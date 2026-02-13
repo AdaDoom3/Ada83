@@ -1,0 +1,190 @@
+Ada83 Compiler — Literate Reformatting Checklist
+═══════════════════════════════════════════════════
+
+MASTER PLAN
+───────────
+We are doing a slow, careful, human-quality pass through the entire 40 000 line
+single-file Ada 83 compiler.  Every function gets read, understood, and cleaned
+up by hand.  No scripts, no bulk regex, no auto-replace slop.
+
+RULES (enforced everywhere)
+───────────────────────────
+R1  No single-character or ultra-short parameter names.
+    "ty" -> "type_info" or "llvm_type" depending on context.
+    "sm" -> "symbols".  "cg" is already global, but if remnants exist, expand.
+    "s"  -> "slice" or "source".  "n" -> "node" or "count".  Etc.
+
+R2  100-character ruler.  Multi-line comments must be filled to approach the
+    ruler edge (no ragged 40-character comment blocks in 100-character space).
+
+R3  No cringe meta-commentary.  Delete references to work done ON the compiler
+    ("DRY Pattern: 50+ locations", "REFACTORING", "Key insight from GNAT", etc.).
+    The code speaks for itself; comments describe WHAT and WHY, not process.
+
+R4  Space before parenthesis in function calls and definitions:
+      BEFORE:  Symbol_Find(sm, name)
+      AFTER:   Symbol_Find (symbols, name)
+    This is the Ada convention and must be applied everywhere.
+
+R5  Function call formatting — arguments aligned or one-per-line when they
+    exceed the ruler:
+      Report_Error (location, "expected %s but found %s",
+                    expected_name, actual_name);
+
+R6  Blank lines only precede comments.  No double blanks.  (Already done,
+    but verify as we touch each function.)
+
+R7  Use C99 designated initializer lists where possible — this mirrors Ada's
+    named aggregate notation and makes field assignments self-documenting:
+      BEFORE:  Source_Location loc = {NULL, 0, 0};
+      AFTER:   Source_Location loc = { .file = NULL, .line = 0, .column = 0 };
+
+
+FILE STRUCTURE  (§ section -> line range)
+─────────────────────────────────────────
+§0    Setup / SIMD / Fat Pointers          lines     1 –   134
+§1    Type_Metrics                         lines   135 –   319
+§2    Memory_Arena                         lines   320 –   369
+§3    String_Slice                         lines   370 –   428
+§4    Source_Location                       lines   429 –   439
+§5    Error_Handling                        lines   440 –   469
+§6    Big_Integer / Big_Real / SIMD parse   lines   470 –  1161
+§7    Lexer                                lines  1162 –  1457
+      §7 sub-sections (token table, etc.)   lines  1458 –  1595
+§8    Abstract_Syntax (node kinds, tree)    lines  1596 –  2582
+§9    Parser (recursive descent)            lines  2583 –  3960
+§10   Type_System                          lines  3961 –  5081
+§11   Symbol_Table                         lines  5082 –  5755
+§12   Semantic_Pass                        lines  5756 –  7916
+§12+  Semantic (resolution, big switch)     lines  7917 – 11944
+§15   ALI_Writer                           lines 11945 – 12747
+§15.7 Elaboration_Model                    lines 12748 – 13483
+§14   Include_Path / Package loading        lines 13484 – 14000
+§16   Generic_Expansion                    lines 14001 – 14365
+§12b  Resolve_Compilation_Unit             lines 14366 – 17418
+§13   Code_Generator (LLVM IR emission)     lines 17419 – 39306
+§17   Main_Driver                          lines 39307 – 39658
+
+
+PROGRESS LOG
+────────────
+Each function we touch gets an entry below:
+
+  [status] Function_Name (line) — what it does
+           CHANGED: what we changed
+           NOTICED: observations for future work
+
+Status key:  [ ] = not started,  [~] = in progress,  [x] = done
+
+────────────────────────────────────────────────────────────────────────────────
+§0. SETUP / SIMD / FAT POINTERS  (lines 1–134)
+────────────────────────────────────────────────────────────────────────────────
+
+[x] File header comment (line 1-24) — table of contents for the 17 sections
+    CHANGED: filled to 100-char ruler, reordered §-list to logical order,
+             removed "(NEW)" meta-tag, em-dashes, expanded descriptions
+    NOTICED: section numbering in the file is non-sequential (§15 before §14 etc.)
+             because of how the code grew; the header now lists them in logical order
+
+[x] Llvm_Type_Is_Pointer (line 86) — true when LLVM type string is "ptr"
+    CHANGED: "ty" -> "llvm_type", space before parens, filled comment to ruler,
+             reformatted the four-way 'and' chain for readability
+
+[x] Llvm_Type_Is_Fat_Pointer (line 93) — true when LLVM type is "{ ptr, ptr }"
+    CHANGED: "ty" -> "llvm_type", space before parens in decl and strcmp call,
+             filled comment to ruler
+
+[x] Simd_Detect_Features (line 116) — CPUID-based AVX2/AVX-512 runtime detection
+    CHANGED: space before parens, filled comments to ruler, replaced terse
+             bit references with full CPUID field names, expanded the section
+             header comment block to 100-char width
+
+────────────────────────────────────────────────────────────────────────────────
+§1. TYPE METRICS  (lines 135–319)
+────────────────────────────────────────────────────────────────────────────────
+
+[x] Character classification inlines (line 146-150) — safe ctype wrappers
+    CHANGED: "c" -> "ch", space before parens in decls and calls,
+             filled comment to ruler with rationale for unsigned char cast
+
+[x] Id_Char_Table (line 156) — 256-entry lookup for Ada identifier characters
+    CHANGED: filled comment to ruler with LRM §2.3 reference, "c" -> "ch" in macro
+
+[x] Enums and typedefs (lines 193-225) — Bits_Per_Unit, Bit_Width, Ada_Integer_Width
+    CHANGED: expanded terse comments to full sentences reaching the ruler
+
+[x] To_Bits / To_Bytes / Byte_Align (line 234-236) — byte/bit morphisms
+    CHANGED: space before parens, aligned declarations, added Byte_Align to
+             the sub-section header description
+
+[x] Align_To (line 239) — round size up to alignment boundary
+    CHANGED: "align" -> "alignment", space before parens
+
+[x] Llvm_Int_Type / Llvm_Float_Type (line 248, 252) — width to LLVM type string
+    CHANGED: space before parens, aligned ternary chains, expanded sub-section header
+
+[x] Fits_In_Signed / Fits_In_Unsigned (line 262, 271) — range-fits-in-N-bits predicates
+    CHANGED: space before parens, "min/max" -> "range_min/range_max",
+             casts have space after closing paren, expanded sub-section header
+
+[x] Bits_For_Range (line 282) — minimum LLVM width for an integer range
+    CHANGED: "uhi" -> "upper", space before parens, aligned ternary chains,
+             condensed comment (removed redundant parameter documentation)
+
+[x] Bits_For_Modulus (line 312) — minimum LLVM width for a modular type
+    CHANGED: "max_val" -> "max_value", space before parens, condensed the
+             overly long example list into a compact two-line table
+
+────────────────────────────────────────────────────────────────────────────────
+§2. MEMORY ARENA  (lines 320–369)
+────────────────────────────────────────────────────────────────────────────────
+
+[ ] Arena_Allocate (line 342)
+[ ] Arena_Free_All (line 360)
+
+────────────────────────────────────────────────────────────────────────────────
+§3. STRING SLICE  (lines 370–428)
+────────────────────────────────────────────────────────────────────────────────
+
+[ ] Slice_From_Cstring (line 383)
+[ ] Slice_Duplicate (line 386)
+[ ] Slice_Equal / Slice_Equal_Ignore_Case (line 392, 396)
+[ ] Slice_Hash (line 405)
+[ ] Edit_Distance (line 415)
+
+────────────────────────────────────────────────────────────────────────────────
+§4–§5. SOURCE LOCATION / ERROR HANDLING  (lines 429–469)
+────────────────────────────────────────────────────────────────────────────────
+
+[ ] Report_Error (line 448)
+[ ] Fatal_Error (line 459)
+
+────────────────────────────────────────────────────────────────────────────────
+§6. BIG INTEGER / BIG REAL  (lines 470–1161)
+────────────────────────────────────────────────────────────────────────────────
+
+[ ] Big_Integer_New (line 487)
+[ ] Big_Integer_Ensure_Capacity (line 493)
+[ ] Big_Integer_Normalize (line 504)
+[ ] Big_Integer_Mul_Add_Small (line 510)
+[ ] Big_Integer_Fits_Int64 (line 524)
+[ ] Big_Integer_To_Uint128 / To_Int128 (line 540, 553)
+[ ] Big_Integer_Compare (line 573)
+[ ] Big_Integer_Add (line 600)
+[ ] simd_parse_8_digits_avx2 (line 680)
+[ ] simd_parse_digits_avx2 (line 719)
+[ ] Big_Integer_From_Decimal_SIMD (line 798)
+[ ] Big_Real_Fits_Double (line 976)
+[ ] Big_Real_To_Hex (line 989)
+[ ] Big_Integer_Clone (line 1003)
+[ ] Big_Real_Compare (line 1016)
+
+(remaining functions in §6 to be enumerated as we reach them)
+
+────────────────────────────────────────────────────────────────────────────────
+§7–§17: TO BE ENUMERATED AS WE REACH EACH SECTION
+────────────────────────────────────────────────────────────────────────────────
+
+(This checklist grows as we work through each section.  We do not pre-enumerate
+ all 400+ functions — we discover them as we go, which forces us to actually
+ read the code.)

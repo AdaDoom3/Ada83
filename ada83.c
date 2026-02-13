@@ -1,26 +1,26 @@
-/* ═══════════════════════════════════════════════════════════════════════════
- * Ada83 - An Ada 1983 (ANSI/MIL-STD-1815A) compiler targeting LLVM IR
- * ═══════════════════════════════════════════════════════════════════════════
+/* ═══════════════════════════════════════════════════════════════════════════════════════════════════
+ * Ada83 — An Ada 1983 (ANSI/MIL-STD-1815A) compiler targeting LLVM IR
+ * ═══════════════════════════════════════════════════════════════════════════════════════════════════
  *
- * §0    Setup              - SIMD instruction and fat pointer
- * §1    Type_Metrics       - Representation details
- * §2    Memory_Arena       - Bump allocation for AST nodes
- * §3    String_Slice       - Non-owning string views
- * §4    Source_Location    - Diagnostic anchors
- * §5    Error_Handling     - Accumulating error reports
- * §6    Big_Integer        - Arbitrary precision for literals
- * §7    Lexer              - Character stream to tokens
- * §8    Abstract_Syntax    - Parse tree representation
- * §9    Parser             - Recursive descent
- * §10   Type_System        - Ada type semantics
- * §11   Symbol_Table       - Scoped name resolution
- * §12   Semantic_Pass      - Type checking and resolution
- * §15   ALI_Writer         - GNAT-compatible library info
- * §15.7 Elaboration_Model  - GNAT LLVM-style dependency ordering (NEW)
- * §14   Include_Path       - Package loading & search paths
- * §16   Generic_Expansion  - Macro-style instantiation
- * §13   Code_Generator     - LLVM IR emission
- * §17   Main_Driver        - Command-line entry point
+ * §0    Setup              — SIMD feature detection and fat-pointer layout constants
+ * §1    Type_Metrics       — Size, alignment, and bit-width computations
+ * §2    Memory_Arena       — Bump allocator for AST nodes and transient storage
+ * §3    String_Slice       — Non-owning string views with case-insensitive comparison
+ * §4    Source_Location    — File, line, and column anchors for diagnostics
+ * §5    Error_Handling     — Accumulating error and fatal-error reporters
+ * §6    Big_Integer        — Arbitrary-precision integers and reals for Ada literals
+ * §7    Lexer              — Character stream to token stream (with SIMD fast paths)
+ * §8    Abstract_Syntax    — Parse-tree node kinds and tree construction
+ * §9    Parser             — Recursive-descent parser for the full Ada 83 grammar
+ * §10   Type_System        — Ada type semantics: derivation, subtypes, constraints
+ * §11   Symbol_Table       — Scoped name resolution with use-clause visibility
+ * §12   Semantic_Pass      — Type checking, overload resolution, and constant folding
+ * §13   Code_Generator     — LLVM IR emission for all Ada constructs
+ * §14   Include_Path       — Package file loading and search-path management
+ * §15   ALI_Writer         — GNAT-compatible Ada Library Information output
+ * §15.7 Elaboration_Model  — Dependency ordering for multi-unit elaboration
+ * §16   Generic_Expansion  — Macro-style instantiation of generic units
+ * §17   Main_Driver        — Command-line parsing and top-level orchestration
  */
 #define _POSIX_C_SOURCE 200809L
 #include <ctype.h>
@@ -42,79 +42,78 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-/* ═══════════════════════════════════════════════════════════════════════════
+/* ═══════════════════════════════════════════════════════════════════════════════════════════════════
  * §0. SIMD Optimizations and Fat Pointers
- * ═══════════════════════════════════════════════════════════════════════════
+ * ═══════════════════════════════════════════════════════════════════════════════════════════════════
  *
  * Architectures:
- *  x86-64  - AVX-512BW (64B), AVX2 (32B), SSE4.2 (16B)                  
- *  ARM64   - NEON/ASIMD (16B), SVE (128-2048b, runtime detected)        
- *  Generic - Scalar fallback with loop unrolling      
+ *   x86-64  — AVX-512BW (64-byte vectors), AVX2 (32-byte), SSE4.2 (16-byte)
+ *   ARM64   — NEON/ASIMD (16-byte), SVE (128–2048 bits, detected at runtime)
+ *   Generic — Scalar fallback with loop unrolling for portability
  *
- * NOTE: Every SIMD path has an equivalent scalar fallback
+ * Every SIMD path has an equivalent scalar fallback.
  *
- * At runtime the primary path derives the bound type from the type system
- * via Array_Bound_Llvm_Type() > Type_To_Llvm(index_type).  These macros
- * exist ONLY as a compile-time backstop for the RTS preamble (emitted
- * before the type system is consulted) and for safety-net fallbacks
- * where the type is genuinely unavailable.
+ * At runtime the primary path derives the bound type from the type system via
+ * Array_Bound_Llvm_Type () -> Type_To_Llvm (index_type).  These macros exist only as a
+ * compile-time backstop for the RTS preamble (emitted before the type system is consulted)
+ * and for safety-net fallbacks where the type is genuinely unavailable.
  *
- * The values MUST match Type_To_Llvm(Standard.INTEGER).  With 8-byte
- * INTEGER (64-bit), the bound type is i64.  To switch to 32-bit
- * INTEGER, change type_integer->size to 4 AND these four macros.
- *
- * Array types whose index type is NOT INTEGER derive their bound type
- * dynamically via Array_Bound_Llvm_Type().
- * ═══════════════════════════════════════════════════════════════════════════
+ * The values MUST match Type_To_Llvm (Standard.INTEGER).  With 8-byte INTEGER (64-bit), the
+ * bound type is i64.  To switch to 32-bit INTEGER, change type_integer->size to 4 AND these
+ * four macros.  Array types whose index type is NOT INTEGER derive their bound type dynamically
+ * via Array_Bound_Llvm_Type ().
+ * ═══════════════════════════════════════════════════════════════════════════════════════════════════
  */
 
-/* Bounds live behind the second pointer as a { bt, bt } struct where
- * bt = the native index type (i32 for STRING, i8 for CHARACTER, etc.).
- * See gnatllvm-arrays-create.adb:684-707. */
+/* Bounds live behind the second pointer as a { bound_type, bound_type } struct where bound_type
+ * is the native index type (i32 for STRING, i8 for CHARACTER, etc.).  For the GNAT layout see
+ * gnatllvm-arrays-create.adb lines 684–707. */
 #define FAT_PTR_TYPE "{ ptr, ptr }"
 
-/* Fat pointer size in bytes: ptr(8) + ptr(8) = 16 always. */
-#define FAT_PTR_ALLOC_SIZE  16
-#define STRING_BOUND_TYPE   "i32"            /* LLVM IR type for STRING bounds  */
-#define STRING_BOUND_WIDTH  32               /* Width in bits                    */
-#define STRING_BOUNDS_STRUCT "{ i32, i32 }"  /* Bounds struct for STRING        */
-#define STRING_BOUNDS_ALLOC 8                /* sizeof(STRING bounds struct)     */
+/* Fat pointer size in bytes: ptr (8) + ptr (8) = 16 on all 64-bit targets. */
+#define FAT_PTR_ALLOC_SIZE   16
+#define STRING_BOUND_TYPE    "i32"           /* LLVM IR type for STRING index bounds                  */
+#define STRING_BOUND_WIDTH   32              /* Width of that type in bits                            */
+#define STRING_BOUNDS_STRUCT "{ i32, i32 }"  /* Bounds struct for STRING: { first, last }             */
+#define STRING_BOUNDS_ALLOC  8               /* sizeof (STRING bounds struct) in bytes                */
 
-/* Check if an LLVM type string represents a thin pointer ("ptr"). */
-static inline bool Llvm_Type_Is_Pointer(const char *ty) {
-  return ty and ty[0] == 'p' and ty[1] == 't' and ty[2] == 'r' and ty[3] == '\0';
+/* Return true when the LLVM type string denotes a thin pointer ("ptr"). */
+static inline bool Llvm_Type_Is_Pointer (const char *llvm_type) {
+  return llvm_type
+    and llvm_type[0] == 'p' and llvm_type[1] == 't'
+    and llvm_type[2] == 'r' and llvm_type[3] == '\0';
 }
 
-/* Check if an LLVM type string represents a fat pointer type.
- * With the uniform { ptr, ptr } layout, this is an exact match. */
-static inline bool Llvm_Type_Is_Fat_Pointer(const char *ty) {
-  return ty and strcmp(ty, "{ ptr, ptr }") == 0;
+/* Return true when the LLVM type string denotes a fat pointer, i.e. the uniform { ptr, ptr }
+ * layout used for unconstrained array parameters and access-to-unconstrained types. */
+static inline bool Llvm_Type_Is_Fat_Pointer (const char *llvm_type) {
+  return llvm_type and strcmp (llvm_type, "{ ptr, ptr }") == 0;
 }
 
-/* Detect architecture at compile time */
-#if defined(__x86_64__) || defined(_M_X64)
+/* Detect the target architecture at compile time so we can select SIMD paths. */
+#if defined (__x86_64__) || defined (_M_X64)
   #define SIMD_X86_64 1
-#elif defined(__aarch64__) || defined(_M_ARM64)
+#elif defined (__aarch64__) || defined (_M_ARM64)
   #define SIMD_ARM64 1
 #else
   #define SIMD_GENERIC 1
 #endif
 
-/* Runtime CPU feature detection for x86-64
- * Note: AVX-512 code only compiles with -mavx512bw; without it we use AVX2/scalar */
+/* Runtime CPU feature detection for x86-64.  AVX-512 code paths are only compiled when the
+ * toolchain is invoked with -mavx512bw; without that flag we fall back to AVX2 or scalar. */
 #ifdef SIMD_X86_64
 #ifdef __AVX512BW__
-static int Simd_Has_Avx512 = -1;  /* -1 = unchecked, 0 = no, 1 = yes */
+static int Simd_Has_Avx512 = -1;                /* -1 = unchecked, 0 = absent, 1 = present      */
 #else
-__attribute__((unused))
-static int Simd_Has_Avx512 = 0;   /* Disabled: not compiled with AVX-512 support */
+__attribute__ ((unused))
+static int Simd_Has_Avx512 = 0;                 /* Permanently disabled: not compiled with AVX-512 */
 #endif
 static int Simd_Has_Avx2 = -1;
-static void Simd_Detect_Features(void) {
-  if (Simd_Has_Avx2 >= 0) return;  /* Already detected */
+static void Simd_Detect_Features (void) {
+  if (Simd_Has_Avx2 >= 0) return;               /* Already detected, nothing to do                */
   uint32_t eax, ebx, ecx, edx;
 
-  /* Check for AVX2: CPUID.07H:EBX.AVX2[bit 5] */
+  /* CPUID leaf 07H, sub-leaf 0: structured extended feature flags.  AVX2 is EBX bit 5. */
   __asm__ volatile (
     "mov $7, %%eax\n\t"
     "xor %%ecx, %%ecx\n\t"
@@ -126,35 +125,35 @@ static void Simd_Detect_Features(void) {
   Simd_Has_Avx2 = (ebx >> 5) & 1;
 #ifdef __AVX512BW__
 
-  /* Check for AVX-512F and AVX-512BW at runtime (only if compiled with support) */
+  /* AVX-512F is EBX bit 16, AVX-512BW is EBX bit 30 — both are required. */
   Simd_Has_Avx512 = ((ebx >> 16) & 1) and ((ebx >> 30) & 1);
 #endif
 }
 #endif
 
-/* ═══════════════════════════════════════════════════════════════════════════
- * §1. TYPE METRICS — Representation details
- * ═══════════════════════════════════════════════════════════════════════════
+/* ═══════════════════════════════════════════════════════════════════════════════════════════════════
+ * §1. TYPE METRICS — Size, alignment, and bit-width representation
+ * ═══════════════════════════════════════════════════════════════════════════════════════════════════
  *
- * We centralize all size and alignment computations. All sizes flow through
- * To_Bits/To_Bytes morphisms.
+ * All size and alignment computations are centralised here.  Sizes flow through the To_Bits and
+ * To_Bytes morphisms so that bit/byte confusion is impossible at the call site.
  *
- * INVARIANT: Sizes in Type_Info are stored in BYTES (not bits).
- * This matches LLVM's DataLayout model and simplifies record layout.
+ * INVARIANT: Sizes stored in Type_Info are always in BYTES (not bits).  This matches the LLVM
+ * DataLayout model and simplifies record-layout arithmetic throughout the code generator.
  */
 
-/* Safe ctype: C library requires unsigned char to avoid UB on signed char */
-static inline int  Is_Alpha(char c)   { return isalpha((unsigned char)c); }
-static inline int  Is_Digit(char c)   { return isdigit((unsigned char)c); }
-static inline int  Is_Xdigit(char c)  { return isxdigit((unsigned char)c); }
-static inline int  Is_Space(char c)   { return isspace((unsigned char)c); }
-static inline char To_Lower(char c)   { return (char)tolower((unsigned char)c); }
+/* Safe ctype wrappers: the C library <ctype.h> functions take int and require unsigned char to
+ * avoid undefined behaviour on platforms where plain char is signed. */
+static inline int  Is_Alpha  (char ch) { return isalpha  ((unsigned char) ch); }
+static inline int  Is_Digit  (char ch) { return isdigit  ((unsigned char) ch); }
+static inline int  Is_Xdigit (char ch) { return isxdigit ((unsigned char) ch); }
+static inline int  Is_Space  (char ch) { return isspace  ((unsigned char) ch); }
+static inline char To_Lower  (char ch) { return (char) tolower ((unsigned char) ch); }
 
-/* Fast identifier character lookup table per Ada LRM
- * ASCII: [A-Za-z0-9_]
- * Latin-1 letters: 0xC0-0xD6 (À-Ö), 0xD8-0xF6 (Ø-ö), 0xF8-0xFF (ø-ÿ)
- * Excludes: 0xD7 (×) and 0xF7 (÷) which are operators, not letters
- */
+/* Fast identifier-character lookup table per Ada LRM §2.3.  A character is an identifier
+ * constituent when it is an ASCII letter, digit, or underscore, or a Latin-1 letter in the
+ * ranges 0xC0–0xD6 (À–Ö), 0xD8–0xF6 (Ø–ö), 0xF8–0xFF (ø–ÿ).  The two operator code
+ * points 0xD7 (×) and 0xF7 (÷) are explicitly excluded. */
 static const uint8_t Id_Char_Table[256] = {
 
   /* ASCII letters */
@@ -189,26 +188,25 @@ static const uint8_t Id_Char_Table[256] = {
   /* Latin-1 remaining lowercase: ø ù ú û ü ý þ ÿ */
   [0xF8]=1,[0xF9]=1,[0xFA]=1,[0xFB]=1,[0xFC]=1,[0xFD]=1,[0xFE]=1,[0xFF]=1
 };
-#define Is_Id_Char(c) (Id_Char_Table[(uint8_t)(c)])
+#define Is_Id_Char(ch) (Id_Char_Table[(uint8_t)(ch)])
 
-/* 128-bit integer typedefs — GCC/Clang extension, used for i128/u128 support.
- * Ada modular types (mod 2**128) and Long_Long_Long_Integer require these. */
+/* 128-bit integer typedefs — a GCC/Clang extension.  Ada modular types with mod 2**128 and the
+ * Ada 2022 Long_Long_Long_Integer type both require native 128-bit arithmetic. */
 typedef __int128          int128_t;
 typedef unsigned __int128 uint128_t;
 
-/* Universally 8 on modern targets */
+/* Number of bits in an addressable storage unit — universally 8 on modern targets. */
 enum { Bits_Per_Unit = 8 };
 
-/* LLVM integer widths in bits */
+/* Named constants for the LLVM integer and floating-point widths used throughout the compiler. */
 typedef enum {
   Width_1   = 1,    Width_8   = 8,    Width_16  = 16,
   Width_32  = 32,   Width_64  = 64,   Width_128 = 128,
   Width_Ptr = 64,   Width_Float = 32, Width_Double = 64
 } Bit_Width;
 
-/* Ada standard integer widths per RM §3.5.4.
- * Long_Long_Long_Integer (128-bit) is an Ada 2022 extension,
- * included here to prepare for i128/u128 support. */
+/* Ada standard integer widths per RM §3.5.4.  Long_Long_Long_Integer (128-bit) is an Ada 2022
+ * extension included here so that the type system is ready for i128/u128 modular types. */
 typedef enum {
   Ada_Short_Short_Integer_Bits      = Width_8,
   Ada_Short_Integer_Bits            = Width_16,
@@ -218,113 +216,101 @@ typedef enum {
   Ada_Long_Long_Long_Integer_Bits   = Width_128   /* Ada 2022: 128-bit */
 } Ada_Integer_Width;
 
-/* Default metrics when type is unspecified — uses Integer'Size (32 bits) */
+/* Default metrics when the type is unspecified — falls back to Integer'Size (32 bits, 4 bytes). */
 enum {
   Default_Size_Bits   = Ada_Integer_Bits,
   Default_Size_Bytes  = Ada_Integer_Bits / Bits_Per_Unit,
   Default_Align_Bytes = Default_Size_Bytes
 };
 
-/* ─────────────────────────────────────────────────────────────────────────
+/* ─────────────────────────────────────────────────────────────────────────────────────────────────
  * §1.1 Bit/Byte Conversions — Size morphisms
  *
- * To_Bits:  bytes > bits  (multiplicative, total)
- * To_Bytes: bits > bytes  (ceiling division, rounds up)
- * ───────────────────────────────────────────────────────────────────────── */
-static inline uint64_t To_Bits(uint64_t bytes)  { return bytes * Bits_Per_Unit; }
-static inline uint64_t To_Bytes(uint64_t bits)  { return (bits + Bits_Per_Unit - 1) / Bits_Per_Unit; }
-static inline uint64_t Byte_Align(uint64_t bits){ return To_Bits(To_Bytes(bits)); }
+ * To_Bits   : bytes -> bits   (multiplicative, total — never truncates)
+ * To_Bytes  : bits  -> bytes  (ceiling division — rounds up to the next whole byte)
+ * Byte_Align: bits  -> bits   (round up to a byte boundary, i.e. To_Bits (To_Bytes (n)))
+ * ───────────────────────────────────────────────────────────────────────────────────────────────── */
+static inline uint64_t To_Bits    (uint64_t bytes) { return bytes * Bits_Per_Unit; }
+static inline uint64_t To_Bytes   (uint64_t bits)  { return (bits + Bits_Per_Unit - 1) / Bits_Per_Unit; }
+static inline uint64_t Byte_Align (uint64_t bits)  { return To_Bits (To_Bytes (bits)); }
 
-/* Align size up to power-of-2 alignment boundary */
-static inline size_t Align_To(size_t size, size_t align) {
-  return align ? ((size + align - 1) & ~(align - 1)) : size;
+/* Round size up to the nearest power-of-two alignment boundary. */
+static inline size_t Align_To (size_t size, size_t alignment) {
+  return alignment ? ((size + alignment - 1) & ~(alignment - 1)) : size;
 }
 
-/* ─────────────────────────────────────────────────────────────────────────
- * §1.2 LLVM Type Selection — Width to type morphisms
+/* ─────────────────────────────────────────────────────────────────────────────────────────────────
+ * §1.2 LLVM Type Selection — Width-to-type morphisms
  *
- * Maps bit width to smallest containing LLVM integer type.
- * ───────────────────────────────────────────────────────────────────────── */
-static inline const char *Llvm_Int_Type(uint32_t bits) {
-  return bits <= 1   ? "i1"   : bits <= 8   ? "i8"  : bits <= 16  ? "i16" :
-       bits <= 32  ? "i32"  : bits <= 64  ? "i64" : "i128";
+ * Given a bit width, return the smallest LLVM integer (or float) type that can hold that width.
+ * ───────────────────────────────────────────────────────────────────────────────────────────────── */
+static inline const char *Llvm_Int_Type (uint32_t bits) {
+  return bits <= 1   ? "i1"   : bits <= 8   ? "i8"   : bits <= 16  ? "i16" :
+         bits <= 32  ? "i32"  : bits <= 64  ? "i64"  : "i128";
 }
-static inline const char *Llvm_Float_Type(uint32_t bits) {
+static inline const char *Llvm_Float_Type (uint32_t bits) {
   return bits <= Width_Float ? "float" : "double";
 }
 
-/* ─────────────────────────────────────────────────────────────────────────
- * §1.3 Range Predicates — Determining Representation Width
+/* ─────────────────────────────────────────────────────────────────────────────────────────────────
+ * §1.3 Range Predicates — Determining representation width
  *
- * Compute minimum bits needed for a range [lo, hi].
- * ───────────────────────────────────────────────────────────────────────── */
-static inline bool Fits_In_Signed(int128_t lo, int128_t hi, uint32_t bits) {
+ * Compute the minimum number of bits needed to represent the integer range [lo .. hi].  All
+ * bounds are int128_t so that the full Ada 2022 Long_Long_Long_Integer range is covered.
+ * ───────────────────────────────────────────────────────────────────────────────────────────────── */
+static inline bool Fits_In_Signed (int128_t lo, int128_t hi, uint32_t bits) {
   if (bits >= 128) return true;
   if (bits >= 64) {
-    return lo >= (int128_t)INT64_MIN and hi <= (int128_t)INT64_MAX;
+    return lo >= (int128_t) INT64_MIN and hi <= (int128_t) INT64_MAX;
   }
-  int128_t min = -((int128_t)1 << (bits - 1));
-  int128_t max = ((int128_t)1 << (bits - 1)) - 1;
-  return lo >= min and hi <= max;
+  int128_t range_min = -((int128_t) 1 << (bits - 1));
+  int128_t range_max =  ((int128_t) 1 << (bits - 1)) - 1;
+  return lo >= range_min and hi <= range_max;
 }
-static inline bool Fits_In_Unsigned(int128_t lo, int128_t hi, uint32_t bits) {
+static inline bool Fits_In_Unsigned (int128_t lo, int128_t hi, uint32_t bits) {
   if (lo < 0) return false;
   if (bits >= 128) return true;
-  if (bits >= 64) return (uint128_t)hi <= UINT64_MAX;
-  return (uint128_t)hi < ((uint128_t)1 << bits);
+  if (bits >= 64) return (uint128_t) hi <= UINT64_MAX;
+  return (uint128_t) hi < ((uint128_t) 1 << bits);
 }
 
-/* Determine minimum LLVM integer width for a range [lo, hi].
- * Returns Width_8, Width_16, Width_32, Width_64, or Width_128.
- * Unsigned ranges (lo >= 0) use unsigned analysis.
- * Bounds are int128_t so the full range of i128/u128 types is covered. */
-static inline uint32_t Bits_For_Range(int128_t lo, int128_t hi) {
+/* Return the smallest standard LLVM integer width (8, 16, 32, 64, or 128) that can represent
+ * every value in the range [lo .. hi].  Non-negative ranges use unsigned analysis. */
+static inline uint32_t Bits_For_Range (int128_t lo, int128_t hi) {
   if (lo >= 0) {
-    uint128_t uhi = (uint128_t)hi;
-    return uhi < 256               ? Width_8   :
-         uhi < 65536             ? Width_16  :
-         uhi < (uint128_t)1 << 32 ? Width_32  :
-         uhi <= UINT64_MAX       ? Width_64  : Width_128;
+    uint128_t upper = (uint128_t) hi;
+    return upper < 256                   ? Width_8   :
+           upper < 65536                 ? Width_16  :
+           upper < (uint128_t) 1 << 32   ? Width_32  :
+           upper <= UINT64_MAX           ? Width_64  : Width_128;
   }
-  return Fits_In_Signed(lo, hi, 8)  ? Width_8  :
-       Fits_In_Signed(lo, hi, 16) ? Width_16 :
-       Fits_In_Signed(lo, hi, 32) ? Width_32 :
-       Fits_In_Signed(lo, hi, 64) ? Width_64 : Width_128;
+  return Fits_In_Signed (lo, hi, 8)  ? Width_8  :
+         Fits_In_Signed (lo, hi, 16) ? Width_16 :
+         Fits_In_Signed (lo, hi, 32) ? Width_32 :
+         Fits_In_Signed (lo, hi, 64) ? Width_64 : Width_128;
 }
 
-/* Determine minimum LLVM integer width for a modular type with given modulus.
- * Modular types need enough bits to represent values 0 .. modulus-1.
- * For power-of-2 moduli (the common case), this is exactly log2(modulus) bits.
- * For non-power-of-2 moduli, we round up to the next standard LLVM width.
- * Ada RM 3.5.4(9): the range of a modular type is 0 .. modulus-1.
+/* Return the smallest standard LLVM integer width for a modular type.  Per Ada RM §3.5.4(9)
+ * a modular type's range is 0 .. modulus-1, so we need enough bits for the maximum value.
+ * The modulus is uint128_t so that mod 2**64 and mod 2**128 are representable directly.
  *
- * Modulus is uint128_t so mod 2**64 and mod 2**128 are represented directly
- * without sentinel values.
- *
- * Examples:
- *   mod 256     -> 8 bits  (i8)     — u8
- *   mod 65536   -> 16 bits (i16)    — u16
- *   mod 2**32   -> 32 bits (i32)    — u32
- *   mod 2**64   -> 64 bits (i64)    — u64
- *   mod 2**128  -> 128 bits (i128)  — u128
- *   mod 100     -> 8 bits  (i8)     — fits in 7 bits, rounds to i8 */
-static inline uint32_t Bits_For_Modulus(uint128_t modulus) {
-  if (modulus == 0) return 0;  /* Invalid: modulus must be > 0 */
-  uint128_t max_val = modulus - 1;
-  return max_val < 256               ? Width_8  :
-       max_val < 65536             ? Width_16 :
-       max_val < (uint128_t)1 << 32 ? Width_32 :
-       max_val <= UINT64_MAX       ? Width_64 : Width_128;
+ *   mod 256    -> i8      mod 65536  -> i16     mod 2**32  -> i32
+ *   mod 2**64  -> i64     mod 2**128 -> i128    mod 100    -> i8  (7 bits, rounds up) */
+static inline uint32_t Bits_For_Modulus (uint128_t modulus) {
+  if (modulus == 0) return 0;
+  uint128_t max_value = modulus - 1;
+  return max_value < 256                   ? Width_8  :
+         max_value < 65536                 ? Width_16 :
+         max_value < (uint128_t) 1 << 32   ? Width_32 :
+         max_value <= UINT64_MAX           ? Width_64 : Width_128;
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
- * §2. MEMORY ARENA — Bump Allocation for the Compilation Session
- * ═══════════════════════════════════════════════════════════════════════════
+/* ═══════════════════════════════════════════════════════════════════════════════════════════════════
+ * §2. MEMORY ARENA — Bump allocation for the compilation session
+ * ═══════════════════════════════════════════════════════════════════════════════════════════════════
  *
- * Bump allocator for AST nodes and strings. All memory persists for the
- * compilation session — we trade fragmentation for simplicity.
- *
- * Avoiding malloc(32) is not important for performance.
+ * A simple bump allocator used for AST nodes, interned strings, and other objects whose lifetime
+ * spans the entire compilation.  All memory is freed in one shot at the end via Arena_Free_All.
  */
 typedef struct Arena_Chunk Arena_Chunk;
 struct Arena_Chunk {
@@ -337,146 +323,160 @@ typedef struct {
   Arena_Chunk *head;
   size_t       chunk_size;
 } Memory_Arena;
-static Memory_Arena Global_Arena = {0};
-enum { Default_Chunk_Size = 1 << 24 };  /* 16 MiB chunks */
-static void *Arena_Allocate(size_t size) {
-  size = Align_To(size, 16);
+static Memory_Arena Global_Arena = { .head = NULL, .chunk_size = 0 };
+enum { Default_Chunk_Size = 1 << 24 };  /* 16 MiB per chunk */
+static void *Arena_Allocate (size_t size) {
+  size = Align_To (size, 16);
   if (not Global_Arena.head or Global_Arena.head->current + size > Global_Arena.head->end) {
-    size_t chunk_size = Default_Chunk_Size;
-    if (size > chunk_size) chunk_size = size + sizeof(Arena_Chunk);
-    Arena_Chunk *chunk = malloc(sizeof(Arena_Chunk) + chunk_size);
-    if (not chunk) { fprintf(stderr, "Out of memory\n"); exit(1); }
-    chunk->previous = Global_Arena.head;
-    char *raw = (char*)(chunk + 1);
-    char *aligned = (char*)(((uintptr_t)raw + 15) & ~(uintptr_t)15);
-    chunk->base = chunk->current = aligned;
-    chunk->end = raw + chunk_size;
-    Global_Arena.head = chunk;
+    size_t needed = Default_Chunk_Size;
+    if (size > needed) needed = size + sizeof (Arena_Chunk);
+    Arena_Chunk *fresh = malloc (sizeof (Arena_Chunk) + needed);
+    if (not fresh) { fprintf (stderr, "Out of memory\n"); exit (1); }
+    fresh->previous = Global_Arena.head;
+    char *raw     = (char *) (fresh + 1);
+    char *aligned = (char *) (((uintptr_t) raw + 15) & ~(uintptr_t) 15);
+    fresh->base = fresh->current = aligned;
+    fresh->end  = raw + needed;
+    Global_Arena.head = fresh;
   }
   void *result = Global_Arena.head->current;
   Global_Arena.head->current += size;
-  return memset(result, 0, size);
+  return memset (result, 0, size);
 }
-static void Arena_Free_All(void) {
+static void Arena_Free_All (void) {
   Arena_Chunk *chunk = Global_Arena.head;
   while (chunk) {
-    Arena_Chunk *prev = chunk->previous;
-    free(chunk);
-    chunk = prev;
+    Arena_Chunk *previous = chunk->previous;
+    free (chunk);
+    chunk = previous;
   }
   Global_Arena.head = NULL;
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
- * §3. STRING SLICE — Non-Owning String Views
- * ═══════════════════════════════════════════════════════════════════════════
+/* ═══════════════════════════════════════════════════════════════════════════════════════════════════
+ * §3. STRING SLICE — Non-owning string views
+ * ═══════════════════════════════════════════════════════════════════════════════════════════════════
  *
- * A slice is a pointer + length, borrowed from source or arena.
- * This avoids strlen() calls and enables substring views without allocation.
+ * A String_Slice is a (pointer, length) pair borrowed from the source buffer or the arena.  It
+ * avoids strlen () calls and allows substring views without allocation.  Ada identifiers are
+ * case-insensitive, so the comparison and hashing functions fold to lower case.
  */
 typedef struct {
   const char *data;
   uint32_t    length;
 } String_Slice;
-#define S(literal) ((String_Slice){literal, sizeof(literal) - 1})
-static const String_Slice Empty_Slice = {NULL, 0};
-static inline String_Slice Slice_From_Cstring(const char *s) {
-  return (String_Slice){s, s ? (uint32_t)strlen(s) : 0};
+#define S(literal) ((String_Slice){ .data = (literal), .length = sizeof (literal) - 1 })
+static const String_Slice Empty_Slice = { .data = NULL, .length = 0 };
+static inline String_Slice Slice_From_Cstring (const char *source) {
+  return (String_Slice){
+    .data   = source,
+    .length = source ? (uint32_t) strlen (source) : 0
+  };
 }
-static String_Slice Slice_Duplicate(String_Slice s) {
-  if (not s.length) return Empty_Slice;
-  char *copy = Arena_Allocate(s.length + 1);
-  memcpy(copy, s.data, s.length);
-  return (String_Slice){copy, s.length};
+static String_Slice Slice_Duplicate (String_Slice slice) {
+  if (not slice.length) return Empty_Slice;
+  char *copy = Arena_Allocate (slice.length + 1);
+  memcpy (copy, slice.data, slice.length);
+  return (String_Slice){ .data = copy, .length = slice.length };
 }
-static bool Slice_Equal(String_Slice a, String_Slice b) {
-  if (a.length != b.length) return false;
-  return memcmp(a.data, b.data, a.length) == 0;
+static bool Slice_Equal (String_Slice left, String_Slice right) {
+  if (left.length != right.length) return false;
+  return memcmp (left.data, right.data, left.length) == 0;
 }
-static bool Slice_Equal_Ignore_Case(String_Slice a, String_Slice b) {
-  if (a.length != b.length) return false;
-  for (uint32_t i = 0; i < a.length; i++)
-    if (To_Lower(a.data[i]) != To_Lower(b.data[i])) return false;
+static bool Slice_Equal_Ignore_Case (String_Slice left, String_Slice right) {
+  if (left.length != right.length) return false;
+  for (uint32_t i = 0; i < left.length; i++)
+    if (To_Lower (left.data[i]) != To_Lower (right.data[i])) return false;
   return true;
 }
 
-/* FNV-1a hash with case folding for case-insensitive symbol lookup.
- * The constants are prime; their provenance is empirical, not divine. */
-static uint64_t Slice_Hash(String_Slice s) {
-  uint64_t h = 14695981039346656037ULL;
-  for (uint32_t i = 0; i < s.length; i++)
-    h = (h ^ (uint8_t)To_Lower(s.data[i])) * 1099511628211ULL;
-  return h;
+/* FNV-1a hash with case folding, used for case-insensitive symbol-table lookup.  The offset
+ * basis and prime are the standard 64-bit FNV parameters from Fowler/Noll/Vo. */
+static uint64_t Slice_Hash (String_Slice slice) {
+  uint64_t hash = 14695981039346656037ULL;
+  for (uint32_t i = 0; i < slice.length; i++)
+    hash = (hash ^ (uint8_t) To_Lower (slice.data[i])) * 1099511628211ULL;
+  return hash;
 }
 
-/* Levenshtein distance for "did you mean?" suggestions.
- * O(nm) is acceptable; identifiers are short, and errors are infrequent. */
-__attribute__((unused))
-static int Edit_Distance(String_Slice a, String_Slice b) {
-  if (a.length > 20 or b.length > 20) return 100;
-  int d[21][21];
-  for (uint32_t i = 0; i <= a.length; i++) d[i][0] = (int)i;
-  for (uint32_t j = 0; j <= b.length; j++) d[0][j] = (int)j;
-  for (uint32_t i = 1; i <= a.length; i++)
-    for (uint32_t j = 1; j <= b.length; j++) {
-      int cost = To_Lower(a.data[i-1]) != To_Lower(b.data[j-1]);
-      int del = d[i-1][j] + 1, ins = d[i][j-1] + 1, sub = d[i-1][j-1] + cost;
-      d[i][j] = del < ins ? (del < sub ? del : sub) : (ins < sub ? ins : sub);
+/* Levenshtein edit distance for "did you mean …?" diagnostic suggestions.  The O(n*m) dynamic-
+ * programming table is stack-allocated; identifiers longer than 20 characters bail out early. */
+__attribute__ ((unused))
+static int Edit_Distance (String_Slice left, String_Slice right) {
+  if (left.length > 20 or right.length > 20) return 100;
+  int table[21][21];
+  for (uint32_t i = 0; i <= left.length;  i++) table[i][0] = (int) i;
+  for (uint32_t j = 0; j <= right.length; j++) table[0][j] = (int) j;
+  for (uint32_t i = 1; i <= left.length; i++)
+    for (uint32_t j = 1; j <= right.length; j++) {
+      int cost   = To_Lower (left.data[i - 1]) != To_Lower (right.data[j - 1]);
+      int delete = table[i - 1][j]     + 1;
+      int insert = table[i][j - 1]     + 1;
+      int subst  = table[i - 1][j - 1] + cost;
+      table[i][j] = delete < insert
+        ? (delete < subst ? delete : subst)
+        : (insert < subst ? insert : subst);
     }
-  return d[a.length][b.length];
+  return table[left.length][right.length];
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
- * §4. SOURCE LOCATION — Diagnostics to Source
- * ═══════════════════════════════════════════════════════════════════════════
+/* ═══════════════════════════════════════════════════════════════════════════════════════════════════
+ * §4. SOURCE LOCATION — Anchoring diagnostics to source text
+ * ═══════════════════════════════════════════════════════════════════════════════════════════════════
+ *
+ * Every AST node, token, and symbol carries a Source_Location so that error messages can point
+ * the programmer at the exact file, line, and column where the problem was detected.
  */
 typedef struct {
   const char *filename;
   uint32_t    line;
   uint32_t    column;
 } Source_Location;
-static const Source_Location No_Location = {NULL, 0, 0};
+static const Source_Location No_Location = { .filename = NULL, .line = 0, .column = 0 };
 
-/* ═══════════════════════════════════════════════════════════════════════════
- * §5. ERROR HANDLING — Diagnostic and message collection
- * ═══════════════════════════════════════════════════════════════════════════
+/* ═══════════════════════════════════════════════════════════════════════════════════════════════════
+ * §5. ERROR HANDLING — Accumulating diagnostic reports
+ * ═══════════════════════════════════════════════════════════════════════════════════════════════════
  *
- * Errors accumulate rather than immediately aborting, allowing the compiler
- * to report multiple issues in a single pass.
+ * Errors are accumulated rather than triggering an immediate abort, so the compiler can report
+ * multiple issues in a single invocation.  Fatal_Error is reserved for internal consistency
+ * violations that make further progress impossible.
  */
 static int Error_Count = 0;
-static void Report_Error(Source_Location loc, const char *format, ...) {
+static void Report_Error (Source_Location location, const char *format, ...) {
   va_list args;
-  va_start(args, format);
-  fprintf(stderr, "%s:%u:%u: error: ",
-      loc.filename ? loc.filename : "<unknown>", loc.line, loc.column);
-  vfprintf(stderr, format, args);
-  fputc('\n', stderr);
-  va_end(args);
+  va_start (args, format);
+  fprintf (stderr, "%s:%u:%u: error: ",
+           location.filename ? location.filename : "<unknown>",
+           location.line, location.column);
+  vfprintf (stderr, format, args);
+  fputc ('\n', stderr);
+  va_end (args);
   Error_Count++;
 }
-__attribute__((unused, noreturn))
-static void Fatal_Error(Source_Location loc, const char *format, ...) {
+__attribute__ ((unused, noreturn))
+static void Fatal_Error (Source_Location location, const char *format, ...) {
   va_list args;
-  va_start(args, format);
-  fprintf(stderr, "%s:%u:%u: INTERNAL ERROR: ",
-      loc.filename ? loc.filename : "<unknown>", loc.line, loc.column);
-  vfprintf(stderr, format, args);
-  fputc('\n', stderr);
-  va_end(args);
-  exit(1);
+  va_start (args, format);
+  fprintf (stderr, "%s:%u:%u: INTERNAL ERROR: ",
+           location.filename ? location.filename : "<unknown>",
+           location.line, location.column);
+  vfprintf (stderr, format, args);
+  fputc ('\n', stderr);
+  va_end (args);
+  exit (1);
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
- * §6. BIG INTEGER — Arbitrary Precision for Literal Values
- * ═══════════════════════════════════════════════════════════════════════════
+/* ═══════════════════════════════════════════════════════════════════════════════════════════════════
+ * §6. BIG INTEGER — Arbitrary-precision integers and reals for Ada literal values
+ * ═══════════════════════════════════════════════════════════════════════════════════════════════════
  *
- * Ada literals can exceed 64-bit range. We represent magnitudes as arrays
- * of 64-bit limbs (little-endian). For literal parsing, we only need:
- *   - Construction from decimal string
- *   - Multiply by small constant (base)
- *   - Add small constant (digit)
- *   - Comparison and extraction
+ * Ada numeric literals can exceed the 64-bit range (e.g. mod 2**128).  Magnitudes are stored as
+ * little-endian arrays of 64-bit limbs.  The operations needed for literal parsing are:
+ *   - Construction from a decimal (or based) string
+ *   - Multiply by a small constant (the base)
+ *   - Add a small constant (the digit value)
+ *   - Sign-aware comparison and extraction to int64/int128/uint128
  */
 typedef struct {
   uint64_t *limbs;
@@ -484,200 +484,192 @@ typedef struct {
   uint32_t  capacity;
   bool      is_negative;
 } Big_Integer;
-static Big_Integer *Big_Integer_New(uint32_t capacity) {
-  Big_Integer *bi = Arena_Allocate(sizeof(Big_Integer));
-  bi->limbs = Arena_Allocate(capacity * sizeof(uint64_t));
-  bi->capacity = capacity;
-  return bi;
+static Big_Integer *Big_Integer_New (uint32_t capacity) {
+  Big_Integer *result = Arena_Allocate (sizeof (Big_Integer));
+  result->limbs    = Arena_Allocate (capacity * sizeof (uint64_t));
+  result->capacity = capacity;
+  return result;
 }
-static void Big_Integer_Ensure_Capacity(Big_Integer *bi, uint32_t needed) {
-  if (needed <= bi->capacity) return;
-  uint32_t new_cap = bi->capacity * 2;
-  if (new_cap < needed) new_cap = needed;
-  uint64_t *new_limbs = Arena_Allocate(new_cap * sizeof(uint64_t));
-  memcpy(new_limbs, bi->limbs, bi->count * sizeof(uint64_t));
-  bi->limbs = new_limbs;
-  bi->capacity = new_cap;
-}
-
-/* Normalize: remove leading zero limbs, ensure zero is non-negative */
-static void Big_Integer_Normalize(Big_Integer *bi) {
-  while (bi->count > 0 and bi->limbs[bi->count - 1] == 0) bi->count--;
-  if (bi->count == 0) bi->is_negative = false;
+static void Big_Integer_Ensure_Capacity (Big_Integer *integer, uint32_t needed) {
+  if (needed <= integer->capacity) return;
+  uint32_t new_capacity = integer->capacity * 2;
+  if (new_capacity < needed) new_capacity = needed;
+  uint64_t *new_limbs = Arena_Allocate (new_capacity * sizeof (uint64_t));
+  memcpy (new_limbs, integer->limbs, integer->count * sizeof (uint64_t));
+  integer->limbs    = new_limbs;
+  integer->capacity = new_capacity;
 }
 
-/* Multiply in-place by small factor and add small addend */
-static void Big_Integer_Mul_Add_Small(Big_Integer *bi, uint64_t factor, uint64_t addend) {
+/* Remove leading zero limbs and canonicalise the sign (zero is always non-negative). */
+static void Big_Integer_Normalize (Big_Integer *integer) {
+  while (integer->count > 0 and integer->limbs[integer->count - 1] == 0)
+    integer->count--;
+  if (integer->count == 0) integer->is_negative = false;
+}
+
+/* Multiply the integer in place by a single-word factor and add a single-word addend.  This is
+ * the core loop for building a big integer from a digit string: integer = integer * base + digit. */
+static void Big_Integer_Mul_Add_Small (Big_Integer *integer, uint64_t factor, uint64_t addend) {
   __uint128_t carry = addend;
-  for (uint32_t i = 0; i < bi->count; i++) {
-    carry += (__uint128_t)bi->limbs[i] * factor;
-    bi->limbs[i] = (uint64_t)carry;
+  for (uint32_t i = 0; i < integer->count; i++) {
+    carry += (__uint128_t) integer->limbs[i] * factor;
+    integer->limbs[i] = (uint64_t) carry;
     carry >>= 64;
   }
   if (carry) {
-    Big_Integer_Ensure_Capacity(bi, bi->count + 1);
-    bi->limbs[bi->count++] = (uint64_t)carry;
+    Big_Integer_Ensure_Capacity (integer, integer->count + 1);
+    integer->limbs[integer->count++] = (uint64_t) carry;
   }
 }
 
-/* Check if value fits in int64_t and extract if so */
-static bool Big_Integer_Fits_Int64(const Big_Integer *bi, int64_t *out) {
-  if (bi->count == 0) { *out = 0; return true; }
-  if (bi->count > 1) return false;
-  uint64_t v = bi->limbs[0];
-  if (bi->is_negative) {
-    if (v > (uint64_t)INT64_MAX + 1) return false;
-    *out = -(int64_t)v;
+/* If the big integer fits in a signed 64-bit value, store it in *out and return true. */
+static bool Big_Integer_Fits_Int64 (const Big_Integer *integer, int64_t *out) {
+  if (integer->count == 0) { *out = 0; return true; }
+  if (integer->count > 1) return false;
+  uint64_t magnitude = integer->limbs[0];
+  if (integer->is_negative) {
+    if (magnitude > (uint64_t) INT64_MAX + 1) return false;
+    *out = -(int64_t) magnitude;
   } else {
-    if (v > (uint64_t)INT64_MAX) return false;
-    *out = (int64_t)v;
+    if (magnitude > (uint64_t) INT64_MAX) return false;
+    *out = (int64_t) magnitude;
   }
   return true;
 }
 
-/* Extract a Big_Integer as unsigned 128-bit value.  Returns true if the
- * value fits in uint128_t (0 .. 2^128-1).  Handles 0, 1, or 2 limbs. */
-static bool Big_Integer_To_Uint128(const Big_Integer *bi, uint128_t *out) {
-  if (bi->is_negative) return false;
-  if (bi->count == 0) { *out = 0; return true; }
-  if (bi->count == 1) { *out = (uint128_t)bi->limbs[0]; return true; }
-  if (bi->count == 2) {
-    *out = ((uint128_t)bi->limbs[1] << 64) | (uint128_t)bi->limbs[0];
+/* Extract a Big_Integer as an unsigned 128-bit value.  Returns true when the magnitude fits in
+ * uint128_t (0 .. 2**128 - 1), i.e. the integer has at most two limbs and is non-negative. */
+static bool Big_Integer_To_Uint128 (const Big_Integer *integer, uint128_t *out) {
+  if (integer->is_negative) return false;
+  if (integer->count == 0) { *out = 0; return true; }
+  if (integer->count == 1) { *out = (uint128_t) integer->limbs[0]; return true; }
+  if (integer->count == 2) {
+    *out = ((uint128_t) integer->limbs[1] << 64) | (uint128_t) integer->limbs[0];
     return true;
   }
-  return false;  /* > 128 bits */
+  return false;
 }
 
-/* Extract a Big_Integer as signed 128-bit value.  Returns true if the
- * value fits in int128_t (-2^127 .. 2^127-1). */
-static bool Big_Integer_To_Int128(const Big_Integer *bi, int128_t *out) {
-  uint128_t uval;
-  if (bi->count == 0) { *out = 0; return true; }
-  if (bi->count > 2) return false;
-  if (bi->count == 1) uval = (uint128_t)bi->limbs[0];
-  else uval = ((uint128_t)bi->limbs[1] << 64) | (uint128_t)bi->limbs[0];
+/* Extract a Big_Integer as a signed 128-bit value.  Returns true when the value fits in the
+ * int128_t range (-2**127 .. 2**127 - 1). */
+static bool Big_Integer_To_Int128 (const Big_Integer *integer, int128_t *out) {
+  uint128_t magnitude;
+  if (integer->count == 0) { *out = 0; return true; }
+  if (integer->count > 2) return false;
+  if (integer->count == 1)
+    magnitude = (uint128_t) integer->limbs[0];
+  else
+    magnitude = ((uint128_t) integer->limbs[1] << 64) | (uint128_t) integer->limbs[0];
 
-  /* -(2^127) is the min value; uval must be <= 2^127 */
-  if (bi->is_negative) {
-    if (uval > ((uint128_t)1 << 127)) return false;
-    *out = -(int128_t)uval;
+  /* The most negative 128-bit signed value is -(2**127). */
+  if (integer->is_negative) {
+    if (magnitude > ((uint128_t) 1 << 127)) return false;
+    *out = -(int128_t) magnitude;
   } else {
-    if (uval > (((uint128_t)1 << 127) - 1)) return false;
-    *out = (int128_t)uval;
+    if (magnitude > (((uint128_t) 1 << 127) - 1)) return false;
+    *out = (int128_t) magnitude;
   }
   return true;
 }
 
-/* Compare two Big_Integer magnitudes (unsigned): returns -1, 0, or 1.
- * Sign-aware: negative < positive, then magnitude comparison. */
-static int Big_Integer_Compare(const Big_Integer *a, const Big_Integer *b) {
-  bool a_neg = a->is_negative and a->count > 0;
-  bool b_neg = b->is_negative and b->count > 0;
-  bool a_zero = a->count == 0, b_zero = b->count == 0;
-  if (a_zero and b_zero) return 0;
-  if (a_zero) return b_neg ? 1 : -1;
-  if (b_zero) return a_neg ? -1 : 1;
-  if (a_neg != b_neg) return a_neg ? -1 : 1;
+/* Sign-aware comparison of two big integers.  Returns -1, 0, or +1 following the convention
+ * of strcmp: negative means left < right. */
+static int Big_Integer_Compare (const Big_Integer *left, const Big_Integer *right) {
+  bool left_negative  = left->is_negative  and left->count  > 0;
+  bool right_negative = right->is_negative and right->count > 0;
+  bool left_zero  = left->count  == 0;
+  bool right_zero = right->count == 0;
+  if (left_zero and right_zero) return 0;
+  if (left_zero)  return right_negative ? 1 : -1;
+  if (right_zero) return left_negative  ? -1 : 1;
+  if (left_negative != right_negative) return left_negative ? -1 : 1;
 
-  /* Same sign: compare magnitudes */
-  int mag;
-  if (a->count != b->count)
-    mag = a->count > b->count ? 1 : -1;
+  /* Both have the same sign — compare magnitudes limb by limb from the most significant. */
+  int magnitude_order;
+  if (left->count != right->count)
+    magnitude_order = left->count > right->count ? 1 : -1;
   else {
-    mag = 0;
-    for (int i = (int)a->count - 1; i >= 0; i--) {
-      if (a->limbs[i] != b->limbs[i]) {
-        mag = a->limbs[i] > b->limbs[i] ? 1 : -1;
+    magnitude_order = 0;
+    for (int i = (int) left->count - 1; i >= 0; i--) {
+      if (left->limbs[i] != right->limbs[i]) {
+        magnitude_order = left->limbs[i] > right->limbs[i] ? 1 : -1;
         break;
       }
     }
   }
-  return a_neg ? -mag : mag;
+  return left_negative ? -magnitude_order : magnitude_order;
 }
 
-/* Add two Big_Integer values with sign handling.
- * Returns a + b (sign-aware arbitrary precision). */
-static Big_Integer *Big_Integer_Add(const Big_Integer *a, const Big_Integer *b) {
+/* Sign-aware addition of two big integers.  Returns a freshly allocated result. */
+static Big_Integer *Big_Integer_Add (const Big_Integer *left, const Big_Integer *right) {
+  uint32_t max_count = (left->count > right->count ? left->count : right->count) + 1;
+  Big_Integer *result = Big_Integer_New (max_count);
 
-  /* Determine operation based on signs */
-  uint32_t max_count = (a->count > b->count ? a->count : b->count) + 1;
-  Big_Integer *result = Big_Integer_New(max_count);
-
-  /* Same sign: add magnitudes, keep sign */
-  if (a->is_negative == b->is_negative) {
-    result->is_negative = a->is_negative;
+  /* When both operands have the same sign, add the magnitudes and keep the sign. */
+  if (left->is_negative == right->is_negative) {
+    result->is_negative = left->is_negative;
     __uint128_t carry = 0;
     for (uint32_t i = 0; i < max_count; i++) {
       __uint128_t sum = carry;
-      if (i < a->count) sum += a->limbs[i];
-      if (i < b->count) sum += b->limbs[i];
-      result->limbs[i] = (uint64_t)sum;
+      if (i < left->count)  sum += left->limbs[i];
+      if (i < right->count) sum += right->limbs[i];
+      result->limbs[i] = (uint64_t) sum;
       carry = sum >> 64;
     }
     result->count = max_count;
-    Big_Integer_Normalize(result);
+    Big_Integer_Normalize (result);
 
-  /* Different signs: subtract smaller magnitude from larger */
+  /* Different signs: subtract the smaller magnitude from the larger. */
   } else {
-    const Big_Integer *larger = a, *smaller = b;
+    const Big_Integer *larger  = left;
+    const Big_Integer *smaller = right;
 
-    /* Compare magnitudes only */
-    int cmp = 0;
-    if (a->count != b->count)
-      cmp = a->count > b->count ? 1 : -1;
+    /* Compare magnitudes (ignoring sign) to decide which is larger. */
+    int magnitude_cmp = 0;
+    if (left->count != right->count)
+      magnitude_cmp = left->count > right->count ? 1 : -1;
     else {
-      for (int i = (int)a->count - 1; i >= 0; i--) {
-        if (a->limbs[i] != b->limbs[i]) {
-          cmp = a->limbs[i] > b->limbs[i] ? 1 : -1;
+      for (int i = (int) left->count - 1; i >= 0; i--) {
+        if (left->limbs[i] != right->limbs[i]) {
+          magnitude_cmp = left->limbs[i] > right->limbs[i] ? 1 : -1;
           break;
         }
       }
     }
-    if (cmp < 0) { larger = b; smaller = a; }
+    if (magnitude_cmp < 0) { larger = right; smaller = left; }
     result->is_negative = larger->is_negative;
     int64_t borrow = 0;
     for (uint32_t i = 0; i < larger->count; i++) {
-      int64_t diff = (int64_t)larger->limbs[i] - borrow;
-      if (i < smaller->count) diff -= (int64_t)smaller->limbs[i];
-      if (diff < 0) { borrow = 1; }  /* cast to uint64_t handles wrap */
+      int64_t diff = (int64_t) larger->limbs[i] - borrow;
+      if (i < smaller->count) diff -= (int64_t) smaller->limbs[i];
+      if (diff < 0) borrow = 1;
       else borrow = 0;
-      result->limbs[i] = (uint64_t)diff;
+      result->limbs[i] = (uint64_t) diff;
     }
     result->count = larger->count;
-    Big_Integer_Normalize(result);
+    Big_Integer_Normalize (result);
   }
   return result;
 }
 
-/* ─────────────────────────────────────────────────────────────────────────────
- * §6.1 SIMD Big Integer Acceleration
+/* ─────────────────────────────────────────────────────────────────────────────────────────────────
+ * §6.1 SIMD-accelerated decimal parsing
  *
- * SIMD optimization for bigint operations, primarily targeting decimal parsing.
- * Instead of processing one digit at a time (mul by 10, add digit), we batch
- * process 8 digits at once (mul by 10^8, add 8-digit value).
+ * Instead of processing one digit at a time (multiply by 10, add digit), the SIMD path batches
+ * eight digits at once (multiply by 10**8, add the 8-digit value).  Eight ASCII digits are
+ * converted to a 32-bit integer in three steps:
  *
- * For example, eight ASCII digits can be converted to a 32-bit integer using:
- *   vpmaddubsw: Multiply adjacent bytes by weights, sum to words
- *   vpmaddwd:   Multiply adjacent words by weights, sum to dwords
- *   vphaddd:    Horizontal add for final reduction
+ *   vpmaddubsw — multiply adjacent bytes by positional weights [10,1,...], sum to 16-bit words
+ *   vpmaddwd   — multiply adjacent words by [100,1,...], sum to 32-bit dwords
+ *   imul + add — final combine:  high_dword * 10000 + low_dword
  *
- * This turns O(n) multiply-add operations into O(n/8) for large literals.
- * ───────────────────────────────────────────────────────────────────────────── */
+ * This reduces the number of big-integer multiply-add operations from O(n) to O(n/8).
+ * ───────────────────────────────────────────────────────────────────────────────────────────────── */
 #ifdef SIMD_X86_64
 
-/* Parse exactly 8 ASCII digits into a 32-bit integer using SIMD
- * Input: pointer to 8 ASCII digit characters ('0'-'9')
- * Output: 32-bit value in range [0, 99999999]
- *
- * Algorithm:
- *   1. Load 8 bytes, subtract '0' to get digit values 0-9
- *   2. vpmaddubsw with weights [10,1,10,1,10,1,10,1] gives 4 words:
- *      [d0*10+d1, d2*10+d3, d4*10+d5, d6*10+d7]
- *   3. vpmaddwd with weights [100,1,100,1] gives 2 dwords:
- *      [w0*100+w1, w2*100+w3]
- *   4. Final combine: dw0 * 10000 + dw1
- */
-static inline uint32_t simd_parse_8_digits_avx2(const char *p) {
+/* Parse exactly 8 ASCII digit characters ('0'–'9') into a 32-bit integer in the range
+ * [0 .. 99_999_999] using AVX2 multiply-add instructions (see §6.1 header for the algorithm). */
+static inline uint32_t Simd_Parse_8_Digits_Avx2 (const char *digits) {
   uint32_t result;
   __asm__ volatile (
 
@@ -703,35 +695,34 @@ static inline uint32_t simd_parse_8_digits_avx2(const char *p) {
     "imull $10000, %%eax\n\t"
     "addl %%edx, %%eax\n\t"
     : "=a" (result)
-    : [src] "r" (p),
-      [zero] "r" ((uint32_t)'0'),
-      [w1] "r" (0x010A010A010A010AULL),  /* [10,1,10,1,10,1,10,1] as bytes (0x0A=10) */
-      [w2] "r" (0x0001006400010064ULL)   /* [100,1,100,1] as words */
+    : [src] "r" (digits),
+      [zero] "r" ((uint32_t) '0'),
+      [w1] "r" (0x010A010A010A010AULL),  /* byte weights [10,1,10,1,10,1,10,1]  (0x0A = 10) */
+      [w2] "r" (0x0001006400010064ULL)   /* word weights [100,1,100,1]                       */
     : "xmm0", "xmm1", "xmm2", "edx", "memory"
   );
   return result;
 }
 
-/* Parse up to 16 ASCII digits using AVX2 (two 8-digit chunks)
- * Returns the number of digits parsed and the 64-bit value
- * Validates that all bytes are ASCII digits first
- */
-static inline int simd_parse_digits_avx2(const char *p, const char *end, uint64_t *out) {
-  int len = (end - p > 16) ? 16 : (int)(end - p);
+/* Parse up to 16 ASCII digits from the buffer [cursor .. limit) using AVX2.  Validates that all
+ * bytes are ASCII digits first; returns the number of digits actually consumed and stores the
+ * parsed value in *out. */
+static inline int Simd_Parse_Digits_Avx2 (const char *cursor, const char *limit, uint64_t *out) {
+  int length = (limit - cursor > 16) ? 16 : (int) (limit - cursor);
 
-  /* Fall back to scalar for small counts */
-  if (len < 8) {
-    uint64_t v = 0;
-    int i = 0;
-    while (i < len and p[i] >= '0' and p[i] <= '9') {
-      v = v * 10 + (p[i] - '0');
-      i++;
+  /* Fewer than 8 digits available — fall back to scalar. */
+  if (length < 8) {
+    uint64_t value = 0;
+    int count = 0;
+    while (count < length and cursor[count] >= '0' and cursor[count] <= '9') {
+      value = value * 10 + (cursor[count] - '0');
+      count++;
     }
-    *out = v;
-    return i;
+    *out = value;
+    return count;
   }
 
-  /* Validate first eight are all digits using SIMD comparison */
+  /* Validate that the first eight bytes are all ASCII digits using SIMD comparison. */
   uint32_t valid_mask;
   __asm__ volatile (
     "vmovq (%[src]), %%xmm0\n\t"
@@ -739,32 +730,32 @@ static inline int simd_parse_digits_avx2(const char *p, const char *end, uint64_
     "vpbroadcastb %%xmm1, %%xmm1\n\t"
     "vmovd %[hi], %%xmm2\n\t"
     "vpbroadcastb %%xmm2, %%xmm2\n\t"
-    "vpcmpgtb %%xmm1, %%xmm0, %%xmm3\n\t"   /* c > '0'-1 */
-    "vpcmpgtb %%xmm0, %%xmm2, %%xmm4\n\t"   /* '9'+1 > c */
+    "vpcmpgtb %%xmm1, %%xmm0, %%xmm3\n\t"
+    "vpcmpgtb %%xmm0, %%xmm2, %%xmm4\n\t"
     "vpand %%xmm3, %%xmm4, %%xmm0\n\t"
     "vpmovmskb %%xmm0, %[mask]\n\t"
     : [mask] "=r" (valid_mask)
-    : [src] "r" (p), [lo] "r" ((uint32_t)('0' - 1)), [hi] "r" ((uint32_t)('9' + 1))
+    : [src] "r" (cursor),
+      [lo] "r" ((uint32_t) ('0' - 1)),
+      [hi] "r" ((uint32_t) ('9' + 1))
     : "xmm0", "xmm1", "xmm2", "xmm3", "xmm4", "memory"
   );
 
-  /* Check if first 8 bytes are all digits */
-  /* Not all 8 are digits, fall back to scalar */
+  /* Not all eight are digits — fall back to scalar. */
   if ((valid_mask & 0xFF) != 0xFF) {
-    uint64_t v = 0;
-    int i = 0;
-    while (i < len and p[i] >= '0' and p[i] <= '9') {
-      v = v * 10 + (p[i] - '0');
-      i++;
+    uint64_t value = 0;
+    int count = 0;
+    while (count < length and cursor[count] >= '0' and cursor[count] <= '9') {
+      value = value * 10 + (cursor[count] - '0');
+      count++;
     }
-    *out = v;
-    return i;
+    *out = value;
+    return count;
   }
-  uint32_t hi = simd_parse_8_digits_avx2(p);
+  uint32_t high_8 = Simd_Parse_8_Digits_Avx2 (cursor);
 
-  /* Try for 16 digits if we have enough input */
-  /* Validate next 8 */
-  if (len >= 16) {
+  /* If 16 digits are available, validate the second group of eight. */
+  if (length >= 16) {
     __asm__ volatile (
       "vmovq 8(%[src]), %%xmm0\n\t"
       "vmovd %[lo], %%xmm1\n\t"
@@ -776,683 +767,636 @@ static inline int simd_parse_digits_avx2(const char *p, const char *end, uint64_
       "vpand %%xmm3, %%xmm4, %%xmm0\n\t"
       "vpmovmskb %%xmm0, %[mask]\n\t"
       : [mask] "=r" (valid_mask)
-      : [src] "r" (p), [lo] "r" ((uint32_t)('0' - 1)), [hi] "r" ((uint32_t)('9' + 1))
+      : [src] "r" (cursor),
+        [lo] "r" ((uint32_t) ('0' - 1)),
+        [hi] "r" ((uint32_t) ('9' + 1))
       : "xmm0", "xmm1", "xmm2", "xmm3", "xmm4", "memory"
     );
     if ((valid_mask & 0xFF) == 0xFF) {
-      uint32_t lo = simd_parse_8_digits_avx2(p + 8);
-      *out = (uint64_t)hi * 100000000ULL + lo;
+      uint32_t low_8 = Simd_Parse_8_Digits_Avx2 (cursor + 8);
+      *out = (uint64_t) high_8 * 100000000ULL + low_8;
       return 16;
     }
   }
 
-  /* Only 8 digits valid */
-  *out = hi;
+  /* Only the first eight digits were valid. */
+  *out = high_8;
   return 8;
 }
 #endif /* SIMD_X86_64 */
 
-/* SIMD-accelerated decimal to big integer conversion
- * Processes 8 digits at a time when possible for large numbers
- */
-static Big_Integer *Big_Integer_From_Decimal_SIMD(const char *str) {
-  Big_Integer *bi = Big_Integer_New(4);
-  bi->is_negative = (*str == '-');
-  if (*str == '-' or *str == '+') str++;
+/* Convert a decimal digit string (with optional leading sign) to a Big_Integer.  Uses the AVX2
+ * SIMD path when available to process eight or sixteen digits at a time. */
+static Big_Integer *Big_Integer_From_Decimal_SIMD (const char *text) {
+  Big_Integer *integer = Big_Integer_New (4);
+  integer->is_negative = (*text == '-');
+  if (*text == '-' or *text == '+') text++;
 
-  /* Skip leading zeros */
-  while (*str == '0') str++;
-  if (*str == '\0' or (*str < '0' or *str > '9')) {
-    bi->limbs[0] = 0;
-    bi->count = 1;
-    Big_Integer_Normalize(bi);
-    return bi;
+  /* Skip leading zeros. */
+  while (*text == '0') text++;
+  if (*text == '\0' or (*text < '0' or *text > '9')) {
+    integer->limbs[0] = 0;
+    integer->count = 1;
+    Big_Integer_Normalize (integer);
+    return integer;
   }
 
-  /* Find end of digit string */
-  const char *end = str;
+  /* Locate the end of the digit run. */
+  const char *end = text;
   while (*end >= '0' and *end <= '9') end++;
 #ifdef SIMD_X86_64
-  Simd_Detect_Features();
-
-  /* Initialize bigint with first chunk */
+  Simd_Detect_Features ();
   if (Simd_Has_Avx2) {
-    bi->limbs[0] = 0;
-    bi->count = 1;
-    const char *p = str;
-    while (p < end) {
-      int remaining = (int)(end - p);
+    integer->limbs[0] = 0;
+    integer->count = 1;
+    const char *cursor = text;
+    while (cursor < end) {
+      int remaining = (int) (end - cursor);
 
-      /* Process 8 or 16 digits at once */
+      /* When eight or more digits remain, try the SIMD batch path. */
       if (remaining >= 8) {
         uint64_t chunk;
-        int parsed = simd_parse_digits_avx2(p, end, &chunk);
-
-        /* Multiply by 10^16 and add 16-digit value */
+        int parsed = Simd_Parse_Digits_Avx2 (cursor, end, &chunk);
         if (parsed == 16) {
-          Big_Integer_Mul_Add_Small(bi, 10000000000000000ULL, chunk);
-          p += 16;
-
-        /* Multiply by 10^8 and add 8-digit value */
+          Big_Integer_Mul_Add_Small (integer, 10000000000000000ULL, chunk);
+          cursor += 16;
         } else if (parsed == 8) {
-          Big_Integer_Mul_Add_Small(bi, 100000000ULL, chunk);
-          p += 8;
-
-        /* Partial - process one digit */
+          Big_Integer_Mul_Add_Small (integer, 100000000ULL, chunk);
+          cursor += 8;
         } else {
-          Big_Integer_Mul_Add_Small(bi, 10, (uint64_t)(*p - '0'));
-          p++;
+          Big_Integer_Mul_Add_Small (integer, 10, (uint64_t) (*cursor - '0'));
+          cursor++;
         }
-
-      /* Remaining digits one at a time */
       } else {
-        Big_Integer_Mul_Add_Small(bi, 10, (uint64_t)(*p - '0'));
-        p++;
+        Big_Integer_Mul_Add_Small (integer, 10, (uint64_t) (*cursor - '0'));
+        cursor++;
       }
     }
-    Big_Integer_Normalize(bi);
-    return bi;
+    Big_Integer_Normalize (integer);
+    return integer;
   }
 #endif
 
-  /* Scalar fallback */
-  bi->limbs[0] = 0;
-  bi->count = 1;
-  while (str < end) {
-    Big_Integer_Mul_Add_Small(bi, 10, (uint64_t)(*str - '0'));
-    str++;
+  /* Scalar fallback: one digit at a time. */
+  integer->limbs[0] = 0;
+  integer->count = 1;
+  while (text < end) {
+    Big_Integer_Mul_Add_Small (integer, 10, (uint64_t) (*text - '0'));
+    text++;
   }
-  Big_Integer_Normalize(bi);
-  return bi;
+  Big_Integer_Normalize (integer);
+  return integer;
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
- * §6.2 BIG_REAL — Arbitrary Precision Real Numbers
- * ═══════════════════════════════════════════════════════════════════════════
+/* ═══════════════════════════════════════════════════════════════════════════════════════════════════
+ * §6.2 BIG_REAL — Arbitrary-precision real numbers for Ada literals
+ * ═══════════════════════════════════════════════════════════════════════════════════════════════════
  *
- * Represents real literals with arbitrary precision per Ada LRM §2.4.1.
- * Structure: significand × 10^exponent
- *
- * Example: 3.14159_26535_89793 is stored as:
- *   significand = 314159265358979 (Big_Integer)
- *   exponent = -14 (decimal point position)
- *
- * This allows exact representation of literals like Pi to any precision.
- * The rounding error is in the conversion, not the representation.
+ * Real literals are represented as significand * 10**exponent per Ada LRM §2.4.1.  For example
+ * the literal 3.14159_26535_89793 is stored as significand = 314159265358979, exponent = -14.
+ * This keeps the literal value exact; rounding happens only when converting to a machine float.
  */
 typedef struct {
   Big_Integer *significand;  /* All digits without decimal point */
   int32_t      exponent;     /* Power of 10 (negative for fractional) */
 } Big_Real;
-static Big_Real *Big_Real_New(void) {
-  Big_Real *br = Arena_Allocate(sizeof(Big_Real));
-  br->significand = Big_Integer_New(4);
-  br->exponent = 0;
-  return br;
+static Big_Real *Big_Real_New (void) {
+  Big_Real *result = Arena_Allocate (sizeof (Big_Real));
+  result->significand = Big_Integer_New (4);
+  result->exponent    = 0;
+  return result;
 }
 
-/* Parse a real literal into arbitrary precision Big_Real
- * Handles: 3.14, 3.14E-10, 3.14159_26535_89793_23846_26433_83279
- */
-static Big_Real *Big_Real_From_String(const char *str) {
-  Big_Real *br = Big_Real_New();
-  br->significand->is_negative = (*str == '-');
-  if (*str == '-' or *str == '+') str++;
+/* Parse a real literal string into an arbitrary-precision Big_Real.  Handles forms like 3.14,
+ * 3.14E-10, and 3.14159_26535_89793_23846_26433_83279 (underscore-separated digit groups). */
+static Big_Real *Big_Real_From_String (const char *text) {
+  Big_Real *result = Big_Real_New ();
+  result->significand->is_negative = (*text == '-');
+  if (*text == '-' or *text == '+') text++;
 
-  /* Collect all digits (ignoring decimal point and underscores) */
-  char clean[512];
-  int clean_len = 0;
-  int decimal_pos = -1;  /* Position of decimal point in digit sequence */
-  int digit_count = 0;
-  while (*str and *str != 'E' and *str != 'e') {
-    if (*str == '.') {
-      decimal_pos = digit_count;
-    } else if (*str >= '0' and *str <= '9') {
-      if (clean_len < (int)sizeof(clean) - 1) {
-        clean[clean_len++] = *str;
-      }
+  /* Collect all significant digits, stripping the decimal point and underscores. */
+  char cleaned[512];
+  int cleaned_length = 0;
+  int decimal_position = -1;
+  int digit_count      = 0;
+  while (*text and *text != 'E' and *text != 'e') {
+    if (*text == '.') {
+      decimal_position = digit_count;
+    } else if (*text >= '0' and *text <= '9') {
+      if (cleaned_length < (int) sizeof (cleaned) - 1)
+        cleaned[cleaned_length++] = *text;
       digit_count++;
     }
-
-    /* Skip underscores */
-    str++;
+    text++;
   }
-  clean[clean_len] = '\0';
+  cleaned[cleaned_length] = '\0';
 
-  /* Parse exponent if present */
-  int exp = 0;
-  if (*str == 'E' or *str == 'e') {
-    str++;
-    int exp_sign = 1;
-    if (*str == '-') { exp_sign = -1; str++; }
-    else if (*str == '+') str++;
-    while (*str >= '0' and *str <= '9') {
-      exp = exp * 10 + (*str - '0');
-      str++;
+  /* Parse the optional exponent part (E+nnn or E-nnn). */
+  int explicit_exponent = 0;
+  if (*text == 'E' or *text == 'e') {
+    text++;
+    int exponent_sign = 1;
+    if (*text == '-') { exponent_sign = -1; text++; }
+    else if (*text == '+') text++;
+    while (*text >= '0' and *text <= '9') {
+      explicit_exponent = explicit_exponent * 10 + (*text - '0');
+      text++;
     }
-    exp *= exp_sign;
+    explicit_exponent *= exponent_sign;
   }
 
-  /* Calculate final exponent:
-   *
-   * If decimal at position 3 in "314159" (for 3.14159), exponent = 3 - 6 = -3
-   * Then add any explicit exponent
-   */
-  if (decimal_pos >= 0) {
-    br->exponent = exp + (decimal_pos - digit_count);
-  } else {
-    br->exponent = exp;
-  }
+  /* Compute the combined exponent.  If the decimal appeared at position 3 within six digits
+   * (e.g. "3.14159"), the implicit exponent is 3 - 6 = -3; add the explicit exponent. */
+  if (decimal_position >= 0)
+    result->exponent = explicit_exponent + (decimal_position - digit_count);
+  else
+    result->exponent = explicit_exponent;
 
-  /* Parse significand digits using existing Big_Integer parsing */
-  br->significand = Big_Integer_From_Decimal_SIMD(clean);
-  return br;
+  /* Build the significand from the cleaned digit string. */
+  result->significand = Big_Integer_From_Decimal_SIMD (cleaned);
+  return result;
 }
 
-/* Convert Big_Real to double (for compatibility with existing code) */
-static double Big_Real_To_Double(const Big_Real *br) {
-  if (br->significand->count == 0) return 0.0;
+/* Approximate a Big_Real as an IEEE 754 double.  Precision loss is expected for significands
+ * that exceed 53 bits; the result is the nearest representable double value. */
+static double Big_Real_To_Double (const Big_Real *real) {
+  if (real->significand->count == 0) return 0.0;
 
-  /* Extract significand as double */
-  double sig = 0.0;
-  for (int i = (int)br->significand->count - 1; i >= 0; i--) {
-    sig = sig * 18446744073709551616.0 + (double)br->significand->limbs[i];
-  }
-  if (br->significand->is_negative) sig = -sig;
+  /* Reconstruct the significand as a double from limbs (most-significant first). */
+  double value = 0.0;
+  for (int i = (int) real->significand->count - 1; i >= 0; i--)
+    value = value * 18446744073709551616.0 + (double) real->significand->limbs[i];
+  if (real->significand->is_negative) value = -value;
 
-  /* Apply exponent */
-  if (br->exponent > 0) {
-    for (int i = 0; i < br->exponent; i++) sig *= 10.0;
-  } else if (br->exponent < 0) {
-    for (int i = 0; i < -br->exponent; i++) sig /= 10.0;
+  /* Scale by 10**exponent. */
+  if (real->exponent > 0) {
+    for (int i = 0; i < real->exponent; i++) value *= 10.0;
+  } else if (real->exponent < 0) {
+    for (int i = 0; i < -real->exponent; i++) value /= 10.0;
   }
-  return sig;
+  return value;
 }
 
-/* Check if Big_Real fits in a double without precision loss
- * Returns true if the significand has <= 15 significant digits
- */
-__attribute__((unused))
-static bool Big_Real_Fits_Double(const Big_Real *br) {
-  if (br->significand->count == 0) return true;
-  if (br->significand->count > 1) return false;
-
-  /* 15 decimal digits fit in a double's 53-bit mantissa */
-  return br->significand->limbs[0] < 1000000000000000ULL;
+/* Return true when the Big_Real can be converted to double without losing significant digits.
+ * A double's 53-bit mantissa holds at most 15 full decimal digits. */
+__attribute__ ((unused))
+static bool Big_Real_Fits_Double (const Big_Real *real) {
+  if (real->significand->count == 0) return true;
+  if (real->significand->count > 1) return false;
+  return real->significand->limbs[0] < 1000000000000000ULL;
 }
 
-/* Convert Big_Real to hexadecimal float format for precise LLVM IR emission
- * LLVM accepts: 0xHHHHHHHHHHHHHHHH (IEEE 754 double hex encoding)
- * This preserves full precision unlike %f format
- */
-__attribute__((unused))
-static void Big_Real_To_Hex(const Big_Real *br, char *buf, size_t bufsize) {
-  if (not br or br->significand->count == 0) {
-    snprintf(buf, bufsize, "0.0");
+/* Emit a Big_Real as a hexadecimal IEEE 754 double encoding (0xHHHHHHHHHHHHHHHH) suitable for
+ * LLVM IR float literals.  This preserves full precision unlike a %f format string. */
+__attribute__ ((unused))
+static void Big_Real_To_Hex (const Big_Real *real, char *buffer, size_t buffer_size) {
+  if (not real or real->significand->count == 0) {
+    snprintf (buffer, buffer_size, "0.0");
     return;
   }
-
-  /* Convert to double and extract IEEE 754 bits */
-  double d = Big_Real_To_Double(br);
+  double value = Big_Real_To_Double (real);
   uint64_t bits;
-  memcpy(&bits, &d, sizeof(bits));
-  snprintf(buf, bufsize, "0x%016llX", (unsigned long long)bits);
+  memcpy (&bits, &value, sizeof (bits));
+  snprintf (buffer, buffer_size, "0x%016llX", (unsigned long long) bits);
 }
 
-/* Clone a Big_Integer */
-static Big_Integer *Big_Integer_Clone(const Big_Integer *src) {
-  Big_Integer *dst = Big_Integer_New(src->count > 0 ? src->count : 1);
-  dst->count = src->count;
-  dst->is_negative = src->is_negative;
-  if (src->count > 0)
-    memcpy(dst->limbs, src->limbs, src->count * sizeof(uint64_t));
-  return dst;
+/* Return a deep copy of a Big_Integer, allocated from the arena. */
+static Big_Integer *Big_Integer_Clone (const Big_Integer *source) {
+  Big_Integer *clone = Big_Integer_New (source->count > 0 ? source->count : 1);
+  clone->count       = source->count;
+  clone->is_negative = source->is_negative;
+  if (source->count > 0)
+    memcpy (clone->limbs, source->limbs, source->count * sizeof (uint64_t));
+  return clone;
 }
 
-/* Compare two Big_Real values exactly: returns -1, 0, or 1.
- * Normalizes to same exponent by multiplying the one with larger exponent
- * by 10^(diff), then compares significands. */
-__attribute__((unused))
-static int Big_Real_Compare(const Big_Real *a, const Big_Real *b) {
-  if (not a or not b) return 0;
+/* Exact comparison of two Big_Real values.  Returns -1, 0, or +1.  Both operands are normalised
+ * to a common exponent before the significands are compared. */
+__attribute__ ((unused))
+static int Big_Real_Compare (const Big_Real *left, const Big_Real *right) {
+  if (not left or not right) return 0;
+  bool left_negative  = left->significand->is_negative  and left->significand->count  > 0;
+  bool right_negative = right->significand->is_negative and right->significand->count > 0;
+  bool left_zero  = left->significand->count  == 0;
+  bool right_zero = right->significand->count == 0;
+  if (left_zero and right_zero) return 0;
+  if (left_zero)  return right_negative ? 1 : -1;
+  if (right_zero) return left_negative  ? -1 : 1;
+  if (left_negative and not right_negative) return -1;
+  if (not left_negative and right_negative) return 1;
 
-  /* Handle signs first */
-  bool a_neg = a->significand->is_negative and a->significand->count > 0;
-  bool b_neg = b->significand->is_negative and b->significand->count > 0;
-  bool a_zero = a->significand->count == 0;
-  bool b_zero = b->significand->count == 0;
-  if (a_zero and b_zero) return 0;
-  if (a_zero) return b_neg ? 1 : -1;
-  if (b_zero) return a_neg ? -1 : 1;
-  if (a_neg and not b_neg) return -1;
-  if (not a_neg and b_neg) return 1;
-
-  /* Same sign — normalize to common exponent (min), multiply the other */
-  int32_t exp_diff = a->exponent - b->exponent;
-  Big_Integer *sa, *sb;
-  if (exp_diff == 0) {
-    sa = Big_Integer_Clone(a->significand);
-    sb = Big_Integer_Clone(b->significand);
-  } else if (exp_diff > 0) {
-    sa = Big_Integer_Clone(a->significand);
-    for (int32_t i = 0; i < exp_diff; i++)
-      Big_Integer_Mul_Add_Small(sa, 10, 0);
-    sb = Big_Integer_Clone(b->significand);
+  /* Both have the same sign — normalise to the smaller exponent and compare significands. */
+  int32_t exponent_diff = left->exponent - right->exponent;
+  Big_Integer *left_sig, *right_sig;
+  if (exponent_diff == 0) {
+    left_sig  = Big_Integer_Clone (left->significand);
+    right_sig = Big_Integer_Clone (right->significand);
+  } else if (exponent_diff > 0) {
+    left_sig = Big_Integer_Clone (left->significand);
+    for (int32_t i = 0; i < exponent_diff; i++)
+      Big_Integer_Mul_Add_Small (left_sig, 10, 0);
+    right_sig = Big_Integer_Clone (right->significand);
   } else {
-    sa = Big_Integer_Clone(a->significand);
-    sb = Big_Integer_Clone(b->significand);
-    for (int32_t i = 0; i < -exp_diff; i++)
-      Big_Integer_Mul_Add_Small(sb, 10, 0);
+    left_sig  = Big_Integer_Clone (left->significand);
+    right_sig = Big_Integer_Clone (right->significand);
+    for (int32_t i = 0; i < -exponent_diff; i++)
+      Big_Integer_Mul_Add_Small (right_sig, 10, 0);
   }
-
-  /* Compare magnitudes, then adjust for sign */
-  int cmp = Big_Integer_Compare(sa, sb);
-  return a_neg ? -cmp : cmp;
+  int ordering = Big_Integer_Compare (left_sig, right_sig);
+  return left_negative ? -ordering : ordering;
 }
 
-/* Add/subtract Big_Real values (exact). op_sub: 0=add, 1=subtract.
- * Result = a ± b via normalizing to common exponent. */
-__attribute__((unused))
-static Big_Real *Big_Real_Add_Sub(const Big_Real *a, const Big_Real *b, bool op_sub) {
-  if (not a) return (Big_Real *)(uintptr_t)b;
-  if (not b) return (Big_Real *)(uintptr_t)a;
-  Big_Real *result = Big_Real_New();
-  int32_t min_exp = a->exponent < b->exponent ? a->exponent : b->exponent;
+/* Exact addition or subtraction of two Big_Real values.  When subtract is true, the result is
+ * left - right; otherwise left + right.  Both operands are normalised to the common (minimum)
+ * exponent before the significands are combined. */
+__attribute__ ((unused))
+static Big_Real *Big_Real_Add_Sub (const Big_Real *left, const Big_Real *right, bool subtract) {
+  if (not left)  return (Big_Real *) (uintptr_t) right;
+  if (not right) return (Big_Real *) (uintptr_t) left;
+  Big_Real *result = Big_Real_New ();
+  int32_t common_exponent = left->exponent < right->exponent ? left->exponent : right->exponent;
 
-  /* Normalize both to min_exp by multiplying significands by 10^(exp - min_exp) */
-  Big_Integer *sa = Big_Integer_Clone(a->significand);
-  for (int32_t i = 0; i < a->exponent - min_exp; i++)
-    Big_Integer_Mul_Add_Small(sa, 10, 0);
-  Big_Integer *sb = Big_Integer_Clone(b->significand);
-  for (int32_t i = 0; i < b->exponent - min_exp; i++)
-    Big_Integer_Mul_Add_Small(sb, 10, 0);
+  /* Normalise both significands to the common exponent. */
+  Big_Integer *left_sig = Big_Integer_Clone (left->significand);
+  for (int32_t i = 0; i < left->exponent - common_exponent; i++)
+    Big_Integer_Mul_Add_Small (left_sig, 10, 0);
+  Big_Integer *right_sig = Big_Integer_Clone (right->significand);
+  for (int32_t i = 0; i < right->exponent - common_exponent; i++)
+    Big_Integer_Mul_Add_Small (right_sig, 10, 0);
 
-  /* Flip sign for subtraction */
-  if (op_sub) sb->is_negative = not sb->is_negative;
-
-  /* Add: if same sign, add magnitudes. If different sign, subtract. */
-  result->significand = Big_Integer_Add(sa, sb);
-  result->exponent = min_exp;
+  /* For subtraction, negate the right operand's significand before adding. */
+  if (subtract) right_sig->is_negative = not right_sig->is_negative;
+  result->significand = Big_Integer_Add (left_sig, right_sig);
+  result->exponent    = common_exponent;
   return result;
 }
 
-/* Multiply Big_Real by power of 10 (for exponent adjustment) */
-__attribute__((unused))
-static Big_Real *Big_Real_Scale(const Big_Real *br, int32_t scale) {
-  if (not br) return NULL;
-  Big_Real *result = Big_Real_New();
-  result->significand = Big_Integer_New(br->significand->capacity);
-  result->significand->count = br->significand->count;
-  result->significand->is_negative = br->significand->is_negative;
-  memcpy(result->significand->limbs, br->significand->limbs,
-       br->significand->count * sizeof(uint64_t));
-  result->exponent = br->exponent + scale;
+/* Return a copy of the Big_Real scaled by 10**scale (i.e. the exponent is adjusted). */
+__attribute__ ((unused))
+static Big_Real *Big_Real_Scale (const Big_Real *real, int32_t scale) {
+  if (not real) return NULL;
+  Big_Real *result = Big_Real_New ();
+  result->significand = Big_Integer_New (real->significand->capacity);
+  result->significand->count       = real->significand->count;
+  result->significand->is_negative = real->significand->is_negative;
+  memcpy (result->significand->limbs, real->significand->limbs,
+          real->significand->count * sizeof (uint64_t));
+  result->exponent = real->exponent + scale;
   return result;
 }
 
-/* Divide Big_Real by integer (for fixed-point SMALL calculation)
- * Returns result = a / divisor
- * Uses arbitrary precision for intermediate calculation
- */
-__attribute__((unused))
-static Big_Real *Big_Real_Divide_Int(const Big_Real *a, int64_t divisor) {
-  if (not a or divisor == 0) return NULL;
+/* Divide a Big_Real by a machine integer (used for fixed-point delta/SMALL calculations).
+ * Extra decimal digits of precision are introduced before the division so that the quotient
+ * retains meaningful fractional digits. */
+__attribute__ ((unused))
+static Big_Real *Big_Real_Divide_Int (const Big_Real *dividend, int64_t divisor) {
+  if (not dividend or divisor == 0) return NULL;
+  int extra_precision = 30;
+  Big_Real *result = Big_Real_New ();
+  result->significand = Big_Integer_New (dividend->significand->capacity + 4);
 
-  /* For exact division: multiply significand precision and divide */
-  /* Result = (significand * 10^precision) / divisor × 10^(exponent-precision) */
-  int precision = 30;  /* Extra decimal places for precision */
-  Big_Real *result = Big_Real_New();
-  result->significand = Big_Integer_New(a->significand->capacity + 4);
+  /* Copy the significand and scale it up by 10**extra_precision. */
+  result->significand->count       = dividend->significand->count;
+  result->significand->is_negative = dividend->significand->is_negative ^ (divisor < 0);
+  memcpy (result->significand->limbs, dividend->significand->limbs,
+          dividend->significand->count * sizeof (uint64_t));
+  for (int i = 0; i < extra_precision; i++)
+    Big_Integer_Mul_Add_Small (result->significand, 10, 0);
 
-  /* Copy significand and multiply by 10^precision */
-  result->significand->count = a->significand->count;
-  result->significand->is_negative = a->significand->is_negative ^ (divisor < 0);
-  memcpy(result->significand->limbs, a->significand->limbs,
-       a->significand->count * sizeof(uint64_t));
-  for (int i = 0; i < precision; i++) {
-    Big_Integer_Mul_Add_Small(result->significand, 10, 0);
+  /* Perform limb-by-limb division by |divisor|. */
+  uint64_t abs_divisor = divisor < 0 ? (uint64_t) -divisor : (uint64_t) divisor;
+  uint64_t remainder   = 0;
+  for (int i = (int) result->significand->count - 1; i >= 0; i--) {
+    __uint128_t combined = ((__uint128_t) remainder << 64) | result->significand->limbs[i];
+    result->significand->limbs[i] = (uint64_t) (combined / abs_divisor);
+    remainder = (uint64_t) (combined % abs_divisor);
   }
-
-  /* Divide by absolute value of divisor */
-  uint64_t d = divisor < 0 ? -divisor : divisor;
-  uint64_t remainder = 0;
-  for (int i = (int)result->significand->count - 1; i >= 0; i--) {
-    __uint128_t val = ((__uint128_t)remainder << 64) | result->significand->limbs[i];
-    result->significand->limbs[i] = (uint64_t)(val / d);
-    remainder = (uint64_t)(val % d);
-  }
-  Big_Integer_Normalize(result->significand);
-  result->exponent = a->exponent - precision;
+  Big_Integer_Normalize (result->significand);
+  result->exponent = dividend->exponent - extra_precision;
   return result;
 }
 
-/* Multiply two Big_Real values
- * Result = a × b with full precision
- */
-__attribute__((unused))
-static Big_Real *Big_Real_Multiply(const Big_Real *a, const Big_Real *b) {
-  if (not a or not b) return NULL;
-  Big_Real *result = Big_Real_New();
-  uint32_t new_count = a->significand->count + b->significand->count;
-  result->significand = Big_Integer_New(new_count + 1);
-  result->significand->count = new_count;
+/* Full-precision multiplication of two Big_Real values using textbook O(n*m) arithmetic. */
+__attribute__ ((unused))
+static Big_Real *Big_Real_Multiply (const Big_Real *left, const Big_Real *right) {
+  if (not left or not right) return NULL;
+  Big_Real *result = Big_Real_New ();
+  uint32_t product_limbs = left->significand->count + right->significand->count;
+  result->significand = Big_Integer_New (product_limbs + 1);
+  result->significand->count = product_limbs;
   result->significand->is_negative =
-    a->significand->is_negative ^ b->significand->is_negative;
-  memset(result->significand->limbs, 0, new_count * sizeof(uint64_t));
-
-  /* Textbook multiplication */
-  for (uint32_t i = 0; i < a->significand->count; i++) {
+    left->significand->is_negative ^ right->significand->is_negative;
+  memset (result->significand->limbs, 0, product_limbs * sizeof (uint64_t));
+  for (uint32_t i = 0; i < left->significand->count; i++) {
     __uint128_t carry = 0;
-    for (uint32_t j = 0; j < b->significand->count; j++) {
-      __uint128_t prod = (__uint128_t)a->significand->limbs[i] *
-                 b->significand->limbs[j] +
-                 result->significand->limbs[i + j] + carry;
-      result->significand->limbs[i + j] = (uint64_t)prod;
-      carry = prod >> 64;
+    for (uint32_t j = 0; j < right->significand->count; j++) {
+      __uint128_t product = (__uint128_t) left->significand->limbs[i]
+                          * right->significand->limbs[j]
+                          + result->significand->limbs[i + j] + carry;
+      result->significand->limbs[i + j] = (uint64_t) product;
+      carry = product >> 64;
     }
-    if (carry and i + b->significand->count < new_count) {
-      result->significand->limbs[i + b->significand->count] = (uint64_t)carry;
-    }
+    if (carry and i + right->significand->count < product_limbs)
+      result->significand->limbs[i + right->significand->count] = (uint64_t) carry;
   }
-  Big_Integer_Normalize(result->significand);
-  result->exponent = a->exponent + b->exponent;
+  Big_Integer_Normalize (result->significand);
+  result->exponent = left->exponent + right->exponent;
   return result;
 }
 
-/* ─────────────────────────────────────────────────────────────────────────────
- * §6.3 Exact Rational Arithmetic for Universal Reals (RM 4.10)
+/* ─────────────────────────────────────────────────────────────────────────────────────────────────
+ * §6.3 Exact Rational Arithmetic for Universal Reals (RM §4.10)
  *
- * Ada requires that static universal_real expressions be evaluated exactly
- * during compilation.  IEEE double cannot represent fractions like 1/3, so
- * we carry numerator/denominator as Big_Integer pairs, reduced by GCD.
- * ───────────────────────────────────────────────────────────────────────── */
+ * Ada requires that static universal_real expressions be evaluated exactly during compilation.
+ * IEEE double cannot faithfully represent fractions like 1/3, so we carry each value as a
+ * numerator/denominator pair of Big_Integers, always reduced by their GCD.
+ * ───────────────────────────────────────────────────────────────────────────────────────────────── */
 
-/* Full-precision Big_Integer multiply: returns a * b. */
-static Big_Integer *Big_Integer_Multiply(const Big_Integer *a, const Big_Integer *b) {
-  if (a->count == 0 or b->count == 0) {
-    Big_Integer *z = Big_Integer_New(1); z->count = 0; return z;
+/* Full-precision multiplication of two Big_Integers using textbook O(n*m) arithmetic. */
+static Big_Integer *Big_Integer_Multiply (const Big_Integer *left, const Big_Integer *right) {
+  if (left->count == 0 or right->count == 0) {
+    Big_Integer *zero_result = Big_Integer_New (1);
+    zero_result->count = 0;
+    return zero_result;
   }
-  uint32_t nc = a->count + b->count;
-  Big_Integer *r = Big_Integer_New(nc + 1);
-  r->count = nc;
-  r->is_negative = a->is_negative ^ b->is_negative;
-  memset(r->limbs, 0, nc * sizeof(uint64_t));
-  for (uint32_t i = 0; i < a->count; i++) {
+  uint32_t result_limbs = left->count + right->count;
+  Big_Integer *result = Big_Integer_New (result_limbs + 1);
+  result->count       = result_limbs;
+  result->is_negative = left->is_negative ^ right->is_negative;
+  memset (result->limbs, 0, result_limbs * sizeof (uint64_t));
+  for (uint32_t i = 0; i < left->count; i++) {
     __uint128_t carry = 0;
-    for (uint32_t j = 0; j < b->count; j++) {
-      __uint128_t prod = (__uint128_t)a->limbs[i] * b->limbs[j]
-               + r->limbs[i + j] + carry;
-      r->limbs[i + j] = (uint64_t)prod;
-      carry = prod >> 64;
+    for (uint32_t j = 0; j < right->count; j++) {
+      __uint128_t product = (__uint128_t) left->limbs[i] * right->limbs[j]
+                          + result->limbs[i + j] + carry;
+      result->limbs[i + j] = (uint64_t) product;
+      carry = product >> 64;
     }
-    if (carry) r->limbs[i + b->count] += (uint64_t)carry;
+    if (carry) result->limbs[i + right->count] += (uint64_t) carry;
   }
-  Big_Integer_Normalize(r);
-  return r;
+  Big_Integer_Normalize (result);
+  return result;
 }
 
-/* Big_Integer_Div_Rem: q = |a| / |b|, rem = |a| % |b| (unsigned).
- * Uses schoolbook long division on 64-bit limbs.  Signs ignored. */
-static void Big_Integer_Div_Rem(const Big_Integer *a, const Big_Integer *b,
-                Big_Integer **q_out, Big_Integer **r_out) {
-  if (b->count == 0) { *q_out = *r_out = Big_Integer_New(1); return; }
-  if (a->count == 0 or Big_Integer_Compare(a, b) == 0
-    ? false : (a->count < b->count)) {
-
-    /* |a| < |b| > q=0, r=a */
-    *q_out = Big_Integer_New(1); (*q_out)->count = 0;
-    *r_out = Big_Integer_Clone(a); (*r_out)->is_negative = false;
+/* Unsigned division with remainder: quotient = |dividend| / |divisor|, remainder = |dividend|
+ * mod |divisor|.  Signs are ignored.  Implements Knuth's Algorithm D for multi-limb divisors
+ * and a fast path for single-limb divisors. */
+static void Big_Integer_Div_Rem (const Big_Integer *dividend, const Big_Integer *divisor,
+                                 Big_Integer **quotient_out, Big_Integer **remainder_out) {
+  if (divisor->count == 0) {
+    *quotient_out = *remainder_out = Big_Integer_New (1);
+    return;
+  }
+  if (dividend->count == 0
+      or (Big_Integer_Compare (dividend, divisor) != 0 and dividend->count < divisor->count)) {
+    *quotient_out  = Big_Integer_New (1); (*quotient_out)->count = 0;
+    *remainder_out = Big_Integer_Clone (dividend); (*remainder_out)->is_negative = false;
     return;
   }
 
-  /* Single-limb divisor fast path */
-  if (b->count == 1) {
-    uint64_t d = b->limbs[0];
-    Big_Integer *q = Big_Integer_New(a->count);
-    q->count = a->count;
-    __uint128_t rem = 0;
-    for (int i = (int)a->count - 1; i >= 0; i--) {
-      __uint128_t val = (rem << 64) | a->limbs[i];
-      q->limbs[i] = (uint64_t)(val / d);
-      rem = val % d;
+  /* Single-limb divisor: simple linear pass. */
+  if (divisor->count == 1) {
+    uint64_t single_divisor = divisor->limbs[0];
+    Big_Integer *quotient = Big_Integer_New (dividend->count);
+    quotient->count = dividend->count;
+    __uint128_t running_remainder = 0;
+    for (int i = (int) dividend->count - 1; i >= 0; i--) {
+      __uint128_t combined = (running_remainder << 64) | dividend->limbs[i];
+      quotient->limbs[i]   = (uint64_t) (combined / single_divisor);
+      running_remainder     = combined % single_divisor;
     }
-    Big_Integer_Normalize(q);
-    Big_Integer *r = Big_Integer_New(1);
-    if (rem) { r->limbs[0] = (uint64_t)rem; r->count = 1; }
-    else r->count = 0;
-    *q_out = q; *r_out = r;
+    Big_Integer_Normalize (quotient);
+    Big_Integer *remainder = Big_Integer_New (1);
+    if (running_remainder) { remainder->limbs[0] = (uint64_t) running_remainder; remainder->count = 1; }
+    else remainder->count = 0;
+    *quotient_out = quotient; *remainder_out = remainder;
     return;
   }
 
-  /* Multi-limb: Knuth Algorithm D (simplified) */
-  uint32_t m = a->count, n = b->count;
+  /* Multi-limb: Knuth Algorithm D.  First normalise so that the top bit of the divisor's most
+   * significant limb is set (this guarantees the trial-quotient estimate is within 2). */
+  uint32_t dividend_limbs = dividend->count;
+  uint32_t divisor_limbs  = divisor->count;
+  int normalise_shift = __builtin_clzll (divisor->limbs[divisor_limbs - 1]);
 
-  /* Normalize: shift so top bit of divisor's MSL is set */
-  int shift = __builtin_clzll(b->limbs[n - 1]);
-  Big_Integer *u = Big_Integer_New(m + 1);
-  u->count = m + 1;
-  if (shift > 0) {
-    u->limbs[m] = 0;
-    for (uint32_t i = m; i > 0; i--)
-      u->limbs[i] = (a->limbs[i-1] >> (64 - shift))
-             | (i < m ? (a->limbs[i] << shift) : 0);
-    u->limbs[0] = a->limbs[0] << shift;
-
-    /* Re-check top */
-    if (m > 0) u->limbs[m] |= (a->limbs[m-1] >> (64 - shift));
-  } else {
-    memcpy(u->limbs, a->limbs, m * sizeof(uint64_t));
-    u->limbs[m] = 0;
-  }
-
-  /* Actually, let's do it cleanly */
-  /* Re-do: create shifted copies */
-  Big_Integer *v = Big_Integer_New(n);
-  v->count = n;
-  if (shift > 0) {
+  /* Create shifted copies of dividend (into u) and divisor (into v). */
+  Big_Integer *u = Big_Integer_New (dividend_limbs + 1);
+  u->count = dividend_limbs + 1;
+  Big_Integer *v = Big_Integer_New (divisor_limbs);
+  v->count = divisor_limbs;
+  if (normalise_shift > 0) {
     uint64_t carry = 0;
-    for (uint32_t i = 0; i < n; i++) {
-      v->limbs[i] = (b->limbs[i] << shift) | carry;
-      carry = b->limbs[i] >> (64 - shift);
+    for (uint32_t i = 0; i < divisor_limbs; i++) {
+      v->limbs[i] = (divisor->limbs[i] << normalise_shift) | carry;
+      carry = divisor->limbs[i] >> (64 - normalise_shift);
     }
     carry = 0;
-    u->count = m + 1;
-    for (uint32_t i = 0; i < m; i++) {
-      u->limbs[i] = (a->limbs[i] << shift) | carry;
-      carry = a->limbs[i] >> (64 - shift);
+    for (uint32_t i = 0; i < dividend_limbs; i++) {
+      u->limbs[i] = (dividend->limbs[i] << normalise_shift) | carry;
+      carry = dividend->limbs[i] >> (64 - normalise_shift);
     }
-    u->limbs[m] = carry;
+    u->limbs[dividend_limbs] = carry;
   } else {
-    memcpy(u->limbs, a->limbs, m * sizeof(uint64_t));
-    u->limbs[m] = 0;
-    memcpy(v->limbs, b->limbs, n * sizeof(uint64_t));
+    memcpy (u->limbs, dividend->limbs, dividend_limbs * sizeof (uint64_t));
+    u->limbs[dividend_limbs] = 0;
+    memcpy (v->limbs, divisor->limbs, divisor_limbs * sizeof (uint64_t));
   }
-  Big_Integer *q = Big_Integer_New(m - n + 1);
-  q->count = m - n + 1;
-  memset(q->limbs, 0, q->count * sizeof(uint64_t));
+  Big_Integer *quotient = Big_Integer_New (dividend_limbs - divisor_limbs + 1);
+  quotient->count = dividend_limbs - divisor_limbs + 1;
+  memset (quotient->limbs, 0, quotient->count * sizeof (uint64_t));
 
-  /* Estimate q_hat = (u[j+n]*2^64 + u[j+n-1]) / v[n-1] */
-  for (int j = (int)(m - n); j >= 0; j--) {
-    __uint128_t num = ((__uint128_t)u->limbs[j + n] << 64) | u->limbs[j + n - 1];
-    __uint128_t q_hat = num / v->limbs[n - 1];
-    __uint128_t r_hat = num % v->limbs[n - 1];
+  /* Main loop: estimate each quotient digit and subtract. */
+  for (int j = (int) (dividend_limbs - divisor_limbs); j >= 0; j--) {
+    __uint128_t numerator = ((__uint128_t) u->limbs[j + divisor_limbs] << 64)
+                          | u->limbs[j + divisor_limbs - 1];
+    __uint128_t q_hat = numerator / v->limbs[divisor_limbs - 1];
+    __uint128_t r_hat = numerator % v->limbs[divisor_limbs - 1];
 
-    /* Refine */
-    while (q_hat >= ((__uint128_t)1 << 64) or
-         (n >= 2 and q_hat * v->limbs[n - 2] >
-        (r_hat << 64) + u->limbs[j + n - 2])) {
+    /* Refine the trial quotient using the next limb of the divisor. */
+    while (q_hat >= ((__uint128_t) 1 << 64)
+           or (divisor_limbs >= 2
+               and q_hat * v->limbs[divisor_limbs - 2]
+                   > (r_hat << 64) + u->limbs[j + divisor_limbs - 2])) {
       q_hat--;
-      r_hat += v->limbs[n - 1];
-      if (r_hat >= ((__uint128_t)1 << 64)) break;
+      r_hat += v->limbs[divisor_limbs - 1];
+      if (r_hat >= ((__uint128_t) 1 << 64)) break;
     }
 
-    /* Multiply and subtract: u[j..j+n] -= q_hat * v[0..n-1] */
+    /* Multiply and subtract: u[j .. j+n] -= q_hat * v[0 .. n-1]. */
     __int128_t borrow = 0;
-    for (uint32_t i = 0; i < n; i++) {
-      __uint128_t prod = q_hat * v->limbs[i];
-      __int128_t diff = (__int128_t)u->limbs[j + i] - (uint64_t)prod - borrow;
-      u->limbs[j + i] = (uint64_t)diff;
-      borrow = (int64_t)(prod >> 64) - (int64_t)(diff >> 64);
+    for (uint32_t i = 0; i < divisor_limbs; i++) {
+      __uint128_t product = q_hat * v->limbs[i];
+      __int128_t diff = (__int128_t) u->limbs[j + i] - (uint64_t) product - borrow;
+      u->limbs[j + i] = (uint64_t) diff;
+      borrow = (int64_t) (product >> 64) - (int64_t) (diff >> 64);
     }
-    __int128_t diff = (__int128_t)u->limbs[j + n] - borrow;
-    u->limbs[j + n] = (uint64_t)diff;
-    q->limbs[j] = (uint64_t)q_hat;
-    if (diff < 0) {
+    __int128_t final_diff = (__int128_t) u->limbs[j + divisor_limbs] - borrow;
+    u->limbs[j + divisor_limbs] = (uint64_t) final_diff;
+    quotient->limbs[j] = (uint64_t) q_hat;
 
-      /* Add back */
-      q->limbs[j]--;
+    /* If the subtraction went negative, add back one copy of the divisor. */
+    if (final_diff < 0) {
+      quotient->limbs[j]--;
       __uint128_t carry = 0;
-      for (uint32_t i = 0; i < n; i++) {
-        carry += (__uint128_t)u->limbs[j + i] + v->limbs[i];
-        u->limbs[j + i] = (uint64_t)carry;
+      for (uint32_t i = 0; i < divisor_limbs; i++) {
+        carry += (__uint128_t) u->limbs[j + i] + v->limbs[i];
+        u->limbs[j + i] = (uint64_t) carry;
         carry >>= 64;
       }
-      u->limbs[j + n] += (uint64_t)carry;
+      u->limbs[j + divisor_limbs] += (uint64_t) carry;
     }
   }
-  Big_Integer_Normalize(q);
+  Big_Integer_Normalize (quotient);
 
-  /* Remainder = u >> shift */
-  Big_Integer *rem = Big_Integer_New(n);
-  rem->count = n;
-  if (shift > 0) {
-    for (uint32_t i = 0; i < n; i++) {
-      rem->limbs[i] = (u->limbs[i] >> shift)
-              | (i + 1 < u->count ? u->limbs[i + 1] << (64 - shift) : 0);
+  /* The remainder is in u, but still shifted — undo the normalisation. */
+  Big_Integer *remainder = Big_Integer_New (divisor_limbs);
+  remainder->count = divisor_limbs;
+  if (normalise_shift > 0) {
+    for (uint32_t i = 0; i < divisor_limbs; i++) {
+      remainder->limbs[i] = (u->limbs[i] >> normalise_shift)
+        | (i + 1 < u->count ? u->limbs[i + 1] << (64 - normalise_shift) : 0);
     }
   } else {
-    memcpy(rem->limbs, u->limbs, n * sizeof(uint64_t));
+    memcpy (remainder->limbs, u->limbs, divisor_limbs * sizeof (uint64_t));
   }
-  Big_Integer_Normalize(rem);
-  *q_out = q; *r_out = rem;
+  Big_Integer_Normalize (remainder);
+  *quotient_out = quotient; *remainder_out = remainder;
 }
 
-/* GCD via Euclidean algorithm on Big_Integer (magnitude only). */
-static Big_Integer *Big_Integer_GCD(const Big_Integer *a, const Big_Integer *b) {
-  Big_Integer *x = Big_Integer_Clone(a); x->is_negative = false;
-  Big_Integer *y = Big_Integer_Clone(b); y->is_negative = false;
-  while (y->count > 0) {
-    Big_Integer *q, *r;
-    Big_Integer_Div_Rem(x, y, &q, &r);
-    x = y; y = r;
+/* Greatest common divisor via the Euclidean algorithm (magnitudes only, signs ignored). */
+static Big_Integer *Big_Integer_GCD (const Big_Integer *left, const Big_Integer *right) {
+  Big_Integer *current   = Big_Integer_Clone (left);  current->is_negative   = false;
+  Big_Integer *remaining = Big_Integer_Clone (right); remaining->is_negative = false;
+  while (remaining->count > 0) {
+    Big_Integer *quotient, *modulus;
+    Big_Integer_Div_Rem (current, remaining, &quotient, &modulus);
+    current   = remaining;
+    remaining = modulus;
   }
-  return x;
+  return current;
 }
 
-/* Rational number: exact num/den with den > 0, reduced by GCD. */
-typedef struct { Big_Integer *num, *den; } Rational;
-static Big_Integer *Big_Integer_One(void) {
-  Big_Integer *r = Big_Integer_New(1);
-  r->limbs[0] = 1; r->count = 1; r->is_negative = false;
-  return r;
+/* Exact rational number: numerator / denominator with denominator > 0, reduced by GCD. */
+typedef struct {
+  Big_Integer *numerator;
+  Big_Integer *denominator;
+} Rational;
+static Big_Integer *Big_Integer_One (void) {
+  Big_Integer *one = Big_Integer_New (1);
+  one->limbs[0] = 1; one->count = 1; one->is_negative = false;
+  return one;
 }
-static Rational Rational_Reduce(Big_Integer *n, Big_Integer *d) {
 
-  /* Ensure denominator is positive */
-  if (d->is_negative) { n->is_negative = not n->is_negative; d->is_negative = false; }
-  if (n->count == 0) return (Rational){n, Big_Integer_One()};
-  Big_Integer *g = Big_Integer_GCD(n, d);
-  if (g->count == 1 and g->limbs[0] == 1)
-    return (Rational){n, d};
-  Big_Integer *qn, *rn, *qd, *rd;
-  Big_Integer_Div_Rem(n, g, &qn, &rn);
-  Big_Integer_Div_Rem(d, g, &qd, &rd);
-  qn->is_negative = n->is_negative;
-  return (Rational){qn, qd};
-}
-static Rational Rational_From_Big_Real(const Big_Real *br) {
-  if (not br or br->significand->count == 0)
-    return (Rational){Big_Integer_New(1), Big_Integer_One()};
-  Big_Integer *num = Big_Integer_Clone(br->significand);
-  Big_Integer *den = Big_Integer_One();
-  if (br->exponent > 0) {
-    for (int32_t i = 0; i < br->exponent; i++)
-      Big_Integer_Mul_Add_Small(num, 10, 0);
-  } else if (br->exponent < 0) {
-    for (int32_t i = 0; i < -br->exponent; i++)
-      Big_Integer_Mul_Add_Small(den, 10, 0);
+/* Reduce a rational by dividing both numerator and denominator by their GCD.  The denominator
+ * is always made positive (the sign lives on the numerator). */
+static Rational Rational_Reduce (Big_Integer *numer, Big_Integer *denom) {
+  if (denom->is_negative) {
+    numer->is_negative = not numer->is_negative;
+    denom->is_negative = false;
   }
-  return Rational_Reduce(num, den);
+  if (numer->count == 0)
+    return (Rational){ .numerator = numer, .denominator = Big_Integer_One () };
+  Big_Integer *gcd = Big_Integer_GCD (numer, denom);
+  if (gcd->count == 1 and gcd->limbs[0] == 1)
+    return (Rational){ .numerator = numer, .denominator = denom };
+  Big_Integer *reduced_numer, *numer_rem, *reduced_denom, *denom_rem;
+  Big_Integer_Div_Rem (numer, gcd, &reduced_numer, &numer_rem);
+  Big_Integer_Div_Rem (denom, gcd, &reduced_denom, &denom_rem);
+  reduced_numer->is_negative = numer->is_negative;
+  return (Rational){ .numerator = reduced_numer, .denominator = reduced_denom };
 }
-static Rational Rational_From_Int(int64_t v) {
-  Big_Integer *n = Big_Integer_New(1);
-  n->limbs[0] = v < 0 ? (uint64_t)(-v) : (uint64_t)v;
-  n->count = v != 0 ? 1 : 0;
-  n->is_negative = v < 0;
-  return (Rational){n, Big_Integer_One()};
+static Rational Rational_From_Big_Real (const Big_Real *real) {
+  if (not real or real->significand->count == 0)
+    return (Rational){ .numerator = Big_Integer_New (1), .denominator = Big_Integer_One () };
+  Big_Integer *numer = Big_Integer_Clone (real->significand);
+  Big_Integer *denom = Big_Integer_One ();
+  if (real->exponent > 0) {
+    for (int32_t i = 0; i < real->exponent; i++)
+      Big_Integer_Mul_Add_Small (numer, 10, 0);
+  } else if (real->exponent < 0) {
+    for (int32_t i = 0; i < -real->exponent; i++)
+      Big_Integer_Mul_Add_Small (denom, 10, 0);
+  }
+  return Rational_Reduce (numer, denom);
 }
-static Rational Rational_Add(Rational a, Rational b) {
+static Rational Rational_From_Int (int64_t value) {
+  Big_Integer *numer = Big_Integer_New (1);
+  numer->limbs[0]    = value < 0 ? (uint64_t) (-value) : (uint64_t) value;
+  numer->count       = value != 0 ? 1 : 0;
+  numer->is_negative = value < 0;
+  return (Rational){ .numerator = numer, .denominator = Big_Integer_One () };
+}
 
-  /* a.num/a.den + b.num/b.den = (a.num*b.den + b.num*a.den) / (a.den*b.den) */
-  Big_Integer *n1 = Big_Integer_Multiply(a.num, b.den);
-  Big_Integer *n2 = Big_Integer_Multiply(b.num, a.den);
-  Big_Integer *num = Big_Integer_Add(n1, n2);
-  Big_Integer *den = Big_Integer_Multiply(a.den, b.den);
-  return Rational_Reduce(num, den);
+/* left + right  =  (left.n * right.d + right.n * left.d) / (left.d * right.d) */
+static Rational Rational_Add (Rational left, Rational right) {
+  Big_Integer *cross_left  = Big_Integer_Multiply (left.numerator,  right.denominator);
+  Big_Integer *cross_right = Big_Integer_Multiply (right.numerator, left.denominator);
+  Big_Integer *numer = Big_Integer_Add (cross_left, cross_right);
+  Big_Integer *denom = Big_Integer_Multiply (left.denominator, right.denominator);
+  return Rational_Reduce (numer, denom);
 }
-static Rational Rational_Sub(Rational a, Rational b) {
-  Big_Integer *neg_b_num = Big_Integer_Clone(b.num);
-  neg_b_num->is_negative = not neg_b_num->is_negative;
-  Rational neg_b = {neg_b_num, b.den};
-  return Rational_Add(a, neg_b);
+static Rational Rational_Sub (Rational left, Rational right) {
+  Big_Integer *negated_numer = Big_Integer_Clone (right.numerator);
+  negated_numer->is_negative = not negated_numer->is_negative;
+  Rational negated_right = { .numerator = negated_numer, .denominator = right.denominator };
+  return Rational_Add (left, negated_right);
 }
-static Rational Rational_Mul(Rational a, Rational b) {
-  Big_Integer *num = Big_Integer_Multiply(a.num, b.num);
-  Big_Integer *den = Big_Integer_Multiply(a.den, b.den);
-  return Rational_Reduce(num, den);
+static Rational Rational_Mul (Rational left, Rational right) {
+  Big_Integer *numer = Big_Integer_Multiply (left.numerator,   right.numerator);
+  Big_Integer *denom = Big_Integer_Multiply (left.denominator, right.denominator);
+  return Rational_Reduce (numer, denom);
 }
-static Rational Rational_Div(Rational a, Rational b) {
 
-  /* a / b = a.num*b.den / (a.den*b.num) */
-  Big_Integer *num = Big_Integer_Multiply(a.num, b.den);
-  Big_Integer *den = Big_Integer_Multiply(a.den, b.num);
-  return Rational_Reduce(num, den);
+/* left / right  =  left.n * right.d  /  (left.d * right.n) */
+static Rational Rational_Div (Rational left, Rational right) {
+  Big_Integer *numer = Big_Integer_Multiply (left.numerator,   right.denominator);
+  Big_Integer *denom = Big_Integer_Multiply (left.denominator, right.numerator);
+  return Rational_Reduce (numer, denom);
 }
-static Rational Rational_Pow(Rational base, int exp) {
-  if (exp == 0) return Rational_From_Int(1);
-  bool neg_exp = exp < 0;
-  if (neg_exp) exp = -exp;
-  Rational result = Rational_From_Int(1);
-  Rational b = base;
-  while (exp > 0) {
-    if (exp & 1) result = Rational_Mul(result, b);
-    b = Rational_Mul(b, b);
-    exp >>= 1;
+static Rational Rational_Pow (Rational base, int exponent) {
+  if (exponent == 0) return Rational_From_Int (1);
+  bool negative_exponent = exponent < 0;
+  if (negative_exponent) exponent = -exponent;
+  Rational result  = Rational_From_Int (1);
+  Rational current = base;
+  while (exponent > 0) {
+    if (exponent & 1) result = Rational_Mul (result, current);
+    current = Rational_Mul (current, current);
+    exponent >>= 1;
   }
 
-  /* Invert: swap num and den */
-  if (neg_exp) {
-    Big_Integer *tmp = result.num;
-    result.num = result.den;
-    result.den = tmp;
-    if (result.den->is_negative) {
-      result.num->is_negative = not result.num->is_negative;
-      result.den->is_negative = false;
+  /* For a negative exponent, invert the result by swapping numerator and denominator. */
+  if (negative_exponent) {
+    Big_Integer *swap   = result.numerator;
+    result.numerator    = result.denominator;
+    result.denominator  = swap;
+    if (result.denominator->is_negative) {
+      result.numerator->is_negative   = not result.numerator->is_negative;
+      result.denominator->is_negative = false;
     }
   }
   return result;
 }
-static int Rational_Compare(Rational a, Rational b) {
-
-  /* a/b vs c/d: compare a*d vs c*b (respecting signs) */
-  Big_Integer *lhs = Big_Integer_Multiply(a.num, b.den);
-  Big_Integer *rhs = Big_Integer_Multiply(b.num, a.den);
-  return Big_Integer_Compare(lhs, rhs);
+static int Rational_Compare (Rational left, Rational right) {
+  Big_Integer *lhs = Big_Integer_Multiply (left.numerator,  right.denominator);
+  Big_Integer *rhs = Big_Integer_Multiply (right.numerator, left.denominator);
+  return Big_Integer_Compare (lhs, rhs);
 }
-__attribute__((unused))
-static double Rational_To_Double(Rational r) {
 
-  /* Convert to double by computing num/den as double.
-   * For best precision, convert both to double and divide. */
-  double n = 0.0, d = 0.0;
-
-  /* Sentinel & error */
-  for (int i = (int)r.num->count - 1; i >= 0; i--)
-    n = n * 18446744073709551616.0 + (double)r.num->limbs[i];
-  if (r.num->is_negative) n = -n;
-  for (int i = (int)r.den->count - 1; i >= 0; i--)
-    d = d * 18446744073709551616.0 + (double)r.den->limbs[i];
-  return n / d;
+/* Approximate a Rational as an IEEE 754 double by converting numerator and denominator
+ * independently and dividing.  Precision loss is inherent for large values. */
+__attribute__ ((unused))
+static double Rational_To_Double (Rational rational) {
+  double numer_double = 0.0;
+  double denom_double = 0.0;
+  for (int i = (int) rational.numerator->count - 1; i >= 0; i--)
+    numer_double = numer_double * 18446744073709551616.0
+                 + (double) rational.numerator->limbs[i];
+  if (rational.numerator->is_negative) numer_double = -numer_double;
+  for (int i = (int) rational.denominator->count - 1; i >= 0; i--)
+    denom_double = denom_double * 18446744073709551616.0
+                 + (double) rational.denominator->limbs[i];
+  return numer_double / denom_double;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -9212,11 +9156,11 @@ static bool Eval_Const_Rational(Syntax_Node *n, Rational *out) {
       Rational operand;
       if (not Eval_Const_Rational(n->unary.operand, &operand)) return false;
       if (n->unary.op == TK_MINUS) {
-        operand.num = Big_Integer_Clone(operand.num);
-        operand.num->is_negative = not operand.num->is_negative;
+        operand.numerator = Big_Integer_Clone(operand.numerator);
+        operand.numerator->is_negative = not operand.numerator->is_negative;
       } else if (n->unary.op == TK_ABS) {
-        operand.num = Big_Integer_Clone(operand.num);
-        operand.num->is_negative = false;
+        operand.numerator = Big_Integer_Clone(operand.numerator);
+        operand.numerator->is_negative = false;
       }
       *out = operand;
       return true;
@@ -9239,7 +9183,7 @@ static bool Eval_Const_Rational(Syntax_Node *n, Rational *out) {
         case TK_MINUS: *out = Rational_Sub(l, r); return true;
         case TK_STAR:  *out = Rational_Mul(l, r); return true;
         case TK_SLASH:
-          if (r.num->count == 0) return false;
+          if (r.numerator->count == 0) return false;
           *out = Rational_Div(l, r); return true;
         default: return false;
       }
