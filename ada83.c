@@ -27611,7 +27611,9 @@ uint32_t Generate_Aggregate (Syntax_Node *node) {
             }
 
             /* RM 4.3.2: Parenthesized aggregate — INDEX_SUBTYPE'FIRST
-             * may differ from the runtime constraint lower bound. */
+             * may differ from the runtime constraint lower bound.
+             * Compare against the type's actual constraint bound, not
+             * clo (which may be a stale-bounds fallback). */
             if (node->aggregate.is_parenthesized and agg_type->base_type and
               agg_type->base_type->array.index_count > 0 and
               agg_type->base_type->array.indices[0].index_type) {
@@ -27619,9 +27621,11 @@ uint32_t Generate_Aggregate (Syntax_Node *node) {
               uint32_t isf = (idx_ty->low_bound.kind == BOUND_INTEGER)
                 ? Emit_Static_Int (idx_ty->low_bound.int_value, ait)
                 : Emit_Coerce (Emit_Bound_Value (&idx_ty->low_bound), ait);
+              uint32_t con_lo = Emit_Coerce (
+                Emit_Single_Bound (&agg_type->array.indices[0].low_bound, ait), ait);
               uint32_t ne = Emit_Temp ();
               Emit ("  %%t%u = icmp ne %s %%t%u, %%t%u\n",
-                 ne, ait, isf, clo);
+                 ne, ait, isf, con_lo);
               uint32_t ok2 = cg->label_id++;
               uint32_t fail2 = cg->label_id++;
               Emit ("  br i1 %%t%u, label %%L%u, label %%L%u\n",
@@ -27681,6 +27685,40 @@ uint32_t Generate_Aggregate (Syntax_Node *node) {
               Emit_Label_Here (ok_lbl);
             }
           }
+        }
+      }
+      /* RM 4.3.2: When bounds are stale (bounds_ref_unset_disc), the
+       * constraint checks above are skipped.  But parenthesized
+       * aggregates still need a lower-bound check: INDEX_SUBTYPE'FIRST
+       * may differ from the constraint's lower bound.  Evaluate the
+       * constraint bound directly — safe for variable references. */
+      if (bounds_ref_unset_disc and agg_type->array.is_constrained and
+        ac.n_positional > 0 and not ac.has_named and
+        node->aggregate.is_parenthesized) {
+        bool has_unc_base_p = agg_type->base_type and
+          Type_Is_Array_Like (agg_type->base_type) and
+          not agg_type->base_type->array.is_constrained;
+        if (has_unc_base_p and
+          agg_type->base_type->array.index_count > 0 and
+          agg_type->base_type->array.indices[0].index_type) {
+          const char *ait = Integer_Arith_Type ();
+          Type_Info *idx_ty = agg_type->base_type->array.indices[0].index_type;
+          uint32_t isf = (idx_ty->low_bound.kind == BOUND_INTEGER)
+            ? Emit_Static_Int (idx_ty->low_bound.int_value, ait)
+            : Emit_Coerce (Emit_Bound_Value (&idx_ty->low_bound), ait);
+          uint32_t con_lo = Emit_Coerce (
+            Emit_Single_Bound (&agg_type->array.indices[0].low_bound, ait), ait);
+          uint32_t ne = Emit_Temp ();
+          Emit ("  %%t%u = icmp ne %s %%t%u, %%t%u\n", ne, ait, isf, con_lo);
+          uint32_t ok_p = cg->label_id++;
+          uint32_t fail_p = cg->label_id++;
+          Emit ("  br i1 %%t%u, label %%L%u, label %%L%u\n",
+             ne, fail_p, ok_p);
+          cg->block_terminated = true;
+          Emit_Label_Here (fail_p);
+          Emit_Raise_Constraint_Error (
+            "parenthesized aggregate bounds vs stale dynamic constraint");
+          Emit_Label_Here (ok_p);
         }
       }
       } /* end bounds_ref_disc scope */
@@ -31060,9 +31098,18 @@ void Generate_Return_Statement (Syntax_Node *node) {
       if (des->kind == TYPE_RECORD and des->record.has_disc_constraints and
         des->record.discriminant_count > 0 and des->record.disc_constraint_values) {
 
-        /* Non-null check first, then discriminant check */
+        /* RM 4.8: Non-null, then discriminant check.  Extract data
+         * pointer from fat-pointer access values first. */
+        uint32_t ret_ptr = value;
+        { const char *vty = Temp_Get_Type (value);
+          if (vty and Llvm_Type_Is_Fat_Pointer (vty)) {
+            ret_ptr = Emit_Temp ();
+            Emit ("  %%t%u = extractvalue " FAT_PTR_TYPE " %%t%u, 0\n",
+               ret_ptr, value);
+          }
+        }
         uint32_t is_null = Emit_Temp ();
-        Emit ("  %%t%u = icmp eq ptr %%t%u, null\n", is_null, value);
+        Emit ("  %%t%u = icmp eq ptr %%t%u, null\n", is_null, ret_ptr);
         uint32_t skip_lbl = Emit_Label ();
         uint32_t chk_lbl  = Emit_Label ();
         Emit ("  br i1 %%t%u, label %%L%u, label %%L%u\n",
@@ -31070,13 +31117,12 @@ void Generate_Return_Statement (Syntax_Node *node) {
         cg->block_terminated = true;
         Emit_Label_Here (chk_lbl);
 
-        /* Load discriminant from designated object (offset 0, first component) */
         Component_Info *dc = &des->record.components[0];
         const char *disc_ty = dc->component_type ? Type_To_Llvm (dc->component_type)
                              : Integer_Arith_Type ();
         uint32_t dp = Emit_Temp ();
         Emit ("  %%t%u = getelementptr i8, ptr %%t%u, i64 %u\n",
-           dp, value, dc->byte_offset);
+           dp, ret_ptr, dc->byte_offset);
         uint32_t dv = Emit_Temp ();
         Emit ("  %%t%u = load %s, ptr %%t%u\n", dv, disc_ty, dp);
         const char *iat = Integer_Arith_Type ();
@@ -31091,11 +31137,20 @@ void Generate_Return_Statement (Syntax_Node *node) {
         cg->block_terminated = false;
       }
 
-      /* Array-constrained access: check bounds of designated array */
+      /* Array-constrained access: check bounds of designated array.
+       * Extract data pointer from fat-pointer access values. */
       if (Type_Is_Array_Like (des) and des->array.is_constrained and
         des->array.index_count > 0) {
+        uint32_t data_ptr = value;
+        { const char *vty = Temp_Get_Type (value);
+          if (vty and Llvm_Type_Is_Fat_Pointer (vty)) {
+            data_ptr = Emit_Temp ();
+            Emit ("  %%t%u = extractvalue " FAT_PTR_TYPE " %%t%u, 0\n",
+               data_ptr, value);
+          }
+        }
         uint32_t is_null = Emit_Temp ();
-        Emit ("  %%t%u = icmp eq ptr %%t%u, null\n", is_null, value);
+        Emit ("  %%t%u = icmp eq ptr %%t%u, null\n", is_null, data_ptr);
         uint32_t skip_lbl = Emit_Label ();
         uint32_t chk_lbl  = Emit_Label ();
         Emit ("  br i1 %%t%u, label %%L%u, label %%L%u\n",
@@ -31103,21 +31158,18 @@ void Generate_Return_Statement (Syntax_Node *node) {
         cg->block_terminated = true;
         Emit_Label_Here (chk_lbl);
 
-        /* Fat pointer access: bounds are in the fat ptr, not the object.
-         * For heap arrays the bounds are stored before the data. Load them
-         * and compare against the constrained subtype's bounds. */
+        /* Heap arrays store bounds at [-2] and [-1] before data. */
         const char *bt = Array_Bound_Llvm_Type (des);
         int128_t exp_lo = Array_Low_Bound (des);
         int128_t exp_hi = (des->array.index_count > 0 and des->array.indices)
           ? Type_Bound_Value (des->array.indices[0].high_bound) : 0;
 
-        /* Load actual bounds: stored at [-16] and [-8] before data */
         uint32_t blo_p = Emit_Temp ();
-        Emit ("  %%t%u = getelementptr %s, ptr %%t%u, i64 -2\n", blo_p, bt, value);
+        Emit ("  %%t%u = getelementptr %s, ptr %%t%u, i64 -2\n", blo_p, bt, data_ptr);
         uint32_t blo = Emit_Temp ();
         Emit ("  %%t%u = load %s, ptr %%t%u\n", blo, bt, blo_p);
         uint32_t bhi_p = Emit_Temp ();
-        Emit ("  %%t%u = getelementptr %s, ptr %%t%u, i64 -1\n", bhi_p, bt, value);
+        Emit ("  %%t%u = getelementptr %s, ptr %%t%u, i64 -1\n", bhi_p, bt, data_ptr);
         uint32_t bhi = Emit_Temp ();
         Emit ("  %%t%u = load %s, ptr %%t%u\n", bhi, bt, bhi_p);
 
@@ -34361,9 +34413,18 @@ obj_decl_init:
             and des->record.disc_constraint_values
             and des->record.discriminant_count > 0) {
 
-            /* init is the access value (ptr); null check first */
+            /* RM 4.8(6): Extract data ptr from fat-pointer access,
+             * null-check, then verify discriminants. */
+            uint32_t init_ptr = init;
+            { const char *ity = Temp_Get_Type (init);
+              if (ity and Llvm_Type_Is_Fat_Pointer (ity)) {
+                init_ptr = Emit_Temp ();
+                Emit ("  %%t%u = extractvalue " FAT_PTR_TYPE " %%t%u, 0\n",
+                   init_ptr, init);
+              }
+            }
             uint32_t is_nul = Emit_Temp ();
-            Emit ("  %%t%u = icmp eq ptr %%t%u, null\n", is_nul, init);
+            Emit ("  %%t%u = icmp eq ptr %%t%u, null\n", is_nul, init_ptr);
             uint32_t lbl_chk = cg->label_id++;
             uint32_t lbl_end = cg->label_id++;
             Emit ("  br i1 %%t%u, label %%L%u, label %%L%u\n",
@@ -34374,7 +34435,7 @@ obj_decl_init:
               const char *dt = Type_To_Llvm (dc->component_type);
               uint32_t dp = Emit_Temp ();
               Emit ("  %%t%u = getelementptr i8, ptr %%t%u, i64 %u\n",
-                 dp, init, dc->byte_offset);
+                 dp, init_ptr, dc->byte_offset);
               uint32_t dv = Emit_Temp ();
               Emit ("  %%t%u = load %s, ptr %%t%u  ; access disc %.*s\n",
                  dv, dt, dp, (int)dc->name.length, dc->name.data);
@@ -36819,7 +36880,7 @@ void Generate_Declaration (Syntax_Node *node) {
             /* Start the task and store handle in the global */
             uint32_t handle_tmp = Emit_Temp ();
             Emit ("  %%t%u = call ptr @__ada_task_start(ptr @", handle_tmp);
-            Emit_Task_Function_Name (d->symbol, d->task_spec.name);
+            Emit_Task_Function_Name (decl->symbol, decl->task_spec.name);
             Emit (", ptr null)\n");
             Emit ("  store ptr %%t%u, ptr @", handle_tmp);
             Emit_Symbol_Name (task_obj);
