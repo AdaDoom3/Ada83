@@ -1399,17 +1399,18 @@ static double Rational_To_Double (Rational rational) {
   return numer_double / denom_double;
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
- * §7. LEXER — Transform Characters into Tokens
- * ═══════════════════════════════════════════════════════════════════════════
+/* ═══════════════════════════════════════════════════════════════════════════════════════════════════
+ * §7. LEXER — Transforming characters into tokens
+ * ═══════════════════════════════════════════════════════════════════════════════════════════════════
  *
- * The lexer maintains a cursor over the source buffer and produces tokens
- * on demand. Ada lexical rules from RM §2.
+ * The lexer maintains a cursor over the source buffer and produces tokens on demand.  Lexical
+ * rules follow Ada RM §2.  SIMD fast paths accelerate whitespace skipping, identifier scanning,
+ * and digit scanning on x86-64 (AVX-512/AVX2/SSE4.2) and ARM64 (NEON) targets.
  */
 
-/* ─────────────────────────────────────────────────────────────────────────
- * §7.1 Token Kinds — Ada lexicon
- * ───────────────────────────────────────────────────────────────────────── */
+/* ─────────────────────────────────────────────────────────────────────────────────────────────────
+ * §7.1 Token Kinds — Every lexeme in the Ada 83 grammar
+ * ───────────────────────────────────────────────────────────────────────────────────────────────── */
 typedef enum {
   TK_EOF = 0, TK_ERROR,
 
@@ -1495,16 +1496,16 @@ static struct { String_Slice name; Token_Kind kind; } Keywords[] = {
   {S("while"),TK_WHILE},{S("with"),TK_WITH},{S("xor"),TK_XOR},
   {Empty_Slice, TK_EOF}  /* Sentinel */
 };
-static Token_Kind Lookup_Keyword(String_Slice name) {
+static Token_Kind Lookup_Keyword (String_Slice name) {
   for (int i = 0; Keywords[i].name.data; i++)
-    if (Slice_Equal_Ignore_Case(name, Keywords[i].name))
+    if (Slice_Equal_Ignore_Case (name, Keywords[i].name))
       return Keywords[i].kind;
   return TK_IDENTIFIER;
 }
 
-/* ─────────────────────────────────────────────────────────────────────────
- * §7.2 Token Structure
- * ───────────────────────────────────────────────────────────────────────── */
+/* ─────────────────────────────────────────────────────────────────────────────────────────────────
+ * §7.2 Token Structure — A single lexeme with its semantic value
+ * ───────────────────────────────────────────────────────────────────────────────────────────────── */
 typedef struct {
   Token_Kind      kind;
   Source_Location location;
@@ -1521,9 +1522,9 @@ typedef struct {
   };
 } Token;
 
-/* ─────────────────────────────────────────────────────────────────────────
- * §7.3 Lexer State
- * ───────────────────────────────────────────────────────────────────────── */
+/* ─────────────────────────────────────────────────────────────────────────────────────────────────
+ * §7.3 Lexer State — Cursor over the source buffer
+ * ───────────────────────────────────────────────────────────────────────────────────────────────── */
 typedef struct {
   const char *source_start;
   const char *current;
@@ -1533,59 +1534,61 @@ typedef struct {
   uint32_t    column;
   Token_Kind  prev_token_kind;  /* Track previous token for context-sensitive lexing */
 } Lexer;
-static Lexer Lexer_New(const char *source, size_t length, const char *filename) {
-  return (Lexer){source, source, source + length, filename, 1, 1, TK_EOF};
+static Lexer Lexer_New (const char *source, size_t length, const char *filename) {
+  return (Lexer){
+    .source_start    = source,
+    .current         = source,
+    .source_end      = source + length,
+    .filename        = filename,
+    .line            = 1,
+    .column          = 1,
+    .prev_token_kind = TK_EOF
+  };
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
+/* ═══════════════════════════════════════════════════════════════════════════════════════════════════
  * §7.3.1 SIMD-Accelerated Scanning Functions
- * ═══════════════════════════════════════════════════════════════════════════
+ * ═══════════════════════════════════════════════════════════════════════════════════════════════════
  *
- * Four ??? paths: x86-64 (AVX2/SSE4.2), ARM64 (NEON), RISC ???, and
- * scalar fallback.
- * These functions find interesting bytes without character-by-character loops.
+ * Four architecture paths: x86-64 (AVX-512/AVX2/SSE4.2), ARM64 (NEON), generic scalar fallback.
+ * Each function scans for interesting bytes (whitespace boundaries, end-of-identifier, etc.)
+ * without character-by-character loops.
  */
 #ifdef SIMD_X86_64
 
-/* ─────────────────────────────────────────────────────────────────────────────
+/* ─────────────────────────────────────────────────────────────────────────────────────────────────
  * x86-64 AVX-512/AVX2 SIMD Lexer Acceleration
  *
- * Features:
- *   - AVX-512BW: 64-byte processing with k-mask registers
- *   - AVX2: 32-byte processing with optimized instruction scheduling
- *   - Software prefetching (prefetcht0) for memory-bound operations
- *   - Loop unrolling for better instruction-level parallelism
- *   - BMI2 TZCNT for fast trailing zero count (find first non-match)
+ *   AVX-512BW — 64-byte vector processing with k-mask registers
+ *   AVX2      — 32-byte processing with optimised instruction scheduling
+ *   BMI2      — TZCNT for fast "find first non-matching byte" within a mask
  *
- * Architecture:
- *   - Simd_Skip_Whitespace: Skip space (0x20) and C0 controls (0x09-0x0D)
- *   - Simd_Find_Char_X86: Generic single-character search (newline, quotes)
- *   - Simd_Scan_Identifier: Match [a-zA-Z0-9_] character class
- *   - Simd_Scan_Digits: Match [0-9_] for numeric literals
- * ───────────────────────────────────────────────────────────────────────────── */
+ * Scanning functions:
+ *   Simd_Skip_Whitespace  — skip space (0x20) and C0 controls (0x09–0x0D)
+ *   Simd_Find_Char_X86    — generic single-character search (newline, quotes)
+ *   Simd_Scan_Identifier  — match the [A-Za-z0-9_] character class
+ *   Simd_Scan_Digits      — match [0-9_] for numeric literals
+ * ───────────────────────────────────────────────────────────────────────────────────────────────── */
 
-/* Raw assembly bit-scan helpers - BMI2 TZCNT instruction */
-static inline uint32_t Tzcnt32(uint32_t v) {
-  uint32_t r;
-  __asm__ ("tzcntl %1, %0" : "=r" (r) : "r" (v));
-  return r;
+/* BMI2 TZCNT (trailing zero count) — returns the index of the lowest set bit. */
+static inline uint32_t Tzcnt32 (uint32_t value) {
+  uint32_t index;
+  __asm__ ("tzcntl %1, %0" : "=r" (index) : "r" (value));
+  return index;
 }
-static inline uint64_t Tzcnt64(uint64_t v) {
-  uint64_t r;
-  __asm__ ("tzcntq %1, %0" : "=r" (r) : "r" (v));
-  return r;
+static inline uint64_t Tzcnt64 (uint64_t value) {
+  uint64_t index;
+  __asm__ ("tzcntq %1, %0" : "=r" (index) : "r" (value));
+  return index;
 }
 
-/* ─────────────────────────────────────────────────────────────────────────────
- * AVX-512 Whitespace Skip
- *
- * Processes 64 bytes at a time using k-mask registers.
- * Matches: space (0x20) OR range 0x09-0x0D (tab, LF, VT, FF, CR)
- * Only compiled when targeting AVX-512 capable CPUs.
- * ───────────────────────────────────────────────────────────────────────────── */
+/* ─────────────────────────────────────────────────────────────────────────────────────────────────
+ * AVX-512 whitespace skip — 64 bytes at a time using k-mask registers.  Matches space (0x20)
+ * and the C0 control range 0x09–0x0D (tab, LF, VT, FF, CR).  Only compiled with -mavx512bw.
+ * ───────────────────────────────────────────────────────────────────────────────────────────────── */
 #ifdef __AVX512BW__
-static inline const char *Simd_Skip_Whitespace_Avx512(const char *p, const char *end) {
-  while (p + 64 <= end) {
+static inline const char *Simd_Skip_Whitespace_Avx512 (const char *cursor, const char *limit) {
+  while (cursor + 64 <= limit) {
     uint64_t mask;
     __asm__ volatile (
       "prefetcht0 128(%[src])\n\t"           /* Prefetch next cache line */
@@ -1600,33 +1603,34 @@ static inline const char *Simd_Skip_Whitespace_Avx512(const char *p, const char 
       "kord %%k1, %%k2, %%k0\n\t"           /* k0 = whitespace mask */
       "kmovq %%k0, %[mask]\n\t"             /* Extract to GPR */
       : [mask] "=r" (mask)
-      : [src] "r" (p), [space] "r" ((uint32_t)' '),
-        [lo] "r" ((uint32_t)0x08), [hi] "r" ((uint32_t)0x0E)
+      : [src] "r" (cursor), [space] "r" ((uint32_t) ' '),
+        [lo] "r" ((uint32_t) 0x08), [hi] "r" ((uint32_t) 0x0E)
       : "zmm0", "zmm1", "zmm2", "zmm3", "k0", "k1", "k2", "k3", "memory"
     );
 
-    /* If any non-whitespace found, return its position */
+    /* If any non-whitespace byte was found, return its position. */
     if (~mask) {
-      uint64_t inv = ~mask;
-      __asm__ volatile ("tzcntq %1, %0" : "=r" (inv) : "r" (inv));
-      return p + inv;
+      uint64_t first_nonwhite = ~mask;
+      __asm__ volatile ("tzcntq %1, %0" : "=r" (first_nonwhite) : "r" (first_nonwhite));
+      return cursor + first_nonwhite;
     }
-    p += 64;
+    cursor += 64;
   }
-  return p;
+  return cursor;
 }
 #endif /* __AVX512BW__ */
 
-/* ─────────────────────────────────────────────────────────────────────────────
+/* ─────────────────────────────────────────────────────────────────────────────────────────────────
  * AVX2 Whitespace Skip with 2x Unrolling
  *
- * Processes 64 bytes (2x32) per iteration for better throughput.
- * Falls back to single 32-byte chunks for remaining data.
- * ───────────────────────────────────────────────────────────────────────────── */
-static inline const char *Simd_Skip_Whitespace_Avx2(const char *p, const char *end) {
+ * Processes 64 bytes (two 32-byte YMM loads) per iteration for better throughput on long runs of
+ * whitespace.  Falls back to a single 32-byte pass for the remaining tail before returning to the
+ * scalar loop in the dispatcher.
+ * ─────────────────────────────────────────────────────────────────────────────────────────────── */
+static inline const char *Simd_Skip_Whitespace_Avx2 (const char *cursor, const char *limit) {
 
   /* 2x unrolled: process 64 bytes per iteration */
-  while (p + 64 <= end) {
+  while (cursor + 64 <= limit) {
     uint32_t m0, m1;
     __asm__ volatile (
       "prefetcht0 128(%[src])\n\t"
@@ -1643,39 +1647,39 @@ static inline const char *Simd_Skip_Whitespace_Avx2(const char *p, const char *e
       "vmovd %[hi], %%xmm3\n\t"
       "vpbroadcastb %%xmm3, %%ymm3\n\t"
 
-      /* First chunk comparison */
-      "vpcmpeqb %%ymm1, %%ymm0, %%ymm5\n\t"   /* space match */
-      "vpcmpgtb %%ymm2, %%ymm0, %%ymm6\n\t"   /* > 0x08 */
-      "vpcmpgtb %%ymm0, %%ymm3, %%ymm7\n\t"   /* < 0x0E */
+      /* First chunk: space match, range check 0x09..0x0D */
+      "vpcmpeqb %%ymm1, %%ymm0, %%ymm5\n\t"
+      "vpcmpgtb %%ymm2, %%ymm0, %%ymm6\n\t"
+      "vpcmpgtb %%ymm0, %%ymm3, %%ymm7\n\t"
 
-      /* Second chunk comparison (parallel with first) */
+      /* Second chunk: same comparisons on the next 32 bytes */
       "vpcmpeqb %%ymm1, %%ymm8, %%ymm9\n\t"
       "vpcmpgtb %%ymm2, %%ymm8, %%ymm10\n\t"
       "vpcmpgtb %%ymm8, %%ymm3, %%ymm11\n\t"
 
-      /* Combine results */
+      /* Combine results: whitespace = space OR (> 0x08 AND < 0x0E) */
       "vpand %%ymm6, %%ymm7, %%ymm6\n\t"
       "vpor %%ymm5, %%ymm6, %%ymm0\n\t"
       "vpand %%ymm10, %%ymm11, %%ymm10\n\t"
       "vpor %%ymm9, %%ymm10, %%ymm8\n\t"
 
-      /* Extract masks */
+      /* Extract per-byte masks */
       "vpmovmskb %%ymm0, %[m0]\n\t"
       "vpmovmskb %%ymm8, %[m1]\n\t"
       "vzeroupper\n\t"
       : [m0] "=r" (m0), [m1] "=r" (m1)
-      : [src] "r" (p), [space] "r" ((uint32_t)' '),
+      : [src] "r" (cursor), [space] "r" ((uint32_t)' '),
         [lo] "r" ((uint32_t)0x08), [hi] "r" ((uint32_t)0x0E)
       : "ymm0", "ymm1", "ymm2", "ymm3", "ymm5", "ymm6", "ymm7",
         "ymm8", "ymm9", "ymm10", "ymm11", "memory"
     );
-    if (m0 != 0xFFFFFFFF) return p + Tzcnt32(~m0);
-    if (m1 != 0xFFFFFFFF) return p + 32 + Tzcnt32(~m1);
-    p += 64;
+    if (m0 != 0xFFFFFFFF) return cursor + Tzcnt32 (~m0);
+    if (m1 != 0xFFFFFFFF) return cursor + 32 + Tzcnt32 (~m1);
+    cursor += 64;
   }
 
   /* Handle remaining 32-byte chunk */
-  while (p + 32 <= end) {
+  while (cursor + 32 <= limit) {
     uint32_t mask;
     __asm__ volatile (
       "vmovdqu (%[src]), %%ymm0\n\t"
@@ -1693,68 +1697,70 @@ static inline const char *Simd_Skip_Whitespace_Avx2(const char *p, const char *e
       "vpmovmskb %%ymm0, %[mask]\n\t"
       "vzeroupper\n\t"
       : [mask] "=r" (mask)
-      : [src] "r" (p), [space] "r" ((uint32_t)' '),
+      : [src] "r" (cursor), [space] "r" ((uint32_t)' '),
         [lo] "r" ((uint32_t)0x08), [hi] "r" ((uint32_t)0x0E)
       : "ymm0", "ymm1", "ymm2", "ymm3", "ymm5", "ymm6", "ymm7", "memory"
     );
-    if (mask != 0xFFFFFFFF) return p + Tzcnt32(~mask);
-    p += 32;
+    if (mask != 0xFFFFFFFF) return cursor + Tzcnt32 (~mask);
+    cursor += 32;
   }
-  return p;
+  return cursor;
 }
 
-/* ─────────────────────────────────────────────────────────────────────────────
+/* ─────────────────────────────────────────────────────────────────────────────────────────────────
  * Whitespace Skip Dispatcher
  *
- * Selects best SIMD path at runtime based on CPU features.
- * Falls through to scalar loop for remaining bytes.
- * ───────────────────────────────────────────────────────────────────────────── */
-static inline const char *Simd_Skip_Whitespace(const char *p, const char *end) {
-  Simd_Detect_Features();
+ * Selects the best available SIMD path at runtime based on CPU features detected by
+ * Simd_Detect_Features, then falls through to a scalar tail for the last few bytes.
+ * ─────────────────────────────────────────────────────────────────────────────────────────────── */
+static inline const char *Simd_Skip_Whitespace (const char *cursor, const char *limit) {
+  Simd_Detect_Features ();
 #ifdef __AVX512BW__
-  if (Simd_Has_Avx512 and (end - p) >= 64) {
-    p = Simd_Skip_Whitespace_Avx512(p, end);
+  if (Simd_Has_Avx512 and (limit - cursor) >= 64) {
+    cursor = Simd_Skip_Whitespace_Avx512 (cursor, limit);
   }
 #endif
-  if (Simd_Has_Avx2 and (end - p) >= 32) {
-    p = Simd_Skip_Whitespace_Avx2(p, end);
+  if (Simd_Has_Avx2 and (limit - cursor) >= 32) {
+    cursor = Simd_Skip_Whitespace_Avx2 (cursor, limit);
   }
 
   /* Scalar tail for remaining bytes */
-  while (p < end) {
-    unsigned char c = (unsigned char)*p;
-    if (c != ' ' and (c < 0x09 or c > 0x0D)) break;
-    p++;
+  while (cursor < limit) {
+    unsigned char ch = (unsigned char)*cursor;
+    if (ch != ' ' and (ch < 0x09 or ch > 0x0D)) break;
+    cursor++;
   }
-  return p;
+  return cursor;
 }
 
-/* ─────────────────────────────────────────────────────────────────────────────
+/* ─────────────────────────────────────────────────────────────────────────────────────────────────
  * Generic Single-Character Search
  *
- * Searches for a specific character (newline, quote, etc.).
- * Used as building block for Simd_Find_Newline, Simd_Find_Quote, etc.
- * ───────────────────────────────────────────────────────────────────────────── */
-static inline const char *Simd_Find_Char_X86(const char *p, const char *end, char ch) {
+ * Searches for the first occurrence of a specific byte (newline, quote, etc.) in the given range.
+ * The first 16 bytes are checked with a scalar fast path that covers most short comments and
+ * string literals; beyond that the function dispatches to AVX-512 or AVX2 SIMD loops.  Used as
+ * the building block for Simd_Find_Newline, Simd_Find_Quote, and Simd_Find_Double_Quote.
+ * ─────────────────────────────────────────────────────────────────────────────────────────────── */
+static inline const char *Simd_Find_Char_X86 (const char *cursor, const char *limit, char target) {
 
   /* Fast path: scalar check for first 16 bytes (covers most short comments/strings) */
-  for (int i = 0; i < 16 and p + i < end; i++) {
-    if (p[i] == ch) return p + i;
+  for (int i = 0; i < 16 and cursor + i < limit; i++) {
+    if (cursor[i] == target) return cursor + i;
   }
 
-  /* Short remaining buffer - finish with scalar */
-  if (p + 16 >= end) {
-    p += 16;
-    while (p < end and *p != ch) p++;
-    return p;
+  /* Short remaining buffer — finish with scalar */
+  if (cursor + 16 >= limit) {
+    cursor += 16;
+    while (cursor < limit and *cursor != target) cursor++;
+    return cursor;
   }
-  p += 16;  /* Fast path didn't find it, continue with SIMD */
-  Simd_Detect_Features();
+  cursor += 16;  /* Fast path didn't find it, continue with SIMD */
+  Simd_Detect_Features ();
 #ifdef __AVX512BW__
 
   /* AVX-512: 64 bytes at a time */
   if (Simd_Has_Avx512) {
-    while (p + 64 <= end) {
+    while (cursor + 64 <= limit) {
       uint64_t mask;
       __asm__ volatile (
         "vmovdqu8 (%[src]), %%zmm0\n\t"
@@ -1762,20 +1768,20 @@ static inline const char *Simd_Find_Char_X86(const char *p, const char *end, cha
         "vpcmpeqb %%zmm1, %%zmm0, %%k0\n\t"
         "kmovq %%k0, %[mask]\n\t"
         : [mask] "=r" (mask)
-        : [src] "r" (p), [c] "r" ((uint32_t)ch)
+        : [src] "r" (cursor), [c] "r" ((uint32_t)target)
         : "zmm0", "zmm1", "k0", "memory"
       );
       if (mask) {
         __asm__ volatile ("tzcntq %1, %0" : "=r" (mask) : "r" (mask));
-        return p + mask;
+        return cursor + mask;
       }
-      p += 64;
+      cursor += 64;
     }
   }
 #endif
 
   /* AVX2: 32 bytes at a time */
-  while (p + 32 <= end) {
+  while (cursor + 32 <= limit) {
     uint32_t mask;
     __asm__ volatile (
       "vmovdqu (%[src]), %%ymm0\n\t"
@@ -1785,96 +1791,98 @@ static inline const char *Simd_Find_Char_X86(const char *p, const char *end, cha
       "vpmovmskb %%ymm0, %[mask]\n\t"
       "vzeroupper\n\t"
       : [mask] "=r" (mask)
-      : [src] "r" (p), [c] "r" ((uint32_t)ch)
+      : [src] "r" (cursor), [c] "r" ((uint32_t)target)
       : "ymm0", "ymm1", "memory"
     );
-    if (mask) return p + Tzcnt32(mask);
-    p += 32;
+    if (mask) return cursor + Tzcnt32 (mask);
+    cursor += 32;
   }
 
   /* Scalar tail */
-  while (p < end and *p != ch) p++;
-  return p;
+  while (cursor < limit and *cursor != target) cursor++;
+  return cursor;
 }
 
 /* Convenience wrappers for common character searches */
-static inline const char *Simd_Find_Newline(const char *p, const char *end) {
-  return Simd_Find_Char_X86(p, end, '\n');
+static inline const char *Simd_Find_Newline (const char *cursor, const char *limit) {
+  return Simd_Find_Char_X86 (cursor, limit, '\n');
 }
-static inline const char *Simd_Find_Quote(const char *p, const char *end) {
-  return Simd_Find_Char_X86(p, end, '\'');
+static inline const char *Simd_Find_Quote (const char *cursor, const char *limit) {
+  return Simd_Find_Char_X86 (cursor, limit, '\'');
 }
-static inline const char *Simd_Find_Double_Quote(const char *p, const char *end) {
-  return Simd_Find_Char_X86(p, end, '"');
+static inline const char *Simd_Find_Double_Quote (const char *cursor, const char *limit) {
+  return Simd_Find_Char_X86 (cursor, limit, '"');
 }
 
-/* ─────────────────────────────────────────────────────────────────────────────
+/* ─────────────────────────────────────────────────────────────────────────────────────────────────
  * Identifier Character Class Scanner
  *
- * Uses fast table lookup for first 8 chars (covers most identifiers),
- * then SIMD only for long identifiers. Benchmarked 50% faster than pure SIMD ???
- * ───────────────────────────────────────────────────────────────────────────── */
-static inline const char *Simd_Scan_Identifier(const char *p, const char *end) {
+ * Uses a fast unrolled table lookup for the first 8 characters, which covers the vast majority of
+ * Ada identifiers.  Longer identifiers continue with a scalar table-driven loop — the branch
+ * predictor handles this well since identifiers rarely exceed 8 characters.
+ * ─────────────────────────────────────────────────────────────────────────────────────────────── */
+static inline const char *Simd_Scan_Identifier (const char *cursor, const char *limit) {
 
   /* Fast path: unrolled table lookup for first 8 chars (covers most identifiers) */
-  if (p >= end or not Is_Id_Char(*p)) return p;
-  if (p + 1 >= end or not Is_Id_Char(p[1])) return p + 1;
-  if (p + 2 >= end or not Is_Id_Char(p[2])) return p + 2;
-  if (p + 3 >= end or not Is_Id_Char(p[3])) return p + 3;
-  if (p + 4 >= end or not Is_Id_Char(p[4])) return p + 4;
-  if (p + 5 >= end or not Is_Id_Char(p[5])) return p + 5;
-  if (p + 6 >= end or not Is_Id_Char(p[6])) return p + 6;
-  if (p + 7 >= end or not Is_Id_Char(p[7])) return p + 7;
+  if (cursor >= limit or not Is_Id_Char (*cursor)) return cursor;
+  if (cursor + 1 >= limit or not Is_Id_Char (cursor[1])) return cursor + 1;
+  if (cursor + 2 >= limit or not Is_Id_Char (cursor[2])) return cursor + 2;
+  if (cursor + 3 >= limit or not Is_Id_Char (cursor[3])) return cursor + 3;
+  if (cursor + 4 >= limit or not Is_Id_Char (cursor[4])) return cursor + 4;
+  if (cursor + 5 >= limit or not Is_Id_Char (cursor[5])) return cursor + 5;
+  if (cursor + 6 >= limit or not Is_Id_Char (cursor[6])) return cursor + 6;
+  if (cursor + 7 >= limit or not Is_Id_Char (cursor[7])) return cursor + 7;
 
-  /* Long identifier (> 8 chars) - continue with table lookup */
-  p += 8;
-  while (p < end and Is_Id_Char(*p)) p++;
-  return p;
+  /* Long identifier (> 8 chars) — continue with table lookup */
+  cursor += 8;
+  while (cursor < limit and Is_Id_Char (*cursor)) cursor++;
+  return cursor;
 }
 
-/* ─────────────────────────────────────────────────────────────────────────────
+/* ─────────────────────────────────────────────────────────────────────────────────────────────────
  * Digit Scanner for Numeric Literals
  *
- * Matches [0-9_] - digits with optional underscores (Ada numeric syntax).
- * Returns pointer to first non-digit character.
- * ───────────────────────────────────────────────────────────────────────────── */
-static inline const char *Simd_Scan_Digits(const char *p, const char *end) {
-  Simd_Detect_Features();
+ * Matches the character class [0-9_] — decimal digits with optional underscores, which is the Ada
+ * numeric literal syntax (LRM §2.4).  Returns a pointer to the first character that is neither a
+ * digit nor an underscore.
+ * ─────────────────────────────────────────────────────────────────────────────────────────────── */
+static inline const char *Simd_Scan_Digits (const char *cursor, const char *limit) {
+  Simd_Detect_Features ();
 #ifdef __AVX512BW__
 
   /* AVX-512 path */
   if (Simd_Has_Avx512) {
-    while (p + 64 <= end) {
+    while (cursor + 64 <= limit) {
       uint64_t mask;
       __asm__ volatile (
         "vmovdqu8 (%[src]), %%zmm0\n\t"
         "vpbroadcastb %[lo], %%zmm1\n\t"
         "vpbroadcastb %[hi], %%zmm2\n\t"
         "vpbroadcastb %[u], %%zmm3\n\t"
-        "vpcmpgtb %%zmm1, %%zmm0, %%k1\n\t"     /* c > '0'-1 */
-        "vpcmpgtb %%zmm0, %%zmm2, %%k2\n\t"     /* '9'+1 > c */
-        "kandd %%k1, %%k2, %%k3\n\t"            /* digit */
+        "vpcmpgtb %%zmm1, %%zmm0, %%k1\n\t"     /* byte > '0'-1 */
+        "vpcmpgtb %%zmm0, %%zmm2, %%k2\n\t"     /* '9'+1 > byte */
+        "kandd %%k1, %%k2, %%k3\n\t"            /* digit range */
         "vpcmpeqb %%zmm3, %%zmm0, %%k4\n\t"     /* underscore */
-        "kord %%k3, %%k4, %%k0\n\t"             /* combine */
+        "kord %%k3, %%k4, %%k0\n\t"             /* digit OR underscore */
         "kmovq %%k0, %[mask]\n\t"
         : [mask] "=r" (mask)
-        : [src] "r" (p),
-          [lo] "r" ((uint32_t)('0'-1)),
-          [hi] "r" ((uint32_t)('9'+1)),
+        : [src] "r" (cursor),
+          [lo] "r" ((uint32_t)('0' - 1)),
+          [hi] "r" ((uint32_t)('9' + 1)),
           [u] "r" ((uint32_t)'_')
         : "zmm0", "zmm1", "zmm2", "zmm3", "k0", "k1", "k2", "k3", "k4", "memory"
       );
       if (~mask) {
         __asm__ volatile ("tzcntq %1, %0" : "=r" (mask) : "r" (~mask));
-        return p + mask;
+        return cursor + mask;
       }
-      p += 64;
+      cursor += 64;
     }
   }
 #endif
 
   /* AVX2 path */
-  while (p + 32 <= end) {
+  while (cursor + 32 <= limit) {
     uint32_t mask;
     __asm__ volatile (
       "vmovdqu (%[src]), %%ymm0\n\t"
@@ -1892,27 +1900,27 @@ static inline const char *Simd_Scan_Digits(const char *p, const char *end) {
       "vpmovmskb %%ymm0, %[mask]\n\t"
       "vzeroupper\n\t"
       : [mask] "=r" (mask)
-      : [src] "r" (p),
-        [lo] "r" ((uint32_t)('0'-1)),
-        [hi] "r" ((uint32_t)('9'+1)),
+      : [src] "r" (cursor),
+        [lo] "r" ((uint32_t)('0' - 1)),
+        [hi] "r" ((uint32_t)('9' + 1)),
         [u] "r" ((uint32_t)'_')
       : "ymm0", "ymm1", "ymm2", "ymm3", "ymm4", "ymm5", "memory"
     );
-    if (mask != 0xFFFFFFFF) return p + Tzcnt32(~mask);
-    p += 32;
+    if (mask != 0xFFFFFFFF) return cursor + Tzcnt32 (~mask);
+    cursor += 32;
   }
 
   /* Scalar tail */
-  while (p < end and ((*p >= '0' and *p <= '9') or *p == '_')) p++;
-  return p;
+  while (cursor < limit and ((*cursor >= '0' and *cursor <= '9') or *cursor == '_')) cursor++;
+  return cursor;
 }
 #elif defined(SIMD_ARM64)
 
-/* ─────────────────────────────────────────────────────────────────────────
+/* ─────────────────────────────────────────────────────────────────────────────────────────────────
  * ARM64 NEON Implementation (raw inline assembly)
- * ───────────────────────────────────────────────────────────────────────── */
-static inline const char *Simd_Skip_Whitespace(const char *p, const char *end) {
-  while (p + 16 <= end) {
+ * ─────────────────────────────────────────────────────────────────────────────────────────────── */
+static inline const char *Simd_Skip_Whitespace (const char *cursor, const char *limit) {
+  while (cursor + 16 <= limit) {
     uint64_t lo, hi;
     __asm__ volatile (
       "ldr q0, [%[src]]\n\t"                /* Load 16 bytes */
@@ -1921,37 +1929,37 @@ static inline const char *Simd_Skip_Whitespace(const char *p, const char *end) {
       "movi v1.16b, #0x20\n\t"
       "cmeq v5.16b, v0.16b, v1.16b\n\t"
 
-      /* Check range 0x09-0x0D: c > 0x08 and c < 0x0E */
-      "movi v2.16b, #0x08\n\t"              /* lo-1 */
-      "movi v3.16b, #0x0E\n\t"              /* hi+1 */
-      "cmhi v6.16b, v0.16b, v2.16b\n\t"     /* c > 0x08 */
-      "cmhi v7.16b, v3.16b, v0.16b\n\t"     /* 0x0E > c */
+      /* Check range 0x09..0x0D: byte > 0x08 and byte < 0x0E */
+      "movi v2.16b, #0x08\n\t"
+      "movi v3.16b, #0x0E\n\t"
+      "cmhi v6.16b, v0.16b, v2.16b\n\t"
+      "cmhi v7.16b, v3.16b, v0.16b\n\t"
       "and v6.16b, v6.16b, v7.16b\n\t"      /* in range */
 
-      /* Combine: whitespace = space OR in_range */
+      /* Combine: whitespace = space OR in_range, then invert for non-whitespace */
       "orr v0.16b, v5.16b, v6.16b\n\t"
-      "mvn v0.16b, v0.16b\n\t"              /* Invert for non-whitespace */
+      "mvn v0.16b, v0.16b\n\t"
       "mov %[lo], v0.d[0]\n\t"
       "mov %[hi], v0.d[1]\n\t"
       : [lo] "=r" (lo), [hi] "=r" (hi)
-      : [src] "r" (p)
+      : [src] "r" (cursor)
       : "v0", "v1", "v2", "v3", "v5", "v6", "v7", "memory"
     );
-    if (lo) return p + (Tzcnt64(lo) >> 3);
-    if (hi) return p + 8 + (Tzcnt64(hi) >> 3);
-    p += 16;
+    if (lo) return cursor + (Tzcnt64 (lo) >> 3);
+    if (hi) return cursor + 8 + (Tzcnt64 (hi) >> 3);
+    cursor += 16;
   }
 
-  /* Scalar tail: check all isspace() characters */
-  while (p < end) {
-    unsigned char c = (unsigned char)*p;
-    if (c != ' ' and (c < 0x09 or c > 0x0D)) break;
-    p++;
+  /* Scalar tail */
+  while (cursor < limit) {
+    unsigned char ch = (unsigned char)*cursor;
+    if (ch != ' ' and (ch < 0x09 or ch > 0x0D)) break;
+    cursor++;
   }
-  return p;
+  return cursor;
 }
-static inline const char *Simd_Find_Newline(const char *p, const char *end) {
-  while (p + 16 <= end) {
+static inline const char *Simd_Find_Newline (const char *cursor, const char *limit) {
+  while (cursor + 16 <= limit) {
     uint64_t lo, hi;
     __asm__ volatile (
       "ldr q0, [%[src]]\n\t"
@@ -1960,120 +1968,120 @@ static inline const char *Simd_Find_Newline(const char *p, const char *end) {
       "mov %[lo], v0.d[0]\n\t"
       "mov %[hi], v0.d[1]\n\t"
       : [lo] "=r" (lo), [hi] "=r" (hi)
-      : [src] "r" (p)
+      : [src] "r" (cursor)
       : "v0", "v1", "memory"
     );
-    if (lo) return p + (Tzcnt64(lo) >> 3);
-    if (hi) return p + 8 + (Tzcnt64(hi) >> 3);
-    p += 16;
+    if (lo) return cursor + (Tzcnt64 (lo) >> 3);
+    if (hi) return cursor + 8 + (Tzcnt64 (hi) >> 3);
+    cursor += 16;
   }
-  while (p < end and *p != '\n') p++;
-  return p;
+  while (cursor < limit and *cursor != '\n') cursor++;
+  return cursor;
 }
-static inline const char *Simd_Scan_Identifier(const char *p, const char *end) {
-  while (p + 16 <= end) {
+static inline const char *Simd_Scan_Identifier (const char *cursor, const char *limit) {
+  while (cursor + 16 <= limit) {
     uint64_t lo, hi;
     __asm__ volatile (
       "ldr q0, [%[src]]\n\t"
 
-      /* Check a-z: c >= 'a' and c <= 'z' */
-      "movi v1.16b, #0x60\n\t"              /* 'a' - 1 = 0x60 */
-      "movi v2.16b, #0x7B\n\t"              /* 'z' + 1 = 0x7B */
-      "cmhi v3.16b, v0.16b, v1.16b\n\t"     /* c > 'a'-1 */
-      "cmhi v4.16b, v2.16b, v0.16b\n\t"     /* 'z'+1 > c */
-      "and v5.16b, v3.16b, v4.16b\n\t"      /* lower */
+      /* Check a-z */
+      "movi v1.16b, #0x60\n\t"
+      "movi v2.16b, #0x7B\n\t"
+      "cmhi v3.16b, v0.16b, v1.16b\n\t"
+      "cmhi v4.16b, v2.16b, v0.16b\n\t"
+      "and v5.16b, v3.16b, v4.16b\n\t"
 
       /* Check A-Z */
-      "movi v1.16b, #0x40\n\t"              /* 'A' - 1 = 0x40 */
-      "movi v2.16b, #0x5B\n\t"              /* 'Z' + 1 = 0x5B */
+      "movi v1.16b, #0x40\n\t"
+      "movi v2.16b, #0x5B\n\t"
       "cmhi v3.16b, v0.16b, v1.16b\n\t"
       "cmhi v4.16b, v2.16b, v0.16b\n\t"
-      "and v6.16b, v3.16b, v4.16b\n\t"      /* upper */
+      "and v6.16b, v3.16b, v4.16b\n\t"
 
       /* Check 0-9 */
-      "movi v1.16b, #0x2F\n\t"              /* '0' - 1 = 0x2F */
-      "movi v2.16b, #0x3A\n\t"              /* '9' + 1 = 0x3A */
+      "movi v1.16b, #0x2F\n\t"
+      "movi v2.16b, #0x3A\n\t"
       "cmhi v3.16b, v0.16b, v1.16b\n\t"
       "cmhi v4.16b, v2.16b, v0.16b\n\t"
-      "and v7.16b, v3.16b, v4.16b\n\t"      /* digit */
+      "and v7.16b, v3.16b, v4.16b\n\t"
 
       /* Check underscore */
-      "movi v1.16b, #0x5F\n\t"              /* '_' = 0x5F */
+      "movi v1.16b, #0x5F\n\t"
       "cmeq v16.16b, v0.16b, v1.16b\n\t"
 
-      /* Combine: valid = lower | upper | digit | underscore */
+      /* Combine: valid = lower | upper | digit | underscore, then invert */
       "orr v5.16b, v5.16b, v6.16b\n\t"
       "orr v7.16b, v7.16b, v16.16b\n\t"
       "orr v0.16b, v5.16b, v7.16b\n\t"
-      "mvn v0.16b, v0.16b\n\t"              /* Invert for invalid */
+      "mvn v0.16b, v0.16b\n\t"
       "mov %[lo], v0.d[0]\n\t"
       "mov %[hi], v0.d[1]\n\t"
       : [lo] "=r" (lo), [hi] "=r" (hi)
-      : [src] "r" (p)
+      : [src] "r" (cursor)
       : "v0", "v1", "v2", "v3", "v4", "v5", "v6", "v7", "v16", "memory"
     );
-    if (lo) return p + (Tzcnt64(lo) >> 3);
-    if (hi) return p + 8 + (Tzcnt64(hi) >> 3);
-    p += 16;
+    if (lo) return cursor + (Tzcnt64 (lo) >> 3);
+    if (hi) return cursor + 8 + (Tzcnt64 (hi) >> 3);
+    cursor += 16;
   }
-  while (p < end) {
-    char c = *p;
-    if (not ((c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or
-        (c >= '0' and c <= '9') or c == '_'))
+  while (cursor < limit) {
+    char ch = *cursor;
+    if (not ((ch >= 'a' and ch <= 'z') or (ch >= 'A' and ch <= 'Z') or
+        (ch >= '0' and ch <= '9') or ch == '_'))
       break;
-    p++;
+    cursor++;
   }
-  return p;
+  return cursor;
 }
-static inline const char *Simd_Find_Quote(const char *p, const char *end) {
-  while (p + 16 <= end) {
+static inline const char *Simd_Find_Quote (const char *cursor, const char *limit) {
+  while (cursor + 16 <= limit) {
     uint64_t lo, hi;
     __asm__ volatile (
       "ldr q0, [%[src]]\n\t"
-      "movi v1.16b, #0x27\n\t"              /* '\'' = 0x27 */
+      "movi v1.16b, #0x27\n\t"
       "cmeq v0.16b, v0.16b, v1.16b\n\t"
       "mov %[lo], v0.d[0]\n\t"
       "mov %[hi], v0.d[1]\n\t"
       : [lo] "=r" (lo), [hi] "=r" (hi)
-      : [src] "r" (p)
+      : [src] "r" (cursor)
       : "v0", "v1", "memory"
     );
-    if (lo) return p + (Tzcnt64(lo) >> 3);
-    if (hi) return p + 8 + (Tzcnt64(hi) >> 3);
-    p += 16;
+    if (lo) return cursor + (Tzcnt64 (lo) >> 3);
+    if (hi) return cursor + 8 + (Tzcnt64 (hi) >> 3);
+    cursor += 16;
   }
-  while (p < end and *p != '\'') p++;
-  return p;
+  while (cursor < limit and *cursor != '\'') cursor++;
+  return cursor;
 }
-static inline const char *Simd_Find_Double_Quote(const char *p, const char *end) {
-  while (p + 16 <= end) {
+static inline const char *Simd_Find_Double_Quote (const char *cursor, const char *limit) {
+  while (cursor + 16 <= limit) {
     uint64_t lo, hi;
     __asm__ volatile (
       "ldr q0, [%[src]]\n\t"
-      "movi v1.16b, #0x22\n\t"              /* '"' = 0x22 */
+      "movi v1.16b, #0x22\n\t"
       "cmeq v0.16b, v0.16b, v1.16b\n\t"
       "mov %[lo], v0.d[0]\n\t"
       "mov %[hi], v0.d[1]\n\t"
       : [lo] "=r" (lo), [hi] "=r" (hi)
-      : [src] "r" (p)
+      : [src] "r" (cursor)
       : "v0", "v1", "memory"
     );
-    if (lo) return p + (Tzcnt64(lo) >> 3);
-    if (hi) return p + 8 + (Tzcnt64(hi) >> 3);
-    p += 16;
+    if (lo) return cursor + (Tzcnt64 (lo) >> 3);
+    if (hi) return cursor + 8 + (Tzcnt64 (hi) >> 3);
+    cursor += 16;
   }
-  while (p < end and *p != '"') p++;
-  return p;
+  while (cursor < limit and *cursor != '"') cursor++;
+  return cursor;
 }
-static inline const char *Simd_Scan_Digits(const char *p, const char *end) {
-  while (p + 16 <= end) {
+static inline const char *Simd_Scan_Digits (const char *cursor, const char *limit) {
+  while (cursor + 16 <= limit) {
     uint64_t lo, hi;
     __asm__ volatile (
       "ldr q0, [%[src]]\n\t"
 
       /* Check 0-9 */
-      "movi v1.16b, #0x2F\n\t"              /* '0' - 1 */
-      "movi v2.16b, #0x3A\n\t"              /* '9' + 1 */
+      "movi v1.16b, #0x2F\n\t"
+      "movi v2.16b, #0x3A\n\t"
       "cmhi v3.16b, v0.16b, v1.16b\n\t"
       "cmhi v4.16b, v2.16b, v0.16b\n\t"
       "and v5.16b, v3.16b, v4.16b\n\t"
@@ -2088,76 +2096,76 @@ static inline const char *Simd_Scan_Digits(const char *p, const char *end) {
       "mov %[lo], v0.d[0]\n\t"
       "mov %[hi], v0.d[1]\n\t"
       : [lo] "=r" (lo), [hi] "=r" (hi)
-      : [src] "r" (p)
+      : [src] "r" (cursor)
       : "v0", "v1", "v2", "v3", "v4", "v5", "v6", "memory"
     );
-    if (lo) return p + (Tzcnt64(lo) >> 3);
-    if (hi) return p + 8 + (Tzcnt64(hi) >> 3);
-    p += 16;
+    if (lo) return cursor + (Tzcnt64 (lo) >> 3);
+    if (hi) return cursor + 8 + (Tzcnt64 (hi) >> 3);
+    cursor += 16;
   }
-  while (p < end and ((*p >= '0' and *p <= '9') or *p == '_')) p++;
-  return p;
+  while (cursor < limit and ((*cursor >= '0' and *cursor <= '9') or *cursor == '_')) cursor++;
+  return cursor;
 }
 #else
 
 /* Generic Scalar Implementation (Portable Fallback)
  *
- * This is the reference implementation. All SIMD paths must produce identical
- * results to these scalar functions for all possible inputs.
+ * Reference implementation for platforms without SIMD support.  All SIMD paths must produce
+ * identical results to these scalar functions for all possible inputs.
  */
-static inline const char *Simd_Skip_Whitespace(const char *p, const char *end) {
-  while (p < end) {
-    unsigned char c = (unsigned char)*p;
-    if (c != ' ' and (c < 0x09 or c > 0x0D)) break;
-    p++;
+static inline const char *Simd_Skip_Whitespace (const char *cursor, const char *limit) {
+  while (cursor < limit) {
+    unsigned char ch = (unsigned char)*cursor;
+    if (ch != ' ' and (ch < 0x09 or ch > 0x0D)) break;
+    cursor++;
   }
-  return p;
+  return cursor;
 }
-static inline const char *Simd_Find_Newline(const char *p, const char *end) {
-  while (p < end and *p != '\n') p++;
-  return p;
+static inline const char *Simd_Find_Newline (const char *cursor, const char *limit) {
+  while (cursor < limit and *cursor != '\n') cursor++;
+  return cursor;
 }
-static inline const char *Simd_Scan_Identifier(const char *p, const char *end) {
-  while (p < end) {
-    char c = *p;
-    if (not ((c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or
-        (c >= '0' and c <= '9') or c == '_'))
+static inline const char *Simd_Scan_Identifier (const char *cursor, const char *limit) {
+  while (cursor < limit) {
+    char ch = *cursor;
+    if (not ((ch >= 'a' and ch <= 'z') or (ch >= 'A' and ch <= 'Z') or
+        (ch >= '0' and ch <= '9') or ch == '_'))
       break;
-    p++;
+    cursor++;
   }
-  return p;
+  return cursor;
 }
-static inline const char *Simd_Find_Quote(const char *p, const char *end) {
-  while (p < end and *p != '\'') p++;
-  return p;
+static inline const char *Simd_Find_Quote (const char *cursor, const char *limit) {
+  while (cursor < limit and *cursor != '\'') cursor++;
+  return cursor;
 }
-static inline const char *Simd_Find_Double_Quote(const char *p, const char *end) {
-  while (p < end and *p != '"') p++;
-  return p;
+static inline const char *Simd_Find_Double_Quote (const char *cursor, const char *limit) {
+  while (cursor < limit and *cursor != '"') cursor++;
+  return cursor;
 }
-static inline const char *Simd_Scan_Digits(const char *p, const char *end) {
-  while (p < end and ((*p >= '0' and *p <= '9') or *p == '_')) p++;
-  return p;
+static inline const char *Simd_Scan_Digits (const char *cursor, const char *limit) {
+  while (cursor < limit and ((*cursor >= '0' and *cursor <= '9') or *cursor == '_')) cursor++;
+  return cursor;
 }
 #endif /* SIMD architecture selection */
-static inline char Lexer_Peek(const Lexer *lex, size_t offset) {
+static inline char Lexer_Peek (const Lexer *lex, size_t offset) {
   return lex->current + offset < lex->source_end ? lex->current[offset] : '\0';
 }
-static inline char Lexer_Advance(Lexer *lex) {
+static inline char Lexer_Advance (Lexer *lex) {
   if (lex->current >= lex->source_end) return '\0';
-  char c = *lex->current++;
-  if (c == '\n') { lex->line++; lex->column = 1; }
+  char ch = *lex->current++;
+  if (ch == '\n') { lex->line++; lex->column = 1; }
   else lex->column++;
-  return c;
+  return ch;
 }
-static void Lexer_Skip_Whitespace_And_Comments(Lexer *lex) {
+static void Lexer_Skip_Whitespace_And_Comments (Lexer *lex) {
 
-  /* Use SIMD to find first non-whitespace */
+  /* Use SIMD to find first non-whitespace, then check for Ada comments (-- to end of line) */
   for (;;) {
-    const char *end_ws = Simd_Skip_Whitespace(lex->current, lex->source_end);
+    const char *past_space = Simd_Skip_Whitespace (lex->current, lex->source_end);
 
-    /* Update line/column by scanning for newlines in skipped region */
-    while (lex->current < end_ws) {
+    /* Update line/column by scanning for newlines in the skipped region */
+    while (lex->current < past_space) {
       if (*lex->current == '\n') { lex->line++; lex->column = 1; }
       else lex->column++;
       lex->current++;
@@ -2168,369 +2176,384 @@ static void Lexer_Skip_Whitespace_And_Comments(Lexer *lex) {
       lex->current[0] == '-' and lex->current[1] == '-') {
 
       /* Use SIMD to find newline */
-      const char *end_comment = Simd_Find_Newline(lex->current, lex->source_end);
+      const char *end_comment = Simd_Find_Newline (lex->current, lex->source_end);
       lex->column += (uint32_t)(end_comment - lex->current);
       lex->current = end_comment;
     } else break;
   }
 }
-static inline Token Make_Token(Token_Kind kind, Source_Location loc, String_Slice text) {
-  return (Token){kind, loc, text, {0}, {NULL}};
+static inline Token Make_Token (Token_Kind kind, Source_Location location, String_Slice text) {
+  return (Token){
+    .kind = kind, .location = location, .text = text,
+    .integer_value = 0, .big_integer = NULL
+  };
 }
 
-/* ─────────────────────────────────────────────────────────────────────────
- * §7.4 Scanning Functions
- * ───────────────────────────────────────────────────────────────────────── */
-static Token Scan_Identifier(Lexer *lex) {
-  Source_Location loc = {lex->filename, lex->line, lex->column};
-  const char *start = lex->current;
-
-  /* Use SIMD to find end of identifier */
-  const char *end_id = Simd_Scan_Identifier(lex->current, lex->source_end);
-  lex->column += (uint32_t)(end_id - lex->current);
-  lex->current = end_id;
-  String_Slice text = {start, (uint32_t)(lex->current - start)};
-  Token_Kind kind = Lookup_Keyword(text);
-  return Make_Token(kind, loc, text);
+/* ─────────────────────────────────────────────────────────────────────────────────────────────────
+ * §7.4 Scanning Functions — Each scanner consumes one token and returns it
+ * ─────────────────────────────────────────────────────────────────────────────────────────────── */
+static Token Scan_Identifier (Lexer *lex) {
+  Source_Location location = { .filename = lex->filename,
+                               .line     = lex->line,
+                               .column   = lex->column };
+  const char *start  = lex->current;
+  const char *end_id = Simd_Scan_Identifier (lex->current, lex->source_end);
+  lex->column       += (uint32_t)(end_id - lex->current);
+  lex->current       = end_id;
+  String_Slice text  = { .data = start, .length = (uint32_t)(lex->current - start) };
+  Token_Kind   kind  = Lookup_Keyword (text);
+  return Make_Token (kind, location, text);
 }
 
-/* Parse digit value in any base up to 16 */
-static inline int Digit_Value(char c) {
-  if (c >= '0' and c <= '9') return c - '0';
-  if (c >= 'A' and c <= 'F') return c - 'A' + 10;
-  if (c >= 'a' and c <= 'f') return c - 'a' + 10;
+/* Parse digit value in any base up to 16; returns -1 for non-hex characters */
+static inline int Digit_Value (char ch) {
+  if (ch >= '0' and ch <= '9') return ch - '0';
+  if (ch >= 'A' and ch <= 'F') return ch - 'A' + 10;
+  if (ch >= 'a' and ch <= 'f') return ch - 'a' + 10;
   return -1;
 }
-static Token Scan_Number(Lexer *lex) {
-  Source_Location loc = {lex->filename, lex->line, lex->column};
-  const char *start = lex->current;
-  int base = 10;
-  bool is_real = false, has_exponent = false, is_based = false;
+static Token Scan_Number (Lexer *lex) {
+  Source_Location location = { .filename = lex->filename,
+                               .line     = lex->line,
+                               .column   = lex->column };
+  const char *start        = lex->current;
+  int         base         = 10;
+  bool        is_real      = false;
+  bool        has_exponent = false;
+  bool        is_based     = false;
 
   /* Scan integer part (possibly base specifier) */
-  while (Is_Digit(Lexer_Peek(lex, 0)) or Lexer_Peek(lex, 0) == '_')
-    Lexer_Advance(lex);
+  while (Is_Digit (Lexer_Peek (lex, 0)) or Lexer_Peek (lex, 0) == '_')
+    Lexer_Advance (lex);
 
   /* Based literal: 16#FFFF# or 2#1010# */
-  if (Lexer_Peek(lex, 0) == '#' or
-    (Lexer_Peek(lex, 0) == ':' and Is_Xdigit(Lexer_Peek(lex, 1)))) {
-    is_based = true;
-    char delim = Lexer_Peek(lex, 0);
+  if (Lexer_Peek (lex, 0) == '#' or
+    (Lexer_Peek (lex, 0) == ':' and Is_Xdigit (Lexer_Peek (lex, 1)))) {
+    is_based       = true;
+    char delimiter = Lexer_Peek (lex, 0);
 
     /* Parse base from what we've scanned so far */
     char base_buf[16] = {0};
-    int bi = 0;
-    for (const char *p = start; p < lex->current and bi < 15; p++)
-      if (*p != '_') base_buf[bi++] = *p;
-    base = atoi(base_buf);
-    Lexer_Advance(lex); /* consume # or : */
+    int  index        = 0;
+    for (const char *scan = start; scan < lex->current and index < 15; scan++)
+      if (*scan != '_') base_buf[index++] = *scan;
+    base = atoi (base_buf);
+    Lexer_Advance (lex); /* consume # or : */
 
     /* Scan mantissa */
-    while (Is_Xdigit(Lexer_Peek(lex, 0)) or Lexer_Peek(lex, 0) == '_')
-      Lexer_Advance(lex);
-    if (Lexer_Peek(lex, 0) == '.') {
+    while (Is_Xdigit (Lexer_Peek (lex, 0)) or Lexer_Peek (lex, 0) == '_')
+      Lexer_Advance (lex);
+    if (Lexer_Peek (lex, 0) == '.') {
       is_real = true;
-      Lexer_Advance(lex);
-      while (Is_Xdigit(Lexer_Peek(lex, 0)) or Lexer_Peek(lex, 0) == '_')
-        Lexer_Advance(lex);
+      Lexer_Advance (lex);
+      while (Is_Xdigit (Lexer_Peek (lex, 0)) or Lexer_Peek (lex, 0) == '_')
+        Lexer_Advance (lex);
     }
-    if (Lexer_Peek(lex, 0) == delim) Lexer_Advance(lex);
-    if (To_Lower(Lexer_Peek(lex, 0)) == 'e') {
+    if (Lexer_Peek (lex, 0) == delimiter) Lexer_Advance (lex);
+    if (To_Lower (Lexer_Peek (lex, 0)) == 'e') {
       has_exponent = true;
-      Lexer_Advance(lex);
-      if (Lexer_Peek(lex, 0) == '+' or Lexer_Peek(lex, 0) == '-')
-        Lexer_Advance(lex);
-      while (Is_Digit(Lexer_Peek(lex, 0)) or Lexer_Peek(lex, 0) == '_')
-        Lexer_Advance(lex);
+      Lexer_Advance (lex);
+      if (Lexer_Peek (lex, 0) == '+' or Lexer_Peek (lex, 0) == '-')
+        Lexer_Advance (lex);
+      while (Is_Digit (Lexer_Peek (lex, 0)) or Lexer_Peek (lex, 0) == '_')
+        Lexer_Advance (lex);
     }
 
   /* Decimal literal with optional fraction and exponent */
   } else {
-    if (Lexer_Peek(lex, 0) == '.' and Lexer_Peek(lex, 1) != '.' and not Is_Alpha(Lexer_Peek(lex, 1))) {
+    if (Lexer_Peek (lex, 0) == '.' and
+        Lexer_Peek (lex, 1) != '.' and
+        not Is_Alpha (Lexer_Peek (lex, 1))) {
       is_real = true;
-      Lexer_Advance(lex);
-      while (Is_Digit(Lexer_Peek(lex, 0)) or Lexer_Peek(lex, 0) == '_')
-        Lexer_Advance(lex);
+      Lexer_Advance (lex);
+      while (Is_Digit (Lexer_Peek (lex, 0)) or Lexer_Peek (lex, 0) == '_')
+        Lexer_Advance (lex);
     }
-    if (To_Lower(Lexer_Peek(lex, 0)) == 'e') {
+    if (To_Lower (Lexer_Peek (lex, 0)) == 'e') {
       has_exponent = true;
 
-      /* Note: exponent alone doesn't make it real - 12E1 is integer 120 */
-      Lexer_Advance(lex);
-      if (Lexer_Peek(lex, 0) == '+' or Lexer_Peek(lex, 0) == '-')
-        Lexer_Advance(lex);
-      while (Is_Digit(Lexer_Peek(lex, 0)) or Lexer_Peek(lex, 0) == '_')
-        Lexer_Advance(lex);
+      /* Note: exponent alone doesn't make it real — 12E1 is integer 120 */
+      Lexer_Advance (lex);
+      if (Lexer_Peek (lex, 0) == '+' or Lexer_Peek (lex, 0) == '-')
+        Lexer_Advance (lex);
+      while (Is_Digit (Lexer_Peek (lex, 0)) or Lexer_Peek (lex, 0) == '_')
+        Lexer_Advance (lex);
     }
   }
-  String_Slice text = {start, (uint32_t)(lex->current - start)};
-  Token tok = Make_Token(is_real ? TK_REAL : TK_INTEGER, loc, text);
+  String_Slice text = { .data   = start,
+                         .length = (uint32_t)(lex->current - start) };
+  Token tok = Make_Token (is_real ? TK_REAL : TK_INTEGER, location, text);
 
-  /* Convert to value: strip underscores, parse with base */
+  /* Convert to value: strip underscores and base delimiters, then parse */
   char clean[512];
-  int ci = 0;
-  for (const char *p = start; p < lex->current and ci < 510; p++)
-    if (*p != '_' and *p != '#' and *p != ':') clean[ci++] = *p;
-  clean[ci] = '\0';
+  int  index = 0;
+  for (const char *scan = start; scan < lex->current and index < 510; scan++)
+    if (*scan != '_' and *scan != '#' and *scan != ':') clean[index++] = *scan;
+  clean[index] = '\0';
   if (is_real) {
 
     /* Parse into Big_Real for arbitrary precision */
     if (not is_based) {
-      tok.big_real = Big_Real_From_String(clean);
+      tok.big_real    = Big_Real_From_String (clean);
+      tok.float_value = Big_Real_To_Double (tok.big_real);
 
-      /* Also compute double for compatibility */
-      tok.float_value = Big_Real_To_Double(tok.big_real);
-
-    /* Based real — parse mantissa as integer, divide once for precision.
-    * Accumulating frac digits individually causes ULP rounding drift. */
+    /* Based real — parse mantissa as integer, divide once for precision.               *
+     * Accumulating fractional digits individually causes ULP rounding drift.            */
     } else {
-      long double whole = 0.0L, frac_int = 0.0L;
-      int frac_digits = 0, exp = 0, state = 0;
-      bool exp_neg = false;
-      for (const char *p = start; p < lex->current; p++) {
-        char c = *p;
-        if (c == '_') continue;
-        if (c == '#' or c == ':') { state++; continue; }
-        if (c == '.') { state = 2; continue; }
-        if (To_Lower(c) == 'e' and state > 2) { state = 3; continue; }
-        int d = Digit_Value(c);
-        if (state == 1 and d >= 0 and d < base)
-          whole = whole * base + d;
-        else if (state == 2 and d >= 0 and d < base)
-          { frac_int = frac_int * base + d; frac_digits++; }
+      long double whole      = 0.0L;
+      long double frac_int   = 0.0L;
+      int         frac_count = 0;
+      int         exponent   = 0;
+      int         state      = 0;
+      bool        exp_neg    = false;
+      for (const char *scan = start; scan < lex->current; scan++) {
+        char ch = *scan;
+        if (ch == '_') continue;
+        if (ch == '#' or ch == ':')                     { state++; continue; }
+        if (ch == '.')                                   { state = 2; continue; }
+        if (To_Lower (ch) == 'e' and state > 2)         { state = 3; continue; }
+        int digit = Digit_Value (ch);
+        if (state == 1 and digit >= 0 and digit < base)
+          whole = whole * base + digit;
+        else if (state == 2 and digit >= 0 and digit < base)
+          { frac_int = frac_int * base + digit; frac_count++; }
         else if (state == 3)
-          { if (c == '-') exp_neg = true;
-            else if (c != '+' and Is_Digit(c)) exp = exp * 10 + (c - '0'); }
+          { if (ch == '-') exp_neg = true;
+            else if (ch != '+' and Is_Digit (ch)) exponent = exponent * 10 + (ch - '0'); }
       }
 
-      /* value = whole + frac_int / base^frac_digits */
+      /* value = whole + frac_int / base^frac_count */
       long double divisor = 1.0L;
-      for (int i = 0; i < frac_digits; i++) divisor *= base;
+      for (int i = 0; i < frac_count; i++) divisor *= base;
       long double value = whole + frac_int / divisor;
-      if (exp_neg) exp = -exp;
-      for (int i = 0; i < (exp > 0 ? exp : -exp); i++)
-        value = exp > 0 ? value * base : value / base;
+      if (exp_neg) exponent = -exponent;
+      for (int i = 0; i < (exponent > 0 ? exponent : -exponent); i++)
+        value = exponent > 0 ? value * base : value / base;
       tok.float_value = (double)value;
-      tok.big_real = NULL;
+      tok.big_real    = NULL;
     }
   } else {
     if (not is_based and not has_exponent) {
-      tok.big_integer = Big_Integer_From_Decimal_SIMD(clean);
-      int64_t v;
-      if (Big_Integer_Fits_Int64(tok.big_integer, &v))
-        tok.integer_value = v;
+      tok.big_integer = Big_Integer_From_Decimal_SIMD (clean);
+      int64_t narrow;
+      if (Big_Integer_Fits_Int64 (tok.big_integer, &narrow))
+        tok.integer_value = narrow;
 
     /* Decimal integer with exponent (e.g., 12E1 = 120) */
     } else if (not is_based and has_exponent) {
       int64_t mantissa = 0;
-      int exp = 0;
-      bool in_exp = false;
-      bool exp_neg = false;
+      int     exponent = 0;
+      bool    in_exp   = false;
+      bool    exp_neg  = false;
       for (int i = 0; clean[i]; i++) {
-        char c = clean[i];
-        if (To_Lower(c) == 'e') {
+        char ch = clean[i];
+        if (To_Lower (ch) == 'e') {
           in_exp = true;
         } else if (in_exp) {
-          if (c == '-') exp_neg = true;
-          else if (c == '+') continue;
-          else if (Is_Digit(c)) exp = exp * 10 + (c - '0');
-        } else if (Is_Digit(c)) {
-          mantissa = mantissa * 10 + (c - '0');
+          if (ch == '-') exp_neg = true;
+          else if (ch == '+') continue;
+          else if (Is_Digit (ch)) exponent = exponent * 10 + (ch - '0');
+        } else if (Is_Digit (ch)) {
+          mantissa = mantissa * 10 + (ch - '0');
         }
       }
-
-      /* Negative exponent in integer literal is unusual but handle it */
       if (exp_neg) {
-        for (int i = 0; i < exp; i++) mantissa /= 10;
+        for (int i = 0; i < exponent; i++) mantissa /= 10;
       } else {
-
-        /* Structure: base#mantissa#exponent or base#mantissa# */
-        for (int i = 0; i < exp; i++) mantissa *= 10;
+        for (int i = 0; i < exponent; i++) mantissa *= 10;
       }
       tok.integer_value = mantissa;
 
     /* Based integer: parse from original string (e.g., 16#E#E1 = 14*16 = 224) */
     } else {
-      int64_t value = 0;
-      int exp = 0;
-      int state = 0; /* 0=base, 1=mantissa, 2=exponent */
-      for (const char *p = start; p < lex->current; p++) {
-        char c = *p;
-        if (c == '_') continue;
-        if (c == '#' or c == ':') {
-          state++;
-          continue;
-        }
+      int64_t value    = 0;
+      int     exponent = 0;
+      int     state    = 0;  /* 0 = base, 1 = mantissa, 2 = exponent */
+      for (const char *scan = start; scan < lex->current; scan++) {
+        char ch = *scan;
+        if (ch == '_') continue;
+        if (ch == '#' or ch == ':') { state++; continue; }
 
-        /* Skip base part - already parsed */
+        /* Skip base part — already parsed */
         if (state == 0) {
 
         /* Mantissa in given base */
         } else if (state == 1) {
-          int d = Digit_Value(c);
-          if (d >= 0 and d < base) value = value * base + d;
+          int digit = Digit_Value (ch);
+          if (digit >= 0 and digit < base) value = value * base + digit;
 
         /* Exponent (always decimal, after second delimiter) */
         } else if (state == 2) {
-          if (To_Lower(c) == 'e') continue; /* skip the 'e' marker */
-          if (c == '+') continue;
-          if (Is_Digit(c)) exp = exp * 10 + (c - '0');
+          if (To_Lower (ch) == 'e') continue;
+          if (ch == '+') continue;
+          if (Is_Digit (ch)) exponent = exponent * 10 + (ch - '0');
         }
       }
-      for (int i = 0; i < exp; i++) value *= base;
+      for (int i = 0; i < exponent; i++) value *= base;
       tok.integer_value = value;
     }
   }
   return tok;
 }
-static Token Scan_Character_Literal(Lexer *lex) {
-  Source_Location loc = {lex->filename, lex->line, lex->column};
-  Lexer_Advance(lex); /* consume opening ' */
-  char c = Lexer_Advance(lex);
-  if (Lexer_Peek(lex, 0) != '\'') {
-    Report_Error(loc, "unterminated character literal");
-    return Make_Token(TK_ERROR, loc, S(""));
+static Token Scan_Character_Literal (Lexer *lex) {
+  Source_Location location = { .filename = lex->filename,
+                               .line     = lex->line,
+                               .column   = lex->column };
+  Lexer_Advance (lex);  /* consume opening ' */
+  char ch = Lexer_Advance (lex);
+  if (Lexer_Peek (lex, 0) != '\'') {
+    Report_Error (location, "unterminated character literal");
+    return Make_Token (TK_ERROR, location, S (""));
   }
-  Lexer_Advance(lex); /* consume closing ' */
-  Token tok = Make_Token(TK_CHARACTER, loc, (String_Slice){lex->current - 3, 3});
-  tok.integer_value = (unsigned char)c;
+  Lexer_Advance (lex);  /* consume closing ' */
+  Token tok = Make_Token (TK_CHARACTER, location,
+                          (String_Slice){ .data = lex->current - 3, .length = 3 });
+  tok.integer_value = (unsigned char)ch;
   return tok;
 }
-static Token Scan_String_Literal(Lexer *lex) {
-  Source_Location loc = {lex->filename, lex->line, lex->column};
-  char delim = Lexer_Advance(lex); /* consume opening " or % */
-  size_t capacity = 64, length = 0;
-  char *buffer = Arena_Allocate(capacity);
+static Token Scan_String_Literal (Lexer *lex) {
+  Source_Location location  = { .filename = lex->filename,
+                                .line     = lex->line,
+                                .column   = lex->column };
+  char    delimiter = Lexer_Advance (lex);  /* consume opening " or % */
+  size_t  capacity  = 64;
+  size_t  length    = 0;
+  char   *buffer    = Arena_Allocate (capacity);
   while (lex->current < lex->source_end) {
-    if (*lex->current == delim) {
+    if (*lex->current == delimiter) {
 
-      /* Doubled delimiter > literal delimiter char */
-      if (Lexer_Peek(lex, 1) == delim) {
+      /* Doubled delimiter => literal delimiter character (Ada RM §2.6) */
+      if (Lexer_Peek (lex, 1) == delimiter) {
         if (length >= capacity - 1) {
-          char *newbuf = Arena_Allocate(capacity * 2);
-          memcpy(newbuf, buffer, length);
-          buffer = newbuf;
+          char *fresh = Arena_Allocate (capacity * 2);
+          memcpy (fresh, buffer, length);
+          buffer   = fresh;
           capacity *= 2;
         }
-        buffer[length++] = delim;
-        Lexer_Advance(lex);
-        Lexer_Advance(lex);
+        buffer[length++] = delimiter;
+        Lexer_Advance (lex);
+        Lexer_Advance (lex);
       } else {
-        Lexer_Advance(lex); /* consume closing delimiter */
+        Lexer_Advance (lex);  /* consume closing delimiter */
         break;
       }
     } else {
       if (length >= capacity - 1) {
-        char *newbuf = Arena_Allocate(capacity * 2);
-        memcpy(newbuf, buffer, length);
-        buffer = newbuf;
+        char *fresh = Arena_Allocate (capacity * 2);
+        memcpy (fresh, buffer, length);
+        buffer   = fresh;
         capacity *= 2;
       }
-      buffer[length++] = Lexer_Advance(lex);
+      buffer[length++] = Lexer_Advance (lex);
     }
   }
   buffer[length] = '\0';
-  Token tok = Make_Token(TK_STRING, loc, (String_Slice){buffer, (uint32_t)length});
-  return tok;
+  return Make_Token (TK_STRING, location,
+                     (String_Slice){ .data = buffer, .length = (uint32_t)length });
 }
 
-/* ─────────────────────────────────────────────────────────────────────────
+/* ─────────────────────────────────────────────────────────────────────────────────────────────────
  * §7.5 Main Lexer Entry Point
  *
- * The lexer works as an iterator where each call advances the stream by one token.
- * ───────────────────────────────────────────────────────────────────────── */
-static Token Lexer_Next_Token(Lexer *lex) {
-  Lexer_Skip_Whitespace_And_Comments(lex);
+ * The lexer works as an iterator: each call to Lexer_Next_Token advances the source stream by
+ * one token and returns it.  The function dispatches on the first character to select the
+ * appropriate scanner, with a final switch statement handling operators and delimiters.
+ * ─────────────────────────────────────────────────────────────────────────────────────────────── */
+static Token Lexer_Next_Token (Lexer *lex) {
+  Lexer_Skip_Whitespace_And_Comments (lex);
   if (lex->current >= lex->source_end)
-    return Make_Token(TK_EOF, (Source_Location){lex->filename, lex->line, lex->column}, S(""));
-  Source_Location loc = {lex->filename, lex->line, lex->column};
-  char c = Lexer_Peek(lex, 0);
+    return Make_Token (TK_EOF,
+                       (Source_Location){ .filename = lex->filename,
+                                          .line     = lex->line,
+                                          .column   = lex->column },
+                       S (""));
+  Source_Location location = { .filename = lex->filename,
+                               .line     = lex->line,
+                               .column   = lex->column };
+  char ch = Lexer_Peek (lex, 0);
 
   /* Identifiers and keywords */
-  if (Is_Alpha(c)) return Scan_Identifier(lex);
+  if (Is_Alpha (ch)) return Scan_Identifier (lex);
 
   /* Numeric literals */
-  if (Is_Digit(c)) return Scan_Number(lex);
+  if (Is_Digit (ch)) return Scan_Number (lex);
 
-  /* Character literal: 'X' where X is any graphic character */
-  /* Need to check for printable character (not just alpha) since '1' etc. are valid */
-  /* Special case: ''' is a character literal containing single quote */
-  /* Context check: After identifier or RPAREN, '( could be tick+lparen (qualified expr) */
+  /* Character literal: 'X' where X is any graphic character.                                    *
+   * Special case: ''' is a character literal containing single quote.                            *
+   * Context: after identifier or RPAREN, '( is tick+lparen (qualified expression), not char lit. */
   {
-    char middle = Lexer_Peek(lex, 1);
-    char third = Lexer_Peek(lex, 2);
-
-    /* Check for qualified expression context: TYPE'(expr)
-    * If previous token was identifier/RPAREN and middle is '(',
-    * this is tick+lparen, not a character literal */
-    if (c == '\'' and middle >= ' ' and third == '\'') {
+    char middle = Lexer_Peek (lex, 1);
+    char third  = Lexer_Peek (lex, 2);
+    if (ch == '\'' and middle >= ' ' and third == '\'') {
       if (middle == '(' and
         (lex->prev_token_kind == TK_IDENTIFIER or
          lex->prev_token_kind == TK_RPAREN)) {
 
-        /* Not a character literal - fall through to tick handling */
+        /* Not a character literal — fall through to tick handling */
       } else {
-        return Scan_Character_Literal(lex);
+        return Scan_Character_Literal (lex);
       }
     }
   }
 
-  /* String literal — both " and % delimiters (RM 2.6, Ada 83) */
-  if (c == '"' or c == '%') return Scan_String_Literal(lex);
+  /* String literal — both " and % delimiters (RM §2.6, Ada 83) */
+  if (ch == '"' or ch == '%') return Scan_String_Literal (lex);
 
   /* Operators and delimiters */
-  Lexer_Advance(lex);
-  char c2 = Lexer_Peek(lex, 0);
-  switch (c) {
-    case '(': return Make_Token(TK_LPAREN, loc, S("("));
-    case ')': return Make_Token(TK_RPAREN, loc, S(")"));
-    case '[': return Make_Token(TK_LBRACKET, loc, S("["));
-    case ']': return Make_Token(TK_RBRACKET, loc, S("]"));
-    case ',': return Make_Token(TK_COMMA, loc, S(","));
-    case ';': return Make_Token(TK_SEMICOLON, loc, S(";"));
-    case '&': return Make_Token(TK_AMPERSAND, loc, S("&"));
-    case '|': return Make_Token(TK_BAR, loc, S("|"));
-    case '!': return Make_Token(TK_BAR, loc, S("!"));  /* Ada 83 alternative for | */
-    case '+': return Make_Token(TK_PLUS, loc, S("+"));
-    case '-': return Make_Token(TK_MINUS, loc, S("-"));
-    case '\'': return Make_Token(TK_TICK, loc, S("'"));
+  Lexer_Advance (lex);
+  char next = Lexer_Peek (lex, 0);
+  switch (ch) {
+    case '(':  return Make_Token (TK_LPAREN,    location, S ("("));
+    case ')':  return Make_Token (TK_RPAREN,    location, S (")"));
+    case '[':  return Make_Token (TK_LBRACKET,  location, S ("["));
+    case ']':  return Make_Token (TK_RBRACKET,  location, S ("]"));
+    case ',':  return Make_Token (TK_COMMA,     location, S (","));
+    case ';':  return Make_Token (TK_SEMICOLON, location, S (";"));
+    case '&':  return Make_Token (TK_AMPERSAND, location, S ("&"));
+    case '|':  return Make_Token (TK_BAR,       location, S ("|"));
+    case '!':  return Make_Token (TK_BAR,       location, S ("!"));
+    case '+':  return Make_Token (TK_PLUS,      location, S ("+"));
+    case '-':  return Make_Token (TK_MINUS,     location, S ("-"));
+    case '\'': return Make_Token (TK_TICK,      location, S ("'"));
     case '.':
-      if (c2 == '.') { Lexer_Advance(lex); return Make_Token(TK_DOTDOT, loc, S("..")); }
-      return Make_Token(TK_DOT, loc, S("."));
+      if (next == '.') { Lexer_Advance (lex); return Make_Token (TK_DOTDOT, location, S ("..")); }
+      return Make_Token (TK_DOT, location, S ("."));
     case ':':
-      if (c2 == '=') { Lexer_Advance(lex); return Make_Token(TK_ASSIGN, loc, S(":=")); }
-      return Make_Token(TK_COLON, loc, S(":"));
+      if (next == '=') { Lexer_Advance (lex); return Make_Token (TK_ASSIGN, location, S (":=")); }
+      return Make_Token (TK_COLON, location, S (":"));
     case '*':
-      if (c2 == '*') { Lexer_Advance(lex); return Make_Token(TK_EXPON, loc, S("**")); }
-      return Make_Token(TK_STAR, loc, S("*"));
+      if (next == '*') { Lexer_Advance (lex); return Make_Token (TK_EXPON, location, S ("**")); }
+      return Make_Token (TK_STAR, location, S ("*"));
     case '/':
-      if (c2 == '=') { Lexer_Advance(lex); return Make_Token(TK_NE, loc, S("/=")); }
-      return Make_Token(TK_SLASH, loc, S("/"));
+      if (next == '=') { Lexer_Advance (lex); return Make_Token (TK_NE, location, S ("/=")); }
+      return Make_Token (TK_SLASH, location, S ("/"));
     case '=':
-      if (c2 == '>') { Lexer_Advance(lex); return Make_Token(TK_ARROW, loc, S("=>")); }
-      return Make_Token(TK_EQ, loc, S("="));
+      if (next == '>') { Lexer_Advance (lex); return Make_Token (TK_ARROW, location, S ("=>")); }
+      return Make_Token (TK_EQ, location, S ("="));
     case '<':
-      if (c2 == '=') { Lexer_Advance(lex); return Make_Token(TK_LE, loc, S("<=")); }
-      if (c2 == '<') { Lexer_Advance(lex); return Make_Token(TK_LSHIFT, loc, S("<<")); }
-      if (c2 == '>') { Lexer_Advance(lex); return Make_Token(TK_BOX, loc, S("<>")); }
-      return Make_Token(TK_LT, loc, S("<"));
+      if (next == '=') { Lexer_Advance (lex); return Make_Token (TK_LE, location, S ("<=")); }
+      if (next == '<') { Lexer_Advance (lex); return Make_Token (TK_LSHIFT, location, S ("<<")); }
+      if (next == '>') { Lexer_Advance (lex); return Make_Token (TK_BOX, location, S ("<>")); }
+      return Make_Token (TK_LT, location, S ("<"));
     case '>':
-      if (c2 == '=') { Lexer_Advance(lex); return Make_Token(TK_GE, loc, S(">=")); }
-      if (c2 == '>') { Lexer_Advance(lex); return Make_Token(TK_RSHIFT, loc, S(">>")); }
-      return Make_Token(TK_GT, loc, S(">"));
+      if (next == '=') { Lexer_Advance (lex); return Make_Token (TK_GE, location, S (">=")); }
+      if (next == '>') { Lexer_Advance (lex); return Make_Token (TK_RSHIFT, location, S (">>")); }
+      return Make_Token (TK_GT, location, S (">"));
     default:
-      Report_Error(loc, "unexpected character '%c'", c);
-      return Make_Token(TK_ERROR, loc, S(""));
+      Report_Error (location, "unexpected character '%c'", ch);
+      return Make_Token (TK_ERROR, location, S (""));
   }
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
+/* ═══════════════════════════════════════════════════════════════════════════════════════════════════
  * §8. ABSTRACT SYNTAX TREE — Parse Tree Representation
- * ═══════════════════════════════════════════════════════════════════════════
+ * ═══════════════════════════════════════════════════════════════════════════════════════════════════
  *
- * The AST uses a tagged union design. Each node kind has a specific payload.
- * The tree is a forest: one root per compilation unit, shared subtrees within.
- */
+ * The AST uses a tagged-union design: each Syntax_Node carries a Node_Kind tag and a union payload
+ * specific to that kind.  The tree is a forest — one root per compilation unit, with shared
+ * subtrees within a unit where the grammar allows (e.g. subtype marks referenced from multiple
+ * declarations).  All nodes are arena-allocated and never individually freed.
+ * ═══════════════════════════════════════════════════════════════════════════════════════════════ */
 
 /* Forward declarations */
 typedef struct Syntax_Node Syntax_Node;
@@ -2545,20 +2568,20 @@ typedef struct {
 } Node_List;
 
 /* Doubling gives amortized O(1) append; the wasted space is the price of speed */
-static void Node_List_Push(Node_List *list, Syntax_Node *node) {
+static void Node_List_Push (Node_List *list, Syntax_Node *node) {
   if (list->count >= list->capacity) {
-    uint32_t new_cap = list->capacity ? list->capacity * 2 : 8;
-    Syntax_Node **new_items = Arena_Allocate(new_cap * sizeof(Syntax_Node*));
-    if (list->items) memcpy(new_items, list->items, list->count * sizeof(Syntax_Node*));
-    list->items = new_items;
+    uint32_t      new_cap   = list->capacity ? list->capacity * 2 : 8;
+    Syntax_Node **new_items = Arena_Allocate (new_cap * sizeof (Syntax_Node *));
+    if (list->items) memcpy (new_items, list->items, list->count * sizeof (Syntax_Node *));
+    list->items    = new_items;
     list->capacity = new_cap;
   }
   list->items[list->count++] = node;
 }
 
-/* ─────────────────────────────────────────────────────────────────────────
- * §8.1 Node Kinds
- * ───────────────────────────────────────────────────────────────────────── */
+/* ─────────────────────────────────────────────────────────────────────────────────────────────────
+ * §8.1 Node Kinds — one enumerator per syntactic construct in Ada 83
+ * ─────────────────────────────────────────────────────────────────────────────────────────────── */
 typedef enum {
 
   /* Literals and primaries */
@@ -2599,12 +2622,13 @@ typedef enum {
   NK_COUNT
 } Node_Kind;
 
-/* ─────────────────────────────────────────────────────────────────────────
+/* ─────────────────────────────────────────────────────────────────────────────────────────────────
  * §8.2 Syntax Node Structure
  *
- * Each node carries its kind, location, optional type annotation (from
- * semantic analysis), and a payload specific to the kind.
- * ───────────────────────────────────────────────────────────────────────── */
+ * Each node carries its kind, source location, optional type annotation (filled by semantic
+ * analysis), optional symbol link (filled by name resolution), and a payload union whose active
+ * member is determined by the kind tag.
+ * ─────────────────────────────────────────────────────────────────────────────────────────────── */
 struct Syntax_Node {
   Node_Kind        kind;
   Source_Location  location;
@@ -2939,35 +2963,35 @@ struct Syntax_Node {
   };
 };
 
-/* Node constructor - zero-initializes the union to ensure all pointers start NULL */
-static Syntax_Node *Node_New(Node_Kind kind, Source_Location loc) {
-  Syntax_Node *node = Arena_Allocate(sizeof(Syntax_Node));
-  memset(node, 0, sizeof(Syntax_Node));  /* Zero all fields including union */
-  node->kind = kind;
-  node->location = loc;
+/* Node constructor — zero-initialises the union so that all pointers start as NULL */
+static Syntax_Node *Node_New (Node_Kind kind, Source_Location location) {
+  Syntax_Node *node = Arena_Allocate (sizeof (Syntax_Node));
+  memset (node, 0, sizeof (Syntax_Node));
+  node->kind     = kind;
+  node->location = location;
   return node;
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
+/* ═══════════════════════════════════════════════════════════════════════════════════════════════════
  * §9. PARSER — Recursive Descent with Unified Postfix Handling
- * ═══════════════════════════════════════════════════════════════════════════
+ * ═══════════════════════════════════════════════════════════════════════════════════════════════════
  *
  * Recursive descent mirrors the grammar, making the grammar itself the invariant.
  *
  * Key design decisions:
  *
- * 1. UNIFIED APPLY NODE: All X(...) forms parse as NK_APPLY. Semantic analysis
- *    later distinguishes calls, indexing, slicing, and type conversions.
+ * 1. UNIFIED APPLY NODE — All X(...) forms parse as NK_APPLY.  Semantic analysis later
+ *    distinguishes calls, indexing, slicing, and type conversions.
  *
- * 2. UNIFIED ASSOCIATION PARSING: One helper handles positional, named, and
- *    choice associations used in aggregates, calls, and generic actuals.
+ * 2. UNIFIED ASSOCIATION PARSING — One helper handles positional, named, and choice associations
+ *    used in aggregates, calls, and generic actuals.
  *
- * 3. UNIFIED POSTFIX CHAIN: One loop handles .selector, 'attribute, (args).
- */
+ * 3. UNIFIED POSTFIX CHAIN — One loop handles .selector, 'attribute, and (args).
+ * ═══════════════════════════════════════════════════════════════════════════════════════════════ */
 
-/* ─────────────────────────────────────────────────────────────────────────
+/* ─────────────────────────────────────────────────────────────────────────────────────────────────
  * §9.1 Parser State
- * ───────────────────────────────────────────────────────────────────────── */
+ * ─────────────────────────────────────────────────────────────────────────────────────────────── */
 typedef struct {
   Lexer        lexer;
   Token        current_token;
@@ -2980,87 +3004,87 @@ typedef struct {
   uint32_t     last_column;
   Token_Kind   last_kind;
 } Parser;
-static Parser Parser_New(const char *source, size_t length, const char *filename) {
-  Parser p = {0};
-  p.lexer = Lexer_New(source, length, filename);
-  p.current_token = Lexer_Next_Token(&p.lexer);
-  return p;
+static Parser Parser_New (const char *source, size_t length, const char *filename) {
+  Parser parser         = {0};
+  parser.lexer          = Lexer_New (source, length, filename);
+  parser.current_token  = Lexer_Next_Token (&parser.lexer);
+  return parser;
 }
 
-/* ─────────────────────────────────────────────────────────────────────────
+/* ─────────────────────────────────────────────────────────────────────────────────────────────────
  * §9.2 Token Movement
- * ───────────────────────────────────────────────────────────────────────── */
-static inline bool Parser_At(Parser *p, Token_Kind kind) {
-  return p->current_token.kind == kind;
+ * ─────────────────────────────────────────────────────────────────────────────────────────────── */
+static inline bool Parser_At (Parser *parser, Token_Kind kind) {
+  return parser->current_token.kind == kind;
 }
-static inline bool Parser_At_Any(Parser *p, Token_Kind k1, Token_Kind k2) {
-  return Parser_At(p, k1) or Parser_At(p, k2);
+static inline bool Parser_At_Any (Parser *parser, Token_Kind k1, Token_Kind k2) {
+  return Parser_At (parser, k1) or Parser_At (parser, k2);
 }
 
 /* Lookahead: check if the NEXT token (after current) is of the given kind */
-static bool Parser_Peek_At(Parser *p, Token_Kind kind) {
-  Token saved = p->current_token;
-  Lexer saved_lexer = p->lexer;
+static bool Parser_Peek_At (Parser *parser, Token_Kind kind) {
+  Token saved_token = parser->current_token;
+  Lexer saved_lexer = parser->lexer;
 
   /* Update prev_token_kind for context-sensitive lexing during lookahead */
-  p->lexer.prev_token_kind = p->current_token.kind;
-  p->current_token = Lexer_Next_Token(&p->lexer);
-  bool result = p->current_token.kind == kind;
-  p->current_token = saved;
-  p->lexer = saved_lexer;
+  parser->lexer.prev_token_kind = parser->current_token.kind;
+  parser->current_token         = Lexer_Next_Token (&parser->lexer);
+  bool result          = parser->current_token.kind == kind;
+  parser->current_token = saved_token;
+  parser->lexer         = saved_lexer;
   return result;
 }
-static Token Parser_Advance(Parser *p) {
-  p->previous_token = p->current_token;
+static Token Parser_Advance (Parser *parser) {
+  parser->previous_token = parser->current_token;
 
   /* Update lexer's prev_token_kind before getting next token (for context-sensitive lexing) */
-  p->lexer.prev_token_kind = p->current_token.kind;
-  p->current_token = Lexer_Next_Token(&p->lexer);
+  parser->lexer.prev_token_kind = parser->current_token.kind;
+  parser->current_token         = Lexer_Next_Token (&parser->lexer);
 
   /* Handle compound keywords: AND THEN, OR ELSE */
-  if (p->previous_token.kind == TK_AND and Parser_At(p, TK_THEN)) {
-    p->previous_token.kind = TK_AND_THEN;
-    p->lexer.prev_token_kind = TK_AND_THEN;
-    p->current_token = Lexer_Next_Token(&p->lexer);
-  } else if (p->previous_token.kind == TK_OR and Parser_At(p, TK_ELSE)) {
-    p->previous_token.kind = TK_OR_ELSE;
-    p->lexer.prev_token_kind = TK_OR_ELSE;
-    p->current_token = Lexer_Next_Token(&p->lexer);
+  if (parser->previous_token.kind == TK_AND and Parser_At (parser, TK_THEN)) {
+    parser->previous_token.kind  = TK_AND_THEN;
+    parser->lexer.prev_token_kind = TK_AND_THEN;
+    parser->current_token         = Lexer_Next_Token (&parser->lexer);
+  } else if (parser->previous_token.kind == TK_OR and Parser_At (parser, TK_ELSE)) {
+    parser->previous_token.kind  = TK_OR_ELSE;
+    parser->lexer.prev_token_kind = TK_OR_ELSE;
+    parser->current_token         = Lexer_Next_Token (&parser->lexer);
   }
-  return p->previous_token;
+  return parser->previous_token;
 }
-static bool Parser_Match(Parser *p, Token_Kind kind) {
-  if (not Parser_At(p, kind)) return false;
-  Parser_Advance(p);
+static bool Parser_Match (Parser *parser, Token_Kind kind) {
+  if (not Parser_At (parser, kind)) return false;
+  Parser_Advance (parser);
   return true;
 }
-static Source_Location Parser_Location(Parser *p) {
-  return p->current_token.location;
+static Source_Location Parser_Location (Parser *parser) {
+  return parser->current_token.location;
 }
 
-/* ─────────────────────────────────────────────────────────────────────────
+/* ─────────────────────────────────────────────────────────────────────────────────────────────────
  * §9.3 Error Recovery
- * ───────────────────────────────────────────────────────────────────────── */
-static void Parser_Error(Parser *p, const char *message) {
-  if (p->panic_mode) return;
-  p->panic_mode = true;
-  p->had_error = true;
-  Report_Error(p->current_token.location, "%s", message);
+ * ─────────────────────────────────────────────────────────────────────────────────────────────── */
+static void Parser_Error (Parser *parser, const char *message) {
+  if (parser->panic_mode) return;
+  parser->panic_mode = true;
+  parser->had_error  = true;
+  Report_Error (parser->current_token.location, "%s", message);
 }
-static void Parser_Error_At_Current(Parser *p, const char *expected) {
-  if (p->panic_mode) return;
-  p->panic_mode = true;
-  p->had_error = true;
-  Report_Error(p->current_token.location, "expected %s, got %s",
-         expected, Token_Name[p->current_token.kind]);
+static void Parser_Error_At_Current (Parser *parser, const char *expected) {
+  if (parser->panic_mode) return;
+  parser->panic_mode = true;
+  parser->had_error  = true;
+  Report_Error (parser->current_token.location, "expected %s, got %s",
+                expected, Token_Name[parser->current_token.kind]);
 }
 
-/* Synchronize to a recovery point (statement/declaration boundary) */
-static void Parser_Synchronize(Parser *p) {
-  p->panic_mode = false;
-  while (not Parser_At(p, TK_EOF)) {
-    if (p->previous_token.kind == TK_SEMICOLON) return;
-    switch (p->current_token.kind) {
+/* Synchronize to a recovery point (statement or declaration boundary) */
+static void Parser_Synchronize (Parser *parser) {
+  parser->panic_mode = false;
+  while (not Parser_At (parser, TK_EOF)) {
+    if (parser->previous_token.kind == TK_SEMICOLON) return;
+    switch (parser->current_token.kind) {
       case TK_BEGIN: case TK_END: case TK_IF: case TK_CASE: case TK_LOOP:
       case TK_FOR: case TK_WHILE: case TK_RETURN: case TK_DECLARE:
       case TK_EXCEPTION: case TK_PROCEDURE: case TK_FUNCTION:
@@ -3068,203 +3092,192 @@ static void Parser_Synchronize(Parser *p) {
       case TK_PRAGMA: case TK_ACCEPT: case TK_SELECT:
         return;
       default:
-        Parser_Advance(p);
+        Parser_Advance (parser);
     }
   }
 }
 
 /* Check for parser progress — detect stuck parsing loops */
-static bool Parser_Check_Progress(Parser *p) {
-  if (p->current_token.location.line == p->last_line and
-    p->current_token.location.column == p->last_column and
-    p->current_token.kind == p->last_kind) {
-    Parser_Advance(p);
+static bool Parser_Check_Progress (Parser *parser) {
+  if (parser->current_token.location.line   == parser->last_line and
+      parser->current_token.location.column == parser->last_column and
+      parser->current_token.kind            == parser->last_kind) {
+    Parser_Advance (parser);
     return false;
   }
-  p->last_line = p->current_token.location.line;
-  p->last_column = p->current_token.location.column;
-  p->last_kind = p->current_token.kind;
+  parser->last_line   = parser->current_token.location.line;
+  parser->last_column = parser->current_token.location.column;
+  parser->last_kind   = parser->current_token.kind;
   return true;
 }
 
 /* Expect a specific token; report error and return false if not found */
-static bool Parser_Expect(Parser *p, Token_Kind kind) {
-  if (Parser_At(p, kind)) {
-    Parser_Advance(p);
+static bool Parser_Expect (Parser *parser, Token_Kind kind) {
+  if (Parser_At (parser, kind)) {
+    Parser_Advance (parser);
     return true;
   }
-  Parser_Error_At_Current(p, Token_Name[kind]);
+  Parser_Error_At_Current (parser, Token_Name[kind]);
   return false;
 }
 
-/* ─────────────────────────────────────────────────────────────────────────
+/* ─────────────────────────────────────────────────────────────────────────────────────────────────
  * §9.4 Identifier Parsing
- * ───────────────────────────────────────────────────────────────────────── */
-static String_Slice Parser_Identifier(Parser *p) {
-  if (not Parser_At(p, TK_IDENTIFIER)) {
-    Parser_Error_At_Current(p, "identifier");
+ * ─────────────────────────────────────────────────────────────────────────────────────────────── */
+static String_Slice Parser_Identifier (Parser *parser) {
+  if (not Parser_At (parser, TK_IDENTIFIER)) {
+    Parser_Error_At_Current (parser, "identifier");
     return Empty_Slice;
   }
-  String_Slice name = Slice_Duplicate(p->current_token.text);
-  Parser_Advance(p);
+  String_Slice name = Slice_Duplicate (parser->current_token.text);
+  Parser_Advance (parser);
   return name;
 }
 
-/* Check END identifier matches expected name (also handles operator strings) */
-static void Parser_Check_End_Name(Parser *p, String_Slice expected_name) {
-  if (Parser_At(p, TK_IDENTIFIER) or Parser_At(p, TK_STRING)) {
-    String_Slice end_name = p->current_token.text;
-    if (not Slice_Equal_Ignore_Case(end_name, expected_name)) {
-      Report_Error(p->current_token.location,
-            "END name does not match (expected '%.*s', got '%.*s')",
-            expected_name.length, expected_name.data,
-            end_name.length, end_name.data);
+/* Check that the END identifier matches the expected name (also handles operator strings) */
+static void Parser_Check_End_Name (Parser *parser, String_Slice expected_name) {
+  if (Parser_At (parser, TK_IDENTIFIER) or Parser_At (parser, TK_STRING)) {
+    String_Slice end_name = parser->current_token.text;
+    if (not Slice_Equal_Ignore_Case (end_name, expected_name)) {
+      Report_Error (parser->current_token.location,
+                    "END name does not match (expected '%.*s', got '%.*s')",
+                    expected_name.length, expected_name.data,
+                    end_name.length, end_name.data);
     }
-    Parser_Advance(p);
+    Parser_Advance (parser);
   }
 }
 
-/* ─────────────────────────────────────────────────────────────────────────
+/* ─────────────────────────────────────────────────────────────────────────────────────────────────
  * §9.5 Expression Parsing — Operator Precedence
  *
- * The grammar encodes precedence while recursion direction determines associativity.
+ * The grammar encodes precedence; recursion direction determines associativity.
  *
  * Ada precedence (highest to lowest):
- *   ** (right associative)
- *   ABS NOT (unary prefix)
- *   * / MOD REM
- *   + - & (binary) + - (unary)
- *   = /= < <= > >= IN NOT IN
- *   AND OR XOR AND THEN OR ELSE
- * ───────────────────────────────────────────────────────────────────────── */
+ *   **                               (right-associative exponentiation)
+ *   ABS  NOT                         (unary prefix)
+ *   *  /  MOD  REM                   (multiplying operators)
+ *   +  -  &  (binary)  +  - (unary)  (adding operators and concatenation)
+ *   =  /=  <  <=  >  >=  IN  NOT IN (relational)
+ *   AND  OR  XOR  AND THEN  OR ELSE (logical, short-circuit)
+ * ─────────────────────────────────────────────────────────────────────────────────────────────── */
 
 /* Forward declarations */
-static Syntax_Node *Parse_Expression(Parser *p);
-static Syntax_Node *Parse_Choice(Parser *p);
-static Syntax_Node *Parse_Name(Parser *p);
-static Syntax_Node *Parse_Simple_Name(Parser *p);  /* identifier or dotted, no parens/ticks */
-static Syntax_Node *Parse_Subtype_Indication(Parser *p);
-static Syntax_Node *Parse_Array_Type(Parser *p);
-static void Parse_Association_List(Parser *p, Node_List *list);
+static Syntax_Node *Parse_Expression (Parser *p);
+static Syntax_Node *Parse_Choice (Parser *p);
+static Syntax_Node *Parse_Name (Parser *p);
+static Syntax_Node *Parse_Simple_Name (Parser *p);
+static Syntax_Node *Parse_Subtype_Indication (Parser *p);
+static Syntax_Node *Parse_Array_Type (Parser *p);
+static void Parse_Association_List (Parser *p, Node_List *list);
 
-/* ═══════════════════════════════════════════════════════════════════════════
+/* ═══════════════════════════════════════════════════════════════════════════════════════════════════
  * §9.13 Subprogram Declarations and Bodies
- * ═══════════════════════════════════════════════════════════════════════════
+ * ═══════════════════════════════════════════════════════════════════════════════════════════════════
  *
  * The spec declares the interface while the body provides the implementation.
- */
+ * ═══════════════════════════════════════════════════════════════════════════════════════════════ */
 
-/* ─────────────────────────────────────────────────────────────────────────
+/* ─────────────────────────────────────────────────────────────────────────────────────────────────
  * §9.13.1 Parameter Specification
  *
- * IN copies in, OUT copies out, IN OUT does both. Access avoids the copy.
- * ───────────────────────────────────────────────────────────────────────── */
-static void Parse_Parameter_List(Parser *p, Node_List *params) {
-  if (not Parser_Match(p, TK_LPAREN)) return;
+ * IN copies in, OUT copies out, IN OUT does both.  Mode defaults to IN when omitted.
+ * ─────────────────────────────────────────────────────────────────────────────────────────────── */
+static void Parse_Parameter_List (Parser *p, Node_List *params) {
+  if (not Parser_Match (p, TK_LPAREN)) return;
   do {
-    Source_Location loc = Parser_Location(p);
-    Syntax_Node *param = Node_New(NK_PARAM_SPEC, loc);
+    Source_Location location = Parser_Location (p);
+    Syntax_Node   *param    = Node_New (NK_PARAM_SPEC, location);
 
     /* Identifier list */
     do {
-      Syntax_Node *id = Node_New(NK_IDENTIFIER, Parser_Location(p));
-      id->string_val.text = Parser_Identifier(p);
-      Node_List_Push(&param->param_spec.names, id);
-    } while (Parser_Match(p, TK_COMMA));
-    Parser_Expect(p, TK_COLON);
+      Syntax_Node *id = Node_New (NK_IDENTIFIER, Parser_Location (p));
+      id->string_val.text = Parser_Identifier (p);
+      Node_List_Push (&param->param_spec.names, id);
+    } while (Parser_Match (p, TK_COMMA));
+    Parser_Expect (p, TK_COLON);
 
     /* Mode */
-    if (Parser_Match(p, TK_IN)) {
-      if (Parser_Match(p, TK_OUT)) {
-        param->param_spec.mode = MODE_IN_OUT;
-      } else {
-        param->param_spec.mode = MODE_IN;
-      }
-    } else if (Parser_Match(p, TK_OUT)) {
+    if (Parser_Match (p, TK_IN)) {
+      if (Parser_Match (p, TK_OUT)) param->param_spec.mode = MODE_IN_OUT;
+      else                           param->param_spec.mode = MODE_IN;
+    } else if (Parser_Match (p, TK_OUT)) {
       param->param_spec.mode = MODE_OUT;
     } else {
-      param->param_spec.mode = MODE_IN;  /* Default */
+      param->param_spec.mode = MODE_IN;
     }
-    param->param_spec.param_type = Parse_Subtype_Indication(p);
+    param->param_spec.param_type = Parse_Subtype_Indication (p);
 
     /* Default expression */
-    if (Parser_Match(p, TK_ASSIGN)) {
-      param->param_spec.default_expr = Parse_Expression(p);
+    if (Parser_Match (p, TK_ASSIGN)) {
+      param->param_spec.default_expr = Parse_Expression (p);
     }
-    Node_List_Push(params, param);
-  } while (Parser_Match(p, TK_SEMICOLON));
-  Parser_Expect(p, TK_RPAREN);
+    Node_List_Push (params, param);
+  } while (Parser_Match (p, TK_SEMICOLON));
+  Parser_Expect (p, TK_RPAREN);
 }
 
-/* Parse primary: literals, names, aggregates, allocators, parenthesized */
-static Syntax_Node *Parse_Primary(Parser *p) {
-  Source_Location loc = Parser_Location(p);
+/* Parse primary: literals, names, aggregates, allocators, parenthesized expressions */
+static Syntax_Node *Parse_Primary (Parser *p) {
+  Source_Location location = Parser_Location (p);
 
   /* Integer literal */
-  if (Parser_At(p, TK_INTEGER)) {
-    Syntax_Node *node = Node_New(NK_INTEGER, loc);
-    node->integer_lit.value = p->current_token.integer_value;
+  if (Parser_At (p, TK_INTEGER)) {
+    Syntax_Node *node          = Node_New (NK_INTEGER, location);
+    node->integer_lit.value     = p->current_token.integer_value;
     node->integer_lit.big_value = p->current_token.big_integer;
-    Parser_Advance(p);
+    Parser_Advance (p);
     return node;
   }
 
-  /* Real literal - store both double and Big_Real for arbitrary precision */
-  if (Parser_At(p, TK_REAL)) {
-    Syntax_Node *node = Node_New(NK_REAL, loc);
-    node->real_lit.value = p->current_token.float_value;
-    node->real_lit.big_value = p->current_token.big_real;
-    Parser_Advance(p);
+  /* Real literal — store both double and Big_Real for arbitrary precision */
+  if (Parser_At (p, TK_REAL)) {
+    Syntax_Node *node         = Node_New (NK_REAL, location);
+    node->real_lit.value       = p->current_token.float_value;
+    node->real_lit.big_value   = p->current_token.big_real;
+    Parser_Advance (p);
     return node;
   }
 
-  /* Character literal - store only the text (e.g., "'X'"), extract char value when needed.
-   * NOTE: Do not set integer_lit.value here - it overlaps with string_val.text.data
-   * in the union and would corrupt the text pointer. */
-  if (Parser_At(p, TK_CHARACTER)) {
-    Syntax_Node *node = Node_New(NK_CHARACTER, loc);
-    node->string_val.text = Slice_Duplicate(p->current_token.text);
-    Parser_Advance(p);
+  /* Character literal — store only the text (e.g. "'X'"), extract char value when needed.      *
+   * Do not set integer_lit.value here: it overlaps with string_val.text.data in the union and   *
+   * would corrupt the text pointer.                                                             */
+  if (Parser_At (p, TK_CHARACTER)) {
+    Syntax_Node *node       = Node_New (NK_CHARACTER, location);
+    node->string_val.text    = Slice_Duplicate (p->current_token.text);
+    Parser_Advance (p);
     return node;
   }
 
-  /* String literal - but check for operator symbol used as function name.
-   * In Ada, "+"(X, Y) is a valid function call where "+" is the operator.
-   * If this looks like an operator string followed by (, let it fall through
-   * to Parse_Name which handles operator names and function calls. */
-  if (Parser_At(p, TK_STRING)) {
-    String_Slice text = p->current_token.text;
-    bool is_operator_call = (text.length <= 3) and Parser_Peek_At(p, TK_LPAREN);
+  /* String literal — but check for operator symbol used as function name.  In Ada, "+"(X, Y)   *
+   * is a valid function call where "+" is the operator.  If this looks like a short operator     *
+   * string followed by (, fall through to Parse_Name which handles operator names.              */
+  if (Parser_At (p, TK_STRING)) {
+    String_Slice text              = p->current_token.text;
+    bool         is_operator_call  = (text.length <= 3) and Parser_Peek_At (p, TK_LPAREN);
     if (not is_operator_call) {
-      Syntax_Node *node = Node_New(NK_STRING, loc);
-      node->string_val.text = Slice_Duplicate(text);
-      Parser_Advance(p);
+      Syntax_Node *node     = Node_New (NK_STRING, location);
+      node->string_val.text  = Slice_Duplicate (text);
+      Parser_Advance (p);
       return node;
     }
-
-    /* Fall through to Parse_Name for operator call like "+"(X, Y) */
   }
 
   /* NULL */
-  if (Parser_Match(p, TK_NULL)) {
-    return Node_New(NK_NULL, loc);
-  }
+  if (Parser_Match (p, TK_NULL))   return Node_New (NK_NULL, location);
 
   /* OTHERS (in aggregates) */
-  if (Parser_Match(p, TK_OTHERS)) {
-    return Node_New(NK_OTHERS, loc);
-  }
+  if (Parser_Match (p, TK_OTHERS)) return Node_New (NK_OTHERS, location);
 
   /* NEW allocator */
-  if (Parser_Match(p, TK_NEW)) {
-    Syntax_Node *node = Node_New(NK_ALLOCATOR, loc);
-    Syntax_Node *subtype = Parse_Subtype_Indication(p);
+  if (Parser_Match (p, TK_NEW)) {
+    Syntax_Node *node    = Node_New (NK_ALLOCATOR, location);
+    Syntax_Node *subtype = Parse_Subtype_Indication (p);
 
-    /* If Parse_Subtype_Indication returned a qualified expression,
-     * extract subtype_mark and expression separately */
+    /* If Parse_Subtype_Indication returned a qualified expression, extract the parts */
     if (subtype->kind == NK_QUALIFIED) {
       node->allocator.subtype_mark = subtype->qualified.subtype_mark;
-      node->allocator.expression = subtype->qualified.expression;
+      node->allocator.expression   = subtype->qualified.expression;
     } else {
       node->allocator.subtype_mark = subtype;
     }
@@ -3272,101 +3285,93 @@ static Syntax_Node *Parse_Primary(Parser *p) {
   }
 
   /* Unary operators: NOT, ABS, +, - */
-  if (Parser_At_Any(p, TK_NOT, TK_ABS) or
-    Parser_At_Any(p, TK_PLUS, TK_MINUS)) {
-    Token_Kind op = p->current_token.kind;
-    Parser_Advance(p);
-    Syntax_Node *node = Node_New(NK_UNARY_OP, loc);
-    node->unary.op = op;
-    node->unary.operand = Parse_Primary(p);
+  if (Parser_At_Any (p, TK_NOT, TK_ABS) or
+      Parser_At_Any (p, TK_PLUS, TK_MINUS)) {
+    Token_Kind   op   = p->current_token.kind;
+    Parser_Advance (p);
+    Syntax_Node *node  = Node_New (NK_UNARY_OP, location);
+    node->unary.op      = op;
+    node->unary.operand = Parse_Primary (p);
     return node;
   }
 
   /* Parenthesized expression or aggregate */
-  if (Parser_Match(p, TK_LPAREN)) {
-    Syntax_Node *expr = Parse_Expression(p);
+  if (Parser_Match (p, TK_LPAREN)) {
+    Syntax_Node *expr = Parse_Expression (p);
 
     /* Check for aggregate indicators */
-    if (Parser_At(p, TK_COMMA) or Parser_At(p, TK_ARROW) or
-      Parser_At(p, TK_BAR) or Parser_At(p, TK_WITH) or
-      Parser_At(p, TK_DOTDOT)) {
+    if (Parser_At (p, TK_COMMA)  or Parser_At (p, TK_ARROW) or
+        Parser_At (p, TK_BAR)    or Parser_At (p, TK_WITH)  or
+        Parser_At (p, TK_DOTDOT)) {
 
-      /* This is an aggregate */
-      Syntax_Node *node = Node_New(NK_AGGREGATE, loc);
+      Syntax_Node *node = Node_New (NK_AGGREGATE, location);
 
       /* Extension aggregate: (ancestor with components) */
-      if (Parser_Match(p, TK_WITH)) {
-        Node_List_Push(&node->aggregate.items, expr);
+      if (Parser_Match (p, TK_WITH)) {
+        Node_List_Push (&node->aggregate.items, expr);
         node->aggregate.is_named = true;
-        Parse_Association_List(p, &node->aggregate.items);
+        Parse_Association_List (p, &node->aggregate.items);
 
       /* First element is a range: expr .. high */
-      } else if (Parser_At(p, TK_DOTDOT)) {
-        Syntax_Node *range = Node_New(NK_RANGE, loc);
-        range->range.low = expr;
-        Parser_Advance(p);  /* consume .. */
-        range->range.high = Parse_Expression(p);
+      } else if (Parser_At (p, TK_DOTDOT)) {
+        Syntax_Node *range = Node_New (NK_RANGE, location);
+        range->range.low   = expr;
+        Parser_Advance (p);  /* consume .. */
+        range->range.high  = Parse_Expression (p);
 
         /* Check for choice list or named association */
-        if (Parser_At(p, TK_BAR) or Parser_At(p, TK_ARROW)) {
-          Syntax_Node *assoc = Node_New(NK_ASSOCIATION, loc);
-          Node_List_Push(&assoc->association.choices, range);
-          while (Parser_Match(p, TK_BAR)) {
-            Node_List_Push(&assoc->association.choices, Parse_Choice(p));
+        if (Parser_At (p, TK_BAR) or Parser_At (p, TK_ARROW)) {
+          Syntax_Node *assoc = Node_New (NK_ASSOCIATION, location);
+          Node_List_Push (&assoc->association.choices, range);
+          while (Parser_Match (p, TK_BAR)) {
+            Node_List_Push (&assoc->association.choices, Parse_Choice (p));
           }
-          if (Parser_Match(p, TK_ARROW)) {
-            assoc->association.expression = Parse_Expression(p);
+          if (Parser_Match (p, TK_ARROW)) {
+            assoc->association.expression = Parse_Expression (p);
           }
-          Node_List_Push(&node->aggregate.items, assoc);
+          Node_List_Push (&node->aggregate.items, assoc);
         } else {
-          Node_List_Push(&node->aggregate.items, range);
+          Node_List_Push (&node->aggregate.items, range);
         }
-        if (Parser_Match(p, TK_COMMA)) {
-          Parse_Association_List(p, &node->aggregate.items);
+        if (Parser_Match (p, TK_COMMA)) {
+          Parse_Association_List (p, &node->aggregate.items);
         }
 
       /* First element is part of a choice list */
-      } else if (Parser_At(p, TK_BAR) or Parser_At(p, TK_ARROW)) {
-        Syntax_Node *assoc = Node_New(NK_ASSOCIATION, loc);
-        Node_List_Push(&assoc->association.choices, expr);
-
-        /* Collect additional choices */
-        while (Parser_Match(p, TK_BAR)) {
-          Node_List_Push(&assoc->association.choices, Parse_Choice(p));
+      } else if (Parser_At (p, TK_BAR) or Parser_At (p, TK_ARROW)) {
+        Syntax_Node *assoc = Node_New (NK_ASSOCIATION, location);
+        Node_List_Push (&assoc->association.choices, expr);
+        while (Parser_Match (p, TK_BAR)) {
+          Node_List_Push (&assoc->association.choices, Parse_Choice (p));
         }
-
-        /* Named association: choices => value */
-        if (Parser_Match(p, TK_ARROW)) {
-          assoc->association.expression = Parse_Expression(p);
+        if (Parser_Match (p, TK_ARROW)) {
+          assoc->association.expression = Parse_Expression (p);
         }
-        Node_List_Push(&node->aggregate.items, assoc);
-
-        /* Continue with remaining associations */
-        if (Parser_Match(p, TK_COMMA)) {
-          Parse_Association_List(p, &node->aggregate.items);
+        Node_List_Push (&node->aggregate.items, assoc);
+        if (Parser_Match (p, TK_COMMA)) {
+          Parse_Association_List (p, &node->aggregate.items);
         }
 
       /* First element is positional, followed by more */
       } else {
-        Node_List_Push(&node->aggregate.items, expr);
-        Parser_Advance(p);  /* consume the comma we know is there */
-        Parse_Association_List(p, &node->aggregate.items);
+        Node_List_Push (&node->aggregate.items, expr);
+        Parser_Advance (p);  /* consume the comma we know is there */
+        Parse_Association_List (p, &node->aggregate.items);
       }
-      Parser_Expect(p, TK_RPAREN);
+      Parser_Expect (p, TK_RPAREN);
       return node;
     }
-    Parser_Expect(p, TK_RPAREN);
+    Parser_Expect (p, TK_RPAREN);
 
-    /* RM 4.3.2: A parenthesized aggregate ((a,b,c)) uses INDEX_SUBTYPE'FIRST
-     * for its lower bound, unlike a direct sub-aggregate (a,b,c) which uses
-     * the applicable index constraint.  Preserve this distinction. */
+    /* RM §4.3.2: A parenthesized aggregate ((a,b,c)) uses INDEX_SUBTYPE'FIRST for its lower     *
+     * bound, unlike a direct sub-aggregate (a,b,c) which uses the applicable index constraint.  */
     if (expr->kind == NK_AGGREGATE)
       expr->aggregate.is_parenthesized = true;
     return expr;
   }
 
   /* Name (identifier, selected, indexed, etc.) */
-  return Parse_Name(p);
+  return Parse_Name (p);
 }
 
 /* ─────────────────────────────────────────────────────────────────────────

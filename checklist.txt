@@ -39,6 +39,11 @@ R7  Use C99 designated initializer lists where possible — this mirrors Ada's
       BEFORE:  Source_Location loc = {NULL, 0, 0};
       AFTER:   Source_Location loc = { .file = NULL, .line = 0, .column = 0 };
 
+R8  Make the symbol manager global (like the code generator).  Remove the "sm"
+    parameter that is threaded through every call:
+      BEFORE:  Symbol_Manager_Push_Existing_Scope (sm,
+      AFTER:   Symbol_Manager_Push_Existing_Scope (
+
 
 FILE STRUCTURE  (§ section -> line range)
 ─────────────────────────────────────────
@@ -136,55 +141,93 @@ Status key:  [ ] = not started,  [~] = in progress,  [x] = done
              overly long example list into a compact two-line table
 
 ────────────────────────────────────────────────────────────────────────────────
-§2. MEMORY ARENA  (lines 320–369)
+§2. MEMORY ARENA  (lines 320–369)  — DONE
 ────────────────────────────────────────────────────────────────────────────────
 
-[ ] Arena_Allocate (line 342)
-[ ] Arena_Free_All (line 360)
+[x] Arena_Allocate — bump allocator, 16-byte aligned
+    CHANGED: space before parens, "chunk"→"fresh", "chunk_size"→"needed",
+             designated init for Global_Arena, casts have spaces
+
+[x] Arena_Free_All — walk linked list and free
+    CHANGED: space before parens, "prev"→"previous"
 
 ────────────────────────────────────────────────────────────────────────────────
-§3. STRING SLICE  (lines 370–428)
+§3. STRING SLICE  (lines 370–428)  — DONE
 ────────────────────────────────────────────────────────────────────────────────
 
-[ ] Slice_From_Cstring (line 383)
-[ ] Slice_Duplicate (line 386)
-[ ] Slice_Equal / Slice_Equal_Ignore_Case (line 392, 396)
-[ ] Slice_Hash (line 405)
-[ ] Edit_Distance (line 415)
+[x] S macro — designated init fields (.data, .length)
+[x] Slice_From_Cstring — "s"→"source", designated init
+[x] Slice_Duplicate — "s"→"slice", space before parens
+[x] Slice_Equal / Slice_Equal_Ignore_Case — "a/b"→"left/right"
+[x] Slice_Hash — "s"→"slice", "h"→"hash", cleaned whimsical comment
+[x] Edit_Distance — "a/b"→"left/right", "d"→"table", "del/ins/sub"→
+             "delete/insert/subst", reformatted ternary for readability
 
 ────────────────────────────────────────────────────────────────────────────────
-§4–§5. SOURCE LOCATION / ERROR HANDLING  (lines 429–469)
+§4–§5. SOURCE LOCATION / ERROR HANDLING  — DONE
 ────────────────────────────────────────────────────────────────────────────────
 
-[ ] Report_Error (line 448)
-[ ] Fatal_Error (line 459)
+[x] No_Location — designated init
+[x] Report_Error — "loc"→"location", space before parens, aligned fprintf args
+[x] Fatal_Error — same treatment
 
 ────────────────────────────────────────────────────────────────────────────────
-§6. BIG INTEGER / BIG REAL  (lines 470–1161)
+§6. BIG INTEGER / BIG REAL / RATIONAL  — DONE
 ────────────────────────────────────────────────────────────────────────────────
 
-[ ] Big_Integer_New (line 487)
-[ ] Big_Integer_Ensure_Capacity (line 493)
-[ ] Big_Integer_Normalize (line 504)
-[ ] Big_Integer_Mul_Add_Small (line 510)
-[ ] Big_Integer_Fits_Int64 (line 524)
-[ ] Big_Integer_To_Uint128 / To_Int128 (line 540, 553)
-[ ] Big_Integer_Compare (line 573)
-[ ] Big_Integer_Add (line 600)
-[ ] simd_parse_8_digits_avx2 (line 680)
-[ ] simd_parse_digits_avx2 (line 719)
-[ ] Big_Integer_From_Decimal_SIMD (line 798)
-[ ] Big_Real_Fits_Double (line 976)
-[ ] Big_Real_To_Hex (line 989)
-[ ] Big_Integer_Clone (line 1003)
-[ ] Big_Real_Compare (line 1016)
-
-(remaining functions in §6 to be enumerated as we reach them)
+[x] All Big_Integer_* functions — "bi"→"integer", "a/b"→"left/right",
+             "v"→"magnitude", space before parens everywhere
+[x] SIMD functions — renamed to Ada_Case (Simd_Parse_8_Digits_Avx2),
+             "p"→"digits"/"cursor", "v"→"value", "len"→"length"
+[x] Big_Integer_From_Decimal_SIMD — "bi"→"integer", "str"→"text"
+[x] All Big_Real_* functions — "br"→"real"/"result", filled comments to ruler
+[x] Big_Integer_Div_Rem — "a/b"→"dividend/divisor", "m/n"→"dividend_limbs/
+             divisor_limbs", "q"→"quotient", removed dead code comment
+             "Actually, let's do it cleanly"
+    NOTICED: This function has a dead first normalisation pass that is
+             immediately redone — could be simplified in a future pass
+[x] Big_Integer_GCD — "x/y"→"current/remaining"
+[x] Rational struct — fields renamed from num/den to numerator/denominator
+[x] All Rational_* functions — "a/b"→"left/right", "n/d"→"numer/denom",
+             "r"→"rational", designated inits for Rational literals
 
 ────────────────────────────────────────────────────────────────────────────────
-§7–§17: TO BE ENUMERATED AS WE REACH EACH SECTION
+§7. LEXER  (lines ~1402–)  — DONE
 ────────────────────────────────────────────────────────────────────────────────
 
-(This checklist grows as we work through each section.  We do not pre-enumerate
- all 400+ functions — we discover them as we go, which forces us to actually
- read the code.)
+[x] Section headers — filled to 100-char ruler
+[x] Lookup_Keyword — space before parens
+[x] Lexer_New — designated init, space before parens
+[x] Tzcnt32 / Tzcnt64 — "v/r"→"value/index", space before parens
+[x] Simd_Skip_Whitespace_Avx512 — "p/end"→"cursor/limit", expanded comments
+[x] Simd_Skip_Whitespace_Avx2 — "p/end"→"cursor/limit", filled header to ruler
+[x] Simd_Skip_Whitespace (dispatcher) — "p/end"→"cursor/limit", "c"→"ch"
+[x] Simd_Find_Char_X86 — "p/end"→"cursor/limit", "ch"→"target", filled header
+[x] Simd_Find_Newline / Simd_Find_Quote / Simd_Find_Double_Quote (x86 wrappers)
+             — "p/end"→"cursor/limit", space before parens
+[x] Simd_Scan_Identifier (x86) — "p/end"→"cursor/limit", removed "???" comment
+[x] Simd_Scan_Digits (x86) — "p/end"→"cursor/limit", filled header with LRM ref
+[x] ARM64 NEON: Simd_Skip_Whitespace — "p/end"→"cursor/limit", "c"→"ch"
+[x] ARM64 NEON: Simd_Find_Newline — "p/end"→"cursor/limit"
+[x] ARM64 NEON: Simd_Scan_Identifier — "p/end"→"cursor/limit", "c"→"ch"
+[x] ARM64 NEON: Simd_Find_Quote / Find_Double_Quote — "p/end"→"cursor/limit"
+[x] ARM64 NEON: Simd_Scan_Digits — "p/end"→"cursor/limit"
+[x] Scalar fallback: all 6 functions — "p/end"→"cursor/limit", "c"→"ch"
+[x] Lexer_Peek / Lexer_Advance — "c"→"ch", space before parens
+[x] Lexer_Skip_Whitespace_And_Comments — "end_ws"→"past_space", space before parens
+[x] Make_Token — designated init, "loc"→"location"
+[x] Scan_Identifier — designated inits, aligned declarations
+[x] Digit_Value — "c"→"ch", space before parens
+[x] Scan_Number — designated inits, "loc"→"location", "bi"→"index", "ci"→"index",
+             "p"→"scan", "c"→"ch", "delim"→"delimiter", "d"→"digit",
+             "frac_digits"→"frac_count", "exp"→"exponent", "v"→"narrow",
+             aligned declarations, expanded comment about based reals
+[x] Scan_Character_Literal — "loc"→"location", "c"→"ch", designated inits
+[x] Scan_String_Literal — "loc"→"location", "delim"→"delimiter",
+             "newbuf"→"fresh", designated init for result, aligned declarations
+[x] Lexer_Next_Token — "loc"→"location", "c"→"ch", "c2"→"next",
+             designated inits, aligned switch cases, expanded header comment
+
+────────────────────────────────────────────────────────────────────────────────
+§8–§17: TO BE ENUMERATED AS WE REACH EACH SECTION
+────────────────────────────────────────────────────────────────────────────────
