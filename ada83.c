@@ -14758,8 +14758,8 @@ static char *Lookup_Path(String_Slice name) {
          (int)name.length, name.data);
 
     /* Lowercase the filename part */
-    for (char *p = path + base_len; *p; p++) {
-      if (*p >= 'A' and *p <= 'Z') *p = *p - 'A' + 'a';
+    for (char *cursor = path + base_len; *cursor; cursor++) {
+      if (*cursor >= 'A' and *cursor <= 'Z') *cursor = *cursor - 'A' + 'a';
     }
 
     /* Try .ads extension */
@@ -14784,8 +14784,8 @@ static bool Has_Precompiled_LL (String_Slice name) {
          Include_Paths[i],
          (base_len > 0 and Include_Paths[i][base_len-1] != '/') ? "/" : "",
          (int)name.length, name.data);
-    for (char *p = path + base_len; *p; p++) {
-      if (*p >= 'A' and *p <= 'Z') *p = *p - 'A' + 'a';
+    for (char *cursor = path + base_len; *cursor; cursor++) {
+      if (*cursor >= 'A' and *cursor <= 'Z') *cursor = *cursor - 'A' + 'a';
     }
     snprintf (full_path, sizeof (full_path), "%s.ll", path);
     FILE *f = fopen (full_path, "r");
@@ -14805,8 +14805,8 @@ static char *Lookup_Path_Body (String_Slice name) {
          (int)name.length, name.data);
 
     /* Lowercase the filename part */
-    for (char *p = path + base_len; *p; p++) {
-      if (*p >= 'A' and *p <= 'Z') *p = *p - 'A' + 'a';
+    for (char *cursor = path + base_len; *cursor; cursor++) {
+      if (*cursor >= 'A' and *cursor <= 'Z') *cursor = *cursor - 'A' + 'a';
     }
 
     /* Try .adb extension */
@@ -14882,10 +14882,10 @@ static void Create_Derived_Operation (Symbol *sub,
                    Symbol *type_sym) {
   (void)type_sym;  /* reserved for future use */
   Symbol *derived_sub = Symbol_New (sub->kind, sub->name, sub->location);
-  derived_sub->parameter_count = sub->parameter_count;
-  derived_sub->parent_operation = sub;  /* Link to parent's implementation */
+  derived_sub->parameter_count  = sub->parameter_count;
+  derived_sub->parent_operation = sub;           /* Link to parent's implementation */
   derived_sub->derived_from_type = derived_type;
-  derived_sub->is_overloaded = true;  /* Needs unique_id suffix */
+  derived_sub->is_overloaded    = true;          /* Needs unique_id suffix */
 
   /* Copy and adjust parameters - substitute derived_type for parent_type */
   if (sub->parameter_count > 0) {
@@ -15006,8 +15006,8 @@ static void Resolve_Declaration (Syntax_Node *node) {
 
         /* Object renames: type comes from renamed object */
         if (node->object_decl.is_rename and node->object_decl.init) {
-          sym->type = node->object_decl.init->type;
-          sym->renamed_object = node->object_decl.init;  /* Point to renamed */
+          sym->type            = node->object_decl.init->type;
+          sym->renamed_object  = node->object_decl.init;  /* Point to renamed */
           sym->is_named_number = false;
         }
 
@@ -15088,7 +15088,7 @@ static void Resolve_Declaration (Syntax_Node *node) {
                 Syntax_Node *name_node = disc_spec->discriminant.names.items[j];
                 Symbol *disc_sym = Symbol_New (SYMBOL_DISCRIMINANT, name_node->string_val.text,
                                 name_node->location);
-                disc_sym->type = disc_type;
+                disc_sym->type   = disc_type;
                 disc_sym->parent = sym;
                 Symbol_Add (disc_sym);
                 name_node->symbol = disc_sym;
@@ -15103,14 +15103,14 @@ static void Resolve_Declaration (Syntax_Node *node) {
 
           /* Copy type info from definition to named type */
           if (def_type) {
-            type->kind = def_type->kind;
-            type->size = def_type->size;
-            type->alignment = def_type->alignment;
-            type->low_bound = def_type->low_bound;
-            type->high_bound = def_type->high_bound;
+            type->kind        = def_type->kind;
+            type->size        = def_type->size;
+            type->alignment   = def_type->alignment;
+            type->low_bound   = def_type->low_bound;
+            type->high_bound  = def_type->high_bound;
 
             /* For derived and subtype types, preserve base/parent chain */
-            type->base_type = def_type->base_type;
+            type->base_type   = def_type->base_type;
             type->parent_type = def_type->parent_type;
 
             /* For user-defined integer types (TYPE T IS RANGE L..R), the declared
@@ -15195,14 +15195,14 @@ static void Resolve_Declaration (Syntax_Node *node) {
                 }
 
                 /* Update record size to include discriminants */
-                type->size += disc_offset;
-                type->record.components = new_comps;
-                type->record.component_count = new_count;
+                type->size                      += disc_offset;
+                type->record.components          = new_comps;
+                type->record.component_count     = new_count;
 
                 /* Set discriminant tracking fields */
-                type->record.has_discriminants = true;
-                type->record.discriminant_count = disc_count;
-                type->record.all_defaults = all_have_defaults;
+                type->record.has_discriminants   = true;
+                type->record.discriminant_count  = disc_count;
+                type->record.all_defaults        = all_have_defaults;
               }
             } else if (Type_Is_Access (def_type)) {
               type->access = def_type->access;
@@ -15319,12 +15319,12 @@ static void Resolve_Declaration (Syntax_Node *node) {
                 di++;
               }
             }
-            type->record.components = comps;
-            type->record.component_count = disc_count;
-            type->record.has_discriminants = true;
+            type->record.components         = comps;
+            type->record.component_count    = disc_count;
+            type->record.has_discriminants  = true;
             type->record.discriminant_count = disc_count;
-            type->record.all_defaults = all_have_defaults;
-            type->size = off;
+            type->record.all_defaults       = all_have_defaults;
+            type->size                      = off;
           }
         }
 
@@ -15452,9 +15452,9 @@ static void Resolve_Declaration (Syntax_Node *node) {
               }
               for (uint32_t j = 0; j < ps->param_spec.names.count; j++) {
                 Syntax_Node *name = ps->param_spec.names.items[j];
-                sym->parameters[param_idx].name = name->string_val.text;
-                sym->parameters[param_idx].param_type = pt;
-                sym->parameters[param_idx].mode = (Parameter_Mode)ps->param_spec.mode;
+                sym->parameters[param_idx].name          = name->string_val.text;
+                sym->parameters[param_idx].param_type    = pt;
+                sym->parameters[param_idx].mode          = (Parameter_Mode)ps->param_spec.mode;
                 sym->parameters[param_idx].default_value = ps->param_spec.default_expr;
                 param_idx++;
               }
@@ -15490,10 +15490,10 @@ static void Resolve_Declaration (Syntax_Node *node) {
 
         /* Copy info from renamed subprogram if available */
         if (renamed_sym) {
-          sym->parameters = renamed_sym->parameters;
+          sym->parameters      = renamed_sym->parameters;
           sym->parameter_count = renamed_sym->parameter_count;
-          sym->return_type = renamed_sym->return_type;
-          sym->renamed_object = (Syntax_Node *)renamed_sym;  /* Store reference */
+          sym->return_type     = renamed_sym->return_type;
+          sym->renamed_object  = (Syntax_Node *)renamed_sym;  /* Store reference */
 
         /* Build parameter info from our own spec */
         } else {
@@ -15517,9 +15517,9 @@ static void Resolve_Declaration (Syntax_Node *node) {
                         ps->param_spec.param_type->type : NULL;
                 for (uint32_t j = 0; j < ps->param_spec.names.count; j++) {
                   Syntax_Node *nm = ps->param_spec.names.items[j];
-                  sym->parameters[idx].name = nm->string_val.text;
-                  sym->parameters[idx].param_type = pt;
-                  sym->parameters[idx].mode = (Parameter_Mode)ps->param_spec.mode;
+                  sym->parameters[idx].name          = nm->string_val.text;
+                  sym->parameters[idx].param_type    = pt;
+                  sym->parameters[idx].mode          = (Parameter_Mode)ps->param_spec.mode;
                   sym->parameters[idx].default_value = ps->param_spec.default_expr;
                   idx++;
                 }
@@ -15622,11 +15622,11 @@ static void Resolve_Declaration (Syntax_Node *node) {
                         ci++;
                       }
                     }
-                    ftype->record.components = comps;
-                    ftype->record.component_count = disc_count;
-                    ftype->record.has_discriminants = true;
+                    ftype->record.components         = comps;
+                    ftype->record.component_count    = disc_count;
+                    ftype->record.has_discriminants  = true;
                     ftype->record.discriminant_count = disc_count;
-                    ftype->size = offset;
+                    ftype->size                      = offset;
                   }
                 }
 
@@ -15661,9 +15661,9 @@ static void Resolve_Declaration (Syntax_Node *node) {
                         }
                         for (uint32_t k = 0; k < ps->param_spec.names.count; k++) {
                           Syntax_Node *pn = ps->param_spec.names.items[k];
-                          subprog_sym->parameters[idx].name = pn->string_val.text;
+                          subprog_sym->parameters[idx].name       = pn->string_val.text;
                           subprog_sym->parameters[idx].param_type = pt;
-                          subprog_sym->parameters[idx].mode =
+                          subprog_sym->parameters[idx].mode       =
                             (Parameter_Mode)ps->param_spec.mode;
                           idx++;
                         }
@@ -29534,14 +29534,14 @@ static uint32_t Generate_Aggregate (Syntax_Node *node) {
           if (not bt or bt[0] == '\0') bt = "i32";
           uint32_t lo_val = 0, hi_val = 0;
           for (int bx = 0; bx < 2; bx++) {
-            Type_Bound *b = (bx == 0) ? lo : hi;
+            Type_Bound *bound = (bx == 0) ? lo : hi;
             uint32_t bval = 0;
-            if (b->kind == BOUND_INTEGER) {
+            if (bound->kind == BOUND_INTEGER) {
               bval = Emit_Temp ();
               Emit ("  %%t%u = add %s 0, %lld\n", bval, bt,
-                 (long long)b->int_value);
-            } else if (b->kind == BOUND_EXPR and b->expr) {
-              bval = Generate_Expression (b->expr);
+                 (long long)bound->int_value);
+            } else if (bound->kind == BOUND_EXPR and bound->expr) {
+              bval = Generate_Expression (bound->expr);
               bval = Emit_Coerce_Default_Int (bval, bt);
             }
             if (bx == 0) lo_val = bval; else hi_val = bval;
@@ -33123,14 +33123,14 @@ static void Emit_Nested_Disc_Checks (Type_Info *parent_type)
       /* Evaluate each bound, resolving disc references to parent */
       uint32_t lo_val = 0, hi_val = 0;
       for (int bx = 0; bx < 2; bx++) {
-        Type_Bound *b = (bx == 0) ? lo : hi;
+        Type_Bound *bound = (bx == 0) ? lo : hi;
         uint32_t bval = 0;
-        if (b->kind == BOUND_INTEGER) {
+        if (bound->kind == BOUND_INTEGER) {
           bval = Emit_Temp ();
           Emit ("  %%t%u = add %s 0, %lld\n", bval, bt,
-             (long long)b->int_value);
-        } else if (b->kind == BOUND_EXPR and b->expr) {
-          Syntax_Node *bexpr = b->expr;
+             (long long)bound->int_value);
+        } else if (bound->kind == BOUND_EXPR and bound->expr) {
+          Syntax_Node *bexpr = bound->expr;
           bool resolved = false;
           if (bexpr->symbol) {
             for (uint32_t pdi = 0;
@@ -36736,8 +36736,8 @@ static void Generate_Declaration (Syntax_Node *node) {
         pkg_sym->declaration->kind == NK_PACKAGE_SPEC) ? pkg_sym->declaration : NULL;
       if (not cg->current_function and pkg_spec_node) {
         for (uint32_t ti = 0; ti < pkg_spec_node->package_spec.visible_decls.count; ti++) {
-          Syntax_Node *d = pkg_spec_node->package_spec.visible_decls.items[ti];
-          if (d and d->kind == NK_TASK_SPEC and not d->task_spec.is_type) {
+          Syntax_Node *decl = pkg_spec_node->package_spec.visible_decls.items[ti];
+          if (decl and decl->kind == NK_TASK_SPEC and not decl->task_spec.is_type) {
             has_pkg_tasks = true;
             break;
           }
@@ -36808,20 +36808,20 @@ static void Generate_Declaration (Syntax_Node *node) {
         /* Start package-level tasks */
         if (has_pkg_tasks and pkg_spec_node) {
           for (uint32_t ti = 0; ti < pkg_spec_node->package_spec.visible_decls.count; ti++) {
-            Syntax_Node *d = pkg_spec_node->package_spec.visible_decls.items[ti];
-            if (not d or d->kind != NK_TASK_SPEC or d->task_spec.is_type or not d->symbol)
+            Syntax_Node *decl = pkg_spec_node->package_spec.visible_decls.items[ti];
+            if (not decl or decl->kind != NK_TASK_SPEC or decl->task_spec.is_type or not decl->symbol)
               continue;
 
             /* Find the task object variable symbol */
             Symbol *task_obj = NULL;
-            Scope *tscope = d->symbol->defining_scope;
+            Scope *tscope = decl->symbol->defining_scope;
             if (tscope) {
               for (uint32_t si = 0; si < tscope->symbol_count; si++) {
-                Symbol *s = tscope->symbols[si];
-                if (s and s->kind == SYMBOL_VARIABLE and
-                  Type_Is_Task (s->type) and
-                  Slice_Equal_Ignore_Case (s->name, d->task_spec.name)) {
-                  task_obj = s;
+                Symbol *cur_sym = tscope->symbols[si];
+                if (cur_sym and cur_sym->kind == SYMBOL_VARIABLE and
+                  Type_Is_Task (cur_sym->type) and
+                  Slice_Equal_Ignore_Case (cur_sym->name, decl->task_spec.name)) {
+                  task_obj = cur_sym;
                   break;
                 }
               }
@@ -37171,11 +37171,11 @@ static void Generate_Declaration (Syntax_Node *node) {
         Scope *scope = node->symbol->defining_scope;
         if (scope) {
           for (uint32_t i = 0; i < scope->symbol_count; i++) {
-            Symbol *s = scope->symbols[i];
-            if (s and s->kind == SYMBOL_VARIABLE and
-              Type_Is_Task (s->type) and
-              Slice_Equal_Ignore_Case (s->name, node->task_spec.name)) {
-              obj_sym = s;
+            Symbol *cur_sym = scope->symbols[i];
+            if (cur_sym and cur_sym->kind == SYMBOL_VARIABLE and
+              Type_Is_Task (cur_sym->type) and
+              Slice_Equal_Ignore_Case (cur_sym->name, node->task_spec.name)) {
+              obj_sym = cur_sym;
               break;
             }
           }
