@@ -265,3 +265,55 @@ Status key:  [ ] = not started,  [~] = in progress,  [x] = done
              lists and call sites.  Symbol_Manager_New renamed to
              Symbol_Manager_Init (void).  cg->sm references replaced with sm.
 [x] Type_New — "t"→"type_info", aligned declarations
+[x] R3 ??? comments — all five remaining instances replaced with real comments
+
+────────────────────────────────────────────────────────────────────────────────
+§10. TYPE SYSTEM  (lines ~5754–6585)  — IN PROGRESS
+────────────────────────────────────────────────────────────────────────────────
+
+[x] All Type_Is_* predicates — "t"→"type_info" via script (156 lines)
+[x] Type_Base / Type_Root — "t"→"type_info", space before parens
+[x] Freeze_Type — "t"→"type_info", aligned snprintf args
+[x] Type_To_Llvm — "t"→"type_info", "d"→"designated", space before parens
+[x] Type_To_Llvm_Sig — "t"→"type_info", space before parens
+[x] Array_Bound_Llvm_Type — "t"→"type_info", space before parens
+[x] Bounds_Type_For — "bt"→"bound_type", space before parens
+[x] Bounds_Alloc_Size — "bt"→"bound_type"
+[x] Float_Model_Parameters — aligned declarations GNAT-style, params one-per-line
+[x] Float_Is_Single — removed R3 meta-commentary
+[x] Float_Effective_Digits — removed R3 meta-commentary
+[x] Type_Has_Dynamic_Bounds — "idx_ty"→"index_type"
+[x] Expression_Produces_Fat_Pointer — "nty"→"node_type"
+[x] Type_Bound_Value — "b"→"bound", aligned returns
+[x] I128_Decimal — "v"→"value", "p"→"cursor", "u"→"absolute", aligned decls
+[x] U128_Decimal — "v"→"value", "p"→"cursor", aligned decls
+[x] Array_Element_Count — "t"→"type_info", "d"→"dim", "dim"→"length", aligned
+[x] Array_Low_Bound — "t"→"type_info"
+[x] ceil( → ceil ( (R4 fix)
+
+────────────────────────────────────────────────────────────────────────────────
+§11. SYMBOL TABLE  (lines ~6588–7878)  — IN PROGRESS
+────────────────────────────────────────────────────────────────────────────────
+
+[x] Scope_New — aligned declarations GNAT-style
+[x] Symbol_New — "loc"→"location", aligned declarations GNAT-style
+[x] Symbol_Add — aligned defining_scope/nesting_level/next_in_bucket block
+[x] Symbol_Manager_Init — aligned declarations GNAT-style
+[x] Symbol_Manager_Init_Predefined — GNAT-style alignment for all predefined
+             type setup blocks, designated initializers for Type_Bound,
+             "ty"→"numeric_type", designated inits for Parameter_Info,
+             exception symbols grouped and aligned, S() calls with space
+
+────────────────────────────────────────────────────────────────────────────────
+§12. SEMANTIC PASS  (lines ~7880–17418)  — IN PROGRESS
+────────────────────────────────────────────────────────────────────────────────
+
+[x] Resolve_Identifier — aligned Report_Error args
+[x] Resolve_Expression — GNAT-style aligned switch cases for literal types,
+             "ot"→"operand_type" in NOT handler
+[x] Is_Integer_Expr — "n"→"node"
+[x] Eval_Const_Numeric — "n"→"node" via script (81 lines)
+[x] Eval_Const_Rational — "n"→"node"
+[x] Eval_Const_Uint128 — "n"→"node"
+[x] Row type calculation — "d"→"dim", "cnt"→"extent", "el_sz"→"element_size",
+             aligned declarations

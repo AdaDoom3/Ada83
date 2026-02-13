@@ -5988,51 +5988,51 @@ static Type_Info *Type_New (Type_Kind kind, String_Slice name) {
 /* ─────────────────────────────────────────────────────────────────────────────────────────────────
  * §10.4 Type Predicates
  * ────────────────────────────────────────────────────────────────────────────────────────────── */
-static inline bool Type_Is_Scalar (const Type_Info *t) {
-  return t and t->kind >= TYPE_BOOLEAN and t->kind <= TYPE_FIXED;
+static inline bool Type_Is_Scalar (const Type_Info *type_info) {
+  return type_info and type_info->kind >= TYPE_BOOLEAN and type_info->kind <= TYPE_FIXED;
 }
-static inline bool Type_Is_Discrete (const Type_Info *t) {
-  return t and (t->kind == TYPE_BOOLEAN or t->kind == TYPE_CHARACTER or
-         t->kind == TYPE_INTEGER or t->kind == TYPE_MODULAR or
-         t->kind == TYPE_ENUMERATION);
+static inline bool Type_Is_Discrete (const Type_Info *type_info) {
+  return type_info and (type_info->kind == TYPE_BOOLEAN or type_info->kind == TYPE_CHARACTER or
+         type_info->kind == TYPE_INTEGER or type_info->kind == TYPE_MODULAR or
+         type_info->kind == TYPE_ENUMERATION);
 }
-static inline bool Type_Is_Numeric (const Type_Info *t) {
-  return t and (t->kind == TYPE_INTEGER or t->kind == TYPE_MODULAR or
-         t->kind == TYPE_FLOAT or t->kind == TYPE_FIXED or
-         t->kind == TYPE_UNIVERSAL_INTEGER or t->kind == TYPE_UNIVERSAL_REAL);
+static inline bool Type_Is_Numeric (const Type_Info *type_info) {
+  return type_info and (type_info->kind == TYPE_INTEGER or type_info->kind == TYPE_MODULAR or
+         type_info->kind == TYPE_FLOAT or type_info->kind == TYPE_FIXED or
+         type_info->kind == TYPE_UNIVERSAL_INTEGER or type_info->kind == TYPE_UNIVERSAL_REAL);
 }
-static inline bool Type_Is_Real (const Type_Info *t) {
-  return t and (t->kind == TYPE_FLOAT or t->kind == TYPE_FIXED or
-         t->kind == TYPE_UNIVERSAL_REAL);
+static inline bool Type_Is_Real (const Type_Info *type_info) {
+  return type_info and (type_info->kind == TYPE_FLOAT or type_info->kind == TYPE_FIXED or
+         type_info->kind == TYPE_UNIVERSAL_REAL);
 }
 
 /* Type uses floating-point LLVM representation (for codegen, not semantic analysis).
  * Fixed-point types are NOT included as they use integer representation. */
-static inline bool Type_Is_Float_Representation (const Type_Info *t) {
-  return t and (t->kind == TYPE_FLOAT or t->kind == TYPE_UNIVERSAL_REAL);
+static inline bool Type_Is_Float_Representation (const Type_Info *type_info) {
+  return type_info and (type_info->kind == TYPE_FLOAT or type_info->kind == TYPE_UNIVERSAL_REAL);
 }
-static inline bool Type_Is_Array_Like (const Type_Info *t) {
-  return t and (t->kind == TYPE_ARRAY or t->kind == TYPE_STRING);
+static inline bool Type_Is_Array_Like (const Type_Info *type_info) {
+  return type_info and (type_info->kind == TYPE_ARRAY or type_info->kind == TYPE_STRING);
 }
-static inline bool Type_Is_Composite (const Type_Info *t) {
-  return t and (t->kind == TYPE_ARRAY or t->kind == TYPE_RECORD or
-         t->kind == TYPE_STRING);
+static inline bool Type_Is_Composite (const Type_Info *type_info) {
+  return type_info and (type_info->kind == TYPE_ARRAY or type_info->kind == TYPE_RECORD or
+         type_info->kind == TYPE_STRING);
 }
-static inline bool Type_Is_Access (const Type_Info *t) {
-  return t and t->kind == TYPE_ACCESS;
+static inline bool Type_Is_Access (const Type_Info *type_info) {
+  return type_info and type_info->kind == TYPE_ACCESS;
 }
 
 /* Per GNAT sem_util.ads — systematic predicates for every type class */
-static inline bool Type_Is_Record (const Type_Info *t)    { return t and t->kind == TYPE_RECORD; }
-static inline bool Type_Is_Task (const Type_Info *t)      { return t and t->kind == TYPE_TASK; }
-static inline bool Type_Is_Float (const Type_Info *t)     { return t and t->kind == TYPE_FLOAT; }
-static inline bool Type_Is_Fixed_Point (const Type_Info *t) { return t and t->kind == TYPE_FIXED; }
+static inline bool Type_Is_Record (const Type_Info *type_info)    { return type_info and type_info->kind == TYPE_RECORD; }
+static inline bool Type_Is_Task (const Type_Info *type_info)      { return type_info and type_info->kind == TYPE_TASK; }
+static inline bool Type_Is_Float (const Type_Info *type_info)     { return type_info and type_info->kind == TYPE_FLOAT; }
+static inline bool Type_Is_Fixed_Point (const Type_Info *type_info) { return type_info and type_info->kind == TYPE_FIXED; }
 
 /* Derive LLVM float type string from a Type_Info.
  * Falls back to "double" for UNIVERSAL_REAL or when type info is unavailable. */
-static inline const char *Float_Llvm_Type_Of (const Type_Info *t) {
-  if (t and t->size > 0)
-    return Llvm_Float_Type ((uint32_t)To_Bits (t->size));
+static inline const char *Float_Llvm_Type_Of (const Type_Info *type_info) {
+  if (type_info and type_info->size > 0)
+    return Llvm_Float_Type ((uint32_t)To_Bits (type_info->size));
   return "double";  /* UNIVERSAL_REAL / unknown > 64-bit */
 }
 
@@ -6053,115 +6053,115 @@ static inline const char *Float_Llvm_Type_Of (const Type_Info *t) {
 #define IEEE_FLOAT_MIN_NORMAL   1.1754943508222875e-38    /* 2^(-126)  */
 #define LOG2_OF_10              3.321928094887362
 
-/* Check whether a float type maps to IEEE single precision.
- * Replaces the ad-hoc `type->size <= 4` test scattered across 13+ sites. */
-static inline bool Float_Is_Single (const Type_Info *t) {
-  return strcmp (Float_Llvm_Type_Of (t), "float") == 0;
+/* Check whether a float type maps to IEEE single precision (32-bit). */
+static inline bool Float_Is_Single (const Type_Info *type_info) {
+  return strcmp (Float_Llvm_Type_Of (type_info), "float") == 0;
 }
 
 /* Resolve effective DIGITS for a float type: uses declared digits if > 0,
- * else defaults from IEEE precision.  Replaces 5 copy-pasted blocks. */
-static inline int Float_Effective_Digits (const Type_Info *t) {
-  if (t and t->flt.digits > 0) return t->flt.digits;
-  return Float_Is_Single (t) ? IEEE_FLOAT_DIGITS : IEEE_DOUBLE_DIGITS;
+ * else defaults from IEEE precision. */
+static inline int Float_Effective_Digits (const Type_Info *type_info) {
+  if (type_info and type_info->flt.digits > 0) return type_info->flt.digits;
+  return Float_Is_Single (type_info) ? IEEE_FLOAT_DIGITS : IEEE_DOUBLE_DIGITS;
 }
 
 /* Compute model parameters for a floating-point type (RM 3.5.8).
  * mantissa = ceil(DIGITS * log2(10)) + 1
  * emax     = 4 * mantissa
  * Used by MANTISSA, EMAX, EPSILON, SMALL, LARGE attributes. */
-static inline void Float_Model_Parameters (const Type_Info *t,
-                       int64_t *out_mantissa, int64_t *out_emax) {
-  int digits = Float_Effective_Digits (t);
-  int64_t mantissa = (int64_t)ceil(digits * LOG2_OF_10) + 1;
-  int64_t emax = 4 * mantissa;
+static inline void Float_Model_Parameters (const Type_Info *type_info,
+                                           int64_t        *out_mantissa,
+                                           int64_t        *out_emax) {
+  int     digits   = Float_Effective_Digits (type_info);
+  int64_t mantissa = (int64_t) ceil (digits * LOG2_OF_10) + 1;
+  int64_t emax     = 4 * mantissa;
   if (out_mantissa) *out_mantissa = mantissa;
-  if (out_emax)     *out_emax = emax;
+  if (out_emax)     *out_emax     = emax;
 }
-static inline bool Type_Is_Private (const Type_Info *t) {
-  return t and (t->kind == TYPE_PRIVATE or t->kind == TYPE_LIMITED_PRIVATE);
+static inline bool Type_Is_Private (const Type_Info *type_info) {
+  return type_info and (type_info->kind == TYPE_PRIVATE or type_info->kind == TYPE_LIMITED_PRIVATE);
 }
-static inline bool Type_Is_Limited (const Type_Info *t) {
-  return t and (t->kind == TYPE_LIMITED_PRIVATE or t->kind == TYPE_TASK);
+static inline bool Type_Is_Limited (const Type_Info *type_info) {
+  return type_info and (type_info->kind == TYPE_LIMITED_PRIVATE or type_info->kind == TYPE_TASK);
 }
-static inline bool Type_Is_Integer_Like (const Type_Info *t) {
-  return t and (t->kind == TYPE_INTEGER or t->kind == TYPE_MODULAR);
+static inline bool Type_Is_Integer_Like (const Type_Info *type_info) {
+  return type_info and (type_info->kind == TYPE_INTEGER or type_info->kind == TYPE_MODULAR);
 }
 
 /* Modular types are unsigned in Ada (RM 3.5.4).  This predicate drives
  * codegen choices: zext vs sext, udiv vs sdiv, unsigned comparisons, etc. */
-static inline bool Type_Is_Unsigned (const Type_Info *t) {
-  return t and t->kind == TYPE_MODULAR;
+static inline bool Type_Is_Unsigned (const Type_Info *type_info) {
+  return type_info and type_info->kind == TYPE_MODULAR;
 }
-static inline bool Type_Is_Enumeration (const Type_Info *t) {
-  return t and t->kind == TYPE_ENUMERATION;
+static inline bool Type_Is_Enumeration (const Type_Info *type_info) {
+  return type_info and type_info->kind == TYPE_ENUMERATION;
 }
-static inline bool Type_Is_Boolean (const Type_Info *t) { return t and t->kind == TYPE_BOOLEAN; }
-static inline bool Type_Is_Character (const Type_Info *t) { return t and t->kind == TYPE_CHARACTER; }
-static inline bool Type_Is_String (const Type_Info *t)  { return t and t->kind == TYPE_STRING; }
+static inline bool Type_Is_Boolean (const Type_Info *type_info) { return type_info and type_info->kind == TYPE_BOOLEAN; }
+static inline bool Type_Is_Character (const Type_Info *type_info) { return type_info and type_info->kind == TYPE_CHARACTER; }
+static inline bool Type_Is_String (const Type_Info *type_info)  { return type_info and type_info->kind == TYPE_STRING; }
 
 /* Needs fat pointer { ptr, { bound, bound } } for unconstrained array or access thereto */
-static inline bool Type_Needs_Fat_Pointer (const Type_Info *t) {
-  if (not t) return false;
+static inline bool Type_Needs_Fat_Pointer (const Type_Info *type_info) {
+  if (not type_info) return false;
 
   /* RM 3.10: Access to unconstrained array always needs fat pointer,
   * even when a subtype constraint narrows the bounds (e.g.,
   * ACCESS ARR (1..N)).  Chase base_type to the root declaration. */
-  if (Type_Is_Access (t) and t->access.designated_type) {
-    Type_Info *des = t->access.designated_type;
+  if (Type_Is_Access (type_info) and type_info->access.designated_type) {
+    Type_Info *des = type_info->access.designated_type;
     while (des and Type_Is_Array_Like (des) and des->array.is_constrained
          and des->base_type and Type_Is_Array_Like (des->base_type))
       des = des->base_type;
     return Type_Is_Array_Like (des) and not des->array.is_constrained;
   }
-  return Type_Is_Array_Like (t) and not t->array.is_constrained;
+  return Type_Is_Array_Like (type_info) and not type_info->array.is_constrained;
 }
 
 /* Check if array type is unconstrained (needs fat pointer representation) */
-static inline bool Type_Is_Unconstrained_Array (const Type_Info *t) {
-  return t and (t->kind == TYPE_ARRAY or t->kind == TYPE_STRING) and
-       not t->array.is_constrained;
+static inline bool Type_Is_Unconstrained_Array (const Type_Info *type_info) {
+  return type_info and (type_info->kind == TYPE_ARRAY or type_info->kind == TYPE_STRING) and
+       not type_info->array.is_constrained;
 }
 
 /* Constrained array: TYPE_ARRAY or TYPE_STRING with static bounds */
-static inline bool Type_Is_Constrained_Array (const Type_Info *t) {
-  return t and (t->kind == TYPE_ARRAY or t->kind == TYPE_STRING) and
-       t->array.is_constrained;
+static inline bool Type_Is_Constrained_Array (const Type_Info *type_info) {
+  return type_info and (type_info->kind == TYPE_ARRAY or type_info->kind == TYPE_STRING) and
+       type_info->array.is_constrained;
 }
 
 /* Universal numeric types: compile-time only, no storage */
-static inline bool Type_Is_Universal_Integer (const Type_Info *t) {
-  return t and t->kind == TYPE_UNIVERSAL_INTEGER;
+static inline bool Type_Is_Universal_Integer (const Type_Info *type_info) {
+  return type_info and type_info->kind == TYPE_UNIVERSAL_INTEGER;
 }
-static inline bool Type_Is_Universal_Real (const Type_Info *t) {
-  return t and t->kind == TYPE_UNIVERSAL_REAL;
+static inline bool Type_Is_Universal_Real (const Type_Info *type_info) {
+  return type_info and type_info->kind == TYPE_UNIVERSAL_REAL;
 }
-static inline bool Type_Is_Universal (const Type_Info *t) {
-  return t and (t->kind == TYPE_UNIVERSAL_INTEGER or
-         t->kind == TYPE_UNIVERSAL_REAL);
+static inline bool Type_Is_Universal (const Type_Info *type_info) {
+  return type_info and (type_info->kind == TYPE_UNIVERSAL_INTEGER or
+         type_info->kind == TYPE_UNIVERSAL_REAL);
 }
 
 /* Check if array type has dynamic bounds (BOUND_EXPR) that need runtime access.
  * This includes constrained arrays like ARRAY (1..G) where G is a variable. */
-static inline bool Type_Has_Dynamic_Bounds (const Type_Info *t) {
-  if (not t or (t->kind != TYPE_ARRAY and t->kind != TYPE_STRING))
+static inline bool Type_Has_Dynamic_Bounds (const Type_Info *type_info) {
+  if (not type_info or (type_info->kind != TYPE_ARRAY and type_info->kind != TYPE_STRING))
     return false;
-  if (t->array.index_count == 0)
+  if (type_info->array.index_count == 0)
     return false;
 
   /* Check if any bound is a runtime expression, either on the array
    * index entry itself or on the index type (e.g., ARRAY (SNI,..)
    * where SNI has dynamic range -N..N). */
-  for (uint32_t i = 0; i < t->array.index_count; i++) {
-    if (t->array.indices[i].low_bound.kind == BOUND_EXPR or
-      t->array.indices[i].high_bound.kind == BOUND_EXPR) {
+  for (uint32_t i = 0; i < type_info->array.index_count; i++) {
+    if (type_info->array.indices[i].low_bound.kind == BOUND_EXPR or
+      type_info->array.indices[i].high_bound.kind == BOUND_EXPR) {
       return true;
     }
 
     /* Also check if the index type itself has dynamic bounds */
-    Type_Info *idx_ty = t->array.indices[i].index_type;
-    if (idx_ty and (idx_ty->low_bound.kind == BOUND_EXPR or
-            idx_ty->high_bound.kind == BOUND_EXPR)) {
+    Type_Info *index_type = type_info->array.indices[i].index_type;
+    if (index_type and (index_type->low_bound.kind == BOUND_EXPR or
+            index_type->high_bound.kind == BOUND_EXPR)) {
       return true;
     }
   }
@@ -6215,8 +6215,8 @@ static inline bool Expression_Produces_Fat_Pointer (const Syntax_Node *node,
   /* Identifier-based check: if the node's own type has dynamic bounds or is
    * unconstrained, Generate_Identifier will load it as a fat pointer value. */
   if (node and node->kind == NK_IDENTIFIER and node->type) {
-    const Type_Info *nty = node->type;
-    if (Type_Has_Dynamic_Bounds (nty) or Type_Is_Unconstrained_Array (nty))
+    const Type_Info *node_type = node->type;
+    if (Type_Has_Dynamic_Bounds (node_type) or Type_Is_Unconstrained_Array (node_type))
       return true;
   }
 
@@ -6236,21 +6236,21 @@ static inline bool Expression_Produces_Fat_Pointer (const Syntax_Node *node,
  * Unconstrained arrays, dynamic-bound arrays, and unconstrained STRING fields
  * are stored as fat pointers { ptr, { bound, bound } } in records.
  * Constrained STRING subtypes (e.g., STRING (1..6)) are flat arrays. */
-static inline bool Type_Needs_Fat_Pointer_Load (const Type_Info *t) {
-  if (not t) return false;
+static inline bool Type_Needs_Fat_Pointer_Load (const Type_Info *type_info) {
+  if (not type_info) return false;
 
   /* Constrained arrays with static bounds are flat — no fat pointer. */
-  if (Type_Is_Constrained_Array (t) and not Type_Has_Dynamic_Bounds (t))
+  if (Type_Is_Constrained_Array (type_info) and not Type_Has_Dynamic_Bounds (type_info))
     return false;
 
   /* A constrained array with non-zero size has compile-time-known layout
    * even when bounds are stored as BOUND_EXPR (constant expressions like
    * OA = OTHER_ARRAY (2..4)).  Treat as static. */
-  if (Type_Is_Constrained_Array (t) and t->size > 0)
+  if (Type_Is_Constrained_Array (type_info) and type_info->size > 0)
     return false;
-  if (Type_Is_String (t)) return true;
-  if (t->kind == TYPE_ARRAY and
-    (not t->array.is_constrained or Type_Has_Dynamic_Bounds (t)))
+  if (Type_Is_String (type_info)) return true;
+  if (type_info->kind == TYPE_ARRAY and
+    (not type_info->array.is_constrained or Type_Has_Dynamic_Bounds (type_info)))
     return true;
   return false;
 }
@@ -6261,25 +6261,25 @@ static inline bool Type_Needs_Fat_Pointer_Load (const Type_Info *t) {
  * Per RM 3.3.1: The base type of a type is the ultimate ancestor.
  * For subtypes, follow base_type links; for derived types, follow parent_type.
  * ────────────────────────────────────────────────────────────────────────────────────────────── */
-static Type_Info *Type_Base (Type_Info *t) {
-  while (t and t->base_type) t = t->base_type;
-  return t;
+static Type_Info *Type_Base (Type_Info *type_info) {
+  while (type_info and type_info->base_type) type_info = type_info->base_type;
+  return type_info;
 }
 
 /* Type_Root: Follow both base_type and parent_type chains to find the root
  * ancestor type. This is used for derived type compatibility checking where
  * we need to find the ultimate parent enumeration/integer type. */
-static Type_Info *Type_Root(Type_Info *t) {
-  while (t) {
-    if (t->base_type) {
-      t = t->base_type;
-    } else if (t->parent_type) {
-      t = t->parent_type;
+static Type_Info *Type_Root (Type_Info *type_info) {
+  while (type_info) {
+    if (type_info->base_type) {
+      type_info = type_info->base_type;
+    } else if (type_info->parent_type) {
+      type_info = type_info->parent_type;
     } else {
       break;
     }
   }
-  return t;
+  return type_info;
 }
 
 /*
@@ -6310,45 +6310,45 @@ typedef struct Symbol Symbol;
 
 /* Freeze a type and all its dependencies
  * Per RM 13.14: When a type is frozen, its representation is fixed */
-static void Freeze_Type (Type_Info *t) {
-  if (not t or t->is_frozen) return;
+static void Freeze_Type (Type_Info *type_info) {
+  if (not type_info or type_info->is_frozen) return;
 
   /* Mark as frozen first to prevent infinite recursion */
-  t->is_frozen = true;
+  type_info->is_frozen = true;
 
   /* Freeze base type if present */
-  if (t->base_type) {
-    Freeze_Type (t->base_type);
+  if (type_info->base_type) {
+    Freeze_Type (type_info->base_type);
   }
 
   /* Freeze parent type for derived types */
-  if (t->parent_type) {
-    Freeze_Type (t->parent_type);
+  if (type_info->parent_type) {
+    Freeze_Type (type_info->parent_type);
   }
 
   /* Freeze component types for composites */
-  switch (t->kind) {
+  switch (type_info->kind) {
     case TYPE_ARRAY:
     case TYPE_STRING:
 
       /* Freeze element type */
-      if (t->array.element_type) {
-        Freeze_Type (t->array.element_type);
+      if (type_info->array.element_type) {
+        Freeze_Type (type_info->array.element_type);
       }
 
       /* Freeze index types */
-      for (uint32_t i = 0; i < t->array.index_count; i++) {
-        if (t->array.indices[i].index_type) {
-          Freeze_Type (t->array.indices[i].index_type);
+      for (uint32_t i = 0; i < type_info->array.index_count; i++) {
+        if (type_info->array.indices[i].index_type) {
+          Freeze_Type (type_info->array.indices[i].index_type);
         }
       }
       break;
     case TYPE_RECORD:
 
       /* Freeze all component types */
-      for (uint32_t i = 0; i < t->record.component_count; i++) {
-        if (t->record.components[i].component_type) {
-          Freeze_Type (t->record.components[i].component_type);
+      for (uint32_t i = 0; i < type_info->record.component_count; i++) {
+        if (type_info->record.components[i].component_type) {
+          Freeze_Type (type_info->record.components[i].component_type);
         }
       }
       break;
@@ -6364,16 +6364,16 @@ static void Freeze_Type (Type_Info *t) {
 
   /* Register composite types for implicit equality function generation
    * Per RM 4.5.2: Equality is predefined for all non-limited types */
-  if (Type_Is_Composite (t) and Frozen_Composite_Count < 256) {
-    Frozen_Composite_Types[Frozen_Composite_Count++] = t;
+  if (Type_Is_Composite (type_info) and Frozen_Composite_Count < 256) {
+    Frozen_Composite_Types[Frozen_Composite_Count++] = type_info;
 
     /* Generate a unique function name for this type's equality */
     char *name_buf = Arena_Allocate (64);
     snprintf (name_buf, 64, "_ada_eq_%.*s_%u",
-         (int)(t->name.length > 20 ? 20 : t->name.length),
-         t->name.data,
-         Frozen_Composite_Count);
-    t->equality_func_name = name_buf;
+              (int) (type_info->name.length > 20 ? 20 : type_info->name.length),
+              type_info->name.data,
+              Frozen_Composite_Count);
+    type_info->equality_func_name = name_buf;
   }
 }
 
@@ -6384,7 +6384,7 @@ static void Freeze_Type (Type_Info *t) {
  * ────────────────────────────────────────────────────────────────────────────────────────────── */
 
 /* Forward declarations for array helpers (defined after Type_Bound_Value) */
-static int128_t Type_Bound_Value (Type_Bound b);
+static int128_t Type_Bound_Value (Type_Bound bound);
 
 /* File-scope map of generic formal>actual types for the current instance
  * being code-generated.  Used by Type_To_Llvm to resolve generic formal
@@ -6393,34 +6393,34 @@ static struct {
   uint32_t count;
   struct { String_Slice formal_name; Type_Info *actual_type; } mappings[32];
 } g_generic_type_map = {0};
-static const char *Type_To_Llvm(Type_Info *t) {
-  if (not t) {
+static const char *Type_To_Llvm (Type_Info *type_info) {
+  if (not type_info) {
     fprintf (stderr, "error: Type_To_Llvm called with NULL type\n");
     return Llvm_Int_Type (64);  /* ERROR path — caller bug */
   }
 
   /* For private/limited private/incomplete types, resolve through parent_type
    * chain to find the actual representation type (Ada RM 7.4.1, 3.4). */
-  if ((Type_Is_Private (t) or t->kind == TYPE_INCOMPLETE) and t->parent_type) {
-    return Type_To_Llvm (t->parent_type);
+  if ((Type_Is_Private (type_info) or type_info->kind == TYPE_INCOMPLETE) and type_info->parent_type) {
+    return Type_To_Llvm (type_info->parent_type);
   }
 
   /* Unresolved private/limited private types without a full view (parent_type).
    * This occurs for generic formal type parameters whose actual type was not
    * propagated through expansion.  Resolve through the current generic
    * instance's actual type mapping (formal_name > actual_type). */
-  if (Type_Is_Private (t) and not t->parent_type) {
-    if (g_generic_type_map.count > 0 and t->name.data) {
+  if (Type_Is_Private (type_info) and not type_info->parent_type) {
+    if (g_generic_type_map.count > 0 and type_info->name.data) {
       for (uint32_t i = 0; i < g_generic_type_map.count; i++) {
         if (g_generic_type_map.mappings[i].actual_type and
-          Slice_Equal_Ignore_Case (t->name,
+          Slice_Equal_Ignore_Case (type_info->name,
                       g_generic_type_map.mappings[i].formal_name))
           return Type_To_Llvm (g_generic_type_map.mappings[i].actual_type);
       }
     }
     return "ptr";
   }
-  switch (t->kind) {
+  switch (type_info->kind) {
     case TYPE_BOOLEAN:    return "i8";  /* Boolean stored as i8, NOT i1 */
     case TYPE_CHARACTER:  return "i8";
     case TYPE_INTEGER:
@@ -6428,22 +6428,22 @@ static const char *Type_To_Llvm(Type_Info *t) {
     case TYPE_ENUMERATION:
     case TYPE_UNIVERSAL_INTEGER:
     case TYPE_FIXED:  /* Fixed-point uses scaled integer representation */
-      return Llvm_Int_Type ((uint32_t)To_Bits (t->size));
+      return Llvm_Int_Type ((uint32_t)To_Bits (type_info->size));
     case TYPE_FLOAT:
     case TYPE_UNIVERSAL_REAL:
-      return Llvm_Float_Type ((uint32_t)To_Bits (t->size));
+      return Llvm_Float_Type ((uint32_t)To_Bits (type_info->size));
     case TYPE_ACCESS:
 
       /* Access to unconstrained array/STRING needs fat pointer { ptr, ptr }.
        * Chase through constrained subtypes to the root declaration so
        * ACCESS ARR (1..N) still uses fat pointer when ARR is unconstrained.
        * (RM 3.10, GNAT LLVM convention) */
-      if (t->access.designated_type) {
-        Type_Info *d = t->access.designated_type;
-        while (d and Type_Is_Array_Like (d) and d->array.is_constrained
-             and d->base_type and Type_Is_Array_Like (d->base_type))
-          d = d->base_type;
-        if (Type_Is_String (d) or Type_Is_Unconstrained_Array (d)) {
+      if (type_info->access.designated_type) {
+        Type_Info *designated = type_info->access.designated_type;
+        while (designated and Type_Is_Array_Like (designated) and designated->array.is_constrained
+             and designated->base_type and Type_Is_Array_Like (designated->base_type))
+          designated = designated->base_type;
+        if (Type_Is_String (designated) or Type_Is_Unconstrained_Array (designated)) {
           return FAT_PTR_TYPE;
         }
       }
@@ -6454,26 +6454,26 @@ static const char *Type_To_Llvm(Type_Info *t) {
     case TYPE_ARRAY:
 
       /* Unconstrained arrays use fat pointers { ptr, ptr } */
-      return (t->array.is_constrained) ? "ptr" : FAT_PTR_TYPE;
+      return (type_info->array.is_constrained) ? "ptr" : FAT_PTR_TYPE;
     case TYPE_STRING:
 
       /* Unconstrained STRING > fat pointer { ptr, ptr }
        * Constrained STRING (e.g., STRING (1..6)) > ptr to flat array */
-      return (t->array.is_constrained) ? "ptr" : FAT_PTR_TYPE;
+      return (type_info->array.is_constrained) ? "ptr" : FAT_PTR_TYPE;
     default:
       fprintf (stderr, "error: Type_To_Llvm unhandled type kind %d for '%.*s'\n",
-          t->kind, (int)t->name.length, t->name.data);
-      return Llvm_Int_Type ((uint32_t)To_Bits (t->size));  /* ERROR path — derive from size */
+          type_info->kind, (int)type_info->name.length, type_info->name.data);
+      return Llvm_Int_Type ((uint32_t)To_Bits (type_info->size));  /* ERROR path — derive from size */
   }
 }
 
 /* Like Type_To_Llvm but for function signatures: constrained arrays with
  * dynamic bounds are passed/returned as fat pointers {ptr, ptr}. */
-static const char *Type_To_Llvm_Sig(Type_Info *t) {
-  if (t and (t->kind == TYPE_ARRAY or t->kind == TYPE_STRING) and
-    t->array.is_constrained and Type_Has_Dynamic_Bounds (t))
+static const char *Type_To_Llvm_Sig (Type_Info *type_info) {
+  if (type_info and (type_info->kind == TYPE_ARRAY or type_info->kind == TYPE_STRING) and
+    type_info->array.is_constrained and Type_Has_Dynamic_Bounds (type_info))
     return FAT_PTR_TYPE;
-  return Type_To_Llvm (t);
+  return Type_To_Llvm (type_info);
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────────────────────────
@@ -6486,32 +6486,32 @@ static const char *Type_To_Llvm_Sig(Type_Info *t) {
 
 /* Get the native LLVM type for array bounds based on the index type.
  * Every call site MUST supply an actual array/string/access-to-array type. */
-static const char *Array_Bound_Llvm_Type(const Type_Info *t) {
-  if (not t) {
+static const char *Array_Bound_Llvm_Type (const Type_Info *type_info) {
+  if (not type_info) {
     fprintf (stderr, "BUG: Array_Bound_Llvm_Type called with NULL\n");
     return STRING_BOUND_TYPE;  /* safety net — default STRING bound type */
   }
 
   /* Access > designated type */
-  if (t->kind == TYPE_ACCESS and t->access.designated_type)
-    t = t->access.designated_type;
+  if (type_info->kind == TYPE_ACCESS and type_info->access.designated_type)
+    type_info = type_info->access.designated_type;
 
   /* Private/incomplete > parent */
-  if ((Type_Is_Private (t) or t->kind == TYPE_INCOMPLETE) and t->parent_type)
-    return Array_Bound_Llvm_Type (t->parent_type);
+  if ((Type_Is_Private (type_info) or type_info->kind == TYPE_INCOMPLETE) and type_info->parent_type)
+    return Array_Bound_Llvm_Type (type_info->parent_type);
 
   /* STRING > derive bound type from index type (POSITIVE > INTEGER).
    * GNAT LLVM style: Bound_Sub_GT from index subtype's base type. */
-  if (t->kind == TYPE_STRING) {
-    if (t->array.index_count > 0 and t->array.indices and
-      t->array.indices[0].index_type) {
-      return Type_To_Llvm (t->array.indices[0].index_type);
+  if (type_info->kind == TYPE_STRING) {
+    if (type_info->array.index_count > 0 and type_info->array.indices and
+      type_info->array.indices[0].index_type) {
+      return Type_To_Llvm (type_info->array.indices[0].index_type);
     }
     return STRING_BOUND_TYPE;  /* pre-init fallback only */
   }
-  if (t->kind != TYPE_ARRAY) {
+  if (type_info->kind != TYPE_ARRAY) {
     fprintf (stderr, "BUG: Array_Bound_Llvm_Type: non-array kind %d '%.*s'\n",
-        t->kind, (int)t->name.length, t->name.data);
+        type_info->kind, (int)type_info->name.length, type_info->name.data);
     return STRING_BOUND_TYPE;  /* safety net — default STRING bound type */
   }
 
@@ -6519,15 +6519,15 @@ static const char *Array_Bound_Llvm_Type(const Type_Info *t) {
    * For multi-dimensional arrays, return the WIDEST type across all
    * dimensions to avoid truncating bounds of wider index types.
    * E.g., ARRAY (BOOLEAN, INTEGER RANGE ..) > use i32 not i8. */
-  if (t->array.index_count > 0 and t->array.indices and
-    t->array.indices[0].index_type) {
-    const char *widest = Type_To_Llvm (t->array.indices[0].index_type);
-    uint32_t widest_sz = t->array.indices[0].index_type->size;
-    for (uint32_t i = 1; i < t->array.index_count; i++) {
-      if (t->array.indices[i].index_type and
-        t->array.indices[i].index_type->size > widest_sz) {
-        widest = Type_To_Llvm (t->array.indices[i].index_type);
-        widest_sz = t->array.indices[i].index_type->size;
+  if (type_info->array.index_count > 0 and type_info->array.indices and
+    type_info->array.indices[0].index_type) {
+    const char *widest = Type_To_Llvm (type_info->array.indices[0].index_type);
+    uint32_t widest_sz = type_info->array.indices[0].index_type->size;
+    for (uint32_t i = 1; i < type_info->array.index_count; i++) {
+      if (type_info->array.indices[i].index_type and
+        type_info->array.indices[i].index_type->size > widest_sz) {
+        widest = Type_To_Llvm (type_info->array.indices[i].index_type);
+        widest_sz = type_info->array.indices[i].index_type->size;
       }
     }
     return widest;
@@ -6536,9 +6536,9 @@ static const char *Array_Bound_Llvm_Type(const Type_Info *t) {
   /* No index type info — infer from array context.
    * This can happen for dynamically constrained arrays. */
   /* Try to infer from bound values */
-  if (t->array.index_count > 0 and t->array.indices) {
-    Type_Bound lb = t->array.indices[0].low_bound;
-    Type_Bound hb = t->array.indices[0].high_bound;
+  if (type_info->array.index_count > 0 and type_info->array.indices) {
+    Type_Bound lb = type_info->array.indices[0].low_bound;
+    Type_Bound hb = type_info->array.indices[0].high_bound;
 
     /* Static bounds — use minimum width that fits */
     if (lb.kind == BOUND_INTEGER and hb.kind == BOUND_INTEGER) {
@@ -6548,7 +6548,7 @@ static const char *Array_Bound_Llvm_Type(const Type_Info *t) {
 
   /* Last resort: INTEGER is the standard index type in Ada 83 */
   fprintf (stderr, "note: Array_Bound_Llvm_Type: no index type for '%.*s'\n",
-      (int)t->name.length, t->name.data);
+      (int)type_info->name.length, type_info->name.data);
   return STRING_BOUND_TYPE;
 }
 
@@ -6556,14 +6556,14 @@ static const char *Array_Bound_Llvm_Type(const Type_Info *t) {
  * e.g., Bounds_Type_For ("i32") > "{ i32, i32 }".
  * Used when allocating/loading/storing the bounds struct behind
  * the second pointer in a { ptr, ptr } fat pointer. */
-static const char *Bounds_Type_For(const char *bt) {
+static const char *Bounds_Type_For (const char *bound_type) {
 
   /* GNAT LLVM style: bounds struct uses the NATIVE index type.
    * e.g. Bounds_Type_For ("i32") > "{ i32, i32 }"
    * See gnatllvm-arrays-create.adb:586-636.
    * Dispatch by bit width to avoid strcmp chain. */
-  if (not bt or bt[0] != 'i') return STRING_BOUNDS_STRUCT;
-  int bits = atoi (bt + 1);
+  if (not bound_type or bound_type[0] != 'i') return STRING_BOUNDS_STRUCT;
+  int bits = atoi (bound_type + 1);
   switch (bits) {
     case 8:   return "{ i8, i8 }";
     case 16:  return "{ i16, i16 }";
@@ -6574,13 +6574,13 @@ static const char *Bounds_Type_For(const char *bt) {
   }
 }
 
-/* Return the allocation size in bytes for a bounds struct { bt, bt }.
+/* Return the allocation size in bytes for a bounds struct.
  * Used when allocating bounds on the secondary stack (for returned fat ptrs). */
-static int Bounds_Alloc_Size (const char *bt) {
+static int Bounds_Alloc_Size (const char *bound_type) {
 
   /* Size = 2 * (bits / 8).  E.g. { i32, i32 } = 8 bytes. */
-  if (not bt or bt[0] != 'i') return STRING_BOUNDS_ALLOC;
-  int bits = atoi (bt + 1);
+  if (not bound_type or bound_type[0] != 'i') return STRING_BOUNDS_ALLOC;
+  int bits = atoi (bound_type + 1);
   return 2 * (bits / 8);
 }
 
@@ -6880,13 +6880,13 @@ static Symbol_Manager *sm;
  * Lexical scoping is a tree; visibility rules turn it into a forest.
  * ────────────────────────────────────────────────────────────────────────────────────────────── */
 static Scope *Scope_New (Scope *parent) {
-  Scope *scope = Arena_Allocate (sizeof (Scope));
-  scope->parent = parent;
-  scope->nesting_level = parent ? parent->nesting_level + 1 : 0;
+  Scope *scope          = Arena_Allocate (sizeof (Scope));
+  scope->parent         = parent;
+  scope->nesting_level  = parent ? parent->nesting_level + 1 : 0;
 
   /* Inherit frame_size from parent so nested scope variables get unique offsets.
    * This ensures variables in DECLARE blocks don't overlap with outer variables. */
-  scope->frame_size = parent ? parent->frame_size : 0;
+  scope->frame_size     = parent ? parent->frame_size : 0;
   return scope;
 }
 static void Symbol_Manager_Push_Scope (Symbol *owner) {
@@ -6963,18 +6963,18 @@ static void Symbol_Manager_Push_Existing_Scope (Scope *scope) {
 static uint32_t Symbol_Hash_Name (String_Slice name) {
   return (uint32_t)(Slice_Hash (name) % SYMBOL_TABLE_SIZE);
 }
-static Symbol *Symbol_New (Symbol_Kind kind, String_Slice name, Source_Location loc) {
-  Symbol *sym = Arena_Allocate (sizeof (Symbol));
-  sym->kind = kind;
-  sym->name = name;
-  sym->location = loc;
-  sym->visibility = VIS_IMMEDIATELY_VISIBLE;
+static Symbol *Symbol_New (Symbol_Kind kind, String_Slice name, Source_Location location) {
+  Symbol *sym      = Arena_Allocate (sizeof (Symbol));
+  sym->kind        = kind;
+  sym->name        = name;
+  sym->location    = location;
+  sym->visibility  = VIS_IMMEDIATELY_VISIBLE;
   return sym;
 }
 static void Symbol_Add (Symbol *sym) {
-  Scope *scope = sm->current_scope;
-  uint32_t hash = Symbol_Hash_Name (sym->name);
-  Symbol *existing = scope->buckets[hash];
+  Scope    *scope    = sm->current_scope;
+  uint32_t  hash     = Symbol_Hash_Name (sym->name);
+  Symbol   *existing = scope->buckets[hash];
 
   /* Check if symbol is already in this bucket (avoid self-cycle) */
   while (existing) {
@@ -7032,8 +7032,7 @@ static void Symbol_Add (Symbol *sym) {
         return;
       }
 
-      /* Same symbol already exists at this scope - skip */
-      /* Same symbol already exists at this scope - skip */
+      /* Same symbol already exists at this scope — skip */
       return;
     }
     existing = existing->next_in_bucket;
@@ -7042,9 +7041,9 @@ static void Symbol_Add (Symbol *sym) {
   /* Only assign unique_id if not already set */
   if (sym->unique_id == 0)
     sym->unique_id = sm->next_unique_id++;
-  sym->defining_scope = scope;
-  sym->nesting_level = scope->nesting_level;
-  sym->next_in_bucket = scope->buckets[hash];
+  sym->defining_scope  = scope;
+  sym->nesting_level   = scope->nesting_level;
+  sym->next_in_bucket  = scope->buckets[hash];
   scope->buckets[hash] = sym;
 
   /* Set parent to enclosing package/subprogram for nested symbol support */
@@ -7646,24 +7645,27 @@ static Symbol *Resolve_Overloaded_Call (
 static void Symbol_Manager_Init_Predefined (void) {
 
   /* Create predefined types */
-  sm->type_boolean = Type_New (TYPE_BOOLEAN, S("BOOLEAN"));
-  sm->type_boolean->size = 1;
-  sm->type_boolean->low_bound = (Type_Bound){BOUND_INTEGER, {.int_value = 0}};
-  sm->type_boolean->high_bound = (Type_Bound){BOUND_INTEGER, {.int_value = 1}};
-  sm->type_integer = Type_New (TYPE_INTEGER, S("INTEGER"));
-  sm->type_integer->size = 4;  /* 32-bit INTEGER — matches GNAT and standard Ada convention */
-  sm->type_integer->low_bound = (Type_Bound){BOUND_INTEGER, {.int_value = INT32_MIN}};
-  sm->type_integer->high_bound = (Type_Bound){BOUND_INTEGER, {.int_value = INT32_MAX}};
-  sm->type_float = Type_New (TYPE_FLOAT, S("FLOAT"));
-  sm->type_float->size = 8;  /* double precision */
+  sm->type_boolean             = Type_New (TYPE_BOOLEAN, S ("BOOLEAN"));
+  sm->type_boolean->size       = 1;
+  sm->type_boolean->low_bound  = (Type_Bound){ .kind = BOUND_INTEGER, .int_value = 0 };
+  sm->type_boolean->high_bound = (Type_Bound){ .kind = BOUND_INTEGER, .int_value = 1 };
+
+  sm->type_integer             = Type_New (TYPE_INTEGER, S ("INTEGER"));
+  sm->type_integer->size       = 4;  /* 32-bit — matches GNAT and standard Ada convention */
+  sm->type_integer->low_bound  = (Type_Bound){ .kind = BOUND_INTEGER, .int_value = INT32_MIN };
+  sm->type_integer->high_bound = (Type_Bound){ .kind = BOUND_INTEGER, .int_value = INT32_MAX };
+
+  sm->type_float             = Type_New (TYPE_FLOAT, S ("FLOAT"));
+  sm->type_float->size       = 8;   /* double precision */
   sm->type_float->flt.digits = 15;  /* IEEE double: ~15 decimal digits */
-  sm->type_character = Type_New (TYPE_CHARACTER, S("CHARACTER"));
-  sm->type_character->size = 1;
+
+  sm->type_character             = Type_New (TYPE_CHARACTER, S ("CHARACTER"));
+  sm->type_character->size       = 1;
   sm->type_character->low_bound  = (Type_Bound){ .kind = BOUND_INTEGER, .int_value = 0   };
   sm->type_character->high_bound = (Type_Bound){ .kind = BOUND_INTEGER, .int_value = 127 };
-  sm->type_string = Type_New (TYPE_STRING, S("STRING"));
-  sm->type_string->size = 16;  /* Fat pointer: ptr + length */
-  sm->type_string->array.element_type = sm->type_character;  /* STRING is array of CHARACTER */
+  sm->type_string                    = Type_New (TYPE_STRING, S ("STRING"));
+  sm->type_string->size              = 16;  /* Fat pointer: ptr + length */
+  sm->type_string->array.element_type = sm->type_character;
 
   /* STRING's index type is POSITIVE (RM 3.6.3).  Wire it into the type
    * system so Array_Bound_Llvm_Type can derive the bound type from the
@@ -7671,13 +7673,14 @@ static void Symbol_Manager_Init_Predefined (void) {
    * subtype's base type (see gnatllvm-arrays-create.adb).
    * NOTE: type_positive is allocated below; we back-patch after it exists. */
 
-  /* DURATION is a predefined fixed-point type for time intervals */
-  sm->type_duration = Type_New (TYPE_FIXED, S("DURATION"));
-  sm->type_duration->size = 8;  /* 64-bit for high precision */
-  sm->type_duration->fixed.delta = 0.00001;  /* 10 microsecond resolution */
-  sm->type_universal_integer = Type_New (TYPE_UNIVERSAL_INTEGER, S("universal_integer"));
+  sm->type_duration             = Type_New (TYPE_FIXED, S ("DURATION"));
+  sm->type_duration->size       = 8;        /* 64-bit for high precision */
+  sm->type_duration->fixed.delta = 0.00001; /* 10 microsecond resolution */
+
+  sm->type_universal_integer       = Type_New (TYPE_UNIVERSAL_INTEGER, S ("universal_integer"));
   sm->type_universal_integer->size = 4;  /* 32 bits — same as INTEGER (RM 3.5.4) */
-  sm->type_universal_real = Type_New (TYPE_UNIVERSAL_REAL, S("universal_real"));
+
+  sm->type_universal_real       = Type_New (TYPE_UNIVERSAL_REAL, S ("universal_real"));
   sm->type_universal_real->size = 8;  /* 64 bits / double precision */
 
   /* Add predefined type symbols to global scope */
@@ -7689,79 +7692,83 @@ static void Symbol_Manager_Init_Predefined (void) {
   Symbol_Add (sym_integer);
 
   /* NATURAL is subtype INTEGER range 0..INTEGER'LAST */
-  Symbol *sym_natural = Symbol_New (SYMBOL_SUBTYPE, S("NATURAL"), No_Location);
-  Type_Info *type_natural = Type_New (TYPE_INTEGER, S("NATURAL"));
-  type_natural->base_type = sm->type_integer;
-  type_natural->size = sm->type_integer->size;
-  type_natural->alignment = sm->type_integer->alignment;
-  type_natural->low_bound = (Type_Bound){ .kind = BOUND_INTEGER, .int_value = 0 };
+  Symbol    *sym_natural  = Symbol_New (SYMBOL_SUBTYPE, S ("NATURAL"), No_Location);
+  Type_Info *type_natural = Type_New (TYPE_INTEGER, S ("NATURAL"));
+  type_natural->base_type  = sm->type_integer;
+  type_natural->size       = sm->type_integer->size;
+  type_natural->alignment  = sm->type_integer->alignment;
+  type_natural->low_bound  = (Type_Bound){ .kind = BOUND_INTEGER, .int_value = 0 };
   type_natural->high_bound = sm->type_integer->high_bound;
-  sym_natural->type = type_natural;
+  sym_natural->type        = type_natural;
   Symbol_Add (sym_natural);
 
   /* POSITIVE is subtype INTEGER range 1..INTEGER'LAST */
-  Symbol *sym_positive = Symbol_New (SYMBOL_SUBTYPE, S("POSITIVE"), No_Location);
-  Type_Info *type_positive = Type_New (TYPE_INTEGER, S("POSITIVE"));
-  type_positive->base_type = sm->type_integer;
-  type_positive->size = sm->type_integer->size;
-  type_positive->alignment = sm->type_integer->alignment;
-  type_positive->low_bound = (Type_Bound){ .kind = BOUND_INTEGER, .int_value = 1 };
+  Symbol    *sym_positive  = Symbol_New (SYMBOL_SUBTYPE, S ("POSITIVE"), No_Location);
+  Type_Info *type_positive = Type_New (TYPE_INTEGER, S ("POSITIVE"));
+  type_positive->base_type  = sm->type_integer;
+  type_positive->size       = sm->type_integer->size;
+  type_positive->alignment  = sm->type_integer->alignment;
+  type_positive->low_bound  = (Type_Bound){ .kind = BOUND_INTEGER, .int_value = 1 };
   type_positive->high_bound = sm->type_integer->high_bound;
-  sym_positive->type = type_positive;
+  sym_positive->type        = type_positive;
   Symbol_Add (sym_positive);
 
   /* Back-patch STRING's index type to POSITIVE (deferred from above).
    * This makes Array_Bound_Llvm_Type derive STRING's bound type from
    * POSITIVE's base type (INTEGER), matching GNAT LLVM's Bound_Sub_GT. */
-  sm->type_string->array.indices = Arena_Allocate (sizeof (Index_Info));
-  sm->type_string->array.index_count = 1;
-  sm->type_string->array.indices[0].index_type = type_positive;
-  sm->type_string->array.indices[0].low_bound =
+  sm->type_string->array.indices                = Arena_Allocate (sizeof (Index_Info));
+  sm->type_string->array.index_count            = 1;
+  sm->type_string->array.indices[0].index_type  = type_positive;
+  sm->type_string->array.indices[0].low_bound   =
     (Type_Bound){ .kind = BOUND_INTEGER, .int_value = 1 };
-  sm->type_string->array.indices[0].high_bound =
-    sm->type_integer->high_bound;
-  Symbol *sym_float = Symbol_New (SYMBOL_TYPE, S("FLOAT"), No_Location);
-  sym_float->type = sm->type_float;
+  sm->type_string->array.indices[0].high_bound  = sm->type_integer->high_bound;
+
+  Symbol *sym_float      = Symbol_New (SYMBOL_TYPE, S ("FLOAT"), No_Location);
+  sym_float->type        = sm->type_float;
   Symbol_Add (sym_float);
-  Symbol *sym_duration = Symbol_New (SYMBOL_TYPE, S("DURATION"), No_Location);
-  sym_duration->type = sm->type_duration;
+
+  Symbol *sym_duration   = Symbol_New (SYMBOL_TYPE, S ("DURATION"), No_Location);
+  sym_duration->type     = sm->type_duration;
   Symbol_Add (sym_duration);
-  Symbol *sym_character = Symbol_New (SYMBOL_TYPE, S("CHARACTER"), No_Location);
-  sym_character->type = sm->type_character;
+
+  Symbol *sym_character  = Symbol_New (SYMBOL_TYPE, S ("CHARACTER"), No_Location);
+  sym_character->type    = sm->type_character;
   Symbol_Add (sym_character);
-  Symbol *sym_string = Symbol_New (SYMBOL_TYPE, S("STRING"), No_Location);
-  sym_string->type = sm->type_string;
+
+  Symbol *sym_string     = Symbol_New (SYMBOL_TYPE, S ("STRING"), No_Location);
+  sym_string->type       = sm->type_string;
   Symbol_Add (sym_string);
 
   /* Boolean literals */
-  Symbol *sym_false = Symbol_New (SYMBOL_LITERAL, S("FALSE"), No_Location);
-  sym_false->type = sm->type_boolean;
+  Symbol *sym_false        = Symbol_New (SYMBOL_LITERAL, S ("FALSE"), No_Location);
+  sym_false->type          = sm->type_boolean;
   Symbol_Add (sym_false);
-  Symbol *sym_true = Symbol_New (SYMBOL_LITERAL, S("TRUE"), No_Location);
-  sym_true->type = sm->type_boolean;
-  sym_true->frame_offset = 1;  /* TRUE has position 1 in BOOLEAN (RM 3.5.3) */
+
+  Symbol *sym_true         = Symbol_New (SYMBOL_LITERAL, S ("TRUE"), No_Location);
+  sym_true->type           = sm->type_boolean;
+  sym_true->frame_offset   = 1;  /* TRUE has position 1 in BOOLEAN (RM 3.5.3) */
   Symbol_Add (sym_true);
 
   /* Predefined exceptions (RM 11.1) */
-  Symbol *sym_constraint_error = Symbol_New (SYMBOL_EXCEPTION, S("CONSTRAINT_ERROR"), No_Location);
+  Symbol *sym_constraint_error = Symbol_New (SYMBOL_EXCEPTION, S ("CONSTRAINT_ERROR"), No_Location);
+  Symbol *sym_numeric_error    = Symbol_New (SYMBOL_EXCEPTION, S ("NUMERIC_ERROR"),    No_Location);
+  Symbol *sym_program_error    = Symbol_New (SYMBOL_EXCEPTION, S ("PROGRAM_ERROR"),    No_Location);
+  Symbol *sym_storage_error    = Symbol_New (SYMBOL_EXCEPTION, S ("STORAGE_ERROR"),    No_Location);
   Symbol_Add (sym_constraint_error);
-  Symbol *sym_numeric_error = Symbol_New (SYMBOL_EXCEPTION, S("NUMERIC_ERROR"), No_Location);
   Symbol_Add (sym_numeric_error);
-  Symbol *sym_program_error = Symbol_New (SYMBOL_EXCEPTION, S("PROGRAM_ERROR"), No_Location);
   Symbol_Add (sym_program_error);
-  Symbol *sym_storage_error = Symbol_New (SYMBOL_EXCEPTION, S("STORAGE_ERROR"), No_Location);
   Symbol_Add (sym_storage_error);
-  Symbol *sym_tasking_error = Symbol_New (SYMBOL_EXCEPTION, S("TASKING_ERROR"), No_Location);
+  Symbol *sym_tasking_error     = Symbol_New (SYMBOL_EXCEPTION, S ("TASKING_ERROR"),   No_Location);
   Symbol_Add (sym_tasking_error);
 
-  /* SYSTEM.ADDRESS (RM 13.7) - implementation-defined private type
+  /* SYSTEM.ADDRESS (RM 13.7) — implementation-defined private type.
    * In our implementation, ADDRESS is a 64-bit integer type.
    * Bounds cover full i64 range so ptrtoint values always pass checks. */
-  sm->type_address = Type_New (TYPE_INTEGER, S("ADDRESS"));
-  sm->type_address->size = 8;  /* 64-bit addresses */
-  sm->type_address->alignment = 8;
-  sm->type_address->low_bound  = (Type_Bound){.kind = BOUND_INTEGER, .int_value = INT64_MIN};
-  sm->type_address->high_bound = (Type_Bound){.kind = BOUND_INTEGER, .int_value = INT64_MAX};
+  sm->type_address             = Type_New (TYPE_INTEGER, S ("ADDRESS"));
+  sm->type_address->size       = 8;  /* 64-bit addresses */
+  sm->type_address->alignment  = 8;
+  sm->type_address->low_bound  = (Type_Bound){ .kind = BOUND_INTEGER, .int_value = INT64_MIN };
+  sm->type_address->high_bound = (Type_Bound){ .kind = BOUND_INTEGER, .int_value = INT64_MAX };
 
   /* STANDARD package (RM 8.6) - the implicit library containing predefined types
    * All visible entities are implicitly declared here */
@@ -7835,30 +7842,37 @@ static void Symbol_Manager_Init_Predefined (void) {
   };
   Type_Info *num_types[] = { sm->type_integer, sm->type_float };
   for (uint32_t ti = 0; ti < 2; ti++) {
-    Type_Info *ty = num_types[ti];
-    for (uint32_t i = 0; i < sizeof (predef_ops)/sizeof (predef_ops[0]); i++) {
-      String_Slice op_name = { predef_ops[i].name, strlen (predef_ops[i].name) };
-      Symbol *op_sym = Symbol_New (SYMBOL_FUNCTION, op_name, No_Location);
-      op_sym->is_predefined = true;
-      op_sym->return_type = predef_ops[i].returns_bool ? sm->type_boolean : ty;
-      if (predef_ops[i].is_binary) {
+    Type_Info *numeric_type = num_types[ti];
+    for (uint32_t oi = 0; oi < sizeof (predef_ops) / sizeof (predef_ops[0]); oi++) {
+      String_Slice op_name = { .data   = predef_ops[oi].name,
+                               .length = strlen (predef_ops[oi].name) };
+      Symbol *op_sym         = Symbol_New (SYMBOL_FUNCTION, op_name, No_Location);
+      op_sym->is_predefined  = true;
+      op_sym->return_type    = predef_ops[oi].returns_bool ? sm->type_boolean : numeric_type;
+      if (predef_ops[oi].is_binary) {
         op_sym->parameter_count = 2;
-        op_sym->parameters = Arena_Allocate (2 * sizeof (Parameter_Info));
-        op_sym->parameters[0] = (Parameter_Info){S("LEFT"), ty, PARAM_IN, NULL, NULL};
-        op_sym->parameters[1] = (Parameter_Info){S("RIGHT"), ty, PARAM_IN, NULL, NULL};
+        op_sym->parameters      = Arena_Allocate (2 * sizeof (Parameter_Info));
+        op_sym->parameters[0]   = (Parameter_Info){ .name       = S ("LEFT"),
+                                                    .param_type = numeric_type,
+                                                    .mode       = PARAM_IN };
+        op_sym->parameters[1]   = (Parameter_Info){ .name       = S ("RIGHT"),
+                                                    .param_type = numeric_type,
+                                                    .mode       = PARAM_IN };
       } else {
         op_sym->parameter_count = 1;
-        op_sym->parameters = Arena_Allocate (1 * sizeof (Parameter_Info));
-        op_sym->parameters[0] = (Parameter_Info){S("RIGHT"), ty, PARAM_IN, NULL, NULL};
+        op_sym->parameters      = Arena_Allocate (1 * sizeof (Parameter_Info));
+        op_sym->parameters[0]   = (Parameter_Info){ .name       = S ("RIGHT"),
+                                                    .param_type = numeric_type,
+                                                    .mode       = PARAM_IN };
       }
       Symbol_Add (op_sym);
     }
   }
 }
 static void Symbol_Manager_Init (void) {
-  sm = Arena_Allocate (sizeof (Symbol_Manager));
-  sm->global_scope = Scope_New (NULL);
-  sm->current_scope = sm->global_scope;
+  sm                 = Arena_Allocate (sizeof (Symbol_Manager));
+  sm->global_scope   = Scope_New (NULL);
+  sm->current_scope  = sm->global_scope;
   sm->next_unique_id = 1;
   Symbol_Manager_Init_Predefined ();
 }
@@ -7885,8 +7899,8 @@ static Type_Info *Resolve_Identifier (Syntax_Node *node) {
   Symbol *sym = Symbol_Find (node->string_val.text);
   if (not sym) {
     Report_Error (node->location, "undefined identifier '%.*s'",
-          node->string_val.text.length, node->string_val.text.data);
-    return sm->type_integer;  /* ??? Continue; one error is better than ten. */
+                  node->string_val.text.length, node->string_val.text.data);
+    return sm->type_integer;  /* Return a valid type to allow continued analysis */
   }
   node->symbol = sym;
 
@@ -8914,71 +8928,71 @@ static Type_Info *Resolve_Apply (Syntax_Node *node) {
  * Evaluate Constant Numeric Expression (for delta, bounds in type defs)
  * Returns NaN if not a static constant expression
  * ────────────────────────────────────────────────────────────────────────────────────────────── */
-static bool Is_Integer_Expr (Syntax_Node *n);  /* Forward declaration */
-static bool Is_Integer_Expr (Syntax_Node *n) {
+static bool Is_Integer_Expr (Syntax_Node *node);  /* Forward declaration */
+static bool Is_Integer_Expr (Syntax_Node *node) {
 
   /* Returns true if the expression is integer-typed (for division semantics) */
-  if (not n) return false;
-  switch (n->kind) {
+  if (not node) return false;
+  switch (node->kind) {
 
     /* Check if named number/constant is integer */
     case NK_INTEGER: return true;
     case NK_REAL:    return false;
     case NK_IDENTIFIER:
     case NK_SELECTED: {
-      Symbol *sym = n->symbol;
+      Symbol *sym = node->symbol;
       if (sym and sym->kind == SYMBOL_CONSTANT and sym->is_named_number and
         sym->declaration and sym->declaration->kind == NK_OBJECT_DECL) {
         return Is_Integer_Expr (sym->declaration->object_decl.init);
       }
 
       /* Check type if available */
-      if (Type_Is_Integer_Like (n->type)) return true;
+      if (Type_Is_Integer_Like (node->type)) return true;
       return false;
     }
     case NK_UNARY_OP:
-      return Is_Integer_Expr (n->unary.operand);
+      return Is_Integer_Expr (node->unary.operand);
     case NK_BINARY_OP:
-      return Is_Integer_Expr (n->binary.left) and Is_Integer_Expr (n->binary.right);
+      return Is_Integer_Expr (node->binary.left) and Is_Integer_Expr (node->binary.right);
     case NK_APPLY:
 
       /* For type conversions TYPE (arg), check if arg is integer */
-      if (n->apply.arguments.count == 1 and
-        n->apply.prefix and n->apply.prefix->symbol and
-        n->apply.prefix->symbol->kind == SYMBOL_TYPE) {
-        return Is_Integer_Expr (n->apply.arguments.items[0]);
+      if (node->apply.arguments.count == 1 and
+        node->apply.prefix and node->apply.prefix->symbol and
+        node->apply.prefix->symbol->kind == SYMBOL_TYPE) {
+        return Is_Integer_Expr (node->apply.arguments.items[0]);
       }
       return false;
     default:
       return false;
   }
 }
-static double Eval_Const_Numeric (Syntax_Node *n) {
-  if (not n) return 0.0/0.0;
-  switch (n->kind) {
-    case NK_REAL:    return n->real_lit.value;
-    case NK_INTEGER: return (double)n->integer_lit.value;
+static double Eval_Const_Numeric (Syntax_Node *node) {
+  if (not node) return 0.0/0.0;
+  switch (node->kind) {
+    case NK_REAL:    return node->real_lit.value;
+    case NK_INTEGER: return (double)node->integer_lit.value;
     case NK_CHARACTER:
 
       /* Character literals have position value in symbol->frame_offset */
-      if (n->symbol and n->symbol->kind == SYMBOL_LITERAL) {
-        return (double)n->symbol->frame_offset;
+      if (node->symbol and node->symbol->kind == SYMBOL_LITERAL) {
+        return (double)node->symbol->frame_offset;
       }
 
       /* Fallback: use ASCII code - character literals store their value in string_val.text */
       /* Format is 'X' (length 3) - extract the middle character at index 1 */
-      if (n->string_val.text.length >= 2) {
-        return (double)(unsigned char)n->string_val.text.data[1];
+      if (node->string_val.text.length >= 2) {
+        return (double)(unsigned char)node->string_val.text.data[1];
       }
-      if (n->string_val.text.length == 1) {
-        return (double)(unsigned char)n->string_val.text.data[0];
+      if (node->string_val.text.length == 1) {
+        return (double)(unsigned char)node->string_val.text.data[0];
       }
       return 0.0/0.0;
 
     /* Check for character/enum literal first */
     case NK_IDENTIFIER:
     case NK_SELECTED: {
-      Symbol *sym = n->symbol;
+      Symbol *sym = node->symbol;
       if (sym and sym->kind == SYMBOL_LITERAL) {
         return (double)sym->frame_offset;
       }
@@ -9005,14 +9019,14 @@ static double Eval_Const_Numeric (Syntax_Node *n) {
     case NK_QUALIFIED:
 
       /* Qualified expression: TYPE'(expr) - evaluate the inner expression */
-      if (n->qualified.expression) {
-        Syntax_Node *inner = n->qualified.expression;
+      if (node->qualified.expression) {
+        Syntax_Node *inner = node->qualified.expression;
 
         /* Handle character literal inside qualified expression:
          * look up in the qualifying type's enumeration literals */
-        if (inner->kind == NK_CHARACTER and n->qualified.subtype_mark and
-          n->qualified.subtype_mark->type) {
-          Type_Info *qual_type = n->qualified.subtype_mark->type;
+        if (inner->kind == NK_CHARACTER and node->qualified.subtype_mark and
+          node->qualified.subtype_mark->type) {
+          Type_Info *qual_type = node->qualified.subtype_mark->type;
 
           /* Walk up to find the base enumeration type with literals */
           while (Type_Is_Enumeration (qual_type) and
@@ -9044,9 +9058,9 @@ static double Eval_Const_Numeric (Syntax_Node *n) {
 
     /* Type conversions: TYPE_NAME (expr) - evaluate the argument */
     case NK_APPLY: {
-      if (n->apply.prefix and n->apply.arguments.count == 1) {
-        Syntax_Node *arg = n->apply.arguments.items[0];
-        Syntax_Node *prefix = n->apply.prefix;
+      if (node->apply.prefix and node->apply.arguments.count == 1) {
+        Syntax_Node *arg = node->apply.arguments.items[0];
+        Syntax_Node *prefix = node->apply.prefix;
         if (prefix->kind == NK_IDENTIFIER and prefix->symbol and
           prefix->symbol->kind == SYMBOL_TYPE) {
           return Eval_Const_Numeric (arg);
@@ -9057,13 +9071,13 @@ static double Eval_Const_Numeric (Syntax_Node *n) {
 
     /* T'SIZE, T'FIRST, T'LAST, T'POS, T'LENGTH etc. */
     case NK_UNARY_OP:
-      if (n->unary.op == TK_MINUS) return -Eval_Const_Numeric (n->unary.operand);
-      if (n->unary.op == TK_PLUS)  return Eval_Const_Numeric (n->unary.operand);
-      if (n->unary.op == TK_ABS)   return fabs(Eval_Const_Numeric (n->unary.operand));
+      if (node->unary.op == TK_MINUS) return -Eval_Const_Numeric (node->unary.operand);
+      if (node->unary.op == TK_PLUS)  return Eval_Const_Numeric (node->unary.operand);
+      if (node->unary.op == TK_ABS)   return fabs(Eval_Const_Numeric (node->unary.operand));
       return 0.0/0.0;
     case NK_ATTRIBUTE: {
-      Type_Info *ty = n->attribute.prefix ? n->attribute.prefix->type : NULL;
-      String_Slice a = n->attribute.name;
+      Type_Info *ty = node->attribute.prefix ? node->attribute.prefix->type : NULL;
+      String_Slice a = node->attribute.name;
       if (not ty) return 0.0/0.0;
       if (Slice_Equal_Ignore_Case (a, S("SIZE")))
         return (double)(ty->size * 8);
@@ -9083,14 +9097,14 @@ static double Eval_Const_Numeric (Syntax_Node *n) {
         }
       }
       if (Slice_Equal_Ignore_Case (a, S("POS")) and
-        n->attribute.arguments.count == 1)
-        return Eval_Const_Numeric (n->attribute.arguments.items[0]);
+        node->attribute.arguments.count == 1)
+        return Eval_Const_Numeric (node->attribute.arguments.items[0]);
       return 0.0/0.0;
     }
     case NK_BINARY_OP: {
-      double l = Eval_Const_Numeric (n->binary.left);
-      double r = Eval_Const_Numeric (n->binary.right);
-      switch (n->binary.op) {
+      double l = Eval_Const_Numeric (node->binary.left);
+      double r = Eval_Const_Numeric (node->binary.right);
+      switch (node->binary.op) {
         case TK_PLUS:  return l + r;
         case TK_MINUS: return l - r;
         case TK_STAR:  return l * r;
@@ -9099,7 +9113,7 @@ static double Eval_Const_Numeric (Syntax_Node *n) {
 
           /* Ada integer division truncates toward zero (RM 4.5.5) */
           /* Only use integer division if BOTH operands are integer-typed */
-          if (Is_Integer_Expr (n->binary.left) and Is_Integer_Expr (n->binary.right) and
+          if (Is_Integer_Expr (node->binary.left) and Is_Integer_Expr (node->binary.right) and
             l == floor(l) and r == floor(r) and
             fabs(l) < 1e15 and fabs(r) < 1e15) {
             int64_t li = (int64_t)l;
@@ -9119,23 +9133,23 @@ static double Eval_Const_Numeric (Syntax_Node *n) {
  * Returns true and fills *out if the expression is a compile-time constant
  * representable as an exact rational number.  Used so that comparisons like
  * 0.1*0.1 = 0.01 or (2/3)**10 chain correctly without IEEE rounding errors. */
-static bool Eval_Const_Rational (Syntax_Node *n, Rational *out) {
-  if (not n) return false;
-  switch (n->kind) {
+static bool Eval_Const_Rational (Syntax_Node *node, Rational *out) {
+  if (not node) return false;
+  switch (node->kind) {
     case NK_REAL:
-      if (n->real_lit.big_value) {
-        *out = Rational_From_Big_Real (n->real_lit.big_value);
+      if (node->real_lit.big_value) {
+        *out = Rational_From_Big_Real (node->real_lit.big_value);
         return true;
       }
 
       /* Fallback: wrap double as rational — loses exactness */
       return false;
     case NK_INTEGER:
-      *out = Rational_From_Int ((int64_t)n->integer_lit.value);
+      *out = Rational_From_Int ((int64_t)node->integer_lit.value);
       return true;
     case NK_IDENTIFIER:
     case NK_SELECTED: {
-      Symbol *sym = n->symbol;
+      Symbol *sym = node->symbol;
       if (sym and sym->kind == SYMBOL_CONSTANT and sym->declaration
         and sym->declaration->kind == NK_OBJECT_DECL
         and sym->declaration->object_decl.init)
@@ -9148,22 +9162,22 @@ static bool Eval_Const_Rational (Syntax_Node *n, Rational *out) {
       return false;
     }
     case NK_QUALIFIED:
-      if (n->qualified.expression)
-        return Eval_Const_Rational (n->qualified.expression, out);
+      if (node->qualified.expression)
+        return Eval_Const_Rational (node->qualified.expression, out);
       return false;
     case NK_APPLY:
-      if (n->apply.prefix and n->apply.arguments.count == 1 and
-        n->apply.prefix->symbol and
-        n->apply.prefix->symbol->kind == SYMBOL_TYPE)
-        return Eval_Const_Rational (n->apply.arguments.items[0], out);
+      if (node->apply.prefix and node->apply.arguments.count == 1 and
+        node->apply.prefix->symbol and
+        node->apply.prefix->symbol->kind == SYMBOL_TYPE)
+        return Eval_Const_Rational (node->apply.arguments.items[0], out);
       return false;
     case NK_UNARY_OP: {
       Rational operand;
-      if (not Eval_Const_Rational (n->unary.operand, &operand)) return false;
-      if (n->unary.op == TK_MINUS) {
+      if (not Eval_Const_Rational (node->unary.operand, &operand)) return false;
+      if (node->unary.op == TK_MINUS) {
         operand.numerator = Big_Integer_Clone (operand.numerator);
         operand.numerator->is_negative = not operand.numerator->is_negative;
-      } else if (n->unary.op == TK_ABS) {
+      } else if (node->unary.op == TK_ABS) {
         operand.numerator = Big_Integer_Clone (operand.numerator);
         operand.numerator->is_negative = false;
       }
@@ -9174,16 +9188,16 @@ static bool Eval_Const_Rational (Syntax_Node *n, Rational *out) {
       Rational l, r;
 
       /* For exponentiation, exponent must be integer */
-      if (n->binary.op == TK_EXPON) {
-        if (not Eval_Const_Rational (n->binary.left, &l)) return false;
-        double re = Eval_Const_Numeric (n->binary.right);
+      if (node->binary.op == TK_EXPON) {
+        if (not Eval_Const_Rational (node->binary.left, &l)) return false;
+        double re = Eval_Const_Numeric (node->binary.right);
         if (re != re or re != floor(re) or fabs(re) > 1000) return false;
         *out = Rational_Pow (l, (int)re);
         return true;
       }
-      if (not Eval_Const_Rational (n->binary.left, &l)) return false;
-      if (not Eval_Const_Rational (n->binary.right, &r)) return false;
-      switch (n->binary.op) {
+      if (not Eval_Const_Rational (node->binary.left, &l)) return false;
+      if (not Eval_Const_Rational (node->binary.right, &r)) return false;
+      switch (node->binary.op) {
         case TK_PLUS:  *out = Rational_Add (l, r); return true;
         case TK_MINUS: *out = Rational_Sub (l, r); return true;
         case TK_STAR:  *out = Rational_Mul (l, r); return true;
@@ -9203,20 +9217,20 @@ static bool Eval_Const_Rational (Syntax_Node *n, Rational *out) {
  * Returns true on success, false if the expression is not a compile-time
  * integer constant.  Handles 2**64, 2**128, and all intermediate values
  * without sentinel hacks. */
-static bool Eval_Const_Uint128 (Syntax_Node *n, uint128_t *out) {
-  if (not n) return false;
-  switch (n->kind) {
+static bool Eval_Const_Uint128 (Syntax_Node *node, uint128_t *out) {
+  if (not node) return false;
+  switch (node->kind) {
     case NK_INTEGER:
 
       /* integer_lit.value is int64_t; for values > INT64_MAX, use big_value */
-      if (n->integer_lit.big_value) {
-        return Big_Integer_To_Uint128 (n->integer_lit.big_value, out);
+      if (node->integer_lit.big_value) {
+        return Big_Integer_To_Uint128 (node->integer_lit.big_value, out);
       }
-      *out = (uint128_t)(uint64_t)n->integer_lit.value;
+      *out = (uint128_t)(uint64_t)node->integer_lit.value;
       return true;
     case NK_IDENTIFIER:
     case NK_SELECTED: {
-      Symbol *sym = n ? n->symbol : NULL;
+      Symbol *sym = node ? node->symbol : NULL;
       if (sym and sym->kind == SYMBOL_CONSTANT and sym->is_named_number and
         sym->declaration and sym->declaration->kind == NK_OBJECT_DECL) {
         return Eval_Const_Uint128 (sym->declaration->object_decl.init, out);
@@ -9224,10 +9238,10 @@ static bool Eval_Const_Uint128 (Syntax_Node *n, uint128_t *out) {
       return false;
     }
     case NK_UNARY_OP:
-      if (n->unary.op == TK_PLUS) return Eval_Const_Uint128 (n->unary.operand, out);
-      if (n->unary.op == TK_MINUS) {
+      if (node->unary.op == TK_PLUS) return Eval_Const_Uint128 (node->unary.operand, out);
+      if (node->unary.op == TK_MINUS) {
         uint128_t v;
-        if (Eval_Const_Uint128 (n->unary.operand, &v)) {
+        if (Eval_Const_Uint128 (node->unary.operand, &v)) {
           *out = (uint128_t)(-(int128_t)v);
           return true;
         }
@@ -9235,9 +9249,9 @@ static bool Eval_Const_Uint128 (Syntax_Node *n, uint128_t *out) {
       return false;
     case NK_BINARY_OP: {
       uint128_t l, r;
-      if (not Eval_Const_Uint128 (n->binary.left, &l)) return false;
-      if (not Eval_Const_Uint128 (n->binary.right, &r)) return false;
-      switch (n->binary.op) {
+      if (not Eval_Const_Uint128 (node->binary.left, &l)) return false;
+      if (not Eval_Const_Uint128 (node->binary.right, &r)) return false;
+      switch (node->binary.op) {
 
         /* Integer exponentiation: l ** r.  For modular type declarations,
         * the common case is 2**N.  2**64 and 2**128 compute exactly
@@ -9267,11 +9281,11 @@ static bool Eval_Const_Uint128 (Syntax_Node *n, uint128_t *out) {
       }
     }
     case NK_APPLY: {
-      if (n->apply.prefix and n->apply.arguments.count == 1) {
-        Syntax_Node *prefix = n->apply.prefix;
+      if (node->apply.prefix and node->apply.arguments.count == 1) {
+        Syntax_Node *prefix = node->apply.prefix;
         if (prefix->kind == NK_IDENTIFIER and prefix->symbol and
           prefix->symbol->kind == SYMBOL_TYPE) {
-          return Eval_Const_Uint128 (n->apply.arguments.items[0], out);
+          return Eval_Const_Uint128 (node->apply.arguments.items[0], out);
         }
       }
       return false;
@@ -9282,94 +9296,81 @@ static bool Eval_Const_Uint128 (Syntax_Node *n, uint128_t *out) {
 
 /* Return bound value as int128_t.  For most types this fits in 64 bits;
  * for mod 2**128 the high bound is 2^128-1 which requires the full range. */
-static int128_t Type_Bound_Value (Type_Bound b) {
-  if (b.kind == BOUND_INTEGER) return b.int_value;
-  if (b.kind == BOUND_FLOAT) return (int128_t)b.float_value;
+static int128_t Type_Bound_Value (Type_Bound bound) {
+  if (bound.kind == BOUND_INTEGER) return bound.int_value;
+  if (bound.kind == BOUND_FLOAT)   return (int128_t) bound.float_value;
 
   /* Try to evaluate expression bound at compile time */
-  if (b.kind == BOUND_EXPR and b.expr) {
-    double val = Eval_Const_Numeric (b.expr);
-    if (val == val) return (int128_t)val;  /* Not NaN */
+  if (bound.kind == BOUND_EXPR and bound.expr) {
+    double val = Eval_Const_Numeric (bound.expr);
+    if (val == val) return (int128_t) val;  /* Not NaN */
   }
-  return 0;  /* Handle other bound kinds as needed */
+  return 0;  /* BOUND_NONE or unevaluable expression */
 }
 
 /* Format an int128_t as a decimal string.  Returns pointer to a static
  * thread-local buffer.  Handles the full range -2^127 .. 2^127-1.
  * Used for emitting i128 constants in LLVM IR (which accepts arbitrary
  * width decimal literals). */
-static const char *I128_Decimal(int128_t v) {
+static const char *I128_Decimal (int128_t value) {
   static _Thread_local char buf[42];  /* -170141183460469231731687303715884105728 + NUL */
-  if (v == 0) return "0";
-  char *p = buf + sizeof (buf) - 1;
-  *p = '\0';
-  bool neg = v < 0;
-  uint128_t u = neg ? (uint128_t)(-(v + 1)) + 1 : (uint128_t)v;
-  while (u) { *--p = '0' + (char)(u % 10); u /= 10; }
-  if (neg) *--p = '-';
-  return p;
+  if (value == 0) return "0";
+  char *cursor      = buf + sizeof (buf) - 1;
+  *cursor            = '\0';
+  bool      negative = value < 0;
+  uint128_t absolute = negative ? (uint128_t) (-(value + 1)) + 1 : (uint128_t) value;
+  while (absolute) { *--cursor = '0' + (char) (absolute % 10); absolute /= 10; }
+  if (negative) *--cursor = '-';
+  return cursor;
 }
 
 /* Format a uint128_t as a decimal string.  Returns pointer to a static
  * thread-local buffer.  Handles 0 .. 2^128-1. */
-static const char *U128_Decimal(uint128_t v) {
+static const char *U128_Decimal (uint128_t value) {
   static _Thread_local char buf[40];  /* 340282366920938463463374607431768211455 + NUL */
-  if (v == 0) return "0";
-  char *p = buf + sizeof (buf) - 1;
-  *p = '\0';
-  while (v) { *--p = '0' + (char)(v % 10); v /= 10; }
-  return p;
+  if (value == 0) return "0";
+  char *cursor = buf + sizeof (buf) - 1;
+  *cursor       = '\0';
+  while (value) { *--cursor = '0' + (char) (value % 10); value /= 10; }
+  return cursor;
 }
 
 /* Get array element count for constrained arrays, 0 for unconstrained */
-static int128_t Array_Element_Count (Type_Info *t) {
-  if (not t or t->kind != TYPE_ARRAY or not t->array.is_constrained)
+static int128_t Array_Element_Count (Type_Info *type_info) {
+  if (not type_info or type_info->kind != TYPE_ARRAY or not type_info->array.is_constrained)
     return 0;
-  if (t->array.index_count == 0)
+  if (type_info->array.index_count == 0)
     return 0;
 
   /* Product of all dimension lengths (RM 3.6.1) */
   int128_t total = 1;
-  for (uint32_t d = 0; d < t->array.index_count; d++) {
-    int128_t lo = Type_Bound_Value (t->array.indices[d].low_bound);
-    int128_t hi = Type_Bound_Value (t->array.indices[d].high_bound);
-    int128_t dim = hi - lo + 1;
-    if (dim <= 0) return 0;
-    total *= dim;
+  for (uint32_t dim = 0; dim < type_info->array.index_count; dim++) {
+    int128_t lo     = Type_Bound_Value (type_info->array.indices[dim].low_bound);
+    int128_t hi     = Type_Bound_Value (type_info->array.indices[dim].high_bound);
+    int128_t length = hi - lo + 1;
+    if (length <= 0) return 0;
+    total *= length;
   }
   return total;
 }
 
 /* Get array low bound for index adjustment */
-static int128_t Array_Low_Bound (Type_Info *t) {
-  if (not t or t->kind != TYPE_ARRAY or t->array.index_count == 0)
+static int128_t Array_Low_Bound (Type_Info *type_info) {
+  if (not type_info or type_info->kind != TYPE_ARRAY or type_info->array.index_count == 0)
     return 0;
-  return Type_Bound_Value (t->array.indices[0].low_bound);
+  return Type_Bound_Value (type_info->array.indices[0].low_bound);
 }
 static Type_Info *Resolve_Expression (Syntax_Node *node) {
   if (not node) return NULL;
   switch (node->kind) {
-    case NK_INTEGER:
-      node->type = sm->type_universal_integer;
-      return node->type;
-    case NK_REAL:
-      node->type = sm->type_universal_real;
-      return node->type;
-    case NK_CHARACTER:
-      node->type = sm->type_character;
-      return node->type;
-    case NK_STRING:
-      node->type = sm->type_string;
-      return node->type;
-    case NK_NULL:
-      node->type = NULL;  /* Matches any access type */
-      return NULL;
-    case NK_IDENTIFIER:
-      return Resolve_Identifier (node);
-    case NK_SELECTED:
-      return Resolve_Selected (node);
-    case NK_BINARY_OP:
-      return Resolve_Binary_Op (node);
+    case NK_INTEGER:    node->type = sm->type_universal_integer;  return node->type;
+    case NK_REAL:       node->type = sm->type_universal_real;     return node->type;
+    case NK_CHARACTER:  node->type = sm->type_character;          return node->type;
+    case NK_STRING:     node->type = sm->type_string;             return node->type;
+    case NK_NULL:       node->type = NULL;                        return NULL;
+    case NK_IDENTIFIER: return Resolve_Identifier (node);
+    case NK_SELECTED:   return Resolve_Selected (node);
+    case NK_BINARY_OP:  return Resolve_Binary_Op (node);
     case NK_UNARY_OP:
       node->type = Resolve_Expression (node->unary.operand);
 
@@ -9398,11 +9399,11 @@ static Type_Info *Resolve_Expression (Syntax_Node *node) {
       /* NOT preserves array-of-BOOLEAN type (RM 4.5.6);
       * for scalar operands it returns BOOLEAN. */
       if (node->unary.op == TK_NOT) {
-        Type_Info *ot = node->unary.operand ? node->unary.operand->type : NULL;
-        if (ot and Type_Is_Array_Like (ot) and
-          ot->array.element_type and
-          Type_Is_Boolean (ot->array.element_type)) {
-          node->type = ot;  /* boolean array > boolean array */
+        Type_Info *operand_type = node->unary.operand ? node->unary.operand->type : NULL;
+        if (operand_type and Type_Is_Array_Like (operand_type) and
+          operand_type->array.element_type and
+          Type_Is_Boolean (operand_type->array.element_type)) {
+          node->type = operand_type;  /* boolean array > boolean array */
         } else {
           node->type = sm->type_boolean;
         }
@@ -9731,16 +9732,16 @@ static Type_Info *Resolve_Expression (Syntax_Node *node) {
 
               /* Calculate row size */
               uint32_t row_elems = 1;
-              for (uint32_t d = 0; d < row_type->array.index_count; d++) {
-                int128_t lo = Type_Bound_Value (row_type->array.indices[d].low_bound);
-                int128_t hi = Type_Bound_Value (row_type->array.indices[d].high_bound);
-                int128_t cnt = hi - lo + 1;
-                if (cnt > 0) row_elems *= (uint32_t)cnt;
+              for (uint32_t dim = 0; dim < row_type->array.index_count; dim++) {
+                int128_t lo     = Type_Bound_Value (row_type->array.indices[dim].low_bound);
+                int128_t hi     = Type_Bound_Value (row_type->array.indices[dim].high_bound);
+                int128_t extent = hi - lo + 1;
+                if (extent > 0) row_elems *= (uint32_t) extent;
               }
-              uint32_t el_sz = agg_type->array.element_type ?
-                       agg_type->array.element_type->size : 8;
-              if (el_sz == 0) el_sz = 8;
-              row_type->size = row_elems * el_sz;
+              uint32_t element_size = agg_type->array.element_type
+                                    ? agg_type->array.element_type->size : 8;
+              if (element_size == 0) element_size = 8;
+              row_type->size = row_elems * element_size;
               row_type->alignment = agg_type->alignment;
               inner_agg_type = row_type;
             }
@@ -16475,9 +16476,9 @@ static void Resolve_Declaration (Syntax_Node *node) {
           }
         }
 
-        /* pragma Pure, pragma Preelaborate - informational only ??? */
-        /* pragma Elaborate, pragma Elaborate_All - handled at link time ??? */
-        /* pragma Restrictions - ??? */
+        /* pragma Pure, pragma Preelaborate — informational only, accepted and ignored */
+        /* pragma Elaborate, pragma Elaborate_All — handled at link time */
+        /* pragma Restrictions — accepted and ignored */
       }
       break;
     case NK_EXCEPTION_DECL:
@@ -20751,7 +20752,7 @@ static uint32_t Generate_Identifier (Syntax_Node *node) {
              t, named_t, (long long)sym->frame_offset);
           Temp_Set_Type (t, named_t);
 
-        /* ??? Fallback if no initializer found */
+        /* Fallback: no initializer found for named number */
         } else {
           Emit ("  %%t%u = add %s 0, 0  ; named number without init\n", t, Integer_Arith_Type ());
           Temp_Set_Type (t, Integer_Arith_Type ());
@@ -20794,7 +20795,7 @@ static uint32_t Generate_Identifier (Syntax_Node *node) {
           Temp_Set_Type (t, type_str);
         }
 
-      /* ??? Unknown literal type - emit 0 as fallback */
+      /* Unknown literal type — emit zero as fallback */
       } else {
         Emit ("  %%t%u = add %s 0, 0  ; unknown literal\n", t, Integer_Arith_Type ());
       }
@@ -20859,7 +20860,7 @@ static uint32_t Generate_Identifier (Syntax_Node *node) {
     } break;
     default:
 
-      /* ??? */
+      /* Unhandled symbol kind — emit zero as fallback */
       Emit ("  %%t%u = add %s 0, 0  ; unhandled symbol kind\n", t, Integer_Arith_Type ());
   }
   return t;
@@ -31479,7 +31480,7 @@ static void Generate_For_Loop (Syntax_Node *node) {
       }
     } else {
 
-      /* ??? */
+      /* Single expression used as range — evaluate as both low and high */
       low_val = Generate_Expression (range);
       high_val = low_val;
     }
@@ -38819,7 +38820,7 @@ static void Generate_Compilation_Unit (Syntax_Node *node) {
   Emit ("  ret void\n");
   Emit ("}\n\n");
 
-  /* Task abort: signal task to terminate (simplified: just sets flag) - is this right ??? */
+  /* Task abort: signal task to terminate (simplified: sets abort-pending flag) */
   Emit ("define linkonce_odr void @__ada_task_abort (ptr %%task) {\n");
   Emit ("entry:\n");
   Emit ("  %%1 = icmp eq ptr %%task, null\n");
