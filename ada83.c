@@ -6407,9 +6407,16 @@ static inline bool Type_Is_String(const Type_Info *t)  { return t and t->kind ==
 /* Needs fat pointer { ptr, { bound, bound } } for unconstrained array or access thereto */
 static inline bool Type_Needs_Fat_Pointer(const Type_Info *t) {
     if (not t) return false;
-    if (Type_Is_Access(t) and t->access.designated_type)
-        return Type_Is_Array_Like(t->access.designated_type) and
-               not t->access.designated_type->array.is_constrained;
+    if (Type_Is_Access(t) and t->access.designated_type) {
+        /* RM 3.10: Access to unconstrained array always needs fat pointer,
+         * even when a subtype constraint narrows the bounds (e.g.,
+         * ACCESS ARR(1..N)).  Chase base_type to the root declaration. */
+        Type_Info *des = t->access.designated_type;
+        while (des and Type_Is_Array_Like(des) and des->array.is_constrained
+               and des->base_type and Type_Is_Array_Like(des->base_type))
+            des = des->base_type;
+        return Type_Is_Array_Like(des) and not des->array.is_constrained;
+    }
     return Type_Is_Array_Like(t) and not t->array.is_constrained;
 }
 
@@ -6721,10 +6728,15 @@ static const char *Type_To_Llvm(Type_Info *t) {
         case TYPE_UNIVERSAL_REAL:
             return Llvm_Float_Type((uint32_t)To_Bits(t->size));
         case TYPE_ACCESS:
-            /* Access to unconstrained array/STRING needs fat pointer representation.
-             * GNAT LLVM style: fat pointer is always { ptr, ptr }. */
+            /* Access to unconstrained array/STRING needs fat pointer { ptr, ptr }.
+             * Chase through constrained subtypes to the root declaration so
+             * ACCESS ARR(1..N) still uses fat pointer when ARR is unconstrained.
+             * (RM 3.10, GNAT LLVM convention) */
             if (t->access.designated_type) {
                 Type_Info *d = t->access.designated_type;
+                while (d and Type_Is_Array_Like(d) and d->array.is_constrained
+                       and d->base_type and Type_Is_Array_Like(d->base_type))
+                    d = d->base_type;
                 if (Type_Is_String(d) or Type_Is_Unconstrained_Array(d)) {
                     return FAT_PTR_TYPE;
                 }
@@ -15314,7 +15326,11 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                 }
                 sym->declaration = node;
                 Symbol_Add(sm, sym);
-                name_node->symbol = sym;
+                /* RM 7.4: If Symbol_Add detected a deferred constant completion,
+                 * it already set name_node->symbol to the existing (deferred)
+                 * symbol.  Preserve that binding so codegen uses one symbol. */
+                if (not name_node->symbol)
+                    name_node->symbol = sym;
             }
             break;
 
@@ -15519,6 +15535,35 @@ static void Resolve_Declaration(Symbol_Manager *sm, Syntax_Node *node) {
                         /* Propagate limited flag from AST node (RM 7.5) */
                         if (node->type_decl.is_limited) {
                             type->is_limited = true;
+                        }
+
+                        /* RM 7.4.1: Propagate private→record completion to constrained
+                         * subtypes.  SUBTYPE S IS T(V) copies T's Type_Info when T is
+                         * still TYPE_PRIVATE, creating a snapshot with stale `kind` and
+                         * partial `components`.  After the full declaration completes T
+                         * to TYPE_RECORD, refresh every such snapshot so that record
+                         * aggregates, selected components, and codegen see the full view.
+                         * Constraint-specific fields (disc_constraint_values/exprs) are
+                         * untouched — only definition-derived fields are updated. */
+                        if (Type_Is_Record(type)) {
+                            for (Scope *scp = sm->current_scope; scp; scp = scp->parent) {
+                                for (uint32_t si = 0; si < scp->symbol_count; si++) {
+                                    Symbol *sub = scp->symbols[si];
+                                    if (sub and sub->type and sub->type != type
+                                        and sub->type->base_type == type
+                                        and Type_Is_Private(sub->type)) {
+                                        sub->type->kind = TYPE_RECORD;
+                                        sub->type->record.components      = type->record.components;
+                                        sub->type->record.component_count = type->record.component_count;
+                                        sub->type->record.variants        = type->record.variants;
+                                        sub->type->record.variant_count   = type->record.variant_count;
+                                        sub->type->record.variant_offset  = type->record.variant_offset;
+                                        sub->type->record.max_variant_size = type->record.max_variant_size;
+                                        sub->type->record.variant_part_node = type->record.variant_part_node;
+                                        sub->type->size = type->size;
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -19731,9 +19776,15 @@ static uint32_t Emit_Single_Bound(Code_Generator *cg, Type_Bound *bound,
     } else if (bound->kind == BOUND_FLOAT) {
         return Emit_Static_Int(cg, (int128_t)bound->float_value, target_type);
     } else if (bound->kind == BOUND_EXPR and bound->expr) {
-        uint32_t val = Generate_Expression(cg, bound->expr);
-        const char *expr_ty = Expression_Llvm_Type(cg, bound->expr);
-        if (expr_ty and strcmp(expr_ty, target_type) != 0 and
+        /* RM 3.3.1: Use cached temp if pre-evaluated, to avoid re-calling
+         * side-effectful expressions (function calls) during aggregate gen. */
+        uint32_t val = bound->cached_temp ? bound->cached_temp
+            : Generate_Expression(cg, bound->expr);
+        const char *expr_ty = bound->cached_temp
+            ? Temp_Get_Type(cg, bound->cached_temp)
+            : Expression_Llvm_Type(cg, bound->expr);
+        if (not expr_ty or not expr_ty[0]) expr_ty = target_type;
+        if (strcmp(expr_ty, target_type) != 0 and
             expr_ty[0] == 'i' and target_type[0] == 'i') {
             val = Emit_Convert(cg, val, expr_ty, target_type);
         }
@@ -27309,8 +27360,36 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
         if (dynamic_bounds) {
             /* Dynamic bounds: generate runtime allocation and loop-based init */
             const char *iat_bnd = Integer_Arith_Type(cg);
-            uint32_t low_val = Emit_Single_Bound(cg, &low_bound, iat_bnd);
-            uint32_t high_val = Emit_Single_Bound(cg, &high_bound, iat_bnd);
+
+            /* RM 3.2.1: When BOUND_EXPR has no cached_temp, the expression
+             * would be re-evaluated with stale side effects (e.g., F(I) long
+             * after the declaration that created this constrained subtype).
+             * For positional aggregates, derive bounds from the count instead
+             * of re-evaluating the type's constraint expression. */
+            bool bounds_stale = false;
+            if (high_bound.kind == BOUND_EXPR and not high_bound.cached_temp
+                and high_bound.expr)
+                bounds_stale = true;
+            Agg_Class ac_early = Agg_Classify(node);
+            uint32_t low_val, high_val;
+            if (bounds_stale and ac_early.n_positional > 0 and not ac_early.has_others) {
+                /* Positional aggregate with stale constraint: use count as bound.
+                 * low = index type FIRST (usually 1 for NATURAL/POSITIVE),
+                 * high = low + n_positional - 1. */
+                int128_t lo_static = 1;
+                if (low_bound.kind == BOUND_INTEGER)
+                    lo_static = low_bound.int_value;
+                else if (agg_type->base_type and agg_type->base_type->array.index_count > 0
+                         and agg_type->base_type->array.indices[0].index_type)
+                    lo_static = Type_Bound_Value(
+                        agg_type->base_type->array.indices[0].index_type->low_bound);
+                low_val = Emit_Static_Int(cg, lo_static, iat_bnd);
+                high_val = Emit_Static_Int(cg,
+                    lo_static + (int128_t)ac_early.n_positional - 1, iat_bnd);
+            } else {
+                low_val = Emit_Single_Bound(cg, &low_bound, iat_bnd);
+                high_val = Emit_Single_Bound(cg, &high_bound, iat_bnd);
+            }
             /* Report bounds to outer multidim aggregate for consistency check */
             if (cg->in_agg_component > 0) {
                 cg->inner_agg_bnd_lo[0] = low_val;
@@ -27428,7 +27507,7 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
             Emit(cg, "  %%t%u = alloca i8, %s %%t%u  ; dynamic array aggregate\n", base, iat_bnd, clamped);
 
             /* Classify items: find OTHERS clause (value generated in loop below) */
-            Agg_Class ac = Agg_Classify(node);
+            Agg_Class ac = ac_early;  /* reuse early classification */
             bool has_others = ac.has_others;
             uint32_t others_val = 0;  /* unused; OTHERS re-evaluated per component */
 
@@ -27447,12 +27526,21 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
                 for (uint32_t d = 0; d < agg_ndims && !bounds_ref_unset_disc; d++) {
                     Type_Bound *b[2] = {&agg_type->array.indices[d].low_bound,
                                         &agg_type->array.indices[d].high_bound};
-                    for (int bi = 0; bi < 2; bi++)
+                    for (int bi = 0; bi < 2; bi++) {
                         if (b[bi]->kind == BOUND_EXPR && b[bi]->expr &&
                             b[bi]->expr->symbol &&
                             b[bi]->expr->symbol->kind == SYMBOL_DISCRIMINANT &&
                             b[bi]->expr->symbol->disc_agg_temp == 0)
                             bounds_ref_unset_disc = true;
+                        /* RM 3.2.1: Also skip when BOUND_EXPR has no cached
+                         * temp — the expression would be re-evaluated with
+                         * stale side effects (e.g., F(I) after elaboration). */
+                        if (b[bi]->kind == BOUND_EXPR && b[bi]->expr &&
+                            !b[bi]->cached_temp &&
+                            (!b[bi]->expr->symbol ||
+                             b[bi]->expr->symbol->kind != SYMBOL_DISCRIMINANT))
+                            bounds_ref_unset_disc = true;
+                    }
                 }
             if (agg_type->array.is_constrained && !bounds_ref_unset_disc) {
                 bool has_unc_base = agg_type->base_type &&
@@ -28286,12 +28374,21 @@ static uint32_t Generate_Aggregate(Code_Generator *cg, Syntax_Node *node) {
             for (uint32_t d = 0; d < agg_ndims && !bounds_ref_disc_s; d++) {
                 Type_Bound *b[2] = {&agg_type->array.indices[d].low_bound,
                                     &agg_type->array.indices[d].high_bound};
-                for (int bi = 0; bi < 2; bi++)
+                for (int bi = 0; bi < 2; bi++) {
                     if (b[bi]->kind == BOUND_EXPR && b[bi]->expr &&
                         b[bi]->expr->symbol &&
                         b[bi]->expr->symbol->kind == SYMBOL_DISCRIMINANT &&
                         b[bi]->expr->symbol->disc_agg_temp == 0)
                         bounds_ref_disc_s = true;
+                    /* RM 3.2.1: Also skip when BOUND_EXPR has no cached
+                     * temp — the expression would be re-evaluated with
+                     * stale side effects (e.g., F(I) after elaboration). */
+                    if (b[bi]->kind == BOUND_EXPR && b[bi]->expr &&
+                        !b[bi]->cached_temp &&
+                        (!b[bi]->expr->symbol ||
+                         b[bi]->expr->symbol->kind != SYMBOL_DISCRIMINANT))
+                        bounds_ref_disc_s = true;
+                }
             }
         if (agg_type->array.is_constrained && !bounds_ref_disc_s &&
             (agg_type->array.indices[0].low_bound.kind == BOUND_EXPR or
@@ -29475,19 +29572,12 @@ static uint32_t Generate_Allocator(Code_Generator *cg, Syntax_Node *node) {
         return t;
     }
 
-    /* Check if this access type needs fat pointer representation.
-     * Access to unconstrained arrays/STRING always use fat pointers,
-     * but also check if the LLVM type is a fat pointer (for constrained
-     * subtypes of unconstrained access types). */
+    /* Fat pointer decision must match Type_Needs_Fat_Pointer / Type_To_Llvm.
+     * Access to unconstrained arrays always uses fat pointer, even when
+     * the access subtype adds a constraint (RM 3.10). */
     Type_Info *designated = Type_Is_Access(access_type) ?
                             access_type->access.designated_type : NULL;
-    bool is_fat_ptr = (not Type_Is_Constrained_Array(designated) and Type_Is_String(designated)) or
-                      Type_Is_Unconstrained_Array(designated);
-
-    /* Note: if the designated type is a constrained subtype of an unconstrained
-     * array (e.g., ACCESS ARRAY3(1..5)), we do NOT use fat pointer representation.
-     * The bounds are known from the subtype constraint — plain ptr suffices.
-     * This matches Type_To_Llvm which returns "ptr" for access-to-constrained. */
+    bool is_fat_ptr = Type_Needs_Fat_Pointer(access_type);
 
     if (is_fat_ptr and node->allocator.expression) {
         /* Access to unconstrained array with initializer */
@@ -33073,6 +33163,38 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
         Symbol *sym = name->symbol;
         if (not sym) continue;
 
+        /* RM 3.2.1: For multi-name declarations (S1, S2 : T := ...),
+         * each name gets independent evaluation of the subtype indication
+         * and init expression.  Clear cached temps before each subsequent
+         * name so bounds are re-evaluated from scratch. */
+        if (i > 0 and node->object_decl.names.count > 1) {
+            Type_Info *prev_ty = node->object_decl.names.items[0]->symbol ?
+                                 node->object_decl.names.items[0]->symbol->type : NULL;
+            if (prev_ty) {
+                prev_ty->low_bound.cached_temp = 0;
+                prev_ty->high_bound.cached_temp = 0;
+                if (prev_ty->kind == TYPE_ARRAY or prev_ty->kind == TYPE_STRING) {
+                    for (uint32_t d = 0; d < prev_ty->array.index_count; d++) {
+                        prev_ty->array.indices[d].low_bound.cached_temp = 0;
+                        prev_ty->array.indices[d].high_bound.cached_temp = 0;
+                    }
+                    if (prev_ty->array.element_type) {
+                        prev_ty->array.element_type->low_bound.cached_temp = 0;
+                        prev_ty->array.element_type->high_bound.cached_temp = 0;
+                        if (prev_ty->array.element_type->kind == TYPE_RECORD)
+                            prev_ty->array.element_type->record.disc_constraint_preeval = NULL;
+                        if (Type_Is_Array_Like(prev_ty->array.element_type))
+                            for (uint32_t d = 0; d < prev_ty->array.element_type->array.index_count; d++) {
+                                prev_ty->array.element_type->array.indices[d].low_bound.cached_temp = 0;
+                                prev_ty->array.element_type->array.indices[d].high_bound.cached_temp = 0;
+                            }
+                    }
+                }
+                if (prev_ty->kind == TYPE_RECORD)
+                    prev_ty->record.disc_constraint_preeval = NULL;
+            }
+        }
+
         /* Emit declaration info comment */
         Emit(cg, "  ; %s %.*s : %s\n",
              node->object_decl.is_constant ? "CONST" : "VAR",
@@ -33258,6 +33380,12 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
             continue;
         }
 
+        /* RM 7.4: Deferred constant and its completion share one symbol after
+         * Scope_Insert merge.  The deferred decl (no init) emits storage first;
+         * the completion (has init) must reuse that storage, not re-emit it. */
+        if (sym->extern_emitted) goto obj_decl_init;
+        sym->extern_emitted = true;
+
         /* Local variable allocation */
         if (use_frame) {
             /* Skip symbols that aren't actually in the current function's scope.
@@ -33439,6 +33567,113 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
             Emit(cg, "  store ptr %%t%u, ptr %%", handle_tmp);
             Emit_Symbol_Name(cg, sym);
             Emit(cg, "\n");
+        }
+
+obj_decl_init:
+        /* RM 3.3.1(5) + RM 3.6(5): Elaborate subtype indication by
+         * evaluating all dynamic constraint expressions, even for
+         * uninitialized objects.  For arrays, the elaboration order is:
+         *   1. Index discrete ranges (array bounds)
+         *   2. Component subtype indication (element type constraints)
+         * This ordering is critical because expressions may have side
+         * effects (function calls setting globals read by later exprs). */
+        if (ty and Type_Is_Scalar(ty)) {
+            if (ty->low_bound.kind == BOUND_EXPR and ty->low_bound.expr
+                and not ty->low_bound.cached_temp) {
+                ty->low_bound.cached_temp = Generate_Expression(cg, ty->low_bound.expr);
+                const char *ety = Expression_Llvm_Type(cg, ty->low_bound.expr);
+                if (ety and ety[0]) Temp_Set_Type(cg, ty->low_bound.cached_temp, ety);
+            }
+            if (ty->high_bound.kind == BOUND_EXPR and ty->high_bound.expr
+                and not ty->high_bound.cached_temp) {
+                ty->high_bound.cached_temp = Generate_Expression(cg, ty->high_bound.expr);
+                const char *ety = Expression_Llvm_Type(cg, ty->high_bound.expr);
+                if (ety and ety[0]) Temp_Set_Type(cg, ty->high_bound.cached_temp, ety);
+            }
+        }
+        if (is_any_array and ty) {
+            /* Step 1: evaluate array index bounds (discrete ranges) */
+            for (uint32_t d = 0; d < ty->array.index_count; d++) {
+                Index_Info *idx = &ty->array.indices[d];
+                if (idx->low_bound.kind == BOUND_EXPR and idx->low_bound.expr
+                    and not idx->low_bound.cached_temp) {
+                    idx->low_bound.cached_temp = Generate_Expression(cg, idx->low_bound.expr);
+                    const char *ety = Expression_Llvm_Type(cg, idx->low_bound.expr);
+                    if (ety and ety[0]) Temp_Set_Type(cg, idx->low_bound.cached_temp, ety);
+                }
+                if (idx->high_bound.kind == BOUND_EXPR and idx->high_bound.expr
+                    and not idx->high_bound.cached_temp) {
+                    idx->high_bound.cached_temp = Generate_Expression(cg, idx->high_bound.expr);
+                    const char *ety = Expression_Llvm_Type(cg, idx->high_bound.expr);
+                    if (ety and ety[0]) Temp_Set_Type(cg, idx->high_bound.cached_temp, ety);
+                }
+            }
+            /* Step 2: evaluate element subtype constraints.
+             * For record elements with disc constraints: pre-evaluate once
+             * so aggregate disc checks reuse cached values (RM 3.7.1).
+             * For scalar elements with dynamic range: cache bounds. */
+            if (ty->array.element_type and
+                Type_Is_Record(ty->array.element_type)) {
+                Type_Info *elt = ty->array.element_type;
+                if (elt->record.has_disc_constraints and
+                    elt->record.disc_constraint_exprs and
+                    not elt->record.disc_constraint_preeval) {
+                    elt->record.disc_constraint_preeval = Arena_Allocate(
+                        elt->record.discriminant_count * sizeof(uint32_t));
+                    memset(elt->record.disc_constraint_preeval, 0,
+                           elt->record.discriminant_count * sizeof(uint32_t));
+                    for (uint32_t di = 0; di < elt->record.discriminant_count; di++) {
+                        if (not elt->record.disc_constraint_exprs[di]) continue;
+                        Component_Info *dc = &elt->record.components[di];
+                        const char *ddt = dc->component_type ?
+                            Type_To_Llvm(dc->component_type) : "i32";
+                        uint32_t v = Generate_Expression(cg,
+                            elt->record.disc_constraint_exprs[di]);
+                        v = Emit_Coerce_Default_Int(cg, v, ddt);
+                        uint32_t at = Emit_Temp(cg);
+                        Emit(cg, "  %%t%u = alloca %s  ; preeval array elem disc\n",
+                             at, ddt);
+                        Emit(cg, "  store %s %%t%u, ptr %%t%u\n", ddt, v, at);
+                        elt->record.disc_constraint_preeval[di] = at;
+                    }
+                }
+            } else if (ty->array.element_type and
+                       Type_Is_Scalar(ty->array.element_type)) {
+                Type_Info *elt = ty->array.element_type;
+                if (elt->low_bound.kind == BOUND_EXPR and elt->low_bound.expr
+                    and not elt->low_bound.cached_temp) {
+                    elt->low_bound.cached_temp = Generate_Expression(cg, elt->low_bound.expr);
+                    const char *ety = Expression_Llvm_Type(cg, elt->low_bound.expr);
+                    if (ety and ety[0]) Temp_Set_Type(cg, elt->low_bound.cached_temp, ety);
+                }
+                if (elt->high_bound.kind == BOUND_EXPR and elt->high_bound.expr
+                    and not elt->high_bound.cached_temp) {
+                    elt->high_bound.cached_temp = Generate_Expression(cg, elt->high_bound.expr);
+                    const char *ety = Expression_Llvm_Type(cg, elt->high_bound.expr);
+                    if (ety and ety[0]) Temp_Set_Type(cg, elt->high_bound.cached_temp, ety);
+                }
+            } else if (ty->array.element_type and
+                       Type_Is_Array_Like(ty->array.element_type)) {
+                /* RM 3.6(5): For array-of-array, cache the element type's
+                 * index bounds so inner aggregates reuse them instead of
+                 * re-evaluating side-effectful expressions per outer element. */
+                Type_Info *elt = ty->array.element_type;
+                for (uint32_t d = 0; d < elt->array.index_count; d++) {
+                    Index_Info *eidx = &elt->array.indices[d];
+                    if (eidx->low_bound.kind == BOUND_EXPR and eidx->low_bound.expr
+                        and not eidx->low_bound.cached_temp) {
+                        eidx->low_bound.cached_temp = Generate_Expression(cg, eidx->low_bound.expr);
+                        const char *ety = Expression_Llvm_Type(cg, eidx->low_bound.expr);
+                        if (ety and ety[0]) Temp_Set_Type(cg, eidx->low_bound.cached_temp, ety);
+                    }
+                    if (eidx->high_bound.kind == BOUND_EXPR and eidx->high_bound.expr
+                        and not eidx->high_bound.cached_temp) {
+                        eidx->high_bound.cached_temp = Generate_Expression(cg, eidx->high_bound.expr);
+                        const char *ety = Expression_Llvm_Type(cg, eidx->high_bound.expr);
+                        if (ety and ety[0]) Temp_Set_Type(cg, eidx->high_bound.cached_temp, ety);
+                    }
+                }
+            }
         }
 
         /* Initialize if provided */
@@ -33910,23 +34145,22 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
                  * multiple times, breaking the c32001 family of ACATS tests). */
                 bool has_cached_bounds = false;
                 if (ty and Type_Is_Scalar(ty)) {
-                    if (ty->low_bound.kind == BOUND_EXPR and ty->low_bound.expr) {
+                    if (ty->low_bound.kind == BOUND_EXPR and ty->low_bound.expr
+                        and not ty->low_bound.cached_temp) {
                         ty->low_bound.cached_temp = Generate_Expression(cg, ty->low_bound.expr);
-                        /* Ensure LLVM type is tracked for the cached temp so that
-                         * downstream Emit_Convert / Emit_Bound_Value_Typed can find
-                         * the correct source type for conversions. */
                         const char *ety = Expression_Llvm_Type(cg, ty->low_bound.expr);
                         if (ety and ety[0])
                             Temp_Set_Type(cg, ty->low_bound.cached_temp, ety);
-                        has_cached_bounds = true;
                     }
-                    if (ty->high_bound.kind == BOUND_EXPR and ty->high_bound.expr) {
+                    has_cached_bounds = (ty->low_bound.cached_temp != 0);
+                    if (ty->high_bound.kind == BOUND_EXPR and ty->high_bound.expr
+                        and not ty->high_bound.cached_temp) {
                         ty->high_bound.cached_temp = Generate_Expression(cg, ty->high_bound.expr);
                         const char *ety = Expression_Llvm_Type(cg, ty->high_bound.expr);
                         if (ety and ety[0])
                             Temp_Set_Type(cg, ty->high_bound.cached_temp, ety);
-                        has_cached_bounds = true;
                     }
+                    has_cached_bounds = has_cached_bounds or (ty->high_bound.cached_temp != 0);
                 }
 
                 /* RM 3.2.2(5): For access types with constrained designated record,
@@ -34160,8 +34394,12 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
                     Emit(cg, "  %%t%u = add %s 0, %s\n", dim_lo_decl[d], iat_decl, I128_Decimal(low_b.int_value));
                     Temp_Set_Type(cg, dim_lo_decl[d], iat_decl);
                 } else if (low_b.kind == BOUND_EXPR and low_b.expr) {
-                    dim_lo_decl[d] = Generate_Expression(cg, low_b.expr);
-                    if (not Type_Is_Float_Representation(low_b.expr->type)) {
+                    /* RM 3.3.1: Reuse cached temp from subtype elaboration
+                     * to avoid re-evaluating side-effectful expressions. */
+                    dim_lo_decl[d] = low_b.cached_temp ? low_b.cached_temp
+                        : Generate_Expression(cg, low_b.expr);
+                    if (not low_b.cached_temp and
+                        not Type_Is_Float_Representation(low_b.expr->type)) {
                         const char *low_llvm = Expression_Llvm_Type(cg, low_b.expr);
                         if (strcmp(low_llvm, iat_decl) != 0 and !Llvm_Type_Is_Pointer(low_llvm))
                             dim_lo_decl[d] = Emit_Convert(cg, dim_lo_decl[d], low_llvm, iat_decl);
@@ -34193,8 +34431,10 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
                     Emit(cg, "  %%t%u = add %s 0, %s\n", dim_hi_decl[d], iat_decl, I128_Decimal(high_b.int_value));
                     Temp_Set_Type(cg, dim_hi_decl[d], iat_decl);
                 } else if (high_b.kind == BOUND_EXPR and high_b.expr) {
-                    dim_hi_decl[d] = Generate_Expression(cg, high_b.expr);
-                    if (not Type_Is_Float_Representation(high_b.expr->type)) {
+                    dim_hi_decl[d] = high_b.cached_temp ? high_b.cached_temp
+                        : Generate_Expression(cg, high_b.expr);
+                    if (not high_b.cached_temp and
+                        not Type_Is_Float_Representation(high_b.expr->type)) {
                         const char *high_llvm = Expression_Llvm_Type(cg, high_b.expr);
                         if (strcmp(high_llvm, iat_decl) != 0 and !Llvm_Type_Is_Pointer(high_llvm))
                             dim_hi_decl[d] = Emit_Convert(cg, dim_hi_decl[d], high_llvm, iat_decl);
@@ -35243,6 +35483,35 @@ static void Generate_Object_Declaration(Code_Generator *cg, Syntax_Node *node) {
             /* Clear disc_agg_temp so it doesn't leak to other contexts */
             for (uint32_t di = 0; di < disc_temp_count; di++)
                 disc_temps[di]->disc_agg_temp = 0;
+        }
+
+    }
+
+    /* RM 3.2.1: Clear cached_temps after the entire declaration so that
+     * subsequent code (comparisons, assignments) doesn't use stale bound
+     * values from BOUND_EXPR cached during elaboration.  Each object stores
+     * its actual bounds in its fat pointer at runtime. */
+    if (node->object_decl.names.count > 0) {
+        Symbol *first_sym = node->object_decl.names.items[0]->symbol;
+        Type_Info *cty = first_sym ? first_sym->type : NULL;
+        if (cty) {
+            cty->low_bound.cached_temp = 0;
+            cty->high_bound.cached_temp = 0;
+            if (cty->kind == TYPE_ARRAY or cty->kind == TYPE_STRING) {
+                for (uint32_t d = 0; d < cty->array.index_count; d++) {
+                    cty->array.indices[d].low_bound.cached_temp = 0;
+                    cty->array.indices[d].high_bound.cached_temp = 0;
+                }
+                if (cty->array.element_type) {
+                    cty->array.element_type->low_bound.cached_temp = 0;
+                    cty->array.element_type->high_bound.cached_temp = 0;
+                    if (Type_Is_Array_Like(cty->array.element_type))
+                        for (uint32_t d = 0; d < cty->array.element_type->array.index_count; d++) {
+                            cty->array.element_type->array.indices[d].low_bound.cached_temp = 0;
+                            cty->array.element_type->array.indices[d].high_bound.cached_temp = 0;
+                        }
+                }
+            }
         }
     }
 }

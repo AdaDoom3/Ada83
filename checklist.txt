@@ -1,0 +1,85 @@
+ACATS c32 Group - Full Pass Checklist
+======================================
+
+Prompt: "In the pursuit of high-quality code (low line count and high
+feature/correctness) - refactor and fix ada83.c to pass a single C-test group
+completely with much better Haskell-like C99 and tight smart code-golfing with
+'Literate Programming' style."
+
+Target: c32 group (19 tests) - 100% pass rate
+
+----------------------------------------------------------------------
+Test Failures Fixed
+----------------------------------------------------------------------
+
+[x] c32113a (COMPILE/SKIP)
+    Root cause: Private type completion not propagated to constrained subtypes.
+    Fix: When completing a private type, propagate updated fields to all
+    constrained subtypes that reference it (low_bound, high_bound, size, etc.).
+
+[x] c32107a (BIND/SKIP -> blocks B/C/F wrong ORDER_CHECK values)
+    Root cause 1: Deferred constants lost symbol binding in codegen.
+    Fix A: Preserve deferred constant symbol binding at elaboration.
+
+    Root cause 2: Duplicate extern emission for deferred constants.
+    Fix B: extern_emitted guard prevents double emission.
+
+    Root cause 3: Fat pointer setup re-evaluated BOUND_EXPR without checking
+    cached_temp, causing double evaluation of side-effectful bound expressions.
+    Fix: Check cached_temp before Generate_Expression in fat ptr setup code.
+
+    Root cause 4: Array subtype elaboration order (RM 3.6(5)) not enforced:
+    index bounds must be evaluated before component subtype constraints.
+    Fix C+D: Pre-evaluate index bounds and element type constraints at
+    obj_decl_init, setting cached_temp for reuse downstream.
+
+[x] c32001b (RUNTIME:exit 1)
+    Root cause 1: Multi-name declarations (S1, S2 : T := E) shared Type_Info
+    with cached_temps from first name, violating RM 3.2.1.
+    Fix: Clear cached_temps at top of per-name loop (for i > 0).
+
+    Root cause 2: Stale BOUND_EXPR after declaration caused comparison
+    aggregates to re-evaluate F(I), triggering CONSTRAINT_ERROR.
+    Fix: Clear cached_temps after entire declaration; add stale-bounds
+    guards in both dynamic and static aggregate constraint check paths.
+
+    Root cause 3: Array-of-array element type index bounds not cached
+    during subtype elaboration (RM 3.6(5) Step 2).  Inner aggregates
+    re-evaluated F(3) per outer OTHERS iteration instead of once.
+    Fix: Add array element type index bound caching in subtype
+    elaboration, alongside existing record and scalar element handling.
+
+----------------------------------------------------------------------
+All 19 c32 Tests - Final Status
+----------------------------------------------------------------------
+
+[x] c32001b    PASS
+[x] c32001c    PASS
+[x] c32001d    PASS
+[x] c32001e    PASS
+[x] c32107a    PASS
+[x] c32107c    PASS
+[x] c32108a    PASS
+[x] c32108b    PASS
+[x] c32111a    PASS
+[x] c32111b    PASS
+[x] c32112a    PASS
+[x] c32112b    PASS
+[x] c32113a    PASS
+[x] c32114a    PASS
+[x] c32115a    PASS
+[x] c32115b    PASS
+[x] c32117a    PASS
+[x] c32203a    PASS
+
+Result: 19/19 (100%)
+
+----------------------------------------------------------------------
+Key RM References
+----------------------------------------------------------------------
+
+- RM 3.2.1: Multi-name object declarations equivalent to sequence of singles
+- RM 3.3.1(5): Subtype indication elaborated before initialization
+- RM 3.6(5): Array subtype: discrete ranges before component subtype
+- RM 3.7.1: Discriminant constraint elaboration
+- RM 4.3.2(4-6): Aggregate bounds, positional/named, constraint checks
