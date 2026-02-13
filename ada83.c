@@ -12522,12 +12522,12 @@ static ALI_Cache_Entry *ALI_Read (const char *ali_path) {
   }
 
   /* Read ALI file */
-  FILE *f = fopen (ali_path, "r");
-  if (not f) return NULL;
+  FILE *file = fopen (ali_path, "r");
+  if (not file) return NULL;
 
   /* Allocate cache entry */
   if (ALI_Cache_Count >= 256) {
-    fclose (f);
+    fclose (file);
     return NULL;
   }
   ALI_Cache_Entry *entry = &ALI_Cache[ALI_Cache_Count++];
@@ -12535,12 +12535,12 @@ static ALI_Cache_Entry *ALI_Read (const char *ali_path) {
   entry->ali_file = strdup (ali_path);
   char line[1024];
   char token[256];
-  while (fgets (line, sizeof (line), f)) {
+  while (fgets (line, sizeof (line), file)) {
     const char *cursor = line;
 
     /* Version line: V "version" — reject if compiler build differs.
-    * This ensures stale ALI files from an older compiler rebuild
-    * are not reused; the unit will be reparsed from source. */
+     * This ensures stale ALI files from an older compiler rebuild
+     * are not reused; the unit will be reparsed from source. */
     if (line[0] == 'V') {
       char ver[256] = {0};
       const char *quote = strchr (line, '"');
@@ -12555,7 +12555,7 @@ static ALI_Cache_Entry *ALI_Read (const char *ali_path) {
 
       /* ALI was produced by a different compiler build — stale */
       if (strcmp (ver, ALI_VERSION) != 0) {
-        fclose (f);
+        fclose (file);
         ALI_Cache_Count--;  /* release the cache slot */
         return NULL;
       }
@@ -12675,7 +12675,7 @@ static ALI_Cache_Entry *ALI_Read (const char *ali_path) {
       entry->export_count++;
     }
   }
-  fclose (f);
+  fclose (file);
   return entry;
 }
 
@@ -12685,11 +12685,11 @@ static bool ALI_Is_Current (const char *ali_path, const char *source_path) {
   if (not entry) return false;
 
   /* Read source and compute checksum */
-  size_t source_size;
-  char *source = Read_File (source_path, &source_size);
-  if (not source) return false;
-  uint32_t current_checksum = Crc32 (source, source_size);
-  free (source);
+  size_t   source_size;
+  char    *source_text = Read_File (source_path, &source_size);
+  if (not source_text) return false;
+  uint32_t current_checksum = Crc32 (source_text, source_size);
+  free (source_text);
   return (current_checksum == entry->checksum);
 }
 
@@ -13698,26 +13698,23 @@ static void BIP_End_Function (void) {
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────────────────────────
- * §15.8.7 BIP Integration API — Called from code generator
+ * §14 Include Path and Unit Loading
  *
- * Public interface for the BIP subsystem:
- *   BIP_Begin_Function ()   - Start generating a function
- *   BIP_In_BIP_Function ()  - Check if current function is BIP
- *   BIP_Get_Access_Param () - Get destination pointer
- *   BIP_End_Function ()     - End function generation
- *   BIP_Is_BIP_Function ()  - Check if symbol is BIP function
- *   BIP_Is_Limited_Type ()  - Check if type is limited
+ * Resolves Ada WITH clauses by searching include paths for source files,
+ * loading package specs/bodies on demand, and tracking which units have
+ * already been loaded to avoid duplicate processing.
  * ────────────────────────────────────────────────────────────────────────────────────────────── */
-static const char *Include_Paths[32];
-static uint32_t Include_Path_Count = 0;
+
+static const char     *Include_Paths[32];
+static uint32_t        Include_Path_Count        = 0;
 
 /* Track loaded package bodies for code generation */
-static Syntax_Node *Loaded_Package_Bodies[128];
-static int Loaded_Body_Count = 0;
+static Syntax_Node    *Loaded_Package_Bodies[128];
+static int             Loaded_Body_Count          = 0;
 
 /* Track which package bodies have already been loaded (to avoid duplicates) */
-static String_Slice Loaded_Body_Names[128];
-static int Loaded_Body_Names_Count = 0;
+static String_Slice    Loaded_Body_Names[128];
+static int             Loaded_Body_Names_Count    = 0;
 static bool Body_Already_Loaded (String_Slice name) {
   for (int i = 0; i < Loaded_Body_Names_Count; i++) {
     if (Loaded_Body_Names[i].length == name.length and
@@ -13766,24 +13763,24 @@ static void Loading_Set_Remove (String_Slice name) {
 }
 
 /* Forward declarations for functions defined after Load_Package_Spec */
-static char *Lookup_Path(String_Slice name);
-static bool Has_Precompiled_LL (String_Slice name);
-static char *Lookup_Path_Body(String_Slice name);
+static char *Lookup_Path      (String_Slice name);
+static bool  Has_Precompiled_LL (String_Slice name);
+static char *Lookup_Path_Body (String_Slice name);
 
 /* Find ALI file for a unit name in include paths */
-static char *ALI_Find(String_Slice unit_name) {
+static char *ALI_Find (String_Slice unit_name) {
   static char path_buf[512];
-  char file_buf[256];
+  char        file_buf[256];
 
   /* Convert unit name to file name (lowercase, dots to hyphens) */
-  size_t j = 0;
-  for (size_t i = 0; i < unit_name.length and j < sizeof (file_buf) - 5; i++) {
-    char c = unit_name.data[i];
-    if (c == '.') file_buf[j++] = '-';
-    else if (c >= 'A' and c <= 'Z') file_buf[j++] = c - 'A' + 'a';
-    else file_buf[j++] = c;
+  size_t pos = 0;
+  for (size_t i = 0; i < unit_name.length and pos < sizeof (file_buf) - 5; i++) {
+    char ch = unit_name.data[i];
+    if (ch == '.')                       file_buf[pos++] = '-';
+    else if (ch >= 'A' and ch <= 'Z')   file_buf[pos++] = ch - 'A' + 'a';
+    else                                 file_buf[pos++] = ch;
   }
-  file_buf[j] = '\0';
+  file_buf[pos] = '\0';
 
   /* Try each include path */
   for (uint32_t i = 0; i < Include_Path_Count; i++) {
@@ -13853,12 +13850,12 @@ static void ALI_Load_Symbols (ALI_Cache_Entry *entry) {
       * cross-compilation-unit type widths are consistent. */
       case 'T': {
         sym = Symbol_New (SYMBOL_TYPE, name, exp_loc);
-        Type_Info *t = Type_New (TYPE_INTEGER, name);
+        Type_Info *exported_type = Type_New (TYPE_INTEGER, name);
         if (exp->llvm_type and exp->llvm_type[0] == 'i') {
           int bits = atoi (exp->llvm_type + 1);
-          if (bits > 0) t->size = (bits + 7) / 8;
+          if (bits > 0) exported_type->size = (bits + 7) / 8;
         }
-        sym->type = t;
+        sym->type = exported_type;
         break;
       }
 
@@ -13878,12 +13875,12 @@ static void ALI_Load_Symbols (ALI_Cache_Entry *entry) {
       /* Variable: external reference */
       case 'V': {
         sym = Symbol_New (SYMBOL_VARIABLE, name, exp_loc);
-        sym->is_imported = true;
-        sym->external_name = mangled;
+        sym->is_imported    = true;
+        sym->external_name  = mangled;
         if (exp->type_name) {
-          String_Slice tn = {exp->type_name, strlen (exp->type_name)};
-          Symbol *ts = Symbol_Find (tn);
-          sym->type = ts ? ts->type : Type_New (TYPE_INTEGER, tn);
+          String_Slice type_slice = {exp->type_name, strlen (exp->type_name)};
+          Symbol      *type_sym  = Symbol_Find (type_slice);
+          sym->type = type_sym ? type_sym->type : Type_New (TYPE_INTEGER, type_slice);
         }
         break;
       }
@@ -13891,12 +13888,12 @@ static void ALI_Load_Symbols (ALI_Cache_Entry *entry) {
       /* Constant: external reference */
       case 'C': {
         sym = Symbol_New (SYMBOL_CONSTANT, name, exp_loc);
-        sym->is_imported = true;
-        sym->external_name = mangled;
+        sym->is_imported    = true;
+        sym->external_name  = mangled;
         if (exp->type_name) {
-          String_Slice tn = {exp->type_name, strlen (exp->type_name)};
-          Symbol *ts = Symbol_Find (tn);
-          sym->type = ts ? ts->type : Type_New (TYPE_INTEGER, tn);
+          String_Slice type_slice = {exp->type_name, strlen (exp->type_name)};
+          Symbol      *type_sym  = Symbol_Find (type_slice);
+          sym->type = type_sym ? type_sym->type : Type_New (TYPE_INTEGER, type_slice);
         }
         break;
       }
@@ -13904,23 +13901,23 @@ static void ALI_Load_Symbols (ALI_Cache_Entry *entry) {
       /* Procedure: external subprogram declaration */
       case 'P': {
         sym = Symbol_New (SYMBOL_PROCEDURE, name, exp_loc);
-        sym->is_imported = true;
-        sym->external_name = mangled;
-        sym->parameter_count = exp->param_count;
+        sym->is_imported      = true;
+        sym->external_name    = mangled;
+        sym->parameter_count  = exp->param_count;
         break;
       }
 
       /* Function: external subprogram declaration */
       case 'F': {
         sym = Symbol_New (SYMBOL_FUNCTION, name, exp_loc);
-        sym->is_imported = true;
-        sym->external_name = mangled;
-        sym->parameter_count = exp->param_count;
+        sym->is_imported      = true;
+        sym->external_name    = mangled;
+        sym->parameter_count  = exp->param_count;
         if (exp->type_name) {
-          String_Slice tn = {exp->type_name, strlen (exp->type_name)};
-          Symbol *ts = Symbol_Find (tn);
-          sym->return_type = ts ? ts->type : Type_New (TYPE_INTEGER, tn);
-          sym->type = sym->return_type;  /* For consistency */
+          String_Slice type_slice = {exp->type_name, strlen (exp->type_name)};
+          Symbol      *type_sym  = Symbol_Find (type_slice);
+          sym->return_type = type_sym ? type_sym->type : Type_New (TYPE_INTEGER, type_slice);
+          sym->type        = sym->return_type;
         }
         break;
       }
@@ -13928,8 +13925,8 @@ static void ALI_Load_Symbols (ALI_Cache_Entry *entry) {
       /* Exception: external exception identity */
       case 'E': {
         sym = Symbol_New (SYMBOL_EXCEPTION, name, exp_loc);
-        sym->is_imported = true;
-        sym->external_name = mangled;
+        sym->is_imported    = true;
+        sym->external_name  = mangled;
         break;
       }
     }
@@ -13946,10 +13943,13 @@ static void ALI_Load_Symbols (ALI_Cache_Entry *entry) {
   Symbol_Manager_Pop_Scope ();
 }
 
-/* ═════════════════════════════════════════════════════════════════════════════════════════════════
- * §14. INCLUDE PATH & PACKAGE LOADING
- * ═════════════════════════════════════════════════════════════════════════════════════════════════
- */
+/* ─────────────────────────────────────────────────────────────────────────────────────────────────
+ * §14.1 ALI-Based Loading
+ *
+ * Try_Load_From_ALI is called by Load_Package_Spec to attempt fast loading
+ * from a pre-existing ALI file, bypassing full source parsing when the
+ * source checksum matches.
+ * ────────────────────────────────────────────────────────────────────────────────────────────── */
 
 /* Try_Load_From_ALI — Called by Load_Package_Spec to attempt ALI-based loading
  *
@@ -13969,9 +13969,9 @@ static bool Try_Load_From_ALI (String_Slice name) {
   size_t pos = 0;
   for (size_t i = 0; i < name.length and pos < sizeof (source_file) - 5; i++) {
     char ch = name.data[i];
-    if (ch == '.') source_file[pos++] = '-';
-    else if (ch >= 'A' and ch <= 'Z') source_file[pos++] = ch - 'A' + 'a';
-    else source_file[pos++] = ch;
+    if (ch == '.')                       source_file[pos++] = '-';
+    else if (ch >= 'A' and ch <= 'Z')   source_file[pos++] = ch - 'A' + 'a';
+    else                                 source_file[pos++] = ch;
   }
   strcpy (source_file + pos, ".ads");
 
@@ -14027,8 +14027,8 @@ static void Load_Package_Spec (String_Slice name, char *src) {
   size_t fn_len = name.length + 4; /* ".ads" */
   char *filename = Arena_Allocate (fn_len + 1);
   snprintf (filename, fn_len + 1, "%.*s.ads", (int)name.length, name.data);
-  Parser p = Parser_New (src, strlen (src), filename);
-  Syntax_Node *cu = Parse_Compilation_Unit (&p);
+  Parser parser = Parser_New (src, strlen (src), filename);
+  Syntax_Node *cu = Parse_Compilation_Unit (&parser);
   if (not cu) {
     Loading_Set_Remove (name);
     return;
@@ -14088,9 +14088,9 @@ static void Load_Package_Spec (String_Slice name, char *src) {
           Symbol *esym = pkg_sym->exported[ei];
           if (esym and esym->type and
             Slice_Equal_Ignore_Case (esym->name, S("ADDRESS"))) {
-            esym->type->size = sm->type_address->size;
-            esym->type->alignment = sm->type_address->alignment;
-            esym->type->low_bound = sm->type_address->low_bound;
+            esym->type->size       = sm->type_address->size;
+            esym->type->alignment  = sm->type_address->alignment;
+            esym->type->low_bound  = sm->type_address->low_bound;
             esym->type->high_bound = sm->type_address->high_bound;
             break;
           }
@@ -14137,17 +14137,17 @@ static void Load_Package_Spec (String_Slice name, char *src) {
                 formal->generic_type_param.name, formal->location);
 
               /* Map def_kind to appropriate Type_Kind */
-              Type_Kind tk = TYPE_PRIVATE;
+              Type_Kind formal_kind = TYPE_PRIVATE;
               switch (formal->generic_type_param.def_kind) {
-                case 2: tk = TYPE_ENUMERATION; break; /* DISCRETE */
-                case 3: tk = TYPE_INTEGER; break;     /* INTEGER */
-                case 4: tk = TYPE_FLOAT; break;       /* FLOAT */
-                case 5: tk = TYPE_FIXED; break;       /* FIXED */
-                case 6: tk = TYPE_ARRAY; break;       /* ARRAY */
-                case 7: tk = TYPE_ACCESS; break;      /* ACCESS */
-                default: tk = TYPE_PRIVATE; break;
+                case 2:  formal_kind = TYPE_ENUMERATION; break;  /* DISCRETE */
+                case 3:  formal_kind = TYPE_INTEGER;     break;  /* INTEGER */
+                case 4:  formal_kind = TYPE_FLOAT;       break;  /* FLOAT   */
+                case 5:  formal_kind = TYPE_FIXED;       break;  /* FIXED   */
+                case 6:  formal_kind = TYPE_ARRAY;       break;  /* ARRAY   */
+                case 7:  formal_kind = TYPE_ACCESS;      break;  /* ACCESS  */
+                default: formal_kind = TYPE_PRIVATE;     break;
               }
-              Type_Info *type = Type_New (tk, formal->generic_type_param.name);
+              Type_Info *type = Type_New (formal_kind, formal->generic_type_param.name);
               type_sym->type = type;
               formal->symbol = type_sym;
               Symbol_Add (type_sym);
@@ -14243,19 +14243,17 @@ static void Load_Package_Spec (String_Slice name, char *src) {
                   formal->generic_type_param.name, formal->location);
 
                 /* Map def_kind to appropriate Type_Kind */
-                Type_Kind tk = TYPE_PRIVATE;
+                Type_Kind formal_kind = TYPE_PRIVATE;
                 switch (formal->generic_type_param.def_kind) {
-
-                  /* Helper: install symbols from a declaration */
-                  case 2: tk = TYPE_ENUMERATION; break; /* DISCRETE */
-                  case 3: tk = TYPE_INTEGER; break;     /* INTEGER */
-                  case 4: tk = TYPE_FLOAT; break;       /* FLOAT */
-                  case 5: tk = TYPE_FIXED; break;       /* FIXED */
-                  case 6: tk = TYPE_ARRAY; break;       /* ARRAY */
-                  case 7: tk = TYPE_ACCESS; break;      /* ACCESS */
-                  default: tk = TYPE_PRIVATE; break;
+                  case 2:  formal_kind = TYPE_ENUMERATION; break;  /* DISCRETE */
+                  case 3:  formal_kind = TYPE_INTEGER;     break;  /* INTEGER */
+                  case 4:  formal_kind = TYPE_FLOAT;       break;  /* FLOAT   */
+                  case 5:  formal_kind = TYPE_FIXED;       break;  /* FIXED   */
+                  case 6:  formal_kind = TYPE_ARRAY;       break;  /* ARRAY   */
+                  case 7:  formal_kind = TYPE_ACCESS;      break;  /* ACCESS  */
+                  default: formal_kind = TYPE_PRIVATE;     break;
                 }
-                Type_Info *type = Type_New (tk, formal->generic_type_param.name);
+                Type_Info *type = Type_New (formal_kind, formal->generic_type_param.name);
                 type_sym->type = type;
                 formal->symbol = type_sym;
                 Symbol_Add (type_sym);
@@ -14797,7 +14795,7 @@ static bool Has_Precompiled_LL (String_Slice name) {
 }
 
 /* Find a package body source file in include paths */
-static char *Lookup_Path_Body(String_Slice name) {
+static char *Lookup_Path_Body (String_Slice name) {
   char path[512], full_path[520];
   for (uint32_t i = 0; i < Include_Path_Count; i++) {
     size_t base_len = strlen (Include_Paths[i]);
@@ -15568,19 +15566,19 @@ static void Resolve_Declaration (Syntax_Node *node) {
               * 0=PRIVATE, 1=LIMITED, 2=DISCRETE, 3=INTEGER,
               * 4=FLOAT, 5=FIXED, 6=ARRAY, 7=ACCESS */
               if (formal->kind == NK_GENERIC_TYPE_PARAM) {
-                Type_Kind tk = TYPE_PRIVATE;
+                Type_Kind formal_kind = TYPE_PRIVATE;
                 switch (formal->generic_type_param.def_kind) {
-                  case 2: tk = TYPE_ENUMERATION; break;
-                  case 3: tk = TYPE_INTEGER;     break;
-                  case 4: tk = TYPE_FLOAT;       break;
-                  case 5: tk = TYPE_FIXED;       break;
-                  case 6: tk = TYPE_ARRAY;       break;
-                  case 7: tk = TYPE_ACCESS;      break;
+                  case 2:  formal_kind = TYPE_ENUMERATION; break;  /* DISCRETE */
+                  case 3:  formal_kind = TYPE_INTEGER;     break;  /* INTEGER */
+                  case 4:  formal_kind = TYPE_FLOAT;       break;  /* FLOAT   */
+                  case 5:  formal_kind = TYPE_FIXED;       break;  /* FIXED   */
+                  case 6:  formal_kind = TYPE_ARRAY;       break;  /* ARRAY   */
+                  case 7:  formal_kind = TYPE_ACCESS;      break;  /* ACCESS  */
                   default: break;
                 }
                 Symbol *type_sym = Symbol_New (SYMBOL_TYPE,
                   formal->generic_type_param.name, formal->location);
-                type_sym->type = Type_New (tk,
+                type_sym->type = Type_New (formal_kind,
                   formal->generic_type_param.name);
                 Symbol_Add (type_sym);
                 formal->symbol = type_sym;
@@ -16046,19 +16044,17 @@ static void Resolve_Declaration (Syntax_Node *node) {
                 /* Map def_kind to appropriate Type_Kind:
                  * 0=PRIVATE, 1=LIMITED_PRIVATE, 2=DISCRETE, 3=INTEGER,
                  * 4=FLOAT, 5=FIXED, 6=ARRAY, 7=ACCESS */
-                Type_Kind tk = TYPE_PRIVATE;
+                Type_Kind formal_kind = TYPE_PRIVATE;
                 switch (formal->generic_type_param.def_kind) {
-
-                  /* Resolve the object type */
-                  case 2: tk = TYPE_ENUMERATION; break; /* DISCRETE */
-                  case 3: tk = TYPE_INTEGER; break;     /* INTEGER (range <>) */
-                  case 4: tk = TYPE_FLOAT; break;       /* FLOAT (digits <>) */
-                  case 5: tk = TYPE_FIXED; break;       /* FIXED (delta <>) */
-                  case 6: tk = TYPE_ARRAY; break;       /* ARRAY */
-                  case 7: tk = TYPE_ACCESS; break;      /* ACCESS */
-                  default: tk = TYPE_PRIVATE; break;
+                  case 2:  formal_kind = TYPE_ENUMERATION; break;  /* DISCRETE       */
+                  case 3:  formal_kind = TYPE_INTEGER;     break;  /* INTEGER range<> */
+                  case 4:  formal_kind = TYPE_FLOAT;       break;  /* FLOAT digits<>  */
+                  case 5:  formal_kind = TYPE_FIXED;       break;  /* FIXED delta<>   */
+                  case 6:  formal_kind = TYPE_ARRAY;       break;  /* ARRAY           */
+                  case 7:  formal_kind = TYPE_ACCESS;      break;  /* ACCESS          */
+                  default: formal_kind = TYPE_PRIVATE;     break;
                 }
-                Type_Info *type = Type_New (tk, formal->generic_type_param.name);
+                Type_Info *type = Type_New (formal_kind, formal->generic_type_param.name);
                 type_sym->type = type;
                 formal->symbol = type_sym;
                 Symbol_Add (type_sym);
