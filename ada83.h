@@ -8,21 +8,7 @@
 /*                                                                                                  */
 /* ------------------------------------------------------------------------------------------------ */
 
-/*  This specification declares every type, constant, and subprogram of the
-    Ada83 compiler -- an implementation of ANSI/MIL-STD-1815A (Ada 1983) that
-    targets LLVM IR.  The compiler lives in a single compilation unit, presented
-    in the tradition of Knuth's literate programming.
-
-    The file is arranged like a textbook.  Simple foundations come first:
-    machine constants, scalar helpers, memory allocation.  Then the vocabulary
-    of Ada (tokens), then its grammar (syntax tree and parser), then its
-    meaning (type system, symbol table, semantic analysis), and finally its
-    realization in machine code (LLVM IR generation).  Later chapters address
-    the library model, elaboration ordering, the build-in-place protocol for
-    limited types, and generic instantiation.
-
-    To modify the compiler, begin at S1.  Every hard-coded limit, capacity
-    bound, and platform assumption is gathered there.
+/* 
 
       S1   Settings                S13  Type system
       S2   Scalar primitives       S14  Symbol table
@@ -64,13 +50,6 @@
 /* ------------------------------------------------------------------------------------------------ */
 /*  S1. Settings                                                                                    */
 /* ------------------------------------------------------------------------------------------------ */
-
-/*  Every tuneable limit, capacity bound, and platform-dependent constant lives
-    here.  When porting to a new target, adapting to a larger program, or
-    changing the LLVM IR layout conventions, this is the only section that
-    should need attention.  The constants are grouped by the subsystem they
-    govern; a search for the S-number of any later chapter shows which
-    settings feed into it.  */
 
    /* ----------------------- */
    /*  Target Data Model      */
@@ -114,7 +93,7 @@ enum {
    /* --------------------------------- */
 
 /*  An unconstrained array parameter in Ada carries both a data pointer and
-    a bounds pointer.  The GNAT convention packs these into a fat pointer:
+    a bounds pointer.  Our convention packs these into a fat pointer:
     { data_ptr, bounds_ptr }, which is 16 bytes on 64-bit targets.  STRING
     bounds are a pair of i32 indices.  See gnatllvm-arrays-create.adb
     lines 684-707 for the authoritative layout.  */
