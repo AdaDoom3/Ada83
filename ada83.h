@@ -2,7 +2,7 @@
 /*                                                                                           */
 /*                             A D A 8 3   C O M P I L E R                                   */
 /*                                                                                           */
-/*                        Package Specification   (ada83.h)                                   */
+/*                                     Specification                                        */
 /*                                                                                           */
 /*                  An Ada 1983 Compiler Targeting LLVM Intermediate Representation           */
 /*                                                                                           */
