@@ -6,17 +6,6 @@
 /*                                                                                           */
 /*                  An Ada 1983 Compiler Targeting LLVM Intermediate Representation           */
 /*                                                                                           */
-/* ═══════════════════════════════════════════════════════════════════════════════════════════ */
-/*                                                                                           */
-/*  This header declares the complete public interface of the Ada83 compiler, a              */
-/*  single-translation-unit implementation that reads Ada 1983 source text conforming         */
-/*  to ANSI/MIL-STD-1815A and emits LLVM IR suitable for compilation by llc or clang.        */
-/*                                                                                           */
-/*  The material is arranged as one would arrange a book: it begins with the simplest        */
-/*  vocabulary -- scalar types, character predicates, unit conversions -- and builds          */
-/*  steadily toward the full complexity of generic expansion and code generation.             */
-/*  A reader who proceeds from beginning to end will encounter each concept only              */
-/*  after its prerequisites have been established.                                           */
 /*                                                                                           */
 /*  Chapter  1.   Foundations        Includes, typedefs, target constants, ctype wrappers     */
 /*  Chapter  2.   Measurement        Bit/byte morphisms, LLVM type selection, range checks   */
@@ -45,13 +34,7 @@
 
 /* ========================================================================================= */
 /*                                                                                           */
-/*  Chapter 1.   FOUNDATIONS                                                                 */
-/*                                                                                           */
-/*  Every edifice rests on its materials.  This chapter establishes the raw vocabulary:       */
-/*  the standard headers that supply primitive types and I/O, the 128-bit integer             */
-/*  extensions required by Ada's numeric model, the target data-model constants, and          */
-/*  the safe character-classification wrappers that protect against the perennial             */
-/*  signed-char pitfall in the C library.                                                    */
+/*  FOUNDATIONS                                                                              */
 /*                                                                                           */
 /* ========================================================================================= */
 
