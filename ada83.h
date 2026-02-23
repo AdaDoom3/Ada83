@@ -32,16 +32,6 @@
 #ifndef ADA83_H
 #define ADA83_H
 
-/* ========================================================================================= */
-/*                                                                                           */
-/*  FOUNDATIONS                                                                              */
-/*                                                                                           */
-/* ========================================================================================= */
-
-/*  Standard C headers -- one per line for grep-friendliness.  iso646.h provides             */
-/*  the alternate tokens `and', `or', `not' that make Boolean expressions read               */
-/*  like Ada rather than like punctuation.                                                   */
-
 #include <ctype.h>
 #include <dirent.h>
 #include <errno.h>
