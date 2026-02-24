@@ -14,7 +14,7 @@ all: compiler
 compiler: ada83
 
 # Build the compiler
-ada83: ada83.c
+ada83: ada83.c ada83.h
 	$(CC) $(CFLAGS) -o ada83 ada83.c -lm -lpthread -march=native
 
 # Pattern rules for compiling Ada programs
