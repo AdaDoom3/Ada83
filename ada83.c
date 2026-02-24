@@ -13,160 +13,9 @@
 // depends on character classification.                                                             
 //                                                                                                  
 
-// Safe ctype wrappers: the C library <ctype.h> functions take int and require unsigned char to
-// avoid undefined behaviour on platforms where plain char is signed.
-int  Is_Alpha  (char ch) { return isalpha  ((unsigned char) ch); }
-int  Is_Digit  (char ch) { return isdigit  ((unsigned char) ch); }
-int  Is_Xdigit (char ch) { return isxdigit ((unsigned char) ch); }
-int  Is_Space  (char ch) { return isspace  ((unsigned char) ch); }
-char To_Lower  (char ch) { return (char) tolower ((unsigned char) ch); }
+// §1 — Now defined as static inline in ada83.h
 
-// Fast identifier-character lookup table per Ada LRM §2.3.  A character is an identifier           
-// constituent when it is an ASCII letter, digit, or underscore, or a Latin-1 letter in the         
-// ranges 0xC0–0xD6 (À–Ö), 0xD8–0xF6 (Ø–ö), 0xF8–0xFF (ø–ÿ).  The two operator code                 
-// points 0xD7 (×) and 0xF7 (÷) are explicitly excluded.                                            
-//                                                                                                  
-const uint8_t Id_Char_Table[256] = {
-
-  // ASCII letters
-  ['A']=1,['B']=1,['C']=1,['D']=1,['E']=1,['F']=1,['G']=1,['H']=1,
-  ['I']=1,['J']=1,['K']=1,['L']=1,['M']=1,['N']=1,['O']=1,['P']=1,
-  ['Q']=1,['R']=1,['S']=1,['T']=1,['U']=1,['V']=1,['W']=1,['X']=1,
-  ['Y']=1,['Z']=1,
-  ['a']=1,['b']=1,['c']=1,['d']=1,['e']=1,['f']=1,['g']=1,['h']=1,
-  ['i']=1,['j']=1,['k']=1,['l']=1,['m']=1,['n']=1,['o']=1,['p']=1,
-  ['q']=1,['r']=1,['s']=1,['t']=1,['u']=1,['v']=1,['w']=1,['x']=1,
-  ['y']=1,['z']=1,
-
-  // Digits and underscore
-  ['0']=1,['1']=1,['2']=1,['3']=1,['4']=1,['5']=1,['6']=1,['7']=1,
-  ['8']=1,['9']=1,['_']=1,
-
-  // Latin-1 uppercase letters: À Á Â Ã Ä Å Æ Ç È É Ê Ë Ì Í Î Ï Ð Ñ Ò Ó Ô Õ Ö
-  [0xC0]=1,[0xC1]=1,[0xC2]=1,[0xC3]=1,[0xC4]=1,[0xC5]=1,[0xC6]=1,[0xC7]=1,
-  [0xC8]=1,[0xC9]=1,[0xCA]=1,[0xCB]=1,[0xCC]=1,[0xCD]=1,[0xCE]=1,[0xCF]=1,
-  [0xD0]=1,[0xD1]=1,[0xD2]=1,[0xD3]=1,[0xD4]=1,[0xD5]=1,[0xD6]=1,
-
-  // 0xD7 = × (multiplication sign) - NOT a letter
-  // Latin-1 more letters: Ø Ù Ú Û Ü Ý Þ ß
-  [0xD8]=1,[0xD9]=1,[0xDA]=1,[0xDB]=1,[0xDC]=1,[0xDD]=1,[0xDE]=1,[0xDF]=1,
-
-  // Latin-1 lowercase letters: à á â ã ä å æ ç è é ê ë ì í î ï ð ñ ò ó ô õ ö
-  [0xE0]=1,[0xE1]=1,[0xE2]=1,[0xE3]=1,[0xE4]=1,[0xE5]=1,[0xE6]=1,[0xE7]=1,
-  [0xE8]=1,[0xE9]=1,[0xEA]=1,[0xEB]=1,[0xEC]=1,[0xED]=1,[0xEE]=1,[0xEF]=1,
-  [0xF0]=1,[0xF1]=1,[0xF2]=1,[0xF3]=1,[0xF4]=1,[0xF5]=1,[0xF6]=1,
-
-  // 0xF7 = ÷ (division sign) - NOT a letter
-  // Latin-1 remaining lowercase: ø ù ú û ü ý þ ÿ
-  [0xF8]=1,[0xF9]=1,[0xFA]=1,[0xFB]=1,[0xFC]=1,[0xFD]=1,[0xFE]=1,[0xFF]=1
-};
-
-// ═════════════════════════════════════════════════════════════════════════════════════════════════
-// §2. Size, alignment, and bit-width representation                                  
-// ═════════════════════════════════════════════════════════════════════════════════════════════════
-//                                                                                                  
-// All size and alignment computations are centralised here.  Sizes flow through the To_Bits and    
-// To_Bytes morphisms so that bit/byte confusion is impossible at the call site.                    
-//                                                                                                  
-// INVARIANT: Sizes stored in Type_Info are always in BYTES (not bits).  This matches the LLVM      
-// DataLayout model and simplifies record-layout arithmetic throughout the code generator.          
-// ─────────────────────────────────────────────────────────────────────────────────────────────────
-// §2.1 Bit/Byte Conversions - Size morphisms                                                       
-//                                                                                                  
-// To_Bits   : bytes -> bits   (multiplicative, total - never truncates)                            
-// To_Bytes  : bits  -> bytes  (ceiling division - rounds up to the next whole byte)                
-// Byte_Align: bits  -> bits   (round up to a byte boundary, i.e. To_Bits (To_Bytes (n)))           
-// ─────────────────────────────────────────────────────────────────────────────────────────────────
-
-uint64_t To_Bits    (uint64_t bytes) { return bytes * Bits_Per_Unit; }
-uint64_t To_Bytes   (uint64_t bits)  { return (bits + Bits_Per_Unit - 1) / Bits_Per_Unit; }
-uint64_t Byte_Align (uint64_t bits)  { return To_Bits (To_Bytes (bits)); }
-
-// Round size up to the nearest power-of-two alignment boundary.
-size_t Align_To (size_t size, size_t alignment) {
-  return alignment ? ((size + alignment - 1) & ~(alignment - 1)) : size;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────────────────────────
-// §2.2 LLVM Type Selection - Width-to-type morphisms                                               
-//                                                                                                  
-// Given a bit width, return the smallest LLVM integer (or float) type that can hold that width.    
-// ─────────────────────────────────────────────────────────────────────────────────────────────────
-
-const char *Llvm_Int_Type (uint32_t bits) {
-  return bits <= 1   ? "i1"   : bits <= 8   ? "i8"   : bits <= 16  ? "i16" :
-         bits <= 32  ? "i32"  : bits <= 64  ? "i64"  : "i128";
-}
-const char *Llvm_Float_Type (uint32_t bits) {
-  return bits <= Width_Float ? "float" : "double";
-}
-// Return true when the LLVM type string denotes a thin pointer ("ptr").
-bool Llvm_Type_Is_Pointer (const char *llvm_type) {
-  return llvm_type
-    and llvm_type[0] == 'p' and llvm_type[1] == 't'
-    and llvm_type[2] == 'r' and llvm_type[3] == '\0';
-}
-
-// Return true when the LLVM type string denotes a fat pointer, i.e. the uniform { ptr, ptr }
-// layout used for unconstrained array parameters and access-to-unconstrained types.
-bool Llvm_Type_Is_Fat_Pointer (const char *llvm_type) {
-  return llvm_type and strcmp (llvm_type, "{ ptr, ptr }") == 0;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────────────────────────
-// §2.3 Range Predicates - Determining representation width                                         
-//                                                                                                  
-// Compute the minimum number of bits needed to represent the integer range [lo .. hi].  All        
-// bounds are int128_t so that the full Ada 2022 Long_Long_Long_Integer range is covered.           
-// ─────────────────────────────────────────────────────────────────────────────────────────────────
-
-bool Fits_In_Signed (int128_t lo, int128_t hi, uint32_t bits) {
-  if (bits >= 128) return true;
-  if (bits >= 64) {
-    return lo >= (int128_t) INT64_MIN and hi <= (int128_t) INT64_MAX;
-  }
-  int128_t range_min = -((int128_t) 1 << (bits - 1));
-  int128_t range_max =  ((int128_t) 1 << (bits - 1)) - 1;
-  return lo >= range_min and hi <= range_max;
-}
-bool Fits_In_Unsigned (int128_t lo, int128_t hi, uint32_t bits) {
-  if (lo < 0) return false;
-  if (bits >= 128) return true;
-  if (bits >= 64) return (uint128_t) hi <= UINT64_MAX;
-  return (uint128_t) hi < ((uint128_t) 1 << bits);
-}
-
-// Return the smallest standard LLVM integer width (8, 16, 32, 64, or 128) that can represent
-// every value in the range [lo .. hi].  Non-negative ranges use unsigned analysis.
-uint32_t Bits_For_Range (int128_t lo, int128_t hi) {
-  if (lo >= 0) {
-    uint128_t upper = (uint128_t) hi;
-    return upper < 256                   ? Width_8   :
-           upper < 65536                 ? Width_16  :
-           upper < (uint128_t) 1 << 32   ? Width_32  :
-           upper <= UINT64_MAX           ? Width_64  : Width_128;
-  }
-  return Fits_In_Signed (lo, hi, 8)  ? Width_8  :
-         Fits_In_Signed (lo, hi, 16) ? Width_16 :
-         Fits_In_Signed (lo, hi, 32) ? Width_32 :
-         Fits_In_Signed (lo, hi, 64) ? Width_64 : Width_128;
-}
-
-// Return the smallest standard LLVM integer width for a modular type.  Per Ada RM §3.5.4(9)        
-// a modular type's range is 0 .. modulus-1, so we need enough bits for the maximum value.          
-// The modulus is uint128_t so that mod 2**64 and mod 2**128 are representable directly.            
-//                                                                                                  
-//   mod 256    -> i8      mod 65536  -> i16     mod 2**32  -> i32                                  
-//   mod 2**64  -> i64     mod 2**128 -> i128    mod 100    -> i8  (7 bits, rounds up)              
-//                                                                                                  
-uint32_t Bits_For_Modulus (uint128_t modulus) {
-  if (modulus == 0) return 0;
-  uint128_t max_value = modulus - 1;
-  return max_value < 256                   ? Width_8  :
-         max_value < 65536                 ? Width_16 :
-         max_value < (uint128_t) 1 << 32   ? Width_32 :
-         max_value <= UINT64_MAX           ? Width_64 : Width_128;
-}
+// §2 — Now defined as static inline in ada83.h
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 // §3. MEMORY - Bump allocation for the compilation session                                         
@@ -1032,110 +881,8 @@ double Rational_To_Double (Rational rational) {
   return numer_double / denom_double;
 }
 
-// ═════════════════════════════════════════════════════════════════════════════════════════════════
-// §7. LEXER - Transforming characters into tokens                                                  
-// ═════════════════════════════════════════════════════════════════════════════════════════════════
-//                                                                                                  
-// The lexer maintains a cursor over the source buffer and produces tokens on demand.  Lexical      
-// rules follow Ada RM §2.  SIMD fast paths accelerate whitespace skipping, identifier scanning,    
-// and digit scanning on x86-64 (AVX-512/AVX2/SSE4.2) and ARM64 (NEON) targets.                     
-//                                                                                                  
-
-// Token kind names for diagnostics
-const char *Token_Name[TK_COUNT] = {
-  [TK_EOF]        = "<eof>",      [TK_ERROR]      = "<error>",    [TK_IDENTIFIER] = "identifier",
-  [TK_INTEGER]    = "integer",    [TK_REAL]       = "real",       [TK_CHARACTER]  = "character",
-  [TK_STRING]     = "string",
-
-  [TK_LPAREN]     = "(",  [TK_RPAREN]     = ")",  [TK_LBRACKET]   = "[",  [TK_RBRACKET]   = "]",
-  [TK_COMMA]      = ",",  [TK_DOT]        = ".",  [TK_SEMICOLON]  = ";",  [TK_COLON]      = ":",
-  [TK_TICK]       = "'",  [TK_ASSIGN]     = ":=", [TK_ARROW]      = "=>", [TK_DOTDOT]     = "..",
-  [TK_LSHIFT]     = "<<", [TK_RSHIFT]     = ">>", [TK_BOX]        = "<>", [TK_BAR]        = "|",
-  [TK_EQ]         = "=",  [TK_NE]         = "/=", [TK_LT]         = "<",  [TK_LE]         = "<=",
-  [TK_GT]         = ">",  [TK_GE]         = ">=", [TK_PLUS]       = "+",  [TK_MINUS]      = "-",
-  [TK_STAR]       = "*",  [TK_SLASH]      = "/",  [TK_AMPERSAND]  = "&",  [TK_EXPON]      = "**",
-
-  [TK_ABORT]      = "ABORT",      [TK_ABS]        = "ABS",        [TK_ACCEPT]     = "ACCEPT",
-  [TK_ACCESS]     = "ACCESS",     [TK_ALL]        = "ALL",        [TK_AND]        = "AND",
-  [TK_AND_THEN]   = "AND THEN",   [TK_ARRAY]      = "ARRAY",      [TK_AT]         = "AT",
-  [TK_BEGIN]      = "BEGIN",      [TK_BODY]       = "BODY",       [TK_CASE]       = "CASE",
-  [TK_CONSTANT]   = "CONSTANT",   [TK_DECLARE]    = "DECLARE",    [TK_DELAY]      = "DELAY",
-  [TK_DELTA]      = "DELTA",      [TK_DIGITS]     = "DIGITS",     [TK_DO]         = "DO",
-  [TK_ELSE]       = "ELSE",       [TK_ELSIF]      = "ELSIF",      [TK_END]        = "END",
-  [TK_ENTRY]      = "ENTRY",      [TK_EXCEPTION]  = "EXCEPTION",  [TK_EXIT]       = "EXIT",
-  [TK_FOR]        = "FOR",        [TK_FUNCTION]   = "FUNCTION",   [TK_GENERIC]    = "GENERIC",
-  [TK_GOTO]       = "GOTO",       [TK_IF]         = "IF",         [TK_IN]         = "IN",
-  [TK_IS]         = "IS",         [TK_LIMITED]    = "LIMITED",    [TK_LOOP]       = "LOOP",
-  [TK_MOD]        = "MOD",        [TK_NEW]        = "NEW",        [TK_NOT]        = "NOT",
-  [TK_NULL]       = "NULL",       [TK_OF]         = "OF",         [TK_OR]         = "OR",
-  [TK_OR_ELSE]    = "OR ELSE",    [TK_OTHERS]     = "OTHERS",     [TK_OUT]        = "OUT",
-  [TK_PACKAGE]    = "PACKAGE",    [TK_PRAGMA]     = "PRAGMA",     [TK_PRIVATE]    = "PRIVATE",
-  [TK_PROCEDURE]  = "PROCEDURE",  [TK_RAISE]      = "RAISE",      [TK_RANGE]      = "RANGE",
-  [TK_RECORD]     = "RECORD",     [TK_REM]        = "REM",        [TK_RENAMES]    = "RENAMES",
-  [TK_RETURN]     = "RETURN",     [TK_REVERSE]    = "REVERSE",    [TK_SELECT]     = "SELECT",
-  [TK_SEPARATE]   = "SEPARATE",   [TK_SUBTYPE]    = "SUBTYPE",    [TK_TASK]       = "TASK",
-  [TK_TERMINATE]  = "TERMINATE",  [TK_THEN]       = "THEN",       [TK_TYPE]       = "TYPE",
-  [TK_USE]        = "USE",        [TK_WHEN]       = "WHEN",       [TK_WHILE]      = "WHILE",
-  [TK_WITH]       = "WITH",       [TK_XOR]        = "XOR"
-};
-
-// Keyword lookup table - sorted for potential binary search, but linear is fine for 63 keywords
-struct { String_Slice name; Token_Kind kind; } Keywords[] = {
-  {S("abort")    , TK_ABORT    }, {S("abs")      , TK_ABS      }, {S("accept")   , TK_ACCEPT   },
-  {S("access")   , TK_ACCESS   }, {S("all")      , TK_ALL      }, {S("and")      , TK_AND      },
-  {S("array")    , TK_ARRAY    }, {S("at")       , TK_AT       }, {S("begin")    , TK_BEGIN    },
-  {S("body")     , TK_BODY     }, {S("case")     , TK_CASE     }, {S("constant") , TK_CONSTANT },
-  {S("declare")  , TK_DECLARE  }, {S("delay")    , TK_DELAY    }, {S("delta")    , TK_DELTA    },
-  {S("digits")   , TK_DIGITS   }, {S("do")       , TK_DO       }, {S("else")     , TK_ELSE     },
-  {S("elsif")    , TK_ELSIF    }, {S("end")      , TK_END      }, {S("entry")    , TK_ENTRY    },
-  {S("exception"), TK_EXCEPTION}, {S("exit")     , TK_EXIT     }, {S("for")      , TK_FOR      },
-  {S("function") , TK_FUNCTION }, {S("generic")  , TK_GENERIC  }, {S("goto")     , TK_GOTO     },
-  {S("if")       , TK_IF       }, {S("in")       , TK_IN       }, {S("is")       , TK_IS       },
-  {S("limited")  , TK_LIMITED  }, {S("loop")     , TK_LOOP     }, {S("mod")      , TK_MOD      },
-  {S("new")      , TK_NEW      }, {S("not")      , TK_NOT      }, {S("null")     , TK_NULL     },
-  {S("of")       , TK_OF       }, {S("or")       , TK_OR       }, {S("others")   , TK_OTHERS   },
-  {S("out")      , TK_OUT      }, {S("package")  , TK_PACKAGE  }, {S("pragma")   , TK_PRAGMA   },
-  {S("private")  , TK_PRIVATE  }, {S("procedure"), TK_PROCEDURE}, {S("raise")    , TK_RAISE    },
-  {S("range")    , TK_RANGE    }, {S("record")   , TK_RECORD   }, {S("rem")      , TK_REM      },
-  {S("renames")  , TK_RENAMES  }, {S("return")   , TK_RETURN   }, {S("reverse")  , TK_REVERSE  },
-  {S("select")   , TK_SELECT   }, {S("separate") , TK_SEPARATE }, {S("subtype")  , TK_SUBTYPE  },
-  {S("task")     , TK_TASK     }, {S("terminate"), TK_TERMINATE}, {S("then")     , TK_THEN     },
-  {S("type")     , TK_TYPE     }, {S("use")      , TK_USE      }, {S("when")     , TK_WHEN     },
-  {S("while")    , TK_WHILE    }, {S("with")     , TK_WITH     }, {S("xor")      , TK_XOR      },
-  {Empty_Slice, TK_EOF}
-};
-Token_Kind Lookup_Keyword (String_Slice name) {
-  for (int i = 0; Keywords[i].name.data; i++)
-    if (Slice_Equal_Ignore_Case (name, Keywords[i].name))
-      return Keywords[i].kind;
-  return TK_IDENTIFIER;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────────────────────────
-// §7.2 Token Structure - A single lexeme with its semantic value                                   
-// ─────────────────────────────────────────────────────────────────────────────────────────────────
-
-Lexer Lexer_New (const char *source, size_t length, const char *filename) {
-  return (Lexer){
-    .source_start    = source,
-    .current         = source,
-    .source_end      = source + length,
-    .filename        = filename,
-    .line            = 1,
-    .column          = 1,
-    .prev_token_kind = TK_EOF
-  };
-}
-char Lexer_Peek (const Lexer *lex, size_t offset) {
-  return lex->current + offset < lex->source_end ? lex->current[offset] : '\0';
-}
-char Lexer_Advance (Lexer *lex) {
-  if (lex->current >= lex->source_end) return '\0';
-  char ch = *lex->current++;
-  if (ch == '\n') { lex->line++; lex->column = 1; }
-  else lex->column++;
-  return ch;
-}
+// §7 — Token_Name, Keywords, Lookup_Keyword, Lexer_New, Lexer_Peek, Lexer_Advance
+//      now defined as static/static inline in ada83.h
 void Lexer_Skip_Whitespace_And_Comments (Lexer *lex) {
 
   // Use SIMD to find first non-whitespace, then check for Ada comments (-- to end of line)
@@ -1160,12 +907,7 @@ void Lexer_Skip_Whitespace_And_Comments (Lexer *lex) {
     } else break;
   }
 }
-Token Make_Token (Token_Kind kind, Source_Location location, String_Slice text) {
-  return (Token){
-    .kind = kind, .location = location, .text = text,
-    .integer_value = 0, .big_integer = NULL
-  };
-}
+// Make_Token — now defined as static inline in ada83.h
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
 // §7.3 Scanning Functions - Each scanner consumes one token and returns it                         
@@ -1184,13 +926,7 @@ Token Scan_Identifier (Lexer *lex) {
   return Make_Token (kind, location, text);
 }
 
-// Parse digit value in any base up to 16; returns -1 for non-hex characters
-int Digit_Value (char ch) {
-  if (ch >= '0' and ch <= '9') return ch - '0';
-  if (ch >= 'A' and ch <= 'F') return ch - 'A' + 10;
-  if (ch >= 'a' and ch <= 'f') return ch - 'a' + 10;
-  return -1;
-}
+// Digit_Value — now defined as static inline in ada83.h
 Token Scan_Number (Lexer *lex) {
   Source_Location location = { .filename = lex->filename,
                                .line     = lex->line,
