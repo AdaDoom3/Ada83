@@ -1,33 +1,28 @@
-/* ═══════════════════════════════════════════════════════════════════════════════════════════ */
-/*                                                                                           */
-/*                             A D A 8 3   C O M P I L E R                                   */
-/*                                                                                           */
-/*                                     Specification                                        */
-/*                                                                                           */
-/*                  An Ada 1983 Compiler Targeting LLVM Intermediate Representation           */
-/*                                                                                           */
-/*                                                                                           */
-/*  Chapter  1.   Foundations        Includes, typedefs, target constants, ctype wrappers     */
-/*  Chapter  2.   Measurement        Bit/byte morphisms, LLVM type selection, range checks   */
-/*  Chapter  3.   Memory             Arena allocator for the compilation session              */
-/*  Chapter  4.   Text               String slices, hashing, edit distance                   */
-/*  Chapter  5.   Provenance         Source locations and diagnostic reporting                */
-/*  Chapter  6.   Arithmetic         Big integers, big reals, exact rationals                */
-/*  Chapter  7.   Lexical Analysis   Token kinds, lexer state, scanning functions             */
-/*  Chapter  8.   Syntax             Node kinds, the syntax tree, node lists                  */
-/*  Chapter  9.   Parsing            Recursive descent for the full Ada 83 grammar           */
-/*  Chapter 10.   Types              The Ada type lattice, Type_Info, classification          */
-/*  Chapter 11.   Names              Symbol table, scopes, overload resolution               */
-/*  Chapter 12.   Semantics          Name resolution, type checking, constant folding        */
-/*  Chapter 13.   Code Generation    LLVM IR emission for every Ada construct                */
-/*  Chapter 14.   Library Management ALI files, checksums, dependency tracking               */
-/*  Chapter 15.   Elaboration        Dependency ordering for multi-unit programs              */
-/*  Chapter 16.   Generics           Macro-style instantiation of generic units              */
-/*  Chapter 17.   File Loading       Include-path search, source file I/O                    */
-/*  Chapter 18.   Vector Paths       SIMD-accelerated scanning on x86-64 and ARM64          */
-/*  Chapter 19.   Driver             Command-line parsing and top-level orchestration        */
-/*                                                                                           */
-/* ═══════════════════════════════════════════════════════════════════════════════════════════ */
+//                                                                                                  //
+//                                  A D A 8 3   C O M P I L E R                                    //
+//                                                                                                  //
+//              An Ada 1983 Compiler Targeting LLVM Intermediate Representation                     //
+//                                                                                                  //
+//  Ch.  1.  Foundations         Includes, typedefs, target constants, ctype wrappers               //
+//  Ch.  2.  Measurement         Bit/byte morphisms, LLVM type selection, range checks              //
+//  Ch.  3.  Memory              Arena allocator for the compilation session                        //
+//  Ch.  4.  Text                String slices, hashing, edit distance                              //
+//  Ch.  5.  Provenance          Source locations and diagnostic reporting                          //
+//  Ch.  6.  Arithmetic          Big integers, big reals, exact rationals                           //
+//  Ch.  7.  Lexical Analysis    Token kinds, lexer state, scanning functions                       //
+//  Ch.  8.  Syntax              Node kinds, the syntax tree, node lists                            //
+//  Ch.  9.  Parsing             Recursive descent for the full Ada 83 grammar                      //
+//  Ch. 10.  Types               The Ada type lattice, Type_Info, classification                    //
+//  Ch. 11.  Names               Symbol table, scopes, overload resolution                         //
+//  Ch. 12.  Semantics           Name resolution, type checking, constant folding                   //
+//  Ch. 13.  Code Generation     LLVM IR emission for every Ada construct                          //
+//  Ch. 14.  Library Management  ALI files, checksums, dependency tracking                         //
+//  Ch. 15.  Elaboration         Dependency ordering for multi-unit programs                        //
+//  Ch. 16.  Generics            Macro-style instantiation of generic units                         //
+//  Ch. 17.  File Loading        Include-path search, source file I/O                               //
+//  Ch. 18.  Vector Paths        SIMD-accelerated scanning on x86-64 and ARM64                     //
+//  Ch. 19.  Driver              Command-line parsing and top-level orchestration                    //
+//                                                                                                  //
 
 #ifndef ADA83_H
 #define ADA83_H
@@ -51,37 +46,25 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-/*  1.1  Extended Integer Types                                                              */
-/*                                                                                           */
-/*  Ada's numeric model demands integers wider than 64 bits.  Modular types permit           */
-/*  moduli up to 2**128, and universal_integer arithmetic is unbounded.  The GCC/Clang       */
-/*  __int128 extension gives us native 128-bit registers on 64-bit targets, which            */
-/*  suffices for all compile-time range checks and representation computations.              */
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
+// -----------------
+// -- Foundations --
+// -----------------
 
+// -- Extended Integer Types
+// Ada's numeric model demands integers wider than 64 bits; GCC/Clang __int128 gives us
+// native 128-bit registers on 64-bit targets.
 typedef __int128          int128_t;
 typedef unsigned __int128 uint128_t;
 
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-/*  1.2  Target Data Model                                                                   */
-/*                                                                                           */
-/*  The compiler assumes a 64-bit LP64 host throughout.  All sizes stored in                 */
-/*  Type_Info (Chapter 10) are in bytes, matching the LLVM DataLayout convention.             */
-/*  Bit widths appear only in IR emission and range checks; everywhere else,                 */
-/*  arithmetic is done in bytes to prevent the confusion that inevitably follows              */
-/*  when both units circulate in the same code.                                              */
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-
+// -- Target Data Model
+// 64-bit LP64 host throughout; sizes in Type_Info are bytes, bit widths only in IR.
 enum { Bits_Per_Unit = 8 };
-/*  Number of bits in the smallest addressable storage unit.                                 */
 
 typedef enum {
-  Width_1    = 1,     Width_8   = 8,    Width_16     = 16,
-  Width_32   = 32,    Width_64  = 64,   Width_128    = 128,
-  Width_Ptr  = 64,    Width_Float = 32, Width_Double = 64
+  Width_1      = 1,   Width_8     = 8,   Width_16     = 16,
+  Width_32     = 32,  Width_64    = 64,  Width_128    = 128,
+  Width_Ptr    = 64,  Width_Float = 32,  Width_Double = 64
 } Bit_Width;
-/*  Named bit widths used when selecting LLVM IR integer and float types.                    */
 
 typedef enum {
   Ada_Short_Short_Integer_Bits    = Width_8,
@@ -89,44 +72,25 @@ typedef enum {
   Ada_Integer_Bits                = Width_32,
   Ada_Long_Integer_Bits           = Width_64,
   Ada_Long_Long_Integer_Bits      = Width_64,
-  Ada_Long_Long_Long_Integer_Bits = Width_128       /* Ada 2022 extension */
+  Ada_Long_Long_Long_Integer_Bits = Width_128
 } Ada_Integer_Width;
-/*  Bit widths for the predefined integer types declared in package Standard.                 */
-/*  The semantic pass uses these when installing the universal Standard types.                */
 
 enum {
   Default_Size_Bits   = Ada_Integer_Bits,
   Default_Size_Bytes  = Ada_Integer_Bits / Bits_Per_Unit,
   Default_Align_Bytes = Default_Size_Bytes
 };
-/*  Default size and alignment for objects when no representation clause                     */
-/*  or type constraint specifies otherwise.                                                  */
 
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-/*  1.3  Fat-Pointer Layout                                                                  */
-/*                                                                                           */
-/*  An unconstrained array parameter in Ada carries both a data pointer and a                */
-/*  bounds pointer.  The compiler packs these into a fat pointer: { data, bounds },          */
-/*  which occupies 16 bytes on all 64-bit targets.  STRING bounds are a pair of              */
-/*  i32 indices -- first and last -- matching the layout described in the                    */
-/*  gnatllvm-arrays-create.adb source (lines 684-707).                                      */
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
+// -- Fat-Pointer Layout
+// Unconstrained array parameters carry { data, bounds } -- 16 bytes on 64-bit targets.
+#define FAT_PTR_TYPE         "{ ptr, ptr }"
+#define FAT_PTR_ALLOC_SIZE   16
+#define STRING_BOUND_TYPE    "i32"
+#define STRING_BOUND_WIDTH   32
+#define STRING_BOUNDS_STRUCT "{ i32, i32 }"
+#define STRING_BOUNDS_ALLOC  8
 
-#define FAT_PTR_TYPE          "{ ptr, ptr }"
-#define FAT_PTR_ALLOC_SIZE    16
-#define STRING_BOUND_TYPE     "i32"
-#define STRING_BOUND_WIDTH    32
-#define STRING_BOUNDS_STRUCT  "{ i32, i32 }"
-#define STRING_BOUNDS_ALLOC   8
-
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-/*  1.4  IEEE Floating-Point Model                                                             */
-/*                                                                                             */
-/*  Model parameters for FLOAT (single) and LONG_FLOAT (double) as defined by                  */
-/*  Ada RM 3.5.8.  The code generator uses these when emitting attribute references            */
-/*  such as T'Digits, T'Machine_Mantissa, and T'Model_Emin.                                    */
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-
+// -- IEEE Floating-Point Model
 #define IEEE_FLOAT_DIGITS      6
 #define IEEE_DOUBLE_DIGITS     15
 #define IEEE_FLOAT_MANTISSA    24
@@ -136,118 +100,57 @@ enum {
 #define IEEE_FLOAT_EMIN        (-125)
 #define IEEE_DOUBLE_EMIN       (-1021)
 #define IEEE_MACHINE_RADIX     2
-#define IEEE_DOUBLE_MIN_NORMAL 2.2250738585072014e-308 /* 2^(-1022) */
-#define IEEE_FLOAT_MIN_NORMAL  1.1754943508222875e-38  /* 2^(-126) */
+#define IEEE_DOUBLE_MIN_NORMAL 2.2250738585072014e-308
+#define IEEE_FLOAT_MIN_NORMAL  1.1754943508222875e-38
 #define LOG2_OF_10             3.321928094887362
 
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-/*  1.5  Subsystem Capacities                                                                */
-/*                                                                                           */
-/*  These capacity constants are deliberately generous.  Exceeding them signals              */
-/*  a pathological program rather than a compiler limitation.                                */
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
+// -- Subsystem Capacities
+enum { Default_Chunk_Size = 1 << 24 }; // Arena chunk: 16 MiB
+#define SYMBOL_TABLE_SIZE   1024       // Hash buckets (Ch. 11)
+#define MAX_INTERPRETATIONS 64         // Overload ceiling
+#define ALI_VERSION         "Ada83 1.0 built " __DATE__ " " __TIME__
+#define ELAB_MAX_VERTICES   512        // Elaboration graph (Ch. 15)
+#define ELAB_MAX_EDGES      2048
+#define ELAB_MAX_COMPONENTS 256
 
-enum { Default_Chunk_Size = 1 << 24 };
-/*  Memory arena chunk size: 16 MiB keeps the number of malloc calls low.                    */
+// -- Build-in-Place Formal Names
+#define BIP_ALLOC_NAME  "__BIPalloc"
+#define BIP_ACCESS_NAME "__BIPaccess"
+#define BIP_MASTER_NAME "__BIPmaster"
+#define BIP_CHAIN_NAME  "__BIPchain"
+#define BIP_FINAL_NAME  "__BIPfinal"
 
-#define SYMBOL_TABLE_SIZE        1024
-/*  Hash table width for the symbol table (Ch. 11).  1024 buckets covers                    */
-/*  most programs without excessive chaining.                                                */
+// -- Code Generator Capacities
+#define TEMP_TYPE_CAPACITY 4096 // Ring buffer for temp types
+#define EXC_REF_CAPACITY   512  // Exception references per unit
+#define MAX_AGG_DIMS       8    // Array aggregate dimensions
+#define MAX_DISC_CACHE     16   // Discriminant value cache depth
 
-#define MAX_INTERPRETATIONS      64
-/*  Maximum simultaneous overload interpretations during name resolution.                    */
-/*  Sixty-four suffices; deeper ambiguity signals a pathological program.                    */
+// -- Runtime Check Flags
+// Each bit controls a check category suppressible via pragma Suppress (RM 11.5).
+#define CHK_RANGE        ((uint32_t)1)
+#define CHK_OVERFLOW     ((uint32_t)2)
+#define CHK_INDEX        ((uint32_t)4)
+#define CHK_LENGTH       ((uint32_t)8)
+#define CHK_DIVISION     ((uint32_t)16)
+#define CHK_ACCESS       ((uint32_t)32)
+#define CHK_DISCRIMINANT ((uint32_t)64)
+#define CHK_ELABORATION  ((uint32_t)128)
+#define CHK_STORAGE      ((uint32_t)256)
+#define CHK_ALL          ((uint32_t)0xFFFFFFFF)
 
-#define ALI_VERSION              "Ada83 1.0 built " __DATE__ " " __TIME__
-/*  Version stamp written into Ada Library Information files (Ch. 14).                       */
-
-#define ELAB_MAX_VERTICES        512
-#define ELAB_MAX_EDGES           2048
-#define ELAB_MAX_COMPONENTS      256
-/*  Elaboration graph capacities (Ch. 15).  These bound the number of                       */
-/*  compilation units, dependency edges, and strongly-connected components                   */
-/*  the elaboration pass can handle in a single closure.                                     */
-
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-/*  1.6  Build-in-Place Formal Names                                                         */
-/*                                                                                           */
-/*  The BIP protocol (Ch. 13) passes extra implicit formals whose linker names               */
-/*  must follow the conventional naming so that mixed-language linking works.                 */
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-
-#define BIP_ALLOC_NAME           "__BIPalloc"
-#define BIP_ACCESS_NAME          "__BIPaccess"
-#define BIP_MASTER_NAME          "__BIPmaster"
-#define BIP_CHAIN_NAME           "__BIPchain"
-#define BIP_FINAL_NAME           "__BIPfinal"
-
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-/*  1.7  Code Generator Capacities                                                           */
-/*                                                                                           */
-/*  Ring-buffer and array sizes for the LLVM IR emitter (Ch. 13).                            */
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-
-#define TEMP_TYPE_CAPACITY       4096
-/*  Temp register type slots in the ring buffer.                                             */
-
-#define EXC_REF_CAPACITY         512
-/*  Maximum distinct exception references per compilation unit.                              */
-
-#define MAX_AGG_DIMS             8
-/*  Maximum array dimensions tracked during aggregate generation.                            */
-
-#define MAX_DISC_CACHE           16
-/*  Discriminant value cache depth for record variant dispatch.                              */
-
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-/*  1.8  Runtime Check Flags                                                                 */
-/*                                                                                           */
-/*  Each bit controls a category of runtime check suppressible via pragma Suppress            */
-/*  (RM 11.5).  The flags are stored in Type_Info and Symbol so that suppression              */
-/*  is inherited through derivation.                                                         */
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-
-#define CHK_RANGE                ((uint32_t)1)
-#define CHK_OVERFLOW             ((uint32_t)2)
-#define CHK_INDEX                ((uint32_t)4)
-#define CHK_LENGTH               ((uint32_t)8)
-#define CHK_DIVISION             ((uint32_t)16)
-#define CHK_ACCESS               ((uint32_t)32)
-#define CHK_DISCRIMINANT         ((uint32_t)64)
-#define CHK_ELABORATION          ((uint32_t)128)
-#define CHK_STORAGE              ((uint32_t)256)
-#define CHK_ALL                  ((uint32_t)0xFFFFFFFF)
-
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-/*  1.9  Platform Detection                                                                  */
-/*                                                                                           */
-/*  Selects SIMD fast paths at compile time (Ch. 18).  The x86-64 path uses                  */
-/*  AVX-512, AVX2, or SSE4.2 depending on what the toolchain supports; ARM64                 */
-/*  uses NEON; everything else gets a scalar fallback that produces identical                 */
-/*  results on every platform.                                                               */
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-
-#if defined (__x86_64__) || defined (_M_X64)
-  #define SIMD_X86_64 1
-#elif defined (__aarch64__) || defined (_M_ARM64)
-  #define SIMD_ARM64 1
+// -- Platform Detection
+#if defined(__x86_64__) || defined(_M_X64)
+  #define SIMD_X86_64  1
+#elif defined(__aarch64__) || defined(_M_ARM64)
+  #define SIMD_ARM64   1
 #else
   #define SIMD_GENERIC 1
 #endif
 
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-/*  1.10  Safe Character Classification                                                      */
-/*                                                                                           */
-/*  The C library ctype functions take int and require unsigned-char arguments to             */
-/*  avoid undefined behaviour on platforms where plain char is signed.  These                 */
-/*  wrappers perform the cast once so that callers need not think about it.                   */
-/*                                                                                           */
-/*  The identifier-character table encodes Ada RM 2.3 as a 256-byte bitmap:                  */
-/*  ASCII letters, digits, underscore, and Latin-1 letters in the ranges                     */
-/*  0xC0-0xD6, 0xD8-0xF6, 0xF8-0xFF.  The multiplication sign (0xD7) and                    */
-/*  division sign (0xF7) are explicitly excluded.                                            */
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-
+// -- Safe Character Classification
+// Wrappers cast to unsigned char before calling ctype.  Id_Char_Table encodes
+// Ada RM 2.3: ASCII letters, digits, underscore, Latin-1 in 0xC0..0xFF minus 0xD7, 0xF7.
 int  Is_Alpha  (char ch);
 int  Is_Digit  (char ch);
 int  Is_Xdigit (char ch);
@@ -257,399 +160,261 @@ char To_Lower  (char ch);
 extern const uint8_t Id_Char_Table[256];
 #define Is_Id_Char(ch) (Id_Char_Table[(uint8_t)(ch)])
 
-/* ========================================================================================= */
-/*                                                                                           */
-/*  Chapter 2.   MEASUREMENT                                                                 */
-/*                                                                                           */
-/*  Before any data structure can be laid out in memory, the compiler must answer             */
-/*  a prior question: how wide is this value?  The functions in this chapter convert          */
-/*  between bits and bytes, select the narrowest LLVM integer type for a given                */
-/*  width, and determine whether a range of values fits within a given number of              */
-/*  signed or unsigned bits.  These are the rulers and callipers of the compiler.             */
-/*                                                                                           */
-/* ========================================================================================= */
+// -----------------
+// -- Measurement --
+// -----------------
 
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-/*  2.1  Bit/Byte Conversions                                                                */
-/*                                                                                           */
-/*  To_Bits and To_Bytes form a Galois connection between the bit and byte                   */
-/*  domains: To_Bits is multiplicative (total, never truncates), while To_Bytes               */
-/*  is a ceiling division that rounds up to the next whole byte.  Byte_Align                  */
-/*  is their composition: round a bit count up to a byte boundary.                           */
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
+// -- Bit/Byte Conversions
+// To_Bits and To_Bytes form a Galois connection between the bit and byte domains:
+// To_Bits is multiplicative (total, never truncates), To_Bytes is ceiling division.
+// Byte_Align is their composition.
+uint64_t To_Bits    (uint64_t bytes);
+uint64_t To_Bytes   (uint64_t bits);
+uint64_t Byte_Align (uint64_t bits);
+size_t   Align_To   (size_t   size, size_t alignment);
 
-uint64_t    To_Bits              (uint64_t bytes);
-uint64_t    To_Bytes             (uint64_t bits);
-uint64_t    Byte_Align           (uint64_t bits);
-size_t      Align_To             (size_t size, size_t alignment);
-/*  Round size up to the next multiple of alignment.                                         */
-
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-/*  2.2  LLVM Type Selection                                                                 */
-/*                                                                                           */
-/*  Given a bit width, return the smallest LLVM integer (or float) type that                 */
-/*  can hold that many bits.  These are pure functions of their argument --                   */
-/*  they consult no global state.                                                            */
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-
-const char *Llvm_Int_Type        (uint32_t bits);
-const char *Llvm_Float_Type      (uint32_t bits);
+// -- LLVM Type Selection
+const char *Llvm_Int_Type            (uint32_t    bits);
+const char *Llvm_Float_Type          (uint32_t    bits);
 bool        Llvm_Type_Is_Pointer     (const char *llvm_type);
 bool        Llvm_Type_Is_Fat_Pointer (const char *llvm_type);
 
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-/*  2.3  Range Predicates                                                                    */
-/*                                                                                           */
-/*  All bounds are int128_t / uint128_t so that the full Ada 2022 integer range               */
-/*  is representable.  These predicates drive the code generator's choice of                  */
-/*  LLVM integer widths and sign-extension operations.                                       */
-/*                                                                                           */
-/*  Fits_In_Signed asks: does [lo..hi] lie within the signed range of N bits?                */
-/*  Fits_In_Unsigned asks the same for the unsigned range.  Bits_For_Range                   */
-/*  returns the smallest standard width (8, 16, 32, 64, or 128) that covers                  */
-/*  the range.  Bits_For_Modulus does likewise for a modular type whose range                 */
-/*  is 0 .. modulus-1.                                                                       */
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
+// -- Range Predicates
+// All bounds are int128_t / uint128_t so that the full Ada integer range is representable.
+// Fits_In_Signed asks: does [lo..hi] lie within the signed range of N bits?
+// Bits_For_Range returns the smallest standard width (8, 16, 32, 64, 128) that covers it.
+bool     Fits_In_Signed   (int128_t  lo, int128_t hi, uint32_t bits);
+bool     Fits_In_Unsigned (int128_t  lo, int128_t hi, uint32_t bits);
+uint32_t Bits_For_Range   (int128_t  lo, int128_t hi);
+uint32_t Bits_For_Modulus (uint128_t modulus);
 
-bool        Fits_In_Signed       (int128_t lo, int128_t hi, uint32_t bits);
-bool        Fits_In_Unsigned     (int128_t lo, int128_t hi, uint32_t bits);
-uint32_t    Bits_For_Range       (int128_t lo, int128_t hi);
-uint32_t    Bits_For_Modulus     (uint128_t modulus);
+// ----------
+// -- Memory --
+// ----------
 
-/* ========================================================================================= */
-/*                                                                                           */
-/*  Chapter 3.   MEMORY                                                                      */
-/*                                                                                           */
-/*  A compiler's memory regime differs from that of a long-running server: all               */
-/*  allocations share a single lifetime -- the compilation -- and are freed in                */
-/*  one shot at the end.  The bump allocator here exploits that invariant.                    */
-/*  Individual frees are neither needed nor supported.  Chunks are 16 MiB by                 */
-/*  default (see Default_Chunk_Size in Ch. 1); oversized requests get their                  */
-/*  own chunk.  All returned pointers are 16-byte aligned.                                   */
-/*                                                                                           */
-/* ========================================================================================= */
-
+// Bump allocator exploiting the single-lifetime invariant of compilation.
+// Chunks are 16 MiB by default; oversized requests get their own chunk.
+// All pointers are 16-byte aligned.
 typedef struct Arena_Chunk Arena_Chunk;
 struct Arena_Chunk {
-  Arena_Chunk *previous;        /*  Singly-linked list of chunks             */
-  char        *base;            /*  First usable byte in this chunk          */
-  char        *current;         /*  Next free byte (the bump pointer)        */
-  char        *end;             /*  One past the last usable byte            */
+  Arena_Chunk *previous; // Singly-linked list of chunks
+  char        *base;     // First usable byte
+  char        *current;  // Bump pointer
+  char        *end;      // One past last usable byte
 };
 
 typedef struct {
-  Arena_Chunk *head;            /*  Most recently allocated chunk             */
-  size_t       chunk_size;      /*  Minimum allocation granularity           */
+  Arena_Chunk *head;
+  size_t       chunk_size;
 } Memory_Arena;
 
 extern Memory_Arena Global_Arena;
 
-void *Arena_Allocate (size_t size);
-/*  Allocate `size' bytes from the global arena, zero-filled and 16-byte aligned.            */
+void *Arena_Allocate (size_t size); // Zero-filled, 16-byte aligned
+void  Arena_Free_All (void);        // Release every chunk at end of main
 
-void  Arena_Free_All (void);
-/*  Release every chunk in one operation.  Called once, at the end of main.                   */
+// --------
+// -- Text --
+// --------
 
-/* ========================================================================================= */
-/*                                                                                           */
-/*  Chapter 4.   TEXT                                                                        */
-/*                                                                                           */
-/*  The fundamental textual unit of the compiler is the String_Slice: a non-owning            */
-/*  (pointer, length) view into the source buffer or the arena.  No null terminator           */
-/*  is required or expected.  Because Ada identifiers are case-insensitive                   */
-/*  (RM 2.3), comparison and hashing fold to lower case.                                     */
-/*                                                                                           */
-/*  The S() macro constructs a compile-time slice from a C string literal,                   */
-/*  computing the length at compile time via sizeof.  It is the closest C comes               */
-/*  to an Ada string aggregate.                                                              */
-/*                                                                                           */
-/* ========================================================================================= */
-
+// String_Slice: a non-owning (pointer, length) view into the source buffer or arena.
+// No null terminator required.  Comparison and hashing fold to lower case (Ada RM 2.3).
 typedef struct {
-  const char *data;             /*  Points into the source buffer or arena   */
-  uint32_t    length;           /*  Number of characters in the view         */
+  const char *data;
+  uint32_t    length;
 } String_Slice;
 
-#define S(literal) \
-  ((String_Slice){ .data = (literal), .length = sizeof (literal) - 1 })
+#define S(lit) ((String_Slice){ .data = (lit), .length = sizeof(lit) - 1 })
 
 extern const String_Slice Empty_Slice;
-/*  The zero-length slice, used as a sentinel throughout.                                    */
 
-String_Slice Slice_From_Cstring      (const char *source);
+String_Slice Slice_From_Cstring      (const char  *source);
 String_Slice Slice_Duplicate         (String_Slice slice);
-/*  Allocate a fresh copy on the arena.                                                      */
+bool         Slice_Equal             (String_Slice left,  String_Slice right);
+bool         Slice_Equal_Ignore_Case (String_Slice left,  String_Slice right);
+uint64_t     Slice_Hash              (String_Slice slice);                    // FNV-1a, case-folded
+int          Edit_Distance           (String_Slice left,  String_Slice right); // Levenshtein
 
-bool         Slice_Equal             (String_Slice left, String_Slice right);
-bool         Slice_Equal_Ignore_Case (String_Slice left, String_Slice right);
+// ----------------
+// -- Provenance --
+// ----------------
 
-uint64_t     Slice_Hash              (String_Slice slice);
-/*  FNV-1a hash with case folding, used by the symbol table (Ch. 11).                        */
-
-int          Edit_Distance           (String_Slice left, String_Slice right);
-/*  Levenshtein distance for "did you mean ...?" diagnostic suggestions.                     */
-
-/* ========================================================================================= */
-/*                                                                                           */
-/*  Chapter 5.   PROVENANCE                                                                  */
-/*                                                                                           */
-/*  Every token, syntax node, and symbol carries a Source_Location so that error              */
-/*  messages can point the programmer at the exact file, line, and column where               */
-/*  the problem was detected.  No_Location is a sentinel for compiler-generated               */
-/*  constructs that have no corresponding source text.                                       */
-/*                                                                                           */
-/*  Errors are accumulated rather than triggering an immediate abort, so the                  */
-/*  compiler can report multiple issues in a single invocation.  Error_Count                  */
-/*  is checked after each phase to decide whether to proceed.  Fatal_Error                   */
-/*  is reserved for internal consistency violations that make further progress                */
-/*  impossible -- it prints a diagnostic and calls exit(1).                                  */
-/*                                                                                           */
-/* ========================================================================================= */
-
+// Every token, syntax node, and symbol carries a Source_Location.  Errors are
+// accumulated; Error_Count is checked after each phase.  Fatal_Error calls exit(1).
 typedef struct {
-  const char *filename;         /*  Path of the source file                  */
-  uint32_t    line;             /*  One-based line number                    */
-  uint32_t    column;           /*  One-based column number                  */
+  const char *filename;
+  uint32_t    line;
+  uint32_t    column;
 } Source_Location;
 
 extern const Source_Location No_Location;
-
-extern int Error_Count;
+extern int                   Error_Count;
 
 void Report_Error (Source_Location location, const char *format, ...);
 
-__attribute__ ((noreturn))
+__attribute__((noreturn))
 void Fatal_Error  (Source_Location location, const char *format, ...);
 
-/* ========================================================================================= */
-/*                                                                                           */
-/*  Chapter 6.   ARITHMETIC                                                                  */
-/*                                                                                           */
-/*  Ada numeric literals can exceed the 64-bit range: modular types allow moduli              */
-/*  up to 2**128, and universal_integer expressions are unbounded.  This chapter              */
-/*  provides three levels of exact arithmetic:                                               */
-/*                                                                                           */
-/*    Big_Integer   Arbitrary-precision integers stored as little-endian arrays               */
-/*                  of 64-bit limbs.  The operations needed for literal parsing               */
-/*                  are: construction from a based or decimal string, multiply-add            */
-/*                  by a small constant, comparison, full multiplication, division            */
-/*                  with remainder, and greatest common divisor.                              */
-/*                                                                                           */
-/*    Big_Real      A significand (Big_Integer) paired with a power-of-ten exponent.          */
-/*                  Real literals are represented exactly until the code generator            */
-/*                  rounds to float or double at the point of use.                           */
-/*                                                                                           */
-/*    Rational      An exact quotient of two Big_Integers, always reduced by GCD.             */
-/*                  The semantic pass uses Rationals for constant folding of                  */
-/*                  fixed-point arithmetic, where intermediate results must be               */
-/*                  carried without rounding until the final conversion.                     */
-/*                                                                                           */
-/*  All storage is arena-allocated (Ch. 3), so there is no explicit deallocation.             */
-/*                                                                                           */
-/* ========================================================================================= */
+// ----------------
+// -- Arithmetic --
+// ----------------
 
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-/*  6.1  Big_Integer                                                                         */
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
+// Three levels of exact arithmetic for Ada numeric literals and constant folding:
+//   Big_Integer  Arbitrary-precision integers as little-endian 64-bit limb arrays.
+//   Big_Real     Significand (Big_Integer) paired with a power-of-ten exponent.
+//   Rational     Exact quotient of two Big_Integers, always reduced by GCD.
+// All storage is arena-allocated; no explicit deallocation.
 
+// -- Big_Integer
 typedef struct {
-  uint64_t *limbs;              /*  Little-endian array of 64-bit digits     */
-  uint32_t  count;              /*  Number of active limbs                   */
-  uint32_t  capacity;           /*  Allocated limb slots                     */
-  bool      is_negative;        /*  Sign flag; magnitude is always positive  */
+  uint64_t *limbs;       // Little-endian 64-bit digits
+  uint32_t  count;       // Active limbs
+  uint32_t  capacity;    // Allocated slots
+  bool      is_negative; // Sign flag; magnitude always positive
 } Big_Integer;
 
-Big_Integer *Big_Integer_New             (uint32_t capacity);
+Big_Integer *Big_Integer_New             (uint32_t     capacity);
 Big_Integer *Big_Integer_Clone           (const Big_Integer *source);
 Big_Integer *Big_Integer_One             (void);
-
 void         Big_Integer_Ensure_Capacity (Big_Integer *integer, uint32_t needed);
 void         Big_Integer_Normalize       (Big_Integer *integer);
-/*  Strip leading zero limbs and canonicalise the sign.                                      */
-
 void         Big_Integer_Mul_Add_Small   (Big_Integer *integer,
-                                          uint64_t factor, uint64_t addend);
-/*  In-place: integer = integer * factor + addend.  The core accumulation                    */
-/*  loop for building a big integer one digit at a time.                                     */
+                                          uint64_t     factor,
+                                          uint64_t     addend);
 
-int          Big_Integer_Compare         (const Big_Integer *left,
-                                          const Big_Integer *right);
-/*  Sign-aware comparison.  Returns -1, 0, or +1.                                            */
+int          Big_Integer_Compare         (const Big_Integer  *left,
+                                          const Big_Integer  *right);
+Big_Integer *Big_Integer_Add             (const Big_Integer  *left,
+                                          const Big_Integer  *right);
+Big_Integer *Big_Integer_Multiply        (const Big_Integer  *left,
+                                          const Big_Integer  *right);
+Big_Integer *Big_Integer_GCD             (const Big_Integer  *left,
+                                          const Big_Integer  *right);
+void         Big_Integer_Div_Rem         (const Big_Integer  *dividend,
+                                          const Big_Integer  *divisor,
+                                          Big_Integer       **quotient,
+                                          Big_Integer       **remainder);
 
-Big_Integer *Big_Integer_Add             (const Big_Integer *left,
-                                          const Big_Integer *right);
-Big_Integer *Big_Integer_Multiply        (const Big_Integer *left,
-                                          const Big_Integer *right);
+Big_Integer *Big_Integer_From_Decimal_SIMD (const char        *text);
+bool         Big_Integer_Fits_Int64        (const Big_Integer  *integer, int64_t   *out);
+bool         Big_Integer_To_Uint128        (const Big_Integer  *integer, uint128_t *out);
+bool         Big_Integer_To_Int128         (const Big_Integer  *integer, int128_t  *out);
 
-void         Big_Integer_Div_Rem         (const Big_Integer *dividend,
-                                          const Big_Integer *divisor,
-                                          Big_Integer **quotient,
-                                          Big_Integer **remainder);
-/*  Schoolbook long division (Knuth Algorithm D for multi-limb divisors).                    */
-
-Big_Integer *Big_Integer_GCD             (const Big_Integer *left,
-                                          const Big_Integer *right);
-/*  Euclidean algorithm on magnitudes; used to reduce Rationals.                             */
-
-Big_Integer *Big_Integer_From_Decimal_SIMD (const char *text);
-/*  Parse a decimal digit string (with optional leading sign) using SIMD                     */
-/*  acceleration where available.                                                            */
-
-bool         Big_Integer_Fits_Int64      (const Big_Integer *integer,
-                                          int64_t *out);
-bool         Big_Integer_To_Uint128      (const Big_Integer *integer,
-                                          uint128_t *out);
-bool         Big_Integer_To_Int128       (const Big_Integer *integer,
-                                          int128_t *out);
-
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-/*  6.2  Big_Real                                                                            */
-/*                                                                                           */
-/*  A real literal is significand * 10^exponent.  The literal 3.14159 becomes                 */
-/*  significand = 314159, exponent = -5.  This representation is exact; rounding              */
-/*  happens only when converting to a machine float.                                         */
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-
+// -- Big_Real
 typedef struct {
-  Big_Integer *significand;     /*  The unscaled digits of the literal       */
-  int32_t      exponent;        /*  Power-of-ten scale factor                */
+  Big_Integer *significand;
+  int32_t      exponent;
 } Big_Real;
 
 Big_Real *Big_Real_New         (void);
-Big_Real *Big_Real_From_String (const char *text);
-
+Big_Real *Big_Real_From_String (const char    *text);
 double    Big_Real_To_Double   (const Big_Real *real);
 bool      Big_Real_Fits_Double (const Big_Real *real);
-
-void      Big_Real_To_Hex     (const Big_Real *real,
-                                char *buffer, size_t buffer_size);
-/*  Emit the LLVM IR hex-float representation (e.g. 0x3FF0000000000000).                     */
-
-int       Big_Real_Compare     (const Big_Real *left, const Big_Real *right);
+int       Big_Real_Compare     (const Big_Real *left,     const Big_Real *right);
+Big_Real *Big_Real_Scale       (const Big_Real *real,     int32_t         scale);
+Big_Real *Big_Real_Divide_Int  (const Big_Real *dividend, int64_t         divisor);
+void      Big_Real_To_Hex      (const Big_Real *real,
+                                char           *buffer,
+                                size_t          buffer_size);
 Big_Real *Big_Real_Add_Sub     (const Big_Real *left,
-                                const Big_Real *right, bool subtract);
-Big_Real *Big_Real_Scale       (const Big_Real *real, int32_t scale);
-Big_Real *Big_Real_Divide_Int  (const Big_Real *dividend, int64_t divisor);
-Big_Real *Big_Real_Multiply    (const Big_Real *left, const Big_Real *right);
+                                const Big_Real *right,
+                                bool            subtract);
+Big_Real *Big_Real_Multiply    (const Big_Real *left,
+                                const Big_Real *right);
 
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-/*  6.3  Rational                                                                            */
-/*                                                                                           */
-/*  A rational number is numerator / denominator, always reduced by GCD so that               */
-/*  the fraction is in lowest terms.  The denominator is always positive; the                 */
-/*  sign lives on the numerator.                                                             */
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-
+// -- Rational
 typedef struct {
   Big_Integer *numerator;
   Big_Integer *denominator;
 } Rational;
 
-Rational Rational_Reduce        (Big_Integer *numer, Big_Integer *denom);
+Rational Rational_Reduce        (Big_Integer    *numer, Big_Integer    *denom);
 Rational Rational_From_Big_Real (const Big_Real *real);
-Rational Rational_From_Int      (int64_t value);
-Rational Rational_Add           (Rational left, Rational right);
-Rational Rational_Sub           (Rational left, Rational right);
-Rational Rational_Mul           (Rational left, Rational right);
-Rational Rational_Div           (Rational left, Rational right);
-Rational Rational_Pow           (Rational base, int exponent);
-int      Rational_Compare       (Rational left, Rational right);
-double   Rational_To_Double     (Rational rational);
+Rational Rational_From_Int      (int64_t         value);
+Rational Rational_Add           (Rational         left, Rational        right);
+Rational Rational_Sub           (Rational         left, Rational        right);
+Rational Rational_Mul           (Rational         left, Rational        right);
+Rational Rational_Div           (Rational         left, Rational        right);
+Rational Rational_Pow           (Rational         base, int             exponent);
+int      Rational_Compare       (Rational         left, Rational        right);
+double   Rational_To_Double     (Rational         rational);
 
-/* ========================================================================================= */
-/*                                                                                           */
-/*  Chapter 7.   LEXICAL ANALYSIS                                                            */
-/*                                                                                           */
-/*  A token is the smallest meaningful unit of Ada source text.  Token_Kind                   */
-/*  enumerates every lexeme in the Ada 83 grammar: identifiers, numeric and                  */
-/*  string literals, delimiters, operator symbols, and the sixty-three reserved               */
-/*  words of RM 2.9.                                                                         */
-/*                                                                                           */
-/*  The Token record carries the kind, source location, raw text, and -- for                  */
-/*  numeric literals -- both a machine-width parsed value and an optional                    */
-/*  arbitrary-precision value for literals that overflow 64 bits.                             */
-/*                                                                                           */
-/*  The Lexer is a cursor over the source buffer that produces tokens on                     */
-/*  demand.  It owns no allocations; all string data points into the original                */
-/*  source text.  SIMD fast paths for whitespace skipping, identifier scanning,              */
-/*  and digit scanning are declared in Chapter 18.                                           */
-/*                                                                                           */
-/* ========================================================================================= */
+// ----------------------
+// -- Lexical Analysis --
+// ----------------------
 
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-/*  7.1  Token Kinds                                                                         */
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-
+// -- Token Kinds
+// Token_Kind enumerates every lexeme in the Ada 83 grammar: identifiers, numeric and
+// string literals, delimiters, operator symbols, and the sixty-three reserved words of RM 2.9.
 typedef enum {
-  TK_EOF = 0, TK_ERROR,
+  TK_EOF = 0,
+  TK_ERROR,
 
-  /* Literals */
-  TK_IDENTIFIER, TK_INTEGER, TK_REAL, TK_CHARACTER, TK_STRING,
+  // Literals
+  TK_IDENTIFIER, TK_INTEGER,   TK_REAL,      TK_CHARACTER, TK_STRING,
 
-  /* Delimiters */
-  TK_LPAREN, TK_RPAREN, TK_LBRACKET, TK_RBRACKET,
-  TK_COMMA, TK_DOT, TK_SEMICOLON, TK_COLON, TK_TICK,
+  // Delimiters
+  TK_LPAREN,     TK_RPAREN,    TK_LBRACKET,  TK_RBRACKET,
+  TK_COMMA,      TK_DOT,       TK_SEMICOLON, TK_COLON,     TK_TICK,
 
-  /* Compound delimiters */
-  TK_ASSIGN, TK_ARROW, TK_DOTDOT, TK_LSHIFT, TK_RSHIFT, TK_BOX, TK_BAR,
+  // Compound delimiters
+  TK_ASSIGN,     TK_ARROW,     TK_DOTDOT,    TK_LSHIFT,
+  TK_RSHIFT,     TK_BOX,       TK_BAR,
 
-  /* Operators */
-  TK_EQ, TK_NE, TK_LT, TK_LE, TK_GT, TK_GE,
-  TK_PLUS, TK_MINUS, TK_STAR, TK_SLASH, TK_AMPERSAND, TK_EXPON,
+  // Operators
+  TK_EQ,         TK_NE,        TK_LT,        TK_LE,
+  TK_GT,         TK_GE,        TK_PLUS,      TK_MINUS,
+  TK_STAR,       TK_SLASH,     TK_AMPERSAND, TK_EXPON,
 
-  /* Reserved words - the sixty-three of Ada 83 */
-  TK_ABORT,    TK_ABS,       TK_ACCEPT,  TK_ACCESS,    TK_ALL,      TK_AND,      TK_AND_THEN,
-  TK_ARRAY,    TK_AT,        TK_BEGIN,   TK_BODY,      TK_CASE,     TK_CONSTANT, TK_DECLARE,
-  TK_DELAY,    TK_DELTA,     TK_DIGITS,  TK_DO,        TK_ELSE,     TK_ELSIF,    TK_END,
-  TK_ENTRY,    TK_EXCEPTION, TK_EXIT,    TK_FOR,       TK_FUNCTION, TK_GENERIC,  TK_GOTO,     
-  TK_IF,       TK_IN,        TK_IS,      TK_LIMITED,   TK_LOOP,     TK_MOD,      TK_NEW,
-  TK_NOT,      TK_NULL,      TK_OF,      TK_OR,        TK_OR_ELSE,  TK_OTHERS,   TK_OUT,
-  TK_PACKAGE,  TK_PRAGMA,    TK_PRIVATE, TK_PROCEDURE, TK_RAISE,    TK_RANGE,    TK_RECORD,   
-  TK_REM,      TK_RENAMES,   TK_RETURN,  TK_REVERSE,   TK_SELECT,   TK_SEPARATE, TK_SUBTYPE,   
-  TK_TASK,     TK_TERMINATE, TK_THEN,    TK_TYPE,      TK_USE,      TK_WHEN,     TK_WHILE,   
-  TK_WITH,     TK_XOR,       TK_COUNT
+  // Reserved words -- the sixty-three of Ada 83
+  TK_ABORT,     TK_ABS,       TK_ACCEPT,    TK_ACCESS,    TK_ALL,
+  TK_AND,       TK_AND_THEN,  TK_ARRAY,     TK_AT,        TK_BEGIN,
+  TK_BODY,      TK_CASE,      TK_CONSTANT,  TK_DECLARE,   TK_DELAY,
+  TK_DELTA,     TK_DIGITS,    TK_DO,        TK_ELSE,      TK_ELSIF,
+  TK_END,       TK_ENTRY,     TK_EXCEPTION, TK_EXIT,      TK_FOR,
+  TK_FUNCTION,  TK_GENERIC,   TK_GOTO,      TK_IF,        TK_IN,
+  TK_IS,        TK_LIMITED,   TK_LOOP,      TK_MOD,       TK_NEW,
+  TK_NOT,       TK_NULL,      TK_OF,        TK_OR,        TK_OR_ELSE,
+  TK_OTHERS,    TK_OUT,       TK_PACKAGE,   TK_PRAGMA,    TK_PRIVATE,
+  TK_PROCEDURE, TK_RAISE,     TK_RANGE,     TK_RECORD,    TK_REM,
+  TK_RENAMES,   TK_RETURN,    TK_REVERSE,   TK_SELECT,    TK_SEPARATE,
+  TK_SUBTYPE,   TK_TASK,      TK_TERMINATE, TK_THEN,      TK_TYPE,
+  TK_USE,       TK_WHEN,      TK_WHILE,     TK_WITH,      TK_XOR,
+
+  TK_COUNT
 } Token_Kind;
 
 extern const char *Token_Name[TK_COUNT];
-/*  Printable name for each token kind, used in diagnostic messages.                         */
 
 Token_Kind Lookup_Keyword (String_Slice name);
-/*  Search the reserved-word table.  Returns TK_IDENTIFIER if no match.                     */
 
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-/*  7.2  Token Record                                                                        */
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-
+// -- Token Record
 typedef struct {
-  Token_Kind      kind;         /*  What sort of lexeme this is              */
-  Source_Location  location;    /*  Where it appeared in the source          */
-  String_Slice    text;         /*  The raw source text of the token         */
-  union { int64_t integer_value; double float_value; };
-  /*  Machine-width literal value, valid for TK_INTEGER / TK_REAL.                           */
-  union { Big_Integer *big_integer; Big_Real *big_real; };
-  /*  Arbitrary-precision value when the literal overflows 64 bits.                           */
+  Token_Kind      kind;
+  Source_Location location;
+  String_Slice    text;
+  union { int64_t      integer_value; double    float_value; };
+  union { Big_Integer *big_integer;   Big_Real *big_real;    };
 } Token;
 
-Token Make_Token (Token_Kind kind, Source_Location location, String_Slice text);
+Token Make_Token (Token_Kind      kind,
+                  Source_Location location,
+                  String_Slice    text);
 
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-/*  7.3  Lexer State                                                                         */
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-
+// -- Lexer State
 typedef struct {
-  const char *source_start;     /*  Beginning of the source buffer           */
-  const char *current;          /*  Read cursor -- advances as we scan       */
-  const char *source_end;       /*  One past the last source character       */
-  const char *filename;         /*  Source file name for error reporting      */
-  uint32_t    line;             /*  Current line, one-based                  */
-  uint32_t    column;           /*  Current column, one-based                */
-  Token_Kind  prev_token_kind;  /*  Disambiguates tick vs. attribute         */
+  const char *source_start;
+  const char *current;
+  const char *source_end;
+  const char *filename;
+  uint32_t    line;
+  uint32_t    column;
+  Token_Kind  prev_token_kind; // Disambiguates tick vs. attribute
 } Lexer;
 
-Lexer Lexer_New                          (const char *source, size_t length,
-                                          const char *filename);
-char  Lexer_Peek                         (const Lexer *lex, size_t offset);
-char  Lexer_Advance                      (Lexer *lex);
+Lexer Lexer_New     (const char *source, size_t length, const char *filename);
+char  Lexer_Peek    (const Lexer *lex, size_t offset);
+char  Lexer_Advance (Lexer *lex);
 void  Lexer_Skip_Whitespace_And_Comments (Lexer *lex);
 Token Lexer_Next_Token                   (Lexer *lex);
 
@@ -657,669 +422,780 @@ Token Scan_Identifier        (Lexer *lex);
 Token Scan_Number            (Lexer *lex);
 Token Scan_Character_Literal (Lexer *lex);
 Token Scan_String_Literal    (Lexer *lex);
-int   Digit_Value            (char ch);
+int   Digit_Value            (char   ch);
 
-/* ========================================================================================= */
-/*                                                                                           */
-/*  Chapter 8.   SYNTAX                                                                      */
-/*                                                                                           */
-/*  The abstract syntax tree is the central data structure of the compiler.  Every            */
-/*  syntactic construct in Ada 83 maps to a Node_Kind enumerator; the Syntax_Node             */
-/*  record carries the kind, source location, a type annotation set during semantic           */
-/*  analysis (Ch. 12), a symbol link set during name resolution (Ch. 11), and a              */
-/*  payload union discriminated by the kind tag.                                             */
-/*                                                                                           */
-/*  Three types are mutually recursive -- Syntax_Node, Type_Info, and Symbol --               */
-/*  because a syntax node references a type and a symbol, which may in turn                  */
-/*  reference syntax nodes.  Forward declarations break the cycle.                           */
-/*                                                                                           */
-/* ========================================================================================= */
+// ----------
+// -- Syntax --
+// ----------
 
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-/*  8.1  Forward Declarations                                                                */
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
+// The abstract syntax tree is the central data structure.  Every syntactic construct
+// maps to a Node_Kind; the Syntax_Node record carries kind, location, type annotation,
+// symbol link, and a payload union discriminated by the kind tag.
 
+// -- Forward Declarations
 typedef struct Syntax_Node Syntax_Node;
 typedef struct Type_Info   Type_Info;
 typedef struct Symbol      Symbol;
 typedef struct Scope       Scope;
 
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-/*  8.2  Node List                                                                           */
-/*                                                                                           */
-/*  A growable array of Syntax_Node pointers, used for statement lists, declaration           */
-/*  lists, parameter lists, and similar sequences.  All storage is arena-allocated;           */
-/*  doubling gives amortised O(1) append.                                                    */
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-
+// -- Node List
 typedef struct {
-  Syntax_Node **items;          /*  Array of node pointers                   */
-  uint32_t      count;          /*  Number of active entries                 */
-  uint32_t      capacity;       /*  Allocated slots                          */
+  Syntax_Node **items;
+  uint32_t      count;
+  uint32_t      capacity;
 } Node_List;
 
 void Node_List_Push (Node_List *list, Syntax_Node *node);
 
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-/*  8.3  Node Kinds                                                                          */
-/*                                                                                           */
-/*  One enumerator per syntactic construct.  The grouping follows the RM chapter              */
-/*  structure: primaries, expressions, type definitions, statements, declarations,            */
-/*  and generic formals.                                                                     */
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-
+// -- Node Kinds
 typedef enum {
 
-  /* Literals and primaries */
-  NK_INTEGER, NK_REAL, NK_STRING, NK_CHARACTER, NK_NULL, NK_OTHERS,
-  NK_IDENTIFIER, NK_SELECTED, NK_ATTRIBUTE, NK_QUALIFIED,
+  // Literals and primaries
+  NK_INTEGER,          NK_REAL,             NK_STRING,           NK_CHARACTER,
+  NK_NULL,             NK_OTHERS,           NK_IDENTIFIER,       NK_SELECTED,
+  NK_ATTRIBUTE,        NK_QUALIFIED,
 
-  /* Expressions */
-  NK_BINARY_OP, NK_UNARY_OP, NK_AGGREGATE, NK_ALLOCATOR,
-  NK_APPLY,                     /*  Unified: call, index, slice, conversion  */
-  NK_RANGE,                     /*  low .. high                              */
-  NK_ASSOCIATION,               /*  name => value                            */
+  // Expressions
+  NK_BINARY_OP,        NK_UNARY_OP,         NK_AGGREGATE,        NK_ALLOCATOR,
+  NK_APPLY,            // Unified: call, index, slice, conversion
+  NK_RANGE,
+  NK_ASSOCIATION,      // name => value
 
-  /* Type definitions */
-  NK_SUBTYPE_INDICATION, NK_RANGE_CONSTRAINT, NK_INDEX_CONSTRAINT,
-  NK_DISCRIMINANT_CONSTRAINT, NK_DIGITS_CONSTRAINT, NK_DELTA_CONSTRAINT,
-  NK_ARRAY_TYPE, NK_RECORD_TYPE, NK_ACCESS_TYPE, NK_DERIVED_TYPE,
-  NK_ENUMERATION_TYPE, NK_INTEGER_TYPE, NK_REAL_TYPE, NK_COMPONENT_DECL,
-  NK_VARIANT_PART, NK_VARIANT, NK_DISCRIMINANT_SPEC,
+  // Type definitions
+  NK_SUBTYPE_INDICATION,     NK_RANGE_CONSTRAINT,
+  NK_INDEX_CONSTRAINT,       NK_DISCRIMINANT_CONSTRAINT,
+  NK_DIGITS_CONSTRAINT,      NK_DELTA_CONSTRAINT,
+  NK_ARRAY_TYPE,       NK_RECORD_TYPE,      NK_ACCESS_TYPE,      NK_DERIVED_TYPE,
+  NK_ENUMERATION_TYPE, NK_INTEGER_TYPE,     NK_REAL_TYPE,
+  NK_COMPONENT_DECL,   NK_VARIANT_PART,     NK_VARIANT,
+  NK_DISCRIMINANT_SPEC,
 
-  /* Statements */
-  NK_ASSIGNMENT, NK_CALL_STMT, NK_RETURN, NK_IF, NK_CASE, NK_LOOP,
-  NK_BLOCK, NK_EXIT, NK_GOTO, NK_RAISE, NK_NULL_STMT, NK_LABEL,
-  NK_ACCEPT, NK_SELECT, NK_DELAY, NK_ABORT, NK_CODE,
+  // Statements
+  NK_ASSIGNMENT,       NK_CALL_STMT,        NK_RETURN,           NK_IF,         NK_CASE,
+  NK_LOOP,             NK_BLOCK,            NK_EXIT,             NK_GOTO,       NK_RAISE,
+  NK_NULL_STMT,        NK_LABEL,            NK_ACCEPT,           NK_SELECT,
+  NK_DELAY,            NK_ABORT,            NK_CODE,
 
-  /* Declarations */
-  NK_OBJECT_DECL, NK_TYPE_DECL, NK_SUBTYPE_DECL, NK_EXCEPTION_DECL,
-  NK_PROCEDURE_SPEC, NK_FUNCTION_SPEC, NK_PROCEDURE_BODY, NK_FUNCTION_BODY,
-  NK_PACKAGE_SPEC, NK_PACKAGE_BODY, NK_TASK_SPEC, NK_TASK_BODY,
-  NK_ENTRY_DECL, NK_SUBPROGRAM_RENAMING, NK_PACKAGE_RENAMING,
-  NK_EXCEPTION_RENAMING, NK_GENERIC_DECL, NK_GENERIC_INST,
-  NK_PARAM_SPEC, NK_USE_CLAUSE, NK_WITH_CLAUSE, NK_PRAGMA,
+  // Declarations
+  NK_OBJECT_DECL,      NK_TYPE_DECL,        NK_SUBTYPE_DECL,     NK_EXCEPTION_DECL,
+  NK_PROCEDURE_SPEC,   NK_FUNCTION_SPEC,
+  NK_PROCEDURE_BODY,   NK_FUNCTION_BODY,
+  NK_PACKAGE_SPEC,     NK_PACKAGE_BODY,     NK_TASK_SPEC,        NK_TASK_BODY,
+  NK_ENTRY_DECL,       NK_SUBPROGRAM_RENAMING,
+  NK_PACKAGE_RENAMING, NK_EXCEPTION_RENAMING,
+  NK_GENERIC_DECL,     NK_GENERIC_INST,
+  NK_PARAM_SPEC,       NK_USE_CLAUSE,       NK_WITH_CLAUSE,      NK_PRAGMA,
   NK_REPRESENTATION_CLAUSE, NK_EXCEPTION_HANDLER,
-  NK_CONTEXT_CLAUSE, NK_COMPILATION_UNIT,
+  NK_CONTEXT_CLAUSE,        NK_COMPILATION_UNIT,
 
-  /* Generic formals */
-  NK_GENERIC_TYPE_PARAM, NK_GENERIC_OBJECT_PARAM, NK_GENERIC_SUBPROGRAM_PARAM,
+  // Generic formals
+  NK_GENERIC_TYPE_PARAM,     NK_GENERIC_OBJECT_PARAM,
+  NK_GENERIC_SUBPROGRAM_PARAM,
+
   NK_COUNT
 } Node_Kind;
 
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-/*  8.4  Syntax Node Record                                                                  */
-/*                                                                                           */
-/*  The payload union is large but flat: each node kind activates exactly one                  */
-/*  anonymous struct member.  The tag field is `kind'; no other discriminant is               */
-/*  needed.  The comments name the Node_Kind(s) that each union member serves.               */
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-
+// -- Syntax Node Record
+// The payload union is discriminated by `kind'.  Each variant is written as in an Ada
+// variant record: one field per line, with a trailing comment describing its role.
 struct Syntax_Node {
-  Node_Kind        kind;        /*  Discriminant tag for the payload union   */
-  Source_Location   location;   /*  Where this construct appeared            */
-  Type_Info       *type;        /*  Set by semantic analysis, NULL before    */
-  Symbol          *symbol;      /*  Set by name resolution, NULL before      */
+  Node_Kind       kind;     // Discriminant tag for the payload union
+  Source_Location location; // Where this construct appeared in source
+  Type_Info      *type;     // Set by semantic analysis, NULL before
+  Symbol         *symbol;   // Set by name resolution, NULL before
 
   union {
 
-    /* NK_INTEGER */
-    struct { int64_t value; Big_Integer *big_value; }              integer_lit;
+    //  when NK_INTEGER =>
+    struct {
+      int64_t      value;     // Machine-width literal value
+      Big_Integer *big_value; // Arbitrary-precision overflow
+    } integer_lit;
+
+    //  when NK_REAL =>
+    struct {
+      double    value;     // Machine-width float value
+      Big_Real *big_value; // Arbitrary-precision overflow
+    } real_lit;
+
+    //  when NK_STRING | NK_CHARACTER | NK_IDENTIFIER =>
+    struct {
+      String_Slice text; // Raw source text
+    } string_val;
+
+    //  when NK_SELECTED =>
+    struct {
+      Syntax_Node *prefix;   // The dotted prefix expression
+      String_Slice selector; // The selected component name
+    } selected;
+
+    //  when NK_ATTRIBUTE =>
+    struct {
+      Syntax_Node *prefix;    // The prefix before the tick
+      String_Slice name;      // Attribute designator
+      Node_List    arguments; // Optional attribute arguments
+    } attribute;
+
+    //  when NK_QUALIFIED =>
+    struct {
+      Syntax_Node *subtype_mark; // Qualifying subtype
+      Syntax_Node *expression;   // Qualified expression
+    } qualified;
+
+    //  when NK_BINARY_OP =>
+    struct {
+      Token_Kind   op;    // Operator token kind
+      Syntax_Node *left;  // Left operand
+      Syntax_Node *right; // Right operand
+    } binary;
+
+    //  when NK_UNARY_OP =>
+    struct {
+      Token_Kind   op;      // Operator token kind
+      Syntax_Node *operand; // Sole operand
+    } unary;
+
+    //  when NK_AGGREGATE =>
+    struct {
+      Node_List items;            // Component associations
+      bool      is_named;         // True if using named notation
+      bool      is_parenthesized; // True if parenthesized
+    } aggregate;
+
+    //  when NK_ALLOCATOR =>
+    struct {
+      Syntax_Node *subtype_mark; // Allocated subtype
+      Syntax_Node *expression;   // Initializer or NULL
+    } allocator;
+
+    //  when NK_APPLY =>
+    struct {
+      Syntax_Node *prefix;    // Called / indexed / sliced / converted name
+      Node_List    arguments; // Actual parameter list
+    } apply;
+
+    //  when NK_RANGE =>
+    struct {
+      Syntax_Node *low;  // Low bound expression
+      Syntax_Node *high; // High bound expression
+    } range;
+
+    //  when NK_ASSOCIATION =>
+    struct {
+      Node_List    choices;    // Discrete choices or names
+      Syntax_Node *expression; // Associated value
+    } association;
+
+    //  when NK_SUBTYPE_INDICATION =>
+    struct {
+      Syntax_Node *subtype_mark; // Named subtype
+      Syntax_Node *constraint;   // Optional constraint or NULL
+    } subtype_ind;
+
+    //  when NK_INDEX_CONSTRAINT =>
+    struct {
+      Node_List ranges; // Discrete range per dimension
+    } index_constraint;
+
+    //  when NK_RANGE_CONSTRAINT =>
+    struct {
+      Syntax_Node *range; // The constraining range
+    } range_constraint;
+
+    //  when NK_DISCRIMINANT_CONSTRAINT =>
+    struct {
+      Node_List associations; // Discriminant value associations
+    } discriminant_constraint;
+
+    //  when NK_DIGITS_CONSTRAINT =>
+    struct {
+      Syntax_Node *digits_expr; // Digits expression
+      Syntax_Node *range;       // Optional range or NULL
+    } digits_constraint;
+
+    //  when NK_DELTA_CONSTRAINT =>
+    struct {
+      Syntax_Node *delta_expr; // Delta expression
+      Syntax_Node *range;      // Optional range or NULL
+    } delta_constraint;
+
+    //  when NK_ARRAY_TYPE =>
+    struct {
+      Node_List    indices;        // Index subtype definitions
+      Syntax_Node *component_type; // Element subtype indication
+      bool         is_constrained; // True for constrained arrays
+    } array_type;
+
+    //  when NK_RECORD_TYPE =>
+    struct {
+      Node_List    discriminants; // Discriminant specifications
+      Node_List    components;    // Component declarations
+      Syntax_Node *variant_part;  // Variant part or NULL
+      bool         is_null;       // True for null record
+    } record_type;
+
+    //  when NK_ACCESS_TYPE =>
+    struct {
+      Syntax_Node *designated;  // Designated subtype
+      bool         is_constant; // Access-to-constant
+    } access_type;
+
+    //  when NK_DERIVED_TYPE =>
+    struct {
+      Syntax_Node *parent_type; // Parent subtype indication
+      Syntax_Node *constraint;  // Optional constraint or NULL
+    } derived_type;
+
+    //  when NK_ENUMERATION_TYPE =>
+    struct {
+      Node_List literals; // Enumeration literal names
+    } enum_type;
+
+    //  when NK_INTEGER_TYPE =>
+    struct {
+      Syntax_Node *range;      // Range constraint
+      uint128_t    modulus;    // Modular type modulus
+      bool         is_modular; // True for mod types
+    } integer_type;
+
+    //  when NK_REAL_TYPE =>
+    struct {
+      Syntax_Node *precision; // Digits or delta expression
+      Syntax_Node *range;     // Optional range or NULL
+      Syntax_Node *delta;     // Delta for fixed-point
+    } real_type;
+
+    //  when NK_COMPONENT_DECL =>
+    struct {
+      Node_List    names;          // Defining identifiers
+      Syntax_Node *component_type; // Component subtype indication
+      Syntax_Node *init;           // Default expression or NULL
+    } component;
+
+    //  when NK_VARIANT_PART =>
+    struct {
+      String_Slice discriminant; // Discriminant name
+      Node_List    variants;     // Variant alternatives
+    } variant_part;
+
+    //  when NK_VARIANT =>
+    struct {
+      Node_List    choices;      // Discrete choice list
+      Node_List    components;   // Component declarations
+      Syntax_Node *variant_part; // Nested variant part or NULL
+    } variant;
+
+    //  when NK_DISCRIMINANT_SPEC =>
+    struct {
+      Node_List    names;        // Discriminant names
+      Syntax_Node *disc_type;    // Discriminant subtype
+      Syntax_Node *default_expr; // Default value or NULL
+    } discriminant;
+
+    //  when NK_ASSIGNMENT =>
+    struct {
+      Syntax_Node *target; // Left-hand side name
+      Syntax_Node *value;  // Right-hand side expression
+    } assignment;
+
+    //  when NK_RETURN =>
+    struct {
+      Syntax_Node *expression; // Return value or NULL
+    } return_stmt;
+
+    //  when NK_IF =>
+    struct {
+      Syntax_Node *condition;   // Boolean condition
+      Node_List    then_stmts;  // Then-part statements
+      Node_List    elsif_parts; // Elsif clauses
+      Node_List    else_stmts;  // Else-part statements
+    } if_stmt;
+
+    //  when NK_CASE =>
+    struct {
+      Syntax_Node *expression;   // Selecting expression
+      Node_List    alternatives; // Case alternatives
+    } case_stmt;
+
+    //  when NK_LOOP =>
+    struct {
+      String_Slice  label;            // Optional loop label
+      Symbol       *label_symbol;     // Resolved label symbol
+      Syntax_Node  *iteration_scheme; // For/while or NULL
+      Node_List     statements;       // Loop body
+      bool          is_reverse;       // True for reverse iteration
+    } loop_stmt;
+
+    //  when NK_BLOCK =>
+    struct {
+      String_Slice label;        // Optional block label
+      Symbol      *label_symbol; // Resolved label symbol
+      Node_List    declarations; // Declarative part
+      Node_List    statements;   // Statement sequence
+      Node_List    handlers;     // Exception handlers
+    } block_stmt;
+
+    //  when NK_EXIT =>
+    struct {
+      String_Slice  loop_name; // Target loop name or empty
+      Syntax_Node  *condition; // When condition or NULL
+      Symbol       *target;    // Resolved loop symbol
+    } exit_stmt;
+
+    //  when NK_GOTO =>
+    struct {
+      String_Slice name;   // Target label name
+      Symbol      *target; // Resolved label symbol
+    } goto_stmt;
+
+    //  when NK_LABEL =>
+    struct {
+      String_Slice  name;      // Label identifier
+      Syntax_Node  *statement; // Labelled statement
+      Symbol       *symbol;    // Label symbol
+    } label_node;
+
+    //  when NK_RAISE =>
+    struct {
+      Syntax_Node *exception_name; // Exception name or NULL for reraise
+    } raise_stmt;
+
+    //  when NK_ACCEPT =>
+    struct {
+      String_Slice  entry_name; // Accepted entry name
+      Syntax_Node  *index;      // Entry family index or NULL
+      Node_List     parameters; // Formal parameters
+      Node_List     statements; // Accept body
+      Symbol       *entry_sym;  // Resolved entry symbol
+    } accept_stmt;
+
+    //  when NK_SELECT =>
+    struct {
+      Node_List    alternatives; // Select alternatives
+      Syntax_Node *else_part;    // Else part or NULL
+    } select_stmt;
+
+    //  when NK_DELAY =>
+    struct {
+      Syntax_Node *expression; // Duration expression
+    } delay_stmt;
+
+    //  when NK_ABORT =>
+    struct {
+      Node_List task_names; // Task objects to abort
+    } abort_stmt;
+
+    //  when NK_OBJECT_DECL =>
+    struct {
+      Node_List    names;       // Defining identifiers
+      Syntax_Node *object_type; // Object subtype indication
+      Syntax_Node *init;        // Initial value or NULL
+      bool         is_constant; // True for constant declarations
+      bool         is_aliased;  // True for aliased objects
+      bool         is_rename;   // True for renaming declarations
+    } object_decl;
+
+    //  when NK_TYPE_DECL =>
+    struct {
+      String_Slice  name;          // Type name
+      Node_List     discriminants; // Known discriminant part
+      Syntax_Node  *definition;    // Type definition
+      bool          is_limited;    // Limited type
+      bool          is_private;    // Private type
+    } type_decl;
+
+    //  when NK_EXCEPTION_DECL =>
+    struct {
+      Node_List    names;   // Exception identifiers
+      Syntax_Node *renamed; // Renamed exception or NULL
+    } exception_decl;
+
+    //  when NK_PROCEDURE_SPEC | NK_FUNCTION_SPEC =>
+    struct {
+      String_Slice  name;        // Subprogram name
+      Node_List     parameters;  // Formal parameter list
+      Syntax_Node  *return_type; // Return type or NULL
+      Syntax_Node  *renamed;     // Renamed entity or NULL
+    } subprogram_spec;
+
+    //  when NK_PROCEDURE_BODY | NK_FUNCTION_BODY =>
+    struct {
+      Syntax_Node *specification;  // The subprogram spec
+      Node_List    declarations;   // Declarative part
+      Node_List    statements;     // Body statements
+      Node_List    handlers;       // Exception handlers
+      bool         is_separate;    // Is a subunit stub
+      bool         code_generated; // Already emitted
+    } subprogram_body;
+
+    //  when NK_PACKAGE_SPEC =>
+    struct {
+      String_Slice name;          // Package name
+      Node_List    visible_decls; // Visible part declarations
+      Node_List    private_decls; // Private part declarations
+    } package_spec;
+
+    //  when NK_PACKAGE_BODY =>
+    struct {
+      String_Slice name;         // Package name
+      Node_List    declarations; // Body declarations
+      Node_List    statements;   // Body statements
+      Node_List    handlers;     // Exception handlers
+      bool         is_separate;  // Is a subunit stub
+    } package_body;
+
+    //  when NK_PACKAGE_RENAMING =>
+    struct {
+      String_Slice  new_name; // New package name
+      Syntax_Node  *old_name; // Renamed package name
+    } package_renaming;
+
+    //  when NK_TASK_SPEC =>
+    struct {
+      String_Slice name;    // Task name
+      Node_List    entries; // Entry declarations
+      bool         is_type; // True for task type
+    } task_spec;
+
+    //  when NK_TASK_BODY =>
+    struct {
+      String_Slice name;         // Task name
+      Node_List    declarations; // Body declarations
+      Node_List    statements;   // Body statements
+      Node_List    handlers;     // Exception handlers
+      bool         is_separate;  // Is a subunit stub
+    } task_body;
+
+    //  when NK_ENTRY_DECL =>
+    struct {
+      String_Slice name;              // Entry name
+      Node_List    parameters;        // Formal parameters
+      Node_List    index_constraints; // Family index constraints
+    } entry_decl;
+
+    //  when NK_PARAM_SPEC =>
+    struct {
+      Node_List    names;        // Parameter identifiers
+      Syntax_Node *param_type;   // Parameter subtype indication
+      Syntax_Node *default_expr; // Default value or NULL
+      enum { MODE_IN, MODE_OUT, MODE_IN_OUT } mode;
+    } param_spec;
+
+    //  when NK_GENERIC_DECL =>
+    struct {
+      Node_List    formals; // Generic formal parameters
+      Syntax_Node *unit;    // The generic unit declaration
+    } generic_decl;
+
+    //  when NK_GENERIC_INST =>
+    struct {
+      Syntax_Node *generic_name;  // Name of generic template
+      Node_List    actuals;       // Actual parameter list
+      String_Slice instance_name; // Instance defining name
+      Token_Kind   unit_kind;     // TK_PACKAGE / TK_PROCEDURE / TK_FUNCTION
+    } generic_inst;
+
+    //  when NK_GENERIC_TYPE_PARAM =>
+    struct {
+      String_Slice name;
+      enum {
+        GEN_DEF_PRIVATE = 0, GEN_DEF_LIMITED_PRIVATE,
+        GEN_DEF_DISCRETE,    GEN_DEF_INTEGER,
+        GEN_DEF_FLOAT,       GEN_DEF_FIXED,
+        GEN_DEF_ARRAY,       GEN_DEF_ACCESS,
+        GEN_DEF_DERIVED
+      } def_kind;                 // Form of the generic formal type
+      Syntax_Node *def_detail;    // Type definition detail
+      Node_List    discriminants; // Discriminant part
+    } generic_type_param;
+
+    //  when NK_GENERIC_OBJECT_PARAM =>
+    struct {
+      Node_List    names;        // Object parameter names
+      Syntax_Node *object_type;  // Object subtype indication
+      Syntax_Node *default_expr; // Default value or NULL
+      enum { GEN_MODE_IN = 0, GEN_MODE_OUT, GEN_MODE_IN_OUT } mode;
+    } generic_object_param;
+
+    //  when NK_GENERIC_SUBPROGRAM_PARAM =>
+    struct {
+      String_Slice  name;         // Formal subprogram name
+      Node_List     parameters;   // Formal parameters
+      Syntax_Node  *return_type;  // Return type or NULL
+      Syntax_Node  *default_name; // Default subprogram or NULL
+      bool          is_function;  // True for generic function
+      bool          default_box;  // True for <>
+    } generic_subprog_param;
+
+    //  when NK_USE_CLAUSE =>
+    struct {
+      Node_List names; // Used package names
+    } use_clause;
+
+    //  when NK_PRAGMA =>
+    struct {
+      String_Slice name;      // Pragma identifier
+      Node_List    arguments; // Pragma arguments
+    } pragma_node;
+
+    //  when NK_EXCEPTION_HANDLER =>
+    struct {
+      Node_List exceptions; // Handled exception choices
+      Node_List statements; // Handler statements
+    } handler;
+
+    //  when NK_REPRESENTATION_CLAUSE =>
+    struct {
+      Syntax_Node *entity_name;       // Entity being represented
+      String_Slice attribute;         // Representation attribute
+      Syntax_Node *expression;        // Representation expression
+      Node_List    component_clauses; // Record rep component clauses
+      bool         is_record_rep;     // True for record rep clause
+      bool         is_enum_rep;       // True for enum rep clause
+    } rep_clause;
+
+    //  when NK_CONTEXT_CLAUSE =>
+    struct {
+      Node_List with_clauses; // With clauses
+      Node_List use_clauses;  // Use clauses
+    } context;
+
+    //  when NK_COMPILATION_UNIT =>
+    struct {
+      Syntax_Node *context;         // Context clause
+      Syntax_Node *unit;            // The library unit
+      Syntax_Node *separate_parent; // Separate parent or NULL
+    } compilation_unit;
 
-    /* NK_REAL */
-    struct { double value; Big_Real *big_value; }                  real_lit;
-
-    /* NK_STRING, NK_CHARACTER, NK_IDENTIFIER */
-    struct { String_Slice text; }                                  string_val;
-
-    /* NK_SELECTED -- prefix.selector */
-    struct { Syntax_Node *prefix; String_Slice selector; }        selected;
-
-    /* NK_ATTRIBUTE -- prefix'name(args) */
-    struct { Syntax_Node *prefix; String_Slice name;
-             Node_List arguments; }                                attribute;
-
-    /* NK_QUALIFIED -- subtype_mark'(expression) */
-    struct { Syntax_Node *subtype_mark;
-             Syntax_Node *expression; }                            qualified;
-
-    /* NK_BINARY_OP */
-    struct { Token_Kind op; Syntax_Node *left;
-             Syntax_Node *right; }                                 binary;
-
-    /* NK_UNARY_OP */
-    struct { Token_Kind op; Syntax_Node *operand; }               unary;
-
-    /* NK_AGGREGATE */
-    struct { Node_List items; bool is_named;
-             bool is_parenthesized; }                              aggregate;
-
-    /* NK_ALLOCATOR -- new subtype_mark'(expression) */
-    struct { Syntax_Node *subtype_mark;
-             Syntax_Node *expression; }                            allocator;
-
-    /* NK_APPLY -- unified: calls, indexing, slicing, conversion */
-    struct { Syntax_Node *prefix; Node_List arguments; }          apply;
-
-    /* NK_RANGE -- low .. high */
-    struct { Syntax_Node *low; Syntax_Node *high; }               range;
-
-    /* NK_ASSOCIATION -- choices => expression */
-    struct { Node_List choices; Syntax_Node *expression; }        association;
-
-    /* NK_SUBTYPE_INDICATION */
-    struct { Syntax_Node *subtype_mark;
-             Syntax_Node *constraint; }                            subtype_ind;
-
-    /* NK_INDEX_CONSTRAINT */
-    struct { Node_List ranges; }                                  index_constraint;
-
-    /* NK_RANGE_CONSTRAINT */
-    struct { Syntax_Node *range; }                                range_constraint;
-
-    /* NK_DISCRIMINANT_CONSTRAINT */
-    struct { Node_List associations; }                            discriminant_constraint;
-
-    /* NK_DIGITS_CONSTRAINT */
-    struct { Syntax_Node *digits_expr;
-             Syntax_Node *range; }                                 digits_constraint;
-
-    /* NK_DELTA_CONSTRAINT */
-    struct { Syntax_Node *delta_expr;
-             Syntax_Node *range; }                                 delta_constraint;
-
-    /* NK_ARRAY_TYPE */
-    struct { Node_List indices; Syntax_Node *component_type;
-             bool is_constrained; }                                array_type;
-
-    /* NK_RECORD_TYPE */
-    struct { Node_List discriminants; Node_List components;
-             Syntax_Node *variant_part; bool is_null; }           record_type;
-
-    /* NK_ACCESS_TYPE */
-    struct { Syntax_Node *designated; bool is_constant; }         access_type;
-
-    /* NK_DERIVED_TYPE */
-    struct { Syntax_Node *parent_type;
-             Syntax_Node *constraint; }                            derived_type;
-
-    /* NK_ENUMERATION_TYPE */
-    struct { Node_List literals; }                                enum_type;
-
-    /* NK_INTEGER_TYPE */
-    struct { Syntax_Node *range; uint128_t modulus;
-             bool is_modular; }                                    integer_type;
-
-    /* NK_REAL_TYPE */
-    struct { Syntax_Node *precision; Syntax_Node *range;
-             Syntax_Node *delta; }                                 real_type;
-
-    /* NK_COMPONENT_DECL */
-    struct { Node_List names; Syntax_Node *component_type;
-             Syntax_Node *init; }                                  component;
-
-    /* NK_VARIANT_PART */
-    struct { String_Slice discriminant; Node_List variants; }     variant_part;
-
-    /* NK_VARIANT */
-    struct { Node_List choices; Node_List components;
-             Syntax_Node *variant_part; }                          variant;
-
-    /* NK_DISCRIMINANT_SPEC */
-    struct { Node_List names; Syntax_Node *disc_type;
-             Syntax_Node *default_expr; }                          discriminant;
-
-    /* NK_ASSIGNMENT */
-    struct { Syntax_Node *target; Syntax_Node *value; }           assignment;
-
-    /* NK_RETURN */
-    struct { Syntax_Node *expression; }                           return_stmt;
-
-    /* NK_IF */
-    struct { Syntax_Node *condition; Node_List then_stmts;
-             Node_List elsif_parts; Node_List else_stmts; }       if_stmt;
-
-    /* NK_CASE */
-    struct { Syntax_Node *expression;
-             Node_List alternatives; }                             case_stmt;
-
-    /* NK_LOOP */
-    struct { String_Slice label; Symbol *label_symbol;
-             Syntax_Node *iteration_scheme;
-             Node_List statements; bool is_reverse; }             loop_stmt;
-
-    /* NK_BLOCK */
-    struct { String_Slice label; Symbol *label_symbol;
-             Node_List declarations; Node_List statements;
-             Node_List handlers; }                                 block_stmt;
-
-    /* NK_EXIT */
-    struct { String_Slice loop_name; Syntax_Node *condition;
-             Symbol *target; }                                     exit_stmt;
-
-    /* NK_GOTO */
-    struct { String_Slice name; Symbol *target; }                 goto_stmt;
-
-    /* NK_LABEL */
-    struct { String_Slice name; Syntax_Node *statement;
-             Symbol *symbol; }                                     label_node;
-
-    /* NK_RAISE */
-    struct { Syntax_Node *exception_name; }                       raise_stmt;
-
-    /* NK_ACCEPT */
-    struct { String_Slice entry_name; Syntax_Node *index;
-             Node_List parameters; Node_List statements;
-             Symbol *entry_sym; }                                  accept_stmt;
-
-    /* NK_SELECT */
-    struct { Node_List alternatives;
-             Syntax_Node *else_part; }                             select_stmt;
-
-    /* NK_DELAY */
-    struct { Syntax_Node *expression; }                           delay_stmt;
-
-    /* NK_ABORT */
-    struct { Node_List task_names; }                              abort_stmt;
-
-    /* NK_OBJECT_DECL */
-    struct { Node_List names; Syntax_Node *object_type;
-             Syntax_Node *init; bool is_constant;
-             bool is_aliased; bool is_rename; }                   object_decl;
-
-    /* NK_TYPE_DECL */
-    struct { String_Slice name; Node_List discriminants;
-             Syntax_Node *definition; bool is_limited;
-             bool is_private; }                                    type_decl;
-
-    /* NK_EXCEPTION_DECL */
-    struct { Node_List names; Syntax_Node *renamed; }             exception_decl;
-
-    /* NK_PROCEDURE_SPEC, NK_FUNCTION_SPEC */
-    struct { String_Slice name; Node_List parameters;
-             Syntax_Node *return_type;
-             Syntax_Node *renamed; }                               subprogram_spec;
-
-    /* NK_PROCEDURE_BODY, NK_FUNCTION_BODY */
-    struct { Syntax_Node *specification; Node_List declarations;
-             Node_List statements; Node_List handlers;
-             bool is_separate; bool code_generated; }             subprogram_body;
-
-    /* NK_PACKAGE_SPEC */
-    struct { String_Slice name; Node_List visible_decls;
-             Node_List private_decls; }                            package_spec;
-
-    /* NK_PACKAGE_BODY */
-    struct { String_Slice name; Node_List declarations;
-             Node_List statements; Node_List handlers;
-             bool is_separate; }                                   package_body;
-
-    /* NK_PACKAGE_RENAMING */
-    struct { String_Slice new_name;
-             Syntax_Node *old_name; }                              package_renaming;
-
-    /* NK_TASK_SPEC */
-    struct { String_Slice name; Node_List entries;
-             bool is_type; }                                       task_spec;
-
-    /* NK_TASK_BODY */
-    struct { String_Slice name; Node_List declarations;
-             Node_List statements; Node_List handlers;
-             bool is_separate; }                                   task_body;
-
-    /* NK_ENTRY_DECL */
-    struct { String_Slice name; Node_List parameters;
-             Node_List index_constraints; }                        entry_decl;
-
-    /* NK_PARAM_SPEC */
-    struct { Node_List names; Syntax_Node *param_type;
-             Syntax_Node *default_expr;
-             enum { MODE_IN, MODE_OUT, MODE_IN_OUT } mode; }     param_spec;
-
-    /* NK_GENERIC_DECL */
-    struct { Node_List formals; Syntax_Node *unit; }              generic_decl;
-
-    /* NK_GENERIC_INST */
-    struct { Syntax_Node *generic_name; Node_List actuals;
-             String_Slice instance_name;
-             Token_Kind unit_kind; }                               generic_inst;
-
-    /* NK_GENERIC_TYPE_PARAM */
-    struct { String_Slice name;
-             enum { GEN_DEF_PRIVATE = 0, GEN_DEF_LIMITED_PRIVATE,
-                    GEN_DEF_DISCRETE, GEN_DEF_INTEGER, GEN_DEF_FLOAT,
-                    GEN_DEF_FIXED, GEN_DEF_ARRAY, GEN_DEF_ACCESS,
-                    GEN_DEF_DERIVED } def_kind;
-             Syntax_Node *def_detail;
-             Node_List discriminants; }                            generic_type_param;
-
-    /* NK_GENERIC_OBJECT_PARAM */
-    struct { Node_List names; Syntax_Node *object_type;
-             Syntax_Node *default_expr;
-             enum { GEN_MODE_IN = 0, GEN_MODE_OUT,
-                    GEN_MODE_IN_OUT } mode; }                     generic_object_param;
-
-    /* NK_GENERIC_SUBPROGRAM_PARAM */
-    struct { String_Slice name; Node_List parameters;
-             Syntax_Node *return_type; Syntax_Node *default_name;
-             bool is_function; bool default_box; }                generic_subprog_param;
-
-    /* NK_USE_CLAUSE */
-    struct { Node_List names; }                                   use_clause;
-
-    /* NK_PRAGMA */
-    struct { String_Slice name; Node_List arguments; }            pragma_node;
-
-    /* NK_EXCEPTION_HANDLER */
-    struct { Node_List exceptions; Node_List statements; }        handler;
-
-    /* NK_REPRESENTATION_CLAUSE */
-    struct { Syntax_Node *entity_name; String_Slice attribute;
-             Syntax_Node *expression; Node_List component_clauses;
-             bool is_record_rep; bool is_enum_rep; }              rep_clause;
-
-    /* NK_CONTEXT_CLAUSE */
-    struct { Node_List with_clauses;
-             Node_List use_clauses; }                              context;
-
-    /* NK_COMPILATION_UNIT */
-    struct { Syntax_Node *context; Syntax_Node *unit;
-             Syntax_Node *separate_parent; }                       compilation_unit;
   };
 };
 
 Syntax_Node *Node_New (Node_Kind kind, Source_Location location);
 
-/* ========================================================================================= */
-/*                                                                                           */
-/*  Chapter 9.   PARSING                                                                     */
-/*                                                                                           */
-/*  Recursive descent mirrors the grammar: each nonterminal becomes a function,               */
-/*  each alternative becomes a branch.  Three simplifying principles keep the                 */
-/*  parser compact:                                                                          */
-/*                                                                                           */
-/*    1.  All X(...) forms parse as NK_APPLY.  Semantic analysis later                        */
-/*        distinguishes calls, indexing, slicing, and type conversions.                       */
-/*                                                                                           */
-/*    2.  One helper handles positional, named, and choice associations.                      */
-/*                                                                                           */
-/*    3.  One postfix loop handles .selector, 'attribute, and (args).                         */
-/*                                                                                           */
-/*  The parser never allocates heap memory directly; all nodes are arena-                     */
-/*  allocated through Node_New (Ch. 8).                                                      */
-/*                                                                                           */
-/* ========================================================================================= */
+// -----------
+// -- Parsing --
+// -----------
 
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-/*  9.1  Parser State                                                                        */
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
+// Recursive descent mirrors the grammar.  Three simplifying principles:
+//   1. All X(...) forms parse as NK_APPLY; semantic analysis disambiguates later.
+//   2. One helper handles positional, named, and choice associations.
+//   3. One postfix loop handles .selector, 'attribute, and (args).
 
 typedef struct {
-  Lexer        lexer;           /*  The token source                         */
-  Token        current_token;   /*  Lookahead -- the token under the cursor  */
-  Token        previous_token;  /*  The most recently consumed token         */
-  bool         had_error;       /*  True after any syntax error              */
-  bool         panic_mode;      /*  True while synchronising after an error  */
-  uint32_t     last_line;       /*  Line of the previous token               */
-  uint32_t     last_column;     /*  Column of the previous token             */
-  Token_Kind   last_kind;       /*  Kind of the previous token               */
+  Lexer      lexer;
+  Token      current_token;
+  Token      previous_token;
+  bool       had_error;
+  bool       panic_mode;
+  uint32_t   last_line;
+  uint32_t   last_column;
+  Token_Kind last_kind;
 } Parser;
 
 typedef enum {
-  PREC_NONE = 0, PREC_LOGICAL, PREC_RELATIONAL, PREC_ADDITIVE,
-  PREC_MULTIPLICATIVE, PREC_EXPONENTIAL, PREC_UNARY, PREC_PRIMARY
+  PREC_NONE = 0,  PREC_LOGICAL,        PREC_RELATIONAL,
+  PREC_ADDITIVE,  PREC_MULTIPLICATIVE, PREC_EXPONENTIAL,
+  PREC_UNARY,     PREC_PRIMARY
 } Precedence;
-/*  Operator precedence levels for Pratt-style expression parsing (RM 4.5).                  */
 
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-/*  9.2  Parser Infrastructure                                                               */
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
+Parser          Parser_New              (const char *source, size_t length, const char *filename);
+bool            Parser_At               (Parser *p, Token_Kind kind);
+bool            Parser_At_Any           (Parser *p, Token_Kind k1, Token_Kind k2);
+bool            Parser_Peek_At          (Parser *p, Token_Kind kind);
+Token           Parser_Advance          (Parser *p);
+bool            Parser_Match            (Parser *p, Token_Kind kind);
+bool            Parser_Expect           (Parser *p, Token_Kind kind);
+Source_Location Parser_Location         (Parser *p);
+String_Slice    Parser_Identifier       (Parser *p);
+void            Parser_Error            (Parser *p, const char *message);
+void            Parser_Error_At_Current (Parser *p, const char *expected);
+void            Parser_Synchronize      (Parser *p);
+bool            Parser_Check_Progress   (Parser *p);
+void            Parser_Check_End_Name   (Parser *p, String_Slice expected);
+Precedence      Get_Infix_Precedence    (Token_Kind kind);
+bool            Is_Right_Associative    (Token_Kind kind);
 
-Parser           Parser_New               (const char *source, size_t length,
-                                           const char *filename);
-bool             Parser_At                (Parser *p, Token_Kind kind);
-bool             Parser_At_Any            (Parser *p, Token_Kind k1,
-                                           Token_Kind k2);
-bool             Parser_Peek_At           (Parser *p, Token_Kind kind);
-Token            Parser_Advance           (Parser *p);
-bool             Parser_Match             (Parser *p, Token_Kind kind);
-bool             Parser_Expect            (Parser *p, Token_Kind kind);
-/*  Consume a token of the given kind, or report "expected ..." and return false.             */
+Syntax_Node *Parse_Expression              (Parser *p);
+Syntax_Node *Parse_Expression_Precedence   (Parser *p, Precedence min_prec);
+Syntax_Node *Parse_Unary                   (Parser *p);
+Syntax_Node *Parse_Primary                 (Parser *p);
+Syntax_Node *Parse_Name                    (Parser *p);
+Syntax_Node *Parse_Simple_Name             (Parser *p);
+Syntax_Node *Parse_Choice                  (Parser *p);
+Syntax_Node *Parse_Range                   (Parser *p);
+void         Parse_Association_List        (Parser *p, Node_List *list);
+void         Parse_Parameter_List          (Parser *p, Node_List *params);
 
-Source_Location   Parser_Location          (Parser *p);
-String_Slice     Parser_Identifier        (Parser *p);
-void             Parser_Error             (Parser *p, const char *message);
-void             Parser_Error_At_Current  (Parser *p, const char *expected);
-void             Parser_Synchronize       (Parser *p);
-/*  Discard tokens until a statement or declaration boundary is found.                       */
+Syntax_Node *Parse_Subtype_Indication      (Parser *p);
+Syntax_Node *Parse_Type_Definition         (Parser *p);
+Syntax_Node *Parse_Enumeration_Type        (Parser *p);
+Syntax_Node *Parse_Array_Type              (Parser *p);
+Syntax_Node *Parse_Record_Type             (Parser *p);
+Syntax_Node *Parse_Access_Type             (Parser *p);
+Syntax_Node *Parse_Derived_Type            (Parser *p);
+Syntax_Node *Parse_Discrete_Range          (Parser *p);
+Syntax_Node *Parse_Variant_Part            (Parser *p);
+Syntax_Node *Parse_Discriminant_Part       (Parser *p);
 
-bool             Parser_Check_Progress    (Parser *p);
-/*  Return false if the parser has not advanced since the last call.                         */
+Syntax_Node *Parse_Statement               (Parser *p);
+void         Parse_Statement_Sequence      (Parser *p, Node_List *list);
+Syntax_Node *Parse_Assignment_Or_Call      (Parser *p);
+Syntax_Node *Parse_Return_Statement        (Parser *p);
+Syntax_Node *Parse_If_Statement            (Parser *p);
+Syntax_Node *Parse_Case_Statement          (Parser *p);
+Syntax_Node *Parse_Loop_Statement          (Parser *p, String_Slice label);
+Syntax_Node *Parse_Block_Statement         (Parser *p, String_Slice label);
+Syntax_Node *Parse_Exit_Statement          (Parser *p);
+Syntax_Node *Parse_Goto_Statement          (Parser *p);
+Syntax_Node *Parse_Raise_Statement         (Parser *p);
+Syntax_Node *Parse_Delay_Statement         (Parser *p);
+Syntax_Node *Parse_Abort_Statement         (Parser *p);
+Syntax_Node *Parse_Accept_Statement        (Parser *p);
+Syntax_Node *Parse_Select_Statement        (Parser *p);
+Syntax_Node *Parse_Pragma                  (Parser *p);
 
-void             Parser_Check_End_Name    (Parser *p, String_Slice expected);
-Precedence       Get_Infix_Precedence     (Token_Kind kind);
-bool             Is_Right_Associative     (Token_Kind kind);
-
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-/*  9.3  Expressions and Names                                                               */
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-
-Syntax_Node *Parse_Expression             (Parser *p);
-Syntax_Node *Parse_Expression_Precedence  (Parser *p, Precedence min_prec);
-Syntax_Node *Parse_Unary                  (Parser *p);
-Syntax_Node *Parse_Primary               (Parser *p);
-Syntax_Node *Parse_Name                  (Parser *p);
-Syntax_Node *Parse_Simple_Name           (Parser *p);
-Syntax_Node *Parse_Choice                (Parser *p);
-Syntax_Node *Parse_Range                 (Parser *p);
-void         Parse_Association_List      (Parser *p, Node_List *list);
-void         Parse_Parameter_List        (Parser *p, Node_List *params);
-
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-/*  9.4  Type Definitions                                                                    */
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-
-Syntax_Node *Parse_Subtype_Indication    (Parser *p);
-Syntax_Node *Parse_Type_Definition       (Parser *p);
-Syntax_Node *Parse_Enumeration_Type      (Parser *p);
-Syntax_Node *Parse_Array_Type            (Parser *p);
-Syntax_Node *Parse_Record_Type           (Parser *p);
-Syntax_Node *Parse_Access_Type           (Parser *p);
-Syntax_Node *Parse_Derived_Type          (Parser *p);
-Syntax_Node *Parse_Discrete_Range        (Parser *p);
-Syntax_Node *Parse_Variant_Part          (Parser *p);
-Syntax_Node *Parse_Discriminant_Part     (Parser *p);
-
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-/*  9.5  Statements                                                                          */
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-
-Syntax_Node *Parse_Statement             (Parser *p);
-void         Parse_Statement_Sequence    (Parser *p, Node_List *list);
-Syntax_Node *Parse_Assignment_Or_Call    (Parser *p);
-Syntax_Node *Parse_Return_Statement      (Parser *p);
-Syntax_Node *Parse_If_Statement          (Parser *p);
-Syntax_Node *Parse_Case_Statement        (Parser *p);
-Syntax_Node *Parse_Loop_Statement        (Parser *p, String_Slice label);
-Syntax_Node *Parse_Block_Statement       (Parser *p, String_Slice label);
-Syntax_Node *Parse_Exit_Statement        (Parser *p);
-Syntax_Node *Parse_Goto_Statement        (Parser *p);
-Syntax_Node *Parse_Raise_Statement       (Parser *p);
-Syntax_Node *Parse_Delay_Statement       (Parser *p);
-Syntax_Node *Parse_Abort_Statement       (Parser *p);
-Syntax_Node *Parse_Accept_Statement      (Parser *p);
-Syntax_Node *Parse_Select_Statement      (Parser *p);
-Syntax_Node *Parse_Pragma                (Parser *p);
-
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-/*  9.6  Declarations and Packages                                                           */
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-
-Syntax_Node *Parse_Declaration           (Parser *p);
-void         Parse_Declarative_Part      (Parser *p, Node_List *list);
-Syntax_Node *Parse_Object_Declaration    (Parser *p);
-Syntax_Node *Parse_Type_Declaration      (Parser *p);
-Syntax_Node *Parse_Subtype_Declaration   (Parser *p);
+Syntax_Node *Parse_Declaration             (Parser *p);
+void         Parse_Declarative_Part        (Parser *p, Node_List *list);
+Syntax_Node *Parse_Object_Declaration      (Parser *p);
+Syntax_Node *Parse_Type_Declaration        (Parser *p);
+Syntax_Node *Parse_Subtype_Declaration     (Parser *p);
 Syntax_Node *Parse_Procedure_Specification (Parser *p);
 Syntax_Node *Parse_Function_Specification  (Parser *p);
-Syntax_Node *Parse_Subprogram_Body       (Parser *p, Syntax_Node *spec);
-Syntax_Node *Parse_Package_Specification (Parser *p);
-Syntax_Node *Parse_Package_Body          (Parser *p);
-void         Parse_Generic_Formal_Part   (Parser *p, Node_List *formals);
-Syntax_Node *Parse_Generic_Declaration   (Parser *p);
-Syntax_Node *Parse_Use_Clause            (Parser *p);
-Syntax_Node *Parse_With_Clause           (Parser *p);
-Syntax_Node *Parse_Representation_Clause (Parser *p);
-Syntax_Node *Parse_Context_Clause        (Parser *p);
-Syntax_Node *Parse_Compilation_Unit      (Parser *p);
+Syntax_Node *Parse_Subprogram_Body         (Parser *p, Syntax_Node *spec);
+Syntax_Node *Parse_Package_Specification   (Parser *p);
+Syntax_Node *Parse_Package_Body            (Parser *p);
+void         Parse_Generic_Formal_Part     (Parser *p, Node_List *formals);
+Syntax_Node *Parse_Generic_Declaration     (Parser *p);
+Syntax_Node *Parse_Use_Clause              (Parser *p);
+Syntax_Node *Parse_With_Clause             (Parser *p);
+Syntax_Node *Parse_Representation_Clause   (Parser *p);
+Syntax_Node *Parse_Context_Clause          (Parser *p);
+Syntax_Node *Parse_Compilation_Unit        (Parser *p);
 
-/* ========================================================================================= */
-/*                                                                                           */
-/*  Chapter 10.  TYPES                                                                       */
-/*                                                                                           */
-/*  Ada's types form a lattice rooted at the universal types.  Boolean and                    */
-/*  Character are enumerations; Integer and its derivatives are discrete; Float               */
-/*  and Fixed are real; String is a constrained array.  Every type in the program              */
-/*  is represented by a Type_Info descriptor that carries the kind, scalar bounds,            */
-/*  composite structure, representation size, and a chain to the base type and                */
-/*  parent type (for derived types).                                                         */
-/*                                                                                           */
-/*  Sizes in Type_Info are always BYTES, matching the LLVM DataLayout convention.             */
-/*  The only places bit widths appear are in Type_Bound values and IR emission.               */
-/*                                                                                           */
-/* ========================================================================================= */
+// ---------
+// -- Types --
+// ---------
 
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-/*  10.1  Type Kinds                                                                         */
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
+// Ada's types form a lattice rooted at the universal types.  Every type in the program
+// is represented by a Type_Info descriptor carrying kind, scalar bounds, composite
+// structure, representation size, and derivation chains.  Sizes in Type_Info are BYTES.
 
 typedef enum {
   TYPE_UNKNOWN = 0,
-  TYPE_BOOLEAN, TYPE_CHARACTER, TYPE_INTEGER, TYPE_MODULAR,
-  TYPE_ENUMERATION, TYPE_FLOAT, TYPE_FIXED,
-  TYPE_ARRAY, TYPE_RECORD, TYPE_STRING, TYPE_ACCESS,
-  TYPE_UNIVERSAL_INTEGER, TYPE_UNIVERSAL_REAL,
-  TYPE_TASK, TYPE_SUBPROGRAM, TYPE_PRIVATE, TYPE_LIMITED_PRIVATE,
-  TYPE_INCOMPLETE, TYPE_PACKAGE,
+  TYPE_BOOLEAN,          TYPE_CHARACTER,       TYPE_INTEGER,
+  TYPE_MODULAR,          TYPE_ENUMERATION,     TYPE_FLOAT,
+  TYPE_FIXED,            TYPE_ARRAY,           TYPE_RECORD,
+  TYPE_STRING,           TYPE_ACCESS,          TYPE_UNIVERSAL_INTEGER,
+  TYPE_UNIVERSAL_REAL,   TYPE_TASK,            TYPE_SUBPROGRAM,
+  TYPE_PRIVATE,          TYPE_LIMITED_PRIVATE, TYPE_INCOMPLETE,
+  TYPE_PACKAGE,
   TYPE_COUNT
 } Type_Kind;
-
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-/*  10.2  Scalar Bounds                                                                      */
-/*                                                                                           */
-/*  Scalar bounds are represented as a tagged union.  BOUND_INTEGER and                       */
-/*  BOUND_FLOAT hold compile-time-known values; BOUND_EXPR holds a pointer                   */
-/*  to an expression node whose value is only known at runtime (e.g. a                       */
-/*  discriminant reference in an array index constraint).                                     */
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
 
 typedef struct {
   enum { BOUND_NONE, BOUND_INTEGER, BOUND_FLOAT, BOUND_EXPR } kind;
   union { int128_t int_value; double float_value; Syntax_Node *expr; };
-  uint32_t cached_temp;         /*  LLVM temp register, 0 if not yet emitted */
+  uint32_t cached_temp; // LLVM temp register, 0 if not yet emitted
 } Type_Bound;
 
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-/*  10.3  Composite Descriptors                                                              */
-/*                                                                                           */
-/*  Discriminated records (RM 3.7) use variant parts to overlay fields                       */
-/*  conditionally.  Variant_Info describes one arm of the case; Component_Info                */
-/*  describes one field or discriminant.  Index_Info describes one dimension                  */
-/*  of an array type.                                                                        */
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-
 typedef struct {
-  int64_t  disc_value_low;      /*  Low bound of the discrete choice         */
-  int64_t  disc_value_high;     /*  High bound (equal to low for scalars)    */
-  bool     is_others;           /*  True for the "when others" arm           */
-  uint32_t first_component;     /*  Index into the component array           */
-  uint32_t component_count;     /*  Number of components in this arm         */
-  uint32_t variant_size;        /*  Byte size of this variant's fields       */
+  int64_t  disc_value_low;
+  int64_t  disc_value_high;
+  bool     is_others;
+  uint32_t first_component;
+  uint32_t component_count;
+  uint32_t variant_size;
 } Variant_Info;
 
 typedef struct {
-  String_Slice  name;           /*  Component name (Ada identifier)          */
-  Type_Info    *component_type; /*  Type of the component                    */
-  uint32_t      byte_offset;    /*  Offset from the record origin            */
-  uint32_t      bit_offset;     /*  Bit offset within the byte               */
-  uint32_t      bit_size;       /*  Size in bits (for rep clauses)           */
-  Syntax_Node  *default_expr;   /*  Default initializer, or NULL             */
-  bool          is_discriminant; /* True for discriminant components         */
-  int32_t       variant_index;  /*  -1 if not in a variant part              */
+  String_Slice  name;
+  Type_Info    *component_type;
+  uint32_t      byte_offset;
+  uint32_t      bit_offset;
+  uint32_t      bit_size;
+  Syntax_Node  *default_expr;
+  bool          is_discriminant;
+  int32_t       variant_index;
 } Component_Info;
 
 typedef struct {
-  Type_Info *index_type;        /*  The discrete type of this dimension      */
+  Type_Info *index_type;
   Type_Bound low_bound;
   Type_Bound high_bound;
 } Index_Info;
 
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-/*  10.4  Type_Info Record                                                                   */
-/*                                                                                           */
-/*  The central type descriptor.  Every Ada type and subtype in the program has               */
-/*  exactly one Type_Info.  The record is large because Ada types carry a great               */
-/*  deal of semantic information: bounds, constraints, component layouts, variant             */
-/*  parts, representation attributes, and derivation chains.                                 */
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-
 struct Type_Info {
-  Type_Kind     kind;
-  String_Slice  name;               /*  Source name of the type                  */
-  Symbol       *defining_symbol;    /*  The SYMBOL_TYPE or SYMBOL_SUBTYPE        */
-  uint32_t      size;               /* Size in BYTES                            */
-  uint32_t      alignment;          /* Alignment in BYTES                       */
-  uint32_t      specified_bit_size; /* From a 'Size rep clause, or 0         */
-  Type_Bound    low_bound;          /* Scalar low bound                         */
-  Type_Bound    high_bound;         /* Scalar high bound                        */
-  uint128_t     modulus;            /* For TYPE_MODULAR only                    */
-  Type_Info    *base_type;          /* The base type for a subtype              */
-  Type_Info    *parent_type;        /* The parent type for a derived type       */
+  Type_Kind    kind;
+  String_Slice name;
+  Symbol      *defining_symbol;
+  uint32_t     size;               // Bytes
+  uint32_t     alignment;          // Bytes
+  uint32_t     specified_bit_size; // From 'Size rep clause, or 0
+  Type_Bound   low_bound;
+  Type_Bound   high_bound;
+  uint128_t    modulus;            // TYPE_MODULAR only
+  Type_Info   *base_type;
+  Type_Info   *parent_type;
 
   union {
-    struct { Index_Info *indices; uint32_t index_count;
-             Type_Info *element_type; bool is_constrained; }      array;
 
-    struct { Component_Info *components; uint32_t component_count;
-             uint32_t discriminant_count; bool has_discriminants;
-             bool all_defaults; bool is_constrained;
-             Variant_Info *variants; uint32_t variant_count;
-             uint32_t variant_offset; uint32_t max_variant_size;
-             Syntax_Node *variant_part_node;
-             int64_t *disc_constraint_values;
-             Syntax_Node **disc_constraint_exprs;
-             uint32_t *disc_constraint_preeval;
-             bool has_disc_constraints; }                          record;
+    //  array
+    struct {
+      Index_Info *indices;
+      uint32_t    index_count;
+      Type_Info  *element_type;
+      bool        is_constrained;
+    } array;
 
-    struct { Type_Info *designated_type;
-             bool is_access_constant; }                            access;
+    //  record
+    struct {
+      Component_Info *components;
+      uint32_t        component_count;
+      uint32_t        discriminant_count;
+      bool            has_discriminants;
+      bool            all_defaults;
+      bool            is_constrained;
+      Variant_Info   *variants;
+      uint32_t        variant_count;
+      uint32_t        variant_offset;
+      uint32_t        max_variant_size;
+      Syntax_Node    *variant_part_node;
+      int64_t        *disc_constraint_values;
+      Syntax_Node   **disc_constraint_exprs;
+      uint32_t       *disc_constraint_preeval;
+      bool            has_disc_constraints;
+    } record;
 
-    struct { String_Slice *literals; uint32_t literal_count;
-             int64_t *rep_values; }                                enumeration;
+    //  access
+    struct {
+      Type_Info *designated_type;
+      bool       is_access_constant;
+    } access;
 
-    struct { double delta; double small; int scale; }             fixed;
+    //  enumeration
+    struct {
+      String_Slice *literals;
+      uint32_t      literal_count;
+      int64_t      *rep_values;
+    } enumeration;
 
-    struct { int digits; }                                        flt;
+    struct { double delta; double small; int scale; } fixed;
+    struct { int digits; }                            flt;
   };
 
-  uint32_t     suppressed_checks;
-  bool         is_packed;
-  bool         is_limited;
-  bool         is_frozen;
-  int64_t      storage_size;
-  const char  *equality_func_name;
-  uint32_t     rt_global_id;
+  uint32_t    suppressed_checks;
+  bool        is_packed;
+  bool        is_limited;
+  bool        is_frozen;
+  int64_t     storage_size;
+  const char *equality_func_name;
+  uint32_t    rt_global_id;
 };
 
 extern Type_Info *Frozen_Composite_Types[256];
 extern uint32_t   Frozen_Composite_Count;
-
 extern Symbol    *Exception_Symbols[256];
 extern uint32_t   Exception_Symbol_Count;
-
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-/*  10.5  Type Construction and Classification                                               */
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
 
 Type_Info *Type_New    (Type_Kind kind, String_Slice name);
 void       Freeze_Type (Type_Info *type_info);
@@ -1354,206 +1230,134 @@ bool Type_Has_Dynamic_Bounds      (const Type_Info *t);
 bool Type_Needs_Fat_Pointer       (const Type_Info *t);
 bool Type_Needs_Fat_Pointer_Load  (const Type_Info *t);
 
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-/*  10.6  Type Chain Navigation and Bound Queries                                            */
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
+Type_Info *Type_Base (Type_Info *t);
+Type_Info *Type_Root (Type_Info *t);
 
-Type_Info  *Type_Base                    (Type_Info *t);
-Type_Info  *Type_Root                    (Type_Info *t);
+int128_t Type_Bound_Value                 (Type_Bound  bound);
+bool     Type_Bound_Is_Compile_Time_Known (Type_Bound  b);
+bool     Type_Bound_Is_Set                (Type_Bound  b);
+double   Type_Bound_Float_Value           (Type_Bound  b);
+int128_t Array_Element_Count              (Type_Info  *t);
+int128_t Array_Low_Bound                  (Type_Info  *t);
 
-int128_t    Type_Bound_Value             (Type_Bound bound);
-bool        Type_Bound_Is_Compile_Time_Known (Type_Bound b);
-bool        Type_Bound_Is_Set            (Type_Bound b);
-double      Type_Bound_Float_Value       (Type_Bound b);
-int128_t    Array_Element_Count          (Type_Info *t);
-int128_t    Array_Low_Bound              (Type_Info *t);
+const char *Type_To_Llvm           (Type_Info       *t);
+const char *Type_To_Llvm_Sig       (Type_Info       *t);
+const char *Array_Bound_Llvm_Type  (const Type_Info *t);
+const char *Bounds_Type_For        (const char      *bound_type);
+const char *Float_Llvm_Type_Of     (const Type_Info *t);
+int         Bounds_Alloc_Size      (const char      *bound_type);
+bool        Float_Is_Single        (const Type_Info *t);
+int         Float_Effective_Digits (const Type_Info *t);
 
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-/*  10.7  LLVM Type Mapping                                                                  */
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
+void Float_Model_Parameters (const Type_Info *t,
+                              int64_t         *out_mantissa,
+                              int64_t         *out_emax);
 
-const char *Type_To_Llvm                 (Type_Info *t);
-const char *Type_To_Llvm_Sig             (Type_Info *t);
-const char *Array_Bound_Llvm_Type        (const Type_Info *t);
-const char *Bounds_Type_For              (const char *bound_type);
-int         Bounds_Alloc_Size            (const char *bound_type);
-const char *Float_Llvm_Type_Of           (const Type_Info *t);
-bool        Float_Is_Single              (const Type_Info *t);
-int         Float_Effective_Digits       (const Type_Info *t);
-void        Float_Model_Parameters       (const Type_Info *t,
-                                          int64_t *out_mantissa,
-                                          int64_t *out_emax);
+bool        Expression_Is_Slice             (const Syntax_Node *node);
+bool        Expression_Is_Boolean           (Syntax_Node       *node);
+bool        Expression_Is_Float             (Syntax_Node       *node);
+const char *Expression_Llvm_Type            (Syntax_Node       *node);
+bool        Expression_Produces_Fat_Pointer (const Syntax_Node *node,
+                                             const Type_Info   *type);
 
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-/*  10.8  Expression Type Queries                                                            */
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-
-bool        Expression_Is_Slice              (const Syntax_Node *node);
-bool        Expression_Produces_Fat_Pointer  (const Syntax_Node *node,
-                                              const Type_Info *type);
-bool        Expression_Is_Boolean            (Syntax_Node *node);
-bool        Expression_Is_Float              (Syntax_Node *node);
-const char *Expression_Llvm_Type             (Syntax_Node *node);
-
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-/*  10.9  Derived Type Operations                                                            */
-/*                                                                                           */
-/*  When a derived type is declared (RM 3.4), it inherits primitive subprograms               */
-/*  from its parent type.  These functions identify and create the inherited                  */
-/*  operations.                                                                              */
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-
-bool        Types_Same_Named         (Type_Info *t1, Type_Info *t2);
-bool        Subprogram_Is_Primitive_Of (Symbol *sub, Type_Info *type);
-void        Create_Derived_Operation (Symbol *sub, Type_Info *derived_type,
-                                      Type_Info *parent_type,
-                                      Symbol *type_sym);
-void        Derive_Subprograms      (Type_Info *derived_type,
-                                      Type_Info *parent_type,
-                                      Symbol *type_sym);
-
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-/*  10.10  Generic Type Map                                                                  */
-/*                                                                                           */
-/*  During generic instantiation (Ch. 16), formal type names are mapped to actual             */
-/*  types.  This small fixed-size table is set before resolving the expanded                  */
-/*  body and cleared afterward.                                                              */
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
+bool Types_Same_Named           (Type_Info *t1,   Type_Info *t2);
+bool Subprogram_Is_Primitive_Of (Symbol    *sub,  Type_Info *type);
+void Create_Derived_Operation   (Symbol    *sub,
+                                 Type_Info *derived_type,
+                                 Type_Info *parent_type,
+                                 Symbol    *type_sym);
+void Derive_Subprograms         (Type_Info *derived_type,
+                                 Type_Info *parent_type,
+                                 Symbol    *type_sym);
 
 typedef struct {
-  uint32_t count;                                   /*  Number of active mappings   */
-  struct { String_Slice formal_name; Type_Info *actual_type; } mappings[32]; /* Map entries */
+  uint32_t count;
+  struct {
+    String_Slice formal_name;
+    Type_Info   *actual_type;
+  } mappings[32];
 } Generic_Type_Map;
 
 extern Generic_Type_Map g_generic_type_map;
 
-void        Set_Generic_Type_Map        (Symbol *inst);
-Type_Info  *Resolve_Generic_Actual_Type (Type_Info *type);
-bool        Check_Is_Suppressed         (Type_Info *type, Symbol *sym,
-                                         uint32_t check_bit);
+void       Set_Generic_Type_Map        (Symbol    *inst);
+Type_Info *Resolve_Generic_Actual_Type (Type_Info *type);
+bool       Check_Is_Suppressed         (Type_Info *type, Symbol *sym, uint32_t check_bit);
 
-/* ========================================================================================= */
-/*                                                                                           */
-/*  Chapter 11.  NAMES                                                                       */
-/*                                                                                           */
-/*  Every named entity in an Ada program -- variable, constant, type, subprogram,             */
-/*  package, exception, loop, label -- is represented by a Symbol.  Symbols live              */
-/*  in Scopes, which are chained outward from inner to enclosing.  A Scope is a              */
-/*  hash table (1024 buckets) of Symbol chains; push and pop operations bracket               */
-/*  each declarative region.                                                                 */
-/*                                                                                           */
-/*  Ada permits overloading of subprograms and enumeration literals (RM 8.3).                 */
-/*  The Interpretation and Interp_List types model the set of possible meanings               */
-/*  of an overloaded name; filtering and disambiguation narrow the set to a                  */
-/*  unique solution or produce an ambiguity error.                                           */
-/*                                                                                           */
-/* ========================================================================================= */
+// ---------
+// -- Names --
+// ---------
 
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-/*  11.1  Symbol Kinds                                                                       */
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
+// Every named entity -- variable, constant, type, subprogram, package, exception, loop,
+// label -- is represented by a Symbol.  Symbols live in Scopes chained outward from
+// inner to enclosing.  A Scope is a hash table of Symbol chains.
 
 typedef enum {
   SYMBOL_UNKNOWN = 0,
-  SYMBOL_VARIABLE, SYMBOL_CONSTANT, SYMBOL_TYPE, SYMBOL_SUBTYPE,
-  SYMBOL_PROCEDURE, SYMBOL_FUNCTION, SYMBOL_PARAMETER,
-  SYMBOL_PACKAGE, SYMBOL_EXCEPTION, SYMBOL_LABEL, SYMBOL_LOOP,
-  SYMBOL_ENTRY, SYMBOL_COMPONENT, SYMBOL_DISCRIMINANT,
-  SYMBOL_LITERAL,       /*  Enumeration literal                      */
-  SYMBOL_GENERIC, SYMBOL_GENERIC_INSTANCE,
+  SYMBOL_VARIABLE,    SYMBOL_CONSTANT,     SYMBOL_TYPE,
+  SYMBOL_SUBTYPE,     SYMBOL_PROCEDURE,    SYMBOL_FUNCTION,
+  SYMBOL_PARAMETER,   SYMBOL_PACKAGE,      SYMBOL_EXCEPTION,
+  SYMBOL_LABEL,       SYMBOL_LOOP,         SYMBOL_ENTRY,
+  SYMBOL_COMPONENT,   SYMBOL_DISCRIMINANT, SYMBOL_LITERAL,
+  SYMBOL_GENERIC,     SYMBOL_GENERIC_INSTANCE,
   SYMBOL_COUNT
 } Symbol_Kind;
 
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-/*  11.1a  Parameter Mode and Info                                                           */
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-
-typedef enum {
-  PARAM_IN = 0, PARAM_OUT, PARAM_IN_OUT
-} Parameter_Mode;
+typedef enum { PARAM_IN = 0, PARAM_OUT, PARAM_IN_OUT } Parameter_Mode;
 
 typedef struct {
   String_Slice    name;
   Type_Info      *param_type;
   Parameter_Mode  mode;
   Syntax_Node    *default_value;
-  struct Symbol  *param_sym;      /*  Symbol for this parameter in body      */
+  struct Symbol  *param_sym;
 } Parameter_Info;
 
 bool Param_Is_By_Reference (Parameter_Mode mode);
 
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-/*  11.2  Symbol Record                                                                      */
-/*                                                                                           */
-/*  The Symbol record gathers everything the compiler knows about a named                    */
-/*  entity.  It is large because Ada names carry rich semantics: a subprogram                 */
-/*  symbol holds parameter types, a package symbol holds exported members, a                 */
-/*  generic symbol holds the template AST and the list of formal-to-actual                   */
-/*  bindings.                                                                                */
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-
 struct Symbol {
-  Symbol_Kind     kind;
-  String_Slice    name;
-  Source_Location location;
+  Symbol_Kind      kind;
+  String_Slice     name;
+  Source_Location  location;
+  Type_Info       *type;
+  Scope           *defining_scope;
+  Symbol          *parent;
+  Symbol          *next_overload;
+  Symbol          *next_in_bucket;
 
-  /* Type information */
-  Type_Info      *type;
-
-  /* Scope membership */
-  Scope          *defining_scope;
-  Symbol         *parent;         /*  Enclosing package/subprogram symbol    */
-
-  /* Overloading chain */
-  Symbol         *next_overload;
-
-  /* Hash table chaining */
-  Symbol         *next_in_bucket;
-
-  /* Visibility */
   enum {
-    VIS_HIDDEN = 0,
+    VIS_HIDDEN              = 0,
     VIS_IMMEDIATELY_VISIBLE = 1,
-    VIS_USE_VISIBLE = 2,
-    VIS_DIRECTLY_VISIBLE = 3
+    VIS_USE_VISIBLE         = 2,
+    VIS_DIRECTLY_VISIBLE    = 3
   } visibility;
 
-  /* Declaration reference */
   Syntax_Node    *declaration;
 
-  /* Subprogram-specific */
-  Parameter_Info *parameters;
+  Parameter_Info *parameters;      // Subprogram formals
   uint32_t        parameter_count;
-  Type_Info      *return_type;    /*  NULL for procedures                    */
+  Type_Info      *return_type;     // NULL for procedures
 
-  /* Package-specific */
-  Symbol        **exported;       /*  Visible part symbols                   */
+  Symbol        **exported;        // Package visible-part symbols
   uint32_t        exported_count;
 
-  /* Unique identifier for mangling */
   uint32_t        unique_id;
-
-  /* Nesting level for static link computation */
   uint32_t        nesting_level;
-
-  /* Frame offset for static link variable access */
   int64_t         frame_offset;
-
-  /* Scope created by this symbol (for functions/procedures) */
   Scope          *scope;
 
-  /* Pragma effects */
   bool            is_inline;
   bool            is_imported;
   bool            is_exported;
-  String_Slice    external_name;       /*  External linker name              */
-  String_Slice    link_name;           /*  Link section name                 */
-  enum { CONVENTION_ADA = 0, CONVENTION_C, CONVENTION_STDCALL,
-         CONVENTION_INTRINSIC, CONVENTION_ASSEMBLER } convention;
-  uint32_t        suppressed_checks;   /*  Bitmask of suppressed checks     */
+  String_Slice    external_name;
+  String_Slice    link_name;
+  enum {
+    CONVENTION_ADA = 0,    CONVENTION_C,        CONVENTION_STDCALL,
+    CONVENTION_INTRINSIC,  CONVENTION_ASSEMBLER
+  } convention;
+  uint32_t        suppressed_checks;
   bool            is_unreferenced;
 
-  /* Code generation flags */
   bool            extern_emitted;
   bool            body_emitted;
   bool            is_named_number;
@@ -1566,17 +1370,14 @@ struct Symbol {
   bool            is_disc_constrained;
   bool            needs_fat_ptr_storage;
 
-  /* Derived type operations (RM 3.4) */
   Symbol         *parent_operation;
   Type_Info      *derived_from_type;
 
-  /* Labels and entries */
   uint32_t        llvm_label_id;
   uint32_t        loop_exit_label_id;
   uint32_t        entry_index;
   Syntax_Node    *renamed_object;
 
-  /* Generic support */
   Syntax_Node    *generic_formals;
   Syntax_Node    *generic_unit;
   Syntax_Node    *generic_body;
@@ -1594,36 +1395,19 @@ struct Symbol {
   Syntax_Node    *expanded_body;
 };
 
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-/*  11.3  Scope                                                                              */
-/*                                                                                           */
-/*  A scope is a hash table of symbols together with metadata about the                      */
-/*  enclosing subprogram's stack frame.  Scopes are pushed when entering a                   */
-/*  declarative region and popped when leaving.  The flat symbol list enables                 */
-/*  iteration without walking all 1024 hash buckets.                                         */
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-
 struct Scope {
   Symbol   *buckets[SYMBOL_TABLE_SIZE];
-  Scope    *parent;             /*  Lexically enclosing scope                */
-  Symbol   *owner;              /*  The subprogram or package that owns it   */
-  uint32_t  nesting_level;      /*  Depth from the global scope              */
-  Symbol  **symbols;            /*  Flat list of all symbols in this scope   */
+  Scope    *parent;
+  Symbol   *owner;
+  uint32_t  nesting_level;
+  Symbol  **symbols;
   uint32_t  symbol_count;
   uint32_t  symbol_capacity;
-  int64_t   frame_size;         /*  Running total of local variable bytes    */
-  Symbol  **frame_vars;         /*  Variables needing stack frame slots       */
+  int64_t   frame_size;
+  Symbol  **frame_vars;
   uint32_t  frame_var_count;
   uint32_t  frame_var_capacity;
 };
-
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-/*  11.4  Symbol Manager                                                                     */
-/*                                                                                           */
-/*  The Symbol_Manager holds the global and current scopes, pointers to the                  */
-/*  predefined types from package Standard, and the unique-ID counter for                    */
-/*  symbol mangling.  There is exactly one instance, pointed to by `sm'.                     */
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
 
 typedef struct {
   Scope     *current_scope;
@@ -1642,51 +1426,32 @@ typedef struct {
 
 extern Symbol_Manager *sm;
 
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-/*  11.5  Scope and Symbol Lifecycle                                                         */
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
+Scope   *Scope_New                         (Scope  *parent);
+void     Symbol_Manager_Push_Scope         (Symbol *owner);
+void     Symbol_Manager_Pop_Scope          (void);
+void     Symbol_Manager_Push_Existing_Scope(Scope  *scope);
+uint32_t Symbol_Hash_Name                  (String_Slice name);
 
-Scope   *Scope_New                       (Scope *parent);
-void     Symbol_Manager_Push_Scope       (Symbol *owner);
-void     Symbol_Manager_Pop_Scope        (void);
-void     Symbol_Manager_Push_Existing_Scope (Scope *scope);
+Symbol *Symbol_New          (Symbol_Kind kind, String_Slice name, Source_Location location);
+void    Symbol_Add          (Symbol *sym);
+Symbol *Symbol_Find         (String_Slice name);
+Symbol *Symbol_Find_By_Type (String_Slice name, Type_Info *expected_type);
 
-uint32_t Symbol_Hash_Name               (String_Slice name);
-Symbol  *Symbol_New                      (Symbol_Kind kind, String_Slice name,
-                                          Source_Location location);
-void     Symbol_Add                      (Symbol *sym);
-Symbol  *Symbol_Find                     (String_Slice name);
-Symbol  *Symbol_Find_By_Type             (String_Slice name,
-                                          Type_Info *expected_type);
-
-void     Symbol_Manager_Init_Predefined  (void);
-/*  Install Boolean, Integer, Float, Character, String, and the                              */
-/*  universal types into the global scope.                                                   */
-
-void     Symbol_Manager_Init             (void);
-
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-/*  11.6  Overload Resolution                                                                */
-/*                                                                                           */
-/*  Ada allows subprogram names and enumeration literals to be overloaded                    */
-/*  (RM 8.3).  Resolution collects all visible interpretations, filters                      */
-/*  by argument profile, and selects the unique match whose result type                      */
-/*  agrees with the context.  When no unique match exists, the call is                       */
-/*  ambiguous.                                                                               */
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
+void Symbol_Manager_Init_Predefined (void);
+void Symbol_Manager_Init            (void);
 
 typedef struct {
-  Type_Info    **types;
-  uint32_t       count;
-  String_Slice  *names;
+  Type_Info   **types;
+  uint32_t      count;
+  String_Slice *names;
 } Argument_Info;
 
 typedef struct {
-  Symbol    *nam;               /*  Candidate symbol                         */
-  Type_Info *typ;               /*  Result type                              */
-  Type_Info *opnd_typ;          /*  Operand type (for operator resolution)   */
-  bool       is_universal;      /*  True if from a universal context         */
-  uint32_t   scope_depth;       /*  Distance from use to declaration         */
+  Symbol    *nam;          // Candidate symbol
+  Type_Info *typ;          // Result type
+  Type_Info *opnd_typ;     // Operand type (for operator resolution)
+  bool       is_universal; // From a universal context
+  uint32_t   scope_depth;  // Distance from use to declaration
 } Interpretation;
 
 typedef struct {
@@ -1694,995 +1459,819 @@ typedef struct {
   uint32_t       count;
 } Interp_List;
 
-bool     Type_Covers                     (Type_Info *expected,
-                                          Type_Info *actual);
-bool     Arguments_Match_Profile         (Symbol *sym, Argument_Info *args);
-void     Collect_Interpretations         (String_Slice name,
-                                          Interp_List *list);
-void     Filter_By_Arguments             (Interp_List *interps,
-                                          Argument_Info *args);
-bool     Symbol_Hides                    (Symbol *sym1, Symbol *sym2);
-int32_t  Score_Interpretation            (Interpretation *interp,
-                                          Type_Info *context_type,
-                                          Argument_Info *args);
-Symbol  *Disambiguate                    (Interp_List *interps,
-                                          Type_Info *context_type,
-                                          Argument_Info *args);
-Symbol  *Resolve_Overloaded_Call         (String_Slice name,
-                                          Argument_Info *args,
-                                          Type_Info *context_type);
-String_Slice Operator_Name               (Token_Kind op);
+bool Type_Covers             (Type_Info    *expected, Type_Info    *actual);
+bool Arguments_Match_Profile (Symbol       *sym,      Argument_Info *args);
+void Collect_Interpretations (String_Slice  name,     Interp_List   *list);
+void Filter_By_Arguments     (Interp_List  *interps,  Argument_Info *args);
+bool Symbol_Hides            (Symbol       *sym1,     Symbol        *sym2);
 
-/* ========================================================================================= */
-/*                                                                                           */
-/*  Chapter 12.  SEMANTICS                                                                   */
-/*                                                                                           */
-/*  The semantic pass walks the syntax tree to resolve identifiers to their                   */
-/*  declarations, check type compatibility, fold static expressions to compile-               */
-/*  time constants, and freeze type representations.  It bridges parsing (which               */
-/*  knows only syntax) and code generation (which needs fully resolved types                 */
-/*  and symbols).                                                                            */
-/*                                                                                           */
-/*  Each Resolve_ function receives a syntax node and returns the type of the                 */
-/*  expression, or NULL on error.  Declaration processing installs new symbols               */
-/*  and types into the current scope; statement processing checks legality rules             */
-/*  and resolves inner expressions.                                                          */
-/*                                                                                           */
-/* ========================================================================================= */
+int32_t Score_Interpretation    (Interpretation *interp,
+                                 Type_Info      *context_type,
+                                 Argument_Info  *args);
+Symbol *Disambiguate            (Interp_List    *interps,
+                                 Type_Info      *context_type,
+                                 Argument_Info  *args);
+Symbol *Resolve_Overloaded_Call (String_Slice    name,
+                                 Argument_Info  *args,
+                                 Type_Info      *context_type);
 
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-/*  12.1  Expression Resolution                                                              */
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
+String_Slice Operator_Name (Token_Kind op);
 
-Type_Info   *Resolve_Expression          (Syntax_Node *node);
-Type_Info   *Resolve_Identifier          (Syntax_Node *node);
-Type_Info   *Resolve_Selected            (Syntax_Node *node);
-Type_Info   *Resolve_Binary_Op           (Syntax_Node *node);
-Type_Info   *Resolve_Apply               (Syntax_Node *node);
-/*  Resolve a unified NK_APPLY node: distinguish calls, indexing,                            */
-/*  slicing, and type conversions based on the resolved prefix.                              */
+// -------------
+// -- Semantics --
+// -------------
 
-bool         Resolve_Char_As_Enum        (Syntax_Node *char_node,
-                                          Type_Info *enum_type);
-/*  Attempt to interpret a character literal as an enumeration                                */
-/*  literal of the given type (RM 4.2).                                                      */
+// The semantic pass walks the syntax tree to resolve identifiers, check type
+// compatibility, fold static expressions, and freeze type representations.
 
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-/*  12.2  Statements and Declarations                                                        */
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
+Type_Info *Resolve_Expression   (Syntax_Node *node);
+Type_Info *Resolve_Identifier   (Syntax_Node *node);
+Type_Info *Resolve_Selected     (Syntax_Node *node);
+Type_Info *Resolve_Binary_Op    (Syntax_Node *node);
+Type_Info *Resolve_Apply        (Syntax_Node *node);
+bool       Resolve_Char_As_Enum (Syntax_Node *char_node, Type_Info *enum_type);
 
-void         Resolve_Statement           (Syntax_Node *node);
-void         Resolve_Declaration         (Syntax_Node *node);
-void         Resolve_Declaration_List    (Node_List *list);
-void         Resolve_Statement_List      (Node_List *list);
-void         Resolve_Compilation_Unit    (Syntax_Node *node);
+void Resolve_Statement           (Syntax_Node *node);
+void Resolve_Declaration         (Syntax_Node *node);
+void Resolve_Declaration_List    (Node_List   *list);
+void Resolve_Statement_List      (Node_List   *list);
+void Resolve_Compilation_Unit    (Syntax_Node *node);
+void Freeze_Declaration_List     (Node_List   *list);
+void Populate_Package_Exports    (Symbol      *pkg_sym,  Syntax_Node *pkg_spec);
+void Preregister_Labels          (Node_List   *list);
+void Install_Declaration_Symbols (Node_List   *decls);
 
-void         Freeze_Declaration_List     (Node_List *list);
-/*  Freeze every type declared in the list.  Called at the end of each                       */
-/*  declarative region before the statement part begins.                                     */
+bool        Is_Integer_Expr     (Syntax_Node *node);
+double      Eval_Const_Numeric  (Syntax_Node *node);
+bool        Eval_Const_Rational (Syntax_Node *node, Rational *out);
+const char *I128_Decimal        (int128_t     value);
+const char *U128_Decimal        (uint128_t    value);
 
-void         Populate_Package_Exports    (Symbol *pkg_sym,
-                                          Syntax_Node *pkg_spec);
-void         Preregister_Labels          (Node_List *list);
-/*  Scan a statement list for labels and install them before processing                      */
-/*  statements, because forward gotos are legal (RM 5.9).                                    */
+// -------------------
+// -- Code Generation --
+// -------------------
 
-void         Install_Declaration_Symbols (Node_List *decls);
-
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-/*  12.3  Constant Folding                                                                   */
-/*                                                                                           */
-/*  The constant folder evaluates static expressions at compile time.  It is                  */
-/*  needed for range bounds, discriminant constraints, representation clauses,                */
-/*  and named numbers -- all of which must be known before code generation.                  */
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-
-bool         Is_Integer_Expr             (Syntax_Node *node);
-double       Eval_Const_Numeric          (Syntax_Node *node);
-bool         Eval_Const_Rational         (Syntax_Node *node, Rational *out);
-
-const char  *I128_Decimal                (int128_t value);
-const char  *U128_Decimal                (uint128_t value);
-
-/* ========================================================================================= */
-/*                                                                                           */
-/*  Chapter 13.  CODE GENERATION                                                             */
-/*                                                                                           */
-/*  The code generator walks the resolved syntax tree and emits LLVM IR as                    */
-/*  plain text to a FILE*.  Every Ada construct maps to a sequence of LLVM                    */
-/*  instructions.  The generator tracks temp registers (SSA values), labels,                  */
-/*  string constants, and deferred nested subprogram bodies.                                 */
-/*                                                                                           */
-/*  The Code_Generator record holds all mutable state for one compilation                    */
-/*  unit.  There is exactly one instance, pointed to by `cg'.                                */
-/*                                                                                           */
-/*  Build-in-place (BIP) support handles Ada limited types that cannot be                    */
-/*  copied: functions returning them build the result directly in the                        */
-/*  caller's storage via implicit extra formals.                                             */
-/*                                                                                           */
-/* ========================================================================================= */
-
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-/*  13.1  Code_Generator State                                                               */
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
+// The code generator walks the resolved syntax tree and emits LLVM IR as plain text
+// to a FILE*.  The Code_Generator record holds all mutable state for one compilation unit.
 
 typedef struct {
-  FILE         *output;         /*  The .ll file being written               */
-  uint32_t      temp_id;        /*  Next SSA temp register number            */
-  uint32_t      label_id;       /*  Next basic-block label number            */
-  uint32_t      global_id;      /*  Next global variable number              */
-  uint32_t      string_id;      /*  Next string constant number              */
-  Symbol       *current_function;   /*  Function currently being generated   */
-  uint32_t      current_nesting_level; /*  Lexical nesting depth             */
-  Symbol       *current_instance;  /*  Current generic instance, if any      */
-  uint32_t      loop_exit_label;   /*  Target label for exit statements      */
-  uint32_t      loop_continue_label; /*  Target label for continue           */
-  bool          has_return;        /*  True if current block ends with ret   */
-  bool          block_terminated;  /*  Current block has a terminator        */
-  bool          header_emitted;    /*  Module header already written         */
-  Symbol       *main_candidate;    /*  Last parameterless library procedure  */
-  Syntax_Node  *deferred_bodies[64]; /*  Nested bodies to emit later        */
-  uint32_t      deferred_count;    /*  Count of deferred nested bodies      */
-  Symbol       *enclosing_function; /*  Parent of current nested function   */
-  bool          is_nested;         /*  True inside a nested subprogram      */
-  uint32_t      exception_handler_label; /*  Label of current handler       */
-  uint32_t      exception_jmp_buf; /*  Current setjmp buffer temp           */
-  bool          in_exception_region; /*  Inside exception-handled block     */
-  char         *string_const_buffer; /*  Deferred string constants          */
-  size_t        string_const_size; /*  Bytes used in string buffer          */
-  size_t        string_const_capacity; /*  Allocated capacity               */
-  Symbol       *address_markers[256]; /*  Symbols needing 'ADDRESS globals  */
-  uint32_t      address_marker_count; /*  Count of address markers          */
-  uint32_t      emitted_func_ids[1024]; /*  Unique IDs already emitted      */
-  uint32_t      emitted_func_count; /*  Count of emitted functions          */
-  bool          in_task_body;      /*  Generating a task body               */
-  Symbol       *elab_funcs[64];    /*  Package elab functions to call       */
-  uint32_t      elab_func_count;   /*  Count of elab functions              */
-  uint32_t      temp_type_keys[TEMP_TYPE_CAPACITY]; /*  Ring buffer keys    */
-  const char   *temp_types[TEMP_TYPE_CAPACITY]; /*  LLVM type strings       */
-  uint8_t       temp_is_fat_alloca[TEMP_TYPE_CAPACITY]; /*  Fat-ptr bitmap  */
-  char         *exc_refs[EXC_REF_CAPACITY]; /*  Exception global names      */
-  uint32_t      exc_ref_count;     /*  Count of exception references        */
-  bool          needs_trim_helpers; /*  Emit trim helper functions           */
-  uint32_t      rt_type_counter;   /*  Runtime type elaboration ID counter  */
-  uint32_t      in_agg_component;  /*  Nonzero inside sub-aggregate         */
-  uint32_t      inner_agg_bnd_lo[MAX_AGG_DIMS]; /*  Inner aggregate lows   */
-  uint32_t      inner_agg_bnd_hi[MAX_AGG_DIMS]; /*  Inner aggregate highs  */
-  int           inner_agg_bnd_n;   /*  Number of dimension levels reported  */
-  uint32_t      disc_cache[MAX_DISC_CACHE]; /*  Cached discriminant temps   */
-  uint32_t      disc_cache_count;  /*  Count of cached discriminants        */
-  Type_Info    *disc_cache_type;   /*  Record type these caches belong to   */
+  FILE        *output;
+  uint32_t     temp_id;
+  uint32_t     label_id;
+  uint32_t     global_id;
+  uint32_t     string_id;
+  Symbol      *current_function;
+  uint32_t     current_nesting_level;
+  Symbol      *current_instance;
+  uint32_t     loop_exit_label;
+  uint32_t     loop_continue_label;
+  bool         has_return;
+  bool         block_terminated;
+  bool         header_emitted;
+  Symbol      *main_candidate;
+  Syntax_Node *deferred_bodies[64];
+  uint32_t     deferred_count;
+  Symbol      *enclosing_function;
+  bool         is_nested;
+  uint32_t     exception_handler_label;
+  uint32_t     exception_jmp_buf;
+  bool         in_exception_region;
+  char        *string_const_buffer;
+  size_t       string_const_size;
+  size_t       string_const_capacity;
+  Symbol      *address_markers[256];
+  uint32_t     address_marker_count;
+  uint32_t     emitted_func_ids[1024];
+  uint32_t     emitted_func_count;
+  bool         in_task_body;
+  Symbol      *elab_funcs[64];
+  uint32_t     elab_func_count;
+  uint32_t     temp_type_keys[TEMP_TYPE_CAPACITY];
+  const char  *temp_types[TEMP_TYPE_CAPACITY];
+  uint8_t      temp_is_fat_alloca[TEMP_TYPE_CAPACITY];
+  char        *exc_refs[EXC_REF_CAPACITY];
+  uint32_t     exc_ref_count;
+  bool         needs_trim_helpers;
+  uint32_t     rt_type_counter;
+  uint32_t     in_agg_component;
+  uint32_t     inner_agg_bnd_lo[MAX_AGG_DIMS];
+  uint32_t     inner_agg_bnd_hi[MAX_AGG_DIMS];
+  int          inner_agg_bnd_n;
+  uint32_t     disc_cache[MAX_DISC_CACHE];
+  uint32_t     disc_cache_count;
+  Type_Info   *disc_cache_type;
 } Code_Generator;
 
 extern Code_Generator *cg;
 
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-/*  13.2  Lifecycle                                                                          */
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-
 void Code_Generator_Init (FILE *output);
 
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-/*  13.3  Temp and Label Management                                                          */
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
+uint32_t    Emit_Temp             (void);
+uint32_t    Emit_Label            (void);
+void        Temp_Set_Type         (uint32_t temp_id, const char *llvm_type);
+const char *Temp_Get_Type         (uint32_t temp_id);
+void        Temp_Mark_Fat_Alloca  (uint32_t temp_id);
+bool        Temp_Is_Fat_Alloca    (uint32_t temp_id);
 
-uint32_t    Emit_Temp                    (void);
-uint32_t    Emit_Label                   (void);
-void        Temp_Set_Type                (uint32_t temp_id,
-                                          const char *llvm_type);
-const char *Temp_Get_Type                (uint32_t temp_id);
-void        Temp_Mark_Fat_Alloca         (uint32_t temp_id);
-bool        Temp_Is_Fat_Alloca           (uint32_t temp_id);
+void Emit                   (const char *format, ...);
+void Emit_Location          (Source_Location location);
+void Emit_Label_Here        (uint32_t label);
+void Emit_Branch_If_Needed  (uint32_t label);
+void Emit_String_Const      (const char *format, ...);
+void Emit_String_Const_Char (char ch);
+void Emit_Float_Constant    (uint32_t    result,
+                             const char *float_type,
+                             double      value,
+                             const char *comment);
 
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-/*  13.4  IR Emission Primitives                                                             */
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
+const char *String_Bound_Type    (void);
+const char *String_Bounds_Struct (void);
+const char *Integer_Arith_Type   (void);
+const char *Wider_Int_Type       (const char *left, const char *right);
+const char *Float_Cmp_Predicate  (int op);
+const char *Int_Cmp_Predicate    (int op, bool is_unsigned);
+int         String_Bounds_Alloc  (void);
+int         Type_Bits            (const char *llvm_type);
+bool        Is_Float_Type        (const char *llvm_type);
 
-void        Emit                         (const char *format, ...);
-void        Emit_Location                (Source_Location location);
-void        Emit_Label_Here              (uint32_t label);
-void        Emit_Branch_If_Needed        (uint32_t label);
-void        Emit_String_Const            (const char *format, ...);
-void        Emit_String_Const_Char       (char ch);
-void        Emit_Float_Constant          (uint32_t result,
-                                          const char *float_type,
-                                          double value, const char *comment);
+bool   Symbol_Is_Global   (Symbol *sym);
+size_t Mangle_Slice_Into  (char         *buf,
+                            size_t        pos,
+                            size_t        max,
+                            String_Slice  name);
+size_t Mangle_Into_Buffer (char   *buf,
+                            size_t  pos,
+                            size_t  max,
+                            Symbol *sym);
 
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-/*  13.5  String and Type Helpers                                                            */
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
+String_Slice Symbol_Mangle_Name    (Symbol      *sym);
+String_Slice Mangle_Qualified_Name (String_Slice parent, String_Slice name);
+void         Emit_Symbol_Name      (Symbol *sym);
+void         Emit_Symbol_Ref       (Symbol *sym);
+void         Emit_Symbol_Storage   (Symbol *sym);
+void         Emit_Exception_Ref    (Symbol *exc);
+Symbol      *Find_Instance_Local   (const Symbol *template_sym);
 
-const char *String_Bound_Type            (void);
-const char *String_Bounds_Struct         (void);
-int         String_Bounds_Alloc          (void);
-const char *Integer_Arith_Type           (void);
-int         Type_Bits                    (const char *llvm_type);
-const char *Wider_Int_Type               (const char *left,
-                                          const char *right);
-bool        Is_Float_Type                (const char *llvm_type);
-const char *Float_Cmp_Predicate          (int op);
-const char *Int_Cmp_Predicate            (int op, bool is_unsigned);
+Symbol  *Find_Enclosing_Subprogram      (Symbol *sym);
+bool     Subprogram_Needs_Static_Chain  (Symbol *sym);
+bool     Is_Uplevel_Access              (const Symbol *sym);
+int      Nested_Frame_Depth             (Symbol *proc);
+uint32_t Precompute_Nested_Frame_Arg    (Symbol *proc);
+bool     Emit_Nested_Frame_Arg          (Symbol *proc, uint32_t precomp);
 
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-/*  13.6  Symbol Mangling                                                                    */
-/*                                                                                           */
-/*  Ada names are mangled into linker-friendly identifiers: dotted names become               */
-/*  underscored, casing is preserved, unique IDs disambiguate overloads.                     */
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
+// -- Checks and Conversions
+void Emit_Raise_Exception  (const char *exc_name, const char *comment);
+void Emit_Check_With_Raise (uint32_t    cond,
+                             bool        raise_on_true,
+                             const char *comment);
+void Emit_Range_Check_With_Raise (uint32_t    val,
+                                   int64_t     lo_val,
+                                   int64_t     hi_val,
+                                   const char *type,
+                                   const char *comment);
+uint32_t Emit_Overflow_Checked_Op (uint32_t    left,
+                                    uint32_t    right,
+                                    const char *op,
+                                    const char *llvm_type,
+                                    Type_Info  *result_type);
+void Emit_Division_Check (uint32_t    divisor,
+                           const char *type,
+                           Type_Info  *t);
+void Emit_Signed_Division_Overflow_Check (uint32_t    dividend,
+                                           uint32_t    divisor,
+                                           const char *llvm_type,
+                                           Type_Info  *type);
 
-bool         Symbol_Is_Global            (Symbol *sym);
-size_t       Mangle_Slice_Into           (char *buf, size_t pos,
-                                          size_t max, String_Slice name);
-size_t       Mangle_Into_Buffer          (char *buf, size_t pos,
-                                          size_t max, Symbol *sym);
-String_Slice Symbol_Mangle_Name          (Symbol *sym);
-String_Slice Mangle_Qualified_Name       (String_Slice parent,
-                                          String_Slice name);
-void         Emit_Symbol_Name            (Symbol *sym);
-void         Emit_Symbol_Ref             (Symbol *sym);
-void         Emit_Symbol_Storage         (Symbol *sym);
-void         Emit_Exception_Ref          (Symbol *exc);
-Symbol      *Find_Instance_Local         (const Symbol *template_sym);
+uint32_t Emit_Convert           (uint32_t src, const char *from, const char *to);
+uint32_t Emit_Convert_Ext       (uint32_t    src,
+                                  const char *src_type,
+                                  const char *dst_type,
+                                  bool        is_unsigned);
+uint32_t Emit_Coerce            (uint32_t temp, const char *desired_type);
+uint32_t Emit_Coerce_Default_Int(uint32_t temp, const char *desired_type);
 
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-/*  13.7  Static Link Support                                                                */
-/*                                                                                           */
-/*  Ada allows nested subprograms to access variables of their enclosing                     */
-/*  subprograms.  The code generator implements this with static links: each                  */
-/*  nested frame carries a pointer to its lexical parent's frame.                            */
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-
-Symbol      *Find_Enclosing_Subprogram   (Symbol *sym);
-bool         Subprogram_Needs_Static_Chain (Symbol *sym);
-bool         Is_Uplevel_Access           (const Symbol *sym);
-int          Nested_Frame_Depth          (Symbol *proc);
-uint32_t     Precompute_Nested_Frame_Arg (Symbol *proc);
-bool         Emit_Nested_Frame_Arg       (Symbol *proc, uint32_t precomp);
-
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-/*  13.8  Checks and Conversions                                                             */
-/*                                                                                           */
-/*  Runtime checks implement Ada's safety model (RM 11.5).  Each check can be                */
-/*  suppressed per-type or per-symbol via the CHK_ flags (Ch. 1).  The                       */
-/*  Emit_*_Check functions generate the check-and-raise sequence.                            */
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-
-void         Emit_Raise_Exception        (const char *exc_name,
-                                          const char *comment);
-void         Emit_Check_With_Raise       (uint32_t cond,
-                                          bool raise_on_true,
-                                          const char *comment);
-void         Emit_Range_Check_With_Raise (uint32_t val,
-                                          int64_t lo_val, int64_t hi_val,
-                                          const char *type,
-                                          const char *comment);
-uint32_t     Emit_Overflow_Checked_Op    (uint32_t left, uint32_t right,
-                                          const char *op,
-                                          const char *llvm_type,
-                                          Type_Info *result_type);
-void         Emit_Division_Check         (uint32_t divisor,
-                                          const char *type, Type_Info *t);
-void         Emit_Signed_Division_Overflow_Check (uint32_t dividend,
-                                          uint32_t divisor,
-                                          const char *llvm_type,
-                                          Type_Info *type);
-uint32_t     Emit_Convert                (uint32_t src, const char *from,
-                                          const char *to);
-uint32_t     Emit_Convert_Ext            (uint32_t src, const char *src_type,
-                                          const char *dst_type,
-                                          bool is_unsigned);
-uint32_t     Emit_Coerce                 (uint32_t temp,
-                                          const char *desired_type);
-uint32_t     Emit_Coerce_Default_Int     (uint32_t temp,
-                                          const char *desired_type);
-uint32_t     Emit_Index_Check            (uint32_t index,
-                                          uint32_t low_bound,
-                                          uint32_t high_bound,
-                                          const char *index_type,
-                                          Type_Info *array_type);
-void         Emit_Length_Check           (uint32_t src_length,
-                                          uint32_t dst_length,
-                                          const char *len_type,
-                                          Type_Info *array_type);
-void         Emit_Access_Check           (uint32_t ptr_val,
-                                          Type_Info *acc_type);
-void         Emit_Discriminant_Check     (uint32_t actual, uint32_t expected,
-                                          const char *disc_type,
-                                          Type_Info *record_type);
-uint32_t     Emit_Constraint_Check       (uint32_t val, Type_Info *target,
-                                          Type_Info *source);
-uint32_t     Emit_Constraint_Check_With_Type (uint32_t val, Type_Info *target,
-                                          Type_Info *source,
+uint32_t Emit_Index_Check (uint32_t    index,
+                            uint32_t    low_bound,
+                            uint32_t    high_bound,
+                            const char *index_type,
+                            Type_Info  *array_type);
+void Emit_Length_Check (uint32_t    src_length,
+                         uint32_t    dst_length,
+                         const char *len_type,
+                         Type_Info  *array_type);
+void Emit_Access_Check       (uint32_t ptr_val, Type_Info *acc_type);
+void Emit_Discriminant_Check (uint32_t    actual,
+                               uint32_t    expected,
+                               const char *disc_type,
+                               Type_Info  *record_type);
+uint32_t Emit_Constraint_Check (uint32_t   val,
+                                 Type_Info *target,
+                                 Type_Info *source);
+uint32_t Emit_Constraint_Check_With_Type (uint32_t    val,
+                                          Type_Info  *target,
+                                          Type_Info  *source,
                                           const char *actual_val_type);
-void         Emit_Subtype_Constraint_Compat_Check (Type_Info *subtype);
-uint32_t     Emit_Widen_For_Intrinsic    (uint32_t val,
-                                          const char *from_type);
-uint32_t     Emit_Extend_To_I64          (uint32_t val, const char *from);
+void Emit_Subtype_Constraint_Compat_Check (Type_Info *subtype);
 
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-/*  13.9  Fat-Pointer Operations                                                             */
-/*                                                                                           */
-/*  Fat pointers are the uniform representation for unconstrained arrays passed               */
-/*  by reference.  The `bt' parameter is always the LLVM bound type                          */
-/*  (e.g. "i32" for String).                                                                 */
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
+uint32_t Emit_Widen_For_Intrinsic (uint32_t val, const char *from_type);
+uint32_t Emit_Extend_To_I64       (uint32_t val, const char *from);
 
-uint32_t     Emit_Fat_Pointer            (uint32_t data_ptr,
-                                          int128_t low, int128_t high,
-                                          const char *bt);
-uint32_t     Emit_Fat_Pointer_Dynamic    (uint32_t data_ptr, uint32_t lo,
-                                          uint32_t hi, const char *bt);
-uint32_t     Emit_Fat_Pointer_Heap       (uint32_t data_ptr, uint32_t lo,
-                                          uint32_t hi, const char *bt);
-uint32_t     Emit_Fat_Pointer_MultiDim   (uint32_t data_ptr,
-                                          uint32_t *lo, uint32_t *hi,
-                                          uint32_t ndims, const char *bt);
-uint32_t     Emit_Fat_Pointer_Null       (const char *bt);
-uint32_t     Fat_Ptr_As_Value            (uint32_t fat_ptr);
-uint32_t     Emit_Fat_Pointer_Data       (uint32_t fat_ptr, const char *bt);
-uint32_t     Emit_Fat_Pointer_Bound      (uint32_t fat_ptr, const char *bt,
-                                          uint32_t field_index);
-uint32_t     Emit_Fat_Pointer_Low_Dim    (uint32_t fat_ptr, const char *bt,
-                                          uint32_t dim);
-uint32_t     Emit_Fat_Pointer_High_Dim   (uint32_t fat_ptr, const char *bt,
-                                          uint32_t dim);
-uint32_t     Emit_Fat_Pointer_Length     (uint32_t fat_ptr, const char *bt);
-uint32_t     Emit_Fat_Pointer_Length_Dim (uint32_t fat_ptr, const char *bt,
-                                          uint32_t dim);
-uint32_t     Emit_Fat_Pointer_Compare    (uint32_t left_fat,
-                                          uint32_t right_fat, const char *bt);
-uint32_t     Emit_Load_Fat_Pointer       (Symbol *sym, const char *bt);
-uint32_t     Emit_Load_Fat_Pointer_From_Temp (uint32_t ptr, const char *bt);
-void         Emit_Store_Fat_Pointer_To_Symbol (uint32_t fat, Symbol *sym,
-                                          const char *bt);
-void         Emit_Store_Fat_Pointer_Fields_To_Temp (uint32_t data,
-                                          uint32_t lo, uint32_t hi,
-                                          uint32_t dest, const char *bt);
-void         Emit_Fat_Pointer_Copy_To_Name (uint32_t fat_ptr,
-                                          Symbol *dst, const char *bt);
-void         Emit_Fat_To_Array_Memcpy    (uint32_t fat_val,
-                                          uint32_t dest_ptr, Type_Info *t);
-uint32_t     Emit_Alloc_Bounds_Struct    (uint32_t lo, uint32_t hi,
-                                          const char *bt);
-uint32_t     Emit_Alloc_Bounds_MultiDim  (uint32_t *lo, uint32_t *hi,
-                                          uint32_t ndims, const char *bt);
-uint32_t     Emit_Heap_Bounds_Struct     (uint32_t lo, uint32_t hi,
-                                          const char *bt);
-void         Emit_Fat_Pointer_Insertvalue_Named (const char *prefix,
+// -- Fat-Pointer Operations
+uint32_t Emit_Fat_Pointer          (uint32_t    data_ptr,
+                                    int128_t    low,
+                                    int128_t    high,
+                                    const char *bt);
+uint32_t Emit_Fat_Pointer_Dynamic  (uint32_t    data_ptr,
+                                    uint32_t    lo,
+                                    uint32_t    hi,
+                                    const char *bt);
+uint32_t Emit_Fat_Pointer_Heap     (uint32_t    data_ptr,
+                                    uint32_t    lo,
+                                    uint32_t    hi,
+                                    const char *bt);
+uint32_t Emit_Fat_Pointer_MultiDim (uint32_t    data_ptr,
+                                    uint32_t   *lo,
+                                    uint32_t   *hi,
+                                    uint32_t    ndims,
+                                    const char *bt);
+uint32_t Emit_Fat_Pointer_Null     (const char *bt);
+uint32_t Fat_Ptr_As_Value          (uint32_t fat_ptr);
+
+uint32_t Emit_Fat_Pointer_Data     (uint32_t fat_ptr, const char *bt);
+uint32_t Emit_Fat_Pointer_Bound    (uint32_t    fat_ptr,
+                                    const char *bt,
+                                    uint32_t    field_index);
+uint32_t Emit_Fat_Pointer_Low_Dim  (uint32_t fat_ptr, const char *bt, uint32_t dim);
+uint32_t Emit_Fat_Pointer_High_Dim (uint32_t fat_ptr, const char *bt, uint32_t dim);
+uint32_t Emit_Fat_Pointer_Length   (uint32_t fat_ptr, const char *bt);
+uint32_t Emit_Fat_Pointer_Length_Dim(uint32_t fat_ptr, const char *bt, uint32_t dim);
+uint32_t Emit_Fat_Pointer_Compare  (uint32_t    left_fat,
+                                    uint32_t    right_fat,
+                                    const char *bt);
+
+uint32_t Emit_Load_Fat_Pointer           (Symbol   *sym, const char *bt);
+uint32_t Emit_Load_Fat_Pointer_From_Temp (uint32_t  ptr, const char *bt);
+void     Emit_Store_Fat_Pointer_To_Symbol     (uint32_t    fat,
+                                               Symbol     *sym,
+                                               const char *bt);
+void     Emit_Store_Fat_Pointer_Fields_To_Temp(uint32_t    data,
+                                               uint32_t    lo,
+                                               uint32_t    hi,
+                                               uint32_t    dest,
+                                               const char *bt);
+void     Emit_Fat_Pointer_Copy_To_Name (uint32_t    fat_ptr,
+                                        Symbol     *dst,
+                                        const char *bt);
+void     Emit_Fat_To_Array_Memcpy      (uint32_t   fat_val,
+                                        uint32_t   dest_ptr,
+                                        Type_Info *t);
+
+uint32_t Emit_Alloc_Bounds_Struct  (uint32_t lo, uint32_t hi, const char *bt);
+uint32_t Emit_Alloc_Bounds_MultiDim(uint32_t   *lo,
+                                    uint32_t   *hi,
+                                    uint32_t    ndims,
+                                    const char *bt);
+uint32_t Emit_Heap_Bounds_Struct   (uint32_t lo, uint32_t hi, const char *bt);
+
+void Emit_Fat_Pointer_Insertvalue_Named  (const char *prefix,
                                           const char *data_expr,
                                           const char *low_expr,
                                           const char *high_expr,
                                           const char *bt);
-void         Emit_Fat_Pointer_Extractvalue_Named (const char *src_name,
+void Emit_Fat_Pointer_Extractvalue_Named (const char *src_name,
                                           const char *data_name,
                                           const char *low_name,
                                           const char *high_name,
                                           const char *bt);
-void         Emit_Widen_Named_For_Intrinsic (const char *src,
-                                          const char *dst, const char *bt);
-void         Emit_Narrow_Named_From_Intrinsic (const char *src,
-                                          const char *dst, const char *bt);
+void Emit_Widen_Named_For_Intrinsic   (const char *src, const char *dst, const char *bt);
+void Emit_Narrow_Named_From_Intrinsic (const char *src, const char *dst, const char *bt);
 
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-/*  13.10  Bound and Length Emission                                                         */
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-
+// -- Bound and Length Emission
 typedef struct {
-  uint32_t    low_temp;         /*  Temp holding the low bound               */
-  uint32_t    high_temp;        /*  Temp holding the high bound              */
-  const char *bound_type;       /*  LLVM type of both bounds                 */
+  uint32_t    low_temp;
+  uint32_t    high_temp;
+  const char *bound_type;
 } Bound_Temps;
 
-uint32_t     Emit_Bound_Value            (Type_Bound *bound);
-uint32_t     Emit_Bound_Value_Typed      (Type_Bound *bound,
-                                          const char **out_type);
-uint32_t     Emit_Single_Bound           (Type_Bound *bound, const char *ty);
-Bound_Temps  Emit_Bounds                 (Type_Info *type, uint32_t dim);
-Bound_Temps  Emit_Bounds_From_Fat        (uint32_t fat, const char *bt);
-Bound_Temps  Emit_Bounds_From_Fat_Dim    (uint32_t fat, const char *bt,
-                                          uint32_t dim);
-uint32_t     Emit_Length_From_Bounds     (uint32_t lo, uint32_t hi,
-                                          const char *bt);
-uint32_t     Emit_Length_Clamped         (uint32_t lo, uint32_t hi,
-                                          const char *bt);
-uint32_t     Emit_Static_Int            (int128_t value, const char *ty);
-uint32_t     Emit_Type_Bound            (Type_Bound *bound, const char *ty);
-uint32_t     Emit_Min_Value             (uint32_t left, uint32_t right,
-                                          const char *ty);
-uint32_t     Emit_Memcmp_Eq             (uint32_t left_ptr,
-                                          uint32_t right_ptr,
-                                          uint32_t byte_size_temp,
-                                          int64_t byte_size_static,
-                                          bool is_dynamic);
-uint32_t     Emit_Array_Lex_Compare     (uint32_t left_ptr,
-                                          uint32_t right_ptr,
-                                          uint32_t elem_size, const char *bt);
+uint32_t    Emit_Bound_Value          (Type_Bound *bound);
+uint32_t    Emit_Bound_Value_Typed    (Type_Bound *bound, const char **out_type);
+uint32_t    Emit_Single_Bound         (Type_Bound *bound, const char *ty);
+Bound_Temps Emit_Bounds               (Type_Info  *type,  uint32_t dim);
+Bound_Temps Emit_Bounds_From_Fat      (uint32_t    fat,   const char *bt);
+Bound_Temps Emit_Bounds_From_Fat_Dim  (uint32_t    fat,   const char *bt, uint32_t dim);
+uint32_t    Emit_Length_From_Bounds   (uint32_t    lo,    uint32_t hi, const char *bt);
+uint32_t    Emit_Length_Clamped       (uint32_t    lo,    uint32_t hi, const char *bt);
+uint32_t    Emit_Static_Int           (int128_t    value, const char *ty);
+uint32_t    Emit_Type_Bound           (Type_Bound *bound, const char *ty);
+uint32_t    Emit_Min_Value            (uint32_t    left,  uint32_t right, const char *ty);
+uint32_t    Emit_Memcmp_Eq            (uint32_t    left_ptr,
+                                       uint32_t    right_ptr,
+                                       uint32_t    byte_size_temp,
+                                       int64_t     byte_size_static,
+                                       bool        is_dynamic);
+uint32_t    Emit_Array_Lex_Compare    (uint32_t    left_ptr,
+                                       uint32_t    right_ptr,
+                                       uint32_t    elem_size,
+                                       const char *bt);
 
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-/*  13.11  Exception Handling                                                                */
-/*                                                                                           */
-/*  Ada exceptions are implemented via setjmp/longjmp.  Each handler region                  */
-/*  sets up a jump buffer; raising an exception longjmps to the nearest                      */
-/*  enclosing handler and dispatches by exception identity.                                  */
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-
+// -- Exception Handling
 typedef struct {
-  uint32_t handler_frame;       /*  Temp holding the jmp_buf alloca          */
-  uint32_t jmp_buf;             /*  Temp holding the setjmp result           */
-  uint32_t normal_label;        /*  Label for the non-exception path         */
-  uint32_t handler_label;       /*  Label for the exception dispatch         */
+  uint32_t handler_frame;
+  uint32_t jmp_buf;
+  uint32_t normal_label;
+  uint32_t handler_label;
 } Exception_Setup;
 
 Exception_Setup Emit_Exception_Handler_Setup (void);
-uint32_t     Emit_Current_Exception_Id   (void);
-void         Generate_Exception_Dispatch (Node_List *handlers,
-                                          uint32_t exc_id,
-                                          uint32_t end_label);
+uint32_t        Emit_Current_Exception_Id    (void);
+void            Generate_Exception_Dispatch  (Node_List *handlers,
+                                              uint32_t   exc_id,
+                                              uint32_t   end_label);
 
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-/*  13.12  Expression Generation                                                             */
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
+// -- Expression Generation
+uint32_t Generate_Expression        (Syntax_Node *node);
+uint32_t Generate_Lvalue            (Syntax_Node *node);
+uint32_t Generate_Integer_Literal   (Syntax_Node *node);
+uint32_t Generate_Real_Literal      (Syntax_Node *node);
+uint32_t Generate_String_Literal    (Syntax_Node *node);
+uint32_t Generate_Identifier        (Syntax_Node *node);
+uint32_t Generate_Binary_Op         (Syntax_Node *node);
+uint32_t Generate_Unary_Op          (Syntax_Node *node);
+uint32_t Generate_Apply             (Syntax_Node *node);
+uint32_t Generate_Selected          (Syntax_Node *node);
+uint32_t Generate_Attribute         (Syntax_Node *node);
+uint32_t Generate_Qualified         (Syntax_Node *node);
+uint32_t Generate_Allocator         (Syntax_Node *node);
+uint32_t Generate_Aggregate         (Syntax_Node *node);
+uint32_t Generate_Composite_Address (Syntax_Node *node);
+uint32_t Generate_Bound_Value       (Type_Bound   bound, const char *ty);
+uint32_t Generate_Array_Equality    (uint32_t    left_ptr,
+                                     uint32_t    right_ptr,
+                                     Type_Info  *t);
+uint32_t Generate_Record_Equality   (uint32_t    left_ptr,
+                                     uint32_t    right_ptr,
+                                     Type_Info  *t);
+uint32_t Normalize_To_Fat_Pointer   (Syntax_Node *expr,
+                                     uint32_t     raw,
+                                     Type_Info   *type,
+                                     const char  *bt);
+uint32_t Wrap_Constrained_As_Fat    (Syntax_Node *expr,
+                                     Type_Info   *type,
+                                     const char  *bt);
+uint32_t Convert_Real_To_Fixed      (uint32_t val, double small, const char *fix_type);
 
-uint32_t     Generate_Expression         (Syntax_Node *node);
-uint32_t     Generate_Lvalue             (Syntax_Node *node);
-uint32_t     Generate_Bound_Value        (Type_Bound bound, const char *ty);
-uint32_t     Generate_Integer_Literal    (Syntax_Node *node);
-uint32_t     Generate_Real_Literal       (Syntax_Node *node);
-uint32_t     Generate_String_Literal     (Syntax_Node *node);
-uint32_t     Generate_Identifier         (Syntax_Node *node);
-uint32_t     Generate_Binary_Op          (Syntax_Node *node);
-uint32_t     Generate_Unary_Op           (Syntax_Node *node);
-uint32_t     Generate_Apply              (Syntax_Node *node);
-uint32_t     Generate_Selected           (Syntax_Node *node);
-uint32_t     Generate_Attribute          (Syntax_Node *node);
-uint32_t     Generate_Qualified          (Syntax_Node *node);
-uint32_t     Generate_Allocator          (Syntax_Node *node);
-uint32_t     Generate_Aggregate          (Syntax_Node *node);
-uint32_t     Generate_Array_Equality     (uint32_t left_ptr,
-                                          uint32_t right_ptr, Type_Info *t);
-uint32_t     Generate_Record_Equality    (uint32_t left_ptr,
-                                          uint32_t right_ptr, Type_Info *t);
-uint32_t     Generate_Composite_Address  (Syntax_Node *node);
-uint32_t     Normalize_To_Fat_Pointer    (Syntax_Node *expr, uint32_t raw,
-                                          Type_Info *type, const char *bt);
-bool         Aggregate_Produces_Fat_Pointer (const Type_Info *t);
-void         Ensure_Runtime_Type_Globals (Type_Info *t);
-uint32_t     Wrap_Constrained_As_Fat     (Syntax_Node *expr, Type_Info *type,
-                                          const char *bt);
-uint32_t     Convert_Real_To_Fixed       (uint32_t val, double small,
-                                          const char *fix_type);
-uint32_t     Emit_Bool_Array_Binop       (uint32_t left, uint32_t right,
-                                          Type_Info *result_type,
-                                          const char *ir_op);
-uint32_t     Emit_Bool_Array_Not         (uint32_t operand,
-                                          Type_Info *result_type);
-uint32_t     Get_Dimension_Index         (Syntax_Node *arg);
-void         Emit_Float_Type_Limit       (uint32_t t, Type_Info *type,
-                                          bool is_low, String_Slice attr);
-uint32_t     Emit_Bound_Attribute        (uint32_t t, Type_Info *prefix_type,
-                                          Symbol *prefix_sym,
-                                          Syntax_Node *prefix_expr,
-                                          bool needs_runtime_bounds,
-                                          uint32_t dim, bool is_low,
-                                          String_Slice attr);
-uint32_t     Emit_Disc_Constraint_Value  (Type_Info *type_info,
-                                          uint32_t disc_index,
-                                          const char *disc_type);
-void         Emit_Nested_Disc_Checks     (Type_Info *parent_type);
-void         Emit_Comp_Disc_Check        (uint32_t ptr,
-                                          Type_Info *comp_ti);
+bool     Aggregate_Produces_Fat_Pointer (const Type_Info *t);
+void     Ensure_Runtime_Type_Globals    (Type_Info *t);
+uint32_t Emit_Bool_Array_Binop          (uint32_t    left,
+                                         uint32_t    right,
+                                         Type_Info  *result_type,
+                                         const char *ir_op);
+uint32_t Emit_Bool_Array_Not            (uint32_t operand, Type_Info *result_type);
+uint32_t Get_Dimension_Index            (Syntax_Node *arg);
 
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-/*  13.13  Statement Generation                                                              */
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
+void     Emit_Float_Type_Limit   (uint32_t     t,
+                                   Type_Info   *type,
+                                   bool         is_low,
+                                   String_Slice attr);
+uint32_t Emit_Bound_Attribute    (uint32_t     t,
+                                   Type_Info   *prefix_type,
+                                   Symbol      *prefix_sym,
+                                   Syntax_Node *prefix_expr,
+                                   bool         needs_runtime_bounds,
+                                   uint32_t     dim,
+                                   bool         is_low,
+                                   String_Slice attr);
+uint32_t Emit_Disc_Constraint_Value (Type_Info  *type_info,
+                                      uint32_t    disc_index,
+                                      const char *disc_type);
+void Emit_Nested_Disc_Checks (Type_Info *parent_type);
+void Emit_Comp_Disc_Check    (uint32_t   ptr, Type_Info *comp_ti);
 
-void         Generate_Statement          (Syntax_Node *node);
-void         Generate_Statement_List     (Node_List *list);
-void         Generate_Assignment         (Syntax_Node *node);
-void         Generate_If_Statement       (Syntax_Node *node);
-void         Generate_Loop_Statement     (Syntax_Node *node);
-void         Generate_For_Loop           (Syntax_Node *node);
-void         Generate_Return_Statement   (Syntax_Node *node);
-void         Generate_Case_Statement     (Syntax_Node *node);
-void         Generate_Block_Statement    (Syntax_Node *node);
-void         Generate_Raise_Statement    (Syntax_Node *node);
+// -- Statement Generation
+void Generate_Statement        (Syntax_Node *node);
+void Generate_Statement_List   (Node_List   *list);
+void Generate_Assignment       (Syntax_Node *node);
+void Generate_If_Statement     (Syntax_Node *node);
+void Generate_Loop_Statement   (Syntax_Node *node);
+void Generate_For_Loop         (Syntax_Node *node);
+void Generate_Return_Statement (Syntax_Node *node);
+void Generate_Case_Statement   (Syntax_Node *node);
+void Generate_Block_Statement  (Syntax_Node *node);
+void Generate_Raise_Statement  (Syntax_Node *node);
 
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-/*  13.14  Declaration Generation                                                            */
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
+// -- Declaration Generation
+void         Generate_Declaration            (Syntax_Node *node);
+void         Generate_Declaration_List       (Node_List   *list);
+void         Generate_Object_Declaration     (Syntax_Node *node);
+void         Generate_Subprogram_Body        (Syntax_Node *node);
+void         Generate_Task_Body              (Syntax_Node *node);
+void         Emit_Extern_Subprogram          (Symbol *sym);
+void         Emit_Function_Header            (Symbol *sym, bool is_nested);
+void         Process_Deferred_Bodies         (uint32_t saved_deferred_count);
+void         Generate_Generic_Instance_Body  (Symbol      *inst_sym,
+                                              Syntax_Node *template_body);
+bool         Is_Builtin_Function             (String_Slice name);
+bool         Has_Nested_Subprograms          (Node_List *declarations, Node_List *statements);
+bool         Has_Nested_In_Statements        (Node_List *statements);
+Syntax_Node *Find_Homograph_Body             (Symbol      **exports,
+                                              uint32_t      idx,
+                                              String_Slice  name,
+                                              Node_List    *body_decls);
+void         Emit_Task_Function_Name         (Symbol *task_sym, String_Slice fallback_name);
 
-void         Generate_Declaration        (Syntax_Node *node);
-void         Generate_Declaration_List   (Node_List *list);
-void         Generate_Object_Declaration (Syntax_Node *node);
-void         Generate_Subprogram_Body    (Syntax_Node *node);
-void         Generate_Task_Body          (Syntax_Node *node);
-void         Generate_Generic_Instance_Body (Symbol *inst_sym,
-                                          Syntax_Node *template_body);
-void         Emit_Extern_Subprogram      (Symbol *sym);
-void         Emit_Function_Header        (Symbol *sym, bool is_nested);
-bool         Is_Builtin_Function         (String_Slice name);
-bool         Has_Nested_Subprograms      (Node_List *declarations,
-                                          Node_List *statements);
-bool         Has_Nested_In_Statements    (Node_List *statements);
-Syntax_Node *Find_Homograph_Body         (Symbol **exports, uint32_t idx,
-                                          String_Slice name,
-                                          Node_List *body_decls);
-void         Process_Deferred_Bodies     (uint32_t saved_deferred_count);
-void         Emit_Task_Function_Name     (Symbol *task_sym,
-                                          String_Slice fallback_name);
-
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-/*  13.15  Aggregate Helpers                                                                 */
-/*                                                                                           */
-/*  Ada aggregates can be positional, named, or mixed, and may contain "others"              */
-/*  choices.  These functions classify, resolve, and emit aggregate components.               */
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-
+// -- Aggregate Helpers
 typedef struct {
-  uint32_t n_positional;        /*  Number of positional components          */
-  bool     has_named;           /*  True if named associations are present   */
-  bool     has_others;          /*  True if an "others =>" clause exists     */
-  Syntax_Node *others_expr;     /*  The expression for the others clause     */
+  uint32_t     n_positional;
+  bool         has_named;
+  bool         has_others;
+  Syntax_Node *others_expr;
 } Agg_Class;
 
-typedef struct {
-  Symbol   *sym;                  /*  Discriminant symbol                     */
-  uint32_t  temp;                 /*  LLVM temp holding the value             */
-} Disc_Alloc_Entry;
+typedef struct { Symbol *sym; uint32_t temp; }            Disc_Alloc_Entry;
+typedef struct { Disc_Alloc_Entry *entries; uint32_t count; } Disc_Alloc_Info;
 
-typedef struct {
-  Disc_Alloc_Entry *entries;      /*  Array of discriminant alloc entries     */
-  uint32_t          count;        /*  Number of entries                       */
-} Disc_Alloc_Info;
+Agg_Class Agg_Classify        (Syntax_Node *node);
+bool      Bound_Pair_Overflows (Type_Bound low, Type_Bound high);
+uint32_t  Agg_Resolve_Elem    (Syntax_Node *expr,
+                                bool         multidim,
+                                bool         elem_is_composite,
+                                Type_Info   *agg_type,
+                                const char  *elem_type,
+                                Type_Info   *elem_ti);
+void      Agg_Store_At_Static (uint32_t    base,
+                                uint32_t    val,
+                                int128_t    idx,
+                                const char *elem_type,
+                                uint32_t    elem_size,
+                                bool        is_composite);
+void      Agg_Store_At_Dynamic(uint32_t    base,
+                                uint32_t    val,
+                                uint32_t    arr_idx,
+                                const char *idx_type,
+                                const char *elem_type,
+                                uint32_t    elem_size,
+                                uint32_t    rt_row_size,
+                                bool        is_composite);
+bool      Agg_Elem_Is_Composite  (Type_Info *elem, bool multidim);
+uint32_t  Agg_Comp_Byte_Size     (Type_Info *ti,   Syntax_Node *src);
+void      Agg_Rec_Store          (uint32_t        val,
+                                   uint32_t        dest_ptr,
+                                   Component_Info *comp,
+                                   Syntax_Node    *src_expr);
+void      Agg_Rec_Disc_Post      (uint32_t         val,
+                                   Component_Info  *comp,
+                                   uint32_t         disc_ordinal,
+                                   Type_Info       *agg_type,
+                                   Disc_Alloc_Info *da_info);
 
-Agg_Class    Agg_Classify                (Syntax_Node *node);
-bool         Bound_Pair_Overflows        (Type_Bound low, Type_Bound high);
-uint32_t     Agg_Resolve_Elem            (Syntax_Node *expr,
-                                          bool multidim,
-                                          bool elem_is_composite,
-                                          Type_Info *agg_type,
-                                          const char *elem_type,
-                                          Type_Info *elem_ti);
-void         Agg_Store_At_Static         (uint32_t base, uint32_t val,
-                                          int128_t idx,
-                                          const char *elem_type,
-                                          uint32_t elem_size,
-                                          bool is_composite);
-void         Agg_Store_At_Dynamic        (uint32_t base,
-                                          uint32_t val, uint32_t arr_idx,
-                                          const char *idx_type,
-                                          const char *elem_type,
-                                          uint32_t elem_size,
-                                          uint32_t rt_row_size,
-                                          bool is_composite);
-bool         Agg_Elem_Is_Composite       (Type_Info *elem, bool multidim);
-uint32_t     Agg_Comp_Byte_Size          (Type_Info *ti, Syntax_Node *src);
-void         Agg_Rec_Store               (uint32_t val, uint32_t dest_ptr,
-                                          Component_Info *comp,
-                                          Syntax_Node *src_expr);
-void         Agg_Rec_Disc_Post           (uint32_t val, Component_Info *comp,
-                                          uint32_t disc_ordinal,
-                                          Type_Info *agg_type,
-                                          Disc_Alloc_Info *da_info);
-uint32_t     Disc_Ordinal_Before         (Type_Info *type_info,
-                                          uint32_t comp_index);
-int32_t      Find_Record_Component       (Type_Info *record_type,
-                                          String_Slice name);
-bool         Is_Others_Choice            (Syntax_Node *choice);
-bool         Is_Static_Int_Node          (Syntax_Node *n);
-int128_t     Static_Int_Value            (Syntax_Node *n);
-void         Desugar_Aggregate_Range_Choices (Syntax_Node *agg);
-void         Emit_Inner_Consistency_Track (uint32_t *inner_trk_lo,
-                                          uint32_t *inner_trk_hi,
-                                          uint32_t inner_trk_first,
-                                          uint32_t inner_trk_mm,
-                                          int n_inner_dims,
+uint32_t Disc_Ordinal_Before             (Type_Info *type_info, uint32_t comp_index);
+int32_t  Find_Record_Component           (Type_Info *record_type, String_Slice name);
+bool     Is_Others_Choice                (Syntax_Node *choice);
+bool     Is_Static_Int_Node              (Syntax_Node *n);
+int128_t Static_Int_Value                (Syntax_Node *n);
+void     Desugar_Aggregate_Range_Choices (Syntax_Node *agg);
+void     Emit_Inner_Consistency_Track    (uint32_t   *inner_trk_lo,
+                                          uint32_t   *inner_trk_hi,
+                                          uint32_t    inner_trk_first,
+                                          uint32_t    inner_trk_mm,
+                                          int         n_inner_dims,
                                           const char *bt);
-void         Collect_Disc_Symbols_In_Expr (Syntax_Node *node,
-                                          Symbol **found,
-                                          uint32_t *count,
-                                          uint32_t max);
+void     Collect_Disc_Symbols_In_Expr    (Syntax_Node *node,
+                                          Symbol     **found,
+                                          uint32_t    *count,
+                                          uint32_t     max);
 
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-/*  13.16  Top-Level Unit Generation                                                         */
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
+void Generate_Type_Equality_Function (Type_Info *t);
+void Generate_Implicit_Operators     (void);
+void Generate_Exception_Globals      (void);
+void Generate_Extern_Declarations    (Syntax_Node *node);
+void Generate_Compilation_Unit       (Syntax_Node *node);
 
-void         Generate_Type_Equality_Function (Type_Info *t);
-void         Generate_Implicit_Operators (void);
-void         Generate_Exception_Globals  (void);
-void         Generate_Extern_Declarations (Syntax_Node *node);
-void         Generate_Compilation_Unit   (Syntax_Node *node);
-
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-/*  13.17  Build-in-Place (BIP) Protocol                                                     */
-/*                                                                                           */
-/*  Ada limited types cannot be copied (RM 7.5), so functions returning them                  */
-/*  must build the result directly in the caller's storage.  The BIP protocol                 */
-/*  passes extra implicit formals that carry the allocation strategy and                     */
-/*  destination address.                                                                     */
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-
+// -- Build-in-Place Protocol
 typedef enum {
-  BIP_ALLOC_UNSPECIFIED = 0, BIP_ALLOC_CALLER = 1,
-  BIP_ALLOC_SECONDARY = 2, BIP_ALLOC_GLOBAL_HEAP = 3,
-  BIP_ALLOC_USER_POOL = 4
+  BIP_ALLOC_UNSPECIFIED = 0, BIP_ALLOC_CALLER      = 1,
+  BIP_ALLOC_SECONDARY   = 2, BIP_ALLOC_GLOBAL_HEAP = 3,
+  BIP_ALLOC_USER_POOL   = 4
 } BIP_Alloc_Form;
 
 typedef enum {
-  BIP_FORMAL_ALLOC_FORM, BIP_FORMAL_STORAGE_POOL,
+  BIP_FORMAL_ALLOC_FORM,   BIP_FORMAL_STORAGE_POOL,
   BIP_FORMAL_FINALIZATION, BIP_FORMAL_TASK_MASTER,
-  BIP_FORMAL_ACTIVATION, BIP_FORMAL_OBJECT_ACCESS
+  BIP_FORMAL_ACTIVATION,   BIP_FORMAL_OBJECT_ACCESS
 } BIP_Formal_Kind;
 
 typedef struct {
-  Symbol         *func;                /*  Function being transformed           */
-  Type_Info      *result_type;         /*  Return type                          */
-  BIP_Alloc_Form  alloc_form;          /*  Determined allocation strategy       */
-  uint32_t        dest_ptr;            /*  Temp holding destination address     */
-  bool            needs_finalization;  /*  Has controlled components            */
-  bool            has_tasks;           /*  Has task components                  */
+  Symbol        *func;
+  Type_Info     *result_type;
+  BIP_Alloc_Form alloc_form;
+  uint32_t       dest_ptr;
+  bool           needs_finalization;
+  bool           has_tasks;
 } BIP_Context;
 
 typedef struct {
-  bool     is_bip_function;            /*  Current function uses BIP            */
-  uint32_t bip_alloc_param;            /*  Temp holding __BIPalloc value        */
-  uint32_t bip_access_param;           /*  Temp holding __BIPaccess pointer     */
-  uint32_t bip_master_param;           /*  Temp holding __BIPmaster (if tasks)  */
-  uint32_t bip_chain_param;            /*  Temp holding __BIPchain (if tasks)   */
-  bool     has_task_components;        /*  Return type has tasks                */
+  bool     is_bip_function;
+  uint32_t bip_alloc_param;
+  uint32_t bip_access_param;
+  uint32_t bip_master_param;
+  uint32_t bip_chain_param;
+  bool     has_task_components;
 } BIP_Function_State;
 
 extern BIP_Function_State g_bip_state;
 
-bool         BIP_Is_Explicitly_Limited        (const Type_Info *t);
-bool         BIP_Is_Task_Type                 (const Type_Info *t);
-bool         BIP_Record_Has_Limited_Component (const Type_Info *t);
-bool         BIP_Is_Limited_Type              (const Type_Info *t);
-bool         BIP_Is_BIP_Function              (const Symbol *func);
-bool         BIP_Type_Has_Task_Component      (const Type_Info *t);
-bool         BIP_Needs_Alloc_Form             (const Symbol *func);
-uint32_t     BIP_Extra_Formal_Count           (const Symbol *func);
-BIP_Alloc_Form BIP_Determine_Alloc_Form      (bool is_allocator,
-                                               bool in_return_stmt,
-                                               bool has_target);
-void         BIP_Begin_Function               (const Symbol *func);
-bool         BIP_In_BIP_Function              (void);
-void         BIP_End_Function                 (void);
+bool BIP_Is_Explicitly_Limited        (const Type_Info *t);
+bool BIP_Is_Task_Type                 (const Type_Info *t);
+bool BIP_Record_Has_Limited_Component (const Type_Info *t);
+bool BIP_Is_Limited_Type              (const Type_Info *t);
+bool BIP_Is_BIP_Function              (const Symbol    *func);
+bool BIP_Type_Has_Task_Component      (const Type_Info *t);
+bool BIP_Needs_Alloc_Form             (const Symbol    *func);
 
-/* ========================================================================================= */
-/*                                                                                           */
-/*  Chapter 14.  LIBRARY MANAGEMENT                                                          */
-/*                                                                                           */
-/*  Ada Library Information (ALI) files record dependencies, checksums, and                   */
-/*  exported symbols so that the binder can check consistency and the linker                  */
-/*  can resolve cross-unit references.  Each ALI file corresponds to one                     */
-/*  compilation unit.                                                                        */
-/*                                                                                           */
-/*  The CRC32 checksum covers the source text so that recompilation can be                   */
-/*  skipped when a source file has not changed.                                              */
-/*                                                                                           */
-/* ========================================================================================= */
+uint32_t       BIP_Extra_Formal_Count   (const Symbol *func);
+BIP_Alloc_Form BIP_Determine_Alloc_Form (bool is_allocator,
+                                          bool in_return_stmt,
+                                          bool has_target);
+void           BIP_Begin_Function       (const Symbol *func);
+bool           BIP_In_BIP_Function      (void);
+void           BIP_End_Function         (void);
 
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-/*  14.1  ALI Writer Data Structures                                                         */
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
+// ----------------------
+// -- Library Management --
+// ----------------------
+
+// ALI files record dependencies, checksums, and exported symbols per compilation unit.
 
 typedef struct {
-  String_Slice      unit_name;        /*  Canonical Ada name (Package.Child%b) */
-  String_Slice      source_name;      /*  File name (package-child.adb)        */
-  uint32_t          source_checksum;  /*  CRC32 of source text                 */
-  bool              is_body;          /*  spec (false) or body (true)          */
-  bool              is_generic;       /*  Generic declaration                  */
-  bool              is_preelaborate;  /*  Pragma Preelaborate                  */
-  bool              is_pure;          /*  Pragma Pure                          */
-  bool              has_elaboration;  /*  Has elaboration code                 */
+  String_Slice unit_name;
+  String_Slice source_name;
+  uint32_t     source_checksum;
+  bool         is_body;
+  bool         is_generic;
+  bool         is_preelaborate;
+  bool         is_pure;
+  bool         has_elaboration;
 } Unit_Info;
 
 typedef struct {
-  String_Slice      name;             /*  WITH'd unit name                     */
-  String_Slice      source_file;      /*  Source file name                     */
-  String_Slice      ali_file;         /*  ALI file name                        */
-  bool              is_limited;       /*  LIMITED WITH                         */
-  bool              elaborate;        /*  Pragma Elaborate was specified        */
-  bool              elaborate_all;    /*  Pragma Elaborate_All was specified    */
+  String_Slice name;
+  String_Slice source_file;
+  String_Slice ali_file;
+  bool         is_limited;
+  bool         elaborate;
+  bool         elaborate_all;
 } With_Info;
 
 typedef struct {
-  String_Slice      source_file;      /*  Depended-on source file              */
-  uint32_t          timestamp;        /*  Modification time (Unix epoch)       */
-  uint32_t          checksum;         /*  CRC32 checksum                       */
+  String_Slice source_file;
+  uint32_t     timestamp;
+  uint32_t     checksum;
 } Dependency_Info;
 
 typedef struct {
-  String_Slice      name;             /*  Ada symbol name                      */
-  String_Slice      mangled_name;     /*  LLVM symbol name                     */
-  char              kind;             /*  T/S/V/C/P/F/E symbol category        */
-  uint32_t          line;             /*  Declaration line number              */
-  String_Slice      type_name;        /*  Type name (for typed symbols)        */
-  String_Slice      llvm_type;        /*  LLVM type signature                  */
-  uint32_t          param_count;      /*  Parameter count (subprograms)        */
+  String_Slice name;
+  String_Slice mangled_name;
+  char         kind;
+  uint32_t     line;
+  String_Slice type_name;
+  String_Slice llvm_type;
+  uint32_t     param_count;
 } Export_Info;
 
 typedef struct {
-  Unit_Info         units[8];         /*  Units in this compilation            */
-  uint32_t          unit_count;       /*  Number of units                      */
-  With_Info         withs[64];        /*  WITH dependencies                    */
-  uint32_t          with_count;       /*  Number of with clauses               */
-  Dependency_Info   deps[128];        /*  Source dependencies                  */
-  uint32_t          dep_count;        /*  Number of dependencies               */
-  Export_Info        exports[256];     /*  Exported symbols                     */
-  uint32_t          export_count;     /*  Number of exports                    */
+  Unit_Info       units[8];
+  uint32_t        unit_count;
+  With_Info       withs[64];
+  uint32_t        with_count;
+  Dependency_Info deps[128];
+  uint32_t        dep_count;
+  Export_Info     exports[256];
+  uint32_t        export_count;
 } ALI_Info;
 
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-/*  14.2  ALI Reader / Cache                                                                 */
-/*                                                                                           */
-/*  The reader parses .ali files produced by prior compilations.  The cache                  */
-/*  avoids redundant file I/O when the same unit is depended upon by                         */
-/*  multiple compilation units in the same session.                                          */
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-
 typedef struct {
-  char            kind;            /*  T/S/V/C/P/F/E symbol category        */
-  char           *name;            /*  Ada symbol name                      */
-  char           *mangled_name;    /*  LLVM symbol name for linking         */
-  char           *llvm_type;       /*  LLVM type signature                  */
-  uint32_t        line;            /*  Source line number                   */
-  char           *type_name;       /*  Ada type name (or NULL)              */
-  uint32_t        param_count;     /*  Number of parameters (subprograms)   */
+  char     kind;
+  char    *name;
+  char    *mangled_name;
+  char    *llvm_type;
+  uint32_t line;
+  char    *type_name;
+  uint32_t param_count;
 } ALI_Export;
 
 typedef struct ALI_Cache_Entry_Forward {
-  char           *unit_name;       /*  Canonical name (e.g., "text_io")     */
-  char           *source_file;     /*  Source file name                     */
-  char           *ali_file;        /*  ALI file path                        */
-  uint32_t        checksum;        /*  Source checksum from ALI             */
-  bool            is_spec;         /*  true = spec, false = body            */
-  bool            is_generic;      /*  Generic unit                         */
-  bool            is_preelaborate; /*  Has Preelaborate pragma              */
-  bool            is_pure;         /*  Has Pure pragma                      */
-  bool            loaded;          /*  Symbols already loaded into scope    */
-  char           *withs[64];       /*  WITH'd unit names                    */
-  uint32_t        with_count;      /*  Number of with dependencies          */
-  ALI_Export      exports[256];    /*  Exported symbols from X lines        */
-  uint32_t        export_count;    /*  Number of exported symbols           */
+  char       *unit_name;
+  char       *source_file;
+  char       *ali_file;
+  uint32_t    checksum;
+  bool        is_spec;
+  bool        is_generic;
+  bool        is_preelaborate;
+  bool        is_pure;
+  bool        loaded;
+  char       *withs[64];
+  uint32_t    with_count;
+  ALI_Export  exports[256];
+  uint32_t    export_count;
 } ALI_Cache_Entry;
 
 extern ALI_Cache_Entry ALI_Cache[256];
 extern uint32_t        ALI_Cache_Count;
 
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-/*  14.3  ALI and CRC Operations                                                             */
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
+uint32_t CRC32_Update (uint32_t crc, const void *data, size_t length);
 
-uint32_t CRC32_Update                    (uint32_t crc, const void *data,
-                                          size_t length);
+void ALI_Collect_Exports (ALI_Info *ali, Syntax_Node *unit);
+void ALI_Collect_Withs   (ALI_Info *ali, Syntax_Node *ctx);
+void ALI_Collect_Unit    (ALI_Info    *ali,
+                           Syntax_Node *cu,
+                           const char  *source,
+                           size_t       source_size);
 
-void     ALI_Write                       (FILE *out, ALI_Info *ali);
-ALI_Cache_Entry *ALI_Read                (const char *ali_path);
-void     ALI_Collect_Exports             (ALI_Info *ali, Syntax_Node *unit);
-void     ALI_Collect_Withs              (ALI_Info *ali, Syntax_Node *ctx);
-void     ALI_Collect_Unit               (ALI_Info *ali, Syntax_Node *cu,
-                                          const char *source, size_t source_size);
-void     Generate_ALI_File              (const char *output_path,
-                                          Syntax_Node **units, int unit_count,
-                                          const char *source, size_t source_size);
-char    *ALI_Find                        (String_Slice unit_name);
-void     ALI_Load_Symbols               (ALI_Cache_Entry *entry);
-bool     Try_Load_From_ALI              (String_Slice name);
+void             ALI_Write (FILE *out, ALI_Info *ali);
+ALI_Cache_Entry *ALI_Read  (const char *ali_path);
 
-/* ========================================================================================= */
-/*                                                                                           */
-/*  Chapter 15.  ELABORATION                                                                 */
-/*                                                                                           */
-/*  Ada requires that library-level packages be elaborated in an order consistent             */
-/*  with their dependency graph.  This chapter builds a directed graph of                    */
-/*  elaboration dependencies, detects strongly-connected components using                    */
-/*  Tarjan's algorithm, and produces a topological ordering.                                 */
-/*                                                                                           */
-/*  The elaboration model handles spec-before-body ordering, pragma Elaborate                 */
-/*  and Elaborate_All, and circular dependency detection with diagnostic                     */
-/*  reporting.                                                                               */
-/*                                                                                           */
-/* ========================================================================================= */
+char *ALI_Find          (String_Slice     unit_name);
+bool  Try_Load_From_ALI (String_Slice     name);
+void  ALI_Load_Symbols  (ALI_Cache_Entry *entry);
 
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-/*  15.1  Elaboration Types                                                                  */
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
+void Generate_ALI_File (const char   *output_path,
+                         Syntax_Node **units,
+                         int           unit_count,
+                         const char   *source,
+                         size_t        source_size);
+
+// ----------------
+// -- Elaboration --
+// ----------------
+
+// Library-level packages must be elaborated in dependency order.  This chapter builds
+// the dependency graph, detects SCCs via Tarjan's algorithm, and produces a topological
+// ordering.
+
+typedef enum { UNIT_SPEC, UNIT_BODY, UNIT_SPEC_ONLY, UNIT_BODY_ONLY } Elab_Unit_Kind;
 
 typedef enum {
-  UNIT_SPEC,             /*  Package/subprogram spec with separate body      */
-  UNIT_BODY,             /*  Package/subprogram body (paired with spec)      */
-  UNIT_SPEC_ONLY,        /*  Spec without body (e.g., pure package spec)     */
-  UNIT_BODY_ONLY         /*  Body without explicit spec (e.g., main)         */
-} Elab_Unit_Kind;
-
-typedef enum {
-  EDGE_WITH,             /*  WITH clause dependency (strong)                 */
-  EDGE_ELABORATE,        /*  pragma Elaborate (strong)                       */
-  EDGE_ELABORATE_ALL,    /*  pragma Elaborate_All (strong, transitive)       */
-  EDGE_SPEC_BEFORE_BODY, /*  Spec must elaborate before body (strong)        */
-  EDGE_INVOCATION,       /*  Call discovered during elaboration (weak)       */
-  EDGE_FORCED            /*  Compiler-forced ordering (strong)               */
+  EDGE_WITH,          EDGE_ELABORATE,
+  EDGE_ELABORATE_ALL, EDGE_SPEC_BEFORE_BODY,
+  EDGE_INVOCATION,    EDGE_FORCED
 } Elab_Edge_Kind;
 
-typedef enum {
-  PREC_HIGHER,           /*  First vertex should elaborate first             */
-  PREC_EQUAL,            /*  No preference (use tiebreaker)                  */
-  PREC_LOWER             /*  Second vertex should elaborate first            */
-} Elab_Precedence;
+typedef enum { PREC_HIGHER, PREC_EQUAL, PREC_LOWER } Elab_Precedence;
 
 typedef enum {
-  ELAB_ORDER_OK,                       /*  Valid order found                 */
-  ELAB_ORDER_HAS_CYCLE,                /*  Unresolvable cycle detected      */
-  ELAB_ORDER_HAS_ELABORATE_ALL_CYCLE   /*  Elaborate_All cycle (fatal)      */
+  ELAB_ORDER_OK,
+  ELAB_ORDER_HAS_CYCLE,
+  ELAB_ORDER_HAS_ELABORATE_ALL_CYCLE
 } Elab_Order_Status;
 
 typedef struct Elab_Vertex Elab_Vertex;
 typedef struct Elab_Edge   Elab_Edge;
 
 struct Elab_Vertex {
-  uint32_t         id;                 /*  Unique vertex ID (1-based)       */
-  String_Slice     name;               /*  Unit name (e.g., "Text_IO")      */
-  Elab_Unit_Kind   kind;               /*  Spec/Body/Spec_Only/Body_Only    */
-  Symbol          *symbol;             /*  Associated package/subprogram    */
-  uint32_t         component_id;       /*  SCC ID (0 = not yet assigned)    */
-  uint32_t         pending_strong;     /*  Strong predecessors remaining    */
-  uint32_t         pending_weak;       /*  Weak predecessors remaining      */
-  bool             in_elab_order;      /*  Already in elaboration order?    */
-  bool             is_preelaborate;    /*  pragma Preelaborate              */
-  bool             is_pure;            /*  pragma Pure                      */
-  bool             has_elab_body;      /*  pragma Elaborate_Body            */
-  bool             is_predefined;      /*  Ada.*, System.*, Interfaces.*   */
-  bool             is_internal;        /*  GNAT.*, Ada83.* internal units   */
-  bool             needs_elab_code;    /*  Has elaboration code to run?     */
-  Elab_Vertex     *body_vertex;        /*  For spec: pointer to body vertex */
-  Elab_Vertex     *spec_vertex;        /*  For body: pointer to spec vertex */
-  uint32_t         first_pred_edge;    /*  First incoming edge index (or 0) */
-  uint32_t         first_succ_edge;    /*  First outgoing edge index (or 0) */
-  int32_t          tarjan_index;       /*  Discovery index (-1 = unvisited) */
-  int32_t          tarjan_lowlink;     /*  Lowest reachable index           */
-  bool             tarjan_on_stack;    /*  Currently on the DFS stack?      */
+  uint32_t       id;              // Graph-unique vertex index
+  String_Slice   name;            // Unit name
+  Elab_Unit_Kind kind;            // Spec, body, or standalone
+  Symbol        *symbol;          // Corresponding package symbol
+  uint32_t       component_id;    // SCC component from Tarjan
+  uint32_t       pending_strong;  // Unelaborated strong predecessors
+  uint32_t       pending_weak;    // Unelaborated weak predecessors
+  bool           in_elab_order;   // Already placed in final order
+  bool           is_preelaborate; // Pragma Preelaborate
+  bool           is_pure;         // Pragma Pure
+  bool           has_elab_body;   // Has elaboration code
+  bool           is_predefined;   // Standard library unit
+  bool           is_internal;     // Compiler-generated unit
+  bool           needs_elab_code; // Needs an elab call in main
+  Elab_Vertex   *body_vertex;     // Paired body (from a spec)
+  Elab_Vertex   *spec_vertex;     // Paired spec (from a body)
+  uint32_t       first_pred_edge; // Head of predecessor edge list
+  uint32_t       first_succ_edge; // Head of successor edge list
+  int32_t        tarjan_index;    // Tarjan discovery index
+  int32_t        tarjan_lowlink;  // Tarjan lowlink value
+  bool           tarjan_on_stack; // Currently on Tarjan stack
 };
 
 struct Elab_Edge {
-  uint32_t         id;                 /*  Unique edge ID (1-based)         */
-  Elab_Edge_Kind   kind;               /*  WITH/ELABORATE/etc.              */
-  bool             is_strong;          /*  Strong edge must be satisfied    */
-  uint32_t         pred_vertex_id;     /*  Predecessor (elaborates first)   */
-  uint32_t         succ_vertex_id;     /*  Successor (elaborates after)     */
-  uint32_t         next_pred_edge;     /*  Next edge with same predecessor  */
-  uint32_t         next_succ_edge;     /*  Next edge with same successor    */
+  uint32_t       id;             // Graph-unique edge index
+  Elab_Edge_Kind kind;           // Dependency kind
+  bool           is_strong;      // Strong edges block elaboration
+  uint32_t       pred_vertex_id; // Source vertex
+  uint32_t       succ_vertex_id; // Target vertex
+  uint32_t       next_pred_edge; // Next edge in pred list
+  uint32_t       next_succ_edge; // Next edge in succ list
 };
 
-typedef struct {
-  uint64_t bits[(ELAB_MAX_VERTICES + 63) / 64]; /*  Bitset of vertex IDs   */
-} Elab_Vertex_Set;
+typedef struct { uint64_t bits[(ELAB_MAX_VERTICES + 63) / 64]; } Elab_Vertex_Set;
 
 typedef struct {
-  Elab_Vertex      vertices[ELAB_MAX_VERTICES]; /*  Vertex array            */
-  uint32_t         vertex_count;       /*  Number of vertices               */
-  Elab_Edge        edges[ELAB_MAX_EDGES]; /*  Edge array                    */
-  uint32_t         edge_count;         /*  Number of edges                  */
-  uint32_t         component_pending_strong[ELAB_MAX_COMPONENTS]; /*  SCC strong preds */
-  uint32_t         component_pending_weak[ELAB_MAX_COMPONENTS];   /*  SCC weak preds   */
-  uint32_t         component_count;    /*  Number of SCCs                   */
-  Elab_Vertex     *order[ELAB_MAX_VERTICES]; /*  Elaboration order result   */
-  uint32_t         order_count;        /*  Entries in the order array       */
-  bool             has_elaborate_all_cycle; /*  Fatal cycle detected?        */
+  Elab_Vertex  vertices[ELAB_MAX_VERTICES];
+  uint32_t     vertex_count;
+  Elab_Edge    edges[ELAB_MAX_EDGES];
+  uint32_t     edge_count;
+  uint32_t     component_pending_strong[ELAB_MAX_COMPONENTS];
+  uint32_t     component_pending_weak[ELAB_MAX_COMPONENTS];
+  uint32_t     component_count;
+  Elab_Vertex *order[ELAB_MAX_VERTICES];
+  uint32_t     order_count;
+  bool         has_elaborate_all_cycle;
 } Elab_Graph;
 
 typedef struct {
-  uint32_t stack[ELAB_MAX_VERTICES];   /*  Tarjan DFS stack                 */
-  uint32_t stack_top;                  /*  Current stack depth              */
-  int32_t  index;                      /*  Discovery counter                */
+  uint32_t stack[ELAB_MAX_VERTICES];
+  uint32_t stack_top;
+  int32_t  index;
 } Tarjan_State;
-
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
-/*  15.2  Elaboration Operations                                                             */
-/* ─────────────────────────────────────────────────────────────────────────────────────────── */
 
 extern Elab_Graph g_elab_graph;
 extern bool       g_elab_graph_initialized;
 
-uint32_t          Elab_Find_Vertex        (const Elab_Graph *g,
-                                            String_Slice name,
-                                            Elab_Unit_Kind kind);
-uint32_t          Elab_Add_Vertex         (Elab_Graph *g, String_Slice name,
-                                            Elab_Unit_Kind kind, Symbol *sym);
-uint32_t          Elab_Add_Edge           (Elab_Graph *g, uint32_t pred_id,
-                                            uint32_t succ_id,
-                                            Elab_Edge_Kind kind);
-bool              Edge_Kind_Is_Strong     (Elab_Edge_Kind k);
-Elab_Vertex      *Elab_Get_Vertex         (Elab_Graph *g, uint32_t id);
-const Elab_Vertex *Elab_Get_Vertex_Const  (const Elab_Graph *g, uint32_t id);
+Elab_Graph Elab_Graph_New        (void);
+void       Elab_Init             (void);
+void       Elab_Find_Components  (Elab_Graph *g);
+void       Elab_Pair_Specs_Bodies(Elab_Graph *g);
+uint32_t   Elab_Find_Vertex      (const Elab_Graph *g,
+                                   String_Slice      name,
+                                   Elab_Unit_Kind    kind);
+uint32_t   Elab_Add_Vertex       (Elab_Graph    *g,
+                                   String_Slice   name,
+                                   Elab_Unit_Kind kind,
+                                   Symbol        *sym);
+uint32_t   Elab_Add_Edge         (Elab_Graph    *g,
+                                   uint32_t       pred_id,
+                                   uint32_t       succ_id,
+                                   Elab_Edge_Kind kind);
 
-void              Elab_Find_Components    (Elab_Graph *g);
-Elab_Graph        Elab_Graph_New          (void);
-Elab_Vertex_Set   Elab_Set_Empty          (void);
-bool              Elab_Set_Contains       (const Elab_Vertex_Set *s,
-                                            uint32_t id);
-void              Elab_Set_Insert         (Elab_Vertex_Set *s, uint32_t id);
-void              Elab_Set_Remove         (Elab_Vertex_Set *s, uint32_t id);
-uint32_t          Elab_Set_Size           (const Elab_Vertex_Set *s);
+bool               Edge_Kind_Is_Strong   (Elab_Edge_Kind    k);
+Elab_Vertex       *Elab_Get_Vertex       (Elab_Graph       *g, uint32_t id);
+const Elab_Vertex *Elab_Get_Vertex_Const (const Elab_Graph *g, uint32_t id);
 
-void              Elab_Elaborate_Vertex   (Elab_Graph *g, uint32_t v_id,
-                                            Elab_Vertex_Set *elaborable,
-                                            Elab_Vertex_Set *waiting);
-Elab_Order_Status Elab_Elaborate_Graph    (Elab_Graph *g);
-void              Elab_Pair_Specs_Bodies  (Elab_Graph *g);
+Elab_Vertex_Set Elab_Set_Empty    (void);
+bool            Elab_Set_Contains (const Elab_Vertex_Set *s, uint32_t id);
+void            Elab_Set_Insert   (Elab_Vertex_Set *s, uint32_t id);
+void            Elab_Set_Remove   (Elab_Vertex_Set *s, uint32_t id);
+uint32_t        Elab_Set_Size     (const Elab_Vertex_Set *s);
 
-void              Elab_Init               (void);
-uint32_t          Elab_Register_Unit      (String_Slice name, bool is_body,
-                                            Symbol *sym, bool is_preelaborate,
-                                            bool is_pure, bool has_elab_code);
-Elab_Order_Status Elab_Compute_Order      (void);
-uint32_t          Elab_Get_Order_Count    (void);
-Symbol           *Elab_Get_Order_Symbol   (uint32_t index);
-bool              Elab_Needs_Elab_Call    (uint32_t index);
+void Elab_Elaborate_Vertex (Elab_Graph      *g,
+                             uint32_t         v_id,
+                             Elab_Vertex_Set *elaborable,
+                             Elab_Vertex_Set *waiting);
+Elab_Order_Status Elab_Elaborate_Graph (Elab_Graph *g);
+uint32_t          Elab_Register_Unit   (String_Slice name,
+                                         bool         is_body,
+                                         Symbol      *sym,
+                                         bool         is_preelaborate,
+                                         bool         is_pure,
+                                         bool         has_elab_code);
 
-/* ========================================================================================= */
-/*                                                                                           */
-/*  Chapter 16.  GENERICS                                                                    */
-/*                                                                                           */
-/*  Generic units are instantiated by macro-style expansion: the template AST                */
-/*  is deep-cloned with formal-to-actual substitution, then resolved and                     */
-/*  code-generated as though the programmer had written the expanded text by hand.           */
-/*                                                                                           */
-/*  The Instantiation_Env maps formal names to actual types, subprograms, and                */
-/*  expressions.  Node_Deep_Clone recursively duplicates the AST while replacing             */
-/*  formal references with their actuals.                                                    */
-/*                                                                                           */
-/* ========================================================================================= */
+Elab_Order_Status Elab_Compute_Order    (void);
+uint32_t          Elab_Get_Order_Count  (void);
+Symbol           *Elab_Get_Order_Symbol (uint32_t index);
+bool              Elab_Needs_Elab_Call  (uint32_t index);
+
+// -----------
+// -- Generics --
+// -----------
+
+// Generic units are instantiated by macro-style expansion: the template AST is
+// deep-cloned with formal-to-actual substitution, then resolved and code-generated
+// as though the programmer had written the expanded text by hand.
 
 typedef struct {
-  String_Slice  formal_name;   /* Generic formal parameter name */
-  Type_Info    *actual_type;   /* Substituted actual type */
-  Symbol       *actual_symbol; /* Actual symbol (for subprogram formals) */
-  Syntax_Node  *actual_expr;   /* Actual expression (for object formals) */
+  String_Slice  formal_name;   // Generic formal parameter name
+  Type_Info    *actual_type;   // Substituted actual type
+  Symbol       *actual_symbol; // Actual symbol (for subprogram formals)
+  Syntax_Node  *actual_expr;   // Actual expression (for object formals)
 } Generic_Mapping;
 
 typedef struct {
-  Generic_Mapping  mappings[32]; /* Formal-to-actual mapping array */
-  uint32_t         count;        /* Number of active mappings */
-  Symbol          *instance_sym; /* The instantiation symbol */
-  Symbol          *template_sym; /* The generic template symbol */
+  Generic_Mapping  mappings[32]; // Formal-to-actual mapping array
+  uint32_t         count;        // Number of active mappings
+  Symbol          *instance_sym; // The instantiation symbol
+  Symbol          *template_sym; // The generic template symbol
 } Instantiation_Env;
 
-Type_Info *Env_Lookup_Type (Instantiation_Env *env,
-                            String_Slice       name);
-
-Syntax_Node *Env_Lookup_Expr (Instantiation_Env *env,
-                              String_Slice       name);
+Type_Info   *Env_Lookup_Type (Instantiation_Env *env, String_Slice name);
+Syntax_Node *Env_Lookup_Expr (Instantiation_Env *env, String_Slice name);
 
 Syntax_Node *Node_Deep_Clone (Syntax_Node       *node,
-                              Instantiation_Env *env,
-                              int                depth);
+                               Instantiation_Env *env,
+                               int                depth);
+void         Node_List_Clone (Node_List         *dst,
+                               Node_List         *src,
+                               Instantiation_Env *env,
+                               int                depth);
 
-void Node_List_Clone (Node_List         *dst,
-                      Node_List         *src,
-                      Instantiation_Env *env,
-                      int                depth);
+void Build_Instantiation_Env (Instantiation_Env *env, Symbol *inst, Symbol *tmpl);
+void Expand_Generic_Package  (Symbol *instance_sym);
 
-void Build_Instantiation_Env (Instantiation_Env *env,
-                              Symbol            *inst,
-                              Symbol            *tmpl);
+// ----------------
+// -- File Loading --
+// ----------------
 
-void Expand_Generic_Package (Symbol *instance_sym);
-
-/* ========================================================================================= */
-/*                                                                                           */
-/*  Chapter 17.  FILE LOADING                                                                */
-/*                                                                                           */
-/*  WITH clauses name packages that must be found on disk, loaded, parsed,                   */
-/*  semantically analysed, and code-generated before the withing unit can                    */
-/*  proceed.  Include_Paths lists the directories to search; Lookup_Path                     */
-/*  maps a unit name to a file path using standard naming conventions.                       */
-/*                                                                                           */
-/*  The Loading_Set detects circular WITH dependencies by tracking which                     */
-/*  units are currently being loaded.                                                        */
-/*                                                                                           */
-/* ========================================================================================= */
+// WITH clauses name packages that must be found on disk, loaded, parsed, analysed,
+// and code-generated before the withing unit can proceed.  Include_Paths lists the
+// directories to search; Lookup_Path maps a unit name to a file path.  Loading_Set
+// detects circular WITH dependencies by tracking which units are currently being loaded.
 
 extern const char   *Include_Paths[32];
 extern uint32_t      Include_Path_Count;
@@ -2692,8 +2281,8 @@ extern String_Slice  Loaded_Body_Names[128];
 extern int           Loaded_Body_Names_Count;
 
 typedef struct {
-  String_Slice names[64]; /* Unit names currently being loaded */
-  int          count;     /* Number of entries in the set */
+  String_Slice names[64]; // Unit names currently being loaded
+  int          count;
 } Loading_Set;
 
 extern Loading_Set Loading_Packages;
@@ -2711,65 +2300,57 @@ void  Load_Package_Spec (String_Slice name, char *src);
 char *Read_File         (const char *path, size_t *out_size);
 char *Read_File_Simple  (const char *path);
 
-/* ========================================================================================= */
-/*                                                                                           */
-/*  Chapter 18.  VECTOR PATHS                                                                */
-/*                                                                                           */
-/*  Vectorised scanning primitives for whitespace skipping, identifier recognition,          */
-/*  digit scanning, and single-character search.  Three implementations are                  */
-/*  selected at compile time by the platform detection in Chapter 1:                         */
-/*                                                                                           */
-/*    x86-64   AVX-512BW (64-byte), AVX2 (32-byte), with scalar tail                         */
-/*    ARM64    NEON/ASIMD (16-byte), with scalar tail                                        */
-/*    Generic  Scalar fallback with unrolled loops                                           */
-/*                                                                                           */
-/*  All SIMD paths produce results identical to their scalar equivalents for                 */
-/*  every possible input.  The scanning interface is the same on all platforms;              */
-/*  only the implementation changes.                                                         */
-/*                                                                                           */
-/* ========================================================================================= */
+// -----------------
+// -- Vector Paths --
+// -----------------
+
+// Vectorised scanning primitives for whitespace skipping, identifier recognition,
+// digit scanning, and single-character search.  Three implementations are selected
+// at compile time by the platform detection above:
+//   x86-64   AVX-512BW (64-byte), AVX2 (32-byte), with scalar tail
+//   ARM64    NEON/ASIMD (16-byte), with scalar tail
+//   Generic  Scalar fallback with unrolled loops
 
 #ifdef SIMD_X86_64
-  extern int  Simd_Has_Avx512;
-  extern int  Simd_Has_Avx2;
-  uint32_t    Tzcnt32 (uint32_t value);
-  uint64_t    Tzcnt64 (uint64_t value);
+  extern int Simd_Has_Avx512;
+  extern int Simd_Has_Avx2;
+  uint32_t   Tzcnt32 (uint32_t value);
+  uint64_t   Tzcnt64 (uint64_t value);
   #ifdef __AVX2__
     uint32_t Simd_Parse_8_Digits_Avx2 (const char *digits);
-    int      Simd_Parse_Digits_Avx2   (const char *cursor, const char *limit, uint64_t *out);
+    int      Simd_Parse_Digits_Avx2   (const char *cursor,
+                                        const char *limit,
+                                        uint64_t   *out);
   #endif
 #elif defined(SIMD_ARM64)
   uint64_t Tzcnt64 (uint64_t value);
 #endif
 
-void         Simd_Detect_Features   (void);
-const char  *Simd_Skip_Whitespace   (const char *cursor, const char *limit);
-const char  *Simd_Find_Newline      (const char *cursor, const char *limit);
-const char  *Simd_Find_Quote        (const char *cursor, const char *limit);
-const char  *Simd_Find_Double_Quote (const char *cursor, const char *limit);
-const char  *Simd_Scan_Identifier   (const char *cursor, const char *limit);
-const char  *Simd_Scan_Digits       (const char *cursor, const char *limit);
+void        Simd_Detect_Features   (void);
+const char *Simd_Skip_Whitespace   (const char *cursor, const char *limit);
+const char *Simd_Find_Newline      (const char *cursor, const char *limit);
+const char *Simd_Find_Quote        (const char *cursor, const char *limit);
+const char *Simd_Find_Double_Quote (const char *cursor, const char *limit);
+const char *Simd_Scan_Identifier   (const char *cursor, const char *limit);
+const char *Simd_Scan_Digits       (const char *cursor, const char *limit);
 
-/* ========================================================================================= */
-/*                                                                                           */
-/*  Chapter 19.  DRIVER                                                                      */
-/*                                                                                           */
-/*  The main driver parses command-line arguments, compiles each source file to              */
-/*  LLVM IR -- optionally forking a subprocess per file for parallel compilation --          */
-/*  and returns an exit status.  Derive_Output_Path maps an input .adb or .ads               */
-/*  file to the corresponding .ll output path.                                               */
-/*                                                                                           */
-/* ========================================================================================= */
+// ----------
+// -- Driver --
+// ----------
+
+// The main driver parses command-line arguments, compiles each source file to LLVM IR
+// -- optionally forking a subprocess per file for parallel compilation -- and returns
+// an exit status.  Derive_Output_Path maps an input .adb or .ads to the .ll output path.
 
 typedef struct {
-  const char *input_path;  /* Source file to compile   */
-  const char *output_path; /* Where NULL means derive from input */
-  int         exit_status; /* Zero for success, one for failure */
+  const char *input_path;  // Source file to compile
+  const char *output_path; // NULL means derive from input
+  int         exit_status; // Zero for success, one for failure
 } Compile_Job;
 
-void  Compile_File       (const char *input_path, const char *output_path);
-void  Derive_Output_Path (const char *input, char *out, size_t out_size);
-void *Compile_Worker     (void *arg);
-int   main               (int argc, char *argv[]);
+void  Compile_File        (const char *input_path, const char *output_path);
+void  Derive_Output_Path  (const char *input, char *out, size_t out_size);
+void *Compile_Worker      (void *arg);
+int   main                (int argc, char *argv[]);
 
-#endif /* ADA83_H */
+#endif // ADA83_H
