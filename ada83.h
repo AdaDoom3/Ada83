@@ -120,25 +120,25 @@ enum {
 #define STRING_BOUNDS_ALLOC   8
 
 /* ─────────────────────────────────────────────────────────────────────────────────────────── */
-/*  1.4  IEEE Floating-Point Model                                                           */
-/*                                                                                           */
-/*  Model parameters for FLOAT (single) and LONG_FLOAT (double) as defined by                */
-/*  Ada RM 3.5.8.  The code generator uses these when emitting attribute references           */
-/*  such as T'Digits, T'Machine_Mantissa, and T'Model_Emin.                                  */
+/*  1.4  IEEE Floating-Point Model                                                             */
+/*                                                                                             */
+/*  Model parameters for FLOAT (single) and LONG_FLOAT (double) as defined by                  */
+/*  Ada RM 3.5.8.  The code generator uses these when emitting attribute references            */
+/*  such as T'Digits, T'Machine_Mantissa, and T'Model_Emin.                                    */
 /* ─────────────────────────────────────────────────────────────────────────────────────────── */
 
-#define IEEE_FLOAT_DIGITS        6
-#define IEEE_DOUBLE_DIGITS       15
-#define IEEE_FLOAT_MANTISSA      24
-#define IEEE_DOUBLE_MANTISSA     53
-#define IEEE_FLOAT_EMAX          128
-#define IEEE_DOUBLE_EMAX         1024
-#define IEEE_FLOAT_EMIN          (-125)
-#define IEEE_DOUBLE_EMIN         (-1021)
-#define IEEE_MACHINE_RADIX       2
-#define IEEE_DOUBLE_MIN_NORMAL   2.2250738585072014e-308    /* 2^(-1022) */
-#define IEEE_FLOAT_MIN_NORMAL    1.1754943508222875e-38     /* 2^(-126)  */
-#define LOG2_OF_10               3.321928094887362
+#define IEEE_FLOAT_DIGITS      6
+#define IEEE_DOUBLE_DIGITS     15
+#define IEEE_FLOAT_MANTISSA    24
+#define IEEE_DOUBLE_MANTISSA   53
+#define IEEE_FLOAT_EMAX        128
+#define IEEE_DOUBLE_EMAX       1024
+#define IEEE_FLOAT_EMIN        (-125)
+#define IEEE_DOUBLE_EMIN       (-1021)
+#define IEEE_MACHINE_RADIX     2
+#define IEEE_DOUBLE_MIN_NORMAL 2.2250738585072014e-308 /* 2^(-1022) */
+#define IEEE_FLOAT_MIN_NORMAL  1.1754943508222875e-38  /* 2^(-126) */
+#define LOG2_OF_10             3.321928094887362
 
 /* ─────────────────────────────────────────────────────────────────────────────────────────── */
 /*  1.5  Subsystem Capacities                                                                */
@@ -597,18 +597,17 @@ typedef enum {
   TK_EQ, TK_NE, TK_LT, TK_LE, TK_GT, TK_GE,
   TK_PLUS, TK_MINUS, TK_STAR, TK_SLASH, TK_AMPERSAND, TK_EXPON,
 
-  /* Reserved words -- the sixty-three of Ada 83 (RM 2.9) */
-  TK_ABORT, TK_ABS, TK_ACCEPT, TK_ACCESS, TK_ALL, TK_AND, TK_AND_THEN,
-  TK_ARRAY, TK_AT, TK_BEGIN, TK_BODY, TK_CASE, TK_CONSTANT, TK_DECLARE,
-  TK_DELAY, TK_DELTA, TK_DIGITS, TK_DO, TK_ELSE, TK_ELSIF, TK_END,
-  TK_ENTRY, TK_EXCEPTION, TK_EXIT, TK_FOR, TK_FUNCTION, TK_GENERIC,
-  TK_GOTO, TK_IF, TK_IN, TK_IS, TK_LIMITED, TK_LOOP, TK_MOD, TK_NEW,
-  TK_NOT, TK_NULL, TK_OF, TK_OR, TK_OR_ELSE, TK_OTHERS, TK_OUT,
-  TK_PACKAGE, TK_PRAGMA, TK_PRIVATE, TK_PROCEDURE, TK_RAISE, TK_RANGE,
-  TK_RECORD, TK_REM, TK_RENAMES, TK_RETURN, TK_REVERSE, TK_SELECT,
-  TK_SEPARATE, TK_SUBTYPE, TK_TASK, TK_TERMINATE, TK_THEN, TK_TYPE,
-  TK_USE, TK_WHEN, TK_WHILE, TK_WITH, TK_XOR,
-  TK_COUNT
+  /* Reserved words - the sixty-three of Ada 83 */
+  TK_ABORT,    TK_ABS,       TK_ACCEPT,  TK_ACCESS,    TK_ALL,      TK_AND,      TK_AND_THEN,
+  TK_ARRAY,    TK_AT,        TK_BEGIN,   TK_BODY,      TK_CASE,     TK_CONSTANT, TK_DECLARE,
+  TK_DELAY,    TK_DELTA,     TK_DIGITS,  TK_DO,        TK_ELSE,     TK_ELSIF,    TK_END,
+  TK_ENTRY,    TK_EXCEPTION, TK_EXIT,    TK_FOR,       TK_FUNCTION, TK_GENERIC,  TK_GOTO,     
+  TK_IF,       TK_IN,        TK_IS,      TK_LIMITED,   TK_LOOP,     TK_MOD,      TK_NEW,
+  TK_NOT,      TK_NULL,      TK_OF,      TK_OR,        TK_OR_ELSE,  TK_OTHERS,   TK_OUT,
+  TK_PACKAGE,  TK_PRAGMA,    TK_PRIVATE, TK_PROCEDURE, TK_RAISE,    TK_RANGE,    TK_RECORD,   
+  TK_REM,      TK_RENAMES,   TK_RETURN,  TK_REVERSE,   TK_SELECT,   TK_SEPARATE, TK_SUBTYPE,   
+  TK_TASK,     TK_TERMINATE, TK_THEN,    TK_TYPE,      TK_USE,      TK_WHEN,     TK_WHILE,   
+  TK_WITH,     TK_XOR,       TK_COUNT
 } Token_Kind;
 
 extern const char *Token_Name[TK_COUNT];
@@ -1265,17 +1264,17 @@ typedef struct {
 /* ─────────────────────────────────────────────────────────────────────────────────────────── */
 
 struct Type_Info {
-  Type_Kind    kind;
-  String_Slice name;            /*  Source name of the type                  */
-  Symbol      *defining_symbol; /*  The SYMBOL_TYPE or SYMBOL_SUBTYPE        */
-  uint32_t     size;            /*  Size in BYTES                            */
-  uint32_t     alignment;       /*  Alignment in BYTES                       */
-  uint32_t     specified_bit_size; /* From a 'Size rep clause, or 0         */
-  Type_Bound   low_bound;       /*  Scalar low bound                         */
-  Type_Bound   high_bound;      /*  Scalar high bound                        */
-  uint128_t    modulus;          /*  For TYPE_MODULAR only                    */
-  Type_Info   *base_type;       /*  The base type for a subtype              */
-  Type_Info   *parent_type;     /*  The parent type for a derived type       */
+  Type_Kind     kind;
+  String_Slice  name;               /*  Source name of the type                  */
+  Symbol       *defining_symbol;    /*  The SYMBOL_TYPE or SYMBOL_SUBTYPE        */
+  uint32_t      size;               /* Size in BYTES                            */
+  uint32_t      alignment;          /* Alignment in BYTES                       */
+  uint32_t      specified_bit_size; /* From a 'Size rep clause, or 0         */
+  Type_Bound    low_bound;          /* Scalar low bound                         */
+  Type_Bound    high_bound;         /* Scalar high bound                        */
+  uint128_t     modulus;            /* For TYPE_MODULAR only                    */
+  Type_Info    *base_type;          /* The base type for a subtype              */
+  Type_Info    *parent_type;        /* The parent type for a derived type       */
 
   union {
     struct { Index_Info *indices; uint32_t index_count;
@@ -1322,38 +1321,38 @@ extern uint32_t   Exception_Symbol_Count;
 /*  10.5  Type Construction and Classification                                               */
 /* ─────────────────────────────────────────────────────────────────────────────────────────── */
 
-Type_Info  *Type_New             (Type_Kind kind, String_Slice name);
-void        Freeze_Type          (Type_Info *type_info);
+Type_Info *Type_New    (Type_Kind kind, String_Slice name);
+void       Freeze_Type (Type_Info *type_info);
 
-bool Type_Is_Scalar              (const Type_Info *t);
-bool Type_Is_Discrete            (const Type_Info *t);
-bool Type_Is_Numeric             (const Type_Info *t);
-bool Type_Is_Real                (const Type_Info *t);
-bool Type_Is_Float_Representation(const Type_Info *t);
-bool Type_Is_Array_Like          (const Type_Info *t);
-bool Type_Is_Composite           (const Type_Info *t);
-bool Type_Is_Access              (const Type_Info *t);
-bool Type_Is_Record              (const Type_Info *t);
-bool Type_Is_Task                (const Type_Info *t);
-bool Type_Is_Float               (const Type_Info *t);
-bool Type_Is_Fixed_Point         (const Type_Info *t);
-bool Type_Is_Private             (const Type_Info *t);
-bool Type_Is_Limited             (const Type_Info *t);
-bool Type_Is_Integer_Like        (const Type_Info *t);
-bool Type_Is_Unsigned            (const Type_Info *t);
-bool Type_Is_Enumeration         (const Type_Info *t);
-bool Type_Is_Boolean             (const Type_Info *t);
-bool Type_Is_Character           (const Type_Info *t);
-bool Type_Is_String              (const Type_Info *t);
-bool Type_Is_Universal_Integer   (const Type_Info *t);
-bool Type_Is_Universal_Real      (const Type_Info *t);
-bool Type_Is_Universal           (const Type_Info *t);
-bool Type_Is_Unconstrained_Array (const Type_Info *t);
-bool Type_Is_Constrained_Array   (const Type_Info *t);
-bool Type_Is_Bool_Array          (const Type_Info *t);
-bool Type_Has_Dynamic_Bounds     (const Type_Info *t);
-bool Type_Needs_Fat_Pointer      (const Type_Info *t);
-bool Type_Needs_Fat_Pointer_Load (const Type_Info *t);
+bool Type_Is_Scalar               (const Type_Info *t);
+bool Type_Is_Discrete             (const Type_Info *t);
+bool Type_Is_Numeric              (const Type_Info *t);
+bool Type_Is_Real                 (const Type_Info *t);
+bool Type_Is_Float_Representation (const Type_Info *t);
+bool Type_Is_Array_Like           (const Type_Info *t);
+bool Type_Is_Composite            (const Type_Info *t);
+bool Type_Is_Access               (const Type_Info *t);
+bool Type_Is_Record               (const Type_Info *t);
+bool Type_Is_Task                 (const Type_Info *t);
+bool Type_Is_Float                (const Type_Info *t);
+bool Type_Is_Fixed_Point          (const Type_Info *t);
+bool Type_Is_Private              (const Type_Info *t);
+bool Type_Is_Limited              (const Type_Info *t);
+bool Type_Is_Integer_Like         (const Type_Info *t);
+bool Type_Is_Unsigned             (const Type_Info *t);
+bool Type_Is_Enumeration          (const Type_Info *t);
+bool Type_Is_Boolean              (const Type_Info *t);
+bool Type_Is_Character            (const Type_Info *t);
+bool Type_Is_String               (const Type_Info *t);
+bool Type_Is_Universal_Integer    (const Type_Info *t);
+bool Type_Is_Universal_Real       (const Type_Info *t);
+bool Type_Is_Universal            (const Type_Info *t);
+bool Type_Is_Unconstrained_Array  (const Type_Info *t);
+bool Type_Is_Constrained_Array    (const Type_Info *t);
+bool Type_Is_Bool_Array           (const Type_Info *t);
+bool Type_Has_Dynamic_Bounds      (const Type_Info *t);
+bool Type_Needs_Fat_Pointer       (const Type_Info *t);
+bool Type_Needs_Fat_Pointer_Load  (const Type_Info *t);
 
 /* ─────────────────────────────────────────────────────────────────────────────────────────── */
 /*  10.6  Type Chain Navigation and Bound Queries                                            */
@@ -1382,7 +1381,8 @@ const char *Float_Llvm_Type_Of           (const Type_Info *t);
 bool        Float_Is_Single              (const Type_Info *t);
 int         Float_Effective_Digits       (const Type_Info *t);
 void        Float_Model_Parameters       (const Type_Info *t,
-                                          int *mantissa, int *emin, int *emax);
+                                          int64_t *out_mantissa,
+                                          int64_t *out_emax);
 
 /* ─────────────────────────────────────────────────────────────────────────────────────────── */
 /*  10.8  Expression Type Queries                                                            */
@@ -1406,9 +1406,11 @@ const char *Expression_Llvm_Type             (Syntax_Node *node);
 bool        Types_Same_Named         (Type_Info *t1, Type_Info *t2);
 bool        Subprogram_Is_Primitive_Of (Symbol *sub, Type_Info *type);
 void        Create_Derived_Operation (Symbol *sub, Type_Info *derived_type,
-                                      Type_Info *parent_type);
+                                      Type_Info *parent_type,
+                                      Symbol *type_sym);
 void        Derive_Subprograms      (Type_Info *derived_type,
-                                      Type_Info *parent_type);
+                                      Type_Info *parent_type,
+                                      Symbol *type_sym);
 
 /* ─────────────────────────────────────────────────────────────────────────────────────────── */
 /*  10.10  Generic Type Map                                                                  */
@@ -1418,10 +1420,12 @@ void        Derive_Subprograms      (Type_Info *derived_type,
 /*  body and cleared afterward.                                                              */
 /* ─────────────────────────────────────────────────────────────────────────────────────────── */
 
-extern struct {
-  uint32_t count;
-  struct { String_Slice formal_name; Type_Info *actual_type; } mappings[32];
-} g_generic_type_map;
+typedef struct {
+  uint32_t count;                                   /*  Number of active mappings   */
+  struct { String_Slice formal_name; Type_Info *actual_type; } mappings[32]; /* Map entries */
+} Generic_Type_Map;
+
+extern Generic_Type_Map g_generic_type_map;
 
 void        Set_Generic_Type_Map        (Symbol *inst);
 Type_Info  *Resolve_Generic_Actual_Type (Type_Info *type);
@@ -1450,15 +1454,33 @@ bool        Check_Is_Suppressed         (Type_Info *type, Symbol *sym,
 /* ─────────────────────────────────────────────────────────────────────────────────────────── */
 
 typedef enum {
-  SYMBOL_VARIABLE = 0, SYMBOL_CONSTANT, SYMBOL_TYPE, SYMBOL_SUBTYPE,
+  SYMBOL_UNKNOWN = 0,
+  SYMBOL_VARIABLE, SYMBOL_CONSTANT, SYMBOL_TYPE, SYMBOL_SUBTYPE,
   SYMBOL_PROCEDURE, SYMBOL_FUNCTION, SYMBOL_PARAMETER,
-  SYMBOL_PACKAGE, SYMBOL_COMPONENT, SYMBOL_LOOP,
-  SYMBOL_LABEL, SYMBOL_EXCEPTION, SYMBOL_ENTRY,
-  SYMBOL_GENERIC_PACKAGE, SYMBOL_GENERIC_PROCEDURE, SYMBOL_GENERIC_FUNCTION,
-  SYMBOL_NAMED_NUMBER, SYMBOL_ENUM_LITERAL,
-  SYMBOL_TASK, SYMBOL_TASK_TYPE,
+  SYMBOL_PACKAGE, SYMBOL_EXCEPTION, SYMBOL_LABEL, SYMBOL_LOOP,
+  SYMBOL_ENTRY, SYMBOL_COMPONENT, SYMBOL_DISCRIMINANT,
+  SYMBOL_LITERAL,       /*  Enumeration literal                      */
+  SYMBOL_GENERIC, SYMBOL_GENERIC_INSTANCE,
   SYMBOL_COUNT
 } Symbol_Kind;
+
+/* ─────────────────────────────────────────────────────────────────────────────────────────── */
+/*  11.1a  Parameter Mode and Info                                                           */
+/* ─────────────────────────────────────────────────────────────────────────────────────────── */
+
+typedef enum {
+  PARAM_IN = 0, PARAM_OUT, PARAM_IN_OUT
+} Parameter_Mode;
+
+typedef struct {
+  String_Slice    name;
+  Type_Info      *param_type;
+  Parameter_Mode  mode;
+  Syntax_Node    *default_value;
+  struct Symbol  *param_sym;      /*  Symbol for this parameter in body      */
+} Parameter_Info;
+
+bool Param_Is_By_Reference (Parameter_Mode mode);
 
 /* ─────────────────────────────────────────────────────────────────────────────────────────── */
 /*  11.2  Symbol Record                                                                      */
@@ -1471,80 +1493,95 @@ typedef enum {
 /* ─────────────────────────────────────────────────────────────────────────────────────────── */
 
 struct Symbol {
-  Symbol_Kind   kind;           /*  What this symbol represents              */
-  String_Slice  name;           /*  Source name (case-preserved)             */
-  Source_Location location;     /*  Where it was declared                    */
-  Type_Info    *type;           /*  Type of the entity                       */
-  uint32_t      unique_id;      /*  Disambiguation tag for mangling          */
-  Scope        *scope;          /*  Scope where this symbol was declared     */
-  Symbol       *next;           /*  Hash chain link in the scope bucket      */
+  Symbol_Kind     kind;
+  String_Slice    name;
+  Source_Location location;
 
-  /* Subprogram profile */
-  Type_Info   **param_types;    /*  Array of formal parameter types          */
-  uint32_t      param_count;
-  Type_Info    *return_type;    /*  NULL for procedures                      */
-  Syntax_Node **param_nodes;    /*  AST nodes of the formal parameters       */
-  Syntax_Node  *body_node;      /*  AST of the body, if available            */
-  Syntax_Node  *spec_node;      /*  AST of the specification                 */
+  /* Type information */
+  Type_Info      *type;
 
-  /* Package exports */
-  Symbol      **exports;        /*  Array of symbols visible outside         */
-  uint32_t      export_count;
+  /* Scope membership */
+  Scope          *defining_scope;
+  Symbol         *parent;         /*  Enclosing package/subprogram symbol    */
 
-  /* Object storage */
-  int64_t       stack_offset;   /*  Byte offset in the enclosing frame       */
-  uint32_t      llvm_temp;      /*  Temp register holding the alloca         */
-  uint32_t      llvm_global_id; /*  Global variable slot in the .ll file     */
-  bool          is_global;
-  bool          is_formal_param;
-  bool          is_by_reference;
-  bool          is_constrained;
-  bool          needs_alloca;
+  /* Overloading chain */
+  Symbol         *next_overload;
 
-  /* Named numbers and constants */
-  int128_t      constant_value;
-  double        float_constant;
-  bool          has_constant_value;
-  Rational      rational_value;
-  bool          has_rational_value;
+  /* Hash table chaining */
+  Symbol         *next_in_bucket;
 
-  /* Representation and pragma attributes */
-  String_Slice  external_name;  /*  pragma Import link name                  */
-  String_Slice  link_name;
+  /* Visibility */
+  enum {
+    VIS_HIDDEN = 0,
+    VIS_IMMEDIATELY_VISIBLE = 1,
+    VIS_USE_VISIBLE = 2,
+    VIS_DIRECTLY_VISIBLE = 3
+  } visibility;
+
+  /* Declaration reference */
+  Syntax_Node    *declaration;
+
+  /* Subprogram-specific */
+  Parameter_Info *parameters;
+  uint32_t        parameter_count;
+  Type_Info      *return_type;    /*  NULL for procedures                    */
+
+  /* Package-specific */
+  Symbol        **exported;       /*  Visible part symbols                   */
+  uint32_t        exported_count;
+
+  /* Unique identifier for mangling */
+  uint32_t        unique_id;
+
+  /* Nesting level for static link computation */
+  uint32_t        nesting_level;
+
+  /* Frame offset for static link variable access */
+  int64_t         frame_offset;
+
+  /* Scope created by this symbol (for functions/procedures) */
+  Scope          *scope;
+
+  /* Pragma effects */
+  bool            is_inline;
+  bool            is_imported;
+  bool            is_exported;
+  String_Slice    external_name;       /*  External linker name              */
+  String_Slice    link_name;           /*  Link section name                 */
   enum { CONVENTION_ADA = 0, CONVENTION_C, CONVENTION_STDCALL,
          CONVENTION_INTRINSIC, CONVENTION_ASSEMBLER } convention;
-  uint32_t      suppressed_checks;
-  bool          is_unreferenced;
+  uint32_t        suppressed_checks;   /*  Bitmask of suppressed checks     */
+  bool            is_unreferenced;
 
-  /* Code-generation flags */
-  bool          extern_emitted;
-  bool          body_emitted;
-  bool          is_named_number;
-  bool          is_overloaded;
-  bool          body_claimed;
-  bool          is_predefined;
-  bool          needs_address_marker;
-  bool          is_identity_function;
-  uint32_t      disc_agg_temp;
-  bool          is_disc_constrained;
-  bool          needs_fat_ptr_storage;
+  /* Code generation flags */
+  bool            extern_emitted;
+  bool            body_emitted;
+  bool            is_named_number;
+  bool            is_overloaded;
+  bool            body_claimed;
+  bool            is_predefined;
+  bool            needs_address_marker;
+  bool            is_identity_function;
+  uint32_t        disc_agg_temp;
+  bool            is_disc_constrained;
+  bool            needs_fat_ptr_storage;
 
   /* Derived type operations (RM 3.4) */
-  Symbol       *parent_operation;
-  Type_Info    *derived_from_type;
+  Symbol         *parent_operation;
+  Type_Info      *derived_from_type;
 
   /* Labels and entries */
-  uint32_t      llvm_label_id;
-  uint32_t      loop_exit_label_id;
-  uint32_t      entry_index;
-  Syntax_Node  *renamed_object;
+  uint32_t        llvm_label_id;
+  uint32_t        loop_exit_label_id;
+  uint32_t        entry_index;
+  Syntax_Node    *renamed_object;
 
   /* Generic support */
-  Syntax_Node  *generic_formals;
-  Syntax_Node  *generic_unit;
-  Syntax_Node  *generic_body;
-  Symbol       *generic_template;
-  Symbol       *instantiated_subprogram;
+  Syntax_Node    *generic_formals;
+  Syntax_Node    *generic_unit;
+  Syntax_Node    *generic_body;
+  Symbol         *generic_template;
+  Symbol         *instantiated_subprogram;
   struct {
     String_Slice  formal_name;
     Type_Info    *actual_type;
@@ -1552,9 +1589,9 @@ struct Symbol {
     Syntax_Node  *actual_expr;
     Token_Kind    builtin_operator;
   } *generic_actuals;
-  uint32_t      generic_actual_count;
-  Syntax_Node  *expanded_spec;
-  Syntax_Node  *expanded_body;
+  uint32_t        generic_actual_count;
+  Syntax_Node    *expanded_spec;
+  Syntax_Node    *expanded_body;
 };
 
 /* ─────────────────────────────────────────────────────────────────────────────────────────── */
@@ -1775,46 +1812,46 @@ typedef struct {
   uint32_t      label_id;       /*  Next basic-block label number            */
   uint32_t      global_id;      /*  Next global variable number              */
   uint32_t      string_id;      /*  Next string constant number              */
-  Symbol       *current_function;
-  uint32_t      current_nesting_level;
+  Symbol       *current_function;   /*  Function currently being generated   */
+  uint32_t      current_nesting_level; /*  Lexical nesting depth             */
   Symbol       *current_instance;  /*  Current generic instance, if any      */
   uint32_t      loop_exit_label;   /*  Target label for exit statements      */
-  uint32_t      loop_continue_label;
-  bool          has_return;     /*  True if current block ends with ret      */
-  bool          block_terminated;
-  bool          header_emitted;
-  Symbol       *main_candidate; /*  The entry point, if one was found        */
-  Syntax_Node  *deferred_bodies[64];
-  uint32_t      deferred_count; /*  Nested bodies to emit after the parent   */
-  Symbol       *enclosing_function;
-  bool          is_nested;      /*  True inside a nested subprogram          */
-  uint32_t      exception_handler_label;
-  uint32_t      exception_jmp_buf;
-  bool          in_exception_region;
-  char         *string_const_buffer;
-  size_t        string_const_size;
-  size_t        string_const_capacity;
-  Symbol       *address_markers[256];
-  uint32_t      address_marker_count;
-  uint32_t      emitted_func_ids[1024];
-  uint32_t      emitted_func_count;
-  bool          in_task_body;
-  Symbol       *elab_funcs[64];
-  uint32_t      elab_func_count;
-  uint32_t      temp_type_keys[TEMP_TYPE_CAPACITY];
-  const char   *temp_types[TEMP_TYPE_CAPACITY];
-  uint8_t       temp_is_fat_alloca[TEMP_TYPE_CAPACITY];
-  char         *exc_refs[EXC_REF_CAPACITY];
-  uint32_t      exc_ref_count;
-  bool          needs_trim_helpers;
-  uint32_t      rt_type_counter;
-  uint32_t      in_agg_component;
-  uint32_t      inner_agg_bnd_lo[MAX_AGG_DIMS];
-  uint32_t      inner_agg_bnd_hi[MAX_AGG_DIMS];
-  int           inner_agg_bnd_n;
-  uint32_t      disc_cache[MAX_DISC_CACHE];
-  uint32_t      disc_cache_count;
-  Type_Info    *disc_cache_type;
+  uint32_t      loop_continue_label; /*  Target label for continue           */
+  bool          has_return;        /*  True if current block ends with ret   */
+  bool          block_terminated;  /*  Current block has a terminator        */
+  bool          header_emitted;    /*  Module header already written         */
+  Symbol       *main_candidate;    /*  Last parameterless library procedure  */
+  Syntax_Node  *deferred_bodies[64]; /*  Nested bodies to emit later        */
+  uint32_t      deferred_count;    /*  Count of deferred nested bodies      */
+  Symbol       *enclosing_function; /*  Parent of current nested function   */
+  bool          is_nested;         /*  True inside a nested subprogram      */
+  uint32_t      exception_handler_label; /*  Label of current handler       */
+  uint32_t      exception_jmp_buf; /*  Current setjmp buffer temp           */
+  bool          in_exception_region; /*  Inside exception-handled block     */
+  char         *string_const_buffer; /*  Deferred string constants          */
+  size_t        string_const_size; /*  Bytes used in string buffer          */
+  size_t        string_const_capacity; /*  Allocated capacity               */
+  Symbol       *address_markers[256]; /*  Symbols needing 'ADDRESS globals  */
+  uint32_t      address_marker_count; /*  Count of address markers          */
+  uint32_t      emitted_func_ids[1024]; /*  Unique IDs already emitted      */
+  uint32_t      emitted_func_count; /*  Count of emitted functions          */
+  bool          in_task_body;      /*  Generating a task body               */
+  Symbol       *elab_funcs[64];    /*  Package elab functions to call       */
+  uint32_t      elab_func_count;   /*  Count of elab functions              */
+  uint32_t      temp_type_keys[TEMP_TYPE_CAPACITY]; /*  Ring buffer keys    */
+  const char   *temp_types[TEMP_TYPE_CAPACITY]; /*  LLVM type strings       */
+  uint8_t       temp_is_fat_alloca[TEMP_TYPE_CAPACITY]; /*  Fat-ptr bitmap  */
+  char         *exc_refs[EXC_REF_CAPACITY]; /*  Exception global names      */
+  uint32_t      exc_ref_count;     /*  Count of exception references        */
+  bool          needs_trim_helpers; /*  Emit trim helper functions           */
+  uint32_t      rt_type_counter;   /*  Runtime type elaboration ID counter  */
+  uint32_t      in_agg_component;  /*  Nonzero inside sub-aggregate         */
+  uint32_t      inner_agg_bnd_lo[MAX_AGG_DIMS]; /*  Inner aggregate lows   */
+  uint32_t      inner_agg_bnd_hi[MAX_AGG_DIMS]; /*  Inner aggregate highs  */
+  int           inner_agg_bnd_n;   /*  Number of dimension levels reported  */
+  uint32_t      disc_cache[MAX_DISC_CACHE]; /*  Cached discriminant temps   */
+  uint32_t      disc_cache_count;  /*  Count of cached discriminants        */
+  Type_Info    *disc_cache_type;   /*  Record type these caches belong to   */
 } Code_Generator;
 
 extern Code_Generator *cg;
@@ -1848,7 +1885,8 @@ void        Emit_Branch_If_Needed        (uint32_t label);
 void        Emit_String_Const            (const char *format, ...);
 void        Emit_String_Const_Char       (char ch);
 void        Emit_Float_Constant          (uint32_t result,
-                                          const char *type, double value);
+                                          const char *float_type,
+                                          double value, const char *comment);
 
 /* ─────────────────────────────────────────────────────────────────────────────────────────── */
 /*  13.5  String and Type Helpers                                                            */
@@ -1912,40 +1950,53 @@ bool         Emit_Nested_Frame_Arg       (Symbol *proc, uint32_t precomp);
 void         Emit_Raise_Exception        (const char *exc_name,
                                           const char *comment);
 void         Emit_Check_With_Raise       (uint32_t cond,
-                                          const char *exc, const char *msg);
-void         Emit_Range_Check_With_Raise (uint32_t val, uint32_t lo,
-                                          uint32_t hi, const char *ty,
-                                          bool is_unsigned);
+                                          bool raise_on_true,
+                                          const char *comment);
+void         Emit_Range_Check_With_Raise (uint32_t val,
+                                          int64_t lo_val, int64_t hi_val,
+                                          const char *type,
+                                          const char *comment);
 uint32_t     Emit_Overflow_Checked_Op    (uint32_t left, uint32_t right,
-                                          const char *type, const char *op,
-                                          bool is_unsigned);
+                                          const char *op,
+                                          const char *llvm_type,
+                                          Type_Info *result_type);
 void         Emit_Division_Check         (uint32_t divisor,
                                           const char *type, Type_Info *t);
 void         Emit_Signed_Division_Overflow_Check (uint32_t dividend,
-                                          uint32_t divisor, const char *ty);
+                                          uint32_t divisor,
+                                          const char *llvm_type,
+                                          Type_Info *type);
 uint32_t     Emit_Convert                (uint32_t src, const char *from,
                                           const char *to);
 uint32_t     Emit_Convert_Ext            (uint32_t src, const char *src_type,
                                           const char *dst_type,
                                           bool is_unsigned);
-uint32_t     Emit_Coerce                 (uint32_t temp, const char *from,
-                                          const char *to);
-uint32_t     Emit_Coerce_Default_Int     (uint32_t temp, const char *from);
-uint32_t     Emit_Index_Check            (uint32_t index, uint32_t lo,
-                                          uint32_t hi, const char *ty);
+uint32_t     Emit_Coerce                 (uint32_t temp,
+                                          const char *desired_type);
+uint32_t     Emit_Coerce_Default_Int     (uint32_t temp,
+                                          const char *desired_type);
+uint32_t     Emit_Index_Check            (uint32_t index,
+                                          uint32_t low_bound,
+                                          uint32_t high_bound,
+                                          const char *index_type,
+                                          Type_Info *array_type);
 void         Emit_Length_Check           (uint32_t src_length,
                                           uint32_t dst_length,
-                                          const char *ty);
+                                          const char *len_type,
+                                          Type_Info *array_type);
 void         Emit_Access_Check           (uint32_t ptr_val,
                                           Type_Info *acc_type);
 void         Emit_Discriminant_Check     (uint32_t actual, uint32_t expected,
-                                          const char *ty);
-uint32_t     Emit_Constraint_Check       (uint32_t val, Type_Info *type);
-uint32_t     Emit_Constraint_Check_With_Type (uint32_t val, Type_Info *type,
-                                          const char *target_type);
+                                          const char *disc_type,
+                                          Type_Info *record_type);
+uint32_t     Emit_Constraint_Check       (uint32_t val, Type_Info *target,
+                                          Type_Info *source);
+uint32_t     Emit_Constraint_Check_With_Type (uint32_t val, Type_Info *target,
+                                          Type_Info *source,
+                                          const char *actual_val_type);
 void         Emit_Subtype_Constraint_Compat_Check (Type_Info *subtype);
-uint32_t     Emit_Widen_For_Intrinsic    (uint32_t val, const char *from,
-                                          const char *to);
+uint32_t     Emit_Widen_For_Intrinsic    (uint32_t val,
+                                          const char *from_type);
 uint32_t     Emit_Extend_To_I64          (uint32_t val, const char *from);
 
 /* ─────────────────────────────────────────────────────────────────────────────────────────── */
@@ -1956,8 +2007,9 @@ uint32_t     Emit_Extend_To_I64          (uint32_t val, const char *from);
 /*  (e.g. "i32" for String).                                                                 */
 /* ─────────────────────────────────────────────────────────────────────────────────────────── */
 
-uint32_t     Emit_Fat_Pointer            (uint32_t data_ptr, uint32_t lo,
-                                          uint32_t hi, const char *bt);
+uint32_t     Emit_Fat_Pointer            (uint32_t data_ptr,
+                                          int128_t low, int128_t high,
+                                          const char *bt);
 uint32_t     Emit_Fat_Pointer_Dynamic    (uint32_t data_ptr, uint32_t lo,
                                           uint32_t hi, const char *bt);
 uint32_t     Emit_Fat_Pointer_Heap       (uint32_t data_ptr, uint32_t lo,
@@ -1969,7 +2021,7 @@ uint32_t     Emit_Fat_Pointer_Null       (const char *bt);
 uint32_t     Fat_Ptr_As_Value            (uint32_t fat_ptr);
 uint32_t     Emit_Fat_Pointer_Data       (uint32_t fat_ptr, const char *bt);
 uint32_t     Emit_Fat_Pointer_Bound      (uint32_t fat_ptr, const char *bt,
-                                          int which);
+                                          uint32_t field_index);
 uint32_t     Emit_Fat_Pointer_Low_Dim    (uint32_t fat_ptr, const char *bt,
                                           uint32_t dim);
 uint32_t     Emit_Fat_Pointer_High_Dim   (uint32_t fat_ptr, const char *bt,
@@ -1987,7 +2039,7 @@ void         Emit_Store_Fat_Pointer_Fields_To_Temp (uint32_t data,
                                           uint32_t lo, uint32_t hi,
                                           uint32_t dest, const char *bt);
 void         Emit_Fat_Pointer_Copy_To_Name (uint32_t fat_ptr,
-                                          const char *name, const char *bt);
+                                          Symbol *dst, const char *bt);
 void         Emit_Fat_To_Array_Memcpy    (uint32_t fat_val,
                                           uint32_t dest_ptr, Type_Info *t);
 uint32_t     Emit_Alloc_Bounds_Struct    (uint32_t lo, uint32_t hi,
@@ -1998,11 +2050,13 @@ uint32_t     Emit_Heap_Bounds_Struct     (uint32_t lo, uint32_t hi,
                                           const char *bt);
 void         Emit_Fat_Pointer_Insertvalue_Named (const char *prefix,
                                           const char *data_expr,
-                                          const char *bounds_expr,
+                                          const char *low_expr,
+                                          const char *high_expr,
                                           const char *bt);
-void         Emit_Fat_Pointer_Extractvalue_Named (const char *src,
+void         Emit_Fat_Pointer_Extractvalue_Named (const char *src_name,
                                           const char *data_name,
-                                          const char *bounds_name,
+                                          const char *low_name,
+                                          const char *high_name,
                                           const char *bt);
 void         Emit_Widen_Named_For_Intrinsic (const char *src,
                                           const char *dst, const char *bt);
@@ -2020,7 +2074,8 @@ typedef struct {
 } Bound_Temps;
 
 uint32_t     Emit_Bound_Value            (Type_Bound *bound);
-uint32_t     Emit_Bound_Value_Typed      (Type_Bound *bound, const char *ty);
+uint32_t     Emit_Bound_Value_Typed      (Type_Bound *bound,
+                                          const char **out_type);
 uint32_t     Emit_Single_Bound           (Type_Bound *bound, const char *ty);
 Bound_Temps  Emit_Bounds                 (Type_Info *type, uint32_t dim);
 Bound_Temps  Emit_Bounds_From_Fat        (uint32_t fat, const char *bt);
@@ -2036,7 +2091,9 @@ uint32_t     Emit_Min_Value             (uint32_t left, uint32_t right,
                                           const char *ty);
 uint32_t     Emit_Memcmp_Eq             (uint32_t left_ptr,
                                           uint32_t right_ptr,
-                                          uint32_t byte_size, const char *ty);
+                                          uint32_t byte_size_temp,
+                                          int64_t byte_size_static,
+                                          bool is_dynamic);
 uint32_t     Emit_Array_Lex_Compare     (uint32_t left_ptr,
                                           uint32_t right_ptr,
                                           uint32_t elem_size, const char *bt);
@@ -2059,7 +2116,8 @@ typedef struct {
 Exception_Setup Emit_Exception_Handler_Setup (void);
 uint32_t     Emit_Current_Exception_Id   (void);
 void         Generate_Exception_Dispatch (Node_List *handlers,
-                                          uint32_t handler_label);
+                                          uint32_t exc_id,
+                                          uint32_t end_label);
 
 /* ─────────────────────────────────────────────────────────────────────────────────────────── */
 /*  13.12  Expression Generation                                                             */
@@ -2100,15 +2158,19 @@ uint32_t     Emit_Bool_Array_Not         (uint32_t operand,
                                           Type_Info *result_type);
 uint32_t     Get_Dimension_Index         (Syntax_Node *arg);
 void         Emit_Float_Type_Limit       (uint32_t t, Type_Info *type,
-                                          String_Slice attr_name);
-uint32_t     Emit_Bound_Attribute        (uint32_t t, Type_Info *type,
-                                          String_Slice attr_name);
+                                          bool is_low, String_Slice attr);
+uint32_t     Emit_Bound_Attribute        (uint32_t t, Type_Info *prefix_type,
+                                          Symbol *prefix_sym,
+                                          Syntax_Node *prefix_expr,
+                                          bool needs_runtime_bounds,
+                                          uint32_t dim, bool is_low,
+                                          String_Slice attr);
 uint32_t     Emit_Disc_Constraint_Value  (Type_Info *type_info,
                                           uint32_t disc_index,
                                           const char *disc_type);
 void         Emit_Nested_Disc_Checks     (Type_Info *parent_type);
-void         Emit_Comp_Disc_Check        (uint32_t ptr, Type_Info *type,
-                                          uint32_t comp_idx);
+void         Emit_Comp_Disc_Check        (uint32_t ptr,
+                                          Type_Info *comp_ti);
 
 /* ─────────────────────────────────────────────────────────────────────────────────────────── */
 /*  13.13  Statement Generation                                                              */
@@ -2143,7 +2205,8 @@ bool         Has_Nested_Subprograms      (Node_List *declarations,
                                           Node_List *statements);
 bool         Has_Nested_In_Statements    (Node_List *statements);
 Syntax_Node *Find_Homograph_Body         (Symbol **exports, uint32_t idx,
-                                          Node_List *decls);
+                                          String_Slice name,
+                                          Node_List *body_decls);
 void         Process_Deferred_Bodies     (uint32_t saved_deferred_count);
 void         Emit_Task_Function_Name     (Symbol *task_sym,
                                           String_Slice fallback_name);
@@ -2162,21 +2225,45 @@ typedef struct {
   Syntax_Node *others_expr;     /*  The expression for the others clause     */
 } Agg_Class;
 
+typedef struct {
+  Symbol   *sym;                  /*  Discriminant symbol                     */
+  uint32_t  temp;                 /*  LLVM temp holding the value             */
+} Disc_Alloc_Entry;
+
+typedef struct {
+  Disc_Alloc_Entry *entries;      /*  Array of discriminant alloc entries     */
+  uint32_t          count;        /*  Number of entries                       */
+} Disc_Alloc_Info;
+
 Agg_Class    Agg_Classify                (Syntax_Node *node);
 bool         Bound_Pair_Overflows        (Type_Bound low, Type_Bound high);
 uint32_t     Agg_Resolve_Elem            (Syntax_Node *expr,
-                                          Type_Info *elem_type);
+                                          bool multidim,
+                                          bool elem_is_composite,
+                                          Type_Info *agg_type,
+                                          const char *elem_type,
+                                          Type_Info *elem_ti);
 void         Agg_Store_At_Static         (uint32_t base, uint32_t val,
-                                          uint32_t index, Type_Info *t);
-void         Agg_Store_At_Dynamic        (uint32_t base, uint32_t idx_temp,
-                                          uint32_t val, Type_Info *t);
+                                          int128_t idx,
+                                          const char *elem_type,
+                                          uint32_t elem_size,
+                                          bool is_composite);
+void         Agg_Store_At_Dynamic        (uint32_t base,
+                                          uint32_t val, uint32_t arr_idx,
+                                          const char *idx_type,
+                                          const char *elem_type,
+                                          uint32_t elem_size,
+                                          uint32_t rt_row_size,
+                                          bool is_composite);
 bool         Agg_Elem_Is_Composite       (Type_Info *elem, bool multidim);
 uint32_t     Agg_Comp_Byte_Size          (Type_Info *ti, Syntax_Node *src);
 void         Agg_Rec_Store               (uint32_t val, uint32_t dest_ptr,
-                                          Component_Info *comp, Type_Info *t);
+                                          Component_Info *comp,
+                                          Syntax_Node *src_expr);
 void         Agg_Rec_Disc_Post           (uint32_t val, Component_Info *comp,
                                           uint32_t disc_ordinal,
-                                          Type_Info *type);
+                                          Type_Info *agg_type,
+                                          Disc_Alloc_Info *da_info);
 uint32_t     Disc_Ordinal_Before         (Type_Info *type_info,
                                           uint32_t comp_index);
 int32_t      Find_Record_Component       (Type_Info *record_type,
@@ -2185,10 +2272,16 @@ bool         Is_Others_Choice            (Syntax_Node *choice);
 bool         Is_Static_Int_Node          (Syntax_Node *n);
 int128_t     Static_Int_Value            (Syntax_Node *n);
 void         Desugar_Aggregate_Range_Choices (Syntax_Node *agg);
-void         Emit_Inner_Consistency_Track (uint32_t lo, uint32_t hi,
+void         Emit_Inner_Consistency_Track (uint32_t *inner_trk_lo,
+                                          uint32_t *inner_trk_hi,
+                                          uint32_t inner_trk_first,
+                                          uint32_t inner_trk_mm,
+                                          int n_inner_dims,
                                           const char *bt);
 void         Collect_Disc_Symbols_In_Expr (Syntax_Node *node,
-                                          Symbol **syms, uint32_t *count);
+                                          Symbol **found,
+                                          uint32_t *count,
+                                          uint32_t max);
 
 /* ─────────────────────────────────────────────────────────────────────────────────────────── */
 /*  13.16  Top-Level Unit Generation                                                         */
@@ -2222,17 +2315,21 @@ typedef enum {
 } BIP_Formal_Kind;
 
 typedef struct {
-  Symbol *func; Type_Info *result_type; BIP_Alloc_Form alloc_form;
-  uint32_t dest_ptr; bool needs_finalization; bool has_tasks;
+  Symbol         *func;                /*  Function being transformed           */
+  Type_Info      *result_type;         /*  Return type                          */
+  BIP_Alloc_Form  alloc_form;          /*  Determined allocation strategy       */
+  uint32_t        dest_ptr;            /*  Temp holding destination address     */
+  bool            needs_finalization;  /*  Has controlled components            */
+  bool            has_tasks;           /*  Has task components                  */
 } BIP_Context;
 
 typedef struct {
-  bool     is_bip_function;
-  uint32_t bip_alloc_param;
-  uint32_t bip_access_param;
-  uint32_t bip_master_param;
-  uint32_t bip_chain_param;
-  bool     has_task_components;
+  bool     is_bip_function;            /*  Current function uses BIP            */
+  uint32_t bip_alloc_param;            /*  Temp holding __BIPalloc value        */
+  uint32_t bip_access_param;           /*  Temp holding __BIPaccess pointer     */
+  uint32_t bip_master_param;           /*  Temp holding __BIPmaster (if tasks)  */
+  uint32_t bip_chain_param;            /*  Temp holding __BIPchain (if tasks)   */
+  bool     has_task_components;        /*  Return type has tasks                */
 } BIP_Function_State;
 
 extern BIP_Function_State g_bip_state;
@@ -2246,7 +2343,8 @@ bool         BIP_Type_Has_Task_Component      (const Type_Info *t);
 bool         BIP_Needs_Alloc_Form             (const Symbol *func);
 uint32_t     BIP_Extra_Formal_Count           (const Symbol *func);
 BIP_Alloc_Form BIP_Determine_Alloc_Form      (bool is_allocator,
-                                               bool has_pool);
+                                               bool in_return_stmt,
+                                               bool has_target);
 void         BIP_Begin_Function               (const Symbol *func);
 bool         BIP_In_BIP_Function              (void);
 void         BIP_End_Function                 (void);
@@ -2266,79 +2364,88 @@ void         BIP_End_Function                 (void);
 /* ========================================================================================= */
 
 /* ─────────────────────────────────────────────────────────────────────────────────────────── */
-/*  14.1  ALI Data Structures                                                                */
+/*  14.1  ALI Writer Data Structures                                                         */
 /* ─────────────────────────────────────────────────────────────────────────────────────────── */
 
 typedef struct {
-  String_Slice unit_name;
-  String_Slice source_name;
-  uint32_t     source_checksum;
-  bool         is_body;
-  bool         is_generic;
-  bool         is_preelaborate;
-  bool         is_pure;
-  bool         has_elaboration;
+  String_Slice      unit_name;        /*  Canonical Ada name (Package.Child%b) */
+  String_Slice      source_name;      /*  File name (package-child.adb)        */
+  uint32_t          source_checksum;  /*  CRC32 of source text                 */
+  bool              is_body;          /*  spec (false) or body (true)          */
+  bool              is_generic;       /*  Generic declaration                  */
+  bool              is_preelaborate;  /*  Pragma Preelaborate                  */
+  bool              is_pure;          /*  Pragma Pure                          */
+  bool              has_elaboration;  /*  Has elaboration code                 */
 } Unit_Info;
 
 typedef struct {
-  String_Slice name;
-  String_Slice source_file;
-  String_Slice ali_file;
-  bool         is_limited;
-  bool         elaborate;       /*  pragma Elaborate was specified            */
-  bool         elaborate_all;   /*  pragma Elaborate_All was specified        */
+  String_Slice      name;             /*  WITH'd unit name                     */
+  String_Slice      source_file;      /*  Source file name                     */
+  String_Slice      ali_file;         /*  ALI file name                        */
+  bool              is_limited;       /*  LIMITED WITH                         */
+  bool              elaborate;        /*  Pragma Elaborate was specified        */
+  bool              elaborate_all;    /*  Pragma Elaborate_All was specified    */
 } With_Info;
 
 typedef struct {
-  String_Slice source_file;
-  uint32_t     timestamp;
-  uint32_t     checksum;
+  String_Slice      source_file;      /*  Depended-on source file              */
+  uint32_t          timestamp;        /*  Modification time (Unix epoch)       */
+  uint32_t          checksum;         /*  CRC32 checksum                       */
 } Dependency_Info;
 
 typedef struct {
-  String_Slice name;
-  String_Slice llvm_name;
-  String_Slice type_name;
-  bool         is_function;
-  bool         is_generic;
-  bool         is_type;
-  const char  *llvm_type;
+  String_Slice      name;             /*  Ada symbol name                      */
+  String_Slice      mangled_name;     /*  LLVM symbol name                     */
+  char              kind;             /*  T/S/V/C/P/F/E symbol category        */
+  uint32_t          line;             /*  Declaration line number              */
+  String_Slice      type_name;        /*  Type name (for typed symbols)        */
+  String_Slice      llvm_type;        /*  LLVM type signature                  */
+  uint32_t          param_count;      /*  Parameter count (subprograms)        */
 } Export_Info;
 
 typedef struct {
-  Unit_Info       unit;
-  With_Info      *withs;        /*  Array of with-clause records             */
-  uint32_t        with_count;
-  Dependency_Info *deps;        /*  Array of dependency records              */
-  uint32_t        dep_count;
-  Export_Info     *exports;      /*  Array of exported symbol records         */
-  uint32_t        export_count;
-  String_Slice    body_source;
-  uint32_t        body_checksum;
+  Unit_Info         units[8];         /*  Units in this compilation            */
+  uint32_t          unit_count;       /*  Number of units                      */
+  With_Info         withs[64];        /*  WITH dependencies                    */
+  uint32_t          with_count;       /*  Number of with clauses               */
+  Dependency_Info   deps[128];        /*  Source dependencies                  */
+  uint32_t          dep_count;        /*  Number of dependencies               */
+  Export_Info        exports[256];     /*  Exported symbols                     */
+  uint32_t          export_count;     /*  Number of exports                    */
 } ALI_Info;
 
 /* ─────────────────────────────────────────────────────────────────────────────────────────── */
-/*  14.2  ALI Cache                                                                          */
+/*  14.2  ALI Reader / Cache                                                                 */
 /*                                                                                           */
-/*  The cache avoids redundant file I/O when the same unit is depended upon                  */
-/*  by multiple compilation units in the same session.                                       */
+/*  The reader parses .ali files produced by prior compilations.  The cache                  */
+/*  avoids redundant file I/O when the same unit is depended upon by                         */
+/*  multiple compilation units in the same session.                                          */
 /* ─────────────────────────────────────────────────────────────────────────────────────────── */
 
 typedef struct {
-  String_Slice    unit_name;
-  String_Slice    source_name;
-  uint32_t        source_checksum;
-  bool            is_preelaborate;
-  bool            is_pure;
-  bool            has_elaboration;
-  Export_Info     *exports;
-  uint32_t        export_count;
+  char            kind;            /*  T/S/V/C/P/F/E symbol category        */
+  char           *name;            /*  Ada symbol name                      */
+  char           *mangled_name;    /*  LLVM symbol name for linking         */
+  char           *llvm_type;       /*  LLVM type signature                  */
+  uint32_t        line;            /*  Source line number                   */
+  char           *type_name;       /*  Ada type name (or NULL)              */
+  uint32_t        param_count;     /*  Number of parameters (subprograms)   */
 } ALI_Export;
 
-typedef struct {
-  String_Slice ali_path;
-  ALI_Export   exports;
-  bool         loaded;
+typedef struct ALI_Cache_Entry_Forward {
+  char           *unit_name;       /*  Canonical name (e.g., "text_io")     */
+  char           *source_file;     /*  Source file name                     */
+  char           *ali_file;        /*  ALI file path                        */
+  uint32_t        checksum;        /*  Source checksum from ALI             */
+  bool            is_spec;         /*  true = spec, false = body            */
+  bool            is_generic;      /*  Generic unit                         */
+  bool            is_preelaborate; /*  Has Preelaborate pragma              */
+  bool            is_pure;         /*  Has Pure pragma                      */
+  bool            loaded;          /*  Symbols already loaded into scope    */
+  char           *withs[64];       /*  WITH'd unit names                    */
+  uint32_t        with_count;      /*  Number of with dependencies          */
+  ALI_Export      exports[256];    /*  Exported symbols from X lines        */
+  uint32_t        export_count;    /*  Number of exported symbols           */
 } ALI_Cache_Entry;
 
 extern ALI_Cache_Entry ALI_Cache[256];
@@ -2348,28 +2455,18 @@ extern uint32_t        ALI_Cache_Count;
 /*  14.3  ALI and CRC Operations                                                             */
 /* ─────────────────────────────────────────────────────────────────────────────────────────── */
 
-void     Crc32_Init_Table                (void);
 uint32_t CRC32_Update                    (uint32_t crc, const void *data,
                                           size_t length);
-uint32_t CRC32_File                      (const char *path);
 
-void     ALI_Write                       (const char *path, ALI_Info *ali);
-bool     ALI_Read                        (const char *path, ALI_Info *ali);
-void     ALI_Collect_Exports             (Syntax_Node *unit,
-                                          ALI_Info *ali);
-String_Slice Get_Subprogram_Name         (Syntax_Node *node);
-String_Slice LLVM_Type_Basic             (String_Slice ada_type);
-void     ALI_Register_Dependency         (ALI_Info *ali, String_Slice name,
-                                          const char *source_file);
-void     ALI_Build_Info                  (Syntax_Node *comp_unit,
-                                          const char *source_file,
-                                          ALI_Info *ali);
-void     ALI_Write_For_Unit              (Syntax_Node *comp_unit,
-                                          const char *source_file);
-bool     ALI_Load_Exports                (const char *ali_path,
-                                          ALI_Export *out);
-ALI_Export *ALI_Get_Cached_Exports       (String_Slice unit_name);
-void     ALI_Install_Exports_Into_Scope  (ALI_Export *exports, Scope *scope);
+void     ALI_Write                       (FILE *out, ALI_Info *ali);
+ALI_Cache_Entry *ALI_Read                (const char *ali_path);
+void     ALI_Collect_Exports             (ALI_Info *ali, Syntax_Node *unit);
+void     ALI_Collect_Withs              (ALI_Info *ali, Syntax_Node *ctx);
+void     ALI_Collect_Unit               (ALI_Info *ali, Syntax_Node *cu,
+                                          const char *source, size_t source_size);
+void     Generate_ALI_File              (const char *output_path,
+                                          Syntax_Node **units, int unit_count,
+                                          const char *source, size_t source_size);
 char    *ALI_Find                        (String_Slice unit_name);
 void     ALI_Load_Symbols               (ALI_Cache_Entry *entry);
 bool     Try_Load_From_ALI              (String_Slice name);
@@ -2393,82 +2490,132 @@ bool     Try_Load_From_ALI              (String_Slice name);
 /*  15.1  Elaboration Types                                                                  */
 /* ─────────────────────────────────────────────────────────────────────────────────────────── */
 
-typedef enum { ELAB_SPEC = 0, ELAB_BODY, ELAB_BOTH } Elab_Unit_Kind;
-typedef enum { ELAB_DEP_WITH = 0, ELAB_DEP_ELABORATE,
-               ELAB_DEP_ELABORATE_ALL, ELAB_DEP_SPEC_BODY } Elab_Edge_Kind;
-typedef enum { ELAB_NORMAL = 0, ELAB_FORCED, ELAB_DEFERRED } Elab_Precedence;
-typedef enum { ELAB_OK = 0, ELAB_CIRCULAR, ELAB_MISSING } Elab_Order_Status;
+typedef enum {
+  UNIT_SPEC,             /*  Package/subprogram spec with separate body      */
+  UNIT_BODY,             /*  Package/subprogram body (paired with spec)      */
+  UNIT_SPEC_ONLY,        /*  Spec without body (e.g., pure package spec)     */
+  UNIT_BODY_ONLY         /*  Body without explicit spec (e.g., main)         */
+} Elab_Unit_Kind;
+
+typedef enum {
+  EDGE_WITH,             /*  WITH clause dependency (strong)                 */
+  EDGE_ELABORATE,        /*  pragma Elaborate (strong)                       */
+  EDGE_ELABORATE_ALL,    /*  pragma Elaborate_All (strong, transitive)       */
+  EDGE_SPEC_BEFORE_BODY, /*  Spec must elaborate before body (strong)        */
+  EDGE_INVOCATION,       /*  Call discovered during elaboration (weak)       */
+  EDGE_FORCED            /*  Compiler-forced ordering (strong)               */
+} Elab_Edge_Kind;
+
+typedef enum {
+  PREC_HIGHER,           /*  First vertex should elaborate first             */
+  PREC_EQUAL,            /*  No preference (use tiebreaker)                  */
+  PREC_LOWER             /*  Second vertex should elaborate first            */
+} Elab_Precedence;
+
+typedef enum {
+  ELAB_ORDER_OK,                       /*  Valid order found                 */
+  ELAB_ORDER_HAS_CYCLE,                /*  Unresolvable cycle detected      */
+  ELAB_ORDER_HAS_ELABORATE_ALL_CYCLE   /*  Elaborate_All cycle (fatal)      */
+} Elab_Order_Status;
+
+typedef struct Elab_Vertex Elab_Vertex;
+typedef struct Elab_Edge   Elab_Edge;
+
+struct Elab_Vertex {
+  uint32_t         id;                 /*  Unique vertex ID (1-based)       */
+  String_Slice     name;               /*  Unit name (e.g., "Text_IO")      */
+  Elab_Unit_Kind   kind;               /*  Spec/Body/Spec_Only/Body_Only    */
+  Symbol          *symbol;             /*  Associated package/subprogram    */
+  uint32_t         component_id;       /*  SCC ID (0 = not yet assigned)    */
+  uint32_t         pending_strong;     /*  Strong predecessors remaining    */
+  uint32_t         pending_weak;       /*  Weak predecessors remaining      */
+  bool             in_elab_order;      /*  Already in elaboration order?    */
+  bool             is_preelaborate;    /*  pragma Preelaborate              */
+  bool             is_pure;            /*  pragma Pure                      */
+  bool             has_elab_body;      /*  pragma Elaborate_Body            */
+  bool             is_predefined;      /*  Ada.*, System.*, Interfaces.*   */
+  bool             is_internal;        /*  GNAT.*, Ada83.* internal units   */
+  bool             needs_elab_code;    /*  Has elaboration code to run?     */
+  Elab_Vertex     *body_vertex;        /*  For spec: pointer to body vertex */
+  Elab_Vertex     *spec_vertex;        /*  For body: pointer to spec vertex */
+  uint32_t         first_pred_edge;    /*  First incoming edge index (or 0) */
+  uint32_t         first_succ_edge;    /*  First outgoing edge index (or 0) */
+  int32_t          tarjan_index;       /*  Discovery index (-1 = unvisited) */
+  int32_t          tarjan_lowlink;     /*  Lowest reachable index           */
+  bool             tarjan_on_stack;    /*  Currently on the DFS stack?      */
+};
+
+struct Elab_Edge {
+  uint32_t         id;                 /*  Unique edge ID (1-based)         */
+  Elab_Edge_Kind   kind;               /*  WITH/ELABORATE/etc.              */
+  bool             is_strong;          /*  Strong edge must be satisfied    */
+  uint32_t         pred_vertex_id;     /*  Predecessor (elaborates first)   */
+  uint32_t         succ_vertex_id;     /*  Successor (elaborates after)     */
+  uint32_t         next_pred_edge;     /*  Next edge with same predecessor  */
+  uint32_t         next_succ_edge;     /*  Next edge with same successor    */
+};
 
 typedef struct {
-  String_Slice   name;
-  Elab_Unit_Kind kind;
-  Symbol        *symbol;
-  bool           elaborated;
-  bool           in_progress;
-  uint32_t       order_index;   /*  Position in the final ordering           */
-  uint32_t       scc_index;     /*  Tarjan SCC index                         */
-  uint32_t       scc_lowlink;   /*  Tarjan lowlink value                     */
-  bool           scc_on_stack;
-} Elab_Vertex;
-
-typedef struct {
-  uint32_t        from;         /*  Source vertex index                       */
-  uint32_t        to;           /*  Target vertex index                       */
-  Elab_Edge_Kind  kind;
-  Elab_Precedence precedence;
-} Elab_Edge;
-
-typedef struct {
-  uint32_t items[ELAB_MAX_VERTICES];
-  uint32_t count;
+  uint64_t bits[(ELAB_MAX_VERTICES + 63) / 64]; /*  Bitset of vertex IDs   */
 } Elab_Vertex_Set;
 
 typedef struct {
-  Elab_Vertex    vertices[ELAB_MAX_VERTICES];
-  uint32_t       vertex_count;
-  Elab_Edge      edges[ELAB_MAX_EDGES];
-  uint32_t       edge_count;
-  uint32_t       order[ELAB_MAX_VERTICES];
-  uint32_t       order_count;
-  uint32_t       scc_components[ELAB_MAX_COMPONENTS][ELAB_MAX_VERTICES];
-  uint32_t       scc_sizes[ELAB_MAX_COMPONENTS];
-  uint32_t       scc_count;
+  Elab_Vertex      vertices[ELAB_MAX_VERTICES]; /*  Vertex array            */
+  uint32_t         vertex_count;       /*  Number of vertices               */
+  Elab_Edge        edges[ELAB_MAX_EDGES]; /*  Edge array                    */
+  uint32_t         edge_count;         /*  Number of edges                  */
+  uint32_t         component_pending_strong[ELAB_MAX_COMPONENTS]; /*  SCC strong preds */
+  uint32_t         component_pending_weak[ELAB_MAX_COMPONENTS];   /*  SCC weak preds   */
+  uint32_t         component_count;    /*  Number of SCCs                   */
+  Elab_Vertex     *order[ELAB_MAX_VERTICES]; /*  Elaboration order result   */
+  uint32_t         order_count;        /*  Entries in the order array       */
+  bool             has_elaborate_all_cycle; /*  Fatal cycle detected?        */
 } Elab_Graph;
 
 typedef struct {
-  uint32_t stack[ELAB_MAX_VERTICES];
-  uint32_t stack_top;
-  uint32_t index;
+  uint32_t stack[ELAB_MAX_VERTICES];   /*  Tarjan DFS stack                 */
+  uint32_t stack_top;                  /*  Current stack depth              */
+  int32_t  index;                      /*  Discovery counter                */
 } Tarjan_State;
 
 /* ─────────────────────────────────────────────────────────────────────────────────────────── */
 /*  15.2  Elaboration Operations                                                             */
 /* ─────────────────────────────────────────────────────────────────────────────────────────── */
 
-uint32_t          Elab_Find_Vertex        (Elab_Graph *g, String_Slice name,
+extern Elab_Graph g_elab_graph;
+extern bool       g_elab_graph_initialized;
+
+uint32_t          Elab_Find_Vertex        (const Elab_Graph *g,
+                                            String_Slice name,
                                             Elab_Unit_Kind kind);
 uint32_t          Elab_Add_Vertex         (Elab_Graph *g, String_Slice name,
                                             Elab_Unit_Kind kind, Symbol *sym);
-void              Elab_Add_Edge           (Elab_Graph *g, uint32_t from,
-                                            uint32_t to, Elab_Edge_Kind kind);
+uint32_t          Elab_Add_Edge           (Elab_Graph *g, uint32_t pred_id,
+                                            uint32_t succ_id,
+                                            Elab_Edge_Kind kind);
 bool              Edge_Kind_Is_Strong     (Elab_Edge_Kind k);
+Elab_Vertex      *Elab_Get_Vertex         (Elab_Graph *g, uint32_t id);
+const Elab_Vertex *Elab_Get_Vertex_Const  (const Elab_Graph *g, uint32_t id);
 
-void              Elab_Tarjan_Visit       (Elab_Graph *g, Tarjan_State *st,
-                                            uint32_t v);
-void              Elab_Compute_SCCs       (Elab_Graph *g);
 void              Elab_Find_Components    (Elab_Graph *g);
 Elab_Graph        Elab_Graph_New          (void);
 Elab_Vertex_Set   Elab_Set_Empty          (void);
+bool              Elab_Set_Contains       (const Elab_Vertex_Set *s,
+                                            uint32_t id);
+void              Elab_Set_Insert         (Elab_Vertex_Set *s, uint32_t id);
+void              Elab_Set_Remove         (Elab_Vertex_Set *s, uint32_t id);
+uint32_t          Elab_Set_Size           (const Elab_Vertex_Set *s);
 
 void              Elab_Elaborate_Vertex   (Elab_Graph *g, uint32_t v_id,
-                                            Elab_Vertex_Set *ready);
+                                            Elab_Vertex_Set *elaborable,
+                                            Elab_Vertex_Set *waiting);
 Elab_Order_Status Elab_Elaborate_Graph    (Elab_Graph *g);
 void              Elab_Pair_Specs_Bodies  (Elab_Graph *g);
 
-extern bool       g_elab_graph_initialized;
 void              Elab_Init               (void);
 uint32_t          Elab_Register_Unit      (String_Slice name, bool is_body,
-                                            Symbol *sym);
+                                            Symbol *sym, bool is_preelaborate,
+                                            bool is_pure, bool has_elab_code);
 Elab_Order_Status Elab_Compute_Order      (void);
 uint32_t          Elab_Get_Order_Count    (void);
 Symbol           *Elab_Get_Order_Symbol   (uint32_t index);
@@ -2478,9 +2625,9 @@ bool              Elab_Needs_Elab_Call    (uint32_t index);
 /*                                                                                           */
 /*  Chapter 16.  GENERICS                                                                    */
 /*                                                                                           */
-/*  Generic units are instantiated by macro-style expansion: the template AST                 */
+/*  Generic units are instantiated by macro-style expansion: the template AST                */
 /*  is deep-cloned with formal-to-actual substitution, then resolved and                     */
-/*  code-generated as though the programmer had written the expanded text by hand.            */
+/*  code-generated as though the programmer had written the expanded text by hand.           */
 /*                                                                                           */
 /*  The Instantiation_Env maps formal names to actual types, subprograms, and                */
 /*  expressions.  Node_Deep_Clone recursively duplicates the AST while replacing             */
@@ -2489,36 +2636,45 @@ bool              Elab_Needs_Elab_Call    (uint32_t index);
 /* ========================================================================================= */
 
 typedef struct {
-  String_Slice  formal_name;
-  Type_Info    *actual_type;
-  Symbol       *actual_symbol;
-  Syntax_Node  *actual_expr;
+  String_Slice  formal_name;   /* Generic formal parameter name */
+  Type_Info    *actual_type;   /* Substituted actual type */
+  Symbol       *actual_symbol; /* Actual symbol (for subprogram formals) */
+  Syntax_Node  *actual_expr;   /* Actual expression (for object formals) */
 } Generic_Mapping;
 
 typedef struct {
-  Generic_Mapping  mappings[32];
-  uint32_t         count;
-  Symbol          *instance_sym;
-  Symbol          *template_sym;
+  Generic_Mapping  mappings[32]; /* Formal-to-actual mapping array */
+  uint32_t         count;        /* Number of active mappings */
+  Symbol          *instance_sym; /* The instantiation symbol */
+  Symbol          *template_sym; /* The generic template symbol */
 } Instantiation_Env;
 
-Type_Info   *Env_Lookup_Type             (Instantiation_Env *env,
-                                          String_Slice name);
-Syntax_Node *Env_Lookup_Expr             (Instantiation_Env *env,
-                                          String_Slice name);
-Syntax_Node *Node_Deep_Clone             (Syntax_Node *node,
-                                          Instantiation_Env *env, int depth);
-void         Node_List_Clone             (Node_List *dst, Node_List *src,
-                                          Instantiation_Env *env, int depth);
-void         Build_Instantiation_Env     (Instantiation_Env *env,
-                                          Symbol *inst, Symbol *tmpl);
-void         Expand_Generic_Package      (Symbol *instance_sym);
+Type_Info *Env_Lookup_Type (Instantiation_Env *env,
+                            String_Slice       name);
+
+Syntax_Node *Env_Lookup_Expr (Instantiation_Env *env,
+                              String_Slice       name);
+
+Syntax_Node *Node_Deep_Clone (Syntax_Node       *node,
+                              Instantiation_Env *env,
+                              int                depth);
+
+void Node_List_Clone (Node_List         *dst,
+                      Node_List         *src,
+                      Instantiation_Env *env,
+                      int                depth);
+
+void Build_Instantiation_Env (Instantiation_Env *env,
+                              Symbol            *inst,
+                              Symbol            *tmpl);
+
+void Expand_Generic_Package (Symbol *instance_sym);
 
 /* ========================================================================================= */
 /*                                                                                           */
 /*  Chapter 17.  FILE LOADING                                                                */
 /*                                                                                           */
-/*  WITH clauses name packages that must be found on disk, loaded, parsed,                    */
+/*  WITH clauses name packages that must be found on disk, loaded, parsed,                   */
 /*  semantically analysed, and code-generated before the withing unit can                    */
 /*  proceed.  Include_Paths lists the directories to search; Lookup_Path                     */
 /*  maps a unit name to a file path using standard naming conventions.                       */
@@ -2528,47 +2684,47 @@ void         Expand_Generic_Package      (Symbol *instance_sym);
 /*                                                                                           */
 /* ========================================================================================= */
 
-extern const char     *Include_Paths[32];
-extern uint32_t        Include_Path_Count;
-extern Syntax_Node    *Loaded_Package_Bodies[128];
-extern int             Loaded_Body_Count;
-extern String_Slice    Loaded_Body_Names[128];
-extern int             Loaded_Body_Names_Count;
+extern const char   *Include_Paths[32];
+extern uint32_t      Include_Path_Count;
+extern Syntax_Node  *Loaded_Package_Bodies[128];
+extern int           Loaded_Body_Count;
+extern String_Slice  Loaded_Body_Names[128];
+extern int           Loaded_Body_Names_Count;
 
 typedef struct {
-  String_Slice names[64];
-  int          count;
+  String_Slice names[64]; /* Unit names currently being loaded */
+  int          count;     /* Number of entries in the set */
 } Loading_Set;
 
 extern Loading_Set Loading_Packages;
 
-bool  Body_Already_Loaded    (String_Slice name);
-void  Mark_Body_Loaded       (String_Slice name);
-bool  Loading_Set_Contains   (String_Slice name);
-void  Loading_Set_Add        (String_Slice name);
-void  Loading_Set_Remove     (String_Slice name);
-char *Lookup_Path            (String_Slice name);
-char *Lookup_Path_Body       (String_Slice name);
-bool  Has_Precompiled_LL     (String_Slice name);
+bool  Body_Already_Loaded  (String_Slice name);
+void  Mark_Body_Loaded     (String_Slice name);
+bool  Loading_Set_Contains (String_Slice name);
+void  Loading_Set_Add      (String_Slice name);
+void  Loading_Set_Remove   (String_Slice name);
+char *Lookup_Path          (String_Slice name);
+char *Lookup_Path_Body     (String_Slice name);
+bool  Has_Precompiled_LL   (String_Slice name);
 
-void  Load_Package_Spec      (String_Slice name, char *src);
-char *Read_File              (const char *path, size_t *out_size);
-char *Read_File_Simple       (const char *path);
+void  Load_Package_Spec (String_Slice name, char *src);
+char *Read_File         (const char *path, size_t *out_size);
+char *Read_File_Simple  (const char *path);
 
 /* ========================================================================================= */
 /*                                                                                           */
 /*  Chapter 18.  VECTOR PATHS                                                                */
 /*                                                                                           */
-/*  Vectorised scanning primitives for whitespace skipping, identifier recognition,           */
+/*  Vectorised scanning primitives for whitespace skipping, identifier recognition,          */
 /*  digit scanning, and single-character search.  Three implementations are                  */
 /*  selected at compile time by the platform detection in Chapter 1:                         */
 /*                                                                                           */
-/*    x86-64   AVX-512BW (64-byte), AVX2 (32-byte), with scalar tail                        */
+/*    x86-64   AVX-512BW (64-byte), AVX2 (32-byte), with scalar tail                         */
 /*    ARM64    NEON/ASIMD (16-byte), with scalar tail                                        */
 /*    Generic  Scalar fallback with unrolled loops                                           */
 /*                                                                                           */
 /*  All SIMD paths produce results identical to their scalar equivalents for                 */
-/*  every possible input.  The scanning interface is the same on all platforms;               */
+/*  every possible input.  The scanning interface is the same on all platforms;              */
 /*  only the implementation changes.                                                         */
 /*                                                                                           */
 /* ========================================================================================= */
@@ -2579,37 +2735,36 @@ char *Read_File_Simple       (const char *path);
   uint32_t    Tzcnt32 (uint32_t value);
   uint64_t    Tzcnt64 (uint64_t value);
   #ifdef __AVX2__
-  uint32_t    Simd_Parse_8_Digits_Avx2 (const char *digits);
-  int         Simd_Parse_Digits_Avx2   (const char *cursor,
-                                         const char *limit, uint64_t *out);
+    uint32_t Simd_Parse_8_Digits_Avx2 (const char *digits);
+    int      Simd_Parse_Digits_Avx2   (const char *cursor, const char *limit, uint64_t *out);
   #endif
 #elif defined(SIMD_ARM64)
-  uint64_t    Tzcnt64 (uint64_t value);
+  uint64_t Tzcnt64 (uint64_t value);
 #endif
 
-void         Simd_Detect_Features       (void);
-const char  *Simd_Skip_Whitespace       (const char *cursor, const char *limit);
-const char  *Simd_Find_Newline          (const char *cursor, const char *limit);
-const char  *Simd_Find_Quote            (const char *cursor, const char *limit);
-const char  *Simd_Find_Double_Quote     (const char *cursor, const char *limit);
-const char  *Simd_Scan_Identifier       (const char *cursor, const char *limit);
-const char  *Simd_Scan_Digits           (const char *cursor, const char *limit);
+void         Simd_Detect_Features   (void);
+const char  *Simd_Skip_Whitespace   (const char *cursor, const char *limit);
+const char  *Simd_Find_Newline      (const char *cursor, const char *limit);
+const char  *Simd_Find_Quote        (const char *cursor, const char *limit);
+const char  *Simd_Find_Double_Quote (const char *cursor, const char *limit);
+const char  *Simd_Scan_Identifier   (const char *cursor, const char *limit);
+const char  *Simd_Scan_Digits       (const char *cursor, const char *limit);
 
 /* ========================================================================================= */
 /*                                                                                           */
 /*  Chapter 19.  DRIVER                                                                      */
 /*                                                                                           */
-/*  The main driver parses command-line arguments, compiles each source file to               */
-/*  LLVM IR -- optionally forking a subprocess per file for parallel compilation --           */
+/*  The main driver parses command-line arguments, compiles each source file to              */
+/*  LLVM IR -- optionally forking a subprocess per file for parallel compilation --          */
 /*  and returns an exit status.  Derive_Output_Path maps an input .adb or .ads               */
 /*  file to the corresponding .ll output path.                                               */
 /*                                                                                           */
 /* ========================================================================================= */
 
 typedef struct {
-  const char *input_path;
-  const char *output_path;
-  int         exit_status;
+  const char *input_path;  /* Source file to compile   */
+  const char *output_path; /* Where NULL means derive from input */
+  int         exit_status; /* Zero for success, one for failure */
 } Compile_Job;
 
 void  Compile_File       (const char *input_path, const char *output_path);
