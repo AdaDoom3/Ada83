@@ -6,14 +6,12 @@
 #include "ada83.h"
 
 /* ═══════════════════════════════════════════════════════════════════════════════════════════════════
- * §1. TYPE METRICS — Size, alignment, and bit-width representation
+ * §1. FOUNDATIONS — Includes, typedefs, target constants, ctype wrappers
  * ═══════════════════════════════════════════════════════════════════════════════════════════════════
  *
- * All size and alignment computations are centralised here.  Sizes flow through the To_Bits and
- * To_Bytes morphisms so that bit/byte confusion is impossible at the call site.
- *
- * INVARIANT: Sizes stored in Type_Info are always in BYTES (not bits).  This matches the LLVM
- * DataLayout model and simplifies record-layout arithmetic throughout the code generator.
+ * Safe wrappers around the C library ctype functions and the identifier-character lookup table
+ * defined by Ada LRM §2.3.  These are the first definitions because every subsequent chapter
+ * depends on character classification.
  */
 
 /* Safe ctype wrappers: the C library <ctype.h> functions take int and require unsigned char to
@@ -62,8 +60,19 @@ const uint8_t Id_Char_Table[256] = {
   /* Latin-1 remaining lowercase: ø ù ú û ü ý þ ÿ */
   [0xF8]=1,[0xF9]=1,[0xFA]=1,[0xFB]=1,[0xFC]=1,[0xFD]=1,[0xFE]=1,[0xFF]=1
 };
+
+/* ═══════════════════════════════════════════════════════════════════════════════════════════════════
+ * §2. MEASUREMENT — Size, alignment, and bit-width representation
+ * ═══════════════════════════════════════════════════════════════════════════════════════════════════
+ *
+ * All size and alignment computations are centralised here.  Sizes flow through the To_Bits and
+ * To_Bytes morphisms so that bit/byte confusion is impossible at the call site.
+ *
+ * INVARIANT: Sizes stored in Type_Info are always in BYTES (not bits).  This matches the LLVM
+ * DataLayout model and simplifies record-layout arithmetic throughout the code generator.
+ */
 /* ─────────────────────────────────────────────────────────────────────────────────────────────────
- * §1.1 Bit/Byte Conversions — Size morphisms
+ * §2.1 Bit/Byte Conversions — Size morphisms
  *
  * To_Bits   : bytes -> bits   (multiplicative, total — never truncates)
  * To_Bytes  : bits  -> bytes  (ceiling division — rounds up to the next whole byte)
@@ -79,7 +88,7 @@ size_t Align_To (size_t size, size_t alignment) {
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────────────────────────
- * §1.2 LLVM Type Selection — Width-to-type morphisms
+ * §2.2 LLVM Type Selection — Width-to-type morphisms
  *
  * Given a bit width, return the smallest LLVM integer (or float) type that can hold that width.
  * ───────────────────────────────────────────────────────────────────────────────────────────────── */
@@ -105,7 +114,7 @@ bool Llvm_Type_Is_Fat_Pointer (const char *llvm_type) {
 
 
 /* ─────────────────────────────────────────────────────────────────────────────────────────────────
- * §1.3 Range Predicates — Determining representation width
+ * §2.3 Range Predicates — Determining representation width
  *
  * Compute the minimum number of bits needed to represent the integer range [lo .. hi].  All
  * bounds are int128_t so that the full Ada 2022 Long_Long_Long_Integer range is covered.
@@ -158,7 +167,7 @@ uint32_t Bits_For_Modulus (uint128_t modulus) {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════════════════════════════
- * §2. MEMORY ARENA — Bump allocation for the compilation session
+ * §3. MEMORY — Bump allocation for the compilation session
  * ═══════════════════════════════════════════════════════════════════════════════════════════════════
  *
  * A simple bump allocator used for AST nodes, interned strings, and other objects whose lifetime
@@ -194,7 +203,7 @@ void Arena_Free_All (void) {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════════════════════════════
- * §3. STRING SLICE — Non-owning string views
+ * §4. TEXT — Non-owning string views
  * ═══════════════════════════════════════════════════════════════════════════════════════════════════
  *
  * A String_Slice is a (pointer, length) pair borrowed from the source buffer or the arena.  It
@@ -256,7 +265,7 @@ int Edit_Distance (String_Slice left, String_Slice right) {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════════════════════════════
- * §4. SOURCE LOCATION — Anchoring diagnostics to source text
+ * §5. PROVENANCE — Anchoring diagnostics to source text
  * ═══════════════════════════════════════════════════════════════════════════════════════════════════
  *
  * Every AST node, token, and symbol carries a Source_Location so that error messages can point
@@ -265,7 +274,7 @@ int Edit_Distance (String_Slice left, String_Slice right) {
 const Source_Location No_Location = { .filename = NULL, .line = 0, .column = 0 };
 
 /* ═══════════════════════════════════════════════════════════════════════════════════════════════════
- * §5. ERROR HANDLING — Accumulating diagnostic reports
+ * §5.2 ERROR HANDLING — Accumulating diagnostic reports
  * ═══════════════════════════════════════════════════════════════════════════════════════════════════
  *
  * Errors are accumulated rather than triggering an immediate abort, so the compiler can report
@@ -476,204 +485,8 @@ Big_Integer *Big_Integer_Add (const Big_Integer *left, const Big_Integer *right)
   return result;
 }
 
-/* ─────────────────────────────────────────────────────────────────────────────────────────────────
- * §6.1 SIMD-accelerated decimal parsing
- *
- * Instead of processing one digit at a time (multiply by 10, add digit), the SIMD path batches
- * eight digits at once (multiply by 10**8, add the 8-digit value).  Eight ASCII digits are
- * converted to a 32-bit integer in three steps:
- *
- *   vpmaddubsw — multiply adjacent bytes by positional weights [10,1,...], sum to 16-bit words
- *   vpmaddwd   — multiply adjacent words by [100,1,...], sum to 32-bit dwords
- *   imul + add — final combine:  high_dword * 10000 + low_dword
- *
- * This reduces the number of big-integer multiply-add operations from O(n) to O(n/8).
- * ───────────────────────────────────────────────────────────────────────────────────────────────── */
-#ifdef SIMD_X86_64
-
-/* Parse exactly 8 ASCII digit characters ('0'–'9') into a 32-bit integer in the range
- * [0 .. 99_999_999] using AVX2 multiply-add instructions (see §6.1 header for the algorithm). */
-uint32_t Simd_Parse_8_Digits_Avx2 (const char *digits) {
-  uint32_t result;
-  __asm__ volatile (
-
-    /* Load 8 bytes into low portion of xmm0 */
-    "vmovq (%[src]), %%xmm0\n\t"
-
-    /* Broadcast '0' and subtract to get digit values */
-    "vmovd %[zero], %%xmm1\n\t"
-    "vpbroadcastb %%xmm1, %%xmm1\n\t"
-    "vpsubb %%xmm1, %%xmm0, %%xmm0\n\t"
-
-    /* Multiply-add bytes to words: weights [10,1,10,1,10,1,10,1] */
-    "vmovq %[w1], %%xmm2\n\t"
-    "vpmaddubsw %%xmm2, %%xmm0, %%xmm0\n\t"
-
-    /* Multiply-add words to dwords: weights [100,1,100,1] */
-    "vmovq %[w2], %%xmm2\n\t"
-    "vpmaddwd %%xmm2, %%xmm0, %%xmm0\n\t"
-
-    /* Extract two dwords and combine: dw0 * 10000 + dw1 */
-    "vmovd %%xmm0, %%eax\n\t"
-    "vpextrd $1, %%xmm0, %%edx\n\t"
-    "imull $10000, %%eax\n\t"
-    "addl %%edx, %%eax\n\t"
-    : "=a" (result)
-    : [src] "r" (digits),
-      [zero] "r" ((uint32_t) '0'),
-      [w1] "r" (0x010A010A010A010AULL),  /* byte weights [10,1,10,1,10,1,10,1]  (0x0A = 10) */
-      [w2] "r" (0x0001006400010064ULL)   /* word weights [100,1,100,1]                       */
-    : "xmm0", "xmm1", "xmm2", "edx", "memory"
-  );
-  return result;
-}
-
-/* Parse up to 16 ASCII digits from the buffer [cursor .. limit) using AVX2.  Validates that all
- * bytes are ASCII digits first; returns the number of digits actually consumed and stores the
- * parsed value in *out. */
-int Simd_Parse_Digits_Avx2 (const char *cursor, const char *limit, uint64_t *out) {
-  int length = (limit - cursor > 16) ? 16 : (int) (limit - cursor);
-
-  /* Fewer than 8 digits available — fall back to scalar. */
-  if (length < 8) {
-    uint64_t value = 0;
-    int count = 0;
-    while (count < length and cursor[count] >= '0' and cursor[count] <= '9') {
-      value = value * 10 + (cursor[count] - '0');
-      count++;
-    }
-    *out = value;
-    return count;
-  }
-
-  /* Validate that the first eight bytes are all ASCII digits using SIMD comparison. */
-  uint32_t valid_mask;
-  __asm__ volatile (
-    "vmovq (%[src]), %%xmm0\n\t"
-    "vmovd %[lo], %%xmm1\n\t"
-    "vpbroadcastb %%xmm1, %%xmm1\n\t"
-    "vmovd %[hi], %%xmm2\n\t"
-    "vpbroadcastb %%xmm2, %%xmm2\n\t"
-    "vpcmpgtb %%xmm1, %%xmm0, %%xmm3\n\t"
-    "vpcmpgtb %%xmm0, %%xmm2, %%xmm4\n\t"
-    "vpand %%xmm3, %%xmm4, %%xmm0\n\t"
-    "vpmovmskb %%xmm0, %[mask]\n\t"
-    : [mask] "=r" (valid_mask)
-    : [src] "r" (cursor),
-      [lo] "r" ((uint32_t) ('0' - 1)),
-      [hi] "r" ((uint32_t) ('9' + 1))
-    : "xmm0", "xmm1", "xmm2", "xmm3", "xmm4", "memory"
-  );
-
-  /* Not all eight are digits — fall back to scalar. */
-  if ((valid_mask & 0xFF) != 0xFF) {
-    uint64_t value = 0;
-    int count = 0;
-    while (count < length and cursor[count] >= '0' and cursor[count] <= '9') {
-      value = value * 10 + (cursor[count] - '0');
-      count++;
-    }
-    *out = value;
-    return count;
-  }
-  uint32_t high_8 = Simd_Parse_8_Digits_Avx2 (cursor);
-
-  /* If 16 digits are available, validate the second group of eight. */
-  if (length >= 16) {
-    __asm__ volatile (
-      "vmovq 8(%[src]), %%xmm0\n\t"
-      "vmovd %[lo], %%xmm1\n\t"
-      "vpbroadcastb %%xmm1, %%xmm1\n\t"
-      "vmovd %[hi], %%xmm2\n\t"
-      "vpbroadcastb %%xmm2, %%xmm2\n\t"
-      "vpcmpgtb %%xmm1, %%xmm0, %%xmm3\n\t"
-      "vpcmpgtb %%xmm0, %%xmm2, %%xmm4\n\t"
-      "vpand %%xmm3, %%xmm4, %%xmm0\n\t"
-      "vpmovmskb %%xmm0, %[mask]\n\t"
-      : [mask] "=r" (valid_mask)
-      : [src] "r" (cursor),
-        [lo] "r" ((uint32_t) ('0' - 1)),
-        [hi] "r" ((uint32_t) ('9' + 1))
-      : "xmm0", "xmm1", "xmm2", "xmm3", "xmm4", "memory"
-    );
-    if ((valid_mask & 0xFF) == 0xFF) {
-      uint32_t low_8 = Simd_Parse_8_Digits_Avx2 (cursor + 8);
-      *out = (uint64_t) high_8 * 100000000ULL + low_8;
-      return 16;
-    }
-  }
-
-  /* Only the first eight digits were valid. */
-  *out = high_8;
-  return 8;
-}
-#endif /* SIMD_X86_64 */
-
-/* Convert a decimal digit string (with optional leading sign) to a Big_Integer.  Uses the AVX2
- * SIMD path when available to process eight or sixteen digits at a time. */
-Big_Integer *Big_Integer_From_Decimal_SIMD (const char *text) {
-  Big_Integer *integer = Big_Integer_New (4);
-  integer->is_negative = (*text == '-');
-  if (*text == '-' or *text == '+') text++;
-
-  /* Skip leading zeros. */
-  while (*text == '0') text++;
-  if (*text == '\0' or (*text < '0' or *text > '9')) {
-    integer->limbs[0] = 0;
-    integer->count = 1;
-    Big_Integer_Normalize (integer);
-    return integer;
-  }
-
-  /* Locate the end of the digit run. */
-  const char *end = text;
-  while (*end >= '0' and *end <= '9') end++;
-#ifdef SIMD_X86_64
-  Simd_Detect_Features ();
-  if (Simd_Has_Avx2) {
-    integer->limbs[0] = 0;
-    integer->count = 1;
-    const char *cursor = text;
-    while (cursor < end) {
-      int remaining = (int) (end - cursor);
-
-      /* When eight or more digits remain, try the SIMD batch path. */
-      if (remaining >= 8) {
-        uint64_t chunk;
-        int parsed = Simd_Parse_Digits_Avx2 (cursor, end, &chunk);
-        if (parsed == 16) {
-          Big_Integer_Mul_Add_Small (integer, 10000000000000000ULL, chunk);
-          cursor += 16;
-        } else if (parsed == 8) {
-          Big_Integer_Mul_Add_Small (integer, 100000000ULL, chunk);
-          cursor += 8;
-        } else {
-          Big_Integer_Mul_Add_Small (integer, 10, (uint64_t) (*cursor - '0'));
-          cursor++;
-        }
-      } else {
-        Big_Integer_Mul_Add_Small (integer, 10, (uint64_t) (*cursor - '0'));
-        cursor++;
-      }
-    }
-    Big_Integer_Normalize (integer);
-    return integer;
-  }
-#endif
-
-  /* Scalar fallback: one digit at a time. */
-  integer->limbs[0] = 0;
-  integer->count = 1;
-  while (text < end) {
-    Big_Integer_Mul_Add_Small (integer, 10, (uint64_t) (*text - '0'));
-    text++;
-  }
-  Big_Integer_Normalize (integer);
-  return integer;
-}
-
 /* ═══════════════════════════════════════════════════════════════════════════════════════════════════
- * §6.2 BIG_REAL — Arbitrary-precision real numbers for Ada literals
+ * §6.1 BIG_REAL — Arbitrary-precision real numbers for Ada literals
  * ═══════════════════════════════════════════════════════════════════════════════════════════════════
  *
  * Real literals are represented as significand * 10**exponent per Ada LRM §2.4.1.  For example
@@ -925,7 +738,7 @@ Big_Real *Big_Real_Multiply (const Big_Real *left, const Big_Real *right) {
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────────────────────────
- * §6.3 Exact Rational Arithmetic for Universal Reals (RM §4.10)
+ * §6.2 Exact Rational Arithmetic for Universal Reals (RM §4.10)
  *
  * Ada requires that static universal_real expressions be evaluated exactly during compilation.
  * IEEE double cannot faithfully represent fractions like 1/3, so we carry each value as a
@@ -1298,609 +1111,6 @@ Lexer Lexer_New (const char *source, size_t length, const char *filename) {
     .prev_token_kind = TK_EOF
   };
 }
-
-/* ═══════════════════════════════════════════════════════════════════════════════════════════════════
- * §7.3.1 SIMD-Accelerated Scanning Functions
- * ═══════════════════════════════════════════════════════════════════════════════════════════════════
- *
- * Four architecture paths: x86-64 (AVX-512/AVX2/SSE4.2), ARM64 (NEON), generic scalar fallback.
- * Each function scans for interesting bytes (whitespace boundaries, end-of-identifier, etc.)
- * without character-by-character loops.
- */
-#ifdef SIMD_X86_64
-
-/* ─────────────────────────────────────────────────────────────────────────────────────────────────
- * x86-64 AVX-512/AVX2 SIMD Lexer Acceleration
- *
- *   AVX-512BW — 64-byte vector processing with k-mask registers
- *   AVX2      — 32-byte processing with optimised instruction scheduling
- *   BMI2      — TZCNT for fast "find first non-matching byte" within a mask
- *
- * Scanning functions:
- *   Simd_Skip_Whitespace  — skip space (0x20) and C0 controls (0x09–0x0D)
- *   Simd_Find_Char_X86    — generic single-character search (newline, quotes)
- *   Simd_Scan_Identifier  — match the [A-Za-z0-9_] character class
- *   Simd_Scan_Digits      — match [0-9_] for numeric literals
- * ───────────────────────────────────────────────────────────────────────────────────────────────── */
-
-/* BMI2 TZCNT (trailing zero count) — returns the index of the lowest set bit. */
-uint32_t Tzcnt32 (uint32_t value) {
-  uint32_t index;
-  __asm__ ("tzcntl %1, %0" : "=r" (index) : "r" (value));
-  return index;
-}
-uint64_t Tzcnt64 (uint64_t value) {
-  uint64_t index;
-  __asm__ ("tzcntq %1, %0" : "=r" (index) : "r" (value));
-  return index;
-}
-
-/* ─────────────────────────────────────────────────────────────────────────────────────────────────
- * AVX-512 whitespace skip — 64 bytes at a time using k-mask registers.  Matches space (0x20)
- * and the C0 control range 0x09–0x0D (tab, LF, VT, FF, CR).  Only compiled with -mavx512bw.
- * ───────────────────────────────────────────────────────────────────────────────────────────────── */
-#ifdef __AVX512BW__
-const char *Simd_Skip_Whitespace_Avx512 (const char *cursor, const char *limit) {
-  while (cursor + 64 <= limit) {
-    uint64_t mask;
-    __asm__ volatile (
-      "prefetcht0 128(%[src])\n\t"           /* Prefetch next cache line */
-      "vmovdqu8 (%[src]), %%zmm0\n\t"        /* Load 64 bytes */
-      "vpbroadcastb %[space], %%zmm1\n\t"   /* Broadcast space char */
-      "vpcmpeqb %%zmm1, %%zmm0, %%k1\n\t"   /* k1 = (c == ' ') */
-      "vpbroadcastb %[lo], %%zmm2\n\t"      /* Broadcast 0x08 */
-      "vpbroadcastb %[hi], %%zmm3\n\t"      /* Broadcast 0x0E */
-      "vpcmpgtb %%zmm2, %%zmm0, %%k2\n\t"   /* k2 = (c > 0x08) */
-      "vpcmpgtb %%zmm0, %%zmm3, %%k3\n\t"   /* k3 = (0x0E > c) */
-      "kandd %%k2, %%k3, %%k2\n\t"          /* k2 = in range [0x09,0x0D] */
-      "kord %%k1, %%k2, %%k0\n\t"           /* k0 = whitespace mask */
-      "kmovq %%k0, %[mask]\n\t"             /* Extract to GPR */
-      : [mask] "=r" (mask)
-      : [src] "r" (cursor), [space] "r" ((uint32_t) ' '),
-        [lo] "r" ((uint32_t) 0x08), [hi] "r" ((uint32_t) 0x0E)
-      : "zmm0", "zmm1", "zmm2", "zmm3", "k0", "k1", "k2", "k3", "memory"
-    );
-
-    /* If any non-whitespace byte was found, return its position. */
-    if (~mask) {
-      uint64_t first_nonwhite = ~mask;
-      __asm__ volatile ("tzcntq %1, %0" : "=r" (first_nonwhite) : "r" (first_nonwhite));
-      return cursor + first_nonwhite;
-    }
-    cursor += 64;
-  }
-  return cursor;
-}
-#endif /* __AVX512BW__ */
-
-/* ─────────────────────────────────────────────────────────────────────────────────────────────────
- * AVX2 Whitespace Skip with 2x Unrolling
- *
- * Processes 64 bytes (two 32-byte YMM loads) per iteration for better throughput on long runs of
- * whitespace.  Falls back to a single 32-byte pass for the remaining tail before returning to the
- * scalar loop in the dispatcher.
- * ─────────────────────────────────────────────────────────────────────────────────────────────── */
-const char *Simd_Skip_Whitespace_Avx2 (const char *cursor, const char *limit) {
-
-  /* 2x unrolled: process 64 bytes per iteration */
-  while (cursor + 64 <= limit) {
-    uint32_t m0, m1;
-    __asm__ volatile (
-      "prefetcht0 128(%[src])\n\t"
-
-      /* Load two 32-byte chunks in parallel */
-      "vmovdqu (%[src]), %%ymm0\n\t"
-      "vmovdqu 32(%[src]), %%ymm8\n\t"
-
-      /* Broadcast constants once, reuse for both chunks */
-      "vmovd %[space], %%xmm1\n\t"
-      "vpbroadcastb %%xmm1, %%ymm1\n\t"
-      "vmovd %[lo], %%xmm2\n\t"
-      "vpbroadcastb %%xmm2, %%ymm2\n\t"
-      "vmovd %[hi], %%xmm3\n\t"
-      "vpbroadcastb %%xmm3, %%ymm3\n\t"
-
-      /* First chunk: space match, range check 0x09..0x0D */
-      "vpcmpeqb %%ymm1, %%ymm0, %%ymm5\n\t"
-      "vpcmpgtb %%ymm2, %%ymm0, %%ymm6\n\t"
-      "vpcmpgtb %%ymm0, %%ymm3, %%ymm7\n\t"
-
-      /* Second chunk: same comparisons on the next 32 bytes */
-      "vpcmpeqb %%ymm1, %%ymm8, %%ymm9\n\t"
-      "vpcmpgtb %%ymm2, %%ymm8, %%ymm10\n\t"
-      "vpcmpgtb %%ymm8, %%ymm3, %%ymm11\n\t"
-
-      /* Combine results: whitespace = space OR (> 0x08 AND < 0x0E) */
-      "vpand %%ymm6, %%ymm7, %%ymm6\n\t"
-      "vpor %%ymm5, %%ymm6, %%ymm0\n\t"
-      "vpand %%ymm10, %%ymm11, %%ymm10\n\t"
-      "vpor %%ymm9, %%ymm10, %%ymm8\n\t"
-
-      /* Extract per-byte masks */
-      "vpmovmskb %%ymm0, %[m0]\n\t"
-      "vpmovmskb %%ymm8, %[m1]\n\t"
-      "vzeroupper\n\t"
-      : [m0] "=r" (m0), [m1] "=r" (m1)
-      : [src] "r" (cursor), [space] "r" ((uint32_t)' '),
-        [lo] "r" ((uint32_t)0x08), [hi] "r" ((uint32_t)0x0E)
-      : "ymm0", "ymm1", "ymm2", "ymm3", "ymm5", "ymm6", "ymm7",
-        "ymm8", "ymm9", "ymm10", "ymm11", "memory"
-    );
-    if (m0 != 0xFFFFFFFF) return cursor + Tzcnt32 (~m0);
-    if (m1 != 0xFFFFFFFF) return cursor + 32 + Tzcnt32 (~m1);
-    cursor += 64;
-  }
-
-  /* Handle remaining 32-byte chunk */
-  while (cursor + 32 <= limit) {
-    uint32_t mask;
-    __asm__ volatile (
-      "vmovdqu (%[src]), %%ymm0\n\t"
-      "vmovd %[space], %%xmm1\n\t"
-      "vpbroadcastb %%xmm1, %%ymm1\n\t"
-      "vmovd %[lo], %%xmm2\n\t"
-      "vpbroadcastb %%xmm2, %%ymm2\n\t"
-      "vmovd %[hi], %%xmm3\n\t"
-      "vpbroadcastb %%xmm3, %%ymm3\n\t"
-      "vpcmpeqb %%ymm1, %%ymm0, %%ymm5\n\t"
-      "vpcmpgtb %%ymm2, %%ymm0, %%ymm6\n\t"
-      "vpcmpgtb %%ymm0, %%ymm3, %%ymm7\n\t"
-      "vpand %%ymm6, %%ymm7, %%ymm6\n\t"
-      "vpor %%ymm5, %%ymm6, %%ymm0\n\t"
-      "vpmovmskb %%ymm0, %[mask]\n\t"
-      "vzeroupper\n\t"
-      : [mask] "=r" (mask)
-      : [src] "r" (cursor), [space] "r" ((uint32_t)' '),
-        [lo] "r" ((uint32_t)0x08), [hi] "r" ((uint32_t)0x0E)
-      : "ymm0", "ymm1", "ymm2", "ymm3", "ymm5", "ymm6", "ymm7", "memory"
-    );
-    if (mask != 0xFFFFFFFF) return cursor + Tzcnt32 (~mask);
-    cursor += 32;
-  }
-  return cursor;
-}
-
-/* ─────────────────────────────────────────────────────────────────────────────────────────────────
- * Whitespace Skip Dispatcher
- *
- * Selects the best available SIMD path at runtime based on CPU features detected by
- * Simd_Detect_Features, then falls through to a scalar tail for the last few bytes.
- * ─────────────────────────────────────────────────────────────────────────────────────────────── */
-const char *Simd_Skip_Whitespace (const char *cursor, const char *limit) {
-  Simd_Detect_Features ();
-#ifdef __AVX512BW__
-  if (Simd_Has_Avx512 and (limit - cursor) >= 64) {
-    cursor = Simd_Skip_Whitespace_Avx512 (cursor, limit);
-  }
-#endif
-  if (Simd_Has_Avx2 and (limit - cursor) >= 32) {
-    cursor = Simd_Skip_Whitespace_Avx2 (cursor, limit);
-  }
-
-  /* Scalar tail for remaining bytes */
-  while (cursor < limit) {
-    unsigned char ch = (unsigned char)*cursor;
-    if (ch != ' ' and (ch < 0x09 or ch > 0x0D)) break;
-    cursor++;
-  }
-  return cursor;
-}
-
-/* ─────────────────────────────────────────────────────────────────────────────────────────────────
- * Generic Single-Character Search
- *
- * Searches for the first occurrence of a specific byte (newline, quote, etc.) in the given range.
- * The first 16 bytes are checked with a scalar fast path that covers most short comments and
- * string literals; beyond that the function dispatches to AVX-512 or AVX2 SIMD loops.  Used as
- * the building block for Simd_Find_Newline, Simd_Find_Quote, and Simd_Find_Double_Quote.
- * ─────────────────────────────────────────────────────────────────────────────────────────────── */
-const char *Simd_Find_Char_X86 (const char *cursor, const char *limit, char target) {
-
-  /* Fast path: scalar check for first 16 bytes (covers most short comments/strings) */
-  for (int i = 0; i < 16 and cursor + i < limit; i++) {
-    if (cursor[i] == target) return cursor + i;
-  }
-
-  /* Short remaining buffer — finish with scalar */
-  if (cursor + 16 >= limit) {
-    cursor += 16;
-    while (cursor < limit and *cursor != target) cursor++;
-    return cursor;
-  }
-  cursor += 16;  /* Fast path didn't find it, continue with SIMD */
-  Simd_Detect_Features ();
-#ifdef __AVX512BW__
-
-  /* AVX-512: 64 bytes at a time */
-  if (Simd_Has_Avx512) {
-    while (cursor + 64 <= limit) {
-      uint64_t mask;
-      __asm__ volatile (
-        "vmovdqu8 (%[src]), %%zmm0\n\t"
-        "vpbroadcastb %[c], %%zmm1\n\t"
-        "vpcmpeqb %%zmm1, %%zmm0, %%k0\n\t"
-        "kmovq %%k0, %[mask]\n\t"
-        : [mask] "=r" (mask)
-        : [src] "r" (cursor), [c] "r" ((uint32_t)target)
-        : "zmm0", "zmm1", "k0", "memory"
-      );
-      if (mask) {
-        __asm__ volatile ("tzcntq %1, %0" : "=r" (mask) : "r" (mask));
-        return cursor + mask;
-      }
-      cursor += 64;
-    }
-  }
-#endif
-
-  /* AVX2: 32 bytes at a time */
-  while (cursor + 32 <= limit) {
-    uint32_t mask;
-    __asm__ volatile (
-      "vmovdqu (%[src]), %%ymm0\n\t"
-      "vmovd %[c], %%xmm1\n\t"
-      "vpbroadcastb %%xmm1, %%ymm1\n\t"
-      "vpcmpeqb %%ymm1, %%ymm0, %%ymm0\n\t"
-      "vpmovmskb %%ymm0, %[mask]\n\t"
-      "vzeroupper\n\t"
-      : [mask] "=r" (mask)
-      : [src] "r" (cursor), [c] "r" ((uint32_t)target)
-      : "ymm0", "ymm1", "memory"
-    );
-    if (mask) return cursor + Tzcnt32 (mask);
-    cursor += 32;
-  }
-
-  /* Scalar tail */
-  while (cursor < limit and *cursor != target) cursor++;
-  return cursor;
-}
-
-/* Convenience wrappers for common character searches */
-const char *Simd_Find_Newline (const char *cursor, const char *limit) {
-  return Simd_Find_Char_X86 (cursor, limit, '\n');
-}
-const char *Simd_Find_Quote (const char *cursor, const char *limit) {
-  return Simd_Find_Char_X86 (cursor, limit, '\'');
-}
-const char *Simd_Find_Double_Quote (const char *cursor, const char *limit) {
-  return Simd_Find_Char_X86 (cursor, limit, '"');
-}
-
-/* ─────────────────────────────────────────────────────────────────────────────────────────────────
- * Identifier Character Class Scanner
- *
- * Uses a fast unrolled table lookup for the first 8 characters, which covers the vast majority of
- * Ada identifiers.  Longer identifiers continue with a scalar table-driven loop — the branch
- * predictor handles this well since identifiers rarely exceed 8 characters.
- * ─────────────────────────────────────────────────────────────────────────────────────────────── */
-const char *Simd_Scan_Identifier (const char *cursor, const char *limit) {
-
-  /* Fast path: unrolled table lookup for first 8 chars (covers most identifiers) */
-  if (cursor >= limit or not Is_Id_Char (*cursor)) return cursor;
-  if (cursor + 1 >= limit or not Is_Id_Char (cursor[1])) return cursor + 1;
-  if (cursor + 2 >= limit or not Is_Id_Char (cursor[2])) return cursor + 2;
-  if (cursor + 3 >= limit or not Is_Id_Char (cursor[3])) return cursor + 3;
-  if (cursor + 4 >= limit or not Is_Id_Char (cursor[4])) return cursor + 4;
-  if (cursor + 5 >= limit or not Is_Id_Char (cursor[5])) return cursor + 5;
-  if (cursor + 6 >= limit or not Is_Id_Char (cursor[6])) return cursor + 6;
-  if (cursor + 7 >= limit or not Is_Id_Char (cursor[7])) return cursor + 7;
-
-  /* Long identifier (> 8 chars) — continue with table lookup */
-  cursor += 8;
-  while (cursor < limit and Is_Id_Char (*cursor)) cursor++;
-  return cursor;
-}
-
-/* ─────────────────────────────────────────────────────────────────────────────────────────────────
- * Digit Scanner for Numeric Literals
- *
- * Matches the character class [0-9_] — decimal digits with optional underscores, which is the Ada
- * numeric literal syntax (LRM §2.4).  Returns a pointer to the first character that is neither a
- * digit nor an underscore.
- * ─────────────────────────────────────────────────────────────────────────────────────────────── */
-const char *Simd_Scan_Digits (const char *cursor, const char *limit) {
-  Simd_Detect_Features ();
-#ifdef __AVX512BW__
-
-  /* AVX-512 path */
-  if (Simd_Has_Avx512) {
-    while (cursor + 64 <= limit) {
-      uint64_t mask;
-      __asm__ volatile (
-        "vmovdqu8 (%[src]), %%zmm0\n\t"
-        "vpbroadcastb %[lo], %%zmm1\n\t"
-        "vpbroadcastb %[hi], %%zmm2\n\t"
-        "vpbroadcastb %[u], %%zmm3\n\t"
-        "vpcmpgtb %%zmm1, %%zmm0, %%k1\n\t"     /* byte > '0'-1 */
-        "vpcmpgtb %%zmm0, %%zmm2, %%k2\n\t"     /* '9'+1 > byte */
-        "kandd %%k1, %%k2, %%k3\n\t"            /* digit range */
-        "vpcmpeqb %%zmm3, %%zmm0, %%k4\n\t"     /* underscore */
-        "kord %%k3, %%k4, %%k0\n\t"             /* digit OR underscore */
-        "kmovq %%k0, %[mask]\n\t"
-        : [mask] "=r" (mask)
-        : [src] "r" (cursor),
-          [lo] "r" ((uint32_t)('0' - 1)),
-          [hi] "r" ((uint32_t)('9' + 1)),
-          [u] "r" ((uint32_t)'_')
-        : "zmm0", "zmm1", "zmm2", "zmm3", "k0", "k1", "k2", "k3", "k4", "memory"
-      );
-      if (~mask) {
-        __asm__ volatile ("tzcntq %1, %0" : "=r" (mask) : "r" (~mask));
-        return cursor + mask;
-      }
-      cursor += 64;
-    }
-  }
-#endif
-
-  /* AVX2 path */
-  while (cursor + 32 <= limit) {
-    uint32_t mask;
-    __asm__ volatile (
-      "vmovdqu (%[src]), %%ymm0\n\t"
-      "vmovd %[lo], %%xmm1\n\t"
-      "vpbroadcastb %%xmm1, %%ymm1\n\t"
-      "vmovd %[hi], %%xmm2\n\t"
-      "vpbroadcastb %%xmm2, %%ymm2\n\t"
-      "vpcmpgtb %%ymm1, %%ymm0, %%ymm3\n\t"
-      "vpcmpgtb %%ymm0, %%ymm2, %%ymm4\n\t"
-      "vpand %%ymm3, %%ymm4, %%ymm5\n\t"
-      "vmovd %[u], %%xmm1\n\t"
-      "vpbroadcastb %%xmm1, %%ymm1\n\t"
-      "vpcmpeqb %%ymm1, %%ymm0, %%ymm1\n\t"
-      "vpor %%ymm5, %%ymm1, %%ymm0\n\t"
-      "vpmovmskb %%ymm0, %[mask]\n\t"
-      "vzeroupper\n\t"
-      : [mask] "=r" (mask)
-      : [src] "r" (cursor),
-        [lo] "r" ((uint32_t)('0' - 1)),
-        [hi] "r" ((uint32_t)('9' + 1)),
-        [u] "r" ((uint32_t)'_')
-      : "ymm0", "ymm1", "ymm2", "ymm3", "ymm4", "ymm5", "memory"
-    );
-    if (mask != 0xFFFFFFFF) return cursor + Tzcnt32 (~mask);
-    cursor += 32;
-  }
-
-  /* Scalar tail */
-  while (cursor < limit and ((*cursor >= '0' and *cursor <= '9') or *cursor == '_')) cursor++;
-  return cursor;
-}
-#elif defined(SIMD_ARM64)
-
-/* ─────────────────────────────────────────────────────────────────────────────────────────────────
- * ARM64 NEON Implementation (raw inline assembly)
- * ─────────────────────────────────────────────────────────────────────────────────────────────── */
-const char *Simd_Skip_Whitespace (const char *cursor, const char *limit) {
-  while (cursor + 16 <= limit) {
-    uint64_t lo, hi;
-    __asm__ volatile (
-      "ldr q0, [%[src]]\n\t"                /* Load 16 bytes */
-
-      /* Check for space (0x20) */
-      "movi v1.16b, #0x20\n\t"
-      "cmeq v5.16b, v0.16b, v1.16b\n\t"
-
-      /* Check range 0x09..0x0D: byte > 0x08 and byte < 0x0E */
-      "movi v2.16b, #0x08\n\t"
-      "movi v3.16b, #0x0E\n\t"
-      "cmhi v6.16b, v0.16b, v2.16b\n\t"
-      "cmhi v7.16b, v3.16b, v0.16b\n\t"
-      "and v6.16b, v6.16b, v7.16b\n\t"      /* in range */
-
-      /* Combine: whitespace = space OR in_range, then invert for non-whitespace */
-      "orr v0.16b, v5.16b, v6.16b\n\t"
-      "mvn v0.16b, v0.16b\n\t"
-      "mov %[lo], v0.d[0]\n\t"
-      "mov %[hi], v0.d[1]\n\t"
-      : [lo] "=r" (lo), [hi] "=r" (hi)
-      : [src] "r" (cursor)
-      : "v0", "v1", "v2", "v3", "v5", "v6", "v7", "memory"
-    );
-    if (lo) return cursor + (Tzcnt64 (lo) >> 3);
-    if (hi) return cursor + 8 + (Tzcnt64 (hi) >> 3);
-    cursor += 16;
-  }
-
-  /* Scalar tail */
-  while (cursor < limit) {
-    unsigned char ch = (unsigned char)*cursor;
-    if (ch != ' ' and (ch < 0x09 or ch > 0x0D)) break;
-    cursor++;
-  }
-  return cursor;
-}
-const char *Simd_Find_Newline (const char *cursor, const char *limit) {
-  while (cursor + 16 <= limit) {
-    uint64_t lo, hi;
-    __asm__ volatile (
-      "ldr q0, [%[src]]\n\t"
-      "movi v1.16b, #0x0A\n\t"
-      "cmeq v0.16b, v0.16b, v1.16b\n\t"
-      "mov %[lo], v0.d[0]\n\t"
-      "mov %[hi], v0.d[1]\n\t"
-      : [lo] "=r" (lo), [hi] "=r" (hi)
-      : [src] "r" (cursor)
-      : "v0", "v1", "memory"
-    );
-    if (lo) return cursor + (Tzcnt64 (lo) >> 3);
-    if (hi) return cursor + 8 + (Tzcnt64 (hi) >> 3);
-    cursor += 16;
-  }
-  while (cursor < limit and *cursor != '\n') cursor++;
-  return cursor;
-}
-const char *Simd_Scan_Identifier (const char *cursor, const char *limit) {
-  while (cursor + 16 <= limit) {
-    uint64_t lo, hi;
-    __asm__ volatile (
-      "ldr q0, [%[src]]\n\t"
-
-      /* Check a-z */
-      "movi v1.16b, #0x60\n\t"
-      "movi v2.16b, #0x7B\n\t"
-      "cmhi v3.16b, v0.16b, v1.16b\n\t"
-      "cmhi v4.16b, v2.16b, v0.16b\n\t"
-      "and v5.16b, v3.16b, v4.16b\n\t"
-
-      /* Check A-Z */
-      "movi v1.16b, #0x40\n\t"
-      "movi v2.16b, #0x5B\n\t"
-      "cmhi v3.16b, v0.16b, v1.16b\n\t"
-      "cmhi v4.16b, v2.16b, v0.16b\n\t"
-      "and v6.16b, v3.16b, v4.16b\n\t"
-
-      /* Check 0-9 */
-      "movi v1.16b, #0x2F\n\t"
-      "movi v2.16b, #0x3A\n\t"
-      "cmhi v3.16b, v0.16b, v1.16b\n\t"
-      "cmhi v4.16b, v2.16b, v0.16b\n\t"
-      "and v7.16b, v3.16b, v4.16b\n\t"
-
-      /* Check underscore */
-      "movi v1.16b, #0x5F\n\t"
-      "cmeq v16.16b, v0.16b, v1.16b\n\t"
-
-      /* Combine: valid = lower | upper | digit | underscore, then invert */
-      "orr v5.16b, v5.16b, v6.16b\n\t"
-      "orr v7.16b, v7.16b, v16.16b\n\t"
-      "orr v0.16b, v5.16b, v7.16b\n\t"
-      "mvn v0.16b, v0.16b\n\t"
-      "mov %[lo], v0.d[0]\n\t"
-      "mov %[hi], v0.d[1]\n\t"
-      : [lo] "=r" (lo), [hi] "=r" (hi)
-      : [src] "r" (cursor)
-      : "v0", "v1", "v2", "v3", "v4", "v5", "v6", "v7", "v16", "memory"
-    );
-    if (lo) return cursor + (Tzcnt64 (lo) >> 3);
-    if (hi) return cursor + 8 + (Tzcnt64 (hi) >> 3);
-    cursor += 16;
-  }
-  while (cursor < limit) {
-    char ch = *cursor;
-    if (not ((ch >= 'a' and ch <= 'z') or (ch >= 'A' and ch <= 'Z') or
-        (ch >= '0' and ch <= '9') or ch == '_'))
-      break;
-    cursor++;
-  }
-  return cursor;
-}
-const char *Simd_Find_Quote (const char *cursor, const char *limit) {
-  while (cursor + 16 <= limit) {
-    uint64_t lo, hi;
-    __asm__ volatile (
-      "ldr q0, [%[src]]\n\t"
-      "movi v1.16b, #0x27\n\t"
-      "cmeq v0.16b, v0.16b, v1.16b\n\t"
-      "mov %[lo], v0.d[0]\n\t"
-      "mov %[hi], v0.d[1]\n\t"
-      : [lo] "=r" (lo), [hi] "=r" (hi)
-      : [src] "r" (cursor)
-      : "v0", "v1", "memory"
-    );
-    if (lo) return cursor + (Tzcnt64 (lo) >> 3);
-    if (hi) return cursor + 8 + (Tzcnt64 (hi) >> 3);
-    cursor += 16;
-  }
-  while (cursor < limit and *cursor != '\'') cursor++;
-  return cursor;
-}
-const char *Simd_Find_Double_Quote (const char *cursor, const char *limit) {
-  while (cursor + 16 <= limit) {
-    uint64_t lo, hi;
-    __asm__ volatile (
-      "ldr q0, [%[src]]\n\t"
-      "movi v1.16b, #0x22\n\t"
-      "cmeq v0.16b, v0.16b, v1.16b\n\t"
-      "mov %[lo], v0.d[0]\n\t"
-      "mov %[hi], v0.d[1]\n\t"
-      : [lo] "=r" (lo), [hi] "=r" (hi)
-      : [src] "r" (cursor)
-      : "v0", "v1", "memory"
-    );
-    if (lo) return cursor + (Tzcnt64 (lo) >> 3);
-    if (hi) return cursor + 8 + (Tzcnt64 (hi) >> 3);
-    cursor += 16;
-  }
-  while (cursor < limit and *cursor != '"') cursor++;
-  return cursor;
-}
-const char *Simd_Scan_Digits (const char *cursor, const char *limit) {
-  while (cursor + 16 <= limit) {
-    uint64_t lo, hi;
-    __asm__ volatile (
-      "ldr q0, [%[src]]\n\t"
-
-      /* Check 0-9 */
-      "movi v1.16b, #0x2F\n\t"
-      "movi v2.16b, #0x3A\n\t"
-      "cmhi v3.16b, v0.16b, v1.16b\n\t"
-      "cmhi v4.16b, v2.16b, v0.16b\n\t"
-      "and v5.16b, v3.16b, v4.16b\n\t"
-
-      /* Check underscore */
-      "movi v1.16b, #0x5F\n\t"
-      "cmeq v6.16b, v0.16b, v1.16b\n\t"
-
-      /* Combine and invert */
-      "orr v0.16b, v5.16b, v6.16b\n\t"
-      "mvn v0.16b, v0.16b\n\t"
-      "mov %[lo], v0.d[0]\n\t"
-      "mov %[hi], v0.d[1]\n\t"
-      : [lo] "=r" (lo), [hi] "=r" (hi)
-      : [src] "r" (cursor)
-      : "v0", "v1", "v2", "v3", "v4", "v5", "v6", "memory"
-    );
-    if (lo) return cursor + (Tzcnt64 (lo) >> 3);
-    if (hi) return cursor + 8 + (Tzcnt64 (hi) >> 3);
-    cursor += 16;
-  }
-  while (cursor < limit and ((*cursor >= '0' and *cursor <= '9') or *cursor == '_')) cursor++;
-  return cursor;
-}
-#else
-
-/* Generic Scalar Implementation (Portable Fallback)
- *
- * Reference implementation for platforms without SIMD support.  All SIMD paths must produce
- * identical results to these scalar functions for all possible inputs.
- */
-const char *Simd_Skip_Whitespace (const char *cursor, const char *limit) {
-  while (cursor < limit) {
-    unsigned char ch = (unsigned char)*cursor;
-    if (ch != ' ' and (ch < 0x09 or ch > 0x0D)) break;
-    cursor++;
-  }
-  return cursor;
-}
-const char *Simd_Find_Newline (const char *cursor, const char *limit) {
-  while (cursor < limit and *cursor != '\n') cursor++;
-  return cursor;
-}
-const char *Simd_Scan_Identifier (const char *cursor, const char *limit) {
-  while (cursor < limit) {
-    char ch = *cursor;
-    if (not ((ch >= 'a' and ch <= 'z') or (ch >= 'A' and ch <= 'Z') or
-        (ch >= '0' and ch <= '9') or ch == '_'))
-      break;
-    cursor++;
-  }
-  return cursor;
-}
-const char *Simd_Find_Quote (const char *cursor, const char *limit) {
-  while (cursor < limit and *cursor != '\'') cursor++;
-  return cursor;
-}
-const char *Simd_Find_Double_Quote (const char *cursor, const char *limit) {
-  while (cursor < limit and *cursor != '"') cursor++;
-  return cursor;
-}
-const char *Simd_Scan_Digits (const char *cursor, const char *limit) {
-  while (cursor < limit and ((*cursor >= '0' and *cursor <= '9') or *cursor == '_')) cursor++;
-  return cursor;
-}
-#endif /* SIMD architecture selection */
 char Lexer_Peek (const Lexer *lex, size_t offset) {
   return lex->current + offset < lex->source_end ? lex->current[offset] : '\0';
 }
@@ -1943,7 +1153,7 @@ Token Make_Token (Token_Kind kind, Source_Location location, String_Slice text) 
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────────────────────────
- * §7.4 Scanning Functions — Each scanner consumes one token and returns it
+ * §7.3 Scanning Functions — Each scanner consumes one token and returns it
  * ─────────────────────────────────────────────────────────────────────────────────────────────── */
 Token Scan_Identifier (Lexer *lex) {
   Source_Location location = { .filename = lex->filename,
@@ -2206,7 +1416,7 @@ Token Scan_String_Literal (Lexer *lex) {
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────────────────────────
- * §7.5 Main Lexer Entry Point
+ * §7.4 Main Lexer Entry Point
  *
  * The lexer works as an iterator: each call to Lexer_Next_Token advances the source stream by
  * one token and returns it.  The function dispatches on the first character to select the
@@ -32775,12 +31985,12 @@ void Generate_Declaration (Syntax_Node *node) {
         cg->current_function = saved_current_function;
 
         /* Track this elaboration function for calling from main.
-         * Also register with the §15.7 elaboration graph for
+         * Also register with the §15 elaboration graph for
          * proper dependency-ordered elaboration. */
         if (pkg_sym and cg->elab_func_count < 64) {
           cg->elab_funcs[cg->elab_func_count++] = pkg_sym;
 
-          /* Register unit in elaboration graph (§15.7) */
+          /* Register unit in elaboration graph (§15) */
           Elab_Register_Unit (pkg_sym->name, /*is_body=*/true, pkg_sym,
 
                      /*is_preelaborate=*/false,
@@ -32951,7 +32161,7 @@ void Generate_Declaration (Syntax_Node *node) {
             if (cg->elab_func_count < 64) {
               cg->elab_funcs[cg->elab_func_count++] = inst_sym;
 
-              /* Register generic instance in elaboration graph (§15.7) */
+              /* Register generic instance in elaboration graph (§15) */
               Elab_Register_Unit (inst_sym->name, /*is_body=*/true, inst_sym,
 
                          /*is_preelaborate=*/false,
@@ -35182,7 +34392,7 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
 }
 
 /* ═════════════════════════════════════════════════════════════════════════════════════════════════
- * §15.8 BUILD-IN-PLACE — Limited Type Function Returns
+ * §13.17 BUILD-IN-PLACE — Limited Type Function Returns
  *
  * Ada limited types cannot be copied (RM 7.5). Functions returning limited
  * types must construct the result directly in caller-provided space—the
@@ -35199,7 +34409,7 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
  * ══════════════════════════════════════════════════════════════════════════════════════════════ */
 
 /* ─────────────────────────────────────────────────────────────────────────────────────────────────
- * §15.8.1 Algebraic Types — Sum types for BIP protocol
+ * §13.17.1 Algebraic Types — Sum types for BIP protocol
  *
  * BIP_Alloc_Form determines where the function result is allocated:
  *   - CALLER: Caller provides stack/object space (most common)
@@ -35211,7 +34421,7 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
  * ────────────────────────────────────────────────────────────────────────────────────────────── */
 
 /* ─────────────────────────────────────────────────────────────────────────────────────────────────
- * §15.8.3 Type Predicates — Pure functions for BIP decisions
+ * §13.17.3 Type Predicates — Pure functions for BIP decisions
  *
  * These predicates determine whether a type requires BIP handling.
  * Per Ada RM 7.5, limited types include:
@@ -35312,7 +34522,7 @@ bool BIP_Needs_Alloc_Form (const Symbol *func) {
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────────────────────────
- * §15.8.4 Extra Formal Parameters — Hidden BIP parameters
+ * §13.17.4 Extra Formal Parameters — Hidden BIP parameters
  *
  * BIP functions receive extra hidden parameters prepended to their formals:
  *   __BIPalloc  : i32     (BIP_Alloc_Form enum value)
@@ -35343,7 +34553,7 @@ uint32_t BIP_Extra_Formal_Count (const Symbol *func) {
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────────────────────────
- * §15.8.5 Call-Site Transformation — Expanding BIP function calls
+ * §13.17.5 Call-Site Transformation — Expanding BIP function calls
  *
  * When calling a BIP function, the caller must:
  *   1. Determine allocation form (usually CALLER for declarations)
@@ -35367,7 +34577,7 @@ BIP_Alloc_Form BIP_Determine_Alloc_Form (bool is_allocator,
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────────────────────────
- * §15.8.6 Return Statement Expansion — Building result in place
+ * §13.17.6 Return Statement Expansion — Building result in place
  *
  * In a BIP function, return statements build directly into __BIPaccess:
  *
@@ -35411,7 +34621,7 @@ void BIP_End_Function (void) {
 }
 
 /* ═════════════════════════════════════════════════════════════════════════════════════════════════
- * §15. ALI FILE WRITER — GNAT-Compatible Library Information
+ * §14. LIBRARY MANAGEMENT — GNAT-Compatible Library Information
  * ═════════════════════════════════════════════════════════════════════════════════════════════════
  *
  * Ada Library Information (.ali) files record compilation dependencies and
@@ -35430,10 +34640,10 @@ void BIP_End_Function (void) {
  */
 
 /* ─────────────────────────────────────────────────────────────────────────────────────────────────
- * §15.1 Unit_Info — Compilation unit metadata collector
+ * §14.1 Unit_Info — Compilation unit metadata collector
  * ────────────────────────────────────────────────────────────────────────────────────────────── */
 /* ─────────────────────────────────────────────────────────────────────────────────────────────────
- * §15.2 CRC32 — Fast checksum for source identity
+ * §14.2 CRC32 — Fast checksum for source identity
  *
  * Standard CRC-32/ISO-HDLC polynomial: 0xEDB88320 (bit-reversed 0x04C11DB7)
  * ────────────────────────────────────────────────────────────────────────────────────────────── */
@@ -35458,7 +34668,7 @@ uint32_t Crc32 (const char *data, size_t length) {
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────────────────────────
- * §15.3 Unit_Name_To_File — GNAT naming convention
+ * §14.3 Unit_Name_To_File — GNAT naming convention
  *
  * Maps Ada unit names to file names:
  *   Package_Name      > package_name.ads
@@ -35487,7 +34697,7 @@ void Unit_Name_To_File (String_Slice unit_name, bool is_body,
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────────────────────────
- * §15.4 ALI_Collect — Gather unit info from parsed AST
+ * §14.4 ALI_Collect — Gather unit info from parsed AST
  * ────────────────────────────────────────────────────────────────────────────────────────────── */
 void ALI_Collect_Withs (ALI_Info *ali, Syntax_Node *ctx) {
   if (not ctx) return;
@@ -35542,7 +34752,7 @@ String_Slice Mangle_Qualified_Name (String_Slice parent, String_Slice name);
 String_Slice LLVM_Type_Basic (String_Slice ada_type);
 
 /* ─────────────────────────────────────────────────────────────────────────────────────────────────
- * §15.4.2 ALI_Collect_Exports — Gather exported symbols from package spec
+ * §14.4.2 ALI_Collect_Exports — Gather exported symbols from package spec
  * ────────────────────────────────────────────────────────────────────────────────────────────── */
 void ALI_Collect_Exports (ALI_Info *ali, Syntax_Node *unit) {
   if (not unit or unit->kind != NK_PACKAGE_SPEC) return;
@@ -35741,7 +34951,7 @@ String_Slice LLVM_Type_Basic (String_Slice ada_type) {
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────────────────────────
- * §15.5 ALI_Write — Emit .ali file in GNAT format
+ * §14.5 ALI_Write — Emit .ali file in GNAT format
  *
  * Per lib-writ.ads, the minimum valid ALI file needs:
  *   V line (version) — MUST be first
@@ -35874,7 +35084,7 @@ void ALI_Write (FILE *out, ALI_Info *ali) {
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────────────────────────
- * §15.6 Generate_ALI_File — Entry point for ALI generation
+ * §14.6 Generate_ALI_File — Entry point for ALI generation
  * ────────────────────────────────────────────────────────────────────────────────────────────── */
 void Generate_ALI_File (const char *output_path,
                 Syntax_Node **units, int unit_count,
@@ -35907,7 +35117,7 @@ void Generate_ALI_File (const char *output_path,
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────────────────────────
- * §15.7 ALI_Reader — Parse .ali files for dependency management
+ * §14.7 ALI_Reader — Parse .ali files for dependency management
  *
  * We read ALI files to:
  *   1. Skip recompilation of unchanged units (checksum match)
@@ -36132,7 +35342,7 @@ bool ALI_Is_Current (const char *ali_path, const char *source_path) {
 }
 
 /* ═════════════════════════════════════════════════════════════════════════════════════════════════
- * §15.7 ELABORATION MODEL — Standard-Style Dependency Graph Algorithm
+ * §15. ELABORATION MODEL — Standard-Style Dependency Graph Algorithm
  *
  * Implements the full Standard elaboration ordering algorithm as described
  * in bindo-elaborators.adb. This determines the safe order in which library
@@ -36153,7 +35363,7 @@ bool ALI_Is_Current (const char *ali_path, const char *source_path) {
  * ══════════════════════════════════════════════════════════════════════════════════════════════ */
 
 /* ─────────────────────────────────────────────────────────────────────────────────────────────────
- * §15.7.1 Algebraic Types — Sum types via tagged unions
+ * §15.1 Algebraic Types — Sum types via tagged unions
  *
  * Following the Haskell pattern: data Kind = A | B | C
  * In C99: enum for tag, union for payload, struct wrapper.
@@ -36165,14 +35375,14 @@ bool Edge_Kind_Is_Strong (Elab_Edge_Kind k) {
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────────────────────────
- * §15.7.4 Graph Structure — Vertices + Edges + Components
+ * §15.4 Graph Structure — Vertices + Edges + Components
  *
  * Uses arena allocation for vertices/edges, dynamic arrays for order.
  * Maximum capacities chosen to handle large Ada programs.
  * ────────────────────────────────────────────────────────────────────────────────────────────── */
 
 /* ─────────────────────────────────────────────────────────────────────────────────────────────────
- * §15.7.5 Graph Construction — Pure creation functions
+ * §15.5 Graph Construction — Pure creation functions
  *
  * Functions return new graph/vertex/edge without side effects.
  * Following functional style: prefer immutable creation over mutation.
@@ -36277,7 +35487,7 @@ uint32_t Elab_Add_Edge (Elab_Graph *g, uint32_t pred_id, uint32_t succ_id,
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────────────────────────
- * §15.7.6 Tarjan's SCC Algorithm — Find strongly connected components
+ * §15.6 Tarjan's SCC Algorithm — Find strongly connected components
  *
  * Standard O(V+E) algorithm for finding SCCs. Each SCC becomes a component
  * that must be elaborated together (handles circular dependencies).
@@ -36369,7 +35579,7 @@ void Elab_Find_Components (Elab_Graph *g) {
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────────────────────────
- * §15.7.7 Vertex Predicates — Pure functions for elaboration decisions
+ * §15.7 Vertex Predicates — Pure functions for elaboration decisions
  *
  * These predicates determine vertex eligibility and priority.
  * All are pure (no side effects) for functional composition.
@@ -36447,7 +35657,7 @@ Elab_Precedence Elab_Compare_Weak (const Elab_Graph *g,
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────────────────────────
- * §15.7.8 Vertex Set Operations — Functional set manipulation
+ * §15.8 Vertex Set Operations — Functional set manipulation
  *
  * Uses bitmap representation for O(1) membership testing.
  * Pure functions that return new sets rather than mutating.
@@ -36477,7 +35687,7 @@ uint32_t Elab_Set_Size (const Elab_Vertex_Set *s) {
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────────────────────────
- * §15.7.9 Best Vertex Selection — Find optimal elaboration candidate
+ * §15.9 Best Vertex Selection — Find optimal elaboration candidate
  *
  * Scans a vertex set to find the best candidate using a comparator.
  * Pure function with no side effects.
@@ -36505,7 +35715,7 @@ uint32_t Elab_Find_Best_Vertex (const Elab_Graph *g,
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────────────────────────
- * §15.7.10 Elaboration Core — The main elaboration algorithm
+ * §15.10 Elaboration Core — The main elaboration algorithm
  *
  * Implements the Standard elaboration loop:
  *   1. Create elaborable/waiting vertex sets
@@ -36659,9 +35869,9 @@ void Elab_Pair_Specs_Bodies (Elab_Graph *g) {
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────────────────────────
- * §15.7.12 Elaboration Order API — Public interface
+ * §15.12 Elaboration Order API — Public interface
  *
- * These functions are called from the main driver (§17) and code generator
+ * These functions are called from the main driver (§19) and code generator
  * (§13) to determine and use the elaboration order.
  * ────────────────────────────────────────────────────────────────────────────────────────────── */
 
@@ -37194,7 +36404,7 @@ char *Lookup_Path_Body (String_Slice name) {
   return NULL;
 }
 /* ─────────────────────────────────────────────────────────────────────────────────────────────────
- * §14 Include Path and Unit Loading
+ * §17. FILE LOADING — Include Path and Unit Loading
  *
  * Resolves Ada WITH clauses by searching include paths for source files,
  * loading package specs/bodies on demand, and tracking which units have
@@ -37435,7 +36645,7 @@ void ALI_Load_Symbols (ALI_Cache_Entry *entry) {
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────────────────────────
- * §14.1 ALI-Based Loading
+ * §17.1 ALI-Based Loading
  *
  * Try_Load_From_ALI is called by Load_Package_Spec to attempt fast loading
  * from a pre-existing ALI file, bypassing full source parsing when the
@@ -37801,17 +37011,22 @@ void Load_Package_Spec (String_Slice name, char *src) {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════════════════════════════
- * §0. SIMD Optimizations and Fat Pointers
+ * §18. VECTOR PATHS — SIMD-Accelerated Scanning on x86-64 and ARM64
  * ═══════════════════════════════════════════════════════════════════════════════════════════════════
  *
- * Architectures:
+ * Vectorised scanning primitives for whitespace skipping, identifier recognition, digit scanning,
+ * and single-character search.  Three implementations are selected at compile time:
+ *
  *   x86-64  — AVX-512BW (64-byte vectors), AVX2 (32-byte), SSE4.2 (16-byte)
  *   ARM64   — NEON/ASIMD (16-byte), SVE (128–2048 bits, detected at runtime)
  *   Generic — Scalar fallback with loop unrolling for portability
  *
  * Every SIMD path has an equivalent scalar fallback.
- * ═══════════════════════════════════════════════════════════════════════════════════════════════════
  */
+
+/* ─────────────────────────────────────────────────────────────────────────────────────────────────
+ * §18.1 Runtime CPU Feature Detection
+ * ───────────────────────────────────────────────────────────────────────────────────────────────── */
 
 /* Runtime CPU feature detection for x86-64.  AVX-512 code paths are only compiled when the
  * toolchain is invoked with -mavx512bw; without that flag we fall back to AVX2 or scalar. */
@@ -37845,8 +37060,800 @@ void Simd_Detect_Features (void) {
 }
 #endif
 
+
+/* ─────────────────────────────────────────────────────────────────────────────────────────────────
+ * §18.2 SIMD-Accelerated Scanning Functions
+ *
+ * Four architecture paths: x86-64 (AVX-512/AVX2/SSE4.2), ARM64 (NEON), generic scalar fallback.
+ * Each function scans for interesting bytes (whitespace boundaries, end-of-identifier, etc.)
+ * without character-by-character loops.
+ * ───────────────────────────────────────────────────────────────────────────────────────────────── */
+#ifdef SIMD_X86_64
+
+/* ─────────────────────────────────────────────────────────────────────────────────────────────────
+ * x86-64 AVX-512/AVX2 SIMD Lexer Acceleration
+ *
+ *   AVX-512BW — 64-byte vector processing with k-mask registers
+ *   AVX2      — 32-byte processing with optimised instruction scheduling
+ *   BMI2      — TZCNT for fast "find first non-matching byte" within a mask
+ *
+ * Scanning functions:
+ *   Simd_Skip_Whitespace  — skip space (0x20) and C0 controls (0x09–0x0D)
+ *   Simd_Find_Char_X86    — generic single-character search (newline, quotes)
+ *   Simd_Scan_Identifier  — match the [A-Za-z0-9_] character class
+ *   Simd_Scan_Digits      — match [0-9_] for numeric literals
+ * ───────────────────────────────────────────────────────────────────────────────────────────────── */
+
+/* BMI2 TZCNT (trailing zero count) — returns the index of the lowest set bit. */
+uint32_t Tzcnt32 (uint32_t value) {
+  uint32_t index;
+  __asm__ ("tzcntl %1, %0" : "=r" (index) : "r" (value));
+  return index;
+}
+uint64_t Tzcnt64 (uint64_t value) {
+  uint64_t index;
+  __asm__ ("tzcntq %1, %0" : "=r" (index) : "r" (value));
+  return index;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────────────────────────
+ * AVX-512 whitespace skip — 64 bytes at a time using k-mask registers.  Matches space (0x20)
+ * and the C0 control range 0x09–0x0D (tab, LF, VT, FF, CR).  Only compiled with -mavx512bw.
+ * ───────────────────────────────────────────────────────────────────────────────────────────────── */
+#ifdef __AVX512BW__
+const char *Simd_Skip_Whitespace_Avx512 (const char *cursor, const char *limit) {
+  while (cursor + 64 <= limit) {
+    uint64_t mask;
+    __asm__ volatile (
+      "prefetcht0 128(%[src])\n\t"           /* Prefetch next cache line */
+      "vmovdqu8 (%[src]), %%zmm0\n\t"        /* Load 64 bytes */
+      "vpbroadcastb %[space], %%zmm1\n\t"   /* Broadcast space char */
+      "vpcmpeqb %%zmm1, %%zmm0, %%k1\n\t"   /* k1 = (c == ' ') */
+      "vpbroadcastb %[lo], %%zmm2\n\t"      /* Broadcast 0x08 */
+      "vpbroadcastb %[hi], %%zmm3\n\t"      /* Broadcast 0x0E */
+      "vpcmpgtb %%zmm2, %%zmm0, %%k2\n\t"   /* k2 = (c > 0x08) */
+      "vpcmpgtb %%zmm0, %%zmm3, %%k3\n\t"   /* k3 = (0x0E > c) */
+      "kandd %%k2, %%k3, %%k2\n\t"          /* k2 = in range [0x09,0x0D] */
+      "kord %%k1, %%k2, %%k0\n\t"           /* k0 = whitespace mask */
+      "kmovq %%k0, %[mask]\n\t"             /* Extract to GPR */
+      : [mask] "=r" (mask)
+      : [src] "r" (cursor), [space] "r" ((uint32_t) ' '),
+        [lo] "r" ((uint32_t) 0x08), [hi] "r" ((uint32_t) 0x0E)
+      : "zmm0", "zmm1", "zmm2", "zmm3", "k0", "k1", "k2", "k3", "memory"
+    );
+
+    /* If any non-whitespace byte was found, return its position. */
+    if (~mask) {
+      uint64_t first_nonwhite = ~mask;
+      __asm__ volatile ("tzcntq %1, %0" : "=r" (first_nonwhite) : "r" (first_nonwhite));
+      return cursor + first_nonwhite;
+    }
+    cursor += 64;
+  }
+  return cursor;
+}
+#endif /* __AVX512BW__ */
+
+/* ─────────────────────────────────────────────────────────────────────────────────────────────────
+ * AVX2 Whitespace Skip with 2x Unrolling
+ *
+ * Processes 64 bytes (two 32-byte YMM loads) per iteration for better throughput on long runs of
+ * whitespace.  Falls back to a single 32-byte pass for the remaining tail before returning to the
+ * scalar loop in the dispatcher.
+ * ─────────────────────────────────────────────────────────────────────────────────────────────── */
+const char *Simd_Skip_Whitespace_Avx2 (const char *cursor, const char *limit) {
+
+  /* 2x unrolled: process 64 bytes per iteration */
+  while (cursor + 64 <= limit) {
+    uint32_t m0, m1;
+    __asm__ volatile (
+      "prefetcht0 128(%[src])\n\t"
+
+      /* Load two 32-byte chunks in parallel */
+      "vmovdqu (%[src]), %%ymm0\n\t"
+      "vmovdqu 32(%[src]), %%ymm8\n\t"
+
+      /* Broadcast constants once, reuse for both chunks */
+      "vmovd %[space], %%xmm1\n\t"
+      "vpbroadcastb %%xmm1, %%ymm1\n\t"
+      "vmovd %[lo], %%xmm2\n\t"
+      "vpbroadcastb %%xmm2, %%ymm2\n\t"
+      "vmovd %[hi], %%xmm3\n\t"
+      "vpbroadcastb %%xmm3, %%ymm3\n\t"
+
+      /* First chunk: space match, range check 0x09..0x0D */
+      "vpcmpeqb %%ymm1, %%ymm0, %%ymm5\n\t"
+      "vpcmpgtb %%ymm2, %%ymm0, %%ymm6\n\t"
+      "vpcmpgtb %%ymm0, %%ymm3, %%ymm7\n\t"
+
+      /* Second chunk: same comparisons on the next 32 bytes */
+      "vpcmpeqb %%ymm1, %%ymm8, %%ymm9\n\t"
+      "vpcmpgtb %%ymm2, %%ymm8, %%ymm10\n\t"
+      "vpcmpgtb %%ymm8, %%ymm3, %%ymm11\n\t"
+
+      /* Combine results: whitespace = space OR (> 0x08 AND < 0x0E) */
+      "vpand %%ymm6, %%ymm7, %%ymm6\n\t"
+      "vpor %%ymm5, %%ymm6, %%ymm0\n\t"
+      "vpand %%ymm10, %%ymm11, %%ymm10\n\t"
+      "vpor %%ymm9, %%ymm10, %%ymm8\n\t"
+
+      /* Extract per-byte masks */
+      "vpmovmskb %%ymm0, %[m0]\n\t"
+      "vpmovmskb %%ymm8, %[m1]\n\t"
+      "vzeroupper\n\t"
+      : [m0] "=r" (m0), [m1] "=r" (m1)
+      : [src] "r" (cursor), [space] "r" ((uint32_t)' '),
+        [lo] "r" ((uint32_t)0x08), [hi] "r" ((uint32_t)0x0E)
+      : "ymm0", "ymm1", "ymm2", "ymm3", "ymm5", "ymm6", "ymm7",
+        "ymm8", "ymm9", "ymm10", "ymm11", "memory"
+    );
+    if (m0 != 0xFFFFFFFF) return cursor + Tzcnt32 (~m0);
+    if (m1 != 0xFFFFFFFF) return cursor + 32 + Tzcnt32 (~m1);
+    cursor += 64;
+  }
+
+  /* Handle remaining 32-byte chunk */
+  while (cursor + 32 <= limit) {
+    uint32_t mask;
+    __asm__ volatile (
+      "vmovdqu (%[src]), %%ymm0\n\t"
+      "vmovd %[space], %%xmm1\n\t"
+      "vpbroadcastb %%xmm1, %%ymm1\n\t"
+      "vmovd %[lo], %%xmm2\n\t"
+      "vpbroadcastb %%xmm2, %%ymm2\n\t"
+      "vmovd %[hi], %%xmm3\n\t"
+      "vpbroadcastb %%xmm3, %%ymm3\n\t"
+      "vpcmpeqb %%ymm1, %%ymm0, %%ymm5\n\t"
+      "vpcmpgtb %%ymm2, %%ymm0, %%ymm6\n\t"
+      "vpcmpgtb %%ymm0, %%ymm3, %%ymm7\n\t"
+      "vpand %%ymm6, %%ymm7, %%ymm6\n\t"
+      "vpor %%ymm5, %%ymm6, %%ymm0\n\t"
+      "vpmovmskb %%ymm0, %[mask]\n\t"
+      "vzeroupper\n\t"
+      : [mask] "=r" (mask)
+      : [src] "r" (cursor), [space] "r" ((uint32_t)' '),
+        [lo] "r" ((uint32_t)0x08), [hi] "r" ((uint32_t)0x0E)
+      : "ymm0", "ymm1", "ymm2", "ymm3", "ymm5", "ymm6", "ymm7", "memory"
+    );
+    if (mask != 0xFFFFFFFF) return cursor + Tzcnt32 (~mask);
+    cursor += 32;
+  }
+  return cursor;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────────────────────────
+ * Whitespace Skip Dispatcher
+ *
+ * Selects the best available SIMD path at runtime based on CPU features detected by
+ * Simd_Detect_Features, then falls through to a scalar tail for the last few bytes.
+ * ─────────────────────────────────────────────────────────────────────────────────────────────── */
+const char *Simd_Skip_Whitespace (const char *cursor, const char *limit) {
+  Simd_Detect_Features ();
+#ifdef __AVX512BW__
+  if (Simd_Has_Avx512 and (limit - cursor) >= 64) {
+    cursor = Simd_Skip_Whitespace_Avx512 (cursor, limit);
+  }
+#endif
+  if (Simd_Has_Avx2 and (limit - cursor) >= 32) {
+    cursor = Simd_Skip_Whitespace_Avx2 (cursor, limit);
+  }
+
+  /* Scalar tail for remaining bytes */
+  while (cursor < limit) {
+    unsigned char ch = (unsigned char)*cursor;
+    if (ch != ' ' and (ch < 0x09 or ch > 0x0D)) break;
+    cursor++;
+  }
+  return cursor;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────────────────────────
+ * Generic Single-Character Search
+ *
+ * Searches for the first occurrence of a specific byte (newline, quote, etc.) in the given range.
+ * The first 16 bytes are checked with a scalar fast path that covers most short comments and
+ * string literals; beyond that the function dispatches to AVX-512 or AVX2 SIMD loops.  Used as
+ * the building block for Simd_Find_Newline, Simd_Find_Quote, and Simd_Find_Double_Quote.
+ * ─────────────────────────────────────────────────────────────────────────────────────────────── */
+const char *Simd_Find_Char_X86 (const char *cursor, const char *limit, char target) {
+
+  /* Fast path: scalar check for first 16 bytes (covers most short comments/strings) */
+  for (int i = 0; i < 16 and cursor + i < limit; i++) {
+    if (cursor[i] == target) return cursor + i;
+  }
+
+  /* Short remaining buffer — finish with scalar */
+  if (cursor + 16 >= limit) {
+    cursor += 16;
+    while (cursor < limit and *cursor != target) cursor++;
+    return cursor;
+  }
+  cursor += 16;  /* Fast path didn't find it, continue with SIMD */
+  Simd_Detect_Features ();
+#ifdef __AVX512BW__
+
+  /* AVX-512: 64 bytes at a time */
+  if (Simd_Has_Avx512) {
+    while (cursor + 64 <= limit) {
+      uint64_t mask;
+      __asm__ volatile (
+        "vmovdqu8 (%[src]), %%zmm0\n\t"
+        "vpbroadcastb %[c], %%zmm1\n\t"
+        "vpcmpeqb %%zmm1, %%zmm0, %%k0\n\t"
+        "kmovq %%k0, %[mask]\n\t"
+        : [mask] "=r" (mask)
+        : [src] "r" (cursor), [c] "r" ((uint32_t)target)
+        : "zmm0", "zmm1", "k0", "memory"
+      );
+      if (mask) {
+        __asm__ volatile ("tzcntq %1, %0" : "=r" (mask) : "r" (mask));
+        return cursor + mask;
+      }
+      cursor += 64;
+    }
+  }
+#endif
+
+  /* AVX2: 32 bytes at a time */
+  while (cursor + 32 <= limit) {
+    uint32_t mask;
+    __asm__ volatile (
+      "vmovdqu (%[src]), %%ymm0\n\t"
+      "vmovd %[c], %%xmm1\n\t"
+      "vpbroadcastb %%xmm1, %%ymm1\n\t"
+      "vpcmpeqb %%ymm1, %%ymm0, %%ymm0\n\t"
+      "vpmovmskb %%ymm0, %[mask]\n\t"
+      "vzeroupper\n\t"
+      : [mask] "=r" (mask)
+      : [src] "r" (cursor), [c] "r" ((uint32_t)target)
+      : "ymm0", "ymm1", "memory"
+    );
+    if (mask) return cursor + Tzcnt32 (mask);
+    cursor += 32;
+  }
+
+  /* Scalar tail */
+  while (cursor < limit and *cursor != target) cursor++;
+  return cursor;
+}
+
+/* Convenience wrappers for common character searches */
+const char *Simd_Find_Newline (const char *cursor, const char *limit) {
+  return Simd_Find_Char_X86 (cursor, limit, '\n');
+}
+const char *Simd_Find_Quote (const char *cursor, const char *limit) {
+  return Simd_Find_Char_X86 (cursor, limit, '\'');
+}
+const char *Simd_Find_Double_Quote (const char *cursor, const char *limit) {
+  return Simd_Find_Char_X86 (cursor, limit, '"');
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────────────────────────
+ * Identifier Character Class Scanner
+ *
+ * Uses a fast unrolled table lookup for the first 8 characters, which covers the vast majority of
+ * Ada identifiers.  Longer identifiers continue with a scalar table-driven loop — the branch
+ * predictor handles this well since identifiers rarely exceed 8 characters.
+ * ─────────────────────────────────────────────────────────────────────────────────────────────── */
+const char *Simd_Scan_Identifier (const char *cursor, const char *limit) {
+
+  /* Fast path: unrolled table lookup for first 8 chars (covers most identifiers) */
+  if (cursor >= limit or not Is_Id_Char (*cursor)) return cursor;
+  if (cursor + 1 >= limit or not Is_Id_Char (cursor[1])) return cursor + 1;
+  if (cursor + 2 >= limit or not Is_Id_Char (cursor[2])) return cursor + 2;
+  if (cursor + 3 >= limit or not Is_Id_Char (cursor[3])) return cursor + 3;
+  if (cursor + 4 >= limit or not Is_Id_Char (cursor[4])) return cursor + 4;
+  if (cursor + 5 >= limit or not Is_Id_Char (cursor[5])) return cursor + 5;
+  if (cursor + 6 >= limit or not Is_Id_Char (cursor[6])) return cursor + 6;
+  if (cursor + 7 >= limit or not Is_Id_Char (cursor[7])) return cursor + 7;
+
+  /* Long identifier (> 8 chars) — continue with table lookup */
+  cursor += 8;
+  while (cursor < limit and Is_Id_Char (*cursor)) cursor++;
+  return cursor;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────────────────────────
+ * Digit Scanner for Numeric Literals
+ *
+ * Matches the character class [0-9_] — decimal digits with optional underscores, which is the Ada
+ * numeric literal syntax (LRM §2.4).  Returns a pointer to the first character that is neither a
+ * digit nor an underscore.
+ * ─────────────────────────────────────────────────────────────────────────────────────────────── */
+const char *Simd_Scan_Digits (const char *cursor, const char *limit) {
+  Simd_Detect_Features ();
+#ifdef __AVX512BW__
+
+  /* AVX-512 path */
+  if (Simd_Has_Avx512) {
+    while (cursor + 64 <= limit) {
+      uint64_t mask;
+      __asm__ volatile (
+        "vmovdqu8 (%[src]), %%zmm0\n\t"
+        "vpbroadcastb %[lo], %%zmm1\n\t"
+        "vpbroadcastb %[hi], %%zmm2\n\t"
+        "vpbroadcastb %[u], %%zmm3\n\t"
+        "vpcmpgtb %%zmm1, %%zmm0, %%k1\n\t"     /* byte > '0'-1 */
+        "vpcmpgtb %%zmm0, %%zmm2, %%k2\n\t"     /* '9'+1 > byte */
+        "kandd %%k1, %%k2, %%k3\n\t"            /* digit range */
+        "vpcmpeqb %%zmm3, %%zmm0, %%k4\n\t"     /* underscore */
+        "kord %%k3, %%k4, %%k0\n\t"             /* digit OR underscore */
+        "kmovq %%k0, %[mask]\n\t"
+        : [mask] "=r" (mask)
+        : [src] "r" (cursor),
+          [lo] "r" ((uint32_t)('0' - 1)),
+          [hi] "r" ((uint32_t)('9' + 1)),
+          [u] "r" ((uint32_t)'_')
+        : "zmm0", "zmm1", "zmm2", "zmm3", "k0", "k1", "k2", "k3", "k4", "memory"
+      );
+      if (~mask) {
+        __asm__ volatile ("tzcntq %1, %0" : "=r" (mask) : "r" (~mask));
+        return cursor + mask;
+      }
+      cursor += 64;
+    }
+  }
+#endif
+
+  /* AVX2 path */
+  while (cursor + 32 <= limit) {
+    uint32_t mask;
+    __asm__ volatile (
+      "vmovdqu (%[src]), %%ymm0\n\t"
+      "vmovd %[lo], %%xmm1\n\t"
+      "vpbroadcastb %%xmm1, %%ymm1\n\t"
+      "vmovd %[hi], %%xmm2\n\t"
+      "vpbroadcastb %%xmm2, %%ymm2\n\t"
+      "vpcmpgtb %%ymm1, %%ymm0, %%ymm3\n\t"
+      "vpcmpgtb %%ymm0, %%ymm2, %%ymm4\n\t"
+      "vpand %%ymm3, %%ymm4, %%ymm5\n\t"
+      "vmovd %[u], %%xmm1\n\t"
+      "vpbroadcastb %%xmm1, %%ymm1\n\t"
+      "vpcmpeqb %%ymm1, %%ymm0, %%ymm1\n\t"
+      "vpor %%ymm5, %%ymm1, %%ymm0\n\t"
+      "vpmovmskb %%ymm0, %[mask]\n\t"
+      "vzeroupper\n\t"
+      : [mask] "=r" (mask)
+      : [src] "r" (cursor),
+        [lo] "r" ((uint32_t)('0' - 1)),
+        [hi] "r" ((uint32_t)('9' + 1)),
+        [u] "r" ((uint32_t)'_')
+      : "ymm0", "ymm1", "ymm2", "ymm3", "ymm4", "ymm5", "memory"
+    );
+    if (mask != 0xFFFFFFFF) return cursor + Tzcnt32 (~mask);
+    cursor += 32;
+  }
+
+  /* Scalar tail */
+  while (cursor < limit and ((*cursor >= '0' and *cursor <= '9') or *cursor == '_')) cursor++;
+  return cursor;
+}
+#elif defined(SIMD_ARM64)
+
+/* ─────────────────────────────────────────────────────────────────────────────────────────────────
+ * ARM64 NEON Implementation (raw inline assembly)
+ * ─────────────────────────────────────────────────────────────────────────────────────────────── */
+const char *Simd_Skip_Whitespace (const char *cursor, const char *limit) {
+  while (cursor + 16 <= limit) {
+    uint64_t lo, hi;
+    __asm__ volatile (
+      "ldr q0, [%[src]]\n\t"                /* Load 16 bytes */
+
+      /* Check for space (0x20) */
+      "movi v1.16b, #0x20\n\t"
+      "cmeq v5.16b, v0.16b, v1.16b\n\t"
+
+      /* Check range 0x09..0x0D: byte > 0x08 and byte < 0x0E */
+      "movi v2.16b, #0x08\n\t"
+      "movi v3.16b, #0x0E\n\t"
+      "cmhi v6.16b, v0.16b, v2.16b\n\t"
+      "cmhi v7.16b, v3.16b, v0.16b\n\t"
+      "and v6.16b, v6.16b, v7.16b\n\t"      /* in range */
+
+      /* Combine: whitespace = space OR in_range, then invert for non-whitespace */
+      "orr v0.16b, v5.16b, v6.16b\n\t"
+      "mvn v0.16b, v0.16b\n\t"
+      "mov %[lo], v0.d[0]\n\t"
+      "mov %[hi], v0.d[1]\n\t"
+      : [lo] "=r" (lo), [hi] "=r" (hi)
+      : [src] "r" (cursor)
+      : "v0", "v1", "v2", "v3", "v5", "v6", "v7", "memory"
+    );
+    if (lo) return cursor + (Tzcnt64 (lo) >> 3);
+    if (hi) return cursor + 8 + (Tzcnt64 (hi) >> 3);
+    cursor += 16;
+  }
+
+  /* Scalar tail */
+  while (cursor < limit) {
+    unsigned char ch = (unsigned char)*cursor;
+    if (ch != ' ' and (ch < 0x09 or ch > 0x0D)) break;
+    cursor++;
+  }
+  return cursor;
+}
+const char *Simd_Find_Newline (const char *cursor, const char *limit) {
+  while (cursor + 16 <= limit) {
+    uint64_t lo, hi;
+    __asm__ volatile (
+      "ldr q0, [%[src]]\n\t"
+      "movi v1.16b, #0x0A\n\t"
+      "cmeq v0.16b, v0.16b, v1.16b\n\t"
+      "mov %[lo], v0.d[0]\n\t"
+      "mov %[hi], v0.d[1]\n\t"
+      : [lo] "=r" (lo), [hi] "=r" (hi)
+      : [src] "r" (cursor)
+      : "v0", "v1", "memory"
+    );
+    if (lo) return cursor + (Tzcnt64 (lo) >> 3);
+    if (hi) return cursor + 8 + (Tzcnt64 (hi) >> 3);
+    cursor += 16;
+  }
+  while (cursor < limit and *cursor != '\n') cursor++;
+  return cursor;
+}
+const char *Simd_Scan_Identifier (const char *cursor, const char *limit) {
+  while (cursor + 16 <= limit) {
+    uint64_t lo, hi;
+    __asm__ volatile (
+      "ldr q0, [%[src]]\n\t"
+
+      /* Check a-z */
+      "movi v1.16b, #0x60\n\t"
+      "movi v2.16b, #0x7B\n\t"
+      "cmhi v3.16b, v0.16b, v1.16b\n\t"
+      "cmhi v4.16b, v2.16b, v0.16b\n\t"
+      "and v5.16b, v3.16b, v4.16b\n\t"
+
+      /* Check A-Z */
+      "movi v1.16b, #0x40\n\t"
+      "movi v2.16b, #0x5B\n\t"
+      "cmhi v3.16b, v0.16b, v1.16b\n\t"
+      "cmhi v4.16b, v2.16b, v0.16b\n\t"
+      "and v6.16b, v3.16b, v4.16b\n\t"
+
+      /* Check 0-9 */
+      "movi v1.16b, #0x2F\n\t"
+      "movi v2.16b, #0x3A\n\t"
+      "cmhi v3.16b, v0.16b, v1.16b\n\t"
+      "cmhi v4.16b, v2.16b, v0.16b\n\t"
+      "and v7.16b, v3.16b, v4.16b\n\t"
+
+      /* Check underscore */
+      "movi v1.16b, #0x5F\n\t"
+      "cmeq v16.16b, v0.16b, v1.16b\n\t"
+
+      /* Combine: valid = lower | upper | digit | underscore, then invert */
+      "orr v5.16b, v5.16b, v6.16b\n\t"
+      "orr v7.16b, v7.16b, v16.16b\n\t"
+      "orr v0.16b, v5.16b, v7.16b\n\t"
+      "mvn v0.16b, v0.16b\n\t"
+      "mov %[lo], v0.d[0]\n\t"
+      "mov %[hi], v0.d[1]\n\t"
+      : [lo] "=r" (lo), [hi] "=r" (hi)
+      : [src] "r" (cursor)
+      : "v0", "v1", "v2", "v3", "v4", "v5", "v6", "v7", "v16", "memory"
+    );
+    if (lo) return cursor + (Tzcnt64 (lo) >> 3);
+    if (hi) return cursor + 8 + (Tzcnt64 (hi) >> 3);
+    cursor += 16;
+  }
+  while (cursor < limit) {
+    char ch = *cursor;
+    if (not ((ch >= 'a' and ch <= 'z') or (ch >= 'A' and ch <= 'Z') or
+        (ch >= '0' and ch <= '9') or ch == '_'))
+      break;
+    cursor++;
+  }
+  return cursor;
+}
+const char *Simd_Find_Quote (const char *cursor, const char *limit) {
+  while (cursor + 16 <= limit) {
+    uint64_t lo, hi;
+    __asm__ volatile (
+      "ldr q0, [%[src]]\n\t"
+      "movi v1.16b, #0x27\n\t"
+      "cmeq v0.16b, v0.16b, v1.16b\n\t"
+      "mov %[lo], v0.d[0]\n\t"
+      "mov %[hi], v0.d[1]\n\t"
+      : [lo] "=r" (lo), [hi] "=r" (hi)
+      : [src] "r" (cursor)
+      : "v0", "v1", "memory"
+    );
+    if (lo) return cursor + (Tzcnt64 (lo) >> 3);
+    if (hi) return cursor + 8 + (Tzcnt64 (hi) >> 3);
+    cursor += 16;
+  }
+  while (cursor < limit and *cursor != '\'') cursor++;
+  return cursor;
+}
+const char *Simd_Find_Double_Quote (const char *cursor, const char *limit) {
+  while (cursor + 16 <= limit) {
+    uint64_t lo, hi;
+    __asm__ volatile (
+      "ldr q0, [%[src]]\n\t"
+      "movi v1.16b, #0x22\n\t"
+      "cmeq v0.16b, v0.16b, v1.16b\n\t"
+      "mov %[lo], v0.d[0]\n\t"
+      "mov %[hi], v0.d[1]\n\t"
+      : [lo] "=r" (lo), [hi] "=r" (hi)
+      : [src] "r" (cursor)
+      : "v0", "v1", "memory"
+    );
+    if (lo) return cursor + (Tzcnt64 (lo) >> 3);
+    if (hi) return cursor + 8 + (Tzcnt64 (hi) >> 3);
+    cursor += 16;
+  }
+  while (cursor < limit and *cursor != '"') cursor++;
+  return cursor;
+}
+const char *Simd_Scan_Digits (const char *cursor, const char *limit) {
+  while (cursor + 16 <= limit) {
+    uint64_t lo, hi;
+    __asm__ volatile (
+      "ldr q0, [%[src]]\n\t"
+
+      /* Check 0-9 */
+      "movi v1.16b, #0x2F\n\t"
+      "movi v2.16b, #0x3A\n\t"
+      "cmhi v3.16b, v0.16b, v1.16b\n\t"
+      "cmhi v4.16b, v2.16b, v0.16b\n\t"
+      "and v5.16b, v3.16b, v4.16b\n\t"
+
+      /* Check underscore */
+      "movi v1.16b, #0x5F\n\t"
+      "cmeq v6.16b, v0.16b, v1.16b\n\t"
+
+      /* Combine and invert */
+      "orr v0.16b, v5.16b, v6.16b\n\t"
+      "mvn v0.16b, v0.16b\n\t"
+      "mov %[lo], v0.d[0]\n\t"
+      "mov %[hi], v0.d[1]\n\t"
+      : [lo] "=r" (lo), [hi] "=r" (hi)
+      : [src] "r" (cursor)
+      : "v0", "v1", "v2", "v3", "v4", "v5", "v6", "memory"
+    );
+    if (lo) return cursor + (Tzcnt64 (lo) >> 3);
+    if (hi) return cursor + 8 + (Tzcnt64 (hi) >> 3);
+    cursor += 16;
+  }
+  while (cursor < limit and ((*cursor >= '0' and *cursor <= '9') or *cursor == '_')) cursor++;
+  return cursor;
+}
+#else
+
+/* Generic Scalar Implementation (Portable Fallback)
+ *
+ * Reference implementation for platforms without SIMD support.  All SIMD paths must produce
+ * identical results to these scalar functions for all possible inputs.
+ */
+const char *Simd_Skip_Whitespace (const char *cursor, const char *limit) {
+  while (cursor < limit) {
+    unsigned char ch = (unsigned char)*cursor;
+    if (ch != ' ' and (ch < 0x09 or ch > 0x0D)) break;
+    cursor++;
+  }
+  return cursor;
+}
+const char *Simd_Find_Newline (const char *cursor, const char *limit) {
+  while (cursor < limit and *cursor != '\n') cursor++;
+  return cursor;
+}
+const char *Simd_Scan_Identifier (const char *cursor, const char *limit) {
+  while (cursor < limit) {
+    char ch = *cursor;
+    if (not ((ch >= 'a' and ch <= 'z') or (ch >= 'A' and ch <= 'Z') or
+        (ch >= '0' and ch <= '9') or ch == '_'))
+      break;
+    cursor++;
+  }
+  return cursor;
+}
+const char *Simd_Find_Quote (const char *cursor, const char *limit) {
+  while (cursor < limit and *cursor != '\'') cursor++;
+  return cursor;
+}
+const char *Simd_Find_Double_Quote (const char *cursor, const char *limit) {
+  while (cursor < limit and *cursor != '"') cursor++;
+  return cursor;
+}
+const char *Simd_Scan_Digits (const char *cursor, const char *limit) {
+  while (cursor < limit and ((*cursor >= '0' and *cursor <= '9') or *cursor == '_')) cursor++;
+  return cursor;
+}
+#endif /* SIMD architecture selection */
+
+/* ─────────────────────────────────────────────────────────────────────────────────────────────────
+ * §18.3 SIMD-Accelerated Decimal Parsing
+ *
+ * Instead of processing one digit at a time (multiply by 10, add digit), the SIMD path batches
+ * eight digits at once (multiply by 10**8, add the 8-digit value).
+ * ───────────────────────────────────────────────────────────────────────────────────────────────── */
+#ifdef SIMD_X86_64
+
+/* Parse exactly 8 ASCII digit characters ('0'–'9') into a 32-bit integer in the range
+ * [0 .. 99_999_999] using AVX2 multiply-add instructions (see §6.1 header for the algorithm). */
+uint32_t Simd_Parse_8_Digits_Avx2 (const char *digits) {
+  uint32_t result;
+  __asm__ volatile (
+
+    /* Load 8 bytes into low portion of xmm0 */
+    "vmovq (%[src]), %%xmm0\n\t"
+
+    /* Broadcast '0' and subtract to get digit values */
+    "vmovd %[zero], %%xmm1\n\t"
+    "vpbroadcastb %%xmm1, %%xmm1\n\t"
+    "vpsubb %%xmm1, %%xmm0, %%xmm0\n\t"
+
+    /* Multiply-add bytes to words: weights [10,1,10,1,10,1,10,1] */
+    "vmovq %[w1], %%xmm2\n\t"
+    "vpmaddubsw %%xmm2, %%xmm0, %%xmm0\n\t"
+
+    /* Multiply-add words to dwords: weights [100,1,100,1] */
+    "vmovq %[w2], %%xmm2\n\t"
+    "vpmaddwd %%xmm2, %%xmm0, %%xmm0\n\t"
+
+    /* Extract two dwords and combine: dw0 * 10000 + dw1 */
+    "vmovd %%xmm0, %%eax\n\t"
+    "vpextrd $1, %%xmm0, %%edx\n\t"
+    "imull $10000, %%eax\n\t"
+    "addl %%edx, %%eax\n\t"
+    : "=a" (result)
+    : [src] "r" (digits),
+      [zero] "r" ((uint32_t) '0'),
+      [w1] "r" (0x010A010A010A010AULL),  /* byte weights [10,1,10,1,10,1,10,1]  (0x0A = 10) */
+      [w2] "r" (0x0001006400010064ULL)   /* word weights [100,1,100,1]                       */
+    : "xmm0", "xmm1", "xmm2", "edx", "memory"
+  );
+  return result;
+}
+
+/* Parse up to 16 ASCII digits from the buffer [cursor .. limit) using AVX2.  Validates that all
+ * bytes are ASCII digits first; returns the number of digits actually consumed and stores the
+ * parsed value in *out. */
+int Simd_Parse_Digits_Avx2 (const char *cursor, const char *limit, uint64_t *out) {
+  int length = (limit - cursor > 16) ? 16 : (int) (limit - cursor);
+
+  /* Fewer than 8 digits available — fall back to scalar. */
+  if (length < 8) {
+    uint64_t value = 0;
+    int count = 0;
+    while (count < length and cursor[count] >= '0' and cursor[count] <= '9') {
+      value = value * 10 + (cursor[count] - '0');
+      count++;
+    }
+    *out = value;
+    return count;
+  }
+
+  /* Validate that the first eight bytes are all ASCII digits using SIMD comparison. */
+  uint32_t valid_mask;
+  __asm__ volatile (
+    "vmovq (%[src]), %%xmm0\n\t"
+    "vmovd %[lo], %%xmm1\n\t"
+    "vpbroadcastb %%xmm1, %%xmm1\n\t"
+    "vmovd %[hi], %%xmm2\n\t"
+    "vpbroadcastb %%xmm2, %%xmm2\n\t"
+    "vpcmpgtb %%xmm1, %%xmm0, %%xmm3\n\t"
+    "vpcmpgtb %%xmm0, %%xmm2, %%xmm4\n\t"
+    "vpand %%xmm3, %%xmm4, %%xmm0\n\t"
+    "vpmovmskb %%xmm0, %[mask]\n\t"
+    : [mask] "=r" (valid_mask)
+    : [src] "r" (cursor),
+      [lo] "r" ((uint32_t) ('0' - 1)),
+      [hi] "r" ((uint32_t) ('9' + 1))
+    : "xmm0", "xmm1", "xmm2", "xmm3", "xmm4", "memory"
+  );
+
+  /* Not all eight are digits — fall back to scalar. */
+  if ((valid_mask & 0xFF) != 0xFF) {
+    uint64_t value = 0;
+    int count = 0;
+    while (count < length and cursor[count] >= '0' and cursor[count] <= '9') {
+      value = value * 10 + (cursor[count] - '0');
+      count++;
+    }
+    *out = value;
+    return count;
+  }
+  uint32_t high_8 = Simd_Parse_8_Digits_Avx2 (cursor);
+
+  /* If 16 digits are available, validate the second group of eight. */
+  if (length >= 16) {
+    __asm__ volatile (
+      "vmovq 8(%[src]), %%xmm0\n\t"
+      "vmovd %[lo], %%xmm1\n\t"
+      "vpbroadcastb %%xmm1, %%xmm1\n\t"
+      "vmovd %[hi], %%xmm2\n\t"
+      "vpbroadcastb %%xmm2, %%xmm2\n\t"
+      "vpcmpgtb %%xmm1, %%xmm0, %%xmm3\n\t"
+      "vpcmpgtb %%xmm0, %%xmm2, %%xmm4\n\t"
+      "vpand %%xmm3, %%xmm4, %%xmm0\n\t"
+      "vpmovmskb %%xmm0, %[mask]\n\t"
+      : [mask] "=r" (valid_mask)
+      : [src] "r" (cursor),
+        [lo] "r" ((uint32_t) ('0' - 1)),
+        [hi] "r" ((uint32_t) ('9' + 1))
+      : "xmm0", "xmm1", "xmm2", "xmm3", "xmm4", "memory"
+    );
+    if ((valid_mask & 0xFF) == 0xFF) {
+      uint32_t low_8 = Simd_Parse_8_Digits_Avx2 (cursor + 8);
+      *out = (uint64_t) high_8 * 100000000ULL + low_8;
+      return 16;
+    }
+  }
+
+  /* Only the first eight digits were valid. */
+  *out = high_8;
+  return 8;
+}
+#endif /* SIMD_X86_64 */
+
+/* Convert a decimal digit string (with optional leading sign) to a Big_Integer.  Uses the AVX2
+ * SIMD path when available to process eight or sixteen digits at a time. */
+Big_Integer *Big_Integer_From_Decimal_SIMD (const char *text) {
+  Big_Integer *integer = Big_Integer_New (4);
+  integer->is_negative = (*text == '-');
+  if (*text == '-' or *text == '+') text++;
+
+  /* Skip leading zeros. */
+  while (*text == '0') text++;
+  if (*text == '\0' or (*text < '0' or *text > '9')) {
+    integer->limbs[0] = 0;
+    integer->count = 1;
+    Big_Integer_Normalize (integer);
+    return integer;
+  }
+
+  /* Locate the end of the digit run. */
+  const char *end = text;
+  while (*end >= '0' and *end <= '9') end++;
+#ifdef SIMD_X86_64
+  Simd_Detect_Features ();
+  if (Simd_Has_Avx2) {
+    integer->limbs[0] = 0;
+    integer->count = 1;
+    const char *cursor = text;
+    while (cursor < end) {
+      int remaining = (int) (end - cursor);
+
+      /* When eight or more digits remain, try the SIMD batch path. */
+      if (remaining >= 8) {
+        uint64_t chunk;
+        int parsed = Simd_Parse_Digits_Avx2 (cursor, end, &chunk);
+        if (parsed == 16) {
+          Big_Integer_Mul_Add_Small (integer, 10000000000000000ULL, chunk);
+          cursor += 16;
+        } else if (parsed == 8) {
+          Big_Integer_Mul_Add_Small (integer, 100000000ULL, chunk);
+          cursor += 8;
+        } else {
+          Big_Integer_Mul_Add_Small (integer, 10, (uint64_t) (*cursor - '0'));
+          cursor++;
+        }
+      } else {
+        Big_Integer_Mul_Add_Small (integer, 10, (uint64_t) (*cursor - '0'));
+        cursor++;
+      }
+    }
+    Big_Integer_Normalize (integer);
+    return integer;
+  }
+#endif
+
+  /* Scalar fallback: one digit at a time. */
+  integer->limbs[0] = 0;
+  integer->count = 1;
+  while (text < end) {
+    Big_Integer_Mul_Add_Small (integer, 10, (uint64_t) (*text - '0'));
+    text++;
+  }
+  Big_Integer_Normalize (integer);
+  return integer;
+}
+
 /* ═════════════════════════════════════════════════════════════════════════════════════════════════
- * §17. MAIN DRIVER
+ * §19. DRIVER
  * ═════════════════════════════════════════════════════════════════════════════════════════════════
  */
 void Compile_File (const char *input_path, const char *output_path) {
@@ -37924,10 +37931,10 @@ void Compile_File (const char *input_path, const char *output_path) {
   }
 
   /* ═══════════════════════════════════════════════════════════════════════════════════════════════
-   * Emit @main() with Standard-style elaboration order (§15.7)
+   * Emit @main() with Standard-style elaboration order (§15)
    *
    * Per Ada RM 10.2, library units must be elaborated in a safe order
-   * before the main subprogram executes. The elaboration model (§15.7)
+   * before the main subprogram executes. The elaboration model (§15)
    * computes this order using dependency analysis and topological sort.
    *
    * The algorithm respects:
