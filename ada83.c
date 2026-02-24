@@ -6,72 +6,12 @@
 #include "ada83.h"
 
 /* ═══════════════════════════════════════════════════════════════════════════════════════════════════
- * §0. SIMD Optimizations and Fat Pointers
+ * §1. FOUNDATIONS — Includes, typedefs, target constants, ctype wrappers
  * ═══════════════════════════════════════════════════════════════════════════════════════════════════
  *
- * Architectures:
- *   x86-64  — AVX-512BW (64-byte vectors), AVX2 (32-byte), SSE4.2 (16-byte)
- *   ARM64   — NEON/ASIMD (16-byte), SVE (128–2048 bits, detected at runtime)
- *   Generic — Scalar fallback with loop unrolling for portability
- *
- * Every SIMD path has an equivalent scalar fallback.
- * ═══════════════════════════════════════════════════════════════════════════════════════════════════
- */
-
-/* Return true when the LLVM type string denotes a thin pointer ("ptr"). */
-bool Llvm_Type_Is_Pointer (const char *llvm_type) {
-  return llvm_type
-    and llvm_type[0] == 'p' and llvm_type[1] == 't'
-    and llvm_type[2] == 'r' and llvm_type[3] == '\0';
-}
-
-/* Return true when the LLVM type string denotes a fat pointer, i.e. the uniform { ptr, ptr }
- * layout used for unconstrained array parameters and access-to-unconstrained types. */
-bool Llvm_Type_Is_Fat_Pointer (const char *llvm_type) {
-  return llvm_type and strcmp (llvm_type, "{ ptr, ptr }") == 0;
-}
-
-/* Runtime CPU feature detection for x86-64.  AVX-512 code paths are only compiled when the
- * toolchain is invoked with -mavx512bw; without that flag we fall back to AVX2 or scalar. */
-#ifdef SIMD_X86_64
-#ifdef __AVX512BW__
-int Simd_Has_Avx512 = -1; /* -1 = unchecked, 0 = absent, 1 = present */
-#else
-__attribute__ ((unused))
-int Simd_Has_Avx512 = 0; /* Permanently disabled: not compiled with AVX-512 */
-#endif
-int Simd_Has_Avx2 = -1;
-void Simd_Detect_Features (void) {
-  if (Simd_Has_Avx2 >= 0) return; /* Already detected, nothing to do */
-  uint32_t eax, ebx, ecx, edx;
-
-  /* CPUID leaf 07H, sub-leaf 0: structured extended feature flags.  AVX2 is EBX bit 5. */
-  __asm__ volatile (
-    "mov $7, %%eax\n\t"
-    "xor %%ecx, %%ecx\n\t"
-    "cpuid\n\t"
-    : "=a" (eax), "=b" (ebx), "=c" (ecx), "=d" (edx)
-    :
-    : "memory"
-  );
-  Simd_Has_Avx2 = (ebx >> 5) & 1;
-#ifdef __AVX512BW__
-
-  /* AVX-512F is EBX bit 16, AVX-512BW is EBX bit 30 — both are required. */
-  Simd_Has_Avx512 = ((ebx >> 16) & 1) and ((ebx >> 30) & 1);
-#endif
-}
-#endif
-
-/* ═══════════════════════════════════════════════════════════════════════════════════════════════════
- * §1. TYPE METRICS — Size, alignment, and bit-width representation
- * ═══════════════════════════════════════════════════════════════════════════════════════════════════
- *
- * All size and alignment computations are centralised here.  Sizes flow through the To_Bits and
- * To_Bytes morphisms so that bit/byte confusion is impossible at the call site.
- *
- * INVARIANT: Sizes stored in Type_Info are always in BYTES (not bits).  This matches the LLVM
- * DataLayout model and simplifies record-layout arithmetic throughout the code generator.
+ * Safe wrappers around the C library ctype functions and the identifier-character lookup table
+ * defined by Ada LRM §2.3.  These are the first definitions because every subsequent chapter
+ * depends on character classification.
  */
 
 /* Safe ctype wrappers: the C library <ctype.h> functions take int and require unsigned char to
@@ -120,8 +60,19 @@ const uint8_t Id_Char_Table[256] = {
   /* Latin-1 remaining lowercase: ø ù ú û ü ý þ ÿ */
   [0xF8]=1,[0xF9]=1,[0xFA]=1,[0xFB]=1,[0xFC]=1,[0xFD]=1,[0xFE]=1,[0xFF]=1
 };
+
+/* ═══════════════════════════════════════════════════════════════════════════════════════════════════
+ * §2. MEASUREMENT — Size, alignment, and bit-width representation
+ * ═══════════════════════════════════════════════════════════════════════════════════════════════════
+ *
+ * All size and alignment computations are centralised here.  Sizes flow through the To_Bits and
+ * To_Bytes morphisms so that bit/byte confusion is impossible at the call site.
+ *
+ * INVARIANT: Sizes stored in Type_Info are always in BYTES (not bits).  This matches the LLVM
+ * DataLayout model and simplifies record-layout arithmetic throughout the code generator.
+ */
 /* ─────────────────────────────────────────────────────────────────────────────────────────────────
- * §1.1 Bit/Byte Conversions — Size morphisms
+ * §2.1 Bit/Byte Conversions — Size morphisms
  *
  * To_Bits   : bytes -> bits   (multiplicative, total — never truncates)
  * To_Bytes  : bits  -> bytes  (ceiling division — rounds up to the next whole byte)
@@ -137,7 +88,7 @@ size_t Align_To (size_t size, size_t alignment) {
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────────────────────────
- * §1.2 LLVM Type Selection — Width-to-type morphisms
+ * §2.2 LLVM Type Selection — Width-to-type morphisms
  *
  * Given a bit width, return the smallest LLVM integer (or float) type that can hold that width.
  * ───────────────────────────────────────────────────────────────────────────────────────────────── */
@@ -148,9 +99,22 @@ const char *Llvm_Int_Type (uint32_t bits) {
 const char *Llvm_Float_Type (uint32_t bits) {
   return bits <= Width_Float ? "float" : "double";
 }
+/* Return true when the LLVM type string denotes a thin pointer ("ptr"). */
+bool Llvm_Type_Is_Pointer (const char *llvm_type) {
+  return llvm_type
+    and llvm_type[0] == 'p' and llvm_type[1] == 't'
+    and llvm_type[2] == 'r' and llvm_type[3] == '\0';
+}
+
+/* Return true when the LLVM type string denotes a fat pointer, i.e. the uniform { ptr, ptr }
+ * layout used for unconstrained array parameters and access-to-unconstrained types. */
+bool Llvm_Type_Is_Fat_Pointer (const char *llvm_type) {
+  return llvm_type and strcmp (llvm_type, "{ ptr, ptr }") == 0;
+}
+
 
 /* ─────────────────────────────────────────────────────────────────────────────────────────────────
- * §1.3 Range Predicates — Determining representation width
+ * §2.3 Range Predicates — Determining representation width
  *
  * Compute the minimum number of bits needed to represent the integer range [lo .. hi].  All
  * bounds are int128_t so that the full Ada 2022 Long_Long_Long_Integer range is covered.
@@ -203,7 +167,7 @@ uint32_t Bits_For_Modulus (uint128_t modulus) {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════════════════════════════
- * §2. MEMORY ARENA — Bump allocation for the compilation session
+ * §3. MEMORY — Bump allocation for the compilation session
  * ═══════════════════════════════════════════════════════════════════════════════════════════════════
  *
  * A simple bump allocator used for AST nodes, interned strings, and other objects whose lifetime
@@ -239,7 +203,7 @@ void Arena_Free_All (void) {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════════════════════════════
- * §3. STRING SLICE — Non-owning string views
+ * §4. TEXT — Non-owning string views
  * ═══════════════════════════════════════════════════════════════════════════════════════════════════
  *
  * A String_Slice is a (pointer, length) pair borrowed from the source buffer or the arena.  It
@@ -301,7 +265,7 @@ int Edit_Distance (String_Slice left, String_Slice right) {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════════════════════════════
- * §4. SOURCE LOCATION — Anchoring diagnostics to source text
+ * §5. PROVENANCE — Anchoring diagnostics to source text
  * ═══════════════════════════════════════════════════════════════════════════════════════════════════
  *
  * Every AST node, token, and symbol carries a Source_Location so that error messages can point
@@ -310,7 +274,7 @@ int Edit_Distance (String_Slice left, String_Slice right) {
 const Source_Location No_Location = { .filename = NULL, .line = 0, .column = 0 };
 
 /* ═══════════════════════════════════════════════════════════════════════════════════════════════════
- * §5. ERROR HANDLING — Accumulating diagnostic reports
+ * §5.2 ERROR HANDLING — Accumulating diagnostic reports
  * ═══════════════════════════════════════════════════════════════════════════════════════════════════
  *
  * Errors are accumulated rather than triggering an immediate abort, so the compiler can report
@@ -521,204 +485,8 @@ Big_Integer *Big_Integer_Add (const Big_Integer *left, const Big_Integer *right)
   return result;
 }
 
-/* ─────────────────────────────────────────────────────────────────────────────────────────────────
- * §6.1 SIMD-accelerated decimal parsing
- *
- * Instead of processing one digit at a time (multiply by 10, add digit), the SIMD path batches
- * eight digits at once (multiply by 10**8, add the 8-digit value).  Eight ASCII digits are
- * converted to a 32-bit integer in three steps:
- *
- *   vpmaddubsw — multiply adjacent bytes by positional weights [10,1,...], sum to 16-bit words
- *   vpmaddwd   — multiply adjacent words by [100,1,...], sum to 32-bit dwords
- *   imul + add — final combine:  high_dword * 10000 + low_dword
- *
- * This reduces the number of big-integer multiply-add operations from O(n) to O(n/8).
- * ───────────────────────────────────────────────────────────────────────────────────────────────── */
-#ifdef SIMD_X86_64
-
-/* Parse exactly 8 ASCII digit characters ('0'–'9') into a 32-bit integer in the range
- * [0 .. 99_999_999] using AVX2 multiply-add instructions (see §6.1 header for the algorithm). */
-uint32_t Simd_Parse_8_Digits_Avx2 (const char *digits) {
-  uint32_t result;
-  __asm__ volatile (
-
-    /* Load 8 bytes into low portion of xmm0 */
-    "vmovq (%[src]), %%xmm0\n\t"
-
-    /* Broadcast '0' and subtract to get digit values */
-    "vmovd %[zero], %%xmm1\n\t"
-    "vpbroadcastb %%xmm1, %%xmm1\n\t"
-    "vpsubb %%xmm1, %%xmm0, %%xmm0\n\t"
-
-    /* Multiply-add bytes to words: weights [10,1,10,1,10,1,10,1] */
-    "vmovq %[w1], %%xmm2\n\t"
-    "vpmaddubsw %%xmm2, %%xmm0, %%xmm0\n\t"
-
-    /* Multiply-add words to dwords: weights [100,1,100,1] */
-    "vmovq %[w2], %%xmm2\n\t"
-    "vpmaddwd %%xmm2, %%xmm0, %%xmm0\n\t"
-
-    /* Extract two dwords and combine: dw0 * 10000 + dw1 */
-    "vmovd %%xmm0, %%eax\n\t"
-    "vpextrd $1, %%xmm0, %%edx\n\t"
-    "imull $10000, %%eax\n\t"
-    "addl %%edx, %%eax\n\t"
-    : "=a" (result)
-    : [src] "r" (digits),
-      [zero] "r" ((uint32_t) '0'),
-      [w1] "r" (0x010A010A010A010AULL),  /* byte weights [10,1,10,1,10,1,10,1]  (0x0A = 10) */
-      [w2] "r" (0x0001006400010064ULL)   /* word weights [100,1,100,1]                       */
-    : "xmm0", "xmm1", "xmm2", "edx", "memory"
-  );
-  return result;
-}
-
-/* Parse up to 16 ASCII digits from the buffer [cursor .. limit) using AVX2.  Validates that all
- * bytes are ASCII digits first; returns the number of digits actually consumed and stores the
- * parsed value in *out. */
-int Simd_Parse_Digits_Avx2 (const char *cursor, const char *limit, uint64_t *out) {
-  int length = (limit - cursor > 16) ? 16 : (int) (limit - cursor);
-
-  /* Fewer than 8 digits available — fall back to scalar. */
-  if (length < 8) {
-    uint64_t value = 0;
-    int count = 0;
-    while (count < length and cursor[count] >= '0' and cursor[count] <= '9') {
-      value = value * 10 + (cursor[count] - '0');
-      count++;
-    }
-    *out = value;
-    return count;
-  }
-
-  /* Validate that the first eight bytes are all ASCII digits using SIMD comparison. */
-  uint32_t valid_mask;
-  __asm__ volatile (
-    "vmovq (%[src]), %%xmm0\n\t"
-    "vmovd %[lo], %%xmm1\n\t"
-    "vpbroadcastb %%xmm1, %%xmm1\n\t"
-    "vmovd %[hi], %%xmm2\n\t"
-    "vpbroadcastb %%xmm2, %%xmm2\n\t"
-    "vpcmpgtb %%xmm1, %%xmm0, %%xmm3\n\t"
-    "vpcmpgtb %%xmm0, %%xmm2, %%xmm4\n\t"
-    "vpand %%xmm3, %%xmm4, %%xmm0\n\t"
-    "vpmovmskb %%xmm0, %[mask]\n\t"
-    : [mask] "=r" (valid_mask)
-    : [src] "r" (cursor),
-      [lo] "r" ((uint32_t) ('0' - 1)),
-      [hi] "r" ((uint32_t) ('9' + 1))
-    : "xmm0", "xmm1", "xmm2", "xmm3", "xmm4", "memory"
-  );
-
-  /* Not all eight are digits — fall back to scalar. */
-  if ((valid_mask & 0xFF) != 0xFF) {
-    uint64_t value = 0;
-    int count = 0;
-    while (count < length and cursor[count] >= '0' and cursor[count] <= '9') {
-      value = value * 10 + (cursor[count] - '0');
-      count++;
-    }
-    *out = value;
-    return count;
-  }
-  uint32_t high_8 = Simd_Parse_8_Digits_Avx2 (cursor);
-
-  /* If 16 digits are available, validate the second group of eight. */
-  if (length >= 16) {
-    __asm__ volatile (
-      "vmovq 8(%[src]), %%xmm0\n\t"
-      "vmovd %[lo], %%xmm1\n\t"
-      "vpbroadcastb %%xmm1, %%xmm1\n\t"
-      "vmovd %[hi], %%xmm2\n\t"
-      "vpbroadcastb %%xmm2, %%xmm2\n\t"
-      "vpcmpgtb %%xmm1, %%xmm0, %%xmm3\n\t"
-      "vpcmpgtb %%xmm0, %%xmm2, %%xmm4\n\t"
-      "vpand %%xmm3, %%xmm4, %%xmm0\n\t"
-      "vpmovmskb %%xmm0, %[mask]\n\t"
-      : [mask] "=r" (valid_mask)
-      : [src] "r" (cursor),
-        [lo] "r" ((uint32_t) ('0' - 1)),
-        [hi] "r" ((uint32_t) ('9' + 1))
-      : "xmm0", "xmm1", "xmm2", "xmm3", "xmm4", "memory"
-    );
-    if ((valid_mask & 0xFF) == 0xFF) {
-      uint32_t low_8 = Simd_Parse_8_Digits_Avx2 (cursor + 8);
-      *out = (uint64_t) high_8 * 100000000ULL + low_8;
-      return 16;
-    }
-  }
-
-  /* Only the first eight digits were valid. */
-  *out = high_8;
-  return 8;
-}
-#endif /* SIMD_X86_64 */
-
-/* Convert a decimal digit string (with optional leading sign) to a Big_Integer.  Uses the AVX2
- * SIMD path when available to process eight or sixteen digits at a time. */
-Big_Integer *Big_Integer_From_Decimal_SIMD (const char *text) {
-  Big_Integer *integer = Big_Integer_New (4);
-  integer->is_negative = (*text == '-');
-  if (*text == '-' or *text == '+') text++;
-
-  /* Skip leading zeros. */
-  while (*text == '0') text++;
-  if (*text == '\0' or (*text < '0' or *text > '9')) {
-    integer->limbs[0] = 0;
-    integer->count = 1;
-    Big_Integer_Normalize (integer);
-    return integer;
-  }
-
-  /* Locate the end of the digit run. */
-  const char *end = text;
-  while (*end >= '0' and *end <= '9') end++;
-#ifdef SIMD_X86_64
-  Simd_Detect_Features ();
-  if (Simd_Has_Avx2) {
-    integer->limbs[0] = 0;
-    integer->count = 1;
-    const char *cursor = text;
-    while (cursor < end) {
-      int remaining = (int) (end - cursor);
-
-      /* When eight or more digits remain, try the SIMD batch path. */
-      if (remaining >= 8) {
-        uint64_t chunk;
-        int parsed = Simd_Parse_Digits_Avx2 (cursor, end, &chunk);
-        if (parsed == 16) {
-          Big_Integer_Mul_Add_Small (integer, 10000000000000000ULL, chunk);
-          cursor += 16;
-        } else if (parsed == 8) {
-          Big_Integer_Mul_Add_Small (integer, 100000000ULL, chunk);
-          cursor += 8;
-        } else {
-          Big_Integer_Mul_Add_Small (integer, 10, (uint64_t) (*cursor - '0'));
-          cursor++;
-        }
-      } else {
-        Big_Integer_Mul_Add_Small (integer, 10, (uint64_t) (*cursor - '0'));
-        cursor++;
-      }
-    }
-    Big_Integer_Normalize (integer);
-    return integer;
-  }
-#endif
-
-  /* Scalar fallback: one digit at a time. */
-  integer->limbs[0] = 0;
-  integer->count = 1;
-  while (text < end) {
-    Big_Integer_Mul_Add_Small (integer, 10, (uint64_t) (*text - '0'));
-    text++;
-  }
-  Big_Integer_Normalize (integer);
-  return integer;
-}
-
 /* ═══════════════════════════════════════════════════════════════════════════════════════════════════
- * §6.2 BIG_REAL — Arbitrary-precision real numbers for Ada literals
+ * §6.1 BIG_REAL — Arbitrary-precision real numbers for Ada literals
  * ═══════════════════════════════════════════════════════════════════════════════════════════════════
  *
  * Real literals are represented as significand * 10**exponent per Ada LRM §2.4.1.  For example
@@ -970,7 +738,7 @@ Big_Real *Big_Real_Multiply (const Big_Real *left, const Big_Real *right) {
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────────────────────────
- * §6.3 Exact Rational Arithmetic for Universal Reals (RM §4.10)
+ * §6.2 Exact Rational Arithmetic for Universal Reals (RM §4.10)
  *
  * Ada requires that static universal_real expressions be evaluated exactly during compilation.
  * IEEE double cannot faithfully represent fractions like 1/3, so we carry each value as a
@@ -1343,609 +1111,6 @@ Lexer Lexer_New (const char *source, size_t length, const char *filename) {
     .prev_token_kind = TK_EOF
   };
 }
-
-/* ═══════════════════════════════════════════════════════════════════════════════════════════════════
- * §7.3.1 SIMD-Accelerated Scanning Functions
- * ═══════════════════════════════════════════════════════════════════════════════════════════════════
- *
- * Four architecture paths: x86-64 (AVX-512/AVX2/SSE4.2), ARM64 (NEON), generic scalar fallback.
- * Each function scans for interesting bytes (whitespace boundaries, end-of-identifier, etc.)
- * without character-by-character loops.
- */
-#ifdef SIMD_X86_64
-
-/* ─────────────────────────────────────────────────────────────────────────────────────────────────
- * x86-64 AVX-512/AVX2 SIMD Lexer Acceleration
- *
- *   AVX-512BW — 64-byte vector processing with k-mask registers
- *   AVX2      — 32-byte processing with optimised instruction scheduling
- *   BMI2      — TZCNT for fast "find first non-matching byte" within a mask
- *
- * Scanning functions:
- *   Simd_Skip_Whitespace  — skip space (0x20) and C0 controls (0x09–0x0D)
- *   Simd_Find_Char_X86    — generic single-character search (newline, quotes)
- *   Simd_Scan_Identifier  — match the [A-Za-z0-9_] character class
- *   Simd_Scan_Digits      — match [0-9_] for numeric literals
- * ───────────────────────────────────────────────────────────────────────────────────────────────── */
-
-/* BMI2 TZCNT (trailing zero count) — returns the index of the lowest set bit. */
-uint32_t Tzcnt32 (uint32_t value) {
-  uint32_t index;
-  __asm__ ("tzcntl %1, %0" : "=r" (index) : "r" (value));
-  return index;
-}
-uint64_t Tzcnt64 (uint64_t value) {
-  uint64_t index;
-  __asm__ ("tzcntq %1, %0" : "=r" (index) : "r" (value));
-  return index;
-}
-
-/* ─────────────────────────────────────────────────────────────────────────────────────────────────
- * AVX-512 whitespace skip — 64 bytes at a time using k-mask registers.  Matches space (0x20)
- * and the C0 control range 0x09–0x0D (tab, LF, VT, FF, CR).  Only compiled with -mavx512bw.
- * ───────────────────────────────────────────────────────────────────────────────────────────────── */
-#ifdef __AVX512BW__
-const char *Simd_Skip_Whitespace_Avx512 (const char *cursor, const char *limit) {
-  while (cursor + 64 <= limit) {
-    uint64_t mask;
-    __asm__ volatile (
-      "prefetcht0 128(%[src])\n\t"           /* Prefetch next cache line */
-      "vmovdqu8 (%[src]), %%zmm0\n\t"        /* Load 64 bytes */
-      "vpbroadcastb %[space], %%zmm1\n\t"   /* Broadcast space char */
-      "vpcmpeqb %%zmm1, %%zmm0, %%k1\n\t"   /* k1 = (c == ' ') */
-      "vpbroadcastb %[lo], %%zmm2\n\t"      /* Broadcast 0x08 */
-      "vpbroadcastb %[hi], %%zmm3\n\t"      /* Broadcast 0x0E */
-      "vpcmpgtb %%zmm2, %%zmm0, %%k2\n\t"   /* k2 = (c > 0x08) */
-      "vpcmpgtb %%zmm0, %%zmm3, %%k3\n\t"   /* k3 = (0x0E > c) */
-      "kandd %%k2, %%k3, %%k2\n\t"          /* k2 = in range [0x09,0x0D] */
-      "kord %%k1, %%k2, %%k0\n\t"           /* k0 = whitespace mask */
-      "kmovq %%k0, %[mask]\n\t"             /* Extract to GPR */
-      : [mask] "=r" (mask)
-      : [src] "r" (cursor), [space] "r" ((uint32_t) ' '),
-        [lo] "r" ((uint32_t) 0x08), [hi] "r" ((uint32_t) 0x0E)
-      : "zmm0", "zmm1", "zmm2", "zmm3", "k0", "k1", "k2", "k3", "memory"
-    );
-
-    /* If any non-whitespace byte was found, return its position. */
-    if (~mask) {
-      uint64_t first_nonwhite = ~mask;
-      __asm__ volatile ("tzcntq %1, %0" : "=r" (first_nonwhite) : "r" (first_nonwhite));
-      return cursor + first_nonwhite;
-    }
-    cursor += 64;
-  }
-  return cursor;
-}
-#endif /* __AVX512BW__ */
-
-/* ─────────────────────────────────────────────────────────────────────────────────────────────────
- * AVX2 Whitespace Skip with 2x Unrolling
- *
- * Processes 64 bytes (two 32-byte YMM loads) per iteration for better throughput on long runs of
- * whitespace.  Falls back to a single 32-byte pass for the remaining tail before returning to the
- * scalar loop in the dispatcher.
- * ─────────────────────────────────────────────────────────────────────────────────────────────── */
-const char *Simd_Skip_Whitespace_Avx2 (const char *cursor, const char *limit) {
-
-  /* 2x unrolled: process 64 bytes per iteration */
-  while (cursor + 64 <= limit) {
-    uint32_t m0, m1;
-    __asm__ volatile (
-      "prefetcht0 128(%[src])\n\t"
-
-      /* Load two 32-byte chunks in parallel */
-      "vmovdqu (%[src]), %%ymm0\n\t"
-      "vmovdqu 32(%[src]), %%ymm8\n\t"
-
-      /* Broadcast constants once, reuse for both chunks */
-      "vmovd %[space], %%xmm1\n\t"
-      "vpbroadcastb %%xmm1, %%ymm1\n\t"
-      "vmovd %[lo], %%xmm2\n\t"
-      "vpbroadcastb %%xmm2, %%ymm2\n\t"
-      "vmovd %[hi], %%xmm3\n\t"
-      "vpbroadcastb %%xmm3, %%ymm3\n\t"
-
-      /* First chunk: space match, range check 0x09..0x0D */
-      "vpcmpeqb %%ymm1, %%ymm0, %%ymm5\n\t"
-      "vpcmpgtb %%ymm2, %%ymm0, %%ymm6\n\t"
-      "vpcmpgtb %%ymm0, %%ymm3, %%ymm7\n\t"
-
-      /* Second chunk: same comparisons on the next 32 bytes */
-      "vpcmpeqb %%ymm1, %%ymm8, %%ymm9\n\t"
-      "vpcmpgtb %%ymm2, %%ymm8, %%ymm10\n\t"
-      "vpcmpgtb %%ymm8, %%ymm3, %%ymm11\n\t"
-
-      /* Combine results: whitespace = space OR (> 0x08 AND < 0x0E) */
-      "vpand %%ymm6, %%ymm7, %%ymm6\n\t"
-      "vpor %%ymm5, %%ymm6, %%ymm0\n\t"
-      "vpand %%ymm10, %%ymm11, %%ymm10\n\t"
-      "vpor %%ymm9, %%ymm10, %%ymm8\n\t"
-
-      /* Extract per-byte masks */
-      "vpmovmskb %%ymm0, %[m0]\n\t"
-      "vpmovmskb %%ymm8, %[m1]\n\t"
-      "vzeroupper\n\t"
-      : [m0] "=r" (m0), [m1] "=r" (m1)
-      : [src] "r" (cursor), [space] "r" ((uint32_t)' '),
-        [lo] "r" ((uint32_t)0x08), [hi] "r" ((uint32_t)0x0E)
-      : "ymm0", "ymm1", "ymm2", "ymm3", "ymm5", "ymm6", "ymm7",
-        "ymm8", "ymm9", "ymm10", "ymm11", "memory"
-    );
-    if (m0 != 0xFFFFFFFF) return cursor + Tzcnt32 (~m0);
-    if (m1 != 0xFFFFFFFF) return cursor + 32 + Tzcnt32 (~m1);
-    cursor += 64;
-  }
-
-  /* Handle remaining 32-byte chunk */
-  while (cursor + 32 <= limit) {
-    uint32_t mask;
-    __asm__ volatile (
-      "vmovdqu (%[src]), %%ymm0\n\t"
-      "vmovd %[space], %%xmm1\n\t"
-      "vpbroadcastb %%xmm1, %%ymm1\n\t"
-      "vmovd %[lo], %%xmm2\n\t"
-      "vpbroadcastb %%xmm2, %%ymm2\n\t"
-      "vmovd %[hi], %%xmm3\n\t"
-      "vpbroadcastb %%xmm3, %%ymm3\n\t"
-      "vpcmpeqb %%ymm1, %%ymm0, %%ymm5\n\t"
-      "vpcmpgtb %%ymm2, %%ymm0, %%ymm6\n\t"
-      "vpcmpgtb %%ymm0, %%ymm3, %%ymm7\n\t"
-      "vpand %%ymm6, %%ymm7, %%ymm6\n\t"
-      "vpor %%ymm5, %%ymm6, %%ymm0\n\t"
-      "vpmovmskb %%ymm0, %[mask]\n\t"
-      "vzeroupper\n\t"
-      : [mask] "=r" (mask)
-      : [src] "r" (cursor), [space] "r" ((uint32_t)' '),
-        [lo] "r" ((uint32_t)0x08), [hi] "r" ((uint32_t)0x0E)
-      : "ymm0", "ymm1", "ymm2", "ymm3", "ymm5", "ymm6", "ymm7", "memory"
-    );
-    if (mask != 0xFFFFFFFF) return cursor + Tzcnt32 (~mask);
-    cursor += 32;
-  }
-  return cursor;
-}
-
-/* ─────────────────────────────────────────────────────────────────────────────────────────────────
- * Whitespace Skip Dispatcher
- *
- * Selects the best available SIMD path at runtime based on CPU features detected by
- * Simd_Detect_Features, then falls through to a scalar tail for the last few bytes.
- * ─────────────────────────────────────────────────────────────────────────────────────────────── */
-const char *Simd_Skip_Whitespace (const char *cursor, const char *limit) {
-  Simd_Detect_Features ();
-#ifdef __AVX512BW__
-  if (Simd_Has_Avx512 and (limit - cursor) >= 64) {
-    cursor = Simd_Skip_Whitespace_Avx512 (cursor, limit);
-  }
-#endif
-  if (Simd_Has_Avx2 and (limit - cursor) >= 32) {
-    cursor = Simd_Skip_Whitespace_Avx2 (cursor, limit);
-  }
-
-  /* Scalar tail for remaining bytes */
-  while (cursor < limit) {
-    unsigned char ch = (unsigned char)*cursor;
-    if (ch != ' ' and (ch < 0x09 or ch > 0x0D)) break;
-    cursor++;
-  }
-  return cursor;
-}
-
-/* ─────────────────────────────────────────────────────────────────────────────────────────────────
- * Generic Single-Character Search
- *
- * Searches for the first occurrence of a specific byte (newline, quote, etc.) in the given range.
- * The first 16 bytes are checked with a scalar fast path that covers most short comments and
- * string literals; beyond that the function dispatches to AVX-512 or AVX2 SIMD loops.  Used as
- * the building block for Simd_Find_Newline, Simd_Find_Quote, and Simd_Find_Double_Quote.
- * ─────────────────────────────────────────────────────────────────────────────────────────────── */
-const char *Simd_Find_Char_X86 (const char *cursor, const char *limit, char target) {
-
-  /* Fast path: scalar check for first 16 bytes (covers most short comments/strings) */
-  for (int i = 0; i < 16 and cursor + i < limit; i++) {
-    if (cursor[i] == target) return cursor + i;
-  }
-
-  /* Short remaining buffer — finish with scalar */
-  if (cursor + 16 >= limit) {
-    cursor += 16;
-    while (cursor < limit and *cursor != target) cursor++;
-    return cursor;
-  }
-  cursor += 16;  /* Fast path didn't find it, continue with SIMD */
-  Simd_Detect_Features ();
-#ifdef __AVX512BW__
-
-  /* AVX-512: 64 bytes at a time */
-  if (Simd_Has_Avx512) {
-    while (cursor + 64 <= limit) {
-      uint64_t mask;
-      __asm__ volatile (
-        "vmovdqu8 (%[src]), %%zmm0\n\t"
-        "vpbroadcastb %[c], %%zmm1\n\t"
-        "vpcmpeqb %%zmm1, %%zmm0, %%k0\n\t"
-        "kmovq %%k0, %[mask]\n\t"
-        : [mask] "=r" (mask)
-        : [src] "r" (cursor), [c] "r" ((uint32_t)target)
-        : "zmm0", "zmm1", "k0", "memory"
-      );
-      if (mask) {
-        __asm__ volatile ("tzcntq %1, %0" : "=r" (mask) : "r" (mask));
-        return cursor + mask;
-      }
-      cursor += 64;
-    }
-  }
-#endif
-
-  /* AVX2: 32 bytes at a time */
-  while (cursor + 32 <= limit) {
-    uint32_t mask;
-    __asm__ volatile (
-      "vmovdqu (%[src]), %%ymm0\n\t"
-      "vmovd %[c], %%xmm1\n\t"
-      "vpbroadcastb %%xmm1, %%ymm1\n\t"
-      "vpcmpeqb %%ymm1, %%ymm0, %%ymm0\n\t"
-      "vpmovmskb %%ymm0, %[mask]\n\t"
-      "vzeroupper\n\t"
-      : [mask] "=r" (mask)
-      : [src] "r" (cursor), [c] "r" ((uint32_t)target)
-      : "ymm0", "ymm1", "memory"
-    );
-    if (mask) return cursor + Tzcnt32 (mask);
-    cursor += 32;
-  }
-
-  /* Scalar tail */
-  while (cursor < limit and *cursor != target) cursor++;
-  return cursor;
-}
-
-/* Convenience wrappers for common character searches */
-const char *Simd_Find_Newline (const char *cursor, const char *limit) {
-  return Simd_Find_Char_X86 (cursor, limit, '\n');
-}
-const char *Simd_Find_Quote (const char *cursor, const char *limit) {
-  return Simd_Find_Char_X86 (cursor, limit, '\'');
-}
-const char *Simd_Find_Double_Quote (const char *cursor, const char *limit) {
-  return Simd_Find_Char_X86 (cursor, limit, '"');
-}
-
-/* ─────────────────────────────────────────────────────────────────────────────────────────────────
- * Identifier Character Class Scanner
- *
- * Uses a fast unrolled table lookup for the first 8 characters, which covers the vast majority of
- * Ada identifiers.  Longer identifiers continue with a scalar table-driven loop — the branch
- * predictor handles this well since identifiers rarely exceed 8 characters.
- * ─────────────────────────────────────────────────────────────────────────────────────────────── */
-const char *Simd_Scan_Identifier (const char *cursor, const char *limit) {
-
-  /* Fast path: unrolled table lookup for first 8 chars (covers most identifiers) */
-  if (cursor >= limit or not Is_Id_Char (*cursor)) return cursor;
-  if (cursor + 1 >= limit or not Is_Id_Char (cursor[1])) return cursor + 1;
-  if (cursor + 2 >= limit or not Is_Id_Char (cursor[2])) return cursor + 2;
-  if (cursor + 3 >= limit or not Is_Id_Char (cursor[3])) return cursor + 3;
-  if (cursor + 4 >= limit or not Is_Id_Char (cursor[4])) return cursor + 4;
-  if (cursor + 5 >= limit or not Is_Id_Char (cursor[5])) return cursor + 5;
-  if (cursor + 6 >= limit or not Is_Id_Char (cursor[6])) return cursor + 6;
-  if (cursor + 7 >= limit or not Is_Id_Char (cursor[7])) return cursor + 7;
-
-  /* Long identifier (> 8 chars) — continue with table lookup */
-  cursor += 8;
-  while (cursor < limit and Is_Id_Char (*cursor)) cursor++;
-  return cursor;
-}
-
-/* ─────────────────────────────────────────────────────────────────────────────────────────────────
- * Digit Scanner for Numeric Literals
- *
- * Matches the character class [0-9_] — decimal digits with optional underscores, which is the Ada
- * numeric literal syntax (LRM §2.4).  Returns a pointer to the first character that is neither a
- * digit nor an underscore.
- * ─────────────────────────────────────────────────────────────────────────────────────────────── */
-const char *Simd_Scan_Digits (const char *cursor, const char *limit) {
-  Simd_Detect_Features ();
-#ifdef __AVX512BW__
-
-  /* AVX-512 path */
-  if (Simd_Has_Avx512) {
-    while (cursor + 64 <= limit) {
-      uint64_t mask;
-      __asm__ volatile (
-        "vmovdqu8 (%[src]), %%zmm0\n\t"
-        "vpbroadcastb %[lo], %%zmm1\n\t"
-        "vpbroadcastb %[hi], %%zmm2\n\t"
-        "vpbroadcastb %[u], %%zmm3\n\t"
-        "vpcmpgtb %%zmm1, %%zmm0, %%k1\n\t"     /* byte > '0'-1 */
-        "vpcmpgtb %%zmm0, %%zmm2, %%k2\n\t"     /* '9'+1 > byte */
-        "kandd %%k1, %%k2, %%k3\n\t"            /* digit range */
-        "vpcmpeqb %%zmm3, %%zmm0, %%k4\n\t"     /* underscore */
-        "kord %%k3, %%k4, %%k0\n\t"             /* digit OR underscore */
-        "kmovq %%k0, %[mask]\n\t"
-        : [mask] "=r" (mask)
-        : [src] "r" (cursor),
-          [lo] "r" ((uint32_t)('0' - 1)),
-          [hi] "r" ((uint32_t)('9' + 1)),
-          [u] "r" ((uint32_t)'_')
-        : "zmm0", "zmm1", "zmm2", "zmm3", "k0", "k1", "k2", "k3", "k4", "memory"
-      );
-      if (~mask) {
-        __asm__ volatile ("tzcntq %1, %0" : "=r" (mask) : "r" (~mask));
-        return cursor + mask;
-      }
-      cursor += 64;
-    }
-  }
-#endif
-
-  /* AVX2 path */
-  while (cursor + 32 <= limit) {
-    uint32_t mask;
-    __asm__ volatile (
-      "vmovdqu (%[src]), %%ymm0\n\t"
-      "vmovd %[lo], %%xmm1\n\t"
-      "vpbroadcastb %%xmm1, %%ymm1\n\t"
-      "vmovd %[hi], %%xmm2\n\t"
-      "vpbroadcastb %%xmm2, %%ymm2\n\t"
-      "vpcmpgtb %%ymm1, %%ymm0, %%ymm3\n\t"
-      "vpcmpgtb %%ymm0, %%ymm2, %%ymm4\n\t"
-      "vpand %%ymm3, %%ymm4, %%ymm5\n\t"
-      "vmovd %[u], %%xmm1\n\t"
-      "vpbroadcastb %%xmm1, %%ymm1\n\t"
-      "vpcmpeqb %%ymm1, %%ymm0, %%ymm1\n\t"
-      "vpor %%ymm5, %%ymm1, %%ymm0\n\t"
-      "vpmovmskb %%ymm0, %[mask]\n\t"
-      "vzeroupper\n\t"
-      : [mask] "=r" (mask)
-      : [src] "r" (cursor),
-        [lo] "r" ((uint32_t)('0' - 1)),
-        [hi] "r" ((uint32_t)('9' + 1)),
-        [u] "r" ((uint32_t)'_')
-      : "ymm0", "ymm1", "ymm2", "ymm3", "ymm4", "ymm5", "memory"
-    );
-    if (mask != 0xFFFFFFFF) return cursor + Tzcnt32 (~mask);
-    cursor += 32;
-  }
-
-  /* Scalar tail */
-  while (cursor < limit and ((*cursor >= '0' and *cursor <= '9') or *cursor == '_')) cursor++;
-  return cursor;
-}
-#elif defined(SIMD_ARM64)
-
-/* ─────────────────────────────────────────────────────────────────────────────────────────────────
- * ARM64 NEON Implementation (raw inline assembly)
- * ─────────────────────────────────────────────────────────────────────────────────────────────── */
-const char *Simd_Skip_Whitespace (const char *cursor, const char *limit) {
-  while (cursor + 16 <= limit) {
-    uint64_t lo, hi;
-    __asm__ volatile (
-      "ldr q0, [%[src]]\n\t"                /* Load 16 bytes */
-
-      /* Check for space (0x20) */
-      "movi v1.16b, #0x20\n\t"
-      "cmeq v5.16b, v0.16b, v1.16b\n\t"
-
-      /* Check range 0x09..0x0D: byte > 0x08 and byte < 0x0E */
-      "movi v2.16b, #0x08\n\t"
-      "movi v3.16b, #0x0E\n\t"
-      "cmhi v6.16b, v0.16b, v2.16b\n\t"
-      "cmhi v7.16b, v3.16b, v0.16b\n\t"
-      "and v6.16b, v6.16b, v7.16b\n\t"      /* in range */
-
-      /* Combine: whitespace = space OR in_range, then invert for non-whitespace */
-      "orr v0.16b, v5.16b, v6.16b\n\t"
-      "mvn v0.16b, v0.16b\n\t"
-      "mov %[lo], v0.d[0]\n\t"
-      "mov %[hi], v0.d[1]\n\t"
-      : [lo] "=r" (lo), [hi] "=r" (hi)
-      : [src] "r" (cursor)
-      : "v0", "v1", "v2", "v3", "v5", "v6", "v7", "memory"
-    );
-    if (lo) return cursor + (Tzcnt64 (lo) >> 3);
-    if (hi) return cursor + 8 + (Tzcnt64 (hi) >> 3);
-    cursor += 16;
-  }
-
-  /* Scalar tail */
-  while (cursor < limit) {
-    unsigned char ch = (unsigned char)*cursor;
-    if (ch != ' ' and (ch < 0x09 or ch > 0x0D)) break;
-    cursor++;
-  }
-  return cursor;
-}
-const char *Simd_Find_Newline (const char *cursor, const char *limit) {
-  while (cursor + 16 <= limit) {
-    uint64_t lo, hi;
-    __asm__ volatile (
-      "ldr q0, [%[src]]\n\t"
-      "movi v1.16b, #0x0A\n\t"
-      "cmeq v0.16b, v0.16b, v1.16b\n\t"
-      "mov %[lo], v0.d[0]\n\t"
-      "mov %[hi], v0.d[1]\n\t"
-      : [lo] "=r" (lo), [hi] "=r" (hi)
-      : [src] "r" (cursor)
-      : "v0", "v1", "memory"
-    );
-    if (lo) return cursor + (Tzcnt64 (lo) >> 3);
-    if (hi) return cursor + 8 + (Tzcnt64 (hi) >> 3);
-    cursor += 16;
-  }
-  while (cursor < limit and *cursor != '\n') cursor++;
-  return cursor;
-}
-const char *Simd_Scan_Identifier (const char *cursor, const char *limit) {
-  while (cursor + 16 <= limit) {
-    uint64_t lo, hi;
-    __asm__ volatile (
-      "ldr q0, [%[src]]\n\t"
-
-      /* Check a-z */
-      "movi v1.16b, #0x60\n\t"
-      "movi v2.16b, #0x7B\n\t"
-      "cmhi v3.16b, v0.16b, v1.16b\n\t"
-      "cmhi v4.16b, v2.16b, v0.16b\n\t"
-      "and v5.16b, v3.16b, v4.16b\n\t"
-
-      /* Check A-Z */
-      "movi v1.16b, #0x40\n\t"
-      "movi v2.16b, #0x5B\n\t"
-      "cmhi v3.16b, v0.16b, v1.16b\n\t"
-      "cmhi v4.16b, v2.16b, v0.16b\n\t"
-      "and v6.16b, v3.16b, v4.16b\n\t"
-
-      /* Check 0-9 */
-      "movi v1.16b, #0x2F\n\t"
-      "movi v2.16b, #0x3A\n\t"
-      "cmhi v3.16b, v0.16b, v1.16b\n\t"
-      "cmhi v4.16b, v2.16b, v0.16b\n\t"
-      "and v7.16b, v3.16b, v4.16b\n\t"
-
-      /* Check underscore */
-      "movi v1.16b, #0x5F\n\t"
-      "cmeq v16.16b, v0.16b, v1.16b\n\t"
-
-      /* Combine: valid = lower | upper | digit | underscore, then invert */
-      "orr v5.16b, v5.16b, v6.16b\n\t"
-      "orr v7.16b, v7.16b, v16.16b\n\t"
-      "orr v0.16b, v5.16b, v7.16b\n\t"
-      "mvn v0.16b, v0.16b\n\t"
-      "mov %[lo], v0.d[0]\n\t"
-      "mov %[hi], v0.d[1]\n\t"
-      : [lo] "=r" (lo), [hi] "=r" (hi)
-      : [src] "r" (cursor)
-      : "v0", "v1", "v2", "v3", "v4", "v5", "v6", "v7", "v16", "memory"
-    );
-    if (lo) return cursor + (Tzcnt64 (lo) >> 3);
-    if (hi) return cursor + 8 + (Tzcnt64 (hi) >> 3);
-    cursor += 16;
-  }
-  while (cursor < limit) {
-    char ch = *cursor;
-    if (not ((ch >= 'a' and ch <= 'z') or (ch >= 'A' and ch <= 'Z') or
-        (ch >= '0' and ch <= '9') or ch == '_'))
-      break;
-    cursor++;
-  }
-  return cursor;
-}
-const char *Simd_Find_Quote (const char *cursor, const char *limit) {
-  while (cursor + 16 <= limit) {
-    uint64_t lo, hi;
-    __asm__ volatile (
-      "ldr q0, [%[src]]\n\t"
-      "movi v1.16b, #0x27\n\t"
-      "cmeq v0.16b, v0.16b, v1.16b\n\t"
-      "mov %[lo], v0.d[0]\n\t"
-      "mov %[hi], v0.d[1]\n\t"
-      : [lo] "=r" (lo), [hi] "=r" (hi)
-      : [src] "r" (cursor)
-      : "v0", "v1", "memory"
-    );
-    if (lo) return cursor + (Tzcnt64 (lo) >> 3);
-    if (hi) return cursor + 8 + (Tzcnt64 (hi) >> 3);
-    cursor += 16;
-  }
-  while (cursor < limit and *cursor != '\'') cursor++;
-  return cursor;
-}
-const char *Simd_Find_Double_Quote (const char *cursor, const char *limit) {
-  while (cursor + 16 <= limit) {
-    uint64_t lo, hi;
-    __asm__ volatile (
-      "ldr q0, [%[src]]\n\t"
-      "movi v1.16b, #0x22\n\t"
-      "cmeq v0.16b, v0.16b, v1.16b\n\t"
-      "mov %[lo], v0.d[0]\n\t"
-      "mov %[hi], v0.d[1]\n\t"
-      : [lo] "=r" (lo), [hi] "=r" (hi)
-      : [src] "r" (cursor)
-      : "v0", "v1", "memory"
-    );
-    if (lo) return cursor + (Tzcnt64 (lo) >> 3);
-    if (hi) return cursor + 8 + (Tzcnt64 (hi) >> 3);
-    cursor += 16;
-  }
-  while (cursor < limit and *cursor != '"') cursor++;
-  return cursor;
-}
-const char *Simd_Scan_Digits (const char *cursor, const char *limit) {
-  while (cursor + 16 <= limit) {
-    uint64_t lo, hi;
-    __asm__ volatile (
-      "ldr q0, [%[src]]\n\t"
-
-      /* Check 0-9 */
-      "movi v1.16b, #0x2F\n\t"
-      "movi v2.16b, #0x3A\n\t"
-      "cmhi v3.16b, v0.16b, v1.16b\n\t"
-      "cmhi v4.16b, v2.16b, v0.16b\n\t"
-      "and v5.16b, v3.16b, v4.16b\n\t"
-
-      /* Check underscore */
-      "movi v1.16b, #0x5F\n\t"
-      "cmeq v6.16b, v0.16b, v1.16b\n\t"
-
-      /* Combine and invert */
-      "orr v0.16b, v5.16b, v6.16b\n\t"
-      "mvn v0.16b, v0.16b\n\t"
-      "mov %[lo], v0.d[0]\n\t"
-      "mov %[hi], v0.d[1]\n\t"
-      : [lo] "=r" (lo), [hi] "=r" (hi)
-      : [src] "r" (cursor)
-      : "v0", "v1", "v2", "v3", "v4", "v5", "v6", "memory"
-    );
-    if (lo) return cursor + (Tzcnt64 (lo) >> 3);
-    if (hi) return cursor + 8 + (Tzcnt64 (hi) >> 3);
-    cursor += 16;
-  }
-  while (cursor < limit and ((*cursor >= '0' and *cursor <= '9') or *cursor == '_')) cursor++;
-  return cursor;
-}
-#else
-
-/* Generic Scalar Implementation (Portable Fallback)
- *
- * Reference implementation for platforms without SIMD support.  All SIMD paths must produce
- * identical results to these scalar functions for all possible inputs.
- */
-const char *Simd_Skip_Whitespace (const char *cursor, const char *limit) {
-  while (cursor < limit) {
-    unsigned char ch = (unsigned char)*cursor;
-    if (ch != ' ' and (ch < 0x09 or ch > 0x0D)) break;
-    cursor++;
-  }
-  return cursor;
-}
-const char *Simd_Find_Newline (const char *cursor, const char *limit) {
-  while (cursor < limit and *cursor != '\n') cursor++;
-  return cursor;
-}
-const char *Simd_Scan_Identifier (const char *cursor, const char *limit) {
-  while (cursor < limit) {
-    char ch = *cursor;
-    if (not ((ch >= 'a' and ch <= 'z') or (ch >= 'A' and ch <= 'Z') or
-        (ch >= '0' and ch <= '9') or ch == '_'))
-      break;
-    cursor++;
-  }
-  return cursor;
-}
-const char *Simd_Find_Quote (const char *cursor, const char *limit) {
-  while (cursor < limit and *cursor != '\'') cursor++;
-  return cursor;
-}
-const char *Simd_Find_Double_Quote (const char *cursor, const char *limit) {
-  while (cursor < limit and *cursor != '"') cursor++;
-  return cursor;
-}
-const char *Simd_Scan_Digits (const char *cursor, const char *limit) {
-  while (cursor < limit and ((*cursor >= '0' and *cursor <= '9') or *cursor == '_')) cursor++;
-  return cursor;
-}
-#endif /* SIMD architecture selection */
 char Lexer_Peek (const Lexer *lex, size_t offset) {
   return lex->current + offset < lex->source_end ? lex->current[offset] : '\0';
 }
@@ -1988,7 +1153,7 @@ Token Make_Token (Token_Kind kind, Source_Location location, String_Slice text) 
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────────────────────────
- * §7.4 Scanning Functions — Each scanner consumes one token and returns it
+ * §7.3 Scanning Functions — Each scanner consumes one token and returns it
  * ─────────────────────────────────────────────────────────────────────────────────────────────── */
 Token Scan_Identifier (Lexer *lex) {
   Source_Location location = { .filename = lex->filename,
@@ -2251,7 +1416,7 @@ Token Scan_String_Literal (Lexer *lex) {
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────────────────────────
- * §7.5 Main Lexer Entry Point
+ * §7.4 Main Lexer Entry Point
  *
  * The lexer works as an iterator: each call to Lexer_Next_Token advances the source stream by
  * one token and returns it.  The function dispatches on the first character to select the
@@ -10800,2533 +9965,6 @@ void Resolve_Statement (Syntax_Node *node) {
       break;
   }
 }
-char *Read_File(const char *path, size_t *out_size) {
-  FILE *f = fopen (path, "rb");
-  if (not f) return NULL;
-  fseek (f, 0, SEEK_END);
-  long fsize = ftell (f);
-  if (fsize < 0) { fclose (f); return NULL; }
-  size_t size = (size_t)fsize;
-  fseek (f, 0, SEEK_SET);
-  char *buffer = malloc (size + 1);
-  if (not buffer) { fclose (f); return NULL; }
-  size_t read = fread (buffer, 1, size, f);
-  fclose (f);
-  buffer[read] = '\0';
-  *out_size = read;
-  return buffer;
-}
-
-/* ═════════════════════════════════════════════════════════════════════════════════════════════════
- * §15. ALI FILE WRITER — GNAT-Compatible Library Information
- * ═════════════════════════════════════════════════════════════════════════════════════════════════
- *
- * Ada Library Information (.ali) files record compilation dependencies and
- * unit metadata. Format follows GNAT's lib-writ.ads specification:
- *
- *   V "version"              -- compiler version
- *   P flags                  -- compilation parameters
- *   U name source version    -- unit entry
- *   W name [source ali]      -- with dependency
- *   D source timestamp       -- source dependency
- *
- * The ALI file enables:
- *   • Separate compilation with dependency tracking
- *   • Binder consistency checking
- *   • IDE cross-reference navigation
- */
-
-/* ─────────────────────────────────────────────────────────────────────────────────────────────────
- * §15.1 Unit_Info — Compilation unit metadata collector
- * ────────────────────────────────────────────────────────────────────────────────────────────── */
-/* ─────────────────────────────────────────────────────────────────────────────────────────────────
- * §15.2 CRC32 — Fast checksum for source identity
- *
- * Standard CRC-32/ISO-HDLC polynomial: 0xEDB88320 (bit-reversed 0x04C11DB7)
- * ────────────────────────────────────────────────────────────────────────────────────────────── */
-uint32_t Crc32_Table[256];
-bool Crc32_Table_Initialized = false;
-void Crc32_Init_Table (void) {
-  if (Crc32_Table_Initialized) return;
-  for (uint32_t i = 0; i < 256; i++) {
-    uint32_t crc = i;
-    for (int j = 0; j < 8; j++)
-      crc = (crc >> 1) ^ (0xEDB88320 & -(crc & 1));
-    Crc32_Table[i] = crc;
-  }
-  Crc32_Table_Initialized = true;
-}
-uint32_t Crc32 (const char *data, size_t length) {
-  Crc32_Init_Table ();
-  uint32_t crc = 0xFFFFFFFF;
-  for (size_t i = 0; i < length; i++)
-    crc = Crc32_Table[(crc ^ (uint8_t)data[i]) & 0xFF] ^ (crc >> 8);
-  return ~crc;
-}
-
-/* ─────────────────────────────────────────────────────────────────────────────────────────────────
- * §15.3 Unit_Name_To_File — GNAT naming convention
- *
- * Maps Ada unit names to file names:
- *   Package_Name      > package_name.ads
- *   Package_Name%b    > package_name.adb
- *   Parent.Child      > parent-child.ads
- * ────────────────────────────────────────────────────────────────────────────────────────────── */
-void Unit_Name_To_File (String_Slice unit_name, bool is_body,
-                char *out, size_t out_size) {
-  size_t j = 0;
-  for (size_t i = 0; i < unit_name.length and j < out_size - 5; i++) {
-    char c = unit_name.data[i];
-    if (c == '.') {
-      out[j++] = '-';  /* Dots become hyphens */
-    } else if (c >= 'A' and c <= 'Z') {
-      out[j++] = c - 'A' + 'a';  /* Lowercase */
-    } else {
-      out[j++] = c;
-    }
-  }
-
-  /* Append extension */
-  const char *ext = is_body ? ".adb" : ".ads";
-  for (int k = 0; ext[k] and j < out_size - 1; k++)
-    out[j++] = ext[k];
-  out[j] = '\0';
-}
-
-/* ─────────────────────────────────────────────────────────────────────────────────────────────────
- * §15.4 ALI_Collect — Gather unit info from parsed AST
- * ────────────────────────────────────────────────────────────────────────────────────────────── */
-void ALI_Collect_Withs (ALI_Info *ali, Syntax_Node *ctx) {
-  if (not ctx) return;
-  for (uint32_t i = 0; i < ctx->context.with_clauses.count; i++) {
-    Syntax_Node *with_node = ctx->context.with_clauses.items[i];
-    if (not with_node) continue;
-
-    /* Each WITH clause may have multiple names */
-    for (uint32_t j = 0; j < with_node->use_clause.names.count; j++) {
-      Syntax_Node *name = with_node->use_clause.names.items[j];
-      if (not name or ali->with_count >= 64) continue;
-      With_Info *w = &ali->withs[ali->with_count++];
-      w->name = name->kind == NK_IDENTIFIER ?
-            name->string_val.text : (String_Slice){0};
-      w->is_limited = false;  /* TODO: detect LIMITED WITH */
-      w->elaborate = false;
-      w->elaborate_all = false;
-
-      /* Derive file names from unit name */
-      char file_buf[256];
-      if (w->name.data) {
-        Unit_Name_To_File (w->name, false, file_buf, sizeof (file_buf));
-        w->source_file = Slice_Duplicate ((String_Slice){file_buf, strlen (file_buf)});
-        size_t len = strlen (file_buf);
-        if (len > 4) {
-          file_buf[len-3] = 'a';
-          file_buf[len-2] = 'l';
-          file_buf[len-1] = 'i';
-        }
-        w->ali_file = Slice_Duplicate ((String_Slice){file_buf, strlen (file_buf)});
-      }
-    }
-  }
-}
-
-/* Helper: extract unit name from a subprogram spec/body */
-String_Slice Get_Subprogram_Name (Syntax_Node *node) {
-  if (not node) return (String_Slice){"UNKNOWN", 7};
-  if (node->kind == NK_PROCEDURE_SPEC or node->kind == NK_FUNCTION_SPEC)
-    return node->subprogram_spec.name;
-
-  /* Body has spec nested inside */
-  if (node->kind == NK_PROCEDURE_BODY or node->kind == NK_FUNCTION_BODY) {
-    if (node->subprogram_body.specification)
-      return Get_Subprogram_Name (node->subprogram_body.specification);
-  }
-  return (String_Slice){"UNKNOWN", 7};
-}
-
-/* Forward declarations for functions used by ALI_Collect_Exports */
-String_Slice Mangle_Qualified_Name (String_Slice parent, String_Slice name);
-String_Slice LLVM_Type_Basic (String_Slice ada_type);
-
-/* ─────────────────────────────────────────────────────────────────────────────────────────────────
- * §15.4.2 ALI_Collect_Exports — Gather exported symbols from package spec
- * ────────────────────────────────────────────────────────────────────────────────────────────── */
-void ALI_Collect_Exports (ALI_Info *ali, Syntax_Node *unit) {
-  if (not unit or unit->kind != NK_PACKAGE_SPEC) return;
-  String_Slice pkg_name = unit->package_spec.name;
-  Node_List *decls = &unit->package_spec.visible_decls;
-  for (uint32_t i = 0; i < decls->count and ali->export_count < 256; i++) {
-    Syntax_Node *decl = decls->items[i];
-    if (not decl) continue;
-    Export_Info *exp = &ali->exports[ali->export_count];
-    exp->line = decl->location.line;
-    exp->param_count = 0;
-    exp->type_name = (String_Slice){0};
-    exp->mangled_name = (String_Slice){0};
-    exp->llvm_type = (String_Slice){0};
-    switch (decl->kind) {
-      case NK_TYPE_DECL:
-        exp->name = decl->type_decl.name;
-        exp->kind = 'T';
-        exp->mangled_name = Mangle_Qualified_Name (pkg_name, exp->name);
-        exp->llvm_type = LLVM_Type_Basic (exp->name);
-        ali->export_count++;
-        break;
-      case NK_SUBTYPE_DECL:
-        exp->name = decl->type_decl.name;
-        exp->kind = 'S';
-        exp->mangled_name = Mangle_Qualified_Name (pkg_name, exp->name);
-        if (decl->type_decl.definition) {
-          Syntax_Node *def = decl->type_decl.definition;
-          if (def->kind == NK_IDENTIFIER) {
-            exp->type_name = def->string_val.text;
-            exp->llvm_type = LLVM_Type_Basic (exp->type_name);
-          } else if (def->kind == NK_SUBTYPE_INDICATION and def->subtype_ind.subtype_mark) {
-            if (def->subtype_ind.subtype_mark->kind == NK_IDENTIFIER) {
-              exp->type_name = def->subtype_ind.subtype_mark->string_val.text;
-              exp->llvm_type = LLVM_Type_Basic (exp->type_name);
-            }
-          }
-        }
-        if (not exp->llvm_type.data) {
-          const char *int_t = Llvm_Int_Type ((uint32_t)To_Bits (sm->type_integer->size));
-          exp->llvm_type = (String_Slice){int_t, strlen (int_t)};
-        }
-        ali->export_count++;
-        break;
-      case NK_OBJECT_DECL:
-        for (uint32_t j = 0; j < decl->object_decl.names.count and ali->export_count < 256; j++) {
-          Syntax_Node *name = decl->object_decl.names.items[j];
-          if (name and name->kind == NK_IDENTIFIER) {
-            exp = &ali->exports[ali->export_count];
-            exp->name = name->string_val.text;
-            exp->kind = decl->object_decl.is_constant ? 'C' : 'V';
-            exp->line = name->location.line;
-            exp->mangled_name = Mangle_Qualified_Name (pkg_name, exp->name);
-            if (decl->object_decl.object_type and decl->object_decl.object_type->kind == NK_IDENTIFIER) {
-              exp->type_name = decl->object_decl.object_type->string_val.text;
-              exp->llvm_type = LLVM_Type_Basic (exp->type_name);
-            } else {
-              const char *int_t = Llvm_Int_Type ((uint32_t)To_Bits (sm->type_integer->size));
-              exp->llvm_type = (String_Slice){int_t, strlen (int_t)};
-            }
-            ali->export_count++;
-          }
-        }
-        break;
-      case NK_PROCEDURE_SPEC:
-        exp->name = decl->subprogram_spec.name;
-        exp->kind = 'P';
-        exp->mangled_name = Mangle_Qualified_Name (pkg_name, exp->name);
-        for (uint32_t j = 0; j < decl->subprogram_spec.parameters.count; j++) {
-          Syntax_Node *ps = decl->subprogram_spec.parameters.items[j];
-          if (ps and ps->kind == NK_PARAM_SPEC)
-            exp->param_count += ps->param_spec.names.count;
-        }
-        exp->llvm_type = (String_Slice){"void", 4};
-        ali->export_count++;
-        break;
-      case NK_FUNCTION_SPEC:
-        exp->name = decl->subprogram_spec.name;
-        exp->kind = 'F';
-        exp->mangled_name = Mangle_Qualified_Name (pkg_name, exp->name);
-        for (uint32_t j = 0; j < decl->subprogram_spec.parameters.count; j++) {
-          Syntax_Node *ps = decl->subprogram_spec.parameters.items[j];
-          if (ps and ps->kind == NK_PARAM_SPEC)
-            exp->param_count += ps->param_spec.names.count;
-        }
-        if (decl->subprogram_spec.return_type and decl->subprogram_spec.return_type->kind == NK_IDENTIFIER) {
-          exp->type_name = decl->subprogram_spec.return_type->string_val.text;
-          exp->llvm_type = LLVM_Type_Basic (exp->type_name);
-        } else {
-          const char *int_t = Llvm_Int_Type ((uint32_t)To_Bits (sm->type_integer->size));
-          exp->llvm_type = (String_Slice){int_t, strlen (int_t)};
-        }
-        ali->export_count++;
-        break;
-      case NK_EXCEPTION_DECL:
-        for (uint32_t j = 0; j < decl->exception_decl.names.count and ali->export_count < 256; j++) {
-          Syntax_Node *name = decl->exception_decl.names.items[j];
-          if (name and name->kind == NK_IDENTIFIER) {
-            exp = &ali->exports[ali->export_count];
-            exp->name = name->string_val.text;
-            exp->kind = 'E';
-            exp->line = name->location.line;
-            exp->mangled_name = Mangle_Qualified_Name (pkg_name, exp->name);
-            exp->llvm_type = (String_Slice){"i8", 2};  /* Exception identity */
-            ali->export_count++;
-          }
-        }
-        break;
-      default:
-        break;
-    }
-  }
-}
-void ALI_Collect_Unit (ALI_Info *ali, Syntax_Node *cu,
-               const char *source, size_t source_size) {
-  if (not cu or ali->unit_count >= 8) return;
-  Syntax_Node *unit = cu->compilation_unit.unit;
-  if (not unit) return;
-  Unit_Info *u = &ali->units[ali->unit_count++];
-
-  /* Extract unit name based on declaration kind */
-  switch (unit->kind) {
-    case NK_PACKAGE_SPEC:
-      u->unit_name = unit->package_spec.name;
-      u->is_body = false;
-      break;
-    case NK_PACKAGE_BODY:
-      u->unit_name = unit->package_body.name;
-      u->is_body = true;
-      break;
-    case NK_PROCEDURE_BODY:
-    case NK_PROCEDURE_SPEC:
-      u->unit_name = Get_Subprogram_Name (unit);
-      u->is_body = unit->kind == NK_PROCEDURE_BODY;
-      break;
-    case NK_FUNCTION_BODY:
-    case NK_FUNCTION_SPEC:
-      u->unit_name = Get_Subprogram_Name (unit);
-      u->is_body = unit->kind == NK_FUNCTION_BODY;
-      break;
-    case NK_GENERIC_DECL:
-      u->is_generic = true;
-      if (unit->generic_decl.unit) {
-        Syntax_Node *inner = unit->generic_decl.unit;
-        if (inner->kind == NK_PACKAGE_SPEC)
-          u->unit_name = inner->package_spec.name;
-        else if (inner->kind == NK_PROCEDURE_SPEC or inner->kind == NK_FUNCTION_SPEC)
-          u->unit_name = inner->subprogram_spec.name;
-      }
-      u->is_body = false;
-      break;
-    default:
-      u->unit_name = (String_Slice){"UNKNOWN", 7};
-      u->is_body = false;
-  }
-
-  /* Compute source checksum */
-  u->source_checksum = Crc32 (source, source_size);
-
-  /* Derive source file name */
-  char file_buf[256];
-  Unit_Name_To_File (u->unit_name, u->is_body, file_buf, sizeof (file_buf));
-  u->source_name = Slice_Duplicate ((String_Slice){file_buf, strlen (file_buf)});
-
-  /* Check for elaboration pragmas (simplified) */
-  u->is_preelaborate = false;
-  u->is_pure = false;
-  u->has_elaboration = true;  /* Assume has elaboration unless proven otherwise */
-
-  /* Collect WITH dependencies */
-  ALI_Collect_Withs (ali, cu->compilation_unit.context);
-
-  /* Collect exported symbols from package specs */
-  if (unit and unit->kind == NK_PACKAGE_SPEC) {
-    ALI_Collect_Exports (ali, unit);
-  }
-}
-
-/* LLVM type signature derived from the type system via Symbol_Manager.
- * Looks up the Ada type name in the symbol table and uses Type_To_Llvm
- * to get the correct LLVM representation. */
-String_Slice LLVM_Type_Basic (String_Slice ada_type) {
-
-  /* Look up in the symbol table for proper type-system derivation */
-  Symbol *sym = Symbol_Find (ada_type);
-  if (sym and sym->type) {
-    const char *llvm = Type_To_Llvm (sym->type);
-    return (String_Slice){llvm, strlen (llvm)};
-  }
-
-  /* Error: type not found in symbol table */
-  fprintf (stderr, "error: LLVM_Type_Basic: type '%.*s' not found in symbol table\n",
-      (int)ada_type.length, ada_type.data);
-  const char *fallback = Llvm_Int_Type ((uint32_t)To_Bits (sm->type_integer->size));
-  return (String_Slice){fallback, strlen (fallback)};
-}
-
-/* ─────────────────────────────────────────────────────────────────────────────────────────────────
- * §15.5 ALI_Write — Emit .ali file in GNAT format
- *
- * Per lib-writ.ads, the minimum valid ALI file needs:
- *   V line (version) — MUST be first
- *   P line (parameters) — MUST be present
- *   At least one U line (unit)
- * ────────────────────────────────────────────────────────────────────────────────────────────── */
-#define ALI_VERSION "Ada83 1.0 built " __DATE__ " " __TIME__
-void ALI_Write (FILE *out, ALI_Info *ali) {
-
-  /* V line: Version — must be first per GNAT spec */
-  fprintf (out, "V \"%s\"\n", ALI_VERSION);
-
-  /* P line: Parameters/flags — ZX = zero-cost exceptions */
-  fprintf (out, "P ZX\n");
-
-  /* Blank line before restrictions */
-  fprintf (out, "\n");
-
-  /* R line: Restrictions (minimal) */
-  fprintf (out, "RN\n");
-
-  /* U lines: Unit entries */
-  for (uint32_t i = 0; i < ali->unit_count; i++) {
-    Unit_Info *u = &ali->units[i];
-
-    /* U unit-name source-name version [flags] */
-    fprintf (out, "\nU %.*s%s %.*s %08X",
-        (int)u->unit_name.length, u->unit_name.data,
-        u->is_body ? "%b" : "%s",
-        (int)u->source_name.length, u->source_name.data,
-        u->source_checksum);
-
-    /* Flags */
-    if (u->is_generic) fprintf (out, " GE");
-    if (u->is_preelaborate) fprintf (out, " PR");
-    if (u->is_pure) fprintf (out, " PU");
-    if (not u->has_elaboration) fprintf (out, " NE");
-    if (not u->is_body) fprintf (out, " PK");
-    else fprintf (out, " SU");
-    fprintf (out, "\n");
-
-    /* W lines: WITH dependencies for this unit */
-    for (uint32_t j = 0; j < ali->with_count; j++) {
-      With_Info *w = &ali->withs[j];
-      if (not w->name.data) continue;
-      char line_type = w->is_limited ? 'Y' : 'W';
-      fprintf (out, "%c %.*s%s",
-          line_type,
-          (int)w->name.length, w->name.data,
-          "%s");  /* Assume spec dependency */
-      if (w->source_file.data) {
-        fprintf (out, " %.*s %.*s",
-            (int)w->source_file.length, w->source_file.data,
-            (int)w->ali_file.length, w->ali_file.data);
-      }
-      if (w->elaborate) fprintf (out, " E");
-      if (w->elaborate_all) fprintf (out, " EA");
-      fprintf (out, "\n");
-    }
-  }
-
-  /* D lines: Source dependencies */
-  fprintf (out, "\n");
-  for (uint32_t i = 0; i < ali->unit_count; i++) {
-    Unit_Info *u = &ali->units[i];
-
-    /* Self-dependency */
-    fprintf (out, "D %.*s 00000000 %08X\n",
-        (int)u->source_name.length, u->source_name.data,
-        u->source_checksum);
-  }
-  for (uint32_t i = 0; i < ali->with_count; i++) {
-    With_Info *w = &ali->withs[i];
-    if (w->source_file.data) {
-      fprintf (out, "D %.*s 00000000 00000000\n",
-          (int)w->source_file.length, w->source_file.data);
-    }
-  }
-
-  /* X lines: Exported symbols (extended format for Ada83 separate compilation)
-   *
-   * Format: X kind name:line llvm_type @mangled [ada_type] [(params)]
-   *
-   *   kind: T=type, S=subtype, V=variable, C=constant, P=procedure, F=function, E=exception
-   *   llvm_type: LLVM IR type signature (i64, double, void, ptr, etc.)
-   *   @mangled: LLVM symbol name for linking
-   *   ada_type: Ada type name for typed symbols
-   *   (params): Parameter count for subprograms
-   *
-   * This provides everything needed to compile against the package without source:
-   *   - Type checking via ada_type
-   *   - Code generation via llvm_type and @mangled
-   *   - Linking via @mangled symbol references
-   */
-  if (ali->export_count > 0) {
-    fprintf (out, "\n");
-    for (uint32_t i = 0; i < ali->export_count; i++) {
-      Export_Info *x = &ali->exports[i];
-
-      /* X kind name:line */
-      fprintf (out, "X %c %.*s:%u",
-          x->kind,
-          (int)x->name.length, x->name.data,
-          x->line);
-
-      /* llvm_type */
-      if (x->llvm_type.data) {
-        fprintf (out, " %.*s", (int)x->llvm_type.length, x->llvm_type.data);
-      } else {
-        fprintf (out, " i64");
-      }
-
-      /* @mangled */
-      if (x->mangled_name.data) {
-        fprintf (out, " @%.*s", (int)x->mangled_name.length, x->mangled_name.data);
-      }
-
-      /* ada_type (for typed symbols) */
-      if (x->type_name.data) {
-        fprintf (out, " %.*s", (int)x->type_name.length, x->type_name.data);
-      }
-
-      /* (params) for subprograms */
-      if (x->param_count > 0) {
-        fprintf (out, " (%u)", x->param_count);
-      }
-      fprintf (out, "\n");
-    }
-  }
-}
-
-/* ─────────────────────────────────────────────────────────────────────────────────────────────────
- * §15.6 Generate_ALI_File — Entry point for ALI generation
- * ────────────────────────────────────────────────────────────────────────────────────────────── */
-void Generate_ALI_File (const char *output_path,
-                Syntax_Node **units, int unit_count,
-                const char *source, size_t source_size) {
-
-  /* Build ALI path from output path (replace .ll with .ali) */
-  char ali_path[512];
-  size_t len = strlen (output_path);
-  if (len > 3 and strcmp (output_path + len - 3, ".ll") == 0) {
-    snprintf (ali_path, sizeof (ali_path), "%.*s.ali", (int)(len - 3), output_path);
-  } else {
-    snprintf (ali_path, sizeof (ali_path), "%s.ali", output_path);
-  }
-  FILE *ali_file = fopen (ali_path, "w");
-  if (not ali_file) {
-    fprintf (stderr, "Warning: cannot create ALI file '%s'\n", ali_path);
-    return;
-  }
-
-  /* Collect information from all compilation units */
-  ALI_Info ali = {0};
-  for (int i = 0; i < unit_count; i++) {
-    ALI_Collect_Unit (&ali, units[i], source, source_size);
-  }
-
-  /* Write ALI file */
-  ALI_Write (ali_file, &ali);
-  fclose (ali_file);
-  fprintf (stderr, "Generated ALI file '%s'\n", ali_path);
-}
-
-/* ─────────────────────────────────────────────────────────────────────────────────────────────────
- * §15.7 ALI_Reader — Parse .ali files for dependency management
- *
- * We read ALI files to:
- *   1. Skip recompilation of unchanged units (checksum match)
- *   2. Load exported symbols from precompiled packages
- *   3. Track dependencies for elaboration ordering
- *   4. Find generic templates for instantiation
- * ────────────────────────────────────────────────────────────────────────────────────────────── */
-/* Global ALI cache */
-ALI_Cache_Entry ALI_Cache[256];
-uint32_t        ALI_Cache_Count = 0;
-
-/* Skip whitespace */
-const char *ALI_Skip_Ws (const char *cursor) {
-  while (*cursor == ' ' or *cursor == '\t') cursor++;
-  return cursor;
-}
-
-/* Read until whitespace or newline, return end pointer */
-const char *ALI_Read_Token (const char *cursor, char *buf, size_t bufsize) {
-  cursor = ALI_Skip_Ws (cursor);
-  size_t pos = 0;
-  while (*cursor and *cursor != ' ' and *cursor != '\t' and *cursor != '\n' and pos < bufsize - 1) {
-    buf[pos++] = *cursor++;
-  }
-  buf[pos] = '\0';
-  return cursor;
-}
-
-/* Parse a hex value */
-uint32_t ALI_Parse_Hex (const char *str) {
-  uint32_t val = 0;
-  while (*str) {
-    char ch = *str++;
-    if (ch >= '0' and ch <= '9')      val = (val << 4) | (ch - '0');
-    else if (ch >= 'A' and ch <= 'F') val = (val << 4) | (ch - 'A' + 10);
-    else if (ch >= 'a' and ch <= 'f') val = (val << 4) | (ch - 'a' + 10);
-    else break;
-  }
-  return val;
-}
-
-/* Read and parse an ALI file, returning cache entry or NULL */
-ALI_Cache_Entry *ALI_Read (const char *ali_path) {
-
-  /* Check if already cached */
-  for (uint32_t i = 0; i < ALI_Cache_Count; i++) {
-    if (ALI_Cache[i].ali_file and strcmp (ALI_Cache[i].ali_file, ali_path) == 0) {
-      return &ALI_Cache[i];
-    }
-  }
-
-  /* Read ALI file */
-  FILE *file = fopen (ali_path, "r");
-  if (not file) return NULL;
-
-  /* Allocate cache entry */
-  if (ALI_Cache_Count >= 256) {
-    fclose (file);
-    return NULL;
-  }
-  ALI_Cache_Entry *entry = &ALI_Cache[ALI_Cache_Count++];
-  memset (entry, 0, sizeof (*entry));
-  entry->ali_file = strdup (ali_path);
-  char line[1024];
-  char token[256];
-  while (fgets (line, sizeof (line), file)) {
-    const char *cursor = line;
-
-    /* Version line: V "version" — reject if compiler build differs.
-     * This ensures stale ALI files from an older compiler rebuild
-     * are not reused; the unit will be reparsed from source. */
-    if (line[0] == 'V') {
-      char ver[256] = {0};
-      const char *quote = strchr (line, '"');
-      if (quote) {
-        quote++;
-        const char *end = strchr (quote, '"');
-        if (end and (size_t)(end - quote) < sizeof (ver)) {
-          memcpy (ver, quote, (size_t)(end - quote));
-          ver[end - quote] = '\0';
-        }
-      }
-
-      /* ALI was produced by a different compiler build — stale */
-      if (strcmp (ver, ALI_VERSION) != 0) {
-        fclose (file);
-        ALI_Cache_Count--;  /* release the cache slot */
-        return NULL;
-      }
-      continue;
-    }
-    else if (line[0] == 'P') {
-
-      /* Parameters line: P flags */
-      continue;
-    }
-    else if (line[0] == 'U') {
-
-      /* Unit line: U name source checksum [flags] */
-      cursor = ALI_Read_Token (cursor + 1, token, sizeof (token));  /* Skip 'U' */
-
-      /* Unit name (with %s/%b suffix) */
-      char *pct = strchr (token, '%');
-      if (pct) {
-        entry->is_spec = (pct[1] == 's');
-        *pct = '\0';
-      }
-      entry->unit_name = strdup (token);
-
-      /* Source file */
-      cursor = ALI_Read_Token (cursor, token, sizeof (token));
-      entry->source_file = strdup (token);
-
-      /* Checksum */
-      cursor = ALI_Read_Token (cursor, token, sizeof (token));
-      entry->checksum = ALI_Parse_Hex (token);
-
-      /* Parse flags */
-      while (*cursor and *cursor != '\n') {
-        cursor = ALI_Read_Token (cursor, token, sizeof (token));
-        if (strcmp (token, "GE") == 0) entry->is_generic = true;
-        else if (strcmp (token, "PR") == 0) entry->is_preelaborate = true;
-        else if (strcmp (token, "PU") == 0) entry->is_pure = true;
-      }
-    }
-    else if (line[0] == 'W' or line[0] == 'Y' or line[0] == 'Z') {
-
-      /* With line: W/Y/Z name [source ali] [flags] */
-      cursor = ALI_Read_Token (cursor + 1, token, sizeof (token));
-
-      /* Strip %s/%b suffix */
-      char *pct = strchr (token, '%');
-      if (pct) *pct = '\0';
-      if (entry->with_count < 64) {
-        entry->withs[entry->with_count++] = strdup (token);
-      }
-    }
-    else if (line[0] == 'D') {
-
-      /* Dependency line: D source timestamp checksum — informational */
-      continue;
-    }
-    else if (line[0] == 'X') {
-
-      /* Export line: X kind name:line llvm_type @mangled [ada_type] [(params)]
-       *
-       * Example: X F Get_Value:9 i64 @test_exports__get_value Counter
-       */
-      if (entry->export_count >= 256) continue;
-      ALI_Export *exp = &entry->exports[entry->export_count];
-      memset (exp, 0, sizeof (*exp));
-      cursor = ALI_Skip_Ws (cursor + 1);  /* Skip 'X' */
-
-      /* Kind (single char: T/S/V/C/P/F/E) */
-      exp->kind = *cursor++;
-      cursor = ALI_Skip_Ws (cursor);
-
-      /* Name:line */
-      cursor = ALI_Read_Token (cursor, token, sizeof (token));
-      char *colon = strchr (token, ':');
-      if (colon) {
-        *colon = '\0';
-        exp->name = strdup (token);
-        exp->line = (uint32_t)atoi (colon + 1);
-      } else {
-        exp->name = strdup (token);
-        exp->line = 0;
-      }
-
-      /* llvm_type */
-      cursor = ALI_Skip_Ws (cursor);
-      if (*cursor and *cursor != '\n') {
-        cursor = ALI_Read_Token (cursor, token, sizeof (token));
-        if (token[0]) exp->llvm_type = strdup (token);
-      }
-
-      /* @mangled */
-      cursor = ALI_Skip_Ws (cursor);
-      if (*cursor == '@') {
-        cursor++;  /* Skip '@' */
-        cursor = ALI_Read_Token (cursor, token, sizeof (token));
-        if (token[0]) exp->mangled_name = strdup (token);
-      }
-
-      /* Remaining tokens: ada_type and/or (params) */
-      while (*cursor and *cursor != '\n') {
-        cursor = ALI_Skip_Ws (cursor);
-        if (*cursor == '(') {
-
-          /* (params) */
-          cursor = ALI_Read_Token (cursor, token, sizeof (token));
-          exp->param_count = (uint32_t)atoi (token + 1);
-        } else if (*cursor and *cursor != '\n') {
-
-          /* ada_type */
-          cursor = ALI_Read_Token (cursor, token, sizeof (token));
-          if (token[0] and token[0] != '(') {
-            if (exp->type_name) free (exp->type_name);
-            exp->type_name = strdup (token);
-          }
-        }
-      }
-      entry->export_count++;
-    }
-  }
-  fclose (file);
-  return entry;
-}
-
-/* Check if an ALI file is up-to-date with its source */
-bool ALI_Is_Current (const char *ali_path, const char *source_path) {
-  ALI_Cache_Entry *entry = ALI_Read (ali_path);
-  if (not entry) return false;
-
-  /* Read source and compute checksum */
-  size_t   source_size;
-  char    *source_text = Read_File (source_path, &source_size);
-  if (not source_text) return false;
-  uint32_t current_checksum = Crc32 (source_text, source_size);
-  free (source_text);
-  return (current_checksum == entry->checksum);
-}
-
-/* ═════════════════════════════════════════════════════════════════════════════════════════════════
- * §15.7 ELABORATION MODEL — Standard-Style Dependency Graph Algorithm
- *
- * Implements the full Standard elaboration ordering algorithm as described
- * in bindo-elaborators.adb. This determines the safe order in which library
- * units must be elaborated at program startup (Ada RM 10.2).
- *
- * The algorithm proceeds in phases:
- *   1. BUILD GRAPH: Create vertices for units, edges for dependencies
- *   2. FIND COMPONENTS: Tarjan's SCC for cyclic dependency handling
- *   3. ELABORATE: Topological sort with priority ordering
- *   4. VALIDATE: Verify all constraints satisfied
- *
- * Key insight from GNAT: Edges are classified as "strong" (must-satisfy) or
- * "weak" (can-ignore-for-dynamic-model). This allows breaking cycles when
- * compiled with -gnatE (dynamic elaboration checking).
- *
- * Style: Haskell-like C99 with algebraic data types (tagged unions),
- * pure functions where possible, and composition over mutation.
- * ══════════════════════════════════════════════════════════════════════════════════════════════ */
-
-/* ─────────────────────────────────────────────────────────────────────────────────────────────────
- * §15.7.1 Algebraic Types — Sum types via tagged unions
- *
- * Following the Haskell pattern: data Kind = A | B | C
- * In C99: enum for tag, union for payload, struct wrapper.
- * ────────────────────────────────────────────────────────────────────────────────────────────── */
-
-/* Is this edge kind inherently strong? */
-bool Edge_Kind_Is_Strong (Elab_Edge_Kind k) {
-  return k != EDGE_INVOCATION;
-}
-
-/* ─────────────────────────────────────────────────────────────────────────────────────────────────
- * §15.7.4 Graph Structure — Vertices + Edges + Components
- *
- * Uses arena allocation for vertices/edges, dynamic arrays for order.
- * Maximum capacities chosen to handle large Ada programs.
- * ────────────────────────────────────────────────────────────────────────────────────────────── */
-
-/* ─────────────────────────────────────────────────────────────────────────────────────────────────
- * §15.7.5 Graph Construction — Pure creation functions
- *
- * Functions return new graph/vertex/edge without side effects.
- * Following functional style: prefer immutable creation over mutation.
- * ────────────────────────────────────────────────────────────────────────────────────────────── */
-
-/* Initialize an empty graph */
-Elab_Graph Elab_Graph_New (void) {
-  Elab_Graph g = {0};
-  return g;
-}
-
-/* Add a vertex, returning its ID (or 0 on failure) */
-uint32_t Elab_Add_Vertex (Elab_Graph *g, String_Slice name,
-                 Elab_Unit_Kind kind, Symbol *sym) {
-  if (g->vertex_count >= ELAB_MAX_VERTICES) return 0;
-  uint32_t id = ++g->vertex_count;  /* IDs are 1-based */
-  Elab_Vertex *v = &g->vertices[id - 1];
-
-  *v = (Elab_Vertex){
-    .id              = id,
-    .name            = name,
-    .kind            = kind,
-    .symbol          = sym,
-    .tarjan_index    = -1,
-    .tarjan_lowlink  = -1,
-    .is_predefined   = (name.length >= 4 and
-               (strncasecmp (name.data, "Ada.", 4) == 0 or
-              strncasecmp (name.data, "System", 6) == 0 or
-              strncasecmp (name.data, "Interfaces", 10) == 0)),
-    .is_internal     = (name.length >= 5 and
-               strncasecmp (name.data, "GNAT.", 5) == 0)
-  };
-  return id;
-}
-
-/* Find vertex by name, returning ID (or 0 if not found) */
-uint32_t Elab_Find_Vertex (const Elab_Graph *g, String_Slice name,
-                  Elab_Unit_Kind kind) {
-  for (uint32_t i = 0; i < g->vertex_count; i++) {
-    const Elab_Vertex *v = &g->vertices[i];
-    if (v->kind == kind and v->name.length == name.length and
-      strncasecmp (v->name.data, name.data, name.length) == 0) {
-      return v->id;
-    }
-  }
-  return 0;
-}
-
-/* Get vertex by ID (1-based), returns NULL if invalid */
-Elab_Vertex *Elab_Get_Vertex(Elab_Graph *g, uint32_t id) {
-  return (id > 0 and id <= g->vertex_count) ? &g->vertices[id - 1] : NULL;
-}
-const Elab_Vertex *Elab_Get_Vertex_Const(const Elab_Graph *g, uint32_t id) {
-  return (id > 0 and id <= g->vertex_count) ? &g->vertices[id - 1] : NULL;
-}
-
-/* Add an edge from pred_id to succ_id, returning edge ID (or 0 on failure) */
-uint32_t Elab_Add_Edge (Elab_Graph *g, uint32_t pred_id, uint32_t succ_id,
-                 Elab_Edge_Kind kind) {
-  if (g->edge_count >= ELAB_MAX_EDGES) return 0;
-  if (pred_id == 0 or succ_id == 0) return 0;
-  if (pred_id == succ_id) return 0;  /* No self-loops */
-
-  /* Check for duplicate edge */
-  Elab_Vertex *pred = Elab_Get_Vertex (g, pred_id);
-  if (pred) {
-    for (uint32_t e = pred->first_succ_edge; e; ) {
-      const Elab_Edge *edge = &g->edges[e - 1];
-      if (edge->succ_vertex_id == succ_id and edge->kind == kind)
-        return e;  /* Already exists */
-      e = edge->next_pred_edge;
-    }
-  }
-  uint32_t id = ++g->edge_count;
-  Elab_Edge *e = &g->edges[id - 1];
-
-  *e = (Elab_Edge){
-    .id             = id,
-    .kind           = kind,
-    .is_strong      = Edge_Kind_Is_Strong (kind),
-    .pred_vertex_id = pred_id,
-    .succ_vertex_id = succ_id
-  };
-
-  /* Thread into predecessor's outgoing list */
-  if (pred) {
-    e->next_pred_edge = pred->first_succ_edge;
-    pred->first_succ_edge = id;
-  }
-
-  /* Thread into successor's incoming list */
-  Elab_Vertex *succ = Elab_Get_Vertex (g, succ_id);
-  if (succ) {
-    e->next_succ_edge = succ->first_pred_edge;
-    succ->first_pred_edge = id;
-
-    /* Update pending counts */
-    if (e->is_strong) succ->pending_strong++;
-    else              succ->pending_weak++;
-  }
-  return id;
-}
-
-/* ─────────────────────────────────────────────────────────────────────────────────────────────────
- * §15.7.6 Tarjan's SCC Algorithm — Find strongly connected components
- *
- * Standard O(V+E) algorithm for finding SCCs. Each SCC becomes a component
- * that must be elaborated together (handles circular dependencies).
- *
- * Invariant: After completion, every vertex has a non-zero component_id.
- * ────────────────────────────────────────────────────────────────────────────────────────────── */
-void Tarjan_Strongconnect (Elab_Graph *g, Tarjan_State *s, uint32_t v_id) {
-  Elab_Vertex *v = Elab_Get_Vertex (g, v_id);
-  if (not v) return;
-  v->tarjan_index = s->index;
-  v->tarjan_lowlink = s->index;
-  s->index++;
-
-  /* Push onto stack */
-  s->stack[s->stack_top++] = v_id;
-  v->tarjan_on_stack = true;
-
-  /* Visit all successors */
-  for (uint32_t e_id = v->first_succ_edge; e_id; ) {
-    const Elab_Edge *e = &g->edges[e_id - 1];
-    Elab_Vertex *w = Elab_Get_Vertex (g, e->succ_vertex_id);
-
-    /* Successor not yet visited */
-    if (w and w->tarjan_index < 0) {
-      Tarjan_Strongconnect (g, s, e->succ_vertex_id);
-      v->tarjan_lowlink = (v->tarjan_lowlink < w->tarjan_lowlink)
-                ? v->tarjan_lowlink : w->tarjan_lowlink;
-
-    /* Successor is on stack, part of current SCC */
-    } else if (w and w->tarjan_on_stack) {
-      v->tarjan_lowlink = (v->tarjan_lowlink < w->tarjan_index)
-                ? v->tarjan_lowlink : w->tarjan_index;
-    }
-    e_id = e->next_pred_edge;
-  }
-
-  /* If v is a root node, pop SCC from stack */
-  if (v->tarjan_lowlink == v->tarjan_index) {
-    uint32_t comp_id = ++g->component_count;
-    uint32_t w_id;
-    do {
-      w_id = s->stack[--s->stack_top];
-      Elab_Vertex *w = Elab_Get_Vertex (g, w_id);
-      if (w) {
-        w->tarjan_on_stack = false;
-        w->component_id = comp_id;
-      }
-    } while (w_id != v_id);
-  }
-}
-void Elab_Find_Components (Elab_Graph *g) {
-  Tarjan_State s = {.stack_top = 0, .index = 0};
-
-  /* Reset Tarjan state */
-  for (uint32_t i = 0; i < g->vertex_count; i++) {
-    g->vertices[i].tarjan_index = -1;
-    g->vertices[i].tarjan_lowlink = -1;
-    g->vertices[i].tarjan_on_stack = false;
-    g->vertices[i].component_id = 0;
-  }
-  g->component_count = 0;
-
-  /* Run Tarjan's algorithm */
-  for (uint32_t i = 1; i <= g->vertex_count; i++) {
-    if (g->vertices[i - 1].tarjan_index < 0) {
-      Tarjan_Strongconnect (g, &s, i);
-    }
-  }
-
-  /* Compute component-level predecessor counts */
-  memset (g->component_pending_strong, 0, sizeof (g->component_pending_strong));
-  memset (g->component_pending_weak, 0, sizeof (g->component_pending_weak));
-  for (uint32_t i = 0; i < g->edge_count; i++) {
-    const Elab_Edge *e = &g->edges[i];
-    const Elab_Vertex *pred = Elab_Get_Vertex_Const (g, e->pred_vertex_id);
-    const Elab_Vertex *succ = Elab_Get_Vertex_Const (g, e->succ_vertex_id);
-    if (pred and succ and pred->component_id != succ->component_id) {
-      uint32_t c = succ->component_id;
-      if (e->is_strong) g->component_pending_strong[c]++;
-      else              g->component_pending_weak[c]++;
-
-      /* Check for Elaborate_All edge in cycle (fatal) */
-      if (e->kind == EDGE_ELABORATE_ALL and
-        pred->component_id == succ->component_id) {
-        g->has_elaborate_all_cycle = true;
-      }
-    }
-  }
-}
-
-/* ─────────────────────────────────────────────────────────────────────────────────────────────────
- * §15.7.7 Vertex Predicates — Pure functions for elaboration decisions
- *
- * These predicates determine vertex eligibility and priority.
- * All are pure (no side effects) for functional composition.
- * ────────────────────────────────────────────────────────────────────────────────────────────── */
-
-/* Can this vertex be elaborated now? (all strong predecessors done) */
-bool Elab_Is_Elaborable (const Elab_Vertex *v) {
-  return v and not v->in_elab_order and v->pending_strong == 0;
-}
-
-/* Can this vertex be weakly elaborated? (only weak predecessors remain) */
-bool Elab_Is_Weakly_Elaborable (const Elab_Vertex *v) {
-  return v and not v->in_elab_order and
-       v->pending_strong == 0 and v->pending_weak > 0;
-}
-
-/* Does this spec vertex have an elaborable body? */
-bool Elab_Has_Elaborable_Body (const Elab_Graph *g,
-                      const Elab_Vertex *v) {
-  (void)g;  /* reserved for future use */
-  if (not v or v->kind != UNIT_SPEC) return false;
-  if (not v->body_vertex) return false;
-  if (v->has_elab_body) return true;  /* pragma Elaborate_Body forces it */
-  return Elab_Is_Elaborable (v->body_vertex);
-}
-
-/* Compare two vertices for elaboration priority.
- * Returns PREC_HIGHER if a should elaborate before b.
- * Per GNAT bindo-elaborators.adb Is_Better_Elaborable_Vertex. */
-Elab_Precedence Elab_Compare_Vertices (const Elab_Graph *g,
-                        const Elab_Vertex *a,
-                        const Elab_Vertex *b) {
-  (void)g;  /* reserved for future use */
-  if (not a or not b) return PREC_EQUAL;
-
-  /* 1. Prefer spec with Elaborate_Body before its paired body */
-  if (a->has_elab_body and b->spec_vertex == a) return PREC_HIGHER;
-  if (b->has_elab_body and a->spec_vertex == b) return PREC_LOWER;
-
-  /* 2. Prefer predefined units (Ada.*, System.*, Interfaces.*) */
-  if (a->is_predefined and not b->is_predefined) return PREC_HIGHER;
-  if (b->is_predefined and not a->is_predefined) return PREC_LOWER;
-
-  /* 3. Prefer internal units (GNAT.*) */
-  if (a->is_internal and not b->is_internal) return PREC_HIGHER;
-  if (b->is_internal and not a->is_internal) return PREC_LOWER;
-
-  /* 4. Prefer preelaborated units */
-  if (a->is_preelaborate and not b->is_preelaborate) return PREC_HIGHER;
-  if (b->is_preelaborate and not a->is_preelaborate) return PREC_LOWER;
-
-  /* 5. Prefer pure units */
-  if (a->is_pure and not b->is_pure) return PREC_HIGHER;
-  if (b->is_pure and not a->is_pure) return PREC_LOWER;
-
-  /* 6. Lexicographical tiebreaker for determinism */
-  size_t min_len = (a->name.length < b->name.length)
-           ? a->name.length : b->name.length;
-  int cmp = strncasecmp (a->name.data, b->name.data, min_len);
-  if (cmp < 0) return PREC_HIGHER;
-  if (cmp > 0) return PREC_LOWER;
-  if (a->name.length < b->name.length) return PREC_HIGHER;
-  if (a->name.length > b->name.length) return PREC_LOWER;
-  return PREC_EQUAL;
-}
-
-/* Compare for weak elaboration: prefer fewer weak predecessors */
-Elab_Precedence Elab_Compare_Weak (const Elab_Graph *g,
-                      const Elab_Vertex *a,
-                      const Elab_Vertex *b) {
-  if (not a or not b) return PREC_EQUAL;
-  if (a->pending_weak < b->pending_weak) return PREC_HIGHER;
-  if (a->pending_weak > b->pending_weak) return PREC_LOWER;
-  return Elab_Compare_Vertices (g, a, b);
-}
-
-/* ─────────────────────────────────────────────────────────────────────────────────────────────────
- * §15.7.8 Vertex Set Operations — Functional set manipulation
- *
- * Uses bitmap representation for O(1) membership testing.
- * Pure functions that return new sets rather than mutating.
- * ────────────────────────────────────────────────────────────────────────────────────────────── */
-Elab_Vertex_Set Elab_Set_Empty (void) {
-  return (Elab_Vertex_Set){0};
-}
-bool Elab_Set_Contains (const Elab_Vertex_Set *s, uint32_t id) {
-  if (id == 0 or id > ELAB_MAX_VERTICES) return false;
-  return (s->bits[(id - 1) / 64] >> ((id - 1) % 64)) & 1;
-}
-void Elab_Set_Insert (Elab_Vertex_Set *s, uint32_t id) {
-  if (id > 0 and id <= ELAB_MAX_VERTICES)
-    s->bits[(id - 1) / 64] |= (1ULL << ((id - 1) % 64));
-}
-void Elab_Set_Remove (Elab_Vertex_Set *s, uint32_t id) {
-  if (id > 0 and id <= ELAB_MAX_VERTICES)
-    s->bits[(id - 1) / 64] &= ~(1ULL << ((id - 1) % 64));
-}
-uint32_t Elab_Set_Size (const Elab_Vertex_Set *s) {
-  uint32_t count = 0;
-  for (int i = 0; i < (ELAB_MAX_VERTICES + 63) / 64; i++) {
-    uint64_t v = s->bits[i];
-    while (v) { count++; v &= v - 1; }  /* Brian Kernighan's trick */
-  }
-  return count;
-}
-
-/* ─────────────────────────────────────────────────────────────────────────────────────────────────
- * §15.7.9 Best Vertex Selection — Find optimal elaboration candidate
- *
- * Scans a vertex set to find the best candidate using a comparator.
- * Pure function with no side effects.
- * ────────────────────────────────────────────────────────────────────────────────────────────── */
-typedef bool (*Elab_Vertex_Pred)(const Elab_Vertex *v);
-typedef Elab_Precedence (*Elab_Vertex_Cmp)(const Elab_Graph *,
-                       const Elab_Vertex *,
-                       const Elab_Vertex *);
-uint32_t Elab_Find_Best_Vertex (const Elab_Graph *g,
-                     const Elab_Vertex_Set *candidates,
-                     Elab_Vertex_Pred pred,
-                     Elab_Vertex_Cmp cmp) {
-  uint32_t best_id = 0;
-  const Elab_Vertex *best = NULL;
-  for (uint32_t i = 1; i <= g->vertex_count; i++) {
-    if (not Elab_Set_Contains (candidates, i)) continue;
-    const Elab_Vertex *v = &g->vertices[i - 1];
-    if (not pred(v)) continue;
-    if (not best or cmp(g, v, best) == PREC_HIGHER) {
-      best_id = i;
-      best = v;
-    }
-  }
-  return best_id;
-}
-
-/* ─────────────────────────────────────────────────────────────────────────────────────────────────
- * §15.7.10 Elaboration Core — The main elaboration algorithm
- *
- * Implements the Standard elaboration loop:
- *   1. Create elaborable/waiting vertex sets
- *   2. Repeatedly find best elaborable vertex
- *   3. Elaborate it and update successor counts
- *   4. Handle weak elaboration for cycles
- *
- * Per bindo-elaborators.adb Elaborate_Library_Graph.
- * ────────────────────────────────────────────────────────────────────────────────────────────── */
-
-/* Update successor when predecessor is elaborated */
-void Elab_Update_Successor (Elab_Graph *g, uint32_t edge_id,
-                   Elab_Vertex_Set *elaborable,
-                   Elab_Vertex_Set *waiting) {
-  Elab_Edge *e = (edge_id > 0 and edge_id <= g->edge_count)
-         ? &g->edges[edge_id - 1] : NULL;
-  if (not e) return;
-  Elab_Vertex *succ = Elab_Get_Vertex (g, e->succ_vertex_id);
-  Elab_Vertex *pred = Elab_Get_Vertex (g, e->pred_vertex_id);
-  if (not succ or not pred) return;
-
-  /* Decrement appropriate predecessor count */
-  if (e->is_strong and succ->pending_strong > 0)
-    succ->pending_strong--;
-  else if (not e->is_strong and succ->pending_weak > 0)
-    succ->pending_weak--;
-
-  /* Update component counts if cross-component edge */
-  if (pred->component_id != succ->component_id) {
-    uint32_t c = succ->component_id;
-    if (e->is_strong and g->component_pending_strong[c] > 0)
-      g->component_pending_strong[c]--;
-    else if (not e->is_strong and g->component_pending_weak[c] > 0)
-      g->component_pending_weak[c]--;
-  }
-
-  /* Move successor from waiting to elaborable if now ready */
-  if (Elab_Is_Elaborable (succ) and not succ->in_elab_order) {
-    Elab_Set_Remove (waiting, succ->id);
-    Elab_Set_Insert (elaborable, succ->id);
-
-    /* Also update complement (spec/body pair) */
-    Elab_Vertex *comp = succ->body_vertex ? succ->body_vertex
-              : succ->spec_vertex;
-    if (comp and Elab_Is_Elaborable (comp) and not comp->in_elab_order) {
-      Elab_Set_Remove (waiting, comp->id);
-      Elab_Set_Insert (elaborable, comp->id);
-    }
-  }
-}
-
-/* Elaborate a single vertex */
-void Elab_Elaborate_Vertex (Elab_Graph *g, uint32_t v_id,
-                   Elab_Vertex_Set *elaborable,
-                   Elab_Vertex_Set *waiting) {
-  Elab_Vertex *v = Elab_Get_Vertex (g, v_id);
-  if (not v or v->in_elab_order) return;
-
-  /* Mark as elaborated */
-  v->in_elab_order = true;
-  Elab_Set_Remove (elaborable, v_id);
-  Elab_Set_Remove (waiting, v_id);
-
-  /* Add to elaboration order */
-  if (g->order_count < ELAB_MAX_VERTICES)
-    g->order[g->order_count++] = v;
-
-  /* Update all successors */
-  for (uint32_t e_id = v->first_succ_edge; e_id; ) {
-    Elab_Edge *e = &g->edges[e_id - 1];
-    Elab_Update_Successor (g, e_id, elaborable, waiting);
-    e_id = e->next_pred_edge;
-  }
-
-  /* If this is a spec with Elaborate_Body, immediately elaborate the body */
-  if (v->has_elab_body and v->body_vertex and
-    not v->body_vertex->in_elab_order) {
-    Elab_Elaborate_Vertex (g, v->body_vertex->id, elaborable, waiting);
-  }
-
-  /* If this spec has an elaborable body, elaborate it too */
-  if (Elab_Has_Elaborable_Body (g, v)) {
-    Elab_Elaborate_Vertex (g, v->body_vertex->id, elaborable, waiting);
-  }
-}
-
-/* Main elaboration algorithm */
-Elab_Order_Status Elab_Elaborate_Graph (Elab_Graph *g) {
-
-  /* Initialize vertex sets */
-  Elab_Vertex_Set elaborable = Elab_Set_Empty ();
-  Elab_Vertex_Set waiting = Elab_Set_Empty ();
-  for (uint32_t i = 1; i <= g->vertex_count; i++) {
-    Elab_Vertex *v = &g->vertices[i - 1];
-    v->in_elab_order = false;
-    if (Elab_Is_Elaborable (v))
-      Elab_Set_Insert (&elaborable, i);
-    else
-      Elab_Set_Insert (&waiting, i);
-  }
-  g->order_count = 0;
-
-  /* Main elaboration loop */
-  /* Find best elaborable vertex */
-  while (Elab_Set_Size (&elaborable) > 0 or Elab_Set_Size (&waiting) > 0) {
-    uint32_t best_id = Elab_Find_Best_Vertex (
-      g, &elaborable, Elab_Is_Elaborable,
-      (Elab_Vertex_Cmp)Elab_Compare_Vertices);
-
-    /* If no strongly elaborable vertex, try weak elaboration */
-    if (best_id == 0) {
-      best_id = Elab_Find_Best_Vertex (
-        g, &waiting, Elab_Is_Weakly_Elaborable,
-        (Elab_Vertex_Cmp)Elab_Compare_Weak);
-    }
-
-    /* If still nothing, we have an unresolvable cycle */
-    if (best_id == 0) {
-      if (g->has_elaborate_all_cycle)
-        return ELAB_ORDER_HAS_ELABORATE_ALL_CYCLE;
-      return ELAB_ORDER_HAS_CYCLE;
-    }
-    Elab_Elaborate_Vertex (g, best_id, &elaborable, &waiting);
-  }
-  return ELAB_ORDER_OK;
-}
-
-/* Pair spec and body vertices after all vertices are added */
-void Elab_Pair_Specs_Bodies (Elab_Graph *g) {
-  for (uint32_t i = 0; i < g->vertex_count; i++) {
-    Elab_Vertex *v = &g->vertices[i];
-    if (v->kind != UNIT_SPEC) continue;
-
-    /* Find matching body */
-    for (uint32_t j = 0; j < g->vertex_count; j++) {
-      Elab_Vertex *b = &g->vertices[j];
-      if (b->kind != UNIT_BODY) continue;
-      if (b->name.length != v->name.length) continue;
-      if (strncasecmp (b->name.data, v->name.data, v->name.length) != 0)
-        continue;
-
-      /* Found the pair */
-      v->body_vertex = b;
-      b->spec_vertex = v;
-
-      /* Add spec-before-body edge */
-      Elab_Add_Edge (g, v->id, b->id, EDGE_SPEC_BEFORE_BODY);
-      break;
-    }
-  }
-}
-
-/* ─────────────────────────────────────────────────────────────────────────────────────────────────
- * §15.7.12 Elaboration Order API — Public interface
- *
- * These functions are called from the main driver (§17) and code generator
- * (§13) to determine and use the elaboration order.
- * ────────────────────────────────────────────────────────────────────────────────────────────── */
-
-/* Global elaboration graph (initialized during compilation) */
-Elab_Graph g_elab_graph;
-bool g_elab_graph_initialized = false;
-
-/* Initialize the global elaboration graph */
-void Elab_Init (void) {
-  if (not g_elab_graph_initialized) {
-    g_elab_graph = Elab_Graph_New ();
-    g_elab_graph_initialized = true;
-  }
-}
-
-/* Add a unit to the elaboration graph */
-uint32_t Elab_Register_Unit (String_Slice name, bool is_body,
-                  Symbol *sym, bool is_preelaborate,
-                  bool is_pure, bool has_elab_code) {
-  Elab_Init ();
-  Elab_Unit_Kind kind = is_body ? UNIT_BODY : UNIT_SPEC;
-  uint32_t id = Elab_Find_Vertex (&g_elab_graph, name, kind);
-  if (id == 0) {
-    id = Elab_Add_Vertex (&g_elab_graph, name, kind, sym);
-  }
-  Elab_Vertex *v = Elab_Get_Vertex (&g_elab_graph, id);
-  if (v) {
-    v->symbol = sym;
-    v->is_preelaborate = is_preelaborate;
-    v->is_pure = is_pure;
-    v->needs_elab_code = has_elab_code;
-  }
-  return id;
-}
-
-/* Compute the elaboration order (call after all units registered) */
-Elab_Order_Status Elab_Compute_Order (void) {
-  Elab_Init ();
-
-  /* Pair specs with their bodies */
-  Elab_Pair_Specs_Bodies (&g_elab_graph);
-
-  /* Find strongly connected components */
-  Elab_Find_Components (&g_elab_graph);
-
-  /* Compute elaboration order */
-  return Elab_Elaborate_Graph (&g_elab_graph);
-}
-
-/* Get the computed elaboration order */
-uint32_t Elab_Get_Order_Count (void) {
-  return g_elab_graph.order_count;
-}
-Symbol *Elab_Get_Order_Symbol(uint32_t index) {
-  if (index >= g_elab_graph.order_count) return NULL;
-  const Elab_Vertex *v = g_elab_graph.order[index];
-  return v ? v->symbol : NULL;
-}
-bool Elab_Needs_Elab_Call (uint32_t index) {
-  if (index >= g_elab_graph.order_count) return false;
-  const Elab_Vertex *v = g_elab_graph.order[index];
-  if (not v) return false;
-
-  /* Pure units never need elaboration calls */
-  if (v->is_pure) return false;
-
-  /* Preelaborate units without explicit elab code don't need calls */
-  if (v->is_preelaborate and not v->needs_elab_code) return false;
-
-  /* Only bodies generate __elab functions */
-  return v->kind == UNIT_BODY or v->kind == UNIT_BODY_ONLY;
-}
-
-/* ═════════════════════════════════════════════════════════════════════════════════════════════════
- * §15.8 BUILD-IN-PLACE — Limited Type Function Returns
- *
- * Ada limited types cannot be copied (RM 7.5). Functions returning limited
- * types must construct the result directly in caller-provided space—the
- * "Build-in-Place" (BIP) protocol. This eliminates intermediate temporaries.
- *
- * The protocol passes extra hidden parameters to BIP functions:
- *   __BIPalloc  - Allocation form selector (caller space, heap, pool, etc.)
- *   __BIPaccess - Pointer to destination where result is constructed
- *   __BIPfinal  - Finalization collection (for controlled components)
- *   __BIPmaster - Task master ID (for task components)
- *   __BIPchain  - Activation chain (for task components)
- *
- * Reference: Ada RM 7.5 (Limited Types), RM 6.5 (Return Statements)
- * ══════════════════════════════════════════════════════════════════════════════════════════════ */
-
-/* ─────────────────────────────────────────────────────────────────────────────────────────────────
- * §15.8.1 Algebraic Types — Sum types for BIP protocol
- *
- * BIP_Alloc_Form determines where the function result is allocated:
- *   - CALLER: Caller provides stack/object space (most common)
- *   - SECONDARY_STACK: Use secondary stack for dynamic-sized returns
- *   - GLOBAL_HEAP: Allocate on heap (from 'new' expression)
- *   - USER_POOL: Use user-defined storage pool
- *
- * BIP_Formal_Kind identifies which extra formal parameter is being accessed.
- * ────────────────────────────────────────────────────────────────────────────────────────────── */
-
-/* ─────────────────────────────────────────────────────────────────────────────────────────────────
- * §15.8.3 Type Predicates — Pure functions for BIP decisions
- *
- * These predicates determine whether a type requires BIP handling.
- * Per Ada RM 7.5, limited types include:
- *   - Task types (always limited)
- *   - Types with "limited" in their declaration
- *   - Private types declared "limited private"
- *   - Composite types with limited components
- * ────────────────────────────────────────────────────────────────────────────────────────────── */
-
-/* Forward declaration - full Type_Info checking */
-bool BIP_Type_Has_Task_Component (const Type_Info *t);
-
-/* Check if type is explicitly marked limited (not just by composition) */
-bool BIP_Is_Explicitly_Limited (const Type_Info *t) {
-  if (not t) return false;
-  return t->kind == TYPE_LIMITED_PRIVATE or t->kind == TYPE_TASK;
-}
-
-/* Check if type is a task type */
-bool BIP_Is_Task_Type (const Type_Info *t) {
-  return t and t->kind == TYPE_TASK;
-}
-
-/* Check if record type has any limited components (recursive) */
-bool BIP_Record_Has_Limited_Component (const Type_Info *t) {
-  if (not t or t->kind != TYPE_RECORD) return false;
-  for (uint32_t i = 0; i < t->record.component_count; i++) {
-    const Type_Info *ft = t->record.components[i].component_type;
-    if (not ft) continue;
-
-    /* Task component makes the record limited */
-    if (ft->kind == TYPE_TASK) return true;
-
-    /* Limited private component makes the record limited */
-    if (ft->kind == TYPE_LIMITED_PRIVATE) return true;
-
-    /* Recursively check nested records */
-    if (ft->kind == TYPE_RECORD and BIP_Record_Has_Limited_Component (ft))
-      return true;
-  }
-  return false;
-}
-
-/* Master predicate: Is this type limited? (RM 7.5) */
-bool BIP_Is_Limited_Type (const Type_Info *t) {
-  if (not t) return false;
-
-  /* Explicitly marked as limited (from type declaration) */
-  if (t->is_limited) return true;
-
-  /* Task types are always limited */
-  if (t->kind == TYPE_TASK) return true;
-
-  /* Limited private types */
-  if (t->kind == TYPE_LIMITED_PRIVATE) return true;
-
-  /* Records with limited components */
-  if (t->kind == TYPE_RECORD and BIP_Record_Has_Limited_Component (t))
-    return true;
-
-  /* Arrays of limited element type */
-  if (t->kind == TYPE_ARRAY and t->array.element_type and
-    BIP_Is_Limited_Type (t->array.element_type))
-    return true;
-  return false;
-}
-
-/* Does this function return a type requiring BIP? */
-bool BIP_Is_BIP_Function (const Symbol *func) {
-  if (not func or func->kind != SYMBOL_FUNCTION) return false;
-  return func->return_type and BIP_Is_Limited_Type (func->return_type);
-}
-
-/* Does type have task components (needs activation chain)? */
-bool BIP_Type_Has_Task_Component (const Type_Info *t) {
-  if (not t) return false;
-  if (t->kind == TYPE_TASK) return true;
-  if (t->kind == TYPE_RECORD) {
-    for (uint32_t i = 0; i < t->record.component_count; i++) {
-      if (BIP_Type_Has_Task_Component (t->record.components[i].component_type))
-        return true;
-    }
-  }
-  if (t->kind == TYPE_ARRAY and t->array.element_type)
-    return BIP_Type_Has_Task_Component (t->array.element_type);
-  return false;
-}
-
-/* Does function need allocation form parameter? (unconstrained result) */
-bool BIP_Needs_Alloc_Form (const Symbol *func) {
-  if (not func or not func->return_type) return false;
-  const Type_Info *rt = func->return_type;
-
-  /* Unconstrained arrays need runtime size determination */
-  if (rt->kind == TYPE_ARRAY and not rt->array.is_constrained)
-    return true;
-  return false;
-}
-
-/* ─────────────────────────────────────────────────────────────────────────────────────────────────
- * §15.8.4 Extra Formal Parameters — Hidden BIP parameters
- *
- * BIP functions receive extra hidden parameters prepended to their formals:
- *   __BIPalloc  : i32     (BIP_Alloc_Form enum value)
- *   __BIPaccess : ptr     (pointer to result destination)
- *   __BIPmaster : i32     (task master ID, if tasks)
- *   __BIPchain  : ptr     (activation chain, if tasks)
- *
- * These are added during code generation, not during semantic analysis,
- * so the Symbol structure remains unchanged.
- * ────────────────────────────────────────────────────────────────────────────────────────────── */
-
-/* BIP extra formal names (matched by code generator) */
-#define BIP_ALLOC_NAME   "__BIPalloc"
-#define BIP_ACCESS_NAME  "__BIPaccess"
-#define BIP_MASTER_NAME  "__BIPmaster"
-#define BIP_CHAIN_NAME   "__BIPchain"
-#define BIP_FINAL_NAME   "__BIPfinal"
-
-/* Count of BIP extra formals for a given function */
-uint32_t BIP_Extra_Formal_Count (const Symbol *func) {
-  if (not BIP_Is_BIP_Function (func)) return 0;
-  uint32_t count = 2;  /* alloc_form + object_access always present */
-  if (BIP_Type_Has_Task_Component (func->return_type))
-    count += 2;  /* task_master + activation_chain */
-
-  /* Future: finalization collection for controlled types */
-  return count;
-}
-
-/* ─────────────────────────────────────────────────────────────────────────────────────────────────
- * §15.8.5 Call-Site Transformation — Expanding BIP function calls
- *
- * When calling a BIP function, the caller must:
- *   1. Determine allocation form (usually CALLER for declarations)
- *   2. Allocate destination space if CALLER
- *   3. Pass extra BIP actuals before regular arguments
- *
- * Transform: X : Limited_Type := F(args);
- * Into:      space = alloca(sizeof (Limited_Type))
- *            F(__BIPalloc => CALLER, __BIPaccess => space, args)
- *            X = *space  (or X IS space if we alias)
- * ────────────────────────────────────────────────────────────────────────────────────────────── */
-
-/* Determine allocation form from call context */
-BIP_Alloc_Form BIP_Determine_Alloc_Form (bool is_allocator,
-                        bool in_return_stmt,
-                        bool has_target) {
-  if (is_allocator)   return BIP_ALLOC_GLOBAL_HEAP;
-  if (in_return_stmt) return BIP_ALLOC_UNSPECIFIED;  /* Propagate caller's */
-  if (has_target)     return BIP_ALLOC_CALLER;
-  return BIP_ALLOC_SECONDARY;  /* Temp needed */
-}
-
-/* ─────────────────────────────────────────────────────────────────────────────────────────────────
- * §15.8.6 Return Statement Expansion — Building result in place
- *
- * In a BIP function, return statements build directly into __BIPaccess:
- *
- *   return (Field1 => V1, Field2 => V2);
- *
- * Becomes (for CALLER allocation):
- *   __BIPaccess->Field1 = V1;
- *   __BIPaccess->Field2 = V2;
- *   return;
- *
- * For HEAP allocation, we allocate first then build:
- *   tmp = malloc (sizeof (T));
- *   tmp->Field1 = V1;
- *   tmp->Field2 = V2;
- *   *__BIPaccess = tmp;  // Return allocated pointer
- *   return;
- * ────────────────────────────────────────────────────────────────────────────────────────────── */
-
-
-/* Global BIP state for current function being generated */
-BIP_Function_State g_bip_state = {0};
-
-/* Initialize BIP state for a new function */
-void BIP_Begin_Function (const Symbol *func) {
-  g_bip_state = (BIP_Function_State){0};
-  if (BIP_Is_BIP_Function (func)) {
-    g_bip_state.is_bip_function = true;
-    g_bip_state.has_task_components =
-      BIP_Type_Has_Task_Component (func->return_type);
-  }
-}
-
-/* Check if we're in a BIP function */
-bool BIP_In_BIP_Function (void) {
-  return g_bip_state.is_bip_function;
-}
-
-/* End BIP state for function */
-void BIP_End_Function (void) {
-  g_bip_state = (BIP_Function_State){0};
-}
-
-/* ─────────────────────────────────────────────────────────────────────────────────────────────────
- * §14 Include Path and Unit Loading
- *
- * Resolves Ada WITH clauses by searching include paths for source files,
- * loading package specs/bodies on demand, and tracking which units have
- * already been loaded to avoid duplicate processing.
- * ────────────────────────────────────────────────────────────────────────────────────────────── */
-
-const char     *Include_Paths[32];
-uint32_t        Include_Path_Count        = 0;
-
-/* Track loaded package bodies for code generation */
-Syntax_Node    *Loaded_Package_Bodies[128];
-int             Loaded_Body_Count          = 0;
-
-/* Track which package bodies have already been loaded (to avoid duplicates) */
-String_Slice    Loaded_Body_Names[128];
-int             Loaded_Body_Names_Count    = 0;
-bool Body_Already_Loaded (String_Slice name) {
-  for (int i = 0; i < Loaded_Body_Names_Count; i++) {
-    if (Loaded_Body_Names[i].length == name.length and
-      strncasecmp (Loaded_Body_Names[i].data, name.data, name.length) == 0) {
-      return true;
-    }
-  }
-  return false;
-}
-void Mark_Body_Loaded (String_Slice name) {
-  if (Loaded_Body_Names_Count < 128) {
-    Loaded_Body_Names[Loaded_Body_Names_Count++] = name;
-  }
-}
-
-Loading_Set Loading_Packages = {0};
-bool Loading_Set_Contains (String_Slice name) {
-  for (int i = 0; i < Loading_Packages.count; i++) {
-    if (Loading_Packages.names[i].length == name.length and
-      strncasecmp (Loading_Packages.names[i].data, name.data, name.length) == 0) {
-      return true;
-    }
-  }
-  return false;
-}
-void Loading_Set_Add (String_Slice name) {
-  if (Loading_Packages.count < 64) {
-    Loading_Packages.names[Loading_Packages.count++] = name;
-  }
-}
-void Loading_Set_Remove (String_Slice name) {
-  for (int i = 0; i < Loading_Packages.count; i++) {
-    if (Loading_Packages.names[i].length == name.length and
-      strncasecmp (Loading_Packages.names[i].data, name.data, name.length) == 0) {
-
-      /* Swap with last and decrement count */
-      Loading_Packages.names[i] = Loading_Packages.names[--Loading_Packages.count];
-      return;
-    }
-  }
-}
-
-/* Forward declarations for functions defined after Load_Package_Spec */
-char *Lookup_Path      (String_Slice name);
-bool  Has_Precompiled_LL (String_Slice name);
-char *Lookup_Path_Body (String_Slice name);
-
-/* Find ALI file for a unit name in include paths */
-char *ALI_Find (String_Slice unit_name) {
-  static char path_buf[512];
-  char        file_buf[256];
-
-  /* Convert unit name to file name (lowercase, dots to hyphens) */
-  size_t pos = 0;
-  for (size_t i = 0; i < unit_name.length and pos < sizeof (file_buf) - 5; i++) {
-    char ch = unit_name.data[i];
-    if (ch == '.')                       file_buf[pos++] = '-';
-    else if (ch >= 'A' and ch <= 'Z')   file_buf[pos++] = ch - 'A' + 'a';
-    else                                 file_buf[pos++] = ch;
-  }
-  file_buf[pos] = '\0';
-
-  /* Try each include path */
-  for (uint32_t i = 0; i < Include_Path_Count; i++) {
-    snprintf (path_buf, sizeof (path_buf), "%s/%s.ali", Include_Paths[i], file_buf);
-    if (access (path_buf, R_OK) == 0) {
-      return path_buf;
-    }
-  }
-  return NULL;
-}
-
-/* Load symbols from an ALI file into the symbol manager */
-void ALI_Load_Symbols (ALI_Cache_Entry *entry) {
-  if (not entry or entry->loaded) return;
-  entry->loaded = true;
-
-  /* Recursively load dependencies first */
-  for (uint32_t i = 0; i < entry->with_count; i++) {
-    char *dep_ali = ALI_Find ((String_Slice){entry->withs[i], strlen (entry->withs[i])});
-    if (dep_ali) {
-      ALI_Cache_Entry *dep = ALI_Read (dep_ali);
-      if (dep) ALI_Load_Symbols (dep);
-    }
-  }
-
-  /* For specs, create package symbol and exports */
-  if (not entry->is_spec or entry->export_count == 0) return;
-  String_Slice pkg_name = {entry->unit_name, strlen (entry->unit_name)};
-
-  /* Check if package already exists */
-  Symbol *pkg_sym = Symbol_Find (pkg_name);
-  if (pkg_sym) return;
-
-  /* Create package symbol */
-  Source_Location loc = {entry->source_file, 1, 1};
-  pkg_sym = Symbol_New (SYMBOL_PACKAGE, pkg_name, loc);
-  pkg_sym->type = Type_New (TYPE_PACKAGE, pkg_name);
-  Symbol_Add (pkg_sym);
-
-  /* Allocate exported array for qualified access */
-  if (entry->export_count > 0) {
-    pkg_sym->exported = Arena_Allocate (entry->export_count * sizeof (Symbol*));
-    pkg_sym->exported_count = 0;
-  }
-
-  /* Push package scope to add exports */
-  Symbol_Manager_Push_Scope (pkg_sym);
-
-  /* Create symbols from exports
-   *
-   * The mangled_name from ALI becomes external_name on Symbol,
-   * enabling direct LLVM references without re-mangling.
-   */
-  for (uint32_t i = 0; i < entry->export_count; i++) {
-    ALI_Export *exp = &entry->exports[i];
-    String_Slice name = {exp->name, strlen (exp->name)};
-    String_Slice mangled = exp->mangled_name ?
-      (String_Slice){exp->mangled_name, strlen (exp->mangled_name)} : (String_Slice){0};
-    Source_Location exp_loc = {entry->source_file, exp->line, 1};
-    Symbol *sym = NULL;
-    switch (exp->kind) {
-
-      /* Type: create type symbol with size derived from exported LLVM type.
-      * Type_New defaults to 4 bytes (i32) which is wrong for smaller
-      * types like 3-value enumerations (i8).  Use the LLVM type
-      * signature from the ALI export to set the correct size so that
-      * cross-compilation-unit type widths are consistent. */
-      case 'T': {
-        sym = Symbol_New (SYMBOL_TYPE, name, exp_loc);
-        Type_Info *exported_type = Type_New (TYPE_INTEGER, name);
-        if (exp->llvm_type and exp->llvm_type[0] == 'i') {
-          int bits = atoi (exp->llvm_type + 1);
-          if (bits > 0) exported_type->size = (bits + 7) / 8;
-        }
-        sym->type = exported_type;
-        break;
-      }
-
-      /* Subtype: link to base type */
-      case 'S': {
-        sym = Symbol_New (SYMBOL_SUBTYPE, name, exp_loc);
-        if (exp->type_name) {
-          String_Slice base = {exp->type_name, strlen (exp->type_name)};
-          Symbol *base_sym = Symbol_Find (base);
-          sym->type = base_sym ? base_sym->type : Type_New (TYPE_INTEGER, base);
-        } else {
-          sym->type = Type_New (TYPE_INTEGER, name);
-        }
-        break;
-      }
-
-      /* Variable: external reference */
-      case 'V': {
-        sym = Symbol_New (SYMBOL_VARIABLE, name, exp_loc);
-        sym->is_imported    = true;
-        sym->external_name  = mangled;
-        if (exp->type_name) {
-          String_Slice type_slice = {exp->type_name, strlen (exp->type_name)};
-          Symbol      *type_sym  = Symbol_Find (type_slice);
-          sym->type = type_sym ? type_sym->type : Type_New (TYPE_INTEGER, type_slice);
-        }
-        break;
-      }
-
-      /* Constant: external reference */
-      case 'C': {
-        sym = Symbol_New (SYMBOL_CONSTANT, name, exp_loc);
-        sym->is_imported    = true;
-        sym->external_name  = mangled;
-        if (exp->type_name) {
-          String_Slice type_slice = {exp->type_name, strlen (exp->type_name)};
-          Symbol      *type_sym  = Symbol_Find (type_slice);
-          sym->type = type_sym ? type_sym->type : Type_New (TYPE_INTEGER, type_slice);
-        }
-        break;
-      }
-
-      /* Procedure: external subprogram declaration */
-      case 'P': {
-        sym = Symbol_New (SYMBOL_PROCEDURE, name, exp_loc);
-        sym->is_imported      = true;
-        sym->external_name    = mangled;
-        sym->parameter_count  = exp->param_count;
-        break;
-      }
-
-      /* Function: external subprogram declaration */
-      case 'F': {
-        sym = Symbol_New (SYMBOL_FUNCTION, name, exp_loc);
-        sym->is_imported      = true;
-        sym->external_name    = mangled;
-        sym->parameter_count  = exp->param_count;
-        if (exp->type_name) {
-          String_Slice type_slice = {exp->type_name, strlen (exp->type_name)};
-          Symbol      *type_sym  = Symbol_Find (type_slice);
-          sym->return_type = type_sym ? type_sym->type : Type_New (TYPE_INTEGER, type_slice);
-          sym->type        = sym->return_type;
-        }
-        break;
-      }
-
-      /* Exception: external exception identity */
-      case 'E': {
-        sym = Symbol_New (SYMBOL_EXCEPTION, name, exp_loc);
-        sym->is_imported    = true;
-        sym->external_name  = mangled;
-        break;
-      }
-    }
-    if (sym) {
-      sym->parent = pkg_sym;  /* Set parent for proper scoping */
-      Symbol_Add (sym);
-
-      /* Also add to package exported list for qualified access */
-      if (pkg_sym->exported_count < 256) {
-        pkg_sym->exported[pkg_sym->exported_count++] = sym;
-      }
-    }
-  }
-  Symbol_Manager_Pop_Scope ();
-}
-
-/* ─────────────────────────────────────────────────────────────────────────────────────────────────
- * §14.1 ALI-Based Loading
- *
- * Try_Load_From_ALI is called by Load_Package_Spec to attempt fast loading
- * from a pre-existing ALI file, bypassing full source parsing when the
- * source checksum matches.
- * ────────────────────────────────────────────────────────────────────────────────────────────── */
-
-/* Try_Load_From_ALI — Called by Load_Package_Spec to attempt ALI-based loading
- *
- * This is the entry point for ALI-based separate compilation:
- *   1. Look for ALI file in include paths
- *   2. Verify checksum against source
- *   3. Load symbols directly from ALI X lines
- *
- * Returns true if successful (caller should skip parsing).
- */
-bool Try_Load_From_ALI (String_Slice name) {
-  char *ali_path = ALI_Find (name);
-  if (not ali_path) return false;
-
-  /* Build source path from unit name */
-  char source_file[256];
-  size_t pos = 0;
-  for (size_t i = 0; i < name.length and pos < sizeof (source_file) - 5; i++) {
-    char ch = name.data[i];
-    if (ch == '.')                       source_file[pos++] = '-';
-    else if (ch >= 'A' and ch <= 'Z')   source_file[pos++] = ch - 'A' + 'a';
-    else                                 source_file[pos++] = ch;
-  }
-  strcpy (source_file + pos, ".ads");
-
-  /* Find full source path in include paths */
-  char full_source_path[512] = {0};
-  for (uint32_t i = 0; i < Include_Path_Count; i++) {
-    snprintf (full_source_path, sizeof (full_source_path), "%s/%s",
-         Include_Paths[i], source_file);
-    if (access (full_source_path, R_OK) == 0) break;
-    full_source_path[0] = '\0';
-  }
-  if (not full_source_path[0]) return false;
-
-  /* Check if ALI is current */
-  if (not ALI_Is_Current (ali_path, full_source_path)) {
-    return false;  /* Stale - need to recompile */
-  }
-
-  /* Read ALI and check for exports */
-  ALI_Cache_Entry *entry = ALI_Read (ali_path);
-  if (not entry or entry->export_count == 0) return false;
-
-  /* Load symbols from ALI */
-  ALI_Load_Symbols (entry);
-  return true;
-}
-
-/* Load and resolve a package specification */
-void Load_Package_Spec (String_Slice name, char *src) {
-  if (not src) return;
-
-  /* Check if already loaded */
-  Symbol *existing = Symbol_Find (name);
-  if (existing and existing->kind == SYMBOL_PACKAGE and existing->declaration) {
-    return;  /* Already loaded */
-  }
-
-  /* Check for circular dependency (package currently being loaded) */
-  if (Loading_Set_Contains (name)) {
-    return;  /* Break cycle - package will be available when outer load completes */
-  }
-
-  /* Try to load from cached ALI file first.
-   * If successful, we skip parsing entirely. */
-  if (Try_Load_From_ALI (name)) {
-    return;
-  }
-
-  /* Mark package as loading to detect cycles */
-  Loading_Set_Add (name);
-
-  /* Parse the package (ALI not available or stale) */
-  size_t fn_len = name.length + 4; /* ".ads" */
-  char *filename = Arena_Allocate (fn_len + 1);
-  snprintf (filename, fn_len + 1, "%.*s.ads", (int)name.length, name.data);
-  Parser parser = Parser_New (src, strlen (src), filename);
-  Syntax_Node *cu = Parse_Compilation_Unit (&parser);
-  if (not cu) {
-    Loading_Set_Remove (name);
-    return;
-  }
-
-  /* Recursively load WITH'd packages */
-  if (cu->compilation_unit.context) {
-    Node_List *withs = &cu->compilation_unit.context->context.with_clauses;
-    for (uint32_t i = 0; i < withs->count; i++) {
-      Syntax_Node *with_node = withs->items[i];
-      for (uint32_t j = 0; j < with_node->use_clause.names.count; j++) {
-        Syntax_Node *pkg_name = with_node->use_clause.names.items[j];
-        if (pkg_name->kind == NK_IDENTIFIER) {
-          char *pkg_src = Lookup_Path (pkg_name->string_val.text);
-          if (pkg_src) {
-            Load_Package_Spec (pkg_name->string_val.text, pkg_src);
-          }
-        }
-      }
-    }
-  }
-
-  /* Resolve the package declarations */
-  if (cu->compilation_unit.unit) {
-    Syntax_Node *unit = cu->compilation_unit.unit;
-    if (unit->kind == NK_PACKAGE_SPEC) {
-      Syntax_Node *pkg = unit;
-
-      /* Create package symbol */
-      Symbol *pkg_sym = Symbol_New (SYMBOL_PACKAGE, pkg->package_spec.name,
-                     pkg->location);
-      Type_Info *pkg_type = Type_New (TYPE_PACKAGE, pkg->package_spec.name);
-      pkg_sym->type = pkg_type;
-      pkg_sym->declaration = pkg;
-      Symbol_Add (pkg_sym);
-      pkg->symbol = pkg_sym;
-
-      /* Push package scope */
-      Symbol_Manager_Push_Scope (pkg_sym);
-
-      /* Resolve visible declarations */
-      Resolve_Declaration_List (&pkg->package_spec.visible_decls);
-
-      /* Populate package exports for qualified access (e.g., SYSTEM.MAX_INT) */
-      Populate_Package_Exports (pkg_sym, pkg);
-
-      /* Resolve private declarations */
-      Resolve_Declaration_List (&pkg->package_spec.private_decls);
-      Symbol_Manager_Pop_Scope ();
-
-      /* SYSTEM.ADDRESS override (RM 13.7):
-       * The SYSTEM package declares ADDRESS as NEW INTEGER (32-bit),
-       * but on 64-bit targets, addresses require 64 bits.  Override
-       * the parsed type to match the compiler's internal type_address. */
-      if (Slice_Equal_Ignore_Case (name, S("SYSTEM")) and sm->type_address) {
-        for (uint32_t ei = 0; ei < pkg_sym->exported_count; ei++) {
-          Symbol *esym = pkg_sym->exported[ei];
-          if (esym and esym->type and
-            Slice_Equal_Ignore_Case (esym->name, S("ADDRESS"))) {
-            esym->type->size       = sm->type_address->size;
-            esym->type->alignment  = sm->type_address->alignment;
-            esym->type->low_bound  = sm->type_address->low_bound;
-            esym->type->high_bound = sm->type_address->high_bound;
-            break;
-          }
-        }
-      }
-    }
-    else if (unit->kind == NK_GENERIC_DECL) {
-
-      /* Generic unit: create SYMBOL_GENERIC with the inner spec */
-      Syntax_Node *inner = unit->generic_decl.unit;
-      String_Slice unit_name = {0};
-      if (inner and inner->kind == NK_PACKAGE_SPEC) {
-        unit_name = inner->package_spec.name;
-      } else if (inner and (inner->kind == NK_PROCEDURE_SPEC or
-                 inner->kind == NK_FUNCTION_SPEC)) {
-        unit_name = inner->subprogram_spec.name;
-      }
-
-      /* Create generic symbol */
-      if (unit_name.data) {
-        Symbol *sym = Symbol_New (SYMBOL_GENERIC, unit_name, unit->location);
-        sym->declaration = unit;
-        sym->generic_unit = inner;
-
-        /* Store formals list for later instantiation */
-        if (unit->generic_decl.formals.count > 0) {
-          sym->generic_formals = unit->generic_decl.formals.items[0];
-        }
-        Symbol_Add (sym);
-        unit->symbol = sym;
-
-        /* Resolve the generic package spec's declarations so type/exception
-         * names are available when the body is parsed. Push scope, install
-         * generic formals, then resolve visible/private declarations. */
-        if (inner and inner->kind == NK_PACKAGE_SPEC) {
-          Symbol_Manager_Push_Scope (sym);
-
-          /* Install generic formal parameters */
-          Node_List *formals = &unit->generic_decl.formals;
-          for (uint32_t i = 0; i < formals->count; i++) {
-            Syntax_Node *formal = formals->items[i];
-            if (formal->kind == NK_GENERIC_TYPE_PARAM) {
-              Symbol *type_sym = Symbol_New (SYMBOL_TYPE,
-                formal->generic_type_param.name, formal->location);
-
-              /* Map def_kind to appropriate Type_Kind */
-              Type_Kind formal_kind = TYPE_PRIVATE;
-              switch (formal->generic_type_param.def_kind) {
-                case 2:  formal_kind = TYPE_ENUMERATION; break;  /* DISCRETE */
-                case 3:  formal_kind = TYPE_INTEGER;     break;  /* INTEGER */
-                case 4:  formal_kind = TYPE_FLOAT;       break;  /* FLOAT   */
-                case 5:  formal_kind = TYPE_FIXED;       break;  /* FIXED   */
-                case 6:  formal_kind = TYPE_ARRAY;       break;  /* ARRAY   */
-                case 7:  formal_kind = TYPE_ACCESS;      break;  /* ACCESS  */
-                default: formal_kind = TYPE_PRIVATE;     break;
-              }
-              Type_Info *type = Type_New (formal_kind, formal->generic_type_param.name);
-              type_sym->type = type;
-              formal->symbol = type_sym;
-              Symbol_Add (type_sym);
-            }
-          }
-
-          /* Resolve visible declarations */
-          Resolve_Declaration_List (&inner->package_spec.visible_decls);
-
-          /* Populate package exports for qualified access */
-          Populate_Package_Exports (sym, inner);
-
-          /* Resolve private declarations */
-          Resolve_Declaration_List (&inner->package_spec.private_decls);
-          Symbol_Manager_Pop_Scope ();
-        }
-      }
-    }
-  }
-
-  /* Done loading this package */
-  Loading_Set_Remove (name);
-
-  /* Also try to load the package body if available.
-   * Skip if a precompiled .ll file exists (package provided externally). */
-  if (Body_Already_Loaded (name)) {
-    return;  /* Body already loaded */
-  }
-  if (Has_Precompiled_LL (name)) {
-    return;  /* Precompiled version will be linked in */
-  }
-  char *body_src = Lookup_Path_Body (name);
-  if (body_src and Loaded_Body_Count < 128) {
-    Mark_Body_Loaded (name);
-
-    /* Parse the body — arena-allocate filename so AST Source_Locations stay valid */
-    size_t bfn_len = name.length + 4;
-    char *body_filename = Arena_Allocate (bfn_len + 1);
-    snprintf (body_filename, bfn_len + 1, "%.*s.adb", (int)name.length, name.data);
-    Parser body_parser = Parser_New (body_src, strlen (body_src), body_filename);
-    Syntax_Node *body_cu = Parse_Compilation_Unit (&body_parser);
-    if (body_cu and body_cu->compilation_unit.unit) {
-      Syntax_Node *body_unit = body_cu->compilation_unit.unit;
-
-      /* Recursively load WITH'd packages from body */
-      if (body_cu->compilation_unit.context) {
-        Node_List *withs = &body_cu->compilation_unit.context->context.with_clauses;
-        for (uint32_t i = 0; i < withs->count; i++) {
-          Syntax_Node *with_node = withs->items[i];
-          for (uint32_t j = 0; j < with_node->use_clause.names.count; j++) {
-            Syntax_Node *pkg_name = with_node->use_clause.names.items[j];
-            if (pkg_name->kind == NK_IDENTIFIER) {
-              char *pkg_src = Lookup_Path (pkg_name->string_val.text);
-              if (pkg_src) {
-                Load_Package_Spec (pkg_name->string_val.text, pkg_src);
-              }
-            }
-          }
-        }
-      }
-
-      /* Look up the package symbol */
-      if (body_unit->kind == NK_PACKAGE_BODY) {
-        String_Slice body_name = body_unit->package_body.name;
-        Symbol *pkg_sym = Symbol_Find (body_name);
-
-        /* Link body to spec */
-        if (pkg_sym and (pkg_sym->kind == SYMBOL_PACKAGE or pkg_sym->kind == SYMBOL_GENERIC)) {
-          body_unit->symbol = pkg_sym;
-
-          /* For generic packages, store the body for later instantiation */
-          if (pkg_sym->kind == SYMBOL_GENERIC) {
-            pkg_sym->generic_body = body_unit;
-          }
-
-          /* Resolve the body within package scope */
-          Symbol_Manager_Push_Scope (pkg_sym);
-
-          /* Install visible and private declarations from package spec
-           * into the body's scope (RM 7.1, 7.2) */
-          Syntax_Node *spec = pkg_sym->declaration;
-
-          /* For generics, install formals first, then look at the unit */
-          if (spec and spec->kind == NK_GENERIC_DECL) {
-            Node_List *formals = &spec->generic_decl.formals;
-            for (uint32_t i = 0; i < formals->count; i++) {
-              Syntax_Node *formal = formals->items[i];
-              if (formal->symbol) Symbol_Add (formal->symbol);
-
-              /* For generic type parameters, create type symbol if needed */
-              if (formal->kind == NK_GENERIC_TYPE_PARAM and not formal->symbol) {
-                Symbol *type_sym = Symbol_New (SYMBOL_TYPE,
-                  formal->generic_type_param.name, formal->location);
-
-                /* Map def_kind to appropriate Type_Kind */
-                Type_Kind formal_kind = TYPE_PRIVATE;
-                switch (formal->generic_type_param.def_kind) {
-                  case 2:  formal_kind = TYPE_ENUMERATION; break;  /* DISCRETE */
-                  case 3:  formal_kind = TYPE_INTEGER;     break;  /* INTEGER */
-                  case 4:  formal_kind = TYPE_FLOAT;       break;  /* FLOAT   */
-                  case 5:  formal_kind = TYPE_FIXED;       break;  /* FIXED   */
-                  case 6:  formal_kind = TYPE_ARRAY;       break;  /* ARRAY   */
-                  case 7:  formal_kind = TYPE_ACCESS;      break;  /* ACCESS  */
-                  default: formal_kind = TYPE_PRIVATE;     break;
-                }
-                Type_Info *type = Type_New (formal_kind, formal->generic_type_param.name);
-                type_sym->type = type;
-                formal->symbol = type_sym;
-                Symbol_Add (type_sym);
-              }
-            }
-            spec = spec->generic_decl.unit;
-          }
-          if (spec and spec->kind == NK_PACKAGE_SPEC) {
-            #define INSTALL_DECL_SYMBOLS(decl) do { \
-              if ((decl)->symbol) Symbol_Add ((decl)->symbol); \
-              if ((decl)->kind == NK_OBJECT_DECL) { \
-                for (uint32_t k = 0; k < (decl)->object_decl.names.count; k++) { \
-                  Syntax_Node *n = (decl)->object_decl.names.items[k]; \
-                  if (n->symbol) Symbol_Add (n->symbol); \
-                } \
-              } \
-              if ((decl)->kind == NK_EXCEPTION_DECL) { \
-                for (uint32_t k = 0; k < (decl)->exception_decl.names.count; k++) { \
-                  Syntax_Node *n = (decl)->exception_decl.names.items[k]; \
-                  if (n->symbol) Symbol_Add (n->symbol); \
-                } \
-              } \
-              if ((decl)->kind == NK_TYPE_DECL and (decl)->type_decl.definition and \
-                (decl)->type_decl.definition->kind == NK_ENUMERATION_TYPE) { \
-                Node_List *lits = &(decl)->type_decl.definition->enum_type.literals; \
-                for (uint32_t k = 0; k < lits->count; k++) { \
-                  if (lits->items[k]->symbol) Symbol_Add (lits->items[k]->symbol); \
-                } \
-              } \
-            } while (0)
-
-            /* Install visible declarations */
-            for (uint32_t i = 0; i < spec->package_spec.visible_decls.count; i++) {
-              Syntax_Node *decl = spec->package_spec.visible_decls.items[i];
-              INSTALL_DECL_SYMBOLS (decl);
-            }
-
-            /* Install private declarations */
-            for (uint32_t i = 0; i < spec->package_spec.private_decls.count; i++) {
-              Syntax_Node *decl = spec->package_spec.private_decls.items[i];
-              INSTALL_DECL_SYMBOLS (decl);
-            }
-            #undef INSTALL_DECL_SYMBOLS
-          }
-          Resolve_Declaration_List (&body_unit->package_body.declarations);
-          Symbol_Manager_Pop_Scope ();
-
-          /* Store for code generation */
-          Loaded_Package_Bodies[Loaded_Body_Count++] = body_cu;
-        }
-      }
-    }
-  }
-}
-
-/* ═════════════════════════════════════════════════════════════════════════════════════════════════
- * §16. GENERIC EXPANSION - Macro-style instantiation
- * ═════════════════════════════════════════════════════════════════════════════════════════════════
- *
- * Generics via macro expansion:
- *   1. Parse generic declaration > store template AST
- *   2. On instantiation: clone template, substitute actuals
- *   3. Analyze cloned tree with actual types
- *   4. Generate code for each instantiation separately
- *
- * Key insight: We do NOT share code between instantiations. Each instance
- * gets its own copy with types fully substituted.
- */
-
-/* ─────────────────────────────────────────────────────────────────────────────────────────────────
- * §16.1 Instantiation_Env — Formal-to-actual mapping
- *
- * Instead of mutating nodes, we carry substitution environment through.
- * ────────────────────────────────────────────────────────────────────────────────────────────── */
-
-/* ─────────────────────────────────────────────────────────────────────────────────────────────────
- * §16.2 Instantiation_Env helpers
- * ────────────────────────────────────────────────────────────────────────────────────────────── */
-Type_Info *Env_Lookup_Type (Instantiation_Env *env, String_Slice name) {
-  for (uint32_t i = 0; i < env->count; i++) {
-    if (Slice_Equal_Ignore_Case (env->mappings[i].formal_name, name))
-      return env->mappings[i].actual_type;
-  }
-  return NULL;
-}
-Syntax_Node *Env_Lookup_Expr (Instantiation_Env *env, String_Slice name) {
-  for (uint32_t i = 0; i < env->count; i++) {
-    if (Slice_Equal_Ignore_Case (env->mappings[i].formal_name, name))
-      return env->mappings[i].actual_expr;
-  }
-  return NULL;
-}
-
-/* ─────────────────────────────────────────────────────────────────────────────────────────────────
- * §16.3 Node_Deep_Clone — Deep copy with environment substitution
- *
- * Unlike the existing node_clone_substitute, this:
- *   • ALWAYS allocates new nodes (no aliasing)
- *   • Uses recursion depth tracking with proper error
- *   • Carries environment for type substitution
- * ────────────────────────────────────────────────────────────────────────────────────────────── */
-Syntax_Node *Node_Deep_Clone (Syntax_Node *node, Instantiation_Env *env,
-                  int depth);
-
-/* Clone a node list */
-void Node_List_Clone (Node_List *dst, Node_List *src,
-              Instantiation_Env *env, int depth) {
-  dst->count = 0;
-  dst->capacity = 0;
-  dst->items = NULL;
-  for (uint32_t i = 0; i < src->count; i++) {
-    Syntax_Node *cloned = Node_Deep_Clone (src->items[i], env, depth);
-    Node_List_Push (dst, cloned);
-  }
-}
-Syntax_Node *Node_Deep_Clone (Syntax_Node *node, Instantiation_Env *env,
-                  int depth) {
-  if (not node) return NULL;
-
-  /* Depth limit with REAL error, not silent aliasing */
-  if (depth > 500) {
-    Report_Error (node->location, "generic instantiation too deeply nested");
-    return NULL;
-  }
-
-  /* Allocate fresh node */
-  Syntax_Node *n = Arena_Allocate (sizeof (Syntax_Node));
-  memset (n, 0, sizeof (Syntax_Node));  /* Zero-init ALL fields */
-  n->kind = node->kind;
-  n->location = node->location;
-  n->type = node->type;
-  n->symbol = NULL;  /* Symbols will be re-resolved */
-
-  /* Substitute generic formal types throughout the cloned tree.
-   * When a node carries a TYPE_PRIVATE/TYPE_LIMITED_PRIVATE type whose
-   * name matches a generic formal parameter, replace it with the actual
-   * type.  This ensures that expressions, declarations, and statements
-   * all use the concrete type (e.g., FLOAT) rather than the opaque
-   * formal type (e.g., ELEMENT_TYPE). */
-  if (env and n->type and Type_Is_Private (n->type) and n->type->name.data) {
-    Type_Info *subst = Env_Lookup_Type (env, n->type->name);
-    if (subst) n->type = subst;
-  }
-  switch (node->kind) {
-    case NK_IDENTIFIER:
-
-      /* Check for expression substitution (formal object parameters) */
-      if (env) {
-        Syntax_Node *expr_subst = Env_Lookup_Expr (env, node->string_val.text);
-
-        /* Return a clone of the actual expression instead.
-        * The 'n' node becomes garbage but arena will reclaim it. */
-        if (expr_subst) {
-          return Node_Deep_Clone (expr_subst, env, depth + 1);
-        }
-      }
-      n->string_val = node->string_val;
-
-      /* Check for type substitution */
-      if (env) {
-        Type_Info *subst = Env_Lookup_Type (env, node->string_val.text);
-        if (subst) n->type = subst;
-      }
-      break;
-    case NK_INTEGER:
-      n->integer_lit = node->integer_lit;
-      break;
-    case NK_REAL:
-      n->real_lit = node->real_lit;
-      break;
-    case NK_STRING:
-    case NK_CHARACTER:
-      n->string_val = node->string_val;
-      break;
-    case NK_BINARY_OP:
-      n->binary.op = node->binary.op;
-      n->binary.left = Node_Deep_Clone (node->binary.left, env, depth + 1);
-      n->binary.right = Node_Deep_Clone (node->binary.right, env, depth + 1);
-      break;
-    case NK_UNARY_OP:
-      n->unary.op = node->unary.op;
-      n->unary.operand = Node_Deep_Clone (node->unary.operand, env, depth + 1);
-      break;
-    case NK_ATTRIBUTE:
-      n->attribute.prefix = Node_Deep_Clone (node->attribute.prefix, env, depth + 1);
-      n->attribute.name = node->attribute.name;
-      Node_List_Clone (&n->attribute.arguments, &node->attribute.arguments, env, depth + 1);
-      break;
-    case NK_APPLY:
-      n->apply.prefix = Node_Deep_Clone (node->apply.prefix, env, depth + 1);
-      Node_List_Clone (&n->apply.arguments, &node->apply.arguments, env, depth + 1);
-      break;
-    case NK_SELECTED:
-      n->selected.prefix = Node_Deep_Clone (node->selected.prefix, env, depth + 1);
-      n->selected.selector = node->selected.selector;  /* String_Slice, not a node */
-      break;
-    case NK_AGGREGATE:
-      Node_List_Clone (&n->aggregate.items, &node->aggregate.items, env, depth + 1);
-      n->aggregate.is_named = node->aggregate.is_named;
-      break;
-    case NK_ASSOCIATION:
-      Node_List_Clone (&n->association.choices, &node->association.choices, env, depth + 1);
-      n->association.expression = Node_Deep_Clone (node->association.expression, env, depth + 1);
-      break;
-    case NK_RANGE:
-      n->range.low = Node_Deep_Clone (node->range.low, env, depth + 1);
-      n->range.high = Node_Deep_Clone (node->range.high, env, depth + 1);
-      break;
-    case NK_OBJECT_DECL:
-      Node_List_Clone (&n->object_decl.names, &node->object_decl.names, env, depth + 1);
-      n->object_decl.object_type = Node_Deep_Clone (node->object_decl.object_type, env, depth + 1);
-      n->object_decl.init = Node_Deep_Clone (node->object_decl.init, env, depth + 1);
-      n->object_decl.is_constant = node->object_decl.is_constant;
-      n->object_decl.is_rename = node->object_decl.is_rename;
-      break;
-    case NK_TYPE_DECL:
-    case NK_SUBTYPE_DECL:
-      n->type_decl.name = node->type_decl.name;
-      n->type_decl.definition = Node_Deep_Clone (node->type_decl.definition, env, depth + 1);
-      Node_List_Clone (&n->type_decl.discriminants, &node->type_decl.discriminants, env, depth + 1);
-      break;
-    case NK_PROCEDURE_BODY:
-    case NK_FUNCTION_BODY:
-      n->subprogram_body.specification = Node_Deep_Clone (node->subprogram_body.specification, env, depth + 1);
-      Node_List_Clone (&n->subprogram_body.declarations, &node->subprogram_body.declarations, env, depth + 1);
-      Node_List_Clone (&n->subprogram_body.statements, &node->subprogram_body.statements, env, depth + 1);
-      Node_List_Clone (&n->subprogram_body.handlers, &node->subprogram_body.handlers, env, depth + 1);
-      n->subprogram_body.is_separate = node->subprogram_body.is_separate;
-      break;
-    case NK_PROCEDURE_SPEC:
-    case NK_FUNCTION_SPEC:
-      n->subprogram_spec.name = node->subprogram_spec.name;
-      Node_List_Clone (&n->subprogram_spec.parameters, &node->subprogram_spec.parameters, env, depth + 1);
-      n->subprogram_spec.return_type = Node_Deep_Clone (node->subprogram_spec.return_type, env, depth + 1);
-      n->subprogram_spec.renamed = Node_Deep_Clone (node->subprogram_spec.renamed, env, depth + 1);
-      break;
-    case NK_PARAM_SPEC:
-      Node_List_Clone (&n->param_spec.names, &node->param_spec.names, env, depth + 1);
-      n->param_spec.mode = node->param_spec.mode;
-      n->param_spec.param_type = Node_Deep_Clone (node->param_spec.param_type, env, depth + 1);
-      n->param_spec.default_expr = Node_Deep_Clone (node->param_spec.default_expr, env, depth + 1);
-      break;
-    case NK_PACKAGE_SPEC:
-      n->package_spec.name = node->package_spec.name;
-      Node_List_Clone (&n->package_spec.visible_decls, &node->package_spec.visible_decls, env, depth + 1);
-      Node_List_Clone (&n->package_spec.private_decls, &node->package_spec.private_decls, env, depth + 1);
-      break;
-    case NK_PACKAGE_BODY:
-      n->package_body.name = node->package_body.name;
-      Node_List_Clone (&n->package_body.declarations, &node->package_body.declarations, env, depth + 1);
-      Node_List_Clone (&n->package_body.statements, &node->package_body.statements, env, depth + 1);
-      Node_List_Clone (&n->package_body.handlers, &node->package_body.handlers, env, depth + 1);
-      break;
-    case NK_ASSIGNMENT:
-    case NK_CALL_STMT:  /* Reuses assignment.target field */
-      n->assignment.target = Node_Deep_Clone (node->assignment.target, env, depth + 1);
-      n->assignment.value = Node_Deep_Clone (node->assignment.value, env, depth + 1);
-      break;
-    case NK_IF:
-      n->if_stmt.condition = Node_Deep_Clone (node->if_stmt.condition, env, depth + 1);
-      Node_List_Clone (&n->if_stmt.then_stmts, &node->if_stmt.then_stmts, env, depth + 1);
-      Node_List_Clone (&n->if_stmt.elsif_parts, &node->if_stmt.elsif_parts, env, depth + 1);
-      Node_List_Clone (&n->if_stmt.else_stmts, &node->if_stmt.else_stmts, env, depth + 1);
-      break;
-    case NK_LOOP:
-      n->loop_stmt.label = node->loop_stmt.label;
-      n->loop_stmt.iteration_scheme = Node_Deep_Clone (node->loop_stmt.iteration_scheme, env, depth + 1);
-      Node_List_Clone (&n->loop_stmt.statements, &node->loop_stmt.statements, env, depth + 1);
-      n->loop_stmt.is_reverse = node->loop_stmt.is_reverse;
-      break;
-    case NK_RETURN:
-      n->return_stmt.expression = Node_Deep_Clone (node->return_stmt.expression, env, depth + 1);
-      break;
-    case NK_BLOCK:
-      n->block_stmt.label = node->block_stmt.label;
-      Node_List_Clone (&n->block_stmt.declarations, &node->block_stmt.declarations, env, depth + 1);
-      Node_List_Clone (&n->block_stmt.statements, &node->block_stmt.statements, env, depth + 1);
-      Node_List_Clone (&n->block_stmt.handlers, &node->block_stmt.handlers, env, depth + 1);
-      break;
-    case NK_CASE:
-      n->case_stmt.expression = Node_Deep_Clone (node->case_stmt.expression, env, depth + 1);
-      Node_List_Clone (&n->case_stmt.alternatives, &node->case_stmt.alternatives, env, depth + 1);
-      break;
-    case NK_EXIT:
-      n->exit_stmt.loop_name = node->exit_stmt.loop_name;
-      n->exit_stmt.condition = Node_Deep_Clone (node->exit_stmt.condition, env, depth + 1);
-      break;
-    case NK_NULL_STMT:
-    case NK_OTHERS:
-
-      /* No fields to copy */
-      break;
-    default:
-
-      /* For node kinds not explicitly handled, do shallow copy.
-       * This is safer than the original which returned aliased nodes. */
-      *n = *node;
-      n->symbol = NULL;
-      break;
-  }
-  return n;
-}
-
-/* ─────────────────────────────────────────────────────────────────────────────────────────────────
- * §16.4 Build_Instantiation_Env — Create mapping from formals to actuals
- * ────────────────────────────────────────────────────────────────────────────────────────────── */
-void Build_Instantiation_Env (Instantiation_Env *env,
-                  Symbol *template_sym,
-                  Symbol *instance_sym) {
-  (void)sm;  /* reserved for future use */
-  env->count = 0;
-  env->template_sym = template_sym;
-  env->instance_sym = instance_sym;
-  if (not template_sym or not template_sym->declaration) return;
-  Syntax_Node *gen_decl = template_sym->declaration;
-  if (gen_decl->kind != NK_GENERIC_DECL) return;
-  Node_List *formals = &gen_decl->generic_decl.formals;
-
-  /* Use pre-resolved actuals from instance symbol */
-  for (uint32_t i = 0; i < instance_sym->generic_actual_count and i < 32; i++) {
-    Generic_Mapping *m = &env->mappings[env->count++];
-    m->formal_name = instance_sym->generic_actuals[i].formal_name;
-    m->actual_type = instance_sym->generic_actuals[i].actual_type;
-    m->actual_symbol = NULL;
-    m->actual_expr = NULL;
-
-    /* For object/subprogram formals, populate additional fields */
-    if (i < formals->count) {
-      Syntax_Node *formal = formals->items[i];
-
-      /* Store expression for object formals */
-      if (formal->kind == NK_GENERIC_OBJECT_PARAM) {
-        m->actual_expr = instance_sym->generic_actuals[i].actual_expr;
-
-      /* Store actual subprogram symbol for substitution during clone */
-      } else if (formal->kind == NK_GENERIC_SUBPROGRAM_PARAM) {
-        m->actual_symbol = instance_sym->generic_actuals[i].actual_subprogram;
-      }
-    }
-  }
-}
-
-/* ─────────────────────────────────────────────────────────────────────────────────────────────────
- * §16.5 Expand_Generic_Package — Full instantiation of generic package
- *
- *   1. Clone the package spec with type substitutions
- *   2. Clone the package body (if found)
- *   3. Resolve cloned trees with actual types
- *   4. Store expanded body for code generation
- * ────────────────────────────────────────────────────────────────────────────────────────────── */
-void Expand_Generic_Package (Symbol *instance_sym) {
-  if (not instance_sym or not instance_sym->generic_template) return;
-  Symbol *template = instance_sym->generic_template;
-  if (not template->generic_unit) return;
-
-  /* Build substitution environment */
-  Instantiation_Env env;
-  Build_Instantiation_Env (&env, template, instance_sym);
-
-  /* Clone the package spec */
-  Syntax_Node *spec_clone = Node_Deep_Clone (template->generic_unit, &env, 0);
-
-  /* Rename to instance name */
-  if (spec_clone) {
-    if (spec_clone->kind == NK_PACKAGE_SPEC) {
-      spec_clone->package_spec.name = instance_sym->name;
-    }
-
-    /* Store for later processing */
-    instance_sym->expanded_spec = spec_clone;
-  }
-
-  /* Try to find and clone the package body */
-  String_Slice pkg_name = template->generic_unit->kind == NK_PACKAGE_SPEC ?
-              template->generic_unit->package_spec.name :
-              template->name;
-  char *body_src = Lookup_Path_Body (pkg_name);
-
-  /* Parse the body — arena-allocate filename for Source_Location stability */
-  if (body_src) {
-    size_t bfn_len = pkg_name.length + 4;
-    char *body_filename = Arena_Allocate (bfn_len + 1);
-    snprintf (body_filename, bfn_len + 1, "%.*s.adb",
-         (int)pkg_name.length, pkg_name.data);
-    Parser body_parser = Parser_New (body_src, strlen (body_src), body_filename);
-    Syntax_Node *body_cu = Parse_Compilation_Unit (&body_parser);
-    if (body_cu and body_cu->compilation_unit.unit and
-      body_cu->compilation_unit.unit->kind == NK_PACKAGE_BODY) {
-
-      /* Clone with substitutions */
-      Syntax_Node *body_clone = Node_Deep_Clone (
-        body_cu->compilation_unit.unit, &env, 0);
-
-      /* Rename to instance name */
-      if (body_clone) {
-        body_clone->package_body.name = instance_sym->name;
-
-        /* Store expanded body */
-        instance_sym->expanded_body = body_clone;
-      }
-    }
-  }
-}
-
 /* ─────────────────────────────────────────────────────────────────────────────────────────────────
  * §12.3 Declaration Resolution
  * ────────────────────────────────────────────────────────────────────────────────────────────── */
@@ -13385,98 +10023,6 @@ void Install_Declaration_Symbols (Node_List *decls) {
         if (lits->items[j]->symbol) Symbol_Add (lits->items[j]->symbol);
     }
   }
-}
-char *Read_File_Simple(const char *path) {
-  FILE *f = fopen (path, "rb");
-  if (not f) return NULL;
-  fseek (f, 0, SEEK_END);
-  long fsize = ftell (f);
-  if (fsize < 0) { fclose (f); return NULL; }
-  size_t size = (size_t)fsize;
-  fseek (f, 0, SEEK_SET);
-  char *buffer = malloc (size + 1);
-  if (not buffer) { fclose (f); return NULL; }
-  size_t read_size = fread (buffer, 1, size, f);
-  fclose (f);
-  buffer[read_size] = '\0';
-  return buffer;
-}
-
-/* Find a package source file in include paths */
-char *Lookup_Path(String_Slice name) {
-  char path[512], full_path[520];  /* full_path larger for .ads extension */
-
-  /* Build lowercase filename */
-  for (uint32_t i = 0; i < Include_Path_Count; i++) {
-    size_t base_len = strlen (Include_Paths[i]);
-    snprintf (path, sizeof (path), "%s%s%.*s",
-         Include_Paths[i],
-         (base_len > 0 and Include_Paths[i][base_len-1] != '/') ? "/" : "",
-         (int)name.length, name.data);
-
-    /* Lowercase the filename part */
-    for (char *cursor = path + base_len; *cursor; cursor++) {
-      if (*cursor >= 'A' and *cursor <= 'Z') *cursor = *cursor - 'A' + 'a';
-    }
-
-    /* Try .ads extension */
-    snprintf (full_path, sizeof (full_path), "%s.ads", path);
-    char *src = Read_File_Simple (full_path);
-    if (src) return src;
-
-    /* Try .ada extension (ACATS naming convention) */
-    snprintf (full_path, sizeof (full_path), "%s.ada", path);
-    src = Read_File_Simple (full_path);
-    if (src) return src;
-  }
-  return NULL;
-}
-
-/* Check if a precompiled .ll file exists for a package in include paths */
-bool Has_Precompiled_LL (String_Slice name) {
-  char path[512], full_path[520];
-  for (uint32_t i = 0; i < Include_Path_Count; i++) {
-    size_t base_len = strlen (Include_Paths[i]);
-    snprintf (path, sizeof (path), "%s%s%.*s",
-         Include_Paths[i],
-         (base_len > 0 and Include_Paths[i][base_len-1] != '/') ? "/" : "",
-         (int)name.length, name.data);
-    for (char *cursor = path + base_len; *cursor; cursor++) {
-      if (*cursor >= 'A' and *cursor <= 'Z') *cursor = *cursor - 'A' + 'a';
-    }
-    snprintf (full_path, sizeof (full_path), "%s.ll", path);
-    FILE *f = fopen (full_path, "r");
-    if (f) { fclose (f); return true; }
-  }
-  return false;
-}
-
-/* Find a package body source file in include paths */
-char *Lookup_Path_Body (String_Slice name) {
-  char path[512], full_path[520];
-  for (uint32_t i = 0; i < Include_Path_Count; i++) {
-    size_t base_len = strlen (Include_Paths[i]);
-    snprintf (path, sizeof (path), "%s%s%.*s",
-         Include_Paths[i],
-         (base_len > 0 and Include_Paths[i][base_len-1] != '/') ? "/" : "",
-         (int)name.length, name.data);
-
-    /* Lowercase the filename part */
-    for (char *cursor = path + base_len; *cursor; cursor++) {
-      if (*cursor >= 'A' and *cursor <= 'Z') *cursor = *cursor - 'A' + 'a';
-    }
-
-    /* Try .adb extension */
-    snprintf (full_path, sizeof (full_path), "%s.adb", path);
-    char *src = Read_File_Simple (full_path);
-    if (src) return src;
-
-    /* Try .ada extension (ACATS uses .ada for both specs and bodies) */
-    snprintf (full_path, sizeof (full_path), "%s.ada", path);
-    src = Read_File_Simple (full_path);
-    if (src) return src;
-  }
-  return NULL;
 }
 void Resolve_Declaration_List (Node_List *list) {
   for (uint32_t i = 0; i < list->count; i++) {
@@ -35439,12 +31985,12 @@ void Generate_Declaration (Syntax_Node *node) {
         cg->current_function = saved_current_function;
 
         /* Track this elaboration function for calling from main.
-         * Also register with the §15.7 elaboration graph for
+         * Also register with the §15 elaboration graph for
          * proper dependency-ordered elaboration. */
         if (pkg_sym and cg->elab_func_count < 64) {
           cg->elab_funcs[cg->elab_func_count++] = pkg_sym;
 
-          /* Register unit in elaboration graph (§15.7) */
+          /* Register unit in elaboration graph (§15) */
           Elab_Register_Unit (pkg_sym->name, /*is_body=*/true, pkg_sym,
 
                      /*is_preelaborate=*/false,
@@ -35615,7 +32161,7 @@ void Generate_Declaration (Syntax_Node *node) {
             if (cg->elab_func_count < 64) {
               cg->elab_funcs[cg->elab_func_count++] = inst_sym;
 
-              /* Register generic instance in elaboration graph (§15.7) */
+              /* Register generic instance in elaboration graph (§15) */
               Elab_Register_Unit (inst_sym->name, /*is_body=*/true, inst_sym,
 
                          /*is_preelaborate=*/false,
@@ -37846,7 +34392,3468 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
 }
 
 /* ═════════════════════════════════════════════════════════════════════════════════════════════════
- * §17. MAIN DRIVER
+ * §13.17 BUILD-IN-PLACE — Limited Type Function Returns
+ *
+ * Ada limited types cannot be copied (RM 7.5). Functions returning limited
+ * types must construct the result directly in caller-provided space—the
+ * "Build-in-Place" (BIP) protocol. This eliminates intermediate temporaries.
+ *
+ * The protocol passes extra hidden parameters to BIP functions:
+ *   __BIPalloc  - Allocation form selector (caller space, heap, pool, etc.)
+ *   __BIPaccess - Pointer to destination where result is constructed
+ *   __BIPfinal  - Finalization collection (for controlled components)
+ *   __BIPmaster - Task master ID (for task components)
+ *   __BIPchain  - Activation chain (for task components)
+ *
+ * Reference: Ada RM 7.5 (Limited Types), RM 6.5 (Return Statements)
+ * ══════════════════════════════════════════════════════════════════════════════════════════════ */
+
+/* ─────────────────────────────────────────────────────────────────────────────────────────────────
+ * §13.17.1 Algebraic Types — Sum types for BIP protocol
+ *
+ * BIP_Alloc_Form determines where the function result is allocated:
+ *   - CALLER: Caller provides stack/object space (most common)
+ *   - SECONDARY_STACK: Use secondary stack for dynamic-sized returns
+ *   - GLOBAL_HEAP: Allocate on heap (from 'new' expression)
+ *   - USER_POOL: Use user-defined storage pool
+ *
+ * BIP_Formal_Kind identifies which extra formal parameter is being accessed.
+ * ────────────────────────────────────────────────────────────────────────────────────────────── */
+
+/* ─────────────────────────────────────────────────────────────────────────────────────────────────
+ * §13.17.3 Type Predicates — Pure functions for BIP decisions
+ *
+ * These predicates determine whether a type requires BIP handling.
+ * Per Ada RM 7.5, limited types include:
+ *   - Task types (always limited)
+ *   - Types with "limited" in their declaration
+ *   - Private types declared "limited private"
+ *   - Composite types with limited components
+ * ────────────────────────────────────────────────────────────────────────────────────────────── */
+
+/* Forward declaration - full Type_Info checking */
+bool BIP_Type_Has_Task_Component (const Type_Info *t);
+
+/* Check if type is explicitly marked limited (not just by composition) */
+bool BIP_Is_Explicitly_Limited (const Type_Info *t) {
+  if (not t) return false;
+  return t->kind == TYPE_LIMITED_PRIVATE or t->kind == TYPE_TASK;
+}
+
+/* Check if type is a task type */
+bool BIP_Is_Task_Type (const Type_Info *t) {
+  return t and t->kind == TYPE_TASK;
+}
+
+/* Check if record type has any limited components (recursive) */
+bool BIP_Record_Has_Limited_Component (const Type_Info *t) {
+  if (not t or t->kind != TYPE_RECORD) return false;
+  for (uint32_t i = 0; i < t->record.component_count; i++) {
+    const Type_Info *ft = t->record.components[i].component_type;
+    if (not ft) continue;
+
+    /* Task component makes the record limited */
+    if (ft->kind == TYPE_TASK) return true;
+
+    /* Limited private component makes the record limited */
+    if (ft->kind == TYPE_LIMITED_PRIVATE) return true;
+
+    /* Recursively check nested records */
+    if (ft->kind == TYPE_RECORD and BIP_Record_Has_Limited_Component (ft))
+      return true;
+  }
+  return false;
+}
+
+/* Master predicate: Is this type limited? (RM 7.5) */
+bool BIP_Is_Limited_Type (const Type_Info *t) {
+  if (not t) return false;
+
+  /* Explicitly marked as limited (from type declaration) */
+  if (t->is_limited) return true;
+
+  /* Task types are always limited */
+  if (t->kind == TYPE_TASK) return true;
+
+  /* Limited private types */
+  if (t->kind == TYPE_LIMITED_PRIVATE) return true;
+
+  /* Records with limited components */
+  if (t->kind == TYPE_RECORD and BIP_Record_Has_Limited_Component (t))
+    return true;
+
+  /* Arrays of limited element type */
+  if (t->kind == TYPE_ARRAY and t->array.element_type and
+    BIP_Is_Limited_Type (t->array.element_type))
+    return true;
+  return false;
+}
+
+/* Does this function return a type requiring BIP? */
+bool BIP_Is_BIP_Function (const Symbol *func) {
+  if (not func or func->kind != SYMBOL_FUNCTION) return false;
+  return func->return_type and BIP_Is_Limited_Type (func->return_type);
+}
+
+/* Does type have task components (needs activation chain)? */
+bool BIP_Type_Has_Task_Component (const Type_Info *t) {
+  if (not t) return false;
+  if (t->kind == TYPE_TASK) return true;
+  if (t->kind == TYPE_RECORD) {
+    for (uint32_t i = 0; i < t->record.component_count; i++) {
+      if (BIP_Type_Has_Task_Component (t->record.components[i].component_type))
+        return true;
+    }
+  }
+  if (t->kind == TYPE_ARRAY and t->array.element_type)
+    return BIP_Type_Has_Task_Component (t->array.element_type);
+  return false;
+}
+
+/* Does function need allocation form parameter? (unconstrained result) */
+bool BIP_Needs_Alloc_Form (const Symbol *func) {
+  if (not func or not func->return_type) return false;
+  const Type_Info *rt = func->return_type;
+
+  /* Unconstrained arrays need runtime size determination */
+  if (rt->kind == TYPE_ARRAY and not rt->array.is_constrained)
+    return true;
+  return false;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────────────────────────
+ * §13.17.4 Extra Formal Parameters — Hidden BIP parameters
+ *
+ * BIP functions receive extra hidden parameters prepended to their formals:
+ *   __BIPalloc  : i32     (BIP_Alloc_Form enum value)
+ *   __BIPaccess : ptr     (pointer to result destination)
+ *   __BIPmaster : i32     (task master ID, if tasks)
+ *   __BIPchain  : ptr     (activation chain, if tasks)
+ *
+ * These are added during code generation, not during semantic analysis,
+ * so the Symbol structure remains unchanged.
+ * ────────────────────────────────────────────────────────────────────────────────────────────── */
+
+/* BIP extra formal names (matched by code generator) */
+#define BIP_ALLOC_NAME   "__BIPalloc"
+#define BIP_ACCESS_NAME  "__BIPaccess"
+#define BIP_MASTER_NAME  "__BIPmaster"
+#define BIP_CHAIN_NAME   "__BIPchain"
+#define BIP_FINAL_NAME   "__BIPfinal"
+
+/* Count of BIP extra formals for a given function */
+uint32_t BIP_Extra_Formal_Count (const Symbol *func) {
+  if (not BIP_Is_BIP_Function (func)) return 0;
+  uint32_t count = 2;  /* alloc_form + object_access always present */
+  if (BIP_Type_Has_Task_Component (func->return_type))
+    count += 2;  /* task_master + activation_chain */
+
+  /* Future: finalization collection for controlled types */
+  return count;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────────────────────────
+ * §13.17.5 Call-Site Transformation — Expanding BIP function calls
+ *
+ * When calling a BIP function, the caller must:
+ *   1. Determine allocation form (usually CALLER for declarations)
+ *   2. Allocate destination space if CALLER
+ *   3. Pass extra BIP actuals before regular arguments
+ *
+ * Transform: X : Limited_Type := F(args);
+ * Into:      space = alloca(sizeof (Limited_Type))
+ *            F(__BIPalloc => CALLER, __BIPaccess => space, args)
+ *            X = *space  (or X IS space if we alias)
+ * ────────────────────────────────────────────────────────────────────────────────────────────── */
+
+/* Determine allocation form from call context */
+BIP_Alloc_Form BIP_Determine_Alloc_Form (bool is_allocator,
+                        bool in_return_stmt,
+                        bool has_target) {
+  if (is_allocator)   return BIP_ALLOC_GLOBAL_HEAP;
+  if (in_return_stmt) return BIP_ALLOC_UNSPECIFIED;  /* Propagate caller's */
+  if (has_target)     return BIP_ALLOC_CALLER;
+  return BIP_ALLOC_SECONDARY;  /* Temp needed */
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────────────────────────
+ * §13.17.6 Return Statement Expansion — Building result in place
+ *
+ * In a BIP function, return statements build directly into __BIPaccess:
+ *
+ *   return (Field1 => V1, Field2 => V2);
+ *
+ * Becomes (for CALLER allocation):
+ *   __BIPaccess->Field1 = V1;
+ *   __BIPaccess->Field2 = V2;
+ *   return;
+ *
+ * For HEAP allocation, we allocate first then build:
+ *   tmp = malloc (sizeof (T));
+ *   tmp->Field1 = V1;
+ *   tmp->Field2 = V2;
+ *   *__BIPaccess = tmp;  // Return allocated pointer
+ *   return;
+ * ────────────────────────────────────────────────────────────────────────────────────────────── */
+
+
+/* Global BIP state for current function being generated */
+BIP_Function_State g_bip_state = {0};
+
+/* Initialize BIP state for a new function */
+void BIP_Begin_Function (const Symbol *func) {
+  g_bip_state = (BIP_Function_State){0};
+  if (BIP_Is_BIP_Function (func)) {
+    g_bip_state.is_bip_function = true;
+    g_bip_state.has_task_components =
+      BIP_Type_Has_Task_Component (func->return_type);
+  }
+}
+
+/* Check if we're in a BIP function */
+bool BIP_In_BIP_Function (void) {
+  return g_bip_state.is_bip_function;
+}
+
+/* End BIP state for function */
+void BIP_End_Function (void) {
+  g_bip_state = (BIP_Function_State){0};
+}
+
+/* ═════════════════════════════════════════════════════════════════════════════════════════════════
+ * §14. LIBRARY MANAGEMENT — GNAT-Compatible Library Information
+ * ═════════════════════════════════════════════════════════════════════════════════════════════════
+ *
+ * Ada Library Information (.ali) files record compilation dependencies and
+ * unit metadata. Format follows GNAT's lib-writ.ads specification:
+ *
+ *   V "version"              -- compiler version
+ *   P flags                  -- compilation parameters
+ *   U name source version    -- unit entry
+ *   W name [source ali]      -- with dependency
+ *   D source timestamp       -- source dependency
+ *
+ * The ALI file enables:
+ *   • Separate compilation with dependency tracking
+ *   • Binder consistency checking
+ *   • IDE cross-reference navigation
+ */
+
+/* ─────────────────────────────────────────────────────────────────────────────────────────────────
+ * §14.1 Unit_Info — Compilation unit metadata collector
+ * ────────────────────────────────────────────────────────────────────────────────────────────── */
+/* ─────────────────────────────────────────────────────────────────────────────────────────────────
+ * §14.2 CRC32 — Fast checksum for source identity
+ *
+ * Standard CRC-32/ISO-HDLC polynomial: 0xEDB88320 (bit-reversed 0x04C11DB7)
+ * ────────────────────────────────────────────────────────────────────────────────────────────── */
+uint32_t Crc32_Table[256];
+bool Crc32_Table_Initialized = false;
+void Crc32_Init_Table (void) {
+  if (Crc32_Table_Initialized) return;
+  for (uint32_t i = 0; i < 256; i++) {
+    uint32_t crc = i;
+    for (int j = 0; j < 8; j++)
+      crc = (crc >> 1) ^ (0xEDB88320 & -(crc & 1));
+    Crc32_Table[i] = crc;
+  }
+  Crc32_Table_Initialized = true;
+}
+uint32_t Crc32 (const char *data, size_t length) {
+  Crc32_Init_Table ();
+  uint32_t crc = 0xFFFFFFFF;
+  for (size_t i = 0; i < length; i++)
+    crc = Crc32_Table[(crc ^ (uint8_t)data[i]) & 0xFF] ^ (crc >> 8);
+  return ~crc;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────────────────────────
+ * §14.3 Unit_Name_To_File — GNAT naming convention
+ *
+ * Maps Ada unit names to file names:
+ *   Package_Name      > package_name.ads
+ *   Package_Name%b    > package_name.adb
+ *   Parent.Child      > parent-child.ads
+ * ────────────────────────────────────────────────────────────────────────────────────────────── */
+void Unit_Name_To_File (String_Slice unit_name, bool is_body,
+                char *out, size_t out_size) {
+  size_t j = 0;
+  for (size_t i = 0; i < unit_name.length and j < out_size - 5; i++) {
+    char c = unit_name.data[i];
+    if (c == '.') {
+      out[j++] = '-';  /* Dots become hyphens */
+    } else if (c >= 'A' and c <= 'Z') {
+      out[j++] = c - 'A' + 'a';  /* Lowercase */
+    } else {
+      out[j++] = c;
+    }
+  }
+
+  /* Append extension */
+  const char *ext = is_body ? ".adb" : ".ads";
+  for (int k = 0; ext[k] and j < out_size - 1; k++)
+    out[j++] = ext[k];
+  out[j] = '\0';
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────────────────────────
+ * §14.4 ALI_Collect — Gather unit info from parsed AST
+ * ────────────────────────────────────────────────────────────────────────────────────────────── */
+void ALI_Collect_Withs (ALI_Info *ali, Syntax_Node *ctx) {
+  if (not ctx) return;
+  for (uint32_t i = 0; i < ctx->context.with_clauses.count; i++) {
+    Syntax_Node *with_node = ctx->context.with_clauses.items[i];
+    if (not with_node) continue;
+
+    /* Each WITH clause may have multiple names */
+    for (uint32_t j = 0; j < with_node->use_clause.names.count; j++) {
+      Syntax_Node *name = with_node->use_clause.names.items[j];
+      if (not name or ali->with_count >= 64) continue;
+      With_Info *w = &ali->withs[ali->with_count++];
+      w->name = name->kind == NK_IDENTIFIER ?
+            name->string_val.text : (String_Slice){0};
+      w->is_limited = false;  /* TODO: detect LIMITED WITH */
+      w->elaborate = false;
+      w->elaborate_all = false;
+
+      /* Derive file names from unit name */
+      char file_buf[256];
+      if (w->name.data) {
+        Unit_Name_To_File (w->name, false, file_buf, sizeof (file_buf));
+        w->source_file = Slice_Duplicate ((String_Slice){file_buf, strlen (file_buf)});
+        size_t len = strlen (file_buf);
+        if (len > 4) {
+          file_buf[len-3] = 'a';
+          file_buf[len-2] = 'l';
+          file_buf[len-1] = 'i';
+        }
+        w->ali_file = Slice_Duplicate ((String_Slice){file_buf, strlen (file_buf)});
+      }
+    }
+  }
+}
+
+/* Helper: extract unit name from a subprogram spec/body */
+String_Slice Get_Subprogram_Name (Syntax_Node *node) {
+  if (not node) return (String_Slice){"UNKNOWN", 7};
+  if (node->kind == NK_PROCEDURE_SPEC or node->kind == NK_FUNCTION_SPEC)
+    return node->subprogram_spec.name;
+
+  /* Body has spec nested inside */
+  if (node->kind == NK_PROCEDURE_BODY or node->kind == NK_FUNCTION_BODY) {
+    if (node->subprogram_body.specification)
+      return Get_Subprogram_Name (node->subprogram_body.specification);
+  }
+  return (String_Slice){"UNKNOWN", 7};
+}
+
+/* Forward declarations for functions used by ALI_Collect_Exports */
+String_Slice Mangle_Qualified_Name (String_Slice parent, String_Slice name);
+String_Slice LLVM_Type_Basic (String_Slice ada_type);
+
+/* ─────────────────────────────────────────────────────────────────────────────────────────────────
+ * §14.4.2 ALI_Collect_Exports — Gather exported symbols from package spec
+ * ────────────────────────────────────────────────────────────────────────────────────────────── */
+void ALI_Collect_Exports (ALI_Info *ali, Syntax_Node *unit) {
+  if (not unit or unit->kind != NK_PACKAGE_SPEC) return;
+  String_Slice pkg_name = unit->package_spec.name;
+  Node_List *decls = &unit->package_spec.visible_decls;
+  for (uint32_t i = 0; i < decls->count and ali->export_count < 256; i++) {
+    Syntax_Node *decl = decls->items[i];
+    if (not decl) continue;
+    Export_Info *exp = &ali->exports[ali->export_count];
+    exp->line = decl->location.line;
+    exp->param_count = 0;
+    exp->type_name = (String_Slice){0};
+    exp->mangled_name = (String_Slice){0};
+    exp->llvm_type = (String_Slice){0};
+    switch (decl->kind) {
+      case NK_TYPE_DECL:
+        exp->name = decl->type_decl.name;
+        exp->kind = 'T';
+        exp->mangled_name = Mangle_Qualified_Name (pkg_name, exp->name);
+        exp->llvm_type = LLVM_Type_Basic (exp->name);
+        ali->export_count++;
+        break;
+      case NK_SUBTYPE_DECL:
+        exp->name = decl->type_decl.name;
+        exp->kind = 'S';
+        exp->mangled_name = Mangle_Qualified_Name (pkg_name, exp->name);
+        if (decl->type_decl.definition) {
+          Syntax_Node *def = decl->type_decl.definition;
+          if (def->kind == NK_IDENTIFIER) {
+            exp->type_name = def->string_val.text;
+            exp->llvm_type = LLVM_Type_Basic (exp->type_name);
+          } else if (def->kind == NK_SUBTYPE_INDICATION and def->subtype_ind.subtype_mark) {
+            if (def->subtype_ind.subtype_mark->kind == NK_IDENTIFIER) {
+              exp->type_name = def->subtype_ind.subtype_mark->string_val.text;
+              exp->llvm_type = LLVM_Type_Basic (exp->type_name);
+            }
+          }
+        }
+        if (not exp->llvm_type.data) {
+          const char *int_t = Llvm_Int_Type ((uint32_t)To_Bits (sm->type_integer->size));
+          exp->llvm_type = (String_Slice){int_t, strlen (int_t)};
+        }
+        ali->export_count++;
+        break;
+      case NK_OBJECT_DECL:
+        for (uint32_t j = 0; j < decl->object_decl.names.count and ali->export_count < 256; j++) {
+          Syntax_Node *name = decl->object_decl.names.items[j];
+          if (name and name->kind == NK_IDENTIFIER) {
+            exp = &ali->exports[ali->export_count];
+            exp->name = name->string_val.text;
+            exp->kind = decl->object_decl.is_constant ? 'C' : 'V';
+            exp->line = name->location.line;
+            exp->mangled_name = Mangle_Qualified_Name (pkg_name, exp->name);
+            if (decl->object_decl.object_type and decl->object_decl.object_type->kind == NK_IDENTIFIER) {
+              exp->type_name = decl->object_decl.object_type->string_val.text;
+              exp->llvm_type = LLVM_Type_Basic (exp->type_name);
+            } else {
+              const char *int_t = Llvm_Int_Type ((uint32_t)To_Bits (sm->type_integer->size));
+              exp->llvm_type = (String_Slice){int_t, strlen (int_t)};
+            }
+            ali->export_count++;
+          }
+        }
+        break;
+      case NK_PROCEDURE_SPEC:
+        exp->name = decl->subprogram_spec.name;
+        exp->kind = 'P';
+        exp->mangled_name = Mangle_Qualified_Name (pkg_name, exp->name);
+        for (uint32_t j = 0; j < decl->subprogram_spec.parameters.count; j++) {
+          Syntax_Node *ps = decl->subprogram_spec.parameters.items[j];
+          if (ps and ps->kind == NK_PARAM_SPEC)
+            exp->param_count += ps->param_spec.names.count;
+        }
+        exp->llvm_type = (String_Slice){"void", 4};
+        ali->export_count++;
+        break;
+      case NK_FUNCTION_SPEC:
+        exp->name = decl->subprogram_spec.name;
+        exp->kind = 'F';
+        exp->mangled_name = Mangle_Qualified_Name (pkg_name, exp->name);
+        for (uint32_t j = 0; j < decl->subprogram_spec.parameters.count; j++) {
+          Syntax_Node *ps = decl->subprogram_spec.parameters.items[j];
+          if (ps and ps->kind == NK_PARAM_SPEC)
+            exp->param_count += ps->param_spec.names.count;
+        }
+        if (decl->subprogram_spec.return_type and decl->subprogram_spec.return_type->kind == NK_IDENTIFIER) {
+          exp->type_name = decl->subprogram_spec.return_type->string_val.text;
+          exp->llvm_type = LLVM_Type_Basic (exp->type_name);
+        } else {
+          const char *int_t = Llvm_Int_Type ((uint32_t)To_Bits (sm->type_integer->size));
+          exp->llvm_type = (String_Slice){int_t, strlen (int_t)};
+        }
+        ali->export_count++;
+        break;
+      case NK_EXCEPTION_DECL:
+        for (uint32_t j = 0; j < decl->exception_decl.names.count and ali->export_count < 256; j++) {
+          Syntax_Node *name = decl->exception_decl.names.items[j];
+          if (name and name->kind == NK_IDENTIFIER) {
+            exp = &ali->exports[ali->export_count];
+            exp->name = name->string_val.text;
+            exp->kind = 'E';
+            exp->line = name->location.line;
+            exp->mangled_name = Mangle_Qualified_Name (pkg_name, exp->name);
+            exp->llvm_type = (String_Slice){"i8", 2};  /* Exception identity */
+            ali->export_count++;
+          }
+        }
+        break;
+      default:
+        break;
+    }
+  }
+}
+void ALI_Collect_Unit (ALI_Info *ali, Syntax_Node *cu,
+               const char *source, size_t source_size) {
+  if (not cu or ali->unit_count >= 8) return;
+  Syntax_Node *unit = cu->compilation_unit.unit;
+  if (not unit) return;
+  Unit_Info *u = &ali->units[ali->unit_count++];
+
+  /* Extract unit name based on declaration kind */
+  switch (unit->kind) {
+    case NK_PACKAGE_SPEC:
+      u->unit_name = unit->package_spec.name;
+      u->is_body = false;
+      break;
+    case NK_PACKAGE_BODY:
+      u->unit_name = unit->package_body.name;
+      u->is_body = true;
+      break;
+    case NK_PROCEDURE_BODY:
+    case NK_PROCEDURE_SPEC:
+      u->unit_name = Get_Subprogram_Name (unit);
+      u->is_body = unit->kind == NK_PROCEDURE_BODY;
+      break;
+    case NK_FUNCTION_BODY:
+    case NK_FUNCTION_SPEC:
+      u->unit_name = Get_Subprogram_Name (unit);
+      u->is_body = unit->kind == NK_FUNCTION_BODY;
+      break;
+    case NK_GENERIC_DECL:
+      u->is_generic = true;
+      if (unit->generic_decl.unit) {
+        Syntax_Node *inner = unit->generic_decl.unit;
+        if (inner->kind == NK_PACKAGE_SPEC)
+          u->unit_name = inner->package_spec.name;
+        else if (inner->kind == NK_PROCEDURE_SPEC or inner->kind == NK_FUNCTION_SPEC)
+          u->unit_name = inner->subprogram_spec.name;
+      }
+      u->is_body = false;
+      break;
+    default:
+      u->unit_name = (String_Slice){"UNKNOWN", 7};
+      u->is_body = false;
+  }
+
+  /* Compute source checksum */
+  u->source_checksum = Crc32 (source, source_size);
+
+  /* Derive source file name */
+  char file_buf[256];
+  Unit_Name_To_File (u->unit_name, u->is_body, file_buf, sizeof (file_buf));
+  u->source_name = Slice_Duplicate ((String_Slice){file_buf, strlen (file_buf)});
+
+  /* Check for elaboration pragmas (simplified) */
+  u->is_preelaborate = false;
+  u->is_pure = false;
+  u->has_elaboration = true;  /* Assume has elaboration unless proven otherwise */
+
+  /* Collect WITH dependencies */
+  ALI_Collect_Withs (ali, cu->compilation_unit.context);
+
+  /* Collect exported symbols from package specs */
+  if (unit and unit->kind == NK_PACKAGE_SPEC) {
+    ALI_Collect_Exports (ali, unit);
+  }
+}
+
+/* LLVM type signature derived from the type system via Symbol_Manager.
+ * Looks up the Ada type name in the symbol table and uses Type_To_Llvm
+ * to get the correct LLVM representation. */
+String_Slice LLVM_Type_Basic (String_Slice ada_type) {
+
+  /* Look up in the symbol table for proper type-system derivation */
+  Symbol *sym = Symbol_Find (ada_type);
+  if (sym and sym->type) {
+    const char *llvm = Type_To_Llvm (sym->type);
+    return (String_Slice){llvm, strlen (llvm)};
+  }
+
+  /* Error: type not found in symbol table */
+  fprintf (stderr, "error: LLVM_Type_Basic: type '%.*s' not found in symbol table\n",
+      (int)ada_type.length, ada_type.data);
+  const char *fallback = Llvm_Int_Type ((uint32_t)To_Bits (sm->type_integer->size));
+  return (String_Slice){fallback, strlen (fallback)};
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────────────────────────
+ * §14.5 ALI_Write — Emit .ali file in GNAT format
+ *
+ * Per lib-writ.ads, the minimum valid ALI file needs:
+ *   V line (version) — MUST be first
+ *   P line (parameters) — MUST be present
+ *   At least one U line (unit)
+ * ────────────────────────────────────────────────────────────────────────────────────────────── */
+#define ALI_VERSION "Ada83 1.0 built " __DATE__ " " __TIME__
+void ALI_Write (FILE *out, ALI_Info *ali) {
+
+  /* V line: Version — must be first per GNAT spec */
+  fprintf (out, "V \"%s\"\n", ALI_VERSION);
+
+  /* P line: Parameters/flags — ZX = zero-cost exceptions */
+  fprintf (out, "P ZX\n");
+
+  /* Blank line before restrictions */
+  fprintf (out, "\n");
+
+  /* R line: Restrictions (minimal) */
+  fprintf (out, "RN\n");
+
+  /* U lines: Unit entries */
+  for (uint32_t i = 0; i < ali->unit_count; i++) {
+    Unit_Info *u = &ali->units[i];
+
+    /* U unit-name source-name version [flags] */
+    fprintf (out, "\nU %.*s%s %.*s %08X",
+        (int)u->unit_name.length, u->unit_name.data,
+        u->is_body ? "%b" : "%s",
+        (int)u->source_name.length, u->source_name.data,
+        u->source_checksum);
+
+    /* Flags */
+    if (u->is_generic) fprintf (out, " GE");
+    if (u->is_preelaborate) fprintf (out, " PR");
+    if (u->is_pure) fprintf (out, " PU");
+    if (not u->has_elaboration) fprintf (out, " NE");
+    if (not u->is_body) fprintf (out, " PK");
+    else fprintf (out, " SU");
+    fprintf (out, "\n");
+
+    /* W lines: WITH dependencies for this unit */
+    for (uint32_t j = 0; j < ali->with_count; j++) {
+      With_Info *w = &ali->withs[j];
+      if (not w->name.data) continue;
+      char line_type = w->is_limited ? 'Y' : 'W';
+      fprintf (out, "%c %.*s%s",
+          line_type,
+          (int)w->name.length, w->name.data,
+          "%s");  /* Assume spec dependency */
+      if (w->source_file.data) {
+        fprintf (out, " %.*s %.*s",
+            (int)w->source_file.length, w->source_file.data,
+            (int)w->ali_file.length, w->ali_file.data);
+      }
+      if (w->elaborate) fprintf (out, " E");
+      if (w->elaborate_all) fprintf (out, " EA");
+      fprintf (out, "\n");
+    }
+  }
+
+  /* D lines: Source dependencies */
+  fprintf (out, "\n");
+  for (uint32_t i = 0; i < ali->unit_count; i++) {
+    Unit_Info *u = &ali->units[i];
+
+    /* Self-dependency */
+    fprintf (out, "D %.*s 00000000 %08X\n",
+        (int)u->source_name.length, u->source_name.data,
+        u->source_checksum);
+  }
+  for (uint32_t i = 0; i < ali->with_count; i++) {
+    With_Info *w = &ali->withs[i];
+    if (w->source_file.data) {
+      fprintf (out, "D %.*s 00000000 00000000\n",
+          (int)w->source_file.length, w->source_file.data);
+    }
+  }
+
+  /* X lines: Exported symbols (extended format for Ada83 separate compilation)
+   *
+   * Format: X kind name:line llvm_type @mangled [ada_type] [(params)]
+   *
+   *   kind: T=type, S=subtype, V=variable, C=constant, P=procedure, F=function, E=exception
+   *   llvm_type: LLVM IR type signature (i64, double, void, ptr, etc.)
+   *   @mangled: LLVM symbol name for linking
+   *   ada_type: Ada type name for typed symbols
+   *   (params): Parameter count for subprograms
+   *
+   * This provides everything needed to compile against the package without source:
+   *   - Type checking via ada_type
+   *   - Code generation via llvm_type and @mangled
+   *   - Linking via @mangled symbol references
+   */
+  if (ali->export_count > 0) {
+    fprintf (out, "\n");
+    for (uint32_t i = 0; i < ali->export_count; i++) {
+      Export_Info *x = &ali->exports[i];
+
+      /* X kind name:line */
+      fprintf (out, "X %c %.*s:%u",
+          x->kind,
+          (int)x->name.length, x->name.data,
+          x->line);
+
+      /* llvm_type */
+      if (x->llvm_type.data) {
+        fprintf (out, " %.*s", (int)x->llvm_type.length, x->llvm_type.data);
+      } else {
+        fprintf (out, " i64");
+      }
+
+      /* @mangled */
+      if (x->mangled_name.data) {
+        fprintf (out, " @%.*s", (int)x->mangled_name.length, x->mangled_name.data);
+      }
+
+      /* ada_type (for typed symbols) */
+      if (x->type_name.data) {
+        fprintf (out, " %.*s", (int)x->type_name.length, x->type_name.data);
+      }
+
+      /* (params) for subprograms */
+      if (x->param_count > 0) {
+        fprintf (out, " (%u)", x->param_count);
+      }
+      fprintf (out, "\n");
+    }
+  }
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────────────────────────
+ * §14.6 Generate_ALI_File — Entry point for ALI generation
+ * ────────────────────────────────────────────────────────────────────────────────────────────── */
+void Generate_ALI_File (const char *output_path,
+                Syntax_Node **units, int unit_count,
+                const char *source, size_t source_size) {
+
+  /* Build ALI path from output path (replace .ll with .ali) */
+  char ali_path[512];
+  size_t len = strlen (output_path);
+  if (len > 3 and strcmp (output_path + len - 3, ".ll") == 0) {
+    snprintf (ali_path, sizeof (ali_path), "%.*s.ali", (int)(len - 3), output_path);
+  } else {
+    snprintf (ali_path, sizeof (ali_path), "%s.ali", output_path);
+  }
+  FILE *ali_file = fopen (ali_path, "w");
+  if (not ali_file) {
+    fprintf (stderr, "Warning: cannot create ALI file '%s'\n", ali_path);
+    return;
+  }
+
+  /* Collect information from all compilation units */
+  ALI_Info ali = {0};
+  for (int i = 0; i < unit_count; i++) {
+    ALI_Collect_Unit (&ali, units[i], source, source_size);
+  }
+
+  /* Write ALI file */
+  ALI_Write (ali_file, &ali);
+  fclose (ali_file);
+  fprintf (stderr, "Generated ALI file '%s'\n", ali_path);
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────────────────────────
+ * §14.7 ALI_Reader — Parse .ali files for dependency management
+ *
+ * We read ALI files to:
+ *   1. Skip recompilation of unchanged units (checksum match)
+ *   2. Load exported symbols from precompiled packages
+ *   3. Track dependencies for elaboration ordering
+ *   4. Find generic templates for instantiation
+ * ────────────────────────────────────────────────────────────────────────────────────────────── */
+/* Global ALI cache */
+ALI_Cache_Entry ALI_Cache[256];
+uint32_t        ALI_Cache_Count = 0;
+
+/* Skip whitespace */
+const char *ALI_Skip_Ws (const char *cursor) {
+  while (*cursor == ' ' or *cursor == '\t') cursor++;
+  return cursor;
+}
+
+/* Read until whitespace or newline, return end pointer */
+const char *ALI_Read_Token (const char *cursor, char *buf, size_t bufsize) {
+  cursor = ALI_Skip_Ws (cursor);
+  size_t pos = 0;
+  while (*cursor and *cursor != ' ' and *cursor != '\t' and *cursor != '\n' and pos < bufsize - 1) {
+    buf[pos++] = *cursor++;
+  }
+  buf[pos] = '\0';
+  return cursor;
+}
+
+/* Parse a hex value */
+uint32_t ALI_Parse_Hex (const char *str) {
+  uint32_t val = 0;
+  while (*str) {
+    char ch = *str++;
+    if (ch >= '0' and ch <= '9')      val = (val << 4) | (ch - '0');
+    else if (ch >= 'A' and ch <= 'F') val = (val << 4) | (ch - 'A' + 10);
+    else if (ch >= 'a' and ch <= 'f') val = (val << 4) | (ch - 'a' + 10);
+    else break;
+  }
+  return val;
+}
+
+/* Read and parse an ALI file, returning cache entry or NULL */
+ALI_Cache_Entry *ALI_Read (const char *ali_path) {
+
+  /* Check if already cached */
+  for (uint32_t i = 0; i < ALI_Cache_Count; i++) {
+    if (ALI_Cache[i].ali_file and strcmp (ALI_Cache[i].ali_file, ali_path) == 0) {
+      return &ALI_Cache[i];
+    }
+  }
+
+  /* Read ALI file */
+  FILE *file = fopen (ali_path, "r");
+  if (not file) return NULL;
+
+  /* Allocate cache entry */
+  if (ALI_Cache_Count >= 256) {
+    fclose (file);
+    return NULL;
+  }
+  ALI_Cache_Entry *entry = &ALI_Cache[ALI_Cache_Count++];
+  memset (entry, 0, sizeof (*entry));
+  entry->ali_file = strdup (ali_path);
+  char line[1024];
+  char token[256];
+  while (fgets (line, sizeof (line), file)) {
+    const char *cursor = line;
+
+    /* Version line: V "version" — reject if compiler build differs.
+     * This ensures stale ALI files from an older compiler rebuild
+     * are not reused; the unit will be reparsed from source. */
+    if (line[0] == 'V') {
+      char ver[256] = {0};
+      const char *quote = strchr (line, '"');
+      if (quote) {
+        quote++;
+        const char *end = strchr (quote, '"');
+        if (end and (size_t)(end - quote) < sizeof (ver)) {
+          memcpy (ver, quote, (size_t)(end - quote));
+          ver[end - quote] = '\0';
+        }
+      }
+
+      /* ALI was produced by a different compiler build — stale */
+      if (strcmp (ver, ALI_VERSION) != 0) {
+        fclose (file);
+        ALI_Cache_Count--;  /* release the cache slot */
+        return NULL;
+      }
+      continue;
+    }
+    else if (line[0] == 'P') {
+
+      /* Parameters line: P flags */
+      continue;
+    }
+    else if (line[0] == 'U') {
+
+      /* Unit line: U name source checksum [flags] */
+      cursor = ALI_Read_Token (cursor + 1, token, sizeof (token));  /* Skip 'U' */
+
+      /* Unit name (with %s/%b suffix) */
+      char *pct = strchr (token, '%');
+      if (pct) {
+        entry->is_spec = (pct[1] == 's');
+        *pct = '\0';
+      }
+      entry->unit_name = strdup (token);
+
+      /* Source file */
+      cursor = ALI_Read_Token (cursor, token, sizeof (token));
+      entry->source_file = strdup (token);
+
+      /* Checksum */
+      cursor = ALI_Read_Token (cursor, token, sizeof (token));
+      entry->checksum = ALI_Parse_Hex (token);
+
+      /* Parse flags */
+      while (*cursor and *cursor != '\n') {
+        cursor = ALI_Read_Token (cursor, token, sizeof (token));
+        if (strcmp (token, "GE") == 0) entry->is_generic = true;
+        else if (strcmp (token, "PR") == 0) entry->is_preelaborate = true;
+        else if (strcmp (token, "PU") == 0) entry->is_pure = true;
+      }
+    }
+    else if (line[0] == 'W' or line[0] == 'Y' or line[0] == 'Z') {
+
+      /* With line: W/Y/Z name [source ali] [flags] */
+      cursor = ALI_Read_Token (cursor + 1, token, sizeof (token));
+
+      /* Strip %s/%b suffix */
+      char *pct = strchr (token, '%');
+      if (pct) *pct = '\0';
+      if (entry->with_count < 64) {
+        entry->withs[entry->with_count++] = strdup (token);
+      }
+    }
+    else if (line[0] == 'D') {
+
+      /* Dependency line: D source timestamp checksum — informational */
+      continue;
+    }
+    else if (line[0] == 'X') {
+
+      /* Export line: X kind name:line llvm_type @mangled [ada_type] [(params)]
+       *
+       * Example: X F Get_Value:9 i64 @test_exports__get_value Counter
+       */
+      if (entry->export_count >= 256) continue;
+      ALI_Export *exp = &entry->exports[entry->export_count];
+      memset (exp, 0, sizeof (*exp));
+      cursor = ALI_Skip_Ws (cursor + 1);  /* Skip 'X' */
+
+      /* Kind (single char: T/S/V/C/P/F/E) */
+      exp->kind = *cursor++;
+      cursor = ALI_Skip_Ws (cursor);
+
+      /* Name:line */
+      cursor = ALI_Read_Token (cursor, token, sizeof (token));
+      char *colon = strchr (token, ':');
+      if (colon) {
+        *colon = '\0';
+        exp->name = strdup (token);
+        exp->line = (uint32_t)atoi (colon + 1);
+      } else {
+        exp->name = strdup (token);
+        exp->line = 0;
+      }
+
+      /* llvm_type */
+      cursor = ALI_Skip_Ws (cursor);
+      if (*cursor and *cursor != '\n') {
+        cursor = ALI_Read_Token (cursor, token, sizeof (token));
+        if (token[0]) exp->llvm_type = strdup (token);
+      }
+
+      /* @mangled */
+      cursor = ALI_Skip_Ws (cursor);
+      if (*cursor == '@') {
+        cursor++;  /* Skip '@' */
+        cursor = ALI_Read_Token (cursor, token, sizeof (token));
+        if (token[0]) exp->mangled_name = strdup (token);
+      }
+
+      /* Remaining tokens: ada_type and/or (params) */
+      while (*cursor and *cursor != '\n') {
+        cursor = ALI_Skip_Ws (cursor);
+        if (*cursor == '(') {
+
+          /* (params) */
+          cursor = ALI_Read_Token (cursor, token, sizeof (token));
+          exp->param_count = (uint32_t)atoi (token + 1);
+        } else if (*cursor and *cursor != '\n') {
+
+          /* ada_type */
+          cursor = ALI_Read_Token (cursor, token, sizeof (token));
+          if (token[0] and token[0] != '(') {
+            if (exp->type_name) free (exp->type_name);
+            exp->type_name = strdup (token);
+          }
+        }
+      }
+      entry->export_count++;
+    }
+  }
+  fclose (file);
+  return entry;
+}
+
+/* Check if an ALI file is up-to-date with its source */
+bool ALI_Is_Current (const char *ali_path, const char *source_path) {
+  ALI_Cache_Entry *entry = ALI_Read (ali_path);
+  if (not entry) return false;
+
+  /* Read source and compute checksum */
+  size_t   source_size;
+  char    *source_text = Read_File (source_path, &source_size);
+  if (not source_text) return false;
+  uint32_t current_checksum = Crc32 (source_text, source_size);
+  free (source_text);
+  return (current_checksum == entry->checksum);
+}
+
+/* ═════════════════════════════════════════════════════════════════════════════════════════════════
+ * §15. ELABORATION MODEL — Standard-Style Dependency Graph Algorithm
+ *
+ * Implements the full Standard elaboration ordering algorithm as described
+ * in bindo-elaborators.adb. This determines the safe order in which library
+ * units must be elaborated at program startup (Ada RM 10.2).
+ *
+ * The algorithm proceeds in phases:
+ *   1. BUILD GRAPH: Create vertices for units, edges for dependencies
+ *   2. FIND COMPONENTS: Tarjan's SCC for cyclic dependency handling
+ *   3. ELABORATE: Topological sort with priority ordering
+ *   4. VALIDATE: Verify all constraints satisfied
+ *
+ * Key insight from GNAT: Edges are classified as "strong" (must-satisfy) or
+ * "weak" (can-ignore-for-dynamic-model). This allows breaking cycles when
+ * compiled with -gnatE (dynamic elaboration checking).
+ *
+ * Style: Haskell-like C99 with algebraic data types (tagged unions),
+ * pure functions where possible, and composition over mutation.
+ * ══════════════════════════════════════════════════════════════════════════════════════════════ */
+
+/* ─────────────────────────────────────────────────────────────────────────────────────────────────
+ * §15.1 Algebraic Types — Sum types via tagged unions
+ *
+ * Following the Haskell pattern: data Kind = A | B | C
+ * In C99: enum for tag, union for payload, struct wrapper.
+ * ────────────────────────────────────────────────────────────────────────────────────────────── */
+
+/* Is this edge kind inherently strong? */
+bool Edge_Kind_Is_Strong (Elab_Edge_Kind k) {
+  return k != EDGE_INVOCATION;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────────────────────────
+ * §15.4 Graph Structure — Vertices + Edges + Components
+ *
+ * Uses arena allocation for vertices/edges, dynamic arrays for order.
+ * Maximum capacities chosen to handle large Ada programs.
+ * ────────────────────────────────────────────────────────────────────────────────────────────── */
+
+/* ─────────────────────────────────────────────────────────────────────────────────────────────────
+ * §15.5 Graph Construction — Pure creation functions
+ *
+ * Functions return new graph/vertex/edge without side effects.
+ * Following functional style: prefer immutable creation over mutation.
+ * ────────────────────────────────────────────────────────────────────────────────────────────── */
+
+/* Initialize an empty graph */
+Elab_Graph Elab_Graph_New (void) {
+  Elab_Graph g = {0};
+  return g;
+}
+
+/* Add a vertex, returning its ID (or 0 on failure) */
+uint32_t Elab_Add_Vertex (Elab_Graph *g, String_Slice name,
+                 Elab_Unit_Kind kind, Symbol *sym) {
+  if (g->vertex_count >= ELAB_MAX_VERTICES) return 0;
+  uint32_t id = ++g->vertex_count;  /* IDs are 1-based */
+  Elab_Vertex *v = &g->vertices[id - 1];
+
+  *v = (Elab_Vertex){
+    .id              = id,
+    .name            = name,
+    .kind            = kind,
+    .symbol          = sym,
+    .tarjan_index    = -1,
+    .tarjan_lowlink  = -1,
+    .is_predefined   = (name.length >= 4 and
+               (strncasecmp (name.data, "Ada.", 4) == 0 or
+              strncasecmp (name.data, "System", 6) == 0 or
+              strncasecmp (name.data, "Interfaces", 10) == 0)),
+    .is_internal     = (name.length >= 5 and
+               strncasecmp (name.data, "GNAT.", 5) == 0)
+  };
+  return id;
+}
+
+/* Find vertex by name, returning ID (or 0 if not found) */
+uint32_t Elab_Find_Vertex (const Elab_Graph *g, String_Slice name,
+                  Elab_Unit_Kind kind) {
+  for (uint32_t i = 0; i < g->vertex_count; i++) {
+    const Elab_Vertex *v = &g->vertices[i];
+    if (v->kind == kind and v->name.length == name.length and
+      strncasecmp (v->name.data, name.data, name.length) == 0) {
+      return v->id;
+    }
+  }
+  return 0;
+}
+
+/* Get vertex by ID (1-based), returns NULL if invalid */
+Elab_Vertex *Elab_Get_Vertex(Elab_Graph *g, uint32_t id) {
+  return (id > 0 and id <= g->vertex_count) ? &g->vertices[id - 1] : NULL;
+}
+const Elab_Vertex *Elab_Get_Vertex_Const(const Elab_Graph *g, uint32_t id) {
+  return (id > 0 and id <= g->vertex_count) ? &g->vertices[id - 1] : NULL;
+}
+
+/* Add an edge from pred_id to succ_id, returning edge ID (or 0 on failure) */
+uint32_t Elab_Add_Edge (Elab_Graph *g, uint32_t pred_id, uint32_t succ_id,
+                 Elab_Edge_Kind kind) {
+  if (g->edge_count >= ELAB_MAX_EDGES) return 0;
+  if (pred_id == 0 or succ_id == 0) return 0;
+  if (pred_id == succ_id) return 0;  /* No self-loops */
+
+  /* Check for duplicate edge */
+  Elab_Vertex *pred = Elab_Get_Vertex (g, pred_id);
+  if (pred) {
+    for (uint32_t e = pred->first_succ_edge; e; ) {
+      const Elab_Edge *edge = &g->edges[e - 1];
+      if (edge->succ_vertex_id == succ_id and edge->kind == kind)
+        return e;  /* Already exists */
+      e = edge->next_pred_edge;
+    }
+  }
+  uint32_t id = ++g->edge_count;
+  Elab_Edge *e = &g->edges[id - 1];
+
+  *e = (Elab_Edge){
+    .id             = id,
+    .kind           = kind,
+    .is_strong      = Edge_Kind_Is_Strong (kind),
+    .pred_vertex_id = pred_id,
+    .succ_vertex_id = succ_id
+  };
+
+  /* Thread into predecessor's outgoing list */
+  if (pred) {
+    e->next_pred_edge = pred->first_succ_edge;
+    pred->first_succ_edge = id;
+  }
+
+  /* Thread into successor's incoming list */
+  Elab_Vertex *succ = Elab_Get_Vertex (g, succ_id);
+  if (succ) {
+    e->next_succ_edge = succ->first_pred_edge;
+    succ->first_pred_edge = id;
+
+    /* Update pending counts */
+    if (e->is_strong) succ->pending_strong++;
+    else              succ->pending_weak++;
+  }
+  return id;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────────────────────────
+ * §15.6 Tarjan's SCC Algorithm — Find strongly connected components
+ *
+ * Standard O(V+E) algorithm for finding SCCs. Each SCC becomes a component
+ * that must be elaborated together (handles circular dependencies).
+ *
+ * Invariant: After completion, every vertex has a non-zero component_id.
+ * ────────────────────────────────────────────────────────────────────────────────────────────── */
+void Tarjan_Strongconnect (Elab_Graph *g, Tarjan_State *s, uint32_t v_id) {
+  Elab_Vertex *v = Elab_Get_Vertex (g, v_id);
+  if (not v) return;
+  v->tarjan_index = s->index;
+  v->tarjan_lowlink = s->index;
+  s->index++;
+
+  /* Push onto stack */
+  s->stack[s->stack_top++] = v_id;
+  v->tarjan_on_stack = true;
+
+  /* Visit all successors */
+  for (uint32_t e_id = v->first_succ_edge; e_id; ) {
+    const Elab_Edge *e = &g->edges[e_id - 1];
+    Elab_Vertex *w = Elab_Get_Vertex (g, e->succ_vertex_id);
+
+    /* Successor not yet visited */
+    if (w and w->tarjan_index < 0) {
+      Tarjan_Strongconnect (g, s, e->succ_vertex_id);
+      v->tarjan_lowlink = (v->tarjan_lowlink < w->tarjan_lowlink)
+                ? v->tarjan_lowlink : w->tarjan_lowlink;
+
+    /* Successor is on stack, part of current SCC */
+    } else if (w and w->tarjan_on_stack) {
+      v->tarjan_lowlink = (v->tarjan_lowlink < w->tarjan_index)
+                ? v->tarjan_lowlink : w->tarjan_index;
+    }
+    e_id = e->next_pred_edge;
+  }
+
+  /* If v is a root node, pop SCC from stack */
+  if (v->tarjan_lowlink == v->tarjan_index) {
+    uint32_t comp_id = ++g->component_count;
+    uint32_t w_id;
+    do {
+      w_id = s->stack[--s->stack_top];
+      Elab_Vertex *w = Elab_Get_Vertex (g, w_id);
+      if (w) {
+        w->tarjan_on_stack = false;
+        w->component_id = comp_id;
+      }
+    } while (w_id != v_id);
+  }
+}
+void Elab_Find_Components (Elab_Graph *g) {
+  Tarjan_State s = {.stack_top = 0, .index = 0};
+
+  /* Reset Tarjan state */
+  for (uint32_t i = 0; i < g->vertex_count; i++) {
+    g->vertices[i].tarjan_index = -1;
+    g->vertices[i].tarjan_lowlink = -1;
+    g->vertices[i].tarjan_on_stack = false;
+    g->vertices[i].component_id = 0;
+  }
+  g->component_count = 0;
+
+  /* Run Tarjan's algorithm */
+  for (uint32_t i = 1; i <= g->vertex_count; i++) {
+    if (g->vertices[i - 1].tarjan_index < 0) {
+      Tarjan_Strongconnect (g, &s, i);
+    }
+  }
+
+  /* Compute component-level predecessor counts */
+  memset (g->component_pending_strong, 0, sizeof (g->component_pending_strong));
+  memset (g->component_pending_weak, 0, sizeof (g->component_pending_weak));
+  for (uint32_t i = 0; i < g->edge_count; i++) {
+    const Elab_Edge *e = &g->edges[i];
+    const Elab_Vertex *pred = Elab_Get_Vertex_Const (g, e->pred_vertex_id);
+    const Elab_Vertex *succ = Elab_Get_Vertex_Const (g, e->succ_vertex_id);
+    if (pred and succ and pred->component_id != succ->component_id) {
+      uint32_t c = succ->component_id;
+      if (e->is_strong) g->component_pending_strong[c]++;
+      else              g->component_pending_weak[c]++;
+
+      /* Check for Elaborate_All edge in cycle (fatal) */
+      if (e->kind == EDGE_ELABORATE_ALL and
+        pred->component_id == succ->component_id) {
+        g->has_elaborate_all_cycle = true;
+      }
+    }
+  }
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────────────────────────
+ * §15.7 Vertex Predicates — Pure functions for elaboration decisions
+ *
+ * These predicates determine vertex eligibility and priority.
+ * All are pure (no side effects) for functional composition.
+ * ────────────────────────────────────────────────────────────────────────────────────────────── */
+
+/* Can this vertex be elaborated now? (all strong predecessors done) */
+bool Elab_Is_Elaborable (const Elab_Vertex *v) {
+  return v and not v->in_elab_order and v->pending_strong == 0;
+}
+
+/* Can this vertex be weakly elaborated? (only weak predecessors remain) */
+bool Elab_Is_Weakly_Elaborable (const Elab_Vertex *v) {
+  return v and not v->in_elab_order and
+       v->pending_strong == 0 and v->pending_weak > 0;
+}
+
+/* Does this spec vertex have an elaborable body? */
+bool Elab_Has_Elaborable_Body (const Elab_Graph *g,
+                      const Elab_Vertex *v) {
+  (void)g;  /* reserved for future use */
+  if (not v or v->kind != UNIT_SPEC) return false;
+  if (not v->body_vertex) return false;
+  if (v->has_elab_body) return true;  /* pragma Elaborate_Body forces it */
+  return Elab_Is_Elaborable (v->body_vertex);
+}
+
+/* Compare two vertices for elaboration priority.
+ * Returns PREC_HIGHER if a should elaborate before b.
+ * Per GNAT bindo-elaborators.adb Is_Better_Elaborable_Vertex. */
+Elab_Precedence Elab_Compare_Vertices (const Elab_Graph *g,
+                        const Elab_Vertex *a,
+                        const Elab_Vertex *b) {
+  (void)g;  /* reserved for future use */
+  if (not a or not b) return PREC_EQUAL;
+
+  /* 1. Prefer spec with Elaborate_Body before its paired body */
+  if (a->has_elab_body and b->spec_vertex == a) return PREC_HIGHER;
+  if (b->has_elab_body and a->spec_vertex == b) return PREC_LOWER;
+
+  /* 2. Prefer predefined units (Ada.*, System.*, Interfaces.*) */
+  if (a->is_predefined and not b->is_predefined) return PREC_HIGHER;
+  if (b->is_predefined and not a->is_predefined) return PREC_LOWER;
+
+  /* 3. Prefer internal units (GNAT.*) */
+  if (a->is_internal and not b->is_internal) return PREC_HIGHER;
+  if (b->is_internal and not a->is_internal) return PREC_LOWER;
+
+  /* 4. Prefer preelaborated units */
+  if (a->is_preelaborate and not b->is_preelaborate) return PREC_HIGHER;
+  if (b->is_preelaborate and not a->is_preelaborate) return PREC_LOWER;
+
+  /* 5. Prefer pure units */
+  if (a->is_pure and not b->is_pure) return PREC_HIGHER;
+  if (b->is_pure and not a->is_pure) return PREC_LOWER;
+
+  /* 6. Lexicographical tiebreaker for determinism */
+  size_t min_len = (a->name.length < b->name.length)
+           ? a->name.length : b->name.length;
+  int cmp = strncasecmp (a->name.data, b->name.data, min_len);
+  if (cmp < 0) return PREC_HIGHER;
+  if (cmp > 0) return PREC_LOWER;
+  if (a->name.length < b->name.length) return PREC_HIGHER;
+  if (a->name.length > b->name.length) return PREC_LOWER;
+  return PREC_EQUAL;
+}
+
+/* Compare for weak elaboration: prefer fewer weak predecessors */
+Elab_Precedence Elab_Compare_Weak (const Elab_Graph *g,
+                      const Elab_Vertex *a,
+                      const Elab_Vertex *b) {
+  if (not a or not b) return PREC_EQUAL;
+  if (a->pending_weak < b->pending_weak) return PREC_HIGHER;
+  if (a->pending_weak > b->pending_weak) return PREC_LOWER;
+  return Elab_Compare_Vertices (g, a, b);
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────────────────────────
+ * §15.8 Vertex Set Operations — Functional set manipulation
+ *
+ * Uses bitmap representation for O(1) membership testing.
+ * Pure functions that return new sets rather than mutating.
+ * ────────────────────────────────────────────────────────────────────────────────────────────── */
+Elab_Vertex_Set Elab_Set_Empty (void) {
+  return (Elab_Vertex_Set){0};
+}
+bool Elab_Set_Contains (const Elab_Vertex_Set *s, uint32_t id) {
+  if (id == 0 or id > ELAB_MAX_VERTICES) return false;
+  return (s->bits[(id - 1) / 64] >> ((id - 1) % 64)) & 1;
+}
+void Elab_Set_Insert (Elab_Vertex_Set *s, uint32_t id) {
+  if (id > 0 and id <= ELAB_MAX_VERTICES)
+    s->bits[(id - 1) / 64] |= (1ULL << ((id - 1) % 64));
+}
+void Elab_Set_Remove (Elab_Vertex_Set *s, uint32_t id) {
+  if (id > 0 and id <= ELAB_MAX_VERTICES)
+    s->bits[(id - 1) / 64] &= ~(1ULL << ((id - 1) % 64));
+}
+uint32_t Elab_Set_Size (const Elab_Vertex_Set *s) {
+  uint32_t count = 0;
+  for (int i = 0; i < (ELAB_MAX_VERTICES + 63) / 64; i++) {
+    uint64_t v = s->bits[i];
+    while (v) { count++; v &= v - 1; }  /* Brian Kernighan's trick */
+  }
+  return count;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────────────────────────
+ * §15.9 Best Vertex Selection — Find optimal elaboration candidate
+ *
+ * Scans a vertex set to find the best candidate using a comparator.
+ * Pure function with no side effects.
+ * ────────────────────────────────────────────────────────────────────────────────────────────── */
+typedef bool (*Elab_Vertex_Pred)(const Elab_Vertex *v);
+typedef Elab_Precedence (*Elab_Vertex_Cmp)(const Elab_Graph *,
+                       const Elab_Vertex *,
+                       const Elab_Vertex *);
+uint32_t Elab_Find_Best_Vertex (const Elab_Graph *g,
+                     const Elab_Vertex_Set *candidates,
+                     Elab_Vertex_Pred pred,
+                     Elab_Vertex_Cmp cmp) {
+  uint32_t best_id = 0;
+  const Elab_Vertex *best = NULL;
+  for (uint32_t i = 1; i <= g->vertex_count; i++) {
+    if (not Elab_Set_Contains (candidates, i)) continue;
+    const Elab_Vertex *v = &g->vertices[i - 1];
+    if (not pred(v)) continue;
+    if (not best or cmp(g, v, best) == PREC_HIGHER) {
+      best_id = i;
+      best = v;
+    }
+  }
+  return best_id;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────────────────────────
+ * §15.10 Elaboration Core — The main elaboration algorithm
+ *
+ * Implements the Standard elaboration loop:
+ *   1. Create elaborable/waiting vertex sets
+ *   2. Repeatedly find best elaborable vertex
+ *   3. Elaborate it and update successor counts
+ *   4. Handle weak elaboration for cycles
+ *
+ * Per bindo-elaborators.adb Elaborate_Library_Graph.
+ * ────────────────────────────────────────────────────────────────────────────────────────────── */
+
+/* Update successor when predecessor is elaborated */
+void Elab_Update_Successor (Elab_Graph *g, uint32_t edge_id,
+                   Elab_Vertex_Set *elaborable,
+                   Elab_Vertex_Set *waiting) {
+  Elab_Edge *e = (edge_id > 0 and edge_id <= g->edge_count)
+         ? &g->edges[edge_id - 1] : NULL;
+  if (not e) return;
+  Elab_Vertex *succ = Elab_Get_Vertex (g, e->succ_vertex_id);
+  Elab_Vertex *pred = Elab_Get_Vertex (g, e->pred_vertex_id);
+  if (not succ or not pred) return;
+
+  /* Decrement appropriate predecessor count */
+  if (e->is_strong and succ->pending_strong > 0)
+    succ->pending_strong--;
+  else if (not e->is_strong and succ->pending_weak > 0)
+    succ->pending_weak--;
+
+  /* Update component counts if cross-component edge */
+  if (pred->component_id != succ->component_id) {
+    uint32_t c = succ->component_id;
+    if (e->is_strong and g->component_pending_strong[c] > 0)
+      g->component_pending_strong[c]--;
+    else if (not e->is_strong and g->component_pending_weak[c] > 0)
+      g->component_pending_weak[c]--;
+  }
+
+  /* Move successor from waiting to elaborable if now ready */
+  if (Elab_Is_Elaborable (succ) and not succ->in_elab_order) {
+    Elab_Set_Remove (waiting, succ->id);
+    Elab_Set_Insert (elaborable, succ->id);
+
+    /* Also update complement (spec/body pair) */
+    Elab_Vertex *comp = succ->body_vertex ? succ->body_vertex
+              : succ->spec_vertex;
+    if (comp and Elab_Is_Elaborable (comp) and not comp->in_elab_order) {
+      Elab_Set_Remove (waiting, comp->id);
+      Elab_Set_Insert (elaborable, comp->id);
+    }
+  }
+}
+
+/* Elaborate a single vertex */
+void Elab_Elaborate_Vertex (Elab_Graph *g, uint32_t v_id,
+                   Elab_Vertex_Set *elaborable,
+                   Elab_Vertex_Set *waiting) {
+  Elab_Vertex *v = Elab_Get_Vertex (g, v_id);
+  if (not v or v->in_elab_order) return;
+
+  /* Mark as elaborated */
+  v->in_elab_order = true;
+  Elab_Set_Remove (elaborable, v_id);
+  Elab_Set_Remove (waiting, v_id);
+
+  /* Add to elaboration order */
+  if (g->order_count < ELAB_MAX_VERTICES)
+    g->order[g->order_count++] = v;
+
+  /* Update all successors */
+  for (uint32_t e_id = v->first_succ_edge; e_id; ) {
+    Elab_Edge *e = &g->edges[e_id - 1];
+    Elab_Update_Successor (g, e_id, elaborable, waiting);
+    e_id = e->next_pred_edge;
+  }
+
+  /* If this is a spec with Elaborate_Body, immediately elaborate the body */
+  if (v->has_elab_body and v->body_vertex and
+    not v->body_vertex->in_elab_order) {
+    Elab_Elaborate_Vertex (g, v->body_vertex->id, elaborable, waiting);
+  }
+
+  /* If this spec has an elaborable body, elaborate it too */
+  if (Elab_Has_Elaborable_Body (g, v)) {
+    Elab_Elaborate_Vertex (g, v->body_vertex->id, elaborable, waiting);
+  }
+}
+
+/* Main elaboration algorithm */
+Elab_Order_Status Elab_Elaborate_Graph (Elab_Graph *g) {
+
+  /* Initialize vertex sets */
+  Elab_Vertex_Set elaborable = Elab_Set_Empty ();
+  Elab_Vertex_Set waiting = Elab_Set_Empty ();
+  for (uint32_t i = 1; i <= g->vertex_count; i++) {
+    Elab_Vertex *v = &g->vertices[i - 1];
+    v->in_elab_order = false;
+    if (Elab_Is_Elaborable (v))
+      Elab_Set_Insert (&elaborable, i);
+    else
+      Elab_Set_Insert (&waiting, i);
+  }
+  g->order_count = 0;
+
+  /* Main elaboration loop */
+  /* Find best elaborable vertex */
+  while (Elab_Set_Size (&elaborable) > 0 or Elab_Set_Size (&waiting) > 0) {
+    uint32_t best_id = Elab_Find_Best_Vertex (
+      g, &elaborable, Elab_Is_Elaborable,
+      (Elab_Vertex_Cmp)Elab_Compare_Vertices);
+
+    /* If no strongly elaborable vertex, try weak elaboration */
+    if (best_id == 0) {
+      best_id = Elab_Find_Best_Vertex (
+        g, &waiting, Elab_Is_Weakly_Elaborable,
+        (Elab_Vertex_Cmp)Elab_Compare_Weak);
+    }
+
+    /* If still nothing, we have an unresolvable cycle */
+    if (best_id == 0) {
+      if (g->has_elaborate_all_cycle)
+        return ELAB_ORDER_HAS_ELABORATE_ALL_CYCLE;
+      return ELAB_ORDER_HAS_CYCLE;
+    }
+    Elab_Elaborate_Vertex (g, best_id, &elaborable, &waiting);
+  }
+  return ELAB_ORDER_OK;
+}
+
+/* Pair spec and body vertices after all vertices are added */
+void Elab_Pair_Specs_Bodies (Elab_Graph *g) {
+  for (uint32_t i = 0; i < g->vertex_count; i++) {
+    Elab_Vertex *v = &g->vertices[i];
+    if (v->kind != UNIT_SPEC) continue;
+
+    /* Find matching body */
+    for (uint32_t j = 0; j < g->vertex_count; j++) {
+      Elab_Vertex *b = &g->vertices[j];
+      if (b->kind != UNIT_BODY) continue;
+      if (b->name.length != v->name.length) continue;
+      if (strncasecmp (b->name.data, v->name.data, v->name.length) != 0)
+        continue;
+
+      /* Found the pair */
+      v->body_vertex = b;
+      b->spec_vertex = v;
+
+      /* Add spec-before-body edge */
+      Elab_Add_Edge (g, v->id, b->id, EDGE_SPEC_BEFORE_BODY);
+      break;
+    }
+  }
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────────────────────────
+ * §15.12 Elaboration Order API — Public interface
+ *
+ * These functions are called from the main driver (§19) and code generator
+ * (§13) to determine and use the elaboration order.
+ * ────────────────────────────────────────────────────────────────────────────────────────────── */
+
+/* Global elaboration graph (initialized during compilation) */
+Elab_Graph g_elab_graph;
+bool g_elab_graph_initialized = false;
+
+/* Initialize the global elaboration graph */
+void Elab_Init (void) {
+  if (not g_elab_graph_initialized) {
+    g_elab_graph = Elab_Graph_New ();
+    g_elab_graph_initialized = true;
+  }
+}
+
+/* Add a unit to the elaboration graph */
+uint32_t Elab_Register_Unit (String_Slice name, bool is_body,
+                  Symbol *sym, bool is_preelaborate,
+                  bool is_pure, bool has_elab_code) {
+  Elab_Init ();
+  Elab_Unit_Kind kind = is_body ? UNIT_BODY : UNIT_SPEC;
+  uint32_t id = Elab_Find_Vertex (&g_elab_graph, name, kind);
+  if (id == 0) {
+    id = Elab_Add_Vertex (&g_elab_graph, name, kind, sym);
+  }
+  Elab_Vertex *v = Elab_Get_Vertex (&g_elab_graph, id);
+  if (v) {
+    v->symbol = sym;
+    v->is_preelaborate = is_preelaborate;
+    v->is_pure = is_pure;
+    v->needs_elab_code = has_elab_code;
+  }
+  return id;
+}
+
+/* Compute the elaboration order (call after all units registered) */
+Elab_Order_Status Elab_Compute_Order (void) {
+  Elab_Init ();
+
+  /* Pair specs with their bodies */
+  Elab_Pair_Specs_Bodies (&g_elab_graph);
+
+  /* Find strongly connected components */
+  Elab_Find_Components (&g_elab_graph);
+
+  /* Compute elaboration order */
+  return Elab_Elaborate_Graph (&g_elab_graph);
+}
+
+/* Get the computed elaboration order */
+uint32_t Elab_Get_Order_Count (void) {
+  return g_elab_graph.order_count;
+}
+Symbol *Elab_Get_Order_Symbol(uint32_t index) {
+  if (index >= g_elab_graph.order_count) return NULL;
+  const Elab_Vertex *v = g_elab_graph.order[index];
+  return v ? v->symbol : NULL;
+}
+bool Elab_Needs_Elab_Call (uint32_t index) {
+  if (index >= g_elab_graph.order_count) return false;
+  const Elab_Vertex *v = g_elab_graph.order[index];
+  if (not v) return false;
+
+  /* Pure units never need elaboration calls */
+  if (v->is_pure) return false;
+
+  /* Preelaborate units without explicit elab code don't need calls */
+  if (v->is_preelaborate and not v->needs_elab_code) return false;
+
+  /* Only bodies generate __elab functions */
+  return v->kind == UNIT_BODY or v->kind == UNIT_BODY_ONLY;
+}
+
+/* ═════════════════════════════════════════════════════════════════════════════════════════════════
+ * §16. GENERIC EXPANSION - Macro-style instantiation
+ * ═════════════════════════════════════════════════════════════════════════════════════════════════
+ *
+ * Generics via macro expansion:
+ *   1. Parse generic declaration > store template AST
+ *   2. On instantiation: clone template, substitute actuals
+ *   3. Analyze cloned tree with actual types
+ *   4. Generate code for each instantiation separately
+ *
+ * Key insight: We do NOT share code between instantiations. Each instance
+ * gets its own copy with types fully substituted.
+ */
+
+/* ─────────────────────────────────────────────────────────────────────────────────────────────────
+ * §16.1 Instantiation_Env — Formal-to-actual mapping
+ *
+ * Instead of mutating nodes, we carry substitution environment through.
+ * ────────────────────────────────────────────────────────────────────────────────────────────── */
+
+/* ─────────────────────────────────────────────────────────────────────────────────────────────────
+ * §16.2 Instantiation_Env helpers
+ * ────────────────────────────────────────────────────────────────────────────────────────────── */
+Type_Info *Env_Lookup_Type (Instantiation_Env *env, String_Slice name) {
+  for (uint32_t i = 0; i < env->count; i++) {
+    if (Slice_Equal_Ignore_Case (env->mappings[i].formal_name, name))
+      return env->mappings[i].actual_type;
+  }
+  return NULL;
+}
+Syntax_Node *Env_Lookup_Expr (Instantiation_Env *env, String_Slice name) {
+  for (uint32_t i = 0; i < env->count; i++) {
+    if (Slice_Equal_Ignore_Case (env->mappings[i].formal_name, name))
+      return env->mappings[i].actual_expr;
+  }
+  return NULL;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────────────────────────
+ * §16.3 Node_Deep_Clone — Deep copy with environment substitution
+ *
+ * Unlike the existing node_clone_substitute, this:
+ *   • ALWAYS allocates new nodes (no aliasing)
+ *   • Uses recursion depth tracking with proper error
+ *   • Carries environment for type substitution
+ * ────────────────────────────────────────────────────────────────────────────────────────────── */
+Syntax_Node *Node_Deep_Clone (Syntax_Node *node, Instantiation_Env *env,
+                  int depth);
+
+/* Clone a node list */
+void Node_List_Clone (Node_List *dst, Node_List *src,
+              Instantiation_Env *env, int depth) {
+  dst->count = 0;
+  dst->capacity = 0;
+  dst->items = NULL;
+  for (uint32_t i = 0; i < src->count; i++) {
+    Syntax_Node *cloned = Node_Deep_Clone (src->items[i], env, depth);
+    Node_List_Push (dst, cloned);
+  }
+}
+Syntax_Node *Node_Deep_Clone (Syntax_Node *node, Instantiation_Env *env,
+                  int depth) {
+  if (not node) return NULL;
+
+  /* Depth limit with REAL error, not silent aliasing */
+  if (depth > 500) {
+    Report_Error (node->location, "generic instantiation too deeply nested");
+    return NULL;
+  }
+
+  /* Allocate fresh node */
+  Syntax_Node *n = Arena_Allocate (sizeof (Syntax_Node));
+  memset (n, 0, sizeof (Syntax_Node));  /* Zero-init ALL fields */
+  n->kind = node->kind;
+  n->location = node->location;
+  n->type = node->type;
+  n->symbol = NULL;  /* Symbols will be re-resolved */
+
+  /* Substitute generic formal types throughout the cloned tree.
+   * When a node carries a TYPE_PRIVATE/TYPE_LIMITED_PRIVATE type whose
+   * name matches a generic formal parameter, replace it with the actual
+   * type.  This ensures that expressions, declarations, and statements
+   * all use the concrete type (e.g., FLOAT) rather than the opaque
+   * formal type (e.g., ELEMENT_TYPE). */
+  if (env and n->type and Type_Is_Private (n->type) and n->type->name.data) {
+    Type_Info *subst = Env_Lookup_Type (env, n->type->name);
+    if (subst) n->type = subst;
+  }
+  switch (node->kind) {
+    case NK_IDENTIFIER:
+
+      /* Check for expression substitution (formal object parameters) */
+      if (env) {
+        Syntax_Node *expr_subst = Env_Lookup_Expr (env, node->string_val.text);
+
+        /* Return a clone of the actual expression instead.
+        * The 'n' node becomes garbage but arena will reclaim it. */
+        if (expr_subst) {
+          return Node_Deep_Clone (expr_subst, env, depth + 1);
+        }
+      }
+      n->string_val = node->string_val;
+
+      /* Check for type substitution */
+      if (env) {
+        Type_Info *subst = Env_Lookup_Type (env, node->string_val.text);
+        if (subst) n->type = subst;
+      }
+      break;
+    case NK_INTEGER:
+      n->integer_lit = node->integer_lit;
+      break;
+    case NK_REAL:
+      n->real_lit = node->real_lit;
+      break;
+    case NK_STRING:
+    case NK_CHARACTER:
+      n->string_val = node->string_val;
+      break;
+    case NK_BINARY_OP:
+      n->binary.op = node->binary.op;
+      n->binary.left = Node_Deep_Clone (node->binary.left, env, depth + 1);
+      n->binary.right = Node_Deep_Clone (node->binary.right, env, depth + 1);
+      break;
+    case NK_UNARY_OP:
+      n->unary.op = node->unary.op;
+      n->unary.operand = Node_Deep_Clone (node->unary.operand, env, depth + 1);
+      break;
+    case NK_ATTRIBUTE:
+      n->attribute.prefix = Node_Deep_Clone (node->attribute.prefix, env, depth + 1);
+      n->attribute.name = node->attribute.name;
+      Node_List_Clone (&n->attribute.arguments, &node->attribute.arguments, env, depth + 1);
+      break;
+    case NK_APPLY:
+      n->apply.prefix = Node_Deep_Clone (node->apply.prefix, env, depth + 1);
+      Node_List_Clone (&n->apply.arguments, &node->apply.arguments, env, depth + 1);
+      break;
+    case NK_SELECTED:
+      n->selected.prefix = Node_Deep_Clone (node->selected.prefix, env, depth + 1);
+      n->selected.selector = node->selected.selector;  /* String_Slice, not a node */
+      break;
+    case NK_AGGREGATE:
+      Node_List_Clone (&n->aggregate.items, &node->aggregate.items, env, depth + 1);
+      n->aggregate.is_named = node->aggregate.is_named;
+      break;
+    case NK_ASSOCIATION:
+      Node_List_Clone (&n->association.choices, &node->association.choices, env, depth + 1);
+      n->association.expression = Node_Deep_Clone (node->association.expression, env, depth + 1);
+      break;
+    case NK_RANGE:
+      n->range.low = Node_Deep_Clone (node->range.low, env, depth + 1);
+      n->range.high = Node_Deep_Clone (node->range.high, env, depth + 1);
+      break;
+    case NK_OBJECT_DECL:
+      Node_List_Clone (&n->object_decl.names, &node->object_decl.names, env, depth + 1);
+      n->object_decl.object_type = Node_Deep_Clone (node->object_decl.object_type, env, depth + 1);
+      n->object_decl.init = Node_Deep_Clone (node->object_decl.init, env, depth + 1);
+      n->object_decl.is_constant = node->object_decl.is_constant;
+      n->object_decl.is_rename = node->object_decl.is_rename;
+      break;
+    case NK_TYPE_DECL:
+    case NK_SUBTYPE_DECL:
+      n->type_decl.name = node->type_decl.name;
+      n->type_decl.definition = Node_Deep_Clone (node->type_decl.definition, env, depth + 1);
+      Node_List_Clone (&n->type_decl.discriminants, &node->type_decl.discriminants, env, depth + 1);
+      break;
+    case NK_PROCEDURE_BODY:
+    case NK_FUNCTION_BODY:
+      n->subprogram_body.specification = Node_Deep_Clone (node->subprogram_body.specification, env, depth + 1);
+      Node_List_Clone (&n->subprogram_body.declarations, &node->subprogram_body.declarations, env, depth + 1);
+      Node_List_Clone (&n->subprogram_body.statements, &node->subprogram_body.statements, env, depth + 1);
+      Node_List_Clone (&n->subprogram_body.handlers, &node->subprogram_body.handlers, env, depth + 1);
+      n->subprogram_body.is_separate = node->subprogram_body.is_separate;
+      break;
+    case NK_PROCEDURE_SPEC:
+    case NK_FUNCTION_SPEC:
+      n->subprogram_spec.name = node->subprogram_spec.name;
+      Node_List_Clone (&n->subprogram_spec.parameters, &node->subprogram_spec.parameters, env, depth + 1);
+      n->subprogram_spec.return_type = Node_Deep_Clone (node->subprogram_spec.return_type, env, depth + 1);
+      n->subprogram_spec.renamed = Node_Deep_Clone (node->subprogram_spec.renamed, env, depth + 1);
+      break;
+    case NK_PARAM_SPEC:
+      Node_List_Clone (&n->param_spec.names, &node->param_spec.names, env, depth + 1);
+      n->param_spec.mode = node->param_spec.mode;
+      n->param_spec.param_type = Node_Deep_Clone (node->param_spec.param_type, env, depth + 1);
+      n->param_spec.default_expr = Node_Deep_Clone (node->param_spec.default_expr, env, depth + 1);
+      break;
+    case NK_PACKAGE_SPEC:
+      n->package_spec.name = node->package_spec.name;
+      Node_List_Clone (&n->package_spec.visible_decls, &node->package_spec.visible_decls, env, depth + 1);
+      Node_List_Clone (&n->package_spec.private_decls, &node->package_spec.private_decls, env, depth + 1);
+      break;
+    case NK_PACKAGE_BODY:
+      n->package_body.name = node->package_body.name;
+      Node_List_Clone (&n->package_body.declarations, &node->package_body.declarations, env, depth + 1);
+      Node_List_Clone (&n->package_body.statements, &node->package_body.statements, env, depth + 1);
+      Node_List_Clone (&n->package_body.handlers, &node->package_body.handlers, env, depth + 1);
+      break;
+    case NK_ASSIGNMENT:
+    case NK_CALL_STMT:  /* Reuses assignment.target field */
+      n->assignment.target = Node_Deep_Clone (node->assignment.target, env, depth + 1);
+      n->assignment.value = Node_Deep_Clone (node->assignment.value, env, depth + 1);
+      break;
+    case NK_IF:
+      n->if_stmt.condition = Node_Deep_Clone (node->if_stmt.condition, env, depth + 1);
+      Node_List_Clone (&n->if_stmt.then_stmts, &node->if_stmt.then_stmts, env, depth + 1);
+      Node_List_Clone (&n->if_stmt.elsif_parts, &node->if_stmt.elsif_parts, env, depth + 1);
+      Node_List_Clone (&n->if_stmt.else_stmts, &node->if_stmt.else_stmts, env, depth + 1);
+      break;
+    case NK_LOOP:
+      n->loop_stmt.label = node->loop_stmt.label;
+      n->loop_stmt.iteration_scheme = Node_Deep_Clone (node->loop_stmt.iteration_scheme, env, depth + 1);
+      Node_List_Clone (&n->loop_stmt.statements, &node->loop_stmt.statements, env, depth + 1);
+      n->loop_stmt.is_reverse = node->loop_stmt.is_reverse;
+      break;
+    case NK_RETURN:
+      n->return_stmt.expression = Node_Deep_Clone (node->return_stmt.expression, env, depth + 1);
+      break;
+    case NK_BLOCK:
+      n->block_stmt.label = node->block_stmt.label;
+      Node_List_Clone (&n->block_stmt.declarations, &node->block_stmt.declarations, env, depth + 1);
+      Node_List_Clone (&n->block_stmt.statements, &node->block_stmt.statements, env, depth + 1);
+      Node_List_Clone (&n->block_stmt.handlers, &node->block_stmt.handlers, env, depth + 1);
+      break;
+    case NK_CASE:
+      n->case_stmt.expression = Node_Deep_Clone (node->case_stmt.expression, env, depth + 1);
+      Node_List_Clone (&n->case_stmt.alternatives, &node->case_stmt.alternatives, env, depth + 1);
+      break;
+    case NK_EXIT:
+      n->exit_stmt.loop_name = node->exit_stmt.loop_name;
+      n->exit_stmt.condition = Node_Deep_Clone (node->exit_stmt.condition, env, depth + 1);
+      break;
+    case NK_NULL_STMT:
+    case NK_OTHERS:
+
+      /* No fields to copy */
+      break;
+    default:
+
+      /* For node kinds not explicitly handled, do shallow copy.
+       * This is safer than the original which returned aliased nodes. */
+      *n = *node;
+      n->symbol = NULL;
+      break;
+  }
+  return n;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────────────────────────
+ * §16.4 Build_Instantiation_Env — Create mapping from formals to actuals
+ * ────────────────────────────────────────────────────────────────────────────────────────────── */
+void Build_Instantiation_Env (Instantiation_Env *env,
+                  Symbol *template_sym,
+                  Symbol *instance_sym) {
+  (void)sm;  /* reserved for future use */
+  env->count = 0;
+  env->template_sym = template_sym;
+  env->instance_sym = instance_sym;
+  if (not template_sym or not template_sym->declaration) return;
+  Syntax_Node *gen_decl = template_sym->declaration;
+  if (gen_decl->kind != NK_GENERIC_DECL) return;
+  Node_List *formals = &gen_decl->generic_decl.formals;
+
+  /* Use pre-resolved actuals from instance symbol */
+  for (uint32_t i = 0; i < instance_sym->generic_actual_count and i < 32; i++) {
+    Generic_Mapping *m = &env->mappings[env->count++];
+    m->formal_name = instance_sym->generic_actuals[i].formal_name;
+    m->actual_type = instance_sym->generic_actuals[i].actual_type;
+    m->actual_symbol = NULL;
+    m->actual_expr = NULL;
+
+    /* For object/subprogram formals, populate additional fields */
+    if (i < formals->count) {
+      Syntax_Node *formal = formals->items[i];
+
+      /* Store expression for object formals */
+      if (formal->kind == NK_GENERIC_OBJECT_PARAM) {
+        m->actual_expr = instance_sym->generic_actuals[i].actual_expr;
+
+      /* Store actual subprogram symbol for substitution during clone */
+      } else if (formal->kind == NK_GENERIC_SUBPROGRAM_PARAM) {
+        m->actual_symbol = instance_sym->generic_actuals[i].actual_subprogram;
+      }
+    }
+  }
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────────────────────────
+ * §16.5 Expand_Generic_Package — Full instantiation of generic package
+ *
+ *   1. Clone the package spec with type substitutions
+ *   2. Clone the package body (if found)
+ *   3. Resolve cloned trees with actual types
+ *   4. Store expanded body for code generation
+ * ────────────────────────────────────────────────────────────────────────────────────────────── */
+void Expand_Generic_Package (Symbol *instance_sym) {
+  if (not instance_sym or not instance_sym->generic_template) return;
+  Symbol *template = instance_sym->generic_template;
+  if (not template->generic_unit) return;
+
+  /* Build substitution environment */
+  Instantiation_Env env;
+  Build_Instantiation_Env (&env, template, instance_sym);
+
+  /* Clone the package spec */
+  Syntax_Node *spec_clone = Node_Deep_Clone (template->generic_unit, &env, 0);
+
+  /* Rename to instance name */
+  if (spec_clone) {
+    if (spec_clone->kind == NK_PACKAGE_SPEC) {
+      spec_clone->package_spec.name = instance_sym->name;
+    }
+
+    /* Store for later processing */
+    instance_sym->expanded_spec = spec_clone;
+  }
+
+  /* Try to find and clone the package body */
+  String_Slice pkg_name = template->generic_unit->kind == NK_PACKAGE_SPEC ?
+              template->generic_unit->package_spec.name :
+              template->name;
+  char *body_src = Lookup_Path_Body (pkg_name);
+
+  /* Parse the body — arena-allocate filename for Source_Location stability */
+  if (body_src) {
+    size_t bfn_len = pkg_name.length + 4;
+    char *body_filename = Arena_Allocate (bfn_len + 1);
+    snprintf (body_filename, bfn_len + 1, "%.*s.adb",
+         (int)pkg_name.length, pkg_name.data);
+    Parser body_parser = Parser_New (body_src, strlen (body_src), body_filename);
+    Syntax_Node *body_cu = Parse_Compilation_Unit (&body_parser);
+    if (body_cu and body_cu->compilation_unit.unit and
+      body_cu->compilation_unit.unit->kind == NK_PACKAGE_BODY) {
+
+      /* Clone with substitutions */
+      Syntax_Node *body_clone = Node_Deep_Clone (
+        body_cu->compilation_unit.unit, &env, 0);
+
+      /* Rename to instance name */
+      if (body_clone) {
+        body_clone->package_body.name = instance_sym->name;
+
+        /* Store expanded body */
+        instance_sym->expanded_body = body_clone;
+      }
+    }
+  }
+}
+
+char *Read_File(const char *path, size_t *out_size) {
+  FILE *f = fopen (path, "rb");
+  if (not f) return NULL;
+  fseek (f, 0, SEEK_END);
+  long fsize = ftell (f);
+  if (fsize < 0) { fclose (f); return NULL; }
+  size_t size = (size_t)fsize;
+  fseek (f, 0, SEEK_SET);
+  char *buffer = malloc (size + 1);
+  if (not buffer) { fclose (f); return NULL; }
+  size_t read = fread (buffer, 1, size, f);
+  fclose (f);
+  buffer[read] = '\0';
+  *out_size = read;
+  return buffer;
+}
+
+char *Read_File_Simple(const char *path) {
+  FILE *f = fopen (path, "rb");
+  if (not f) return NULL;
+  fseek (f, 0, SEEK_END);
+  long fsize = ftell (f);
+  if (fsize < 0) { fclose (f); return NULL; }
+  size_t size = (size_t)fsize;
+  fseek (f, 0, SEEK_SET);
+  char *buffer = malloc (size + 1);
+  if (not buffer) { fclose (f); return NULL; }
+  size_t read_size = fread (buffer, 1, size, f);
+  fclose (f);
+  buffer[read_size] = '\0';
+  return buffer;
+}
+
+/* Find a package source file in include paths */
+char *Lookup_Path(String_Slice name) {
+  char path[512], full_path[520];  /* full_path larger for .ads extension */
+
+  /* Build lowercase filename */
+  for (uint32_t i = 0; i < Include_Path_Count; i++) {
+    size_t base_len = strlen (Include_Paths[i]);
+    snprintf (path, sizeof (path), "%s%s%.*s",
+         Include_Paths[i],
+         (base_len > 0 and Include_Paths[i][base_len-1] != '/') ? "/" : "",
+         (int)name.length, name.data);
+
+    /* Lowercase the filename part */
+    for (char *cursor = path + base_len; *cursor; cursor++) {
+      if (*cursor >= 'A' and *cursor <= 'Z') *cursor = *cursor - 'A' + 'a';
+    }
+
+    /* Try .ads extension */
+    snprintf (full_path, sizeof (full_path), "%s.ads", path);
+    char *src = Read_File_Simple (full_path);
+    if (src) return src;
+
+    /* Try .ada extension (ACATS naming convention) */
+    snprintf (full_path, sizeof (full_path), "%s.ada", path);
+    src = Read_File_Simple (full_path);
+    if (src) return src;
+  }
+  return NULL;
+}
+
+/* Check if a precompiled .ll file exists for a package in include paths */
+bool Has_Precompiled_LL (String_Slice name) {
+  char path[512], full_path[520];
+  for (uint32_t i = 0; i < Include_Path_Count; i++) {
+    size_t base_len = strlen (Include_Paths[i]);
+    snprintf (path, sizeof (path), "%s%s%.*s",
+         Include_Paths[i],
+         (base_len > 0 and Include_Paths[i][base_len-1] != '/') ? "/" : "",
+         (int)name.length, name.data);
+    for (char *cursor = path + base_len; *cursor; cursor++) {
+      if (*cursor >= 'A' and *cursor <= 'Z') *cursor = *cursor - 'A' + 'a';
+    }
+    snprintf (full_path, sizeof (full_path), "%s.ll", path);
+    FILE *f = fopen (full_path, "r");
+    if (f) { fclose (f); return true; }
+  }
+  return false;
+}
+
+/* Find a package body source file in include paths */
+char *Lookup_Path_Body (String_Slice name) {
+  char path[512], full_path[520];
+  for (uint32_t i = 0; i < Include_Path_Count; i++) {
+    size_t base_len = strlen (Include_Paths[i]);
+    snprintf (path, sizeof (path), "%s%s%.*s",
+         Include_Paths[i],
+         (base_len > 0 and Include_Paths[i][base_len-1] != '/') ? "/" : "",
+         (int)name.length, name.data);
+
+    /* Lowercase the filename part */
+    for (char *cursor = path + base_len; *cursor; cursor++) {
+      if (*cursor >= 'A' and *cursor <= 'Z') *cursor = *cursor - 'A' + 'a';
+    }
+
+    /* Try .adb extension */
+    snprintf (full_path, sizeof (full_path), "%s.adb", path);
+    char *src = Read_File_Simple (full_path);
+    if (src) return src;
+
+    /* Try .ada extension (ACATS uses .ada for both specs and bodies) */
+    snprintf (full_path, sizeof (full_path), "%s.ada", path);
+    src = Read_File_Simple (full_path);
+    if (src) return src;
+  }
+  return NULL;
+}
+/* ─────────────────────────────────────────────────────────────────────────────────────────────────
+ * §17. FILE LOADING — Include Path and Unit Loading
+ *
+ * Resolves Ada WITH clauses by searching include paths for source files,
+ * loading package specs/bodies on demand, and tracking which units have
+ * already been loaded to avoid duplicate processing.
+ * ────────────────────────────────────────────────────────────────────────────────────────────── */
+
+const char     *Include_Paths[32];
+uint32_t        Include_Path_Count        = 0;
+
+/* Track loaded package bodies for code generation */
+Syntax_Node    *Loaded_Package_Bodies[128];
+int             Loaded_Body_Count          = 0;
+
+/* Track which package bodies have already been loaded (to avoid duplicates) */
+String_Slice    Loaded_Body_Names[128];
+int             Loaded_Body_Names_Count    = 0;
+bool Body_Already_Loaded (String_Slice name) {
+  for (int i = 0; i < Loaded_Body_Names_Count; i++) {
+    if (Loaded_Body_Names[i].length == name.length and
+      strncasecmp (Loaded_Body_Names[i].data, name.data, name.length) == 0) {
+      return true;
+    }
+  }
+  return false;
+}
+void Mark_Body_Loaded (String_Slice name) {
+  if (Loaded_Body_Names_Count < 128) {
+    Loaded_Body_Names[Loaded_Body_Names_Count++] = name;
+  }
+}
+
+Loading_Set Loading_Packages = {0};
+bool Loading_Set_Contains (String_Slice name) {
+  for (int i = 0; i < Loading_Packages.count; i++) {
+    if (Loading_Packages.names[i].length == name.length and
+      strncasecmp (Loading_Packages.names[i].data, name.data, name.length) == 0) {
+      return true;
+    }
+  }
+  return false;
+}
+void Loading_Set_Add (String_Slice name) {
+  if (Loading_Packages.count < 64) {
+    Loading_Packages.names[Loading_Packages.count++] = name;
+  }
+}
+void Loading_Set_Remove (String_Slice name) {
+  for (int i = 0; i < Loading_Packages.count; i++) {
+    if (Loading_Packages.names[i].length == name.length and
+      strncasecmp (Loading_Packages.names[i].data, name.data, name.length) == 0) {
+
+      /* Swap with last and decrement count */
+      Loading_Packages.names[i] = Loading_Packages.names[--Loading_Packages.count];
+      return;
+    }
+  }
+}
+
+/* Forward declarations for functions defined after Load_Package_Spec */
+char *Lookup_Path      (String_Slice name);
+bool  Has_Precompiled_LL (String_Slice name);
+char *Lookup_Path_Body (String_Slice name);
+
+/* Find ALI file for a unit name in include paths */
+char *ALI_Find (String_Slice unit_name) {
+  static char path_buf[512];
+  char        file_buf[256];
+
+  /* Convert unit name to file name (lowercase, dots to hyphens) */
+  size_t pos = 0;
+  for (size_t i = 0; i < unit_name.length and pos < sizeof (file_buf) - 5; i++) {
+    char ch = unit_name.data[i];
+    if (ch == '.')                       file_buf[pos++] = '-';
+    else if (ch >= 'A' and ch <= 'Z')   file_buf[pos++] = ch - 'A' + 'a';
+    else                                 file_buf[pos++] = ch;
+  }
+  file_buf[pos] = '\0';
+
+  /* Try each include path */
+  for (uint32_t i = 0; i < Include_Path_Count; i++) {
+    snprintf (path_buf, sizeof (path_buf), "%s/%s.ali", Include_Paths[i], file_buf);
+    if (access (path_buf, R_OK) == 0) {
+      return path_buf;
+    }
+  }
+  return NULL;
+}
+
+/* Load symbols from an ALI file into the symbol manager */
+void ALI_Load_Symbols (ALI_Cache_Entry *entry) {
+  if (not entry or entry->loaded) return;
+  entry->loaded = true;
+
+  /* Recursively load dependencies first */
+  for (uint32_t i = 0; i < entry->with_count; i++) {
+    char *dep_ali = ALI_Find ((String_Slice){entry->withs[i], strlen (entry->withs[i])});
+    if (dep_ali) {
+      ALI_Cache_Entry *dep = ALI_Read (dep_ali);
+      if (dep) ALI_Load_Symbols (dep);
+    }
+  }
+
+  /* For specs, create package symbol and exports */
+  if (not entry->is_spec or entry->export_count == 0) return;
+  String_Slice pkg_name = {entry->unit_name, strlen (entry->unit_name)};
+
+  /* Check if package already exists */
+  Symbol *pkg_sym = Symbol_Find (pkg_name);
+  if (pkg_sym) return;
+
+  /* Create package symbol */
+  Source_Location loc = {entry->source_file, 1, 1};
+  pkg_sym = Symbol_New (SYMBOL_PACKAGE, pkg_name, loc);
+  pkg_sym->type = Type_New (TYPE_PACKAGE, pkg_name);
+  Symbol_Add (pkg_sym);
+
+  /* Allocate exported array for qualified access */
+  if (entry->export_count > 0) {
+    pkg_sym->exported = Arena_Allocate (entry->export_count * sizeof (Symbol*));
+    pkg_sym->exported_count = 0;
+  }
+
+  /* Push package scope to add exports */
+  Symbol_Manager_Push_Scope (pkg_sym);
+
+  /* Create symbols from exports
+   *
+   * The mangled_name from ALI becomes external_name on Symbol,
+   * enabling direct LLVM references without re-mangling.
+   */
+  for (uint32_t i = 0; i < entry->export_count; i++) {
+    ALI_Export *exp = &entry->exports[i];
+    String_Slice name = {exp->name, strlen (exp->name)};
+    String_Slice mangled = exp->mangled_name ?
+      (String_Slice){exp->mangled_name, strlen (exp->mangled_name)} : (String_Slice){0};
+    Source_Location exp_loc = {entry->source_file, exp->line, 1};
+    Symbol *sym = NULL;
+    switch (exp->kind) {
+
+      /* Type: create type symbol with size derived from exported LLVM type.
+      * Type_New defaults to 4 bytes (i32) which is wrong for smaller
+      * types like 3-value enumerations (i8).  Use the LLVM type
+      * signature from the ALI export to set the correct size so that
+      * cross-compilation-unit type widths are consistent. */
+      case 'T': {
+        sym = Symbol_New (SYMBOL_TYPE, name, exp_loc);
+        Type_Info *exported_type = Type_New (TYPE_INTEGER, name);
+        if (exp->llvm_type and exp->llvm_type[0] == 'i') {
+          int bits = atoi (exp->llvm_type + 1);
+          if (bits > 0) exported_type->size = (bits + 7) / 8;
+        }
+        sym->type = exported_type;
+        break;
+      }
+
+      /* Subtype: link to base type */
+      case 'S': {
+        sym = Symbol_New (SYMBOL_SUBTYPE, name, exp_loc);
+        if (exp->type_name) {
+          String_Slice base = {exp->type_name, strlen (exp->type_name)};
+          Symbol *base_sym = Symbol_Find (base);
+          sym->type = base_sym ? base_sym->type : Type_New (TYPE_INTEGER, base);
+        } else {
+          sym->type = Type_New (TYPE_INTEGER, name);
+        }
+        break;
+      }
+
+      /* Variable: external reference */
+      case 'V': {
+        sym = Symbol_New (SYMBOL_VARIABLE, name, exp_loc);
+        sym->is_imported    = true;
+        sym->external_name  = mangled;
+        if (exp->type_name) {
+          String_Slice type_slice = {exp->type_name, strlen (exp->type_name)};
+          Symbol      *type_sym  = Symbol_Find (type_slice);
+          sym->type = type_sym ? type_sym->type : Type_New (TYPE_INTEGER, type_slice);
+        }
+        break;
+      }
+
+      /* Constant: external reference */
+      case 'C': {
+        sym = Symbol_New (SYMBOL_CONSTANT, name, exp_loc);
+        sym->is_imported    = true;
+        sym->external_name  = mangled;
+        if (exp->type_name) {
+          String_Slice type_slice = {exp->type_name, strlen (exp->type_name)};
+          Symbol      *type_sym  = Symbol_Find (type_slice);
+          sym->type = type_sym ? type_sym->type : Type_New (TYPE_INTEGER, type_slice);
+        }
+        break;
+      }
+
+      /* Procedure: external subprogram declaration */
+      case 'P': {
+        sym = Symbol_New (SYMBOL_PROCEDURE, name, exp_loc);
+        sym->is_imported      = true;
+        sym->external_name    = mangled;
+        sym->parameter_count  = exp->param_count;
+        break;
+      }
+
+      /* Function: external subprogram declaration */
+      case 'F': {
+        sym = Symbol_New (SYMBOL_FUNCTION, name, exp_loc);
+        sym->is_imported      = true;
+        sym->external_name    = mangled;
+        sym->parameter_count  = exp->param_count;
+        if (exp->type_name) {
+          String_Slice type_slice = {exp->type_name, strlen (exp->type_name)};
+          Symbol      *type_sym  = Symbol_Find (type_slice);
+          sym->return_type = type_sym ? type_sym->type : Type_New (TYPE_INTEGER, type_slice);
+          sym->type        = sym->return_type;
+        }
+        break;
+      }
+
+      /* Exception: external exception identity */
+      case 'E': {
+        sym = Symbol_New (SYMBOL_EXCEPTION, name, exp_loc);
+        sym->is_imported    = true;
+        sym->external_name  = mangled;
+        break;
+      }
+    }
+    if (sym) {
+      sym->parent = pkg_sym;  /* Set parent for proper scoping */
+      Symbol_Add (sym);
+
+      /* Also add to package exported list for qualified access */
+      if (pkg_sym->exported_count < 256) {
+        pkg_sym->exported[pkg_sym->exported_count++] = sym;
+      }
+    }
+  }
+  Symbol_Manager_Pop_Scope ();
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────────────────────────
+ * §17.1 ALI-Based Loading
+ *
+ * Try_Load_From_ALI is called by Load_Package_Spec to attempt fast loading
+ * from a pre-existing ALI file, bypassing full source parsing when the
+ * source checksum matches.
+ * ────────────────────────────────────────────────────────────────────────────────────────────── */
+
+/* Try_Load_From_ALI — Called by Load_Package_Spec to attempt ALI-based loading
+ *
+ * This is the entry point for ALI-based separate compilation:
+ *   1. Look for ALI file in include paths
+ *   2. Verify checksum against source
+ *   3. Load symbols directly from ALI X lines
+ *
+ * Returns true if successful (caller should skip parsing).
+ */
+bool Try_Load_From_ALI (String_Slice name) {
+  char *ali_path = ALI_Find (name);
+  if (not ali_path) return false;
+
+  /* Build source path from unit name */
+  char source_file[256];
+  size_t pos = 0;
+  for (size_t i = 0; i < name.length and pos < sizeof (source_file) - 5; i++) {
+    char ch = name.data[i];
+    if (ch == '.')                       source_file[pos++] = '-';
+    else if (ch >= 'A' and ch <= 'Z')   source_file[pos++] = ch - 'A' + 'a';
+    else                                 source_file[pos++] = ch;
+  }
+  strcpy (source_file + pos, ".ads");
+
+  /* Find full source path in include paths */
+  char full_source_path[512] = {0};
+  for (uint32_t i = 0; i < Include_Path_Count; i++) {
+    snprintf (full_source_path, sizeof (full_source_path), "%s/%s",
+         Include_Paths[i], source_file);
+    if (access (full_source_path, R_OK) == 0) break;
+    full_source_path[0] = '\0';
+  }
+  if (not full_source_path[0]) return false;
+
+  /* Check if ALI is current */
+  if (not ALI_Is_Current (ali_path, full_source_path)) {
+    return false;  /* Stale - need to recompile */
+  }
+
+  /* Read ALI and check for exports */
+  ALI_Cache_Entry *entry = ALI_Read (ali_path);
+  if (not entry or entry->export_count == 0) return false;
+
+  /* Load symbols from ALI */
+  ALI_Load_Symbols (entry);
+  return true;
+}
+
+/* Load and resolve a package specification */
+void Load_Package_Spec (String_Slice name, char *src) {
+  if (not src) return;
+
+  /* Check if already loaded */
+  Symbol *existing = Symbol_Find (name);
+  if (existing and existing->kind == SYMBOL_PACKAGE and existing->declaration) {
+    return;  /* Already loaded */
+  }
+
+  /* Check for circular dependency (package currently being loaded) */
+  if (Loading_Set_Contains (name)) {
+    return;  /* Break cycle - package will be available when outer load completes */
+  }
+
+  /* Try to load from cached ALI file first.
+   * If successful, we skip parsing entirely. */
+  if (Try_Load_From_ALI (name)) {
+    return;
+  }
+
+  /* Mark package as loading to detect cycles */
+  Loading_Set_Add (name);
+
+  /* Parse the package (ALI not available or stale) */
+  size_t fn_len = name.length + 4; /* ".ads" */
+  char *filename = Arena_Allocate (fn_len + 1);
+  snprintf (filename, fn_len + 1, "%.*s.ads", (int)name.length, name.data);
+  Parser parser = Parser_New (src, strlen (src), filename);
+  Syntax_Node *cu = Parse_Compilation_Unit (&parser);
+  if (not cu) {
+    Loading_Set_Remove (name);
+    return;
+  }
+
+  /* Recursively load WITH'd packages */
+  if (cu->compilation_unit.context) {
+    Node_List *withs = &cu->compilation_unit.context->context.with_clauses;
+    for (uint32_t i = 0; i < withs->count; i++) {
+      Syntax_Node *with_node = withs->items[i];
+      for (uint32_t j = 0; j < with_node->use_clause.names.count; j++) {
+        Syntax_Node *pkg_name = with_node->use_clause.names.items[j];
+        if (pkg_name->kind == NK_IDENTIFIER) {
+          char *pkg_src = Lookup_Path (pkg_name->string_val.text);
+          if (pkg_src) {
+            Load_Package_Spec (pkg_name->string_val.text, pkg_src);
+          }
+        }
+      }
+    }
+  }
+
+  /* Resolve the package declarations */
+  if (cu->compilation_unit.unit) {
+    Syntax_Node *unit = cu->compilation_unit.unit;
+    if (unit->kind == NK_PACKAGE_SPEC) {
+      Syntax_Node *pkg = unit;
+
+      /* Create package symbol */
+      Symbol *pkg_sym = Symbol_New (SYMBOL_PACKAGE, pkg->package_spec.name,
+                     pkg->location);
+      Type_Info *pkg_type = Type_New (TYPE_PACKAGE, pkg->package_spec.name);
+      pkg_sym->type = pkg_type;
+      pkg_sym->declaration = pkg;
+      Symbol_Add (pkg_sym);
+      pkg->symbol = pkg_sym;
+
+      /* Push package scope */
+      Symbol_Manager_Push_Scope (pkg_sym);
+
+      /* Resolve visible declarations */
+      Resolve_Declaration_List (&pkg->package_spec.visible_decls);
+
+      /* Populate package exports for qualified access (e.g., SYSTEM.MAX_INT) */
+      Populate_Package_Exports (pkg_sym, pkg);
+
+      /* Resolve private declarations */
+      Resolve_Declaration_List (&pkg->package_spec.private_decls);
+      Symbol_Manager_Pop_Scope ();
+
+      /* SYSTEM.ADDRESS override (RM 13.7):
+       * The SYSTEM package declares ADDRESS as NEW INTEGER (32-bit),
+       * but on 64-bit targets, addresses require 64 bits.  Override
+       * the parsed type to match the compiler's internal type_address. */
+      if (Slice_Equal_Ignore_Case (name, S("SYSTEM")) and sm->type_address) {
+        for (uint32_t ei = 0; ei < pkg_sym->exported_count; ei++) {
+          Symbol *esym = pkg_sym->exported[ei];
+          if (esym and esym->type and
+            Slice_Equal_Ignore_Case (esym->name, S("ADDRESS"))) {
+            esym->type->size       = sm->type_address->size;
+            esym->type->alignment  = sm->type_address->alignment;
+            esym->type->low_bound  = sm->type_address->low_bound;
+            esym->type->high_bound = sm->type_address->high_bound;
+            break;
+          }
+        }
+      }
+    }
+    else if (unit->kind == NK_GENERIC_DECL) {
+
+      /* Generic unit: create SYMBOL_GENERIC with the inner spec */
+      Syntax_Node *inner = unit->generic_decl.unit;
+      String_Slice unit_name = {0};
+      if (inner and inner->kind == NK_PACKAGE_SPEC) {
+        unit_name = inner->package_spec.name;
+      } else if (inner and (inner->kind == NK_PROCEDURE_SPEC or
+                 inner->kind == NK_FUNCTION_SPEC)) {
+        unit_name = inner->subprogram_spec.name;
+      }
+
+      /* Create generic symbol */
+      if (unit_name.data) {
+        Symbol *sym = Symbol_New (SYMBOL_GENERIC, unit_name, unit->location);
+        sym->declaration = unit;
+        sym->generic_unit = inner;
+
+        /* Store formals list for later instantiation */
+        if (unit->generic_decl.formals.count > 0) {
+          sym->generic_formals = unit->generic_decl.formals.items[0];
+        }
+        Symbol_Add (sym);
+        unit->symbol = sym;
+
+        /* Resolve the generic package spec's declarations so type/exception
+         * names are available when the body is parsed. Push scope, install
+         * generic formals, then resolve visible/private declarations. */
+        if (inner and inner->kind == NK_PACKAGE_SPEC) {
+          Symbol_Manager_Push_Scope (sym);
+
+          /* Install generic formal parameters */
+          Node_List *formals = &unit->generic_decl.formals;
+          for (uint32_t i = 0; i < formals->count; i++) {
+            Syntax_Node *formal = formals->items[i];
+            if (formal->kind == NK_GENERIC_TYPE_PARAM) {
+              Symbol *type_sym = Symbol_New (SYMBOL_TYPE,
+                formal->generic_type_param.name, formal->location);
+
+              /* Map def_kind to appropriate Type_Kind */
+              Type_Kind formal_kind = TYPE_PRIVATE;
+              switch (formal->generic_type_param.def_kind) {
+                case 2:  formal_kind = TYPE_ENUMERATION; break;  /* DISCRETE */
+                case 3:  formal_kind = TYPE_INTEGER;     break;  /* INTEGER */
+                case 4:  formal_kind = TYPE_FLOAT;       break;  /* FLOAT   */
+                case 5:  formal_kind = TYPE_FIXED;       break;  /* FIXED   */
+                case 6:  formal_kind = TYPE_ARRAY;       break;  /* ARRAY   */
+                case 7:  formal_kind = TYPE_ACCESS;      break;  /* ACCESS  */
+                default: formal_kind = TYPE_PRIVATE;     break;
+              }
+              Type_Info *type = Type_New (formal_kind, formal->generic_type_param.name);
+              type_sym->type = type;
+              formal->symbol = type_sym;
+              Symbol_Add (type_sym);
+            }
+          }
+
+          /* Resolve visible declarations */
+          Resolve_Declaration_List (&inner->package_spec.visible_decls);
+
+          /* Populate package exports for qualified access */
+          Populate_Package_Exports (sym, inner);
+
+          /* Resolve private declarations */
+          Resolve_Declaration_List (&inner->package_spec.private_decls);
+          Symbol_Manager_Pop_Scope ();
+        }
+      }
+    }
+  }
+
+  /* Done loading this package */
+  Loading_Set_Remove (name);
+
+  /* Also try to load the package body if available.
+   * Skip if a precompiled .ll file exists (package provided externally). */
+  if (Body_Already_Loaded (name)) {
+    return;  /* Body already loaded */
+  }
+  if (Has_Precompiled_LL (name)) {
+    return;  /* Precompiled version will be linked in */
+  }
+  char *body_src = Lookup_Path_Body (name);
+  if (body_src and Loaded_Body_Count < 128) {
+    Mark_Body_Loaded (name);
+
+    /* Parse the body — arena-allocate filename so AST Source_Locations stay valid */
+    size_t bfn_len = name.length + 4;
+    char *body_filename = Arena_Allocate (bfn_len + 1);
+    snprintf (body_filename, bfn_len + 1, "%.*s.adb", (int)name.length, name.data);
+    Parser body_parser = Parser_New (body_src, strlen (body_src), body_filename);
+    Syntax_Node *body_cu = Parse_Compilation_Unit (&body_parser);
+    if (body_cu and body_cu->compilation_unit.unit) {
+      Syntax_Node *body_unit = body_cu->compilation_unit.unit;
+
+      /* Recursively load WITH'd packages from body */
+      if (body_cu->compilation_unit.context) {
+        Node_List *withs = &body_cu->compilation_unit.context->context.with_clauses;
+        for (uint32_t i = 0; i < withs->count; i++) {
+          Syntax_Node *with_node = withs->items[i];
+          for (uint32_t j = 0; j < with_node->use_clause.names.count; j++) {
+            Syntax_Node *pkg_name = with_node->use_clause.names.items[j];
+            if (pkg_name->kind == NK_IDENTIFIER) {
+              char *pkg_src = Lookup_Path (pkg_name->string_val.text);
+              if (pkg_src) {
+                Load_Package_Spec (pkg_name->string_val.text, pkg_src);
+              }
+            }
+          }
+        }
+      }
+
+      /* Look up the package symbol */
+      if (body_unit->kind == NK_PACKAGE_BODY) {
+        String_Slice body_name = body_unit->package_body.name;
+        Symbol *pkg_sym = Symbol_Find (body_name);
+
+        /* Link body to spec */
+        if (pkg_sym and (pkg_sym->kind == SYMBOL_PACKAGE or pkg_sym->kind == SYMBOL_GENERIC)) {
+          body_unit->symbol = pkg_sym;
+
+          /* For generic packages, store the body for later instantiation */
+          if (pkg_sym->kind == SYMBOL_GENERIC) {
+            pkg_sym->generic_body = body_unit;
+          }
+
+          /* Resolve the body within package scope */
+          Symbol_Manager_Push_Scope (pkg_sym);
+
+          /* Install visible and private declarations from package spec
+           * into the body's scope (RM 7.1, 7.2) */
+          Syntax_Node *spec = pkg_sym->declaration;
+
+          /* For generics, install formals first, then look at the unit */
+          if (spec and spec->kind == NK_GENERIC_DECL) {
+            Node_List *formals = &spec->generic_decl.formals;
+            for (uint32_t i = 0; i < formals->count; i++) {
+              Syntax_Node *formal = formals->items[i];
+              if (formal->symbol) Symbol_Add (formal->symbol);
+
+              /* For generic type parameters, create type symbol if needed */
+              if (formal->kind == NK_GENERIC_TYPE_PARAM and not formal->symbol) {
+                Symbol *type_sym = Symbol_New (SYMBOL_TYPE,
+                  formal->generic_type_param.name, formal->location);
+
+                /* Map def_kind to appropriate Type_Kind */
+                Type_Kind formal_kind = TYPE_PRIVATE;
+                switch (formal->generic_type_param.def_kind) {
+                  case 2:  formal_kind = TYPE_ENUMERATION; break;  /* DISCRETE */
+                  case 3:  formal_kind = TYPE_INTEGER;     break;  /* INTEGER */
+                  case 4:  formal_kind = TYPE_FLOAT;       break;  /* FLOAT   */
+                  case 5:  formal_kind = TYPE_FIXED;       break;  /* FIXED   */
+                  case 6:  formal_kind = TYPE_ARRAY;       break;  /* ARRAY   */
+                  case 7:  formal_kind = TYPE_ACCESS;      break;  /* ACCESS  */
+                  default: formal_kind = TYPE_PRIVATE;     break;
+                }
+                Type_Info *type = Type_New (formal_kind, formal->generic_type_param.name);
+                type_sym->type = type;
+                formal->symbol = type_sym;
+                Symbol_Add (type_sym);
+              }
+            }
+            spec = spec->generic_decl.unit;
+          }
+          if (spec and spec->kind == NK_PACKAGE_SPEC) {
+            #define INSTALL_DECL_SYMBOLS(decl) do { \
+              if ((decl)->symbol) Symbol_Add ((decl)->symbol); \
+              if ((decl)->kind == NK_OBJECT_DECL) { \
+                for (uint32_t k = 0; k < (decl)->object_decl.names.count; k++) { \
+                  Syntax_Node *n = (decl)->object_decl.names.items[k]; \
+                  if (n->symbol) Symbol_Add (n->symbol); \
+                } \
+              } \
+              if ((decl)->kind == NK_EXCEPTION_DECL) { \
+                for (uint32_t k = 0; k < (decl)->exception_decl.names.count; k++) { \
+                  Syntax_Node *n = (decl)->exception_decl.names.items[k]; \
+                  if (n->symbol) Symbol_Add (n->symbol); \
+                } \
+              } \
+              if ((decl)->kind == NK_TYPE_DECL and (decl)->type_decl.definition and \
+                (decl)->type_decl.definition->kind == NK_ENUMERATION_TYPE) { \
+                Node_List *lits = &(decl)->type_decl.definition->enum_type.literals; \
+                for (uint32_t k = 0; k < lits->count; k++) { \
+                  if (lits->items[k]->symbol) Symbol_Add (lits->items[k]->symbol); \
+                } \
+              } \
+            } while (0)
+
+            /* Install visible declarations */
+            for (uint32_t i = 0; i < spec->package_spec.visible_decls.count; i++) {
+              Syntax_Node *decl = spec->package_spec.visible_decls.items[i];
+              INSTALL_DECL_SYMBOLS (decl);
+            }
+
+            /* Install private declarations */
+            for (uint32_t i = 0; i < spec->package_spec.private_decls.count; i++) {
+              Syntax_Node *decl = spec->package_spec.private_decls.items[i];
+              INSTALL_DECL_SYMBOLS (decl);
+            }
+            #undef INSTALL_DECL_SYMBOLS
+          }
+          Resolve_Declaration_List (&body_unit->package_body.declarations);
+          Symbol_Manager_Pop_Scope ();
+
+          /* Store for code generation */
+          Loaded_Package_Bodies[Loaded_Body_Count++] = body_cu;
+        }
+      }
+    }
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════════════════════════
+ * §18. VECTOR PATHS — SIMD-Accelerated Scanning on x86-64 and ARM64
+ * ═══════════════════════════════════════════════════════════════════════════════════════════════════
+ *
+ * Vectorised scanning primitives for whitespace skipping, identifier recognition, digit scanning,
+ * and single-character search.  Three implementations are selected at compile time:
+ *
+ *   x86-64  — AVX-512BW (64-byte vectors), AVX2 (32-byte), SSE4.2 (16-byte)
+ *   ARM64   — NEON/ASIMD (16-byte), SVE (128–2048 bits, detected at runtime)
+ *   Generic — Scalar fallback with loop unrolling for portability
+ *
+ * Every SIMD path has an equivalent scalar fallback.
+ */
+
+/* ─────────────────────────────────────────────────────────────────────────────────────────────────
+ * §18.1 Runtime CPU Feature Detection
+ * ───────────────────────────────────────────────────────────────────────────────────────────────── */
+
+/* Runtime CPU feature detection for x86-64.  AVX-512 code paths are only compiled when the
+ * toolchain is invoked with -mavx512bw; without that flag we fall back to AVX2 or scalar. */
+#ifdef SIMD_X86_64
+#ifdef __AVX512BW__
+int Simd_Has_Avx512 = -1; /* -1 = unchecked, 0 = absent, 1 = present */
+#else
+__attribute__ ((unused))
+int Simd_Has_Avx512 = 0; /* Permanently disabled: not compiled with AVX-512 */
+#endif
+int Simd_Has_Avx2 = -1;
+void Simd_Detect_Features (void) {
+  if (Simd_Has_Avx2 >= 0) return; /* Already detected, nothing to do */
+  uint32_t eax, ebx, ecx, edx;
+
+  /* CPUID leaf 07H, sub-leaf 0: structured extended feature flags.  AVX2 is EBX bit 5. */
+  __asm__ volatile (
+    "mov $7, %%eax\n\t"
+    "xor %%ecx, %%ecx\n\t"
+    "cpuid\n\t"
+    : "=a" (eax), "=b" (ebx), "=c" (ecx), "=d" (edx)
+    :
+    : "memory"
+  );
+  Simd_Has_Avx2 = (ebx >> 5) & 1;
+#ifdef __AVX512BW__
+
+  /* AVX-512F is EBX bit 16, AVX-512BW is EBX bit 30 — both are required. */
+  Simd_Has_Avx512 = ((ebx >> 16) & 1) and ((ebx >> 30) & 1);
+#endif
+}
+#endif
+
+
+/* ─────────────────────────────────────────────────────────────────────────────────────────────────
+ * §18.2 SIMD-Accelerated Scanning Functions
+ *
+ * Four architecture paths: x86-64 (AVX-512/AVX2/SSE4.2), ARM64 (NEON), generic scalar fallback.
+ * Each function scans for interesting bytes (whitespace boundaries, end-of-identifier, etc.)
+ * without character-by-character loops.
+ * ───────────────────────────────────────────────────────────────────────────────────────────────── */
+#ifdef SIMD_X86_64
+
+/* ─────────────────────────────────────────────────────────────────────────────────────────────────
+ * x86-64 AVX-512/AVX2 SIMD Lexer Acceleration
+ *
+ *   AVX-512BW — 64-byte vector processing with k-mask registers
+ *   AVX2      — 32-byte processing with optimised instruction scheduling
+ *   BMI2      — TZCNT for fast "find first non-matching byte" within a mask
+ *
+ * Scanning functions:
+ *   Simd_Skip_Whitespace  — skip space (0x20) and C0 controls (0x09–0x0D)
+ *   Simd_Find_Char_X86    — generic single-character search (newline, quotes)
+ *   Simd_Scan_Identifier  — match the [A-Za-z0-9_] character class
+ *   Simd_Scan_Digits      — match [0-9_] for numeric literals
+ * ───────────────────────────────────────────────────────────────────────────────────────────────── */
+
+/* BMI2 TZCNT (trailing zero count) — returns the index of the lowest set bit. */
+uint32_t Tzcnt32 (uint32_t value) {
+  uint32_t index;
+  __asm__ ("tzcntl %1, %0" : "=r" (index) : "r" (value));
+  return index;
+}
+uint64_t Tzcnt64 (uint64_t value) {
+  uint64_t index;
+  __asm__ ("tzcntq %1, %0" : "=r" (index) : "r" (value));
+  return index;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────────────────────────
+ * AVX-512 whitespace skip — 64 bytes at a time using k-mask registers.  Matches space (0x20)
+ * and the C0 control range 0x09–0x0D (tab, LF, VT, FF, CR).  Only compiled with -mavx512bw.
+ * ───────────────────────────────────────────────────────────────────────────────────────────────── */
+#ifdef __AVX512BW__
+const char *Simd_Skip_Whitespace_Avx512 (const char *cursor, const char *limit) {
+  while (cursor + 64 <= limit) {
+    uint64_t mask;
+    __asm__ volatile (
+      "prefetcht0 128(%[src])\n\t"           /* Prefetch next cache line */
+      "vmovdqu8 (%[src]), %%zmm0\n\t"        /* Load 64 bytes */
+      "vpbroadcastb %[space], %%zmm1\n\t"   /* Broadcast space char */
+      "vpcmpeqb %%zmm1, %%zmm0, %%k1\n\t"   /* k1 = (c == ' ') */
+      "vpbroadcastb %[lo], %%zmm2\n\t"      /* Broadcast 0x08 */
+      "vpbroadcastb %[hi], %%zmm3\n\t"      /* Broadcast 0x0E */
+      "vpcmpgtb %%zmm2, %%zmm0, %%k2\n\t"   /* k2 = (c > 0x08) */
+      "vpcmpgtb %%zmm0, %%zmm3, %%k3\n\t"   /* k3 = (0x0E > c) */
+      "kandd %%k2, %%k3, %%k2\n\t"          /* k2 = in range [0x09,0x0D] */
+      "kord %%k1, %%k2, %%k0\n\t"           /* k0 = whitespace mask */
+      "kmovq %%k0, %[mask]\n\t"             /* Extract to GPR */
+      : [mask] "=r" (mask)
+      : [src] "r" (cursor), [space] "r" ((uint32_t) ' '),
+        [lo] "r" ((uint32_t) 0x08), [hi] "r" ((uint32_t) 0x0E)
+      : "zmm0", "zmm1", "zmm2", "zmm3", "k0", "k1", "k2", "k3", "memory"
+    );
+
+    /* If any non-whitespace byte was found, return its position. */
+    if (~mask) {
+      uint64_t first_nonwhite = ~mask;
+      __asm__ volatile ("tzcntq %1, %0" : "=r" (first_nonwhite) : "r" (first_nonwhite));
+      return cursor + first_nonwhite;
+    }
+    cursor += 64;
+  }
+  return cursor;
+}
+#endif /* __AVX512BW__ */
+
+/* ─────────────────────────────────────────────────────────────────────────────────────────────────
+ * AVX2 Whitespace Skip with 2x Unrolling
+ *
+ * Processes 64 bytes (two 32-byte YMM loads) per iteration for better throughput on long runs of
+ * whitespace.  Falls back to a single 32-byte pass for the remaining tail before returning to the
+ * scalar loop in the dispatcher.
+ * ─────────────────────────────────────────────────────────────────────────────────────────────── */
+const char *Simd_Skip_Whitespace_Avx2 (const char *cursor, const char *limit) {
+
+  /* 2x unrolled: process 64 bytes per iteration */
+  while (cursor + 64 <= limit) {
+    uint32_t m0, m1;
+    __asm__ volatile (
+      "prefetcht0 128(%[src])\n\t"
+
+      /* Load two 32-byte chunks in parallel */
+      "vmovdqu (%[src]), %%ymm0\n\t"
+      "vmovdqu 32(%[src]), %%ymm8\n\t"
+
+      /* Broadcast constants once, reuse for both chunks */
+      "vmovd %[space], %%xmm1\n\t"
+      "vpbroadcastb %%xmm1, %%ymm1\n\t"
+      "vmovd %[lo], %%xmm2\n\t"
+      "vpbroadcastb %%xmm2, %%ymm2\n\t"
+      "vmovd %[hi], %%xmm3\n\t"
+      "vpbroadcastb %%xmm3, %%ymm3\n\t"
+
+      /* First chunk: space match, range check 0x09..0x0D */
+      "vpcmpeqb %%ymm1, %%ymm0, %%ymm5\n\t"
+      "vpcmpgtb %%ymm2, %%ymm0, %%ymm6\n\t"
+      "vpcmpgtb %%ymm0, %%ymm3, %%ymm7\n\t"
+
+      /* Second chunk: same comparisons on the next 32 bytes */
+      "vpcmpeqb %%ymm1, %%ymm8, %%ymm9\n\t"
+      "vpcmpgtb %%ymm2, %%ymm8, %%ymm10\n\t"
+      "vpcmpgtb %%ymm8, %%ymm3, %%ymm11\n\t"
+
+      /* Combine results: whitespace = space OR (> 0x08 AND < 0x0E) */
+      "vpand %%ymm6, %%ymm7, %%ymm6\n\t"
+      "vpor %%ymm5, %%ymm6, %%ymm0\n\t"
+      "vpand %%ymm10, %%ymm11, %%ymm10\n\t"
+      "vpor %%ymm9, %%ymm10, %%ymm8\n\t"
+
+      /* Extract per-byte masks */
+      "vpmovmskb %%ymm0, %[m0]\n\t"
+      "vpmovmskb %%ymm8, %[m1]\n\t"
+      "vzeroupper\n\t"
+      : [m0] "=r" (m0), [m1] "=r" (m1)
+      : [src] "r" (cursor), [space] "r" ((uint32_t)' '),
+        [lo] "r" ((uint32_t)0x08), [hi] "r" ((uint32_t)0x0E)
+      : "ymm0", "ymm1", "ymm2", "ymm3", "ymm5", "ymm6", "ymm7",
+        "ymm8", "ymm9", "ymm10", "ymm11", "memory"
+    );
+    if (m0 != 0xFFFFFFFF) return cursor + Tzcnt32 (~m0);
+    if (m1 != 0xFFFFFFFF) return cursor + 32 + Tzcnt32 (~m1);
+    cursor += 64;
+  }
+
+  /* Handle remaining 32-byte chunk */
+  while (cursor + 32 <= limit) {
+    uint32_t mask;
+    __asm__ volatile (
+      "vmovdqu (%[src]), %%ymm0\n\t"
+      "vmovd %[space], %%xmm1\n\t"
+      "vpbroadcastb %%xmm1, %%ymm1\n\t"
+      "vmovd %[lo], %%xmm2\n\t"
+      "vpbroadcastb %%xmm2, %%ymm2\n\t"
+      "vmovd %[hi], %%xmm3\n\t"
+      "vpbroadcastb %%xmm3, %%ymm3\n\t"
+      "vpcmpeqb %%ymm1, %%ymm0, %%ymm5\n\t"
+      "vpcmpgtb %%ymm2, %%ymm0, %%ymm6\n\t"
+      "vpcmpgtb %%ymm0, %%ymm3, %%ymm7\n\t"
+      "vpand %%ymm6, %%ymm7, %%ymm6\n\t"
+      "vpor %%ymm5, %%ymm6, %%ymm0\n\t"
+      "vpmovmskb %%ymm0, %[mask]\n\t"
+      "vzeroupper\n\t"
+      : [mask] "=r" (mask)
+      : [src] "r" (cursor), [space] "r" ((uint32_t)' '),
+        [lo] "r" ((uint32_t)0x08), [hi] "r" ((uint32_t)0x0E)
+      : "ymm0", "ymm1", "ymm2", "ymm3", "ymm5", "ymm6", "ymm7", "memory"
+    );
+    if (mask != 0xFFFFFFFF) return cursor + Tzcnt32 (~mask);
+    cursor += 32;
+  }
+  return cursor;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────────────────────────
+ * Whitespace Skip Dispatcher
+ *
+ * Selects the best available SIMD path at runtime based on CPU features detected by
+ * Simd_Detect_Features, then falls through to a scalar tail for the last few bytes.
+ * ─────────────────────────────────────────────────────────────────────────────────────────────── */
+const char *Simd_Skip_Whitespace (const char *cursor, const char *limit) {
+  Simd_Detect_Features ();
+#ifdef __AVX512BW__
+  if (Simd_Has_Avx512 and (limit - cursor) >= 64) {
+    cursor = Simd_Skip_Whitespace_Avx512 (cursor, limit);
+  }
+#endif
+  if (Simd_Has_Avx2 and (limit - cursor) >= 32) {
+    cursor = Simd_Skip_Whitespace_Avx2 (cursor, limit);
+  }
+
+  /* Scalar tail for remaining bytes */
+  while (cursor < limit) {
+    unsigned char ch = (unsigned char)*cursor;
+    if (ch != ' ' and (ch < 0x09 or ch > 0x0D)) break;
+    cursor++;
+  }
+  return cursor;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────────────────────────
+ * Generic Single-Character Search
+ *
+ * Searches for the first occurrence of a specific byte (newline, quote, etc.) in the given range.
+ * The first 16 bytes are checked with a scalar fast path that covers most short comments and
+ * string literals; beyond that the function dispatches to AVX-512 or AVX2 SIMD loops.  Used as
+ * the building block for Simd_Find_Newline, Simd_Find_Quote, and Simd_Find_Double_Quote.
+ * ─────────────────────────────────────────────────────────────────────────────────────────────── */
+const char *Simd_Find_Char_X86 (const char *cursor, const char *limit, char target) {
+
+  /* Fast path: scalar check for first 16 bytes (covers most short comments/strings) */
+  for (int i = 0; i < 16 and cursor + i < limit; i++) {
+    if (cursor[i] == target) return cursor + i;
+  }
+
+  /* Short remaining buffer — finish with scalar */
+  if (cursor + 16 >= limit) {
+    cursor += 16;
+    while (cursor < limit and *cursor != target) cursor++;
+    return cursor;
+  }
+  cursor += 16;  /* Fast path didn't find it, continue with SIMD */
+  Simd_Detect_Features ();
+#ifdef __AVX512BW__
+
+  /* AVX-512: 64 bytes at a time */
+  if (Simd_Has_Avx512) {
+    while (cursor + 64 <= limit) {
+      uint64_t mask;
+      __asm__ volatile (
+        "vmovdqu8 (%[src]), %%zmm0\n\t"
+        "vpbroadcastb %[c], %%zmm1\n\t"
+        "vpcmpeqb %%zmm1, %%zmm0, %%k0\n\t"
+        "kmovq %%k0, %[mask]\n\t"
+        : [mask] "=r" (mask)
+        : [src] "r" (cursor), [c] "r" ((uint32_t)target)
+        : "zmm0", "zmm1", "k0", "memory"
+      );
+      if (mask) {
+        __asm__ volatile ("tzcntq %1, %0" : "=r" (mask) : "r" (mask));
+        return cursor + mask;
+      }
+      cursor += 64;
+    }
+  }
+#endif
+
+  /* AVX2: 32 bytes at a time */
+  while (cursor + 32 <= limit) {
+    uint32_t mask;
+    __asm__ volatile (
+      "vmovdqu (%[src]), %%ymm0\n\t"
+      "vmovd %[c], %%xmm1\n\t"
+      "vpbroadcastb %%xmm1, %%ymm1\n\t"
+      "vpcmpeqb %%ymm1, %%ymm0, %%ymm0\n\t"
+      "vpmovmskb %%ymm0, %[mask]\n\t"
+      "vzeroupper\n\t"
+      : [mask] "=r" (mask)
+      : [src] "r" (cursor), [c] "r" ((uint32_t)target)
+      : "ymm0", "ymm1", "memory"
+    );
+    if (mask) return cursor + Tzcnt32 (mask);
+    cursor += 32;
+  }
+
+  /* Scalar tail */
+  while (cursor < limit and *cursor != target) cursor++;
+  return cursor;
+}
+
+/* Convenience wrappers for common character searches */
+const char *Simd_Find_Newline (const char *cursor, const char *limit) {
+  return Simd_Find_Char_X86 (cursor, limit, '\n');
+}
+const char *Simd_Find_Quote (const char *cursor, const char *limit) {
+  return Simd_Find_Char_X86 (cursor, limit, '\'');
+}
+const char *Simd_Find_Double_Quote (const char *cursor, const char *limit) {
+  return Simd_Find_Char_X86 (cursor, limit, '"');
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────────────────────────
+ * Identifier Character Class Scanner
+ *
+ * Uses a fast unrolled table lookup for the first 8 characters, which covers the vast majority of
+ * Ada identifiers.  Longer identifiers continue with a scalar table-driven loop — the branch
+ * predictor handles this well since identifiers rarely exceed 8 characters.
+ * ─────────────────────────────────────────────────────────────────────────────────────────────── */
+const char *Simd_Scan_Identifier (const char *cursor, const char *limit) {
+
+  /* Fast path: unrolled table lookup for first 8 chars (covers most identifiers) */
+  if (cursor >= limit or not Is_Id_Char (*cursor)) return cursor;
+  if (cursor + 1 >= limit or not Is_Id_Char (cursor[1])) return cursor + 1;
+  if (cursor + 2 >= limit or not Is_Id_Char (cursor[2])) return cursor + 2;
+  if (cursor + 3 >= limit or not Is_Id_Char (cursor[3])) return cursor + 3;
+  if (cursor + 4 >= limit or not Is_Id_Char (cursor[4])) return cursor + 4;
+  if (cursor + 5 >= limit or not Is_Id_Char (cursor[5])) return cursor + 5;
+  if (cursor + 6 >= limit or not Is_Id_Char (cursor[6])) return cursor + 6;
+  if (cursor + 7 >= limit or not Is_Id_Char (cursor[7])) return cursor + 7;
+
+  /* Long identifier (> 8 chars) — continue with table lookup */
+  cursor += 8;
+  while (cursor < limit and Is_Id_Char (*cursor)) cursor++;
+  return cursor;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────────────────────────
+ * Digit Scanner for Numeric Literals
+ *
+ * Matches the character class [0-9_] — decimal digits with optional underscores, which is the Ada
+ * numeric literal syntax (LRM §2.4).  Returns a pointer to the first character that is neither a
+ * digit nor an underscore.
+ * ─────────────────────────────────────────────────────────────────────────────────────────────── */
+const char *Simd_Scan_Digits (const char *cursor, const char *limit) {
+  Simd_Detect_Features ();
+#ifdef __AVX512BW__
+
+  /* AVX-512 path */
+  if (Simd_Has_Avx512) {
+    while (cursor + 64 <= limit) {
+      uint64_t mask;
+      __asm__ volatile (
+        "vmovdqu8 (%[src]), %%zmm0\n\t"
+        "vpbroadcastb %[lo], %%zmm1\n\t"
+        "vpbroadcastb %[hi], %%zmm2\n\t"
+        "vpbroadcastb %[u], %%zmm3\n\t"
+        "vpcmpgtb %%zmm1, %%zmm0, %%k1\n\t"     /* byte > '0'-1 */
+        "vpcmpgtb %%zmm0, %%zmm2, %%k2\n\t"     /* '9'+1 > byte */
+        "kandd %%k1, %%k2, %%k3\n\t"            /* digit range */
+        "vpcmpeqb %%zmm3, %%zmm0, %%k4\n\t"     /* underscore */
+        "kord %%k3, %%k4, %%k0\n\t"             /* digit OR underscore */
+        "kmovq %%k0, %[mask]\n\t"
+        : [mask] "=r" (mask)
+        : [src] "r" (cursor),
+          [lo] "r" ((uint32_t)('0' - 1)),
+          [hi] "r" ((uint32_t)('9' + 1)),
+          [u] "r" ((uint32_t)'_')
+        : "zmm0", "zmm1", "zmm2", "zmm3", "k0", "k1", "k2", "k3", "k4", "memory"
+      );
+      if (~mask) {
+        __asm__ volatile ("tzcntq %1, %0" : "=r" (mask) : "r" (~mask));
+        return cursor + mask;
+      }
+      cursor += 64;
+    }
+  }
+#endif
+
+  /* AVX2 path */
+  while (cursor + 32 <= limit) {
+    uint32_t mask;
+    __asm__ volatile (
+      "vmovdqu (%[src]), %%ymm0\n\t"
+      "vmovd %[lo], %%xmm1\n\t"
+      "vpbroadcastb %%xmm1, %%ymm1\n\t"
+      "vmovd %[hi], %%xmm2\n\t"
+      "vpbroadcastb %%xmm2, %%ymm2\n\t"
+      "vpcmpgtb %%ymm1, %%ymm0, %%ymm3\n\t"
+      "vpcmpgtb %%ymm0, %%ymm2, %%ymm4\n\t"
+      "vpand %%ymm3, %%ymm4, %%ymm5\n\t"
+      "vmovd %[u], %%xmm1\n\t"
+      "vpbroadcastb %%xmm1, %%ymm1\n\t"
+      "vpcmpeqb %%ymm1, %%ymm0, %%ymm1\n\t"
+      "vpor %%ymm5, %%ymm1, %%ymm0\n\t"
+      "vpmovmskb %%ymm0, %[mask]\n\t"
+      "vzeroupper\n\t"
+      : [mask] "=r" (mask)
+      : [src] "r" (cursor),
+        [lo] "r" ((uint32_t)('0' - 1)),
+        [hi] "r" ((uint32_t)('9' + 1)),
+        [u] "r" ((uint32_t)'_')
+      : "ymm0", "ymm1", "ymm2", "ymm3", "ymm4", "ymm5", "memory"
+    );
+    if (mask != 0xFFFFFFFF) return cursor + Tzcnt32 (~mask);
+    cursor += 32;
+  }
+
+  /* Scalar tail */
+  while (cursor < limit and ((*cursor >= '0' and *cursor <= '9') or *cursor == '_')) cursor++;
+  return cursor;
+}
+#elif defined(SIMD_ARM64)
+
+/* ─────────────────────────────────────────────────────────────────────────────────────────────────
+ * ARM64 NEON Implementation (raw inline assembly)
+ * ─────────────────────────────────────────────────────────────────────────────────────────────── */
+const char *Simd_Skip_Whitespace (const char *cursor, const char *limit) {
+  while (cursor + 16 <= limit) {
+    uint64_t lo, hi;
+    __asm__ volatile (
+      "ldr q0, [%[src]]\n\t"                /* Load 16 bytes */
+
+      /* Check for space (0x20) */
+      "movi v1.16b, #0x20\n\t"
+      "cmeq v5.16b, v0.16b, v1.16b\n\t"
+
+      /* Check range 0x09..0x0D: byte > 0x08 and byte < 0x0E */
+      "movi v2.16b, #0x08\n\t"
+      "movi v3.16b, #0x0E\n\t"
+      "cmhi v6.16b, v0.16b, v2.16b\n\t"
+      "cmhi v7.16b, v3.16b, v0.16b\n\t"
+      "and v6.16b, v6.16b, v7.16b\n\t"      /* in range */
+
+      /* Combine: whitespace = space OR in_range, then invert for non-whitespace */
+      "orr v0.16b, v5.16b, v6.16b\n\t"
+      "mvn v0.16b, v0.16b\n\t"
+      "mov %[lo], v0.d[0]\n\t"
+      "mov %[hi], v0.d[1]\n\t"
+      : [lo] "=r" (lo), [hi] "=r" (hi)
+      : [src] "r" (cursor)
+      : "v0", "v1", "v2", "v3", "v5", "v6", "v7", "memory"
+    );
+    if (lo) return cursor + (Tzcnt64 (lo) >> 3);
+    if (hi) return cursor + 8 + (Tzcnt64 (hi) >> 3);
+    cursor += 16;
+  }
+
+  /* Scalar tail */
+  while (cursor < limit) {
+    unsigned char ch = (unsigned char)*cursor;
+    if (ch != ' ' and (ch < 0x09 or ch > 0x0D)) break;
+    cursor++;
+  }
+  return cursor;
+}
+const char *Simd_Find_Newline (const char *cursor, const char *limit) {
+  while (cursor + 16 <= limit) {
+    uint64_t lo, hi;
+    __asm__ volatile (
+      "ldr q0, [%[src]]\n\t"
+      "movi v1.16b, #0x0A\n\t"
+      "cmeq v0.16b, v0.16b, v1.16b\n\t"
+      "mov %[lo], v0.d[0]\n\t"
+      "mov %[hi], v0.d[1]\n\t"
+      : [lo] "=r" (lo), [hi] "=r" (hi)
+      : [src] "r" (cursor)
+      : "v0", "v1", "memory"
+    );
+    if (lo) return cursor + (Tzcnt64 (lo) >> 3);
+    if (hi) return cursor + 8 + (Tzcnt64 (hi) >> 3);
+    cursor += 16;
+  }
+  while (cursor < limit and *cursor != '\n') cursor++;
+  return cursor;
+}
+const char *Simd_Scan_Identifier (const char *cursor, const char *limit) {
+  while (cursor + 16 <= limit) {
+    uint64_t lo, hi;
+    __asm__ volatile (
+      "ldr q0, [%[src]]\n\t"
+
+      /* Check a-z */
+      "movi v1.16b, #0x60\n\t"
+      "movi v2.16b, #0x7B\n\t"
+      "cmhi v3.16b, v0.16b, v1.16b\n\t"
+      "cmhi v4.16b, v2.16b, v0.16b\n\t"
+      "and v5.16b, v3.16b, v4.16b\n\t"
+
+      /* Check A-Z */
+      "movi v1.16b, #0x40\n\t"
+      "movi v2.16b, #0x5B\n\t"
+      "cmhi v3.16b, v0.16b, v1.16b\n\t"
+      "cmhi v4.16b, v2.16b, v0.16b\n\t"
+      "and v6.16b, v3.16b, v4.16b\n\t"
+
+      /* Check 0-9 */
+      "movi v1.16b, #0x2F\n\t"
+      "movi v2.16b, #0x3A\n\t"
+      "cmhi v3.16b, v0.16b, v1.16b\n\t"
+      "cmhi v4.16b, v2.16b, v0.16b\n\t"
+      "and v7.16b, v3.16b, v4.16b\n\t"
+
+      /* Check underscore */
+      "movi v1.16b, #0x5F\n\t"
+      "cmeq v16.16b, v0.16b, v1.16b\n\t"
+
+      /* Combine: valid = lower | upper | digit | underscore, then invert */
+      "orr v5.16b, v5.16b, v6.16b\n\t"
+      "orr v7.16b, v7.16b, v16.16b\n\t"
+      "orr v0.16b, v5.16b, v7.16b\n\t"
+      "mvn v0.16b, v0.16b\n\t"
+      "mov %[lo], v0.d[0]\n\t"
+      "mov %[hi], v0.d[1]\n\t"
+      : [lo] "=r" (lo), [hi] "=r" (hi)
+      : [src] "r" (cursor)
+      : "v0", "v1", "v2", "v3", "v4", "v5", "v6", "v7", "v16", "memory"
+    );
+    if (lo) return cursor + (Tzcnt64 (lo) >> 3);
+    if (hi) return cursor + 8 + (Tzcnt64 (hi) >> 3);
+    cursor += 16;
+  }
+  while (cursor < limit) {
+    char ch = *cursor;
+    if (not ((ch >= 'a' and ch <= 'z') or (ch >= 'A' and ch <= 'Z') or
+        (ch >= '0' and ch <= '9') or ch == '_'))
+      break;
+    cursor++;
+  }
+  return cursor;
+}
+const char *Simd_Find_Quote (const char *cursor, const char *limit) {
+  while (cursor + 16 <= limit) {
+    uint64_t lo, hi;
+    __asm__ volatile (
+      "ldr q0, [%[src]]\n\t"
+      "movi v1.16b, #0x27\n\t"
+      "cmeq v0.16b, v0.16b, v1.16b\n\t"
+      "mov %[lo], v0.d[0]\n\t"
+      "mov %[hi], v0.d[1]\n\t"
+      : [lo] "=r" (lo), [hi] "=r" (hi)
+      : [src] "r" (cursor)
+      : "v0", "v1", "memory"
+    );
+    if (lo) return cursor + (Tzcnt64 (lo) >> 3);
+    if (hi) return cursor + 8 + (Tzcnt64 (hi) >> 3);
+    cursor += 16;
+  }
+  while (cursor < limit and *cursor != '\'') cursor++;
+  return cursor;
+}
+const char *Simd_Find_Double_Quote (const char *cursor, const char *limit) {
+  while (cursor + 16 <= limit) {
+    uint64_t lo, hi;
+    __asm__ volatile (
+      "ldr q0, [%[src]]\n\t"
+      "movi v1.16b, #0x22\n\t"
+      "cmeq v0.16b, v0.16b, v1.16b\n\t"
+      "mov %[lo], v0.d[0]\n\t"
+      "mov %[hi], v0.d[1]\n\t"
+      : [lo] "=r" (lo), [hi] "=r" (hi)
+      : [src] "r" (cursor)
+      : "v0", "v1", "memory"
+    );
+    if (lo) return cursor + (Tzcnt64 (lo) >> 3);
+    if (hi) return cursor + 8 + (Tzcnt64 (hi) >> 3);
+    cursor += 16;
+  }
+  while (cursor < limit and *cursor != '"') cursor++;
+  return cursor;
+}
+const char *Simd_Scan_Digits (const char *cursor, const char *limit) {
+  while (cursor + 16 <= limit) {
+    uint64_t lo, hi;
+    __asm__ volatile (
+      "ldr q0, [%[src]]\n\t"
+
+      /* Check 0-9 */
+      "movi v1.16b, #0x2F\n\t"
+      "movi v2.16b, #0x3A\n\t"
+      "cmhi v3.16b, v0.16b, v1.16b\n\t"
+      "cmhi v4.16b, v2.16b, v0.16b\n\t"
+      "and v5.16b, v3.16b, v4.16b\n\t"
+
+      /* Check underscore */
+      "movi v1.16b, #0x5F\n\t"
+      "cmeq v6.16b, v0.16b, v1.16b\n\t"
+
+      /* Combine and invert */
+      "orr v0.16b, v5.16b, v6.16b\n\t"
+      "mvn v0.16b, v0.16b\n\t"
+      "mov %[lo], v0.d[0]\n\t"
+      "mov %[hi], v0.d[1]\n\t"
+      : [lo] "=r" (lo), [hi] "=r" (hi)
+      : [src] "r" (cursor)
+      : "v0", "v1", "v2", "v3", "v4", "v5", "v6", "memory"
+    );
+    if (lo) return cursor + (Tzcnt64 (lo) >> 3);
+    if (hi) return cursor + 8 + (Tzcnt64 (hi) >> 3);
+    cursor += 16;
+  }
+  while (cursor < limit and ((*cursor >= '0' and *cursor <= '9') or *cursor == '_')) cursor++;
+  return cursor;
+}
+#else
+
+/* Generic Scalar Implementation (Portable Fallback)
+ *
+ * Reference implementation for platforms without SIMD support.  All SIMD paths must produce
+ * identical results to these scalar functions for all possible inputs.
+ */
+const char *Simd_Skip_Whitespace (const char *cursor, const char *limit) {
+  while (cursor < limit) {
+    unsigned char ch = (unsigned char)*cursor;
+    if (ch != ' ' and (ch < 0x09 or ch > 0x0D)) break;
+    cursor++;
+  }
+  return cursor;
+}
+const char *Simd_Find_Newline (const char *cursor, const char *limit) {
+  while (cursor < limit and *cursor != '\n') cursor++;
+  return cursor;
+}
+const char *Simd_Scan_Identifier (const char *cursor, const char *limit) {
+  while (cursor < limit) {
+    char ch = *cursor;
+    if (not ((ch >= 'a' and ch <= 'z') or (ch >= 'A' and ch <= 'Z') or
+        (ch >= '0' and ch <= '9') or ch == '_'))
+      break;
+    cursor++;
+  }
+  return cursor;
+}
+const char *Simd_Find_Quote (const char *cursor, const char *limit) {
+  while (cursor < limit and *cursor != '\'') cursor++;
+  return cursor;
+}
+const char *Simd_Find_Double_Quote (const char *cursor, const char *limit) {
+  while (cursor < limit and *cursor != '"') cursor++;
+  return cursor;
+}
+const char *Simd_Scan_Digits (const char *cursor, const char *limit) {
+  while (cursor < limit and ((*cursor >= '0' and *cursor <= '9') or *cursor == '_')) cursor++;
+  return cursor;
+}
+#endif /* SIMD architecture selection */
+
+/* ─────────────────────────────────────────────────────────────────────────────────────────────────
+ * §18.3 SIMD-Accelerated Decimal Parsing
+ *
+ * Instead of processing one digit at a time (multiply by 10, add digit), the SIMD path batches
+ * eight digits at once (multiply by 10**8, add the 8-digit value).
+ * ───────────────────────────────────────────────────────────────────────────────────────────────── */
+#ifdef SIMD_X86_64
+
+/* Parse exactly 8 ASCII digit characters ('0'–'9') into a 32-bit integer in the range
+ * [0 .. 99_999_999] using AVX2 multiply-add instructions (see §6.1 header for the algorithm). */
+uint32_t Simd_Parse_8_Digits_Avx2 (const char *digits) {
+  uint32_t result;
+  __asm__ volatile (
+
+    /* Load 8 bytes into low portion of xmm0 */
+    "vmovq (%[src]), %%xmm0\n\t"
+
+    /* Broadcast '0' and subtract to get digit values */
+    "vmovd %[zero], %%xmm1\n\t"
+    "vpbroadcastb %%xmm1, %%xmm1\n\t"
+    "vpsubb %%xmm1, %%xmm0, %%xmm0\n\t"
+
+    /* Multiply-add bytes to words: weights [10,1,10,1,10,1,10,1] */
+    "vmovq %[w1], %%xmm2\n\t"
+    "vpmaddubsw %%xmm2, %%xmm0, %%xmm0\n\t"
+
+    /* Multiply-add words to dwords: weights [100,1,100,1] */
+    "vmovq %[w2], %%xmm2\n\t"
+    "vpmaddwd %%xmm2, %%xmm0, %%xmm0\n\t"
+
+    /* Extract two dwords and combine: dw0 * 10000 + dw1 */
+    "vmovd %%xmm0, %%eax\n\t"
+    "vpextrd $1, %%xmm0, %%edx\n\t"
+    "imull $10000, %%eax\n\t"
+    "addl %%edx, %%eax\n\t"
+    : "=a" (result)
+    : [src] "r" (digits),
+      [zero] "r" ((uint32_t) '0'),
+      [w1] "r" (0x010A010A010A010AULL),  /* byte weights [10,1,10,1,10,1,10,1]  (0x0A = 10) */
+      [w2] "r" (0x0001006400010064ULL)   /* word weights [100,1,100,1]                       */
+    : "xmm0", "xmm1", "xmm2", "edx", "memory"
+  );
+  return result;
+}
+
+/* Parse up to 16 ASCII digits from the buffer [cursor .. limit) using AVX2.  Validates that all
+ * bytes are ASCII digits first; returns the number of digits actually consumed and stores the
+ * parsed value in *out. */
+int Simd_Parse_Digits_Avx2 (const char *cursor, const char *limit, uint64_t *out) {
+  int length = (limit - cursor > 16) ? 16 : (int) (limit - cursor);
+
+  /* Fewer than 8 digits available — fall back to scalar. */
+  if (length < 8) {
+    uint64_t value = 0;
+    int count = 0;
+    while (count < length and cursor[count] >= '0' and cursor[count] <= '9') {
+      value = value * 10 + (cursor[count] - '0');
+      count++;
+    }
+    *out = value;
+    return count;
+  }
+
+  /* Validate that the first eight bytes are all ASCII digits using SIMD comparison. */
+  uint32_t valid_mask;
+  __asm__ volatile (
+    "vmovq (%[src]), %%xmm0\n\t"
+    "vmovd %[lo], %%xmm1\n\t"
+    "vpbroadcastb %%xmm1, %%xmm1\n\t"
+    "vmovd %[hi], %%xmm2\n\t"
+    "vpbroadcastb %%xmm2, %%xmm2\n\t"
+    "vpcmpgtb %%xmm1, %%xmm0, %%xmm3\n\t"
+    "vpcmpgtb %%xmm0, %%xmm2, %%xmm4\n\t"
+    "vpand %%xmm3, %%xmm4, %%xmm0\n\t"
+    "vpmovmskb %%xmm0, %[mask]\n\t"
+    : [mask] "=r" (valid_mask)
+    : [src] "r" (cursor),
+      [lo] "r" ((uint32_t) ('0' - 1)),
+      [hi] "r" ((uint32_t) ('9' + 1))
+    : "xmm0", "xmm1", "xmm2", "xmm3", "xmm4", "memory"
+  );
+
+  /* Not all eight are digits — fall back to scalar. */
+  if ((valid_mask & 0xFF) != 0xFF) {
+    uint64_t value = 0;
+    int count = 0;
+    while (count < length and cursor[count] >= '0' and cursor[count] <= '9') {
+      value = value * 10 + (cursor[count] - '0');
+      count++;
+    }
+    *out = value;
+    return count;
+  }
+  uint32_t high_8 = Simd_Parse_8_Digits_Avx2 (cursor);
+
+  /* If 16 digits are available, validate the second group of eight. */
+  if (length >= 16) {
+    __asm__ volatile (
+      "vmovq 8(%[src]), %%xmm0\n\t"
+      "vmovd %[lo], %%xmm1\n\t"
+      "vpbroadcastb %%xmm1, %%xmm1\n\t"
+      "vmovd %[hi], %%xmm2\n\t"
+      "vpbroadcastb %%xmm2, %%xmm2\n\t"
+      "vpcmpgtb %%xmm1, %%xmm0, %%xmm3\n\t"
+      "vpcmpgtb %%xmm0, %%xmm2, %%xmm4\n\t"
+      "vpand %%xmm3, %%xmm4, %%xmm0\n\t"
+      "vpmovmskb %%xmm0, %[mask]\n\t"
+      : [mask] "=r" (valid_mask)
+      : [src] "r" (cursor),
+        [lo] "r" ((uint32_t) ('0' - 1)),
+        [hi] "r" ((uint32_t) ('9' + 1))
+      : "xmm0", "xmm1", "xmm2", "xmm3", "xmm4", "memory"
+    );
+    if ((valid_mask & 0xFF) == 0xFF) {
+      uint32_t low_8 = Simd_Parse_8_Digits_Avx2 (cursor + 8);
+      *out = (uint64_t) high_8 * 100000000ULL + low_8;
+      return 16;
+    }
+  }
+
+  /* Only the first eight digits were valid. */
+  *out = high_8;
+  return 8;
+}
+#endif /* SIMD_X86_64 */
+
+/* Convert a decimal digit string (with optional leading sign) to a Big_Integer.  Uses the AVX2
+ * SIMD path when available to process eight or sixteen digits at a time. */
+Big_Integer *Big_Integer_From_Decimal_SIMD (const char *text) {
+  Big_Integer *integer = Big_Integer_New (4);
+  integer->is_negative = (*text == '-');
+  if (*text == '-' or *text == '+') text++;
+
+  /* Skip leading zeros. */
+  while (*text == '0') text++;
+  if (*text == '\0' or (*text < '0' or *text > '9')) {
+    integer->limbs[0] = 0;
+    integer->count = 1;
+    Big_Integer_Normalize (integer);
+    return integer;
+  }
+
+  /* Locate the end of the digit run. */
+  const char *end = text;
+  while (*end >= '0' and *end <= '9') end++;
+#ifdef SIMD_X86_64
+  Simd_Detect_Features ();
+  if (Simd_Has_Avx2) {
+    integer->limbs[0] = 0;
+    integer->count = 1;
+    const char *cursor = text;
+    while (cursor < end) {
+      int remaining = (int) (end - cursor);
+
+      /* When eight or more digits remain, try the SIMD batch path. */
+      if (remaining >= 8) {
+        uint64_t chunk;
+        int parsed = Simd_Parse_Digits_Avx2 (cursor, end, &chunk);
+        if (parsed == 16) {
+          Big_Integer_Mul_Add_Small (integer, 10000000000000000ULL, chunk);
+          cursor += 16;
+        } else if (parsed == 8) {
+          Big_Integer_Mul_Add_Small (integer, 100000000ULL, chunk);
+          cursor += 8;
+        } else {
+          Big_Integer_Mul_Add_Small (integer, 10, (uint64_t) (*cursor - '0'));
+          cursor++;
+        }
+      } else {
+        Big_Integer_Mul_Add_Small (integer, 10, (uint64_t) (*cursor - '0'));
+        cursor++;
+      }
+    }
+    Big_Integer_Normalize (integer);
+    return integer;
+  }
+#endif
+
+  /* Scalar fallback: one digit at a time. */
+  integer->limbs[0] = 0;
+  integer->count = 1;
+  while (text < end) {
+    Big_Integer_Mul_Add_Small (integer, 10, (uint64_t) (*text - '0'));
+    text++;
+  }
+  Big_Integer_Normalize (integer);
+  return integer;
+}
+
+/* ═════════════════════════════════════════════════════════════════════════════════════════════════
+ * §19. DRIVER
  * ═════════════════════════════════════════════════════════════════════════════════════════════════
  */
 void Compile_File (const char *input_path, const char *output_path) {
@@ -37924,10 +37931,10 @@ void Compile_File (const char *input_path, const char *output_path) {
   }
 
   /* ═══════════════════════════════════════════════════════════════════════════════════════════════
-   * Emit @main() with Standard-style elaboration order (§15.7)
+   * Emit @main() with Standard-style elaboration order (§15)
    *
    * Per Ada RM 10.2, library units must be elaborated in a safe order
-   * before the main subprogram executes. The elaboration model (§15.7)
+   * before the main subprogram executes. The elaboration model (§15)
    * computes this order using dependency analysis and topological sort.
    *
    * The algorithm respects:
