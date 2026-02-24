@@ -547,7 +547,7 @@ typedef enum {
   K(EQ),   K(NE),    K(LT),   K(LE),    K(GT),        K(GE),
   K(PLUS), K(MINUS), K(STAR), K(SLASH), K(AMPERSAND), K(EXPON),
 
-  // Reserved words — first and last mark the keyword range for lookup
+  // Keywords
   K(ABORT),     K(ABS),       K(ACCEPT),    K(ACCESS),    K(ALL),       K(AND),       K(AND_THEN),  
   K(ARRAY),     K(AT),        K(BEGIN),     K(BODY),      K(CASE),      K(CONSTANT),  K(DECLARE),   
   K(DELAY),     K(DELTA),     K(DIGITS),    K(DO),        K(ELSE),      K(ELSIF),     K(END),       
@@ -562,7 +562,7 @@ typedef enum {
   K(COUNT)
 } Token_Kind;
 
-// ???
+// Token to string mapping table for parsing
 const char *Token_Name [TK_COUNT] = {
 
   // Sentinels
@@ -580,6 +580,7 @@ const char *Token_Name [TK_COUNT] = {
   N(GT,     ">"), N(GE,        ">="), N(PLUS,     "+"), N(MINUS,    "-"), N(STAR,    "*"), 
   N(SLASH,  "/"), N(AMPERSAND,  "&"), N(EXPON,   "**"),
 
+  // Keywords
   KW(ABORT),    KW(ABS),       KW(ACCEPT),  KW(ACCESS),    KW(ALL),      KW(AND),  
   KW(ARRAY),    KW(AT),        KW(BEGIN),   KW(BODY),      KW(CASE),     KW(CONSTANT),  
   KW(DECLARE),  KW(DELAY),     KW(DELTA),   KW(DIGITS),    KW(DO),       KW(ELSE),      
@@ -1259,10 +1260,10 @@ struct Syntax_Node {
       Syntax_Node *unit;            // The library unit
       Syntax_Node *separate_parent; // Separate parent or NULL
     } compilation_unit;
-
   };
 };
 
+// Node constructor
 Syntax_Node *Node_New (Node_Kind kind, Source_Location location);
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
@@ -1702,20 +1703,22 @@ typedef enum {
   CONVENTION_INTRINSIC,  CONVENTION_ASSEMBLER
 } Convention_Kind;
 
+// ???
 struct Symbol {
+
   // Identity
-  Symbol_Kind      kind;             // What kind of entity this symbol represents
-  String_Slice     name;             // The Ada identifier for this entity
-  Source_Location  location;         // Where this entity was declared
-  Type_Info       *type;             // Type of the entity (variable, constant, param, etc.)
-  Scope           *defining_scope;   // The scope in which this symbol was introduced
-  Symbol          *parent;           // Enclosing package or subprogram symbol, or NULL
-  Symbol          *next_overload;    // Next homonym in the overload chain
-  Symbol          *next_in_bucket;   // Next symbol in the hash-bucket collision chain
-  Visibility_Level visibility;       // Current visibility (hidden, use, direct)
+  Symbol_Kind      kind;           // What kind of entity this symbol represents
+  String_Slice     name;           // The Ada identifier for this entity
+  Source_Location  location;       // Where this entity was declared
+  Type_Info       *type;           // Type of the entity (variable, constant, param, etc.)
+  Scope           *defining_scope; // The scope in which this symbol was introduced
+  Symbol          *parent;         // Enclosing package or subprogram symbol, or NULL
+  Symbol          *next_overload;  // Next homonym in the overload chain
+  Symbol          *next_in_bucket; // Next symbol in the hash-bucket collision chain
+  Visibility_Level visibility;     // Current visibility (hidden, use, direct)
 
   // Declaration link
-  Syntax_Node    *declaration;       // AST node that declared this entity
+  Syntax_Node *declaration; // AST node that declared this entity
 
   // Subprogram profile
   Parameter_Info *parameters;        // Array of formal parameter descriptors
@@ -1756,14 +1759,14 @@ struct Symbol {
   bool     needs_fat_ptr_storage; // Requires fat-pointer alloca
 
   // Derived operations
-  Symbol         *parent_operation;  // Original primitive inherited by derivation
-  Type_Info      *derived_from_type; // Parent type from which this op was derived
+  Symbol    *parent_operation;  // Original primitive inherited by derivation
+  Type_Info *derived_from_type; // Parent type from which this op was derived
 
   // Labels, loops, entries
-  uint32_t        llvm_label_id;      // LLVM label for goto targets
-  uint32_t        loop_exit_label_id; // LLVM label for exit-loop targets
-  uint32_t        entry_index;        // Index in the task entry family
-  Syntax_Node    *renamed_object;     // Renamed entity expression, or NULL
+  uint32_t     llvm_label_id;      // LLVM label for goto targets
+  uint32_t     loop_exit_label_id; // LLVM label for exit-loop targets
+  uint32_t     entry_index;        // Index in the task entry family
+  Syntax_Node *renamed_object;     // Renamed entity expression, or NULL
 
   // Generic instantiation state
   Syntax_Node    *generic_formals;         // AST of the generic formal part
@@ -1772,15 +1775,15 @@ struct Symbol {
   Symbol         *generic_template;        // Back-link to the generic template symbol
   Symbol         *instantiated_subprogram; // Expanded subprogram from instantiation
   struct {
-    String_Slice  formal_name;          // Name of the generic formal parameter
-    Type_Info    *actual_type;          // Actual type supplied at instantiation
-    Symbol       *actual_subprogram;    // Actual subprogram supplied at instantiation
-    Syntax_Node  *actual_expr;          // Actual expression (for object formals)
-    Token_Kind    builtin_operator;     // Intrinsic operator kind, or TK_EOF
-  } *generic_actuals;                   // Array of formal-to-actual mappings
-  uint32_t        generic_actual_count; // Length of the generic_actuals array
-  Syntax_Node    *expanded_spec;        // Macro-expanded specification AST
-  Syntax_Node    *expanded_body;        // Macro-expanded body AST
+    String_Slice  formal_name;             // Name of the generic formal parameter
+    Type_Info    *actual_type;             // Actual type supplied at instantiation
+    Symbol       *actual_subprogram;       // Actual subprogram supplied at instantiation
+    Syntax_Node  *actual_expr;             // Actual expression (for object formals)
+    Token_Kind    builtin_operator;        // Intrinsic operator kind, or TK_EOF
+  } *generic_actuals;                      // Array of formal-to-actual mappings
+  uint32_t        generic_actual_count;    // Length of the generic_actuals array
+  Syntax_Node    *expanded_spec;           // Macro-expanded specification AST
+  Syntax_Node    *expanded_body;           // Macro-expanded body AST
 };
 
 // A scope is a hash table of symbols chained outward from inner to enclosing.
@@ -2017,7 +2020,7 @@ typedef struct {
   Type_Info   *disc_cache_type;                 // Record type the disc cache belongs to
 } Code_Generator;
 
-// ???
+// Global code generator state
 Code_Generator *cg;
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
@@ -2307,29 +2310,30 @@ void     Emit_Store_Fat_Pointer_Fields_To_Temp(uint32_t    data,
 void     Emit_Fat_Pointer_Copy_To_Name (uint32_t    fat_ptr,
                                         Symbol     *dst,
                                         const char *bt);
-void     Emit_Fat_To_Array_Memcpy      (uint32_t   fat_val,
-                                        uint32_t   dest_ptr,
-                                        Type_Info *t);
+void     Emit_Fat_To_Array_Memcpy (uint32_t   fat_val,
+                                   uint32_t   dest_ptr,
+                                   Type_Info *t);
 
-uint32_t Emit_Alloc_Bounds_Struct  (uint32_t lo, uint32_t hi, const char *bt);
-uint32_t Emit_Alloc_Bounds_MultiDim(uint32_t   *lo,
-                                    uint32_t   *hi,
-                                    uint32_t    ndims,
-                                    const char *bt);
-uint32_t Emit_Heap_Bounds_Struct   (uint32_t lo, uint32_t hi, const char *bt);
+uint32_t Emit_Alloc_Bounds_MultiDim (uint32_t   *lo,
+                                     uint32_t   *hi,
+                                     uint32_t    ndims,
+                                     const char *bt);
+uint32_t Emit_Alloc_Bounds_Struct   (uint32_t lo, uint32_t hi, const char *bt);
+uint32_t Emit_Heap_Bounds_Struct    (uint32_t lo, uint32_t hi, const char *bt);
 
-void Emit_Fat_Pointer_Insertvalue_Named  (const char *prefix,
-                                          const char *data_expr,
-                                          const char *low_expr,
-                                          const char *high_expr,
-                                          const char *bt);
 void Emit_Fat_Pointer_Extractvalue_Named (const char *src_name,
                                           const char *data_name,
                                           const char *low_name,
                                           const char *high_name,
                                           const char *bt);
-void Emit_Widen_Named_For_Intrinsic   (const char *src, const char *dst, const char *bt);
+void Emit_Fat_Pointer_Insertvalue_Named  (const char *prefix,
+                                          const char *data_expr,
+                                          const char *low_expr,
+                                          const char *high_expr,
+                                          const char *bt);
+
 void Emit_Narrow_Named_From_Intrinsic (const char *src, const char *dst, const char *bt);
+void Emit_Widen_Named_For_Intrinsic   (const char *src, const char *dst, const char *bt);
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 //
@@ -3006,21 +3010,19 @@ void Expand_Generic_Package  (Symbol *instance_sym);
 //
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 
-
-extern const char   *Include_Paths[32];
-extern uint32_t      Include_Path_Count;
-extern Syntax_Node  *Loaded_Package_Bodies[128];
-extern int           Loaded_Body_Count;
-extern String_Slice  Loaded_Body_Names[128];
-extern int           Loaded_Body_Names_Count;
-
 // Tracks which packages are currently being loaded to detect circular WITH chains.
 typedef struct {
   String_Slice names[64]; // Unit names currently being loaded
   int          count;     // Number of names in the set
 } Loading_Set;
 
-extern Loading_Set Loading_Packages;
+extern Loading_Set   Loading_Packages;
+extern const char   *Include_Paths[32];
+extern uint32_t      Include_Path_Count;
+extern Syntax_Node  *Loaded_Package_Bodies[128];
+extern int           Loaded_Body_Count;
+extern String_Slice  Loaded_Body_Names[128];
+extern int           Loaded_Body_Names_Count;
 
 bool  Body_Already_Loaded  (String_Slice name);
 void  Mark_Body_Loaded     (String_Slice name);
