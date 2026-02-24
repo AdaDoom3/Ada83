@@ -3,25 +3,25 @@
 //                                                                                                  //
 //              An Ada 1983 Compiler Targeting LLVM Intermediate Representation                     //
 //                                                                                                  //
-//  Ch.  1.  Foundations         Includes, typedefs, target constants, ctype wrappers               //
-//  Ch.  2.  Measurement         Bit/byte morphisms, LLVM type selection, range checks              //
-//  Ch.  3.  Memory              Arena allocator for the compilation session                        //
-//  Ch.  4.  Text                String slices, hashing, edit distance                              //
-//  Ch.  5.  Provenance          Source locations and diagnostic reporting                          //
-//  Ch.  6.  Arithmetic          Big integers, big reals, exact rationals                           //
-//  Ch.  7.  Lexical Analysis    Token kinds, lexer state, scanning functions                       //
-//  Ch.  8.  Syntax              Node kinds, the syntax tree, node lists                            //
-//  Ch.  9.  Parsing             Recursive descent for the full Ada 83 grammar                      //
-//  Ch. 10.  Types               The Ada type lattice, Type_Info, classification                    //
-//  Ch. 11.  Names               Symbol table, scopes, overload resolution                         //
-//  Ch. 12.  Semantics           Name resolution, type checking, constant folding                   //
-//  Ch. 13.  Code Generation     LLVM IR emission for every Ada construct                          //
-//  Ch. 14.  Library Management  ALI files, checksums, dependency tracking                         //
-//  Ch. 15.  Elaboration         Dependency ordering for multi-unit programs                        //
-//  Ch. 16.  Generics            Macro-style instantiation of generic units                         //
-//  Ch. 17.  File Loading        Include-path search, source file I/O                               //
-//  Ch. 18.  Vector Paths        SIMD-accelerated scanning on x86-64 and ARM64                     //
-//  Ch. 19.  Driver              Command-line parsing and top-level orchestration                    //
+//  §1.   Foundations         Includes, typedefs, target constants, ctype wrappers               //
+//  §2.   Measurement         Bit/byte morphisms, LLVM type selection, range checks              //
+//  §3.   Memory              Arena allocator for the compilation session                        //
+//  §4.   Text                String slices, hashing, edit distance                              //
+//  §5.   Provenance          Source locations and diagnostic reporting                          //
+//  §6.   Arithmetic          Big integers, big reals, exact rationals                           //
+//  §7.   Lexical Analysis    Token kinds, lexer state, scanning functions                       //
+//  §8.   Syntax              Node kinds, the syntax tree, node lists                            //
+//  §9.   Parsing             Recursive descent for the full Ada 83 grammar                      //
+//  §10.  Types               The Ada type lattice, Type_Info, classification                    //
+//  §11.  Names               Symbol table, scopes, overload resolution                         //
+//  §12.  Semantics           Name resolution, type checking, constant folding                   //
+//  §13.  Code Generation     LLVM IR emission for every Ada construct                          //
+//  §14.  Library Management  ALI files, checksums, dependency tracking                         //
+//  §15.  Elaboration         Dependency ordering for multi-unit programs                        //
+//  §16.  Generics            Macro-style instantiation of generic units                         //
+//  §17.  File Loading        Include-path search, source file I/O                               //
+//  §18.  Vector Paths        SIMD-accelerated scanning on x86-64 and ARM64                     //
+//  §19.  Driver              Command-line parsing and top-level orchestration                    //
 //                                                                                                  //
 
 
@@ -44,9 +44,15 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-// -----------------
-// -- Foundations --
-// -----------------
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+// §1.  FOUNDATIONS — Includes, typedefs, target constants, ctype wrappers
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+//
+// Ada's numeric model demands integers wider than 64 bits; GCC/Clang __int128 gives us
+// native 128-bit registers on 64-bit targets.  All widths, bounds, and capacities for the
+// compiler's subsystems are defined here so that every translation unit sees consistent
+// constants.  Safe ctype wrappers cast to unsigned char before calling the C library.
+//
 
 // -- Extended Integer Types
 // Ada's numeric model demands integers wider than 64 bits; GCC/Clang __int128 gives us
@@ -104,10 +110,10 @@ enum {
 
 // -- Subsystem Capacities
 enum { Default_Chunk_Size = 1 << 24 }; // Arena chunk: 16 MiB
-#define SYMBOL_TABLE_SIZE   1024       // Hash buckets (Ch. 11)
+#define SYMBOL_TABLE_SIZE   1024       // Hash buckets (§11)
 #define MAX_INTERPRETATIONS 64         // Overload ceiling
 #define ALI_VERSION         "Ada83 1.0 built " __DATE__ " " __TIME__
-#define ELAB_MAX_VERTICES   512        // Elaboration graph (Ch. 15)
+#define ELAB_MAX_VERTICES   512        // Elaboration graph (§15)
 #define ELAB_MAX_EDGES      2048
 #define ELAB_MAX_COMPONENTS 256
 
@@ -196,18 +202,23 @@ static const uint8_t Id_Char_Table[256] = {
 };
 #define Is_Id_Char(ch) (Id_Char_Table[(uint8_t)(ch)])
 
-// -----------------
-// -- Measurement --
-// -----------------
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+// §2.  MEASUREMENT — Bit/byte morphisms, LLVM type selection, range checks
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+//
+// Size morphisms convert between the byte world of Type_Info and the bit world of LLVM IR.
+// Llvm_Int_Type and Llvm_Float_Type map a bit width to the smallest LLVM type that holds it.
+// Range predicates determine representation width for integer and modular types.
+//
 
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
 // §2.1  Bit/Byte Conversions — Size morphisms
 //
 // To_Bits   : bytes -> bits   (multiplicative, total — never truncates)
 // To_Bytes  : bits  -> bytes  (ceiling division — rounds up to next whole byte)
 // Byte_Align: bits  -> bits   (round up to a byte boundary)
-// Align_To  : round `size' up to the nearest `alignment' boundary
-// ─────────────────────────────────────────────────────────────────────────────
+// Align_To  : round size up to the nearest alignment boundary
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
 static inline uint64_t To_Bits    (uint64_t bytes) { return bytes * Bits_Per_Unit; }
 static inline uint64_t To_Bytes   (uint64_t bits)  { return (bits + Bits_Per_Unit - 1) / Bits_Per_Unit; }
 static inline uint64_t Byte_Align (uint64_t bits)  { return To_Bits (To_Bytes (bits)); }
@@ -215,12 +226,12 @@ static inline size_t   Align_To   (size_t size, size_t alignment) {
   return alignment ? ((size + alignment - 1) & ~(alignment - 1)) : size;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
 // §2.2  LLVM Type Selection — Width-to-type morphisms
 //
 // Given a bit width, return the smallest LLVM integer or float type that can
 // hold that width.
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
 
 // Return the smallest LLVM integer type (i1 through i128) for `bits' bits.
 static inline const char *Llvm_Int_Type (uint32_t bits) {
@@ -243,13 +254,13 @@ static inline bool Llvm_Type_Is_Fat_Pointer (const char *llvm_type) {
   return llvm_type and strcmp (llvm_type, "{ ptr, ptr }") == 0;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
 // §2.3  Range Predicates — Determining representation width
 //
 // Compute the minimum number of bits needed to represent the integer range
 // [lo .. hi].  All bounds are int128_t / uint128_t so the full Ada integer
 // range is representable.
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
 
 // Return true when [lo..hi] fits within the signed range of `bits' bits.
 static inline bool Fits_In_Signed (int128_t lo, int128_t hi, uint32_t bits) {
@@ -292,13 +303,16 @@ static inline uint32_t Bits_For_Modulus (uint128_t modulus) {
          max_value <= UINT64_MAX           ? Width_64 : Width_128;
 }
 
-// ----------
-// -- Memory --
-// ----------
-
-// Bump allocator exploiting the single-lifetime invariant of compilation.
-// Chunks are 16 MiB by default; oversized requests get their own chunk.
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+// §3.  MEMORY — Arena allocator for the compilation session
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+//
+// A simple bump allocator used for AST nodes, interned strings, and other objects whose
+// lifetime spans the entire compilation.  All memory is freed in one shot at the end via
+// Arena_Free_All.  Chunks are 16 MiB by default; oversized requests get their own chunk.
 // All pointers are 16-byte aligned.
+//
+
 typedef struct Arena_Chunk Arena_Chunk;
 struct Arena_Chunk {
   Arena_Chunk *previous; // Singly-linked list of chunks
@@ -317,11 +331,15 @@ extern Memory_Arena Global_Arena;
 void *Arena_Allocate (size_t size); // Zero-filled, 16-byte aligned
 void  Arena_Free_All (void);        // Release every chunk at end of main
 
-// --------
-// -- Text --
-// --------
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+// §4.  TEXT — Non-owning string views
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+//
+// A String_Slice is a (pointer, length) pair borrowed from the source buffer or the arena.
+// It avoids strlen() calls and allows substring views without allocation.  Ada identifiers
+// are case-insensitive (RM 2.3), so comparison and hashing fold to lower case.
+//
 
-// String_Slice: a non-owning (pointer, length) view into the source buffer or arena.
 // No null terminator required.  Comparison and hashing fold to lower case (Ada RM 2.3).
 typedef struct {
   const char *data;   // Pointer into the source buffer or arena (not null-terminated)
@@ -345,11 +363,16 @@ uint64_t     Slice_Hash              (String_Slice slice);
 // Levenshtein edit distance for spelling-correction suggestions.
 int          Edit_Distance           (String_Slice left,  String_Slice right);
 
-// ----------------
-// -- Provenance --
-// ----------------
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+// §5.  PROVENANCE — Anchoring diagnostics to source text
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+//
+// Every AST node, token, and symbol carries a Source_Location so that error messages can
+// point the programmer at the exact file, line, and column where the problem was detected.
+// Errors are accumulated rather than triggering an immediate abort, so the compiler can
+// report multiple issues in a single invocation.
+//
 
-// Every token, syntax node, and symbol carries a Source_Location.  Errors are
 // accumulated; Error_Count is checked after each phase.  Fatal_Error calls exit(1).
 typedef struct {
   const char *filename; // Path of the source file (interned, never freed)
@@ -367,15 +390,21 @@ void Report_Error (Source_Location location, const char *format, ...);
 __attribute__((noreturn))
 void Fatal_Error  (Source_Location location, const char *format, ...);
 
-// ----------------
-// -- Arithmetic --
-// ----------------
-
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+// §6.  ARITHMETIC — Big integers, big reals, exact rationals
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+//
 // Three levels of exact arithmetic for Ada numeric literals and constant folding:
+//   Big_Integer  — Arbitrary-precision integers as little-endian 64-bit limb arrays.
+//   Big_Real     — Significand (Big_Integer) paired with a power-of-ten exponent.
+//   Rational     — Exact quotient of two Big_Integers, always reduced by GCD.
+// All storage is arena-allocated; no explicit deallocation.  Ada numeric literals can
+// exceed the 64-bit range (e.g. mod 2**128), so arbitrary precision is not optional.
+//
+
 //   Big_Integer  Arbitrary-precision integers as little-endian 64-bit limb arrays.
 //   Big_Real     Significand (Big_Integer) paired with a power-of-ten exponent.
 //   Rational     Exact quotient of two Big_Integers, always reduced by GCD.
-// All storage is arena-allocated; no explicit deallocation.
 
 // -- Big_Integer
 typedef struct {
@@ -490,11 +519,17 @@ int      Rational_Compare       (Rational         left, Rational        right);
 // Best-effort conversion to IEEE double; may lose precision.
 double   Rational_To_Double     (Rational         rational);
 
-// ----------------------
-// -- Lexical Analysis --
-// ----------------------
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+// §7.  LEXICAL ANALYSIS — Token kinds, lexer state, scanning functions
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+//
+// The scanner converts a flat character buffer into a stream of typed tokens.  Token_Kind
+// enumerates every lexeme in the Ada 83 grammar: identifiers, numeric and string literals,
+// delimiters, operator symbols, and the sixty-three reserved words of RM 2.9.  The lexer
+// maintains a sliding cursor with one character of look-ahead; SIMD fast-paths accelerate
+// whitespace skipping and identifier scanning on x86-64 and ARM64.
+//
 
-// -- Token Kinds
 // Token_Kind enumerates every lexeme in the Ada 83 grammar: identifiers, numeric and
 // string literals, delimiters, operator symbols, and the sixty-three reserved words of RM 2.9.
 typedef enum {
@@ -687,11 +722,17 @@ Token Scan_String_Literal    (Lexer *lex);
 // Return the integer value of a hex digit character, or -1 if not a digit.
 int   Digit_Value            (char   ch);
 
-// ----------
-// -- Syntax --
-// ----------
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+// §8.  SYNTAX — Node kinds, the syntax tree, node lists
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+//
+// The AST uses a tagged-union design: each Syntax_Node carries a Node_Kind tag and a
+// union payload specific to that kind.  The tree is a forest — one root per compilation
+// unit, with shared subtrees within a unit where the grammar allows (e.g. subtype marks
+// referenced from multiple declarations).  All nodes are arena-allocated and never
+// individually freed.
+//
 
-// The abstract syntax tree is the central data structure.  Every syntactic construct
 // maps to a Node_Kind; the Syntax_Node record carries kind, location, type annotation,
 // symbol link, and a payload union discriminated by the kind tag.
 
@@ -1247,14 +1288,20 @@ struct Syntax_Node {
 
 Syntax_Node *Node_New (Node_Kind kind, Source_Location location);
 
-// -----------
-// -- Parsing --
-// -----------
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+// §9.  PARSING — Recursive descent for the full Ada 83 grammar
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+//
+// Recursive descent mirrors the grammar, making the grammar itself the invariant.
+//
+// Key design decisions:
+//   1. UNIFIED APPLY NODE — All X(...) forms parse as NK_APPLY.  Semantic analysis
+//      later distinguishes calls, indexing, slicing, and type conversions.
+//   2. UNIFIED ASSOCIATION PARSING — One helper handles positional, named, and choice
+//      associations used in aggregates, calls, and generic actuals.
+//   3. UNIFIED POSTFIX CHAIN — One loop handles .selector, 'attribute, and (args).
+//
 
-// Recursive descent mirrors the grammar.  Three simplifying principles:
-//   1. All X(...) forms parse as NK_APPLY; semantic analysis disambiguates later.
-//   2. One helper handles positional, named, and choice associations.
-//   3. One postfix loop handles .selector, 'attribute, and (args).
 
 typedef struct {
   Lexer      lexer;          // The underlying lexer driving token production
@@ -1360,13 +1407,18 @@ Syntax_Node *Parse_Representation_Clause   (Parser *p);
 Syntax_Node *Parse_Context_Clause          (Parser *p);
 Syntax_Node *Parse_Compilation_Unit        (Parser *p);
 
-// ---------
-// -- Types --
-// ---------
-
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+// §10.  TYPES — The Ada type lattice, Type_Info, classification
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+//
 // Ada's types form a lattice rooted at the universal types.  Every type in the program
 // is represented by a Type_Info descriptor carrying kind, scalar bounds, composite
-// structure, representation size, and derivation chains.  Sizes in Type_Info are BYTES.
+// structure, representation size, and derivation chains.  A type combines name, range,
+// and representation as three orthogonal concerns.
+//
+// INVARIANT: All sizes in Type_Info are stored in BYTES, not bits.
+//
+
 
 typedef enum {
   TYPE_UNKNOWN = 0,
@@ -1589,13 +1641,22 @@ void       Set_Generic_Type_Map        (Symbol    *inst);
 Type_Info *Resolve_Generic_Actual_Type (Type_Info *type);
 bool       Check_Is_Suppressed         (Type_Info *type, Symbol *sym, uint32_t check_bit);
 
-// ---------
-// -- Names --
-// ---------
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+// §11.  NAMES — Symbol table, scopes, overload resolution
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+//
+// Every named entity — variable, constant, type, subprogram, package, exception, loop,
+// label — is represented by a Symbol.  Symbols live in Scopes chained outward from
+// inner to enclosing.  The symbol table implements Ada's visibility and overloading
+// rules: hierarchical scopes, use-clause visibility, and multi-meaning overloads.
+// We use a hash table with chaining and a scope stack for nested contexts.
+//
+// Overload resolution is a two-pass process (RM 8.6):
+//   1. Bottom-up: collect all possible interpretations of each identifier.
+//   2. Top-down: given context type expectations, select the unique valid one.
+//
 
-// Every named entity -- variable, constant, type, subprogram, package, exception, loop,
 // label -- is represented by a Symbol.  Symbols live in Scopes chained outward from
-// inner to enclosing.  A Scope is a hash table of Symbol chains.
 
 typedef enum {
   SYMBOL_UNKNOWN = 0,
@@ -1804,12 +1865,21 @@ Symbol *Resolve_Overloaded_Call (String_Slice    name,
 
 String_Slice Operator_Name (Token_Kind op);
 
-// -------------
-// -- Semantics --
-// -------------
-
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+// §12.  SEMANTICS — Name resolution, type checking, constant folding
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+//
 // The semantic pass walks the syntax tree to resolve identifiers, check type
 // compatibility, fold static expressions, and freeze type representations.
+// A permissive parser gives the type checker material to work with.
+//
+// Semantic analysis performs:
+//   - Name resolution: bind identifiers to symbols
+//   - Type checking: verify type compatibility of operations
+//   - Overload resolution: select correct subprogram
+//   - Constraint checking: verify bounds, indices, etc.
+//
+
 
 Type_Info *Resolve_Expression   (Syntax_Node *node);
 Type_Info *Resolve_Identifier   (Syntax_Node *node);
@@ -1834,12 +1904,32 @@ bool        Eval_Const_Rational (Syntax_Node *node, Rational *out);
 const char *I128_Decimal        (int128_t     value);
 const char *U128_Decimal        (uint128_t    value);
 
-// -------------------
-// -- Code Generation --
-// -------------------
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+// §13.  CODE GENERATION — LLVM IR emission for every Ada construct
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+//
+// The code generator walks the resolved syntax tree and emits LLVM IR as plain text to
+// a FILE*.  The AST is semantic and the IR is operational, with translation bridging
+// the gap.
+//
+// Key principles:
+//   1. Operate at native type width; convert only at explicit Ada type conversions and
+//      LLVM intrinsic boundaries (memcpy length, alloc size must be i64).
+//   2. All pointer types use opaque 'ptr' (LLVM 15+).
+//   3. Static links for nested subprogram access.
+//   4. Fat pointers { ptr, ptr } for unconstrained arrays (data + bounds).
+//
+// The Code_Generator record holds all mutable state for one compilation unit:
+// temporaries, labels, globals, string constants, deferred bodies, and exception state.
+//
+// LLVM IR is an SSA (Static Single Assignment) form where every %N temporary is defined
+// exactly once.  Emit_Temp() allocates a fresh temporary number; the Emit() function
+// writes IR text.  Labels partition code into basic blocks — straight-line sequences
+// ending in a terminator (br, ret, switch, unreachable).  Emit_Label_Here() begins a
+// new block; Emit_Branch_If_Needed() closes the current one if it isn't already
+// terminated.
+//
 
-// The code generator walks the resolved syntax tree and emits LLVM IR as plain text
-// to a FILE*.  The Code_Generator record holds all mutable state for one compilation unit.
 
 typedef struct {
   // -- Output stream and counters
@@ -1918,60 +2008,148 @@ extern Code_Generator *cg;
 
 void Code_Generator_Init (FILE *output);
 
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+// §13.1  Core IR Emission Primitives
+//
+// LLVM IR is an SSA (Static Single Assignment) intermediate representation.  Every value
+// lives in a numbered "temporary" written %1, %2, ... and is defined exactly once.
+// Emit_Temp() hands out the next number; the Emit() variadic function writes a line of
+// IR text to the output stream.
+//
+// Control flow is expressed as "basic blocks" — straight-line instruction sequences ending
+// in exactly one terminator (br, ret, switch, unreachable).  Emit_Label_Here() opens a
+// new block; Emit_Branch_If_Needed() closes the current one with a branch if it is not
+// already terminated.  This two-function protocol prevents the common bug of emitting
+// instructions after a terminator (which LLVM rejects).
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+
+// Allocate a fresh SSA temporary number (%N).  Numbers are never reused within a function.
 uint32_t    Emit_Temp             (void);
+// Allocate a fresh basic-block label number (label.N).
 uint32_t    Emit_Label            (void);
+// Associate an LLVM type string (e.g. "i32", "ptr") with a temporary for later queries.
 void        Temp_Set_Type         (uint32_t temp_id, const char *llvm_type);
+// Retrieve the LLVM type previously associated with a temporary.
 const char *Temp_Get_Type         (uint32_t temp_id);
+// Mark a temporary as holding the address of a fat-pointer alloca (not the fat value itself).
 void        Temp_Mark_Fat_Alloca  (uint32_t temp_id);
+// Return true if this temporary was marked as a fat-pointer alloca.
 bool        Temp_Is_Fat_Alloca    (uint32_t temp_id);
 
+// Write a formatted line of LLVM IR text to the output stream (like fprintf to cg->output).
 void Emit                   (const char *format, ...);
+// Emit an LLVM debug-location comment anchoring the next instruction to source.
 void Emit_Location          (Source_Location location);
+// Emit a basic-block label, closing the previous block if it has no terminator.
 void Emit_Label_Here        (uint32_t label);
+// If the current block lacks a terminator, emit an unconditional "br label %N".
 void Emit_Branch_If_Needed  (uint32_t label);
+// Append formatted text to the string-constant accumulator (for @.str.N globals).
 void Emit_String_Const      (const char *format, ...);
+// Append a single character to the string-constant accumulator.
 void Emit_String_Const_Char (char ch);
+// Emit a floating-point constant using LLVM's hexadecimal literal syntax.
 void Emit_Float_Constant    (uint32_t    result,
                              const char *float_type,
                              double      value,
                              const char *comment);
 
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+// §13.1.1  LLVM Type Helpers
+//
+// LLVM's type system is simpler than Ada's: integers are iN, floats are "float"/"double",
+// and all pointers are the opaque type "ptr".  These helpers translate between Ada's rich
+// type model and LLVM's flat one, choosing the correct comparison predicate, arithmetic
+// width, or bounds struct layout.
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+
+// Return the LLVM integer type used for string bounds (e.g. "i32").
 const char *String_Bound_Type    (void);
+// Return the LLVM struct type for a pair of string bounds (e.g. "{ i32, i32 }").
 const char *String_Bounds_Struct (void);
+// Return the LLVM integer type used for general-purpose integer arithmetic.
 const char *Integer_Arith_Type   (void);
+// Return the wider of two LLVM integer types (e.g. wider of "i16" and "i32" is "i32").
 const char *Wider_Int_Type       (const char *left, const char *right);
+// Return the LLVM fcmp predicate string ("oeq", "olt", ...) for a floating-point comparison.
 const char *Float_Cmp_Predicate  (int op);
+// Return the LLVM icmp predicate ("eq", "slt", "ult", ...) for an integer comparison.
 const char *Int_Cmp_Predicate    (int op, bool is_unsigned);
+// Return the byte size of the string bounds struct.
 int         String_Bounds_Alloc  (void);
+// Return the bit width of an LLVM type string (e.g. "i32" -> 32, "ptr" -> 64).
 int         Type_Bits            (const char *llvm_type);
+// Return true if the LLVM type string denotes a floating-point type ("float" or "double").
 bool        Is_Float_Type        (const char *llvm_type);
 
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+// §13.1.2  Name Mangling and Symbol References
+//
+// LLVM IR uses textual identifiers for globals (@name) and locals (%name).  Ada's dotted
+// names (Package.Subprogram) and overloaded identifiers must be encoded into unique,
+// linker-safe strings.  The mangling scheme prefixes each component with its byte length
+// (like Itanium C++ mangling) so that "Ada.Text_IO.Put" becomes "_ada__3ada8text_io3put".
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+
+// Return true if the symbol has global (module-level) linkage rather than local scope.
 bool   Symbol_Is_Global   (Symbol *sym);
+// Mangle one name component into buf[pos..pos+max]; return the new write position.
 size_t Mangle_Slice_Into  (char         *buf,
                             size_t        pos,
                             size_t        max,
                             String_Slice  name);
+// Mangle a full symbol (with parent chain) into buf; return the new write position.
 size_t Mangle_Into_Buffer (char   *buf,
                             size_t  pos,
                             size_t  max,
                             Symbol *sym);
 
+// Return the mangled linker name for a symbol as an arena-allocated slice.
 String_Slice Symbol_Mangle_Name    (Symbol      *sym);
+// Return a qualified mangled name by joining parent and child components.
 String_Slice Mangle_Qualified_Name (String_Slice parent, String_Slice name);
+// Emit "@mangled_name" (the define/declare name) for a symbol.
 void         Emit_Symbol_Name      (Symbol *sym);
+// Emit "@mangled_name" as a reference (call target or global address).
 void         Emit_Symbol_Ref       (Symbol *sym);
+// Emit the alloca or global declaration that provides storage for a symbol.
 void         Emit_Symbol_Storage   (Symbol *sym);
+// Emit a reference to an exception's runtime type descriptor global.
 void         Emit_Exception_Ref    (Symbol *exc);
+// Find a locally-instantiated copy of a generic template symbol.
 Symbol      *Find_Instance_Local   (const Symbol *template_sym);
 
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+// §13.1.3  Static Chain (Nested Subprogram Access)
+//
+// Ada allows nested subprograms to reference variables declared in enclosing scopes.  LLVM
+// has no built-in closure mechanism, so the compiler passes a hidden "static chain" pointer
+// as an extra argument.  Each nesting level adds one pointer indirection; the depth is
+// computed at compile time from the symbol table's nesting_level fields.
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+
+// Walk the scope chain to find the nearest enclosing subprogram symbol.
 Symbol  *Find_Enclosing_Subprogram      (Symbol *sym);
+// Return true if this subprogram needs a static-chain parameter (has uplevel references).
 bool     Subprogram_Needs_Static_Chain  (Symbol *sym);
+// Return true if accessing this symbol requires traversing a static chain.
 bool     Is_Uplevel_Access              (const Symbol *sym);
+// Return the number of static-chain hops needed to reach a nested procedure's frame.
 int      Nested_Frame_Depth             (Symbol *proc);
+// Precompute the static-chain argument for a nested call (returns a temp holding the pointer).
 uint32_t Precompute_Nested_Frame_Arg    (Symbol *proc);
+// Emit the static-chain argument in a call instruction; return true if one was emitted.
 bool     Emit_Nested_Frame_Arg          (Symbol *proc, uint32_t precomp);
 
-// -- Checks and Conversions
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+// §13.2  Runtime Checks and Type Conversions
+//
+// Ada requires runtime checks for range violations, overflow, division by zero,
+// null access, index bounds, array length mismatches, and discriminant mismatches.
+// Each check category can be suppressed via pragma Suppress (RM 11.5).  These
+// functions emit LLVM IR that compares a value against bounds and branches to
+// an exception-raising block on failure.
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
 void Emit_Raise_Exception  (const char *exc_name, const char *comment);
 void Emit_Check_With_Raise (uint32_t    cond,
                              bool        raise_on_true,
@@ -2028,7 +2206,15 @@ void Emit_Subtype_Constraint_Compat_Check (Type_Info *subtype);
 uint32_t Emit_Widen_For_Intrinsic (uint32_t val, const char *from_type);
 uint32_t Emit_Extend_To_I64       (uint32_t val, const char *from);
 
-// -- Fat-Pointer Operations
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+// §13.3  Fat-Pointer Operations
+//
+// Ada unconstrained arrays (e.g. String) carry their bounds at runtime.  In LLVM IR
+// this is modelled as a "fat pointer" — a { ptr, ptr } pair where the first element
+// points to the data and the second to a { i32, i32 } bounds struct holding the low
+// and high index values.  This design lets slices, function parameters, and allocator
+// results share a uniform representation without knowing the array size at compile time.
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
 uint32_t Emit_Fat_Pointer          (uint32_t    data_ptr,
                                     int128_t    low,
                                     int128_t    high,
@@ -2098,7 +2284,13 @@ void Emit_Fat_Pointer_Extractvalue_Named (const char *src_name,
 void Emit_Widen_Named_For_Intrinsic   (const char *src, const char *dst, const char *bt);
 void Emit_Narrow_Named_From_Intrinsic (const char *src, const char *dst, const char *bt);
 
-// -- Bound and Length Emission
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+// §13.4  Bound and Length Emission
+//
+// Array dimensions carry compile-time or runtime bounds.  These helpers emit IR to
+// extract bounds from Type_Info (when statically known) or from fat-pointer structs
+// (when dynamic), compute lengths as high - low + 1, and clamp to zero for null ranges.
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
 // Pair of LLVM temporaries holding the low and high bounds of an array
 // dimension, together with the LLVM integer type they are expressed in.
 typedef struct {
@@ -2128,7 +2320,14 @@ uint32_t    Emit_Array_Lex_Compare    (uint32_t    left_ptr,
                                        uint32_t    elem_size,
                                        const char *bt);
 
-// -- Exception Handling
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+// §13.5  Exception Handling
+//
+// Ada exceptions use a setjmp/longjmp model: entering a begin..exception..end block
+// calls setjmp to save the machine state, then dispatches to the matching handler on
+// longjmp.  The Exception_Setup struct captures the four LLVM temporaries/labels
+// emitted at block entry.
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
 // The four LLVM labels / temps emitted when entering a begin..exception..end block.
 typedef struct {
   uint32_t handler_frame;  // Stack alloca for the exception handler frame
@@ -2143,7 +2342,15 @@ void            Generate_Exception_Dispatch  (Node_List *handlers,
                                               uint32_t   exc_id,
                                               uint32_t   end_label);
 
-// -- Expression Generation
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+// §13.6  Expression Generation
+//
+// Each Generate_* function lowers one AST node kind to LLVM IR.  The return value
+// is a uint32_t temporary number (%N) holding the result.  Expressions are compiled
+// bottom-up: leaves (literals, identifiers) produce a single load or constant;
+// compound nodes (binary ops, calls, aggregates) recursively generate their children
+// and then emit the combining instruction.
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
 uint32_t Generate_Expression        (Syntax_Node *node);
 uint32_t Generate_Lvalue            (Syntax_Node *node);
 uint32_t Generate_Integer_Literal   (Syntax_Node *node);
@@ -2202,7 +2409,12 @@ uint32_t Emit_Disc_Constraint_Value (Type_Info  *type_info,
 void Emit_Nested_Disc_Checks (Type_Info *parent_type);
 void Emit_Comp_Disc_Check    (uint32_t   ptr, Type_Info *comp_ti);
 
-// -- Statement Generation
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+// §13.7  Statement Generation
+//
+// Statements produce side effects rather than values, so they return void.  Control
+// flow (if/case/loop) is lowered to LLVM basic blocks connected by br/switch terminators.
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
 void Generate_Statement        (Syntax_Node *node);
 void Generate_Statement_List   (Node_List   *list);
 void Generate_Assignment       (Syntax_Node *node);
@@ -2214,7 +2426,13 @@ void Generate_Case_Statement   (Syntax_Node *node);
 void Generate_Block_Statement  (Syntax_Node *node);
 void Generate_Raise_Statement  (Syntax_Node *node);
 
-// -- Declaration Generation
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+// §13.8  Declaration Generation
+//
+// Declarations allocate storage (alloca for locals, @global for globals), emit
+// initialisation code, and register subprogram definitions.  Deferred bodies are
+// queued for later emission to handle forward references.
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
 void         Generate_Declaration            (Syntax_Node *node);
 void         Generate_Declaration_List       (Node_List   *list);
 void         Generate_Object_Declaration     (Syntax_Node *node);
@@ -2234,8 +2452,14 @@ Syntax_Node *Find_Homograph_Body             (Symbol      **exports,
                                               Node_List    *body_decls);
 void         Emit_Task_Function_Name         (Symbol *task_sym, String_Slice fallback_name);
 
-// -- Aggregate Helpers
-// Classification of an aggregate expression for the code generator.
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+// §13.9  Aggregate Helpers
+//
+// Ada aggregates (both array and record) are compiled by classifying the associations
+// (positional vs. named vs. others), allocating storage, and emitting per-element stores.
+// Multi-dimensional array aggregates and discriminated record aggregates require careful
+// index arithmetic and variant-part selection.
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
 typedef struct {
   uint32_t     n_positional; // Number of positional associations
   bool         has_named;    // True if any named associations are present
@@ -2305,7 +2529,15 @@ void Generate_Exception_Globals      (void);
 void Generate_Extern_Declarations    (Syntax_Node *node);
 void Generate_Compilation_Unit       (Syntax_Node *node);
 
-// -- Build-in-Place Protocol
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+// §13.10  Build-in-Place Protocol
+//
+// Functions returning limited types (records with tasks, controlled components, or
+// explicit limited declarations) cannot be copied.  Instead the caller passes extra
+// hidden formals (BIPalloc, BIPaccess, BIPmaster, BIPchain, BIPfinal) that tell the
+// callee where to construct the result directly.  This avoids illegal copies of
+// limited objects per RM 7.5.
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
 typedef enum {
   BIP_ALLOC_UNSPECIFIED = 0, BIP_ALLOC_CALLER      = 1,
   BIP_ALLOC_SECONDARY   = 2, BIP_ALLOC_GLOBAL_HEAP = 3,
@@ -2357,11 +2589,16 @@ void           BIP_Begin_Function       (const Symbol *func);
 bool           BIP_In_BIP_Function      (void);
 void           BIP_End_Function         (void);
 
-// ----------------------
-// -- Library Management --
-// ----------------------
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+// §14.  LIBRARY MANAGEMENT — ALI files, checksums, dependency tracking
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+//
+// ALI (Ada Library Information) files record dependencies, checksums, and exported
+// symbols per compilation unit.  When a package is WITH'd, the compiler first checks
+// the ALI cache to avoid re-parsing unchanged sources.  CRC32 checksums detect stale
+// dependencies; exported symbols are reinstalled into the symbol table from ALI data.
+//
 
-// ALI files record dependencies, checksums, and exported symbols per compilation unit.
 
 // One compilation unit described in an ALI file.
 typedef struct {
@@ -2471,13 +2708,16 @@ void Generate_ALI_File (const char   *output_path,
                          const char   *source,
                          size_t        source_size);
 
-// ----------------
-// -- Elaboration --
-// ----------------
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+// §15.  ELABORATION — Dependency ordering for multi-unit programs
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+//
+// Library-level packages must be elaborated in dependency order before the main
+// procedure runs.  This section builds the dependency graph, detects strongly-connected
+// components via Tarjan's algorithm, and produces a topological ordering.  Cycles
+// caused by Elaborate_All pragmas are detected and reported.
+//
 
-// Library-level packages must be elaborated in dependency order.  This chapter builds
-// the dependency graph, detects SCCs via Tarjan's algorithm, and produces a topological
-// ordering.
 
 typedef enum { UNIT_SPEC, UNIT_BODY, UNIT_SPEC_ONLY, UNIT_BODY_ONLY } Elab_Unit_Kind;
 
@@ -2602,13 +2842,16 @@ uint32_t          Elab_Get_Order_Count  (void);
 Symbol           *Elab_Get_Order_Symbol (uint32_t index);
 bool              Elab_Needs_Elab_Call  (uint32_t index);
 
-// -----------
-// -- Generics --
-// -----------
-
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+// §16.  GENERICS — Macro-style instantiation of generic units
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+//
 // Generic units are instantiated by macro-style expansion: the template AST is
 // deep-cloned with formal-to-actual substitution, then resolved and code-generated
-// as though the programmer had written the expanded text by hand.
+// as though the programmer had written the expanded text by hand.  Each instantiation
+// gets its own copy of the AST, its own symbols, and its own emitted IR.
+//
+
 
 typedef struct {
   String_Slice  formal_name;   // Generic formal parameter name
@@ -2638,14 +2881,16 @@ void         Node_List_Clone (Node_List         *dst,
 void Build_Instantiation_Env (Instantiation_Env *env, Symbol *inst, Symbol *tmpl);
 void Expand_Generic_Package  (Symbol *instance_sym);
 
-// ----------------
-// -- File Loading --
-// ----------------
-
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+// §17.  FILE LOADING — Include-path search, source file I/O
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+//
 // WITH clauses name packages that must be found on disk, loaded, parsed, analysed,
 // and code-generated before the withing unit can proceed.  Include_Paths lists the
 // directories to search; Lookup_Path maps a unit name to a file path.  Loading_Set
 // detects circular WITH dependencies by tracking which units are currently being loaded.
+//
+
 
 extern const char   *Include_Paths[32];
 extern uint32_t      Include_Path_Count;
@@ -2675,16 +2920,18 @@ void  Load_Package_Spec (String_Slice name, char *src);
 char *Read_File         (const char *path, size_t *out_size);
 char *Read_File_Simple  (const char *path);
 
-// -----------------
-// -- Vector Paths --
-// -----------------
-
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+// §18.  VECTOR PATHS — SIMD-accelerated scanning on x86-64 and ARM64
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+//
 // Vectorised scanning primitives for whitespace skipping, identifier recognition,
 // digit scanning, and single-character search.  Three implementations are selected
-// at compile time by the platform detection above:
+// at compile time by the platform detection macros:
 //   x86-64   AVX-512BW (64-byte), AVX2 (32-byte), with scalar tail
 //   ARM64    NEON/ASIMD (16-byte), with scalar tail
 //   Generic  Scalar fallback with unrolled loops
+//
+
 
 #ifdef SIMD_X86_64
   extern int Simd_Has_Avx512;
@@ -2709,13 +2956,15 @@ const char *Simd_Find_Double_Quote (const char *cursor, const char *limit);
 const char *Simd_Scan_Identifier   (const char *cursor, const char *limit);
 const char *Simd_Scan_Digits       (const char *cursor, const char *limit);
 
-// ----------
-// -- Driver --
-// ----------
-
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+// §19.  DRIVER — Command-line parsing and top-level orchestration
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+//
 // The main driver parses command-line arguments, compiles each source file to LLVM IR
-// -- optionally forking a subprocess per file for parallel compilation -- and returns
-// an exit status.  Derive_Output_Path maps an input .adb or .ads to the .ll output path.
+// — optionally forking a subprocess per file for parallel compilation — and returns
+// an exit status.  Derive_Output_Path maps an input .adb or .ads to the .ll output.
+//
+
 
 typedef struct {
   const char *input_path;  // Source file to compile
@@ -2729,15 +2978,11 @@ void *Compile_Worker      (void *arg);
 int   main                (int argc, char *argv[]);
 
 
-// §1–§2.3 are now part of this file (static inline definitions and static const table)
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 // §3. MEMORY - Bump allocation for the compilation session                                         
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
-//                                                                                                  
-// A simple bump allocator used for AST nodes, interned strings, and other objects whose lifetime   
-// spans the entire compilation.  All memory is freed in one shot at the end via Arena_Free_All.    
-//                                                                                                  
+
 Memory_Arena Global_Arena = { .head = NULL, .chunk_size = 0 };
 void *Arena_Allocate (size_t size) {
   size = Align_To (size, 16);
@@ -2770,11 +3015,7 @@ void Arena_Free_All (void) {
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 // §4. TEXT - Non-owning string views                                                               
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
-//                                                                                                  
-// A String_Slice is a (pointer, length) pair borrowed from the source buffer or the arena.  It     
-// avoids strlen () calls and allows substring views without allocation.  Ada identifiers are       
-// case-insensitive, so the comparison and hashing functions fold to lower case.                    
-//                                                                                                  
+
 const String_Slice Empty_Slice = { .data = NULL, .length = 0 };
 String_Slice Slice_From_Cstring (const char *source) {
   return (String_Slice){
@@ -2832,20 +3073,13 @@ int Edit_Distance (String_Slice left, String_Slice right) {
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 // §5. PROVENANCE - Anchoring diagnostics to source text                                            
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
-//                                                                                                  
-// Every AST node, token, and symbol carries a Source_Location so that error messages can point     
-// the programmer at the exact file, line, and column where the problem was detected.               
-//                                                                                                  
+
 const Source_Location No_Location = { .filename = NULL, .line = 0, .column = 0 };
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 // §5.2 ERROR HANDLING - Accumulating diagnostic reports                                            
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
-//                                                                                                  
-// Errors are accumulated rather than triggering an immediate abort, so the compiler can report     
-// multiple issues in a single invocation.  Fatal_Error is reserved for internal consistency        
-// violations that make further progress impossible.                                                
-//                                                                                                  
+
 int Error_Count = 0;
 void Report_Error (Source_Location location, const char *format, ...) {
   va_list args;
@@ -2874,14 +3108,7 @@ void Fatal_Error (Source_Location location, const char *format, ...) {
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 // §6. BIG INTEGER - Arbitrary-precision integers and reals for Ada literal values                  
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
-//                                                                                                  
-// Ada numeric literals can exceed the 64-bit range (e.g. mod 2**128).  Magnitudes are stored as    
-// little-endian arrays of 64-bit limbs.  The operations needed for literal parsing are:            
-//   - Construction from a decimal (or based) string                                                
-//   - Multiply by a small constant (the base)                                                      
-//   - Add a small constant (the digit value)                                                       
-//   - Sign-aware comparison and extraction to int64/int128/uint128                                 
-//                                                                                                  
+
 Big_Integer *Big_Integer_New (uint32_t capacity) {
   Big_Integer *result = Arena_Allocate (sizeof (Big_Integer));
   result->limbs    = Arena_Allocate (capacity * sizeof (uint64_t));
@@ -3053,11 +3280,7 @@ Big_Integer *Big_Integer_Add (const Big_Integer *left, const Big_Integer *right)
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 // §6.1 BIG_REAL - Arbitrary-precision real numbers for Ada literals                                
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
-//                                                                                                  
-// Real literals are represented as significand * 10**exponent per Ada LRM §2.4.1.  For example     
-// the literal 3.14159_26535_89793 is stored as significand = 314159265358979, exponent = -14.      
-// This keeps the literal value exact; rounding happens only when converting to a machine float.    
-//                                                                                                  
+
 Big_Real *Big_Real_New (void) {
   Big_Real *result = Arena_Allocate (sizeof (Big_Real));
   result->significand = Big_Integer_New (4);
@@ -3985,12 +4208,7 @@ Token Lexer_Next_Token (Lexer *lex) {
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 // §8. ABSTRACT SYNTAX TREE - Parse Tree Representation                                             
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
-//                                                                                                  
-// The AST uses a tagged-union design: each Syntax_Node carries a Node_Kind tag and a union payload 
-// specific to that kind.  The tree is a forest - one root per compilation unit, with shared        
-// subtrees within a unit where the grammar allows (e.g. subtype marks referenced from multiple     
-// declarations).  All nodes are arena-allocated and never individually freed.                      
-// ═════════════════════════════════════════════════════════════════════════════════════════════════
+
 
 void Node_List_Push (Node_List *list, Syntax_Node *node) {
   if (list->count >= list->capacity) {
@@ -4015,19 +4233,7 @@ Syntax_Node *Node_New (Node_Kind kind, Source_Location location) {
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 // §9. PARSER - Recursive Descent with Unified Postfix Handling                                     
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
-//                                                                                                  
-// Recursive descent mirrors the grammar, making the grammar itself the invariant.                  
-//                                                                                                  
-// Key design decisions:                                                                            
-//                                                                                                  
-// 1. UNIFIED APPLY NODE - All X(...) forms parse as NK_APPLY.  Semantic analysis later             
-//    distinguishes calls, indexing, slicing, and type conversions.                                 
-//                                                                                                  
-// 2. UNIFIED ASSOCIATION PARSING - One helper handles positional, named, and choice associations   
-//    used in aggregates, calls, and generic actuals.                                               
-//                                                                                                  
-// 3. UNIFIED POSTFIX CHAIN - One loop handles .selector, 'attribute, and (args).                   
-// ═════════════════════════════════════════════════════════════════════════════════════════════════
+
 
 Parser Parser_New (const char *source, size_t length, const char *filename) {
   Parser parser         = {0};
@@ -4193,9 +4399,7 @@ void Parser_Check_End_Name (Parser *parser, String_Slice expected_name) {
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 // §9.13 Subprogram Declarations and Bodies                                                         
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
-//                                                                                                  
-// The spec declares the interface while the body provides the implementation.                      
-// ═════════════════════════════════════════════════════════════════════════════════════════════════
+
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
 // §9.13.1 Parameter Specification                                                                  
@@ -4924,9 +5128,7 @@ Syntax_Node *Parse_Subtype_Indication (Parser *p) {
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 // §9.11 Statement Parsing                                                                          
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
-//                                                                                                  
-// Statements run in sequence while expressions form a tree, and parsing reflects this.             
-//                                                                                                  
+
 
 Syntax_Node *Parse_Type_Definition (Parser *p) {
   Source_Location loc = Parser_Location (p);
@@ -5003,6 +5205,7 @@ Syntax_Node *Parse_Type_Definition (Parser *p) {
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 // §9.17 Pragmas                                                                                    
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
+
 
 Syntax_Node *Parse_Pragma (Parser *p) {
   Source_Location loc = Parser_Location (p);
@@ -5492,6 +5695,7 @@ void Parse_Statement_Sequence (Parser *p, Node_List *list) {
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 // §9.12 Declaration Parsing                                                                        
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
+
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
 // §9.12.1 Object Declaration (variables, constants)                                                
@@ -5983,6 +6187,7 @@ Syntax_Node *Parse_Subprogram_Body (Parser *p, Syntax_Node *spec) {
 // §9.14 Package Declarations and Bodies                                                            
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 
+
 Syntax_Node *Parse_Package_Specification(Parser *p) {
 
   // Note: caller must consume TK_PACKAGE before calling
@@ -6048,9 +6253,7 @@ Syntax_Node *Parse_Package_Body (Parser *p) {
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 // §9.15 Generic Units                                                                              
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
-//                                                                                                  
-// Generics are templates where instantiation means substitution with type checking.                
-//                                                                                                  
+
 void Parse_Generic_Formal_Part (Parser *p, Node_List *formals) {
   while (not Parser_At (p, TK_PROCEDURE) and not Parser_At (p, TK_FUNCTION) and
        not Parser_At (p, TK_PACKAGE) and not Parser_At (p, TK_EOF)) {
@@ -6264,6 +6467,7 @@ Syntax_Node *Parse_Generic_Declaration(Parser *p) {
 // §9.16 Use and With Clauses                                                                       
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 
+
 Syntax_Node *Parse_Use_Clause (Parser *p) {
   Source_Location loc = Parser_Location (p);
   Parser_Expect (p, TK_USE);
@@ -6286,6 +6490,7 @@ Syntax_Node *Parse_With_Clause (Parser *p) {
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 // §9.19 Representation Clauses                                                                     
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
+
 
 Syntax_Node *Parse_Representation_Clause (Parser *p) {
   Source_Location loc = Parser_Location (p);
@@ -6371,6 +6576,7 @@ Syntax_Node *Parse_Representation_Clause (Parser *p) {
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 // §9.20 Declaration Dispatch                                                                       
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
+
 
 Syntax_Node *Parse_Declaration (Parser *p) {
   Source_Location loc = Parser_Location (p);
@@ -6724,9 +6930,7 @@ void Parse_Declarative_Part (Parser *p, Node_List *list) {
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 // §9.21 Compilation Unit                                                                           
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
-//                                                                                                  
-// WITH establishes dependencies while USE imports names into the current namespace.                
-//                                                                                                  
+
 Syntax_Node *Parse_Context_Clause (Parser *p) {
   Source_Location loc = Parser_Location (p);
   Syntax_Node *node = Node_New (NK_CONTEXT_CLAUSE, loc);
@@ -6772,11 +6976,7 @@ Syntax_Node *Parse_Compilation_Unit (Parser *p) {
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 // §10. TYPE SYSTEM - Ada Type Semantics                                                            
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
-//                                                                                                  
-// A type combines name, range, and representation as three orthogonal concerns.                    
-//                                                                                                  
-// INVARIANT: All sizes are stored in BYTES, not bits.                                              
-//                                                                                                  
+
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
 // §10.2.1 Frozen Composite Types List                                                              
@@ -7421,18 +7621,7 @@ int Bounds_Alloc_Size (const char *bound_type) {
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 // §11. SYMBOL TABLE - Scoped Name Resolution                                                       
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
-//                                                                                                  
-// The symbol table implements Ada's visibility and overloading rules:                              
-//                                                                                                  
-// - Hierarchical scopes (packages can nest, blocks create new scopes)                              
-// - Overloading: same name, different parameter profiles                                           
-// - Use clauses: make names directly visible without qualification                                 
-// - Visibility: immediately visible, use-visible, directly visible                                 
-//                                                                                                  
-// We use a hash table with chaining and a scope stack for nested contexts.                         
-// Collisions are inevitable; we make them cheap rather than trying to                              
-// eliminate them.                                                                                  
-//                                                                                                  
+
 bool Param_Is_By_Reference (Parameter_Mode mode) {
   return mode == PARAM_OUT or mode == PARAM_IN_OUT;
 }
@@ -7775,13 +7964,7 @@ Symbol *Symbol_Find_By_Type (String_Slice name, Type_Info *expected_type) {
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 // §11.6 OVERLOAD RESOLUTION                                                                        
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
-//                                                                                                  
-// Overload resolution is a two-pass process:                                                       
-//                                                                                                  
-// 1. Bottom-up pass: Collect all possible interpretations of each identifier                       
-//    based on visibility rules. Each interpretation is a (Symbol, Type) pair.                      
-//                                                                                                  
-// 2. Top-down pass: Given context type expectations, select the unique valid                       
+
 //    interpretation using disambiguation rules.                                                    
 //                                                                                                  
 // Key concepts:                                                                                    
@@ -8490,15 +8673,7 @@ void Symbol_Manager_Init (void) {
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 // §12. SEMANTIC ANALYSIS - Type Checking and Resolution                                            
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
-//                                                                                                  
-// A permissive parser gives the type checker material to work with.                                
-//                                                                                                  
-// Semantic analysis performs:                                                                      
-// - Name resolution: bind identifiers to symbols                                                   
-// - Type checking: verify type compatibility of operations                                         
-// - Overload resolution: select correct subprogram                                                 
-// - Constraint checking: verify bounds, indices, etc.                                              
-//                                                                                                  
+
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
 // §12.1 Expression Resolution                                                                      
@@ -15236,18 +15411,7 @@ void Resolve_Compilation_Unit (Syntax_Node *node) {
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 // §13. LLVM IR CODE GENERATION                                                                     
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
-//                                                                                                  
-// The AST is semantic and the IR is operational, with translation bridging the gap.                
-//                                                                                                  
-// Generate LLVM IR from the resolved AST. Key principles:                                          
-//                                                                                                  
-// 1. Operate at native type width;                                                                 
-//    convert only at explicit Ada type conversions and LLVM intrinsic                              
-//    boundaries (memcpy length, alloc size must be i64)                                            
-// 2. All pointer types use opaque 'ptr' (LLVM 15+)                                                 
-// 3. Static links for nested subprogram access                                                     
-// 4. Fat pointers for unconstrained arrays (ptr + bounds)                                          
-//                                                                                                  
+
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
 // §13.1 Code Generator State                                                                       
@@ -17547,6 +17711,7 @@ uint32_t Emit_Fat_Pointer_Compare (uint32_t left_fat, uint32_t right_fat, const 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 // §13.2.3 Additional Helpers                                                                       
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
+
 
 // Emit minimum of two values:  result = (left < right) ? left : right
 uint32_t Emit_Min_Value (uint32_t left, uint32_t right, const char *ty) {
@@ -37099,7 +37264,7 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   Emit ("  ret void\n");
   Emit ("}\n\n");
 
-  // TEXT_IO inline implementation (Ada 83 Chapter 14)
+  // TEXT_IO inline implementation (Ada 83 RM §14)
   Emit ("; TEXT_IO runtime\n");
   Emit ("@stdin = external global ptr\n");
   Emit ("@stdout = external global ptr\n");
@@ -37567,21 +37732,7 @@ void BIP_End_Function (void) {
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 // §14. LIBRARY MANAGEMENT - GNAT-Compatible Library Information                                    
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
-//                                                                                                  
-// Ada Library Information (.ali) files record compilation dependencies and                         
-// unit metadata. Format follows GNAT's lib-writ.ads specification:                                 
-//                                                                                                  
-//   V "version"              -- compiler version                                                   
-//   P flags                  -- compilation parameters                                             
-//   U name source version    -- unit entry                                                         
-//   W name [source ali]      -- with dependency                                                    
-//   D source timestamp       -- source dependency                                                  
-//                                                                                                  
-// The ALI file enables:                                                                            
-//   • Separate compilation with dependency tracking                                                
-//   • Binder consistency checking                                                                  
-//   • IDE cross-reference navigation                                                               
-//                                                                                                  
+
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
 // §14.1 Unit_Info - Compilation unit metadata collector                                            
@@ -38901,16 +39052,7 @@ bool Elab_Needs_Elab_Call (uint32_t index) {
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 // §16. GENERIC EXPANSION - Macro-style instantiation                                               
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
-//                                                                                                  
-// Generics via macro expansion:                                                                    
-//   1. Parse generic declaration > store template AST                                              
-//   2. On instantiation: clone template, substitute actuals                                        
-//   3. Analyze cloned tree with actual types                                                       
-//   4. Generate code for each instantiation separately                                             
-//                                                                                                  
-// Key insight: We do NOT share code between instantiations. Each instance                          
-// gets its own copy with types fully substituted.                                                  
-//                                                                                                  
+
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
 // §16.1 Instantiation_Env - Formal-to-actual mapping                                               
@@ -39969,16 +40111,7 @@ void Load_Package_Spec (String_Slice name, char *src) {
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 // §18. VECTOR PATHS - SIMD-Accelerated Scanning on x86-64 and ARM64                                
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
-//                                                                                                  
-// Vectorised scanning primitives for whitespace skipping, identifier recognition, digit scanning,  
-// and single-character search.  Three implementations are selected at compile time:                
-//                                                                                                  
-//   x86-64  - AVX-512BW (64-byte vectors), AVX2 (32-byte), SSE4.2 (16-byte)                        
-//   ARM64   - NEON/ASIMD (16-byte), SVE (128–2048 bits, detected at runtime)                       
-//   Generic - Scalar fallback with loop unrolling for portability                                  
-//                                                                                                  
-// Every SIMD path has an equivalent scalar fallback.                                               
-//                                                                                                  
+
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
 // §18.1 Runtime CPU Feature Detection                                                              
@@ -40820,6 +40953,7 @@ Big_Integer *Big_Integer_From_Decimal_SIMD (const char *text) {
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 // §19. DRIVER                                                                                      
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
+
 
 void Compile_File (const char *input_path, const char *output_path) {
 
