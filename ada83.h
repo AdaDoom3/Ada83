@@ -2449,6 +2449,10 @@ extern uint32_t        ALI_Cache_Count;
 
 uint32_t CRC32_Update (uint32_t crc, const void *data, size_t length);
 
+// Map an Ada type name to its LLVM IR type string via the symbol table.
+// Falls back to the default integer type if the name is not found.
+String_Slice LLVM_Type_Basic (String_Slice ada_type);
+
 void ALI_Collect_Exports (ALI_Info *ali, Syntax_Node *unit);
 void ALI_Collect_Withs   (ALI_Info *ali, Syntax_Node *ctx);
 void ALI_Collect_Unit    (ALI_Info    *ali,
