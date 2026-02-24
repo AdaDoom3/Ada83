@@ -77,6 +77,7 @@ const uint8_t Id_Char_Table[256] = {
 // To_Bytes  : bits  -> bytes  (ceiling division — rounds up to the next whole byte)                
 // Byte_Align: bits  -> bits   (round up to a byte boundary, i.e. To_Bits (To_Bytes (n)))           
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
+
 uint64_t To_Bits    (uint64_t bytes) { return bytes * Bits_Per_Unit; }
 uint64_t To_Bytes   (uint64_t bits)  { return (bits + Bits_Per_Unit - 1) / Bits_Per_Unit; }
 uint64_t Byte_Align (uint64_t bits)  { return To_Bits (To_Bytes (bits)); }
@@ -91,6 +92,7 @@ size_t Align_To (size_t size, size_t alignment) {
 //                                                                                                  
 // Given a bit width, return the smallest LLVM integer (or float) type that can hold that width.    
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
+
 const char *Llvm_Int_Type (uint32_t bits) {
   return bits <= 1   ? "i1"   : bits <= 8   ? "i8"   : bits <= 16  ? "i16" :
          bits <= 32  ? "i32"  : bits <= 64  ? "i64"  : "i128";
@@ -111,13 +113,13 @@ bool Llvm_Type_Is_Fat_Pointer (const char *llvm_type) {
   return llvm_type and strcmp (llvm_type, "{ ptr, ptr }") == 0;
 }
 
-
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
 // §2.3 Range Predicates — Determining representation width                                         
 //                                                                                                  
 // Compute the minimum number of bits needed to represent the integer range [lo .. hi].  All        
 // bounds are int128_t so that the full Ada 2022 Long_Long_Long_Integer range is covered.           
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
+
 bool Fits_In_Signed (int128_t lo, int128_t hi, uint32_t bits) {
   if (bits >= 128) return true;
   if (bits >= 64) {
@@ -1103,6 +1105,7 @@ Token_Kind Lookup_Keyword (String_Slice name) {
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
 // §7.2 Token Structure — A single lexeme with its semantic value                                   
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
+
 Lexer Lexer_New (const char *source, size_t length, const char *filename) {
   return (Lexer){
     .source_start    = source,
@@ -1158,6 +1161,7 @@ Token Make_Token (Token_Kind kind, Source_Location location, String_Slice text) 
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
 // §7.3 Scanning Functions — Each scanner consumes one token and returns it                         
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
+
 Token Scan_Identifier (Lexer *lex) {
   Source_Location location = { .filename = lex->filename,
                                .line     = lex->line,
@@ -1425,6 +1429,7 @@ Token Scan_String_Literal (Lexer *lex) {
 // one token and returns it.  The function dispatches on the first character to select the          
 // appropriate scanner, with a final switch statement handling operators and delimiters.            
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
+
 Token Lexer_Next_Token (Lexer *lex) {
   Lexer_Skip_Whitespace_And_Comments (lex);
   if (lex->current >= lex->source_end)
@@ -1569,6 +1574,7 @@ Parser Parser_New (const char *source, size_t length, const char *filename) {
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
 // §9.2 Token Movement                                                                              
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
+
 bool Parser_At (Parser *parser, Token_Kind kind) {
   return parser->current_token.kind == kind;
 }
@@ -1620,6 +1626,7 @@ Source_Location Parser_Location (Parser *parser) {
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
 // §9.3 Error Recovery                                                                              
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
+
 void Parser_Error (Parser *parser, const char *message) {
   if (parser->panic_mode) return;
   parser->panic_mode = true;
@@ -1679,6 +1686,7 @@ bool Parser_Expect (Parser *parser, Token_Kind kind) {
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
 // §9.4 Identifier Parsing                                                                          
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
+
 String_Slice Parser_Identifier (Parser *parser) {
   if (not Parser_At (parser, TK_IDENTIFIER)) {
     Parser_Error_At_Current (parser, "identifier");
@@ -1717,15 +1725,6 @@ void Parser_Check_End_Name (Parser *parser, String_Slice expected_name) {
 //   AND  OR  XOR  AND THEN  OR ELSE (logical, short-circuit)                                       
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
 
-// Forward declarations
-Syntax_Node *Parse_Expression (Parser *p);
-Syntax_Node *Parse_Choice (Parser *p);
-Syntax_Node *Parse_Name (Parser *p);
-Syntax_Node *Parse_Simple_Name (Parser *p);
-Syntax_Node *Parse_Subtype_Indication (Parser *p);
-Syntax_Node *Parse_Array_Type (Parser *p);
-void Parse_Association_List (Parser *p, Node_List *list);
-
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 // §9.13 Subprogram Declarations and Bodies                                                         
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
@@ -1738,6 +1737,7 @@ void Parse_Association_List (Parser *p, Node_List *list);
 //                                                                                                  
 // IN copies in, OUT copies out, IN OUT does both.  Mode defaults to IN when omitted.               
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
+
 void Parse_Parameter_List (Parser *p, Node_List *params) {
   if (not Parser_Match (p, TK_LPAREN)) return;
   do {
@@ -1936,6 +1936,7 @@ Syntax_Node *Parse_Primary (Parser *p) {
 //                                                                                                  
 // Handles: .selector, 'attribute, (arguments) — in one loop.                                       
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
+
 Syntax_Node *Parse_Name (Parser *p) {
   Source_Location loc = Parser_Location (p);
   Syntax_Node *node;
@@ -2105,6 +2106,7 @@ Syntax_Node *Parse_Name (Parser *p) {
 // Used for generic unit names in instantiations where we don't want                                
 // parentheses interpreted as function calls.                                                       
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
+
 Syntax_Node *Parse_Simple_Name (Parser *p) {
   Source_Location loc = Parser_Location (p);
   Syntax_Node *node;
@@ -2221,6 +2223,7 @@ void Parse_Association_List (Parser *p, Node_List *list) {
 //                                                                                                  
 // Climbing starts at low precedence and consumes equal-or-higher before returning.                 
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
+
 Precedence Get_Infix_Precedence (Token_Kind kind) {
   switch (kind) {
     case TK_AND: case TK_OR: case TK_XOR:
@@ -2242,7 +2245,6 @@ Precedence Get_Infix_Precedence (Token_Kind kind) {
 bool Is_Right_Associative (Token_Kind kind) {
   return kind == TK_EXPON;
 }
-Syntax_Node *Parse_Expression_Precedence(Parser *p, Precedence min_prec);
 Syntax_Node *Parse_Unary(Parser *p) {
   Source_Location loc = Parser_Location (p);
   if (Parser_At_Any (p, TK_PLUS, TK_MINUS) or
@@ -2326,6 +2328,7 @@ Syntax_Node *Parse_Expression (Parser *p) {
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
 // §9.9 Range Parsing                                                                               
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
+
 Syntax_Node *Parse_Range(Parser *p) {
   Source_Location loc = Parser_Location (p);
 
@@ -2373,6 +2376,7 @@ Syntax_Node *Parse_Range(Parser *p) {
 //                                                                                                  
 // A subtype is a type with a constraint that narrows the range of valid values.                    
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
+
 Syntax_Node *Parse_Subtype_Indication (Parser *p) {
   Source_Location loc = Parser_Location (p);
 
@@ -2459,15 +2463,6 @@ Syntax_Node *Parse_Subtype_Indication (Parser *p) {
 // Statements run in sequence while expressions form a tree, and parsing reflects this.             
 //                                                                                                  
 
-// Forward declarations
-Syntax_Node *Parse_Statement (Parser *p);
-void Parse_Statement_Sequence (Parser *p, Node_List *list);
-void Parse_Declarative_Part (Parser *p, Node_List *list);
-Syntax_Node *Parse_Declaration (Parser *p);
-Syntax_Node *Parse_Enumeration_Type (Parser *p);
-Syntax_Node *Parse_Record_Type (Parser *p);
-Syntax_Node *Parse_Access_Type(Parser *p);
-Syntax_Node *Parse_Derived_Type(Parser *p);
 Syntax_Node *Parse_Type_Definition (Parser *p) {
   Source_Location loc = Parser_Location (p);
 
@@ -2539,13 +2534,11 @@ Syntax_Node *Parse_Type_Definition (Parser *p) {
   Parser_Error (p, "expected type definition");
   return Node_New (NK_INTEGER_TYPE, loc);
 }
-Syntax_Node *Parse_Subprogram_Body (Parser *p, Syntax_Node *spec);
-Syntax_Node *Parse_Block_Statement(Parser *p, String_Slice label);
-Syntax_Node *Parse_Loop_Statement(Parser *p, String_Slice label);
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 // §9.17 Pragmas                                                                                    
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
+
 Syntax_Node *Parse_Pragma (Parser *p) {
   Source_Location loc = Parser_Location (p);
   Parser_Expect (p, TK_PRAGMA);
@@ -2561,6 +2554,7 @@ Syntax_Node *Parse_Pragma (Parser *p) {
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
 // §9.11.1 Simple Statements                                                                        
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
+
 Syntax_Node *Parse_Assignment_Or_Call(Parser *p) {
   Source_Location loc = Parser_Location (p);
   Syntax_Node *target = Parse_Name (p);
@@ -2633,6 +2627,7 @@ Syntax_Node *Parse_Abort_Statement(Parser *p) {
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
 // §9.11.2 If Statement                                                                             
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
+
 Syntax_Node *Parse_If_Statement(Parser *p) {
   Source_Location loc = Parser_Location (p);
   Parser_Expect (p, TK_IF);
@@ -2664,6 +2659,7 @@ Syntax_Node *Parse_If_Statement(Parser *p) {
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
 // §9.11.3 Case Statement                                                                           
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
+
 Syntax_Node *Parse_Case_Statement(Parser *p) {
   Source_Location loc = Parser_Location (p);
   Parser_Expect (p, TK_CASE);
@@ -2697,6 +2693,7 @@ Syntax_Node *Parse_Case_Statement(Parser *p) {
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
 // §9.11.4 Loop Statement                                                                           
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
+
 Syntax_Node *Parse_Loop_Statement(Parser *p, String_Slice label) {
   Source_Location loc = Parser_Location (p);
   Syntax_Node *node = Node_New (NK_LOOP, loc);
@@ -2737,6 +2734,7 @@ Syntax_Node *Parse_Loop_Statement(Parser *p, String_Slice label) {
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
 // §9.11.5 Block Statement                                                                          
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
+
 Syntax_Node *Parse_Block_Statement(Parser *p, String_Slice label) {
   Source_Location loc = Parser_Location (p);
   Syntax_Node *node = Node_New (NK_BLOCK, loc);
@@ -2777,6 +2775,7 @@ Syntax_Node *Parse_Block_Statement(Parser *p, String_Slice label) {
 //                                                                                                  
 // ACCEPT is the server side of rendezvous where the caller blocks until accepted.                  
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
+
 Syntax_Node *Parse_Accept_Statement(Parser *p) {
   Source_Location loc = Parser_Location (p);
   Parser_Expect (p, TK_ACCEPT);
@@ -2838,6 +2837,7 @@ Syntax_Node *Parse_Accept_Statement(Parser *p) {
 //                                                                                                  
 // SELECT makes a nondeterministic choice among open alternatives at runtime.                       
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
+
 Syntax_Node *Parse_Select_Statement(Parser *p) {
   Source_Location loc = Parser_Location (p);
   Parser_Expect (p, TK_SELECT);
@@ -2924,6 +2924,7 @@ Syntax_Node *Parse_Select_Statement(Parser *p) {
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
 // §9.11.8 Statement Dispatch                                                                       
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
+
 Syntax_Node *Parse_Statement (Parser *p) {
   Source_Location loc = Parser_Location (p);
   Source_Location label_loc = loc;
@@ -3032,6 +3033,7 @@ void Parse_Statement_Sequence (Parser *p, Node_List *list) {
 //                                                                                                  
 // Multiple names can share one type declaration but each gets its own symbol.                      
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
+
 Syntax_Node *Parse_Object_Declaration(Parser *p) {
   Source_Location loc = Parser_Location (p);
   Syntax_Node *node = Node_New (NK_OBJECT_DECL, loc);
@@ -3091,6 +3093,7 @@ Syntax_Node *Parse_Object_Declaration(Parser *p) {
 //                                                                                                  
 // Discriminants parameterize the type with values fixed when the object is created.                
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
+
 Syntax_Node *Parse_Discriminant_Part (Parser *p) {
   if (not Parser_Match (p, TK_LPAREN)) return NULL;
   Source_Location loc = Parser_Location (p);
@@ -3156,6 +3159,7 @@ Syntax_Node *Parse_Subtype_Declaration(Parser *p) {
 //                                                                                                  
 // Parsing establishes structure while elaboration establishes meaning.                             
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
+
 Syntax_Node *Parse_Enumeration_Type (Parser *p) {
   Source_Location loc = Parser_Location (p);
   Parser_Expect (p, TK_LPAREN);
@@ -3177,7 +3181,6 @@ Syntax_Node *Parse_Enumeration_Type (Parser *p) {
   Parser_Expect (p, TK_RPAREN);
   return node;
 }
-Syntax_Node *Parse_Discrete_Range(Parser *p);
 Syntax_Node *Parse_Array_Type (Parser *p) {
   Source_Location loc = Parser_Location (p);
   Parser_Expect (p, TK_ARRAY);
@@ -3261,8 +3264,6 @@ Syntax_Node *Parse_Discrete_Range(Parser *p) {
   return name;
 }
 
-// Forward declaration for variant part parsing
-Syntax_Node *Parse_Variant_Part (Parser *p);
 Syntax_Node *Parse_Record_Type (Parser *p) {
   Source_Location loc = Parser_Location (p);
   Parser_Expect (p, TK_RECORD);
@@ -3432,6 +3433,7 @@ Syntax_Node *Parse_Derived_Type(Parser *p) {
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
 // §9.13.2 Procedure/Function Specification                                                         
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
+
 Syntax_Node *Parse_Procedure_Specification(Parser *p) {
   Source_Location loc = Parser_Location (p);
   Parser_Expect (p, TK_PROCEDURE);
@@ -3470,6 +3472,7 @@ Syntax_Node *Parse_Function_Specification(Parser *p) {
 //                                                                                                  
 // Declarations, then BEGIN, then statements. The structure is invariant.                           
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
+
 Syntax_Node *Parse_Subprogram_Body (Parser *p, Syntax_Node *spec) {
   Source_Location loc = spec ? spec->location : Parser_Location (p);
   bool is_function = spec and spec->kind == NK_FUNCTION_SPEC;
@@ -3514,6 +3517,7 @@ Syntax_Node *Parse_Subprogram_Body (Parser *p, Syntax_Node *spec) {
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 // §9.14 Package Declarations and Bodies                                                            
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
+
 Syntax_Node *Parse_Package_Specification(Parser *p) {
 
   // Note: caller must consume TK_PACKAGE before calling
@@ -3794,6 +3798,7 @@ Syntax_Node *Parse_Generic_Declaration(Parser *p) {
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 // §9.16 Use and With Clauses                                                                       
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
+
 Syntax_Node *Parse_Use_Clause (Parser *p) {
   Source_Location loc = Parser_Location (p);
   Parser_Expect (p, TK_USE);
@@ -3816,6 +3821,7 @@ Syntax_Node *Parse_With_Clause (Parser *p) {
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 // §9.19 Representation Clauses                                                                     
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
+
 Syntax_Node *Parse_Representation_Clause (Parser *p) {
   Source_Location loc = Parser_Location (p);
   Parser_Expect (p, TK_FOR);
@@ -3900,6 +3906,7 @@ Syntax_Node *Parse_Representation_Clause (Parser *p) {
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 // §9.20 Declaration Dispatch                                                                       
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
+
 Syntax_Node *Parse_Declaration (Parser *p) {
   Source_Location loc = Parser_Location (p);
 
@@ -4306,13 +4313,13 @@ Syntax_Node *Parse_Compilation_Unit (Parser *p) {
 // INVARIANT: All sizes are stored in BYTES, not bits.                                              
 //                                                                                                  
 
-
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
 // §10.2.1 Frozen Composite Types List                                                              
 //                                                                                                  
 // Track composite types that need implicit equality operators.                                     
 // These are added during Freeze_Type and processed during code generation.                         
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
+
 Type_Info *Frozen_Composite_Types[256];
 uint32_t   Frozen_Composite_Count = 0;
 
@@ -4323,6 +4330,7 @@ uint32_t   Exception_Symbol_Count = 0;
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
 // §10.3 Type Construction                                                                          
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
+
 Type_Info *Type_New (Type_Kind kind, String_Slice name) {
   Type_Info *type_info  = Arena_Allocate (sizeof (Type_Info));
   type_info->kind       = kind;
@@ -4335,6 +4343,7 @@ Type_Info *Type_New (Type_Kind kind, String_Slice name) {
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
 // §10.4 Type Predicates                                                                            
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
+
 bool Type_Is_Scalar (const Type_Info *type_info) {
   return type_info and type_info->kind >= TYPE_BOOLEAN and type_info->kind <= TYPE_FIXED;
 }
@@ -4387,6 +4396,7 @@ const char *Float_Llvm_Type_Of (const Type_Info *type_info) {
 // IEEE 754 Named Constants — replaces magic numbers throughout codegen.                            
 // Single source of truth for float/double structural parameters.                                   
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
+
 #define IEEE_FLOAT_DIGITS       6
 #define IEEE_DOUBLE_DIGITS      15
 #define IEEE_FLOAT_MANTISSA     24
@@ -4617,6 +4627,7 @@ bool Type_Needs_Fat_Pointer_Load (const Type_Info *type_info) {
 // Per RM 3.3.1: The base type of a type is the ultimate ancestor.                                  
 // For subtypes, follow base_type links; for derived types, follow parent_type.                     
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
+
 Type_Info *Type_Base (Type_Info *type_info) {
   while (type_info and type_info->base_type) type_info = type_info->base_type;
   return type_info;
@@ -4739,9 +4750,6 @@ void Freeze_Type (Type_Info *type_info) {
 //                                                                                                  
 // The source type is semantic while the target type is representational.                           
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
-
-// Forward declarations for array helpers (defined after Type_Bound_Value)
-int128_t Type_Bound_Value (Type_Bound bound);
 
 // File-scope map of generic formal>actual types for the current instance                           
 // being code-generated.  Used by Type_To_Llvm to resolve generic formal                            
@@ -4995,6 +5003,7 @@ void Set_Generic_Type_Map (Symbol *inst) {
 //   3. The symbol (if provided)                                                                    
 // Returns true if the specified check_bit is suppressed at any level.                              
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
+
 bool Check_Is_Suppressed (Type_Info *type, Symbol *sym, uint32_t check_bit) {
   if (type and (type->suppressed_checks & check_bit)) return true;
   if (type and type->base_type and (type->base_type->suppressed_checks & check_bit)) return true;
@@ -5007,6 +5016,7 @@ bool Check_Is_Suppressed (Type_Info *type, Symbol *sym, uint32_t check_bit) {
 //                                                                                                  
 // Each scope has its own hash table with 1024 buckets, which covers most programs.                 
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
+
 Symbol_Manager *sm;
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
@@ -5014,6 +5024,7 @@ Symbol_Manager *sm;
 //                                                                                                  
 // Lexical scoping is a tree; visibility rules turn it into a forest.                               
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
+
 Scope *Scope_New (Scope *parent) {
   Scope *scope          = Arena_Allocate (sizeof (Scope));
   scope->parent         = parent;
@@ -5096,6 +5107,7 @@ void Symbol_Manager_Push_Existing_Scope (Scope *scope) {
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
 // §11.5 Symbol Table Operations                                                                    
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
+
 uint32_t Symbol_Hash_Name (String_Slice name) {
   return (uint32_t)(Slice_Hash (name) % SYMBOL_TABLE_SIZE);
 }
@@ -5334,6 +5346,7 @@ Symbol *Symbol_Find_By_Type (String_Slice name, Type_Info *expected_type) {
 // - Subtypes of same base type: cover each other                                                   
 // - Universal types: Universal_Integer covers any integer type, etc.                               
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
+
 bool Type_Covers (Type_Info *expected, Type_Info *actual) {
 
   // Null types are permissive (incomplete analysis)
@@ -5726,6 +5739,7 @@ Symbol *Disambiguate(Interp_List *interps, Type_Info *context_type,
 //                                                                                                  
 // Collect, filter, disambiguate, fail if not unique.                                               
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
+
 Symbol *Resolve_Overloaded_Call (
                      String_Slice name,
                      Argument_Info *args,
@@ -5768,6 +5782,7 @@ Symbol *Resolve_Overloaded_Call (
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
 // §11.7 Symbol Manager Initialization                                                              
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
+
 void Symbol_Manager_Init_Predefined (void) {
 
   // Create predefined types
@@ -5961,6 +5976,7 @@ void Symbol_Manager_Init_Predefined (void) {
   // Per LRM 4.5.3-4.5.6, predefined operators exist for all numeric types.                         
   // We add symbols for these so RENAMES "+" etc. can resolve them.                                 
   // ───────────────────────────────────────────────────────────────────────────────────────────────
+
   static const struct { const char *name; bool is_binary; bool returns_bool; } predef_ops[] = {
     {"+", true, false}, {"-", true, false}, {"*", true, false},
     {"/", true, false}, {"mod", true, false}, {"rem", true, false},
@@ -6022,8 +6038,7 @@ void Symbol_Manager_Init (void) {
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
 // §12.1 Expression Resolution                                                                      
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
-Type_Info *Resolve_Expression (Syntax_Node *node);
-void Resolve_Statement (Syntax_Node *node);
+
 Type_Info *Resolve_Identifier (Syntax_Node *node) {
   Symbol *sym = Symbol_Find (node->string_val.text);
   if (not sym) {
@@ -6758,6 +6773,7 @@ Type_Info *Resolve_Apply (Syntax_Node *node) {
 
   // Handle based on what the prefix resolves to
   // ─── Case 1: Function/Procedure Call ───────────────────────────────────────────────────────────
+
   if (prefix_sym) {
 
     // Only treat as a call if prefix is an identifier referring to a callable.                     
@@ -6800,6 +6816,7 @@ Type_Info *Resolve_Apply (Syntax_Node *node) {
     }
 
     // ─── Case 2: Type Conversion or Constrained Subtype ──────────────────────────────────────────
+
     if (prefix_sym->kind == SYMBOL_TYPE or prefix_sym->kind == SYMBOL_SUBTYPE) {
       Type_Info *base_type = prefix_sym->type;
 
@@ -7071,6 +7088,7 @@ Type_Info *Resolve_Apply (Syntax_Node *node) {
   }
 
   // ─── Case 4: Unresolved - report error and recover ─────────────────────────────────────────────
+
   if (prefix->kind == NK_IDENTIFIER) {
     Report_Error (node->location, "cannot resolve '%.*s' as callable or indexable",
           (int)prefix->string_val.text.length, prefix->string_val.text.data);
@@ -7082,7 +7100,7 @@ Type_Info *Resolve_Apply (Syntax_Node *node) {
 // Evaluate Constant Numeric Expression (for delta, bounds in type defs)                            
 // Returns NaN if not a static constant expression                                                  
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
-bool Is_Integer_Expr (Syntax_Node *node);  // Forward declaration
+
 bool Is_Integer_Expr (Syntax_Node *node) {
 
   // Returns true if the expression is integer-typed (for division semantics)
@@ -9586,7 +9604,6 @@ Type_Info *Resolve_Expression (Syntax_Node *node) {
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
 // §12.2 Statement Resolution                                                                       
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
-void Resolve_Declaration_List (Node_List *list);
 
 // Freeze all types declared in a list
 // Per RM 13.14: At the end of a declarative part, all entities are frozen
@@ -10068,7 +10085,6 @@ void Resolve_Statement (Syntax_Node *node) {
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
 // §12.3 Declaration Resolution                                                                     
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
-void Resolve_Declaration (Syntax_Node *node);
 
 // Install all exported symbols from a declaration list into the symbol table.                      
 // Handles objects, exceptions, and enumeration literals uniformly.                                 
@@ -12687,6 +12703,7 @@ void Resolve_Declaration (Syntax_Node *node) {
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
 // §12.4 Compilation Unit Resolution                                                                
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
+
 void Resolve_Compilation_Unit (Syntax_Node *node) {
   if (not node) return;
 
@@ -12770,6 +12787,7 @@ void Resolve_Compilation_Unit (Syntax_Node *node) {
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
 // §13.1 Code Generator State                                                                       
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
+
 Code_Generator *cg;
 void Code_Generator_Init (FILE *output) {
   cg                        = Arena_Allocate (sizeof (Code_Generator));
@@ -12883,6 +12901,7 @@ void Emit_String_Const_Char (char ch) {
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
 // §13.2 IR Emission Helpers                                                                        
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
+
 uint32_t Emit_Temp (void) {
   return cg->temp_id++;
 }
@@ -13381,10 +13400,6 @@ void Emit_Raise_Exception (const char *exc_name, const char *comment) {
 //     ; continue execution                                                                         
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
 
-// Forward declaration for Emit_Check_With_Raise (defined in §13.2.4)
-void Emit_Check_With_Raise (uint32_t cond,
-                   bool raise_on_true, const char *comment);
-
 // Emit_Overflow_Checked_Op — signed integer overflow check via LLVM intrinsics.                    
 // Uses llvm.sadd/ssub/smul.with.overflow.iN for signed types.                                      
 // Modular (unsigned) types are exempt — they wrap (RM 3.5.4).                                      
@@ -13493,12 +13508,6 @@ void Emit_Signed_Division_Overflow_Check (uint32_t dividend, uint32_t divisor,
   Emit ("  %%t%u = and i1 %%t%u, %%t%u\n", both, cmp_neg1, cmp_min);
   Emit_Check_With_Raise (both, true, "division overflow (MIN_INT / -1)");
 }
-uint32_t Emit_Convert (uint32_t src,
-  const char *src_type, const char *dst_type);
-uint32_t Emit_Coerce (uint32_t temp,
-  const char *desired_type);
-uint32_t Emit_Coerce_Default_Int (uint32_t temp,
-  const char *desired_type);
 
 // Emit_Index_Check — array index bounds check (RM 4.1.1).                                          
 // Checks index against array low and high bounds.                                                  
@@ -13981,9 +13990,6 @@ uint32_t Emit_Coerce_Default_Int (uint32_t temp,
   return Emit_Convert (temp, cur, desired_type);
 }
 
-// Forward declaration for use in bound evaluation
-uint32_t Generate_Expression (Syntax_Node *node);
-
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
 // §13.1.2 Constraint Checks                                                                        
 //                                                                                                  
@@ -13991,6 +13997,7 @@ uint32_t Generate_Expression (Syntax_Node *node);
 // Handles both static (BOUND_INTEGER) and dynamic (BOUND_EXPR) bounds.                             
 // Generates: if (val < low or val > high) __ada_raise(CONSTRAINT_ERROR)                            
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
+
 uint32_t Emit_Bound_Value_Typed (Type_Bound *bound,
                      const char **out_type) {
   const char *iat = Integer_Arith_Type ();
@@ -14545,17 +14552,6 @@ uint32_t Emit_Fat_Pointer_High_Dim (uint32_t fat_ptr,
   Temp_Set_Type (val, bt);
   return val;
 }
-
-// Consolidated helpers (defined in §13.2.1, §13.2.3)
-uint32_t Emit_Length_Clamped (uint32_t low, uint32_t high, const char *bt);
-uint32_t Emit_Length_From_Bounds (uint32_t low, uint32_t high, const char *bt);
-uint32_t Emit_Static_Int (int128_t value, const char *ty);
-uint32_t Emit_Memcmp_Eq (uint32_t left_ptr, uint32_t right_ptr,
-  uint32_t byte_size_temp, int64_t byte_size_static, bool is_dynamic);
-uint32_t Emit_Type_Bound (Type_Bound *bound, const char *ty);
-uint32_t Emit_Min_Value (uint32_t left, uint32_t right, const char *ty);
-uint32_t Emit_Array_Lex_Compare (uint32_t left_ptr, uint32_t right_ptr,
-  uint32_t elem_size, const char *bt);
 
 // Compute length for dimension `dim` from fat pointer: high - low + 1
 // with null-array clamping (RM 3.6.2).
@@ -15132,11 +15128,6 @@ uint32_t Emit_Current_Exception_Id (void) {
   return exc_id;
 }
 
-// Forward declarations for exception handler dispatch
-void Generate_Statement_List (Node_List *list);
-void Emit_Branch_If_Needed (uint32_t label);
-void Emit_Exception_Ref (Symbol *sym);
-
 // Generate exception handler dispatch code for a list of handlers.                                 
 // exc_id = temp holding current exception identity (i64)                                           
 // end_label = label to branch to after handler completes                                           
@@ -15395,6 +15386,7 @@ uint32_t Emit_Fat_Pointer_Null (const char *bt) {
 //   - load from it  (expression context)                                                           
 //   - store to it   (assignment context)                                                           
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
+
 uint32_t Generate_Lvalue (Syntax_Node *node) {
   if (not node) return 0;
 
@@ -16144,10 +16136,6 @@ uint32_t Generate_Identifier (Syntax_Node *node) {
 // types (records, arrays), equality is defined component-wise.                                     
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
 
-// Forward declaration for mutual recursion
-uint32_t Generate_Array_Equality (uint32_t left_ptr,
-                    uint32_t right_ptr, Type_Info *array_type);
-
 // Generate equality comparison for record types (component-by-component)
 uint32_t Generate_Record_Equality (uint32_t left_ptr,
                      uint32_t right_ptr, Type_Info *record_type) {
@@ -16815,7 +16803,6 @@ uint32_t Convert_Real_To_Fixed (uint32_t val, double small, const char *fix_type
   Temp_Set_Type (scaled, fix_type);
   return scaled;
 }
-uint32_t Get_Dimension_Index (Syntax_Node *arg);  // forward decl
 uint32_t Generate_Binary_Op (Syntax_Node *node) {
 
   // User-defined operator: generate function call (RM 6.7)
@@ -20440,6 +20427,7 @@ uint32_t Generate_Attribute (Syntax_Node *node) {
       needs_runtime_bounds = true;
 
   // ─── Array/Scalar Bound Attributes: unified FIRST/LAST ─────────────────────────────────────────
+
   if (Slice_Equal_Ignore_Case (attr, S("FIRST")))
     return Emit_Bound_Attribute (t, prefix_type, prefix_sym,
            node->attribute.prefix, needs_runtime_bounds, dim, true, attr);
@@ -21962,6 +21950,7 @@ int128_t Static_Int_Value (Syntax_Node *n) {
 //                                                                                                  
 
 // ── Agg_Classify: classify aggregate items into positional / named / others ──────────────────────
+
 Agg_Class Agg_Classify (Syntax_Node *node) {
   Agg_Class r = {0, false, false, NULL};
   for (uint32_t i = 0; i < node->aggregate.items.count; i++) {
@@ -22152,13 +22141,10 @@ bool Agg_Elem_Is_Composite (Type_Info *elem_ti, bool multidim) {
                    Type_Is_Constrained_Array (elem_ti)));
 }
 
-// RM 3.7.1: After memcpy-ing a composite value into a record component,                            
-// verify that the stored discriminant(s) match the component type's                                
-// discriminant constraint(s).  E.g.  (H => INIT (1)) where H : PRIV (0).                           
-// Forward declarations - defined later near Collect_Disc_Symbols_In_Expr                           
-//                                                                                                  
-uint32_t Emit_Disc_Constraint_Value (Type_Info *type_info, uint32_t disc_index, const char *disc_type);
-void Emit_Nested_Disc_Checks (Type_Info *parent_type);
+// RM 3.7.1: After memcpy-ing a composite value into a record component,
+// verify that the stored discriminant(s) match the component type's
+// discriminant constraint(s).  E.g.  (H => INIT (1)) where H : PRIV (0).
+//
 void Emit_Comp_Disc_Check (uint32_t ptr,
                   Type_Info *comp_ti) {
   if (not comp_ti or not Type_Is_Record (comp_ti) or
@@ -24938,6 +24924,7 @@ uint32_t Generate_Aggregate (Syntax_Node *node) {
     }
 
     // ── Third pass: fill uninitialized with OTHERS value (RM 4.3.1) ──────────────────────────────
+
     if (has_others and others_expr) {
       for (uint32_t idx = 0; idx < comp_count; idx++) {
         if (initialized[idx]) continue;
@@ -25063,7 +25050,6 @@ uint32_t Generate_Qualified (Syntax_Node *node) {
   // Callers use Emit_Convert at use sites.
   return result;
 }
-void Emit_Task_Function_Name (Symbol *task_sym, String_Slice fallback_name);
 uint32_t Generate_Allocator (Syntax_Node *node) {
 
   // new T or new T'(value)
@@ -25620,7 +25606,7 @@ uint32_t Generate_Expression (Syntax_Node *node) {
 //                                                                                                  
 // Statements modify state while expressions compute values, a distinction Ada enforces.            
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
-void Generate_Statement (Syntax_Node *node);
+
 void Generate_Statement_List (Node_List *list) {
   for (uint32_t i = 0; i < list->count; i++) {
     Syntax_Node *stmt = list->items[i];
@@ -27149,11 +27135,6 @@ void Generate_For_Loop (Syntax_Node *node) {
 // The stack unwinder's memory is what makes exceptions possible.                                   
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
 
-// Forward declarations
-void Generate_Declaration_List (Node_List *list);
-void Generate_Generic_Instance_Body (Symbol *inst_sym, Syntax_Node *template_body);
-void Generate_Task_Body (Syntax_Node *node);
-void Generate_Subprogram_Body (Syntax_Node *node);
 void Generate_Raise_Statement (Syntax_Node *node) {
 
   // RAISE E; or RAISE; (reraise)
@@ -28319,7 +28300,6 @@ void Generate_Statement (Syntax_Node *node) {
 //                                                                                                  
 // Names get bound to meanings, and those bindings are what we generate.                            
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
-void Generate_Declaration (Syntax_Node *node);
 
 // Check if external name is a builtin/runtime function (already defined)
 bool Is_Builtin_Function (String_Slice name) {
@@ -31278,8 +31258,6 @@ obj_decl_init:
   }
 }
 
-// Forward declare for recursive search
-bool Has_Nested_Subprograms (Node_List *declarations, Node_List *statements);
 bool Has_Nested_In_Statements (Node_List *statements) {
   if (not statements) return false;
   for (uint32_t i = 0; i < statements->count; i++) {
@@ -32879,6 +32857,7 @@ void Generate_Declaration (Syntax_Node *node) {
       Type_Info *elab_ty = type_sym ? type_sym->type : NULL;
 
       // ── Array type with expression bounds ──────────────────────────────────────────────────────
+
       if (elab_ty and Type_Is_Array_Like (elab_ty) and
         elab_ty->array.is_constrained and Type_Has_Dynamic_Bounds (elab_ty)) {
         Ensure_Runtime_Type_Globals (elab_ty);
@@ -32945,6 +32924,7 @@ void Generate_Declaration (Syntax_Node *node) {
       }
 
       // ── Record type with dynamic-sized components ──────────────────────────────────────────────
+
       if (elab_ty and Type_Is_Record (elab_ty)) {
         bool has_dyn = false;
         for (uint32_t ci = 0; ci < elab_ty->record.component_count; ci++) {
@@ -33265,6 +33245,7 @@ void Generate_Declaration (Syntax_Node *node) {
 // Per RM 4.5.2, equality is predefined for all non-limited types.                                  
 // The RM specifies the semantics and the compiler provides the implementation.                     
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
+
 void Generate_Type_Equality_Function (Type_Info *t) {
   if (not t or not t->equality_func_name) return;
   const char *func_name = t->equality_func_name;
@@ -33697,6 +33678,7 @@ void Generate_Extern_Declarations (Syntax_Node *node) {
 //                                                                                                  
 // A compilation unit is the quantum of separate compilation.                                       
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
+
 void Generate_Compilation_Unit (Syntax_Node *node) {
   if (not node) return;
 
@@ -34932,9 +34914,6 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
 //   - Composite types with limited components                                                      
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
 
-// Forward declaration - full Type_Info checking
-bool BIP_Type_Has_Task_Component (const Type_Info *t);
-
 // Check if type is explicitly marked limited (not just by composition)
 bool BIP_Is_Explicitly_Limited (const Type_Info *t) {
   if (not t) return false;
@@ -35097,7 +35076,6 @@ BIP_Alloc_Form BIP_Determine_Alloc_Form (bool is_allocator,
 //   return;                                                                                        
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
 
-
 // Global BIP state for current function being generated
 BIP_Function_State g_bip_state = {0};
 
@@ -35148,6 +35126,7 @@ void BIP_End_Function (void) {
 //                                                                                                  
 // Standard CRC-32/ISO-HDLC polynomial: 0xEDB88320 (bit-reversed 0x04C11DB7)                        
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
+
 uint32_t Crc32_Table[256];
 bool Crc32_Table_Initialized = false;
 void Crc32_Init_Table (void) {
@@ -35176,6 +35155,7 @@ uint32_t Crc32 (const char *data, size_t length) {
 //   Package_Name%b    > package_name.adb                                                           
 //   Parent.Child      > parent-child.ads                                                           
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
+
 void Unit_Name_To_File (String_Slice unit_name, bool is_body,
                 char *out, size_t out_size) {
   size_t j = 0;
@@ -35200,6 +35180,7 @@ void Unit_Name_To_File (String_Slice unit_name, bool is_body,
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
 // §14.4 ALI_Collect — Gather unit info from parsed AST                                             
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
+
 void ALI_Collect_Withs (ALI_Info *ali, Syntax_Node *ctx) {
   if (not ctx) return;
   for (uint32_t i = 0; i < ctx->context.with_clauses.count; i++) {
@@ -35248,13 +35229,10 @@ String_Slice Get_Subprogram_Name (Syntax_Node *node) {
   return (String_Slice){"UNKNOWN", 7};
 }
 
-// Forward declarations for functions used by ALI_Collect_Exports
-String_Slice Mangle_Qualified_Name (String_Slice parent, String_Slice name);
-String_Slice LLVM_Type_Basic (String_Slice ada_type);
-
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
 // §14.4.2 ALI_Collect_Exports — Gather exported symbols from package spec                          
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
+
 void ALI_Collect_Exports (ALI_Info *ali, Syntax_Node *unit) {
   if (not unit or unit->kind != NK_PACKAGE_SPEC) return;
   String_Slice pkg_name = unit->package_spec.name;
@@ -35460,6 +35438,7 @@ String_Slice LLVM_Type_Basic (String_Slice ada_type) {
 //   P line (parameters) — MUST be present                                                          
 //   At least one U line (unit)                                                                     
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
+
 #define ALI_VERSION "Ada83 1.0 built " __DATE__ " " __TIME__
 void ALI_Write (FILE *out, ALI_Info *ali) {
 
@@ -35588,6 +35567,7 @@ void ALI_Write (FILE *out, ALI_Info *ali) {
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
 // §14.6 Generate_ALI_File — Entry point for ALI generation                                         
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
+
 void Generate_ALI_File (const char *output_path,
                 Syntax_Node **units, int unit_count,
                 const char *source, size_t source_size) {
@@ -35998,6 +35978,7 @@ uint32_t Elab_Add_Edge (Elab_Graph *g, uint32_t pred_id, uint32_t succ_id,
 //                                                                                                  
 // Invariant: After completion, every vertex has a non-zero component_id.                           
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
+
 void Tarjan_Strongconnect (Elab_Graph *g, Tarjan_State *s, uint32_t v_id) {
   Elab_Vertex *v = Elab_Get_Vertex (g, v_id);
   if (not v) return;
@@ -36167,6 +36148,7 @@ Elab_Precedence Elab_Compare_Weak (const Elab_Graph *g,
 // Uses bitmap representation for O(1) membership testing.                                          
 // Pure functions that return new sets rather than mutating.                                        
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
+
 Elab_Vertex_Set Elab_Set_Empty (void) {
   return (Elab_Vertex_Set){0};
 }
@@ -36197,6 +36179,7 @@ uint32_t Elab_Set_Size (const Elab_Vertex_Set *s) {
 // Scans a vertex set to find the best candidate using a comparator.                                
 // Pure function with no side effects.                                                              
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
+
 typedef bool (*Elab_Vertex_Pred)(const Elab_Vertex *v);
 typedef Elab_Precedence (*Elab_Vertex_Cmp)(const Elab_Graph *,
                        const Elab_Vertex *,
@@ -36473,6 +36456,7 @@ bool Elab_Needs_Elab_Call (uint32_t index) {
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
 // §16.2 Instantiation_Env helpers                                                                  
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
+
 Type_Info *Env_Lookup_Type (Instantiation_Env *env, String_Slice name) {
   for (uint32_t i = 0; i < env->count; i++) {
     if (Slice_Equal_Ignore_Case (env->mappings[i].formal_name, name))
@@ -36496,6 +36480,7 @@ Syntax_Node *Env_Lookup_Expr (Instantiation_Env *env, String_Slice name) {
 //   • Uses recursion depth tracking with proper error                                              
 //   • Carries environment for type substitution                                                    
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
+
 Syntax_Node *Node_Deep_Clone (Syntax_Node *node, Instantiation_Env *env,
                   int depth);
 
@@ -36702,6 +36687,7 @@ Syntax_Node *Node_Deep_Clone (Syntax_Node *node, Instantiation_Env *env,
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
 // §16.4 Build_Instantiation_Env — Create mapping from formals to actuals                           
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
+
 void Build_Instantiation_Env (Instantiation_Env *env,
                   Symbol *template_sym,
                   Symbol *instance_sym) {
@@ -36746,6 +36732,7 @@ void Build_Instantiation_Env (Instantiation_Env *env,
 //   3. Resolve cloned trees with actual types                                                      
 //   4. Store expanded body for code generation                                                     
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
+
 void Expand_Generic_Package (Symbol *instance_sym) {
   if (not instance_sym or not instance_sym->generic_template) return;
   Symbol *template = instance_sym->generic_template;
@@ -36968,11 +36955,6 @@ void Loading_Set_Remove (String_Slice name) {
     }
   }
 }
-
-// Forward declarations for functions defined after Load_Package_Spec
-char *Lookup_Path      (String_Slice name);
-bool  Has_Precompiled_LL (String_Slice name);
-char *Lookup_Path_Body (String_Slice name);
 
 // Find ALI file for a unit name in include paths
 char *ALI_Find (String_Slice unit_name) {
@@ -37569,7 +37551,6 @@ void Simd_Detect_Features (void) {
 }
 #endif
 
-
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
 // §18.2 SIMD-Accelerated Scanning Functions                                                        
 //                                                                                                  
@@ -37577,6 +37558,7 @@ void Simd_Detect_Features (void) {
 // Each function scans for interesting bytes (whitespace boundaries, end-of-identifier, etc.)       
 // without character-by-character loops.                                                            
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
+
 #ifdef SIMD_X86_64
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
@@ -37609,6 +37591,7 @@ uint64_t Tzcnt64 (uint64_t value) {
 // AVX-512 whitespace skip — 64 bytes at a time using k-mask registers.  Matches space (0x20)       
 // and the C0 control range 0x09–0x0D (tab, LF, VT, FF, CR).  Only compiled with -mavx512bw.        
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
+
 #ifdef __AVX512BW__
 const char *Simd_Skip_Whitespace_Avx512 (const char *cursor, const char *limit) {
   while (cursor + 64 <= limit) {
@@ -37650,6 +37633,7 @@ const char *Simd_Skip_Whitespace_Avx512 (const char *cursor, const char *limit) 
 // whitespace.  Falls back to a single 32-byte pass for the remaining tail before returning to the  
 // scalar loop in the dispatcher.                                                                   
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
+
 const char *Simd_Skip_Whitespace_Avx2 (const char *cursor, const char *limit) {
 
   // 2x unrolled: process 64 bytes per iteration
@@ -37736,6 +37720,7 @@ const char *Simd_Skip_Whitespace_Avx2 (const char *cursor, const char *limit) {
 // Selects the best available SIMD path at runtime based on CPU features detected by                
 // Simd_Detect_Features, then falls through to a scalar tail for the last few bytes.                
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
+
 const char *Simd_Skip_Whitespace (const char *cursor, const char *limit) {
   Simd_Detect_Features ();
 #ifdef __AVX512BW__
@@ -37764,6 +37749,7 @@ const char *Simd_Skip_Whitespace (const char *cursor, const char *limit) {
 // string literals; beyond that the function dispatches to AVX-512 or AVX2 SIMD loops.  Used as     
 // the building block for Simd_Find_Newline, Simd_Find_Quote, and Simd_Find_Double_Quote.           
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
+
 const char *Simd_Find_Char_X86 (const char *cursor, const char *limit, char target) {
 
   // Fast path: scalar check for first 16 bytes (covers most short comments/strings)
@@ -37844,6 +37830,7 @@ const char *Simd_Find_Double_Quote (const char *cursor, const char *limit) {
 // Ada identifiers.  Longer identifiers continue with a scalar table-driven loop — the branch       
 // predictor handles this well since identifiers rarely exceed 8 characters.                        
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
+
 const char *Simd_Scan_Identifier (const char *cursor, const char *limit) {
 
   // Fast path: unrolled table lookup for first 8 chars (covers most identifiers)
@@ -37869,6 +37856,7 @@ const char *Simd_Scan_Identifier (const char *cursor, const char *limit) {
 // numeric literal syntax (LRM §2.4).  Returns a pointer to the first character that is neither a   
 // digit nor an underscore.                                                                         
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
+
 const char *Simd_Scan_Digits (const char *cursor, const char *limit) {
   Simd_Detect_Features ();
 #ifdef __AVX512BW__
@@ -37942,6 +37930,7 @@ const char *Simd_Scan_Digits (const char *cursor, const char *limit) {
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
 // ARM64 NEON Implementation (raw inline assembly)                                                  
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
+
 const char *Simd_Skip_Whitespace (const char *cursor, const char *limit) {
   while (cursor + 16 <= limit) {
     uint64_t lo, hi;
@@ -38178,6 +38167,7 @@ const char *Simd_Scan_Digits (const char *cursor, const char *limit) {
 // Instead of processing one digit at a time (multiply by 10, add digit), the SIMD path batches     
 // eight digits at once (multiply by 10**8, add the 8-digit value).                                 
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
+
 #ifdef SIMD_X86_64
 
 // Parse exactly 8 ASCII digit characters ('0'–'9') into a 32-bit integer in the range
@@ -38365,6 +38355,7 @@ Big_Integer *Big_Integer_From_Decimal_SIMD (const char *text) {
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 // §19. DRIVER                                                                                      
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
+
 void Compile_File (const char *input_path, const char *output_path) {
 
   // Reset loaded bodies for this compilation
@@ -38549,6 +38540,7 @@ void Compile_File (const char *input_path, const char *output_path) {
 // Derive output .ll path from input path by replacing extension.                                   
 // Writes into caller-supplied buffer.                                                              
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
+
 void Derive_Output_Path (const char *input, char *out, size_t out_size) {
   strncpy (out, input, out_size - 1);
   out[out_size - 1] = '\0';
@@ -38569,6 +38561,7 @@ void Derive_Output_Path (const char *input, char *out, size_t out_size) {
 // complete isolation of all global state (arena, error count, loaded                               
 // packages, etc.) without refactoring Compile_File.                                                
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
+
 void *Compile_Worker (void *arg) {
   Compile_Job *job = (Compile_Job *)arg;
   char derived[512];
@@ -38628,6 +38621,7 @@ int main (int argc, char *argv[]) {
   }
 
   // ── Auto-discover rts path from executable location ────────────────────────────────────────────
+
   {
     char exe_path[PATH_MAX];
     ssize_t len = readlink ("/proc/self/exe", exe_path, sizeof (exe_path) - 1);
@@ -38653,6 +38647,7 @@ int main (int argc, char *argv[]) {
   }
 
   // ── Auto-discover input file's directory as include path ───────────────────────────────────────
+
   {
     const char *slash = strrchr (inputs[0], '/');
     if (slash) {

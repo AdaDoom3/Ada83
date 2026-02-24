@@ -1918,6 +1918,7 @@ size_t       Mangle_Into_Buffer          (char *buf, size_t pos,
 String_Slice Symbol_Mangle_Name          (Symbol *sym);
 String_Slice Mangle_Qualified_Name       (String_Slice parent,
                                           String_Slice name);
+String_Slice LLVM_Type_Basic             (String_Slice ada_type);
 void         Emit_Symbol_Name            (Symbol *sym);
 void         Emit_Symbol_Ref             (Symbol *sym);
 void         Emit_Symbol_Storage         (Symbol *sym);
