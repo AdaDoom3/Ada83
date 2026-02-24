@@ -120,25 +120,25 @@ enum {
 #define STRING_BOUNDS_ALLOC   8
 
 /* ─────────────────────────────────────────────────────────────────────────────────────────── */
-/*  1.4  IEEE Floating-Point Model                                                           */
-/*                                                                                           */
-/*  Model parameters for FLOAT (single) and LONG_FLOAT (double) as defined by                */
-/*  Ada RM 3.5.8.  The code generator uses these when emitting attribute references           */
-/*  such as T'Digits, T'Machine_Mantissa, and T'Model_Emin.                                  */
+/*  1.4  IEEE Floating-Point Model                                                             */
+/*                                                                                             */
+/*  Model parameters for FLOAT (single) and LONG_FLOAT (double) as defined by                  */
+/*  Ada RM 3.5.8.  The code generator uses these when emitting attribute references            */
+/*  such as T'Digits, T'Machine_Mantissa, and T'Model_Emin.                                    */
 /* ─────────────────────────────────────────────────────────────────────────────────────────── */
 
-#define IEEE_FLOAT_DIGITS        6
-#define IEEE_DOUBLE_DIGITS       15
-#define IEEE_FLOAT_MANTISSA      24
-#define IEEE_DOUBLE_MANTISSA     53
-#define IEEE_FLOAT_EMAX          128
-#define IEEE_DOUBLE_EMAX         1024
-#define IEEE_FLOAT_EMIN          (-125)
-#define IEEE_DOUBLE_EMIN         (-1021)
-#define IEEE_MACHINE_RADIX       2
-#define IEEE_DOUBLE_MIN_NORMAL   2.2250738585072014e-308    /* 2^(-1022) */
-#define IEEE_FLOAT_MIN_NORMAL    1.1754943508222875e-38     /* 2^(-126)  */
-#define LOG2_OF_10               3.321928094887362
+#define IEEE_FLOAT_DIGITS      6
+#define IEEE_DOUBLE_DIGITS     15
+#define IEEE_FLOAT_MANTISSA    24
+#define IEEE_DOUBLE_MANTISSA   53
+#define IEEE_FLOAT_EMAX        128
+#define IEEE_DOUBLE_EMAX       1024
+#define IEEE_FLOAT_EMIN        (-125)
+#define IEEE_DOUBLE_EMIN       (-1021)
+#define IEEE_MACHINE_RADIX     2
+#define IEEE_DOUBLE_MIN_NORMAL 2.2250738585072014e-308 /* 2^(-1022) */
+#define IEEE_FLOAT_MIN_NORMAL  1.1754943508222875e-38  /* 2^(-126) */
+#define LOG2_OF_10             3.321928094887362
 
 /* ─────────────────────────────────────────────────────────────────────────────────────────── */
 /*  1.5  Subsystem Capacities                                                                */
@@ -597,18 +597,17 @@ typedef enum {
   TK_EQ, TK_NE, TK_LT, TK_LE, TK_GT, TK_GE,
   TK_PLUS, TK_MINUS, TK_STAR, TK_SLASH, TK_AMPERSAND, TK_EXPON,
 
-  /* Reserved words -- the sixty-three of Ada 83 (RM 2.9) */
-  TK_ABORT, TK_ABS, TK_ACCEPT, TK_ACCESS, TK_ALL, TK_AND, TK_AND_THEN,
-  TK_ARRAY, TK_AT, TK_BEGIN, TK_BODY, TK_CASE, TK_CONSTANT, TK_DECLARE,
-  TK_DELAY, TK_DELTA, TK_DIGITS, TK_DO, TK_ELSE, TK_ELSIF, TK_END,
-  TK_ENTRY, TK_EXCEPTION, TK_EXIT, TK_FOR, TK_FUNCTION, TK_GENERIC,
-  TK_GOTO, TK_IF, TK_IN, TK_IS, TK_LIMITED, TK_LOOP, TK_MOD, TK_NEW,
-  TK_NOT, TK_NULL, TK_OF, TK_OR, TK_OR_ELSE, TK_OTHERS, TK_OUT,
-  TK_PACKAGE, TK_PRAGMA, TK_PRIVATE, TK_PROCEDURE, TK_RAISE, TK_RANGE,
-  TK_RECORD, TK_REM, TK_RENAMES, TK_RETURN, TK_REVERSE, TK_SELECT,
-  TK_SEPARATE, TK_SUBTYPE, TK_TASK, TK_TERMINATE, TK_THEN, TK_TYPE,
-  TK_USE, TK_WHEN, TK_WHILE, TK_WITH, TK_XOR,
-  TK_COUNT
+  /* Reserved words - the sixty-three of Ada 83 */
+  TK_ABORT,    TK_ABS,       TK_ACCEPT,  TK_ACCESS,    TK_ALL,      TK_AND,      TK_AND_THEN,
+  TK_ARRAY,    TK_AT,        TK_BEGIN,   TK_BODY,      TK_CASE,     TK_CONSTANT, TK_DECLARE,
+  TK_DELAY,    TK_DELTA,     TK_DIGITS,  TK_DO,        TK_ELSE,     TK_ELSIF,    TK_END,
+  TK_ENTRY,    TK_EXCEPTION, TK_EXIT,    TK_FOR,       TK_FUNCTION, TK_GENERIC,  TK_GOTO,     
+  TK_IF,       TK_IN,        TK_IS,      TK_LIMITED,   TK_LOOP,     TK_MOD,      TK_NEW,
+  TK_NOT,      TK_NULL,      TK_OF,      TK_OR,        TK_OR_ELSE,  TK_OTHERS,   TK_OUT,
+  TK_PACKAGE,  TK_PRAGMA,    TK_PRIVATE, TK_PROCEDURE, TK_RAISE,    TK_RANGE,    TK_RECORD,   
+  TK_REM,      TK_RENAMES,   TK_RETURN,  TK_REVERSE,   TK_SELECT,   TK_SEPARATE, TK_SUBTYPE,   
+  TK_TASK,     TK_TERMINATE, TK_THEN,    TK_TYPE,      TK_USE,      TK_WHEN,     TK_WHILE,   
+  TK_WITH,     TK_XOR,       TK_COUNT
 } Token_Kind;
 
 extern const char *Token_Name[TK_COUNT];
@@ -1265,17 +1264,17 @@ typedef struct {
 /* ─────────────────────────────────────────────────────────────────────────────────────────── */
 
 struct Type_Info {
-  Type_Kind    kind;
-  String_Slice name;            /*  Source name of the type                  */
-  Symbol      *defining_symbol; /*  The SYMBOL_TYPE or SYMBOL_SUBTYPE        */
-  uint32_t     size;            /*  Size in BYTES                            */
-  uint32_t     alignment;       /*  Alignment in BYTES                       */
-  uint32_t     specified_bit_size; /* From a 'Size rep clause, or 0         */
-  Type_Bound   low_bound;       /*  Scalar low bound                         */
-  Type_Bound   high_bound;      /*  Scalar high bound                        */
-  uint128_t    modulus;          /*  For TYPE_MODULAR only                    */
-  Type_Info   *base_type;       /*  The base type for a subtype              */
-  Type_Info   *parent_type;     /*  The parent type for a derived type       */
+  Type_Kind     kind;
+  String_Slice  name;               /*  Source name of the type                  */
+  Symbol       *defining_symbol;    /*  The SYMBOL_TYPE or SYMBOL_SUBTYPE        */
+  uint32_t      size;               /* Size in BYTES                            */
+  uint32_t      alignment;          /* Alignment in BYTES                       */
+  uint32_t      specified_bit_size; /* From a 'Size rep clause, or 0         */
+  Type_Bound    low_bound;          /* Scalar low bound                         */
+  Type_Bound    high_bound;         /* Scalar high bound                        */
+  uint128_t     modulus;            /* For TYPE_MODULAR only                    */
+  Type_Info    *base_type;          /* The base type for a subtype              */
+  Type_Info    *parent_type;        /* The parent type for a derived type       */
 
   union {
     struct { Index_Info *indices; uint32_t index_count;
@@ -1322,38 +1321,38 @@ extern uint32_t   Exception_Symbol_Count;
 /*  10.5  Type Construction and Classification                                               */
 /* ─────────────────────────────────────────────────────────────────────────────────────────── */
 
-Type_Info  *Type_New             (Type_Kind kind, String_Slice name);
-void        Freeze_Type          (Type_Info *type_info);
+Type_Info *Type_New    (Type_Kind kind, String_Slice name);
+void       Freeze_Type (Type_Info *type_info);
 
-bool Type_Is_Scalar              (const Type_Info *t);
-bool Type_Is_Discrete            (const Type_Info *t);
-bool Type_Is_Numeric             (const Type_Info *t);
-bool Type_Is_Real                (const Type_Info *t);
-bool Type_Is_Float_Representation(const Type_Info *t);
-bool Type_Is_Array_Like          (const Type_Info *t);
-bool Type_Is_Composite           (const Type_Info *t);
-bool Type_Is_Access              (const Type_Info *t);
-bool Type_Is_Record              (const Type_Info *t);
-bool Type_Is_Task                (const Type_Info *t);
-bool Type_Is_Float               (const Type_Info *t);
-bool Type_Is_Fixed_Point         (const Type_Info *t);
-bool Type_Is_Private             (const Type_Info *t);
-bool Type_Is_Limited             (const Type_Info *t);
-bool Type_Is_Integer_Like        (const Type_Info *t);
-bool Type_Is_Unsigned            (const Type_Info *t);
-bool Type_Is_Enumeration         (const Type_Info *t);
-bool Type_Is_Boolean             (const Type_Info *t);
-bool Type_Is_Character           (const Type_Info *t);
-bool Type_Is_String              (const Type_Info *t);
-bool Type_Is_Universal_Integer   (const Type_Info *t);
-bool Type_Is_Universal_Real      (const Type_Info *t);
-bool Type_Is_Universal           (const Type_Info *t);
-bool Type_Is_Unconstrained_Array (const Type_Info *t);
-bool Type_Is_Constrained_Array   (const Type_Info *t);
-bool Type_Is_Bool_Array          (const Type_Info *t);
-bool Type_Has_Dynamic_Bounds     (const Type_Info *t);
-bool Type_Needs_Fat_Pointer      (const Type_Info *t);
-bool Type_Needs_Fat_Pointer_Load (const Type_Info *t);
+bool Type_Is_Scalar               (const Type_Info *t);
+bool Type_Is_Discrete             (const Type_Info *t);
+bool Type_Is_Numeric              (const Type_Info *t);
+bool Type_Is_Real                 (const Type_Info *t);
+bool Type_Is_Float_Representation (const Type_Info *t);
+bool Type_Is_Array_Like           (const Type_Info *t);
+bool Type_Is_Composite            (const Type_Info *t);
+bool Type_Is_Access               (const Type_Info *t);
+bool Type_Is_Record               (const Type_Info *t);
+bool Type_Is_Task                 (const Type_Info *t);
+bool Type_Is_Float                (const Type_Info *t);
+bool Type_Is_Fixed_Point          (const Type_Info *t);
+bool Type_Is_Private              (const Type_Info *t);
+bool Type_Is_Limited              (const Type_Info *t);
+bool Type_Is_Integer_Like         (const Type_Info *t);
+bool Type_Is_Unsigned             (const Type_Info *t);
+bool Type_Is_Enumeration          (const Type_Info *t);
+bool Type_Is_Boolean              (const Type_Info *t);
+bool Type_Is_Character            (const Type_Info *t);
+bool Type_Is_String               (const Type_Info *t);
+bool Type_Is_Universal_Integer    (const Type_Info *t);
+bool Type_Is_Universal_Real       (const Type_Info *t);
+bool Type_Is_Universal            (const Type_Info *t);
+bool Type_Is_Unconstrained_Array  (const Type_Info *t);
+bool Type_Is_Constrained_Array    (const Type_Info *t);
+bool Type_Is_Bool_Array           (const Type_Info *t);
+bool Type_Has_Dynamic_Bounds      (const Type_Info *t);
+bool Type_Needs_Fat_Pointer       (const Type_Info *t);
+bool Type_Needs_Fat_Pointer_Load  (const Type_Info *t);
 
 /* ─────────────────────────────────────────────────────────────────────────────────────────── */
 /*  10.6  Type Chain Navigation and Bound Queries                                            */
@@ -2583,6 +2582,9 @@ typedef struct {
 /*  15.2  Elaboration Operations                                                             */
 /* ─────────────────────────────────────────────────────────────────────────────────────────── */
 
+extern Elab_Graph g_elab_graph;
+extern bool       g_elab_graph_initialized;
+
 uint32_t          Elab_Find_Vertex        (const Elab_Graph *g,
                                             String_Slice name,
                                             Elab_Unit_Kind kind);
@@ -2610,8 +2612,6 @@ void              Elab_Elaborate_Vertex   (Elab_Graph *g, uint32_t v_id,
 Elab_Order_Status Elab_Elaborate_Graph    (Elab_Graph *g);
 void              Elab_Pair_Specs_Bodies  (Elab_Graph *g);
 
-extern Elab_Graph g_elab_graph;
-extern bool       g_elab_graph_initialized;
 void              Elab_Init               (void);
 uint32_t          Elab_Register_Unit      (String_Slice name, bool is_body,
                                             Symbol *sym, bool is_preelaborate,
@@ -2625,9 +2625,9 @@ bool              Elab_Needs_Elab_Call    (uint32_t index);
 /*                                                                                           */
 /*  Chapter 16.  GENERICS                                                                    */
 /*                                                                                           */
-/*  Generic units are instantiated by macro-style expansion: the template AST                 */
+/*  Generic units are instantiated by macro-style expansion: the template AST                */
 /*  is deep-cloned with formal-to-actual substitution, then resolved and                     */
-/*  code-generated as though the programmer had written the expanded text by hand.            */
+/*  code-generated as though the programmer had written the expanded text by hand.           */
 /*                                                                                           */
 /*  The Instantiation_Env maps formal names to actual types, subprograms, and                */
 /*  expressions.  Node_Deep_Clone recursively duplicates the AST while replacing             */
@@ -2636,36 +2636,45 @@ bool              Elab_Needs_Elab_Call    (uint32_t index);
 /* ========================================================================================= */
 
 typedef struct {
-  String_Slice  formal_name;    /*  Generic formal parameter name            */
-  Type_Info    *actual_type;    /*  Substituted actual type                  */
-  Symbol       *actual_symbol;  /*  Actual symbol (for subprogram formals)   */
-  Syntax_Node  *actual_expr;    /*  Actual expression (for object formals)   */
+  String_Slice  formal_name;   /* Generic formal parameter name */
+  Type_Info    *actual_type;   /* Substituted actual type */
+  Symbol       *actual_symbol; /* Actual symbol (for subprogram formals) */
+  Syntax_Node  *actual_expr;   /* Actual expression (for object formals) */
 } Generic_Mapping;
 
 typedef struct {
-  Generic_Mapping  mappings[32]; /*  Formal-to-actual mapping array          */
-  uint32_t         count;        /*  Number of active mappings               */
-  Symbol          *instance_sym; /*  The instantiation symbol                */
-  Symbol          *template_sym; /*  The generic template symbol             */
+  Generic_Mapping  mappings[32]; /* Formal-to-actual mapping array */
+  uint32_t         count;        /* Number of active mappings */
+  Symbol          *instance_sym; /* The instantiation symbol */
+  Symbol          *template_sym; /* The generic template symbol */
 } Instantiation_Env;
 
-Type_Info   *Env_Lookup_Type             (Instantiation_Env *env,
-                                          String_Slice name);
-Syntax_Node *Env_Lookup_Expr             (Instantiation_Env *env,
-                                          String_Slice name);
-Syntax_Node *Node_Deep_Clone             (Syntax_Node *node,
-                                          Instantiation_Env *env, int depth);
-void         Node_List_Clone             (Node_List *dst, Node_List *src,
-                                          Instantiation_Env *env, int depth);
-void         Build_Instantiation_Env     (Instantiation_Env *env,
-                                          Symbol *inst, Symbol *tmpl);
-void         Expand_Generic_Package      (Symbol *instance_sym);
+Type_Info *Env_Lookup_Type (Instantiation_Env *env,
+                            String_Slice       name);
+
+Syntax_Node *Env_Lookup_Expr (Instantiation_Env *env,
+                              String_Slice       name);
+
+Syntax_Node *Node_Deep_Clone (Syntax_Node       *node,
+                              Instantiation_Env *env,
+                              int                depth);
+
+void Node_List_Clone (Node_List         *dst,
+                      Node_List         *src,
+                      Instantiation_Env *env,
+                      int                depth);
+
+void Build_Instantiation_Env (Instantiation_Env *env,
+                              Symbol            *inst,
+                              Symbol            *tmpl);
+
+void Expand_Generic_Package (Symbol *instance_sym);
 
 /* ========================================================================================= */
 /*                                                                                           */
 /*  Chapter 17.  FILE LOADING                                                                */
 /*                                                                                           */
-/*  WITH clauses name packages that must be found on disk, loaded, parsed,                    */
+/*  WITH clauses name packages that must be found on disk, loaded, parsed,                   */
 /*  semantically analysed, and code-generated before the withing unit can                    */
 /*  proceed.  Include_Paths lists the directories to search; Lookup_Path                     */
 /*  maps a unit name to a file path using standard naming conventions.                       */
@@ -2675,47 +2684,47 @@ void         Expand_Generic_Package      (Symbol *instance_sym);
 /*                                                                                           */
 /* ========================================================================================= */
 
-extern const char     *Include_Paths[32];
-extern uint32_t        Include_Path_Count;
-extern Syntax_Node    *Loaded_Package_Bodies[128];
-extern int             Loaded_Body_Count;
-extern String_Slice    Loaded_Body_Names[128];
-extern int             Loaded_Body_Names_Count;
+extern const char   *Include_Paths[32];
+extern uint32_t      Include_Path_Count;
+extern Syntax_Node  *Loaded_Package_Bodies[128];
+extern int           Loaded_Body_Count;
+extern String_Slice  Loaded_Body_Names[128];
+extern int           Loaded_Body_Names_Count;
 
 typedef struct {
-  String_Slice names[64];        /*  Unit names currently being loaded       */
-  int          count;            /*  Number of entries in the set            */
+  String_Slice names[64]; /* Unit names currently being loaded */
+  int          count;     /* Number of entries in the set */
 } Loading_Set;
 
 extern Loading_Set Loading_Packages;
 
-bool  Body_Already_Loaded    (String_Slice name);
-void  Mark_Body_Loaded       (String_Slice name);
-bool  Loading_Set_Contains   (String_Slice name);
-void  Loading_Set_Add        (String_Slice name);
-void  Loading_Set_Remove     (String_Slice name);
-char *Lookup_Path            (String_Slice name);
-char *Lookup_Path_Body       (String_Slice name);
-bool  Has_Precompiled_LL     (String_Slice name);
+bool  Body_Already_Loaded  (String_Slice name);
+void  Mark_Body_Loaded     (String_Slice name);
+bool  Loading_Set_Contains (String_Slice name);
+void  Loading_Set_Add      (String_Slice name);
+void  Loading_Set_Remove   (String_Slice name);
+char *Lookup_Path          (String_Slice name);
+char *Lookup_Path_Body     (String_Slice name);
+bool  Has_Precompiled_LL   (String_Slice name);
 
-void  Load_Package_Spec      (String_Slice name, char *src);
-char *Read_File              (const char *path, size_t *out_size);
-char *Read_File_Simple       (const char *path);
+void  Load_Package_Spec (String_Slice name, char *src);
+char *Read_File         (const char *path, size_t *out_size);
+char *Read_File_Simple  (const char *path);
 
 /* ========================================================================================= */
 /*                                                                                           */
 /*  Chapter 18.  VECTOR PATHS                                                                */
 /*                                                                                           */
-/*  Vectorised scanning primitives for whitespace skipping, identifier recognition,           */
+/*  Vectorised scanning primitives for whitespace skipping, identifier recognition,          */
 /*  digit scanning, and single-character search.  Three implementations are                  */
 /*  selected at compile time by the platform detection in Chapter 1:                         */
 /*                                                                                           */
-/*    x86-64   AVX-512BW (64-byte), AVX2 (32-byte), with scalar tail                        */
+/*    x86-64   AVX-512BW (64-byte), AVX2 (32-byte), with scalar tail                         */
 /*    ARM64    NEON/ASIMD (16-byte), with scalar tail                                        */
 /*    Generic  Scalar fallback with unrolled loops                                           */
 /*                                                                                           */
 /*  All SIMD paths produce results identical to their scalar equivalents for                 */
-/*  every possible input.  The scanning interface is the same on all platforms;               */
+/*  every possible input.  The scanning interface is the same on all platforms;              */
 /*  only the implementation changes.                                                         */
 /*                                                                                           */
 /* ========================================================================================= */
@@ -2726,37 +2735,36 @@ char *Read_File_Simple       (const char *path);
   uint32_t    Tzcnt32 (uint32_t value);
   uint64_t    Tzcnt64 (uint64_t value);
   #ifdef __AVX2__
-  uint32_t    Simd_Parse_8_Digits_Avx2 (const char *digits);
-  int         Simd_Parse_Digits_Avx2   (const char *cursor,
-                                         const char *limit, uint64_t *out);
+    uint32_t Simd_Parse_8_Digits_Avx2 (const char *digits);
+    int      Simd_Parse_Digits_Avx2   (const char *cursor, const char *limit, uint64_t *out);
   #endif
 #elif defined(SIMD_ARM64)
-  uint64_t    Tzcnt64 (uint64_t value);
+  uint64_t Tzcnt64 (uint64_t value);
 #endif
 
-void         Simd_Detect_Features       (void);
-const char  *Simd_Skip_Whitespace       (const char *cursor, const char *limit);
-const char  *Simd_Find_Newline          (const char *cursor, const char *limit);
-const char  *Simd_Find_Quote            (const char *cursor, const char *limit);
-const char  *Simd_Find_Double_Quote     (const char *cursor, const char *limit);
-const char  *Simd_Scan_Identifier       (const char *cursor, const char *limit);
-const char  *Simd_Scan_Digits           (const char *cursor, const char *limit);
+void         Simd_Detect_Features   (void);
+const char  *Simd_Skip_Whitespace   (const char *cursor, const char *limit);
+const char  *Simd_Find_Newline      (const char *cursor, const char *limit);
+const char  *Simd_Find_Quote        (const char *cursor, const char *limit);
+const char  *Simd_Find_Double_Quote (const char *cursor, const char *limit);
+const char  *Simd_Scan_Identifier   (const char *cursor, const char *limit);
+const char  *Simd_Scan_Digits       (const char *cursor, const char *limit);
 
 /* ========================================================================================= */
 /*                                                                                           */
 /*  Chapter 19.  DRIVER                                                                      */
 /*                                                                                           */
-/*  The main driver parses command-line arguments, compiles each source file to               */
-/*  LLVM IR -- optionally forking a subprocess per file for parallel compilation --           */
+/*  The main driver parses command-line arguments, compiles each source file to              */
+/*  LLVM IR -- optionally forking a subprocess per file for parallel compilation --          */
 /*  and returns an exit status.  Derive_Output_Path maps an input .adb or .ads               */
 /*  file to the corresponding .ll output path.                                               */
 /*                                                                                           */
 /* ========================================================================================= */
 
 typedef struct {
-  const char *input_path;        /*  Source file to compile                  */
-  const char *output_path;       /*  NULL = derive from input               */
-  int         exit_status;       /*  0 = success, 1 = failure               */
+  const char *input_path;  /* Source file to compile   */
+  const char *output_path; /* Where NULL means derive from input */
+  int         exit_status; /* Zero for success, one for failure */
 } Compile_Job;
 
 void  Compile_File       (const char *input_path, const char *output_path);
