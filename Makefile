@@ -1,13 +1,13 @@
 # Makefile for Ada83 Compiler
 
 CC = gcc
-CFLAGS = -O2 -Wall
+CFLAGS = -O3 -Wall
 LLC = llc
 ADA83 = ./ada83
 
 RUNTIME_LIBS = -lm
 
-.PHONY: all clean compiler help
+.PHONY: all clean clean-test compiler help
 
 all: compiler
 
@@ -31,7 +31,13 @@ ada83: ada83.c
 clean:
 	rm -f ada83 *.o *.ll *.s *.exe
 	rm -f a.out core
+	rm -rf test_results acats_logs acats/report.ll
 	@echo "Clean complete"
+
+# Clean only test artifacts (keep compiler)
+clean-test:
+	rm -rf test_results acats_logs acats/report.ll
+	@echo "Test artifacts cleaned"
 
 # Help target
 help:
