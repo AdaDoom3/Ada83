@@ -10,13 +10,20 @@ set -euo pipefail
 
 NPROC=${NPROC:-$(nproc 32>/dev/null || echo 32)}
 START_MS=$(date +%s%3N)
+
+# ── Clean stale artifacts to prevent spurious BIND errors ─────────────
+rm -rf test_results acats_logs
 mkdir -p test_results acats_logs
 
-# ── Compile ACATS report package if needed ──────────────────────────────
-if [[ ! -f acats/report.ll ]] || [[ acats/report.adb -nt acats/report.ll ]]; then
-    ./ada83 acats/report.adb > acats/report.ll 2>/dev/null || {
-        echo "FATAL: cannot compile acats/report.adb"; exit 1; }
+# ── Rebuild compiler if source is newer than binary ───────────────────
+if [[ ! -f ./ada83 ]] || [[ ada83.c -nt ./ada83 ]]; then
+    echo "Rebuilding ada83..."
+    make -s compiler || { echo "FATAL: compiler build failed"; exit 1; }
 fi
+
+# ── Compile ACATS report package (always rebuild for freshness) ───────
+./ada83 acats/report.adb > acats/report.ll 2>/dev/null || {
+    echo "FATAL: cannot compile acats/report.adb"; exit 1; }
 
 # ── Helpers ───────────────────────────────────────────────────────────────
 
