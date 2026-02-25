@@ -522,10 +522,10 @@ double   Rational_To_Double     (Rational         rational); // may lose precisi
 //
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 
-// Convience macros for oken kind names for diagnostics and error messages
+// Convience macros for token kind names for diagnostics and error messages
 #define K(t)   TK_##t
-#define N(t,s) [K(t)] = s
-#define KW(t)  N(t, #t) // Stringify the token name as the display form
+#define N(t,s) [TK_##t] = s
+#define KW(t)  [TK_##t] = #t
 
 // Token_Kind enumerates every lexeme in the Ada 83 grammar: identifiers, numeric and string
 // literals, delimiters, operator symbols, and reserved words.
@@ -692,26 +692,19 @@ Token Scan_String_Literal    (Lexer *lex);
 // Return the integer value of a hex digit character, or -1 if not a digit.
 int   Digit_Value            (char   ch);
 
-// Linear scan is adequate for the sixty-three reserved words of Ada 83. AND_THEN and OR_ELSE
-// contain spaces and are never matched as bare identifiers, so they're harmlessly skipped.
-static Token_Kind lookup_keyword (String_Slice id) {
-  for (int k = K(ABORT); k <= K(XOR); k++) {
+// Linear scan over Token_Name is adequate for the sixty-three reserved words of Ada 83.
+// AND_THEN and OR_ELSE contain spaces and are never matched as bare identifiers, so they're
+// harmlessly skipped.
+Token_Kind Lookup_Keyword (String_Slice name) {
+  for (int k = TK_ABORT; k <= TK_XOR; k++) {
     const char *kw = Token_Name[k];
     if (!kw) continue;
-    int i = 0;
-    while (i < id.len && kw[i] && (id.ptr[i] | 0x20) == (kw[i] | 0x20))
+    uint32_t i = 0;
+    while (i < name.length && kw[i] && (name.data[i] | 0x20) == (kw[i] | 0x20))
       i++;
-    if (i == id.len && !kw[i])
+    if (i == name.length && !kw[i])
       return (Token_Kind)k;
   }
-  return K(IDENTIFIER);
-}
-
-// Look up a name in the keyword table; return TK_IDENTIFIER if not a reserved word.
-Token_Kind Lookup_Keyword (String_Slice name) {
-  for (int i = 0; Keywords[i].name.data; i++)
-    if (Slice_Equal_Ignore_Case (name, Keywords[i].name))
-      return Keywords[i].kind;
   return TK_IDENTIFIER;
 }
 
