@@ -1,0 +1,96 @@
+CHECKLIST — Ada83 Compiler c48 (Allocator) Test Group Refactoring
+=================================================================
+
+ORIGINAL PROMPT:
+  In the pursuit of high-quality code (low line count (e.g. low undue complexity)
+  and high feature/correctness) - refactor and fix ada83.c to pass a single
+  C-test group completely (e.g. cXX) with much better Haskell-like C99 and smart
+  code-golfing with, ironically, textbook "Literate Programming" style.
+
+  Do NOT skip around - when you encounter a complex problem look at it as an
+  opportunity to finally attack a big issue. Remember to follow the flow upstream
+  to avoid hacking up the expander.
+
+  Create a file to track everything called "checklist.txt" and include this
+  prompt in it. Start with the group with the most non-passing. Test exclusively
+  with run_acats.sh
+
+TARGET GROUP: c48 (Ada RM §4.8 — Allocators)
+  Rationale: 31 tests, 22 fail, 2 skip — most non-passing in a coherent domain
+
+BASELINE (before any changes):
+  c48004a  PASS   PASSED
+  c48004b  FAIL   WRONG VALUES - B5
+  c48004c  PASS   PASSED
+  c48004d  FAIL   WRONG VALUES - C4
+  c48004e  FAIL   WRONG VALUES - CASE 2
+  c48004f  FAIL   VARIABLE IS NOT NULL - CASE 1
+  c48005a  PASS   PASSED
+  c48005b  FAIL   WRONG ARRAY BOUNDS - V A UA2
+  c48005c  FAIL   VARIABLE NOT SET TO NULL - CASE 1
+  c48006a  PASS   PASSED
+  c48006b  PASS   PASSED
+  c48007a  FAIL   NO EXCEPTION RAISED - UR
+  c48007b  FAIL   NO EXCEPTION RAISED - CR
+  c48007c  FAIL   NO EXCEPTION RAISED - V11
+  c48008a  SKIP   BIND:unresolved symbols
+  c48008b  FAIL   NO EXCEPTION RAISED - UR1
+  c48008c  FAIL   NO EXCEPTION RAISED - CASE 1
+  c48008d  FAIL   NO EXCEPTION RAISED - UA1
+  c48009a  FAIL   NO EXCEPTION RAISED - 1
+  c48009b  FAIL   NO EXCEPTION RAISED - CASE 1A
+  c48009c  FAIL   NO EXCEPTION RAISED - CASE 2
+  c48009d  FAIL   NO EXCEPTION RAISED - CASE 1A
+  c48009e  FAIL   RUNTIME:exit 139 (SEGFAULT)
+  c48009f  FAIL   NO EXCEPTION RAISED - CASE 0
+  c48009g  FAIL   RUNTIME:exit 139 (SEGFAULT)
+  c48009h  FAIL   NO EXCEPTION RAISED - CR
+  c48009i  FAIL   NO EXCEPTION RAISED - UR
+  c48009j  FAIL   NO EXCEPTION RAISED - UA
+  c48010a  PASS   PASSED
+  c48011a  SKIP   COMPILE: type mismatch in assignment
+  c48012a  PASS   PASSED
+
+FAILURE CATEGORIES:
+  [A] Wrong values on allocation (c48004b/d/e)    — allocator initial values
+  [B] Null init issues (c48004f, c48005c)          — access-type default null
+  [C] Wrong array bounds (c48005b)                 — unconstrained allocators
+  [D] No exception raised (c48007*, c48008*, c48009a-d,f,h-j) — constraint check
+  [E] Segfault (c48009e, c48009g)                  — likely null deref or bad ptr
+  [F] Unresolved symbols (c48008a)                 — missing runtime/package
+  [G] Compile error (c48011a)                      — type mismatch parse issue
+
+PROGRESS LOG:
+  [date]  [test(s)]  [status]  [what was changed]
+  -----------------------------------------------
+  (Session 1 — prior to this session)
+  Various  c48004b/d/e/f, c48005b/c, c48006b, c48007a/b/c → PASS
+           c48008b/c, c48009a-d/h/j → PASS  (7/31 → 23/31, 74%)
+
+  2025-02-25  c48008b  PASS  Check (f.1): disc constraint for access-type allocators
+  2025-02-25  c48008d  PASS  Check (f.2): array index bounds for access-type allocators
+  2025-02-25  c48009e  PASS  Fixed 3 issues: negative array size for null ranges,
+                             RETURN NULL for fat pointer types, positional aggregate
+                             element count check in allocators
+  2025-02-25  c48009g  PASS  Null guard in check (e) for disc/array bounds checks
+  2025-02-25  c48009i  PASS  Check (g): target-constrained access-to-access types
+  2025-02-25  c48009f  PASS  Aggregate element count check in Generate_Aggregate for
+                             constrained arrays (ragged multidim aggregates)
+  2025-02-25  c48008a  PASS  3 fixes: disc_agg_temp propagation for nested disc checks
+                             in allocators, target_access_type for function args and
+                             qualified expressions, default value constraint check
+  2025-02-25  c48011a  PASS  Overload resolution retry in assignment when target is
+                             selected component of overloaded function call
+
+FINAL RESULT: 31/31 (100%) — ALL c48 TESTS PASS
+
+KEY CHANGES IN ada83.c:
+  1. Allocator checks (a)-(g) for RM 4.8 constraint checks
+  2. Negative array size clamping for null ranges (RM 3.6.1)
+  3. RETURN NULL special case for fat pointer access types
+  4. Null guards for pointer dereferences in constraint checks
+  5. Aggregate element count verification for constrained arrays
+  6. disc_agg_temp propagation for recursive nested disc checks
+  7. target_access_type propagation for function args and qualified exprs
+  8. Default value constraint check for record component initialization
+  9. Overload resolution retry for assignment targets with selected components
