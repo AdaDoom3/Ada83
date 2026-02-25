@@ -226,8 +226,7 @@ EOF
 }
 
 case ${1:-h} in
-    f|full) run_parallel "acats/*.ada" "Full Suite" ;;
-    g)      run_parallel "acats/${2:-c}*.ada" "Class ${2:-C} Tests" ;;
-    q)      run_parallel "acats/${2:-c32}*.ada" "Group ${2:-c32} Tests" ;;
+    g)        run_parallel "acats/${2:-c}*.ada" "Class ${2:-C} Tests" ;;
+    q)        run_parallel "acats/${2:-c32}*.ada" "Group ${2:-c32} Tests" ;;
     h|help|*) usage ;;
 esac
