@@ -859,6 +859,7 @@ struct Syntax_Node {
     struct {
       Syntax_Node *subtype_mark; // Allocated subtype
       Syntax_Node *expression;   // Initializer or NULL
+      Type_Info   *target_access_type; // Context access type from assignment/return (RM 4.8)
     } allocator;
 
     // when NK_APPLY =>
@@ -11554,6 +11555,48 @@ Type_Info *Resolve_Expression (Syntax_Node *node) {
           node->type = acc_con;
           return acc_con;
         }
+        // RM 3.7.1: Access-to-discriminated-record with disc constraint.
+        // NEW A_UR1(6) → A_UR1 is ACCESS UR1, (6) constrains disc A=6.
+        // Create a constrained access type whose designated is UR1(A=6).
+        if (constraint and constraint->kind == NK_INDEX_CONSTRAINT and
+          Type_Is_Access (base_type) and base_type->access.designated_type and
+          Type_Is_Record (base_type->access.designated_type) and
+          base_type->access.designated_type->record.has_discriminants) {
+          Type_Info *des_base = base_type->access.designated_type;
+          uint32_t n_args = (uint32_t)constraint->index_constraint.ranges.count;
+          uint32_t n_disc = des_base->record.discriminant_count;
+          if (n_args > 0 and n_args <= n_disc) {
+            Type_Info *des_con = Type_New (TYPE_RECORD, des_base->name);
+            *des_con = *des_base;
+            des_con->base_type = des_base;
+            des_con->record.has_disc_constraints = true;
+
+            // Allocate disc constraint values
+            int64_t *vals = Arena_Allocate (n_disc * sizeof (int64_t));
+            Syntax_Node **exprs = Arena_Allocate (n_disc * sizeof (Syntax_Node *));
+            for (uint32_t i = 0; i < n_disc; i++) { vals[i] = 0; exprs[i] = NULL; }
+            for (uint32_t i = 0; i < n_args and i < n_disc; i++) {
+              Syntax_Node *arg = constraint->index_constraint.ranges.items[i];
+              Resolve_Expression (arg);
+              exprs[i] = arg;
+              double v = Eval_Const_Numeric (arg);
+              if (v == v) vals[i] = (int64_t)v;
+            }
+            des_con->record.disc_constraint_values = vals;
+            des_con->record.disc_constraint_exprs = exprs;
+
+            // Compute size from disc constraints
+            if (des_base->size > 0) des_con->size = des_base->size;
+
+            Type_Info *acc_con = Type_New (TYPE_ACCESS, base_type->name);
+            *acc_con = *base_type;
+            acc_con->base_type = base_type;
+            acc_con->access.designated_type = des_con;
+            node->type = acc_con;
+            return acc_con;
+          }
+        }
+
         if (constraint and constraint->kind == NK_INDEX_CONSTRAINT and
           Type_Is_Array_Like (base_type)) {
 
@@ -12547,7 +12590,46 @@ void Resolve_Statement (Syntax_Node *node) {
       if (node->assignment.target->type and node->assignment.value->type) {
         if (not Type_Covers (node->assignment.target->type,
                 node->assignment.value->type)) {
-          Report_Error (node->location, "type mismatch in assignment");
+
+          // RM 8.6: Overload resolution retry.  When target is
+          // X.COMPONENT where X is an overloaded function call, try
+          // alternative overloads whose result type has a matching
+          // component.  E.g., FUNC(2).A := NEW INTEGER'(2) where two
+          // FUNCs return different record types — pick the one whose
+          // .A component matches the RHS type.
+          bool resolved = false;
+          Syntax_Node *tgt = node->assignment.target;
+          if (tgt->kind == NK_SELECTED and tgt->selected.prefix and
+            tgt->selected.prefix->kind == NK_APPLY and
+            tgt->selected.prefix->apply.prefix and
+            tgt->selected.prefix->apply.prefix->symbol and
+            tgt->selected.prefix->apply.prefix->symbol->is_overloaded) {
+            Symbol *orig = tgt->selected.prefix->apply.prefix->symbol;
+            Type_Info *val_type = node->assignment.value->type;
+            for (Symbol *alt = orig->next_overload; alt; alt = alt->next_overload) {
+              if (alt == orig) break;
+              Type_Info *rt = alt->return_type;
+              if (not rt) continue;
+              // Dereference access type to get record type
+              Type_Info *rec = Type_Is_Access (rt) ? rt->access.designated_type : rt;
+              if (not rec or not Type_Is_Record (rec)) continue;
+              for (uint32_t ci = 0; ci < rec->record.component_count; ci++) {
+                if (Slice_Equal_Ignore_Case (rec->record.components[ci].name,
+                      tgt->selected.selector) and
+                  Type_Covers (rec->record.components[ci].component_type, val_type)) {
+                  // Found matching overload - update prefix symbol and types
+                  tgt->selected.prefix->apply.prefix->symbol = alt;
+                  tgt->selected.prefix->type = rt;
+                  tgt->type = rec->record.components[ci].component_type;
+                  resolved = true;
+                  break;
+                }
+              }
+              if (resolved) break;
+            }
+          }
+          if (not resolved)
+            Report_Error (node->location, "type mismatch in assignment");
         }
       }
       break;
@@ -16635,9 +16717,28 @@ uint32_t Emit_Convert_Ext (uint32_t src, const char *src_type,
   } else if (Llvm_Type_Is_Fat_Pointer (src_type) and Llvm_Type_Is_Pointer (dst_type)) {
     Emit ("  %%t%u = extractvalue %s %%t%u, 0\n", t, src_type, src);
 
-  // ptr > fat pointer: pointer to unconstrained array storage, load it
+  // ptr > fat pointer: pointer to unconstrained array storage, load it.
+  // Guard against null pointers (e.g. RETURN NULL for fat-ptr access types).
   } else if (Llvm_Type_Is_Pointer (src_type) and Llvm_Type_Is_Fat_Pointer (dst_type)) {
-    Emit ("  %%t%u = load %s, ptr %%t%u\n", t, dst_type, src);
+    uint32_t is_null = Emit_Temp ();
+    Emit ("  %%t%u = icmp eq ptr %%t%u, null\n", is_null, src);
+    uint32_t ok_lbl = cg->label_id++;
+    uint32_t null_lbl = cg->label_id++;
+    uint32_t merge_lbl = cg->label_id++;
+    Emit ("  br i1 %%t%u, label %%L%u, label %%L%u\n", is_null, null_lbl, ok_lbl);
+    cg->block_terminated = true;
+    Emit_Label_Here (ok_lbl);
+    uint32_t loaded = Emit_Temp ();
+    Emit ("  %%t%u = load %s, ptr %%t%u\n", loaded, dst_type, src);
+    Emit ("  br label %%L%u\n", merge_lbl);
+    cg->block_terminated = true;
+    Emit_Label_Here (null_lbl);
+    Emit ("  br label %%L%u\n", merge_lbl);
+    cg->block_terminated = true;
+    Emit_Label_Here (merge_lbl);
+    Emit ("  %%t%u = phi %s [ %%t%u, %%L%u ], [ zeroinitializer, %%L%u ]\n",
+       t, dst_type, loaded, ok_lbl, null_lbl);
+    cg->block_terminated = false;
 
   // fat pointer > integer: extract data pointer then ptrtoint
   } else if (Llvm_Type_Is_Fat_Pointer (src_type) and dst_type[0] == 'i') {
@@ -21583,6 +21684,14 @@ uint32_t Generate_Apply (Syntax_Node *node) {
           }
         }
       } else {
+        // RM 4.8: Propagate target access type to allocator in parameter
+        // context so disc/bounds constraint checks fire (like assignments).
+        if (arg->kind == NK_ALLOCATOR and sym->parameters and
+          param_idx < sym->parameter_count) {
+          Type_Info *ft = sym->parameters[param_idx].param_type;
+          if (ft and Type_Is_Access (ft))
+            arg->allocator.target_access_type = ft;
+        }
         args[i] = Generate_Expression (arg);
 
         // IN parameter: check constraint before call (RM 4.6)
@@ -25104,9 +25213,16 @@ void Agg_Rec_Store (uint32_t val, uint32_t dest_ptr,
       val = dv;
     }
     val = Emit_Convert (val, src_type, comp_type);
-    if (ti and Type_Is_Scalar (ti) and not comp->is_discriminant)
-      val = Emit_Constraint_Check_With_Type (val, ti,
-        src_expr ? src_expr->type : NULL, comp_type);
+    if (ti and Type_Is_Scalar (ti)) {
+      if (comp->is_discriminant) {
+        // RM 3.7.1: Check discriminant value against its own subtype range
+        val = Emit_Constraint_Check_With_Type (val, ti,
+          src_expr ? src_expr->type : NULL, comp_type);
+      } else {
+        val = Emit_Constraint_Check_With_Type (val, ti,
+          src_expr ? src_expr->type : NULL, comp_type);
+      }
+    }
     Emit ("  store %s %%t%u, ptr %%t%u\n", comp_type, val, dest_ptr);
   }
 }
@@ -25224,6 +25340,17 @@ uint32_t Generate_Aggregate (Syntax_Node *node) {
           .kind = BOUND_INTEGER,
           .int_value = dim_lo[0].int_value + (int128_t)n_positional - 1
         };
+      }
+
+      // RM 4.3.2: For constrained arrays, the positional element count must
+      // match the type's expected element count. Raises CE for mismatches
+      // like (3,4,5) when the type has only 2 elements.
+      if (n_positional > 0 and not has_named and
+        agg_type->array.is_constrained) {
+        int128_t type_count = Array_Element_Count (agg_type);
+        if (type_count > 0 and (int128_t)n_positional != type_count) {
+          Emit_Raise_Constraint_Error ("aggregate element count (RM 4.3.2)");
+        }
       }
 
       // Walk into nested inner aggregates to fix inner dimension bounds.                          
@@ -27762,6 +27889,15 @@ uint32_t Generate_Aggregate (Syntax_Node *node) {
   return 0;
 }
 uint32_t Generate_Qualified (Syntax_Node *node) {
+  // RM 4.8: Propagate target access type to allocator in qualified expression
+  // context so disc/bounds constraint checks fire (e.g., ACTB'(NEW TB(2))).
+  Type_Info *qual_type = node->qualified.subtype_mark ?
+              node->qualified.subtype_mark->type : NULL;
+  if (qual_type and Type_Is_Access (qual_type) and
+    node->qualified.expression and
+    node->qualified.expression->kind == NK_ALLOCATOR) {
+    node->qualified.expression->allocator.target_access_type = qual_type;
+  }
   uint32_t result = Generate_Expression (node->qualified.expression);
 
   // Get source and destination types
@@ -27860,6 +27996,7 @@ uint32_t Generate_Allocator (Syntax_Node *node) {
         Emit ("  %%t%u = add %s 0, %lld\n", high_t, con_bt, (long long)hi);
         len_t = Emit_Temp ();
         int64_t length = hi - lo + 1;
+        if (length < 0) length = 0;  // Null range (RM 3.6.1)
         uint32_t elem_size = init_type->array.element_type ?
                    init_type->array.element_type->size : 1;
         if (elem_size == 0) elem_size = 1;
@@ -27924,42 +28061,183 @@ uint32_t Generate_Allocator (Syntax_Node *node) {
     Emit ("  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %%t%u, i1 false)\n",
        heap_ptr, src_data, len_t_64);
 
-    // Build result fat pointer with heap-allocated bounds.                                        
-    // Allocator results must survive across function returns,                                      
-    // so bounds cannot be on the stack (alloca).                                                  
-    //                                                                                              
+    // RM 4.8(6): Check bounds against index subtype of designated array type.
+    // E.g. NEW TD'(3,4,5) where TD's index is TWO (1..2) - bounds 1..3 exceed TWO.
+    if (designated and Type_Is_Array_Like (designated) and
+      designated->array.index_count > 0) {
+      Type_Info *idx_ty = designated->array.indices[0].index_type;
+      if (idx_ty and Type_Is_Scalar (idx_ty)) {
+        const char *iat = Integer_Arith_Type ();
+        uint32_t lo_c = Emit_Convert (low_t, new_bt, iat);
+        uint32_t hi_c = Emit_Convert (high_t, new_bt, iat);
+        Emit_Constraint_Check (lo_c, idx_ty, NULL);
+        Emit_Constraint_Check (hi_c, idx_ty, NULL);
+      }
+    }
+
+    // RM 4.8(6): Check fat-pointer bounds against target access type bounds
+    {
+      Type_Info *tgt = node->allocator.target_access_type;
+      Type_Info *tgt_des = (tgt and Type_Is_Access (tgt)) ?
+                  tgt->access.designated_type : NULL;
+      if (tgt_des and Type_Is_Array_Like (tgt_des) and
+        tgt_des->array.is_constrained and tgt_des->array.index_count > 0) {
+        uint32_t elo = Emit_Type_Bound (
+          &tgt_des->array.indices[0].low_bound, new_bt);
+        uint32_t ehi = Emit_Type_Bound (
+          &tgt_des->array.indices[0].high_bound, new_bt);
+        if (elo and ehi) {
+          uint32_t clo = Emit_Temp ();
+          Emit ("  %%t%u = icmp ne %s %%t%u, %%t%u\n",
+             clo, new_bt, low_t, elo);
+          Emit_Check_With_Raise (clo, true,
+            "alloc fat-init array lo (RM 4.8)");
+          uint32_t chi = Emit_Temp ();
+          Emit ("  %%t%u = icmp ne %s %%t%u, %%t%u\n",
+             chi, new_bt, high_t, ehi);
+          Emit_Check_With_Raise (chi, true,
+            "alloc fat-init array hi (RM 4.8)");
+        }
+      }
+    }
+
+    // Build result fat pointer with heap-allocated bounds.
+    // Allocator results must survive across function returns,
+    // so bounds cannot be on the stack (alloca).
     return Emit_Fat_Pointer_Heap (heap_ptr, low_t, high_t, new_bt);
   }
 
-  // Handle NEW T(bounds) without initializer - allocate unconstrained array
-  // Get bounds from the subtype mark's type
+  // Handle NEW T(bounds) without initializer - allocate unconstrained array.
+  // Supports multi-dimensional arrays (RM 4.8, 3.6.1).
   if (is_fat_ptr and not node->allocator.expression and node->allocator.subtype_mark) {
     Type_Info *subtype = node->allocator.subtype_mark->type;
 
-    // Generate bound values in the designated type's bt
     if (subtype and subtype->kind == TYPE_ARRAY and subtype->array.index_count > 0) {
       const char *new_bt = Array_Bound_Llvm_Type (designated);
-      uint32_t low_t = Emit_Single_Bound (&subtype->array.indices[0].low_bound, new_bt);
-      uint32_t high_t = Emit_Single_Bound (&subtype->array.indices[0].high_bound, new_bt);
-
-      // Calculate size: (high - low + 1) * elem_size
       const char *alloc_iat = Integer_Arith_Type ();
+      uint32_t ndims = subtype->array.index_count;
       uint32_t elem_size = subtype->array.element_type ?
                  subtype->array.element_type->size : 8;
       if (elem_size == 0) elem_size = 8;
-      uint32_t high_conv = Emit_Convert (high_t, new_bt, alloc_iat);
-      uint32_t low_conv = Emit_Convert (low_t, new_bt, alloc_iat);
-      uint32_t len_plus1 = Emit_Length_From_Bounds (low_conv, high_conv, alloc_iat);
-      uint32_t byte_size = Emit_Temp ();
-      Emit ("  %%t%u = mul %s %%t%u, %u\n", byte_size, alloc_iat, len_plus1, elem_size);
 
-      // Allocate heap space - widen to i64 for malloc ABI
+      // Generate bounds for all dimensions, compute total element count
+      uint32_t low_ts[8], high_ts[8];
+      uint32_t total_elems = 0;
+      for (uint32_t d = 0; d < ndims and d < 8; d++) {
+        low_ts[d] = Emit_Single_Bound (&subtype->array.indices[d].low_bound, new_bt);
+        high_ts[d] = Emit_Single_Bound (&subtype->array.indices[d].high_bound, new_bt);
+
+        // RM 4.8(6): Check bounds against index subtype
+        if (designated and d < designated->array.index_count) {
+          Type_Info *idx_ty = designated->array.indices[d].index_type;
+          if (idx_ty and Type_Is_Scalar (idx_ty)) {
+            uint32_t lo_c = Emit_Convert (low_ts[d], new_bt, alloc_iat);
+            uint32_t hi_c = Emit_Convert (high_ts[d], new_bt, alloc_iat);
+            Emit_Constraint_Check (lo_c, idx_ty, NULL);
+            Emit_Constraint_Check (hi_c, idx_ty, NULL);
+          }
+        }
+
+        uint32_t hi_c = Emit_Convert (high_ts[d], new_bt, alloc_iat);
+        uint32_t lo_c = Emit_Convert (low_ts[d], new_bt, alloc_iat);
+        uint32_t dim_len = Emit_Length_From_Bounds (lo_c, hi_c, alloc_iat);
+        total_elems = (d == 0) ? dim_len : ({
+          uint32_t prod = Emit_Temp ();
+          Emit ("  %%t%u = mul %s %%t%u, %%t%u\n",
+             prod, alloc_iat, total_elems, dim_len);
+          prod;
+        });
+      }
+
+      uint32_t byte_size = Emit_Temp ();
+      Emit ("  %%t%u = mul %s %%t%u, %u\n", byte_size, alloc_iat, total_elems, elem_size);
       uint32_t byte_size_64 = Emit_Extend_To_I64 (byte_size, alloc_iat);
       uint32_t heap_ptr = Emit_Temp ();
       Emit ("  %%t%u = call ptr @malloc (i64 %%t%u)\n", heap_ptr, byte_size_64);
 
-      // Return fat pointer with heap-allocated bounds
-      return Emit_Fat_Pointer_Heap (heap_ptr, low_t, high_t, new_bt);
+      // For multi-dim arrays, emit bounds for all dimensions into heap struct
+      if (ndims > 1) {
+        // Allocate bounds: 2 * ndims entries
+        uint32_t bnd_sz = 2 * ndims * (uint32_t)(strcmp (new_bt, "i64") == 0 ? 8 : 4);
+        uint32_t bnds = Emit_Temp ();
+        Emit ("  %%t%u = call ptr @malloc (i64 %u)  ; multi-dim bounds\n", bnds, bnd_sz);
+        for (uint32_t d = 0; d < ndims and d < 8; d++) {
+          uint32_t lo_ptr = Emit_Temp ();
+          Emit ("  %%t%u = getelementptr %s, ptr %%t%u, i32 %u\n",
+             lo_ptr, new_bt, bnds, d * 2);
+          Emit ("  store %s %%t%u, ptr %%t%u\n", new_bt, low_ts[d], lo_ptr);
+          uint32_t hi_ptr = Emit_Temp ();
+          Emit ("  %%t%u = getelementptr %s, ptr %%t%u, i32 %u\n",
+             hi_ptr, new_bt, bnds, d * 2 + 1);
+          Emit ("  store %s %%t%u, ptr %%t%u\n", new_bt, high_ts[d], hi_ptr);
+        }
+        // RM 4.8(6): Check allocated bounds against target access type bounds
+        {
+          Type_Info *tgt = node->allocator.target_access_type;
+          Type_Info *tgt_des = (tgt and Type_Is_Access (tgt)) ?
+                      tgt->access.designated_type : NULL;
+          if (tgt_des and Type_Is_Array_Like (tgt_des) and
+            tgt_des->array.is_constrained and tgt_des->array.index_count > 0) {
+            uint32_t ck = (tgt_des->array.index_count < ndims) ?
+                    tgt_des->array.index_count : ndims;
+            for (uint32_t d = 0; d < ck and d < 8; d++) {
+              uint32_t elo = Emit_Type_Bound (
+                &tgt_des->array.indices[d].low_bound, new_bt);
+              uint32_t ehi = Emit_Type_Bound (
+                &tgt_des->array.indices[d].high_bound, new_bt);
+              if (elo == 0 or ehi == 0) continue;
+              uint32_t clo = Emit_Temp ();
+              Emit ("  %%t%u = icmp ne %s %%t%u, %%t%u\n",
+                 clo, new_bt, low_ts[d], elo);
+              Emit_Check_With_Raise (clo, true,
+                "alloc fat array lo bound (RM 4.8)");
+              uint32_t chi = Emit_Temp ();
+              Emit ("  %%t%u = icmp ne %s %%t%u, %%t%u\n",
+                 chi, new_bt, high_ts[d], ehi);
+              Emit_Check_With_Raise (chi, true,
+                "alloc fat array hi bound (RM 4.8)");
+            }
+          }
+        }
+        // Build fat pointer directly using multi-dim heap bounds
+        {
+          uint32_t partial = Emit_Temp ();
+          Emit ("  %%t%u = insertvalue " FAT_PTR_TYPE " undef, ptr %%t%u, 0\n",
+             partial, heap_ptr);
+          uint32_t result = Emit_Temp ();
+          Emit ("  %%t%u = insertvalue " FAT_PTR_TYPE " %%t%u, ptr %%t%u, 1\n",
+             result, partial, bnds);
+          Temp_Set_Type (result, FAT_PTR_TYPE);
+          return result;
+        }
+      }
+
+      // RM 4.8(6): Check allocated bounds against target access type bounds (1D)
+      {
+        Type_Info *tgt = node->allocator.target_access_type;
+        Type_Info *tgt_des = (tgt and Type_Is_Access (tgt)) ?
+                    tgt->access.designated_type : NULL;
+        if (tgt_des and Type_Is_Array_Like (tgt_des) and
+          tgt_des->array.is_constrained and tgt_des->array.index_count > 0) {
+          uint32_t elo = Emit_Type_Bound (
+            &tgt_des->array.indices[0].low_bound, new_bt);
+          uint32_t ehi = Emit_Type_Bound (
+            &tgt_des->array.indices[0].high_bound, new_bt);
+          if (elo and ehi) {
+            uint32_t clo = Emit_Temp ();
+            Emit ("  %%t%u = icmp ne %s %%t%u, %%t%u\n",
+               clo, new_bt, low_ts[0], elo);
+            Emit_Check_With_Raise (clo, true,
+              "alloc fat array lo bound (RM 4.8)");
+            uint32_t chi = Emit_Temp ();
+            Emit ("  %%t%u = icmp ne %s %%t%u, %%t%u\n",
+               chi, new_bt, high_ts[0], ehi);
+            Emit_Check_With_Raise (chi, true,
+              "alloc fat array hi bound (RM 4.8)");
+          }
+        }
+      }
+      return Emit_Fat_Pointer_Heap (heap_ptr, low_ts[0], high_ts[0], new_bt);
     }
   }
 
@@ -27995,8 +28273,38 @@ uint32_t Generate_Allocator (Syntax_Node *node) {
 
     // Composite type: memcpy from initializer to heap
     if (designated_is_composite) {
+
+      // RM 4.8(6): For NEW T'(X) where T is constrained array, check that
+      // X has the right number of elements before memcpy. The aggregate may
+      // have fewer or more elements than T expects.
+      uint64_t copy_size = alloc_size;
+      if (Type_Is_Constrained_Array (designated)) {
+        Syntax_Node *inner = node->allocator.expression;
+        if (inner->kind == NK_QUALIFIED and inner->qualified.expression)
+          inner = inner->qualified.expression;
+
+        int128_t type_count = Array_Element_Count (designated);
+        uint32_t esz = designated->array.element_type ?
+                 designated->array.element_type->size : 4;
+        if (esz == 0) esz = 4;
+
+        if (inner->kind == NK_AGGREGATE) {
+          uint32_t pos_count = inner->aggregate.items.count;
+          if (not inner->aggregate.is_named and
+            pos_count > 0 and (int128_t)pos_count != type_count) {
+            // Positional element count mismatch — raise CE
+            Emit_Raise_Constraint_Error ("allocator array element count (RM 4.8)");
+          }
+          // Cap memcpy at source aggregate size to prevent read overflow
+          if (not inner->aggregate.is_named) {
+            uint64_t src_sz = (uint64_t)pos_count * esz;
+            if (src_sz < copy_size) copy_size = src_sz;
+          }
+        }
+      }
+
       Emit ("  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %llu, i1 false)\n",
-         t, val, (unsigned long long)alloc_size);
+         t, val, (unsigned long long)copy_size);
 
     // Scalar type: store value - convert to designated type if needed
     } else {
@@ -28041,8 +28349,44 @@ uint32_t Generate_Allocator (Syntax_Node *node) {
         }
       }
 
-      // RM 3.7.2(3): Check nested component disc constraints
+      // RM 3.7.2(3): Check nested component disc constraints.
+      // Before calling, set disc_agg_temp on disc symbols referenced by
+      // nested constraint expressions so recursive resolution can load
+      // disc values from the allocated record's memory (not from local
+      // variables that don't exist in the allocator context).
+      //
+      Symbol *nest_disc_syms[16] = {NULL};
+      uint32_t nest_disc_count = 0;
+      for (uint32_t ci2 = ty->record.discriminant_count;
+         ci2 < ty->record.component_count; ci2++) {
+        Type_Info *ct = ty->record.components[ci2].component_type;
+        if (not ct or not Type_Is_Record (ct) or
+          not ct->record.has_disc_constraints or
+          not ct->record.disc_constraint_exprs)
+          continue;
+        for (uint32_t cdi = 0; cdi < ct->record.discriminant_count; cdi++) {
+          Syntax_Node *ce = ct->record.disc_constraint_exprs[cdi];
+          if (not ce or not ce->symbol or
+            ce->symbol->kind != SYMBOL_DISCRIMINANT or
+            ce->symbol->disc_agg_temp != 0) continue;
+          for (uint32_t pdi = 0;
+             pdi < ty->record.discriminant_count; pdi++) {
+            if (Slice_Equal_Ignore_Case (ce->symbol->name,
+                ty->record.components[pdi].name)) {
+              uint32_t dp = Emit_Temp ();
+              Emit ("  %%t%u = getelementptr i8, ptr %%t%u, i64 %u\n",
+                 dp, t, ty->record.components[pdi].byte_offset);
+              ce->symbol->disc_agg_temp = dp;
+              if (nest_disc_count < 16)
+                nest_disc_syms[nest_disc_count++] = ce->symbol;
+              break;
+            }
+          }
+        }
+      }
       Emit_Nested_Disc_Checks (ty);
+      for (uint32_t i = 0; i < nest_disc_count; i++)
+        nest_disc_syms[i]->disc_agg_temp = 0;
     }
 
     // Apply component defaults (RM 3.7).
@@ -28056,6 +28400,12 @@ uint32_t Generate_Allocator (Syntax_Node *node) {
       if (comp->is_discriminant and ty->record.has_disc_constraints) continue;
       uint32_t val = Generate_Expression (comp->default_expr);
       if (val == 0) continue;
+
+      // RM 3.7: Check default value against component subtype (RM 4.8(6))
+      if (not comp->is_discriminant and comp->component_type and
+        Type_Is_Scalar (comp->component_type))
+        Emit_Constraint_Check (val, comp->component_type, NULL);
+
       uint32_t comp_ptr = Emit_Temp ();
       if (ty->rt_global_id > 0) {
         uint32_t rt_off = Emit_Temp ();
@@ -28225,6 +28575,64 @@ uint32_t Generate_Allocator (Syntax_Node *node) {
     for (uint32_t i = 0; i < default_disc_cnt; i++)
       default_disc_syms[i]->disc_agg_temp = 0;
 
+    // RM 3.7: Initialize nested record components that have their own
+    // defaults but no default_expr on the parent component. E.g.,
+    // component C : LPRIV0 where LPRIV0 has (Q : INTEGER := 7).
+    for (uint32_t ci = 0; ci < ty->record.component_count; ci++) {
+      Component_Info *comp = &ty->record.components[ci];
+      if (comp->default_expr) continue;  // Already handled above
+      if (comp->is_discriminant) continue;
+      Type_Info *ct = comp->component_type;
+      if (not ct or not Type_Is_Record (ct)) continue;
+
+      // Check if ct has any component defaults to apply
+      bool has_defaults = false;
+      for (uint32_t nci = 0; nci < ct->record.component_count; nci++) {
+        if (ct->record.components[nci].default_expr) { has_defaults = true; break; }
+      }
+      if (not has_defaults) continue;
+
+      // Initialize nested record's disc constraints first
+      uint32_t comp_ptr = Emit_Temp ();
+      Emit ("  %%t%u = getelementptr i8, ptr %%t%u, i64 %u  ; nested %.*s\n",
+         comp_ptr, t, comp->byte_offset,
+         (int)comp->name.length, comp->name.data);
+      if (ct->record.has_disc_constraints and ct->record.disc_constraint_values) {
+        for (uint32_t ndi = 0; ndi < ct->record.discriminant_count; ndi++) {
+          Component_Info *ndc = &ct->record.components[ndi];
+          const char *ndt = Type_To_Llvm (ndc->component_type);
+          uint32_t ndp = Emit_Temp ();
+          Emit ("  %%t%u = getelementptr i8, ptr %%t%u, i64 %u\n",
+             ndp, comp_ptr, ndc->byte_offset);
+          uint32_t nval = Emit_Disc_Constraint_Value (ct, ndi, ndt);
+          if (nval == 0) nval = Emit_Static_Int (0, ndt);
+          Emit ("  store %s %%t%u, ptr %%t%u\n", ndt, nval, ndp);
+        }
+      }
+      // Apply component defaults in the nested record
+      for (uint32_t nci = 0; nci < ct->record.component_count; nci++) {
+        Component_Info *ncomp = &ct->record.components[nci];
+        if (not ncomp->default_expr) continue;
+        if (ncomp->is_discriminant and ct->record.has_disc_constraints) continue;
+        uint32_t nval = Generate_Expression (ncomp->default_expr);
+        if (nval == 0) continue;
+        uint32_t ndp = Emit_Temp ();
+        Emit ("  %%t%u = getelementptr i8, ptr %%t%u, i64 %u  ; nested %.*s\n",
+           ndp, comp_ptr, ncomp->byte_offset,
+           (int)ncomp->name.length, ncomp->name.data);
+        Type_Info *nct = ncomp->component_type;
+        if (nct and Type_Is_Composite (nct) and nct->size > 0) {
+          Emit ("  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %u, i1 false)\n",
+             ndp, nval, nct->size);
+        } else {
+          const char *ndt = Type_To_Llvm (nct);
+          const char *nvt = Expression_Llvm_Type (ncomp->default_expr);
+          nval = Emit_Convert (nval, nvt, ndt);
+          Emit ("  store %s %%t%u, ptr %%t%u\n", ndt, nval, ndp);
+        }
+      }
+    }
+
     // RM 3.7.2: For unconstrained record types with disc defaults,
     // check that default disc values are compatible with nested
     // disc constraints and array bounds. Disc symbols resolve
@@ -28295,6 +28703,74 @@ uint32_t Generate_Allocator (Syntax_Node *node) {
     }
   }
 
+  // RM 4.8(4): NEW T where T is an access type - default value is null.
+  // Also covers NEW T where T is any scalar - zero-init the allocation.
+  // For composite types without initializers (arrays, records), zero-init
+  // ensures predictable values for components without explicit defaults.
+  if (not node->allocator.expression and designated and
+    not Type_Is_Record (designated) and not Type_Is_Task (designated)) {
+    if (Type_Is_Access (designated)) {
+      Emit ("  store ptr null, ptr %%t%u  ; RM 4.8(4) access default = null\n", t);
+    } else if (Type_Is_Constrained_Array (designated)) {
+      // Zero-init array elements first
+      Emit ("  call void @llvm.memset.p0.i64(ptr %%t%u, i8 0, i64 %llu, i1 false)"
+         "  ; zero-init array\n", t, (unsigned long long)alloc_size);
+
+      // RM 3.3.1: If array element type is a record with defaults,
+      // iterate over elements and apply component defaults.
+      Type_Info *elem_ty = designated->array.element_type;
+      if (elem_ty and Type_Is_Record (elem_ty)) {
+        bool has_defs = false;
+        for (uint32_t nci = 0; nci < elem_ty->record.component_count; nci++)
+          if (elem_ty->record.components[nci].default_expr) { has_defs = true; break; }
+        if (has_defs) {
+          int128_t count = Array_Element_Count (designated);
+          uint32_t esz = elem_ty->size > 0 ? elem_ty->size : 8;
+          for (int128_t ei = 0; ei < count and ei < 1024; ei++) {
+            uint32_t ep = Emit_Temp ();
+            Emit ("  %%t%u = getelementptr i8, ptr %%t%u, i64 %lld  ; elem[%lld]\n",
+               ep, t, (long long)(ei * esz), (long long)ei);
+            // Apply disc constraints
+            if (elem_ty->record.has_disc_constraints and
+              elem_ty->record.disc_constraint_values) {
+              for (uint32_t ndi = 0; ndi < elem_ty->record.discriminant_count; ndi++) {
+                Component_Info *ndc = &elem_ty->record.components[ndi];
+                const char *ndt = Type_To_Llvm (ndc->component_type);
+                uint32_t ndp = Emit_Temp ();
+                Emit ("  %%t%u = getelementptr i8, ptr %%t%u, i64 %u\n",
+                   ndp, ep, ndc->byte_offset);
+                uint32_t nval = Emit_Disc_Constraint_Value (elem_ty, ndi, ndt);
+                if (nval == 0) nval = Emit_Static_Int (0, ndt);
+                Emit ("  store %s %%t%u, ptr %%t%u\n", ndt, nval, ndp);
+              }
+            }
+            // Apply component defaults
+            for (uint32_t nci = 0; nci < elem_ty->record.component_count; nci++) {
+              Component_Info *ncomp = &elem_ty->record.components[nci];
+              if (not ncomp->default_expr) continue;
+              if (ncomp->is_discriminant and elem_ty->record.has_disc_constraints) continue;
+              uint32_t nval = Generate_Expression (ncomp->default_expr);
+              if (nval == 0) continue;
+              uint32_t ndp = Emit_Temp ();
+              Emit ("  %%t%u = getelementptr i8, ptr %%t%u, i64 %u\n",
+                 ndp, ep, ncomp->byte_offset);
+              Type_Info *nct = ncomp->component_type;
+              if (nct and Type_Is_Composite (nct) and nct->size > 0) {
+                Emit ("  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %u, i1 false)\n",
+                   ndp, nval, nct->size);
+              } else {
+                const char *ndt = Type_To_Llvm (nct);
+                const char *nvt = Expression_Llvm_Type (ncomp->default_expr);
+                nval = Emit_Convert (nval, nvt, ndt);
+                Emit ("  store %s %%t%u, ptr %%t%u\n", ndt, nval, ndp);
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
   // RM 9.2: Allocating a task type via NEW activates the task immediately.
   // The allocated memory stores the thread handle (ptr-sized).
   if (designated and Type_Is_Task (designated)) {
@@ -28309,6 +28785,352 @@ uint32_t Generate_Allocator (Syntax_Node *node) {
     }
     Emit ("  store ptr %%t%u, ptr %%t%u  ; store task handle\n", handle_tmp, t);
   }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // RM 4.8(6): Allocator constraint checks against the target access type.
+  //
+  // When the target access type constrains its designated subtype (e.g.,
+  // TYPE A_UR IS ACCESS UR(1,9)), the allocated object must satisfy those
+  // constraints. Three cases:
+  //
+  //   (a) NEW T'(X) — scalar: check X against target's designated range
+  //   (b) NEW T'(X) — record: check X's discriminants against target's
+  //   (c) NEW T — record with defaults: check defaults against target's
+  //   (d) NEW T(bounds) or NEW T'(X) — array: check bounds against target's
+  // ═══════════════════════════════════════════════════════════════════════
+  {
+    Type_Info *tgt = node->allocator.target_access_type;
+    Type_Info *tgt_des = (tgt and Type_Is_Access (tgt)) ?
+                tgt->access.designated_type : NULL;
+    Type_Info *alloc_ty = (node->allocator.subtype_mark) ?
+                node->allocator.subtype_mark->type : NULL;
+
+    // (a) Scalar qualified expression: NEW T'(X) where T is a scalar subtype
+    //     Check value against BOTH T's range and the designated subtype range.
+    if (node->allocator.expression and tgt_des and
+      Type_Is_Scalar (tgt_des) and not Type_Is_Record (tgt_des)) {
+      // Load the stored value back for checking
+      const char *dt = Type_To_Llvm (tgt_des);
+      uint32_t loaded = Emit_Temp ();
+      Emit ("  %%t%u = load %s, ptr %%t%u  ; load for alloc constraint check\n",
+         loaded, dt, t);
+      Emit_Constraint_Check (loaded, tgt_des, alloc_ty);
+    }
+
+    // Also check the subtype mark's own range for scalar qualified exprs
+    if (node->allocator.expression and alloc_ty and
+      Type_Is_Scalar (alloc_ty) and not Type_Is_Record (alloc_ty)) {
+      const char *dt = Type_To_Llvm (alloc_ty);
+      uint32_t loaded = Emit_Temp ();
+      Emit ("  %%t%u = load %s, ptr %%t%u  ; load for subtype check\n",
+         loaded, dt, t);
+      Emit_Constraint_Check (loaded, alloc_ty, NULL);
+    }
+
+    // (b) Record qualified expression: NEW T'(X)
+    //     Check X's discriminants against target access type's disc constraints.
+    if (node->allocator.expression and tgt_des and
+      Type_Is_Record (tgt_des) and tgt_des->record.has_disc_constraints and
+      tgt_des->record.disc_constraint_values) {
+      for (uint32_t di = 0; di < tgt_des->record.discriminant_count; di++) {
+        Component_Info *dc = &tgt_des->record.components[di];
+        const char *dt = Type_To_Llvm (dc->component_type);
+        // Load actual disc from allocated object
+        uint32_t dp = Emit_Temp ();
+        Emit ("  %%t%u = getelementptr i8, ptr %%t%u, i64 %u\n",
+           dp, t, dc->byte_offset);
+        uint32_t actual = Emit_Temp ();
+        Emit ("  %%t%u = load %s, ptr %%t%u  ; alloc disc %.*s\n",
+           actual, dt, dp, (int)dc->name.length, dc->name.data);
+        // Get expected disc value from target type
+        uint32_t expected = Emit_Disc_Constraint_Value (tgt_des, di, dt);
+        if (expected == 0) continue;
+        // Compare and raise CE on mismatch
+        uint32_t cmp = Emit_Temp ();
+        Emit ("  %%t%u = icmp ne %s %%t%u, %%t%u  ; disc check\n",
+           cmp, dt, actual, expected);
+        Emit_Check_With_Raise (cmp, true, "allocator disc constraint (RM 4.8)");
+      }
+    }
+
+    // (c) NEW T without initializer — record with defaults:
+    //     When the target access type constrains discs differently from defaults.
+    if (not node->allocator.expression and tgt_des and
+      Type_Is_Record (tgt_des) and tgt_des->record.has_disc_constraints and
+      tgt_des->record.disc_constraint_values and
+      alloc_ty and Type_Is_Record (alloc_ty) and
+      alloc_ty->record.has_discriminants) {
+      for (uint32_t di = 0; di < tgt_des->record.discriminant_count; di++) {
+        Component_Info *dc = &tgt_des->record.components[di];
+        const char *dt = Type_To_Llvm (dc->component_type);
+        // Load actual disc from allocated (default-initialized) object
+        uint32_t dp = Emit_Temp ();
+        Emit ("  %%t%u = getelementptr i8, ptr %%t%u, i64 %u\n",
+           dp, t, dc->byte_offset);
+        uint32_t actual = Emit_Temp ();
+        Emit ("  %%t%u = load %s, ptr %%t%u  ; default disc %.*s\n",
+           actual, dt, dp, (int)dc->name.length, dc->name.data);
+        // Get expected disc value from target access subtype
+        uint32_t expected = Emit_Disc_Constraint_Value (tgt_des, di, dt);
+        if (expected == 0) continue;
+        uint32_t cmp = Emit_Temp ();
+        Emit ("  %%t%u = icmp ne %s %%t%u, %%t%u  ; NEW T default disc check\n",
+           cmp, dt, actual, expected);
+        Emit_Check_With_Raise (cmp, true, "allocator default disc (RM 4.8)");
+      }
+    }
+
+    // (d) Array bounds compatibility checks.
+    //     Check allocated array bounds against target access type's designated array bounds.
+    if (tgt_des and Type_Is_Array_Like (tgt_des) and
+      tgt_des->array.is_constrained and alloc_ty and
+      Type_Is_Array_Like (alloc_ty) and alloc_ty->array.index_count > 0) {
+      const char *abt = Array_Bound_Llvm_Type (tgt_des);
+      uint32_t ndims = tgt_des->array.index_count;
+      if (ndims > alloc_ty->array.index_count)
+        ndims = alloc_ty->array.index_count;
+      for (uint32_t xi = 0; xi < ndims; xi++) {
+        Type_Bound *exp_lo = &tgt_des->array.indices[xi].low_bound;
+        Type_Bound *exp_hi = &tgt_des->array.indices[xi].high_bound;
+        Type_Bound *act_lo = &alloc_ty->array.indices[xi].low_bound;
+        Type_Bound *act_hi = &alloc_ty->array.indices[xi].high_bound;
+        uint32_t elo = Emit_Type_Bound (exp_lo, abt);
+        uint32_t ehi = Emit_Type_Bound (exp_hi, abt);
+        uint32_t alo = Emit_Type_Bound (act_lo, abt);
+        uint32_t ahi = Emit_Type_Bound (act_hi, abt);
+        if (elo == 0 or ehi == 0 or alo == 0 or ahi == 0) continue;
+        uint32_t clo = Emit_Temp ();
+        Emit ("  %%t%u = icmp ne %s %%t%u, %%t%u\n", clo, abt, alo, elo);
+        Emit_Check_With_Raise (clo, true, "allocator array lo bound (RM 4.8)");
+        uint32_t chi = Emit_Temp ();
+        Emit ("  %%t%u = icmp ne %s %%t%u, %%t%u\n", chi, abt, ahi, ehi);
+        Emit_Check_With_Raise (chi, true, "allocator array hi bound (RM 4.8)");
+      }
+    }
+
+    // (e) Access-to-constrained: NEW T'(X) where T is an access type whose
+    //     designated type is constrained. Dereference stored pointer and check
+    //     discriminants/bounds against T's designated subtype constraints.
+    //     E.g. NEW A_CR'(NEW UR(3)) where A_CR = ACCESS UR(2) — disc A must be 2.
+    if (node->allocator.expression and alloc_ty and Type_Is_Access (alloc_ty)) {
+      Type_Info *inner_des = alloc_ty->access.designated_type;
+
+      // Check discriminant constraints on access-to-constrained-record.
+      // RM 4.8(4): NULL satisfies any access constraint — skip check if null.
+      if (inner_des and Type_Is_Record (inner_des) and
+        inner_des->record.has_disc_constraints and
+        inner_des->record.disc_constraint_values) {
+        // Load the pointer value from allocated memory
+        uint32_t ptr_val = Emit_Temp ();
+        Emit ("  %%t%u = load ptr, ptr %%t%u  ; deref for access constraint\n",
+           ptr_val, t);
+        // Skip check if pointer is null
+        uint32_t is_null = Emit_Temp ();
+        Emit ("  %%t%u = icmp eq ptr %%t%u, null\n", is_null, ptr_val);
+        uint32_t skip_lbl = cg->label_id++;
+        uint32_t chk_lbl = cg->label_id++;
+        Emit ("  br i1 %%t%u, label %%L%u, label %%L%u\n",
+           is_null, skip_lbl, chk_lbl);
+        cg->block_terminated = true;
+        Emit_Label_Here (chk_lbl);
+        for (uint32_t di = 0; di < inner_des->record.discriminant_count; di++) {
+          Component_Info *dc = &inner_des->record.components[di];
+          const char *dt = Type_To_Llvm (dc->component_type);
+          uint32_t dp = Emit_Temp ();
+          Emit ("  %%t%u = getelementptr i8, ptr %%t%u, i64 %u\n",
+             dp, ptr_val, dc->byte_offset);
+          uint32_t actual = Emit_Temp ();
+          Emit ("  %%t%u = load %s, ptr %%t%u  ; deref disc %.*s\n",
+             actual, dt, dp, (int)dc->name.length, dc->name.data);
+          uint32_t expected = Emit_Disc_Constraint_Value (inner_des, di, dt);
+          if (expected == 0) continue;
+          uint32_t cmp = Emit_Temp ();
+          Emit ("  %%t%u = icmp ne %s %%t%u, %%t%u\n", cmp, dt, actual, expected);
+          Emit_Check_With_Raise (cmp, true, "access-to-constrained disc (RM 4.8)");
+        }
+        Emit ("  br label %%L%u\n", skip_lbl);
+        cg->block_terminated = true;
+        Emit_Label_Here (skip_lbl);
+        cg->block_terminated = false;
+      }
+
+      // Check array bounds on access-to-constrained-array. Only when the
+      // inner value is a fat pointer (unconstrained base with constraints).
+      // Constrained array subtypes w/o fat pointer have matching bounds.
+      // RM 4.8(4): NULL satisfies any constraint — skip if null.
+      if (inner_des and Type_Is_Array_Like (inner_des) and
+        inner_des->array.is_constrained and inner_des->array.index_count > 0 and
+        Type_Needs_Fat_Pointer (alloc_ty)) {
+        // Load data pointer from fat pointer and check for null
+        uint32_t fat_val = Emit_Temp ();
+        Emit ("  %%t%u = load " FAT_PTR_TYPE ", ptr %%t%u  ; load fat for bound check\n",
+           fat_val, t);
+        uint32_t data_ptr = Emit_Temp ();
+        Emit ("  %%t%u = extractvalue " FAT_PTR_TYPE " %%t%u, 0\n", data_ptr, fat_val);
+        uint32_t is_null = Emit_Temp ();
+        Emit ("  %%t%u = icmp eq ptr %%t%u, null\n", is_null, data_ptr);
+        uint32_t arr_skip = cg->label_id++;
+        uint32_t arr_chk = cg->label_id++;
+        Emit ("  br i1 %%t%u, label %%L%u, label %%L%u\n",
+           is_null, arr_skip, arr_chk);
+        cg->block_terminated = true;
+        Emit_Label_Here (arr_chk);
+
+        const char *abt = Array_Bound_Llvm_Type (inner_des);
+        uint32_t act_lo = Emit_Fat_Pointer_Low (fat_val, abt);
+        uint32_t act_hi = Emit_Fat_Pointer_High (fat_val, abt);
+        for (uint32_t xi = 0; xi < inner_des->array.index_count; xi++) {
+          uint32_t elo = Emit_Type_Bound (&inner_des->array.indices[xi].low_bound, abt);
+          uint32_t ehi = Emit_Type_Bound (&inner_des->array.indices[xi].high_bound, abt);
+          if (elo == 0 or ehi == 0) continue;
+          uint32_t clo = Emit_Temp ();
+          Emit ("  %%t%u = icmp ne %s %%t%u, %%t%u\n", clo, abt, act_lo, elo);
+          Emit_Check_With_Raise (clo, true, "access-to-constrained array lo (RM 4.8)");
+          uint32_t chi = Emit_Temp ();
+          Emit ("  %%t%u = icmp ne %s %%t%u, %%t%u\n", chi, abt, act_hi, ehi);
+          Emit_Check_With_Raise (chi, true, "access-to-constrained array hi (RM 4.8)");
+          break;
+        }
+        Emit ("  br label %%L%u\n", arr_skip);
+        cg->block_terminated = true;
+        Emit_Label_Here (arr_skip);
+        cg->block_terminated = false;
+      }
+    }
+
+    // (f) NEW T(constraints) where T is an access type — check disc/index
+    //     constraint values against subtype ranges. RM 4.8(6).
+    //     E.g. NEW A_UR1(6) where A_UR1 is ACCESS UR1(A : INT range 1..5).
+    //     E.g. NEW A_UA1(1..6) where A_UA1 is ACCESS UA1(INT RANGE <>) with INT 1..5.
+    if (alloc_ty and Type_Is_Access (alloc_ty)) {
+      Type_Info *inner_des = alloc_ty->access.designated_type;
+
+      // (f.1) Record disc constraint values vs disc subtypes
+      if (inner_des and Type_Is_Record (inner_des) and
+        inner_des->record.has_disc_constraints and
+        (inner_des->record.disc_constraint_values or
+         inner_des->record.disc_constraint_exprs)) {
+        for (uint32_t di = 0; di < inner_des->record.discriminant_count; di++) {
+          Component_Info *dc = &inner_des->record.components[di];
+          if (not dc->is_discriminant) continue;
+          Type_Info *disc_sub = dc->component_type;
+          if (not disc_sub or not Type_Is_Scalar (disc_sub)) continue;
+          const char *dt = Type_To_Llvm (disc_sub);
+          uint32_t val = Emit_Disc_Constraint_Value (inner_des, di, dt);
+          if (val == 0) continue;
+          Emit_Constraint_Check (val, disc_sub, NULL);
+        }
+      }
+
+      // (f.2) Array index bounds vs index subtypes
+      if (inner_des and Type_Is_Array_Like (inner_des) and
+        inner_des->array.is_constrained and inner_des->array.index_count > 0) {
+        const char *bt = Array_Bound_Llvm_Type (inner_des);
+        const char *iat = Integer_Arith_Type ();
+        for (uint32_t d = 0; d < inner_des->array.index_count; d++) {
+          Type_Info *idx_ty = inner_des->array.indices[d].index_type;
+          if (not idx_ty or not Type_Is_Scalar (idx_ty)) continue;
+          uint32_t lo = Emit_Type_Bound (&inner_des->array.indices[d].low_bound, bt);
+          uint32_t hi = Emit_Type_Bound (&inner_des->array.indices[d].high_bound, bt);
+          if (lo == 0 or hi == 0) continue;
+          // Only check non-null ranges (RM 3.6.1)
+          uint32_t lo_c = Emit_Convert (lo, bt, iat);
+          uint32_t hi_c = Emit_Convert (hi, bt, iat);
+          Emit_Constraint_Check (lo_c, idx_ty, NULL);
+          Emit_Constraint_Check (hi_c, idx_ty, NULL);
+        }
+      }
+    }
+
+    // (g) Target-constrained access: the target access type's designated type
+    //     is itself an access type with constrained designated. Check the stored
+    //     access value's pointed-to object against the constraint.
+    //     E.g. AC_A_UR : ACCESS A_UR(2); NEW A_UR'(NEW UR(3)) → disc 3 vs 2.
+    if (node->allocator.expression and tgt_des and Type_Is_Access (tgt_des)) {
+      Type_Info *inner_tgt = tgt_des->access.designated_type;
+
+      // Record disc check
+      if (inner_tgt and Type_Is_Record (inner_tgt) and
+        inner_tgt->record.has_disc_constraints and
+        inner_tgt->record.disc_constraint_values) {
+        // Load the stored access value
+        uint32_t stored_ptr = Emit_Temp ();
+        if (Type_Needs_Fat_Pointer (alloc_ty)) {
+          uint32_t fat_val = Emit_Temp ();
+          Emit ("  %%t%u = load " FAT_PTR_TYPE ", ptr %%t%u\n", fat_val, t);
+          Emit ("  %%t%u = extractvalue " FAT_PTR_TYPE " %%t%u, 0\n", stored_ptr, fat_val);
+        } else {
+          Emit ("  %%t%u = load ptr, ptr %%t%u  ; load for tgt access disc\n",
+             stored_ptr, t);
+        }
+        // Skip if null
+        uint32_t is_null = Emit_Temp ();
+        Emit ("  %%t%u = icmp eq ptr %%t%u, null\n", is_null, stored_ptr);
+        uint32_t skip = cg->label_id++;
+        uint32_t chk = cg->label_id++;
+        Emit ("  br i1 %%t%u, label %%L%u, label %%L%u\n", is_null, skip, chk);
+        cg->block_terminated = true;
+        Emit_Label_Here (chk);
+        for (uint32_t di = 0; di < inner_tgt->record.discriminant_count; di++) {
+          Component_Info *dc = &inner_tgt->record.components[di];
+          const char *dt = Type_To_Llvm (dc->component_type);
+          uint32_t dp = Emit_Temp ();
+          Emit ("  %%t%u = getelementptr i8, ptr %%t%u, i64 %u\n",
+             dp, stored_ptr, dc->byte_offset);
+          uint32_t actual = Emit_Temp ();
+          Emit ("  %%t%u = load %s, ptr %%t%u  ; tgt disc %.*s\n",
+             actual, dt, dp, (int)dc->name.length, dc->name.data);
+          uint32_t expected = Emit_Disc_Constraint_Value (inner_tgt, di, dt);
+          if (expected == 0) continue;
+          uint32_t cmp = Emit_Temp ();
+          Emit ("  %%t%u = icmp ne %s %%t%u, %%t%u\n", cmp, dt, actual, expected);
+          Emit_Check_With_Raise (cmp, true, "tgt access disc (RM 4.8)");
+        }
+        Emit ("  br label %%L%u\n", skip);
+        cg->block_terminated = true;
+        Emit_Label_Here (skip);
+        cg->block_terminated = false;
+      }
+
+      // Array bounds check
+      if (inner_tgt and Type_Is_Array_Like (inner_tgt) and
+        inner_tgt->array.is_constrained and inner_tgt->array.index_count > 0 and
+        alloc_ty and Type_Needs_Fat_Pointer (alloc_ty)) {
+        const char *abt = Array_Bound_Llvm_Type (inner_tgt);
+        // Load fat pointer, extract data and bounds
+        uint32_t fat_val = Emit_Temp ();
+        Emit ("  %%t%u = load " FAT_PTR_TYPE ", ptr %%t%u\n", fat_val, t);
+        uint32_t data_ptr = Emit_Temp ();
+        Emit ("  %%t%u = extractvalue " FAT_PTR_TYPE " %%t%u, 0\n", data_ptr, fat_val);
+        uint32_t is_null = Emit_Temp ();
+        Emit ("  %%t%u = icmp eq ptr %%t%u, null\n", is_null, data_ptr);
+        uint32_t skip = cg->label_id++;
+        uint32_t chk = cg->label_id++;
+        Emit ("  br i1 %%t%u, label %%L%u, label %%L%u\n", is_null, skip, chk);
+        cg->block_terminated = true;
+        Emit_Label_Here (chk);
+        uint32_t act_lo = Emit_Fat_Pointer_Low (fat_val, abt);
+        uint32_t act_hi = Emit_Fat_Pointer_High (fat_val, abt);
+        for (uint32_t xi = 0; xi < inner_tgt->array.index_count; xi++) {
+          uint32_t elo = Emit_Type_Bound (&inner_tgt->array.indices[xi].low_bound, abt);
+          uint32_t ehi = Emit_Type_Bound (&inner_tgt->array.indices[xi].high_bound, abt);
+          if (elo == 0 or ehi == 0) continue;
+          uint32_t clo = Emit_Temp ();
+          Emit ("  %%t%u = icmp ne %s %%t%u, %%t%u\n", clo, abt, act_lo, elo);
+          Emit_Check_With_Raise (clo, true, "tgt access array lo (RM 4.8)");
+          uint32_t chi = Emit_Temp ();
+          Emit ("  %%t%u = icmp ne %s %%t%u, %%t%u\n", chi, abt, act_hi, ehi);
+          Emit_Check_With_Raise (chi, true, "tgt access array hi (RM 4.8)");
+          break;
+        }
+        Emit ("  br label %%L%u\n", skip);
+        cg->block_terminated = true;
+        Emit_Label_Here (skip);
+        cg->block_terminated = false;
+      }
+    }
+  }
+
   return t;
 }
 uint32_t Generate_Expression (Syntax_Node *node) {
@@ -29048,13 +29870,20 @@ void Generate_Assignment (Syntax_Node *node) {
     }
     return;
   }
+
+  // RM 4.8: Propagate target access type to allocator for constraint checks.
+  // When assigning NEW T or NEW T'(X) to an access variable, the allocator
+  // must check that T's constraints are compatible with the access subtype.
+  if (Type_Is_Access (ty) and node->assignment.value->kind == NK_ALLOCATOR)
+    node->assignment.value->allocator.target_access_type = ty;
+
   uint32_t value = Generate_Expression (node->assignment.value);
   const char *type_str = Type_To_Llvm (ty);
 
-  // Determine source type from the value expression.                                              
-  // Resolve through generic actuals so that a formal TYPE_PRIVATE is                               
-  // treated as its actual representation (e.g., FLOAT > double).                                  
-  //                                                                                                
+  // Determine source type from the value expression.
+  // Resolve through generic actuals so that a formal TYPE_PRIVATE is
+  // treated as its actual representation (e.g., FLOAT > double).
+  //
   Type_Info *value_type = node->assignment.value->type;
   if (cg->current_instance)
     value_type = Resolve_Generic_Actual_Type (value_type);
@@ -29273,12 +30102,29 @@ void Generate_Return_Statement (Syntax_Node *node) {
       BIP_End_Function ();
       return;
     }
+
+    // RM 4.8: Propagate return type to allocator for constraint checks.
+    Type_Info *ret_type = cg->current_function ? cg->current_function->return_type : NULL;
+    if (ret_type and Type_Is_Access (ret_type) and expr->kind == NK_ALLOCATOR)
+      expr->allocator.target_access_type = ret_type;
+
+    // RM 4.8(4): RETURN NULL for fat-pointer access types must return
+    // {null, null} directly — loading a fat pointer from address 0 crashes.
+    if (expr->kind == NK_NULL and ret_type and Type_Is_Access (ret_type) and
+      Type_Needs_Fat_Pointer (ret_type)) {
+      const char *fp_type = FAT_PTR_TYPE;
+      uint32_t z = Emit_Temp ();
+      Emit ("  %%t%u = insertvalue %s zeroinitializer, ptr null, 0  ; null fat ptr\n",
+         z, fp_type);
+      Temp_Set_Type (z, fp_type);
+      Emit ("  ret %s %%t%u\n", fp_type, z);
+      cg->block_terminated = true;
+      return;
+    }
+
     uint32_t value = Generate_Expression (expr);
     const char *type_str = cg->current_function and cg->current_function->return_type
       ? Type_To_Llvm_Sig (cg->current_function->return_type) : Integer_Arith_Type ();
-
-    // Convert from expression type to return type
-    Type_Info *ret_type = cg->current_function ? cg->current_function->return_type : NULL;
     const char *actual_ty = Temp_Get_Type (value);
     bool val_is_float = (actual_ty and Is_Float_Type (actual_ty)) or
               Type_Is_Float_Representation (expr->type) or
