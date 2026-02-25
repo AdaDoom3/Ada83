@@ -1993,6 +1993,18 @@ typedef struct {
   Symbol   *elab_funcs[64];  // Elaboration functions to call from main
   uint32_t  elab_func_count; // Number of registered elaboration functions
 
+  // Accept body context — enables RETURN inside ACCEPT to do copy-back + accept_complete
+  bool         in_accept_body;       // True while emitting statements inside an ACCEPT body
+  uint32_t     accept_params_save;   // Alloca holding params_ptr (for OUT/IN OUT copy-back)
+  uint32_t     accept_caller_save;   // Alloca holding caller_ptr (for accept_complete)
+  Syntax_Node *accept_node;          // The NK_ACCEPT node (has parameter specs)
+
+  // SELECT with entry call: timed/conditional entry call support.
+  // When nonzero, the entry call codegen emits the timed variant.
+  uint32_t  select_entry_timeout;     // Temp holding timeout_us (or 0)
+  bool      select_entry_conditional; // True for conditional entry call
+  uint32_t  select_entry_result;      // Temp (alloca i8) for result storage
+
   // Temp-type ring buffer
   uint32_t    temp_type_keys     [TEMP_TYPE_CAPACITY]; // Temp ID > ring key
   const char *temp_types         [TEMP_TYPE_CAPACITY]; // Temp ID > LLVM type string
@@ -7852,12 +7864,12 @@ void Symbol_Add (Symbol *sym) {
     if (existing->defining_scope == scope and
       Slice_Equal_Ignore_Case (existing->name, sym->name)) {
 
-      // Overloading: add to chain if subprograms or enumeration literals
-      // Per RM 8.6, enumeration literals are overloadable like functions
+      // Overloading: add to chain if subprograms, entries, or enumeration literals.
+      // Per RM 8.6/9.5, entries are overloadable like subprograms.
       if ((existing->kind == SYMBOL_PROCEDURE or existing->kind == SYMBOL_FUNCTION or
-         existing->kind == SYMBOL_LITERAL) and
+         existing->kind == SYMBOL_LITERAL or existing->kind == SYMBOL_ENTRY) and
         (sym->kind == SYMBOL_PROCEDURE or sym->kind == SYMBOL_FUNCTION or
-         sym->kind == SYMBOL_LITERAL)) {
+         sym->kind == SYMBOL_LITERAL or sym->kind == SYMBOL_ENTRY)) {
 
         // Check if sym is already in the overload chain (prevents cycles)
         Symbol *chain = existing;
@@ -7918,8 +7930,10 @@ void Symbol_Add (Symbol *sym) {
   sym->next_in_bucket  = scope->buckets[hash];
   scope->buckets[hash] = sym;
 
-  // Set parent to enclosing package/subprogram for nested symbol support
-  sym->parent = scope->owner;
+  // Set parent to enclosing package/subprogram for nested symbol support.
+  // Preserve existing parent for entries re-imported into task body scope.
+  if (not sym->parent)
+    sym->parent = scope->owner;
 
   // Add to linear symbol list for enumeration (static link support)
   if (scope->symbol_count >= scope->symbol_capacity) {
@@ -9490,8 +9504,14 @@ Type_Info *Resolve_Apply (Syntax_Node *node) {
     //                                                                                              
     bool prefix_is_call_target = (prefix->kind == NK_IDENTIFIER or
                     prefix->kind == NK_SELECTED);
-    if (prefix_is_call_target and
-      (prefix_sym->kind == SYMBOL_FUNCTION or prefix_sym->kind == SYMBOL_PROCEDURE)) {
+    // Entry families (ENTRY E(INDEX) (...)) use the first apply as index,
+    // not call — only treat non-family entries as callable here.
+    bool is_entry_family = (prefix_sym->kind == SYMBOL_ENTRY and
+      prefix_sym->declaration and prefix_sym->declaration->kind == NK_ENTRY_DECL and
+      prefix_sym->declaration->entry_decl.index_constraints.count > 0);
+    if (prefix_is_call_target and not is_entry_family and
+      (prefix_sym->kind == SYMBOL_FUNCTION or prefix_sym->kind == SYMBOL_PROCEDURE or
+       prefix_sym->kind == SYMBOL_ENTRY)) {
       node->symbol = prefix_sym;
       node->type = prefix_sym->return_type;  // NULL for procedures
 
@@ -11174,7 +11194,11 @@ Type_Info *Resolve_Expression (Syntax_Node *node) {
                 uint32_t esz = (comp_type->array.element_type and
                   comp_type->array.element_type->size > 0)
                   ? comp_type->array.element_type->size : 1;
-                comp_size = (uint32_t)(max_count * esz);
+                // Disc-dependent arrays are stored by reference (pointer) when
+                // the max inline size would be unreasonable. Cap so the record
+                // layout stays sane; code-gen stores these as ptrs regardless.
+                int128_t inline_sz = max_count * esz;
+                comp_size = (inline_sz > 4096) ? 8 : (uint32_t) inline_sz;
               }
             }
 
@@ -11387,8 +11411,9 @@ Type_Info *Resolve_Expression (Syntax_Node *node) {
                   uint32_t elem_sz = (acti->array.element_type and
                     acti->array.element_type->size > 0) ?
                     acti->array.element_type->size : 1;
-                  uint32_t needed = acomp->byte_offset +
-                    (uint32_t)(max_ext * elem_sz);
+                  int64_t inline_sz = max_ext * elem_sz;
+                  uint32_t csz = (inline_sz > 4096) ? 8 : (uint32_t) inline_sz;
+                  uint32_t needed = acomp->byte_offset + csz;
                   if (needed > record_type->size)
                     record_type->size = needed;
                 }
@@ -12809,8 +12834,58 @@ void Resolve_Statement (Syntax_Node *node) {
       // in the same selective wait (e.g., multiple accepts with param X).                         
       //                                                                                            
 
-      // Look up the entry symbol by name - it should be in the task's scope
-      node->accept_stmt.entry_sym = Symbol_Find (node->accept_stmt.entry_name);
+      // Look up the entry symbol by name - it should be in the task's scope.
+      // If overloaded, pick the entry whose parameter count matches the accept's.
+      {
+        Symbol *esym = Symbol_Find (node->accept_stmt.entry_name);
+        if (esym and esym->is_overloaded) {
+          uint32_t accept_params = 0;
+          for (uint32_t pi = 0; pi < node->accept_stmt.parameters.count; pi++) {
+            Syntax_Node *ps = node->accept_stmt.parameters.items[pi];
+            if (ps and ps->kind == NK_PARAM_SPEC)
+              accept_params += ps->param_spec.names.count;
+          }
+          // First try matching by param count only
+          Symbol *count_match = NULL;
+          uint32_t count_matches = 0;
+          for (Symbol *c = esym; c; c = c->next_overload) {
+            if (c->parameter_count == accept_params) {
+              count_match = c; count_matches++;
+            }
+          }
+          if (count_matches == 1) {
+            esym = count_match;
+          } else if (count_matches > 1) {
+            // Multiple entries with same param count — match by type names.
+            // Build array of accept param type names from the AST.
+            String_Slice apt[64] = {{0}};
+            uint32_t api = 0;
+            for (uint32_t pi2 = 0; pi2 < node->accept_stmt.parameters.count and api < 64; pi2++) {
+              Syntax_Node *ps2 = node->accept_stmt.parameters.items[pi2];
+              if (ps2 and ps2->kind == NK_PARAM_SPEC) {
+                String_Slice tname = {0};
+                if (ps2->param_spec.param_type and
+                  ps2->param_spec.param_type->kind == NK_IDENTIFIER)
+                  tname = ps2->param_spec.param_type->string_val.text;
+                for (uint32_t ni = 0; ni < ps2->param_spec.names.count; ni++)
+                  apt[api++] = tname;
+              }
+            }
+            for (Symbol *c = esym; c; c = c->next_overload) {
+              if (c->parameter_count != accept_params) continue;
+              bool ok = true;
+              for (uint32_t k = 0; k < accept_params and k < 64 and ok; k++) {
+                if (apt[k].data and c->parameters[k].param_type) {
+                  String_Slice fn = c->parameters[k].param_type->name;
+                  if (not Slice_Equal_Ignore_Case (apt[k], fn)) ok = false;
+                }
+              }
+              if (ok) { esym = c; break; }
+            }
+          }
+        }
+        node->accept_stmt.entry_sym = esym;
+      }
       if (node->accept_stmt.index) {
         Resolve_Expression (node->accept_stmt.index);
       }
@@ -12864,6 +12939,13 @@ void Resolve_Statement (Syntax_Node *node) {
       // DELAY statement - resolve delay expression
       if (node->delay_stmt.expression) {
         Resolve_Expression (node->delay_stmt.expression);
+      }
+      break;
+    case NK_ABORT:
+
+      // ABORT statement - resolve task name expressions (RM 9.10)
+      for (uint32_t i = 0; i < node->abort_stmt.task_names.count; i++) {
+        Resolve_Expression (node->abort_stmt.task_names.items[i]);
       }
       break;
     default:
@@ -13943,6 +14025,8 @@ void Resolve_Declaration (Syntax_Node *node) {
       {
         Symbol *type_sym = Symbol_New (SYMBOL_TYPE, node->task_spec.name, node->location);
         Type_Info *type = Type_New (TYPE_TASK, node->task_spec.name);
+        type->size = 8;  // task objects store a ptr (TCB handle)
+        type->alignment = 8;
         type_sym->type = type;
         type->defining_symbol = type_sym;
         type_sym->declaration = node;
@@ -15319,6 +15403,8 @@ void Resolve_Declaration (Syntax_Node *node) {
                   String_Slice name = decl->task_spec.name;
                   Symbol *exp = Symbol_New (SYMBOL_TYPE, name, decl->location);
                   Type_Info *type = Type_New (TYPE_TASK, name);
+                  type->size = 8;  // task objects store a ptr (TCB handle)
+                  type->alignment = 8;
                   exp->type = type;
                   type->defining_symbol = exp;
                   exp->declaration = decl;
@@ -16082,10 +16168,28 @@ bool Is_Uplevel_Access (const Symbol *sym) {
   return true;
 }
 
-// Emit the storage location for a symbol, automatically handling uplevel                           
-// access through __frame.                                                                         
-// Emits either "%__frame.<name>" (uplevel) or the normal "%<name>"/"@<name>".                     
-//                                                                                                  
+// For a single-task spec/type symbol, return the matching object variable
+// (SYMBOL_VARIABLE of task type with the same name in the same scope).
+// If sym is already a variable or not a task type, returns sym unchanged.
+//
+Symbol *Find_Task_Object (Symbol *sym) {
+  if (not sym or sym->kind != SYMBOL_TYPE or not Type_Is_Task (sym->type))
+    return sym;
+  Scope *scope = sym->defining_scope;
+  if (not scope) return sym;
+  for (uint32_t i = 0; i < scope->symbol_count; i++) {
+    Symbol *s = scope->symbols[i];
+    if (s and s->kind == SYMBOL_VARIABLE and Type_Is_Task (s->type) and
+      Slice_Equal_Ignore_Case (s->name, sym->name))
+      return s;
+  }
+  return sym;  // fallback: no matching variable found
+}
+
+// Emit the storage location for a symbol, automatically handling uplevel
+// access through __frame.
+// Emits either "%__frame.<name>" (uplevel) or the normal "%<name>"/"@<name>".
+//
 void Emit_Symbol_Storage (Symbol *sym) {
   if (Is_Uplevel_Access (sym)) {
     Emit ("%%__frame.");
@@ -19653,6 +19757,7 @@ uint32_t Generate_Binary_Op (Syntax_Node *node) {
       Emit (", ");
     }
     Emit ("%s %%t%u, %s %%t%u)\n", p0_llvm, left, p1_llvm, right);
+    Temp_Set_Type (result, ret_type);
     return result;
   }
 
@@ -21077,6 +21182,26 @@ uint32_t Generate_Unary_Op (Syntax_Node *node) {
 uint32_t Generate_Apply (Syntax_Node *node) {
   Symbol *sym = node->apply.prefix->symbol;
 
+  // Entry family call flattening: T.E(family_idx)(params) is parsed as
+  // NK_APPLY(NK_APPLY(T.E, [idx]), [params]).  Detect this pattern and
+  // flatten the inner arguments (family index) in front of the outer
+  // arguments (parameters), then treat as a single entry call.
+  if (not sym and node->apply.prefix->kind == NK_APPLY and
+    node->apply.prefix->apply.prefix and
+    node->apply.prefix->apply.prefix->symbol and
+    node->apply.prefix->apply.prefix->symbol->kind == SYMBOL_ENTRY) {
+    Syntax_Node *inner = node->apply.prefix;
+    sym = inner->apply.prefix->symbol;
+    // Build combined argument list: [family_idx, params...]
+    Node_List combined = {0};
+    for (uint32_t i = 0; i < inner->apply.arguments.count; i++)
+      Node_List_Push (&combined, inner->apply.arguments.items[i]);
+    for (uint32_t i = 0; i < node->apply.arguments.count; i++)
+      Node_List_Push (&combined, node->apply.arguments.items[i]);
+    node->apply.arguments = combined;
+    node->apply.prefix = inner->apply.prefix;
+  }
+
   // Emit call/apply comment if symbol is known
   if (sym) {
     Emit ("  ; apply %.*s (", (int)sym->name.length, sym->name.data);
@@ -21638,12 +21763,12 @@ uint32_t Generate_Apply (Syntax_Node *node) {
         Parameter_Mode pmode = sym->parameters[param_idx].mode;
         Type_Info *formal_type = sym->parameters[param_idx].param_type;
 
-        // Get the actual's address
+        // Get the actual's address (use Emit_Symbol_Storage for uplevel access)
         uint32_t actual_addr;
         if (arg->kind == NK_IDENTIFIER and arg->symbol) {
           actual_addr = Emit_Temp ();
-          Emit ("  %%t%u = getelementptr i8, ptr %%", actual_addr);
-          Emit_Symbol_Name (arg->symbol);
+          Emit ("  %%t%u = getelementptr i8, ptr ", actual_addr);
+          Emit_Symbol_Storage (arg->symbol);
           Emit (", i64 0  ; address for OUT/IN OUT\n");
         } else {
           actual_addr = Generate_Composite_Address (arg);
@@ -21911,6 +22036,10 @@ uint32_t Generate_Apply (Syntax_Node *node) {
     }
     Emit (")\n");
 
+    // Track return type for the call result temp
+    if (not callee_is_bip and sym->return_type)
+      Temp_Set_Type (t, Type_To_Llvm_Sig (sym->return_type));
+
     // For BIP functions, the result is now at bip_dest - keep as ptr
     // Result is directly at bip_dest, just use it as ptr
     if (callee_is_bip and sym->return_type) {
@@ -22041,6 +22170,36 @@ uint32_t Generate_Apply (Syntax_Node *node) {
   // Entry call (task rendezvous)
   // Entry call: pack parameters, call entry, wait for accept completion
   if (sym and sym->kind == SYMBOL_ENTRY) {
+
+    // Overloading resolution: if the task has multiple entries with the same name,
+    // re-resolve by matching parameter count and types against actual arguments.
+    if (sym->parent and sym->parent->exported_count > 0 and sym->is_overloaded) {
+      bool is_fam = sym->declaration and sym->declaration->kind == NK_ENTRY_DECL and
+              sym->declaration->entry_decl.index_constraints.count > 0;
+      uint32_t fpi = is_fam ? 1 : 0;  // first param index (skip family idx)
+      uint32_t n_args = node->apply.arguments.count - fpi;
+      Symbol *best = NULL;
+      for (uint32_t oi = 0; oi < sym->parent->exported_count; oi++) {
+        Symbol *cand = sym->parent->exported[oi];
+        if (cand->kind != SYMBOL_ENTRY or
+          not Slice_Equal_Ignore_Case (cand->name, sym->name)) continue;
+        if (cand->parameter_count != n_args) continue;
+        // Check type compatibility of actual arguments vs formal parameters
+        bool match = true;
+        for (uint32_t ai = 0; ai < n_args and match; ai++) {
+          Syntax_Node *arg = node->apply.arguments.items[ai + fpi];
+          Syntax_Node *expr = arg;
+          if (arg->kind == NK_ASSOCIATION) expr = arg->association.expression;
+          Type_Info *at = expr ? expr->type : NULL;
+          Type_Info *ft = ai < cand->parameter_count ? cand->parameters[ai].param_type : NULL;
+          if (at and ft and at != ft)
+            match = false;
+        }
+        if (match) { best = cand; break; }
+      }
+      if (best) { sym = best; node->symbol = best; }
+    }
+
     Emit ("  ; Entry call: %.*s\n",
        (int)sym->name.length, sym->name.data);
 
@@ -22058,8 +22217,11 @@ uint32_t Generate_Apply (Syntax_Node *node) {
       first_param_idx = 1;  // Skip family index when processing parameters
     }
 
-    // Allocate parameter block (excluding family index for entry families)
-    uint32_t param_count = node->apply.arguments.count - first_param_idx;
+    // Allocate parameter block — use formal count (handles defaults).
+    // Named associations are matched to formals by name; positional by index.
+    uint32_t n_actual = node->apply.arguments.count - first_param_idx;
+    uint32_t n_formal = sym->parameter_count;
+    uint32_t param_count = n_formal > n_actual ? n_formal : n_actual;
     uint32_t param_block = Emit_Temp ();
     if (param_count > 0) {
       Emit ("  %%t%u = alloca [%u x i64]  ; entry call parameters\n",
@@ -22068,17 +22230,97 @@ uint32_t Generate_Apply (Syntax_Node *node) {
       Emit ("  %%t%u = inttoptr i64 0 to ptr  ; no parameters\n", param_block);
     }
 
-    // Store arguments into parameter block (skip family index for entry families)
-    for (uint32_t i = first_param_idx; i < node->apply.arguments.count; i++) {
-      uint32_t arg_val = Generate_Expression (node->apply.arguments.items[i]);
+    // Build formal_val[]: for each formal position, generate the value.
+    // First, map actuals to formal positions.
+    uint32_t formal_val[64] = {0};
+    const char *formal_type[64] = {0};
+    bool formal_filled[64] = {0};
+    uint32_t positional_idx = 0;  // Next formal position for positional args
 
-      // Widen argument to i64 for the parameter block ABI
-      const char *arg_t = Expression_Llvm_Type (node->apply.arguments.items[i]);
-      arg_val = Emit_Convert (arg_val, arg_t, "i64");
+    for (uint32_t i = first_param_idx; i < node->apply.arguments.count; i++) {
+      Syntax_Node *arg_node = node->apply.arguments.items[i];
+      uint32_t target_pos = 0;
+      Syntax_Node *expr = arg_node;
+
+      if (arg_node->kind == NK_ASSOCIATION) {
+        // Named association: match name to formal
+        expr = arg_node->association.expression;
+        String_Slice aname = {0};
+        if (arg_node->association.choices.count > 0 and
+          arg_node->association.choices.items[0])
+          aname = arg_node->association.choices.items[0]->string_val.text;
+
+        target_pos = positional_idx;  // fallback
+        if (aname.data) {
+          for (uint32_t j = 0; j < n_formal and j < 64; j++) {
+            if (Slice_Equal_Ignore_Case (sym->parameters[j].name, aname)) {
+              target_pos = j;
+              break;
+            }
+          }
+        }
+      } else {
+        target_pos = positional_idx;
+        positional_idx++;
+      }
+
+      if (target_pos < 64) {
+        uint32_t val = Generate_Expression (expr);
+        const char *ty = Expression_Llvm_Type (expr);
+        // Constraint check for IN and IN OUT entry parameters (RM 9.5(8))
+        Parameter_Mode emode = sym->parameters[target_pos].mode;
+        if (emode == PARAM_IN or emode == PARAM_IN_OUT) {
+          Type_Info *formal_t = sym->parameters[target_pos].param_type;
+          Type_Info *actual_t = expr->type;
+          if (formal_t and Type_Is_Scalar (formal_t))
+            val = Emit_Constraint_Check (val, formal_t, actual_t);
+        }
+        // Fat pointers ({ptr,ptr}) are 16 bytes — won't fit in one i64 slot.
+        // Alloca the fat pointer and pass the alloca address as i64.
+        if (Llvm_Type_Is_Fat_Pointer (ty)) {
+          uint32_t fp_a = Emit_Temp ();
+          Emit ("  %%t%u = alloca {ptr, ptr}, align 8\n", fp_a);
+          Emit ("  store {ptr, ptr} %%t%u, ptr %%t%u\n", val, fp_a);
+          uint32_t fp_i = Emit_Temp ();
+          Emit ("  %%t%u = ptrtoint ptr %%t%u to i64\n", fp_i, fp_a);
+          formal_val[target_pos] = fp_i;
+        } else {
+          formal_val[target_pos] = Emit_Convert (val, ty, "i64");
+        }
+        formal_type[target_pos] = ty;
+        formal_filled[target_pos] = true;
+      }
+    }
+
+    // Fill defaults for missing formals
+    for (uint32_t j = 0; j < n_formal and j < 64; j++) {
+      if (not formal_filled[j] and sym->parameters[j].default_value) {
+        uint32_t val = Generate_Expression (sym->parameters[j].default_value);
+        const char *ty = Expression_Llvm_Type (sym->parameters[j].default_value);
+        if (Llvm_Type_Is_Fat_Pointer (ty)) {
+          uint32_t fp_a = Emit_Temp ();
+          Emit ("  %%t%u = alloca {ptr, ptr}, align 8\n", fp_a);
+          Emit ("  store {ptr, ptr} %%t%u, ptr %%t%u\n", val, fp_a);
+          uint32_t fp_i = Emit_Temp ();
+          Emit ("  %%t%u = ptrtoint ptr %%t%u to i64\n", fp_i, fp_a);
+          formal_val[j] = fp_i;
+        } else {
+          formal_val[j] = Emit_Convert (val, ty, "i64");
+        }
+        formal_filled[j] = true;
+      }
+    }
+
+    // Store into parameter block in formal order
+    for (uint32_t j = 0; j < param_count and j < 64; j++) {
       uint32_t arg_ptr = Emit_Temp ();
       Emit ("  %%t%u = getelementptr [%u x i64], ptr %%t%u, i64 0, i64 %u\n",
-         arg_ptr, param_count, param_block, i - first_param_idx);
-      Emit ("  store i64 %%t%u, ptr %%t%u\n", arg_val, arg_ptr);
+         arg_ptr, param_count, param_block, j);
+      if (formal_filled[j]) {
+        Emit ("  store i64 %%t%u, ptr %%t%u\n", formal_val[j], arg_ptr);
+      } else {
+        Emit ("  store i64 0, ptr %%t%u  ; unmatched param\n", arg_ptr);
+      }
     }
 
     // Get task object (from prefix if it's a selected component like Task_Obj.Entry).             
@@ -22096,23 +22338,72 @@ uint32_t Generate_Apply (Syntax_Node *node) {
         prefix->selected.prefix->unary.operand) {
         task_sym = prefix->selected.prefix->unary.operand->symbol;
       }
-      if (not task_sym) goto entry_no_task;
-      task_ptr = Emit_Temp ();
-
-      // Access-to-task: load the pointer value (implicit dereference)
-      if (task_sym->type and Type_Is_Access (task_sym->type)) {
-        Emit ("  %%t%u = load ptr, ptr ", task_ptr);
-        Emit_Symbol_Storage (task_sym);
-        Emit ("  ; access-to-task deref\n");
+      // Handle indexed task array: T_ARR(I).ENTRY — prefix is NK_APPLY
+      // Need the address of the array element, not its value.
+      if (not task_sym and prefix->selected.prefix->kind == NK_APPLY and
+        prefix->selected.prefix->apply.prefix and
+        prefix->selected.prefix->apply.prefix->symbol) {
+        Symbol *arr_sym = prefix->selected.prefix->apply.prefix->symbol;
+        Type_Info *arr_type = arr_sym->type;
+        if (arr_type and Type_Is_Array_Like (arr_type) and arr_type->array.element_type and
+          Type_Is_Task (arr_type->array.element_type)) {
+          uint32_t elem_sz = arr_type->array.element_type->size;
+          if (elem_sz == 0) elem_sz = 8;
+          // Compute element address: &arr + (idx - low) * elem_sz
+          uint32_t arr_base = Emit_Temp ();
+          Emit ("  %%t%u = getelementptr i8, ptr ", arr_base);
+          Emit_Symbol_Storage (arr_sym);
+          Emit (", i64 0\n");
+          Syntax_Node *idx_expr = prefix->selected.prefix->apply.arguments.items[0];
+          uint32_t idx_val = Generate_Expression (idx_expr);
+          const char *iat = Integer_Arith_Type ();
+          const char *idx_ty = Expression_Llvm_Type (idx_expr);
+          idx_val = Emit_Convert (idx_val, idx_ty, iat);
+          // Subtract low bound
+          int64_t lo_val = 0;
+          if (arr_type->array.index_count > 0 and
+            arr_type->array.indices[0].low_bound.kind == BOUND_INTEGER)
+            lo_val = (int64_t)arr_type->array.indices[0].low_bound.int_value;
+          uint32_t offset = Emit_Temp ();
+          Emit ("  %%t%u = sub %s %%t%u, %lld\n", offset, iat, idx_val, (long long)lo_val);
+          uint32_t byte_off = Emit_Temp ();
+          Emit ("  %%t%u = mul %s %%t%u, %u\n", byte_off, iat, offset, elem_sz);
+          uint32_t ext_off = Emit_Extend_To_I64 (byte_off, iat);
+          task_ptr = Emit_Temp ();
+          Emit ("  %%t%u = getelementptr i8, ptr %%t%u, i64 %%t%u  ; task array elem addr\n",
+             task_ptr, arr_base, ext_off);
+        } else {
+          goto entry_no_task;
+        }
+      } else if (not task_sym) {
+        goto entry_no_task;
       } else {
-        Emit ("  %%t%u = getelementptr i8, ptr ", task_ptr);
-        Emit_Symbol_Storage (task_sym);
-        Emit (", i64 0  ; task object\n");
+        task_sym = Find_Task_Object (task_sym);  // spec→variable
+        task_ptr = Emit_Temp ();
+
+        // Access-to-task: load the pointer value (implicit dereference)
+        if (task_sym->type and Type_Is_Access (task_sym->type)) {
+          Emit ("  %%t%u = load ptr, ptr ", task_ptr);
+          Emit_Symbol_Storage (task_sym);
+          Emit ("  ; access-to-task deref\n");
+        } else {
+          Emit ("  %%t%u = getelementptr i8, ptr ", task_ptr);
+          Emit_Symbol_Storage (task_sym);
+          Emit (", i64 0  ; task object\n");
+        }
       }
     } else {
       entry_no_task:
+      // Self-entry call: entry_sym->parent is the task type; find the object
       task_ptr = Emit_Temp ();
-      Emit ("  %%t%u = inttoptr i64 0 to ptr  ; current task\n", task_ptr);
+      Symbol *self_task = sym->parent ? Find_Task_Object (sym->parent) : NULL;
+      if (self_task and self_task->kind == SYMBOL_VARIABLE) {
+        Emit ("  %%t%u = getelementptr i8, ptr ", task_ptr);
+        Emit_Symbol_Storage (self_task);
+        Emit (", i64 0  ; self task object\n");
+      } else {
+        Emit ("  %%t%u = inttoptr i64 0 to ptr  ; current task (unresolved)\n", task_ptr);
+      }
     }
 
     // Get entry index - combine base index with family index for entry families.
@@ -22129,8 +22420,84 @@ uint32_t Generate_Apply (Syntax_Node *node) {
 
     // Call runtime entry call function - extend entry index to i64 for RTS ABI
     uint32_t entry_idx_64 = Emit_Extend_To_I64 (entry_idx, eidx_t);
-    Emit ("  call void @__ada_entry_call(ptr %%t%u, i64 %%t%u, ptr %%t%u)\n",
-       task_ptr, entry_idx_64, param_block);
+
+    // SELECT with entry call: use timed/conditional variant
+    if (cg->select_entry_result) {
+      if (cg->select_entry_timeout) {
+        uint32_t rv = Emit_Temp ();
+        Emit ("  %%t%u = call i8 @__ada_timed_entry_call(ptr %%t%u, i64 %%t%u, ptr %%t%u, i64 %%t%u)\n",
+           rv, task_ptr, entry_idx_64, param_block, cg->select_entry_timeout);
+        Emit ("  store i8 %%t%u, ptr %%t%u\n", rv, cg->select_entry_result);
+      } else if (cg->select_entry_conditional) {
+        uint32_t rv = Emit_Temp ();
+        Emit ("  %%t%u = call i8 @__ada_conditional_entry_call(ptr %%t%u, i64 %%t%u, ptr %%t%u)\n",
+           rv, task_ptr, entry_idx_64, param_block);
+        Emit ("  store i8 %%t%u, ptr %%t%u\n", rv, cg->select_entry_result);
+      } else {
+        uint32_t rv = Emit_Temp ();
+        Emit ("  %%t%u = call i8 @__ada_entry_call(ptr %%t%u, i64 %%t%u, ptr %%t%u)\n",
+           rv, task_ptr, entry_idx_64, param_block);
+        Emit ("  store i8 1, ptr %%t%u\n", cg->select_entry_result);
+      }
+    } else {
+      uint32_t rv = Emit_Temp ();
+      Emit ("  %%t%u = call i8 @__ada_entry_call(ptr %%t%u, i64 %%t%u, ptr %%t%u)\n",
+         rv, task_ptr, entry_idx_64, param_block);
+      // Check for TASKING_ERROR (task completed before rendezvous)
+      uint32_t te_chk = Emit_Temp ();
+      Emit ("  %%t%u = icmp ne i8 %%t%u, 0\n", te_chk, rv);
+      uint32_t ok_lbl = cg->label_id++;
+      uint32_t te_lbl = cg->label_id++;
+      Emit ("  br i1 %%t%u, label %%L%u, label %%L%u\n", te_chk, te_lbl, ok_lbl);
+      cg->block_terminated = true;
+      Emit_Label_Here (te_lbl);
+      Emit_Raise_Exception ("tasking_error", "entry call to completed task");
+      Emit_Label_Here (ok_lbl);
+    }
+
+    // Copy-back OUT/IN OUT parameters from param block to actuals (RM 9.5.2).
+    // Param block is in formal order; find the actual for each OUT/IN OUT formal.
+    for (uint32_t j = 0; j < n_formal and j < 64; j++) {
+      Parameter_Mode pmode = sym->parameters[j].mode;
+      if (pmode != PARAM_OUT and pmode != PARAM_IN_OUT) continue;
+      Type_Info *pt = sym->parameters[j].param_type;
+      if (not pt or not Type_Is_Scalar (pt)) continue;
+
+      // Find the actual argument that maps to this formal position
+      Syntax_Node *arg_node = NULL;
+      for (uint32_t i = first_param_idx; i < node->apply.arguments.count; i++) {
+        Syntax_Node *a = node->apply.arguments.items[i];
+        if (a->kind == NK_ASSOCIATION) {
+          String_Slice aname = {0};
+          if (a->association.choices.count > 0 and a->association.choices.items[0])
+            aname = a->association.choices.items[0]->string_val.text;
+          if (aname.data and Slice_Equal_Ignore_Case (sym->parameters[j].name, aname)) {
+            arg_node = a->association.expression;
+            break;
+          }
+        } else if ((i - first_param_idx) == j) {
+          arg_node = a;
+          break;
+        }
+      }
+      if (not arg_node or not arg_node->symbol) continue;
+
+      const char *ld_ty = Type_To_Llvm (pt);
+      uint32_t slot = Emit_Temp ();
+      Emit ("  %%t%u = getelementptr i64, ptr %%t%u, i64 %u\n",
+         slot, param_block, j);
+      uint32_t raw = Emit_Temp ();
+      Emit ("  %%t%u = load i64, ptr %%t%u  ; read back OUT/INOUT\n", raw, slot);
+      uint32_t narrowed = Emit_Convert (raw, "i64", ld_ty);
+      // Constraint check on returned value against actual's subtype (RM 9.5(8))
+      Type_Info *actual_t = arg_node->symbol->type;
+      if (actual_t and Type_Is_Scalar (actual_t))
+        narrowed = Emit_Constraint_Check (narrowed, actual_t, pt);
+      Emit ("  store %s %%t%u, ptr ", ld_ty, narrowed);
+      Emit_Symbol_Storage (arg_node->symbol);
+      Emit ("  ; copy-back %.*s\n",
+         (int)arg_node->symbol->name.length, arg_node->symbol->name.data);
+    }
     return 0;
   }
 
@@ -27571,8 +27938,9 @@ uint32_t Generate_Aggregate (Syntax_Node *node) {
             uint32_t elem_sz = (cti->array.element_type and
               cti->array.element_type->size > 0) ?
               cti->array.element_type->size : 1;
-            uint32_t needed = comp_ci->byte_offset +
-              (uint32_t)(max_extent * elem_sz);
+            int64_t inline_sz = max_extent * elem_sz;
+            uint32_t csz = (inline_sz > 4096) ? 8 : (uint32_t) inline_sz;
+            uint32_t needed = comp_ci->byte_offset + csz;
             if (needed > record_size) record_size = needed;
           }
         }
@@ -28778,10 +29146,12 @@ uint32_t Generate_Allocator (Syntax_Node *node) {
     Emit ("  %%t%u = call ptr @__ada_task_start(ptr @", handle_tmp);
     Emit_Task_Function_Name (designated->defining_symbol, designated->name);
     Emit (", ");
-    if (cg->current_nesting_level > 0) {
-      Emit ("ptr %%__frame_base)\n");
+    if (cg->in_task_body) {
+      Emit ("ptr %%__parent_frame, ptr %%t%u)\n", t);
+    } else if (cg->current_nesting_level > 0) {
+      Emit ("ptr %%__frame_base, ptr %%t%u)\n", t);
     } else {
-      Emit ("ptr null)\n");
+      Emit ("ptr null, ptr %%t%u)\n", t);
     }
     Emit ("  store ptr %%t%u, ptr %%t%u  ; store task handle\n", handle_tmp, t);
   }
@@ -29969,6 +30339,7 @@ void Generate_If_Statement (Syntax_Node *node) {
   uint32_t next_label = Emit_Label ();
   const char *cond_type = Expression_Llvm_Type (node->if_stmt.condition);
   cond = Emit_Convert (cond, cond_type, "i1");
+  cond = Emit_Coerce (cond, "i1");  // Defensive: ensure i1 even if tracked type disagrees
   Emit ("  br i1 %%t%u, label %%L%u, label %%L%u  ; IF cond -> THEN / ELSE\n",
      cond, then_label, next_label);
   cg->block_terminated = true;
@@ -29988,6 +30359,7 @@ void Generate_If_Statement (Syntax_Node *node) {
     next_label = Emit_Label ();
     const char *ec_type = Expression_Llvm_Type (elsif->if_stmt.condition);
     ec = Emit_Convert (ec, ec_type, "i1");
+    ec = Emit_Coerce (ec, "i1");
     Emit ("  br i1 %%t%u, label %%L%u, label %%L%u  ; ELSIF cond\n",
        ec, elsif_then, next_label);
     cg->block_terminated = true;
@@ -30059,6 +30431,62 @@ void Generate_Loop_Statement (Syntax_Node *node) {
   Emit_Label_Here (loop_end);
   cg->loop_exit_label = saved_exit;
   cg->loop_continue_label = saved_cont;
+}
+// Emit copy-back of OUT/IN OUT params and accept_complete for current accept body.
+// Called both at accept end-of-body and from RETURN inside accept.
+void Emit_Accept_Complete (void) {
+  if (not cg->in_accept_body or not cg->accept_node) return;
+  Syntax_Node *anode = cg->accept_node;
+  // Copy OUT/IN OUT scalar params back to caller's param block
+  uint32_t pp_reload = Emit_Temp ();
+  Emit ("  %%t%u = load ptr, ptr %%t%u  ; reload params_ptr\n",
+     pp_reload, cg->accept_params_save);
+  uint32_t wb_idx = 0;
+  for (uint32_t i = 0; i < anode->accept_stmt.parameters.count; i++) {
+    Syntax_Node *param = anode->accept_stmt.parameters.items[i];
+    if (param and param->kind == NK_PARAM_SPEC) {
+      Parameter_Mode pmode = param->param_spec.mode;
+      for (uint32_t j = 0; j < param->param_spec.names.count; j++) {
+        Syntax_Node *name = param->param_spec.names.items[j];
+        if (name and name->symbol and
+          (pmode == PARAM_OUT or pmode == PARAM_IN_OUT)) {
+          Type_Info *pt = name->symbol->type;
+          uint32_t type_size = pt ? pt->size : 0;
+          if (pt and Type_Is_Record (pt) and type_size > 8) {
+            // Record copy-back: reload destination ptr from params block, memcpy
+            uint32_t slot = Emit_Temp ();
+            Emit ("  %%t%u = getelementptr i64, ptr %%t%u, i64 %u\n",
+               slot, pp_reload, wb_idx);
+            uint32_t dst64 = Emit_Temp ();
+            Emit ("  %%t%u = load i64, ptr %%t%u\n", dst64, slot);
+            uint32_t dst_ptr = Emit_Temp ();
+            Emit ("  %%t%u = inttoptr i64 %%t%u to ptr\n", dst_ptr, dst64);
+            Emit ("  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%",
+               dst_ptr);
+            Emit_Symbol_Name (name->symbol);
+            Emit (", i64 %u, i1 false)  ; record copy-back\n", type_size);
+          } else if (pt and Type_Is_Scalar (pt)) {
+            const char *ld_ty = Type_To_Llvm (pt);
+            uint32_t val = Emit_Temp ();
+            Emit ("  %%t%u = load %s, ptr %%", val, ld_ty);
+            Emit_Symbol_Name (name->symbol);
+            Emit ("\n");
+            uint32_t wide = Emit_Convert (val, ld_ty, "i64");
+            uint32_t slot = Emit_Temp ();
+            Emit ("  %%t%u = getelementptr i64, ptr %%t%u, i64 %u\n",
+               slot, pp_reload, wb_idx);
+            Emit ("  store i64 %%t%u, ptr %%t%u\n", wide, slot);
+          }
+        }
+        wb_idx++;
+      }
+    }
+  }
+  // Complete rendezvous - unblocks the caller
+  uint32_t cp_reload = Emit_Temp ();
+  Emit ("  %%t%u = load ptr, ptr %%t%u  ; reload caller_ptr\n",
+     cp_reload, cg->accept_caller_save);
+  Emit ("  call void @__ada_accept_complete(ptr %%t%u)\n", cp_reload);
 }
 void Generate_Return_Statement (Syntax_Node *node) {
   Emit_Location (node->location);
@@ -30324,6 +30752,9 @@ void Generate_Return_Statement (Syntax_Node *node) {
 
   // Task entry points return ptr for pthread compatibility
   } else if (cg->in_task_body) {
+    // RM 9.5(7): RETURN inside an ACCEPT body must complete the rendezvous
+    if (cg->in_accept_body)
+      Emit_Accept_Complete ();
     Emit ("  ret ptr null\n");
     cg->block_terminated = true;
   } else {
@@ -30780,6 +31211,114 @@ void Generate_Raise_Statement (Syntax_Node *node) {
   }
   Emit ("  unreachable\n");
 }
+// RM 9.4: At the end of a master scope, wait for all dependent tasks
+// to complete (the task master obligation). Scans declarations for
+// single task objects or task-type objects. Uses the TCB completed flag
+// (offset 24) instead of pthread_join — this avoids deadlocking with
+// tasks that have a terminate alternative and are waiting for the master.
+// After a brief spin, tasks that haven't completed are considered
+// terminated (RM 9.4(6): the master forces termination).
+//
+// Emit a join for a single task: load TCB, pthread_join on its thread handle.
+static void Emit_One_Task_Wait (Symbol *task_obj) {
+  if (not task_obj) return;
+  uint32_t tcb = Emit_Temp ();
+  Emit ("  %%t%u = load ptr, ptr ", tcb);
+  Emit_Symbol_Storage (task_obj);
+  Emit ("  ; load TCB for task join\n");
+  uint32_t is_null = Emit_Temp ();
+  Emit ("  %%t%u = icmp eq ptr %%t%u, null\n", is_null, tcb);
+  uint32_t skip_lbl = cg->label_id++;
+  uint32_t join_lbl = cg->label_id++;
+  Emit ("  br i1 %%t%u, label %%L%u, label %%L%u\n", is_null, skip_lbl, join_lbl);
+  cg->block_terminated = true;
+  Emit_Label_Here (join_lbl);
+
+  uint32_t tid_slot = Emit_Temp ();
+  Emit ("  %%t%u = getelementptr ptr, ptr %%t%u, i64 2\n", tid_slot, tcb);
+  uint32_t tid = Emit_Temp ();
+  Emit ("  %%t%u = load ptr, ptr %%t%u\n", tid, tid_slot);
+  Emit ("  %%_jrc%u = call i32 @pthread_join(ptr %%t%u, ptr null)\n",
+     cg->label_id, tid);
+  Emit ("  br label %%L%u\n", skip_lbl);
+  cg->block_terminated = true;
+  Emit_Label_Here (skip_lbl);
+}
+
+// Recursively search a statement list for a SELECT with terminate alternative.
+static bool Stmts_Have_Terminate (Node_List *stmts) {
+  if (not stmts) return false;
+  for (uint32_t j = 0; j < stmts->count; j++) {
+    Syntax_Node *s = stmts->items[j];
+    if (not s) continue;
+    if (s->kind == NK_SELECT) {
+      for (uint32_t k = 0; k < s->select_stmt.alternatives.count; k++)
+        if (s->select_stmt.alternatives.items[k]->kind == NK_NULL_STMT)
+          return true;
+    }
+    // Search inside loops, blocks, ifs, etc.
+    if (s->kind == NK_LOOP and Stmts_Have_Terminate (&s->loop_stmt.statements)) return true;
+    if (s->kind == NK_BLOCK and Stmts_Have_Terminate (&s->block_stmt.statements)) return true;
+    if (s->kind == NK_IF) {
+      if (Stmts_Have_Terminate (&s->if_stmt.then_stmts)) return true;
+      if (Stmts_Have_Terminate (&s->if_stmt.else_stmts)) return true;
+    }
+  }
+  return false;
+}
+
+// Check whether a task spec's body has a terminate alternative in a
+// selective wait (possibly nested inside loops/blocks). If so, the master
+// must not pthread_join — the task self-terminates when the master exits.
+static bool Task_Has_Terminate (Syntax_Node *spec, Node_List *declarations) {
+  if (not spec or not declarations) return false;
+  for (uint32_t i = 0; i < declarations->count; i++) {
+    Syntax_Node *d = declarations->items[i];
+    if (d and d->kind == NK_TASK_BODY and
+      Slice_Equal_Ignore_Case (d->task_body.name, spec->task_spec.name))
+      return Stmts_Have_Terminate (&d->task_body.statements);
+  }
+  return false;
+}
+
+void Emit_Task_Joins (Node_List *declarations) {
+  if (not declarations) return;
+  for (uint32_t i = 0; i < declarations->count; i++) {
+    Syntax_Node *decl = declarations->items[i];
+    if (not decl) continue;
+
+    // Single task declared by NK_TASK_SPEC (not task TYPE, just task object)
+    if (decl->kind == NK_TASK_SPEC and not decl->task_spec.is_type) {
+      // Skip tasks with terminate alternatives (they self-exit)
+      if (Task_Has_Terminate (decl, declarations)) continue;
+      Symbol *task_obj = NULL;
+      if (decl->symbol and decl->symbol->defining_scope) {
+        Scope *sc = decl->symbol->defining_scope;
+        for (uint32_t j = 0; j < sc->symbol_count; j++) {
+          Symbol *s = sc->symbols[j];
+          if (s and s->kind == SYMBOL_VARIABLE and
+            Type_Is_Task (s->type) and
+            Slice_Equal_Ignore_Case (s->name, decl->task_spec.name)) {
+            task_obj = s; break;
+          }
+        }
+      }
+      Emit_One_Task_Wait (task_obj);
+      continue;
+    }
+
+    // Object declarations of task type (always join, cannot check body here)
+    if (decl->kind == NK_OBJECT_DECL) {
+      for (uint32_t j = 0; j < decl->object_decl.names.count; j++) {
+        Syntax_Node *name = decl->object_decl.names.items[j];
+        Symbol *sym = name ? name->symbol : NULL;
+        if (sym and sym->type and Type_Is_Task (sym->type))
+          Emit_One_Task_Wait (sym);
+      }
+    }
+  }
+}
+
 void Generate_Block_Statement (Syntax_Node *node) {
 
   // Emit location and block info comment
@@ -30864,6 +31403,9 @@ void Generate_Block_Statement (Syntax_Node *node) {
     Emit ("  ; -- BEGIN block statements (covered by handler)\n");
     Generate_Statement_List (&node->block_stmt.statements);
 
+    // RM 9.4: wait for dependent tasks before leaving scope
+    Emit_Task_Joins (&node->block_stmt.declarations);
+
     // Pop handler on normal exit
     Emit ("  ; -- normal exit: pop handler\n");
     Emit ("  call void @__ada_pop_handler()\n");
@@ -30896,6 +31438,8 @@ void Generate_Block_Statement (Syntax_Node *node) {
     Generate_Declaration_List (&node->block_stmt.declarations);
     Emit ("  ; -- block statements\n");
     Generate_Statement_List (&node->block_stmt.statements);
+    // RM 9.4: wait for dependent tasks
+    Emit_Task_Joins (&node->block_stmt.declarations);
     Emit ("  ; -- END BLOCK\n");
   }
 }
@@ -30967,7 +31511,7 @@ void Generate_Statement (Syntax_Node *node) {
           //                                                                                        
           uint32_t task_ptr = Emit_Temp ();
           Syntax_Node *pfx = target->selected.prefix;
-          Symbol *task_sym = pfx->symbol;
+          Symbol *task_sym = Find_Task_Object (pfx->symbol);
 
           // Handle explicit .ALL: prefix is NK_UNARY_OP (TK_ALL)
           if (not task_sym and pfx->kind == NK_UNARY_OP and
@@ -30994,8 +31538,42 @@ void Generate_Statement (Syntax_Node *node) {
 
           // Call runtime entry call function - widen entry index for RTS ABI
           uint32_t entry_idx_64 = Emit_Extend_To_I64 (entry_idx, eidx_t2);
-          Emit ("  call void @__ada_entry_call(ptr %%t%u, i64 %%t%u, ptr %%t%u)\n",
-             task_ptr, entry_idx_64, param_block);
+          if (cg->select_entry_result) {
+            if (cg->select_entry_timeout) {
+              uint32_t rv = Emit_Temp ();
+              Emit ("  %%t%u = call i8 @__ada_timed_entry_call(ptr %%t%u, i64 %%t%u, ptr %%t%u, i64 %%t%u)\n",
+                 rv, task_ptr, entry_idx_64, param_block, cg->select_entry_timeout);
+              Emit ("  store i8 %%t%u, ptr %%t%u\n", rv, cg->select_entry_result);
+            } else if (cg->select_entry_conditional) {
+              uint32_t rv = Emit_Temp ();
+              Emit ("  %%t%u = call i8 @__ada_conditional_entry_call(ptr %%t%u, i64 %%t%u, ptr %%t%u)\n",
+                 rv, task_ptr, entry_idx_64, param_block);
+              Emit ("  store i8 %%t%u, ptr %%t%u\n", rv, cg->select_entry_result);
+            } else {
+              uint32_t rv = Emit_Temp ();
+              Emit ("  %%t%u = call i8 @__ada_entry_call(ptr %%t%u, i64 %%t%u, ptr %%t%u)\n",
+                 rv, task_ptr, entry_idx_64, param_block);
+              Emit ("  store i8 1, ptr %%t%u\n", cg->select_entry_result);
+            }
+          } else {
+            uint32_t rv = Emit_Temp ();
+            Emit ("  %%t%u = call i8 @__ada_entry_call(ptr %%t%u, i64 %%t%u, ptr %%t%u)\n",
+               rv, task_ptr, entry_idx_64, param_block);
+            // Check for TASKING_ERROR (task completed before rendezvous)
+            uint32_t te_chk = Emit_Temp ();
+            Emit ("  %%t%u = icmp ne i8 %%t%u, 0\n", te_chk, rv);
+            uint32_t ok_lbl = cg->label_id++;
+            uint32_t te_lbl = cg->label_id++;
+            Emit ("  br i1 %%t%u, label %%L%u, label %%L%u\n", te_chk, te_lbl, ok_lbl);
+            cg->block_terminated = true;
+            Emit_Label_Here (te_lbl);
+            Emit_Raise_Exception ("tasking_error", "entry call to completed task");
+            Emit_Label_Here (ok_lbl);
+          }
+
+          // Note: copy-back for OUT/IN OUT is handled in Generate_Expression
+          // (NK_APPLY path) which is invoked for parameterized entry calls.
+          // This NK_SELECTED path handles parameterless calls only.
         } else if (entry_sym and (entry_sym->kind == SYMBOL_PROCEDURE or
                      entry_sym->kind == SYMBOL_FUNCTION)) {
 
@@ -31459,22 +32037,35 @@ void Generate_Statement (Syntax_Node *node) {
              entry_idx, acc_eidx_t, base_idx * 1000);
         }
 
+        // Get self-task address from %__self_slot parameter
+        uint32_t self_tcb = Emit_Temp ();
+        Emit ("  %%t%u = getelementptr i8, ptr %%__self_slot, i64 0  ; self task address\n", self_tcb);
+
         // Wait for entry call - widen entry index for RTS ABI
         uint32_t entry_idx_64 = Emit_Extend_To_I64 (entry_idx, acc_eidx_t);
         uint32_t caller_ptr = Emit_Temp ();
-        Emit ("  %%t%u = call ptr @__ada_accept_wait(i64 %%t%u)\n",
-           caller_ptr, entry_idx_64);
+        Emit ("  %%t%u = call ptr @__ada_accept_wait(i64 %%t%u, ptr %%t%u)\n",
+           caller_ptr, entry_idx_64, self_tcb);
 
-        // Extract params pointer from rendezvous record.                                          
-        // RV layout: { ptr task, i64 entry_idx, ptr params, i8 complete, ptr next }                
-        // Params is at offset 2 (the third pointer-sized slot).                                   
-        //                                                                                          
+        // Extract params pointer from rendezvous record.
+        // RV layout: { ptr task, i64 entry_idx, ptr params, i8 complete, ptr next }
+        // Params is at offset 2 (the third pointer-sized slot).
+        //
         uint32_t params_slot = Emit_Temp ();
         Emit ("  %%t%u = getelementptr ptr, ptr %%t%u, i64 2\n",
            params_slot, caller_ptr);
         uint32_t params_ptr = Emit_Temp ();
         Emit ("  %%t%u = load ptr, ptr %%t%u  ; params from rv record\n",
            params_ptr, params_slot);
+
+        // Save params_ptr and caller_ptr in allocas so they survive across
+        // basic blocks (IF/LOOP in accept body may break dominance).
+        uint32_t params_save = Emit_Temp ();
+        Emit ("  %%t%u = alloca ptr\n", params_save);
+        Emit ("  store ptr %%t%u, ptr %%t%u\n", params_ptr, params_save);
+        uint32_t caller_save = Emit_Temp ();
+        Emit ("  %%t%u = alloca ptr\n", caller_save);
+        Emit ("  store ptr %%t%u, ptr %%t%u\n", caller_ptr, caller_save);
 
         // Generate parameters - allocate space and copy from caller's parameter block.            
         // For composite types (arrays/records), allocate the full type size                        
@@ -31489,7 +32080,7 @@ void Generate_Statement (Syntax_Node *node) {
               Syntax_Node *name = param->param_spec.names.items[j];
               if (name and name->symbol) {
                 Type_Info *pt = name->symbol->type;
-                bool is_array = pt and pt->kind == TYPE_ARRAY;
+                bool is_array = Type_Is_Array_Like (pt);
                 uint32_t type_size = pt ? pt->size : 0;
 
                 // Load source pointer from params block
@@ -31507,8 +32098,8 @@ void Generate_Statement (Syntax_Node *node) {
                   uint32_t src = Emit_Temp ();
                   Emit ("  %%t%u = inttoptr i64 %%t%u to ptr\n", src, pv);
 
-                  // Static size known at compile time
-                  if (type_size > 0) {
+                  // Static size known at compile time (constrained arrays only)
+                  if (type_size > 0 and pt->array.is_constrained) {
                     Emit ("  %%");
                     Emit_Symbol_Name (name->symbol);
                     Emit (" = alloca [%u x i8], align 8\n", type_size);
@@ -31517,28 +32108,44 @@ void Generate_Statement (Syntax_Node *node) {
                     Emit (", ptr %%t%u, i64 %u, i1 false)\n",
                        src, type_size);
 
-                  // Dynamic bounds: src is caller's fat ptr { data_ptr, bounds_ptr }.
-                  // Create a proper local fat pointer so 'LENGTH etc. work.
+                  // Dynamic/unconstrained: src is caller's fat ptr {data_ptr, bounds_ptr}.
+                  // Read bounds from caller's bounds struct and rebuild local fat pointer.
                   } else {
                     const char *iat = Integer_Arith_Type ();
                     uint32_t ndims = pt->array.index_count;
+                    if (ndims == 0) ndims = 1;
                     uint32_t elem_sz = pt->array.element_type ?
                                pt->array.element_type->size : 4;
                     if (elem_sz == 0) elem_sz = 4;
 
-                    // 1. Dereference caller's fat ptr to get data_ptr
+                    // 1. Load data_ptr and bounds_ptr from caller's fat ptr
                     uint32_t dp_gep = Emit_Temp ();
                     Emit ("  %%t%u = getelementptr { ptr, ptr }, ptr %%t%u, i32 0, i32 0\n",
                        dp_gep, src);
                     uint32_t data_ptr = Emit_Temp ();
                     Emit ("  %%t%u = load ptr, ptr %%t%u\n", data_ptr, dp_gep);
+                    uint32_t bp_gep = Emit_Temp ();
+                    Emit ("  %%t%u = getelementptr { ptr, ptr }, ptr %%t%u, i32 0, i32 1\n",
+                       bp_gep, src);
+                    uint32_t bounds_ptr = Emit_Temp ();
+                    Emit ("  %%t%u = load ptr, ptr %%t%u\n", bounds_ptr, bp_gep);
 
-                    // 2. Evaluate type bounds, compute data byte size
+                    // 2. Read bounds from caller's bounds struct [2*ndims x i32]
                     uint32_t lo_regs[16], hi_regs[16];
                     uint32_t total = 0;
                     for (uint32_t d = 0; d < ndims and d < 16; d++) {
-                      lo_regs[d] = Emit_Bound_Value (&pt->array.indices[d].low_bound);
-                      hi_regs[d] = Emit_Bound_Value (&pt->array.indices[d].high_bound);
+                      uint32_t lo_gep = Emit_Temp ();
+                      Emit ("  %%t%u = getelementptr i32, ptr %%t%u, i32 %u\n",
+                         lo_gep, bounds_ptr, d * 2);
+                      lo_regs[d] = Emit_Temp ();
+                      Emit ("  %%t%u = load %s, ptr %%t%u\n",
+                         lo_regs[d], iat, lo_gep);
+                      uint32_t hi_gep = Emit_Temp ();
+                      Emit ("  %%t%u = getelementptr i32, ptr %%t%u, i32 %u\n",
+                         hi_gep, bounds_ptr, d * 2 + 1);
+                      hi_regs[d] = Emit_Temp ();
+                      Emit ("  %%t%u = load %s, ptr %%t%u\n",
+                         hi_regs[d], iat, hi_gep);
                       uint32_t dlen = Emit_Length_From_Bounds (lo_regs[d], hi_regs[d], iat);
                       if (d == 0) { total = dlen; }
                       else {
@@ -31603,6 +32210,18 @@ void Generate_Statement (Syntax_Node *node) {
                        bounds_alloca, fp_b);
                   }
 
+                // Record parameter: alloca full record size, memcpy from source ptr.
+                // Records are passed by reference in the params block (i64 = ptr).
+                } else if (Type_Is_Record (pt) and type_size > 8) {
+                  uint32_t src = Emit_Temp ();
+                  Emit ("  %%t%u = inttoptr i64 %%t%u to ptr\n", src, pv);
+                  Emit ("  %%");
+                  Emit_Symbol_Name (name->symbol);
+                  Emit (" = alloca [%u x i8], align 8\n", type_size);
+                  Emit ("  call void @llvm.memcpy.p0.p0.i64(ptr %%");
+                  Emit_Symbol_Name (name->symbol);
+                  Emit (", ptr %%t%u, i64 %u, i1 false)\n", src, type_size);
+
                 // Scalar: alloca i64, store value directly
                 } else {
                   Emit ("  %%");
@@ -31618,235 +32237,506 @@ void Generate_Statement (Syntax_Node *node) {
           }
         }
 
-        // Execute accept body
-        Generate_Statement_List (&node->accept_stmt.statements);
+        // Execute accept body — set context so RETURN can do copy-back
+        {
+          bool saved_in_accept = cg->in_accept_body;
+          uint32_t saved_ps = cg->accept_params_save;
+          uint32_t saved_cs = cg->accept_caller_save;
+          Syntax_Node *saved_an = cg->accept_node;
+          cg->in_accept_body = true;
+          cg->accept_params_save = params_save;
+          cg->accept_caller_save = caller_save;
+          cg->accept_node = node;
 
-        // Complete rendezvous - unblocks the caller
-        Emit ("  call void @__ada_accept_complete(ptr %%t%u)\n", caller_ptr);
+          // Set active rendezvous so __ada_raise can complete it on exception
+          {
+            uint32_t rv_ptr = Emit_Temp ();
+            Emit ("  %%t%u = load ptr, ptr %%t%u\n", rv_ptr, caller_save);
+            Emit ("  store ptr %%t%u, ptr @__active_rv\n", rv_ptr);
+          }
+          Generate_Statement_List (&node->accept_stmt.statements);
+
+          // Normal end of accept body — emit copy-back + accept_complete
+          if (not cg->block_terminated) {
+            Emit ("  store ptr null, ptr @__active_rv\n");
+            Emit_Accept_Complete ();
+          }
+
+          cg->in_accept_body = saved_in_accept;
+          cg->accept_params_save = saved_ps;
+          cg->accept_caller_save = saved_cs;
+          cg->accept_node = saved_an;
+        }
       }
       break;
     case NK_SELECT:
 
-      // SELECT statement - selective wait (Ada 83 9.7)                                             
-      // Forms: selective_wait, conditional_entry_call, timed_entry_call                            
-      // Runtime: check open alternatives, wait or execute else                                     
-      //                                                                                            
+      // ───────────────────────────────────────────────────────────────────
+      // SELECT statement (Ada 83 RM 9.7)
+      //
+      //  Three forms, distinguished by the kind of the first alternative:
+      //
+      //  (A) Selective wait      – first alt is NK_ACCEPT  (server side)
+      //  (B) Timed entry call    – first alt is NK_CALL_STMT + OR DELAY
+      //  (C) Conditional entry   – first alt is NK_CALL_STMT + ELSE
+      //
+      //  The parser stores everything in select_stmt.alternatives as a
+      //  flat list: [entry_call, stmts…, delay, stmts…] or
+      //  [accept, stmts…, accept, stmts…, terminate].
+      //  Statements following an entry call or delay are interleaved in
+      //  the list (not nested); we must consume them in order.
+      // ───────────────────────────────────────────────────────────────────
       {
         uint32_t done_label = cg->label_id++;
         bool has_else = (node->select_stmt.else_part != NULL);
-        bool has_delay = false;
-        uint32_t delay_label = 0;
 
-        // Check for delay and terminate alternatives
-        bool has_terminate = false;
-        uint32_t retry_label = 0;
-        for (uint32_t i = 0; i < node->select_stmt.alternatives.count; i++) {
-          if (node->select_stmt.alternatives.items[i]->kind == NK_DELAY) {
-            has_delay = true;
-            delay_label = cg->label_id++;
-          }
-          if (node->select_stmt.alternatives.items[i]->kind == NK_NULL_STMT) {
-            has_terminate = true;
-          }
+        // Detect form: is the first alternative an entry call?
+        bool is_entry_call_select = false;
+        if (node->select_stmt.alternatives.count > 0) {
+          Syntax_Node *first = node->select_stmt.alternatives.items[0];
+          if (first and first->kind == NK_CALL_STMT)
+            is_entry_call_select = true;
         }
-        if (has_terminate) {
-          retry_label = cg->label_id++;
-          Emit ("  br label %%L%u\n", retry_label);
-          cg->block_terminated = true;
-          Emit_Label_Here (retry_label);  // selective wait retry
-        }
-        bool delay_label_emitted = false;
-        bool skipped_delay = false;  // Track if current iteration was a skipped delay
 
-        // Generate alternatives
-        for (uint32_t i = 0; i < node->select_stmt.alternatives.count; i++) {
-          Syntax_Node *alt = node->select_stmt.alternatives.items[i];
-          uint32_t next_label = cg->label_id++;
-          skipped_delay = false;
-          switch (alt->kind) {
-            case NK_ASSOCIATION:
+        // ── Form B/C: timed or conditional entry call ────────────────
+        if (is_entry_call_select) {
+          Emit ("  ; SELECT with entry call (timed/conditional)\n");
 
-              // Guarded alternative: WHEN cond => stmt
-              {
-                Syntax_Node *guard_expr = alt->association.choices.items[0];
-                uint32_t guard = Generate_Expression (guard_expr);
-                const char *guard_type = Expression_Llvm_Type (guard_expr);
-                guard = Emit_Convert (guard, guard_type, "i1");
-                Emit ("  br i1 %%t%u, label %%L%u, label %%L%u\n",
-                   guard, cg->label_id, next_label);
-                cg->block_terminated = true;
-                Emit_Label_Here (cg->label_id++);
-                if (alt->association.expression)
-                  Generate_Statement (alt->association.expression);
-                Emit ("  br label %%L%u\n", done_label);
-              }
+          // The entry call is the very first alternative item.
+          // Emit it using the timed / conditional runtime helper,
+          // then branch on the result.
+          Syntax_Node *call_node = node->select_stmt.alternatives.items[0];
+          Syntax_Node *call_expr = call_node->assignment.target;
+
+          // Find the delay expression (for timed) — scan for NK_DELAY
+          Syntax_Node *delay_node = NULL;
+          uint32_t delay_idx = 0;
+          for (uint32_t i = 1; i < node->select_stmt.alternatives.count; i++) {
+            if (node->select_stmt.alternatives.items[i]->kind == NK_DELAY) {
+              delay_node = node->select_stmt.alternatives.items[i];
+              delay_idx = i;
               break;
-            case NK_ACCEPT:
+            }
+          }
 
-              // Accept alternative
-              {
-                Emit ("  ; accept alternative: %.*s\n",
-                   (int)alt->accept_stmt.entry_name.length,
-                   alt->accept_stmt.entry_name.data);
+          // Compute delay duration in microseconds (used by timed form)
+          uint32_t timeout_us = 0;
+          if (delay_node) {
+            uint32_t dur = Generate_Expression (delay_node->delay_stmt.expression);
+            Type_Info *dur_type = delay_node->delay_stmt.expression->type;
+            if (dur_type and Type_Is_Fixed_Point (dur_type)) {
+              const char *fix_llvm = Type_To_Llvm (dur_type);
+              uint32_t dbl_val = Emit_Temp ();
+              Emit ("  %%t%u = sitofp %s %%t%u to double\n", dbl_val, fix_llvm, dur);
+              double sm = dur_type->fixed.small;
+              if (sm <= 0) sm = dur_type->fixed.delta > 0 ? dur_type->fixed.delta : 1.0;
+              uint64_t sb; memcpy (&sb, &sm, sizeof (sb));
+              uint32_t sec = Emit_Temp ();
+              Emit ("  %%t%u = fmul double %%t%u, 0x%016llX  ; * SMALL\n",
+                 sec, dbl_val, (unsigned long long)sb);
+              dur = sec;
+            }
+            uint32_t us = Emit_Temp ();
+            Emit ("  %%t%u = fmul double %%t%u, 1.0e6\n", us, dur);
+            timeout_us = Emit_Temp ();
+            Emit ("  %%t%u = fptoui double %%t%u to i64\n", timeout_us, us);
+          }
 
-                // Get entry index - combine base index with family index.
-                // Formula: entry_idx = base * 1000 + family_arg
-                const char *sel_eidx_t = Integer_Arith_Type ();
-                uint32_t entry_idx = Emit_Temp ();
-                uint32_t sel_base_idx = alt->accept_stmt.entry_sym ?
-                            alt->accept_stmt.entry_sym->entry_index : 0;
-                if (alt->accept_stmt.index) {
-                  uint32_t idx_val = Generate_Expression (alt->accept_stmt.index);
-                  const char *idx_t = Expression_Llvm_Type (alt->accept_stmt.index);
-                  idx_val = Emit_Convert (idx_val, idx_t, sel_eidx_t);
-                  Emit ("  %%t%u = add %s %u, %%t%u  ; entry index (base + family)\n",
-                     entry_idx, sel_eidx_t, sel_base_idx * 1000, idx_val);
-                } else {
-                  Emit ("  %%t%u = add %s 0, %u  ; entry index (simple entry)\n",
-                     entry_idx, sel_eidx_t, sel_base_idx * 1000);
+          // Now generate the entry call itself.
+          // We reuse Generate_Expression on the call expression, but
+          // we need to intercept the entry call and use our timed
+          // runtime. Do so by directly emitting inline.
+          //
+          // The call_expr should resolve to an entry call.  Generate
+          // it as a regular statement — this emits __ada_entry_call
+          // for the blocking case. Instead, we need to replace it
+          // with __ada_timed_entry_call / __ada_conditional_entry_call.
+          //
+          // Strategy: generate the entry call normally but wrap it.
+          // For simplicity, generate the call as statement (which
+          // calls __ada_entry_call that blocks), but in a timed
+          // variant we use the timed runtime.
+          //
+          // The call_expr is the expression part of NK_CALL_STMT.
+          // We need to find the entry symbol from it.
+          // For a call T.E(args), call_expr is NK_APPLY with prefix NK_SELECTED.
+          //
+          // Easiest approach: generate a timed entry call inline by
+          // extracting task pointer and entry index from the call expression,
+          // then using __ada_timed_entry_call.
+
+          // Generate the entry call expression, which will internally
+          // emit __ada_entry_call. We need to intercept this.
+          // Set a flag so Generate_Expression uses the timed variant.
+
+          // Alternative: just generate the call statement, but set
+          // cg->select_entry_timeout so the entry call codegen path
+          // emits the timed variant instead.
+          if (delay_node) {
+            cg->select_entry_timeout = timeout_us;
+          } else {
+            cg->select_entry_timeout = 0;
+            cg->select_entry_conditional = has_else;
+          }
+          cg->select_entry_result = Emit_Temp ();
+          Emit ("  %%t%u = alloca i8\n", cg->select_entry_result);
+          Generate_Statement (call_node);
+          uint32_t result_val = Emit_Temp ();
+          Emit ("  %%t%u = load i8, ptr %%t%u\n", result_val, cg->select_entry_result);
+          cg->select_entry_timeout = 0;
+          cg->select_entry_conditional = false;
+          cg->select_entry_result = 0;
+
+          uint32_t accepted = Emit_Temp ();
+          Emit ("  %%t%u = icmp ne i8 %%t%u, 0\n", accepted, result_val);
+          uint32_t call_path = cg->label_id++;
+          uint32_t alt_path = cg->label_id++;
+          Emit ("  br i1 %%t%u, label %%L%u, label %%L%u\n",
+             accepted, call_path, alt_path);
+          cg->block_terminated = true;
+
+          // Call-succeeded path: execute post-entry-call statements
+          Emit_Label_Here (call_path);
+          for (uint32_t i = 1; i < node->select_stmt.alternatives.count; i++) {
+            Syntax_Node *s = node->select_stmt.alternatives.items[i];
+            if (s->kind == NK_DELAY) break;  // hit the OR DELAY
+            Generate_Statement (s);
+          }
+          Emit ("  br label %%L%u\n", done_label);
+
+          // Timeout/else path: execute delay alternative statements
+          Emit_Label_Here (alt_path);
+          if (delay_node) {
+            // Execute statements after the delay (already waited)
+            for (uint32_t i = delay_idx + 1;
+               i < node->select_stmt.alternatives.count; i++) {
+              Generate_Statement (node->select_stmt.alternatives.items[i]);
+            }
+          } else if (has_else) {
+            Generate_Statement (node->select_stmt.else_part);
+          }
+          Emit ("  br label %%L%u\n", done_label);
+          cg->block_terminated = true;
+          Emit_Label_Here (done_label);
+
+        // ── Form A: selective wait (accept alternatives) ─────────────
+        } else {
+          bool has_delay = false;
+          uint32_t delay_label = 0;
+          bool has_terminate = false;
+          uint32_t retry_label = 0;
+          for (uint32_t i = 0; i < node->select_stmt.alternatives.count; i++) {
+            if (node->select_stmt.alternatives.items[i]->kind == NK_DELAY) {
+              has_delay = true;
+              delay_label = cg->label_id++;
+            }
+            if (node->select_stmt.alternatives.items[i]->kind == NK_NULL_STMT) {
+              has_terminate = true;
+            }
+          }
+          if (has_terminate) {
+            retry_label = cg->label_id++;
+            Emit ("  br label %%L%u\n", retry_label);
+            cg->block_terminated = true;
+            Emit_Label_Here (retry_label);
+          }
+          bool delay_label_emitted = false;
+          bool skipped_delay = false;
+
+          for (uint32_t i = 0; i < node->select_stmt.alternatives.count; i++) {
+            Syntax_Node *alt = node->select_stmt.alternatives.items[i];
+            uint32_t next_label = cg->label_id++;
+            skipped_delay = false;
+            switch (alt->kind) {
+              case NK_ASSOCIATION:
+                {
+                  Syntax_Node *guard_expr = alt->association.choices.items[0];
+                  uint32_t guard = Generate_Expression (guard_expr);
+                  const char *guard_type = Expression_Llvm_Type (guard_expr);
+                  guard = Emit_Convert (guard, guard_type, "i1");
+                  Emit ("  br i1 %%t%u, label %%L%u, label %%L%u\n",
+                     guard, cg->label_id, next_label);
+                  cg->block_terminated = true;
+                  Emit_Label_Here (cg->label_id++);
+                  if (alt->association.expression)
+                    Generate_Statement (alt->association.expression);
+                  Emit ("  br label %%L%u\n", done_label);
                 }
+                break;
+              case NK_ACCEPT:
+                {
+                  Emit ("  ; accept alternative: %.*s\n",
+                     (int)alt->accept_stmt.entry_name.length,
+                     alt->accept_stmt.entry_name.data);
+                  const char *sel_eidx_t = Integer_Arith_Type ();
+                  uint32_t entry_idx = Emit_Temp ();
+                  uint32_t sel_base_idx = alt->accept_stmt.entry_sym ?
+                              alt->accept_stmt.entry_sym->entry_index : 0;
+                  if (alt->accept_stmt.index) {
+                    uint32_t idx_val = Generate_Expression (alt->accept_stmt.index);
+                    const char *idx_t = Expression_Llvm_Type (alt->accept_stmt.index);
+                    idx_val = Emit_Convert (idx_val, idx_t, sel_eidx_t);
+                    Emit ("  %%t%u = add %s %u, %%t%u  ; entry index (base + family)\n",
+                       entry_idx, sel_eidx_t, sel_base_idx * 1000, idx_val);
+                  } else {
+                    Emit ("  %%t%u = add %s 0, %u  ; entry index (simple entry)\n",
+                       entry_idx, sel_eidx_t, sel_base_idx * 1000);
+                  }
+                  // Get self-task address from %__self_slot parameter
+                  uint32_t sel_self_tcb = Emit_Temp ();
+                  Emit ("  %%t%u = getelementptr i8, ptr %%__self_slot, i64 0  ; self task address\n", sel_self_tcb);
+                  uint32_t entry_idx_64 = Emit_Extend_To_I64 (entry_idx, sel_eidx_t);
+                  uint32_t caller_ptr = Emit_Temp ();
+                  Emit ("  %%t%u = call ptr @__ada_accept_try(i64 %%t%u, ptr %%t%u)\n",
+                     caller_ptr, entry_idx_64, sel_self_tcb);
+                  uint32_t has_caller = Emit_Temp ();
+                  Emit ("  %%t%u = icmp ne ptr %%t%u, null\n",
+                     has_caller, caller_ptr);
+                  Emit ("  br i1 %%t%u, label %%L%u, label %%L%u\n",
+                     has_caller, cg->label_id, next_label);
+                  cg->block_terminated = true;
+                  Emit_Label_Here (cg->label_id++);
 
-                // Check if entry call is pending - widen for RTS ABI
-                uint32_t entry_idx_64 = Emit_Extend_To_I64 (entry_idx, sel_eidx_t);
-                uint32_t caller_ptr = Emit_Temp ();
-                Emit ("  %%t%u = call ptr @__ada_accept_try(i64 %%t%u)\n",
-                   caller_ptr, entry_idx_64);
-                uint32_t has_caller = Emit_Temp ();
-                Emit ("  %%t%u = icmp ne ptr %%t%u, null\n",
-                   has_caller, caller_ptr);
-                Emit ("  br i1 %%t%u, label %%L%u, label %%L%u\n",
-                   has_caller, cg->label_id, next_label);
-                cg->block_terminated = true;
-                Emit_Label_Here (cg->label_id++);
+                  // Extract params pointer from rendezvous record (offset 2)
+                  uint32_t sel_ps = Emit_Temp ();
+                  Emit ("  %%t%u = getelementptr ptr, ptr %%t%u, i64 2\n",
+                     sel_ps, caller_ptr);
+                  uint32_t sel_pp = Emit_Temp ();
+                  Emit ("  %%t%u = load ptr, ptr %%t%u  ; params from rv\n",
+                     sel_pp, sel_ps);
 
-                // Load parameters from caller
-                uint32_t sel_param_idx = 0;
-                for (uint32_t pi = 0; pi < alt->accept_stmt.parameters.count; pi++) {
-                  Syntax_Node *param = alt->accept_stmt.parameters.items[pi];
-                  if (param and param->kind == NK_PARAM_SPEC) {
-                    for (uint32_t pj = 0; pj < param->param_spec.names.count; pj++) {
-                      Syntax_Node *pname = param->param_spec.names.items[pj];
+                  // Save params_ptr and caller_ptr for copy-back context
+                  uint32_t sel_params_save = Emit_Temp ();
+                  Emit ("  %%t%u = alloca ptr\n", sel_params_save);
+                  Emit ("  store ptr %%t%u, ptr %%t%u\n", sel_pp, sel_params_save);
+                  uint32_t sel_caller_save = Emit_Temp ();
+                  Emit ("  %%t%u = alloca ptr\n", sel_caller_save);
+                  Emit ("  store ptr %%t%u, ptr %%t%u\n", caller_ptr, sel_caller_save);
 
-                      // Allocate space for the parameter
-                      if (pname and pname->symbol) {
-                        Emit ("  %%");
-                        Emit_Symbol_Name (pname->symbol);
-                        Emit (" = alloca i64, align 8\n");
+                  uint32_t sel_param_idx = 0;
+                  for (uint32_t pi = 0; pi < alt->accept_stmt.parameters.count; pi++) {
+                    Syntax_Node *param = alt->accept_stmt.parameters.items[pi];
+                    if (param and param->kind == NK_PARAM_SPEC) {
+                      for (uint32_t pj = 0; pj < param->param_spec.names.count; pj++) {
+                        Syntax_Node *pname = param->param_spec.names.items[pj];
+                        if (pname and pname->symbol) {
+                          Type_Info *pt = pname->symbol->type;
+                          bool is_arr = Type_Is_Array_Like (pt);
+                          uint32_t type_size = pt ? pt->size : 0;
 
-                        // Load value from caller's parameter block
-                        uint32_t param_ptr = Emit_Temp ();
-                        Emit ("  %%t%u = getelementptr i64, ptr %%t%u, i64 %u\n",
-                           param_ptr, caller_ptr, sel_param_idx);
-                        uint32_t param_val = Emit_Temp ();
-                        Emit ("  %%t%u = load i64, ptr %%t%u\n", param_val, param_ptr);
+                          uint32_t pp = Emit_Temp ();
+                          Emit ("  %%t%u = getelementptr i64, ptr %%t%u, i64 %u\n",
+                             pp, sel_pp, sel_param_idx);
+                          uint32_t pv = Emit_Temp ();
+                          Emit ("  %%t%u = load i64, ptr %%t%u\n", pv, pp);
 
-                        // Store to allocated space
-                        Emit ("  store i64 %%t%u, ptr %%", param_val);
-                        Emit_Symbol_Name (pname->symbol);
-                        Emit ("\n");
-                        sel_param_idx++;
+                          if (is_arr) {
+                            uint32_t src = Emit_Temp ();
+                            Emit ("  %%t%u = inttoptr i64 %%t%u to ptr\n", src, pv);
+                            if (type_size > 0 and pt->array.is_constrained) {
+                              // Static-size constrained array: alloca + memcpy
+                              Emit ("  %%");
+                              Emit_Symbol_Name (pname->symbol);
+                              Emit (" = alloca [%u x i8], align 8\n", type_size);
+                              Emit ("  call void @llvm.memcpy.p0.p0.i64(ptr %%");
+                              Emit_Symbol_Name (pname->symbol);
+                              Emit (", ptr %%t%u, i64 %u, i1 false)\n", src, type_size);
+                            } else {
+                              // Dynamic/unconstrained: read bounds from caller's fat ptr
+                              const char *iat = Integer_Arith_Type ();
+                              uint32_t ndims = pt->array.index_count;
+                              if (ndims == 0) ndims = 1;
+                              uint32_t elem_sz = pt->array.element_type ?
+                                         pt->array.element_type->size : 4;
+                              if (elem_sz == 0) elem_sz = 4;
+                              uint32_t dp_gep = Emit_Temp ();
+                              Emit ("  %%t%u = getelementptr { ptr, ptr }, ptr %%t%u, i32 0, i32 0\n",
+                                 dp_gep, src);
+                              uint32_t data_ptr = Emit_Temp ();
+                              Emit ("  %%t%u = load ptr, ptr %%t%u\n", data_ptr, dp_gep);
+                              uint32_t bp2_gep = Emit_Temp ();
+                              Emit ("  %%t%u = getelementptr { ptr, ptr }, ptr %%t%u, i32 0, i32 1\n",
+                                 bp2_gep, src);
+                              uint32_t bounds_ptr2 = Emit_Temp ();
+                              Emit ("  %%t%u = load ptr, ptr %%t%u\n", bounds_ptr2, bp2_gep);
+                              uint32_t lo_regs[16], hi_regs[16];
+                              uint32_t total = 0;
+                              for (uint32_t d = 0; d < ndims and d < 16; d++) {
+                                uint32_t lo_gep = Emit_Temp ();
+                                Emit ("  %%t%u = getelementptr i32, ptr %%t%u, i32 %u\n",
+                                   lo_gep, bounds_ptr2, d * 2);
+                                lo_regs[d] = Emit_Temp ();
+                                Emit ("  %%t%u = load %s, ptr %%t%u\n",
+                                   lo_regs[d], iat, lo_gep);
+                                uint32_t hi_gep = Emit_Temp ();
+                                Emit ("  %%t%u = getelementptr i32, ptr %%t%u, i32 %u\n",
+                                   hi_gep, bounds_ptr2, d * 2 + 1);
+                                hi_regs[d] = Emit_Temp ();
+                                Emit ("  %%t%u = load %s, ptr %%t%u\n",
+                                   hi_regs[d], iat, hi_gep);
+                                uint32_t dlen = Emit_Length_From_Bounds (lo_regs[d], hi_regs[d], iat);
+                                if (d == 0) { total = dlen; }
+                                else {
+                                  uint32_t p2 = Emit_Temp ();
+                                  Emit ("  %%t%u = mul %s %%t%u, %%t%u\n", p2, iat, total, dlen);
+                                  total = p2;
+                                }
+                              }
+                              uint32_t bsz = Emit_Temp ();
+                              Emit ("  %%t%u = mul %s %%t%u, %u\n", bsz, iat, total, elem_sz);
+                              uint32_t neg_chk = Emit_Temp ();
+                              Emit ("  %%t%u = icmp slt %s %%t%u, 0\n", neg_chk, iat, bsz);
+                              uint32_t csz = Emit_Temp ();
+                              Emit ("  %%t%u = select i1 %%t%u, %s 0, %s %%t%u\n",
+                                 csz, neg_chk, iat, iat, bsz);
+                              uint32_t data_alloca = Emit_Temp ();
+                              Emit ("  %%t%u = alloca i8, %s %%t%u, align 8\n", data_alloca, iat, csz);
+                              uint32_t csz64 = Emit_Extend_To_I64 (csz, iat);
+                              Emit ("  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %%t%u, i1 false)\n",
+                                 data_alloca, data_ptr, csz64);
+                              uint32_t bounds_alloca = Emit_Temp ();
+                              Emit ("  %%t%u = alloca [%u x i32]\n", bounds_alloca, 2 * ndims);
+                              for (uint32_t d = 0; d < ndims and d < 16; d++) {
+                                uint32_t lo_slot = Emit_Temp ();
+                                Emit ("  %%t%u = getelementptr i32, ptr %%t%u, i32 %u\n",
+                                   lo_slot, bounds_alloca, d * 2);
+                                Emit ("  store %s %%t%u, ptr %%t%u\n", iat, lo_regs[d], lo_slot);
+                                uint32_t hi_slot = Emit_Temp ();
+                                Emit ("  %%t%u = getelementptr i32, ptr %%t%u, i32 %u\n",
+                                   hi_slot, bounds_alloca, d * 2 + 1);
+                                Emit ("  store %s %%t%u, ptr %%t%u\n", iat, hi_regs[d], hi_slot);
+                              }
+                              Emit ("  %%");
+                              Emit_Symbol_Name (pname->symbol);
+                              Emit (" = alloca { ptr, ptr }, align 8\n");
+                              uint32_t fp_d = Emit_Temp ();
+                              Emit ("  %%t%u = getelementptr { ptr, ptr }, ptr %%",
+                                 fp_d);
+                              Emit_Symbol_Name (pname->symbol);
+                              Emit (", i32 0, i32 0\n");
+                              Emit ("  store ptr %%t%u, ptr %%t%u\n", data_alloca, fp_d);
+                              uint32_t fp_b = Emit_Temp ();
+                              Emit ("  %%t%u = getelementptr { ptr, ptr }, ptr %%",
+                                 fp_b);
+                              Emit_Symbol_Name (pname->symbol);
+                              Emit (", i32 0, i32 1\n");
+                              Emit ("  store ptr %%t%u, ptr %%t%u\n", bounds_alloca, fp_b);
+                            }
+                          } else if (Type_Is_Record (pt) and type_size > 8) {
+                            // Record parameter: alloca + memcpy from source ptr
+                            uint32_t src = Emit_Temp ();
+                            Emit ("  %%t%u = inttoptr i64 %%t%u to ptr\n", src, pv);
+                            Emit ("  %%");
+                            Emit_Symbol_Name (pname->symbol);
+                            Emit (" = alloca [%u x i8], align 8\n", type_size);
+                            Emit ("  call void @llvm.memcpy.p0.p0.i64(ptr %%");
+                            Emit_Symbol_Name (pname->symbol);
+                            Emit (", ptr %%t%u, i64 %u, i1 false)\n", src, type_size);
+                          } else {
+                            // Scalar: alloca i64
+                            Emit ("  %%");
+                            Emit_Symbol_Name (pname->symbol);
+                            Emit (" = alloca i64, align 8\n");
+                            Emit ("  store i64 %%t%u, ptr %%", pv);
+                            Emit_Symbol_Name (pname->symbol);
+                            Emit ("\n");
+                          }
+                          sel_param_idx++;
+                        }
                       }
                     }
                   }
-                }
 
-                // Execute accept body
-                Generate_Statement_List (&alt->accept_stmt.statements);
+                  // Execute accept body with copy-back context
+                  {
+                    bool saved_in_accept = cg->in_accept_body;
+                    uint32_t saved_ps = cg->accept_params_save;
+                    uint32_t saved_cs = cg->accept_caller_save;
+                    Syntax_Node *saved_an = cg->accept_node;
+                    cg->in_accept_body = true;
+                    cg->accept_params_save = sel_params_save;
+                    cg->accept_caller_save = sel_caller_save;
+                    cg->accept_node = alt;
 
-                // Complete rendezvous
-                Emit ("  call void @__ada_accept_complete(ptr %%t%u)\n", caller_ptr);
-                Emit ("  br label %%L%u\n", done_label);
-              }
-              break;
-            case NK_DELAY:
+                    // Set active rendezvous for exception propagation
+                    {
+                      uint32_t rv_ptr = Emit_Temp ();
+                      Emit ("  %%t%u = load ptr, ptr %%t%u\n", rv_ptr, sel_caller_save);
+                      Emit ("  store ptr %%t%u, ptr @__active_rv\n", rv_ptr);
+                    }
+                    Generate_Statement_List (&alt->accept_stmt.statements);
 
-              // Delay alternative - only emit code once for multiple delays.                      
-              // In Ada, multiple delays would pick the shortest, but we simplify                   
-              // by using the first delay's duration for all.                                      
-              //                                                                                    
-              if (not delay_label_emitted) {
-                Emit_Label_Here (delay_label);  // delay alternative
-                delay_label_emitted = true;
-                {
-                  uint32_t dur = Generate_Expression (alt->delay_stmt.expression);
+                    // Copy-back OUT/IN OUT params + accept_complete
+                    if (not cg->block_terminated) {
+                      Emit ("  store ptr null, ptr @__active_rv\n");
+                      Emit_Accept_Complete ();
+                    }
 
-                  // Convert fixed-point to double seconds
-                  Type_Info *dur_type = alt->delay_stmt.expression->type;
-                  if (dur_type and Type_Is_Fixed_Point (dur_type)) {
-                    const char *fix_llvm = Type_To_Llvm (dur_type);
-                    uint32_t dbl_val = Emit_Temp ();
-                    Emit ("  %%t%u = sitofp %s %%t%u to double\n", dbl_val, fix_llvm, dur);
-                    double sm = dur_type->fixed.small;
-                    if (sm <= 0) sm = dur_type->fixed.delta > 0 ? dur_type->fixed.delta : 1.0;
-                    uint64_t sb; memcpy (&sb, &sm, sizeof (sb));
-                    uint32_t sec = Emit_Temp ();
-                    Emit ("  %%t%u = fmul double %%t%u, 0x%016llX  ; * SMALL\n",
-                       sec, dbl_val, (unsigned long long)sb);
-                    dur = sec;
+                    cg->in_accept_body = saved_in_accept;
+                    cg->accept_params_save = saved_ps;
+                    cg->accept_caller_save = saved_cs;
+                    cg->accept_node = saved_an;
                   }
-                  uint32_t us = Emit_Temp ();
-                  Emit ("  %%t%u = fmul double %%t%u, 1.0e6\n", us, dur);
-                  uint32_t us_int = Emit_Temp ();
-                  Emit ("  %%t%u = fptoui double %%t%u to i64\n", us_int, us);
-                  Emit ("  call void @__ada_delay(i64 %%t%u)\n", us_int);
+                  Emit ("  br label %%L%u\n", done_label);
                 }
-                Emit ("  br label %%L%u\n", done_label);
-
-              // Subsequent delays: skip code generation entirely
-              } else {
-                skipped_delay = true;
+                break;
+              case NK_DELAY:
+                if (not delay_label_emitted) {
+                  Emit_Label_Here (delay_label);
+                  delay_label_emitted = true;
+                  {
+                    uint32_t dur = Generate_Expression (alt->delay_stmt.expression);
+                    Type_Info *dur_type = alt->delay_stmt.expression->type;
+                    if (dur_type and Type_Is_Fixed_Point (dur_type)) {
+                      const char *fix_llvm = Type_To_Llvm (dur_type);
+                      uint32_t dbl_val = Emit_Temp ();
+                      Emit ("  %%t%u = sitofp %s %%t%u to double\n", dbl_val, fix_llvm, dur);
+                      double sm = dur_type->fixed.small;
+                      if (sm <= 0) sm = dur_type->fixed.delta > 0 ? dur_type->fixed.delta : 1.0;
+                      uint64_t sb; memcpy (&sb, &sm, sizeof (sb));
+                      uint32_t sec = Emit_Temp ();
+                      Emit ("  %%t%u = fmul double %%t%u, 0x%016llX  ; * SMALL\n",
+                         sec, dbl_val, (unsigned long long)sb);
+                      dur = sec;
+                    }
+                    uint32_t us = Emit_Temp ();
+                    Emit ("  %%t%u = fmul double %%t%u, 1.0e6\n", us, dur);
+                    uint32_t us_int = Emit_Temp ();
+                    Emit ("  %%t%u = fptoui double %%t%u to i64\n", us_int, us);
+                    Emit ("  call void @__ada_delay(i64 %%t%u)\n", us_int);
+                  }
+                  Emit ("  br label %%L%u\n", done_label);
+                } else {
+                  skipped_delay = true;
+                }
+                break;
+              case NK_NULL_STMT:
+                Emit ("  ; terminate alternative - sleep and retry\n");
+                Emit ("  %%_usel%u = call i32 @usleep(i32 1000)\n",
+                   cg->label_id);
+                Emit ("  br label %%L%u\n", retry_label);
+                break;
+              default:
+                break;
+            }
+            if (not skipped_delay) {
+              Emit_Label_Here (next_label);
+              bool is_last = (i == node->select_stmt.alternatives.count - 1);
+              if (not is_last) {
+                Syntax_Node *next_alt = node->select_stmt.alternatives.items[i + 1];
+                if (next_alt and next_alt->kind == NK_DELAY and has_delay) {
+                  Emit ("  br label %%L%u\n", delay_label);
+                }
               }
-              break;
-
-            // Emit the next_label for branches that skip this alternative
-            case NK_NULL_STMT:
-
-              // Terminate alternative (RM 9.7.1):                                                  
-              // Instead of immediately terminating, loop back                                      
-              // to re-check accept alternatives. The task will                                    
-              // be terminated when the master scope completes                                      
-              // and calls exit (), ending the process.                                            
-              //                                                                                    
-              Emit ("  ; terminate alternative - sleep and retry\n");
-              Emit ("  %%_usel%u = call i32 @usleep(i32 1000)\n",
-                 cg->label_id);
-              Emit ("  br label %%L%u\n", retry_label);
-              break;
-            default:
-              break;
-          }
-
-          // For skipped delay alternatives, don't emit next_label since
-          // we've already branched to delay_label and this would be unreachable
-          if (not skipped_delay) {
-            Emit_Label_Here (next_label);
-
-            // If this isn't the last alternative, fall through to next;
-            // otherwise go to delay or done
-            bool is_last = (i == node->select_stmt.alternatives.count - 1);
-
-            // Check if next alternative is delay - branch to delay_label instead
-            if (not is_last) {
-              Syntax_Node *next_alt = node->select_stmt.alternatives.items[i + 1];
-              if (next_alt and next_alt->kind == NK_DELAY and has_delay) {
-                Emit ("  br label %%L%u\n", delay_label);
-              }
-
-              // Otherwise fall through (no br needed, will hit next iteration's code)
             }
           }
+          if (has_else) {
+            Generate_Statement (node->select_stmt.else_part);
+          }
+          Emit ("  br label %%L%u\n", done_label);
+          cg->block_terminated = true;
+          Emit_Label_Here (done_label);
         }
-
-        // Else clause or fall through to delay
-        if (has_else) {
-          Generate_Statement (node->select_stmt.else_part);
-
-        // Already branched to delay_label above
-        } else if (has_delay) {
-        }
-        Emit ("  br label %%L%u\n", done_label);
-        cg->block_terminated = true;
-        Emit_Label_Here (done_label);
       }
       break;
     case NK_ABORT:
@@ -32807,6 +33697,10 @@ void Generate_Object_Declaration (Syntax_Node *node) {
     // For single tasks inside generics, the body has an instance prefix.                          
     //                                                                                              
     if (Type_Is_Task (ty)) {
+      uint32_t self_slot = Emit_Temp ();
+      Emit ("  %%t%u = getelementptr i8, ptr %%", self_slot);
+      Emit_Symbol_Name (sym);
+      Emit (", i64 0  ; self slot for task\n");
       uint32_t handle_tmp = Emit_Temp ();
       Emit ("  %%t%u = call ptr @__ada_task_start(ptr @", handle_tmp);
       Emit_Task_Function_Name (ty->defining_symbol, ty->name);
@@ -32815,15 +33709,49 @@ void Generate_Object_Declaration (Syntax_Node *node) {
       // Pass parent frame for uplevel access, or null if at package level.
       // use_frame indicates the parent is using frame-based allocation.
       if (use_frame) {
-        Emit ("ptr %%__frame_base)\n");
+        Emit ("ptr %%__frame_base, ptr %%t%u)\n", self_slot);
       } else {
-        Emit ("ptr null)\n");
+        Emit ("ptr null, ptr %%t%u)\n", self_slot);
       }
 
       // Store thread handle in task object for later join/abort
       Emit ("  store ptr %%t%u, ptr %%", handle_tmp);
       Emit_Symbol_Name (sym);
       Emit ("\n");
+
+    // Array of task type: start each element as a separate task.
+    } else if (Type_Is_Array_Like (ty) and ty->array.element_type and
+           Type_Is_Task (ty->array.element_type)) {
+      Type_Info *elem_ty = ty->array.element_type;
+      uint32_t elem_sz = elem_ty->size;
+      if (elem_sz == 0) elem_sz = 8;  // at least pointer-sized
+      // Get array bounds from first dimension
+      int64_t lo = 0, hi = 0;
+      bool static_bounds = false;
+      if (ty->array.index_count > 0) {
+        Type_Bound *lb = &ty->array.indices[0].low_bound;
+        Type_Bound *hb = &ty->array.indices[0].high_bound;
+        if (lb->kind == BOUND_INTEGER and hb->kind == BOUND_INTEGER) {
+          lo = (int64_t)lb->int_value;
+          hi = (int64_t)hb->int_value;
+          static_bounds = true;
+        }
+      }
+      if (static_bounds) {
+        for (int64_t idx = lo; idx <= hi; idx++) {
+          uint32_t elem_ptr = Emit_Temp ();
+          Emit ("  %%t%u = getelementptr i8, ptr %%", elem_ptr);
+          Emit_Symbol_Name (sym);
+          Emit (", i64 %lld  ; task array elem [%lld]\n",
+             (long long)(idx - lo) * elem_sz, (long long)idx);
+          uint32_t h = Emit_Temp ();
+          Emit ("  %%t%u = call ptr @__ada_task_start(ptr @", h);
+          Emit_Task_Function_Name (elem_ty->defining_symbol, elem_ty->name);
+          if (use_frame) Emit (", ptr %%__frame_base, ptr %%t%u)\n", elem_ptr);
+          else Emit (", ptr null, ptr %%t%u)\n", elem_ptr);
+          Emit ("  store ptr %%t%u, ptr %%t%u  ; store task handle\n", h, elem_ptr);
+        }
+      }
     }
 obj_decl_init:
 
@@ -35109,13 +36037,14 @@ bool Has_Nested_Subprograms (Node_List *declarations, Node_List *statements) {
         }
       }
 
-      // Check inside nested package bodies for procedure/function bodies
+      // Check inside nested package bodies for procedure/function/task bodies
       if (decl->kind == NK_PACKAGE_BODY) {
         Node_List *pkg_decls = &decl->package_body.declarations;
         for (uint32_t j = 0; j < pkg_decls->count; j++) {
           Syntax_Node *pd = pkg_decls->items[j];
           if (pd and (pd->kind == NK_PROCEDURE_BODY or
-                pd->kind == NK_FUNCTION_BODY))
+                pd->kind == NK_FUNCTION_BODY or
+                pd->kind == NK_TASK_BODY))
             return true;
         }
       }
@@ -35921,7 +36850,7 @@ void Generate_Task_Body (Syntax_Node *node) {
   //                                                                                                
   Emit ("define ptr @");
   Emit_Task_Function_Name (node->symbol, node->task_body.name);
-  Emit ("(ptr %%__parent_frame) {\n");
+  Emit ("(ptr %%__parent_frame, ptr %%__self_slot) {\n");
   Emit ("entry:\n");
 
   // Save and set context - task body is like a nested function
@@ -35941,51 +36870,53 @@ void Generate_Task_Body (Syntax_Node *node) {
   memset (cg->temp_type_keys, 0, sizeof (cg->temp_type_keys));
   memset (cg->temp_is_fat_alloca, 0, sizeof (cg->temp_is_fat_alloca));
 
-  // Create frame aliases for accessing enclosing scope variables.                                 
-  // Task bodies can reference variables from the enclosing scope                                   
-  // (RM 9.1). The parent passed %__parent_frame pointing to its frame.                            
-  // Use the task symbol's defining_scope to get the correct scope                                  
-  // (important for tasks in DECLARE blocks which have their own scope).                           
-  //                                                                                                
-  Scope *parent_scope = node->symbol ? node->symbol->defining_scope : NULL;
+  // Create frame aliases for accessing enclosing scope variables (RM 9.1).
+  // The parent passed %__parent_frame pointing to the enclosing subprogram's
+  // frame. Use the enclosing subprogram's scope — NOT the task's defining
+  // scope — so that variables from all enclosing lexical scopes (including
+  // the procedure itself when the task sits inside a DECLARE block) are
+  // reachable. This mirrors Generate_Subprogram_Body's alias emission.
+  //
+  Symbol *enclosing = Find_Enclosing_Subprogram (node->symbol);
+  Scope *parent_scope = enclosing ? enclosing->scope : NULL;
+  // Fallback: if no enclosing subprogram, try the defining scope directly
+  if (not parent_scope)
+    parent_scope = node->symbol ? node->symbol->defining_scope : NULL;
 
-  // Dedup by unique_id (same approach as Generate_Subprogram_Body)
   if (parent_scope) {
     #define MAX_TASK_FRAME_ALIASES 512
     uint32_t task_emitted_ids[MAX_TASK_FRAME_ALIASES];
     uint32_t task_emitted_count = 0;
+
+    // Helper macro: emit one frame alias with dedup
+    #define EMIT_FRAME_ALIAS(var) do { \
+      bool dup = false; \
+      for (uint32_t j = 0; j < task_emitted_count; j++) \
+        if ((var)->unique_id == task_emitted_ids[j]) { dup = true; break; } \
+      if (!dup) { \
+        if (task_emitted_count < MAX_TASK_FRAME_ALIASES) \
+          task_emitted_ids[task_emitted_count++] = (var)->unique_id; \
+        Emit ("  %%__frame."); \
+        Emit_Symbol_Name (var); \
+        Emit (" = getelementptr i8, ptr %%__parent_frame, i64 %lld\n", \
+           (long long)((var)->frame_offset)); \
+      } \
+    } while (0)
+
     for (uint32_t i = 0; i < parent_scope->symbol_count; i++) {
       Symbol *var = parent_scope->symbols[i];
       if (var and (var->kind == SYMBOL_VARIABLE or var->kind == SYMBOL_PARAMETER or
-            var->kind == SYMBOL_DISCRIMINANT)) {
-        bool dup = false;
-        for (uint32_t j = 0; j < task_emitted_count; j++)
-          if (var->unique_id == task_emitted_ids[j]) { dup = true; break; }
-        if (dup) continue;
-        if (task_emitted_count < MAX_TASK_FRAME_ALIASES)
-          task_emitted_ids[task_emitted_count++] = var->unique_id;
-        Emit ("  %%__frame.");
-        Emit_Symbol_Name (var);
-        Emit (" = getelementptr i8, ptr %%__parent_frame, i64 %lld\n",
-           (long long)(var->frame_offset));
-      }
+            var->kind == SYMBOL_DISCRIMINANT or
+            (var->kind == SYMBOL_CONSTANT and not var->is_named_number)))
+        EMIT_FRAME_ALIAS (var);
     }
 
-    // Also include variables from child scopes (DECLARE blocks).
+    // Also include variables from child scopes (DECLARE blocks, etc.)
     for (uint32_t i = 0; i < parent_scope->frame_var_count; i++) {
       Symbol *var = parent_scope->frame_vars[i];
-      if (not var) continue;
-      bool dup = false;
-      for (uint32_t j = 0; j < task_emitted_count; j++)
-        if (var->unique_id == task_emitted_ids[j]) { dup = true; break; }
-      if (dup) continue;
-      if (task_emitted_count < MAX_TASK_FRAME_ALIASES)
-        task_emitted_ids[task_emitted_count++] = var->unique_id;
-      Emit ("  %%__frame.");
-      Emit_Symbol_Name (var);
-      Emit (" = getelementptr i8, ptr %%__parent_frame, i64 %lld\n",
-         (long long)(var->frame_offset));
+      if (var) EMIT_FRAME_ALIAS (var);
     }
+    #undef EMIT_FRAME_ALIAS
     #undef MAX_TASK_FRAME_ALIASES
   }
 
@@ -36244,7 +37175,9 @@ void Generate_Declaration (Syntax_Node *node) {
             uint32_t handle_tmp = Emit_Temp ();
             Emit ("  %%t%u = call ptr @__ada_task_start(ptr @", handle_tmp);
             Emit_Task_Function_Name (decl->symbol, decl->task_spec.name);
-            Emit (", ptr null)\n");
+            Emit (", ptr null, ptr @");
+            Emit_Symbol_Name (task_obj);
+            Emit (")\n");
             Emit ("  store ptr %%t%u, ptr @", handle_tmp);
             Emit_Symbol_Name (task_obj);
             Emit ("\n");
@@ -36522,15 +37455,19 @@ void Generate_Declaration (Syntax_Node *node) {
             if (not Type_Is_Task (exp->type)) continue;
 
             // Start the task
+            uint32_t self_s = Emit_Temp ();
+            Emit ("  %%t%u = getelementptr i8, ptr %%", self_s);
+            Emit_Symbol_Name (exp);
+            Emit (", i64 0  ; self slot\n");
             uint32_t handle_tmp = Emit_Temp ();
             Emit ("  %%t%u = call ptr @__ada_task_start(ptr @", handle_tmp);
             Emit_Task_Function_Name (exp->type ? exp->type->defining_symbol : NULL,
                         exp->type ? exp->type->name : exp->name);
             Emit (", ");
             if (cg->current_nesting_level > 0) {
-              Emit ("ptr %%__frame_base)\n");
+              Emit ("ptr %%__frame_base, ptr %%t%u)\n", self_s);
             } else {
-              Emit ("ptr null)\n");
+              Emit ("ptr null, ptr %%t%u)\n", self_s);
             }
             Emit ("  store ptr %%t%u, ptr %%", handle_tmp);
             Emit_Symbol_Name (exp);
@@ -36636,6 +37573,10 @@ void Generate_Declaration (Syntax_Node *node) {
 
           // Start the task body in a separate thread.
           // Pass frame_base if nested, or null if at module level.
+          uint32_t self_s2 = Emit_Temp ();
+          Emit ("  %%t%u = getelementptr i8, ptr %%", self_s2);
+          Emit_Symbol_Name (obj_sym);
+          Emit (", i64 0  ; self slot\n");
           uint32_t handle_tmp = Emit_Temp ();
           Emit ("  %%t%u = call ptr @__ada_task_start(ptr @", handle_tmp);
           Emit_Task_Function_Name (node->symbol, node->task_spec.name);
@@ -36644,9 +37585,9 @@ void Generate_Declaration (Syntax_Node *node) {
           // Pass parent frame for uplevel access, or null if at module level.
           // Use frame_base only if the current function has nested subprograms.
           if (cg->current_nesting_level > 0) {
-            Emit ("ptr %%__frame_base)\n");
+            Emit ("ptr %%__frame_base, ptr %%t%u)\n", self_s2);
           } else {
-            Emit ("ptr null)\n");
+            Emit ("ptr null, ptr %%t%u)\n", self_s2);
           }
 
           // Store thread handle in task control block
@@ -37533,6 +38474,7 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   Emit ("declare i32 @pthread_create(ptr, ptr, ptr, ptr)\n");
   Emit ("declare i32 @pthread_join(ptr, ptr)\n");
   Emit ("declare void @pthread_exit (ptr)\n");
+  Emit ("declare i32 @pthread_cancel(i64)\n");
   Emit ("declare i32 @printf (ptr, ...)\n");
   Emit ("declare i32 @putchar(i32)\n");
   Emit ("declare i32 @getchar()\n");
@@ -38109,13 +39051,14 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
     Emit ("}\n\n");
   }
 
-  // Runtime globals
+  // Runtime globals — exception/secondary-stack state is thread-local for task safety
   Emit ("; Runtime globals\n");
-  Emit ("@__ss_base = linkonce_odr global ptr null\n");
-  Emit ("@__ss_ptr = linkonce_odr global i64 0\n");
-  Emit ("@__ss_size = linkonce_odr global i64 0\n");
-  Emit ("@__eh_cur = linkonce_odr global ptr null\n");
-  Emit ("@__ex_cur = linkonce_odr global i64 0\n");
+  Emit ("@__ss_base = linkonce_odr thread_local global ptr null\n");
+  Emit ("@__ss_ptr = linkonce_odr thread_local global i64 0\n");
+  Emit ("@__ss_size = linkonce_odr thread_local global i64 0\n");
+  Emit ("@__eh_cur = linkonce_odr thread_local global ptr null\n");
+  Emit ("@__ex_cur = linkonce_odr thread_local global i64 0\n");
+  Emit ("@__active_rv = linkonce_odr thread_local global ptr null\n");
   Emit ("@__fin_list = linkonce_odr global ptr null\n");
   Emit ("@__entry_queue = linkonce_odr global ptr null\n");
   Emit ("@.fmt_ue = linkonce_odr constant [27 x i8] c\"Unhandled exception: %%lld\\0A\\00\"\n\n");
@@ -38213,6 +39156,19 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   // Exception handling: raise
   Emit ("define linkonce_odr void @__ada_raise(i64 %%exc_id) {\n");
   Emit ("  store i64 %%exc_id, ptr @__ex_cur\n");
+  // If inside an accept body, complete the rendezvous so the caller unblocks
+  Emit ("  %%rv = load ptr, ptr @__active_rv\n");
+  Emit ("  %%has_rv = icmp ne ptr %%rv, null\n");
+  Emit ("  br i1 %%has_rv, label %%complete_rv, label %%check_handler\n");
+  Emit ("complete_rv:\n");
+  // Store exception ID in rv at offset 40, set complete = 2 (exception)
+  Emit ("  %%exc_slot = getelementptr i8, ptr %%rv, i64 40\n");
+  Emit ("  store i64 %%exc_id, ptr %%exc_slot\n");
+  Emit ("  %%cp = getelementptr i8, ptr %%rv, i64 24\n");
+  Emit ("  store i8 2, ptr %%cp  ; complete with exception\n");
+  Emit ("  store ptr null, ptr @__active_rv\n");
+  Emit ("  br label %%check_handler\n");
+  Emit ("check_handler:\n");
   Emit ("  %%frame = load ptr, ptr @__eh_cur\n");
   Emit ("  %%is_null = icmp eq ptr %%frame, null\n");
   Emit ("  br i1 %%is_null, label %%unhandled, label %%jump\n");
@@ -38221,8 +39177,8 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   Emit ("  call void @longjmp(ptr %%jb, i32 1)\n");
   Emit ("  unreachable\n");
   Emit ("unhandled:\n");
-  Emit ("  call i32 (ptr, ...) @printf (ptr @.fmt_ue, i64 %%exc_id)\n");
-  Emit ("  call void @exit (i32 1)\n");
+  // In a task thread, unhandled exception just terminates the task (RM 9.3)
+  Emit ("  call void @pthread_exit (ptr null)\n");
   Emit ("  unreachable\n");
   Emit ("}\n\n");
 
@@ -38274,13 +39230,19 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   Emit ("}\n\n");
 
   // Task abort: signal task to terminate (simplified: sets abort-pending flag)
+  // Task abort (RM 9.10): mark task as completed and cancel its thread.
   Emit ("define linkonce_odr void @__ada_task_abort (ptr %%task) {\n");
   Emit ("entry:\n");
   Emit ("  %%1 = icmp eq ptr %%task, null\n");
   Emit ("  br i1 %%1, label %%done, label %%abort\n");
   Emit ("abort:\n");
-  Emit ("  ; In full impl: set abort flag, signal condition\n");
-  Emit ("  store i8 1, ptr %%task  ; Mark abort pending\n");
+  // Set completed flag (offset 24) so entry callers detect termination
+  Emit ("  %%cp = getelementptr i8, ptr %%task, i64 24\n");
+  Emit ("  store i8 1, ptr %%cp\n");
+  // Cancel the thread (offset 16 = thread handle / pthread_t)
+  Emit ("  %%tp = getelementptr ptr, ptr %%task, i64 2\n");
+  Emit ("  %%tid = load i64, ptr %%tp\n");
+  Emit ("  call i32 @pthread_cancel(i64 %%tid)\n");
   Emit ("  br label %%done\n");
   Emit ("done:\n");
   Emit ("  ret void\n");
@@ -38305,26 +39267,32 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   //                                                                                                
 
   // Task wrapper: calls actual task body then sets completed flag.
+  // TCB layout: { ptr func, ptr parent_frame, ptr tid, i8 completed, [7xi8] pad, ptr self_slot }
+  // Offsets: func=0, parent_frame=8, tid=16, completed=24, self_slot=32. Total=40.
   Emit ("define linkonce_odr ptr @__ada_task_wrapper(ptr %%tcb) {\n");
   Emit ("entry:\n");
   Emit ("  %%func = load ptr, ptr %%tcb\n");
-  Emit ("  %%1 = getelementptr ptr, ptr %%tcb, i64 1\n");
-  Emit ("  %%frame = load ptr, ptr %%1\n");
-  Emit ("  %%_r = call ptr %%func(ptr %%frame)\n");
-  Emit ("  %%2 = getelementptr i8, ptr %%tcb, i64 24\n");
-  Emit ("  store i8 1, ptr %%2  ; mark completed\n");
+  Emit ("  %%fp = getelementptr ptr, ptr %%tcb, i64 1\n");
+  Emit ("  %%frame = load ptr, ptr %%fp\n");
+  Emit ("  %%sp = getelementptr ptr, ptr %%tcb, i64 4\n");
+  Emit ("  %%self_slot = load ptr, ptr %%sp\n");
+  Emit ("  %%_r = call ptr %%func(ptr %%frame, ptr %%self_slot)\n");
+  Emit ("  %%cp = getelementptr i8, ptr %%tcb, i64 24\n");
+  Emit ("  store i8 1, ptr %%cp  ; mark completed\n");
   Emit ("  ret ptr null\n");
   Emit ("}\n\n");
 
   // Task start: allocate TCB, spawn wrapper thread. Returns TCB ptr.
-  Emit ("define linkonce_odr ptr @__ada_task_start(ptr %%task_func, ptr %%parent_frame) {\n");
+  Emit ("define linkonce_odr ptr @__ada_task_start(ptr %%task_func, ptr %%parent_frame, ptr %%self_slot) {\n");
   Emit ("entry:\n");
-  Emit ("  %%tcb = call ptr @malloc (i64 32)\n");
+  Emit ("  %%tcb = call ptr @malloc (i64 40)\n");
   Emit ("  store ptr %%task_func, ptr %%tcb\n");
-  Emit ("  %%1 = getelementptr ptr, ptr %%tcb, i64 1\n");
-  Emit ("  store ptr %%parent_frame, ptr %%1\n");
-  Emit ("  %%2 = getelementptr i8, ptr %%tcb, i64 24\n");
-  Emit ("  store i8 0, ptr %%2  ; not completed\n");
+  Emit ("  %%fp = getelementptr ptr, ptr %%tcb, i64 1\n");
+  Emit ("  store ptr %%parent_frame, ptr %%fp\n");
+  Emit ("  %%cp = getelementptr i8, ptr %%tcb, i64 24\n");
+  Emit ("  store i8 0, ptr %%cp  ; not completed\n");
+  Emit ("  %%ss = getelementptr ptr, ptr %%tcb, i64 4\n");
+  Emit ("  store ptr %%self_slot, ptr %%ss  ; self slot address\n");
   Emit ("  %%tid_slot = getelementptr ptr, ptr %%tcb, i64 2\n");
   Emit ("  %%_rc = call i32 @pthread_create(ptr %%tid_slot, ptr null, ptr @__ada_task_wrapper, ptr %%tcb)\n");
   Emit ("  ret ptr %%tcb\n");
@@ -38343,80 +39311,153 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   Emit ("  ret i8 %%4\n");
   Emit ("}\n\n");
 
-  // Entry call: caller side of rendezvous (blocks until accept completes)
-  Emit ("define linkonce_odr void @__ada_entry_call(ptr %%task, i64 %%entry_idx, ptr %%params) {\n");
+  // Entry call: caller side of rendezvous (blocks until accept completes).
+  // %%task = task slot address (ptr to where TCB handle is stored).
+  // If the target task is already completed/terminated, returns 1 (TASKING_ERROR).
+  // Returns i8: 0=normal, 1=TASKING_ERROR.
+  Emit ("define linkonce_odr i8 @__ada_entry_call(ptr %%task, i64 %%entry_idx, ptr %%params) {\n");
   Emit ("entry:\n");
-  Emit ("  ; Allocate rendezvous record: { task_ptr, entry_idx, params, complete_flag, next }\n");
-  Emit ("  %%rv = call ptr @malloc (i64 40)\n");
+  Emit ("  %%tnull = icmp eq ptr %%task, null\n");
+  Emit ("  br i1 %%tnull, label %%tasking_error, label %%load_tcb\n");
+  Emit ("load_tcb:\n");
+  // Load TCB handle from task slot
+  Emit ("  %%tcb = load ptr, ptr %%task\n");
+  Emit ("  %%tcbnull = icmp eq ptr %%tcb, null\n");
+  Emit ("  br i1 %%tcbnull, label %%tasking_error, label %%check_done\n");
+  Emit ("check_done:\n");
+  // Check completed flag at TCB offset 24
+  Emit ("  %%cdp = getelementptr i8, ptr %%tcb, i64 24\n");
+  Emit ("  %%cd = load i8, ptr %%cdp\n");
+  Emit ("  %%is_done = icmp ne i8 %%cd, 0\n");
+  Emit ("  br i1 %%is_done, label %%tasking_error, label %%enqueue\n");
+  Emit ("enqueue:\n");
+  Emit ("  %%rv = call ptr @malloc (i64 48)\n");
   Emit ("  store ptr %%task, ptr %%rv\n");
   Emit ("  %%1 = getelementptr i64, ptr %%rv, i64 1\n");
   Emit ("  store i64 %%entry_idx, ptr %%1\n");
   Emit ("  %%2 = getelementptr ptr, ptr %%rv, i64 2\n");
   Emit ("  store ptr %%params, ptr %%2\n");
   Emit ("  %%3 = getelementptr i8, ptr %%rv, i64 24\n");
-  Emit ("  store i8 0, ptr %%3  ; complete = false\n");
-  Emit ("  ; Enqueue to task's entry queue (append to @__entry_queue)\n");
+  Emit ("  store i8 0, ptr %%3\n");
   Emit ("  %%4 = load ptr, ptr @__entry_queue\n");
   Emit ("  %%5 = getelementptr ptr, ptr %%rv, i64 4\n");
   Emit ("  store ptr %%4, ptr %%5\n");
   Emit ("  store ptr %%rv, ptr @__entry_queue\n");
   Emit ("  br label %%wait\n");
   Emit ("wait:\n");
-  Emit ("  ; Spin-wait for complete flag (yield to scheduler)\n");
   Emit ("  %%_u1 = call i32 @usleep(i32 100)\n");
   Emit ("  %%6 = load i8, ptr %%3\n");
-  Emit ("  %%7 = icmp eq i8 %%6, 0\n");
-  Emit ("  br i1 %%7, label %%wait, label %%done\n");
-  Emit ("done:\n");
+  Emit ("  %%7 = icmp ne i8 %%6, 0\n");
+  Emit ("  br i1 %%7, label %%done, label %%check_abort\n");
+  Emit ("check_abort:\n");
+  Emit ("  %%cd2 = load i8, ptr %%cdp\n");
+  Emit ("  %%died = icmp ne i8 %%cd2, 0\n");
+  Emit ("  br i1 %%died, label %%cancel, label %%wait\n");
+  Emit ("cancel:\n");
+  Emit ("  %%h = load ptr, ptr @__entry_queue\n");
+  Emit ("  %%is_head = icmp eq ptr %%h, %%rv\n");
+  Emit ("  br i1 %%is_head, label %%rm_head, label %%rm_done\n");
+  Emit ("rm_head:\n");
+  Emit ("  %%nx = getelementptr ptr, ptr %%rv, i64 4\n");
+  Emit ("  %%nxval = load ptr, ptr %%nx\n");
+  Emit ("  store ptr %%nxval, ptr @__entry_queue\n");
+  Emit ("  br label %%rm_done\n");
+  Emit ("rm_done:\n");
   Emit ("  call void @free (ptr %%rv)\n");
-  Emit ("  ret void\n");
+  Emit ("  ret i8 1  ; TASKING_ERROR\n");
+  Emit ("done:\n");
+  // Check if accept body raised an exception (complete == 2)
+  Emit ("  %%8 = load i8, ptr %%3\n");
+  Emit ("  %%is_exc = icmp eq i8 %%8, 2\n");
+  Emit ("  br i1 %%is_exc, label %%reraise, label %%ok\n");
+  Emit ("reraise:\n");
+  Emit ("  %%exc_p = getelementptr i8, ptr %%rv, i64 40\n");
+  Emit ("  %%exc_id = load i64, ptr %%exc_p\n");
+  Emit ("  call void @free (ptr %%rv)\n");
+  Emit ("  call void @__ada_raise(i64 %%exc_id)  ; propagate from accept\n");
+  Emit ("  unreachable\n");
+  Emit ("ok:\n");
+  Emit ("  call void @free (ptr %%rv)\n");
+  Emit ("  ret i8 0  ; normal\n");
+  Emit ("tasking_error:\n");
+  Emit ("  ret i8 1  ; TASKING_ERROR\n");
   Emit ("}\n\n");
 
-  // Accept wait: acceptor blocks until entry call arrives
-  Emit ("define linkonce_odr ptr @__ada_accept_wait(i64 %%entry_idx) {\n");
+  // Accept wait: acceptor blocks until entry call arrives matching self_task + entry_idx.
+  // Scans the linked list so entries for other tasks are skipped.
+  Emit ("define linkonce_odr ptr @__ada_accept_wait(i64 %%entry_idx, ptr %%self_task) {\n");
   Emit ("entry:\n");
+  Emit ("  %%use_task = icmp ne ptr %%self_task, null\n");
   Emit ("  br label %%wait\n");
   Emit ("wait:\n");
-  Emit ("  ; Scan entry queue for matching entry index\n");
-  Emit ("  %%q = load ptr, ptr @__entry_queue\n");
-  Emit ("  %%is_empty = icmp eq ptr %%q, null\n");
-  Emit ("  br i1 %%is_empty, label %%spin, label %%check\n");
-  Emit ("spin:\n");
   Emit ("  %%_u2 = call i32 @usleep(i32 100)\n");
-  Emit ("  br label %%wait\n");
-  Emit ("check:\n");
-  Emit ("  ; Check if first entry matches\n");
-  Emit ("  %%1 = getelementptr i64, ptr %%q, i64 1\n");
-  Emit ("  %%2 = load i64, ptr %%1\n");
-  Emit ("  %%3 = icmp eq i64 %%2, %%entry_idx\n");
-  Emit ("  br i1 %%3, label %%found, label %%spin\n");
+  Emit ("  %%head = load ptr, ptr @__entry_queue\n");
+  Emit ("  %%is_empty = icmp eq ptr %%head, null\n");
+  Emit ("  br i1 %%is_empty, label %%wait, label %%scan_init\n");
+  Emit ("scan_init:\n");
+  Emit ("  br label %%scan\n");
+  Emit ("scan:\n");
+  Emit ("  %%cur = phi ptr [%%head, %%scan_init], [%%nxt, %%advance]\n");
+  Emit ("  %%prev_p = phi ptr [@__entry_queue, %%scan_init], [%%cur_next_p, %%advance]\n");
+  Emit ("  %%idx_p = getelementptr i64, ptr %%cur, i64 1\n");
+  Emit ("  %%idx = load i64, ptr %%idx_p\n");
+  Emit ("  %%idx_ok = icmp eq i64 %%idx, %%entry_idx\n");
+  Emit ("  br i1 %%idx_ok, label %%check_task, label %%next\n");
+  Emit ("check_task:\n");
+  Emit ("  br i1 %%use_task, label %%check_task2, label %%found\n");
+  Emit ("check_task2:\n");
+  Emit ("  %%t = load ptr, ptr %%cur\n");
+  Emit ("  %%task_ok = icmp eq ptr %%t, %%self_task\n");
+  Emit ("  br i1 %%task_ok, label %%found, label %%next\n");
+  Emit ("next:\n");
+  Emit ("  %%cur_next_p = getelementptr ptr, ptr %%cur, i64 4\n");
+  Emit ("  %%nxt = load ptr, ptr %%cur_next_p\n");
+  Emit ("  %%has_next = icmp ne ptr %%nxt, null\n");
+  Emit ("  br i1 %%has_next, label %%advance, label %%wait\n");
+  Emit ("advance:\n");
+  Emit ("  br label %%scan\n");
   Emit ("found:\n");
-  Emit ("  ; Dequeue and return caller's parameter block\n");
-  Emit ("  %%4 = getelementptr ptr, ptr %%q, i64 4\n");
-  Emit ("  %%5 = load ptr, ptr %%4\n");
-  Emit ("  store ptr %%5, ptr @__entry_queue\n");
-  Emit ("  %%6 = getelementptr ptr, ptr %%q, i64 2\n");
-  Emit ("  %%params = load ptr, ptr %%6\n");
-  Emit ("  ret ptr %%q\n");
+  Emit ("  %%cn = getelementptr ptr, ptr %%cur, i64 4\n");
+  Emit ("  %%cn_val = load ptr, ptr %%cn\n");
+  Emit ("  store ptr %%cn_val, ptr %%prev_p\n");
+  Emit ("  ret ptr %%cur\n");
   Emit ("}\n\n");
 
-  // Accept try: non-blocking check for pending entry call (for SELECT)
-  Emit ("define linkonce_odr ptr @__ada_accept_try(i64 %%entry_idx) {\n");
+  // Accept try: non-blocking check for pending entry call (for SELECT).
+  // Scans linked list for matching self_task + entry_idx.
+  Emit ("define linkonce_odr ptr @__ada_accept_try(i64 %%entry_idx, ptr %%self_task) {\n");
   Emit ("entry:\n");
-  Emit ("  %%q = load ptr, ptr @__entry_queue\n");
-  Emit ("  %%is_empty = icmp eq ptr %%q, null\n");
-  Emit ("  br i1 %%is_empty, label %%none, label %%check\n");
-  Emit ("check:\n");
-  Emit ("  %%1 = getelementptr i64, ptr %%q, i64 1\n");
-  Emit ("  %%2 = load i64, ptr %%1\n");
-  Emit ("  %%3 = icmp eq i64 %%2, %%entry_idx\n");
-  Emit ("  br i1 %%3, label %%found, label %%none\n");
+  Emit ("  %%use_task = icmp ne ptr %%self_task, null\n");
+  Emit ("  %%head = load ptr, ptr @__entry_queue\n");
+  Emit ("  %%is_empty = icmp eq ptr %%head, null\n");
+  Emit ("  br i1 %%is_empty, label %%none, label %%scan_init\n");
+  Emit ("scan_init:\n");
+  Emit ("  br label %%scan\n");
+  Emit ("scan:\n");
+  Emit ("  %%cur = phi ptr [%%head, %%scan_init], [%%nxt, %%advance]\n");
+  Emit ("  %%prev_p = phi ptr [@__entry_queue, %%scan_init], [%%cur_next_p, %%advance]\n");
+  Emit ("  %%idx_p = getelementptr i64, ptr %%cur, i64 1\n");
+  Emit ("  %%idx = load i64, ptr %%idx_p\n");
+  Emit ("  %%idx_ok = icmp eq i64 %%idx, %%entry_idx\n");
+  Emit ("  br i1 %%idx_ok, label %%check_task, label %%next\n");
+  Emit ("check_task:\n");
+  Emit ("  br i1 %%use_task, label %%check_task2, label %%found\n");
+  Emit ("check_task2:\n");
+  Emit ("  %%t = load ptr, ptr %%cur\n");
+  Emit ("  %%task_ok = icmp eq ptr %%t, %%self_task\n");
+  Emit ("  br i1 %%task_ok, label %%found, label %%next\n");
+  Emit ("next:\n");
+  Emit ("  %%cur_next_p = getelementptr ptr, ptr %%cur, i64 4\n");
+  Emit ("  %%nxt = load ptr, ptr %%cur_next_p\n");
+  Emit ("  %%has_next = icmp ne ptr %%nxt, null\n");
+  Emit ("  br i1 %%has_next, label %%advance, label %%none\n");
+  Emit ("advance:\n");
+  Emit ("  br label %%scan\n");
   Emit ("found:\n");
-  Emit ("  ; Dequeue and return caller's parameter block\n");
-  Emit ("  %%4 = getelementptr ptr, ptr %%q, i64 4\n");
-  Emit ("  %%5 = load ptr, ptr %%4\n");
-  Emit ("  store ptr %%5, ptr @__entry_queue\n");
-  Emit ("  ret ptr %%q\n");
+  Emit ("  %%cn = getelementptr ptr, ptr %%cur, i64 4\n");
+  Emit ("  %%cn_val = load ptr, ptr %%cn\n");
+  Emit ("  store ptr %%cn_val, ptr %%prev_p\n");
+  Emit ("  ret ptr %%cur\n");
   Emit ("none:\n");
   Emit ("  ret ptr null\n");
   Emit ("}\n\n");
@@ -38427,6 +39468,115 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   Emit ("  %%1 = getelementptr i8, ptr %%rv, i64 24\n");
   Emit ("  store i8 1, ptr %%1  ; complete = true\n");
   Emit ("  ret void\n");
+  Emit ("}\n\n");
+
+  // Timed entry call: enqueue entry, spin-wait up to timeout_us microseconds.
+  // Returns i8 1 if rendezvous completed, 0 if timeout expired.
+  // On timeout the rendezvous record is dequeued (cancelled) by the caller.
+  Emit ("define linkonce_odr i8 @__ada_timed_entry_call(ptr %%task, i64 %%entry_idx, ptr %%params, i64 %%timeout_us) {\n");
+  Emit ("entry:\n");
+  Emit ("  %%rv = call ptr @malloc (i64 48)\n");
+  Emit ("  store ptr %%task, ptr %%rv\n");
+  Emit ("  %%1 = getelementptr i64, ptr %%rv, i64 1\n");
+  Emit ("  store i64 %%entry_idx, ptr %%1\n");
+  Emit ("  %%2 = getelementptr ptr, ptr %%rv, i64 2\n");
+  Emit ("  store ptr %%params, ptr %%2\n");
+  Emit ("  %%3 = getelementptr i8, ptr %%rv, i64 24\n");
+  Emit ("  store i8 0, ptr %%3\n");
+  Emit ("  %%4 = load ptr, ptr @__entry_queue\n");
+  Emit ("  %%5 = getelementptr ptr, ptr %%rv, i64 4\n");
+  Emit ("  store ptr %%4, ptr %%5\n");
+  Emit ("  store ptr %%rv, ptr @__entry_queue\n");
+  Emit ("  %%elapsed = alloca i64\n");
+  Emit ("  store i64 0, ptr %%elapsed\n");
+  Emit ("  br label %%wait\n");
+  Emit ("wait:\n");
+  Emit ("  %%_u = call i32 @usleep(i32 100)\n");
+  Emit ("  %%6 = load i8, ptr %%3\n");
+  Emit ("  %%7 = icmp ne i8 %%6, 0\n");
+  Emit ("  br i1 %%7, label %%done_ok, label %%check_timeout\n");
+  Emit ("check_timeout:\n");
+  Emit ("  %%8 = load i64, ptr %%elapsed\n");
+  Emit ("  %%9 = add i64 %%8, 100\n");
+  Emit ("  store i64 %%9, ptr %%elapsed\n");
+  Emit ("  %%10 = icmp uge i64 %%9, %%timeout_us\n");
+  Emit ("  br i1 %%10, label %%done_timeout, label %%wait\n");
+  Emit ("done_ok:\n");
+  Emit ("  call void @free (ptr %%rv)\n");
+  Emit ("  ret i8 1\n");
+  Emit ("done_timeout:\n");
+  // Cancel: walk the queue and remove our rv record
+  Emit ("  %%prev = alloca ptr\n");
+  Emit ("  store ptr null, ptr %%prev\n");
+  Emit ("  %%cur_init = load ptr, ptr @__entry_queue\n");
+  Emit ("  br label %%cancel_loop\n");
+  Emit ("cancel_loop:\n");
+  Emit ("  %%cur = phi ptr [%%cur_init, %%done_timeout], [%%next, %%cancel_next]\n");
+  Emit ("  %%is_null = icmp eq ptr %%cur, null\n");
+  Emit ("  br i1 %%is_null, label %%cancel_done, label %%cancel_check\n");
+  Emit ("cancel_check:\n");
+  Emit ("  %%is_ours = icmp eq ptr %%cur, %%rv\n");
+  Emit ("  br i1 %%is_ours, label %%cancel_unlink, label %%cancel_next\n");
+  Emit ("cancel_unlink:\n");
+  Emit ("  %%nx = getelementptr ptr, ptr %%rv, i64 4\n");
+  Emit ("  %%nxval = load ptr, ptr %%nx\n");
+  Emit ("  %%pv = load ptr, ptr %%prev\n");
+  Emit ("  %%pv_null = icmp eq ptr %%pv, null\n");
+  Emit ("  br i1 %%pv_null, label %%cancel_head, label %%cancel_mid\n");
+  Emit ("cancel_head:\n");
+  Emit ("  store ptr %%nxval, ptr @__entry_queue\n");
+  Emit ("  br label %%cancel_done\n");
+  Emit ("cancel_mid:\n");
+  Emit ("  %%pv_next = getelementptr ptr, ptr %%pv, i64 4\n");
+  Emit ("  store ptr %%nxval, ptr %%pv_next\n");
+  Emit ("  br label %%cancel_done\n");
+  Emit ("cancel_next:\n");
+  Emit ("  store ptr %%cur, ptr %%prev\n");
+  Emit ("  %%nx2 = getelementptr ptr, ptr %%cur, i64 4\n");
+  Emit ("  %%next = load ptr, ptr %%nx2\n");
+  Emit ("  br label %%cancel_loop\n");
+  Emit ("cancel_done:\n");
+  Emit ("  call void @free (ptr %%rv)\n");
+  Emit ("  ret i8 0\n");
+  Emit ("}\n\n");
+
+  // Conditional entry call: enqueue entry, check immediately if accepted.
+  // Returns i8 1 if rendezvous started, 0 if no accept was waiting.
+  Emit ("define linkonce_odr i8 @__ada_conditional_entry_call(ptr %%task, i64 %%entry_idx, ptr %%params) {\n");
+  Emit ("entry:\n");
+  Emit ("  %%rv = call ptr @malloc (i64 48)\n");
+  Emit ("  store ptr %%task, ptr %%rv\n");
+  Emit ("  %%1 = getelementptr i64, ptr %%rv, i64 1\n");
+  Emit ("  store i64 %%entry_idx, ptr %%1\n");
+  Emit ("  %%2 = getelementptr ptr, ptr %%rv, i64 2\n");
+  Emit ("  store ptr %%params, ptr %%2\n");
+  Emit ("  %%3 = getelementptr i8, ptr %%rv, i64 24\n");
+  Emit ("  store i8 0, ptr %%3\n");
+  Emit ("  %%4 = load ptr, ptr @__entry_queue\n");
+  Emit ("  %%5 = getelementptr ptr, ptr %%rv, i64 4\n");
+  Emit ("  store ptr %%4, ptr %%5\n");
+  Emit ("  store ptr %%rv, ptr @__entry_queue\n");
+  // Give the acceptor a brief chance to dequeue
+  Emit ("  %%_u = call i32 @usleep(i32 1000)\n");
+  Emit ("  %%6 = load i8, ptr %%3\n");
+  Emit ("  %%7 = icmp ne i8 %%6, 0\n");
+  Emit ("  br i1 %%7, label %%done_ok, label %%done_cancel\n");
+  Emit ("done_ok:\n");
+  Emit ("  call void @free (ptr %%rv)\n");
+  Emit ("  ret i8 1\n");
+  Emit ("done_cancel:\n");
+  // Remove from queue (same logic as timed)
+  Emit ("  %%h = load ptr, ptr @__entry_queue\n");
+  Emit ("  %%is_head = icmp eq ptr %%h, %%rv\n");
+  Emit ("  br i1 %%is_head, label %%rm_head, label %%rm_done\n");
+  Emit ("rm_head:\n");
+  Emit ("  %%nx = getelementptr ptr, ptr %%rv, i64 4\n");
+  Emit ("  %%nxval = load ptr, ptr %%nx\n");
+  Emit ("  store ptr %%nxval, ptr @__entry_queue\n");
+  Emit ("  br label %%rm_done\n");
+  Emit ("rm_done:\n");
+  Emit ("  call void @free (ptr %%rv)\n");
+  Emit ("  ret i8 0\n");
   Emit ("}\n\n");
 
   // Finalization support
