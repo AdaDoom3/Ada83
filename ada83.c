@@ -16681,6 +16681,23 @@ bool Expression_Is_Float (Syntax_Node *node) {
 // Get LLVM type string for expression result
 const char *Expression_Llvm_Type (Syntax_Node *node) {
 
+  // User-defined operator call (binary or unary): the actual emission is a
+  // `call <ret_type> @func(...)` where <ret_type> is the function's declared
+  // return type — typically BOOLEAN = i8 for comparison operators. Must take
+  // precedence over the boolean-i1 fast path below, otherwise codegen will
+  // think a user-defined `/=` produces i1 when it actually produces i8.
+  //
+  // Peels through renaming chains (RM 8.5) so a rename to a predefined op
+  // falls through to the boolean fast path and uses i1, matching what
+  // Generate_Binary_Op's rename-override emits.
+  if (node and (node->kind == NK_BINARY_OP or node->kind == NK_UNARY_OP) and
+      node->symbol and node->symbol->kind == SYMBOL_FUNCTION) {
+    Symbol *target = Resolve_Subprogram_Rename (node->symbol);
+    if (target and not target->is_predefined and target->return_type) {
+      return Type_To_Llvm (target->return_type);
+    }
+  }
+
   // Boolean expressions (comparisons, logical ops) produce i1.
   // Widening to i8 (Boolean storage type) happens at store boundaries.
   if (Expression_Is_Boolean (node)) {
@@ -21713,6 +21730,11 @@ uint32_t Generate_Apply (Syntax_Node *node) {
       uint32_t slo = Generate_Expression (rng->range.low);
       uint32_t shi = Generate_Expression (rng->range.high);
       const char *slice_iat = Integer_Arith_Type ();
+      // Slice bounds may be narrower than slice_iat (e.g. SMALL RANGE 1..100
+      // stored as i8). Promote to slice_iat before arithmetic so the sub/
+      // GEP operand types match.
+      const char *slo_t = Expression_Llvm_Type (rng->range.low);
+      slo = Emit_Convert (slo, slo_t, slice_iat);
       uint32_t off;
       if (dyn_low) {
         uint32_t low_bound_conv = Emit_Convert (low_bound_val, dyn_low_bt, slice_iat);
@@ -24797,14 +24819,18 @@ uint32_t Generate_Attribute (Syntax_Node *node) {
     return t;
   }
 
-  // T'CALLABLE (RM 9.9): load TCB handle, check completed flag
+  // T'CALLABLE (RM 9.9): load TCB handle, check completed flag.
+  // Result is BOOLEAN (i8) — track the type so downstream conversions
+  // don't rely on Expression_Llvm_Type predicting it.
   if (Slice_Equal_Ignore_Case (attr, S("CALLABLE"))) {
     uint32_t handle = Generate_Expression (node->attribute.prefix);
     Emit ("  %%t%u = call i8 @__ada_task_callable(ptr %%t%u)\n", t, handle);
+    Temp_Set_Type (t, "i8");
     return t;
   }
 
-  // T'TERMINATED (RM 9.9): load TCB handle, check completed flag
+  // T'TERMINATED (RM 9.9): load TCB handle, check completed flag.
+  // Result is BOOLEAN (i8) — same tracking note as CALLABLE.
   if (Slice_Equal_Ignore_Case (attr, S("TERMINATED"))) {
     uint32_t handle = Generate_Expression (node->attribute.prefix);
     uint32_t tcb_ptr = Emit_Temp ();
@@ -24823,6 +24849,7 @@ uint32_t Generate_Attribute (Syntax_Node *node) {
     cg->block_terminated = true;
     Emit_Label_Here (done_l);
     Emit ("  %%t%u = phi i8 [ 0, %%L%u ], [ %%t%u, %%L%u ]\n", t, nil_l, val, ok_l);
+    Temp_Set_Type (t, "i8");
     return t;
   }
 
@@ -33970,11 +33997,11 @@ obj_decl_init:
         } else if (low_b.kind == BOUND_EXPR and low_b.expr) {
           dim_lo_decl[d] = low_b.cached_temp ? low_b.cached_temp
             : Generate_Expression (low_b.expr);
-          if (not low_b.cached_temp and
-            not Type_Is_Float_Representation (low_b.expr->type)) {
-            const char *low_llvm = Expression_Llvm_Type (low_b.expr);
-            if (strcmp (low_llvm, iat_decl) != 0 and not Llvm_Type_Is_Pointer (low_llvm))
-              dim_lo_decl[d] = Emit_Convert (dim_lo_decl[d], low_llvm, iat_decl);
+          if (not Type_Is_Float_Representation (low_b.expr->type)) {
+            // Both freshly-generated and cached temps may be at the bound's
+            // narrow type (e.g. SMALL RANGE 1..100 as i8). Coerce uniformly
+            // to iat_decl so downstream sub/add see matching operand widths.
+            dim_lo_decl[d] = Emit_Coerce (dim_lo_decl[d], iat_decl);
           }
           Temp_Set_Type (dim_lo_decl[d], iat_decl);
 
@@ -34006,11 +34033,10 @@ obj_decl_init:
         } else if (high_b.kind == BOUND_EXPR and high_b.expr) {
           dim_hi_decl[d] = high_b.cached_temp ? high_b.cached_temp
             : Generate_Expression (high_b.expr);
-          if (not high_b.cached_temp and
-            not Type_Is_Float_Representation (high_b.expr->type)) {
-            const char *high_llvm = Expression_Llvm_Type (high_b.expr);
-            if (strcmp (high_llvm, iat_decl) != 0 and not Llvm_Type_Is_Pointer (high_llvm))
-              dim_hi_decl[d] = Emit_Convert (dim_hi_decl[d], high_llvm, iat_decl);
+          if (not Type_Is_Float_Representation (high_b.expr->type)) {
+            // Same coercion as low_bound: both fresh and cached temps may be
+            // narrower than iat_decl; unify before downstream arithmetic.
+            dim_hi_decl[d] = Emit_Coerce (dim_hi_decl[d], iat_decl);
           }
           Temp_Set_Type (dim_hi_decl[d], iat_decl);
 
