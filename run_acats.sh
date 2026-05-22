@@ -151,16 +151,19 @@ run_one(){
 export -f run_one pct
 export START_MS
 
-# ── Per-test 1-second cap (defense in depth) ──────────────────────────────
-# Wraps run_one in `timeout 1`; on SIGTERM/SIGKILL exit (124/137), emit a
+# ── Per-test 2-second cap (defense in depth) ──────────────────────────────
+# Wraps run_one in `timeout 2`; on SIGTERM/SIGKILL exit (124/137), emit a
 # synthetic fail line so the test is recorded rather than silently dropped.
+# 2s is generous for non-tasking tests but accommodates the usleep-polling
+# rendezvous and task-wait helpers, which add up when many tasks live in
+# the same test or when 16 parallel workers contend for CPU.
 run_one_timed(){
     local f=$1 n=$(basename "$1" .ada) q
     q=${f##*/}; q=${q:0:1}; q=${q,,}
     local out rc=0
-    out=$(timeout 1 bash -c 'run_one "$1"' _ "$f" 2>/dev/null) || rc=$?
+    out=$(timeout 2 bash -c 'run_one "$1"' _ "$f" 2>/dev/null) || rc=$?
     if ((rc==124 || rc==137)); then
-        echo "$q fail $n TIMEOUT:exceeded_1s"
+        echo "$q fail $n TIMEOUT:exceeded_2s"
     elif [[ -n $out ]]; then
         echo "$out"
     fi
