@@ -1587,6 +1587,7 @@ bool Type_Needs_Fat_Pointer_Load  (const Type_Info *t);
 
 Type_Info *Type_Base (Type_Info *t);
 Type_Info *Type_Root (Type_Info *t);
+Type_Info *Discriminant_Type_In_Record (Type_Info *record_type, Symbol *disc_sym);
 
 int128_t Type_Bound_Value                 (Type_Bound  bound);
 bool     Type_Bound_Is_Compile_Time_Known (Type_Bound  b);
@@ -7382,6 +7383,21 @@ Type_Info *Type_Root (Type_Info *type_info) {
     }
   }
   return type_info;
+}
+
+// Recover a discriminant's Type_Info from its enclosing record by name.
+// Used when a discriminant Symbol's `->type` was never populated (some
+// resolver paths attach the symbol without setting its type). Records carry
+// each discriminant as a `Component_Info` with `is_discriminant = true`.
+Type_Info *Discriminant_Type_In_Record (Type_Info *record_type, Symbol *disc_sym) {
+  if (not record_type or not disc_sym) return NULL;
+  if (not (record_type->kind == TYPE_RECORD)) return NULL;
+  for (uint32_t i = 0; i < record_type->record.component_count; i++) {
+    Component_Info *c = &record_type->record.components[i];
+    if (c->is_discriminant and Slice_Equal_Ignore_Case (c->name, disc_sym->name))
+      return c->component_type;
+  }
+  return NULL;
 }
 
 // NOTE: Type compatibility checking is consolidated in Type_Covers ()                              
@@ -18735,7 +18751,10 @@ uint32_t Generate_Identifier (Syntax_Node *node) {
         Emit (", i64 0  ; record ref\n");
         break;
       }
-      const char *type_str = Type_To_Llvm (ty);
+      // Fall back to the expression's resolved type if the symbol's type
+      // field was never populated (some symbol-creation paths skip it).
+      if (not ty) ty = node->type;
+      const char *type_str = ty ? Type_To_Llvm (ty) : Integer_Arith_Type ();
       Emit ("  %%t%u = load %s, ptr ", t, type_str);
       Emit_Symbol_Storage (sym);
       Emit ("\n");
@@ -21051,6 +21070,11 @@ uint32_t Generate_Unary_Op (Syntax_Node *node) {
       {
         Emit_Access_Check (operand, node->unary.operand->type);
         Type_Info *designated = node->type;  // Set by resolution
+        // Fall back: derive the designated type from the operand's access
+        // type if resolution didn't annotate the .ALL node.
+        if (not designated and node->unary.operand and node->unary.operand->type and
+            Type_Is_Access (node->unary.operand->type))
+          designated = node->unary.operand->type->access.designated_type;
 
         // For composite types, pointer is the value
         if (Type_Is_Composite (designated)) {
@@ -21058,7 +21082,7 @@ uint32_t Generate_Unary_Op (Syntax_Node *node) {
         }
 
         // For scalar types, load the value from the pointer
-        const char *type_str = Type_To_Llvm (designated);
+        const char *type_str = designated ? Type_To_Llvm (designated) : Integer_Arith_Type ();
         Emit ("  %%t%u = load %s, ptr %%t%u  ; .ALL dereference\n",
            t, type_str, operand);
         Temp_Set_Type (t, type_str);
@@ -22436,13 +22460,18 @@ uint32_t Generate_Apply (Syntax_Node *node) {
       flat_idx = idx;
     }
 
-    // Get pointer to element and load
+    // Get pointer to element and load. If the array Type_Info was built
+    // without its `element_type` populated, recover from the indexed-access
+    // expression's own resolved type (the value type of `arr(i)` IS the
+    // element type).
     Type_Info *elem_type_info = array_type->array.element_type;
+    if (not elem_type_info) elem_type_info = node->type;
     bool elem_is_composite = Type_Is_Record (elem_type_info) or
       Type_Is_Constrained_Array (elem_type_info);
     bool elem_is_fat = Type_Needs_Fat_Pointer_Load (elem_type_info);
     uint32_t elem_size = elem_type_info ? elem_type_info->size : 8;
-    const char *elem_type = elem_is_fat ? FAT_PTR_TYPE : Type_To_Llvm (elem_type_info);
+    const char *elem_type = elem_is_fat ? FAT_PTR_TYPE
+                          : (elem_type_info ? Type_To_Llvm (elem_type_info) : Integer_Arith_Type ());
     uint32_t ptr = Emit_Temp ();
     uint32_t t;
 
@@ -27605,7 +27634,10 @@ uint32_t Generate_Aggregate (Syntax_Node *node) {
                 if (disc_alloc[da].sym == disc_sym) { already = true; break; }
               }
               if (already) continue;
-              const char *disc_type = Type_To_Llvm (disc_sym->type);
+              Type_Info *resolved = disc_sym->type;
+              if (not resolved) resolved = Discriminant_Type_In_Record (agg_type, disc_sym);
+              if (not resolved) resolved = bounds[bi]->expr->type;
+              const char *disc_type = resolved ? Type_To_Llvm (resolved) : Integer_Arith_Type ();
               if (not disc_type or disc_type[0] == '\0') disc_type = Integer_Arith_Type ();
               uint32_t dt = Emit_Temp ();
               Emit ("  %%t%u = alloca %s  ; disc for aggregate bounds\n", dt, disc_type);
@@ -27629,7 +27661,10 @@ uint32_t Generate_Aggregate (Syntax_Node *node) {
               if (disc_alloc[da].sym == disc_sym) { already = true; break; }
             }
             if (already) continue;
-            const char *disc_type = Type_To_Llvm (disc_sym->type);
+            Type_Info *resolved = disc_sym->type;
+            if (not resolved) resolved = Discriminant_Type_In_Record (agg_type, disc_sym);
+            if (not resolved) resolved = ce->type;
+            const char *disc_type = resolved ? Type_To_Llvm (resolved) : Integer_Arith_Type ();
             if (not disc_type or disc_type[0] == '\0') disc_type = Integer_Arith_Type ();
             uint32_t dt = Emit_Temp ();
             Emit ("  %%t%u = alloca %s  ; disc for rec constraint\n", dt, disc_type);
@@ -29621,8 +29656,13 @@ void Generate_Assignment (Syntax_Node *node) {
       return;
     }
 
-    // Scalar / access types: store value directly
-    const char *store_type = Type_To_Llvm (assign_type);
+    // Scalar / access types: store value directly. If component-type lookup
+    // didn't yield a type (e.g. record component not found by name, or
+    // prefix->type was unset), recover from the target's resolved type
+    // before falling back to the RHS type.
+    if (not assign_type) assign_type = target->type;
+    if (not assign_type and node->assignment.value) assign_type = node->assignment.value->type;
+    const char *store_type = assign_type ? Type_To_Llvm (assign_type) : Integer_Arith_Type ();
     const char *value_type = Expression_Llvm_Type (node->assignment.value);
     value = Emit_Convert (value, value_type, store_type);
     Emit ("  store %s %%t%u, ptr %%t%u  ; selected assign\n",
@@ -29639,6 +29679,10 @@ void Generate_Assignment (Syntax_Node *node) {
     return;
   }
   Type_Info *ty = target_sym->type;
+  // Fall back to expression types if the symbol has no type set
+  // (some symbol-creation paths skip the type field).
+  if (not ty) ty = target->type;
+  if (not ty) ty = node->assignment.value ? node->assignment.value->type : NULL;
   if (cg->current_instance)
     ty = Resolve_Generic_Actual_Type (ty);
 
@@ -35611,7 +35655,13 @@ void Generate_Generic_Instance_Body (Symbol *inst_sym,
           Syntax_Node *pname = ps->param_spec.names.items[j];
           Symbol *param_sym = pname->symbol;
           if (param_sym) {
-            const char *type_str = Type_To_Llvm (inst_sym->parameters[param_idx].param_type);
+            // Generic-instance pipeline can leave param_type NULL; recover
+            // from the param-spec's own type-annotated syntax subtree.
+            Type_Info *pty = inst_sym->parameters[param_idx].param_type;
+            if (not pty and ps->param_spec.param_type)
+              pty = ps->param_spec.param_type->type;
+            if (not pty) pty = param_sym->type;
+            const char *type_str = pty ? Type_To_Llvm (pty) : Integer_Arith_Type ();
             Parameter_Mode mode = inst_sym->parameters[param_idx].mode;
 
             // OUT/IN OUT: %p is already a pointer to caller's variable
@@ -36308,6 +36358,14 @@ void Generate_Declaration (Syntax_Node *node) {
             if (exp->kind != SYMBOL_VARIABLE and exp->kind != SYMBOL_CONSTANT)
               continue;
             Type_Info *ty = exp->type;
+            // Generic-instance exports occasionally arrive without a type
+            // (instantiation pipeline skips type propagation in some paths).
+            // Skip the export rather than emit malformed IR for it.
+            if (not ty) {
+              fprintf (stderr, "warning: generic-instance export '%.*s' has no type; skipping\n",
+                       (int)exp->name.length, exp->name.data);
+              continue;
+            }
             const char *type_str = Type_To_Llvm (ty);
             bool is_array = Type_Is_Constrained_Array (ty);
             bool is_record = Type_Is_Record (ty);
@@ -36470,6 +36528,11 @@ void Generate_Declaration (Syntax_Node *node) {
             // Allocate local storage for package variable
             if (exp->kind == SYMBOL_VARIABLE or exp->kind == SYMBOL_CONSTANT) {
               Type_Info *ty = exp->type;
+              if (not ty) {
+                fprintf (stderr, "warning: generic-instance local export '%.*s' has no type; skipping\n",
+                         (int)exp->name.length, exp->name.data);
+                continue;
+              }
               const char *type_str = Type_To_Llvm (ty);
               bool is_array = Type_Is_Constrained_Array (ty);
               bool is_record = Type_Is_Record (ty);
