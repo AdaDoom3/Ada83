@@ -42,6 +42,9 @@ run_one(){
     local f=$1 n=$(basename "$1" .ada) q=${1##*/}; q=${q:0:1}
     # Skip multi-file tests (end in digit, not 'm')
     [[ $n =~ [0-9]$ && ! $n =~ m$ ]] && return
+    # Skip support packages — ACATS test names never contain underscores
+    # (check_file, enum_check, length_check, spprt13, fcndecl live alongside tests).
+    [[ $n == *_* ]] && return
 
     case ${q,,} in
     c)
