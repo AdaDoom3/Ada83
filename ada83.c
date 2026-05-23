@@ -22420,16 +22420,36 @@ uint32_t Generate_Apply (Syntax_Node *node) {
       Emit ("  %%t%u = inttoptr i64 0 to ptr  ; no parameters\n", param_block);
     }
 
-    // Store arguments into parameter block (skip family index for entry families)
+    // Store arguments into parameter block (skip family index for entry families).
+    // Each actual may be NK_ASSOCIATION (NAME => VALUE); reorder by matching
+    // the choice name against the entry's formal parameter list.
     for (uint32_t i = first_param_idx; i < node->apply.arguments.count; i++) {
-      uint32_t arg_val = Generate_Expression (node->apply.arguments.items[i]);
+      Syntax_Node *arg = node->apply.arguments.items[i];
+      Syntax_Node *value_node = arg;
+      uint32_t slot = i - first_param_idx;
+      if (arg and arg->kind == NK_ASSOCIATION and arg->association.expression) {
+        value_node = arg->association.expression;
+        if (arg->association.choices.count == 1) {
+          Syntax_Node *name = arg->association.choices.items[0];
+          if (name and name->kind == NK_IDENTIFIER and sym->parameters) {
+            for (uint32_t p = 0; p < sym->parameter_count; p++) {
+              if (Slice_Equal_Ignore_Case (sym->parameters[p].name,
+                              name->string_val.text)) {
+                slot = p;
+                break;
+              }
+            }
+          }
+        }
+      }
+      uint32_t arg_val = Generate_Expression (value_node);
 
       // Widen argument to i64 for the parameter block ABI
-      const char *arg_t = Expression_Llvm_Type (node->apply.arguments.items[i]);
+      const char *arg_t = Expression_Llvm_Type (value_node);
       arg_val = Emit_Convert (arg_val, arg_t, "i64");
       uint32_t arg_ptr = Emit_Temp ();
       Emit ("  %%t%u = getelementptr [%u x i64], ptr %%t%u, i64 0, i64 %u\n",
-         arg_ptr, param_count, param_block, i - first_param_idx);
+         arg_ptr, param_count, param_block, slot);
       Emit ("  store i64 %%t%u, ptr %%t%u\n", arg_val, arg_ptr);
     }
 
