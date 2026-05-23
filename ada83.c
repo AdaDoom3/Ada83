@@ -12918,10 +12918,13 @@ void Resolve_Statement (Syntax_Node *node) {
       break;
     case NK_SELECT:
 
-      // SELECT statement - resolve alternatives
+      // SELECT statement - resolve alternatives and ELSE part
       for (uint32_t i = 0; i < node->select_stmt.alternatives.count; i++) {
         Syntax_Node *alt = node->select_stmt.alternatives.items[i];
         if (alt) Resolve_Statement (alt);
+      }
+      if (node->select_stmt.else_part) {
+        Resolve_Statement (node->select_stmt.else_part);
       }
       break;
     case NK_DELAY:
@@ -12929,6 +12932,14 @@ void Resolve_Statement (Syntax_Node *node) {
       // DELAY statement - resolve delay expression
       if (node->delay_stmt.expression) {
         Resolve_Expression (node->delay_stmt.expression);
+      }
+      break;
+    case NK_ABORT:
+
+      // ABORT statement - resolve task name expressions
+      for (uint32_t i = 0; i < node->abort_stmt.task_names.count; i++) {
+        Syntax_Node *task_name = node->abort_stmt.task_names.items[i];
+        if (task_name) Resolve_Expression (task_name);
       }
       break;
     default:
