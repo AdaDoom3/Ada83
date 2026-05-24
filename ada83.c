@@ -9539,9 +9539,15 @@ Type_Info *Resolve_Apply (Syntax_Node *node) {
   Syntax_Node *prefix = node->apply.prefix;
   Symbol *prefix_sym = NULL;
 
-  // For identifier prefix, use overload resolution
+  // For identifier prefix, use overload resolution.
+  // Pass node->type as context so call returns may be filtered by the
+  // expected result type (RM 6.6: function-return overload disambiguation
+  // by context — e.g. `W : WHOLE := F1(0,0)` picks the F1 overload
+  // whose return type is WHOLE when several F1's have matching arg
+  // profiles but differing returns).
   if (prefix->kind == NK_IDENTIFIER) {
-    prefix_sym = Resolve_Overloaded_Call (prefix->string_val.text, &args, NULL);
+    Type_Info *call_ctx = node->type;
+    prefix_sym = Resolve_Overloaded_Call (prefix->string_val.text, &args, call_ctx);
     if (prefix_sym) {
       prefix->symbol = prefix_sym;
       prefix->type = (prefix_sym->kind == SYMBOL_FUNCTION) ?
@@ -13234,6 +13240,15 @@ void Resolve_Declaration (Syntax_Node *node) {
       if (node->object_decl.init) {
         if (node->object_decl.init->kind == NK_AGGREGATE and
           node->object_decl.object_type and node->object_decl.object_type->type) {
+          node->object_decl.init->type = node->object_decl.object_type->type;
+        }
+
+        // Pre-set the type of an NK_APPLY initializer to the declared
+        // type so Resolve_Apply can use it as a context for overload
+        // resolution by return type (RM 6.6).
+        if (node->object_decl.init->kind == NK_APPLY and
+          node->object_decl.object_type and node->object_decl.object_type->type and
+          not node->object_decl.init->type) {
           node->object_decl.init->type = node->object_decl.object_type->type;
         }
         Resolve_Expression (node->object_decl.init);
@@ -20481,10 +20496,18 @@ uint32_t Emit_Binary_Op_Predefined (Syntax_Node *node) {
         high_b = idx_info->index_type->high_bound;
       }
 
-      // Max length = index_high - index_low + 1
+      // Max length = index_high - index_low + 1.
+      // For index subtype INTEGER, max_len = 2^32 which doesn't fit in
+      // cat_bt (typically i32). Since total_len is i32 (max INT32_MAX),
+      // it can never exceed such a max_len — skip the check entirely.
+      // Only emit the check when max_len fits cat_bt.
       if (low_b.kind == BOUND_INTEGER and high_b.kind == BOUND_INTEGER) {
         int128_t max_len = high_b.int_value - low_b.int_value + 1;
-        if (max_len > 0) {
+        int128_t bt_max = (strcmp (cat_bt, "i64") == 0) ? (int128_t)INT64_MAX
+                       : (strcmp (cat_bt, "i32") == 0) ? (int128_t)INT32_MAX
+                       : (strcmp (cat_bt, "i16") == 0) ? (int128_t)INT16_MAX
+                       : (int128_t)INT8_MAX;
+        if (max_len > 0 and max_len <= bt_max) {
           uint32_t max_const = Emit_Temp ();
           Emit ("  %%t%u = add %s 0, %lld  ; max index length\n", max_const, cat_bt, (long long)max_len);
           uint32_t overflow = Emit_Temp ();
@@ -22152,11 +22175,26 @@ uint32_t Generate_Apply (Syntax_Node *node) {
                  disc_val, disc_llvm, disc_ptr);
               if (strcmp (disc_llvm, iat) != 0)
                 disc_val = Emit_Convert (disc_val, disc_llvm, iat);
-              uint32_t expected = Emit_Temp ();
-              Emit ("  %%t%u = add %s 0, %lld"
-                   "  ; expected disc value\n",
-                 expected, iat,
-                 (long long)formal_type->record.disc_constraint_values[di]);
+              // Prefer dynamic expression when present (RM 3.7.2):
+              // for `NEW PARENT (IDENT_BOOL (TRUE), IDENT_INT (3))` the
+              // discriminant value is a runtime call, not a static literal.
+              // Fall back to disc_constraint_values for static cases.
+              uint32_t expected;
+              Syntax_Node *disc_expr = formal_type->record.disc_constraint_exprs
+                              ? formal_type->record.disc_constraint_exprs[di]
+                              : NULL;
+              if (disc_expr) {
+                expected = Generate_Expression (disc_expr);
+                const char *exp_t = Expression_Llvm_Type (disc_expr);
+                if (exp_t and strcmp (exp_t, iat) != 0)
+                  expected = Emit_Convert (expected, exp_t, iat);
+              } else {
+                expected = Emit_Temp ();
+                Emit ("  %%t%u = add %s 0, %lld"
+                     "  ; expected disc value\n",
+                   expected, iat,
+                   (long long)formal_type->record.disc_constraint_values[di]);
+              }
               Emit_Discriminant_Check (disc_val, expected,
                           iat, formal_type);
             }
@@ -23025,6 +23063,89 @@ type_conversion:
           const char *dst_llvm = Type_To_Llvm (dst_type);
           Emit ("  %%t%u = fptosi %s %%t%u to %s  ; float>fixed\n", t2, src_llvm, t1, dst_llvm);
           Temp_Set_Type (t2, dst_llvm);
+          return t2;
+
+        // Integer > Fixed (RM 4.6): treat integer as real, then divide
+        // by SMALL to get the scaled stored value.
+        } else if (Type_Is_Fixed_Point (dst_type) and src_type and
+               (src_type->kind == TYPE_INTEGER or
+                src_type->kind == TYPE_MODULAR or
+                src_type->kind == TYPE_UNIVERSAL_INTEGER)) {
+          double small = dst_type->fixed.small;
+          if (small <= 0) small = dst_type->fixed.delta > 0 ? dst_type->fixed.delta : 1.0;
+          const char *src_llvm = Expression_Llvm_Type (arg);
+          if (not src_llvm or src_llvm[0] == '\0') src_llvm = Integer_Arith_Type ();
+          uint32_t f1 = Emit_Temp ();
+          Emit ("  %%t%u = sitofp %s %%t%u to double  ; integer>double\n",
+             f1, src_llvm, result);
+          uint32_t f2 = Emit_Temp ();
+          uint64_t small_bits;
+          memcpy (&small_bits, &small, sizeof (small_bits));
+          Emit ("  %%t%u = fdiv double %%t%u, 0x%016llX  ; divide by SMALL\n",
+             f2, f1, (unsigned long long)small_bits);
+          uint32_t t2 = Emit_Temp ();
+          const char *dst_llvm = Type_To_Llvm (dst_type);
+          Emit ("  %%t%u = fptosi double %%t%u to %s  ; double>fixed\n",
+             t2, f2, dst_llvm);
+          Temp_Set_Type (t2, dst_llvm);
+          return t2;
+
+        // Fixed > Fixed (different SMALL): rescale by SMALL_src/SMALL_dst.
+        } else if (Type_Is_Fixed_Point (src_type) and Type_Is_Fixed_Point (dst_type)) {
+          double src_small = src_type->fixed.small;
+          if (src_small <= 0) src_small = src_type->fixed.delta > 0 ? src_type->fixed.delta : 1.0;
+          double dst_small = dst_type->fixed.small;
+          if (dst_small <= 0) dst_small = dst_type->fixed.delta > 0 ? dst_type->fixed.delta : 1.0;
+          const char *fix_int_ty = Temp_Get_Type (result);
+          if (not fix_int_ty or fix_int_ty[0] == '\0') fix_int_ty = Type_To_Llvm (src_type);
+          if (not fix_int_ty or fix_int_ty[0] == '\0') fix_int_ty = Integer_Arith_Type ();
+          uint32_t f1 = Emit_Temp ();
+          Emit ("  %%t%u = sitofp %s %%t%u to double  ; fixed>double\n",
+             f1, fix_int_ty, result);
+          uint32_t f2 = Emit_Temp ();
+          double scale = src_small / dst_small;
+          uint64_t scale_bits;
+          memcpy (&scale_bits, &scale, sizeof (scale_bits));
+          Emit ("  %%t%u = fmul double %%t%u, 0x%016llX  ; rescale SMALL_s/SMALL_d\n",
+             f2, f1, (unsigned long long)scale_bits);
+          uint32_t t2 = Emit_Temp ();
+          const char *dst_llvm = Type_To_Llvm (dst_type);
+          Emit ("  %%t%u = fptosi double %%t%u to %s  ; double>fixed\n",
+             t2, f2, dst_llvm);
+          Temp_Set_Type (t2, dst_llvm);
+          return t2;
+
+        // Fixed > Integer (RM 4.6): convert via float, scaling by SMALL.
+        // Fixed-point storage is scaled (value = stored * SMALL); integer
+        // result is the rounded real value, so descale first.
+        } else if (Type_Is_Fixed_Point (src_type) and dst_type and
+               (dst_type->kind == TYPE_INTEGER or
+                dst_type->kind == TYPE_MODULAR or
+                dst_type->kind == TYPE_UNIVERSAL_INTEGER)) {
+          double small = src_type->fixed.small;
+          if (small <= 0) small = src_type->fixed.delta > 0 ? src_type->fixed.delta : 1.0;
+          const char *fix_int_ty = Temp_Get_Type (result);
+          if (not fix_int_ty or fix_int_ty[0] == '\0') fix_int_ty = Type_To_Llvm (src_type);
+          if (not fix_int_ty or fix_int_ty[0] == '\0') fix_int_ty = Integer_Arith_Type ();
+
+          // Stored scaled integer > double > * SMALL > round > fptosi
+          uint32_t f1 = Emit_Temp ();
+          Emit ("  %%t%u = sitofp %s %%t%u to double  ; fixed>double\n",
+             f1, fix_int_ty, result);
+          uint32_t f2 = Emit_Temp ();
+          uint64_t small_bits;
+          memcpy (&small_bits, &small, sizeof (small_bits));
+          Emit ("  %%t%u = fmul double %%t%u, 0x%016llX  ; scale by SMALL\n",
+             f2, f1, (unsigned long long)small_bits);
+          uint32_t f3 = Emit_Temp ();
+          Emit ("  %%t%u = call double @llvm.round.f64(double %%t%u)\n", f3, f2);
+          uint32_t t2 = Emit_Temp ();
+          const char *dst_llvm = Type_To_Llvm (dst_type);
+          Emit ("  %%t%u = fptosi double %%t%u to %s  ; fixed>integer\n",
+             t2, f3, dst_llvm);
+          Temp_Set_Type (t2, dst_llvm);
+          if (Type_Is_Scalar (dst_type))
+            Emit_Constraint_Check_With_Type (t2, dst_type, src_type, dst_llvm);
           return t2;
         }
 
@@ -38195,7 +38316,10 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   Emit ("  br label %%skip_trail\n");
   Emit ("skip_trail:\n");
   Emit ("  %%st_i = phi %s [ %%end_init, %%got_start ], [ %%st_ni, %%st_cont ]\n", rts_sbt);
-  Emit ("  %%st_le = icmp sle %s %%st_i, %%sl_i\n", rts_sbt);
+  // Use `slt` (strict): st_i == sl_i is a valid single-character string
+  // (the char was already verified non-space in skip_lead). Only error if
+  // we ran past the leading position.
+  Emit ("  %%st_le = icmp slt %s %%st_i, %%sl_i\n", rts_sbt);
   Emit ("  br i1 %%st_le, label %%bad, label %%st_body\n");
   Emit ("st_body:\n");
   Emit ("  %%st_p = getelementptr i8, ptr %%buf, %s %%st_i\n", rts_sbt);
