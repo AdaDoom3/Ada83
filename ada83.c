@@ -9211,8 +9211,23 @@ Type_Info *Resolve_Binary_Op (Syntax_Node *node) {
       node->binary.right->type = node->type;
   }
   Type_Info *left_type = Resolve_Expression (node->binary.left);
-  if (node->binary.right->kind == NK_AGGREGATE and not node->binary.right->type and left_type)
-    node->binary.right->type = left_type;
+  if (node->binary.right->kind == NK_AGGREGATE and not node->binary.right->type and left_type) {
+    Type_Info *prop = left_type;
+
+    // For comparison/membership, strip discriminant constraints from the
+    // propagated type so the aggregate's own discriminant values don't
+    // get spuriously checked against the LHS subtype's constraint
+    // (RM 4.5.2: equality compares values; different discriminants yield
+    // FALSE, never CONSTRAINT_ERROR).
+    bool is_cmp = (op == TK_EQ or op == TK_NE or op == TK_LT or
+             op == TK_LE or op == TK_GT or op == TK_GE);
+    if (is_cmp) {
+      while (prop and Type_Is_Record (prop) and
+           prop->record.has_disc_constraints and prop->base_type)
+        prop = prop->base_type;
+    }
+    node->binary.right->type = prop;
+  }
   Type_Info *right_type = Resolve_Expression (node->binary.right);
 
   // Per RM 4.5: Binary operators can be user-defined. We first check for                           
@@ -9362,19 +9377,29 @@ Type_Info *Resolve_Binary_Op (Syntax_Node *node) {
       // In A = (1, 2, 3), the aggregate gets its type from A.                                     
       // Per GNAT sem_res.adb Find_Unique_Type, propagate type context.                            
       //                                                                                            
+      // For comparison ops, propagate the base type (without discriminant
+      // constraints). RM 4.5.2: equality compares values; if LHS subtype
+      // is constrained (e.g. R1(TRUE)) and RHS aggregate supplies a
+      // different discriminant, the comparison should return FALSE, not
+      // raise CONSTRAINT_ERROR via the aggregate's disc-vs-constraint
+      // check. Strip discriminant constraints from the propagated type.
       if (node->binary.right->kind == NK_AGGREGATE and not node->binary.right->type and left_type) {
-        node->binary.right->type = left_type;
-
-        // Re-resolve aggregate with proper type context
+        Type_Info *prop = left_type;
+        while (prop and Type_Is_Record (prop) and
+             prop->record.has_disc_constraints and prop->base_type)
+          prop = prop->base_type;
+        node->binary.right->type = prop;
         Resolve_Expression (node->binary.right);
         right_type = node->binary.right->type;
       }
 
       // Propagate type from right operand to aggregate
       if (node->binary.left->kind == NK_AGGREGATE and not node->binary.left->type and right_type) {
-        node->binary.left->type = right_type;
-
-        // Re-resolve aggregate with proper type context
+        Type_Info *prop = right_type;
+        while (prop and Type_Is_Record (prop) and
+             prop->record.has_disc_constraints and prop->base_type)
+          prop = prop->base_type;
+        node->binary.left->type = prop;
         Resolve_Expression (node->binary.left);
         left_type = node->binary.left->type;
       }
@@ -10627,6 +10652,20 @@ Type_Info *Resolve_Expression (Syntax_Node *node) {
               if (item->association.expression->kind == NK_AGGREGATE and comp_type) {
                 item->association.expression->type = comp_type;
               }
+
+              // RM 4.3: character literal in record component context
+              // resolves as enum literal when component type is enum
+              // (e.g. D => 'A' for enum (A, 'A')).
+              if (item->association.expression->kind == NK_CHARACTER and comp_type) {
+                Type_Info *enum_t = comp_type;
+                while (enum_t and enum_t->kind != TYPE_ENUMERATION) {
+                  if (enum_t->parent_type) enum_t = enum_t->parent_type;
+                  else if (enum_t->base_type) enum_t = enum_t->base_type;
+                  else break;
+                }
+                if (enum_t and enum_t->kind == TYPE_ENUMERATION)
+                  Resolve_Char_As_Enum (item->association.expression, enum_t);
+              }
               Resolve_Expression (item->association.expression);
             }
 
@@ -11766,6 +11805,17 @@ Type_Info *Resolve_Expression (Syntax_Node *node) {
         if (constraint and constraint->kind == NK_RANGE_CONSTRAINT) {
           Syntax_Node *range = constraint->range_constraint.range;
           if (range) {
+
+            // RM 3.5: range bounds in a scalar subtype indication are
+            // implicitly converted to the type mark's base type.
+            // Character literals as bounds resolve as enum literals
+            // when the base type is an enumeration containing them.
+            if (range->kind == NK_RANGE and Type_Is_Enumeration (base_type)) {
+              if (range->range.low and range->range.low->kind == NK_CHARACTER)
+                Resolve_Char_As_Enum (range->range.low, base_type);
+              if (range->range.high and range->range.high->kind == NK_CHARACTER)
+                Resolve_Char_As_Enum (range->range.high, base_type);
+            }
             Resolve_Expression (range);
 
             // Create a constrained subtype
@@ -12004,6 +12054,24 @@ Type_Info *Resolve_Expression (Syntax_Node *node) {
 
             // Only resolve the value expression, not the choices
             if (assoc->kind == NK_ASSOCIATION and assoc->association.expression) {
+
+              // RM 4.3.1: a character literal in a discriminant
+              // constraint resolves as an enum literal if the
+              // discriminant's type is (or derives from) an
+              // enumeration containing character literals.
+              if (assoc->association.expression->kind == NK_CHARACTER and
+                disc_target and disc_target->record.has_discriminants and
+                i < disc_target->record.discriminant_count) {
+                Type_Info *dtype = disc_target->record.components[i].component_type;
+                Type_Info *enum_t = dtype;
+                while (enum_t and enum_t->kind != TYPE_ENUMERATION) {
+                  if (enum_t->parent_type) enum_t = enum_t->parent_type;
+                  else if (enum_t->base_type) enum_t = enum_t->base_type;
+                  else break;
+                }
+                if (enum_t and enum_t->kind == TYPE_ENUMERATION)
+                  Resolve_Char_As_Enum (assoc->association.expression, enum_t);
+              }
               Resolve_Expression (assoc->association.expression);
             }
           }
@@ -25736,14 +25804,29 @@ uint32_t Generate_Aggregate (Syntax_Node *node) {
         };
       }
 
-      // RM 4.3.2: For constrained arrays, the positional element count must
-      // match the type's expected element count. Raises CE for mismatches
-      // like (3,4,5) when the type has only 2 elements.
+      // RM 4.3.2: For constrained arrays, the positional element count
+      // at this aggregate level must match the FIRST dimension's length.
+      // Inner dimensions are checked recursively when nested aggregates
+      // are walked. Use agg_type's ORIGINAL bounds (dim_hi[0] may have
+      // been overridden above to lo + N - 1, which would make the check
+      // vacuous). Skip for unconstrained types — bounds derive from count.
       if (n_positional > 0 and not has_named and
-        agg_type->array.is_constrained) {
-        int128_t type_count = Array_Element_Count (agg_type);
-        if (type_count > 0 and (int128_t)n_positional != type_count) {
-          Emit_Raise_Constraint_Error ("aggregate element count (RM 4.3.2)");
+        agg_type->array.is_constrained and
+        agg_type->array.index_count > 0) {
+        Type_Bound olo = agg_type->array.indices[0].low_bound;
+        Type_Bound ohi = agg_type->array.indices[0].high_bound;
+        if (olo.kind == BOUND_INTEGER and ohi.kind == BOUND_INTEGER) {
+          int128_t first_dim = ohi.int_value - olo.int_value + 1;
+
+          // Only raise on positional OVERFLOW. Underflow (fewer items
+          // than the formal dim) is legitimate when the aggregate's
+          // type carries the index subtype's full range but the
+          // aggregate becomes a sub-range whose actual bounds are
+          // derived from the positional count. The dim_hi[0] override
+          // earlier in this block handles the bound adjustment.
+          if (first_dim > 0 and (int128_t)n_positional > first_dim) {
+            Emit_Raise_Constraint_Error ("aggregate element count (RM 4.3.2)");
+          }
         }
       }
 
