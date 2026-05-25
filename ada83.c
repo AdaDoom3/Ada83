@@ -8050,8 +8050,12 @@ Symbol *Symbol_Find_By_Type (String_Slice name, Type_Info *expected_type) {
         for (Symbol *ovl = sym; ovl; ovl = ovl->next_overload) {
           if (is_char_lit and not Slice_Equal (ovl->name, name)) continue;
 
+          // For functions, match by return type, not by symbol type.
+          Type_Info *ovl_type = (ovl->kind == SYMBOL_FUNCTION)
+            ? ovl->return_type : ovl->type;
+
           // Check if type matches (either directly or via base type)
-          Type_Info *sym_base = ovl->type;
+          Type_Info *sym_base = ovl_type;
           while (sym_base) {
             if (sym_base->parent_type)
               sym_base = sym_base->parent_type;
@@ -8819,6 +8823,17 @@ Type_Info *Resolve_Identifier (Syntax_Node *node) {
     Report_Error (node->location, "undefined identifier '%.*s'",
                   node->string_val.text.length, node->string_val.text.data);
     return sm->type_integer;  // Return a valid type to allow continued analysis
+  }
+
+  // RM 6.6: when caller pre-set node->type as context (e.g.
+  // RETURN ORANGE where ORANGE is overloaded between CITRUS and HUE),
+  // prefer the homograph whose type matches the context. Without this,
+  // Symbol_Find returns the first-bucket match and the body's RETURN
+  // emits the wrong enum literal's position.
+  Type_Info *ctx = node->type;
+  if (ctx and sym->is_overloaded) {
+    Symbol *match = Symbol_Find_By_Type (node->string_val.text, ctx);
+    if (match) sym = match;
   }
   node->symbol = sym;
 
@@ -10565,6 +10580,13 @@ Type_Info *Resolve_Expression (Syntax_Node *node) {
 
           // Only resolve if not already resolved as enum literal
           if (not resolved_as_enum) {
+            // RM 6.6: pre-set arg type for context-sensitive
+            // attributes so overloaded names resolve correctly.
+            //   POS/SUCC/PRED/IMAGE: arg has prefix type.
+            if (needs_enum_context and arg and not arg->type and
+              (arg->kind == NK_IDENTIFIER or arg->kind == NK_APPLY or
+               arg->kind == NK_BINARY_OP))
+              arg->type = prefix_type;
             Resolve_Expression (arg);
           }
         }
@@ -10718,10 +10740,18 @@ Type_Info *Resolve_Expression (Syntax_Node *node) {
       // Resolve subtype mark first to get the type
       Resolve_Expression (node->qualified.subtype_mark);
 
-      // Propagate type to expression (critical for aggregates)
+      // Propagate type to expression (critical for aggregates).
+      // Also propagate to NK_APPLY/NK_BINARY_OP/NK_IDENTIFIER so
+      // overload res (RM 6.6) sees qualifying type as context:
+      // `WHOLE'(F2(0,0))` picks F2 returning WHOLE; `CITRUS'(ORANGE)`
+      // picks CITRUS.ORANGE over HUE.ORANGE.
       if (node->qualified.expression and
-        node->qualified.expression->kind == NK_AGGREGATE and
-        node->qualified.subtype_mark->type) {
+        node->qualified.subtype_mark->type and
+        not node->qualified.expression->type and
+        (node->qualified.expression->kind == NK_AGGREGATE or
+         node->qualified.expression->kind == NK_APPLY or
+         node->qualified.expression->kind == NK_BINARY_OP or
+         node->qualified.expression->kind == NK_IDENTIFIER)) {
         node->qualified.expression->type = node->qualified.subtype_mark->type;
       }
       Resolve_Expression (node->qualified.expression);
@@ -10857,10 +10887,15 @@ Type_Info *Resolve_Expression (Syntax_Node *node) {
             }
             if (inner_agg_type and item->kind == NK_ASSOCIATION and item->association.expression) {
               Syntax_Node *expr = item->association.expression;
-              if (expr->kind == NK_AGGREGATE) {
+              if (not expr->type and
+                (expr->kind == NK_AGGREGATE or expr->kind == NK_APPLY or
+                 expr->kind == NK_BINARY_OP or expr->kind == NK_IDENTIFIER)) {
                 expr->type = inner_agg_type;
               }
-            } else if (inner_agg_type and item->kind == NK_AGGREGATE) {
+            } else if (inner_agg_type and
+                   not item->type and
+                   (item->kind == NK_AGGREGATE or item->kind == NK_APPLY or
+                    item->kind == NK_BINARY_OP or item->kind == NK_IDENTIFIER)) {
               item->type = inner_agg_type;
             }
             Resolve_Expression (item);
@@ -11401,13 +11436,15 @@ Type_Info *Resolve_Expression (Syntax_Node *node) {
 
             // Propagate component type to init expression so overload
             // resolution (RM 6.6) and aggregate type inference work.
-            // Aggregates, calls, and binary ops all benefit from
-            // having node->type pre-set to the component's typemark.
+            // Aggregates, calls, binary ops, and identifiers all
+            // benefit from having node->type pre-set to the
+            // component's typemark.
             if (comp->component.init) {
               if (not comp->component.init->type and comp_type and
                 (comp->component.init->kind == NK_AGGREGATE or
                  comp->component.init->kind == NK_APPLY or
-                 comp->component.init->kind == NK_BINARY_OP))
+                 comp->component.init->kind == NK_BINARY_OP or
+                 comp->component.init->kind == NK_IDENTIFIER))
                 comp->component.init->type = comp_type;
               Resolve_Expression (comp->component.init);
             }
@@ -11524,7 +11561,8 @@ Type_Info *Resolve_Expression (Syntax_Node *node) {
                   if (not vc->component.init->type and comp_type and
                     (vc->component.init->kind == NK_AGGREGATE or
                      vc->component.init->kind == NK_APPLY or
-                     vc->component.init->kind == NK_BINARY_OP))
+                     vc->component.init->kind == NK_BINARY_OP or
+                     vc->component.init->kind == NK_IDENTIFIER))
                     vc->component.init->type = comp_type;
                   Resolve_Expression (vc->component.init);
                 }
@@ -12184,15 +12222,30 @@ Type_Info *Resolve_Expression (Syntax_Node *node) {
 
             // Only resolve the value expression, not the choices
             if (assoc->kind == NK_ASSOCIATION and assoc->association.expression) {
+              Syntax_Node *vexpr = assoc->association.expression;
 
-              // RM 4.3.1: a character literal in a discriminant
-              // constraint resolves as an enum literal if the
-              // discriminant's type is (or derives from) an
-              // enumeration containing character literals.
-              if (assoc->association.expression->kind == NK_CHARACTER and
-                disc_target and disc_target->record.has_discriminants and
-                i < disc_target->record.discriminant_count) {
-                Type_Info *dtype = disc_target->record.components[i].component_type;
+              // Locate the target discriminant. For positional assoc,
+              // it's i-th; for named, look up by choice name.
+              Type_Info *dtype = NULL;
+              if (disc_target and disc_target->record.has_discriminants) {
+                uint32_t didx = i;
+                if (assoc->association.choices.count > 0) {
+                  Syntax_Node *ch = assoc->association.choices.items[0];
+                  if (ch and ch->kind == NK_IDENTIFIER) {
+                    for (uint32_t k = 0; k < disc_target->record.discriminant_count; k++) {
+                      if (Slice_Equal_Ignore_Case (disc_target->record.components[k].name,
+                            ch->string_val.text)) {
+                        didx = k; break;
+                      }
+                    }
+                  }
+                }
+                if (didx < disc_target->record.discriminant_count)
+                  dtype = disc_target->record.components[didx].component_type;
+              }
+
+              // RM 4.3.1: char literal vs enum disc type.
+              if (vexpr->kind == NK_CHARACTER and dtype) {
                 Type_Info *enum_t = dtype;
                 while (enum_t and enum_t->kind != TYPE_ENUMERATION) {
                   if (enum_t->parent_type) enum_t = enum_t->parent_type;
@@ -12200,9 +12253,15 @@ Type_Info *Resolve_Expression (Syntax_Node *node) {
                   else break;
                 }
                 if (enum_t and enum_t->kind == TYPE_ENUMERATION)
-                  Resolve_Char_As_Enum (assoc->association.expression, enum_t);
+                  Resolve_Char_As_Enum (vexpr, enum_t);
               }
-              Resolve_Expression (assoc->association.expression);
+
+              // RM 6.6: pre-set context type for overload resolution.
+              if (dtype and not vexpr->type and
+                (vexpr->kind == NK_APPLY or vexpr->kind == NK_BINARY_OP or
+                 vexpr->kind == NK_AGGREGATE or vexpr->kind == NK_IDENTIFIER))
+                vexpr->type = dtype;
+              Resolve_Expression (vexpr);
             }
           }
 
@@ -12822,12 +12881,13 @@ void Resolve_Statement (Syntax_Node *node) {
       Resolve_Expression (node->assignment.target);
 
       // Propagate target type to value for context-dependent typing:
-      // aggregates (RM 4.3), calls/binary ops needing overload res
-      // by return type (RM 6.6).
+      // aggregates (RM 4.3), calls/binary ops/identifiers needing
+      // overload res by return type (RM 6.6).
       if (node->assignment.target->type and
         (node->assignment.value->kind == NK_AGGREGATE or
          node->assignment.value->kind == NK_APPLY or
-         node->assignment.value->kind == NK_BINARY_OP) and
+         node->assignment.value->kind == NK_BINARY_OP or
+         node->assignment.value->kind == NK_IDENTIFIER) and
         not node->assignment.value->type) {
         node->assignment.value->type = node->assignment.target->type;
       }
@@ -12907,13 +12967,13 @@ void Resolve_Statement (Syntax_Node *node) {
         Symbol *owner = sm->current_scope->owner;
         Type_Info *ret_type = (owner and owner->kind == SYMBOL_FUNCTION)
           ? owner->return_type : NULL;
-        if (rexpr->kind == NK_AGGREGATE and not rexpr->type and ret_type)
-          rexpr->type = ret_type;
-
-        // For RETURN A & B where both sides may be aggregates,
-        // set the expression type so operand aggregates inherit it
-        if (ret_type and rexpr->kind == NK_BINARY_OP and
-          rexpr->binary.op == TK_AMPERSAND and not rexpr->type)
+        // Pre-set type on aggregates, calls, binary ops, and
+        // identifiers so overload resolution (RM 6.6) sees the
+        // function's declared return type as context (e.g. RETURN
+        // ORANGE picks CITRUS.ORANGE vs HUE.ORANGE).
+        if (ret_type and not rexpr->type and
+          (rexpr->kind == NK_AGGREGATE or rexpr->kind == NK_APPLY or
+           rexpr->kind == NK_BINARY_OP or rexpr->kind == NK_IDENTIFIER))
           rexpr->type = ret_type;
         Resolve_Expression (rexpr);
       }
@@ -13372,12 +13432,14 @@ void Resolve_Declaration (Syntax_Node *node) {
           node->object_decl.init->type = node->object_decl.object_type->type;
         }
 
-        // Pre-set the type of an NK_APPLY or NK_BINARY_OP initializer
-        // to the declared type so Resolve_Apply / Resolve_Binary_Op can
-        // use it as a context for user-operator overload resolution by
-        // return type (RM 6.6).
+        // Pre-set type on call/binary op/identifier initializer to the
+        // declared type so Resolve_Apply / Resolve_Binary_Op /
+        // Resolve_Identifier can use it as context for overload
+        // resolution by return type (RM 6.6) — e.g. `C : CITRUS :=
+        // ORANGE` picks CITRUS.ORANGE over HUE.ORANGE.
         if ((node->object_decl.init->kind == NK_APPLY or
-             node->object_decl.init->kind == NK_BINARY_OP) and
+             node->object_decl.init->kind == NK_BINARY_OP or
+             node->object_decl.init->kind == NK_IDENTIFIER) and
           node->object_decl.object_type and node->object_decl.object_type->type and
           not node->object_decl.init->type) {
           node->object_decl.init->type = node->object_decl.object_type->type;
@@ -13481,9 +13543,17 @@ void Resolve_Declaration (Syntax_Node *node) {
                 disc_type = Resolve_Expression (disc_spec->discriminant.disc_type);
               }
 
-              // Resolve default expression if present (RM 3.7.1)
+              // Resolve default expression if present (RM 3.7.1).
+              // Pre-set type on calls/binary ops/aggregates/identifiers
+              // so overload resolution (RM 6.6) sees the discriminant's
+              // declared type as context.
               if (disc_spec->discriminant.default_expr) {
-                Resolve_Expression (disc_spec->discriminant.default_expr);
+                Syntax_Node *de = disc_spec->discriminant.default_expr;
+                if (disc_type and not de->type and
+                  (de->kind == NK_APPLY or de->kind == NK_BINARY_OP or
+                   de->kind == NK_AGGREGATE or de->kind == NK_IDENTIFIER))
+                  de->type = disc_type;
+                Resolve_Expression (de);
               }
 
               // Add each discriminant name as a symbol (RM 3.7.1)
@@ -13851,12 +13921,16 @@ void Resolve_Declaration (Syntax_Node *node) {
                       ps->param_spec.param_type->type : NULL;
 
               // Resolve default expression, propagating param type
-              // to untyped aggregates (RM 6.1, 3.2.1)
+              // to untyped aggregates/calls/binary ops/identifiers so
+              // overload resolution (RM 6.6) sees the param's typemark
+              // as context (RM 6.1, 3.2.1).
               if (ps->param_spec.default_expr) {
-                if (ps->param_spec.default_expr->kind == NK_AGGREGATE and
-                  not ps->param_spec.default_expr->type and pt)
-                  ps->param_spec.default_expr->type = pt;
-                Resolve_Expression (ps->param_spec.default_expr);
+                Syntax_Node *de = ps->param_spec.default_expr;
+                if (pt and not de->type and
+                  (de->kind == NK_AGGREGATE or de->kind == NK_APPLY or
+                   de->kind == NK_BINARY_OP or de->kind == NK_IDENTIFIER))
+                  de->type = pt;
+                Resolve_Expression (de);
               }
               for (uint32_t j = 0; j < ps->param_spec.names.count; j++) {
                 Syntax_Node *name = ps->param_spec.names.items[j];
@@ -32088,7 +32162,17 @@ void Generate_Statement (Syntax_Node *node) {
                 } else {
                   const char *param_type = pt ?
                     Type_To_Llvm (pt) : Integer_Arith_Type ();
-                  val = Emit_Convert (val, Integer_Arith_Type (), param_type);
+                  // Use val's actual type as src — default expr may
+                  // return i8 (enum) and Emit_Convert(i32→i8) on an
+                  // already-i8 value emits invalid `trunc i32 %v to i8`.
+                  const char *src_type = Temp_Get_Type (val);
+                  if (not src_type or src_type[0] == '\0') {
+                    src_type = Expression_Llvm_Type (
+                      original_sym->parameters[i].default_value);
+                  }
+                  if (not src_type or src_type[0] == '\0')
+                    src_type = Integer_Arith_Type ();
+                  val = Emit_Convert (val, src_type, param_type);
 
                   // Scalar constraint check (RM 6.4.1)
                   val = Emit_Constraint_Check_With_Type (val, pt,
@@ -36576,6 +36660,23 @@ void Generate_Generic_Instance_Body (Symbol *inst_sym,
                 }
               }
               obj_sym->needs_fat_ptr_storage = needs_fat;
+
+              // RM 12.1.1 / 12.4: IN OUT generic object formal is a
+              // *renaming* of the actual variable — formal and actual
+              // share storage. Emit %formal_sym as a pointer alias for
+              // the actual's address instead of alloca+store, so writes
+              // via formal reflect in actual (and vice versa).
+              Generic_Mode_Kind gmode = formal->generic_object_param.mode;
+              if (gmode == GEN_MODE_IN_OUT or gmode == GEN_MODE_OUT) {
+                uint32_t actual_addr = Generate_Lvalue (actual_expr);
+                Emit ("  %%");
+                Emit_Symbol_Name (obj_sym);
+                Emit (" = getelementptr i8, ptr %%t%u, i64 0"
+                      "  ; IN OUT generic formal alias\n", actual_addr);
+                ai++;
+                continue;
+              }
+
               Emit ("  %%");
               Emit_Symbol_Name (obj_sym);
               const char *ts = needs_fat ? FAT_PTR_TYPE
