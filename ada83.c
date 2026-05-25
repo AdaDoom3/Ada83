@@ -1830,11 +1830,16 @@ void Symbol_Manager_Init_Predefined (void);
 void Symbol_Manager_Init            (void);
 
 // Captures the types and names of actual arguments at a call site for
-// overload resolution.
+// overload resolution. `alt_types` carries alternative interpretations
+// for ambiguous argument expressions (e.g. a binary op like `5<5`
+// resolving as either predefined `<`→BOOLEAN or user `<`→INTEGER); the
+// resolver tries `types[i]` first, then `alt_types[i]` if non-NULL,
+// implementing RM 6.6 bidirectional overload resolution.
 typedef struct {
-  Type_Info   **types; // Array of resolved argument types
-  uint32_t      count; // Number of actual arguments
-  String_Slice *names; // Named-association formal names, or NULL for positional
+  Type_Info   **types;     // Array of resolved argument types (primary)
+  Type_Info   **alt_types; // Optional alternates, parallel to `types` (or NULL)
+  uint32_t      count;     // Number of actual arguments
+  String_Slice *names;     // Named-association formal names, or NULL for positional
 } Argument_Info;
 
 typedef struct {
@@ -8109,9 +8114,9 @@ bool Type_Covers (Type_Info *expected, Type_Info *actual) {
   // Same type always covers
   if (expected == actual) return true;
 
-  // Universal_Integer covers any discrete type
-  if (Type_Is_Universal_Integer (expected)) return Type_Is_Discrete (actual);
-  if (Type_Is_Universal_Integer (actual))   return Type_Is_Discrete (expected);
+  // Universal_Integer is covered by any Integer type
+  if (Type_Is_Universal_Integer (expected)) return Type_Is_Integer_Like (actual);
+  if (Type_Is_Universal_Integer (actual))   return Type_Is_Integer_Like (expected);
 
   // Universal_Real covers any real type
   if (Type_Is_Universal_Real (expected)) return Type_Is_Real (actual);
@@ -8296,7 +8301,13 @@ bool Arguments_Match_Profile (Symbol *sym, Argument_Info *args) {
       param_covered[param_idx] = true;
     }
     if (not Type_Covers (param_type, arg_type)) {
-      return false;
+      // RM 6.6: try alternative interpretation if available (e.g. user
+      // `<` returns INT but predefined `<` returns BOOLEAN for the same
+      // operand types — the alt may match where the primary didn't).
+      Type_Info *alt = (args->alt_types ? args->alt_types[i] : NULL);
+      if (not alt or not Type_Covers (param_type, alt)) {
+        return false;
+      }
     }
   }
 
@@ -8494,10 +8505,9 @@ Symbol *Disambiguate(Interp_List *interps, Type_Info *context_type,
 // Collect, filter, disambiguate, fail if not unique.                                              
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 
-Symbol *Resolve_Overloaded_Call (
-                     String_Slice name,
-                     Argument_Info *args,
-                     Type_Info *context_type) {
+Symbol *Resolve_Overloaded_Call (String_Slice name,
+                                 Argument_Info *args,
+                                 Type_Info *context_type) {
   Interp_List interps;
 
   // Phase 1: Collect all visible interpretations
@@ -8514,16 +8524,33 @@ Symbol *Resolve_Overloaded_Call (
     }
   }
 
-  // Phase 3: Apply context type filtering if provided
+  // Phase 3: Apply context type filtering if provided.
+  // Two-stage: prefer interpretations whose return type is the SAME base
+  // (subtypes of one named type) over loose Type_Covers matches (which
+  // unify derived types with their parents via Type_Root). For
+  // `W : WHOLE := F1(0,0)` where WHOLE is `NEW INTEGER`, F1 overloads
+  // returning INTEGER and WHOLE both Type_Cover-match WHOLE, but only
+  // the WHOLE-returning one is implicitly assignable (RM 6.6).
   if (context_type and interps.count > 1) {
-    uint32_t write_idx = 0;
+    Type_Info *ctx_base = Type_Base (context_type);
+    uint32_t strict_write = 0;
     for (uint32_t i = 0; i < interps.count; i++) {
-      if (Type_Covers (context_type, interps.items[i].typ)) {
-        interps.items[write_idx++] = interps.items[i];
-      }
+      Type_Info *ret_t = interps.items[i].typ;
+      Type_Info *ret_base = Type_Base (ret_t);
+      bool exact = (ret_t == context_type) or
+             (ret_base == ctx_base and ret_base != NULL);
+      if (exact) interps.items[strict_write++] = interps.items[i];
     }
-    if (write_idx > 0) {
-      interps.count = write_idx;
+    if (strict_write > 0) {
+      interps.count = strict_write;
+    } else {
+      uint32_t loose_write = 0;
+      for (uint32_t i = 0; i < interps.count; i++) {
+        if (Type_Covers (context_type, interps.items[i].typ)) {
+          interps.items[loose_write++] = interps.items[i];
+        }
+      }
+      if (loose_write > 0) interps.count = loose_write;
     }
 
     // If no matches, keep all for better error reporting
@@ -9246,12 +9273,16 @@ Type_Info *Resolve_Binary_Op (Syntax_Node *node) {
       .count = 2,
       .names = NULL
     };
-    Symbol *user_op = Resolve_Overloaded_Call (op_name, &args, NULL);
+    // Pass node->type as context so user-defined operator overloads
+    // can be disambiguated by expected result type (RM 6.6). E.g.
+    // `W : WHOLE := 0 - 0` picks the "-" overload returning WHOLE,
+    // not INTEGER, when both have matching operand types.
+    Symbol *user_op = Resolve_Overloaded_Call (op_name, &args, node->type);
 
-    // Skip predefined operators when either operand is universal:                                  
-    // universal types must propagate through arithmetic (RM 4.10).                                
-    // Predefined *(FLOAT,FLOAT)>FLOAT would swallow UNIVERSAL_REAL.                               
-    //                                                                                              
+    // Skip predefined operators when either operand is universal:
+    // universal types must propagate through arithmetic (RM 4.10).
+    // Predefined *(FLOAT,FLOAT)>FLOAT would swallow UNIVERSAL_REAL.
+    //
     if (user_op and user_op->kind == SYMBOL_FUNCTION) {
       if (user_op->is_predefined and
         (Type_Is_Universal (left_type) or Type_Is_Universal (right_type)))
@@ -9492,14 +9523,85 @@ Type_Info *Resolve_Binary_Op (Syntax_Node *node) {
   }
   return node->type;
 }
+// RM 6.6 helper: for a binary-op or function-call argument expression
+// whose name is overloaded, collect an alternative return type that
+// differs from the one picked by single-pass resolution. The outer
+// overload-resolution can then test the call against both the primary
+// and the alternative, yielding a unique combination when one exists.
+//
+// Returns NULL if there's no alternative (single interpretation, or
+// caller isn't overloaded, or sub-resolution failed).
+Type_Info *Possible_Alt_Type (Syntax_Node *arg) {
+  if (not arg) return NULL;
+
+  // Binary operator: try each interpretation of `op` and look for a
+  // return type that differs from arg->type. Operand types are already
+  // set by the single-pass resolve, so no recursion needed here.
+  if (arg->kind == NK_BINARY_OP) {
+    Token_Kind op = arg->binary.op;
+    String_Slice op_name = Operator_Name (op);
+    if (op_name.length == 0) return NULL;
+    Type_Info *lt = arg->binary.left  ? arg->binary.left->type  : NULL;
+    Type_Info *rt = arg->binary.right ? arg->binary.right->type : NULL;
+    if (not lt or not rt) return NULL;
+    Type_Info *atypes[2] = { lt, rt };
+    Argument_Info sub_args = { .types = atypes, .count = 2, .names = NULL };
+    Interp_List interps;
+    Collect_Interpretations (op_name, &interps);
+    Filter_By_Arguments (&interps, &sub_args);
+    for (uint32_t i = 0; i < interps.count; i++) {
+      Type_Info *t = interps.items[i].typ;
+      if (t and t != arg->type) return t;
+    }
+    return NULL;
+  }
+
+  // Function call: try each visible overload of the prefix name and
+  // return the first return type that differs from arg->type.
+  if (arg->kind == NK_APPLY and arg->apply.prefix and
+    arg->apply.prefix->kind == NK_IDENTIFIER) {
+    String_Slice nm = arg->apply.prefix->string_val.text;
+    uint32_t sub_arg_count = (uint32_t)arg->apply.arguments.count;
+    Type_Info **sub_types = sub_arg_count
+      ? Arena_Allocate (sub_arg_count * sizeof (Type_Info*)) : NULL;
+    String_Slice *sub_names = sub_arg_count
+      ? Arena_Allocate (sub_arg_count * sizeof (String_Slice)) : NULL;
+    for (uint32_t i = 0; i < sub_arg_count; i++) {
+      Syntax_Node *a = arg->apply.arguments.items[i];
+      if (a->kind == NK_ASSOCIATION) {
+        if (a->association.choices.count == 1 and
+          a->association.choices.items[0]->kind == NK_IDENTIFIER)
+          sub_names[i] = a->association.choices.items[0]->string_val.text;
+        sub_types[i] = a->association.expression
+          ? a->association.expression->type : NULL;
+      } else {
+        sub_names[i] = (String_Slice){0};
+        sub_types[i] = a->type;
+      }
+    }
+    Argument_Info sub_args = {
+      .types = sub_types, .count = sub_arg_count, .names = sub_names };
+    Interp_List interps;
+    Collect_Interpretations (nm, &interps);
+    Filter_By_Arguments (&interps, &sub_args);
+    for (uint32_t i = 0; i < interps.count; i++) {
+      Type_Info *t = interps.items[i].typ;
+      if (t and t != arg->type) return t;
+    }
+  }
+  return NULL;
+}
+
 Type_Info *Resolve_Apply (Syntax_Node *node) {
 
   // First, resolve all arguments to get their types
   uint32_t arg_count = (uint32_t)node->apply.arguments.count;
   Type_Info **arg_types = NULL;
+  Type_Info **arg_alt_types = NULL;
   String_Slice *arg_names = NULL;
   if (arg_count > 0) {
     arg_types = Arena_Allocate (arg_count * sizeof (Type_Info*));
+    arg_alt_types = Arena_Allocate (arg_count * sizeof (Type_Info*));
     arg_names = Arena_Allocate (arg_count * sizeof (String_Slice));
     for (uint32_t i = 0; i < arg_count; i++) {
       Syntax_Node *arg = node->apply.arguments.items[i];
@@ -9514,23 +9616,27 @@ Type_Info *Resolve_Apply (Syntax_Node *node) {
         // Resolve the value expression
         if (arg->association.expression) {
           arg_types[i] = Resolve_Expression (arg->association.expression);
+          arg_alt_types[i] = Possible_Alt_Type (arg->association.expression);
         }
       } else {
         arg_names[i] = (String_Slice){0};  // Positional
 
-        // Defer aggregate resolution: aggregates need parameter type                               
-        // context for record component names (RM 4.3, 6.4). They'll                                
-        // be resolved after the callable is identified.                                           
-        //                                                                                          
-        if (arg->kind == NK_AGGREGATE)
+        // Defer aggregate resolution: aggregates need parameter type
+        // context for record component names (RM 4.3, 6.4). They'll
+        // be resolved after the callable is identified.
+        //
+        if (arg->kind == NK_AGGREGATE) {
           arg_types[i] = NULL;
-        else
+        } else {
           arg_types[i] = Resolve_Expression (arg);
+          arg_alt_types[i] = Possible_Alt_Type (arg);
+        }
       }
     }
   }
   Argument_Info args = {
     .types = arg_types,
+    .alt_types = arg_alt_types,
     .count = arg_count,
     .names = arg_names
   };
@@ -9607,6 +9713,17 @@ Type_Info *Resolve_Apply (Syntax_Node *node) {
         // Propagate type to aggregate arguments
         if (arg->kind == NK_AGGREGATE and not arg->type and param_type) {
           arg->type = param_type;
+          Resolve_Expression (arg);
+        }
+
+        // RM 6.6: if this arg had an alternate interpretation, re-resolve
+        // it with the formal parameter type as context so a binary-op
+        // or call picks the overload whose return matches the formal
+        // (e.g. `5<5` as a BOOLEAN formal picks predefined `<`).
+        if (arg_alt_types and arg_alt_types[i] and param_type and
+          arg->type != param_type and Type_Covers (param_type, arg_alt_types[i])) {
+          arg->type = param_type;  // context hint
+          arg->symbol = NULL;       // clear stale pick
           Resolve_Expression (arg);
         }
       }
@@ -11282,10 +11399,15 @@ Type_Info *Resolve_Expression (Syntax_Node *node) {
               }
             }
 
-            // Propagate component type to aggregate inits
+            // Propagate component type to init expression so overload
+            // resolution (RM 6.6) and aggregate type inference work.
+            // Aggregates, calls, and binary ops all benefit from
+            // having node->type pre-set to the component's typemark.
             if (comp->component.init) {
-              if (comp->component.init->kind == NK_AGGREGATE and
-                not comp->component.init->type and comp_type)
+              if (not comp->component.init->type and comp_type and
+                (comp->component.init->kind == NK_AGGREGATE or
+                 comp->component.init->kind == NK_APPLY or
+                 comp->component.init->kind == NK_BINARY_OP))
                 comp->component.init->type = comp_type;
               Resolve_Expression (comp->component.init);
             }
@@ -11399,8 +11521,10 @@ Type_Info *Resolve_Expression (Syntax_Node *node) {
                              vc->component.component_type->type : sm->type_integer;
                 uint32_t comp_size = comp_type ? comp_type->size : 8;
                 if (vc->component.init) {
-                  if (vc->component.init->kind == NK_AGGREGATE and
-                    not vc->component.init->type and comp_type)
+                  if (not vc->component.init->type and comp_type and
+                    (vc->component.init->kind == NK_AGGREGATE or
+                     vc->component.init->kind == NK_APPLY or
+                     vc->component.init->kind == NK_BINARY_OP))
                     vc->component.init->type = comp_type;
                   Resolve_Expression (vc->component.init);
                 }
@@ -12697,9 +12821,14 @@ void Resolve_Statement (Syntax_Node *node) {
     case NK_ASSIGNMENT:
       Resolve_Expression (node->assignment.target);
 
-      // Propagate target type to aggregate values for context-dependent typing
-      if (node->assignment.value->kind == NK_AGGREGATE and
-        node->assignment.target->type) {
+      // Propagate target type to value for context-dependent typing:
+      // aggregates (RM 4.3), calls/binary ops needing overload res
+      // by return type (RM 6.6).
+      if (node->assignment.target->type and
+        (node->assignment.value->kind == NK_AGGREGATE or
+         node->assignment.value->kind == NK_APPLY or
+         node->assignment.value->kind == NK_BINARY_OP) and
+        not node->assignment.value->type) {
         node->assignment.value->type = node->assignment.target->type;
       }
       Resolve_Expression (node->assignment.value);
@@ -13243,10 +13372,12 @@ void Resolve_Declaration (Syntax_Node *node) {
           node->object_decl.init->type = node->object_decl.object_type->type;
         }
 
-        // Pre-set the type of an NK_APPLY initializer to the declared
-        // type so Resolve_Apply can use it as a context for overload
-        // resolution by return type (RM 6.6).
-        if (node->object_decl.init->kind == NK_APPLY and
+        // Pre-set the type of an NK_APPLY or NK_BINARY_OP initializer
+        // to the declared type so Resolve_Apply / Resolve_Binary_Op can
+        // use it as a context for user-operator overload resolution by
+        // return type (RM 6.6).
+        if ((node->object_decl.init->kind == NK_APPLY or
+             node->object_decl.init->kind == NK_BINARY_OP) and
           node->object_decl.object_type and node->object_decl.object_type->type and
           not node->object_decl.init->type) {
           node->object_decl.init->type = node->object_decl.object_type->type;
@@ -13778,60 +13909,92 @@ void Resolve_Declaration (Syntax_Node *node) {
 
       // PROCEDURE P RENAMES Q; or FUNCTION F RENAMES G;
       {
-        if (node->subprogram_spec.renamed) {
-          Resolve_Expression (node->subprogram_spec.renamed);
-        }
-        Symbol *renamed_sym = node->subprogram_spec.renamed ?
-                    node->subprogram_spec.renamed->symbol : NULL;
-
-        // Create new symbol for the rename
+        // Resolve the renamed reference. RM 8.5.4: when Q is overloaded,
+        // disambiguate by the rename's own profile (parameter types,
+        // result type). Build that profile first, then look up the
+        // specific overload, then create our symbol.
         bool is_proc = not node->subprogram_spec.return_type;
         Symbol *sym = Symbol_New (
           is_proc ? SYMBOL_PROCEDURE : SYMBOL_FUNCTION,
           node->subprogram_spec.name, node->location);
 
-        // Copy info from renamed subprogram if available
-        if (renamed_sym) {
-          sym->parameters      = renamed_sym->parameters;
-          sym->parameter_count = renamed_sym->parameter_count;
-          sym->return_type     = renamed_sym->return_type;
-          sym->renamed_object  = (Syntax_Node *)renamed_sym;  // Store reference
-
-        // Build parameter info from our own spec
-        } else {
-          Node_List *param_list = &node->subprogram_spec.parameters;
-          uint32_t total_params = 0;
+        // Build sym->parameters / sym->return_type from rename's own spec
+        Node_List *param_list = &node->subprogram_spec.parameters;
+        uint32_t total_params = 0;
+        for (uint32_t i = 0; i < param_list->count; i++) {
+          Syntax_Node *ps = param_list->items[i];
+          if (ps->kind == NK_PARAM_SPEC)
+            total_params += ps->param_spec.names.count;
+        }
+        sym->parameter_count = total_params;
+        if (total_params > 0) {
+          sym->parameters = Arena_Allocate (total_params * sizeof (Parameter_Info));
+          uint32_t idx = 0;
           for (uint32_t i = 0; i < param_list->count; i++) {
             Syntax_Node *ps = param_list->items[i];
-            if (ps->kind == NK_PARAM_SPEC)
-              total_params += ps->param_spec.names.count;
-          }
-          sym->parameter_count = total_params;
-          if (total_params > 0) {
-            sym->parameters = Arena_Allocate (total_params * sizeof (Parameter_Info));
-            uint32_t idx = 0;
-            for (uint32_t i = 0; i < param_list->count; i++) {
-              Syntax_Node *ps = param_list->items[i];
-              if (ps->kind == NK_PARAM_SPEC) {
-                if (ps->param_spec.param_type)
-                  Resolve_Expression (ps->param_spec.param_type);
-                Type_Info *pt = ps->param_spec.param_type ?
-                        ps->param_spec.param_type->type : NULL;
-                for (uint32_t j = 0; j < ps->param_spec.names.count; j++) {
-                  Syntax_Node *nm = ps->param_spec.names.items[j];
-                  sym->parameters[idx].name          = nm->string_val.text;
-                  sym->parameters[idx].param_type    = pt;
-                  sym->parameters[idx].mode          = (Parameter_Mode)ps->param_spec.mode;
-                  sym->parameters[idx].default_value = ps->param_spec.default_expr;
-                  idx++;
-                }
+            if (ps->kind == NK_PARAM_SPEC) {
+              if (ps->param_spec.param_type)
+                Resolve_Expression (ps->param_spec.param_type);
+              Type_Info *pt = ps->param_spec.param_type ?
+                      ps->param_spec.param_type->type : NULL;
+              if (ps->param_spec.default_expr) {
+                if (pt and not ps->param_spec.default_expr->type and
+                  (ps->param_spec.default_expr->kind == NK_APPLY or
+                   ps->param_spec.default_expr->kind == NK_BINARY_OP or
+                   ps->param_spec.default_expr->kind == NK_AGGREGATE))
+                  ps->param_spec.default_expr->type = pt;
+                Resolve_Expression (ps->param_spec.default_expr);
+              }
+              for (uint32_t j = 0; j < ps->param_spec.names.count; j++) {
+                Syntax_Node *nm = ps->param_spec.names.items[j];
+                sym->parameters[idx].name          = nm->string_val.text;
+                sym->parameters[idx].param_type    = pt;
+                sym->parameters[idx].mode          = (Parameter_Mode)ps->param_spec.mode;
+                sym->parameters[idx].default_value = ps->param_spec.default_expr;
+                idx++;
               }
             }
           }
-          if (node->subprogram_spec.return_type) {
-            Resolve_Expression (node->subprogram_spec.return_type);
-            sym->return_type = node->subprogram_spec.return_type->type;
+        }
+        if (node->subprogram_spec.return_type) {
+          Resolve_Expression (node->subprogram_spec.return_type);
+          sym->return_type = node->subprogram_spec.return_type->type;
+        }
+
+        // Resolve the renamed name using rename's own profile to
+        // disambiguate overloads (e.g. `FUNCTION "*"(X,Y:WHOLE) RETURN
+        // WHOLE RENAMES F1` must pick the F1 returning WHOLE, not the
+        // first F1 visible).
+        Symbol *renamed_sym = NULL;
+        if (node->subprogram_spec.renamed) {
+          Syntax_Node *ren = node->subprogram_spec.renamed;
+          if (ren->kind == NK_IDENTIFIER and total_params > 0) {
+            Type_Info **arg_types = Arena_Allocate (total_params * sizeof (Type_Info *));
+            String_Slice *arg_names = Arena_Allocate (total_params * sizeof (String_Slice));
+            for (uint32_t i = 0; i < total_params; i++) {
+              arg_types[i] = sym->parameters[i].param_type;
+              arg_names[i] = (String_Slice){0};
+            }
+            Argument_Info args = {.types = arg_types, .count = total_params, .names = arg_names};
+            renamed_sym = Resolve_Overloaded_Call (
+              ren->string_val.text, &args, sym->return_type);
+            if (renamed_sym) ren->symbol = renamed_sym;
           }
+          if (not renamed_sym) {
+            Resolve_Expression (ren);
+            renamed_sym = ren->symbol;
+          }
+        }
+
+        if (renamed_sym) {
+          sym->renamed_object  = (Syntax_Node *)renamed_sym;
+          // Fall back to renamed signature if rename had no own spec
+          if (total_params == 0 and renamed_sym->parameter_count > 0) {
+            sym->parameters      = renamed_sym->parameters;
+            sym->parameter_count = renamed_sym->parameter_count;
+          }
+          if (not sym->return_type)
+            sym->return_type = renamed_sym->return_type;
         }
         Symbol_Add (sym);
         node->symbol = sym;
@@ -25611,11 +25774,22 @@ void Emit_Inner_Consistency_Track (
   if (n_child <= 0) return;
   if (n_child > n_inner_dims) n_child = n_inner_dims;
 
-  // Capture child bounds into local C arrays (SSA temp ids)
+  // Capture child bounds into local C arrays (SSA temp ids).
+  // Child values may be wider than `bt` (parent tracker's bound type)
+  // e.g. child reports i32 low_val but parent allocated i8 trackers.
+  // Coerce each child value to bt so store/compare types line up.
   uint32_t child_lo[MAX_AGG_DIMS], child_hi[MAX_AGG_DIMS];
   for (int d = 0; d < n_child; d++) {
-    child_lo[d] = cg->inner_agg_bnd_lo[d];
-    child_hi[d] = cg->inner_agg_bnd_hi[d];
+    uint32_t clo = cg->inner_agg_bnd_lo[d];
+    uint32_t chi = cg->inner_agg_bnd_hi[d];
+    const char *clo_t = Temp_Get_Type (clo);
+    const char *chi_t = Temp_Get_Type (chi);
+    if (clo_t and clo_t[0] and strcmp (clo_t, bt) != 0)
+      clo = Emit_Convert (clo, clo_t, bt);
+    if (chi_t and chi_t[0] and strcmp (chi_t, bt) != 0)
+      chi = Emit_Convert (chi, chi_t, bt);
+    child_lo[d] = clo;
+    child_hi[d] = chi;
   }
   cg->inner_agg_bnd_n = 0;  // consumed
 
@@ -26231,12 +26405,14 @@ uint32_t Generate_Aggregate (Syntax_Node *node) {
         bounds_stale = true;
       Agg_Class ac_early = Agg_Classify (node);
       uint32_t low_val, high_val;
+      bool bounds_are_synthetic = false;
 
-      // Positional aggregate with stale constraint: use count as bound.                           
-      // low = index type FIRST (usually 1 for NATURAL/POSITIVE),                                   
-      // high = low + n_positional - 1.                                                            
-      //                                                                                            
+      // Positional aggregate with stale constraint: use count as bound.
+      // low = index type FIRST (usually 1 for NATURAL/POSITIVE),
+      // high = low + n_positional - 1.
+      //
       if (bounds_stale and ac_early.n_positional > 0 and not ac_early.has_others) {
+        bounds_are_synthetic = true;
         int128_t lo_static = 1;
         if (low_bound.kind == BOUND_INTEGER)
           lo_static = low_bound.int_value;
@@ -26575,7 +26751,8 @@ uint32_t Generate_Aggregate (Syntax_Node *node) {
         dyn_n_inner_dims = agg_ndims - 1;
         if (dyn_n_inner_dims > MAX_AGG_DIMS)
           dyn_n_inner_dims = MAX_AGG_DIMS;
-        const char *ait2 = Integer_Arith_Type ();
+        const char *ait2 = Array_Bound_Llvm_Type (agg_type);
+        if (not ait2 or ait2[0] == '\0') ait2 = Integer_Arith_Type ();
         for (int d = 0; d < dyn_n_inner_dims; d++) {
           dyn_inner_trk_lo[d] = Emit_Temp ();
           Emit ("  %%t%u = alloca %s  ; dyn expected inner lo [dim %d]\n",
@@ -27016,20 +27193,29 @@ uint32_t Generate_Aggregate (Syntax_Node *node) {
         Emit_Label_Here (ok_lbl);
       }
 
-      // Propagate inner dimension bounds to parent for deep nesting
-      if (cg->in_agg_component > 0 and check_inner_consistency) {
-        const char *bt = Array_Bound_Llvm_Type (agg_type);
-        int dim_count = 1;  // bnd[0] already set from early reporting
+      // Report actual aggregate bounds to outer multidim aggregate.
+      // bnd[0] = this aggregate's own first-dimension bounds.
+      // bnd[1..] = deeper inner dimensions' bounds (from inner tracking).
+      // This is critical for 1D dynamic aggregates nested in a multidim
+      // parent — the early report at line 26255 was wiped by 26598's
+      // clear-before-associations. Mirrors the static path at 27972.
+      // Skip when bounds_are_synthetic (positional with stale constraint
+      // got fake count-derived bounds, not the actual constraint values).
+      if (cg->in_agg_component > 0 and not bounds_are_synthetic) {
         cg->inner_agg_bnd_lo[0] = low_val;
         cg->inner_agg_bnd_hi[0] = high_val;
-        for (int d = 0; d < dyn_n_inner_dims and dim_count < MAX_AGG_DIMS; d++) {
-          cg->inner_agg_bnd_lo[dim_count] = Emit_Temp ();
-          Emit ("  %%t%u = load %s, ptr %%t%u  ; dyn deep inner lo [dim %d]\n",
-             cg->inner_agg_bnd_lo[dim_count], bt, dyn_inner_trk_lo[d], d);
-          cg->inner_agg_bnd_hi[dim_count] = Emit_Temp ();
-          Emit ("  %%t%u = load %s, ptr %%t%u  ; dyn deep inner hi [dim %d]\n",
-             cg->inner_agg_bnd_hi[dim_count], bt, dyn_inner_trk_hi[d], d);
-          dim_count++;
+        int dim_count = 1;
+        if (check_inner_consistency) {
+          const char *bt = Array_Bound_Llvm_Type (agg_type);
+          for (int d = 0; d < dyn_n_inner_dims and dim_count < MAX_AGG_DIMS; d++) {
+            cg->inner_agg_bnd_lo[dim_count] = Emit_Temp ();
+            Emit ("  %%t%u = load %s, ptr %%t%u  ; dyn deep inner lo [dim %d]\n",
+               cg->inner_agg_bnd_lo[dim_count], bt, dyn_inner_trk_lo[d], d);
+            cg->inner_agg_bnd_hi[dim_count] = Emit_Temp ();
+            Emit ("  %%t%u = load %s, ptr %%t%u  ; dyn deep inner hi [dim %d]\n",
+               cg->inner_agg_bnd_hi[dim_count], bt, dyn_inner_trk_hi[d], d);
+            dim_count++;
+          }
         }
         cg->inner_agg_bnd_n = dim_count;
       }
