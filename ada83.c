@@ -19006,9 +19006,17 @@ uint32_t Generate_Lvalue (Syntax_Node *node) {
     }
   }
 
-  // NK_UNARY_OP with TK_ALL: .ALL dereference - load the pointer value
+  // NK_UNARY_OP with TK_ALL: .ALL dereference - load the pointer value.
+  // For access-to-fat-storage types, the access value is itself a fat
+  // pointer { data, bounds }; extract the data slot so callers (memcpy,
+  // store, indexing) get a plain ptr to the dereferenced storage.
   if (node->kind == NK_UNARY_OP and node->unary.op == TK_ALL) {
     uint32_t ptr = Generate_Expression (node->unary.operand);
+    Type_Info *acc_ty = node->unary.operand ? node->unary.operand->type : NULL;
+    if (acc_ty and Type_Needs_Fat_Pointer (acc_ty)) {
+      const char *bt = Array_Bound_Llvm_Type (acc_ty);
+      return Emit_Fat_Pointer_Data (ptr, bt);
+    }
     return ptr;
   }
 
@@ -21109,6 +21117,17 @@ uint32_t Emit_Binary_Op_Predefined (Syntax_Node *node) {
         const char *llvm_op = (node->binary.op == TK_AND or node->binary.op == TK_AND_THEN) ? "and" :
                     (node->binary.op == TK_OR  or node->binary.op == TK_OR_ELSE)  ? "or" : "xor";
         if (Type_Is_Bool_Array (result_type)) {
+          // Operands may be loaded as fat pointers (dyn-bound boolean
+          // arrays). Emit_Bool_Array_Binop needs raw data pointers for
+          // its byte-wise GEPs, so extract data ptr from fat values.
+          Type_Info *lty = node->binary.left ? node->binary.left->type : NULL;
+          Type_Info *rty = node->binary.right ? node->binary.right->type : NULL;
+          const char *lt = Temp_Get_Type (left);
+          const char *rt = Temp_Get_Type (right);
+          if (lt and Llvm_Type_Is_Fat_Pointer (lt))
+            left = Emit_Fat_Pointer_Data (left, Array_Bound_Llvm_Type (lty ? lty : result_type));
+          if (rt and Llvm_Type_Is_Fat_Pointer (rt))
+            right = Emit_Fat_Pointer_Data (right, Array_Bound_Llvm_Type (rty ? rty : result_type));
           return Emit_Bool_Array_Binop (left, right, result_type, llvm_op);
         } else if (Type_Is_Unsigned (result_type)) {
           const char *common_t = Wider_Int_Type (left_int_type, right_int_type);
@@ -21830,6 +21849,14 @@ uint32_t Generate_Unary_Op (Syntax_Node *node) {
              t, unary_int_type, operand, U128_Decimal (mask));
           Temp_Set_Type (t, unary_int_type);
         } else if (Type_Is_Bool_Array (res_type)) {
+          // Operand may be a loaded fat pointer (dyn-bound array).
+          // Extract data ptr for byte-wise NOT.
+          const char *ot = Temp_Get_Type (operand);
+          if (ot and Llvm_Type_Is_Fat_Pointer (ot)) {
+            Type_Info *oty = node->unary.operand ? node->unary.operand->type : NULL;
+            operand = Emit_Fat_Pointer_Data (operand,
+              Array_Bound_Llvm_Type (oty ? oty : res_type));
+          }
           t = Emit_Bool_Array_Not (operand, res_type);
 
         // Boolean NOT: convert to i1, flip - result stays i1 (Standard)
@@ -22406,7 +22433,17 @@ uint32_t Generate_Apply (Syntax_Node *node) {
         // references (from a nested subprogram into the enclosing
         // frame) emit %__frame.X instead of %X.
         uint32_t actual_addr;
-        if (addr_node->kind == NK_IDENTIFIER and addr_node->symbol) {
+        // Expanded names (STANDARD.PKG.X) resolve to the same variable
+        // symbol as a bare identifier - take its address directly via
+        // Emit_Symbol_Storage so we don't go through Generate_Composite_Address
+        // (which loads the value instead of the address for scalars).
+        bool is_simple_var_ref = addr_node->symbol and
+          (addr_node->kind == NK_IDENTIFIER or
+           addr_node->kind == NK_SELECTED) and
+          (addr_node->symbol->kind == SYMBOL_VARIABLE or
+           addr_node->symbol->kind == SYMBOL_PARAMETER or
+           addr_node->symbol->kind == SYMBOL_CONSTANT);
+        if (is_simple_var_ref) {
           actual_addr = Emit_Temp ();
           Emit ("  %%t%u = getelementptr i8, ptr ", actual_addr);
           Emit_Symbol_Storage (addr_node->symbol);
@@ -22608,18 +22645,27 @@ uint32_t Generate_Apply (Syntax_Node *node) {
             }
           } else if (Expression_Produces_Fat_Pointer (arg, actual_type) and
                  formal_type->array.is_constrained and
-                 formal_type->array.index_count > 0) {
+                 formal_type->array.index_count > 0 and
+                 formal_needs_fat) {
 
-            // Fat pointer actual (string literal, slice) to constrained                            
-            // formal: rebuild fat pointer with the formal type's bounds.                          
-            // E.g. "ABCDE" passed to STRING (11..15) - bounds must be                              
-            // 11..15, not the literal's default 1..5. (RM 4.3.2)                                  
-            //                                                                                      
+            // Fat pointer actual (string literal, slice) to constrained
+            // formal with fat-pointer storage (dyn bounds): rebuild fat
+            // pointer with the formal type's bounds. E.g. "ABCDE" passed
+            // to STRING (11..15) - bounds must be 11..15, not the
+            // literal's default 1..5. (RM 4.3.2)
             const char *abt = Array_Bound_Llvm_Type (formal_type);
             uint32_t data_ptr = Emit_Fat_Pointer_Data (args[i], abt);
             uint32_t lo = Emit_Single_Bound (&formal_type->array.indices[0].low_bound, abt);
             uint32_t hi = Emit_Single_Bound (&formal_type->array.indices[0].high_bound, abt);
             args[i] = Emit_Fat_Pointer_Dynamic (data_ptr, lo, hi, abt);
+          } else if (Expression_Produces_Fat_Pointer (arg, actual_type) and
+                 not formal_needs_fat and
+                 formal_type->array.is_constrained) {
+
+            // Fat pointer actual to constrained-static formal (flat ptr):
+            // extract data pointer. The formal expects a raw ptr.
+            const char *abt = Array_Bound_Llvm_Type (actual_type ? actual_type : formal_type);
+            args[i] = Emit_Fat_Pointer_Data (args[i], abt);
           } else {
             const char *param_type = Type_To_Llvm_Sig (formal_type);
             const char *arg_type = Expression_Llvm_Type (arg);
@@ -22684,15 +22730,61 @@ uint32_t Generate_Apply (Syntax_Node *node) {
       Emit ("  %%t%u = alloca [%u x i8]  ; UNCHECKED_CONVERSION buffer\n",
          buf, buf_sz);
       if (src_composite) {
-        // args[0] is ptr to source data. Copy src_sz bytes into buf.
+        // Source is a composite (array/record). For array sources with
+        // fat-pointer storage, args[0] is a {ptr, ptr} value — extract
+        // the data pointer before memcpy. For flat-storage composites,
+        // args[0] is already a ptr to the data.
+        uint32_t src_data = args[0];
+        if (Type_Is_Array_Like (src_ti) and
+            (Type_Is_Unconstrained_Array (src_ti) or
+             Type_Has_Dynamic_Bounds (src_ti))) {
+          const char *src_bt = Array_Bound_Llvm_Type (src_ti);
+          src_data = Emit_Fat_Pointer_Data (args[0], src_bt);
+        }
         Emit ("  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u,"
-              " i64 %u, i1 false)  ; UC src\n", buf, args[0], src_sz);
+              " i64 %u, i1 false)  ; UC src\n", buf, src_data, src_sz);
       } else {
         Emit ("  store %s %%t%u, ptr %%t%u  ; UC src\n",
            src_llvm, args[0], buf);
       }
       if (dst_composite) {
-        // Return ptr to the buffer; caller's assignment will memcpy it.
+        // Array dst with fat-pointer storage: wrap buf as { data, {lo,hi} }
+        // using the dst type's known bounds so the caller (typically an
+        // assignment or comparison) sees a proper fat pointer value
+        // instead of a bare data pointer.
+        if (Type_Is_Array_Like (dst_ti) and
+            (Type_Is_Unconstrained_Array (dst_ti) or
+             Type_Has_Dynamic_Bounds (dst_ti))) {
+          const char *bt = Array_Bound_Llvm_Type (dst_ti);
+          uint32_t lo_t = Emit_Temp ();
+          uint32_t hi_t = Emit_Temp ();
+          if (dst_ti->array.index_count > 0 and
+              dst_ti->array.indices[0].low_bound.kind == BOUND_EXPR and
+              dst_ti->array.indices[0].low_bound.expr) {
+            uint32_t lo_v = Generate_Expression (
+              dst_ti->array.indices[0].low_bound.expr);
+            Emit ("  %%t%u = add %s 0, %%t%u  ; UC dst lo\n", lo_t, bt, lo_v);
+          } else {
+            int128_t lo = Array_Low_Bound (dst_ti);
+            Emit ("  %%t%u = add %s 0, %s  ; UC dst lo\n",
+               lo_t, bt, I128_Decimal (lo));
+          }
+          if (dst_ti->array.index_count > 0 and
+              dst_ti->array.indices[0].high_bound.kind == BOUND_EXPR and
+              dst_ti->array.indices[0].high_bound.expr) {
+            uint32_t hi_v = Generate_Expression (
+              dst_ti->array.indices[0].high_bound.expr);
+            Emit ("  %%t%u = add %s 0, %%t%u  ; UC dst hi\n", hi_t, bt, hi_v);
+          } else {
+            int128_t hi = (dst_ti->array.index_count > 0)
+              ? Type_Bound_Value (dst_ti->array.indices[0].high_bound) : 0;
+            Emit ("  %%t%u = add %s 0, %s  ; UC dst hi\n",
+               hi_t, bt, I128_Decimal (hi));
+          }
+          return Emit_Fat_Pointer_Dynamic (buf, lo_t, hi_t, bt);
+        }
+        // Flat-storage composite dst (constrained static array, record):
+        // return ptr to the buffer; caller will memcpy it.
         return buf;
       }
       uint32_t res = Emit_Temp ();
@@ -23389,6 +23481,7 @@ uint32_t Generate_Apply (Syntax_Node *node) {
          ptr, FAT_PTR_TYPE, base, iat_idx, flat_idx);
       t = Emit_Temp ();
       Emit ("  %%t%u = load %s, ptr %%t%u  ; array[idx] fat\n", t, FAT_PTR_TYPE, ptr);
+      Temp_Set_Type (t, FAT_PTR_TYPE);
       return t;
 
     // Composite element - use byte array for getelementptr
@@ -23407,6 +23500,7 @@ uint32_t Generate_Apply (Syntax_Node *node) {
          "  ; &array[idx] (elem_type=%s)\n",
          ptr, elem_type, base, iat_idx, flat_idx, elem_type);
       Emit ("  %%t%u = load %s, ptr %%t%u  ; array[idx]\n", t, elem_type, ptr);
+      Temp_Set_Type (t, elem_type);
 
       // no widening at load - value stays at native type width.
       // Conversions happen at use sites via Emit_Convert.
@@ -23437,15 +23531,20 @@ type_conversion:
         uint32_t result = Generate_Expression (arg);
         bool dst_unc = Type_Is_Unconstrained_Array (dst_type);
 
-        // Check if the source expression actually produces a fat pointer value.                   
-        // This covers: unconstrained parameters/variables, function calls returning                
-        // unconstrained arrays, slices, concatenations, string literals, etc.                     
-        //                                                                                          
+        // Check if the source expression actually produces a fat pointer value.
+        // This covers: unconstrained parameters/variables, function calls returning
+        // unconstrained arrays, slices, concatenations, string literals, etc.
+        //
         bool src_is_fat = Expression_Produces_Fat_Pointer (arg, src_type);
 
-        // Constrained/flat storage > Unconstrained: build fat pointer {data, {low, high}}.
-        // Source is stored as a flat alloca; bounds come from type info.
-        if (dst_unc and not src_is_fat) {
+        // Whether the destination is stored as a fat pointer. Constrained
+        // arrays with DYNAMIC bounds (e.g., T NEW PARENT(IDENT_INT(5)..IDENT_INT(7)))
+        // use fat-pointer storage even though dst_unc is false.
+        bool dst_is_fat = dst_unc or Type_Has_Dynamic_Bounds (dst_type);
+
+        // Flat alloca > fat pointer destination: build {data, {low, high}}.
+        // Source is a flat alloca; bounds come from type info.
+        if (dst_is_fat and not src_is_fat) {
           const char *bt = Array_Bound_Llvm_Type (dst_type);
           int128_t lo = Array_Low_Bound (src_type);
           int128_t hi = (src_type->kind == TYPE_ARRAY and src_type->array.index_count > 0)
@@ -23456,13 +23555,13 @@ type_conversion:
           Emit ("  %%t%u = add %s 0, %s  ; array conv high bound\n", hi_t, bt, I128_Decimal (hi));
           return Emit_Fat_Pointer_Dynamic (result, lo_t, hi_t, bt);
 
-        // Unconstrained fat ptr > Constrained: extract data pointer
-        } else if (not dst_unc and src_is_fat) {
+        // Fat pointer > flat alloca destination: extract data pointer.
+        } else if (not dst_is_fat and src_is_fat) {
           const char *bt = Array_Bound_Llvm_Type (src_type);
           return Emit_Fat_Pointer_Data (result, bt);
         }
 
-        // Same representation: pass through
+        // Same representation (both fat or both flat): pass through.
         return result;
       }
       uint32_t result = Generate_Expression (arg);
@@ -23706,6 +23805,11 @@ uint32_t Generate_Selected (Syntax_Node *node) {
       break;
     }
   }
+  // Resolve generic formal field types to their actual so we load at
+  // the right width (e.g., FIXED_ELEMENT formal -> CHECK_TYPE actual
+  // with 'SIZE USE 7 -> i8 load, not i32).
+  if (cg->current_instance and field_type)
+    field_type = Resolve_Generic_Actual_Type (field_type);
   const char *field_llvm_type = Type_To_Llvm (field_type);
 
   // Runtime discriminant check for variant component access (RM 3.7.3)                             
@@ -23968,11 +24072,17 @@ uint32_t Generate_Selected (Syntax_Node *node) {
   if (Type_Is_Record (field_type) or (field_type and field_type->kind == TYPE_ARRAY))
     return ptr;
 
-  // For access-type components, load ptr without converting to i64
+  // For access-type components, load without converting to i64.
+  // Access-to-unconstrained-array / access-to-dyn-bound-array values
+  // are themselves fat pointers { ptr, ptr } (16 bytes), so load with
+  // the matching width.
   if (Type_Is_Access (field_type)) {
+    bool acc_is_fat = Type_Needs_Fat_Pointer (field_type);
+    const char *acc_ty = acc_is_fat ? FAT_PTR_TYPE : "ptr";
     uint32_t t = Emit_Temp ();
-    Emit ("  %%t%u = load ptr, ptr %%t%u  ; .%.*s (access)\n", t, ptr,
+    Emit ("  %%t%u = load %s, ptr %%t%u  ; .%.*s (access)\n", t, acc_ty, ptr,
        node->selected.selector.length > 20 ? 20 : (int)node->selected.selector.length, node->selected.selector.data);
+    Temp_Set_Type (t, acc_ty);
     return t;
   }
   uint32_t t = Emit_Temp ();
@@ -36333,6 +36443,16 @@ void Emit_Function_Header (Symbol *sym, bool is_nested) {
       Emit ("%s %%p%u", Type_To_Llvm_Sig (sym->parameters[i].param_type), i);
   }
   Emit (") {\nentry:\n");
+
+  // Each LLVM `define` uses fresh %0/%1/... SSA numbering. Reset the
+  // temp counter and per-function side tables so a stale entry from
+  // the previously emitted function (e.g. an implicit equality fn or
+  // a sibling subprogram) can't leak its type into this function via
+  // a hash collision in Temp_Get_Type.
+  cg->temp_id = 1;
+  memset (cg->temp_types, 0, sizeof (cg->temp_types));
+  memset (cg->temp_type_keys, 0, sizeof (cg->temp_type_keys));
+  memset (cg->temp_is_fat_alloca, 0, sizeof (cg->temp_is_fat_alloca));
 
   // Initialize BIP state for code generator
   BIP_Begin_Function (sym);
