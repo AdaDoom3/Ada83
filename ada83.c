@@ -90,7 +90,6 @@ enum {Default_Chunk_Size = 1 << 24}; // 16 MiB
 #define ELAB_MAX_COMPONENTS 256
 
 // Code generator limits
-#define TEMP_TYPE_CAPACITY 4096 // Ring buffer for temp types
 #define EXC_REF_CAPACITY   512  // Exception references per unit
 #define MAX_AGG_DIMS       8    // Array aggregate dimensions
 #define MAX_DISC_CACHE     16   // Discriminant value cache depth
@@ -120,8 +119,7 @@ enum {Default_Chunk_Size = 1 << 24}; // 16 MiB
 
 // A typed SSA value: an LLVM register paired with the LLVM type it holds, so a
 // value's type travels with the value rather than being looked up separately.
-// Build one with Val(), which also records the type in the temp-type table so a
-// later Temp_Get_Type on the same register returns the same type.
+// Build one with Val().
 typedef struct {
   uint32_t    reg;   // %tN SSA register id
   const char *type;  // its LLVM type string ("i32", "ptr", "{ptr, ptr}", ...)
@@ -2024,14 +2022,6 @@ typedef struct {
   Symbol   *elab_funcs[64];  // Elaboration functions to call from main
   uint32_t  elab_func_count; // Number of registered elaboration functions
 
-  // Temp-type table: direct-indexed by temp_id (dense within a function, reset
-  // at every function boundary), grown on demand so large functions never evict
-  // a temp's type. malloc/realloc'd (not arena) since the arena cannot realloc;
-  // never freed (process-lifetime). No hashing => no collisions, no eviction.
-  const char **temp_types;         // Temp ID > LLVM type string (NULL = unknown)
-  uint8_t     *temp_is_fat_alloca; // Temp ID > fat-alloca flag
-  uint32_t     temp_type_cap;      // Allocated entries in the two arrays above
-
   // Exception reference table
   char     *exc_refs[EXC_REF_CAPACITY]; // Mangled names of referenced exceptions
   uint32_t  exc_ref_count;              // Number of exception references
@@ -2090,15 +2080,7 @@ Code_Generator *cg;
 uint32_t    Emit_Temp             (void);
 // Allocate a fresh basic-block label number (label.N).
 uint32_t    Emit_Label            (void);
-// Associate an LLVM type string (e.g. "i32", "ptr") with a temporary for later queries.
-// Retrieve the LLVM type previously associated with a temporary.
-// Mark a temporary as holding the address of a fat-pointer alloca (not the fat value itself).
-void        Temp_Mark_Fat_Alloca  (uint32_t temp_id);
-// Return true if this temporary was marked as a fat-pointer alloca.
-bool        Temp_Is_Fat_Alloca    (uint32_t temp_id);
-// Clear the temp-type table at a function boundary (every temp -> unknown).
-void        Temp_Type_Reset       (void);
-// Construct a typed SSA value; also records its type in the temp-type table.
+// Construct a typed SSA value: pairs a register id with its LLVM type.
 LLVM_Value  Val                   (uint32_t reg, const char *type);
 
 // Write a formatted line of LLVM IR text to the output stream (like fprintf to cg->output).
@@ -7274,18 +7256,22 @@ bool Type_Is_String (const Type_Info *type_info)  { return type_info and type_in
 bool Type_Needs_Fat_Pointer (const Type_Info *type_info) {
   if (not type_info) return false;
 
-  // RM 3.10: Access to unconstrained array always needs fat pointer,                               
-  // even when a subtype constraint narrows the bounds (e.g.,                                       
-  // ACCESS ARR (1..N)). Chase base_type to the root declaration.                                 
-  //                                                                                                
+  // RM 3.10: Access to unconstrained array always needs fat pointer; access to
+  // a constrained array with DYNAMIC bounds likewise stores as fat because the
+  // bounds must travel with the value (RM 3.6.1). Chase base_type so a subtype
+  // narrowing the bounds (ACCESS ARR (1..N)) still resolves to the underlying
+  // representation decision.
+  //
   if (Type_Is_Access (type_info) and type_info->access.designated_type) {
     Type_Info *des = type_info->access.designated_type;
     while (des and Type_Is_Array_Like (des) and des->array.is_constrained
          and des->base_type and Type_Is_Array_Like (des->base_type))
       des = des->base_type;
-    return Type_Is_Array_Like (des) and not des->array.is_constrained;
+    if (not Type_Is_Array_Like (des)) return false;
+    return (not des->array.is_constrained) or Type_Has_Dynamic_Bounds (des);
   }
-  return Type_Is_Array_Like (type_info) and not type_info->array.is_constrained;
+  if (not Type_Is_Array_Like (type_info)) return false;
+  return (not type_info->array.is_constrained) or Type_Has_Dynamic_Bounds (type_info);
 }
 
 // Check if array type is unconstrained (needs fat pointer representation)
@@ -7361,18 +7347,21 @@ bool Expression_Is_Slice (const Syntax_Node *node) {
 bool Expression_Produces_Fat_Pointer (const Syntax_Node *node,
                           const Type_Info *type) {
 
-  // Operation-specific checks FIRST: these operations always produce fat                           
-  // pointers at runtime regardless of the expression's declared type.                             
-  // E.g., concatenation of two constrained STRINGs still builds { ptr, ptr }.                     
-  // Aggregates return a fat pointer ALLOCA (ptr to { ptr, ptr }),                                  
-  // not a loaded { ptr, ptr } value. Callers that need the value                                  
-  // must load from it. Treat as "not fat" for the extractvalue                                    
-  // callers - specific call sites (assignment, etc.) handle the                                    
-  // alloca-based fat pointer specially.                                                           
-  //                                                                                                
+  // Operation-specific checks FIRST: these operations always produce fat
+  // pointers at runtime regardless of the expression's declared type.
+  // E.g., concatenation of two constrained STRINGs still builds { ptr, ptr }.
+  // Array aggregates of unconstrained or dynamic-bounds types now return SSA
+  // { ptr, ptr } directly; record aggregates and static-bounds array
+  // aggregates still return a plain ptr to flat storage.
+  //
   if (node) {
-    if (node->kind == NK_AGGREGATE)
+    if (node->kind == NK_AGGREGATE) {
+      if (node->type and Type_Is_Array_Like (node->type) and
+          (Type_Is_Unconstrained_Array (node->type) or
+           Type_Has_Dynamic_Bounds (node->type)))
+        return true;
       return false;
+    }
 
     // String literals always produce fat pointers
     if (node->kind == NK_STRING)
@@ -7646,14 +7635,15 @@ const char *Type_To_Llvm (Type_Info *type_info) {
     case TYPE_TASK:
       return "ptr";
     case TYPE_ARRAY:
-
-      // Unconstrained arrays use fat pointers { ptr, ptr }
-      return (type_info->array.is_constrained) ? "ptr" : FAT_PTR_TYPE;
     case TYPE_STRING:
 
-      // Unconstrained STRING > fat pointer { ptr, ptr }
-      // Constrained STRING (e.g., STRING (1..6)) > ptr to flat array
-      return (type_info->array.is_constrained) ? "ptr" : FAT_PTR_TYPE;
+      // Unconstrained arrays/STRINGs use fat pointers { ptr, ptr }.
+      // Constrained arrays with DYNAMIC bounds (e.g. NEW PARENT (IDENT_INT(4)..))
+      // are also stored as fat pointers - the bounds are runtime-determined
+      // (RM 3.6.1) and cannot live in a static [N x i8] flat alloca. Constrained
+      // arrays with static bounds are flat allocas referenced by plain ptr.
+      if (not type_info->array.is_constrained) return FAT_PTR_TYPE;
+      return Type_Has_Dynamic_Bounds (type_info) ? FAT_PTR_TYPE : "ptr";
     default:
       fprintf (stderr, "error: Type_To_Llvm unhandled type kind %d for '%.*s'\n",
           type_info->kind, (int)type_info->name.length, type_info->name.data);
@@ -16111,48 +16101,12 @@ void Code_Generator_Init (FILE *output) {
   cg->string_const_capacity = 4096;
   cg->string_const_buffer   = Arena_Allocate (cg->string_const_capacity);
   cg->string_const_size     = 0;
-  cg->temp_type_cap         = TEMP_TYPE_CAPACITY;
-  cg->temp_types            = calloc (cg->temp_type_cap, sizeof *cg->temp_types);
-  cg->temp_is_fat_alloca    = calloc (cg->temp_type_cap, sizeof *cg->temp_is_fat_alloca);
   cg->emit_debug_locations  = Debug_Emit_Locations;
   cg->emit_at_line_start    = true;
   cg->emit_line_has_content = false;
   cg->emit_line_start_func  = NULL;
   cg->emit_line_start_line  = 0;
 }
-
-// Grow the temp-type table so `temp_id` is addressable. The table is direct-
-// indexed (no modulo): temp_id is dense within a function and reset between
-// functions, so capacity tracks the largest function's temp count - never
-// evicting a live temp's type (the failure mode of the old `% CAPACITY` ring,
-// where functions with >4096 temps lost type info and Emit_Coerce silently
-// skipped the cast). Uses realloc since the arena cannot grow in place.
-static void Temp_Type_Ensure (uint32_t temp_id) {
-  if (temp_id < cg->temp_type_cap) return;
-  uint32_t new_cap = cg->temp_type_cap ? cg->temp_type_cap : TEMP_TYPE_CAPACITY;
-  while (temp_id >= new_cap) new_cap *= 2;
-  cg->temp_types         = realloc (cg->temp_types,        new_cap * sizeof *cg->temp_types);
-  cg->temp_is_fat_alloca = realloc (cg->temp_is_fat_alloca, new_cap * sizeof *cg->temp_is_fat_alloca);
-  if (not cg->temp_types or not cg->temp_is_fat_alloca) {
-    fprintf (stderr, "fatal: temp-type table realloc failed (%u entries)\n", new_cap);
-    exit (1);
-  }
-  // Zero the freshly grown tail so unset temps read as unknown / not-fat.
-  memset (cg->temp_types + cg->temp_type_cap, 0,
-          (new_cap - cg->temp_type_cap) * sizeof *cg->temp_types);
-  memset (cg->temp_is_fat_alloca + cg->temp_type_cap, 0,
-          (new_cap - cg->temp_type_cap) * sizeof *cg->temp_is_fat_alloca);
-  cg->temp_type_cap = new_cap;
-}
-
-// Clear the table at a function boundary (every temp -> unknown).
-void Temp_Type_Reset (void) {
-  if (cg->temp_types)
-    memset (cg->temp_types, 0, cg->temp_type_cap * sizeof *cg->temp_types);
-  if (cg->temp_is_fat_alloca)
-    memset (cg->temp_is_fat_alloca, 0, cg->temp_type_cap * sizeof *cg->temp_is_fat_alloca);
-}
-
 
 // Construct a typed SSA value: the type travels with the value.
 // ── Debug producer-honesty checker ────────────────────────────────────────
@@ -16281,18 +16235,8 @@ LLVM_Value Emit_Bool_Value (uint32_t i1_reg) {
 }
 
 
-// Mark/query a temp as a fat-pointer alloca (separate from its LLVM type)
-void Temp_Mark_Fat_Alloca (uint32_t temp_id) {
-  Temp_Type_Ensure (temp_id);
-  cg->temp_is_fat_alloca[temp_id] = 1;
-}
-bool Temp_Is_Fat_Alloca (uint32_t temp_id) {
-  if (temp_id >= cg->temp_type_cap) return false;
-  return cg->temp_is_fat_alloca[temp_id];
-}
-
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
-// §13.1.1 Type-Derived Codegen Helpers                                                             
+// §13.1.1 Type-Derived Codegen Helpers
 //                                                                                                  
 // Standard never hardcodes type widths - it derives them from the front-end                        
 // type system (see GL_Type, Bound_Sub_GT). These helpers do the same: they                        
@@ -17452,16 +17396,20 @@ const char *Expression_Llvm_Type (Syntax_Node *node) {
     return FAT_PTR_TYPE;  // Slices always produce fat pointers
   }
 
-  // Array indexing (NK_APPLY) that returns non-i64 element types.                                 
-  // Now preserves native types for ALL element types, not just composites.                        
-  // Must exclude function calls where prefix happens to have array-like return type.              
-  //                                                                                                
+  // Array indexing (NK_APPLY) that returns non-i64 element types.
+  // Preserves native element types for all element types. Exclude:
+  //  - function/procedure calls (prefix happens to have array return type);
+  //  - type conversions `T(X)` where prefix is a TYPE/SUBTYPE symbol (the
+  //    result type is the whole array, not an element).
+  //
   if (node and node->kind == NK_APPLY and node->apply.prefix and
     node->apply.prefix->type and
     Type_Is_Array_Like (node->apply.prefix->type) and
     not (node->apply.prefix->symbol and
       (node->apply.prefix->symbol->kind == SYMBOL_FUNCTION or
-       node->apply.prefix->symbol->kind == SYMBOL_PROCEDURE))) {
+       node->apply.prefix->symbol->kind == SYMBOL_PROCEDURE or
+       node->apply.prefix->symbol->kind == SYMBOL_TYPE or
+       node->apply.prefix->symbol->kind == SYMBOL_SUBTYPE))) {
     Type_Info *elem_type = node->type;
     if (Type_Is_Record (elem_type) or Type_Is_String (elem_type) or
       Type_Is_Constrained_Array (elem_type)) {
@@ -17553,17 +17501,6 @@ const char *Expression_Llvm_Type (Syntax_Node *node) {
 LLVM_Value Emit_Convert_Ext (uint32_t src, const char *src_type,
                  const char *dst_type, bool is_unsigned) {
 
-  // A fat-pointer source may be an alloca holding the fat value (marked via
-  // Temp_Mark_Fat_Alloca) rather than an SSA {ptr,ptr}. Materialize it with a
-  // load so passthrough/extract operate on a real fat value instead of
-  // reinterpreting the alloca pointer as a fat aggregate.
-  if (Llvm_Type_Is_Fat_Pointer (src_type) and Temp_Is_Fat_Alloca (src))
-    src = Fat_Ptr_As_Value (src).reg;
-
-  // Check tracked actual type - Expression_Llvm_Type may disagree with
-  // the actual generated type (e.g. after 'VAL, 'POS, arithmetic).
-  // Use the tracked type if available to avoid invalid IR.
-  //
   if (strcmp (src_type, dst_type) == 0) return Val (src, src_type);
   bool src_is_float = Is_Float_Type (src_type);
   bool dst_is_float = Is_Float_Type (dst_type);
@@ -18244,15 +18181,11 @@ LLVM_Value Emit_Extend_To_I64 (uint32_t val, const char *from_type) {
   return Val (extended, "i64");
 }
 
-// Ensure fat_ptr is an SSA {ptr,ptr} value. If it's an alloca-backed                              
-// fat pointer (marked via Temp_Mark_Fat_Alloca), emit a load first.                               
-// Conservative: only loads when the temp is KNOWN to be an alloca.                                
-//                                                                                                  
+// All fat-pointer producers now return SSA { ptr, ptr } values directly;
+// nothing wraps a fat value in an alloca anymore. This is a pure pass-through
+// kept as documentation at sites that historically needed the unwrap.
 LLVM_Value Fat_Ptr_As_Value (uint32_t fat_ptr) {
-  if (not Temp_Is_Fat_Alloca (fat_ptr)) return Val (fat_ptr, FAT_PTR_TYPE);
-  uint32_t loaded = Emit_Temp ();
-  Emit ("  %%t%u = load " FAT_PTR_TYPE ", ptr %%t%u\n", loaded, fat_ptr);
-  return Val (loaded, FAT_PTR_TYPE);
+  return Val (fat_ptr, FAT_PTR_TYPE);
 }
 
 // Extract data pointer from fat pointer.
@@ -20321,7 +20254,25 @@ uint32_t Generate_Composite_Address (Syntax_Node *node) {
     return Generate_Expression (node->unary.operand).reg;
   }
 
-  // Array indexing or slice: Arr (I) or Arr (low..high)
+  // Array indexing or slice: Arr (I) or Arr (low..high).
+  // First reject type conversions T(X) — Arr-shaped at the AST but semantically
+  // a value-producing conversion, not an lvalue. Route to Generate_Expression
+  // so the conversion runs through Generate_Apply's type_conversion: branch,
+  // then take the result's address via the NK_APPLY composite-result handling
+  // further down (or, for an SSA fat result, the caller's fat-aware path).
+  if (node->kind == NK_APPLY and node->apply.prefix and
+      node->apply.prefix->symbol and
+      (node->apply.prefix->symbol->kind == SYMBOL_TYPE or
+       node->apply.prefix->symbol->kind == SYMBOL_SUBTYPE) and
+      node->apply.arguments.count == 1) {
+    LLVM_Value v = Generate_Expression (node);
+    if (v.type and Llvm_Type_Is_Fat_Pointer (v.type)) {
+      uint32_t dp = Emit_Temp ();
+      Emit ("  %%t%u = extractvalue " FAT_PTR_TYPE " %%t%u, 0\n", dp, v.reg);
+      return dp;
+    }
+    return v.reg;
+  }
   if (node->kind == NK_APPLY and node->apply.arguments.count == 1) {
     Type_Info *prefix_type = node->apply.prefix ? node->apply.prefix->type : NULL;
 
@@ -20437,8 +20388,16 @@ uint32_t Generate_Composite_Address (Syntax_Node *node) {
       return Generate_Lvalue (node);
   }
 
-  // Fallback: for expressions that return a pointer (like composite values)
-  return Generate_Expression (node).reg;
+  // Fallback: for expressions that return a pointer (like composite values).
+  // A dynamic-bounds aggregate returns an SSA fat pointer { ptr, ptr }; the
+  // caller wants a plain data ptr, so extract field 0 in that case.
+  LLVM_Value v = Generate_Expression (node);
+  if (v.type and Llvm_Type_Is_Fat_Pointer (v.type)) {
+    uint32_t dp = Emit_Temp ();
+    Emit ("  %%t%u = extractvalue " FAT_PTR_TYPE " %%t%u, 0\n", dp, v.reg);
+    return dp;
+  }
+  return v.reg;
 }
 
 // ─── Boolean Array Elementwise Op (RM 4.5.1) ─────────────────────────────────────────────────────
@@ -20629,11 +20588,8 @@ uint32_t Wrap_Constrained_As_Fat (Syntax_Node *expr, Type_Info *type, const char
   //                                                                                                
   if (expr->kind == NK_AGGREGATE and type and Type_Is_Array_Like (type) and
     (Type_Is_Unconstrained_Array (type) or Aggregate_Produces_Fat_Pointer (type))) {
-    uint32_t agg_ptr = Generate_Expression (expr).reg;
-    uint32_t loaded = Emit_Temp ();
-    Emit ("  %%t%u = load " FAT_PTR_TYPE ", ptr %%t%u  ; load agg fat ptr\n",
-       loaded, agg_ptr);
-    return loaded;
+    // Aggregate returns SSA fat pointer { ptr, ptr } directly.
+    return Generate_Expression (expr).reg;
   }
   uint32_t ptr = Generate_Composite_Address (expr);
   int128_t lo = 1, hi = 0;
@@ -22209,7 +22165,20 @@ LLVM_Value Generate_Unary_Op (Syntax_Node *node) {
   return Val (t, result_type);
 }
 LLVM_Value Generate_Apply (Syntax_Node *node) {
-  Symbol *sym = node->apply.prefix->symbol;
+  // Chained apply `f(...)(I)`: the parser left the prefix as a function-call
+  // NK_APPLY whose `.symbol` is the called function. Dispatching on that symbol
+  // would re-emit the call with the wrong arguments (this outer apply's index,
+  // not the original call's args). Strip the symbol so dispatch falls through
+  // to the array-indexing path, which calls Generate_Expression on the prefix
+  // to emit the inner call honestly.
+  Symbol *sym;
+  if (node->apply.prefix->kind == NK_APPLY and
+      node->apply.prefix->type and
+      Type_Is_Array_Like (node->apply.prefix->type)) {
+    sym = NULL;
+  } else {
+    sym = node->apply.prefix->symbol;
+  }
 
   // Emit call/apply comment if symbol is known
   if (sym) {
@@ -23396,7 +23365,12 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
     implicit_deref = true;
   }
   if (Type_Is_Array_Like (array_type)) {
-    Symbol *array_sym = node->apply.prefix->symbol;
+    // For chained applies (call-then-index), the prefix's symbol is the
+    // called function — irrelevant here; treat as un-symboled and route the
+    // prefix value through Generate_Expression below.
+    Symbol *array_sym =
+      (node->apply.prefix->kind == NK_APPLY) ? NULL
+                                             : node->apply.prefix->symbol;
     uint32_t base;
     uint32_t low_bound_val = 0, dyn_fat = 0;
     uint32_t high_bound_val = 0;  // For index checks
@@ -23408,10 +23382,10 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
     // pointer { ptr, ptr } and we must extract data + bounds.                                     
     //                                                                                              
     if (implicit_deref) {
-      bool deref_is_fat = prefix_type and Type_Is_Access (prefix_type) and
-                prefix_type->access.designated_type and
-                (Type_Is_Unconstrained_Array (prefix_type->access.designated_type) or
-                 Type_Is_String (prefix_type->access.designated_type));
+      // Aligned with Type_To_Llvm and Type_Needs_Fat_Pointer so the load
+      // type, Val claim, and convert-time predictions all agree on whether
+      // the access value is fat (unconstrained or dynamic-bounds designated).
+      bool deref_is_fat = Type_Needs_Fat_Pointer (prefix_type);
       if (deref_is_fat) {
         const char *idx_bt = Array_Bound_Llvm_Type (array_type);
         uint32_t fat;
@@ -26203,36 +26177,24 @@ uint32_t Agg_Resolve_Elem (Syntax_Node *expr,
   const char *elem_type, Type_Info *elem_ti)
 {
   cg->in_agg_component++;
-  uint32_t val = Generate_Expression (expr).reg;
+  LLVM_Value val_v = Generate_Expression (expr);
+  uint32_t val = val_v.reg;
   cg->in_agg_component--;
 
-  // Fat pointer sources: extract data pointer for composite elements.                             
-  // Three cases: (a) normal fat ptr, (b) dynamic inner aggregate fat ptr,                          
-  // (c) non-fat-ptr inner aggregate.                                                              
-  //                                                                                                
+  // Fat pointer sources: extract data pointer for composite elements.
+  // The value's real type drives the choice — bound-pair overflow on the AST
+  // type only flags that an inner sub-aggregate *might* have built a fat
+  // pointer; a static-bounds inner still returns a plain ptr.
+  //
   if (elem_is_composite) {
-    if (Expression_Produces_Fat_Pointer (expr, expr->type)) {
+    if (val_v.type and Llvm_Type_Is_Fat_Pointer (val_v.type)) {
+      uint32_t dp = Emit_Temp ();
+      Emit ("  %%t%u = extractvalue " FAT_PTR_TYPE
+         " %%t%u, 0\n", dp, val);
+      val = dp;
+    } else if (Expression_Produces_Fat_Pointer (expr, expr->type)) {
       val = Emit_Fat_Pointer_Data (val,
             Array_Bound_Llvm_Type (agg_type)).reg;
-    } else if (multidim and expr->kind == NK_AGGREGATE and
-           expr->type and
-           (Type_Has_Dynamic_Bounds (expr->type) or
-
-          // Inner sub-aggregate with full-range placeholder bounds:                                
-          // its Generate_Aggregate will detect the overflow, override                              
-          // bounds via early scan, and produce a fat pointer.                                     
-          //                                                                                        
-          (expr->type->kind == TYPE_ARRAY and
-           expr->type->array.index_count > 0 and
-           Bound_Pair_Overflows (
-             expr->type->array.indices[0].low_bound,
-             expr->type->array.indices[0].high_bound)))) {
-      uint32_t loaded = Emit_Temp ();
-      Emit ("  %%t%u = load " FAT_PTR_TYPE ", ptr %%t%u\n",
-         loaded, val);
-      val = Emit_Temp ();
-      Emit ("  %%t%u = extractvalue " FAT_PTR_TYPE
-         " %%t%u, 0\n", val, loaded);
     }
 
   // Fat-pointer element (dynamic-bound array/string): rebuild the                                  
@@ -26560,12 +26522,6 @@ void Agg_Rec_Store (uint32_t val, uint32_t dest_ptr,
   const char *comp_type = Type_To_Llvm (ti);
   bool is_fat = Llvm_Type_Is_Fat_Pointer (src_type);
   bool is_ptr = src_type and strcmp (src_type, "ptr") == 0;
-
-  // A dynamic-array aggregate yields a pointer to fat-pointer storage
-  // (alloca), not an SSA {ptr,ptr} value. The fat paths below extract
-  // fields, so materialize the value with a load first.
-  if (is_fat and Temp_Is_Fat_Alloca (val))
-    val = Fat_Ptr_As_Value (val).reg;
 
   // Fat → constrained: extract data+bounds, compute length, memcpy
   if (ti and is_fat and (Type_Is_String (ti) or Type_Is_Array_Like (ti))) {
@@ -27843,15 +27799,11 @@ uint32_t Generate_Aggregate (Syntax_Node *node) {
         cg->inner_agg_bnd_n = dim_count;
       }
 
-      // For dynamic bounds arrays, return a fat pointer { ptr, ptr }                               
-      // where the bounds pointer contains ALL dimension bounds in flat                             
-      // layout [lo0, hi0, lo1, hi1, ...] so multi-dim indexing works.                             
-      //                                                                                            
-      uint32_t fat_ptr = Emit_Temp ();
+      // Dynamic-bounds aggregate result: return SSA fat pointer { ptr, ptr }.
+      // Multidim bounds pointer contains ALL dimension bounds in flat layout
+      // [lo0, hi0, lo1, hi1, ...] so multi-dim indexing works.
       {
         const char *agg_bt = Array_Bound_Llvm_Type (agg_type);
-        Emit ("  %%t%u = alloca " FAT_PTR_TYPE "  ; dynamic array fat ptr\n", fat_ptr);
-        Temp_Mark_Fat_Alloca (fat_ptr);
         if (multidim and agg_ndims > 1) {
           uint32_t md_lo[8], md_hi[8];
           md_lo[0] = low_val;
@@ -27862,24 +27814,15 @@ uint32_t Generate_Aggregate (Syntax_Node *node) {
             md_hi[d] = rt_inner_hi[d] ? rt_inner_hi[d]
                  : Emit_Static_Int (Type_Bound_Value (dim_hi[d]), iat_bnd).reg;
           }
-          uint32_t bounds_alloca = Emit_Alloc_Bounds_MultiDim (md_lo, md_hi, agg_ndims, agg_bt);
-          uint32_t ds = Emit_Temp ();
-          Emit ("  %%t%u = getelementptr " FAT_PTR_TYPE ", ptr %%t%u, i32 0, i32 0\n", ds, fat_ptr);
-          Emit ("  store ptr %%t%u, ptr %%t%u\n", base, ds);
-          uint32_t bs = Emit_Temp ();
-          Emit ("  %%t%u = getelementptr " FAT_PTR_TYPE ", ptr %%t%u, i32 0, i32 1\n", bs, fat_ptr);
-          Emit ("  store ptr %%t%u, ptr %%t%u\n", bounds_alloca, bs);
-        } else {
-          // low_val/high_val are at the aggregate working type (iat_bnd);
-          // the bounds block stores at agg_bt (the index bound width, e.g. i8
-          // for a small-range index). Coerce to honor the helper's "bounds at
-          // bt" contract instead of emitting `store i8 %i32`.
-          uint32_t lo_b = Emit_Convert (low_val, iat_bnd, agg_bt).reg;
-          uint32_t hi_b = Emit_Convert (high_val, iat_bnd, agg_bt).reg;
-          Emit_Store_Fat_Pointer_Fields_To_Temp (base, lo_b, hi_b, fat_ptr, agg_bt);
+          return Emit_Fat_Pointer_MultiDim (base, md_lo, md_hi, agg_ndims, agg_bt).reg;
         }
+        // low_val/high_val are at the aggregate working type (iat_bnd); the
+        // bounds block stores at agg_bt (the index bound width). Coerce to
+        // honor the helper's "bounds at bt" contract.
+        uint32_t lo_b = Emit_Convert (low_val, iat_bnd, agg_bt).reg;
+        uint32_t hi_b = Emit_Convert (high_val, iat_bnd, agg_bt).reg;
+        return Emit_Fat_Pointer_Dynamic (base, lo_b, hi_b, agg_bt).reg;
       }
-      return fat_ptr;
     }
 
     // Static bounds: use compile-time allocation and unrolled initialization
@@ -28223,6 +28166,7 @@ uint32_t Generate_Aggregate (Syntax_Node *node) {
     // Fat-pointer elements are value-typed { ptr, ptr }; store, don't memcpy.
     if (elem_is_fat) elem_is_composite = false;
 
+    // TODO: mem-safety remove this after investigating OOM
     if (count > 10000000) {
       fprintf (stderr, "BUG: runaway aggregate count=%lld low=%lld high=%lld lk=%d hk=%d at line %d\n",
         (long long)count, (long long)low, (long long)high, low_bound.kind, high_bound.kind, __LINE__);
@@ -28929,12 +28873,7 @@ uint32_t Generate_Aggregate (Syntax_Node *node) {
                mhi[d], agg_bt, I128_Decimal (dhi), d);
           }
         }
-        uint32_t fat_val = Emit_Fat_Pointer_MultiDim (base, mlo, mhi, agg_ndims, agg_bt).reg;
-        uint32_t fat_ptr = Emit_Temp ();
-        Emit ("  %%t%u = alloca " FAT_PTR_TYPE "  ; multidim array fat ptr\n", fat_ptr);
-        Temp_Mark_Fat_Alloca (fat_ptr);
-        Emit ("  store " FAT_PTR_TYPE " %%t%u, ptr %%t%u\n", fat_val, fat_ptr);
-        return fat_ptr;
+        return Emit_Fat_Pointer_MultiDim (base, mlo, mhi, agg_ndims, agg_bt).reg;
       }
 
       // Use SSA-evaluated choice bounds if available (expression                                   
@@ -28957,11 +28896,7 @@ uint32_t Generate_Aggregate (Syntax_Node *node) {
         Emit ("  %%t%u = add %s 0, %s  ; static agg high\n",
            high_temp, agg_bt, I128_Decimal (high));
       }
-      uint32_t fat_ptr = Emit_Temp ();
-      Emit ("  %%t%u = alloca " FAT_PTR_TYPE "  ; static array fat ptr\n", fat_ptr);
-      Temp_Mark_Fat_Alloca (fat_ptr);
-      Emit_Store_Fat_Pointer_Fields_To_Temp (base, low_temp, high_temp, fat_ptr, agg_bt);
-      return fat_ptr;
+      return Emit_Fat_Pointer_Dynamic (base, low_temp, high_temp, agg_bt).reg;
     }
     return base;
   }
@@ -29388,23 +29323,17 @@ LLVM_Value Generate_Allocator (Syntax_Node *node) {
       agg_type = node->allocator.expression->type;  // Use outer type
     }
     bool init_is_constrained = Type_Is_Constrained_Array (agg_type);
-    uint32_t init_val = Generate_Expression (node->allocator.expression).reg;
-
-    // After generation, check if the result is actually a fat pointer                              
-    // alloca (dynamic-bounds aggregate). Expression_Llvm_Type returns                             
-    // "ptr" for allocas, but if it's marked as a fat alloca, we must                               
-    // use the fat pointer extraction path.                                                        
-    //                                                                                              
-    if (init_returns_ptr and Temp_Is_Fat_Alloca (init_val)) {
-      init_returns_ptr = false;
-      init_is_constrained = false;
-    }
+    LLVM_Value init_v = Generate_Expression (node->allocator.expression);
+    uint32_t init_val = init_v.reg;
+    // Aggregates of constrained-but-dynamic-bounds types now produce SSA fat;
+    // treat them as fat regardless of the static `is_constrained` flag.
+    bool init_actually_fat = init_v.type and Llvm_Type_Is_Fat_Pointer (init_v.type);
     uint32_t src_data, low_t, high_t, len_t;
     bool len_is_bytes = false;  // true if len_t is in bytes, false if elements
 
     // Constrained array initializer: returns ptr, not fat pointer.
     // Extract bounds from the type and use the ptr directly.
-    if (init_returns_ptr or init_is_constrained) {
+    if ((init_returns_ptr or init_is_constrained) and not init_actually_fat) {
       src_data = init_val;  // Already a pointer to array data
 
       // Get bounds from the constrained type.                                                     
@@ -29697,7 +29626,15 @@ LLVM_Value Generate_Allocator (Syntax_Node *node) {
 
   // If there's an initializer, copy it into the allocated memory
   if (node->allocator.expression) {
-    uint32_t val = Generate_Expression (node->allocator.expression).reg;
+    LLVM_Value val_v = Generate_Expression (node->allocator.expression);
+    uint32_t val = val_v.reg;
+    // If the initializer is an SSA fat pointer (dynamic-bounds aggregate),
+    // extract the data field for the memcpy source.
+    if (val_v.type and Llvm_Type_Is_Fat_Pointer (val_v.type)) {
+      uint32_t dp = Emit_Temp ();
+      Emit ("  %%t%u = extractvalue " FAT_PTR_TYPE " %%t%u, 0\n", dp, val);
+      val = dp;
+    }
 
     // Composite type: memcpy from initializer to heap
     if (designated_is_composite) {
@@ -29737,7 +29674,11 @@ LLVM_Value Generate_Allocator (Syntax_Node *node) {
     // Scalar type: store value - convert to designated type if needed
     } else {
       const char *desg_llvm = designated ? Type_To_Llvm (designated) : Integer_Arith_Type ();
-      const char *val_llvm = Expression_Llvm_Type (node->allocator.expression);
+      // Prefer the value's actual generated type over the AST prediction:
+      // an aggregate-built fat value reports "fat" via .type but the AST
+      // node may say "ptr". Wrong label here emits sext/zext on a fat value.
+      const char *val_llvm = (val_v.type and val_v.type[0]) ? val_v.type
+        : Expression_Llvm_Type (node->allocator.expression);
       if (strcmp (val_llvm, desg_llvm) != 0) {
         val = Emit_Convert (val, val_llvm, desg_llvm).reg;
       }
@@ -29919,14 +29860,13 @@ LLVM_Value Generate_Allocator (Syntax_Node *node) {
           (Type_Is_Unconstrained_Array (comp_type) or
            Aggregate_Produces_Fat_Pointer (comp_type));
         if (is_fat_agg) {
-          uint32_t loaded = Emit_Temp ();
-          Emit ("  %%t%u = load " FAT_PTR_TYPE ", ptr %%t%u\n", loaded, val);
+          // val is the SSA fat pointer { ptr, ptr } from the aggregate.
           uint32_t data_ptr = Emit_Temp ();
           Emit ("  %%t%u = extractvalue " FAT_PTR_TYPE " %%t%u, 0\n",
-             data_ptr, loaded);
+             data_ptr, val);
           uint32_t bnds = Emit_Temp ();
           Emit ("  %%t%u = extractvalue " FAT_PTR_TYPE " %%t%u, 1\n",
-             bnds, loaded);
+             bnds, val);
           uint32_t ndim = comp_type->array.index_count;
           uint32_t esz = (comp_type->array.element_type and
             comp_type->array.element_type->size > 0)
@@ -30613,7 +30553,18 @@ LLVM_Value Generate_Expression (Syntax_Node *node) {
     case NK_BINARY_OP:  return Generate_Binary_Op (node);
     case NK_UNARY_OP:   return Generate_Unary_Op (node);
     case NK_APPLY:      return Generate_Apply (node);
-    case NK_AGGREGATE:  return Val (Generate_Aggregate (node), "ptr");
+    case NK_AGGREGATE: {
+      // Array aggregates of unconstrained or dynamic-bounds types now return
+      // SSA { ptr, ptr } from Generate_Aggregate; everything else (records,
+      // static-bounds arrays) is a plain ptr to flat storage.
+      uint32_t r = Generate_Aggregate (node);
+      const char *ty = "ptr";
+      if (node->type and Type_Is_Array_Like (node->type) and
+          (Type_Is_Unconstrained_Array (node->type) or
+           Type_Has_Dynamic_Bounds (node->type)))
+        ty = FAT_PTR_TYPE;
+      return Val (r, ty);
+    }
     case NK_QUALIFIED:  return Generate_Qualified (node);
     case NK_ALLOCATOR:  return Generate_Allocator (node);
     default:
@@ -30965,7 +30916,14 @@ void Generate_Assignment (Syntax_Node *node) {
       // Composite types: copy contents via memcpy (RM 5.2)
       if (designated and (Type_Is_Record (designated) or
         (designated->kind == TYPE_ARRAY and designated->size > 0))) {
-        uint32_t value = Generate_Expression (node->assignment.value).reg;
+        LLVM_Value value_v = Generate_Expression (node->assignment.value);
+        uint32_t value = value_v.reg;
+        // Dynamic-bounds aggregate sources arrive as SSA fat - extract data.
+        if (value_v.type and Llvm_Type_Is_Fat_Pointer (value_v.type)) {
+          uint32_t dp = Emit_Temp ();
+          Emit ("  %%t%u = extractvalue " FAT_PTR_TYPE " %%t%u, 0\n", dp, value);
+          value = dp;
+        }
         uint32_t sz = designated->size > 0 ? designated->size : 8;
         Emit ("  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %u, i1 false)  ; .ALL composite assign\n",
            ptr, value, sz);
@@ -31117,7 +31075,16 @@ void Generate_Assignment (Syntax_Node *node) {
 
   // Handle record assignment (use memcpy) (RM 5.2, 3.7.2)
   if (Type_Is_Record (ty)) {
-    uint32_t src_ptr = Generate_Expression (node->assignment.value).reg;
+    LLVM_Value src_v = Generate_Expression (node->assignment.value);
+    uint32_t src_ptr = src_v.reg;
+    // A fat-valued source (e.g. dynamic-bounds aggregate) needs its data ptr
+    // extracted before memcpy — passing the SSA fat directly emits an invalid
+    // `memcpy ... ptr %fatreg`.
+    if (src_v.type and Llvm_Type_Is_Fat_Pointer (src_v.type)) {
+      uint32_t dp = Emit_Temp ();
+      Emit ("  %%t%u = extractvalue " FAT_PTR_TYPE " %%t%u, 0\n", dp, src_ptr);
+      src_ptr = dp;
+    }
     uint32_t record_size = ty->size > 0 ? ty->size : 8;
 
     // For constrained discriminated records, verify source discriminants match                     
@@ -31195,19 +31162,18 @@ void Generate_Assignment (Syntax_Node *node) {
     bool target_is_fat = Type_Has_Dynamic_Bounds (ty);
     bool src_is_agg_fat = (not src_is_fat_ptr and target_is_fat and
       node->assignment.value->kind == NK_AGGREGATE);
-    uint32_t src_ptr = Generate_Expression (node->assignment.value).reg;
+    LLVM_Value src_v = Generate_Expression (node->assignment.value);
+    uint32_t src_ptr = src_v.reg;
+    bool src_actually_fat = src_v.type and Llvm_Type_Is_Fat_Pointer (src_v.type);
 
-    // Aggregate produced a fat pointer alloca - load and store
+    // Aggregate returns SSA fat pointer { ptr, ptr }; store to target.
     if (src_is_agg_fat) {
-      uint32_t fp = Emit_Temp ();
-      Emit ("  %%t%u = load " FAT_PTR_TYPE ", ptr %%t%u  ; load agg fat ptr\n",
-         fp, src_ptr);
-      Emit ("  store " FAT_PTR_TYPE " %%t%u, ptr ", fp);
+      Emit ("  store " FAT_PTR_TYPE " %%t%u, ptr ", src_ptr);
       Emit_Symbol_Ref (target_sym);
       Emit ("  ; array assignment (dynamic constrained)\n");
 
     // Source is unconstrained/string - extract data pointer from fat pointer
-    } else if (src_is_fat_ptr) {
+    } else if (src_is_fat_ptr or src_actually_fat) {
 
       // Length check: verify source length matches constrained target length.
       // When target has dynamic bounds (BOUND_EXPR), Type_Bound_Value returns
@@ -32582,10 +32548,8 @@ void Generate_Statement (Syntax_Node *node) {
                     pt->array.is_constrained and Type_Has_Dynamic_Bounds (pt);
                   const char *vty = val_v.type;
                   if (not sig_is_fat and
-                    (Temp_Is_Fat_Alloca (val) or
-                     (vty and Llvm_Type_Is_Fat_Pointer (vty))) and
+                    (vty and Llvm_Type_Is_Fat_Pointer (vty)) and
                     pt and Type_Is_Constrained_Array (pt)) {
-                    val = Fat_Ptr_As_Value (val).reg;
                     uint32_t dp = Emit_Temp ();
                     Emit ("  %%t%u = extractvalue " FAT_PTR_TYPE
                        " %%t%u, 0\n", dp, val);
@@ -34695,13 +34659,9 @@ obj_decl_init:
            Type_Has_Dynamic_Bounds (agg_type));
         uint32_t agg_ptr = Generate_Expression (node->object_decl.init).reg;
 
-        // Aggregate already returns a fat pointer alloca.
-        // Load it and store to the destination variable.
+        // Aggregate returns SSA fat pointer { ptr, ptr }; store to destination.
         if (dest_needs_fat and agg_returns_fat) {
-          uint32_t loaded = Emit_Temp ();
-          Emit ("  %%t%u = load " FAT_PTR_TYPE ", ptr %%t%u  ; load agg fat ptr\n",
-             loaded, agg_ptr);
-          Emit ("  store " FAT_PTR_TYPE " %%t%u, ptr %%", loaded);
+          Emit ("  store " FAT_PTR_TYPE " %%t%u, ptr %%", agg_ptr);
           Emit_Symbol_Name (sym);
           Emit ("  ; store fat ptr to var\n");
 
@@ -35811,14 +35771,13 @@ obj_decl_init:
               (Type_Is_Unconstrained_Array (comp_type) or
                Aggregate_Produces_Fat_Pointer (comp_type));
             if (is_fat_agg) {
-              uint32_t loaded = Emit_Temp ();
-              Emit ("  %%t%u = load " FAT_PTR_TYPE ", ptr %%t%u\n", loaded, val);
+              // val is the SSA fat pointer { ptr, ptr } from the aggregate.
               uint32_t data_ptr = Emit_Temp ();
               Emit ("  %%t%u = extractvalue " FAT_PTR_TYPE " %%t%u, 0\n",
-                 data_ptr, loaded);
+                 data_ptr, val);
               uint32_t bnds = Emit_Temp ();
               Emit ("  %%t%u = extractvalue " FAT_PTR_TYPE " %%t%u, 1\n",
-                 bnds, loaded);
+                 bnds, val);
               uint32_t ndim = comp_type->array.index_count;
               uint32_t esz = (comp_type->array.element_type and
                 comp_type->array.element_type->size > 0)
@@ -36688,11 +36647,7 @@ void Emit_Function_Header (Symbol *sym, bool is_nested) {
 
   // Each LLVM `define` uses fresh %0/%1/... SSA numbering. Reset the
   // temp counter and per-function side tables so a stale entry from
-  // the previously emitted function (e.g. an implicit equality fn or
-  // a sibling subprogram) can't leak its type into this function via
-  // a hash collision in Temp_Get_Type.
   cg->temp_id = 1;
-  Temp_Type_Reset ();
 
   // Initialize BIP state for code generator
   BIP_Begin_Function (sym);
@@ -37325,14 +37280,8 @@ void Generate_Generic_Instance_Body (Symbol *inst_sym,
                 // Constrained array: extract data ptr from fat ptr if needed
                 } else if (obj_type and Type_Is_Constrained_Array (obj_type)) {
                   const char *vty = val_v.type;
-                  bool is_fat_val = (vty and strcmp (vty, FAT_PTR_TYPE) == 0) or
-                            Temp_Is_Fat_Alloca (val);
+                  bool is_fat_val = vty and strcmp (vty, FAT_PTR_TYPE) == 0;
                   if (is_fat_val) {
-                    if (Temp_Is_Fat_Alloca (val)) {
-                      uint32_t lv = Emit_Temp ();
-                      Emit ("  %%t%u = load " FAT_PTR_TYPE ", ptr %%t%u\n", lv, val);
-                      val = lv;
-                    }
                     uint32_t dp = Emit_Temp ();
                     Emit ("  %%t%u = extractvalue " FAT_PTR_TYPE " %%t%u, 0\n", dp, val);
                     val = dp;
@@ -37526,7 +37475,6 @@ void Generate_Task_Body (Syntax_Node *node) {
   // Reset temp counter for new function
   uint32_t saved_temp = cg->temp_id;
   cg->temp_id = 1;
-  Temp_Type_Reset ();
 
   // Create frame aliases for accessing enclosing scope variables.
   // Task bodies can reference variables from the enclosing scope (RM 9.1).
@@ -37807,7 +37755,6 @@ void Generate_Declaration (Syntax_Node *node) {
         cg->current_function = pkg_sym;
         cg->block_terminated = false;
         cg->temp_id = 1;
-  Temp_Type_Reset ();
 
         // Start package-level tasks
         if (has_pkg_tasks and pkg_spec_node) {
@@ -37984,7 +37931,6 @@ void Generate_Declaration (Syntax_Node *node) {
             cg->current_function = inst_sym;
             cg->block_terminated = false;
             cg->temp_id = 1;
-  Temp_Type_Reset ();
 
             // For each non-static exported var, find the generic actual
             // that corresponds to its init expression and evaluate it.
@@ -38700,7 +38646,6 @@ void Generate_Type_Equality_Function (Type_Info *t) {
   // Save and reset temp counter for this function
   uint32_t saved_temp = cg->temp_id;
   cg->temp_id = 2;  // Start after %0 and %1
-  Temp_Type_Reset ();
   if (Type_Is_Record (t)) {
 
     // Empty record - always equal
