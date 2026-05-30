@@ -20858,7 +20858,7 @@ LLVM_Value Emit_Binary_Op_Predefined (Syntax_Node *node) {
       left_ptr = Generate_Composite_Address (node->binary.left);
       right_ptr = Generate_Composite_Address (node->binary.right);
     }
-    uint32_t memcmp_result, cmp_result;
+    uint32_t memcmp_result;
 
     // Constrained array: same size, use memcmp directly
     if (left_type->array.is_constrained and not is_unconstrained) {
@@ -23853,7 +23853,7 @@ type_conversion:
           Emit ("  %%t%u = fptosi double %%t%u to %s  ; fixed>integer\n",
              t2, f3, LLVM_Rep_To_String (dst_llvm));
           if (Type_Is_Scalar (dst_type))
-            Emit_Constraint_Check_Val ((LLVM_Value){ t2, dst_llvm }, dst_type, src_type).reg;
+            Emit_Constraint_Check_Val ((LLVM_Value){ t2, dst_llvm }, dst_type, src_type);
           return Val_Rep (t2, dst_llvm);
         }
 
@@ -23876,7 +23876,7 @@ type_conversion:
 
         // RM 4.6: Check converted value against target subtype constraint
         if (Type_Is_Scalar (dst_type)) {
-          Emit_Constraint_Check_Val ((LLVM_Value){ result, dst_llvm }, dst_type, src_type).reg;
+          Emit_Constraint_Check_Val ((LLVM_Value){ result, dst_llvm }, dst_type, src_type);
         }
       }
       return Val_Of_Type (result, dst_type);
@@ -29061,7 +29061,7 @@ LLVM_Value Generate_Qualified (Syntax_Node *node) {
 
   // RM 4.7: Qualified expression checks value against subtype constraint
   if (Type_Is_Scalar (dst_type)) {
-    Emit_Constraint_Check_Val ((LLVM_Value){ result.reg, src_llvm }, dst_type, src_type).reg;
+    Emit_Constraint_Check_Val ((LLVM_Value){ result.reg, src_llvm }, dst_type, src_type);
   }
   if (src_type and src_type != dst_type) {
     LLVM_Rep dst_llvm = Type_To_Rep (dst_type);
@@ -31238,7 +31238,7 @@ void Generate_Assignment (Syntax_Node *node) {
     LLVM_Rep src_rep = value_v.rep;
     if (ty and Type_Is_Scalar (ty)) {
       Type_Info *src_type_info = node->assignment.value->type;
-      Emit_Constraint_Check_Val ((LLVM_Value){ value, src_rep }, ty, src_type_info).reg;
+      Emit_Constraint_Check_Val ((LLVM_Value){ value, src_rep }, ty, src_type_info);
     }
     value = Emit_Convert (value, src_rep, type_rep).reg;
   }
@@ -31250,7 +31250,7 @@ void Generate_Assignment (Syntax_Node *node) {
   //
   if (ty and Type_Is_Scalar (ty) and (is_src_float or is_dst_float)) {
     Type_Info *src_type_info = node->assignment.value->type;
-    Emit_Constraint_Check_Val ((LLVM_Value){ value, type_rep }, ty, src_type_info).reg;
+    Emit_Constraint_Check_Val ((LLVM_Value){ value, type_rep }, ty, src_type_info);
   }
   Emit ("  store %s %%t%u, ptr ", LLVM_Rep_To_String (type_rep), value);
   Emit_Symbol_Storage (target_sym);
@@ -31447,7 +31447,7 @@ void Generate_Return_Statement (Syntax_Node *node) {
 
     // RM 6.5: Check return value.reg against function return subtype constraint
     if (ret_type and Type_Is_Scalar (ret_type)) {
-      Emit_Constraint_Check_Val ((LLVM_Value){ value.reg, ret_rep }, ret_type, expr->type).reg;
+      Emit_Constraint_Check_Val ((LLVM_Value){ value.reg, ret_rep }, ret_type, expr->type);
     }
 
     // RM 6.5(3): For constrained access subtypes, check that the                                   
@@ -32528,7 +32528,7 @@ void Generate_Statement (Syntax_Node *node) {
                          cp, val, comp->byte_offset);
                       uint32_t cv2 = Emit_Temp ();
                       Emit ("  %%t%u = load %s, ptr %%t%u\n", cv2, LLVM_Rep_To_String (ct_llvm), cp);
-                      Emit_Constraint_Check_Val ((LLVM_Value){ cv2, ct_llvm }, ct, NULL).reg;
+                      Emit_Constraint_Check_Val ((LLVM_Value){ cv2, ct_llvm }, ct, NULL);
                     }
                   }
 
@@ -34015,13 +34015,15 @@ obj_decl_init:
     if (ty and Type_Is_Scalar (ty)) {
       if (ty->low_bound.kind == BOUND_EXPR and ty->low_bound.expr
         and not ty->low_bound.cached_temp) {
-        { LLVM_Value _cv = Generate_Expression (ty->low_bound.expr); ty->low_bound.cached_temp = _cv.reg; ty->low_bound.cached_rep = _cv.rep; }
-        LLVM_Rep ety = Expression_LLVM_Rep (ty->low_bound.expr);
+        LLVM_Value _cv = Generate_Expression (ty->low_bound.expr);
+        ty->low_bound.cached_temp = _cv.reg;
+        ty->low_bound.cached_rep = _cv.rep;
       }
       if (ty->high_bound.kind == BOUND_EXPR and ty->high_bound.expr
         and not ty->high_bound.cached_temp) {
-        { LLVM_Value _cv = Generate_Expression (ty->high_bound.expr); ty->high_bound.cached_temp = _cv.reg; ty->high_bound.cached_rep = _cv.rep; }
-        LLVM_Rep ety = Expression_LLVM_Rep (ty->high_bound.expr);
+        LLVM_Value _cv = Generate_Expression (ty->high_bound.expr);
+        ty->high_bound.cached_temp = _cv.reg;
+        ty->high_bound.cached_rep = _cv.rep;
       }
     }
 
@@ -34031,13 +34033,15 @@ obj_decl_init:
         Index_Info *idx = &ty->array.indices[d];
         if (idx->low_bound.kind == BOUND_EXPR and idx->low_bound.expr
           and not idx->low_bound.cached_temp) {
-          { LLVM_Value _cv = Generate_Expression (idx->low_bound.expr); idx->low_bound.cached_temp = _cv.reg; idx->low_bound.cached_rep = _cv.rep; }
-          LLVM_Rep ety = Expression_LLVM_Rep (idx->low_bound.expr);
+          LLVM_Value _cv = Generate_Expression (idx->low_bound.expr);
+          idx->low_bound.cached_temp = _cv.reg;
+          idx->low_bound.cached_rep = _cv.rep;
         }
         if (idx->high_bound.kind == BOUND_EXPR and idx->high_bound.expr
           and not idx->high_bound.cached_temp) {
-          { LLVM_Value _cv = Generate_Expression (idx->high_bound.expr); idx->high_bound.cached_temp = _cv.reg; idx->high_bound.cached_rep = _cv.rep; }
-          LLVM_Rep ety = Expression_LLVM_Rep (idx->high_bound.expr);
+          LLVM_Value _cv = Generate_Expression (idx->high_bound.expr);
+          idx->high_bound.cached_temp = _cv.reg;
+          idx->high_bound.cached_rep = _cv.rep;
         }
       }
 
@@ -34074,13 +34078,15 @@ obj_decl_init:
         Type_Info *elt = ty->array.element_type;
         if (elt->low_bound.kind == BOUND_EXPR and elt->low_bound.expr
           and not elt->low_bound.cached_temp) {
-          { LLVM_Value _cv = Generate_Expression (elt->low_bound.expr); elt->low_bound.cached_temp = _cv.reg; elt->low_bound.cached_rep = _cv.rep; }
-          LLVM_Rep ety = Expression_LLVM_Rep (elt->low_bound.expr);
+          LLVM_Value _cv = Generate_Expression (elt->low_bound.expr);
+          elt->low_bound.cached_temp = _cv.reg;
+          elt->low_bound.cached_rep = _cv.rep;
         }
         if (elt->high_bound.kind == BOUND_EXPR and elt->high_bound.expr
           and not elt->high_bound.cached_temp) {
-          { LLVM_Value _cv = Generate_Expression (elt->high_bound.expr); elt->high_bound.cached_temp = _cv.reg; elt->high_bound.cached_rep = _cv.rep; }
-          LLVM_Rep ety = Expression_LLVM_Rep (elt->high_bound.expr);
+          LLVM_Value _cv = Generate_Expression (elt->high_bound.expr);
+          elt->high_bound.cached_temp = _cv.reg;
+          elt->high_bound.cached_rep = _cv.rep;
         }
       } else if (ty->array.element_type and
              Type_Is_Array_Like (ty->array.element_type)) {
@@ -34094,13 +34100,15 @@ obj_decl_init:
           Index_Info *eidx = &elt->array.indices[d];
           if (eidx->low_bound.kind == BOUND_EXPR and eidx->low_bound.expr
             and not eidx->low_bound.cached_temp) {
-            { LLVM_Value _cv = Generate_Expression (eidx->low_bound.expr); eidx->low_bound.cached_temp = _cv.reg; eidx->low_bound.cached_rep = _cv.rep; }
-            LLVM_Rep ety = Expression_LLVM_Rep (eidx->low_bound.expr);
+            LLVM_Value _cv = Generate_Expression (eidx->low_bound.expr);
+            eidx->low_bound.cached_temp = _cv.reg;
+            eidx->low_bound.cached_rep = _cv.rep;
           }
           if (eidx->high_bound.kind == BOUND_EXPR and eidx->high_bound.expr
             and not eidx->high_bound.cached_temp) {
-            { LLVM_Value _cv = Generate_Expression (eidx->high_bound.expr); eidx->high_bound.cached_temp = _cv.reg; eidx->high_bound.cached_rep = _cv.rep; }
-            LLVM_Rep ety = Expression_LLVM_Rep (eidx->high_bound.expr);
+            LLVM_Value _cv = Generate_Expression (eidx->high_bound.expr);
+            eidx->high_bound.cached_temp = _cv.reg;
+            eidx->high_bound.cached_rep = _cv.rep;
           }
         }
       }
@@ -34275,7 +34283,7 @@ obj_decl_init:
            init, LLVM_Rep_To_String (fix_store_type), (long long)scaled_val, small);
 
         // RM 3.3.2: Scalar constraint check on initialization
-        Emit_Constraint_Check_Val ((LLVM_Value){ init, fix_store_type }, ty, NULL).reg;
+        Emit_Constraint_Check_Val ((LLVM_Value){ init, fix_store_type }, ty, NULL);
         Emit ("  store %s %%t%u, ptr %%", LLVM_Rep_To_String (fix_store_type), init);
         Emit_Symbol_Name (sym);
         Emit ("\n");
@@ -34694,7 +34702,7 @@ obj_decl_init:
         // the check operates on matching types.
         if (ty and Type_Is_Scalar (ty)) {
           Type_Info *init_src_type = node->object_decl.init->type;
-          Emit_Constraint_Check_Val ((LLVM_Value){ init, src_type_rep }, ty, init_src_type).reg;
+          Emit_Constraint_Check_Val ((LLVM_Value){ init, src_type_rep }, ty, init_src_type);
         }
 
         // RM 4.8(6): Access type constraint check. When assigning                                 
@@ -38209,8 +38217,7 @@ void Generate_Exception_Globals (void) {
       }
       if (dup) continue;
       if (exc_emitted_count < 256) {
-        strncpy (exc_emitted[exc_emitted_count], buf, 255);
-        exc_emitted[exc_emitted_count][255] = '\0';
+        snprintf (exc_emitted[exc_emitted_count], 256, "%s", buf);
         exc_emitted_count++;
       }
       Emit_Exception_Identity_Global (buf);
@@ -38237,8 +38244,7 @@ void Generate_Exception_Globals (void) {
       fclose (mem);
       buf[len] = '\0';
       cg->output = real_out;
-      strncpy (emitted_names[emitted_count], buf, 255);
-      emitted_names[emitted_count][255] = '\0';
+      snprintf (emitted_names[emitted_count], 256, "%s", buf);
       emitted_count++;
     }
 
