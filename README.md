@@ -2,6 +2,46 @@
 
 Single-file Ada 83 (ANSI/MIL-STD-1815A) compiler targeting LLVM IR.
 
+## Prerequisites
+
+Build the compiler:
+
+- **`gcc`** — the compiler is a single C file built with `-march=native -lm -lpthread`.
+  Clang works too (`make CC=clang`).
+- **GNU `make`**.
+- A 64-bit host with `__int128` support (x86-64 or ARM64).
+
+Run compiled Ada programs and the ACATS test suite (LLVM ≥ 14 recommended):
+
+- **`lli`** — LLVM IR interpreter / JIT used to execute `.ll` and `.bc` files.
+- **`llvm-link`** — links the program's `.ll` with `acats/report.ll` and any
+  runtime packages.
+- **`llc`** — only needed if you go through native assembly (`make %.exe`).
+
+On Debian/Ubuntu: `apt install build-essential llvm` (provides `lli`,
+`llvm-link`, `llc`).
+On Arch:           `pacman -S base-devel llvm`.
+On macOS:          `brew install llvm` (then ensure `$(brew --prefix llvm)/bin`
+is on `PATH`).
+
+Test harness (`run_acats.sh`) additionally needs: **`bash`**, GNU **`xargs`**,
+**`timeout`**, **`bc`**, **`nproc`**, and standard POSIX utilities (`grep`,
+`sort`, `head`, `cut`, `basename`). All ship with `coreutils` /
+`findutils` / `bc` on Linux; on macOS install GNU versions
+(`brew install coreutils findutils bc`) or expect minor harness breakage.
+
+Quick check that everything is on `PATH`:
+
+```sh
+gcc --version && lli --version && llvm-link --version && llc --version
+```
+
+## Building
+
+```sh
+make all
+```
+
 ## Usage
 
 ```
