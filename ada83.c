@@ -499,6 +499,7 @@ int Error_Count = 0;
 
 // Emit a diagnostic message and increment Error_Count without stopping.
 void Report_Error (Source_Location location, const char *format, ...);
+void Report_Warning (Source_Location location, const char *format, ...);
 
 // Emit a diagnostic message and terminate the compiler immediately.
 __attribute__((noreturn))
@@ -1000,6 +1001,7 @@ struct Syntax_Node {
     struct {
       Syntax_Node *subtype_mark; // Named subtype
       Syntax_Node *constraint;   // Optional constraint or NULL
+      bool         is_box;       // True for `subtype_mark RANGE <>` (unconstrained index)
     } subtype_ind;
 
     // when NK_INDEX_CONSTRAINT =>
@@ -1873,7 +1875,6 @@ struct Symbol {
   bool     is_identity_function;  // Derived identity "=" operator
   uint32_t disc_agg_temp;         // Temp register for discriminant aggregate
   bool     is_disc_constrained;   // Constrained by a discriminant constraint
-  bool     needs_fat_ptr_storage; // Requires fat-pointer alloca
 
   // Derived operations
   Symbol    *parent_operation;  // Original primitive inherited by derivation
@@ -2013,6 +2014,7 @@ String_Slice Operator_Name (Token_Kind op);
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 
 Type_Info *Resolve_Expression   (Syntax_Node *node);
+bool       Index_Bound_From_Range_Attr (Syntax_Node *idx, Index_Info *info);
 Type_Info *Resolve_Identifier   (Syntax_Node *node);
 Type_Info *Resolve_Selected     (Syntax_Node *node);
 Type_Info *Resolve_Binary_Op    (Syntax_Node *node);
@@ -3426,6 +3428,19 @@ void Report_Error (Source_Location location, const char *format, ...) {
   fputc ('\n', stderr);
   va_end (args);
   Error_Count++;
+}
+// Located, non-fatal warning. Does not affect Error_Count or compilation — used
+// e.g. when a runtime check is statically known to fail (RM permits compiling
+// the program and raising at run time, but a quality compiler flags it).
+void Report_Warning (Source_Location location, const char *format, ...) {
+  va_list args;
+  va_start (args, format);
+  fprintf (stderr, "%s:%u:%u: warning: ",
+           location.filename ? location.filename : "<unknown>",
+           location.line, location.column);
+  vfprintf (stderr, format, args);
+  fputc ('\n', stderr);
+  va_end (args);
 }
 __attribute__ ((unused, noreturn))
 void Fatal_Error (Source_Location location, const char *format, ...) {
@@ -6174,12 +6189,12 @@ Syntax_Node *Parse_Array_Type (Parser *p) {
   // without a range constraint. A range or subtype_indication with constraint                      
   // means constrained.                                                                            
   //                                                                                                
+  // Unconstrained iff an index is `subtype_mark RANGE <>` (a box). A bare type
+  // mark (e.g. ARRAY (BOOLEAN)) is CONSTRAINED to that subtype's range (RM 3.6).
   node->array_type.is_constrained = true;
   for (size_t i = 0; i < node->array_type.indices.count; i++) {
     Syntax_Node *idx = node->array_type.indices.items[i];
-
-    // Just a type name without constraint = unconstrained
-    if (idx->kind == NK_IDENTIFIER or idx->kind == NK_SELECTED) {
+    if (idx->kind == NK_SUBTYPE_INDICATION and idx->subtype_ind.is_box) {
       node->array_type.is_constrained = false;
       break;
     }
@@ -6210,9 +6225,14 @@ Syntax_Node *Parse_Discrete_Range(Parser *p) {
   // Type RANGE low..high or Type RANGE <>
   if (Parser_Match (p, TK_RANGE)) {
 
-    // Unconstrained - return the type mark; <> is consumed
+    // Unconstrained - `subtype_mark RANGE <>`. Mark the box so the array-type
+    // parser can tell it apart from a bare type mark (which is CONSTRAINED to
+    // the subtype's range, RM 3.6).
     if (Parser_Match (p, TK_BOX)) {
-      return name;
+      Syntax_Node *ind = Node_New (NK_SUBTYPE_INDICATION, loc);
+      ind->subtype_ind.subtype_mark = name;
+      ind->subtype_ind.is_box = true;
+      return ind;
     }
     Syntax_Node *range = Node_New (NK_RANGE, loc);
     range->range.low = Parse_Expression (p);
@@ -7435,11 +7455,14 @@ bool Type_Needs_Fat_Pointer (const Type_Info *type_info) {
   // representation decision.
   //
   if (Type_Is_Access (type_info) and type_info->access.designated_type) {
-    Type_Info *des = type_info->access.designated_type;
-    while (des and Type_Is_Array_Like (des) and des->array.is_constrained
-         and des->base_type and Type_Is_Array_Like (des->base_type))
-      des = des->base_type;
-    if (not Type_Is_Array_Like (des)) return false;
+    // Follow the ROOT access type (matches Type_To_Rep): an access subtype
+    // constraint can't change the pointer width — only an access type that
+    // directly designates a static-bounds-constrained array is thin.
+    const Type_Info *root = type_info;
+    while (root->base_type and Type_Is_Access (root->base_type))
+      root = root->base_type;
+    Type_Info *des = root->access.designated_type;
+    if (not des or not Type_Is_Array_Like (des)) return false;
     return (not des->array.is_constrained) or Type_Has_Dynamic_Bounds (des);
   }
   if (not Type_Is_Array_Like (type_info)) return false;
@@ -7799,15 +7822,17 @@ LLVM_Rep Type_To_Rep (Type_Info *type_info) {
       // Float_LLVM_Rep_Of handles both (formal resolve + base-type walk).
       return Float_LLVM_Rep_Of (type_info);
     case TYPE_ACCESS:
-      // Access to unconstrained-or-dynamic-bounds array carries fat pointer
-      // (RM 3.10). Chase constrained subtypes to the root.
-      if (type_info->access.designated_type) {
-        Type_Info *designated = type_info->access.designated_type;
-        while (designated and Type_Is_Array_Like (designated)
-               and designated->array.is_constrained
-               and designated->base_type and Type_Is_Array_Like (designated->base_type))
-          designated = designated->base_type;
-        if (Type_Is_Array_Like (designated)
+      // Representation follows the ROOT access type (RM 3.10): an access SUBTYPE
+      // constraint — `type A is access STRING; subtype A1 is A(1..3)` — cannot
+      // change the pointer width, so A1 stays fat like A (the bounds travel for
+      // the subtype check). Only an access type that itself DIRECTLY designates
+      // a static-bounds-constrained array (`access STRING(1..2)`) is thin.
+      {
+        Type_Info *root = type_info;
+        while (root->base_type and Type_Is_Access (root->base_type))
+          root = root->base_type;
+        Type_Info *designated = root->access.designated_type;
+        if (designated and Type_Is_Array_Like (designated)
             and ((not designated->array.is_constrained)
                  or Type_Has_Dynamic_Bounds (designated)))
           return LL_REP_FAT;
@@ -8200,11 +8225,8 @@ void Symbol_Add (Symbol *sym) {
 
     // Fat pointers for dynamic/unconstrained arrays (or access thereto) need
     // { ptr, ptr } = 16 bytes, not just ptr = 8 bytes.
-    if (sym->type and (Type_Has_Dynamic_Bounds (sym->type) or
-               Type_Is_Unconstrained_Array (sym->type) or
-               Type_Needs_Fat_Pointer (sym->type))) {
+    if (Type_Needs_Fat_Pointer (sym->type)) {
       var_size = FAT_PTR_ALLOC_SIZE;
-      sym->needs_fat_ptr_storage = true;
     }
     if (var_size == 0) {
       fprintf (stderr, "warning: variable '%.*s' has zero size, defaulting to 8 bytes\n",
@@ -10095,6 +10117,11 @@ Type_Info *Resolve_Apply (Syntax_Node *node) {
                     .int_value = arg->range.high->integer_lit.value
                   };
                 }
+
+              // P'RANGE index constraint (RM 3.6.1): inherit the prefix
+              // subtype's index bounds (e.g. J (A'RANGE) with A = J(0..50)).
+              } else {
+                Index_Bound_From_Range_Attr (arg, info);
               }
             }
 
@@ -10757,6 +10784,31 @@ int128_t Array_Low_Bound (Type_Info *type_info) {
     return 0;
   return Type_Bound_Value (type_info->array.indices[0].low_bound);
 }
+// If `idx` is a `P'RANGE` attribute used as an array index constraint, fill
+// `info` with the prefix subtype's index bounds and index type, and return
+// true. `P'RANGE(n)` selects dimension n (1-based, default 1). RM 3.6.1.
+// Shared by the three array-index-constraint resolution paths (anonymous array
+// type, indexed-name subtype, and subtype-indication subtype).
+bool Index_Bound_From_Range_Attr (Syntax_Node *idx, Index_Info *info) {
+  if (not idx or idx->kind != NK_ATTRIBUTE or not idx->attribute.prefix
+      or not Slice_Equal_Ignore_Case (idx->attribute.name, S("RANGE")))
+    return false;
+  Type_Info *pfx = idx->attribute.prefix->type;
+  if (not (pfx and Type_Is_Array_Like (pfx) and pfx->array.index_count > 0))
+    return false;
+  uint32_t dim = 0;
+  if (idx->attribute.arguments.count == 1) {
+    double dv = Eval_Const_Numeric (idx->attribute.arguments.items[0]);
+    if (dv == dv and dv >= 1) dim = (uint32_t) dv - 1;
+  }
+  if (dim >= pfx->array.index_count) dim = 0;
+  if (pfx->array.indices[dim].index_type)
+    info->index_type = pfx->array.indices[dim].index_type;
+  info->low_bound  = pfx->array.indices[dim].low_bound;
+  info->high_bound = pfx->array.indices[dim].high_bound;
+  return true;
+}
+
 Type_Info *Resolve_Expression (Syntax_Node *node) {
   if (not node) return NULL;
   switch (node->kind) {
@@ -11319,6 +11371,11 @@ Type_Info *Resolve_Expression (Syntax_Node *node) {
 
               // Unconstrained index type (just a type mark, no constraint)
               info->index_type = idx->subtype_ind.subtype_mark->type;
+
+            // P'RANGE as an index constraint (RM 3.6.1): inherit the prefix
+            // subtype's index bounds, e.g. ARRAY (A'RANGE) where A is J(0..50).
+            } else if (Index_Bound_From_Range_Attr (idx, info)) {
+              // handled by the predicate
 
             // Use resolved type from identifier/expression (e.g., BOOLEAN)
             } else if (idx->type) {
@@ -12233,6 +12290,11 @@ Type_Info *Resolve_Expression (Syntax_Node *node) {
                     };
                   }
                 }
+
+              // P'RANGE index constraint (RM 3.6.1): inherit the prefix
+              // subtype's index bounds (e.g. J (A'RANGE) with A = J(0..50)).
+              } else {
+                Index_Bound_From_Range_Attr (range, info);
               }
             }
 
@@ -17601,7 +17663,7 @@ LLVM_Rep Expression_LLVM_Rep (Syntax_Node *node) {
     return LL_REP_FAT;
 
   if (node and node->kind == NK_IDENTIFIER and node->symbol and
-    node->symbol->needs_fat_ptr_storage)
+    Type_Needs_Fat_Pointer (node->symbol->type))
     return LL_REP_FAT;
 
   if (node and node->kind != NK_AGGREGATE and
@@ -18687,9 +18749,16 @@ void Emit_Access_Designated_Disc_Check (uint32_t acc_val, LLVM_Rep acc_rep,
                     Type_Info *access_type) {
   if (not access_type or not Type_Is_Access (access_type)) return;
   Type_Info *des = access_type->access.designated_type;
-  if (not (des and des->kind == TYPE_RECORD and des->record.has_disc_constraints
-       and des->record.disc_constraint_values and des->record.discriminant_count > 0))
-    return;
+  if (not des) return;
+  bool is_rec = des->kind == TYPE_RECORD and des->record.has_disc_constraints
+       and des->record.disc_constraint_values and des->record.discriminant_count > 0;
+  // Constrained array designated subtype (e.g. ACCESS ARR (2..5)): the
+  // designated object's bounds must equal the subtype constraint (RM 4.8(6)).
+  // Only meaningful when the access carries runtime bounds (fat) — a thin
+  // access-to-constrained already has the static bounds by construction.
+  bool is_arr = Type_Is_Array_Like (des) and des->array.is_constrained
+       and des->array.index_count > 0 and LLVM_Rep_Is_Fat_Pointer (acc_rep);
+  if (not is_rec and not is_arr) return;
   uint32_t ptr = acc_val;
   if (LLVM_Rep_Is_Fat_Pointer (acc_rep)) {
     ptr = Emit_Temp ();
@@ -18699,17 +18768,34 @@ void Emit_Access_Designated_Disc_Check (uint32_t acc_val, LLVM_Rep acc_rep,
   uint32_t lbl_chk = cg->label_id++, lbl_end = cg->label_id++;
   Emit ("  br i1 %%t%u, label %%L%u, label %%L%u\n", is_nul.reg, lbl_end, lbl_chk);
   Emit ("L%u:\n", lbl_chk);
-  for (uint32_t di = 0; di < des->record.discriminant_count; di++) {
-    Component_Info *dc = &des->record.components[di];
-    LLVM_Rep dt = Type_To_Rep (dc->component_type);
-    uint32_t dp = Emit_Temp ();
-    Emit ("  %%t%u = getelementptr i8, ptr %%t%u, i64 %u\n", dp, ptr, dc->byte_offset);
-    uint32_t dv = Emit_Temp ();
-    Emit ("  %%t%u = load %s, ptr %%t%u  ; access disc %.*s\n",
-       dv, LLVM_Rep_To_String (dt), dp, (int)dc->name.length, dc->name.data);
-    uint32_t cv = Emit_Disc_Constraint_Value (des, di, dt).reg;
-    if (cv == 0) cv = Emit_Static_Int (0, dt).reg;
-    Emit_Discriminant_Check (dv, cv, dt, des);
+  if (is_rec) {
+    for (uint32_t di = 0; di < des->record.discriminant_count; di++) {
+      Component_Info *dc = &des->record.components[di];
+      LLVM_Rep dt = Type_To_Rep (dc->component_type);
+      uint32_t dp = Emit_Temp ();
+      Emit ("  %%t%u = getelementptr i8, ptr %%t%u, i64 %u\n", dp, ptr, dc->byte_offset);
+      uint32_t dv = Emit_Temp ();
+      Emit ("  %%t%u = load %s, ptr %%t%u  ; access disc %.*s\n",
+         dv, LLVM_Rep_To_String (dt), dp, (int)dc->name.length, dc->name.data);
+      uint32_t cv = Emit_Disc_Constraint_Value (des, di, dt).reg;
+      if (cv == 0) cv = Emit_Static_Int (0, dt).reg;
+      Emit_Discriminant_Check (dv, cv, dt, des);
+    }
+  } else {
+    LLVM_Rep bt = Array_Bound_LLVM_Rep (des);
+    uint32_t ndims = des->array.index_count;
+    if (ndims > 8) ndims = 8;
+    for (uint32_t d = 0; d < ndims; d++) {
+      uint32_t actual_lo = Emit_Fat_Pointer_Low_Dim (acc_val, bt, d).reg;
+      uint32_t actual_hi = Emit_Fat_Pointer_High_Dim (acc_val, bt, d).reg;
+      uint32_t exp_lo = Emit_Single_Bound (&des->array.indices[d].low_bound, bt);
+      uint32_t exp_hi = Emit_Single_Bound (&des->array.indices[d].high_bound, bt);
+      LLVM_I1 lo_ne = Emit_Icmp ("ne", bt, actual_lo, exp_lo);
+      LLVM_I1 hi_ne = Emit_Icmp ("ne", bt, actual_hi, exp_hi);
+      uint32_t bad = Emit_Temp ();
+      Emit ("  %%t%u = or i1 %%t%u, %%t%u\n", bad, lo_ne.reg, hi_ne.reg);
+      Emit_Check_With_Raise (bad, true, "access designated array bounds (RM 4.8)");
+    }
   }
   Emit ("  br label %%L%u\n", lbl_end);
   Emit ("L%u:\n", lbl_end);
@@ -19913,7 +19999,7 @@ LLVM_Value Generate_Identifier (Syntax_Node *node) {
       // Must take priority over Type_Is_Constrained_Array which may change                         
       // after bounds are resolved to static values.                                               
       //                                                                                            
-      if (sym->needs_fat_ptr_storage) {
+      if (Type_Needs_Fat_Pointer (sym->type)) {
         LLVM_Rep dbt = Array_Bound_LLVM_Rep (ty);
         uint32_t fat = Emit_Load_Fat_Pointer (sym, dbt).reg;
         return Val_Rep (fat, LL_REP_FAT);
@@ -19996,7 +20082,7 @@ LLVM_Value Generate_Identifier (Syntax_Node *node) {
         return Val_Rep (t, cty); }
 
       // Constant stored as fat pointer (dynamic bounds at declaration)
-      } else if (sym->needs_fat_ptr_storage) {
+      } else if (Type_Needs_Fat_Pointer (sym->type)) {
         LLVM_Rep dbt = Array_Bound_LLVM_Rep (ty);
         uint32_t fat = Emit_Load_Fat_Pointer (sym, dbt).reg;
         return Val_Rep (fat, LL_REP_FAT);
@@ -29688,7 +29774,52 @@ LLVM_Value Generate_Allocator (Syntax_Node *node) {
   //                                                                                                
   Type_Info *designated = Type_Is_Access (access_type) ?
               access_type->access.designated_type : NULL;
-  bool is_fat_ptr = Type_Needs_Fat_Pointer (access_type);
+  // The result SHAPE follows the context access type when one was propagated
+  // (assignment / object decl / return / param / qualified). An allocator's
+  // anonymous access-to-the-qualified-subtype is thin, but if it flows into a
+  // fat access context the value must be built fat (data + bounds), else the
+  // bounds are lost (RM 3.10). The allocated object's bounds still come from
+  // `designated` / `subtype_mark`.
+  Type_Info *ctx_access = node->allocator.target_access_type;
+  bool is_fat_ptr = Type_Needs_Fat_Pointer (access_type)
+                or (ctx_access and Type_Needs_Fat_Pointer (ctx_access));
+
+  // RM 11.6: when the allocated array subtype and the target access subtype
+  // both have static bounds that differ, the RM 4.8 designated-bounds check is
+  // statically known to fail. Warn (a quality compiler flags it); the runtime
+  // raise is still emitted below so the program behaves per the RM.
+  if (ctx_access and designated and Type_Is_Array_Like (designated)
+      and designated->array.is_constrained) {
+    Type_Info *tdes = ctx_access->access.designated_type;
+    if (tdes and Type_Is_Array_Like (tdes) and tdes->array.is_constrained
+        and tdes->array.index_count == designated->array.index_count) {
+      bool all_static = true, mismatch = false;
+      for (uint32_t d = 0; d < designated->array.index_count; d++) {
+        Type_Bound *al = &designated->array.indices[d].low_bound;
+        Type_Bound *ah = &designated->array.indices[d].high_bound;
+        Type_Bound *tl = &tdes->array.indices[d].low_bound;
+        Type_Bound *th = &tdes->array.indices[d].high_bound;
+        if (al->kind != BOUND_INTEGER or ah->kind != BOUND_INTEGER
+            or tl->kind != BOUND_INTEGER or th->kind != BOUND_INTEGER) {
+          all_static = false; break;
+        }
+        if (al->int_value != tl->int_value or ah->int_value != th->int_value)
+          mismatch = true;
+      }
+      if (all_static and mismatch)
+        Report_Warning (node->location,
+          "\"CONSTRAINT_ERROR\" will be raised at run time (RM 4.8)");
+    }
+  }
+
+  // NEW T'(X) where the initializer is itself an allocator and the designated
+  // type is an access type (T is access-to-access): X must be built at the
+  // designated access type's shape (fat for access-to-unconstrained), so
+  // propagate it as the inner allocator's context (RM 4.8 / 3.10).
+  if (node->allocator.expression and
+      node->allocator.expression->kind == NK_ALLOCATOR and
+      designated and Type_Is_Access (designated))
+    node->allocator.expression->allocator.target_access_type = designated;
 
   // Access to unconstrained array with initializer
   if (is_fat_ptr and node->allocator.expression) {
@@ -29973,6 +30104,10 @@ LLVM_Value Generate_Allocator (Syntax_Node *node) {
       designated_is_composite = true;
     } else {
       alloc_size = designated->size > 0 ? designated->size : 8;
+      // A designated access value that is itself fat (access-to-unconstrained)
+      // occupies a { ptr, ptr } = 16 bytes, not the 8-byte `size` of an access.
+      if (Type_Needs_Fat_Pointer (designated))
+        alloc_size = FAT_PTR_ALLOC_SIZE;
     }
   }
   uint32_t t = Emit_Temp ();
@@ -29982,6 +30117,16 @@ LLVM_Value Generate_Allocator (Syntax_Node *node) {
   if (node->allocator.expression) {
     LLVM_Value val_v = Generate_Expression (node->allocator.expression);
     uint32_t val = val_v.reg;
+
+    // RM 4.8(6): NEW T'(X) bound to a constrained access subtype whose
+    // designated is itself a constrained access (e.g. AC is access A_UA(2..4),
+    // X an A_UA): the allocated access value X must satisfy that designated
+    // subtype's constraint. Check X against it.
+    if (node->allocator.target_access_type) {
+      Type_Info *tgt_des = node->allocator.target_access_type->access.designated_type;
+      if (tgt_des and Type_Is_Access (tgt_des))
+        Emit_Access_Designated_Disc_Check (val_v.reg, val_v.rep, tgt_des);
+    }
 
     // Composite type: memcpy from initializer to heap
     if (designated_is_composite) {
@@ -31905,105 +32050,11 @@ void Generate_Return_Statement (Syntax_Node *node) {
     // Apply_Type_Conversion with access target calls                                               
     // Apply_Discriminant_Check on the designated object.                                          
     //                                                                                              
-    if (ret_type and Type_Is_Access (ret_type) and ret_type->access.designated_type) {
-      Type_Info *des = ret_type->access.designated_type;
-      if (des->kind == TYPE_RECORD and des->record.has_disc_constraints and
-        des->record.discriminant_count > 0 and des->record.disc_constraint_values) {
-
-        // RM 4.8: Non-null, then discriminant check. Extract data
-        // pointer from fat-pointer access values first.
-        uint32_t ret_ptr = value.reg;
-        if (LLVM_Rep_Is_Fat_Pointer (value.rep)) {
-          ret_ptr = Emit_Temp ();
-          Emit ("  %%t%u = extractvalue " FAT_PTR_TYPE " %%t%u, 0\n",
-             ret_ptr, value.reg);
-        }
-        LLVM_I1 is_null = Emit_Icmp_Null_Ptr ("eq", ret_ptr);
-        uint32_t skip_lbl = Emit_Label ();
-        uint32_t chk_lbl  = Emit_Label ();
-        Emit ("  br i1 %%t%u, label %%L%u, label %%L%u\n",
-           is_null.reg, skip_lbl, chk_lbl);
-        cg->block_terminated = true;
-        Emit_Label_Here (chk_lbl);
-
-        Component_Info *dc = &des->record.components[0];
-        LLVM_Rep disc_rep = dc->component_type ? Type_To_Rep (dc->component_type)
-                                               : Integer_Arith_Rep ();
-        uint32_t dp = Emit_Temp ();
-        Emit ("  %%t%u = getelementptr i8, ptr %%t%u, i64 %u\n",
-           dp, ret_ptr, dc->byte_offset);
-        uint32_t dv = Emit_Temp ();
-        Emit ("  %%t%u = load %s, ptr %%t%u\n", dv, LLVM_Rep_To_String (disc_rep), dp);
-        LLVM_Rep iat = Integer_Arith_Rep ();
-        dv = Emit_Convert (dv, disc_rep, iat).reg;
-        uint32_t ev = Emit_Temp ();
-        Emit ("  %%t%u = add %s 0, %lld\n", ev, LLVM_Rep_To_String (iat),
-           (long long)des->record.disc_constraint_values[0]);
-        Emit_Discriminant_Check (dv, ev, iat, des);
-        Emit ("  br label %%L%u\n", skip_lbl);
-        cg->block_terminated = true;
-        Emit_Label_Here (skip_lbl);
-        cg->block_terminated = false;
-      }
-
-      // Array-constrained access: check bounds of designated array.
-      // Extract data pointer from fat-pointer access values.
-      if (Type_Is_Array_Like (des) and des->array.is_constrained and
-        des->array.index_count > 0) {
-        uint32_t data_ptr = value.reg;
-        if (LLVM_Rep_Is_Fat_Pointer (value.rep)) {
-          data_ptr = Emit_Temp ();
-          Emit ("  %%t%u = extractvalue " FAT_PTR_TYPE " %%t%u, 0\n",
-             data_ptr, value.reg);
-        }
-        LLVM_I1 is_null = Emit_Icmp_Null_Ptr ("eq", data_ptr);
-        uint32_t skip_lbl = Emit_Label ();
-        uint32_t chk_lbl  = Emit_Label ();
-        Emit ("  br i1 %%t%u, label %%L%u, label %%L%u\n",
-           is_null.reg, skip_lbl, chk_lbl);
-        cg->block_terminated = true;
-        Emit_Label_Here (chk_lbl);
-
-        // Heap arrays store bounds at [-2] and [-1] before data.
-        LLVM_Rep bt = Array_Bound_LLVM_Rep (des);
-        int128_t exp_lo = Array_Low_Bound (des);
-        int128_t exp_hi = (des->array.index_count > 0 and des->array.indices)
-          ? Type_Bound_Value (des->array.indices[0].high_bound) : 0;
-
-        uint32_t blo_p = Emit_Temp ();
-        Emit ("  %%t%u = getelementptr %s, ptr %%t%u, i64 -2\n", blo_p, LLVM_Rep_To_String (bt), data_ptr);
-        uint32_t blo = Emit_Temp ();
-        Emit ("  %%t%u = load %s, ptr %%t%u\n", blo, LLVM_Rep_To_String (bt), blo_p);
-        uint32_t bhi_p = Emit_Temp ();
-        Emit ("  %%t%u = getelementptr %s, ptr %%t%u, i64 -1\n", bhi_p, LLVM_Rep_To_String (bt), data_ptr);
-        uint32_t bhi = Emit_Temp ();
-        Emit ("  %%t%u = load %s, ptr %%t%u\n", bhi, LLVM_Rep_To_String (bt), bhi_p);
-
-        // Compare lo and hi
-        LLVM_Rep iat = Integer_Arith_Rep ();
-        blo = Emit_Convert (blo, bt, iat).reg;
-        bhi = Emit_Convert (bhi, bt, iat).reg;
-        uint32_t elo = Emit_Temp ();
-        Emit ("  %%t%u = add %s 0, %s\n", elo, LLVM_Rep_To_String (iat), I128_Decimal (exp_lo));
-        uint32_t ehi = Emit_Temp ();
-        Emit ("  %%t%u = add %s 0, %s\n", ehi, LLVM_Rep_To_String (iat), I128_Decimal (exp_hi));
-        LLVM_I1 clo = Emit_Icmp ("ne", iat, blo, elo);
-        LLVM_I1 chi = Emit_Icmp ("ne", iat, bhi, ehi);
-        uint32_t bad = Emit_Temp ();
-        Emit ("  %%t%u = or i1 %%t%u, %%t%u\n", bad, clo.reg, chi.reg);
-        uint32_t raise_lbl = Emit_Label ();
-        uint32_t ok_lbl = Emit_Label ();
-        Emit ("  br i1 %%t%u, label %%L%u, label %%L%u\n", bad, raise_lbl, ok_lbl);
-        cg->block_terminated = true;
-        Emit_Label_Here (raise_lbl);
-        Emit_Raise_Constraint_Error ("access array bounds check");
-        Emit_Label_Here (ok_lbl);
-        Emit ("  br label %%L%u\n", skip_lbl);
-        cg->block_terminated = true;
-        Emit_Label_Here (skip_lbl);
-        cg->block_terminated = false;
-      }
-    }
+    // RM 6.5(3) / 4.8(6): constrained access subtype return — the designated
+    // object's discriminants (record) or bounds (array) must match the subtype
+    // constraint. Single source of truth, fat-aware, reads bounds from field 1.
+    if (ret_type and Type_Is_Access (ret_type))
+      Emit_Access_Designated_Disc_Check (value.reg, value.rep, ret_type);
 
     // RM 6.5: For unconstrained array returns, the data pointer in the fat                         
     // pointer points to a local alloca that becomes invalid after return.                         
@@ -34048,6 +34099,13 @@ void Generate_Object_Declaration (Syntax_Node *node) {
     if (cg->current_instance)
       ty = Resolve_Generic_Actual_Type (ty);
 
+    // RM 4.8 / 3.10: propagate the declared access subtype to an initializing
+    // allocator so it builds the value at the declared SHAPE (fat vs thin) and
+    // checks the designated constraint — same as assignment / return / param.
+    if (node->object_decl.init and
+        node->object_decl.init->kind == NK_ALLOCATOR and Type_Is_Access (ty))
+      node->object_decl.init->allocator.target_access_type = ty;
+
     // Transfer discriminant constraints from the formal type's constrained                         
     // subtype to the resolved actual type (RM 12.3). When a generic body                          
     // declares P2 : PRIV (T'VAL (F * 100)), the formal PRIV type gets disc                         
@@ -34293,7 +34351,7 @@ void Generate_Object_Declaration (Syntax_Node *node) {
       Emit ("  %%");
       Emit_Symbol_Name (sym);
       Emit (" = alloca [%s x " FAT_PTR_TYPE "]\n", I128_Decimal (array_count));
-    } else if (sym->needs_fat_ptr_storage or
+    } else if (Type_Needs_Fat_Pointer (sym->type) or
            (is_any_array and Type_Has_Dynamic_Bounds (ty)) or
            elem_has_dynamic_size) {
 
@@ -34304,7 +34362,6 @@ void Generate_Object_Declaration (Syntax_Node *node) {
       Emit ("  %%");
       Emit_Symbol_Name (sym);
       Emit (" = alloca " FAT_PTR_TYPE "\n");
-      sym->needs_fat_ptr_storage = true;
 
     // Constrained array with static bounds: allocate [N x element_type]
     } else if (is_constrained_array and array_count > 0) {
@@ -34590,7 +34647,7 @@ obj_decl_init:
         Type_Info *init_ty = init->type;
         int init_is_constrained = Type_Is_Constrained_Array (init_ty);
         bool dest_needs_fat_storage = not is_constrained_array or
-          sym->needs_fat_ptr_storage;
+          Type_Needs_Fat_Pointer (sym->type);
 
         // Source produces a fat pointer value
         if (init->kind == NK_STRING or not init_is_constrained) {
@@ -35220,11 +35277,11 @@ obj_decl_init:
                 Type_Bound *lo_b = &des->array.indices[xi].low_bound;
                 Type_Bound *hi_b = &des->array.indices[xi].high_bound;
 
-                // Get expected bounds (may be i32) and coerce to abt
-                uint32_t exp_lo = Emit_Bound_Value (lo_b).reg;
-                uint32_t exp_hi = Emit_Bound_Value (hi_b).reg;
-                exp_lo = Emit_Convert (exp_lo, Integer_Arith_Rep (), abt).reg;
-                exp_hi = Emit_Convert (exp_hi, Integer_Arith_Rep (), abt).reg;
+                // Expected bounds materialised at the bound type directly
+                // (Emit_Single_Bound handles enum/character/static bounds that
+                // Emit_Bound_Value left as an unmaterialised reg 0).
+                uint32_t exp_lo = Emit_Single_Bound (lo_b, abt);
+                uint32_t exp_hi = Emit_Single_Bound (hi_b, abt);
 
                 // Get actual bounds from fat pointer
                 uint32_t act_lo = Emit_Fat_Pointer_Low (init, abt).reg;
@@ -37136,7 +37193,6 @@ void Generate_Generic_Instance_Body (Symbol *inst_sym, Syntax_Node *template_bod
                   arr_storage_sz = (uint32_t)(total * esz);
                 }
               }
-              obj_sym->needs_fat_ptr_storage = needs_fat;
 
               // RM 12.1.1 / 12.4: IN OUT generic object formal is a
               // *renaming* of the actual variable — formal and actual
