@@ -32,13 +32,13 @@ BEGIN
 
                SELECT
                     WHEN NOT FALSE =>
-                         DELAY 2.5 ;
+                         DELAY 0.25 ;  -- TODO: acats-delay-deviation: before was 2.5
                OR
                     WHEN  BUSY =>
                          NULL ;    -- ERROR: NOT AN ALTERNATIVE.
                OR
                     WHEN TRUE =>
-                         DELAY 2.5 ;
+                         DELAY 0.25 ;  -- TODO: acats-delay-deviation: before was 2.5
                END SELECT;         
 
 

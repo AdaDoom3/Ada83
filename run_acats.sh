@@ -9,12 +9,13 @@ set -euo pipefail
 # because every subprocess writes to its own unique file.
 
 NPROC=${NPROC:-$(nproc 32>/dev/null || echo 32)}
-# Per-test execution cap. Generous by default: ACATS delay tests legitimately
-# run for minutes (c97112a strings together several DELAY 10.0s), and a master
-# now really waits for its dependent tasks (RM 9.4). Genuinely hung tests
-# still terminate, they just take the full cap. Set TEST_TIMEOUT=2 for a fast
-# smoke run where long-delay tests report as timeouts.
-TEST_TIMEOUT=${TEST_TIMEOUT:-120}
+# Per-test execution cap. The ACATS sources in acats/ carry a temporary
+# development deviation: every DELAY literal >= 1.0 is scaled down by 10x
+# (marked "TODO: acats-delay-deviation", listed in README.md), so the longest
+# legitimate test runs ~12 s instead of ~2 minutes. The cap matches that.
+# When the deviations are reverted for a pristine-ACATS conformance run,
+# raise this back to 120.
+TEST_TIMEOUT=${TEST_TIMEOUT:-15}
 START_MS=$(date +%s%3N)
 
 # ── Clean stale artifacts to prevent spurious BIND errors ─────────────
@@ -54,11 +55,11 @@ run_one(){
 
     case ${q,,} in
     c)
-        if ! timeout 0.5 ./ada83 "$f" > test_results/$n.ll 2>acats_logs/$n.err; then
+        if ! timeout 2 ./ada83 "$f" > test_results/$n.ll 2>acats_logs/$n.err; then
             echo "c skip $n COMPILE:$(head -1 acats_logs/$n.err 2>/dev/null|cut -c1-50)"
             return
         fi
-        if ! timeout 0.5 llvm-link -o test_results/$n.bc test_results/$n.ll acats/report.ll 2>acats_logs/$n.link; then
+        if ! timeout 2 llvm-link -o test_results/$n.bc test_results/$n.ll acats/report.ll 2>acats_logs/$n.link; then
             echo "c skip $n BIND:unresolved_symbols"
             return
         fi
@@ -93,9 +94,9 @@ run_one(){
         fi
         ;;
     a)
-        if ! timeout 0.5 ./ada83 "$f" > test_results/$n.ll 2>acats_logs/$n.err; then
+        if ! timeout 2 ./ada83 "$f" > test_results/$n.ll 2>acats_logs/$n.err; then
             echo "a skip $n COMPILE:$(head -1 acats_logs/$n.err 2>/dev/null|cut -c1-50)"; return; fi
-        if ! timeout 0.5 llvm-link -o test_results/$n.bc test_results/$n.ll acats/report.ll 2>acats_logs/$n.link; then
+        if ! timeout 2 llvm-link -o test_results/$n.bc test_results/$n.ll acats/report.ll 2>acats_logs/$n.link; then
             echo "a skip $n BIND:unresolved_symbols"; return; fi
         local rc=0
         timeout "$TEST_TIMEOUT" lli test_results/$n.bc > acats_logs/$n.out 2>&1 || rc=$?
@@ -110,13 +111,13 @@ run_one(){
         fi
         ;;
     b)
-        if timeout 0.5 ./ada83 "$f" > acats_logs/$n.ll 2>acats_logs/$n.err; then
+        if timeout 2 ./ada83 "$f" > acats_logs/$n.ll 2>acats_logs/$n.err; then
             echo "b fail $n WRONG_ACCEPT:compiled_when_should_reject"
         else
             # Count error coverage
             local -a expected=() actual=(); local i=0 hits=0
             while IFS= read -r l; do ((++i)); [[ $l =~ --\ ERROR ]] && expected+=($i); done < "$f"
-            while IFS=: read -r _ m _; do actual+=($m); done < <(timeout 0.5 ./ada83 "$f" 2>&1|grep "^[^:]*:[0-9]")
+            while IFS=: read -r _ m _; do actual+=($m); done < <(timeout 2 ./ada83 "$f" 2>&1|grep "^[^:]*:[0-9]")
             for e in ${expected[@]+"${expected[@]}"}; do
                 for v in ${actual[@]+"${actual[@]}"}; do
                     ((v>=e-1&&v<=e+1)) && { ((++hits)); break; }
@@ -129,9 +130,9 @@ run_one(){
         fi
         ;;
     d)
-        if ! timeout 0.5 ./ada83 "$f" > test_results/$n.ll 2>acats_logs/$n.err; then
+        if ! timeout 2 ./ada83 "$f" > test_results/$n.ll 2>acats_logs/$n.err; then
             echo "d skip $n COMPILE:$(head -1 acats_logs/$n.err 2>/dev/null|cut -c1-50)"; return; fi
-        if ! timeout 0.5 llvm-link -o test_results/$n.bc test_results/$n.ll acats/report.ll 2>/dev/null; then
+        if ! timeout 2 llvm-link -o test_results/$n.bc test_results/$n.ll acats/report.ll 2>/dev/null; then
             echo "d skip $n BIND"; return; fi
         if timeout "$TEST_TIMEOUT" lli test_results/$n.bc > acats_logs/$n.out 2>&1 && grep -q PASSED acats_logs/$n.out; then
             echo "d pass $n PASSED"
@@ -140,9 +141,9 @@ run_one(){
         fi
         ;;
     e)
-        if ! timeout 0.5 ./ada83 "$f" > test_results/$n.ll 2>acats_logs/$n.err; then
+        if ! timeout 2 ./ada83 "$f" > test_results/$n.ll 2>acats_logs/$n.err; then
             echo "e skip $n COMPILE:$(head -1 acats_logs/$n.err 2>/dev/null|cut -c1-50)"; return; fi
-        if ! timeout 0.5 llvm-link -o test_results/$n.bc test_results/$n.ll acats/report.ll 2>/dev/null; then
+        if ! timeout 2 llvm-link -o test_results/$n.bc test_results/$n.ll acats/report.ll 2>/dev/null; then
             echo "e skip $n BIND"; return; fi
         timeout "$TEST_TIMEOUT" lli test_results/$n.bc > acats_logs/$n.out 2>&1 || true
         if grep -q "TENTATIVELY PASSED" acats_logs/$n.out 2>/dev/null; then
@@ -154,8 +155,8 @@ run_one(){
         fi
         ;;
     l)
-        if timeout 0.5 ./ada83 "$f" > test_results/$n.ll 2>acats_logs/$n.err; then
-            if timeout 0.5 llvm-link -o test_results/$n.bc test_results/$n.ll acats/report.ll 2>acats_logs/$n.link; then
+        if timeout 2 ./ada83 "$f" > test_results/$n.ll 2>acats_logs/$n.err; then
+            if timeout 2 llvm-link -o test_results/$n.bc test_results/$n.ll acats/report.ll 2>acats_logs/$n.link; then
                 if timeout 1 lli test_results/$n.bc > acats_logs/$n.out 2>&1; then
                     echo "l fail $n WRONG_EXEC:should_not_execute"
                 else
@@ -270,9 +271,9 @@ Modes:
 
 Environment:
   NPROC=N         Set parallelism (default: $(nproc 32>/dev/null||echo 32))
-  TEST_TIMEOUT=N  Per-test execution cap in seconds (default: 120).
-                  Long-delay ACATS tests need minutes; TEST_TIMEOUT=2 gives
-                  a fast smoke run where they report as timeouts.
+  TEST_TIMEOUT=N  Per-test execution cap in seconds (default: 15, matching
+                  the 10x-scaled DELAY deviation in acats/ — see README.md).
+                  Use 120 when running pristine ACATS sources.
 EOF
 }
 

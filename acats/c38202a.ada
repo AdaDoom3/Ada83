@@ -59,7 +59,7 @@ BEGIN
                P.GO_ON;
                ACCEPT TSK_DONE;
                WHILE (NOT P'TERMINATED AND COUNTER <= 3) LOOP
-                    DELAY 10.0;
+                    DELAY 1.0;  -- TODO: acats-delay-deviation: before was 10.0
                     COUNTER := COUNTER + 1;
                END LOOP;
 
@@ -139,7 +139,7 @@ BEGIN
                F1.ALL.GO_ON;
                ACCEPT TSK_DONE;
                WHILE (NOT F1'TERMINATED AND COUNTER <= 3) LOOP
-                    DELAY 10.0;
+                    DELAY 1.0;  -- TODO: acats-delay-deviation: before was 10.0
                     COUNTER := COUNTER + 1;
                END LOOP;
 

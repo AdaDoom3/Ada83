@@ -25,7 +25,7 @@ BEGIN
 
      DECLARE
           
-          WAIT_TIME : DURATION :=  3.0;
+          WAIT_TIME : DURATION :=  0.3;  -- TODO: acats-delay-deviation: before was 3.0
           
           START_TIME : TIME;
          

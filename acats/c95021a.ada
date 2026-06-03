@@ -92,7 +92,7 @@ BEGIN
                FOR I IN 1..6       -- WILL WAIT FOR ONE MINUTE
                LOOP
                     EXIT WHEN E1'COUNT = 2;
-                    DELAY 10.0;    -- WAIT FOR CALLS TO ARRIVE
+                    DELAY 1.0;    -- WAIT FOR CALLS TO ARRIVE  -- TODO: acats-delay-deviation: before was 10.0
                END LOOP;
 
                IF E1'COUNT /= 2 THEN
@@ -121,7 +121,7 @@ BEGIN
                FOR I IN 1..6       -- WILL WAIT FOR ONE MINUTE
                LOOP
                     EXIT WHEN E1'COUNT = 2;
-                    DELAY 10.0;    -- WAIT FOR CALLS TO ARRIVE
+                    DELAY 1.0;    -- WAIT FOR CALLS TO ARRIVE  -- TODO: acats-delay-deviation: before was 10.0
                END LOOP;
 
                IF E1'COUNT /= 2 THEN

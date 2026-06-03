@@ -60,7 +60,7 @@ BEGIN
                FAILED ("TASK NOT EXECUTED PROPERLY");
           END IF;
      OR
-          DELAY 10.0;
+          DELAY 1.0;  -- TODO: acats-delay-deviation: before was 10.0
           FAILED ("TASK NOT ACTIVATED AFTER 10 SECONDS");
      END SELECT;
 

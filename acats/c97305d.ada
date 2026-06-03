@@ -33,7 +33,7 @@ BEGIN
 
           TASK BODY T IS
           BEGIN
-               DELAY 10.0;
+               DELAY 1.0;  -- TODO: acats-delay-deviation: before was 10.0
 
                SELECT
                     ACCEPT E (2) (B : IN OUT BOOLEAN) DO

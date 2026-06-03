@@ -36,7 +36,7 @@ BEGIN
                          TERMINATE ;
                OR
                          ACCEPT  A ;
-                         DELAY 1.0 ;-- OK (IN AN  'ACCEPT'  ALTERNATIVE)
+                         DELAY 0.1 ;-- OK (IN AN  'ACCEPT'  ALTERNATIVE)  -- TODO: acats-delay-deviation: before was 1.0
                END SELECT ;
 
 
@@ -45,7 +45,7 @@ BEGIN
                OR  
                          TERMINATE ;
                OR
-                         DELAY 1.0 ;-- ERROR: INCOMPATIBLE WITH 
+                         DELAY 0.1 ;-- ERROR: INCOMPATIBLE WITH   -- TODO: acats-delay-deviation: before was 1.0
                                     --              'TERMINATE' .
                          NULL ;
                END SELECT ;

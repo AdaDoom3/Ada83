@@ -35,7 +35,7 @@ PROCEDURE C95009C IS
 
      TASK BODY T2 IS
      BEGIN
-          DELAY 5.0;
+          DELAY 0.5;  -- TODO: acats-delay-deviation: before was 5.0
           IF SPYNUMB /= 1 THEN
                FAILED ("SCHEDULER DID NOT RUN T1 -- CHECK TEST");
           END IF;

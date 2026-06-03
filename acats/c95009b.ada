@@ -28,7 +28,7 @@ BEGIN
                     T.E;
                     V := 2;
                OR
-                    DELAY 120.0;
+                    DELAY 12.0;  -- TODO: acats-delay-deviation: before was 120.0
                     V := 3;
                END SELECT;
           END T;

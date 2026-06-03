@@ -47,7 +47,7 @@ PROCEDURE BC1306A IS
           SELECT
                ENT;                     -- ERROR: GENERIC PARM.
           OR
-               DELAY 1.0;
+               DELAY 0.1;  -- TODO: acats-delay-deviation: before was 1.0
           END SELECT;
      END PK;
 

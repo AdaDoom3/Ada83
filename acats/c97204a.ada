@@ -58,7 +58,7 @@ BEGIN
 
           FOR  I  IN  1..5  LOOP
                EXIT WHEN  T_OBJECT1'TERMINATED ;
-               DELAY 10.0 ;
+               DELAY 1.0 ;  -- TODO: acats-delay-deviation: before was 10.0
           END LOOP;
 
 

@@ -25,7 +25,7 @@ BEGIN
           BEGIN
                -- ENSURE THAT NO_GO HAS BEEN CALLED BEFORE PROCEEDING:
                WHILE NO_GO'COUNT = 0 LOOP
-                    DELAY 1.0;
+                    DELAY 0.1;  -- TODO: acats-delay-deviation: before was 1.0
                END LOOP;
 
                SELECT

@@ -34,7 +34,7 @@ BEGIN
 
           TASK BODY T IS
           BEGIN
-               DELAY 10.0;
+               DELAY 1.0;  -- TODO: acats-delay-deviation: before was 10.0
                ACCEPT E (B : IN OUT BOOLEAN) DO
                     B := IDENT_BOOL (TRUE);
                END E;

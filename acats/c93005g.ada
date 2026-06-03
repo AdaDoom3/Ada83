@@ -149,7 +149,7 @@ PACKAGE BODY C93005G_PK1 IS
 --
      TASK BODY MNT_TASK IS
      BEGIN
-          DELAY 5.0;
+          DELAY 0.5;  -- TODO: acats-delay-deviation: before was 5.0
           MNT_COUNTER.DECR;
      END MNT_TASK;
 

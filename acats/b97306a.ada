@@ -35,7 +35,7 @@ BEGIN
      SELECT
           INTEGR(5);                                 -- ERROR:
      OR
-          DELAY 5.0;
+          DELAY 0.5;  -- TODO: acats-delay-deviation: before was 5.0
           DUMMY;
      END SELECT;
 

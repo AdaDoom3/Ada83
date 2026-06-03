@@ -34,7 +34,7 @@ PROCEDURE C95035A IS
 
      TASK BODY T2 IS
      BEGIN
-          DELAY 1.0;
+          DELAY 0.1;  -- TODO: acats-delay-deviation: before was 1.0
           PSPY_NUMB (1);
           T1.E1;
      END T2;

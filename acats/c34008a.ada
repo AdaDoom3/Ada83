@@ -67,7 +67,7 @@ PROCEDURE C34008A IS
                     OR
                          ACCEPT G DO
                               WHILE H(2)'COUNT < 2 LOOP
-                                   DELAY 5.0;
+                                   DELAY 0.5;  -- TODO: acats-delay-deviation: before was 5.0
                               END LOOP;
                               ACCEPT H (2) DO
                                    IF E'COUNT    /= 0 OR

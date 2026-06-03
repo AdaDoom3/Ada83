@@ -39,7 +39,7 @@ BEGIN
      SELECT
           T.E;
      OR 
-          DELAY 60.0; 
+          DELAY 6.0;   -- TODO: acats-delay-deviation: before was 60.0
           FAILED("RENDEZVOUS NOT ACCEPTED WITHIN 60 SECONDS");
      END SELECT;
 

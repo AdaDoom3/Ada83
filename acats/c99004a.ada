@@ -90,7 +90,7 @@ BEGIN
           BEGIN
                ACCEPT E (1);
                ABORT PKG1.T1;
-               DELAY 5.0;
+               DELAY 0.5;  -- TODO: acats-delay-deviation: before was 5.0
                D1 := CHECK ("F", F'CALLABLE, FALSE,
                              F'TERMINATED, TRUE, D);
           END MAIN_TASK;
@@ -130,7 +130,7 @@ BEGIN
           BEGIN
                ACCEPT E (1);
                ABORT T2;
-               DELAY 5.0;
+               DELAY 0.5;  -- TODO: acats-delay-deviation: before was 5.0
                D2 := CHECK ("T2", T2'CALLABLE, FALSE,
                              T2'TERMINATED, TRUE, D);
           END MAIN_TASK;

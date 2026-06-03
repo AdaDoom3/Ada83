@@ -73,7 +73,7 @@ BLOCK:
 
           TASK BODY TT1 IS
           BEGIN
-               DELAY 1.0;
+               DELAY 0.1;  -- TODO: acats-delay-deviation: before was 1.0
                PSPY_NUMB (1);
           END TT1;
 

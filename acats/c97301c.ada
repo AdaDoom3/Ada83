@@ -25,7 +25,7 @@ BEGIN
      DECLARE
           START_TIME : TIME;
           STOP_TIME : TIME;
-          WAIT_TIME  : DURATION :=  3.0;
+          WAIT_TIME  : DURATION :=  0.3;  -- TODO: acats-delay-deviation: before was 3.0
 
           TASK  T  IS
                ENTRY NO_SPIN;

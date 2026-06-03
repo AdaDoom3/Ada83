@@ -58,7 +58,7 @@ BEGIN
 
           FOR  I  IN  1..5  LOOP
                EXIT WHEN  T_OBJECT1'TERMINATED ;
-               DELAY 10.0 ;
+               DELAY 1.0 ;  -- TODO: acats-delay-deviation: before was 10.0
           END LOOP;
 
 
@@ -73,7 +73,7 @@ BEGIN
                     T_OBJECT1.E ;
                     FAILED( "CALL WAS NOT DISOBEYED" );
                OR
-                    DELAY 1.0 ;
+                    DELAY 0.1 ;  -- TODO: acats-delay-deviation: before was 1.0
                     FAILED( "'OR' BRANCH TAKEN INSTEAD OF TSKG_ERROR" );
                END SELECT;
 

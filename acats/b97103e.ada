@@ -27,7 +27,7 @@ BEGIN
                                        --                     TASK BODY.
 
                     WHEN NOT FALSE =>
-                         DELAY 2.5 ;
+                         DELAY 0.25 ;  -- TODO: acats-delay-deviation: before was 2.5
                OR
                          DELAY 0.0 ;
                OR

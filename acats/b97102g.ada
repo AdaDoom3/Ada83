@@ -32,7 +32,7 @@ BEGIN
 
                SELECT
                     WHEN BUSY =>
-                         DELAY 1.0 ;
+                         DELAY 0.1 ;  -- TODO: acats-delay-deviation: before was 1.0
                END SELECT;         -- ERROR: ACCEPT ALTERNATIVE MISSING.
 
 

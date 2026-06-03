@@ -179,10 +179,10 @@ BEGIN -- C94008C
                     OR WHEN ENTER_TERMINATE => TERMINATE;
                     END SELECT;
 
-                    DELAY 10.0;
+                    DELAY 1.0;  -- TODO: acats-delay-deviation: before was 10.0
 
                     IF TERMINATE_COUNT.GET /= 1 THEN
-                         DELAY 20.0;
+                         DELAY 2.0;  -- TODO: acats-delay-deviation: before was 20.0
                     END IF;
 
                     IF TERMINATE_COUNT.GET /= 1 THEN
@@ -220,10 +220,10 @@ BEGIN -- C94008C
 
      BEGIN
 
-          DELAY 10.0; -- WAIT FOR T1, T2, AND T3 TO GET TO SELECT STMTS.
+          DELAY 1.0; -- WAIT FOR T1, T2, AND T3 TO GET TO SELECT STMTS.  -- TODO: acats-delay-deviation: before was 10.0
 
            IF TERMINATE_COUNT.GET /= 3 THEN
-                DELAY 20.0;
+                DELAY 2.0;  -- TODO: acats-delay-deviation: before was 20.0
            END IF;
 
            IF TERMINATE_COUNT.GET /= 3 THEN

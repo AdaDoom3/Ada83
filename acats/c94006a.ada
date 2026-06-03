@@ -19,7 +19,7 @@ PROCEDURE C94006A IS
           SELECT
                ACCEPT E;
           OR
-               DELAY 30.0;
+               DELAY 3.0;  -- TODO: acats-delay-deviation: before was 30.0
           END SELECT;
      END TT;
 

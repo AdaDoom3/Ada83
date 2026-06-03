@@ -50,7 +50,7 @@ BEGIN
                          FAILED ("TIMED ENTRY CALL ACCEPTED - " &
                                  "INNER (1)");
                     OR
-                         DELAY 1.0;
+                         DELAY 0.1;  -- TODO: acats-delay-deviation: before was 1.0
                          T.SYNCH;
                     END SELECT;
 
@@ -59,7 +59,7 @@ BEGIN
                          FAILED ("TIMED ENTRY CALL ACCEPTED - " &
                                  "INNER (2)");
                     OR
-                         DELAY 1.0;
+                         DELAY 0.1;  -- TODO: acats-delay-deviation: before was 1.0
                          OUTER.SYNCH;
                     END SELECT;
                EXCEPTION
@@ -78,7 +78,7 @@ BEGIN
                     T.E;
                     FAILED ("TIMED ENTRY CALL ACCEPTED - OUTER");
                OR
-                    DELAY 1.0;
+                    DELAY 0.1;  -- TODO: acats-delay-deviation: before was 1.0
                     T.SYNCH;
                END SELECT;
 

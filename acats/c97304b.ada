@@ -41,7 +41,7 @@ BEGIN
                T.E (F);
                FAILED ("TIMED ENTRY CALL MADE");
           OR
-               DELAY 1.0;
+               DELAY 0.1;  -- TODO: acats-delay-deviation: before was 1.0
                FAILED ("DELAY ALTERNATIVE TAKEN");
           END SELECT;
 

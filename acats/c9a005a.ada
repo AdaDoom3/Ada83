@@ -128,7 +128,7 @@ BEGIN
 
                     FOR  I  IN  1..9  LOOP
                          EXIT WHEN  BIRTHS_AND_DEATHS'COUNT = 9; 
-                         DELAY 10.0; 
+                         DELAY 1.0;   -- TODO: acats-delay-deviation: before was 10.0
                     END LOOP;
 
                     OLD_COUNT := BIRTHS_AND_DEATHS'COUNT; 

@@ -61,7 +61,7 @@ BEGIN
 
           T.E (TRUE, 5, I);
 
-          DELAY 10.0;
+          DELAY 1.0;  -- TODO: acats-delay-deviation: before was 10.0
           ABORT T;
 
           IF S /= "AB" THEN

@@ -34,7 +34,7 @@ BEGIN
                     ACCEPT E;
                     ACCEPT_ALTERNATIVE_TAKEN := TRUE;
                     BEFORE := CLOCK;
-                    DELAY 10.0;
+                    DELAY 1.0;  -- TODO: acats-delay-deviation: before was 10.0
                     AFTER  := CLOCK;
                     IF AFTER - BEFORE < 10.0 THEN
                          FAILED ("INSUFFICIENT DELAY (A)");
@@ -67,13 +67,13 @@ BEGIN
           BEGIN
                --ENSURE THAT E HAS BEEN CALLED BEFORE PROCEEDING:
                WHILE E'COUNT = 0 LOOP
-                    DELAY 1.0;
+                    DELAY 0.1;  -- TODO: acats-delay-deviation: before was 1.0
                END LOOP;
 
                SELECT
                     ACCEPT E;
                     BEFORE := CLOCK;
-                    DELAY 10.0;
+                    DELAY 1.0;  -- TODO: acats-delay-deviation: before was 10.0
                     AFTER  := CLOCK;
                     IF AFTER - BEFORE < 10.0 THEN
                          FAILED ("INSUFFICIENT DELAY (B-1)");
@@ -87,7 +87,7 @@ BEGIN
                     FAILED ("ACCEPT STATEMENT EXECUTED (B-2)");
                ELSE
                     BEFORE := CLOCK;
-                    DELAY 10.0;
+                    DELAY 1.0;  -- TODO: acats-delay-deviation: before was 10.0
                     AFTER  := CLOCK;
                     IF AFTER - BEFORE < 10.0 THEN
                          FAILED ("INSUFFICIENT DELAY (B-2)");

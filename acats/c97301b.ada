@@ -28,7 +28,7 @@ BEGIN
 
 
      DECLARE
-          WAIT_TIME  : DURATION :=  3.0;
+          WAIT_TIME  : DURATION :=  0.3;  -- TODO: acats-delay-deviation: before was 3.0
 
           TASK T1;
 
@@ -51,7 +51,7 @@ BEGIN
                     IF X = 1 THEN
                          T2.AWAKEN_T2;
                          WHILE DO_IT_NOW_OR_WAIT'COUNT = 0 LOOP
-                              DELAY 1.0;
+                              DELAY 0.1;  -- TODO: acats-delay-deviation: before was 1.0
                          END LOOP;
                          T3.AWAKEN_T3;
                          T3.RELEASE_T;

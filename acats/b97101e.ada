@@ -34,7 +34,7 @@ BEGIN
                     SELECT
                          ACCEPT  A;
                     OR
-                         DELAY 2.5;
+                         DELAY 0.25;  -- TODO: acats-delay-deviation: before was 2.5
                END  SIMPLE;    -- ERROR:  END SELECT MISSING.
           END TT;
 
