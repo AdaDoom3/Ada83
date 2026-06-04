@@ -17,7 +17,7 @@ BEGIN
 
      DECLARE
 
-          DELAY_TIME : CONSTANT DURATION := 2 * 60.0;
+          DELAY_TIME : CONSTANT DURATION := 2 * 6.0;  -- TODO: acats-delay-deviation: before was 2 * 60.0
 
           TASK EXPIRED IS
                ENTRY INCREMENT;

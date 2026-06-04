@@ -12,10 +12,10 @@ NPROC=${NPROC:-$(nproc 32>/dev/null || echo 32)}
 # Per-test execution cap. The ACATS sources in acats/ carry a temporary
 # development deviation: every DELAY literal >= 1.0 is scaled down by 10x
 # (marked "TODO: acats-delay-deviation", listed in README.md), so the longest
-# legitimate test runs ~12 s instead of ~2 minutes. The cap matches that.
-# When the deviations are reverted for a pristine-ACATS conformance run,
-# raise this back to 120.
-TEST_TIMEOUT=${TEST_TIMEOUT:-15}
+# legitimate test runs ~12 s instead of ~2 minutes. The cap allows for that
+# plus 16-way scheduling contention. When the deviations are reverted for a
+# pristine-ACATS conformance run, raise this back to 120.
+TEST_TIMEOUT=${TEST_TIMEOUT:-30}
 START_MS=$(date +%s%3N)
 
 # ── Clean stale artifacts to prevent spurious BIND errors ─────────────
@@ -271,8 +271,8 @@ Modes:
 
 Environment:
   NPROC=N         Set parallelism (default: $(nproc 32>/dev/null||echo 32))
-  TEST_TIMEOUT=N  Per-test execution cap in seconds (default: 15, matching
-                  the 10x-scaled DELAY deviation in acats/ — see README.md).
+  TEST_TIMEOUT=N  Per-test execution cap in seconds (default: 30, covering
+                  the 10x-scaled DELAY deviation in acats/ plus contention — see README.md).
                   Use 120 when running pristine ACATS sources.
 EOF
 }

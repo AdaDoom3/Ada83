@@ -27,7 +27,7 @@ PROCEDURE C97116A IS
      FUNCTION SO_LONG RETURN DURATION IS
      BEGIN
           DELAY_EVALUATED := TRUE;
-          RETURN 20.0;
+          RETURN 2.0;  -- TODO: acats-delay-deviation: before was 20.0
      END SO_LONG;
 
 BEGIN
