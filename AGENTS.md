@@ -97,21 +97,31 @@ Per-class pass criteria the harness applies:
 - E: `TENTATIVELY PASSED` counts as pass (manual inspection class)
 - L: post-compilation; passes if the compile **or** link **or** run is rejected
 
-### Known flaky tests (lli JIT, not compiler bugs)
+### Tasking test stability (updated after the RM 9 implementation)
 
-Tasking tests flip between PASS and crash/timeout under `lli` independently of
-`ada83.c` changes: the program runs, then SIGSEGVs during process teardown
-(`_dl_fini` / `__run_exit_handlers`), or the rendezvous polling exceeds the 2 s
-harness cap. The crash stack has no Ada frame. Do **not** treat a PASS↔FAIL flip
-on these as a regression — re-run natively (often still flaky) before blaming a
-diff. Observed unstable as of this writing:
+The historical "flaky quartet" (c93001a, c93005a, c95034a, c97203c) and the
+teardown-SIGSEGV class are FIXED — the root cause was the program racing its
+own task threads to `exit` before RM 9.4 master semantics existed. Tasking
+results are now deterministic: identical pass counts across consecutive full
+Class C runs. A PASS↔FAIL flip on a tasking test today IS evidence of a real
+regression — investigate it; do not write it off as lli noise. (Native
+`llc`+`clang` builds remain the best substrate for debugging with gdb.)
 
-- `c93001a`, `c93005a` — task activation
-- `c95034a` — rendezvous / entry calls
-- `c97203c` — `delay` / timed entry calls
+Two things to know when running the suite:
 
-More c93xxx/c95xxx/c96xxx/c97xxx/c9axxx tests share this teardown crash. Verify
-real tasking regressions against a native build, and even then expect noise.
+- **ACATS delay deviation.** Sources under `acats/` have DELAY values scaled
+  down 10x for development speed, each marked
+  `-- TODO: acats-delay-deviation: before was X` (rationale, scope, and the
+  revert procedure are in README.md). The harness cap (`TEST_TIMEOUT`,
+  default 30 s) is sized for the scaled delays plus 16-way contention; use
+  `TEST_TIMEOUT=120` with pristine sources.
+- **Known cap-payers.** Four tests hang on unimplemented features and burn
+  the full cap each run: c64201c (task components in composite IN
+  parameters), c85018b (renaming an entry family member), c94021a
+  (function-result task master migration), cc1310a (nested generic package
+  instance body statements). Heavily loaded machines can push 12 s-class
+  delay tests past a tight cap — if a delay test flips to TIMEOUT, suspect
+  contention before suspecting the compiler, and re-run the group serially.
 
 ## Code architecture (`ada83.c`)
 
