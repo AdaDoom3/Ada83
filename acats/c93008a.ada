@@ -49,7 +49,7 @@ BLOCK:
 
                PACKAGE BODY DUMMY IS
                BEGIN
-                    DELAY 2.0;
+                    DELAY 0.2;  -- TODO: acats-delay-deviation: before was 2.0
                     T.FINIT_POS(1);
                END DUMMY;
           BEGIN
@@ -62,7 +62,7 @@ BLOCK:
 
                PACKAGE BODY DUMMY IS
                BEGIN
-                    DELAY 2.0;
+                    DELAY 0.2;  -- TODO: acats-delay-deviation: before was 2.0
                     T.FINIT_POS(2);
                END DUMMY;
           BEGIN

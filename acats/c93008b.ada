@@ -42,7 +42,7 @@ BLOCK:
 
                PACKAGE BODY DUMMY IS
                BEGIN
-                    DELAY 2.0;
+                    DELAY 0.2;  -- TODO: acats-delay-deviation: before was 2.0
                     DECLARE
                          IDUMMY1 : NATURAL := FINIT_POS (1);
                     BEGIN

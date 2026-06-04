@@ -68,7 +68,7 @@ BEGIN
           TASK BODY CHANGING_OF_THE_GUARD IS
           BEGIN
                WHILE GUARD_EVALUATIONS = 0 AND NOT DELAY_EVALUATED LOOP
-                    DELAY 1.0;
+                    DELAY 0.1;  -- TODO: acats-delay-deviation: before was 1.0
                END LOOP;
 
                UNBLOCKED := TRUE;  -- IF EITHER THE CONDITION "GUARD" OR

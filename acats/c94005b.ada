@@ -37,7 +37,7 @@ PACKAGE BODY C94005B_PKG IS
           ACCEPT E (I : INTEGER) DO
                LOCAL := I;
           END E;
-          DELAY 60.0;    -- SINCE THE PARENT UNIT HAS HIGHER PRIORITY
+          DELAY 6.0;    -- SINCE THE PARENT UNIT HAS HIGHER PRIORITY  -- TODO: acats-delay-deviation: before was 60.0
                          -- AT THIS POINT, IT WILL RECEIVE CONTROL AND
                          -- TERMINATE IF THE ERROR IS PRESENT.
           GLOBAL := LOCAL;

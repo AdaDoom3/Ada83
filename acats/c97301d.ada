@@ -24,7 +24,7 @@ BEGIN
 
      DECLARE
           START_TIME : TIME;
-          WAIT_TIME : CONSTANT DURATION := 10.0;
+          WAIT_TIME : CONSTANT DURATION := 1.0;  -- TODO: acats-delay-deviation: before was 10.0
 
           TASK  T  IS
                ENTRY  DO_IT_NOW_OR_WAIT;

@@ -95,6 +95,27 @@ bash run_acats.sh f         # full suite (all classes)
 NPROC=4 bash run_acats.sh f # limit parallelism
 ```
 
+### ACATS delay deviation (temporary, development only)
+
+The ACATS sources under `acats/` are modified from pristine: every `DELAY`
+literal >= 1.0 seconds (and the named delay constants `WAIT_TIME` /
+`DELAY_TIME` and `c96001a`'s delay variables) is **scaled down by 10x**
+(`DELAY 5.0` -> `DELAY 0.5`). Each modified line is marked with
+
+```
+-- TODO: acats-delay-deviation: before was <original>
+```
+
+Rationale: the delay values are 1980s-era scheduling-margin padding; the
+semantics they exercise (delay accuracy, master-wait ordering, timed-call
+expiry) are preserved at 10x smaller margins on modern hardware, and the
+full Class C run drops from ~5 minutes back to under a minute. The harness
+cap (`TEST_TIMEOUT` in `run_acats.sh`, default 15 s) is sized to match.
+
+**Before any conformance claim**: revert the deviation (grep for
+`acats-delay-deviation`, restore the recorded values) and raise
+`TEST_TIMEOUT` back to 120.
+
 ## Reference
 
 Reference material is in the `reference/` directory including

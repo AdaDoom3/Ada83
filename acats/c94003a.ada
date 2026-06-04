@@ -60,7 +60,7 @@ BEGIN
 
      BEGIN -- (A)
 
-          DELAY 2.0;
+          DELAY 0.2;  -- TODO: acats-delay-deviation: before was 2.0
 
      END; -- (A)    -- FAILS IF INFINITE WAIT.
 
@@ -87,7 +87,7 @@ BEGIN
                TYPE ART IS ACCESS RT;
                AR : ART;
           BEGIN
-               DELAY 2.0;
+               DELAY 0.2;  -- TODO: acats-delay-deviation: before was 2.0
                RETURN 0;
           END F;    -- FAILS IF INFINITE WAIT.
 
@@ -128,14 +128,14 @@ BEGIN
                     END RECORD;
                LIST : ARAT;
           BEGIN
-               DELAY 2.0;
+               DELAY 0.2;  -- TODO: acats-delay-deviation: before was 2.0
           END TSK;  -- FAILS IF INFINITE WAIT.
 
      BEGIN -- (C)
 
           WHILE NOT TSK'TERMINATED AND LOOP_COUNT < CUT_OFF LOOP
                                    -- FAILS IF "INFINITE" LOOP.
-               DELAY 4.0;
+               DELAY 0.4;  -- TODO: acats-delay-deviation: before was 4.0
                LOOP_COUNT := LOOP_COUNT + 1;
           END LOOP;
 

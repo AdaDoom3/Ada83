@@ -16,7 +16,7 @@ PROCEDURE C95040B IS
 
      TASK BODY T1 IS
      BEGIN
-          DELAY 1.0;
+          DELAY 0.1;  -- TODO: acats-delay-deviation: before was 1.0
           IF EQUAL (1, 1) THEN
                ABORT T1;
           END IF;

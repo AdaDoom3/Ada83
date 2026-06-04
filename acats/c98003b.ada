@@ -98,7 +98,7 @@ BEGIN
                     TASK BODY LO IS
                     BEGIN
                          ACCEPT HOLD_LO;
-                         DELAY 5.0;
+                         DELAY 0.5;  -- TODO: acats-delay-deviation: before was 5.0
                          T.SET(IDENT_INT(0));
                     END LO;
 
@@ -108,7 +108,7 @@ BEGIN
                               LO.HOLD_LO;
                               MEDIUM.HOLD_MEDIUM;
                               KILL_TIME.D_CLOCK;
-                              DELAY 5.0;
+                              DELAY 0.5;  -- TODO: acats-delay-deviation: before was 5.0
                               T.SET(IDENT_INT(9));
                          END CALL_SET;
                     END HI;
@@ -116,7 +116,7 @@ BEGIN
                     TASK BODY MEDIUM IS
                     BEGIN
                          ACCEPT HOLD_MEDIUM;
-                         DELAY 5.0;
+                         DELAY 0.5;  -- TODO: acats-delay-deviation: before was 5.0
                          T.SET(IDENT_INT(5));
                     END MEDIUM;
 
@@ -128,7 +128,7 @@ BEGIN
                     TASK BODY KILL_TIME IS
                     BEGIN
                          ACCEPT D_CLOCK;
-                         DELAY 1.0;
+                         DELAY 0.1;  -- TODO: acats-delay-deviation: before was 1.0
                          Y := IDENT(CLOCK);
                          X := CLOCK + DURATION'(20.0);
                          WHILE Y <= X LOOP

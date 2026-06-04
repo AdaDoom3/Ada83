@@ -39,7 +39,7 @@ BEGIN
                          ACCEPT  A ;
                OR  
                          ACCEPT  A ;
-                         DELAY 1.0 ;      -- (IN AN ACCEPT ALTERNATIVE)
+                         DELAY 0.1 ;      -- (IN AN ACCEPT ALTERNATIVE)  -- TODO: acats-delay-deviation: before was 1.0
                OR
                          ACCEPT  A ;
                ELSE                       -- OK.
@@ -50,7 +50,7 @@ BEGIN
                SELECT
                          ACCEPT  A ;
                OR  
-                         DELAY 1.0 ;
+                         DELAY 0.1 ;  -- TODO: acats-delay-deviation: before was 1.0
                OR
                          ACCEPT  A ;
 

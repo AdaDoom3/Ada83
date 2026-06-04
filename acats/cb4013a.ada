@@ -35,7 +35,7 @@ BEGIN
                      "RAISES NO EXCEPTION OUTSIDE THE TASK");
 
      T.E1;
-     DELAY 1.0;
+     DELAY 0.1;  -- TODO: acats-delay-deviation: before was 1.0
      IF T'CALLABLE THEN
           FAILED("TASK NOT COMPLETED ON RAISING CONSTRAINT_ERROR");
           T.STOP;

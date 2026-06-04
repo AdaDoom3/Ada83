@@ -58,12 +58,12 @@ BEGIN
                     WHEN NOT FALSE =>  -- ERROR: SELECTIVE_WAIT OUTSIDE
                                        --   TASK BODY, OR MISSING
                                        --   ACCEPT_ALTERNATIVE.
-                         DELAY 2.5 ;
+                         DELAY 0.25 ;  -- TODO: acats-delay-deviation: before was 2.5
                OR
                          DELAY 0.0 ;
                OR
                     WHEN TRUE =>
-                         DELAY 1.0 ;
+                         DELAY 0.1 ;  -- TODO: acats-delay-deviation: before was 1.0
                END SELECT;
 
 

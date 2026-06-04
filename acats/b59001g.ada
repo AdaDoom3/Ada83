@@ -29,7 +29,7 @@ BEGIN
                     ACCEPT  E2 ;
                     << L111 >>  NULL ;
                OR
-                    DELAY 10.0 ;
+                    DELAY 1.0 ;  -- TODO: acats-delay-deviation: before was 10.0
                     GOTO  L111 ;  -- ERROR: JUMP FROM ONE SELECT_ALTERN.
                                   --     TO ANOTHER.
                END SELECT;

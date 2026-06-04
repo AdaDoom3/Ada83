@@ -33,7 +33,7 @@ PROCEDURE C94001C IS
           ACCEPT E (I : INTEGER) DO
                LOCAL := I;
           END E;
-          DELAY 30.0;    -- SINCE THE PARENT UNIT HAS HIGHER PRIORITY
+          DELAY 3.0;    -- SINCE THE PARENT UNIT HAS HIGHER PRIORITY  -- TODO: acats-delay-deviation: before was 30.0
                          -- AT THIS POINT, IT WILL RECEIVE CONTROL AND
                          -- TERMINATE IF THE ERROR IS PRESENT.
           GLOBAL := LOCAL;
@@ -188,7 +188,7 @@ BEGIN
 
      BEGIN -- (E)
           WHILE NOT(OUT_TSK'TERMINATED) AND DELAY_COUNT < 60 LOOP
-               DELAY 1.0;
+               DELAY 0.1;  -- TODO: acats-delay-deviation: before was 1.0
                DELAY_COUNT := DELAY_COUNT + 1;
           END LOOP;
           IF DELAY_COUNT = 60 THEN
@@ -232,7 +232,7 @@ BEGIN
 
      BEGIN
           WHILE NOT(OUT_TSK'TERMINATED) AND DELAY_COUNT < 60 LOOP
-               DELAY 1.0;
+               DELAY 0.1;  -- TODO: acats-delay-deviation: before was 1.0
                DELAY_COUNT := DELAY_COUNT + 1;
           END LOOP;
           IF DELAY_COUNT = 60 THEN

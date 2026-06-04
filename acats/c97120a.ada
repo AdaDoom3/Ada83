@@ -26,7 +26,7 @@ BEGIN
           BEGIN
                -- ENSURE THAT SYNCH HAS BEEN CALLED BEFORE PROCEEDING:
                WHILE SYNCH'COUNT = 0 LOOP
-                    DELAY 1.0;
+                    DELAY 0.1;  -- TODO: acats-delay-deviation: before was 1.0
                END LOOP;
 
                BEFORE := CLOCK;
@@ -34,7 +34,7 @@ BEGIN
                     ACCEPT NO_GO;
                     FAILED ("ACCEPTED NONEXISTENT ENTRY CALL");
                OR
-                    DELAY 10.0;
+                    DELAY 1.0;  -- TODO: acats-delay-deviation: before was 10.0
                     AFTER := CLOCK;
                     IF AFTER - BEFORE < 10.0 THEN
                          FAILED ("INSUFFICIENT DELAY");

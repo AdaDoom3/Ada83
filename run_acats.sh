@@ -9,6 +9,13 @@ set -euo pipefail
 # because every subprocess writes to its own unique file.
 
 NPROC=${NPROC:-$(nproc 32>/dev/null || echo 32)}
+# Per-test execution cap. The ACATS sources in acats/ carry a temporary
+# development deviation: every DELAY literal >= 1.0 is scaled down by 10x
+# (marked "TODO: acats-delay-deviation", listed in README.md), so the longest
+# legitimate test runs ~12 s instead of ~2 minutes. The cap matches that.
+# When the deviations are reverted for a pristine-ACATS conformance run,
+# raise this back to 120.
+TEST_TIMEOUT=${TEST_TIMEOUT:-15}
 START_MS=$(date +%s%3N)
 
 # ── Clean stale artifacts to prevent spurious BIND errors ─────────────
@@ -48,16 +55,31 @@ run_one(){
 
     case ${q,,} in
     c)
-        if ! timeout 0.5 ./ada83 "$f" > test_results/$n.ll 2>acats_logs/$n.err; then
+        if ! timeout 2 ./ada83 "$f" > test_results/$n.ll 2>acats_logs/$n.err; then
             echo "c skip $n COMPILE:$(head -1 acats_logs/$n.err 2>/dev/null|cut -c1-50)"
             return
         fi
-        if ! timeout 0.5 llvm-link -o test_results/$n.bc test_results/$n.ll acats/report.ll 2>acats_logs/$n.link; then
+        if ! timeout 2 llvm-link -o test_results/$n.bc test_results/$n.ll acats/report.ll 2>acats_logs/$n.link; then
             echo "c skip $n BIND:unresolved_symbols"
             return
         fi
-        if timeout 2 lli test_results/$n.bc > acats_logs/$n.out 2>&1 \
-           || timeout 3 lli -jit-kind=mcjit test_results/$n.bc > acats_logs/$n.out 2>&1; then
+        local rc=0
+        timeout "$TEST_TIMEOUT" lli test_results/$n.bc > acats_logs/$n.out 2>&1 || rc=$?
+        if ((rc==124 || rc==137)); then
+            echo "c fail $n TIMEOUT:exceeded_${TEST_TIMEOUT}s"
+            return
+        fi
+        # The mcjit retry exists for ORC-JIT crashes only; a timeout must not
+        # pay the cap a second time.
+        if ((rc!=0)); then
+            rc=0
+            timeout "$TEST_TIMEOUT" lli -jit-kind=mcjit test_results/$n.bc > acats_logs/$n.out 2>&1 || rc=$?
+            if ((rc==124 || rc==137)); then
+                echo "c fail $n TIMEOUT:exceeded_${TEST_TIMEOUT}s"
+                return
+            fi
+        fi
+        if ((rc==0)); then
             if grep -q PASSED acats_logs/$n.out 2>/dev/null; then
                 echo "c pass $n PASSED"
             elif grep -q NOT.APPLICABLE acats_logs/$n.out 2>/dev/null; then
@@ -68,31 +90,34 @@ run_one(){
                 echo "c fail $n NO_REPORT:no_PASSED/FAILED_in_output"
             fi
         else
-            local ec=$?
-            echo "c fail $n RUNTIME:exit_${ec}"
+            echo "c fail $n RUNTIME:exit_${rc}"
         fi
         ;;
     a)
-        if ! timeout 0.5 ./ada83 "$f" > test_results/$n.ll 2>acats_logs/$n.err; then
+        if ! timeout 2 ./ada83 "$f" > test_results/$n.ll 2>acats_logs/$n.err; then
             echo "a skip $n COMPILE:$(head -1 acats_logs/$n.err 2>/dev/null|cut -c1-50)"; return; fi
-        if ! timeout 0.5 llvm-link -o test_results/$n.bc test_results/$n.ll acats/report.ll 2>acats_logs/$n.link; then
+        if ! timeout 2 llvm-link -o test_results/$n.bc test_results/$n.ll acats/report.ll 2>acats_logs/$n.link; then
             echo "a skip $n BIND:unresolved_symbols"; return; fi
-        if timeout 2 lli test_results/$n.bc > acats_logs/$n.out 2>&1; then
+        local rc=0
+        timeout "$TEST_TIMEOUT" lli test_results/$n.bc > acats_logs/$n.out 2>&1 || rc=$?
+        if ((rc==124 || rc==137)); then
+            echo "a fail $n TIMEOUT:exceeded_${TEST_TIMEOUT}s"
+        elif ((rc==0)); then
             echo "a pass $n PASSED"
-        elif timeout 3 lli -jit-kind=mcjit test_results/$n.bc > acats_logs/$n.out 2>&1; then
+        elif timeout "$TEST_TIMEOUT" lli -jit-kind=mcjit test_results/$n.bc > acats_logs/$n.out 2>&1; then
             echo "a pass $n PASSED"
         else
             echo "a fail $n FAILED:exit_$?"
         fi
         ;;
     b)
-        if timeout 0.5 ./ada83 "$f" > acats_logs/$n.ll 2>acats_logs/$n.err; then
+        if timeout 2 ./ada83 "$f" > acats_logs/$n.ll 2>acats_logs/$n.err; then
             echo "b fail $n WRONG_ACCEPT:compiled_when_should_reject"
         else
             # Count error coverage
             local -a expected=() actual=(); local i=0 hits=0
             while IFS= read -r l; do ((++i)); [[ $l =~ --\ ERROR ]] && expected+=($i); done < "$f"
-            while IFS=: read -r _ m _; do actual+=($m); done < <(timeout 0.5 ./ada83 "$f" 2>&1|grep "^[^:]*:[0-9]")
+            while IFS=: read -r _ m _; do actual+=($m); done < <(timeout 2 ./ada83 "$f" 2>&1|grep "^[^:]*:[0-9]")
             for e in ${expected[@]+"${expected[@]}"}; do
                 for v in ${actual[@]+"${actual[@]}"}; do
                     ((v>=e-1&&v<=e+1)) && { ((++hits)); break; }
@@ -105,22 +130,22 @@ run_one(){
         fi
         ;;
     d)
-        if ! timeout 0.5 ./ada83 "$f" > test_results/$n.ll 2>acats_logs/$n.err; then
+        if ! timeout 2 ./ada83 "$f" > test_results/$n.ll 2>acats_logs/$n.err; then
             echo "d skip $n COMPILE:$(head -1 acats_logs/$n.err 2>/dev/null|cut -c1-50)"; return; fi
-        if ! timeout 0.5 llvm-link -o test_results/$n.bc test_results/$n.ll acats/report.ll 2>/dev/null; then
+        if ! timeout 2 llvm-link -o test_results/$n.bc test_results/$n.ll acats/report.ll 2>/dev/null; then
             echo "d skip $n BIND"; return; fi
-        if timeout 2 lli test_results/$n.bc > acats_logs/$n.out 2>&1 && grep -q PASSED acats_logs/$n.out; then
+        if timeout "$TEST_TIMEOUT" lli test_results/$n.bc > acats_logs/$n.out 2>&1 && grep -q PASSED acats_logs/$n.out; then
             echo "d pass $n PASSED"
         else
             echo "d fail $n FAILED:exact_arithmetic_check"
         fi
         ;;
     e)
-        if ! timeout 0.5 ./ada83 "$f" > test_results/$n.ll 2>acats_logs/$n.err; then
+        if ! timeout 2 ./ada83 "$f" > test_results/$n.ll 2>acats_logs/$n.err; then
             echo "e skip $n COMPILE:$(head -1 acats_logs/$n.err 2>/dev/null|cut -c1-50)"; return; fi
-        if ! timeout 0.5 llvm-link -o test_results/$n.bc test_results/$n.ll acats/report.ll 2>/dev/null; then
+        if ! timeout 2 llvm-link -o test_results/$n.bc test_results/$n.ll acats/report.ll 2>/dev/null; then
             echo "e skip $n BIND"; return; fi
-        timeout 2 lli test_results/$n.bc > acats_logs/$n.out 2>&1 || true
+        timeout "$TEST_TIMEOUT" lli test_results/$n.bc > acats_logs/$n.out 2>&1 || true
         if grep -q "TENTATIVELY PASSED" acats_logs/$n.out 2>/dev/null; then
             echo "e pass $n INSPECT:requires_manual_verification"
         elif grep -q PASSED acats_logs/$n.out 2>/dev/null; then
@@ -130,8 +155,8 @@ run_one(){
         fi
         ;;
     l)
-        if timeout 0.5 ./ada83 "$f" > test_results/$n.ll 2>acats_logs/$n.err; then
-            if timeout 0.5 llvm-link -o test_results/$n.bc test_results/$n.ll acats/report.ll 2>acats_logs/$n.link; then
+        if timeout 2 ./ada83 "$f" > test_results/$n.ll 2>acats_logs/$n.err; then
+            if timeout 2 llvm-link -o test_results/$n.bc test_results/$n.ll acats/report.ll 2>acats_logs/$n.link; then
                 if timeout 1 lli test_results/$n.bc > acats_logs/$n.out 2>&1; then
                     echo "l fail $n WRONG_EXEC:should_not_execute"
                 else
@@ -149,21 +174,22 @@ run_one(){
     esac
 }
 export -f run_one pct
-export START_MS
+export START_MS TEST_TIMEOUT
 
-# ── Per-test 2-second cap (defense in depth) ──────────────────────────────
-# Wraps run_one in `timeout 2`; on SIGTERM/SIGKILL exit (124/137), emit a
-# synthetic fail line so the test is recorded rather than silently dropped.
-# 2s is generous for non-tasking tests but accommodates the usleep-polling
-# rendezvous and task-wait helpers, which add up when many tasks live in
-# the same test or when 16 parallel workers contend for CPU.
+# ── Per-test outer cap (defense in depth) ─────────────────────────────────
+# Wraps run_one so a hung test can never hang the suite, even if an inner
+# `timeout` is bypassed (e.g. a runaway grandchild process). Sized to cover
+# the worst case inside run_one: compile + link + one lli run + the mcjit
+# crash-retry, each already individually capped. On SIGTERM/SIGKILL exit
+# (124/137), emit a synthetic fail line so the test is recorded rather than
+# silently dropped.
 run_one_timed(){
     local f=$1 n=$(basename "$1" .ada) q
     q=${f##*/}; q=${q:0:1}; q=${q,,}
     local out rc=0
-    out=$(timeout 2 bash -c 'run_one "$1"' _ "$f" 2>/dev/null) || rc=$?
+    out=$(timeout $((2*TEST_TIMEOUT+5)) bash -c 'run_one "$1"' _ "$f" 2>/dev/null) || rc=$?
     if ((rc==124 || rc==137)); then
-        echo "$q fail $n TIMEOUT:exceeded_2s"
+        echo "$q fail $n TIMEOUT:exceeded_$((2*TEST_TIMEOUT+5))s"
     elif [[ -n $out ]]; then
         echo "$out"
     fi
@@ -244,7 +270,10 @@ Modes:
   h|help         Show this help
 
 Environment:
-  NPROC=N        Set parallelism (default: $(nproc 32>/dev/null||echo 32))
+  NPROC=N         Set parallelism (default: $(nproc 32>/dev/null||echo 32))
+  TEST_TIMEOUT=N  Per-test execution cap in seconds (default: 15, matching
+                  the 10x-scaled DELAY deviation in acats/ — see README.md).
+                  Use 120 when running pristine ACATS sources.
 EOF
 }
 

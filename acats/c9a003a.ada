@@ -53,7 +53,7 @@ BEGIN
 
 
           IF NOT  T_OBJECT1'TERMINATED  THEN
-               DELAY  20.0 ;
+               DELAY  2.0 ;  -- TODO: acats-delay-deviation: before was 20.0
           END IF;
 
           IF NOT  T_OBJECT1'TERMINATED  THEN

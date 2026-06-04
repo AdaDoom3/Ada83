@@ -115,7 +115,7 @@ BEGIN
 
                WHILE  E1'COUNT = 0  -- IF  E1  NOT YET CALLED, THEN GIVE
                LOOP                 --     THE MAIN TASK AN OPPORTUNITY
-                    DELAY  10.01;   --     TO ISSUE THE CALL.
+                    DELAY  1.001;   --     TO ISSUE THE CALL.  -- TODO: acats-delay-deviation: before was 10.01
                END LOOP;
 
 

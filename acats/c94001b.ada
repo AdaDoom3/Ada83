@@ -41,7 +41,7 @@ PROCEDURE C94001B IS
                ACCEPT E (I : INTEGER) DO
                     LOCAL := I;
                END E;
-               DELAY 30.0;    -- SINCE THE PARENT UNIT HAS HIGHER
+               DELAY 3.0;    -- SINCE THE PARENT UNIT HAS HIGHER  -- TODO: acats-delay-deviation: before was 30.0
                               -- PRIORITY AT THIS POINT, IT WILL
                               -- RECEIVE CONTROL AND TERMINATE IF
                               -- THE ERROR IS PRESENT.
@@ -185,7 +185,7 @@ BEGIN
      BEGIN -- (E)
 
           WHILE NOT TSK'TERMINATED AND LOOP_COUNT < CUT_OFF LOOP
-               DELAY 1.0;
+               DELAY 0.1;  -- TODO: acats-delay-deviation: before was 1.0
                LOOP_COUNT := LOOP_COUNT + 1;
           END LOOP;
 
@@ -230,7 +230,7 @@ BEGIN
      BEGIN -- (F)
 
           WHILE NOT TSK'TERMINATED AND LOOP_COUNT < CUT_OFF LOOP
-               DELAY 1.0;
+               DELAY 0.1;  -- TODO: acats-delay-deviation: before was 1.0
                LOOP_COUNT := LOOP_COUNT + 1;
           END LOOP;
 

@@ -45,7 +45,7 @@ BEGIN
                     SELECT  -- NOT A SELECTIVE_WAIT
                          A ( FALSE ) ;  -- CALLING (OWN) ENTRY
                     OR
-                         DELAY 1.0 ;
+                         DELAY 0.1 ;  -- TODO: acats-delay-deviation: before was 1.0
                          COMMENT( "ALTERNATIVE BRANCH TAKEN" );
                     END SELECT;
                     
@@ -78,7 +78,7 @@ BEGIN
                SELECT  -- NOT A SELECTIVE_WAIT
                     TT.A ( FALSE ) ;  -- UNBORN
                OR   
-                    DELAY 1.0 ;
+                    DELAY 0.1 ;  -- TODO: acats-delay-deviation: before was 1.0
                     COMMENT( "(OUT:) ALTERNATIVE BRANCH TAKEN" );
                END SELECT;
 

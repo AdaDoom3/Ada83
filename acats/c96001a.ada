@@ -28,7 +28,7 @@ BEGIN
      ---------------------------------------------
 
      DECLARE   -- (A)
-          X : DURATION := 5.0;
+          X : DURATION := 0.5;  -- TODO: acats-delay-deviation: before was 5.0
           OLD_TIME : TIME;
           LAPSE : DURATION;
      BEGIN     -- (A)
@@ -116,8 +116,8 @@ BEGIN
      ---------------------------------------------
 
      DECLARE   -- (E)
-          INC1 : DURATION := 2.0;
-          INC2 : DURATION := 3.0;
+          INC1 : DURATION := 0.2;  -- TODO: acats-delay-deviation: before was 2.0
+          INC2 : DURATION := 0.3;  -- TODO: acats-delay-deviation: before was 3.0
           OLD_TIME : TIME;
           LAPSE : DURATION;
      BEGIN     -- (E)

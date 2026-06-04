@@ -141,7 +141,7 @@ PACKAGE BODY C93005D_PK1 IS
 --
      TASK BODY MNT_TASK IS
      BEGIN
-          DELAY 5.0;
+          DELAY 0.5;  -- TODO: acats-delay-deviation: before was 5.0
           MNT_COUNTER.DECR;
      END MNT_TASK;
 
@@ -195,7 +195,7 @@ PACKAGE BODY C93005D_ENQUEUE IS
      END T3;
 
 BEGIN                    -- T3 CALLS T1 HERE
-     DELAY 1.0;            -- ENSURE THAT T3 EXECUTES
+     DELAY 0.1;            -- ENSURE THAT T3 EXECUTES  -- TODO: acats-delay-deviation: before was 1.0
 END C93005D_ENQUEUE;
 
 WITH REPORT, C93005D_PK1, C93005D_ENQUEUE;

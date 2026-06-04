@@ -44,7 +44,7 @@ BEGIN
           BEGIN
 
                WHILE  E2'COUNT <= 0  LOOP
-                    DELAY 1.0 ;
+                    DELAY 0.1 ;  -- TODO: acats-delay-deviation: before was 1.0
                END LOOP;
 
                SELECT 
@@ -56,7 +56,7 @@ BEGIN
                     GOTO  L123 ;
                     FAILED( "'GOTO' NOT OBEYED (1)" );
                OR
-                    DELAY 10.0 ;
+                    DELAY 1.0 ;  -- TODO: acats-delay-deviation: before was 10.0
                     FAILED( "DELAY ALTERNATIVE SELECTED (1)" );
                END SELECT;
 
@@ -96,7 +96,7 @@ BEGIN
                          FAILED( " E2  ACCEPTED; NO ENTRY CALL (2)" );
                     END ;
                OR
-                    DELAY 10.0 ;
+                    DELAY 1.0 ;  -- TODO: acats-delay-deviation: before was 10.0
                     GOTO  L321 ;
                     FAILED( "'GOTO' NOT OBEYED (2)" );
                END SELECT;

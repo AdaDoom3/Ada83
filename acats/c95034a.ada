@@ -27,7 +27,7 @@ PROCEDURE C95034A IS
      BEGIN
           ACCEPT E1 DO
                PSPY_NUMB (1);
-               DELAY 1.0;
+               DELAY 0.1;  -- TODO: acats-delay-deviation: before was 1.0
           END E1;
           ACCEPT E2 DO
                PSPY_NUMB (2);

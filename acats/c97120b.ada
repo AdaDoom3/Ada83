@@ -32,7 +32,7 @@ BEGIN
           TASK BODY T IS
           BEGIN
                WHILE E'COUNT = 0 LOOP
-                    DELAY 1.0;
+                    DELAY 0.1;  -- TODO: acats-delay-deviation: before was 1.0
                END LOOP;
 
             A: BEGIN
@@ -50,7 +50,7 @@ BEGIN
                END A;
 
                WHILE E'COUNT = 0 LOOP
-                    DELAY 1.0;
+                    DELAY 0.1;  -- TODO: acats-delay-deviation: before was 1.0
                END LOOP;
 
             B: BEGIN

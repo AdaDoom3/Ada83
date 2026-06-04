@@ -37,15 +37,15 @@ BEGIN
                SELECT
                          ACCEPT  A ;
                OR
-                         DELAY 2.5 ;
+                         DELAY 0.25 ;  -- TODO: acats-delay-deviation: before was 2.5
                OR
                          ACCEPT  A ;
                OR
                          ACCEPT  A ;
                OR
-                         DELAY 2.5 ;  -- MULTIPLE 'DELAY'S PERMITTED (IF
+                         DELAY 0.25 ;  -- MULTIPLE 'DELAY'S PERMITTED (IF  -- TODO: acats-delay-deviation: before was 2.5
                OR                     --     AND ONLY IF SINGLE 'DELAY'S
-                         DELAY 2.5 ;  --     ARE PERMITTED).
+                         DELAY 0.25 ;  --     ARE PERMITTED).  -- TODO: acats-delay-deviation: before was 2.5
                OR
                          ACCEPT  A ;
                END SELECT ;

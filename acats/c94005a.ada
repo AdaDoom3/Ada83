@@ -31,7 +31,7 @@ PACKAGE BODY C94005A_PKG IS
           ACCEPT E;
           FOR J IN 1..60 LOOP
                I := IDENT_INT (I);
-               DELAY 1.0;
+               DELAY 0.1;  -- TODO: acats-delay-deviation: before was 1.0
           END LOOP;
           RESULT;   -- FAILURE IF THIS MESSAGE IS NOT WRITTEN.
      END TT;

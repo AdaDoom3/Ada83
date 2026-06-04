@@ -50,21 +50,21 @@ BEGIN
           BEGIN
                          
                LOOP
-                    DELAY 1.0;
+                    DELAY 0.1;  -- TODO: acats-delay-deviation: before was 1.0
                     EXIT WHEN QENTRY'COUNT = 1;
                END LOOP;               
                
                T1.RELEASE;
 
                LOOP
-                    DELAY 1.0;
+                    DELAY 0.1;  -- TODO: acats-delay-deviation: before was 1.0
                     EXIT WHEN QENTRY'COUNT = 2;
                END LOOP;               
                
                T2.RELEASE;
 
                LOOP
-                    DELAY 1.0;
+                    DELAY 0.1;  -- TODO: acats-delay-deviation: before was 1.0
                     EXIT WHEN QENTRY'COUNT = 3;
                END LOOP;               
                
@@ -147,21 +147,21 @@ BEGIN
           BEGIN
 
                LOOP
-                    DELAY 1.0;
+                    DELAY 0.1;  -- TODO: acats-delay-deviation: before was 1.0
                     EXIT WHEN QENTRY'COUNT = 1;
                END LOOP;               
                          
                ABORTED.RELEASE;
 
                LOOP
-                    DELAY 1.0;
+                    DELAY 0.1;  -- TODO: acats-delay-deviation: before was 1.0
                     EXIT WHEN QENTRY'COUNT = 2;
                END LOOP;               
                
                T2.RELEASE;
 
                LOOP
-                    DELAY 1.0;
+                    DELAY 0.1;  -- TODO: acats-delay-deviation: before was 1.0
                     EXIT WHEN QENTRY'COUNT = 3;
                END LOOP;               
                
@@ -244,21 +244,21 @@ BEGIN
           BEGIN
                          
                LOOP
-                    DELAY 1.0;
+                    DELAY 0.1;  -- TODO: acats-delay-deviation: before was 1.0
                     EXIT WHEN QENTRY'COUNT = 1;
                END LOOP;               
                          
                T2.RELEASE;
 
                LOOP
-                    DELAY 1.0;
+                    DELAY 0.1;  -- TODO: acats-delay-deviation: before was 1.0
                     EXIT WHEN QENTRY'COUNT = 2;
                END LOOP;               
                
                ABORTED.RELEASE;
 
                LOOP
-                    DELAY 1.0;
+                    DELAY 0.1;  -- TODO: acats-delay-deviation: before was 1.0
                     EXIT WHEN QENTRY'COUNT = 3;
                END LOOP;               
                

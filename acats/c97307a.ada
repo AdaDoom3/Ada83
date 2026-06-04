@@ -137,7 +137,7 @@ BEGIN
                          EXPIRED.READ (EXPIRED_CALLS);
                     EXIT WHEN E'COUNT >= DESIRED_QUEUE_LENGTH -
                                          EXPIRED_CALLS;
-                         DELAY 2.0;
+                         DELAY 0.2;  -- TODO: acats-delay-deviation: before was 2.0
                     END LOOP;
                EXIT WHEN DESIRED_QUEUE_LENGTH = 5;
                     DISPATCH.READY;

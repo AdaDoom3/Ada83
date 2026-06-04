@@ -181,7 +181,7 @@ BEGIN
                TSK1.ENT1 (ARA1);     -- ARA1.T BECOMES ALIAS FOR ARA2.T.
 
                WHILE NOT TSK1'TERMINATED AND LOOP_COUNT1 < CUT_OFF1 LOOP
-                    DELAY 1.0;
+                    DELAY 0.1;  -- TODO: acats-delay-deviation: before was 1.0
                     LOOP_COUNT1 := LOOP_COUNT1 + 1;
                END LOOP;
 
@@ -200,7 +200,7 @@ BEGIN
      BEGIN -- (C)
 
           WHILE NOT TSK'TERMINATED AND LOOP_COUNT < CUT_OFF LOOP
-               DELAY 2.0;
+               DELAY 0.2;  -- TODO: acats-delay-deviation: before was 2.0
                LOOP_COUNT := LOOP_COUNT + 1;
           END LOOP;
 
@@ -290,7 +290,7 @@ BEGIN
                WHEN MY_EXCEPTION =>
                     WHILE NOT TSK1'TERMINATED AND
                           LOOP_COUNT1 < CUT_OFF1 LOOP
-                         DELAY 1.0;
+                         DELAY 0.1;  -- TODO: acats-delay-deviation: before was 1.0
                          LOOP_COUNT1 := LOOP_COUNT1 + 1;
                     END LOOP;
 
@@ -315,7 +315,7 @@ BEGIN
      BEGIN -- (D)
 
           WHILE NOT TSK'TERMINATED AND LOOP_COUNT < CUT_OFF LOOP
-               DELAY 2.0;
+               DELAY 0.2;  -- TODO: acats-delay-deviation: before was 2.0
                LOOP_COUNT := LOOP_COUNT + 1;
           END LOOP;
 

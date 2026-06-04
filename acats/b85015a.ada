@@ -51,12 +51,12 @@ BEGIN
      SELECT
           PROC1;                                        -- ERROR: B.
      OR
-          DELAY 30.0;
+          DELAY 3.0;  -- TODO: acats-delay-deviation: before was 30.0
      END SELECT;
      SELECT
           PROC2;                                        -- ERROR: B.
      OR
-          DELAY 30.0;
+          DELAY 3.0;  -- TODO: acats-delay-deviation: before was 30.0
      END SELECT;
 
 END B85015A;

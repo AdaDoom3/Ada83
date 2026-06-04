@@ -178,7 +178,7 @@ BEGIN
                LOOP
                     SELECT
                          ACCEPT WAIT DO
-                              DELAY 1.0;
+                              DELAY 0.1;  -- TODO: acats-delay-deviation: before was 1.0
                          END WAIT;
                          CHOICE.RETURN_CALL;
                     OR

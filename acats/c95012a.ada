@@ -63,7 +63,7 @@ BEGIN
           PACKAGE BODY PKG IS
           BEGIN
                AT2 := NEW T2T;
-               DELAY 60.0;
+               DELAY 6.0;  -- TODO: acats-delay-deviation: before was 60.0
           END PKG;
 
      BEGIN
