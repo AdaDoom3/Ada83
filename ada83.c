@@ -20,7 +20,7 @@
 //  §13. Code Generation    LLVM IR emission for every Ada construct                            
 //  §14. Library Management ALI files, checksums, dependency tracking                           
 //  §15. Elaboration        Dependency ordering for multi-unit programs                         
-//  §16. Generics           Macro-style instantiation of generic units                          
+//  §16. Generics           Tree-copy instantiation of generic units                          
 //  §17. File Loading       Include-path search, source file I/O                                
 //  §18. Vector Paths       SIMD-accelerated scanning on x86-64 and ARM64                       
 //  §19. Driver             Command-line parsing and top-level orchestration                    
@@ -902,6 +902,31 @@ typedef enum {
 // Generic Object Mode Kind  (extracted from NK_GENERIC_OBJECT_PARAM payload)
 typedef enum {GEN_MODE_IN, GEN_MODE_OUT, GEN_MODE_IN_OUT} Generic_Mode_Kind;
 
+// One resolved formal-to-actual association of a generic instantiation
+// (RM 12.3): filled by the actual-resolution passes, consumed by the formal
+// binder and by the matching validators.
+// One instantiation-elaboration agreement check (RM 12.3(81)): two scalar
+// subtypes that must have equal bounds, captured at resolution time (where
+// the formal part's marks are resolvable) and emitted at the instantiation
+// point.
+typedef struct Instance_Agreement_Check {
+  Type_Info  *formal_subtype;  // What the formal part requires
+  Type_Info  *actual_subtype;  // What the actual supplies
+  const char *what;            // Diagnostic tag (index/component/discriminant)
+} Instance_Agreement_Check;
+
+typedef struct Generic_Actual_Binding {
+  String_Slice  formal_name;       // Name of the generic formal parameter
+  Type_Info    *actual_type;       // Actual type supplied at instantiation
+  Symbol       *actual_subprogram; // Actual subprogram supplied at instantiation
+  Syntax_Node  *actual_expr;       // Actual expression (for object formals)
+  Syntax_Node  *actual_attribute;  // Attribute actual (a default like IS
+                                   // T'SUCC); becomes a wrapper body
+  Token_Kind    builtin_operator;  // Intrinsic operator kind, or TK_EOF
+  bool          actual_negated;    // "/=" actual: the bound "=", negated
+                                   // through a wrapper body (RM 6.7)
+} Generic_Actual_Binding;
+
 // What an NK_APPLY denotes. The parser spells call, indexing, slicing,
 // conversion, and operator-as-function all as the one syntactic shape `X (…)`
 // (see Parse_Postfix); Resolve_Apply is the single oracle that decides which of
@@ -927,10 +952,6 @@ struct Syntax_Node {
   Source_Location location; // Where this construct appeared in source
   Type_Info      *type;     // Set by semantic analysis, NULL before
   Symbol         *symbol;   // Set by name resolution, NULL before
-  // Generic-expansion decoration: for an NK_IDENTIFIER in a generic template,
-  // the formal-object slot it names (>=0), -1 if it names no formal, or -2 when
-  // not yet decided. Computed once on the template node and read by every clone.
-  int             generic_formal_index;
   // Folded static-value cache: Eval_Const_Numeric memoizes a node's compile-time
   // numeric value here once, so the constant-folding deep walk is not repeated
   // every time resolution and codegen ask for the same subtree's value.
@@ -1428,6 +1449,107 @@ struct Syntax_Node {
 // Node constructor
 Syntax_Node *Node_New (Node_Kind kind, Source_Location location);
 
+// A child edge of a syntax node: a single node pointer (is_list 0) or a node
+// list (is_list 1), at a byte offset into the node. The tree's shape is the
+// data: SYNTAX_TREE_SHAPE_LIST names every node kind exactly once together
+// with its child edges, and the static assertion beside the table definition
+// in the §8 body keeps it total -- a new node kind does not compile until
+// this list declares its children (or declares, by listing none, that it has
+// none). Generic instantiation cloning (§16) walks this table. A row
+// terminates at offset 0 (which is `kind`, never a child); rows hold at most
+// five edges plus the terminator -- widen the table's row width if a kind
+// ever grows a sixth child.
+typedef struct { uint16_t offset; bool is_list; } Syntax_Tree_Edge;
+extern const Syntax_Tree_Edge Syntax_Tree_Shape[NK_COUNT][6];
+
+#define SYNTAX_TREE_SHAPE_LIST(X) \
+  /* Literals and primaries */ \
+  X (NK_INTEGER) \
+  X (NK_REAL) \
+  X (NK_STRING) \
+  X (NK_CHARACTER) \
+  X (NK_NULL) \
+  X (NK_OTHERS) \
+  X (NK_IDENTIFIER) \
+  X (NK_SELECTED, KID (selected.prefix)) \
+  X (NK_ATTRIBUTE, KID (attribute.prefix), KIDS (attribute.arguments)) \
+  X (NK_QUALIFIED, KID (qualified.subtype_mark), KID (qualified.expression)) \
+  /* Expressions */ \
+  X (NK_BINARY_OP, KID (binary.left), KID (binary.right)) \
+  X (NK_UNARY_OP, KID (unary.operand)) \
+  X (NK_AGGREGATE, KIDS (aggregate.items)) \
+  X (NK_ALLOCATOR, KID (allocator.subtype_mark), KID (allocator.expression)) \
+  X (NK_APPLY, KID (apply.prefix), KIDS (apply.arguments)) \
+  X (NK_RANGE, KID (range.low), KID (range.high)) \
+  X (NK_ASSOCIATION, KIDS (association.choices), KID (association.expression)) \
+  /* Type definitions and constraints */ \
+  X (NK_SUBTYPE_INDICATION, KID (subtype_ind.subtype_mark), KID (subtype_ind.constraint)) \
+  X (NK_RANGE_CONSTRAINT, KID (range_constraint.range)) \
+  X (NK_INDEX_CONSTRAINT, KIDS (index_constraint.ranges)) \
+  X (NK_DISCRIMINANT_CONSTRAINT, KIDS (discriminant_constraint.associations)) \
+  X (NK_DIGITS_CONSTRAINT, KID (digits_constraint.digits_expr), KID (digits_constraint.range)) \
+  X (NK_DELTA_CONSTRAINT, KID (delta_constraint.delta_expr), KID (delta_constraint.range)) \
+  X (NK_ARRAY_TYPE, KIDS (array_type.indices), KID (array_type.component_type)) \
+  X (NK_RECORD_TYPE, KIDS (record_type.discriminants), KIDS (record_type.components), KID (record_type.variant_part)) \
+  X (NK_ACCESS_TYPE, KID (access_type.designated)) \
+  X (NK_DERIVED_TYPE, KID (derived_type.parent_type), KID (derived_type.constraint)) \
+  X (NK_ENUMERATION_TYPE, KIDS (enum_type.literals)) \
+  X (NK_INTEGER_TYPE, KID (integer_type.range)) \
+  X (NK_REAL_TYPE, KID (real_type.precision), KID (real_type.range), KID (real_type.delta)) \
+  X (NK_COMPONENT_DECL, KIDS (component.names), KID (component.component_type), KID (component.init)) \
+  X (NK_VARIANT_PART, KIDS (variant_part.variants)) \
+  X (NK_VARIANT, KIDS (variant.choices), KIDS (variant.components), KID (variant.variant_part)) \
+  X (NK_DISCRIMINANT_SPEC, KIDS (discriminant.names), KID (discriminant.disc_type), KID (discriminant.default_expr)) \
+  /* Statements */ \
+  X (NK_ASSIGNMENT, KID (assignment.target), KID (assignment.value)) \
+  X (NK_CALL_STMT, KID (assignment.target), KID (assignment.value)) \
+  X (NK_RETURN, KID (return_stmt.expression)) \
+  X (NK_IF, KID (if_stmt.condition), KIDS (if_stmt.then_stmts), KIDS (if_stmt.elsif_parts), KIDS (if_stmt.else_stmts)) \
+  X (NK_CASE, KID (case_stmt.expression), KIDS (case_stmt.alternatives)) \
+  X (NK_LOOP, KID (loop_stmt.iteration_scheme), KIDS (loop_stmt.statements)) \
+  X (NK_BLOCK, KIDS (block_stmt.declarations), KIDS (block_stmt.statements), KIDS (block_stmt.handlers)) \
+  X (NK_EXIT, KID (exit_stmt.condition)) \
+  X (NK_GOTO) \
+  X (NK_RAISE, KID (raise_stmt.exception_name)) \
+  X (NK_NULL_STMT) \
+  X (NK_LABEL, KID (label_node.statement)) \
+  X (NK_ACCEPT, KID (accept_stmt.index), KIDS (accept_stmt.parameters), KIDS (accept_stmt.statements), KID (accept_stmt.guard)) \
+  X (NK_SELECT, KIDS (select_stmt.alternatives), KID (select_stmt.else_part)) \
+  X (NK_DELAY, KID (delay_stmt.expression), KID (delay_stmt.guard)) \
+  X (NK_ABORT, KIDS (abort_stmt.task_names)) \
+  X (NK_CODE) \
+  /* Declarations */ \
+  X (NK_OBJECT_DECL, KIDS (object_decl.names), KID (object_decl.object_type), KID (object_decl.init)) \
+  X (NK_TYPE_DECL, KID (type_decl.definition), KIDS (type_decl.discriminants)) \
+  X (NK_SUBTYPE_DECL, KID (type_decl.definition), KIDS (type_decl.discriminants)) \
+  X (NK_EXCEPTION_DECL, KIDS (exception_decl.names), KID (exception_decl.renamed)) \
+  X (NK_PROCEDURE_SPEC, KIDS (subprogram_spec.parameters), KID (subprogram_spec.return_type), KID (subprogram_spec.renamed)) \
+  X (NK_FUNCTION_SPEC, KIDS (subprogram_spec.parameters), KID (subprogram_spec.return_type), KID (subprogram_spec.renamed)) \
+  X (NK_PROCEDURE_BODY, KID (subprogram_body.specification), KIDS (subprogram_body.declarations), KIDS (subprogram_body.statements), KIDS (subprogram_body.handlers)) \
+  X (NK_FUNCTION_BODY, KID (subprogram_body.specification), KIDS (subprogram_body.declarations), KIDS (subprogram_body.statements), KIDS (subprogram_body.handlers)) \
+  X (NK_PACKAGE_SPEC, KIDS (package_spec.visible_decls), KIDS (package_spec.private_decls)) \
+  X (NK_PACKAGE_BODY, KIDS (package_body.declarations), KIDS (package_body.statements), KIDS (package_body.handlers)) \
+  X (NK_TASK_SPEC, KIDS (task_spec.entries)) \
+  X (NK_TASK_BODY, KIDS (task_body.declarations), KIDS (task_body.statements), KIDS (task_body.handlers)) \
+  X (NK_ENTRY_DECL, KIDS (entry_decl.parameters), KIDS (entry_decl.index_constraints)) \
+  X (NK_SUBPROGRAM_RENAMING, KIDS (subprogram_spec.parameters), KID (subprogram_spec.return_type), KID (subprogram_spec.renamed)) \
+  X (NK_PACKAGE_RENAMING, KID (package_renaming.old_name)) \
+  X (NK_EXCEPTION_RENAMING, KIDS (exception_decl.names), KID (exception_decl.renamed)) \
+  X (NK_GENERIC_DECL, KIDS (generic_decl.formals), KID (generic_decl.unit)) \
+  X (NK_GENERIC_INST, KID (generic_inst.generic_name), KIDS (generic_inst.actuals)) \
+  X (NK_PARAM_SPEC, KIDS (param_spec.names), KID (param_spec.param_type), KID (param_spec.default_expr)) \
+  X (NK_USE_CLAUSE, KIDS (use_clause.names)) \
+  X (NK_WITH_CLAUSE, KIDS (use_clause.names)) \
+  X (NK_PRAGMA, KIDS (pragma_node.arguments)) \
+  X (NK_REPRESENTATION_CLAUSE, KID (rep_clause.entity_name), KID (rep_clause.expression), KIDS (rep_clause.component_clauses)) \
+  X (NK_EXCEPTION_HANDLER, KIDS (handler.exceptions), KIDS (handler.statements)) \
+  X (NK_CONTEXT_CLAUSE, KIDS (context.with_clauses), KIDS (context.use_clauses)) \
+  X (NK_COMPILATION_UNIT, KID (compilation_unit.context), KID (compilation_unit.unit), KID (compilation_unit.separate_parent)) \
+  /* Generic formals */ \
+  X (NK_GENERIC_TYPE_PARAM, KID (generic_type_param.def_detail), KIDS (generic_type_param.discriminants)) \
+  X (NK_GENERIC_OBJECT_PARAM, KIDS (generic_object_param.names), KID (generic_object_param.object_type), KID (generic_object_param.default_expr)) \
+  X (NK_GENERIC_SUBPROGRAM_PARAM, KIDS (generic_subprog_param.parameters), KID (generic_subprog_param.return_type), KID (generic_subprog_param.default_name))
+
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 //
 // §9. Recursive descent parser
@@ -1731,10 +1853,19 @@ struct Type_Info {
   int64_t     storage_size;       // 'Storage_Size attribute value, or -1 if unset
   const char *equality_func_name; // Mangled name of the compiler-generated "=" function
   uint32_t    rt_global_id;       // Runtime type identifier for exception dispatch
-  int         generic_formal_index; // Slot in the enclosing generic's actuals when
-                                    // this is a formal type; -1 otherwise. Fixed
-                                    // once at template resolution so instantiation
-                                    // can resolve the actual by index, not by name.
+  bool        is_generic_formal;    // True when this type stands for a generic
+                                    // formal type inside its template (RM 12.1.2)
+  bool        is_generic_actual_view;   // Instance-side view of a formal
+                                         // type: names the actual (base_type)
+                                         // but its predefined operators bind
+                                         // to the actual's PREDEFINED ones
+                                         // even when redefined (RM 12.1.2
+                                         // (41-42))
+  Generic_Def_Kind generic_formal_class; // Which formal class (private, discrete,
+                                         // range <>, digits <>, ...) when
+                                         // is_generic_formal; drives the class's
+                                         // available operations and the RM 12.3.3+
+                                         // matching rules at instantiation
 };
 
 extern Type_Info *Frozen_Composite_Types[256];
@@ -1759,6 +1890,7 @@ bool Type_Is_Task                 (const Type_Info *t);
 bool Type_Is_Float                (const Type_Info *t);
 bool Type_Is_Fixed_Point          (const Type_Info *t);
 bool Type_Is_Private              (const Type_Info *t);
+bool Type_Has_Generic_Actual_View (const Type_Info *t);
 bool Type_Is_Limited              (const Type_Info *t);
 bool Type_Is_Integer_Like         (const Type_Info *t);
 bool Type_Is_Unsigned             (const Type_Info *t);
@@ -1821,9 +1953,7 @@ void Derive_Subprograms         (Type_Info *derived_type,
                                  Type_Info *parent_type,
                                  Symbol    *type_sym);
 
-Type_Info *Resolve_Generic_Formal (Type_Info *type_info);
 
-Type_Info *Resolve_Generic_Actual_Type (Type_Info *type);
 bool       Check_Is_Suppressed         (Type_Info *type, Symbol *sym, uint32_t check_bit);
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
@@ -1868,6 +1998,125 @@ typedef struct {
 // Return true when a parameter of this mode is passed by reference.
 bool Param_Is_By_Reference (Parameter_Mode mode);
 
+// Stamp is_package_level on every object symbol declared directly in the
+// given declaration list (a package spec's visible/private part or a
+// package body's declarative part).
+void Mark_Package_Level_Objects (Node_List *declarations);
+
+// Resolve the IS-name defaults of a generic's formal subprograms
+// (RM 12.1.3). Called where the generic's formals are installed in
+// scope (body completion paths), so defaults naming earlier formals or
+// formal-type attributes resolve without spurious diagnostics. The
+// resolved symbol rides on the default_name node; instantiation binds
+// it when no explicit actual is given.
+void Resolve_Generic_Formal_Subprogram_Defaults (Node_List *formals);
+
+// Install the generic's formal parameters as symbols in the current scope
+// (RM 12.1): formal types as distinct Type_Infos tagged with their formal
+// class (RM 12.1.2), formal objects as a constant per name for mode IN and a
+// variable per name for mode IN OUT (RM 12.1.1), formal subprograms with
+// full parameter profiles (RM 12.1.3). Symbols are created on first call and
+// cached on the formal nodes; later calls (a body completing the generic, a
+// disk-loaded body) re-install the same symbols into the current scope.
+void Install_Generic_Formal_Symbols (Symbol *generic_symbol);
+
+// Formal-to-binding remap pairs produced while binding an instance's
+// formals; applied to decorated default-expression clones (RM 12.3 rules
+// (b)/(c)/(d): in the instance, formal names denote the bindings).
+typedef struct {
+  Symbol  *from[128];
+  Symbol  *to[128];
+  uint32_t count;
+} Instance_Remap;
+
+// Synthesize a resolved wrapper body on `binding`:
+//   function <formal> (L, R) return BOOLEAN is
+//   begin return not "="(L, R); end;
+// for a "/=" generic actual (RM 6.7). The body is ordinary resolved AST;
+// it emits with the instance and calls through the formal are plain calls.
+void Synthesize_Negated_Equality_Wrapper (Symbol *binding, Symbol *equality,
+                                          Source_Location location);
+
+// Synthesize a resolved wrapper body on `binding` for an attribute actual
+// (a default like IS T'SUCC, RM 12.3.6): the body applies the attribute —
+// its formal references remapped to the instance's bindings — to the
+// wrapper's parameters. Calls through the formal are then ordinary calls.
+void Synthesize_Attribute_Wrapper (Symbol *binding,
+                                   Syntax_Node *attribute_node,
+                                   Syntax_Node *formal,
+                                   Instance_Remap *remap);
+
+// Synthesize a resolved wrapper body on `binding` for a predefined-operator
+// actual (e.g. F2 => "&"): the body applies the operator to the wrapper's
+// parameters. Calls through the formal are then ordinary calls, and the
+// operator lowers through the one shared binary-op emitter.
+void Synthesize_Operator_Wrapper (Symbol *binding, Token_Kind operator_token,
+                                  Syntax_Node *formal, Instance_Remap *remap);
+
+// Bind each generic formal to its actual as a symbol of the current
+// (instance) scope: formal types alias the actual subtype, formal objects
+// become per-instance binding globals (IN value / IN OUT pointer cell),
+// formal subprograms rename their actuals. Fills `remap`.
+void Bind_Generic_Formals_To_Actuals (Symbol *instance_sym,
+                                      Symbol *template_sym,
+                                      Instance_Remap *remap);
+
+// Legality of the instantiation's actuals against the formal part
+// (RM 12.3.1 .. 12.3.6): class membership for formal scalar types,
+// limitedness and discriminant agreement for formal private types,
+// dimensionality / index types / component type / constrainedness for
+// formal array types, designated-type agreement for formal access types,
+// variable-ness for IN OUT formal objects, full profile-and-mode
+// conformance for formal subprograms, and the missing-actual rule.
+// Diagnoses; never transforms.
+void Validate_Generic_Actuals (Symbol *instance_sym, Symbol *template_sym,
+                               Syntax_Node **slot_actual_nodes,
+                               uint32_t slot_count);
+
+// The actual subtype a formal-part type mark denotes at an instantiation.
+Type_Info *Formal_Mark_Actual_Type (Symbol *instance_sym, Syntax_Node *mark);
+
+// Templates currently being instantiated, mirroring §17's Loading_Set:
+// re-entering one is the recursive instantiation RM 12.3 (and 12.1 Notes)
+// prohibits — direct, or through a cycle — and is rejected at compile time
+// with the cycle named.
+extern Symbol  *Instantiating_Templates[64];
+extern uint32_t Instantiating_Template_Count;
+bool Instantiating_Set_Contains (Symbol *template_sym);
+void Instantiating_Set_Push     (Symbol *template_sym);
+void Instantiating_Set_Pop      (void);
+
+// Tree-copy instantiation of a generic package (RM 12.3): clone the
+// resolved template spec and body, bind formals, resolve the clones in the
+// generic declaration's environment, and export the resolved per-instance
+// symbols. Emission then walks the clones through the ordinary package
+// paths. Returns false when the template spec is unavailable.
+bool Instantiate_Generic_Package (Symbol *instance_sym, Symbol *template_sym);
+void Resolve_Instance_Package_Body_Clone (Symbol *instance_sym,
+                                          Symbol *template_sym,
+                                          Syntax_Node *body_clone,
+                                          Scope *instance_scope);
+void Complete_Instance_Package_Body (Symbol *instance_sym,
+                                     Symbol *template_sym);
+
+// Tree-copy instantiation of a generic subprogram (RM 12.3): clone the
+// resolved template body structurally, bind each formal to its actual as an
+// ordinary symbol or declaration of the instance's own scope, and resolve
+// the clone in the environment of the generic's declaration. On success the
+// instance symbol carries the resolved clone as its declaration and emits
+// through the ordinary subprogram paths. Returns false when no template
+// body is available yet (the caller's deferred path then applies).
+bool Instantiate_Generic_Subprogram (Symbol *instance_sym, Symbol *template_sym);
+
+// Single source of truth for the parameter-passing convention: true when a
+// formal of this mode and type is passed as a pointer to the actual's
+// storage. OUT and IN OUT formals always are; IN formals are when the type
+// is a record, a task (RM 6.2: the formal and the actual denote the same
+// task object), or a statically-bounded constrained array/string stored as
+// raw data. Caller marshaling and both callee parameter materializers must
+// all classify through this predicate.
+bool Parameter_Passed_By_Reference (Parameter_Mode mode, Type_Info *type);
+
 // Symbol Visibility Level  (extracted from Symbol record)
 typedef enum {
   VIS_HIDDEN              = 0,
@@ -1890,13 +2139,15 @@ struct Symbol {
   String_Slice     name;           // The Ada identifier for this entity
   Source_Location  location;       // Where this entity was declared
   Type_Info       *type;           // Type of the entity (variable, constant, param, etc.)
-  int              generic_formal_index; // Slot in the enclosing generic's actuals when
-                                   // this is a formal object/subprogram; -1 otherwise.
-                                   // Lets the cloner and codegen substitute by index.
   Scope           *defining_scope; // The scope in which this symbol was introduced
   Symbol          *parent;         // Enclosing package or subprogram symbol, or NULL
   Symbol          *next_overload;  // Next homonym in the overload chain
   Symbol          *next_in_bucket; // Next symbol in the hash-bucket collision chain
+  uint32_t         creation_sequence; // Monotonic creation stamp: instance
+                                      // resolution hides symbols stamped
+                                      // after the template's visibility
+                                      // cutoff (declaration-point
+                                      // visibility, RM 12.3 rule (i))
   Visibility_Level visibility;     // Current visibility (hidden, use, direct)
 
   // Declaration link
@@ -1931,6 +2182,33 @@ struct Symbol {
   bool     extern_emitted;        // LLVM declare already written
   bool     body_emitted;          // LLVM define already written
   bool     is_named_number;       // This is a number declaration (RM 3.2)
+  bool     is_loop_parameter;     // FOR-loop parameter (RM 5.5) — always
+                                  // stack-local to the function emitting
+                                  // the loop, never package-level storage
+  bool     is_package_level;      // Object declared directly in a package
+                                  // spec or body declarative part (not in
+                                  // a block or subprogram nested inside);
+                                  // inside a generic package this selects
+                                  // per-instance global storage
+  bool     is_instance_in_binding;     // Generic formal object of mode IN,
+                                       // bound for a tree-copy instance: a
+                                       // per-instance global constant whose
+                                       // value stores at the instantiation
+                                       // point (RM 12.1.1, 12.3(80))
+  bool     is_instance_in_out_binding; // Generic formal object of mode IN
+                                       // OUT, bound for a tree-copy
+                                       // instance: a per-instance global
+                                       // POINTER cell renaming the actual
+                                       // variable; reads and writes
+                                       // indirect through it (RM 12.1.1)
+  Syntax_Node *instance_actual;        // The resolved actual expression the
+                                       // binding elaborates from
+  bool     is_instance_wrapper;        // Synthesized instance-level wrapper
+                                       // body for a non-plain formal-
+                                       // subprogram actual ("/=" negation,
+                                       // attribute, enumeration literal):
+                                       // declaration holds the resolved
+                                       // body; emitted with the instance
   bool     is_overloaded;         // More than one meaning in scope
   Symbol  *aliased;               // USE-visible alias -> the original it denotes
   bool     body_claimed;          // Body already associated with a spec
@@ -1951,6 +2229,14 @@ struct Symbol {
   Syntax_Node *renamed_object;     // Renamed entity expression, or NULL
   Symbol      *rename_target;       // Peeled subprogram-rename target, memoized
                                     // by Resolve_Subprogram_Rename (NULL = uncomputed)
+  Syntax_Node *renamed_entry_name;  // Name after RENAMES when the target is an
+                                    // entry: NK_SELECTED, or NK_APPLY for an
+                                    // entry-family member (index retained)
+  Symbol      *rename_task_slot;    // Hidden local holding the task object
+                                    // pointer the renaming bound when it was
+                                    // elaborated (RM 8.5)
+  Symbol      *rename_index_slot;   // Hidden local holding the family index
+                                    // evaluated at the same elaboration
 
   // Generic instantiation state
   Syntax_Node    *generic_formals;         // AST of the generic formal part
@@ -1959,17 +2245,24 @@ struct Symbol {
   Syntax_Node    *generic_body_cache;      // Disk-parsed generic body AST, parsed
                                            // once per template and cloned per instance
   Symbol         *generic_template;        // Back-link to the generic template symbol
-  Symbol         *instantiated_subprogram; // Expanded subprogram from instantiation
-  struct {
-    String_Slice  formal_name;             // Name of the generic formal parameter
-    Type_Info    *actual_type;             // Actual type supplied at instantiation
-    Symbol       *actual_subprogram;       // Actual subprogram supplied at instantiation
-    Syntax_Node  *actual_expr;             // Actual expression (for object formals)
-    Token_Kind    builtin_operator;        // Intrinsic operator kind, or TK_EOF
-  } *generic_actuals;                      // Array of formal-to-actual mappings
-  uint32_t        generic_actual_count;    // Length of the generic_actuals array
-  Syntax_Node    *expanded_spec;           // Macro-expanded specification AST
-  Syntax_Node    *expanded_body;           // Macro-expanded body AST
+  uint32_t        generic_spec_visibility_cutoff; // creation_sequence horizon at the
+                                                  // end of template spec analysis
+  uint32_t        generic_body_visibility_cutoff; // ... at the start of template
+                                                  // body analysis (0 = unseen)
+  Generic_Actual_Binding *actual_bindings; // The instantiation's resolved
+                                           // formal-to-actual record (one per
+                                           // slot; object formals one per
+                                           // name): input to the formal
+                                           // binder and the RM 12.3
+                                           // validators
+  uint32_t        actual_binding_count;    // Length of actual_bindings
+  Instance_Agreement_Check *agreement_checks; // RM 12.3(81) subtype-agreement
+                                              // pairs, captured at resolution
+  uint32_t        agreement_check_count;      // Length of agreement_checks
+  Syntax_Node    *instance_spec;           // The instance's resolved spec
+                                           // clone (packages)
+  Syntax_Node    *instance_body;           // The instance's resolved body
+                                           // clone
 };
 
 // A scope is a hash table of symbols chained outward from inner to enclosing.
@@ -2002,6 +2295,14 @@ typedef struct {
   Type_Info *type_universal_real;    // Universal_Real (numeric class)
   Type_Info *type_address;           // System.Address
   uint32_t   next_unique_id;         // Monotonic counter for mangled names
+  uint32_t   next_creation_sequence; // Monotonic Symbol creation stamp
+  uint32_t   visibility_cutoff;      // When nonzero: lookups hide symbols
+                                     // stamped after this (instance
+                                     // resolution under the template's
+                                     // declaration-point visibility)
+  Scope     *cutoff_exempt_scope;    // The instance scope (and its
+                                     // descendants): bindings and the
+                                     // clone's own entities stay visible
 } Symbol_Manager;
 
 extern Symbol_Manager *sm;
@@ -2013,9 +2314,11 @@ void     Symbol_Manager_Push_Existing_Scope(Scope  *scope);
 uint32_t Symbol_Hash_Name                  (String_Slice name);
 
 Symbol *Symbol_New          (Symbol_Kind kind, String_Slice name, Source_Location location);
+bool    Symbol_Visible_Under_Cutoff (Symbol *sym, Scope *scope);
 void    Symbol_Add          (Symbol *sym);
 Symbol *Symbol_Find         (String_Slice name);
 Symbol *Symbol_Find_By_Type (String_Slice name, Type_Info *expected_type);
+Symbol *Single_Task_Object_Denoted (Symbol *sym);
 
 void Symbol_Manager_Init_Predefined (void);
 void Symbol_Manager_Init            (void);
@@ -2047,6 +2350,7 @@ typedef struct {
 } Interp_List;
 
 bool Type_Covers             (Type_Info    *expected, Type_Info    *actual);
+bool Type_Limited_View_Active (const Type_Info *t);
 bool Arguments_Match_Profile (Symbol       *sym,      Argument_Info *args);
 void Collect_Interpretations (String_Slice  name,     Interp_List   *list);
 void Filter_By_Arguments     (Interp_List  *interps,  Argument_Info *args);
@@ -2173,7 +2477,6 @@ typedef struct {
   // Current context
   Symbol   *current_function;      // The subprogram currently being emitted
   uint32_t  current_nesting_level; // Static nesting depth of current_function
-  Symbol   *current_instance;      // Active generic instance, or NULL
 
   // Control flow
   uint32_t loop_exit_label;     // Target label for the nearest enclosing loop exit
@@ -2183,9 +2486,10 @@ typedef struct {
   bool     header_emitted;      // True once the LLVM module header has been written
 
   // Deferred work
-  Symbol      *main_candidate;      // The "main" procedure symbol, or NULL
-  Syntax_Node *deferred_bodies[64]; // Subprogram bodies to emit after the current unit
-  uint32_t     deferred_count;      // Number of deferred bodies queued
+  Symbol       *main_candidate;     // The "main" procedure symbol, or NULL
+  Syntax_Node **deferred_bodies;    // Subprogram bodies to emit after the current unit (arena-grown)
+  uint32_t      deferred_count;     // Number of deferred bodies queued
+  uint32_t      deferred_capacity;  // Allocated slots in deferred_bodies
 
   // Tasks declared in the current declarative part(s), awaiting activation at
   // the enclosing master's `begin` (RM 9.3). A scope saves the count on entry
@@ -2329,6 +2633,13 @@ void Emit_Branch_If_Needed  (uint32_t label);
 void Emit_String_Const      (const char *format, ...);
 // Append a single character to the string-constant accumulator.
 void Emit_String_Const_Char (char ch);
+// Append a symbol's mangled name to the string-constant accumulator (for
+// module-level global definitions created while inside a function body).
+void Emit_String_Const_Symbol (Symbol *sym);
+// As above, but with the full Emit_Symbol_Name naming rules applied.
+void Emit_String_Const_Symbol_Name (Symbol *sym);
+// Module-level zero-initialized definition for a per-instance global.
+void Emit_Instance_Global_Definition (Symbol *sym);
 // Emit a floating-point constant using LLVM's hexadecimal literal syntax.
 void Emit_Float_Constant    (uint32_t    result,
                              LLVM_Rep    float_rep,
@@ -2401,8 +2712,7 @@ void         Emit_Symbol_Ref       (Symbol *sym);
 void         Emit_Symbol_Storage   (Symbol *sym);
 // Emit a reference to an exception's runtime type descriptor global.
 void         Emit_Exception_Ref    (Symbol *exc);
-// Find a locally-instantiated copy of a generic template symbol.
-Symbol      *Find_Instance_Local   (const Symbol *template_sym);
+
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 //
@@ -2431,7 +2741,7 @@ bool     Emit_Nested_Frame_Arg          (Symbol *proc, uint32_t precomp);
 // underlying body. Call this on a callable symbol before emitting `@name`
 // or checking static-chain nesting; renames do not generate their own body.
 Symbol  *Resolve_Subprogram_Rename      (Symbol *sym);
-Symbol  *Substitute_Generic_Formal_Subprogram (Symbol *sym);
+Symbol  *Operator_Call_Target           (Symbol *sym);
 // Map an operator's source-text name (e.g. "+", "<=", "mod") to its Token_Kind.
 // Returns TK_EOF if the name isn't an operator.
 Token_Kind Token_From_Op_Name           (String_Slice name);
@@ -2530,7 +2840,11 @@ void Emit_Discriminant_Check (uint32_t    actual,
 // check widens to the comparison rep internally. There is no bare-reg form -
 // the rep MUST come from the producer.
 LLVM_Value Emit_Constraint_Check_Val (LLVM_Value value, Type_Info *target, Type_Info *source);
-void Emit_Subtype_Constraint_Compat_Check (Type_Info *subtype);
+void Emit_Range_Constraint_Compat_Check (Type_Bound *constraint_low,
+                                         Type_Bound *constraint_high,
+                                         Type_Info  *type_mark);
+void Emit_Subtype_Constraint_Compat_Check (Type_Info *subtype,
+                                           Type_Info *type_mark);
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 //
@@ -2859,10 +3173,6 @@ void Generate_Raise_Statement  (Syntax_Node *node);
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 
 // ???
-Syntax_Node *Find_Homograph_Body (Symbol      **exports,
-                                  uint32_t      idx,
-                                  String_Slice  name,
-                                  Node_List    *body_decls);
 
 // ???
 void Generate_Declaration_List      (Node_List   *list);
@@ -2903,14 +3213,22 @@ void Generate_Object_Declaration    (Syntax_Node *node);
 void Emit_Pending_Global_Initializers (void);
 void Generate_Subprogram_Body       (Syntax_Node *node);
 void Generate_Task_Body             (Syntax_Node *node);
-void Reset_Template_Extern_Flags   (Node_List *declarations);
-void Generate_Generic_Instance_Body (Symbol      *inst_sym,
-                                     Syntax_Node *template_body);
+// Elaborate a tree-copy instance's formal-object bindings at the
+// instantiation point (RM 12.3(80)).
+void Emit_Instance_Binding_Elaboration (Symbol *inst_sym);
+// Emit the synthesized wrapper bodies of an instance's bindings.
+void Emit_Instance_Wrapper_Bodies (Symbol *inst_sym);
+
+
+// Emit module-scope zero-initialized storage for a package instance's
+// exported variables and constants (per-instance globals named
+// <instance>__<var>). Initializers run at the instantiation point.
 
 // ???
 void Emit_Extern_Subprogram  (Symbol *sym);
 void Emit_Function_Header    (Symbol *sym, bool is_nested);
 void Emit_Task_Function_Name (Symbol *task_sym, String_Slice fallback_name);
+void Defer_Subprogram_Body   (Syntax_Node *node);
 void Process_Deferred_Bodies (uint32_t saved_deferred_count);
 
 // ???
@@ -3352,22 +3670,36 @@ bool              Elab_Needs_Elab_Call  (uint32_t index);
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 //
-// §16. Generics - Macro-style instantiation of generic units
+// §16. Generics - Tree-copy instantiation of generic units
 //
-// Generic units are instantiated by macro-style expansion: the template AST is deep-cloned with
-// formal-to-actual substitution, then resolved and code-generated as though the programmer had
-// written the expanded text by hand. Each instantiation gets its own copy of the AST, its own
-// symbols, and its own emitted IR.
+// An instance is a copy of the generic unit (RM 12.3): the template AST is cloned structurally,
+// each formal is bound to its actual as an ordinary symbol or declaration of the instance's own
+// scope, and the clone is resolved under the declaration-point visibility of the template
+// (creation-sequence cutoffs) and emitted through the ordinary subprogram/package paths. Every
+// instantiation gets its own symbols, its own types, its own storage, and its own emitted IR.
 //
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 
-// Deep-clone a generic template, substituting formals from the instance symbol's
-// decorated actuals (formal types by slot index, formal objects by name).
-Syntax_Node *Node_Deep_Clone (Syntax_Node *node, Symbol *instance, int depth);
-void Node_List_Clone (Node_List *dst, Node_List *src, Symbol *instance, int depth);
+// Pure structural deep copy over the §8 shape table: no substitution, and
+// every semantic decoration (symbols, types, fold cache, apply verdicts,
+// master state) reset so re-resolution owns the clone outright. This is the
+// instantiation cloner: an instance is a copy of the generic unit (RM 12.3)
+// whose meaning re-derives in its own scope.
+Syntax_Node *Clone_Subtree (Syntax_Node *node);
+
+// Structural deep copy that KEEPS the template's semantic decorations.
+// Used for generic formal-part default expressions, whose names were bound
+// at the generic declaration with that point's visibility (RM 12.1(13)) --
+// re-resolving them at instantiation time would see declarations added to
+// the same scopes afterwards. Formal references inside the copy are then
+// remapped to the instance's bindings via Reassign_Symbol_References.
+Syntax_Node *Clone_Subtree_Keep_Decorations (Syntax_Node *node);
+
+// Replace every reference to `from` with `to` throughout a decorated clone
+// (the formal-to-binding remap of RM 12.3 rules (b)/(c)/(d)).
+void Reassign_Symbol_References (Syntax_Node *node, Symbol *from, Symbol *to);
 
 // ???
-void Expand_Generic_Package  (Symbol *instance_sym);
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 //
@@ -3389,6 +3721,7 @@ typedef struct {
 extern Loading_Set   Loading_Packages;
 extern const char   *Include_Paths[32];
 extern bool          Debug_Emit_Locations;
+extern bool          Clone_Self_Check;
 extern uint32_t      Include_Path_Count;
 extern Syntax_Node  *Loaded_Package_Bodies[128];
 extern int           Loaded_Body_Count;
@@ -4730,7 +5063,6 @@ Syntax_Node *Node_New (Node_Kind kind, Source_Location location) {
   memset (node, 0, sizeof (Syntax_Node));
   node->kind     = kind;
   node->location = location;
-  node->generic_formal_index = -2;  // formal-object verdict not yet computed
   return node;
 }
 
@@ -4739,6 +5071,22 @@ Syntax_Node *Node_New (Node_Kind kind, Source_Location location) {
 Syntax_Node *Unwrap_Association (Syntax_Node *n) {
   return (n and n->kind == NK_ASSOCIATION) ? n->association.expression : n;
 }
+
+// The syntax tree's child-edge table, generated from SYNTAX_TREE_SHAPE_LIST
+// (§8 spec). KID names a single child node pointer, KIDS a child node list.
+#define KID(f)  { (uint16_t) __builtin_offsetof (Syntax_Node, f), 0 }
+#define KIDS(f) { (uint16_t) __builtin_offsetof (Syntax_Node, f), 1 }
+#define SHAPE_ROW(kind, ...) [kind] = { __VA_ARGS__ },
+const Syntax_Tree_Edge Syntax_Tree_Shape[NK_COUNT][6] = {
+  SYNTAX_TREE_SHAPE_LIST (SHAPE_ROW)
+};
+#undef SHAPE_ROW
+#define SHAPE_ONE(kind, ...) + 1
+_Static_assert (0 SYNTAX_TREE_SHAPE_LIST (SHAPE_ONE) == NK_COUNT,
+  "SYNTAX_TREE_SHAPE_LIST must name every Node_Kind exactly once");
+#undef SHAPE_ONE
+#undef KID
+#undef KIDS
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 // §9. PARSER - Recursive Descent with Unified Postfix Handling                                     
@@ -6737,31 +7085,47 @@ void Parse_Generic_Formal_Part (Parser *p, Node_List *formals) {
         Parser_Expect (p, TK_BOX);
         formal->generic_type_param.def_kind = GEN_DEF_FIXED;
 
-      // array (index {, index}) of element_type for array types
+      // array (index {, index}) of element_type for array types. The
+      // definition is kept as a real NK_ARRAY_TYPE node: the RM 12.3.4
+      // matching and agreement checks need the index marks, the
+      // constrained/unconstrained form, and the component subtype.
       } else if (Parser_Match (p, TK_ARRAY)) {
         formal->generic_type_param.def_kind = GEN_DEF_ARRAY;
+        Syntax_Node *array_definition = Node_New (NK_ARRAY_TYPE, loc);
+        array_definition->array_type.is_constrained = true;
         Parser_Expect (p, TK_LPAREN);
 
-        // Parse index subtypes: subtype_mark [RANGE <>] or discrete_range
+        // Index subtypes: subtype_mark [RANGE <>] (RM 12.1.2: a discrete
+        // range in a formal array type must be a type mark).
         do {
-          Parse_Name (p);  // index subtype mark
+          Syntax_Node *index = Node_New (NK_SUBTYPE_INDICATION,
+                                         Parser_Location (p));
+          index->subtype_ind.subtype_mark = Parse_Name (p);
           if (Parser_Match (p, TK_RANGE)) {
             if (Parser_At (p, TK_BOX)) {
-              Parser_Advance (p);  // <> for unconstrained
+              Parser_Advance (p);  // <>: unconstrained in this dimension
+              index->subtype_ind.is_box = true;
+              array_definition->array_type.is_constrained = false;
 
             // subtype_mark RANGE low..high (constrained)
             } else {
-              Parse_Expression (p);  // low
+              Syntax_Node *bounds = Node_New (NK_RANGE, Parser_Location (p));
+              bounds->range.low = Parse_Expression (p);
               Parser_Expect (p, TK_DOTDOT);
-              Parse_Expression (p);  // high
+              bounds->range.high = Parse_Expression (p);
+              Syntax_Node *constraint =
+                Node_New (NK_RANGE_CONSTRAINT, bounds->location);
+              constraint->range_constraint.range = bounds;
+              index->subtype_ind.constraint = constraint;
             }
           }
-
-          // else: just a subtype mark as index (constrained)
+          Node_List_Push (&array_definition->array_type.indices, index);
         } while (Parser_Match (p, TK_COMMA));
         Parser_Expect (p, TK_RPAREN);
         Parser_Expect (p, TK_OF);
-        formal->generic_type_param.def_detail = Parse_Subtype_Indication (p);
+        array_definition->array_type.component_type =
+          Parse_Subtype_Indication (p);
+        formal->generic_type_param.def_detail = array_definition;
 
       // access type_name for access types
       } else if (Parser_Match (p, TK_ACCESS)) {
@@ -7416,7 +7780,6 @@ Type_Info *Type_New (Type_Kind kind, String_Slice name) {
     type_info->size      = POINTER_ALLOC_SIZE;
     type_info->alignment = POINTER_ALLOC_SIZE;
   }
-  type_info->generic_formal_index = -1;  // not a generic formal unless set so
   return type_info;
 }
 
@@ -7498,9 +7861,7 @@ LLVM_Rep Float_LLVM_Rep_Of (const Type_Info *type_info) {
   // A float subtype shares its base type's representation (RM 3.5.7); resolve
   // the width through the base-type chain so a DIGITS-constrained subtype keeps
   // its base type's machine width (derived types link via parent_type instead).
-  // A generic formal float type carries a placeholder size; resolve it to the
-  // instantiation actual so the rep reflects the actual's accuracy (RM 12.1.2).
-  const Type_Info *rep_ty = Resolve_Generic_Actual_Type ((Type_Info *)type_info);
+  const Type_Info *rep_ty = type_info;
   while (rep_ty and rep_ty->base_type) rep_ty = rep_ty->base_type;
   uint16_t bits = (rep_ty and rep_ty->size > 0)
                   ? (uint16_t)To_Bits (rep_ty->size) : 64;
@@ -7564,6 +7925,12 @@ void Float_Model_Parameters (const Type_Info *type_info,
   if (out_mantissa) *out_mantissa = mantissa;
   if (out_emax)     *out_emax     = emax;
 }
+bool Type_Has_Generic_Actual_View (const Type_Info *t) {
+  for (; t; t = t->base_type)
+    if (t->is_generic_actual_view) return true;
+  return false;
+}
+
 bool Type_Is_Private (const Type_Info *type_info) {
   return type_info and (type_info->kind == TYPE_PRIVATE or type_info->kind == TYPE_LIMITED_PRIVATE);
 }
@@ -7937,12 +8304,9 @@ LLVM_Rep Type_To_Rep (Type_Info *type_info) {
       and type_info->parent_type)
     return Type_To_Rep (type_info->parent_type);
 
-  // Generic formal type of ANY kind: resolve to the instantiation actual so
-  // a formal discrete type (TYPE T IS RANGE <>) emits at the actual's width.
-  Type_Info *formal_actual = Resolve_Generic_Formal (type_info);
-  if (formal_actual) return Type_To_Rep (formal_actual);
-
-  // Unresolved private formal: fall back to opaque pointer.
+  // A private view without a completion in sight reps as an opaque
+  // pointer. (Generic formal types never reach representation queries:
+  // instances are resolved clones whose types are the actuals.)
   if (Type_Is_Private (type_info) and not type_info->parent_type)
     return LL_REP_PTR;
 
@@ -8098,28 +8462,40 @@ int Bounds_Alloc_Size (LLVM_Rep bound_rep) {
 bool Param_Is_By_Reference (Parameter_Mode mode) {
   return mode == PARAM_OUT or mode == PARAM_IN_OUT;
 }
-// Populate the global type map from a generic instance's actuals.                                 
-// Called when entering a generic instance codegen context so that                                  
-// Type_To_Rep can resolve formal private types to their actuals.                                 
-//                                                                                                  
-// Resolve a generic formal type to its instantiation actual. The formal carries
-// the slot it occupies in an instance's actuals (its generic_formal_index, fixed
-// once when the template was resolved); the actuals live on the active instance
-// (cg->current_instance), or on its enclosing generic package instance when a
-// generic subprogram is nested in one. Returns the actual Type_Info, or NULL
-// when the type is not a formal of the active instance. Covers EVERY formal kind
-// (discrete, float, fixed, private, array, access) by index, not by name.
-Type_Info *Resolve_Generic_Formal (Type_Info *type_info) {
-  if (not type_info or type_info->generic_formal_index < 0) return NULL;
-  Symbol *holder = cg->current_instance;
-  if (holder and not holder->generic_actuals and holder->parent and
-    holder->parent->kind == SYMBOL_PACKAGE and holder->parent->generic_actuals)
-    holder = holder->parent;
-  if (not holder or not holder->generic_actuals) return NULL;
-  if (type_info->generic_formal_index >= (int)holder->generic_actual_count) return NULL;
-  Type_Info *actual =
-    holder->generic_actuals[type_info->generic_formal_index].actual_type;
-  return (actual and actual != type_info) ? actual : NULL;
+
+void Resolve_Generic_Formal_Subprogram_Defaults (Node_List *formals) {
+  if (not formals) return;
+  for (uint32_t i = 0; i < formals->count; i++) {
+    Syntax_Node *formal = formals->items[i];
+    if (not formal or formal->kind != NK_GENERIC_SUBPROGRAM_PARAM) continue;
+    Syntax_Node *default_name = formal->generic_subprog_param.default_name;
+    if (not default_name or formal->generic_subprog_param.default_box) continue;
+    if (default_name->symbol) continue;  // already resolved
+    Resolve_Expression (default_name);
+  }
+}
+
+void Mark_Package_Level_Objects (Node_List *declarations) {
+  if (not declarations) return;
+  for (uint32_t i = 0; i < declarations->count; i++) {
+    Syntax_Node *decl = declarations->items[i];
+    if (not decl or decl->kind != NK_OBJECT_DECL) continue;
+    for (uint32_t j = 0; j < decl->object_decl.names.count; j++) {
+      Syntax_Node *name_node = decl->object_decl.names.items[j];
+      if (name_node and name_node->symbol)
+        name_node->symbol->is_package_level = true;
+    }
+  }
+}
+
+bool Parameter_Passed_By_Reference (Parameter_Mode mode, Type_Info *type) {
+  if (Param_Is_By_Reference (mode)) return true;
+  if (mode != PARAM_IN or not type) return false;
+  if (type->kind == TYPE_RECORD or type->kind == TYPE_TASK) return true;
+  if ((type->kind == TYPE_ARRAY or type->kind == TYPE_STRING) and
+      type->array.is_constrained and not Type_Has_Dynamic_Bounds (type))
+    return true;
+  return false;
 }
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
@@ -8245,8 +8621,20 @@ Symbol *Symbol_New (Symbol_Kind kind, String_Slice name, Source_Location locatio
   sym->name        = name;
   sym->location    = location;
   sym->visibility  = VIS_IMMEDIATELY_VISIBLE;
-  sym->generic_formal_index = -1;  // not a generic formal unless set so
+  sym->creation_sequence = ++sm->next_creation_sequence;
   return sym;
+}
+
+// Declaration-point visibility for instance resolution (RM 12.3 rule (i)):
+// when a cutoff is active, a symbol stamped after it is invisible unless it
+// belongs to the instance's own scope subtree (formal bindings and the
+// clone's freshly created entities).
+bool Symbol_Visible_Under_Cutoff (Symbol *sym, Scope *scope) {
+  if (sm->visibility_cutoff == 0) return true;
+  if (sym->creation_sequence <= sm->visibility_cutoff) return true;
+  for (Scope *s = scope; s; s = s->parent)
+    if (s == sm->cutoff_exempt_scope) return true;
+  return false;
 }
 void Symbol_Add (Symbol *sym) {
   Scope    *scope    = sm->current_scope;
@@ -8368,13 +8756,35 @@ void Symbol_Add (Symbol *sym) {
   }
 }
 
+// RM 9.1: a single task declaration declares an OBJECT; its task type is
+// anonymous. Name lookup that lands on the type symbol of a single task
+// (the declaration's carrier for entries and the body completion) denotes
+// the implicit object variable; find it in the type's defining scope.
+Symbol *Single_Task_Object_Denoted (Symbol *sym) {
+  if (not sym or sym->kind != SYMBOL_TYPE or not Type_Is_Task (sym->type) or
+      not sym->declaration or sym->declaration->kind != NK_TASK_SPEC or
+      sym->declaration->task_spec.is_type)
+    return sym;
+  Scope *scope = sym->defining_scope;
+  if (scope)
+    for (uint32_t i = 0; i < scope->symbol_count; i++) {
+      Symbol *candidate = scope->symbols[i];
+      if (candidate and candidate->kind == SYMBOL_VARIABLE and
+          Type_Is_Task (candidate->type) and
+          Slice_Equal_Ignore_Case (candidate->name, sym->name))
+        return candidate;
+    }
+  return sym;
+}
+
 // Find symbol by name, searching enclosing scopes
 Symbol *Symbol_Find (String_Slice name) {
   uint32_t hash = Symbol_Hash_Name (name);
   for (Scope *scope = sm->current_scope; scope; scope = scope->parent) {
     for (Symbol *sym = scope->buckets[hash]; sym; sym = sym->next_in_bucket) {
       if (Slice_Equal_Ignore_Case (sym->name, name) and
-        sym->visibility >= VIS_IMMEDIATELY_VISIBLE) {
+        sym->visibility >= VIS_IMMEDIATELY_VISIBLE and
+        Symbol_Visible_Under_Cutoff (sym, scope)) {
         return sym;
       }
     }
@@ -8402,7 +8812,8 @@ Symbol *Symbol_Find_By_Type (String_Slice name, Type_Info *expected_type) {
   for (Scope *scope = sm->current_scope; scope; scope = scope->parent) {
     for (Symbol *sym = scope->buckets[hash]; sym; sym = sym->next_in_bucket) {
       if (Slice_Equal_Ignore_Case (sym->name, name) and
-        sym->visibility >= VIS_IMMEDIATELY_VISIBLE) {
+        sym->visibility >= VIS_IMMEDIATELY_VISIBLE and
+        Symbol_Visible_Under_Cutoff (sym, scope)) {
 
         // Search through overload chain (for enumeration literals)
         // For character literals, require exact case match (RM 2.6)
@@ -8473,6 +8884,19 @@ bool Types_Match_By_Name (Type_Info *expected, Type_Info *actual) {
       or (Type_Is_Fixed_Point (expected) and Type_Is_Fixed_Point (actual));
 }
 
+// Is the LIMITED view of this type the governing one here? True when the
+// type is limited private and the current scope chain is OUTSIDE its
+// defining package (RM 7.4.4); inside, the full view applies.
+bool Type_Limited_View_Active (const Type_Info *t) {
+  if (not t or not t->is_limited) return false;
+  Symbol *defining_package = t->defining_symbol
+    ? t->defining_symbol->parent : NULL;
+  if (not defining_package) return t->is_limited;
+  for (Scope *scope = sm->current_scope; scope; scope = scope->parent)
+    if (scope->owner == defining_package) return false;
+  return true;
+}
+
 bool Type_Covers (Type_Info *expected, Type_Info *actual) {
 
   // Null types are permissive (incomplete analysis)
@@ -8481,9 +8905,17 @@ bool Type_Covers (Type_Info *expected, Type_Info *actual) {
   // Same type always covers
   if (expected == actual) return true;
 
-  // Universal_Integer is covered by any Integer type
-  if (Type_Is_Universal_Integer (expected)) return Type_Is_Integer_Like (actual);
-  if (Type_Is_Universal_Integer (actual))   return Type_Is_Integer_Like (expected);
+  // Universal_Integer is covered by any Integer type — except a LIMITED
+  // private one seen from OUTSIDE its defining package: there the partial
+  // view governs and a limited type has no literals (RM 7.4.4). Inside the
+  // package (its spec's private part or its body), the full view restores
+  // them.
+  if (Type_Is_Universal_Integer (expected))
+    return Type_Is_Integer_Like (actual) and
+           not Type_Limited_View_Active (actual);
+  if (Type_Is_Universal_Integer (actual))
+    return Type_Is_Integer_Like (expected) and
+           not Type_Limited_View_Active (expected);
 
   // Universal_Real covers any real type
   if (Type_Is_Universal_Real (expected)) return Type_Is_Real (actual);
@@ -8713,6 +9145,7 @@ void Collect_Interpretations (String_Slice name,
     for (Symbol *sym = scope->buckets[hash]; sym; sym = sym->next_in_bucket) {
       if (not Slice_Equal_Ignore_Case (sym->name, name)) continue;
       if (sym->visibility < VIS_IMMEDIATELY_VISIBLE) continue;
+      if (not Symbol_Visible_Under_Cutoff (sym, scope)) continue;
 
       // Add this interpretation and all overloads
       Symbol *s = sym;
@@ -9313,13 +9746,14 @@ Type_Info *Resolve_Selected (Syntax_Node *node) {
       for (uint32_t i = 0; i < prefix_sym->exported_count; i++) {
         if (Slice_Equal_Ignore_Case (prefix_sym->exported[i]->name,
                        node->selected.selector)) {
-          node->symbol = prefix_sym->exported[i];
 
-          // For function symbols, the expression type is the return                                
-          // type (RM 4.1.3). sym->type may be NULL for locally                                    
-          // declared functions where only return_type is set.                                     
-          //                                                                                        
-          Symbol *sel = prefix_sym->exported[i];
+          // For function symbols, the expression type is the return
+          // type (RM 4.1.3). sym->type may be NULL for locally
+          // declared functions where only return_type is set.
+          //
+          Symbol *sel =
+            Single_Task_Object_Denoted (prefix_sym->exported[i]);
+          node->symbol = sel;
           node->type = (sel->kind == SYMBOL_FUNCTION and sel->return_type)
                  ? sel->return_type : sel->type;
           return node->type;
@@ -9336,9 +9770,10 @@ Type_Info *Resolve_Selected (Syntax_Node *node) {
         for (Symbol *s = prefix_sym->scope->buckets[hash]; s; s = s->next_in_bucket) {
           if (Slice_Equal_Ignore_Case (s->name, node->selected.selector) and
             s->visibility >= VIS_IMMEDIATELY_VISIBLE) {
-            node->symbol = s;
-            node->type = (s->kind == SYMBOL_FUNCTION and s->return_type)
-                   ? s->return_type : s->type;
+            Symbol *sel = Single_Task_Object_Denoted (s);
+            node->symbol = sel;
+            node->type = (sel->kind == SYMBOL_FUNCTION and sel->return_type)
+                   ? sel->return_type : sel->type;
             return node->type;
           }
         }
@@ -9679,9 +10114,42 @@ Type_Info *Resolve_Binary_Op (Syntax_Node *node) {
     // universal types must propagate through arithmetic (RM 4.10).
     // Predefined *(FLOAT,FLOAT)>FLOAT would swallow UNIVERSAL_REAL.
     //
+    // RM 6.7: "/=" is never declarable; an explicit "=" implicitly defines
+    // "/=" as its negation, hiding the predefined "/=". When the operands'
+    // "=" resolves to a user-defined function (including a generic formal
+    // "="), rewrite X /= Y as NOT (X = Y) — the same rewrite GNAT performs
+    // in Sem_Res. Checked before the "/=" lookup result binds: the
+    // fabricated predefined "/=" must not shadow the implicit negation.
+    if (op == TK_NE) {
+      Symbol *eq_op = Resolve_Overloaded_Call (S("="), &args, node->type);
+      if (eq_op and eq_op->kind == SYMBOL_FUNCTION and
+          not eq_op->is_predefined) {
+        Syntax_Node *eq_node = Node_New (NK_BINARY_OP, node->location);
+        eq_node->binary.op    = TK_EQ;
+        eq_node->binary.left  = node->binary.left;
+        eq_node->binary.right = node->binary.right;
+        eq_node->symbol       = eq_op;
+        eq_node->type         = eq_op->return_type;
+        node->kind            = NK_UNARY_OP;
+        node->unary.op        = TK_NOT;
+        node->unary.operand   = eq_node;
+        node->symbol          = NULL;
+        node->type            = eq_op->return_type;
+        return node->type;
+      }
+    }
+
     if (user_op and user_op->kind == SYMBOL_FUNCTION) {
       if (user_op->is_predefined and
         (Type_Is_Universal (left_type) or Type_Is_Universal (right_type)))
+        goto predefined_semantics;
+
+      // RM 12.1.2(41-42): an operand typed through a generic formal's
+      // actual-view uses the actual's PREDEFINED operator, even when a
+      // user redefinition is visible.
+      if (not user_op->is_predefined and
+          (Type_Has_Generic_Actual_View (left_type) or
+           Type_Has_Generic_Actual_View (right_type)))
         goto predefined_semantics;
       node->symbol = user_op;
       node->type = user_op->return_type;
@@ -10599,8 +11067,13 @@ double Eval_Const_Numeric_Impl (Syntax_Node *node) {
           and sym->declaration->object_decl.init)
           return Eval_Const_Numeric (sym->declaration->object_decl.init);
 
-        // Predefined constant (e.g. ASCII.DEL) - value in frame_offset
-        return (double)sym->frame_offset;
+        // Predefined named number (e.g. ASCII.DEL) - value in frame_offset.
+        // Only named numbers stash their value there; any other constant
+        // without a static initializer (e.g. a generic formal object, whose
+        // value arrives per instance) has no compile-time value.
+        if (sym->is_named_number)
+          return (double)sym->frame_offset;
+        return 0.0/0.0;
       }
 
       // Variable with constant init (typed constants get variable-like alloc)
@@ -12504,6 +12977,15 @@ Type_Info *Resolve_Expression (Syntax_Node *node) {
                   ? (Type_Bound){ .kind = BOUND_INTEGER, .int_value = val }
                   : (Type_Bound){ .kind = BOUND_EXPR, .expr = bound_expr[b] };
               }
+            } else {
+
+              // T RANGE A'RANGE (RM 3.5(2)): the constraint is the prefix
+              // array subtype's index range for the chosen dimension.
+              Index_Info range_attr_index = { 0 };
+              if (Index_Bound_From_Range_Attr (range, &range_attr_index)) {
+                constrained->low_bound  = range_attr_index.low_bound;
+                constrained->high_bound = range_attr_index.high_bound;
+              }
             }
             node->type = constrained;
             return constrained;
@@ -13260,7 +13742,7 @@ bool Declarations_Create_Task_Dependents (Node_List *list) {
         if (Type_Has_Task_Component (nt))
           return true;
         // Generic formal private type: the actual may carry tasks.
-        if (nt and nt->generic_formal_index >= 0)
+        if (nt and nt->is_generic_formal)
           return true;
       }
     }
@@ -13471,6 +13953,7 @@ void Resolve_Statement (Syntax_Node *node) {
             Symbol *loop_var = Symbol_New (SYMBOL_VARIABLE,
                             loop_id->string_val.text,
                             loop_id->location);
+            loop_var->is_loop_parameter = true;
 
             // Loop variable type comes from the range expression.                                 
             // Per Ada RM 5.5(6): if the range is universal_integer,                                
@@ -13922,19 +14405,6 @@ void Apply_Pragma_External_Name (Symbol *sym, Node_List *args) {
     sym->external_name = name_node->string_val.text;
 }
 
-// Single-character operator designators ("+","-","*","/","&") map to tokens;
-// TK_EOF signals "not a recognized operator character".
-Token_Kind Operator_Token_From_Char (char ch) {
-  switch (ch) {
-    case '&': return TK_AMPERSAND;
-    case '+': return TK_PLUS;
-    case '-': return TK_MINUS;
-    case '*': return TK_STAR;
-    case '/': return TK_SLASH;
-    default:  return TK_EOF;
-  }
-}
-
 // Map the convention-name argument of pragma Import/Convention to a Convention.
 void Apply_Pragma_Convention (Symbol *sym, Syntax_Node *conv_node) {
   if (not (conv_node and conv_node->kind == NK_IDENTIFIER)) return;
@@ -13947,17 +14417,1452 @@ void Apply_Pragma_Convention (Symbol *sym, Syntax_Node *conv_node) {
     sym->convention = CONVENTION_INTRINSIC;
 }
 
-// Match a name against an instance's generic formals; return the bound actual
-// type, or NULL if the name is not a formal type of the instance. Used where a
-// formal type's AST node carries no slot decoration (generic_formal_index) and
-// must be resolved by its declared name instead.
+// Match a name against an instance's resolved actual bindings; return the
+// bound actual type, or NULL when the name is not a formal type of the
+// instance.
 Type_Info *Generic_Actual_Type_By_Name (Symbol *inst, String_Slice name) {
   if (not inst) return NULL;
-  for (uint32_t k = 0; k < inst->generic_actual_count; k++)
-    if (inst->generic_actuals[k].actual_type and
-        Slice_Equal_Ignore_Case (inst->generic_actuals[k].formal_name, name))
-      return inst->generic_actuals[k].actual_type;
+  for (uint32_t k = 0; k < inst->actual_binding_count; k++)
+    if (inst->actual_bindings[k].actual_type and
+        Slice_Equal_Ignore_Case (inst->actual_bindings[k].formal_name, name))
+      return inst->actual_bindings[k].actual_type;
   return NULL;
+}
+
+// Parameter types of a generic formal subprogram, with formal types
+// substituted by the instantiation's actuals. Fills at most two slots of
+// `out` and returns the number filled.
+uint32_t Generic_Formal_Parameter_Types (Symbol *inst_sym, Syntax_Node *formal,
+                                         Type_Info **out) {
+  uint32_t count = 0;
+  Node_List *params = &formal->generic_subprog_param.parameters;
+  for (uint32_t i = 0; i < params->count and count < 2; i++) {
+    Syntax_Node *ps = params->items[i];
+    if (not ps or ps->kind != NK_PARAM_SPEC) continue;
+    Type_Info *param_type = NULL;
+    Syntax_Node *pt = ps->param_spec.param_type;
+    if (pt and pt->kind == NK_IDENTIFIER) {
+      param_type = Generic_Actual_Type_By_Name (inst_sym, pt->string_val.text);
+      if (not param_type) {
+        Symbol *type_sym = Symbol_Find (pt->string_val.text);
+        if (type_sym and type_sym->type) param_type = type_sym->type;
+      }
+    }
+    for (uint32_t j = 0; j < ps->param_spec.names.count and count < 2; j++)
+      out[count++] = param_type;
+  }
+  return count;
+}
+
+// Resolve the "=" a "/=" generic actual denotes (RM 6.7: "/=" is never a
+// declarable function — as an actual it names the negation of the
+// corresponding "="). Builds the formal subprogram's two-parameter profile
+// with formal types substituted by their actuals, then overload-resolves
+// "=" against it. Returns the user-defined "=" or NULL when only the
+// predefined equality applies.
+Symbol *Generic_Formal_Equality_Actual (Symbol *inst_sym, Syntax_Node *formal) {
+  Type_Info *arg_types[2] = { NULL, NULL };
+  if (Generic_Formal_Parameter_Types (inst_sym, formal, arg_types) != 2)
+    return NULL;
+  Argument_Info args = { .types = arg_types, .count = 2, .names = NULL };
+  Symbol *eq_op = Resolve_Overloaded_Call (S("="), &args, NULL);
+  if (eq_op and eq_op->kind == SYMBOL_FUNCTION and not eq_op->is_predefined)
+    return eq_op;
+  return NULL;
+}
+
+// Does a candidate "=" function's parameter profile match a generic formal
+// subprogram's substituted profile? Used to validate an expanded-name "/="
+// actual (PK."/="): the package's "=" applies only when its operand types
+// agree with the formal's (RM 12.3); otherwise the actual denotes the
+// predefined inequality.
+bool Generic_Formal_Equality_Profile_Matches (Symbol *inst_sym,
+                                              Syntax_Node *formal,
+                                              Symbol *equality) {
+  Type_Info *arg_types[2] = { NULL, NULL };
+  if (Generic_Formal_Parameter_Types (inst_sym, formal, arg_types) != 2)
+    return false;
+  if (equality->parameter_count != 2) return false;
+  for (uint32_t i = 0; i < 2; i++) {
+    Type_Info *want = arg_types[i];
+    Type_Info *have = equality->parameters[i].param_type;
+    if (not want or not have) continue;  // unresolved side: not a mismatch
+    if (want != have and Type_Base (want) != Type_Base (have))
+      return false;
+  }
+  return true;
+}
+
+void Install_Generic_Formal_Symbols (Symbol *generic_symbol) {
+  if (not generic_symbol or not generic_symbol->declaration or
+      generic_symbol->declaration->kind != NK_GENERIC_DECL)
+    return;
+  Node_List *formals = &generic_symbol->declaration->generic_decl.formals;
+  for (uint32_t i = 0; i < formals->count; i++) {
+    Syntax_Node *formal = formals->items[i];
+    if (not formal) continue;
+    switch (formal->kind) {
+
+      // Formal type (RM 12.1.2): a distinct type whose kind gives the
+      // operations of its class inside the template.
+      case NK_GENERIC_TYPE_PARAM: {
+        if (not formal->symbol) {
+          Type_Kind type_kind = TYPE_PRIVATE;
+          switch (formal->generic_type_param.def_kind) {
+            case GEN_DEF_PRIVATE:
+            case GEN_DEF_LIMITED_PRIVATE:
+            case GEN_DEF_DERIVED:  type_kind = TYPE_PRIVATE;     break;
+            case GEN_DEF_DISCRETE: type_kind = TYPE_ENUMERATION; break;
+            case GEN_DEF_INTEGER:  type_kind = TYPE_INTEGER;     break;
+            case GEN_DEF_FLOAT:    type_kind = TYPE_FLOAT;       break;
+            case GEN_DEF_FIXED:    type_kind = TYPE_FIXED;       break;
+            case GEN_DEF_ARRAY:    type_kind = TYPE_ARRAY;       break;
+            case GEN_DEF_ACCESS:   type_kind = TYPE_ACCESS;      break;
+          }
+          Symbol *type_sym = Symbol_New (SYMBOL_TYPE,
+            formal->generic_type_param.name, formal->location);
+          Type_Info *type = Type_New (type_kind,
+            formal->generic_type_param.name);
+          type->is_generic_formal    = true;
+          type->generic_formal_class = formal->generic_type_param.def_kind;
+          type->is_limited =
+            formal->generic_type_param.def_kind == GEN_DEF_LIMITED_PRIVATE;
+
+          type_sym->type = type;
+          formal->symbol = type_sym;
+
+          // Known discriminants of a formal private type (RM 12.1.2):
+          // resolve each discriminant's type and lay the discriminants out
+          // as components so selected names like P.D resolve in the
+          // template.
+          if (formal->generic_type_param.discriminants.count > 0) {
+            uint32_t discriminant_count = 0;
+            for (uint32_t di = 0;
+                 di < formal->generic_type_param.discriminants.count; di++) {
+              Syntax_Node *ds = formal->generic_type_param.discriminants.items[di];
+              if (ds and ds->kind == NK_DISCRIMINANT_SPEC)
+                discriminant_count += ds->discriminant.names.count;
+            }
+            if (discriminant_count > 0) {
+              for (uint32_t di = 0;
+                   di < formal->generic_type_param.discriminants.count; di++) {
+                Syntax_Node *ds = formal->generic_type_param.discriminants.items[di];
+                if (ds and ds->kind == NK_DISCRIMINANT_SPEC and
+                    ds->discriminant.disc_type)
+                  Resolve_Expression (ds->discriminant.disc_type);
+              }
+              Component_Info *components =
+                Arena_Allocate (discriminant_count * sizeof (Component_Info));
+              type->size = Fill_Discriminant_Components (components,
+                             &formal->generic_type_param.discriminants);
+              type->record.components         = components;
+              type->record.component_count    = discriminant_count;
+              type->record.has_discriminants  = true;
+              type->record.discriminant_count = discriminant_count;
+            }
+          }
+        }
+        Symbol_Add (formal->symbol);
+      } break;
+
+      // Formal object (RM 12.1.1): mode IN is a constant, mode IN OUT is a
+      // variable; mode OUT does not exist for generic formal objects.
+      case NK_GENERIC_OBJECT_PARAM: {
+        bool first_install =
+          formal->generic_object_param.names.count > 0 and
+          formal->generic_object_param.names.items[0]->symbol == NULL;
+        if (first_install) {
+          if (formal->generic_object_param.mode == GEN_MODE_OUT)
+            Report_Error (formal->location,
+              "a generic formal object cannot have mode OUT");
+          Type_Info *object_type = NULL;
+          if (formal->generic_object_param.object_type) {
+            Resolve_Expression (formal->generic_object_param.object_type);
+            object_type = formal->generic_object_param.object_type->type;
+          }
+
+          // The default expression resolves against the formal's type and
+          // is only legal for mode IN (RM 12.1.1).
+          if (formal->generic_object_param.default_expr) {
+            if (formal->generic_object_param.mode != GEN_MODE_IN)
+              Report_Error (formal->location,
+                "a default expression is only allowed for a generic formal "
+                "object of mode IN");
+            if (object_type) {
+              Syntax_Node *default_expr = formal->generic_object_param.default_expr;
+              default_expr->type = object_type;
+              Resolve_Expression (default_expr);
+              if (not default_expr->type or default_expr->kind == NK_AGGREGATE)
+                default_expr->type = object_type;
+            }
+          }
+          for (uint32_t j = 0; j < formal->generic_object_param.names.count; j++) {
+            Syntax_Node *name_node = formal->generic_object_param.names.items[j];
+            if (not name_node or name_node->kind != NK_IDENTIFIER) continue;
+            Symbol *object_sym = Symbol_New (
+              formal->generic_object_param.mode == GEN_MODE_IN_OUT
+                ? SYMBOL_VARIABLE : SYMBOL_CONSTANT,
+              name_node->string_val.text, name_node->location);
+            object_sym->type = object_type;
+            name_node->symbol = object_sym;
+          }
+        }
+        for (uint32_t j = 0; j < formal->generic_object_param.names.count; j++) {
+          Syntax_Node *name_node = formal->generic_object_param.names.items[j];
+          if (name_node and name_node->symbol)
+            Symbol_Add (name_node->symbol);
+        }
+      } break;
+
+      // Formal subprogram (RM 12.1.3): full parameter profile so calls in
+      // the template overload-resolve against it.
+      case NK_GENERIC_SUBPROGRAM_PARAM: {
+        if (not formal->symbol) {
+          Symbol *subprogram_sym = Symbol_New (
+            formal->generic_subprog_param.is_function
+              ? SYMBOL_FUNCTION : SYMBOL_PROCEDURE,
+            formal->generic_subprog_param.name, formal->location);
+          Node_List *parameters = &formal->generic_subprog_param.parameters;
+          uint32_t total_parameters = 0;
+          for (uint32_t j = 0; j < parameters->count; j++) {
+            Syntax_Node *ps = parameters->items[j];
+            if (ps and ps->kind == NK_PARAM_SPEC)
+              total_parameters += ps->param_spec.names.count;
+          }
+          subprogram_sym->parameter_count = total_parameters;
+          if (total_parameters > 0) {
+            subprogram_sym->parameters =
+              Arena_Allocate (total_parameters * sizeof (Parameter_Info));
+            uint32_t index = 0;
+            for (uint32_t j = 0; j < parameters->count; j++) {
+              Syntax_Node *ps = parameters->items[j];
+              if (not ps or ps->kind != NK_PARAM_SPEC) continue;
+              Type_Info *parameter_type = NULL;
+              if (ps->param_spec.param_type) {
+                Resolve_Expression (ps->param_spec.param_type);
+                parameter_type = ps->param_spec.param_type->type;
+              }
+              for (uint32_t k = 0; k < ps->param_spec.names.count; k++) {
+                Syntax_Node *parameter_name = ps->param_spec.names.items[k];
+                subprogram_sym->parameters[index].name =
+                  parameter_name->string_val.text;
+                subprogram_sym->parameters[index].param_type = parameter_type;
+                subprogram_sym->parameters[index].mode =
+                  (Parameter_Mode) ps->param_spec.mode;
+                index++;
+              }
+            }
+          }
+          if (formal->generic_subprog_param.is_function and
+              formal->generic_subprog_param.return_type) {
+            Resolve_Expression (formal->generic_subprog_param.return_type);
+            subprogram_sym->type = formal->generic_subprog_param.return_type->type;
+            subprogram_sym->return_type = subprogram_sym->type;
+          }
+          formal->symbol = subprogram_sym;
+        }
+        Symbol_Add (formal->symbol);
+      } break;
+
+      default: break;
+    }
+  }
+}
+
+void Synthesize_Negated_Equality_Wrapper (Symbol *binding, Symbol *equality,
+                                          Source_Location location) {
+  Type_Info *operand_type = equality->parameter_count >= 1
+    ? equality->parameters[0].param_type : NULL;
+  Type_Info *boolean_type = equality->return_type
+    ? equality->return_type : sm->type_boolean;
+
+  // Parameters L and R, in a scope of the wrapper's own.
+  Symbol_Manager_Push_Scope (binding);
+  Symbol *left_param  = Symbol_New (SYMBOL_PARAMETER, S ("L"), location);
+  Symbol *right_param = Symbol_New (SYMBOL_PARAMETER, S ("R"), location);
+  left_param->type  = operand_type;
+  right_param->type = operand_type;
+  Symbol_Add (left_param);
+  Symbol_Add (right_param);
+
+  binding->parameter_count = 2;
+  binding->parameters = Arena_Allocate (2 * sizeof (Parameter_Info));
+  binding->parameters[0] = (Parameter_Info){
+    .name = S ("L"), .param_type = operand_type,
+    .mode = MODE_IN, .param_sym = left_param };
+  binding->parameters[1] = (Parameter_Info){
+    .name = S ("R"), .param_type = operand_type,
+    .mode = MODE_IN, .param_sym = right_param };
+  binding->return_type = boolean_type;
+  binding->type        = boolean_type;
+
+  // return not "="(L, R);
+  Syntax_Node *left_ref  = Node_New (NK_IDENTIFIER, location);
+  Syntax_Node *right_ref = Node_New (NK_IDENTIFIER, location);
+  left_ref->string_val.text  = S ("L");
+  right_ref->string_val.text = S ("R");
+  left_ref->symbol  = left_param;  left_ref->type  = operand_type;
+  right_ref->symbol = right_param; right_ref->type = operand_type;
+  Syntax_Node *equality_call = Node_New (NK_BINARY_OP, location);
+  equality_call->binary.op    = TK_EQ;
+  equality_call->binary.left  = left_ref;
+  equality_call->binary.right = right_ref;
+  equality_call->symbol       = equality;
+  equality_call->type         = boolean_type;
+  Syntax_Node *negation = Node_New (NK_UNARY_OP, location);
+  negation->unary.op      = TK_NOT;
+  negation->unary.operand = equality_call;
+  negation->type          = boolean_type;
+  Syntax_Node *return_stmt = Node_New (NK_RETURN, location);
+  return_stmt->return_stmt.expression = negation;
+
+  Syntax_Node *wrapper_spec = Node_New (NK_FUNCTION_SPEC, location);
+  wrapper_spec->subprogram_spec.name = binding->name;
+  wrapper_spec->symbol = binding;
+  Syntax_Node *wrapper_body = Node_New (NK_FUNCTION_BODY, location);
+  wrapper_body->subprogram_body.specification = wrapper_spec;
+  Node_List_Push (&wrapper_body->subprogram_body.statements, return_stmt);
+  wrapper_body->symbol = binding;
+
+  binding->scope = sm->current_scope;
+  binding->declaration = wrapper_body;
+  binding->is_instance_wrapper = true;
+  Symbol_Manager_Pop_Scope ();
+}
+
+void Synthesize_Attribute_Wrapper (Symbol *binding,
+                                   Syntax_Node *attribute_node,
+                                   Syntax_Node *formal,
+                                   Instance_Remap *remap) {
+  Source_Location location = formal->location;
+  Symbol_Manager_Push_Scope (binding);
+
+  // Parameters mirror the formal subprogram's profile; their type marks
+  // resolve against the instance's bindings (formal types -> actual views).
+  Node_List *formal_parameters = &formal->generic_subprog_param.parameters;
+  uint32_t total_parameters = 0;
+  for (uint32_t i = 0; i < formal_parameters->count; i++) {
+    Syntax_Node *ps = formal_parameters->items[i];
+    if (ps and ps->kind == NK_PARAM_SPEC)
+      total_parameters += ps->param_spec.names.count;
+  }
+  binding->parameter_count = total_parameters;
+  binding->parameters = total_parameters
+    ? Arena_Allocate (total_parameters * sizeof (Parameter_Info)) : NULL;
+
+  Syntax_Node *attribute_call =
+    Clone_Subtree_Keep_Decorations (attribute_node);
+  for (uint32_t m = 0; m < remap->count; m++)
+    Reassign_Symbol_References (attribute_call, remap->from[m], remap->to[m]);
+  attribute_call->attribute.arguments = (Node_List){0};
+
+  uint32_t index = 0;
+  for (uint32_t i = 0; i < formal_parameters->count; i++) {
+    Syntax_Node *ps = formal_parameters->items[i];
+    if (not ps or ps->kind != NK_PARAM_SPEC) continue;
+    Type_Info *parameter_type = NULL;
+    if (ps->param_spec.param_type) {
+      Syntax_Node *mark = Clone_Subtree (ps->param_spec.param_type);
+      Resolve_Expression (mark);
+      parameter_type = mark->type;
+    }
+    for (uint32_t j = 0; j < ps->param_spec.names.count; j++) {
+      Syntax_Node *parameter_name = ps->param_spec.names.items[j];
+      Symbol *parameter_sym = Symbol_New (SYMBOL_PARAMETER,
+        parameter_name->string_val.text, location);
+      parameter_sym->type = parameter_type;
+      Symbol_Add (parameter_sym);
+      binding->parameters[index] = (Parameter_Info){
+        .name       = parameter_name->string_val.text,
+        .param_type = parameter_type,
+        .mode       = (Parameter_Mode) ps->param_spec.mode,
+        .param_sym  = parameter_sym,
+      };
+      Syntax_Node *argument = Node_New (NK_IDENTIFIER, location);
+      argument->string_val.text = parameter_name->string_val.text;
+      argument->symbol = parameter_sym;
+      argument->type   = parameter_type;
+      Node_List_Push (&attribute_call->attribute.arguments, argument);
+      index++;
+    }
+  }
+  if (formal->generic_subprog_param.return_type) {
+    Syntax_Node *return_mark =
+      Clone_Subtree (formal->generic_subprog_param.return_type);
+    Resolve_Expression (return_mark);
+    binding->return_type = return_mark->type;
+    binding->type        = binding->return_type;
+  }
+  attribute_call->type = binding->return_type;
+
+  Syntax_Node *return_stmt = Node_New (NK_RETURN, location);
+  return_stmt->return_stmt.expression = attribute_call;
+  Syntax_Node *wrapper_spec = Node_New (NK_FUNCTION_SPEC, location);
+  wrapper_spec->subprogram_spec.name = binding->name;
+  wrapper_spec->symbol = binding;
+  Syntax_Node *wrapper_body = Node_New (NK_FUNCTION_BODY, location);
+  wrapper_body->subprogram_body.specification = wrapper_spec;
+  Node_List_Push (&wrapper_body->subprogram_body.statements, return_stmt);
+  wrapper_body->symbol = binding;
+
+  binding->scope = sm->current_scope;
+  binding->declaration = wrapper_body;
+  binding->is_instance_wrapper = true;
+  Symbol_Manager_Pop_Scope ();
+}
+
+void Synthesize_Operator_Wrapper (Symbol *binding, Token_Kind operator_token,
+                                  Syntax_Node *formal, Instance_Remap *remap) {
+  (void) remap;
+  Source_Location location = formal->location;
+  Symbol_Manager_Push_Scope (binding);
+
+  Node_List *formal_parameters = &formal->generic_subprog_param.parameters;
+  uint32_t total_parameters = 0;
+  for (uint32_t i = 0; i < formal_parameters->count; i++) {
+    Syntax_Node *ps = formal_parameters->items[i];
+    if (ps and ps->kind == NK_PARAM_SPEC)
+      total_parameters += ps->param_spec.names.count;
+  }
+  binding->parameter_count = total_parameters;
+  binding->parameters = total_parameters
+    ? Arena_Allocate (total_parameters * sizeof (Parameter_Info)) : NULL;
+
+  Syntax_Node *operands[2] = { NULL, NULL };
+  uint32_t index = 0;
+  for (uint32_t i = 0; i < formal_parameters->count; i++) {
+    Syntax_Node *ps = formal_parameters->items[i];
+    if (not ps or ps->kind != NK_PARAM_SPEC) continue;
+    Type_Info *parameter_type = NULL;
+    if (ps->param_spec.param_type) {
+      Syntax_Node *mark = Clone_Subtree (ps->param_spec.param_type);
+      Resolve_Expression (mark);
+      parameter_type = mark->type;
+    }
+    for (uint32_t j = 0; j < ps->param_spec.names.count; j++) {
+      Syntax_Node *parameter_name = ps->param_spec.names.items[j];
+      Symbol *parameter_sym = Symbol_New (SYMBOL_PARAMETER,
+        parameter_name->string_val.text, location);
+      parameter_sym->type = parameter_type;
+      Symbol_Add (parameter_sym);
+      binding->parameters[index] = (Parameter_Info){
+        .name       = parameter_name->string_val.text,
+        .param_type = parameter_type,
+        .mode       = (Parameter_Mode) ps->param_spec.mode,
+        .param_sym  = parameter_sym,
+      };
+      if (index < 2) {
+        Syntax_Node *reference = Node_New (NK_IDENTIFIER, location);
+        reference->string_val.text = parameter_name->string_val.text;
+        reference->symbol = parameter_sym;
+        reference->type   = parameter_type;
+        operands[index] = reference;
+      }
+      index++;
+    }
+  }
+  if (formal->generic_subprog_param.return_type) {
+    Syntax_Node *return_mark =
+      Clone_Subtree (formal->generic_subprog_param.return_type);
+    Resolve_Expression (return_mark);
+    binding->return_type = return_mark->type;
+    binding->type        = binding->return_type;
+  }
+
+  Syntax_Node *expression = NULL;
+  if (total_parameters == 2 and operands[0] and operands[1]) {
+    expression = Node_New (NK_BINARY_OP, location);
+    expression->binary.op    = operator_token;
+    expression->binary.left  = operands[0];
+    expression->binary.right = operands[1];
+  } else if (total_parameters == 1 and operands[0]) {
+    expression = Node_New (NK_UNARY_OP, location);
+    expression->unary.op      = operator_token;
+    expression->unary.operand = operands[0];
+  }
+  if (expression) {
+    expression->type = binding->return_type;
+    Syntax_Node *return_stmt = Node_New (NK_RETURN, location);
+    return_stmt->return_stmt.expression = expression;
+    Syntax_Node *wrapper_spec = Node_New (NK_FUNCTION_SPEC, location);
+    wrapper_spec->subprogram_spec.name = binding->name;
+    wrapper_spec->symbol = binding;
+    Syntax_Node *wrapper_body = Node_New (NK_FUNCTION_BODY, location);
+    wrapper_body->subprogram_body.specification = wrapper_spec;
+    Node_List_Push (&wrapper_body->subprogram_body.statements, return_stmt);
+    wrapper_body->symbol = binding;
+    binding->declaration = wrapper_body;
+    binding->is_instance_wrapper = true;
+  }
+  binding->scope = sm->current_scope;
+  Symbol_Manager_Pop_Scope ();
+}
+
+void Bind_Generic_Formals_To_Actuals (Symbol *instance_sym,
+                                      Symbol *template_sym,
+                                      Instance_Remap *remap) {
+
+  // Slot accounting matches Install_Generic_Formal_Symbols: object formals
+  // consume one slot per name, every other formal one slot.
+  Syntax_Node *generic_decl = template_sym->declaration;
+  remap->count = 0;
+  if (generic_decl and generic_decl->kind == NK_GENERIC_DECL) {
+    Node_List *formals = &generic_decl->generic_decl.formals;
+    uint32_t slot = 0;
+    for (uint32_t i = 0; i < formals->count; i++) {
+      Syntax_Node *formal = formals->items[i];
+      if (not formal) continue;
+      switch (formal->kind) {
+
+        // Formal type: the instance-scope name denotes the actual subtype
+        // (RM 12.3 rule (d)). Predefined operations of the formal rebind to
+        // the actual's through ordinary resolution against this binding.
+        case NK_GENERIC_TYPE_PARAM: {
+          Type_Info *actual_type = slot < instance_sym->actual_binding_count
+            ? instance_sym->actual_bindings[slot].actual_type : NULL;
+
+          // Capture the RM 12.3(81) subtype-agreement pairs now, while the
+          // formal part's marks resolve (the emission point has no scopes).
+          // The emitter (Emit_Subtype_Agreement_Check) dispatches on the
+          // pair's shape and ignores shapes it cannot compare, so capture
+          // is unconditional.
+          #define RECORD_AGREEMENT(F, A, WHAT) do {                          \
+            Type_Info *_f = (F), *_a = (A);                                  \
+            if (_f and _a and                                                \
+                instance_sym->agreement_check_count < 64) {                  \
+              if (not instance_sym->agreement_checks)                        \
+                instance_sym->agreement_checks = Arena_Allocate (            \
+                  64 * sizeof (Instance_Agreement_Check));                   \
+              instance_sym->agreement_checks[                                \
+                instance_sym->agreement_check_count++] =                     \
+                (Instance_Agreement_Check){ _f, _a, (WHAT) };                \
+            }                                                                \
+          } while (0)
+          Syntax_Node *definition = formal->generic_type_param.def_detail;
+          if (actual_type and
+              formal->generic_type_param.def_kind == GEN_DEF_ARRAY and
+              definition and definition->kind == NK_ARRAY_TYPE and
+              Type_Is_Array_Like (actual_type)) {
+            for (uint32_t d = 0; d < definition->array_type.indices.count and
+                                 d < actual_type->array.index_count; d++) {
+              RECORD_AGREEMENT (
+                Formal_Mark_Actual_Type (instance_sym,
+                  definition->array_type.indices.items[d]),
+                actual_type->array.indices[d].index_type,
+                "index subtype agreement (RM 12.3.4)");
+            }
+            RECORD_AGREEMENT (
+              Formal_Mark_Actual_Type (instance_sym,
+                definition->array_type.component_type),
+              actual_type->array.element_type,
+              "component subtype agreement (RM 12.3.4)");
+          }
+          if (actual_type and
+              formal->generic_type_param.def_kind == GEN_DEF_ACCESS and
+              Type_Is_Access (actual_type))
+            RECORD_AGREEMENT (
+              Formal_Mark_Actual_Type (instance_sym, definition),
+              actual_type->access.designated_type,
+              "designated subtype agreement (RM 12.3.5)");
+          if (actual_type and
+              (formal->generic_type_param.def_kind == GEN_DEF_PRIVATE or
+               formal->generic_type_param.def_kind == GEN_DEF_LIMITED_PRIVATE)
+              and formal->symbol and formal->symbol->type and
+              formal->symbol->type->record.has_discriminants and
+              Type_Is_Record (actual_type) and
+              actual_type->record.has_discriminants) {
+            Type_Info *formal_view = formal->symbol->type;
+            uint32_t shared = formal_view->record.discriminant_count;
+            if (actual_type->record.discriminant_count < shared)
+              shared = actual_type->record.discriminant_count;
+            for (uint32_t di = 0; di < shared; di++) {
+              Type_Info *formal_disc =
+                formal_view->record.components[di].component_type;
+              if (formal_disc and formal_disc->is_generic_formal)
+                formal_disc = Generic_Actual_Type_By_Name (instance_sym,
+                                                           formal_disc->name);
+              RECORD_AGREEMENT (formal_disc,
+                actual_type->record.components[di].component_type,
+                "discriminant subtype agreement (RM 12.3.2)");
+            }
+          }
+          #undef RECORD_AGREEMENT
+          if (actual_type) {
+            Symbol *binding = Symbol_New (SYMBOL_TYPE,
+              formal->generic_type_param.name, formal->location);
+
+            // The binding is a VIEW of the actual: same structure and
+            // base, but the formal's predefined operators denote the
+            // actual's PREDEFINED operations even when the actual's are
+            // redefined (RM 12.1.2(41-42)).
+            Type_Info *actual_view = Type_New (actual_type->kind,
+              formal->generic_type_param.name);
+            *actual_view = *actual_type;
+            actual_view->name = formal->generic_type_param.name;
+
+            // 'BASE of the formal denotes the actual's BASE (RM 3.3.3):
+            // chain to it, not to the first subtype, or attributes like
+            // 'BASE'SMALL would see subtype values.
+            actual_view->base_type =
+              actual_type->base_type ? actual_type->base_type : actual_type;
+            actual_view->is_generic_actual_view = true;
+            binding->type = actual_view;
+            Symbol_Add (binding);
+            if (formal->symbol and remap->count < 128) {
+              remap->from[remap->count] = formal->symbol;
+              remap->to[remap->count]   = binding;
+              remap->count++;
+            }
+          }
+          slot++;
+        } break;
+
+        // Formal object: mode IN binds a per-instance constant whose value
+        // stores once at the instantiation point; mode IN OUT binds a
+        // per-instance pointer cell renaming the actual variable
+        // (RM 12.1.1, 12.3 rules (b)/(c), 12.3(80)). Both elaborate at the
+        // instantiation site — in the instantiation's own context — and
+        // the instance body reads them as globals, so no cross-frame
+        // access is ever needed.
+        case NK_GENERIC_OBJECT_PARAM: {
+          Type_Info *object_type = NULL;
+          if (formal->generic_object_param.object_type)
+            object_type = formal->generic_object_param.object_type->type;
+          if (object_type and object_type->is_generic_formal) {
+
+            // The object's type mark names a formal type: the binding is
+            // typed by that formal's actual-VIEW (already bound above in
+            // this same scope), so formal-typed objects carry RM
+            // 12.1.2(41-42) operator semantics.
+            Symbol *type_binding = Symbol_Find (object_type->name);
+            if (type_binding and type_binding->kind == SYMBOL_TYPE and
+                type_binding->type)
+              object_type = type_binding->type;
+            else
+              object_type =
+                Generic_Actual_Type_By_Name (instance_sym, object_type->name);
+          }
+          for (uint32_t j = 0; j < formal->generic_object_param.names.count; j++) {
+            Syntax_Node *formal_name = formal->generic_object_param.names.items[j];
+            Syntax_Node *actual_expr = slot < instance_sym->actual_binding_count
+              ? instance_sym->actual_bindings[slot].actual_expr : NULL;
+
+            // A defaulted formal evaluates its default at the instantiation
+            // (RM 12.1(11)), with the names it contains still denoting what
+            // they denoted at the generic declaration (RM 12.1(13)) — except
+            // references to earlier formals, which denote their bindings
+            // (RM 12.3(79)). The decorated clone keeps the declaration-point
+            // resolution; the remap swings formal references to bindings.
+            // The actual-resolution passes hand back the template's own
+            // default node when no actual was given; it is never evaluated
+            // as-is.
+            if (not actual_expr or
+                actual_expr == formal->generic_object_param.default_expr) {
+              if (formal->generic_object_param.default_expr) {
+                actual_expr = Clone_Subtree_Keep_Decorations (
+                  formal->generic_object_param.default_expr);
+                for (uint32_t m = 0; m < remap->count; m++)
+                  Reassign_Symbol_References (actual_expr,
+                                              remap->from[m], remap->to[m]);
+                if (not actual_expr->type) actual_expr->type = object_type;
+              }
+            }
+            if (formal_name and actual_expr) {
+              bool in_out =
+                formal->generic_object_param.mode == GEN_MODE_IN_OUT;
+              Symbol *binding = Symbol_New (
+                in_out ? SYMBOL_VARIABLE : SYMBOL_CONSTANT,
+                formal_name->string_val.text, formal->location);
+              binding->type             = object_type;
+              binding->parent           = instance_sym;
+              binding->is_package_level = true;
+              binding->instance_actual  = actual_expr;
+              if (in_out) binding->is_instance_in_out_binding = true;
+              else        binding->is_instance_in_binding     = true;
+              Symbol_Add (binding);
+              if (formal_name->symbol and remap->count < 128) {
+                remap->from[remap->count] = formal_name->symbol;
+                remap->to[remap->count]   = binding;
+                remap->count++;
+              }
+            }
+            slot++;
+          }
+        } break;
+
+        // Formal subprogram: the instance-scope name renames the actual
+        // (RM 12.3 rule (f)); calls in the clone resolve to this binding
+        // and emission follows the renaming chain. An attribute actual
+        // (T'SUCC) travels on the binding for the call emitter to expand.
+        case NK_GENERIC_SUBPROGRAM_PARAM: {
+          Symbol *actual_subprogram = slot < instance_sym->actual_binding_count
+            ? instance_sym->actual_bindings[slot].actual_subprogram : NULL;
+          bool actual_negated = slot < instance_sym->actual_binding_count
+            ? instance_sym->actual_bindings[slot].actual_negated : false;
+          Syntax_Node *actual_attribute = slot < instance_sym->actual_binding_count
+            ? instance_sym->actual_bindings[slot].actual_attribute : NULL;
+          Token_Kind builtin_operator = slot < instance_sym->actual_binding_count
+            ? instance_sym->actual_bindings[slot].builtin_operator : TK_EOF;
+          if (actual_subprogram or actual_attribute or
+              builtin_operator != TK_EOF) {
+            Symbol *binding = Symbol_New (
+              formal->generic_subprog_param.is_function
+                ? SYMBOL_FUNCTION : SYMBOL_PROCEDURE,
+              formal->generic_subprog_param.name, formal->location);
+            if (builtin_operator != TK_EOF and not actual_subprogram and
+                not actual_attribute) {
+              Synthesize_Operator_Wrapper (binding, builtin_operator,
+                                           formal, remap);
+            } else if (actual_attribute and not actual_subprogram) {
+              Synthesize_Attribute_Wrapper (binding, actual_attribute,
+                                            formal, remap);
+            } else if (actual_subprogram and actual_negated) {
+
+              // "/=" actual (RM 6.7): the matched subprogram is the
+              // corresponding "=". Synthesize a real wrapper body
+              //   function F (L, R) return BOOLEAN is
+              //   begin return not "="(L, R); end;
+              // so calls through the formal are ordinary calls — no
+              // emission-time special case exists or is needed.
+              Synthesize_Negated_Equality_Wrapper (binding, actual_subprogram,
+                                                   formal->location);
+            } else if (actual_subprogram) {
+              binding->renamed_object   = (Syntax_Node *) actual_subprogram;
+              binding->parameters       = actual_subprogram->parameters;
+              binding->parameter_count  = actual_subprogram->parameter_count;
+              binding->return_type      = actual_subprogram->return_type;
+              if (not binding->return_type) binding->return_type = actual_subprogram->type;
+              binding->type             = binding->return_type;
+            }
+            Symbol_Add (binding);
+
+            // A wrapper body lives at the INSTANTIATION's static level —
+            // a sibling of the instance, not a child: its target (the
+            // bound "=", attribute prefix, or operator operand types)
+            // resolves in the instantiation's environment, so its static
+            // chain must be the instance's own parent frame, and callers
+            // inside the instance then pass their %__parent_frame, which
+            // always exists. (Symbol_Add stamped the instance as parent;
+            // re-point it.)
+            if (binding->is_instance_wrapper)
+              binding->parent = instance_sym->parent;
+            if (formal->symbol and remap->count < 128) {
+              remap->from[remap->count] = formal->symbol;
+              remap->to[remap->count]   = binding;
+              remap->count++;
+            }
+          }
+          slot++;
+        } break;
+
+        default:
+          slot++;
+          break;
+      }
+    }
+  }
+}
+
+// The actual type a formal-part type mark denotes at this instantiation:
+// a formal of the same generic maps through the bindings; anything else
+// resolves from scope.
+Type_Info *Formal_Mark_Actual_Type (Symbol *instance_sym,
+                                    Syntax_Node *mark) {
+  if (not mark) return NULL;
+  if (mark->kind == NK_SUBTYPE_INDICATION)
+    mark = mark->subtype_ind.subtype_mark;
+  if (not mark or mark->kind != NK_IDENTIFIER) return mark ? mark->type : NULL;
+  Type_Info *bound =
+    Generic_Actual_Type_By_Name (instance_sym, mark->string_val.text);
+  if (bound) return bound;
+  if (mark->type and not mark->type->is_generic_formal) return mark->type;
+  Symbol *named = Symbol_Find (mark->string_val.text);
+  return (named and (named->kind == SYMBOL_TYPE or
+                     named->kind == SYMBOL_SUBTYPE)) ? named->type : NULL;
+}
+
+// Same base type, looking through subtype and actual-view chains.
+static bool Same_Base_Type (Type_Info *left, Type_Info *right) {
+  if (not left or not right) return true;  // unresolved side: no verdict
+  return Type_Base (left) == Type_Base (right) or
+         Type_Root (left) == Type_Root (right);
+}
+
+// A name legal as the actual for an IN OUT formal object: a variable, a
+// non-OUT formal parameter, or a component/element of one (RM 12.3.1,
+// renameable per RM 8.5).
+static bool Actual_Is_Renameable_Variable (Syntax_Node *node) {
+  if (not node) return false;
+  if (node->kind == NK_ASSOCIATION) node = node->association.expression;
+  switch (node->kind) {
+    case NK_IDENTIFIER: {
+      Symbol *sym = node->symbol;
+      if (not sym) return true;  // unresolved: no verdict
+      if (sym->kind == SYMBOL_VARIABLE) return true;
+      if (sym->kind == SYMBOL_PARAMETER) return true;
+      return false;
+    }
+    case NK_SELECTED:
+      return Actual_Is_Renameable_Variable (node->selected.prefix);
+    case NK_APPLY:
+      return Actual_Is_Renameable_Variable (node->apply.prefix);
+    case NK_UNARY_OP:  // X.ALL
+      return node->unary.op == TK_ALL;
+    default:
+      return false;
+  }
+}
+
+// RM 12.3.6: when the actual's name is overloaded, the meaning whose
+// parameter and result type profile matches the formal's (formal types
+// mapped to their actuals) is the actual. Returns the matching overload,
+// or the first symbol when none matches (the validator then diagnoses).
+static Symbol *Disambiguate_Subprogram_Actual (Symbol *first,
+                                               Symbol *instance_sym,
+                                               Syntax_Node *formal) {
+  if (not first or not first->next_overload) return first;
+  Node_List *formal_parameters = &formal->generic_subprog_param.parameters;
+  Type_Info *formal_types[16];
+  uint32_t formal_count = 0;
+  for (uint32_t i = 0; i < formal_parameters->count; i++) {
+    Syntax_Node *ps = formal_parameters->items[i];
+    if (not ps or ps->kind != NK_PARAM_SPEC) continue;
+    Type_Info *pt = Formal_Mark_Actual_Type (instance_sym,
+                                             ps->param_spec.param_type);
+    for (uint32_t n = 0; n < ps->param_spec.names.count and
+                         formal_count < 16; n++)
+      formal_types[formal_count++] = pt;
+  }
+  Type_Info *formal_result = formal->generic_subprog_param.is_function
+    ? Formal_Mark_Actual_Type (instance_sym,
+                               formal->generic_subprog_param.return_type)
+    : NULL;
+  for (Symbol *candidate = first; candidate;
+       candidate = candidate->next_overload) {
+    if (candidate->kind != SYMBOL_FUNCTION and
+        candidate->kind != SYMBOL_PROCEDURE)
+      continue;
+    if (candidate->parameter_count != formal_count) continue;
+    bool matches = true;
+    for (uint32_t i = 0; i < formal_count; i++)
+      if (formal_types[i] and
+          not Same_Base_Type (formal_types[i],
+                              candidate->parameters[i].param_type)) {
+        matches = false;
+        break;
+      }
+    if (matches and formal->generic_subprog_param.is_function and
+        formal_result and
+        not Same_Base_Type (formal_result, candidate->return_type))
+      matches = false;
+    if (matches) return candidate;
+  }
+  return first;
+}
+
+Symbol  *Instantiating_Templates[64];
+uint32_t Instantiating_Template_Count = 0;
+
+bool Instantiating_Set_Contains (Symbol *template_sym) {
+  for (uint32_t i = 0; i < Instantiating_Template_Count; i++)
+    if (Instantiating_Templates[i] == template_sym) return true;
+  return false;
+}
+void Instantiating_Set_Push (Symbol *template_sym) {
+  if (Instantiating_Template_Count < 64)
+    Instantiating_Templates[Instantiating_Template_Count++] = template_sym;
+}
+void Instantiating_Set_Pop (void) {
+  if (Instantiating_Template_Count > 0) Instantiating_Template_Count--;
+}
+
+void Validate_Generic_Actuals (Symbol *instance_sym, Symbol *template_sym,
+                               Syntax_Node **slot_actual_nodes,
+                               uint32_t slot_count) {
+  Syntax_Node *generic_decl = template_sym->declaration;
+  if (not generic_decl or generic_decl->kind != NK_GENERIC_DECL) return;
+  Node_List *formals = &generic_decl->generic_decl.formals;
+  uint32_t slot = 0;
+  for (uint32_t i = 0; i < formals->count; i++) {
+    Syntax_Node *formal = formals->items[i];
+    if (not formal) continue;
+    Generic_Actual_Binding *binding =
+      slot < instance_sym->actual_binding_count
+        ? &instance_sym->actual_bindings[slot] : NULL;
+    Syntax_Node *actual_node =
+      (slot_actual_nodes and slot < slot_count) ? slot_actual_nodes[slot] : NULL;
+    Source_Location location =
+      actual_node ? actual_node->location : instance_sym->location;
+
+    switch (formal->kind) {
+      case NK_GENERIC_TYPE_PARAM: {
+        Type_Info *actual = binding ? binding->actual_type : NULL;
+        String_Slice formal_name = formal->generic_type_param.name;
+        if (not actual) {
+          Report_Error (location,
+            "missing actual for generic formal type '%.*s'",
+            (int) formal_name.length, formal_name.data);
+          slot++;
+          break;
+        }
+        switch (formal->generic_type_param.def_kind) {
+          case GEN_DEF_DISCRETE:  // RM 12.3.3: enumeration or integer
+            if (not Type_Is_Discrete (actual))
+              Report_Error (location,
+                "actual for formal discrete type '%.*s' must be an "
+                "enumeration or integer type",
+                (int) formal_name.length, formal_name.data);
+            break;
+          case GEN_DEF_INTEGER:   // RM 12.3.3: integer
+            if (not Type_Is_Integer_Like (actual) or
+                Type_Is_Enumeration (actual))
+              Report_Error (location,
+                "actual for formal integer type '%.*s' must be an "
+                "integer type",
+                (int) formal_name.length, formal_name.data);
+            break;
+          case GEN_DEF_FLOAT:     // RM 12.3.3: floating point
+            if (not Type_Is_Float (actual))
+              Report_Error (location,
+                "actual for formal floating point type '%.*s' must be "
+                "a floating point type",
+                (int) formal_name.length, formal_name.data);
+            break;
+          case GEN_DEF_FIXED:     // RM 12.3.3: fixed point
+            if (not Type_Is_Fixed_Point (actual))
+              Report_Error (location,
+                "actual for formal fixed point type '%.*s' must be a "
+                "fixed point type",
+                (int) formal_name.length, formal_name.data);
+            break;
+          case GEN_DEF_PRIVATE: { // RM 12.3.2
+            if (actual->is_limited or Type_Is_Limited (actual) or
+                Type_Has_Task_Component ((Type_Info *) actual))
+              Report_Error (location,
+                "actual for non-limited formal private type '%.*s' "
+                "must not be a limited type",
+                (int) formal_name.length, formal_name.data);
+            uint32_t formal_disc_count = 0;
+            for (uint32_t di = 0;
+                 di < formal->generic_type_param.discriminants.count; di++) {
+              Syntax_Node *ds =
+                formal->generic_type_param.discriminants.items[di];
+              if (ds and ds->kind == NK_DISCRIMINANT_SPEC)
+                formal_disc_count += ds->discriminant.names.count;
+            }
+            if (formal_disc_count > 0) {
+              bool actual_has_discs = Type_Is_Record (actual) and
+                actual->record.has_discriminants;
+              if (not actual_has_discs or
+                  actual->record.discriminant_count != formal_disc_count)
+                Report_Error (location,
+                  "actual for formal private type '%.*s' must have "
+                  "the same number of discriminants",
+                  (int) formal_name.length, formal_name.data);
+              else if (actual->record.has_disc_constraints)
+                Report_Error (location,
+                  "actual subtype for discriminated formal private "
+                  "type '%.*s' must be unconstrained",
+                  (int) formal_name.length, formal_name.data);
+            }
+          } break;
+          case GEN_DEF_LIMITED_PRIVATE:  // RM 12.3.2(95): anything
+            break;
+          case GEN_DEF_ARRAY: {          // RM 12.3.4
+            Syntax_Node *definition = formal->generic_type_param.def_detail;
+            if (not Type_Is_Array_Like (actual)) {
+              Report_Error (location,
+                "actual for formal array type '%.*s' must be an "
+                "array type",
+                (int) formal_name.length, formal_name.data);
+              break;
+            }
+            if (definition and definition->kind == NK_ARRAY_TYPE) {
+              uint32_t formal_dimensions =
+                definition->array_type.indices.count;
+              if (formal_dimensions and
+                  actual->array.index_count != formal_dimensions)
+                Report_Error (location,
+                  "actual for formal array type '%.*s' must have %u "
+                  "dimension%s",
+                  (int) formal_name.length, formal_name.data,
+                  formal_dimensions, formal_dimensions == 1 ? "" : "s");
+              if (definition->array_type.is_constrained !=
+                  actual->array.is_constrained)
+                Report_Error (location,
+                  "actual for formal array type '%.*s' must be %s",
+                  (int) formal_name.length, formal_name.data,
+                  definition->array_type.is_constrained
+                    ? "constrained" : "unconstrained");
+              for (uint32_t d = 0; d < formal_dimensions and
+                                   d < actual->array.index_count; d++) {
+                Type_Info *formal_index = Formal_Mark_Actual_Type (
+                  instance_sym, definition->array_type.indices.items[d]);
+                if (formal_index and
+                    not Same_Base_Type (formal_index,
+                                        actual->array.indices[d].index_type))
+                  Report_Error (location,
+                    "index type %u of the actual for formal array "
+                    "type '%.*s' does not match",
+                    d + 1, (int) formal_name.length, formal_name.data);
+              }
+              Type_Info *formal_component = Formal_Mark_Actual_Type (
+                instance_sym, definition->array_type.component_type);
+              if (formal_component and
+                  not Same_Base_Type (formal_component,
+                                      actual->array.element_type))
+                Report_Error (location,
+                  "component type of the actual for formal array "
+                  "type '%.*s' does not match",
+                  (int) formal_name.length, formal_name.data);
+            }
+          } break;
+          case GEN_DEF_ACCESS: {         // RM 12.3.5
+            Syntax_Node *designated_mark =
+              formal->generic_type_param.def_detail;
+            if (not Type_Is_Access (actual)) {
+              Report_Error (location,
+                "actual for formal access type '%.*s' must be an "
+                "access type",
+                (int) formal_name.length, formal_name.data);
+              break;
+            }
+            Type_Info *formal_designated = Formal_Mark_Actual_Type (
+              instance_sym, designated_mark);
+            if (formal_designated and
+                not Same_Base_Type (formal_designated,
+                                    actual->access.designated_type))
+              Report_Error (location,
+                "designated type of the actual for formal access "
+                "type '%.*s' does not match",
+                (int) formal_name.length, formal_name.data);
+          } break;
+          case GEN_DEF_DERIVED:
+            break;  // parent-type matching not yet enforced
+        }
+        slot++;
+      } break;
+
+      case NK_GENERIC_OBJECT_PARAM: {    // RM 12.3.1
+        for (uint32_t j = 0; j < formal->generic_object_param.names.count;
+             j++) {
+          Generic_Actual_Binding *object_binding =
+            slot < instance_sym->actual_binding_count
+              ? &instance_sym->actual_bindings[slot] : NULL;
+          Syntax_Node *object_actual =
+            (slot_actual_nodes and slot < slot_count)
+              ? slot_actual_nodes[slot] : NULL;
+          Syntax_Node *name_node =
+            formal->generic_object_param.names.items[j];
+          String_Slice object_name = name_node
+            ? name_node->string_val.text : (String_Slice){0};
+          Source_Location object_location =
+            object_actual ? object_actual->location : instance_sym->location;
+          bool has_actual =
+            object_binding and object_binding->actual_expr and
+            object_binding->actual_expr !=
+              formal->generic_object_param.default_expr;
+          if (not has_actual and
+              not formal->generic_object_param.default_expr) {
+            Report_Error (object_location,
+              "missing actual for generic formal object '%.*s'",
+              (int) object_name.length, object_name.data);
+          } else if (has_actual and
+                     formal->generic_object_param.mode == GEN_MODE_IN_OUT and
+                     not Actual_Is_Renameable_Variable (object_actual)) {
+            Report_Error (object_location,
+              "actual for IN OUT formal object '%.*s' must be a "
+              "variable",
+              (int) object_name.length, object_name.data);
+          }
+          slot++;
+        }
+      } break;
+
+      case NK_GENERIC_SUBPROGRAM_PARAM: {  // RM 12.3.6
+        String_Slice subprogram_name = formal->generic_subprog_param.name;
+        bool has_actual = binding and
+          (binding->actual_subprogram or binding->actual_attribute or
+           binding->builtin_operator != TK_EOF);
+        if (not has_actual and
+            not formal->generic_subprog_param.default_box and
+            not formal->generic_subprog_param.default_name) {
+          Report_Error (location,
+            "missing actual for generic formal subprogram '%.*s'",
+            (int) subprogram_name.length, subprogram_name.data);
+          slot++;
+          break;
+        }
+        Symbol *actual = binding ? binding->actual_subprogram : NULL;
+        if (actual and (actual->kind == SYMBOL_FUNCTION or
+                        actual->kind == SYMBOL_PROCEDURE)) {
+          bool formal_is_function = formal->generic_subprog_param.is_function;
+          bool actual_is_function = actual->kind == SYMBOL_FUNCTION;
+          if (formal_is_function != actual_is_function)
+            Report_Error (location,
+              "actual for formal %s '%.*s' must be a %s",
+              formal_is_function ? "function" : "procedure",
+              (int) subprogram_name.length, subprogram_name.data,
+              formal_is_function ? "function" : "procedure");
+          uint32_t formal_parameter_count = 0;
+          Node_List *formal_parameters =
+            &formal->generic_subprog_param.parameters;
+          for (uint32_t p = 0; p < formal_parameters->count; p++) {
+            Syntax_Node *ps = formal_parameters->items[p];
+            if (ps and ps->kind == NK_PARAM_SPEC)
+              formal_parameter_count += ps->param_spec.names.count;
+          }
+          if (actual->parameter_count != formal_parameter_count) {
+            Report_Error (location,
+              "actual for formal subprogram '%.*s' has %u parameter%s; "
+              "the formal has %u",
+              (int) subprogram_name.length, subprogram_name.data,
+              actual->parameter_count,
+              actual->parameter_count == 1 ? "" : "s",
+              formal_parameter_count);
+          } else {
+            uint32_t index = 0;
+            for (uint32_t p = 0; p < formal_parameters->count; p++) {
+              Syntax_Node *ps = formal_parameters->items[p];
+              if (not ps or ps->kind != NK_PARAM_SPEC) continue;
+              Type_Info *formal_parameter_type = Formal_Mark_Actual_Type (
+                instance_sym, ps->param_spec.param_type);
+              for (uint32_t n = 0; n < ps->param_spec.names.count; n++) {
+                if (index < actual->parameter_count) {
+                  if ((Parameter_Mode) ps->param_spec.mode !=
+                      actual->parameters[index].mode)
+                    Report_Error (location,
+                      "parameter %u of the actual for formal "
+                      "subprogram '%.*s' has the wrong mode",
+                      index + 1,
+                      (int) subprogram_name.length, subprogram_name.data);
+                  if (formal_parameter_type and
+                      not Same_Base_Type (formal_parameter_type,
+                            actual->parameters[index].param_type))
+                    Report_Error (location,
+                      "parameter %u of the actual for formal "
+                      "subprogram '%.*s' has the wrong type",
+                      index + 1,
+                      (int) subprogram_name.length, subprogram_name.data);
+                }
+                index++;
+              }
+            }
+            if (formal_is_function and actual_is_function) {
+              Type_Info *formal_result = Formal_Mark_Actual_Type (
+                instance_sym, formal->generic_subprog_param.return_type);
+              if (formal_result and
+                  not Same_Base_Type (formal_result, actual->return_type))
+                Report_Error (location,
+                  "result type of the actual for formal function "
+                  "'%.*s' does not match",
+                  (int) subprogram_name.length, subprogram_name.data);
+            }
+          }
+        }
+        slot++;
+      } break;
+
+      default:
+        slot++;
+        break;
+    }
+  }
+}
+
+// Resolve a package instance's body clone inside the instance's own scope,
+// under the template body's visibility horizon. Shared by initial
+// instantiation and by late completion (a SEPARATE or later-in-file body
+// arriving after the instantiation resolved, RM 12.2).
+void Resolve_Instance_Package_Body_Clone (Symbol *instance_sym,
+                                          Symbol *template_sym,
+                                          Syntax_Node *body_clone,
+                                          Scope *instance_scope) {
+  uint32_t before = instance_scope->symbol_count;
+  if (template_sym->generic_body_visibility_cutoff)
+    sm->visibility_cutoff = template_sym->generic_body_visibility_cutoff;
+  Resolve_Declaration_List (&body_clone->package_body.declarations);
+  Mark_Package_Level_Objects (&body_clone->package_body.declarations);
+  for (uint32_t i = before; i < instance_scope->symbol_count; i++) {
+    Symbol *entity = instance_scope->symbols[i];
+    if (entity and not entity->parent) entity->parent = instance_sym;
+  }
+  Freeze_Declaration_List (&body_clone->package_body.declarations);
+  Resolve_Statement_List (&body_clone->package_body.statements);
+  for (uint32_t hi = 0; hi < body_clone->package_body.handlers.count; hi++) {
+    Syntax_Node *handler = body_clone->package_body.handlers.items[hi];
+    if (not handler) continue;
+    for (uint32_t ei = 0; ei < handler->handler.exceptions.count; ei++)
+      Resolve_Expression (handler->handler.exceptions.items[ei]);
+    Resolve_Statement_List (&handler->handler.statements);
+  }
+  body_clone->symbol = instance_sym;
+}
+
+// Late body completion: the template body arrived (later in the file, or as
+// a SEPARATE subunit) after the instantiation resolved its spec.
+void Complete_Instance_Package_Body (Symbol *instance_sym,
+                                     Symbol *template_sym) {
+  if (instance_sym->instance_body or not template_sym->generic_body or
+      not instance_sym->scope)
+    return;
+  Syntax_Node *body_clone = Clone_Subtree (template_sym->generic_body);
+  body_clone->package_body.name = instance_sym->name;
+  Scope *saved_scope  = sm->current_scope;
+  uint32_t saved_cutoff = sm->visibility_cutoff;
+  Scope   *saved_exempt = sm->cutoff_exempt_scope;
+  Symbol_Manager_Push_Existing_Scope (instance_sym->scope);
+  sm->cutoff_exempt_scope = instance_sym->scope;
+  Resolve_Instance_Package_Body_Clone (instance_sym, template_sym,
+                                       body_clone, instance_sym->scope);
+  Symbol_Manager_Pop_Scope ();
+  sm->current_scope = saved_scope;
+  sm->visibility_cutoff = saved_cutoff;
+  sm->cutoff_exempt_scope = saved_exempt;
+  instance_sym->instance_body = body_clone;
+}
+
+bool Instantiate_Generic_Package (Symbol *instance_sym, Symbol *template_sym) {
+  if (not instance_sym or not template_sym) return false;
+  Syntax_Node *spec_template = template_sym->generic_unit;
+  if (not spec_template or spec_template->kind != NK_PACKAGE_SPEC)
+    return false;
+
+  // The body source: the resolved in-file body when the completion has been
+  // seen, else the disk-parsed cache (parsed once per template).
+  Syntax_Node *body_template = template_sym->generic_body;
+  if (body_template and body_template->package_body.is_separate)
+    body_template = NULL;  // a stub; the subunit completes it later
+  if (not body_template) {
+    if (not template_sym->generic_body_cache) {
+      String_Slice package_name = spec_template->package_spec.name;
+      char *body_source = Lookup_Path_Body (package_name);
+      if (body_source) {
+        size_t filename_length = package_name.length + 4;
+        char *body_filename = Arena_Allocate (filename_length + 1);
+        snprintf (body_filename, filename_length + 1, "%.*s.adb",
+                  (int) package_name.length, package_name.data);
+        Parser body_parser =
+          Parser_New (body_source, strlen (body_source), body_filename);
+        Syntax_Node *body_cu = Parse_Compilation_Unit (&body_parser);
+        if (body_cu and body_cu->compilation_unit.unit and
+            body_cu->compilation_unit.unit->kind == NK_PACKAGE_BODY)
+          template_sym->generic_body_cache = body_cu->compilation_unit.unit;
+      }
+    }
+    body_template = template_sym->generic_body_cache;
+  }
+
+  // The instance is a copy of the generic unit (RM 12.3), renamed.
+  Syntax_Node *spec_clone = Clone_Subtree (spec_template);
+  spec_clone->package_spec.name = instance_sym->name;
+  Syntax_Node *body_clone = body_template ? Clone_Subtree (body_template) : NULL;
+  if (body_clone) body_clone->package_body.name = instance_sym->name;
+
+  // Resolve the clones in the environment of the generic's declaration
+  // (RM 12.3 rule (i)), with the formal bindings layered on top.
+  Scope *saved_scope = sm->current_scope;
+  uint32_t saved_cutoff = sm->visibility_cutoff;
+  Scope   *saved_exempt = sm->cutoff_exempt_scope;
+  if (template_sym->defining_scope)
+    sm->current_scope = template_sym->defining_scope;
+  Symbol_Manager_Push_Scope (instance_sym);
+  sm->cutoff_exempt_scope = sm->current_scope;
+  sm->visibility_cutoff = template_sym->generic_spec_visibility_cutoff;
+  Instance_Remap remap;
+  Bind_Generic_Formals_To_Actuals (instance_sym, template_sym, &remap);
+  uint32_t binding_count = sm->current_scope->symbol_count;
+
+  // The visible and private parts resolve as ordinary declarations; their
+  // entities are the instance's own (RM 12.3 rule (h)).
+  uint32_t visible_sequence_low = sm->next_creation_sequence;
+  Resolve_Declaration_List (&spec_clone->package_spec.visible_decls);
+  uint32_t visible_count = sm->current_scope->symbol_count;
+  uint32_t visible_sequence_high = sm->next_creation_sequence;
+  Resolve_Declaration_List (&spec_clone->package_spec.private_decls);
+  Mark_Package_Level_Objects (&spec_clone->package_spec.visible_decls);
+  Mark_Package_Level_Objects (&spec_clone->package_spec.private_decls);
+
+  // Package-level entities of the instance parent under it (per-instance
+  // global mangling <instance>__<name>); the visible part becomes the
+  // instance's export list, replacing the old export-cloning machinery.
+  Scope *instance_scope = sm->current_scope;
+  for (uint32_t i = binding_count; i < instance_scope->symbol_count; i++) {
+    Symbol *entity = instance_scope->symbols[i];
+    if (entity and not entity->parent) entity->parent = instance_sym;
+  }
+  // The scope's flat symbol array holds only overload-chain HEADS; the
+  // export list flattens each chain so homographs (e.g. RESET/RESET) are
+  // individually visible to USE clauses and member lookup. The creation-
+  // sequence window keeps later (private-part / body) homographs out.
+  uint32_t export_count = 0;
+  for (uint32_t i = binding_count; i < visible_count; i++)
+    for (Symbol *entity = instance_scope->symbols[i]; entity;
+         entity = entity->next_overload)
+      if (entity->creation_sequence >  visible_sequence_low and
+          entity->creation_sequence <= visible_sequence_high)
+        export_count++;
+  instance_sym->exported_count = 0;
+  instance_sym->exported = export_count
+    ? Arena_Allocate (export_count * sizeof (Symbol *)) : NULL;
+  for (uint32_t i = binding_count; i < visible_count; i++)
+    for (Symbol *entity = instance_scope->symbols[i]; entity;
+         entity = entity->next_overload)
+      if (entity->creation_sequence >  visible_sequence_low and
+          entity->creation_sequence <= visible_sequence_high)
+        instance_sym->exported[instance_sym->exported_count++] = entity;
+
+  // The body resolves in the same scope (spec entities directly visible),
+  // under the visibility horizon of the template body's own analysis point.
+  if (body_clone)
+    Resolve_Instance_Package_Body_Clone (instance_sym, template_sym,
+                                         body_clone, instance_scope);
+
+  spec_clone->symbol = instance_sym;
+  instance_sym->scope = instance_scope;
+  instance_sym->instance_spec = spec_clone;
+  instance_sym->instance_body = body_clone;
+  Symbol_Manager_Pop_Scope ();
+  sm->current_scope = saved_scope;
+  sm->visibility_cutoff = saved_cutoff;
+  sm->cutoff_exempt_scope = saved_exempt;
+  return true;
+}
+
+bool Instantiate_Generic_Subprogram (Symbol *instance_sym, Symbol *template_sym) {
+  if (not instance_sym or not template_sym) return false;
+  Syntax_Node *template_body = template_sym->generic_body;
+  if (template_body and template_body->kind != NK_PROCEDURE_BODY and
+      template_body->kind != NK_FUNCTION_BODY)
+    return false;
+
+  // A bodyless generic subprogram (the UNCHECKED_CONVERSION intrinsic)
+  // still needs its instance PROFILE — parameter and result types bound to
+  // the actuals — for call sites; there is no body to clone or emit.
+  if (not template_body) {
+    if (instance_sym->convention != CONVENTION_INTRINSIC) return false;
+    Syntax_Node *unit = template_sym->generic_unit;
+    if (not unit or (unit->kind != NK_PROCEDURE_SPEC and
+                     unit->kind != NK_FUNCTION_SPEC))
+      return false;
+  }
+
+  // The instance is a copy of the generic unit (RM 12.3), renamed to the
+  // instance's own name so its emitted symbol is the instance's.
+  Syntax_Node *body_clone = template_body ? Clone_Subtree (template_body) : NULL;
+  Syntax_Node *spec_clone = body_clone
+    ? body_clone->subprogram_body.specification
+    : Clone_Subtree (template_sym->generic_unit);
+  if (spec_clone) spec_clone->subprogram_spec.name = instance_sym->name;
+
+  // Resolve the clone in the environment of the generic's declaration
+  // (RM 12.3 rule (i): global names denote the same entities as in the
+  // template), with the instance's formal bindings layered on top.
+  Scope *saved_scope = sm->current_scope;
+  uint32_t saved_cutoff = sm->visibility_cutoff;
+  Scope   *saved_exempt = sm->cutoff_exempt_scope;
+  if (template_sym->defining_scope)
+    sm->current_scope = template_sym->defining_scope;
+  Symbol_Manager_Push_Scope (instance_sym);
+  sm->cutoff_exempt_scope = sm->current_scope;
+  sm->visibility_cutoff = template_sym->generic_body_visibility_cutoff
+    ? template_sym->generic_body_visibility_cutoff
+    : template_sym->generic_spec_visibility_cutoff;
+
+  // Bind each formal to its actual as a symbol of the instance scope.
+  Instance_Remap remap;
+  Bind_Generic_Formals_To_Actuals (instance_sym, template_sym, &remap);
+
+  // Parameters of the instance enter its scope; their types resolve against
+  // the formal bindings just installed. The instance symbol's parameter
+  // array is rebuilt from the clone so each entry carries its parameter
+  // symbol — the body prologue allocates slots through param_sym and the
+  // resolved body references those same symbols.
+  if (spec_clone) {
+    Node_List *parameters = &spec_clone->subprogram_spec.parameters;
+    uint32_t total_parameters = 0;
+    for (uint32_t i = 0; i < parameters->count; i++) {
+      Syntax_Node *parameter = parameters->items[i];
+      if (parameter and parameter->kind == NK_PARAM_SPEC)
+        total_parameters += parameter->param_spec.names.count;
+    }
+    instance_sym->parameter_count = total_parameters;
+    instance_sym->parameters = total_parameters
+      ? Arena_Allocate (total_parameters * sizeof (Parameter_Info)) : NULL;
+    uint32_t index = 0;
+    for (uint32_t i = 0; i < parameters->count; i++) {
+      Syntax_Node *parameter = parameters->items[i];
+      if (not parameter or parameter->kind != NK_PARAM_SPEC) continue;
+      if (parameter->param_spec.param_type)
+        Resolve_Expression (parameter->param_spec.param_type);
+      if (parameter->param_spec.default_expr)
+        Resolve_Expression (parameter->param_spec.default_expr);
+      Type_Info *parameter_type = parameter->param_spec.param_type
+        ? parameter->param_spec.param_type->type : NULL;
+      for (uint32_t j = 0; j < parameter->param_spec.names.count; j++) {
+        Syntax_Node *parameter_name = parameter->param_spec.names.items[j];
+        Symbol *parameter_sym = Symbol_New (SYMBOL_PARAMETER,
+          parameter_name->string_val.text, parameter_name->location);
+        parameter_sym->type = parameter_type;
+        Symbol_Add (parameter_sym);
+        parameter_name->symbol = parameter_sym;
+        instance_sym->parameters[index] = (Parameter_Info){
+          .name          = parameter_name->string_val.text,
+          .param_type    = parameter_type,
+          .mode          = (Parameter_Mode) parameter->param_spec.mode,
+          .param_sym     = parameter_sym,
+          .default_value = parameter->param_spec.default_expr,
+        };
+        index++;
+      }
+    }
+    if (spec_clone->subprogram_spec.return_type) {
+      Resolve_Expression (spec_clone->subprogram_spec.return_type);
+      if (spec_clone->subprogram_spec.return_type->type) {
+        instance_sym->return_type = spec_clone->subprogram_spec.return_type->type;
+        instance_sym->type        = instance_sym->return_type;
+      }
+    }
+    spec_clone->symbol = instance_sym;
+  }
+
+  // Within its own declarative region the generic unit's name denotes the
+  // current instance (RM 12.1(7)): bind the template's name to the
+  // instance so recursive calls in the clone target the instance.
+  if (body_clone) {
+    Symbol *self_binding = Symbol_New (instance_sym->kind,
+      template_sym->name, instance_sym->location);
+    self_binding->renamed_object  = (Syntax_Node *) instance_sym;
+    self_binding->parameters      = instance_sym->parameters;
+    self_binding->parameter_count = instance_sym->parameter_count;
+    self_binding->return_type     = instance_sym->return_type;
+    self_binding->type            = instance_sym->return_type;
+    Symbol_Add (self_binding);
+  }
+
+  // Resolve the clone as an ordinary body: declarations (the bindings
+  // first), master bookkeeping, statements, handlers.
+  if (body_clone) {
+    Resolve_Declaration_List (&body_clone->subprogram_body.declarations);
+    body_clone->subprogram_body.is_task_master =
+      Declarations_Create_Task_Dependents (&body_clone->subprogram_body.declarations);
+    if (body_clone->subprogram_body.is_task_master) {
+      body_clone->subprogram_body.master_scope_id = Next_Master_Scope_Id ();
+      Assign_Access_Type_Masters (&body_clone->subprogram_body.declarations,
+                                  body_clone->subprogram_body.master_scope_id);
+    }
+    Resolve_Statement_List (&body_clone->subprogram_body.statements);
+    for (uint32_t i = 0; i < body_clone->subprogram_body.handlers.count; i++)
+      Resolve_Statement (body_clone->subprogram_body.handlers.items[i]);
+    body_clone->symbol = instance_sym;
+  }
+  instance_sym->scope = sm->current_scope;
+  instance_sym->instance_body = body_clone;
+  Symbol_Manager_Pop_Scope ();
+  sm->current_scope = saved_scope;
+  sm->visibility_cutoff = saved_cutoff;
+  sm->cutoff_exempt_scope = saved_exempt;
+  return true;
 }
 
 void Resolve_Declaration (Syntax_Node *node) {
@@ -14282,6 +16187,11 @@ void Resolve_Declaration (Syntax_Node *node) {
           type->kind == TYPE_UNKNOWN) {
           type->kind = node->type_decl.is_limited ?
             TYPE_LIMITED_PRIVATE : TYPE_PRIVATE;
+
+          // Limitedness is a property of the PRIVATE view and survives the
+          // full-view completion (RM 7.4.4): no assignment, no predefined
+          // equality, no literals, whatever the completion turns out to be.
+          type->is_limited = node->type_decl.is_limited;
           if (has_discriminants) {
             Component_Info *comps = Arena_Allocate (
               disc_count * sizeof (Component_Info));
@@ -14560,6 +16470,43 @@ void Resolve_Declaration (Syntax_Node *node) {
           if (not sym->return_type)
             sym->return_type = renamed_sym->return_type;
         }
+
+        // RM 8.5: a renaming of an entry (or entry-family member) denotes
+        // the entity determined when the renaming declaration is
+        // ELABORATED — the task prefix and any family index are evaluated
+        // then, not at each call. Keep the renamed name (it carries both)
+        // and give the rename two hidden locals; elaboration stores the
+        // task pointer and index there, calls through the rename read
+        // them back.
+        if (renamed_sym and renamed_sym->kind == SYMBOL_ENTRY and
+            node->subprogram_spec.renamed) {
+          Syntax_Node *renamed_name = node->subprogram_spec.renamed;
+          sym->renamed_entry_name = renamed_name;
+
+          size_t slot_name_cap = sym->name.length + 24;
+          char *task_slot_name = Arena_Allocate (slot_name_cap);
+          int task_name_len = snprintf (task_slot_name, slot_name_cap,
+            "%.*s__renamed_task", (int)sym->name.length, sym->name.data);
+          Symbol *task_slot = Symbol_New (SYMBOL_VARIABLE,
+            (String_Slice){ task_slot_name, (uint32_t)task_name_len },
+            node->location);
+          task_slot->type = renamed_sym->parent ? renamed_sym->parent->type
+                                                : NULL;
+          Symbol_Add (task_slot);
+          sym->rename_task_slot = task_slot;
+
+          if (renamed_name->kind == NK_APPLY) {
+            char *index_slot_name = Arena_Allocate (slot_name_cap);
+            int index_name_len = snprintf (index_slot_name, slot_name_cap,
+              "%.*s__renamed_index", (int)sym->name.length, sym->name.data);
+            Symbol *index_slot = Symbol_New (SYMBOL_VARIABLE,
+              (String_Slice){ index_slot_name, (uint32_t)index_name_len },
+              node->location);
+            index_slot->type = sm->type_integer;
+            Symbol_Add (index_slot);
+            sym->rename_index_slot = index_slot;
+          }
+        }
         Symbol_Add (sym);
         node->symbol = sym;
       }
@@ -14575,165 +16522,19 @@ void Resolve_Declaration (Syntax_Node *node) {
 
         // This body completes a generic - store it and resolve it.
         // Push scope with generic formals so T, F etc. are visible.
-        if (matching_generic and matching_generic->kind == SYMBOL_GENERIC) {
+        if (matching_generic and matching_generic->kind == SYMBOL_GENERIC and
+            not node->subprogram_body.is_separate) {
           matching_generic->generic_body = node;
+          matching_generic->generic_body_visibility_cutoff =
+            sm->next_creation_sequence;
           node->symbol = matching_generic;
 
           // Push scope for generic body resolution
           Symbol_Manager_Push_Scope (matching_generic);
 
-          // Add generic formal parameters (types, objects, subprograms) to scope
-          if (matching_generic->declaration and
-            matching_generic->declaration->kind == NK_GENERIC_DECL) {
-            Node_List *formals = &matching_generic->declaration->generic_decl.formals;
-            for (uint32_t i = 0; i < formals->count; i++) {
-              Syntax_Node *formal = formals->items[i];
-              if (not formal) continue;
-
-              // Map def_kind > Type_Kind so numeric formals                                        
-              // are recognised by Type_Is_Numeric (RM 12.1.2):                                     
-              // 0=PRIVATE, 1=LIMITED, 2=DISCRETE, 3=INTEGER,                                       
-              // 4=FLOAT, 5=FIXED, 6=ARRAY, 7=ACCESS                                                
-              //                                                                                    
-              if (formal->kind == NK_GENERIC_TYPE_PARAM) {
-                Type_Kind formal_kind = TYPE_PRIVATE;
-                switch (formal->generic_type_param.def_kind) {
-                  case 2:  formal_kind = TYPE_ENUMERATION; break;  // DISCRETE
-                  case 3:  formal_kind = TYPE_INTEGER;     break;  // INTEGER
-                  case 4:  formal_kind = TYPE_FLOAT;       break;  // FLOAT
-                  case 5:  formal_kind = TYPE_FIXED;       break;  // FIXED
-                  case 6:  formal_kind = TYPE_ARRAY;       break;  // ARRAY
-                  case 7:  formal_kind = TYPE_ACCESS;      break;  // ACCESS
-                  default: break;
-                }
-                Symbol *type_sym = Symbol_New (SYMBOL_TYPE,
-                  formal->generic_type_param.name, formal->location);
-                type_sym->type = Type_New (formal_kind,
-                  formal->generic_type_param.name);
-
-                // Slot this formal occupies in an instance's actuals (object
-                // formals consume one slot per name), fixed once here.
-                int slot = 0;
-                for (uint32_t j = 0; j < i; j++) {
-                  Syntax_Node *prior = formals->items[j];
-                  slot += (prior->kind == NK_GENERIC_OBJECT_PARAM)
-                            ? (int)prior->generic_object_param.names.count : 1;
-                }
-                type_sym->type->generic_formal_index = slot;
-
-                Symbol_Add (type_sym);
-                formal->symbol = type_sym;
-
-                // RM 12.1.2: Process known discriminants for formal                                
-                // private types. Create discriminant symbols and add                              
-                // them as components so P1.D resolves correctly.                                  
-                //                                                                                  
-                if (formal->generic_type_param.discriminants.count > 0) {
-                  Type_Info *ftype = type_sym->type;
-                  uint32_t disc_count = 0;
-                  for (uint32_t di = 0; di < formal->generic_type_param.discriminants.count; di++) {
-                    Syntax_Node *ds = formal->generic_type_param.discriminants.items[di];
-                    if (ds and ds->kind == NK_DISCRIMINANT_SPEC)
-                      disc_count += ds->discriminant.names.count;
-                  }
-                  if (disc_count > 0) {
-                    // Resolve each discriminant's type, then lay out the
-                    // components through the shared builder.
-                    for (uint32_t di = 0; di < formal->generic_type_param.discriminants.count; di++) {
-                      Syntax_Node *ds = formal->generic_type_param.discriminants.items[di];
-                      if (ds and ds->kind == NK_DISCRIMINANT_SPEC and ds->discriminant.disc_type)
-                        Resolve_Expression (ds->discriminant.disc_type);
-                    }
-                    Component_Info *comps = Arena_Allocate (disc_count * sizeof (Component_Info));
-                    ftype->size = Fill_Discriminant_Components (comps,
-                                    &formal->generic_type_param.discriminants);
-                    ftype->record.components         = comps;
-                    ftype->record.component_count    = disc_count;
-                    ftype->record.has_discriminants  = true;
-                    ftype->record.discriminant_count = disc_count;
-                  }
-                }
-
-              // Create and add formal subprogram symbol if not exists
-              } else if (formal->kind == NK_GENERIC_SUBPROGRAM_PARAM) {
-                if (not formal->symbol) {
-                  String_Slice name = formal->generic_subprog_param.name;
-                  Symbol_Kind sk = formal->generic_subprog_param.is_function ?
-                           SYMBOL_FUNCTION : SYMBOL_PROCEDURE;
-                  Symbol *subprog_sym = Symbol_New (sk, name, formal->location);
-
-                  // Set up parameter info
-                  Node_List *fparams = &formal->generic_subprog_param.parameters;
-                  uint32_t total_params = 0;
-                  for (uint32_t j = 0; j < fparams->count; j++) {
-                    Syntax_Node *ps = fparams->items[j];
-                    if (ps and ps->kind == NK_PARAM_SPEC)
-                      total_params += ps->param_spec.names.count;
-                  }
-                  subprog_sym->parameter_count = total_params;
-                  if (total_params > 0) {
-                    subprog_sym->parameters = Arena_Allocate (
-                      total_params * sizeof (Parameter_Info));
-                    uint32_t idx = 0;
-                    for (uint32_t j = 0; j < fparams->count; j++) {
-                      Syntax_Node *ps = fparams->items[j];
-                      if (ps and ps->kind == NK_PARAM_SPEC) {
-                        Type_Info *pt = NULL;
-                        if (ps->param_spec.param_type) {
-                          Resolve_Expression (ps->param_spec.param_type);
-                          pt = ps->param_spec.param_type->type;
-                        }
-                        for (uint32_t k = 0; k < ps->param_spec.names.count; k++) {
-                          Syntax_Node *pn = ps->param_spec.names.items[k];
-                          subprog_sym->parameters[idx].name       = pn->string_val.text;
-                          subprog_sym->parameters[idx].param_type = pt;
-                          subprog_sym->parameters[idx].mode       =
-                            (Parameter_Mode)ps->param_spec.mode;
-                          idx++;
-                        }
-                      }
-                    }
-                  }
-
-                  // Set return type for functions
-                  if (formal->generic_subprog_param.is_function and
-                    formal->generic_subprog_param.return_type) {
-                    Resolve_Expression (formal->generic_subprog_param.return_type);
-                    subprog_sym->type = formal->generic_subprog_param.return_type->type;
-                    subprog_sym->return_type = subprog_sym->type;
-                  }
-                  formal->symbol = subprog_sym;
-                }
-                Symbol_Add (formal->symbol);
-
-              // Add formal object(s) as variable(s) with their declared type.
-              // e.g., "I1, I2 : INTEGER" creates two symbols of type INTEGER
-              } else if (formal->kind == NK_GENERIC_OBJECT_PARAM) {
-                Type_Info *obj_type = NULL;
-                if (formal->generic_object_param.object_type) {
-                  Resolve_Expression (formal->generic_object_param.object_type);
-                  obj_type = formal->generic_object_param.object_type->type;
-                }
-
-                // Resolve default expression with formal's type (RM 12.4)
-                if (obj_type and formal->generic_object_param.default_expr) {
-                  Syntax_Node *def = formal->generic_object_param.default_expr;
-                  def->type = obj_type;
-                  Resolve_Expression (def);
-                  if (not def->type or def->kind == NK_AGGREGATE)
-                    def->type = obj_type;
-                }
-                for (uint32_t j = 0; j < formal->generic_object_param.names.count; j++) {
-                  Syntax_Node *name_node = formal->generic_object_param.names.items[j];
-                  Symbol *obj_sym = Symbol_New (SYMBOL_VARIABLE,
-                    name_node->string_val.text, formal->location);
-                  obj_sym->type = obj_type;
-                  Symbol_Add (obj_sym);
-                  name_node->symbol = obj_sym;
-                }
-              }
-            }
-          }
+          // Formals into scope (RM 12.1); symbols already exist when the
+          // declaration was analyzed, and re-install here for the body.
+          Install_Generic_Formal_Symbols (matching_generic);
 
           // Add body parameters to scope
           if (spec) {
@@ -14759,6 +16560,13 @@ void Resolve_Declaration (Syntax_Node *node) {
               }
             }
           }
+
+          // Formals are in scope: resolve IS-name formal-subprogram
+          // defaults (RM 12.1.3).
+          if (matching_generic->declaration and
+              matching_generic->declaration->kind == NK_GENERIC_DECL)
+            Resolve_Generic_Formal_Subprogram_Defaults (
+              &matching_generic->declaration->generic_decl.formals);
 
           // Resolve declarations and statements in the generic body
           Resolve_Declaration_List (&node->subprogram_body.declarations);
@@ -15092,151 +16900,18 @@ void Resolve_Declaration (Syntax_Node *node) {
 
         // Handle generic packages: formals and unit are in the generic declaration
         // Store this body as the generic's body for later instantiation
-        if (pkg_sym and pkg_sym->kind == SYMBOL_GENERIC) {
+        if (pkg_sym and pkg_sym->kind == SYMBOL_GENERIC and
+            not node->package_body.is_separate) {
           pkg_sym->generic_body = node;
+          pkg_sym->generic_body_visibility_cutoff = sm->next_creation_sequence;
 
-          // Install generic formal parameters first
-          if (pkg_sym->declaration and
-            pkg_sym->declaration->kind == NK_GENERIC_DECL) {
-            Node_List *formals = &pkg_sym->declaration->generic_decl.formals;
-            for (uint32_t i = 0; i < formals->count; i++) {
-              Syntax_Node *formal = formals->items[i];
-              if (formal->symbol) {
-                Symbol_Add (formal->symbol);
-              }
+          // Formals into scope (RM 12.1); created once, re-installed here.
+          Install_Generic_Formal_Symbols (pkg_sym);
 
-              // For generic type parameters, create/install a type symbol
-              if (formal->kind == NK_GENERIC_TYPE_PARAM and not formal->symbol) {
-                Symbol *type_sym = Symbol_New (SYMBOL_TYPE,
-                  formal->generic_type_param.name, formal->location);
-
-                // Map def_kind to appropriate Type_Kind:                                           
-                // 0=PRIVATE, 1=LIMITED_PRIVATE, 2=DISCRETE, 3=INTEGER,                             
-                // 4=FLOAT, 5=FIXED, 6=ARRAY, 7=ACCESS                                              
-                //                                                                                  
-                Type_Kind formal_kind = TYPE_PRIVATE;
-                switch (formal->generic_type_param.def_kind) {
-                  case 2:  formal_kind = TYPE_ENUMERATION; break;  // DISCRETE
-                  case 3:  formal_kind = TYPE_INTEGER;     break;  // INTEGER range<>
-                  case 4:  formal_kind = TYPE_FLOAT;       break;  // FLOAT digits<>
-                  case 5:  formal_kind = TYPE_FIXED;       break;  // FIXED delta<>
-                  case 6:  formal_kind = TYPE_ARRAY;       break;  // ARRAY
-                  case 7:  formal_kind = TYPE_ACCESS;      break;  // ACCESS
-                  default: formal_kind = TYPE_PRIVATE;     break;
-                }
-                Type_Info *type = Type_New (formal_kind, formal->generic_type_param.name);
-
-                // Slot this formal occupies in an instance's actuals (object
-                // formals consume one slot per name), fixed once here.
-                int slot = 0;
-                for (uint32_t j = 0; j < i; j++) {
-                  Syntax_Node *prior = formals->items[j];
-                  slot += (prior->kind == NK_GENERIC_OBJECT_PARAM)
-                            ? (int)prior->generic_object_param.names.count : 1;
-                }
-                type->generic_formal_index = slot;
-
-                type_sym->type = type;
-                formal->symbol = type_sym;
-                Symbol_Add (type_sym);
-              }
-
-              // For generic object parameters, create/install object symbols
-              if (formal->kind == NK_GENERIC_OBJECT_PARAM) {
-                Type_Info *obj_type = NULL;
-                if (formal->generic_object_param.object_type) {
-                  Resolve_Expression (formal->generic_object_param.object_type);
-                  obj_type = formal->generic_object_param.object_type->type;
-                }
-
-                // Resolve default expression with formal's type (RM 12.4)
-                if (obj_type and formal->generic_object_param.default_expr) {
-                  Syntax_Node *def = formal->generic_object_param.default_expr;
-                  def->type = obj_type;
-                  Resolve_Expression (def);
-                  if (not def->type or def->kind == NK_AGGREGATE)
-                    def->type = obj_type;
-                }
-
-                // Create symbols for each name
-                for (uint32_t j = 0; j < formal->generic_object_param.names.count; j++) {
-                  Syntax_Node *name_node = formal->generic_object_param.names.items[j];
-                  if (name_node and name_node->kind == NK_IDENTIFIER) {
-                    Symbol *obj_sym = Symbol_New (SYMBOL_CONSTANT,
-                      name_node->string_val.text, name_node->location);
-                    obj_sym->type = obj_type;
-                    name_node->symbol = obj_sym;
-                    Symbol_Add (obj_sym);
-                  }
-                }
-              }
-
-              // For generic subprogram parameters, create procedure/function symbols
-              // so calls to formal subprograms resolve during generic body analysis
-              if (formal->kind == NK_GENERIC_SUBPROGRAM_PARAM) {
-                String_Slice name = formal->generic_subprog_param.name;
-                Symbol_Kind sk = formal->generic_subprog_param.is_function ?
-                         SYMBOL_FUNCTION : SYMBOL_PROCEDURE;
-                Symbol *subprog_sym = Symbol_New (sk, name, formal->location);
-
-                // Count total parameters
-                Node_List *params = &formal->generic_subprog_param.parameters;
-                uint32_t total_params = 0;
-                for (uint32_t j = 0; j < params->count; j++) {
-                  Syntax_Node *ps = params->items[j];
-                  if (ps->kind == NK_PARAM_SPEC) {
-                    total_params += ps->param_spec.names.count;
-                  }
-                }
-
-                // Allocate and fill parameter info
-                subprog_sym->parameter_count = total_params;
-                if (total_params > 0) {
-                  subprog_sym->parameters = Arena_Allocate (
-                    total_params * sizeof (Parameter_Info));
-                  uint32_t idx = 0;
-                  for (uint32_t j = 0; j < params->count; j++) {
-                    Syntax_Node *ps = params->items[j];
-
-                    // Resolve param type - may reference earlier formal types
-                    if (ps->kind == NK_PARAM_SPEC) {
-                      Type_Info *pt = NULL;
-                      if (ps->param_spec.param_type) {
-                        Resolve_Expression (ps->param_spec.param_type);
-                        pt = ps->param_spec.param_type->type;
-                      }
-                      for (uint32_t k = 0; k < ps->param_spec.names.count; k++) {
-                        Syntax_Node *pn = ps->param_spec.names.items[k];
-                        subprog_sym->parameters[idx].name = pn->string_val.text;
-                        subprog_sym->parameters[idx].param_type = pt;
-                        subprog_sym->parameters[idx].mode =
-                          (Parameter_Mode)ps->param_spec.mode;
-                        idx++;
-                      }
-                    }
-                  }
-                }
-
-                // For functions, set return type
-                if (formal->generic_subprog_param.is_function and
-                  formal->generic_subprog_param.return_type) {
-                  Resolve_Expression (formal->generic_subprog_param.return_type);
-                  subprog_sym->type = formal->generic_subprog_param.return_type->type;
-                }
-                formal->symbol = subprog_sym;
-                Symbol_Add (subprog_sym);
-              }
-            }
-          }
-
-          // Get the package spec from the generic unit
+          // The spec was resolved when the generic declaration was analyzed
+          // (or by the §17 loaded-unit path); the shared install below puts
+          // its decorated entities into the body's scope.
           spec = pkg_sym->generic_unit;
-
-          // For generic package body, resolve the spec first if not done
-          if (spec and spec->kind == NK_PACKAGE_SPEC) {
-            Resolve_Declaration_List (&spec->package_spec.visible_decls);
-            Resolve_Declaration_List (&spec->package_spec.private_decls);
-          }
         } else if (pkg_sym and pkg_sym->declaration and
                pkg_sym->declaration->kind == NK_PACKAGE_SPEC) {
           spec = pkg_sym->declaration;
@@ -15246,6 +16921,7 @@ void Resolve_Declaration (Syntax_Node *node) {
           Install_Declaration_Symbols (&spec->package_spec.private_decls);
         }
         Resolve_Declaration_List (&node->package_body.declarations);
+        Mark_Package_Level_Objects (&node->package_body.declarations);
 
         // Freeze all types at end of declarative part (RM 13.14)
         Freeze_Declaration_List (&node->package_body.declarations);
@@ -15568,8 +17244,38 @@ void Resolve_Declaration (Syntax_Node *node) {
         Symbol_Add (sym);
         node->symbol = sym;
 
-        // DON'T resolve the unit here - it contains generic formals
-        // that need to be substituted during instantiation
+        // Analyze the template at its declaration (RM 12.1): the formals
+        // enter a scope of their own and the generic unit's specification
+        // resolves against them, so template errors surface here and both
+        // instantiation and the body (when one arrives) start from a
+        // decorated specification. IS-name defaults of formal subprograms
+        // resolve in the same scope (RM 12.1.3) — a default like T'SUCC or
+        // one naming an earlier formal binds against the installed formals.
+        Symbol_Manager_Push_Scope (sym);
+        Install_Generic_Formal_Symbols (sym);
+        if (unit->kind == NK_PACKAGE_SPEC) {
+          Resolve_Declaration_List (&unit->package_spec.visible_decls);
+          Resolve_Declaration_List (&unit->package_spec.private_decls);
+          Mark_Package_Level_Objects (&unit->package_spec.visible_decls);
+          Mark_Package_Level_Objects (&unit->package_spec.private_decls);
+        } else if (unit->kind == NK_PROCEDURE_SPEC or
+                   unit->kind == NK_FUNCTION_SPEC) {
+          Node_List *parameters = &unit->subprogram_spec.parameters;
+          for (uint32_t i = 0; i < parameters->count; i++) {
+            Syntax_Node *parameter = parameters->items[i];
+            if (parameter and parameter->kind == NK_PARAM_SPEC and
+                parameter->param_spec.param_type)
+              Resolve_Expression (parameter->param_spec.param_type);
+          }
+          if (unit->subprogram_spec.return_type)
+            Resolve_Expression (unit->subprogram_spec.return_type);
+        }
+        Resolve_Generic_Formal_Subprogram_Defaults (&node->generic_decl.formals);
+        Symbol_Manager_Pop_Scope ();
+
+        // Declaration-point visibility horizon: instance spec clones
+        // resolve as if at this exact point (RM 12.3 rule (i)).
+        sym->generic_spec_visibility_cutoff = sm->next_creation_sequence;
       }
       break;
 
@@ -15608,6 +17314,11 @@ void Resolve_Declaration (Syntax_Node *node) {
                         node->location);
         inst_sym->declaration = node;
         inst_sym->generic_template = template;
+
+        // The instance nests where the instantiation occurs: its parent
+        // anchors static-chain emission (uplevel access from the instance
+        // body to the instantiation's enclosing frames).
+        inst_sym->parent = sm->current_scope ? sm->current_scope->owner : NULL;
         // Propagate INTRINSIC convention from template so the call site
         // can recognize the instance as needing inline lowering (e.g.
         // UNCHECKED_CONVERSION) instead of an external call.
@@ -15639,49 +17350,87 @@ void Resolve_Declaration (Syntax_Node *node) {
         // Use the larger of computed slots and actual params provided
         if (total_actual_slots < actuals->count)
           total_actual_slots = actuals->count;
-        inst_sym->generic_actual_count = total_actual_slots;
+        inst_sym->actual_binding_count = total_actual_slots;
+        Syntax_Node **slot_actuals = NULL;
         if (total_actual_slots > 0) {
-          inst_sym->generic_actuals = Arena_Allocate (
-            total_actual_slots * sizeof (*inst_sym->generic_actuals));
+          inst_sym->actual_bindings = Arena_Allocate (
+            total_actual_slots * sizeof (*inst_sym->actual_bindings));
 
-          // Decorate each formal's symbol with the slot it occupies in the
-          // actuals, so codegen substitutes a formal object or subprogram by
-          // index rather than by matching its name. A multi-name object formal
-          // stamps one slot per name. (The slot is a template-position property,
-          // identical across instances, so re-stamping is idempotent.)
-          { uint32_t slot = 0;
-            for (uint32_t i = 0; i < formals->count; i++) {
+          // Place each actual into its formal's slot (RM 12.3): a
+          // positional actual takes the next slot in formal order; a named
+          // association (FORMAL => ACTUAL) takes the slot of the formal it
+          // names. The resolution passes below then read actuals by slot,
+          // never by list position.
+          slot_actuals = Arena_Allocate (
+            total_actual_slots * sizeof (*slot_actuals));
+          {
+            String_Slice *slot_names = Arena_Allocate (
+              total_actual_slots * sizeof (*slot_names));
+            uint32_t slot = 0;
+            for (uint32_t i = 0; i < formals->count and slot < total_actual_slots; i++) {
               Syntax_Node *formal = formals->items[i];
               if (formal->kind == NK_GENERIC_OBJECT_PARAM) {
-                for (uint32_t j = 0; j < formal->generic_object_param.names.count; j++) {
+                for (uint32_t j = 0; j < formal->generic_object_param.names.count and
+                                     slot < total_actual_slots; j++) {
                   Syntax_Node *nm = formal->generic_object_param.names.items[j];
-                  if (nm and nm->symbol) nm->symbol->generic_formal_index = (int)slot;
+                  if (nm) slot_names[slot] = nm->string_val.text;
                   slot++;
                 }
+              } else if (formal->kind == NK_GENERIC_TYPE_PARAM) {
+                slot_names[slot++] = formal->generic_type_param.name;
+              } else if (formal->kind == NK_GENERIC_SUBPROGRAM_PARAM) {
+                slot_names[slot++] = formal->generic_subprog_param.name;
               } else {
-                if (formal->symbol) formal->symbol->generic_formal_index = (int)slot;
                 slot++;
+              }
+            }
+            uint32_t next_positional = 0;
+            for (uint32_t i = 0; i < actuals->count; i++) {
+              Syntax_Node *actual = actuals->items[i];
+              if (not actual) continue;
+              if (actual->kind == NK_ASSOCIATION and
+                  actual->association.choices.count == 1 and
+                  actual->association.choices.items[0] and
+                  (actual->association.choices.items[0]->kind == NK_IDENTIFIER or
+                   actual->association.choices.items[0]->kind == NK_STRING)) {
+                String_Slice formal_name =
+                  actual->association.choices.items[0]->string_val.text;
+                bool placed = false;
+                for (uint32_t s = 0; s < total_actual_slots; s++) {
+                  if (slot_names[s].data and
+                      Slice_Equal_Ignore_Case (slot_names[s], formal_name)) {
+                    slot_actuals[s] = actual;
+                    placed = true;
+                    break;
+                  }
+                }
+                if (not placed)
+                  Report_Error (actual->location,
+                    "no generic formal named '%.*s'",
+                    (int)formal_name.length, formal_name.data);
+              } else if (next_positional < total_actual_slots) {
+                slot_actuals[next_positional++] = actual;
               }
             }
           }
 
           // First pass: resolve type formals (using actual_idx to track
-          // position in the actuals list, since object formals with multiple                       
-          // names consume multiple actual slots).                                                 
-          //                                                                                        
+          // the formal's slot, since object formals with multiple names
+          // consume multiple actual slots).
+          //
           uint32_t actual_idx = 0;
           for (uint32_t i = 0; i < formals->count; i++) {
             Syntax_Node *formal = formals->items[i];
             if (formal->kind == NK_GENERIC_TYPE_PARAM) {
-              Syntax_Node *actual = (actual_idx < actuals->count) ?
-                actuals->items[actual_idx] : NULL;
+              Syntax_Node *actual = (actual_idx < total_actual_slots) ?
+                slot_actuals[actual_idx] : NULL;
               if (actual_idx < total_actual_slots) {
-                inst_sym->generic_actuals[actual_idx].formal_name =
+                inst_sym->actual_bindings[actual_idx].formal_name =
                   formal->generic_type_param.name;
                 if (actual) {
                   Syntax_Node *type_node = Unwrap_Association (actual);
                   Resolve_Expression (type_node);
-                  inst_sym->generic_actuals[actual_idx].actual_type = type_node->type;
+                  inst_sym->actual_bindings[actual_idx].actual_type = type_node->type;
                 }
               }
               actual_idx++;
@@ -15706,18 +17455,10 @@ void Resolve_Declaration (Syntax_Node *node) {
               // When the object formal's type is itself a type formal, take its
               // actual by the formal type's slot decoration rather than by name.
               if (obj_type_node and obj_type_node->kind == NK_IDENTIFIER) {
-                if (obj_type_node->type and
-                    obj_type_node->type->generic_formal_index >= 0 and
-                    obj_type_node->type->generic_formal_index < (int)total_actual_slots)
-                  obj_type = inst_sym->generic_actuals[
-                    obj_type_node->type->generic_formal_index].actual_type;
 
-                // The object formal's type may name a type formal of the same
-                // generic whose node carries no stamped index (e.g. INIT : GEN
-                // where GEN is a formal private type). Match by name against the
-                // bound actuals before treating it as a concrete scope type.
-                if (not obj_type)
-                  obj_type = Generic_Actual_Type_By_Name (inst_sym, obj_type_node->string_val.text);
+                // A type formal of the same generic matches by name against
+                // the bound actuals; otherwise it is a concrete scope type.
+                obj_type = Generic_Actual_Type_By_Name (inst_sym, obj_type_node->string_val.text);
 
                 // Concrete types: resolve from scope (RM 12.3)
                 if (not obj_type) {
@@ -15736,8 +17477,8 @@ void Resolve_Declaration (Syntax_Node *node) {
 
               // Map each name to its own actual
               for (uint32_t j = 0; j < formal->generic_object_param.names.count; j++) {
-                Syntax_Node *actual = (actual_idx < actuals->count) ?
-                  actuals->items[actual_idx] : NULL;
+                Syntax_Node *actual = (actual_idx < total_actual_slots) ?
+                  slot_actuals[actual_idx] : NULL;
                 if (actual and actual_idx < total_actual_slots) {
                   Syntax_Node *expr = Unwrap_Association (actual);
                   if (obj_type) {
@@ -15756,10 +17497,23 @@ void Resolve_Declaration (Syntax_Node *node) {
                   } else {
                     Resolve_Expression (expr);
                   }
-                  inst_sym->generic_actuals[actual_idx].actual_expr = expr;
+                  inst_sym->actual_bindings[actual_idx].actual_expr = expr;
                   Syntax_Node *fname = formal->generic_object_param.names.items[j];
                   if (fname)
-                    inst_sym->generic_actuals[actual_idx].formal_name =
+                    inst_sym->actual_bindings[actual_idx].formal_name =
+                      fname->string_val.text;
+
+                // No actual: the formal's default expression supplies the
+                // value (RM 12.1.1, evaluated for instantiations that use
+                // the default). Bound like an actual so references inside
+                // the instance substitute it.
+                } else if (formal->generic_object_param.default_expr and
+                           actual_idx < total_actual_slots) {
+                  inst_sym->actual_bindings[actual_idx].actual_expr =
+                    formal->generic_object_param.default_expr;
+                  Syntax_Node *fname = formal->generic_object_param.names.items[j];
+                  if (fname)
+                    inst_sym->actual_bindings[actual_idx].formal_name =
                       fname->string_val.text;
                 }
                 actual_idx++;
@@ -15779,11 +17533,11 @@ void Resolve_Declaration (Syntax_Node *node) {
               actual_idx += formal->generic_object_param.names.count;
               continue;
             }
-            Syntax_Node *actual = (actual_idx < actuals->count) ?
-              actuals->items[actual_idx] : NULL;
+            Syntax_Node *actual = (actual_idx < total_actual_slots) ?
+              slot_actuals[actual_idx] : NULL;
             if (formal->kind == NK_GENERIC_SUBPROGRAM_PARAM) {
               if (actual_idx < total_actual_slots)
-                inst_sym->generic_actuals[actual_idx].formal_name =
+                inst_sym->actual_bindings[actual_idx].formal_name =
                   formal->generic_subprog_param.name;
 
               // Resolve actual subprogram name
@@ -15795,20 +17549,39 @@ void Resolve_Declaration (Syntax_Node *node) {
                 // Look up operator by name
                 if (name_node->kind == NK_STRING) {
                   if (name_node->string_val.text.data) {
+
+                    // "/=" as an actual (RM 6.7): it denotes the negation of
+                    // the corresponding "=". A user-defined "=" matching the
+                    // formal's profile binds with the negation flag; anything
+                    // else lowers as the predefined inequality.
+                    if (Slice_Equal_Ignore_Case (name_node->string_val.text,
+                                                 S("/="))) {
+                      Symbol *eq_op =
+                        Generic_Formal_Equality_Actual (inst_sym, formal);
+                      if (eq_op) {
+                        name_node->symbol = eq_op;
+                        inst_sym->actual_bindings[actual_idx].actual_subprogram = eq_op;
+                        inst_sym->actual_bindings[actual_idx].actual_negated = true;
+                      } else {
+                        inst_sym->actual_bindings[actual_idx].builtin_operator = TK_NE;
+                      }
+                      goto string_actual_bound;
+                    }
+
                     Symbol *op = Symbol_Find (name_node->string_val.text);
 
-                    // Check type profile matches: the formal's type parameter                      
-                    // must match the found operator's return type. Otherwise                       
-                    // fall through to built-in operator path.                                     
-                    //                                                                              
+                    // Check type profile matches: the formal's type parameter
+                    // must match the found operator's return type. Otherwise
+                    // fall through to built-in operator path.
+                    //
                     bool type_matches = false;
 
                     // Find the actual type for the first type formal
                     if (op and (op->kind == SYMBOL_FUNCTION or op->kind == SYMBOL_PROCEDURE)) {
                       Type_Info *expected_type = NULL;
                       for (uint32_t k = 0; k < total_actual_slots; k++) {
-                        if (inst_sym->generic_actuals[k].actual_type) {
-                          expected_type = inst_sym->generic_actuals[k].actual_type;
+                        if (inst_sym->actual_bindings[k].actual_type) {
+                          expected_type = inst_sym->actual_bindings[k].actual_type;
                           break;
                         }
                       }
@@ -15822,19 +17595,20 @@ void Resolve_Declaration (Syntax_Node *node) {
                     if (op and type_matches and
                       (op->kind == SYMBOL_FUNCTION or op->kind == SYMBOL_PROCEDURE)) {
                       name_node->symbol = op;
-                      inst_sym->generic_actuals[actual_idx].actual_subprogram = op;
+                      inst_sym->actual_bindings[actual_idx].actual_subprogram = op;
 
                     // Check for built-in operators
                     } else {
 
-                      // String lexer strips quotes: "&" becomes just &
-                      String_Slice s = name_node->string_val.text;
-                      if (s.length == 1) {
-                        Token_Kind op = Operator_Token_From_Char (s.data[0]);
-                        if (op != TK_EOF)
-                          inst_sym->generic_actuals[actual_idx].builtin_operator = op;
-                      }
+                      // String lexer strips quotes: "&" arrives as &, "and"
+                      // as and. Token_From_Op_Name covers the multi-character
+                      // designators too.
+                      Token_Kind op_token =
+                        Token_From_Op_Name (name_node->string_val.text);
+                      if (op_token != TK_EOF)
+                        inst_sym->actual_bindings[actual_idx].builtin_operator = op_token;
                     }
+                    string_actual_bound: ;
                   }
                 }
 
@@ -15846,16 +17620,46 @@ void Resolve_Declaration (Syntax_Node *node) {
                     Symbol *lit = Symbol_Find (name_node->string_val.text);
                     if (lit and lit->kind == SYMBOL_LITERAL) {
                       name_node->symbol = lit;
-                      inst_sym->generic_actuals[actual_idx].actual_subprogram = lit;
+                      inst_sym->actual_bindings[actual_idx].actual_subprogram = lit;
                     }
+                  }
+                }
+                // Expanded-name "/=" actual (PK."/="): the same RM 6.7
+                // negation as the direct designator — resolve the package's
+                // "=" and bind it with the negation flag.
+                else if (name_node->kind == NK_SELECTED and
+                         Slice_Equal_Ignore_Case (name_node->selected.selector,
+                                                  S("/="))) {
+                  Syntax_Node eq_name = *name_node;
+                  eq_name.selected.selector = S("=");
+                  eq_name.symbol = NULL;
+                  eq_name.type = NULL;
+                  Resolve_Expression (&eq_name);
+                  if (eq_name.symbol and
+                      eq_name.symbol->kind == SYMBOL_FUNCTION and
+                      not eq_name.symbol->is_predefined and
+                      Generic_Formal_Equality_Profile_Matches (
+                        inst_sym, formal, eq_name.symbol)) {
+                    inst_sym->actual_bindings[actual_idx].actual_subprogram =
+                      eq_name.symbol;
+                    inst_sym->actual_bindings[actual_idx].actual_negated = true;
+                  } else {
+                    inst_sym->actual_bindings[actual_idx].builtin_operator = TK_NE;
                   }
                 }
                 else {
 
-                  // Look up the actual subprogram symbol
+                  // Look up the actual subprogram symbol; an overloaded
+                  // name disambiguates by the formal's profile (RM 12.3.6).
                   Resolve_Expression (name_node);
-                  if (name_node->symbol) {
-                    inst_sym->generic_actuals[actual_idx].actual_subprogram = name_node->symbol;
+                  Symbol *actual_sym = name_node->symbol;
+                  if (actual_sym and (actual_sym->kind == SYMBOL_FUNCTION or
+                                      actual_sym->kind == SYMBOL_PROCEDURE))
+                    actual_sym = Disambiguate_Subprogram_Actual (
+                      actual_sym, inst_sym, formal);
+                  if (actual_sym) {
+                    name_node->symbol = actual_sym;
+                    inst_sym->actual_bindings[actual_idx].actual_subprogram = actual_sym;
                   }
                 }
 
@@ -15867,7 +17671,34 @@ void Resolve_Declaration (Syntax_Node *node) {
                 if (default_sym and (default_sym->kind == SYMBOL_FUNCTION or
                            default_sym->kind == SYMBOL_PROCEDURE)) {
                   if (actual_idx < total_actual_slots)
-                    inst_sym->generic_actuals[actual_idx].actual_subprogram = default_sym;
+                    inst_sym->actual_bindings[actual_idx].actual_subprogram = default_sym;
+                }
+
+              // IS name default (RM 12.1.3): the name was resolved when
+              // the generic's body was analyzed (formals in scope). A
+              // bare identifier that has no binding yet is retried here
+              // quietly — spec-only generics never went through body
+              // analysis. Attribute defaults (T'SUCC) carry no symbol
+              // and bind nothing; calls through such formals keep their
+              // existing emission path.
+              } else if (formal->generic_subprog_param.default_name) {
+                Syntax_Node *default_name =
+                  formal->generic_subprog_param.default_name;
+                Symbol *default_sym = default_name->symbol;
+                if (not default_sym and default_name->kind == NK_IDENTIFIER)
+                  default_sym = Symbol_Find (default_name->string_val.text);
+                if (default_sym and (default_sym->kind == SYMBOL_FUNCTION or
+                           default_sym->kind == SYMBOL_PROCEDURE or
+                           default_sym->kind == SYMBOL_ENTRY or
+                           default_sym->kind == SYMBOL_LITERAL)) {
+                  if (actual_idx < total_actual_slots)
+                    inst_sym->actual_bindings[actual_idx].actual_subprogram = default_sym;
+
+                // Attribute default (IS T'SUCC, IS T'IMAGE, ...): calls
+                // through the formal apply the attribute (RM 12.1.3).
+                } else if (default_name->kind == NK_ATTRIBUTE) {
+                  if (actual_idx < total_actual_slots)
+                    inst_sym->actual_bindings[actual_idx].actual_attribute = default_name;
                 }
               }
               actual_idx++;
@@ -15877,394 +17708,41 @@ void Resolve_Declaration (Syntax_Node *node) {
           }
         }
 
-        // Copy parameter info from template unit
-        Syntax_Node *unit = template->generic_unit;
-        if (unit and (unit->kind == NK_FUNCTION_SPEC or unit->kind == NK_PROCEDURE_SPEC)) {
-          Node_List *params = &unit->subprogram_spec.parameters;
-          uint32_t total_params = 0;
-          for (uint32_t i = 0; i < params->count; i++) {
-            Syntax_Node *ps = params->items[i];
-            if (ps->kind == NK_PARAM_SPEC) {
-              total_params += ps->param_spec.names.count;
-            }
-          }
-          inst_sym->parameter_count = total_params;
-          if (total_params > 0) {
-            inst_sym->parameters = Arena_Allocate (total_params * sizeof (Parameter_Info));
-            uint32_t idx = 0;
-            for (uint32_t i = 0; i < params->count; i++) {
-              Syntax_Node *ps = params->items[i];
+        // RM 12.3.1 .. 12.3.6: every actual must match its formal's class
+        // and profile; diagnose before instantiating.
+        Validate_Generic_Actuals (inst_sym, template, slot_actuals,
+                                  total_actual_slots);
 
-              // Resolve param type and substitute formals with actuals
-              if (ps->kind == NK_PARAM_SPEC) {
-                Type_Info *param_type = NULL;
-                if (ps->param_spec.param_type) {
-                  Syntax_Node *pt = ps->param_spec.param_type;
-
-                  // A formal parameter type substitutes its actual by slot
-                  // decoration; otherwise resolve the named concrete type.
-                  if (pt->kind == NK_IDENTIFIER) {
-                    if (pt->type and pt->type->generic_formal_index >= 0 and
-                        pt->type->generic_formal_index < (int)inst_sym->generic_actual_count)
-                      param_type =
-                        inst_sym->generic_actuals[pt->type->generic_formal_index].actual_type;
-
-                    // The template's param-type node may carry no stamped formal
-                    // index; match the formal by name against the bound actuals
-                    // so a generic formal parameter type maps to its actual
-                    // rather than defaulting to void (mirrors the return type).
-                    if (not param_type)
-                      param_type = Generic_Actual_Type_By_Name (inst_sym, pt->string_val.text);
-
-                    if (not param_type) {
-                      Symbol *type_sym = Symbol_Find (pt->string_val.text);
-                      if (type_sym and type_sym->type)
-                        param_type = type_sym->type;
-                    }
-                  }
-                }
-                for (uint32_t j = 0; j < ps->param_spec.names.count; j++) {
-                  Syntax_Node *name = ps->param_spec.names.items[j];
-                  inst_sym->parameters[idx].name = name->string_val.text;
-                  inst_sym->parameters[idx].param_type = param_type;
-                  inst_sym->parameters[idx].mode = (Parameter_Mode)ps->param_spec.mode;
-                  idx++;
-                }
-              }
-            }
-          }
-
-          // Handle return type for functions
-          if (unit->kind == NK_FUNCTION_SPEC and unit->subprogram_spec.return_type) {
-            Syntax_Node *rt = unit->subprogram_spec.return_type;
-
-            // A formal return type substitutes its actual by slot decoration;
-            // otherwise resolve the named concrete type (e.g. INTEGER).
-            if (rt->kind == NK_IDENTIFIER) {
-              if (rt->type and rt->type->generic_formal_index >= 0 and
-                  rt->type->generic_formal_index < (int)inst_sym->generic_actual_count)
-                inst_sym->return_type =
-                  inst_sym->generic_actuals[rt->type->generic_formal_index].actual_type;
-
-              // The template's return-type node may carry no resolved type (the
-              // formal was never stamped on it); match the formal by name against
-              // the bound actuals so a generic formal return type still maps to
-              // its actual rather than defaulting to void.
-              if (not inst_sym->return_type)
-                for (uint32_t k = 0; k < inst_sym->generic_actual_count; k++)
-                  if (inst_sym->generic_actuals[k].actual_type and
-                      Slice_Equal_Ignore_Case (inst_sym->generic_actuals[k].formal_name,
-                                               rt->string_val.text)) {
-                    inst_sym->return_type = inst_sym->generic_actuals[k].actual_type;
-                    break;
-                  }
-
-              // Concrete named type (e.g. INTEGER): resolve from scope.
-              if (not inst_sym->return_type) {
-                Symbol *type_sym = Symbol_Find (rt->string_val.text);
-                if (type_sym and type_sym->type)
-                  inst_sym->return_type = type_sym->type;
-              }
-            }
-          }
+        // RM 12.3: an instantiation may not depend on itself — directly or
+        // through a chain of instantiations. Reject the cycle here rather
+        // than recursing into it.
+        if (Instantiating_Set_Contains (template)) {
+          Report_Error (node->location,
+            "recursive generic instantiation: '%.*s' is already being "
+            "instantiated",
+            (int) template->name.length, template->name.data);
+          break;
         }
+        Instantiating_Set_Push (template);
 
-        // For package instantiations, copy and instantiate exported symbols
-        // Look for exports from the template's generic_unit (package spec)
-        if (node->generic_inst.unit_kind == TK_PACKAGE) {
-          Syntax_Node *pkg_spec = template->generic_unit;
+        // Tree-copy instantiation (RM 12.3): a subprogram instance carries
+        // its own resolved clone of the template body and emits through the
+        // ordinary subprogram paths. When the template body has not been
+        // seen yet the instantiation stays deferred (codegen retries once
+        // the body completes the generic).
+        if (node->generic_inst.unit_kind != TK_PACKAGE)
+          Instantiate_Generic_Subprogram (inst_sym, template);
 
-          // Count visible declarations
-          if (pkg_spec and pkg_spec->kind == NK_PACKAGE_SPEC) {
-            uint32_t export_count = 0;
-            for (uint32_t i = 0; i < pkg_spec->package_spec.visible_decls.count; i++) {
-              Syntax_Node *decl = pkg_spec->package_spec.visible_decls.items[i];
-              if (not decl) continue;
-              if (decl->kind == NK_TYPE_DECL or decl->kind == NK_SUBTYPE_DECL) {
-                export_count++;
-
-                // Count enum literals too
-                if (decl->type_decl.definition and
-                  decl->type_decl.definition->kind == NK_ENUMERATION_TYPE) {
-                  export_count += decl->type_decl.definition->enum_type.literals.count;
-                }
-              }
-              else if (decl->kind == NK_PROCEDURE_SPEC or decl->kind == NK_FUNCTION_SPEC)
-                export_count++;
-              else if (decl->kind == NK_EXCEPTION_DECL)
-                export_count += decl->exception_decl.names.count;
-              else if (decl->kind == NK_OBJECT_DECL)
-                export_count += decl->object_decl.names.count;
-              else if (decl->kind == NK_TASK_SPEC)
-                export_count++;
-            }
-            if (export_count > 0) {
-              inst_sym->exported = Arena_Allocate (export_count * sizeof (Symbol*));
-              inst_sym->exported_count = 0;
-
-              // Helper: substitute a generic formal type with its actual by the
-              // formal's slot decoration (generic_formal_index), no name match.
-              #define SUBSTITUTE_TYPE(ty) do { \
-                if (ty and ty->generic_formal_index >= 0 and \
-                    ty->generic_formal_index < (int)inst_sym->generic_actual_count) \
-                  ty = inst_sym->generic_actuals[ty->generic_formal_index].actual_type; \
-              } while (0)
-
-              // Helper: resolve a type named by NAME for an export whose spec node
-              // left it unresolved -- the instance's own exports first (so a type
-              // like FILE_MODE binds), then the global symbol table.
-              #define RESOLVE_EXPORT_OR_GLOBAL_TYPE(out, name_slice) do { \
-                for (uint32_t k = 0; k < inst_sym->exported_count; k++) { \
-                  Symbol *es = inst_sym->exported[k]; \
-                  if (es and es->kind == SYMBOL_TYPE and \
-                      Slice_Equal_Ignore_Case (es->name, (name_slice))) { \
-                    (out) = es->type; break; } \
-                } \
-                if (not (out)) { \
-                  Symbol *tsym = Symbol_Find (name_slice); \
-                  if (tsym) (out) = tsym->type; \
-                } \
-              } while (0)
-              for (uint32_t i = 0; i < pkg_spec->package_spec.visible_decls.count; i++) {
-                Syntax_Node *decl = pkg_spec->package_spec.visible_decls.items[i];
-                if (not decl) continue;
-
-                // Create type symbol for the instance
-                if (decl->kind == NK_TYPE_DECL or decl->kind == NK_SUBTYPE_DECL) {
-                  String_Slice name = decl->type_decl.name;
-                  Symbol *exp = Symbol_New (SYMBOL_TYPE, name, decl->location);
-
-                  // Use the symbol's type (has the named type) if available
-                  if (decl->symbol and decl->symbol->type)
-                    exp->type = decl->symbol->type;
-                  else if (decl->type)
-                    exp->type = decl->type;
-                  else if (decl->type_decl.definition)
-                    exp->type = decl->type_decl.definition->type;
-
-                  // Subtype of a formal type (SUBTYPE X IS GEN [(c)|RANGE ..]):
-                  // take the formal's actual by the subtype mark's slot decoration.
-                  if (not exp->type and decl->kind == NK_SUBTYPE_DECL and
-                    decl->type_decl.definition) {
-                    Syntax_Node *def = decl->type_decl.definition;
-                    Syntax_Node *mark = def->kind == NK_APPLY ? def->apply.prefix :
-                      def->kind == NK_SUBTYPE_INDICATION ? def->subtype_ind.subtype_mark : def;
-                    if (mark and mark->type and mark->type->generic_formal_index >= 0 and
-                        mark->type->generic_formal_index < (int)inst_sym->generic_actual_count)
-                      exp->type = inst_sym->generic_actuals[mark->type->generic_formal_index].actual_type;
-                    // Slot decoration may be absent on the mark node; match the
-                    // formal type by its declared name.
-                    if (not exp->type and mark and mark->kind == NK_IDENTIFIER)
-                      exp->type = Generic_Actual_Type_By_Name (inst_sym, mark->string_val.text);
-                  }
-
-                  // Materialise a Type_Info for an unresolved enum/range type.
-                  if (not exp->type and decl->type_decl.definition) {
-                    Syntax_Node *def = decl->type_decl.definition;
-                    Type_Info *ti = NULL;
-                    if (def->kind == NK_ENUMERATION_TYPE) {
-                      ti = Type_New (TYPE_ENUMERATION, name);
-                      uint32_t lit_count = def->enum_type.literals.count;
-                      ti->enumeration.literal_count = lit_count;
-                      if (lit_count > 0) {
-                        ti->enumeration.literals = Arena_Allocate (lit_count * sizeof (String_Slice));
-                        for (uint32_t j = 0; j < lit_count; j++) {
-                          Syntax_Node *lit = def->enum_type.literals.items[j];
-                          if (lit and lit->kind == NK_IDENTIFIER)
-                            ti->enumeration.literals[j] = lit->string_val.text;
-                        }
-                      }
-                    } else if (def->kind == NK_RANGE) {
-                      ti = Type_New (TYPE_INTEGER, name);
-                    }
-                    if (ti) { ti->size = 4; exp->type = def->type = decl->type = ti; }
-                  }
-                  exp->declaration = decl;
-                  exp->parent = inst_sym;
-                  inst_sym->exported[inst_sym->exported_count++] = exp;
-
-                  // Also export enum literals
-                  if (decl->type_decl.definition and
-                    decl->type_decl.definition->kind == NK_ENUMERATION_TYPE) {
-                    Node_List *lits = &decl->type_decl.definition->enum_type.literals;
-                    for (uint32_t j = 0; j < lits->count; j++) {
-                      Syntax_Node *lit = lits->items[j];
-                      if (lit and lit->kind == NK_IDENTIFIER) {
-                        Symbol *lit_sym = Symbol_New (SYMBOL_LITERAL,
-                          lit->string_val.text, lit->location);
-                        lit_sym->type = exp->type;
-                        lit_sym->parent = inst_sym;
-                        inst_sym->exported[inst_sym->exported_count++] = lit_sym;
-                      }
-                    }
-                  }
-                }
-                else if (decl->kind == NK_PROCEDURE_SPEC or
-                     decl->kind == NK_FUNCTION_SPEC) {
-
-                  // Create subprogram symbol with instantiated types.
-                  // Assign unique_id immediately so homographs get distinct IDs.
-                  String_Slice name = decl->subprogram_spec.name;
-                  Symbol_Kind sk = (decl->kind == NK_PROCEDURE_SPEC) ?
-                           SYMBOL_PROCEDURE : SYMBOL_FUNCTION;
-                  Symbol *exp = Symbol_New (sk, name, decl->location);
-                  exp->unique_id = sm->next_unique_id++;
-                  exp->declaration = decl;
-                  exp->parent = inst_sym;
-                  exp->generic_template = template;
-
-                  // Copy and substitute parameter types
-                  Node_List *params = &decl->subprogram_spec.parameters;
-                  uint32_t total_params = 0;
-                  for (uint32_t j = 0; j < params->count; j++) {
-                    Syntax_Node *ps = params->items[j];
-                    if (ps->kind == NK_PARAM_SPEC)
-                      total_params += ps->param_spec.names.count;
-                  }
-                  exp->parameter_count = total_params;
-                  if (total_params > 0) {
-                    exp->parameters = Arena_Allocate (
-                      total_params * sizeof (Parameter_Info));
-                    uint32_t idx = 0;
-                    for (uint32_t j = 0; j < params->count; j++) {
-                      Syntax_Node *ps = params->items[j];
-                      if (ps->kind == NK_PARAM_SPEC) {
-                        Type_Info *ptype = ps->param_spec.param_type ?
-                          ps->param_spec.param_type->type : NULL;
-
-                        // If type not resolved, look up by name
-                        if (not ptype and ps->param_spec.param_type and
-                          ps->param_spec.param_type->kind == NK_IDENTIFIER)
-                          RESOLVE_EXPORT_OR_GLOBAL_TYPE (ptype,
-                            ps->param_spec.param_type->string_val.text);
-                        SUBSTITUTE_TYPE (ptype);
-                        for (uint32_t m = 0; m < ps->param_spec.names.count; m++) {
-                          Syntax_Node *pname = ps->param_spec.names.items[m];
-                          exp->parameters[idx].name = pname->string_val.text;
-                          exp->parameters[idx].param_type = ptype;
-                          exp->parameters[idx].mode =
-                            (Parameter_Mode)ps->param_spec.mode;
-
-                          // Create param symbol if not present (specs don't have symbols)
-                          if (not pname->symbol) {
-                            Symbol *ps_sym = Symbol_New (SYMBOL_PARAMETER,
-                              pname->string_val.text, pname->location);
-                            ps_sym->type = ptype;
-                            ps_sym->unique_id = sm->next_unique_id++;
-                            pname->symbol = ps_sym;
-                          }
-                          exp->parameters[idx].param_sym = pname->symbol;
-                          idx++;
-                        }
-                      }
-                    }
-                  }
-
-                  // Handle return type
-                  if (decl->kind == NK_FUNCTION_SPEC and
-                    decl->subprogram_spec.return_type) {
-                    Type_Info *rtype = decl->subprogram_spec.return_type->type;
-
-                    // If return type not resolved, look up by name
-                    if (not rtype and decl->subprogram_spec.return_type->kind == NK_IDENTIFIER)
-                      RESOLVE_EXPORT_OR_GLOBAL_TYPE (rtype,
-                        decl->subprogram_spec.return_type->string_val.text);
-                    SUBSTITUTE_TYPE (rtype);
-                    exp->return_type = rtype;
-                  }
-                  inst_sym->exported[inst_sym->exported_count++] = exp;
-                }
-                else if (decl->kind == NK_EXCEPTION_DECL) {
-                  for (uint32_t j = 0; j < decl->exception_decl.names.count; j++) {
-                    Syntax_Node *nm = decl->exception_decl.names.items[j];
-                    Symbol *exp = Symbol_New (SYMBOL_EXCEPTION,
-                      nm->string_val.text, nm->location);
-                    exp->parent = inst_sym;
-                    inst_sym->exported[inst_sym->exported_count++] = exp;
-                  }
-                }
-                else if (decl->kind == NK_OBJECT_DECL) {
-
-                  // Export object declarations (including renames)
-                  Type_Info *obj_type = NULL;
-                  if (decl->object_decl.object_type) {
-                    obj_type = decl->object_decl.object_type->type;
-                    if (not obj_type and decl->object_decl.object_type->kind == NK_IDENTIFIER)
-                      RESOLVE_EXPORT_OR_GLOBAL_TYPE (obj_type,
-                        decl->object_decl.object_type->string_val.text);
-                    SUBSTITUTE_TYPE (obj_type);
-                  }
-                  for (uint32_t j = 0; j < decl->object_decl.names.count; j++) {
-                    Syntax_Node *nm = decl->object_decl.names.items[j];
-                    Symbol_Kind sk = decl->object_decl.is_constant ?
-                      SYMBOL_CONSTANT : SYMBOL_VARIABLE;
-                    Symbol *exp = Symbol_New (sk, nm->string_val.text, nm->location);
-                    exp->type = obj_type;
-                    exp->parent = inst_sym;
-
-                    // For renames, store the renamed object expression
-                    if (decl->object_decl.is_rename and decl->object_decl.init) {
-                      exp->renamed_object = decl->object_decl.init;
-                    }
-                    inst_sym->exported[inst_sym->exported_count++] = exp;
-                  }
-                }
-                else if (decl->kind == NK_TASK_SPEC) {
-
-                  // Export task declarations from generic instantiation.                          
-                  // Create a type symbol with TYPE_TASK and populate its                           
-                  // entries from the task spec's entry declarations.                              
-                  //                                                                                
-                  String_Slice name = decl->task_spec.name;
-                  Symbol *exp = Symbol_New (SYMBOL_TYPE, name, decl->location);
-                  Type_Info *type = Type_New (TYPE_TASK, name);
-                  exp->type = type;
-                  type->defining_symbol = exp;
-                  exp->declaration = decl;
-                  exp->parent = inst_sym;
-
-                  // Add entries to the task type's exported list
-                  for (uint32_t j = 0; j < decl->task_spec.entries.count; j++) {
-                    Syntax_Node *entry = decl->task_spec.entries.items[j];
-                    if (entry->kind == NK_ENTRY_DECL) {
-                      Symbol *entry_sym = Symbol_New (SYMBOL_ENTRY,
-                        entry->entry_decl.name, entry->location);
-                      entry_sym->declaration = entry;
-                      entry_sym->parent = exp;
-                      entry_sym->entry_index = j;
-                      if (not exp->exported) {
-                        exp->exported = Arena_Allocate (100 * sizeof (Symbol*));
-                      }
-                      exp->exported[exp->exported_count++] = entry_sym;
-                    }
-                  }
-                  inst_sym->exported[inst_sym->exported_count++] = exp;
-
-                  // For single task declarations (not task types),
-                  // also create an object variable (RM 9.1)
-                  if (not decl->task_spec.is_type) {
-                    Symbol *obj = Symbol_New (SYMBOL_VARIABLE,
-                      name, decl->location);
-                    obj->type = type;
-                    obj->declaration = decl;
-                    obj->parent = inst_sym;
-                    inst_sym->exported[inst_sym->exported_count++] = obj;
-                  }
-                }
-              }
-              #undef SUBSTITUTE_TYPE
-              #undef RESOLVE_EXPORT_OR_GLOBAL_TYPE
-            }
-          }
-        }
         Symbol_Add (inst_sym);
         node->symbol = inst_sym;
 
-        // For package instantiations, expand the generic now
-        // so we have expanded_spec/expanded_body for codegen
+        // Tree-copy instantiation (RM 12.3): a package instance carries
+        // its own resolved clones of the template spec and body and emits
+        // through the ordinary package paths.
         if (node->generic_inst.unit_kind == TK_PACKAGE) {
-          Expand_Generic_Package (inst_sym);
+          Instantiate_Generic_Package (inst_sym, template);
         }
+        Instantiating_Set_Pop ();
       }
       break;
 
@@ -16474,6 +17952,9 @@ void Code_Generator_Init (FILE *output) {
   cg->global_id             = 1;
   cg->string_id             = 1;
   cg->deferred_count        = 0;
+  cg->deferred_capacity     = 64;
+  cg->deferred_bodies       = Arena_Allocate (cg->deferred_capacity
+                                              * sizeof *cg->deferred_bodies);
   cg->pending_activation_capacity = 64;
   cg->pending_activations   = Arena_Allocate (cg->pending_activation_capacity
                                               * sizeof *cg->pending_activations);
@@ -16696,6 +18177,29 @@ void Emit_String_Const (const char *format, ...) {
   cg->string_const_buffer[cg->string_const_size] = '\0';
 }
 
+void Emit_String_Const_Symbol (Symbol *sym) {
+  String_Slice mangled = Symbol_Mangle_Name (sym);
+  Emit_String_Const ("%.*s", (int) mangled.length, mangled.data);
+}
+
+// Append the symbol's EMITTED name (every Emit_Symbol_Name rule applied,
+// including the instance-prefix forms) to the accumulator. Captures the
+// emitter's output through a temporary stream so the definition and every
+// reference agree byte for byte.
+void Emit_String_Const_Symbol_Name (Symbol *sym) {
+  char  *captured = NULL;
+  size_t captured_size = 0;
+  FILE  *saved_output = cg->output;
+  cg->output = open_memstream (&captured, &captured_size);
+  Emit_Symbol_Name (sym);
+  fclose (cg->output);
+  cg->output = saved_output;
+  if (captured) {
+    Emit_String_Const ("%.*s", (int) captured_size, captured);
+    free (captured);
+  }
+}
+
 // Emit a single char to string constant buffer
 void Emit_String_Const_Char (char ch) {
   if (cg->string_const_size + 2 > cg->string_const_capacity) {
@@ -16873,6 +18377,20 @@ void Emit_Float_Constant (uint32_t    result,
 // This handles nested packages inside subprogram bodies correctly.                                
 //                                                                                                  
 bool Symbol_Is_Global (Symbol *sym) {
+  // A USE-visible alias denotes the same entity as the original; its
+  // storage class is the original's (mirrors Symbol_Mangle_Name's peel).
+  while (sym and sym->aliased) sym = sym->aliased;
+
+  // A FOR-loop parameter lives in the frame of whatever function emits
+  // the loop — including a loop in a package body's statement part,
+  // whose parent chain otherwise looks package-level.
+  if (sym->is_loop_parameter) return false;
+
+  // Tree-copy instance formal-object bindings are per-instance globals by
+  // construction: they elaborate at the instantiation point and the
+  // instance body reads them as module-level storage (RM 12.3(80)).
+  if (sym->is_instance_in_binding or sym->is_instance_in_out_binding)
+    return true;
   if (not sym->parent) return true;  // Top-level
 
   // Walk up parent chain - if any ancestor is a subprogram, symbol is local.                      
@@ -16883,6 +18401,25 @@ bool Symbol_Is_Global (Symbol *sym) {
   //                                                                                                
   Symbol *ancestor = sym->parent;
   while (ancestor) {
+    // A generic package's PACKAGE-LEVEL variables (spec or body
+    // declarative part) are per-instance globals named <instance>__<var>
+    // even when the generic declaration or the instantiation is nested
+    // inside a subprogram. Both the template symbol (parent: the
+    // SYMBOL_GENERIC) and the instance's exported clone (parent: the
+    // instance package) classify as global here so every reference path
+    // agrees with the storage emission. Block-locals and subprogram
+    // locals inside the generic are NOT package-level and fall through
+    // to the ordinary nesting walk.
+    if ((sym->kind == SYMBOL_VARIABLE or sym->kind == SYMBOL_CONSTANT) and
+        sym->is_package_level) {
+      if (ancestor->kind == SYMBOL_GENERIC and ancestor->generic_unit and
+        ancestor->generic_unit->kind == NK_PACKAGE_SPEC) {
+        return true;
+      }
+      if (ancestor->kind == SYMBOL_PACKAGE and ancestor->generic_template) {
+        return true;
+      }
+    }
     if (ancestor->kind == SYMBOL_FUNCTION or ancestor->kind == SYMBOL_PROCEDURE) {
       return false;  // Inside a subprogram - use local (%) prefix
     }
@@ -16930,7 +18467,12 @@ size_t Mangle_Slice_Into (char *buf, size_t pos, size_t max, String_Slice name) 
 }
 size_t Mangle_Into_Buffer (char *buf, size_t pos, size_t max, Symbol *sym) {
   if (not sym) return pos;
-  if (sym->parent and sym->parent->kind == SYMBOL_PACKAGE) {
+
+  // Package members qualify through their package; a tree-copy instance's
+  // formal-object binding qualifies through its instance, whatever the
+  // instance's kind, so distinct instances never share a binding global.
+  if (sym->parent and (sym->parent->kind == SYMBOL_PACKAGE or
+      sym->is_instance_in_binding or sym->is_instance_in_out_binding)) {
     pos = Mangle_Into_Buffer (buf, pos, max, sym->parent);
     if (pos + 2 < max) { buf[pos++] = '_'; buf[pos++] = '_'; }
   }
@@ -16953,8 +18495,12 @@ String_Slice Symbol_Mangle_Name (Symbol *sym) {
   // Build mangled name from parent chain
   pos = Mangle_Into_Buffer (buf, 0, 510, sym);
 
-  // Add unique_id suffix for local/overloaded symbols
-  if (sym and (not Symbol_Is_Global (sym) or sym->is_overloaded)) {
+  // Add unique_id suffix for local/overloaded symbols — and for instance
+  // formal-object bindings, whose readable prefix alone cannot distinguish
+  // two same-named instantiations in different scopes.
+  if (sym and (not Symbol_Is_Global (sym) or sym->is_overloaded or
+               sym->is_instance_in_binding or sym->is_instance_in_out_binding or
+               sym->is_instance_wrapper)) {
     pos += snprintf (buf + pos, 512 - pos, "_s%u", sym->unique_id);
   }
   buf[pos] = '\0';
@@ -16974,52 +18520,6 @@ String_Slice Mangle_Qualified_Name (String_Slice parent, String_Slice name) {
   return Slice_Duplicate ((String_Slice){buf, pos});
 }
 
-// Find the instance counterpart for a template symbol in the current function's                    
-// scope. When generating a generic instance body, the AST references template                     
-// symbols (simple names, frame_offset 0) but the function scope contains the                       
-// properly-scoped instance symbols (qualified names, correct frame_offset).                       
-// Returns NULL if no match is found.                                                              
-//                                                                                                  
-// True if a scope entry is the instance counterpart of template_sym: same kind,
-// same case-insensitive name, owned by the given instance.
-static bool Instance_Local_Matches (Symbol *candidate, const Symbol *template_sym,
-                                    Symbol *inst) {
-  if (not candidate or candidate->kind != template_sym->kind) return false;
-  if (candidate->name.length != template_sym->name.length) return false;
-  if (candidate->parent != inst) return false;
-  for (uint32_t j = 0; j < candidate->name.length; j++) {
-    char left_ch  = candidate->name.data[j];
-    char right_ch = template_sym->name.data[j];
-    if (left_ch  >= 'A' and left_ch  <= 'Z') left_ch  = left_ch  - 'A' + 'a';
-    if (right_ch >= 'A' and right_ch <= 'Z') right_ch = right_ch - 'A' + 'a';
-    if (left_ch != right_ch) return false;
-  }
-  return true;
-}
-
-Symbol *Find_Instance_Local (const Symbol *template_sym) {
-  if (not cg->current_instance or not cg->current_function or
-    not cg->current_function->scope)
-    return NULL;
-
-  // Determine which instance (package) to match against
-  Symbol *inst = cg->current_instance;
-  if ((inst->kind == SYMBOL_FUNCTION or inst->kind == SYMBOL_PROCEDURE) and
-    inst->parent and inst->parent->kind == SYMBOL_PACKAGE and
-    inst->parent->generic_template) {
-    inst = inst->parent;
-  }
-  Scope *scope = cg->current_function->scope;
-  for (uint32_t i = 0; i < scope->symbol_count; i++)
-    if (Instance_Local_Matches (scope->symbols[i], template_sym, inst))
-      return scope->symbols[i];
-
-  // Also check frame_vars (for symbols from child scopes)
-  for (uint32_t i = 0; i < scope->frame_var_count; i++)
-    if (Instance_Local_Matches (scope->frame_vars[i], template_sym, inst))
-      return scope->frame_vars[i];
-  return NULL;
-}
 
 // Start a local SSA assignment line: "  %<symbol-name>" (caller appends " = ...").
 void Emit_Local_Ref (Symbol *sym) {
@@ -17048,6 +18548,10 @@ void Emit_Symbol_Name (Symbol *sym) {
     return;
   }
 
+  // A USE-visible alias denotes the same entity as the original; every
+  // naming rule below must see the original (mirrors Symbol_Mangle_Name).
+  while (sym->aliased) sym = sym->aliased;
+
   // For imported symbols with external name, use that directly
   if (sym->is_imported and sym->external_name.length > 0) {
     String_Slice name = sym->external_name;
@@ -17063,58 +18567,39 @@ void Emit_Symbol_Name (Symbol *sym) {
     return;
   }
 
-  // For generic instance code generation: prefix global OBJECT symbols                             
-  // (variables) from the template body with the instance name to avoid                             
-  // collisions when multiple instances of the same generic are created.                           
-  // Do NOT prefix exceptions, types, or subprograms.                                              
-  // Find the package instance - current_instance might be a procedure                              
-  // within a package, in which case use the procedure's parent package                             
-  //                                                                                                
-  if (cg->current_instance and sym->kind == SYMBOL_VARIABLE and Symbol_Is_Global (sym)) {
-    Symbol *inst = cg->current_instance;
-    if ((inst->kind == SYMBOL_FUNCTION or inst->kind == SYMBOL_PROCEDURE) and
-      inst->parent and inst->parent->kind == SYMBOL_PACKAGE and
-      inst->parent->generic_template) {
-      inst = inst->parent;  // Use owning package instance for globals
-    }
-    Symbol *tmpl = inst->generic_template;
-    if (tmpl and sym->parent and sym->parent != inst and
-      (sym->parent == tmpl or sym->parent->kind == SYMBOL_GENERIC)) {
-
-      // Emit instance name prefix
-      String_Slice inst_mangled = Symbol_Mangle_Name (inst);
-      for (uint32_t i = 0; i < inst_mangled.length; i++) {
-        fputc (inst_mangled.data[i], cg->output);
-      }
-      Emit ("__");
-
-      // Emit just the symbol name (not parent chain)
-      for (uint32_t i = 0; i < sym->name.length; i++) {
-        char ch = sym->name.data[i];
-        if (ch >= 'A' and ch <= 'Z') ch = ch - 'A' + 'a';
-        fputc (ch, cg->output);
-      }
-      return;
-    }
+  // Tree-copy instance formal-object bindings own their storage name —
+  // Symbol_Mangle_Name already yields <instance>__<formal>_sN — and are
+  // exempt from every instance-name rewriting rule below (those serve the
+  // substitution-at-emission machinery).
+  if (sym->is_instance_in_binding or sym->is_instance_in_out_binding) {
+    String_Slice mangled = Symbol_Mangle_Name (sym);
+    for (uint32_t i = 0; i < mangled.length; i++)
+      fputc (mangled.data[i], cg->output);
+    return;
   }
 
-  // For generic instance bodies: local variables/constants from the template                       
-  // need instance-qualified names to avoid collisions between instances.                          
-  // Find the instance counterpart in the function scope and use its name.                         
-  //                                                                                                
-  if (cg->current_instance and
-    (sym->kind == SYMBOL_VARIABLE or sym->kind == SYMBOL_CONSTANT or
-     sym->kind == SYMBOL_PARAMETER) and
-    not sym->is_named_number) {
-    Symbol *inst_sym = Find_Instance_Local (sym);
-    if (inst_sym) {
-      String_Slice mangled = Symbol_Mangle_Name (inst_sym);
-      for (uint32_t i = 0; i < mangled.length; i++) {
-        fputc (mangled.data[i], cg->output);
-      }
-      return;
+  // An instance's exported variable/constant clone names the same storage
+  // the template path above names: <instance>__<var>. References from
+  // outside the instance (PP.D) bind to the clone; references from inside
+  // the instance's own statements and subprograms bind to the template
+  // symbol — both must produce one name, byte for byte.
+  if ((sym->kind == SYMBOL_VARIABLE or sym->kind == SYMBOL_CONSTANT) and
+    sym->is_package_level and
+    sym->parent and sym->parent->kind == SYMBOL_PACKAGE and
+    sym->parent->generic_template) {
+    String_Slice inst_mangled = Symbol_Mangle_Name (sym->parent);
+    for (uint32_t i = 0; i < inst_mangled.length; i++) {
+      fputc (inst_mangled.data[i], cg->output);
     }
+    Emit ("__");
+    for (uint32_t i = 0; i < sym->name.length; i++) {
+      char ch = sym->name.data[i];
+      if (ch >= 'A' and ch <= 'Z') ch = ch - 'A' + 'a';
+      fputc (ch, cg->output);
+    }
+    return;
   }
+
 
   // Use unified mangling (lowercase, parent__name format, _sN suffix)
   String_Slice mangled = Symbol_Mangle_Name (sym);
@@ -17230,15 +18715,26 @@ Symbol *Resolve_Subprogram_Rename (Symbol *sym) {
        (root->kind == SYMBOL_FUNCTION or root->kind == SYMBOL_PROCEDURE)) {
     Symbol *target = (Symbol *) root->renamed_object;
 
-    // A procedure renaming a task ENTRY (RM 8.5(8)): calls through the
-    // rename are entry calls. Peel to the entry symbol; the call emitters
-    // dispatch on SYMBOL_ENTRY.
-    if (target->kind == SYMBOL_ENTRY) { root = target; break; }
-    if (target->kind != SYMBOL_FUNCTION and target->kind != SYMBOL_PROCEDURE)
+    // A terminal non-subprogram target IS the denoted entity: an ENTRY
+    // (RM 8.5(8) — calls through the rename are entry calls) or an
+    // enumeration LITERAL standing for a parameterless function
+    // (RM 12.3.6). The call emitters dispatch on the target's kind.
+    if (target->kind != SYMBOL_FUNCTION and target->kind != SYMBOL_PROCEDURE) {
+      root = target;
       break;
+    }
     root = target;
   }
   return sym->rename_target = root;
+}
+
+// The symbol an operator node's call actually dispatches to: peel renames
+// (RM 8.5) — a generic formal subprogram is a rename of its actual, so the
+// peel covers instances too. Generate_Binary_Op, Expression_Is_Boolean and
+// Expression_LLVM_Rep all route through here so the emitted call and its
+// consumers agree on the result representation.
+Symbol *Operator_Call_Target (Symbol *sym) {
+  return Resolve_Subprogram_Rename (sym);
 }
 
 // Map an Ada operator's source-text name to its Token_Kind. Returns TK_EOF
@@ -17273,6 +18769,9 @@ Token_Kind Token_From_Op_Name (String_Slice name) {
 
 // Is sym an uplevel reference requiring access through __parent_frame?
 bool Is_Uplevel_Access (const Symbol *sym) {
+  // Globals are never uplevel: their storage is module-level no matter how
+  // deep the reference (per-instance generic state included).
+  if (Symbol_Is_Global ((Symbol *) sym)) return false;
   if (not cg->current_function or not sym) return false;
   Symbol *owner = sym->defining_scope ? sym->defining_scope->owner : NULL;
 
@@ -17297,10 +18796,6 @@ bool Is_Uplevel_Access (const Symbol *sym) {
       so == cg->current_function->generic_template) return false;
     // Match by unique_id: generic expansion can clone functions
     if (so and so->unique_id == cg->current_function->unique_id) return false;
-    // Match by name for generic instance functions that have different IDs
-    if (so and cg->current_instance and
-      Slice_Equal_Ignore_Case (so->name, cg->current_function->name) and
-      so->kind == cg->current_function->kind) return false;
     s = s->parent;
   }
 
@@ -17402,25 +18897,6 @@ bool Emit_Nested_Frame_Arg (Symbol *proc, uint32_t precomp) {
   return true;
 }
 
-// Resolve generic formal type > actual type within an instance.                                   
-// Called from attribute codegen, SUCC/PRED, and elsewhere.                                        
-// Returns the substituted type, or the original if no match.                                      
-//                                                                                                  
-Type_Info *Resolve_Generic_Actual_Type (Type_Info *type) {
-  if (not type or not type->name.data) return type;
-  Symbol *holder = cg->current_instance;
-
-  // Walk up: subprogram inside generic package uses package's actuals
-  if (holder and not holder->generic_actuals and holder->parent and
-    holder->parent->kind == SYMBOL_PACKAGE and holder->parent->generic_actuals)
-    holder = holder->parent;
-  if (not holder or not holder->generic_actuals) return type;
-  int fi = type->generic_formal_index;
-  if (fi >= 0 and fi < (int)holder->generic_actual_count and
-      holder->generic_actuals[fi].actual_type)
-    return holder->generic_actuals[fi].actual_type;
-  return type;
-}
 
 // Emit raise sequence for a named exception: ptrtoint + call __ada_raise + unreachable.
 void Emit_Raise_Exception (const char *exc_name, const char *comment) {
@@ -17682,7 +19158,7 @@ bool Expression_Is_Boolean (Syntax_Node *node) {
   // Mirror Expression_Llvm_Type's user-function path so the two agree.
   if ((node->kind == NK_BINARY_OP or node->kind == NK_UNARY_OP) and
       node->symbol and node->symbol->kind == SYMBOL_FUNCTION) {
-    Symbol *tgt = Resolve_Subprogram_Rename (node->symbol);
+    Symbol *tgt = Operator_Call_Target (node->symbol);
     if (tgt and not tgt->is_predefined) return false;
   }
   if (node->kind == NK_BINARY_OP) {
@@ -17750,7 +19226,7 @@ LLVM_Rep Expression_LLVM_Rep (Syntax_Node *node) {
   // precedence over the boolean-i1 fast path below.
   if (node and (node->kind == NK_BINARY_OP or node->kind == NK_UNARY_OP) and
       node->symbol and node->symbol->kind == SYMBOL_FUNCTION) {
-    Symbol *target = Resolve_Subprogram_Rename (node->symbol);
+    Symbol *target = Operator_Call_Target (node->symbol);
     if (target and not target->is_predefined and target->return_type) {
       return Type_To_Rep (target->return_type);
     }
@@ -17852,10 +19328,19 @@ LLVM_Rep Expression_LLVM_Rep (Syntax_Node *node) {
     return Expression_LLVM_Rep (node->unary.operand);
   }
 
+  // NOT mirrors its operand's storage width: the TK_NOT emitter flips as
+  // i1 and returns at the operand's rep (i8 for BOOLEAN, the modular width
+  // for modular types). Boolean-array NOT produces ptr/fat storage and
+  // keeps the default path below.
+  if (node and node->kind == NK_UNARY_OP and node->unary.op == TK_NOT and
+      node->unary.operand) {
+    LLVM_Rep operand_rep = Expression_LLVM_Rep (node->unary.operand);
+    if (LLVM_Rep_Is_Int (operand_rep))
+      return operand_rep;
+  }
+
   if (node and node->type) {
     Type_Info *resolved = node->type;
-    if (cg->current_instance)
-      resolved = Resolve_Generic_Actual_Type (resolved);
     return Type_To_Rep (resolved);
   }
   return Integer_Arith_Rep ();
@@ -18376,47 +19861,96 @@ LLVM_Value Emit_Constraint_Check_Val (LLVM_Value value,
 // (e.g. I5 RANGE 0..P), the constraint bounds must lie within the                                  
 // base type's range. Emit runtime checks for any BOUND_EXPR bound.                               
 //                                                                                                  
-void Emit_Subtype_Constraint_Compat_Check (Type_Info *subtype) {
-  if (not subtype or not subtype->base_type or not Type_Is_Scalar (subtype)) return;
-  Type_Info *base = subtype->base_type;
-  if (Check_Is_Suppressed (subtype, NULL, CHK_RANGE)) return;
-  bool lo_dyn = (subtype->low_bound.kind == BOUND_EXPR);
-  bool hi_dyn = (subtype->high_bound.kind == BOUND_EXPR);
-  if (not lo_dyn and not hi_dyn) return;  // purely static - checked at compile time
-  bool base_lo_ok = (base->low_bound.kind == BOUND_INTEGER or
-             base->low_bound.kind == BOUND_EXPR);
-  bool base_hi_ok = (base->high_bound.kind == BOUND_INTEGER or
-             base->high_bound.kind == BOUND_EXPR);
-  if (not base_lo_ok or not base_hi_ok) return;
+void Emit_Range_Constraint_Compat_Check (Type_Bound *constraint_low,
+                                         Type_Bound *constraint_high,
+                                         Type_Info  *type_mark) {
+  if (not constraint_low or not constraint_high or not type_mark) return;
+  if (not Type_Is_Scalar (type_mark)) return;
+  if (Check_Is_Suppressed (type_mark, NULL, CHK_RANGE)) return;
+  Type_Bound *mark_low  = &type_mark->low_bound;
+  Type_Bound *mark_high = &type_mark->high_bound;
+  bool all_static =
+    constraint_low->kind  == BOUND_INTEGER and
+    constraint_high->kind == BOUND_INTEGER and
+    mark_low->kind        == BOUND_INTEGER and
+    mark_high->kind       == BOUND_INTEGER;
+  if (all_static) {
+    // Fully static: decide here. A null range is always compatible
+    // (RM 3.5(4)); a non-null range with a bound outside the type mark
+    // raises CONSTRAINT_ERROR unconditionally at elaboration.
+    if (constraint_low->int_value > constraint_high->int_value)
+      return;
+    if (constraint_low->int_value  >= mark_low->int_value and
+        constraint_high->int_value <= mark_high->int_value)
+      return;
+    Emit ("  ; range constraint outside type mark (RM 3.5)\n");
+    Emit_Raise_And_Continue ("subtype bound outside type mark");
+    return;
+  }
+  bool mark_lo_ok = (mark_low->kind == BOUND_INTEGER or
+             mark_low->kind == BOUND_EXPR);
+  bool mark_hi_ok = (mark_high->kind == BOUND_INTEGER or
+             mark_high->kind == BOUND_EXPR);
+  if (not mark_lo_ok or not mark_hi_ok) return;
+  bool constraint_lo_ok = (constraint_low->kind == BOUND_INTEGER or
+             constraint_low->kind == BOUND_EXPR);
+  bool constraint_hi_ok = (constraint_high->kind == BOUND_INTEGER or
+             constraint_high->kind == BOUND_EXPR);
+  if (not constraint_lo_ok or not constraint_hi_ok) return;
+
+  // Identical bound terms cannot disagree (a constraint built from the
+  // mark's own bounds); skip the no-op comparison.
+  if (constraint_low->kind == BOUND_EXPR and
+      mark_low->kind == BOUND_EXPR and
+      constraint_low->expr == mark_low->expr and
+      constraint_high->kind == BOUND_EXPR and
+      mark_high->kind == BOUND_EXPR and
+      constraint_high->expr == mark_high->expr)
+    return;
   LLVM_Rep iat = Integer_Arith_Rep ();
 
-  // Emit base type bounds - widen to iat for comparison
-  LLVM_Rep base_low_rep = LL_REP_VOID, base_high_rep = LL_REP_VOID;
-  uint32_t blo = Emit_Bound_Value_Typed (&base->low_bound,  &base_low_rep);
-  uint32_t bhi = Emit_Bound_Value_Typed (&base->high_bound, &base_high_rep);
-  base_low_rep  = LLVM_Rep_Or (base_low_rep,  iat);
-  base_high_rep = LLVM_Rep_Or (base_high_rep, iat);
-  blo = Emit_Convert (blo, base_low_rep,  iat).reg;
-  bhi = Emit_Convert (bhi, base_high_rep, iat).reg;
+  // Emit type mark bounds - widen to iat for comparison
+  LLVM_Rep mark_low_rep = LL_REP_VOID, mark_high_rep = LL_REP_VOID;
+  uint32_t blo = Emit_Bound_Value_Typed (mark_low,  &mark_low_rep);
+  uint32_t bhi = Emit_Bound_Value_Typed (mark_high, &mark_high_rep);
+  mark_low_rep  = LLVM_Rep_Or (mark_low_rep,  iat);
+  mark_high_rep = LLVM_Rep_Or (mark_high_rep, iat);
+  blo = Emit_Convert (blo, mark_low_rep,  iat).reg;
+  bhi = Emit_Convert (bhi, mark_high_rep, iat).reg;
   LLVM_Rep iat_s = iat;
 
-  // Check each dynamic constraint bound against base range
-  if (lo_dyn) {
-    LLVM_Rep constraint_low_rep = LL_REP_VOID;
-    uint32_t clo = Emit_Bound_Value_Typed (&subtype->low_bound, &constraint_low_rep);
-    constraint_low_rep = LLVM_Rep_Or (constraint_low_rep, iat);
-    clo = Emit_Convert (clo, constraint_low_rep, iat).reg;
-    LLVM_I1 cmp_result = Emit_Icmp ("slt", iat_s, clo, blo);
-    Emit_Check_With_Raise (cmp_result.reg, true, "subtype low bound");
-  }
-  if (hi_dyn) {
-    LLVM_Rep constraint_high_rep = LL_REP_VOID;
-    uint32_t chi = Emit_Bound_Value_Typed (&subtype->high_bound, &constraint_high_rep);
-    constraint_high_rep = LLVM_Rep_Or (constraint_high_rep, iat);
-    chi = Emit_Convert (chi, constraint_high_rep, iat).reg;
-    LLVM_I1 cmp_result = Emit_Icmp ("sgt", iat_s, chi, bhi);
-    Emit_Check_With_Raise (cmp_result.reg, true, "subtype high bound");
-  }
+  // Check each constraint bound against the mark's range.
+  // RM 3.5(4): the bounds must belong to the type mark's range only for a
+  // NON-null range; a null range (low > high) is always legal.
+  LLVM_Rep constraint_low_rep = LL_REP_VOID, constraint_high_rep = LL_REP_VOID;
+  uint32_t clo = Emit_Bound_Value_Typed (constraint_low, &constraint_low_rep);
+  clo = Emit_Convert (clo, LLVM_Rep_Or (constraint_low_rep, iat), iat).reg;
+  uint32_t chi = Emit_Bound_Value_Typed (constraint_high, &constraint_high_rep);
+  chi = Emit_Convert (chi, LLVM_Rep_Or (constraint_high_rep, iat), iat).reg;
+  LLVM_I1 is_null_range = Emit_Icmp ("sgt", iat_s, clo, chi);
+  uint32_t skip = Emit_Open_Skip_If (is_null_range.reg);
+  LLVM_I1 low_outside = Emit_Icmp ("slt", iat_s, clo, blo);
+  Emit_Check_With_Raise (low_outside.reg, true, "subtype low bound");
+  LLVM_I1 high_outside = Emit_Icmp ("sgt", iat_s, chi, bhi);
+  Emit_Check_With_Raise (high_outside.reg, true, "subtype high bound");
+  Emit_Close_Null_Skip (skip);
+}
+
+void Emit_Subtype_Constraint_Compat_Check (Type_Info *subtype,
+                                           Type_Info *type_mark) {
+  if (not subtype or not Type_Is_Scalar (subtype)) return;
+
+  // A type declaration's FIRST subtype has no constraint-vs-mark relation
+  // to elaborate: an integer type definition's range picks its base width
+  // at compile time (RM 3.5.4), it is not an RM 3.5(4) range constraint.
+  // Only subtype declarations and subtype indications carry that check.
+  if (not type_mark and subtype->defining_symbol and
+      subtype->defining_symbol->kind == SYMBOL_TYPE)
+    return;
+  Type_Info *base = type_mark ? type_mark : subtype->base_type;
+  if (not base or base == subtype) return;
+  Emit_Range_Constraint_Compat_Check (&subtype->low_bound,
+                                      &subtype->high_bound, base);
 }
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
@@ -19387,6 +20921,20 @@ void Emit_Range_Check_With_Raise (uint32_t val,
 // Emit a type bound as a temp: handles BOUND_INTEGER, BOUND_EXPR, BOUND_FLOAT.
 // Returns temp ID with value at specified type width.
 uint32_t Emit_Type_Bound (Type_Bound *bound, LLVM_Rep ty) {
+  if (LLVM_Rep_Is_Float (ty)) {
+    if (bound->kind == BOUND_EXPR and bound->expr) {
+      LLVM_Value bv = Generate_Expression (bound->expr);
+      if (not LLVM_Rep_Equal (bv.rep, ty))
+        return Emit_Convert (bv.reg, bv.rep, ty).reg;
+      return bv.reg;
+    }
+    double value = bound->kind == BOUND_FLOAT   ? bound->float_value
+                 : bound->kind == BOUND_INTEGER ? (double)bound->int_value
+                 : 0.0;
+    uint32_t result = Emit_Temp ();
+    Emit_Float_Constant (result, ty, value, "type bound");
+    return result;
+  }
   if (bound->kind == BOUND_INTEGER) {
     return Emit_Static_Int (bound->int_value, ty).reg;
   } else if (bound->kind == BOUND_FLOAT) {
@@ -19831,6 +21379,7 @@ uint32_t Emit_Fat_Pointer_Null (LLVM_Rep bt) {
 //   - store to it   (assignment context)                                                           
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 
+
 uint32_t Generate_Lvalue (Syntax_Node *node) {
   if (not node) return 0;
 
@@ -19839,9 +21388,25 @@ uint32_t Generate_Lvalue (Syntax_Node *node) {
     Symbol *sym = node->symbol;
     if (not sym) return 0;
 
-    // For RENAMES: redirect to renamed object
+    // Tree-copy instance IN OUT binding: the lvalue is the actual
+    // variable's address, read from the per-instance pointer cell that
+    // the instantiation point stored (RM 12.1.1 renaming semantics).
+    if (sym->is_instance_in_out_binding) {
+      uint32_t cell = Emit_Temp ();
+      Emit ("  %%t%u = load ptr, ptr ", cell);
+      Emit_Global_Ref (sym);
+      Emit ("\n");
+      return cell;
+    }
+
+    // For RENAMES: redirect to renamed object. A rename exported from a
+    // generic instance denotes an entity of THAT instance: activate the
+    // instance context so formal-object references inside the renamed
+    // expression substitute their actuals even when the reference comes
+    // from outside the instance.
     if (sym->renamed_object) {
-      return Generate_Lvalue (sym->renamed_object);
+      uint32_t renamed_addr = Generate_Lvalue (sym->renamed_object);
+      return renamed_addr;
     }
     uint32_t addr = Emit_Temp ();
     Emit_Symbol_Addr (addr, sym);
@@ -19954,8 +21519,13 @@ uint32_t Generate_Lvalue (Syntax_Node *node) {
         uint32_t raw = Generate_Expression (node->apply.prefix).reg;
         LLVM_Rep raw_rep = Expression_LLVM_Rep (node->apply.prefix);
         if (LLVM_Rep_Is_Fat_Pointer (raw_rep)) {
-          LLVM_Rep bt = Array_Bound_LLVM_Rep (node->apply.prefix->type);
+          LLVM_Rep bt = Array_Bound_LLVM_Rep (prefix_type);
+          dyn_lv_bt = bt;
+          dyn_fat = raw;
           base = Emit_Fat_Pointer_Data (raw, bt).reg;
+          dynamic_low = Emit_Fat_Pointer_Low (raw, bt).reg;
+          dynamic_high = Emit_Fat_Pointer_High (raw, bt).reg;
+          has_dynamic_low = true;
         } else {
           base = raw;
         }
@@ -19974,6 +21544,20 @@ uint32_t Generate_Lvalue (Syntax_Node *node) {
       } else if (array_sym) {
         base = Emit_Temp ();
         Emit_Symbol_Addr (base, array_sym);
+      } else if (Type_Is_Unconstrained_Array (prefix_type) or
+                 Type_Has_Dynamic_Bounds (prefix_type)) {
+
+        // Non-symbol prefix (selected component, function call, ...)
+        // of a dynamic-bounds array: the expression yields a fat
+        // pointer value; unpack data and bounds as in the symbol case.
+        LLVM_Rep bt = Array_Bound_LLVM_Rep (prefix_type);
+        dyn_lv_bt = bt;
+        uint32_t fat = Generate_Expression (node->apply.prefix).reg;
+        dyn_fat = fat;
+        base = Emit_Fat_Pointer_Data (fat, bt).reg;
+        dynamic_low = Emit_Fat_Pointer_Low (fat, bt).reg;
+        dynamic_high = Emit_Fat_Pointer_High (fat, bt).reg;
+        has_dynamic_low = true;
       } else {
         base = Generate_Expression (node->apply.prefix).reg;
       }
@@ -20145,34 +21729,40 @@ LLVM_Value Generate_Identifier (Syntax_Node *node) {
     Fatal_Error (node->location, "unresolved identifier reached codegen");
   }
 
-  // Generic formal object substitution: a reference to a formal object inside a
-  // generic instance generates the actual expression. The formal carries the
-  // slot it occupies in the actuals (generic_formal_index), so we index the
-  // active instance — or its enclosing generic package instance — directly.
-  if (sym->generic_formal_index >= 0 and cg->current_instance) {
-    Symbol *holder = cg->current_instance;
-    if (not holder->generic_actuals and holder->parent and
-        holder->parent->kind == SYMBOL_PACKAGE and holder->parent->generic_actuals)
-      holder = holder->parent;
-    if (holder->generic_actuals and
-        sym->generic_formal_index < (int)holder->generic_actual_count) {
-      Syntax_Node *actual_expr =
-        holder->generic_actuals[sym->generic_formal_index].actual_expr;
-      if (actual_expr) return Generate_Expression (actual_expr);
-    }
+  // Tree-copy instance IN OUT binding: a per-instance pointer cell renames
+  // the actual variable (RM 12.1.1). Reading the formal loads the cell,
+  // then loads the value through it.
+  if (sym->is_instance_in_out_binding) {
+    uint32_t cell = Emit_Temp ();
+    Emit ("  %%t%u = load ptr, ptr ", cell);
+    Emit_Global_Ref (sym);
+    Emit ("\n");
+    LLVM_Rep value_rep = sym->type ? Type_To_Rep (sym->type)
+                                   : Integer_Arith_Rep ();
+    uint32_t value = Emit_Temp ();
+    Emit ("  %%t%u = load %s, ptr %%t%u\n", value,
+          LLVM_Rep_To_String (value_rep), cell);
+    return Val_Rep (value, value_rep);
   }
 
-  // For RENAMES: redirect to the renamed object
-  if (sym->renamed_object) {
-    return Generate_Expression (sym->renamed_object);
+  // For RENAMES: redirect to the renamed object. A rename exported from
+  // a generic instance denotes an entity of THAT instance: activate the
+  // instance context so formal-object references inside the renamed
+  // expression substitute their actuals even when the reference comes
+  // from outside the instance. Subprogram renames are NOT objects — their
+  // renamed_object holds a Symbol, not an expression (see
+  // Resolve_Subprogram_Rename) — and fall through to the SYMBOL_FUNCTION
+  // parameterless-call case below, which peels the rename chain.
+  if (sym->renamed_object and
+      sym->kind != SYMBOL_FUNCTION and sym->kind != SYMBOL_PROCEDURE) {
+    LLVM_Value renamed_value = Generate_Expression (sym->renamed_object);
+    return renamed_value;
   }
   uint32_t t = Emit_Temp ();
   Type_Info *ty = sym->type;
 
   // Resolve generic formal types to their actuals for correct LLVM type sizing.
   // E.g. generic formal T (<>) mapped to COLOR (i8) - must load as i8, not i32.
-  if (cg->current_instance and ty)
-    ty = Resolve_Generic_Actual_Type (ty);
   switch (sym->kind) {
 
     // Discriminant with aggregate-local temp: load from temp alloca
@@ -20338,13 +21928,10 @@ LLVM_Value Generate_Identifier (Syntax_Node *node) {
     // inside a generic instantiation, substitute with actual.                                     
     //                                                                                              
     case SYMBOL_FUNCTION: {
-      Symbol *actual = sym;
-      if (sym->generic_formal_index >= 0 and cg->current_instance and
-          cg->current_instance->generic_actuals and
-          sym->generic_formal_index < (int)cg->current_instance->generic_actual_count) {
-        Symbol *act = cg->current_instance->generic_actuals[sym->generic_formal_index].actual_subprogram;
-        if (act) actual = act;
-      }
+
+      // A rename (including a generic formal-subprogram binding) denotes
+      // its target: peel the chain before dispatching the call.
+      Symbol *actual = Resolve_Subprogram_Rename (sym);
 
       // Check if actual is an enumeration literal (e.g., RED, YELLOW)
       if (actual->kind == SYMBOL_LITERAL and Type_Is_Enumeration (actual->type)) {
@@ -20385,6 +21972,19 @@ LLVM_Value Generate_Identifier (Syntax_Node *node) {
         goto direct_emit_function_call;
       } else if (actual->kind == SYMBOL_FUNCTION) {
         direct_emit_function_call:;
+
+        // A parameterless call whose result builds in place (limited
+        // return type, §13.10) must go through Generate_Apply — the
+        // direct emit below knows nothing of the BIP protocol and would
+        // call with the wrong signature.
+        if (actual->return_type and actual->return_type->is_limited) {
+          Syntax_Node *bip_app = Node_New (NK_APPLY, node->location);
+          bip_app->apply.prefix = node;
+          bip_app->apply.resolution = APPLY_CALL;
+          bip_app->symbol = actual;
+          bip_app->type = actual->return_type;
+          return Generate_Apply (bip_app);
+        }
         LLVM_Rep ret_rep = actual->return_type ?
           Type_To_Rep (actual->return_type) : Integer_Arith_Rep ();
         bool callee_is_nested = Subprogram_Needs_Static_Chain (actual);
@@ -20661,6 +22261,23 @@ uint32_t Generate_Composite_Address (Syntax_Node *node) {
   if (node->kind == NK_IDENTIFIER) {
     Symbol *sym = node->symbol;
     if (sym) {
+      // Tree-copy instance IN OUT binding: the composite's address is the
+      // actual variable's address, read from the per-instance pointer
+      // cell (RM 12.1.1 renaming semantics).
+      if (sym->is_instance_in_out_binding) {
+        uint32_t cell = Emit_Temp ();
+        Emit ("  %%t%u = load ptr, ptr ", cell);
+        Emit_Global_Ref (sym);
+        Emit ("\n");
+        return cell;
+      }
+
+      // A rename redirects to the renamed entity's storage, under the
+      // owning instance's context when the rename came from one.
+      if (sym->renamed_object) {
+        uint32_t renamed_addr = Generate_Composite_Address (sym->renamed_object);
+        return renamed_addr;
+      }
       uint32_t t = Emit_Temp ();
       Emit_Symbol_Addr (t, sym);
       return t;
@@ -21177,9 +22794,10 @@ LLVM_Value Convert_Real_To_Fixed (uint32_t val, double small, LLVM_Rep fix_rep)
 //
 LLVM_Value Generate_Binary_Op (Syntax_Node *node) {
 
-  // Peel through any subprogram rename chain (RM 8.5). A rename does not emit
-  // its own body — calls dispatch to the renamed entity.
-  Symbol *call_target = Resolve_Subprogram_Rename (node->symbol);
+  // Peel renames (RM 8.5) and substitute a generic formal subprogram with
+  // the instantiation's actual (RM 12.3) — a rename does not emit its own
+  // body, and a formal's calls dispatch to the actual.
+  Symbol *call_target = Operator_Call_Target (node->symbol);
 
   // User-defined operator: generate function call (RM 6.7)
   if (call_target and call_target->kind == SYMBOL_FUNCTION and
@@ -22039,8 +23657,7 @@ LLVM_Value Emit_Binary_Op_Predefined (Syntax_Node *node) {
           // scaling the mantissa up to float, where SMALL's representation
           // error makes exact equalities like D = 86_400.0 fail.
           if (Type_Is_Fixed_Point (right_type)) {
-            Type_Info *resolved_right = cg->current_instance ?
-              Resolve_Generic_Actual_Type (right_type) : right_type;
+            Type_Info *resolved_right = right_type;
             uint32_t dval = left;
             if (left_llvm_type.bits != 64)
               dval = Emit_Convert (left, left_llvm_type, LLVM_Rep_Float (64)).reg;
@@ -22066,8 +23683,7 @@ LLVM_Value Emit_Binary_Op_Predefined (Syntax_Node *node) {
         } else if (not left_is_float and right_is_float) {
 
           if (Type_Is_Fixed_Point (left_type)) {
-            Type_Info *resolved_left = cg->current_instance ?
-              Resolve_Generic_Actual_Type (left_type) : left_type;
+            Type_Info *resolved_left = left_type;
             uint32_t dval = right;
             if (right_float_type.bits != 64)
               dval = Emit_Convert (right, right_float_type, LLVM_Rep_Float (64)).reg;
@@ -22427,10 +24043,11 @@ LLVM_Value Emit_Binary_Op_Predefined (Syntax_Node *node) {
 
 }LLVM_Value Generate_Unary_Op (Syntax_Node *node) {
 
-  // Peel through any subprogram rename chain (RM 8.5). If the resolved
-  // target is a predefined operator (`"-" RENAMES "abs"` etc.), fall through
-  // to the inline-operator path below instead of calling a never-emitted body.
-  Symbol *peeled = Resolve_Subprogram_Rename (node->symbol);
+  // Peel renames (RM 8.5) and substitute a generic formal subprogram with
+  // the instantiation's actual (RM 12.3). If the resolved target is a
+  // predefined operator (`"-" RENAMES "abs"` etc.), fall through to the
+  // inline-operator path below instead of calling a never-emitted body.
+  Symbol *peeled = Operator_Call_Target (node->symbol);
 
   // User-defined unary operator: generate function call (RM 6.7)
   if (peeled and peeled->kind == SYMBOL_FUNCTION and
@@ -22695,6 +24312,17 @@ uint32_t Emit_Task_Pointer_From_Selected (Syntax_Node *selected_prefix) {
   uint32_t task_ptr = Emit_Temp ();
   if (not task_sym) {
     Emit ("  %%t%u = inttoptr " PTR_INT_TYPE " 0 to ptr  ; current task\n", task_ptr);
+  } else if (task_sym->is_instance_in_out_binding) {
+
+    // Tree-copy instance IN OUT binding of a task: the pointer cell holds
+    // the task VARIABLE's address and the variable holds the TCB — two
+    // loads (RM 12.1.1 renaming semantics).
+    uint32_t variable_addr = Emit_Temp ();
+    Emit ("  %%t%u = load ptr, ptr ", variable_addr);
+    Emit_Global_Ref (task_sym);
+    Emit ("\n");
+    Emit ("  %%t%u = load ptr, ptr %%t%u  ; task via IN OUT binding\n",
+          task_ptr, variable_addr);
   } else if (task_sym->type and Type_Is_Access (task_sym->type)) {
     // Implicit dereference (RM 4.1.3): the access value designates the
     // allocated task OBJECT, which itself holds the TCB pointer — so two
@@ -22728,25 +24356,6 @@ uint32_t Emit_Task_Pointer_From_Selected (Syntax_Node *selected_prefix) {
   return task_ptr;
 }
 
-// Substitute a generic FORMAL subprogram with the instantiation's actual
-// (RM 12.3). For subprograms exported from generic packages the actuals live
-// on the parent package instance. Returns sym unchanged when not a formal or
-// when the actual is a built-in operator (the caller handles that case).
-Symbol *Substitute_Generic_Formal_Subprogram (Symbol *sym) {
-  Symbol *actuals_holder = cg->current_instance;
-  if (actuals_holder and not actuals_holder->generic_actuals and actuals_holder->parent and
-    actuals_holder->parent->kind == SYMBOL_PACKAGE and actuals_holder->parent->generic_actuals) {
-    actuals_holder = actuals_holder->parent;
-  }
-  if (sym and sym->generic_formal_index >= 0 and actuals_holder and
-      actuals_holder->generic_actuals and
-      sym->generic_formal_index < (int)actuals_holder->generic_actual_count) {
-    Symbol *actual =
-      actuals_holder->generic_actuals[sym->generic_formal_index].actual_subprogram;
-    if (actual) return actual;
-  }
-  return sym;
-}
 
 // Resolve which formal slot an entry-call actual binds — positional order,
 // or by name for an NK_ASSOCIATION (NAME => VALUE) — and surface the value
@@ -22791,6 +24400,11 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
   // never consults this symbol.
   Symbol *sym = node->apply.prefix->symbol;
 
+  // The entry rename a call peeled through, if any: the rename's hidden
+  // locals carry the task pointer and family index bound at elaboration
+  // (RM 8.5); entry_path reads them instead of the call's own syntax.
+  Symbol *entry_rename_sym = NULL;
+
   // Emit call/apply comment if symbol is known
   if (sym) {
     Emit ("  ; apply %.*s (", (int)sym->name.length, sym->name.data);
@@ -22805,6 +24419,8 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
     Emit (")\n");
   }
 
+  if (sym and sym->renamed_entry_name)
+    entry_rename_sym = sym;
   sym = Resolve_Subprogram_Rename (sym);
 
   // A call through a procedure-renames-entry peeled to the entry symbol:
@@ -22835,8 +24451,14 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
   // Predefined operator named as a function: "="(X,Y), "NOT"(X), etc. The
   // operand on the prefix is either the predefined-operator symbol or a bare
   // operator-name identifier; either way Resolve_Apply has already settled that
-  // this is an operator.
-  if (node->apply.resolution == APPLY_OPERATOR and node->apply.arguments.count >= 1) {
+  // this is an operator. Also entered from below when a formal-subprogram
+  // substitution or a rename peels to a predefined operator — those have no
+  // body to call.
+  operator_path:
+  if ((node->apply.resolution == APPLY_OPERATOR or
+       (sym and sym->is_predefined and
+        Token_From_Op_Name (sym->name) != TK_EOF)) and
+      node->apply.arguments.count >= 1) {
     String_Slice op_name = sym ? sym->name : node->apply.prefix->string_val.text;
     uint32_t argc = (uint32_t)node->apply.arguments.count;
 
@@ -22931,57 +24553,24 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
     // Fall through to regular call for unhandled operators
   }
 
-  // Generic formal subprogram substitution: if calling a formal subprogram                         
-  // inside a generic instantiation, substitute with the actual subprogram                          
-  // or generate inline code for built-in operators.                                               
-  // For subprograms exported from generic packages, the actuals are on the                         
-  // parent package instance, not on the subprogram itself.                                        
-  //                                                                                                
-  Symbol *actuals_holder = cg->current_instance;
-  if (actuals_holder and not actuals_holder->generic_actuals and actuals_holder->parent and
-    actuals_holder->parent->kind == SYMBOL_PACKAGE and actuals_holder->parent->generic_actuals) {
-    actuals_holder = actuals_holder->parent;  // Use package's generic_actuals
-  }
-  if (sym and sym->generic_formal_index >= 0 and actuals_holder and
-      actuals_holder->generic_actuals and
-      sym->generic_formal_index < (int)actuals_holder->generic_actual_count) {
-    uint32_t fi = (uint32_t)sym->generic_formal_index;
-    if (actuals_holder->generic_actuals[fi].actual_subprogram) {
-      sym = actuals_holder->generic_actuals[fi].actual_subprogram;
-
-    // Built-in operator bound to a generic formal subprogram. Lower it through
-    // the very emitter that `L op R` uses, so concatenation, arithmetic,
-    // overflow checks, fixed/float handling, and fat-pointer results all come
-    // from one implementation. Synthesising the binary-op node and handing it
-    // to Emit_Binary_Op_Predefined replaces a private, overflow-unchecked
-    // re-coding of `&`, `+`, `-`, `*`, and `/`.
-    } else if (actuals_holder->generic_actuals[fi].builtin_operator and
-               node->apply.arguments.count == 2) {
-      Syntax_Node *left_arg  = node->apply.arguments.items[0];
-      Syntax_Node *right_arg = node->apply.arguments.items[1];
-      if (left_arg->kind  == NK_ASSOCIATION) left_arg  = left_arg->association.expression;
-      if (right_arg->kind == NK_ASSOCIATION) right_arg = right_arg->association.expression;
-      Syntax_Node binop  = {0};
-      binop.kind         = NK_BINARY_OP;
-      binop.binary.op    = actuals_holder->generic_actuals[fi].builtin_operator;
-      binop.binary.left  = left_arg;
-      binop.binary.right = right_arg;
-      binop.type         = sym ? sym->return_type : node->type;
-      binop.location     = node->location;
-      return Emit_Binary_Op_Predefined (&binop);
-    }
-  }
-
   // The substituted actual may itself be an entry or a procedure renaming
   // one (cc1310a: WITH PROCEDURE P3 (I : INTEGER) IS T.ENT2): peel and
   // route to the entry-call emitter.
+  if (sym and sym->renamed_entry_name)
+    entry_rename_sym = sym;
   sym = Resolve_Subprogram_Rename (sym);
   if (sym and sym->kind == SYMBOL_ENTRY)
     goto entry_path;
 
-  // RM 12.3(17): redirect generic recursive calls to current instance
-  if (sym and sym->kind == SYMBOL_GENERIC and cg->current_instance)
-    sym = cg->current_instance;
+  // A substituted actual or rename that peeled to a predefined operator
+  // (FUNCTION NE (...) RENAMES "/=" bound to a formal): predefined
+  // operators have no body — route through the operator-as-function
+  // emitter instead of calling a never-emitted symbol.
+  if (sym and sym->is_predefined and
+      (sym->kind == SYMBOL_FUNCTION or sym->kind == SYMBOL_PROCEDURE) and
+      Token_From_Op_Name (sym->name) != TK_EOF and
+      node->apply.resolution != APPLY_OPERATOR)
+    goto operator_path;
 
   // Function call - generate arguments                                                             
   // For OUT/IN OUT parameters, we need to pass the ADDRESS, not the value.                        
@@ -23054,7 +24643,8 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
            addr_node->kind == NK_SELECTED) and
           (addr_node->symbol->kind == SYMBOL_VARIABLE or
            addr_node->symbol->kind == SYMBOL_PARAMETER or
-           addr_node->symbol->kind == SYMBOL_CONSTANT);
+           addr_node->symbol->kind == SYMBOL_CONSTANT) and
+          not addr_node->symbol->is_instance_in_out_binding;
         if (is_simple_var_ref) {
           actual_addr = Emit_Temp ();
           Emit_Symbol_Addr (actual_addr, addr_node->symbol);
@@ -23136,6 +24726,36 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
           Type_Info *ft = sym->parameters[param_idx].param_type;
           if (ft and Type_Is_Access (ft))
             arg->allocator.target_access_type = ft;
+        }
+
+        // A task-typed IN formal is by reference (Parameter_Passed_By_Reference):
+        // pass the address of the actual's task slot. Generate_Expression
+        // would load the TCB handle — the value form of a task — but the
+        // callee aliases %p as the slot address, and abort/'TERMINATED/
+        // entry calls through the formal all read the handle through it.
+        // Records and arrays already arrive as addresses; the task is the
+        // one by-reference type whose value form differs from its address.
+        if (sym->parameters and param_idx < sym->parameter_count and
+            Type_Is_Task (sym->parameters[param_idx].param_type)) {
+
+          // A task value with no storage of its own — a function result
+          // like F2 (F1) — gets spilled to a fresh slot whose address is
+          // passed; the slot is the anonymous object holding the result.
+          bool actual_is_value =
+            (arg->kind == NK_IDENTIFIER and arg->symbol and
+             arg->symbol->kind == SYMBOL_FUNCTION) or
+            (arg->kind == NK_APPLY and
+             arg->apply.resolution == APPLY_CALL);
+          if (actual_is_value) {
+            LLVM_Value task_value = Generate_Expression (arg);
+            uint32_t slot = Emit_Temp ();
+            Emit ("  %%t%u = alloca ptr  ; task function-result slot\n", slot);
+            Emit ("  store ptr %%t%u, ptr %%t%u\n", task_value.reg, slot);
+            args[i] = slot;
+          } else {
+            args[i] = Generate_Composite_Address (arg);
+          }
+          continue;
         }
         LLVM_Value arg_v = Generate_Expression (arg);
         args[i] = arg_v.reg;
@@ -23236,16 +24856,6 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
     // This is the GNAT-style optimization.                                                        
     //                                                                                              
     Symbol *call_target = sym->parent_operation ? sym->parent_operation : sym;
-
-    // RM 12.3(17): recursive call within a generic body > call current                             
-    // instance. Redirect SYMBOL_GENERIC to cg->current_instance so the                            
-    // emitted name, return type, and parameter list are correct.                                  
-    // GNAT: Expand_N_Subprogram_Call maps generic to current instance.                            
-    //                                                                                              
-    if (call_target->kind == SYMBOL_GENERIC and cg->current_instance) {
-      sym = cg->current_instance;
-      call_target = sym;
-    }
 
     // RM 13.10.2 / GNAT: UNCHECKED_CONVERSION is an intrinsic generic.
     // Each instantiation creates a SYMBOL_FUNCTION with no body.
@@ -23373,6 +24983,16 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
         Syntax_Node *def = sym->parameters[p].default_value;
         if (not def) continue;  // not reachable for a legal call
         Type_Info *pt = sym->parameters[p].param_type;
+
+        // A task-typed default is by reference like every task formal:
+        // pass the address of the default object's task slot, not the
+        // loaded TCB handle (Parameter_Passed_By_Reference).
+        if (pt and Type_Is_Task (pt)) {
+          default_arg_vals[n_default_args]  = Generate_Composite_Address (def);
+          default_arg_types[n_default_args] = LL_REP_PTR;
+          n_default_args++;
+          continue;
+        }
         LLVM_Value dv = Generate_Expression (def);
 
         // Composite IN defaults pass by reference. The formal's ABI rep
@@ -23583,8 +25203,23 @@ entry_path:
     uint32_t family_idx_temp = 0;
     uint32_t first_param_idx = 0;  // Index of first actual parameter in arguments
 
-    // First argument is the family index - widen to i32 for index arithmetic
-    if (is_entry_family and node->apply.arguments.count > 0) {
+    // Call through an entry rename: every argument is a parameter — the
+    // call's syntax never carried a family index. The index (if the renamed
+    // name had one) was evaluated when the renaming was elaborated (RM 8.5)
+    // and waits in the rename's hidden local.
+    if (entry_rename_sym) {
+      if (is_entry_family and entry_rename_sym->rename_index_slot) {
+        family_idx_temp = Emit_Temp ();
+        Emit ("  %%t%u = load %s, ptr ", family_idx_temp,
+              LLVM_Rep_To_String (Integer_Arith_Rep ()));
+        Emit_Symbol_Storage (entry_rename_sym->rename_index_slot);
+        Emit ("  ; family index bound at rename elaboration\n");
+      }
+
+    // Direct call: the resolver flattened index+parameters into one
+    // argument list, so the first argument is the family index — widen to
+    // i32 for index arithmetic.
+    } else if (is_entry_family and node->apply.arguments.count > 0) {
       family_idx_temp = Generate_Expression (node->apply.arguments.items[0]).reg;
       LLVM_Rep fam_t = Expression_LLVM_Rep (node->apply.arguments.items[0]);
       family_idx_temp = Emit_Convert (family_idx_temp, fam_t, Integer_Arith_Rep ()).reg;
@@ -23607,7 +25242,8 @@ entry_path:
     // OUT / IN OUT scalar actuals get their values copied back from the
     // parameter block after the rendezvous (RM 9.5, 6.4). Capture each
     // actual's address now, before the call.
-    struct { uint32_t address; uint32_t slot; LLVM_Rep rep; } out_actuals[32];
+    struct { uint32_t address; uint32_t slot; LLVM_Rep rep;
+             Type_Info *actual_type; } out_actuals[32];
     uint32_t out_actual_count = 0;
 
     for (uint32_t i = first_param_idx; i < node->apply.arguments.count; i++) {
@@ -23624,9 +25260,11 @@ entry_path:
         if ((mode == PARAM_OUT or mode == PARAM_IN_OUT) and
             formal_type and not Type_Is_Composite (formal_type) and
             (LLVM_Rep_Is_Int (formal_rep) or LLVM_Rep_Is_Pointer (formal_rep))) {
-          out_actuals[out_actual_count].address = Generate_Lvalue (value_node);
-          out_actuals[out_actual_count].slot    = slot;
-          out_actuals[out_actual_count].rep     = Type_To_Rep (formal_type);
+          out_actuals[out_actual_count].address     = Generate_Lvalue (value_node);
+          out_actuals[out_actual_count].slot        = slot;
+          out_actuals[out_actual_count].rep         = Type_To_Rep (formal_type);
+          out_actuals[out_actual_count].actual_type =
+            value_node ? value_node->type : NULL;
           out_actual_count++;
         }
       }
@@ -23641,6 +25279,50 @@ entry_path:
           sym->parameters[slot].mode != PARAM_OUT)
         Emit_Access_Designated_Disc_Check (arg_val, arg_v.rep,
                        sym->parameters[slot].param_type);
+
+      // RM 6.4.1: an IN / IN OUT scalar actual is checked against the
+      // ENTRY's formal subtype before the rendezvous — through a rename
+      // this is the renamed entry's profile (RM 8.5), never the rename's
+      // own, because `sym` here is the peeled entry.
+      if (sym->parameters and slot < sym->parameter_count and
+          sym->parameters[slot].param_type and
+          sym->parameters[slot].mode != PARAM_OUT and
+          not Type_Is_Composite (sym->parameters[slot].param_type)) {
+        arg_v = Emit_Constraint_Check_Val (arg_v,
+          sym->parameters[slot].param_type,
+          value_node ? value_node->type : NULL);
+        arg_val = arg_v.reg;
+      }
+
+      // RM 6.4.1: a constrained-array actual must match the entry formal's
+      // bounds exactly — a rendezvous does not slide. Static bounds compare
+      // at compile time; a mismatch raises CONSTRAINT_ERROR at the call.
+      if (sym->parameters and slot < sym->parameter_count and value_node) {
+        Type_Info *formal_array = sym->parameters[slot].param_type;
+        Type_Info *actual_array = value_node->type;
+        if (formal_array and actual_array and
+            Type_Is_Constrained_Array (formal_array) and
+            Type_Is_Constrained_Array (actual_array) and
+            formal_array->array.index_count == 1 and
+            actual_array->array.index_count == 1) {
+          Type_Bound *formal_low  = &formal_array->array.indices[0].low_bound;
+          Type_Bound *formal_high = &formal_array->array.indices[0].high_bound;
+          Type_Bound *actual_low  = &actual_array->array.indices[0].low_bound;
+          Type_Bound *actual_high = &actual_array->array.indices[0].high_bound;
+          if (formal_low->kind  == BOUND_INTEGER and
+              actual_low->kind  == BOUND_INTEGER and
+              formal_high->kind == BOUND_INTEGER and
+              actual_high->kind == BOUND_INTEGER and
+              (formal_low->int_value  != actual_low->int_value or
+               formal_high->int_value != actual_high->int_value)) {
+            uint32_t always = Emit_Temp ();
+            Emit ("  %%t%u = icmp eq i32 0, 0  ; bounds mismatch, always raise\n",
+                  always);
+            Emit_Check_With_Raise (always, true,
+              "array bounds mismatch in entry call (RM 6.4.1)");
+          }
+        }
+      }
 
       // Widen argument to i64 for the parameter block ABI
       LLVM_Rep arg_t = Expression_LLVM_Rep (value_node);
@@ -23657,7 +25339,15 @@ entry_path:
     //                                                                                              
     Syntax_Node *prefix = node->apply.prefix;
     uint32_t task_ptr;
-    if (prefix->kind != NK_SELECTED and sym->parent and
+    if (entry_rename_sym and entry_rename_sym->rename_task_slot) {
+      // Call through an entry rename: the task object was determined when
+      // the renaming was elaborated (RM 8.5) — read it back, never
+      // re-evaluate the prefix.
+      task_ptr = Emit_Temp ();
+      Emit ("  %%t%u = load ptr, ptr ", task_ptr);
+      Emit_Symbol_Storage (entry_rename_sym->rename_task_slot);
+      Emit ("  ; task bound at rename elaboration\n");
+    } else if (prefix->kind != NK_SELECTED and sym->parent and
         sym->parent->kind == SYMBOL_VARIABLE and Type_Is_Task (sym->parent->type)) {
       // Entry call with no task prefix — e.g. the entry was passed as a generic
       // actual subprogram and is called by its formal name. The target is the
@@ -23704,6 +25394,14 @@ entry_path:
       Emit ("  %%t%u = load i64, ptr %%t%u\n", raw, slot_ptr);
       uint32_t narrowed = Emit_Convert (raw, LLVM_Rep_Int (64, false),
                                         out_actuals[k].rep).reg;
+
+      // RM 6.4.1: the value copied back is checked against the ACTUAL's
+      // subtype (the entry's formal subtype governed the way in).
+      if (out_actuals[k].actual_type and
+          not Type_Is_Composite (out_actuals[k].actual_type))
+        Emit_Constraint_Check_Val (
+          Val_Rep (narrowed, out_actuals[k].rep),
+          out_actuals[k].actual_type, NULL);
       Emit ("  store %s %%t%u, ptr %%t%u  ; OUT param copy-back\n",
          LLVM_Rep_To_String (out_actuals[k].rep), narrowed,
          out_actuals[k].address);
@@ -24228,8 +25926,6 @@ LLVM_Value Generate_Selected (Syntax_Node *node) {
   // Resolve generic formal field types to their actual so we load at
   // the right width (e.g., FIXED_ELEMENT formal -> CHECK_TYPE actual
   // with 'SIZE USE 7 -> i8 load, not i32).
-  if (cg->current_instance and field_type)
-    field_type = Resolve_Generic_Actual_Type (field_type);
   LLVM_Rep field_llvm_type = Type_To_Rep (field_type);
 
   // Runtime discriminant check for variant component access (RM 3.7.3)                             
@@ -24590,13 +26286,6 @@ LLVM_Value Emit_Bound_Attribute (uint32_t t,
     // Inside generic instantiations, resolve through the base type chain to
     // pick up the actual type's native width (e.g., BOOLEAN > i8).
     LLVM_Rep bound_rep = Type_To_Rep (prefix_type);
-    if (cg->current_instance and prefix_type->base_type) {
-      Type_Info *resolved_base = Resolve_Generic_Actual_Type (prefix_type->base_type);
-      if (resolved_base != prefix_type->base_type) {
-        LLVM_Rep actual_rep = Type_To_Rep (resolved_base);
-        if (LLVM_Rep_Is_Int (actual_rep)) bound_rep = actual_rep;
-      }
-    }
     if (not LLVM_Rep_Is_Int (bound_rep)) bound_rep = Integer_Arith_Rep ();
     result_ty = bound_rep;
     LLVM_Rep bound_s = bound_rep;
@@ -24668,10 +26357,6 @@ LLVM_Value Generate_Attribute (Syntax_Node *node) {
                ? node->attribute.arguments.items[0] : NULL;
   uint32_t dim = Get_Dimension_Index (first_arg);
 
-  // Resolve generic formal type > actual (RM 12.3), but preserve constrained subtypes
-  if (prefix_type and cg->current_instance and not prefix_type->base_type)
-    prefix_type = Resolve_Generic_Actual_Type (prefix_type);
-
   // If the attribute prefix is T'BASE, resolve BASE after generic substitution.                   
   // T'BASE with T=C (constrained subtype) should use C's unconstrained base type.                 
   // Without this, T'BASE'FIRST/LAST incorrectly uses the subtype's bounds (RM 3.3.3).             
@@ -24687,14 +26372,6 @@ LLVM_Value Generate_Attribute (Syntax_Node *node) {
   // actual type kind (for IMAGE, VALUE, etc.) (RM 12.3).                                          
   //                                                                                                
   Type_Info *classify_type = prefix_type;
-  if (cg->current_instance and prefix_type) {
-    Type_Info *walk = prefix_type;
-    for (int depth = 0; walk and depth < 20; depth++) {
-      Type_Info *resolved = Resolve_Generic_Actual_Type (walk);
-      if (resolved != walk) { classify_type = resolved; break; }
-      walk = walk->base_type ? walk->base_type : walk->parent_type;
-    }
-  }
 
   // Implicit dereference for access-to-array (RM 4.1(3))
   // But NOT for type-level attributes like SIZE, STORAGE_SIZE, BASE (RM 13.7.2)
@@ -24969,8 +26646,6 @@ LLVM_Value Generate_Attribute (Syntax_Node *node) {
 
       // Get BASE TYPE bounds for range check (RM 3.5.5(5))
       Type_Info *val_base = Type_Root (prefix_type);
-      if (cg->current_instance)
-        val_base = Type_Root (Resolve_Generic_Actual_Type (val_base));
       int64_t lo = 0, hi = 0;
       bool have_bounds = false;
       if (Type_Is_Enumeration (val_base) and
@@ -24997,8 +26672,6 @@ LLVM_Value Generate_Attribute (Syntax_Node *node) {
       // Resolve generic formal types to their actuals.
       LLVM_Rep val_t = Expression_LLVM_Rep (first_arg);
       Type_Info *val_result_type = prefix_type;
-      if (cg->current_instance)
-        val_result_type = Resolve_Generic_Actual_Type (val_result_type);
       LLVM_Rep result_t = Type_To_Rep (val_result_type);
       if (LLVM_Rep_Is_Int (result_t))
         val = Emit_Convert (val, val_t, result_t).reg;
@@ -25028,8 +26701,6 @@ LLVM_Value Generate_Attribute (Syntax_Node *node) {
       // includes ALL values of the parent type's base range.                                      
       //                                                                                            
       Type_Info *base = Type_Root (prefix_type);
-      if (cg->current_instance)
-        base = Type_Root (Resolve_Generic_Actual_Type (base));
 
       // Bound check: SUCC vs high, PRED vs low
       Type_Bound limit = is_succ ? base->high_bound : base->low_bound;
@@ -25043,8 +26714,6 @@ LLVM_Value Generate_Attribute (Syntax_Node *node) {
       // Convert result back to prefix type width.
       // Resolve generic formal types to their actuals.
       Type_Info *result_type = prefix_type;
-      if (cg->current_instance)
-        result_type = Resolve_Generic_Actual_Type (result_type);
       LLVM_Rep result_t = Type_To_Rep (result_type);
       if (LLVM_Rep_Is_Int (result_t))
         t = Emit_Convert (t, wide_iat, result_t).reg;
@@ -26206,14 +27875,11 @@ uint32_t Record_RT_Global_Id (Type_Info *t) {
 }
 
 // Unwrap a type to the underlying record it denotes for component access:
-// resolve generic formals to actuals and follow private/incomplete views down
-// the parent chain (RM 7.4.1, 12.3). Returns the input unchanged when no record
-// is reached.
+// follow private/incomplete views down the parent chain (RM 7.4.1).
+// Returns the input unchanged when no record is reached.
 Type_Info *Underlying_Record_Type (Type_Info *t) {
   for (int depth = 0; depth < 10 and t and not Type_Is_Record (t); depth++) {
-    Type_Info *actual = Resolve_Generic_Formal (t);
-    if (actual) t = actual;
-    else if ((Type_Is_Private (t) or t->kind == TYPE_INCOMPLETE) and t->parent_type)
+    if ((Type_Is_Private (t) or t->kind == TYPE_INCOMPLETE) and t->parent_type)
       t = t->parent_type;
     else break;
   }
@@ -30271,8 +31937,6 @@ LLVM_Value Generate_Allocator (Syntax_Node *node) {
   char alloc_master_arg[32] = "ptr null";
   if (designated and Type_Has_Task_Component (designated)) {
     Type_Info *master_source = ctx_access ? ctx_access : access_type;
-    if (cg->current_instance)
-      master_source = Resolve_Generic_Actual_Type (master_source);
     uint32_t access_master_id = Type_Is_Access (master_source)
                               ? master_source->access.master_scope_id : 0;
     if (access_master_id == 0 and Type_Is_Access (access_type))
@@ -30573,6 +32237,22 @@ void Generate_Statement_List (Node_List *list) {
     Generate_Statement (stmt);
   }
 }
+// Materialize the address a symbol-targeted assignment stores through:
+// ordinarily the symbol's own storage, but a tree-copy instance IN OUT
+// binding stores through the actual variable's address held in its
+// per-instance pointer cell (RM 12.1.1 renaming semantics).
+static uint32_t Emit_Assignment_Target_Address (Symbol *target_sym) {
+  uint32_t addr = Emit_Temp ();
+  if (target_sym->is_instance_in_out_binding) {
+    Emit ("  %%t%u = load ptr, ptr ", addr);
+    Emit_Global_Ref (target_sym);
+    Emit ("  ; IN OUT binding target\n");
+  } else {
+    Emit_Symbol_Addr (addr, target_sym);
+  }
+  return addr;
+}
+
 void Generate_Assignment (Syntax_Node *node) {
   Syntax_Node *target = node->assignment.target;
 
@@ -31076,8 +32756,6 @@ void Generate_Assignment (Syntax_Node *node) {
   // (some symbol-creation paths skip the type field).
   if (not ty) ty = target->type;
   if (not ty) ty = node->assignment.value ? node->assignment.value->type : NULL;
-  if (cg->current_instance)
-    ty = Resolve_Generic_Actual_Type (ty);
 
   // Handle record assignment (use memcpy) (RM 5.2, 3.7.2)
   if (Type_Is_Record (ty)) {
@@ -31140,8 +32818,6 @@ void Generate_Assignment (Syntax_Node *node) {
   //                                                                                                
   if (Type_Is_Constrained_Array (ty)) {
     Type_Info *src_type = node->assignment.value->type;
-    if (cg->current_instance)
-      src_type = Resolve_Generic_Actual_Type (src_type);
     bool src_is_fat_ptr = Expression_Produces_Fat_Pointer (
       node->assignment.value, src_type);
 
@@ -31212,17 +32888,17 @@ void Generate_Assignment (Syntax_Node *node) {
     // Target is fat pointer but source isn't aggregate/fat - store as fat ptr
     } else if (target_is_fat) {
       uint32_t fp = Fat_Ptr_As_Value (src_ptr).reg;
-      Emit ("  store " FAT_PTR_TYPE " %%t%u, ptr ", fp);
-      Emit_Symbol_Ref (target_sym);
-      Emit ("  ; array assignment (dynamic constrained)\n");
+      uint32_t target_addr = Emit_Assignment_Target_Address (target_sym);
+      Emit ("  store " FAT_PTR_TYPE " %%t%u, ptr %%t%u"
+            "  ; array assignment (dynamic constrained)\n", fp, target_addr);
 
     // Source is constrained - memcpy directly
     } else {
       uint32_t array_size = ty->size > 0 ? ty->size : 8;
-      Emit ("  call void @llvm.memcpy.p0.p0.i64(ptr ");
-      Emit_Symbol_Ref (target_sym);
-      Emit (", ptr %%t%u, i64 %u, i1 false)  ; array assignment\n",
-         src_ptr, array_size);
+      uint32_t target_addr = Emit_Assignment_Target_Address (target_sym);
+      Emit ("  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u"
+            ", ptr %%t%u, i64 %u, i1 false)  ; array assignment\n",
+         target_addr, src_ptr, array_size);
     }
     return;
   }
@@ -31245,8 +32921,6 @@ void Generate_Assignment (Syntax_Node *node) {
     Type_Is_Unconstrained_Array (ty)) {
     Syntax_Node *src = node->assignment.value;
     Type_Info *src_type = src->type;
-    if (cg->current_instance)
-      src_type = Resolve_Generic_Actual_Type (src_type);
     bool src_is_fat = Expression_Produces_Fat_Pointer (src, src_type);
 
     // Load existing fat pointer from the target variable
@@ -31344,8 +33018,6 @@ void Generate_Assignment (Syntax_Node *node) {
   // treated as its actual representation (e.g., FLOAT > double).
   //
   Type_Info *value_type = node->assignment.value->type;
-  if (cg->current_instance)
-    value_type = Resolve_Generic_Actual_Type (value_type);
   bool is_src_float = Type_Is_Float_Representation (value_type);
   bool is_dst_float = Type_Is_Float_Representation (ty);
 
@@ -31408,9 +33080,11 @@ void Generate_Assignment (Syntax_Node *node) {
     Type_Info *src_type_info = node->assignment.value->type;
     Emit_Constraint_Check_Val ((LLVM_Value){ value, type_rep }, ty, src_type_info);
   }
-  Emit ("  store %s %%t%u, ptr ", LLVM_Rep_To_String (type_rep), value);
-  Emit_Symbol_Storage (target_sym);
-  Emit ("\n");
+  {
+    uint32_t target_addr = Emit_Assignment_Target_Address (target_sym);
+    Emit ("  store %s %%t%u, ptr %%t%u\n",
+          LLVM_Rep_To_String (type_rep), value, target_addr);
+  }
 }
 void Generate_If_Statement (Syntax_Node *node) {
   Emit_Location (node->location);
@@ -32420,8 +34094,7 @@ void Generate_Statement (Syntax_Node *node) {
       // Parameterless procedure/function call
       } else if (target->kind == NK_IDENTIFIER) {
         Symbol *original_sym = target->symbol;  // Keep for defaults
-        Symbol *proc = Resolve_Subprogram_Rename (
-          Substitute_Generic_Formal_Subprogram (original_sym));
+        Symbol *proc = Resolve_Subprogram_Rename (original_sym);
 
         // A procedure-renames-entry peeled to the entry: emit an entry call.
         // The target task is the entry's enclosing single-task object (the
@@ -32469,10 +34142,20 @@ void Generate_Statement (Syntax_Node *node) {
             for (uint32_t i = 0; i < original_sym->parameter_count and
                i < MAX_DEFAULT_ARGS; i++) {
               if (original_sym->parameters[i].default_value) {
+                Type_Info *pt = original_sym->parameters[i].param_type;
+
+                // Task default: by reference — pass the address of the
+                // default object's slot (Parameter_Passed_By_Reference),
+                // not the loaded TCB handle.
+                if (Type_Is_Task (pt)) {
+                  default_vals[i] = Generate_Composite_Address (
+                    original_sym->parameters[i].default_value);
+                  default_types[i] = LL_REP_PTR;
+                  continue;
+                }
                 LLVM_Value val_v = Generate_Expression (original_sym->parameters[i].default_value);
                 uint32_t val = val_v.reg;
-                Type_Info *pt = original_sym->parameters[i].param_type;
-                bool is_composite = Type_Is_Composite (pt) or Type_Is_Task (pt);
+                bool is_composite = Type_Is_Composite (pt);
                 bool is_access = Type_Is_Access (pt);
 
                 // Composite default: extract data ptr from fat ptr
@@ -33787,10 +35470,6 @@ void Emit_Component_Task_Operation (Type_Info *ty, uint32_t base,
                                     const char *master_arg) {
   if (not ty) return;
 
-  // Inside a generic instance a component type may be a generic formal;
-  // the task body function is named after the ACTUAL type.
-  if (cg->current_instance) ty = Resolve_Generic_Actual_Type (ty);
-
   if (Type_Is_Task (ty)) {
     switch (op) {
       case COMPONENT_TASK_CREATE: {
@@ -34469,6 +36148,66 @@ void Generate_Object_Declaration (Syntax_Node *node) {
   bool use_frame = cg->current_nesting_level > 0;
   bool is_package_level = (cg->current_function == NULL);
 
+  // A tree-copy package instance's package-level objects are per-instance
+  // GLOBALS even when the instantiation is nested inside a subprogram
+  // (storage class must agree with Symbol_Is_Global, which classifies them
+  // global for every reference path). Their definitions go to module level
+  // through the accumulator; initialization runs here, at the elaboration
+  // point, exactly like any declaration's.
+  if (not is_package_level) {
+    Syntax_Node *first_name = node->object_decl.names.count
+      ? node->object_decl.names.items[0] : NULL;
+    Symbol *first_sym = first_name ? first_name->symbol : NULL;
+    if (first_sym and first_sym->is_package_level and
+        Symbol_Is_Global (first_sym)) {
+      for (uint32_t i = 0; i < node->object_decl.names.count; i++) {
+        Syntax_Node *name_node = node->object_decl.names.items[i];
+        Symbol *sym = name_node ? name_node->symbol : NULL;
+        if (not sym) continue;
+        Emit_Instance_Global_Definition (sym);
+        if (node->object_decl.init) {
+          Type_Info *ty = sym->type;
+          if (ty and (Type_Is_Record (ty) or
+                      (Type_Is_Constrained_Array (ty) and
+                       not Type_Has_Dynamic_Bounds (ty)))) {
+            uint32_t destination = Emit_Temp ();
+            Emit ("  %%t%u = getelementptr i8, ptr ", destination);
+            Emit_Symbol_Ref (sym);
+            Emit (", i64 0\n");
+            if (Type_Is_Constrained_Array (ty)) {
+              LLVM_Value source = Generate_Expression (node->object_decl.init);
+              if (LLVM_Rep_Is_Fat_Pointer (source.rep)) {
+                Emit_Fat_To_Array_Memcpy (Fat_Ptr_As_Value (source.reg).reg,
+                                          destination, ty);
+              } else {
+                uint32_t size_temp = Emit_Temp ();
+                Emit ("  %%t%u = add i64 0, %u\n", size_temp,
+                      ty->size ? ty->size : 1);
+                Emit_Memcpy (destination, source.reg, size_temp);
+              }
+            } else {
+              uint32_t source_addr =
+                Generate_Composite_Address (node->object_decl.init);
+              uint32_t size_temp = Emit_Temp ();
+              Emit ("  %%t%u = add i64 0, %u\n", size_temp,
+                    ty->size ? ty->size : 1);
+              Emit_Memcpy (destination, source_addr, size_temp);
+            }
+          } else {
+            LLVM_Rep rep = ty ? Type_To_Rep (ty)
+                              : Expression_LLVM_Rep (node->object_decl.init);
+            LLVM_Value value = Generate_Expression (node->object_decl.init);
+            uint32_t stored = Emit_Convert (value.reg, value.rep, rep).reg;
+            Emit ("  store %s %%t%u, ptr ", LLVM_Rep_To_String (rep), stored);
+            Emit_Symbol_Ref (sym);
+            Emit ("\n");
+          }
+        }
+      }
+      return;
+    }
+  }
+
   // Elaborate one BOUND_EXPR bound into its cached temp/rep, exactly once
   // (RM 3.3.1 / RM 3.6(5)). Dynamic subtype bounds are side-effectful
   // expressions, so they must be evaluated and cached, never re-run. The
@@ -34510,9 +36249,6 @@ void Generate_Object_Declaration (Syntax_Node *node) {
        (int)sym->name.length, sym->name.data,
        sym->type ? LLVM_Rep_To_String (Type_To_Rep (sym->type)) : "?");
     Type_Info *ty = sym->type;
-    Type_Info *orig_ty = ty;  // Save for disc constraint transfer
-    if (cg->current_instance)
-      ty = Resolve_Generic_Actual_Type (ty);
 
     // RM 4.8 / 3.10: propagate the declared access subtype to an initializing
     // allocator so it builds the value at the declared SHAPE (fat vs thin) and
@@ -34521,38 +36257,8 @@ void Generate_Object_Declaration (Syntax_Node *node) {
         node->object_decl.init->kind == NK_ALLOCATOR and Type_Is_Access (ty))
       node->object_decl.init->allocator.target_access_type = ty;
 
-    // Transfer discriminant constraints from the formal type's constrained                         
-    // subtype to the resolved actual type (RM 12.3). When a generic body                          
-    // declares P2 : PRIV (T'VAL (F * 100)), the formal PRIV type gets disc                         
-    // constraints, but Resolve_Generic_Actual_Type returns the base actual                         
-    // type (REC) which has no constraints. We must carry them over.                              
-    // For generic instances: if the resolved actual type is a record with                          
-    // discriminants, extract disc constraint expressions from the object                           
-    // declaration's AST (RM 12.3). The formal type (PRIV) doesn't carry                           
-    // constraints, but the AST for "P2 : PRIV (T'VAL (F*100))" has them.                          
-    //                                                                                              
     Syntax_Node **decl_disc_exprs = NULL;
     uint32_t decl_disc_count = 0;
-    if (cg->current_instance and ty != orig_ty and
-      Type_Is_Record (ty) and ty->record.has_discriminants and
-      not ty->record.has_disc_constraints and
-      node->object_decl.object_type) {
-      Syntax_Node *ot = node->object_decl.object_type;
-      Syntax_Node *constraint = NULL;
-      if (ot->kind == NK_SUBTYPE_INDICATION and ot->subtype_ind.constraint)
-        constraint = ot->subtype_ind.constraint;
-      Node_List *disc_args = NULL;
-      if (constraint and constraint->kind == NK_INDEX_CONSTRAINT)
-        disc_args = &constraint->index_constraint.ranges;
-      else if (constraint and constraint->kind == NK_DISCRIMINANT_CONSTRAINT)
-        disc_args = &constraint->discriminant_constraint.associations;
-      if (disc_args and disc_args->count > 0) {
-        decl_disc_count = disc_args->count;
-        if (decl_disc_count > ty->record.discriminant_count)
-          decl_disc_count = ty->record.discriminant_count;
-        decl_disc_exprs = disc_args->items;
-      }
-    }
 
     // Named numbers (constants without explicit type) don't need storage.                         
     // They are compile-time values that get inlined when referenced.                              
@@ -34757,13 +36463,7 @@ void Generate_Object_Declaration (Syntax_Node *node) {
         if (not found_in_scope) continue;
       }
 
-      // In generic instance bodies, find the instance symbol which has
-      // the correct frame_offset (template symbols have offset 0).
       int64_t offset = sym->frame_offset;
-      if (cg->current_instance) {
-        Symbol *inst_sym = Find_Instance_Local (sym);
-        if (inst_sym) offset = inst_sym->frame_offset;
-      }
       Emit_Local_Ref (sym);
       Emit (" = getelementptr i8, ptr %%__frame_base, i64 %lld\n",
          (long long)offset);
@@ -35534,7 +37234,7 @@ obj_decl_init:
 
         // RM 3.5(3): Check dynamic subtype constraint bounds against base type.
         // Must happen before init to respect evaluation order.
-        Emit_Subtype_Constraint_Compat_Check (ty);
+        Emit_Subtype_Constraint_Compat_Check (ty, NULL);
         LLVM_Value init_v = Generate_Expression (node->object_decl.init);
         uint32_t init = init_v.reg;
 
@@ -35703,54 +37403,6 @@ obj_decl_init:
         }
       }
 
-    // Generic formal unconstrained array: resolved actual (e.g., STRING) has
-    // no bounds, but the AST carries the index constraint. Allocate data and
-    // set up a proper fat pointer from the AST constraint expressions.
-    //
-    } else if (cg->current_instance and is_any_array and not ty->array.is_constrained
-           and node->object_decl.object_type) {
-      Syntax_Node *ot = node->object_decl.object_type;
-      Syntax_Node *constraint = NULL;
-      if (ot->kind == NK_SUBTYPE_INDICATION and ot->subtype_ind.constraint)
-        constraint = ot->subtype_ind.constraint;
-      else if (ot->kind == NK_APPLY and ot->apply.arguments.count > 0)
-        constraint = ot;  // sentinel: use apply.arguments directly
-      Node_List *idx_ranges = NULL;
-      if (constraint and constraint->kind == NK_INDEX_CONSTRAINT)
-        idx_ranges = &constraint->index_constraint.ranges;
-      else if (constraint == ot and ot->kind == NK_APPLY)
-        idx_ranges = &ot->apply.arguments;
-      if (idx_ranges and idx_ranges->count > 0) {
-        LLVM_Rep iat = LLVM_Rep_Or (Array_Bound_LLVM_Rep (ty), Integer_Arith_Rep ());
-        uint32_t ndims = idx_ranges->count;
-        if (ndims > 8) ndims = 8;
-        uint32_t dlo[8], dhi[8];
-        for (uint32_t d = 0; d < ndims; d++) {
-          Syntax_Node *rng = idx_ranges->items[d];
-          if (rng and rng->kind == NK_RANGE) {
-            dlo[d] = Generate_Expression (rng->range.low).reg;
-            dlo[d] = Emit_Convert (dlo[d], Integer_Arith_Rep (), iat).reg;
-            dhi[d] = Generate_Expression (rng->range.high).reg;
-            dhi[d] = Emit_Convert (dhi[d], Integer_Arith_Rep (), iat).reg;
-          } else if (rng) {
-            dlo[d] = Generate_Expression (rng).reg;
-            dlo[d] = Emit_Convert (dlo[d], Integer_Arith_Rep (), iat).reg;
-            dhi[d] = dlo[d];
-          } else {
-            dlo[d] = Emit_Static_Int (1, iat).reg;
-            dhi[d] = Emit_Static_Int (0, iat).reg;
-          }
-        }
-        uint32_t esz = elem_size > 0 ? elem_size
-          : (ty->array.element_type ? ty->array.element_type->size : 1);
-        if (esz == 0) esz = 1;
-        Emit_Bind_Bounded_Array_Storage (sym, dlo, dhi, ndims, esz, iat, "generic formal array");
-      }
-
-    // Uninitialized array with dynamic bounds - still need to set up fat pointer.
-    // The array contents are uninitialized but bounds are known from the type.
-    // This handles cases like: A2 : ARR1 (1 .. F * 1000);
-    //
     } else if (is_any_array and Type_Has_Dynamic_Bounds (ty) and ty->array.index_count > 0) {
       LLVM_Rep iat_decl = Integer_Arith_Rep ();
       uint32_t ndims_decl = ty->array.index_count;
@@ -35847,8 +37499,17 @@ obj_decl_init:
         for (uint32_t di = 0; di < ty->record.discriminant_count; di++) {
           Component_Info *dc = &ty->record.components[di];
           LLVM_Rep dt = Type_To_Rep (dc->component_type);
-          uint32_t val = Emit_Disc_Constraint_Value (ty, di, dt).reg;
-          if (val == 0) val = Emit_Static_Int (0, dt).reg;
+
+          // The discriminant was just stored: bind its dependent-bounds
+          // alloca from the record's own slot. Re-evaluating the
+          // constraint expression here would repeat its side effects —
+          // each constraint is evaluated exactly once (RM 3.7.2).
+          uint32_t slot_addr = Emit_Temp ();
+          Emit ("  %%t%u = getelementptr i8, ptr %%t%u, i64 %u\n",
+                slot_addr, rbase, dc->byte_offset);
+          uint32_t val = Emit_Temp ();
+          Emit ("  %%t%u = load %s, ptr %%t%u\n",
+                val, LLVM_Rep_To_String (dt), slot_addr);
           Bind_Disc_For_Dependent_Bounds (ty, dc->name, Emit_Alloca_Store (dt, val),
                                           disc_temps, &disc_temp_count, 16);
         }
@@ -36454,8 +38115,7 @@ bool Has_Nested_Subprograms (Node_List *declarations, Node_List *statements) {
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 // Emit LLVM function header: define <ret> @<name>([ptr %__parent_frame,] params...) {              
-// Extracted from three near-identical blocks in Generate_Subprogram_Body,                          
-// Generate_Generic_Instance_Body, and Generate_Task_Body.                                         
+// Shared by Generate_Subprogram_Body and Generate_Task_Body.                                      
 //                                                                                                  
 // For BIP functions (returning limited types), we prepend extra parameters:                        
 //   i32 %__BIPalloc   - Allocation form selector                                                   
@@ -36519,47 +38179,354 @@ void Emit_Function_Header (Symbol *sym, bool is_nested) {
 
 // Find the Nth homograph body matching export name in a package body.
 // Extracted from two identical 25-line blocks in Generate_Declaration.
-Syntax_Node *Find_Homograph_Body (Symbol **exports, uint32_t idx,
-                     String_Slice name, Node_List *body_decls) {
-
-  // Count preceding exports with the same name to get homograph index
-  uint32_t homograph_idx = 0;
-  for (uint32_t k = 0; k < idx; k++) {
-    Symbol *prev = exports[k];
-    if (prev and (prev->kind == SYMBOL_FUNCTION or prev->kind == SYMBOL_PROCEDURE) and
-      Slice_Equal_Ignore_Case (prev->name, name))
-      homograph_idx++;
-  }
-
-  // Walk body declarations to find the Nth body with this name
-  uint32_t body_idx = 0;
-  for (uint32_t j = 0; j < body_decls->count; j++) {
-    Syntax_Node *decl = body_decls->items[j];
-    if (not decl) continue;
-    if (decl->kind == NK_PROCEDURE_BODY or decl->kind == NK_FUNCTION_BODY)
-      if (Slice_Equal_Ignore_Case (
-          decl->subprogram_body.specification->subprogram_spec.name, name))
-        if (body_idx++ == homograph_idx) return decl;
-  }
-  return NULL;
-}
-
 // Process_Deferred_Bodies: Emit deferred nested subprogram/task/generic bodies.                   
 // Called at end of enclosing function/task/generic instance after restoring context.              
 // Processes all bodies deferred since saved_deferred_count.                                       
 //                                                                                                  
+// Elaborate a tree-copy instance's formal-object bindings (RM 12.3(80)):
+// mode IN evaluates the actual once and stores its value (or copies its
+// bytes, for flat composites) into the binding's per-instance global; mode
+// IN OUT stores the actual variable's address into the binding's pointer
+// cell. Emitted at the instantiation point, in the instantiation's own
+// context.
+// Define a per-instance global at module level (via the string-constant
+// accumulator, so it is legal even when emission is inside a function):
+// zero-initialized storage shaped by the symbol's type. Idempotent through
+// extern_emitted.
+void Emit_Instance_Global_Definition (Symbol *sym) {
+  if (sym->extern_emitted) return;
+  sym->extern_emitted = true;
+  Type_Info *ty = sym->type;
+  Emit_String_Const ("@");
+  Emit_String_Const_Symbol_Name (sym);
+  if (ty and (Type_Is_Record (ty) or
+              (Type_Is_Constrained_Array (ty) and
+               not Type_Has_Dynamic_Bounds (ty)))) {
+    uint32_t byte_size = ty->size ? ty->size : 1;
+    Emit_String_Const (" = linkonce_odr global [%u x i8] zeroinitializer\n",
+                       byte_size);
+    return;
+  }
+  LLVM_Rep rep = ty ? Type_To_Rep (ty) : Integer_Arith_Rep ();
+  if (LLVM_Rep_Is_Fat_Pointer (rep))
+    Emit_String_Const (" = linkonce_odr global " FAT_PTR_TYPE
+                       " zeroinitializer\n");
+  else if (LLVM_Rep_Is_Pointer (rep))
+    Emit_String_Const (" = linkonce_odr global ptr null\n");
+  else if (Type_Is_Float_Representation (ty))
+    Emit_String_Const (" = linkonce_odr global %s 0.0\n",
+                       LLVM_Rep_To_String (rep));
+  else
+    Emit_String_Const (" = linkonce_odr global %s 0\n",
+                       LLVM_Rep_To_String (rep));
+}
+
+// Emit (or defer, like any nested body) the synthesized wrapper bodies a
+// tree-copy instance's formal-subprogram bindings carry.
+void Emit_Instance_Wrapper_Bodies (Symbol *inst_sym) {
+  if (not inst_sym->scope) return;
+  for (uint32_t i = 0; i < inst_sym->scope->symbol_count; i++) {
+    Symbol *binding = inst_sym->scope->symbols[i];
+    if (not binding or not binding->is_instance_wrapper or
+        not binding->declaration)
+      continue;
+    if (binding->declaration->subprogram_body.code_generated) continue;
+    if (cg->current_function)
+      Defer_Subprogram_Body (binding->declaration);
+    else
+      Generate_Subprogram_Body (binding->declaration);
+  }
+}
+
+// Emit one bound of a subtype-agreement comparison in the comparison
+// domain. Discrete and float domains go through Emit_Type_Bound; the
+// fixed-point domain compares scaled mantissas, so real-valued bounds
+// (BOUND_FLOAT statically, float-typed expressions dynamically) divide
+// by the type's small before the integer compare.
+static uint32_t Emit_Agreement_Bound (Type_Bound *bound,
+                                      Type_Info  *domain,
+                                      LLVM_Rep    rep) {
+  if (domain and domain->kind == TYPE_FIXED) {
+    double small = domain->fixed.small > 0 ? domain->fixed.small
+                 : domain->fixed.delta > 0 ? domain->fixed.delta : 1.0;
+    if (bound->kind == BOUND_FLOAT)
+      return Emit_Static_Int ((int128_t)(bound->float_value / small),
+                              rep).reg;
+    if (bound->kind == BOUND_INTEGER)
+      return Emit_Static_Int (
+        (int128_t)((double)bound->int_value / small), rep).reg;
+    if (bound->kind == BOUND_EXPR and bound->expr) {
+      LLVM_Value bv = Generate_Expression (bound->expr);
+      if (LLVM_Rep_Is_Float (bv.rep)) {
+        uint32_t small_temp = Emit_Temp ();
+        Emit_Float_Constant (small_temp, bv.rep, small, "fixed small");
+        uint32_t scaled = Emit_Temp ();
+        Emit ("  %%t%u = fdiv %s %%t%u, %%t%u\n", scaled,
+              LLVM_Rep_To_String (bv.rep), bv.reg, small_temp);
+        uint32_t result = Emit_Temp ();
+        Emit ("  %%t%u = fptosi %s %%t%u to %s\n", result,
+              LLVM_Rep_To_String (bv.rep), scaled, LLVM_Rep_To_String (rep));
+        return result;
+      }
+      if (not LLVM_Rep_Equal (bv.rep, rep))
+        return Emit_Convert (bv.reg, bv.rep, rep).reg;
+      return bv.reg;
+    }
+  }
+  return Emit_Type_Bound (bound, rep);
+}
+
+// Raise CONSTRAINT_ERROR at the instantiation point unless two single
+// values agree. Static-equal values emit nothing; static-unequal emit an
+// unconditional raise; dynamic values emit a runtime comparison in the
+// domain's representation (fcmp for float values, icmp on scaled
+// mantissas for fixed, icmp otherwise).
+static void Emit_Value_Agreement_Check (Type_Bound *formal_bound,
+                                        Type_Bound *actual_bound,
+                                        Type_Info  *domain,
+                                        LLVM_Rep    rep,
+                                        const char *what) {
+  if (formal_bound->kind == BOUND_NONE or actual_bound->kind == BOUND_NONE)
+    return;
+  if (formal_bound->kind == BOUND_INTEGER and
+      actual_bound->kind == BOUND_INTEGER) {
+    if (formal_bound->int_value == actual_bound->int_value) return;
+    Emit ("  ; %s subtypes disagree at instantiation (RM 12.3)\n", what);
+    Emit_Raise_Exception ("constraint_error", what);
+    return;
+  }
+  if (formal_bound->kind == BOUND_FLOAT and
+      actual_bound->kind == BOUND_FLOAT) {
+    if (formal_bound->float_value == actual_bound->float_value) return;
+    Emit ("  ; %s subtypes disagree at instantiation (RM 12.3)\n", what);
+    Emit_Raise_Exception ("constraint_error", what);
+    return;
+  }
+  const char *compare = LLVM_Rep_Is_Float (rep) ? "fcmp une" : "icmp ne";
+  uint32_t formal_value = Emit_Agreement_Bound (formal_bound, domain, rep);
+  uint32_t actual_value = Emit_Agreement_Bound (actual_bound, domain, rep);
+  uint32_t differs = Emit_Temp ();
+  Emit ("  %%t%u = %s %s %%t%u, %%t%u\n", differs, compare,
+        LLVM_Rep_To_String (rep), formal_value, actual_value);
+  Emit_Check_With_Raise (differs, true, what);
+}
+
+// Agreement over a low/high bound pair: both ends must match.
+static void Emit_Bound_Agreement_Check (Type_Bound *formal_low_bound,
+                                        Type_Bound *formal_high_bound,
+                                        Type_Bound *actual_low_bound,
+                                        Type_Bound *actual_high_bound,
+                                        Type_Info  *domain,
+                                        LLVM_Rep    rep,
+                                        const char *what) {
+  Emit_Value_Agreement_Check (formal_low_bound,  actual_low_bound,
+                              domain, rep, what);
+  Emit_Value_Agreement_Check (formal_high_bound, actual_high_bound,
+                              domain, rep, what);
+}
+
+// A record subtype's discriminant constraint value as a Type_Bound: the
+// resolved constraint expression when present, the folded value otherwise.
+static Type_Bound Discriminant_Constraint_Bound (Type_Info *subtype,
+                                                 uint32_t   discriminant) {
+  if (subtype->record.disc_constraint_exprs and
+      subtype->record.disc_constraint_exprs[discriminant])
+    return (Type_Bound){ .kind = BOUND_EXPR,
+      .expr = subtype->record.disc_constraint_exprs[discriminant] };
+  if (subtype->record.disc_constraint_values)
+    return (Type_Bound){ .kind = BOUND_INTEGER,
+      .int_value = subtype->record.disc_constraint_values[discriminant] };
+  return (Type_Bound){ .kind = BOUND_NONE };
+}
+
+// Raise CONSTRAINT_ERROR at the instantiation point unless two subtypes
+// have matching constraints (the RM 12.3.4(116-118) index/component and
+// RM 12.3.2(104-105) discriminant agreement checks). Scalar pairs compare
+// their own bounds. Array pairs compare per-dimension index constraints
+// (an array subtype's constraint lives in Index_Info, not in the shared
+// index_type) and recurse on the component subtypes, which may themselves
+// be arrays.
+static void Emit_Subtype_Agreement_Check (Type_Info *formal_subtype,
+                                          Type_Info *actual_subtype,
+                                          const char *what) {
+  if (not formal_subtype or not actual_subtype) return;
+  if (formal_subtype == actual_subtype) return;
+  if (Type_Is_Array_Like (formal_subtype) and
+      Type_Is_Array_Like (actual_subtype)) {
+    for (uint32_t d = 0; d < formal_subtype->array.index_count and
+                         d < actual_subtype->array.index_count; d++)
+      Emit_Bound_Agreement_Check (
+        &formal_subtype->array.indices[d].low_bound,
+        &formal_subtype->array.indices[d].high_bound,
+        &actual_subtype->array.indices[d].low_bound,
+        &actual_subtype->array.indices[d].high_bound,
+        NULL, Integer_Arith_Rep (), what);
+    Emit_Subtype_Agreement_Check (formal_subtype->array.element_type,
+                                  actual_subtype->array.element_type, what);
+    return;
+  }
+  if (Type_Is_Access (formal_subtype) and Type_Is_Access (actual_subtype)) {
+    Emit_Subtype_Agreement_Check (formal_subtype->access.designated_type,
+                                  actual_subtype->access.designated_type,
+                                  what);
+    return;
+  }
+  if ((Type_Is_Record (formal_subtype) or Type_Is_Private (formal_subtype))
+      and
+      (Type_Is_Record (actual_subtype) or Type_Is_Private (actual_subtype))) {
+    if (not formal_subtype->record.has_disc_constraints or
+        not actual_subtype->record.has_disc_constraints)
+      return;
+    uint32_t shared = formal_subtype->record.discriminant_count;
+    if (actual_subtype->record.discriminant_count < shared)
+      shared = actual_subtype->record.discriminant_count;
+    for (uint32_t d = 0; d < shared; d++) {
+      Type_Bound formal_value =
+        Discriminant_Constraint_Bound (formal_subtype, d);
+      Type_Bound actual_value =
+        Discriminant_Constraint_Bound (actual_subtype, d);
+      Emit_Value_Agreement_Check (&formal_value, &actual_value,
+                                  NULL, Integer_Arith_Rep (), what);
+    }
+    return;
+  }
+  if (not Type_Is_Scalar (formal_subtype) or
+      not Type_Is_Scalar (actual_subtype))
+    return;
+  Type_Info *domain = formal_subtype->kind == TYPE_FIXED or
+                      Type_Is_Real (formal_subtype) ? formal_subtype : NULL;
+  LLVM_Rep rep = Type_Is_Real (formal_subtype)
+    ? Type_To_Rep (formal_subtype) : Integer_Arith_Rep ();
+  if (formal_subtype->kind == TYPE_FIXED and not LLVM_Rep_Is_Int (rep))
+    rep = LLVM_Rep_Int (64, false);
+  Emit_Bound_Agreement_Check (
+    &formal_subtype->low_bound, &formal_subtype->high_bound,
+    &actual_subtype->low_bound, &actual_subtype->high_bound,
+    domain, rep, what);
+}
+
+// The instantiation-elaboration constraint checks of RM 12.3 (81): the
+// subtype-agreement pairs captured at resolution emit here, in the
+// instantiation's own context, before the bindings store.
+static void Emit_Instance_Formal_Agreement_Checks (Symbol *inst_sym) {
+  for (uint32_t i = 0; i < inst_sym->agreement_check_count; i++) {
+    Instance_Agreement_Check *check = &inst_sym->agreement_checks[i];
+    Emit_Subtype_Agreement_Check (check->formal_subtype,
+                                  check->actual_subtype, check->what);
+  }
+}
+
+void Emit_Instance_Binding_Elaboration (Symbol *inst_sym) {
+  Emit_Instance_Formal_Agreement_Checks (inst_sym);
+  if (not inst_sym->scope) return;
+  for (uint32_t i = 0; i < inst_sym->scope->symbol_count; i++) {
+    Symbol *binding = inst_sym->scope->symbols[i];
+    if (not binding or not binding->instance_actual) continue;
+    if (binding->is_instance_in_out_binding) {
+      if (not binding->extern_emitted) {
+        binding->extern_emitted = true;
+        Emit_String_Const ("@");
+        Emit_String_Const_Symbol (binding);
+        Emit_String_Const (" = linkonce_odr global ptr null\n");
+      }
+      uint32_t actual_addr = Generate_Lvalue (binding->instance_actual);
+      Emit ("  store ptr %%t%u, ptr ", actual_addr);
+      Emit_Global_Ref (binding);
+      Emit ("\n");
+    } else if (binding->is_instance_in_binding and binding->type and
+               (Type_Is_Record (binding->type) or
+                (Type_Is_Constrained_Array (binding->type) and
+                 not Type_Has_Dynamic_Bounds (binding->type)))) {
+
+      // Composite IN binding: byte-array global, value copied in.
+      uint32_t byte_size = binding->type->size ? binding->type->size : 1;
+      if (not binding->extern_emitted) {
+        binding->extern_emitted = true;
+        Emit_String_Const ("@");
+        Emit_String_Const_Symbol (binding);
+        Emit_String_Const (" = linkonce_odr global [%u x i8]"
+                           " zeroinitializer\n", byte_size);
+      }
+      uint32_t destination = Emit_Temp ();
+      Emit ("  %%t%u = getelementptr i8, ptr ", destination);
+      Emit_Global_Ref (binding);
+      Emit (", i64 0\n");
+      if (Type_Is_Constrained_Array (binding->type)) {
+
+        // Arrays copy through the expression's fat pointer — uniform for
+        // names, literals, slices, and aggregates.
+        LLVM_Value source = Generate_Expression (binding->instance_actual);
+        if (LLVM_Rep_Is_Fat_Pointer (source.rep)) {
+          Emit_Fat_To_Array_Memcpy (Fat_Ptr_As_Value (source.reg).reg,
+                                    destination, binding->type);
+        } else {
+          uint32_t size_temp = Emit_Temp ();
+          Emit ("  %%t%u = add i64 0, %u\n", size_temp, byte_size);
+          Emit_Memcpy (destination, source.reg, size_temp);
+        }
+      } else {
+        uint32_t source_addr =
+          Generate_Composite_Address (binding->instance_actual);
+        uint32_t size_temp = Emit_Temp ();
+        Emit ("  %%t%u = add i64 0, %u\n", size_temp, byte_size);
+        Emit_Memcpy (destination, source_addr, size_temp);
+      }
+    } else if (binding->is_instance_in_binding) {
+      LLVM_Rep binding_rep = binding->type
+        ? Type_To_Rep (binding->type)
+        : Expression_LLVM_Rep (binding->instance_actual);
+      if (not binding->extern_emitted) {
+        binding->extern_emitted = true;
+        Emit_String_Const ("@");
+        Emit_String_Const_Symbol (binding);
+        if (LLVM_Rep_Is_Fat_Pointer (binding_rep))
+          Emit_String_Const (" = linkonce_odr global " FAT_PTR_TYPE
+                             " zeroinitializer\n");
+        else if (LLVM_Rep_Is_Pointer (binding_rep))
+          Emit_String_Const (" = linkonce_odr global ptr null\n");
+        else if (Type_Is_Float_Representation (binding->type))
+          Emit_String_Const (" = linkonce_odr global %s 0.0\n",
+                             LLVM_Rep_To_String (binding_rep));
+        else
+          Emit_String_Const (" = linkonce_odr global %s 0\n",
+                             LLVM_Rep_To_String (binding_rep));
+      }
+      LLVM_Value actual_value =
+        Generate_Expression (binding->instance_actual);
+      uint32_t stored = Emit_Convert (actual_value.reg,
+                                      actual_value.rep,
+                                      binding_rep).reg;
+      Emit ("  store %s %%t%u, ptr ",
+            LLVM_Rep_To_String (binding_rep), stored);
+      Emit_Global_Ref (binding);
+      Emit ("\n");
+    }
+  }
+}
+
+
+// Queue a nested body for emission after the current function closes.
+// Duplicate queuing is a no-op. The queue grows without bound: spilling
+// into inline emission would nest a define inside the open function.
+void Defer_Subprogram_Body (Syntax_Node *node) {
+  for (uint32_t d = 0; d < cg->deferred_count; d++)
+    if (cg->deferred_bodies[d] == node) return;
+  if (cg->deferred_count == cg->deferred_capacity) {
+    uint32_t grown_capacity = cg->deferred_capacity * 2;
+    Syntax_Node **grown = Arena_Allocate (grown_capacity
+                                          * sizeof *cg->deferred_bodies);
+    for (uint32_t d = 0; d < cg->deferred_count; d++)
+      grown[d] = cg->deferred_bodies[d];
+    cg->deferred_bodies = grown;
+    cg->deferred_capacity = grown_capacity;
+  }
+  cg->deferred_bodies[cg->deferred_count++] = node;
+}
+
 void Process_Deferred_Bodies (uint32_t saved_deferred_count) {
   while (cg->deferred_count > saved_deferred_count) {
     Syntax_Node *deferred = cg->deferred_bodies[--cg->deferred_count];
-    if (deferred->kind == NK_GENERIC_INST) {
-      Symbol *inst = deferred->symbol;
-      if (inst and inst->generic_template and inst->generic_template->generic_body) {
-        Symbol *saved = cg->current_instance;
-        cg->current_instance = inst;
-        Generate_Generic_Instance_Body (inst, inst->generic_template->generic_body);
-        cg->current_instance = saved;
-      }
-    } else if (deferred->kind == NK_TASK_BODY) {
+    if (deferred->kind == NK_TASK_BODY) {
       Generate_Task_Body (deferred);
     } else {
       Generate_Subprogram_Body (deferred);
@@ -36663,6 +38630,11 @@ void Generate_Subprogram_Body (Syntax_Node *node) {
             var->kind == SYMBOL_DISCRIMINANT or
             (var->kind == SYMBOL_CONSTANT and not var->is_named_number))) {
 
+        // Globals (including per-instance generic-package variables) have
+        // no frame slot; an alias would shadow nothing and same-named
+        // aliases from template + clone collide.
+        if (Symbol_Is_Global (var)) continue;
+
         // Check for duplicate unique_id
         bool already_emitted = false;
         for (uint32_t j = 0; j < emitted_count; j++) {
@@ -36675,6 +38647,7 @@ void Generate_Subprogram_Body (Syntax_Node *node) {
         if (emitted_count < MAX_FRAME_ALIASES) {
           emitted_ids[emitted_count++] = var->unique_id;
         }
+        if (Symbol_Is_Global (var)) continue;  // module-level storage, no alias
         Emit ("  %%__frame.");
         Emit_Symbol_Name (var);
         Emit (" = getelementptr i8, ptr %%__parent_frame, i64 %lld\n",
@@ -36689,6 +38662,7 @@ void Generate_Subprogram_Body (Syntax_Node *node) {
     for (uint32_t i = 0; i < parent_scope->frame_var_count; i++) {
       Symbol *var = parent_scope->frame_vars[i];
       if (not var) continue;
+      if (Symbol_Is_Global (var)) continue;  // no frame slot for globals
       bool already_emitted = false;
       for (uint32_t j = 0; j < emitted_count; j++) {
         if (var->unique_id == emitted_ids[j]) {
@@ -36700,6 +38674,7 @@ void Generate_Subprogram_Body (Syntax_Node *node) {
         if (emitted_count < MAX_FRAME_ALIASES) {
           emitted_ids[emitted_count++] = var->unique_id;
         }
+        if (Symbol_Is_Global (var)) continue;  // module-level storage, no alias
         Emit ("  %%__frame.");
         Emit_Symbol_Name (var);
         Emit (" = getelementptr i8, ptr %%__parent_frame, i64 %lld\n",
@@ -36719,26 +38694,14 @@ void Generate_Subprogram_Body (Syntax_Node *node) {
       LLVM_Rep type_rep = Type_To_Rep (sym->parameters[i].param_type);
       Parameter_Mode mode = sym->parameters[i].mode;
 
-      // Check if this IN parameter is a constrained composite type                                 
-      // (array/record/string) passed as a raw pointer. These need by-ref                           
-      // treatment since the caller passes a pointer to the data, not the                           
-      // data itself. Unconstrained arrays/strings use fat pointers                                 
-      // {ptr, ptr} and should be stored in alloca like scalars.                                   
-      //                                                                                            
+      // By-reference formals (OUT/IN OUT, and IN composites/tasks per
+      // Parameter_Passed_By_Reference): %p is a pointer to the caller's
+      // storage. Unconstrained arrays/strings use fat pointers {ptr, ptr}
+      // and are stored in an alloca like scalars.
       Type_Info *pt = sym->parameters[i].param_type;
-      bool is_composite_in = false;
-      if (mode == PARAM_IN and pt) {
-        if (pt->kind == TYPE_RECORD or pt->kind == TYPE_TASK) {
-          is_composite_in = true;
-        } else if ((pt->kind == TYPE_ARRAY or pt->kind == TYPE_STRING) and
-               pt->array.is_constrained and not Type_Has_Dynamic_Bounds (pt)) {
-          is_composite_in = true;
-        }
-      }
 
-      // OUT/IN OUT or IN composite: %p is already a pointer to data.
       // Create an alias so the parameter name points to caller's storage
-      if (Param_Is_By_Reference (mode) or is_composite_in) {
+      if (Parameter_Passed_By_Reference (mode, pt)) {
         Emit_Local_Ref (param_sym);
         Emit (" = getelementptr i8, ptr %%p%u, i64 0  ; by-ref param\n", i);
 
@@ -36841,427 +38804,6 @@ void Generate_Subprogram_Body (Syntax_Node *node) {
   Process_Deferred_Bodies (saved_deferred_count);
 }
 
-// Reset extern_emitted on all object-declaration symbols in a declaration list.
-// Required before each generic instance body: multiple instances share the same
-// template AST and symbols, but each needs independent alloca/global emissions.
-//
-void Reset_Template_Extern_Flags (Node_List *declarations) {
-  if (not declarations) return;
-  for (uint32_t i = 0; i < declarations->count; i++) {
-    Syntax_Node *decl = declarations->items[i];
-    if (not decl) continue;
-    if (decl->kind == NK_OBJECT_DECL)
-      for (uint32_t j = 0; j < decl->object_decl.names.count; j++) {
-        Syntax_Node *nm = decl->object_decl.names.items[j];
-        if (nm and nm->symbol) nm->symbol->extern_emitted = false;
-      }
-  }
-}
-
-// Generate code for a generic instance body
-void Generate_Generic_Instance_Body (Symbol *inst_sym, Syntax_Node *template_body) {
-  if (not inst_sym or not template_body) return;
-
-  // Handle package instantiation specially: generate package body declarations                     
-  // (global variables), then iterate through exported subprograms.                                
-  // Set current instance so names are prefixed with instance name                                  
-  //                                                                                                
-  if (inst_sym->kind == SYMBOL_PACKAGE and template_body->kind == NK_PACKAGE_BODY) {
-    Symbol *saved_instance = cg->current_instance;
-    cg->current_instance = inst_sym;
-
-    // Reset extern_emitted on template symbols so this instance gets
-    // its own independent allocations (multiple instances share one AST).
-    Reset_Template_Extern_Flags (&template_body->package_body.declarations);
-
-    // First, emit any global declarations from the package body
-    // (e.g., FILES, BUFFERS, NEXT_FD in DIRECT_IO). These need unique names
-    // based on the instance to avoid collisions.
-    //
-    for (uint32_t i = 0; i < template_body->package_body.declarations.count; i++) {
-      Syntax_Node *decl = template_body->package_body.declarations.items[i];
-      if (not decl) continue;
-
-      // Only generate non-subprogram declarations (variables, types)
-      if (decl->kind != NK_PROCEDURE_BODY and decl->kind != NK_FUNCTION_BODY and
-        decl->kind != NK_PROCEDURE_SPEC and decl->kind != NK_FUNCTION_SPEC) {
-        Generate_Declaration (decl);
-      }
-    }
-
-    // Then generate the subprogram bodies
-    for (uint32_t i = 0; i < inst_sym->exported_count; i++) {
-      Symbol *exp = inst_sym->exported[i];
-      if (not exp) continue;
-      if (exp->kind != SYMBOL_FUNCTION and exp->kind != SYMBOL_PROCEDURE)
-        continue;
-      Syntax_Node *subp_body = Find_Homograph_Body (
-        inst_sym->exported, i, exp->name,
-        &template_body->package_body.declarations);
-      if (subp_body)
-        Generate_Generic_Instance_Body (exp, subp_body);
-    }
-
-    // Restore previous instance context
-    cg->current_instance = saved_instance;
-    return;
-  }
-  bool is_function = inst_sym->kind == SYMBOL_FUNCTION;
-  uint32_t saved_deferred_count = cg->deferred_count;
-
-  // Set current instance for formal subprogram substitution during codegen
-  Symbol *saved_current_instance = cg->current_instance;
-  cg->current_instance = inst_sym;
-
-  // For generic instances, determine nesting from instance parent
-  Symbol *saved_enclosing = cg->enclosing_function;
-  bool saved_is_nested = cg->is_nested;
-
-  // Find nearest enclosing function/procedure (walks through packages)
-  Symbol *enclosing_subprog = Find_Enclosing_Subprogram (inst_sym);
-  bool is_nested = (enclosing_subprog != NULL);
-  cg->is_nested = is_nested;
-  cg->enclosing_function = enclosing_subprog;
-  Emit_Function_Header (inst_sym, is_nested);
-  Symbol *saved_current_function = cg->current_function;
-  cg->current_function = inst_sym;
-  cg->has_return = false;
-  cg->block_terminated = false;  // Reset for new function
-
-  // Emit %__frame.X aliases for uplevel access into the enclosing function's
-  // frame. The generic-actual binding loop below may reference these (e.g.
-  // `NEW_G IS NEW G(VAL)` lowers G's formal X to a load from VAL via
-  // %__frame.val_s###), so the aliases must dominate those loads. They depend
-  // only on %__parent_frame (a function parameter), so it's safe to put them
-  // at the very top of the entry block. Mirrors Generate_Subprogram_Body's
-  // and Generate_Task_Body's alias setup.
-  if (is_nested) {
-    Scope *parent_scope = enclosing_subprog ? enclosing_subprog->scope : NULL;
-    if (parent_scope) {
-      #define MAX_INST_FRAME_ALIASES 512
-      uint32_t inst_emitted_ids[MAX_INST_FRAME_ALIASES];
-      uint32_t inst_emitted_count = 0;
-
-      // Two passes over the enclosing scope: pass 0 walks the declared
-      // symbols (kind-filtered), pass 1 walks the frame-var list (any
-      // non-null). Both share one dedup-and-emit tail, so each unique_id
-      // yields its %%__frame.X alias at most once across the two sources.
-      for (uint32_t pass = 0; pass < 2; pass++) {
-        uint32_t source_count = (pass == 0) ? parent_scope->symbol_count
-                                            : parent_scope->frame_var_count;
-        for (uint32_t i = 0; i < source_count; i++) {
-          Symbol *var = (pass == 0) ? parent_scope->symbols[i]
-                                    : parent_scope->frame_vars[i];
-          if (pass == 0) {
-            if (not (var and (var->kind == SYMBOL_VARIABLE or var->kind == SYMBOL_PARAMETER
-                           or var->kind == SYMBOL_DISCRIMINANT
-                           or (var->kind == SYMBOL_CONSTANT and not var->is_named_number))))
-              continue;
-          } else if (not var) {
-            continue;
-          }
-          bool dup = false;
-          for (uint32_t j = 0; j < inst_emitted_count; j++)
-            if (var->unique_id == inst_emitted_ids[j]) { dup = true; break; }
-          if (dup) continue;
-          if (inst_emitted_count < MAX_INST_FRAME_ALIASES)
-            inst_emitted_ids[inst_emitted_count++] = var->unique_id;
-          Emit ("  %%__frame.");
-          Emit_Symbol_Name (var);
-          Emit (" = getelementptr i8, ptr %%__parent_frame, i64 %lld\n", (long long)(var->frame_offset));
-        }
-      }
-      #undef MAX_INST_FRAME_ALIASES
-    }
-  }
-
-  // Get parameter symbols from template body's specification (they have
-  // the unique_ids that match the body's code references)
-  Syntax_Node *body_spec = template_body->subprogram_body.specification;
-  uint32_t param_idx = 0;
-  if (body_spec) {
-    Node_List *params = &body_spec->subprogram_spec.parameters;
-    for (uint32_t i = 0; i < params->count and param_idx < inst_sym->parameter_count; i++) {
-      Syntax_Node *ps = params->items[i];
-      if (ps and ps->kind == NK_PARAM_SPEC) {
-        for (uint32_t j = 0; j < ps->param_spec.names.count and param_idx < inst_sym->parameter_count; j++) {
-          Syntax_Node *pname = ps->param_spec.names.items[j];
-          Symbol *param_sym = pname->symbol;
-          if (param_sym) {
-            // Generic-instance pipeline can leave param_type NULL; recover
-            // from the param-spec's own type-annotated syntax subtree.
-            Type_Info *pty = inst_sym->parameters[param_idx].param_type;
-            if (not pty and ps->param_spec.param_type)
-              pty = ps->param_spec.param_type->type;
-            if (not pty) pty = param_sym->type;
-            LLVM_Rep type_rep = pty ? Type_To_Rep (pty) : Integer_Arith_Rep ();
-            Parameter_Mode mode = inst_sym->parameters[param_idx].mode;
-
-            // Both modes name the parameter local with %<name>; the prefix
-            // is common, the right-hand side differs.
-            Emit_Local_Ref (param_sym);
-
-            // OUT/IN OUT: %p is already a pointer to caller's variable
-            // Create an alias so the parameter name points to caller's storage
-            if (Param_Is_By_Reference (mode)) {
-              Emit (" = getelementptr i8, ptr %%p%u, i64 0  ; by-ref param\n", param_idx);
-
-            // IN param: allocate local and copy value
-            } else {
-              Emit (" = alloca %s\n", LLVM_Rep_To_String (type_rep));
-              Emit ("  store %s %%p%u, ptr %%", LLVM_Rep_To_String (type_rep), param_idx);
-              Emit_Symbol_Name (param_sym);
-              Emit ("\n");
-            }
-          }
-          param_idx++;
-        }
-      }
-    }
-  }
-
-  // Allocate and initialize generic formal object parameters (RM 12.4).                           
-  // These are variables visible inside the generic body but not subprogram                         
-  // parameters - they carry the actual values provided at instantiation.                          
-  //                                                                                                
-  // Storage type must match the expression's value representation:                                 
-  //   - String literals and unconstrained arrays produce {ptr,ptr} fat ptrs                        
-  //   - Scalar values and constrained arrays produce their base type                               
-  // We use Expression_Llvm_Type to determine the correct storage width.                           
-  //                                                                                                
-  {
-    Symbol *tmpl = inst_sym->generic_template;
-    Syntax_Node *gen_decl = tmpl ? tmpl->declaration : NULL;
-    if (gen_decl and gen_decl->kind == NK_GENERIC_DECL) {
-      Node_List *formals = &gen_decl->generic_decl.formals;
-      uint32_t ai = 0;
-      for (uint32_t fi = 0; fi < formals->count; fi++) {
-        Syntax_Node *formal = formals->items[fi];
-        if (formal->kind == NK_GENERIC_OBJECT_PARAM) {
-          for (uint32_t j = 0; j < formal->generic_object_param.names.count; j++) {
-            Syntax_Node *fname = formal->generic_object_param.names.items[j];
-            Symbol *obj_sym = fname ? fname->symbol : NULL;
-            Syntax_Node *actual_expr = (ai < inst_sym->generic_actual_count)
-              ? inst_sym->generic_actuals[ai].actual_expr : NULL;
-
-            // Use default expression if no actual provided (RM 12.4)
-            if (not actual_expr)
-              actual_expr = formal->generic_object_param.default_expr;
-
-            // Resolve type from formal's type mark (RM 12.4)
-            if (obj_sym and actual_expr) {
-              Type_Info *obj_type = obj_sym->type;
-              if (not obj_type) {
-                Syntax_Node *ot = formal->generic_object_param.object_type;
-                if (ot) {
-                  if (ot->type) obj_type = ot->type;
-                  else if (ot->symbol and ot->symbol->type)
-                    obj_type = ot->symbol->type;
-                  else {
-                    Symbol *ts = Symbol_Find (ot->string_val.text);
-                    if (ts and ts->type) obj_type = ts->type;
-                  }
-                }
-              }
-
-              // Set type on expression for codegen (aggregates need it)
-              if (obj_type and not actual_expr->type)
-                actual_expr->type = obj_type;
-
-              // Determine storage type for formal object (RM 12.4):                                
-              // - Unconstrained/dynamic arrays: fat pointer {ptr,ptr}                              
-              // - Constrained arrays: [N x i8] flat alloca, memcpy data                            
-              // - Scalars/records: native type                                                     
-              //                                                                                    
-              bool needs_fat = false;
-              if (obj_type and Type_Is_Array_Like (obj_type) and
-                (Type_Has_Dynamic_Bounds (obj_type) or
-                 Type_Is_Unconstrained_Array (obj_type)))
-                needs_fat = true;
-
-              // For constrained arrays, compute storage size from bounds
-              // (obj_type->size may be 0 if bounds use expressions)
-              bool is_constrained_arr = obj_type and
-                Type_Is_Constrained_Array (obj_type) and not needs_fat;
-              uint32_t arr_storage_sz = 0;
-              if (is_constrained_arr) {
-                arr_storage_sz = obj_type->size;
-
-                // Recompute from type bounds (RM 3.6.1)
-                if (arr_storage_sz == 0) {
-                  int128_t total = 1;
-                  for (uint32_t d = 0; d < obj_type->array.index_count; d++) {
-                    int128_t lo = Type_Bound_Value (obj_type->array.indices[d].low_bound);
-                    int128_t hi = Type_Bound_Value (obj_type->array.indices[d].high_bound);
-                    int128_t dim = hi - lo + 1;
-                    if (dim < 0) dim = 0;
-                    total *= dim;
-                  }
-                  uint32_t esz = obj_type->array.element_type
-                    ? obj_type->array.element_type->size : 1;
-                  arr_storage_sz = (uint32_t)(total * esz);
-                }
-              }
-
-              // RM 12.1.1 / 12.4: IN OUT generic object formal is a
-              // *renaming* of the actual variable — formal and actual
-              // share storage. Emit %formal_sym as a pointer alias for
-              // the actual's address instead of alloca+store, so writes
-              // via formal reflect in actual (and vice versa).
-              Generic_Mode_Kind gmode = formal->generic_object_param.mode;
-              if (gmode == GEN_MODE_IN_OUT or gmode == GEN_MODE_OUT) {
-                uint32_t actual_addr = Generate_Lvalue (actual_expr);
-                Emit_Local_Ref (obj_sym);
-                Emit (" = getelementptr i8, ptr %%t%u, i64 0"
-                      "  ; IN OUT generic formal alias\n", actual_addr);
-                ai++;
-                continue;
-              }
-
-              Emit_Local_Ref (obj_sym);
-              LLVM_Rep ts_rep = needs_fat ? LL_REP_FAT
-                              : (obj_type ? Type_To_Rep (obj_type)
-                                          : Expression_LLVM_Rep (actual_expr));
-              if (is_constrained_arr and arr_storage_sz > 0) {
-                Emit (" = alloca [%u x i8]  ; generic formal object\n", arr_storage_sz);
-              } else {
-                Emit (" = alloca %s  ; generic formal object\n", LLVM_Rep_To_String (ts_rep));
-              }
-              LLVM_Value val_v = Generate_Expression (actual_expr);
-              uint32_t val = val_v.reg;
-              if (val > 0) {
-                if (needs_fat) {
-                  val = Fat_Ptr_As_Value (val).reg;
-                  Emit ("  store " FAT_PTR_TYPE " %%t%u, ptr %%", val);
-
-                // Constrained array: extract data ptr from fat ptr if needed
-                } else if (obj_type and Type_Is_Constrained_Array (obj_type)) {
-                  if (LLVM_Rep_Is_Fat_Pointer (val_v.rep)) {
-                    uint32_t dp = Emit_Extract_Fat_Data (val);
-                    val = dp;
-                  }
-                  uint32_t sz = arr_storage_sz > 0 ? arr_storage_sz
-                    : (obj_type->size > 0 ? obj_type->size : 1);
-                  Emit_Memcpy_To_Symbol (obj_sym, val, sz, NULL);
-                  val = 0;  // Skip the store below
-                } else {
-                  // Coerce from the actual's real rep (assuming i32 would
-                  // emit `trunc i32 %i8` on a narrow formal-object actual).
-                  LLVM_Rep avty = val_v.rep;
-                  val = Emit_Convert (val, avty, ts_rep).reg;
-                  Emit ("  store %s %%t%u, ptr %%", LLVM_Rep_To_String (ts_rep), val);
-                }
-                if (val > 0) {
-                  Emit_Symbol_Name (obj_sym);
-                  Emit ("\n");
-                }
-              }
-            }
-            ai++;
-          }
-        } else {
-          ai++;
-        }
-      }
-    }
-  }
-
-  // Set up nesting context for this subprogram (mirrors Generate_Subprogram_Body).
-  // Without this, current_nesting_level inherits stale values from the caller,
-  // causing local variables to be frame-allocated without a frame_base.
-  //
-  Syntax_Node *body = template_body;
-  bool has_nested = Has_Nested_Subprograms (&body->subprogram_body.declarations,
-                        &body->subprogram_body.statements);
-  if (has_nested) {
-    int64_t frame_size = (inst_sym->scope and inst_sym->scope->frame_size > 0)
-      ? inst_sym->scope->frame_size : 8;
-    int64_t alloca_size = is_nested ? frame_size + 8 : frame_size;
-    Emit ("  %%__frame_base = alloca i8, i64 %lld\n", (long long)alloca_size);
-    if (is_nested) {
-      uint32_t slot = Emit_Temp ();
-      Emit ("  %%t%u = getelementptr i8, ptr %%__frame_base, i64 %lld\n",
-         slot, (long long)frame_size);
-      Emit ("  store ptr %%__parent_frame, ptr %%t%u\n", slot);
-    }
-  }
-  uint32_t saved_nesting = cg->current_nesting_level;
-  cg->current_nesting_level = has_nested ? 1 : 0;
-
-  // Reset extern_emitted on template symbols so each instance gets
-  // its own independent allocations (multiple instances share one AST).
-  Reset_Template_Extern_Flags (&body->subprogram_body.declarations);
-
-  // Master bracketing (RM 9.4), mirroring Generate_Subprogram_Body: an
-  // instance whose declarations create tasks (often through a generic
-  // FORMAL whose actual is task-bearing) must activate them at its begin
-  // and wait for them before completing.
-  Master_Scope inst_master = Emit_Master_Enter_If (
-    body->subprogram_body.is_task_master,
-    body->subprogram_body.master_scope_id);
-
-  // Generate local declarations
-  Generate_Declaration_List (&body->subprogram_body.declarations);
-  Emit_Activate_Pending_Tasks (inst_master.saved_pa);  // RM 9.3 activation point
-
-  // Check for exception handlers in the template body
-  bool has_exc = body->subprogram_body.handlers.count > 0;
-  if (has_exc) {
-    Exception_Setup setup = Emit_Exception_Handler_Setup ();
-    uint32_t end_lbl = Emit_Label ();
-
-    // Normal execution path
-    Emit_Label_Here (setup.normal_label);
-    Generate_Statement_List (&body->subprogram_body.statements);
-    if (not cg->block_terminated)
-      Emit ("  call void @__ada_pop_handler()\n");
-    Emit_Branch_If_Needed (end_lbl);
-
-    // Exception handler entry
-    Emit_Label_Here (setup.handler_label);
-    cg->block_terminated = false;
-    Emit ("  call void @__ada_pop_handler()\n");
-    uint32_t exc_id = Emit_Current_Exception_Id ();
-    Generate_Exception_Dispatch (&body->subprogram_body.handlers, exc_id, end_lbl);
-    Emit_Label_Here (end_lbl);
-    cg->block_terminated = false;
-  } else {
-    for (uint32_t i = 0; i < body->subprogram_body.statements.count; i++) {
-      Syntax_Node *stmt = body->subprogram_body.statements.items[i];
-      if (stmt) Generate_Statement (stmt);
-    }
-  }
-
-  // Master completion (RM 9.7.1 + 9.4) on the normal exit path; RETURN
-  // paths were completed by Emit_Master_Cleanup_For_Return.
-  Emit_Master_Exit (inst_master);
-
-  // Default return if block is not terminated
-  if (not cg->block_terminated) {
-
-    // RM 6.4(11): a function that completes without RETURN raises
-    // PROGRAM_ERROR. A build-in-place function returns void, so it needs an
-    // (unreachable) ret void after the raise to keep the block well-formed.
-    if (is_function) {
-      Emit_Raise_Program_Error ("missing return");
-      if (BIP_Is_BIP_Function (inst_sym))
-        Emit ("  ret void  ; unreachable after raise\n");
-    } else {
-      Emit ("  ret void\n");
-    }
-  }
-
-  // Clean up BIP state
-  BIP_End_Function ();
-  Emit ("}\n\n");
-  cg->current_nesting_level = saved_nesting;
-  cg->current_function = saved_current_function;
-  cg->is_nested = saved_is_nested;
-  cg->enclosing_function = saved_enclosing;
-  cg->current_instance = saved_current_instance;
-  Process_Deferred_Bodies (saved_deferred_count);
-}
-
 // Emit the task body function name for a task type symbol.                                        
 // Resolves to the task TYPE's defining_symbol for consistency between                              
 // task body definitions and task_start call sites.                                                
@@ -37284,24 +38826,7 @@ void Emit_Task_Function_Name (Symbol *task_sym, String_Slice fallback_name) {
   else if (task_sym)
     resolved = task_sym;
 
-  // Owned by a generic template or by an instance package: its body is
-  // emitted per instance, so the reference carries the instance id.
-  bool instance_owned = (resolved == NULL);  // unresolved: keep old behavior
-  for (Symbol *p = resolved; p; p = p->parent)
-    if (p->kind == SYMBOL_GENERIC or p->generic_actual_count > 0) {
-      instance_owned = true;
-      break;
-    }
-
-  if (cg->current_instance and instance_owned) {
-    String_Slice name = resolved ? resolved->name : fallback_name;
-    for (uint32_t i = 0; i < name.length; i++) {
-      char ch = name.data[i];
-      if (ch >= 'A' and ch <= 'Z') ch = ch - 'A' + 'a';
-      fputc (ch, cg->output);
-    }
-    Emit ("_g%u", cg->current_instance->unique_id);
-  } else if (resolved) {
+  if (resolved) {
     Emit_Symbol_Name (resolved);
   } else {
     for (uint32_t i = 0; i < fallback_name.length; i++) {
@@ -37338,10 +38863,17 @@ void Generate_Task_Body (Syntax_Node *node) {
   bool saved_is_nested = cg->is_nested;
   Symbol *saved_enclosing = cg->enclosing_function;
   bool saved_in_task_body = cg->in_task_body;
+  uint32_t saved_nesting_level = cg->current_nesting_level;
   cg->current_function = node->symbol;
   cg->is_nested = true;  // Task bodies are nested in enclosing scope
   cg->enclosing_function = saved_current_function;  // Access parent's vars
   cg->in_task_body = true;  // Task entry points return ptr for pthread
+
+  // A task function never allocates a %__frame_base of its own: its locals
+  // are allocas, and enclosing-scope variables arrive through the
+  // %__parent_frame aliases above. Deferred emission would otherwise leak
+  // the ENCLOSING function's has-nested flag into the task's declarations.
+  cg->current_nesting_level = 0;
 
   // Reset temp counter for new function
   uint32_t saved_temp = cg->temp_id;
@@ -37380,6 +38912,7 @@ void Generate_Task_Body (Syntax_Node *node) {
         if (dup) continue;
         if (task_emitted_count < MAX_TASK_FRAME_ALIASES)
           task_emitted_ids[task_emitted_count++] = var->unique_id;
+        if (Symbol_Is_Global (var)) continue;  // module-level storage, no alias
         Emit ("  %%__frame.");
         Emit_Symbol_Name (var);
         Emit (" = getelementptr i8, ptr %%__parent_frame, i64 %lld\n",
@@ -37458,6 +38991,7 @@ void Generate_Task_Body (Syntax_Node *node) {
   cg->is_nested = saved_is_nested;
   cg->enclosing_function = saved_enclosing;
   cg->in_task_body = saved_in_task_body;
+  cg->current_nesting_level = saved_nesting_level;
 }
 
 // RM 3.3.1: Elaborate a constrained array type or subtype whose bounds are
@@ -37612,17 +39146,8 @@ void Generate_Declaration (Syntax_Node *node) {
       // Defer nested subprogram bodies - emit after enclosing function
       // Skip if already generated (prevents duplicates from re-processing)
       if (node->subprogram_body.code_generated) break;
-      if (cg->current_function and cg->deferred_count < 64) {
-        bool already_deferred = false;
-        for (uint32_t d = 0; d < cg->deferred_count; d++) {
-          if (cg->deferred_bodies[d] == node) {
-            already_deferred = true;
-            break;
-          }
-        }
-        if (not already_deferred) {
-          cg->deferred_bodies[cg->deferred_count++] = node;
-        }
+      if (cg->current_function) {
+        Defer_Subprogram_Body (node);
       } else {
         Generate_Subprogram_Body (node);
       }
@@ -37736,7 +39261,9 @@ void Generate_Declaration (Syntax_Node *node) {
       // deferred library-level initializers, starts package-level tasks,
       // and runs any initialization statements.
       } else if (not cg->current_function and
-                 (has_init_stmts or has_pkg_tasks or cg->pending_global_init_count > 0)) {
+                 (has_init_stmts or has_pkg_tasks or
+                  cg->pending_global_init_count > 0 or
+                  (pkg_sym and pkg_sym->generic_template and pkg_sym->scope))) {
         Emit ("\n; Package body elaboration\n");
         Emit ("define void @");
         if (pkg_sym) {
@@ -37754,6 +39281,11 @@ void Generate_Declaration (Syntax_Node *node) {
         cg->current_function = pkg_sym;
         cg->block_terminated = false;
         cg->temp_id = 1;
+
+        // A tree-copy instance's formal-object bindings elaborate first:
+        // the declarative part's initializers may read them (RM 12.3(80)).
+        if (pkg_sym and pkg_sym->generic_template)
+          Emit_Instance_Binding_Elaboration (pkg_sym);
 
         // RM 7.2: elaborate the declarative part first — store each deferred
         // library-level initializer (declaration order), before the package's
@@ -37837,281 +39369,117 @@ void Generate_Declaration (Syntax_Node *node) {
         Symbol *inst_sym = node->symbol;
         if (not inst_sym or not inst_sym->generic_template) break;
         Symbol *template = inst_sym->generic_template;
-        Symbol *saved_instance = cg->current_instance;
-        cg->current_instance = inst_sym;
 
-        // Spec reference and elab flag, used both in global emission
-        // and in the spec-only elaboration path below.
-        Syntax_Node *gen_spec = inst_sym->expanded_spec;
-        if (not gen_spec) gen_spec = template->generic_unit;
-        bool needs_elab = false;
+        // A package instantiation that textually preceded the generic
+        // body (or whose body is a SEPARATE subunit) completes now that
+        // the body exists (RM 12.2).
+        if (inst_sym->kind == SYMBOL_PACKAGE and inst_sym->instance_spec and
+            inst_sym->instance_spec->symbol == inst_sym and
+            not inst_sym->instance_body and template->generic_body)
+          Complete_Instance_Package_Body (inst_sym, template);
 
-        // For library-level package instances, emit global variables for                           
-        // exported objects REGARDLESS of whether there's a body. Generic                           
-        // packages may have just a spec with object declarations.                                 
-        //                                                                                          
-        if (not cg->current_function and inst_sym->kind == SYMBOL_PACKAGE) {
-          for (uint32_t i = 0; i < inst_sym->exported_count; i++) {
-            Symbol *exp = inst_sym->exported[i];
-            if (not exp) continue;
-            if (exp->kind != SYMBOL_VARIABLE and exp->kind != SYMBOL_CONSTANT)
-              continue;
-            Type_Info *ty = exp->type;
-            // Generic-instance exports occasionally arrive without a type
-            // (instantiation pipeline skips type propagation in some paths).
-            // Skip the export rather than emit malformed IR for it.
-            if (not ty) {
-              fprintf (stderr, "warning: generic-instance export '%.*s' has no type; skipping\n",
-                       (int)exp->name.length, exp->name.data);
-              continue;
+        // Tree-copy package instance: bindings elaborate at the
+        // instantiation point, then the resolved spec and body clones emit
+        // through the ordinary package paths — globals, subprogram bodies,
+        // and the body's statement sequence exactly as if written here
+        // (RM 12.3, 7.2).
+        if (inst_sym->kind == SYMBOL_PACKAGE and inst_sym->instance_spec and
+            inst_sym->instance_spec->symbol == inst_sym) {
+          Emit_Instance_Wrapper_Bodies (inst_sym);
+          if (cg->current_function) {
+            Emit_Instance_Binding_Elaboration (inst_sym);
+          } else if (not inst_sym->instance_body and inst_sym->scope) {
+
+            // Bodyless library instance: the bindings (and the spec's
+            // pending initializers, drained below) get their own ___elab.
+            // With a body, the package-body emitter's ___elab elaborates
+            // the bindings first instead.
+            bool has_bindings = false;
+            for (uint32_t i = 0; i < inst_sym->scope->symbol_count; i++) {
+              Symbol *binding = inst_sym->scope->symbols[i];
+              if (binding and binding->instance_actual) { has_bindings = true; break; }
             }
-            LLVM_Rep type_rep = Type_To_Rep (ty);
-            bool is_array = Type_Is_Constrained_Array (ty);
-            bool is_record = Type_Is_Record (ty);
-
-            // Look for initializer in the expanded spec's visible decls.                          
-            // With expanded_spec, formal params are already substituted                            
-            // with actual expressions, so we can evaluate directly.                               
-            //                                                                                      
-            int64_t init_val = 0;
-            bool has_init = false;
-            bool this_needs_elab = false;
-            if (gen_spec and gen_spec->kind == NK_PACKAGE_SPEC) {
-              for (uint32_t j = 0; j < gen_spec->package_spec.visible_decls.count; j++) {
-                Syntax_Node *decl = gen_spec->package_spec.visible_decls.items[j];
-                if (not decl or decl->kind != NK_OBJECT_DECL) continue;
-                for (uint32_t k = 0; k < decl->object_decl.names.count; k++) {
-                  Syntax_Node *nm = decl->object_decl.names.items[k];
-                  if (nm and Slice_Equal_Ignore_Case (nm->string_val.text, exp->name)) {
-                    Syntax_Node *init = decl->object_decl.init;
-                    if (init and init->kind == NK_INTEGER) {
-                      init_val = init->integer_lit.value;
-                      has_init = true;
-                    } else if (init) {
-                      this_needs_elab = true;
-                      needs_elab = true;
-                    }
-                    break;
-                  }
-                }
-                if (has_init or this_needs_elab) break;
-              }
-            }
-            exp->extern_emitted = true;
-            Emit_Global_Ref (exp);
-            if (is_array) {
-              int128_t cnt = Array_Element_Count (ty);
-              LLVM_Rep elem_rep = Type_To_Rep (ty->array.element_type);
-              Emit (" = linkonce_odr global [%s x %s] zeroinitializer\n",
-                 I128_Decimal (cnt), LLVM_Rep_To_String (elem_rep));
-            } else if (is_record) {
-              Emit (" = linkonce_odr global [%u x i8] zeroinitializer\n", ty->size);
-            } else if (Type_Is_Float_Representation (ty)) {
-              Emit (" = linkonce_odr global %s 0.0\n", LLVM_Rep_To_String (type_rep));
-            } else if (LLVM_Rep_Is_Pointer (type_rep)) {
-              Emit (" = linkonce_odr global ptr null\n");
-            } else {
-              Emit (" = linkonce_odr global %s %lld\n", LLVM_Rep_To_String (type_rep),
-                 (long long)init_val);
+            if (has_bindings) {
+              Generate_Declaration (inst_sym->instance_spec);
+              Emit ("\n; Instance binding + spec elaboration\n");
+              Emit ("define void @");
+              Emit_Symbol_Name (inst_sym);
+              Emit ("___elab() {\nentry:\n");
+              Symbol *saved_function = cg->current_function;
+              uint32_t saved_temp = cg->temp_id;
+              cg->current_function = inst_sym;
+              cg->block_terminated = false;
+              cg->temp_id = 1;
+              Emit_Instance_Binding_Elaboration (inst_sym);
+              Emit_Pending_Global_Initializers ();
+              Emit ("  ret void\n}\n");
+              cg->current_function = saved_function;
+              cg->temp_id = saved_temp;
+              if (cg->elab_func_count < 64)
+                cg->elab_funcs[cg->elab_func_count++] = inst_sym;
+              break;
             }
           }
-        }
-
-        // Prefer expanded_body (with substitutions already applied)
-        // over template->generic_body (requires runtime substitution)
-        Syntax_Node *generic_body = inst_sym->expanded_body;
-        if (not generic_body) generic_body = template->generic_body;
-
-        // Spec-only generic: if any init needs runtime evaluation,                                 
-        // emit an elab function. Use generic_actuals (resolved in the                              
-        // instantiation context) rather than cloned template AST.                                 
-        //                                                                                          
-        if (not generic_body) {
-
-          // Build map: for each variable whose init references a
-          // generic formal, pair it with the formal's actual_expr.
-          if (needs_elab) {
-            Emit ("\n; Generic instance spec elaboration\n");
-            Emit ("define void @");
-            Emit_Symbol_Name (inst_sym);
-            Emit ("___elab() {\nentry:\n");
-            Symbol *saved_func = cg->current_function;
-            uint32_t saved_temp = cg->temp_id;
-            cg->current_function = inst_sym;
-            cg->block_terminated = false;
-            cg->temp_id = 1;
-
-            // For each non-static exported var, find the generic actual
-            // that corresponds to its init expression and evaluate it.
-            Syntax_Node *tmpl_spec = template->generic_unit;
-            if (tmpl_spec and tmpl_spec->kind == NK_PACKAGE_SPEC) {
-              for (uint32_t j = 0; j < tmpl_spec->package_spec.visible_decls.count; j++) {
-                Syntax_Node *decl = tmpl_spec->package_spec.visible_decls.items[j];
-                if (not decl or decl->kind != NK_OBJECT_DECL or not decl->object_decl.init)
-                  continue;
-                Syntax_Node *init = decl->object_decl.init;
-                if (init->kind == NK_INTEGER) continue;
-
-                // init is likely NK_IDENTIFIER referencing formal C.
-                // Find the actual expression from generic_actuals.
-                Syntax_Node *actual_expr = NULL;
-                if (init->kind == NK_IDENTIFIER and init->symbol and
-                    init->symbol->generic_formal_index >= 0 and
-                    init->symbol->generic_formal_index < (int)inst_sym->generic_actual_count)
-                  actual_expr = inst_sym->generic_actuals[
-                    init->symbol->generic_formal_index].actual_expr;
-                if (not actual_expr) continue;
-
-                // Find exported symbol for this variable
-                for (uint32_t k = 0; k < decl->object_decl.names.count; k++) {
-                  Syntax_Node *nm = decl->object_decl.names.items[k];
-                  if (not nm) continue;
-                  Symbol *target = NULL;
-                  for (uint32_t ei = 0; ei < inst_sym->exported_count; ei++) {
-                    if (inst_sym->exported[ei] and
-                      Slice_Equal_Ignore_Case (inst_sym->exported[ei]->name,
-                                  nm->string_val.text)) {
-                      target = inst_sym->exported[ei];
-                      break;
-                    }
-                  }
-                  if (not target) continue;
-                  uint32_t val = Generate_Expression (actual_expr).reg;
-                  LLVM_Rep ts = Type_To_Rep (target->type);
-                  Emit ("  store %s %%t%u, ptr @", LLVM_Rep_To_String (ts), val);
-                  Emit_Symbol_Name (target);
-                  Emit ("\n");
-                }
-              }
-            }
-            if (not cg->block_terminated) Emit ("  ret void\n");
-            Emit ("}\n\n");
-            cg->temp_id = saved_temp;
-            cg->current_function = saved_func;
-            if (cg->elab_func_count < 64) {
-              cg->elab_funcs[cg->elab_func_count++] = inst_sym;
-
-              // Register generic instance in elaboration graph (§15)
-              Elab_Register_Unit (inst_sym->name, true, inst_sym,  // is_body
-
-                         false,  // is_preelaborate
-                         false,  // is_pure
-                         true);  // has_elab_code
-            }
-          }
-          cg->current_instance = saved_instance;
+          Generate_Declaration (inst_sym->instance_spec);
+          if (inst_sym->instance_body)
+            Generate_Declaration (inst_sym->instance_body);
           break;
         }
 
-        // Generate instantiated body using the instance's symbol                                   
-        // Local generic package instance: allocate storage for exported                            
-        // variables/constants NOW (as local allocas), but defer subprogram                         
-        // bodies for later. Per Ada RM 12.3: "The elaboration of a generic                         
-        // instantiation declares an instance... and elaborates the instance"                       
-        //                                                                                          
-        if (cg->current_function and inst_sym->kind == SYMBOL_PACKAGE) {
-          for (uint32_t i = 0; i < inst_sym->exported_count; i++) {
-            Symbol *exp = inst_sym->exported[i];
-            if (not exp) continue;
+        // A subprogram instantiation that textually preceded the generic
+        // body resolves its clone now that the body exists (RM 12.2: the
+        // body serves every instantiation).
+        if (inst_sym->kind != SYMBOL_PACKAGE and not inst_sym->instance_body and
+            template->generic_body)
+          Instantiate_Generic_Subprogram (inst_sym, template);
 
-            // Allocate local storage for package variable
-            if (exp->kind == SYMBOL_VARIABLE or exp->kind == SYMBOL_CONSTANT) {
-              Type_Info *ty = exp->type;
-              if (not ty) {
-                fprintf (stderr, "warning: generic-instance local export '%.*s' has no type; skipping\n",
-                         (int)exp->name.length, exp->name.data);
-                continue;
-              }
-              LLVM_Rep type_rep = Type_To_Rep (ty);
-              bool is_array = Type_Is_Constrained_Array (ty);
-              bool is_record = Type_Is_Record (ty);
-              Emit_Local_Ref (exp);
-              if (is_array) {
-                int128_t cnt = Array_Element_Count (ty);
-                LLVM_Rep elem_rep = Type_To_Rep (ty->array.element_type);
-                Emit (" = alloca [%s x %s]  ; local pkg var\n", I128_Decimal (cnt), LLVM_Rep_To_String (elem_rep));
-              } else if (is_record) {
-                Emit (" = alloca [%u x i8]  ; local pkg record\n", ty->size);
-              } else {
-                Emit (" = alloca %s  ; local pkg var\n", LLVM_Rep_To_String (type_rep));
-              }
+        // Tree-copy subprogram instance: its resolved clone emits as an
+        // ordinary subprogram body — deferred when nested, exactly like a
+        // directly written nested body. No instance context is needed.
+        if (inst_sym->kind != SYMBOL_PACKAGE and inst_sym->instance_body and
+            (inst_sym->instance_body->kind == NK_PROCEDURE_BODY or
+             inst_sym->instance_body->kind == NK_FUNCTION_BODY)) {
+          Syntax_Node *instance_body = inst_sym->instance_body;
+          if (instance_body->subprogram_body.code_generated) break;
 
-              // Initialize from package body if present                                            
-              // Look for assignment in BEGIN..END section targeting this var.                     
-              // Compare by name since body symbol differs from exported symbol.                   
-              //                                                                                    
-              if (generic_body and generic_body->kind == NK_PACKAGE_BODY) {
-                for (uint32_t j = 0; j < generic_body->package_body.statements.count; j++) {
-                  Syntax_Node *stmt = generic_body->package_body.statements.items[j];
-                  if (not stmt or stmt->kind != NK_ASSIGNMENT) continue;
-                  Syntax_Node *tgt = stmt->assignment.target;
-                  if (not tgt) continue;
-                  String_Slice tgt_name = {0};
-                  if (tgt->kind == NK_IDENTIFIER)
-                    tgt_name = tgt->string_val.text;
-                  else if (tgt->symbol)
-                    tgt_name = tgt->symbol->name;
-
-                  // Redirect target to use local exported symbol
-                  if (tgt_name.data and Slice_Equal_Ignore_Case (tgt_name, exp->name)) {
-                    tgt->symbol = exp;
-                    Generate_Statement (stmt);
-                    break;
-                  }
-                }
-              }
+          // Elaborate the formal-object bindings at the instantiation
+          // point (RM 12.3(80)). At library level the initialization code
+          // needs a function to live in: give the instance an ___elab and
+          // register it with the elaboration list.
+          Emit_Instance_Wrapper_Bodies (inst_sym);
+          if (cg->current_function) {
+            Emit_Instance_Binding_Elaboration (inst_sym);
+          } else if (inst_sym->scope) {
+            bool has_bindings = false;
+            for (uint32_t i = 0; i < inst_sym->scope->symbol_count; i++) {
+              Symbol *binding = inst_sym->scope->symbols[i];
+              if (binding and binding->instance_actual) { has_bindings = true; break; }
+            }
+            if (has_bindings) {
+              Emit ("\n; Instance formal-object binding elaboration\n");
+              Emit ("define void @");
+              Emit_Symbol_Name (inst_sym);
+              Emit ("___elab() {\nentry:\n");
+              Symbol *saved_function = cg->current_function;
+              uint32_t saved_temp = cg->temp_id;
+              cg->current_function = inst_sym;
+              cg->block_terminated = false;
+              cg->temp_id = 1;
+              Emit_Instance_Binding_Elaboration (inst_sym);
+              Emit ("  ret void\n}\n");
+              cg->current_function = saved_function;
+              cg->temp_id = saved_temp;
+              if (cg->elab_func_count < 64)
+                cg->elab_funcs[cg->elab_func_count++] = inst_sym;
             }
           }
-
-          // Start any task objects declared in the generic spec.                                  
-          // Task variables (SYMBOL_VARIABLE with TYPE_TASK) need                                   
-          // __ada_task_start called after their alloca.                                           
-          //                                                                                        
-          for (uint32_t i = 0; i < inst_sym->exported_count; i++) {
-            Symbol *exp = inst_sym->exported[i];
-            if (not exp or exp->kind != SYMBOL_VARIABLE) continue;
-            if (not Type_Is_Task (exp->type)) continue;
-
-            // Start the task
-            uint32_t handle_tmp = Emit_Temp ();
-            Emit ("  %%t%u = call ptr @__ada_task_start(ptr @", handle_tmp);
-            Emit_Task_Function_Name (exp->type ? exp->type->defining_symbol : NULL,
-                        exp->type ? exp->type->name : exp->name);
-            Emit (", %s, %s)\n", Task_Parent_Frame_Argument (),
-               Task_Master_Record_Argument ());
-            Emit ("  store ptr %%t%u, ptr %%", handle_tmp);
-            Emit_Symbol_Name (exp);
-            Emit ("\n");
+          if (cg->current_function) {
+            Defer_Subprogram_Body (instance_body);
+          } else {
+            Generate_Subprogram_Body (instance_body);
           }
-
-          // Defer subprogram bodies for later
-          if (cg->deferred_count < 64)
-            cg->deferred_bodies[cg->deferred_count++] = node;
-
-        // Defer nested generic subprogram instance
-        } else if (cg->current_function and cg->deferred_count < 64) {
-          cg->deferred_bodies[cg->deferred_count++] = node;
-
-        // Global variables already emitted above. Now generate subprogram
-        // bodies, matching by homograph index.
-        } else if (inst_sym->kind == SYMBOL_PACKAGE) {
-          if (generic_body->kind == NK_PACKAGE_BODY) {
-            for (uint32_t i = 0; i < inst_sym->exported_count; i++) {
-              Symbol *exp = inst_sym->exported[i];
-              if (not exp) continue;
-              if (exp->kind != SYMBOL_FUNCTION and exp->kind != SYMBOL_PROCEDURE)
-                continue;
-              Syntax_Node *subp_body = Find_Homograph_Body (
-                inst_sym->exported, i, exp->name,
-                &generic_body->package_body.declarations);
-              if (subp_body)
-                Generate_Generic_Instance_Body (exp, subp_body);
-            }
-          }
-        } else {
-          Generate_Generic_Instance_Body (inst_sym, generic_body);
+          break;
         }
-        cg->current_instance = saved_instance;
       }
       break;
 
@@ -38200,8 +39568,8 @@ void Generate_Declaration (Syntax_Node *node) {
     case NK_TASK_BODY:
 
       // Defer task body generation when inside another function
-      if (cg->current_function and cg->deferred_count < 64) {
-        cg->deferred_bodies[cg->deferred_count++] = node;
+      if (cg->current_function) {
+        Defer_Subprogram_Body (node);
       } else {
         Generate_Task_Body (node);
       }
@@ -38222,6 +39590,40 @@ void Generate_Declaration (Syntax_Node *node) {
       // ── Array type with expression bounds ──────────────────────────────────────────────────────
 
       Elaborate_Dynamic_Array_Bounds (elab_ty);
+
+      // RM 3.5(4)/3.6.1: scalar subtype indications elaborated as part of
+      // this type declaration — array index constraints, an access type's
+      // designated subtype, a derived scalar type's own constraint (checked
+      // against the PARENT's range; a derived type is its own base) — have
+      // their ranges checked against the type mark here.
+      if (cg->current_function and elab_ty) {
+        if (Type_Is_Array_Like (elab_ty))
+          for (uint32_t d = 0; d < elab_ty->array.index_count; d++) {
+
+            // An index constraint's bounds live in the dimension's
+            // Index_Info; the mark is the dimension's index type.
+            Emit_Range_Constraint_Compat_Check (
+              &elab_ty->array.indices[d].low_bound,
+              &elab_ty->array.indices[d].high_bound,
+              elab_ty->array.indices[d].index_type);
+            Emit_Subtype_Constraint_Compat_Check (
+              elab_ty->array.indices[d].index_type, NULL);
+          }
+        if (Type_Is_Access (elab_ty))
+          Emit_Subtype_Constraint_Compat_Check (
+            elab_ty->access.designated_type, NULL);
+        if (Type_Is_Scalar (elab_ty) and elab_ty->parent_type) {
+
+          // A derived type's range constraint lives on the parent subtype
+          // indication's (possibly anonymous) constrained subtype; check
+          // that subtype against ITS type mark. The derived type's own
+          // bounds are copies of the parent's, so the direct comparison
+          // is the no-constraint case's no-op.
+          Emit_Subtype_Constraint_Compat_Check (elab_ty,
+                                                elab_ty->parent_type);
+          Emit_Subtype_Constraint_Compat_Check (elab_ty->parent_type, NULL);
+        }
+      }
 
       // ── Record type with dynamic-sized components ──────────────────────────────────────────────
 
@@ -38389,11 +39791,16 @@ void Generate_Declaration (Syntax_Node *node) {
       // @__rt_type globals are populated before any use.
       Elaborate_Dynamic_Array_Bounds (sub_type);
 
-      // Resolve a generic formal base type to its instantiation actual so the
-      // accuracy/range checks compare against the actual's DIGITS/DELTA/bounds
-      // (RM 12.1.2), e.g. `SUBTYPE S IS FIX DELTA 0.1` where FIX is a formal.
-      Type_Info *acc_base = sub_type and sub_type->base_type
-                  ? Resolve_Generic_Actual_Type (sub_type->base_type) : NULL;
+      // RM 3.3.2 / 3.5(4): a range constraint with dynamic bounds is
+      // checked against the type mark's range when the SUBTYPE elaborates
+      // (a non-null range with a bound outside the type mark raises
+      // CONSTRAINT_ERROR here, not at first use). Library-level subtype
+      // declarations emit at module scope where no instructions can live;
+      // their elaboration checks stay with the object paths.
+      if (cg->current_function)
+        Emit_Subtype_Constraint_Compat_Check (sub_type, NULL);
+
+      Type_Info *acc_base = sub_type ? sub_type->base_type : NULL;
 
       // RM 3.5.7: a floating point subtype's DIGITS must not exceed the base
       // type's DIGITS; an incompatible accuracy constraint raises
@@ -38543,6 +39950,65 @@ void Generate_Declaration (Syntax_Node *node) {
       break;
     }
 
+    // RM 8.5: elaborating a renaming declaration evaluates the renamed
+    // name. For an entry rename that means the task prefix and any family
+    // index bind NOW — their variables may change later without affecting
+    // what the rename denotes. Store both into the rename's hidden locals;
+    // entry calls through the rename read them back.
+    case NK_SUBPROGRAM_RENAMING: {
+      Symbol *rename_sym = node->symbol;
+      if (not rename_sym or not rename_sym->renamed_entry_name or
+          not rename_sym->rename_task_slot or not cg->current_function)
+        break;
+      Syntax_Node *renamed_name = rename_sym->renamed_entry_name;
+      Syntax_Node *entry_name = (renamed_name->kind == NK_APPLY)
+                                ? renamed_name->apply.prefix : renamed_name;
+
+      // A slot owned by the current function's frame gets its local name
+      // bound here; a slot in an enclosing frame (a rename inside a task
+      // body or nested subprogram) is reached through the %__frame. alias
+      // the function header already emitted — Emit_Symbol_Storage picks.
+      Emit ("  ; RENAMES entry: bind task and family index (RM 8.5)\n");
+      if (not Is_Uplevel_Access (rename_sym->rename_task_slot)) {
+        Emit_Local_Ref (rename_sym->rename_task_slot);
+        if (cg->current_nesting_level > 0)
+          Emit (" = getelementptr i8, ptr %%__frame_base, i64 %lld\n",
+                (long long)rename_sym->rename_task_slot->frame_offset);
+        else
+          Emit (" = alloca ptr\n");
+      }
+      uint32_t task_ptr = Emit_Task_Pointer_From_Selected (
+        entry_name->kind == NK_SELECTED ? entry_name->selected.prefix : NULL);
+      Emit ("  store ptr %%t%u, ptr ", task_ptr);
+      Emit_Symbol_Storage (rename_sym->rename_task_slot);
+      Emit ("\n");
+
+      if (rename_sym->rename_index_slot and
+          renamed_name->kind == NK_APPLY and
+          renamed_name->apply.arguments.count > 0) {
+        if (not Is_Uplevel_Access (rename_sym->rename_index_slot)) {
+          Emit_Local_Ref (rename_sym->rename_index_slot);
+          if (cg->current_nesting_level > 0)
+            Emit (" = getelementptr i8, ptr %%__frame_base, i64 %lld\n",
+                  (long long)rename_sym->rename_index_slot->frame_offset);
+          else
+            Emit (" = alloca %s\n",
+                  LLVM_Rep_To_String (Integer_Arith_Rep ()));
+        }
+        Syntax_Node *index_node = renamed_name->apply.arguments.items[0];
+        if (index_node->kind == NK_ASSOCIATION)
+          index_node = index_node->association.expression;
+        LLVM_Value index_v = Generate_Expression (index_node);
+        uint32_t index_reg =
+          Emit_Convert (index_v.reg, index_v.rep, Integer_Arith_Rep ()).reg;
+        Emit ("  store %s %%t%u, ptr ",
+              LLVM_Rep_To_String (Integer_Arith_Rep ()), index_reg);
+        Emit_Symbol_Storage (rename_sym->rename_index_slot);
+        Emit ("\n");
+      }
+      break;
+    }
+
     // Other declaration kinds that need no codegen
     case NK_EXCEPTION_DECL:
     case NK_USE_CLAUSE:
@@ -38551,7 +40017,6 @@ void Generate_Declaration (Syntax_Node *node) {
     case NK_REPRESENTATION_CLAUSE:
     case NK_EXCEPTION_HANDLER:
     case NK_ENTRY_DECL:
-    case NK_SUBPROGRAM_RENAMING:
     case NK_PACKAGE_RENAMING:
     case NK_EXCEPTION_RENAMING:
       break;
@@ -41428,6 +42893,13 @@ bool BIP_Record_Has_Limited_Component (const Type_Info *t) {
 bool BIP_Is_Limited_Type (const Type_Info *t) {
   if (not t) return false;
 
+  // Build-in-place exists because some VALUES cannot be copied (tasks,
+  // limited composites). A limited type whose full view is scalar-
+  // represented (e.g. a private file handle completed as an integer)
+  // carries the SEMANTIC no-copy rule, enforced at resolution — its
+  // representation copies fine, so plain return applies.
+  if (Type_Is_Scalar (t) or Type_Is_Access (t)) return false;
+
   // Explicitly marked as limited (from type declaration)
   if (t->is_limited) return true;
 
@@ -42883,190 +44355,102 @@ bool Elab_Needs_Elab_Call (uint32_t index) {
 }
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
-// §16. GENERIC EXPANSION - Macro-style instantiation                                               
+// §16. GENERIC INSTANTIATION - Tree-copy cloners
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 
-
-// ═════════════════════════════════════════════════════════════════════════════════════════════════
-// §16.3 Node_Deep_Clone - Deep copy of a generic template with formal substitution
-//
-// Substitution reads the instance's decorated actuals directly: a formal type
-// carries its slot (generic_formal_index) so its actual is indexed, and a formal
-// object reference is matched by name against the instance's generic_actuals.
-// The cloner therefore needs only the instance symbol -- no separately built
-// environment. New nodes are always allocated (no aliasing); symbols are cleared
-// for re-resolution.
-// ═════════════════════════════════════════════════════════════════════════════════════════════════
-
-Syntax_Node *Node_Deep_Clone (Syntax_Node *node, Symbol *instance, int depth);
-
-// Clone a node list
-void Node_List_Clone (Node_List *dst, Node_List *src,
-              Symbol *env, int depth) {
-  dst->count = 0;
-  dst->capacity = 0;
-  dst->items = NULL;
-  for (uint32_t i = 0; i < src->count; i++) {
-    Syntax_Node *cloned = Node_Deep_Clone (src->items[i], env, depth);
-    Node_List_Push (dst, cloned);
-  }
+// Clone a node list, structurally (Clone_Subtree on each element).
+static void Clone_Subtree_List (Node_List *destination, Node_List *source) {
+  destination->count    = 0;
+  destination->capacity = 0;
+  destination->items    = NULL;
+  for (uint32_t i = 0; i < source->count; i++)
+    Node_List_Push (destination, Clone_Subtree (source->items[i]));
 }
-// A child field of a syntax node that the cloner must re-clone: a single node
-// pointer (is_list 0) or a node list (is_list 1), at a byte offset into the
-// node. This table replaces a ~150-line per-kind switch -- the tree's shape is
-// the data. A row terminates at offset 0 (which is `kind`, never a child), so
-// the zero-filled rows of unhandled kinds clone nothing and stay shallow-copied
-// (exactly the old default arm's aliasing behaviour).
-typedef struct { uint16_t offset; bool is_list; } Clone_Child;
-#define KID(f)  { (uint16_t) __builtin_offsetof (Syntax_Node, f), 0 }
-#define KIDS(f) { (uint16_t) __builtin_offsetof (Syntax_Node, f), 1 }
-static const Clone_Child clone_kids[][5] = {
-  [NK_BINARY_OP]      = { KID(binary.left), KID(binary.right) },
-  [NK_UNARY_OP]       = { KID(unary.operand) },
-  [NK_ATTRIBUTE]      = { KID(attribute.prefix), KIDS(attribute.arguments) },
-  [NK_APPLY]          = { KID(apply.prefix), KIDS(apply.arguments) },
-  [NK_SELECTED]       = { KID(selected.prefix) },
-  [NK_AGGREGATE]      = { KIDS(aggregate.items) },
-  [NK_ASSOCIATION]    = { KIDS(association.choices), KID(association.expression) },
-  [NK_RANGE]          = { KID(range.low), KID(range.high) },
-  [NK_OBJECT_DECL]    = { KIDS(object_decl.names), KID(object_decl.object_type), KID(object_decl.init) },
-  [NK_TYPE_DECL]      = { KID(type_decl.definition), KIDS(type_decl.discriminants) },
-  [NK_SUBTYPE_DECL]   = { KID(type_decl.definition), KIDS(type_decl.discriminants) },
-  [NK_PROCEDURE_BODY] = { KID(subprogram_body.specification), KIDS(subprogram_body.declarations), KIDS(subprogram_body.statements), KIDS(subprogram_body.handlers) },
-  [NK_FUNCTION_BODY]  = { KID(subprogram_body.specification), KIDS(subprogram_body.declarations), KIDS(subprogram_body.statements), KIDS(subprogram_body.handlers) },
-  [NK_PROCEDURE_SPEC] = { KIDS(subprogram_spec.parameters), KID(subprogram_spec.return_type), KID(subprogram_spec.renamed) },
-  [NK_FUNCTION_SPEC]  = { KIDS(subprogram_spec.parameters), KID(subprogram_spec.return_type), KID(subprogram_spec.renamed) },
-  [NK_PARAM_SPEC]     = { KIDS(param_spec.names), KID(param_spec.param_type), KID(param_spec.default_expr) },
-  [NK_PACKAGE_SPEC]   = { KIDS(package_spec.visible_decls), KIDS(package_spec.private_decls) },
-  [NK_PACKAGE_BODY]   = { KIDS(package_body.declarations), KIDS(package_body.statements), KIDS(package_body.handlers) },
-  [NK_ASSIGNMENT]     = { KID(assignment.target), KID(assignment.value) },
-  [NK_CALL_STMT]      = { KID(assignment.target), KID(assignment.value) },
-  [NK_IF]             = { KID(if_stmt.condition), KIDS(if_stmt.then_stmts), KIDS(if_stmt.elsif_parts), KIDS(if_stmt.else_stmts) },
-  [NK_LOOP]           = { KID(loop_stmt.iteration_scheme), KIDS(loop_stmt.statements) },
-  [NK_RETURN]         = { KID(return_stmt.expression) },
-  [NK_BLOCK]          = { KIDS(block_stmt.declarations), KIDS(block_stmt.statements), KIDS(block_stmt.handlers) },
-  [NK_CASE]           = { KID(case_stmt.expression), KIDS(case_stmt.alternatives) },
-  [NK_EXIT]           = { KID(exit_stmt.condition) },
-};
-#undef KID
-#undef KIDS
 
-Syntax_Node *Node_Deep_Clone (Syntax_Node *node, Symbol *env, int depth) {
+Syntax_Node *Clone_Subtree (Syntax_Node *node) {
   if (not node) return NULL;
+  Syntax_Node *clone = Arena_Allocate (sizeof (Syntax_Node));
+  *clone = *node;
 
-  // Depth limit with REAL error, not silent aliasing
-  if (depth > 500) {
-    Report_Error (node->location, "generic instantiation too deeply nested");
-    return NULL;
+  // Re-resolution owns every semantic decoration: the clone is ordinary
+  // unresolved syntax. Source locations stay with the template so
+  // diagnostics point at the generic's text.
+  clone->symbol       = NULL;
+  clone->type         = NULL;
+  clone->folded_valid = false;
+  switch (node->kind) {
+    case NK_APPLY:  clone->apply.resolution       = APPLY_UNRESOLVED; break;
+    case NK_LOOP:   clone->loop_stmt.label_symbol = NULL;             break;
+    case NK_EXIT:   clone->exit_stmt.target       = NULL;             break;
+    case NK_GOTO:   clone->goto_stmt.target       = NULL;             break;
+    case NK_LABEL:  clone->label_node.symbol      = NULL;             break;
+    case NK_ACCEPT: clone->accept_stmt.entry_sym  = NULL;             break;
+    case NK_PROCEDURE_BODY:
+    case NK_FUNCTION_BODY:
+      clone->subprogram_body.code_generated  = false;
+      clone->subprogram_body.is_task_master  = false;
+      clone->subprogram_body.master_scope_id = 0;
+      break;
+    case NK_BLOCK:
+      clone->block_stmt.label_symbol    = NULL;
+      clone->block_stmt.is_task_master  = false;
+      clone->block_stmt.master_scope_id = 0;
+      break;
+    case NK_TASK_BODY:
+      clone->task_body.is_task_master  = false;
+      clone->task_body.master_scope_id = 0;
+      break;
+    default: break;
   }
 
-  // Shallow-copy every field, then re-clone the child nodes/lists the shape
-  // table names; kind, location, slices, and scalars all ride along for free.
-  Syntax_Node *n = Arena_Allocate (sizeof (Syntax_Node));
-  *n = *node;
-  n->symbol = NULL;  // symbols are re-resolved on the clone
-
-  // Substitute generic formal types throughout the cloned tree.
-  // When a node carries a TYPE_PRIVATE/TYPE_LIMITED_PRIVATE type whose
-  // name matches a generic formal parameter, replace it with the actual
-  // type. This ensures that expressions, declarations, and statements
-  // all use the concrete type (e.g., FLOAT) rather than the opaque
-  // formal type (e.g., ELEMENT_TYPE).
-  //
-  if (env and env->generic_actuals and n->type and n->type->generic_formal_index >= 0 and
-      n->type->generic_formal_index < (int)env->generic_actual_count) {
-    Type_Info *subst = env->generic_actuals[n->type->generic_formal_index].actual_type;
-    if (subst) n->type = subst;
+  for (const Syntax_Tree_Edge *edge = Syntax_Tree_Shape[node->kind];
+       edge->offset; edge++) {
+    void *slot = (char *) clone + edge->offset;
+    void *from = (char *) node  + edge->offset;
+    if (edge->is_list) Clone_Subtree_List (slot, from);
+    else *(Syntax_Node **) slot = Clone_Subtree (*(Syntax_Node **) from);
   }
-  // A formal-object reference becomes its actual expression. Which formal slot
-  // (if any) this identifier names is a property of the template node, identical
-  // for every instance, so decide it once by name and stamp the template node;
-  // later clones read the stamp instead of re-scanning the formal list.
-  if (node->kind == NK_IDENTIFIER and env and env->generic_actuals) {
-    int slot = node->generic_formal_index;
-    if (slot == -2) {
-      slot = -1;
-      for (uint32_t i = 0; i < env->generic_actual_count; i++)
-        if (env->generic_actuals[i].actual_expr and
-            Slice_Equal_Ignore_Case (env->generic_actuals[i].formal_name, node->string_val.text)) {
-          slot = (int) i;
-          break;
-        }
-      node->generic_formal_index = slot;
-    }
-    if (slot >= 0 and (uint32_t) slot < env->generic_actual_count and
-        env->generic_actuals[slot].actual_expr)
-      return Node_Deep_Clone (env->generic_actuals[slot].actual_expr, env, depth + 1);
-  }
-
-  // Re-clone the child fields this kind owns; the shallow copy aliased them.
-  if ((size_t) node->kind < sizeof (clone_kids) / sizeof (clone_kids[0]))
-    for (const Clone_Child *kid = clone_kids[node->kind]; kid->offset; kid++) {
-      void *slot = (char *) n + kid->offset, *from = (char *) node + kid->offset;
-      if (kid->is_list) Node_List_Clone (slot, from, env, depth + 1);
-      else *(Syntax_Node **) slot = Node_Deep_Clone (*(Syntax_Node **) from, env, depth + 1);
-    }
-  return n;
+  return clone;
 }
 
-// ═════════════════════════════════════════════════════════════════════════════════════════════════
-// §16.4 Build_Instantiation_Env - Create mapping from formals to actuals                           
-// ═════════════════════════════════════════════════════════════════════════════════════════════════
+static void Clone_Decorated_List (Node_List *destination, Node_List *source) {
+  destination->count    = 0;
+  destination->capacity = 0;
+  destination->items    = NULL;
+  for (uint32_t i = 0; i < source->count; i++)
+    Node_List_Push (destination, Clone_Subtree_Keep_Decorations (source->items[i]));
+}
 
-// ═════════════════════════════════════════════════════════════════════════════════════════════════
-// §16.5 Expand_Generic_Package - Full instantiation of generic package
-//                                                                                                  
-//   1. Clone the package spec with type substitutions                                              
-//   2. Clone the package body (if found)                                                           
-//   3. Resolve cloned trees with actual types                                                      
-//   4. Store expanded body for code generation                                                     
-// ═════════════════════════════════════════════════════════════════════════════════════════════════
-
-void Expand_Generic_Package (Symbol *instance_sym) {
-  if (not instance_sym or not instance_sym->generic_template) return;
-  Symbol *template = instance_sym->generic_template;
-  if (not template->generic_unit) return;
-
-  // Clone the package spec, substituting formals directly from the instance.
-  Syntax_Node *spec_clone = Node_Deep_Clone (template->generic_unit, instance_sym, 0);
-
-  // Rename to instance name
-  if (spec_clone) {
-    if (spec_clone->kind == NK_PACKAGE_SPEC) {
-      spec_clone->package_spec.name = instance_sym->name;
-    }
-
-    // Store for later processing
-    instance_sym->expanded_spec = spec_clone;
+Syntax_Node *Clone_Subtree_Keep_Decorations (Syntax_Node *node) {
+  if (not node) return NULL;
+  Syntax_Node *clone = Arena_Allocate (sizeof (Syntax_Node));
+  *clone = *node;
+  for (const Syntax_Tree_Edge *edge = Syntax_Tree_Shape[node->kind];
+       edge->offset; edge++) {
+    void *slot = (char *) clone + edge->offset;
+    void *from = (char *) node  + edge->offset;
+    if (edge->is_list) Clone_Decorated_List (slot, from);
+    else *(Syntax_Node **) slot =
+      Clone_Subtree_Keep_Decorations (*(Syntax_Node **) from);
   }
+  return clone;
+}
 
-  // Find the package body and clone it with substitutions. The body source is
-  // the same for every instance, so read-and-parse it once and cache the
-  // un-substituted AST on the template; further instances clone from the cache
-  // rather than re-reading and re-parsing from disk.
-  if (not template->generic_body_cache) {
-    String_Slice pkg_name = template->generic_unit->kind == NK_PACKAGE_SPEC ?
-                template->generic_unit->package_spec.name :
-                template->name;
-    char *body_src = Lookup_Path_Body (pkg_name);
-    if (body_src) {
-      // arena-allocate filename for Source_Location stability
-      size_t bfn_len = pkg_name.length + 4;
-      char *body_filename = Arena_Allocate (bfn_len + 1);
-      snprintf (body_filename, bfn_len + 1, "%.*s.adb",
-           (int)pkg_name.length, pkg_name.data);
-      Parser body_parser = Parser_New (body_src, strlen (body_src), body_filename);
-      Syntax_Node *body_cu = Parse_Compilation_Unit (&body_parser);
-      if (body_cu and body_cu->compilation_unit.unit and
-        body_cu->compilation_unit.unit->kind == NK_PACKAGE_BODY)
-        template->generic_body_cache = body_cu->compilation_unit.unit;
-    }
+void Reassign_Symbol_References (Syntax_Node *node, Symbol *from, Symbol *to) {
+  if (not node or not from or not to) return;
+  if (node->symbol == from) {
+    node->symbol = to;
+    if (to->type and node->type == from->type) node->type = to->type;
   }
-  if (template->generic_body_cache) {
-    Syntax_Node *body_clone = Node_Deep_Clone (template->generic_body_cache, instance_sym, 0);
-    if (body_clone) {
-      body_clone->package_body.name = instance_sym->name;
-      instance_sym->expanded_body = body_clone;
+  for (const Syntax_Tree_Edge *edge = Syntax_Tree_Shape[node->kind];
+       edge->offset; edge++) {
+    void *child = (char *) node + edge->offset;
+    if (edge->is_list) {
+      Node_List *list = child;
+      for (uint32_t i = 0; i < list->count; i++)
+        Reassign_Symbol_References (list->items[i], from, to);
+    } else {
+      Reassign_Symbol_References (*(Syntax_Node **) child, from, to);
     }
   }
 }
@@ -43155,6 +44539,12 @@ uint32_t        Include_Path_Count        = 0;
 // Set by `-g` on the command line. Propagated into `cg` at Code_Generator_Init
 // time so every emitted IR line gets a trailing `; @ FUNC:LINE` comment.
 bool            Debug_Emit_Locations      = false;
+
+// Set by `--clone-check` on the command line. Swaps every parsed compilation
+// unit for its structural deep clone before resolution; output must be
+// identical to a normal compile, so any difference convicts a missing or
+// wrong edge in SYNTAX_TREE_SHAPE.
+bool            Clone_Self_Check          = false;
 
 // Track loaded package bodies for code generation
 Syntax_Node    *Loaded_Package_Bodies[128];
@@ -43589,38 +44979,8 @@ void Load_Package_Spec (String_Slice name, char *src) {
         if (inner and inner->kind == NK_PACKAGE_SPEC) {
           Symbol_Manager_Push_Scope (sym);
 
-          // Install generic formal parameters
-          Node_List *formals = &unit->generic_decl.formals;
-          for (uint32_t i = 0; i < formals->count; i++) {
-            Syntax_Node *formal = formals->items[i];
-            if (formal->kind == NK_GENERIC_TYPE_PARAM) {
-              Symbol *type_sym = Symbol_New (SYMBOL_TYPE,
-                formal->generic_type_param.name, formal->location);
-
-              // Map def_kind to appropriate Type_Kind
-              Type_Kind formal_kind = TYPE_PRIVATE;
-              switch (formal->generic_type_param.def_kind) {
-                case 2:  formal_kind = TYPE_ENUMERATION; break;  // DISCRETE
-                case 3:  formal_kind = TYPE_INTEGER;     break;  // INTEGER
-                case 4:  formal_kind = TYPE_FLOAT;       break;  // FLOAT
-                case 5:  formal_kind = TYPE_FIXED;       break;  // FIXED
-                case 6:  formal_kind = TYPE_ARRAY;       break;  // ARRAY
-                case 7:  formal_kind = TYPE_ACCESS;      break;  // ACCESS
-                default: formal_kind = TYPE_PRIVATE;     break;
-              }
-              Type_Info *type = Type_New (formal_kind, formal->generic_type_param.name);
-              int slot = 0;
-              for (uint32_t j = 0; j < i; j++) {
-                Syntax_Node *prior = formals->items[j];
-                slot += (prior->kind == NK_GENERIC_OBJECT_PARAM)
-                          ? (int)prior->generic_object_param.names.count : 1;
-              }
-              type->generic_formal_index = slot;
-              type_sym->type = type;
-              formal->symbol = type_sym;
-              Symbol_Add (type_sym);
-            }
-          }
+          // Install generic formal parameters (shared installer, RM 12.1)
+          Install_Generic_Formal_Symbols (sym);
 
           // Resolve visible declarations
           Resolve_Declaration_List (&inner->package_spec.visible_decls);
@@ -43644,7 +45004,7 @@ void Load_Package_Spec (String_Slice name, char *src) {
   // the SAME parser to pick up the body when it follows the spec.
   // This handles generic procedures/functions like LENGTH_CHECK where
   // the body must attach to the SYMBOL_GENERIC created above so
-  // Generate_Generic_Instance_Body has a body to emit at instantiation.
+  // instantiation has a template body to clone.
   while (not Parser_At (&parser, TK_EOF)) {
     Syntax_Node *more_cu = Parse_Compilation_Unit (&parser);
     if (not more_cu or not more_cu->compilation_unit.unit) break;
@@ -43683,38 +45043,8 @@ void Load_Package_Spec (String_Slice name, char *src) {
         // symbols. Mirrors the package-body branch below.
         Symbol_Manager_Push_Scope (gen_sym);
         Syntax_Node *spec = gen_sym->declaration;
-        if (spec and spec->kind == NK_GENERIC_DECL) {
-          Node_List *formals = &spec->generic_decl.formals;
-          for (uint32_t fi = 0; fi < formals->count; fi++) {
-            Syntax_Node *formal = formals->items[fi];
-            if (not formal) continue;
-            if (formal->symbol) Symbol_Add (formal->symbol);
-            if (formal->kind == NK_GENERIC_TYPE_PARAM and not formal->symbol) {
-              Symbol *type_sym = Symbol_New (SYMBOL_TYPE,
-                formal->generic_type_param.name, formal->location);
-              Type_Kind formal_kind = TYPE_PRIVATE;
-              switch (formal->generic_type_param.def_kind) {
-                case 2: formal_kind = TYPE_ENUMERATION; break;
-                case 3: formal_kind = TYPE_INTEGER;     break;
-                case 4: formal_kind = TYPE_FLOAT;       break;
-                case 5: formal_kind = TYPE_FIXED;       break;
-                case 6: formal_kind = TYPE_ARRAY;       break;
-                case 7: formal_kind = TYPE_ACCESS;      break;
-                default: formal_kind = TYPE_PRIVATE;    break;
-              }
-              type_sym->type = Type_New (formal_kind, formal->generic_type_param.name);
-              { int slot = 0;
-                for (uint32_t j = 0; j < fi; j++) {
-                  Syntax_Node *prior = formals->items[j];
-                  slot += (prior->kind == NK_GENERIC_OBJECT_PARAM)
-                            ? (int)prior->generic_object_param.names.count : 1;
-                }
-                type_sym->type->generic_formal_index = slot; }
-              formal->symbol = type_sym;
-              Symbol_Add (type_sym);
-            }
-          }
-        }
+        if (spec and spec->kind == NK_GENERIC_DECL)
+          Install_Generic_Formal_Symbols (gen_sym);
         // Install spec's parameters
         Syntax_Node *bspec = more_unit->subprogram_body.specification;
         if (bspec) {
@@ -43750,8 +45080,12 @@ void Load_Package_Spec (String_Slice name, char *src) {
       String_Slice body_name = more_unit->package_body.name;
       Symbol *pkg_sym = body_name.data ? Symbol_Find (body_name) : NULL;
       if (pkg_sym and pkg_sym->kind == SYMBOL_GENERIC) {
-        pkg_sym->generic_body = more_unit;
-        more_unit->symbol = pkg_sym;
+        // Resolve through the NK_PACKAGE_BODY case: its generic-completion
+        // path installs the formals, resolves the spec and the body
+        // (declarations, statement part, handlers), and records the body
+        // on the generic symbol. Assigning generic_body without resolving
+        // left every instantiation emitting from an unresolved AST.
+        Resolve_Declaration (more_unit);
       }
     } else {
       break;
@@ -43816,47 +45150,9 @@ void Load_Package_Spec (String_Slice name, char *src) {
           // Install visible and private declarations from package spec
           // into the body's scope (RM 7.1, 7.2)
           Syntax_Node *spec = pkg_sym->declaration;
-
           // For generics, install formals first, then look at the unit
           if (spec and spec->kind == NK_GENERIC_DECL) {
-            Node_List *formals = &spec->generic_decl.formals;
-            for (uint32_t i = 0; i < formals->count; i++) {
-              Syntax_Node *formal = formals->items[i];
-              if (formal->symbol) Symbol_Add (formal->symbol);
-
-              // For generic type parameters, create type symbol if needed
-              if (formal->kind == NK_GENERIC_TYPE_PARAM and not formal->symbol) {
-                Symbol *type_sym = Symbol_New (SYMBOL_TYPE,
-                  formal->generic_type_param.name, formal->location);
-
-                // Map def_kind to appropriate Type_Kind
-                Type_Kind formal_kind = TYPE_PRIVATE;
-                switch (formal->generic_type_param.def_kind) {
-                  case 2:  formal_kind = TYPE_ENUMERATION; break;  // DISCRETE
-                  case 3:  formal_kind = TYPE_INTEGER;     break;  // INTEGER
-                  case 4:  formal_kind = TYPE_FLOAT;       break;  // FLOAT
-                  case 5:  formal_kind = TYPE_FIXED;       break;  // FIXED
-                  case 6:  formal_kind = TYPE_ARRAY;       break;  // ARRAY
-                  case 7:  formal_kind = TYPE_ACCESS;      break;  // ACCESS
-                  default: formal_kind = TYPE_PRIVATE;     break;
-                }
-                Type_Info *type = Type_New (formal_kind, formal->generic_type_param.name);
-
-                // Slot this formal occupies in an instance's actuals (object
-                // formals consume one slot per name), fixed once here.
-                int slot = 0;
-                for (uint32_t j = 0; j < i; j++) {
-                  Syntax_Node *prior = formals->items[j];
-                  slot += (prior->kind == NK_GENERIC_OBJECT_PARAM)
-                            ? (int)prior->generic_object_param.names.count : 1;
-                }
-                type->generic_formal_index = slot;
-
-                type_sym->type = type;
-                formal->symbol = type_sym;
-                Symbol_Add (type_sym);
-              }
-            }
+            Install_Generic_Formal_Symbols (pkg_sym);
             spec = spec->generic_decl.unit;
           }
           if (spec and spec->kind == NK_PACKAGE_SPEC) {
@@ -43896,7 +45192,31 @@ void Load_Package_Spec (String_Slice name, char *src) {
             }
             #undef INSTALL_DECL_SYMBOLS
           }
+          // Formals and spec entities are in scope: resolve IS-name
+          // formal-subprogram defaults (RM 12.1.3).
+          if (pkg_sym->kind == SYMBOL_GENERIC and pkg_sym->declaration and
+              pkg_sym->declaration->kind == NK_GENERIC_DECL)
+            Resolve_Generic_Formal_Subprogram_Defaults (
+              &pkg_sym->declaration->generic_decl.formals);
+
           Resolve_Declaration_List (&body_unit->package_body.declarations);
+          Mark_Package_Level_Objects (&body_unit->package_body.declarations);
+
+          // Freeze types and resolve the statement part and handlers,
+          // exactly like the NK_PACKAGE_BODY resolution case: a generic
+          // body's statement sequence executes at every instantiation
+          // (RM 12.3), so its statements must be resolved here or the
+          // instantiation emitter has nothing legal to emit.
+          Freeze_Declaration_List (&body_unit->package_body.declarations);
+          Resolve_Statement_List (&body_unit->package_body.statements);
+          for (uint32_t hi = 0; hi < body_unit->package_body.handlers.count; hi++) {
+            Syntax_Node *handler = body_unit->package_body.handlers.items[hi];
+            if (handler) {
+              for (uint32_t ei = 0; ei < handler->handler.exceptions.count; ei++)
+                Resolve_Expression (handler->handler.exceptions.items[ei]);
+              Resolve_Statement_List (&handler->handler.statements);
+            }
+          }
           Symbol_Manager_Pop_Scope ();
 
           // Store for code generation
@@ -44779,6 +46099,13 @@ void Compile_File (const char *input_path, const char *output_path) {
     return;
   }
 
+  // Cloner self-check: resolution and emission proceed on structural deep
+  // clones of the parsed units. A NULL instance makes the clone substitution-
+  // free, so the output must match a normal compile exactly.
+  if (Clone_Self_Check)
+    for (int i = 0; i < unit_count; i++)
+      units[i] = Clone_Subtree (units[i]);
+
   // Semantic analysis for all units
   Symbol_Manager_Init ();
   for (int i = 0; i < unit_count; i++) {
@@ -44990,9 +46317,12 @@ void *Compile_Worker (void *arg) {
 int main (int argc, char *argv[]) {
   if (argc < 2) {
     fprintf (stderr,
-      "Usage: %s [-I path] [-g] <input.ada ...> [-o output.ll]\n"
+      "Usage: %s [-I path] [-g] [--clone-check] <input.ada ...> [-o output.ll]\n"
       "  -g    Annotate each emitted IR line with `; @ FUNC:LINE` of the\n"
-      "        C source site in ada83.c that produced it (codegen debug).\n",
+      "        C source site in ada83.c that produced it (codegen debug).\n"
+      "  --clone-check\n"
+      "        Compile structural deep clones of the parsed units; output\n"
+      "        must match a normal compile (syntax shape table self-test).\n",
       argv[0]);
     return 1;
   }
@@ -45012,6 +46342,8 @@ int main (int argc, char *argv[]) {
       output = argv[++i];
     } else if (strcmp (argv[i], "-g") == 0) {
       Debug_Emit_Locations = true;
+    } else if (strcmp (argv[i], "--clone-check") == 0) {
+      Clone_Self_Check = true;
     } else if (argv[i][0] != '-') {
       if (input_count < 256)
         inputs[input_count++] = argv[i];

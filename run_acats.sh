@@ -18,8 +18,14 @@ NPROC=${NPROC:-$(nproc 32>/dev/null || echo 32)}
 TEST_TIMEOUT=${TEST_TIMEOUT:-30}
 START_MS=$(date +%s%3N)
 
-# ── Clean stale artifacts to prevent spurious BIND errors ─────────────
-rm -rf test_results acats_logs
+# ── Per-run output directories ────────────────────────────────────────
+# Every invocation writes into its own timestamped subfolder of
+# test_results and acats_logs (named <label>-<timestamp>-<pid>), so
+# repeated or concurrent runs never overwrite each other. A fresh
+# directory per run also means no stale .ll/.bc artifacts can cause
+# spurious BIND errors, which is why no cleanup pass is needed here.
+# RESULTS_DIR and LOGS_DIR are created in run_parallel once the run
+# label (class or group) is known.
 mkdir -p test_results acats_logs
 
 # ── Rebuild compiler if source is newer than binary ───────────────────
@@ -55,16 +61,16 @@ run_one(){
 
     case ${q,,} in
     c)
-        if ! timeout 2 ./ada83 "$f" > test_results/$n.ll 2>acats_logs/$n.err; then
-            echo "c skip $n COMPILE:$(head -1 acats_logs/$n.err 2>/dev/null|cut -c1-50)"
+        if ! timeout 2 ./ada83 "$f" > $RESULTS_DIR/$n.ll 2>$LOGS_DIR/$n.err; then
+            echo "c skip $n COMPILE:$(head -1 $LOGS_DIR/$n.err 2>/dev/null|cut -c1-50)"
             return
         fi
-        if ! timeout 2 llvm-link -o test_results/$n.bc test_results/$n.ll acats/report.ll 2>acats_logs/$n.link; then
+        if ! timeout 2 llvm-link -o $RESULTS_DIR/$n.bc $RESULTS_DIR/$n.ll acats/report.ll 2>$LOGS_DIR/$n.link; then
             echo "c skip $n BIND:unresolved_symbols"
             return
         fi
         local rc=0
-        timeout "$TEST_TIMEOUT" lli test_results/$n.bc > acats_logs/$n.out 2>&1 || rc=$?
+        timeout "$TEST_TIMEOUT" lli $RESULTS_DIR/$n.bc > $LOGS_DIR/$n.out 2>&1 || rc=$?
         if ((rc==124 || rc==137)); then
             echo "c fail $n TIMEOUT:exceeded_${TEST_TIMEOUT}s"
             return
@@ -73,19 +79,19 @@ run_one(){
         # pay the cap a second time.
         if ((rc!=0)); then
             rc=0
-            timeout "$TEST_TIMEOUT" lli -jit-kind=mcjit test_results/$n.bc > acats_logs/$n.out 2>&1 || rc=$?
+            timeout "$TEST_TIMEOUT" lli -jit-kind=mcjit $RESULTS_DIR/$n.bc > $LOGS_DIR/$n.out 2>&1 || rc=$?
             if ((rc==124 || rc==137)); then
                 echo "c fail $n TIMEOUT:exceeded_${TEST_TIMEOUT}s"
                 return
             fi
         fi
         if ((rc==0)); then
-            if grep -q PASSED acats_logs/$n.out 2>/dev/null; then
+            if grep -q PASSED $LOGS_DIR/$n.out 2>/dev/null; then
                 echo "c pass $n PASSED"
-            elif grep -q NOT.APPLICABLE acats_logs/$n.out 2>/dev/null; then
-                echo "c skip $n N/A:$(grep -o 'NOT.APPLICABLE.*' acats_logs/$n.out|head -1|cut -c1-40)"
-            elif grep -q FAILED acats_logs/$n.out 2>/dev/null; then
-                echo "c fail $n FAILED:$(grep FAILED acats_logs/$n.out|head -1|cut -c1-50)"
+            elif grep -q NOT.APPLICABLE $LOGS_DIR/$n.out 2>/dev/null; then
+                echo "c skip $n N/A:$(grep -o 'NOT.APPLICABLE.*' $LOGS_DIR/$n.out|head -1|cut -c1-40)"
+            elif grep -q FAILED $LOGS_DIR/$n.out 2>/dev/null; then
+                echo "c fail $n FAILED:$(grep FAILED $LOGS_DIR/$n.out|head -1|cut -c1-50)"
             else
                 echo "c fail $n NO_REPORT:no_PASSED/FAILED_in_output"
             fi
@@ -94,24 +100,24 @@ run_one(){
         fi
         ;;
     a)
-        if ! timeout 2 ./ada83 "$f" > test_results/$n.ll 2>acats_logs/$n.err; then
-            echo "a skip $n COMPILE:$(head -1 acats_logs/$n.err 2>/dev/null|cut -c1-50)"; return; fi
-        if ! timeout 2 llvm-link -o test_results/$n.bc test_results/$n.ll acats/report.ll 2>acats_logs/$n.link; then
+        if ! timeout 2 ./ada83 "$f" > $RESULTS_DIR/$n.ll 2>$LOGS_DIR/$n.err; then
+            echo "a skip $n COMPILE:$(head -1 $LOGS_DIR/$n.err 2>/dev/null|cut -c1-50)"; return; fi
+        if ! timeout 2 llvm-link -o $RESULTS_DIR/$n.bc $RESULTS_DIR/$n.ll acats/report.ll 2>$LOGS_DIR/$n.link; then
             echo "a skip $n BIND:unresolved_symbols"; return; fi
         local rc=0
-        timeout "$TEST_TIMEOUT" lli test_results/$n.bc > acats_logs/$n.out 2>&1 || rc=$?
+        timeout "$TEST_TIMEOUT" lli $RESULTS_DIR/$n.bc > $LOGS_DIR/$n.out 2>&1 || rc=$?
         if ((rc==124 || rc==137)); then
             echo "a fail $n TIMEOUT:exceeded_${TEST_TIMEOUT}s"
         elif ((rc==0)); then
             echo "a pass $n PASSED"
-        elif timeout "$TEST_TIMEOUT" lli -jit-kind=mcjit test_results/$n.bc > acats_logs/$n.out 2>&1; then
+        elif timeout "$TEST_TIMEOUT" lli -jit-kind=mcjit $RESULTS_DIR/$n.bc > $LOGS_DIR/$n.out 2>&1; then
             echo "a pass $n PASSED"
         else
             echo "a fail $n FAILED:exit_$?"
         fi
         ;;
     b)
-        if timeout 2 ./ada83 "$f" > acats_logs/$n.ll 2>acats_logs/$n.err; then
+        if timeout 2 ./ada83 "$f" > $LOGS_DIR/$n.ll 2>$LOGS_DIR/$n.err; then
             echo "b fail $n WRONG_ACCEPT:compiled_when_should_reject"
         else
             # Count error coverage
@@ -130,34 +136,34 @@ run_one(){
         fi
         ;;
     d)
-        if ! timeout 2 ./ada83 "$f" > test_results/$n.ll 2>acats_logs/$n.err; then
-            echo "d skip $n COMPILE:$(head -1 acats_logs/$n.err 2>/dev/null|cut -c1-50)"; return; fi
-        if ! timeout 2 llvm-link -o test_results/$n.bc test_results/$n.ll acats/report.ll 2>/dev/null; then
+        if ! timeout 2 ./ada83 "$f" > $RESULTS_DIR/$n.ll 2>$LOGS_DIR/$n.err; then
+            echo "d skip $n COMPILE:$(head -1 $LOGS_DIR/$n.err 2>/dev/null|cut -c1-50)"; return; fi
+        if ! timeout 2 llvm-link -o $RESULTS_DIR/$n.bc $RESULTS_DIR/$n.ll acats/report.ll 2>/dev/null; then
             echo "d skip $n BIND"; return; fi
-        if timeout "$TEST_TIMEOUT" lli test_results/$n.bc > acats_logs/$n.out 2>&1 && grep -q PASSED acats_logs/$n.out; then
+        if timeout "$TEST_TIMEOUT" lli $RESULTS_DIR/$n.bc > $LOGS_DIR/$n.out 2>&1 && grep -q PASSED $LOGS_DIR/$n.out; then
             echo "d pass $n PASSED"
         else
             echo "d fail $n FAILED:exact_arithmetic_check"
         fi
         ;;
     e)
-        if ! timeout 2 ./ada83 "$f" > test_results/$n.ll 2>acats_logs/$n.err; then
-            echo "e skip $n COMPILE:$(head -1 acats_logs/$n.err 2>/dev/null|cut -c1-50)"; return; fi
-        if ! timeout 2 llvm-link -o test_results/$n.bc test_results/$n.ll acats/report.ll 2>/dev/null; then
+        if ! timeout 2 ./ada83 "$f" > $RESULTS_DIR/$n.ll 2>$LOGS_DIR/$n.err; then
+            echo "e skip $n COMPILE:$(head -1 $LOGS_DIR/$n.err 2>/dev/null|cut -c1-50)"; return; fi
+        if ! timeout 2 llvm-link -o $RESULTS_DIR/$n.bc $RESULTS_DIR/$n.ll acats/report.ll 2>/dev/null; then
             echo "e skip $n BIND"; return; fi
-        timeout "$TEST_TIMEOUT" lli test_results/$n.bc > acats_logs/$n.out 2>&1 || true
-        if grep -q "TENTATIVELY PASSED" acats_logs/$n.out 2>/dev/null; then
+        timeout "$TEST_TIMEOUT" lli $RESULTS_DIR/$n.bc > $LOGS_DIR/$n.out 2>&1 || true
+        if grep -q "TENTATIVELY PASSED" $LOGS_DIR/$n.out 2>/dev/null; then
             echo "e pass $n INSPECT:requires_manual_verification"
-        elif grep -q PASSED acats_logs/$n.out 2>/dev/null; then
+        elif grep -q PASSED $LOGS_DIR/$n.out 2>/dev/null; then
             echo "e pass $n PASSED"
         else
             echo "e fail $n FAILED"
         fi
         ;;
     l)
-        if timeout 2 ./ada83 "$f" > test_results/$n.ll 2>acats_logs/$n.err; then
-            if timeout 2 llvm-link -o test_results/$n.bc test_results/$n.ll acats/report.ll 2>acats_logs/$n.link; then
-                if timeout 1 lli test_results/$n.bc > acats_logs/$n.out 2>&1; then
+        if timeout 2 ./ada83 "$f" > $RESULTS_DIR/$n.ll 2>$LOGS_DIR/$n.err; then
+            if timeout 2 llvm-link -o $RESULTS_DIR/$n.bc $RESULTS_DIR/$n.ll acats/report.ll 2>$LOGS_DIR/$n.link; then
+                if timeout 1 lli $RESULTS_DIR/$n.bc > $LOGS_DIR/$n.out 2>&1; then
                     echo "l fail $n WRONG_EXEC:should_not_execute"
                 else
                     echo "l pass $n BIND_REJECT:execution_blocked"
@@ -166,7 +172,7 @@ run_one(){
                 echo "l pass $n LINK_REJECT:binding_failed_as_expected"
             fi
         else
-            echo "l pass $n COMPILE_REJECT:$(head -1 acats_logs/$n.err 2>/dev/null|cut -c1-40)"
+            echo "l pass $n COMPILE_REJECT:$(head -1 $LOGS_DIR/$n.err 2>/dev/null|cut -c1-40)"
         fi
         ;;
     f) ;; # Foundation support code — silent
@@ -238,16 +244,24 @@ tally_results(){
     printf " elapsed $(elapsed)s  |  processed %d tests  |  %d workers  |  %s\n" ${C[z]} "$NPROC" "$(date '+%Y-%m-%d %H:%M:%S')"
     printf "========================================\n"
     printf "A=%d B=%d C=%d D=%d E=%d L=%d F=%d S=%d T=%d/%d (%d%%)\n" \
-        ${C[a]} ${C[b]} ${C[c]} ${C[d]} ${C[e]} ${C[l]} ${C[f]} ${C[s]} $pass ${C[z]} $(pct $pass ${C[z]}) > test_summary.txt
+        ${C[a]} ${C[b]} ${C[c]} ${C[d]} ${C[e]} ${C[l]} ${C[f]} ${C[s]} $pass ${C[z]} $(pct $pass ${C[z]}) > "$RESULTS_DIR/test_summary.txt"
 }
 
 # ── Entry points ──────────────────────────────────────────────────────────
 
 run_parallel(){
-    local pattern=$1
+    local pattern=$1 title=$2 label=$3
     local tmpfile=$(mktemp)
 
-    printf "\n========================================\n%s\n========================================\n\n" "$2"
+    # One subfolder per run: <label>-<timestamp>-<pid>. The PID suffix keeps
+    # two runs started within the same second from sharing a directory.
+    local run_id="${label}-$(date +%Y%m%d-%H%M%S)-$$"
+    export RESULTS_DIR="test_results/${run_id}"
+    export LOGS_DIR="acats_logs/${run_id}"
+    mkdir -p "$RESULTS_DIR" "$LOGS_DIR"
+
+    printf "\n========================================\n%s\n========================================\n\n" "$title"
+    printf "results: %s\nlogs:    %s\n\n" "$RESULTS_DIR" "$LOGS_DIR"
 
     # Run tests in parallel, each outputting one result line
     for f in $pattern; do
@@ -278,7 +292,7 @@ EOF
 }
 
 case ${1:-h} in
-    g)        run_parallel "acats/${2:-c}*.ada" "Class ${2:-C} Tests" ;;
-    q)        run_parallel "acats/${2:-c32}*.ada" "Group ${2:-c32} Tests" ;;
+    g)        run_parallel "acats/${2:-c}*.ada" "Class ${2:-C} Tests" "${2:-c}" ;;
+    q)        run_parallel "acats/${2:-c32}*.ada" "Group ${2:-c32} Tests" "${2:-c32}" ;;
     h|help|*) usage ;;
 esac
