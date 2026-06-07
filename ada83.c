@@ -94,6 +94,16 @@ enum {Default_Chunk_Size = 1 << 24}; // 16 MiB
 #define MAX_AGG_DIMS       8    // Array aggregate dimensions
 #define MAX_DISC_CACHE     16   // Discriminant value cache depth
 
+// Generics limits (§16)
+#define MAX_AGREEMENT_CHECKS    64  // RM 12.3(81) subtype-agreement pairs per instance
+#define MAX_INSTANCE_REMAPS    128  // Formal-to-binding symbol remaps per instance
+#define MAX_INSTANTIATION_DEPTH 64  // Nested instantiation chain (cycle detector)
+
+// File loading limits (§17)
+
+// Library management limits (§14)
+#define MAX_ALI_CACHE_ENTRIES 256  // Parsed .ali files held for spec reuse
+
 // Math constants
 #define LOG2_OF_10 3.321928094887362
 
@@ -468,6 +478,22 @@ uint64_t     Slice_Hash              (String_Slice slice);
 // Levenshtein edit distance for spelling-correction suggestions.
 int          Edit_Distance           (String_Slice left,  String_Slice right);
 
+// Closest-name accumulator for "did you mean" diagnostics over an
+// arbitrary candidate list (record components, task entries, package
+// exports). Begin with the misspelled target, Consider each candidate,
+// then read `best` if Found.
+typedef struct {
+  String_Slice target;        // The name that failed to resolve
+  String_Slice best;          // Closest candidate seen so far
+  int          best_distance; // Its edit distance (distance_limit+1 = none)
+  int          distance_limit;// Maximum distance worth suggesting
+} Closest_Name_Search;
+
+Closest_Name_Search Closest_Name_Begin    (String_Slice target);
+void                Closest_Name_Consider (Closest_Name_Search *search,
+                                           String_Slice         candidate);
+bool                Closest_Name_Found    (const Closest_Name_Search *search);
+
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 //
 // §5. Provenance - Anchoring diagnostics to source text
@@ -576,26 +602,8 @@ typedef struct {
 } Big_Real;
 
 Big_Real *Big_Real_New         (void); // Arena-allocate a zero-valued Big_Real
-Big_Real *Big_Real_From_String (const char     *text); 
+Big_Real *Big_Real_From_String (const char     *text);
 double    Big_Real_To_Double   (const Big_Real *real); // Best-effort - may lose precision
-bool      Big_Real_Fits_Double (const Big_Real *real); // True when real exactly fits a double
-int       Big_Real_Compare     (const Big_Real *left,     const Big_Real *right); // Three-way compare
-Big_Real *Big_Real_Scale       (const Big_Real *real,     int32_t         scale); // Multiply by 10^scale
-Big_Real *Big_Real_Divide_Int  (const Big_Real *dividend, int64_t         divisor); // Exponent unchanged
-
-// Format as an LLVM hexadecimal floating-point constant into `buffer'.
-void Big_Real_To_Hex (const Big_Real *real,
-                      char           *buffer,
-                      size_t          buffer_size);
-
-// Add or subtract two Big_Reals after aligning their exponents.
-Big_Real *Big_Real_Add_Sub (const Big_Real *left,
-                            const Big_Real *right,
-                            bool            subtract);
-
-// Multiply significands and sum exponents.
-Big_Real *Big_Real_Multiply (const Big_Real *left,
-                             const Big_Real *right);
 
 // Rational
 //
@@ -727,7 +735,8 @@ typedef struct {
   union { // Big representation
     Big_Integer  *big_integer;   // Arbitrary-precision integer (overflow path)
     Big_Real     *big_real;      // Arbitrary-precision real (overflow path)
-  };    
+  };
+  Rational       *rational_real; // Exact value of a based real literal, or NULL
 } Token;
 
 // Construct a zero-valued token with the given kind, location, and text.
@@ -873,7 +882,7 @@ typedef enum {
 
   // Statements
   NK_ASSIGNMENT, NK_CALL_STMT, NK_RETURN, NK_IF,     NK_CASE,   NK_LOOP,  NK_BLOCK, NK_EXIT, NK_GOTO,
-  NK_RAISE,      NK_NULL_STMT, NK_LABEL,  NK_ACCEPT, NK_SELECT, NK_DELAY, NK_ABORT, NK_CODE,
+  NK_RAISE,      NK_NULL_STMT, NK_LABEL,  NK_ACCEPT, NK_SELECT, NK_DELAY, NK_ABORT,
 
   // Declarations
   NK_OBJECT_DECL,    NK_TYPE_DECL,           NK_SUBTYPE_DECL,          NK_EXCEPTION_DECL,
@@ -968,8 +977,9 @@ struct Syntax_Node {
 
     // when NK_REAL =>
     struct {
-      double    value;     // Machine-width float value
-      Big_Real *big_value; // Arbitrary-precision overflow
+      double    value;          // Machine-width float value
+      Big_Real *big_value;      // Arbitrary-precision overflow
+      Rational *rational_value; // Exact value of a based real literal, or NULL
     } real_lit;
 
     // when NK_STRING | NK_CHARACTER | NK_IDENTIFIER =>
@@ -1316,11 +1326,12 @@ struct Syntax_Node {
 
     // when NK_PACKAGE_BODY =>
     struct {
-      String_Slice name;         // Package name
-      Node_List    declarations; // Body declarations
-      Node_List    statements;   // Body statements
-      Node_List    handlers;     // Exception handlers
-      bool         is_separate;  // Is a subunit stub
+      String_Slice name;           // Package name
+      Node_List    declarations;   // Body declarations
+      Node_List    statements;     // Body statements
+      Node_List    handlers;       // Exception handlers
+      bool         is_separate;    // Is a subunit stub
+      bool         elab_generated; // Elaboration function already emitted
     } package_body;
 
     // when NK_PACKAGE_RENAMING =>
@@ -1429,12 +1440,14 @@ struct Syntax_Node {
       Node_List    component_clauses; // Record rep component clauses
       bool         is_record_rep;     // True for record rep clause
       bool         is_enum_rep;       // True for enum rep clause
+      bool         is_address_clause; // True for FOR X USE AT addr
     } rep_clause;
 
     // when NK_CONTEXT_CLAUSE =>
     struct {
       Node_List with_clauses; // With clauses
       Node_List use_clauses;  // Use clauses
+      Node_List pragmas;      // Context pragmas (Elaborate, Elaborate_All, ...)
     } context;
 
     // when NK_COMPILATION_UNIT =>
@@ -1517,7 +1530,6 @@ extern const Syntax_Tree_Edge Syntax_Tree_Shape[NK_COUNT][6];
   X (NK_SELECT, KIDS (select_stmt.alternatives), KID (select_stmt.else_part)) \
   X (NK_DELAY, KID (delay_stmt.expression), KID (delay_stmt.guard)) \
   X (NK_ABORT, KIDS (abort_stmt.task_names)) \
-  X (NK_CODE) \
   /* Declarations */ \
   X (NK_OBJECT_DECL, KIDS (object_decl.names), KID (object_decl.object_type), KID (object_decl.init)) \
   X (NK_TYPE_DECL, KID (type_decl.definition), KIDS (type_decl.discriminants)) \
@@ -1543,7 +1555,7 @@ extern const Syntax_Tree_Edge Syntax_Tree_Shape[NK_COUNT][6];
   X (NK_PRAGMA, KIDS (pragma_node.arguments)) \
   X (NK_REPRESENTATION_CLAUSE, KID (rep_clause.entity_name), KID (rep_clause.expression), KIDS (rep_clause.component_clauses)) \
   X (NK_EXCEPTION_HANDLER, KIDS (handler.exceptions), KIDS (handler.statements)) \
-  X (NK_CONTEXT_CLAUSE, KIDS (context.with_clauses), KIDS (context.use_clauses)) \
+  X (NK_CONTEXT_CLAUSE, KIDS (context.with_clauses), KIDS (context.use_clauses), KIDS (context.pragmas)) \
   X (NK_COMPILATION_UNIT, KID (compilation_unit.context), KID (compilation_unit.unit), KID (compilation_unit.separate_parent)) \
   /* Generic formals */ \
   X (NK_GENERIC_TYPE_PARAM, KID (generic_type_param.def_detail), KIDS (generic_type_param.discriminants)) \
@@ -1919,17 +1931,6 @@ double   Type_Bound_Float_Value           (Type_Bound  b);
 int128_t Array_Element_Count              (Type_Info  *t);
 int128_t Array_Low_Bound                  (Type_Info  *t);
 
-LLVM_Rep    Type_To_Rep            (Type_Info       *t);
-
-// Pure formatter: IR text spelling of an Ada type's representation. Equivalent
-// to LLVM_Rep_To_String (Type_To_Rep (t)). Use at Emit() boundaries; everywhere
-// else use Type_To_Rep and dispatch on the rep fields.
-LLVM_Rep    Array_Bound_LLVM_Rep   (const Type_Info *t);
-const char *Bounds_Type_For        (LLVM_Rep         bound_rep);
-LLVM_Rep    Float_LLVM_Rep_Of      (const Type_Info *t);
-LLVM_Rep    Expression_LLVM_Rep    (Syntax_Node     *node);
-int         Bounds_Alloc_Size      (LLVM_Rep         bound_rep);
-bool        Float_Is_Single        (const Type_Info *t);
 int         Float_Effective_Digits (const Type_Info *t);
 
 void Float_Model_Parameters (const Type_Info *t,
@@ -2024,8 +2025,8 @@ void Install_Generic_Formal_Symbols (Symbol *generic_symbol);
 // formals; applied to decorated default-expression clones (RM 12.3 rules
 // (b)/(c)/(d): in the instance, formal names denote the bindings).
 typedef struct {
-  Symbol  *from[128];
-  Symbol  *to[128];
+  Symbol  *from[MAX_INSTANCE_REMAPS];
+  Symbol  *to[MAX_INSTANCE_REMAPS];
   uint32_t count;
 } Instance_Remap;
 
@@ -2080,7 +2081,7 @@ Type_Info *Formal_Mark_Actual_Type (Symbol *instance_sym, Syntax_Node *mark);
 // re-entering one is the recursive instantiation RM 12.3 (and 12.1 Notes)
 // prohibits — direct, or through a cycle — and is rejected at compile time
 // with the cycle named.
-extern Symbol  *Instantiating_Templates[64];
+extern Symbol  *Instantiating_Templates[MAX_INSTANTIATION_DEPTH];
 extern uint32_t Instantiating_Template_Count;
 bool Instantiating_Set_Contains (Symbol *template_sym);
 void Instantiating_Set_Push     (Symbol *template_sym);
@@ -2180,6 +2181,9 @@ struct Symbol {
 
   // Code generation bookkeeping
   bool     extern_emitted;        // LLVM declare already written
+  bool     is_predefined_unit;    // RTS-provided unit; runtime supplies its body
+  bool     elab_extern_noted;     // ___elab recorded for the extern flush
+  bool     elab_defined;          // ___elab DEFINED in this module
   bool     body_emitted;          // LLVM define already written
   bool     is_named_number;       // This is a number declaration (RM 3.2)
   bool     is_loop_parameter;     // FOR-loop parameter (RM 5.5) — always
@@ -2212,6 +2216,13 @@ struct Symbol {
   bool     is_overloaded;         // More than one meaning in scope
   Symbol  *aliased;               // USE-visible alias -> the original it denotes
   bool     body_claimed;          // Body already associated with a spec
+  bool     is_pure_unit;          // Pragma Pure names this unit (RM 10.5)
+  bool     is_preelaborate_unit;  // Pragma Preelaborate names this unit
+  bool     definition_emitted;    // A define exists in this module
+  bool     separate_callee_noted; // Queued for the SEPARATE-boundary extern flush
+  bool     body_is_separate_stub; // Package body is a SEPARATE stub in this compilation
+  bool     frame_offset_assigned; // Frame slot already assigned; re-adds keep it
+  bool     owned_by_subunit_module; // Module-level storage of a subunit's own module
   bool     is_predefined;         // Standard-library predefined entity
   bool     needs_address_marker;  // Needs a @__address_marker global
   bool     is_identity_function;  // Derived identity "=" operator
@@ -2237,6 +2248,12 @@ struct Symbol {
                                     // elaborated (RM 8.5)
   Symbol      *rename_index_slot;   // Hidden local holding the family index
                                     // evaluated at the same elaboration
+  Syntax_Node *address_clause;      // FOR X USE AT expr (RM 13.5): the object
+                                    // is an overlay on that address. Accesses
+                                    // redirect through renamed_object, which
+                                    // dereferences the hidden address_cell.
+  Symbol      *address_cell;        // Hidden variable holding the evaluated
+                                    // clause address as an access value
 
   // Generic instantiation state
   Syntax_Node    *generic_formals;         // AST of the generic formal part
@@ -2311,6 +2328,8 @@ Scope   *Scope_New                         (Scope  *parent);
 void     Symbol_Manager_Push_Scope         (Symbol *owner);
 void     Symbol_Manager_Pop_Scope          (void);
 void     Symbol_Manager_Push_Existing_Scope(Scope  *scope);
+Scope   *Symbol_Manager_Enter_Scope        (Scope  *scope);
+void     Symbol_Manager_Leave_Scope        (Scope  *saved);
 uint32_t Symbol_Hash_Name                  (String_Slice name);
 
 Symbol *Symbol_New          (Symbol_Kind kind, String_Slice name, Source_Location location);
@@ -2318,7 +2337,12 @@ bool    Symbol_Visible_Under_Cutoff (Symbol *sym, Scope *scope);
 void    Symbol_Add          (Symbol *sym);
 Symbol *Symbol_Find         (String_Slice name);
 Symbol *Symbol_Find_By_Type (String_Slice name, Type_Info *expected_type);
+Symbol *Symbol_Find_Closest (String_Slice name);
 Symbol *Single_Task_Object_Denoted (Symbol *sym);
+bool    Symbol_Has_Stable_Library_Name (const Symbol *sym);
+void    Note_Separate_Boundary_Callee  (Symbol *sym);
+void    Append_Elab_Function           (Symbol *sym);
+void    Append_Separate_Callee         (Symbol *sym);
 
 void Symbol_Manager_Init_Predefined (void);
 void Symbol_Manager_Init            (void);
@@ -2550,7 +2574,16 @@ typedef struct {
 
   // Task support
   bool      in_task_body;    // True while emitting a task body
-  Symbol   *elab_funcs[64];  // Elaboration functions to call from main
+  Symbol  **elab_funcs;      // Elaboration functions to call from main (arena-grown)
+  uint32_t  elab_func_capacity;
+  Symbol   *subunit_parent;         // Immediate parent when emitting a subunit CU
+  bool      generating_loaded_unit; // Emitting a WITH-loaded unit, not the file's own
+  Symbol  **separate_callees;       // Called across a SEPARATE boundary (arena-grown)
+  uint32_t  separate_callee_count;
+  uint32_t  separate_callee_capacity;
+  Symbol  **pkg_elab_externs;       // Package stubs whose ___elab may be external (arena-grown)
+  uint32_t  pkg_elab_extern_count;
+  uint32_t  pkg_elab_extern_capacity;
   uint32_t  elab_func_count; // Number of registered elaboration functions
 
   // Exception reference table
@@ -2569,7 +2602,7 @@ typedef struct {
   uint32_t     disc_cache_count;                // Number of entries in the disc cache
   Type_Info   *disc_cache_type;                 // Record type the disc cache belongs to
 
-  // §13.1 Emit debug-location instrumentation. When `emit_debug_locations`
+  // Emit debug-location instrumentation. When `emit_debug_locations`
   // is true, each emitted IR line gets a trailing `; @ FUNC:LINE` comment
   // identifying the C source site that started the line. Toggled by `-g`.
   bool         emit_debug_locations;
@@ -2656,6 +2689,18 @@ void Emit_Float_Constant    (uint32_t    result,
 // layout.
 //
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
+
+// Canonical Ada → LLVM representation lowering: single source of truth for
+// fat-vs-thin policy and integer/float widths. Spell IR text at the Emit()
+// site via LLVM_Rep_To_String (Type_To_Rep (t)); everywhere else dispatch
+// on the rep fields.
+LLVM_Rep    Type_To_Rep            (Type_Info       *t);
+LLVM_Rep    Array_Bound_LLVM_Rep   (const Type_Info *t);
+const char *Bounds_Type_For        (LLVM_Rep         bound_rep);
+LLVM_Rep    Float_LLVM_Rep_Of      (const Type_Info *t);
+LLVM_Rep    Expression_LLVM_Rep    (Syntax_Node     *node);
+int         Bounds_Alloc_Size      (LLVM_Rep         bound_rep);
+bool        Float_Is_Single        (const Type_Info *t);
 
 // Return the LLVM integer type used for string bounds (e.g. "i32").
 LLVM_Rep    String_Bound_Rep     (void);
@@ -3228,6 +3273,7 @@ void Emit_Instance_Wrapper_Bodies (Symbol *inst_sym);
 void Emit_Extern_Subprogram  (Symbol *sym);
 void Emit_Function_Header    (Symbol *sym, bool is_nested);
 void Emit_Task_Function_Name (Symbol *task_sym, String_Slice fallback_name);
+void Emit_Parent_Frame_Aliases (Symbol *enclosing_subprogram);
 void Defer_Subprogram_Body   (Syntax_Node *node);
 void Process_Deferred_Bodies (uint32_t saved_deferred_count);
 
@@ -3420,18 +3466,6 @@ BIP_Alloc_Form BIP_Determine_Alloc_Form (bool is_allocator,
 //
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 
-// One compilation unit described in an ALI file.
-typedef struct {
-  String_Slice unit_name;       // Fully qualified Ada unit name
-  String_Slice source_name;     // Filename of the source
-  uint32_t     source_checksum; // CRC32 of the source text
-  bool         is_body;         // True for a package body, false for a spec
-  bool         is_generic;      // True for a generic unit
-  bool         is_preelaborate; // Pragma Preelaborate applies
-  bool         is_pure;         // Pragma Pure applies
-  bool         has_elaboration; // Unit has elaboration-time code
-} Unit_Info;
-
 // One WITH dependency recorded in an ALI file.
 typedef struct {
   String_Slice name;          // Withed unit name
@@ -3442,12 +3476,24 @@ typedef struct {
   bool         elaborate_all; // Pragma Elaborate_All applies
 } With_Info;
 
-// Source file dependency entry in an ALI file.
+// One compilation unit described in an ALI file.
 typedef struct {
-  String_Slice source_file; // Filename of the depended-upon source
-  uint32_t     timestamp;   // Modification timestamp at compile time
-  uint32_t     checksum;    // CRC32 of the source text
-} Dependency_Info;
+  String_Slice unit_name;       // Fully qualified Ada unit name
+  String_Slice source_name;     // Filename of the source
+  uint32_t     source_checksum; // CRC32 of the source text
+  Scope       *frame_scope;     // The unit's scope, for frame-layout F lines
+  bool         is_body;         // True for a package body, false for a spec
+  bool         is_subunit;      // True for a SEPARATE subunit (name is PARENT.CHILD)
+  bool         is_generic;      // True for a generic unit
+  bool         is_preelaborate; // Pragma Preelaborate applies
+  bool         is_pure;         // Pragma Pure applies
+  bool         has_elaboration; // Unit has elaboration-time code
+  bool         requires_body;   // Spec requires a compiled body (RM 7.1)
+  String_Slice *stub_names;     // Body-stub names (SEPARATE) in this body
+  uint32_t      stub_count;
+  With_Info    *withs;          // THIS unit's WITH clauses (not the file's)
+  uint32_t      with_count;
+} Unit_Info;
 
 // One exported symbol in an ALI file.
 typedef struct {
@@ -3461,14 +3507,12 @@ typedef struct {
 } Export_Info;
 
 typedef struct {
-  Unit_Info       units[8];
+  Unit_Info      *units;           // Arena-grown, no cap
   uint32_t        unit_count;
-  With_Info       withs[64];
-  uint32_t        with_count;
-  Dependency_Info deps[128];
-  uint32_t        dep_count;
-  Export_Info     exports[256];
+  uint32_t        unit_capacity;
+  Export_Info    *exports;         // Arena-grown, no cap
   uint32_t        export_count;
+  uint32_t        export_capacity;
 } ALI_Info;
 
 // An exported symbol as read back from an ALI file (heap-allocated strings).
@@ -3495,23 +3539,94 @@ typedef struct ALI_Cache_Entry_Forward {
   bool        loaded;         // True once symbols have been installed
   char       *withs[64];      // Names of units this unit depends on
   uint32_t    with_count;     // Number of with dependencies
-  ALI_Export  exports[256];   // Exported symbols
+  ALI_Export *exports;        // Exported symbols (arena-grown, no cap)
   uint32_t    export_count;   // Number of exported symbols
+  uint32_t    export_capacity;
 } ALI_Cache_Entry;
 
-extern ALI_Cache_Entry ALI_Cache[256];
+extern ALI_Cache_Entry ALI_Cache[MAX_ALI_CACHE_ENTRIES];
 extern uint32_t        ALI_Cache_Count;
+
+// The program library catalog (RM 10.4): unit name -> the source file that
+// provides it. Populated in-process as units load or compile, and from the
+// ALI files of earlier compilations in the output directory — that is how
+// a unit living in a file whose NAME does not match (ACATS fragments,
+// subunit files) becomes findable. Arena-grown, no cap.
+typedef enum {
+  CATALOG_UNIT_SPEC,
+  CATALOG_UNIT_BODY,
+  CATALOG_UNIT_SUBUNIT,
+} Catalog_Unit_Kind;
+
+// One published frame slot: a frame-resident variable's emitted name and
+// its byte offset in the owning library unit's frame.
+typedef struct {
+  String_Slice name;   // Mangled name, as emitted
+  int64_t      offset; // Byte offset within the unit's frame
+} Frame_Slot;
+
+typedef struct {
+  String_Slice      unit_name;   // Library unit name; PARENT.CHILD for subunits
+  String_Slice      source_file; // Path of the file that provides the unit
+  Catalog_Unit_Kind kind;
+  uint32_t          checksum;    // Source checksum recorded at registration
+  int64_t           recorded_at; // ALI mtime: newest registration REPLACES (RM 10.3)
+  bool              loaded;      // Already loaded into THIS compilation
+
+  // The unit's PUBLISHED frame layout (ALI F/FS lines): the module that
+  // compiled the unit allocated the frame, so its offsets are the ground
+  // truth every subunit compilation must adopt — recomputing them from a
+  // fresh resolution diverges on any side-effect difference.
+  Frame_Slot       *frame_slots;
+  uint32_t          frame_slot_count;
+  int64_t           frame_size;  // The frame alloca size (chain-slot base)
+
+  // The unit's WITH dependencies (ALI W lines) — what the binder walks
+  // to verify the closure of a main program is consistent (RM 10.3).
+  String_Slice     *with_units;
+  uint32_t          with_unit_count;
+
+  // RM 7.1/10.2 completeness facts: whether a spec requires a body
+  // (ALI RB flag), and which subunits a body's stubs demand (ST lines).
+  bool              requires_body;
+  String_Slice     *stub_names;
+  uint32_t          stub_count;
+} Catalog_Entry;
+
+Catalog_Entry *Library_Catalog_Find     (String_Slice unit_name,
+                                         Catalog_Unit_Kind kind);
+char          *Catalog_Read_Source      (String_Slice unit_name,
+                                         Catalog_Unit_Kind kind);
+String_Slice   Flatten_Dotted_Name      (Syntax_Node *name);
+Symbol        *Load_Subunit_Parent      (Syntax_Node *name_node);
+void           Apply_Published_Frame_Layout (Symbol *unit_sym);
+Catalog_Entry *Library_Catalog_Register (String_Slice unit_name,
+                                         String_Slice source_file,
+                                         Catalog_Unit_Kind kind,
+                                         uint32_t checksum);
+Catalog_Entry *Library_Catalog_Register_At (String_Slice unit_name,
+                                         String_Slice source_file,
+                                         Catalog_Unit_Kind kind,
+                                         uint32_t checksum,
+                                         int64_t recorded_at);
+void           Library_Catalog_Load_Directory (const char *directory);
+void           Library_Catalog_Reset          (void);
+void           Library_Catalog_Require_Consistent (String_Slice unit_name,
+                                                   Source_Location location);
+int            Library_Bind_Check                 (String_Slice main_unit);
 
 // Map an Ada type name to its LLVM IR type string via the symbol table.
 // Falls back to the default integer type if the name is not found.
 String_Slice LLVM_Type_Basic (String_Slice ada_type);
 
 void ALI_Collect_Exports (ALI_Info *ali, Syntax_Node *unit);
-void ALI_Collect_Withs   (ALI_Info *ali, Syntax_Node *ctx);
+void ALI_Collect_Withs   (Unit_Info *u, Syntax_Node *ctx);
+String_Slice Get_Subprogram_Name (Syntax_Node *node);
 void ALI_Collect_Unit    (ALI_Info    *ali,
                            Syntax_Node *cu,
                            const char  *source,
-                           size_t       source_size);
+                           size_t       source_size,
+                           const char  *source_path);
 
 void             ALI_Write (FILE *out, ALI_Info *ali);
 ALI_Cache_Entry *ALI_Read  (const char *ali_path);
@@ -3521,6 +3636,7 @@ bool  Try_Load_From_ALI (String_Slice     name);
 void  ALI_Load_Symbols  (ALI_Cache_Entry *entry);
 
 void Generate_ALI_File (const char   *output_path,
+                        const char   *input_path,
                          Syntax_Node **units,
                          int           unit_count,
                          const char   *source,
@@ -3537,27 +3653,30 @@ void Generate_ALI_File (const char   *output_path,
 //
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 
-// ???
+// What a graph vertex stands for: a unit's spec, its body, or a unit
+// that only ever has one of the two.
 typedef enum {UNIT_SPEC, UNIT_BODY, UNIT_SPEC_ONLY, UNIT_BODY_ONLY} Elab_Unit_Kind;
 
-// ???
+// Three-way ordering used when choosing the next vertex to elaborate.
 typedef enum {PREC_HIGHER, PREC_EQUAL, PREC_LOWER} Elab_Precedence;
 
-// ???
+// Why one unit must (or should) elaborate before another.
 typedef enum {
-  EDGE_WITH,             // ???
-  EDGE_ELABORATE,        // ???
-  EDGE_ELABORATE_ALL,    // ???
-  EDGE_SPEC_BEFORE_BODY, // ???
-  EDGE_INVOCATION,       // ???
-  EDGE_FORCED            // ???
+  EDGE_WITH,             // WITH clause: the named unit's spec first (RM 10.5)
+  EDGE_ELABORATE,        // pragma Elaborate: the named unit's body first
+  EDGE_ELABORATE_ALL,    // pragma Elaborate_All: transitively binding
+  EDGE_SPEC_BEFORE_BODY, // A unit's spec always precedes its own body
+  EDGE_INVOCATION,       // Elaboration code calls into the unit — WEAK: a
+                         // preference, never a constraint that can deadlock
+  EDGE_FORCED            // Synthetic ordering injected by the algorithm
 } Elab_Edge_Kind;
 
-// ???
+// Outcome of the order computation. Anything but OK means no consistent
+// order exists and the program is illegal (RM 10.5).
 typedef enum {
-  ELAB_ORDER_OK,                     // ???
-  ELAB_ORDER_HAS_CYCLE,              // ???
-  ELAB_ORDER_HAS_ELABORATE_ALL_CYCLE // ???
+  ELAB_ORDER_OK,                     // A consistent order was produced
+  ELAB_ORDER_HAS_CYCLE,              // Constraint cycle (WITH/Elaborate)
+  ELAB_ORDER_HAS_ELABORATE_ALL_CYCLE // Cycle through an Elaborate_All edge
 } Elab_Order_Status;
 
 typedef struct Elab_Vertex Elab_Vertex;
@@ -3667,6 +3786,8 @@ Elab_Order_Status Elab_Compute_Order    (void);
 uint32_t          Elab_Get_Order_Count  (void);
 Symbol           *Elab_Get_Order_Symbol (uint32_t index);
 bool              Elab_Needs_Elab_Call  (uint32_t index);
+void              Elab_Register_Context_Dependencies (Syntax_Node *compilation_unit);
+void              Elab_Note_Invocation (Symbol *caller_unit, Symbol *callee);
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 //
@@ -3714,19 +3835,42 @@ void Reassign_Symbol_References (Syntax_Node *node, Symbol *from, Symbol *to);
 
 // Tracks which packages are currently being loaded to detect circular WITH chains.
 typedef struct {
-  String_Slice names[64]; // Unit names currently being loaded
-  int          count;     // Number of names in the set
+  String_Slice *names;    // Unit names currently being loaded (arena-grown)
+  int           count;    // Number of names in the set
+  int           capacity; // Allocated slots
 } Loading_Set;
 
 extern Loading_Set   Loading_Packages;
 extern const char   *Include_Paths[32];
+
+// The implementation's predefined-library directory (<exe_dir>/rts) and
+// whether the most recent Lookup_Path resolution came from it. Predefined
+// units' bodies are provided by the runtime itself (RM Appendix C) — the
+// library-completeness checks must not demand compiled bodies for them.
+extern const char   *Rts_Include_Path;
+extern bool          Lookup_Path_Resolved_From_Rts;
 extern bool          Debug_Emit_Locations;
 extern bool          Clone_Self_Check;
 extern uint32_t      Include_Path_Count;
-extern Syntax_Node  *Loaded_Package_Bodies[128];
+extern Syntax_Node **Loaded_Package_Bodies;  // arena-grown, no cap
 extern int           Loaded_Body_Count;
-extern String_Slice  Loaded_Body_Names[128];
-extern int           Loaded_Body_Names_Count;
+void  Queue_Loaded_Body (Syntax_Node *cu);
+
+// RM 10.3/10.5 library completeness, consulted when compiling a main
+// program (this compiler's bind point). A WITH'd package whose spec
+// requires a body the library has not compiled gets its elaboration
+// call emitted against an external definition; a WITH'd library
+// subprogram in the same position gets a presence anchor in @main.
+// Either way a later compilation may supply the body — and execution
+// is rejected when none does.
+extern Symbol  **Bodyless_Required_Packages;
+extern uint32_t  Bodyless_Required_Package_Count;
+extern Symbol  **Missing_Body_Subprograms;
+extern uint32_t  Missing_Body_Subprogram_Count;
+void Append_Bodyless_Required_Package (Symbol *package_symbol);
+void Append_Missing_Body_Subprogram   (Symbol *subprogram_symbol);
+bool Package_Spec_Requires_Body       (Syntax_Node *pkg_spec);
+void Require_Complete_Library         (Syntax_Node **units, int unit_count);
 
 bool  Body_Already_Loaded  (String_Slice name);
 void  Mark_Body_Loaded     (String_Slice name);
@@ -3908,8 +4052,34 @@ int Edit_Distance (String_Slice left, String_Slice right) {
   return table[left.length][right.length];
 }
 
+// Suggest at distance 1–2, and never more than one edit for a short name
+// (a 3-character name may differ by one; 4+ characters by two).
+Closest_Name_Search Closest_Name_Begin (String_Slice target) {
+  int distance_limit = target.length >= 4 ? 2 : 1;
+  return (Closest_Name_Search){
+    .target         = target,
+    .best           = (String_Slice){ NULL, 0 },
+    .best_distance  = distance_limit + 1,
+    .distance_limit = distance_limit,
+  };
+}
+
+void Closest_Name_Consider (Closest_Name_Search *search,
+                            String_Slice         candidate) {
+  if (search->target.length < 2 or candidate.length < 2) return;
+  int distance = Edit_Distance (search->target, candidate);
+  if (distance > 0 and distance < search->best_distance) {
+    search->best_distance = distance;
+    search->best = candidate;
+  }
+}
+
+bool Closest_Name_Found (const Closest_Name_Search *search) {
+  return search->best_distance <= search->distance_limit;
+}
+
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
-// §5.2 Error Handling - Accumulating diagnostic reports                                            
+// §5.2 Error Handling - Accumulating diagnostic reports
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 
 void Report_Error (Source_Location location, const char *format, ...) {
@@ -4202,29 +4372,6 @@ double Big_Real_To_Double (const Big_Real *real) {
   return value;
 }
 
-// Return true when the Big_Real can be converted to double without losing significant digits.
-// A double's 53-bit mantissa holds at most 15 full decimal digits.
-__attribute__ ((unused))
-bool Big_Real_Fits_Double (const Big_Real *real) {
-  if (real->significand->count == 0) return true;
-  if (real->significand->count > 1) return false;
-  return real->significand->limbs[0] < 1000000000000000ULL;
-}
-
-// Emit a Big_Real as a hexadecimal IEEE 754 double encoding (0xHHHHHHHHHHHHHHHH) suitable for
-// LLVM IR float literals. This preserves full precision unlike a %f format string.
-__attribute__ ((unused))
-void Big_Real_To_Hex (const Big_Real *real, char *buffer, size_t buffer_size) {
-  if (not real or real->significand->count == 0) {
-    snprintf (buffer, buffer_size, "0.0");
-    return;
-  }
-  double value = Big_Real_To_Double (real);
-  uint64_t bits;
-  memcpy (&bits, &value, sizeof (bits));
-  snprintf (buffer, buffer_size, "0x%016llX", (unsigned long long) bits);
-}
-
 // Return a deep copy of a Big_Integer, allocated from the arena.
 Big_Integer *Big_Integer_Clone (const Big_Integer *source) {
   Big_Integer *clone = Big_Integer_New (source->count > 0 ? source->count : 1);
@@ -4233,142 +4380,6 @@ Big_Integer *Big_Integer_Clone (const Big_Integer *source) {
   if (source->count > 0)
     memcpy (clone->limbs, source->limbs, source->count * sizeof (uint64_t));
   return clone;
-}
-
-// Exact comparison of two Big_Real values. Returns -1, 0, or +1. Both operands are normalised
-// to a common exponent before the significands are compared.
-__attribute__ ((unused))
-int Big_Real_Compare (const Big_Real *left, const Big_Real *right) {
-  if (not left or not right) return 0;
-  bool left_negative  = left->significand->is_negative  and left->significand->count  > 0;
-  bool right_negative = right->significand->is_negative and right->significand->count > 0;
-  bool left_zero  = left->significand->count  == 0;
-  bool right_zero = right->significand->count == 0;
-  if (left_zero and right_zero) return 0;
-  if (left_zero)  return right_negative ? 1 : -1;
-  if (right_zero) return left_negative  ? -1 : 1;
-  if (left_negative and not right_negative) return -1;
-  if (not left_negative and right_negative) return 1;
-
-  // Both have the same sign - normalise to the smaller exponent and compare significands.
-  int32_t exponent_diff = left->exponent - right->exponent;
-  Big_Integer *left_sig, *right_sig;
-  if (exponent_diff == 0) {
-    left_sig  = Big_Integer_Clone (left->significand);
-    right_sig = Big_Integer_Clone (right->significand);
-  } else if (exponent_diff > 0) {
-    left_sig = Big_Integer_Clone (left->significand);
-    for (int32_t i = 0; i < exponent_diff; i++)
-      Big_Integer_Mul_Add_Small (left_sig, 10, 0);
-    right_sig = Big_Integer_Clone (right->significand);
-  } else {
-    left_sig  = Big_Integer_Clone (left->significand);
-    right_sig = Big_Integer_Clone (right->significand);
-    for (int32_t i = 0; i < -exponent_diff; i++)
-      Big_Integer_Mul_Add_Small (right_sig, 10, 0);
-  }
-  int ordering = Big_Integer_Compare (left_sig, right_sig);
-  return left_negative ? -ordering : ordering;
-}
-
-// Exact addition or subtraction of two Big_Real values. When subtract is true, the result is      
-// left - right; otherwise left + right. Both operands are normalised to the common (minimum)      
-// exponent before the significands are combined.                                                  
-//                                                                                                  
-__attribute__ ((unused))
-Big_Real *Big_Real_Add_Sub (const Big_Real *left, const Big_Real *right, bool subtract) {
-  if (not left)  return (Big_Real *) (uintptr_t) right;
-  if (not right) return (Big_Real *) (uintptr_t) left;
-  Big_Real *result = Big_Real_New ();
-  int32_t common_exponent = left->exponent < right->exponent ? left->exponent : right->exponent;
-
-  // Normalise both significands to the common exponent.
-  Big_Integer *left_sig = Big_Integer_Clone (left->significand);
-  for (int32_t i = 0; i < left->exponent - common_exponent; i++)
-    Big_Integer_Mul_Add_Small (left_sig, 10, 0);
-  Big_Integer *right_sig = Big_Integer_Clone (right->significand);
-  for (int32_t i = 0; i < right->exponent - common_exponent; i++)
-    Big_Integer_Mul_Add_Small (right_sig, 10, 0);
-
-  // For subtraction, negate the right operand's significand before adding.
-  if (subtract) right_sig->is_negative = not right_sig->is_negative;
-  result->significand = Big_Integer_Add (left_sig, right_sig);
-  result->exponent    = common_exponent;
-  return result;
-}
-
-// Return a copy of the Big_Real scaled by 10**scale (i.e. the exponent is adjusted).
-__attribute__ ((unused))
-Big_Real *Big_Real_Scale (const Big_Real *real, int32_t scale) {
-  if (not real) return NULL;
-  Big_Real *result = Big_Real_New ();
-  result->significand = Big_Integer_New (real->significand->capacity);
-  result->significand->count       = real->significand->count;
-  result->significand->is_negative = real->significand->is_negative;
-  memcpy (result->significand->limbs, real->significand->limbs,
-          real->significand->count * sizeof (uint64_t));
-  result->exponent = real->exponent + scale;
-  return result;
-}
-
-// Divide a Big_Real by a machine integer (used for fixed-point delta/SMALL calculations).         
-// Extra decimal digits of precision are introduced before the division so that the quotient        
-// retains meaningful fractional digits.                                                           
-//                                                                                                  
-__attribute__ ((unused))
-Big_Real *Big_Real_Divide_Int (const Big_Real *dividend, int64_t divisor) {
-  if (not dividend or divisor == 0) return NULL;
-  int extra_precision = 30;
-  Big_Real *result = Big_Real_New ();
-  result->significand = Big_Integer_New (dividend->significand->capacity + 4);
-
-  // Copy the significand and scale it up by 10**extra_precision.
-  result->significand->count       = dividend->significand->count;
-  result->significand->is_negative = dividend->significand->is_negative ^ (divisor < 0);
-  memcpy (result->significand->limbs, dividend->significand->limbs,
-          dividend->significand->count * sizeof (uint64_t));
-  for (int i = 0; i < extra_precision; i++)
-    Big_Integer_Mul_Add_Small (result->significand, 10, 0);
-
-  // Perform limb-by-limb division by |divisor|.
-  uint64_t abs_divisor = divisor < 0 ? (uint64_t) -divisor : (uint64_t) divisor;
-  uint64_t remainder   = 0;
-  for (int i = (int) result->significand->count - 1; i >= 0; i--) {
-    __uint128_t combined = ((__uint128_t) remainder << 64) | result->significand->limbs[i];
-    result->significand->limbs[i] = (uint64_t) (combined / abs_divisor);
-    remainder = (uint64_t) (combined % abs_divisor);
-  }
-  Big_Integer_Normalize (result->significand);
-  result->exponent = dividend->exponent - extra_precision;
-  return result;
-}
-
-// Full-precision multiplication of two Big_Real values using textbook O(n*m) arithmetic.
-__attribute__ ((unused))
-Big_Real *Big_Real_Multiply (const Big_Real *left, const Big_Real *right) {
-  if (not left or not right) return NULL;
-  Big_Real *result = Big_Real_New ();
-  uint32_t product_limbs = left->significand->count + right->significand->count;
-  result->significand = Big_Integer_New (product_limbs + 1);
-  result->significand->count = product_limbs;
-  result->significand->is_negative =
-    left->significand->is_negative ^ right->significand->is_negative;
-  memset (result->significand->limbs, 0, product_limbs * sizeof (uint64_t));
-  for (uint32_t i = 0; i < left->significand->count; i++) {
-    __uint128_t carry = 0;
-    for (uint32_t j = 0; j < right->significand->count; j++) {
-      __uint128_t product = (__uint128_t) left->significand->limbs[i]
-                          * right->significand->limbs[j]
-                          + result->significand->limbs[i + j] + carry;
-      result->significand->limbs[i + j] = (uint64_t) product;
-      carry = product >> 64;
-    }
-    if (carry and i + right->significand->count < product_limbs)
-      result->significand->limbs[i + right->significand->count] = (uint64_t) carry;
-  }
-  Big_Integer_Normalize (result->significand);
-  result->exponent = left->exponent + right->exponent;
-  return result;
 }
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
@@ -4802,15 +4813,17 @@ Token Scan_Number (Lexer *lex) {
       tok.big_real    = Big_Real_From_String (clean);
       tok.float_value = Big_Real_To_Double (tok.big_real);
 
-    // Based real - parse mantissa as integer, divide once for precision.
-    // Accumulating fractional digits individually causes ULP rounding drift.
+    // Based real — exact value as a Rational: the whole mantissa (integer
+    // and fraction digits together) accumulates into one big integer M
+    // with F fraction digits, giving M / base^F, then base^±E applies the
+    // exponent. No floating-point arithmetic touches the value; the
+    // machine double is a final, single rounding of the exact rational.
     } else {
-      long double whole      = 0.0L;
-      long double frac_int   = 0.0L;
-      int         frac_count = 0;
-      int         exponent   = 0;
-      int         state      = 0;
-      bool        exp_neg    = false;
+      Big_Integer *mantissa             = Big_Integer_New (8);
+      uint32_t     fraction_digit_count = 0;
+      int          exponent             = 0;
+      int          state                = 0;
+      bool         exponent_negative    = false;
       for (const char *scan = start; scan < lex->current; scan++) {
         char ch = *scan;
         if (ch == '_') continue;
@@ -4818,24 +4831,32 @@ Token Scan_Number (Lexer *lex) {
         if (ch == '.')                                   { state = 2; continue; }
         if (To_Lower (ch) == 'e' and state > 2)         { state = 3; continue; }
         int digit = Digit_Value (ch);
-        if (state == 1 and digit >= 0 and digit < base)
-          whole = whole * base + digit;
-        else if (state == 2 and digit >= 0 and digit < base)
-          { frac_int = frac_int * base + digit; frac_count++; }
-        else if (state == 3)
-          { if (ch == '-') exp_neg = true;
-            else if (ch != '+' and Is_Digit (ch)) exponent = exponent * 10 + (ch - '0'); }
+        if ((state == 1 or state == 2) and digit >= 0 and digit < base) {
+          Big_Integer_Mul_Add_Small (mantissa, (uint64_t)base,
+                                     (uint64_t)digit);
+          if (state == 2) fraction_digit_count++;
+        } else if (state == 3) {
+          if (ch == '-') exponent_negative = true;
+          else if (ch != '+' and Is_Digit (ch))
+            exponent = exponent * 10 + (ch - '0');
+        }
       }
+      if (exponent_negative) exponent = -exponent;
 
-      // value = whole + frac_int / base^frac_count
-      long double divisor = 1.0L;
-      for (int i = 0; i < frac_count; i++) divisor *= base;
-      long double value = whole + frac_int / divisor;
-      if (exp_neg) exponent = -exponent;
-      for (int i = 0; i < (exponent > 0 ? exponent : -exponent); i++)
-        value = exponent > 0 ? value * base : value / base;
-      tok.float_value = (double)value;
-      tok.big_real    = NULL;
+      // value = mantissa / base^(F - E); a negative power scales the
+      // numerator instead.
+      Big_Integer *numerator   = mantissa;
+      Big_Integer *denominator = Big_Integer_One ();
+      int32_t denominator_power = (int32_t)fraction_digit_count - exponent;
+      for (int32_t i = 0; i < denominator_power; i++)
+        Big_Integer_Mul_Add_Small (denominator, (uint64_t)base, 0);
+      for (int32_t i = 0; i < -denominator_power; i++)
+        Big_Integer_Mul_Add_Small (numerator, (uint64_t)base, 0);
+      Rational *exact_value = Arena_Allocate (sizeof (Rational));
+      *exact_value = Rational_Reduce (numerator, denominator);
+      tok.rational_real = exact_value;
+      tok.float_value   = Rational_To_Double (*exact_value);
+      tok.big_real      = NULL;
     }
   } else {
     if (not is_based and not has_exponent) {
@@ -4844,36 +4865,45 @@ Token Scan_Number (Lexer *lex) {
       if (Big_Integer_Fits_Int64 (tok.big_integer, &narrow))
         tok.integer_value = narrow;
 
-    // Decimal integer with exponent (e.g., 12E1 = 120)
+    // Decimal integer with exponent (e.g., 12E1 = 120). Exact through
+    // Big_Integer — int64 accumulation silently wrapped for large
+    // mantissas or exponents. RM 2.4.1: an integer literal's exponent
+    // must not have a minus sign.
     } else if (not is_based and has_exponent) {
-      int64_t mantissa = 0;
-      int     exponent = 0;
-      bool    in_exp   = false;
-      bool    exp_neg  = false;
+      Big_Integer *mantissa = Big_Integer_New (4);
+      int  exponent          = 0;
+      bool in_exponent       = false;
+      bool exponent_negative = false;
       for (int i = 0; clean[i]; i++) {
         char ch = clean[i];
         if (To_Lower (ch) == 'e') {
-          in_exp = true;
-        } else if (in_exp) {
-          if (ch == '-') exp_neg = true;
+          in_exponent = true;
+        } else if (in_exponent) {
+          if (ch == '-') exponent_negative = true;
           else if (ch == '+') continue;
           else if (Is_Digit (ch)) exponent = exponent * 10 + (ch - '0');
         } else if (Is_Digit (ch)) {
-          mantissa = mantissa * 10 + (ch - '0');
+          Big_Integer_Mul_Add_Small (mantissa, 10, (uint64_t)(ch - '0'));
         }
       }
-      if (exp_neg) {
-        for (int i = 0; i < exponent; i++) mantissa /= 10;
-      } else {
-        for (int i = 0; i < exponent; i++) mantissa *= 10;
+      if (exponent_negative) {
+        Report_Error (location,
+          "exponent of an integer literal must not have a minus sign");
+        exponent = 0;
       }
-      tok.integer_value = mantissa;
+      for (int i = 0; i < exponent; i++)
+        Big_Integer_Mul_Add_Small (mantissa, 10, 0);
+      tok.big_integer = mantissa;
+      int64_t narrow;
+      if (Big_Integer_Fits_Int64 (mantissa, &narrow))
+        tok.integer_value = narrow;
 
-    // Based integer: parse from original string (e.g., 16#E#E1 = 14*16 = 224)
+    // Based integer: parse from original string (e.g., 16#E#E1 = 14*16 =
+    // 224). Same exact Big_Integer accumulation as the decimal path.
     } else {
-      int64_t value    = 0;
-      int     exponent = 0;
-      int     state    = 0;  // 0 = base, 1 = mantissa, 2 = exponent
+      Big_Integer *value = Big_Integer_New (4);
+      int exponent = 0;
+      int state    = 0;  // 0 = base, 1 = mantissa, 2 = exponent
       for (const char *scan = start; scan < lex->current; scan++) {
         char ch = *scan;
         if (ch == '_') continue;
@@ -4885,17 +4915,28 @@ Token Scan_Number (Lexer *lex) {
         // Mantissa in given base
         } else if (state == 1) {
           int digit = Digit_Value (ch);
-          if (digit >= 0 and digit < base) value = value * base + digit;
+          if (digit >= 0 and digit < base)
+            Big_Integer_Mul_Add_Small (value, (uint64_t)base,
+                                       (uint64_t)digit);
 
         // Exponent (always decimal, after second delimiter)
         } else if (state == 2) {
           if (To_Lower (ch) == 'e') continue;
           if (ch == '+') continue;
+          if (ch == '-') {
+            Report_Error (location,
+              "exponent of an integer literal must not have a minus sign");
+            break;
+          }
           if (Is_Digit (ch)) exponent = exponent * 10 + (ch - '0');
         }
       }
-      for (int i = 0; i < exponent; i++) value *= base;
-      tok.integer_value = value;
+      for (int i = 0; i < exponent; i++)
+        Big_Integer_Mul_Add_Small (value, (uint64_t)base, 0);
+      tok.big_integer = value;
+      int64_t narrow;
+      if (Big_Integer_Fits_Int64 (value, &narrow))
+        tok.integer_value = narrow;
     }
   }
   return tok;
@@ -5309,7 +5350,8 @@ Syntax_Node *Parse_Primary (Parser *p) {
   if (Parser_At (p, TK_REAL)) {
     Syntax_Node *node         = Node_New (NK_REAL, location);
     node->real_lit.value       = p->current_token.float_value;
-    node->real_lit.big_value   = p->current_token.big_real;
+    node->real_lit.big_value      = p->current_token.big_real;
+    node->real_lit.rational_value = p->current_token.rational_real;
     Parser_Advance (p);
     return node;
   }
@@ -7358,6 +7400,7 @@ Syntax_Node *Parse_Representation_Clause (Parser *p) {
 
   // Address clause: FOR X USE AT address;
   } else if (Parser_Match (p, TK_AT)) {
+    node->rep_clause.is_address_clause = true;
     node->rep_clause.expression = Parse_Expression (p);
 
   // Attribute value: FOR T'SIZE USE 32;
@@ -7721,7 +7764,10 @@ Syntax_Node *Parse_Context_Clause (Parser *p) {
       Node_List_Push (&node->context.use_clauses, Parse_Use_Clause (p));
       Parser_Expect (p, TK_SEMICOLON);
     } else if (Parser_At (p, TK_PRAGMA)) {
-      Parse_Pragma (p);  // Configuration pragmas
+
+      // Context pragmas (Elaborate, Elaborate_All, ...) are kept: the
+      // elaboration graph (§15) consumes them as ordering edges.
+      Node_List_Push (&node->context.pragmas, Parse_Pragma (p));
       Parser_Expect (p, TK_SEMICOLON);
     }
   }
@@ -7853,21 +7899,6 @@ bool Type_Has_Task_Component (Type_Info *t) {
 bool Type_Is_Float (const Type_Info *type_info)     { return type_info and type_info->kind == TYPE_FLOAT; }
 bool Type_Is_Fixed_Point (const Type_Info *type_info) { return type_info and type_info->kind == TYPE_FIXED; }
 
-// Derive LLVM float type string from a Type_Info.
-// Falls back to "double" for UNIVERSAL_REAL or when type info is unavailable.
-// Structured float rep for an Ada type. Defaults to 64-bit for UNIVERSAL_REAL
-// or when type info is unavailable.
-LLVM_Rep Float_LLVM_Rep_Of (const Type_Info *type_info) {
-  // A float subtype shares its base type's representation (RM 3.5.7); resolve
-  // the width through the base-type chain so a DIGITS-constrained subtype keeps
-  // its base type's machine width (derived types link via parent_type instead).
-  const Type_Info *rep_ty = type_info;
-  while (rep_ty and rep_ty->base_type) rep_ty = rep_ty->base_type;
-  uint16_t bits = (rep_ty and rep_ty->size > 0)
-                  ? (uint16_t)To_Bits (rep_ty->size) : 64;
-  return LLVM_Rep_Float (bits);
-}
-
 // RM 3.5.9: the effective SMALL of a fixed-point type. Uses the declared SMALL,
 // falling back to DELTA (then 1.0) when SMALL is unset. Single source for the
 // `small <= 0 ? delta : 1.0` guard that was duplicated at every scaling site.
@@ -7899,16 +7930,18 @@ void Fixed_Small_As_Rational (double small, unsigned long long *numerator,
 // Single source of truth for float/double structural parameters.                                  
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 
-// Check whether a float type maps to IEEE single precision (32-bit).
-bool Float_Is_Single (const Type_Info *type_info) {
-  return strcmp (LLVM_Rep_To_String (Float_LLVM_Rep_Of (type_info)), "float") == 0;
-}
-
 // Resolve effective DIGITS for a float type: uses declared digits if > 0,
 // else defaults from IEEE precision.
 int Float_Effective_Digits (const Type_Info *type_info) {
   if (type_info and type_info->flt.digits > 0) return type_info->flt.digits;
-  return Float_Is_Single (type_info) ? IEEE_FLOAT_DIGITS : IEEE_DOUBLE_DIGITS;
+
+  // Default from the machine width (RM 3.5.7): a 4-byte float carries IEEE
+  // single precision, anything else double. The width lives on the BASE
+  // type — a DIGITS-constrained subtype narrows accuracy, not storage.
+  const Type_Info *base = type_info;
+  while (base and base->base_type) base = base->base_type;
+  bool is_single = base and base->size > 0 and base->size <= 4;
+  return is_single ? IEEE_FLOAT_DIGITS : IEEE_DOUBLE_DIGITS;
 }
 
 // Compute model parameters for a floating-point type (RM 3.5.8).                                  
@@ -8279,183 +8312,6 @@ void Freeze_Type (Type_Info *type_info) {
 }
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
-// §10.7 LLVM Type Mapping                                                                          
-//                                                                                                  
-// The source type is semantic while the target type is representational.                          
-// ═════════════════════════════════════════════════════════════════════════════════════════════════
-
-// File-scope map of generic formal>actual types for the current instance
-// being code-generated. Used by Type_To_Rep to resolve generic formal
-// types (TYPE_PRIVATE) to their actual types.
-//                                                  
-// Canonical Ada → LLVM representation lowering. Single source of truth for
-// fat-vs-thin policy. Callers that need IR text spell it at the Emit() site
-// via LLVM_Rep_To_String(Type_To_Rep(t)).
-LLVM_Rep Type_To_Rep (Type_Info *type_info) {
-  if (not type_info) {
-    fprintf (stderr, "error: Type_To_Rep called with NULL type\n");
-    if (Debug_Emit_Locations) abort ();
-    return LL_REP_VOID;
-  }
-
-  // Private/limited private/incomplete: resolve through parent_type
-  // (RM 7.4.1, 3.4).
-  if ((Type_Is_Private (type_info) or type_info->kind == TYPE_INCOMPLETE)
-      and type_info->parent_type)
-    return Type_To_Rep (type_info->parent_type);
-
-  // A private view without a completion in sight reps as an opaque
-  // pointer. (Generic formal types never reach representation queries:
-  // instances are resolved clones whose types are the actuals.)
-  if (Type_Is_Private (type_info) and not type_info->parent_type)
-    return LL_REP_PTR;
-
-  switch (type_info->kind) {
-    case TYPE_BOOLEAN:   return LLVM_Rep_Int (8, false);   // RM 3.5.3 (i8, not i1)
-    case TYPE_CHARACTER: return LLVM_Rep_Int (8, false);
-    case TYPE_INTEGER:
-    case TYPE_ENUMERATION:
-    case TYPE_UNIVERSAL_INTEGER:
-    case TYPE_FIXED:                                       // scaled-integer repr
-      return LLVM_Rep_Int ((uint16_t)To_Bits (type_info->size), false);
-    case TYPE_MODULAR:                                     // RM 3.5.4 (unsigned)
-      return LLVM_Rep_Int ((uint16_t)To_Bits (type_info->size), true);
-    case TYPE_FLOAT:
-    case TYPE_UNIVERSAL_REAL:
-      // A float subtype shares its base type's representation (RM 3.5.7): a
-      // DIGITS constraint narrows accuracy, not the machine width. A generic
-      // formal float type resolves to its instantiation actual (RM 12.1.2).
-      // Float_LLVM_Rep_Of handles both (formal resolve + base-type walk).
-      return Float_LLVM_Rep_Of (type_info);
-    case TYPE_ACCESS:
-      // Representation follows the ROOT access type (RM 3.10): an access SUBTYPE
-      // constraint — `type A is access STRING; subtype A1 is A(1..3)` — cannot
-      // change the pointer width, so A1 stays fat like A (the bounds travel for
-      // the subtype check). Only an access type that itself DIRECTLY designates
-      // a static-bounds-constrained array (`access STRING(1..2)`) is thin.
-      {
-        Type_Info *root = type_info;
-        while (root->base_type and Type_Is_Access (root->base_type))
-          root = root->base_type;
-        Type_Info *designated = root->access.designated_type;
-        if (designated and Type_Is_Array_Like (designated)
-            and ((not designated->array.is_constrained)
-                 or Type_Has_Dynamic_Bounds (designated)))
-          return LL_REP_FAT;
-      }
-      return LL_REP_PTR;
-    case TYPE_RECORD:
-    case TYPE_TASK:
-      return LL_REP_PTR;
-    case TYPE_ARRAY:
-    case TYPE_STRING:
-      // Unconstrained or dynamic-bounds-constrained: fat. Static-bounds
-      // constrained: plain ptr to flat storage. (RM 3.6.1)
-      if (not type_info->array.is_constrained) return LL_REP_FAT;
-      return Type_Has_Dynamic_Bounds (type_info) ? LL_REP_FAT : LL_REP_PTR;
-    default:
-      fprintf (stderr, "error: Type_To_Rep unhandled type kind %d for '%.*s'\n",
-          type_info->kind, (int)type_info->name.length, type_info->name.data);
-      if (Debug_Emit_Locations) abort ();
-      return LL_REP_VOID;
-  }
-}
-
-// ═════════════════════════════════════════════════════════════════════════════════════════════════
-// §10.8 Standard-Style Fat Pointer Type Helpers                                                    
-//                                                                                                  
-// Standard uses native index types for array bounds in fat pointers.                              
-// Instead of always i64, STRING (indexed by POSITIVE/INTEGER) uses i32,                            
-// CHARACTER-indexed arrays use i8, etc.                                                           
-// ═════════════════════════════════════════════════════════════════════════════════════════════════
-
-// Canonical bound rep. Picks the widest index-type rep across dimensions so a
-// BOOLEAN index can't truncate an INTEGER one in a mixed-index array.
-LLVM_Rep Array_Bound_LLVM_Rep (const Type_Info *type_info) {
-  if (not type_info) {
-    fprintf (stderr, "BUG: Array_Bound_LLVM_Rep called with NULL\n");
-    return Integer_Arith_Rep ();  // default STRING bound width
-  }
-
-  // Access > designated type
-  if (type_info->kind == TYPE_ACCESS and type_info->access.designated_type)
-    type_info = type_info->access.designated_type;
-
-  // Private/incomplete > parent
-  if ((Type_Is_Private (type_info) or type_info->kind == TYPE_INCOMPLETE)
-      and type_info->parent_type)
-    return Array_Bound_LLVM_Rep (type_info->parent_type);
-
-  if (type_info->kind == TYPE_STRING) {
-    if (type_info->array.index_count > 0 and type_info->array.indices and
-        type_info->array.indices[0].index_type)
-      return Type_To_Rep (type_info->array.indices[0].index_type);
-    return Integer_Arith_Rep ();
-  }
-  if (type_info->kind != TYPE_ARRAY) {
-    fprintf (stderr, "BUG: Array_Bound_LLVM_Rep: non-array kind %d '%.*s'\n",
-        type_info->kind, (int)type_info->name.length, type_info->name.data);
-    return Integer_Arith_Rep ();
-  }
-
-  // Widest index rep across dimensions. Compare .bits because Type_Info.size
-  // may be unresolved (0) at codegen for subtypes.
-  if (type_info->array.index_count > 0 and type_info->array.indices and
-      type_info->array.indices[0].index_type) {
-    LLVM_Rep widest = Type_To_Rep (type_info->array.indices[0].index_type);
-    for (uint32_t i = 1; i < type_info->array.index_count; i++) {
-      if (type_info->array.indices[i].index_type) {
-        LLVM_Rep cand = Type_To_Rep (type_info->array.indices[i].index_type);
-        if (cand.bits > widest.bits) widest = cand;
-      }
-    }
-    return widest;
-  }
-
-  // No index type info: infer width from static bound values when available.
-  if (type_info->array.index_count > 0 and type_info->array.indices) {
-    Type_Bound lb = type_info->array.indices[0].low_bound;
-    Type_Bound hb = type_info->array.indices[0].high_bound;
-    if (lb.kind == BOUND_INTEGER and hb.kind == BOUND_INTEGER) {
-      uint16_t bits = (uint16_t) Bits_For_Range (lb.int_value, hb.int_value);
-      return LLVM_Rep_Int (bits, false);
-    }
-  }
-
-  fprintf (stderr, "note: Array_Bound_LLVM_Rep: no index type for '%.*s'\n",
-      (int)type_info->name.length, type_info->name.data);
-  return Integer_Arith_Rep ();
-}
-
-// Get the LLVM bounds struct type string for a given bound type.                                  
-// e.g., Bounds_Type_For ("i32") > "{ i32, i32 }".                                                 
-// Used when allocating/loading/storing the bounds struct behind                                    
-// the second pointer in a { ptr, ptr } fat pointer.                                               
-//                                                                                                  
-const char * Bounds_Type_For (LLVM_Rep bound_rep) {
-  // Standard style: bounds struct uses the NATIVE index type.
-  // e.g. Bounds_Type_For (i32-rep) > "{ i32, i32 }".
-  // Dispatch by bit width.
-  if (not LLVM_Rep_Is_Int (bound_rep)) return STRING_BOUNDS_STRUCT;
-  switch (bound_rep.bits) {
-    case 8:   return "{ i8, i8 }";
-    case 16:  return "{ i16, i16 }";
-    case 32:  return "{ i32, i32 }";
-    case 64:  return "{ i64, i64 }";
-    case 128: return "{ i128, i128 }";
-    default:  return STRING_BOUNDS_STRUCT;
-  }
-}
-
-// Return the allocation size in bytes for a bounds struct.
-// Used when allocating bounds on the secondary stack (for returned fat ptrs).
-int Bounds_Alloc_Size (LLVM_Rep bound_rep) {
-  // Size = 2 * (bits / 8). E.g. { i32, i32 } = 8 bytes.
-  if (not LLVM_Rep_Is_Int (bound_rep)) return STRING_BOUNDS_ALLOC;
-  return 2 * ((int)bound_rep.bits / 8);
-}
-
-// ═════════════════════════════════════════════════════════════════════════════════════════════════
 // §11. SYMBOL TABLE - Scoped Name Resolution                                                       
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 
@@ -8600,12 +8456,28 @@ void Symbol_Manager_Pop_Scope (void) {
   }
 }
 
-// Push an existing scope (used for separate subunits to reuse parent's scope)
+// Push an existing scope, REPARENTING it under the current scope. Used by
+// generic instantiation, whose declaration-point visibility machinery
+// depends on the instance scope hanging off the instantiation context.
 void Symbol_Manager_Push_Existing_Scope (Scope *scope) {
   if (scope) {
     scope->parent = sm->current_scope;
     sm->current_scope = scope;
   }
+}
+
+// Enter an existing scope WITHOUT reparenting: the scope's own lexical
+// chain is the point — a subunit resolves in its stub's environment, whose
+// enclosing scopes (RM 10.2) must stay reachable. Returns the scope to
+// hand back to Symbol_Manager_Leave_Scope.
+Scope *Symbol_Manager_Enter_Scope (Scope *scope) {
+  Scope *saved = sm->current_scope;
+  if (scope) sm->current_scope = scope;
+  return saved;
+}
+
+void Symbol_Manager_Leave_Scope (Scope *saved) {
+  sm->current_scope = saved;
 }
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
@@ -8732,7 +8604,9 @@ void Symbol_Add (Symbol *sym) {
   //                                                                                                
   if ((sym->kind == SYMBOL_VARIABLE or sym->kind == SYMBOL_PARAMETER or
      sym->kind == SYMBOL_CONSTANT or sym->kind == SYMBOL_DISCRIMINANT) and
-    not (sym->kind == SYMBOL_CONSTANT and sym->is_named_number)) {
+    not (sym->kind == SYMBOL_CONSTANT and sym->is_named_number) and
+    not sym->frame_offset_assigned) {
+    sym->frame_offset_assigned = true;
     sym->frame_offset = scope->frame_size;
     uint32_t var_size = sym->type ? sym->type->size : 8;
 
@@ -8748,7 +8622,8 @@ void Symbol_Add (Symbol *sym) {
       var_size = POINTER_ALLOC_SIZE;  // pointer to TCB
     }
     if (var_size == 0) {
-      fprintf (stderr, "warning: variable '%.*s' has zero size, defaulting to 8 bytes\n",
+      Report_Warning (sym->location,
+          "variable '%.*s' has zero size, defaulting to 8 bytes",
           (int)sym->name.length, sym->name.data);
       var_size = 8;
     }
@@ -8790,6 +8665,25 @@ Symbol *Symbol_Find (String_Slice name) {
     }
   }
   return NULL;
+}
+
+// "Did you mean": the nearest visible name within a small edit distance
+// of `name`, for undefined-name diagnostics. Returns NULL when nothing is
+// close enough to suggest.
+Symbol *Symbol_Find_Closest (String_Slice name) {
+  Closest_Name_Search search = Closest_Name_Begin (name);
+  Symbol *best = NULL;
+  for (Scope *scope = sm->current_scope; scope; scope = scope->parent)
+    for (uint32_t bucket = 0; bucket < SYMBOL_TABLE_SIZE; bucket++)
+      for (Symbol *sym = scope->buckets[bucket]; sym;
+           sym = sym->next_in_bucket) {
+        if (sym->visibility < VIS_IMMEDIATELY_VISIBLE) continue;
+        if (not Symbol_Visible_Under_Cutoff (sym, scope)) continue;
+        int distance_before = search.best_distance;
+        Closest_Name_Consider (&search, sym->name);
+        if (search.best_distance < distance_before) best = sym;
+      }
+  return Closest_Name_Found (&search) ? best : NULL;
 }
 
 // Find symbol by name and type (for enumeration literal disambiguation)
@@ -9625,8 +9519,15 @@ void Symbol_Manager_Init (void) {
 Type_Info *Resolve_Identifier (Syntax_Node *node) {
   Symbol *sym = Symbol_Find (node->string_val.text);
   if (not sym) {
-    Report_Error (node->location, "undefined identifier '%.*s'",
-                  node->string_val.text.length, node->string_val.text.data);
+    Symbol *closest = Symbol_Find_Closest (node->string_val.text);
+    if (closest)
+      Report_Error (node->location,
+                    "undefined identifier '%.*s' (did you mean '%.*s'?)",
+                    node->string_val.text.length, node->string_val.text.data,
+                    closest->name.length, closest->name.data);
+    else
+      Report_Error (node->location, "undefined identifier '%.*s'",
+                    node->string_val.text.length, node->string_val.text.data);
     return sm->type_integer;  // Return a valid type to allow continued analysis
   }
 
@@ -9708,8 +9609,17 @@ Type_Info *Resolve_Selected (Syntax_Node *node) {
         return node->type;
       }
     }
-    Report_Error (node->location, "no component '%.*s' in record type",
-          node->selected.selector.length, node->selected.selector.data);
+    Closest_Name_Search search = Closest_Name_Begin (node->selected.selector);
+    for (uint32_t i = 0; i < record_type->record.component_count; i++)
+      Closest_Name_Consider (&search, record_type->record.components[i].name);
+    if (Closest_Name_Found (&search))
+      Report_Error (node->location,
+            "no component '%.*s' in record type (did you mean '%.*s'?)",
+            node->selected.selector.length, node->selected.selector.data,
+            search.best.length, search.best.data);
+    else
+      Report_Error (node->location, "no component '%.*s' in record type",
+            node->selected.selector.length, node->selected.selector.data);
   } else if (Type_Is_Task (record_type) or
          (Type_Is_Access (record_type) and record_type->access.designated_type and
         Type_Is_Task (record_type->access.designated_type))) {
@@ -9731,8 +9641,18 @@ Type_Info *Resolve_Selected (Syntax_Node *node) {
         }
       }
     }
-    Report_Error (node->location, "no entry '%.*s' in task type",
-          (int)node->selected.selector.length, node->selected.selector.data);
+    Closest_Name_Search search = Closest_Name_Begin (node->selected.selector);
+    if (type_sym)
+      for (uint32_t i = 0; i < type_sym->exported_count; i++)
+        Closest_Name_Consider (&search, type_sym->exported[i]->name);
+    if (Closest_Name_Found (&search))
+      Report_Error (node->location,
+            "no entry '%.*s' in task type (did you mean '%.*s'?)",
+            (int)node->selected.selector.length, node->selected.selector.data,
+            search.best.length, search.best.data);
+    else
+      Report_Error (node->location, "no entry '%.*s' in task type",
+            (int)node->selected.selector.length, node->selected.selector.data);
 
   // Could be qualified name - look up in prefix's exported/visible symbols.                       
   // Per RM 4.1.3, qualified names can use package, procedure, or function                          
@@ -9941,8 +9861,23 @@ Type_Info *Resolve_Selected (Syntax_Node *node) {
       }
     }
   }
-  Report_Error (node->location, "cannot resolve selected component '%.*s'",
-         (int)node->selected.selector.length, node->selected.selector.data);
+  {
+    // "Did you mean": when the prefix is a package, suggest the closest
+    // exported name; otherwise nothing useful to scan.
+    Symbol *prefix_sym = node->selected.prefix->symbol;
+    Closest_Name_Search search = Closest_Name_Begin (node->selected.selector);
+    if (prefix_sym and prefix_sym->kind == SYMBOL_PACKAGE)
+      for (uint32_t i = 0; i < prefix_sym->exported_count; i++)
+        Closest_Name_Consider (&search, prefix_sym->exported[i]->name);
+    if (Closest_Name_Found (&search))
+      Report_Error (node->location,
+             "cannot resolve selected component '%.*s' (did you mean '%.*s'?)",
+             (int)node->selected.selector.length, node->selected.selector.data,
+             search.best.length, search.best.data);
+    else
+      Report_Error (node->location, "cannot resolve selected component '%.*s'",
+             (int)node->selected.selector.length, node->selected.selector.data);
+  }
   return sm->type_integer;  // Error recovery
 }
 
@@ -11218,6 +11153,12 @@ bool Eval_Const_Rational (Syntax_Node *node, Rational *out) {
   if (not node) return false;
   switch (node->kind) {
     case NK_REAL:
+
+      // A based real literal carries its exact rational from the lexer.
+      if (node->real_lit.rational_value) {
+        *out = *node->real_lit.rational_value;
+        return true;
+      }
       if (node->real_lit.big_value) {
         *out = Rational_From_Big_Real (node->real_lit.big_value);
         return true;
@@ -13892,6 +13833,24 @@ void Resolve_Statement (Syntax_Node *node) {
               }
             }
           }
+          // RM 8.6, value side: a bare identifier may name BOTH a
+          // parameterized subprogram and an enumeration literal
+          // (FUNCTION TRUE (X : INTEGER) alongside BOOLEAN's TRUE) —
+          // only the literal can be a value of the target's type, so
+          // re-resolve by the expected type.
+          if (not resolved and
+              node->assignment.value->kind == NK_IDENTIFIER) {
+            Symbol *alternative = Symbol_Find_By_Type (
+              node->assignment.value->string_val.text,
+              node->assignment.target->type);
+            if (alternative and alternative->type and
+                Type_Covers (node->assignment.target->type,
+                             alternative->type)) {
+              node->assignment.value->symbol = alternative;
+              node->assignment.value->type = alternative->type;
+              resolved = true;
+            }
+          }
           if (not resolved)
             Report_Error (node->location, "type mismatch in assignment");
         }
@@ -14929,10 +14888,10 @@ void Bind_Generic_Formals_To_Actuals (Symbol *instance_sym,
           #define RECORD_AGREEMENT(F, A, WHAT) do {                          \
             Type_Info *_f = (F), *_a = (A);                                  \
             if (_f and _a and                                                \
-                instance_sym->agreement_check_count < 64) {                  \
+                instance_sym->agreement_check_count < MAX_AGREEMENT_CHECKS) {                  \
               if (not instance_sym->agreement_checks)                        \
                 instance_sym->agreement_checks = Arena_Allocate (            \
-                  64 * sizeof (Instance_Agreement_Check));                   \
+                  MAX_AGREEMENT_CHECKS * sizeof (Instance_Agreement_Check));                   \
               instance_sym->agreement_checks[                                \
                 instance_sym->agreement_check_count++] =                     \
                 (Instance_Agreement_Check){ _f, _a, (WHAT) };                \
@@ -15008,7 +14967,7 @@ void Bind_Generic_Formals_To_Actuals (Symbol *instance_sym,
             actual_view->is_generic_actual_view = true;
             binding->type = actual_view;
             Symbol_Add (binding);
-            if (formal->symbol and remap->count < 128) {
+            if (formal->symbol and remap->count < MAX_INSTANCE_REMAPS) {
               remap->from[remap->count] = formal->symbol;
               remap->to[remap->count]   = binding;
               remap->count++;
@@ -15080,7 +15039,7 @@ void Bind_Generic_Formals_To_Actuals (Symbol *instance_sym,
               if (in_out) binding->is_instance_in_out_binding = true;
               else        binding->is_instance_in_binding     = true;
               Symbol_Add (binding);
-              if (formal_name->symbol and remap->count < 128) {
+              if (formal_name->symbol and remap->count < MAX_INSTANCE_REMAPS) {
                 remap->from[remap->count] = formal_name->symbol;
                 remap->to[remap->count]   = binding;
                 remap->count++;
@@ -15146,7 +15105,7 @@ void Bind_Generic_Formals_To_Actuals (Symbol *instance_sym,
             // re-point it.)
             if (binding->is_instance_wrapper)
               binding->parent = instance_sym->parent;
-            if (formal->symbol and remap->count < 128) {
+            if (formal->symbol and remap->count < MAX_INSTANCE_REMAPS) {
               remap->from[remap->count] = formal->symbol;
               remap->to[remap->count]   = binding;
               remap->count++;
@@ -15260,7 +15219,7 @@ static Symbol *Disambiguate_Subprogram_Actual (Symbol *first,
   return first;
 }
 
-Symbol  *Instantiating_Templates[64];
+Symbol  *Instantiating_Templates[MAX_INSTANTIATION_DEPTH];
 uint32_t Instantiating_Template_Count = 0;
 
 bool Instantiating_Set_Contains (Symbol *template_sym) {
@@ -15269,7 +15228,7 @@ bool Instantiating_Set_Contains (Symbol *template_sym) {
   return false;
 }
 void Instantiating_Set_Push (Symbol *template_sym) {
-  if (Instantiating_Template_Count < 64)
+  if (Instantiating_Template_Count < MAX_INSTANTIATION_DEPTH)
     Instantiating_Templates[Instantiating_Template_Count++] = template_sym;
 }
 void Instantiating_Set_Pop (void) {
@@ -16593,6 +16552,34 @@ void Resolve_Declaration (Syntax_Node *node) {
           node->symbol = spec->symbol;
         }
 
+        // A spec-less LIBRARY subprogram body (e.g. a loaded parent unit)
+        // still needs its symbol: scope ownership, mangling, and the
+        // subunit machinery's stability walk all read it. The direct
+        // compile path sets one later; the loader path never did, leaving
+        // the body's scope owner NULL and degrading every name derived
+        // through it in subunit compilations.
+        if (not node->symbol and sm->current_scope and
+            not sm->current_scope->parent) {
+          Syntax_Node *body_spec = node->subprogram_body.specification;
+          String_Slice body_name = Get_Subprogram_Name (node);
+          if (body_name.length > 0) {
+            Symbol *existing = Symbol_Find (body_name);
+            if (existing and (existing->kind == SYMBOL_PROCEDURE or
+                              existing->kind == SYMBOL_FUNCTION)) {
+              node->symbol = existing;
+            } else {
+              bool is_function = body_spec and
+                body_spec->kind == NK_FUNCTION_SPEC;
+              Symbol *created = Symbol_New (
+                is_function ? SYMBOL_FUNCTION : SYMBOL_PROCEDURE,
+                body_name, node->location);
+              created->declaration = node;
+              Symbol_Add (created);
+              node->symbol = created;
+            }
+          }
+        }
+
         // For stubs (IS SEPARATE), don't claim the symbol - the separate
         // subunit will provide the actual body and should claim it.
         if (node->subprogram_body.is_separate and node->symbol) {
@@ -16900,6 +16887,8 @@ void Resolve_Declaration (Syntax_Node *node) {
 
         // Handle generic packages: formals and unit are in the generic declaration
         // Store this body as the generic's body for later instantiation
+        if (pkg_sym and node->package_body.is_separate)
+          pkg_sym->body_is_separate_stub = true;
         if (pkg_sym and pkg_sym->kind == SYMBOL_GENERIC and
             not node->package_body.is_separate) {
           pkg_sym->generic_body = node;
@@ -16921,7 +16910,13 @@ void Resolve_Declaration (Syntax_Node *node) {
           Install_Declaration_Symbols (&spec->package_spec.private_decls);
         }
         Resolve_Declaration_List (&node->package_body.declarations);
-        Mark_Package_Level_Objects (&node->package_body.declarations);
+
+        // Package-level (module-global) storage only for packages with no
+        // enclosing subprogram: a nested package's state lives in the
+        // enclosing frame — and a SUBUNIT package body of a nested
+        // package must agree with the parent's module about that.
+        if (not Find_Enclosing_Subprogram (pkg_sym))
+          Mark_Package_Level_Objects (&node->package_body.declarations);
 
         // Freeze all types at end of declarative part (RM 13.14)
         Freeze_Declaration_List (&node->package_body.declarations);
@@ -17192,7 +17187,32 @@ void Resolve_Declaration (Syntax_Node *node) {
           }
         }
 
-        // pragma Pure, pragma Preelaborate - informational only, accepted and ignored              
+        // pragma Pure / pragma Preelaborate (RM 10.5): mark the named
+        // unit (or the enclosing package when unnamed) so the
+        // elaboration graph can relax its ordering requirements.
+        else if (Slice_Equal_Ignore_Case (pragma_name, S("PURE")) or
+                 Slice_Equal_Ignore_Case (pragma_name, S("PREELABORATE"))) {
+          bool pure = Slice_Equal_Ignore_Case (pragma_name, S("PURE"));
+          Symbol *named_unit = NULL;
+          if (node->pragma_node.arguments.count >= 1) {
+            Syntax_Node *argument =
+              Unwrap_Association (node->pragma_node.arguments.items[0]);
+            if (argument and argument->kind == NK_IDENTIFIER)
+              named_unit = Symbol_Find (argument->string_val.text);
+          } else {
+            for (Scope *s = sm->current_scope; s; s = s->parent)
+              if (s->owner and s->owner->kind == SYMBOL_PACKAGE) {
+                named_unit = s->owner;
+                break;
+              }
+          }
+          if (named_unit) {
+            if (pure) named_unit->is_pure_unit = true;
+            else      named_unit->is_preelaborate_unit = true;
+          }
+        }
+
+        // pragma System_Name etc. - informational only, accepted and ignored              
         // pragma Elaborate, pragma Elaborate_All - handled at link time                            
         // pragma Restrictions - accepted and ignored                                               
         //                                                                                          
@@ -17790,6 +17810,13 @@ void Resolve_Declaration (Syntax_Node *node) {
                   target_type->fixed.small =
                     node->rep_clause.expression->real_lit.value;
                 }
+
+              // Any other attribute clause (ADDRESS, ...) has no effect on
+              // code generation — warn instead of silently accepting.
+              } else {
+                Report_Warning (node->location,
+                  "attribute clause '%.*s' is not applied",
+                  (int)attr.length, attr.data);
               }
             }
           }
@@ -17834,9 +17861,71 @@ void Resolve_Declaration (Syntax_Node *node) {
             }
           }
 
+          // Address clause (RM 13.5): FOR X USE AT expr makes the object an
+          // overlay on the given address. Mechanism: a hidden cell variable
+          // (X__AT, an access value designating X's type) holds the address,
+          // evaluated where the clause is elaborated; X itself redirects
+          // through renamed_object to CELL.ALL, so every read, write, and
+          // 'ADDRESS flows through the established dereference paths. The
+          // cell's storage and the object's declared initialization are
+          // emitted at the clause's elaboration point (codegen
+          // NK_REPRESENTATION_CLAUSE).
+          if (node->rep_clause.is_address_clause) {
+            if (node->rep_clause.expression)
+              Resolve_Expression (node->rep_clause.expression);
+            // A USE-visible alias denotes the same entity as the original;
+            // the overlay must hang off the original symbol every access
+            // path resolves to.
+            while (target_sym and target_sym->aliased)
+              target_sym = target_sym->aliased;
+            if (target_sym and node->rep_clause.expression and
+                (target_sym->kind == SYMBOL_VARIABLE or
+                 target_sym->kind == SYMBOL_CONSTANT) and
+                target_sym->type) {
+              size_t cell_name_cap = target_sym->name.length + 8;
+              char *cell_name = Arena_Allocate (cell_name_cap);
+              int cell_name_len = snprintf (cell_name, cell_name_cap,
+                "%.*s__at", (int)target_sym->name.length,
+                target_sym->name.data);
+              String_Slice cell_slice =
+                (String_Slice){ cell_name, (uint32_t)cell_name_len };
+              Type_Info *cell_type = Type_New (TYPE_ACCESS, cell_slice);
+              cell_type->access.designated_type = target_sym->type;
+              Symbol *cell = Symbol_New (SYMBOL_VARIABLE, cell_slice,
+                node->location);
+              cell->type = cell_type;
+              cell->is_package_level = target_sym->is_package_level;
+              Symbol_Add (cell);
+              Syntax_Node *cell_ref = Node_New (NK_IDENTIFIER,
+                node->location);
+              cell_ref->string_val.text = cell_slice;
+              cell_ref->symbol = cell;
+              cell_ref->type = cell_type;
+              Syntax_Node *overlay_deref = Node_New (NK_UNARY_OP,
+                node->location);
+              overlay_deref->unary.op = TK_ALL;
+              overlay_deref->unary.operand = cell_ref;
+              overlay_deref->type = target_sym->type;
+              target_sym->address_clause = node->rep_clause.expression;
+              target_sym->address_cell = cell;
+              target_sym->renamed_object = overlay_deref;
+            } else {
+              Report_Warning (node->location,
+                "address clause is not applied; "
+                "the object is allocated normally");
+            }
+          }
+
           // Process enumeration representation: FOR T USE (val0, val1, ...);
           if (node->rep_clause.is_enum_rep and
             Type_Is_Enumeration (target_type)) {
+
+            // The values are recorded but code generation still uses
+            // position numbers throughout — say so rather than silently
+            // accepting (RM 13.3 not implemented through to emission).
+            Report_Warning (node->location,
+              "enumeration representation clause is not applied; "
+              "code generation uses position numbers");
 
             // Store internal representation values for enum literals
             // The component_clauses list contains the values in order
@@ -17871,6 +17960,102 @@ void Resolve_Declaration (Syntax_Node *node) {
 // §12.4 Compilation Unit Resolution                                                                
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 
+// Materialize a subunit's parent chain (RM 10.2). The root is a library
+// unit loaded by name; every later component names a subunit whose source
+// the program library catalog knows — it is parsed and resolved through
+// Resolve_Compilation_Unit (recursing through THIS machinery for its own
+// prefix), so each level's body scope exists before the next descends.
+// Returns the immediate parent's symbol, or NULL.
+// Adopt a unit's PUBLISHED frame layout (ALI F/FS lines): the module that
+// compiled the unit owns the frame, so every frame-resident symbol this
+// compilation re-resolved takes the published offset, and the scope's
+// frame_size (the static-chain slot base) takes the published size.
+// Matching is by emitted name — the same contract the linker enforces.
+void Apply_Published_Frame_Layout_Entry (Symbol *unit_sym,
+                                         Catalog_Entry *entry);
+
+void Apply_Published_Frame_Layout (Symbol *unit_sym) {
+  if (not unit_sym or not unit_sym->scope) return;
+  Apply_Published_Frame_Layout_Entry (unit_sym,
+    Library_Catalog_Find (unit_sym->name, CATALOG_UNIT_BODY));
+}
+
+void Apply_Published_Frame_Layout_Entry (Symbol *unit_sym,
+                                         Catalog_Entry *entry) {
+  if (not unit_sym or not unit_sym->scope) return;
+  if (not entry or entry->frame_slot_count == 0) return;
+  Scope *scope = unit_sym->scope;
+  for (int pass = 0; pass < 2; pass++) {
+    uint32_t count = pass == 0 ? scope->symbol_count
+                               : scope->frame_var_count;
+    for (uint32_t i = 0; i < count; i++) {
+      Symbol *var = pass == 0 ? scope->symbols[i] : scope->frame_vars[i];
+      if (not var) continue;
+      String_Slice mangled = Symbol_Mangle_Name (var);
+      for (uint32_t s = 0; s < entry->frame_slot_count; s++)
+        if (Slice_Equal_Ignore_Case (entry->frame_slots[s].name, mangled)) {
+          var->frame_offset = entry->frame_slots[s].offset;
+          break;
+        }
+    }
+  }
+  if (entry->frame_size > 0) scope->frame_size = entry->frame_size;
+}
+
+Symbol *Load_Subunit_Parent (Syntax_Node *name_node) {
+  if (not name_node) return NULL;
+  if (name_node->kind == NK_IDENTIFIER) {
+    String_Slice root_name = name_node->string_val.text;
+    Symbol *root = Symbol_Find (root_name);
+    if (root) return root;
+    char *root_source = Lookup_Path (root_name);
+    if (not root_source) root_source = Lookup_Path_Body (root_name);
+    if (root_source) Load_Package_Spec (root_name, root_source);
+    root = Symbol_Find (root_name);
+    Apply_Published_Frame_Layout (root);
+    return root;
+  }
+  if (name_node->kind != NK_SELECTED) return NULL;
+  Symbol *enclosing = Load_Subunit_Parent (name_node->selected.prefix);
+  if (not enclosing or not enclosing->scope) return NULL;
+  String_Slice level_name = name_node->selected.selector;
+
+  // Materialize this level's subunit BODY (once per compilation): the
+  // SPEC symbol existing is not enough — the body's own declarations are
+  // part of the environment the next level resolves in (RM 10.2).
+  String_Slice dotted = Flatten_Dotted_Name (name_node);
+  Catalog_Entry *subunit_entry =
+    Library_Catalog_Find (dotted, CATALOG_UNIT_SUBUNIT);
+  if (not subunit_entry or not subunit_entry->loaded) {
+    char *subunit_source = Catalog_Read_Source (dotted, CATALOG_UNIT_SUBUNIT);
+    if (subunit_source) {
+      Parser subunit_parser =
+        Parser_New (subunit_source, strlen (subunit_source), "subunit");
+      Syntax_Node *subunit_cu = Parse_Compilation_Unit (&subunit_parser);
+      if (subunit_cu) {
+        Resolve_Compilation_Unit (subunit_cu);
+        if (not subunit_entry)
+          subunit_entry = Library_Catalog_Find (dotted, CATALOG_UNIT_SUBUNIT);
+        if (subunit_entry) subunit_entry->loaded = true;
+      }
+    }
+  }
+  for (uint32_t i = 0; i < enclosing->scope->symbol_count; i++) {
+    Symbol *candidate = enclosing->scope->symbols[i];
+    if (candidate and
+        Slice_Equal_Ignore_Case (candidate->name, level_name)) {
+
+      // Adopt the subunit's own PUBLISHED layout: its body-level
+      // variables (invisible to the parent's module) were placed by the
+      // subunit's compilation — that module owns those slots.
+      Apply_Published_Frame_Layout_Entry (candidate,
+        Library_Catalog_Find (dotted, CATALOG_UNIT_SUBUNIT));
+      return candidate;
+    }
+  }
+  return NULL;
+}
+
 void Resolve_Compilation_Unit (Syntax_Node *node) {
   if (not node) return;
 
@@ -17903,35 +18088,70 @@ void Resolve_Compilation_Unit (Syntax_Node *node) {
 
   // Handle separate subunits (SEPARATE (parent) ...)
   Symbol *parent_sym = NULL;
+  Scope  *entered_from = NULL;
+  bool    entered = false;
   if (node->compilation_unit.separate_parent) {
-    Syntax_Node *parent = node->compilation_unit.separate_parent;
-    String_Slice parent_name = {0};
-    if (parent->kind == NK_IDENTIFIER) {
-      parent_name = parent->string_val.text;
 
-    // Handle qualified names like A.B - use the selector (rightmost part)
-    } else if (parent->kind == NK_SELECTED) {
-      parent_name = parent->selected.selector;
+    // RM 10.2/10.3: a subunit compiles against its parent's BODY, found
+    // through the program library; a dotted parent (A.B) names a
+    // transitive subunit chain that materializes level by level.
+    parent_sym = Load_Subunit_Parent (node->compilation_unit.separate_parent);
+    node->compilation_unit.separate_parent->symbol = parent_sym;
+    if (not parent_sym) {
+      Syntax_Node *parent = node->compilation_unit.separate_parent;
+      String_Slice shown = Flatten_Dotted_Name (parent);
+      Report_Error (parent->location,
+        "parent unit '%.*s' of this subunit is not in the program "
+        "library (compile the parent first, RM 10.3)",
+        (int)shown.length, shown.data);
     }
-    if (parent_name.length > 0) {
-      parent_sym = Symbol_Find (parent_name);
 
-      // Push the parent's actual scope so we can find the stub symbol.
-      // This reuses the scope where the stub was declared.
-      if (parent_sym and parent_sym->scope) {
-        Symbol_Manager_Push_Existing_Scope (parent_sym->scope);
-      }
+    // Enter the parent's scope (lexical chain intact — the stub's whole
+    // enclosing environment must resolve, RM 10.2).
+    if (parent_sym and parent_sym->scope) {
+      entered_from = Symbol_Manager_Enter_Scope (parent_sym->scope);
+      entered = true;
     }
   }
 
   // Resolve main unit
   if (node->compilation_unit.unit) {
     Resolve_Declaration (node->compilation_unit.unit);
+
+    // A subunit PACKAGE BODY whose chain nests in a subprogram: its
+    // body-level state is INVISIBLE to the parent's module (which sized
+    // the frame first, without it) — so it belongs to the subunit's own
+    // module as package-level globals. Their mangled names are stable
+    // (globals carry no per-compilation suffix), so every other module
+    // names the same storage.
+    if (parent_sym and
+        node->compilation_unit.unit->kind == NK_PACKAGE_BODY) {
+      Symbol *frame_owner = parent_sym;
+      if (frame_owner->kind != SYMBOL_PROCEDURE and
+          frame_owner->kind != SYMBOL_FUNCTION)
+        frame_owner = Find_Enclosing_Subprogram (frame_owner);
+      if (frame_owner) {
+        Node_List *body_declarations =
+          &node->compilation_unit.unit->package_body.declarations;
+        for (uint32_t d = 0; d < body_declarations->count; d++) {
+          Syntax_Node *declaration = body_declarations->items[d];
+          if (not declaration or declaration->kind != NK_OBJECT_DECL)
+            continue;
+          for (uint32_t k = 0;
+               k < declaration->object_decl.names.count; k++) {
+            Syntax_Node *name = declaration->object_decl.names.items[k];
+            if (name and name->symbol) {
+              name->symbol->is_package_level = true;
+              name->symbol->owned_by_subunit_module = true;
+            }
+          }
+        }
+      }
+    }
   }
 
-  // Pop parent scope if we pushed it
-  if (parent_sym and parent_sym->scope) {
-    Symbol_Manager_Pop_Scope ();
+  if (entered) {
+    Symbol_Manager_Leave_Scope (entered_from);
   }
 }
 
@@ -17941,7 +18161,7 @@ void Resolve_Compilation_Unit (Syntax_Node *node) {
 
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
-// §13.1 Code Generator State                                                                       
+// §13.0 Code Generator State                                                                       
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 
 void Code_Generator_Init (FILE *output) {
@@ -18114,13 +18334,197 @@ LLVM_Value Emit_Bool_Value (LLVM_I1 i1_reg) {
 
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
-// §13.1.1 Type-Derived Codegen Helpers
+// §13.0.2 Type-Derived Codegen Helpers
 //                                                                                                  
 // Standard never hardcodes type widths - it derives them from the front-end                        
 // type system (see GL_Type, Bound_Sub_GT). These helpers do the same: they                        
 // query sm to derive LLVM IR types from the Ada type system at the point                           
 // of emission, so every codegen site gets its types from a single source.                         
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
+
+// File-scope map of generic formal>actual types for the current instance
+// being code-generated. Used by Type_To_Rep to resolve generic formal
+// types (TYPE_PRIVATE) to their actual types.
+//                                                  
+// Canonical Ada → LLVM representation lowering. Single source of truth for
+// fat-vs-thin policy. Callers that need IR text spell it at the Emit() site
+// via LLVM_Rep_To_String(Type_To_Rep(t)).
+LLVM_Rep Type_To_Rep (Type_Info *type_info) {
+  if (not type_info) {
+    fprintf (stderr, "error: Type_To_Rep called with NULL type\n");
+    if (Debug_Emit_Locations) abort ();
+    return LL_REP_VOID;
+  }
+
+  // Private/limited private/incomplete: resolve through parent_type
+  // (RM 7.4.1, 3.4).
+  if ((Type_Is_Private (type_info) or type_info->kind == TYPE_INCOMPLETE)
+      and type_info->parent_type)
+    return Type_To_Rep (type_info->parent_type);
+
+  // A private view without a completion in sight reps as an opaque
+  // pointer. (Generic formal types never reach representation queries:
+  // instances are resolved clones whose types are the actuals.)
+  if (Type_Is_Private (type_info) and not type_info->parent_type)
+    return LL_REP_PTR;
+
+  switch (type_info->kind) {
+    case TYPE_BOOLEAN:   return LLVM_Rep_Int (8, false);   // RM 3.5.3 (i8, not i1)
+    case TYPE_CHARACTER: return LLVM_Rep_Int (8, false);
+    case TYPE_INTEGER:
+    case TYPE_ENUMERATION:
+    case TYPE_UNIVERSAL_INTEGER:
+    case TYPE_FIXED:                                       // scaled-integer repr
+      return LLVM_Rep_Int ((uint16_t)To_Bits (type_info->size), false);
+    case TYPE_MODULAR:                                     // RM 3.5.4 (unsigned)
+      return LLVM_Rep_Int ((uint16_t)To_Bits (type_info->size), true);
+    case TYPE_FLOAT:
+    case TYPE_UNIVERSAL_REAL:
+      // A float subtype shares its base type's representation (RM 3.5.7): a
+      // DIGITS constraint narrows accuracy, not the machine width. A generic
+      // formal float type resolves to its instantiation actual (RM 12.1.2).
+      // Float_LLVM_Rep_Of handles both (formal resolve + base-type walk).
+      return Float_LLVM_Rep_Of (type_info);
+    case TYPE_ACCESS:
+      // Representation follows the ROOT access type (RM 3.10): an access SUBTYPE
+      // constraint — `type A is access STRING; subtype A1 is A(1..3)` — cannot
+      // change the pointer width, so A1 stays fat like A (the bounds travel for
+      // the subtype check). Only an access type that itself DIRECTLY designates
+      // a static-bounds-constrained array (`access STRING(1..2)`) is thin.
+      {
+        Type_Info *root = type_info;
+        while (root->base_type and Type_Is_Access (root->base_type))
+          root = root->base_type;
+        Type_Info *designated = root->access.designated_type;
+        if (designated and Type_Is_Array_Like (designated)
+            and ((not designated->array.is_constrained)
+                 or Type_Has_Dynamic_Bounds (designated)))
+          return LL_REP_FAT;
+      }
+      return LL_REP_PTR;
+    case TYPE_RECORD:
+    case TYPE_TASK:
+      return LL_REP_PTR;
+    case TYPE_ARRAY:
+    case TYPE_STRING:
+      // Unconstrained or dynamic-bounds-constrained: fat. Static-bounds
+      // constrained: plain ptr to flat storage. (RM 3.6.1)
+      if (not type_info->array.is_constrained) return LL_REP_FAT;
+      return Type_Has_Dynamic_Bounds (type_info) ? LL_REP_FAT : LL_REP_PTR;
+    default:
+      fprintf (stderr, "error: Type_To_Rep unhandled type kind %d for '%.*s'\n",
+          type_info->kind, (int)type_info->name.length, type_info->name.data);
+      if (Debug_Emit_Locations) abort ();
+      return LL_REP_VOID;
+  }
+}
+
+// Derive LLVM float type string from a Type_Info.
+// Falls back to "double" for UNIVERSAL_REAL or when type info is unavailable.
+// Structured float rep for an Ada type. Defaults to 64-bit for UNIVERSAL_REAL
+// or when type info is unavailable.
+LLVM_Rep Float_LLVM_Rep_Of (const Type_Info *type_info) {
+  // A float subtype shares its base type's representation (RM 3.5.7); resolve
+  // the width through the base-type chain so a DIGITS-constrained subtype keeps
+  // its base type's machine width (derived types link via parent_type instead).
+  const Type_Info *rep_ty = type_info;
+  while (rep_ty and rep_ty->base_type) rep_ty = rep_ty->base_type;
+  uint16_t bits = (rep_ty and rep_ty->size > 0)
+                  ? (uint16_t)To_Bits (rep_ty->size) : 64;
+  return LLVM_Rep_Float (bits);
+}
+
+// Check whether a float type maps to IEEE single precision (32-bit).
+bool Float_Is_Single (const Type_Info *type_info) {
+  return strcmp (LLVM_Rep_To_String (Float_LLVM_Rep_Of (type_info)), "float") == 0;
+}
+
+// Canonical bound rep. Picks the widest index-type rep across dimensions so a
+// BOOLEAN index can't truncate an INTEGER one in a mixed-index array.
+LLVM_Rep Array_Bound_LLVM_Rep (const Type_Info *type_info) {
+  if (not type_info) {
+    fprintf (stderr, "BUG: Array_Bound_LLVM_Rep called with NULL\n");
+    return Integer_Arith_Rep ();  // default STRING bound width
+  }
+
+  // Access > designated type
+  if (type_info->kind == TYPE_ACCESS and type_info->access.designated_type)
+    type_info = type_info->access.designated_type;
+
+  // Private/incomplete > parent
+  if ((Type_Is_Private (type_info) or type_info->kind == TYPE_INCOMPLETE)
+      and type_info->parent_type)
+    return Array_Bound_LLVM_Rep (type_info->parent_type);
+
+  if (type_info->kind == TYPE_STRING) {
+    if (type_info->array.index_count > 0 and type_info->array.indices and
+        type_info->array.indices[0].index_type)
+      return Type_To_Rep (type_info->array.indices[0].index_type);
+    return Integer_Arith_Rep ();
+  }
+  if (type_info->kind != TYPE_ARRAY) {
+    fprintf (stderr, "BUG: Array_Bound_LLVM_Rep: non-array kind %d '%.*s'\n",
+        type_info->kind, (int)type_info->name.length, type_info->name.data);
+    return Integer_Arith_Rep ();
+  }
+
+  // Widest index rep across dimensions. Compare .bits because Type_Info.size
+  // may be unresolved (0) at codegen for subtypes.
+  if (type_info->array.index_count > 0 and type_info->array.indices and
+      type_info->array.indices[0].index_type) {
+    LLVM_Rep widest = Type_To_Rep (type_info->array.indices[0].index_type);
+    for (uint32_t i = 1; i < type_info->array.index_count; i++) {
+      if (type_info->array.indices[i].index_type) {
+        LLVM_Rep cand = Type_To_Rep (type_info->array.indices[i].index_type);
+        if (cand.bits > widest.bits) widest = cand;
+      }
+    }
+    return widest;
+  }
+
+  // No index type info: infer width from static bound values when available.
+  if (type_info->array.index_count > 0 and type_info->array.indices) {
+    Type_Bound lb = type_info->array.indices[0].low_bound;
+    Type_Bound hb = type_info->array.indices[0].high_bound;
+    if (lb.kind == BOUND_INTEGER and hb.kind == BOUND_INTEGER) {
+      uint16_t bits = (uint16_t) Bits_For_Range (lb.int_value, hb.int_value);
+      return LLVM_Rep_Int (bits, false);
+    }
+  }
+
+  fprintf (stderr, "note: Array_Bound_LLVM_Rep: no index type for '%.*s'\n",
+      (int)type_info->name.length, type_info->name.data);
+  return Integer_Arith_Rep ();
+}
+
+// Get the LLVM bounds struct type string for a given bound type.                                  
+// e.g., Bounds_Type_For ("i32") > "{ i32, i32 }".                                                 
+// Used when allocating/loading/storing the bounds struct behind                                    
+// the second pointer in a { ptr, ptr } fat pointer.                                               
+//                                                                                                  
+const char * Bounds_Type_For (LLVM_Rep bound_rep) {
+  // Standard style: bounds struct uses the NATIVE index type.
+  // e.g. Bounds_Type_For (i32-rep) > "{ i32, i32 }".
+  // Dispatch by bit width.
+  if (not LLVM_Rep_Is_Int (bound_rep)) return STRING_BOUNDS_STRUCT;
+  switch (bound_rep.bits) {
+    case 8:   return "{ i8, i8 }";
+    case 16:  return "{ i16, i16 }";
+    case 32:  return "{ i32, i32 }";
+    case 64:  return "{ i64, i64 }";
+    case 128: return "{ i128, i128 }";
+    default:  return STRING_BOUNDS_STRUCT;
+  }
+}
+
+// Return the allocation size in bytes for a bounds struct.
+// Used when allocating bounds on the secondary stack (for returned fat ptrs).
+int Bounds_Alloc_Size (LLVM_Rep bound_rep) {
+  // Size = 2 * (bits / 8). E.g. { i32, i32 } = 8 bytes.
+  if (not LLVM_Rep_Is_Int (bound_rep)) return STRING_BOUNDS_ALLOC;
+  return 2 * ((int)bound_rep.bits / 8);
+}
+
 
 // Derive the LLVM bound type for STRING from the type system.
 // Follows: STRING > index_type (POSITIVE) > Type_To_Rep > LLVM_Rep_To_String.
@@ -18214,7 +18618,7 @@ void Emit_String_Const_Char (char ch) {
 }
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
-// §13.2 IR Emission Helpers                                                                        
+// §13.1 Core IR Emission Primitives (body)                                                                        
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 
 uint32_t Emit_Temp (void) {
@@ -18391,6 +18795,10 @@ bool Symbol_Is_Global (Symbol *sym) {
   // instance body reads them as module-level storage (RM 12.3(80)).
   if (sym->is_instance_in_binding or sym->is_instance_in_out_binding)
     return true;
+
+  // Subunit-added package state: global in the subunit's own module by
+  // construction (the parent's frame was sized before this state existed).
+  if (sym->owned_by_subunit_module) return true;
   if (not sym->parent) return true;  // Top-level
 
   // Walk up parent chain - if any ancestor is a subprogram, symbol is local.                      
@@ -18471,8 +18879,21 @@ size_t Mangle_Into_Buffer (char *buf, size_t pos, size_t max, Symbol *sym) {
   // Package members qualify through their package; a tree-copy instance's
   // formal-object binding qualifies through its instance, whatever the
   // instance's kind, so distinct instances never share a binding global.
-  if (sym->parent and (sym->parent->kind == SYMBOL_PACKAGE or
-      sym->is_instance_in_binding or sym->is_instance_in_out_binding)) {
+  bool qualify_through_parent =
+    sym->parent and (sym->parent->kind == SYMBOL_PACKAGE or
+      sym->is_instance_in_binding or sym->is_instance_in_out_binding);
+
+  // A suffix-exempt (library-stable) name nested under a library
+  // SUBPROGRAM must carry the subprogram's name too: a local package P
+  // inside procedure M would otherwise collide with a LIBRARY package P
+  // (ca1002: subunits deliberately reuse library-unit names).
+  if (not qualify_through_parent and sym->parent and
+      (sym->parent->kind == SYMBOL_PROCEDURE or
+       sym->parent->kind == SYMBOL_FUNCTION) and
+      not sym->parent->parent and
+      Symbol_Has_Stable_Library_Name (sym))
+    qualify_through_parent = true;
+  if (qualify_through_parent) {
     pos = Mangle_Into_Buffer (buf, pos, max, sym->parent);
     if (pos + 2 < max) { buf[pos++] = '_'; buf[pos++] = '_'; }
   }
@@ -18480,6 +18901,63 @@ size_t Mangle_Into_Buffer (char *buf, size_t pos, size_t max, Symbol *sym) {
 }
 
 // Get mangled name for a symbol (thread-safe via rotation)
+// A SEPARATE stub — and the subunit body that completes it in another
+// compilation — must carry the SAME emitted name everywhere: the parent's
+// module declares it extern, the subunit's module defines it. Parent-chain
+// qualification already makes the name unique (RM 10.2: subunit names are
+// unique within their parent), so the per-compilation _s suffix is omitted.
+static bool Symbol_Is_Subunit_Stub (const Symbol *sym) {
+  Syntax_Node *declaration = sym ? sym->declaration : NULL;
+  if (not declaration) return false;
+  switch (declaration->kind) {
+    case NK_PROCEDURE_BODY:
+    case NK_FUNCTION_BODY:
+      return declaration->subprogram_body.is_separate;
+    case NK_PACKAGE_BODY:
+      return declaration->package_body.is_separate;
+    case NK_TASK_BODY:
+      return declaration->task_body.is_separate;
+    default:
+      return false;
+  }
+}
+
+// A name is library-stable when its qualified parent chain alone
+// identifies it in EVERY compilation that can see it: each enclosing
+// level is a package, up to the library unit at the root. Such entities
+// are reachable across subunit boundaries (the parent's module calls
+// them, the subunit's module may define them), so the per-compilation
+// _s suffix must not differ — the chain is collision-free by Ada's
+// no-homograph rules, blocks and nested subprograms break the chain.
+bool Symbol_Has_Stable_Library_Name (const Symbol *sym) {
+  if (not sym) return false;
+  if (Symbol_Is_Subunit_Stub (sym)) return true;
+
+  // Only PROGRAM UNITS are nameable across modules; data lives in frames
+  // or as globals under the ordinary rules.
+  if (sym->kind != SYMBOL_PROCEDURE and sym->kind != SYMBOL_FUNCTION and
+      sym->kind != SYMBOL_PACKAGE)
+    return false;
+
+  // Walk the LEXICAL scope chain (the symbol-parent chain cannot see
+  // DECLARE blocks): every enclosing level must be a package scope, up to
+  // the library unit's own scope just under the global scope. An
+  // anonymous block anywhere makes same-named siblings possible, so the
+  // suffix stays.
+  for (const Scope *level = sym->defining_scope;
+       level and level->parent; level = level->parent) {
+    Symbol *owner = level->owner;
+    if (not owner) return false;  // anonymous block scope
+    bool at_library_root = (level->parent->parent == NULL);
+    if (at_library_root)
+      return owner->kind == SYMBOL_PACKAGE or
+             owner->kind == SYMBOL_PROCEDURE or
+             owner->kind == SYMBOL_FUNCTION;
+    if (owner->kind != SYMBOL_PACKAGE) return false;
+  }
+  return false;
+}
+
 String_Slice Symbol_Mangle_Name (Symbol *sym) {
   // A USE-visible alias denotes the same entity as the original; mangle it as
   // the original so a cross-USE call matches the definition (the alias may have
@@ -18498,7 +18976,9 @@ String_Slice Symbol_Mangle_Name (Symbol *sym) {
   // Add unique_id suffix for local/overloaded symbols — and for instance
   // formal-object bindings, whose readable prefix alone cannot distinguish
   // two same-named instantiations in different scopes.
-  if (sym and (not Symbol_Is_Global (sym) or sym->is_overloaded or
+  if (sym and ((not Symbol_Is_Global (sym) and
+                not Symbol_Has_Stable_Library_Name (sym)) or
+               sym->is_overloaded or
                sym->is_instance_in_binding or sym->is_instance_in_out_binding or
                sym->is_instance_wrapper)) {
     pos += snprintf (buf + pos, 512 - pos, "_s%u", sym->unique_id);
@@ -18781,6 +19261,18 @@ bool Is_Uplevel_Access (const Symbol *sym) {
   if (sym->kind == SYMBOL_PARAMETER and owner == cg->current_function)
     return false;
   if (not cg->is_nested or not owner) return false;
+
+  // Emitting a subunit package-body elaboration function (current_function
+  // is the PACKAGE symbol): the function has no frame of its own, so every
+  // frame-resident symbol lives in the parent subprogram's frame and is
+  // reached through its %__frame. alias.
+  if (cg->current_function->kind == SYMBOL_PACKAGE) {
+    for (Symbol *p = owner; p; p = p->parent)
+      if (p->kind == SYMBOL_PROCEDURE or p->kind == SYMBOL_FUNCTION or
+          Type_Is_Task (p->type))
+        return true;
+    return false;
+  }
   // Local to current function or its generic template
   if (owner == cg->current_function) return false;
   if (cg->current_function->generic_template and
@@ -18824,6 +19316,15 @@ void Emit_Symbol_Storage (Symbol *sym) {
     Emit ("%%__frame.");
     Emit_Symbol_Name (sym);
   } else {
+
+    // A package-level global may be DEFINED by another module (subunit
+    // package state): note it, and the post-generation flush declares it
+    // external if no definition appeared here.
+    if (sym and not sym->separate_callee_noted and
+        not sym->extern_emitted and sym->is_package_level and
+        (sym->kind == SYMBOL_VARIABLE or sym->kind == SYMBOL_CONSTANT) and
+        Symbol_Is_Global (sym))
+      Append_Separate_Callee (sym);
     Emit_Symbol_Ref (sym);
   }
 }
@@ -18910,7 +19411,7 @@ void Emit_Raise_Exception (const char *exc_name, const char *comment) {
 #define Emit_Raise_Program_Error(comment)    Emit_Raise_Exception ("program_error", comment)
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
-// §13.1.1a Granular Runtime Check Emission                                                         
+// §13.2.1 Granular Runtime Check Emission                                                         
 //                                                                                                  
 // Each Emit_*_Check function:                                                                      
 //   1. Consults Check_Is_Suppressed () - returns early if suppressed.                             
@@ -19485,6 +19986,10 @@ uint32_t Coerce_To_Rep (uint32_t v, LLVM_Rep from, LLVM_Rep to) {
 // returns the value unchanged.
 LLVM_Value Emit_Coerce_Val (LLVM_Value value, LLVM_Rep desired_rep) {
   if (value.rep.kind == LL_VOID) {
+
+    // Debug-only internal honesty check (like the producer-lie detector):
+    // stays on raw stderr deliberately — it reports a compiler-internal
+    // tracking gap, not a property of the user's program.
     if (cg->emit_debug_locations)
       fprintf (stderr, "warning: Emit_Coerce: %%t%u has no tracked rep; "
                "coercion to '%s' skipped (possible missing cast)\n",
@@ -19496,7 +20001,7 @@ LLVM_Value Emit_Coerce_Val (LLVM_Value value, LLVM_Rep desired_rep) {
 }
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
-// §13.1.2 Constraint Checks                                                                        
+// §13.2.2 Constraint Checks                                                                        
 //                                                                                                  
 // Per RM 3.5.4: CONSTRAINT_ERROR raised when value falls outside subtype range.                   
 // Handles both static (BOUND_INTEGER) and dynamic (BOUND_EXPR) bounds.                            
@@ -19954,7 +20459,7 @@ void Emit_Subtype_Constraint_Compat_Check (Type_Info *subtype,
 }
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
-// §13.2.1 Fat Pointer Support for Unconstrained Arrays                                             
+// §13.3 Fat-Pointer Operations                                             
 //                                                                                                  
 // fat pointer = { data_ptr, bounds_ptr } = { ptr, ptr }.                                          
 // Bounds live behind the second pointer as a struct { bt, bt } where                               
@@ -20105,8 +20610,8 @@ void Emit_Memcpy (uint32_t dst, uint32_t src, uint32_t size_reg) {
 // memcpy `bytes` constant bytes from value register `src` into symbol `dst`'s
 // storage. `comment`, when non-NULL, is appended as a trailing IR comment.
 void Emit_Memcpy_To_Symbol (Symbol *dst, uint32_t src, int64_t bytes, const char *comment) {
-  Emit ("  call void @llvm.memcpy.p0.p0.i64(ptr %%");
-  Emit_Symbol_Name (dst);
+  Emit ("  call void @llvm.memcpy.p0.p0.i64(ptr ");
+  Emit_Symbol_Storage (dst);
   Emit (", ptr %%t%u, i64 %lld, i1 false)%s%s\n",
      src, (long long)bytes, comment ? "  ; " : "", comment ? comment : "");
 }
@@ -20534,7 +21039,7 @@ void Emit_Fat_To_Array_Memcpy (uint32_t fat_val,
 }
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
-// §13.2.1 Consolidated Helpers                                                                     
+// §13.2.3 Consolidated Check and Length Helpers                                                                     
 //                                                                                                  
 // Length computation with null-array clamping (RM 3.6.2), static integer constant emission,        
 // memcmp-based array comparison, and conditional check + raise sequences.                         
@@ -20767,7 +21272,7 @@ LLVM_Value Emit_Memcmp_Eq (uint32_t left_ptr, uint32_t right_ptr, uint32_t byte_
 }
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
-// §13.2.2 Bound Extraction Helpers                                                                 
+// §13.4 Bound and Length Emission (body)                                                                 
 //                                                                                                  
 // Ada types carry bounds as either:                                                                
 //   - BOUND_INTEGER: compile-time constant                                                         
@@ -20959,8 +21464,8 @@ void Emit_Fat_Pointer_Copy_To_Name (uint32_t fat_ptr,
   uint32_t src_ptr = Emit_Fat_Pointer_Data (fat_ptr, bt).reg;
   uint32_t len = Emit_Fat_Pointer_Length (fat_ptr, bt).reg;
   uint32_t len64 = Emit_Extend_To_I64 (len, bt).reg;
-  Emit ("  call void @llvm.memcpy.p0.p0.i64(ptr %%");
-  Emit_Symbol_Name (dst);
+  Emit ("  call void @llvm.memcpy.p0.p0.i64(ptr ");
+  Emit_Symbol_Storage (dst);
   Emit (", ptr %%t%u, i64 %%t%u, i1 false)\n", src_ptr, len64);
 }
 
@@ -21053,7 +21558,7 @@ LLVM_I1 Emit_Fat_Pointer_Compare (uint32_t left_fat, uint32_t right_fat, LLVM_Re
 }
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
-// §13.2.3 Additional Helpers                                                                       
+// §13.2.5 Additional Helpers                                                                       
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 
 
@@ -21233,7 +21738,7 @@ uint32_t Emit_Array_Lex_Compare (uint32_t left_ptr, uint32_t right_ptr, uint32_t
 }
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
-// §13.2.2 Named-SSA Fat Pointer Helpers for RTS Functions                                          
+// §13.3.1 Named-SSA Fat Pointer Helpers for RTS Functions                                          
 //                                                                                                  
 // RTS function bodies (emitted as LLVM IR text with named registers like                           
 // %fat1, %data, etc.) cannot use the temp-ID helpers above. These helpers                         
@@ -21359,7 +21864,7 @@ uint32_t Emit_Fat_Pointer_Null (LLVM_Rep bt) {
 }
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
-// §13.3 Expression Code Generation                                                                 
+// §13.6 Expression Code Generation                                                                 
 //                                                                                                  
 // Returns the LLVM SSA value ID holding the expression result.                                    
 // Every expression yields a value, and in SSA form every value has one definition.                
@@ -21404,10 +21909,19 @@ uint32_t Generate_Lvalue (Syntax_Node *node) {
     // instance context so formal-object references inside the renamed
     // expression substitute their actuals even when the reference comes
     // from outside the instance.
+    // A USE-visible alias denotes the original entity — follow it so a
+    // rename (including an RM 13.5 overlay) attached to the original fires.
+    while (sym->aliased) sym = sym->aliased;
     if (sym->renamed_object) {
       uint32_t renamed_addr = Generate_Lvalue (sym->renamed_object);
       return renamed_addr;
     }
+
+    // RM 4.1.3: a parameterless FUNCTION name as a composite prefix is an
+    // implicit call; the lvalue (for component selection on the result)
+    // is the call's result pointer, not the function symbol's storage.
+    if (sym->kind == SYMBOL_FUNCTION)
+      return Generate_Identifier (node).reg;
     uint32_t addr = Emit_Temp ();
     Emit_Symbol_Addr (addr, sym);
     return addr;
@@ -21464,11 +21978,15 @@ uint32_t Generate_Lvalue (Syntax_Node *node) {
       return Emit_Record_Field_Ptr (base, record_type, comp_idx, byte_offset);
     }
 
-    // Package-qualified name: return lvalue (address) of the resolved symbol.                     
-    // E.g. PACK1.ARG1 where PACK1 is a package and ARG1 is a variable inside it.                  
-    // We must NOT fall through to Generate_Expression which would load the value.                 
-    //                                                                                              
+    // Package-qualified name: return lvalue (address) of the resolved symbol.
+    // E.g. PACK1.ARG1 where PACK1 is a package and ARG1 is a variable inside it.
+    // We must NOT fall through to Generate_Expression which would load the value.
+    //
     if (node->symbol) {
+      // A renamed entity (including an RM 13.5 address-clause overlay)
+      // denotes its target, exactly as the NK_IDENTIFIER arm redirects.
+      if (node->symbol->renamed_object)
+        return Generate_Lvalue (node->symbol->renamed_object);
       uint32_t addr = Emit_Temp ();
       Emit_Symbol_Addr (addr, node->symbol);
       return addr;
@@ -21643,22 +22161,26 @@ LLVM_Value Generate_Bound_Value (Type_Bound bound, LLVM_Rep target_rep) {
 LLVM_Value Generate_Integer_Literal (Syntax_Node *node) {
   uint32_t result = Emit_Temp ();
 
-  // Emit literal at the expression's native type width
-  LLVM_Rep lit_type = node->type ? Type_To_Rep (node->type) : Integer_Arith_Rep ();
-
-  // Value may exceed int64_t range - use Big_Integer_To_Int128
+  // The exact value (Big_Integer overflow path included).
+  int128_t value = (int128_t)node->integer_lit.value;
   if (node->integer_lit.big_value) {
     int128_t val128;
-    if (Big_Integer_To_Int128 (node->integer_lit.big_value, &val128)) {
-      Emit ("  %%t%u = add %s 0, %s\n", result, LLVM_Rep_To_String (lit_type), I128_Decimal (val128));
-
-    // Value doesn't fit in int128 - fall back to int64
-    } else {
-      Emit ("  %%t%u = add %s 0, %lld\n", result, LLVM_Rep_To_String (lit_type), (long long)node->integer_lit.value);
-    }
-  } else {
-    Emit ("  %%t%u = add %s 0, %lld\n", result, LLVM_Rep_To_String (lit_type), (long long)node->integer_lit.value);
+    if (Big_Integer_To_Int128 (node->integer_lit.big_value, &val128))
+      value = val128;
   }
+
+  // Emit at the expression's native type width. A UNIVERSAL literal has no
+  // representation of its own — pick the narrowest standard width that
+  // holds the VALUE, so the immediate never wraps (an i32 emission of
+  // 2**60 silently truncates); consumers convert as their context needs.
+  LLVM_Rep lit_type = node->type ? Type_To_Rep (node->type) : Integer_Arith_Rep ();
+  if (not node->type or node->type->kind == TYPE_UNIVERSAL_INTEGER) {
+    if (value < INT32_MIN or value > INT32_MAX)
+      lit_type = (value < INT64_MIN or value > INT64_MAX)
+        ? LLVM_Rep_Int (128, false) : LLVM_Rep_Int (64, false);
+  }
+  Emit ("  %%t%u = add %s 0, %s\n", result,
+        LLVM_Rep_To_String (lit_type), I128_Decimal (value));
   return Val_Rep (result, lit_type);
 }
 LLVM_Value Generate_Real_Literal (Syntax_Node *node) {
@@ -21682,7 +22204,7 @@ LLVM_Value Generate_String_Literal (Syntax_Node *node) {
 
   // Generate global constant to buffer (without null terminator for Ada strings)
   // Use linkonce_odr to allow merging of duplicate string constants across units
-  Emit_String_Const ("@.str%u = linkonce_odr unnamed_addr constant [%u x i8] c\"", str_id, len);
+  Emit_String_Const ("@.str%u = private unnamed_addr constant [%u x i8] c\"", str_id, len);
   for (uint32_t i = 0; i < len; i++) {
     char ch = node->string_val.text.data[i];
     if (ch >= 32 and ch < 127 and ch != '"' and ch != '\\') {
@@ -21753,6 +22275,9 @@ LLVM_Value Generate_Identifier (Syntax_Node *node) {
   // renamed_object holds a Symbol, not an expression (see
   // Resolve_Subprogram_Rename) — and fall through to the SYMBOL_FUNCTION
   // parameterless-call case below, which peels the rename chain.
+  // A USE-visible alias denotes the original entity — follow it so a
+  // rename (including an RM 13.5 overlay) attached to the original fires.
+  while (sym->aliased) sym = sym->aliased;
   if (sym->renamed_object and
       sym->kind != SYMBOL_FUNCTION and sym->kind != SYMBOL_PROCEDURE) {
     LLVM_Value renamed_value = Generate_Expression (sym->renamed_object);
@@ -21932,6 +22457,7 @@ LLVM_Value Generate_Identifier (Syntax_Node *node) {
       // A rename (including a generic formal-subprogram binding) denotes
       // its target: peel the chain before dispatching the call.
       Symbol *actual = Resolve_Subprogram_Rename (sym);
+      Note_Separate_Boundary_Callee (actual);
 
       // Check if actual is an enumeration literal (e.g., RED, YELLOW)
       if (actual->kind == SYMBOL_LITERAL and Type_Is_Enumeration (actual->type)) {
@@ -22020,7 +22546,7 @@ LLVM_Value Generate_Identifier (Syntax_Node *node) {
 }
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
-// §13.3.1 Implicit Operators for Composite Types                                                   
+// §13.6.1 Implicit Operators for Composite Types                                                   
 //                                                                                                  
 // Ada requires equality operators for all non-limited types. For composite                         
 // types (records, arrays), equality is defined component-wise.                                    
@@ -22034,7 +22560,8 @@ LLVM_I1 Generate_Record_Equality (uint32_t left_ptr,
 
     // Empty record or invalid - always equal
     if (not Type_Is_Record (record_type))
-      fprintf (stderr, "warning: record equality called on non-record type\n");
+      Report_Warning (No_Location,
+        "internal: record equality called on non-record type");
     return Emit_I1_Const (1, "empty record equality");
   }
   LLVM_I1 result = { 0 };
@@ -22162,7 +22689,8 @@ LLVM_I1 Generate_Array_Equality (LLVM_Value left_v,
                     LLVM_Value right_v, Type_Info *array_type) {
   uint32_t left_ptr = left_v.reg, right_ptr = right_v.reg;
   if (not Type_Is_Array_Like (array_type)) {
-    fprintf (stderr, "warning: array equality called on non-array type\n");
+    Report_Warning (No_Location,
+      "internal: array equality called on non-array type");
     return Emit_I1_Const (1, "invalid array equality");
   }
 
@@ -22274,10 +22802,18 @@ uint32_t Generate_Composite_Address (Syntax_Node *node) {
 
       // A rename redirects to the renamed entity's storage, under the
       // owning instance's context when the rename came from one.
+      // A USE-visible alias denotes the original entity — follow it.
+      while (sym->aliased) sym = sym->aliased;
       if (sym->renamed_object) {
         uint32_t renamed_addr = Generate_Composite_Address (sym->renamed_object);
         return renamed_addr;
       }
+
+      // RM 4.1.3: a parameterless FUNCTION name as a composite prefix is
+      // an implicit call; the composite's address is the call's result
+      // pointer, not the function symbol's (nonexistent) storage.
+      if (sym->kind == SYMBOL_FUNCTION)
+        return Generate_Identifier (node).reg;
       uint32_t t = Emit_Temp ();
       Emit_Symbol_Addr (t, sym);
       return t;
@@ -22300,16 +22836,13 @@ uint32_t Generate_Composite_Address (Syntax_Node *node) {
     if (Type_Is_Record (record_type)) {
       uint32_t base;
 
-      // Load the access value (pointer to record)
+      // Load the access value (pointer to record). Evaluating the prefix
+      // as an expression handles every prefix form uniformly: a plain
+      // access variable (one load), a rename or USE-visible alias, and a
+      // parameterless function returning an access value (implicit call,
+      // RM 4.1.3).
       if (implicit_deref) {
-        Symbol *access_sym = node->selected.prefix->symbol;
-        base = Emit_Temp ();
-        if (access_sym) {
-          Emit_Load_Ptr_From_Symbol (base, access_sym);
-        } else {
-          uint32_t ptr = Generate_Expression (node->selected.prefix).reg;
-          base = ptr;  // Already a ptr from access expr
-        }
+        base = Generate_Expression (node->selected.prefix).reg;
         Emit_Access_Check (Val_Of_Type (base, prefix_type), prefix_type);
       } else {
         base = Generate_Composite_Address (node->selected.prefix);
@@ -22328,16 +22861,11 @@ uint32_t Generate_Composite_Address (Syntax_Node *node) {
     }
   }
 
-  // .ALL dereference: address of P.ALL = value of P (the pointer itself)
+  // .ALL dereference: address of P.ALL = value of P (the pointer itself).
+  // Evaluating the operand as an expression handles every operand form
+  // uniformly — access variable, rename, alias, or parameterless function
+  // returning an access value (implicit call, RM 4.1.3).
   if (node->kind == NK_UNARY_OP and node->unary.op == TK_ALL and node->unary.operand) {
-    Symbol *access_sym = node->unary.operand->symbol;
-    if (access_sym) {
-      uint32_t t = Emit_Temp ();
-      Emit_Load_Ptr_From_Symbol (t, access_sym);
-      return t;
-    }
-
-    // For non-symbol expressions, evaluate to get the pointer
     return Generate_Expression (node->unary.operand).reg;
   }
 
@@ -22378,8 +22906,10 @@ uint32_t Generate_Composite_Address (Syntax_Node *node) {
       if (arg0->kind == NK_RANGE) {
         uint32_t base;
         if (access_to_array) {
-          base = Emit_Temp ();
-          Emit_Load_Ptr_From_Symbol (base, node->apply.prefix->symbol);
+          // Evaluate the prefix as an expression: handles a plain access
+          // variable, a rename/alias, and an access-returning
+          // parameterless function (implicit call, RM 4.1.3) uniformly.
+          base = Generate_Expression (node->apply.prefix).reg;
         } else {
           base = Generate_Composite_Address (node->apply.prefix);
         }
@@ -22401,10 +22931,11 @@ uint32_t Generate_Composite_Address (Syntax_Node *node) {
       }
       uint32_t base;
 
-      // Dereference access-to-array: load pointer then index
+      // Dereference access-to-array: evaluate the prefix (the access
+      // value IS the array base) — uniform over variables, renames, and
+      // access-returning parameterless functions (RM 4.1.3).
       if (access_to_array) {
-        base = Emit_Temp ();
-        Emit_Load_Ptr_From_Symbol (base, node->apply.prefix->symbol);
+        base = Generate_Expression (node->apply.prefix).reg;
       } else {
         base = Generate_Composite_Address (node->apply.prefix);
       }
@@ -23489,20 +24020,43 @@ LLVM_Value Emit_Binary_Op_Predefined (Syntax_Node *node) {
         // Modular types use wrapping __ada_modular_pow (RM 3.5.4).                                
         //                                                                                          
         } else {
-          LLVM_Rep iat = Integer_Arith_Rep ();
-          left = Emit_Convert (left, left_int_type, iat).reg;
-          right = Emit_Convert (right, right_int_type, iat).reg;
+
+          // The power helpers run at 64-bit width so any integer base
+          // type's values fit (an i32 working width overflowed BIG'(2)**60
+          // spuriously); the result narrows back below.
+          LLVM_Rep pow_width = LLVM_Rep_Int (64, false);
+          left = Emit_Convert (left, left_int_type, pow_width).reg;
+          right = Emit_Convert (right, right_int_type, pow_width).reg;
           bool pow_unsigned = Type_Is_Unsigned (result_type);
           bool pow_suppressed = Check_Is_Suppressed (result_type, NULL, CHK_OVERFLOW);
           const char *pow_fn = (pow_unsigned or pow_suppressed)
             ? "__ada_modular_pow" : "__ada_integer_pow";
           Emit ("  %%t%u = call %s @%s(%s %%t%u, %s %%t%u)\n",
-             t, LLVM_Rep_To_String (iat), pow_fn, LLVM_Rep_To_String (iat), left, LLVM_Rep_To_String (iat), right);
+             t, LLVM_Rep_To_String (pow_width), pow_fn, LLVM_Rep_To_String (pow_width), left, LLVM_Rep_To_String (pow_width), right);
           // The `**` node's Ada type is result_type; return at its storage rep
           // (the pow runs at the i32 working width but the result is e.g. i8),
           // so an enclosing operator sees a correctly-typed operand.
-          LLVM_Rep pow_dst = result_type ? Type_To_Rep (result_type) : iat;
-          t = Coerce_To_Rep (t, iat, pow_dst);
+          LLVM_Rep pow_dst = result_type ? Type_To_Rep (result_type)
+                                         : Integer_Arith_Rep ();
+
+
+          // An i64-clean result can still overflow a narrower base type
+          // (RM 4.5.6 with RM 11.6): check against the destination
+          // width's own bounds before narrowing — the generic constraint
+          // check treats a base type as uncheckable, so the compare is
+          // explicit here.
+          if (not pow_suppressed and not pow_unsigned and
+              LLVM_Rep_Is_Int (pow_dst) and pow_dst.bits < 64) {
+            int64_t width_low  = -((int64_t)1 << (pow_dst.bits - 1));
+            int64_t width_high = ((int64_t)1 << (pow_dst.bits - 1)) - 1;
+            LLVM_I1 below = Emit_Icmp_Const ("slt", pow_width, t, width_low);
+            Emit_Check_With_Raise (below.reg, true,
+                                   "exponentiation overflow (RM 4.5.6)");
+            LLVM_I1 above = Emit_Icmp_Const ("sgt", pow_width, t, width_high);
+            Emit_Check_With_Raise (above.reg, true,
+                                   "exponentiation overflow (RM 4.5.6)");
+          }
+          t = Coerce_To_Rep (t, pow_width, pow_dst);
           pow_result_rep = pow_dst;
         }
         return Val_Rep (t, pow_result_rep);
@@ -24281,6 +24835,67 @@ uint32_t Emit_Entry_Index (Symbol *entry_sym, uint32_t family_index) {
 // designated task for access-to-task, the task object's address otherwise, and
 // a null pointer (meaning the current task) when no task symbol resolves.
 // `selected_prefix` is the node before the dot, or NULL.
+// A callee with a library-stable name whose body is unclaimed in this
+// compilation and whose enclosing package body is a SEPARATE stub lives
+// in another module: note it, and the post-generation flush declares
+// whichever notes never got a define here.
+void Note_Separate_Boundary_Callee (Symbol *sym) {
+  if (not sym or sym->separate_callee_noted) return;
+  if (sym->kind != SYMBOL_PROCEDURE and sym->kind != SYMBOL_FUNCTION) return;
+
+  // Inside a subunit module nearly every callee is external — bodies the
+  // parent chain "claims" are defined in OTHER modules. Elsewhere, only a
+  // callee behind a SEPARATE package-body stub is external.
+  if (not cg->subunit_parent) {
+    if (sym->body_claimed) return;
+    bool behind_separate_stub = false;
+    for (Symbol *ancestor = sym->parent; ancestor;
+         ancestor = ancestor->parent)
+      if (ancestor->kind == SYMBOL_PACKAGE and
+          ancestor->body_is_separate_stub) {
+        behind_separate_stub = true;
+        break;
+      }
+    if (not behind_separate_stub) return;
+  }
+  if (not Symbol_Has_Stable_Library_Name (sym) and
+      not Symbol_Is_Global (sym)) return;
+  Append_Separate_Callee (sym);
+}
+
+// Register an ___elab function for @main's elaboration sequence.
+// Arena-grown: a silent cap here would silently skip elaborating a unit.
+void Append_Elab_Function (Symbol *sym) {
+  if (cg->elab_func_count == cg->elab_func_capacity) {
+    uint32_t grown_capacity =
+      cg->elab_func_capacity ? cg->elab_func_capacity * 2 : 32;
+    Symbol **grown = Arena_Allocate (grown_capacity * sizeof (Symbol *));
+    for (uint32_t i = 0; i < cg->elab_func_count; i++)
+      grown[i] = cg->elab_funcs[i];
+    cg->elab_funcs = grown;
+    cg->elab_func_capacity = grown_capacity;
+  }
+  cg->elab_funcs[cg->elab_func_count++] = sym;
+}
+
+// Low-level append for the SEPARATE-boundary declare flush. Used by the
+// call-site noting above and directly by stub emission (a stub IS the
+// boundary; no condition to probe).
+void Append_Separate_Callee (Symbol *sym) {
+  if (not sym or sym->separate_callee_noted) return;
+  sym->separate_callee_noted = true;
+  if (cg->separate_callee_count == cg->separate_callee_capacity) {
+    uint32_t grown_capacity = cg->separate_callee_capacity
+                            ? cg->separate_callee_capacity * 2 : 16;
+    Symbol **grown = Arena_Allocate (grown_capacity * sizeof (Symbol *));
+    for (uint32_t i = 0; i < cg->separate_callee_count; i++)
+      grown[i] = cg->separate_callees[i];
+    cg->separate_callees = grown;
+    cg->separate_callee_capacity = grown_capacity;
+  }
+  cg->separate_callees[cg->separate_callee_count++] = sym;
+}
+
 uint32_t Emit_Task_Pointer_From_Selected (Syntax_Node *selected_prefix) {
   // Composite prefix — a record component (OBJ.B) or array element (A(I))
   // naming a task: its symbol (a component, or none) has no standalone
@@ -24304,7 +24919,38 @@ uint32_t Emit_Task_Pointer_From_Selected (Syntax_Node *selected_prefix) {
     return tcb;
   }
 
+  // RM 4.1.3: a parameterless FUNCTION as the task prefix (F.E) is an
+  // implicit call; the call's result IS the task value (the TCB pointer),
+  // or an access value designating the task object (one more load).
+  if (selected_prefix and selected_prefix->symbol and
+      selected_prefix->symbol->kind == SYMBOL_FUNCTION and
+      selected_prefix->type and
+      (Type_Is_Task (selected_prefix->type) or
+       Type_Is_Access (selected_prefix->type))) {
+    LLVM_Value result = Generate_Expression (selected_prefix);
+    if (Type_Is_Task (selected_prefix->type))
+      return result.reg;
+    uint32_t tcb = Emit_Temp ();
+    Emit ("  %%t%u = load ptr, ptr %%t%u  ; deref access-to-task\n",
+       tcb, result.reg);
+    return tcb;
+  }
+
   Symbol *task_sym = selected_prefix ? selected_prefix->symbol : NULL;
+  // Explicit .ALL over an access-returning parameterless FUNCTION
+  // (F.ALL.E, RM 4.1.3): the implicit call's result is the access value;
+  // one load reaches the task object's TCB.
+  if (selected_prefix and selected_prefix->kind == NK_UNARY_OP and
+      selected_prefix->unary.op == TK_ALL and selected_prefix->unary.operand and
+      selected_prefix->unary.operand->symbol and
+      selected_prefix->unary.operand->symbol->kind == SYMBOL_FUNCTION) {
+    LLVM_Value access_value = Generate_Expression (selected_prefix->unary.operand);
+    uint32_t tcb = Emit_Temp ();
+    Emit ("  %%t%u = load ptr, ptr %%t%u  ; deref access-to-task\n",
+       tcb, access_value.reg);
+    return tcb;
+  }
+
   // Explicit .ALL: the prefix is NK_UNARY_OP (TK_ALL) over the access variable.
   if (not task_sym and selected_prefix and selected_prefix->kind == NK_UNARY_OP and
       selected_prefix->unary.op == TK_ALL and selected_prefix->unary.operand)
@@ -24404,6 +25050,14 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
   // locals carry the task pointer and family index bound at elaboration
   // (RM 8.5); entry_path reads them instead of the call's own syntax.
   Symbol *entry_rename_sym = NULL;
+
+  Note_Separate_Boundary_Callee (sym);
+
+  // A call emitted inside a package's library-level elaboration is an
+  // invocation-time dependency on the callee's unit (RM 10.5).
+  if (cg->current_function and
+      cg->current_function->kind == SYMBOL_PACKAGE)
+    Elab_Note_Invocation (cg->current_function, sym);
 
   // Emit call/apply comment if symbol is known
   if (sym) {
@@ -24578,14 +25232,31 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
   // This prevents aliasing - P(I, I, I) uses independent copies.                                  
   //                                                                                                
   if (sym and (sym->kind == SYMBOL_FUNCTION or sym->kind == SYMBOL_PROCEDURE)) {
-    uint32_t *args = Arena_Allocate (node->apply.arguments.count * sizeof (uint32_t));
-    bool *is_byref = Arena_Allocate (node->apply.arguments.count * sizeof (bool));
+    // Arguments marshal into PARAMETER-SLOT order: a named association
+    // (NAME => V) lands in its formal's slot, and defaults fill any
+    // uncovered slot — leading or trailing (RM 6.4.2). The old model
+    // emitted the actuals in list order and appended defaults at the
+    // end, which mis-bound `P (Y => V)` with a leading defaulted X.
+    uint32_t slot_count = node->apply.arguments.count;
+    if (sym->parameters and sym->parameter_count > slot_count)
+      slot_count = sym->parameter_count;
+    if (slot_count == 0) slot_count = 1;
+    uint32_t *args = Arena_Allocate (slot_count * sizeof (uint32_t));
+    bool *is_byref = Arena_Allocate (slot_count * sizeof (bool));
+    bool *slot_covered = Arena_Allocate (slot_count * sizeof (bool));
+    bool *slot_is_default = Arena_Allocate (slot_count * sizeof (bool));
+    LLVM_Rep *slot_default_rep = Arena_Allocate (slot_count * sizeof (LLVM_Rep));
+    Syntax_Node **slot_actual =
+      Arena_Allocate (slot_count * sizeof (Syntax_Node *));
+    memset (slot_covered, 0, slot_count * sizeof (bool));
+    memset (slot_is_default, 0, slot_count * sizeof (bool));
+    memset (slot_actual, 0, slot_count * sizeof (Syntax_Node *));
 
     // Track copy-back info for scalar/access OUT/IN OUT params
-    uint32_t *copyback_addr = Arena_Allocate (node->apply.arguments.count * sizeof (uint32_t));
-    LLVM_Rep *copyback_llvm = Arena_Allocate (node->apply.arguments.count * sizeof (LLVM_Rep));
-    memset (copyback_addr, 0, node->apply.arguments.count * sizeof (uint32_t));
-    memset (copyback_llvm, 0, node->apply.arguments.count * sizeof (LLVM_Rep));
+    uint32_t *copyback_addr = Arena_Allocate (slot_count * sizeof (uint32_t));
+    LLVM_Rep *copyback_llvm = Arena_Allocate (slot_count * sizeof (LLVM_Rep));
+    memset (copyback_addr, 0, slot_count * sizeof (uint32_t));
+    memset (copyback_llvm, 0, slot_count * sizeof (LLVM_Rep));
     for (uint32_t i = 0; i < node->apply.arguments.count; i++) {
       Syntax_Node *arg_node = node->apply.arguments.items[i];
       Syntax_Node *arg = arg_node;  // Actual expression to evaluate
@@ -24610,10 +25281,17 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
         }
       }
 
+      // Final slot for this actual: record coverage and the actual node
+      // (the copy-back pass reads the actual's subtype off it).
+      if (param_idx < slot_count) {
+        slot_covered[param_idx] = true;
+        slot_actual[param_idx] = arg_node;
+      }
+
       // For ALI-loaded symbols, parameters may be NULL - default to pass by value
       bool byref = sym->parameters and param_idx < sym->parameter_count and
              Param_Is_By_Reference (sym->parameters[param_idx].mode);
-      is_byref[i] = byref;
+      is_byref[param_idx] = byref;
 
       // OUT/IN OUT: pass address of variable
       if (byref) {
@@ -24672,9 +25350,9 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
             Emit_Access_Designated_Disc_Check (val, ld_ty, formal_type);
             Emit ("  store %s %%t%u, ptr %%t%u  ; copy-in\n", LLVM_Rep_To_String (ld_ty), val, temp);
           }
-          args[i] = temp;
-          copyback_addr[i] = actual_addr;
-          copyback_llvm[i] = ld_ty;
+          args[param_idx] = temp;
+          copyback_addr[param_idx] = actual_addr;
+          copyback_llvm[param_idx] = ld_ty;
 
         // Composite: pass actual address directly (by reference)
         } else {
@@ -24700,9 +25378,9 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
             Emit ("  %%t%u = alloca " FAT_PTR_TYPE
                   "  ; by-ref fat ptr for unconstrained formal\n", slot);
             Emit ("  store " FAT_PTR_TYPE " %%t%u, ptr %%t%u\n", fat.reg, slot);
-            args[i] = slot;
+            args[param_idx] = slot;
           } else {
-            args[i] = actual_addr;
+            args[param_idx] = actual_addr;
           }
 
           // IN OUT constraint check for composites
@@ -24710,13 +25388,13 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
             Type_Is_Scalar (formal_type)) {
             LLVM_Rep ld_ty = Type_To_Rep (formal_type);
             uint32_t cur_val = Emit_Temp ();
-            Emit ("  %%t%u = load %s, ptr %%t%u\n", cur_val, LLVM_Rep_To_String (ld_ty), args[i]);
+            Emit ("  %%t%u = load %s, ptr %%t%u\n", cur_val, LLVM_Rep_To_String (ld_ty), args[param_idx]);
             Emit_Constraint_Check_Val (Val_Rep (cur_val, ld_ty), formal_type, arg->type);
           }
 
           // RM 6.4.1: for an IN OUT / OUT record formal with constrained
           // discriminants, the actual's discriminants must match the constraint.
-          Emit_Record_Discriminant_Constraint_Checks (args[i], formal_type);
+          Emit_Record_Discriminant_Constraint_Checks (args[param_idx], formal_type);
         }
       } else {
         // RM 4.8: Propagate target access type to allocator in parameter
@@ -24751,14 +25429,14 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
             uint32_t slot = Emit_Temp ();
             Emit ("  %%t%u = alloca ptr  ; task function-result slot\n", slot);
             Emit ("  store ptr %%t%u, ptr %%t%u\n", task_value.reg, slot);
-            args[i] = slot;
+            args[param_idx] = slot;
           } else {
-            args[i] = Generate_Composite_Address (arg);
+            args[param_idx] = Generate_Composite_Address (arg);
           }
           continue;
         }
         LLVM_Value arg_v = Generate_Expression (arg);
-        args[i] = arg_v.reg;
+        args[param_idx] = arg_v.reg;
 
         // IN parameter: check constraint before call (RM 4.6)
         if (sym->parameters and param_idx < sym->parameter_count and
@@ -24770,12 +25448,12 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
           // coerced to a context type (e.g. a universal-real expression emitted
           // as single-precision for a FLOAT formal).
           LLVM_Rep arg_llvm = arg_v.rep;
-          args[i] = Emit_Constraint_Check_Val ((LLVM_Value){ args[i], arg_llvm }, formal_type, actual_type).reg;
+          args[param_idx] = Emit_Constraint_Check_Val ((LLVM_Value){ args[param_idx], arg_llvm }, formal_type, actual_type).reg;
 
           // Discriminant constraint check for a constrained record subtype
           // (RM 3.7.2(3)): when a formal is e.g. S_TRUE IS VAR_REC (TRUE),
           // verify the actual's discriminant matches.
-          Emit_Record_Discriminant_Constraint_Checks (args[i], formal_type);
+          Emit_Record_Discriminant_Constraint_Checks (args[param_idx], formal_type);
 
           // Constrained array > unconstrained formal: build fat pointer (RM 6.4.1)                 
           // When passing a constrained array to an unconstrained formal, we must                   
@@ -24808,7 +25486,7 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
             // carrying its bounds, across every dimension. Emit_Fat_Pointer_For_Lvalue
             // owns the static and rt-elaborated cases alike.
             if (not already_fat)
-              args[i] = Emit_Fat_Pointer_For_Lvalue (args[i], actual_type).reg;
+              args[param_idx] = Emit_Fat_Pointer_For_Lvalue (args[param_idx], actual_type).reg;
           } else if (Expression_Produces_Fat_Pointer (arg, actual_type) and
                  formal_type->array.is_constrained and
                  formal_type->array.index_count > 0 and
@@ -24820,10 +25498,10 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
             // to STRING (11..15) - bounds must be 11..15, not the
             // literal's default 1..5. (RM 4.3.2)
             LLVM_Rep abt = Array_Bound_LLVM_Rep (formal_type);
-            uint32_t data_ptr = Emit_Fat_Pointer_Data (args[i], abt).reg;
+            uint32_t data_ptr = Emit_Fat_Pointer_Data (args[param_idx], abt).reg;
             uint32_t lo = Emit_Single_Bound (&formal_type->array.indices[0].low_bound, abt);
             uint32_t hi = Emit_Single_Bound (&formal_type->array.indices[0].high_bound, abt);
-            args[i] = Emit_Fat_Pointer_Dynamic (data_ptr, lo, hi, abt).reg;
+            args[param_idx] = Emit_Fat_Pointer_Dynamic (data_ptr, lo, hi, abt).reg;
           } else if (Expression_Produces_Fat_Pointer (arg, actual_type) and
                  not formal_needs_fat and
                  formal_type->array.is_constrained) {
@@ -24831,7 +25509,7 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
             // Fat pointer actual to constrained-static formal (flat ptr):
             // extract data pointer. The formal expects a raw ptr.
             LLVM_Rep abt = Array_Bound_LLVM_Rep (actual_type ? actual_type : formal_type);
-            args[i] = Emit_Fat_Pointer_Data (args[i], abt).reg;
+            args[param_idx] = Emit_Fat_Pointer_Data (args[param_idx], abt).reg;
           } else {
             LLVM_Rep param_type = Type_To_Rep (formal_type);
             // Use the produced value's own rep (see arg_llvm above); the AST
@@ -24841,9 +25519,9 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
             // Real literal > fixed-point param: scale by 1/SMALL
             if (Type_Is_Fixed_Point (formal_type) and LLVM_Rep_Is_Float (arg_type)) {
               double small = Fixed_Small (formal_type);
-              args[i] = Convert_Real_To_Fixed (args[i], small, param_type).reg;
+              args[param_idx] = Convert_Real_To_Fixed (args[param_idx], small, param_type).reg;
             } else {
-              args[i] = Emit_Convert (args[i], arg_type, param_type).reg;
+              args[param_idx] = Emit_Convert (args[param_idx], arg_type, param_type).reg;
             }
           }
         }
@@ -24971,58 +25649,55 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
     // defaults here, at the call site, in formal order. Pre-compute before
     // the call instruction text so the default expressions' IR does not
     // interleave with the call's argument list.
-    uint32_t  provided_count = node->apply.arguments.count;
-    uint32_t  n_default_args = 0;
-    uint32_t *default_arg_vals = NULL;
-    LLVM_Rep *default_arg_types = NULL;
-    if (sym->parameters and provided_count < sym->parameter_count) {
-      uint32_t missing = sym->parameter_count - provided_count;
-      default_arg_vals  = Arena_Allocate (missing * sizeof (uint32_t));
-      default_arg_types = Arena_Allocate (missing * sizeof (LLVM_Rep));
-      for (uint32_t p = provided_count; p < sym->parameter_count; p++) {
+    // Fill every uncovered slot from its default (RM 6.4.2) — leading
+    // or trailing; a named association may skip any defaulted formal.
+    if (sym->parameters) {
+      for (uint32_t p = 0; p < sym->parameter_count and p < slot_count; p++) {
+        if (slot_covered[p]) continue;
         Syntax_Node *def = sym->parameters[p].default_value;
         if (not def) continue;  // not reachable for a legal call
         Type_Info *pt = sym->parameters[p].param_type;
+        slot_covered[p] = true;
+        slot_is_default[p] = true;
+        is_byref[p] = false;
 
         // A task-typed default is by reference like every task formal:
-        // pass the address of the default object's task slot, not the
-        // loaded TCB handle (Parameter_Passed_By_Reference).
+        // pass the address of the default object's task slot
+        // (Parameter_Passed_By_Reference).
         if (pt and Type_Is_Task (pt)) {
-          default_arg_vals[n_default_args]  = Generate_Composite_Address (def);
-          default_arg_types[n_default_args] = LL_REP_PTR;
-          n_default_args++;
+          args[p] = Generate_Composite_Address (def);
+          slot_default_rep[p] = LL_REP_PTR;
           continue;
         }
         LLVM_Value dv = Generate_Expression (def);
-
-        // Composite IN defaults pass by reference. The formal's ABI rep
-        // (Type_To_Rep) decides the shape: fat { ptr, ptr } for unconstrained
-        // or dynamic-bounded arrays/strings, a plain data ptr otherwise. Match
-        // the value to that rep — extract field 0 when the callee wants a ptr
-        // but the default value (e.g. a string literal) is fat.
-        if (pt and Type_Is_Composite (pt)) {
-          LLVM_Rep param_rep = Type_To_Rep (pt);
-          uint32_t v = dv.reg;
-          if (LLVM_Rep_Is_Fat_Pointer (param_rep)) {
-            if (not LLVM_Rep_Is_Fat_Pointer (dv.rep))
-              v = Fat_Ptr_As_Value (v).reg;
-            default_arg_types[n_default_args] = LL_REP_FAT;
-          } else {
-            if (LLVM_Rep_Is_Fat_Pointer (dv.rep)) {
-              uint32_t dp = Emit_Extract_Fat_Data (v);
-              v = dp;
+        uint32_t v = dv.reg;
+        if (pt and (Type_Is_Record (pt) or Type_Is_Array_Like (pt))) {
+          if (Type_Is_Unconstrained_Array (pt) or Type_Is_String (pt) or
+              (Type_Is_Array_Like (pt) and Type_Has_Dynamic_Bounds (pt))) {
+            if (not LLVM_Rep_Is_Fat_Pointer (dv.rep)) {
+              Type_Info *def_type = def->type ? def->type : pt;
+              v = Emit_Fat_Pointer_For_Lvalue (v, def_type).reg;
             }
-            default_arg_types[n_default_args] = LL_REP_PTR;
+            uint32_t spill = Emit_Temp ();
+            Emit ("  %%t%u = alloca " FAT_PTR_TYPE
+                  "  ; default fat ptr spill\n", spill);
+            Emit ("  store " FAT_PTR_TYPE " %%t%u, ptr %%t%u\n", v, spill);
+            args[p] = spill;
+            slot_default_rep[p] = LL_REP_PTR;
+          } else {
+            if (LLVM_Rep_Is_Fat_Pointer (dv.rep))
+              v = Emit_Extract_Fat_Data (v);
+            args[p] = v;
+            slot_default_rep[p] = LL_REP_PTR;
           }
-          default_arg_vals[n_default_args] = v;
         } else {
-          // Coerce from the value's PRODUCED rep, not the AST prediction, which
-          // can disagree (e.g. a small-int default emitted at its base width).
+
+          // Coerce from the value's PRODUCED rep, not the AST prediction,
+          // which can disagree (e.g. a small-int default at base width).
           LLVM_Rep prep = pt ? Type_To_Rep (pt) : Integer_Arith_Rep ();
-          default_arg_vals[n_default_args]  = Coerce_To_Rep (dv.reg, dv.rep, prep);
-          default_arg_types[n_default_args] = prep;
+          args[p]  = Coerce_To_Rep (dv.reg, dv.rep, prep);
+          slot_default_rep[p] = prep;
         }
-        n_default_args++;
       }
     }
     uint32_t t = Emit_Temp ();
@@ -25070,13 +25745,19 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
       }
     }
 
-    // Regular arguments
-    for (uint32_t i = 0; i < node->apply.arguments.count; i++) {
+    // Arguments in PARAMETER order — actuals and defaults interleave by
+    // slot (RM 6.4.2).
+    uint32_t emitted_slots = sym->parameters ? sym->parameter_count
+                                             : node->apply.arguments.count;
+    if (emitted_slots > slot_count) emitted_slots = slot_count;
+    for (uint32_t i = 0; i < emitted_slots; i++) {
+      if (not slot_covered[i] and not slot_is_default[i] and
+          not (i < node->apply.arguments.count)) continue;
       if (need_comma) Emit (", ");
       need_comma = true;
-
-      // OUT/IN OUT: pass as pointer
-      if (is_byref[i]) {
+      if (slot_is_default[i]) {
+        Emit ("%s %%t%u", LLVM_Rep_To_String (slot_default_rep[i]), args[i]);
+      } else if (is_byref[i]) {
         Emit ("ptr %%t%u", args[i]);
       } else {
         const char *param_type = (sym->parameters and i < sym->parameter_count and
@@ -25085,13 +25766,6 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
           : LLVM_Rep_To_String (Integer_Arith_Rep ());
         Emit ("%s %%t%u", param_type, args[i]);
       }
-    }
-
-    // Trailing default arguments (RM 6.4.2), in formal order after actuals
-    for (uint32_t k = 0; k < n_default_args; k++) {
-      if (need_comma) Emit (", ");
-      need_comma = true;
-      Emit ("%s %%t%u", LLVM_Rep_To_String (default_arg_types[k]), default_arg_vals[k]);
     }
     Emit (")\n");
 
@@ -25103,11 +25777,13 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
 
     // Copy-out: for scalar/access OUT/IN OUT, copy from temp back to actual.
     // This only runs on normal return - exceptions skip via longjmp (RM 6.2).
-    for (uint32_t i = 0; i < node->apply.arguments.count; i++) {
+    for (uint32_t i = 0; i < slot_count; i++) {
 
       // The actual expression behind this slot, with NK_ASSOCIATION
-      // (NAME => VALUE) peeled. Both arms read the actual's subtype off it.
-      Syntax_Node *arg_node = node->apply.arguments.items[i];
+      // (NAME => VALUE) peeled. Default-filled slots have no actual and
+      // nothing to copy back.
+      Syntax_Node *arg_node = slot_actual[i];
+      if (not arg_node) continue;
       Syntax_Node *arg = Unwrap_Association (arg_node);
 
       // Scalar/access copy-back
@@ -25469,12 +26145,10 @@ index_path: ;
         // null-check it directly as a plain pointer.
         Emit_Access_Check (Val_Rep (base, LL_REP_PTR), prefix_type);
       } else {
-        if (array_sym) {
-          base = Emit_Temp ();
-          Emit_Load_Ptr_From_Symbol (base, array_sym);
-        } else {
-          base = Generate_Expression (node->apply.prefix).reg;
-        }
+        // Evaluate the prefix as an expression — uniform over access
+        // variables, renames/aliases, and access-returning parameterless
+        // functions (implicit call, RM 4.1.3).
+        base = Generate_Expression (node->apply.prefix).reg;
         Emit_Access_Check (Val_Of_Type (base, prefix_type), prefix_type);
       }
     }
@@ -26342,7 +27016,8 @@ LLVM_Value Emit_Bound_Attribute (uint32_t t,
       return Generate_Bound_Value (b, bound_rep);
     }
   } else {
-    fprintf (stderr, "warning: attribute '%.*s'%s has no type, defaulting to 0\n",
+    Report_Warning (prefix_expr ? prefix_expr->location : No_Location,
+        "attribute '%.*s'%s has no type, defaulting to 0",
         (int)attr.length, attr.data, tag);
     Emit ("  %%t%u = add %s 0, 0  ; %.*s'%s (no type)\n", t,
        LLVM_Rep_To_String (Integer_Arith_Rep ()), (int)attr.length, attr.data, tag);
@@ -26563,6 +27238,9 @@ LLVM_Value Generate_Attribute (Syntax_Node *node) {
   // Generate address of prefix object
   if (Slice_Equal_Ignore_Case (attr, S("ADDRESS"))) {
     Symbol *sym = node->attribute.prefix->symbol;
+    // A USE-visible alias denotes the original entity — follow it so an
+    // RM 13.5 overlay's address_cell is seen.
+    while (sym and sym->aliased) sym = sym->aliased;
     if (sym) {
 
       // Label address - use blockaddress for code location
@@ -26606,6 +27284,16 @@ LLVM_Value Generate_Attribute (Syntax_Node *node) {
           sym->needs_address_marker = true;
           cg->address_markers[cg->address_marker_count++] = sym;
         }
+
+      // Overlay object (RM 13.5 address clause): its address IS the value
+      // stored in the hidden cell, not the (nonexistent) own storage.
+      } else if (sym->address_cell) {
+        uint32_t cell_ptr = Emit_Temp ();
+        Emit ("  %%t%u = load ptr, ptr ", cell_ptr);
+        Emit_Symbol_Storage (sym->address_cell);
+        Emit ("\n");
+        Emit ("  %%t%u = ptrtoint ptr %%t%u to i64  ; 'ADDRESS (overlay)\n",
+           t, cell_ptr);
 
       // Variable/task address - emit via uplevel predicate
       } else {
@@ -27422,7 +28110,7 @@ LLVM_Value Generate_Attribute (Syntax_Node *node) {
     if (not sym)
       Fatal_Error (node->location, "'ACCESS attribute applied to expression with no symbol");
     Emit ("  %%t%u = getelementptr i8, ptr ", t);
-    Emit_Symbol_Ref (sym);
+    Emit_Symbol_Storage (sym);
     Emit (", i64 0  ; '%.*s\n", (int)attr.length, attr.data);
     return Val_Rep (t, LL_REP_PTR);
   }
@@ -28464,6 +29152,10 @@ void Emit_Index_Bounds_Constraint_Check (uint32_t lo_val, uint32_t hi_val,
     Emit_Constraint_Check_Val (Val_Rep (hi_val, bt), idx_ty, NULL);
   }
 }
+
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+// §13.9 Aggregate Helpers (body)
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
 
 uint32_t Generate_Aggregate (Syntax_Node *node) {
   Type_Info *agg_type = node->type;
@@ -32202,7 +32894,7 @@ LLVM_Value Generate_Expression (Syntax_Node *node) {
 }
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
-// §13.4 Statement Code Generation                                                                  
+// §13.7 Statement Code Generation                                                                  
 //                                                                                                  
 // Statements modify state while expressions compute values, a distinction Ada enforces.           
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
@@ -32268,9 +32960,14 @@ void Generate_Assignment (Syntax_Node *node) {
     Emit ("  ; ASSIGN indexed/slice :=\n");
   }
 
-  // For RENAMES: redirect to the renamed object
-  if (target->kind == NK_IDENTIFIER and target->symbol and target->symbol->renamed_object) {
-    target = target->symbol->renamed_object;
+  // For RENAMES: redirect to the renamed object. A USE-visible alias
+  // denotes the original entity — follow it so a rename (including an
+  // RM 13.5 overlay) attached to the original fires.
+  if (target->kind == NK_IDENTIFIER and target->symbol) {
+    Symbol *target_base = target->symbol;
+    while (target_base->aliased) target_base = target_base->aliased;
+    if (target_base->renamed_object)
+      target = target_base->renamed_object;
   }
 
   // Handle indexed component target (array element or slice assignment)
@@ -32279,8 +32976,6 @@ void Generate_Assignment (Syntax_Node *node) {
     bool is_array_target = prefix_type and
       (prefix_type->kind == TYPE_ARRAY or prefix_type->kind == TYPE_STRING);
     if (is_array_target) {
-      Symbol *array_sym = target->apply.prefix->symbol;
-      if (not array_sym) return;
 
       // For unconstrained (STRING / unconstrained array) the variable                              
       // holds a fat pointer - we must load it and extract the data ptr.                           
@@ -32348,7 +33043,8 @@ void Generate_Assignment (Syntax_Node *node) {
         // Load fat pointer, extract data ptr and low bound
         if (target_is_uncon) {
           LLVM_Rep sa_bt = Array_Bound_LLVM_Rep (prefix_type);
-          uint32_t fat = Emit_Load_Fat_Pointer (array_sym, sa_bt).reg;
+          uint32_t fat_addr = Generate_Lvalue (target->apply.prefix);
+          uint32_t fat = Emit_Load_Fat_Pointer_From_Temp (fat_addr, sa_bt).reg;
           dest_base = Emit_Fat_Pointer_Data (fat, sa_bt).reg;
 
           // Low bound comes from the fat pointer at runtime
@@ -32399,9 +33095,9 @@ void Generate_Assignment (Syntax_Node *node) {
         LLVM_Rep csa_t = Integer_Arith_Rep ();
         low_bound = Array_Low_Bound (prefix_type);
 
-        // Get destination base address
-        dest_base = Emit_Temp ();
-        Emit_Symbol_Addr (dest_base, array_sym);
+        // Get destination base address (any addressable prefix: identifier,
+        // record component, dereference)
+        dest_base = Generate_Lvalue (target->apply.prefix);
 
         // Evaluate slice bounds and compute copy length from original range.
         // Length must use raw bounds (not index-adjusted) per Ada RM 5.2.1.
@@ -32521,8 +33217,12 @@ void Generate_Assignment (Syntax_Node *node) {
           // Ada RM 5.2.1: source slides to destination index range.                               
           // We evaluate the source, extract its data pointer, and memcpy.                         
           //                                                                                        
-          uint32_t src_val = Generate_Expression (src).reg;
-          LLVM_Rep src_llvm = Expression_LLVM_Rep (src);
+          // The VALUE's own rep is ground truth — a concatenation always
+          // yields a fat pointer even when the context type is a
+          // constrained array (whose predicted rep is a thin pointer).
+          LLVM_Value src_value = Generate_Expression (src);
+          uint32_t src_val = src_value.reg;
+          LLVM_Rep src_llvm = src_value.rep;
           if (LLVM_Rep_Is_Fat_Pointer (src_llvm)) {
             src_ptr = Emit_Fat_Pointer_Data (src_val,
               Array_Bound_LLVM_Rep (src->type ? src->type : prefix_type)).reg;
@@ -32789,7 +33489,7 @@ void Generate_Assignment (Syntax_Node *node) {
         // Load target discriminant
         uint32_t tgt_dp = Emit_Temp ();
         Emit ("  %%t%u = getelementptr i8, ptr ", tgt_dp);
-        Emit_Symbol_Ref (target_sym);
+        Emit_Symbol_Storage (target_sym);
         Emit (", %s %u\n", LLVM_Rep_To_String (iat_dc), dc->byte_offset);
         uint32_t tgt_dv = Emit_Temp ();
         Emit ("  %%t%u = load %s, ptr %%t%u  ; tgt disc %.*s\n",
@@ -32805,7 +33505,7 @@ void Generate_Assignment (Syntax_Node *node) {
 
     // Copy record data (whole record for mutable, or non-discriminant part for constrained)
     Emit ("  call void @llvm.memcpy.p0.p0.i64(ptr ");
-    Emit_Symbol_Ref (target_sym);
+    Emit_Symbol_Storage (target_sym);
     Emit (", ptr %%t%u, i64 %u, i1 false)  ; record assignment\n",
        src_ptr, record_size);
     return;
@@ -32835,7 +33535,7 @@ void Generate_Assignment (Syntax_Node *node) {
     // Aggregate returns SSA fat pointer { ptr, ptr }; store to target.
     if (src_is_agg_fat) {
       Emit ("  store " FAT_PTR_TYPE " %%t%u, ptr ", src_ptr);
-      Emit_Symbol_Ref (target_sym);
+      Emit_Symbol_Storage (target_sym);
       Emit ("  ; array assignment (dynamic constrained)\n");
 
     // Source is unconstrained/string - extract data pointer from fat pointer
@@ -33756,7 +34456,7 @@ void Generate_For_Loop (Syntax_Node *node) {
 }
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
-// §13.4.8 Exception Handling                                                                       
+// §13.5 Exception Handling (body)                                                                       
 //                                                                                                  
 // The stack unwinder's memory is what makes exceptions possible.                                  
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
@@ -33994,6 +34694,7 @@ void Generate_Statement (Syntax_Node *node) {
 
       // Emit procedure name comment if available
       if (target->symbol) {
+        Note_Separate_Boundary_Callee (target->symbol);
         Emit ("  ; CALL %.*s\n",
            (int)target->symbol->name.length, target->symbol->name.data);
       } else if (target->kind == NK_APPLY and target->apply.prefix and
@@ -35350,7 +36051,7 @@ void Generate_Statement (Syntax_Node *node) {
 }
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
-// §13.5 Declaration Code Generation                                                                
+// §13.8 Declaration Code Generation                                                                
 //                                                                                                  
 // Names get bound to meanings, and those bindings are what we generate.                           
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
@@ -36148,6 +36849,21 @@ void Generate_Object_Declaration (Syntax_Node *node) {
   bool use_frame = cg->current_nesting_level > 0;
   bool is_package_level = (cg->current_function == NULL);
 
+  // An object with an address clause (RM 13.5) owns no storage of its own:
+  // it is an overlay reached through its hidden address cell. The clause's
+  // elaboration point (codegen NK_REPRESENTATION_CLAUSE) emits the cell and
+  // performs the declared initialization through the overlay.
+  if (node->object_decl.names.count > 0) {
+    bool all_overlaid = true;
+    for (uint32_t i = 0; i < node->object_decl.names.count; i++) {
+      Syntax_Node *name_node = node->object_decl.names.items[i];
+      if (not name_node or not name_node->symbol or
+          not name_node->symbol->address_clause)
+        all_overlaid = false;
+    }
+    if (all_overlaid) return;
+  }
+
   // A tree-copy package instance's package-level objects are per-instance
   // GLOBALS even when the instantiation is nested inside a subprogram
   // (storage class must agree with Symbol_Is_Global, which classifies them
@@ -36343,10 +37059,15 @@ void Generate_Object_Declaration (Syntax_Node *node) {
           }
           Emit ("\"\n");
 
-          // Emit bounds global: @SYMNAME.bounds = { i64 1, i64 N }
+          // Emit bounds global: @SYMNAME.bounds = { bt 1, bt N } where bt is
+          // the array's index bound rep (i32 for STRING), matching the
+          // Bounds_Type_For convention every fat-pointer consumer reads with.
+          LLVM_Rep bound_rep = Array_Bound_LLVM_Rep (is_any_array ? ty : sm->type_string);
+          const char *bound_type = LLVM_Rep_To_String (bound_rep);
           Emit_Global_Ref (sym);
-          Emit (".bounds = linkonce_odr constant { i64, i64 } "
-             "{ i64 1, i64 %d }\n", (int)str_len);
+          Emit (".bounds = linkonce_odr constant %s "
+             "{ %s 1, %s %d }\n",
+             Bounds_Type_For (bound_rep), bound_type, bound_type, (int)str_len);
 
           // Emit fat pointer global: { ptr @X.data, ptr @X.bounds }
           Emit_Global_Ref (sym);
@@ -36400,32 +37121,45 @@ void Generate_Object_Declaration (Syntax_Node *node) {
         cg->pending_global_inits[cg->pending_global_init_count].init = node->object_decl.init;
         cg->pending_global_init_count++;
       }
+      // Linkage: a unit compiled as the FILE'S OWN content emits the
+      // authoritative definition (strong); the same spec INLINED into a
+      // consumer (loaded unit) emits a discardable copy that merges with
+      // the authoritative one at link time. A strong define from a
+      // consumer would collide; a linkonce define from the owner gets
+      // DROPPED by llvm-link when nothing in its own module uses it.
+      const char *global_linkage =
+        cg->generating_loaded_unit ? "linkonce_odr global" : "global";
       if (is_constrained_array and array_count > 0) {
         if (elem_is_composite and elem_size > 0) {
-          Emit (" = linkonce_odr global [%s x [%u x i8]] zeroinitializer\n",
-             I128_Decimal (array_count), elem_size);
+          Emit (" = %s [%s x [%u x i8]] zeroinitializer\n",
+             global_linkage, I128_Decimal (array_count), elem_size);
         } else {
-          Emit (" = linkonce_odr global [%s x %s] zeroinitializer\n",
-             I128_Decimal (array_count), LLVM_Rep_To_String (elem_rep));
+          Emit (" = %s [%s x %s] zeroinitializer\n",
+             global_linkage, I128_Decimal (array_count),
+             LLVM_Rep_To_String (elem_rep));
         }
       } else if (is_record and record_size > 0) {
-        Emit (" = linkonce_odr global [%u x i8] zeroinitializer\n", record_size);
+        Emit (" = %s [%u x i8] zeroinitializer\n", global_linkage,
+              record_size);
       } else {
         if (LLVM_Rep_Is_Fat_Pointer (type_rep)) {
-          Emit (" = linkonce_odr global %s zeroinitializer\n", LLVM_Rep_To_String (type_rep));
+          Emit (" = %s %s zeroinitializer\n", global_linkage,
+                LLVM_Rep_To_String (type_rep));
         } else if (Type_Is_Float_Representation (ty)) {
           double fv = has_static_init ? init_fval : 0.0;
           if (fv == 0.0) {
-            Emit (" = linkonce_odr global %s 0.0\n", LLVM_Rep_To_String (type_rep));
+            Emit (" = %s %s 0.0\n", global_linkage,
+                  LLVM_Rep_To_String (type_rep));
           } else {
             uint64_t bits; memcpy (&bits, &fv, 8);
-            Emit (" = linkonce_odr global %s 0x%016llX\n",
+            Emit (" = %s %s 0x%016llX\n", global_linkage,
                LLVM_Rep_To_String (type_rep), (unsigned long long) bits);
           }
         } else if (LLVM_Rep_Is_Pointer (type_rep)) {
-          Emit (" = linkonce_odr global ptr null\n");
+          Emit (" = %s ptr null\n", global_linkage);
         } else {
-          Emit (" = linkonce_odr global %s %lld\n", LLVM_Rep_To_String (type_rep),
+          Emit (" = %s %s %lld\n", global_linkage,
+             LLVM_Rep_To_String (type_rep),
              (long long)(has_static_init ? init_ival : 0));
         }
       }
@@ -38071,6 +38805,11 @@ bool Has_Nested_Subprograms (Node_List *declarations, Node_List *statements) {
         return true;
       }
 
+      // A SEPARATE package-body stub: the subunit's elaboration runs as a
+      // function over THIS frame (RM 10.2), so the frame must exist.
+      if (decl->kind == NK_PACKAGE_BODY and decl->package_body.is_separate)
+        return true;
+
       // Check inside nested package specs / bodies for any kind of subprogram
       // that would need access to our frame. Generic instantiations and task
       // bodies count too: an instantiated generic is a real subprogram whose
@@ -38123,6 +38862,7 @@ bool Has_Nested_Subprograms (Node_List *declarations, Node_List *statements) {
 // The function returns void since result is built into __BIPaccess.                               
 //                                                                                                  
 void Emit_Function_Header (Symbol *sym, bool is_nested) {
+  if (sym) sym->definition_emitted = true;
   // New function: invalidate the producer-honesty shadow (temp ids restart).
   cg->reg_emit_gen++;
   bool is_function = (sym->kind == SYMBOL_FUNCTION);
@@ -38535,9 +39275,13 @@ void Process_Deferred_Bodies (uint32_t saved_deferred_count) {
 }
 void Generate_Subprogram_Body (Syntax_Node *node) {
 
-  // Skip stub bodies (PROCEDURE X IS SEPARATE;) - the actual body
-  // will be provided by a separate subunit compilation
+  // A subprogram stub (PROCEDURE X IS SEPARATE;): the subunit's own
+  // compilation defines the body under the SAME stable mangled name
+  // (Symbol_Is_Subunit_Stub suppresses the per-compilation suffix), so
+  // this module declares it — through the SEPARATE-boundary flush, which
+  // emits the full call ABI including the static-link parameter.
   if (node->subprogram_body.is_separate) {
+    Append_Separate_Callee (node->symbol);
     return;
   }
 
@@ -38606,83 +39350,11 @@ void Generate_Subprogram_Body (Syntax_Node *node) {
     }
   }
 
-  // If nested, create aliases for accessing enclosing scope variables via frame                    
-  // Create pointer aliases to parent scope variables.                                             
-  // Must include all storage-bearing symbol kinds: variables, parameters,                          
-  // discriminants, and constants (non-named-number constants like                                  
-  // "X : INTEGER := 2" have stack storage and can be modified).                                   
-  // Track emitted names to avoid duplicate definitions when the same                               
-  // mangled name appears from both symbols[] and frame_vars[].                                    
-  //                                                                                                
-  if (is_nested and enclosing_subprog and enclosing_subprog->scope) {
-    Scope *parent_scope = enclosing_subprog->scope;
-
-    // Track emitted frame alias unique_ids to prevent duplicates.                                 
-    // Note: cannot store String_Slice from Symbol_Mangle_Name because                              
-    // it returns pointers into a rotating static buffer (4 slots).                                
-    //                                                                                              
-    #define MAX_FRAME_ALIASES 512
-    uint32_t emitted_ids[MAX_FRAME_ALIASES];
-    uint32_t emitted_count = 0;
-    for (uint32_t i = 0; i < parent_scope->symbol_count; i++) {
-      Symbol *var = parent_scope->symbols[i];
-      if (var and (var->kind == SYMBOL_VARIABLE or var->kind == SYMBOL_PARAMETER or
-            var->kind == SYMBOL_DISCRIMINANT or
-            (var->kind == SYMBOL_CONSTANT and not var->is_named_number))) {
-
-        // Globals (including per-instance generic-package variables) have
-        // no frame slot; an alias would shadow nothing and same-named
-        // aliases from template + clone collide.
-        if (Symbol_Is_Global (var)) continue;
-
-        // Check for duplicate unique_id
-        bool already_emitted = false;
-        for (uint32_t j = 0; j < emitted_count; j++) {
-          if (var->unique_id == emitted_ids[j]) {
-            already_emitted = true;
-            break;
-          }
-        }
-        if (already_emitted) continue;
-        if (emitted_count < MAX_FRAME_ALIASES) {
-          emitted_ids[emitted_count++] = var->unique_id;
-        }
-        if (Symbol_Is_Global (var)) continue;  // module-level storage, no alias
-        Emit ("  %%__frame.");
-        Emit_Symbol_Name (var);
-        Emit (" = getelementptr i8, ptr %%__parent_frame, i64 %lld\n",
-           (long long)(var->frame_offset));
-      }
-    }
-
-    // Also create aliases for variables from child scopes (DECLARE blocks, etc.)                   
-    // that share the same function frame but were in deeper scopes.                               
-    // Skip symbols whose mangled name was already emitted above.                                  
-    //                                                                                              
-    for (uint32_t i = 0; i < parent_scope->frame_var_count; i++) {
-      Symbol *var = parent_scope->frame_vars[i];
-      if (not var) continue;
-      if (Symbol_Is_Global (var)) continue;  // no frame slot for globals
-      bool already_emitted = false;
-      for (uint32_t j = 0; j < emitted_count; j++) {
-        if (var->unique_id == emitted_ids[j]) {
-          already_emitted = true;
-          break;
-        }
-      }
-      if (not already_emitted) {
-        if (emitted_count < MAX_FRAME_ALIASES) {
-          emitted_ids[emitted_count++] = var->unique_id;
-        }
-        if (Symbol_Is_Global (var)) continue;  // module-level storage, no alias
-        Emit ("  %%__frame.");
-        Emit_Symbol_Name (var);
-        Emit (" = getelementptr i8, ptr %%__parent_frame, i64 %lld\n",
-           (long long)(var->frame_offset));
-      }
-    }
-    #undef MAX_FRAME_ALIASES
-  }
+  // If nested, create aliases for accessing enclosing scope variables via
+  // the frame: Emit_Parent_Frame_Aliases walks every enclosing level
+  // through the static chain (the chain slot is the alloca above).
+  if (is_nested)
+    Emit_Parent_Frame_Aliases (enclosing_subprog);
 
   // Allocate and store parameters to local stack slots                                             
   // For OUT/IN OUT: param is already a pointer, use directly                                       
@@ -38836,11 +39508,97 @@ void Emit_Task_Function_Name (Symbol *task_sym, String_Slice fallback_name) {
     }
   }
 }
+// Emit %__frame. aliases for every frame-resident variable of EVERY
+// enclosing subprogram level (RM 8.3): the direct parent's variables read
+// through %__parent_frame; deeper levels chase the static chain — each
+// nested frame stores its parent's frame pointer at its own frame_size
+// offset. Each level covers its own scope plus DECLARE-block frame_vars,
+// deduplicated by unique_id; innermost level emits first, so the dedup
+// realizes lexical shadowing. Shared by nested subprograms, task bodies,
+// and package-body subunits — all run as functions over the parent's
+// frame. No-op when there is no enclosing subprogram (library level:
+// uplevel references are globals and must not alias through
+// %__parent_frame).
+void Emit_Parent_Frame_Aliases (Symbol *enclosing_subprogram) {
+  if (not enclosing_subprogram or not enclosing_subprogram->scope) return;
+  uint32_t *emitted_ids = NULL;
+  uint32_t emitted_count = 0, emitted_capacity = 0;
+  char chain_base[32];
+  snprintf (chain_base, sizeof (chain_base), "%%__parent_frame");
+  Symbol *level_sym = enclosing_subprogram;
+
+  // Lexical nesting cannot cycle; the walk ends when no subprogram
+  // encloses the level. No depth cap — a silent one cost the deepest
+  // ACATS subunit chains their root-frame aliases.
+  while (level_sym) {
+    Scope *level_scope = level_sym->scope;
+    if (level_scope) {
+      for (int pass = 0; pass < 2; pass++) {
+        uint32_t count = pass == 0 ? level_scope->symbol_count
+                                   : level_scope->frame_var_count;
+        for (uint32_t i = 0; i < count; i++) {
+          Symbol *var = pass == 0 ? level_scope->symbols[i]
+                                  : level_scope->frame_vars[i];
+          if (not var) continue;
+          if (pass == 0 and
+              var->kind != SYMBOL_VARIABLE and
+              var->kind != SYMBOL_PARAMETER and
+              var->kind != SYMBOL_DISCRIMINANT and
+              not (var->kind == SYMBOL_CONSTANT and
+                   not var->is_named_number))
+            continue;
+          if (Symbol_Is_Global (var)) continue;  // module-level storage
+          bool already_emitted = false;
+          for (uint32_t j = 0; j < emitted_count; j++)
+            if (var->unique_id == emitted_ids[j]) {
+              already_emitted = true;
+              break;
+            }
+          if (already_emitted) continue;
+          if (emitted_count == emitted_capacity) {
+            uint32_t grown_capacity =
+              emitted_capacity ? emitted_capacity * 2 : 64;
+            uint32_t *grown =
+              Arena_Allocate (grown_capacity * sizeof (uint32_t));
+            for (uint32_t g = 0; g < emitted_count; g++)
+              grown[g] = emitted_ids[g];
+            emitted_ids = grown;
+            emitted_capacity = grown_capacity;
+          }
+          emitted_ids[emitted_count++] = var->unique_id;
+          Emit ("  %%__frame.");
+          Emit_Symbol_Name (var);
+          Emit (" = getelementptr i8, ptr %s, i64 %lld\n",
+             chain_base, (long long)(var->frame_offset));
+        }
+      }
+    }
+
+    // Chase the static chain to the next enclosing subprogram's frame.
+    Symbol *next_level = Find_Enclosing_Subprogram (level_sym);
+    if (not next_level) break;
+    int64_t link_offset = (level_scope and level_scope->frame_size > 0)
+      ? level_scope->frame_size : 8;
+    uint32_t link = Emit_Temp ();
+    Emit ("  %%t%u = getelementptr i8, ptr %s, i64 %lld"
+          "  ; static chain slot\n",
+          link, chain_base, (long long)link_offset);
+    uint32_t chained = Emit_Temp ();
+    Emit ("  %%t%u = load ptr, ptr %%t%u\n", chained, link);
+    snprintf (chain_base, sizeof (chain_base), "%%t%u", chained);
+    level_sym = next_level;
+  }
+  #undef MAX_FRAME_ALIASES
+}
+
 void Generate_Task_Body (Syntax_Node *node) {
 
   // Skip stub bodies (TASK BODY X IS SEPARATE;) - the actual body
   // will be provided by a separate subunit compilation
   if (node->task_body.is_separate) {
+    Report_Warning (node->location,
+      "SEPARATE task body is not compiled in this unit; "
+      "the task will be unresolved at link time");
     Emit ("\n; Task body stub: %.*s (defined in separate subunit)\n",
        (int)node->task_body.name.length, node->task_body.name.data);
     return;
@@ -38895,48 +39653,7 @@ void Generate_Task_Body (Syntax_Node *node) {
   // static link); its uplevel references are globals and must not be
   // aliased through %__parent_frame.
   Symbol *enclosing_subp = Find_Enclosing_Subprogram (node->symbol);
-  Scope  *parent_scope   = enclosing_subp ? enclosing_subp->scope : NULL;
-
-  // Dedup by unique_id (same approach as Generate_Subprogram_Body)
-  if (parent_scope) {
-    #define MAX_TASK_FRAME_ALIASES 512
-    uint32_t task_emitted_ids[MAX_TASK_FRAME_ALIASES];
-    uint32_t task_emitted_count = 0;
-    for (uint32_t i = 0; i < parent_scope->symbol_count; i++) {
-      Symbol *var = parent_scope->symbols[i];
-      if (var and (var->kind == SYMBOL_VARIABLE or var->kind == SYMBOL_PARAMETER or
-            var->kind == SYMBOL_DISCRIMINANT)) {
-        bool dup = false;
-        for (uint32_t j = 0; j < task_emitted_count; j++)
-          if (var->unique_id == task_emitted_ids[j]) { dup = true; break; }
-        if (dup) continue;
-        if (task_emitted_count < MAX_TASK_FRAME_ALIASES)
-          task_emitted_ids[task_emitted_count++] = var->unique_id;
-        if (Symbol_Is_Global (var)) continue;  // module-level storage, no alias
-        Emit ("  %%__frame.");
-        Emit_Symbol_Name (var);
-        Emit (" = getelementptr i8, ptr %%__parent_frame, i64 %lld\n",
-           (long long)(var->frame_offset));
-      }
-    }
-
-    // Also include variables from child scopes (DECLARE blocks).
-    for (uint32_t i = 0; i < parent_scope->frame_var_count; i++) {
-      Symbol *var = parent_scope->frame_vars[i];
-      if (not var) continue;
-      bool dup = false;
-      for (uint32_t j = 0; j < task_emitted_count; j++)
-        if (var->unique_id == task_emitted_ids[j]) { dup = true; break; }
-      if (dup) continue;
-      if (task_emitted_count < MAX_TASK_FRAME_ALIASES)
-        task_emitted_ids[task_emitted_count++] = var->unique_id;
-      Emit ("  %%__frame.");
-      Emit_Symbol_Name (var);
-      Emit (" = getelementptr i8, ptr %%__parent_frame, i64 %lld\n",
-         (long long)(var->frame_offset));
-    }
-    #undef MAX_TASK_FRAME_ALIASES
-  }
+  Emit_Parent_Frame_Aliases (enclosing_subp);
 
   // Push exception handler for task using consolidated helper
   Exception_Setup exc = Emit_Exception_Handler_Setup ();
@@ -39153,8 +39870,93 @@ void Generate_Declaration (Syntax_Node *node) {
       }
       break;
     case NK_PACKAGE_BODY:
+
+      // A package-body stub (PACKAGE BODY X IS SEPARATE;): the subunit's
+      // module defines @<x>___elab(ptr) under the same stable name; this
+      // module declares it and calls it at the stub's elaboration point
+      // with the enclosing frame (RM 10.2: the subunit's body elaborates
+      // where the stub stands).
+      if (node->package_body.is_separate and node->symbol) {
+
+        // The declaration is deferred to the post-generation flush: in a
+        // single-file program the subunit's define lands in THIS module,
+        // and a textual declare alongside it is a redefinition error.
+        if (not node->symbol->elab_extern_noted) {
+          node->symbol->elab_extern_noted = true;
+          if (cg->pkg_elab_extern_count == cg->pkg_elab_extern_capacity) {
+            uint32_t grown_capacity = cg->pkg_elab_extern_capacity
+                                    ? cg->pkg_elab_extern_capacity * 2 : 8;
+            Symbol **grown =
+              Arena_Allocate (grown_capacity * sizeof (Symbol *));
+            for (uint32_t i = 0; i < cg->pkg_elab_extern_count; i++)
+              grown[i] = cg->pkg_elab_externs[i];
+            cg->pkg_elab_externs = grown;
+            cg->pkg_elab_extern_capacity = grown_capacity;
+          }
+          cg->pkg_elab_externs[cg->pkg_elab_extern_count++] = node->symbol;
+        }
+        if (cg->current_function) {
+          Emit ("  call void @");
+          Emit_Symbol_Name (node->symbol);
+          Emit ("___elab(%s)  ; SEPARATE package body\n",
+                Task_Parent_Frame_Argument ());
+        }
+        break;
+      }
       {
         Symbol *pkg_sym = node->symbol;  // Use symbol from semantic analysis
+
+        // A SUBUNIT package body whose parent chain nests in a subprogram:
+        // all its state lives in the PARENT's frame (offsets agree — both
+        // compilations resolve the same parent source), so the whole body
+        // emits as one elaboration function over that frame. %__frame_base
+        // aliases %__parent_frame and the ordinary frame-mode declaration
+        // machinery lays the package's variables into their shared slots.
+        if (cg->subunit_parent and pkg_sym and
+            Find_Enclosing_Subprogram (pkg_sym)) {
+          uint32_t subunit_saved_deferred = cg->deferred_count;
+          pkg_sym->elab_defined = true;
+          Emit ("\n; Subunit package body over parent frame\n");
+          Emit ("define void @");
+          Emit_Symbol_Name (pkg_sym);
+          Emit ("___elab(ptr %%__parent_frame) {\n");
+          Emit ("entry:\n");
+          Symbol *saved_function = cg->current_function;
+          bool saved_nested = cg->is_nested;
+          uint32_t saved_nesting = cg->current_nesting_level;
+          uint32_t saved_temp = cg->temp_id;
+          cg->current_function = pkg_sym;
+          cg->is_nested = true;
+          cg->current_nesting_level = 1;
+          cg->temp_id = 1;
+          cg->block_terminated = false;
+          Symbol *frame_owner = cg->subunit_parent;
+          if (frame_owner->kind != SYMBOL_PROCEDURE and
+              frame_owner->kind != SYMBOL_FUNCTION)
+            frame_owner = Find_Enclosing_Subprogram (frame_owner);
+          Emit_Parent_Frame_Aliases (frame_owner);
+          Emit ("  %%__frame_base = getelementptr i8, ptr "
+                "%%__parent_frame, i64 0  ; shared parent frame\n");
+
+          // The SPEC's declarations elaborated at their own declaration
+          // point inside the parent's module (RM 7.2); only the body's
+          // declarative part and statements belong to this function.
+          Generate_Declaration_List (&node->package_body.declarations);
+          Generate_Statement_List (&node->package_body.statements);
+          if (not cg->block_terminated)
+            Emit ("  ret void\n");
+          Emit ("}\n\n");
+          cg->current_function = saved_function;
+          cg->is_nested = saved_nested;
+          cg->current_nesting_level = saved_nesting;
+          cg->temp_id = saved_temp;
+
+          // Nested subprogram bodies deferred during the elaboration
+          // function emit now, at module level — the subunit's whole
+          // payload (ca1002's P) lives here.
+          Process_Deferred_Bodies (subunit_saved_deferred);
+          break;
+        }
 
         // Skip generic package bodies - code is generated only for instances
         if (pkg_sym and pkg_sym->kind == SYMBOL_GENERIC) {
@@ -39172,8 +39974,19 @@ void Generate_Declaration (Syntax_Node *node) {
           pkg_sym->declaration and
           pkg_sym->declaration->kind == NK_PACKAGE_SPEC) {
           Syntax_Node *spec = pkg_sym->declaration;
+
+          // Ownership of the spec's globals (linkage): when the spec
+          // REQUIRES a body, consumers reference them externally and
+          // this body's module is the one authoritative definition
+          // (strong). When the body is optional, the spec's own
+          // compilation (and every consumer that inlined it) already
+          // defines them — this re-emission is a discardable copy.
+          bool body_owns_globals = Package_Spec_Requires_Body (spec);
+          bool saved_loaded_mode = cg->generating_loaded_unit;
+          if (not body_owns_globals) cg->generating_loaded_unit = true;
           Generate_Declaration_List (&spec->package_spec.visible_decls);
           Generate_Declaration_List (&spec->package_spec.private_decls);
+          cg->generating_loaded_unit = saved_loaded_mode;
         }
         uint32_t pkg_body_saved_pa = cg->pending_activation_count;
         Generate_Declaration_List (&node->package_body.declarations);
@@ -39257,13 +40070,22 @@ void Generate_Declaration (Syntax_Node *node) {
           Generate_Statement_List (&node->package_body.statements);
         }
 
-      // Library-level package: emit elaboration function that runs the
+      // Library-level package: emit the elaboration function that runs the
       // deferred library-level initializers, starts package-level tasks,
-      // and runs any initialization statements.
+      // and runs any initialization statements. Emitted even when empty:
+      // a dependent compiled against the spec alone calls @<pkg>___elab
+      // as an external reference, so the body's compilation must always
+      // define it (RM 10.5).
       } else if (not cg->current_function and
-                 (has_init_stmts or has_pkg_tasks or
-                  cg->pending_global_init_count > 0 or
-                  (pkg_sym and pkg_sym->generic_template and pkg_sym->scope))) {
+                 not node->package_body.elab_generated) {
+        node->package_body.elab_generated = true;
+        if (pkg_sym) pkg_sym->elab_defined = true;
+        // A subunit package body runs its elaboration as a function over
+        // the parent's frame, exactly like a task body: uniform
+        // @<name>___elab(ptr) ABI (callers pass the frame, or null at
+        // library level), with %__frame. aliases for the parent's
+        // frame-resident variables.
+        bool subunit_elab = cg->subunit_parent != NULL;
         Emit ("\n; Package body elaboration\n");
         Emit ("define void @");
         if (pkg_sym) {
@@ -39274,13 +40096,27 @@ void Generate_Declaration (Syntax_Node *node) {
             Emit ("%c", (c >= 'A' and c <= 'Z') ? c + 32 : c);
           }
         }
-        Emit ("___elab() {\n");
+        Emit (subunit_elab ? "___elab(ptr %%__parent_frame) {\n"
+                           : "___elab() {\n");
         Emit ("entry:\n");
         Symbol *saved_current_function = cg->current_function;
+        bool saved_is_nested = cg->is_nested;
         uint32_t saved_temp = cg->temp_id;
         cg->current_function = pkg_sym;
         cg->block_terminated = false;
         cg->temp_id = 1;
+        if (subunit_elab) {
+          cg->is_nested = true;
+
+          // The frame owner is the parent itself when the parent IS a
+          // subprogram (stub directly inside a procedure body); otherwise
+          // the nearest subprogram enclosing the parent package.
+          Symbol *frame_owner = cg->subunit_parent;
+          if (frame_owner and frame_owner->kind != SYMBOL_PROCEDURE and
+              frame_owner->kind != SYMBOL_FUNCTION)
+            frame_owner = Find_Enclosing_Subprogram (frame_owner);
+          Emit_Parent_Frame_Aliases (frame_owner);
+        }
 
         // A tree-copy instance's formal-object bindings elaborate first:
         // the declarative part's initializers may read them (RM 12.3(80)).
@@ -39343,19 +40179,19 @@ void Generate_Declaration (Syntax_Node *node) {
         Emit ("}\n\n");
         cg->temp_id = saved_temp;
         cg->current_function = saved_current_function;
+        cg->is_nested = saved_is_nested;
 
         // Track this elaboration function for calling from main.                                  
         // Also register with the §15 elaboration graph for                                         
         // proper dependency-ordered elaboration.                                                  
         //                                                                                          
-        if (pkg_sym and cg->elab_func_count < 64) {
-          cg->elab_funcs[cg->elab_func_count++] = pkg_sym;
+        if (pkg_sym) {
+          Append_Elab_Function (pkg_sym);
 
           // Register unit in elaboration graph (§15)
           Elab_Register_Unit (pkg_sym->name, true, pkg_sym,  // is_body
-
-                     false,  // is_preelaborate
-                     false,  // is_pure
+                     pkg_sym->is_preelaborate_unit,
+                     pkg_sym->is_pure_unit,
                      true);  // has_elab_code
         }
       }
@@ -39415,8 +40251,12 @@ void Generate_Declaration (Syntax_Node *node) {
               Emit ("  ret void\n}\n");
               cg->current_function = saved_function;
               cg->temp_id = saved_temp;
-              if (cg->elab_func_count < 64)
-                cg->elab_funcs[cg->elab_func_count++] = inst_sym;
+              Append_Elab_Function (inst_sym);
+
+              // A library-level instantiation is a library unit: its
+              // binding elaboration joins the §15 graph like any body.
+              Elab_Register_Unit (inst_sym->name, true, inst_sym,
+                                  false, false, true);
               break;
             }
           }
@@ -39469,8 +40309,12 @@ void Generate_Declaration (Syntax_Node *node) {
               Emit ("  ret void\n}\n");
               cg->current_function = saved_function;
               cg->temp_id = saved_temp;
-              if (cg->elab_func_count < 64)
-                cg->elab_funcs[cg->elab_func_count++] = inst_sym;
+              Append_Elab_Function (inst_sym);
+
+              // A library-level instantiation is a library unit: its
+              // binding elaboration joins the §15 graph like any body.
+              Elab_Register_Unit (inst_sym->name, true, inst_sym,
+                                  false, false, true);
             }
           }
           if (cg->current_function) {
@@ -40009,12 +40853,67 @@ void Generate_Declaration (Syntax_Node *node) {
       break;
     }
 
+    // Address clause elaboration (RM 13.5): emit the hidden cell's storage,
+    // store the evaluated address into it, then perform the overlaid
+    // object's declared initialization through the overlay (the assignment
+    // redirects via the object's renamed_object dereference).
+    case NK_REPRESENTATION_CLAUSE: {
+      Symbol *overlaid = node->rep_clause.entity_name
+        ? node->rep_clause.entity_name->symbol : NULL;
+      if (not overlaid and node->rep_clause.entity_name and
+          node->rep_clause.entity_name->kind == NK_IDENTIFIER)
+        overlaid = Symbol_Find (node->rep_clause.entity_name->string_val.text);
+      if (node->rep_clause.is_address_clause and overlaid and
+          overlaid->address_cell and node->rep_clause.expression) {
+        Symbol *cell = overlaid->address_cell;
+        Emit_Location (node->location);
+        Emit ("  ; FOR %.*s USE AT (RM 13.5 overlay)\n",
+           (int)overlaid->name.length, overlaid->name.data);
+        if (Symbol_Is_Global (cell)) {
+          Emit_Instance_Global_Definition (cell);
+        } else if (not Is_Uplevel_Access (cell)) {
+          Emit_Local_Ref (cell);
+          if (cg->current_nesting_level > 0)
+            Emit (" = getelementptr i8, ptr %%__frame_base, i64 %lld\n",
+               (long long)cell->frame_offset);
+          else
+            Emit (" = alloca ptr\n");
+        }
+        LLVM_Value clause_value =
+          Generate_Expression (node->rep_clause.expression);
+        uint32_t addr64 = Emit_Convert (clause_value.reg, clause_value.rep,
+          LLVM_Rep_Int (64, false)).reg;
+        uint32_t overlay_ptr = Emit_Temp ();
+        Emit ("  %%t%u = inttoptr i64 %%t%u to ptr\n", overlay_ptr, addr64);
+        Emit ("  store ptr %%t%u, ptr ", overlay_ptr);
+        Emit_Symbol_Storage (cell);
+        Emit ("\n");
+        Syntax_Node *obj_decl = overlaid->declaration;
+        if (obj_decl and obj_decl->kind == NK_OBJECT_DECL and
+            obj_decl->object_decl.init) {
+          Syntax_Node *target_name = NULL;
+          for (uint32_t i = 0; i < obj_decl->object_decl.names.count; i++) {
+            Syntax_Node *name_node = obj_decl->object_decl.names.items[i];
+            if (name_node and name_node->symbol == overlaid)
+              target_name = name_node;
+          }
+          if (target_name) {
+            Syntax_Node *init_assign = Node_New (NK_ASSIGNMENT,
+              node->location);
+            init_assign->assignment.target = target_name;
+            init_assign->assignment.value = obj_decl->object_decl.init;
+            Generate_Assignment (init_assign);
+          }
+        }
+      }
+      break;
+    }
+
     // Other declaration kinds that need no codegen
     case NK_EXCEPTION_DECL:
     case NK_USE_CLAUSE:
     case NK_WITH_CLAUSE:
     case NK_PRAGMA:
-    case NK_REPRESENTATION_CLAUSE:
     case NK_EXCEPTION_HANDLER:
     case NK_ENTRY_DECL:
     case NK_PACKAGE_RENAMING:
@@ -40030,7 +40929,7 @@ void Generate_Declaration (Syntax_Node *node) {
 }
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
-// §13.6 Implicit Equality Function Generation                                                      
+// §13.6.2 Implicit Equality Function Generation                                                      
 //                                                                                                  
 // Generate equality functions for composite types at freeze points.                               
 // Per RM 4.5.2, equality is predefined for all non-limited types.                                 
@@ -40338,7 +41237,7 @@ void Generate_Extern_Declarations (Syntax_Node *node) {
 }
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
-// §13.7 Compilation Unit Code Generation                                                           
+// §13.11 Compilation Unit Code Generation                                                           
 //                                                                                                  
 // A compilation unit is the quantum of separate compilation.                                      
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
@@ -40805,16 +41704,19 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   Emit ("  ret double %%result\n");
   Emit ("}\n\n");
 
+  // Both power helpers run at 64-bit width so every integer type's base
+  // values fit; the call site narrows the result back with a range check.
+  const char *pow_t = LLVM_Rep_To_String (LLVM_Rep_Int (64, false));
   // Integer power function - signed, overflow-checked (RM 4.5.6).                                 
   // Uses binary exponentiation (O(log n)) with overflow checking.                                 
   // Raises Constraint_Error on negative exponent or overflow.                                     
   //                                                                                                
   Emit ("; Integer exponentiation helper (signed, overflow-checked, binary exp)\n");
-  Emit ("define linkonce_odr %s @__ada_integer_pow (%s %%base, %s %%exp) {\n", it, it, it);
+  Emit ("define linkonce_odr %s @__ada_integer_pow (%s %%base, %s %%exp) {\n", pow_t, pow_t, pow_t);
   Emit ("entry:\n");
 
   // Check for negative exponent
-  Emit ("  %%is_neg = icmp slt %s %%exp, 0\n", it);
+  Emit ("  %%is_neg = icmp slt %s %%exp, 0\n", pow_t);
   Emit ("  br i1 %%is_neg, label %%neg_exp, label %%check_zero\n");
   Emit ("neg_exp:\n");
   Emit ("  %%exc_ptr_neg = ptrtoint ptr @__exc.constraint_error to " PTR_INT_TYPE "\n");
@@ -40823,90 +41725,90 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   Emit ("check_zero:\n");
 
   // exp == 0 -> return 1
-  Emit ("  %%is_zero = icmp eq %s %%exp, 0\n", it);
+  Emit ("  %%is_zero = icmp eq %s %%exp, 0\n", pow_t);
   Emit ("  br i1 %%is_zero, label %%ret_one, label %%loop\n");
   Emit ("ret_one:\n");
-  Emit ("  ret %s 1\n", it);
+  Emit ("  ret %s 1\n", pow_t);
 
   // Binary exponentiation loop: result *= b when e is odd, b *= b, e /= 2
   Emit ("loop:\n");
-  Emit ("  %%result = phi %s [ 1, %%check_zero ], [ %%new_result, %%cont ]\n", it);
-  Emit ("  %%b = phi %s [ %%base, %%check_zero ], [ %%new_b, %%cont ]\n", it);
-  Emit ("  %%e = phi %s [ %%exp, %%check_zero ], [ %%new_e, %%cont ]\n", it);
+  Emit ("  %%result = phi %s [ 1, %%check_zero ], [ %%new_result, %%cont ]\n", pow_t);
+  Emit ("  %%b = phi %s [ %%base, %%check_zero ], [ %%new_b, %%cont ]\n", pow_t);
+  Emit ("  %%e = phi %s [ %%exp, %%check_zero ], [ %%new_e, %%cont ]\n", pow_t);
 
   // Check if e is odd: e & 1
-  Emit ("  %%is_odd = and %s %%e, 1\n", it);
-  Emit ("  %%odd_bit = icmp ne %s %%is_odd, 0\n", it);
+  Emit ("  %%is_odd = and %s %%e, 1\n", pow_t);
+  Emit ("  %%odd_bit = icmp ne %s %%is_odd, 0\n", pow_t);
   Emit ("  br i1 %%odd_bit, label %%mult_result, label %%square_base\n");
 
   // Multiply result by base (overflow checked)
   Emit ("mult_result:\n");
-  Emit ("  %%pair_r = call {%s, i1} @llvm.smul.with.overflow.%s(%s %%result, %s %%b)\n", it, it, it, it);
-  Emit ("  %%mult_r = extractvalue {%s, i1} %%pair_r, 0\n", it);
-  Emit ("  %%ovf_r = extractvalue {%s, i1} %%pair_r, 1\n", it);
+  Emit ("  %%pair_r = call {%s, i1} @llvm.smul.with.overflow.%s(%s %%result, %s %%b)\n", pow_t, pow_t, pow_t, pow_t);
+  Emit ("  %%mult_r = extractvalue {%s, i1} %%pair_r, 0\n", pow_t);
+  Emit ("  %%ovf_r = extractvalue {%s, i1} %%pair_r, 1\n", pow_t);
   Emit ("  br i1 %%ovf_r, label %%overflow, label %%square_base\n");
 
   // Square the base for next iteration
   Emit ("square_base:\n");
-  Emit ("  %%result_sq = phi %s [ %%result, %%loop ], [ %%mult_r, %%mult_result ]\n", it);
+  Emit ("  %%result_sq = phi %s [ %%result, %%loop ], [ %%mult_r, %%mult_result ]\n", pow_t);
 
   // Halve exponent
-  Emit ("  %%new_e = lshr %s %%e, 1\n", it);
+  Emit ("  %%new_e = lshr %s %%e, 1\n", pow_t);
 
   // Check if done (e == 0 after shift)
-  Emit ("  %%done = icmp eq %s %%new_e, 0\n", it);
+  Emit ("  %%done = icmp eq %s %%new_e, 0\n", pow_t);
   Emit ("  br i1 %%done, label %%exit, label %%do_square\n");
 
-  // Actually compute b*b (only if we need it for next iteration)
+  // Actually compute b*b (only if we need pow_t for next iteration)
   Emit ("do_square:\n");
-  Emit ("  %%pair_b = call {%s, i1} @llvm.smul.with.overflow.%s(%s %%b, %s %%b)\n", it, it, it, it);
-  Emit ("  %%sq_b = extractvalue {%s, i1} %%pair_b, 0\n", it);
-  Emit ("  %%ovf_b = extractvalue {%s, i1} %%pair_b, 1\n", it);
+  Emit ("  %%pair_b = call {%s, i1} @llvm.smul.with.overflow.%s(%s %%b, %s %%b)\n", pow_t, pow_t, pow_t, pow_t);
+  Emit ("  %%sq_b = extractvalue {%s, i1} %%pair_b, 0\n", pow_t);
+  Emit ("  %%ovf_b = extractvalue {%s, i1} %%pair_b, 1\n", pow_t);
   Emit ("  br i1 %%ovf_b, label %%overflow, label %%cont\n");
   Emit ("cont:\n");
-  Emit ("  %%new_result = phi %s [ %%result_sq, %%do_square ]\n", it);
-  Emit ("  %%new_b = phi %s [ %%sq_b, %%do_square ]\n", it);
+  Emit ("  %%new_result = phi %s [ %%result_sq, %%do_square ]\n", pow_t);
+  Emit ("  %%new_b = phi %s [ %%sq_b, %%do_square ]\n", pow_t);
   Emit ("  br label %%loop\n");
   Emit ("overflow:\n");
   Emit ("  %%exc_ptr = ptrtoint ptr @__exc.constraint_error to " PTR_INT_TYPE "\n");
   Emit ("  call void @__ada_raise(i64 %%exc_ptr)\n");
   Emit ("  unreachable\n");
   Emit ("exit:\n");
-  Emit ("  ret %s %%result_sq\n", it);
+  Emit ("  ret %s %%result_sq\n", pow_t);
   Emit ("}\n\n");
 
   // Modular power function - unsigned, wrapping (RM 3.5.4).
   // Uses binary exponentiation (O(log n)), no overflow check as modular wraps.
   Emit ("; Modular exponentiation helper (unsigned, wrapping, binary exp)\n");
-  Emit ("define linkonce_odr %s @__ada_modular_pow (%s %%base, %s %%exp) {\n", it, it, it);
+  Emit ("define linkonce_odr %s @__ada_modular_pow (%s %%base, %s %%exp) {\n", pow_t, pow_t, pow_t);
   Emit ("entry:\n");
-  Emit ("  %%is_zero = icmp eq %s %%exp, 0\n", it);
+  Emit ("  %%is_zero = icmp eq %s %%exp, 0\n", pow_t);
   Emit ("  br i1 %%is_zero, label %%ret_one, label %%loop\n");
   Emit ("ret_one:\n");
-  Emit ("  ret %s 1\n", it);
+  Emit ("  ret %s 1\n", pow_t);
 
   // Binary exponentiation loop
   Emit ("loop:\n");
-  Emit ("  %%result = phi %s [ 1, %%entry ], [ %%new_result, %%cont ]\n", it);
-  Emit ("  %%b = phi %s [ %%base, %%entry ], [ %%new_b, %%cont ]\n", it);
-  Emit ("  %%e = phi %s [ %%exp, %%entry ], [ %%new_e, %%cont ]\n", it);
-  Emit ("  %%is_odd = and %s %%e, 1\n", it);
-  Emit ("  %%odd_bit = icmp ne %s %%is_odd, 0\n", it);
+  Emit ("  %%result = phi %s [ 1, %%entry ], [ %%new_result, %%cont ]\n", pow_t);
+  Emit ("  %%b = phi %s [ %%base, %%entry ], [ %%new_b, %%cont ]\n", pow_t);
+  Emit ("  %%e = phi %s [ %%exp, %%entry ], [ %%new_e, %%cont ]\n", pow_t);
+  Emit ("  %%is_odd = and %s %%e, 1\n", pow_t);
+  Emit ("  %%odd_bit = icmp ne %s %%is_odd, 0\n", pow_t);
   Emit ("  br i1 %%odd_bit, label %%mult, label %%square\n");
   Emit ("mult:\n");
-  Emit ("  %%mult_r = mul %s %%result, %%b\n", it);
+  Emit ("  %%mult_r = mul %s %%result, %%b\n", pow_t);
   Emit ("  br label %%square\n");
   Emit ("square:\n");
-  Emit ("  %%result_s = phi %s [ %%result, %%loop ], [ %%mult_r, %%mult ]\n", it);
-  Emit ("  %%new_e = lshr %s %%e, 1\n", it);
-  Emit ("  %%done = icmp eq %s %%new_e, 0\n", it);
+  Emit ("  %%result_s = phi %s [ %%result, %%loop ], [ %%mult_r, %%mult ]\n", pow_t);
+  Emit ("  %%new_e = lshr %s %%e, 1\n", pow_t);
+  Emit ("  %%done = icmp eq %s %%new_e, 0\n", pow_t);
   Emit ("  br i1 %%done, label %%exit, label %%cont\n");
   Emit ("cont:\n");
-  Emit ("  %%new_result = phi %s [ %%result_s, %%square ]\n", it);
-  Emit ("  %%new_b = mul %s %%b, %%b\n", it);
+  Emit ("  %%new_result = phi %s [ %%result_s, %%square ]\n", pow_t);
+  Emit ("  %%new_b = mul %s %%b, %%b\n", pow_t);
   Emit ("  br label %%loop\n");
   Emit ("exit:\n");
-  Emit ("  ret %s %%result_s\n", it);
+  Emit ("  ret %s %%result_s\n", pow_t);
   Emit ("}\n\n");
 
   // String trim helpers for Enum'VALUE (Ada RM 3.5): count leading/trailing
@@ -42789,6 +43691,10 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   // Generate extern declarations for WITH'd packages
   Generate_Extern_Declarations (node);
 
+  // RM 10.2/10.5: feed the elaboration graph this unit's context — WITH
+  // edges and Elaborate/Elaborate_All pragma edges.
+  Elab_Register_Context_Dependencies (node);
+
   // Generate declarations
   if (node->compilation_unit.unit) {
     Generate_Declaration (node->compilation_unit.unit);
@@ -42812,14 +43718,16 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
 
     // Check if this is a library-level procedure (no parameters)
     // and NOT a SEPARATE subunit
-    if (main_sym->parameter_count == 0 and not unit->subprogram_body.is_separate) {
+    if (main_sym->parameter_count == 0 and
+        not unit->subprogram_body.is_separate and
+        not cg->generating_loaded_unit) {
       cg->main_candidate = main_sym;
     }
   }
 }
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
-// §13.17 BUILD-IN-PLACE - Limited Type Function Returns                                            
+// §13.10 BUILD-IN-PLACE - Limited Type Function Returns                                            
 //                                                                                                  
 // Ada limited types cannot be copied (RM 7.5). Functions returning limited                         
 // types must construct the result directly in caller-provided space-the                            
@@ -42836,7 +43744,7 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
-// §13.17.1 Algebraic Types - Sum types for BIP protocol                                            
+// §13.10.1 Algebraic Types - Sum types for BIP protocol                                            
 //                                                                                                  
 // BIP_Alloc_Form determines where the function result is allocated:                                
 //   - CALLER: Caller provides stack/object space (most common)                                     
@@ -42848,7 +43756,7 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
-// §13.17.3 Type Predicates - Pure functions for BIP decisions                                      
+// §13.10.2 Type Predicates - Pure functions for BIP decisions                                      
 //                                                                                                  
 // These predicates determine whether a type requires BIP handling. Per Ada RM 7.5, limited types
 // include:                                                           
@@ -42940,7 +43848,7 @@ bool BIP_Needs_Alloc_Form (const Symbol *func) {
 }
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
-// §13.17.4 Extra Formal Parameters - Hidden BIP parameters                                         
+// §13.10.3 Extra Formal Parameters - Hidden BIP parameters                                         
 //                                                                                                  
 // BIP functions receive extra hidden parameters prepended to their formals:                        
 //   __BIPalloc  : i32     (BIP_Alloc_Form enum value)                                              
@@ -42971,7 +43879,7 @@ uint32_t BIP_Extra_Formal_Count (const Symbol *func) {
 }
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
-// §13.17.5 Call-Site Transformation - Expanding BIP function calls                                 
+// §13.10.4 Call-Site Transformation - Expanding BIP function calls                                 
 //                                                                                                  
 // When calling a BIP function, the caller must:                                                    
 //   1. Determine allocation form (usually CALLER for declarations)                                 
@@ -42995,7 +43903,7 @@ BIP_Alloc_Form BIP_Determine_Alloc_Form (bool is_allocator,
 }
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
-// §13.17.6 Return Statement Expansion - Building result in place                                   
+// §13.10.5 Return Statement Expansion - Building result in place                                   
 //                                                                                                  
 // In a BIP function, return statements build directly into __BIPaccess:                            
 //                                                                                                  
@@ -43102,7 +44010,7 @@ void Unit_Name_To_File (String_Slice unit_name, bool is_body,
 // §14.4 ALI_Collect - Gather unit info from parsed AST                                             
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 
-void ALI_Collect_Withs (ALI_Info *ali, Syntax_Node *ctx) {
+void ALI_Collect_Withs (Unit_Info *u, Syntax_Node *ctx) {
   if (not ctx) return;
   for (uint32_t i = 0; i < ctx->context.with_clauses.count; i++) {
     Syntax_Node *with_node = ctx->context.with_clauses.items[i];
@@ -43111,8 +44019,13 @@ void ALI_Collect_Withs (ALI_Info *ali, Syntax_Node *ctx) {
     // Each WITH clause may have multiple names
     for (uint32_t j = 0; j < with_node->use_clause.names.count; j++) {
       Syntax_Node *name = with_node->use_clause.names.items[j];
-      if (not name or ali->with_count >= 64) continue;
-      With_Info *w = &ali->withs[ali->with_count++];
+      if (not name) continue;
+      With_Info *grown = Arena_Allocate ((u->with_count + 1)
+                                         * sizeof (With_Info));
+      for (uint32_t k = 0; k < u->with_count; k++) grown[k] = u->withs[k];
+      u->withs = grown;
+      With_Info *w = &u->withs[u->with_count++];
+      *w = (With_Info){0};
       w->name = name->kind == NK_IDENTIFIER ?
             name->string_val.text : (String_Slice){0};
       w->is_limited = false;  // TODO: detect LIMITED WITH
@@ -43154,19 +44067,33 @@ String_Slice Get_Subprogram_Name (Syntax_Node *node) {
 // §14.4.2 ALI_Collect_Exports - Gather exported symbols from package spec                          
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 
+// Grow the export table; a silent cap would silently lose symbols on
+// ALI fast-load.
+static Export_Info *ALI_Next_Export (ALI_Info *ali) {
+  if (ali->export_count == ali->export_capacity) {
+    uint32_t grown_capacity =
+      ali->export_capacity ? ali->export_capacity * 2 : 64;
+    Export_Info *grown =
+      Arena_Allocate (grown_capacity * sizeof (Export_Info));
+    for (uint32_t i = 0; i < ali->export_count; i++)
+      grown[i] = ali->exports[i];
+    ali->exports = grown;
+    ali->export_capacity = grown_capacity;
+  }
+  Export_Info *exp = &ali->exports[ali->export_count];
+  *exp = (Export_Info){0};
+  return exp;
+}
+
 void ALI_Collect_Exports (ALI_Info *ali, Syntax_Node *unit) {
   if (not unit or unit->kind != NK_PACKAGE_SPEC) return;
   String_Slice pkg_name = unit->package_spec.name;
   Node_List *decls = &unit->package_spec.visible_decls;
-  for (uint32_t i = 0; i < decls->count and ali->export_count < 256; i++) {
+  for (uint32_t i = 0; i < decls->count; i++) {
     Syntax_Node *decl = decls->items[i];
     if (not decl) continue;
-    Export_Info *exp = &ali->exports[ali->export_count];
+    Export_Info *exp = ALI_Next_Export (ali);
     exp->line = decl->location.line;
-    exp->param_count = 0;
-    exp->type_name = (String_Slice){0};
-    exp->mangled_name = (String_Slice){0};
-    exp->llvm_type = (String_Slice){0};
     switch (decl->kind) {
       case NK_TYPE_DECL:
         exp->name = decl->type_decl.name;
@@ -43198,10 +44125,10 @@ void ALI_Collect_Exports (ALI_Info *ali, Syntax_Node *unit) {
         ali->export_count++;
         break;
       case NK_OBJECT_DECL:
-        for (uint32_t j = 0; j < decl->object_decl.names.count and ali->export_count < 256; j++) {
+        for (uint32_t j = 0; j < decl->object_decl.names.count; j++) {
           Syntax_Node *name = decl->object_decl.names.items[j];
           if (name and name->kind == NK_IDENTIFIER) {
-            exp = &ali->exports[ali->export_count];
+            exp = ALI_Next_Export (ali);
             exp->name = name->string_val.text;
             exp->kind = decl->object_decl.is_constant ? 'C' : 'V';
             exp->line = name->location.line;
@@ -43248,10 +44175,10 @@ void ALI_Collect_Exports (ALI_Info *ali, Syntax_Node *unit) {
         ali->export_count++;
         break;
       case NK_EXCEPTION_DECL:
-        for (uint32_t j = 0; j < decl->exception_decl.names.count and ali->export_count < 256; j++) {
+        for (uint32_t j = 0; j < decl->exception_decl.names.count; j++) {
           Syntax_Node *name = decl->exception_decl.names.items[j];
           if (name and name->kind == NK_IDENTIFIER) {
-            exp = &ali->exports[ali->export_count];
+            exp = ALI_Next_Export (ali);
             exp->name = name->string_val.text;
             exp->kind = 'E';
             exp->line = name->location.line;
@@ -43266,12 +44193,39 @@ void ALI_Collect_Exports (ALI_Info *ali, Syntax_Node *unit) {
     }
   }
 }
+// Flatten a (possibly dotted) name AST into "A.B.C" text for unit naming.
+String_Slice Flatten_Dotted_Name (Syntax_Node *name) {
+  if (not name) return (String_Slice){ NULL, 0 };
+  if (name->kind == NK_IDENTIFIER) return name->string_val.text;
+  if (name->kind == NK_SELECTED) {
+    String_Slice prefix = Flatten_Dotted_Name (name->selected.prefix);
+    String_Slice selector = name->selected.selector;
+    if (not prefix.length) return selector;
+    uint32_t total = prefix.length + 1 + selector.length;
+    char *joined = Arena_Allocate (total + 1);
+    snprintf (joined, total + 1, "%.*s.%.*s",
+              (int)prefix.length, prefix.data,
+              (int)selector.length, selector.data);
+    return (String_Slice){ joined, total };
+  }
+  return (String_Slice){ NULL, 0 };
+}
+
 void ALI_Collect_Unit (ALI_Info *ali, Syntax_Node *cu,
-               const char *source, size_t source_size) {
-  if (not cu or ali->unit_count >= 8) return;
+               const char *source, size_t source_size,
+               const char *source_path) {
+  if (not cu) return;
   Syntax_Node *unit = cu->compilation_unit.unit;
   if (not unit) return;
+  if (ali->unit_count == ali->unit_capacity) {
+    uint32_t grown_capacity = ali->unit_capacity ? ali->unit_capacity * 2 : 8;
+    Unit_Info *grown = Arena_Allocate (grown_capacity * sizeof (Unit_Info));
+    for (uint32_t i = 0; i < ali->unit_count; i++) grown[i] = ali->units[i];
+    ali->units = grown;
+    ali->unit_capacity = grown_capacity;
+  }
   Unit_Info *u = &ali->units[ali->unit_count++];
+  *u = (Unit_Info){0};
 
   // Extract unit name based on declaration kind
   switch (unit->kind) {
@@ -43293,6 +44247,13 @@ void ALI_Collect_Unit (ALI_Info *ali, Syntax_Node *cu,
       u->unit_name = Get_Subprogram_Name (unit);
       u->is_body = unit->kind == NK_FUNCTION_BODY;
       break;
+    case NK_TASK_BODY:
+
+      // Only reachable as a SEPARATE subunit (a task body is otherwise
+      // nested inside its package or subprogram body).
+      u->unit_name = unit->task_body.name;
+      u->is_body = true;
+      break;
     case NK_GENERIC_DECL:
       u->is_generic = true;
       if (unit->generic_decl.unit) {
@@ -43309,21 +44270,103 @@ void ALI_Collect_Unit (ALI_Info *ali, Syntax_Node *cu,
       u->is_body = false;
   }
 
+  // A subunit's library name is PARENT.CHILD (RM 10.2: subunit names
+  // live in the parent's namespace); record the kind so the catalog can
+  // distinguish it from an ordinary body.
+  if (cu->compilation_unit.separate_parent) {
+    u->is_subunit = true;
+    String_Slice parent =
+      Flatten_Dotted_Name (cu->compilation_unit.separate_parent);
+    if (parent.length) {
+      uint32_t total = parent.length + 1 + u->unit_name.length;
+      char *qualified = Arena_Allocate (total + 1);
+      snprintf (qualified, total + 1, "%.*s.%.*s",
+                (int)parent.length, parent.data,
+                (int)u->unit_name.length, u->unit_name.data);
+      u->unit_name = (String_Slice){ qualified, total };
+    }
+  }
+
+  // The resolved unit's scope publishes the frame layout (F/FS lines).
+  if (unit->symbol) u->frame_scope = unit->symbol->scope;
+
   // Compute source checksum
   u->source_checksum = Crc32 (source, source_size);
 
-  // Derive source file name
-  char file_buf[256];
-  Unit_Name_To_File (u->unit_name, u->is_body, file_buf, sizeof (file_buf));
-  u->source_name = Slice_Duplicate ((String_Slice){file_buf, strlen (file_buf)});
+  // Record the ACTUAL source path as given to the compiler (the old
+  // name-derived guess was a lie for any file whose name does not match
+  // its unit). Catalog loading uses a bare basename relative to the
+  // library directory and any other form relative to the compilation's
+  // working directory.
+  if (source_path)
+    u->source_name = Slice_Duplicate (
+      (String_Slice){ source_path, strlen (source_path) });
+  else {
+    char file_buf[256];
+    Unit_Name_To_File (u->unit_name, u->is_body, file_buf, sizeof (file_buf));
+    u->source_name =
+      Slice_Duplicate ((String_Slice){ file_buf, strlen (file_buf) });
+  }
 
-  // Check for elaboration pragmas (simplified)
-  u->is_preelaborate = false;
-  u->is_pure = false;
-  u->has_elaboration = true;  // Assume has elaboration unless proven otherwise
+  // Unit categorization pragmas (RM 10.5), as resolved on the symbol.
+  u->is_preelaborate = unit->symbol and unit->symbol->is_preelaborate_unit;
+  u->is_pure = unit->symbol and unit->symbol->is_pure_unit;
+  u->has_elaboration = not u->is_pure;  // Pure units have no elaboration
 
-  // Collect WITH dependencies
-  ALI_Collect_Withs (ali, cu->compilation_unit.context);
+  // RM 7.1: does this spec require a body? Subprogram declarations
+  // always do; package (and generic package) specs per their contents.
+  u->requires_body = false;
+  if (unit->kind == NK_PACKAGE_SPEC)
+    u->requires_body = Package_Spec_Requires_Body (unit);
+  else if (unit->kind == NK_PROCEDURE_SPEC or unit->kind == NK_FUNCTION_SPEC)
+    u->requires_body = true;
+  else if (unit->kind == NK_GENERIC_DECL) {
+    Syntax_Node *inner = unit->generic_decl.unit;
+    u->requires_body = not inner or inner->kind != NK_PACKAGE_SPEC or
+                       Package_Spec_Requires_Body (inner);
+  }
+
+  // RM 10.2: record the body's stubs so the binder can demand their
+  // subunits — and ignore subunits a replacement body no longer stubs.
+  Node_List *body_declarations = NULL;
+  if (unit->kind == NK_PACKAGE_BODY)
+    body_declarations = &unit->package_body.declarations;
+  else if (unit->kind == NK_PROCEDURE_BODY or unit->kind == NK_FUNCTION_BODY)
+    body_declarations = &unit->subprogram_body.declarations;
+  if (body_declarations) {
+    for (uint32_t d = 0; d < body_declarations->count; d++) {
+      Syntax_Node *decl = body_declarations->items[d];
+      if (not decl) continue;
+      String_Slice stub_name = {0};
+      switch (decl->kind) {
+        case NK_PROCEDURE_BODY:
+        case NK_FUNCTION_BODY:
+          if (decl->subprogram_body.is_separate)
+            stub_name = Get_Subprogram_Name (decl);
+          break;
+        case NK_PACKAGE_BODY:
+          if (decl->package_body.is_separate)
+            stub_name = decl->package_body.name;
+          break;
+        case NK_TASK_BODY:
+          if (decl->task_body.is_separate)
+            stub_name = decl->task_body.name;
+          break;
+        default: break;
+      }
+      if (stub_name.length == 0) continue;
+      String_Slice *grown =
+        Arena_Allocate ((u->stub_count + 1) * sizeof (String_Slice));
+      for (uint32_t s = 0; s < u->stub_count; s++) grown[s] = u->stub_names[s];
+      grown[u->stub_count] = stub_name;
+      u->stub_names = grown;
+      u->stub_count++;
+    }
+  }
+
+  // Collect WITH dependencies — per UNIT: a spec's W lines must not
+  // inherit the body's context (obsolescence is judged per unit).
+  ALI_Collect_Withs (u, cu->compilation_unit.context);
 
   // Collect exported symbols from package specs
   if (unit and unit->kind == NK_PACKAGE_SPEC) {
@@ -43387,17 +44430,90 @@ void ALI_Write (FILE *out, ALI_Info *ali) {
         u->source_checksum);
 
     // Flags
+    if (u->is_subunit) fprintf (out, " SB");
     if (u->is_generic) fprintf (out, " GE");
     if (u->is_preelaborate) fprintf (out, " PR");
     if (u->is_pure) fprintf (out, " PU");
     if (not u->has_elaboration) fprintf (out, " NE");
     if (not u->is_body) fprintf (out, " PK");
     else fprintf (out, " SU");
+    if (u->requires_body) fprintf (out, " RB");
     fprintf (out, "\n");
 
+    // ST lines: the body's stub names (RM 10.2), for the binder.
+    for (uint32_t s = 0; s < u->stub_count; s++)
+      fprintf (out, "ST %.*s\n",
+               (int)u->stub_names[s].length, u->stub_names[s].data);
+
+    // F/FS lines: the unit's frame layout, the cross-compilation ground
+    // truth for subunits that share this frame. One F line per
+    // frame-resident variable (emitted name + byte offset), then the
+    // frame's alloca size (the static-chain slot sits at that offset).
+    if (u->frame_scope) {
+
+      // Dedup by emitted name, LAST occurrence wins: resolution may hold
+      // duplicate symbol objects for one variable (spec re-installation),
+      // and declaration emission binds to the latest — the published
+      // offset must be the one the module actually stores at.
+      Scope *frame_scope = u->frame_scope;
+      String_Slice *published_names   = NULL;
+      int64_t      *published_offsets = NULL;
+      uint32_t      published_count = 0, published_capacity = 0;
+      for (int pass = 0; pass < 2; pass++) {
+        uint32_t count = pass == 0 ? frame_scope->symbol_count
+                                   : frame_scope->frame_var_count;
+        for (uint32_t k = 0; k < count; k++) {
+          Symbol *var = pass == 0 ? frame_scope->symbols[k]
+                                  : frame_scope->frame_vars[k];
+          if (not var) continue;
+          if (var->kind != SYMBOL_VARIABLE and
+              var->kind != SYMBOL_PARAMETER and
+              var->kind != SYMBOL_DISCRIMINANT and
+              not (var->kind == SYMBOL_CONSTANT and
+                   not var->is_named_number))
+            continue;
+          if (Symbol_Is_Global (var)) continue;
+          String_Slice mangled =
+            Slice_Duplicate (Symbol_Mangle_Name (var));
+          bool replaced = false;
+          for (uint32_t p = 0; p < published_count; p++)
+            if (Slice_Equal_Ignore_Case (published_names[p], mangled)) {
+              published_offsets[p] = var->frame_offset;
+              replaced = true;
+              break;
+            }
+          if (not replaced) {
+            if (published_count == published_capacity) {
+              uint32_t grown_capacity =
+                published_capacity ? published_capacity * 2 : 32;
+              String_Slice *grown_names =
+                Arena_Allocate (grown_capacity * sizeof (String_Slice));
+              int64_t *grown_offsets =
+                Arena_Allocate (grown_capacity * sizeof (int64_t));
+              for (uint32_t s = 0; s < published_count; s++) {
+                grown_names[s] = published_names[s];
+                grown_offsets[s] = published_offsets[s];
+              }
+              published_names = grown_names;
+              published_offsets = grown_offsets;
+              published_capacity = grown_capacity;
+            }
+            published_names[published_count] = mangled;
+            published_offsets[published_count] = var->frame_offset;
+            published_count++;
+          }
+        }
+      }
+      for (uint32_t p = 0; p < published_count; p++)
+        fprintf (out, "F %.*s %lld\n",
+                 (int)published_names[p].length, published_names[p].data,
+                 (long long)published_offsets[p]);
+      fprintf (out, "FS %lld\n", (long long)frame_scope->frame_size);
+    }
+
     // W lines: WITH dependencies for this unit
-    for (uint32_t j = 0; j < ali->with_count; j++) {
-      With_Info *w = &ali->withs[j];
+    for (uint32_t j = 0; j < u->with_count; j++) {
+      With_Info *w = &u->withs[j];
       if (not w->name.data) continue;
       char line_type = w->is_limited ? 'Y' : 'W';
       fprintf (out, "%c %.*s%s",
@@ -43425,11 +44541,13 @@ void ALI_Write (FILE *out, ALI_Info *ali) {
         (int)u->source_name.length, u->source_name.data,
         u->source_checksum);
   }
-  for (uint32_t i = 0; i < ali->with_count; i++) {
-    With_Info *w = &ali->withs[i];
-    if (w->source_file.data) {
-      fprintf (out, "D %.*s 00000000 00000000\n",
-          (int)w->source_file.length, w->source_file.data);
+  for (uint32_t i = 0; i < ali->unit_count; i++) {
+    Unit_Info *u = &ali->units[i];
+    for (uint32_t j = 0; j < u->with_count; j++) {
+      With_Info *w = &u->withs[j];
+      if (w->source_file.data)
+        fprintf (out, "D %.*s 00000000 00000000\n",
+            (int)w->source_file.length, w->source_file.data);
     }
   }
 
@@ -43486,10 +44604,390 @@ void ALI_Write (FILE *out, ALI_Info *ali) {
 }
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
-// §14.6 Generate_ALI_File - Entry point for ALI generation                                         
+// §14.6 Library Catalog - The program library's unit -> file map (RM 10.4)
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 
-void Generate_ALI_File (const char *output_path,
+static Catalog_Entry *Catalog_Entries        = NULL;
+static uint32_t       Catalog_Entry_Count    = 0;
+static uint32_t       Catalog_Entry_Capacity = 0;
+
+Catalog_Entry *Library_Catalog_Find (String_Slice unit_name,
+                                     Catalog_Unit_Kind kind) {
+  for (uint32_t i = 0; i < Catalog_Entry_Count; i++) {
+    Catalog_Entry *entry = &Catalog_Entries[i];
+    if (entry->kind == kind and
+        Slice_Equal_Ignore_Case (entry->unit_name, unit_name))
+      return entry;
+  }
+  return NULL;
+}
+
+Catalog_Entry *Library_Catalog_Register (String_Slice unit_name,
+                                         String_Slice source_file,
+                                         Catalog_Unit_Kind kind,
+                                         uint32_t checksum) {
+  return Library_Catalog_Register_At (unit_name, source_file, kind,
+                                      checksum, 0);
+}
+
+Catalog_Entry *Library_Catalog_Register_At (String_Slice unit_name,
+                                            String_Slice source_file,
+                                            Catalog_Unit_Kind kind,
+                                            uint32_t checksum,
+                                            int64_t recorded_at) {
+  Catalog_Entry *existing = Library_Catalog_Find (unit_name, kind);
+  if (existing) {
+
+    // RM 10.3: a LATER compilation of the same unit replaces the earlier
+    // one. Directory scan order is arbitrary; the ALI's mtime decides.
+    // Replacement resets the per-registration facts (frame layout, WITH
+    // deps, stubs) — the new ALI's lines repopulate them.
+    if (recorded_at >= existing->recorded_at) {
+      existing->source_file      = Slice_Duplicate (source_file);
+      existing->checksum         = checksum;
+      existing->recorded_at      = recorded_at;
+      existing->frame_slots      = NULL;
+      existing->frame_slot_count = 0;
+      existing->frame_size       = 0;
+      existing->with_units       = NULL;
+      existing->with_unit_count  = 0;
+      existing->stub_names       = NULL;
+      existing->stub_count       = 0;
+      existing->requires_body    = false;
+    }
+    return existing;
+  }
+  if (Catalog_Entry_Count == Catalog_Entry_Capacity) {
+    uint32_t grown_capacity = Catalog_Entry_Capacity
+                            ? Catalog_Entry_Capacity * 2 : 64;
+    Catalog_Entry *grown =
+      Arena_Allocate (grown_capacity * sizeof (Catalog_Entry));
+    for (uint32_t i = 0; i < Catalog_Entry_Count; i++)
+      grown[i] = Catalog_Entries[i];
+    Catalog_Entries = grown;
+    Catalog_Entry_Capacity = grown_capacity;
+  }
+  Catalog_Entry *entry = &Catalog_Entries[Catalog_Entry_Count++];
+  *entry = (Catalog_Entry){
+    .unit_name   = Slice_Duplicate (unit_name),
+    .source_file = Slice_Duplicate (source_file),
+    .kind        = kind,
+    .checksum    = checksum,
+    .recorded_at = recorded_at,
+    .loaded      = false,
+  };
+  return entry;
+}
+
+// RM 10.3 consistency for a WITH'd unit at main-program compile time:
+// a body compiled before the unit's current specification is obsolete,
+// and so is a subunit compiled before its parent's current body.
+void Library_Catalog_Require_Consistent (String_Slice unit_name,
+                                         Source_Location location) {
+  Catalog_Entry *spec_entry = Library_Catalog_Find (unit_name, CATALOG_UNIT_SPEC);
+  Catalog_Entry *body_entry = Library_Catalog_Find (unit_name, CATALOG_UNIT_BODY);
+
+  // A fileless body entry is Mark_Body_Loaded's in-process load marker,
+  // not a compiled unit — no obsolescence to judge.
+  if (body_entry and body_entry->source_file.length == 0) body_entry = NULL;
+
+  // An obsolete OPTIONAL body is simply no longer part of the program
+  // (the loader drops it); only a REQUIRED body's obsolescence forbids
+  // execution. Subunit staleness is judged against the current body's
+  // stubs (ST lines) — a replacement body may have dropped the stub.
+  if (spec_entry and body_entry and spec_entry->requires_body and
+      body_entry->recorded_at < spec_entry->recorded_at) {
+    Report_Error (location,
+      "body of unit '%.*s' is obsolete: it was compiled before the "
+      "unit's current specification (RM 10.3)",
+      (int)unit_name.length, unit_name.data);
+    return;
+  }
+  if (not body_entry) return;
+  for (uint32_t s = 0; s < body_entry->stub_count; s++) {
+    String_Slice stub = body_entry->stub_names[s];
+    size_t dotted_length = (size_t)unit_name.length + 1 + stub.length;
+    char *dotted = Arena_Allocate (dotted_length);
+    memcpy (dotted, unit_name.data, unit_name.length);
+    dotted[unit_name.length] = '.';
+    memcpy (dotted + unit_name.length + 1, stub.data, stub.length);
+    String_Slice dotted_name = { dotted, (uint32_t)dotted_length };
+    Catalog_Entry *subunit_entry =
+      Library_Catalog_Find (dotted_name, CATALOG_UNIT_SUBUNIT);
+    if (subunit_entry and subunit_entry->recorded_at < body_entry->recorded_at)
+      Report_Error (location,
+        "subunit '%.*s' is obsolete: it was compiled before its "
+        "parent's current body (RM 10.3)",
+        (int)dotted_name.length, dotted_name.data);
+  }
+}
+
+// The binder (RM 10.3/10.5, GNAT's gnatbind): verify the catalog closure
+// of a main program AFTER all compilations. A unit whose WITH'd
+// specification was recompiled later than the unit itself is obsolete,
+// and an obsolete unit anywhere in the closure forbids execution.
+// Returns the number of consistency errors found.
+int Library_Bind_Check (String_Slice main_unit) {
+  String_Slice *worklist =
+    Arena_Allocate ((Catalog_Entry_Count + 1) * sizeof (String_Slice));
+  uint32_t worklist_count = 0, visited_count = 0;
+  worklist[worklist_count++] = main_unit;
+  int errors = 0;
+  Source_Location no_location = {0};
+  while (visited_count < worklist_count) {
+    String_Slice unit_name = worklist[visited_count++];
+
+    // Spec/body and subunit recompilation order for this unit.
+    int errors_before = Error_Count;
+    Library_Catalog_Require_Consistent (unit_name, no_location);
+    errors += Error_Count - errors_before;
+
+    // Walk every catalog entry belonging to the unit: its spec, its
+    // body, and its subunits (whose names extend "UNIT.").
+    for (uint32_t i = 0; i < Catalog_Entry_Count; i++) {
+      Catalog_Entry *entry = &Catalog_Entries[i];
+      bool belongs = Slice_Equal_Ignore_Case (entry->unit_name, unit_name);
+      if (not belongs) continue;
+
+      // The body's stubs (ST lines) demand current subunits (RM 10.2).
+      for (uint32_t s = 0; s < entry->stub_count; s++) {
+        String_Slice stub = entry->stub_names[s];
+        size_t dotted_length =
+          (size_t)entry->unit_name.length + 1 + stub.length;
+        char *dotted = Arena_Allocate (dotted_length);
+        memcpy (dotted, entry->unit_name.data, entry->unit_name.length);
+        dotted[entry->unit_name.length] = '.';
+        memcpy (dotted + entry->unit_name.length + 1, stub.data, stub.length);
+        String_Slice dotted_name = { dotted, (uint32_t)dotted_length };
+        Catalog_Entry *subunit_entry =
+          Library_Catalog_Find (dotted_name, CATALOG_UNIT_SUBUNIT);
+        if (not subunit_entry) {
+          fprintf (stderr,
+            "bind error: subunit '%.*s' has no compiled body in the "
+            "library (RM 10.2)\n",
+            (int)dotted_name.length, dotted_name.data);
+          errors++;
+        } else if (subunit_entry->recorded_at < entry->recorded_at) {
+          fprintf (stderr,
+            "bind error: subunit '%.*s' is obsolete: it was compiled "
+            "before its parent's current body (RM 10.3)\n",
+            (int)dotted_name.length, dotted_name.data);
+          errors++;
+        } else {
+
+          // Subunits join the closure walk through their own deps.
+          bool queued = false;
+          for (uint32_t q = 0; q < worklist_count; q++)
+            if (Slice_Equal_Ignore_Case (worklist[q], dotted_name)) {
+              queued = true;
+              break;
+            }
+          if (not queued and worklist_count < Catalog_Entry_Count + 1)
+            worklist[worklist_count++] = dotted_name;
+        }
+      }
+      for (uint32_t w = 0; w < entry->with_unit_count; w++) {
+        String_Slice dep_name = entry->with_units[w];
+        // The dependency's specification governs obsolescence; a
+        // subprogram compiled body-only carries its implicit spec in
+        // the body entry, so recompiling that body recompiles the spec.
+        Catalog_Entry *dep_spec =
+          Library_Catalog_Find (dep_name, CATALOG_UNIT_SPEC);
+        if (not dep_spec)
+          dep_spec = Library_Catalog_Find (dep_name, CATALOG_UNIT_BODY);
+
+        // An obsolete OPTIONAL body was dropped from the program by the
+        // dependent's compilation — only a required body (or a spec)
+        // going stale is a bind error.
+        bool optional_dropped_body = false;
+        if (entry->kind == CATALOG_UNIT_BODY) {
+          Catalog_Entry *own_spec =
+            Library_Catalog_Find (entry->unit_name, CATALOG_UNIT_SPEC);
+          optional_dropped_body = own_spec and not own_spec->requires_body;
+        }
+        if (dep_spec and dep_spec->recorded_at > entry->recorded_at and
+            not optional_dropped_body) {
+          fprintf (stderr,
+            "bind error: unit '%.*s' is obsolete: '%.*s' was recompiled "
+            "after it (RM 10.3)\n",
+            (int)entry->unit_name.length, entry->unit_name.data,
+            (int)dep_name.length, dep_name.data);
+          errors++;
+        }
+
+        // Enqueue the dependency once.
+        bool queued = false;
+        for (uint32_t q = 0; q < worklist_count; q++)
+          if (Slice_Equal_Ignore_Case (worklist[q], dep_name)) {
+            queued = true;
+            break;
+          }
+        if (not queued and worklist_count < Catalog_Entry_Count + 1)
+          worklist[worklist_count++] = dep_name;
+      }
+    }
+  }
+  return errors;
+}
+
+void Library_Catalog_Reset (void) {
+  Catalog_Entries        = NULL;
+  Catalog_Entry_Count    = 0;
+  Catalog_Entry_Capacity = 0;
+}
+
+// Scan a directory's .ali files and register every U line's unit. The
+// catalog stores source paths joined to the directory so a later
+// compilation from any working directory still finds the file. A stale or
+// malformed ALI contributes nothing (loudly, not silently — the name
+// lookup falls back to convention and the obsolescence pass re-checks).
+void Library_Catalog_Load_Directory (const char *directory) {
+  DIR *dir = opendir (directory);
+  if (not dir) return;
+  struct dirent *dir_entry;
+  while ((dir_entry = readdir (dir))) {
+    const char *file_name = dir_entry->d_name;
+    size_t name_length = strlen (file_name);
+    if (name_length < 5 or
+        strcmp (file_name + name_length - 4, ".ali") != 0)
+      continue;
+    char ali_path[512];
+    snprintf (ali_path, sizeof (ali_path), "%s/%s", directory, file_name);
+    char *text = Read_File_Simple (ali_path);
+    if (not text) continue;
+    struct stat ali_status;
+    int64_t ali_mtime = (stat (ali_path, &ali_status) == 0)
+      ? (int64_t)ali_status.st_mtime * 1000000000
+        + ali_status.st_mtim.tv_nsec
+      : 0;
+    Catalog_Entry *current_unit = NULL;
+    Frame_Slot *slots = NULL;
+    uint32_t slot_count = 0, slot_capacity = 0;
+    for (char *line = text; line and *line; ) {
+      char *line_end = strchr (line, '\n');
+      if (line[0] == 'F' and line[1] == ' ' and current_unit) {
+        char slot_name[256]; long long slot_offset = 0;
+        if (sscanf (line + 2, "%255s %lld", slot_name, &slot_offset) == 2) {
+          if (slot_count == slot_capacity) {
+            slot_capacity = slot_capacity ? slot_capacity * 2 : 16;
+            Frame_Slot *grown =
+              Arena_Allocate (slot_capacity * sizeof (Frame_Slot));
+            for (uint32_t s = 0; s < slot_count; s++) grown[s] = slots[s];
+            slots = grown;
+          }
+          slots[slot_count++] = (Frame_Slot){
+            .name = Slice_Duplicate ((String_Slice){
+                      slot_name, (uint32_t)strlen (slot_name) }),
+            .offset = (int64_t)slot_offset,
+          };
+          current_unit->frame_slots = slots;
+          current_unit->frame_slot_count = slot_count;
+        }
+      }
+      else if (line[0] == 'F' and line[1] == 'S' and current_unit) {
+        long long published_size = 0;
+        if (sscanf (line + 3, "%lld", &published_size) == 1)
+          current_unit->frame_size = (int64_t)published_size;
+      }
+      else if (line[0] == 'S' and line[1] == 'T' and line[2] == ' ' and
+               current_unit) {
+        char stub_token[256];
+        if (sscanf (line + 3, "%255s", stub_token) == 1) {
+          String_Slice *grown = Arena_Allocate (
+            (current_unit->stub_count + 1) * sizeof (String_Slice));
+          for (uint32_t s = 0; s < current_unit->stub_count; s++)
+            grown[s] = current_unit->stub_names[s];
+          grown[current_unit->stub_count] = Slice_Duplicate ((String_Slice){
+            stub_token, (uint32_t)strlen (stub_token) });
+          current_unit->stub_names = grown;
+          current_unit->stub_count++;
+        }
+      }
+      else if (line[0] == 'W' and line[1] == ' ' and current_unit) {
+
+        // W <unit-name>%s [<source-file> <ali-file>] — record the WITH
+        // dependency for the binder's closure walk.
+        char dep_token[256];
+        if (sscanf (line + 2, "%255s", dep_token) == 1) {
+          char *percent = strchr (dep_token, '%');
+          if (percent) *percent = '\0';
+          uint32_t grown_count = current_unit->with_unit_count + 1;
+          String_Slice *grown =
+            Arena_Allocate (grown_count * sizeof (String_Slice));
+          for (uint32_t w = 0; w < current_unit->with_unit_count; w++)
+            grown[w] = current_unit->with_units[w];
+          grown[grown_count - 1] = Slice_Duplicate ((String_Slice){
+            dep_token, (uint32_t)strlen (dep_token) });
+          current_unit->with_units = grown;
+          current_unit->with_unit_count = grown_count;
+        }
+      }
+      else if (line[0] == 'U' and line[1] == ' ') {
+
+        // U <unit-name>%s|%b <source-file> <checksum> [flags...]
+        char unit_token[256], file_token[256], sum_token[32];
+        char subunit_flag[8] = "";
+        int fields = sscanf (line + 2, "%255s %255s %31s %7s",
+                             unit_token, file_token, sum_token,
+                             subunit_flag);
+        if (fields >= 3) {
+          Catalog_Unit_Kind kind = CATALOG_UNIT_SPEC;
+          char *percent = strchr (unit_token, '%');
+          if (percent) {
+            kind = (percent[1] == 'b') ? CATALOG_UNIT_BODY
+                                       : CATALOG_UNIT_SPEC;
+            *percent = '\0';
+          }
+          if (strcmp (subunit_flag, "SB") == 0)
+            kind = CATALOG_UNIT_SUBUNIT;
+          bool requires_body = false;
+          {
+            size_t line_length = line_end ? (size_t)(line_end - line)
+                                          : strlen (line);
+            for (size_t p = 0; p + 3 <= line_length; p++)
+              if (line[p] == ' ' and line[p + 1] == 'R' and
+                  line[p + 2] == 'B' and
+                  (p + 3 == line_length or line[p + 3] == ' ')) {
+                requires_body = true;
+                break;
+              }
+          }
+          char joined_path[512];
+          if (strchr (file_token, '/'))
+
+            // Absolute or CWD-relative path: use as recorded.
+            snprintf (joined_path, sizeof (joined_path), "%s", file_token);
+          else
+            snprintf (joined_path, sizeof (joined_path), "%s/%s",
+                      directory, file_token);
+          current_unit = Library_Catalog_Register_At (
+            (String_Slice){ unit_token, (uint32_t)strlen (unit_token) },
+            (String_Slice){ joined_path, (uint32_t)strlen (joined_path) },
+            kind, (uint32_t)strtoul (sum_token, NULL, 16), ali_mtime);
+
+          // A rejected (stale) registration keeps the newer ALI's facts:
+          // this older file's F/W/ST lines must not attach to it.
+          if (current_unit->recorded_at != ali_mtime) {
+            current_unit = NULL;
+          } else {
+            current_unit->requires_body = requires_body;
+          }
+          slots = NULL;
+          slot_count = 0;
+          slot_capacity = 0;
+        }
+      }
+      line = line_end ? line_end + 1 : NULL;
+    }
+  }
+  closedir (dir);
+}
+
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+// §14.7 Generate_ALI_File - Entry point for ALI generation
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+
+void Generate_ALI_File (const char *output_path, const char *input_path,
                 Syntax_Node **units, int unit_count,
                 const char *source, size_t source_size) {
 
@@ -43510,7 +45008,7 @@ void Generate_ALI_File (const char *output_path,
   // Collect information from all compilation units
   ALI_Info ali = {0};
   for (int i = 0; i < unit_count; i++) {
-    ALI_Collect_Unit (&ali, units[i], source, source_size);
+    ALI_Collect_Unit (&ali, units[i], source, source_size, input_path);
   }
 
   // Write ALI file
@@ -43520,7 +45018,7 @@ void Generate_ALI_File (const char *output_path,
 }
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
-// §14.7 ALI_Reader - Parse .ali files for dependency management                                    
+// §14.8 ALI_Reader - Parse .ali files for dependency management                                    
 //                                                                                                  
 // We read ALI files to:                                                                            
 //   1. Skip recompilation of unchanged units (checksum match)                                      
@@ -43530,7 +45028,7 @@ void Generate_ALI_File (const char *output_path,
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 // Global ALI cache                                                                                 
 //                                                                                                  
-ALI_Cache_Entry ALI_Cache[256];
+ALI_Cache_Entry ALI_Cache[MAX_ALI_CACHE_ENTRIES];
 uint32_t        ALI_Cache_Count = 0;
 
 // Skip whitespace
@@ -43577,8 +45075,9 @@ ALI_Cache_Entry *ALI_Read (const char *ali_path) {
   FILE *file = fopen (ali_path, "r");
   if (not file) return NULL;
 
-  // Allocate cache entry
-  if (ALI_Cache_Count >= 256) {
+  // Cache full: refuse the CACHE slot, not the load — the caller falls
+  // back to parsing the source, which is correct, only slower.
+  if (ALI_Cache_Count >= MAX_ALI_CACHE_ENTRIES) {
     fclose (file);
     return NULL;
   }
@@ -43671,7 +45170,16 @@ ALI_Cache_Entry *ALI_Read (const char *ali_path) {
       //                                                                                            
       // Example: X F Get_Value:9 i64 @test_exports__get_value Counter                              
       //                                                                                            
-      if (entry->export_count >= 256) continue;
+      if (entry->export_count == entry->export_capacity) {
+        uint32_t grown_capacity =
+          entry->export_capacity ? entry->export_capacity * 2 : 64;
+        ALI_Export *grown =
+          Arena_Allocate (grown_capacity * sizeof (ALI_Export));
+        for (uint32_t e = 0; e < entry->export_count; e++)
+          grown[e] = entry->exports[e];
+        entry->exports = grown;
+        entry->export_capacity = grown_capacity;
+      }
       ALI_Export *exp = &entry->exports[entry->export_count];
       memset (exp, 0, sizeof (*exp));
       cursor = ALI_Skip_Ws (cursor + 1);  // Skip 'X'
@@ -44316,6 +45824,107 @@ uint32_t Elab_Register_Unit (String_Slice name, bool is_body,
   return id;
 }
 
+// Find-or-add a vertex without touching the elaboration flags Register_Unit
+// owns (a context reference must not clobber a unit's own registration).
+static uint32_t Elab_Reference_Unit (String_Slice name, Elab_Unit_Kind kind) {
+  uint32_t id = Elab_Find_Vertex (&g_elab_graph, name, kind);
+  if (id == 0) id = Elab_Add_Vertex (&g_elab_graph, name, kind, NULL);
+  return id;
+}
+
+// RM 10.5 invocation edge: a call executed during CALLER_UNIT's library
+// elaboration needs CALLEE's enclosing library unit elaborated first —
+// a WEAK preference (EDGE_INVOCATION), so it guides the order without
+// manufacturing unsatisfiable cycles.
+void Elab_Note_Invocation (Symbol *caller_unit, Symbol *callee) {
+  if (not caller_unit or not callee) return;
+  Symbol *callee_root = callee;
+  while (callee_root->parent) callee_root = callee_root->parent;
+  Symbol *caller_root = caller_unit;
+  while (caller_root->parent) caller_root = caller_root->parent;
+  if (callee_root == caller_root) return;  // intra-unit call
+  if (callee_root->kind != SYMBOL_PACKAGE) return;
+  if (callee_root->is_pure_unit or callee_root->is_preelaborate_unit)
+    return;  // categorized units need no invocation ordering
+  Elab_Init ();
+  uint32_t callee_body =
+    Elab_Reference_Unit (callee_root->name, UNIT_BODY);
+  uint32_t caller_body =
+    Elab_Reference_Unit (caller_root->name, UNIT_BODY);
+  Elab_Add_Edge (&g_elab_graph, callee_body, caller_body, EDGE_INVOCATION);
+}
+
+// RM 10.2 / 10.5: a compilation unit's context clause becomes elaboration
+// edges. Every WITH'd unit's SPEC elaborates before this unit (EDGE_WITH);
+// pragma Elaborate (X) orders X's BODY before this unit (EDGE_ELABORATE);
+// pragma Elaborate_All (X) does the same with transitive strength
+// (EDGE_ELABORATE_ALL). Vertices are find-or-add — the unit's own code
+// generation completes the flags when its body registers.
+void Elab_Register_Context_Dependencies (Syntax_Node *compilation_unit) {
+  if (not compilation_unit or
+      compilation_unit->kind != NK_COMPILATION_UNIT) return;
+  Syntax_Node *unit    = compilation_unit->compilation_unit.unit;
+  Syntax_Node *context = compilation_unit->compilation_unit.context;
+  if (not unit or not context) return;
+  String_Slice unit_name;
+  Elab_Unit_Kind unit_kind;
+  switch (unit->kind) {
+    case NK_PACKAGE_SPEC:
+      unit_name = unit->package_spec.name; unit_kind = UNIT_SPEC; break;
+    case NK_PACKAGE_BODY:
+      unit_name = unit->package_body.name; unit_kind = UNIT_BODY; break;
+    case NK_GENERIC_INST:
+
+      // A library instantiation elaborates its bindings as one unit;
+      // it joins the graph under the instance name (UNIT_BODY: the
+      // bindings ARE its body-level elaboration).
+      unit_name = unit->generic_inst.instance_name;
+      unit_kind = UNIT_BODY;
+      break;
+    default:
+      return;  // subprogram units order through main, not the graph
+  }
+  Elab_Init ();
+  uint32_t unit_vertex = Elab_Reference_Unit (unit_name, unit_kind);
+  if (unit_vertex == 0) return;
+
+  // WITH clauses: the named unit's spec elaborates first.
+  for (uint32_t i = 0; i < context->context.with_clauses.count; i++) {
+    Syntax_Node *with_clause = context->context.with_clauses.items[i];
+    if (not with_clause) continue;
+    for (uint32_t j = 0; j < with_clause->use_clause.names.count; j++) {
+      Syntax_Node *name = with_clause->use_clause.names.items[j];
+      if (not name or name->kind != NK_IDENTIFIER) continue;
+      uint32_t withed_spec =
+        Elab_Reference_Unit (name->string_val.text, UNIT_SPEC);
+      Elab_Add_Edge (&g_elab_graph, withed_spec, unit_vertex, EDGE_WITH);
+    }
+  }
+
+  // Context pragmas Elaborate / Elaborate_All: the named unit's BODY
+  // elaborates before this unit.
+  for (uint32_t i = 0; i < context->context.pragmas.count; i++) {
+    Syntax_Node *pragma_node = context->context.pragmas.items[i];
+    if (not pragma_node or pragma_node->kind != NK_PRAGMA) continue;
+    bool is_elaborate =
+      Slice_Equal_Ignore_Case (pragma_node->pragma_node.name, S("ELABORATE"));
+    bool is_elaborate_all =
+      Slice_Equal_Ignore_Case (pragma_node->pragma_node.name,
+                               S("ELABORATE_ALL"));
+    if (not is_elaborate and not is_elaborate_all) continue;
+    for (uint32_t j = 0; j < pragma_node->pragma_node.arguments.count; j++) {
+      Syntax_Node *argument = pragma_node->pragma_node.arguments.items[j];
+      if (argument and argument->kind == NK_ASSOCIATION)
+        argument = argument->association.expression;
+      if (not argument or argument->kind != NK_IDENTIFIER) continue;
+      uint32_t named_body =
+        Elab_Reference_Unit (argument->string_val.text, UNIT_BODY);
+      Elab_Add_Edge (&g_elab_graph, named_body, unit_vertex,
+                     is_elaborate_all ? EDGE_ELABORATE_ALL : EDGE_ELABORATE);
+    }
+  }
+}
+
 // Compute the elaboration order (call after all units registered)
 Elab_Order_Status Elab_Compute_Order (void) {
   Elab_Init ();
@@ -44500,12 +46109,39 @@ char *Lookup_Path_Ext (String_Slice name, const char *primary) {
     Build_Include_Path_Filename (name, i, path, sizeof (path));
     char *src = Try_Read_Ext (path, primary);
     if (not src) src = Try_Read_Ext (path, "ada");
-    if (src) return src;
+    if (src) {
+      Lookup_Path_Resolved_From_Rts =
+        Rts_Include_Path and Include_Paths[i] == Rts_Include_Path;
+      return src;
+    }
   }
+  Lookup_Path_Resolved_From_Rts = false;
   return NULL;
 }
 
+// Read a catalog entry's file; NULL when the entry is absent, fileless
+// (registered in-process without a source), or unreadable.
+char *Catalog_Read_Source (String_Slice name, Catalog_Unit_Kind kind) {
+  Catalog_Entry *entry = Library_Catalog_Find (name, kind);
+  if (not entry or not entry->source_file.length) return NULL;
+  char path[512];
+  snprintf (path, sizeof (path), "%.*s",
+            (int)entry->source_file.length, entry->source_file.data);
+  return Read_File_Simple (path);
+}
+
+// The program library catalog answers first (it knows units whose file
+// names match nothing); the GNAT-style naming convention is the fallback.
 char *Lookup_Path(String_Slice name) {
+  Lookup_Path_Resolved_From_Rts = false;
+  char *from_catalog = Catalog_Read_Source (name, CATALOG_UNIT_SPEC);
+  if (from_catalog) return from_catalog;
+
+  // A library SUBPROGRAM has only a body entry; the catalog's pick (the
+  // NEWEST compilation, RM 10.3 replacement) must outrank a name-derived
+  // file that happens to exist with an older version.
+  from_catalog = Catalog_Read_Source (name, CATALOG_UNIT_BODY);
+  if (from_catalog) return from_catalog;
   return Lookup_Path_Ext (name, "ads");
 }
 
@@ -44521,8 +46157,10 @@ bool Has_Precompiled_LL (String_Slice name) {
   return false;
 }
 
-// Find a package body source file in include paths
+// Find a package body source file: catalog first, then include paths.
 char *Lookup_Path_Body (String_Slice name) {
+  char *from_catalog = Catalog_Read_Source (name, CATALOG_UNIT_BODY);
+  if (from_catalog) return from_catalog;
   return Lookup_Path_Ext (name, "adb");
 }
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
@@ -44535,6 +46173,8 @@ char *Lookup_Path_Body (String_Slice name) {
 
 const char     *Include_Paths[32];
 uint32_t        Include_Path_Count        = 0;
+const char     *Rts_Include_Path          = NULL;
+bool            Lookup_Path_Resolved_From_Rts = false;
 
 // Set by `-g` on the command line. Propagated into `cg` at Code_Generator_Init
 // time so every emitted IR line gets a trailing `; @ FUNC:LINE` comment.
@@ -44546,22 +46186,37 @@ bool            Debug_Emit_Locations      = false;
 // wrong edge in SYNTAX_TREE_SHAPE.
 bool            Clone_Self_Check          = false;
 
-// Track loaded package bodies for code generation
-Syntax_Node    *Loaded_Package_Bodies[128];
+// Track loaded package bodies for code generation (arena-grown, no cap)
+Syntax_Node   **Loaded_Package_Bodies      = NULL;
 int             Loaded_Body_Count          = 0;
+static int      Loaded_Body_Capacity       = 0;
 
-// Track which package bodies have already been loaded (to avoid duplicates)
-String_Slice    Loaded_Body_Names[128];
-int             Loaded_Body_Names_Count    = 0;
+void Queue_Loaded_Body (Syntax_Node *cu) {
+  if (Loaded_Body_Count == Loaded_Body_Capacity) {
+    int grown_capacity = Loaded_Body_Capacity ? Loaded_Body_Capacity * 2 : 32;
+    Syntax_Node **grown =
+      Arena_Allocate ((size_t)grown_capacity * sizeof (Syntax_Node *));
+    for (int i = 0; i < Loaded_Body_Count; i++)
+      grown[i] = Loaded_Package_Bodies[i];
+    Loaded_Package_Bodies = grown;
+    Loaded_Body_Capacity = grown_capacity;
+  }
+  Loaded_Package_Bodies[Loaded_Body_Count++] = cu;
+}
+
+// "Already loaded into this compilation" is the catalog's `loaded` flag —
+// one tracking structure, not two (the old Loaded_Body_Names array died
+// into the catalog).
 bool Body_Already_Loaded (String_Slice name) {
-  for (int i = 0; i < Loaded_Body_Names_Count; i++)
-    if (Slice_Equal_Ignore_Case (Loaded_Body_Names[i], name)) return true;
-  return false;
+  Catalog_Entry *entry = Library_Catalog_Find (name, CATALOG_UNIT_BODY);
+  return entry and entry->loaded;
 }
 void Mark_Body_Loaded (String_Slice name) {
-  if (Loaded_Body_Names_Count < 128) {
-    Loaded_Body_Names[Loaded_Body_Names_Count++] = name;
-  }
+  Catalog_Entry *entry = Library_Catalog_Find (name, CATALOG_UNIT_BODY);
+  if (not entry)
+    entry = Library_Catalog_Register (name, (String_Slice){ NULL, 0 },
+                                      CATALOG_UNIT_BODY, 0);
+  entry->loaded = true;
 }
 
 Loading_Set Loading_Packages = {0};
@@ -44571,9 +46226,17 @@ bool Loading_Set_Contains (String_Slice name) {
   return false;
 }
 void Loading_Set_Add (String_Slice name) {
-  if (Loading_Packages.count < 64) {
-    Loading_Packages.names[Loading_Packages.count++] = name;
+  if (Loading_Packages.count == Loading_Packages.capacity) {
+    int grown_capacity =
+      Loading_Packages.capacity ? Loading_Packages.capacity * 2 : 16;
+    String_Slice *grown =
+      Arena_Allocate ((size_t)grown_capacity * sizeof (String_Slice));
+    for (int i = 0; i < Loading_Packages.count; i++)
+      grown[i] = Loading_Packages.names[i];
+    Loading_Packages.names = grown;
+    Loading_Packages.capacity = grown_capacity;
   }
+  Loading_Packages.names[Loading_Packages.count++] = name;
 }
 void Loading_Set_Remove (String_Slice name) {
   for (int i = 0; i < Loading_Packages.count; i++)
@@ -44752,8 +46415,9 @@ void ALI_Load_Symbols (ALI_Cache_Entry *entry) {
       sym->parent = pkg_sym;  // Set parent for proper scoping
       Symbol_Add (sym);
 
-      // Also add to package exported list for qualified access
-      if (pkg_sym->exported_count < 256) {
+      // Also add to package exported list for qualified access; the
+      // array was allocated for exactly entry->export_count symbols.
+      if (pkg_sym->exported and pkg_sym->exported_count < entry->export_count) {
         pkg_sym->exported[pkg_sym->exported_count++] = sym;
       }
     }
@@ -44778,6 +46442,201 @@ void ALI_Load_Symbols (ALI_Cache_Entry *entry) {
 //                                                                                                  
 // Returns true if successful (caller should skip parsing).                                        
 //                                                                                                  
+Symbol  **Bodyless_Required_Packages       = NULL;
+uint32_t  Bodyless_Required_Package_Count  = 0;
+static uint32_t Bodyless_Required_Package_Capacity = 0;
+Symbol  **Missing_Body_Subprograms         = NULL;
+uint32_t  Missing_Body_Subprogram_Count    = 0;
+static uint32_t Missing_Body_Subprogram_Capacity = 0;
+
+static void Append_Symbol_Grown (Symbol ***items, uint32_t *count,
+                                 uint32_t *capacity, Symbol *symbol) {
+  for (uint32_t i = 0; i < *count; i++)
+    if ((*items)[i] == symbol) return;
+  if (*count == *capacity) {
+    uint32_t grown_capacity = *capacity ? *capacity * 2 : 8;
+    Symbol **grown = Arena_Allocate (grown_capacity * sizeof (Symbol *));
+    for (uint32_t i = 0; i < *count; i++) grown[i] = (*items)[i];
+    *items = grown;
+    *capacity = grown_capacity;
+  }
+  (*items)[(*count)++] = symbol;
+}
+
+void Append_Bodyless_Required_Package (Symbol *package_symbol) {
+  Append_Symbol_Grown (&Bodyless_Required_Packages,
+                       &Bodyless_Required_Package_Count,
+                       &Bodyless_Required_Package_Capacity, package_symbol);
+}
+
+void Append_Missing_Body_Subprogram (Symbol *subprogram_symbol) {
+  Append_Symbol_Grown (&Missing_Body_Subprograms,
+                       &Missing_Body_Subprogram_Count,
+                       &Missing_Body_Subprogram_Capacity, subprogram_symbol);
+}
+
+// RM 7.1: a package specification requires a body when it declares
+// something only a body can complete — a subprogram, a task unit, a
+// generic unit, or an incomplete type with no full declaration in the
+// same specification.
+bool Package_Spec_Requires_Body (Syntax_Node *pkg_spec) {
+  Node_List *lists[2] = { &pkg_spec->package_spec.visible_decls,
+                          &pkg_spec->package_spec.private_decls };
+  for (int li = 0; li < 2; li++) {
+    for (uint32_t i = 0; i < lists[li]->count; i++) {
+      Syntax_Node *decl = lists[li]->items[i];
+      if (not decl) continue;
+      switch (decl->kind) {
+        case NK_PROCEDURE_SPEC:
+        case NK_FUNCTION_SPEC:
+          if (not decl->subprogram_spec.renamed) return true;
+          break;
+        case NK_TASK_SPEC:
+          return true;
+        case NK_GENERIC_DECL:
+          return true;
+        case NK_TYPE_DECL: {
+          if (decl->type_decl.definition or decl->type_decl.is_private)
+            break;
+
+          // Incomplete type: a full declaration later in the spec
+          // completes it; otherwise the body must (RM 3.8.1).
+          bool completed = false;
+          for (int lj = 0; lj < 2 and not completed; lj++)
+            for (uint32_t j = 0; j < lists[lj]->count; j++) {
+              Syntax_Node *other = lists[lj]->items[j];
+              if (other and other != decl and other->kind == NK_TYPE_DECL and
+                  (other->type_decl.definition or other->type_decl.is_private) and
+                  Slice_Equal_Ignore_Case (other->type_decl.name,
+                                           decl->type_decl.name)) {
+                completed = true;
+                break;
+              }
+            }
+          if (not completed) return true;
+          break;
+        }
+        default: break;
+      }
+    }
+  }
+  return false;
+}
+
+// RM 10.2 stub completeness of a LOADED unit: every body stub in a
+// WITH'd dependency must have a compiled subunit in the library by the
+// time a main program is compiled. The compilation that contains the
+// stub itself is exempt — its subunit may legitimately follow later.
+static void Require_Loaded_Stub_Subunits (String_Slice parent_name,
+                                          Node_List *declarations) {
+  for (uint32_t i = 0; i < declarations->count; i++) {
+    Syntax_Node *decl = declarations->items[i];
+    if (not decl) continue;
+    String_Slice stub_name = {0};
+    switch (decl->kind) {
+      case NK_PROCEDURE_BODY:
+      case NK_FUNCTION_BODY:
+        if (decl->subprogram_body.is_separate)
+          stub_name = Get_Subprogram_Name (decl);
+        break;
+      case NK_PACKAGE_BODY:
+        if (decl->package_body.is_separate)
+          stub_name = decl->package_body.name;
+        break;
+      case NK_TASK_BODY:
+        if (decl->task_body.is_separate)
+          stub_name = decl->task_body.name;
+        break;
+      default: break;
+    }
+    if (stub_name.length == 0) continue;
+    size_t dotted_length = (size_t)parent_name.length + 1 + stub_name.length;
+    char *dotted = Arena_Allocate (dotted_length);
+    memcpy (dotted, parent_name.data, parent_name.length);
+    dotted[parent_name.length] = '.';
+    memcpy (dotted + parent_name.length + 1, stub_name.data, stub_name.length);
+    String_Slice dotted_name = { dotted, (uint32_t)dotted_length };
+    if (not Library_Catalog_Find (dotted_name, CATALOG_UNIT_SUBUNIT))
+      Report_Error (decl->location,
+        "subunit '%.*s' has no compiled body in the library (RM 10.2)",
+        (int)dotted_name.length, dotted_name.data);
+  }
+}
+
+// RM 10.3/10.5: compiling a main program is this compiler's bind point —
+// the library it closes over must be complete and consistent. Checks the
+// main's direct WITHs for obsolete bodies/subunits and uncompiled generic
+// bodies, and every loaded dependency body for unsatisfied stubs.
+void Require_Complete_Library (Syntax_Node **units, int unit_count) {
+  for (int i = 0; i < unit_count; i++) {
+    Syntax_Node *cu = units[i];
+    if (not cu or not cu->compilation_unit.context) continue;
+    Node_List *withs = &cu->compilation_unit.context->context.with_clauses;
+    for (uint32_t w = 0; w < withs->count; w++) {
+      Syntax_Node *with_node = withs->items[w];
+      for (uint32_t j = 0; j < with_node->use_clause.names.count; j++) {
+        Syntax_Node *name_node = with_node->use_clause.names.items[j];
+        if (name_node->kind != NK_IDENTIFIER) continue;
+        String_Slice with_name = name_node->string_val.text;
+        Library_Catalog_Require_Consistent (with_name, name_node->location);
+        Symbol *with_symbol = Symbol_Find (with_name);
+        if (with_symbol and with_symbol->kind == SYMBOL_GENERIC and
+            not with_symbol->generic_body and
+            not with_symbol->is_predefined_unit and
+            not Library_Catalog_Find (with_name, CATALOG_UNIT_BODY)) {
+
+          // A generic SUBPROGRAM always requires a body; a generic
+          // PACKAGE only when its spec does (RM 7.1, RM 12.2).
+          Syntax_Node *generic_unit = with_symbol->generic_unit;
+          bool requires_body =
+            not generic_unit or generic_unit->kind != NK_PACKAGE_SPEC or
+            Package_Spec_Requires_Body (generic_unit);
+          if (requires_body)
+            Report_Error (name_node->location,
+              "generic unit '%.*s' has no compiled body in the library (RM 10.3)",
+              (int)with_name.length, with_name.data);
+        }
+
+        // Stubs inside a generic's body need compiled subunits just as
+        // non-generic bodies do (RM 10.2).
+        if (with_symbol and with_symbol->kind == SYMBOL_GENERIC and
+            with_symbol->generic_body) {
+          Syntax_Node *generic_body = with_symbol->generic_body;
+          switch (generic_body->kind) {
+            case NK_PROCEDURE_BODY:
+            case NK_FUNCTION_BODY:
+              Require_Loaded_Stub_Subunits (
+                with_name, &generic_body->subprogram_body.declarations);
+              break;
+            case NK_PACKAGE_BODY:
+              Require_Loaded_Stub_Subunits (
+                with_name, &generic_body->package_body.declarations);
+              break;
+            default: break;
+          }
+        }
+      }
+    }
+  }
+  for (int i = 0; i < Loaded_Body_Count; i++) {
+    Syntax_Node *unit = Loaded_Package_Bodies[i]
+      ? Loaded_Package_Bodies[i]->compilation_unit.unit : NULL;
+    if (not unit) continue;
+    switch (unit->kind) {
+      case NK_PACKAGE_BODY:
+        Require_Loaded_Stub_Subunits (unit->package_body.name,
+                                      &unit->package_body.declarations);
+        break;
+      case NK_PROCEDURE_BODY:
+      case NK_FUNCTION_BODY:
+        Require_Loaded_Stub_Subunits (Get_Subprogram_Name (unit),
+                                      &unit->subprogram_body.declarations);
+        break;
+      default: break;
+    }
+  }
+}
+
 bool Try_Load_From_ALI (String_Slice name) {
   char *ali_path = ALI_Find (name);
   if (not ali_path) return false;
@@ -44820,6 +46679,11 @@ bool Try_Load_From_ALI (String_Slice name) {
 // Load and resolve a package specification
 void Load_Package_Spec (String_Slice name, char *src) {
   if (not src) return;
+
+  // Predefined library unit (resolved from the implementation's rts
+  // directory): the runtime itself provides its body. Captured before
+  // any recursive lookup overwrites the flag.
+  bool predefined_unit = Lookup_Path_Resolved_From_Rts;
 
   // Check if already loaded
   Symbol *existing = Symbol_Find (name);
@@ -44869,6 +46733,11 @@ void Load_Package_Spec (String_Slice name, char *src) {
     }
   }
 
+  // The spec's context (WITH clauses, Elaborate pragmas) feeds the
+  // elaboration graph here — a loaded spec's compilation unit never
+  // passes through code generation, only its body does.
+  Elab_Register_Context_Dependencies (cu);
+
   // Resolve the package declarations
   if (cu->compilation_unit.unit) {
     Syntax_Node *unit = cu->compilation_unit.unit;
@@ -44883,6 +46752,15 @@ void Load_Package_Spec (String_Slice name, char *src) {
       pkg_sym->declaration = pkg;
       Symbol_Add (pkg_sym);
       pkg->symbol = pkg_sym;
+
+      // Resolve the spec's USE clauses (RM 8.4): its declarations may
+      // name entities of WITH'd packages directly.
+      if (cu->compilation_unit.context) {
+        Node_List *spec_uses =
+          &cu->compilation_unit.context->context.use_clauses;
+        for (uint32_t i = 0; i < spec_uses->count; i++)
+          Resolve_Declaration (spec_uses->items[i]);
+      }
 
       // Push package scope
       Symbol_Manager_Push_Scope (pkg_sym);
@@ -44942,9 +46820,9 @@ void Load_Package_Spec (String_Slice name, char *src) {
       // emitted .ll defines @check_file (etc.) rather than just
       // declaring it extern. Skip mere spec compilation units.
       if ((unit->kind == NK_PROCEDURE_BODY or unit->kind == NK_FUNCTION_BODY) and
-        Loaded_Body_Count < 128 and not Body_Already_Loaded (name)) {
+        not Body_Already_Loaded (name)) {
         Mark_Body_Loaded (name);
-        Loaded_Package_Bodies[Loaded_Body_Count++] = cu;
+        Queue_Loaded_Body (cu);
       }
     }
     else if (unit->kind == NK_GENERIC_DECL) {
@@ -44964,6 +46842,7 @@ void Load_Package_Spec (String_Slice name, char *src) {
         Symbol *sym = Symbol_New (SYMBOL_GENERIC, unit_name, unit->location);
         sym->declaration = unit;
         sym->generic_unit = inner;
+        sym->is_predefined_unit = predefined_unit;
 
         // Store formals list for later instantiation
         if (unit->generic_decl.formals.count > 0) {
@@ -45005,6 +46884,7 @@ void Load_Package_Spec (String_Slice name, char *src) {
   // This handles generic procedures/functions like LENGTH_CHECK where
   // the body must attach to the SYMBOL_GENERIC created above so
   // instantiation has a template body to clone.
+  Syntax_Node *same_file_body_cu = NULL;
   while (not Parser_At (&parser, TK_EOF)) {
     Syntax_Node *more_cu = Parse_Compilation_Unit (&parser);
     if (not more_cu or not more_cu->compilation_unit.unit) break;
@@ -45069,17 +46949,30 @@ void Load_Package_Spec (String_Slice name, char *src) {
         Resolve_Declaration_List (&more_unit->subprogram_body.declarations);
         Resolve_Statement_List (&more_unit->subprogram_body.statements);
         Symbol_Manager_Pop_Scope ();
-      } else {
+      } else if (body_name.data and Slice_Equal_Ignore_Case (body_name, name)) {
         Resolve_Declaration (more_unit);
-        if (Loaded_Body_Count < 128 and not Body_Already_Loaded (name)) {
+        if (not Body_Already_Loaded (name)) {
           Mark_Body_Loaded (name);
-          Loaded_Package_Bodies[Loaded_Body_Count++] = more_cu;
+          Queue_Loaded_Body (more_cu);
         }
       }
+      // Other subprogram units sharing the file (ACATS multi-unit
+      // convention) are separate compilations — never resolve or queue
+      // them while loading this unit.
+
     } else if (more_unit->kind == NK_PACKAGE_BODY) {
       String_Slice body_name = more_unit->package_body.name;
       Symbol *pkg_sym = body_name.data ? Symbol_Find (body_name) : NULL;
-      if (pkg_sym and pkg_sym->kind == SYMBOL_GENERIC) {
+
+      // Spec and body in ONE file (ACATS convention): the body found
+      // here IS this unit's body — hand it to the body-loading section
+      // below instead of re-reading the file (which would re-find the
+      // spec and wrongly classify the package as bodyless).
+      if (pkg_sym and pkg_sym->kind == SYMBOL_PACKAGE and
+          Slice_Equal_Ignore_Case (body_name, name)) {
+        same_file_body_cu = more_cu;
+      }
+      else if (pkg_sym and pkg_sym->kind == SYMBOL_GENERIC) {
         // Resolve through the NK_PACKAGE_BODY case: its generic-completion
         // path installs the formals, resolves the spec and the body
         // (declarations, statement part, handlers), and records the body
@@ -45098,18 +46991,106 @@ void Load_Package_Spec (String_Slice name, char *src) {
     return;  // Body already loaded
   }
   if (Has_Precompiled_LL (name)) {
+
+    // A precompiled unit still constrains elaboration order: its ALI's
+    // recorded WITH set enters the graph even though no source loads
+    // (RM 10.5). Pure units record no elaboration dependency.
+    char *precompiled_ali = ALI_Find (name);
+    ALI_Cache_Entry *ali_entry =
+      precompiled_ali ? ALI_Read (precompiled_ali) : NULL;
+    if (ali_entry and not ali_entry->is_pure) {
+      Elab_Init ();
+      uint32_t unit_body = Elab_Reference_Unit (name, UNIT_BODY);
+      for (uint32_t w = 0; w < ali_entry->with_count; w++) {
+        String_Slice dep_name = { ali_entry->withs[w],
+                                  (uint32_t)strlen (ali_entry->withs[w]) };
+        uint32_t dep_spec = Elab_Reference_Unit (dep_name, UNIT_SPEC);
+        Elab_Add_Edge (&g_elab_graph, dep_spec, unit_body, EDGE_WITH);
+      }
+    }
     return;  // Precompiled version will be linked in
   }
-  char *body_src = Lookup_Path_Body (name);
-  if (body_src and Loaded_Body_Count < 128) {
-    Mark_Body_Loaded (name);
+  // RM 10.3: an OPTIONAL body that became obsolete (one of its WITH'd
+  // specs was recompiled after it) is no longer part of the program —
+  // load the spec alone, even when the body shares the spec's file. A
+  // required body's obsolescence is reported by the completeness sweep.
+  {
+    Catalog_Entry *own_body = Library_Catalog_Find (name, CATALOG_UNIT_BODY);
+    Catalog_Entry *own_spec = Library_Catalog_Find (name, CATALOG_UNIT_SPEC);
+    if (own_body and own_body->source_file.length and own_spec and
+        not own_spec->requires_body) {
+      bool body_obsolete =
+        own_spec->recorded_at > own_body->recorded_at;
+      for (uint32_t w = 0; w < own_body->with_unit_count and
+                           not body_obsolete; w++) {
+        Catalog_Entry *dep_spec =
+          Library_Catalog_Find (own_body->with_units[w], CATALOG_UNIT_SPEC);
+        if (dep_spec and dep_spec->recorded_at > own_body->recorded_at)
+          body_obsolete = true;
+      }
+      if (body_obsolete) {
+        if (cu->compilation_unit.unit and
+            cu->compilation_unit.unit->kind == NK_PACKAGE_SPEC) {
+          Mark_Body_Loaded (name);
+          Queue_Loaded_Body (cu);
+        }
+        return;
+      }
+    }
+  }
+  Syntax_Node *body_cu = same_file_body_cu;
+  if (not body_cu) {
+    char *body_src = Lookup_Path_Body (name);
+    if (body_src) {
 
-    // Parse the body - arena-allocate filename so AST Source_Locations stay valid
-    size_t bfn_len = name.length + 4;
-    char *body_filename = Arena_Allocate (bfn_len + 1);
-    snprintf (body_filename, bfn_len + 1, "%.*s.adb", (int)name.length, name.data);
-    Parser body_parser = Parser_New (body_src, strlen (body_src), body_filename);
-    Syntax_Node *body_cu = Parse_Compilation_Unit (&body_parser);
+      // Parse the body - arena-allocate filename so AST Source_Locations stay valid
+      size_t bfn_len = name.length + 4;
+      char *body_filename = Arena_Allocate (bfn_len + 1);
+      snprintf (body_filename, bfn_len + 1, "%.*s.adb", (int)name.length, name.data);
+      Parser body_parser = Parser_New (body_src, strlen (body_src), body_filename);
+      body_cu = Parse_Compilation_Unit (&body_parser);
+    }
+  }
+
+  // Spec-only package — no body file, or the path lookup's .ada fallback
+  // handed back the spec itself: queue the SPEC for code generation so its
+  // package-level state is DEFINED in this module. The extern path would
+  // otherwise leave the globals undefined forever.
+  bool have_package_body =
+    body_cu and body_cu->compilation_unit.unit and
+    (body_cu->compilation_unit.unit->kind == NK_PACKAGE_BODY or
+     body_cu->compilation_unit.unit->kind == NK_PROCEDURE_BODY or
+     body_cu->compilation_unit.unit->kind == NK_FUNCTION_BODY);
+  if (not have_package_body) {
+    Syntax_Node *spec_unit = cu->compilation_unit.unit;
+    if (spec_unit and spec_unit->kind == NK_PACKAGE_SPEC) {
+      if (Package_Spec_Requires_Body (spec_unit) and not predefined_unit) {
+
+        // RM 7.1/10.5: the spec requires a body the library has not
+        // compiled. Defining its elaboration here would mask that —
+        // record it instead: @main calls the elaboration as an external
+        // reference, satisfied by a later compilation of the body or
+        // failing execution when none exists.
+        if (spec_unit->symbol)
+          Append_Bodyless_Required_Package (spec_unit->symbol);
+      } else {
+        Mark_Body_Loaded (name);
+        Queue_Loaded_Body (cu);
+      }
+    } else if (spec_unit and not predefined_unit and
+               (spec_unit->kind == NK_PROCEDURE_SPEC or
+                spec_unit->kind == NK_FUNCTION_SPEC) and
+               spec_unit->symbol) {
+
+      // Library subprogram declaration without a compiled body: anchor
+      // it from @main so execution requires a later compilation to
+      // provide the body (RM 10.5).
+      Append_Missing_Body_Subprogram (spec_unit->symbol);
+    }
+    return;
+  }
+  {
+    Mark_Body_Loaded (name);
     if (body_cu and body_cu->compilation_unit.unit) {
       Syntax_Node *body_unit = body_cu->compilation_unit.unit;
 
@@ -45128,6 +47109,19 @@ void Load_Package_Spec (String_Slice name, char *src) {
             }
           }
         }
+      }
+
+      // The body's own context also carries elaboration edges.
+      Elab_Register_Context_Dependencies (body_cu);
+
+      // Resolve the body's USE clauses so the WITH'd packages' contents
+      // are directly visible while the body resolves (RM 8.4) — the
+      // subprogram-unit branch already did this; package bodies missed it.
+      if (body_cu->compilation_unit.context) {
+        Node_List *body_uses =
+          &body_cu->compilation_unit.context->context.use_clauses;
+        for (uint32_t i = 0; i < body_uses->count; i++)
+          Resolve_Declaration (body_uses->items[i]);
       }
 
       // Look up the package symbol
@@ -45220,7 +47214,7 @@ void Load_Package_Spec (String_Slice name, char *src) {
           Symbol_Manager_Pop_Scope ();
 
           // Store for code generation
-          Loaded_Package_Bodies[Loaded_Body_Count++] = body_cu;
+          Queue_Loaded_Body (body_cu);
         }
       }
     }
@@ -46076,9 +48070,26 @@ Big_Integer *Big_Integer_From_Decimal_SIMD (const char *text) {
 
 void Compile_File (const char *input_path, const char *output_path) {
 
-  // Reset loaded bodies for this compilation
+  // Reset loaded bodies for this compilation, then prime the program
+  // library catalog (RM 10.4) from the output directory's ALI files —
+  // units compiled earlier into the same library become findable by name
+  // even when their file names match nothing (ACATS fragments, subunits).
   Loaded_Body_Count = 0;
-  Loaded_Body_Names_Count = 0;
+  Bodyless_Required_Package_Count = 0;
+  Missing_Body_Subprogram_Count = 0;
+  {
+    char directory[512];
+    const char *slash = output_path ? strrchr (output_path, '/') : NULL;
+    if (slash) {
+      size_t length = (size_t)(slash - output_path);
+      if (length >= sizeof (directory)) length = sizeof (directory) - 1;
+      memcpy (directory, output_path, length);
+      directory[length] = '\0';
+    } else {
+      snprintf (directory, sizeof (directory), ".");
+    }
+    Library_Catalog_Load_Directory (directory);
+  }
   size_t source_size;
   char *source = Read_File (input_path, &source_size);
   if (not source) {
@@ -46111,6 +48122,49 @@ void Compile_File (const char *input_path, const char *output_path) {
   for (int i = 0; i < unit_count; i++) {
     Resolve_Compilation_Unit (units[i]);
   }
+
+  // RM 10.3/10.5: a main-program compilation is the bind point — sweep
+  // the library closure for obsolete bodies, obsolete subunits, missing
+  // generic bodies, and unsatisfied stubs in loaded dependencies.
+  {
+    bool main_program_compilation = false;
+    for (int i = 0; i < unit_count; i++) {
+      if (not units[i] or units[i]->compilation_unit.separate_parent)
+        continue;
+      Syntax_Node *unit = units[i]->compilation_unit.unit;
+      if (unit and unit->kind == NK_PROCEDURE_BODY and unit->symbol and
+          unit->symbol->parameter_count == 0 and
+          not unit->subprogram_body.is_separate)
+        main_program_compilation = true;
+    }
+    if (main_program_compilation)
+      Require_Complete_Library (units, unit_count);
+  }
+
+  // A subunit compilation (SEPARATE (parent) ...) emits ONLY the
+  // subunit's own code under its stable stub name: the parent chain and
+  // every WITH-loaded unit are already defined in the modules that
+  // compiled them, and re-emitting them here would collide at link time.
+  // A file can also hold the parent AND its subunits together (single-file
+  // programs): then everything is in-module and this is an ordinary
+  // whole-program compile. Subunit mode applies only when some subunit's
+  // parent is NOT compiled by this invocation.
+  bool subunit_compilation = false;
+  for (int i = 0; i < unit_count; i++) {
+    if (not units[i] or not units[i]->compilation_unit.separate_parent)
+      continue;
+    Symbol *parent_symbol = units[i]->compilation_unit.separate_parent->symbol;
+    bool parent_in_file = false;
+    for (int j = 0; j < unit_count; j++) {
+      Syntax_Node *other = units[j] ? units[j]->compilation_unit.unit : NULL;
+      if (other and other->symbol and other->symbol == parent_symbol and
+          not units[j]->compilation_unit.separate_parent) {
+        parent_in_file = true;
+        break;
+      }
+    }
+    if (not parent_in_file) subunit_compilation = true;
+  }
   if (Error_Count > 0) {
     fprintf (stderr, "Semantic analysis failed with %d error(s)\n", Error_Count);
     free (source);
@@ -46132,13 +48186,88 @@ void Compile_File (const char *input_path, const char *output_path) {
     out_file = stdout;  // Output to stdout if no -o specified
   }
   Code_Generator_Init (out_file);
+
+  // WITH'd library subprograms without compiled bodies still need a
+  // declaration with the correct ABI for their @main presence anchors.
+  for (uint32_t i = 0; i < Missing_Body_Subprogram_Count; i++)
+    Append_Separate_Callee (Missing_Body_Subprograms[i]);
   for (int i = 0; i < unit_count; i++) {
+    cg->subunit_parent =
+      (units[i] and units[i]->compilation_unit.separate_parent)
+        ? units[i]->compilation_unit.separate_parent->symbol : NULL;
     Generate_Compilation_Unit (units[i]);
+    cg->subunit_parent = NULL;
   }
 
-  // Generate code for loaded package bodies (e.g., TEXT_IO)
-  for (int i = 0; i < Loaded_Body_Count; i++) {
-    Generate_Compilation_Unit (Loaded_Package_Bodies[i]);
+  // Generate code for loaded package bodies (e.g., TEXT_IO) — except in
+  // a subunit compilation, where the loaded parent chain is context only.
+  if (not subunit_compilation) {
+    cg->generating_loaded_unit = true;
+    for (int i = 0; i < Loaded_Body_Count; i++) {
+      Generate_Compilation_Unit (Loaded_Package_Bodies[i]);
+    }
+    cg->generating_loaded_unit = false;
+  }
+
+  // Declare package-stub elaboration functions another module defines —
+  // skipped when the subunit's define landed in this module.
+  for (uint32_t i = 0; i < cg->pkg_elab_extern_count; i++) {
+    Symbol *stub_package = cg->pkg_elab_externs[i];
+    if (not stub_package or stub_package->elab_defined) continue;
+    Emit ("declare void @");
+    Emit_Symbol_Name (stub_package);
+    Emit ("___elab(ptr)\n");
+  }
+
+  // Declare callees living across a SEPARATE boundary: noted at their
+  // call sites, still without a define after all generation. The
+  // declaration mirrors the call ABI — static-link pointer first for
+  // nested callees, by-reference composites as ptr.
+  for (uint32_t i = 0; i < cg->separate_callee_count; i++) {
+    Symbol *callee = cg->separate_callees[i];
+    if (not callee or callee->definition_emitted or callee->extern_emitted)
+      continue;
+    callee->extern_emitted = true;
+
+    // Package-level data defined in another module (subunit package
+    // state): external global at the type's representation.
+    if (callee->kind == SYMBOL_VARIABLE or callee->kind == SYMBOL_CONSTANT) {
+      Emit ("@");
+      Emit_Symbol_Name (callee);
+      if (callee->type and (Type_Is_Record (callee->type) or
+          (Type_Is_Constrained_Array (callee->type) and
+           not Type_Has_Dynamic_Bounds (callee->type)))) {
+        uint32_t byte_size = callee->type->size ? callee->type->size : 1;
+        Emit (" = external global [%u x i8]"
+              "  ; SEPARATE-boundary data\n", byte_size);
+      } else {
+        Emit (" = external global %s  ; SEPARATE-boundary data\n",
+              callee->type
+                ? LLVM_Rep_To_String (Type_To_Rep (callee->type)) : "i64");
+      }
+      continue;
+    }
+    LLVM_Rep return_rep = callee->return_type
+      ? Type_To_Rep (callee->return_type) : LL_REP_VOID;
+    Emit ("declare %s @", callee->return_type
+          ? LLVM_Rep_To_String (return_rep) : "void");
+    Emit_Symbol_Name (callee);
+    Emit ("(");
+    bool first_parameter = true;
+    if (Subprogram_Needs_Static_Chain (callee)) {
+      Emit ("ptr");
+      first_parameter = false;
+    }
+    for (uint32_t p = 0; p < callee->parameter_count; p++) {
+      if (not first_parameter) Emit (", ");
+      first_parameter = false;
+      if (Param_Is_By_Reference (callee->parameters[p].mode))
+        Emit ("ptr");
+      else
+        Emit ("%s", LLVM_Rep_To_String (
+          Type_To_Rep (callee->parameters[p].param_type)));
+    }
+    Emit (")  ; SEPARATE-boundary callee\n");
   }
 
   // Note: Derived type operations (RM 3.4) don't need wrapper functions.                          
@@ -46171,27 +48300,62 @@ void Compile_File (const char *input_path, const char *output_path) {
   // ═══════════════════════════════════════════════════════════════════════════════════════════════
   // Compute elaboration order using the dependency graph algorithm                                 
   //                                                                                                
-  if (cg->main_candidate) {
+  if (cg->main_candidate and not subunit_compilation) {
     Elab_Order_Status elab_status = Elab_Compute_Order ();
-    if (elab_status == ELAB_ORDER_HAS_ELABORATE_ALL_CYCLE) {
-      fprintf (stderr, "Error: circular pragma Elaborate_All dependency\n");
-    } else if (elab_status == ELAB_ORDER_HAS_CYCLE) {
-      fprintf (stderr, "Warning: elaboration cycle detected, using source order\n");
+    if (elab_status != ELAB_ORDER_OK) {
+
+      // RM 10.5: if no consistent elaboration order exists, the program
+      // is illegal — emitting an arbitrary order would silently run a
+      // program the language forbids.
+      fprintf (stderr, elab_status == ELAB_ORDER_HAS_ELABORATE_ALL_CYCLE
+        ? "error: circular pragma Elaborate_All dependency (RM 10.5)\n"
+        : "error: no consistent elaboration order exists — circular "
+          "elaboration dependency (RM 10.5)\n");
+      Error_Count++;
     }
     Emit ("\n; C main entry point\n");
     Emit ("; Elaboration order computed by Standard-style algorithm (S15.7)\n");
+
+    // RM 10.5: WITH'd packages whose required body the library has not
+    // compiled — elaboration resolves against an external definition (a
+    // later compilation) or execution is rejected.
+    for (uint32_t i = 0; i < Bodyless_Required_Package_Count; i++) {
+      Emit ("declare void @");
+      Emit_Symbol_Name (Bodyless_Required_Packages[i]);
+      Emit ("___elab()\n");
+    }
+
+    // Sink for the RM 10.5 presence anchors below — private per module,
+    // so multi-module links never collide on it.
+    Emit ("@__library_anchors = private global i64 0\n");
     Emit ("define i32 @main() {\n");
 
     // Call elaboration functions in computed dependency order.
     // Prefer the graph-computed order; fall back to source order.
     uint32_t elab_order_count = Elab_Get_Order_Count ();
+    bool *elab_called = cg->elab_func_count
+      ? Arena_Allocate (cg->elab_func_count * sizeof (bool)) : NULL;
+    for (uint32_t i = 0; i < cg->elab_func_count; i++)
+      elab_called[i] = false;
     if (elab_order_count > 0 and elab_status == ELAB_ORDER_OK) {
       for (uint32_t i = 0; i < elab_order_count; i++) {
         if (not Elab_Needs_Elab_Call (i)) continue;
         Symbol *sym = Elab_Get_Order_Symbol (i);
         if (not sym) continue;
+        for (uint32_t k = 0; k < cg->elab_func_count; k++)
+          if (cg->elab_funcs[k] == sym) elab_called[k] = true;
         Emit ("  call void @");
         Emit_Symbol_Name (sym);
+        Emit ("___elab()\n");
+      }
+
+      // No silent drops: any registered elaboration function the graph
+      // did not cover (a unit kind the graph does not model yet) still
+      // runs, in source order, after the graph-ordered units.
+      for (uint32_t i = 0; i < cg->elab_func_count; i++) {
+        if (elab_called[i]) continue;
+        Emit ("  call void @");
+        Emit_Symbol_Name (cg->elab_funcs[i]);
         Emit ("___elab()\n");
       }
 
@@ -46201,6 +48365,31 @@ void Compile_File (const char *input_path, const char *output_path) {
         Emit ("  call void @");
         Emit_Symbol_Name (cg->elab_funcs[i]);
         Emit ("___elab()\n");
+      }
+    }
+    for (uint32_t i = 0; i < Bodyless_Required_Package_Count; i++) {
+      Emit ("  call void @");
+      Emit_Symbol_Name (Bodyless_Required_Packages[i]);
+      Emit ("___elab()\n");
+    }
+
+    // RM 10.5 presence anchors: a WITH'd library subprogram without a
+    // compiled body must fail the program before it runs, even when
+    // nothing calls it. The ptrtoint forces symbol resolution when
+    // @main materializes; a later compilation linking the definition
+    // satisfies it. (Missing SUBUNITS are rejected earlier — by the
+    // completeness sweep at compile time and the binder's ST checks.)
+    {
+      // A bare ptrtoint is dead code the JIT never resolves; the
+      // volatile store makes each anchor live.
+      uint32_t anchor_id = 0;
+      for (uint32_t i = 0; i < Missing_Body_Subprogram_Count; i++) {
+        Emit ("  %%__library_anchor.%u = ptrtoint ptr @", anchor_id);
+        Emit_Symbol_Name (Missing_Body_Subprograms[i]);
+        Emit (" to i64\n");
+        Emit ("  store volatile i64 %%__library_anchor.%u, "
+              "ptr @__library_anchors\n", anchor_id);
+        anchor_id++;
       }
     }
     Emit ("  call void @");
@@ -46260,7 +48449,7 @@ void Compile_File (const char *input_path, const char *output_path) {
     fprintf (stderr, "Compiled '%s' -> '%s'\n", input_path, output_path);
 
     // Generate GNAT-compatible .ali file for dependency tracking
-    Generate_ALI_File (output_path, units, unit_count, source, source_size);
+    Generate_ALI_File (output_path, input_path, units, unit_count, source, source_size);
   }
   free (source);
 }
@@ -46300,8 +48489,18 @@ void *Compile_Worker (void *arg) {
   }
   pid_t pid = fork ();
 
-  // Child - compile and exit
+  // Child - compile and exit. Cross-compilation globals inherited from
+  // the parent reset first: a worker must see the same state a fresh
+  // single-file invocation would (stale ALI cache entries and a
+  // pre-populated elaboration graph would otherwise leak in).
   if (pid == 0) {
+    ALI_Cache_Count = 0;
+    g_elab_graph_initialized = false;
+    Loaded_Body_Count = 0;
+    Bodyless_Required_Package_Count = 0;
+    Missing_Body_Subprogram_Count = 0;
+    Library_Catalog_Reset ();
+    Loading_Packages.count = 0;
     Compile_File (job->input_path, out);
     _exit (Error_Count > 0 ? 1 : 0);
   } else if (pid > 0) {
@@ -46326,6 +48525,20 @@ int main (int argc, char *argv[]) {
       argv[0]);
     return 1;
   }
+  // Bind mode (RM 10.3/10.5): `--bind <libdir> <main-unit>` verifies the
+  // post-compilation consistency of the main program's library closure —
+  // the analogue of GNAT's gnatbind, run by the build after all compiles.
+  if (strcmp (argv[1], "--bind") == 0) {
+    if (argc != 4) {
+      fprintf (stderr, "Usage: %s --bind <library-dir> <main-unit>\n",
+               argv[0]);
+      return 1;
+    }
+    Library_Catalog_Load_Directory (argv[2]);
+    String_Slice main_unit = { argv[3], (uint32_t)strlen (argv[3]) };
+    int errors = Library_Bind_Check (main_unit);
+    return errors > 0 ? 1 : 0;
+  }
   const char *inputs[256];
   int input_count = 0;
   const char *output = NULL;  // NULL means derive from input name
@@ -46335,9 +48548,17 @@ int main (int argc, char *argv[]) {
     if (strcmp (argv[i], "-I") == 0 and i + 1 < argc) {
       if (Include_Path_Count < 32)
         Include_Paths[Include_Path_Count++] = argv[++i];
+      else
+        fprintf (stderr,
+          "warning: include path limit (32) reached; ignoring '%s'\n",
+          argv[++i]);
     } else if (strncmp (argv[i], "-I", 2) == 0) {
       if (Include_Path_Count < 32)
         Include_Paths[Include_Path_Count++] = argv[i] + 2;
+      else
+        fprintf (stderr,
+          "warning: include path limit (32) reached; ignoring '%s'\n",
+          argv[i] + 2);
     } else if (strcmp (argv[i], "-o") == 0 and i + 1 < argc) {
       output = argv[++i];
     } else if (strcmp (argv[i], "-g") == 0) {
@@ -46378,8 +48599,10 @@ int main (int argc, char *argv[]) {
       snprintf (rts_path, sizeof (rts_path), "%s/rts", exe_path);
       struct stat st;
       if (stat (rts_path, &st) == 0 and S_ISDIR (st.st_mode)) {
-        if (Include_Path_Count < 32)
+        if (Include_Path_Count < 32) {
           Include_Paths[Include_Path_Count++] = rts_path;
+          Rts_Include_Path = rts_path;
+        }
       }
     }
   }
@@ -46411,10 +48634,126 @@ int main (int argc, char *argv[]) {
     return Error_Count > 0 ? 1 : 0;
   }
 
-  // Multiple files - parallel compilation using pthreads + fork
+  // RM 10.1: the order of a multi-file compilation matters when a later
+  // file depends on (WITHs, SEPARATEs from, or recompiles a unit of) an
+  // earlier one — the earlier file's library entries must exist before
+  // the later file compiles. Decide by a parse-only pre-scan: collect
+  // each file's defined unit names and referenced unit names, then check
+  // every later file against every earlier file's definitions. Dependent
+  // sets compile sequentially (each child primes its catalog from the
+  // ALIs the previous children wrote); independent sets keep the
+  // fork-per-file parallelism.
+  bool order_sensitive = false;
+  {
+    // A file overflowing the scan tables forces the conservative
+    // (sequential) order rather than silently dropping a dependency.
+    enum { MAX_SCAN_NAMES = 64 };
+    typedef struct {
+      String_Slice defined[MAX_SCAN_NAMES];
+      uint32_t     defined_count;
+      String_Slice referenced[MAX_SCAN_NAMES];
+      uint32_t     referenced_count;
+    } File_Scan;
+    static File_Scan scans[256];
+    for (int i = 0; i < input_count; i++) {
+      File_Scan *scan = &scans[i];
+      scan->defined_count = 0;
+      scan->referenced_count = 0;
+      char *text = Read_File_Simple (inputs[i]);
+      if (not text) continue;
+      Parser parser = Parser_New (text, strlen (text), inputs[i]);
+      while (not Parser_At (&parser, TK_EOF)) {
+        Syntax_Node *cu = Parse_Compilation_Unit (&parser);
+        if (not cu or cu->kind != NK_COMPILATION_UNIT) break;
+        Syntax_Node *unit = cu->compilation_unit.unit;
+        if (not unit) break;
+        String_Slice unit_name = {0};
+        switch (unit->kind) {
+          case NK_PACKAGE_SPEC:
+            unit_name = unit->package_spec.name; break;
+          case NK_PACKAGE_BODY:
+            unit_name = unit->package_body.name; break;
+          case NK_PROCEDURE_SPEC: case NK_FUNCTION_SPEC:
+          case NK_PROCEDURE_BODY: case NK_FUNCTION_BODY:
+            unit_name = Get_Subprogram_Name (unit); break;
+          case NK_GENERIC_DECL: {
+            Syntax_Node *inner = unit->generic_decl.unit;
+            if (inner and inner->kind == NK_PACKAGE_SPEC)
+              unit_name = inner->package_spec.name;
+            else if (inner and (inner->kind == NK_PROCEDURE_SPEC or
+                                inner->kind == NK_FUNCTION_SPEC))
+              unit_name = inner->subprogram_spec.name;
+            break;
+          }
+          default: break;
+        }
+        if (unit_name.length) {
+          if (scan->defined_count < MAX_SCAN_NAMES)
+            scan->defined[scan->defined_count++] = unit_name;
+          else
+            order_sensitive = true;
+        }
+
+        // A subunit references its parent chain's root unit.
+        if (cu->compilation_unit.separate_parent) {
+          String_Slice parent =
+            Flatten_Dotted_Name (cu->compilation_unit.separate_parent);
+          uint32_t root_length = 0;
+          while (root_length < parent.length and
+                 parent.data[root_length] != '.')
+            root_length++;
+          if (root_length and scan->referenced_count < MAX_SCAN_NAMES)
+            scan->referenced[scan->referenced_count++] =
+              (String_Slice){ parent.data, root_length };
+        }
+        if (cu->compilation_unit.context) {
+          Node_List *withs =
+            &cu->compilation_unit.context->context.with_clauses;
+          for (uint32_t w = 0; w < withs->count; w++) {
+            Syntax_Node *with_node = withs->items[w];
+            for (uint32_t k = 0;
+                 with_node and k < with_node->use_clause.names.count; k++) {
+              Syntax_Node *name = with_node->use_clause.names.items[k];
+              if (name and name->kind == NK_IDENTIFIER) {
+                if (scan->referenced_count < MAX_SCAN_NAMES)
+                  scan->referenced[scan->referenced_count++] =
+                    name->string_val.text;
+                else
+                  order_sensitive = true;
+              }
+            }
+          }
+        }
+      }
+    }
+    for (int later = 1; later < input_count and not order_sensitive;
+         later++) {
+      for (int earlier = 0; earlier < later and not order_sensitive;
+           earlier++) {
+        for (uint32_t d = 0; d < scans[earlier].defined_count and
+                             not order_sensitive; d++) {
+          for (uint32_t r = 0; r < scans[later].referenced_count; r++)
+            if (Slice_Equal_Ignore_Case (scans[earlier].defined[d],
+                                         scans[later].referenced[r])) {
+              order_sensitive = true;
+              break;
+            }
+          for (uint32_t r = 0; r < scans[later].defined_count and
+                               not order_sensitive; r++)
+            if (Slice_Equal_Ignore_Case (scans[earlier].defined[d],
+                                         scans[later].defined[r]))
+              order_sensitive = true;  // recompilation replaces (RM 10.3)
+        }
+      }
+    }
+  }
+
+  // Multiple files - parallel compilation using pthreads + fork.
+  // Order-sensitive builds run one file at a time, in command-line order.
   long nprocs = sysconf(_SC_NPROCESSORS_ONLN);
   if (nprocs < 1) nprocs = 1;
   int nthreads = (input_count < (int)nprocs) ? input_count : (int)nprocs;
+  if (order_sensitive) nthreads = 1;
   Compile_Job jobs[256];
   pthread_t threads[256];
   for (int base = 0; base < input_count; base += nthreads) {
