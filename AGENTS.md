@@ -72,8 +72,11 @@ Include-path auto-discovery (no `-I` needed for the common case): `<exe_dir>/rts
 (resolved via `/proc/self/exe`), the input file's directory, then `.`. Explicit
 `-I` paths search first.
 
-ACATS test harness (parallel via `xargs`, written to `test_results/` and
-`acats_logs/`):
+ACATS test harness (parallel via `xargs`). Each invocation writes into its own
+timestamped subfolder pair — `test_results/<label>-<timestamp>-<pid>/` (IR,
+bitcode, `test_summary.txt`) and `acats_logs/<same>/` (compile/link/run logs) —
+so repeated or concurrent runs never overwrite each other; the header of each
+run prints both paths:
 
 ```
 bash run_acats.sh g a            # all class A (acceptance) tests
@@ -115,13 +118,13 @@ Two things to know when running the suite:
   revert procedure are in README.md). The harness cap (`TEST_TIMEOUT`,
   default 30 s) is sized for the scaled delays plus 16-way contention; use
   `TEST_TIMEOUT=120` with pristine sources.
-- **Known cap-payers.** Four tests hang on unimplemented features and burn
-  the full cap each run: c64201c (task components in composite IN
-  parameters), c85018b (renaming an entry family member), c94021a
-  (function-result task master migration), cc1310a (nested generic package
-  instance body statements). Heavily loaded machines can push 12 s-class
-  delay tests past a tight cap — if a delay test flips to TIMEOUT, suspect
-  contention before suspecting the compiler, and re-run the group serially.
+- **Known cap-payers.** The historical hang set (c64201c, c85018b, cc1310a)
+  is FIXED and passes; no test burns the full cap on a hang anymore. The
+  one remaining test in that family is c94021a (function-result task master
+  migration, RM 9.4) — it now fails fast with a segfault rather than
+  hanging. Heavily loaded machines can push 12 s-class delay tests past a
+  tight cap — if a delay test flips to TIMEOUT, suspect contention before
+  suspecting the compiler, and re-run the group serially.
 
 ## Code architecture (`ada83.c`)
 
