@@ -12257,6 +12257,23 @@ Type_Info *Resolve_Expression (Syntax_Node *node) {
           derived->base_type     = base;
         }
 
+        // RM 3.4: likewise for a derived discriminated record constrained at the
+        // derivation (type T is new PARENT(disc)). The base is the unconstrained
+        // record, so comparing against T strips the constraint (an aggregate of
+        // another variant must yield FALSE, not CONSTRAINT_ERROR) and T'BASE is
+        // the full type.
+        if (Type_Is_Record (parent) and parent->record.has_disc_constraints) {
+          Type_Info *parent_base = Type_Base (parent);
+          Type_Info *base = Type_New (TYPE_RECORD, S(""));
+          base->parent_type      = parent_base;
+          base->record           = parent_base->record;
+          base->size             = parent_base->size;
+          base->alignment        = parent_base->alignment;
+          base->specified_bit_size = parent_base->specified_bit_size;
+          base->storage_size     = parent_base->storage_size;
+          derived->base_type     = base;
+        }
+
         // Apply constraint if present
         if (node->derived_type.constraint) {
           Resolve_Expression (node->derived_type.constraint);
@@ -22622,9 +22639,35 @@ LLVM_I1 Generate_Record_Equality (uint32_t left_ptr,
         "internal: record equality called on non-record type");
     return Emit_I1_Const (1, "empty record equality");
   }
-  LLVM_I1 result = { 0 };
+  // Accumulate equality in memory, not an SSA chain: a variant component is
+  // compared under a runtime guard that branches around it when the
+  // discriminant selects a different variant, so the AND must survive across
+  // basic blocks. Comparing an inactive variant's components would read the
+  // unused tail of the record and spuriously report inequality (RM 4.5.2).
+  uint32_t res_flag = Emit_Temp ();
+  Emit ("  %%t%u = alloca i1\n", res_flag);
+  Emit ("  store i1 true, ptr %%t%u\n", res_flag);
+
+  // The discriminant governing the variant part; loaded once from the left
+  // record (the discriminants are compared as ordinary components, so an
+  // unequal discriminant already makes the records unequal).
+  uint32_t disc_val = 0;
+  LLVM_Rep disc_type = Integer_Arith_Rep ();
+  if (record_type->record.variant_count > 0 and record_type->record.variant_part_node) {
+    String_Slice dname = record_type->record.variant_part_node->variant_part.discriminant;
+    for (uint32_t d = 0; d < record_type->record.discriminant_count; d++) {
+      Component_Info *dc = &record_type->record.components[d];
+      if (Slice_Equal_Ignore_Case (dc->name, dname)) {
+        disc_type = LLVM_Rep_Or (Type_To_Rep (dc->component_type), Integer_Arith_Rep ());
+        disc_val = Emit_Load_Field (left_ptr, dc->byte_offset, disc_type);
+        break;
+      }
+    }
+  }
+
   for (uint32_t i = 0; i < record_type->record.component_count; i++) {
     Component_Info *comp = &record_type->record.components[i];
+    uint32_t variant_skip = Emit_Variant_Disc_Guard (comp, record_type, -2, disc_val, disc_type);
     LLVM_Rep comp_llvm_type = Type_To_Rep (comp->component_type);
 
     // Get pointers to components
@@ -22732,14 +22775,18 @@ LLVM_I1 Generate_Record_Equality (uint32_t left_ptr,
       }
     }
 
-    // AND with previous results
-    if (i == 0) {
-      result = cmp;
-    } else {
-      result = Emit_And_I1 (result, cmp);
-    }
+    // AND this component's result into the accumulator (inside the guard, so a
+    // skipped variant component leaves the accumulator untouched = equal).
+    uint32_t cur = Emit_Temp ();
+    Emit ("  %%t%u = load i1, ptr %%t%u\n", cur, res_flag);
+    uint32_t nxt = Emit_Temp ();
+    Emit ("  %%t%u = and i1 %%t%u, %%t%u\n", nxt, cur, cmp.reg);
+    Emit ("  store i1 %%t%u, ptr %%t%u\n", nxt, res_flag);
+    Emit_Close_Variant_Guard (variant_skip);
   }
-  return result;
+  uint32_t final_eq = Emit_Temp ();
+  Emit ("  %%t%u = load i1, ptr %%t%u\n", final_eq, res_flag);
+  return (LLVM_I1){ final_eq };
 }
 
 // Generate equality comparison for constrained array types (element-by-element)
@@ -24610,6 +24657,37 @@ LLVM_Value Emit_Binary_Op_Predefined (Syntax_Node *node) {
                          : Emit_I1_Const (1, "membership (non-static) fallback").reg;
             t = negate ? Emit_Not_I1 ((LLVM_I1){ res }).reg : res;
             return Emit_Bool_Value ((LLVM_I1){ t });
+          }
+
+          // Membership in a *constrained discriminated record* subtype: the
+          // value belongs iff its discriminants equal the subtype's constraint
+          // (RM 4.5.2). Compare each discriminant of the value against the
+          // constraint value (static, or evaluated when the constraint is an
+          // expression such as IDENT(3)).
+          if (range_type and Type_Is_Record (range_type) and
+              range_type->record.has_disc_constraints and
+              range_type->record.discriminant_count > 0) {
+            uint32_t rec_ptr = left_v.reg;
+            LLVM_I1 belongs = { Emit_I1_Const (1, "record membership seed").reg };
+            bool decided = true;
+            for (uint32_t d = 0; d < range_type->record.discriminant_count; d++) {
+              Component_Info *dc = &range_type->record.components[d];
+              LLVM_Rep drep = LLVM_Rep_Or (Type_To_Rep (dc->component_type), Integer_Arith_Rep ());
+              uint32_t vval = Emit_Load_Field (rec_ptr, dc->byte_offset, drep);
+              uint32_t cval;
+              if (range_type->record.disc_constraint_exprs and
+                  range_type->record.disc_constraint_exprs[d])
+                cval = Emit_Coerce_Val (Generate_Expression (
+                         range_type->record.disc_constraint_exprs[d]), drep).reg;
+              else if (range_type->record.disc_constraint_values)
+                cval = Emit_Static_Int (range_type->record.disc_constraint_values[d], drep).reg;
+              else { decided = false; break; }
+              belongs = Emit_And_I1 (belongs, Emit_Icmp ("eq", drep, vval, cval));
+            }
+            if (decided) {
+              t = negate ? Emit_Not_I1 (belongs).reg : belongs.reg;
+              return Emit_Bool_Value ((LLVM_I1){ t });
+            }
           }
 
           // Other composites (records, strings), access and task types: the
@@ -27450,6 +27528,35 @@ LLVM_Value Generate_Attribute (Syntax_Node *node) {
         if (all_static and static_elems >= 0 and static_elems * comp_bits <= INT64_MAX) {
           Emit ("  %%t%u = add %s 0, %lld  ; 'SIZE = extent in bits\n",
              t, LLVM_Rep_To_String (iat), (long long)(int64_t)(static_elems * comp_bits));
+          return Val_Rep (t, iat);
+        }
+
+        // Runtime, object prefix: read the length from the value's own fat
+        // pointer, whose bounds were established from the object (the same
+        // source 'LENGTH uses), then multiply by the component size. This is the
+        // only correct source when an index bound references a discriminant,
+        // which has no meaning without the object. A type prefix (a type name or
+        // T'BASE) has no object, so it evaluates the index bounds below instead.
+        bool prefix_is_type =
+          (node->attribute.prefix->kind == NK_ATTRIBUTE and
+           Slice_Equal_Ignore_Case (node->attribute.prefix->attribute.name, S("BASE")))
+          or (prefix_sym and prefix_sym->kind == SYMBOL_TYPE);
+        if (needs_runtime_bounds and not prefix_is_type) {
+          LLVM_Rep fbt = Array_Bound_LLVM_Rep (prefix_type);
+          uint32_t fat = (prefix_sym and prefix_sym->kind != SYMBOL_FUNCTION and
+                          prefix_sym->kind != SYMBOL_PROCEDURE)
+                       ? Emit_Load_Fat_Pointer (prefix_sym, fbt).reg
+                       : Generate_Expression (node->attribute.prefix).reg;
+          uint32_t total = Emit_Static_Int (1, iat).reg;
+          for (uint32_t d = 0; d < ndims; d++) {
+            uint32_t len = Emit_Convert (
+              Emit_Fat_Pointer_Length_Dim (fat, fbt, d).reg, fbt, iat).reg;
+            uint32_t mul = Emit_Temp ();
+            Emit ("  %%t%u = mul %s %%t%u, %%t%u\n", mul, LLVM_Rep_To_String (iat), total, len);
+            total = mul;
+          }
+          Emit ("  %%t%u = mul %s %%t%u, %lld  ; 'SIZE = length * component bits\n",
+             t, LLVM_Rep_To_String (iat), total, (long long)comp_bits);
           return Val_Rep (t, iat);
         }
         // Runtime: product of per-dimension lengths times component bits.
