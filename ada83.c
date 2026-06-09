@@ -1950,6 +1950,7 @@ void Create_Derived_Operation   (Symbol    *sub,
                                  Type_Info *derived_type,
                                  Type_Info *parent_type,
                                  Symbol    *type_sym);
+Symbol *Ultimate_Operation      (Symbol    *sub);
 void Derive_Subprograms         (Type_Info *derived_type,
                                  Type_Info *parent_type,
                                  Symbol    *type_sym);
@@ -2843,6 +2844,10 @@ LLVM_Value Emit_Convert     (uint32_t src,     LLVM_Rep src_rep, LLVM_Rep dst_re
 uint32_t   Coerce_To_Rep    (uint32_t v,       LLVM_Rep from,    LLVM_Rep to);
 uint32_t   Emit_Scale_By_Small (uint32_t val,  double small,     bool divide, LLVM_Rep frep);
 double     Fixed_Small       (const Type_Info *t);
+double     Fixed_Repr_Small  (const Type_Info *t);
+void       Fixed_Delta_To_Small_Scale (double delta, double *small_out, int *scale_out);
+int        Fixed_Point_Mantissa       (double bound, double small);
+Type_Info *Build_Fixed_Base           (Type_Info *sub);
 void       Fixed_Small_As_Rational (double small, unsigned long long *numerator,
                                     unsigned long long *denominator);
 LLVM_Value Emit_Exact_Rescale (uint32_t value, LLVM_Rep value_rep,
@@ -3023,6 +3028,7 @@ typedef struct {
 
 LLVM_Value  Emit_Bound_Value          (Type_Bound *bound);
 uint32_t    Emit_Bound_Value_Typed    (Type_Bound *bound, LLVM_Rep *out_rep);
+uint32_t    Emit_Fixed_Bound_Mantissa (Type_Bound *bound, double small, LLVM_Rep fix_rep);
 uint32_t    Emit_Single_Bound         (Type_Bound *bound, LLVM_Rep    target_rep);
 Bound_Temps Emit_Bounds               (Type_Info  *type,  uint32_t dim);
 Bound_Temps Emit_Bounds_From_Fat      (uint32_t    fat,   LLVM_Rep bt);
@@ -3106,6 +3112,10 @@ LLVM_Value Generate_Unary_Op          (Syntax_Node *node);
 LLVM_Value Generate_Apply             (Syntax_Node *node);
 LLVM_Value Generate_Selected          (Syntax_Node *node);
 LLVM_Value Generate_Attribute         (Syntax_Node *node);
+uint32_t   Emit_Fixed_Range_Mantissa  (Type_Info *ft, double small);
+uint32_t   Emit_Fixed_Mantissa_Runtime (Type_Info *ft, double small);
+uint32_t   Emit_Fixed_Fore_Runtime    (Type_Info *ft, double small);
+uint32_t   Emit_Fixed_Large_Runtime   (Type_Info *ft, double small);
 LLVM_Value Generate_Qualified         (Syntax_Node *node);
 LLVM_Value Generate_Allocator         (Syntax_Node *node);
 uint32_t   Generate_Aggregate         (Syntax_Node *node);
@@ -7909,6 +7919,64 @@ double Fixed_Small (const Type_Info *t) {
   return small;
 }
 
+// RM 3.5.9: the SMALL that governs the in-memory representation of a
+// fixed-point value. All values of a type (every subtype and the type itself)
+// share the base type's SMALL, which is the finest in the family. A derived
+// type given a coarser DELTA has a larger 'SMALL than its base, but its objects
+// are still stored, and its arithmetic still performed, in the base's units so
+// that base values absent from the subtype remain representable. For an
+// ordinary type the base SMALL equals its own, so this is identity.
+double Fixed_Repr_Small (const Type_Info *t) {
+  return Fixed_Small (Type_Base ((Type_Info *)t));
+}
+
+// RM 3.5.9: the default SMALL of an ordinary fixed-point type is the largest
+// power of two not greater than DELTA; its scale is that power's base-2
+// exponent. Shared by fixed-point type creation and derived-type accuracy
+// constraints.
+void Fixed_Delta_To_Small_Scale (double delta, double *small_out, int *scale_out) {
+  double small = 1.0;
+  if (delta > 0.0) {
+    while (small > delta) small /= 2.0;
+    while (small * 2.0 <= delta) small *= 2.0;
+  }
+  int scale = 0;
+  for (double t = small; t >= 2.0; t /= 2.0) scale++;
+  for (double t = small; t < 1.0; t *= 2.0) scale--;
+  *small_out = small;
+  *scale_out = scale;
+}
+
+// RM 3.5.9: the number of binary digits a fixed-point type needs to span a
+// given magnitude in units of SMALL: ceiling(log2(bound / small)), at least 1.
+int Fixed_Point_Mantissa (double bound, double small) {
+  if (bound > 0 and small > 0) {
+    int m = (int)ceil (log2 (bound / small));
+    return m < 1 ? 1 : m;
+  }
+  return 1;
+}
+
+// RM 3.5.9: construct the anonymous base type of a fixed-point first-named
+// subtype. The base spans the symmetric model range +/-(2**MANTISSA - 1)*SMALL,
+// where MANTISSA derives from the subtype's declared range. Giving the base
+// explicit bounds keeps 'BASE'FIRST, 'BASE'LAST, 'BASE'MANTISSA, 'BASE'LARGE
+// and 'BASE'SAFE_LARGE mutually consistent (each is read back from the range).
+Type_Info *Build_Fixed_Base (Type_Info *sub) {
+  double small = Fixed_Small (sub);
+  double bound = fmax (fabs (Type_Bound_Float_Value (sub->low_bound)),
+                       fabs (Type_Bound_Float_Value (sub->high_bound)));
+  int mantissa = Fixed_Point_Mantissa (bound, small);
+  double large = ((double)(((int64_t)1 << mantissa) - 1)) * small;
+  Type_Info *base = Type_New (TYPE_FIXED, S(""));
+  base->fixed      = sub->fixed;
+  base->size       = sub->size;
+  base->alignment  = sub->alignment;
+  base->low_bound  = (Type_Bound){ .kind = BOUND_FLOAT, .float_value = -large };
+  base->high_bound = (Type_Bound){ .kind = BOUND_FLOAT, .float_value =  large };
+  return base;
+}
+
 // Express a fixed-point SMALL as an exact integer ratio numerator/denominator.
 // Every SMALL in this compiler is either a power of two (the RM 3.5.9 default,
 // computed from DELTA) or a negative power of ten (DURATION's 1e-5), both of
@@ -8106,9 +8174,7 @@ bool Expression_Produces_Fat_Pointer (const Syntax_Node *node,
       return Expression_Produces_Fat_Pointer (node->qualified.expression,
                                               node->qualified.expression->type);
     if (node->kind == NK_AGGREGATE) {
-      if (node->type and Type_Is_Array_Like (node->type) and
-          (Type_Is_Unconstrained_Array (node->type) or
-           Type_Has_Dynamic_Bounds (node->type)))
+      if (Type_Needs_Fat_Pointer (node->type))
         return true;
       return false;
     }
@@ -8123,6 +8189,14 @@ bool Expression_Produces_Fat_Pointer (const Syntax_Node *node,
 
     // Slices always produce fat pointers even with constrained declared type
     if (Expression_Is_Slice (node))
+      return true;
+
+    // A .ALL dereference of a fat access yields the loaded { ptr, ptr }
+    // (data + bounds), even when the designated subtype is statically
+    // constrained — the bounds still travel with an access-to-unconstrained.
+    if (node->kind == NK_UNARY_OP and node->unary.op == TK_ALL and
+        node->unary.operand and
+        Type_Needs_Fat_Pointer (node->unary.operand->type))
       return true;
   }
 
@@ -9970,10 +10044,14 @@ Type_Info *Resolve_Binary_Op (Syntax_Node *node) {
     not node->binary.left->type and node->binary.right) {
     Syntax_Node *type_name = node->binary.right;
 
-    // Resolve right (type name) first to get its symbol
+    // RM 4.4: the tested expression has the base type of the named subtype;
+    // the membership then asks whether the value satisfies the constraint.
+    // Typing the aggregate with the constrained subtype would raise
+    // CONSTRAINT_ERROR while building it, turning a legitimate FALSE into a
+    // raised exception.
     Resolve_Expression (type_name);
     if (type_name->symbol and type_name->symbol->kind == SYMBOL_TYPE)
-      node->binary.left->type = type_name->symbol->type;
+      node->binary.left->type = Type_Base (type_name->symbol->type);
   }
 
   // Resolve left first; then propagate its type to an untyped aggregate                            
@@ -10018,7 +10096,19 @@ Type_Info *Resolve_Binary_Op (Syntax_Node *node) {
       while (prop and Type_Is_Record (prop) and
            prop->record.has_disc_constraints and prop->base_type)
         prop = prop->base_type;
+
+      // RM 4.5.2: equality slides array bounds, so a constrained array operand
+      // must not impose its index constraint on the aggregate (which would
+      // spuriously check the aggregate's element count). Use the base type.
+      if (prop and Type_Is_Array_Like (prop) and prop->array.is_constrained
+          and Type_Base (prop) != prop)
+        prop = Type_Base (prop);
     }
+    // RM 4.5.3: a concatenation operand has the unconstrained base array type,
+    // so an aggregate operand derives its bounds from its own element count
+    // instead of being checked against the sibling's index constraint.
+    if (op == TK_AMPERSAND and Type_Is_Array_Like (prop))
+      prop = Type_Base (prop);
     node->binary.right->type = prop;
   }
   Type_Info *right_type = Resolve_Expression (node->binary.right);
@@ -10138,13 +10228,18 @@ Type_Info *Resolve_Binary_Op (Syntax_Node *node) {
         // Propagate each operand's type into an untyped aggregate on the other
         // side, then re-resolve it. The right operand is handled first (against
         // the left type), then the left (against the now-updated right type).
+        // RM 4.5.3: a concatenation operand has the base array type, so an
+        // aggregate operand takes the unconstrained base and derives its bounds
+        // from its element count rather than being checked against the sibling's
+        // index constraint (which would raise CONSTRAINT_ERROR).
         {
           Syntax_Node *opnd[2]  = { node->binary.right, node->binary.left };
           Type_Info  **own[2]   = { &right_type, &left_type };
           Type_Info  **other[2] = { &left_type, &right_type };
           for (int i = 0; i < 2; i++) {
             if (opnd[i]->kind == NK_AGGREGATE and not opnd[i]->type and *other[i]) {
-              opnd[i]->type = *other[i];
+              opnd[i]->type = Type_Is_Array_Like (*other[i])
+                                ? Type_Base (*other[i]) : *other[i];
               Resolve_Expression (opnd[i]);
               *own[i] = opnd[i]->type;
             }
@@ -10171,12 +10266,17 @@ Type_Info *Resolve_Binary_Op (Syntax_Node *node) {
         // Per RM 4.5.3, concatenation returns the array type.                                     
         // For element & element, the result type comes from context.                              
         //                                                                                          
+        // RM 4.5.3(3): the result is of the base (unconstrained) array type.
+        // Its bounds are computed from the operands, never inherited from an
+        // operand's index constraint. A constrained subtype here would
+        // propagate that constraint to an aggregate compared against the result
+        // and spuriously check its element count.
         if (elem_concat) {
           node->type = ctx_arr;
         } else if (Type_Is_Array_Like (left_type) and left_type->kind == TYPE_ARRAY) {
-          node->type = left_type;
+          node->type = Type_Base (left_type);
         } else if (Type_Is_Array_Like (right_type) and right_type->kind == TYPE_ARRAY) {
-          node->type = right_type;
+          node->type = Type_Base (right_type);
         } else if (Type_Is_String (left_type)) {
           node->type = left_type;
         } else if (Type_Is_String (right_type)) {
@@ -10236,6 +10336,14 @@ Type_Info *Resolve_Binary_Op (Syntax_Node *node) {
             while (prop and Type_Is_Record (prop) and
                  prop->record.has_disc_constraints and prop->base_type)
               prop = prop->base_type;
+
+            // RM 4.5.2: equality compares values with sliding bounds, so a
+            // constrained array operand must not force its index constraint
+            // onto the aggregate (which would spuriously check its element
+            // count). Propagate the unconstrained base instead.
+            if (prop and Type_Is_Array_Like (prop) and prop->array.is_constrained
+                and Type_Base (prop) != prop)
+              prop = Type_Base (prop);
             opnd[i]->type = prop;
             Resolve_Expression (opnd[i]);
             *own[i] = opnd[i]->type;
@@ -10346,9 +10454,18 @@ Type_Info *Possible_Alt_Type (Syntax_Node *arg) {
   }
 
   // Function call: try each visible overload of the prefix name and
-  // return the first return type that differs from arg->type.
+  // return the first return type that differs from arg->type. Only when the
+  // name actually denotes a callable: if its innermost binding is an array
+  // object then A (I) is an indexed component, and treating it as a call to A
+  // would offer A's array type as a spurious alternative (RM 8.3).
   if (arg->kind == NK_APPLY and arg->apply.prefix and
     arg->apply.prefix->kind == NK_IDENTIFIER) {
+    Symbol *innermost = Symbol_Find (arg->apply.prefix->string_val.text);
+    if (innermost and (innermost->kind == SYMBOL_VARIABLE or
+                       innermost->kind == SYMBOL_CONSTANT or
+                       innermost->kind == SYMBOL_PARAMETER) and
+        Type_Is_Array_Like (innermost->type))
+      return NULL;
     String_Slice nm = arg->apply.prefix->string_val.text;
     uint32_t sub_arg_count = (uint32_t)arg->apply.arguments.count;
     Type_Info **sub_types = sub_arg_count
@@ -11386,6 +11503,39 @@ int128_t Array_Low_Bound (Type_Info *type_info) {
     return 0;
   return Type_Bound_Value (type_info->array.indices[0].low_bound);
 }
+
+// Maximum byte size of a constrained array whose bounds may be dynamic. Each
+// dimension is taken at its largest length: a static bound uses its value; a
+// bound that names a discriminant uses that discriminant's subtype'LAST. Used
+// to reserve space for a discriminant-dependent component so later components
+// in the same record sit at fixed offsets (RM 3.7.1). Returns 0 when a bound
+// is not statically bounded.
+uint32_t Max_Constrained_Array_Size (Type_Info *t) {
+  if (not t or t->kind != TYPE_ARRAY or not t->array.element_type) return 0;
+  uint32_t elem_size = t->array.element_type->size ? t->array.element_type->size : 1;
+  int128_t total = 1;
+  for (uint32_t d = 0; d < t->array.index_count; d++) {
+    Type_Bound *lo = &t->array.indices[d].low_bound;
+    Type_Bound *hi = &t->array.indices[d].high_bound;
+    int128_t lov = (lo->kind == BOUND_INTEGER) ? lo->int_value : 1;
+    int128_t hiv;
+    if (hi->kind == BOUND_INTEGER) {
+      hiv = hi->int_value;
+    } else if (hi->kind == BOUND_EXPR and hi->expr and hi->expr->symbol and
+               hi->expr->symbol->type) {
+      Type_Bound *disc_hi = &hi->expr->symbol->type->high_bound;
+      if (disc_hi->kind == BOUND_INTEGER) hiv = disc_hi->int_value;
+      else if (disc_hi->kind == BOUND_EXPR and disc_hi->expr) {
+        double v = Eval_Const_Numeric (disc_hi->expr);
+        if (v != v) return 0;
+        hiv = (int128_t)v;
+      } else return 0;
+    } else return 0;
+    int128_t len = hiv - lov + 1;
+    total *= (len < 0 ? 0 : len);
+  }
+  return (uint32_t)(total * elem_size);
+}
 // If `idx` is a `P'RANGE` attribute used as an array index constraint, fill
 // `info` with the prefix subtype's index bounds and index type, and return
 // true. `P'RANGE(n)` selects dimension n (1-based, default 1). RM 3.6.1.
@@ -12211,6 +12361,65 @@ Type_Info *Resolve_Expression (Syntax_Node *node) {
           derived->flt = parent->flt;
         }
 
+        // RM 3.4: `type T is new PARENT(C)` introduces an unconstrained base
+        // type T'BASE and makes T the constrained subtype of it. When the parent
+        // subtype indication already carried an index constraint, mirror that
+        // here: `derived` is the constrained subtype, and its base_type is a
+        // fresh unconstrained derivation of the parent's base. Without this the
+        // base would be the constrained type itself, so T'BASE'SIZE and the
+        // result type of concatenation (RM 4.5.3) would wrongly carry T's
+        // index constraint.
+        if (Type_Is_Array_Like (parent) and parent->array.is_constrained) {
+          Type_Info *parent_base = Type_Base (parent);
+          Type_Info *base = Type_New (parent_base->kind, S(""));
+          base->parent_type      = parent_base;
+          base->array            = parent_base->array;  // unconstrained indices
+          base->size             = parent_base->size;
+          base->alignment        = parent_base->alignment;
+          base->specified_bit_size = parent_base->specified_bit_size;
+          base->storage_size     = parent_base->storage_size;
+          derived->base_type     = base;
+        }
+
+        // RM 3.4: likewise for a derived discriminated record constrained at the
+        // derivation (type T is new PARENT(disc)). The base is the unconstrained
+        // record, so comparing against T strips the constraint (an aggregate of
+        // another variant must yield FALSE, not CONSTRAINT_ERROR) and T'BASE is
+        // the full type.
+        if (Type_Is_Record (parent) and parent->record.has_disc_constraints) {
+          Type_Info *parent_base = Type_Base (parent);
+          Type_Info *base = Type_New (TYPE_RECORD, S(""));
+          base->parent_type      = parent_base;
+          base->record           = parent_base->record;
+          base->size             = parent_base->size;
+          base->alignment        = parent_base->alignment;
+          base->specified_bit_size = parent_base->specified_bit_size;
+          base->storage_size     = parent_base->storage_size;
+          derived->base_type     = base;
+        }
+
+        // RM 3.5.9 / 3.4: a derived fixed-point type shares its parent's base
+        // model. T'BASE is the parent's anonymous base (full model range, the
+        // parent's DELTA), while T itself carries the derived accuracy and range
+        // applied below.
+        if (Type_Is_Fixed_Point (parent) and Type_Base (parent) != parent)
+          derived->base_type = Type_Base (parent);
+
+        // RM 3.4: a derived access type whose parent subtype constrained its
+        // designated array (e.g. type S is new PARENT(5..7)) keeps that
+        // constraint for bounds checks, but its base is the parent's
+        // unconstrained access base so the fat-pointer decision and T'BASE see
+        // the underlying unconstrained designated (RM 3.10).
+        if (Type_Is_Access (parent) and Type_Base (parent) != parent) {
+          Type_Info *parent_base = Type_Base (parent);
+          Type_Info *base = Type_New (TYPE_ACCESS, S(""));
+          base->parent_type  = parent_base;
+          base->access       = parent_base->access;  // unconstrained designated
+          base->size         = parent_base->size;
+          base->alignment    = parent_base->alignment;
+          derived->base_type = base;
+        }
+
         // Apply constraint if present
         if (node->derived_type.constraint) {
           Resolve_Expression (node->derived_type.constraint);
@@ -12232,6 +12441,29 @@ Type_Info *Resolve_Expression (Syntax_Node *node) {
 
             // Apply RANGE constraint. A statically known bound becomes
             // BOUND_FLOAT; otherwise the expression is deferred.
+            if (c->real_type.range and c->real_type.range->kind == NK_RANGE) {
+              Syntax_Node *range = c->real_type.range;
+              Syntax_Node *bound_expr[2] = { range->range.low, range->range.high };
+              Type_Bound *bound_slot[2] = { &derived->low_bound, &derived->high_bound };
+              for (uint32_t b = 0; b < 2; b++)
+                Assign_Eval_Bound (bound_slot[b], bound_expr[b], false);
+            }
+          }
+
+          // Apply a DELTA [RANGE] accuracy constraint to a derived fixed-point
+          // type (RM 3.5.9): a coarser delta and a tighter range than the
+          // parent. Recompute small/scale from the new delta.
+          if (c->kind == NK_REAL_TYPE and Type_Is_Fixed_Point (derived)) {
+            if (c->real_type.delta) {
+              double delta = Eval_Const_Numeric (c->real_type.delta);
+              if (delta == delta and delta > 0.0) {
+                double small; int scale;
+                Fixed_Delta_To_Small_Scale (delta, &small, &scale);
+                derived->fixed.delta = delta;
+                derived->fixed.small = small;
+                derived->fixed.scale = scale;
+              }
+            }
             if (c->real_type.range and c->real_type.range->kind == NK_RANGE) {
               Syntax_Node *range = c->real_type.range;
               Syntax_Node *bound_expr[2] = { range->range.low, range->range.high };
@@ -12490,6 +12722,14 @@ Type_Info *Resolve_Expression (Syntax_Node *node) {
                 Type_Info *comp_type = vc->component.component_type ?
                              vc->component.component_type->type : sm->type_integer;
                 uint32_t comp_size = comp_type ? comp_type->size : 8;
+                // A discriminant-dependent array component (e.g. S : STRING(1..L))
+                // has no static size, yet a later component in the same variant
+                // must sit past it at a fixed offset. Reserve its MAXIMUM size,
+                // taken from each index's upper bound — a discriminant's own
+                // subtype'LAST when the bound is that discriminant (RM 3.7.1).
+                if (comp_size == 0 and Type_Is_Constrained_Array (comp_type) and
+                    comp_type->array.element_type)
+                  comp_size = Max_Constrained_Array_Size (comp_type);
                 if (vc->component.init) {
                   if (not vc->component.init->type and comp_type and
                     (vc->component.init->kind == NK_AGGREGATE or
@@ -13146,13 +13386,16 @@ Type_Info *Resolve_Expression (Syntax_Node *node) {
                 val = expr->integer_lit.value;
                 is_static = true;
               } else if (expr and expr->kind == NK_IDENTIFIER and expr->symbol and
+                     expr->symbol->kind == SYMBOL_LITERAL and
                      expr->symbol->type and Type_Is_Boolean (expr->symbol->type)) {
 
-                // BOOLEAN literal: FALSE=0, TRUE=1
+                // BOOLEAN literal: FALSE=0, TRUE=1. (A boolean-typed variable or
+                // parameter is NOT a literal — it falls through to runtime eval.)
                 val = Slice_Equal_Ignore_Case (expr->string_val.text, S("TRUE"))
                   ? 1 : 0;
                 is_static = true;
               } else if (expr and expr->kind == NK_IDENTIFIER and expr->symbol and
+                     expr->symbol->kind == SYMBOL_LITERAL and
                      expr->symbol->type and Type_Is_Enumeration (expr->symbol->type)) {
 
                 // Enum literal: find position
@@ -13367,23 +13610,9 @@ Type_Info *Resolve_Expression (Syntax_Node *node) {
           double delta = Eval_Const_Numeric (node->real_type.delta);
           if (delta != delta or delta <= 0.0) delta = 0.001;  // NaN or invalid -> fallback
 
-          // Compute small as largest power of 2 <= delta (per RM 3.5.9)
-          double small = 1.0;
-
-          // Find largest 2^n <= delta
-          if (delta > 0.0) {
-            while (small > delta) small /= 2.0;
-            while (small * 2.0 <= delta) small *= 2.0;
-          }
-
-          // Compute scale factor: small = 2^scale
-          int scale = 0;
-          double temp = small;
-          if (temp >= 1.0) {
-            while (temp >= 2.0) { temp /= 2.0; scale++; }
-          } else {
-            while (temp < 1.0) { temp *= 2.0; scale--; }
-          }
+          // Compute small (largest power of 2 <= delta) and scale (RM 3.5.9).
+          double small; int scale;
+          Fixed_Delta_To_Small_Scale (delta, &small, &scale);
           fixed_type->fixed.delta = delta;
           fixed_type->fixed.small = small;
           fixed_type->fixed.scale = scale;
@@ -13410,6 +13639,13 @@ Type_Info *Resolve_Expression (Syntax_Node *node) {
           // Size: typically 32 or 64 bits depending on range and precision
           fixed_type->size = 8;  // 64-bit for safe default
           fixed_type->alignment = 8;
+
+          // RM 3.5.9: the named fixed-point type is the constrained first-named
+          // subtype of an anonymous base spanning the full model range. T'BASE
+          // resolves through base_type to this wider type.
+          if (Type_Bound_Is_Set (fixed_type->low_bound) and
+              Type_Bound_Is_Set (fixed_type->high_bound))
+            fixed_type->base_type = Build_Fixed_Base (fixed_type);
           node->type = fixed_type;
           return fixed_type;
 
@@ -14282,6 +14518,16 @@ void Create_Derived_Operation (Symbol *sub,
   // Done AFTER Symbol_Add since it overwrites parent.                                             
   //                                                                                                
   derived_sub->parent = sub->parent;
+}
+
+// RM 3.4: follow a derived operation's inheritance chain to the ultimate
+// operation that actually carries a body (GNAT's Ultimate_Alias). A derived
+// subprogram has no code of its own — a call to it binds to the parent's
+// implementation, and a multi-level derivation (S is new T is new P) chains
+// derived op -> derived op -> real body, so only the last has code.
+Symbol *Ultimate_Operation (Symbol *sub) {
+  while (sub and sub->parent_operation) sub = sub->parent_operation;
+  return sub;
 }
 
 // Create inherited operations for a derived type (RM 3.4)
@@ -19755,8 +20001,7 @@ LLVM_Rep Expression_LLVM_Rep (Syntax_Node *node) {
 
   if (node and node->kind == NK_AGGREGATE and node->type and
     (node->type->kind == TYPE_ARRAY or node->type->kind == TYPE_STRING)) {
-    if (Type_Is_Unconstrained_Array (node->type) or
-      Type_Has_Dynamic_Bounds (node->type))
+    if (Type_Needs_Fat_Pointer (node->type))
       return LL_REP_FAT;
     return LL_REP_PTR;
   }
@@ -19886,7 +20131,8 @@ LLVM_Value Emit_Convert_Ext (uint32_t src, LLVM_Rep src_rep,
     // float → integer (or other non-ptr); fat handled by fall-through below.
     uint32_t rounded = Emit_Temp ();
     Emit ("  %%t%u = call %s @llvm.round.%s(%s %%t%u)\n",
-       rounded, LLVM_Rep_To_String (src_s), LLVM_Rep_To_String (src_s), LLVM_Rep_To_String (src_s), src);
+       rounded, LLVM_Rep_To_String (src_s), src_s.bits == 32 ? "f32" : "f64",
+       LLVM_Rep_To_String (src_s), src);
     Emit ("  %%t%u = %s %s %%t%u to %s\n", t,
        is_unsigned ? "fptoui" : "fptosi", LLVM_Rep_To_String (src_s), rounded, LLVM_Rep_To_String (dst_s));
 
@@ -20057,6 +20303,57 @@ LLVM_Value Emit_Bound_Value (Type_Bound *bound) {
   return Val_Rep (reg, rep);
 }
 
+// RM 3.5.9: Emit a fixed-point bound as its scaled-integer mantissa
+// (value / SMALL), which is the in-memory representation of a fixed-point
+// object. A literal real bound folds at compile time; a bound expression is
+// generated then divided by SMALL when it denotes a real value, or converted
+// directly when it is already a scaled mantissa. `fix_rep` is the fixed type's
+// native integer width (i64 unless a narrower one suffices).
+uint32_t Emit_Fixed_Bound_Mantissa (Type_Bound *bound, double small, LLVM_Rep fix_rep) {
+  if (bound->cached_temp) {
+    uint32_t out = bound->cached_temp;
+    LLVM_Rep ct = bound->cached_rep;
+    if (LLVM_Rep_Is_Float (ct)) {
+      uint64_t sb; memcpy (&sb, &small, sizeof (sb));
+      uint32_t st = Emit_Temp ();
+      Emit ("  %%t%u = fadd double 0.0, 0x%016llX\n", st, (unsigned long long)sb);
+      uint32_t dv = Emit_Temp ();
+      Emit ("  %%t%u = fdiv double %%t%u, %%t%u\n", dv, out, st);
+      out = Emit_Temp ();
+      Emit ("  %%t%u = fptosi double %%t%u to %s\n", out, dv, LLVM_Rep_To_String (fix_rep));
+    } else if (LLVM_Rep_Is_Int (ct) and not LLVM_Rep_Equal (ct, fix_rep)) {
+      out = Emit_Convert (out, ct, fix_rep).reg;
+    }
+    return out;
+  }
+  if (bound->kind == BOUND_FLOAT) {
+    int128_t iv = (int128_t)(bound->float_value / small);
+    uint32_t out = Emit_Temp ();
+    Emit ("  %%t%u = add %s 0, %s  ; fixed bound (%g/small)\n",
+       out, LLVM_Rep_To_String (fix_rep), I128_Decimal (iv), bound->float_value);
+    return out;
+  }
+  if (bound->kind == BOUND_EXPR and bound->expr) {
+    LLVM_Value fv = Generate_Expression (bound->expr);
+    bool fv_float = LLVM_Rep_Is_Float (fv.rep) or
+      Type_Is_Float_Representation (bound->expr->type) or
+      (bound->expr->type and bound->expr->type->kind == TYPE_UNIVERSAL_REAL);
+    if (fv_float) {
+      uint64_t sb; memcpy (&sb, &small, sizeof (sb));
+      uint32_t st = Emit_Temp ();
+      Emit ("  %%t%u = fadd double 0.0, 0x%016llX\n", st, (unsigned long long)sb);
+      uint32_t dv = Emit_Temp ();
+      Emit ("  %%t%u = fdiv double %%t%u, %%t%u\n", dv, fv.reg, st);
+      uint32_t out = Emit_Temp ();
+      Emit ("  %%t%u = fptosi double %%t%u to %s\n", out, dv, LLVM_Rep_To_String (fix_rep));
+      return out;
+    }
+    LLVM_Rep fv_src = LLVM_Rep_Or (fv.rep, Type_To_Rep (bound->expr->type));
+    return Emit_Convert (fv.reg, fv_src, fix_rep).reg;
+  }
+  return Emit_Bound_Value (bound).reg;
+}
+
 // RM 3.5: General scalar constraint check - dispatches to integer or                               
 // float path based on the target type's kind. Covers:                                             
 //   Integer, enumeration, character > icmp slt/sgt on native type (Integer_Arith_Rep)
@@ -20215,74 +20512,16 @@ static uint32_t Emit_Constraint_Check_Internal (uint32_t val, LLVM_Rep val_rep,
     uint32_t low_bound, high_bound;
     LLVM_Rep lo_rep = LL_REP_VOID, hi_rep = LL_REP_VOID;
     if (target->kind == TYPE_FIXED) {
-      double small = target->fixed.small;
-      if (small <= 0) small = target->fixed.delta > 0 ? target->fixed.delta : 1.0;
+      double small = Fixed_Repr_Small (target);
 
-      // Fixed-point bounds must use the fixed type's native width (i64)                            
+      // Fixed-point bounds must use the fixed type's native width (i64)
       // to avoid overflow when mantissa approaches MAX_MANTISSA.                                  
       // Integer_Arith_Rep is only i32 which overflows at 2^31.
       //                                                                                            
       LLVM_Rep fix_bnd_rep = Type_To_Rep (target);
       if (not LLVM_Rep_Is_Int (fix_bnd_rep)) fix_bnd_rep = LLVM_Rep_Int (64, false);
-      #define FIXED_BOUND_TO_I64(bnd, out) do {                        \
-        if ((bnd)->cached_temp) {                                      \
-          (out) = (bnd)->cached_temp;                                  \
-          LLVM_Rep _ct = (bnd)->cached_rep;                            \
-          /* Float cached temp: apply fixed-point scaling */           \
-          if (LLVM_Rep_Is_Float (_ct)) {                               \
-            uint64_t _sb; memcpy (&_sb, &small, sizeof (_sb));         \
-            uint32_t _st = Emit_Temp ();                               \
-            Emit ("  %%t%u = fadd double 0.0, 0x%016llX\n",            \
-               _st, (unsigned long long)_sb);                          \
-            uint32_t _dv = Emit_Temp ();                               \
-            Emit ("  %%t%u = fdiv double %%t%u, %%t%u\n",              \
-               _dv, (out), _st);                                       \
-            (out) = Emit_Temp ();                                      \
-            Emit ("  %%t%u = fptosi double %%t%u to %s\n",             \
-               (out), _dv, LLVM_Rep_To_String (fix_bnd_rep));          \
-          } else if (LLVM_Rep_Is_Int (_ct) and                         \
-            not LLVM_Rep_Equal (_ct, fix_bnd_rep))                     \
-            (out) = Emit_Convert ((out), _ct, fix_bnd_rep).reg;        \
-        } else if ((bnd)->kind == BOUND_FLOAT) {                       \
-          int128_t iv = (int128_t)((bnd)->float_value / small);        \
-          (out) = Emit_Temp ();                                        \
-          Emit ("  %%t%u = add %s 0, %s  ; fixed bound"                \
-             " (%g/small)\n", (out), LLVM_Rep_To_String (fix_bnd_rep), \
-             I128_Decimal (iv), (bnd)->float_value);                   \
-        } else if ((bnd)->kind == BOUND_EXPR) {                        \
-          LLVM_Value fv_v = Generate_Expression ((bnd)->expr);         \
-          uint32_t fv = fv_v.reg;                                      \
-          LLVM_Rep fv_rep = fv_v.rep;                                  \
-          bool fv_float = LLVM_Rep_Is_Float (fv_rep) or                \
-            Type_Is_Float_Representation ((bnd)->expr->type) or        \
-            ((bnd)->expr->type and                                     \
-             (bnd)->expr->type->kind == TYPE_UNIVERSAL_REAL);          \
-          /* Float expression: divide by SMALL, fptosi */              \
-          if (fv_float) {                                              \
-            uint64_t sb; memcpy (&sb, &small, sizeof (sb));            \
-            uint32_t st = Emit_Temp ();                                \
-            Emit ("  %%t%u = fadd double 0.0, 0x%016llX\n",            \
-               st, (unsigned long long)sb);                            \
-            uint32_t dv = Emit_Temp ();                                \
-            Emit ("  %%t%u = fdiv double %%t%u, %%t%u\n",              \
-               dv, fv, st);                                            \
-            (out) = Emit_Temp ();                                      \
-            Emit ("  %%t%u = fptosi double %%t%u to %s\n",             \
-               (out), dv, LLVM_Rep_To_String (fix_bnd_rep));           \
-          /* Already scaled integer (fixed-point value) */             \
-          } else {                                                     \
-            LLVM_Rep fv_src = LLVM_Rep_Or (fv_rep,                     \
-                              Type_To_Rep ((bnd)->expr->type));        \
-            (out) = Emit_Convert (fv, fv_src, fix_bnd_rep).reg;        \
-          }                                                            \
-                                                                       \
-        } else {                                                       \
-          (out) = Emit_Bound_Value ((bnd)).reg;                        \
-        }                                                              \
-      } while (0)
-      FIXED_BOUND_TO_I64 (&target->low_bound, low_bound);
-      FIXED_BOUND_TO_I64 (&target->high_bound, high_bound);
-      #undef FIXED_BOUND_TO_I64
+      low_bound  = Emit_Fixed_Bound_Mantissa (&target->low_bound,  small, fix_bnd_rep);
+      high_bound = Emit_Fixed_Bound_Mantissa (&target->high_bound, small, fix_bnd_rep);
       lo_rep = fix_bnd_rep;
       hi_rep = fix_bnd_rep;
     } else {
@@ -20319,7 +20558,7 @@ static uint32_t Emit_Constraint_Check_Internal (uint32_t val, LLVM_Rep val_rep,
       uint32_t dval = cmp_val;
       if (cmp_val_rep.bits != 64)
         dval = Emit_Convert (cmp_val, cmp_val_rep, LLVM_Rep_Float (64)).reg;
-      LLVM_Value scaled = Convert_Real_To_Fixed (dval, Fixed_Small (target), Type_To_Rep (target));
+      LLVM_Value scaled = Convert_Real_To_Fixed (dval, Fixed_Repr_Small (target), Type_To_Rep (target));
       cmp_val = scaled.reg;
       cmp_val_rep = scaled.rep;
     }
@@ -21463,6 +21702,19 @@ void Emit_Fat_Pointer_Copy_To_Name (uint32_t fat_ptr,
                       Symbol *dst, LLVM_Rep bt) {
   uint32_t src_ptr = Emit_Fat_Pointer_Data (fat_ptr, bt).reg;
   uint32_t len = Emit_Fat_Pointer_Length (fat_ptr, bt).reg;
+  // The fat-pointer length counts elements; memcpy counts bytes. Scale by the
+  // destination component's byte width, else a FLOAT or record array copies
+  // only its first 1/element_size of the data.
+  Type_Info *dst_type = dst->type;
+  uint32_t element_size = (dst_type and dst_type->array.element_type and
+                           dst_type->array.element_type->size > 0)
+                          ? dst_type->array.element_type->size : 1;
+  if (element_size != 1) {
+    uint32_t bytes = Emit_Temp ();
+    Emit ("  %%t%u = mul %s %%t%u, %u  ; * element size\n",
+       bytes, LLVM_Rep_To_String (bt), len, element_size);
+    len = bytes;
+  }
   uint32_t len64 = Emit_Extend_To_I64 (len, bt).reg;
   Emit ("  call void @llvm.memcpy.p0.p0.i64(ptr ");
   Emit_Symbol_Storage (dst);
@@ -22425,7 +22677,7 @@ LLVM_Value Generate_Identifier (Syntax_Node *node) {
           // A fixed-point constant inlines as its scaled mantissa, not the
           // real value (DAY_SECONDS = 86_400.0 is mantissa 8_640_000_000).
           int64_t folded = Type_Is_Fixed_Point (ty)
-            ? (int64_t) llround (cv / Fixed_Small (ty))
+            ? (int64_t) llround (cv / Fixed_Repr_Small (ty))
             : (int64_t) cv;
           Emit ("  %%t%u = add %s 0, %lld  ; typed constant\n",
              t, LLVM_Rep_To_String (type_rep), (long long)folded);
@@ -22455,8 +22707,10 @@ LLVM_Value Generate_Identifier (Syntax_Node *node) {
     case SYMBOL_FUNCTION: {
 
       // A rename (including a generic formal-subprogram binding) denotes
-      // its target: peel the chain before dispatching the call.
-      Symbol *actual = Resolve_Subprogram_Rename (sym);
+      // its target: peel the chain before dispatching the call. A derived
+      // operation (RM 3.4) forwards to the parent's body (its ultimate
+      // operation), as the inherited subprogram has no code of its own.
+      Symbol *actual = Ultimate_Operation (Resolve_Subprogram_Rename (sym));
       Note_Separate_Boundary_Callee (actual);
 
       // Check if actual is an enumeration literal (e.g., RED, YELLOW)
@@ -22564,9 +22818,35 @@ LLVM_I1 Generate_Record_Equality (uint32_t left_ptr,
         "internal: record equality called on non-record type");
     return Emit_I1_Const (1, "empty record equality");
   }
-  LLVM_I1 result = { 0 };
+  // Accumulate equality in memory, not an SSA chain: a variant component is
+  // compared under a runtime guard that branches around it when the
+  // discriminant selects a different variant, so the AND must survive across
+  // basic blocks. Comparing an inactive variant's components would read the
+  // unused tail of the record and spuriously report inequality (RM 4.5.2).
+  uint32_t res_flag = Emit_Temp ();
+  Emit ("  %%t%u = alloca i1\n", res_flag);
+  Emit ("  store i1 true, ptr %%t%u\n", res_flag);
+
+  // The discriminant governing the variant part; loaded once from the left
+  // record (the discriminants are compared as ordinary components, so an
+  // unequal discriminant already makes the records unequal).
+  uint32_t disc_val = 0;
+  LLVM_Rep disc_type = Integer_Arith_Rep ();
+  if (record_type->record.variant_count > 0 and record_type->record.variant_part_node) {
+    String_Slice dname = record_type->record.variant_part_node->variant_part.discriminant;
+    for (uint32_t d = 0; d < record_type->record.discriminant_count; d++) {
+      Component_Info *dc = &record_type->record.components[d];
+      if (Slice_Equal_Ignore_Case (dc->name, dname)) {
+        disc_type = LLVM_Rep_Or (Type_To_Rep (dc->component_type), Integer_Arith_Rep ());
+        disc_val = Emit_Load_Field (left_ptr, dc->byte_offset, disc_type);
+        break;
+      }
+    }
+  }
+
   for (uint32_t i = 0; i < record_type->record.component_count; i++) {
     Component_Info *comp = &record_type->record.components[i];
+    uint32_t variant_skip = Emit_Variant_Disc_Guard (comp, record_type, -2, disc_val, disc_type);
     LLVM_Rep comp_llvm_type = Type_To_Rep (comp->component_type);
 
     // Get pointers to components
@@ -22674,14 +22954,18 @@ LLVM_I1 Generate_Record_Equality (uint32_t left_ptr,
       }
     }
 
-    // AND with previous results
-    if (i == 0) {
-      result = cmp;
-    } else {
-      result = Emit_And_I1 (result, cmp);
-    }
+    // AND this component's result into the accumulator (inside the guard, so a
+    // skipped variant component leaves the accumulator untouched = equal).
+    uint32_t cur = Emit_Temp ();
+    Emit ("  %%t%u = load i1, ptr %%t%u\n", cur, res_flag);
+    uint32_t nxt = Emit_Temp ();
+    Emit ("  %%t%u = and i1 %%t%u, %%t%u\n", nxt, cur, cmp.reg);
+    Emit ("  store i1 %%t%u, ptr %%t%u\n", nxt, res_flag);
+    Emit_Close_Variant_Guard (variant_skip);
   }
-  return result;
+  uint32_t final_eq = Emit_Temp ();
+  Emit ("  %%t%u = load i1, ptr %%t%u\n", final_eq, res_flag);
+  return (LLVM_I1){ final_eq };
 }
 
 // Generate equality comparison for constrained array types (element-by-element)
@@ -22901,8 +23185,35 @@ uint32_t Generate_Composite_Address (Syntax_Node *node) {
       if (elem_size == 0) elem_size = 1;
       int128_t low = Array_Low_Bound (array_type);
 
-      // Slice: ARR (low..high) - return address at slice start (RM 4.1.2)
       Syntax_Node *arg0 = node->apply.arguments.items[0];
+
+      // A constrained array with dynamic bounds is stored as a fat pointer, so
+      // its data pointer and low bound are runtime values; the flat-data path
+      // below would treat the fat-pointer struct itself as the element storage.
+      if (Type_Has_Dynamic_Bounds (array_type) and not access_to_array) {
+        LLVM_Rep dbt = Array_Bound_LLVM_Rep (array_type);
+        LLVM_Rep idx_t = Integer_Arith_Rep ();
+        uint32_t fat = Generate_Expression (node->apply.prefix).reg;
+        uint32_t data = Emit_Fat_Pointer_Data (fat, dbt).reg;
+        uint32_t low_rt = Emit_Convert (Emit_Fat_Pointer_Low (fat, dbt).reg, dbt, idx_t).reg;
+        Syntax_Node *start_node = arg0->kind == NK_RANGE ? arg0->range.low : arg0;
+        uint32_t start = Generate_Expression (start_node).reg;
+        LLVM_Rep start_rep = Expression_LLVM_Rep (start_node);
+        if (LLVM_Rep_Is_Int (start_rep) and not LLVM_Rep_Equal (start_rep, idx_t))
+          start = Emit_Convert (start, start_rep, idx_t).reg;
+        uint32_t adj = Emit_Temp ();
+        Emit ("  %%t%u = sub %s %%t%u, %%t%u\n", adj, LLVM_Rep_To_String (idx_t), start, low_rt);
+        uint32_t byte_off = adj;
+        if (elem_size != 1) {
+          byte_off = Emit_Temp ();
+          Emit ("  %%t%u = mul %s %%t%u, %u\n", byte_off, LLVM_Rep_To_String (idx_t), adj, elem_size);
+        }
+        uint32_t addr = Emit_Temp ();
+        Emit ("  %%t%u = getelementptr i8, ptr %%t%u, %s %%t%u\n", addr, data, LLVM_Rep_To_String (idx_t), byte_off);
+        return addr;
+      }
+
+      // Slice: ARR (low..high) - return address at slice start (RM 4.1.2)
       if (arg0->kind == NK_RANGE) {
         uint32_t base;
         if (access_to_array) {
@@ -23145,6 +23456,11 @@ uint32_t Normalize_To_Fat_Pointer (Syntax_Node *expr, uint32_t raw, Type_Info *t
     uint32_t sa = Emit_Alloca_Store (st, raw);
     return Emit_Fat_Pointer (sa, 1, 1, bt).reg;
   }
+  // Multidimensional constrained array: wrap with every dimension's bounds.
+  // The single-dimension path below carries the aggregate count adjustment, so
+  // keep it for 1-D; Emit_Fat_Pointer_For_Lvalue owns the N-D case.
+  if (Type_Is_Constrained_Array (type) and type->array.index_count > 1)
+    return Emit_Fat_Pointer_For_Lvalue (raw, type).reg;
   if (Type_Is_Constrained_Array (type) and type->array.index_count > 0) {
     int128_t lo = Type_Bound_Value (type->array.indices[0].low_bound);
     int128_t hi = Type_Bound_Value (type->array.indices[0].high_bound);
@@ -23327,8 +23643,9 @@ LLVM_Value Generate_Binary_Op (Syntax_Node *node) {
 
   // Peel renames (RM 8.5) and substitute a generic formal subprogram with
   // the instantiation's actual (RM 12.3) — a rename does not emit its own
-  // body, and a formal's calls dispatch to the actual.
-  Symbol *call_target = Operator_Call_Target (node->symbol);
+  // body, and a formal's calls dispatch to the actual. A derived operator
+  // (RM 3.4) further forwards to the parent's body via its ultimate operation.
+  Symbol *call_target = Ultimate_Operation (Operator_Call_Target (node->symbol));
 
   // User-defined operator: generate function call (RM 6.7)
   if (call_target and call_target->kind == SYMBOL_FUNCTION and
@@ -23348,11 +23665,11 @@ LLVM_Value Generate_Binary_Op (Syntax_Node *node) {
     // mantissa (RM 4.5.5), as the Generate_Apply marshalling does. A bare
     // rep conversion would round 10.9 to mantissa 11.
     if (p0_type and Type_Is_Fixed_Point (p0_type) and LLVM_Rep_Is_Float (left_llvm))
-      left = Convert_Real_To_Fixed (left, Fixed_Small (p0_type), p0_llvm).reg;
+      left = Convert_Real_To_Fixed (left, Fixed_Repr_Small (p0_type), p0_llvm).reg;
     else
       left = Emit_Convert (left, left_llvm, p0_llvm).reg;
     if (p1_type and Type_Is_Fixed_Point (p1_type) and LLVM_Rep_Is_Float (right_llvm))
-      right = Convert_Real_To_Fixed (right, Fixed_Small (p1_type), p1_llvm).reg;
+      right = Convert_Real_To_Fixed (right, Fixed_Repr_Small (p1_type), p1_llvm).reg;
     else
       right = Emit_Convert (right, right_llvm, p1_llvm).reg;
     LLVM_Rep ret_rep = call_target->return_type ?
@@ -23681,8 +23998,16 @@ LLVM_Value Emit_Binary_Op_Predefined (Syntax_Node *node) {
     uint32_t left_raw = Generate_Expression (node->binary.left).reg;
     uint32_t right_raw = Generate_Expression (node->binary.right).reg;
 
+    // The index-bound width and the component byte-width both come from the
+    // *result* array type, never from an operand: in `C & D` (component &
+    // component) and `C & A` (component & array) the left operand is a scalar
+    // component, and asking it for an array bound is the "non-array kind" bug.
+    Type_Info *cat_array_type = Type_Is_Array_Like (node->type) ? node->type
+                              : Type_Is_Array_Like (left_type)  ? left_type
+                              : node->type;
+
     // Normalize both operands to fat pointers (handles character, constrained, already-fat)
-    LLVM_Rep cat_bt = Array_Bound_LLVM_Rep (left_type);
+    LLVM_Rep cat_bt = Array_Bound_LLVM_Rep (cat_array_type);
     Type_Info *rhs_type = node->binary.right ? node->binary.right->type : NULL;
     uint32_t left_fat  = Normalize_To_Fat_Pointer (node->binary.left,  left_raw, left_type, cat_bt);
     uint32_t right_fat = Normalize_To_Fat_Pointer (node->binary.right, right_raw, rhs_type, cat_bt);
@@ -23741,25 +24066,40 @@ LLVM_Value Emit_Binary_Op_Predefined (Syntax_Node *node) {
       }
     }
 
-    uint32_t total_len_64 = Emit_Extend_To_I64 (total_len, cat_bt).reg;
-    uint32_t left_len1_64 = Emit_Extend_To_I64 (left_len1, cat_bt).reg;
-    uint32_t right_len1_64 = Emit_Extend_To_I64 (right_len1, cat_bt).reg;
+    // Lengths so far count *elements*; storage counts *bytes*. The operands
+    // and result share one component type, so a single byte-width scales every
+    // length that addresses memory (the allocation extent, each memcpy, and the
+    // offset to the right half). The result bounds stay in element units and
+    // are computed below: they index the array, they do not size it.
+    Type_Info *cat_elem = cat_array_type->array.element_type;
+    uint32_t element_size = (cat_elem and cat_elem->size > 0) ? cat_elem->size : 1;
+
+    uint32_t Emit_Element_Bytes (uint32_t element_len) {
+      uint32_t len_64 = Emit_Extend_To_I64 (element_len, cat_bt).reg;
+      if (element_size == 1) return len_64;
+      uint32_t bytes = Emit_Temp ();
+      Emit ("  %%t%u = mul i64 %%t%u, %u  ; * element size\n", bytes, len_64, element_size);
+      return bytes;
+    }
+    uint32_t total_bytes = Emit_Element_Bytes (total_len);
+    uint32_t left_bytes  = Emit_Element_Bytes (left_len1);
+    uint32_t right_bytes = Emit_Element_Bytes (right_len1);
 
     // Allocate space on secondary stack
     uint32_t result_data = Emit_Temp ();
     Emit ("  %%t%u = call ptr @__ada_sec_stack_alloc(i64 %%t%u)\n",
-       result_data, total_len_64);
+       result_data, total_bytes);
 
     // Copy left string using llvm.memcpy
-    Emit_Memcpy (result_data, left_data, left_len1_64);
+    Emit_Memcpy (result_data, left_data, left_bytes);
 
     // Calculate destination for right string
     uint32_t right_dest = Emit_Temp ();
     Emit ("  %%t%u = getelementptr i8, ptr %%t%u, i64 %%t%u\n",
-       right_dest, result_data, left_len1_64);
+       right_dest, result_data, left_bytes);
 
     // Copy right string
-    Emit_Memcpy (right_dest, right_data, right_len1_64);
+    Emit_Memcpy (right_dest, right_data, right_bytes);
 
     // Result bounds: INDEX_SUBTYPE'FIRST .. FIRST+total_len-1 (RM 4.5.3(8)).                      
     // For STRING the index subtype is POSITIVE with FIRST=1; for custom                            
@@ -23870,8 +24210,7 @@ LLVM_Value Emit_Binary_Op_Predefined (Syntax_Node *node) {
   // Skip for exponentiation which has its own special handling.                                   
   //                                                                                                
   if (is_fixed and node->binary.op != TK_EXPON) {
-    double small = result_type->fixed.small;
-    if (small <= 0) small = result_type->fixed.delta > 0 ? result_type->fixed.delta : 1.0;
+    double small = Fixed_Repr_Small (result_type);
     LLVM_Rep fix_arith = Type_To_Rep (result_type);
     if (Type_Is_Universal_Real (rhs_type))
       right = Convert_Real_To_Fixed (right, small, fix_arith).reg;
@@ -23892,10 +24231,10 @@ LLVM_Value Emit_Binary_Op_Predefined (Syntax_Node *node) {
   // the result's SMALL, so the result's SMALL is its effective SMALL.
   //
   if (is_fixed and (node->binary.op == TK_STAR or node->binary.op == TK_SLASH)) {
-    double result_small = Fixed_Small (result_type);
-    double left_small   = Type_Is_Fixed_Point (lhs_type) ? Fixed_Small (lhs_type)
+    double result_small = Fixed_Repr_Small (result_type);
+    double left_small   = Type_Is_Fixed_Point (lhs_type) ? Fixed_Repr_Small (lhs_type)
                         : Type_Is_Universal_Real (lhs_type) ? result_small : 1.0;
-    double right_small  = Type_Is_Fixed_Point (rhs_type) ? Fixed_Small (rhs_type)
+    double right_small  = Type_Is_Fixed_Point (rhs_type) ? Fixed_Repr_Small (rhs_type)
                         : Type_Is_Universal_Real (rhs_type) ? result_small : 1.0;
 
     unsigned long long left_num, left_den, right_num, right_den, result_num, result_den;
@@ -24215,7 +24554,7 @@ LLVM_Value Emit_Binary_Op_Predefined (Syntax_Node *node) {
             uint32_t dval = left;
             if (left_llvm_type.bits != 64)
               dval = Emit_Convert (left, left_llvm_type, LLVM_Rep_Float (64)).reg;
-            LLVM_Value scaled = Convert_Real_To_Fixed (dval, Fixed_Small (resolved_right), right_llvm_type);
+            LLVM_Value scaled = Convert_Real_To_Fixed (dval, Fixed_Repr_Small (resolved_right), right_llvm_type);
             left = scaled.reg;
             left_llvm_type = scaled.rep;
             left_is_float = false;
@@ -24241,7 +24580,7 @@ LLVM_Value Emit_Binary_Op_Predefined (Syntax_Node *node) {
             uint32_t dval = right;
             if (right_float_type.bits != 64)
               dval = Emit_Convert (right, right_float_type, LLVM_Rep_Float (64)).reg;
-            LLVM_Value scaled = Convert_Real_To_Fixed (dval, Fixed_Small (resolved_left), left_llvm_type);
+            LLVM_Value scaled = Convert_Real_To_Fixed (dval, Fixed_Repr_Small (resolved_left), left_llvm_type);
             right = scaled.reg;
             right_llvm_type = scaled.rep;
           } else {
@@ -24352,7 +24691,7 @@ LLVM_Value Emit_Binary_Op_Predefined (Syntax_Node *node) {
             LLVM_Rep lo_type = lo_v.rep;
             LLVM_Rep hi_type = hi_v.rep;
             bool fp_scale = (lhs_type and lhs_type->kind == TYPE_FIXED);
-            double fp_small = fp_scale ? Fixed_Small (lhs_type) : 1.0;
+            double fp_small = fp_scale ? Fixed_Repr_Small (lhs_type) : 1.0;
             LLVM_Rep iat2 = Integer_Arith_Rep ();
             if (LLVM_Rep_Is_Float (lo_type)) {
               uint32_t src = fp_scale ? Emit_Scale_By_Small (lo, fp_small, true, lo_type) : lo;
@@ -24388,7 +24727,7 @@ LLVM_Value Emit_Binary_Op_Predefined (Syntax_Node *node) {
           uint32_t rdim = Get_Dimension_Index (range_dim_arg);
           uint32_t range_low, range_high;
           bool arr_needs_rt = false;
-          if (arr_type and (Type_Is_Unconstrained_Array (arr_type) or Type_Has_Dynamic_Bounds (arr_type)) and
+          if (arr_type and (Type_Needs_Fat_Pointer (arr_type)) and
             arr_sym and (arr_sym->kind == SYMBOL_PARAMETER or arr_sym->kind == SYMBOL_VARIABLE or
                   arr_sym->kind == SYMBOL_CONSTANT or arr_sym->kind == SYMBOL_DISCRIMINANT))
             arr_needs_rt = true;
@@ -24431,10 +24770,145 @@ LLVM_Value Emit_Binary_Op_Predefined (Syntax_Node *node) {
         } else {
           Type_Info *range_type = node->binary.right ? node->binary.right->type : NULL;
 
-          // Composite types (records, arrays) and access/task types:                               
-          // membership is always TRUE since the value is already of                                
-          // that type (RM 4.5.2). Access types have no range.                                     
-          //                                                                                        
+          // Membership in a constrained array subtype: the value belongs iff
+          // each dimension's length equals the subtype's (RM 4.5.2 / 3.6.1).
+          // Array values slide, so the lengths must match, not the absolute
+          // bounds. Lengths are compared at runtime; an aggregate contributes
+          // its positional count and a typed value its own bounds, so a
+          // statically-decidable case folds to a constant. The subtype bounds
+          // may themselves be dynamic, e.g. new P(IDENT(5)..IDENT(7)), and
+          // Emit_Bound_Value_Typed evaluates them then.
+          if (range_type and range_type->kind == TYPE_ARRAY and
+              range_type->array.is_constrained) {
+            Syntax_Node *val = node->binary.left;
+            Type_Info   *vt  = val ? val->type : NULL;
+            LLVM_Rep iat = Integer_Arith_Rep ();
+            bool val_is_fat = LLVM_Rep_Is_Fat_Pointer (left_v.rep);
+            LLVM_Rep val_bt = vt ? Array_Bound_LLVM_Rep (vt) : iat;
+
+            // Positional count of dimension `dim` of a purely-positional literal
+            // aggregate value, or -1 when the value is not such an aggregate.
+            int128_t Aggregate_Dim_Count (uint32_t dim) {
+              Syntax_Node *n = val;
+              for (uint32_t k = 0; n and k < dim; k++)
+                n = (n->kind == NK_AGGREGATE and n->aggregate.items.count > 0)
+                      ? n->aggregate.items.items[0] : NULL;
+              if (not n or n->kind != NK_AGGREGATE) return -1;
+              int128_t count = 0;
+              for (uint32_t i = 0; i < n->aggregate.items.count; i++) {
+                if (n->aggregate.items.items[i]->kind == NK_ASSOCIATION) return -1;
+                count++;
+              }
+              return count;
+            }
+
+            LLVM_I1 belongs = { Emit_I1_Const (1, "array membership seed").reg };
+            bool determinable = true;
+            for (uint32_t d = 0; d < range_type->array.index_count and determinable; d++) {
+              Index_Info *ix = &range_type->array.indices[d];
+              LLVM_Rep lr = LL_REP_VOID, hr = LL_REP_VOID;
+              uint32_t lo = Emit_Bound_Value_Typed (&ix->low_bound,  &lr);
+              uint32_t hi = Emit_Bound_Value_Typed (&ix->high_bound, &hr);
+              if (lo == 0 or hi == 0) { determinable = false; break; }
+              uint32_t sub_len = Emit_Length_From_Bounds (
+                Emit_Convert (lo, lr, iat).reg, Emit_Convert (hi, hr, iat).reg, iat).reg;
+
+              int128_t agg = Aggregate_Dim_Count (d);
+              uint32_t val_len;
+              if (agg >= 0) {
+                val_len = Emit_Static_Int (agg, iat).reg;
+              } else if (val_is_fat) {
+                val_len = Emit_Convert (
+                  Emit_Fat_Pointer_Length_Dim (left_v.reg, val_bt, d).reg, val_bt, iat).reg;
+              } else if (vt and vt->kind == TYPE_ARRAY and vt->array.is_constrained and
+                         d < vt->array.index_count and
+                         vt->array.indices[d].low_bound.kind == BOUND_INTEGER and
+                         vt->array.indices[d].high_bound.kind == BOUND_INTEGER) {
+                int128_t span = vt->array.indices[d].high_bound.int_value -
+                                vt->array.indices[d].low_bound.int_value + 1;
+                val_len = Emit_Static_Int (span < 0 ? 0 : span, iat).reg;
+              } else { determinable = false; break; }
+
+              belongs = Emit_And_I1 (belongs, Emit_Icmp ("eq", iat, val_len, sub_len));
+            }
+
+            uint32_t res = determinable ? belongs.reg
+                         : Emit_I1_Const (1, "membership (non-static) fallback").reg;
+            t = negate ? Emit_Not_I1 ((LLVM_I1){ res }).reg : res;
+            return Emit_Bool_Value ((LLVM_I1){ t });
+          }
+
+          // Membership in a *constrained discriminated record* subtype: the
+          // value belongs iff its discriminants equal the subtype's constraint
+          // (RM 4.5.2). Compare each discriminant of the value against the
+          // constraint value (static, or evaluated when the constraint is an
+          // expression such as IDENT(3)).
+          if (range_type and Type_Is_Record (range_type) and
+              range_type->record.has_disc_constraints and
+              range_type->record.discriminant_count > 0) {
+            uint32_t rec_ptr = left_v.reg;
+            LLVM_I1 belongs = { Emit_I1_Const (1, "record membership seed").reg };
+            bool decided = true;
+            for (uint32_t d = 0; d < range_type->record.discriminant_count; d++) {
+              Component_Info *dc = &range_type->record.components[d];
+              LLVM_Rep drep = LLVM_Rep_Or (Type_To_Rep (dc->component_type), Integer_Arith_Rep ());
+              uint32_t vval = Emit_Load_Field (rec_ptr, dc->byte_offset, drep);
+              uint32_t cval;
+              if (range_type->record.disc_constraint_exprs and
+                  range_type->record.disc_constraint_exprs[d])
+                cval = Emit_Coerce_Val (Generate_Expression (
+                         range_type->record.disc_constraint_exprs[d]), drep).reg;
+              else if (range_type->record.disc_constraint_values)
+                cval = Emit_Static_Int (range_type->record.disc_constraint_values[d], drep).reg;
+              else { decided = false; break; }
+              belongs = Emit_And_I1 (belongs, Emit_Icmp ("eq", drep, vval, cval));
+            }
+            if (decided) {
+              t = negate ? Emit_Not_I1 (belongs).reg : belongs.reg;
+              return Emit_Bool_Value ((LLVM_I1){ t });
+            }
+          }
+
+          // Membership in a constrained access-to-array subtype (RM 3.3.2):
+          // a null value always belongs; a non-null value belongs iff its
+          // designated array's index bounds equal the subtype's constraint.
+          if (range_type and Type_Is_Access (range_type) and
+              range_type->access.designated_type and
+              Type_Is_Array_Like (range_type->access.designated_type) and
+              range_type->access.designated_type->array.is_constrained and
+              LLVM_Rep_Is_Fat_Pointer (left_v.rep)) {
+            Type_Info *des = range_type->access.designated_type;
+            LLVM_Rep bt = Array_Bound_LLVM_Rep (des);
+            LLVM_Rep iat = Integer_Arith_Rep ();
+            uint32_t data = Emit_Fat_Pointer_Data (left_v.reg, bt).reg;
+            LLVM_I1 is_null = Emit_Icmp_Null_Ptr ("eq", data);
+            LLVM_I1 belongs = { Emit_I1_Const (1, "access membership seed").reg };
+            bool decided = true;
+            for (uint32_t d = 0; d < des->array.index_count; d++) {
+              Index_Info *ix = &des->array.indices[d];
+              LLVM_Rep lr = LL_REP_VOID, hr = LL_REP_VOID;
+              uint32_t clo = Emit_Bound_Value_Typed (&ix->low_bound,  &lr);
+              uint32_t chi = Emit_Bound_Value_Typed (&ix->high_bound, &hr);
+              if (clo == 0 or chi == 0) { decided = false; break; }
+              uint32_t vlo = Emit_Fat_Pointer_Low_Dim  (left_v.reg, bt, d).reg;
+              uint32_t vhi = Emit_Fat_Pointer_High_Dim (left_v.reg, bt, d).reg;
+              belongs = Emit_And_I1 (belongs, Emit_Icmp ("eq", iat,
+                Emit_Convert (vlo, bt, iat).reg, Emit_Convert (clo, lr, iat).reg));
+              belongs = Emit_And_I1 (belongs, Emit_Icmp ("eq", iat,
+                Emit_Convert (vhi, bt, iat).reg, Emit_Convert (chi, hr, iat).reg));
+            }
+            if (decided) {
+              uint32_t res = Emit_Temp ();
+              Emit ("  %%t%u = or i1 %%t%u, %%t%u  ; null or bounds match\n",
+                 res, is_null.reg, belongs.reg);
+              t = negate ? Emit_Not_I1 ((LLVM_I1){ res }).reg : res;
+              return Emit_Bool_Value ((LLVM_I1){ t });
+            }
+          }
+
+          // Other composites (records, strings), access and task types: the
+          // value is already of the type, so membership is always TRUE
+          // (RM 4.5.2). Access types have no range.
           if (range_type and (Type_Is_Composite (range_type) or Type_Is_Access (range_type) or
                 range_type->kind == TYPE_TASK)) {
             uint32_t always = Emit_I1_Const (1, "composite IN is always true").reg;
@@ -24445,8 +24919,28 @@ LLVM_Value Emit_Binary_Op_Predefined (Syntax_Node *node) {
           if (range_type and Type_Bound_Is_Set (range_type->low_bound)
                 and Type_Bound_Is_Set (range_type->high_bound)) {
             LLVM_Rep lo_bt = LL_REP_VOID, hi_bt = LL_REP_VOID;
-            uint32_t bound_low  = Emit_Bound_Value_Typed (&range_type->low_bound, &lo_bt);
-            uint32_t bound_high = Emit_Bound_Value_Typed (&range_type->high_bound, &hi_bt);
+            uint32_t bound_low, bound_high;
+            LLVM_Value mem_val = left_v;
+
+            // Fixed-point bounds are real literals, but the value is held as a
+            // scaled-integer mantissa (value / SMALL); scale the bounds the
+            // same way (and the value, if it arrived as a real) so the integer
+            // comparison is in matching units.
+            if (range_type->kind == TYPE_FIXED) {
+              double small = Fixed_Repr_Small (range_type);
+              LLVM_Rep fix_rep = Type_To_Rep (range_type);
+              if (not LLVM_Rep_Is_Int (fix_rep)) fix_rep = LLVM_Rep_Int (64, false);
+              bound_low  = Emit_Fixed_Bound_Mantissa (&range_type->low_bound,  small, fix_rep);
+              bound_high = Emit_Fixed_Bound_Mantissa (&range_type->high_bound, small, fix_rep);
+              lo_bt = hi_bt = fix_rep;
+              if (LLVM_Rep_Is_Float (mem_val.rep))
+                mem_val = Convert_Real_To_Fixed (
+                  Emit_Convert (mem_val.reg, mem_val.rep, LLVM_Rep_Float (64)).reg,
+                  small, fix_rep);
+            } else {
+              bound_low  = Emit_Bound_Value_Typed (&range_type->low_bound, &lo_bt);
+              bound_high = Emit_Bound_Value_Typed (&range_type->high_bound, &hi_bt);
+            }
 
             // Bounds could not be determined - assume always in range
             if (bound_low == 0 or bound_high == 0) {
@@ -24461,7 +24955,7 @@ LLVM_Value Emit_Binary_Op_Predefined (Syntax_Node *node) {
             // value IN T'FIRST .. T'LAST. Emit_In_Range joins the value and
             // bound reps (float compare if any is float, else widest int with
             // unsigned predicates for modular types).
-            LLVM_I1 in_range = Emit_In_Range (left_v,
+            LLVM_I1 in_range = Emit_In_Range (mem_val,
                        (LLVM_Value){ bound_low, lo_bt }, (LLVM_Value){ bound_high, hi_bt },
                        Type_Is_Unsigned (lhs_type));
             if (negate) { LLVM_I1 nx = Emit_Not_I1 (in_range); t = nx.reg; }
@@ -24608,10 +25102,9 @@ LLVM_Value Emit_Binary_Op_Predefined (Syntax_Node *node) {
     not peeled->is_predefined) {
 
     // Resolve through parent_operation for derived operators (RM 3.4).
-    // parent_operation is orthogonal to renaming; check it on the peeled
-    // target so we land on the actual body to call.
-    Symbol *call_target = peeled->parent_operation ?
-      peeled->parent_operation : peeled;
+    // parent_operation is orthogonal to renaming; follow it to the ultimate
+    // operation (through any chain of derivations) so we land on the body.
+    Symbol *call_target = Ultimate_Operation (peeled);
     uint32_t operand = Generate_Expression (node->unary.operand).reg;
     LLVM_Rep op_llvm = Expression_LLVM_Rep (node->unary.operand);
     Type_Info *p0_type = (call_target->parameter_count > 0) ?
@@ -24750,12 +25243,14 @@ LLVM_Value Emit_Binary_Op_Predefined (Syntax_Node *node) {
           designated = node->unary.operand->type->access.designated_type;
 
         // For composite types the access value IS the dereferenced value.
-        // Label it with the designated type's representation: a thin "ptr" for
-        // records / constrained arrays, but FAT_PTR_TYPE for an unconstrained
-        // array (whose access carries bounds) - "ptr" would lie about a fat
-        // operand.
+        // Label it by how the access is represented: a fat access yields the
+        // loaded { ptr, ptr } (data + bounds) even when the designated subtype
+        // is statically constrained (the bounds still travel); a thin access
+        // yields a bare data pointer typed by the designated subtype.
         if (Type_Is_Composite (designated)) {
-          return Val_Rep (operand, Type_To_Rep (designated));
+          LLVM_Rep deref_rep = Type_Needs_Fat_Pointer (node->unary.operand->type)
+                             ? LL_REP_FAT : Type_To_Rep (designated);
+          return Val_Rep (operand, deref_rep);
         }
 
         // For scalar types, load the value from the pointer
@@ -25356,10 +25851,19 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
 
         // Composite: pass actual address directly (by reference)
         } else {
-          // A constrained array is stored inline as raw data, but an
-          // unconstrained-array formal is passed by reference as a pointer to
-          // an in-memory fat pointer { data, bounds }. Build one aliasing the
-          // actual and spill it so the callee can load bounds. (RM 6.4.1)
+          // A constrained array stored inline as raw data, passed to an
+          // unconstrained-array formal, must be wrapped: the formal is passed by
+          // reference as a pointer to an in-memory fat pointer { data, bounds }.
+          // Build one aliasing the actual and spill it so the callee can load
+          // bounds (RM 6.4.1).
+          //
+          // "Inline" means actual_addr points to flat element data: a static
+          // array, or a dynamically-bounded array embedded in a record or array
+          // (a selected/indexed prefix). A *simple* reference to a fat-stored
+          // object (a variable or by-reference parameter of dynamic-bounds type)
+          // is NOT inline: actual_addr already points to its { data, bounds }
+          // struct, so pass it directly. Wrapping that would alias the data
+          // pointer onto the struct and a callee write would clobber the bounds.
           Type_Info *actual_type = addr_node->type ? addr_node->type : arg->type;
           bool formal_needs_fat = formal_type and
                 (Type_Is_Unconstrained_Array (formal_type) or
@@ -25369,8 +25873,7 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
           bool actual_inline_array = actual_type and
                 Type_Is_Constrained_Array (actual_type) and
                 actual_type->array.index_count > 0 and
-                (actual_type->rt_global_id > 0 or
-                 not Type_Has_Dynamic_Bounds (actual_type));
+                (not Type_Needs_Fat_Pointer (actual_type) or not is_simple_var_ref);
 
           if (formal_needs_fat and actual_inline_array) {
             LLVM_Value fat = Emit_Fat_Pointer_For_Lvalue (actual_addr, actual_type);
@@ -25394,7 +25897,13 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
 
           // RM 6.4.1: for an IN OUT / OUT record formal with constrained
           // discriminants, the actual's discriminants must match the constraint.
-          Emit_Record_Discriminant_Constraint_Checks (args[param_idx], formal_type);
+          // A derived operation forwards to the parent, whose formal is the
+          // unconstrained base, so the actual is passed as the base and carries
+          // no constraint to check (RM 3.4) — use the parent's formal type.
+          Type_Info *disc_check_type = formal_type;
+          if (sym->parent_operation and param_idx < sym->parent_operation->parameter_count)
+            disc_check_type = sym->parent_operation->parameters[param_idx].param_type;
+          Emit_Record_Discriminant_Constraint_Checks (args[param_idx], disc_check_type);
         }
       } else {
         // RM 4.8: Propagate target access type to allocator in parameter
@@ -25452,8 +25961,13 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
 
           // Discriminant constraint check for a constrained record subtype
           // (RM 3.7.2(3)): when a formal is e.g. S_TRUE IS VAR_REC (TRUE),
-          // verify the actual's discriminant matches.
-          Emit_Record_Discriminant_Constraint_Checks (args[param_idx], formal_type);
+          // verify the actual's discriminant matches. A derived operation
+          // forwards to the parent whose formal is the unconstrained base, so
+          // the actual carries no constraint to check (RM 3.4).
+          Type_Info *disc_check_type = formal_type;
+          if (sym->parent_operation and param_idx < sym->parent_operation->parameter_count)
+            disc_check_type = sym->parent_operation->parameters[param_idx].param_type;
+          Emit_Record_Discriminant_Constraint_Checks (args[param_idx], disc_check_type);
 
           // Constrained array > unconstrained formal: build fat pointer (RM 6.4.1)                 
           // When passing a constrained array to an unconstrained formal, we must                   
@@ -25494,14 +26008,37 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
 
             // Fat pointer actual (string literal, slice) to constrained
             // formal with fat-pointer storage (dyn bounds): rebuild fat
-            // pointer with the formal type's bounds. E.g. "ABCDE" passed
-            // to STRING (11..15) - bounds must be 11..15, not the
-            // literal's default 1..5. (RM 4.3.2)
+            // pointer with the formal type's bounds, across every dimension.
+            // E.g. "ABCDE" passed to STRING (11..15) - bounds must be 11..15,
+            // not the literal's default 1..5 (RM 4.3.2); a multidimensional
+            // formal needs every dimension's pair, not just the first.
             LLVM_Rep abt = Array_Bound_LLVM_Rep (formal_type);
             uint32_t data_ptr = Emit_Fat_Pointer_Data (args[param_idx], abt).reg;
-            uint32_t lo = Emit_Single_Bound (&formal_type->array.indices[0].low_bound, abt);
-            uint32_t hi = Emit_Single_Bound (&formal_type->array.indices[0].high_bound, abt);
-            args[param_idx] = Emit_Fat_Pointer_Dynamic (data_ptr, lo, hi, abt).reg;
+            uint32_t ndims = formal_type->array.index_count;
+            if (ndims < 1) ndims = 1;
+            if (ndims > 8) ndims = 8;
+            uint32_t blo[8], bhi[8];
+            for (uint32_t d = 0; d < ndims; d++) {
+              blo[d] = Emit_Single_Bound (&formal_type->array.indices[d].low_bound, abt);
+              bhi[d] = Emit_Single_Bound (&formal_type->array.indices[d].high_bound, abt);
+            }
+
+            // RM 6.4.1: the actual must belong to the constrained formal's
+            // subtype - each dimension's length must match (bounds themselves
+            // slide). Check before re-anchoring to the formal's bounds, which
+            // would otherwise mask a length mismatch.
+            for (uint32_t d = 0; d < ndims; d++) {
+              uint32_t a_len = Emit_Fat_Pointer_Length_Dim (args[param_idx], abt, d).reg;
+              uint32_t f_len = Emit_Length_From_Bounds (blo[d], bhi[d], abt).reg;
+              LLVM_I1 ne = Emit_Icmp ("ne", abt, a_len, f_len);
+              uint32_t ok = cg->label_id++, bad = cg->label_id++;
+              Emit ("  br i1 %%t%u, label %%L%u, label %%L%u\n", ne.reg, bad, ok);
+              cg->block_terminated = true;
+              Emit_Label_Here (bad);
+              Emit_Raise_Constraint_Error ("actual array length vs constrained formal (RM 6.4.1)");
+              Emit_Label_Here (ok);
+            }
+            args[param_idx] = Emit_Fat_Pointer_MultiDim (data_ptr, blo, bhi, ndims, abt, abt).reg;
           } else if (Expression_Produces_Fat_Pointer (arg, actual_type) and
                  not formal_needs_fat and
                  formal_type->array.is_constrained) {
@@ -25518,7 +26055,7 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
 
             // Real literal > fixed-point param: scale by 1/SMALL
             if (Type_Is_Fixed_Point (formal_type) and LLVM_Rep_Is_Float (arg_type)) {
-              double small = Fixed_Small (formal_type);
+              double small = Fixed_Repr_Small (formal_type);
               args[param_idx] = Convert_Real_To_Fixed (args[param_idx], small, param_type).reg;
             } else {
               args[param_idx] = Emit_Convert (args[param_idx], arg_type, param_type).reg;
@@ -25528,12 +26065,14 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
       }
     }
 
-    // For derived type operations (RM 3.4), emit direct call to parent.                           
-    // Derived types have identical representation to parent in Ada 83,                             
-    // so no wrapper needed - just call the parent's implementation directly.                      
-    // This is the GNAT-style optimization.                                                        
-    //                                                                                              
-    Symbol *call_target = sym->parent_operation ? sym->parent_operation : sym;
+    // For derived type operations (RM 3.4), emit direct call to the parent's
+    // implementation. Derived types share the parent's representation in Ada 83,
+    // so no wrapper is needed; the front end inserts the parameter/result
+    // conversions (RM 3.4(17-20)). Follow the inheritance chain to the ultimate
+    // operation that actually has a body (mirrors GNAT's Ultimate_Alias): a
+    // multi-level derivation S is new T is new P chains derived op -> derived op
+    // -> real body, and only the last carries code.
+    Symbol *call_target = Ultimate_Operation (sym);
 
     // RM 13.10.2 / GNAT: UNCHECKED_CONVERSION is an intrinsic generic.
     // Each instantiation creates a SYMBOL_FUNCTION with no body.
@@ -25803,14 +26342,22 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
         Emit ("  store %s %%t%u, ptr %%t%u  ; copy-back to actual\n",
            LLVM_Rep_To_String(copyback_llvm[i]), ret_val, copyback_addr[i]);
 
-      // Composite by-ref: check constraint on returned value
+      // Composite by-ref: check the returned value against the actual's
+      // subtype (RM 6.4.1(17)). A by-reference call writes straight through to
+      // the actual, so a constrained discriminated actual must still satisfy
+      // its discriminant constraint after the call (the callee may have
+      // assigned a value of another variant).
       } else if (is_byref[i]) {
         Type_Info *actual_type = arg->type;
-        if (not actual_type or not Type_Is_Scalar (actual_type)) continue;
-        LLVM_Rep ld_ty = Type_To_Rep (actual_type);
-        uint32_t ret_val = Emit_Temp ();
-        Emit ("  %%t%u = load %s, ptr %%t%u  ; OUT/INOUT result\n", ret_val, LLVM_Rep_To_String(ld_ty), args[i]);
-        Emit_Constraint_Check_Val (Val_Rep (ret_val, ld_ty), actual_type, NULL);
+        if (actual_type and Type_Is_Scalar (actual_type)) {
+          LLVM_Rep ld_ty = Type_To_Rep (actual_type);
+          uint32_t ret_val = Emit_Temp ();
+          Emit ("  %%t%u = load %s, ptr %%t%u  ; OUT/INOUT result\n", ret_val, LLVM_Rep_To_String(ld_ty), args[i]);
+          Emit_Constraint_Check_Val (Val_Rep (ret_val, ld_ty), actual_type, NULL);
+        } else if (actual_type and Type_Is_Record (actual_type) and
+                   actual_type->record.has_disc_constraints) {
+          Emit_Record_Discriminant_Constraint_Checks (args[i], actual_type);
+        }
       }
     }
 
@@ -26155,7 +26702,7 @@ index_path: ;
 
     // Check if unconstrained array OR constrained array with dynamic bounds
     // needing fat pointer handling. Both are stored as fat pointers.
-    else if ((Type_Is_Unconstrained_Array (array_type) or Type_Has_Dynamic_Bounds (array_type)) and
+    else if ((Type_Needs_Fat_Pointer (array_type)) and
       array_sym and (array_sym->kind == SYMBOL_PARAMETER or array_sym->kind == SYMBOL_VARIABLE or
               array_sym->kind == SYMBOL_CONSTANT or array_sym->kind == SYMBOL_DISCRIMINANT)) {
 
@@ -26189,7 +26736,7 @@ index_path: ;
       // yet still produces a { ptr, { bound, bound } } value.
       //
       if (LLVM_Rep_Is_Fat_Pointer (prefix_v.rep) or
-          Type_Is_Unconstrained_Array (array_type) or Type_Has_Dynamic_Bounds (array_type)) {
+          Type_Needs_Fat_Pointer (array_type)) {
         LLVM_Rep pfx_bt = Array_Bound_LLVM_Rep (array_type);
         dyn_fat = prefix_val;
         base = Emit_Fat_Pointer_Data (prefix_val, pfx_bt).reg;
@@ -26370,16 +26917,11 @@ type_conversion:
         // use fat-pointer storage even though dst_unc is false.
         bool dst_is_fat = dst_unc or Type_Has_Dynamic_Bounds (dst_type);
 
-        // Flat alloca > fat pointer destination: build {data, {low, high}}.
-        // Source is a flat alloca; bounds come from type info.
+        // Flat alloca > fat pointer destination: build { data, bounds } over
+        // every dimension from the source's own bounds (a multidimensional
+        // source would otherwise keep only its first dimension's pair).
         if (dst_is_fat and not src_is_fat) {
-          LLVM_Rep bt = Array_Bound_LLVM_Rep (dst_type);
-          int128_t lo = Array_Low_Bound (src_type);
-          int128_t hi = (src_type->kind == TYPE_ARRAY and src_type->array.index_count > 0)
-            ? Type_Bound_Value (src_type->array.indices[0].high_bound) : lo;
-          uint32_t lo_t = Emit_Static_Int_Comment (lo, bt, "array conv low bound").reg;
-          uint32_t hi_t = Emit_Static_Int_Comment (hi, bt, "array conv high bound").reg;
-          return Emit_Fat_Pointer_Dynamic (result, lo_t, hi_t, bt);
+          return Emit_Fat_Pointer_For_Lvalue (result, src_type);
 
         // Fat pointer > flat alloca destination: extract data pointer.
         } else if (not dst_is_fat and src_is_fat) {
@@ -26407,7 +26949,7 @@ type_conversion:
           LLVM_Rep dst_llvm = Type_To_Rep (dst_type);
           uint32_t t1 = Emit_Temp ();
           Emit ("  %%t%u = sitofp %s %%t%u to %s  ; fixed>float\n", t1, LLVM_Rep_To_String (result_v.rep), result, LLVM_Rep_To_String (dst_llvm));
-          uint32_t t2 = Emit_Scale_By_Small (t1, Fixed_Small (src_type), false, dst_llvm);
+          uint32_t t2 = Emit_Scale_By_Small (t1, Fixed_Repr_Small (src_type), false, dst_llvm);
           return Val_Rep (t2, dst_llvm);
 
         // Float > Fixed: divide by SMALL, round to the nearest mantissa.
@@ -26418,7 +26960,7 @@ type_conversion:
           // generic-formal width); the SMALL divisor runs at the value's real
           // float width.
           LLVM_Rep src_llvm = result_rep;
-          uint32_t t1 = Emit_Scale_By_Small (result, Fixed_Small (dst_type), true, src_llvm);
+          uint32_t t1 = Emit_Scale_By_Small (result, Fixed_Repr_Small (dst_type), true, src_llvm);
           uint32_t t1r = Emit_Temp ();
           Emit ("  %%t%u = call %s @llvm.round.%s(%s %%t%u)\n", t1r,
              LLVM_Rep_To_String (src_llvm), src_llvm.bits == 32 ? "f32" : "f64",
@@ -26438,7 +26980,7 @@ type_conversion:
           // generic-formal or overflow-checked width); the rescale must label
           // `result` at the width it was physically emitted.
           unsigned long long small_num, small_den;
-          Fixed_Small_As_Rational (Fixed_Small (dst_type), &small_num, &small_den);
+          Fixed_Small_As_Rational (Fixed_Repr_Small (dst_type), &small_num, &small_den);
           return Emit_Exact_Rescale (result, result_rep, small_den, small_num,
                                      Type_To_Rep (dst_type));
 
@@ -26446,8 +26988,8 @@ type_conversion:
         // SMALL_src/SMALL_dst, exactly, in 128-bit.
         } else if (Type_Is_Fixed_Point (src_type) and Type_Is_Fixed_Point (dst_type)) {
           unsigned long long src_num, src_den, dst_num, dst_den;
-          Fixed_Small_As_Rational (Fixed_Small (src_type), &src_num, &src_den);
-          Fixed_Small_As_Rational (Fixed_Small (dst_type), &dst_num, &dst_den);
+          Fixed_Small_As_Rational (Fixed_Repr_Small (src_type), &src_num, &src_den);
+          Fixed_Small_As_Rational (Fixed_Repr_Small (dst_type), &dst_num, &dst_den);
           unsigned __int128 factor_num = (unsigned __int128) src_num * dst_den;
           unsigned __int128 factor_den = (unsigned __int128) src_den * dst_num;
           unsigned __int128 a = factor_num, b = factor_den;
@@ -26464,7 +27006,7 @@ type_conversion:
                (dst_type->kind == TYPE_INTEGER or
                 dst_type->kind == TYPE_MODULAR or
                 dst_type->kind == TYPE_UNIVERSAL_INTEGER)) {
-          double small = Fixed_Small (src_type);
+          double small = Fixed_Repr_Small (src_type);
           LLVM_Rep fix_int_rep = result_v.rep;
 
           // Stored scaled integer > double > * SMALL > round > fptosi
@@ -26542,10 +27084,14 @@ LLVM_Value Generate_Selected (Syntax_Node *node) {
     Emit_Access_Check (Val_Of_Type (ptr, prefix_type), prefix_type);
 
     // For composite types (records, arrays), return pointer with rep matching
-    // the designated type: thin ptr for records / constrained arrays, fat
-    // { ptr, ptr } for unconstrained or dynamic-bound arrays (mirrors 22123).
+    // the value produced by Generate_Lvalue: a fat access yields the loaded
+    // { ptr, ptr } (data + bounds), so tag it fat even when the designated
+    // subtype is statically constrained (the bounds still travel). A thin
+    // access yields a bare data pointer typed by the designated subtype.
     if (Type_Is_Composite (designated)) {
-      return Val_Rep (ptr, Type_To_Rep (designated));
+      LLVM_Rep deref_rep = Type_Needs_Fat_Pointer (prefix_type)
+                         ? LL_REP_FAT : Type_To_Rep (designated);
+      return Val_Rep (ptr, deref_rep);
     }
 
     // For scalar types, load the value
@@ -26850,6 +27396,11 @@ void Emit_Float_Type_Limit (uint32_t t, Type_Info *type,
 uint32_t Get_Dimension_Index (Syntax_Node *arg) {
   if (not arg) return 0;  // Default to first dimension
   if (arg->kind == NK_INTEGER) return (uint32_t)(arg->integer_lit.value - 1);
+  // RM 3.6.2: the dimension is a static universal_integer expression. Fold a
+  // named number or static constant (e.g. N : constant := 2) to its value;
+  // otherwise it is not a literal 1, so default to the first dimension.
+  double v = Eval_Const_Numeric (arg);
+  if (v == v and v >= 1) return (uint32_t)v - 1;
   return 0;
 }
 
@@ -26965,10 +27516,10 @@ LLVM_Value Emit_Bound_Attribute (uint32_t t,
     LLVM_Rep bound_s = bound_rep;
 
     // Fixed-point FIRST/LAST returns scaled integer representation.
-    // Internal repr = abstract_value / SMALL.
+    // Internal repr = abstract_value / SMALL, in the base type's units (the
+    // representation SMALL), matching how fixed objects are stored.
     if (Type_Is_Fixed_Point (prefix_type)) {
-      double small = prefix_type->fixed.small;
-      if (small <= 0) small = prefix_type->fixed.delta > 0 ? prefix_type->fixed.delta : 1.0;
+      double small = Fixed_Repr_Small (prefix_type);
 
       if (b.kind == BOUND_EXPR and b.expr) {
         LLVM_Value fv_v = Generate_Expression (b.expr);
@@ -27024,6 +27575,122 @@ LLVM_Value Emit_Bound_Attribute (uint32_t t,
   }
   return Val_Rep (t, result_ty);
 }
+
+// The magnitude of a fixed-point subtype's range expressed as an i64 mantissa
+// in units of SMALL: max(|low|, |high|) / SMALL. Used by 'MANTISSA and 'FORE
+// when the range is non-static (its bounds are built from an expression such
+// as IDENT_INT, so they cannot be folded at compile time).
+uint32_t Emit_Fixed_Range_Mantissa (Type_Info *ft, double small) {
+  LLVM_Rep i64r = LLVM_Rep_Int (64, false);
+  const char *s = LLVM_Rep_To_String (i64r);
+  uint32_t lo = Emit_Fixed_Bound_Mantissa (&ft->low_bound,  small, i64r);
+  uint32_t hi = Emit_Fixed_Bound_Mantissa (&ft->high_bound, small, i64r);
+  uint32_t abs_of[2], in[2] = { lo, hi };
+  for (int k = 0; k < 2; k++) {
+    uint32_t neg = Emit_Temp ();
+    Emit ("  %%t%u = sub %s 0, %%t%u\n", neg, s, in[k]);
+    LLVM_I1 isneg = Emit_Icmp_Const ("slt", i64r, in[k], 0);
+    abs_of[k] = Emit_Temp ();
+    Emit ("  %%t%u = select i1 %%t%u, %s %%t%u, %s %%t%u\n",
+       abs_of[k], isneg.reg, s, neg, s, in[k]);
+  }
+  LLVM_I1 lo_bigger = Emit_Icmp ("sgt", i64r, abs_of[0], abs_of[1]);
+  uint32_t mx = Emit_Temp ();
+  Emit ("  %%t%u = select i1 %%t%u, %s %%t%u, %s %%t%u\n",
+     mx, lo_bigger.reg, s, abs_of[0], s, abs_of[1]);
+  return mx;
+}
+
+// RM 3.5.10(5): T'MANTISSA for a non-static fixed-point range, evaluated at
+// runtime. MANTISSA = ceiling(log2(max_magnitude / SMALL)), computed exactly
+// from the mantissa M as the bit width of M - 1 (the count-leading-zeros
+// complement), with a floor of 1.
+uint32_t Emit_Fixed_Mantissa_Runtime (Type_Info *ft, double small) {
+  LLVM_Rep i64r = LLVM_Rep_Int (64, false), i32r = Integer_Arith_Rep ();
+  uint32_t m = Emit_Fixed_Range_Mantissa (ft, small);
+  uint32_t m1 = Emit_Temp ();
+  Emit ("  %%t%u = sub i64 %%t%u, 1\n", m1, m);
+  uint32_t clz = Emit_Temp ();
+  Emit ("  %%t%u = call i64 @llvm.ctlz.i64(i64 %%t%u, i1 false)\n", clz, m1);
+  uint32_t bits = Emit_Temp ();
+  Emit ("  %%t%u = sub i64 64, %%t%u\n", bits, clz);
+  uint32_t bits32 = Emit_Convert (bits, i64r, i32r).reg;
+  LLVM_I1 below1 = Emit_Icmp_Const ("slt", i32r, bits32, 1);
+  uint32_t res = Emit_Temp ();
+  Emit ("  %%t%u = select i1 %%t%u, i32 1, i32 %%t%u\n", res, below1.reg, bits32);
+  return res;
+}
+
+// RM 3.5.10(5): T'FORE for a non-static fixed-point range, evaluated at
+// runtime. FORE is one (for the sign) plus the number of decimal digits in the
+// integer part of the largest magnitude. The integer part is the mantissa
+// shifted by the binary scale (SMALL = 2**scale); its digit count is found by
+// a divide-by-ten loop.
+uint32_t Emit_Fixed_Fore_Runtime (Type_Info *ft, double small) {
+  LLVM_Rep i64r = LLVM_Rep_Int (64, false), i32r = Integer_Arith_Rep ();
+  int scale = 0;
+  for (double s = small; s < 1.0 and scale > -64; s *= 2.0) scale--;
+  for (double s = small; s >= 2.0 and scale <  64; s /= 2.0) scale++;
+  uint32_t m = Emit_Fixed_Range_Mantissa (ft, small);
+  uint32_t intpart = m;
+  if (scale < 0) {
+    intpart = Emit_Temp ();
+    Emit ("  %%t%u = ashr i64 %%t%u, %d\n", intpart, m, -scale);
+  } else if (scale > 0) {
+    intpart = Emit_Temp ();
+    Emit ("  %%t%u = shl i64 %%t%u, %d\n", intpart, m, scale);
+  }
+
+  // digit count loop: nd starts at 1, divide intpart by 10 while >= 10.
+  uint32_t nd_slot = Emit_Alloca_Store (i32r, Emit_Static_Int (1, i32r).reg);
+  uint32_t v_slot  = Emit_Alloca_Store (i64r, intpart);
+  uint32_t l_cond = cg->label_id++, l_body = cg->label_id++, l_done = cg->label_id++;
+  Emit ("  br label %%L%u\n", l_cond);
+  Emit_Label_Here (l_cond);
+  uint32_t v = Emit_Temp ();
+  Emit ("  %%t%u = load i64, ptr %%t%u\n", v, v_slot);
+  LLVM_I1 more = Emit_Icmp_Const ("sge", i64r, v, 10);
+  Emit ("  br i1 %%t%u, label %%L%u, label %%L%u\n", more.reg, l_body, l_done);
+  cg->block_terminated = true;
+  Emit_Label_Here (l_body);
+  uint32_t vd = Emit_Temp ();
+  Emit ("  %%t%u = sdiv i64 %%t%u, 10\n", vd, v);
+  Emit ("  store i64 %%t%u, ptr %%t%u\n", vd, v_slot);
+  uint32_t nd = Emit_Temp ();
+  Emit ("  %%t%u = load i32, ptr %%t%u\n", nd, nd_slot);
+  uint32_t nd1 = Emit_Temp ();
+  Emit ("  %%t%u = add i32 %%t%u, 1\n", nd1, nd);
+  Emit ("  store i32 %%t%u, ptr %%t%u\n", nd1, nd_slot);
+  Emit ("  br label %%L%u\n", l_cond);
+  cg->block_terminated = true;
+  Emit_Label_Here (l_done);
+  uint32_t nd_final = Emit_Temp ();
+  Emit ("  %%t%u = load i32, ptr %%t%u\n", nd_final, nd_slot);
+  uint32_t fore = Emit_Temp ();
+  Emit ("  %%t%u = add i32 %%t%u, 1  ; 'FORE (sign + digits)\n", fore, nd_final);
+  return fore;
+}
+
+// RM 3.5.10(7): T'LARGE for a non-static fixed-point range, evaluated at
+// runtime as (2**MANTISSA - 1) * SMALL, returned as a double (universal_real).
+uint32_t Emit_Fixed_Large_Runtime (Type_Info *ft, double small) {
+  LLVM_Rep i64r = LLVM_Rep_Int (64, false);
+  uint32_t m = Emit_Fixed_Mantissa_Runtime (ft, small);
+  uint32_t m64 = Emit_Convert (m, Integer_Arith_Rep (), i64r).reg;
+  uint32_t pow2 = Emit_Temp ();
+  Emit ("  %%t%u = shl i64 1, %%t%u\n", pow2, m64);
+  uint32_t span = Emit_Temp ();
+  Emit ("  %%t%u = sub i64 %%t%u, 1\n", span, pow2);
+  uint32_t spand = Emit_Temp ();
+  Emit ("  %%t%u = sitofp i64 %%t%u to double\n", spand, span);
+  uint64_t sb; memcpy (&sb, &small, sizeof (sb));
+  uint32_t sc = Emit_Temp ();
+  Emit ("  %%t%u = fadd double 0.0, 0x%016llX  ; SMALL=%g\n", sc, (unsigned long long)sb, small);
+  uint32_t large = Emit_Temp ();
+  Emit ("  %%t%u = fmul double %%t%u, %%t%u  ; 'LARGE\n", large, spand, sc);
+  return large;
+}
+
 LLVM_Value Generate_Attribute (Syntax_Node *node) {
   Type_Info *prefix_type = node->attribute.prefix->type;
   String_Slice attr = node->attribute.name;
@@ -27202,6 +27869,102 @@ LLVM_Value Generate_Attribute (Syntax_Node *node) {
   if (Slice_Equal_Ignore_Case (attr, S("SIZE"))) {
     if (not prefix_type)
       fprintf (stderr, "warning: 'SIZE attribute applied to expression with no type\n");
+    LLVM_Rep iat = Integer_Arith_Rep ();
+
+    // An array's size is its element count times the component size. The stored
+    // type->size already captures this for a statically-bounded subtype, but two
+    // cases need more (RM 13.7.2): an *unconstrained* base has no single size, so
+    // report its index subtype's maximum extent; a *dynamically* bounded subtype
+    // (or object thereof) must be measured at run time from its actual bounds.
+    if (prefix_type and Type_Is_Array_Like (prefix_type) and
+        prefix_type->specified_bit_size == 0 and prefix_type->array.element_type) {
+      Type_Info *comp = prefix_type->array.element_type;
+      int64_t comp_bits = comp->specified_bit_size > 0
+                            ? comp->specified_bit_size : (int64_t)comp->size * 8;
+      uint32_t ndims = prefix_type->array.index_count;
+
+      // The extent in elements: for an unconstrained base it is the product of
+      // the index *subtypes'* lengths (the largest a value may grow to); for a
+      // dynamically-bounded subtype it is the product of the actual index
+      // lengths. Either way each dimension's bounds come from a Type_Bound pair.
+      bool unconstrained = not prefix_type->array.is_constrained;
+      if (unconstrained or Type_Has_Dynamic_Bounds (prefix_type)) {
+        // Try a fully static fold first (no IR), then fall back to runtime.
+        int128_t static_elems = 1;
+        bool all_static = (ndims > 0);
+        for (uint32_t d = 0; d < ndims and all_static; d++) {
+          Type_Info  *ixt = prefix_type->array.indices[d].index_type;
+          Type_Bound *lo = unconstrained ? (ixt ? &ixt->low_bound  : NULL)
+                                         : &prefix_type->array.indices[d].low_bound;
+          Type_Bound *hi = unconstrained ? (ixt ? &ixt->high_bound : NULL)
+                                         : &prefix_type->array.indices[d].high_bound;
+          if (lo and hi and lo->kind == BOUND_INTEGER and hi->kind == BOUND_INTEGER) {
+            int128_t len = hi->int_value - lo->int_value + 1;
+            static_elems *= (len < 0 ? 0 : len);
+          } else all_static = false;
+        }
+        if (all_static and static_elems >= 0 and static_elems * comp_bits <= INT64_MAX) {
+          Emit ("  %%t%u = add %s 0, %lld  ; 'SIZE = extent in bits\n",
+             t, LLVM_Rep_To_String (iat), (long long)(int64_t)(static_elems * comp_bits));
+          return Val_Rep (t, iat);
+        }
+
+        // Runtime, object prefix: read the length from the value's own fat
+        // pointer, whose bounds were established from the object (the same
+        // source 'LENGTH uses), then multiply by the component size. This is the
+        // only correct source when an index bound references a discriminant,
+        // which has no meaning without the object. A type prefix (a type name or
+        // T'BASE) has no object, so it evaluates the index bounds below instead.
+        bool prefix_is_type =
+          (node->attribute.prefix->kind == NK_ATTRIBUTE and
+           Slice_Equal_Ignore_Case (node->attribute.prefix->attribute.name, S("BASE")))
+          or (prefix_sym and prefix_sym->kind == SYMBOL_TYPE);
+        if (needs_runtime_bounds and not prefix_is_type) {
+          LLVM_Rep fbt = Array_Bound_LLVM_Rep (prefix_type);
+          uint32_t fat = (prefix_sym and prefix_sym->kind != SYMBOL_FUNCTION and
+                          prefix_sym->kind != SYMBOL_PROCEDURE)
+                       ? Emit_Load_Fat_Pointer (prefix_sym, fbt).reg
+                       : Generate_Expression (node->attribute.prefix).reg;
+          uint32_t total = Emit_Static_Int (1, iat).reg;
+          for (uint32_t d = 0; d < ndims; d++) {
+            uint32_t len = Emit_Convert (
+              Emit_Fat_Pointer_Length_Dim (fat, fbt, d).reg, fbt, iat).reg;
+            uint32_t mul = Emit_Temp ();
+            Emit ("  %%t%u = mul %s %%t%u, %%t%u\n", mul, LLVM_Rep_To_String (iat), total, len);
+            total = mul;
+          }
+          Emit ("  %%t%u = mul %s %%t%u, %lld  ; 'SIZE = length * component bits\n",
+             t, LLVM_Rep_To_String (iat), total, (long long)comp_bits);
+          return Val_Rep (t, iat);
+        }
+        // Runtime: product of per-dimension lengths times component bits.
+        uint32_t total = Emit_Static_Int (1, iat).reg;
+        bool ok = (ndims > 0);
+        for (uint32_t d = 0; d < ndims and ok; d++) {
+          Type_Info  *ixt = prefix_type->array.indices[d].index_type;
+          Type_Bound *lob = unconstrained ? (ixt ? &ixt->low_bound  : NULL)
+                                          : &prefix_type->array.indices[d].low_bound;
+          Type_Bound *hib = unconstrained ? (ixt ? &ixt->high_bound : NULL)
+                                          : &prefix_type->array.indices[d].high_bound;
+          if (not lob or not hib) { ok = false; break; }
+          LLVM_Rep lr = LL_REP_VOID, hr = LL_REP_VOID;
+          uint32_t lo = Emit_Bound_Value_Typed (lob, &lr);
+          uint32_t hi = Emit_Bound_Value_Typed (hib, &hr);
+          if (lo == 0 or hi == 0) { ok = false; break; }
+          uint32_t len = Emit_Length_From_Bounds (
+            Emit_Convert (lo, lr, iat).reg, Emit_Convert (hi, hr, iat).reg, iat).reg;
+          uint32_t mul = Emit_Temp ();
+          Emit ("  %%t%u = mul %s %%t%u, %%t%u\n", mul, LLVM_Rep_To_String (iat), total, len);
+          total = mul;
+        }
+        if (ok) {
+          Emit ("  %%t%u = mul %s %%t%u, %lld  ; 'SIZE = length * component bits\n",
+             t, LLVM_Rep_To_String (iat), total, (long long)comp_bits);
+          return Val_Rep (t, iat);
+        }
+      }
+    }
+
     int64_t bit_size = 0;
     if (prefix_type) {
       if (prefix_type->specified_bit_size > 0)
@@ -27209,9 +27972,9 @@ LLVM_Value Generate_Attribute (Syntax_Node *node) {
       else
         bit_size = (int64_t)prefix_type->size * 8;
     }
-    Emit ("  %%t%u = add %s 0, %lld  ; 'SIZE in bits\n", t, LLVM_Rep_To_String (Integer_Arith_Rep ()),
+    Emit ("  %%t%u = add %s 0, %lld  ; 'SIZE in bits\n", t, LLVM_Rep_To_String (iat),
        (long long)bit_size);
-    return Val_Rep (t, Integer_Arith_Rep ());
+    return Val_Rep (t, iat);
   }
   if (Slice_Equal_Ignore_Case (attr, S("ALIGNMENT"))) {
     if (not prefix_type)
@@ -28139,11 +28902,14 @@ LLVM_Value Generate_Attribute (Syntax_Node *node) {
       Float_Model_Parameters (classify_type, &mantissa, NULL);
     } else if (Type_Is_Fixed_Point (classify_type)) {
       Type_Info *ft = Type_Is_Fixed_Point (prefix_type) ? prefix_type : classify_type;
-      double small = ft->fixed.small;
-      double low_val = Type_Bound_Float_Value (ft->low_bound);
-      double high_val = Type_Bound_Float_Value (ft->high_bound);
-      if (small <= 0) small = ft->fixed.delta > 0 ? ft->fixed.delta : 1.0;
-      double bound = fmax (fabs (low_val), fabs (high_val));
+      double small = Fixed_Small (ft);
+      double bound = fmax (fabs (Type_Bound_Float_Value (ft->low_bound)),
+                           fabs (Type_Bound_Float_Value (ft->high_bound)));
+
+      // Non-static range (bounds built from an expression): evaluate at runtime.
+      if (bound <= 0 and Type_Bound_Is_Set (ft->low_bound) and
+          Type_Bound_Is_Set (ft->high_bound))
+        return Val_Rep (Emit_Fixed_Mantissa_Runtime (ft, small), Integer_Arith_Rep ());
       if (bound > 0 and small > 0) {
         mantissa = (int64_t)ceil (log2 (bound / small));
         if (mantissa < 1) mantissa = 1;
@@ -28218,10 +28984,14 @@ LLVM_Value Generate_Attribute (Syntax_Node *node) {
     // Use classify_type which is resolved to actual type in generics
     if (Type_Is_Fixed_Point (classify_type)) {
       Type_Info *ft = classify_type;
-      double small = ft->fixed.small;
-      if (small <= 0) small = ft->fixed.delta > 0 ? ft->fixed.delta : 1.0;
+      double small = Fixed_Small (ft);
       double bound = fmax (fabs (Type_Bound_Float_Value (ft->low_bound)),
                  fabs (Type_Bound_Float_Value (ft->high_bound)));
+
+      // Non-static range: (2**MANTISSA - 1) * SMALL computed at runtime.
+      if (bound <= 0 and Type_Bound_Is_Set (ft->low_bound) and
+          Type_Bound_Is_Set (ft->high_bound))
+        return Val_Rep (Emit_Fixed_Large_Runtime (ft, small), LLVM_Rep_Float (64));
       int64_t mantissa = (bound > 0 and small > 0) ?
                 (int64_t)ceil (log2 (bound / small)) : 1;
       if (mantissa < 1) mantissa = 1;
@@ -28323,6 +29093,11 @@ LLVM_Value Generate_Attribute (Syntax_Node *node) {
       Type_Info *ft = Type_Is_Fixed_Point (prefix_type) ? prefix_type : classify_type;
       double bound = fmax (fabs (Type_Bound_Float_Value (ft->low_bound)),
                  fabs (Type_Bound_Float_Value (ft->high_bound)));
+
+      // Non-static range (bounds built from an expression): evaluate at runtime.
+      if (bound <= 0 and Type_Bound_Is_Set (ft->low_bound) and
+          Type_Bound_Is_Set (ft->high_bound))
+        return Val_Rep (Emit_Fixed_Fore_Runtime (ft, Fixed_Small (ft)), Integer_Arith_Rep ());
       if (bound >= 1.0) {
         fore = 2 + (int64_t)floor (log10 (bound));
       }
@@ -28743,7 +29518,7 @@ uint32_t Agg_Resolve_Elem (Syntax_Node *expr,
   } else {
     LLVM_Rep src_type = Expression_LLVM_Rep (expr);
     if (elem_ti and elem_ti->kind == TYPE_FIXED and LLVM_Rep_Is_Float (src_type)) {
-      val = Emit_Scale_By_Small (val, Fixed_Small (elem_ti), true, src_type);
+      val = Emit_Scale_By_Small (val, Fixed_Repr_Small (elem_ti), true, src_type);
     }
     val = Emit_Convert (val, src_type, elem_type).reg;
   }
@@ -29046,7 +29821,7 @@ void Agg_Rec_Store (uint32_t val, LLVM_Rep val_rep, uint32_t dest_ptr,
   // Scalar: convert and store, with constraint check (RM 4.3.1)
   } else {
     if (ti and ti->kind == TYPE_FIXED and LLVM_Rep_Is_Float (src_type)) {
-      val = Emit_Scale_By_Small (val, Fixed_Small (ti), true, src_type);
+      val = Emit_Scale_By_Small (val, Fixed_Repr_Small (ti), true, src_type);
     }
     val = Emit_Convert (val, src_type, comp_type).reg;
     if (ti and Type_Is_Scalar (ti)) {
@@ -29253,12 +30028,22 @@ uint32_t Generate_Aggregate (Syntax_Node *node) {
               inner_named = true;
             else inner_n++;
           }
-          if (inner_n > 0 and not inner_named and
-            dim_lo[d].kind == BOUND_INTEGER) {
+          // The inner dimension's length is the positional count; its low bound
+          // is the index subtype's FIRST. Fold that low bound to an integer even
+          // when it is a named-number expression (e.g. INDEX with a static
+          // constant FIRST), otherwise the dimension would keep the subtype's
+          // full range and report the wrong length.
+          int128_t lo_val = 0;
+          bool have_lo = dim_lo[d].kind == BOUND_INTEGER;
+          if (have_lo) lo_val = dim_lo[d].int_value;
+          else if (dim_lo[d].kind == BOUND_EXPR and dim_lo[d].expr) {
+            double v = Eval_Const_Numeric (dim_lo[d].expr);
+            if (v == v) { lo_val = (int128_t)v; have_lo = true; }
+          }
+          if (inner_n > 0 and not inner_named and have_lo) {
+            dim_lo[d] = (Type_Bound){ .kind = BOUND_INTEGER, .int_value = lo_val };
             dim_hi[d] = (Type_Bound){
-              .kind = BOUND_INTEGER,
-              .int_value = dim_lo[d].int_value + (int128_t)inner_n - 1
-            };
+              .kind = BOUND_INTEGER, .int_value = lo_val + (int128_t)inner_n - 1 };
           }
 
           // Descend into the first element of this inner aggregate
@@ -29741,41 +30526,57 @@ uint32_t Generate_Aggregate (Syntax_Node *node) {
               Emit_Label_Here (ok2);
             }
           }
-          if (ac.has_named and not ac.has_others and agg_ndims == 1) {
-            int128_t ch_lo = INT64_MAX, ch_hi = INT64_MIN;
-            bool found_lo = false, found_hi = false;
-            for (uint32_t ci = 0; ci < node->aggregate.items.count; ci++) {
-              Syntax_Node *cit = node->aggregate.items.items[ci];
-              if (cit->kind != NK_ASSOCIATION) continue;
-              for (uint32_t cc = 0; cc < cit->association.choices.count; cc++) {
-                Syntax_Node *ch = cit->association.choices.items[cc];
-                if (Is_Others_Choice (ch)) continue;
-                if (Is_Static_Int_Node (ch)) {
-                  int128_t v = Static_Int_Value (ch);
-                  if (not found_lo or v < ch_lo) ch_lo = v;
-                  if (not found_hi or v > ch_hi) ch_hi = v;
-                  found_lo = true; found_hi = true;
-                } else if (ch->kind == NK_RANGE) {
-                  if (ch->range.low and Is_Static_Int_Node (ch->range.low)) {
-                    int128_t v = Static_Int_Value (ch->range.low);
+          if (ac.has_named and not ac.has_others) {
+            // Each named dimension's explicit choice bounds must equal that
+            // dimension's constraint (RM 4.3.2). Walk down one aggregate level
+            // per dimension, comparing the level's static choice span against
+            // the matching index constraint. A multidimensional aggregate is
+            // checked at every level, not just the outermost.
+            Syntax_Node *level = node;
+            for (uint32_t d = 0; d < agg_ndims and d < agg_type->array.index_count
+                 and level and level->kind == NK_AGGREGATE; d++) {
+              int128_t ch_lo = INT64_MAX, ch_hi = INT64_MIN;
+              bool found_lo = false, found_hi = false, level_named = false;
+              Syntax_Node *descend = NULL;
+              for (uint32_t ci = 0; ci < level->aggregate.items.count; ci++) {
+                Syntax_Node *cit = level->aggregate.items.items[ci];
+                if (cit->kind != NK_ASSOCIATION) {
+                  if (not descend) descend = cit;  // positional inner value
+                  continue;
+                }
+                level_named = true;
+                if (not descend) descend = cit->association.expression;
+                for (uint32_t cc = 0; cc < cit->association.choices.count; cc++) {
+                  Syntax_Node *ch = cit->association.choices.items[cc];
+                  if (Is_Others_Choice (ch)) { found_lo = found_hi = false; cc = 0; level_named = false; break; }
+                  if (Is_Static_Int_Node (ch)) {
+                    int128_t v = Static_Int_Value (ch);
                     if (not found_lo or v < ch_lo) ch_lo = v;
-                    found_lo = true;
-                  }
-                  if (ch->range.high and Is_Static_Int_Node (ch->range.high)) {
-                    int128_t v = Static_Int_Value (ch->range.high);
                     if (not found_hi or v > ch_hi) ch_hi = v;
-                    found_hi = true;
+                    found_lo = found_hi = true;
+                  } else if (ch->kind == NK_RANGE) {
+                    if (ch->range.low and Is_Static_Int_Node (ch->range.low)) {
+                      int128_t v = Static_Int_Value (ch->range.low);
+                      if (not found_lo or v < ch_lo) ch_lo = v;
+                      found_lo = true;
+                    }
+                    if (ch->range.high and Is_Static_Int_Node (ch->range.high)) {
+                      int128_t v = Static_Int_Value (ch->range.high);
+                      if (not found_hi or v > ch_hi) ch_hi = v;
+                      found_hi = true;
+                    }
                   }
                 }
               }
-            }
-            if (found_lo and found_hi) {
-              uint32_t nclo = Emit_Static_Int (ch_lo, ait).reg;
-              uint32_t nchi = Emit_Static_Int (ch_hi, ait).reg;
-              uint32_t clo = Coerce_To_Rep (low_val, iat_bnd, ait);
-              uint32_t chi = Coerce_To_Rep (high_val, iat_bnd, ait);
-              Emit_Aggregate_Bound_Match_Check (nclo, clo, nchi, chi, ait,
-                "named aggregate bounds vs dynamic constraint");
+              if (level_named and found_lo and found_hi) {
+                uint32_t nclo = Emit_Static_Int (ch_lo, ait).reg;
+                uint32_t nchi = Emit_Static_Int (ch_hi, ait).reg;
+                uint32_t clo = Emit_Single_Bound (&agg_type->array.indices[d].low_bound, ait);
+                uint32_t chi = Emit_Single_Bound (&agg_type->array.indices[d].high_bound, ait);
+                Emit_Aggregate_Bound_Match_Check (nclo, clo, nchi, chi, ait,
+                  "named aggregate bounds vs dynamic constraint");
+              }
+              level = descend;  // next dimension's sub-aggregate
             }
           }
         }
@@ -31100,10 +31901,48 @@ uint32_t Generate_Aggregate (Syntax_Node *node) {
     // Note: For the static path, dynamic named bounds vs constraint                                
     // is NOT checked here because sliding occurs at assignment                                     
     // (RM 5.2.1(3)). Array-of-array components are checked at                                     
-    // line ~27238 (has_unconstrained_base condition).                                             
-    //                                                                                              
+    // line ~27238 (has_unconstrained_base condition).
+    //
 
-    // RM 4.3.2(6): Check inner sub-aggregate bounds consistency.                                  
+    // RM 4.3.2: a NAMED inner sub-aggregate states its bounds explicitly; those
+    // do not slide and must equal the corresponding inner index constraint
+    // (positional inner aggregates do slide and are handled by the consistency
+    // check plus assignment). Walk one level per inner dimension and, where the
+    // sub-aggregate's choice span and the constraint are both static, compare.
+    if (agg_type->array.is_constrained and agg_type->array.index_count > 1) {
+      LLVM_Rep chk_iat = Integer_Arith_Rep ();
+      Syntax_Node *lvl = node;
+      for (uint32_t d = 0; d + 1 < agg_type->array.index_count and
+           lvl and lvl->kind == NK_AGGREGATE; d++) {
+        Syntax_Node *inner = NULL;
+        for (uint32_t i = 0; i < lvl->aggregate.items.count and not inner; i++) {
+          Syntax_Node *it = lvl->aggregate.items.items[i];
+          inner = (it->kind == NK_ASSOCIATION) ? it->association.expression : it;
+        }
+        if (not inner or inner->kind != NK_AGGREGATE) break;
+        Type_Bound *clo_b = &agg_type->array.indices[d + 1].low_bound;
+        Type_Bound *chi_b = &agg_type->array.indices[d + 1].high_bound;
+        for (uint32_t i = 0; i < inner->aggregate.items.count; i++) {
+          Syntax_Node *it = inner->aggregate.items.items[i];
+          if (it->kind != NK_ASSOCIATION or it->association.choices.count == 0) continue;
+          Syntax_Node *ch = it->association.choices.items[0];
+          if (Is_Others_Choice (ch) or ch->kind != NK_RANGE) continue;
+          if (Is_Static_Int_Node (ch->range.low) and Is_Static_Int_Node (ch->range.high) and
+              clo_b->kind == BOUND_INTEGER and chi_b->kind == BOUND_INTEGER) {
+            uint32_t alo = Emit_Static_Int (Static_Int_Value (ch->range.low),  chk_iat).reg;
+            uint32_t ahi = Emit_Static_Int (Static_Int_Value (ch->range.high), chk_iat).reg;
+            uint32_t clo = Emit_Static_Int (clo_b->int_value, chk_iat).reg;
+            uint32_t chi = Emit_Static_Int (chi_b->int_value, chk_iat).reg;
+            Emit_Aggregate_Bound_Match_Check (alo, clo, ahi, chi, chk_iat,
+              "inner aggregate named range vs constraint");
+          }
+          break;
+        }
+        lvl = inner;
+      }
+    }
+
+    // RM 4.3.2(6): Check inner sub-aggregate bounds consistency.
     // After all rows are processed, check if any had mismatched bounds.                           
     // Also check first-seen bounds against the second dimension constraint.                       
     // Only check if at least one inner sub-aggregate was tracked.                                 
@@ -31587,6 +32426,17 @@ LLVM_Value Generate_Qualified (Syntax_Node *node) {
   // stale generic-formal width).
   LLVM_Rep src_llvm = result.rep;
 
+  // A real value qualified to a fixed-point subtype converts to that type's
+  // scaled-integer representation (RM 4.7); a plain float-to-int conversion
+  // would drop the SMALL scaling.
+  if (Type_Is_Fixed_Point (dst_type) and LLVM_Rep_Is_Float (src_llvm)) {
+    uint32_t dval = result.reg;
+    if (src_llvm.bits != 64)
+      dval = Emit_Convert (result.reg, src_llvm, LLVM_Rep_Float (64)).reg;
+    result = Convert_Real_To_Fixed (dval, Fixed_Repr_Small (dst_type), Type_To_Rep (dst_type));
+    src_llvm = result.rep;
+  }
+
   // RM 4.7: Qualified expression checks value against subtype constraint
   if (Type_Is_Scalar (dst_type)) {
     Emit_Constraint_Check_Val ((LLVM_Value){ result.reg, src_llvm }, dst_type, src_type);
@@ -31708,7 +32558,7 @@ void Emit_Record_Component_Default (Component_Info *comp, uint32_t comp_ptr,
     } else {
       if (comp_type and comp_type->kind == TYPE_FIXED and
         LLVM_Rep_Is_Float (val_type)) {
-        val = Emit_Scale_By_Small (val, Fixed_Small (comp_type), true, val_type);
+        val = Emit_Scale_By_Small (val, Fixed_Repr_Small (comp_type), true, val_type);
       }
       val = Emit_Convert (val, val_type, store_type).reg;
       Emit ("  store %s %%t%u, ptr %%t%u\n", LLVM_Rep_To_String (store_type), val, comp_ptr);
@@ -32878,11 +33728,7 @@ LLVM_Value Generate_Expression (Syntax_Node *node) {
       // SSA { ptr, ptr } from Generate_Aggregate; everything else (records,
       // static-bounds arrays) is a plain ptr to flat storage.
       uint32_t r = Generate_Aggregate (node);
-      LLVM_Rep ty = LL_REP_PTR;
-      if (node->type and Type_Is_Array_Like (node->type) and
-          (Type_Is_Unconstrained_Array (node->type) or
-           Type_Has_Dynamic_Bounds (node->type)))
-        ty = LL_REP_FAT;
+      LLVM_Rep ty = Type_Needs_Fat_Pointer (node->type) ? LL_REP_FAT : LL_REP_PTR;
       return Val_Rep (r, ty);
     }
     case NK_QUALIFIED:  return Generate_Qualified (node);
@@ -32984,6 +33830,12 @@ void Generate_Assignment (Syntax_Node *node) {
       bool target_is_uncon = (not Type_Is_Constrained_Array (prefix_type) and
                   Type_Is_String (prefix_type)) or
                    Type_Is_Unconstrained_Array (prefix_type);
+
+      // A *constrained* array whose bounds are dynamic (e.g. a derived subtype
+      // `new P(IDENT(5)..IDENT(7))`) is stored as a fat pointer just like an
+      // unconstrained one, so its data pointer and low bound must be loaded at
+      // runtime. The flat-data path below only applies to static storage.
+      bool target_is_fat = target_is_uncon or Type_Has_Dynamic_Bounds (prefix_type);
       Syntax_Node *arg = target->apply.arguments.items[0];
 
       // ARR (A'RANGE) := source is a slice (RM 4.1.2), not an element. Normalise
@@ -33041,7 +33893,7 @@ void Generate_Assignment (Syntax_Node *node) {
         int128_t low_bound;
 
         // Load fat pointer, extract data ptr and low bound
-        if (target_is_uncon) {
+        if (target_is_fat) {
           LLVM_Rep sa_bt = Array_Bound_LLVM_Rep (prefix_type);
           uint32_t fat_addr = Generate_Lvalue (target->apply.prefix);
           uint32_t fat = Emit_Load_Fat_Pointer_From_Temp (fat_addr, sa_bt).reg;
@@ -33566,20 +34418,14 @@ void Generate_Assignment (Syntax_Node *node) {
         Emit_Length_Check (src_len, dst_len, ca_bt, ty);
       }
       if (target_is_fat) {
-        // Memcpy source data into target's data ptr (preserve fat struct).
+        // Memcpy source data into target's data ptr (preserve fat struct). The
+        // byte count is the product of every dimension's length times the
+        // component size; using dimension 0 alone would copy only the first row
+        // of a multidimensional array.
         uint32_t tfp = Emit_Load_Fat_Pointer (target_sym, ca_bt).reg;
         uint32_t tdata = Emit_Fat_Pointer_Data (tfp, ca_bt).reg;
         uint32_t sdata = Emit_Fat_Pointer_Data (src_ptr, ca_bt).reg;
-        uint32_t slen = Emit_Fat_Pointer_Length (src_ptr, ca_bt).reg;
-        // Multiply length by element size
-        uint32_t esz = ty->array.element_type ? ty->array.element_type->size : 1;
-        if (esz == 0) esz = 1;
-        uint32_t bytes = slen;
-        if (esz != 1) {
-          bytes = Emit_Temp ();
-          Emit ("  %%t%u = mul %s %%t%u, %u\n", bytes, LLVM_Rep_To_String (ca_bt), slen, esz);
-        }
-        uint32_t bytes64 = Emit_Extend_To_I64 (bytes, ca_bt).reg;
+        uint32_t bytes64 = Emit_Array_Byte_Size (ty, src_ptr).reg;
         Emit_Memcpy (tdata, sdata, bytes64);
       } else {
         Emit_Fat_Pointer_Copy_To_Name (src_ptr, target_sym, ca_bt);
@@ -33727,7 +34573,7 @@ void Generate_Assignment (Syntax_Node *node) {
   //                                                                                                
   if (is_src_float and not is_dst_float) {
     if (Type_Is_Fixed_Point (ty)) {
-      value = Emit_Scale_By_Small (value, Fixed_Small (ty), true, LLVM_Rep_Float (Width_Double));
+      value = Emit_Scale_By_Small (value, Fixed_Repr_Small (ty), true, LLVM_Rep_Float (Width_Double));
     }
     LLVM_Rep src_ftype = Float_LLVM_Rep_Of (value_type);
     // Ada RM 4.6: round to nearest before truncation
@@ -33931,7 +34777,9 @@ void Generate_Return_Statement (Syntax_Node *node) {
       }
       Emit ("  ret void\n");
       cg->block_terminated = true;
-      BIP_End_Function ();
+      // Do not end BIP state here: a function may have several RETURNs (e.g. one
+      // per CASE arm), and the remaining ones must still be seen as BIP. State
+      // is cleared once, at end of function generation.
       return;
     }
 
@@ -33956,6 +34804,19 @@ void Generate_Return_Statement (Syntax_Node *node) {
     LLVM_Value value = Generate_Expression (expr);
     LLVM_Rep ret_rep = cg->current_function and cg->current_function->return_type
       ? Type_To_Rep (cg->current_function->return_type) : Integer_Arith_Rep ();
+
+    // Returning a *constrained* array as an *unconstrained* array result: the
+    // value is a plain data pointer, but the result is a fat pointer. Build the
+    // fat pointer from the array's data and its own bounds. Without this the
+    // generic ptr-to-fat conversion would load a fat pointer out of the array's
+    // first 16 data bytes, giving garbage pointers and then a wild dereference.
+    if (ret_type and Type_Is_Array_Like (ret_type) and not ret_type->array.is_constrained and
+        LLVM_Rep_Is_Fat_Pointer (ret_rep) and not LLVM_Rep_Is_Fat_Pointer (value.rep) and
+        not Expression_Produces_Fat_Pointer (expr, expr ? expr->type : NULL)) {
+      LLVM_Rep rbt = Array_Bound_LLVM_Rep (ret_type);
+      value = Val_Rep (Normalize_To_Fat_Pointer (expr, value.reg,
+                         expr && expr->type ? expr->type : ret_type, rbt), LL_REP_FAT);
+    }
     LLVM_Rep actual_rep = value.rep;
     bool val_is_float = LLVM_Rep_Is_Float (actual_rep) or
               Type_Is_Float_Representation (expr->type) or
@@ -33964,7 +34825,7 @@ void Generate_Return_Statement (Syntax_Node *node) {
     // Float expression > fixed-point return: divide by SMALL, fptosi
     if (ret_type and Type_Is_Fixed_Point (ret_type) and val_is_float) {
       LLVM_Rep src_fty_rep = actual_rep;
-      uint32_t div_t = Emit_Scale_By_Small (value.reg, Fixed_Small (ret_type), true, src_fty_rep);
+      uint32_t div_t = Emit_Scale_By_Small (value.reg, Fixed_Repr_Small (ret_type), true, src_fty_rep);
       uint32_t conv_t = Emit_Temp ();
       Emit ("  %%t%u = fptosi %s %%t%u to %s\n", conv_t, LLVM_Rep_To_String (src_fty_rep), div_t, LLVM_Rep_To_String (ret_rep));
       value = Val_Rep (conv_t, ret_rep);
@@ -34037,6 +34898,18 @@ void Generate_Return_Statement (Syntax_Node *node) {
 
       // Rebuild fat pointer with secondary stack data and bounds
       value = Val_Rep (Emit_Build_Fat_Pointer (sec_data, sec_bnd), LL_REP_FAT);
+    }
+
+    // RM 6.5: a by-value record result must outlive the callee frame. The value
+    // is a pointer to record storage that is usually a local alloca; copy it to
+    // the secondary stack so the caller's reference stays valid after return.
+    if (ret_type and Type_Is_Record (ret_type) and ret_type->size > 0 and
+        not LLVM_Rep_Is_Fat_Pointer (value.rep)) {
+      uint32_t sec = Emit_Temp ();
+      Emit ("  %%t%u = call ptr @__ada_sec_stack_alloc(i64 %u)\n", sec, ret_type->size);
+      Emit ("  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %u, i1 false)"
+            "  ; record return copy\n", sec, value.reg, ret_type->size);
+      value = Val_Rep (sec, value.rep);
     }
     Emit ("  ret %s %%t%u\n", LLVM_Rep_To_String (ret_rep), value.reg);
     cg->block_terminated = true;
@@ -36833,7 +37706,7 @@ void Emit_Pending_Global_Initializers (void) {
       uint32_t dval = value.reg;
       if (value.rep.bits != 64)
         dval = Emit_Convert (value.reg, value.rep, LLVM_Rep_Float (64)).reg;
-      value = Convert_Real_To_Fixed (dval, Fixed_Small (ty), dst);
+      value = Convert_Real_To_Fixed (dval, Fixed_Repr_Small (ty), dst);
     }
     uint32_t reg = value.reg;
     if (not LLVM_Rep_Is_Pointer (dst))
@@ -37100,7 +37973,7 @@ void Generate_Object_Declaration (Syntax_Node *node) {
           init_fval = init->real_lit.value;
           // A fixed-point object stores the scaled mantissa, not the real.
           if (Type_Is_Fixed_Point (ty))
-            init_ival = (int64_t) llround (init_fval / Fixed_Small (ty));
+            init_ival = (int64_t) llround (init_fval / Fixed_Repr_Small (ty));
           has_static_init = true;
         } else if (init->kind == NK_IDENTIFIER and init->symbol
                and init->symbol->is_named_number) {
@@ -37994,7 +38867,7 @@ obj_decl_init:
           uint32_t dval = init;
           if (src_type_rep.bits != 64)
             dval = Emit_Convert (init, src_type_rep, LLVM_Rep_Float (64)).reg;
-          LLVM_Value scaled = Convert_Real_To_Fixed (dval, Fixed_Small (ty), Type_To_Rep (ty));
+          LLVM_Value scaled = Convert_Real_To_Fixed (dval, Fixed_Repr_Small (ty), Type_To_Rep (ty));
           init = scaled.reg;
           src_type_rep = scaled.rep;
         }
@@ -41294,7 +42167,8 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   Emit ("declare i32 @fseek (ptr, i64, i32)\n");
   Emit ("declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1)\n");
   Emit ("declare void @llvm.memset.p0.i64(ptr, i8, i64, i1)\n");
-  Emit ("declare double @llvm.pow.f64(double, double)\n\n");
+  Emit ("declare double @llvm.pow.f64(double, double)\n");
+  Emit ("declare i64 @llvm.ctlz.i64(i64, i1)\n\n");
 
   // LLVM overflow intrinsics for GNAT-style arithmetic overflow checks (RM 4.5).
   // Signed add/sub/mul with overflow detection at each standard width.
