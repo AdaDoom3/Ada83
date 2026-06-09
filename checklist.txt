@@ -83,6 +83,30 @@ c34005 STATUS: 9 / 14 pass (was 1). No regressions in the wider suite
         s  (2-D limited-private derived array, segfault)
         u  (limited-private derived array, segfault)
 
+STATUS: c34005 COMPLETE — 14 / 14 (100%). No suite regressions
+(c43205 90->100%, c52103 6->8, c64109 restored). All root-cause fixes upstream
+of the expander, per the brief.
+
+FINAL ROUND OF FIXES (m,o,r,s,u)
+--------------------------------
+[x] Multidimensional fat-pointer plumbing: passing a fat actual to a constrained
+    N-D formal, flat->fat conversion, the aggregate-assignment memcpy, and
+    Normalize_To_Fat_Pointer all carried only dimension 0; now carry every dim
+    (Emit_Fat_Pointer_For_Lvalue / Emit_Array_Byte_Size).
+[x] 'FIRST(N)/'LAST(N)/'LENGTH(N)/'RANGE(N): fold a static named-constant
+    dimension argument (was defaulting to dimension 1).
+[x] A positional inner sub-aggregate kept the index subtype's full range when
+    that subtype's FIRST was a static named number; fold it to the element count.
+[x] Named multidimensional aggregate vs constraint: check every dimension
+    (static and dynamic paths), not just the outermost / 1-D.
+[x] RM 6.4.1: an array actual passed to a constrained array formal is
+    length-checked per dimension (bounds slide); raises CONSTRAINT_ERROR.
+[x] Overload resolution: an indexed component A(I) no longer offers A's array
+    type as a spurious alternative (RM 8.3).
+[x] Regression guard: distinguish a fat-stored OBJECT (simple var/param ref)
+    from INLINE element data (record/array component) when wrapping an actual
+    for an unconstrained formal.
+
 ALSO FIXED
 ----------
 [x] Assigning a fat array (aggregate / unconstrained) into a dynamically-bounded
