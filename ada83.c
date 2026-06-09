@@ -8106,9 +8106,7 @@ bool Expression_Produces_Fat_Pointer (const Syntax_Node *node,
       return Expression_Produces_Fat_Pointer (node->qualified.expression,
                                               node->qualified.expression->type);
     if (node->kind == NK_AGGREGATE) {
-      if (node->type and Type_Is_Array_Like (node->type) and
-          (Type_Is_Unconstrained_Array (node->type) or
-           Type_Has_Dynamic_Bounds (node->type)))
+      if (Type_Needs_Fat_Pointer (node->type))
         return true;
       return false;
     }
@@ -9970,10 +9968,14 @@ Type_Info *Resolve_Binary_Op (Syntax_Node *node) {
     not node->binary.left->type and node->binary.right) {
     Syntax_Node *type_name = node->binary.right;
 
-    // Resolve right (type name) first to get its symbol
+    // RM 4.4: the tested expression has the base type of the named subtype;
+    // the membership then asks whether the value satisfies the constraint.
+    // Typing the aggregate with the constrained subtype would raise
+    // CONSTRAINT_ERROR while building it, turning a legitimate FALSE into a
+    // raised exception.
     Resolve_Expression (type_name);
     if (type_name->symbol and type_name->symbol->kind == SYMBOL_TYPE)
-      node->binary.left->type = type_name->symbol->type;
+      node->binary.left->type = Type_Base (type_name->symbol->type);
   }
 
   // Resolve left first; then propagate its type to an untyped aggregate                            
@@ -10019,6 +10021,11 @@ Type_Info *Resolve_Binary_Op (Syntax_Node *node) {
            prop->record.has_disc_constraints and prop->base_type)
         prop = prop->base_type;
     }
+    // RM 4.5.3: a concatenation operand has the unconstrained base array type,
+    // so an aggregate operand derives its bounds from its own element count
+    // instead of being checked against the sibling's index constraint.
+    if (op == TK_AMPERSAND and Type_Is_Array_Like (prop))
+      prop = Type_Base (prop);
     node->binary.right->type = prop;
   }
   Type_Info *right_type = Resolve_Expression (node->binary.right);
@@ -10138,13 +10145,18 @@ Type_Info *Resolve_Binary_Op (Syntax_Node *node) {
         // Propagate each operand's type into an untyped aggregate on the other
         // side, then re-resolve it. The right operand is handled first (against
         // the left type), then the left (against the now-updated right type).
+        // RM 4.5.3: a concatenation operand has the base array type, so an
+        // aggregate operand takes the unconstrained base and derives its bounds
+        // from its element count rather than being checked against the sibling's
+        // index constraint (which would raise CONSTRAINT_ERROR).
         {
           Syntax_Node *opnd[2]  = { node->binary.right, node->binary.left };
           Type_Info  **own[2]   = { &right_type, &left_type };
           Type_Info  **other[2] = { &left_type, &right_type };
           for (int i = 0; i < 2; i++) {
             if (opnd[i]->kind == NK_AGGREGATE and not opnd[i]->type and *other[i]) {
-              opnd[i]->type = *other[i];
+              opnd[i]->type = Type_Is_Array_Like (*other[i])
+                                ? Type_Base (*other[i]) : *other[i];
               Resolve_Expression (opnd[i]);
               *own[i] = opnd[i]->type;
             }
@@ -10171,12 +10183,17 @@ Type_Info *Resolve_Binary_Op (Syntax_Node *node) {
         // Per RM 4.5.3, concatenation returns the array type.                                     
         // For element & element, the result type comes from context.                              
         //                                                                                          
+        // RM 4.5.3(3): the result is of the base (unconstrained) array type.
+        // Its bounds are computed from the operands, never inherited from an
+        // operand's index constraint. A constrained subtype here would
+        // propagate that constraint to an aggregate compared against the result
+        // and spuriously check its element count.
         if (elem_concat) {
           node->type = ctx_arr;
         } else if (Type_Is_Array_Like (left_type) and left_type->kind == TYPE_ARRAY) {
-          node->type = left_type;
+          node->type = Type_Base (left_type);
         } else if (Type_Is_Array_Like (right_type) and right_type->kind == TYPE_ARRAY) {
-          node->type = right_type;
+          node->type = Type_Base (right_type);
         } else if (Type_Is_String (left_type)) {
           node->type = left_type;
         } else if (Type_Is_String (right_type)) {
@@ -10346,9 +10363,18 @@ Type_Info *Possible_Alt_Type (Syntax_Node *arg) {
   }
 
   // Function call: try each visible overload of the prefix name and
-  // return the first return type that differs from arg->type.
+  // return the first return type that differs from arg->type. Only when the
+  // name actually denotes a callable: if its innermost binding is an array
+  // object then A (I) is an indexed component, and treating it as a call to A
+  // would offer A's array type as a spurious alternative (RM 8.3).
   if (arg->kind == NK_APPLY and arg->apply.prefix and
     arg->apply.prefix->kind == NK_IDENTIFIER) {
+    Symbol *innermost = Symbol_Find (arg->apply.prefix->string_val.text);
+    if (innermost and (innermost->kind == SYMBOL_VARIABLE or
+                       innermost->kind == SYMBOL_CONSTANT or
+                       innermost->kind == SYMBOL_PARAMETER) and
+        Type_Is_Array_Like (innermost->type))
+      return NULL;
     String_Slice nm = arg->apply.prefix->string_val.text;
     uint32_t sub_arg_count = (uint32_t)arg->apply.arguments.count;
     Type_Info **sub_types = sub_arg_count
@@ -12209,6 +12235,26 @@ Type_Info *Resolve_Expression (Syntax_Node *node) {
           derived->fixed = parent->fixed;
         } else if (Type_Is_Float (parent)) {
           derived->flt = parent->flt;
+        }
+
+        // RM 3.4: `type T is new PARENT(C)` introduces an unconstrained base
+        // type T'BASE and makes T the constrained subtype of it. When the parent
+        // subtype indication already carried an index constraint, mirror that
+        // here: `derived` is the constrained subtype, and its base_type is a
+        // fresh unconstrained derivation of the parent's base. Without this the
+        // base would be the constrained type itself, so T'BASE'SIZE and the
+        // result type of concatenation (RM 4.5.3) would wrongly carry T's
+        // index constraint.
+        if (Type_Is_Array_Like (parent) and parent->array.is_constrained) {
+          Type_Info *parent_base = Type_Base (parent);
+          Type_Info *base = Type_New (parent_base->kind, S(""));
+          base->parent_type      = parent_base;
+          base->array            = parent_base->array;  // unconstrained indices
+          base->size             = parent_base->size;
+          base->alignment        = parent_base->alignment;
+          base->specified_bit_size = parent_base->specified_bit_size;
+          base->storage_size     = parent_base->storage_size;
+          derived->base_type     = base;
         }
 
         // Apply constraint if present
@@ -19755,8 +19801,7 @@ LLVM_Rep Expression_LLVM_Rep (Syntax_Node *node) {
 
   if (node and node->kind == NK_AGGREGATE and node->type and
     (node->type->kind == TYPE_ARRAY or node->type->kind == TYPE_STRING)) {
-    if (Type_Is_Unconstrained_Array (node->type) or
-      Type_Has_Dynamic_Bounds (node->type))
+    if (Type_Needs_Fat_Pointer (node->type))
       return LL_REP_FAT;
     return LL_REP_PTR;
   }
@@ -21463,6 +21508,19 @@ void Emit_Fat_Pointer_Copy_To_Name (uint32_t fat_ptr,
                       Symbol *dst, LLVM_Rep bt) {
   uint32_t src_ptr = Emit_Fat_Pointer_Data (fat_ptr, bt).reg;
   uint32_t len = Emit_Fat_Pointer_Length (fat_ptr, bt).reg;
+  // The fat-pointer length counts elements; memcpy counts bytes. Scale by the
+  // destination component's byte width, else a FLOAT or record array copies
+  // only its first 1/element_size of the data.
+  Type_Info *dst_type = dst->type;
+  uint32_t element_size = (dst_type and dst_type->array.element_type and
+                           dst_type->array.element_type->size > 0)
+                          ? dst_type->array.element_type->size : 1;
+  if (element_size != 1) {
+    uint32_t bytes = Emit_Temp ();
+    Emit ("  %%t%u = mul %s %%t%u, %u  ; * element size\n",
+       bytes, LLVM_Rep_To_String (bt), len, element_size);
+    len = bytes;
+  }
   uint32_t len64 = Emit_Extend_To_I64 (len, bt).reg;
   Emit ("  call void @llvm.memcpy.p0.p0.i64(ptr ");
   Emit_Symbol_Storage (dst);
@@ -22901,8 +22959,35 @@ uint32_t Generate_Composite_Address (Syntax_Node *node) {
       if (elem_size == 0) elem_size = 1;
       int128_t low = Array_Low_Bound (array_type);
 
-      // Slice: ARR (low..high) - return address at slice start (RM 4.1.2)
       Syntax_Node *arg0 = node->apply.arguments.items[0];
+
+      // A constrained array with dynamic bounds is stored as a fat pointer, so
+      // its data pointer and low bound are runtime values; the flat-data path
+      // below would treat the fat-pointer struct itself as the element storage.
+      if (Type_Has_Dynamic_Bounds (array_type) and not access_to_array) {
+        LLVM_Rep dbt = Array_Bound_LLVM_Rep (array_type);
+        LLVM_Rep idx_t = Integer_Arith_Rep ();
+        uint32_t fat = Generate_Expression (node->apply.prefix).reg;
+        uint32_t data = Emit_Fat_Pointer_Data (fat, dbt).reg;
+        uint32_t low_rt = Emit_Convert (Emit_Fat_Pointer_Low (fat, dbt).reg, dbt, idx_t).reg;
+        Syntax_Node *start_node = arg0->kind == NK_RANGE ? arg0->range.low : arg0;
+        uint32_t start = Generate_Expression (start_node).reg;
+        LLVM_Rep start_rep = Expression_LLVM_Rep (start_node);
+        if (LLVM_Rep_Is_Int (start_rep) and not LLVM_Rep_Equal (start_rep, idx_t))
+          start = Emit_Convert (start, start_rep, idx_t).reg;
+        uint32_t adj = Emit_Temp ();
+        Emit ("  %%t%u = sub %s %%t%u, %%t%u\n", adj, LLVM_Rep_To_String (idx_t), start, low_rt);
+        uint32_t byte_off = adj;
+        if (elem_size != 1) {
+          byte_off = Emit_Temp ();
+          Emit ("  %%t%u = mul %s %%t%u, %u\n", byte_off, LLVM_Rep_To_String (idx_t), adj, elem_size);
+        }
+        uint32_t addr = Emit_Temp ();
+        Emit ("  %%t%u = getelementptr i8, ptr %%t%u, %s %%t%u\n", addr, data, LLVM_Rep_To_String (idx_t), byte_off);
+        return addr;
+      }
+
+      // Slice: ARR (low..high) - return address at slice start (RM 4.1.2)
       if (arg0->kind == NK_RANGE) {
         uint32_t base;
         if (access_to_array) {
@@ -23681,8 +23766,16 @@ LLVM_Value Emit_Binary_Op_Predefined (Syntax_Node *node) {
     uint32_t left_raw = Generate_Expression (node->binary.left).reg;
     uint32_t right_raw = Generate_Expression (node->binary.right).reg;
 
+    // The index-bound width and the component byte-width both come from the
+    // *result* array type, never from an operand: in `C & D` (component &
+    // component) and `C & A` (component & array) the left operand is a scalar
+    // component, and asking it for an array bound is the "non-array kind" bug.
+    Type_Info *cat_array_type = Type_Is_Array_Like (node->type) ? node->type
+                              : Type_Is_Array_Like (left_type)  ? left_type
+                              : node->type;
+
     // Normalize both operands to fat pointers (handles character, constrained, already-fat)
-    LLVM_Rep cat_bt = Array_Bound_LLVM_Rep (left_type);
+    LLVM_Rep cat_bt = Array_Bound_LLVM_Rep (cat_array_type);
     Type_Info *rhs_type = node->binary.right ? node->binary.right->type : NULL;
     uint32_t left_fat  = Normalize_To_Fat_Pointer (node->binary.left,  left_raw, left_type, cat_bt);
     uint32_t right_fat = Normalize_To_Fat_Pointer (node->binary.right, right_raw, rhs_type, cat_bt);
@@ -23741,25 +23834,40 @@ LLVM_Value Emit_Binary_Op_Predefined (Syntax_Node *node) {
       }
     }
 
-    uint32_t total_len_64 = Emit_Extend_To_I64 (total_len, cat_bt).reg;
-    uint32_t left_len1_64 = Emit_Extend_To_I64 (left_len1, cat_bt).reg;
-    uint32_t right_len1_64 = Emit_Extend_To_I64 (right_len1, cat_bt).reg;
+    // Lengths so far count *elements*; storage counts *bytes*. The operands
+    // and result share one component type, so a single byte-width scales every
+    // length that addresses memory (the allocation extent, each memcpy, and the
+    // offset to the right half). The result bounds stay in element units and
+    // are computed below: they index the array, they do not size it.
+    Type_Info *cat_elem = cat_array_type->array.element_type;
+    uint32_t element_size = (cat_elem and cat_elem->size > 0) ? cat_elem->size : 1;
+
+    uint32_t Emit_Element_Bytes (uint32_t element_len) {
+      uint32_t len_64 = Emit_Extend_To_I64 (element_len, cat_bt).reg;
+      if (element_size == 1) return len_64;
+      uint32_t bytes = Emit_Temp ();
+      Emit ("  %%t%u = mul i64 %%t%u, %u  ; * element size\n", bytes, len_64, element_size);
+      return bytes;
+    }
+    uint32_t total_bytes = Emit_Element_Bytes (total_len);
+    uint32_t left_bytes  = Emit_Element_Bytes (left_len1);
+    uint32_t right_bytes = Emit_Element_Bytes (right_len1);
 
     // Allocate space on secondary stack
     uint32_t result_data = Emit_Temp ();
     Emit ("  %%t%u = call ptr @__ada_sec_stack_alloc(i64 %%t%u)\n",
-       result_data, total_len_64);
+       result_data, total_bytes);
 
     // Copy left string using llvm.memcpy
-    Emit_Memcpy (result_data, left_data, left_len1_64);
+    Emit_Memcpy (result_data, left_data, left_bytes);
 
     // Calculate destination for right string
     uint32_t right_dest = Emit_Temp ();
     Emit ("  %%t%u = getelementptr i8, ptr %%t%u, i64 %%t%u\n",
-       right_dest, result_data, left_len1_64);
+       right_dest, result_data, left_bytes);
 
     // Copy right string
-    Emit_Memcpy (right_dest, right_data, right_len1_64);
+    Emit_Memcpy (right_dest, right_data, right_bytes);
 
     // Result bounds: INDEX_SUBTYPE'FIRST .. FIRST+total_len-1 (RM 4.5.3(8)).                      
     // For STRING the index subtype is POSITIVE with FIRST=1; for custom                            
@@ -24388,7 +24496,7 @@ LLVM_Value Emit_Binary_Op_Predefined (Syntax_Node *node) {
           uint32_t rdim = Get_Dimension_Index (range_dim_arg);
           uint32_t range_low, range_high;
           bool arr_needs_rt = false;
-          if (arr_type and (Type_Is_Unconstrained_Array (arr_type) or Type_Has_Dynamic_Bounds (arr_type)) and
+          if (arr_type and (Type_Needs_Fat_Pointer (arr_type)) and
             arr_sym and (arr_sym->kind == SYMBOL_PARAMETER or arr_sym->kind == SYMBOL_VARIABLE or
                   arr_sym->kind == SYMBOL_CONSTANT or arr_sym->kind == SYMBOL_DISCRIMINANT))
             arr_needs_rt = true;
@@ -24431,10 +24539,77 @@ LLVM_Value Emit_Binary_Op_Predefined (Syntax_Node *node) {
         } else {
           Type_Info *range_type = node->binary.right ? node->binary.right->type : NULL;
 
-          // Composite types (records, arrays) and access/task types:                               
-          // membership is always TRUE since the value is already of                                
-          // that type (RM 4.5.2). Access types have no range.                                     
-          //                                                                                        
+          // Membership in a constrained array subtype: the value belongs iff
+          // each dimension's length equals the subtype's (RM 4.5.2 / 3.6.1).
+          // Array values slide, so the lengths must match, not the absolute
+          // bounds. Lengths are compared at runtime; an aggregate contributes
+          // its positional count and a typed value its own bounds, so a
+          // statically-decidable case folds to a constant. The subtype bounds
+          // may themselves be dynamic, e.g. new P(IDENT(5)..IDENT(7)), and
+          // Emit_Bound_Value_Typed evaluates them then.
+          if (range_type and range_type->kind == TYPE_ARRAY and
+              range_type->array.is_constrained) {
+            Syntax_Node *val = node->binary.left;
+            Type_Info   *vt  = val ? val->type : NULL;
+            LLVM_Rep iat = Integer_Arith_Rep ();
+            bool val_is_fat = LLVM_Rep_Is_Fat_Pointer (left_v.rep);
+            LLVM_Rep val_bt = vt ? Array_Bound_LLVM_Rep (vt) : iat;
+
+            // Positional count of dimension `dim` of a purely-positional literal
+            // aggregate value, or -1 when the value is not such an aggregate.
+            int128_t Aggregate_Dim_Count (uint32_t dim) {
+              Syntax_Node *n = val;
+              for (uint32_t k = 0; n and k < dim; k++)
+                n = (n->kind == NK_AGGREGATE and n->aggregate.items.count > 0)
+                      ? n->aggregate.items.items[0] : NULL;
+              if (not n or n->kind != NK_AGGREGATE) return -1;
+              int128_t count = 0;
+              for (uint32_t i = 0; i < n->aggregate.items.count; i++) {
+                if (n->aggregate.items.items[i]->kind == NK_ASSOCIATION) return -1;
+                count++;
+              }
+              return count;
+            }
+
+            LLVM_I1 belongs = { Emit_I1_Const (1, "array membership seed").reg };
+            bool determinable = true;
+            for (uint32_t d = 0; d < range_type->array.index_count and determinable; d++) {
+              Index_Info *ix = &range_type->array.indices[d];
+              LLVM_Rep lr = LL_REP_VOID, hr = LL_REP_VOID;
+              uint32_t lo = Emit_Bound_Value_Typed (&ix->low_bound,  &lr);
+              uint32_t hi = Emit_Bound_Value_Typed (&ix->high_bound, &hr);
+              if (lo == 0 or hi == 0) { determinable = false; break; }
+              uint32_t sub_len = Emit_Length_From_Bounds (
+                Emit_Convert (lo, lr, iat).reg, Emit_Convert (hi, hr, iat).reg, iat).reg;
+
+              int128_t agg = Aggregate_Dim_Count (d);
+              uint32_t val_len;
+              if (agg >= 0) {
+                val_len = Emit_Static_Int (agg, iat).reg;
+              } else if (val_is_fat) {
+                val_len = Emit_Convert (
+                  Emit_Fat_Pointer_Length_Dim (left_v.reg, val_bt, d).reg, val_bt, iat).reg;
+              } else if (vt and vt->kind == TYPE_ARRAY and vt->array.is_constrained and
+                         d < vt->array.index_count and
+                         vt->array.indices[d].low_bound.kind == BOUND_INTEGER and
+                         vt->array.indices[d].high_bound.kind == BOUND_INTEGER) {
+                int128_t span = vt->array.indices[d].high_bound.int_value -
+                                vt->array.indices[d].low_bound.int_value + 1;
+                val_len = Emit_Static_Int (span < 0 ? 0 : span, iat).reg;
+              } else { determinable = false; break; }
+
+              belongs = Emit_And_I1 (belongs, Emit_Icmp ("eq", iat, val_len, sub_len));
+            }
+
+            uint32_t res = determinable ? belongs.reg
+                         : Emit_I1_Const (1, "membership (non-static) fallback").reg;
+            t = negate ? Emit_Not_I1 ((LLVM_I1){ res }).reg : res;
+            return Emit_Bool_Value ((LLVM_I1){ t });
+          }
+
+          // Other composites (records, strings), access and task types: the
+          // value is already of the type, so membership is always TRUE
+          // (RM 4.5.2). Access types have no range.
           if (range_type and (Type_Is_Composite (range_type) or Type_Is_Access (range_type) or
                 range_type->kind == TYPE_TASK)) {
             uint32_t always = Emit_I1_Const (1, "composite IN is always true").reg;
@@ -25356,10 +25531,15 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
 
         // Composite: pass actual address directly (by reference)
         } else {
-          // A constrained array is stored inline as raw data, but an
-          // unconstrained-array formal is passed by reference as a pointer to
-          // an in-memory fat pointer { data, bounds }. Build one aliasing the
-          // actual and spill it so the callee can load bounds. (RM 6.4.1)
+          // A constrained array stored inline as raw data, passed to an
+          // unconstrained-array formal, must be wrapped: the formal is passed by
+          // reference as a pointer to an in-memory fat pointer { data, bounds }.
+          // Build one aliasing the actual and spill it so the callee can load
+          // bounds (RM 6.4.1). An array that is itself stored as a fat pointer
+          // (dynamic bounds) is NOT inline: actual_addr already points to its
+          // fat-pointer struct, so pass it directly. Building one from the
+          // struct address would alias the data pointer onto the struct, and a
+          // callee write would clobber the bounds.
           Type_Info *actual_type = addr_node->type ? addr_node->type : arg->type;
           bool formal_needs_fat = formal_type and
                 (Type_Is_Unconstrained_Array (formal_type) or
@@ -25369,8 +25549,7 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
           bool actual_inline_array = actual_type and
                 Type_Is_Constrained_Array (actual_type) and
                 actual_type->array.index_count > 0 and
-                (actual_type->rt_global_id > 0 or
-                 not Type_Has_Dynamic_Bounds (actual_type));
+                not Type_Needs_Fat_Pointer (actual_type);
 
           if (formal_needs_fat and actual_inline_array) {
             LLVM_Value fat = Emit_Fat_Pointer_For_Lvalue (actual_addr, actual_type);
@@ -26155,7 +26334,7 @@ index_path: ;
 
     // Check if unconstrained array OR constrained array with dynamic bounds
     // needing fat pointer handling. Both are stored as fat pointers.
-    else if ((Type_Is_Unconstrained_Array (array_type) or Type_Has_Dynamic_Bounds (array_type)) and
+    else if ((Type_Needs_Fat_Pointer (array_type)) and
       array_sym and (array_sym->kind == SYMBOL_PARAMETER or array_sym->kind == SYMBOL_VARIABLE or
               array_sym->kind == SYMBOL_CONSTANT or array_sym->kind == SYMBOL_DISCRIMINANT)) {
 
@@ -26189,7 +26368,7 @@ index_path: ;
       // yet still produces a { ptr, { bound, bound } } value.
       //
       if (LLVM_Rep_Is_Fat_Pointer (prefix_v.rep) or
-          Type_Is_Unconstrained_Array (array_type) or Type_Has_Dynamic_Bounds (array_type)) {
+          Type_Needs_Fat_Pointer (array_type)) {
         LLVM_Rep pfx_bt = Array_Bound_LLVM_Rep (array_type);
         dyn_fat = prefix_val;
         base = Emit_Fat_Pointer_Data (prefix_val, pfx_bt).reg;
@@ -27202,6 +27381,73 @@ LLVM_Value Generate_Attribute (Syntax_Node *node) {
   if (Slice_Equal_Ignore_Case (attr, S("SIZE"))) {
     if (not prefix_type)
       fprintf (stderr, "warning: 'SIZE attribute applied to expression with no type\n");
+    LLVM_Rep iat = Integer_Arith_Rep ();
+
+    // An array's size is its element count times the component size. The stored
+    // type->size already captures this for a statically-bounded subtype, but two
+    // cases need more (RM 13.7.2): an *unconstrained* base has no single size, so
+    // report its index subtype's maximum extent; a *dynamically* bounded subtype
+    // (or object thereof) must be measured at run time from its actual bounds.
+    if (prefix_type and Type_Is_Array_Like (prefix_type) and
+        prefix_type->specified_bit_size == 0 and prefix_type->array.element_type) {
+      Type_Info *comp = prefix_type->array.element_type;
+      int64_t comp_bits = comp->specified_bit_size > 0
+                            ? comp->specified_bit_size : (int64_t)comp->size * 8;
+      uint32_t ndims = prefix_type->array.index_count;
+
+      // The extent in elements: for an unconstrained base it is the product of
+      // the index *subtypes'* lengths (the largest a value may grow to); for a
+      // dynamically-bounded subtype it is the product of the actual index
+      // lengths. Either way each dimension's bounds come from a Type_Bound pair.
+      bool unconstrained = not prefix_type->array.is_constrained;
+      if (unconstrained or Type_Has_Dynamic_Bounds (prefix_type)) {
+        // Try a fully static fold first (no IR), then fall back to runtime.
+        int128_t static_elems = 1;
+        bool all_static = (ndims > 0);
+        for (uint32_t d = 0; d < ndims and all_static; d++) {
+          Type_Info  *ixt = prefix_type->array.indices[d].index_type;
+          Type_Bound *lo = unconstrained ? (ixt ? &ixt->low_bound  : NULL)
+                                         : &prefix_type->array.indices[d].low_bound;
+          Type_Bound *hi = unconstrained ? (ixt ? &ixt->high_bound : NULL)
+                                         : &prefix_type->array.indices[d].high_bound;
+          if (lo and hi and lo->kind == BOUND_INTEGER and hi->kind == BOUND_INTEGER) {
+            int128_t len = hi->int_value - lo->int_value + 1;
+            static_elems *= (len < 0 ? 0 : len);
+          } else all_static = false;
+        }
+        if (all_static and static_elems >= 0 and static_elems * comp_bits <= INT64_MAX) {
+          Emit ("  %%t%u = add %s 0, %lld  ; 'SIZE = extent in bits\n",
+             t, LLVM_Rep_To_String (iat), (long long)(int64_t)(static_elems * comp_bits));
+          return Val_Rep (t, iat);
+        }
+        // Runtime: product of per-dimension lengths × component bits.
+        uint32_t total = Emit_Static_Int (1, iat).reg;
+        bool ok = (ndims > 0);
+        for (uint32_t d = 0; d < ndims and ok; d++) {
+          Type_Info  *ixt = prefix_type->array.indices[d].index_type;
+          Type_Bound *lob = unconstrained ? (ixt ? &ixt->low_bound  : NULL)
+                                          : &prefix_type->array.indices[d].low_bound;
+          Type_Bound *hib = unconstrained ? (ixt ? &ixt->high_bound : NULL)
+                                          : &prefix_type->array.indices[d].high_bound;
+          if (not lob or not hib) { ok = false; break; }
+          LLVM_Rep lr = LL_REP_VOID, hr = LL_REP_VOID;
+          uint32_t lo = Emit_Bound_Value_Typed (lob, &lr);
+          uint32_t hi = Emit_Bound_Value_Typed (hib, &hr);
+          if (lo == 0 or hi == 0) { ok = false; break; }
+          uint32_t len = Emit_Length_From_Bounds (
+            Emit_Convert (lo, lr, iat).reg, Emit_Convert (hi, hr, iat).reg, iat).reg;
+          uint32_t mul = Emit_Temp ();
+          Emit ("  %%t%u = mul %s %%t%u, %%t%u\n", mul, LLVM_Rep_To_String (iat), total, len);
+          total = mul;
+        }
+        if (ok) {
+          Emit ("  %%t%u = mul %s %%t%u, %lld  ; 'SIZE = length * component bits\n",
+             t, LLVM_Rep_To_String (iat), total, (long long)comp_bits);
+          return Val_Rep (t, iat);
+        }
+      }
+    }
+
     int64_t bit_size = 0;
     if (prefix_type) {
       if (prefix_type->specified_bit_size > 0)
@@ -27209,9 +27455,9 @@ LLVM_Value Generate_Attribute (Syntax_Node *node) {
       else
         bit_size = (int64_t)prefix_type->size * 8;
     }
-    Emit ("  %%t%u = add %s 0, %lld  ; 'SIZE in bits\n", t, LLVM_Rep_To_String (Integer_Arith_Rep ()),
+    Emit ("  %%t%u = add %s 0, %lld  ; 'SIZE in bits\n", t, LLVM_Rep_To_String (iat),
        (long long)bit_size);
-    return Val_Rep (t, Integer_Arith_Rep ());
+    return Val_Rep (t, iat);
   }
   if (Slice_Equal_Ignore_Case (attr, S("ALIGNMENT"))) {
     if (not prefix_type)
@@ -32878,11 +33124,7 @@ LLVM_Value Generate_Expression (Syntax_Node *node) {
       // SSA { ptr, ptr } from Generate_Aggregate; everything else (records,
       // static-bounds arrays) is a plain ptr to flat storage.
       uint32_t r = Generate_Aggregate (node);
-      LLVM_Rep ty = LL_REP_PTR;
-      if (node->type and Type_Is_Array_Like (node->type) and
-          (Type_Is_Unconstrained_Array (node->type) or
-           Type_Has_Dynamic_Bounds (node->type)))
-        ty = LL_REP_FAT;
+      LLVM_Rep ty = Type_Needs_Fat_Pointer (node->type) ? LL_REP_FAT : LL_REP_PTR;
       return Val_Rep (r, ty);
     }
     case NK_QUALIFIED:  return Generate_Qualified (node);
@@ -32984,6 +33226,12 @@ void Generate_Assignment (Syntax_Node *node) {
       bool target_is_uncon = (not Type_Is_Constrained_Array (prefix_type) and
                   Type_Is_String (prefix_type)) or
                    Type_Is_Unconstrained_Array (prefix_type);
+
+      // A *constrained* array whose bounds are dynamic (e.g. a derived subtype
+      // `new P(IDENT(5)..IDENT(7))`) is stored as a fat pointer just like an
+      // unconstrained one, so its data pointer and low bound must be loaded at
+      // runtime. The flat-data path below only applies to static storage.
+      bool target_is_fat = target_is_uncon or Type_Has_Dynamic_Bounds (prefix_type);
       Syntax_Node *arg = target->apply.arguments.items[0];
 
       // ARR (A'RANGE) := source is a slice (RM 4.1.2), not an element. Normalise
@@ -33041,7 +33289,7 @@ void Generate_Assignment (Syntax_Node *node) {
         int128_t low_bound;
 
         // Load fat pointer, extract data ptr and low bound
-        if (target_is_uncon) {
+        if (target_is_fat) {
           LLVM_Rep sa_bt = Array_Bound_LLVM_Rep (prefix_type);
           uint32_t fat_addr = Generate_Lvalue (target->apply.prefix);
           uint32_t fat = Emit_Load_Fat_Pointer_From_Temp (fat_addr, sa_bt).reg;
@@ -33956,6 +34204,19 @@ void Generate_Return_Statement (Syntax_Node *node) {
     LLVM_Value value = Generate_Expression (expr);
     LLVM_Rep ret_rep = cg->current_function and cg->current_function->return_type
       ? Type_To_Rep (cg->current_function->return_type) : Integer_Arith_Rep ();
+
+    // Returning a *constrained* array as an *unconstrained* array result: the
+    // value is a plain data pointer, but the result is a fat pointer. Build the
+    // fat pointer from the array's data and its own bounds. Without this the
+    // generic ptr-to-fat conversion would load a fat pointer out of the array's
+    // first 16 data bytes, giving garbage pointers and then a wild dereference.
+    if (ret_type and Type_Is_Array_Like (ret_type) and not ret_type->array.is_constrained and
+        LLVM_Rep_Is_Fat_Pointer (ret_rep) and not LLVM_Rep_Is_Fat_Pointer (value.rep) and
+        not Expression_Produces_Fat_Pointer (expr, expr ? expr->type : NULL)) {
+      LLVM_Rep rbt = Array_Bound_LLVM_Rep (ret_type);
+      value = Val_Rep (Normalize_To_Fat_Pointer (expr, value.reg,
+                         expr && expr->type ? expr->type : ret_type, rbt), LL_REP_FAT);
+    }
     LLVM_Rep actual_rep = value.rep;
     bool val_is_float = LLVM_Rep_Is_Float (actual_rep) or
               Type_Is_Float_Representation (expr->type) or

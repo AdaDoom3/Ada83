@@ -1,0 +1,102 @@
+═══════════════════════════════════════════════════════════════════════════════
+  ada83.c — make ONE C-test group pass completely, with literate, root-cause fixes
+═══════════════════════════════════════════════════════════════════════════════
+
+ORIGINAL PROMPT
+---------------
+In the pursuit of high-quality code (low line count (e.g. low undue complexity)
+and high feature/correctness) - refactor and fix ada83.c to pass a single
+C-test group completely (e.g. cXX) with much better Haskell-like C99 and smart
+code-golfing with, ironically, textbook "Literate Programming" style.
+
+Do NOT skip around - when you encounter a complex problem look at it as an
+opportunity to finally attack a big issue. Remember to follow the flow upstream
+to avoid hacking up the expander.
+
+Create a file to track everything called "checklist.txt" and include this
+prompt in it.
+
+TARGET GROUP
+------------
+c34005 — predefined operations of DERIVED types (RM 3.4). 14 subtests
+(a,c,d,f,g,i,j,l,m,o,p,r,s,u), each component-type variant of derived
+one-dimensional arrays / records. Baseline: only c34005i passed.
+
+ROOT CAUSES FOUND & FIXED
+-------------------------
+[x] Concatenation counted ELEMENTS as BYTES (String-centric, element_size=1
+    assumption). Fixed Generate (`&`) to scale alloc/memcpy/offset by the
+    result component's byte width.  -> §13 binary `&`.
+[x] `Array_Bound_LLVM_Rep(left_type)` in `&` crashed ("non-array kind") for
+    component&component / component&array, where left is a scalar. Now derive
+    the bound rep from the result array type.  -> §13 binary `&`.
+[x] Emit_Fat_Pointer_Copy_To_Name memcpy'd element count as byte count (shared
+    by fat->constrained assignment and var init). Now scales by the dest
+    component byte width.
+[x] Concatenation RESULT type was the operand's CONSTRAINED subtype; per
+    RM 4.5.3 it must be the unconstrained base. Fixed Resolve_Binary_Op to use
+    Type_Base. (Stopped constrained index leaking onto the compared aggregate.)
+[x] Derived array type `type T is new PARENT(C)` never built an unconstrained
+    base T'BASE, so Type_Base(T)=T (constrained). Fixed NK_DERIVED_TYPE to
+    construct the unconstrained base and set derived->base_type.
+
+MORE ROOT CAUSES FIXED
+----------------------
+[x] Aggregate in `AGG IN T` got the constrained subtype -> CE while building.
+    Now propagates Type_Base (RM 4.4). + membership codegen for constrained
+    arrays now does a real per-dimension LENGTH comparison (runtime-capable),
+    not the old "composite IN is always true".
+[x] Slice assignment to a *dynamically*-bounded constrained array used the
+    flat-data path (treated the fat-ptr struct as data, didn't subtract the
+    runtime low bound). Now routes dynamic-bounds targets through the
+    fat-pointer slice path (target_is_fat).
+[x] 'SIZE on arrays: unconstrained base now reports the index-subtype max
+    extent, and a dynamically-bounded subtype/object measures length*component
+    at runtime (was 0 / a stale type->size). Handles BOUND_EXPR index bounds.
+
+EVEN MORE ROOT CAUSES FIXED
+---------------------------
+[x] Returning a constrained array as an unconstrained result loaded a fat
+    pointer out of the flat data instead of building one from data + bounds.
+    Generate_Return_Statement now builds it via Normalize_To_Fat_Pointer.
+[x] Element address of a dynamic-bounds constrained array used the fat-pointer
+    struct as flat data (mirror of the slice fix). Generate_Composite_Address
+    now loads the data pointer and runtime low bound.
+[x] Overload resolution: Possible_Alt_Type treated an indexed component A(I) as
+    a call to A and offered A's array type as a spurious alternative, so a
+    component comparison resolved to the array overload (RM 8.3). Now skipped
+    when the name denotes an array object.
+[x] Passing a fat-pointer-stored array (dynamic bounds) to an unconstrained
+    formal built a fat pointer from the symbol's struct address, so a callee
+    write clobbered the bounds. Now keyed on Type_Needs_Fat_Pointer.
+[x] Consolidated the hand-rolled "stored as a fat pointer" test
+    (Type_Is_Unconstrained_Array or Type_Has_Dynamic_Bounds) onto the existing
+    Type_Needs_Fat_Pointer predicate at the array-typed sites.
+
+c34005 STATUS: 9 / 14 pass (was 1). No regressions in the wider suite
+(c52103 improved 6->7; c35502/c36205/c34001/c34003 still 100%).
+  PASS: a c d f g i j l p
+  FAIL: m  (multi-dimensional derived array, segfault)
+        o  (multi-dimensional derived array, 4 aggregate-bound assertions)
+        r  (array OUT-param assignment length checks: CONSTRAINT_ERROR not
+            raised on wrong-length ASSIGN; no longer crashes)
+        s  (2-D limited-private derived array, segfault)
+        u  (limited-private derived array, segfault)
+
+REMAINING WORK TO REACH 100% ON c34005
+--------------------------------------
+- Multi-dimensional (>1 index) derived arrays: extend the dynamic-bounds
+  fat-pointer element/slice addressing and 'SIZE paths to N dimensions (m,o,s).
+- Length check on assignment to an unconstrained array OUT formal whose actual
+  is a constrained subtype (r).
+- u segfault: diagnose (likely another fat-stored limited-private path).
+
+WORKING NOTES
+-------------
+- Build: `make`  (gcc -O3 -Wall -march=native -> ./ada83)
+- Run one test:
+    ./ada83 -I acats acats/c34005a.ada -o /tmp/x.ll
+    llvm-link -o /tmp/x.bc /tmp/x.ll acats/report.ll && lli /tmp/x.bc
+- Group run:  bash run_acats.sh q c34005
+- Debug substrate: gcc -g -O0 -o /tmp/ada83g ada83.c -lm -lpthread ; gdb.
+- Principle: fix upstream (semantics/type construction), not the expander.
