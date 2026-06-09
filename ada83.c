@@ -34431,7 +34431,9 @@ void Generate_Return_Statement (Syntax_Node *node) {
       }
       Emit ("  ret void\n");
       cg->block_terminated = true;
-      BIP_End_Function ();
+      // Do not end BIP state here: a function may have several RETURNs (e.g. one
+      // per CASE arm), and the remaining ones must still be seen as BIP. State
+      // is cleared once, at end of function generation.
       return;
     }
 
