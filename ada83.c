@@ -11412,6 +11412,39 @@ int128_t Array_Low_Bound (Type_Info *type_info) {
     return 0;
   return Type_Bound_Value (type_info->array.indices[0].low_bound);
 }
+
+// Maximum byte size of a constrained array whose bounds may be dynamic. Each
+// dimension is taken at its largest length: a static bound uses its value; a
+// bound that names a discriminant uses that discriminant's subtype'LAST. Used
+// to reserve space for a discriminant-dependent component so later components
+// in the same record sit at fixed offsets (RM 3.7.1). Returns 0 when a bound
+// is not statically bounded.
+uint32_t Max_Constrained_Array_Size (Type_Info *t) {
+  if (not t or t->kind != TYPE_ARRAY or not t->array.element_type) return 0;
+  uint32_t elem_size = t->array.element_type->size ? t->array.element_type->size : 1;
+  int128_t total = 1;
+  for (uint32_t d = 0; d < t->array.index_count; d++) {
+    Type_Bound *lo = &t->array.indices[d].low_bound;
+    Type_Bound *hi = &t->array.indices[d].high_bound;
+    int128_t lov = (lo->kind == BOUND_INTEGER) ? lo->int_value : 1;
+    int128_t hiv;
+    if (hi->kind == BOUND_INTEGER) {
+      hiv = hi->int_value;
+    } else if (hi->kind == BOUND_EXPR and hi->expr and hi->expr->symbol and
+               hi->expr->symbol->type) {
+      Type_Bound *disc_hi = &hi->expr->symbol->type->high_bound;
+      if (disc_hi->kind == BOUND_INTEGER) hiv = disc_hi->int_value;
+      else if (disc_hi->kind == BOUND_EXPR and disc_hi->expr) {
+        double v = Eval_Const_Numeric (disc_hi->expr);
+        if (v != v) return 0;
+        hiv = (int128_t)v;
+      } else return 0;
+    } else return 0;
+    int128_t len = hiv - lov + 1;
+    total *= (len < 0 ? 0 : len);
+  }
+  return (uint32_t)(total * elem_size);
+}
 // If `idx` is a `P'RANGE` attribute used as an array index constraint, fill
 // `info` with the prefix subtype's index bounds and index type, and return
 // true. `P'RANGE(n)` selects dimension n (1-based, default 1). RM 3.6.1.
@@ -12553,6 +12586,14 @@ Type_Info *Resolve_Expression (Syntax_Node *node) {
                 Type_Info *comp_type = vc->component.component_type ?
                              vc->component.component_type->type : sm->type_integer;
                 uint32_t comp_size = comp_type ? comp_type->size : 8;
+                // A discriminant-dependent array component (e.g. S : STRING(1..L))
+                // has no static size, yet a later component in the same variant
+                // must sit past it at a fixed offset. Reserve its MAXIMUM size,
+                // taken from each index's upper bound — a discriminant's own
+                // subtype'LAST when the bound is that discriminant (RM 3.7.1).
+                if (comp_size == 0 and Type_Is_Constrained_Array (comp_type) and
+                    comp_type->array.element_type)
+                  comp_size = Max_Constrained_Array_Size (comp_type);
                 if (vc->component.init) {
                   if (not vc->component.init->type and comp_type and
                     (vc->component.init->kind == NK_AGGREGATE or
