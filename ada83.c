@@ -34389,6 +34389,18 @@ void Generate_Return_Statement (Syntax_Node *node) {
       // Rebuild fat pointer with secondary stack data and bounds
       value = Val_Rep (Emit_Build_Fat_Pointer (sec_data, sec_bnd), LL_REP_FAT);
     }
+
+    // RM 6.5: a by-value record result must outlive the callee frame. The value
+    // is a pointer to record storage that is usually a local alloca; copy it to
+    // the secondary stack so the caller's reference stays valid after return.
+    if (ret_type and Type_Is_Record (ret_type) and ret_type->size > 0 and
+        not LLVM_Rep_Is_Fat_Pointer (value.rep)) {
+      uint32_t sec = Emit_Temp ();
+      Emit ("  %%t%u = call ptr @__ada_sec_stack_alloc(i64 %u)\n", sec, ret_type->size);
+      Emit ("  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %u, i1 false)"
+            "  ; record return copy\n", sec, value.reg, ret_type->size);
+      value = Val_Rep (sec, value.rep);
+    }
     Emit ("  ret %s %%t%u\n", LLVM_Rep_To_String (ret_rep), value.reg);
     cg->block_terminated = true;
 
