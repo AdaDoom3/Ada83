@@ -23230,6 +23230,11 @@ uint32_t Normalize_To_Fat_Pointer (Syntax_Node *expr, uint32_t raw, Type_Info *t
     uint32_t sa = Emit_Alloca_Store (st, raw);
     return Emit_Fat_Pointer (sa, 1, 1, bt).reg;
   }
+  // Multidimensional constrained array: wrap with every dimension's bounds.
+  // The single-dimension path below carries the aggregate count adjustment, so
+  // keep it for 1-D; Emit_Fat_Pointer_For_Lvalue owns the N-D case.
+  if (Type_Is_Constrained_Array (type) and type->array.index_count > 1)
+    return Emit_Fat_Pointer_For_Lvalue (raw, type).reg;
   if (Type_Is_Constrained_Array (type) and type->array.index_count > 0) {
     int128_t lo = Type_Bound_Value (type->array.indices[0].low_bound);
     int128_t hi = Type_Bound_Value (type->array.indices[0].high_bound);
@@ -25535,11 +25540,15 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
           // unconstrained-array formal, must be wrapped: the formal is passed by
           // reference as a pointer to an in-memory fat pointer { data, bounds }.
           // Build one aliasing the actual and spill it so the callee can load
-          // bounds (RM 6.4.1). An array that is itself stored as a fat pointer
-          // (dynamic bounds) is NOT inline: actual_addr already points to its
-          // fat-pointer struct, so pass it directly. Building one from the
-          // struct address would alias the data pointer onto the struct, and a
-          // callee write would clobber the bounds.
+          // bounds (RM 6.4.1).
+          //
+          // "Inline" means actual_addr points to flat element data: a static
+          // array, or a dynamically-bounded array embedded in a record or array
+          // (a selected/indexed prefix). A *simple* reference to a fat-stored
+          // object (a variable or by-reference parameter of dynamic-bounds type)
+          // is NOT inline: actual_addr already points to its { data, bounds }
+          // struct, so pass it directly. Wrapping that would alias the data
+          // pointer onto the struct and a callee write would clobber the bounds.
           Type_Info *actual_type = addr_node->type ? addr_node->type : arg->type;
           bool formal_needs_fat = formal_type and
                 (Type_Is_Unconstrained_Array (formal_type) or
@@ -25549,7 +25558,7 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
           bool actual_inline_array = actual_type and
                 Type_Is_Constrained_Array (actual_type) and
                 actual_type->array.index_count > 0 and
-                not Type_Needs_Fat_Pointer (actual_type);
+                (not Type_Needs_Fat_Pointer (actual_type) or not is_simple_var_ref);
 
           if (formal_needs_fat and actual_inline_array) {
             LLVM_Value fat = Emit_Fat_Pointer_For_Lvalue (actual_addr, actual_type);
