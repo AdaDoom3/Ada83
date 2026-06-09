@@ -218,3 +218,78 @@ c34014 (derived subprogram visibility) IN PROGRESS (1->2/14). Root cause fixed:
   Suite: c34 39->40; c45/c87 stable; no regressions.
   Remaining c34014 are a separate semantic feature: visibility/overload binding
   of a derived subprogram vs an explicit homograph (NEW/OLD ... NOT VISIBLE).
+
+═══════════════════════════════════════════════════════════════════════════════
+c34014 (derived subprogram / operator visibility, RM 3.4 + RM 8.3) — IN PROGRESS
+Baseline this session: 2/14 (g,t). Now: 3/14 (g,t,j) and climbing.
+
+HOW GNAT DOES IT (grounded in reference/gnat sources, not guessed):
+  - Inherited subprograms are REAL entities carrying an Alias to the parent
+    operation. Derive_Subprogram (sem_ch3.adb) sets Alias(New_Subp):=Parent.
+    Calls redirect through Ultimate_Alias (sem_aux.adb:1546), which follows the
+    Alias chain (and renaming-as-body) to a fixed point.
+      -> our `parent_operation` == Alias; `Ultimate_Operation` == Ultimate_Alias.
+         Ultimate_Operation now also peels renames (Alias subsumes renamings in
+         GNAT), fixing derive-from-rename link failures.
+  - Hiding of an inherited homograph by an explicit one is VISIBILITY, not
+    deletion: New_Overloaded_Entity (sem_ch8.adb) walks the homonym chain and
+    sets Set_Is_Immediately_Visible(Prev,False); the hidden entity stays chained.
+      -> our VIS_HIDDEN on the implicit op, kept in the overload chain.
+  - RM 3.4 first-/second-kind derivability decides which op a FURTHER derivation
+    inherits: a visible-part explicit homograph overrides (is re-derived); a
+    private-part/body homograph is not a derivable operation, so the original
+    inherited op is re-derived instead.
+      -> our `declared_in_visible_part` + Has_Visible_Part_Explicit_Homograph,
+         applied in Derive_Subprograms.
+
+KEY DIFFERENCE FROM GNAT (root of several bugs): GNAT keeps ONE homonym chain
+across a package spec and body; we rebuild a fresh body scope and re-install
+spec symbols. Implicit derived ops are not decl nodes, so they were lost ->
+Install_Derived_Operations re-installs them (walking buckets+overload chains,
+since symbols[] only records the head of each overload set).
+
+RESOLUTION FIXES (per-overload visibility, since a hidden op may be a chain
+head): Collect_Interpretations, Symbol_Find, Symbol_Find_By_Type. The last now
+prefers a same-named-type match over a loose Type_Root match (Type_Root/Type_Base
+both collapse a derivation class, so they cannot tell QS-returning from
+QT-returning apart).
+
+REMAINING: renaming + generic-instantiation homographs (a,h,c,l,n,u); body
+homograph (e); operator derivation paths (p,r,w,y).
+
+───────────────────────────────────────────────────────────────────────────────
+STATUS: c34014 COMPLETE — 14 / 14 (100%). Root causes fixed (all upstream of the
+expander, per the brief):
+  [x] RM 8.3 hiding: an explicit subprogram hides an implicitly declared
+      (derived) homograph, in either declaration order (Symbol_Add).
+  [x] Per-overload visibility in the three lookups that walk overload chains
+      (Collect_Interpretations, Symbol_Find, Symbol_Find_By_Type) — a hidden op
+      may be the chain head. Symbol_Find_By_Type prefers a same-named-type match
+      over a loose Type_Root match.
+  [x] RM 3.4 first/second-kind derivability (Derive_Subprograms now scans the
+      parent's declarative region and applies Subprogram_Is_Derivable). A
+      visible-part explicit homograph is derivable and overrides the inherited
+      op; a private-part/body/block homograph is not derivable, so the inherited
+      op is re-derived.
+  [x] declared_in_visible_part stamped via sm->in_package_visible_part (package
+      spec resolution + loaded specs) and in Populate_Package_Exports.
+  [x] Body sees the spec's implicit derived ops (Install_Derived_Operations),
+      walking buckets+overload chains and preserving each op's parent.
+  [x] A forward spec/body never completes an implicit inherited op (the explicit
+      one is a hiding homograph).
+  [x] Ultimate_Operation interleaves parent_operation and rename peels (GNAT
+      Alias subsumes renamings) — fixes derive-from-rename link failures.
+  [x] Visible-part renamings and subprogram instantiations are exported and
+      derivable (Decl_Is_Visible_Subprogram).
+  [x] A generic subprogram instance exposes its ACTUAL profile, not the formal
+      type's renamed view (Peel_Generic_Actual_View) — so it is a homograph /
+      primitive of the actual type.
+  [x] Unary user-operator resolution receives its context type (was NULL), and
+      object-decl init propagates context to NK_UNARY_OP — `+0 : QT` binds the
+      right "+".
+  [x] A USE-visible view of a renaming/inherited op carries renamed_object and
+      parent_operation so it dispatches to the same body.
+
+REGRESSION CHECK (HEAD vs change, identical harness): NO regressions across
+c34 c35 c41 c45 c46 c48 c64 c66 c83 c84 c85 c86 c92 c95 c96 cc. Improvements:
+c34 40->51 (incl. c34014 2->14), c83 24->26, c87 45->46.

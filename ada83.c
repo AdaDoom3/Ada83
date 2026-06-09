@@ -1946,6 +1946,8 @@ bool        Expression_Produces_Fat_Pointer (const Syntax_Node *node,
 
 bool Types_Same_Named           (Type_Info *t1,  Type_Info *t2);
 bool Subprogram_Is_Primitive_Of (Symbol    *sub, Type_Info *type);
+bool Subprograms_Are_Homographs (Symbol    *a,   Symbol    *b);
+bool Subprogram_Is_Implicit     (Symbol    *s);
 void Create_Derived_Operation   (Symbol    *sub,
                                  Type_Info *derived_type,
                                  Type_Info *parent_type,
@@ -2227,6 +2229,9 @@ struct Symbol {
   bool     is_predefined;         // Standard-library predefined entity
   bool     needs_address_marker;  // Needs a @__address_marker global
   bool     is_identity_function;  // Derived identity "=" operator
+  bool     declared_in_visible_part; // Explicitly declared immediately within a
+                                  // package's visible part. RM 3.4 calls such a
+                                  // subprogram "derivable of the first kind".
   uint32_t disc_agg_temp;         // Temp register for discriminant aggregate
   bool     is_disc_constrained;   // Constrained by a discriminant constraint
 
@@ -2321,6 +2326,10 @@ typedef struct {
   Scope     *cutoff_exempt_scope;    // The instance scope (and its
                                      // descendants): bindings and the
                                      // clone's own entities stay visible
+  bool       in_package_visible_part; // True only while resolving the visible
+                                     // declarations of a package specification,
+                                     // so newly added subprograms can be stamped
+                                     // as first-kind derivable (RM 3.4).
 } Symbol_Manager;
 
 extern Symbol_Manager *sm;
@@ -2432,6 +2441,7 @@ void Freeze_Declaration_List (Node_List *list);
 void Populate_Package_Exports    (Symbol    *pkg_sym, Syntax_Node *pkg_spec);
 void Preregister_Labels          (Node_List *list);
 void Install_Declaration_Symbols (Node_List *decls);
+void Install_Derived_Operations  (Scope     *spec_scope);
 
 bool   Is_Integer_Expr     (Syntax_Node *node);
 bool   Eval_Const_Rational (Syntax_Node *node, Rational *out);
@@ -8582,10 +8592,42 @@ bool Symbol_Visible_Under_Cutoff (Symbol *sym, Scope *scope) {
     if (s == sm->cutoff_exempt_scope) return true;
   return false;
 }
+
+// RM 6.6 / 8.3: two subprograms are homographs when they share a designator
+// and have the same parameter-and-result type profile. The result type is part
+// of a function's profile in Ada 83, so two functions differing only in result
+// type are not homographs.
+bool Subprograms_Are_Homographs (Symbol *a, Symbol *b) {
+  if (not a or not b or a->kind != b->kind) return false;
+  if (a->kind != SYMBOL_FUNCTION and a->kind != SYMBOL_PROCEDURE) return false;
+  if (a->parameter_count != b->parameter_count) return false;
+  for (uint32_t i = 0; i < a->parameter_count; i++)
+    if (not Types_Same_Named (a->parameters[i].param_type, b->parameters[i].param_type))
+      return false;
+  if (a->kind == SYMBOL_FUNCTION and not Types_Same_Named (a->return_type, b->return_type))
+    return false;
+  return true;
+}
+
+// A subprogram is "implicitly declared" when it was introduced by derivation
+// (RM 3.4) rather than by an explicit declaration, renaming, or instantiation.
+// RM 8.3: such an implicit declaration is hidden by an explicit homograph in
+// the same declarative region.
+bool Subprogram_Is_Implicit (Symbol *s) {
+  return s and s->parent_operation != NULL;
+}
+
 void Symbol_Add (Symbol *sym) {
   Scope    *scope    = sm->current_scope;
   uint32_t  hash     = Symbol_Hash_Name (sym->name);
   Symbol   *existing = scope->buckets[hash];
+
+  // RM 3.4: remember whether an explicit subprogram is declared immediately
+  // within a package's visible part, where it becomes derivable of the first
+  // kind (and hides a derived homograph for further derivation).
+  if ((sym->kind == SYMBOL_FUNCTION or sym->kind == SYMBOL_PROCEDURE) and
+      sm->in_package_visible_part and not Subprogram_Is_Implicit (sym))
+    sym->declared_in_visible_part = true;
 
   // Check if symbol is already in this bucket (avoid self-cycle)
   while (existing) {
@@ -8616,6 +8658,21 @@ void Symbol_Add (Symbol *sym) {
         sym->next_overload = existing->next_overload;
         existing->next_overload = sym;
         sym->parent = scope->owner;
+
+        // RM 8.3: when an explicitly declared subprogram and an implicitly
+        // declared (derived) homograph coexist in one declarative region, the
+        // implicit one is hidden. This applies in either declaration order: the
+        // explicit declaration may precede or follow the derived type that
+        // introduces the implicit homograph. Predefined operators have their
+        // own hiding rule (a derived operator hides them) and are excluded.
+        for (Symbol *c = existing; c; c = c->next_overload) {
+          if (c == sym or c->is_predefined or sym->is_predefined) continue;
+          if (not Subprograms_Are_Homographs (c, sym)) continue;
+          if (Subprogram_Is_Implicit (sym) and not Subprogram_Is_Implicit (c))
+            sym->visibility = VIS_HIDDEN;
+          else if (Subprogram_Is_Implicit (c) and not Subprogram_Is_Implicit (sym))
+            c->visibility = VIS_HIDDEN;
+        }
         return;
       }
 
@@ -8731,11 +8788,14 @@ Symbol *Symbol_Find (String_Slice name) {
   uint32_t hash = Symbol_Hash_Name (name);
   for (Scope *scope = sm->current_scope; scope; scope = scope->parent) {
     for (Symbol *sym = scope->buckets[hash]; sym; sym = sym->next_in_bucket) {
-      if (Slice_Equal_Ignore_Case (sym->name, name) and
-        sym->visibility >= VIS_IMMEDIATELY_VISIBLE and
-        Symbol_Visible_Under_Cutoff (sym, scope)) {
-        return sym;
-      }
+      if (not Slice_Equal_Ignore_Case (sym->name, name)) continue;
+
+      // Skip past a hidden head (e.g. a derived subprogram hidden by an
+      // explicit homograph, RM 8.3) to the first visible overload.
+      for (Symbol *s = sym; s; s = s->next_overload)
+        if (s->visibility >= VIS_IMMEDIATELY_VISIBLE and
+          Symbol_Visible_Under_Cutoff (s, scope))
+          return s;
     }
   }
   return NULL;
@@ -8776,31 +8836,33 @@ Symbol *Symbol_Find_By_Type (String_Slice name, Type_Info *expected_type) {
   bool is_char_lit = (name.length >= 1 and name.data[0] == '\'');
 
   // Search all scopes for a matching symbol - don't stop at first name match,
-  // keep searching if the type doesn't match (for enumeration literal overloading)
+  // keep searching if the type doesn't match (for enumeration literal
+  // overloading). Within a scope, a same-named-type match is preferred over a
+  // loose root match: Type_Root collapses an entire derivation class to one
+  // root, so a function inherited into a derived type and a homograph returning
+  // the parent type would otherwise be indistinguishable here (RM 3.4).
   for (Scope *scope = sm->current_scope; scope; scope = scope->parent) {
+    Symbol *loose = NULL;
     for (Symbol *sym = scope->buckets[hash]; sym; sym = sym->next_in_bucket) {
-      if (Slice_Equal_Ignore_Case (sym->name, name) and
-        sym->visibility >= VIS_IMMEDIATELY_VISIBLE and
-        Symbol_Visible_Under_Cutoff (sym, scope)) {
+      if (not Slice_Equal_Ignore_Case (sym->name, name)) continue;
 
-        // Search through overload chain (for enumeration literals)
-        // For character literals, require exact case match (RM 2.6)
-        for (Symbol *ovl = sym; ovl; ovl = ovl->next_overload) {
-          if (is_char_lit and not Slice_Equal (ovl->name, name)) continue;
+      // Visibility is checked per overload so a hidden homograph (RM 8.3) at
+      // the head does not mask a visible one. Char literals require exact
+      // case (RM 2.6).
+      for (Symbol *ovl = sym; ovl; ovl = ovl->next_overload) {
+        if (ovl->visibility < VIS_IMMEDIATELY_VISIBLE) continue;
+        if (not Symbol_Visible_Under_Cutoff (ovl, scope)) continue;
+        if (is_char_lit and not Slice_Equal (ovl->name, name)) continue;
 
-          // For functions, match by return type, not by symbol type.
-          Type_Info *ovl_type = (ovl->kind == SYMBOL_FUNCTION)
-            ? ovl->return_type : ovl->type;
+        // For functions, match by return type, not by symbol type.
+        Type_Info *ovl_type = (ovl->kind == SYMBOL_FUNCTION)
+          ? ovl->return_type : ovl->type;
 
-          // Check if type matches (either directly or via base type)
-          if (Type_Root (ovl_type) == base_expected) {
-            return ovl;
-          }
-        }
-
-        // Type didn't match in this scope - continue to parent scopes
+        if (Types_Same_Named (ovl_type, expected_type)) return ovl;
+        if (not loose and Type_Root (ovl_type) == base_expected) loose = ovl;
       }
     }
+    if (loose) return loose;  // No exact match in this scope; accept the root match
   }
   return NULL;  // No matching symbol found
 }
@@ -9108,26 +9170,22 @@ void Collect_Interpretations (String_Slice name,
   interps->count = 0;
   uint32_t hash = Symbol_Hash_Name (name);
 
-  // Search all enclosing scopes
+  // Search all enclosing scopes. Visibility is checked per overload, not just
+  // on the bucket head: an implicit derived subprogram hidden by an explicit
+  // homograph (RM 8.3) may sit anywhere in the chain, including at its head.
   for (Scope *scope = sm->current_scope; scope; scope = scope->parent) {
     for (Symbol *sym = scope->buckets[hash]; sym; sym = sym->next_in_bucket) {
       if (not Slice_Equal_Ignore_Case (sym->name, name)) continue;
-      if (sym->visibility < VIS_IMMEDIATELY_VISIBLE) continue;
-      if (not Symbol_Visible_Under_Cutoff (sym, scope)) continue;
 
-      // Add this interpretation and all overloads
-      Symbol *s = sym;
+      for (Symbol *s = sym; s and interps->count < MAX_INTERPRETATIONS;
+           s = s->next_overload) {
+        if (s->visibility < VIS_IMMEDIATELY_VISIBLE) continue;
+        if (not Symbol_Visible_Under_Cutoff (s, scope)) continue;
 
-      // Check if we already have this interpretation
-      while (s and interps->count < MAX_INTERPRETATIONS) {
         bool duplicate = false;
-        for (uint32_t i = 0; i < interps->count; i++) {
-          if (interps->items[i].nam == s) {
-            duplicate = true;
-            break;
-          }
-        }
-        if (not duplicate) {
+        for (uint32_t i = 0; i < interps->count; i++)
+          if (interps->items[i].nam == s) { duplicate = true; break; }
+        if (not duplicate)
           interps->items[interps->count++] = (Interpretation){
             .nam = s,
             .typ = (s->kind == SYMBOL_FUNCTION) ? s->return_type : s->type,
@@ -9135,8 +9193,6 @@ void Collect_Interpretations (String_Slice name,
             .is_universal = false,
             .scope_depth = scope->nesting_level
           };
-        }
-        s = s->next_overload;
       }
     }
   }
@@ -11572,10 +11628,13 @@ Type_Info *Resolve_Expression (Syntax_Node *node) {
     case NK_IDENTIFIER: return Resolve_Identifier (node);
     case NK_SELECTED:   return Resolve_Selected (node);
     case NK_BINARY_OP:  return Resolve_Binary_Op (node);
-    case NK_UNARY_OP:
+    case NK_UNARY_OP: {
       // +/-/abs yield the operand's type; propagate an expected type from
       // context down to the operand so an overloaded operand (e.g. a call with
       // several return types) resolves by result type (RM 6.6, 4.5.6).
+      // The same context disambiguates an overloaded user-defined operator
+      // (e.g. `+0` of a derived type with a homograph), so keep it.
+      Type_Info *unary_ctx = node->type;
       if (node->type and not node->unary.operand->type and
         (node->unary.op == TK_PLUS or node->unary.op == TK_MINUS or
          node->unary.op == TK_ABS))
@@ -11594,7 +11653,7 @@ Type_Info *Resolve_Expression (Syntax_Node *node) {
         if (op_name.length > 0 and operand_type) {
           Type_Info *arg_types[1] = { operand_type };
           Argument_Info args = { .types = arg_types, .count = 1, .names = NULL };
-          Symbol *user_op = Resolve_Overloaded_Call (op_name, &args, NULL);
+          Symbol *user_op = Resolve_Overloaded_Call (op_name, &args, unary_ctx);
           if (user_op and user_op->kind == SYMBOL_FUNCTION and
             not user_op->is_predefined) {
             node->symbol = user_op;
@@ -11624,6 +11683,7 @@ Type_Info *Resolve_Expression (Syntax_Node *node) {
         }
       }
       return node->type;
+    }
     case NK_APPLY:
       return Resolve_Apply (node);
     case NK_ATTRIBUTE:
@@ -13732,6 +13792,24 @@ void Freeze_Declaration_List (Node_List *list) {
 // This must be called after all visible declarations are resolved so that                          
 // decl->symbol pointers are valid. Used by both inline packages and loaded specs.                 
 //                                                                                                  
+// RM 3.4: a declaration that introduces an explicit subprogram — a subprogram
+// declaration or body, a renaming, or a subprogram instantiation — into the
+// visible part of a package. Such subprograms are exported and derivable of the
+// first kind.
+bool Decl_Is_Visible_Subprogram (Syntax_Node *decl) {
+  switch (decl->kind) {
+    case NK_PROCEDURE_SPEC: case NK_FUNCTION_SPEC:
+    case NK_PROCEDURE_BODY: case NK_FUNCTION_BODY:
+    case NK_SUBPROGRAM_RENAMING:
+      return true;
+    case NK_GENERIC_INST:
+      return decl->symbol and (decl->symbol->kind == SYMBOL_FUNCTION or
+                               decl->symbol->kind == SYMBOL_PROCEDURE);
+    default:
+      return false;
+  }
+}
+
 void Populate_Package_Exports (Symbol *pkg_sym, Syntax_Node *pkg_spec) {
   if (not pkg_sym or not pkg_spec or pkg_spec->kind != NK_PACKAGE_SPEC) return;
   Node_List *visible = &pkg_spec->package_spec.visible_decls;
@@ -13757,8 +13835,7 @@ void Populate_Package_Exports (Symbol *pkg_sym, Syntax_Node *pkg_spec) {
         // Derived enum type: count inherited literals
         count += decl->symbol->type->enumeration.literal_count;
       }
-    } else if (decl->kind == NK_PROCEDURE_SPEC or decl->kind == NK_FUNCTION_SPEC or
-           decl->kind == NK_PROCEDURE_BODY or decl->kind == NK_FUNCTION_BODY) {
+    } else if (Decl_Is_Visible_Subprogram (decl)) {
       count++;
     } else if (decl->kind == NK_EXCEPTION_DECL) {
       count += (uint32_t)decl->exception_decl.names.count;
@@ -13829,8 +13906,11 @@ void Populate_Package_Exports (Symbol *pkg_sym, Syntax_Node *pkg_spec) {
           }
         }
       }
-    } else if ((decl->kind == NK_PROCEDURE_SPEC or decl->kind == NK_FUNCTION_SPEC or
-          decl->kind == NK_PROCEDURE_BODY or decl->kind == NK_FUNCTION_BODY) and decl->symbol) {
+    } else if (Decl_Is_Visible_Subprogram (decl) and decl->symbol) {
+      // A subprogram in the visible part is derivable of the first kind (RM 3.4).
+      // Stamp it here too so separately loaded specs, whose resolution does not
+      // pass through the visible-part toggle, are still recognised.
+      decl->symbol->declared_in_visible_part = true;
       pkg_sym->exported[pkg_sym->exported_count++] = decl->symbol;
     } else if (decl->kind == NK_EXCEPTION_DECL) {
       for (uint32_t j = 0; j < decl->exception_decl.names.count; j++) {
@@ -14370,6 +14450,36 @@ void Resolve_Statement (Syntax_Node *node) {
 // Handles objects, exceptions, and enumeration literals uniformly.                                
 // Extracted from two identical visible/private installation blocks.                               
 //                                                                                                  
+// Re-install into the current (body) scope the implicit derived operations
+// (RM 3.4) that were created while analysing a package spec. They are not
+// declaration nodes, so Install_Declaration_Symbols does not reach them, yet
+// the body must see them exactly as the spec did (RM 7.1).
+void Install_Derived_Operations (Scope *spec_scope) {
+  if (not spec_scope or spec_scope == sm->current_scope) return;
+
+  // Walk the hash buckets and overload chains, not the flat symbol array: an
+  // overloaded homograph is chained but not recorded in symbols[]. Symbol_Add
+  // relinks next_in_bucket/next_overload into the body scope, so each successor
+  // pointer is captured before the symbol is re-added.
+  for (uint32_t h = 0; h < SYMBOL_TABLE_SIZE; h++)
+    for (Symbol *sym = spec_scope->buckets[h]; sym; ) {
+      Symbol *next_bucket = sym->next_in_bucket;
+      for (Symbol *s = sym; s; ) {
+        Symbol *next_overload = s->next_overload;
+        if (Subprogram_Is_Implicit (s)) {
+          // Symbol_Add overwrites parent with the body scope's owner; an
+          // inherited operation keeps the parent operation's nesting for
+          // mangling, exactly as Create_Derived_Operation set it.
+          Symbol *saved_parent = s->parent;
+          Symbol_Add (s);
+          s->parent = saved_parent;
+        }
+        s = next_overload;
+      }
+      sym = next_bucket;
+    }
+}
+
 void Install_Declaration_Symbols (Node_List *decls) {
   for (uint32_t i = 0; i < decls->count; i++) {
     Syntax_Node *decl = decls->items[i];
@@ -14443,6 +14553,17 @@ void Resolve_Declaration_List (Node_List *list) {
 // Handles private types where partial (visible) and full (private) views                           
 // have different Type_Info pointers but represent the same type.                                  
 //                                                                                                  
+// RM 12.1.2: a generic formal type denotes its actual within an instance. The
+// binding is a renamed copy of the actual (so the formal's predefined operators
+// stay bound to the actual's); peel it back to the actual type the instance was
+// given, which is what an instance's external profile must expose.
+Type_Info *Peel_Generic_Actual_View (Type_Info *t) {
+  while (t and t->is_generic_actual_view and t->defining_symbol and
+         t->defining_symbol->type and t->defining_symbol->type != t)
+    t = t->defining_symbol->type;
+  return t;
+}
+
 bool Types_Same_Named (Type_Info *t1, Type_Info *t2) {
   if (not t1 or not t2) return false;
   if (t1 == t2) return true;
@@ -14524,10 +14645,45 @@ void Create_Derived_Operation (Symbol *sub,
 // operation that actually carries a body (GNAT's Ultimate_Alias). A derived
 // subprogram has no code of its own — a call to it binds to the parent's
 // implementation, and a multi-level derivation (S is new T is new P) chains
-// derived op -> derived op -> real body, so only the last has code.
+// derived op -> derived op -> real body, so only the last has code. The parent
+// of a derived operation may itself be a renaming (RM 8.5), so the two peels
+// are interleaved until a symbol that is neither is reached.
 Symbol *Ultimate_Operation (Symbol *sub) {
-  while (sub and sub->parent_operation) sub = sub->parent_operation;
-  return sub;
+  for (;;) {
+    if (sub and sub->parent_operation) { sub = sub->parent_operation; continue; }
+    Symbol *peeled = Resolve_Subprogram_Rename (sub);
+    if (peeled != sub) { sub = peeled; continue; }
+    return sub;
+  }
+}
+
+// RM 3.4: a derivable subprogram of the "first kind" is an explicit subprogram
+// declared immediately within the visible part of the package that also holds
+// the parent type. Such a subprogram hides a homographic derived (second-kind)
+// subprogram for the purpose of further derivation.
+bool Has_Visible_Part_Explicit_Homograph (Scope *scope, Symbol *op) {
+  if (not scope) return false;
+  uint32_t hash = Symbol_Hash_Name (op->name);
+  for (Symbol *s = scope->buckets[hash]; s; s = s->next_in_bucket)
+    for (Symbol *o = s; o; o = o->next_overload)
+      if (o != op and o->declared_in_visible_part and
+          not Subprogram_Is_Implicit (o) and Subprograms_Are_Homographs (o, op))
+        return true;
+  return false;
+}
+
+// RM 3.4 derivability test for a candidate primitive operation `sub` living in
+// the parent type's declarative region `scope`.
+//   * A derived (second-kind) operation is derivable unless a first-kind
+//     homograph hides it.
+//   * An explicit operation is derivable only as a first kind, i.e. when it is
+//     declared immediately within a package's visible part. An explicit
+//     operation in a private part, package body, or block declarative part is
+//     not derivable.
+bool Subprogram_Is_Derivable (Symbol *sub, Scope *scope) {
+  if (Subprogram_Is_Implicit (sub))
+    return not Has_Visible_Part_Explicit_Homograph (scope, sub);
+  return sub->declared_in_visible_part;
 }
 
 // Create inherited operations for a derived type (RM 3.4)
@@ -14539,12 +14695,28 @@ void Derive_Subprograms (Type_Info *derived_type,
   Symbol *parent_sym = parent_type->defining_symbol;
   if (not parent_sym) return;
 
-  // For private types in packages, look at the package's exported symbols.
-  // The parent of the type symbol is the enclosing package/scope.
-  Symbol *pkg = parent_sym->parent;
+  // Scan the parent type's declarative region. Unlike the package export list,
+  // this sees every primitive operation including the implicit (derived) ones,
+  // which a further derivation must reconsider (RM 3.4 second kind). The
+  // derivability test then keeps exactly the operations the derived type
+  // inherits.
+  Scope *parent_scope = parent_sym->defining_scope;
+  if (parent_scope) {
+    for (uint32_t h = 0; h < SYMBOL_TABLE_SIZE; h++)
+      for (Symbol *sym = parent_scope->buckets[h]; sym; sym = sym->next_in_bucket)
+        for (Symbol *sub = sym; sub; sub = sub->next_overload) {
+          if (sub->kind != SYMBOL_FUNCTION and sub->kind != SYMBOL_PROCEDURE) continue;
+          if (not Subprogram_Is_Primitive_Of (sub, parent_type)) continue;
+          if (not Subprogram_Is_Derivable (sub, parent_scope)) continue;
+          Create_Derived_Operation (sub, derived_type, parent_type, type_sym);
+        }
+    return;
+  }
 
-  // Search package exports for primitive operations
-  if (pkg and pkg->kind == SYMBOL_PACKAGE and pkg->exported_count > 0) {
+  // No declarative scope available (a minimally loaded package): fall back to
+  // the export list, whose entries are visible-part operations by construction.
+  Symbol *pkg = parent_sym->parent;
+  if (pkg and pkg->kind == SYMBOL_PACKAGE and pkg->exported_count > 0)
     for (uint32_t i = 0; i < pkg->exported_count; i++) {
       Symbol *sub = pkg->exported[i];
       if (not sub) continue;
@@ -14552,24 +14724,6 @@ void Derive_Subprograms (Type_Info *derived_type,
       if (not Subprogram_Is_Primitive_Of (sub, parent_type)) continue;
       Create_Derived_Operation (sub, derived_type, parent_type, type_sym);
     }
-    return;
-  }
-
-  // Fallback: search the scope where the parent type is declared.
-  // Iterate through hash buckets to find all symbols including overloads.
-  Scope *parent_scope = parent_sym->defining_scope;
-  if (not parent_scope) return;
-  for (uint32_t h = 0; h < SYMBOL_TABLE_SIZE; h++) {
-
-    // Check this symbol and all in its overload chain
-    for (Symbol *sym = parent_scope->buckets[h]; sym; sym = sym->next_in_bucket) {
-      for (Symbol *sub = sym; sub; sub = sub->next_overload) {
-        if (sub->kind != SYMBOL_FUNCTION and sub->kind != SYMBOL_PROCEDURE) continue;
-        if (not Subprogram_Is_Primitive_Of (sub, parent_type)) continue;
-        Create_Derived_Operation (sub, derived_type, parent_type, type_sym);
-      }
-    }
-  }
 }
 
 // Lay down one Component_Info per discriminant name (RM 3.7.1) into `comps`,
@@ -16003,7 +16157,7 @@ bool Instantiate_Generic_Subprogram (Symbol *instance_sym, Symbol *template_sym)
       if (parameter->param_spec.default_expr)
         Resolve_Expression (parameter->param_spec.default_expr);
       Type_Info *parameter_type = parameter->param_spec.param_type
-        ? parameter->param_spec.param_type->type : NULL;
+        ? Peel_Generic_Actual_View (parameter->param_spec.param_type->type) : NULL;
       for (uint32_t j = 0; j < parameter->param_spec.names.count; j++) {
         Syntax_Node *parameter_name = parameter->param_spec.names.items[j];
         Symbol *parameter_sym = Symbol_New (SYMBOL_PARAMETER,
@@ -16024,7 +16178,8 @@ bool Instantiate_Generic_Subprogram (Symbol *instance_sym, Symbol *template_sym)
     if (spec_clone->subprogram_spec.return_type) {
       Resolve_Expression (spec_clone->subprogram_spec.return_type);
       if (spec_clone->subprogram_spec.return_type->type) {
-        instance_sym->return_type = spec_clone->subprogram_spec.return_type->type;
+        instance_sym->return_type =
+          Peel_Generic_Actual_View (spec_clone->subprogram_spec.return_type->type);
         instance_sym->type        = instance_sym->return_type;
       }
     }
@@ -16095,7 +16250,8 @@ void Resolve_Declaration (Syntax_Node *node) {
         if (node->object_decl.object_type and node->object_decl.object_type->type and
             not init->type and
             (init->kind == NK_AGGREGATE or init->kind == NK_APPLY or
-             init->kind == NK_BINARY_OP or init->kind == NK_IDENTIFIER))
+             init->kind == NK_BINARY_OP or init->kind == NK_UNARY_OP or
+             init->kind == NK_IDENTIFIER))
           init->type = node->object_decl.object_type->type;
         Resolve_Expression (node->object_decl.init);
 
@@ -16458,10 +16614,12 @@ void Resolve_Declaration (Syntax_Node *node) {
         Symbol *scope_owner = sm->current_scope ? sm->current_scope->owner : NULL;
         Symbol *sym = Symbol_Find (node->subprogram_spec.name);
 
-        // Only match specs from the current declarative region
+        // Only match specs from the current declarative region. An implicitly
+        // declared inherited operation (RM 3.4) is never completed by an
+        // explicit declaration; the explicit one is a homograph that hides it.
         while (sym) {
           if (sym->kind == expected_kind and sym->parameter_count == total_params
-            and sym->parent == scope_owner) {
+            and sym->parent == scope_owner and not Subprogram_Is_Implicit (sym)) {
 
             // Check parameter types match
             bool types_match = true;
@@ -17075,8 +17233,15 @@ void Resolve_Declaration (Syntax_Node *node) {
         node->symbol = sym;
         Symbol_Manager_Push_Scope (sym);
         sym->scope = sm->current_scope;  // Link scope to symbol for P.X lookups
+
+        // RM 3.4: only subprograms declared immediately within the visible part
+        // are derivable of the first kind. Saved/restored to nest correctly.
+        bool saved_visible_part = sm->in_package_visible_part;
+        sm->in_package_visible_part = true;
         Resolve_Declaration_List (&node->package_spec.visible_decls);
+        sm->in_package_visible_part = false;
         Resolve_Declaration_List (&node->package_spec.private_decls);
+        sm->in_package_visible_part = saved_visible_part;
 
         // End of package spec freezes all declared entities (RM 13.14)
         Freeze_Declaration_List (&node->package_spec.visible_decls);
@@ -17119,6 +17284,10 @@ void Resolve_Declaration (Syntax_Node *node) {
           }
           node->symbol = pkg_sym;
         }
+
+        // The spec's scope (carrying its implicit derived operations) before
+        // the body overwrites pkg_sym->scope with its own.
+        Scope *spec_scope = pkg_sym ? pkg_sym->scope : NULL;
         Symbol_Manager_Push_Scope (pkg_sym);
 
         // Set package symbol's scope for separate subunit resolution.
@@ -17154,6 +17323,7 @@ void Resolve_Declaration (Syntax_Node *node) {
         if (spec and spec->kind == NK_PACKAGE_SPEC) {
           Install_Declaration_Symbols (&spec->package_spec.visible_decls);
           Install_Declaration_Symbols (&spec->package_spec.private_decls);
+          Install_Derived_Operations (spec_scope);
         }
         Resolve_Declaration_List (&node->package_body.declarations);
 
@@ -17226,6 +17396,11 @@ void Resolve_Declaration (Syntax_Node *node) {
                 alias->generic_unit = (orig)->generic_unit; \
                 alias->generic_body = (orig)->generic_body; \
                 alias->generic_formals = (orig)->generic_formals; \
+                /* A use-visible view of a renaming or an inherited operation */ \
+                /* must dispatch to the same body, so carry the links that */ \
+                /* Ultimate_Operation follows (RM 8.5, 3.4). */ \
+                alias->renamed_object  = (orig)->renamed_object; \
+                alias->parent_operation = (orig)->parent_operation; \
                 Symbol_Add (alias); \
                 alias->parent = (orig)->parent; \
                 alias->unique_id = (orig)->unique_id; \
@@ -47639,14 +47814,19 @@ void Load_Package_Spec (String_Slice name, char *src) {
       // Push package scope
       Symbol_Manager_Push_Scope (pkg_sym);
 
-      // Resolve visible declarations
+      // Resolve visible declarations (RM 3.4: subprograms declared here are
+      // derivable of the first kind).
+      bool saved_visible_part = sm->in_package_visible_part;
+      sm->in_package_visible_part = true;
       Resolve_Declaration_List (&pkg->package_spec.visible_decls);
+      sm->in_package_visible_part = false;
 
       // Populate package exports for qualified access (e.g., SYSTEM.MAX_INT)
       Populate_Package_Exports (pkg_sym, pkg);
 
       // Resolve private declarations
       Resolve_Declaration_List (&pkg->package_spec.private_decls);
+      sm->in_package_visible_part = saved_visible_part;
       Symbol_Manager_Pop_Scope ();
 
       // SYSTEM.ADDRESS override (RM 13.7):                                                         
