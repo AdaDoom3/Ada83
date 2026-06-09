@@ -1950,6 +1950,7 @@ void Create_Derived_Operation   (Symbol    *sub,
                                  Type_Info *derived_type,
                                  Type_Info *parent_type,
                                  Symbol    *type_sym);
+Symbol *Ultimate_Operation      (Symbol    *sub);
 void Derive_Subprograms         (Type_Info *derived_type,
                                  Type_Info *parent_type,
                                  Symbol    *type_sym);
@@ -14519,6 +14520,16 @@ void Create_Derived_Operation (Symbol *sub,
   derived_sub->parent = sub->parent;
 }
 
+// RM 3.4: follow a derived operation's inheritance chain to the ultimate
+// operation that actually carries a body (GNAT's Ultimate_Alias). A derived
+// subprogram has no code of its own — a call to it binds to the parent's
+// implementation, and a multi-level derivation (S is new T is new P) chains
+// derived op -> derived op -> real body, so only the last has code.
+Symbol *Ultimate_Operation (Symbol *sub) {
+  while (sub and sub->parent_operation) sub = sub->parent_operation;
+  return sub;
+}
+
 // Create inherited operations for a derived type (RM 3.4)
 void Derive_Subprograms (Type_Info *derived_type,
                  Type_Info *parent_type, Symbol *type_sym) {
@@ -22696,8 +22707,10 @@ LLVM_Value Generate_Identifier (Syntax_Node *node) {
     case SYMBOL_FUNCTION: {
 
       // A rename (including a generic formal-subprogram binding) denotes
-      // its target: peel the chain before dispatching the call.
-      Symbol *actual = Resolve_Subprogram_Rename (sym);
+      // its target: peel the chain before dispatching the call. A derived
+      // operation (RM 3.4) forwards to the parent's body (its ultimate
+      // operation), as the inherited subprogram has no code of its own.
+      Symbol *actual = Ultimate_Operation (Resolve_Subprogram_Rename (sym));
       Note_Separate_Boundary_Callee (actual);
 
       // Check if actual is an enumeration literal (e.g., RED, YELLOW)
@@ -26052,12 +26065,14 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
       }
     }
 
-    // For derived type operations (RM 3.4), emit direct call to parent.                           
-    // Derived types have identical representation to parent in Ada 83,                             
-    // so no wrapper needed - just call the parent's implementation directly.                      
-    // This is the GNAT-style optimization.                                                        
-    //                                                                                              
-    Symbol *call_target = sym->parent_operation ? sym->parent_operation : sym;
+    // For derived type operations (RM 3.4), emit direct call to the parent's
+    // implementation. Derived types share the parent's representation in Ada 83,
+    // so no wrapper is needed; the front end inserts the parameter/result
+    // conversions (RM 3.4(17-20)). Follow the inheritance chain to the ultimate
+    // operation that actually has a body (mirrors GNAT's Ultimate_Alias): a
+    // multi-level derivation S is new T is new P chains derived op -> derived op
+    // -> real body, and only the last carries code.
+    Symbol *call_target = Ultimate_Operation (sym);
 
     // RM 13.10.2 / GNAT: UNCHECKED_CONVERSION is an intrinsic generic.
     // Each instantiation creates a SYMBOL_FUNCTION with no body.
