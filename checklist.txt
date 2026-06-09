@@ -151,5 +151,34 @@ c34009 (non-limited private). Discriminated-record support added this round:
   - a derived operation's discriminant check uses the parent's base formal
   - BIP state kept across multiple RETURNs
   - OUT record parameter re-checks the actual's discriminant constraint
-No suite regressions throughout. Next derived-type targets: c34004 (fixed
-point), c34007 (access), c34014 (derived subprogram visibility).
+No suite regressions throughout. Next derived-type targets: c34007 (access),
+c34014 (derived subprogram visibility).
+
+═══════════════════════════════════════════════════════════════════════════════
+c34004 COMPLETE (2/2, 100%): derived FIXED POINT types. Root causes fixed:
+  - Fixed-point membership (X IN T, R IN T) scaled the value but not the type
+    bounds; extracted the bound-to-mantissa logic out of a macro into a real
+    function (Emit_Fixed_Bound_Mantissa) and used it in both the constraint
+    check and the scalar/range membership paths.
+  - A derived fixed-point type's explicit RANGE with non-static bounds (built
+    from IDENT_INT) was dropped; now stored via Assign_Eval_Bound like float.
+  - Fixed-point types now build an anonymous base type (Build_Fixed_Base) that
+    spans the symmetric model range +/-(2**MANTISSA-1)*SMALL, so T'BASE'FIRST,
+    'LAST, 'MANTISSA, 'LARGE, 'SAFE_LARGE are mutually consistent. A derived
+    fixed type's base is the parent's base (its finer DELTA, full range).
+  - T'MANTISSA / T'FORE / T'LARGE for a non-static range are evaluated at
+    runtime (Emit_Fixed_Mantissa_Runtime via ctlz, Emit_Fixed_Fore_Runtime via
+    a divide-by-ten digit loop, Emit_Fixed_Large_Runtime).
+  - Representation SMALL vs accuracy SMALL: a derived type given a coarser
+    DELTA has a larger 'SMALL than its base, but its objects are stored and its
+    arithmetic performed in the base's units so base values absent from the
+    subtype stay representable. Introduced Fixed_Repr_Small (= base SMALL) and
+    routed every representation site (literals, init, arithmetic, comparison,
+    membership, conversion, aggregates, returns, 'FIRST/'LAST) through it.
+    Attribute values ('SMALL, 'DELTA, 'MANTISSA, 'FORE) keep the subtype SMALL.
+    Identity for ordinary types (base SMALL == own SMALL), so no suite impact.
+  - Qualified real to fixed (T'(1.0)) used a plain float-to-int convert,
+    dropping the SMALL scaling; now uses Convert_Real_To_Fixed.
+  - Fixed a malformed llvm.round.double intrinsic name (now f32/f64).
+Suite: c34004 0->2/2; c46 8->9; c34 37->39; c35/c45/c87/c96 unchanged.
+Next derived-type targets: c34007 (access), c34014 (derived subprogram vis).
