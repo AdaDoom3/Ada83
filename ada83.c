@@ -13250,13 +13250,16 @@ Type_Info *Resolve_Expression (Syntax_Node *node) {
                 val = expr->integer_lit.value;
                 is_static = true;
               } else if (expr and expr->kind == NK_IDENTIFIER and expr->symbol and
+                     expr->symbol->kind == SYMBOL_LITERAL and
                      expr->symbol->type and Type_Is_Boolean (expr->symbol->type)) {
 
-                // BOOLEAN literal: FALSE=0, TRUE=1
+                // BOOLEAN literal: FALSE=0, TRUE=1. (A boolean-typed variable or
+                // parameter is NOT a literal — it falls through to runtime eval.)
                 val = Slice_Equal_Ignore_Case (expr->string_val.text, S("TRUE"))
                   ? 1 : 0;
                 is_static = true;
               } else if (expr and expr->kind == NK_IDENTIFIER and expr->symbol and
+                     expr->symbol->kind == SYMBOL_LITERAL and
                      expr->symbol->type and Type_Is_Enumeration (expr->symbol->type)) {
 
                 // Enum literal: find position
