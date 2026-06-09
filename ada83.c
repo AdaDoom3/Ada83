@@ -12458,6 +12458,27 @@ Type_Info *Resolve_Expression (Syntax_Node *node) {
           derived->base_type     = base;
         }
 
+        // RM 3.4: deriving from a constrained discrete subtype (e.g.
+        // `type S is new P range L..H`, or `type S is new SUB` where SUB is a
+        // constrained subtype of P) introduces an unconstrained base S'BASE
+        // that holds every value of the parent's base type, while S itself
+        // carries the constraint. Without a distinct base, a base-range value
+        // (an inherited enumeration literal outside S's range) would be typed
+        // with S's constraint and wrongly pass an assignment range check.
+        if ((Type_Is_Enumeration (parent) or parent->kind == TYPE_INTEGER)
+            and not node->derived_type.constraint and Type_Base (parent) != parent) {
+          Type_Info *parent_base = Type_Base (parent);
+          Type_Info *base = Type_New (parent_base->kind, S(""));
+          base->parent_type  = parent_base;
+          if (Type_Is_Enumeration (parent_base))
+            base->enumeration = parent_base->enumeration;
+          base->low_bound    = parent_base->low_bound;
+          base->high_bound   = parent_base->high_bound;
+          base->size         = parent_base->size;
+          base->alignment    = parent_base->alignment;
+          derived->base_type = base;
+        }
+
         // RM 3.5.9 / 3.4: a derived fixed-point type shares its parent's base
         // model. T'BASE is the parent's anonymous base (full model range, the
         // parent's DELTA), while T itself carries the derived accuracy and range
@@ -16487,14 +16508,19 @@ void Resolve_Declaration (Syntax_Node *node) {
               }
 
               // For derived enumeration types (TYPE T IS NEW BOOLEAN),
-              // create inherited literal symbols (RM 3.4(12))
+              // create inherited literal symbols (RM 3.4(12)). An inherited
+              // literal is a value of the base type, so when the derived first
+              // subtype is constrained it carries the unconstrained base — its
+              // value may lie outside the subtype, and an assignment to the
+              // subtype must then be range-checked.
               if (node->type_decl.definition and
                 node->type_decl.definition->kind == NK_DERIVED_TYPE and
                 type->enumeration.literals and type->enumeration.literal_count > 0) {
+                Type_Info *literal_type = type->base_type ? type->base_type : type;
                 for (uint32_t i = 0; i < type->enumeration.literal_count; i++) {
                   String_Slice lit_name = type->enumeration.literals[i];
                   Symbol *lit_sym = Symbol_New (SYMBOL_LITERAL, lit_name, node->location);
-                  lit_sym->type = type;
+                  lit_sym->type = literal_type;
                   lit_sym->frame_offset = (int64_t)i;
                   Symbol_Add (lit_sym);
                 }

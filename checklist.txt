@@ -293,3 +293,27 @@ expander, per the brief):
 REGRESSION CHECK (HEAD vs change, identical harness): NO regressions across
 c34 c35 c41 c45 c46 c48 c64 c66 c83 c84 c85 c86 c92 c95 c96 cc. Improvements:
 c34 40->51 (incl. c34014 2->14), c83 24->26, c87 45->46.
+
+═══════════════════════════════════════════════════════════════════════════════
+c34001 COMPLETE — 4/4 (100%); also completes c34016 (1/1). Root cause fixed:
+
+Deriving from a CONSTRAINED discrete subtype (`type S is new SUBPARENT`, or any
+derived discrete subtype with a tighter range than its base) must introduce an
+unconstrained base S'BASE that holds every value of the parent base type, while
+S itself carries the constraint (RM 3.4). An inherited enumeration literal is a
+value of the BASE — its position may fall outside S's range.
+
+Bug: inherited literals were typed with the constrained first subtype S[lo..hi].
+An assignment `Y : S := <literal outside S>` then hit the "source subtype fits
+target subtype" elision in Emit_Constraint_Check_Internal (source == target =>
+trivially fits) and skipped the range check, so CONSTRAINT_ERROR was not raised.
+(`type T is new P range IDENT..IDENT` happened to work only because its dynamic
+BOUND_EXPR bounds bypass the static elision.)
+
+Fix (upstream, in the type model — not the check):
+  - NK_DERIVED_TYPE builds a distinct unconstrained base for a derived discrete
+    type whose parent is a constrained subtype, mirroring the existing
+    array/record/access/fixed base construction.
+  - Inherited enumeration literals are typed with that base, so a base-range
+    value carries unconstrained bounds and the assignment range check fires.
+No regressions across c34 c35 c35502 c35503 c43 c45 c46 c52 c55 c83; c34 51->53.
