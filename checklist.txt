@@ -202,3 +202,19 @@ c34007 (derived ACCESS types) IN PROGRESS (2->3/11). Root causes fixed:
   Suite: c34007 2->3 (a,f,j); c64 26->27; no regressions (c34/c43/c45/c46/c52).
   Remaining c34007 need distinct features: slice of access-to-array codegen (d),
   2-D access plumbing (g,i,m,p), limited-private (s,u), OUT-param length (r).
+
+═══════════════════════════════════════════════════════════════════════════════
+c34014 (derived subprogram visibility) IN PROGRESS (1->2/14). Root cause fixed:
+  - A call to an inherited (derived) subprogram must bind to the parent's body
+    (RM 3.4): the derived subprogram has no code of its own. The codegen climbed
+    at most one parent_operation level (the binary-operator path climbed none),
+    so a multi-level derivation (S is new T is new P) and the parameterless and
+    operator call paths emitted references to intermediate derived operations
+    that were never defined, failing at link. Added Ultimate_Operation (GNAT's
+    Ultimate_Alias) and routed all four call-emission sites through it:
+    Generate_Apply, the parameterless path in Generate_Identifier, and the
+    unary/binary user-operator paths. Fixed every compile/link failure in the
+    group; c34014g now passes.
+  Suite: c34 39->40; c45/c87 stable; no regressions.
+  Remaining c34014 are a separate semantic feature: visibility/overload binding
+  of a derived subprogram vs an explicit homograph (NEW/OLD ... NOT VISIBLE).
