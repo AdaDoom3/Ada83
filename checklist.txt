@@ -182,3 +182,23 @@ c34004 COMPLETE (2/2, 100%): derived FIXED POINT types. Root causes fixed:
   - Fixed a malformed llvm.round.double intrinsic name (now f32/f64).
 Suite: c34004 0->2/2; c46 8->9; c34 37->39; c35/c45/c87/c96 unchanged.
 Next derived-type targets: c34007 (access), c34014 (derived subprogram vis).
+
+═══════════════════════════════════════════════════════════════════════════════
+c34007 (derived ACCESS types) IN PROGRESS (2->3/11). Root causes fixed:
+  - Dereferencing a fat access (access-to-unconstrained) whose designated
+    subtype is statically constrained mis-tagged the loaded { ptr, ptr } as a
+    thin pointer, so array comparison/operations read it wrong. The .ALL value
+    (NK_UNARY_OP/TK_ALL and the NK_SELECTED path) and Expression_Produces_Fat_
+    Pointer now tag the deref by the access's representation, not the designated
+    subtype. A derived access type from a constrained access subtype now builds
+    an unconstrained access base so the fat-pointer decision sees through it.
+  - RM 4.5.2: equality slides array bounds. A constrained array operand of a
+    comparison no longer imposes its index constraint on the sibling aggregate
+    (was raising a spurious element-count CONSTRAINT_ERROR). Strip to the base
+    in both aggregate-typing sites of Resolve_Binary_Op.
+  - RM 3.3.2: membership in a constrained access-to-array subtype now checks the
+    designated bounds (null belongs; non-null belongs iff bounds match) instead
+    of always returning TRUE.
+  Suite: c34007 2->3 (a,f,j); c64 26->27; no regressions (c34/c43/c45/c46/c52).
+  Remaining c34007 need distinct features: slice of access-to-array codegen (d),
+  2-D access plumbing (g,i,m,p), limited-private (s,u), OUT-param length (r).

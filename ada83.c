@@ -8189,6 +8189,14 @@ bool Expression_Produces_Fat_Pointer (const Syntax_Node *node,
     // Slices always produce fat pointers even with constrained declared type
     if (Expression_Is_Slice (node))
       return true;
+
+    // A .ALL dereference of a fat access yields the loaded { ptr, ptr }
+    // (data + bounds), even when the designated subtype is statically
+    // constrained — the bounds still travel with an access-to-unconstrained.
+    if (node->kind == NK_UNARY_OP and node->unary.op == TK_ALL and
+        node->unary.operand and
+        Type_Needs_Fat_Pointer (node->unary.operand->type))
+      return true;
   }
 
   // Identifier-based check: if the node's own type has dynamic bounds or is
@@ -10087,6 +10095,13 @@ Type_Info *Resolve_Binary_Op (Syntax_Node *node) {
       while (prop and Type_Is_Record (prop) and
            prop->record.has_disc_constraints and prop->base_type)
         prop = prop->base_type;
+
+      // RM 4.5.2: equality slides array bounds, so a constrained array operand
+      // must not impose its index constraint on the aggregate (which would
+      // spuriously check the aggregate's element count). Use the base type.
+      if (prop and Type_Is_Array_Like (prop) and prop->array.is_constrained
+          and Type_Base (prop) != prop)
+        prop = Type_Base (prop);
     }
     // RM 4.5.3: a concatenation operand has the unconstrained base array type,
     // so an aggregate operand derives its bounds from its own element count
@@ -10320,6 +10335,14 @@ Type_Info *Resolve_Binary_Op (Syntax_Node *node) {
             while (prop and Type_Is_Record (prop) and
                  prop->record.has_disc_constraints and prop->base_type)
               prop = prop->base_type;
+
+            // RM 4.5.2: equality compares values with sliding bounds, so a
+            // constrained array operand must not force its index constraint
+            // onto the aggregate (which would spuriously check its element
+            // count). Propagate the unconstrained base instead.
+            if (prop and Type_Is_Array_Like (prop) and prop->array.is_constrained
+                and Type_Base (prop) != prop)
+              prop = Type_Base (prop);
             opnd[i]->type = prop;
             Resolve_Expression (opnd[i]);
             *own[i] = opnd[i]->type;
@@ -12380,6 +12403,21 @@ Type_Info *Resolve_Expression (Syntax_Node *node) {
         // applied below.
         if (Type_Is_Fixed_Point (parent) and Type_Base (parent) != parent)
           derived->base_type = Type_Base (parent);
+
+        // RM 3.4: a derived access type whose parent subtype constrained its
+        // designated array (e.g. type S is new PARENT(5..7)) keeps that
+        // constraint for bounds checks, but its base is the parent's
+        // unconstrained access base so the fat-pointer decision and T'BASE see
+        // the underlying unconstrained designated (RM 3.10).
+        if (Type_Is_Access (parent) and Type_Base (parent) != parent) {
+          Type_Info *parent_base = Type_Base (parent);
+          Type_Info *base = Type_New (TYPE_ACCESS, S(""));
+          base->parent_type  = parent_base;
+          base->access       = parent_base->access;  // unconstrained designated
+          base->size         = parent_base->size;
+          base->alignment    = parent_base->alignment;
+          derived->base_type = base;
+        }
 
         // Apply constraint if present
         if (node->derived_type.constraint) {
@@ -24817,6 +24855,43 @@ LLVM_Value Emit_Binary_Op_Predefined (Syntax_Node *node) {
             }
           }
 
+          // Membership in a constrained access-to-array subtype (RM 3.3.2):
+          // a null value always belongs; a non-null value belongs iff its
+          // designated array's index bounds equal the subtype's constraint.
+          if (range_type and Type_Is_Access (range_type) and
+              range_type->access.designated_type and
+              Type_Is_Array_Like (range_type->access.designated_type) and
+              range_type->access.designated_type->array.is_constrained and
+              LLVM_Rep_Is_Fat_Pointer (left_v.rep)) {
+            Type_Info *des = range_type->access.designated_type;
+            LLVM_Rep bt = Array_Bound_LLVM_Rep (des);
+            LLVM_Rep iat = Integer_Arith_Rep ();
+            uint32_t data = Emit_Fat_Pointer_Data (left_v.reg, bt).reg;
+            LLVM_I1 is_null = Emit_Icmp_Null_Ptr ("eq", data);
+            LLVM_I1 belongs = { Emit_I1_Const (1, "access membership seed").reg };
+            bool decided = true;
+            for (uint32_t d = 0; d < des->array.index_count; d++) {
+              Index_Info *ix = &des->array.indices[d];
+              LLVM_Rep lr = LL_REP_VOID, hr = LL_REP_VOID;
+              uint32_t clo = Emit_Bound_Value_Typed (&ix->low_bound,  &lr);
+              uint32_t chi = Emit_Bound_Value_Typed (&ix->high_bound, &hr);
+              if (clo == 0 or chi == 0) { decided = false; break; }
+              uint32_t vlo = Emit_Fat_Pointer_Low_Dim  (left_v.reg, bt, d).reg;
+              uint32_t vhi = Emit_Fat_Pointer_High_Dim (left_v.reg, bt, d).reg;
+              belongs = Emit_And_I1 (belongs, Emit_Icmp ("eq", iat,
+                Emit_Convert (vlo, bt, iat).reg, Emit_Convert (clo, lr, iat).reg));
+              belongs = Emit_And_I1 (belongs, Emit_Icmp ("eq", iat,
+                Emit_Convert (vhi, bt, iat).reg, Emit_Convert (chi, hr, iat).reg));
+            }
+            if (decided) {
+              uint32_t res = Emit_Temp ();
+              Emit ("  %%t%u = or i1 %%t%u, %%t%u  ; null or bounds match\n",
+                 res, is_null.reg, belongs.reg);
+              t = negate ? Emit_Not_I1 ((LLVM_I1){ res }).reg : res;
+              return Emit_Bool_Value ((LLVM_I1){ t });
+            }
+          }
+
           // Other composites (records, strings), access and task types: the
           // value is already of the type, so membership is always TRUE
           // (RM 4.5.2). Access types have no range.
@@ -25155,12 +25230,14 @@ LLVM_Value Emit_Binary_Op_Predefined (Syntax_Node *node) {
           designated = node->unary.operand->type->access.designated_type;
 
         // For composite types the access value IS the dereferenced value.
-        // Label it with the designated type's representation: a thin "ptr" for
-        // records / constrained arrays, but FAT_PTR_TYPE for an unconstrained
-        // array (whose access carries bounds) - "ptr" would lie about a fat
-        // operand.
+        // Label it by how the access is represented: a fat access yields the
+        // loaded { ptr, ptr } (data + bounds) even when the designated subtype
+        // is statically constrained (the bounds still travel); a thin access
+        // yields a bare data pointer typed by the designated subtype.
         if (Type_Is_Composite (designated)) {
-          return Val_Rep (operand, Type_To_Rep (designated));
+          LLVM_Rep deref_rep = Type_Needs_Fat_Pointer (node->unary.operand->type)
+                             ? LL_REP_FAT : Type_To_Rep (designated);
+          return Val_Rep (operand, deref_rep);
         }
 
         // For scalar types, load the value from the pointer
@@ -26992,10 +27069,14 @@ LLVM_Value Generate_Selected (Syntax_Node *node) {
     Emit_Access_Check (Val_Of_Type (ptr, prefix_type), prefix_type);
 
     // For composite types (records, arrays), return pointer with rep matching
-    // the designated type: thin ptr for records / constrained arrays, fat
-    // { ptr, ptr } for unconstrained or dynamic-bound arrays (mirrors 22123).
+    // the value produced by Generate_Lvalue: a fat access yields the loaded
+    // { ptr, ptr } (data + bounds), so tag it fat even when the designated
+    // subtype is statically constrained (the bounds still travel). A thin
+    // access yields a bare data pointer typed by the designated subtype.
     if (Type_Is_Composite (designated)) {
-      return Val_Rep (ptr, Type_To_Rep (designated));
+      LLVM_Rep deref_rep = Type_Needs_Fat_Pointer (prefix_type)
+                         ? LL_REP_FAT : Type_To_Rep (designated);
+      return Val_Rep (ptr, deref_rep);
     }
 
     // For scalar types, load the value
