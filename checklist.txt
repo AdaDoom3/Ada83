@@ -83,13 +83,28 @@ c34005 STATUS: 9 / 14 pass (was 1). No regressions in the wider suite
         s  (2-D limited-private derived array, segfault)
         u  (limited-private derived array, segfault)
 
-REMAINING WORK TO REACH 100% ON c34005
---------------------------------------
-- Multi-dimensional (>1 index) derived arrays: extend the dynamic-bounds
-  fat-pointer element/slice addressing and 'SIZE paths to N dimensions (m,o,s).
-- Length check on assignment to an unconstrained array OUT formal whose actual
-  is a constrained subtype (r).
-- u segfault: diagnose (likely another fat-stored limited-private path).
+ALSO FIXED
+----------
+[x] Assigning a fat array (aggregate / unconstrained) into a dynamically-bounded
+    multidimensional target copied only dimension 0's length * component size
+    (the first row). Now uses Emit_Array_Byte_Size (product of all dims). This
+    made c34005s run instead of crash and fixed positional/named 2-D aggregate
+    assignment (verified by reduced cases).
+
+REMAINING WORK TO REACH 100% ON c34005   (current: 9/14)
+-------------------------------------------------------
+Each remaining subtest needs a distinct piece of multi-dimensional or
+limited-private support; reduced repros isolate the next root causes:
+- m (2-D, ~23 checks): positional and named 2-D aggregates now work, but a
+  FUNCTION returning a constrained dynamic 2-D array (e.g. IDENT) yields wrong
+  data; 2-D qualification/conversion/slice/membership still to do.
+- s (2-D limited private, ~18 checks): same 2-D operation set over LP.
+- o (2-D, 4 checks): 2-D aggregate-vs-constraint CONSTRAINT_ERROR checks.
+- r (5 checks): CONSTRAINT_ERROR on a wrong-length assignment through an
+  unconstrained array OUT formal (no longer crashes).
+- u: still segfaults (another fat-stored limited-private path).
+
+WIDER SUITE: no regressions; c52103 improved 6 -> 8 from these fixes.
 
 WORKING NOTES
 -------------

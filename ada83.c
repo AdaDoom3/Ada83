@@ -25673,14 +25673,21 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
 
             // Fat pointer actual (string literal, slice) to constrained
             // formal with fat-pointer storage (dyn bounds): rebuild fat
-            // pointer with the formal type's bounds. E.g. "ABCDE" passed
-            // to STRING (11..15) - bounds must be 11..15, not the
-            // literal's default 1..5. (RM 4.3.2)
+            // pointer with the formal type's bounds, across every dimension.
+            // E.g. "ABCDE" passed to STRING (11..15) - bounds must be 11..15,
+            // not the literal's default 1..5 (RM 4.3.2); a multidimensional
+            // formal needs every dimension's pair, not just the first.
             LLVM_Rep abt = Array_Bound_LLVM_Rep (formal_type);
             uint32_t data_ptr = Emit_Fat_Pointer_Data (args[param_idx], abt).reg;
-            uint32_t lo = Emit_Single_Bound (&formal_type->array.indices[0].low_bound, abt);
-            uint32_t hi = Emit_Single_Bound (&formal_type->array.indices[0].high_bound, abt);
-            args[param_idx] = Emit_Fat_Pointer_Dynamic (data_ptr, lo, hi, abt).reg;
+            uint32_t ndims = formal_type->array.index_count;
+            if (ndims < 1) ndims = 1;
+            if (ndims > 8) ndims = 8;
+            uint32_t blo[8], bhi[8];
+            for (uint32_t d = 0; d < ndims; d++) {
+              blo[d] = Emit_Single_Bound (&formal_type->array.indices[d].low_bound, abt);
+              bhi[d] = Emit_Single_Bound (&formal_type->array.indices[d].high_bound, abt);
+            }
+            args[param_idx] = Emit_Fat_Pointer_MultiDim (data_ptr, blo, bhi, ndims, abt, abt).reg;
           } else if (Expression_Produces_Fat_Pointer (arg, actual_type) and
                  not formal_needs_fat and
                  formal_type->array.is_constrained) {
@@ -26549,16 +26556,11 @@ type_conversion:
         // use fat-pointer storage even though dst_unc is false.
         bool dst_is_fat = dst_unc or Type_Has_Dynamic_Bounds (dst_type);
 
-        // Flat alloca > fat pointer destination: build {data, {low, high}}.
-        // Source is a flat alloca; bounds come from type info.
+        // Flat alloca > fat pointer destination: build { data, bounds } over
+        // every dimension from the source's own bounds (a multidimensional
+        // source would otherwise keep only its first dimension's pair).
         if (dst_is_fat and not src_is_fat) {
-          LLVM_Rep bt = Array_Bound_LLVM_Rep (dst_type);
-          int128_t lo = Array_Low_Bound (src_type);
-          int128_t hi = (src_type->kind == TYPE_ARRAY and src_type->array.index_count > 0)
-            ? Type_Bound_Value (src_type->array.indices[0].high_bound) : lo;
-          uint32_t lo_t = Emit_Static_Int_Comment (lo, bt, "array conv low bound").reg;
-          uint32_t hi_t = Emit_Static_Int_Comment (hi, bt, "array conv high bound").reg;
-          return Emit_Fat_Pointer_Dynamic (result, lo_t, hi_t, bt);
+          return Emit_Fat_Pointer_For_Lvalue (result, src_type);
 
         // Fat pointer > flat alloca destination: extract data pointer.
         } else if (not dst_is_fat and src_is_fat) {
@@ -27029,6 +27031,11 @@ void Emit_Float_Type_Limit (uint32_t t, Type_Info *type,
 uint32_t Get_Dimension_Index (Syntax_Node *arg) {
   if (not arg) return 0;  // Default to first dimension
   if (arg->kind == NK_INTEGER) return (uint32_t)(arg->integer_lit.value - 1);
+  // RM 3.6.2: the dimension is a static universal_integer expression. Fold a
+  // named number or static constant (e.g. N : constant := 2) to its value;
+  // otherwise it is not a literal 1, so default to the first dimension.
+  double v = Eval_Const_Numeric (arg);
+  if (v == v and v >= 1) return (uint32_t)v - 1;
   return 0;
 }
 
@@ -29499,12 +29506,22 @@ uint32_t Generate_Aggregate (Syntax_Node *node) {
               inner_named = true;
             else inner_n++;
           }
-          if (inner_n > 0 and not inner_named and
-            dim_lo[d].kind == BOUND_INTEGER) {
+          // The inner dimension's length is the positional count; its low bound
+          // is the index subtype's FIRST. Fold that low bound to an integer even
+          // when it is a named-number expression (e.g. INDEX with a static
+          // constant FIRST), otherwise the dimension would keep the subtype's
+          // full range and report the wrong length.
+          int128_t lo_val = 0;
+          bool have_lo = dim_lo[d].kind == BOUND_INTEGER;
+          if (have_lo) lo_val = dim_lo[d].int_value;
+          else if (dim_lo[d].kind == BOUND_EXPR and dim_lo[d].expr) {
+            double v = Eval_Const_Numeric (dim_lo[d].expr);
+            if (v == v) { lo_val = (int128_t)v; have_lo = true; }
+          }
+          if (inner_n > 0 and not inner_named and have_lo) {
+            dim_lo[d] = (Type_Bound){ .kind = BOUND_INTEGER, .int_value = lo_val };
             dim_hi[d] = (Type_Bound){
-              .kind = BOUND_INTEGER,
-              .int_value = dim_lo[d].int_value + (int128_t)inner_n - 1
-            };
+              .kind = BOUND_INTEGER, .int_value = lo_val + (int128_t)inner_n - 1 };
           }
 
           // Descend into the first element of this inner aggregate
