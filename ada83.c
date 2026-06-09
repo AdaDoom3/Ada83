@@ -25687,6 +25687,22 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
               blo[d] = Emit_Single_Bound (&formal_type->array.indices[d].low_bound, abt);
               bhi[d] = Emit_Single_Bound (&formal_type->array.indices[d].high_bound, abt);
             }
+
+            // RM 6.4.1: the actual must belong to the constrained formal's
+            // subtype - each dimension's length must match (bounds themselves
+            // slide). Check before re-anchoring to the formal's bounds, which
+            // would otherwise mask a length mismatch.
+            for (uint32_t d = 0; d < ndims; d++) {
+              uint32_t a_len = Emit_Fat_Pointer_Length_Dim (args[param_idx], abt, d).reg;
+              uint32_t f_len = Emit_Length_From_Bounds (blo[d], bhi[d], abt).reg;
+              LLVM_I1 ne = Emit_Icmp ("ne", abt, a_len, f_len);
+              uint32_t ok = cg->label_id++, bad = cg->label_id++;
+              Emit ("  br i1 %%t%u, label %%L%u, label %%L%u\n", ne.reg, bad, ok);
+              cg->block_terminated = true;
+              Emit_Label_Here (bad);
+              Emit_Raise_Constraint_Error ("actual array length vs constrained formal (RM 6.4.1)");
+              Emit_Label_Here (ok);
+            }
             args[param_idx] = Emit_Fat_Pointer_MultiDim (data_ptr, blo, bhi, ndims, abt, abt).reg;
           } else if (Expression_Produces_Fat_Pointer (arg, actual_type) and
                  not formal_needs_fat and
