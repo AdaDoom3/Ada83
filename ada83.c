@@ -25704,7 +25704,13 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
 
           // RM 6.4.1: for an IN OUT / OUT record formal with constrained
           // discriminants, the actual's discriminants must match the constraint.
-          Emit_Record_Discriminant_Constraint_Checks (args[param_idx], formal_type);
+          // A derived operation forwards to the parent, whose formal is the
+          // unconstrained base, so the actual is passed as the base and carries
+          // no constraint to check (RM 3.4) — use the parent's formal type.
+          Type_Info *disc_check_type = formal_type;
+          if (sym->parent_operation and param_idx < sym->parent_operation->parameter_count)
+            disc_check_type = sym->parent_operation->parameters[param_idx].param_type;
+          Emit_Record_Discriminant_Constraint_Checks (args[param_idx], disc_check_type);
         }
       } else {
         // RM 4.8: Propagate target access type to allocator in parameter
@@ -25762,8 +25768,13 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
 
           // Discriminant constraint check for a constrained record subtype
           // (RM 3.7.2(3)): when a formal is e.g. S_TRUE IS VAR_REC (TRUE),
-          // verify the actual's discriminant matches.
-          Emit_Record_Discriminant_Constraint_Checks (args[param_idx], formal_type);
+          // verify the actual's discriminant matches. A derived operation
+          // forwards to the parent whose formal is the unconstrained base, so
+          // the actual carries no constraint to check (RM 3.4).
+          Type_Info *disc_check_type = formal_type;
+          if (sym->parent_operation and param_idx < sym->parent_operation->parameter_count)
+            disc_check_type = sym->parent_operation->parameters[param_idx].param_type;
+          Emit_Record_Discriminant_Constraint_Checks (args[param_idx], disc_check_type);
 
           // Constrained array > unconstrained formal: build fat pointer (RM 6.4.1)                 
           // When passing a constrained array to an unconstrained formal, we must                   
