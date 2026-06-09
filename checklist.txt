@@ -317,3 +317,18 @@ Fix (upstream, in the type model — not the check):
   - Inherited enumeration literals are typed with that base, so a base-range
     value carries unconstrained bounds and the assignment range check fires.
 No regressions across c34 c35 c35502 c35503 c43 c45 c46 c52 c55 c83; c34 51->53.
+
+═══════════════════════════════════════════════════════════════════════════════
+c34005 COMPLETE — 14/14 (100%). Final root cause (c34005m):
+
+Comparing a multi-dimensional constrained array against a value that takes the
+fat-pointer equality path (e.g. an aggregate, or a conversion result) gave the
+wrong answer. Wrap_Constrained_As_Fat built the fat pointer from dimension 0's
+bounds only; Generate_Array_Equality (RM 4.5.2) then reads every dimension's
+bounds, so the inner dimensions' lengths were garbage and equal arrays compared
+unequal. (Var-vs-var used the flat memcmp path and was unaffected.)
+
+Fix: Wrap_Constrained_As_Fat wraps a multidimensional array with every
+dimension's bounds via the existing Emit_Fat_Pointer_For_Lvalue, matching the
+sibling fat-wrap path. No regressions across c34 c35 c36 c38 c41 c43 c45 c46
+c52 c64 c95; c34 53->54.

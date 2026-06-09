@@ -23769,6 +23769,14 @@ uint32_t Wrap_Constrained_As_Fat (Syntax_Node *expr, Type_Info *type, LLVM_Rep b
     return Generate_Expression (expr).reg;
   }
   uint32_t ptr = Generate_Composite_Address (expr);
+
+  // Multidimensional array: wrap every dimension's bounds. A single-dimension
+  // fat pointer would leave the inner dimensions' bounds undefined, so a
+  // length comparison (RM 4.5.2) against it reads garbage. The 1-D path below
+  // carries the aggregate positional-count adjustment, so keep it separate.
+  if (Type_Is_Array_Like (type) and type->array.index_count > 1)
+    return Emit_Fat_Pointer_For_Lvalue (ptr, type).reg;
+
   int128_t lo = 1, hi = 0;
   if (Type_Is_Array_Like (type) and type->array.index_count > 0) {
     lo = Type_Bound_Value (type->array.indices[0].low_bound);
