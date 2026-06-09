@@ -27452,7 +27452,7 @@ LLVM_Value Generate_Attribute (Syntax_Node *node) {
              t, LLVM_Rep_To_String (iat), (long long)(int64_t)(static_elems * comp_bits));
           return Val_Rep (t, iat);
         }
-        // Runtime: product of per-dimension lengths × component bits.
+        // Runtime: product of per-dimension lengths times component bits.
         uint32_t total = Emit_Static_Int (1, iat).reg;
         bool ok = (ndims > 0);
         for (uint32_t d = 0; d < ndims and ok; d++) {
