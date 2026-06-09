@@ -2843,6 +2843,7 @@ LLVM_Value Emit_Convert     (uint32_t src,     LLVM_Rep src_rep, LLVM_Rep dst_re
 uint32_t   Coerce_To_Rep    (uint32_t v,       LLVM_Rep from,    LLVM_Rep to);
 uint32_t   Emit_Scale_By_Small (uint32_t val,  double small,     bool divide, LLVM_Rep frep);
 double     Fixed_Small       (const Type_Info *t);
+void       Fixed_Delta_To_Small_Scale (double delta, double *small_out, int *scale_out);
 void       Fixed_Small_As_Rational (double small, unsigned long long *numerator,
                                     unsigned long long *denominator);
 LLVM_Value Emit_Exact_Rescale (uint32_t value, LLVM_Rep value_rep,
@@ -7909,6 +7910,23 @@ double Fixed_Small (const Type_Info *t) {
   return small;
 }
 
+// RM 3.5.9: the default SMALL of an ordinary fixed-point type is the largest
+// power of two not greater than DELTA; its scale is that power's base-2
+// exponent. Shared by fixed-point type creation and derived-type accuracy
+// constraints.
+void Fixed_Delta_To_Small_Scale (double delta, double *small_out, int *scale_out) {
+  double small = 1.0;
+  if (delta > 0.0) {
+    while (small > delta) small /= 2.0;
+    while (small * 2.0 <= delta) small *= 2.0;
+  }
+  int scale = 0;
+  for (double t = small; t >= 2.0; t /= 2.0) scale++;
+  for (double t = small; t < 1.0; t *= 2.0) scale--;
+  *small_out = small;
+  *scale_out = scale;
+}
+
 // Express a fixed-point SMALL as an exact integer ratio numerator/denominator.
 // Every SMALL in this compiler is either a power of two (the RM 3.5.9 default,
 // computed from DELTA) or a negative power of ten (DURATION's 1e-5), both of
@@ -12337,6 +12355,33 @@ Type_Info *Resolve_Expression (Syntax_Node *node) {
             }
           }
 
+          // Apply a DELTA [RANGE] accuracy constraint to a derived fixed-point
+          // type (RM 3.5.9): a coarser delta and a tighter range than the
+          // parent. Recompute small/scale from the new delta.
+          if (c->kind == NK_REAL_TYPE and Type_Is_Fixed_Point (derived)) {
+            if (c->real_type.delta) {
+              double delta = Eval_Const_Numeric (c->real_type.delta);
+              if (delta == delta and delta > 0.0) {
+                double small; int scale;
+                Fixed_Delta_To_Small_Scale (delta, &small, &scale);
+                derived->fixed.delta = delta;
+                derived->fixed.small = small;
+                derived->fixed.scale = scale;
+              }
+            }
+            if (c->real_type.range and c->real_type.range->kind == NK_RANGE) {
+              Syntax_Node *range = c->real_type.range;
+              Syntax_Node *bound_expr[2] = { range->range.low, range->range.high };
+              Type_Bound *bound_slot[2] = { &derived->low_bound, &derived->high_bound };
+              for (uint32_t b = 0; b < 2; b++) {
+                if (not bound_expr[b]) continue;
+                double v = Eval_Const_Numeric (bound_expr[b]);
+                if (v == v)
+                  *bound_slot[b] = (Type_Bound){ .kind = BOUND_FLOAT, .float_value = v };
+              }
+            }
+          }
+
           // Other constraint types handled in subtype_indication
         }
         node->type = derived;
@@ -13474,23 +13519,9 @@ Type_Info *Resolve_Expression (Syntax_Node *node) {
           double delta = Eval_Const_Numeric (node->real_type.delta);
           if (delta != delta or delta <= 0.0) delta = 0.001;  // NaN or invalid -> fallback
 
-          // Compute small as largest power of 2 <= delta (per RM 3.5.9)
-          double small = 1.0;
-
-          // Find largest 2^n <= delta
-          if (delta > 0.0) {
-            while (small > delta) small /= 2.0;
-            while (small * 2.0 <= delta) small *= 2.0;
-          }
-
-          // Compute scale factor: small = 2^scale
-          int scale = 0;
-          double temp = small;
-          if (temp >= 1.0) {
-            while (temp >= 2.0) { temp /= 2.0; scale++; }
-          } else {
-            while (temp < 1.0) { temp *= 2.0; scale--; }
-          }
+          // Compute small (largest power of 2 <= delta) and scale (RM 3.5.9).
+          double small; int scale;
+          Fixed_Delta_To_Small_Scale (delta, &small, &scale);
           fixed_type->fixed.delta = delta;
           fixed_type->fixed.small = small;
           fixed_type->fixed.scale = scale;
