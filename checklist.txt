@@ -86,8 +86,6 @@ c34005 STATUS: 9 / 14 pass (was 1). No regressions in the wider suite
 STATUS: c34005 COMPLETE — 14 / 14 (100%). No suite regressions
 (c43205 90->100%, c52103 6->8, c64109 restored). All root-cause fixes upstream
 of the expander, per the brief.
-
-FINAL ROUND OF FIXES (m,o,r,s,u)
 --------------------------------
 [x] Multidimensional fat-pointer plumbing: passing a fat actual to a constrained
     N-D formal, flat->fat conversion, the aggregate-assignment memcpy, and
@@ -139,3 +137,19 @@ WORKING NOTES
 - Group run:  bash run_acats.sh q c34005
 - Debug substrate: gcc -g -O0 -o /tmp/ada83g ada83.c -lm -lpthread ; gdb.
 - Principle: fix upstream (semantics/type construction), not the expander.
+
+═══════════════════════════════════════════════════════════════════════════════
+DERIVED-TYPE GROUPS COMPLETE (100%): c34005 (arrays), c34006 (records),
+c34009 (non-limited private). Discriminated-record support added this round:
+  - by-value record results copied to the secondary stack (RM 6.5)
+  - record equality compares only the active variant (RM 4.5.2)
+  - 'SIZE of a discriminant-dependent component read from the object fat pointer
+  - derived discriminated subtype gets an unconstrained base
+  - membership in a constrained discriminated subtype checks discriminants
+  - max-size reservation for a discriminant-dependent component (fixed offsets)
+  - a boolean/enum discriminant PARAMETER is not a literal
+  - a derived operation's discriminant check uses the parent's base formal
+  - BIP state kept across multiple RETURNs
+  - OUT record parameter re-checks the actual's discriminant constraint
+No suite regressions throughout. Next derived-type targets: c34004 (fixed
+point), c34007 (access), c34014 (derived subprogram visibility).
