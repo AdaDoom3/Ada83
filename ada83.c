@@ -30004,41 +30004,57 @@ uint32_t Generate_Aggregate (Syntax_Node *node) {
               Emit_Label_Here (ok2);
             }
           }
-          if (ac.has_named and not ac.has_others and agg_ndims == 1) {
-            int128_t ch_lo = INT64_MAX, ch_hi = INT64_MIN;
-            bool found_lo = false, found_hi = false;
-            for (uint32_t ci = 0; ci < node->aggregate.items.count; ci++) {
-              Syntax_Node *cit = node->aggregate.items.items[ci];
-              if (cit->kind != NK_ASSOCIATION) continue;
-              for (uint32_t cc = 0; cc < cit->association.choices.count; cc++) {
-                Syntax_Node *ch = cit->association.choices.items[cc];
-                if (Is_Others_Choice (ch)) continue;
-                if (Is_Static_Int_Node (ch)) {
-                  int128_t v = Static_Int_Value (ch);
-                  if (not found_lo or v < ch_lo) ch_lo = v;
-                  if (not found_hi or v > ch_hi) ch_hi = v;
-                  found_lo = true; found_hi = true;
-                } else if (ch->kind == NK_RANGE) {
-                  if (ch->range.low and Is_Static_Int_Node (ch->range.low)) {
-                    int128_t v = Static_Int_Value (ch->range.low);
+          if (ac.has_named and not ac.has_others) {
+            // Each named dimension's explicit choice bounds must equal that
+            // dimension's constraint (RM 4.3.2). Walk down one aggregate level
+            // per dimension, comparing the level's static choice span against
+            // the matching index constraint. A multidimensional aggregate is
+            // checked at every level, not just the outermost.
+            Syntax_Node *level = node;
+            for (uint32_t d = 0; d < agg_ndims and d < agg_type->array.index_count
+                 and level and level->kind == NK_AGGREGATE; d++) {
+              int128_t ch_lo = INT64_MAX, ch_hi = INT64_MIN;
+              bool found_lo = false, found_hi = false, level_named = false;
+              Syntax_Node *descend = NULL;
+              for (uint32_t ci = 0; ci < level->aggregate.items.count; ci++) {
+                Syntax_Node *cit = level->aggregate.items.items[ci];
+                if (cit->kind != NK_ASSOCIATION) {
+                  if (not descend) descend = cit;  // positional inner value
+                  continue;
+                }
+                level_named = true;
+                if (not descend) descend = cit->association.expression;
+                for (uint32_t cc = 0; cc < cit->association.choices.count; cc++) {
+                  Syntax_Node *ch = cit->association.choices.items[cc];
+                  if (Is_Others_Choice (ch)) { found_lo = found_hi = false; cc = 0; level_named = false; break; }
+                  if (Is_Static_Int_Node (ch)) {
+                    int128_t v = Static_Int_Value (ch);
                     if (not found_lo or v < ch_lo) ch_lo = v;
-                    found_lo = true;
-                  }
-                  if (ch->range.high and Is_Static_Int_Node (ch->range.high)) {
-                    int128_t v = Static_Int_Value (ch->range.high);
                     if (not found_hi or v > ch_hi) ch_hi = v;
-                    found_hi = true;
+                    found_lo = found_hi = true;
+                  } else if (ch->kind == NK_RANGE) {
+                    if (ch->range.low and Is_Static_Int_Node (ch->range.low)) {
+                      int128_t v = Static_Int_Value (ch->range.low);
+                      if (not found_lo or v < ch_lo) ch_lo = v;
+                      found_lo = true;
+                    }
+                    if (ch->range.high and Is_Static_Int_Node (ch->range.high)) {
+                      int128_t v = Static_Int_Value (ch->range.high);
+                      if (not found_hi or v > ch_hi) ch_hi = v;
+                      found_hi = true;
+                    }
                   }
                 }
               }
-            }
-            if (found_lo and found_hi) {
-              uint32_t nclo = Emit_Static_Int (ch_lo, ait).reg;
-              uint32_t nchi = Emit_Static_Int (ch_hi, ait).reg;
-              uint32_t clo = Coerce_To_Rep (low_val, iat_bnd, ait);
-              uint32_t chi = Coerce_To_Rep (high_val, iat_bnd, ait);
-              Emit_Aggregate_Bound_Match_Check (nclo, clo, nchi, chi, ait,
-                "named aggregate bounds vs dynamic constraint");
+              if (level_named and found_lo and found_hi) {
+                uint32_t nclo = Emit_Static_Int (ch_lo, ait).reg;
+                uint32_t nchi = Emit_Static_Int (ch_hi, ait).reg;
+                uint32_t clo = Emit_Single_Bound (&agg_type->array.indices[d].low_bound, ait);
+                uint32_t chi = Emit_Single_Bound (&agg_type->array.indices[d].high_bound, ait);
+                Emit_Aggregate_Bound_Match_Check (nclo, clo, nchi, chi, ait,
+                  "named aggregate bounds vs dynamic constraint");
+              }
+              level = descend;  // next dimension's sub-aggregate
             }
           }
         }
@@ -31363,10 +31379,48 @@ uint32_t Generate_Aggregate (Syntax_Node *node) {
     // Note: For the static path, dynamic named bounds vs constraint                                
     // is NOT checked here because sliding occurs at assignment                                     
     // (RM 5.2.1(3)). Array-of-array components are checked at                                     
-    // line ~27238 (has_unconstrained_base condition).                                             
-    //                                                                                              
+    // line ~27238 (has_unconstrained_base condition).
+    //
 
-    // RM 4.3.2(6): Check inner sub-aggregate bounds consistency.                                  
+    // RM 4.3.2: a NAMED inner sub-aggregate states its bounds explicitly; those
+    // do not slide and must equal the corresponding inner index constraint
+    // (positional inner aggregates do slide and are handled by the consistency
+    // check plus assignment). Walk one level per inner dimension and, where the
+    // sub-aggregate's choice span and the constraint are both static, compare.
+    if (agg_type->array.is_constrained and agg_type->array.index_count > 1) {
+      LLVM_Rep chk_iat = Integer_Arith_Rep ();
+      Syntax_Node *lvl = node;
+      for (uint32_t d = 0; d + 1 < agg_type->array.index_count and
+           lvl and lvl->kind == NK_AGGREGATE; d++) {
+        Syntax_Node *inner = NULL;
+        for (uint32_t i = 0; i < lvl->aggregate.items.count and not inner; i++) {
+          Syntax_Node *it = lvl->aggregate.items.items[i];
+          inner = (it->kind == NK_ASSOCIATION) ? it->association.expression : it;
+        }
+        if (not inner or inner->kind != NK_AGGREGATE) break;
+        Type_Bound *clo_b = &agg_type->array.indices[d + 1].low_bound;
+        Type_Bound *chi_b = &agg_type->array.indices[d + 1].high_bound;
+        for (uint32_t i = 0; i < inner->aggregate.items.count; i++) {
+          Syntax_Node *it = inner->aggregate.items.items[i];
+          if (it->kind != NK_ASSOCIATION or it->association.choices.count == 0) continue;
+          Syntax_Node *ch = it->association.choices.items[0];
+          if (Is_Others_Choice (ch) or ch->kind != NK_RANGE) continue;
+          if (Is_Static_Int_Node (ch->range.low) and Is_Static_Int_Node (ch->range.high) and
+              clo_b->kind == BOUND_INTEGER and chi_b->kind == BOUND_INTEGER) {
+            uint32_t alo = Emit_Static_Int (Static_Int_Value (ch->range.low),  chk_iat).reg;
+            uint32_t ahi = Emit_Static_Int (Static_Int_Value (ch->range.high), chk_iat).reg;
+            uint32_t clo = Emit_Static_Int (clo_b->int_value, chk_iat).reg;
+            uint32_t chi = Emit_Static_Int (chi_b->int_value, chk_iat).reg;
+            Emit_Aggregate_Bound_Match_Check (alo, clo, ahi, chi, chk_iat,
+              "inner aggregate named range vs constraint");
+          }
+          break;
+        }
+        lvl = inner;
+      }
+    }
+
+    // RM 4.3.2(6): Check inner sub-aggregate bounds consistency.
     // After all rows are processed, check if any had mismatched bounds.                           
     // Also check first-seen bounds against the second dimension constraint.                       
     // Only check if at least one inner sub-aggregate was tracked.                                 
