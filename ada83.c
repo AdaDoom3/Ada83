@@ -10640,7 +10640,8 @@ Type_Info *Resolve_Apply (Syntax_Node *node) {
       prefix_sym = Symbol_Find (prefix->string_val.text);
       if (prefix_sym) {
         prefix->symbol = prefix_sym;
-        prefix->type = prefix_sym->type;
+        prefix->type = (prefix_sym->kind == SYMBOL_FUNCTION)
+                     ? prefix_sym->return_type : prefix_sym->type;
       } else {
         // RM 6.7: operator in function-call notation — `"+"(A,B)` /
         // `"+"(LEFT=>A, RIGHT=>B)`. Predefined ops on fixed/float/etc. aren't
@@ -10700,7 +10701,18 @@ Type_Info *Resolve_Apply (Syntax_Node *node) {
     //                                                                                              
     bool prefix_is_call_target = (prefix->kind == NK_IDENTIFIER or
                     prefix->kind == NK_SELECTED);
-    if (prefix_is_call_target and
+
+    // A parameterless function whose result is (an access to) an array, written
+    // F(...), is not a call with arguments but an index or slice of the
+    // implicitly called result (RM 4.1, 4.1.3). Let it fall through to Case 3.
+    Type_Info *res_indexed = prefix_sym->return_type;
+    if (res_indexed and Type_Is_Access (res_indexed) and res_indexed->access.designated_type)
+      res_indexed = res_indexed->access.designated_type;
+    bool indexes_result = prefix_sym->kind == SYMBOL_FUNCTION and
+      prefix_sym->parameter_count == 0 and arg_count > 0 and
+      Type_Is_Array_Like (res_indexed);
+
+    if (prefix_is_call_target and not indexes_result and
       (prefix_sym->kind == SYMBOL_FUNCTION or prefix_sym->kind == SYMBOL_PROCEDURE)) {
       node->symbol = prefix_sym;
       node->type = prefix_sym->return_type;  // NULL for procedures
@@ -26864,6 +26876,11 @@ index_path: ;
     Symbol *array_sym =
       (node->apply.prefix->kind == NK_APPLY) ? NULL
                                              : node->apply.prefix->symbol;
+    // A parameterless function as the prefix must be called to yield the array
+    // (or access) value, not loaded as if it were an object (RM 4.1.3).
+    if (array_sym and (array_sym->kind == SYMBOL_FUNCTION or
+                       array_sym->kind == SYMBOL_PROCEDURE))
+      array_sym = NULL;
     uint32_t base;
     uint32_t low_bound_val = 0, dyn_fat = 0;
     uint32_t high_bound_val = 0;  // For index checks
@@ -34028,23 +34045,38 @@ void Generate_Assignment (Syntax_Node *node) {
   // Handle indexed component target (array element or slice assignment)
   if (target->kind == NK_APPLY) {
     Type_Info *prefix_type = target->apply.prefix->type;
-    bool is_array_target = prefix_type and
-      (prefix_type->kind == TYPE_ARRAY or prefix_type->kind == TYPE_STRING);
+
+    // RM 4.1(3): X(L..H) where X is access-to-array dereferences X implicitly.
+    // Only a slice needs this array-target path; element assignment to an
+    // access-to-array is handled by the general indexed-lvalue path below. The
+    // dereferenced array's value is the access value itself (a fat pointer when
+    // the designated array is unconstrained or dynamically bounded).
+    Syntax_Node *first_target_arg = target->apply.arguments.count > 0
+      ? target->apply.arguments.items[0] : NULL;
+    bool deref_access = Type_Is_Access (prefix_type) and prefix_type->access.designated_type
+      and Type_Is_Array_Like (prefix_type->access.designated_type)
+      and first_target_arg and first_target_arg->kind == NK_RANGE;
+    Type_Info *arr_type = deref_access ? prefix_type->access.designated_type : prefix_type;
+    bool is_array_target = arr_type and
+      (arr_type->kind == TYPE_ARRAY or arr_type->kind == TYPE_STRING);
     if (is_array_target) {
 
       // For unconstrained (STRING / unconstrained array) the variable                              
       // holds a fat pointer - we must load it and extract the data ptr.                           
       // For constrained arrays the variable IS the data pointer.                                  
       //                                                                                            
-      bool target_is_uncon = (not Type_Is_Constrained_Array (prefix_type) and
-                  Type_Is_String (prefix_type)) or
-                   Type_Is_Unconstrained_Array (prefix_type);
+      bool target_is_uncon = (not Type_Is_Constrained_Array (arr_type) and
+                  Type_Is_String (arr_type)) or
+                   Type_Is_Unconstrained_Array (arr_type);
 
       // A *constrained* array whose bounds are dynamic (e.g. a derived subtype
       // `new P(IDENT(5)..IDENT(7))`) is stored as a fat pointer just like an
       // unconstrained one, so its data pointer and low bound must be loaded at
-      // runtime. The flat-data path below only applies to static storage.
-      bool target_is_fat = target_is_uncon or Type_Has_Dynamic_Bounds (prefix_type);
+      // runtime. An access-to-array prefix is likewise a fat value when its
+      // designated array is unconstrained or dynamically bounded. The flat-data
+      // path below only applies to static storage.
+      bool target_is_fat = target_is_uncon or Type_Has_Dynamic_Bounds (arr_type)
+        or (deref_access and Type_Needs_Fat_Pointer (prefix_type));
       Syntax_Node *arg = target->apply.arguments.items[0];
 
       // ARR (A'RANGE) := source is a slice (RM 4.1.2), not an element. Normalise
@@ -34093,7 +34125,7 @@ void Generate_Assignment (Syntax_Node *node) {
       // Check for slice assignment: ARR (low .. high) := source
       // Array slice assignment using memcpy
       if (arg->kind == NK_RANGE) {
-        Type_Info *elem_type_info = prefix_type->array.element_type;
+        Type_Info *elem_type_info = arr_type->array.element_type;
         uint32_t elem_sz = elem_type_info ? elem_type_info->size : 1;
         if (elem_sz == 0) elem_sz = 1;
 
@@ -34103,9 +34135,12 @@ void Generate_Assignment (Syntax_Node *node) {
 
         // Load fat pointer, extract data ptr and low bound
         if (target_is_fat) {
-          LLVM_Rep sa_bt = Array_Bound_LLVM_Rep (prefix_type);
-          uint32_t fat_addr = Generate_Lvalue (target->apply.prefix);
-          uint32_t fat = Emit_Load_Fat_Pointer_From_Temp (fat_addr, sa_bt).reg;
+          LLVM_Rep sa_bt = Array_Bound_LLVM_Rep (arr_type);
+          // An implicit access dereference: the access value is the fat pointer
+          // directly. Otherwise the variable's storage holds the fat pointer.
+          uint32_t fat = deref_access
+            ? Generate_Expression (target->apply.prefix).reg
+            : Emit_Load_Fat_Pointer_From_Temp (Generate_Lvalue (target->apply.prefix), sa_bt).reg;
           dest_base = Emit_Fat_Pointer_Data (fat, sa_bt).reg;
 
           // Low bound comes from the fat pointer at runtime
@@ -34143,7 +34178,7 @@ void Generate_Assignment (Syntax_Node *node) {
           uint32_t src_val = Generate_Expression (src).reg;
           LLVM_Rep src_llvm = Expression_LLVM_Rep (src);
           uint32_t src_data = LLVM_Rep_Is_Fat_Pointer (src_llvm)
-            ? Emit_Fat_Pointer_Data (src_val, Array_Bound_LLVM_Rep (prefix_type)).reg
+            ? Emit_Fat_Pointer_Data (src_val, Array_Bound_LLVM_Rep (arr_type)).reg
             : src_val;
           Emit ("  call void @llvm.memcpy.p0.p0.i64("
              "ptr %%t%u, ptr %%t%u, i64 %%t%u, i1 false)"
@@ -34154,11 +34189,12 @@ void Generate_Assignment (Syntax_Node *node) {
 
         // Constrained array slice assignment (original code)
         LLVM_Rep csa_t = Integer_Arith_Rep ();
-        low_bound = Array_Low_Bound (prefix_type);
+        low_bound = Array_Low_Bound (arr_type);
 
-        // Get destination base address (any addressable prefix: identifier,
-        // record component, dereference)
-        dest_base = Generate_Lvalue (target->apply.prefix);
+        // Get destination base address. For an implicit access dereference the
+        // access value is the data pointer; otherwise take the prefix lvalue.
+        dest_base = deref_access ? Generate_Expression (target->apply.prefix).reg
+                                 : Generate_Lvalue (target->apply.prefix);
 
         // Evaluate slice bounds and compute copy length from original range.
         // Length must use raw bounds (not index-adjusted) per Ada RM 5.2.1.
@@ -34166,11 +34202,11 @@ void Generate_Assignment (Syntax_Node *node) {
         uint32_t dest_hi_raw = Generate_Expression (arg->range.high).reg;
 
         // RM 4.1.2: non-null slice bounds must be in array's range.
-        if (prefix_type->array.index_count > 0 and
-          prefix_type->array.indices[0].high_bound.kind == BOUND_INTEGER and
-          prefix_type->array.indices[0].low_bound.kind == BOUND_INTEGER) {
-          int128_t arr_lo_i = Type_Bound_Value (prefix_type->array.indices[0].low_bound);
-          int128_t arr_hi_i = Type_Bound_Value (prefix_type->array.indices[0].high_bound);
+        if (arr_type->array.index_count > 0 and
+          arr_type->array.indices[0].high_bound.kind == BOUND_INTEGER and
+          arr_type->array.indices[0].low_bound.kind == BOUND_INTEGER) {
+          int128_t arr_lo_i = Type_Bound_Value (arr_type->array.indices[0].low_bound);
+          int128_t arr_hi_i = Type_Bound_Value (arr_type->array.indices[0].high_bound);
           uint32_t arr_lo_c = Emit_Static_Int (arr_lo_i, csa_t).reg;
           uint32_t arr_hi_c = Emit_Static_Int (arr_hi_i, csa_t).reg;
           Emit_Slice_Bound_Check (dest_lo_raw, dest_hi_raw, arr_lo_c, arr_hi_c, csa_t);
