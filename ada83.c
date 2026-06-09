@@ -26147,14 +26147,22 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
         Emit ("  store %s %%t%u, ptr %%t%u  ; copy-back to actual\n",
            LLVM_Rep_To_String(copyback_llvm[i]), ret_val, copyback_addr[i]);
 
-      // Composite by-ref: check constraint on returned value
+      // Composite by-ref: check the returned value against the actual's
+      // subtype (RM 6.4.1(17)). A by-reference call writes straight through to
+      // the actual, so a constrained discriminated actual must still satisfy
+      // its discriminant constraint after the call (the callee may have
+      // assigned a value of another variant).
       } else if (is_byref[i]) {
         Type_Info *actual_type = arg->type;
-        if (not actual_type or not Type_Is_Scalar (actual_type)) continue;
-        LLVM_Rep ld_ty = Type_To_Rep (actual_type);
-        uint32_t ret_val = Emit_Temp ();
-        Emit ("  %%t%u = load %s, ptr %%t%u  ; OUT/INOUT result\n", ret_val, LLVM_Rep_To_String(ld_ty), args[i]);
-        Emit_Constraint_Check_Val (Val_Rep (ret_val, ld_ty), actual_type, NULL);
+        if (actual_type and Type_Is_Scalar (actual_type)) {
+          LLVM_Rep ld_ty = Type_To_Rep (actual_type);
+          uint32_t ret_val = Emit_Temp ();
+          Emit ("  %%t%u = load %s, ptr %%t%u  ; OUT/INOUT result\n", ret_val, LLVM_Rep_To_String(ld_ty), args[i]);
+          Emit_Constraint_Check_Val (Val_Rep (ret_val, ld_ty), actual_type, NULL);
+        } else if (actual_type and Type_Is_Record (actual_type) and
+                   actual_type->record.has_disc_constraints) {
+          Emit_Record_Discriminant_Constraint_Checks (args[i], actual_type);
+        }
       }
     }
 
