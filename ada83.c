@@ -23643,8 +23643,9 @@ LLVM_Value Generate_Binary_Op (Syntax_Node *node) {
 
   // Peel renames (RM 8.5) and substitute a generic formal subprogram with
   // the instantiation's actual (RM 12.3) — a rename does not emit its own
-  // body, and a formal's calls dispatch to the actual.
-  Symbol *call_target = Operator_Call_Target (node->symbol);
+  // body, and a formal's calls dispatch to the actual. A derived operator
+  // (RM 3.4) further forwards to the parent's body via its ultimate operation.
+  Symbol *call_target = Ultimate_Operation (Operator_Call_Target (node->symbol));
 
   // User-defined operator: generate function call (RM 6.7)
   if (call_target and call_target->kind == SYMBOL_FUNCTION and
@@ -25101,10 +25102,9 @@ LLVM_Value Emit_Binary_Op_Predefined (Syntax_Node *node) {
     not peeled->is_predefined) {
 
     // Resolve through parent_operation for derived operators (RM 3.4).
-    // parent_operation is orthogonal to renaming; check it on the peeled
-    // target so we land on the actual body to call.
-    Symbol *call_target = peeled->parent_operation ?
-      peeled->parent_operation : peeled;
+    // parent_operation is orthogonal to renaming; follow it to the ultimate
+    // operation (through any chain of derivations) so we land on the body.
+    Symbol *call_target = Ultimate_Operation (peeled);
     uint32_t operand = Generate_Expression (node->unary.operand).reg;
     LLVM_Rep op_llvm = Expression_LLVM_Rep (node->unary.operand);
     Type_Info *p0_type = (call_target->parameter_count > 0) ?
