@@ -33814,20 +33814,14 @@ void Generate_Assignment (Syntax_Node *node) {
         Emit_Length_Check (src_len, dst_len, ca_bt, ty);
       }
       if (target_is_fat) {
-        // Memcpy source data into target's data ptr (preserve fat struct).
+        // Memcpy source data into target's data ptr (preserve fat struct). The
+        // byte count is the product of every dimension's length times the
+        // component size; using dimension 0 alone would copy only the first row
+        // of a multidimensional array.
         uint32_t tfp = Emit_Load_Fat_Pointer (target_sym, ca_bt).reg;
         uint32_t tdata = Emit_Fat_Pointer_Data (tfp, ca_bt).reg;
         uint32_t sdata = Emit_Fat_Pointer_Data (src_ptr, ca_bt).reg;
-        uint32_t slen = Emit_Fat_Pointer_Length (src_ptr, ca_bt).reg;
-        // Multiply length by element size
-        uint32_t esz = ty->array.element_type ? ty->array.element_type->size : 1;
-        if (esz == 0) esz = 1;
-        uint32_t bytes = slen;
-        if (esz != 1) {
-          bytes = Emit_Temp ();
-          Emit ("  %%t%u = mul %s %%t%u, %u\n", bytes, LLVM_Rep_To_String (ca_bt), slen, esz);
-        }
-        uint32_t bytes64 = Emit_Extend_To_I64 (bytes, ca_bt).reg;
+        uint32_t bytes64 = Emit_Array_Byte_Size (ty, src_ptr).reg;
         Emit_Memcpy (tdata, sdata, bytes64);
       } else {
         Emit_Fat_Pointer_Copy_To_Name (src_ptr, target_sym, ca_bt);
