@@ -2239,6 +2239,14 @@ struct Symbol {
   Symbol    *parent_operation;  // Original primitive inherited by derivation
   Type_Info *derived_from_type; // Parent type from which this op was derived
 
+  // RM 3.9 access-before-elaboration: a subprogram given as a forward spec
+  // carries a boolean flag in a module global @elab.<id>, set false where the
+  // spec elaborates and true where the body elaborates. A call checks it and
+  // raises PROGRAM_ERROR when the body has not yet run. The global is reachable
+  // from any function, so a call from an instance or default expression that
+  // runs in a different frame still sees it.
+  uint32_t     elab_flag_id;       // Global flag id, or 0 if the subprogram has none
+
   // Labels, loops, entries
   uint32_t     llvm_label_id;      // LLVM label for goto targets
   uint32_t     loop_exit_label_id; // LLVM label for exit-loop targets
@@ -2579,6 +2587,8 @@ typedef struct {
   Symbol   *address_markers[256]; // Symbols needing @__address_marker globals
   uint32_t  address_marker_count; // Number of address markers registered
 
+  uint32_t  next_elab_flag_id;    // Monotonic id for RM 3.9 elaboration flags
+
   // Duplicate emission guard
   uint32_t emitted_func_ids[1024]; // Unique IDs of already-emitted functions
   uint32_t emitted_func_count;     // Number of entries in emitted_func_ids
@@ -2830,6 +2840,10 @@ void Emit_Check_With_Raise (uint32_t    cond,
 // array types have component subtypes whose constraints differ.
 void Emit_Component_Constraint_Check (Type_Info *operand_component,
                                       Type_Info *target_component);
+
+// RM 3.9: raise PROGRAM_ERROR at a call whose target body has not yet been
+// elaborated (the callee's elaboration flag is still false).
+void Emit_Elaboration_Check (Symbol *callee);
 
 // ???
 void Emit_Range_Check_With_Raise (uint32_t    val,
@@ -21879,6 +21893,26 @@ void Emit_Check_With_Raise (uint32_t cond,
   cg->block_terminated = false;
 }
 
+// RM 3.9: a call to a subprogram whose body has not yet been elaborated raises
+// PROGRAM_ERROR. The callee's elaboration flag is a local alloca that is false
+// until the body declaration elaborates; the check loads it and raises when it
+// is still false. The flag lives in its owning function's frame, so the check
+// is only emitted while generating that same function.
+void Emit_Elaboration_Check (Symbol *callee) {
+  if (not callee or callee->elab_flag_id == 0) return;
+  uint32_t flag = Emit_Temp ();
+  Emit ("  %%t%u = load i1, ptr @elab.%u  ; access-before-elaboration flag of %.*s\n",
+        flag, callee->elab_flag_id, (int)callee->name.length, callee->name.data);
+  uint32_t raise_label = cg->label_id++;
+  uint32_t cont_label  = cg->label_id++;
+  Emit ("  br i1 %%t%u, label %%L%u, label %%L%u\n", flag, cont_label, raise_label);
+  cg->block_terminated = true;
+  Emit_Label_Here (raise_label);
+  Emit_Raise_Program_Error ("subprogram body not yet elaborated (RM 3.9)");
+  Emit_Label_Here (cont_label);
+  cg->block_terminated = false;
+}
+
 // RM 4.6: an array type conversion checks that any constraint on the component
 // subtype is the same for the operand and target array types, raising
 // CONSTRAINT_ERROR when they differ. The component base types are already known
@@ -23094,6 +23128,9 @@ LLVM_Value Generate_Identifier (Syntax_Node *node) {
           bip_app->type = actual->return_type;
           return Generate_Apply (bip_app);
         }
+        // RM 3.9: access-before-elaboration check on a parameterless call.
+        Emit_Elaboration_Check (sym);
+
         LLVM_Rep ret_rep = actual->return_type ?
           Type_To_Rep (actual->return_type) : Integer_Arith_Rep ();
         bool callee_is_nested = Subprogram_Needs_Static_Chain (actual);
@@ -26486,6 +26523,9 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
     // multi-level derivation S is new T is new P chains derived op -> derived op
     // -> real body, and only the last carries code.
     Symbol *call_target = Ultimate_Operation (sym);
+
+    // RM 3.9: access-before-elaboration check on the called subprogram.
+    Emit_Elaboration_Check (sym);
 
     // RM 13.10.2 / GNAT: UNCHECKED_CONVERSION is an intrinsic generic.
     // Each instantiation creates a SYMBOL_FUNCTION with no body.
@@ -41344,6 +41384,23 @@ void Generate_Declaration (Syntax_Node *node) {
       if (node->symbol and node->symbol->is_imported) {
         Emit_Extern_Subprogram (node->symbol);
       }
+
+      // RM 3.9: a forward spec inside a declarative part may be called before
+      // its body is reached. Give it an elaboration flag and reset it false at
+      // this elaboration point; the body sets it true, and a call checks it
+      // (access-before-elaboration). Skip imported subprograms (the body lives
+      // elsewhere and is always elaborated by the time it can be called).
+      else if (node->symbol and cg->current_function) {
+        if (node->symbol->elab_flag_id == 0) {
+          node->symbol->elab_flag_id = ++cg->next_elab_flag_id;
+          Emit_String_Const ("@elab.%u = internal global i1 false  ; %.*s\n",
+                             node->symbol->elab_flag_id,
+                             (int)node->symbol->name.length, node->symbol->name.data);
+        }
+        Emit ("  store i1 false, ptr @elab.%u  ; reset %.*s elaboration flag\n",
+              node->symbol->elab_flag_id,
+              (int)node->symbol->name.length, node->symbol->name.data);
+      }
       break;
     case NK_PACKAGE_SPEC:
 
@@ -41411,6 +41468,15 @@ void Generate_Declaration (Syntax_Node *node) {
     // Check for duplicate in deferred list
     case NK_PROCEDURE_BODY:
     case NK_FUNCTION_BODY:
+
+      // RM 3.9: the body's declaration point is where it becomes elaborated.
+      // Set its flag true here so calls reached afterward pass the check; calls
+      // reached earlier (in preceding initializations) still saw false.
+      if (node->symbol and node->symbol->elab_flag_id != 0) {
+        Emit ("  store i1 true, ptr @elab.%u  ; %.*s body elaborated\n",
+              node->symbol->elab_flag_id,
+              (int)node->symbol->name.length, node->symbol->name.data);
+      }
 
       // Defer nested subprogram bodies - emit after enclosing function
       // Skip if already generated (prevents duplicates from re-processing)
