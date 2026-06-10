@@ -25195,6 +25195,44 @@ LLVM_Value Emit_Binary_Op_Predefined (Syntax_Node *node) {
             else        { t = always; }
             return Emit_Bool_Value ((LLVM_I1){ t });
           }
+          // X IN T where the operand's nominal subtype is statically known to
+          // be covered by T folds to a constant TRUE (RM 4.5.2): every value
+          // of the operand's subtype belongs to T, so the test neither needs
+          // nor may read the operand, which can be an as-yet-unassigned scalar
+          // whose stored value is meaningless. This mirrors GNAT's
+          // Compile_Time_Compare, which proves the bounds from the operand's
+          // nominal subtype rather than its runtime value; the test stays a
+          // runtime check whenever T is a strictly tighter subtype.
+          {
+            bool Bound_Static_Double (Type_Bound b, double *out) {
+              if (b.kind == BOUND_INTEGER) { *out = (double) b.int_value;  return true; }
+              if (b.kind == BOUND_FLOAT)   { *out = b.float_value;          return true; }
+              return false;
+            }
+            if (lhs_type and range_type and
+                Type_Is_Scalar (lhs_type) and Type_Is_Scalar (range_type) and
+                Type_Root (lhs_type) == Type_Root (range_type) and
+                Type_Bound_Is_Set (lhs_type->low_bound)  and Type_Bound_Is_Set (lhs_type->high_bound) and
+                Type_Bound_Is_Set (range_type->low_bound) and Type_Bound_Is_Set (range_type->high_bound)) {
+              Type_Bound vl = lhs_type->low_bound,   vh = lhs_type->high_bound;
+              Type_Bound ml = range_type->low_bound, mh = range_type->high_bound;
+              bool covered = false;
+              if (vl.kind == BOUND_INTEGER and vh.kind == BOUND_INTEGER and
+                  ml.kind == BOUND_INTEGER and mh.kind == BOUND_INTEGER) {
+                covered = ml.int_value <= vl.int_value and vh.int_value <= mh.int_value;
+              } else {
+                double vld, vhd, mld, mhd;
+                if (Bound_Static_Double (vl, &vld) and Bound_Static_Double (vh, &vhd) and
+                    Bound_Static_Double (ml, &mld) and Bound_Static_Double (mh, &mhd))
+                  covered = mld <= vld and vhd <= mhd;
+              }
+              if (covered) {
+                uint32_t always = Emit_I1_Const (1, "operand subtype covered by membership type").reg;
+                t = negate ? Emit_Not_I1 ((LLVM_I1){ always }).reg : always;
+                return Emit_Bool_Value ((LLVM_I1){ t });
+              }
+            }
+          }
           if (range_type and Type_Bound_Is_Set (range_type->low_bound)
                 and Type_Bound_Is_Set (range_type->high_bound)) {
             LLVM_Rep lo_bt = LL_REP_VOID, hi_bt = LL_REP_VOID;
