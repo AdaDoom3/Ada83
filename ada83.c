@@ -2826,6 +2826,11 @@ void Emit_Check_With_Raise (uint32_t    cond,
                             bool        raise_on_true,
                             const char *comment);
 
+// RM 4.6 array conversion: raise CONSTRAINT_ERROR when the operand and target
+// array types have component subtypes whose constraints differ.
+void Emit_Component_Constraint_Check (Type_Info *operand_component,
+                                      Type_Info *target_component);
+
 // ???
 void Emit_Range_Check_With_Raise (uint32_t    val,
                                   int64_t     lo_val,
@@ -21874,6 +21879,97 @@ void Emit_Check_With_Raise (uint32_t cond,
   cg->block_terminated = false;
 }
 
+// RM 4.6: an array type conversion checks that any constraint on the component
+// subtype is the same for the operand and target array types, raising
+// CONSTRAINT_ERROR when they differ. The component base types are already known
+// to match (a legality rule), so only their subtype constraints can differ -
+// scalar ranges, real accuracy, nested array bounds, or record discriminants.
+// Dynamic constraints are compared at run time; a purely static mismatch
+// (real accuracy) lowers to an unconditional raise.
+void Emit_Component_Constraint_Check (Type_Info *sct, Type_Info *dct) {
+  if (not sct or not dct or sct == dct) return;
+  LLVM_Rep work = Integer_Arith_Rep ();
+
+  // Scalar discrete component: the range constraint must match.
+  if (Type_Is_Discrete (sct) and Type_Is_Discrete (dct)) {
+    if (Type_Bound_Is_Set (sct->low_bound)  and Type_Bound_Is_Set (sct->high_bound) and
+        Type_Bound_Is_Set (dct->low_bound)  and Type_Bound_Is_Set (dct->high_bound)) {
+      uint32_t lo_ne = Emit_Icmp ("ne", work,
+        Emit_Single_Bound (&sct->low_bound,  work), Emit_Single_Bound (&dct->low_bound,  work)).reg;
+      uint32_t hi_ne = Emit_Icmp ("ne", work,
+        Emit_Single_Bound (&sct->high_bound, work), Emit_Single_Bound (&dct->high_bound, work)).reg;
+      uint32_t differ = Emit_Temp ();
+      Emit ("  %%t%u = or i1 %%t%u, %%t%u  ; component range constraint differs\n", differ, lo_ne, hi_ne);
+      Emit_Check_With_Raise (differ, true, "component subtype range constraint mismatch (RM 4.6)");
+    }
+    return;
+  }
+
+  // Real component: the accuracy constraint (DIGITS / DELTA) is static.
+  if (sct->kind == TYPE_FLOAT and dct->kind == TYPE_FLOAT) {
+    if (sct->flt.digits != dct->flt.digits)
+      Emit_Check_With_Raise (Emit_I1_Const (1, "float accuracy differs").reg, true,
+                             "component subtype accuracy mismatch (RM 4.6)");
+    return;
+  }
+  if (sct->kind == TYPE_FIXED and dct->kind == TYPE_FIXED) {
+    if (sct->fixed.delta != dct->fixed.delta or sct->fixed.small != dct->fixed.small)
+      Emit_Check_With_Raise (Emit_I1_Const (1, "fixed accuracy differs").reg, true,
+                             "component subtype accuracy mismatch (RM 4.6)");
+    return;
+  }
+
+  // Access component: the constraint lives on the designated subtype.
+  if (Type_Is_Access (sct) and Type_Is_Access (dct)) {
+    Emit_Component_Constraint_Check (sct->access.designated_type,
+                                     dct->access.designated_type);
+    return;
+  }
+
+  // Array component: each index bound must match, then the element subtype.
+  if (Type_Is_Array_Like (sct) and Type_Is_Array_Like (dct) and
+      sct->array.is_constrained and dct->array.is_constrained) {
+    uint32_t nd = sct->array.index_count < dct->array.index_count
+                ? sct->array.index_count : dct->array.index_count;
+    for (uint32_t d = 0; d < nd; d++) {
+      Type_Bound *slo = &sct->array.indices[d].low_bound,  *shi = &sct->array.indices[d].high_bound;
+      Type_Bound *dlo = &dct->array.indices[d].low_bound,  *dhi = &dct->array.indices[d].high_bound;
+      if (not (Type_Bound_Is_Set (*slo) and Type_Bound_Is_Set (*shi) and
+               Type_Bound_Is_Set (*dlo) and Type_Bound_Is_Set (*dhi))) continue;
+      uint32_t lo_ne = Emit_Icmp ("ne", work, Emit_Single_Bound (slo, work), Emit_Single_Bound (dlo, work)).reg;
+      uint32_t hi_ne = Emit_Icmp ("ne", work, Emit_Single_Bound (shi, work), Emit_Single_Bound (dhi, work)).reg;
+      uint32_t differ = Emit_Temp ();
+      Emit ("  %%t%u = or i1 %%t%u, %%t%u  ; component array bound differs\n", differ, lo_ne, hi_ne);
+      Emit_Check_With_Raise (differ, true, "component subtype array bound mismatch (RM 4.6)");
+    }
+    Emit_Component_Constraint_Check (sct->array.element_type, dct->array.element_type);
+    return;
+  }
+
+  // Record component: each discriminant constraint must match.
+  if (Type_Is_Record (sct) and Type_Is_Record (dct) and
+      sct->record.has_disc_constraints and dct->record.has_disc_constraints) {
+    uint32_t nd = sct->record.discriminant_count < dct->record.discriminant_count
+                ? sct->record.discriminant_count : dct->record.discriminant_count;
+    for (uint32_t d = 0; d < nd; d++) {
+      uint32_t sv, dv;
+      if (sct->record.disc_constraint_exprs and sct->record.disc_constraint_exprs[d])
+        sv = Emit_Coerce_Val (Generate_Expression (sct->record.disc_constraint_exprs[d]), work).reg;
+      else if (sct->record.disc_constraint_values)
+        sv = Emit_Static_Int (sct->record.disc_constraint_values[d], work).reg;
+      else continue;
+      if (dct->record.disc_constraint_exprs and dct->record.disc_constraint_exprs[d])
+        dv = Emit_Coerce_Val (Generate_Expression (dct->record.disc_constraint_exprs[d]), work).reg;
+      else if (dct->record.disc_constraint_values)
+        dv = Emit_Static_Int (dct->record.disc_constraint_values[d], work).reg;
+      else continue;
+      Emit_Check_With_Raise (Emit_Icmp ("ne", work, sv, dv).reg, true,
+                             "component subtype discriminant mismatch (RM 4.6)");
+    }
+    return;
+  }
+}
+
 // Emit_Range_Check_With_Raise: Checks val in [lo_val, hi_val], raises if not.
 // Emits two icmp + br with shared raise label for efficiency.
 void Emit_Range_Check_With_Raise (uint32_t val,
@@ -27228,6 +27324,11 @@ type_conversion:
         uint32_t result = result_v.reg;
         bool dst_unc = Type_Is_Unconstrained_Array (dst_type);
 
+        // RM 4.6: the operand and target component subtypes must carry the same
+        // constraint; otherwise the conversion raises CONSTRAINT_ERROR.
+        Emit_Component_Constraint_Check (src_type->array.element_type,
+                                         dst_type->array.element_type);
+
         // Check if the source expression actually produces a fat pointer value.
         // This covers: unconstrained parameters/variables, function calls returning
         // unconstrained arrays, slices, concatenations, string literals, etc.
@@ -27249,6 +27350,67 @@ type_conversion:
         } else if (not dst_is_fat and src_is_fat) {
           LLVM_Rep bt = Array_Bound_LLVM_Rep (src_type);
           return Emit_Fat_Pointer_Data (result, bt);
+        }
+
+        // Both fat: an array conversion shares the operand's data (the
+        // component type is unchanged) but must produce a fat pointer whose
+        // bounds match the target type (RM 4.6). The bound source depends on
+        // whether the target is constrained.
+        if (dst_is_fat and src_is_fat) {
+          LLVM_Rep src_bt = Array_Bound_LLVM_Rep (src_type);
+          LLVM_Rep dst_bt = Array_Bound_LLVM_Rep (dst_type);
+          uint32_t ndims = dst_type->array.index_count;
+          if (ndims == 0) ndims = 1;
+          if (ndims > 8) ndims = 8;
+          LLVM_Rep work = Integer_Arith_Rep ();
+          uint32_t blo[8], bhi[8];
+
+          if (dst_unc) {
+            // Unconstrained target: the result carries the operand's own
+            // bounds, converted to the target index type. RM 4.6 also requires
+            // that, for each non-null dimension, both result bounds belong to
+            // the target's index subtype, or CONSTRAINT_ERROR is raised.
+            for (uint32_t d = 0; d < ndims; d++) {
+              uint32_t src_lo = Emit_Convert (Emit_Fat_Pointer_Low_Dim  (result, src_bt, d).reg, src_bt, work).reg;
+              uint32_t src_hi = Emit_Convert (Emit_Fat_Pointer_High_Dim (result, src_bt, d).reg, src_bt, work).reg;
+              blo[d] = src_lo;
+              bhi[d] = src_hi;
+              Type_Info *idx = dst_type->array.indices[d].index_type;
+              if (idx and Type_Bound_Is_Set (idx->low_bound) and Type_Bound_Is_Set (idx->high_bound)) {
+                uint32_t ilo = Emit_Single_Bound (&idx->low_bound,  work);
+                uint32_t ihi = Emit_Single_Bound (&idx->high_bound, work);
+                uint32_t non_null = Emit_Icmp ("sle", work, src_lo, src_hi).reg;
+                uint32_t lo_out = Emit_Temp ();
+                Emit ("  %%t%u = or i1 %%t%u, %%t%u  ; low bound outside index subtype\n", lo_out,
+                      Emit_Icmp ("slt", work, src_lo, ilo).reg, Emit_Icmp ("sgt", work, src_lo, ihi).reg);
+                uint32_t hi_out = Emit_Temp ();
+                Emit ("  %%t%u = or i1 %%t%u, %%t%u  ; high bound outside index subtype\n", hi_out,
+                      Emit_Icmp ("slt", work, src_hi, ilo).reg, Emit_Icmp ("sgt", work, src_hi, ihi).reg);
+                uint32_t out = Emit_Temp ();
+                Emit ("  %%t%u = or i1 %%t%u, %%t%u\n", out, lo_out, hi_out);
+                uint32_t raise = Emit_Temp ();
+                Emit ("  %%t%u = and i1 %%t%u, %%t%u  ; non-null dim bound outside index subtype\n", raise, non_null, out);
+                Emit_Check_With_Raise (raise, true, "array bound outside target index subtype (RM 4.6)");
+              }
+            }
+            // When the bound reps already match there is nothing to rebuild.
+            if (LLVM_Rep_Equal (src_bt, dst_bt)) return result_v;
+          } else {
+            // Constrained target: the result takes the target subtype's own
+            // bounds, and a per-dimension length check guards the conversion
+            // (RM 4.6) - CONSTRAINT_ERROR when the operand length differs.
+            for (uint32_t d = 0; d < ndims; d++) {
+              blo[d] = Emit_Single_Bound (&dst_type->array.indices[d].low_bound,  work);
+              bhi[d] = Emit_Single_Bound (&dst_type->array.indices[d].high_bound, work);
+              uint32_t tgt_len = Emit_Length_From_Bounds (blo[d], bhi[d], work).reg;
+              uint32_t src_lo  = Emit_Convert (Emit_Fat_Pointer_Low_Dim  (result, src_bt, d).reg, src_bt, work).reg;
+              uint32_t src_hi  = Emit_Convert (Emit_Fat_Pointer_High_Dim (result, src_bt, d).reg, src_bt, work).reg;
+              uint32_t src_len = Emit_Length_From_Bounds (src_lo, src_hi, work).reg;
+              Emit_Length_Check (src_len, tgt_len, work, dst_type);
+            }
+          }
+          uint32_t data = Emit_Fat_Pointer_Data (result, src_bt).reg;
+          return Emit_Fat_Pointer_MultiDim (data, blo, bhi, ndims, work, dst_bt);
         }
 
         // Same representation (both fat or both flat): pass through.
