@@ -34184,6 +34184,22 @@ void Generate_Assignment (Syntax_Node *node) {
 
   // Handle indexed component target (array element or slice assignment)
   if (target->kind == NK_APPLY) {
+
+    // A slice of a slice (RM 4.1.2): X(a..b)(c..d) denotes X(c..d). A slice
+    // keeps the original index values, so the outer range is already absolute;
+    // collapse to a single slice on the base array so the slice-assignment path
+    // sees an ordinary array prefix.
+    while (target->apply.arguments.count == 1 and
+           target->apply.arguments.items[0]->kind == NK_RANGE and
+           target->apply.prefix and target->apply.prefix->kind == NK_APPLY and
+           target->apply.prefix->apply.arguments.count == 1 and
+           target->apply.prefix->apply.arguments.items[0]->kind == NK_RANGE) {
+      Syntax_Node *collapsed = Node_New (NK_APPLY, target->location);
+      *collapsed = *target;
+      collapsed->apply.prefix = target->apply.prefix->apply.prefix;
+      target = collapsed;
+    }
+
     Type_Info *prefix_type = target->apply.prefix->type;
 
     // RM 4.1(3): X(L..H) where X is access-to-array dereferences X implicitly.
