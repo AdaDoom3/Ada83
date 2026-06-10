@@ -41489,6 +41489,15 @@ void Generate_Declaration (Syntax_Node *node) {
       break;
     case NK_PACKAGE_BODY:
 
+      // RM 3.9: a (generic) package body's declaration point is where it
+      // becomes elaborated; set its flag true so a later instantiation passes
+      // the access-before-elaboration check.
+      if (node->symbol and node->symbol->elab_flag_id != 0) {
+        Emit ("  store i1 true, ptr @elab.%u  ; %.*s body elaborated\n",
+              node->symbol->elab_flag_id,
+              (int)node->symbol->name.length, node->symbol->name.data);
+      }
+
       // A package-body stub (PACKAGE BODY X IS SEPARATE;): the subunit's
       // module defines @<x>___elab(ptr) under the same stable name; this
       // module declares it and calls it at the stub's elaboration point
@@ -41824,6 +41833,10 @@ void Generate_Declaration (Syntax_Node *node) {
         if (not inst_sym or not inst_sym->generic_template) break;
         Symbol *template = inst_sym->generic_template;
 
+        // RM 3.9: instantiating a generic whose body has not yet elaborated
+        // raises PROGRAM_ERROR.
+        Emit_Elaboration_Check (template);
+
         // A package instantiation that textually preceded the generic
         // body (or whose body is a SEPARATE subunit) completes now that
         // the body exists (RM 12.2).
@@ -41952,7 +41965,23 @@ void Generate_Declaration (Syntax_Node *node) {
     //                                                                                              
     case NK_GENERIC_DECL:
 
-      // Generic declarations don't generate code - only instances do
+      // Generic declarations don't generate code - only instances do.
+      // RM 3.9: instantiating a generic whose body is not yet elaborated
+      // raises PROGRAM_ERROR. Give the generic an elaboration flag, reset it
+      // false here; its body sets it true, and an instantiation checks it.
+      // Only a generic that actually has a body can be instantiated too early;
+      // a bodyless generic package has nothing to elaborate and is always safe.
+      if (node->symbol and node->symbol->generic_body and cg->current_function) {
+        if (node->symbol->elab_flag_id == 0) {
+          node->symbol->elab_flag_id = ++cg->next_elab_flag_id;
+          Emit_String_Const ("@elab.%u = internal global i1 false  ; generic %.*s\n",
+                             node->symbol->elab_flag_id,
+                             (int)node->symbol->name.length, node->symbol->name.data);
+        }
+        Emit ("  store i1 false, ptr @elab.%u  ; reset generic %.*s elaboration flag\n",
+              node->symbol->elab_flag_id,
+              (int)node->symbol->name.length, node->symbol->name.data);
+      }
       break;
     case NK_TASK_SPEC:
 
