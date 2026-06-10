@@ -33036,8 +33036,24 @@ void Emit_Apply_Component_Defaults (Type_Info *ty, uint32_t base, int sel_varian
   for (uint32_t ci = 0; ci < ty->record.component_count; ci++) {
     Component_Info *comp = &ty->record.components[ci];
     if (not comp->default_expr) continue;
-    if (comp->is_discriminant and (ty->record.has_disc_constraints or skip_disc_defaults))
+    if (comp->is_discriminant and (ty->record.has_disc_constraints or skip_disc_defaults)) {
+      // The discriminant value already lives in the record (stored from the
+      // constraint, not from this default). Still bind dependent component
+      // bounds to read it from that field, so a default like STRING(1..L)
+      // resolves L (RM 3.7.1) instead of an unbound discriminant symbol.
+      uint32_t dptr = Emit_Temp ();
+      if (ty->rt_global_id > 0) {
+        uint32_t rt_off = Emit_Temp ();
+        Emit ("  %%t%u = load " RT_DESC_TYPE ", ptr @__rt_rec_%u_off%u\n",
+           rt_off, ty->rt_global_id, ci);
+        Emit ("  %%t%u = getelementptr i8, ptr %%t%u, i64 %%t%u  ; %.*s disc bind\n",
+           dptr, base, rt_off, (int)comp->name.length, comp->name.data);
+      } else
+        Emit ("  %%t%u = getelementptr i8, ptr %%t%u, i64 %u  ; %.*s disc bind\n",
+           dptr, base, comp->byte_offset, (int)comp->name.length, comp->name.data);
+      Bind_Disc_For_Dependent_Bounds (ty, comp->name, dptr, seen, count, cap);
       continue;
+    }
     if (sel_variant != -2 and comp->variant_index >= 0
         and comp->variant_index != sel_variant) continue;
     LLVM_Value val_v = Generate_Expression (comp->default_expr);
