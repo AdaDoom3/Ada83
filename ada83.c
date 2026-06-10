@@ -11614,6 +11614,9 @@ bool Index_Bound_From_Range_Attr (Syntax_Node *idx, Index_Info *info) {
       or not Slice_Equal_Ignore_Case (idx->attribute.name, S("RANGE")))
     return false;
   Type_Info *pfx = idx->attribute.prefix->type;
+  // RM 4.1(3): P'RANGE where P is access-to-array denotes the designated array.
+  if (pfx and Type_Is_Access (pfx) and pfx->access.designated_type)
+    pfx = pfx->access.designated_type;
   if (not (pfx and Type_Is_Array_Like (pfx) and pfx->array.index_count > 0))
     return false;
   uint32_t dim = 0;
