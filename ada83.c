@@ -33441,6 +33441,34 @@ LLVM_Value Generate_Allocator (Syntax_Node *node) {
       }
     }
 
+    // A multidimensional designated array's byte length is the product of every
+    // dimension's length times the element size, taken from the (possibly
+    // dynamic) initializer type — a fat initializer value carries only the first
+    // dimension's length, which would otherwise under-allocate the data.
+    if (init_type and Type_Is_Array_Like (init_type)
+        and init_type->array.index_count > 1) {
+      LLVM_Rep liat = Integer_Arith_Rep ();
+      uint32_t total = Emit_Static_Int (1, liat).reg;
+      for (uint32_t d = 0; d < init_type->array.index_count; d++) {
+        uint32_t dlo = Emit_Convert (
+          Emit_Single_Bound (&init_type->array.indices[d].low_bound,  new_bt), new_bt, liat).reg;
+        uint32_t dhi = Emit_Convert (
+          Emit_Single_Bound (&init_type->array.indices[d].high_bound, new_bt), new_bt, liat).reg;
+        uint32_t dlen = Emit_Length_From_Bounds (dlo, dhi, liat).reg;
+        uint32_t prod = Emit_Temp ();
+        Emit ("  %%t%u = mul %s %%t%u, %%t%u\n",
+           prod, LLVM_Rep_To_String (liat), total, dlen);
+        total = prod;
+      }
+      uint32_t esz = init_type->array.element_type
+        ? init_type->array.element_type->size : 1;
+      if (esz == 0) esz = 1;
+      uint32_t tbytes = Emit_Temp ();
+      Emit ("  %%t%u = mul %s %%t%u, %u  ; multi-dim byte length\n",
+         tbytes, LLVM_Rep_To_String (liat), total, esz);
+      len_t_64 = Emit_Extend_To_I64 (tbytes, liat).reg;
+    }
+
     // Allocate heap space for array data
     uint32_t heap_ptr = Emit_Temp ();
     Emit ("  %%t%u = call ptr @__ada_allocate (i64 %%t%u)\n", heap_ptr, len_t_64);
