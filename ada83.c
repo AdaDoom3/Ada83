@@ -25127,6 +25127,42 @@ LLVM_Value Emit_Binary_Op_Predefined (Syntax_Node *node) {
             }
           }
 
+          // Membership in a constrained access-to-record subtype (RM 3.3.2):
+          // a null value belongs; a non-null value belongs iff its designated
+          // record's discriminants equal the subtype's constraint.
+          if (range_type and Type_Is_Access (range_type) and
+              range_type->access.designated_type and
+              Type_Is_Record (range_type->access.designated_type) and
+              range_type->access.designated_type->record.has_disc_constraints) {
+            Type_Info *des = range_type->access.designated_type;
+            uint32_t rec_ptr = LLVM_Rep_Is_Fat_Pointer (left_v.rep)
+              ? Emit_Fat_Pointer_Data (left_v.reg, Array_Bound_LLVM_Rep (des)).reg
+              : left_v.reg;
+            LLVM_I1 is_null = Emit_Icmp_Null_Ptr ("eq", rec_ptr);
+            LLVM_I1 belongs = { Emit_I1_Const (1, "access-record membership seed").reg };
+            bool decided = true;
+            for (uint32_t d = 0; d < des->record.discriminant_count; d++) {
+              Component_Info *dc = &des->record.components[d];
+              LLVM_Rep drep = LLVM_Rep_Or (Type_To_Rep (dc->component_type), Integer_Arith_Rep ());
+              uint32_t vval = Emit_Load_Field (rec_ptr, dc->byte_offset, drep);
+              uint32_t cval;
+              if (des->record.disc_constraint_exprs and des->record.disc_constraint_exprs[d])
+                cval = Emit_Coerce_Val (Generate_Expression (
+                         des->record.disc_constraint_exprs[d]), drep).reg;
+              else if (des->record.disc_constraint_values)
+                cval = Emit_Static_Int (des->record.disc_constraint_values[d], drep).reg;
+              else { decided = false; break; }
+              belongs = Emit_And_I1 (belongs, Emit_Icmp ("eq", drep, vval, cval));
+            }
+            if (decided) {
+              uint32_t res = Emit_Temp ();
+              Emit ("  %%t%u = or i1 %%t%u, %%t%u  ; null or discriminants match\n",
+                 res, is_null.reg, belongs.reg);
+              t = negate ? Emit_Not_I1 ((LLVM_I1){ res }).reg : res;
+              return Emit_Bool_Value ((LLVM_I1){ t });
+            }
+          }
+
           // Other composites (records, strings), access and task types: the
           // value is already of the type, so membership is always TRUE
           // (RM 4.5.2). Access types have no range.
