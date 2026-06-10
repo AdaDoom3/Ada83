@@ -34410,6 +34410,18 @@ void Generate_Assignment (Syntax_Node *node) {
             uint32_t src_start = Generate_Expression (src_range->range.low).reg;
             uint32_t src_end = Generate_Expression (src_range->range.high).reg;
 
+            // RM 5.2.1: the source slice and the target slice must have the
+            // same length (the value slides, but the lengths must match).
+            {
+              uint32_t sc = Emit_Temp ();
+              Emit ("  %%t%u = sub %s %%t%u, %%t%u\n", sc,
+                 LLVM_Rep_To_String (csa_t), src_end, src_start);
+              uint32_t sc1 = Emit_Temp ();
+              Emit ("  %%t%u = add %s %%t%u, 1\n", sc1,
+                 LLVM_Rep_To_String (csa_t), sc);
+              Emit_Length_Check (sc1, len_plus_one, csa_t, arr_type);
+            }
+
             // RM 4.1.2: source slice bounds must be in src array's range.
             if (not src_is_uncon and
               src_type->array.index_count > 0 and
@@ -34833,6 +34845,26 @@ void Generate_Assignment (Syntax_Node *node) {
 
     // Source is constrained - memcpy directly
     } else {
+      // RM 5.2.1: array assignment requires equal lengths in each dimension;
+      // the bounds may differ (the value slides). Compare the source and
+      // target lengths per dimension and raise CONSTRAINT_ERROR on a mismatch.
+      // Static bounds fold to a constant comparison; dynamic bounds check at
+      // run time.
+      Type_Info *src_type = node->assignment.value->type;
+      if (src_type and Type_Is_Array_Like (src_type) and Type_Is_Array_Like (ty)) {
+        LLVM_Rep len_bt = Array_Bound_LLVM_Rep (ty);
+        uint32_t nd = ty->array.index_count;
+        if (src_type->array.index_count < nd) nd = src_type->array.index_count;
+        for (uint32_t d = 0; d < nd; d++) {
+          uint32_t dlen = Emit_Length_From_Bounds (
+            Emit_Single_Bound (&ty->array.indices[d].low_bound,  len_bt),
+            Emit_Single_Bound (&ty->array.indices[d].high_bound, len_bt), len_bt).reg;
+          uint32_t slen = Emit_Length_From_Bounds (
+            Emit_Single_Bound (&src_type->array.indices[d].low_bound,  len_bt),
+            Emit_Single_Bound (&src_type->array.indices[d].high_bound, len_bt), len_bt).reg;
+          Emit_Length_Check (slen, dlen, len_bt, ty);
+        }
+      }
       uint32_t array_size = ty->size > 0 ? ty->size : 8;
       uint32_t target_addr = Emit_Assignment_Target_Address (target_sym);
       Emit ("  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u"
