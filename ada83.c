@@ -34511,17 +34511,25 @@ void Generate_Assignment (Syntax_Node *node) {
 
       // Composite types: copy contents via memcpy (RM 5.2)
       if (designated and (Type_Is_Record (designated) or
-        (designated->kind == TYPE_ARRAY and designated->size > 0))) {
+                          designated->kind == TYPE_ARRAY)) {
         LLVM_Value value_v = Generate_Expression (node->assignment.value);
         uint32_t value = value_v.reg;
         // Dynamic-bounds aggregate sources arrive as SSA fat - extract data.
-        if (LLVM_Rep_Is_Fat_Pointer (value_v.rep)) {
-          uint32_t dp = Emit_Extract_Fat_Data (value);
-          value = dp;
+        if (LLVM_Rep_Is_Fat_Pointer (value_v.rep))
+          value = Emit_Extract_Fat_Data (value);
+        // An unconstrained or dynamically bounded designated array has no static
+        // byte size; derive it from the access value's fat-pointer bounds (the
+        // product of every dimension's length times the element size).
+        if (designated->kind == TYPE_ARRAY and Type_Needs_Fat_Pointer (operand_type)) {
+          uint32_t accfat = Generate_Expression (operand).reg;
+          uint32_t szb = Emit_Array_Byte_Size (designated, accfat).reg;
+          Emit ("  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %%t%u, i1 false)  ; .ALL composite assign\n",
+             ptr, value, szb);
+        } else {
+          uint32_t sz = designated->size > 0 ? designated->size : 8;
+          Emit ("  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %u, i1 false)  ; .ALL composite assign\n",
+             ptr, value, sz);
         }
-        uint32_t sz = designated->size > 0 ? designated->size : 8;
-        Emit ("  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %u, i1 false)  ; .ALL composite assign\n",
-           ptr, value, sz);
         return;
       }
 
