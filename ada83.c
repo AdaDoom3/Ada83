@@ -14132,7 +14132,19 @@ void Resolve_Statement (Syntax_Node *node) {
          node->assignment.value->kind == NK_UNARY_OP or
          node->assignment.value->kind == NK_IDENTIFIER) and
         not node->assignment.value->type) {
-        node->assignment.value->type = node->assignment.target->type;
+        Type_Info *target_type = node->assignment.target->type;
+
+        // RM 3.4: a .ALL dereference of a constrained access may denote an
+        // object whose actual discriminants — a base-range value reached
+        // through an inherited operation — differ from the access subtype's
+        // constraint. Type the source against the unconstrained base so it is
+        // matched to the run-time object, not to the static constraint.
+        Syntax_Node *tgt = node->assignment.target;
+        if (tgt->kind == NK_UNARY_OP and tgt->unary.op == TK_ALL and
+            Type_Is_Record (target_type) and
+            target_type->record.has_disc_constraints and target_type->base_type)
+          target_type = target_type->base_type;
+        node->assignment.value->type = target_type;
       }
       Resolve_Expression (node->assignment.value);
 
