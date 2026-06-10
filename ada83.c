@@ -10617,14 +10617,19 @@ Type_Info *Resolve_Apply (Syntax_Node *node) {
     Type_Info *call_ctx = node->type;
 
     // RM 8.3: an inner object declaration hides an outer homograph subprogram.
-    // If the innermost binding of the name is an array object, `A (I)` is an
-    // indexed component (or slice), not a call — don't let overload resolution
+    // If the innermost binding of the name is an (access-to-)array object,
+    // `A (I)` is an indexed component or slice — possibly through an implicit
+    // dereference (RM 4.1(3)) — not a call, so overload resolution must not
     // reach the hidden outer subprogram.
     Symbol *innermost = Symbol_Find (prefix->string_val.text);
+    Type_Info *innermost_indexed = innermost ? innermost->type : NULL;
+    if (innermost_indexed and Type_Is_Access (innermost_indexed) and
+        innermost_indexed->access.designated_type)
+      innermost_indexed = innermost_indexed->access.designated_type;
     if (innermost and (innermost->kind == SYMBOL_VARIABLE or
               innermost->kind == SYMBOL_CONSTANT or
               innermost->kind == SYMBOL_PARAMETER) and
-        Type_Is_Array_Like (innermost->type)) {
+        Type_Is_Array_Like (innermost_indexed)) {
       prefix_sym = innermost;
       prefix->symbol = innermost;
       prefix->type = innermost->type;
@@ -30577,15 +30582,27 @@ uint32_t Generate_Aggregate (Syntax_Node *node) {
       //
       if (bounds_stale and ac_early.n_positional > 0 and not ac_early.has_others) {
         bounds_are_synthetic = true;
-        int128_t lo_static = 1;
-        if (low_bound.kind == BOUND_INTEGER)
-          lo_static = low_bound.int_value;
-        else if (agg_type->base_type and agg_type->base_type->array.index_count > 0
-             and agg_type->base_type->array.indices[0].index_type)
-          lo_static = Type_Bound_Value (
-            agg_type->base_type->array.indices[0].index_type->low_bound);
-        low_val = Emit_Static_Int (lo_static, iat_bnd).reg;
-        high_val = Emit_Static_Int (lo_static + (int128_t)ac_early.n_positional - 1, iat_bnd).reg;
+        if (low_bound.kind == BOUND_EXPR) {
+          // A dynamic constraint low (e.g. SUBDESIGNATED(IDENT_INT(5)..)):
+          // evaluate it, and derive the high from the positional element count.
+          // (Falling back to the index subtype's first would give 0-based
+          // bounds and fail the constrained-target bound check.)
+          low_val = Emit_Single_Bound (&low_bound, iat_bnd);
+          high_val = Emit_Temp ();
+          Emit ("  %%t%u = add %s %%t%u, %lld\n", high_val,
+             LLVM_Rep_To_String (iat_bnd), low_val,
+             (long long)((int128_t)ac_early.n_positional - 1));
+        } else {
+          int128_t lo_static = 1;
+          if (low_bound.kind == BOUND_INTEGER)
+            lo_static = low_bound.int_value;
+          else if (agg_type->base_type and agg_type->base_type->array.index_count > 0
+               and agg_type->base_type->array.indices[0].index_type)
+            lo_static = Type_Bound_Value (
+              agg_type->base_type->array.indices[0].index_type->low_bound);
+          low_val = Emit_Static_Int (lo_static, iat_bnd).reg;
+          high_val = Emit_Static_Int (lo_static + (int128_t)ac_early.n_positional - 1, iat_bnd).reg;
+        }
       } else {
         low_val = Emit_Single_Bound (&low_bound, iat_bnd);
         high_val = Emit_Single_Bound (&high_bound, iat_bnd);
