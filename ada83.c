@@ -33381,8 +33381,14 @@ LLVM_Value Generate_Allocator (Syntax_Node *node) {
         int64_t hi = init_type->array.indices[0].high_bound.int_value;
         low_t  = Emit_Static_Int (lo, con_bt).reg;
         high_t = Emit_Static_Int (hi, con_bt).reg;
-        int64_t length = hi - lo + 1;
-        if (length < 0) length = 0;  // Null range (RM 3.6.1)
+        // Total element count is the product of every dimension's length, not
+        // just the first — a multidimensional designated must allocate them all.
+        int64_t length = 1;
+        for (uint32_t d = 0; d < init_type->array.index_count; d++) {
+          int64_t dl = init_type->array.indices[d].high_bound.int_value
+                     - init_type->array.indices[d].low_bound.int_value + 1;
+          length *= (dl < 0) ? 0 : dl;  // Null range (RM 3.6.1)
+        }
         uint32_t elem_size = init_type->array.element_type ?
                    init_type->array.element_type->size : 1;
         if (elem_size == 0) elem_size = 1;
@@ -33442,26 +33448,46 @@ LLVM_Value Generate_Allocator (Syntax_Node *node) {
     // Copy data: memcpy (heap_ptr, src_data, length)
     Emit_Memcpy (heap_ptr, src_data, len_t_64);
 
-    // RM 4.8(6): Check bounds against index subtype of designated array type.
-    // E.g. NEW TD'(3,4,5) where TD's index is TWO (1..2) - bounds 1..3 exceed TWO.
+    // RM 4.8(6): check the allocated array's bounds against the designated
+    // index subtypes and the target access subtype, for every dimension, then
+    // build the result fat pointer carrying all dimensions' bounds. Allocator
+    // results outlive the current frame, so the bounds live on the heap.
+    Type_Info *tgt = node->allocator.target_access_type;
+    Type_Info *tgt_des = (tgt and Type_Is_Access (tgt)) ?
+                tgt->access.designated_type : NULL;
+    bool tgt_chk = tgt_des and Type_Is_Array_Like (tgt_des) and
+      tgt_des->array.is_constrained and tgt_des->array.index_count > 0;
+    uint32_t ndims = (designated and Type_Is_Array_Like (designated))
+      ? designated->array.index_count : 1;
+    if (ndims < 1) ndims = 1;
+    if (ndims > 8) ndims = 8;
+
+    if (ndims > 1 and init_type and Type_Is_Array_Like (init_type)
+        and init_type->array.index_count >= ndims) {
+      uint32_t lo_ts[8], hi_ts[8];
+      for (uint32_t d = 0; d < ndims; d++) {
+        lo_ts[d] = Emit_Single_Bound (&init_type->array.indices[d].low_bound,  new_bt);
+        hi_ts[d] = Emit_Single_Bound (&init_type->array.indices[d].high_bound, new_bt);
+        if (d < designated->array.index_count)
+          Emit_Index_Subtype_Bound_Check (designated->array.indices[d].index_type,
+                                          lo_ts[d], hi_ts[d], new_bt);
+        if (tgt_chk and d < tgt_des->array.index_count)
+          Emit_Alloc_Bound_Check_Dim (tgt_des, d, lo_ts[d], hi_ts[d], new_bt);
+      }
+      uint32_t bnd_sz = 2 * ndims * (LLVM_Rep_Bits (new_bt) / 8);
+      uint32_t bnds = Emit_Temp ();
+      Emit ("  %%t%u = call ptr @malloc (i64 %u)  ; multi-dim bounds\n", bnds, bnd_sz);
+      for (uint32_t d = 0; d < ndims; d++)
+        Emit_Store_Bound_Pair (bnds, new_bt, d, lo_ts[d], hi_ts[d]);
+      return Val_Rep (Emit_Build_Fat_Pointer (heap_ptr, bnds), LL_REP_FAT);
+    }
+
     if (designated and Type_Is_Array_Like (designated) and
       designated->array.index_count > 0)
       Emit_Index_Subtype_Bound_Check (designated->array.indices[0].index_type,
                                       low_t, high_t, new_bt);
-
-    // RM 4.8(6): Check fat-pointer bounds against target access type bounds
-    {
-      Type_Info *tgt = node->allocator.target_access_type;
-      Type_Info *tgt_des = (tgt and Type_Is_Access (tgt)) ?
-                  tgt->access.designated_type : NULL;
-      if (tgt_des and Type_Is_Array_Like (tgt_des) and
-        tgt_des->array.is_constrained and tgt_des->array.index_count > 0)
-        Emit_Alloc_Bound_Check_Dim (tgt_des, 0, low_t, high_t, new_bt);
-    }
-
-    // Build result fat pointer with heap-allocated bounds.
-    // Allocator results must survive across function returns,
-    // so bounds cannot be on the stack (alloca).
+    if (tgt_chk)
+      Emit_Alloc_Bound_Check_Dim (tgt_des, 0, low_t, high_t, new_bt);
     return Emit_Fat_Pointer_Heap (heap_ptr, low_t, high_t, new_bt);
   }
 
@@ -39224,9 +39250,9 @@ obj_decl_init:
                 uint32_t exp_lo = Emit_Single_Bound (lo_b, abt);
                 uint32_t exp_hi = Emit_Single_Bound (hi_b, abt);
 
-                // Get actual bounds from fat pointer
-                uint32_t act_lo = Emit_Fat_Pointer_Low (init, abt).reg;
-                uint32_t act_hi = Emit_Fat_Pointer_High (init, abt).reg;
+                // Get actual bounds for this dimension from the fat pointer
+                uint32_t act_lo = Emit_Fat_Pointer_Low_Dim (init, abt, xi).reg;
+                uint32_t act_hi = Emit_Fat_Pointer_High_Dim (init, abt, xi).reg;
 
                 // Check lo match
                 LLVM_I1 clo = Emit_Icmp ("ne", abt, act_lo, exp_lo);
