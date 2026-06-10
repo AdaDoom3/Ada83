@@ -2002,6 +2002,10 @@ typedef struct {
 // Return true when a parameter of this mode is passed by reference.
 bool Param_Is_By_Reference (Parameter_Mode mode);
 
+// Mode of a SYMBOL_PARAMETER, recovered from its subprogram's parameter list;
+// PARAM_IN when the symbol is not a parameter or the mode cannot be found.
+Parameter_Mode Parameter_Symbol_Mode (Symbol *sym);
+
 // Stamp is_package_level on every object symbol declared directly in the
 // given declaration list (a package spec's visible/private part or a
 // package body's declarative part).
@@ -8420,6 +8424,16 @@ void Freeze_Type (Type_Info *type_info) {
 
 bool Param_Is_By_Reference (Parameter_Mode mode) {
   return mode == PARAM_OUT or mode == PARAM_IN_OUT;
+}
+
+Parameter_Mode Parameter_Symbol_Mode (Symbol *sym) {
+  if (not sym or sym->kind != SYMBOL_PARAMETER) return PARAM_IN;
+  Symbol *sub = sym->parent;
+  if (sub and sub->parameters)
+    for (uint32_t i = 0; i < sub->parameter_count; i++)
+      if (sub->parameters[i].param_sym == sym)
+        return sub->parameters[i].mode;
+  return PARAM_IN;
 }
 
 void Resolve_Generic_Formal_Subprogram_Defaults (Node_List *formals) {
@@ -29729,6 +29743,12 @@ LLVM_Value Generate_Attribute (Syntax_Node *node) {
         is_constrained = true;  // Explicitly constrained subtype
       } else if (obj_sym and obj_sym->is_disc_constrained) {
         is_constrained = true;  // Object declared with constraint
+      } else if (obj_sym and obj_sym->kind == SYMBOL_PARAMETER and
+                 Parameter_Symbol_Mode (obj_sym) == PARAM_IN) {
+        is_constrained = true;  // RM 3.7.4: an IN formal parameter is constant,
+                                // so 'CONSTRAINED is always TRUE
+      } else if (obj_sym and obj_sym->kind == SYMBOL_CONSTANT) {
+        is_constrained = true;  // RM 3.7.4: a constant is constrained
       } else if (obj_type->record.all_defaults) {
         is_constrained = false;  // Mutable: defaults, no constraint
       }
