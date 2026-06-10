@@ -38881,8 +38881,17 @@ obj_decl_init:
                "ptr %%t%u, ptr %%t%u, i64 %%t%u, i1 false)\n",
                local_data, src_data, len_64);
 
-            // Build fat pointer pointing to local data with source bounds
-            uint32_t new_fat = Emit_Fat_Pointer_Dynamic (local_data, src_low, src_high, init_bt).reg;
+            // A constrained array object keeps its own subtype bounds; the
+            // initializer slides into them (RM 3.6, 5.2.1). An unconstrained
+            // object takes the initializer's bounds.
+            uint32_t dst_low = src_low, dst_high = src_high;
+            if (is_constrained_array and ty->array.index_count > 0) {
+              dst_low  = Emit_Single_Bound (&ty->array.indices[0].low_bound,  init_bt);
+              dst_high = Emit_Single_Bound (&ty->array.indices[0].high_bound, init_bt);
+            }
+
+            // Build fat pointer pointing to local data with the object's bounds
+            uint32_t new_fat = Emit_Fat_Pointer_Dynamic (local_data, dst_low, dst_high, init_bt).reg;
 
             // Store fat pointer into variable
             Emit_Store_Fat_Pointer_To_Symbol (new_fat, sym, init_bt);
