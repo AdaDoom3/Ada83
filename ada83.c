@@ -29735,10 +29735,21 @@ LLVM_Value Generate_Attribute (Syntax_Node *node) {
   // Use i64 for consistency with Boolean storage/comparison.                                      
   //                                                                                                
   if (Slice_Equal_Ignore_Case (attr, S("CONSTRAINED"))) {
-    Symbol *obj_sym = node->attribute.prefix ? node->attribute.prefix->symbol : NULL;
-    Type_Info *obj_type = node->attribute.prefix ? node->attribute.prefix->type : NULL;
+    Syntax_Node *cpfx = node->attribute.prefix;
+    Symbol *obj_sym = cpfx ? cpfx->symbol : NULL;
+    Type_Info *obj_type = cpfx ? cpfx->type : NULL;
     bool is_constrained = true;  // Default: constrained
-    if (obj_type and Type_Is_Record (obj_type) and obj_type->record.has_discriminants) {
+
+    // RM 3.7.4: an object designated by an access value is always constrained
+    // - a heap object's discriminants are fixed when it is allocated, so an
+    // explicit .ALL dereference yields TRUE regardless of the designated
+    // subtype.
+    bool is_designated = cpfx and cpfx->kind == NK_UNARY_OP and
+      cpfx->unary.op == TK_ALL;
+
+    if (is_designated) {
+      is_constrained = true;
+    } else if (obj_type and Type_Is_Record (obj_type) and obj_type->record.has_discriminants) {
       if (obj_type->record.is_constrained) {
         is_constrained = true;  // Explicitly constrained subtype
       } else if (obj_sym and obj_sym->is_disc_constrained) {
