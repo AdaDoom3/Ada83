@@ -23366,7 +23366,9 @@ uint32_t Generate_Composite_Address (Syntax_Node *node) {
   // uniformly — access variable, rename, alias, or parameterless function
   // returning an access value (implicit call, RM 4.1.3).
   if (node->kind == NK_UNARY_OP and node->unary.op == TK_ALL and node->unary.operand) {
-    return Generate_Expression (node->unary.operand).reg;
+    LLVM_Value acc = Generate_Expression (node->unary.operand);
+    Emit_Access_Check (acc, node->unary.operand->type);  // RM 4.1: null .ALL -> CE
+    return acc.reg;
   }
 
   // Array indexing or slice: Arr (I) or Arr (low..high).
