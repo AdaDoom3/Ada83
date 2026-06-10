@@ -34336,6 +34336,20 @@ void Generate_Assignment (Syntax_Node *node) {
           uint32_t src_data = LLVM_Rep_Is_Fat_Pointer (src_llvm)
             ? Emit_Fat_Pointer_Data (src_val, Array_Bound_LLVM_Rep (arr_type)).reg
             : src_val;
+
+          // RM 5.2.1: the source length must equal the slice length.
+          uint32_t fsrc_count = 0;
+          if (LLVM_Rep_Is_Fat_Pointer (src_llvm)) {
+            LLVM_Rep sb = Array_Bound_LLVM_Rep (src->type ? src->type : arr_type);
+            fsrc_count = Emit_Convert (Emit_Fat_Pointer_Length (src_val, sb).reg, sb, usa_t).reg;
+          } else if (src->type and Type_Is_Array_Like (src->type)
+                     and src->type->array.index_count > 0) {
+            fsrc_count = Emit_Length_From_Bounds (
+              Emit_Single_Bound (&src->type->array.indices[0].low_bound,  usa_t),
+              Emit_Single_Bound (&src->type->array.indices[0].high_bound, usa_t), usa_t).reg;
+          }
+          if (fsrc_count) Emit_Length_Check (fsrc_count, len_plus_one, usa_t, arr_type);
+
           Emit ("  call void @llvm.memcpy.p0.p0.i64("
              "ptr %%t%u, ptr %%t%u, i64 %%t%u, i1 false)"
              "  ; uncon slice assignment\n",
