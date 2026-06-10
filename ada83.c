@@ -34491,6 +34491,21 @@ void Generate_Assignment (Syntax_Node *node) {
           } else {
             src_ptr = Emit_Alloca_Store (src_llvm, src_val);
           }
+
+          // RM 5.2.1: the whole-array or string source must have the same
+          // length as the target slice. A fat source carries its length; a
+          // constrained-array source derives it from its bounds.
+          uint32_t src_count = 0;
+          if (LLVM_Rep_Is_Fat_Pointer (src_llvm)) {
+            LLVM_Rep sb = Array_Bound_LLVM_Rep (src->type ? src->type : prefix_type);
+            src_count = Emit_Convert (Emit_Fat_Pointer_Length (src_val, sb).reg, sb, csa_t).reg;
+          } else if (src->type and Type_Is_Array_Like (src->type)
+                     and src->type->array.index_count > 0) {
+            src_count = Emit_Length_From_Bounds (
+              Emit_Single_Bound (&src->type->array.indices[0].low_bound,  csa_t),
+              Emit_Single_Bound (&src->type->array.indices[0].high_bound, csa_t), csa_t).reg;
+          }
+          if (src_count) Emit_Length_Check (src_count, len_plus_one, csa_t, arr_type);
         }
         Emit ("  call void @llvm.memcpy.p0.p0.i64("
            "ptr %%t%u, ptr %%t%u, i64 %%t%u, i1 false)"
