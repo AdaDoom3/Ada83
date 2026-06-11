@@ -1946,6 +1946,8 @@ bool        Expression_Produces_Fat_Pointer (const Syntax_Node *node,
 
 bool Types_Same_Named           (Type_Info *t1,  Type_Info *t2);
 bool Subprogram_Is_Primitive_Of (Symbol    *sub, Type_Info *type);
+bool Subprograms_Are_Homographs (Symbol    *a,   Symbol    *b);
+bool Subprogram_Is_Implicit     (Symbol    *s);
 void Create_Derived_Operation   (Symbol    *sub,
                                  Type_Info *derived_type,
                                  Type_Info *parent_type,
@@ -1999,6 +2001,10 @@ typedef struct {
 
 // Return true when a parameter of this mode is passed by reference.
 bool Param_Is_By_Reference (Parameter_Mode mode);
+
+// Mode of a SYMBOL_PARAMETER, recovered from its subprogram's parameter list;
+// PARAM_IN when the symbol is not a parameter or the mode cannot be found.
+Parameter_Mode Parameter_Symbol_Mode (Symbol *sym);
 
 // Stamp is_package_level on every object symbol declared directly in the
 // given declaration list (a package spec's visible/private part or a
@@ -2227,12 +2233,23 @@ struct Symbol {
   bool     is_predefined;         // Standard-library predefined entity
   bool     needs_address_marker;  // Needs a @__address_marker global
   bool     is_identity_function;  // Derived identity "=" operator
+  bool     declared_in_visible_part; // Explicitly declared immediately within a
+                                  // package's visible part. RM 3.4 calls such a
+                                  // subprogram "derivable of the first kind".
   uint32_t disc_agg_temp;         // Temp register for discriminant aggregate
   bool     is_disc_constrained;   // Constrained by a discriminant constraint
 
   // Derived operations
   Symbol    *parent_operation;  // Original primitive inherited by derivation
   Type_Info *derived_from_type; // Parent type from which this op was derived
+
+  // RM 3.9 access-before-elaboration: a subprogram given as a forward spec
+  // carries a boolean flag in a module global @elab.<id>, set false where the
+  // spec elaborates and true where the body elaborates. A call checks it and
+  // raises PROGRAM_ERROR when the body has not yet run. The global is reachable
+  // from any function, so a call from an instance or default expression that
+  // runs in a different frame still sees it.
+  uint32_t     elab_flag_id;       // Global flag id, or 0 if the subprogram has none
 
   // Labels, loops, entries
   uint32_t     llvm_label_id;      // LLVM label for goto targets
@@ -2321,6 +2338,10 @@ typedef struct {
   Scope     *cutoff_exempt_scope;    // The instance scope (and its
                                      // descendants): bindings and the
                                      // clone's own entities stay visible
+  bool       in_package_visible_part; // True only while resolving the visible
+                                     // declarations of a package specification,
+                                     // so newly added subprograms can be stamped
+                                     // as first-kind derivable (RM 3.4).
 } Symbol_Manager;
 
 extern Symbol_Manager *sm;
@@ -2432,6 +2453,7 @@ void Freeze_Declaration_List (Node_List *list);
 void Populate_Package_Exports    (Symbol    *pkg_sym, Syntax_Node *pkg_spec);
 void Preregister_Labels          (Node_List *list);
 void Install_Declaration_Symbols (Node_List *decls);
+void Install_Derived_Operations  (Scope     *spec_scope);
 
 bool   Is_Integer_Expr     (Syntax_Node *node);
 bool   Eval_Const_Rational (Syntax_Node *node, Rational *out);
@@ -2568,6 +2590,8 @@ typedef struct {
   // Address markers
   Symbol   *address_markers[256]; // Symbols needing @__address_marker globals
   uint32_t  address_marker_count; // Number of address markers registered
+
+  uint32_t  next_elab_flag_id;    // Monotonic id for RM 3.9 elaboration flags
 
   // Duplicate emission guard
   uint32_t emitted_func_ids[1024]; // Unique IDs of already-emitted functions
@@ -2815,6 +2839,15 @@ void Emit_Raise_Exception  (const char *exc_name, const char *comment);
 void Emit_Check_With_Raise (uint32_t    cond,
                             bool        raise_on_true,
                             const char *comment);
+
+// RM 4.6 array conversion: raise CONSTRAINT_ERROR when the operand and target
+// array types have component subtypes whose constraints differ.
+void Emit_Component_Constraint_Check (Type_Info *operand_component,
+                                      Type_Info *target_component);
+
+// RM 3.9: raise PROGRAM_ERROR at a call whose target body has not yet been
+// elaborated (the callee's elaboration flag is still false).
+void Emit_Elaboration_Check (Symbol *callee);
 
 // ???
 void Emit_Range_Check_With_Raise (uint32_t    val,
@@ -8393,6 +8426,16 @@ bool Param_Is_By_Reference (Parameter_Mode mode) {
   return mode == PARAM_OUT or mode == PARAM_IN_OUT;
 }
 
+Parameter_Mode Parameter_Symbol_Mode (Symbol *sym) {
+  if (not sym or sym->kind != SYMBOL_PARAMETER) return PARAM_IN;
+  Symbol *sub = sym->parent;
+  if (sub and sub->parameters)
+    for (uint32_t i = 0; i < sub->parameter_count; i++)
+      if (sub->parameters[i].param_sym == sym)
+        return sub->parameters[i].mode;
+  return PARAM_IN;
+}
+
 void Resolve_Generic_Formal_Subprogram_Defaults (Node_List *formals) {
   if (not formals) return;
   for (uint32_t i = 0; i < formals->count; i++) {
@@ -8582,10 +8625,42 @@ bool Symbol_Visible_Under_Cutoff (Symbol *sym, Scope *scope) {
     if (s == sm->cutoff_exempt_scope) return true;
   return false;
 }
+
+// RM 6.6 / 8.3: two subprograms are homographs when they share a designator
+// and have the same parameter-and-result type profile. The result type is part
+// of a function's profile in Ada 83, so two functions differing only in result
+// type are not homographs.
+bool Subprograms_Are_Homographs (Symbol *a, Symbol *b) {
+  if (not a or not b or a->kind != b->kind) return false;
+  if (a->kind != SYMBOL_FUNCTION and a->kind != SYMBOL_PROCEDURE) return false;
+  if (a->parameter_count != b->parameter_count) return false;
+  for (uint32_t i = 0; i < a->parameter_count; i++)
+    if (not Types_Same_Named (a->parameters[i].param_type, b->parameters[i].param_type))
+      return false;
+  if (a->kind == SYMBOL_FUNCTION and not Types_Same_Named (a->return_type, b->return_type))
+    return false;
+  return true;
+}
+
+// A subprogram is "implicitly declared" when it was introduced by derivation
+// (RM 3.4) rather than by an explicit declaration, renaming, or instantiation.
+// RM 8.3: such an implicit declaration is hidden by an explicit homograph in
+// the same declarative region.
+bool Subprogram_Is_Implicit (Symbol *s) {
+  return s and s->parent_operation != NULL;
+}
+
 void Symbol_Add (Symbol *sym) {
   Scope    *scope    = sm->current_scope;
   uint32_t  hash     = Symbol_Hash_Name (sym->name);
   Symbol   *existing = scope->buckets[hash];
+
+  // RM 3.4: remember whether an explicit subprogram is declared immediately
+  // within a package's visible part, where it becomes derivable of the first
+  // kind (and hides a derived homograph for further derivation).
+  if ((sym->kind == SYMBOL_FUNCTION or sym->kind == SYMBOL_PROCEDURE) and
+      sm->in_package_visible_part and not Subprogram_Is_Implicit (sym))
+    sym->declared_in_visible_part = true;
 
   // Check if symbol is already in this bucket (avoid self-cycle)
   while (existing) {
@@ -8616,6 +8691,21 @@ void Symbol_Add (Symbol *sym) {
         sym->next_overload = existing->next_overload;
         existing->next_overload = sym;
         sym->parent = scope->owner;
+
+        // RM 8.3: when an explicitly declared subprogram and an implicitly
+        // declared (derived) homograph coexist in one declarative region, the
+        // implicit one is hidden. This applies in either declaration order: the
+        // explicit declaration may precede or follow the derived type that
+        // introduces the implicit homograph. Predefined operators have their
+        // own hiding rule (a derived operator hides them) and are excluded.
+        for (Symbol *c = existing; c; c = c->next_overload) {
+          if (c == sym or c->is_predefined or sym->is_predefined) continue;
+          if (not Subprograms_Are_Homographs (c, sym)) continue;
+          if (Subprogram_Is_Implicit (sym) and not Subprogram_Is_Implicit (c))
+            sym->visibility = VIS_HIDDEN;
+          else if (Subprogram_Is_Implicit (c) and not Subprogram_Is_Implicit (sym))
+            c->visibility = VIS_HIDDEN;
+        }
         return;
       }
 
@@ -8731,11 +8821,14 @@ Symbol *Symbol_Find (String_Slice name) {
   uint32_t hash = Symbol_Hash_Name (name);
   for (Scope *scope = sm->current_scope; scope; scope = scope->parent) {
     for (Symbol *sym = scope->buckets[hash]; sym; sym = sym->next_in_bucket) {
-      if (Slice_Equal_Ignore_Case (sym->name, name) and
-        sym->visibility >= VIS_IMMEDIATELY_VISIBLE and
-        Symbol_Visible_Under_Cutoff (sym, scope)) {
-        return sym;
-      }
+      if (not Slice_Equal_Ignore_Case (sym->name, name)) continue;
+
+      // Skip past a hidden head (e.g. a derived subprogram hidden by an
+      // explicit homograph, RM 8.3) to the first visible overload.
+      for (Symbol *s = sym; s; s = s->next_overload)
+        if (s->visibility >= VIS_IMMEDIATELY_VISIBLE and
+          Symbol_Visible_Under_Cutoff (s, scope))
+          return s;
     }
   }
   return NULL;
@@ -8776,31 +8869,33 @@ Symbol *Symbol_Find_By_Type (String_Slice name, Type_Info *expected_type) {
   bool is_char_lit = (name.length >= 1 and name.data[0] == '\'');
 
   // Search all scopes for a matching symbol - don't stop at first name match,
-  // keep searching if the type doesn't match (for enumeration literal overloading)
+  // keep searching if the type doesn't match (for enumeration literal
+  // overloading). Within a scope, a same-named-type match is preferred over a
+  // loose root match: Type_Root collapses an entire derivation class to one
+  // root, so a function inherited into a derived type and a homograph returning
+  // the parent type would otherwise be indistinguishable here (RM 3.4).
   for (Scope *scope = sm->current_scope; scope; scope = scope->parent) {
+    Symbol *loose = NULL;
     for (Symbol *sym = scope->buckets[hash]; sym; sym = sym->next_in_bucket) {
-      if (Slice_Equal_Ignore_Case (sym->name, name) and
-        sym->visibility >= VIS_IMMEDIATELY_VISIBLE and
-        Symbol_Visible_Under_Cutoff (sym, scope)) {
+      if (not Slice_Equal_Ignore_Case (sym->name, name)) continue;
 
-        // Search through overload chain (for enumeration literals)
-        // For character literals, require exact case match (RM 2.6)
-        for (Symbol *ovl = sym; ovl; ovl = ovl->next_overload) {
-          if (is_char_lit and not Slice_Equal (ovl->name, name)) continue;
+      // Visibility is checked per overload so a hidden homograph (RM 8.3) at
+      // the head does not mask a visible one. Char literals require exact
+      // case (RM 2.6).
+      for (Symbol *ovl = sym; ovl; ovl = ovl->next_overload) {
+        if (ovl->visibility < VIS_IMMEDIATELY_VISIBLE) continue;
+        if (not Symbol_Visible_Under_Cutoff (ovl, scope)) continue;
+        if (is_char_lit and not Slice_Equal (ovl->name, name)) continue;
 
-          // For functions, match by return type, not by symbol type.
-          Type_Info *ovl_type = (ovl->kind == SYMBOL_FUNCTION)
-            ? ovl->return_type : ovl->type;
+        // For functions, match by return type, not by symbol type.
+        Type_Info *ovl_type = (ovl->kind == SYMBOL_FUNCTION)
+          ? ovl->return_type : ovl->type;
 
-          // Check if type matches (either directly or via base type)
-          if (Type_Root (ovl_type) == base_expected) {
-            return ovl;
-          }
-        }
-
-        // Type didn't match in this scope - continue to parent scopes
+        if (Types_Same_Named (ovl_type, expected_type)) return ovl;
+        if (not loose and Type_Root (ovl_type) == base_expected) loose = ovl;
       }
     }
+    if (loose) return loose;  // No exact match in this scope; accept the root match
   }
   return NULL;  // No matching symbol found
 }
@@ -9108,26 +9203,22 @@ void Collect_Interpretations (String_Slice name,
   interps->count = 0;
   uint32_t hash = Symbol_Hash_Name (name);
 
-  // Search all enclosing scopes
+  // Search all enclosing scopes. Visibility is checked per overload, not just
+  // on the bucket head: an implicit derived subprogram hidden by an explicit
+  // homograph (RM 8.3) may sit anywhere in the chain, including at its head.
   for (Scope *scope = sm->current_scope; scope; scope = scope->parent) {
     for (Symbol *sym = scope->buckets[hash]; sym; sym = sym->next_in_bucket) {
       if (not Slice_Equal_Ignore_Case (sym->name, name)) continue;
-      if (sym->visibility < VIS_IMMEDIATELY_VISIBLE) continue;
-      if (not Symbol_Visible_Under_Cutoff (sym, scope)) continue;
 
-      // Add this interpretation and all overloads
-      Symbol *s = sym;
+      for (Symbol *s = sym; s and interps->count < MAX_INTERPRETATIONS;
+           s = s->next_overload) {
+        if (s->visibility < VIS_IMMEDIATELY_VISIBLE) continue;
+        if (not Symbol_Visible_Under_Cutoff (s, scope)) continue;
 
-      // Check if we already have this interpretation
-      while (s and interps->count < MAX_INTERPRETATIONS) {
         bool duplicate = false;
-        for (uint32_t i = 0; i < interps->count; i++) {
-          if (interps->items[i].nam == s) {
-            duplicate = true;
-            break;
-          }
-        }
-        if (not duplicate) {
+        for (uint32_t i = 0; i < interps->count; i++)
+          if (interps->items[i].nam == s) { duplicate = true; break; }
+        if (not duplicate)
           interps->items[interps->count++] = (Interpretation){
             .nam = s,
             .typ = (s->kind == SYMBOL_FUNCTION) ? s->return_type : s->type,
@@ -9135,8 +9226,6 @@ void Collect_Interpretations (String_Slice name,
             .is_universal = false,
             .scope_depth = scope->nesting_level
           };
-        }
-        s = s->next_overload;
       }
     }
   }
@@ -10561,14 +10650,19 @@ Type_Info *Resolve_Apply (Syntax_Node *node) {
     Type_Info *call_ctx = node->type;
 
     // RM 8.3: an inner object declaration hides an outer homograph subprogram.
-    // If the innermost binding of the name is an array object, `A (I)` is an
-    // indexed component (or slice), not a call — don't let overload resolution
+    // If the innermost binding of the name is an (access-to-)array object,
+    // `A (I)` is an indexed component or slice — possibly through an implicit
+    // dereference (RM 4.1(3)) — not a call, so overload resolution must not
     // reach the hidden outer subprogram.
     Symbol *innermost = Symbol_Find (prefix->string_val.text);
+    Type_Info *innermost_indexed = innermost ? innermost->type : NULL;
+    if (innermost_indexed and Type_Is_Access (innermost_indexed) and
+        innermost_indexed->access.designated_type)
+      innermost_indexed = innermost_indexed->access.designated_type;
     if (innermost and (innermost->kind == SYMBOL_VARIABLE or
               innermost->kind == SYMBOL_CONSTANT or
               innermost->kind == SYMBOL_PARAMETER) and
-        Type_Is_Array_Like (innermost->type)) {
+        Type_Is_Array_Like (innermost_indexed)) {
       prefix_sym = innermost;
       prefix->symbol = innermost;
       prefix->type = innermost->type;
@@ -10584,7 +10678,8 @@ Type_Info *Resolve_Apply (Syntax_Node *node) {
       prefix_sym = Symbol_Find (prefix->string_val.text);
       if (prefix_sym) {
         prefix->symbol = prefix_sym;
-        prefix->type = prefix_sym->type;
+        prefix->type = (prefix_sym->kind == SYMBOL_FUNCTION)
+                     ? prefix_sym->return_type : prefix_sym->type;
       } else {
         // RM 6.7: operator in function-call notation — `"+"(A,B)` /
         // `"+"(LEFT=>A, RIGHT=>B)`. Predefined ops on fixed/float/etc. aren't
@@ -10644,7 +10739,18 @@ Type_Info *Resolve_Apply (Syntax_Node *node) {
     //                                                                                              
     bool prefix_is_call_target = (prefix->kind == NK_IDENTIFIER or
                     prefix->kind == NK_SELECTED);
-    if (prefix_is_call_target and
+
+    // A parameterless function whose result is (an access to) an array, written
+    // F(...), is not a call with arguments but an index or slice of the
+    // implicitly called result (RM 4.1, 4.1.3). Let it fall through to Case 3.
+    Type_Info *res_indexed = prefix_sym->return_type;
+    if (res_indexed and Type_Is_Access (res_indexed) and res_indexed->access.designated_type)
+      res_indexed = res_indexed->access.designated_type;
+    bool indexes_result = prefix_sym->kind == SYMBOL_FUNCTION and
+      prefix_sym->parameter_count == 0 and arg_count > 0 and
+      Type_Is_Array_Like (res_indexed);
+
+    if (prefix_is_call_target and not indexes_result and
       (prefix_sym->kind == SYMBOL_FUNCTION or prefix_sym->kind == SYMBOL_PROCEDURE)) {
       node->symbol = prefix_sym;
       node->type = prefix_sym->return_type;  // NULL for procedures
@@ -11546,6 +11652,9 @@ bool Index_Bound_From_Range_Attr (Syntax_Node *idx, Index_Info *info) {
       or not Slice_Equal_Ignore_Case (idx->attribute.name, S("RANGE")))
     return false;
   Type_Info *pfx = idx->attribute.prefix->type;
+  // RM 4.1(3): P'RANGE where P is access-to-array denotes the designated array.
+  if (pfx and Type_Is_Access (pfx) and pfx->access.designated_type)
+    pfx = pfx->access.designated_type;
   if (not (pfx and Type_Is_Array_Like (pfx) and pfx->array.index_count > 0))
     return false;
   uint32_t dim = 0;
@@ -11572,10 +11681,13 @@ Type_Info *Resolve_Expression (Syntax_Node *node) {
     case NK_IDENTIFIER: return Resolve_Identifier (node);
     case NK_SELECTED:   return Resolve_Selected (node);
     case NK_BINARY_OP:  return Resolve_Binary_Op (node);
-    case NK_UNARY_OP:
+    case NK_UNARY_OP: {
       // +/-/abs yield the operand's type; propagate an expected type from
       // context down to the operand so an overloaded operand (e.g. a call with
       // several return types) resolves by result type (RM 6.6, 4.5.6).
+      // The same context disambiguates an overloaded user-defined operator
+      // (e.g. `+0` of a derived type with a homograph), so keep it.
+      Type_Info *unary_ctx = node->type;
       if (node->type and not node->unary.operand->type and
         (node->unary.op == TK_PLUS or node->unary.op == TK_MINUS or
          node->unary.op == TK_ABS))
@@ -11594,7 +11706,7 @@ Type_Info *Resolve_Expression (Syntax_Node *node) {
         if (op_name.length > 0 and operand_type) {
           Type_Info *arg_types[1] = { operand_type };
           Argument_Info args = { .types = arg_types, .count = 1, .names = NULL };
-          Symbol *user_op = Resolve_Overloaded_Call (op_name, &args, NULL);
+          Symbol *user_op = Resolve_Overloaded_Call (op_name, &args, unary_ctx);
           if (user_op and user_op->kind == SYMBOL_FUNCTION and
             not user_op->is_predefined) {
             node->symbol = user_op;
@@ -11624,6 +11736,7 @@ Type_Info *Resolve_Expression (Syntax_Node *node) {
         }
       }
       return node->type;
+    }
     case NK_APPLY:
       return Resolve_Apply (node);
     case NK_ATTRIBUTE:
@@ -12396,6 +12509,27 @@ Type_Info *Resolve_Expression (Syntax_Node *node) {
           base->specified_bit_size = parent_base->specified_bit_size;
           base->storage_size     = parent_base->storage_size;
           derived->base_type     = base;
+        }
+
+        // RM 3.4: deriving from a constrained discrete subtype (e.g.
+        // `type S is new P range L..H`, or `type S is new SUB` where SUB is a
+        // constrained subtype of P) introduces an unconstrained base S'BASE
+        // that holds every value of the parent's base type, while S itself
+        // carries the constraint. Without a distinct base, a base-range value
+        // (an inherited enumeration literal outside S's range) would be typed
+        // with S's constraint and wrongly pass an assignment range check.
+        if ((Type_Is_Enumeration (parent) or parent->kind == TYPE_INTEGER)
+            and not node->derived_type.constraint and Type_Base (parent) != parent) {
+          Type_Info *parent_base = Type_Base (parent);
+          Type_Info *base = Type_New (parent_base->kind, S(""));
+          base->parent_type  = parent_base;
+          if (Type_Is_Enumeration (parent_base))
+            base->enumeration = parent_base->enumeration;
+          base->low_bound    = parent_base->low_bound;
+          base->high_bound   = parent_base->high_bound;
+          base->size         = parent_base->size;
+          base->alignment    = parent_base->alignment;
+          derived->base_type = base;
         }
 
         // RM 3.5.9 / 3.4: a derived fixed-point type shares its parent's base
@@ -13732,6 +13866,24 @@ void Freeze_Declaration_List (Node_List *list) {
 // This must be called after all visible declarations are resolved so that                          
 // decl->symbol pointers are valid. Used by both inline packages and loaded specs.                 
 //                                                                                                  
+// RM 3.4: a declaration that introduces an explicit subprogram — a subprogram
+// declaration or body, a renaming, or a subprogram instantiation — into the
+// visible part of a package. Such subprograms are exported and derivable of the
+// first kind.
+bool Decl_Is_Visible_Subprogram (Syntax_Node *decl) {
+  switch (decl->kind) {
+    case NK_PROCEDURE_SPEC: case NK_FUNCTION_SPEC:
+    case NK_PROCEDURE_BODY: case NK_FUNCTION_BODY:
+    case NK_SUBPROGRAM_RENAMING:
+      return true;
+    case NK_GENERIC_INST:
+      return decl->symbol and (decl->symbol->kind == SYMBOL_FUNCTION or
+                               decl->symbol->kind == SYMBOL_PROCEDURE);
+    default:
+      return false;
+  }
+}
+
 void Populate_Package_Exports (Symbol *pkg_sym, Syntax_Node *pkg_spec) {
   if (not pkg_sym or not pkg_spec or pkg_spec->kind != NK_PACKAGE_SPEC) return;
   Node_List *visible = &pkg_spec->package_spec.visible_decls;
@@ -13757,8 +13909,7 @@ void Populate_Package_Exports (Symbol *pkg_sym, Syntax_Node *pkg_spec) {
         // Derived enum type: count inherited literals
         count += decl->symbol->type->enumeration.literal_count;
       }
-    } else if (decl->kind == NK_PROCEDURE_SPEC or decl->kind == NK_FUNCTION_SPEC or
-           decl->kind == NK_PROCEDURE_BODY or decl->kind == NK_FUNCTION_BODY) {
+    } else if (Decl_Is_Visible_Subprogram (decl)) {
       count++;
     } else if (decl->kind == NK_EXCEPTION_DECL) {
       count += (uint32_t)decl->exception_decl.names.count;
@@ -13829,8 +13980,11 @@ void Populate_Package_Exports (Symbol *pkg_sym, Syntax_Node *pkg_spec) {
           }
         }
       }
-    } else if ((decl->kind == NK_PROCEDURE_SPEC or decl->kind == NK_FUNCTION_SPEC or
-          decl->kind == NK_PROCEDURE_BODY or decl->kind == NK_FUNCTION_BODY) and decl->symbol) {
+    } else if (Decl_Is_Visible_Subprogram (decl) and decl->symbol) {
+      // A subprogram in the visible part is derivable of the first kind (RM 3.4).
+      // Stamp it here too so separately loaded specs, whose resolution does not
+      // pass through the visible-part toggle, are still recognised.
+      decl->symbol->declared_in_visible_part = true;
       pkg_sym->exported[pkg_sym->exported_count++] = decl->symbol;
     } else if (decl->kind == NK_EXCEPTION_DECL) {
       for (uint32_t j = 0; j < decl->exception_decl.names.count; j++) {
@@ -14016,7 +14170,19 @@ void Resolve_Statement (Syntax_Node *node) {
          node->assignment.value->kind == NK_UNARY_OP or
          node->assignment.value->kind == NK_IDENTIFIER) and
         not node->assignment.value->type) {
-        node->assignment.value->type = node->assignment.target->type;
+        Type_Info *target_type = node->assignment.target->type;
+
+        // RM 3.4: a .ALL dereference of a constrained access may denote an
+        // object whose actual discriminants — a base-range value reached
+        // through an inherited operation — differ from the access subtype's
+        // constraint. Type the source against the unconstrained base so it is
+        // matched to the run-time object, not to the static constraint.
+        Syntax_Node *tgt = node->assignment.target;
+        if (tgt->kind == NK_UNARY_OP and tgt->unary.op == TK_ALL and
+            Type_Is_Record (target_type) and
+            target_type->record.has_disc_constraints and target_type->base_type)
+          target_type = target_type->base_type;
+        node->assignment.value->type = target_type;
       }
       Resolve_Expression (node->assignment.value);
 
@@ -14370,6 +14536,36 @@ void Resolve_Statement (Syntax_Node *node) {
 // Handles objects, exceptions, and enumeration literals uniformly.                                
 // Extracted from two identical visible/private installation blocks.                               
 //                                                                                                  
+// Re-install into the current (body) scope the implicit derived operations
+// (RM 3.4) that were created while analysing a package spec. They are not
+// declaration nodes, so Install_Declaration_Symbols does not reach them, yet
+// the body must see them exactly as the spec did (RM 7.1).
+void Install_Derived_Operations (Scope *spec_scope) {
+  if (not spec_scope or spec_scope == sm->current_scope) return;
+
+  // Walk the hash buckets and overload chains, not the flat symbol array: an
+  // overloaded homograph is chained but not recorded in symbols[]. Symbol_Add
+  // relinks next_in_bucket/next_overload into the body scope, so each successor
+  // pointer is captured before the symbol is re-added.
+  for (uint32_t h = 0; h < SYMBOL_TABLE_SIZE; h++)
+    for (Symbol *sym = spec_scope->buckets[h]; sym; ) {
+      Symbol *next_bucket = sym->next_in_bucket;
+      for (Symbol *s = sym; s; ) {
+        Symbol *next_overload = s->next_overload;
+        if (Subprogram_Is_Implicit (s)) {
+          // Symbol_Add overwrites parent with the body scope's owner; an
+          // inherited operation keeps the parent operation's nesting for
+          // mangling, exactly as Create_Derived_Operation set it.
+          Symbol *saved_parent = s->parent;
+          Symbol_Add (s);
+          s->parent = saved_parent;
+        }
+        s = next_overload;
+      }
+      sym = next_bucket;
+    }
+}
+
 void Install_Declaration_Symbols (Node_List *decls) {
   for (uint32_t i = 0; i < decls->count; i++) {
     Syntax_Node *decl = decls->items[i];
@@ -14443,6 +14639,17 @@ void Resolve_Declaration_List (Node_List *list) {
 // Handles private types where partial (visible) and full (private) views                           
 // have different Type_Info pointers but represent the same type.                                  
 //                                                                                                  
+// RM 12.1.2: a generic formal type denotes its actual within an instance. The
+// binding is a renamed copy of the actual (so the formal's predefined operators
+// stay bound to the actual's); peel it back to the actual type the instance was
+// given, which is what an instance's external profile must expose.
+Type_Info *Peel_Generic_Actual_View (Type_Info *t) {
+  while (t and t->is_generic_actual_view and t->defining_symbol and
+         t->defining_symbol->type and t->defining_symbol->type != t)
+    t = t->defining_symbol->type;
+  return t;
+}
+
 bool Types_Same_Named (Type_Info *t1, Type_Info *t2) {
   if (not t1 or not t2) return false;
   if (t1 == t2) return true;
@@ -14524,10 +14731,45 @@ void Create_Derived_Operation (Symbol *sub,
 // operation that actually carries a body (GNAT's Ultimate_Alias). A derived
 // subprogram has no code of its own — a call to it binds to the parent's
 // implementation, and a multi-level derivation (S is new T is new P) chains
-// derived op -> derived op -> real body, so only the last has code.
+// derived op -> derived op -> real body, so only the last has code. The parent
+// of a derived operation may itself be a renaming (RM 8.5), so the two peels
+// are interleaved until a symbol that is neither is reached.
 Symbol *Ultimate_Operation (Symbol *sub) {
-  while (sub and sub->parent_operation) sub = sub->parent_operation;
-  return sub;
+  for (;;) {
+    if (sub and sub->parent_operation) { sub = sub->parent_operation; continue; }
+    Symbol *peeled = Resolve_Subprogram_Rename (sub);
+    if (peeled != sub) { sub = peeled; continue; }
+    return sub;
+  }
+}
+
+// RM 3.4: a derivable subprogram of the "first kind" is an explicit subprogram
+// declared immediately within the visible part of the package that also holds
+// the parent type. Such a subprogram hides a homographic derived (second-kind)
+// subprogram for the purpose of further derivation.
+bool Has_Visible_Part_Explicit_Homograph (Scope *scope, Symbol *op) {
+  if (not scope) return false;
+  uint32_t hash = Symbol_Hash_Name (op->name);
+  for (Symbol *s = scope->buckets[hash]; s; s = s->next_in_bucket)
+    for (Symbol *o = s; o; o = o->next_overload)
+      if (o != op and o->declared_in_visible_part and
+          not Subprogram_Is_Implicit (o) and Subprograms_Are_Homographs (o, op))
+        return true;
+  return false;
+}
+
+// RM 3.4 derivability test for a candidate primitive operation `sub` living in
+// the parent type's declarative region `scope`.
+//   * A derived (second-kind) operation is derivable unless a first-kind
+//     homograph hides it.
+//   * An explicit operation is derivable only as a first kind, i.e. when it is
+//     declared immediately within a package's visible part. An explicit
+//     operation in a private part, package body, or block declarative part is
+//     not derivable.
+bool Subprogram_Is_Derivable (Symbol *sub, Scope *scope) {
+  if (Subprogram_Is_Implicit (sub))
+    return not Has_Visible_Part_Explicit_Homograph (scope, sub);
+  return sub->declared_in_visible_part;
 }
 
 // Create inherited operations for a derived type (RM 3.4)
@@ -14539,12 +14781,28 @@ void Derive_Subprograms (Type_Info *derived_type,
   Symbol *parent_sym = parent_type->defining_symbol;
   if (not parent_sym) return;
 
-  // For private types in packages, look at the package's exported symbols.
-  // The parent of the type symbol is the enclosing package/scope.
-  Symbol *pkg = parent_sym->parent;
+  // Scan the parent type's declarative region. Unlike the package export list,
+  // this sees every primitive operation including the implicit (derived) ones,
+  // which a further derivation must reconsider (RM 3.4 second kind). The
+  // derivability test then keeps exactly the operations the derived type
+  // inherits.
+  Scope *parent_scope = parent_sym->defining_scope;
+  if (parent_scope) {
+    for (uint32_t h = 0; h < SYMBOL_TABLE_SIZE; h++)
+      for (Symbol *sym = parent_scope->buckets[h]; sym; sym = sym->next_in_bucket)
+        for (Symbol *sub = sym; sub; sub = sub->next_overload) {
+          if (sub->kind != SYMBOL_FUNCTION and sub->kind != SYMBOL_PROCEDURE) continue;
+          if (not Subprogram_Is_Primitive_Of (sub, parent_type)) continue;
+          if (not Subprogram_Is_Derivable (sub, parent_scope)) continue;
+          Create_Derived_Operation (sub, derived_type, parent_type, type_sym);
+        }
+    return;
+  }
 
-  // Search package exports for primitive operations
-  if (pkg and pkg->kind == SYMBOL_PACKAGE and pkg->exported_count > 0) {
+  // No declarative scope available (a minimally loaded package): fall back to
+  // the export list, whose entries are visible-part operations by construction.
+  Symbol *pkg = parent_sym->parent;
+  if (pkg and pkg->kind == SYMBOL_PACKAGE and pkg->exported_count > 0)
     for (uint32_t i = 0; i < pkg->exported_count; i++) {
       Symbol *sub = pkg->exported[i];
       if (not sub) continue;
@@ -14552,24 +14810,6 @@ void Derive_Subprograms (Type_Info *derived_type,
       if (not Subprogram_Is_Primitive_Of (sub, parent_type)) continue;
       Create_Derived_Operation (sub, derived_type, parent_type, type_sym);
     }
-    return;
-  }
-
-  // Fallback: search the scope where the parent type is declared.
-  // Iterate through hash buckets to find all symbols including overloads.
-  Scope *parent_scope = parent_sym->defining_scope;
-  if (not parent_scope) return;
-  for (uint32_t h = 0; h < SYMBOL_TABLE_SIZE; h++) {
-
-    // Check this symbol and all in its overload chain
-    for (Symbol *sym = parent_scope->buckets[h]; sym; sym = sym->next_in_bucket) {
-      for (Symbol *sub = sym; sub; sub = sub->next_overload) {
-        if (sub->kind != SYMBOL_FUNCTION and sub->kind != SYMBOL_PROCEDURE) continue;
-        if (not Subprogram_Is_Primitive_Of (sub, parent_type)) continue;
-        Create_Derived_Operation (sub, derived_type, parent_type, type_sym);
-      }
-    }
-  }
 }
 
 // Lay down one Component_Info per discriminant name (RM 3.7.1) into `comps`,
@@ -16003,7 +16243,7 @@ bool Instantiate_Generic_Subprogram (Symbol *instance_sym, Symbol *template_sym)
       if (parameter->param_spec.default_expr)
         Resolve_Expression (parameter->param_spec.default_expr);
       Type_Info *parameter_type = parameter->param_spec.param_type
-        ? parameter->param_spec.param_type->type : NULL;
+        ? Peel_Generic_Actual_View (parameter->param_spec.param_type->type) : NULL;
       for (uint32_t j = 0; j < parameter->param_spec.names.count; j++) {
         Syntax_Node *parameter_name = parameter->param_spec.names.items[j];
         Symbol *parameter_sym = Symbol_New (SYMBOL_PARAMETER,
@@ -16024,7 +16264,8 @@ bool Instantiate_Generic_Subprogram (Symbol *instance_sym, Symbol *template_sym)
     if (spec_clone->subprogram_spec.return_type) {
       Resolve_Expression (spec_clone->subprogram_spec.return_type);
       if (spec_clone->subprogram_spec.return_type->type) {
-        instance_sym->return_type = spec_clone->subprogram_spec.return_type->type;
+        instance_sym->return_type =
+          Peel_Generic_Actual_View (spec_clone->subprogram_spec.return_type->type);
         instance_sym->type        = instance_sym->return_type;
       }
     }
@@ -16095,7 +16336,8 @@ void Resolve_Declaration (Syntax_Node *node) {
         if (node->object_decl.object_type and node->object_decl.object_type->type and
             not init->type and
             (init->kind == NK_AGGREGATE or init->kind == NK_APPLY or
-             init->kind == NK_BINARY_OP or init->kind == NK_IDENTIFIER))
+             init->kind == NK_BINARY_OP or init->kind == NK_UNARY_OP or
+             init->kind == NK_IDENTIFIER))
           init->type = node->object_decl.object_type->type;
         Resolve_Expression (node->object_decl.init);
 
@@ -16331,14 +16573,19 @@ void Resolve_Declaration (Syntax_Node *node) {
               }
 
               // For derived enumeration types (TYPE T IS NEW BOOLEAN),
-              // create inherited literal symbols (RM 3.4(12))
+              // create inherited literal symbols (RM 3.4(12)). An inherited
+              // literal is a value of the base type, so when the derived first
+              // subtype is constrained it carries the unconstrained base — its
+              // value may lie outside the subtype, and an assignment to the
+              // subtype must then be range-checked.
               if (node->type_decl.definition and
                 node->type_decl.definition->kind == NK_DERIVED_TYPE and
                 type->enumeration.literals and type->enumeration.literal_count > 0) {
+                Type_Info *literal_type = type->base_type ? type->base_type : type;
                 for (uint32_t i = 0; i < type->enumeration.literal_count; i++) {
                   String_Slice lit_name = type->enumeration.literals[i];
                   Symbol *lit_sym = Symbol_New (SYMBOL_LITERAL, lit_name, node->location);
-                  lit_sym->type = type;
+                  lit_sym->type = literal_type;
                   lit_sym->frame_offset = (int64_t)i;
                   Symbol_Add (lit_sym);
                 }
@@ -16458,10 +16705,12 @@ void Resolve_Declaration (Syntax_Node *node) {
         Symbol *scope_owner = sm->current_scope ? sm->current_scope->owner : NULL;
         Symbol *sym = Symbol_Find (node->subprogram_spec.name);
 
-        // Only match specs from the current declarative region
+        // Only match specs from the current declarative region. An implicitly
+        // declared inherited operation (RM 3.4) is never completed by an
+        // explicit declaration; the explicit one is a homograph that hides it.
         while (sym) {
           if (sym->kind == expected_kind and sym->parameter_count == total_params
-            and sym->parent == scope_owner) {
+            and sym->parent == scope_owner and not Subprogram_Is_Implicit (sym)) {
 
             // Check parameter types match
             bool types_match = true;
@@ -17075,8 +17324,15 @@ void Resolve_Declaration (Syntax_Node *node) {
         node->symbol = sym;
         Symbol_Manager_Push_Scope (sym);
         sym->scope = sm->current_scope;  // Link scope to symbol for P.X lookups
+
+        // RM 3.4: only subprograms declared immediately within the visible part
+        // are derivable of the first kind. Saved/restored to nest correctly.
+        bool saved_visible_part = sm->in_package_visible_part;
+        sm->in_package_visible_part = true;
         Resolve_Declaration_List (&node->package_spec.visible_decls);
+        sm->in_package_visible_part = false;
         Resolve_Declaration_List (&node->package_spec.private_decls);
+        sm->in_package_visible_part = saved_visible_part;
 
         // End of package spec freezes all declared entities (RM 13.14)
         Freeze_Declaration_List (&node->package_spec.visible_decls);
@@ -17119,6 +17375,10 @@ void Resolve_Declaration (Syntax_Node *node) {
           }
           node->symbol = pkg_sym;
         }
+
+        // The spec's scope (carrying its implicit derived operations) before
+        // the body overwrites pkg_sym->scope with its own.
+        Scope *spec_scope = pkg_sym ? pkg_sym->scope : NULL;
         Symbol_Manager_Push_Scope (pkg_sym);
 
         // Set package symbol's scope for separate subunit resolution.
@@ -17154,6 +17414,7 @@ void Resolve_Declaration (Syntax_Node *node) {
         if (spec and spec->kind == NK_PACKAGE_SPEC) {
           Install_Declaration_Symbols (&spec->package_spec.visible_decls);
           Install_Declaration_Symbols (&spec->package_spec.private_decls);
+          Install_Derived_Operations (spec_scope);
         }
         Resolve_Declaration_List (&node->package_body.declarations);
 
@@ -17226,6 +17487,11 @@ void Resolve_Declaration (Syntax_Node *node) {
                 alias->generic_unit = (orig)->generic_unit; \
                 alias->generic_body = (orig)->generic_body; \
                 alias->generic_formals = (orig)->generic_formals; \
+                /* A use-visible view of a renaming or an inherited operation */ \
+                /* must dispatch to the same body, so carry the links that */ \
+                /* Ultimate_Operation follows (RM 8.5, 3.4). */ \
+                alias->renamed_object  = (orig)->renamed_object; \
+                alias->parent_operation = (orig)->parent_operation; \
                 Symbol_Add (alias); \
                 alias->parent = (orig)->parent; \
                 alias->unique_id = (orig)->unique_id; \
@@ -21641,6 +21907,117 @@ void Emit_Check_With_Raise (uint32_t cond,
   cg->block_terminated = false;
 }
 
+// RM 3.9: a call to a subprogram whose body has not yet been elaborated raises
+// PROGRAM_ERROR. The callee's elaboration flag is a local alloca that is false
+// until the body declaration elaborates; the check loads it and raises when it
+// is still false. The flag lives in its owning function's frame, so the check
+// is only emitted while generating that same function.
+void Emit_Elaboration_Check (Symbol *callee) {
+  if (not callee or callee->elab_flag_id == 0) return;
+  uint32_t flag = Emit_Temp ();
+  Emit ("  %%t%u = load i1, ptr @elab.%u  ; access-before-elaboration flag of %.*s\n",
+        flag, callee->elab_flag_id, (int)callee->name.length, callee->name.data);
+  uint32_t raise_label = cg->label_id++;
+  uint32_t cont_label  = cg->label_id++;
+  Emit ("  br i1 %%t%u, label %%L%u, label %%L%u\n", flag, cont_label, raise_label);
+  cg->block_terminated = true;
+  Emit_Label_Here (raise_label);
+  Emit_Raise_Program_Error ("subprogram body not yet elaborated (RM 3.9)");
+  Emit_Label_Here (cont_label);
+  cg->block_terminated = false;
+}
+
+// RM 4.6: an array type conversion checks that any constraint on the component
+// subtype is the same for the operand and target array types, raising
+// CONSTRAINT_ERROR when they differ. The component base types are already known
+// to match (a legality rule), so only their subtype constraints can differ -
+// scalar ranges, real accuracy, nested array bounds, or record discriminants.
+// Dynamic constraints are compared at run time; a purely static mismatch
+// (real accuracy) lowers to an unconditional raise.
+void Emit_Component_Constraint_Check (Type_Info *sct, Type_Info *dct) {
+  if (not sct or not dct or sct == dct) return;
+  LLVM_Rep work = Integer_Arith_Rep ();
+
+  // Scalar discrete component: the range constraint must match.
+  if (Type_Is_Discrete (sct) and Type_Is_Discrete (dct)) {
+    if (Type_Bound_Is_Set (sct->low_bound)  and Type_Bound_Is_Set (sct->high_bound) and
+        Type_Bound_Is_Set (dct->low_bound)  and Type_Bound_Is_Set (dct->high_bound)) {
+      uint32_t lo_ne = Emit_Icmp ("ne", work,
+        Emit_Single_Bound (&sct->low_bound,  work), Emit_Single_Bound (&dct->low_bound,  work)).reg;
+      uint32_t hi_ne = Emit_Icmp ("ne", work,
+        Emit_Single_Bound (&sct->high_bound, work), Emit_Single_Bound (&dct->high_bound, work)).reg;
+      uint32_t differ = Emit_Temp ();
+      Emit ("  %%t%u = or i1 %%t%u, %%t%u  ; component range constraint differs\n", differ, lo_ne, hi_ne);
+      Emit_Check_With_Raise (differ, true, "component subtype range constraint mismatch (RM 4.6)");
+    }
+    return;
+  }
+
+  // Real component: the accuracy constraint (DIGITS / DELTA) is static.
+  if (sct->kind == TYPE_FLOAT and dct->kind == TYPE_FLOAT) {
+    if (sct->flt.digits != dct->flt.digits)
+      Emit_Check_With_Raise (Emit_I1_Const (1, "float accuracy differs").reg, true,
+                             "component subtype accuracy mismatch (RM 4.6)");
+    return;
+  }
+  if (sct->kind == TYPE_FIXED and dct->kind == TYPE_FIXED) {
+    if (sct->fixed.delta != dct->fixed.delta or sct->fixed.small != dct->fixed.small)
+      Emit_Check_With_Raise (Emit_I1_Const (1, "fixed accuracy differs").reg, true,
+                             "component subtype accuracy mismatch (RM 4.6)");
+    return;
+  }
+
+  // Access component: the constraint lives on the designated subtype.
+  if (Type_Is_Access (sct) and Type_Is_Access (dct)) {
+    Emit_Component_Constraint_Check (sct->access.designated_type,
+                                     dct->access.designated_type);
+    return;
+  }
+
+  // Array component: each index bound must match, then the element subtype.
+  if (Type_Is_Array_Like (sct) and Type_Is_Array_Like (dct) and
+      sct->array.is_constrained and dct->array.is_constrained) {
+    uint32_t nd = sct->array.index_count < dct->array.index_count
+                ? sct->array.index_count : dct->array.index_count;
+    for (uint32_t d = 0; d < nd; d++) {
+      Type_Bound *slo = &sct->array.indices[d].low_bound,  *shi = &sct->array.indices[d].high_bound;
+      Type_Bound *dlo = &dct->array.indices[d].low_bound,  *dhi = &dct->array.indices[d].high_bound;
+      if (not (Type_Bound_Is_Set (*slo) and Type_Bound_Is_Set (*shi) and
+               Type_Bound_Is_Set (*dlo) and Type_Bound_Is_Set (*dhi))) continue;
+      uint32_t lo_ne = Emit_Icmp ("ne", work, Emit_Single_Bound (slo, work), Emit_Single_Bound (dlo, work)).reg;
+      uint32_t hi_ne = Emit_Icmp ("ne", work, Emit_Single_Bound (shi, work), Emit_Single_Bound (dhi, work)).reg;
+      uint32_t differ = Emit_Temp ();
+      Emit ("  %%t%u = or i1 %%t%u, %%t%u  ; component array bound differs\n", differ, lo_ne, hi_ne);
+      Emit_Check_With_Raise (differ, true, "component subtype array bound mismatch (RM 4.6)");
+    }
+    Emit_Component_Constraint_Check (sct->array.element_type, dct->array.element_type);
+    return;
+  }
+
+  // Record component: each discriminant constraint must match.
+  if (Type_Is_Record (sct) and Type_Is_Record (dct) and
+      sct->record.has_disc_constraints and dct->record.has_disc_constraints) {
+    uint32_t nd = sct->record.discriminant_count < dct->record.discriminant_count
+                ? sct->record.discriminant_count : dct->record.discriminant_count;
+    for (uint32_t d = 0; d < nd; d++) {
+      uint32_t sv, dv;
+      if (sct->record.disc_constraint_exprs and sct->record.disc_constraint_exprs[d])
+        sv = Emit_Coerce_Val (Generate_Expression (sct->record.disc_constraint_exprs[d]), work).reg;
+      else if (sct->record.disc_constraint_values)
+        sv = Emit_Static_Int (sct->record.disc_constraint_values[d], work).reg;
+      else continue;
+      if (dct->record.disc_constraint_exprs and dct->record.disc_constraint_exprs[d])
+        dv = Emit_Coerce_Val (Generate_Expression (dct->record.disc_constraint_exprs[d]), work).reg;
+      else if (dct->record.disc_constraint_values)
+        dv = Emit_Static_Int (dct->record.disc_constraint_values[d], work).reg;
+      else continue;
+      Emit_Check_With_Raise (Emit_Icmp ("ne", work, sv, dv).reg, true,
+                             "component subtype discriminant mismatch (RM 4.6)");
+    }
+    return;
+  }
+}
+
 // Emit_Range_Check_With_Raise: Checks val in [lo_val, hi_val], raises if not.
 // Emits two icmp + br with shared raise label for efficiency.
 void Emit_Range_Check_With_Raise (uint32_t val,
@@ -22765,6 +23142,9 @@ LLVM_Value Generate_Identifier (Syntax_Node *node) {
           bip_app->type = actual->return_type;
           return Generate_Apply (bip_app);
         }
+        // RM 3.9: access-before-elaboration check on a parameterless call.
+        Emit_Elaboration_Check (sym);
+
         LLVM_Rep ret_rep = actual->return_type ?
           Type_To_Rep (actual->return_type) : Integer_Arith_Rep ();
         bool callee_is_nested = Subprogram_Needs_Static_Chain (actual);
@@ -23150,7 +23530,9 @@ uint32_t Generate_Composite_Address (Syntax_Node *node) {
   // uniformly — access variable, rename, alias, or parameterless function
   // returning an access value (implicit call, RM 4.1.3).
   if (node->kind == NK_UNARY_OP and node->unary.op == TK_ALL and node->unary.operand) {
-    return Generate_Expression (node->unary.operand).reg;
+    LLVM_Value acc = Generate_Expression (node->unary.operand);
+    Emit_Access_Check (acc, node->unary.operand->type);  // RM 4.1: null .ALL -> CE
+    return acc.reg;
   }
 
   // Array indexing or slice: Arr (I) or Arr (low..high).
@@ -23568,6 +23950,14 @@ uint32_t Wrap_Constrained_As_Fat (Syntax_Node *expr, Type_Info *type, LLVM_Rep b
     return Generate_Expression (expr).reg;
   }
   uint32_t ptr = Generate_Composite_Address (expr);
+
+  // Multidimensional array: wrap every dimension's bounds. A single-dimension
+  // fat pointer would leave the inner dimensions' bounds undefined, so a
+  // length comparison (RM 4.5.2) against it reads garbage. The 1-D path below
+  // carries the aggregate positional-count adjustment, so keep it separate.
+  if (Type_Is_Array_Like (type) and type->array.index_count > 1)
+    return Emit_Fat_Pointer_For_Lvalue (ptr, type).reg;
+
   int128_t lo = 1, hi = 0;
   if (Type_Is_Array_Like (type) and type->array.index_count > 0) {
     lo = Type_Bound_Value (type->array.indices[0].low_bound);
@@ -24906,6 +25296,42 @@ LLVM_Value Emit_Binary_Op_Predefined (Syntax_Node *node) {
             }
           }
 
+          // Membership in a constrained access-to-record subtype (RM 3.3.2):
+          // a null value belongs; a non-null value belongs iff its designated
+          // record's discriminants equal the subtype's constraint.
+          if (range_type and Type_Is_Access (range_type) and
+              range_type->access.designated_type and
+              Type_Is_Record (range_type->access.designated_type) and
+              range_type->access.designated_type->record.has_disc_constraints) {
+            Type_Info *des = range_type->access.designated_type;
+            uint32_t rec_ptr = LLVM_Rep_Is_Fat_Pointer (left_v.rep)
+              ? Emit_Fat_Pointer_Data (left_v.reg, Array_Bound_LLVM_Rep (des)).reg
+              : left_v.reg;
+            LLVM_I1 is_null = Emit_Icmp_Null_Ptr ("eq", rec_ptr);
+            LLVM_I1 belongs = { Emit_I1_Const (1, "access-record membership seed").reg };
+            bool decided = true;
+            for (uint32_t d = 0; d < des->record.discriminant_count; d++) {
+              Component_Info *dc = &des->record.components[d];
+              LLVM_Rep drep = LLVM_Rep_Or (Type_To_Rep (dc->component_type), Integer_Arith_Rep ());
+              uint32_t vval = Emit_Load_Field (rec_ptr, dc->byte_offset, drep);
+              uint32_t cval;
+              if (des->record.disc_constraint_exprs and des->record.disc_constraint_exprs[d])
+                cval = Emit_Coerce_Val (Generate_Expression (
+                         des->record.disc_constraint_exprs[d]), drep).reg;
+              else if (des->record.disc_constraint_values)
+                cval = Emit_Static_Int (des->record.disc_constraint_values[d], drep).reg;
+              else { decided = false; break; }
+              belongs = Emit_And_I1 (belongs, Emit_Icmp ("eq", drep, vval, cval));
+            }
+            if (decided) {
+              uint32_t res = Emit_Temp ();
+              Emit ("  %%t%u = or i1 %%t%u, %%t%u  ; null or discriminants match\n",
+                 res, is_null.reg, belongs.reg);
+              t = negate ? Emit_Not_I1 ((LLVM_I1){ res }).reg : res;
+              return Emit_Bool_Value ((LLVM_I1){ t });
+            }
+          }
+
           // Other composites (records, strings), access and task types: the
           // value is already of the type, so membership is always TRUE
           // (RM 4.5.2). Access types have no range.
@@ -24915,6 +25341,44 @@ LLVM_Value Emit_Binary_Op_Predefined (Syntax_Node *node) {
             if (negate) { Emit ("  %%t%u = xor i1 %%t%u, 1\n", t, always); }
             else        { t = always; }
             return Emit_Bool_Value ((LLVM_I1){ t });
+          }
+          // X IN T where the operand's nominal subtype is statically known to
+          // be covered by T folds to a constant TRUE (RM 4.5.2): every value
+          // of the operand's subtype belongs to T, so the test neither needs
+          // nor may read the operand, which can be an as-yet-unassigned scalar
+          // whose stored value is meaningless. This mirrors GNAT's
+          // Compile_Time_Compare, which proves the bounds from the operand's
+          // nominal subtype rather than its runtime value; the test stays a
+          // runtime check whenever T is a strictly tighter subtype.
+          {
+            bool Bound_Static_Double (Type_Bound b, double *out) {
+              if (b.kind == BOUND_INTEGER) { *out = (double) b.int_value;  return true; }
+              if (b.kind == BOUND_FLOAT)   { *out = b.float_value;          return true; }
+              return false;
+            }
+            if (lhs_type and range_type and
+                Type_Is_Scalar (lhs_type) and Type_Is_Scalar (range_type) and
+                Type_Root (lhs_type) == Type_Root (range_type) and
+                Type_Bound_Is_Set (lhs_type->low_bound)  and Type_Bound_Is_Set (lhs_type->high_bound) and
+                Type_Bound_Is_Set (range_type->low_bound) and Type_Bound_Is_Set (range_type->high_bound)) {
+              Type_Bound vl = lhs_type->low_bound,   vh = lhs_type->high_bound;
+              Type_Bound ml = range_type->low_bound, mh = range_type->high_bound;
+              bool covered = false;
+              if (vl.kind == BOUND_INTEGER and vh.kind == BOUND_INTEGER and
+                  ml.kind == BOUND_INTEGER and mh.kind == BOUND_INTEGER) {
+                covered = ml.int_value <= vl.int_value and vh.int_value <= mh.int_value;
+              } else {
+                double vld, vhd, mld, mhd;
+                if (Bound_Static_Double (vl, &vld) and Bound_Static_Double (vh, &vhd) and
+                    Bound_Static_Double (ml, &mld) and Bound_Static_Double (mh, &mhd))
+                  covered = mld <= vld and vhd <= mhd;
+              }
+              if (covered) {
+                uint32_t always = Emit_I1_Const (1, "operand subtype covered by membership type").reg;
+                t = negate ? Emit_Not_I1 ((LLVM_I1){ always }).reg : always;
+                return Emit_Bool_Value ((LLVM_I1){ t });
+              }
+            }
           }
           if (range_type and Type_Bound_Is_Set (range_type->low_bound)
                 and Type_Bound_Is_Set (range_type->high_bound)) {
@@ -26074,6 +26538,9 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
     // -> real body, and only the last carries code.
     Symbol *call_target = Ultimate_Operation (sym);
 
+    // RM 3.9: access-before-elaboration check on the called subprogram.
+    Emit_Elaboration_Check (sym);
+
     // RM 13.10.2 / GNAT: UNCHECKED_CONVERSION is an intrinsic generic.
     // Each instantiation creates a SYMBOL_FUNCTION with no body.
     // Lower the call inline as a bit-reinterpret instead of emitting
@@ -26655,6 +27122,11 @@ index_path: ;
     Symbol *array_sym =
       (node->apply.prefix->kind == NK_APPLY) ? NULL
                                              : node->apply.prefix->symbol;
+    // A parameterless function as the prefix must be called to yield the array
+    // (or access) value, not loaded as if it were an object (RM 4.1.3).
+    if (array_sym and (array_sym->kind == SYMBOL_FUNCTION or
+                       array_sym->kind == SYMBOL_PROCEDURE))
+      array_sym = NULL;
     uint32_t base;
     uint32_t low_bound_val = 0, dyn_fat = 0;
     uint32_t high_bound_val = 0;  // For index checks
@@ -26906,6 +27378,11 @@ type_conversion:
         uint32_t result = result_v.reg;
         bool dst_unc = Type_Is_Unconstrained_Array (dst_type);
 
+        // RM 4.6: the operand and target component subtypes must carry the same
+        // constraint; otherwise the conversion raises CONSTRAINT_ERROR.
+        Emit_Component_Constraint_Check (src_type->array.element_type,
+                                         dst_type->array.element_type);
+
         // Check if the source expression actually produces a fat pointer value.
         // This covers: unconstrained parameters/variables, function calls returning
         // unconstrained arrays, slices, concatenations, string literals, etc.
@@ -26927,6 +27404,67 @@ type_conversion:
         } else if (not dst_is_fat and src_is_fat) {
           LLVM_Rep bt = Array_Bound_LLVM_Rep (src_type);
           return Emit_Fat_Pointer_Data (result, bt);
+        }
+
+        // Both fat: an array conversion shares the operand's data (the
+        // component type is unchanged) but must produce a fat pointer whose
+        // bounds match the target type (RM 4.6). The bound source depends on
+        // whether the target is constrained.
+        if (dst_is_fat and src_is_fat) {
+          LLVM_Rep src_bt = Array_Bound_LLVM_Rep (src_type);
+          LLVM_Rep dst_bt = Array_Bound_LLVM_Rep (dst_type);
+          uint32_t ndims = dst_type->array.index_count;
+          if (ndims == 0) ndims = 1;
+          if (ndims > 8) ndims = 8;
+          LLVM_Rep work = Integer_Arith_Rep ();
+          uint32_t blo[8], bhi[8];
+
+          if (dst_unc) {
+            // Unconstrained target: the result carries the operand's own
+            // bounds, converted to the target index type. RM 4.6 also requires
+            // that, for each non-null dimension, both result bounds belong to
+            // the target's index subtype, or CONSTRAINT_ERROR is raised.
+            for (uint32_t d = 0; d < ndims; d++) {
+              uint32_t src_lo = Emit_Convert (Emit_Fat_Pointer_Low_Dim  (result, src_bt, d).reg, src_bt, work).reg;
+              uint32_t src_hi = Emit_Convert (Emit_Fat_Pointer_High_Dim (result, src_bt, d).reg, src_bt, work).reg;
+              blo[d] = src_lo;
+              bhi[d] = src_hi;
+              Type_Info *idx = dst_type->array.indices[d].index_type;
+              if (idx and Type_Bound_Is_Set (idx->low_bound) and Type_Bound_Is_Set (idx->high_bound)) {
+                uint32_t ilo = Emit_Single_Bound (&idx->low_bound,  work);
+                uint32_t ihi = Emit_Single_Bound (&idx->high_bound, work);
+                uint32_t non_null = Emit_Icmp ("sle", work, src_lo, src_hi).reg;
+                uint32_t lo_out = Emit_Temp ();
+                Emit ("  %%t%u = or i1 %%t%u, %%t%u  ; low bound outside index subtype\n", lo_out,
+                      Emit_Icmp ("slt", work, src_lo, ilo).reg, Emit_Icmp ("sgt", work, src_lo, ihi).reg);
+                uint32_t hi_out = Emit_Temp ();
+                Emit ("  %%t%u = or i1 %%t%u, %%t%u  ; high bound outside index subtype\n", hi_out,
+                      Emit_Icmp ("slt", work, src_hi, ilo).reg, Emit_Icmp ("sgt", work, src_hi, ihi).reg);
+                uint32_t out = Emit_Temp ();
+                Emit ("  %%t%u = or i1 %%t%u, %%t%u\n", out, lo_out, hi_out);
+                uint32_t raise = Emit_Temp ();
+                Emit ("  %%t%u = and i1 %%t%u, %%t%u  ; non-null dim bound outside index subtype\n", raise, non_null, out);
+                Emit_Check_With_Raise (raise, true, "array bound outside target index subtype (RM 4.6)");
+              }
+            }
+            // When the bound reps already match there is nothing to rebuild.
+            if (LLVM_Rep_Equal (src_bt, dst_bt)) return result_v;
+          } else {
+            // Constrained target: the result takes the target subtype's own
+            // bounds, and a per-dimension length check guards the conversion
+            // (RM 4.6) - CONSTRAINT_ERROR when the operand length differs.
+            for (uint32_t d = 0; d < ndims; d++) {
+              blo[d] = Emit_Single_Bound (&dst_type->array.indices[d].low_bound,  work);
+              bhi[d] = Emit_Single_Bound (&dst_type->array.indices[d].high_bound, work);
+              uint32_t tgt_len = Emit_Length_From_Bounds (blo[d], bhi[d], work).reg;
+              uint32_t src_lo  = Emit_Convert (Emit_Fat_Pointer_Low_Dim  (result, src_bt, d).reg, src_bt, work).reg;
+              uint32_t src_hi  = Emit_Convert (Emit_Fat_Pointer_High_Dim (result, src_bt, d).reg, src_bt, work).reg;
+              uint32_t src_len = Emit_Length_From_Bounds (src_lo, src_hi, work).reg;
+              Emit_Length_Check (src_len, tgt_len, work, dst_type);
+            }
+          }
+          uint32_t data = Emit_Fat_Pointer_Data (result, src_bt).reg;
+          return Emit_Fat_Pointer_MultiDim (data, blo, bhi, ndims, work, dst_bt);
         }
 
         // Same representation (both fat or both flat): pass through.
@@ -29197,14 +29735,31 @@ LLVM_Value Generate_Attribute (Syntax_Node *node) {
   // Use i64 for consistency with Boolean storage/comparison.                                      
   //                                                                                                
   if (Slice_Equal_Ignore_Case (attr, S("CONSTRAINED"))) {
-    Symbol *obj_sym = node->attribute.prefix ? node->attribute.prefix->symbol : NULL;
-    Type_Info *obj_type = node->attribute.prefix ? node->attribute.prefix->type : NULL;
+    Syntax_Node *cpfx = node->attribute.prefix;
+    Symbol *obj_sym = cpfx ? cpfx->symbol : NULL;
+    Type_Info *obj_type = cpfx ? cpfx->type : NULL;
     bool is_constrained = true;  // Default: constrained
-    if (obj_type and Type_Is_Record (obj_type) and obj_type->record.has_discriminants) {
+
+    // RM 3.7.4: an object designated by an access value is always constrained
+    // - a heap object's discriminants are fixed when it is allocated, so an
+    // explicit .ALL dereference yields TRUE regardless of the designated
+    // subtype.
+    bool is_designated = cpfx and cpfx->kind == NK_UNARY_OP and
+      cpfx->unary.op == TK_ALL;
+
+    if (is_designated) {
+      is_constrained = true;
+    } else if (obj_type and Type_Is_Record (obj_type) and obj_type->record.has_discriminants) {
       if (obj_type->record.is_constrained) {
         is_constrained = true;  // Explicitly constrained subtype
       } else if (obj_sym and obj_sym->is_disc_constrained) {
         is_constrained = true;  // Object declared with constraint
+      } else if (obj_sym and obj_sym->kind == SYMBOL_PARAMETER and
+                 Parameter_Symbol_Mode (obj_sym) == PARAM_IN) {
+        is_constrained = true;  // RM 3.7.4: an IN formal parameter is constant,
+                                // so 'CONSTRAINED is always TRUE
+      } else if (obj_sym and obj_sym->kind == SYMBOL_CONSTANT) {
+        is_constrained = true;  // RM 3.7.4: a constant is constrained
       } else if (obj_type->record.all_defaults) {
         is_constrained = false;  // Mutable: defaults, no constraint
       }
@@ -30298,15 +30853,27 @@ uint32_t Generate_Aggregate (Syntax_Node *node) {
       //
       if (bounds_stale and ac_early.n_positional > 0 and not ac_early.has_others) {
         bounds_are_synthetic = true;
-        int128_t lo_static = 1;
-        if (low_bound.kind == BOUND_INTEGER)
-          lo_static = low_bound.int_value;
-        else if (agg_type->base_type and agg_type->base_type->array.index_count > 0
-             and agg_type->base_type->array.indices[0].index_type)
-          lo_static = Type_Bound_Value (
-            agg_type->base_type->array.indices[0].index_type->low_bound);
-        low_val = Emit_Static_Int (lo_static, iat_bnd).reg;
-        high_val = Emit_Static_Int (lo_static + (int128_t)ac_early.n_positional - 1, iat_bnd).reg;
+        if (low_bound.kind == BOUND_EXPR) {
+          // A dynamic constraint low (e.g. SUBDESIGNATED(IDENT_INT(5)..)):
+          // evaluate it, and derive the high from the positional element count.
+          // (Falling back to the index subtype's first would give 0-based
+          // bounds and fail the constrained-target bound check.)
+          low_val = Emit_Single_Bound (&low_bound, iat_bnd);
+          high_val = Emit_Temp ();
+          Emit ("  %%t%u = add %s %%t%u, %lld\n", high_val,
+             LLVM_Rep_To_String (iat_bnd), low_val,
+             (long long)((int128_t)ac_early.n_positional - 1));
+        } else {
+          int128_t lo_static = 1;
+          if (low_bound.kind == BOUND_INTEGER)
+            lo_static = low_bound.int_value;
+          else if (agg_type->base_type and agg_type->base_type->array.index_count > 0
+               and agg_type->base_type->array.indices[0].index_type)
+            lo_static = Type_Bound_Value (
+              agg_type->base_type->array.indices[0].index_type->low_bound);
+          low_val = Emit_Static_Int (lo_static, iat_bnd).reg;
+          high_val = Emit_Static_Int (lo_static + (int128_t)ac_early.n_positional - 1, iat_bnd).reg;
+        }
       } else {
         low_val = Emit_Single_Bound (&low_bound, iat_bnd);
         high_val = Emit_Single_Bound (&high_bound, iat_bnd);
@@ -32810,8 +33377,24 @@ void Emit_Apply_Component_Defaults (Type_Info *ty, uint32_t base, int sel_varian
   for (uint32_t ci = 0; ci < ty->record.component_count; ci++) {
     Component_Info *comp = &ty->record.components[ci];
     if (not comp->default_expr) continue;
-    if (comp->is_discriminant and (ty->record.has_disc_constraints or skip_disc_defaults))
+    if (comp->is_discriminant and (ty->record.has_disc_constraints or skip_disc_defaults)) {
+      // The discriminant value already lives in the record (stored from the
+      // constraint, not from this default). Still bind dependent component
+      // bounds to read it from that field, so a default like STRING(1..L)
+      // resolves L (RM 3.7.1) instead of an unbound discriminant symbol.
+      uint32_t dptr = Emit_Temp ();
+      if (ty->rt_global_id > 0) {
+        uint32_t rt_off = Emit_Temp ();
+        Emit ("  %%t%u = load " RT_DESC_TYPE ", ptr @__rt_rec_%u_off%u\n",
+           rt_off, ty->rt_global_id, ci);
+        Emit ("  %%t%u = getelementptr i8, ptr %%t%u, i64 %%t%u  ; %.*s disc bind\n",
+           dptr, base, rt_off, (int)comp->name.length, comp->name.data);
+      } else
+        Emit ("  %%t%u = getelementptr i8, ptr %%t%u, i64 %u  ; %.*s disc bind\n",
+           dptr, base, comp->byte_offset, (int)comp->name.length, comp->name.data);
+      Bind_Disc_For_Dependent_Bounds (ty, comp->name, dptr, seen, count, cap);
       continue;
+    }
     if (sel_variant != -2 and comp->variant_index >= 0
         and comp->variant_index != sel_variant) continue;
     LLVM_Value val_v = Generate_Expression (comp->default_expr);
@@ -33103,8 +33686,14 @@ LLVM_Value Generate_Allocator (Syntax_Node *node) {
         int64_t hi = init_type->array.indices[0].high_bound.int_value;
         low_t  = Emit_Static_Int (lo, con_bt).reg;
         high_t = Emit_Static_Int (hi, con_bt).reg;
-        int64_t length = hi - lo + 1;
-        if (length < 0) length = 0;  // Null range (RM 3.6.1)
+        // Total element count is the product of every dimension's length, not
+        // just the first — a multidimensional designated must allocate them all.
+        int64_t length = 1;
+        for (uint32_t d = 0; d < init_type->array.index_count; d++) {
+          int64_t dl = init_type->array.indices[d].high_bound.int_value
+                     - init_type->array.indices[d].low_bound.int_value + 1;
+          length *= (dl < 0) ? 0 : dl;  // Null range (RM 3.6.1)
+        }
         uint32_t elem_size = init_type->array.element_type ?
                    init_type->array.element_type->size : 1;
         if (elem_size == 0) elem_size = 1;
@@ -33157,6 +33746,34 @@ LLVM_Value Generate_Allocator (Syntax_Node *node) {
       }
     }
 
+    // A multidimensional designated array's byte length is the product of every
+    // dimension's length times the element size, taken from the (possibly
+    // dynamic) initializer type — a fat initializer value carries only the first
+    // dimension's length, which would otherwise under-allocate the data.
+    if (init_type and Type_Is_Array_Like (init_type)
+        and init_type->array.index_count > 1) {
+      LLVM_Rep liat = Integer_Arith_Rep ();
+      uint32_t total = Emit_Static_Int (1, liat).reg;
+      for (uint32_t d = 0; d < init_type->array.index_count; d++) {
+        uint32_t dlo = Emit_Convert (
+          Emit_Single_Bound (&init_type->array.indices[d].low_bound,  new_bt), new_bt, liat).reg;
+        uint32_t dhi = Emit_Convert (
+          Emit_Single_Bound (&init_type->array.indices[d].high_bound, new_bt), new_bt, liat).reg;
+        uint32_t dlen = Emit_Length_From_Bounds (dlo, dhi, liat).reg;
+        uint32_t prod = Emit_Temp ();
+        Emit ("  %%t%u = mul %s %%t%u, %%t%u\n",
+           prod, LLVM_Rep_To_String (liat), total, dlen);
+        total = prod;
+      }
+      uint32_t esz = init_type->array.element_type
+        ? init_type->array.element_type->size : 1;
+      if (esz == 0) esz = 1;
+      uint32_t tbytes = Emit_Temp ();
+      Emit ("  %%t%u = mul %s %%t%u, %u  ; multi-dim byte length\n",
+         tbytes, LLVM_Rep_To_String (liat), total, esz);
+      len_t_64 = Emit_Extend_To_I64 (tbytes, liat).reg;
+    }
+
     // Allocate heap space for array data
     uint32_t heap_ptr = Emit_Temp ();
     Emit ("  %%t%u = call ptr @__ada_allocate (i64 %%t%u)\n", heap_ptr, len_t_64);
@@ -33164,26 +33781,46 @@ LLVM_Value Generate_Allocator (Syntax_Node *node) {
     // Copy data: memcpy (heap_ptr, src_data, length)
     Emit_Memcpy (heap_ptr, src_data, len_t_64);
 
-    // RM 4.8(6): Check bounds against index subtype of designated array type.
-    // E.g. NEW TD'(3,4,5) where TD's index is TWO (1..2) - bounds 1..3 exceed TWO.
+    // RM 4.8(6): check the allocated array's bounds against the designated
+    // index subtypes and the target access subtype, for every dimension, then
+    // build the result fat pointer carrying all dimensions' bounds. Allocator
+    // results outlive the current frame, so the bounds live on the heap.
+    Type_Info *tgt = node->allocator.target_access_type;
+    Type_Info *tgt_des = (tgt and Type_Is_Access (tgt)) ?
+                tgt->access.designated_type : NULL;
+    bool tgt_chk = tgt_des and Type_Is_Array_Like (tgt_des) and
+      tgt_des->array.is_constrained and tgt_des->array.index_count > 0;
+    uint32_t ndims = (designated and Type_Is_Array_Like (designated))
+      ? designated->array.index_count : 1;
+    if (ndims < 1) ndims = 1;
+    if (ndims > 8) ndims = 8;
+
+    if (ndims > 1 and init_type and Type_Is_Array_Like (init_type)
+        and init_type->array.index_count >= ndims) {
+      uint32_t lo_ts[8], hi_ts[8];
+      for (uint32_t d = 0; d < ndims; d++) {
+        lo_ts[d] = Emit_Single_Bound (&init_type->array.indices[d].low_bound,  new_bt);
+        hi_ts[d] = Emit_Single_Bound (&init_type->array.indices[d].high_bound, new_bt);
+        if (d < designated->array.index_count)
+          Emit_Index_Subtype_Bound_Check (designated->array.indices[d].index_type,
+                                          lo_ts[d], hi_ts[d], new_bt);
+        if (tgt_chk and d < tgt_des->array.index_count)
+          Emit_Alloc_Bound_Check_Dim (tgt_des, d, lo_ts[d], hi_ts[d], new_bt);
+      }
+      uint32_t bnd_sz = 2 * ndims * (LLVM_Rep_Bits (new_bt) / 8);
+      uint32_t bnds = Emit_Temp ();
+      Emit ("  %%t%u = call ptr @malloc (i64 %u)  ; multi-dim bounds\n", bnds, bnd_sz);
+      for (uint32_t d = 0; d < ndims; d++)
+        Emit_Store_Bound_Pair (bnds, new_bt, d, lo_ts[d], hi_ts[d]);
+      return Val_Rep (Emit_Build_Fat_Pointer (heap_ptr, bnds), LL_REP_FAT);
+    }
+
     if (designated and Type_Is_Array_Like (designated) and
       designated->array.index_count > 0)
       Emit_Index_Subtype_Bound_Check (designated->array.indices[0].index_type,
                                       low_t, high_t, new_bt);
-
-    // RM 4.8(6): Check fat-pointer bounds against target access type bounds
-    {
-      Type_Info *tgt = node->allocator.target_access_type;
-      Type_Info *tgt_des = (tgt and Type_Is_Access (tgt)) ?
-                  tgt->access.designated_type : NULL;
-      if (tgt_des and Type_Is_Array_Like (tgt_des) and
-        tgt_des->array.is_constrained and tgt_des->array.index_count > 0)
-        Emit_Alloc_Bound_Check_Dim (tgt_des, 0, low_t, high_t, new_bt);
-    }
-
-    // Build result fat pointer with heap-allocated bounds.
-    // Allocator results must survive across function returns,
-    // so bounds cannot be on the stack (alloca).
+    if (tgt_chk)
+      Emit_Alloc_Bound_Check_Dim (tgt_des, 0, low_t, high_t, new_bt);
     return Emit_Fat_Pointer_Heap (heap_ptr, low_t, high_t, new_bt);
   }
 
@@ -33818,24 +34455,55 @@ void Generate_Assignment (Syntax_Node *node) {
 
   // Handle indexed component target (array element or slice assignment)
   if (target->kind == NK_APPLY) {
+
+    // A slice of a slice (RM 4.1.2): X(a..b)(c..d) denotes X(c..d). A slice
+    // keeps the original index values, so the outer range is already absolute;
+    // collapse to a single slice on the base array so the slice-assignment path
+    // sees an ordinary array prefix.
+    while (target->apply.arguments.count == 1 and
+           target->apply.arguments.items[0]->kind == NK_RANGE and
+           target->apply.prefix and target->apply.prefix->kind == NK_APPLY and
+           target->apply.prefix->apply.arguments.count == 1 and
+           target->apply.prefix->apply.arguments.items[0]->kind == NK_RANGE) {
+      Syntax_Node *collapsed = Node_New (NK_APPLY, target->location);
+      *collapsed = *target;
+      collapsed->apply.prefix = target->apply.prefix->apply.prefix;
+      target = collapsed;
+    }
+
     Type_Info *prefix_type = target->apply.prefix->type;
-    bool is_array_target = prefix_type and
-      (prefix_type->kind == TYPE_ARRAY or prefix_type->kind == TYPE_STRING);
+
+    // RM 4.1(3): X(L..H) where X is access-to-array dereferences X implicitly.
+    // Only a slice needs this array-target path; element assignment to an
+    // access-to-array is handled by the general indexed-lvalue path below. The
+    // dereferenced array's value is the access value itself (a fat pointer when
+    // the designated array is unconstrained or dynamically bounded).
+    Syntax_Node *first_target_arg = target->apply.arguments.count > 0
+      ? target->apply.arguments.items[0] : NULL;
+    bool deref_access = Type_Is_Access (prefix_type) and prefix_type->access.designated_type
+      and Type_Is_Array_Like (prefix_type->access.designated_type)
+      and first_target_arg and first_target_arg->kind == NK_RANGE;
+    Type_Info *arr_type = deref_access ? prefix_type->access.designated_type : prefix_type;
+    bool is_array_target = arr_type and
+      (arr_type->kind == TYPE_ARRAY or arr_type->kind == TYPE_STRING);
     if (is_array_target) {
 
       // For unconstrained (STRING / unconstrained array) the variable                              
       // holds a fat pointer - we must load it and extract the data ptr.                           
       // For constrained arrays the variable IS the data pointer.                                  
       //                                                                                            
-      bool target_is_uncon = (not Type_Is_Constrained_Array (prefix_type) and
-                  Type_Is_String (prefix_type)) or
-                   Type_Is_Unconstrained_Array (prefix_type);
+      bool target_is_uncon = (not Type_Is_Constrained_Array (arr_type) and
+                  Type_Is_String (arr_type)) or
+                   Type_Is_Unconstrained_Array (arr_type);
 
       // A *constrained* array whose bounds are dynamic (e.g. a derived subtype
       // `new P(IDENT(5)..IDENT(7))`) is stored as a fat pointer just like an
       // unconstrained one, so its data pointer and low bound must be loaded at
-      // runtime. The flat-data path below only applies to static storage.
-      bool target_is_fat = target_is_uncon or Type_Has_Dynamic_Bounds (prefix_type);
+      // runtime. An access-to-array prefix is likewise a fat value when its
+      // designated array is unconstrained or dynamically bounded. The flat-data
+      // path below only applies to static storage.
+      bool target_is_fat = target_is_uncon or Type_Has_Dynamic_Bounds (arr_type)
+        or (deref_access and Type_Needs_Fat_Pointer (prefix_type));
       Syntax_Node *arg = target->apply.arguments.items[0];
 
       // ARR (A'RANGE) := source is a slice (RM 4.1.2), not an element. Normalise
@@ -33884,7 +34552,7 @@ void Generate_Assignment (Syntax_Node *node) {
       // Check for slice assignment: ARR (low .. high) := source
       // Array slice assignment using memcpy
       if (arg->kind == NK_RANGE) {
-        Type_Info *elem_type_info = prefix_type->array.element_type;
+        Type_Info *elem_type_info = arr_type->array.element_type;
         uint32_t elem_sz = elem_type_info ? elem_type_info->size : 1;
         if (elem_sz == 0) elem_sz = 1;
 
@@ -33894,9 +34562,12 @@ void Generate_Assignment (Syntax_Node *node) {
 
         // Load fat pointer, extract data ptr and low bound
         if (target_is_fat) {
-          LLVM_Rep sa_bt = Array_Bound_LLVM_Rep (prefix_type);
-          uint32_t fat_addr = Generate_Lvalue (target->apply.prefix);
-          uint32_t fat = Emit_Load_Fat_Pointer_From_Temp (fat_addr, sa_bt).reg;
+          LLVM_Rep sa_bt = Array_Bound_LLVM_Rep (arr_type);
+          // An implicit access dereference: the access value is the fat pointer
+          // directly. Otherwise the variable's storage holds the fat pointer.
+          uint32_t fat = deref_access
+            ? Generate_Expression (target->apply.prefix).reg
+            : Emit_Load_Fat_Pointer_From_Temp (Generate_Lvalue (target->apply.prefix), sa_bt).reg;
           dest_base = Emit_Fat_Pointer_Data (fat, sa_bt).reg;
 
           // Low bound comes from the fat pointer at runtime
@@ -33934,8 +34605,22 @@ void Generate_Assignment (Syntax_Node *node) {
           uint32_t src_val = Generate_Expression (src).reg;
           LLVM_Rep src_llvm = Expression_LLVM_Rep (src);
           uint32_t src_data = LLVM_Rep_Is_Fat_Pointer (src_llvm)
-            ? Emit_Fat_Pointer_Data (src_val, Array_Bound_LLVM_Rep (prefix_type)).reg
+            ? Emit_Fat_Pointer_Data (src_val, Array_Bound_LLVM_Rep (arr_type)).reg
             : src_val;
+
+          // RM 5.2.1: the source length must equal the slice length.
+          uint32_t fsrc_count = 0;
+          if (LLVM_Rep_Is_Fat_Pointer (src_llvm)) {
+            LLVM_Rep sb = Array_Bound_LLVM_Rep (src->type ? src->type : arr_type);
+            fsrc_count = Emit_Convert (Emit_Fat_Pointer_Length (src_val, sb).reg, sb, usa_t).reg;
+          } else if (src->type and Type_Is_Array_Like (src->type)
+                     and src->type->array.index_count > 0) {
+            fsrc_count = Emit_Length_From_Bounds (
+              Emit_Single_Bound (&src->type->array.indices[0].low_bound,  usa_t),
+              Emit_Single_Bound (&src->type->array.indices[0].high_bound, usa_t), usa_t).reg;
+          }
+          if (fsrc_count) Emit_Length_Check (fsrc_count, len_plus_one, usa_t, arr_type);
+
           Emit ("  call void @llvm.memcpy.p0.p0.i64("
              "ptr %%t%u, ptr %%t%u, i64 %%t%u, i1 false)"
              "  ; uncon slice assignment\n",
@@ -33945,11 +34630,12 @@ void Generate_Assignment (Syntax_Node *node) {
 
         // Constrained array slice assignment (original code)
         LLVM_Rep csa_t = Integer_Arith_Rep ();
-        low_bound = Array_Low_Bound (prefix_type);
+        low_bound = Array_Low_Bound (arr_type);
 
-        // Get destination base address (any addressable prefix: identifier,
-        // record component, dereference)
-        dest_base = Generate_Lvalue (target->apply.prefix);
+        // Get destination base address. For an implicit access dereference the
+        // access value is the data pointer; otherwise take the prefix lvalue.
+        dest_base = deref_access ? Generate_Expression (target->apply.prefix).reg
+                                 : Generate_Lvalue (target->apply.prefix);
 
         // Evaluate slice bounds and compute copy length from original range.
         // Length must use raw bounds (not index-adjusted) per Ada RM 5.2.1.
@@ -33957,11 +34643,11 @@ void Generate_Assignment (Syntax_Node *node) {
         uint32_t dest_hi_raw = Generate_Expression (arg->range.high).reg;
 
         // RM 4.1.2: non-null slice bounds must be in array's range.
-        if (prefix_type->array.index_count > 0 and
-          prefix_type->array.indices[0].high_bound.kind == BOUND_INTEGER and
-          prefix_type->array.indices[0].low_bound.kind == BOUND_INTEGER) {
-          int128_t arr_lo_i = Type_Bound_Value (prefix_type->array.indices[0].low_bound);
-          int128_t arr_hi_i = Type_Bound_Value (prefix_type->array.indices[0].high_bound);
+        if (arr_type->array.index_count > 0 and
+          arr_type->array.indices[0].high_bound.kind == BOUND_INTEGER and
+          arr_type->array.indices[0].low_bound.kind == BOUND_INTEGER) {
+          int128_t arr_lo_i = Type_Bound_Value (arr_type->array.indices[0].low_bound);
+          int128_t arr_hi_i = Type_Bound_Value (arr_type->array.indices[0].high_bound);
           uint32_t arr_lo_c = Emit_Static_Int (arr_lo_i, csa_t).reg;
           uint32_t arr_hi_c = Emit_Static_Int (arr_hi_i, csa_t).reg;
           Emit_Slice_Bound_Check (dest_lo_raw, dest_hi_raw, arr_lo_c, arr_hi_c, csa_t);
@@ -34024,6 +34710,18 @@ void Generate_Assignment (Syntax_Node *node) {
             }
             uint32_t src_start = Generate_Expression (src_range->range.low).reg;
             uint32_t src_end = Generate_Expression (src_range->range.high).reg;
+
+            // RM 5.2.1: the source slice and the target slice must have the
+            // same length (the value slides, but the lengths must match).
+            {
+              uint32_t sc = Emit_Temp ();
+              Emit ("  %%t%u = sub %s %%t%u, %%t%u\n", sc,
+                 LLVM_Rep_To_String (csa_t), src_end, src_start);
+              uint32_t sc1 = Emit_Temp ();
+              Emit ("  %%t%u = add %s %%t%u, 1\n", sc1,
+                 LLVM_Rep_To_String (csa_t), sc);
+              Emit_Length_Check (sc1, len_plus_one, csa_t, arr_type);
+            }
 
             // RM 4.1.2: source slice bounds must be in src array's range.
             if (not src_is_uncon and
@@ -34094,6 +34792,21 @@ void Generate_Assignment (Syntax_Node *node) {
           } else {
             src_ptr = Emit_Alloca_Store (src_llvm, src_val);
           }
+
+          // RM 5.2.1: the whole-array or string source must have the same
+          // length as the target slice. A fat source carries its length; a
+          // constrained-array source derives it from its bounds.
+          uint32_t src_count = 0;
+          if (LLVM_Rep_Is_Fat_Pointer (src_llvm)) {
+            LLVM_Rep sb = Array_Bound_LLVM_Rep (src->type ? src->type : prefix_type);
+            src_count = Emit_Convert (Emit_Fat_Pointer_Length (src_val, sb).reg, sb, csa_t).reg;
+          } else if (src->type and Type_Is_Array_Like (src->type)
+                     and src->type->array.index_count > 0) {
+            src_count = Emit_Length_From_Bounds (
+              Emit_Single_Bound (&src->type->array.indices[0].low_bound,  csa_t),
+              Emit_Single_Bound (&src->type->array.indices[0].high_bound, csa_t), csa_t).reg;
+          }
+          if (src_count) Emit_Length_Check (src_count, len_plus_one, csa_t, arr_type);
         }
         Emit ("  call void @llvm.memcpy.p0.p0.i64("
            "ptr %%t%u, ptr %%t%u, i64 %%t%u, i1 false)"
@@ -34160,17 +34873,25 @@ void Generate_Assignment (Syntax_Node *node) {
 
       // Composite types: copy contents via memcpy (RM 5.2)
       if (designated and (Type_Is_Record (designated) or
-        (designated->kind == TYPE_ARRAY and designated->size > 0))) {
+                          designated->kind == TYPE_ARRAY)) {
         LLVM_Value value_v = Generate_Expression (node->assignment.value);
         uint32_t value = value_v.reg;
         // Dynamic-bounds aggregate sources arrive as SSA fat - extract data.
-        if (LLVM_Rep_Is_Fat_Pointer (value_v.rep)) {
-          uint32_t dp = Emit_Extract_Fat_Data (value);
-          value = dp;
+        if (LLVM_Rep_Is_Fat_Pointer (value_v.rep))
+          value = Emit_Extract_Fat_Data (value);
+        // An unconstrained or dynamically bounded designated array has no static
+        // byte size; derive it from the access value's fat-pointer bounds (the
+        // product of every dimension's length times the element size).
+        if (designated->kind == TYPE_ARRAY and Type_Needs_Fat_Pointer (operand_type)) {
+          uint32_t accfat = Generate_Expression (operand).reg;
+          uint32_t szb = Emit_Array_Byte_Size (designated, accfat).reg;
+          Emit ("  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %%t%u, i1 false)  ; .ALL composite assign\n",
+             ptr, value, szb);
+        } else {
+          uint32_t sz = designated->size > 0 ? designated->size : 8;
+          Emit ("  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %u, i1 false)  ; .ALL composite assign\n",
+             ptr, value, sz);
         }
-        uint32_t sz = designated->size > 0 ? designated->size : 8;
-        Emit ("  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %u, i1 false)  ; .ALL composite assign\n",
-           ptr, value, sz);
         return;
       }
 
@@ -34440,6 +35161,26 @@ void Generate_Assignment (Syntax_Node *node) {
 
     // Source is constrained - memcpy directly
     } else {
+      // RM 5.2.1: array assignment requires equal lengths in each dimension;
+      // the bounds may differ (the value slides). Compare the source and
+      // target lengths per dimension and raise CONSTRAINT_ERROR on a mismatch.
+      // Static bounds fold to a constant comparison; dynamic bounds check at
+      // run time.
+      Type_Info *src_type = node->assignment.value->type;
+      if (src_type and Type_Is_Array_Like (src_type) and Type_Is_Array_Like (ty)) {
+        LLVM_Rep len_bt = Array_Bound_LLVM_Rep (ty);
+        uint32_t nd = ty->array.index_count;
+        if (src_type->array.index_count < nd) nd = src_type->array.index_count;
+        for (uint32_t d = 0; d < nd; d++) {
+          uint32_t dlen = Emit_Length_From_Bounds (
+            Emit_Single_Bound (&ty->array.indices[d].low_bound,  len_bt),
+            Emit_Single_Bound (&ty->array.indices[d].high_bound, len_bt), len_bt).reg;
+          uint32_t slen = Emit_Length_From_Bounds (
+            Emit_Single_Bound (&src_type->array.indices[d].low_bound,  len_bt),
+            Emit_Single_Bound (&src_type->array.indices[d].high_bound, len_bt), len_bt).reg;
+          Emit_Length_Check (slen, dlen, len_bt, ty);
+        }
+      }
       uint32_t array_size = ty->size > 0 ? ty->size : 8;
       uint32_t target_addr = Emit_Assignment_Target_Address (target_sym);
       Emit ("  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u"
@@ -38411,8 +39152,17 @@ obj_decl_init:
                "ptr %%t%u, ptr %%t%u, i64 %%t%u, i1 false)\n",
                local_data, src_data, len_64);
 
-            // Build fat pointer pointing to local data with source bounds
-            uint32_t new_fat = Emit_Fat_Pointer_Dynamic (local_data, src_low, src_high, init_bt).reg;
+            // A constrained array object keeps its own subtype bounds; the
+            // initializer slides into them (RM 3.6, 5.2.1). An unconstrained
+            // object takes the initializer's bounds.
+            uint32_t dst_low = src_low, dst_high = src_high;
+            if (is_constrained_array and ty->array.index_count > 0) {
+              dst_low  = Emit_Single_Bound (&ty->array.indices[0].low_bound,  init_bt);
+              dst_high = Emit_Single_Bound (&ty->array.indices[0].high_bound, init_bt);
+            }
+
+            // Build fat pointer pointing to local data with the object's bounds
+            uint32_t new_fat = Emit_Fat_Pointer_Dynamic (local_data, dst_low, dst_high, init_bt).reg;
 
             // Store fat pointer into variable
             Emit_Store_Fat_Pointer_To_Symbol (new_fat, sym, init_bt);
@@ -38927,9 +39677,9 @@ obj_decl_init:
                 uint32_t exp_lo = Emit_Single_Bound (lo_b, abt);
                 uint32_t exp_hi = Emit_Single_Bound (hi_b, abt);
 
-                // Get actual bounds from fat pointer
-                uint32_t act_lo = Emit_Fat_Pointer_Low (init, abt).reg;
-                uint32_t act_hi = Emit_Fat_Pointer_High (init, abt).reg;
+                // Get actual bounds for this dimension from the fat pointer
+                uint32_t act_lo = Emit_Fat_Pointer_Low_Dim (init, abt, xi).reg;
+                uint32_t act_hi = Emit_Fat_Pointer_High_Dim (init, abt, xi).reg;
 
                 // Check lo match
                 LLVM_I1 clo = Emit_Icmp ("ne", abt, act_lo, exp_lo);
@@ -40665,6 +41415,23 @@ void Generate_Declaration (Syntax_Node *node) {
       if (node->symbol and node->symbol->is_imported) {
         Emit_Extern_Subprogram (node->symbol);
       }
+
+      // RM 3.9: a forward spec inside a declarative part may be called before
+      // its body is reached. Give it an elaboration flag and reset it false at
+      // this elaboration point; the body sets it true, and a call checks it
+      // (access-before-elaboration). Skip imported subprograms (the body lives
+      // elsewhere and is always elaborated by the time it can be called).
+      else if (node->symbol and cg->current_function) {
+        if (node->symbol->elab_flag_id == 0) {
+          node->symbol->elab_flag_id = ++cg->next_elab_flag_id;
+          Emit_String_Const ("@elab.%u = internal global i1 false  ; %.*s\n",
+                             node->symbol->elab_flag_id,
+                             (int)node->symbol->name.length, node->symbol->name.data);
+        }
+        Emit ("  store i1 false, ptr @elab.%u  ; reset %.*s elaboration flag\n",
+              node->symbol->elab_flag_id,
+              (int)node->symbol->name.length, node->symbol->name.data);
+      }
       break;
     case NK_PACKAGE_SPEC:
 
@@ -40733,6 +41500,15 @@ void Generate_Declaration (Syntax_Node *node) {
     case NK_PROCEDURE_BODY:
     case NK_FUNCTION_BODY:
 
+      // RM 3.9: the body's declaration point is where it becomes elaborated.
+      // Set its flag true here so calls reached afterward pass the check; calls
+      // reached earlier (in preceding initializations) still saw false.
+      if (node->symbol and node->symbol->elab_flag_id != 0) {
+        Emit ("  store i1 true, ptr @elab.%u  ; %.*s body elaborated\n",
+              node->symbol->elab_flag_id,
+              (int)node->symbol->name.length, node->symbol->name.data);
+      }
+
       // Defer nested subprogram bodies - emit after enclosing function
       // Skip if already generated (prevents duplicates from re-processing)
       if (node->subprogram_body.code_generated) break;
@@ -40743,6 +41519,15 @@ void Generate_Declaration (Syntax_Node *node) {
       }
       break;
     case NK_PACKAGE_BODY:
+
+      // RM 3.9: a (generic) package body's declaration point is where it
+      // becomes elaborated; set its flag true so a later instantiation passes
+      // the access-before-elaboration check.
+      if (node->symbol and node->symbol->elab_flag_id != 0) {
+        Emit ("  store i1 true, ptr @elab.%u  ; %.*s body elaborated\n",
+              node->symbol->elab_flag_id,
+              (int)node->symbol->name.length, node->symbol->name.data);
+      }
 
       // A package-body stub (PACKAGE BODY X IS SEPARATE;): the subunit's
       // module defines @<x>___elab(ptr) under the same stable name; this
@@ -41079,6 +41864,10 @@ void Generate_Declaration (Syntax_Node *node) {
         if (not inst_sym or not inst_sym->generic_template) break;
         Symbol *template = inst_sym->generic_template;
 
+        // RM 3.9: instantiating a generic whose body has not yet elaborated
+        // raises PROGRAM_ERROR.
+        Emit_Elaboration_Check (template);
+
         // A package instantiation that textually preceded the generic
         // body (or whose body is a SEPARATE subunit) completes now that
         // the body exists (RM 12.2).
@@ -41207,7 +41996,23 @@ void Generate_Declaration (Syntax_Node *node) {
     //                                                                                              
     case NK_GENERIC_DECL:
 
-      // Generic declarations don't generate code - only instances do
+      // Generic declarations don't generate code - only instances do.
+      // RM 3.9: instantiating a generic whose body is not yet elaborated
+      // raises PROGRAM_ERROR. Give the generic an elaboration flag, reset it
+      // false here; its body sets it true, and an instantiation checks it.
+      // Only a generic that actually has a body can be instantiated too early;
+      // a bodyless generic package has nothing to elaborate and is always safe.
+      if (node->symbol and node->symbol->generic_body and cg->current_function) {
+        if (node->symbol->elab_flag_id == 0) {
+          node->symbol->elab_flag_id = ++cg->next_elab_flag_id;
+          Emit_String_Const ("@elab.%u = internal global i1 false  ; generic %.*s\n",
+                             node->symbol->elab_flag_id,
+                             (int)node->symbol->name.length, node->symbol->name.data);
+        }
+        Emit ("  store i1 false, ptr @elab.%u  ; reset generic %.*s elaboration flag\n",
+              node->symbol->elab_flag_id,
+              (int)node->symbol->name.length, node->symbol->name.data);
+      }
       break;
     case NK_TASK_SPEC:
 
@@ -47639,14 +48444,19 @@ void Load_Package_Spec (String_Slice name, char *src) {
       // Push package scope
       Symbol_Manager_Push_Scope (pkg_sym);
 
-      // Resolve visible declarations
+      // Resolve visible declarations (RM 3.4: subprograms declared here are
+      // derivable of the first kind).
+      bool saved_visible_part = sm->in_package_visible_part;
+      sm->in_package_visible_part = true;
       Resolve_Declaration_List (&pkg->package_spec.visible_decls);
+      sm->in_package_visible_part = false;
 
       // Populate package exports for qualified access (e.g., SYSTEM.MAX_INT)
       Populate_Package_Exports (pkg_sym, pkg);
 
       // Resolve private declarations
       Resolve_Declaration_List (&pkg->package_spec.private_decls);
+      sm->in_package_visible_part = saved_visible_part;
       Symbol_Manager_Pop_Scope ();
 
       // SYSTEM.ADDRESS override (RM 13.7):                                                         
