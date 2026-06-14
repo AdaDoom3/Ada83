@@ -1332,6 +1332,9 @@ struct Syntax_Node {
       Node_List    handlers;       // Exception handlers
       bool         is_separate;    // Is a subunit stub
       bool         elab_generated; // Elaboration function already emitted
+      Scope       *enclosing_body_scope; // For a generic package body: the
+                                   // enclosing package-body scope, so an
+                                   // instance can see it (RM 8.1, 12.3)
     } package_body;
 
     // when NK_PACKAGE_RENAMING =>
@@ -1747,6 +1750,8 @@ typedef struct {
   };
   uint32_t cached_temp; // LLVM temp register holding the evaluated bound, or zero
   LLVM_Rep cached_rep;  // LLVM rep of cached_temp (set together with it)
+  uint32_t preeval_global; // RM 3.7.1: id of @__rt_cbnd_<n> holding a non-disc
+                           // bound frozen at the record type's elaboration, or 0
 } Type_Bound;
 
 // Describes one alternative of a record variant part
@@ -1886,6 +1891,7 @@ extern Symbol    *Exception_Symbols[256];
 extern uint32_t   Exception_Symbol_Count;
 
 Type_Info *Type_New    (Type_Kind kind, String_Slice name);
+Type_Info *Replicate_Component_Subtype (Type_Info *ct);
 void       Freeze_Type (Type_Info *type_info);
 
 bool Type_Has_Task_Component      (Type_Info *t);
@@ -2284,6 +2290,11 @@ struct Symbol {
                                                   // end of template spec analysis
   uint32_t        generic_body_visibility_cutoff; // ... at the start of template
                                                   // body analysis (0 = unseen)
+  Scope          *generic_enclosing_body_scope;   // The package-body scope that
+                                                  // textually encloses the generic
+                                                  // body, so an instance body can
+                                                  // see the enclosing body's
+                                                  // declarations (RM 8.1, 12.3)
   Generic_Actual_Binding *actual_bindings; // The instantiation's resolved
                                            // formal-to-actual record (one per
                                            // slot; object formals one per
@@ -2399,6 +2410,8 @@ bool Type_Covers             (Type_Info    *expected, Type_Info    *actual);
 bool Type_Limited_View_Active (const Type_Info *t);
 bool Arguments_Match_Profile (Symbol       *sym,      Argument_Info *args);
 void Collect_Interpretations (String_Slice  name,     Interp_List   *list);
+void Collect_Package_Interpretations (Symbol *package, String_Slice selector,
+                                      Interp_List *list);
 void Filter_By_Arguments     (Interp_List  *interps,  Argument_Info *args);
 bool Symbol_Hides            (Symbol       *sym1,     Symbol        *sym2);
 
@@ -3297,7 +3310,9 @@ uint32_t Emit_Master_Flag_Enter     (void);
 void     Emit_Master_Flag_Done      (uint32_t flag_temp);
 void Generate_Declaration           (Syntax_Node *node);
 void Elaborate_Dynamic_Array_Bounds (Type_Info   *elab_ty);
+void Elaborate_Dynamic_Scalar_Bounds (Type_Info  *elab_ty);
 void Generate_Object_Declaration    (Syntax_Node *node);
+void Emit_Array_Index_Constraint_Check (Type_Info *array_type);
 void Emit_Pending_Global_Initializers (void);
 void Generate_Subprogram_Body       (Syntax_Node *node);
 void Generate_Task_Body             (Syntax_Node *node);
@@ -5460,6 +5475,25 @@ Syntax_Node *Parse_Primary (Parser *p) {
   // Parenthesized expression or aggregate
   if (Parser_Match (p, TK_LPAREN)) {
     Syntax_Node *expr = Parse_Expression (p);
+
+    // First aggregate choice given as `subtype_mark RANGE low .. high`
+    // (e.g. (DT RANGE L .. R => M)). Parse_Expression stops at RANGE, so
+    // complete the discrete_subtype_indication here, mirroring Parse_Choice.
+    if (Parser_Match (p, TK_RANGE)) {
+      Syntax_Node *ind = Node_New (NK_SUBTYPE_INDICATION, location);
+      ind->subtype_ind.subtype_mark = expr;
+      Syntax_Node *constraint = Node_New (NK_RANGE_CONSTRAINT, location);
+      Syntax_Node *range_low = Parse_Expression (p);
+      if (Parser_Match (p, TK_DOTDOT)) {
+        Syntax_Node *range_node = Node_New (NK_RANGE, location);
+        range_node->range.low  = range_low;
+        range_node->range.high = Parse_Expression (p);
+        constraint->range_constraint.range = range_node;
+      } else
+        constraint->range_constraint.range = range_low;
+      ind->subtype_ind.constraint = constraint;
+      expr = ind;
+    }
 
     // Check for aggregate indicators
     if (Parser_At (p, TK_COMMA)  or Parser_At (p, TK_ARROW) or
@@ -7872,6 +7906,49 @@ Type_Info *Type_New (Type_Kind kind, String_Slice name) {
   return type_info;
 }
 
+// RM 3.2.1: a component declared with several names (A1, A2 : SUBTYPE) is a
+// series of single declarations; if SUBTYPE carries a NON-STATIC constraint it
+// is elaborated independently for each name. Replicate such a subtype so each
+// name owns its constraint — a distinct runtime descriptor (dynamic array or
+// scalar) or an independently frozen discriminant constraint (a discriminated
+// record component, or an access-to-discriminated-record component). The marked
+// copies are anonymous and local, so their per-component freezing may use
+// function-local temporaries safely. Returns the original type unchanged when
+// no per-name replication is required.
+Type_Info *Replicate_Component_Subtype (Type_Info *ct) {
+  if (not ct) return ct;
+  bool dyn_array  = ct->size == 0 and Type_Is_Array_Like (ct) and
+                    ct->array.is_constrained and Type_Has_Dynamic_Bounds (ct);
+  bool dyn_scalar = Type_Is_Scalar (ct) and
+                    (ct->low_bound.kind == BOUND_EXPR or ct->high_bound.kind == BOUND_EXPR);
+  bool dyn_disc   = Type_Is_Record (ct) and ct->record.has_disc_constraints and
+                    ct->record.disc_constraint_exprs;
+  Type_Info *des  = Type_Is_Access (ct) ? ct->access.designated_type : NULL;
+  bool dyn_access = des and Type_Is_Record (des) and des->record.has_disc_constraints and
+                    des->record.disc_constraint_exprs;
+  if (not (dyn_array or dyn_scalar or dyn_disc or dyn_access)) return ct;
+
+  Type_Info *copy = Type_New (ct->kind, ct->name);
+  *copy = *ct;
+  copy->rt_global_id = 0;
+  if (dyn_array and ct->array.index_count > 0) {
+    copy->array.indices = Arena_Allocate (ct->array.index_count * sizeof (Index_Info));
+    memcpy (copy->array.indices, ct->array.indices, ct->array.index_count * sizeof (Index_Info));
+  }
+  // Each copy freezes its discriminant constraint independently; clearing the
+  // shared pre-eval slot makes the ordered per-component freezing pass build a
+  // fresh one for this name.
+  if (dyn_disc)
+    copy->record.disc_constraint_preeval = NULL;
+  if (dyn_access) {
+    Type_Info *des_copy = Type_New (des->kind, des->name);
+    *des_copy = *des;
+    des_copy->record.disc_constraint_preeval = NULL;
+    copy->access.designated_type = des_copy;
+  }
+  return copy;
+}
+
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 // §10.4 Type Predicates                                                                            
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
@@ -8173,8 +8250,16 @@ bool Type_Has_Dynamic_Bounds (const Type_Info *type_info) {
 bool Is_Slice_Index_Arg (const Syntax_Node *arg) {
   if (not arg) return false;
   if (arg->kind == NK_RANGE) return true;
-  return arg->kind == NK_ATTRIBUTE and
-         Slice_Equal_Ignore_Case (arg->attribute.name, S("RANGE"));
+  if (arg->kind == NK_ATTRIBUTE and
+      Slice_Equal_Ignore_Case (arg->attribute.name, S("RANGE")))
+    return true;
+  // RM 4.1.2: a slice's discrete range may be written as a subtype mark
+  // (A (DT)) or a constrained subtype indication (A (DT RANGE L .. R)).
+  if (arg->kind == NK_SUBTYPE_INDICATION) return true;
+  if (arg->kind == NK_IDENTIFIER and arg->symbol and
+      (arg->symbol->kind == SYMBOL_TYPE or arg->symbol->kind == SYMBOL_SUBTYPE))
+    return true;
+  return false;
 }
 
 bool Expression_Is_Slice (const Syntax_Node *node) {
@@ -9227,6 +9312,34 @@ void Collect_Interpretations (String_Slice name,
             .scope_depth = scope->nesting_level
           };
       }
+    }
+  }
+}
+
+// Gather every overload of SELECTOR that PACKAGE makes visible, for the
+// expanded-name call P.F (...). Qualified selection sees all members of P
+// regardless of USE clauses, so visibility is not re-checked here — the
+// exported list is the authoritative set (RM 4.1.3). Overloads of one name
+// link through next_overload; distinct exported entries are deduplicated.
+void Collect_Package_Interpretations (Symbol *package, String_Slice selector,
+                                      Interp_List *interps) {
+  interps->count = 0;
+  for (uint32_t i = 0; i < package->exported_count; i++) {
+    Symbol *head = package->exported[i];
+    if (not Slice_Equal_Ignore_Case (head->name, selector)) continue;
+    for (Symbol *s = head; s and interps->count < MAX_INTERPRETATIONS;
+         s = s->next_overload) {
+      bool duplicate = false;
+      for (uint32_t j = 0; j < interps->count; j++)
+        if (interps->items[j].nam == s) { duplicate = true; break; }
+      if (not duplicate)
+        interps->items[interps->count++] = (Interpretation){
+          .nam = s,
+          .typ = (s->kind == SYMBOL_FUNCTION) ? s->return_type : s->type,
+          .opnd_typ = NULL,
+          .is_universal = false,
+          .scope_depth = 0
+        };
     }
   }
 }
@@ -10714,6 +10827,10 @@ Type_Info *Resolve_Apply (Syntax_Node *node) {
             Type_Info *rt = Resolve_Expression (syn);
             node->type = rt;
             node->symbol = syn->symbol;
+            // This apply IS the operator (RM 6.7): the emitter lowers it
+            // through the same predefined-operator path as `A op B`. Leaving
+            // it APPLY_UNRESOLVED would trip the codegen's verdict guard.
+            node->apply.resolution = APPLY_OPERATOR;
             return rt;
           }
         }
@@ -10725,6 +10842,31 @@ Type_Info *Resolve_Apply (Syntax_Node *node) {
   } else {
     Resolve_Expression (prefix);
     prefix_sym = prefix->symbol;
+
+    // Expanded-name call P.F (...): F may be overloaded within P, but
+    // Resolve_Selected commits to the first matching member with no view of
+    // the actuals. Redo overload resolution across P's members so the right
+    // profile wins, exactly as the simple-name path does (RM 4.1.3, 6.6).
+    if (prefix->kind == NK_SELECTED and prefix_sym and
+        (prefix_sym->kind == SYMBOL_FUNCTION or
+         prefix_sym->kind == SYMBOL_PROCEDURE)) {
+      Symbol *package = prefix->selected.prefix->symbol;
+      if (package and package->kind == SYMBOL_PACKAGE) {
+        Interp_List interps;
+        Collect_Package_Interpretations (package, prefix->selected.selector,
+                                         &interps);
+        if (interps.count > 1) {
+          if (args.count > 0) Filter_By_Arguments (&interps, &args);
+          Symbol *chosen = Disambiguate (&interps, node->type, &args);
+          if (chosen) {
+            prefix_sym    = chosen;
+            prefix->symbol = chosen;
+            prefix->type   = (chosen->kind == SYMBOL_FUNCTION) ?
+                             chosen->return_type : chosen->type;
+          }
+        }
+      }
+    }
   }
   Type_Info *prefix_type = prefix->type;
 
@@ -11086,6 +11228,57 @@ Type_Info *Resolve_Apply (Syntax_Node *node) {
     // Slice: result type is the same array/string type
     if (is_slice) {
       node->type = indexed_type;
+
+      // Normalize a non-NK_RANGE slice argument to an explicit low .. high
+      // range so the slice emitter (which expects an NK_RANGE) sees a uniform
+      // shape. Without this such an argument falls through to the scalar-index
+      // path and slices at a single index. Three forms (RM 4.1.2):
+      //   P'RANGE                 -> P'FIRST .. P'LAST
+      //   subtype mark DT         -> DT'FIRST .. DT'LAST
+      //   DT RANGE L .. H         -> L .. H  (the constraint's own range)
+      for (uint32_t i = 0; i < arg_count; i++) {
+        Syntax_Node *a = node->apply.arguments.items[i];
+        Syntax_Node *attr_prefix = NULL;  // prefix to take 'FIRST/'LAST of
+        Syntax_Node *explicit_range = NULL;
+        if (a->kind == NK_ATTRIBUTE and
+            Slice_Equal_Ignore_Case (a->attribute.name, S("RANGE")))
+          attr_prefix = a->attribute.prefix;
+        else if (a->kind == NK_IDENTIFIER and a->symbol and
+                 (a->symbol->kind == SYMBOL_TYPE or a->symbol->kind == SYMBOL_SUBTYPE))
+          attr_prefix = a;
+        else if (a->kind == NK_SUBTYPE_INDICATION and a->subtype_ind.constraint and
+                 a->subtype_ind.constraint->kind == NK_RANGE_CONSTRAINT and
+                 a->subtype_ind.constraint->range_constraint.range and
+                 a->subtype_ind.constraint->range_constraint.range->kind == NK_RANGE)
+          explicit_range = a->subtype_ind.constraint->range_constraint.range;
+        else
+          continue;
+
+        Syntax_Node *rng;
+        if (explicit_range) {
+          Resolve_Expression (explicit_range->range.low);
+          Resolve_Expression (explicit_range->range.high);
+          rng = explicit_range;
+        } else {
+          Syntax_Node *lo = Node_New (NK_ATTRIBUTE, a->location);
+          lo->attribute.prefix = attr_prefix;
+          lo->attribute.name   = S("FIRST");
+          Syntax_Node *hi = Node_New (NK_ATTRIBUTE, a->location);
+          hi->attribute.prefix = attr_prefix;
+          hi->attribute.name   = S("LAST");
+          if (a->kind == NK_ATTRIBUTE)
+            for (uint32_t ai = 0; ai < a->attribute.arguments.count; ai++) {
+              Node_List_Push (&lo->attribute.arguments, a->attribute.arguments.items[ai]);
+              Node_List_Push (&hi->attribute.arguments, a->attribute.arguments.items[ai]);
+            }
+          Resolve_Expression (lo);
+          Resolve_Expression (hi);
+          rng = Node_New (NK_RANGE, a->location);
+          rng->range.low  = lo;
+          rng->range.high = hi;
+        }
+        node->apply.arguments.items[i] = rng;
+      }
 
     // Indexing: result type is the element type
     } else {
@@ -12348,6 +12541,17 @@ Type_Info *Resolve_Expression (Syntax_Node *node) {
                 };
               }
             }
+
+            // RM 3.6.1: an index given as a bare type/subtype mark (e.g.
+            // BOOLEAN, with no explicit range) takes that subtype's own
+            // bounds. Without this the dimension stays BOUND_NONE — length 1
+            // — so a multi-dimensional array silently drops every type-mark
+            // dimension from its element count and storage size.
+            if (info->low_bound.kind == BOUND_NONE and
+                info->high_bound.kind == BOUND_NONE and info->index_type) {
+              info->low_bound  = info->index_type->low_bound;
+              info->high_bound = info->index_type->high_bound;
+            }
           }
         }
 
@@ -12750,7 +12954,13 @@ Type_Info *Resolve_Expression (Syntax_Node *node) {
             for (uint32_t j = 0; j < comp->component.names.count; j++) {
               Component_Info *info = &record_type->record.components[comp_idx++];
               info->name = comp->component.names.items[j]->string_val.text;
-              info->component_type = comp_type;
+
+              // RM 3.2.1: a multiple-name component declaration is a series of
+              // single declarations; a non-static constraint is elaborated
+              // independently for each name. Replicate the subtype so each name
+              // owns its constraint.
+              info->component_type = comp->component.names.count > 1
+                ? Replicate_Component_Subtype (comp_type) : comp_type;
               info->byte_offset = offset;
               info->bit_offset = 0;
               info->bit_size = comp_type ? comp_type->size * 8 : 64;
@@ -13203,10 +13413,29 @@ Type_Info *Resolve_Expression (Syntax_Node *node) {
                 for (uint32_t b = 0; b < 2; b++)
                   Assign_Eval_Bound (bound_slot[b], bound_expr[b], true);
 
+              // A subtype-indication index constraint with its own range
+              // (e.g. U (V RANGE 1 .. X), STRING (POSITIVE RANGE X .. 10)):
+              // the bounds are that explicit range, captured dynamically.
+              } else if (range->kind == NK_SUBTYPE_INDICATION and
+                         range->subtype_ind.constraint and
+                         range->subtype_ind.constraint->kind == NK_RANGE_CONSTRAINT and
+                         range->subtype_ind.constraint->range_constraint.range and
+                         range->subtype_ind.constraint->range_constraint.range->kind == NK_RANGE) {
+                Syntax_Node *rng = range->subtype_ind.constraint->range_constraint.range;
+                Assign_Eval_Bound (&info->low_bound,  rng->range.low,  true);
+                Assign_Eval_Bound (&info->high_bound, rng->range.high, true);
+
               // P'RANGE index constraint (RM 3.6.1): inherit the prefix
               // subtype's index bounds (e.g. J (A'RANGE) with A = J(0..50)).
-              } else {
-                Index_Bound_From_Range_Attr (range, info);
+              } else if (Index_Bound_From_Range_Attr (range, info)) {
+                // handled by the predicate
+
+              // A subtype-mark index constraint (e.g. STRING (S), U (T) with
+              // SUBTYPE S IS INTEGER RANGE 1 .. X): the index range is that
+              // subtype's own range, which may carry a dynamic bound.
+              } else if (range->type and Type_Is_Scalar (range->type)) {
+                info->low_bound  = range->type->low_bound;
+                info->high_bound = range->type->high_bound;
               }
             }
 
@@ -13294,12 +13523,46 @@ Type_Info *Resolve_Expression (Syntax_Node *node) {
               }
             } else {
 
-              // T RANGE A'RANGE (RM 3.5(2)): the constraint is the prefix
-              // array subtype's index range for the chosen dimension.
+              // T RANGE A'RANGE (RM 3.5(2)): the constraint is the prefix's
+              // index range for the chosen dimension. A statically-bounded
+              // array subtype prefix supplies its index bounds directly. A
+              // prefix whose bounds are known only at run time — a function
+              // result or a concatenation — makes the subtype's bounds the
+              // prefix value's 'FIRST and 'LAST, captured as bound
+              // expressions and evaluated where the subtype is elaborated.
+              // A CONSTRAINED array prefix (object or subtype) carries the
+              // value's index bounds in its own index_info — read them
+              // directly. An UNCONSTRAINED prefix (a function result, a
+              // concatenation, an unconstrained-array object) has only its
+              // index subtype's full range there, which is not the value's
+              // actual bounds; those are the prefix value's 'FIRST and 'LAST.
               Index_Info range_attr_index = { 0 };
-              if (Index_Bound_From_Range_Attr (range, &range_attr_index)) {
+              Type_Info *rpfx = range->kind == NK_ATTRIBUTE ? range->attribute.prefix->type : NULL;
+              if (rpfx and Type_Is_Access (rpfx) and rpfx->access.designated_type)
+                rpfx = rpfx->access.designated_type;
+              bool prefix_constrained = rpfx and Type_Is_Array_Like (rpfx) and rpfx->array.is_constrained;
+              if (prefix_constrained and Index_Bound_From_Range_Attr (range, &range_attr_index) and
+                  range_attr_index.low_bound.kind != BOUND_NONE and
+                  range_attr_index.high_bound.kind != BOUND_NONE) {
                 constrained->low_bound  = range_attr_index.low_bound;
                 constrained->high_bound = range_attr_index.high_bound;
+              } else if (range->kind == NK_ATTRIBUTE and
+                         Slice_Equal_Ignore_Case (range->attribute.name, S("RANGE"))) {
+                Resolve_Expression (range->attribute.prefix);
+                Syntax_Node *lo = Node_New (NK_ATTRIBUTE, range->location);
+                lo->attribute.prefix = range->attribute.prefix;
+                lo->attribute.name   = S("FIRST");
+                Syntax_Node *hi = Node_New (NK_ATTRIBUTE, range->location);
+                hi->attribute.prefix = range->attribute.prefix;
+                hi->attribute.name   = S("LAST");
+                for (uint32_t ai = 0; ai < range->attribute.arguments.count; ai++) {
+                  Node_List_Push (&lo->attribute.arguments, range->attribute.arguments.items[ai]);
+                  Node_List_Push (&hi->attribute.arguments, range->attribute.arguments.items[ai]);
+                }
+                Resolve_Expression (lo);
+                Resolve_Expression (hi);
+                constrained->low_bound  = (Type_Bound){ .kind = BOUND_EXPR, .expr = lo };
+                constrained->high_bound = (Type_Bound){ .kind = BOUND_EXPR, .expr = hi };
               }
             }
             node->type = constrained;
@@ -16026,6 +16289,25 @@ void Resolve_Instance_Package_Body_Clone (Symbol *instance_sym,
   uint32_t before = instance_scope->symbol_count;
   if (template_sym->generic_body_visibility_cutoff)
     sm->visibility_cutoff = template_sym->generic_body_visibility_cutoff;
+
+  // The instance body must see the declarations of the package body that
+  // textually encloses the generic body (RM 8.1, 12.3) -- the instance spec
+  // resolved under the spec scope (instance_scope->parent), but the body
+  // needs the enclosing body scope, which re-installs all spec entities plus
+  // the body's own. The enclosing package's current scope is that body scope
+  // once its body has been loaded (the spec scope's owner reaches it).
+  // Reparent for the body resolution and restore after, so later member
+  // lookups on the instance keep their spec-scope parent.
+  Scope *enclosing_body = template_sym->generic_enclosing_body_scope;
+  if (not enclosing_body and template_sym->generic_body)
+    enclosing_body = template_sym->generic_body->package_body.enclosing_body_scope;
+  if (not enclosing_body and instance_scope->parent and
+      instance_scope->parent->owner)
+    enclosing_body = instance_scope->parent->owner->scope;
+  Scope *saved_parent = instance_scope->parent;
+  if (enclosing_body)
+    instance_scope->parent = enclosing_body;
+
   Resolve_Declaration_List (&body_clone->package_body.declarations);
   Mark_Package_Level_Objects (&body_clone->package_body.declarations);
   for (uint32_t i = before; i < instance_scope->symbol_count; i++) {
@@ -16041,6 +16323,7 @@ void Resolve_Instance_Package_Body_Clone (Symbol *instance_sym,
       Resolve_Expression (handler->handler.exceptions.items[ei]);
     Resolve_Statement_List (&handler->handler.statements);
   }
+  instance_scope->parent = saved_parent;
   body_clone->symbol = instance_sym;
 }
 
@@ -17399,6 +17682,16 @@ void Resolve_Declaration (Syntax_Node *node) {
             not node->package_body.is_separate) {
           pkg_sym->generic_body = node;
           pkg_sym->generic_body_visibility_cutoff = sm->next_creation_sequence;
+
+          // Record the package-body scope textually enclosing this generic
+          // body (the scope just pushed for it parents off the enclosing
+          // body), so an instance body re-resolved at the instantiation point
+          // can still see the enclosing body's declarations (RM 8.1, 12.3) --
+          // e.g. TEXT_IO.INTEGER_IO's body using TEXT_IO's file-control state.
+          // Stored on the body NODE (shared by the template parse) so it is
+          // reachable even when spec and body load created distinct symbols.
+          pkg_sym->generic_enclosing_body_scope = sm->current_scope->parent;
+          node->package_body.enclosing_body_scope = sm->current_scope->parent;
 
           // Formals into scope (RM 12.1); created once, re-installed here.
           Install_Generic_Formal_Symbols (pkg_sym);
@@ -20285,6 +20578,11 @@ LLVM_Rep Expression_LLVM_Rep (Syntax_Node *node) {
        node->apply.prefix->symbol->kind == SYMBOL_TYPE or
        node->apply.prefix->symbol->kind == SYMBOL_SUBTYPE))) {
     Type_Info *elem_type = node->type;
+    // A fat-stored element (string / unconstrained / dynamic-bound array) is
+    // read as a { ptr, ptr } value — mirror the read path's decision exactly
+    // (Generate_Apply uses Type_Needs_Fat_Pointer_Load) so this rep and the
+    // emitted value never disagree at an assignment's Emit_Convert.
+    if (Type_Needs_Fat_Pointer_Load (elem_type)) return LL_REP_FAT;
     if (Type_Is_Record (elem_type) or Type_Is_String (elem_type) or
       Type_Is_Constrained_Array (elem_type)) {
       return LL_REP_PTR;
@@ -20790,6 +21088,14 @@ static uint32_t Emit_Constraint_Check_Internal (uint32_t val, LLVM_Rep val_rep,
       high_bound = Emit_Fixed_Bound_Mantissa (&target->high_bound, small, fix_bnd_rep);
       lo_rep = fix_bnd_rep;
       hi_rep = fix_bnd_rep;
+    } else if (target->rt_global_id > 0 and not Type_Is_Array_Like (target)) {
+      // Frozen scalar constraint (RM 3.2.1): read the bounds elaborated once
+      // into the runtime descriptor, never re-evaluate the constraint here.
+      low_bound = Emit_Temp ();
+      Emit ("  %%t%u = load " RT_DESC_TYPE ", ptr @__rt_type_%u_lo0\n", low_bound, target->rt_global_id);
+      high_bound = Emit_Temp ();
+      Emit ("  %%t%u = load " RT_DESC_TYPE ", ptr @__rt_type_%u_hi0\n", high_bound, target->rt_global_id);
+      lo_rep = hi_rep = LLVM_Rep_Int (64, false);
     } else {
       low_bound  = Emit_Bound_Value_Typed (&target->low_bound, &lo_rep);
       high_bound = Emit_Bound_Value_Typed (&target->high_bound, &hi_rep);
@@ -21456,13 +21762,13 @@ LLVM_Value Emit_Fat_Pointer_Heap (uint32_t data_ptr,
 // Returns temp ID holding the length in native bound type (bt).
 LLVM_Value Emit_Fat_Pointer_Length (uint32_t fat_ptr,
                      LLVM_Rep bt) {
+  // A null array's length is 0, never a negative/wrapped value (RM 3.6.2). The
+  // clamp lives in Emit_Length_From_Bounds; sizing an alloca / memcpy by an
+  // unclamped high-low+1 of a null range (e.g. (-3 .. -5 => 'A')) would request
+  // ~2^64 bytes and crash.
   uint32_t low = Emit_Fat_Pointer_Low (fat_ptr, bt).reg;
   uint32_t high = Emit_Fat_Pointer_High (fat_ptr, bt).reg;
-  uint32_t diff = Emit_Temp ();
-  Emit ("  %%t%u = sub %s %%t%u, %%t%u\n", diff, LLVM_Rep_To_String (bt), high, low);
-  uint32_t len = Emit_Temp ();
-  Emit ("  %%t%u = add %s %%t%u, 1\n", len, LLVM_Rep_To_String (bt), diff);
-  return Val_Rep (len, bt);
+  return Emit_Length_From_Bounds (low, high, bt);
 }
 
 // Emit length from two temp IDs (raw bounds, not from fat pointer):                                
@@ -21495,6 +21801,11 @@ LLVM_Value Emit_Array_Byte_Size (Type_Info *array_type, uint32_t fat_ptr) {
   if (dimension_count == 0) dimension_count = 1;
   uint32_t element_size = (array_type->kind == TYPE_ARRAY and array_type->array.element_type)
                             ? array_type->array.element_type->size : 1;
+  // A fat-stored element (dynamic-bound array / string component) occupies a
+  // { ptr, ptr } slot, not its zero flat size.
+  if (element_size == 0 and array_type->kind == TYPE_ARRAY and
+      Type_Needs_Fat_Pointer_Load (array_type->array.element_type))
+    element_size = FAT_PTR_ALLOC_SIZE;
   if (element_size == 0) element_size = 1;
 
   // Product of per-dimension lengths, accumulated in i64.
@@ -23906,14 +24217,17 @@ void Ensure_Runtime_Type_Globals (Type_Info *t) {
     if (hi.kind == BOUND_NONE and t->array.indices[d].index_type)
       hi = t->array.indices[d].index_type->high_bound;
 
-    // Only trigger for non-discriminant BOUND_EXPR (function calls like                            
-    // IDENT_INT (-3)). Discriminant-dependent bounds (expr->symbol points                         
-    // to a discriminant) are handled by the existing disc_dep path.                               
-    //                                                                                              
+    // Trigger for any non-discriminant runtime bound: a function call
+    // (IDENT_INT (-3)) or a reference to a variable/constant/parameter
+    // (STRING (1 .. X)). Only a DISCRIMINANT reference is excluded — those
+    // bounds are handled by the existing discriminant-dependent path.
+    //
     bool lo_rt = (lo.kind == BOUND_EXPR and
-            not (lo.expr and lo.expr->kind == NK_IDENTIFIER and lo.expr->symbol));
+            not (lo.expr and lo.expr->kind == NK_IDENTIFIER and lo.expr->symbol
+                 and lo.expr->symbol->kind == SYMBOL_DISCRIMINANT));
     bool hi_rt = (hi.kind == BOUND_EXPR and
-            not (hi.expr and hi.expr->kind == NK_IDENTIFIER and hi.expr->symbol));
+            not (hi.expr and hi.expr->kind == NK_IDENTIFIER and hi.expr->symbol
+                 and hi.expr->symbol->kind == SYMBOL_DISCRIMINANT));
     if (lo_rt or hi_rt)
       { needs = true; break; }
   }
@@ -24491,21 +24805,40 @@ LLVM_Value Emit_Binary_Op_Predefined (Syntax_Node *node) {
     // Copy right string
     Emit_Memcpy (right_dest, right_data, right_bytes);
 
-    // Result bounds: INDEX_SUBTYPE'FIRST .. FIRST+total_len-1 (RM 4.5.3(8)).                      
-    // For STRING the index subtype is POSITIVE with FIRST=1; for custom                            
-    // array types the FIRST may differ (e.g. STE'FIRST=2).                                        
-    //                                                                                              
-    int128_t idx_first = 1;  // default for STRING (POSITIVE'FIRST)
-    if (result_type and (result_type->kind == TYPE_ARRAY or result_type->kind == TYPE_STRING) and
-      result_type->array.index_count > 0 and result_type->array.indices) {
-      Type_Info *idx_ty = result_type->array.indices[0].index_type;
-      if (idx_ty and idx_ty->low_bound.kind == BOUND_INTEGER)
-        idx_first = idx_ty->low_bound.int_value;
+    // Result bounds (RM 4.5.3). When the LEFT operand is itself a one-
+    // dimensional array, the result's lower bound is the left operand's own
+    // lower bound — or, if the left operand is a null array, the right
+    // operand's. Only when the left operand is a single component does the
+    // result take the index subtype's 'FIRST (POSITIVE'FIRST = 1 for STRING,
+    // or e.g. STE'FIRST = 2 for a custom array type). The upper bound always
+    // follows from the lower bound and the total length.
+    //
+    bool left_is_array = Type_Is_Array_Like (left_type) or Type_Is_String (left_type);
+    uint32_t res_lo;
+    if (left_is_array) {
+      LLVM_I1 left_null = Emit_Icmp_Const ("eq", cat_bt, left_len1, 0);
+      res_lo = Emit_Temp ();
+      Emit ("  %%t%u = select i1 %%t%u, %s %%t%u, %s %%t%u"
+         "  ; RM 4.5.3 result low (null-left → right's low)\n",
+         res_lo, left_null.reg, LLVM_Rep_To_String (cat_bt), right_low,
+         LLVM_Rep_To_String (cat_bt), left_low);
+    } else {
+      int128_t idx_first = 1;  // default for STRING (POSITIVE'FIRST)
+      if (result_type and (result_type->kind == TYPE_ARRAY or result_type->kind == TYPE_STRING) and
+        result_type->array.index_count > 0 and result_type->array.indices) {
+        Type_Info *idx_ty = result_type->array.indices[0].index_type;
+        if (idx_ty and idx_ty->low_bound.kind == BOUND_INTEGER)
+          idx_first = idx_ty->low_bound.int_value;
+      }
+      res_lo = Emit_Static_Int (idx_first, cat_bt).reg;
     }
-    uint32_t res_lo = Emit_Static_Int (idx_first, cat_bt).reg;
+    // high = low + total_len - 1
+    uint32_t res_hi_tmp = Emit_Temp ();
+    Emit ("  %%t%u = add %s %%t%u, %%t%u\n",
+       res_hi_tmp, LLVM_Rep_To_String (cat_bt), res_lo, total_len);
     uint32_t res_hi = Emit_Temp ();
-    Emit ("  %%t%u = add %s %%t%u, %s  ; first + total_len - 1\n",
-       res_hi, LLVM_Rep_To_String (cat_bt), total_len, I128_Decimal (idx_first - 1));
+    Emit ("  %%t%u = sub %s %%t%u, 1  ; low + total_len - 1\n",
+       res_hi, LLVM_Rep_To_String (cat_bt), res_hi_tmp);
 
     // Return fat pointer to result
     return Emit_Fat_Pointer_Dynamic (result_data, res_lo, res_hi, cat_bt);
@@ -25116,6 +25449,10 @@ LLVM_Value Emit_Binary_Op_Predefined (Syntax_Node *node) {
                          ? attr_node->attribute.arguments.items[0] : NULL;
           uint32_t rdim = Get_Dimension_Index (range_dim_arg);
           uint32_t range_low, range_high;
+          // The bounds carry the index subtype's width (e.g. i8 for a small
+          // integer index); Emit_In_Range widens against the value, but only
+          // if told the bounds' true rep — never assume Integer_Arith_Rep.
+          LLVM_Rep range_bt = Integer_Arith_Rep ();
           bool arr_needs_rt = false;
           if (arr_type and (Type_Needs_Fat_Pointer (arr_type)) and
             arr_sym and (arr_sym->kind == SYMBOL_PARAMETER or arr_sym->kind == SYMBOL_VARIABLE or
@@ -25126,6 +25463,7 @@ LLVM_Value Emit_Binary_Op_Predefined (Syntax_Node *node) {
             uint32_t fat = Emit_Load_Fat_Pointer (arr_sym, rbt).reg;
             range_low  = Emit_Fat_Pointer_Low_Dim (fat, rbt, rdim).reg;
             range_high = Emit_Fat_Pointer_High_Dim (fat, rbt, rdim).reg;
+            range_bt = rbt;
           } else if (arr_type and Type_Is_Array_Like (arr_type) and rdim < arr_type->array.index_count) {
             LLVM_Rep iat = Integer_Arith_Rep ();
             Type_Bound lb = arr_type->array.indices[rdim].low_bound;
@@ -25150,9 +25488,8 @@ LLVM_Value Emit_Binary_Op_Predefined (Syntax_Node *node) {
           }
 
           // Compare left IN lo..hi (A'FIRST .. A'LAST)
-          LLVM_Rep rng_iat = Integer_Arith_Rep ();
           LLVM_I1 in_range = Emit_In_Range ((LLVM_Value){ left, left_int_type },
-                     (LLVM_Value){ range_low, rng_iat }, (LLVM_Value){ range_high, rng_iat }, false);
+                     (LLVM_Value){ range_low, range_bt }, (LLVM_Value){ range_high, range_bt }, false);
           if (negate) { Emit ("  %%t%u = xor i1 %%t%u, 1\n", t, in_range.reg); }
           else        { t = in_range.reg; }
 
@@ -26684,12 +27021,11 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
               Type_Info *def_type = def->type ? def->type : pt;
               v = Emit_Fat_Pointer_For_Lvalue (v, def_type).reg;
             }
-            uint32_t spill = Emit_Temp ();
-            Emit ("  %%t%u = alloca " FAT_PTR_TYPE
-                  "  ; default fat ptr spill\n", spill);
-            Emit ("  store " FAT_PTR_TYPE " %%t%u, ptr %%t%u\n", v, spill);
-            args[p] = spill;
-            slot_default_rep[p] = LL_REP_PTR;
+            // An unconstrained-array formal is passed by value as a fat
+            // pointer (matching the non-default actual path); the formal's
+            // LLVM type is {ptr, ptr}, not a pointer to one.
+            args[p] = v;
+            slot_default_rep[p] = LL_REP_FAT;
           } else {
             if (LLVM_Rep_Is_Fat_Pointer (dv.rep))
               v = Emit_Extract_Fat_Data (v);
@@ -27801,35 +28137,33 @@ LLVM_Value Generate_Selected (Syntax_Node *node) {
         Type_Bound *lo_bnd = &field_type->array.indices[xi].low_bound;
         Type_Bound *hi_bnd = &field_type->array.indices[xi].high_bound;
 
-        // Emit low bound
-        uint32_t lo_val;
-        if (lo_bnd->kind == BOUND_INTEGER) {
-          lo_val = Emit_Static_Int (lo_bnd->int_value, bnd_type).reg;
-        } else if (lo_bnd->kind == BOUND_EXPR and lo_bnd->expr and
-               lo_bnd->expr->symbol) {
-
-          // Load discriminant value for low bound
-          Symbol *disc = lo_bnd->expr->symbol;
-          int32_t dci = Find_Record_Component (record_type, disc->name);
-          uint32_t d_off = dci >= 0 ? record_type->record.components[dci].byte_offset : 0;
-          lo_val = Emit_Load_Field (rec_base, d_off, bnd_type);
-        } else {
-          lo_val = Emit_Static_Int (1, bnd_type).reg;
+        // A bound that names a discriminant of THIS record is read from the
+        // record's discriminant field; any other dynamic bound (a variable or
+        // expression, e.g. ARR (INIT .. D)) is evaluated directly. The previous
+        // code assumed every symbol-bearing bound was a discriminant and, on a
+        // non-discriminant, fell back to offset 0 — reading the wrong field.
+        uint32_t bound_value (Type_Bound *b, int64_t dflt) {
+          if (b->kind == BOUND_INTEGER) return Emit_Static_Int (b->int_value, bnd_type).reg;
+          if (b->kind == BOUND_EXPR and b->expr) {
+            // A non-disc bound frozen at the record type's elaboration
+            // (RM 3.7.1): read the stored value, never re-evaluate.
+            if (b->preeval_global) {
+              uint32_t g = Emit_Temp ();
+              Emit ("  %%t%u = load " RT_DESC_TYPE ", ptr @__rt_cbnd_%u\n", g, b->preeval_global);
+              return Emit_Convert (g, LLVM_Rep_Int (64, false), bnd_type).reg;
+            }
+            if (b->expr->symbol) {
+              int32_t dci = Find_Record_Component (record_type, b->expr->symbol->name);
+              if (dci >= 0 and (uint32_t) dci < record_type->record.discriminant_count)
+                return Emit_Load_Field (rec_base,
+                  record_type->record.components[dci].byte_offset, bnd_type);
+            }
+            return Emit_Coerce_Val (Generate_Expression (b->expr), bnd_type).reg;
+          }
+          return Emit_Static_Int (dflt, bnd_type).reg;
         }
-
-        // Emit high bound
-        uint32_t hi_val;
-        if (hi_bnd->kind == BOUND_INTEGER) {
-          hi_val = Emit_Static_Int (hi_bnd->int_value, bnd_type).reg;
-        } else if (hi_bnd->kind == BOUND_EXPR and hi_bnd->expr and
-               hi_bnd->expr->symbol) {
-          Symbol *disc = hi_bnd->expr->symbol;
-          int32_t dci = Find_Record_Component (record_type, disc->name);
-          uint32_t d_off = dci >= 0 ? record_type->record.components[dci].byte_offset : 0;
-          hi_val = Emit_Load_Field (rec_base, d_off, bnd_type);
-        } else {
-          hi_val = Emit_Static_Int (0, bnd_type).reg;
-        }
+        uint32_t lo_val = bound_value (lo_bnd, 1);
+        uint32_t hi_val = bound_value (hi_bnd, 0);
 
         Emit_Store_Bound_Pair (bounds_alloca, bnd_type, xi, lo_val, hi_val);
       }
@@ -28828,9 +29162,12 @@ LLVM_Value Generate_Attribute (Syntax_Node *node) {
         t = Emit_Fat_Pointer_Dynamic (ptr_load, low_one, len_load, img_bt).reg;
       } else if (Type_Is_Float_Representation (classify_type)) {
 
-        // Float'IMAGE
+        // Float'IMAGE -- the runtime helper takes a double, so widen a
+        // single-precision argument (a `digits 6` type lowers to float).
+        uint32_t img_arg = Emit_Convert (arg_val, Expression_LLVM_Rep (first_arg),
+                                         LLVM_Rep_Float (64)).reg;
         Emit ("  %%t%u = call " FAT_PTR_TYPE " @__ada_float_image(double %%t%u)\n",
-           t, arg_val);
+           t, img_arg);
 
       // Enumeration'IMAGE - return literal name as string
       } else if (Type_Is_Enumeration (classify_type)) {
@@ -29196,7 +29533,11 @@ LLVM_Value Generate_Attribute (Syntax_Node *node) {
 
           // No match - raise CONSTRAINT_ERROR (RM 3.5.5)
           Emit_Raise_Constraint_Error ("VALUE no match");
+          // Lval_end is the live continuation reached by the match branches;
+          // the no-match raise above marked the block terminated, so clear
+          // that before emitting code that follows the label.
           Emit ("Lval_end%u:\n", end_label);
+          cg->block_terminated = false;
           Emit ("  %%t%u = load %s, ptr %%t%u\n", t, LLVM_Rep_To_String (val_iat), result_alloc);
 
           // Result is the enumeration value computed at the working integer
@@ -30148,10 +30489,17 @@ void Agg_Store_At_Dynamic (uint32_t base,
 }
 
 // ── Agg_Elem_Is_Composite: check if array element needs memcpy vs store. ─────────────────────────
-// Multi-dimensional arrays are always composite at the outer level.
+// A multi-dimensional aggregate's outer element is a row (always memcpy).
+// Otherwise records and inline constrained arrays are memcpy'd — but a
+// fat-stored element (dynamic-bound array / string component) is a value-typed
+// { ptr, ptr } that is *stored*, not memcpy'd, even though it is nominally a
+// constrained array. Keeping that distinction here makes every call site
+// (the temp's sizing, the positional store, the dynamic range-choice loop)
+// agree on one verdict.
 bool Agg_Elem_Is_Composite (Type_Info *elem_ti, bool multidim) {
-  return multidim or (elem_ti and (Type_Is_Record (elem_ti) or
-                   Type_Is_Constrained_Array (elem_ti)));
+  if (multidim) return true;
+  if (Type_Needs_Fat_Pointer_Load (elem_ti)) return false;
+  return elem_ti and (Type_Is_Record (elem_ti) or Type_Is_Constrained_Array (elem_ti));
 }
 
 // RM 3.7.1: After memcpy-ing a composite value into a record component,
@@ -30298,6 +30646,34 @@ void Desugar_Aggregate_Range_Choices (Syntax_Node *agg) {
           range->range.low  = lo;
           range->range.high = hi;
           cit->association.choices.items[cc] = range;
+
+        // RM 4.3.2: a choice that is a subtype mark (e.g. `BOOLEAN => …`)
+        // denotes that subtype's whole discrete range. Desugar it to
+        // T'FIRST..T'LAST so the choice scanner sees a range, not a scalar
+        // expression (which would resolve a type name to "unhandled symbol").
+        } else if (ch->kind == NK_IDENTIFIER and ch->symbol and
+                   (ch->symbol->kind == SYMBOL_TYPE or ch->symbol->kind == SYMBOL_SUBTYPE)) {
+          Syntax_Node *lo = Node_New (NK_ATTRIBUTE, ch->location);
+          lo->attribute.prefix = ch;
+          lo->attribute.name   = S("FIRST");
+          lo->type = ch->symbol->type;
+          Syntax_Node *hi = Node_New (NK_ATTRIBUTE, ch->location);
+          hi->attribute.prefix = ch;
+          hi->attribute.name   = S("LAST");
+          hi->type = ch->symbol->type;
+          Syntax_Node *range = Node_New (NK_RANGE, ch->location);
+          range->range.low  = lo;
+          range->range.high = hi;
+          cit->association.choices.items[cc] = range;
+
+        // RM 4.3.2: a choice given as a constrained subtype indication
+        // (`DT RANGE L .. R => …`) denotes that explicit range.
+        } else if (ch->kind == NK_SUBTYPE_INDICATION and ch->subtype_ind.constraint and
+                   ch->subtype_ind.constraint->kind == NK_RANGE_CONSTRAINT and
+                   ch->subtype_ind.constraint->range_constraint.range and
+                   ch->subtype_ind.constraint->range_constraint.range->kind == NK_RANGE) {
+          cit->association.choices.items[cc] =
+            ch->subtype_ind.constraint->range_constraint.range;
         }
       }
 
@@ -30528,6 +30904,30 @@ uint32_t Generate_Aggregate (Syntax_Node *node) {
     Agg_Class agg_cls = Agg_Classify (node);
     uint32_t n_positional = agg_cls.n_positional;
     bool has_named = agg_cls.has_named;
+
+    // RM 3.6.1: a constrained array subtype whose constraint is non-static is
+    // elaborated ONCE; its bounds are then frozen in the type's runtime
+    // descriptor. A NAMED / OTHERS aggregate of such a subtype must read those
+    // frozen bounds, not re-evaluate the (side-effecting) constraint — pin each
+    // dimension's bound to the descriptor load via the cache slot. A POSITIONAL
+    // aggregate is left alone: its element count drives the bound and the
+    // RM 4.3.2 count-vs-constraint check, which the pin would otherwise mask.
+    if (agg_type->rt_global_id > 0 and n_positional == 0) {
+      for (uint32_t d = 0; d < agg_ndims; d++) {
+        if (dim_lo[d].kind == BOUND_EXPR and dim_lo[d].expr) {
+          uint32_t lo_t = Emit_Temp ();
+          Emit ("  %%t%u = load " RT_DESC_TYPE ", ptr @__rt_type_%u_lo%u\n",
+             lo_t, agg_type->rt_global_id, d);
+          dim_lo[d].cached_temp = lo_t; dim_lo[d].cached_rep = LLVM_Rep_Int (64, false);
+        }
+        if (dim_hi[d].kind == BOUND_EXPR and dim_hi[d].expr) {
+          uint32_t hi_t = Emit_Temp ();
+          Emit ("  %%t%u = load " RT_DESC_TYPE ", ptr @__rt_type_%u_hi%u\n",
+             hi_t, agg_type->rt_global_id, d);
+          dim_hi[d].cached_temp = hi_t; dim_hi[d].cached_rep = LLVM_Rep_Int (64, false);
+        }
+      }
+    }
     {
 
       // For positional aggregates, override upper bound from element count:                        
@@ -30960,6 +31360,9 @@ uint32_t Generate_Aggregate (Syntax_Node *node) {
         uint32_t raw_row_size = Emit_Temp ();
         uint32_t scalar_sz = agg_type->array.element_type ?
                    agg_type->array.element_type->size : 8;
+        // A fat-stored scalar element occupies a { ptr, ptr } slot.
+        if (scalar_sz == 0 and Type_Needs_Fat_Pointer_Load (agg_type->array.element_type))
+          scalar_sz = FAT_PTR_ALLOC_SIZE;
         if (scalar_sz == 0) scalar_sz = 8;
         Emit ("  %%t%u = mul %s %%t%u, %u  ; row byte size\n",
            raw_row_size, LLVM_Rep_To_String (iat_bnd), rt_row_elems, scalar_sz);
@@ -31918,11 +32321,12 @@ uint32_t Generate_Aggregate (Syntax_Node *node) {
     // `store` like scalars, not via memcpy.                                                       
     //                                                                                              
     Type_Info *elem_ti = agg_type->array.element_type;
-    bool elem_is_composite = multidim or (elem_ti and (Type_Is_Record (elem_ti) or
-      Type_Is_Constrained_Array (elem_ti)));
-
-    // Fat-pointer elements are value-typed { ptr, ptr }; store, don't memcpy.
-    if (elem_is_fat) elem_is_composite = false;
+    // Stay identical to the per-element decision (Agg_Elem_Is_Composite) used
+    // at every store site below, or the temp's allocation and its fill
+    // disagree. A multi-dimensional aggregate's outer "element" is a ROW
+    // (memcpy), even when the scalar component is a fat pointer — the fat
+    // store path applies only at the innermost (1-D) level.
+    bool elem_is_composite = Agg_Elem_Is_Composite (elem_ti, multidim);
 
     // TODO: mem-safety remove this after investigating OOM
     if (count > 10000000) {
@@ -33397,11 +33801,54 @@ void Emit_Apply_Component_Defaults (Type_Info *ty, uint32_t base, int sel_varian
     }
     if (sel_variant != -2 and comp->variant_index >= 0
         and comp->variant_index != sel_variant) continue;
-    LLVM_Value val_v = Generate_Expression (comp->default_expr);
+
+    // RM 3.2.1/3.6.1: a multiple-name declaration's default expression node is
+    // shared, but each name has its own (copied) subtype with its own frozen
+    // runtime bounds. Retarget the shared aggregate to THIS component's subtype
+    // so it reads the descriptor instead of re-evaluating the constraint.
+    Syntax_Node *de = comp->default_expr;
+    Type_Info *saved_de_type = de->type;
+    if (de->kind == NK_AGGREGATE and comp->component_type and
+        comp->component_type->rt_global_id > 0)
+      de->type = comp->component_type;
+    // RM 4.8: an allocator default for an access component is constrained by
+    // the component's access subtype — propagate it so the allocated object's
+    // bounds/value are checked against the designated subtype.
+    Type_Info *saved_tgt = NULL; bool set_tgt = false;
+    if (de->kind == NK_ALLOCATOR and comp->component_type and
+        Type_Is_Access (comp->component_type)) {
+      saved_tgt = de->allocator.target_access_type;
+      de->allocator.target_access_type = comp->component_type;
+      set_tgt = true;
+    }
+    LLVM_Value val_v = Generate_Expression (de);
+    if (set_tgt) de->allocator.target_access_type = saved_tgt;
+    de->type = saved_de_type;
     uint32_t val = val_v.reg;
     if (val == 0) continue;
     if (Type_Is_Scalar (comp->component_type))
       Emit_Constraint_Check_Val (val_v, comp->component_type, comp->default_expr->type);
+
+    // RM 3.6.1: an array/string record-component default does NOT slide — the
+    // value's bounds must equal the component's (unlike an object init, which
+    // slides). Comparing each dimension's 'FIRST suffices to detect the
+    // mismatch (e.g. STRING (2..4) into a STRING (1..3) component).
+    if (comp->component_type and Type_Is_Array_Like (comp->component_type) and
+        comp->component_type->array.is_constrained and de->type and
+        Type_Is_Array_Like (de->type) and de->type->array.is_constrained) {
+      LLVM_Rep bt = Integer_Arith_Rep ();
+      uint32_t nd = comp->component_type->array.index_count;
+      if (de->type->array.index_count < nd) nd = de->type->array.index_count;
+      for (uint32_t d = 0; d < nd; d++) {
+        uint32_t clo = Emit_Single_Bound (&comp->component_type->array.indices[d].low_bound, bt);
+        uint32_t slo = Emit_Single_Bound (&de->type->array.indices[d].low_bound, bt);
+        if (clo and slo) {
+          LLVM_I1 ne = Emit_Icmp ("ne", bt, clo, slo);
+          Emit_Check_With_Raise (ne.reg, true,
+            "record component array default does not slide (RM 3.6.1)");
+        }
+      }
+    }
     uint32_t comp_ptr = Emit_Temp ();
     if (ty->rt_global_id > 0) {
       uint32_t rt_off = Emit_Temp ();
@@ -33467,21 +33914,31 @@ void Emit_Check_Disc_Array_Bounds (Symbol *sym, Type_Info *rec, uint32_t base_of
 void Bind_Disc_For_Dependent_Bounds (Type_Info *rec, String_Slice disc_name,
                                      uint32_t slot, Symbol **seen,
                                      uint32_t *count, uint32_t cap) {
+  void bind (Symbol *dsym) {
+    if (dsym and dsym->disc_agg_temp == 0 and
+        Slice_Equal_Ignore_Case (dsym->name, disc_name)) {
+      dsym->disc_agg_temp = slot;
+      if (*count < cap) seen[(*count)++] = dsym;
+    }
+  }
   for (uint32_t ci = 0; ci < rec->record.component_count; ci++) {
-    Type_Info *ct = rec->record.components[ci].component_type;
-    if (not ct or not Type_Is_Array_Like (ct)) continue;
-    for (uint32_t xi = 0; xi < ct->array.index_count; xi++) {
-      Type_Bound *bd[2] = { &ct->array.indices[xi].low_bound,
-                            &ct->array.indices[xi].high_bound };
-      for (int b = 0; b < 2; b++)
-        if (bd[b]->kind == BOUND_EXPR and bd[b]->expr and bd[b]->expr->symbol and
-            Slice_Equal_Ignore_Case (bd[b]->expr->symbol->name, disc_name)) {
-          Symbol *dsym = bd[b]->expr->symbol;
-          if (dsym->disc_agg_temp == 0) {
-            dsym->disc_agg_temp = slot;
-            if (*count < cap) seen[(*count)++] = dsym;
-          }
-        }
+    Component_Info *comp = &rec->record.components[ci];
+    Type_Info *ct = comp->component_type;
+    // A discriminant referenced in a dependent array bound (STRING (1 .. L)).
+    if (ct and Type_Is_Array_Like (ct))
+      for (uint32_t xi = 0; xi < ct->array.index_count; xi++) {
+        Type_Bound *bd[2] = { &ct->array.indices[xi].low_bound,
+                              &ct->array.indices[xi].high_bound };
+        for (int b = 0; b < 2; b++)
+          if (bd[b]->kind == BOUND_EXPR and bd[b]->expr)
+            bind (bd[b]->expr->symbol);
+      }
+    // RM 3.7.1: a discriminant referenced in another component's default
+    // expression (Y : INTEGER := D1 + D2) resolves to the stored discriminant.
+    if (not comp->is_discriminant and comp->default_expr) {
+      Symbol *refs[16]; uint32_t nrefs = 0;
+      Collect_Disc_Symbols_In_Expr (comp->default_expr, refs, &nrefs, 16);
+      for (uint32_t i = 0; i < nrefs; i++) bind (refs[i]);
     }
   }
 }
@@ -34879,6 +35336,15 @@ void Generate_Assignment (Syntax_Node *node) {
         // Dynamic-bounds aggregate sources arrive as SSA fat - extract data.
         if (LLVM_Rep_Is_Fat_Pointer (value_v.rep))
           value = Emit_Extract_Fat_Data (value);
+        // RM 5.2: assigning through an access to a CONSTRAINED subtype
+        // (ACCESS REC1 (6)), the source's discriminants must equal the
+        // designated subtype's constraint — BUT only when the designated type
+        // is genuinely immutable. A type with default discriminants designates
+        // a mutable object through an access (its discriminants may change), so
+        // it is exempt.
+        if (Type_Is_Record (designated) and designated->record.is_constrained and
+            designated->record.has_disc_constraints)
+          Emit_Comp_Disc_Check (value, designated);
         // An unconstrained or dynamically bounded designated array has no static
         // byte size; derive it from the access value's fat-pointer bounds (the
         // product of every dimension's length times the element size).
@@ -38459,6 +38925,45 @@ void Emit_Pending_Global_Initializers (void) {
   cg->pending_global_init_count = 0;
 }
 
+// RM 3.6.1: elaborating a constrained array subtype indication checks that
+// each index range is compatible with the corresponding index subtype. A
+// NON-NULL range whose bounds fall outside the index subtype raises
+// CONSTRAINT_ERROR; a null range (low > high) is always compatible, even with
+// out-of-subtype bounds. E.g. STRING (INTEGER'FIRST .. INTEGER'FIRST + 3) is
+// illegal (POSITIVE'FIRST = 1) while STRING (-1 .. INTEGER'FIRST) is a legal
+// null string. Only static index-subtype bounds are checkable here; a
+// non-discrete or open index subtype imposes nothing.
+void Emit_Array_Index_Constraint_Check (Type_Info *array_type) {
+  if (not array_type or array_type->kind != TYPE_ARRAY or
+      not array_type->array.is_constrained)
+    return;
+  LLVM_Rep work = Integer_Arith_Rep ();
+  for (uint32_t d = 0; d < array_type->array.index_count; d++) {
+    Index_Info *ix = &array_type->array.indices[d];
+    Type_Info *idx = ix->index_type;
+    if (not idx or idx->low_bound.kind != BOUND_INTEGER or
+        idx->high_bound.kind != BOUND_INTEGER)
+      continue;
+    // A full INTEGER index subtype can never be violated by an i32 bound.
+    if (idx->low_bound.int_value == (int128_t) INT32_MIN and
+        idx->high_bound.int_value == (int128_t) INT32_MAX)
+      continue;
+    uint32_t lo  = Emit_Single_Bound (&ix->low_bound, work);
+    uint32_t hi  = Emit_Single_Bound (&ix->high_bound, work);
+    uint32_t ilo = Emit_Single_Bound (&idx->low_bound, work);
+    uint32_t ihi = Emit_Single_Bound (&idx->high_bound, work);
+    LLVM_I1 nonnull   = Emit_Icmp ("sle", work, lo, hi);
+    LLVM_I1 below     = Emit_Icmp ("slt", work, lo, ilo);
+    LLVM_I1 above     = Emit_Icmp ("sgt", work, hi, ihi);
+    uint32_t out = Emit_Temp ();
+    Emit ("  %%t%u = or i1 %%t%u, %%t%u\n", out, below.reg, above.reg);
+    uint32_t bad = Emit_Temp ();
+    Emit ("  %%t%u = and i1 %%t%u, %%t%u  ; RM 3.6.1 index range vs index subtype\n",
+       bad, nonnull.reg, out);
+    Emit_Check_With_Raise (bad, true, "index range not compatible with index subtype (RM 3.6.1)");
+  }
+}
+
 void Generate_Object_Declaration (Syntax_Node *node) {
   bool use_frame = cg->current_nesting_level > 0;
   bool is_package_level = (cg->current_function == NULL);
@@ -38477,6 +38982,21 @@ void Generate_Object_Declaration (Syntax_Node *node) {
     }
     if (all_overlaid) return;
   }
+
+  // RM 3.6.1: elaborating each declared object's constrained array subtype
+  // checks its index ranges against the index subtypes. The subtype is shared
+  // by every name in the declaration, so one check suffices. Only emitted in a
+  // function context — a package-level object's elaboration code is deferred
+  // (Emit_Pending_Global_Initializers), so inline checks would leak to module
+  // scope.
+  if (not is_package_level)
+    for (uint32_t i = 0; i < node->object_decl.names.count; i++) {
+      Syntax_Node *nm = node->object_decl.names.items[i];
+      if (nm and nm->symbol and nm->symbol->type) {
+        Emit_Array_Index_Constraint_Check (nm->symbol->type);
+        break;
+      }
+    }
 
   // A tree-copy package instance's package-level objects are per-instance
   // GLOBALS even when the instantiation is nested inside a subprogram
@@ -38816,6 +39336,28 @@ void Generate_Object_Declaration (Syntax_Node *node) {
       Emit (" = getelementptr i8, ptr %%__frame_base, i64 %lld\n",
          (long long)offset);
 
+      // RM 3.7: a frame-allocated array whose element is a record with
+      // component or discriminant defaults still needs each element
+      // initialized — the alloca path below does this, so mirror it here.
+      {
+        Type_Info *fe = ty ? ty->array.element_type : NULL;
+        if (not node->object_decl.init and is_constrained_array and array_count > 0 and
+            fe and Type_Is_Record (fe) and Type_Has_Component_Defaults (fe) and elem_size > 0) {
+          uint32_t fbase = Emit_Temp ();
+          Emit ("  %%t%u = getelementptr i8, ptr %%", fbase);
+          Emit_Symbol_Name (sym);
+          Emit (", i64 0\n");
+          Emit ("  call void @llvm.memset.p0.i64(ptr %%t%u, i8 0, i64 %llu, i1 false)\n",
+             fbase, (unsigned long long)(array_count * elem_size));
+          for (int128_t ei = 0; ei < array_count and ei < 1024; ei++) {
+            uint32_t ep = Emit_Temp ();
+            Emit ("  %%t%u = getelementptr i8, ptr %%t%u, i64 %lld  ; elem[%lld] defaults\n",
+               ep, fbase, (long long)(ei * elem_size), (long long)ei);
+            Emit_Init_Record_Defaults (fe, ep);
+          }
+        }
+      }
+
     // Constrained outer array whose element type is a dynamic-bound                                
     // array/string: each element is stored as a fat pointer pair.                                 
     // Allocate [N x { ptr, ptr }] so each slot holds one fat ptr.                                 
@@ -39126,8 +39668,13 @@ obj_decl_init:
         bool dest_needs_fat_storage = not is_constrained_array or
           Type_Needs_Fat_Pointer (sym->type);
 
-        // Source produces a fat pointer value
-        if (init->kind == NK_STRING or not init_is_constrained) {
+        // Source produces a fat pointer value. A "constrained" source with
+        // dynamic bounds (e.g. S3A : STRING (I3 .. I3 + 2)) is fat-represented
+        // too, and its bounds are only known at run time — take this branch so
+        // they are read from the fat pointer, not from a static Type_Bound_Value
+        // (which would yield 0).
+        if (init->kind == NK_STRING or not init_is_constrained or
+            Type_Needs_Fat_Pointer (init_ty)) {
           uint32_t fat_ptr = Generate_Expression (init).reg;
           LLVM_Rep init_bt = Array_Bound_LLVM_Rep (ty);
 
@@ -39835,6 +40382,10 @@ obj_decl_init:
 
       uint32_t elem_sz = elem_size > 0 ? elem_size :
                  (ty->array.element_type ? ty->array.element_type->size : 8);
+      // A fat-stored element (dynamic-bound array / string component) occupies
+      // a { ptr, ptr } slot, not its (zero) flat size — size the backing by it.
+      if (elem_sz == 0 and Type_Needs_Fat_Pointer_Load (ty->array.element_type))
+        elem_sz = FAT_PTR_ALLOC_SIZE;
       if (elem_sz == 0) elem_sz = 8;
       Emit_Bind_Bounded_Array_Storage (sym, dim_lo_decl, dim_hi_decl, ndims_decl,
                                        elem_sz, Array_Bound_LLVM_Rep (ty), "dynamic uninit array");
@@ -39990,8 +40541,26 @@ obj_decl_init:
         }
         for (uint32_t di = 0; di < ct->record.discriminant_count; di++) {
           Component_Info *dc = &ct->record.components[di];
-          uint32_t abs_offset = comp->byte_offset + dc->byte_offset;
-          uint32_t dp = Emit_Symbol_Field_Addr (sym, abs_offset);
+          // In an rt-laid-out record the component lives at a runtime offset;
+          // the static byte_offset would store the subcomponent discriminant in
+          // the wrong place.
+          uint32_t dp;
+          if (ty->rt_global_id > 0) {
+            uint32_t base = Emit_Symbol_Field_Addr (sym, 0);
+            uint32_t roff = Emit_Temp ();
+            Emit ("  %%t%u = load " RT_DESC_TYPE ", ptr @__rt_rec_%u_off%u\n",
+               roff, ty->rt_global_id, ci);
+            dp = Emit_Temp ();
+            Emit ("  %%t%u = getelementptr i8, ptr %%t%u, i64 %%t%u\n", dp, base, roff);
+            if (dc->byte_offset) {
+              uint32_t dp2 = Emit_Temp ();
+              Emit ("  %%t%u = getelementptr i8, ptr %%t%u, i64 %u\n", dp2, dp, dc->byte_offset);
+              dp = dp2;
+            }
+          } else {
+            uint32_t abs_offset = comp->byte_offset + dc->byte_offset;
+            dp = Emit_Symbol_Field_Addr (sym, abs_offset);
+          }
           LLVM_Rep dt = Type_To_Rep (dc->component_type);
           uint32_t disc_val = 0;
           if (ct->record.disc_constraint_exprs and
@@ -40049,8 +40618,15 @@ obj_decl_init:
       // expressions (e.g., STRING(1..L)) can resolve disc values.
       //
       Symbol *decl_disc_syms2[16]; uint32_t decl_disc_cnt2 = 0;
+      // The discriminant defaults of an unconstrained mutable record were
+      // already pre-stored above; tell the component-default pass to BIND them
+      // (read the record field) rather than re-evaluate the default — otherwise
+      // a function default like (D : INTEGER := F) is called twice.
+      bool disc_defaults_prestored = ty->record.has_discriminants and
+        not ty->record.has_disc_constraints and not has_decl_disc;
       Emit_Apply_Component_Defaults (ty, Emit_Symbol_Field_Addr (sym, 0), decl_sel_variant,
-                                     has_decl_disc, decl_disc_syms2, &decl_disc_cnt2, 16);
+                                     has_decl_disc or disc_defaults_prestored,
+                                     decl_disc_syms2, &decl_disc_cnt2, 16);
       for (uint32_t i = 0; i < decl_disc_cnt2; i++)
         decl_disc_syms2[i]->disc_agg_temp = 0;
 
@@ -41402,6 +41978,171 @@ void Elaborate_Dynamic_Array_Bounds (Type_Info *elab_ty) {
   Emit ("  store " RT_DESC_TYPE " %%t%u, ptr @__rt_type_%u_size\n", total, rtid);
 }
 
+// RM 3.2.1/3.5: evaluate a scalar subtype's non-static range constraint ONCE
+// and freeze the bounds in its runtime descriptor (lo0/hi0). Every later
+// constraint check reads the frozen value instead of re-evaluating the
+// (possibly side-effecting) constraint expression.
+void Elaborate_Dynamic_Scalar_Bounds (Type_Info *t) {
+  if (not t or not Type_Is_Scalar (t) or Type_Is_Array_Like (t)) return;
+  // A scalar descriptor exists ONLY once elaborated (created here), so a
+  // non-elaborated scalar never carries an rt_global_id whose globals a
+  // constraint check could read as uninitialised zero.
+  if (t->rt_global_id == 0) {
+    bool lo_rt = (t->low_bound.kind == BOUND_EXPR and
+            not (t->low_bound.expr and t->low_bound.expr->kind == NK_IDENTIFIER and
+                 t->low_bound.expr->symbol and
+                 t->low_bound.expr->symbol->kind == SYMBOL_DISCRIMINANT));
+    bool hi_rt = (t->high_bound.kind == BOUND_EXPR and
+            not (t->high_bound.expr and t->high_bound.expr->kind == NK_IDENTIFIER and
+                 t->high_bound.expr->symbol and
+                 t->high_bound.expr->symbol->kind == SYMBOL_DISCRIMINANT));
+    if (not lo_rt and not hi_rt) return;
+    uint32_t sid = ++cg->rt_type_counter;
+    t->rt_global_id = sid;
+    Emit_String_Const ("@__rt_type_%u_lo0 = internal global " RT_DESC_TYPE " 0\n", sid);
+    Emit_String_Const ("@__rt_type_%u_hi0 = internal global " RT_DESC_TYPE " 0\n", sid);
+  }
+  uint32_t id = t->rt_global_id;
+  Type_Bound *bnds[2] = { &t->low_bound, &t->high_bound };
+  const char *tag[2] = { "lo0", "hi0" };
+  for (uint32_t b = 0; b < 2; b++) {
+    uint32_t r;
+    if (bnds[b]->kind == BOUND_EXPR and bnds[b]->expr) {
+      r = Generate_Expression (bnds[b]->expr).reg;
+      r = Emit_Convert (r, Expression_LLVM_Rep (bnds[b]->expr), LLVM_Rep_Int (64, false)).reg;
+    } else {
+      r = Emit_Static_Int (Type_Bound_Value (*bnds[b]), LLVM_Rep_Int (64, false)).reg;
+    }
+    Emit ("  store " RT_DESC_TYPE " %%t%u, ptr @__rt_type_%u_%s\n", r, id, tag[b]);
+  }
+}
+
+// RM 3.2.1: a discriminant constraint that is non-static but does NOT depend on
+// a discriminant (e.g. REC3X (F), F a function) is evaluated exactly once at
+// elaboration. Freeze each such expression into a slot so the constraint check
+// reads the frozen value rather than re-evaluating it. Disc-DEPENDENT
+// constraints (REC (L), L a discriminant) are left to the deferred path.
+void Freeze_Disc_Constraint_Preeval (Type_Info *rec) {
+  if (not cg->current_function or not rec or not Type_Is_Record (rec) or
+      not rec->record.has_disc_constraints or not rec->record.disc_constraint_exprs or
+      rec->record.disc_constraint_preeval)
+    return;
+  bool any_dynamic = false;
+  for (uint32_t di = 0; di < rec->record.discriminant_count; di++) {
+    Syntax_Node *e = rec->record.disc_constraint_exprs[di];
+    if (not e or Is_Static_Int_Node (e)) continue;
+    Symbol *refs[8]; uint32_t nr = 0;
+    Collect_Disc_Symbols_In_Expr (e, refs, &nr, 8);
+    if (nr == 0) { any_dynamic = true; break; }  // non-disc-dependent runtime expr
+  }
+  if (not any_dynamic) return;
+  rec->record.disc_constraint_preeval = Arena_Allocate (
+    rec->record.discriminant_count * sizeof (uint32_t));
+  memset (rec->record.disc_constraint_preeval, 0,
+       rec->record.discriminant_count * sizeof (uint32_t));
+  for (uint32_t di = 0; di < rec->record.discriminant_count; di++) {
+    Syntax_Node *e = rec->record.disc_constraint_exprs[di];
+    if (not e) continue;
+    // Freeze ONLY a non-disc-dependent expression. One that references an
+    // enclosing discriminant (REC1 (D2 => D)) cannot be evaluated at type
+    // elaboration — the discriminant is not bound until the object is
+    // initialized — so leave its slot empty for the deferred / object-init path.
+    Symbol *refs[8]; uint32_t nr = 0;
+    Collect_Disc_Symbols_In_Expr (e, refs, &nr, 8);
+    if (nr > 0) continue;
+    LLVM_Rep dt = Type_To_Rep (rec->record.components[di].component_type);
+    uint32_t val = Emit_Coerce_Val (Generate_Expression (e), dt).reg;
+    rec->record.disc_constraint_preeval[di] = Emit_Alloca_Store (dt, val);
+  }
+}
+
+// RM 3.6 / 3.7.1: freeze one record component's non-static constraint, in
+// declaration order. Dispatches on the component subtype: a dynamic array, a
+// dynamic scalar range, a discriminated record, or an access whose designated
+// subtype is itself constrained. Returns true if it created an array runtime
+// descriptor (the record then needs its own offset/size descriptor).
+// A single bound that references an enclosing discriminant cannot be frozen at
+// type elaboration — the discriminant is bound only when the object is
+// initialized. Such a constraint is deferred to that point (the discriminant-
+// dependent record machinery handles it), and it must NOT take the runtime
+// type-descriptor path (which is for variable/function-bound components).
+bool Bound_References_Discriminant (Type_Bound *b) {
+  if (not b or b->kind != BOUND_EXPR or not b->expr) return false;
+  Symbol *r[8]; uint32_t n = 0;
+  Collect_Disc_Symbols_In_Expr (b->expr, r, &n, 8);
+  return n > 0;
+}
+bool Array_Bounds_Reference_Discriminant (Type_Info *ct) {
+  if (not ct or not Type_Is_Array_Like (ct)) return false;
+  for (uint32_t d = 0; d < ct->array.index_count; d++)
+    if (Bound_References_Discriminant (&ct->array.indices[d].low_bound) or
+        Bound_References_Discriminant (&ct->array.indices[d].high_bound))
+      return true;
+  return false;
+}
+
+// RM 3.7.1: the non-discriminant expressions in a discriminant-dependent
+// component's array index constraint (the INIT of ARR (INIT .. D)) are
+// evaluated ONCE, when the record type is elaborated — not when each object is
+// created, and not re-evaluated on each access. Freeze each into a global so a
+// later change to the variable does not perturb the component's bounds.
+void Freeze_Nondisc_Component_Bounds (Type_Info *ct) {
+  if (not cg->current_function or not ct or not Type_Is_Array_Like (ct)) return;
+  for (uint32_t d = 0; d < ct->array.index_count; d++) {
+    Type_Bound *bs[2] = { &ct->array.indices[d].low_bound,
+                          &ct->array.indices[d].high_bound };
+    for (int b = 0; b < 2; b++) {
+      Type_Bound *bd = bs[b];
+      if (bd->kind != BOUND_EXPR or not bd->expr or bd->preeval_global or
+          Bound_References_Discriminant (bd))
+        continue;
+      uint32_t gid = ++cg->rt_type_counter;
+      bd->preeval_global = gid;
+      Emit_String_Const ("@__rt_cbnd_%u = internal global " RT_DESC_TYPE " 0\n", gid);
+      uint32_t v = Emit_Convert (Generate_Expression (bd->expr).reg,
+                     Expression_LLVM_Rep (bd->expr), LLVM_Rep_Int (64, false)).reg;
+      Emit ("  store " RT_DESC_TYPE " %%t%u, ptr @__rt_cbnd_%u\n", v, gid);
+    }
+  }
+}
+
+bool Elaborate_Component_Constraint (Type_Info *ct) {
+  if (not ct) return false;
+  if (ct->size == 0 and Type_Is_Array_Like (ct) and ct->array.is_constrained and
+      Type_Has_Dynamic_Bounds (ct)) {
+    if (Array_Bounds_Reference_Discriminant (ct)) {
+      // Disc-dependent layout, but its non-disc bounds still freeze now.
+      Freeze_Nondisc_Component_Bounds (ct);
+      return false;
+    }
+    Ensure_Runtime_Type_Globals (ct);
+    if (ct->rt_global_id > 0) { Elaborate_Dynamic_Array_Bounds (ct); return true; }
+    return false;
+  }
+  if (Type_Is_Scalar (ct) and
+      (ct->low_bound.kind == BOUND_EXPR or ct->high_bound.kind == BOUND_EXPR)) {
+    if (Bound_References_Discriminant (&ct->low_bound) or
+        Bound_References_Discriminant (&ct->high_bound)) return false;
+    Elaborate_Dynamic_Scalar_Bounds (ct);
+    return false;
+  }
+  if (Type_Is_Record (ct)) { Freeze_Disc_Constraint_Preeval (ct); return false; }
+  if (Type_Is_Access (ct) and ct->access.designated_type) {
+    Type_Info *des = ct->access.designated_type;
+    if (Type_Is_Array_Like (des) and des->array.is_constrained and
+        Type_Has_Dynamic_Bounds (des)) {
+      if (Array_Bounds_Reference_Discriminant (des))
+        Freeze_Nondisc_Component_Bounds (des);
+      else {
+        Ensure_Runtime_Type_Globals (des);
+        if (des->rt_global_id > 0) Elaborate_Dynamic_Array_Bounds (des);
+      }
+    } else if (Type_Is_Record (des))
+      Freeze_Disc_Constraint_Preeval (des);
+  }
+  return false;
+}
+
 void Generate_Declaration (Syntax_Node *node) {
   if (not node) return;
   switch (node->kind) {
@@ -42151,15 +42892,26 @@ void Generate_Declaration (Syntax_Node *node) {
 
       if (elab_ty and Type_Is_Record (elab_ty)) {
         bool has_dyn = false;
+        // Detection only (creates array descriptor globals, emits no code, so
+        // it is safe at package level): does any component need an array
+        // runtime descriptor, making the record itself dynamically sized?
         for (uint32_t ci = 0; ci < elab_ty->record.component_count; ci++) {
           Type_Info *ct = elab_ty->record.components[ci].component_type;
-          if (ct and ct->size == 0 and Type_Is_Array_Like (ct)
-            and ct->array.is_constrained and Type_Has_Dynamic_Bounds (ct)) {
+          if (ct and ct->size == 0 and Type_Is_Array_Like (ct) and
+              ct->array.is_constrained and Type_Has_Dynamic_Bounds (ct) and
+              not Array_Bounds_Reference_Discriminant (ct)) {
             Ensure_Runtime_Type_Globals (ct);
-            if (ct->rt_global_id > 0)
-              has_dyn = true;
+            if (ct->rt_global_id > 0) has_dyn = true;
           }
         }
+
+        // RM 3.6 / 3.8: the components' non-static constraints are evaluated
+        // once each, in declaration order. Freeze every kind (dynamic array,
+        // scalar range, discriminant, access designated) in that single
+        // ordered pass (emits code, so function context only).
+        if (cg->current_function)
+          for (uint32_t ci = 0; ci < elab_ty->record.component_count; ci++)
+            Elaborate_Component_Constraint (elab_ty->record.components[ci].component_type);
         if (has_dyn and elab_ty->rt_global_id == 0) {
           uint32_t rid = ++cg->rt_type_counter;
           elab_ty->rt_global_id = rid;
@@ -42177,6 +42929,8 @@ void Generate_Declaration (Syntax_Node *node) {
             Type_Info *ct = elab_ty->record.components[ci].component_type;
             uint32_t csz;
             if (ct and ct->rt_global_id > 0) {
+              // The component array type's bounds were already elaborated in
+              // the ordered freezing pass above; just read the frozen size.
               csz = Emit_Temp ();
               Emit ("  %%t%u = load " RT_DESC_TYPE ", ptr @__rt_type_%u_size\n",
                  csz, ct->rt_global_id);
@@ -42218,6 +42972,12 @@ void Generate_Declaration (Syntax_Node *node) {
             Type_Info *ct = elab_ty->record.components[ci].component_type;
             if (HAS_DISC_CONSTR (ct))
               disc_check_types[disc_check_count++] = ct;
+            // An access component's constraint lives on its designated subtype
+            // (AC1 : ACR (F)); freeze that per component.
+            else if (ct and Type_Is_Access (ct) and
+                     HAS_DISC_CONSTR (ct->access.designated_type) and
+                     disc_check_count < 8)
+              disc_check_types[disc_check_count++] = ct->access.designated_type;
           }
         }
         #undef HAS_DISC_CONSTR
@@ -42275,19 +43035,17 @@ void Generate_Declaration (Syntax_Node *node) {
             }
             continue;  // Skip all checks for disc-dependent types
           }
+          // (A non-disc-dependent dynamic discriminant constraint is frozen in
+          // the ordered per-component pass above; the checks below read it.)
           for (uint32_t di = 0; di < dct->record.discriminant_count; di++) {
             Component_Info *dc = &dct->record.components[di];
             Type_Info *disc_type = dc->component_type;
             if (not disc_type or not Type_Is_Scalar (disc_type)) continue;
             LLVM_Rep dt = Type_To_Rep (disc_type);
-            uint32_t val = 0;
-            if (dct->record.disc_constraint_exprs and
-              dct->record.disc_constraint_exprs[di]) {
-              val = Emit_Coerce_Val (
-                Generate_Expression (dct->record.disc_constraint_exprs[di]), dt).reg;
-            } else if (dct->record.disc_constraint_values) {
-              val = Emit_Static_Int (dct->record.disc_constraint_values[di], dt).reg;
-            }
+            // Read the frozen constraint value (preeval) rather than
+            // re-evaluating the constraint expression (RM 3.2.1) — a function
+            // constraint must not be called again here.
+            uint32_t val = Emit_Disc_Constraint_Value (dct, di, dt).reg;
             if (val > 0)
               Emit_Constraint_Check_Val (Val_Rep (val, dt), disc_type, NULL);
           }
@@ -43373,13 +44131,71 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   Emit ("  unreachable\n");
   Emit ("}\n\n");
 
-  // Float'VALUE - declare as external for now (can be implemented similarly)
-  Emit ("; Float'VALUE declaration (to be implemented)\n");
+  // Float'VALUE (RM 3.5.10). The fat-pointer data is a slice and is NOT
+  // NUL-terminated, and Ada literals admit '_' separators that C's strtod does
+  // not, so copy the characters into a fresh NUL-terminated buffer with the
+  // underscores removed before parsing. Validity is enforced by requiring
+  // strtod to consume the whole (blank-trimmed) buffer; otherwise the value
+  // has the wrong syntax and Constraint_Error is raised (which Text_IO turns
+  // into Data_Error). Based real literals are not handled here.
   Emit ("declare double @strtod(ptr, ptr)\n");
   Emit ("define linkonce_odr double @__ada_float_value(" FAT_PTR_TYPE " %%str) {\n");
   Emit ("entry:\n");
   Emit_Fat_Pointer_Extractvalue_Named ("str", "data", "fv_low", "fv_high", rts_sbt);
-  Emit ("  %%result = call double @strtod(ptr %%data, ptr null)\n");
+  Emit ("  %%fv_len = sub %s %%fv_high, %%fv_low\n", sbt);
+  Emit ("  %%fv_len1 = add %s %%fv_len, 1\n", sbt);
+  Emit ("  %%fv_len64 = sext %s %%fv_len1 to i64\n", sbt);
+  Emit ("  %%fv_cap = add i64 %%fv_len64, 1\n");
+  Emit ("  %%fv_buf = alloca i8, i64 %%fv_cap\n");
+  // Copy loop, dropping '_'.
+  Emit ("  br label %%fv_cl\n");
+  Emit ("fv_cl:\n");
+  Emit ("  %%fv_i = phi i64 [ 0, %%entry ], [ %%fv_ni, %%fv_cont ]\n");
+  Emit ("  %%fv_j = phi i64 [ 0, %%entry ], [ %%fv_nj, %%fv_cont ]\n");
+  Emit ("  %%fv_d = icmp sge i64 %%fv_i, %%fv_len64\n");
+  Emit ("  br i1 %%fv_d, label %%fv_clend, label %%fv_body\n");
+  Emit ("fv_body:\n");
+  Emit ("  %%fv_sp = getelementptr i8, ptr %%data, i64 %%fv_i\n");
+  Emit ("  %%fv_c = load i8, ptr %%fv_sp\n");
+  Emit ("  %%fv_us = icmp eq i8 %%fv_c, 95\n");
+  Emit ("  br i1 %%fv_us, label %%fv_cont, label %%fv_store\n");
+  Emit ("fv_store:\n");
+  Emit ("  %%fv_dp = getelementptr i8, ptr %%fv_buf, i64 %%fv_j\n");
+  Emit ("  store i8 %%fv_c, ptr %%fv_dp\n");
+  Emit ("  %%fv_j1 = add i64 %%fv_j, 1\n");
+  Emit ("  br label %%fv_cont\n");
+  Emit ("fv_cont:\n");
+  Emit ("  %%fv_nj = phi i64 [ %%fv_j1, %%fv_store ], [ %%fv_j, %%fv_body ]\n");
+  Emit ("  %%fv_ni = add i64 %%fv_i, 1\n");
+  Emit ("  br label %%fv_cl\n");
+  Emit ("fv_clend:\n");
+  Emit ("  %%fv_tp = getelementptr i8, ptr %%fv_buf, i64 %%fv_j\n");
+  Emit ("  store i8 0, ptr %%fv_tp\n");
+  Emit ("  %%fv_ep = alloca ptr\n");
+  Emit ("  %%result = call double @strtod(ptr %%fv_buf, ptr %%fv_ep)\n");
+  Emit ("  %%fv_end = load ptr, ptr %%fv_ep\n");
+  // Reject if strtod consumed nothing.
+  Emit ("  %%fv_moved = icmp ne ptr %%fv_end, %%fv_buf\n");
+  Emit ("  br i1 %%fv_moved, label %%fv_trail, label %%fv_bad\n");
+  // Allow only trailing blanks after the number.
+  Emit ("fv_trail:\n");
+  Emit ("  %%fv_cur = phi ptr [ %%fv_end, %%fv_clend ], [ %%fv_next, %%fv_tadv ]\n");
+  Emit ("  %%fv_tc = load i8, ptr %%fv_cur\n");
+  Emit ("  %%fv_nul = icmp eq i8 %%fv_tc, 0\n");
+  Emit ("  br i1 %%fv_nul, label %%fv_good, label %%fv_tsp\n");
+  Emit ("fv_tsp:\n");
+  Emit ("  %%fv_sp2 = icmp eq i8 %%fv_tc, 32\n");
+  Emit ("  %%fv_ht = icmp eq i8 %%fv_tc, 9\n");
+  Emit ("  %%fv_bl = or i1 %%fv_sp2, %%fv_ht\n");
+  Emit ("  br i1 %%fv_bl, label %%fv_tadv, label %%fv_bad\n");
+  Emit ("fv_tadv:\n");
+  Emit ("  %%fv_next = getelementptr i8, ptr %%fv_cur, i64 1\n");
+  Emit ("  br label %%fv_trail\n");
+  Emit ("fv_bad:\n");
+  Emit ("  %%fv_exc = ptrtoint ptr @__exc.constraint_error to " PTR_INT_TYPE "\n");
+  Emit ("  call void @__ada_raise(i64 %%fv_exc)\n");
+  Emit ("  unreachable\n");
+  Emit ("fv_good:\n");
   Emit ("  ret double %%result\n");
   Emit ("}\n\n");
 
