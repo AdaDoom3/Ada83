@@ -24,5 +24,11 @@ PROCEDURE READ(FILE:IN FILE_TYPE;ITEM:OUT ELEMENT_TYPE);
 PROCEDURE WRITE(FILE:IN FILE_TYPE;ITEM:IN ELEMENT_TYPE);
 FUNCTION END_OF_FILE(FILE:IN FILE_TYPE)RETURN BOOLEAN;
 PRIVATE
-TYPE FILE_TYPE IS NEW INTEGER;
+-- A file handle indexes the control-block table, or is zero when the object
+-- denotes no open file. The default makes a freshly declared FILE_TYPE closed
+-- (RM 14.1), so CREATE and OPEN see an unopened file rather than an erroneous
+-- uninitialized index.
+TYPE FILE_TYPE IS RECORD
+   HANDLE : INTEGER := 0;
+END RECORD;
 END SEQUENTIAL_IO;
