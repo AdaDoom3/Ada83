@@ -1,31 +1,47 @@
-#!/bin/bash
+#!/usr/bin/env bash
 set -euo pipefail
 # ═══════════════════════════════════════════════════════════════════════════
-# Ada83 ACATS Test Harness — parallel execution via GNU xargs
+# Ada83 ACATS conformance harness
 # ═══════════════════════════════════════════════════════════════════════════
 #
-# Each test runs in its own subprocess, writing a one-line result to a temp
-# file.  The main process reads those lines and tallies.  This is safe
-# because every subprocess writes to its own unique file.
+# Runs the ACATS suite in parallel with per-test isolation, and — the part that
+# turns a pass-rate into a development signal — diffs each run against a
+# committed baseline of expected outcomes. A run therefore reports NEW
+# regressions and progressions, not just an absolute percentage, and `check`
+# returns a nonzero exit status when anything regressed, so it gates CI.
+#
+# Usage:
+#   run_acats.sh run   [SELECTOR]    run and print an absolute report
+#   run_acats.sh check [SELECTOR]    run, diff vs baseline; exit 1 on any regression
+#   run_acats.sh bless [SELECTOR]    run, then write the results as the new baseline
+#   run_acats.sh list  [SELECTOR]    list the tests a selector expands to
+#   run_acats.sh help
+#
+#   SELECTOR (default: all):
+#     all              every acats/*.ada test (each classified by its own name)
+#     a|b|c|d|e|l      one ACATS class
+#     <prefix>         a filename prefix, e.g. c45, c452, c45347
+#
+# Compatibility: `g <class>` == `run <class>`, `q <group>` == `run <group>`.
+#
+# Environment:
+#   JOBS / NPROC     parallel workers (default: nproc)
+#   TEST_TIMEOUT     per-test run cap in seconds (default 30 — sized for the 10x
+#                    DELAY deviation in acats/ plus contention; use 120 for
+#                    pristine sources — see README.md)
+#   BASELINE         baseline manifest path (default: acats.baseline)
+#   TAP=1            also emit a TAP stream to <results>/results.tap
+#
+# A run always writes, into its own timestamped test_results/<id>/ directory:
+#   results.tsv      machine-readable: name <TAB> class <TAB> status <TAB> detail
+#   test_summary.txt one-line totals
+#   results.tap      TAP stream (when TAP=1)
 
-NPROC=${NPROC:-$(nproc 32>/dev/null || echo 32)}
-# Per-test execution cap. The ACATS sources in acats/ carry a temporary
-# development deviation: every DELAY literal >= 1.0 is scaled down by 10x
-# (marked "TODO: acats-delay-deviation", listed in README.md), so the longest
-# legitimate test runs ~12 s instead of ~2 minutes. The cap allows for that
-# plus 16-way scheduling contention. When the deviations are reverted for a
-# pristine-ACATS conformance run, raise this back to 120.
+NPROC=${JOBS:-${NPROC:-$(nproc 2>/dev/null || echo 4)}}
 TEST_TIMEOUT=${TEST_TIMEOUT:-30}
+BASELINE=${BASELINE:-acats.baseline}
 START_MS=$(date +%s%3N)
 
-# ── Per-run output directories ────────────────────────────────────────
-# Every invocation writes into its own timestamped subfolder of
-# test_results and acats_logs (named <label>-<timestamp>-<pid>), so
-# repeated or concurrent runs never overwrite each other. A fresh
-# directory per run also means no stale .ll/.bc artifacts can cause
-# spurious BIND errors, which is why no cleanup pass is needed here.
-# RESULTS_DIR and LOGS_DIR are created in run_parallel once the run
-# label (class or group) is known.
 mkdir -p test_results acats_logs
 
 # ── Rebuild compiler if source is newer than binary ───────────────────
@@ -46,10 +62,13 @@ elapsed(){
     printf %.3f "$(bc<<<"scale=4;($(date +%s%3N)-${START_MS})/1000")"
 }
 
-# ── Single-test runner (called in subprocess) ─────────────────────────────
-# Outputs exactly one line: CLASS RESULT NAME DETAIL
-# CLASS:  a/b/c/d/e/l
-# RESULT: pass/fail/skip
+# ═══════════════════════════════════════════════════════════════════════════
+# EXECUTION CORE — one subprocess per test, each emitting exactly one line:
+#   CLASS RESULT NAME DETAIL   (CLASS a/b/c/d/e/l ; RESULT pass/fail/skip ;
+#   DETAIL a single _-joined token). This section encodes the ACATS run
+# conventions (multi-file families, foundation files, the bind closure check,
+# whole-program linking) and is deliberately kept intact.
+# ═══════════════════════════════════════════════════════════════════════════
 
 # Build the compile set for a test. A multi-file main (…<digits>m) compiles
 # its whole fragment family in the ACATS-prescribed (lexical) order; every
@@ -57,11 +76,6 @@ elapsed(){
 gather_files(){
     local f=$1 n=$2
     COMPILE_FILES=("$f")
-    # ACATS multi-file naming: fragments are <base><digit>.ada or
-    # <base><letter>.ada (d64005ea), the main is <base><digit>m.ada, base
-    # ends in a letter and the index is ONE digit (c35502m is a singleton —
-    # no digit directly before the m). Letter fragments sort AFTER the main
-    # (subunits of it).
     if [[ $n =~ ^(.*[a-z])([0-9])m$ ]]; then
         local base=${BASH_REMATCH[1]}
         local family
@@ -70,23 +84,15 @@ gather_files(){
     fi
 }
 
-# Compile every file of the set in order (-o so each unit's .ll and .ali
-# land in RESULTS_DIR — the .ali set IS the program library the later
-# files consult). Only the LAST file's .ll links: the compiler is
-# whole-program, so the main's module already contains every unit it
-# loaded through the library. Returns nonzero on the first failing file,
-# leaving its name in COMPILE_FAILED.
+# Compile every file of the set in order (-o so each unit's .ll and .ali land
+# in the test's library dir — the .ali set IS the program library the later
+# files consult). Only the LAST/main file's .ll links (whole-program). Returns
+# nonzero on the first failing file, leaving its name in COMPILE_FAILED, then
+# runs the bind closure check (RM 10.3/10.5) leaving BIND_FAILED.
 compile_set(){
     local n=$1 part pn
-    # Each test gets its own library directory: the compiler primes its
-    # unit catalog from the output dir's ALI files, so the dir must hold
-    # exactly this test's units — a shared dir is 32-way cross-talk.
     local lib=$RESULTS_DIR/$n.lib
     mkdir -p "$lib"
-    # The main is the *m file, which the ACATS order may place MID-family.
-    # Its whole-program module contains every unit compiled BEFORE it (the
-    # loader pulled them through the library); units compiled AFTER it are
-    # externs in the main and their own .ll files join the link.
     MAIN_LL=""
     LINK_AFTER_MAIN=()
     COMPILE_FAILED=""
@@ -104,11 +110,6 @@ compile_set(){
     done
     [[ -n $MAIN_LL ]] || MAIN_LL=$lib/$(basename "${COMPILE_FILES[-1]}" .ada).ll
 
-    # The main's module is whole-program over the library as it stood at
-    # the main's compile: any post-main fragment whose unit the main
-    # already DEFINES (an obsolete replaced version, or a unit the main
-    # inlined) must not link — only fragments providing symbols the main
-    # left extern (subunits, later units) join the link.
     if ((${#LINK_AFTER_MAIN[@]})); then
         local kept=() frag unit
         for frag in "${LINK_AFTER_MAIN[@]}"; do
@@ -121,19 +122,15 @@ compile_set(){
         LINK_AFTER_MAIN=(${kept[@]+"${kept[@]}"})
     fi
 
-    # The bind step (RM 10.3/10.5, gnatbind's role): after ALL compiles,
-    # verify the main's library closure is consistent — a unit recompiled
-    # after its dependents makes them obsolete, forbidding execution.
     BIND_FAILED=""
     if ! ./ada83 --bind "$lib" "$n" 2>$LOGS_DIR/$n.bind; then
         BIND_FAILED=$n
     fi
 }
 
-# Run a linked test binary with CWD inside the test's own .lib directory:
-# scratch files the test CREATEs (REPORT.LEGAL_FILE_NAME's X*.TMP) stay out
-# of the repo root, and concurrent tests with identical scratch names
-# cannot collide. $1 = timeout seconds, $2 = test name, rest = lli flags.
+# Run a linked test binary with CWD inside the test's own .lib directory, so
+# scratch files it CREATEs stay out of the repo root and cannot collide across
+# concurrent tests. $1 = timeout seconds, $2 = test name, rest = lli flags.
 run_in_lib(){
     local secs=$1 n=$2; shift 2
     ( cd "$RESULTS_DIR/$n.lib" 2>/dev/null || exit 127
@@ -148,8 +145,8 @@ run_one(){
     if [[ $n =~ ^(.*[a-z])[a-z]$ ]]; then
         compgen -G "acats/${BASH_REMATCH[1]}[0-9]m.ada" >/dev/null && return
     fi
-    # Skip support packages — ACATS test names never contain underscores
-    # (check_file, enum_check, length_check, spprt13, fcndecl live alongside tests).
+    # Support packages (check_file, enum_check, spprt13, …) — never contain the
+    # test-name form; ACATS test names have no underscore.
     [[ $n == *_* ]] && return
     local COMPILE_FILES MAIN_LL LINK_AFTER_MAIN COMPILE_FAILED BIND_FAILED
     gather_files "$f" "$n"
@@ -174,8 +171,7 @@ run_one(){
             echo "c fail $n TIMEOUT:exceeded_${TEST_TIMEOUT}s"
             return
         fi
-        # The mcjit retry exists for ORC-JIT crashes only; a timeout must not
-        # pay the cap a second time.
+        # mcjit retry is for ORC-JIT crashes only; a timeout must not pay twice.
         if ((rc!=0)); then
             rc=0
             run_in_lib "$TEST_TIMEOUT" "$n" -jit-kind=mcjit > $LOGS_DIR/$n.out 2>&1 || rc=$?
@@ -221,7 +217,6 @@ run_one(){
         if timeout 2 ./ada83 "$f" > $LOGS_DIR/$n.ll 2>$LOGS_DIR/$n.err; then
             echo "b fail $n WRONG_ACCEPT:compiled_when_should_reject"
         else
-            # Count error coverage
             local -a expected=() actual=(); local i=0 hits=0
             while IFS= read -r l; do ((++i)); [[ $l =~ --\ ERROR ]] && expected+=($i); done < "$f"
             while IFS=: read -r _ m _; do actual+=($m); done < <(timeout 2 ./ada83 "$f" 2>&1|grep "^[^:]*:[0-9]")
@@ -252,9 +247,6 @@ run_one(){
     e)
         if ! compile_set "$n"; then
             echo "e skip $n COMPILE[$COMPILE_FAILED]:$(head -1 $LOGS_DIR/$n.err 2>/dev/null|cut -c1-50)"; return; fi
-        # Manual-inspection class: a bind rejection is frequently the
-        # EXPECTED outcome ("PASSED => ERROR" tests) — record like a
-        # compile rejection, for inspection.
         if [[ -n $BIND_FAILED ]]; then
             echo "e skip $n BIND_REJECT:$(head -1 $LOGS_DIR/$n.bind 2>/dev/null|cut -c1-50)"; return; fi
         if ! timeout 2 llvm-link -o $RESULTS_DIR/$n.bc "$MAIN_LL" ${LINK_AFTER_MAIN[@]+"${LINK_AFTER_MAIN[@]}"} acats/report.ll 2>/dev/null; then
@@ -296,13 +288,10 @@ export ROOT
 export -f run_one gather_files compile_set run_in_lib pct
 export START_MS TEST_TIMEOUT
 
-# ── Per-test outer cap (defense in depth) ─────────────────────────────────
-# Wraps run_one so a hung test can never hang the suite, even if an inner
-# `timeout` is bypassed (e.g. a runaway grandchild process). Sized to cover
-# the worst case inside run_one: compile + link + one lli run + the mcjit
-# crash-retry, each already individually capped. On SIGTERM/SIGKILL exit
-# (124/137), emit a synthetic fail line so the test is recorded rather than
-# silently dropped.
+# Outer per-test cap (defense in depth): a hung test can never hang the suite,
+# even if an inner `timeout` is bypassed by a runaway grandchild. On a
+# SIGTERM/SIGKILL kill (124/137) emit a synthetic fail line so the test is
+# recorded, never silently dropped.
 run_one_timed(){
     local f=$1 n=$(basename "$1" .ada) q
     q=${f##*/}; q=${q:0:1}; q=${q,,}
@@ -313,12 +302,15 @@ run_one_timed(){
     elif [[ -n $out ]]; then
         echo "$out"
     fi
-    # empty + rc=0 → legitimate silent skip (foundation file or multi-file fragment)
 }
 export -f run_one_timed
 
-# ── Result aggregation ────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════
+# REPORTING & BASELINE
+# ═══════════════════════════════════════════════════════════════════════════
 
+# Read a "class result name detail" stream into RESULTS_TSV (name<TAB>class<TAB>
+# result<TAB>detail) and print the absolute per-class summary.
 tally_results(){
     local results_file=$1
     local -A C=([a]=0 [b]=0 [c]=0 [d]=0 [e]=0 [l]=0
@@ -326,18 +318,19 @@ tally_results(){
                 [sa]=0 [sb]=0 [sc]=0 [sd]=0 [se]=0 [sl]=0
                 [ta]=0 [tb]=0 [tc]=0 [td]=0 [te]=0 [tl]=0
                 [f]=0 [s]=0 [z]=0)
+    : > "$RESULTS_TSV"
 
+    local cls result name detail k
     while read -r cls result name detail; do
         [[ -z $cls ]] && continue
-        local k=${cls,,}
+        k=${cls,,}
+        printf '%s\t%s\t%s\t%s\n' "$name" "$k" "$result" "$detail" >> "$RESULTS_TSV"
         ((++C[z]))
         ((++C[t$k])) 2>/dev/null || C[t$k]=1
         case $result in
-            pass) ((++C[$k])); printf "  %-18s %-6s %s\n" "$name" "PASS" "${detail//_/ }" ;;
-            fail) ((++C[f])); ((++C[f$k])) 2>/dev/null || C[f$k]=1
-                  printf "  %-18s %-6s %s\n" "$name" "FAIL" "${detail//_/ }" ;;
-            skip) ((++C[s])); ((++C[s$k])) 2>/dev/null || C[s$k]=1
-                  printf "  %-18s %-6s %s\n" "$name" "SKIP" "${detail//_/ }" ;;
+            pass) ((++C[$k])) ;;
+            fail) ((++C[f])); ((++C[f$k])) 2>/dev/null || C[f$k]=1 ;;
+            skip) ((++C[s])); ((++C[s$k])) 2>/dev/null || C[s$k]=1 ;;
         esac
     done < "$results_file"
 
@@ -359,54 +352,135 @@ tally_results(){
     printf "========================================\n"
     printf "A=%d B=%d C=%d D=%d E=%d L=%d F=%d S=%d T=%d/%d (%d%%)\n" \
         ${C[a]} ${C[b]} ${C[c]} ${C[d]} ${C[e]} ${C[l]} ${C[f]} ${C[s]} $pass ${C[z]} $(pct $pass ${C[z]}) > "$RESULTS_DIR/test_summary.txt"
+
+    if [[ ${TAP:-0} == 1 ]]; then
+        { echo "TAP version 13"; local i=0 name _k result detail
+          while IFS=$'\t' read -r name _k result detail; do ((++i))
+            case $result in
+              pass) echo "ok $i $name" ;;
+              skip) echo "ok $i $name # SKIP ${detail}" ;;
+              *)    echo "not ok $i $name # ${detail}" ;;
+            esac
+          done < "$RESULTS_TSV"
+          echo "1..$i"; } > "$RESULTS_DIR/results.tap"
+    fi
 }
 
-# ── Entry points ──────────────────────────────────────────────────────────
+# Diff RESULTS_TSV against the baseline manifest (name<TAB>status). Prints the
+# categorized delta and sets REGRESSIONS to the count of pass→not-pass changes.
+# Only "pass" counts as a good state, so the taxonomy is unambiguous:
+#   REGRESSION   baseline pass, now not pass        (gates CI)
+#   PROGRESSION  baseline not pass, now pass        (bless to lock in)
+#   CHANGED      fail<->skip (neither was a pass)   (informational)
+#   NEW          not in baseline                    (informational)
+#   MISSING      in baseline, not run this time     (informational)
+compare_to_baseline(){
+    REGRESSIONS=0
+    if [[ ! -f $BASELINE ]]; then
+        printf "\nNo baseline at %s — run \`%s bless\` to create one.\n" "$BASELINE" "${0##*/}"
+        return 0
+    fi
+    local -A BL RES
+    local name status _c _d _rest
+    while IFS=$'\t' read -r name status _rest; do [[ -n $name ]] && BL[$name]=$status; done < "$BASELINE"
+    while IFS=$'\t' read -r name _c status _d; do [[ -n $name ]] && RES[$name]=$status; done < "$RESULTS_TSV"
 
-run_parallel(){
-    local pattern=$1 title=$2 label=$3
-    local tmpfile=$(mktemp)
+    local -a regr=() prog=() chg=() new=() miss=()
+    local k b r
+    for k in "${!RES[@]}"; do
+        b=${BL[$k]:-__absent__}; r=${RES[$k]}
+        if   [[ $b == __absent__ ]]; then new+=("$k $r")
+        elif [[ $b == "$r" ]];      then :
+        elif [[ $b == pass ]];      then regr+=("$k $b->$r")
+        elif [[ $r == pass ]];      then prog+=("$k $b->$r")
+        else                             chg+=("$k $b->$r"); fi
+    done
+    for k in "${!BL[@]}"; do [[ -z ${RES[$k]:-} ]] && miss+=("$k ${BL[$k]}"); done
+    REGRESSIONS=${#regr[@]}
 
-    # One subfolder per run: <label>-<timestamp>-<pid>. The PID suffix keeps
-    # two runs started within the same second from sharing a directory.
-    local run_id="${label}-$(date +%Y%m%d-%H%M%S)-$$"
+    printf "\n========================================\nBASELINE DIFF  (%s)\n========================================\n" "$BASELINE"
+    _emit(){ local tag=$1; shift; (($#)) || return 0
+             printf "\n%s (%d):\n" "$tag" "$#"; printf '  %s\n' "$@" | sort; }
+    _emit "REGRESSIONS"  ${regr[@]+"${regr[@]}"}
+    _emit "PROGRESSIONS" ${prog[@]+"${prog[@]}"}
+    _emit "CHANGED"      ${chg[@]+"${chg[@]}"}
+    _emit "NEW"          ${new[@]+"${new[@]}"}
+    _emit "MISSING"      ${miss[@]+"${miss[@]}"}
+    printf "\n%d regression(s), %d progression(s), %d changed, %d new, %d missing.\n" \
+        ${#regr[@]} ${#prog[@]} ${#chg[@]} ${#new[@]} ${#miss[@]}
+    ((REGRESSIONS==0)) && printf "OK — no regressions vs baseline.\n" \
+                       || printf "REGRESSED — %d test(s) that passed in the baseline now fail.\n" "$REGRESSIONS"
+}
+
+# Merge RESULTS_TSV into the baseline. A selector runs only part of the suite,
+# so entries for tests NOT in this run are preserved; tests that ran are
+# overwritten with their fresh status. Result: sorted `name<TAB>status`.
+write_baseline(){
+    local tmp; tmp=$(mktemp)
+    [[ -f $BASELINE ]] && cp "$BASELINE" "$tmp"
+    local -A NEW
+    local name _c status _d _rest
+    while IFS=$'\t' read -r name _c status _d; do [[ -n $name ]] && NEW[$name]=$status; done < "$RESULTS_TSV"
+    { [[ -f $tmp ]] && while IFS=$'\t' read -r name status _rest; do
+          [[ -n $name && -z ${NEW[$name]:-} ]] && printf '%s\t%s\n' "$name" "$status"
+      done < "$tmp"
+      for name in "${!NEW[@]}"; do printf '%s\t%s\n' "$name" "${NEW[$name]}"; done
+    } | sort -k1,1 > "$BASELINE"
+    rm -f "$tmp"
+    printf "\nBaseline written: %s (%d tests recorded).\n" "$BASELINE" "$(wc -l < "$BASELINE")"
+}
+
+# ═══════════════════════════════════════════════════════════════════════════
+# SELECTORS & DRIVER
+# ═══════════════════════════════════════════════════════════════════════════
+
+# Expand a selector to a shell glob of test files.
+selector_glob(){
+    case ${1:-all} in
+        all)                     echo "acats/*.ada" ;;
+        a|b|c|d|e|l|A|B|C|D|E|L)  echo "acats/${1,,}*.ada" ;;
+        *)                       echo "acats/${1}*.ada" ;;
+    esac
+}
+
+# Run the selector's tests in parallel, writing results.tsv + summary, then
+# print the absolute report. Leaves the sorted result stream in RESULTS_TSV.
+run_selector(){
+    local sel=${1:-all} title=$2
+    local pattern; pattern=$(selector_glob "$sel")
+    local run_id="${sel}-$(date +%Y%m%d-%H%M%S)-$$"
     export RESULTS_DIR="test_results/${run_id}"
     export LOGS_DIR="acats_logs/${run_id}"
+    export RESULTS_TSV="$RESULTS_DIR/results.tsv"
     mkdir -p "$RESULTS_DIR" "$LOGS_DIR"
 
     printf "\n========================================\n%s\n========================================\n\n" "$title"
     printf "results: %s\nlogs:    %s\n\n" "$RESULTS_DIR" "$LOGS_DIR"
 
-    # Run tests in parallel, each outputting one result line
-    for f in $pattern; do
-        [[ -f $f ]] && echo "$f"
-    done | xargs -P "$NPROC" -I{} bash -c 'run_one_timed "$@"' _ {} > "$tmpfile" 2>/dev/null
-
-    # Sort results by name for stable output, then tally
+    local tmpfile; tmpfile=$(mktemp)
+    for f in $pattern; do [[ -f $f ]] && echo "$f"; done \
+        | xargs -P "$NPROC" -I{} bash -c 'run_one_timed "$@"' _ {} > "$tmpfile" 2>/dev/null
     sort -k3 "$tmpfile" > "${tmpfile}.sorted"
     tally_results "${tmpfile}.sorted"
     rm -f "$tmpfile" "${tmpfile}.sorted"
 }
 
-usage(){
-    cat<<EOF
-Usage: $0 <mode> [options]
+usage(){ sed -n '3,44p' "$0" | sed 's/^# \{0,1\}//'; }
 
-Modes:
-  g <X>          Run all tests for class X (A/B/C/D/E/L)
-  q <XX>         Run tests for group XX (e.g., c32, c34)
-  h|help         Show this help
-
-Environment:
-  NPROC=N         Set parallelism (default: $(nproc 32>/dev/null||echo 32))
-  TEST_TIMEOUT=N  Per-test execution cap in seconds (default: 30, covering
-                  the 10x-scaled DELAY deviation in acats/ plus contention — see README.md).
-                  Use 120 when running pristine ACATS sources.
-EOF
+main(){
+    local cmd=${1:-help}; shift || true
+    case $cmd in
+        run|g)   run_selector "${1:-all}" "ACATS run — ${1:-all}" ;;
+        q)       run_selector "${1:-c32}" "ACATS run — ${1:-c32}" ;;
+        check)   run_selector "${1:-all}" "ACATS check — ${1:-all}"
+                 compare_to_baseline
+                 ((REGRESSIONS==0)) || exit 1 ;;
+        bless)   run_selector "${1:-all}" "ACATS bless — ${1:-all}"
+                 write_baseline ;;
+        list)    local pattern; pattern=$(selector_glob "${1:-all}")
+                 for f in $pattern; do [[ -f $f ]] && basename "$f" .ada; done ;;
+        h|help|-h|--help) usage ;;
+        *)       usage; exit 2 ;;
+    esac
 }
-
-case ${1:-h} in
-    g)        run_parallel "acats/${2:-c}*.ada" "Class ${2:-C} Tests" "${2:-c}" ;;
-    q)        run_parallel "acats/${2:-c32}*.ada" "Group ${2:-c32} Tests" "${2:-c32}" ;;
-    h|help|*) usage ;;
-esac
+main "$@"
