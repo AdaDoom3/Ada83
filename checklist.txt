@@ -108,3 +108,34 @@ UNIFYING RULE: propagate the unconstrained base (-> S'FIRST) to a string
 ═══════════════════════════════════════════════════════════════════════════════
 PROGRESS LOG
 ═══════════════════════════════════════════════════════════════════════════════
+[DONE] c42007e — seed flexible catenation operands with Type_Base(ctx) in
+       Resolve_Binary_Op so string literals / aggregates take the applicable
+       array type -> index subtype 'FIRST. Also fixed an internal error on
+       aggregate-only catenation. Committed 5557fe7.
+[DONE] c42007f — three coordinated upstream fixes:
+       1. Parser preserves parenthesization on string literals
+          (string_val.is_parenthesized), mirroring aggregates.
+       2. Generate_String_Literal: a parenthesized literal takes the index
+          subtype's 'FIRST (named index subtype's first, else the constraint's
+          own low bound for a directly-constrained array type).
+       3. Array-aggregate component type propagation was MISSING NK_STRING, so
+          string components defaulted to STRING (1..N). Added it — a real
+          upstream bug that made siblings pass only by accident.
+       4. New Emit_Array_Component_Belongs_Check (RM 4.3.2 / 3.6.1): an
+          array-typed aggregate/record component must have bounds equal to the
+          component subtype (no sliding). Added at the array path
+          (Agg_Resolve_Elem) and the record path (Agg_Rec_Store).
+       c42 now 13/13 (100%).
+[GATE] Full Class C: PASSED. 1684 -> 1688 pass, 138 -> 135 fail, ZERO
+       regressions. Per-test diff vs reference shows only improvements:
+       c42007e, c42007f (targets), plus bonus c43205e and ce3116a.
+       The belongs check was tuned to be correct AND safe:
+         - static-bound component subtypes only (a dynamic bound like
+           ARR(1..F) is re-evaluated and can differ from the value's own
+           bounds -> would raise spuriously; fixed c36204a, c37003a);
+         - null array subtypes exempt (a null value belongs to any null
+           subtype, RM 3.6.1; fixed c36174a — ARRAY(..) OF STRING(1..0)).
+
+RESULT: c42 group is 13/13 (100%). Two long-standing string-literal-bound
+        bugs fixed at their source (resolution + a missing RM 4.3.2 runtime
+        check), no expander hacks, net +4 suite passes.

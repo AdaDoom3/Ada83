@@ -1155,7 +1155,8 @@ struct Syntax_Node {
 
     // when NK_STRING | NK_CHARACTER | NK_IDENTIFIER =>
     struct {
-      String_Slice text; // Raw source text
+      String_Slice text;            // Raw source text
+      bool         is_parenthesized; // A string literal written as ("...")
     } string_val;
 
     // when NK_SELECTED =>
@@ -3829,6 +3830,12 @@ bool      Aggregate_Has_Others  (Syntax_Node *agg);
 bool      Is_Static_Int_Node    (Syntax_Node *n);
 bool      Agg_Elem_Is_Composite (Type_Info *elem, bool multidim);
 
+// Raise CONSTRAINT_ERROR unless a fat-pointer array value's bounds equal a
+// constrained array component subtype's bounds (RM 4.3.2 belongs check).
+void      Emit_Array_Component_Belongs_Check (uint32_t     fat_reg,
+                                              LLVM_Rep     bt,
+                                              Type_Info   *component_subtype);
+
 // ???
 uint32_t Agg_Resolve_Elem (Syntax_Node *expr,
                            bool         multidim,
@@ -6146,10 +6153,16 @@ Syntax_Node *Parse_Primary (Parser *p) {
     }
     Parser_Expect (p, TK_RPAREN);
 
-    // A parenthesized aggregate ((a,b,c)) uses INDEX_SUBTYPE'FIRST for its lower bound, unlike a
-    // direct sub-aggregate (a,b,c) which uses the applicable index constraint.
+    // Parentheses make a general expression, removing it from the
+    // applicable-index-constraint contexts of RM 4.3.2(a)-(c): a
+    // parenthesized aggregate ((a,b,c)) or string literal ("...") therefore
+    // takes INDEX_SUBTYPE'FIRST for its lower bound, unlike a direct
+    // sub-aggregate (a,b,c) or a bare literal, which take the applicable
+    // index constraint.
     if (expr->kind == NK_AGGREGATE)
       expr->aggregate.is_parenthesized = true;
+    else if (expr->kind == NK_STRING)
+      expr->string_val.is_parenthesized = true;
     return expr;
   }
 
@@ -14165,17 +14178,24 @@ Type_Info *Resolve_Expression (Syntax_Node *node) {
               row_type->alignment = agg_type->alignment;
               inner_agg_type = row_type;
             }
+            // RM 4.3.2: an array-aggregate component expression has the array's
+            // element type as its applicable context. Seed it so overloaded
+            // names resolve in that type and — for a string literal or nested
+            // aggregate whose bounds depend on context — its bounds come from
+            // the element subtype rather than defaulting to STRING's 1..N.
             if (inner_agg_type and item->kind == NK_ASSOCIATION and item->association.expression) {
               Syntax_Node *expr = item->association.expression;
               if (not expr->type and
                 (expr->kind == NK_AGGREGATE or expr->kind == NK_APPLY or
-                 expr->kind == NK_BINARY_OP or expr->kind == NK_IDENTIFIER)) {
+                 expr->kind == NK_BINARY_OP or expr->kind == NK_IDENTIFIER or
+                 expr->kind == NK_STRING)) {
                 expr->type = inner_agg_type;
               }
             } else if (inner_agg_type and
                    not item->type and
                    (item->kind == NK_AGGREGATE or item->kind == NK_APPLY or
-                    item->kind == NK_BINARY_OP or item->kind == NK_IDENTIFIER)) {
+                    item->kind == NK_BINARY_OP or item->kind == NK_IDENTIFIER or
+                    item->kind == NK_STRING)) {
               item->type = inner_agg_type;
             }
 
@@ -25312,6 +25332,35 @@ LLVM_Value Generate_String_Literal (Syntax_Node *node) {
   Type_Info *string_type = node->type;
   LLVM_Rep bt = Array_Bound_LLVM_Rep (node->type);
 
+  // A parenthesized string literal is a general expression, not a literal
+  // directly in an applicable-index-constraint context (RM 4.3.2 (a)-(c)), so
+  // it ignores any constraint on its context type and takes the index
+  // subtype's 'FIRST as its lower bound. The index subtype is the named index
+  // subtype when the context type has one (BASE(3..5) keeps SF1's 'FIRST = 2),
+  // and otherwise the constraint itself, since a directly constrained array
+  // type is its own index subtype (ARRAY(3..6) keeps 3). The resulting value
+  // is checked against the target subtype by the enclosing context, which is
+  // where a bound mismatch is reported.
+  if (node->string_val.is_parenthesized and string_type and len > 0 and
+      string_type->array.index_count > 0) {
+    Index_Info *first_index = &string_type->array.indices[0];
+    Type_Bound first = first_index->index_type
+                         ? first_index->index_type->low_bound
+                         : first_index->low_bound;
+    if (first.kind == BOUND_INTEGER) {
+      lo = first.int_value;
+      hi = lo + (int128_t) len - 1;
+      return Val_Rep (Emit_Fat_Pointer (data_ptr, lo, hi, bt).reg, LL_REP_FAT);
+    }
+    if (first.kind != BOUND_NONE) {
+      uint32_t lo_reg = Emit_Single_Bound (&first, bt);
+      uint32_t hi_reg = (len == 1) ? lo_reg
+        : Emit_Result_Instruction ("add %s %%t%u, %d\n",
+            LLVM_Rep_To_String (bt), lo_reg, (int) len - 1);
+      return Val_Rep (
+        Emit_Fat_Pointer_Dynamic (data_ptr, lo_reg, hi_reg, bt).reg, LL_REP_FAT);
+    }
+  }
 
   if (string_type and string_type->array.is_constrained and
       string_type->array.index_count > 0) {
@@ -33367,6 +33416,47 @@ bool Bound_Pair_Overflows (Type_Bound low, Type_Bound high) {
 //   elem_type         - LLVM type string for scalar elements (e.g. "i32")                          
 //   elem_ti           - Type_Info* for the element subtype (for checks)                            
 //                                                                                                  
+// RM 4.3.2 / 3.6.1: the value of an array-typed aggregate component must
+// BELONG to the component subtype — for a constrained array subtype that means
+// identical bounds in every dimension (an aggregate component does not slide).
+// When the value arrives as a fat pointer carrying its own bounds (a
+// parenthesized string literal, a slice, an unconstrained result), compare
+// each dimension against the constraint and raise on the first mismatch. A
+// value already shaped as the constrained subtype (a plain data pointer)
+// matches by construction and never reaches here.
+void Emit_Array_Component_Belongs_Check (uint32_t fat_reg, LLVM_Rep bt,
+                                         Type_Info *component_subtype) {
+  if (not Type_Is_Constrained_Array (component_subtype)) return;
+
+  // Restrict the check to a subtype whose every bound is a compile-time
+  // constant. A dynamic bound (e.g. ARR (1 .. F)) is re-evaluated here and
+  // compared against bounds the value was built with; the two evaluations can
+  // legitimately differ (F called twice, or a slid value), so comparing them
+  // would raise spuriously. The static case — the one string-literal bounds
+  // (RM 4.2/4.3.2) actually turn on — is exact and safe.
+  // A null array value belongs to any null array subtype irrespective of its
+  // nominal bounds (RM 3.6.1), so a subtype that is null in any dimension is
+  // exempt from the exact-bound comparison below. Require every bound static.
+  for (uint32_t d = 0; d < component_subtype->array.index_count; d++) {
+    Type_Bound lo = component_subtype->array.indices[d].low_bound;
+    Type_Bound hi = component_subtype->array.indices[d].high_bound;
+    if (lo.kind != BOUND_INTEGER or hi.kind != BOUND_INTEGER) return;
+    if (hi.int_value < lo.int_value) return;
+  }
+  for (uint32_t d = 0; d < component_subtype->array.index_count; d++) {
+    int128_t want_lo = component_subtype->array.indices[d].low_bound.int_value;
+    int128_t want_hi = component_subtype->array.indices[d].high_bound.int_value;
+    uint32_t got_lo = Emit_Fat_Pointer_Low_Dim  (fat_reg, bt, d).reg;
+    uint32_t got_hi = Emit_Fat_Pointer_High_Dim (fat_reg, bt, d).reg;
+    LLVM_I1 lo_ne = Emit_Icmp_Const ("ne", bt, got_lo, want_lo);
+    LLVM_I1 hi_ne = Emit_Icmp_Const ("ne", bt, got_hi, want_hi);
+    uint32_t mismatch = Emit_Result_Instruction ("or i1 %%t%u, %%t%u"
+      "  ; RM 4.3.2 component bounds vs subtype\n", lo_ne.reg, hi_ne.reg);
+    Emit_Raise_Constraint_Error_When ((LLVM_I1){ mismatch },
+      "aggregate component bounds do not equal component subtype (RM 4.3.2)");
+  }
+}
+
 uint32_t Agg_Resolve_Elem (Syntax_Node *expr,
   bool multidim, bool elem_is_composite, Type_Info *agg_type,
   LLVM_Rep elem_type, Type_Info *elem_ti)
@@ -33383,6 +33473,10 @@ uint32_t Agg_Resolve_Elem (Syntax_Node *expr,
   //
   if (elem_is_composite) {
     if (LLVM_Rep_Is_Fat_Pointer (val_v.rep)) {
+      // The fat value still carries its own bounds here; verify they belong to
+      // the component subtype (RM 4.3.2) before discarding them for the copy.
+      Emit_Array_Component_Belongs_Check (val, Array_Bound_LLVM_Rep (elem_ti),
+                                          elem_ti);
       uint32_t dp = Emit_Result_Instruction ("extractvalue " FAT_PTR_TYPE
          " %%t%u, 0\n", val);
       val = dp;
@@ -34035,8 +34129,11 @@ void Agg_Rec_Store (uint32_t val, LLVM_Rep val_rep, uint32_t dest_ptr,
     Emit ("  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %%t%u, i1 false)\n",
        dest_ptr, data, rt_size);
 
-  // Fat → constrained: extract data+bounds, compute length, memcpy
+  // Fat → constrained: the value carries its own bounds, so verify it belongs
+  // to the component subtype (RM 4.3.2) before the bounds are dropped for the
+  // copy, then extract data+bounds, compute length, and memcpy.
   } else if (ti and is_fat and (Type_Is_String (ti) or Type_Is_Array_Like (ti))) {
+    Emit_Array_Component_Belongs_Check (val, Array_Bound_LLVM_Rep (ti), ti);
     Emit_Fat_To_Array_Memcpy (val, dest_ptr, ti);
 
   // Composite → memcpy with size from type or source expression. A
