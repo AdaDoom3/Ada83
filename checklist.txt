@@ -279,5 +279,38 @@ Landed: cd1009n/x/y/z, cd4051b/c (+6). Still open in this cluster: cd4051d
 inheritance), cd4024b (fixed-point component clause), cd4031a. Packed bit-field
 load/store remains the big missing feature.
 
+DERIVED-TYPE SIZE-CLAUSE INHERITANCE — LANDED (+1 cd1c03a):
+`for PARENT'SIZE use 5; type D is new PARENT;` made D'SIZE report 8 (byte
+size) not 5. Root cause: the NK_DERIVED_TYPE resolution correctly copied
+parent->specified_bit_size onto the anonymous `derived` Type_Info, but the
+NK_TYPE_DECL handler that builds the NAMED first subtype from the definition
+copied kind/size/alignment/bounds/base/parent and NOT specified_bit_size, so
+the name D dropped the inherited clause and T'SIZE fell back to size*8. Fix:
+copy specified_bit_size from def_type in NK_TYPE_DECL (RM 13.1). No-op unless a
+SIZE clause is in play. Full Class C: +1, zero real regressions (the c97307a
+flip was pre-existing tasking flakiness — fails 5/5 on the pre-change binary in
+isolation too, PASS in one suite run was the fluke).
+
 Other cd clusters still open: address clauses (cd5011g etc.), collection
-STORAGE_SIZE (cd2b11d/e, cd7205c), derived SIZE/SMALL inheritance (cd1c03a/e).
+STORAGE_SIZE (cd2b11d/e, cd7205c), derived SMALL inheritance (cd1c03e),
+derived record POSITION/FIRST_BIT/LAST_BIT inheritance (cd1c04e — separate
+record-layout mechanism, not the scalar 'SIZE path).
+
+BIGGEST REMAINING LEVERS (from full-suite gap analysis, ~119 FAIL + 72
+compile-skips hidden in the skip bucket):
+  * `&` catenation on derived/array types routes to the scalar binary-op
+    switch (token 33 = TK_AMPERSAND) and aborts at the arithmetic default
+    (~ada83.c:28347) instead of the concatenation path. ~10 compile-skips
+    (c34005a/d/g/j, c45347a/c/d, c64005c/d, cc3220a) + likely several c34
+    derived-op FAILs. Highest tests-per-effort; a real inherited-predefined-
+    operation fix, not an expander hack.
+  * Object renaming (RM 8.5) must yield a true alias (pointer to the renamed
+    object), currently copies → segv/CE/wrong. Coherent set c85005a-e,
+    c85006f/g (~7 tests).
+  * Unconstrained-array positional aggregate bounds default to 1..INT_MAX
+    ("runaway aggregate count=2147483647", ~ada83.c:35402) instead of the
+    applicable index constraint — same RM 4.3.2 family already solved for
+    string literals. c85006a-e (5 tests).
+  * Large multi-fix areas (no single lever): generics (~29), TEXT_IO/*_IO RTS
+    (~22), representation clauses (~18, packed bit-fields still the hard part),
+    tasking (~19, some real, some delay-scaling flakiness).

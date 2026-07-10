@@ -18946,6 +18946,13 @@ void Resolve_Declaration (Syntax_Node *node) {
             type->low_bound   = def_type->low_bound;
             type->high_bound  = def_type->high_bound;
 
+            // RM 13.1: a derived type inherits the parent's size representation.
+            // The definition (a derived-type or constraint expression) already
+            // carries the inherited 'SIZE clause value; the named first subtype
+            // must keep it, otherwise T'SIZE falls back to the byte size and a
+            // derived type loses its parent's specified size (cd1c03a).
+            type->specified_bit_size = def_type->specified_bit_size;
+
             // For derived and subtype types, preserve base/parent chain
             type->base_type   = def_type->base_type;
             type->parent_type = def_type->parent_type;
