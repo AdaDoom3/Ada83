@@ -70,7 +70,6 @@
 //
 // To_Bits:    Bytes > Bits  (Multiplicative, total - never truncates)
 // To_Bytes:   Bits  > Bytes (Ceiling division - rounds up to next whole byte)
-// Byte_Align: Bits  > Bits  (Round up to a byte boundary)
 //
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 
@@ -240,7 +239,6 @@ char To_Lower  (char ch) {return (char) tolower  ((unsigned char) ch);}
 int  Is_Alpha  (char ch) {return        isalpha  ((unsigned char) ch);}
 int  Is_Digit  (char ch) {return        isdigit  ((unsigned char) ch);}
 int  Is_Xdigit (char ch) {return        isxdigit ((unsigned char) ch);}
-int  Is_Space  (char ch) {return        isspace  ((unsigned char) ch);}
 
 
 // GCC and Clang give us native 128-bit registers on 64-bit targets
@@ -270,7 +268,6 @@ enum {
 // Given a bit width, return the smallest LLVM integer or float type that can hold that width.
 uint64_t To_Bits    (uint64_t bytes) {return bytes * Bits_Per_Unit;}
 uint64_t To_Bytes   (uint64_t bits)  {return (bits + Bits_Per_Unit - 1) / Bits_Per_Unit;}
-uint64_t Byte_Align (uint64_t bits)  {return To_Bits (To_Bytes (bits));}
 
 // Round size up to the nearest alignment boundary
 size_t Align_To (size_t size, size_t alignment) {
@@ -465,8 +462,6 @@ typedef struct {
 
 const String_Slice Empty_Slice = { .data = NULL, .length = 0 };
 
-// Wrap a null-terminated C string as a non-owning slice.
-String_Slice Slice_From_Cstring      (const char  *source);
 // Arena-allocate a copy of `slice' so it outlives the source buffer.
 String_Slice Slice_Duplicate         (String_Slice slice);
 // Byte-exact equality test (case-sensitive).
@@ -1982,7 +1977,6 @@ void Float_Model_Parameters (const Type_Info *t,
 bool        Is_Slice_Index_Arg             (const Syntax_Node *arg);
 bool        Expression_Is_Slice             (const Syntax_Node *node);
 bool        Expression_Is_Boolean           (Syntax_Node       *node);
-bool        Expression_Is_Float             (Syntax_Node       *node);
 bool        Expression_Produces_Fat_Pointer (const Syntax_Node *node,
                                              const Type_Info   *type);
 
@@ -2857,20 +2851,14 @@ bool        Float_Is_Single        (const Type_Info *t);
 
 // Return the LLVM integer type used for string bounds (e.g. "i32").
 LLVM_Rep    String_Bound_Rep     (void);
-// Return the LLVM struct type for a pair of string bounds (e.g. "{ i32, i32 }").
-const char *String_Bounds_Struct (void);
 // Return the LLVM integer type used for general-purpose integer arithmetic.
 LLVM_Rep    Integer_Arith_Rep    (void);
-// Return the LLVM boolean type used for boolean expressions.
-LLVM_Rep    Boolean_Rep          (void);
 // Return the wider of two LLVM integer types (e.g. wider of "i16" and "i32" is "i32").
 LLVM_Rep    LLVM_Rep_Wider_Int   (LLVM_Rep left, LLVM_Rep right);
 // Return the LLVM fcmp predicate string ("oeq", "olt", ...) for a floating-point comparison.
 const char *Float_Cmp_Predicate  (int op);
 // Return the LLVM icmp predicate ("eq", "slt", "ult", ...) for an integer comparison.
 const char *Int_Cmp_Predicate    (int op, bool is_unsigned);
-// Return the byte size of the string bounds struct.
-int         String_Bounds_Alloc  (void);
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 //
@@ -3134,20 +3122,12 @@ uint32_t   Emit_Fat_Total_Elements    (uint32_t  fat_ptr, LLVM_Rep bt, uint32_t 
 // Total byte size (i64) of the data behind a fat pointer: product of dimension
 // lengths * element size, clamped >= 0. Lengths derived at the index width.
 LLVM_Value Emit_Array_Byte_Size       (Type_Info *array_type, uint32_t fat_ptr);
-LLVM_I1  Emit_Fat_Pointer_Compare     (uint32_t   left_fat,
-                                       uint32_t   right_fat,
-                                       LLVM_Rep   bt);
 
 LLVM_Value Emit_Load_Fat_Pointer                 (Symbol   *sym, LLVM_Rep bt);
 LLVM_Value Emit_Load_Fat_Pointer_From_Temp       (uint32_t  ptr, LLVM_Rep bt);
 LLVM_Value Fat_Ptr_As_Value                      (uint32_t  fat_ptr);
 void       Emit_Store_Fat_Pointer_To_Symbol      (uint32_t  fat,
                                                   Symbol   *sym,
-                                                  LLVM_Rep  bt);
-void       Emit_Store_Fat_Pointer_Fields_To_Temp (uint32_t  data,
-                                                  uint32_t  lo,
-                                                  uint32_t  hi,
-                                                  uint32_t  dest,
                                                   LLVM_Rep  bt);
 void       Emit_Fat_Pointer_Copy_To_Name         (uint32_t  fat_ptr,
                                                   Symbol   *dst,
@@ -3671,12 +3651,9 @@ void BIP_End_Function   (void);
 
 // ???
 bool BIP_In_BIP_Function              (void);
-bool BIP_Is_Explicitly_Limited        (const Type_Info *t);
-bool BIP_Is_Task_Type                 (const Type_Info *t);
 bool BIP_Is_Limited_Type              (const Type_Info *t);
 bool BIP_Record_Has_Limited_Component (const Type_Info *t);
 bool BIP_Is_BIP_Function              (const Symbol    *func);
-bool BIP_Needs_Alloc_Form             (const Symbol    *func);
 
 // ???
 uint32_t       BIP_Extra_Formal_Count   (const Symbol *func);
@@ -4228,12 +4205,6 @@ void Arena_Free_All (void) {
 // §4. TEXT - Non-owning string views                                                               
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 
-String_Slice Slice_From_Cstring (const char *source) {
-  return (String_Slice){
-    .data   = source,
-    .length = source ? (uint32_t) strlen (source) : 0
-  };
-}
 String_Slice Slice_Duplicate (String_Slice slice) {
   if (not slice.length) return Empty_Slice;
   char *copy = Arena_Allocate (slice.length + 1);
@@ -21171,15 +21142,6 @@ LLVM_Rep String_Bound_Rep (void) {
   return Array_Bound_LLVM_Rep (sm->type_string);
 }
 
-// Derive the LLVM bounds struct type for STRING: "{ bt, bt }".
-const char *String_Bounds_Struct (void) {
-  return Bounds_Type_For (Array_Bound_LLVM_Rep (sm->type_string));
-}
-
-// Derive the LLVM allocation size for STRING bounds struct.
-int String_Bounds_Alloc (void) {
-  return Bounds_Alloc_Size (Array_Bound_LLVM_Rep (sm->type_string));
-}
 
 // Derive the LLVM type for Standard.INTEGER (the universal arithmetic type).                      
 // In Standard, integer computation uses the GL_Type of Standard.Integer.                          
@@ -21188,11 +21150,6 @@ int String_Bounds_Alloc (void) {
 // Standard.Integer's canonical rep — the default arithmetic width.
 LLVM_Rep Integer_Arith_Rep (void) {
   return Type_To_Rep (sm->type_integer);
-}
-
-// Derive the LLVM type for Standard.BOOLEAN
-LLVM_Rep Boolean_Rep (void) {
-  return Type_To_Rep (sm->type_boolean);
 }
 
 // Emit to string constant buffer instead of main output
@@ -22357,39 +22314,6 @@ bool Expression_Is_Boolean (Syntax_Node *node) {
   // Note: Boolean-valued attributes (CONSTRAINED, CALLABLE, TERMINATED) produce i8
   // (Boolean storage type), not i1. Only comparisons/logical ops produce i1.
   return false;
-}
-
-// Check if expression produces float result
-bool Expression_Is_Float (Syntax_Node *node) {
-  if (not node) return false;
-
-  // Attributes that return floating-point (double)
-  if (node->kind == NK_ATTRIBUTE) {
-    String_Slice attr = node->attribute.name;
-    if (Slice_Equal_Ignore_Case (attr, S("EPSILON")) or
-      Slice_Equal_Ignore_Case (attr, S("SMALL")) or
-      Slice_Equal_Ignore_Case (attr, S("LARGE")) or
-      Slice_Equal_Ignore_Case (attr, S("SAFE_SMALL")) or
-      Slice_Equal_Ignore_Case (attr, S("SAFE_LARGE")) or
-      Slice_Equal_Ignore_Case (attr, S("DELTA"))) {
-      return true;
-    }
-
-    // FIRST/LAST with float prefix type (not fixed-point)
-    if (Slice_Equal_Ignore_Case (attr, S("FIRST")) or
-      Slice_Equal_Ignore_Case (attr, S("LAST"))) {
-      Syntax_Node *prefix = node->attribute.prefix;
-      if (prefix and prefix->type and
-        not Type_Is_Fixed_Point (prefix->type) and
-        (Type_Is_Float_Representation (prefix->type) or
-         prefix->type->low_bound.kind == BOUND_FLOAT)) {
-        return true;
-      }
-    }
-  }
-
-  // Check node type for general float expressions
-  return Type_Is_Float_Representation (node->type);
 }
 
 // Get LLVM_Rep for expression result
@@ -24499,45 +24423,6 @@ void Emit_Store_Fat_Pointer_Fields_To_Symbol
   Emit ("  store ptr %%t%u, ptr %%t%u\n", bounds_alloca, bounds_slot);
 }
 
-// Store fat pointer fields (data ptr, low, high) into a temp alloca using GEP+store.
-// bt = bound type.
-void Emit_Store_Fat_Pointer_Fields_To_Temp (uint32_t data_ptr, uint32_t low_temp, uint32_t high_temp,
-  uint32_t fat_alloca, LLVM_Rep bt)
-{
-  uint32_t bounds_alloca = Emit_Alloc_Bounds_Struct (low_temp, high_temp, bt);
-
-  // Store data ptr (field 0 of { ptr, ptr })
-  uint32_t data_slot = Emit_Temp ();
-  Emit ("  %%t%u = getelementptr " FAT_PTR_TYPE ", ptr %%t%u, i32 0, i32 0\n",
-     data_slot, fat_alloca);
-  Emit ("  store ptr %%t%u, ptr %%t%u\n", data_ptr, data_slot);
-
-  // Store bounds ptr (field 1 of { ptr, ptr })
-  uint32_t bounds_slot = Emit_Temp ();
-  Emit ("  %%t%u = getelementptr " FAT_PTR_TYPE ", ptr %%t%u, i32 0, i32 1\n",
-     bounds_slot, fat_alloca);
-  Emit ("  store ptr %%t%u, ptr %%t%u\n", bounds_alloca, bounds_slot);
-}
-
-// Compare two fat pointers for identity equality (data ptr + both bounds).
-// Returns temp ID holding i1 result. bt = bound type.
-LLVM_I1 Emit_Fat_Pointer_Compare (uint32_t left_fat, uint32_t right_fat, LLVM_Rep bt)
-{
-  uint32_t left_ptr  = Emit_Fat_Pointer_Data (left_fat, bt).reg;
-  uint32_t right_ptr = Emit_Fat_Pointer_Data (right_fat, bt).reg;
-  uint32_t left_low  = Emit_Fat_Pointer_Low (left_fat, bt).reg;
-  uint32_t right_low = Emit_Fat_Pointer_Low (right_fat, bt).reg;
-  uint32_t left_high  = Emit_Fat_Pointer_High (left_fat, bt).reg;
-  uint32_t right_high = Emit_Fat_Pointer_High (right_fat, bt).reg;
-
-  LLVM_I1 ptr_eq  = Emit_Icmp_Ptr ("eq", left_ptr, right_ptr);
-  LLVM_I1 low_eq  = Emit_Icmp ("eq", bt, left_low, right_low);
-  LLVM_I1 high_eq = Emit_Icmp ("eq", bt, left_high, right_high);
-
-  LLVM_I1 partial = Emit_And_I1 (ptr_eq, low_eq);
-  return Emit_And_I1 (partial, high_eq);
-}
-
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 // §13.2.5 Additional Helpers                                                                       
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
@@ -26040,8 +25925,7 @@ LLVM_I1 Generate_Record_Equality (uint32_t left_ptr,
     // is identity of the designated object (or both NULL). Only the data
     // pointer distinguishes them; bounds are metadata attached to whatever
     // the data pointer designates, so ignore them. Loading bounds off a
-    // NULL access would fault (Emit_Fat_Pointer_Compare dereferences the
-    // bounds ptr).
+    // NULL access would fault (the bounds ptr would be dereferenced).
     } else if (is_fat_ptr_access) {
       LLVM_Rep acc_bt = Array_Bound_LLVM_Rep (comp_type->access.designated_type);
       uint32_t left_val = Emit_Load_Fat_Pointer_From_Temp (left_gep, acc_bt).reg;
@@ -51975,17 +51859,6 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
 //   - Composite types with limited components                                                      
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 
-// Check if type is explicitly marked limited (not just by composition)
-bool BIP_Is_Explicitly_Limited (const Type_Info *t) {
-  if (not t) return false;
-  return t->kind == TYPE_LIMITED_PRIVATE or t->kind == TYPE_TASK;
-}
-
-// Check if type is a task type
-bool BIP_Is_Task_Type (const Type_Info *t) {
-  return t and t->kind == TYPE_TASK;
-}
-
 // Check if record type has any limited components (recursive)
 bool BIP_Record_Has_Limited_Component (const Type_Info *t) {
   if (not Type_Is_Record (t)) return false;
@@ -52039,19 +51912,6 @@ bool BIP_Is_Limited_Type (const Type_Info *t) {
 bool BIP_Is_BIP_Function (const Symbol *func) {
   if (not func or func->kind != SYMBOL_FUNCTION) return false;
   return func->return_type and BIP_Is_Limited_Type (func->return_type);
-}
-
-// Does type have task components (needs activation chain)?
-
-// Does function need allocation form parameter? (unconstrained result)
-bool BIP_Needs_Alloc_Form (const Symbol *func) {
-  if (not func or not func->return_type) return false;
-  const Type_Info *rt = func->return_type;
-
-  // Unconstrained arrays need runtime size determination
-  if (rt->kind == TYPE_ARRAY and not rt->array.is_constrained)
-    return true;
-  return false;
 }
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
