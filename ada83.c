@@ -894,6 +894,104 @@ typedef enum {
   NK_COUNT
 } Node_Kind;
 
+// Attribute Designator Kind  (extracted from NK_ATTRIBUTE payload)
+//
+// One enumerator per attribute designator the compiler handles (Ada 83
+// Appendix A plus the extensions this compiler accepts). ATTRIBUTE_UNKNOWN
+// is deliberately zero so a zero-initialized node reads as "no known
+// designator" and lands on the same fall-through path an unrecognized
+// attribute name takes.
+//
+// Each X-macro row is (enumerator, designator, type_view) where the flag
+// says whether the attribute applies to the prefix's TYPE (or, for the
+// RM 13.7.2/13.7.3 storage-layout attributes, to a component's storage)
+// rather than to a designated object, suppressing the implicit access
+// dereference of RM 4.1(3) in both name resolution and code generation.
+#define ATTRIBUTE_KIND_LIST(X) \
+  /* Array and scalar bounds (RM 3.5, 3.6.2) */ \
+  X (ATTRIBUTE_FIRST,             "FIRST",             false) \
+  X (ATTRIBUTE_LAST,              "LAST",              false) \
+  X (ATTRIBUTE_LENGTH,            "LENGTH",            false) \
+  X (ATTRIBUTE_RANGE,             "RANGE",             false) \
+  /* Representation (RM 13.7.2, 13.7.3) */ \
+  X (ATTRIBUTE_SIZE,              "SIZE",              true ) \
+  X (ATTRIBUTE_ALIGNMENT,         "ALIGNMENT",         false) \
+  X (ATTRIBUTE_COMPONENT_SIZE,    "COMPONENT_SIZE",    false) \
+  X (ATTRIBUTE_ADDRESS,           "ADDRESS",           true ) \
+  X (ATTRIBUTE_STORAGE_SIZE,      "STORAGE_SIZE",      true ) \
+  X (ATTRIBUTE_FIRST_BIT,         "FIRST_BIT",         true ) \
+  X (ATTRIBUTE_LAST_BIT,          "LAST_BIT",          true ) \
+  X (ATTRIBUTE_POSITION,          "POSITION",          true ) \
+  /* Scalar and enumeration operations (RM 3.5.5) */ \
+  X (ATTRIBUTE_POS,               "POS",               false) \
+  X (ATTRIBUTE_VAL,               "VAL",               false) \
+  X (ATTRIBUTE_SUCC,              "SUCC",              false) \
+  X (ATTRIBUTE_PRED,              "PRED",              false) \
+  X (ATTRIBUTE_MIN,               "MIN",               false) \
+  X (ATTRIBUTE_MAX,               "MAX",               false) \
+  X (ATTRIBUTE_ABS,               "ABS",               false) \
+  X (ATTRIBUTE_MOD,               "MOD",               false) \
+  X (ATTRIBUTE_IMAGE,             "IMAGE",             false) \
+  X (ATTRIBUTE_VALUE,             "VALUE",             false) \
+  X (ATTRIBUTE_WIDTH,             "WIDTH",             false) \
+  X (ATTRIBUTE_MODULUS,           "MODULUS",           false) \
+  /* Access views */ \
+  X (ATTRIBUTE_ACCESS,            "ACCESS",            false) \
+  X (ATTRIBUTE_UNCHECKED_ACCESS,  "UNCHECKED_ACCESS",  false) \
+  /* Floating-point model (RM 3.5.8) */ \
+  X (ATTRIBUTE_DIGITS,            "DIGITS",            false) \
+  X (ATTRIBUTE_MANTISSA,          "MANTISSA",          false) \
+  X (ATTRIBUTE_EMAX,              "EMAX",              false) \
+  X (ATTRIBUTE_SAFE_EMAX,         "SAFE_EMAX",         false) \
+  X (ATTRIBUTE_EPSILON,           "EPSILON",           false) \
+  X (ATTRIBUTE_SMALL,             "SMALL",             false) \
+  X (ATTRIBUTE_LARGE,             "LARGE",             false) \
+  X (ATTRIBUTE_SAFE_SMALL,        "SAFE_SMALL",        false) \
+  X (ATTRIBUTE_SAFE_LARGE,        "SAFE_LARGE",        false) \
+  X (ATTRIBUTE_MODEL_EPSILON,     "MODEL_EPSILON",     false) \
+  X (ATTRIBUTE_MODEL_SMALL,       "MODEL_SMALL",       false) \
+  /* Fixed-point model (RM 3.5.10) */ \
+  X (ATTRIBUTE_DELTA,             "DELTA",             false) \
+  X (ATTRIBUTE_FORE,              "FORE",              false) \
+  X (ATTRIBUTE_AFT,               "AFT",               false) \
+  /* Machine model (RM 3.5.8) */ \
+  X (ATTRIBUTE_MACHINE_ROUNDS,    "MACHINE_ROUNDS",    false) \
+  X (ATTRIBUTE_MACHINE_OVERFLOWS, "MACHINE_OVERFLOWS", false) \
+  X (ATTRIBUTE_MACHINE_RADIX,     "MACHINE_RADIX",     false) \
+  X (ATTRIBUTE_MACHINE_MANTISSA,  "MACHINE_MANTISSA",  false) \
+  X (ATTRIBUTE_MACHINE_EMAX,      "MACHINE_EMAX",      false) \
+  X (ATTRIBUTE_MACHINE_EMIN,      "MACHINE_EMIN",      false) \
+  /* Objects and tasks (RM 3.7.4, 9.9) */ \
+  X (ATTRIBUTE_CONSTRAINED,       "CONSTRAINED",       false) \
+  X (ATTRIBUTE_CALLABLE,          "CALLABLE",          false) \
+  X (ATTRIBUTE_TERMINATED,        "TERMINATED",        false) \
+  X (ATTRIBUTE_COUNT,             "COUNT",             false) \
+  /* Type views (RM 3.3.3) */ \
+  X (ATTRIBUTE_BASE,              "BASE",              true )
+
+typedef enum {
+  ATTRIBUTE_UNKNOWN = 0,
+#define ATTRIBUTE_KIND_ENUMERATOR(enumerator, designator, type_view) \
+  enumerator,
+  ATTRIBUTE_KIND_LIST (ATTRIBUTE_KIND_ENUMERATOR)
+#undef ATTRIBUTE_KIND_ENUMERATOR
+  ATTRIBUTE_KIND_COUNT
+} Attribute_Kind;
+
+// Per-attribute properties, indexed by Attribute_Kind. The designator slice
+// backs the name-to-kind lookup; the view flag gates the implicit access
+// dereference of RM 4.1(3) (see ATTRIBUTE_KIND_LIST).
+typedef struct Attribute_Properties {
+  String_Slice designator;
+  bool         prefix_is_type_view;
+} Attribute_Properties;
+extern const Attribute_Properties Attribute_Properties_Table[ATTRIBUTE_KIND_COUNT];
+
+// The single designator-name-to-kind lookup: linear scan over the table,
+// case-insensitive (same shape as Lookup_Keyword). Unrecognized names map
+// to ATTRIBUTE_UNKNOWN.
+Attribute_Kind Attribute_Kind_From_Name (String_Slice designator);
+
 // Parameter Mode Kind  (extracted from NK_PARAM_SPEC payload)
 typedef enum {MODE_IN, MODE_OUT, MODE_IN_OUT} Parameter_Mode_Kind;
 
@@ -996,9 +1094,10 @@ struct Syntax_Node {
 
     // when NK_ATTRIBUTE =>
     struct {
-      Syntax_Node *prefix;    // The prefix before the tick
-      String_Slice name;      // Attribute designator
-      Node_List    arguments; // Optional attribute arguments
+      Syntax_Node   *prefix;    // The prefix before the tick
+      String_Slice   name;      // Attribute designator (kept for diagnostics)
+      Attribute_Kind kind;      // Designator kind; set wherever name is set
+      Node_List      arguments; // Optional attribute arguments
     } attribute;
 
     // when NK_QUALIFIED =>
@@ -1443,9 +1542,10 @@ struct Syntax_Node {
 
     // when NK_REPRESENTATION_CLAUSE =>
     struct {
-      Syntax_Node *entity_name;       // Entity being represented
-      String_Slice attribute;         // Representation attribute
-      Syntax_Node *expression;        // Representation expression
+      Syntax_Node   *entity_name;    // Entity being represented
+      String_Slice   attribute;      // Representation attribute (diagnostics)
+      Attribute_Kind attribute_kind; // Designator kind of that attribute
+      Syntax_Node   *expression;     // Representation expression
       Node_List    component_clauses; // Record rep component clauses
       bool         is_record_rep;     // True for record rep clause
       bool         is_enum_rep;       // True for enum rep clause
@@ -1973,6 +2073,15 @@ int         Float_Effective_Digits (const Type_Info *t);
 void Float_Model_Parameters (const Type_Info *t,
                               int64_t         *out_mantissa,
                               int64_t         *out_emax);
+
+// The compile-time value of a real model attribute (EPSILON, SMALL, LARGE,
+// SAFE_SMALL, SAFE_LARGE) of a floating-point, fixed-point, or universal
+// prefix (RM 3.5.8, 3.5.10). `prefix_type` carries the declared view;
+// `classify_type` is the generic-actual-resolved view used to classify
+// fixed-point prefixes.
+double Float_Model_Attribute_Value (Attribute_Kind   attribute_kind,
+                                    const Type_Info *prefix_type,
+                                    const Type_Info *classify_type);
 
 bool        Is_Slice_Index_Arg             (const Syntax_Node *arg);
 bool        Expression_Is_Slice             (const Syntax_Node *node);
@@ -3276,6 +3385,13 @@ LLVM_Value Generate_Unary_Op          (Syntax_Node *node);
 LLVM_Value Generate_Apply             (Syntax_Node *node);
 LLVM_Value Generate_Selected          (Syntax_Node *node);
 LLVM_Value Generate_Attribute         (Syntax_Node *node);
+
+// The shared tail of a constant-valued integer attribute arm: load `value`
+// into the caller's pre-allocated result register `t`, tagged with the
+// attribute's IR comment, and return it at the integer working width.
+LLVM_Value Emit_Attribute_Integer_Constant (uint32_t    t,
+                                            int64_t     value,
+                                            const char *comment);
 uint32_t   Emit_Fixed_Range_Mantissa  (Type_Info *ft, double small);
 uint32_t   Emit_Fixed_Mantissa_Runtime (Type_Info *ft, double small);
 uint32_t   Emit_Fixed_Fore_Runtime    (Type_Info *ft, double small);
@@ -5333,6 +5449,7 @@ Syntax_Node *Unwrap_Association (Syntax_Node *n) {
 const Syntax_Tree_Edge Syntax_Tree_Shape[NK_COUNT][6] = {
   SYNTAX_TREE_SHAPE_LIST (SHAPE_ROW)
 };
+
 #undef SHAPE_ROW
 #define SHAPE_ONE(kind, ...) + 1
 _Static_assert (0 SYNTAX_TREE_SHAPE_LIST (SHAPE_ONE) == NK_COUNT,
@@ -5340,6 +5457,27 @@ _Static_assert (0 SYNTAX_TREE_SHAPE_LIST (SHAPE_ONE) == NK_COUNT,
 #undef SHAPE_ONE
 #undef KID
 #undef KIDS
+
+// The per-attribute property table, generated from ATTRIBUTE_KIND_LIST
+// (§8 spec). The ATTRIBUTE_UNKNOWN row stays zeroed: an empty designator
+// that matches nothing, with the type-view flag off.
+#define ATTRIBUTE_PROPERTIES_ROW(enumerator, designator, type_view) \
+  [enumerator] = { S (designator), type_view },
+const Attribute_Properties Attribute_Properties_Table[ATTRIBUTE_KIND_COUNT] = {
+  ATTRIBUTE_KIND_LIST (ATTRIBUTE_PROPERTIES_ROW)
+};
+#undef ATTRIBUTE_PROPERTIES_ROW
+
+// Linear scan over the fifty-one designators, matching Lookup_Keyword's
+// pattern. Attribute references are rare enough in source text that a scan
+// beats maintaining a second hash structure.
+Attribute_Kind Attribute_Kind_From_Name (String_Slice designator) {
+  for (int kind = ATTRIBUTE_UNKNOWN + 1; kind < ATTRIBUTE_KIND_COUNT; kind++)
+    if (Slice_Equal_Ignore_Case (designator,
+                                 Attribute_Properties_Table[kind].designator))
+      return (Attribute_Kind) kind;
+  return ATTRIBUTE_UNKNOWN;
+}
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 // §9. PARSER - Recursive Descent with Unified Postfix Handling                                     
@@ -5840,6 +5978,7 @@ Syntax_Node *Parse_Name (Parser *p) {
         } else {
           Parser_Error_At_Current (p, "attribute name");
         }
+        attr->attribute.kind = Attribute_Kind_From_Name (attr->attribute.name);
 
         // Optional attribute arguments (one or more)
         if (Parser_Match (p, TK_LPAREN)) {
@@ -7597,7 +7736,8 @@ Syntax_Node *Parse_Representation_Clause (Parser *p) {
   if (node->rep_clause.entity_name and
     node->rep_clause.entity_name->kind == NK_ATTRIBUTE) {
     Syntax_Node *attr_node = node->rep_clause.entity_name;
-    node->rep_clause.attribute = attr_node->attribute.name;
+    node->rep_clause.attribute      = attr_node->attribute.name;
+    node->rep_clause.attribute_kind = attr_node->attribute.kind;
     node->rep_clause.entity_name = attr_node->attribute.prefix;
 
   // Fallback: tick not consumed by Parse_Name
@@ -7605,6 +7745,8 @@ Syntax_Node *Parse_Representation_Clause (Parser *p) {
     Parser_Advance (p);
     if (Parser_At (p, TK_IDENTIFIER)) {
       node->rep_clause.attribute = p->current_token.text;
+      node->rep_clause.attribute_kind =
+        Attribute_Kind_From_Name (node->rep_clause.attribute);
       Parser_Advance (p);
     }
   }
@@ -8311,6 +8453,88 @@ void Float_Model_Parameters (const Type_Info *type_info,
   if (out_mantissa) *out_mantissa = mantissa;
   if (out_emax)     *out_emax     = emax;
 }
+
+double Float_Model_Attribute_Value (Attribute_Kind   attribute_kind,
+                                    const Type_Info *prefix_type,
+                                    const Type_Info *classify_type) {
+  switch (attribute_kind) {
+
+    // T'EPSILON = 2^(1 - MANTISSA) (RM 3.5.8(9))
+    case ATTRIBUTE_EPSILON: {
+      int64_t mantissa = IEEE_DOUBLE_MANTISSA - 1;
+      if (Type_Is_Float (prefix_type))
+        Float_Model_Parameters (prefix_type, &mantissa, NULL);
+      return pow (2.0, 1 - mantissa);
+    }
+
+    // T'SMALL - fixed-point: power of 2 <= delta; float: 2^(-EMAX - 1)
+    case ATTRIBUTE_SMALL: {
+      if (Type_Is_Fixed_Point (classify_type))
+        return Fixed_Small (classify_type);
+      if (Type_Is_Float (prefix_type)) {
+        int64_t mantissa, emax;
+        Float_Model_Parameters (prefix_type, &mantissa, &emax);
+        return pow (2.0, -(emax + 1));
+      }
+      return pow (2.0, -(IEEE_DOUBLE_EMIN));  // 2^-1022
+    }
+
+    // T'LARGE - fixed-point: (2^MANTISSA - 1) * SMALL (RM 3.5.10)
+    // float: 2^EMAX * (1 - 2^(-MANTISSA)) (RM 3.5.8(10))
+    case ATTRIBUTE_LARGE: {
+      if (Type_Is_Fixed_Point (classify_type)) {
+        double small = Fixed_Small (classify_type);
+        double bound = fmax (fabs (Type_Bound_Float_Value (classify_type->low_bound)),
+                             fabs (Type_Bound_Float_Value (classify_type->high_bound)));
+        int64_t mantissa = Fixed_Point_Mantissa (bound, small);
+        return ((double)((1LL << mantissa) - 1)) * small;
+      }
+      if (Type_Is_Float (prefix_type)) {
+        int64_t mantissa, emax;
+        Float_Model_Parameters (prefix_type, &mantissa, &emax);
+        return pow (2.0, emax) * (1.0 - pow (2.0, -mantissa));
+      }
+      return __DBL_MAX__;
+    }
+
+    // T'SAFE_SMALL - smallest positive safe value
+    // Fixed-point (RM 3.5.10): SAFE_SMALL = BASE'SMALL
+    // Float (RM 3.5.8): 2^(-(SAFE_EMAX+1))
+    case ATTRIBUTE_SAFE_SMALL: {
+      if (Type_Is_Fixed_Point (classify_type))
+        return Fixed_Small (classify_type->base_type ? classify_type->base_type
+                                                     : classify_type);
+      return Type_Is_Float (prefix_type) and Float_Is_Single (prefix_type)
+        ? IEEE_FLOAT_MIN_NORMAL : IEEE_DOUBLE_MIN_NORMAL;
+    }
+
+    // T'SAFE_LARGE - largest safe value
+    // Fixed-point (RM 3.5.10): SAFE_LARGE = BASE'LARGE = (2^B_MANT - 1) * BASE'SMALL
+    // Float (RM 3.5.8): 2^(SAFE_EMAX) * (1 - 2^(-MANTISSA))
+    case ATTRIBUTE_SAFE_LARGE: {
+      if (Type_Is_Fixed_Point (classify_type)) {
+        const Type_Info *base = classify_type->base_type ? classify_type->base_type
+                                                         : classify_type;
+        double small = Fixed_Small (base);
+        double bound = fmax (fabs (Type_Bound_Float_Value (base->low_bound)),
+                             fabs (Type_Bound_Float_Value (base->high_bound)));
+        int64_t mantissa = Fixed_Point_Mantissa (bound, small);
+        return ((double)((1LL << mantissa) - 1)) * small;
+      }
+      int emax = IEEE_DOUBLE_EMAX;
+      int mantissa = IEEE_DOUBLE_MANTISSA;
+      if (Type_Is_Float (prefix_type) and Float_Is_Single (prefix_type)) {
+        emax = IEEE_FLOAT_EMAX;
+        mantissa = IEEE_FLOAT_MANTISSA;
+      }
+      return pow (2.0, emax - 1) * (1.0 - pow (2.0, -mantissa));
+    }
+
+    default:
+      return 0.0;  // not a real model attribute
+  }
+}
+
 bool Type_Has_Generic_Actual_View (const Type_Info *t) {
   for (; t; t = t->base_type)
     if (t->is_generic_actual_view) return true;
@@ -8504,8 +8728,7 @@ uint32_t Emit_Type_Byte_Size (Type_Info *t) {
 bool Is_Slice_Index_Arg (const Syntax_Node *arg) {
   if (not arg) return false;
   if (arg->kind == NK_RANGE) return true;
-  if (arg->kind == NK_ATTRIBUTE and
-      Slice_Equal_Ignore_Case (arg->attribute.name, S("RANGE")))
+  if (arg->kind == NK_ATTRIBUTE and arg->attribute.kind == ATTRIBUTE_RANGE)
     return true;
   // RM 4.1.2: a slice's discrete range may be written as a subtype mark
   // (A (DT)) or a constrained subtype indication (A (DT RANGE L .. R)).
@@ -11609,8 +11832,7 @@ Type_Info *Resolve_Apply (Syntax_Node *node) {
         Syntax_Node *a = node->apply.arguments.items[i];
         Syntax_Node *attr_prefix = NULL;  // prefix to take 'FIRST/'LAST of
         Syntax_Node *explicit_range = NULL;
-        if (a->kind == NK_ATTRIBUTE and
-            Slice_Equal_Ignore_Case (a->attribute.name, S("RANGE")))
+        if (a->kind == NK_ATTRIBUTE and a->attribute.kind == ATTRIBUTE_RANGE)
           attr_prefix = a->attribute.prefix;
         else if (a->kind == NK_IDENTIFIER and a->symbol and
                  (a->symbol->kind == SYMBOL_TYPE or a->symbol->kind == SYMBOL_SUBTYPE))
@@ -11639,9 +11861,11 @@ Type_Info *Resolve_Apply (Syntax_Node *node) {
           Syntax_Node *lo = Node_New (NK_ATTRIBUTE, a->location);
           lo->attribute.prefix = attr_prefix;
           lo->attribute.name   = S("FIRST");
+          lo->attribute.kind   = ATTRIBUTE_FIRST;
           Syntax_Node *hi = Node_New (NK_ATTRIBUTE, a->location);
           hi->attribute.prefix = attr_prefix;
           hi->attribute.name   = S("LAST");
+          hi->attribute.kind   = ATTRIBUTE_LAST;
           if (a->kind == NK_ATTRIBUTE)
             for (uint32_t ai = 0; ai < a->attribute.arguments.count; ai++) {
               Node_List_Push (&lo->attribute.arguments, a->attribute.arguments.items[ai]);
@@ -11886,19 +12110,19 @@ double Eval_Const_Numeric_Impl (Syntax_Node *node) {
       return 0.0/0.0;
     case NK_ATTRIBUTE: {
       Type_Info *ty = node->attribute.prefix ? node->attribute.prefix->type : NULL;
-      String_Slice a = node->attribute.name;
+      Attribute_Kind attribute_kind = node->attribute.kind;
       if (not ty) return 0.0/0.0;
-      if (Slice_Equal_Ignore_Case (a, S("SIZE")))
+      if (attribute_kind == ATTRIBUTE_SIZE)
         return (double)(ty->size * 8);
-      if (Slice_Equal_Ignore_Case (a, S("FIRST"))) {
+      if (attribute_kind == ATTRIBUTE_FIRST) {
         if (ty->low_bound.kind == BOUND_INTEGER) return (double)ty->low_bound.int_value;
         if (ty->low_bound.kind == BOUND_FLOAT)   return ty->low_bound.float_value;
       }
-      if (Slice_Equal_Ignore_Case (a, S("LAST"))) {
+      if (attribute_kind == ATTRIBUTE_LAST) {
         if (ty->high_bound.kind == BOUND_INTEGER) return (double)ty->high_bound.int_value;
         if (ty->high_bound.kind == BOUND_FLOAT)   return ty->high_bound.float_value;
       }
-      if (Slice_Equal_Ignore_Case (a, S("LENGTH"))) {
+      if (attribute_kind == ATTRIBUTE_LENGTH) {
         // 'LENGTH is static only for a CONSTRAINED array subtype. For an
         // unconstrained formal (X : STRING), the bounds live in the actual's
         // fat pointer at run time — the type's own index range is the full
@@ -11912,7 +12136,7 @@ double Eval_Const_Numeric_Impl (Syntax_Node *node) {
           return (double)(hi - lo + 1);
         }
       }
-      if (Slice_Equal_Ignore_Case (a, S("POS")) and
+      if (attribute_kind == ATTRIBUTE_POS and
         node->attribute.arguments.count == 1)
         return Eval_Const_Numeric (node->attribute.arguments.items[0]);
       return 0.0/0.0;
@@ -12549,7 +12773,7 @@ void Fold_Static_Discriminant_Record_Layout (Type_Info *rec) {
 // type, indexed-name subtype, and subtype-indication subtype).
 bool Index_Bound_From_Range_Attr (Syntax_Node *idx, Index_Info *info) {
   if (not idx or idx->kind != NK_ATTRIBUTE or not idx->attribute.prefix
-      or not Slice_Equal_Ignore_Case (idx->attribute.name, S("RANGE")))
+      or idx->attribute.kind != ATTRIBUTE_RANGE)
     return false;
   Type_Info *pfx = idx->attribute.prefix->type;
   // RM 4.1(3): P'RANGE where P is access-to-array denotes the designated array.
@@ -12580,7 +12804,7 @@ bool Index_Bound_From_Range_Attr (Syntax_Node *idx, Index_Info *info) {
 // Returns true iff RANGE was a 'RANGE attribute (and INFO was filled).
 bool Resolve_Range_Attr_Index (Syntax_Node *range, Index_Info *info) {
   if (not range or range->kind != NK_ATTRIBUTE or not range->attribute.prefix
-      or not Slice_Equal_Ignore_Case (range->attribute.name, S("RANGE")))
+      or range->attribute.kind != ATTRIBUTE_RANGE)
     return false;
   Type_Info *rpfx_raw = range->attribute.prefix->type;
   Type_Info *rpfx = rpfx_raw;
@@ -12601,9 +12825,11 @@ bool Resolve_Range_Attr_Index (Syntax_Node *range, Index_Info *info) {
   Syntax_Node *lo = Node_New (NK_ATTRIBUTE, range->location);
   lo->attribute.prefix = range->attribute.prefix;
   lo->attribute.name   = S("FIRST");
+  lo->attribute.kind   = ATTRIBUTE_FIRST;
   Syntax_Node *hi = Node_New (NK_ATTRIBUTE, range->location);
   hi->attribute.prefix = range->attribute.prefix;
   hi->attribute.name   = S("LAST");
+  hi->attribute.kind   = ATTRIBUTE_LAST;
   for (uint32_t ai = 0; ai < range->attribute.arguments.count; ai++) {
     Node_List_Push (&lo->attribute.arguments, range->attribute.arguments.items[ai]);
     Node_List_Push (&hi->attribute.arguments, range->attribute.arguments.items[ai]);
@@ -13241,7 +13467,7 @@ Type_Info *Resolve_Expression (Syntax_Node *node) {
       // Resolve attribute arguments with type context for certain attributes
       {
         Type_Info *prefix_type = node->attribute.prefix->type;
-        String_Slice attr = node->attribute.name;
+        Attribute_Kind attribute_kind = node->attribute.kind;
 
         // For POS, SUCC, PRED, IMAGE the operand is a value of the prefix type
         // (RM 3.5.5), so it takes the prefix type as its expected type for
@@ -13249,10 +13475,10 @@ Type_Info *Resolve_Expression (Syntax_Node *node) {
         // enumerations (e.g. NATURAL'POS (1 + 1) must resolve "+" in NATURAL).
         bool operand_takes_prefix_type =
           prefix_type and Type_Is_Scalar (prefix_type) and
-          (Slice_Equal_Ignore_Case (attr, S("POS")) or
-           Slice_Equal_Ignore_Case (attr, S("SUCC")) or
-           Slice_Equal_Ignore_Case (attr, S("PRED")) or
-           Slice_Equal_Ignore_Case (attr, S("IMAGE")));
+          (attribute_kind == ATTRIBUTE_POS or
+           attribute_kind == ATTRIBUTE_SUCC or
+           attribute_kind == ATTRIBUTE_PRED or
+           attribute_kind == ATTRIBUTE_IMAGE);
 
         // The character-literal disambiguation below applies only when the
         // prefix is an enumeration whose literals may be character literals.
@@ -13306,8 +13532,8 @@ Type_Info *Resolve_Expression (Syntax_Node *node) {
             //   VALUE: arg is STRING (RM 3.5.5) — needed so
             //   overloaded functions returning STRING vs other
             //   types resolve to the STRING one (c87b07c).
-            bool is_val = Slice_Equal_Ignore_Case (attr, S("VAL"));
-            bool is_value = Slice_Equal_Ignore_Case (attr, S("VALUE"));
+            bool is_val = attribute_kind == ATTRIBUTE_VAL;
+            bool is_value = attribute_kind == ATTRIBUTE_VALUE;
             if (arg and not arg->type and
               (arg->kind == NK_IDENTIFIER or arg->kind == NK_APPLY or
                arg->kind == NK_BINARY_OP or arg->kind == NK_UNARY_OP)) {
@@ -13320,146 +13546,146 @@ Type_Info *Resolve_Expression (Syntax_Node *node) {
         }
       }
 
-      // Attribute type depends on attribute name and prefix type
+      // Attribute type depends on attribute kind and prefix type
       {
         Type_Info *prefix_type = node->attribute.prefix->type;
-        String_Slice attr = node->attribute.name;
+        Attribute_Kind attribute_kind = node->attribute.kind;
 
-        // Implicit dereference for access types (RM 4.1(3))                                        
-        // A1'FIRST where A1 is access-to-array is equivalent to A1.ALL'FIRST                       
-        // But NOT for type-level attributes like SIZE, STORAGE_SIZE, BASE (RM 13.7.2)              
-        //                                                                                          
+        // Implicit dereference for access types (RM 4.1(3))
+        // A1'FIRST where A1 is access-to-array is equivalent to A1.ALL'FIRST
+        // But NOT for type-level attributes like SIZE, STORAGE_SIZE, BASE (RM 13.7.2)
+        //
         if (Type_Is_Access (prefix_type) and
           prefix_type->access.designated_type and
-          not Slice_Equal_Ignore_Case (attr, S("SIZE")) and
-          not Slice_Equal_Ignore_Case (attr, S("STORAGE_SIZE")) and
-          not Slice_Equal_Ignore_Case (attr, S("BASE")) and
-          not Slice_Equal_Ignore_Case (attr, S("ADDRESS"))) {
+          not Attribute_Properties_Table[attribute_kind].prefix_is_type_view) {
           prefix_type = prefix_type->access.designated_type;
         }
 
-        // FIRST, LAST return the index type for arrays, base type for scalars
-        if (Slice_Equal_Ignore_Case (attr, S("FIRST")) or
-          Slice_Equal_Ignore_Case (attr, S("LAST"))) {
+        switch (attribute_kind) {
 
-          // For arrays, FIRST/LAST return the actual index type for that dimension
-          if (Type_Is_Array_Like (prefix_type)) {
-            uint32_t dim = 0;  // Default to first dimension (0-indexed)
-            if (node->attribute.arguments.count > 0) {
-              Syntax_Node *dim_arg = node->attribute.arguments.items[0];
-              if (dim_arg and dim_arg->kind == NK_INTEGER) {
-                dim = (uint32_t)(dim_arg->integer_lit.value - 1);
+          // FIRST, LAST return the index type for arrays, base type for scalars
+          case ATTRIBUTE_FIRST:
+          case ATTRIBUTE_LAST:
+
+            // For arrays, FIRST/LAST return the actual index type for that dimension
+            if (Type_Is_Array_Like (prefix_type)) {
+              uint32_t dim = 0;  // Default to first dimension (0-indexed)
+              if (node->attribute.arguments.count > 0) {
+                Syntax_Node *dim_arg = node->attribute.arguments.items[0];
+                if (dim_arg and dim_arg->kind == NK_INTEGER) {
+                  dim = (uint32_t)(dim_arg->integer_lit.value - 1);
+                }
               }
+
+              // Get the index type for this dimension
+              if (prefix_type->kind == TYPE_ARRAY and
+                prefix_type->array.indices and
+                dim < prefix_type->array.index_count and
+                prefix_type->array.indices[dim].index_type) {
+                node->type = prefix_type->array.indices[dim].index_type;
+
+              // Default to INTEGER for strings or missing info
+              } else {
+                node->type = sm->type_integer;
+              }
+
+            // For scalar types, return the type itself
+            } else {
+              node->type = prefix_type ? prefix_type : sm->type_integer;
             }
+            break;
 
-            // Get the index type for this dimension
-            if (prefix_type->kind == TYPE_ARRAY and
-              prefix_type->array.indices and
-              dim < prefix_type->array.index_count and
-              prefix_type->array.indices[dim].index_type) {
-              node->type = prefix_type->array.indices[dim].index_type;
+          // VAL, SUCC, PRED return the base type (for scalar types)
+          case ATTRIBUTE_VAL:
+          case ATTRIBUTE_SUCC:
+          case ATTRIBUTE_PRED:
+            node->type = prefix_type ? prefix_type : sm->type_integer;
+            break;
 
-            // Default to INTEGER for strings or missing info
+          // POS returns universal integer
+          case ATTRIBUTE_POS:
+            node->type = sm->type_universal_integer;
+            break;
+
+          // IMAGE returns STRING
+          case ATTRIBUTE_IMAGE:
+            node->type = sm->type_string;
+            break;
+
+          // SIZE, LENGTH, COUNT, WIDTH, MANTISSA, etc. return universal integer
+          case ATTRIBUTE_SIZE:
+          case ATTRIBUTE_LENGTH:
+          case ATTRIBUTE_COUNT:
+          case ATTRIBUTE_WIDTH:
+          case ATTRIBUTE_MANTISSA:
+          case ATTRIBUTE_MACHINE_MANTISSA:
+          case ATTRIBUTE_DIGITS:
+          case ATTRIBUTE_EMAX:
+          case ATTRIBUTE_MACHINE_EMAX:
+          case ATTRIBUTE_MACHINE_EMIN:
+          case ATTRIBUTE_MACHINE_RADIX:
+          case ATTRIBUTE_SAFE_EMAX:
+          case ATTRIBUTE_STORAGE_SIZE:
+          case ATTRIBUTE_MODULUS:
+          case ATTRIBUTE_AFT:
+          case ATTRIBUTE_FORE:
+            node->type = sm->type_universal_integer;
+            break;
+
+          // Floating-point type attributes returning universal_real (RM 3.5.8)
+          case ATTRIBUTE_EPSILON:
+          case ATTRIBUTE_SMALL:
+          case ATTRIBUTE_LARGE:
+          case ATTRIBUTE_SAFE_SMALL:
+          case ATTRIBUTE_SAFE_LARGE:
+          case ATTRIBUTE_DELTA:
+          case ATTRIBUTE_MODEL_EPSILON:
+          case ATTRIBUTE_MODEL_SMALL:
+            node->type = sm->type_universal_real;
+            break;
+
+          // Boolean attributes (RM 3.5.8, 3.7.1, 9.9)
+          case ATTRIBUTE_MACHINE_OVERFLOWS:
+          case ATTRIBUTE_MACHINE_ROUNDS:
+          case ATTRIBUTE_CONSTRAINED:
+          case ATTRIBUTE_CALLABLE:
+          case ATTRIBUTE_TERMINATED:
+            node->type = sm->type_boolean;
+            break;
+
+          // ADDRESS attribute returns SYSTEM.ADDRESS (RM 13.7.2)
+          case ATTRIBUTE_ADDRESS:
+            node->type = sm->type_address;
+            break;
+
+          // BASE attribute returns the base type (RM 3.3.2)
+          //
+          // T'BASE is a type, used as prefix for other attributes like T'BASE'FIRST
+          // The type should be the base type of the prefix type.
+          // For derived types (TYPE T IS NEW X), follow parent_type chain.
+          // For constrained subtypes (SUBTYPE S IS X RANGE ...), follow base_type chain.
+          // Use Type_Root to handle both cases and find the root type.
+          //
+          case ATTRIBUTE_BASE:
+            if (prefix_type) {
+              Type_Info *base = Type_Root (prefix_type);
+              node->type = base ? base : prefix_type;
             } else {
               node->type = sm->type_integer;
             }
+            break;
 
-          // For scalar types, return the type itself
-          } else {
+          // VALUE attribute returns the type itself (converts string to type)
+          case ATTRIBUTE_VALUE:
+
+            // T'VALUE (S) returns a value of type T
             node->type = prefix_type ? prefix_type : sm->type_integer;
-          }
-        }
+            break;
 
-        // VAL, SUCC, PRED return the base type (for scalar types)
-        else if (Slice_Equal_Ignore_Case (attr, S("VAL")) or
-             Slice_Equal_Ignore_Case (attr, S("SUCC")) or
-             Slice_Equal_Ignore_Case (attr, S("PRED"))) {
-          node->type = prefix_type ? prefix_type : sm->type_integer;
-        }
-
-        // POS returns universal integer
-        else if (Slice_Equal_Ignore_Case (attr, S("POS"))) {
-          node->type = sm->type_universal_integer;
-        }
-
-        // IMAGE returns STRING
-        else if (Slice_Equal_Ignore_Case (attr, S("IMAGE"))) {
-          node->type = sm->type_string;
-        }
-
-        // SIZE, LENGTH, COUNT, WIDTH, MANTISSA, etc. return universal integer
-        else if (Slice_Equal_Ignore_Case (attr, S("SIZE")) or
-             Slice_Equal_Ignore_Case (attr, S("LENGTH")) or
-             Slice_Equal_Ignore_Case (attr, S("COUNT")) or
-             Slice_Equal_Ignore_Case (attr, S("WIDTH")) or
-             Slice_Equal_Ignore_Case (attr, S("MANTISSA")) or
-             Slice_Equal_Ignore_Case (attr, S("MACHINE_MANTISSA")) or
-             Slice_Equal_Ignore_Case (attr, S("DIGITS")) or
-             Slice_Equal_Ignore_Case (attr, S("EMAX")) or
-             Slice_Equal_Ignore_Case (attr, S("MACHINE_EMAX")) or
-             Slice_Equal_Ignore_Case (attr, S("MACHINE_EMIN")) or
-             Slice_Equal_Ignore_Case (attr, S("MACHINE_RADIX")) or
-             Slice_Equal_Ignore_Case (attr, S("SAFE_EMAX")) or
-             Slice_Equal_Ignore_Case (attr, S("STORAGE_SIZE")) or
-             Slice_Equal_Ignore_Case (attr, S("MODULUS")) or
-             Slice_Equal_Ignore_Case (attr, S("AFT")) or
-             Slice_Equal_Ignore_Case (attr, S("FORE"))) {
-          node->type = sm->type_universal_integer;
-        }
-
-        // Floating-point type attributes returning universal_real (RM 3.5.8)
-        else if (Slice_Equal_Ignore_Case (attr, S("EPSILON")) or
-             Slice_Equal_Ignore_Case (attr, S("SMALL")) or
-             Slice_Equal_Ignore_Case (attr, S("LARGE")) or
-             Slice_Equal_Ignore_Case (attr, S("SAFE_SMALL")) or
-             Slice_Equal_Ignore_Case (attr, S("SAFE_LARGE")) or
-             Slice_Equal_Ignore_Case (attr, S("DELTA")) or
-             Slice_Equal_Ignore_Case (attr, S("MODEL_EPSILON")) or
-             Slice_Equal_Ignore_Case (attr, S("MODEL_SMALL"))) {
-          node->type = sm->type_universal_real;
-        }
-
-        // Boolean attributes (RM 3.5.8, 3.7.1, 9.9)
-        else if (Slice_Equal_Ignore_Case (attr, S("MACHINE_OVERFLOWS")) or
-             Slice_Equal_Ignore_Case (attr, S("MACHINE_ROUNDS")) or
-             Slice_Equal_Ignore_Case (attr, S("CONSTRAINED")) or
-             Slice_Equal_Ignore_Case (attr, S("CALLABLE")) or
-             Slice_Equal_Ignore_Case (attr, S("TERMINATED"))) {
-          node->type = sm->type_boolean;
-        }
-
-        // ADDRESS attribute returns SYSTEM.ADDRESS (RM 13.7.2)
-        else if (Slice_Equal_Ignore_Case (attr, S("ADDRESS"))) {
-          node->type = sm->type_address;
-        }
-
-        // BASE attribute returns the base type (RM 3.3.2)
-        else if (Slice_Equal_Ignore_Case (attr, S("BASE"))) {
-
-          // T'BASE is a type, used as prefix for other attributes like T'BASE'FIRST                
-          // The type should be the base type of the prefix type.                                  
-          // For derived types (TYPE T IS NEW X), follow parent_type chain.                        
-          // For constrained subtypes (SUBTYPE S IS X RANGE ...), follow base_type chain.          
-          // Use Type_Root to handle both cases and find the root type.                            
-          //                                                                                        
-          if (prefix_type) {
-            Type_Info *base = Type_Root (prefix_type);
-            node->type = base ? base : prefix_type;
-          } else {
+          // Default to integer for unhandled attributes
+          default:
             node->type = sm->type_integer;
-          }
-        }
-
-        // VALUE attribute returns the type itself (converts string to type)
-        else if (Slice_Equal_Ignore_Case (attr, S("VALUE"))) {
-
-          // T'VALUE (S) returns a value of type T
-          node->type = prefix_type ? prefix_type : sm->type_integer;
-        }
-
-        // Default to integer for unhandled attributes
-        else {
-          node->type = sm->type_integer;
+            break;
         }
       }
       return node->type;
@@ -14551,8 +14777,8 @@ Type_Info *Resolve_Expression (Syntax_Node *node) {
           if (expr->kind == NK_APPLY and expr->apply.prefix and
             expr->apply.prefix->kind == NK_ATTRIBUTE) {
             Syntax_Node *attr = expr->apply.prefix;
-            String_Slice attr_name = attr->attribute.name;
-            if (Slice_Equal_Ignore_Case (attr_name, S("POS")) and
+            Attribute_Kind attribute_kind = attr->attribute.kind;
+            if (attribute_kind == ATTRIBUTE_POS and
               expr->apply.arguments.count == 1) {
               Syntax_Node *arg = expr->apply.arguments.items[0];
               if (arg and arg->symbol and arg->symbol->kind == SYMBOL_LITERAL) {
@@ -14562,7 +14788,7 @@ Type_Info *Resolve_Expression (Syntax_Node *node) {
             }
 
             // Handle TYPE'VAL (N) where N is static
-            if (Slice_Equal_Ignore_Case (attr_name, S("VAL")) and
+            if (attribute_kind == ATTRIBUTE_VAL and
               expr->apply.arguments.count == 1) {
               Syntax_Node *arg = expr->apply.arguments.items[0];
               int64_t inner_val;
@@ -14588,16 +14814,16 @@ Type_Info *Resolve_Expression (Syntax_Node *node) {
 
           // Handle TYPE'VAL (...) or TYPE'POS (...) as NK_ATTRIBUTE with arguments
           if (expr->kind == NK_ATTRIBUTE and expr->attribute.arguments.count == 1) {
-            String_Slice attr_name = expr->attribute.name;
+            Attribute_Kind attribute_kind = expr->attribute.kind;
             Syntax_Node *arg = expr->attribute.arguments.items[0];
-            if (Slice_Equal_Ignore_Case (attr_name, S("VAL"))) {
+            if (attribute_kind == ATTRIBUTE_VAL) {
               int64_t inner_val;
               if (Try_Static_Bound (arg, &inner_val)) {
                 *out_val = inner_val;
                 return true;
               }
             }
-            if (Slice_Equal_Ignore_Case (attr_name, S("POS"))) {
+            if (attribute_kind == ATTRIBUTE_POS) {
               if (arg and arg->symbol and arg->symbol->kind == SYMBOL_LITERAL) {
                 *out_val = arg->symbol->frame_offset;
                 return true;
@@ -14988,14 +15214,16 @@ Type_Info *Resolve_Expression (Syntax_Node *node) {
                 constrained->low_bound  = range_attr_index.low_bound;
                 constrained->high_bound = range_attr_index.high_bound;
               } else if (range->kind == NK_ATTRIBUTE and
-                         Slice_Equal_Ignore_Case (range->attribute.name, S("RANGE"))) {
+                         range->attribute.kind == ATTRIBUTE_RANGE) {
                 Resolve_Expression (range->attribute.prefix);
                 Syntax_Node *lo = Node_New (NK_ATTRIBUTE, range->location);
                 lo->attribute.prefix = range->attribute.prefix;
                 lo->attribute.name   = S("FIRST");
+                lo->attribute.kind   = ATTRIBUTE_FIRST;
                 Syntax_Node *hi = Node_New (NK_ATTRIBUTE, range->location);
                 hi->attribute.prefix = range->attribute.prefix;
                 hi->attribute.name   = S("LAST");
+                hi->attribute.kind   = ATTRIBUTE_LAST;
                 for (uint32_t ai = 0; ai < range->attribute.arguments.count; ai++) {
                   Node_List_Push (&lo->attribute.arguments, range->attribute.arguments.items[ai]);
                   Node_List_Push (&hi->attribute.arguments, range->attribute.arguments.items[ai]);
@@ -20392,16 +20620,17 @@ void Resolve_Declaration (Syntax_Node *node) {
 
               // Apply representation
               // Size in bits - store exact and convert to bytes
-              if (Slice_Equal_Ignore_Case (attr, S("SIZE"))) {
+              Attribute_Kind attribute_kind = node->rep_clause.attribute_kind;
+              if (attribute_kind == ATTRIBUTE_SIZE) {
                 target_type->specified_bit_size = (uint32_t)value;
                 target_type->size = (uint32_t)((value + 7) / 8);
-              } else if (Slice_Equal_Ignore_Case (attr, S("ALIGNMENT"))) {
+              } else if (attribute_kind == ATTRIBUTE_ALIGNMENT) {
                 target_type->alignment = (uint32_t)value;
-              } else if (Slice_Equal_Ignore_Case (attr, S("STORAGE_SIZE"))) {
+              } else if (attribute_kind == ATTRIBUTE_STORAGE_SIZE) {
                 target_type->storage_size = value;
 
               // For fixed-point: set small value
-              } else if (Slice_Equal_Ignore_Case (attr, S("SMALL"))) {
+              } else if (attribute_kind == ATTRIBUTE_SMALL) {
                 if (Type_Is_Fixed_Point (target_type) and
                   node->rep_clause.expression->kind == NK_REAL) {
                   target_type->fixed.small =
@@ -27744,7 +27973,7 @@ LLVM_Value Emit_Binary_Op_Predefined (Syntax_Node *node) {
           if (negate) { LLVM_I1 nx = Emit_Not_I1 (in_range); t = nx.reg; }
           else        { t = in_range.reg; }
         } else if (node->binary.right and node->binary.right->kind == NK_ATTRIBUTE and
-               Slice_Equal_Ignore_Case (node->binary.right->attribute.name, S("RANGE"))) {
+               node->binary.right->attribute.kind == ATTRIBUTE_RANGE) {
 
           // X IN A'RANGE or X IN A'RANGE (N) - expand to A'FIRST (N) <= X <= A'LAST (N)
           Syntax_Node *attr_node = node->binary.right;
@@ -31489,9 +31718,18 @@ uint32_t Emit_Fixed_Large_Runtime (Type_Info *ft, double small) {
   return large;
 }
 
+LLVM_Value Emit_Attribute_Integer_Constant (uint32_t t, int64_t value,
+                                            const char *comment) {
+  LLVM_Rep rep = Integer_Arith_Rep ();
+  Emit ("  %%t%u = add %s 0, %lld  ; %s\n",
+        t, LLVM_Rep_To_String (rep), (long long) value, comment);
+  return Val_Rep (t, rep);
+}
+
 LLVM_Value Generate_Attribute (Syntax_Node *node) {
   Type_Info *prefix_type = node->attribute.prefix->type;
-  String_Slice attr = node->attribute.name;
+  String_Slice attr = node->attribute.name;   // diagnostics and IR comments
+  Attribute_Kind attribute_kind = node->attribute.kind;
   uint32_t t = Emit_Temp ();
   Syntax_Node *first_arg = node->attribute.arguments.count > 0
                ? node->attribute.arguments.items[0] : NULL;
@@ -31502,7 +31740,7 @@ LLVM_Value Generate_Attribute (Syntax_Node *node) {
   // Without this, T'BASE'FIRST/LAST incorrectly uses the subtype's bounds (RM 3.3.3).             
   //                                                                                                
   if (node->attribute.prefix->kind == NK_ATTRIBUTE and
-    Slice_Equal_Ignore_Case (node->attribute.prefix->attribute.name, S("BASE")) and
+    node->attribute.prefix->attribute.kind == ATTRIBUTE_BASE and
     prefix_type and prefix_type->base_type)
     prefix_type = Type_Root (prefix_type);
 
@@ -31518,13 +31756,7 @@ LLVM_Value Generate_Attribute (Syntax_Node *node) {
   // 13.7.3 storage-layout attributes 'FIRST_BIT / 'LAST_BIT / 'POSITION
   // which do not evaluate the prefix's designated object (c41402a).
   if (Type_Is_Access (prefix_type) and prefix_type->access.designated_type and
-    not Slice_Equal_Ignore_Case (attr, S("SIZE")) and
-    not Slice_Equal_Ignore_Case (attr, S("STORAGE_SIZE")) and
-    not Slice_Equal_Ignore_Case (attr, S("BASE")) and
-    not Slice_Equal_Ignore_Case (attr, S("ADDRESS")) and
-    not Slice_Equal_Ignore_Case (attr, S("FIRST_BIT")) and
-    not Slice_Equal_Ignore_Case (attr, S("LAST_BIT")) and
-    not Slice_Equal_Ignore_Case (attr, S("POSITION"))) {
+    not Attribute_Properties_Table[attribute_kind].prefix_is_type_view) {
     // RM 4.1(9): dereferencing a null access raises CONSTRAINT_ERROR.
     // The attribute is defined in terms of the designated object, so it
     // must be evaluated before the attribute is applied — emit the check
@@ -31560,9 +31792,9 @@ LLVM_Value Generate_Attribute (Syntax_Node *node) {
   // helper emits at varying widths (i32 static, bound-type runtime); coerce to
   // node->type's width so the result matches LLVM_Rep_To_String (Expression_LLVM_Rep (e.g. i8 for
   // a narrow index)), instead of feeding an i32 bound to an i8-typed consumer.
-  if (Slice_Equal_Ignore_Case (attr, S("FIRST")) or
-      Slice_Equal_Ignore_Case (attr, S("LAST"))) {
-    bool is_low = Slice_Equal_Ignore_Case (attr, S("FIRST"));
+  if (attribute_kind == ATTRIBUTE_FIRST or
+      attribute_kind == ATTRIBUTE_LAST) {
+    bool is_low = attribute_kind == ATTRIBUTE_FIRST;
     LLVM_Value bv = Emit_Bound_Attribute (t, prefix_type, prefix_sym,
            node->attribute.prefix, needs_runtime_bounds, dim, is_low, attr);
     if (node->type and Type_Is_Scalar (node->type)) {
@@ -31571,7 +31803,7 @@ LLVM_Value Generate_Attribute (Syntax_Node *node) {
     }
     return bv;
   }
-  if (Slice_Equal_Ignore_Case (attr, S("LENGTH"))) {
+  if (attribute_kind == ATTRIBUTE_LENGTH) {
     if (Type_Is_Array_Like (prefix_type)) {
       if (needs_runtime_bounds) {
         LLVM_Rep len_bt = Array_Bound_LLVM_Rep (prefix_type);
@@ -31632,7 +31864,7 @@ LLVM_Value Generate_Attribute (Syntax_Node *node) {
 
   // Range attribute - for general expression contexts, return low bound.
   // For loops handle RANGE specially in Generate_For_Loop.
-  if (Slice_Equal_Ignore_Case (attr, S("RANGE"))) {
+  if (attribute_kind == ATTRIBUTE_RANGE) {
     if (Type_Is_Array_Like (prefix_type)) {
       if (needs_runtime_bounds) {
         LLVM_Rep rng_bt = Array_Bound_LLVM_Rep (prefix_type);
@@ -31683,7 +31915,7 @@ LLVM_Value Generate_Attribute (Syntax_Node *node) {
   // Use specified_bit_size if a SIZE clause was given (exact value),                               
   // otherwise compute from byte size.                                                             
   //                                                                                                
-  if (Slice_Equal_Ignore_Case (attr, S("SIZE"))) {
+  if (attribute_kind == ATTRIBUTE_SIZE) {
     if (not prefix_type)
       fprintf (stderr, "warning: 'SIZE attribute applied to expression with no type\n");
     LLVM_Rep iat = Integer_Arith_Rep ();
@@ -31729,11 +31961,9 @@ LLVM_Value Generate_Attribute (Syntax_Node *node) {
             static_elems *= (len < 0 ? 0 : len);
           } else all_static = false;
         }
-        if (all_static and static_elems >= 0 and static_elems * comp_bits <= INT64_MAX) {
-          Emit ("  %%t%u = add %s 0, %lld  ; 'SIZE = extent in bits\n",
-             t, LLVM_Rep_To_String (iat), (long long)(int64_t)(static_elems * comp_bits));
-          return Val_Rep (t, iat);
-        }
+        if (all_static and static_elems >= 0 and static_elems * comp_bits <= INT64_MAX)
+          return Emit_Attribute_Integer_Constant (t,
+            (int64_t)(static_elems * comp_bits), "'SIZE = extent in bits");
 
         // Runtime, object prefix: read the length from the value's own fat
         // pointer, whose bounds were established from the object (the same
@@ -31743,7 +31973,7 @@ LLVM_Value Generate_Attribute (Syntax_Node *node) {
         // T'BASE) has no object, so it evaluates the index bounds below instead.
         bool prefix_is_type =
           (node->attribute.prefix->kind == NK_ATTRIBUTE and
-           Slice_Equal_Ignore_Case (node->attribute.prefix->attribute.name, S("BASE")))
+           node->attribute.prefix->attribute.kind == ATTRIBUTE_BASE)
           or (prefix_sym and prefix_sym->kind == SYMBOL_TYPE);
         if (needs_runtime_bounds and not prefix_is_type) {
           LLVM_Rep fbt = Array_Bound_LLVM_Rep (prefix_type);
@@ -31796,21 +32026,18 @@ LLVM_Value Generate_Attribute (Syntax_Node *node) {
       else
         bit_size = (int64_t)prefix_type->size * 8;
     }
-    Emit ("  %%t%u = add %s 0, %lld  ; 'SIZE in bits\n", t, LLVM_Rep_To_String (iat),
-       (long long)bit_size);
-    return Val_Rep (t, iat);
+    return Emit_Attribute_Integer_Constant (t, bit_size, "'SIZE in bits");
   }
-  if (Slice_Equal_Ignore_Case (attr, S("ALIGNMENT"))) {
+  if (attribute_kind == ATTRIBUTE_ALIGNMENT) {
     if (not prefix_type)
       fprintf (stderr, "warning: 'ALIGNMENT attribute applied to expression with no type\n");
-    Emit ("  %%t%u = add %s 0, %lld  ; 'ALIGNMENT\n", t, LLVM_Rep_To_String (Integer_Arith_Rep ()),
-       (long long)(prefix_type ? prefix_type->alignment : 8));
-    return Val_Rep (t, Integer_Arith_Rep ());
+    return Emit_Attribute_Integer_Constant (t,
+      prefix_type ? prefix_type->alignment : 8, "'ALIGNMENT");
   }
-  if (Slice_Equal_Ignore_Case (attr, S("COMPONENT_SIZE"))) {
+  if (attribute_kind == ATTRIBUTE_COMPONENT_SIZE) {
     if (Type_Is_Array_Like (prefix_type) and prefix_type->array.element_type) {
-      Emit ("  %%t%u = add %s 0, %lld  ; 'COMPONENT_SIZE\n", t, LLVM_Rep_To_String (Integer_Arith_Rep ()),
-         (long long)(prefix_type->array.element_type->size * 8));
+      return Emit_Attribute_Integer_Constant (t,
+        (int64_t)(prefix_type->array.element_type->size * 8), "'COMPONENT_SIZE");
     } else {
       fprintf (stderr, "warning: 'COMPONENT_SIZE applied to non-array type, returning 0\n");
       Emit ("  %%t%u = add %s 0, 0\n", t, LLVM_Rep_To_String (Integer_Arith_Rep ()));
@@ -31823,7 +32050,7 @@ LLVM_Value Generate_Attribute (Syntax_Node *node) {
   // ───────────────────────────────────────────────────────────────────────────────────────────────
 
   // Generate address of prefix object
-  if (Slice_Equal_Ignore_Case (attr, S("ADDRESS"))) {
+  if (attribute_kind == ATTRIBUTE_ADDRESS) {
     // RM 13.7.2: 'ADDRESS on an indexed or selected component (or any complex
     // prefix beyond a bare name) is defined in terms of the DESIGNATED
     // storage — the array element / record component. Its evaluation must
@@ -31917,7 +32144,7 @@ LLVM_Value Generate_Attribute (Syntax_Node *node) {
   // POS returns universal_integer - convert to Integer_Arith_Rep
   // so the result matches Expression_LLVM_Rep's prediction.
   //                                                                                                
-  if (Slice_Equal_Ignore_Case (attr, S("POS"))) {
+  if (attribute_kind == ATTRIBUTE_POS) {
     if (first_arg) {
       uint32_t val = Generate_Expression (first_arg).reg;
       LLVM_Rep arg_t = Expression_LLVM_Rep (first_arg);
@@ -31929,7 +32156,7 @@ LLVM_Value Generate_Attribute (Syntax_Node *node) {
 
   // T'VAL (n) - value at position n (RM 3.5.5(5))
   // Raises CONSTRAINT_ERROR if n is outside T'BASE range
-  if (Slice_Equal_Ignore_Case (attr, S("VAL"))) {
+  if (attribute_kind == ATTRIBUTE_VAL) {
     if (first_arg) {
       uint32_t val = Generate_Expression (first_arg).reg;
 
@@ -31971,9 +32198,8 @@ LLVM_Value Generate_Attribute (Syntax_Node *node) {
 
   // T'SUCC (x) / T'PRED (x) - RM 3.5.5: operates on base type.
   // SUCC adds 1 and checks against high bound; PRED subtracts 1 and checks low.
-  if (Slice_Equal_Ignore_Case (attr, S("SUCC")) or
-    Slice_Equal_Ignore_Case (attr, S("PRED"))) {
-    bool is_succ = (attr.data[0] == 'S' or attr.data[0] == 's');
+  if (attribute_kind == ATTRIBUTE_SUCC or attribute_kind == ATTRIBUTE_PRED) {
+    bool is_succ = attribute_kind == ATTRIBUTE_SUCC;
     if (first_arg) {
       uint32_t val = Generate_Expression (first_arg).reg;
 
@@ -32016,9 +32242,9 @@ LLVM_Value Generate_Attribute (Syntax_Node *node) {
   // T'MIN (a, b) / T'MAX (a, b) - minimum / maximum of two values.
   // The two differ only in the comparison sense: MIN keeps the left operand
   // when it is the smaller (slt), MAX when it is the greater (sgt).
-  if (Slice_Equal_Ignore_Case (attr, S("MIN")) or
-    Slice_Equal_Ignore_Case (attr, S("MAX"))) {
-    bool is_min = Slice_Equal_Ignore_Case (attr, S("MIN"));
+  if (attribute_kind == ATTRIBUTE_MIN or
+    attribute_kind == ATTRIBUTE_MAX) {
+    bool is_min = attribute_kind == ATTRIBUTE_MIN;
     if (node->attribute.arguments.count >= 2) {
       LLVM_Rep iat = Integer_Arith_Rep ();
       uint32_t left  = Generate_Expression (node->attribute.arguments.items[0]).reg;
@@ -32037,7 +32263,7 @@ LLVM_Value Generate_Attribute (Syntax_Node *node) {
   }
 
   // T'ABS (x) with overflow check: ABS (MIN_INT) overflows
-  if (Slice_Equal_Ignore_Case (attr, S("ABS"))) {
+  if (attribute_kind == ATTRIBUTE_ABS) {
     if (first_arg) {
       uint32_t val = Generate_Expression (first_arg).reg;
       LLVM_Rep abs_type = Integer_Arith_Rep ();
@@ -32052,7 +32278,7 @@ LLVM_Value Generate_Attribute (Syntax_Node *node) {
   }
 
   // T'MOD - returns the modulus of a modular type (RM 3.5.4(17))
-  if (Slice_Equal_Ignore_Case (attr, S("MOD"))) {
+  if (attribute_kind == ATTRIBUTE_MOD) {
     if (prefix_type and prefix_type->kind == TYPE_MODULAR and prefix_type->modulus > 0) {
       LLVM_Rep mod_type = Type_To_Rep (prefix_type);
       Emit ("  %%t%u = add %s 0, %s  ; 'MOD\n", t, LLVM_Rep_To_String (mod_type),
@@ -32067,7 +32293,7 @@ LLVM_Value Generate_Attribute (Syntax_Node *node) {
   // ───────────────────────────────────────────────────────────────────────────────────────────────
 
   // T'IMAGE (x) - string representation (RM 3.5.5)
-  if (Slice_Equal_Ignore_Case (attr, S("IMAGE"))) {
+  if (attribute_kind == ATTRIBUTE_IMAGE) {
     if (first_arg) {
       uint32_t arg_val = Generate_Expression (first_arg).reg;
       if (Type_Is_Integer_Like (classify_type) or
@@ -32238,7 +32464,7 @@ LLVM_Value Generate_Attribute (Syntax_Node *node) {
   }
 
   // T'VALUE (s) - parse string to type (RM 3.5.5)
-  if (Slice_Equal_Ignore_Case (attr, S("VALUE"))) {
+  if (attribute_kind == ATTRIBUTE_VALUE) {
     if (first_arg) {
       uint32_t str_val = Generate_Expression (first_arg).reg;
       if (Type_Is_Integer_Like (classify_type) or
@@ -32507,7 +32733,7 @@ LLVM_Value Generate_Attribute (Syntax_Node *node) {
   //                                                                                                
   // When bounds are not compile-time known, generate runtime code.                                
   //                                                                                                
-  if (Slice_Equal_Ignore_Case (attr, S("WIDTH"))) {
+  if (attribute_kind == ATTRIBUTE_WIDTH) {
     if (prefix_type) {
       bool lo_known = Type_Bound_Is_Compile_Time_Known (prefix_type->low_bound);
       bool hi_known = Type_Bound_Is_Compile_Time_Known (prefix_type->high_bound);
@@ -32560,7 +32786,7 @@ LLVM_Value Generate_Attribute (Syntax_Node *node) {
           while (max_abs >= 10) { digits++; max_abs /= 10; }
           width = digits + 1;  // +1 for leading space or minus sign
         }
-        Emit ("  %%t%u = add %s 0, %s  ; 'WIDTH\n", t, LLVM_Rep_To_String (Integer_Arith_Rep ()), I128_Decimal (width));
+        return Emit_Attribute_Integer_Constant (t, (int64_t)width, "'WIDTH");
 
       // Bounds not compile-time known - generate runtime code.                                    
       // Per GNAT exp_imgv.adb: generate if FIRST > LAST then 0 else <width>                        
@@ -32675,8 +32901,8 @@ LLVM_Value Generate_Attribute (Syntax_Node *node) {
   // ───────────────────────────────────────────────────────────────────────────────────────────────
 
   // X'ACCESS / X'UNCHECKED_ACCESS - identical codegen (RM 3.10.2)
-  if (Slice_Equal_Ignore_Case (attr, S("ACCESS")) or
-    Slice_Equal_Ignore_Case (attr, S("UNCHECKED_ACCESS"))) {
+  if (attribute_kind == ATTRIBUTE_ACCESS or
+    attribute_kind == ATTRIBUTE_UNCHECKED_ACCESS) {
     Symbol *sym = node->attribute.prefix->symbol;
     if (not sym)
       Fatal_Error (node->location, "'ACCESS attribute applied to expression with no symbol");
@@ -32692,19 +32918,18 @@ LLVM_Value Generate_Attribute (Syntax_Node *node) {
   // ───────────────────────────────────────────────────────────────────────────────────────────────
 
   // T'DIGITS - number of significant decimal digits (RM 3.5.7)
-  if (Slice_Equal_Ignore_Case (attr, S("DIGITS"))) {
+  if (attribute_kind == ATTRIBUTE_DIGITS) {
     int64_t digits = Type_Is_Float (prefix_type)
       ? Float_Effective_Digits (prefix_type)
       : IEEE_DOUBLE_DIGITS;
-    Emit ("  %%t%u = add %s 0, %lld  ; 'DIGITS\n", t, LLVM_Rep_To_String (Integer_Arith_Rep ()), (long long)digits);
-    return Val_Rep (t, Integer_Arith_Rep ());
+    return Emit_Attribute_Integer_Constant (t, digits, "'DIGITS");
   }
 
   // T'MANTISSA - number of binary digits (RM 3.5.8, 3.5.10)                                        
   // For floating-point: ceiling(D * log(10)/log(2)) + 1                                            
   // For fixed-point: ceiling(log2 (bound / small))                                                 
   //                                                                                                
-  if (Slice_Equal_Ignore_Case (attr, S("MANTISSA"))) {
+  if (attribute_kind == ATTRIBUTE_MANTISSA) {
     int64_t mantissa = IEEE_DOUBLE_MANTISSA - 1;  // Default for double
     if (Type_Is_Float (classify_type)) {
       Float_Model_Parameters (classify_type, &mantissa, NULL);
@@ -32718,161 +32943,54 @@ LLVM_Value Generate_Attribute (Syntax_Node *node) {
       if (bound <= 0 and Type_Bound_Is_Set (ft->low_bound) and
           Type_Bound_Is_Set (ft->high_bound))
         return Val_Rep (Emit_Fixed_Mantissa_Runtime (ft, small), Integer_Arith_Rep ());
-      if (bound > 0 and small > 0) {
-        mantissa = (int64_t)ceil (log2 (bound / small));
-        if (mantissa < 1) mantissa = 1;
-      }
+      if (bound > 0 and small > 0)
+        mantissa = Fixed_Point_Mantissa (bound, small);
     }
-    Emit ("  %%t%u = add %s 0, %lld  ; 'MANTISSA\n", t, LLVM_Rep_To_String (Integer_Arith_Rep ()), (long long)mantissa);
-    return Val_Rep (t, Integer_Arith_Rep ());
+    return Emit_Attribute_Integer_Constant (t, mantissa, "'MANTISSA");
   }
 
   // T'EMAX - maximum binary exponent (RM 3.5.8)
   // For model numbers: EMAX = 4 * MANTISSA
-  if (Slice_Equal_Ignore_Case (attr, S("EMAX"))) {
+  if (attribute_kind == ATTRIBUTE_EMAX) {
     int64_t emax = IEEE_DOUBLE_EMAX - 1;  // Default for double
     if (Type_Is_Float (prefix_type)) {
       Float_Model_Parameters (prefix_type, NULL, &emax);
     }
-    Emit ("  %%t%u = add %s 0, %lld  ; 'EMAX\n", t, LLVM_Rep_To_String (Integer_Arith_Rep ()), (long long)emax);
-    return Val_Rep (t, Integer_Arith_Rep ());
+    return Emit_Attribute_Integer_Constant (t, emax, "'EMAX");
   }
 
   // T'SAFE_EMAX - safe maximum exponent (RM 3.5.8)
   // For IEEE: MACHINE_EMAX - 1
-  if (Slice_Equal_Ignore_Case (attr, S("SAFE_EMAX"))) {
+  if (attribute_kind == ATTRIBUTE_SAFE_EMAX) {
     bool single = Type_Is_Float (prefix_type) and Float_Is_Single (prefix_type);
     int64_t safe_emax = single ? (IEEE_FLOAT_EMAX - 1) : (IEEE_DOUBLE_EMAX - 1);
-    Emit ("  %%t%u = add %s 0, %lld  ; 'SAFE_EMAX\n", t, LLVM_Rep_To_String (Integer_Arith_Rep ()), (long long)safe_emax);
-    return Val_Rep (t, Integer_Arith_Rep ());
+    return Emit_Attribute_Integer_Constant (t, safe_emax, "'SAFE_EMAX");
   }
 
-  // T'EPSILON - model epsilon (RM 3.5.8(9))
-  // EPSILON = 2^(1 - MANTISSA)
-  if (Slice_Equal_Ignore_Case (attr, S("EPSILON"))) {
-    int64_t mantissa = IEEE_DOUBLE_MANTISSA - 1;
-    if (Type_Is_Float (prefix_type))
-      Float_Model_Parameters (prefix_type, &mantissa, NULL);
-    double epsilon = pow (2.0, 1 - mantissa);
-
-    // generate at double (UNIVERSAL_REAL) - callers convert.
-    // This matches LLVM_Rep_To_String (Expression_LLVM_Rep (UNIVERSAL_REAL)) = "double".
-    Emit_Float_Constant (t, LLVM_Rep_Float (64), epsilon, "'EPSILON");
-    return Val_Rep (t, LLVM_Rep_Float (64));
-  }
-
-  // T'SMALL - fixed-point: power of 2 <= delta; float: 2^(-EMAX - 1)
-  if (Slice_Equal_Ignore_Case (attr, S("SMALL"))) {
-    double small_val;
-
-    // Use classify_type which is resolved to actual type in generics
-    if (Type_Is_Fixed_Point (classify_type)) {
-      Type_Info *ft = classify_type;
-      small_val = ft->fixed.small;
-      if (small_val <= 0) small_val = ft->fixed.delta;
-      if (small_val <= 0) small_val = 1.0;
-    } else if (Type_Is_Float (prefix_type)) {
-      int64_t mantissa, emax;
-      Float_Model_Parameters (prefix_type, &mantissa, &emax);
-      small_val = pow (2.0, -(emax + 1));
-    } else {
-      small_val = pow (2.0, -(IEEE_DOUBLE_EMIN));  // 2^-1022
-    }
-
-    // generate at double (UNIVERSAL_REAL) - callers convert.
-    Emit_Float_Constant (t, LLVM_Rep_Float (64), small_val, "'SMALL");
-    return Val_Rep (t, LLVM_Rep_Float (64));
-  }
-
-  // T'LARGE - fixed-point: (2^MANTISSA - 1) * SMALL (RM 3.5.10)
-  // float: 2^EMAX * (1 - 2^(-MANTISSA)) (RM 3.5.8(10))
-  if (Slice_Equal_Ignore_Case (attr, S("LARGE"))) {
-    double large_val;
-
-    // Use classify_type which is resolved to actual type in generics
-    if (Type_Is_Fixed_Point (classify_type)) {
+  // ─── Real model attributes: EPSILON, SMALL, LARGE, SAFE_SMALL, SAFE_LARGE ─────────────────────
+  // Each is a compile-time double (RM 3.5.8, 3.5.10), generated at double
+  // (UNIVERSAL_REAL) - callers convert. This matches LLVM_Rep_To_String
+  // (Expression_LLVM_Rep (UNIVERSAL_REAL)) = "double". The one exception:
+  // 'LARGE of a fixed-point type whose bounds are not static folds its
+  // (2**MANTISSA - 1) * SMALL at run time instead.
+  if (attribute_kind == ATTRIBUTE_EPSILON or attribute_kind == ATTRIBUTE_SMALL or
+      attribute_kind == ATTRIBUTE_LARGE or attribute_kind == ATTRIBUTE_SAFE_SMALL or
+      attribute_kind == ATTRIBUTE_SAFE_LARGE) {
+    if (attribute_kind == ATTRIBUTE_LARGE and Type_Is_Fixed_Point (classify_type)) {
       Type_Info *ft = classify_type;
       double small = Fixed_Small (ft);
       double bound = fmax (fabs (Type_Bound_Float_Value (ft->low_bound)),
-                 fabs (Type_Bound_Float_Value (ft->high_bound)));
-
-      // Non-static range: (2**MANTISSA - 1) * SMALL computed at runtime.
+                           fabs (Type_Bound_Float_Value (ft->high_bound)));
       if (bound <= 0 and Type_Bound_Is_Set (ft->low_bound) and
           Type_Bound_Is_Set (ft->high_bound))
         return Val_Rep (Emit_Fixed_Large_Runtime (ft, small), LLVM_Rep_Float (64));
-      int64_t mantissa = (bound > 0 and small > 0) ?
-                (int64_t)ceil (log2 (bound / small)) : 1;
-      if (mantissa < 1) mantissa = 1;
-      large_val = ((double)((1LL << mantissa) - 1)) * small;
-    } else if (Type_Is_Float (prefix_type)) {
-      int64_t mantissa, emax;
-      Float_Model_Parameters (prefix_type, &mantissa, &emax);
-      large_val = pow (2.0, emax) * (1.0 - pow (2.0, -mantissa));
-    } else {
-      large_val = __DBL_MAX__;
     }
-
-    // generate at double (UNIVERSAL_REAL) - callers convert.
-    Emit_Float_Constant (t, LLVM_Rep_Float (64), large_val, "'LARGE");
-    return Val_Rep (t, LLVM_Rep_Float (64));
-  }
-
-  // T'SAFE_SMALL - smallest positive safe value                                                    
-  // Fixed-point (RM 3.5.10): SAFE_SMALL = BASE'SMALL                                               
-  // Float (RM 3.5.8): 2^(-(SAFE_EMAX+1))                                                           
-  //                                                                                                
-  if (Slice_Equal_Ignore_Case (attr, S("SAFE_SMALL"))) {
-    double safe_small;
-
-    // Use classify_type which is resolved to actual type in generics
-    if (Type_Is_Fixed_Point (classify_type)) {
-      Type_Info *ft = classify_type;
-      Type_Info *base = ft->base_type ? ft->base_type : ft;
-      safe_small = base->fixed.small;
-      if (safe_small <= 0) safe_small = base->fixed.delta > 0 ? base->fixed.delta : 1.0;
-    } else if (Type_Is_Float (prefix_type) and Float_Is_Single (prefix_type)) {
-      safe_small = IEEE_FLOAT_MIN_NORMAL;
-    } else {
-      safe_small = IEEE_DOUBLE_MIN_NORMAL;
-    }
-
-    // generate at double (UNIVERSAL_REAL) - callers convert.
-    Emit_Float_Constant (t, LLVM_Rep_Float (64), safe_small, "'SAFE_SMALL");
-    return Val_Rep (t, LLVM_Rep_Float (64));
-  }
-
-  // T'SAFE_LARGE - largest safe value                                                              
-  // Fixed-point (RM 3.5.10): SAFE_LARGE = BASE'LARGE = (2^B_MANT - 1) * BASE'SMALL                 
-  // Float (RM 3.5.8): 2^(SAFE_EMAX) * (1 - 2^(-MANTISSA))                                          
-  //                                                                                                
-  if (Slice_Equal_Ignore_Case (attr, S("SAFE_LARGE"))) {
-    double safe_large;
-
-    // Use classify_type which is resolved to actual type in generics
-    if (Type_Is_Fixed_Point (classify_type)) {
-      Type_Info *ft = classify_type;
-      Type_Info *base = ft->base_type ? ft->base_type : ft;
-      double small = base->fixed.small;
-      if (small <= 0) small = base->fixed.delta > 0 ? base->fixed.delta : 1.0;
-      double low_val = Type_Bound_Float_Value (base->low_bound);
-      double high_val = Type_Bound_Float_Value (base->high_bound);
-      double bound = fmax (fabs (low_val), fabs (high_val));
-      int64_t mant = (bound > 0 and small > 0) ?
-              (int64_t)ceil (log2 (bound / small)) : 1;
-      if (mant < 1) mant = 1;
-      safe_large = ((double)((1LL << mant) - 1)) * small;
-    } else {
-      int emax = IEEE_DOUBLE_EMAX;
-      int mantissa = IEEE_DOUBLE_MANTISSA;
-      if (Type_Is_Float (prefix_type) and Float_Is_Single (prefix_type)) {
-        emax = IEEE_FLOAT_EMAX;
-        mantissa = IEEE_FLOAT_MANTISSA;
-      }
-      safe_large = pow (2.0, emax - 1) * (1.0 - pow (2.0, -mantissa));
-    }
-
-    // generate at double (UNIVERSAL_REAL) - callers convert.
-    Emit_Float_Constant (t, LLVM_Rep_Float (64), safe_large, "'SAFE_LARGE");
+    double value = Float_Model_Attribute_Value (attribute_kind, prefix_type,
+                                                classify_type);
+    char comment[32];
+    snprintf (comment, sizeof comment, "'%s",
+              Attribute_Properties_Table[attribute_kind].designator.data);
+    Emit_Float_Constant (t, LLVM_Rep_Float (64), value, comment);
     return Val_Rep (t, LLVM_Rep_Float (64));
   }
 
@@ -32881,7 +32999,7 @@ LLVM_Value Generate_Attribute (Syntax_Node *node) {
   // ───────────────────────────────────────────────────────────────────────────────────────────────
 
   // T'DELTA - delta for fixed-point type (universal real)
-  if (Slice_Equal_Ignore_Case (attr, S("DELTA"))) {
+  if (attribute_kind == ATTRIBUTE_DELTA) {
     double delta = 1.0;
     if (Type_Is_Fixed_Point (classify_type)) {
       Type_Info *ft = Type_Is_Fixed_Point (prefix_type) ? prefix_type : classify_type;
@@ -32895,7 +33013,7 @@ LLVM_Value Generate_Attribute (Syntax_Node *node) {
   // Includes a one-character prefix (minus sign or space).                                        
   // FORE = 2 when integer part is 0, otherwise 1 + 1 + floor (log10 (int_part))                    
   //                                                                                                
-  if (Slice_Equal_Ignore_Case (attr, S("FORE"))) {
+  if (attribute_kind == ATTRIBUTE_FORE) {
     int64_t fore = 2;  // minimum: sign + at least one digit
     if (Type_Is_Fixed_Point (classify_type)) {
       Type_Info *ft = Type_Is_Fixed_Point (prefix_type) ? prefix_type : classify_type;
@@ -32910,13 +33028,12 @@ LLVM_Value Generate_Attribute (Syntax_Node *node) {
         fore = 2 + (int64_t)floor (log10 (bound));
       }
     }
-    Emit ("  %%t%u = add %s 0, %lld  ; 'FORE\n", t, LLVM_Rep_To_String (Integer_Arith_Rep ()), (long long)fore);
-    return Val_Rep (t, Integer_Arith_Rep ());
+    return Emit_Attribute_Integer_Constant (t, fore, "'FORE");
   }
 
   // T'AFT - decimal digits after point in default output (RM 3.5.10)
   // AFT = smallest N such that 10^(-N) <= T'DELTA
-  if (Slice_Equal_Ignore_Case (attr, S("AFT"))) {
+  if (attribute_kind == ATTRIBUTE_AFT) {
     int64_t aft = 1;
     if (Type_Is_Fixed_Point (classify_type)) {
       Type_Info *ft = Type_Is_Fixed_Point (prefix_type) ? prefix_type : classify_type;
@@ -32925,70 +33042,74 @@ LLVM_Value Generate_Attribute (Syntax_Node *node) {
         aft = (int64_t)ceil (-log10 (delta));
       }
     }
-    Emit ("  %%t%u = add %s 0, %lld  ; 'AFT\n", t, LLVM_Rep_To_String (Integer_Arith_Rep ()), (long long)aft);
-    return Val_Rep (t, Integer_Arith_Rep ());
+    return Emit_Attribute_Integer_Constant (t, aft, "'AFT");
   }
 
   // ───────────────────────────────────────────────────────────────────────────────────────────────
-  // Floating-Point Boolean Attributes (RM 3.5.8)                                                   
+  // Machine Model Attributes (RM 3.5.8)
   // ───────────────────────────────────────────────────────────────────────────────────────────────
 
-  // T'MACHINE_ROUNDS - does the hardware round? (RM 3.5.8)                                         
-  // IEEE 754 hardware rounds, so return TRUE.                                                     
-  // Boolean type in Standard is i8.                                                               
-  //                                                                                                
-  if (Slice_Equal_Ignore_Case (attr, S("MACHINE_ROUNDS"))) {
-    Emit ("  %%t%u = add i8 0, 1  ; 'MACHINE_ROUNDS (IEEE rounds)\n", t);
-    return Val_Rep (t, LLVM_Rep_Int (8, false));
-  }
-
-  // T'MACHINE_OVERFLOWS - does the hardware raise on overflow? (RM 3.5.8)                          
-  // IEEE 754 generates infinity on overflow (doesn't trap), return FALSE.                         
-  // Boolean type in Standard is i8.                                                               
-  //                                                                                                
-  if (Slice_Equal_Ignore_Case (attr, S("MACHINE_OVERFLOWS"))) {
-    Emit ("  %%t%u = add i8 0, 0  ; 'MACHINE_OVERFLOWS (IEEE no trap)\n", t);
-    return Val_Rep (t, LLVM_Rep_Int (8, false));
-  }
-
-  // T'MACHINE_RADIX - hardware floating-point radix (RM 3.5.8)
-  // IEEE 754 uses radix 2
-  if (Slice_Equal_Ignore_Case (attr, S("MACHINE_RADIX"))) {
-    Emit ("  %%t%u = add %s 0, %d  ; 'MACHINE_RADIX (IEEE binary)\n", t, LLVM_Rep_To_String (Integer_Arith_Rep ()), IEEE_MACHINE_RADIX);
-    return Val_Rep (t, Integer_Arith_Rep ());
-  }
-
-  // T'MACHINE_MANTISSA - hardware mantissa bits (RM 3.5.8)
-  // IEEE 754 double: 53 bits, float: 24 bits
-  if (Slice_Equal_Ignore_Case (attr, S("MACHINE_MANTISSA"))) {
-    int64_t machine_mantissa = IEEE_DOUBLE_MANTISSA;
-    if (Type_Is_Float (prefix_type) and Float_Is_Single (prefix_type)) {
-      machine_mantissa = IEEE_FLOAT_MANTISSA;
+  // T'MACHINE_ROUNDS through T'MACHINE_EMIN: every machine model attribute is
+  // an IEEE 754 constant that depends only on whether the prefix is single or
+  // double precision. MACHINE_ROUNDS is TRUE (IEEE hardware rounds) and
+  // MACHINE_OVERFLOWS is FALSE (overflow yields infinity, no trap); those two
+  // are BOOLEAN-valued and load at the Boolean storage width, the rest are
+  // universal integers.
+  {
+    static const struct Machine_Attribute_Row {
+      Attribute_Kind kind;
+      int64_t        single_precision_value;
+      int64_t        double_precision_value;
+      bool           boolean_valued;
+      const char    *comment;
+    } Machine_Attribute_Table[] = {
+      { .kind                   = ATTRIBUTE_MACHINE_ROUNDS,
+        .single_precision_value = 1,
+        .double_precision_value = 1,
+        .boolean_valued         = true,
+        .comment                = "'MACHINE_ROUNDS (IEEE rounds)" },
+      { .kind                   = ATTRIBUTE_MACHINE_OVERFLOWS,
+        .single_precision_value = 0,
+        .double_precision_value = 0,
+        .boolean_valued         = true,
+        .comment                = "'MACHINE_OVERFLOWS (IEEE no trap)" },
+      { .kind                   = ATTRIBUTE_MACHINE_RADIX,
+        .single_precision_value = IEEE_MACHINE_RADIX,
+        .double_precision_value = IEEE_MACHINE_RADIX,
+        .boolean_valued         = false,
+        .comment                = "'MACHINE_RADIX (IEEE binary)" },
+      { .kind                   = ATTRIBUTE_MACHINE_MANTISSA,
+        .single_precision_value = IEEE_FLOAT_MANTISSA,
+        .double_precision_value = IEEE_DOUBLE_MANTISSA,
+        .boolean_valued         = false,
+        .comment                = "'MACHINE_MANTISSA" },
+      { .kind                   = ATTRIBUTE_MACHINE_EMAX,
+        .single_precision_value = IEEE_FLOAT_EMAX,
+        .double_precision_value = IEEE_DOUBLE_EMAX,
+        .boolean_valued         = false,
+        .comment                = "'MACHINE_EMAX" },
+      { .kind                   = ATTRIBUTE_MACHINE_EMIN,
+        .single_precision_value = IEEE_FLOAT_EMIN,
+        .double_precision_value = IEEE_DOUBLE_EMIN,
+        .boolean_valued         = false,
+        .comment                = "'MACHINE_EMIN" },
+    };
+    for (size_t i = 0;
+         i < sizeof Machine_Attribute_Table / sizeof Machine_Attribute_Table[0];
+         i++) {
+      const struct Machine_Attribute_Row *row = &Machine_Attribute_Table[i];
+      if (row->kind != attribute_kind) continue;
+      bool single = Type_Is_Float (prefix_type) and Float_Is_Single (prefix_type);
+      int64_t value = single ? row->single_precision_value
+                             : row->double_precision_value;
+      if (row->boolean_valued) {
+        LLVM_Rep boolean_rep = LLVM_Rep_Int (8, false);
+        Emit ("  %%t%u = add %s 0, %lld  ; %s\n",
+              t, LLVM_Rep_To_String (boolean_rep), (long long) value, row->comment);
+        return Val_Rep (t, boolean_rep);
+      }
+      return Emit_Attribute_Integer_Constant (t, value, row->comment);
     }
-    Emit ("  %%t%u = add %s 0, %lld  ; 'MACHINE_MANTISSA\n", t, LLVM_Rep_To_String (Integer_Arith_Rep ()), (long long)machine_mantissa);
-    return Val_Rep (t, Integer_Arith_Rep ());
-  }
-
-  // T'MACHINE_EMAX - hardware max exponent (RM 3.5.8)
-  // IEEE 754 double: 1024, float: 128
-  if (Slice_Equal_Ignore_Case (attr, S("MACHINE_EMAX"))) {
-    int64_t machine_emax = IEEE_DOUBLE_EMAX;
-    if (Type_Is_Float (prefix_type) and Float_Is_Single (prefix_type)) {
-      machine_emax = IEEE_FLOAT_EMAX;
-    }
-    Emit ("  %%t%u = add %s 0, %lld  ; 'MACHINE_EMAX\n", t, LLVM_Rep_To_String (Integer_Arith_Rep ()), (long long)machine_emax);
-    return Val_Rep (t, Integer_Arith_Rep ());
-  }
-
-  // T'MACHINE_EMIN - hardware min exponent (RM 3.5.8)
-  // IEEE 754 double: -1021, float: -125
-  if (Slice_Equal_Ignore_Case (attr, S("MACHINE_EMIN"))) {
-    int64_t machine_emin = IEEE_DOUBLE_EMIN;
-    if (Type_Is_Float (prefix_type) and Float_Is_Single (prefix_type)) {
-      machine_emin = IEEE_FLOAT_EMIN;
-    }
-    Emit ("  %%t%u = add %s 0, %lld  ; 'MACHINE_EMIN\n", t, LLVM_Rep_To_String (Integer_Arith_Rep ()), (long long)machine_emin);
-    return Val_Rep (t, Integer_Arith_Rep ());
   }
 
   // ───────────────────────────────────────────────────────────────────────────────────────────────
@@ -33004,7 +33125,7 @@ LLVM_Value Generate_Attribute (Syntax_Node *node) {
   //   - Object type has discriminants with defaults and no explicit constraint                     
   // Use i64 for consistency with Boolean storage/comparison.                                      
   //                                                                                                
-  if (Slice_Equal_Ignore_Case (attr, S("CONSTRAINED"))) {
+  if (attribute_kind == ATTRIBUTE_CONSTRAINED) {
     Syntax_Node *cpfx = node->attribute.prefix;
     Symbol *obj_sym = cpfx ? cpfx->symbol : NULL;
     Type_Info *obj_type = cpfx ? cpfx->type : NULL;
@@ -33082,7 +33203,7 @@ LLVM_Value Generate_Attribute (Syntax_Node *node) {
   // T'CALLABLE (RM 9.9): load TCB handle, check completed flag.
   // Result is BOOLEAN (i8) — track the type so downstream conversions
   // don't rely on Expression_Llvm_Type predicting it.
-  if (Slice_Equal_Ignore_Case (attr, S("CALLABLE"))) {
+  if (attribute_kind == ATTRIBUTE_CALLABLE) {
     uint32_t handle = Emit_Task_Control_Block_For_Prefix (node->attribute.prefix);
     Emit ("  %%t%u = call i8 @__ada_task_callable(ptr %%t%u)\n", t, handle);
     return Val_Rep (t, LLVM_Rep_Int (8, false));
@@ -33093,7 +33214,7 @@ LLVM_Value Generate_Attribute (Syntax_Node *node) {
   // completed byte (TCB+24) flips earlier, at the end of the statements
   // (callers then get TASKING_ERROR), while 'TERMINATED stays false.
   // Result is BOOLEAN (i8) — same tracking note as CALLABLE.
-  if (Slice_Equal_Ignore_Case (attr, S("TERMINATED"))) {
+  if (attribute_kind == ATTRIBUTE_TERMINATED) {
     uint32_t handle = Emit_Task_Control_Block_For_Prefix (node->attribute.prefix);
     LLVM_I1 tcb_null = Emit_Icmp_Null_Ptr ("eq", handle);
     uint32_t ok_l = cg->label_id++, nil_l = cg->label_id++, done_l = cg->label_id++;
@@ -33112,7 +33233,7 @@ LLVM_Value Generate_Attribute (Syntax_Node *node) {
   // E'COUNT / E(I)'COUNT (RM 9.9): number of entry calls queued on entry E (or
   // family member E(I)) of the current task. Evaluated inside the task body, so
   // the queue is on %__self_tcb.
-  if (Slice_Equal_Ignore_Case (attr, S("COUNT"))) {
+  if (attribute_kind == ATTRIBUTE_COUNT) {
     Syntax_Node *pfx = node->attribute.prefix;
     Symbol *entry_sym = pfx ? pfx->symbol : NULL;
     if (cg->in_task_body and entry_sym and entry_sym->kind == SYMBOL_ENTRY) {
@@ -33136,15 +33257,14 @@ LLVM_Value Generate_Attribute (Syntax_Node *node) {
       return Val_Rep (t, Integer_Arith_Rep ());
     }
     // Outside a task body or unresolved entry: no queue, count is 0.
-    Emit ("  %%t%u = add i32 0, 0  ; 'COUNT (no self task)\n", t);
-    return Val_Rep (t, Integer_Arith_Rep ());
+    return Emit_Attribute_Integer_Constant (t, 0, "'COUNT (no self task)");
   }
 
   // T'STORAGE_SIZE (RM 13.7.1) - return user-specified value if set,
   // otherwise return a reasonable implementation-defined default.                                 
   // For derived access types, walk parent chain to find the clause.                               
   //                                                                                                
-  if (Slice_Equal_Ignore_Case (attr, S("STORAGE_SIZE"))) {
+  if (attribute_kind == ATTRIBUTE_STORAGE_SIZE) {
     int64_t ss = 0;
     Type_Info *st = prefix_type;
     while (st and st->storage_size == 0 and st->parent_type)
@@ -33153,18 +33273,16 @@ LLVM_Value Generate_Attribute (Syntax_Node *node) {
       ss = st->storage_size;
     else if (prefix_type)
       ss = (int64_t)prefix_type->size * 8;
-    Emit ("  %%t%u = add %s 0, %lld  ; 'STORAGE_SIZE\n", t, LLVM_Rep_To_String (Integer_Arith_Rep ()),
-       (long long)ss);
-    return Val_Rep (t, Integer_Arith_Rep ());
+    return Emit_Attribute_Integer_Constant (t, ss, "'STORAGE_SIZE");
   }
 
   // Record component representation attributes (RM 13.7.2):                                        
   // X.C'FIRST_BIT, X.C'LAST_BIT, X.C'POSITION                                                      
   // Prefix must be a selected component of a record.                                              
   //                                                                                                
-  if (Slice_Equal_Ignore_Case (attr, S("FIRST_BIT")) or
-    Slice_Equal_Ignore_Case (attr, S("LAST_BIT")) or
-    Slice_Equal_Ignore_Case (attr, S("POSITION"))) {
+  if (attribute_kind == ATTRIBUTE_FIRST_BIT or
+    attribute_kind == ATTRIBUTE_LAST_BIT or
+    attribute_kind == ATTRIBUTE_POSITION) {
     Syntax_Node *prefix = node->attribute.prefix;
 
     // Determine the record type from the prefix of the selected component
@@ -33179,9 +33297,9 @@ LLVM_Value Generate_Attribute (Syntax_Node *node) {
       int32_t fbi = Type_Is_Record (rec_type) ? Find_Record_Component (rec_type, comp_name) : -1;
       if (fbi >= 0) {
         Component_Info *ci = &rec_type->record.components[fbi];
-        if (Slice_Equal_Ignore_Case (attr, S("FIRST_BIT")))
+        if (attribute_kind == ATTRIBUTE_FIRST_BIT)
           result = ci->bit_offset;
-        else if (Slice_Equal_Ignore_Case (attr, S("LAST_BIT")))
+        else if (attribute_kind == ATTRIBUTE_LAST_BIT)
           result = ci->bit_offset + (ci->bit_size > 0 ? ci->bit_size : ci->component_type ? ci->component_type->size * 8 : 0) - 1;
         else  // POSITION
           result = ci->byte_offset;
@@ -33664,15 +33782,16 @@ void Desugar_Aggregate_Range_Choices (Syntax_Node *agg) {
     if (cit->kind == NK_ASSOCIATION) {
       for (uint32_t cc = 0; cc < cit->association.choices.count; cc++) {
         Syntax_Node *ch = cit->association.choices.items[cc];
-        if (ch->kind == NK_ATTRIBUTE and
-          Slice_Equal_Ignore_Case (ch->attribute.name, S("RANGE"))) {
+        if (ch->kind == NK_ATTRIBUTE and ch->attribute.kind == ATTRIBUTE_RANGE) {
           Syntax_Node *lo = Node_New (NK_ATTRIBUTE, ch->location);
           lo->attribute.prefix = ch->attribute.prefix;
           lo->attribute.name   = S("FIRST");
+          lo->attribute.kind   = ATTRIBUTE_FIRST;
           lo->type = ch->type;
           Syntax_Node *hi = Node_New (NK_ATTRIBUTE, ch->location);
           hi->attribute.prefix = ch->attribute.prefix;
           hi->attribute.name   = S("LAST");
+          hi->attribute.kind   = ATTRIBUTE_LAST;
           hi->type = ch->type;
           for (uint32_t ai = 0; ai < ch->attribute.arguments.count; ai++) {
             Node_List_Push (&lo->attribute.arguments,
@@ -33694,10 +33813,12 @@ void Desugar_Aggregate_Range_Choices (Syntax_Node *agg) {
           Syntax_Node *lo = Node_New (NK_ATTRIBUTE, ch->location);
           lo->attribute.prefix = ch;
           lo->attribute.name   = S("FIRST");
+          lo->attribute.kind   = ATTRIBUTE_FIRST;
           lo->type = ch->symbol->type;
           Syntax_Node *hi = Node_New (NK_ATTRIBUTE, ch->location);
           hi->attribute.prefix = ch;
           hi->attribute.name   = S("LAST");
+          hi->attribute.kind   = ATTRIBUTE_LAST;
           hi->type = ch->symbol->type;
           Syntax_Node *range = Node_New (NK_RANGE, ch->location);
           range->range.low  = lo;
@@ -38406,14 +38527,15 @@ void Generate_Assignment_Body (Syntax_Node *node, Syntax_Node *target) {
       // the 'RANGE attribute into a synthetic low..high range (A'FIRST .. A'LAST)
       // so the slice path below handles it; otherwise it falls through to the
       // element path and stores an aggregate RHS as a scalar (a NO_VALUE reg).
-      if (arg->kind == NK_ATTRIBUTE and
-          Slice_Equal_Ignore_Case (arg->attribute.name, S("RANGE"))) {
+      if (arg->kind == NK_ATTRIBUTE and arg->attribute.kind == ATTRIBUTE_RANGE) {
         Syntax_Node *first = Node_New (NK_ATTRIBUTE, arg->location);
         *first = *arg;
         first->attribute.name = S("FIRST");
+        first->attribute.kind = ATTRIBUTE_FIRST;
         Syntax_Node *last = Node_New (NK_ATTRIBUTE, arg->location);
         *last = *arg;
         last->attribute.name = S("LAST");
+        last->attribute.kind = ATTRIBUTE_LAST;
         Syntax_Node *synth = Node_New (NK_RANGE, arg->location);
         synth->range.low  = first;
         synth->range.high = last;
@@ -40004,7 +40126,7 @@ void Generate_For_Loop (Syntax_Node *node) {
     low_v = Generate_Expression (range->range.low);
     high_v = Generate_Expression (range->range.high);
   } else if (range and range->kind == NK_ATTRIBUTE and
-         Slice_Equal_Ignore_Case (range->attribute.name, S("RANGE"))) {
+         range->attribute.kind == ATTRIBUTE_RANGE) {
 
     // X'RANGE attribute - need to generate both 'FIRST and 'LAST
     Type_Info *prefix_type = range->attribute.prefix->type;
