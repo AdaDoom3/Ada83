@@ -201,3 +201,36 @@ there is correct and leaves arithmetic on the existing permissive path.
 
 Gate: full Class C — c67005b FAIL->PASS, zero regressions (c97307a is the
 known flaky tasking test).
+
+═══════════════════════════════════════════════════════════════════════════════
+FOURTH TARGET (continue): cd representation clauses — fixed-point 'SMALL cluster
+═══════════════════════════════════════════════════════════════════════════════
+Attacked the hardest cd sub-cluster: fixed-point types with user 'SMALL/'SIZE
+clauses producing wrong arithmetic / spurious CONSTRAINT_ERROR. Three upstream
+fixes, +7 tests (cd1009l, cd1c03f, cd2a53a, cd2a53b, cd2a54a, cd2d11a, cd2d13a),
+zero regressions.
+
+1. `for T'SMALL use <expr>` only honored a REAL literal — a named number
+   (BASIC_SMALL : constant := 0.01) was ignored, so the type silently kept the
+   delta-derived default. Use the folded value; record it on the base type
+   (where Fixed_Repr_Small reads it).
+
+2. The constant folder folded SIZE/FIRST/LAST/LENGTH/POS but NOT the fixed-point
+   model attributes, so `for T'SMALL use S'SMALL` (and named numbers built from
+   'SMALL) folded to NaN and set nothing. Fold 'DELTA/'SMALL/'LARGE/'SAFE_SMALL/
+   'SAFE_LARGE via the existing evaluator — restricted to FIXED-point prefixes
+   (folding FLOAT 'LARGE to a plain double loses the base-type accuracy that
+   membership/equality rely on — c35712a).
+
+3. Fixed-point constraint-check bounds were materialized at the object rep
+   (i8 for 'SIZE 7), so a scaled bound like 8.0/(2**-4) = 128 wrapped to -128
+   and raised CONSTRAINT_ERROR on an in-range value. Materialize in a width
+   that holds the scaled mantissa (>= i64); the comparison already widens the
+   value to match.
+
+Remaining in this cluster (deeper, deferred): cd2a52e/cd2a52f/cd2a54e still fail
+on 'LAST — they need the fixed-point ARITHMETIC width decoupled from the
+SIZE-capped STORAGE width (the scaled 'LAST 128 overflows i8 in the comparison
+operator too). Pervasive change across bounds/attributes/comparisons; separate
+effort. Other cd clusters still open: record representation clauses (cd1009n/x/
+y/z, cd4051b/c/d), address clauses (cd5011g etc.), collection STORAGE_SIZE.

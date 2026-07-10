@@ -12346,6 +12346,23 @@ double Eval_Const_Numeric_Impl (Syntax_Node *node) {
       if (attribute_kind == ATTRIBUTE_POS and
         node->attribute.arguments.count == 1)
         return Eval_Const_Numeric (node->attribute.arguments.items[0]);
+
+      // Fixed-point model attributes are static and exactly representable
+      // (RM 3.5.10): fold them so they may appear in static contexts — notably
+      // the value of a `for T'SMALL use S'SMALL` clause and named numbers built
+      // from them. Delegate to the single evaluator the runtime path also uses.
+      // Floating-point model attributes are deliberately NOT folded here: their
+      // value carries base-type accuracy that a plain double constant loses,
+      // which membership and equality against the base type rely on (c35712a).
+      if (Type_Is_Fixed_Point (ty)) {
+        if (attribute_kind == ATTRIBUTE_DELTA)
+          return ty->fixed.delta;
+        if (attribute_kind == ATTRIBUTE_SMALL or
+            attribute_kind == ATTRIBUTE_LARGE or
+            attribute_kind == ATTRIBUTE_SAFE_SMALL or
+            attribute_kind == ATTRIBUTE_SAFE_LARGE)
+          return Float_Model_Attribute_Value (attribute_kind, ty, ty);
+      }
       return 0.0/0.0;
     }
     case NK_BINARY_OP: {
@@ -20706,12 +20723,17 @@ void Resolve_Declaration (Syntax_Node *node) {
               } else if (attribute_kind == ATTRIBUTE_STORAGE_SIZE) {
                 target_type->storage_size = value;
 
-              // For fixed-point: set small value
+              // For fixed-point: set small value. The specification is a
+              // static real expression (RM 13.2) — often a named number such
+              // as `for T'SMALL use BASIC_SMALL` — so take the folded value,
+              // not only a literal. The small governs representation for the
+              // whole type family, so record it on the base type, which is
+              // where Fixed_Repr_Small reads it.
               } else if (attribute_kind == ATTRIBUTE_SMALL) {
-                if (Type_Is_Fixed_Point (target_type) and
-                  node->rep_clause.expression->kind == NK_REAL) {
-                  target_type->fixed.small =
-                    node->rep_clause.expression->real_lit.value;
+                if (Type_Is_Fixed_Point (target_type) and not isnan (dval) and
+                    dval > 0.0) {
+                  target_type->fixed.small = dval;
+                  Type_Base (target_type)->fixed.small = dval;
                 }
 
               // Any other attribute clause (ADDRESS, ...) has no effect on
@@ -23027,12 +23049,15 @@ static uint32_t Emit_Constraint_Check_Internal (uint32_t val, LLVM_Rep val_rep,
     if (target->kind == TYPE_FIXED) {
       double small = Fixed_Repr_Small (target);
 
-      // Fixed-point bounds must use the fixed type's native width (i64)
-      // to avoid overflow when mantissa approaches MAX_MANTISSA.                                  
-      // Integer_Arith_Rep is only i32 which overflows at 2^31.
-      //                                                                                            
-      LLVM_Rep fix_bnd_rep = Type_To_Rep (target);
-      if (not LLVM_Rep_Is_Int (fix_bnd_rep)) fix_bnd_rep = LLVM_Rep_Int (64, false);
+      // Materialize fixed-point bounds in a width that holds the scaled
+      // mantissa, not the object's storage width. A small 'SMALL clause makes
+      // the scaled bound exceed the object rep — CHECK_TYPE range 0.0..8.0 with
+      // 'SMALL 2**-4 scales its upper bound to 128, which does not fit the
+      // 7-bit (i8) object and would wrap to -128, raising CONSTRAINT_ERROR on
+      // an in-range value (cd2a54e). The comparison below widens the value to
+      // match, and the object itself is unaffected.
+      LLVM_Rep fix_bnd_rep = LLVM_Rep_Wider_Int (Type_To_Rep (target),
+                                                 LLVM_Rep_Int (64, false));
       low_bound  = Emit_Fixed_Bound_Mantissa (&target->low_bound,  small, fix_bnd_rep);
       high_bound = Emit_Fixed_Bound_Mantissa (&target->high_bound, small, fix_bnd_rep);
       lo_rep = fix_bnd_rep;
