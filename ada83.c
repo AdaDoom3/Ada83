@@ -8018,16 +8018,16 @@ Syntax_Node *Parse_Representation_Clause (Parser *p) {
 
     // Parse component clauses: component_name AT position RANGE first_bit..last_bit;
     while (not Parser_At (p, TK_END) and not Parser_At (p, TK_EOF)) {
+      // component_name AT byte_position RANGE first_bit .. last_bit. The name
+      // is choices[0] and the position is the association expression; the
+      // optional bit range (RM 13.4) is kept as choices[1] so resolution can
+      // set the component's first bit alongside its byte offset.
       Syntax_Node *comp_clause = Node_New (NK_ASSOCIATION, Parser_Location (p));
       Node_List_Push (&comp_clause->association.choices, Parse_Name (p));
       Parser_Expect (p, TK_AT);
       comp_clause->association.expression = Parse_Expression (p);
-
-      // Optional RANGE clause
-      // bit_range is now part of the expression
-      if (Parser_Match (p, TK_RANGE)) {
-        Parse_Range (p);  // first_bit .. last_bit
-      }
+      if (Parser_Match (p, TK_RANGE))
+        Node_List_Push (&comp_clause->association.choices, Parse_Range (p));
       Parser_Expect (p, TK_SEMICOLON);
       Node_List_Push (&node->rep_clause.component_clauses, comp_clause);
     }
@@ -12386,14 +12386,21 @@ double Eval_Const_Numeric_Impl (Syntax_Node *node) {
         case TK_SLASH:
           if (r == 0) return 0.0/0.0;
 
-          // Ada integer division truncates toward zero (RM 4.5.5)
-          // Only use integer division if BOTH operands are integer-typed
-          if (Is_Integer_Expr (node->binary.left) and Is_Integer_Expr (node->binary.right) and
-            l == floor (l) and r == floor (r) and
-            fabs (l) < 1e15 and fabs (r) < 1e15) {
-            int64_t li = (int64_t)l;
-            int64_t ri = (int64_t)r;
-            return (double)(li / ri);  // Integer division
+          // Ada integer division truncates toward zero (RM 4.5.5). Recognize
+          // an integer operand by its structure (Is_Integer_Expr) OR its
+          // resolved type — an attribute such as INTEGER'SIZE has no structural
+          // case but is universal_integer — so a static
+          // `(INTEGER'SIZE + STORAGE_UNIT - 1) / STORAGE_UNIT` truncates to 4
+          // rather than folding to 4.875 (needed for record layout positions).
+          {
+            Syntax_Node *dl = node->binary.left, *dr = node->binary.right;
+            bool l_int = Is_Integer_Expr (dl) or Type_Is_Integer_Like (dl->type) or
+                         Type_Is_Universal_Integer (dl->type);
+            bool r_int = Is_Integer_Expr (dr) or Type_Is_Integer_Like (dr->type) or
+                         Type_Is_Universal_Integer (dr->type);
+            if (l_int and r_int and l == floor (l) and r == floor (r) and
+                fabs (l) < 1e15 and fabs (r) < 1e15)
+              return (double)((int64_t) l / (int64_t) r);
           }
           return l / r;
         case TK_EXPON: return pow (l, r);
@@ -20772,11 +20779,28 @@ void Resolve_Declaration (Syntax_Node *node) {
                   for (uint32_t j = 0; j < target_type->record.component_count; j++) {
                     Component_Info *comp = &target_type->record.components[j];
 
-                    // Get byte offset from expression
+                    // RM 13.4: `comp AT p RANGE f .. l` places the component at
+                    // byte p with its first stored bit at f. Both p and f are
+                    // static expressions (often products of named numbers such
+                    // as 2 * UNITS_PER_INTEGER), so fold them rather than
+                    // accepting only integer literals. bit_size is left at the
+                    // component's natural width: a sub-natural range denotes a
+                    // packed bit field, whose load/store this generator does not
+                    // implement, and forcing it would corrupt the value.
                     if (Slice_Equal_Ignore_Case (comp->name, comp_name)) {
                       Syntax_Node *pos_expr = cc->association.expression;
-                      if (pos_expr and pos_expr->kind == NK_INTEGER) {
-                        comp->byte_offset = (uint32_t)pos_expr->integer_lit.value;
+                      if (pos_expr) {
+                        Resolve_Expression (pos_expr);
+                        double p = Eval_Const_Numeric (pos_expr);
+                        if (not isnan (p)) comp->byte_offset = (uint32_t) p;
+                      }
+                      if (cc->association.choices.count > 1 and
+                          cc->association.choices.items[1] and
+                          cc->association.choices.items[1]->kind == NK_RANGE) {
+                        Syntax_Node *low = cc->association.choices.items[1]->range.low;
+                        Resolve_Expression (low);
+                        double f = Eval_Const_Numeric (low);
+                        if (not isnan (f)) comp->bit_offset = (uint32_t) f;
                       }
                       break;
                     }
@@ -20784,6 +20808,24 @@ void Resolve_Declaration (Syntax_Node *node) {
                 }
               }
             }
+
+            // Recompute the record's total size from the explicit layout: the
+            // extent is the furthest component end (byte_offset + its byte
+            // size). Without this the object keeps its default size and a
+            // component the clause moved beyond it (E AT 3 * UNITS) writes out
+            // of bounds; the enclosing object then loses that field and the
+            // record's own size no longer matches what the clause dictates
+            // (cd1c03h). A derived type copies these figures after the clause.
+            uint32_t rep_extent = 0;
+            for (uint32_t j = 0; j < target_type->record.component_count; j++) {
+              Component_Info *comp = &target_type->record.components[j];
+              uint32_t comp_bytes = comp->component_type and
+                                    comp->component_type->size > 0
+                                      ? comp->component_type->size : 1;
+              uint32_t end = comp->byte_offset + comp_bytes;
+              if (end > rep_extent) rep_extent = end;
+            }
+            if (rep_extent > target_type->size) target_type->size = rep_extent;
           }
 
           // Address clause (RM 13.5): FOR X USE AT expr makes the object an

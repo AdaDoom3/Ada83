@@ -254,5 +254,30 @@ landing:
 Reverted to keep the tree regression-free. Proper record-rep support needs
 named-number/SYSTEM folding AND bit-field load/store — a substantial feature.
 
+RECORD REPRESENTATION CLAUSES — REVISITED AND LANDED (+6, zero regressions):
+The earlier "named number won't fold" diagnosis was wrong. UPI folds fine; the
+bug was that `(INTEGER'SIZE + SYSTEM.STORAGE_UNIT - 1) / SYSTEM.STORAGE_UNIT`
+folded to 4.875 because the constant folder did FLOAT division — it only used
+Ada integer division (RM 4.5.5) when Is_Integer_Expr held for both operands,
+and INTEGER'SIZE (an attribute) has no structural integer case. So 2*UPI folded
+to 9, corrupting every position. Fixes:
+  1. The division fold now treats an operand as integer when Is_Integer_Expr
+     OR its resolved type is integer/universal_integer (INTEGER'SIZE included).
+     Scoped to the division fold, NOT the global predicate, so the subtype-
+     bound folder at line ~15199 is unchanged and c42005a (null string at
+     INTEGER'FIRST) keeps its runtime-raise path.
+  2. Parser captures the component clause `RANGE f..l` (previously parsed and
+     discarded) as choices[1].
+  3. Resolution folds the AT position and first bit (RM 13.4) and applies
+     byte_offset/bit_offset; bit_size is left natural (sub-natural = packed bit
+     field, unimplemented, would corrupt values).
+  4. The record's total size is RECOMPUTED from the explicit layout (furthest
+     component end) — without it a moved component (E AT 3*UNITS) wrote out of
+     bounds and derived types inherited a too-small size (cd1c03h).
+Landed: cd1009n/x/y/z, cd4051b/c (+6). Still open in this cluster: cd4051d
+(LAST_BIT needs bit-field bit_size), cd1c04e/cd1c03a (derived position/size
+inheritance), cd4024b (fixed-point component clause), cd4031a. Packed bit-field
+load/store remains the big missing feature.
+
 Other cd clusters still open: address clauses (cd5011g etc.), collection
 STORAGE_SIZE (cd2b11d/e, cd7205c), derived SIZE/SMALL inheritance (cd1c03a/e).
