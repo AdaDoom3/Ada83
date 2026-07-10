@@ -362,6 +362,25 @@ a fundamental operator: +16 new passes (c34006j, c34007f/g/i, c36104a, c38004a/b
 c41108a, c41203a/b, c64109c/i, c95089a, cc1204a, ce3603a/04a), one tasking flake
 (c97201x, passes 4/4 isolated). Class C 1715->1729.
 
+CATENATION RESULT UPPER-BOUND CHECK — LANDED (+2 c45345c/d): RM 4.5.3 raises
+CONSTRAINT_ERROR when the UPPER bound of a catenation result exceeds the index
+subtype. The old check compared total LENGTH against the index subtype's extent,
+which misses a result that starts above the subtype's 'FIRST: `A(6..9) & ...`
+inherits lower bound 6 from the left slice, so ten elements run to 15 even
+though length 10 fits a 1..10 subtype. Replaced with a bound check emitted once
+res_lo/res_hi are known: raise when res_hi > index-subtype'LAST for a non-null
+result. The index-subtype range is read from Type_Base(result_type)'s first
+index constraint — this strips a named type's object-constraint (STRING(1..5) ->
+POSITIVE, so `S & S` at 1..10 stays legal) while keeping an anonymous array's
+own discrete range (ARRAY(1..10), ARRAY(MON..FRI)). Dynamic bounds
+(ARRAY(1..IDENT_INT(10)), c45345d) are evaluated at run time via
+Emit_Single_Bound. Only the upper bound is checked, per the RM wording. Class C
+1729->1732, zero regressions, and the new raise fires in no other test (verified
+against the full run). (Investigated goblin trail: the 3 rr9 "regressions"
+c45282a/ce3110a/ce3114b are pre-existing flakes — all fail on the pre-change
+binary in isolation; c45282a is a pre-existing lli-JIT crash, the ce pair the
+known fd/file family — and settled back to PASS on the next run.)
+
 OTHER REMAINING LEVERS (from full-suite gap analysis):
   * Object renaming (RM 8.5) must yield a true alias (pointer to the renamed
     object), currently copies → segv/CE/wrong. Coherent set c85005a-e,

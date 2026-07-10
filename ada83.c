@@ -27468,43 +27468,12 @@ LLVM_Value Emit_Binary_Op_Predefined (Syntax_Node *node) {
     // Total length
     uint32_t total_len = Emit_Result_Instruction ("add %s %%t%u, %%t%u\n", LLVM_Rep_To_String (cat_bt), left_len1, right_len1);
 
-    // Check result length against index SUBTYPE bounds (RM 4.5.3(7)).                             
-    // The check is against the index subtype (e.g., POSITIVE for STRING),                          
-    // NOT the specific constraint on a variable. For STRING, the index                             
-    // subtype is POSITIVE (1..INTEGER'LAST), so almost any length is valid.                       
-    //                                                                                              
+    // RM 4.5.3(7): the check that the result's bounds belong to the index
+    // subtype is emitted below, once the result's actual lower/upper bounds are
+    // known — the lower bound is inherited from the left operand, so a length-
+    // only test would miss a result that starts above the subtype's 'FIRST and
+    // runs its upper bound past 'LAST (c45345c).
     Type_Info *result_type = node->type;
-    if (result_type and (result_type->kind == TYPE_ARRAY or result_type->kind == TYPE_STRING) and
-      result_type->array.index_count > 0) {
-
-      // Always use index_type bounds (the index subtype), not Index_Info
-      // bounds which represent a specific constraint on a variable.
-      Index_Info *idx_info = &result_type->array.indices[0];
-      Type_Bound low_b = {0}, high_b = {0};
-      if (idx_info->index_type) {
-        low_b = idx_info->index_type->low_bound;
-        high_b = idx_info->index_type->high_bound;
-      }
-
-      // Max length = index_high - index_low + 1.
-      // For index subtype INTEGER, max_len = 2^32 which doesn't fit in
-      // cat_bt (typically i32). Since total_len is i32 (max INT32_MAX),
-      // it can never exceed such a max_len — skip the check entirely.
-      // Only emit the check when max_len fits cat_bt.
-      if (low_b.kind == BOUND_INTEGER and high_b.kind == BOUND_INTEGER) {
-        int128_t max_len = high_b.int_value - low_b.int_value + 1;
-        uint32_t bits = LLVM_Rep_Bits (cat_bt);
-        int128_t bt_max = (bits >= 64) ? (int128_t)INT64_MAX
-                       : (bits >= 32) ? (int128_t)INT32_MAX
-                       : (bits >= 16) ? (int128_t)INT16_MAX
-                       : (int128_t)INT8_MAX;
-        if (max_len > 0 and max_len <= bt_max) {
-          uint32_t max_const = Emit_Static_Int_Comment (max_len, cat_bt, "max index length").reg;
-          LLVM_I1 overflow = Emit_Icmp ("sgt", cat_bt, total_len, max_const);
-          Emit_Check_With_Raise (overflow.reg, true, "concatenation length exceeds index subtype");
-        }
-      }
-    }
 
     // Lengths so far count *elements*; storage counts *bytes*. The operands
     // and result share one component type, so a single byte-width scales every
@@ -27577,6 +27546,55 @@ LLVM_Value Emit_Binary_Op_Predefined (Syntax_Node *node) {
          "  ; RM 4.5.3 result high (null-left → right's high)\n", left_null.reg, LLVM_Rep_To_String (cat_bt), right_high,
          LLVM_Rep_To_String (cat_bt), res_hi);
       res_hi = res_hi2;
+    }
+
+    // RM 4.5.3(7): a non-null catenation result must have both bounds within the
+    // index subtype. The lower bound is inherited from the left operand, so the
+    // upper bound can exceed the subtype's 'LAST even when the length fits the
+    // subtype's extent (c45345c: A(6..9) & ... starts at 6, so ten elements run
+    // to 15). The check is skipped for a null result, and for an index subtype
+    // spanning the full index base type (STRING's POSITIVE) where an i32-domain
+    // bound cannot overflow it.
+    if (result_type and
+        (result_type->kind == TYPE_ARRAY or result_type->kind == TYPE_STRING) and
+        result_type->array.index_count > 0 and result_type->array.indices) {
+      // The index subtype's range (RM 3.6(9)) is a property of the array TYPE,
+      // not of an object's constraint: for a named unconstrained type used with
+      // a constraint (STRING(1..5), a user CH_ARR(1..7)) it is the type's own
+      // index subtype (POSITIVE, SMALL), so `S & S` at 1..10 is legal; for an
+      // anonymous constrained array (`ARRAY (1..10)`, `ARRAY (MON..FRI)`) the
+      // discrete range itself defines the index subtype. Type_Base strips a
+      // named type's object-constraint while leaving an anonymous array's own
+      // range, so its first index constraint is the index subtype range in both
+      // cases.
+      Type_Info *base = Type_Base (result_type);
+      Index_Info *ii = (base and Type_Is_Array_Like (base) and
+                        base->array.index_count > 0 and base->array.indices)
+                         ? &base->array.indices[0]
+                         : &result_type->array.indices[0];
+      // RM 4.5.3 checks only the UPPER bound of the result against the index
+      // subtype (the lower bound is inherited from an operand already within
+      // range). A static 'LAST equal to the index base type's own maximum
+      // (STRING's POSITIVE'LAST = INTEGER'LAST) needs no check — an i32-domain
+      // bound cannot pass it. A dynamic bound (`ARRAY (1..IDENT_INT(10))`,
+      // c45345d) is evaluated at run time via Emit_Single_Bound.
+      Type_Bound hb = ii->high_bound;
+      uint32_t bits = LLVM_Rep_Bits (cat_bt);
+      int128_t bt_max = (bits >= 64) ? (int128_t)INT64_MAX
+                      : (bits >= 32) ? (int128_t)INT32_MAX
+                      : (bits >= 16) ? (int128_t)INT16_MAX : (int128_t)INT8_MAX;
+      bool check_hi = (hb.kind == BOUND_INTEGER) ? (hb.int_value < bt_max)
+                                                 : Bound_Is_Expression (&hb);
+      if (check_hi) {
+        LLVM_I1 nonnull = Emit_Icmp_Const ("ne", cat_bt, total_len, 0);
+        uint32_t hi_reg = Emit_Single_Bound (&hb, cat_bt);
+        uint32_t hi_bad = Emit_Icmp ("sgt", cat_bt, res_hi, hi_reg).reg;
+        uint32_t guarded = Emit_Result_Instruction (
+          "and i1 %%t%u, %%t%u  ; RM 4.5.3 upper-bound check (non-null result)\n",
+          hi_bad, nonnull.reg);
+        Emit_Check_With_Raise (guarded, true,
+          "catenation result upper bound exceeds index subtype");
+      }
     }
 
     // Return fat pointer to result
