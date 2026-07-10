@@ -18784,6 +18784,53 @@ bool Instantiate_Generic_Subprogram (Symbol *instance_sym, Symbol *template_sym)
   return true;
 }
 
+// RM 8.5: a slice renaming (`X : STRING renames S(L..H)`) denotes the slice,
+// whose index range L..H is the renamed object's own constraint — the type mark
+// in the renaming supplies no bounds (c85006g). Build the constrained
+// one-dimensional subtype carrying L..H so X'FIRST/'LAST/'LENGTH and indexing
+// use the slice's range, not the base array's. Returns NULL for a non-slice or a
+// slice whose bounds are not both static (a dynamic slice would need runtime
+// bounds carried in a fat pointer, which the rename's single-address slot does
+// not hold).
+static Type_Info *Slice_Rename_Subtype (Syntax_Node *slice) {
+  if (not slice or slice->kind != NK_APPLY or
+      slice->apply.resolution != APPLY_SLICE)
+    return NULL;
+  Type_Info *base = slice->type;
+  if (not Type_Is_Array_Like (base) or base->array.index_count != 1)
+    return NULL;
+  Syntax_Node *rng = slice->apply.arguments.count
+                   ? slice->apply.arguments.items[0] : NULL;
+  if (not rng or rng->kind != NK_RANGE)
+    return NULL;
+  Syntax_Node *lo = rng->range.low, *hi = rng->range.high;
+  if (not lo or not hi or lo->kind != NK_INTEGER or hi->kind != NK_INTEGER)
+    return NULL;
+
+  Type_Info *sub = Type_New (base->kind, base->name);
+  sub->array = base->array;                 // element type, index subtype
+  sub->array.is_constrained = true;
+  sub->array.index_count = 1;
+  sub->array.indices = Arena_Allocate (sizeof (Index_Info));
+  sub->array.indices[0] = base->array.indices
+                        ? base->array.indices[0] : (Index_Info){0};
+  if (not sub->array.indices[0].index_type)
+    sub->array.indices[0].index_type = sm->type_integer;
+  sub->array.indices[0].low_bound  =
+    (Type_Bound){ .kind = BOUND_INTEGER, .int_value = lo->integer_lit.value };
+  sub->array.indices[0].high_bound =
+    (Type_Bound){ .kind = BOUND_INTEGER, .int_value = hi->integer_lit.value };
+  sub->parent_type = Type_Base (base);
+
+  int64_t len = hi->integer_lit.value - lo->integer_lit.value + 1;
+  if (len < 0) len = 0;
+  Type_Info *elem = sub->array.element_type;
+  uint32_t elem_size = (elem and elem->size > 0) ? elem->size : 1;
+  sub->size = (uint32_t)(len * elem_size);
+  sub->alignment = elem ? elem->alignment : 1;
+  return sub;
+}
+
 void Resolve_Declaration (Syntax_Node *node) {
   if (not node) return;
   switch (node->kind) {
@@ -18852,6 +18899,10 @@ void Resolve_Declaration (Syntax_Node *node) {
         // Object renames: type comes from renamed object
         if (node->object_decl.is_rename and node->object_decl.init) {
           sym->type            = node->object_decl.init->type;
+          // A slice rename carries the slice's own index constraint (RM 8.5),
+          // not the base array's bounds nor any type mark in the renaming.
+          Type_Info *slice_sub = Slice_Rename_Subtype (node->object_decl.init);
+          if (slice_sub) sym->type = slice_sub;
           sym->renamed_object  = node->object_decl.init;  // Point to renamed
           sym->is_named_number = false;
 

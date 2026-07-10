@@ -334,12 +334,23 @@ parameter address and the acceptor's copy-back memcpy'd through it -> SIGSEGV
 the ordinary SYMBOL_VARIABLE path — a constrained-array/record rename returns
 the captured address without a load; only scalars/access load. Full Class C
 1713->1714, zero regressions.
-Still open in the cluster: c85006f/g — SLICE renames (`ADJECTIVES : STRING
-renames S(10..24)`). The rename keeps the slice's underlying array type
-(unconstrained), so 'FIRST/'LAST/'LENGTH read the base bounds (1..) instead of
-the slice's (10..24) and indexing is off. Needs a constrained subtype built from
-the slice's range for the rename symbol (RM 8.5: the renamed object's constraint
-is used, not any type mark).
+SLICE RENAMES — LANDED (+2 c85006f/g): `ADJECTIVES : STRING renames S(10..24)`
+kept the slice's underlying (unconstrained) array type, so 'FIRST/'LAST/'LENGTH
+read the base bounds (1..) not the slice's (10..24). New Slice_Rename_Subtype
+builds a constrained one-dimensional subtype from a static slice range and the
+rename symbol adopts it (RM 8.5: the renamed object's constraint governs, not
+any type mark in the renaming). Combined with the composite-rename value fix
+(the constrained subtype is by-reference, so reads return the captured slice-
+base address), 'FIRST/'LAST/indexing/write-through all track the slice. Dynamic
+slice bounds still fall back to the base type (would need a fat-pointer slot).
+Class C 1714->1715, zero real regressions (ce3116a is the documented fd-limit
+flake: no renames, fails on the pre-change binary too).
+
+Note surfaced (NOT a rename bug, pre-existing, out of scope): `S(3..4) = "CX"`
+— equality of an offset-lower-bound slice against a bare string LITERAL returns
+false though the values match (RM 4.5.2 should ignore bounds). c85006f/g pass
+because they compare against IDENT_STR(...) results, not bare literals. Separate
+slice/string-literal equality goblin for a future pass.
 
 OTHER REMAINING LEVERS (from full-suite gap analysis):
   * Object renaming (RM 8.5) must yield a true alias (pointer to the renamed
