@@ -346,11 +346,21 @@ slice bounds still fall back to the base type (would need a fat-pointer slot).
 Class C 1714->1715, zero real regressions (ce3116a is the documented fd-limit
 flake: no renames, fails on the pre-change binary too).
 
-Note surfaced (NOT a rename bug, pre-existing, out of scope): `S(3..4) = "CX"`
-— equality of an offset-lower-bound slice against a bare string LITERAL returns
-false though the values match (RM 4.5.2 should ignore bounds). c85006f/g pass
-because they compare against IDENT_STR(...) results, not bare literals. Separate
-slice/string-literal equality goblin for a future pass.
+ARRAY-LITERAL OPERAND BOUNDS — LANDED (+14, crossed to 87%): `S(3..4) = "CD"`
+(and `S(1..2) = "AB"`) returned FALSE though the values matched. Root cause: a
+string-literal operand of a comparison was seeded with the sibling operand's
+CONSTRAINED subtype (the slice's static type is the whole array's STRING(1..N)),
+so Generate_String_Literal built the literal's fat pointer with the type's
+bounds 1..N — length N — instead of 1..len. The length-equality pre-check
+(len==N) then failed. But RM 4.3.2: an operator operand is NOT an applicable-
+index-constraint context, so the literal must fix its own bounds from its
+length. Fix in Resolve_Operand (operator-only propagation): a string-literal or
+aggregate operand seeded with a constrained array type takes the unconstrained
+base instead. Assignment/object-decl contexts are untouched, so length-mismatch
+there still raises (verified `Y:STRING(1..3):="AB"` still raises). Broad reach —
+a fundamental operator: +16 new passes (c34006j, c34007f/g/i, c36104a, c38004a/b,
+c41108a, c41203a/b, c64109c/i, c95089a, cc1204a, ce3603a/04a), one tasking flake
+(c97201x, passes 4/4 isolated). Class C 1715->1729.
 
 OTHER REMAINING LEVERS (from full-suite gap analysis):
   * Object renaming (RM 8.5) must yield a true alias (pointer to the renamed

@@ -13714,6 +13714,16 @@ static void Resolve_Operand (Syntax_Node *o, Type_Info *opnd_typ) {
     Resolve_Char_As_Enum (o, opnd_typ);
   } else if (opnd_typ and (not o->type or o->kind == NK_AGGREGATE or
                            o->kind == NK_STRING)) {
+    // RM 4.3.2: an operator operand is not one of the applicable-index-
+    // constraint contexts (a)-(c), so a flexible array literal (a string
+    // literal or an array aggregate) fixes its own bounds from its length —
+    // it does not inherit a constrained operand subtype's bounds. Seeding the
+    // unconstrained base makes `S(3..4) = "CD"` compare by length rather than
+    // giving the literal the whole array's 1..N bounds (a length mismatch that
+    // wrongly makes the operands unequal).
+    if ((o->kind == NK_STRING or o->kind == NK_AGGREGATE) and
+        Type_Is_Constrained_Array (opnd_typ))
+      opnd_typ = Type_Base (opnd_typ);
     o->type = opnd_typ;
     Resolve_Expression (o);
   }
