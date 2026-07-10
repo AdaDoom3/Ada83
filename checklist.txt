@@ -1,0 +1,110 @@
+═══════════════════════════════════════════════════════════════════════════════
+TASK
+═══════════════════════════════════════════════════════════════════════════════
+
+In the pursuit of high-quality code (low line count (e.g. low undue complexity)
+and high feature/correctness) - refactor and fix ada83.c to pass a single
+C-test group completely (e.g. cXX) with much better Haskell-like C99 and smart
+code-golfing with, ironically, textbook "Literate Programming" style.
+
+Do NOT skip around - when you encounter a complex problem look at it as an
+opportunity to finally attack a big issue. Remember to follow the flow upstream
+to avoid hacking up the expander.
+
+Create a file to track everything called "checklist.txt" and include this
+prompt in it.
+
+═══════════════════════════════════════════════════════════════════════════════
+GROUND RULES (from CLAUDE.md)
+═══════════════════════════════════════════════════════════════════════════════
+- Do The Right Thing: structural fix over hack, every time.
+- Follow the flow UPSTREAM. A wrong value at codegen usually means a wrong
+  decision at resolution/semantics. Fix it where it is first wrong.
+- Never hack up the expander. Predicates over duplicated logic. No hardcoded
+  "i8"/"i32" in emit code.
+- Real parser for code search, not grep-as-final-answer.
+- Landing constraint: chosen group 100% pass; no regressions in full Class C.
+
+═══════════════════════════════════════════════════════════════════════════════
+TARGET GROUP: c42  (13 tests: 11 pass, 2 fail, 0 skip)
+═══════════════════════════════════════════════════════════════════════════════
+Chosen because both failures share ONE upstream root cause (string-literal
+bound determination, RM 4.2 -> 4.3.2), and the fix is a semantic determination,
+not an expander hack. "Attack the big issue": how array-valued literals get
+their bounds from context.
+
+═══════════════════════════════════════════════════════════════════════════════
+FAILURES IN TARGET GROUP
+═══════════════════════════════════════════════════════════════════════════════
+[ ] c42007e  string literal as left/right operand of "&" (catenation).
+             CONCAT1 RETURN STR, STR index subtype STR_RANGE = 2..10.
+             ("ABC" & (7..8=>'D')) must have 'FIRST = 2, 'LAST = 6.
+             We currently produce 'FIRST = 1 -> all four bound checks fail.
+[ ] c42007f  parenthesized string literal ("WHO") as an aggregate/record
+             component expression. Index subtype SF1 = 2..6, so ("WHO")
+             has bounds 2..4; component subtype is BASE(3..5); value 2..4
+             does NOT belong to 3..5 -> CONSTRAINT_ERROR must be raised.
+             We currently raise nothing (treat "WHO" as 3..5).
+
+═══════════════════════════════════════════════════════════════════════════════
+ROOT-CAUSE NOTES (upstream analysis)  -- RM 4.2, RM 4.3.2, RM 3.6.3
+═══════════════════════════════════════════════════════════════════════════════
+RM 4.2: a string literal's bounds are those of a positional array aggregate
+        (4.3.2). Type is determined solely from context.
+RM 4.3.2 (positional, no others): the lower bound is
+   * the APPLICABLE INDEX CONSTRAINT's lower bound, if the aggregate/literal
+     appears in one of contexts (a),(b),(c);
+   * OTHERWISE  S'FIRST, where S is the array type's index SUBTYPE.
+   The upper bound follows from the component count.
+Contexts (a)-(c) (which supply an applicable index constraint):
+   (a) actual param / generic actual / function result / RHS of ":=", AND the
+       corresponding subtype is a CONSTRAINED array subtype;
+   (b) operand of a qualified expression whose type mark is a constrained
+       array subtype;
+   (c) the expression of a component association of an enclosing (array or
+       record) aggregate (multidim subaggregates inherit the context).
+Parentheses BREAK contexts (a)-(c): a parenthesized primary is a general
+   expression, so the string literal inside gets the "otherwise" rule
+   (lower = S'FIRST). Its value is then checked against the surrounding
+   subtype -> may raise CONSTRAINT_ERROR (this is c42007f).
+RM 3.6.3 (catenation): result low bound = low bound of the left operand when
+   the left operand is non-null; hence a "&"-operand string literal is NOT in
+   a context (a)-(c), so it takes S'FIRST (this is c42007e).
+
+Why siblings a-d,g-k already pass: they exercise contexts (a)-(c) where we
+already take bounds from the target constraint. The hole is precisely the
+"otherwise -> S'FIRST" branch, where we hardcode lower bound = 1.
+
+CONFIRMED MECHANISM (traced through the compiler):
+  Generate_String_Literal (ada83.c ~25315) ALREADY takes the index subtype's
+  'FIRST when node->type is the applicable array type. The bug is upstream in
+  RESOLUTION: the string-literal operand of "&" is committed to STRING before
+  the STR context is known, so it never reaches that codegen branch.
+    - Analyze_Expr eagerly resolves a bare NK_STRING to STRING (13712), unlike
+      NK_AGGREGATE which is deferred as a flexible operand (13493).
+    - The catenation codegen (27089+) already computes result bounds correctly
+      (RM 4.5.3: result low = left operand's own low bound, null-left -> right).
+      So fixing the operand's type is sufficient; codegen needs no change.
+
+  c42007e FIX (done-ish): seed flexible concat operands (NK_STRING / aggregate)
+    with Type_Base(ctx) in Resolve_Binary_Op, so they carry the applicable
+    array type (index subtype -> 'FIRST). Concat operands are never in an
+    applicable-index-constraint context (a)-(c), so the UNCONSTRAINED base is
+    always right -> S'FIRST.
+
+  c42007f FIX (harder): the parser DISCARDS parentheses around a non-aggregate
+    primary (Parse: line ~6153 returns the inner expr; only NK_AGGREGATE gets
+    is_parenthesized). So ("WHO") becomes bare NK_STRING and we lose the fact
+    that it must use S'FIRST (parentheses remove it from context (c)). Fix:
+    preserve parenthesization for string literals, and when propagating a
+    context array type into a parenthesized literal, propagate the
+    UNCONSTRAINED base so it takes S'FIRST; the existing belongs-to-subtype
+    check then raises CONSTRAINT_ERROR (value 2..4 vs component subtype 3..5).
+
+UNIFYING RULE: propagate the unconstrained base (-> S'FIRST) to a string
+  literal / positional aggregate UNLESS it sits DIRECTLY (no parentheses, no
+  "&") in an applicable-index-constraint context (a)-(c).
+
+═══════════════════════════════════════════════════════════════════════════════
+PROGRESS LOG
+═══════════════════════════════════════════════════════════════════════════════

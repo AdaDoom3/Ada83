@@ -13682,8 +13682,29 @@ Type_Info *Resolve_In_Context (Syntax_Node *n, Type_Info *ctx) {
   return n->type;
 }
 
+// RM 4.5.3 + 4.2 + 4.3.2: an operand of "&" is never in an applicable-index-
+// constraint context (contexts (a)-(c) of 4.3.2 do not include catenation
+// operands), so a flexible operand — a string literal or an array aggregate —
+// takes the result array type but fixes its lower bound from that type's index
+// SUBTYPE 'FIRST, not from any constraint carried by the context. Seed such
+// operands with the UNCONSTRAINED base of the applicable array type so their
+// bounds fall out of the index subtype; recurse through nested "&" so every
+// leaf operand of a catenation chain is seeded from the one result type.
+static void Seed_Catenation_Operands (Syntax_Node *operand, Type_Info *array_base) {
+  if (not operand or not array_base) return;
+  if (operand->kind == NK_BINARY_OP and operand->binary.op == TK_AMPERSAND) {
+    Seed_Catenation_Operands (operand->binary.left,  array_base);
+    Seed_Catenation_Operands (operand->binary.right, array_base);
+  } else if ((operand->kind == NK_STRING or operand->kind == NK_AGGREGATE) and
+             not operand->type) {
+    operand->type = array_base;
+  }
+}
+
 Type_Info *Resolve_Binary_Op (Syntax_Node *node) {
   Type_Info *ctx = node->type;       // caller-seeded context hint, or NULL
+  if (node->binary.op == TK_AMPERSAND and Type_Is_Array_Like (ctx))
+    Seed_Catenation_Operands (node, Type_Base (ctx));
   Analyze_Binary (node);
   return Resolve_In_Context (node, ctx);
 }
