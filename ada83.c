@@ -3755,6 +3755,14 @@ void Emit_Instance_Wrapper_Bodies (Symbol *inst_sym);
 void Emit_Extern_Subprogram  (Symbol *sym);
 void Register_Pending_Extern  (Symbol *sym);
 void Flush_Pending_Externs    (void);
+// One source of truth for a subprogram's LLVM signature spelling. The
+// define (Emit_Function_Header) and every declare of the same symbol
+// (Emit_Extern_Subprogram, the SEPARATE-boundary flush) must spell
+// identical return and parameter lists or llvm-link rejects the pair.
+const char *Subprogram_Return_Rep_String (Symbol *sym);
+void        Emit_Formal_Parameter_List   (Symbol *sym,
+                                          bool    with_static_chain,
+                                          bool    with_names);
 void Emit_Function_Header    (Symbol *sym, bool is_nested);
 void Emit_Task_Function_Name (Symbol *task_sym, String_Slice fallback_name);
 void Emit_Parent_Frame_Aliases (Symbol *enclosing_subprogram);
@@ -41170,26 +41178,15 @@ void Emit_Extern_Subprogram (Symbol *sym) {
       cg->emitted_extern_names[cg->emitted_extern_name_count++] = ext;
   }
 
-  // Get return type
-  LLVM_Rep ret_rep = sym->return_type ? Type_To_Rep (sym->return_type) : LL_REP_VOID;
-  Emit ("declare %s @", LLVM_Rep_To_String (ret_rep));
+  // The declare must mirror the define's signature exactly: same return
+  // spelling (BIP functions are void) and same parameter list (ptr for
+  // OUT / IN OUT formals, hidden 'CONSTRAINED flags appended). Call sites
+  // already lower arguments this way, so a value-typed declare for a
+  // by-reference formal would make llvm-link reject the module pair.
+  Emit ("declare %s @", Subprogram_Return_Rep_String (sym));
   Emit_Symbol_Name (sym);
-  Emit ("(");
-
-  // Emit parameter types
-  for (uint32_t i = 0; i < sym->parameter_count; i++) {
-    if (i > 0) Emit (", ");
-
-    // Handle ALI-loaded symbols without full parameter info
-    Type_Info *ty = (sym->parameters and i < sym->parameter_count)
-            ? sym->parameters[i].param_type : NULL;
-    if (ty) {
-      Emit ("%s", LLVM_Rep_To_String (Type_To_Rep (ty)));
-    } else {
-      Emit ("%s", LLVM_Rep_To_String (Integer_Arith_Rep ()));  // Derive from INTEGER for missing param types
-    }
-  }
-  Emit (")\n");
+  Emit_Formal_Parameter_List (sym, false, false);
+  Emit ("\n");
 }
 // Defer an imported subprogram's `declare` to module scope. Generate_Declaration
 // runs both at library level and — through generic instantiation — inside a
@@ -44818,63 +44815,76 @@ bool Has_Nested_Subprograms (Node_List *declarations, Node_List *statements) {
 //   ptr %__BIPaccess  - Pointer to result destination                                              
 // The function returns void since result is built into __BIPaccess.                               
 //                                                                                                  
+// Return-type spelling shared by define and declare: build-in-place
+// functions return void (the result is built through __BIPaccess),
+// procedures return void, functions return their type's value rep.
+const char *Subprogram_Return_Rep_String (Symbol *sym) {
+  if (BIP_Is_BIP_Function (sym)) return "void";
+  if (sym->kind != SYMBOL_FUNCTION or not sym->return_type) return "void";
+  return LLVM_Rep_To_String (Type_To_Rep (sym->return_type));
+}
+
+// Emit the parenthesized formal-parameter list of a subprogram's LLVM
+// signature: static chain, build-in-place extra formals, regular formals
+// (ptr for OUT / IN OUT per Param_Is_By_Reference, the type's value rep
+// otherwise), then the hidden 'CONSTRAINED flags (RM 3.7.4) appended in
+// parameter order so the regular %p<i> numbering is undisturbed.
+// with_names distinguishes the define form (%p<i> names) from the bare
+// declare form. ALI-loaded symbols may lack the formal's type; an IN
+// formal then falls back to the integer arithmetic rep.
+void Emit_Formal_Parameter_List (Symbol *sym, bool with_static_chain,
+                                 bool with_names) {
+  Emit ("(");
+  bool need_comma = false;
+  if (with_static_chain) {
+    Emit (with_names ? "ptr %%__parent_frame" : "ptr");
+    need_comma = true;
+  }
+
+  // BIP extra formals: __BIPalloc (allocation form) and __BIPaccess (dest
+  // ptr); __BIPmaster and __BIPchain follow when the result has task parts.
+  if (BIP_Is_BIP_Function (sym)) {
+    if (need_comma) Emit (", ");
+    Emit (with_names ? "i32 %%__BIPalloc, ptr %%__BIPaccess" : "i32, ptr");
+    need_comma = true;
+    if (BIP_Extra_Formal_Count (sym) > 2)
+      Emit (with_names ? ", i32 %%__BIPmaster, ptr %%__BIPchain" : ", i32, ptr");
+  }
+  for (uint32_t i = 0; i < sym->parameter_count; i++) {
+    if (need_comma) Emit (", ");
+    need_comma = true;
+    Type_Info *formal_type = sym->parameters ? sym->parameters[i].param_type
+                                             : NULL;
+    const char *rep_text;
+    if (sym->parameters and Param_Is_By_Reference (sym->parameters[i].mode))
+      rep_text = "ptr";
+    else if (formal_type)
+      rep_text = LLVM_Rep_To_String (Type_To_Rep (formal_type));
+    else
+      rep_text = LLVM_Rep_To_String (Integer_Arith_Rep ());
+    if (with_names) Emit ("%s %%p%u", rep_text, i);
+    else            Emit ("%s", rep_text);
+  }
+  if (sym->parameters)
+    for (uint32_t i = 0; i < sym->parameter_count; i++)
+      if (Parameter_Needs_Constrained_Flag (sym->parameters[i].mode,
+                                            sym->parameters[i].param_type)) {
+        if (need_comma) Emit (", ");
+        need_comma = true;
+        if (with_names) Emit ("i8 %%__constr_p%u", i);
+        else            Emit ("i8");
+      }
+  Emit (")");
+}
+
 void Emit_Function_Header (Symbol *sym, bool is_nested) {
   if (sym) sym->definition_emitted = true;
   // New function: invalidate the producer-honesty shadow (temp ids restart).
   cg->reg_emit_gen++;
-  bool is_function = (sym->kind == SYMBOL_FUNCTION);
-  bool is_bip = BIP_Is_BIP_Function (sym);
-
-  // BIP functions return void - result is built into __BIPaccess
-  if (is_bip) {
-    Emit ("define void @");
-  } else {
-    Emit ("define %s @", is_function ? LLVM_Rep_To_String (Type_To_Rep (sym->return_type)) : "void");
-  }
+  Emit ("define %s @", Subprogram_Return_Rep_String (sym));
   Emit_Symbol_Name (sym);
-  Emit ("(");
-  bool need_comma = false;
-
-  // Static chain for nested functions
-  if (is_nested) {
-    Emit ("ptr %%__parent_frame");
-    need_comma = true;
-  }
-
-  // BIP extra formals: __BIPalloc (allocation form) and __BIPaccess (dest ptr)
-  // Additional formals for task components: __BIPmaster, __BIPchain
-  if (is_bip) {
-    uint32_t bip_count = BIP_Extra_Formal_Count (sym);
-    if (need_comma) Emit (", ");
-    Emit ("i32 %%__BIPalloc, ptr %%__BIPaccess");
-    need_comma = true;
-
-    // Emit task formals if return type has task components
-    if (bip_count > 2) {
-      Emit (", i32 %%__BIPmaster, ptr %%__BIPchain");
-    }
-  }
-
-  // Regular parameters
-  for (uint32_t i = 0; i < sym->parameter_count; i++) {
-    if (need_comma) Emit (", ");
-    need_comma = true;
-    if (Param_Is_By_Reference (sym->parameters[i].mode))
-      Emit ("ptr %%p%u", i);
-    else
-      Emit ("%s %%p%u", LLVM_Rep_To_String (Type_To_Rep (sym->parameters[i].param_type)), i);
-  }
-
-  // Hidden 'CONSTRAINED flags (RM 3.7.4), appended in parameter order so the
-  // regular %p<i> numbering is undisturbed.
-  for (uint32_t i = 0; i < sym->parameter_count; i++)
-    if (Parameter_Needs_Constrained_Flag (sym->parameters[i].mode,
-                                          sym->parameters[i].param_type)) {
-      if (need_comma) Emit (", ");
-      need_comma = true;
-      Emit ("i8 %%__constr_p%u", i);
-    }
-  Emit (") {\nentry:\n");
+  Emit_Formal_Parameter_List (sym, is_nested, true);
+  Emit (" {\nentry:\n");
 
   // Each LLVM `define` uses fresh %0/%1/... SSA numbering. Reset the
   // temp counter and per-function side tables so a stale entry from
@@ -54622,27 +54632,11 @@ void Compile_File (const char *input_path, const char *output_path) {
       }
       continue;
     }
-    LLVM_Rep return_rep = callee->return_type
-      ? Type_To_Rep (callee->return_type) : LL_REP_VOID;
-    Emit ("declare %s @", callee->return_type
-          ? LLVM_Rep_To_String (return_rep) : "void");
+    Emit ("declare %s @", Subprogram_Return_Rep_String (callee));
     Emit_Symbol_Name (callee);
-    Emit ("(");
-    bool first_parameter = true;
-    if (Subprogram_Needs_Static_Chain (callee)) {
-      Emit ("ptr");
-      first_parameter = false;
-    }
-    for (uint32_t p = 0; p < callee->parameter_count; p++) {
-      if (not first_parameter) Emit (", ");
-      first_parameter = false;
-      if (Param_Is_By_Reference (callee->parameters[p].mode))
-        Emit ("ptr");
-      else
-        Emit ("%s", LLVM_Rep_To_String (
-          Type_To_Rep (callee->parameters[p].param_type)));
-    }
-    Emit (")  ; SEPARATE-boundary callee\n");
+    Emit_Formal_Parameter_List (callee, Subprogram_Needs_Static_Chain (callee),
+                                false);
+    Emit ("  ; SEPARATE-boundary callee\n");
   }
 
   // Note: Derived type operations (RM 3.4) don't need wrapper functions.                          
