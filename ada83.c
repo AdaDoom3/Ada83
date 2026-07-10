@@ -2077,6 +2077,11 @@ struct Type_Info {
   bool        is_limited;         // True for limited types (no assignment or equality)
   bool        is_frozen;          // True once the representation has been finalised
   Task_Component_State_Kind task_component_state; // Type_Has_Task_Component memo
+  int32_t governing_discriminant_memo; // Governing_Discriminant_Index memo: 0 = not yet
+                                       // resolved; else 1 + component index, or -1 when
+                                       // the record has no governing discriminant.
+                                       // Top-level (outside the kind union) like the
+                                       // task memo, so it never aliases another variant.
   int64_t     storage_size;       // 'Storage_Size attribute value, or -1 if unset
   const char *equality_func_name; // Mangled name of the compiler-generated "=" function
   uint32_t    rt_global_id;       // Runtime type identifier for exception dispatch
@@ -3772,13 +3777,25 @@ bool Has_Nested_In_Statements (Node_List *statements);
 //
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 
-// ???
+// One scan of an array or record aggregate's items: the item classification
+// (positional / named / OTHERS) together with the span of its static choices.
+// Every consumer of "what do the choices cover" reads one of these instead of
+// rescanning the item list.
 typedef struct {
-  uint32_t     n_positional; // Number of positional associations
-  bool         has_named;    // True if any named associations are present
-  bool         has_others;   // True if an `others' association is present
-  Syntax_Node *others_expr;  // The expression from the `others' association, or NULL
-} Agg_Class;
+  uint32_t     positional_count;           // Items that are not associations
+  bool         has_named;                  // Some item is a named association
+  bool         has_others;                 // An OTHERS association is present
+  Syntax_Node *others_expression;          // The OTHERS expression, or NULL
+  bool         has_static_low;             // Some static choice contributed a low bound
+  bool         has_static_high;            // Some static choice contributed a high bound
+  int128_t     minimum_low;                // Least static single-index / range low
+  int128_t     maximum_high;               // Greatest static single-index / range high
+  bool         has_dynamic_range;          // Some range choice bound is non-static
+  bool         has_dynamic_single_choice;  // Some single (non-range) choice is non-static
+  Syntax_Node *first_dynamic_range;        // First range choice with a non-static bound
+  Syntax_Node *first_item_expression;      // First item's value (positional item or association expression)
+  Syntax_Node *first_association_expression; // First named association's expression
+} Aggregate_Shape;
 
 // A single discriminant allocation entry: symbol plus its LLVM temp.
 typedef struct {
@@ -3793,7 +3810,7 @@ typedef struct {
 } Disc_Alloc_Info;
 
 // ???
-Agg_Class Agg_Classify          (Syntax_Node *node);
+Aggregate_Shape Scan_Aggregate_Shape (Syntax_Node *node);
 bool      Bound_Pair_Overflows  (Type_Bound low, Type_Bound high);
 bool      Is_Others_Choice      (Syntax_Node *choice);
 bool      Aggregate_Has_Others  (Syntax_Node *agg);
@@ -3808,40 +3825,93 @@ uint32_t Agg_Resolve_Elem (Syntax_Node *expr,
                            LLVM_Rep     elem_type,
                            Type_Info   *elem_ti);
 
-// ???
-void Agg_Store_At_Static  (uint32_t    base,
-                           uint32_t    val,
-                           int128_t    idx,
-                           LLVM_Rep    elem_type,
-                           uint32_t    elem_size,
-                           bool        is_composite,
-                           uint32_t    rt_elem_size);
-void Agg_Store_At_Dynamic (uint32_t    base,
-                           uint32_t    val,
-                           uint32_t    arr_idx,
-                           LLVM_Rep    idx_type,
-                           LLVM_Rep    elem_type,
-                           uint32_t    elem_size,
-                           uint32_t    rt_row_size,
-                           bool        is_composite);
-
-// Threaded state of one array aggregate's static-index emission: the target
-// storage, the element layout facts every store needs, and the initialized
-// map the OTHERS pass consults.
+// A discrete operand of the array-aggregate machinery that is either a
+// compile-time constant or an emitted SSA value. "Static" is a property of
+// the operand, not of a separate lowering path: every helper below accepts
+// either form and folds the constant case into the same emission.
 typedef struct {
-  uint32_t   base;               // aggregate storage (alloca temp)
-  bool       multidim;           // outer level of a multi-dimensional aggregate?
-  bool       elem_is_composite;  // element stored by memcpy rather than store
-  Type_Info *agg_type;           // the aggregate's array type
-  LLVM_Rep   elem_type;          // LLVM rep for scalar element stores
-  Type_Info *elem_ti;            // element subtype (drives the scalar check)
-  uint32_t   elem_size;          // static element byte size
-  uint32_t   rt_element_size;    // runtime element size temp (0 = static)
-  bool      *initialized;        // per-flat-index "was stored" map
+  bool     is_static;  // value is compile-time known
+  int128_t value;      // the constant, when is_static
+  uint32_t reg;        // SSA temp at the owning context's index_rep
+                       // (for a static operand, an optional pre-materialization)
+} Aggregate_Operand;
+
+Aggregate_Operand Aggregate_Operand_Static (int128_t value);
+
+// Threaded state of one array aggregate's per-choice lowering: the target
+// storage, the element layout facts every store needs, the aggregate bounds
+// as operands, and the bookkeeping the choice handlers and the OTHERS pass
+// share (RM 4.3.2, 4.3.3).
+typedef struct {
+  // Target storage and element layout
+  uint32_t   base;                // aggregate storage (alloca temp)
+  bool       multidim;            // outer level of a multi-dimensional aggregate?
+  bool       elem_is_composite;   // element stored by memcpy rather than store
+  Type_Info *agg_type;            // the aggregate's array type
+  LLVM_Rep   elem_type;           // LLVM rep for scalar element stores
+  Type_Info *elem_ti;             // element subtype (drives the scalar check)
+  uint32_t   elem_size;           // static element (or row) byte size
+  uint32_t   rt_element_size;     // runtime element/row byte stride temp (0 = static)
+  LLVM_Rep   rt_element_size_rep; // rep of rt_element_size
+
+  // Aggregate bounds and index arithmetic
+  LLVM_Rep   index_rep;           // rep of every runtime index value below
+  Aggregate_Operand low;          // first-dimension low bound
+  Aggregate_Operand high;         // first-dimension high bound
+  Syntax_Node *low_bound_source;  // expr whose evaluation produced low.reg, or NULL;
+  Syntax_Node *high_bound_source; // a choice bound that IS that expr reuses the
+                                  // SSA value instead of re-evaluating (RM 3.2.1)
+
+  // Compile-time coverage (static-bounds aggregates only)
+  bool      *initialized;         // per-flat-index "was stored" map, or NULL
+  int128_t   count;               // map length
+
+  // RM 4.3.2(3): index-subtype membership checks on choices
+  bool       check_index_subtype;
+  bool       index_subtype_static;   // subtype bounds compile-time known
+  int128_t   index_subtype_low, index_subtype_high;
+  Type_Info *index_subtype;          // for runtime bound loads when non-static
+
+  // RM 4.3.2(6): named-choice span tracking (min-low / max-high allocas)
+  bool       track_named_bounds;
+  uint32_t   named_low_variable, named_high_variable;
+
+  // RM 4.3.2(6): inner sub-aggregate bounds consistency tracking
+  bool       check_inner_consistency;
+  int        inner_dimension_count;
+  LLVM_Rep   inner_track_rep;
+  uint32_t   inner_track_low[MAX_AGG_DIMS], inner_track_high[MAX_AGG_DIMS];
+  uint32_t   inner_track_first, inner_track_mismatch;
+  uint32_t   nonnull_guard;      // i1 SSA: aggregate byte size is non-zero
+                                 // (0 = no guard); a null aggregate has no
+                                 // components, so bound consistency is vacuous
+
+  // Fat-pointer bound seeds of an unconstrained aggregate: first runtime
+  // choice bound per side, for dimensions 0 and 1
+  uint32_t   choice_low_ssa, choice_high_ssa;
+  uint32_t   dim1_choice_low_ssa, dim1_choice_high_ssa;
+
+  // Non-OTHERS choice spans, for the runtime OTHERS fill to skip
+  // (allocated only when a runtime-bounds aggregate has OTHERS)
+  Aggregate_Operand *covered_low, *covered_high;
+  uint32_t   covered_count;
 } Aggregate_Emission_Context;
 
-void Agg_Emit_Component_At (Aggregate_Emission_Context *context,
-                            Syntax_Node *expression, int128_t index);
+uint32_t Agg_Operand_Register       (const Aggregate_Emission_Context *context, Aggregate_Operand operand);
+Aggregate_Operand Agg_Choice_Operand (Aggregate_Emission_Context *context, Syntax_Node *node, int side);
+void Agg_Store_At                   (Aggregate_Emission_Context *context, uint32_t value, Aggregate_Operand flat_index);
+void Agg_Emit_Component_Flat        (Aggregate_Emission_Context *context, Syntax_Node *expression, Aggregate_Operand flat_index, bool track_inner_bounds);
+void Agg_Emit_Component             (Aggregate_Emission_Context *context, Syntax_Node *expression, Aggregate_Operand index, bool track_inner_bounds);
+void Agg_Fill_Range                 (Aggregate_Emission_Context *context, Syntax_Node *expression, Aggregate_Operand low_choice, Aggregate_Operand high_choice);
+void Agg_Fill_Others                (Aggregate_Emission_Context *context, Syntax_Node *expression, uint32_t positional_count);
+void Agg_Track_Named_Span           (Aggregate_Emission_Context *context, Aggregate_Operand low_choice, Aggregate_Operand high_choice);
+void Agg_Check_Choice_Index_Subtype (Aggregate_Emission_Context *context, Aggregate_Operand low_choice, Aggregate_Operand high_choice);
+void Agg_Register_Covered_Span      (Aggregate_Emission_Context *context, Aggregate_Operand low_choice, Aggregate_Operand high_choice);
+void Agg_Init_Named_Tracking        (Aggregate_Emission_Context *context);
+void Emit_Update_Bound              (uint32_t variable, uint32_t value, const char *predicate, LLVM_Rep rep);
+void Emit_Track_Agg_Bounds          (uint32_t low_variable, uint32_t high_variable, uint32_t low_value, uint32_t high_value, LLVM_Rep rep);
+void Agg_Init_Inner_Tracking        (Aggregate_Emission_Context *context);
+void Agg_Track_Inner_Consistency    (Aggregate_Emission_Context *context);
 
 uint32_t Agg_Comp_Byte_Size (Type_Info *ti, Syntax_Node *src);
 void     Agg_Rec_Store      (uint32_t        val,
@@ -3858,6 +3928,7 @@ void     Agg_Rec_Disc_Post  (LLVM_Value       val,
 
 uint32_t Disc_Ordinal_Before             (Type_Info *type_info, uint32_t comp_index);
 int32_t  Find_Record_Component           (Type_Info *record_type, String_Slice name);
+int32_t  Governing_Discriminant_Index    (Type_Info *record_type);
 uint32_t Record_RT_Global_Id             (Type_Info *t);
 uint32_t Emit_Record_Field_Ptr           (uint32_t base, Type_Info *record_type, uint32_t comp_idx, uint32_t byte_offset);
 Type_Info *Underlying_Record_Type        (Type_Info *t);
@@ -25659,15 +25730,12 @@ LLVM_I1 Generate_Record_Equality (uint32_t left_ptr,
   // unequal discriminant already makes the records unequal).
   uint32_t disc_val = 0;
   LLVM_Rep disc_type = Integer_Arith_Rep ();
-  if (record_type->record.variant_count > 0 and record_type->record.variant_part_node) {
-    String_Slice dname = record_type->record.variant_part_node->variant_part.discriminant;
-    for (uint32_t d = 0; d < record_type->record.discriminant_count; d++) {
-      Component_Info *dc = &record_type->record.components[d];
-      if (Slice_Equal_Ignore_Case (dc->name, dname)) {
-        disc_type = LLVM_Rep_Or (Type_To_Rep (dc->component_type), Integer_Arith_Rep ());
-        disc_val = Emit_Load_Field (left_ptr, dc->byte_offset, disc_type);
-        break;
-      }
+  if (record_type->record.variant_count > 0) {
+    int32_t governing = Governing_Discriminant_Index (record_type);
+    if (governing >= 0) {
+      Component_Info *dc = &record_type->record.components[governing];
+      disc_type = LLVM_Rep_Or (Type_To_Rep (dc->component_type), Integer_Arith_Rep ());
+      disc_val = Emit_Load_Field (left_ptr, dc->byte_offset, disc_type);
     }
   }
 
@@ -30872,13 +30940,10 @@ LLVM_Value Generate_Selected (Syntax_Node *node) {
     // named in the variant part, not necessarily the first discriminant
     // (`CASE E IS ...` when D precedes E). Falls back to the first.
     Component_Info *disc_comp = &record_type->record.components[0];
-    if (record_type->record.variant_part_node) {
-      String_Slice gov = record_type->record.variant_part_node->variant_part.discriminant;
-      for (uint32_t d = 0; d < record_type->record.discriminant_count; d++)
-        if (Slice_Equal_Ignore_Case (record_type->record.components[d].name, gov)) {
-          disc_comp = &record_type->record.components[d];
-          break;
-        }
+    {
+      int32_t governing = Governing_Discriminant_Index (record_type);
+      if (governing >= 0)
+        disc_comp = &record_type->record.components[governing];
     }
     uint32_t disc_offset = disc_comp->byte_offset;
     LLVM_Rep disc_llvm = Type_To_Rep (disc_comp->component_type);
@@ -33079,6 +33144,30 @@ int32_t Find_Record_Component (Type_Info *record_type, String_Slice name) {
   return -1;
 }
 
+// The component index of the discriminant that GOVERNS the variant part
+// (RM 3.7.3): the one named in the variant part, not necessarily the first
+// (`CASE E IS ...` when D precedes E). Returns -1 when the type has no
+// variant part or the named discriminant is not among its discriminant
+// components. Memoized on the type, since record layouts are immutable once
+// the discriminants are laid out and this is consulted per variant guard.
+int32_t Governing_Discriminant_Index (Type_Info *record_type) {
+  if (not Type_Is_Record (record_type) or
+      not record_type->record.variant_part_node) return -1;
+  if (record_type->governing_discriminant_memo == 0) {
+    String_Slice governing_name =
+      record_type->record.variant_part_node->variant_part.discriminant;
+    record_type->governing_discriminant_memo = -1;
+    for (uint32_t d = 0; d < record_type->record.discriminant_count; d++)
+      if (Slice_Equal_Ignore_Case (record_type->record.components[d].name,
+                                   governing_name)) {
+        record_type->governing_discriminant_memo = (int32_t) d + 1;
+        break;
+      }
+  }
+  int32_t memo = record_type->governing_discriminant_memo;
+  return memo > 0 ? memo - 1 : -1;
+}
+
 // Check if a choice is "others"
 bool Is_Others_Choice (Syntax_Node *choice) {
   return choice and (choice->kind == NK_OTHERS or
@@ -33091,18 +33180,12 @@ bool Is_Others_Choice (Syntax_Node *choice) {
 // index constraint of its context (RM 4.3.2).
 bool Aggregate_Has_Others (Syntax_Node *agg) {
   if (not agg or agg->kind != NK_AGGREGATE) return false;
-  for (uint32_t i = 0; i < agg->aggregate.items.count; i++) {
-    Syntax_Node *it = agg->aggregate.items.items[i];
-    if (it->kind == NK_ASSOCIATION and it->association.choices.count > 0 and
-        Is_Others_Choice (it->association.choices.items[0]))
-      return true;
-  }
-  return false;
+  return Scan_Aggregate_Shape (agg).has_others;
 }
 
 // ── Is_Static_Int_Node / Static_Int_Value ────────────────────────────────────────────────────────
-// Recognise compile-time integer nodes so the aggregate codegen can                                
-// take the fast static path. Covers:                                                              
+// Recognise compile-time integer nodes so the aggregate codegen can
+// fold them into static operands. Covers:
 //   NK_INTEGER              - positive literal  (e.g. 3)                                          
 //   NK_UNARY_OP (-, int)     - negated literal   (e.g. -1)                                         
 //   NK_UNARY_OP (+, int)     - explicit positive (e.g. +1)                                         
@@ -33153,36 +33236,74 @@ int128_t Static_Int_Value (Syntax_Node *n) {
 }
 
 // ── § 13a: Array Aggregate Helpers (RM 4.3.2) ────────────────────────────────────────────────────
-//                                                                                                  
-// These helpers factor out the repeated patterns in Generate_Aggregate:                            
-//   Agg_Classify       - count positional/named/others items                                       
-//   Agg_Resolve_Elem   - generate element value, extract from fat ptr                              
-//   Agg_Store_At       - store element at array index (scalar or composite)                        
-//   Agg_Emit_Fill_Loop - emit a loop that fills a range with a value                               
-//   Agg_Wrap_Fat_Ptr   - wrap data+bounds into { ptr, ptr }                                        
-//                                                                                                  
-// Design: each helper is a pure function of its arguments - no hidden                              
-// state, no implicit coupling. Haskell-flavoured C99 with `and`/`or`.                            
-//                                                                                                  
+//
+// These helpers factor out the repeated patterns in Generate_Aggregate:
+//   Scan_Aggregate_Shape - classify items and span the static choices
+//   Agg_Resolve_Elem     - generate element value, extract from fat ptr
+//   Agg_Store_At         - store element at array index (scalar or composite)
+//
+// Design: each helper is a pure function of its arguments - no hidden
+// state, no implicit coupling. Haskell-flavoured C99 with `and`/`or`.
+//
 
-// ── Agg_Classify: classify aggregate items into positional / named / others ──────────────────────
+// ── Scan_Aggregate_Shape: one pass over an aggregate's items ─────────────────────────────────────
+// Classification (positional / named / OTHERS) plus the static choice span:
+// the least and greatest values named by static single-index and range
+// choices, and whether any choice bound needs runtime evaluation.
 
-Agg_Class Agg_Classify (Syntax_Node *node) {
-  Agg_Class r = {0, false, false, NULL};
+Aggregate_Shape Scan_Aggregate_Shape (Syntax_Node *node) {
+  Aggregate_Shape shape = { 0 };
   for (uint32_t i = 0; i < node->aggregate.items.count; i++) {
     Syntax_Node *item = node->aggregate.items.items[i];
-    if (item->kind == NK_ASSOCIATION) {
-      r.has_named = true;
-      if (item->association.choices.count > 0 and
-        Is_Others_Choice (item->association.choices.items[0])) {
-        r.has_others   = true;
-        r.others_expr  = item->association.expression;
+    if (item->kind != NK_ASSOCIATION) {
+      shape.positional_count++;
+      if (not shape.first_item_expression) shape.first_item_expression = item;
+      continue;
+    }
+    shape.has_named = true;
+    if (not shape.first_item_expression)
+      shape.first_item_expression = item->association.expression;
+    if (not shape.first_association_expression)
+      shape.first_association_expression = item->association.expression;
+    for (uint32_t c = 0; c < item->association.choices.count; c++) {
+      Syntax_Node *choice = item->association.choices.items[c];
+      if (Is_Others_Choice (choice)) {
+        shape.has_others = true;
+        if (not shape.others_expression)
+          shape.others_expression = item->association.expression;
+      } else if (choice->kind == NK_RANGE) {
+        Syntax_Node *side[2] = { choice->range.low, choice->range.high };
+        for (int s = 0; s < 2; s++) {
+          if (not Is_Static_Int_Node (side[s])) {
+            shape.has_dynamic_range = true;
+            if (not shape.first_dynamic_range) shape.first_dynamic_range = choice;
+            continue;
+          }
+          int128_t v = Static_Int_Value (side[s]);
+          if (s == 0) {
+            if (not shape.has_static_low or v < shape.minimum_low)
+              shape.minimum_low = v;
+            shape.has_static_low = true;
+          } else {
+            if (not shape.has_static_high or v > shape.maximum_high)
+              shape.maximum_high = v;
+            shape.has_static_high = true;
+          }
+        }
+      } else if (Is_Static_Int_Node (choice)) {
+        int128_t v = Static_Int_Value (choice);
+        if (not shape.has_static_low or v < shape.minimum_low)
+          shape.minimum_low = v;
+        shape.has_static_low = true;
+        if (not shape.has_static_high or v > shape.maximum_high)
+          shape.maximum_high = v;
+        shape.has_static_high = true;
+      } else {
+        shape.has_dynamic_single_choice = true;
       }
-    } else {
-      r.n_positional++;
     }
   }
-  return r;
+  return shape;
 }
 
 // Check if a pair of static integer bounds spans an unreasonably large range                       
@@ -33260,93 +33381,373 @@ uint32_t Agg_Resolve_Elem (Syntax_Node *expr,
   return val;
 }
 
-// One aggregate component at a static index: resolve the element value,
-// apply the scalar subtype constraint check (RM 4.3.2), store it at `index`,
-// and mark that slot initialized.
-void Agg_Emit_Component_At (Aggregate_Emission_Context *context,
-                            Syntax_Node *expression, int128_t index) {
-  uint32_t val = Agg_Resolve_Elem (expression, context->multidim,
+// ── Aggregate_Operand constructors and materialization ───────────────────────────────────────────
+
+Aggregate_Operand Aggregate_Operand_Static (int128_t value) {
+  return (Aggregate_Operand){ .is_static = true, .value = value };
+}
+
+// Materialize an operand as an SSA register at the context's index rep. A
+// static operand with a pre-materialized register reuses it; otherwise the
+// constant is emitted afresh at the point of use (so the result always
+// dominates its consumer, even inside emitted loops).
+uint32_t Agg_Operand_Register (const Aggregate_Emission_Context *context,
+                               Aggregate_Operand operand) {
+  if (operand.reg) return operand.reg;
+  return Emit_Static_Int (operand.value, context->index_rep).reg;
+}
+
+// The operand of one choice bound expression. `side` says which aggregate
+// bound the expression may coincide with: 0 = low, 1 = high, -1 = a single
+// (non-range) choice. A static integer node folds to a constant; the
+// expression that itself produced the aggregate's bound reuses that SSA
+// value rather than re-evaluating a side-effecting expression (RM 3.2.1);
+// anything else is generated once (RM 4.3.2(6)) and, for an unconstrained
+// aggregate, seeds the fat-pointer bound of its side.
+Aggregate_Operand Agg_Choice_Operand (Aggregate_Emission_Context *context,
+                                      Syntax_Node *node, int side) {
+  if (Is_Static_Int_Node (node))
+    return Aggregate_Operand_Static (Static_Int_Value (node));
+  if (side == 0 and context->low_bound_source and node == context->low_bound_source)
+    return context->low;
+  if (side == 1 and context->high_bound_source and node == context->high_bound_source)
+    return context->high;
+  LLVM_Value value = Generate_Expression (node);
+  uint32_t reg = Emit_Coerce_Val (value, context->index_rep).reg;
+  if (not context->agg_type->array.is_constrained) {
+    uint32_t *seed = (side == 0) ? &context->choice_low_ssa
+                   : (side == 1) ? &context->choice_high_ssa : NULL;
+    if (seed and *seed == 0) *seed = reg;
+  }
+  return (Aggregate_Operand){ .reg = reg };
+}
+
+// ── Agg_Store_At: store one element value at a flat (zero-based) index. ──────────────────────────
+// The index and the byte stride are each independently compile-time or
+// runtime; all four combinations funnel through here.
+
+void Agg_Store_At (Aggregate_Emission_Context *context, uint32_t value,
+                   Aggregate_Operand flat_index) {
+  const char *index_rep_name = LLVM_Rep_To_String (context->index_rep);
+
+  // Dynamically-sized element or row: byte offset and copy length are the
+  // runtime stride (RM 3.6.1).
+  if (context->rt_element_size) {
+    const char *stride_rep_name = LLVM_Rep_To_String (context->rt_element_size_rep);
+    uint32_t offset;
+    if (flat_index.is_static and not flat_index.reg) {
+      offset = Emit_Result_Instruction ("mul %s %s, %%t%u  ; dynamic element offset\n",
+        stride_rep_name, I128_Decimal (flat_index.value), context->rt_element_size);
+    } else {
+      uint32_t flat_reg = Coerce_To_Rep (Agg_Operand_Register (context, flat_index),
+        context->index_rep, context->rt_element_size_rep);
+      offset = Emit_Result_Instruction ("mul %s %%t%u, %%t%u  ; dynamic element offset\n",
+        stride_rep_name, flat_reg, context->rt_element_size);
+    }
+    uint32_t ptr = Emit_Result_Instruction ("getelementptr i8, ptr %%t%u, %s %%t%u\n",
+      context->base, stride_rep_name, offset);
+    uint32_t length = Coerce_To_Rep (context->rt_element_size,
+      context->rt_element_size_rep, Byte_Size_Rep ());
+    Emit ("  call void @llvm.memcpy.p0.p0.i64("
+       "ptr %%t%u, ptr %%t%u, i64 %%t%u, i1 false)\n", ptr, value, length);
+
+  // Composite element: memcpy elem_size bytes at a byte offset.
+  } else if (context->elem_is_composite) {
+    uint32_t ptr;
+    if (flat_index.is_static and not flat_index.reg) {
+      ptr = Emit_Result_Instruction ("getelementptr i8, ptr %%t%u, i64 %s\n",
+        context->base, I128_Decimal (flat_index.value * (int128_t) context->elem_size));
+    } else {
+      uint32_t offset = Emit_Result_Instruction ("mul %s %%t%u, %u\n",
+        index_rep_name, Agg_Operand_Register (context, flat_index), context->elem_size);
+      ptr = Emit_Result_Instruction ("getelementptr i8, ptr %%t%u, %s %%t%u\n",
+        context->base, index_rep_name, offset);
+    }
+    Emit ("  call void @llvm.memcpy.p0.p0.i64("
+       "ptr %%t%u, ptr %%t%u, i64 %u, i1 false)\n", ptr, value, context->elem_size);
+
+  // Scalar (or fat-pointer-valued) element: typed gep and store.
+  } else {
+    uint32_t ptr;
+    if (flat_index.is_static and not flat_index.reg)
+      ptr = Emit_Result_Instruction ("getelementptr %s, ptr %%t%u, i64 %s\n",
+        LLVM_Rep_To_String (context->elem_type), context->base,
+        I128_Decimal (flat_index.value));
+    else
+      ptr = Emit_Result_Instruction ("getelementptr %s, ptr %%t%u, %s %%t%u\n",
+        LLVM_Rep_To_String (context->elem_type), context->base, index_rep_name,
+        Agg_Operand_Register (context, flat_index));
+    Emit ("  store %s %%t%u, ptr %%t%u\n",
+       LLVM_Rep_To_String (context->elem_type), value, ptr);
+  }
+}
+
+// ── Agg_Emit_Component: one aggregate component (RM 4.3.2(6)) ─────────────────────────────────────
+// Resolve the element value (evaluated once per component), track inner
+// sub-aggregate bounds, apply the scalar subtype constraint check, store at
+// the flat index, and mark the slot initialized when coverage is tracked.
+
+void Agg_Emit_Component_Flat (Aggregate_Emission_Context *context,
+                              Syntax_Node *expression, Aggregate_Operand flat_index,
+                              bool track_inner_bounds) {
+  // An out-of-window compile-time index (already diagnosed against the
+  // index subtype) stores nothing.
+  if (flat_index.is_static and context->initialized and
+      (flat_index.value < 0 or flat_index.value >= context->count))
+    return;
+  uint32_t value = Agg_Resolve_Elem (expression, context->multidim,
     context->elem_is_composite, context->agg_type, context->elem_type,
     context->elem_ti);
+  if (track_inner_bounds)
+    Agg_Track_Inner_Consistency (context);
   if (not context->elem_is_composite and Type_Is_Scalar (context->elem_ti))
-    val = Emit_Constraint_Check_Val ((LLVM_Value){ val, context->elem_type },
+    value = Emit_Constraint_Check_Val ((LLVM_Value){ value, context->elem_type },
       context->elem_ti, expression->type).reg;
-  Agg_Store_At_Static (context->base, val, index, context->elem_type,
-    context->elem_size, context->elem_is_composite, context->rt_element_size);
-  context->initialized[(size_t)index] = true;
+  Agg_Store_At (context, value, flat_index);
+  if (flat_index.is_static and context->initialized)
+    context->initialized[(size_t) flat_index.value] = true;
 }
 
-// ── Agg_Store_At: store element at a given array index. ──────────────────────────────────────────
-//                                                                                                  
-//   base      - SSA temp for the array's alloca                                                    
-//   val       - SSA temp for the element value (scalar) or data ptr (composite)                    
-//   idx       - flat zero-based index (compile-time constant)                                      
-//   elem_type - LLVM type for scalar elements                                                      
-//   elem_size - byte size of one element (for composite memcpy)                                    
-//   is_composite - memcpy vs store?                                                                
-//                                                                                                  
-void Agg_Store_At_Static (uint32_t base, uint32_t val,
-  int128_t idx, LLVM_Rep elem_type, uint32_t elem_size, bool is_composite,
-  uint32_t rt_elem_size)
-{
-  uint32_t ptr = Emit_Temp ();
-  // A dynamically-sized record element: byte offset and copy length are the
-  // runtime element size (RM 3.6.1), the static index scaled at run time.
-  if (rt_elem_size) {
-    uint32_t off = Emit_Result_Instruction ("mul i64 %s, %%t%u  ; dyn element offset\n", I128_Decimal (idx), rt_elem_size);
-    Emit ("  %%t%u = getelementptr i8, ptr %%t%u, i64 %%t%u\n", ptr, base, off);
-    Emit ("  call void @llvm.memcpy.p0.p0.i64("
-       "ptr %%t%u, ptr %%t%u, i64 %%t%u, i1 false)\n", ptr, val, rt_elem_size);
+// The same, at an Ada index value: flat = index - low, folded when both are
+// compile-time constants.
+void Agg_Emit_Component (Aggregate_Emission_Context *context,
+                         Syntax_Node *expression, Aggregate_Operand index,
+                         bool track_inner_bounds) {
+  Aggregate_Operand flat_index;
+  if (index.is_static and context->low.is_static) {
+    flat_index = Aggregate_Operand_Static (index.value - context->low.value);
+  } else {
+    uint32_t index_reg = Agg_Operand_Register (context, index);
+    uint32_t low_reg   = Agg_Operand_Register (context, context->low);
+    flat_index = (Aggregate_Operand){ .reg = Emit_Result_Instruction (
+      "sub %s %%t%u, %%t%u\n", LLVM_Rep_To_String (context->index_rep),
+      index_reg, low_reg) };
+  }
+  Agg_Emit_Component_Flat (context, expression, flat_index, track_inner_bounds);
+}
+
+// ── Agg_Fill_Range: a range choice L..H filled with one expression ───────────────────────────────
+// The expression is evaluated once per component (RM 4.3.2(6)). Compile-time
+// bounds of a coverage-tracked aggregate unroll to per-index emissions; any
+// runtime operand lowers to a loop evaluating and storing one component per
+// iteration.
+
+void Agg_Fill_Range (Aggregate_Emission_Context *context, Syntax_Node *expression,
+                     Aggregate_Operand low_choice, Aggregate_Operand high_choice) {
+  if (low_choice.is_static and high_choice.is_static and context->initialized) {
+    for (int128_t index = low_choice.value; index <= high_choice.value; index++)
+      Agg_Emit_Component (context, expression, Aggregate_Operand_Static (index), true);
     return;
   }
-  if (is_composite) {
-    Emit ("  %%t%u = getelementptr i8, ptr %%t%u, i64 %s\n",
-       ptr, base, I128_Decimal (idx * (int128_t)elem_size));
-    Emit ("  call void @llvm.memcpy.p0.p0.i64("
-       "ptr %%t%u, ptr %%t%u, i64 %u, i1 false)\n",
-       ptr, val, elem_size);
-  } else {
-    Emit ("  %%t%u = getelementptr %s, ptr %%t%u, i64 %s\n",
-       ptr, LLVM_Rep_To_String (elem_type), base, I128_Decimal (idx));
-    Emit ("  store %s %%t%u, ptr %%t%u\n", LLVM_Rep_To_String (elem_type), val, ptr);
-  }
+  const char *rep = LLVM_Rep_To_String (context->index_rep);
+  uint32_t low_reg  = Agg_Operand_Register (context, low_choice);
+  uint32_t high_reg = Agg_Operand_Register (context, high_choice);
+  uint32_t loop_variable = Emit_Alloca_Store (context->index_rep, low_reg);
+  uint32_t loop_head      = cg->label_id++;
+  uint32_t loop_body      = cg->label_id++;
+  uint32_t loop_increment = cg->label_id++;
+  uint32_t loop_end       = cg->label_id++;
+  Emit_Label_Here (loop_head);
+  uint32_t current = Emit_Result_Instruction ("load %s, ptr %%t%u\n", rep, loop_variable);
+  LLVM_I1 in_range = Emit_Icmp ("sle", context->index_rep, current, high_reg);
+  Emit ("  br i1 %%t%u, label %%L%u, label %%L%u\n", in_range.reg, loop_body, loop_end);
+  cg->block_terminated = true;
+  Emit_Label_Here (loop_body);
+  Agg_Emit_Component (context, expression, (Aggregate_Operand){ .reg = current }, true);
+
+  // Stop on equality BEFORE incrementing: a bound at the index rep's
+  // maximum (e.g. SYSTEM.MAX_INT) must not wrap the loop variable.
+  LLVM_I1 at_high = Emit_Icmp ("eq", context->index_rep, current, high_reg);
+  Emit ("  br i1 %%t%u, label %%L%u, label %%L%u\n", at_high.reg, loop_end, loop_increment);
+  cg->block_terminated = true;
+  Emit_Label_Here (loop_increment);
+  uint32_t next = Emit_Result_Instruction ("add %s %%t%u, 1\n", rep, current);
+  Emit ("  store %s %%t%u, ptr %%t%u\n", rep, next, loop_variable);
+  Emit ("  br label %%L%u\n", loop_head);
+  cg->block_terminated = true;
+  Emit_Label_Here (loop_end);
 }
 
-// ── Agg_Store_At_Dynamic: store element at a runtime index. ──────────────────────────────────────
-//                                                                                                  
-//   arr_idx     - SSA temp: zero-based index (cur_idx - low)                                       
-//   rt_row_size - SSA temp for runtime row size (0 → use elem_size)                                
-//   idx_type    - LLVM type for index arithmetic (e.g. "i32")                                      
-//                                                                                                  
-void Agg_Store_At_Dynamic (uint32_t base,
-  uint32_t val, uint32_t arr_idx, LLVM_Rep idx_type,
-  LLVM_Rep elem_type, uint32_t elem_size, uint32_t rt_row_size,
-  bool is_composite)
-{
-  if (is_composite) {
-    uint32_t byte_off = Emit_Temp ();
-    if (rt_row_size)
-      Emit ("  %%t%u = mul %s %%t%u, %%t%u\n",
-         byte_off, LLVM_Rep_To_String (idx_type), arr_idx, rt_row_size);
-    else
-      Emit ("  %%t%u = mul %s %%t%u, %u\n",
-         byte_off, LLVM_Rep_To_String (idx_type), arr_idx, elem_size);
-    uint32_t ptr = Emit_Result_Instruction ("getelementptr i8, ptr %%t%u, %s %%t%u\n", base, LLVM_Rep_To_String (idx_type), byte_off);
-    if (rt_row_size) {
-      uint32_t sz64 = Emit_Result_Instruction ("sext i32 %%t%u to i64\n", rt_row_size);
-      Emit ("  call void @llvm.memcpy.p0.p0.i64("
-         "ptr %%t%u, ptr %%t%u, i64 %%t%u, i1 false)\n",
-         ptr, val, sz64);
-    } else {
-      Emit ("  call void @llvm.memcpy.p0.p0.i64("
-         "ptr %%t%u, ptr %%t%u, i64 %u, i1 false)\n",
-         ptr, val, elem_size);
-    }
-  } else {
-    uint32_t ptr = Emit_Result_Instruction ("getelementptr %s, ptr %%t%u, %s %%t%u\n", LLVM_Rep_To_String (elem_type), base, LLVM_Rep_To_String (idx_type), arr_idx);
-    Emit ("  store %s %%t%u, ptr %%t%u\n", LLVM_Rep_To_String (elem_type), val, ptr);
+// ── Agg_Fill_Others: fill the components no other association covers ─────────────────────────────
+// RM 4.3.3(5): the expression is evaluated once per associated component, so
+// allocators produce distinct objects for each element. With compile-time
+// coverage the uninitialized slots are filled exactly; a runtime-bounds
+// aggregate loops over [low + positional_count .. high] and skips the spans
+// registered by the named choices, so their components keep their explicit
+// values and the OTHERS expression is evaluated only for its own components.
+
+void Agg_Fill_Others (Aggregate_Emission_Context *context, Syntax_Node *expression,
+                      uint32_t positional_count) {
+  if (context->initialized) {
+    for (int128_t flat = 0; flat < context->count; flat++)
+      if (not context->initialized[flat])
+        Agg_Emit_Component_Flat (context, expression,
+          Aggregate_Operand_Static (flat), false);
+    return;
   }
+  const char *rep = LLVM_Rep_To_String (context->index_rep);
+  uint32_t start = Agg_Operand_Register (context, context->low);
+  if (positional_count > 0)
+    start = Emit_Result_Instruction ("add %s %%t%u, %u  ; skip %u positional\n",
+      rep, start, positional_count, positional_count);
+  uint32_t high_reg = Agg_Operand_Register (context, context->high);
+  uint32_t loop_variable = Emit_Alloca_Store (context->index_rep, start);
+  uint32_t loop_head      = cg->label_id++;
+  uint32_t loop_body      = cg->label_id++;
+  uint32_t loop_increment = cg->label_id++;
+  uint32_t loop_end       = cg->label_id++;
+  Emit_Label_Here (loop_head);
+  uint32_t current = Emit_Result_Instruction ("load %s, ptr %%t%u\n", rep, loop_variable);
+  LLVM_I1 in_range = Emit_Icmp ("sle", context->index_rep, current, high_reg);
+  Emit ("  br i1 %%t%u, label %%L%u, label %%L%u\n", in_range.reg, loop_body, loop_end);
+  cg->block_terminated = true;
+  Emit_Label_Here (loop_body);
+  for (uint32_t s = 0; s < context->covered_count; s++) {
+    uint32_t span_low  = Agg_Operand_Register (context, context->covered_low[s]);
+    uint32_t span_high = Agg_Operand_Register (context, context->covered_high[s]);
+    LLVM_I1 not_below = Emit_Icmp ("sge", context->index_rep, current, span_low);
+    LLVM_I1 not_above = Emit_Icmp ("sle", context->index_rep, current, span_high);
+    uint32_t inside = Emit_Result_Instruction ("and i1 %%t%u, %%t%u\n",
+      not_below.reg, not_above.reg);
+    uint32_t next_span = cg->label_id++;
+    Emit ("  br i1 %%t%u, label %%L%u, label %%L%u  ; covered by choice?\n",
+       inside, loop_increment, next_span);
+    cg->block_terminated = true;
+    Emit_Label_Here (next_span);
+  }
+  Agg_Emit_Component (context, expression, (Aggregate_Operand){ .reg = current }, false);
+  Emit ("  br label %%L%u\n", loop_increment);
+  cg->block_terminated = true;
+  Emit_Label_Here (loop_increment);
+
+  // Stop on equality BEFORE incrementing: a bound at the index rep's
+  // maximum (e.g. SYSTEM.MAX_INT) must not wrap the loop variable.
+  LLVM_I1 at_high = Emit_Icmp ("eq", context->index_rep, current, high_reg);
+  uint32_t continue_label = cg->label_id++;
+  Emit ("  br i1 %%t%u, label %%L%u, label %%L%u\n", at_high.reg, loop_end, continue_label);
+  cg->block_terminated = true;
+  Emit_Label_Here (continue_label);
+  uint32_t next = Emit_Result_Instruction ("add %s %%t%u, 1\n", rep, current);
+  Emit ("  store %s %%t%u, ptr %%t%u\n", rep, next, loop_variable);
+  Emit ("  br label %%L%u\n", loop_head);
+  cg->block_terminated = true;
+  Emit_Label_Here (loop_end);
 }
+
+// ── Choice bookkeeping: named-span tracking, index-subtype checks, coverage ──────────────────────
+
+// Widen the tracked named-choice span (min-low into named_low_variable,
+// max-high into named_high_variable).
+void Agg_Track_Named_Span (Aggregate_Emission_Context *context,
+                           Aggregate_Operand low_choice, Aggregate_Operand high_choice) {
+  if (not context->track_named_bounds) return;
+  Emit_Track_Agg_Bounds (context->named_low_variable, context->named_high_variable,
+    Agg_Operand_Register (context, low_choice),
+    Agg_Operand_Register (context, high_choice), context->index_rep);
+}
+
+// RM 4.3.2(3): the bounds of a non-null choice must belong to the index
+// subtype (a single choice passes low == high and is always non-null). Fully
+// static operands fold to a compile-time verdict; otherwise a runtime check
+// is emitted, loading the subtype's own bounds when they too are dynamic.
+void Agg_Check_Choice_Index_Subtype (Aggregate_Emission_Context *context,
+                                     Aggregate_Operand low_choice,
+                                     Aggregate_Operand high_choice) {
+  if (not context->check_index_subtype) return;
+
+  if (context->index_subtype_static and
+      low_choice.is_static and high_choice.is_static) {
+    if (low_choice.value <= high_choice.value and
+        (low_choice.value  < context->index_subtype_low or
+         low_choice.value  > context->index_subtype_high or
+         high_choice.value < context->index_subtype_low or
+         high_choice.value > context->index_subtype_high))
+      Emit_Raise_And_Continue ("aggregate index check");
+    return;
+  }
+
+  uint32_t low_reg  = Agg_Operand_Register (context, low_choice);
+  uint32_t high_reg = Agg_Operand_Register (context, high_choice);
+  LLVM_I1 null_span = Emit_Icmp ("sgt", context->index_rep, low_reg, high_reg);
+  uint32_t skip = Emit_Open_Skip_If (null_span.reg);
+  if (context->index_subtype_static) {
+    Emit_Range_Check_With_Raise (low_reg,
+      (int64_t) context->index_subtype_low, (int64_t) context->index_subtype_high,
+      context->index_rep, "aggregate index subtype check");
+    Emit_Range_Check_With_Raise (high_reg,
+      (int64_t) context->index_subtype_low, (int64_t) context->index_subtype_high,
+      context->index_rep, "aggregate index subtype check");
+  } else {
+    uint32_t subtype_low  = Emit_Single_Bound (&context->index_subtype->low_bound,
+                                               context->index_rep);
+    uint32_t subtype_high = Emit_Single_Bound (&context->index_subtype->high_bound,
+                                               context->index_rep);
+    uint32_t bad[4] = {
+      Emit_Icmp ("slt", context->index_rep, low_reg,  subtype_low).reg,
+      Emit_Icmp ("sgt", context->index_rep, low_reg,  subtype_high).reg,
+      Emit_Icmp ("slt", context->index_rep, high_reg, subtype_low).reg,
+      Emit_Icmp ("sgt", context->index_rep, high_reg, subtype_high).reg };
+    uint32_t any = bad[0];
+    for (int q = 1; q < 4; q++)
+      any = Emit_Result_Instruction ("or i1 %%t%u, %%t%u\n", any, bad[q]);
+    Emit_Check_With_Raise (any, true, "aggregate index subtype check (dynamic)");
+  }
+  Emit_Close_Null_Skip (skip);
+}
+
+// Record a named choice's span so the runtime OTHERS fill can skip it.
+void Agg_Register_Covered_Span (Aggregate_Emission_Context *context,
+                                Aggregate_Operand low_choice, Aggregate_Operand high_choice) {
+  if (not context->covered_low) return;
+  context->covered_low[context->covered_count]  = low_choice;
+  context->covered_high[context->covered_count] = high_choice;
+  context->covered_count++;
+}
+
+// ── Tracker initialization and per-component consistency tracking ────────────────────────────────
+
+void Agg_Init_Named_Tracking (Aggregate_Emission_Context *context) {
+  if (not context->track_named_bounds) return;
+  const char *rep = LLVM_Rep_To_String (context->index_rep);
+  context->named_low_variable = Emit_Result_Instruction ("alloca %s  ; track named min-low\n", rep);
+  uint32_t initial_low = Emit_Static_Int (2147483647LL, context->index_rep).reg;
+  Emit ("  store %s %%t%u, ptr %%t%u\n", rep, initial_low, context->named_low_variable);
+  context->named_high_variable = Emit_Result_Instruction ("alloca %s  ; track named max-high\n", rep);
+  uint32_t initial_high = Emit_Static_Int ((int128_t)-2147483648LL, context->index_rep).reg;
+  Emit ("  store %s %%t%u, ptr %%t%u\n", rep, initial_high, context->named_high_variable);
+}
+
+void Agg_Init_Inner_Tracking (Aggregate_Emission_Context *context) {
+  if (not context->check_inner_consistency) return;
+  context->inner_track_rep = LLVM_Rep_Or (Array_Bound_LLVM_Rep (context->agg_type),
+                                          Integer_Arith_Rep ());
+  const char *rep = LLVM_Rep_To_String (context->inner_track_rep);
+  for (int d = 0; d < context->inner_dimension_count; d++) {
+    context->inner_track_low[d] = Emit_Result_Instruction (
+      "alloca %s  ; expected inner lo [dim %d]\n", rep, d);
+    context->inner_track_high[d] = Emit_Result_Instruction (
+      "alloca %s  ; expected inner hi [dim %d]\n", rep, d);
+
+    // Zero-fill: a sub-aggregate level that produced no elements reports
+    // these slots upward; they must read deterministically.
+    Emit ("  store %s 0, ptr %%t%u\n", rep, context->inner_track_low[d]);
+    Emit ("  store %s 0, ptr %%t%u\n", rep, context->inner_track_high[d]);
+  }
+  context->inner_track_first = Emit_Result_Instruction ("alloca i1  ; first inner seen?\n");
+  Emit ("  store i1 0, ptr %%t%u\n", context->inner_track_first);
+  context->inner_track_mismatch = Emit_Result_Instruction ("alloca i1  ; inner mismatch flag\n");
+  Emit ("  store i1 0, ptr %%t%u\n", context->inner_track_mismatch);
+}
+
+// RM 4.3.2(6): after a component whose evaluation reported sub-aggregate
+// bounds, fold them into the consistency trackers.
+void Agg_Track_Inner_Consistency (Aggregate_Emission_Context *context) {
+  if (not context->check_inner_consistency or cg->inner_agg_bnd_n <= 0) return;
+  Emit_Inner_Consistency_Track (context->inner_track_low, context->inner_track_high,
+    context->inner_track_first, context->inner_track_mismatch,
+    context->inner_dimension_count, context->inner_track_rep);
+}
+
 
 // ── Agg_Elem_Is_Composite: check if array element needs memcpy vs store. ─────────────────────────
 // A multi-dimensional aggregate's outer element is a row (always memcpy).
@@ -33769,7 +34170,7 @@ uint32_t Generate_Aggregate (Syntax_Node *node) {
     //                                                                                              
     uint32_t agg_ndims = agg_type->array.index_count;
     if (agg_ndims > 8) agg_ndims = 8;
-    Type_Bound dim_lo[8], dim_hi[8];
+    Type_Bound dim_lo[8] = { 0 }, dim_hi[8] = { 0 };
     for (uint32_t d = 0; d < agg_ndims; d++) {
       dim_lo[d] = agg_type->array.indices[d].low_bound;
       dim_hi[d] = agg_type->array.indices[d].high_bound;
@@ -33779,10 +34180,10 @@ uint32_t Generate_Aggregate (Syntax_Node *node) {
         dim_hi[d] = agg_type->array.indices[d].index_type->high_bound;
     }
 
-    // Classify items: positional count, named, others (RM 4.3.2)
-    Agg_Class agg_cls = Agg_Classify (node);
-    uint32_t n_positional = agg_cls.n_positional;
-    bool has_named = agg_cls.has_named;
+    // Classify the items and span the static choices in one scan (RM 4.3.2)
+    Aggregate_Shape shape = Scan_Aggregate_Shape (node);
+    uint32_t n_positional = shape.positional_count;
+    bool has_named = shape.has_named;
 
     // RM 3.6.1: a constrained array subtype whose constraint is non-static is
     // elaborated ONCE; its bounds are then frozen in the type's runtime
@@ -33910,40 +34311,11 @@ uint32_t Generate_Aggregate (Syntax_Node *node) {
       // Also compute inner dimension from first inner element's size.                             
       //                                                                                            
       if (has_named and not agg_type->array.is_constrained) {
-        int128_t named_lo = INT64_MAX, named_hi = INT64_MIN;
-        bool found_named = false;
-        Syntax_Node *first_inner_expr = NULL;
-        for (uint32_t i = 0; i < node->aggregate.items.count; i++) {
-          Syntax_Node *item = node->aggregate.items.items[i];
-          if (item->kind != NK_ASSOCIATION) continue;
-          if (not first_inner_expr)
-            first_inner_expr = item->association.expression;
-          for (uint32_t c = 0; c < item->association.choices.count; c++) {
-            Syntax_Node *ch = item->association.choices.items[c];
-            if (Is_Others_Choice (ch)) continue;
-            if (Is_Static_Int_Node (ch)) {
-              int128_t v = Static_Int_Value (ch);
-              if (v < named_lo) named_lo = v;
-              if (v > named_hi) named_hi = v;
-              found_named = true;
-            } else if (ch->kind == NK_RANGE) {
-              if (Is_Static_Int_Node (ch->range.low)) {
-                int128_t v = Static_Int_Value (ch->range.low);
-                if (v < named_lo) named_lo = v;
-                found_named = true;
-              }
-              if (Is_Static_Int_Node (ch->range.high)) {
-                int128_t v = Static_Int_Value (ch->range.high);
-                if (v > named_hi) named_hi = v;
-                found_named = true;
-              }
-            }
-          }
-        }
-        if (found_named) {
-          dim_lo[0] = (Type_Bound){.kind = BOUND_INTEGER, .int_value = named_lo};
-          dim_hi[0] = (Type_Bound){.kind = BOUND_INTEGER, .int_value = named_hi};
-        }
+        Syntax_Node *first_inner_expr = shape.first_association_expression;
+        if (shape.has_static_low)
+          dim_lo[0] = (Type_Bound){.kind = BOUND_INTEGER, .int_value = shape.minimum_low};
+        if (shape.has_static_high)
+          dim_hi[0] = (Type_Bound){.kind = BOUND_INTEGER, .int_value = shape.maximum_high};
 
         // Inner dimension: if inner elements are string literals,
         // use string length for the second dimension extent.
@@ -34068,47 +34440,33 @@ uint32_t Generate_Aggregate (Syntax_Node *node) {
       }
     }
 
-    // Early scan: detect if any named choice has non-static bounds                                 
-    // (e.g. T'RANGE desugared to T'FIRST..T'LAST, or function calls).                             
-    // Negated integer literals like -1 are static and must NOT force                               
-    // the dynamic path - only genuine runtime expressions do.                                     
-    // For CONSTRAINED types the type already supplies static bounds;                               
-    // we only override dim_lo/dim_hi for UNCONSTRAINED types where                                 
-    // the choices determine the aggregate's bounds (RM 4.3.2(4)).                                 
-    //                                                                                              
-    bool has_dynamic_choice_early = false;
-    for (uint32_t ci = 0; ci < node->aggregate.items.count; ci++) {
-      Syntax_Node *cit = node->aggregate.items.items[ci];
-      if (cit->kind != NK_ASSOCIATION) continue;
-      for (uint32_t cc = 0; cc < cit->association.choices.count; cc++) {
-        Syntax_Node *ch = cit->association.choices.items[cc];
-        if (ch->kind == NK_RANGE and
-          (not Is_Static_Int_Node (ch->range.low) or
-           not Is_Static_Int_Node (ch->range.high))) {
-          has_dynamic_choice_early = true;
+    // Non-static named choice bounds (e.g. T'RANGE desugared to
+    // T'FIRST..T'LAST, or function calls). Negated integer literals like -1
+    // are static and must NOT force runtime bounds - only genuine runtime
+    // expressions do. For CONSTRAINED types the type already supplies static
+    // bounds; we only override dim_lo/dim_hi for UNCONSTRAINED types where
+    // the choices determine the aggregate's bounds (RM 4.3.2(4)).
+    //
+    if (shape.first_dynamic_range) {
+      Syntax_Node *ch = shape.first_dynamic_range;
 
-          // RM 4.3.2(4): For unconstrained types, named aggregate                                  
-          // bounds come from the choices. Also override for                                       
-          // constrained types whose dim-0 bounds are full-range                                    
-          // placeholders (would overflow size calculations).                                      
-          //                                                                                        
-          if (not agg_type->array.is_constrained or
-            Bound_Pair_Overflows (dim_lo[0], dim_hi[0])) {
-            if (not Is_Static_Int_Node (ch->range.low)) {
-              dim_lo[0] = (Type_Bound){.kind = BOUND_EXPR, .expr = ch->range.low};
-              low_bound = dim_lo[0];
-            }
-            if (not Is_Static_Int_Node (ch->range.high)) {
-              dim_hi[0] = (Type_Bound){.kind = BOUND_EXPR, .expr = ch->range.high};
-              high_bound = dim_hi[0];
-            }
-          }
-          break;
+      // RM 4.3.2(4): For unconstrained types, named aggregate
+      // bounds come from the choices. Also override for
+      // constrained types whose dim-0 bounds are full-range
+      // placeholders (would overflow size calculations).
+      //
+      if (not agg_type->array.is_constrained or
+        Bound_Pair_Overflows (dim_lo[0], dim_hi[0])) {
+        if (not Is_Static_Int_Node (ch->range.low)) {
+          dim_lo[0] = (Type_Bound){.kind = BOUND_EXPR, .expr = ch->range.low};
+          low_bound = dim_lo[0];
+        }
+        if (not Is_Static_Int_Node (ch->range.high)) {
+          dim_hi[0] = (Type_Bound){.kind = BOUND_EXPR, .expr = ch->range.high};
+          high_bound = dim_hi[0];
         }
       }
-      if (has_dynamic_choice_early) break;
     }
-
     // RM 3.5: a named choice written `S RANGE L..H` requires the range L..H to
     // be compatible with the subtype mark S, checked when the aggregate is
     // evaluated — independently of the index-subtype membership check below.
@@ -34121,16 +34479,15 @@ uint32_t Generate_Aggregate (Syntax_Node *node) {
         Emit_Discrete_Range_Mark_Check (cit->association.choices.items[cc]);
     }
 
-    // Any dimension with dynamic bounds requires runtime path (RM 3.6.1).                         
-    // Type_Bound_Value returns 0 for BOUND_EXPR so compile-time size                               
-    // calculation would be wrong; the dynamic path evaluates bounds at                             
-    // runtime via Emit_Single_Bound.                                                              
-    // Note: has_dynamic_choice_early only forces dynamic_bounds when it                            
-    // actually changed dim_lo/dim_hi to BOUND_EXPR (unconstrained types).                         
-    // Constrained types keep their static dim bounds and use the static                            
-    // path - dynamic choice expressions are evaluated for side effects                             
-    // via the must_eval_low/must_eval_high logic in the static path.                              
-    //                                                                                              
+    // Any dimension with dynamic bounds makes this a runtime-bounds
+    // aggregate (RM 3.6.1): Type_Bound_Value returns 0 for BOUND_EXPR, so a
+    // compile-time size calculation would be wrong; the runtime-bounds
+    // preamble evaluates bounds via Emit_Single_Bound instead.
+    // Note: a dynamic range choice only forces dynamic_bounds when it
+    // actually changed dim_lo/dim_hi to BOUND_EXPR (unconstrained types).
+    // Constrained types keep their static compile-time bounds; their dynamic
+    // choice expressions become runtime operands of the same pipeline.
+    //
     bool dynamic_bounds = false;
     for (uint32_t d = 0; d < agg_ndims; d++) {
       if (dim_lo[d].kind == BOUND_EXPR or dim_hi[d].kind == BOUND_EXPR) {
@@ -34138,7 +34495,39 @@ uint32_t Generate_Aggregate (Syntax_Node *node) {
       }
     }
 
-    // Dynamic bounds: generate runtime allocation and loop-based init
+
+    // ── One per-choice lowering pipeline ───────────────────────────────────
+    // The two bound-regime preambles below establish the aggregate's bounds
+    // as Aggregate_Operands (compile-time constants, or SSA values for a
+    // runtime-bounds subtype), allocate the storage, and apply the
+    // aggregate-level constraint checks of their regime. Everything after —
+    // the per-choice lowering, the OTHERS fill, the bound reporting, and the
+    // fat-pointer result — is one pipeline over those operands: "static" is
+    // a property of an operand, not a separate lowering path.
+
+    // Check whether the element is composite (record or constrained array):
+    // Generate_Expression then returns a ptr to an alloca, and elements are
+    // copied with memcpy instead of a store. A multi-dimensional aggregate's
+    // outer "element" is a ROW (memcpy), even when the scalar component is a
+    // fat pointer — the fat store path applies only at the innermost (1-D)
+    // level. This one verdict drives the storage allocation and every store.
+    Type_Info *elem_ti = agg_type->array.element_type;
+    Aggregate_Emission_Context context = {
+      .multidim          = multidim,
+      .elem_is_composite = Agg_Elem_Is_Composite (elem_ti, multidim),
+      .agg_type          = agg_type,
+      .elem_type         = elem_type,
+      .elem_ti           = elem_ti,
+      .elem_size         = elem_size };
+
+    uint32_t base = 0;
+    int128_t low = 0, high = 0, count = 0;   // compile-time bounds (static regime)
+    uint32_t low_val = 0, high_val = 0;      // runtime bounds (runtime regime)
+    bool bounds_are_synthetic = false;       // runtime regime: count-derived bounds
+    bool check_named_bounds_match = false;   // post-check tracked span vs constraint
+    uint32_t rt_row_size = 0;                // SSA temp for runtime row size
+    uint32_t rt_inner_lo[8] = {0}, rt_inner_hi[8] = {0};
+
     if (dynamic_bounds) {
       LLVM_Rep iat_bnd = Integer_Arith_Rep ();
 
@@ -34151,15 +34540,12 @@ uint32_t Generate_Aggregate (Syntax_Node *node) {
       bool bounds_stale = false;
       if (Bound_Is_Expression (&high_bound) and not high_bound.cached_temp)
         bounds_stale = true;
-      Agg_Class ac_early = Agg_Classify (node);
-      uint32_t low_val, high_val;
-      bool bounds_are_synthetic = false;
 
       // Positional aggregate with stale constraint: use count as bound.
       // low = index type FIRST (usually 1 for NATURAL/POSITIVE),
       // high = low + n_positional - 1.
       //
-      if (bounds_stale and ac_early.n_positional > 0 and not ac_early.has_others) {
+      if (bounds_stale and shape.positional_count > 0 and not shape.has_others) {
         bounds_are_synthetic = true;
         if (low_bound.kind == BOUND_EXPR) {
           // A dynamic constraint low (e.g. SUBDESIGNATED(IDENT_INT(5)..)):
@@ -34170,7 +34556,7 @@ uint32_t Generate_Aggregate (Syntax_Node *node) {
           high_val = Emit_Temp ();
           Emit ("  %%t%u = add %s %%t%u, %lld\n", high_val,
              LLVM_Rep_To_String (iat_bnd), low_val,
-             (long long)((int128_t)ac_early.n_positional - 1));
+             (long long)((int128_t)shape.positional_count - 1));
         } else {
           int128_t lo_static = 1;
           if (low_bound.kind == BOUND_INTEGER)
@@ -34180,7 +34566,7 @@ uint32_t Generate_Aggregate (Syntax_Node *node) {
             lo_static = Type_Bound_Value (
               agg_type->base_type->array.indices[0].index_type->low_bound);
           low_val = Emit_Static_Int (lo_static, iat_bnd).reg;
-          high_val = Emit_Static_Int (lo_static + (int128_t)ac_early.n_positional - 1, iat_bnd).reg;
+          high_val = Emit_Static_Int (lo_static + (int128_t)shape.positional_count - 1, iat_bnd).reg;
         }
       } else {
         low_val = Emit_Single_Bound (&low_bound, iat_bnd);
@@ -34204,8 +34590,6 @@ uint32_t Generate_Aggregate (Syntax_Node *node) {
 
       // For multidim with dynamic inner bounds, compute row_size and
       // total_flat_count at runtime so allocation is correct.
-      uint32_t rt_row_size = 0;  // SSA temp for runtime row size
-      uint32_t rt_inner_lo[8] = {0}, rt_inner_hi[8] = {0};
 
       // Evaluate inner dimension bounds at runtime
       if (multidim and inner_dynamic) {
@@ -34311,12 +34695,8 @@ uint32_t Generate_Aggregate (Syntax_Node *node) {
       uint32_t clamped = Emit_Result_Instruction ("select i1 %%t%u, %s 0, %s %%t%u\n", neg_chk, LLVM_Rep_To_String (iat_bnd), LLVM_Rep_To_String (iat_bnd), byte_size);
 
       // Dynamic stack allocation
-      uint32_t base = Emit_Result_Instruction ("alloca i8, %s %%t%u  ; dynamic array aggregate\n", LLVM_Rep_To_String (iat_bnd), clamped);
+      base = Emit_Result_Instruction ("alloca i8, %s %%t%u  ; dynamic array aggregate\n", LLVM_Rep_To_String (iat_bnd), clamped);
 
-      // Classify items: find OTHERS clause (value generated in loop below)
-      Agg_Class ac = ac_early;  // reuse early classification
-      bool has_others = ac.has_others;
-      uint32_t others_val = 0;  // unused; OTHERS re-evaluated per component
 
       // RM 4.3.2(6): Dynamic aggregate bounds vs constraint check.                                
       // When the aggregate type is a constrained subtype of an unconstrained                       
@@ -34356,7 +34736,7 @@ uint32_t Generate_Aggregate (Syntax_Node *node) {
         bool has_unc_base = Type_Is_Unconstrained_Array (agg_type->base_type);
         if (has_unc_base) {
           LLVM_Rep ait = Integer_Arith_Rep ();
-          if (ac.n_positional > 0 and not ac.has_named) {
+          if (shape.positional_count > 0 and not shape.has_named) {
             uint32_t clo = Coerce_To_Rep (low_val, iat_bnd, ait);
             uint32_t chi = Coerce_To_Rep (high_val, iat_bnd, ait);
             {
@@ -34365,7 +34745,7 @@ uint32_t Generate_Aggregate (Syntax_Node *node) {
               // subtype, only the count must match - the lower bound is                            
               // determined by the constraint.                                                     
               //                                                                                    
-              uint32_t n_pos = Emit_Static_Int ((int128_t)ac.n_positional, ait).reg;
+              uint32_t n_pos = Emit_Static_Int ((int128_t)shape.positional_count, ait).reg;
               uint32_t con_len = Emit_Result_Instruction ("sub %s %%t%u, %%t%u\n", LLVM_Rep_To_String (ait), chi, clo);
               uint32_t con_cnt = Emit_Result_Instruction ("add %s %%t%u, 1\n", LLVM_Rep_To_String (ait), con_len);
               LLVM_I1 mismatch = Emit_Icmp ("ne", ait, n_pos, con_cnt);
@@ -34391,7 +34771,7 @@ uint32_t Generate_Aggregate (Syntax_Node *node) {
                 "parenthesized aggregate bounds vs dynamic constraint");
             }
           }
-          if (ac.has_named and not ac.has_others) {
+          if (shape.has_named and not shape.has_others) {
             // Each named dimension's explicit choice bounds must equal that
             // dimension's constraint (RM 4.3.2). Walk down one aggregate level
             // per dimension, comparing the level's static choice span against
@@ -34400,48 +34780,17 @@ uint32_t Generate_Aggregate (Syntax_Node *node) {
             Syntax_Node *level = node;
             for (uint32_t d = 0; d < agg_ndims and d < agg_type->array.index_count
                  and level and level->kind == NK_AGGREGATE; d++) {
-              int128_t ch_lo = INT64_MAX, ch_hi = INT64_MIN;
-              bool found_lo = false, found_hi = false, level_named = false;
-              Syntax_Node *descend = NULL;
-              for (uint32_t ci = 0; ci < level->aggregate.items.count; ci++) {
-                Syntax_Node *cit = level->aggregate.items.items[ci];
-                if (cit->kind != NK_ASSOCIATION) {
-                  if (not descend) descend = cit;  // positional inner value
-                  continue;
-                }
-                level_named = true;
-                if (not descend) descend = cit->association.expression;
-                for (uint32_t cc = 0; cc < cit->association.choices.count; cc++) {
-                  Syntax_Node *ch = cit->association.choices.items[cc];
-                  if (Is_Others_Choice (ch)) { found_lo = found_hi = false; cc = 0; level_named = false; break; }
-                  if (Is_Static_Int_Node (ch)) {
-                    int128_t v = Static_Int_Value (ch);
-                    if (not found_lo or v < ch_lo) ch_lo = v;
-                    if (not found_hi or v > ch_hi) ch_hi = v;
-                    found_lo = found_hi = true;
-                  } else if (ch->kind == NK_RANGE) {
-                    if (ch->range.low and Is_Static_Int_Node (ch->range.low)) {
-                      int128_t v = Static_Int_Value (ch->range.low);
-                      if (not found_lo or v < ch_lo) ch_lo = v;
-                      found_lo = true;
-                    }
-                    if (ch->range.high and Is_Static_Int_Node (ch->range.high)) {
-                      int128_t v = Static_Int_Value (ch->range.high);
-                      if (not found_hi or v > ch_hi) ch_hi = v;
-                      found_hi = true;
-                    }
-                  }
-                }
-              }
-              if (level_named and found_lo and found_hi) {
-                uint32_t nclo = Emit_Static_Int (ch_lo, ait).reg;
-                uint32_t nchi = Emit_Static_Int (ch_hi, ait).reg;
+              Aggregate_Shape level_shape = Scan_Aggregate_Shape (level);
+              if (level_shape.has_named and not level_shape.has_others and
+                  level_shape.has_static_low and level_shape.has_static_high) {
+                uint32_t nclo = Emit_Static_Int (level_shape.minimum_low, ait).reg;
+                uint32_t nchi = Emit_Static_Int (level_shape.maximum_high, ait).reg;
                 uint32_t clo = Emit_Single_Bound (&agg_type->array.indices[d].low_bound, ait);
                 uint32_t chi = Emit_Single_Bound (&agg_type->array.indices[d].high_bound, ait);
                 Emit_Aggregate_Bound_Match_Check (nclo, clo, nchi, chi, ait,
                   "named aggregate bounds vs dynamic constraint");
               }
-              level = descend;  // next dimension's sub-aggregate
+              level = level_shape.first_item_expression;  // next dimension's sub-aggregate
             }
           }
         }
@@ -34453,7 +34802,7 @@ uint32_t Generate_Aggregate (Syntax_Node *node) {
       // constraint bound directly - safe for variable references.                                 
       //                                                                                            
       if (bounds_ref_unset_disc and agg_type->array.is_constrained and
-        ac.n_positional > 0 and not ac.has_named and
+        shape.positional_count > 0 and not shape.has_named and
         node->aggregate.is_parenthesized) {
         bool has_unc_base_p = Type_Is_Unconstrained_Array (agg_type->base_type);
         if (has_unc_base_p and
@@ -34472,1299 +34821,716 @@ uint32_t Generate_Aggregate (Syntax_Node *node) {
       }
       }  // end bounds_ref_disc scope
 
-      // RM 4.3.2(6): for multidim aggregates, all inner sub-aggregates                             
-      // must have the same bounds. Track expected inner bounds and                                
-      // compare each subsequent sub-aggregate's bounds.                                           
-      //                                                                                            
-      uint32_t dyn_inner_trk_lo[MAX_AGG_DIMS] = {0};
-      uint32_t dyn_inner_trk_hi[MAX_AGG_DIMS] = {0};
-      uint32_t dyn_inner_trk_first = 0, dyn_inner_trk_mm = 0;
-      int dyn_n_inner_dims = 0;
-      bool check_inner_consistency = multidim and agg_ndims > 1;
-      if (check_inner_consistency) {
-        dyn_n_inner_dims = agg_ndims - 1;
-        if (dyn_n_inner_dims > MAX_AGG_DIMS)
-          dyn_n_inner_dims = MAX_AGG_DIMS;
-        LLVM_Rep ait2 = Array_Bound_LLVM_Rep (agg_type);
-        ait2 = LLVM_Rep_Or (ait2, Integer_Arith_Rep ());
-        for (int d = 0; d < dyn_n_inner_dims; d++) {
-          dyn_inner_trk_lo[d] = Emit_Temp ();
-          Emit ("  %%t%u = alloca %s  ; dyn expected inner lo [dim %d]\n",
-             dyn_inner_trk_lo[d], LLVM_Rep_To_String (ait2), d);
-          dyn_inner_trk_hi[d] = Emit_Temp ();
-          Emit ("  %%t%u = alloca %s  ; dyn expected inner hi [dim %d]\n",
-             dyn_inner_trk_hi[d], LLVM_Rep_To_String (ait2), d);
-        }
-        dyn_inner_trk_first = Emit_Temp ();
-        Emit ("  %%t%u = alloca i1  ; first inner seen\n",
-           dyn_inner_trk_first);
-        Emit ("  store i1 0, ptr %%t%u\n", dyn_inner_trk_first);
-        dyn_inner_trk_mm = Emit_Temp ();
-        Emit ("  %%t%u = alloca i1  ; inner mismatch flag\n",
-           dyn_inner_trk_mm);
-        Emit ("  store i1 0, ptr %%t%u\n", dyn_inner_trk_mm);
-      }
+      // ── Populate the emission context (runtime-bounds regime) ────────────
+      context.base = base;
+      context.index_rep = iat_bnd;
+      context.low  = (Aggregate_Operand){ .reg = low_val };
+      context.high = (Aggregate_Operand){ .reg = high_val };
+      context.low_bound_source  = bound_low_expr;
+      context.high_bound_source = bound_high_expr;
+      context.rt_element_size = rt_row_size;
+      context.rt_element_size_rep = iat_bnd;
 
-      // Positional elements: store each at its index offset.
-      cg->inner_agg_bnd_n = 0;  // clear before associations
-      {
-        Type_Info *elem_ti = agg_type->array.element_type;
-        bool ecomp = Agg_Elem_Is_Composite (elem_ti, multidim);
-        LLVM_Rep ait = Integer_Arith_Rep ();
-        uint32_t positional_idx = 0;
-        for (uint32_t i = 0; i < node->aggregate.items.count; i++) {
-          Syntax_Node *item = node->aggregate.items.items[i];
-          if (item->kind == NK_ASSOCIATION) continue;
-          uint32_t val = Agg_Resolve_Elem (item, multidim,
-            ecomp, agg_type, elem_type, elem_ti);
-
-          // RM 4.3.2(6): inner consistency tracking for positional
-          if (check_inner_consistency and cg->inner_agg_bnd_n > 0)
-            Emit_Inner_Consistency_Track (dyn_inner_trk_lo, dyn_inner_trk_hi,
-              dyn_inner_trk_first, dyn_inner_trk_mm,
-              dyn_n_inner_dims,
-              Array_Bound_LLVM_Rep (agg_type));
-
-          // RM 4.3.2: check scalar element against subtype
-          if (not ecomp and Type_Is_Scalar (elem_ti))
-            val = Emit_Constraint_Check_Val ((LLVM_Value){ val, elem_type }, elem_ti, item->type).reg;
-          uint32_t pidx = Emit_Static_Int (positional_idx, ait).reg;
-          Agg_Store_At_Dynamic (base, val, pidx, ait,
-            elem_type, elem_size, rt_row_size, ecomp);
-          positional_idx++;
+      // RM 4.3.2(3): choices are checked against the first index subtype
+      // when it carries meaningful static bounds (a full-INTEGER range is
+      // no real constraint).
+      if (agg_type->array.indices and agg_type->array.indices[0].index_type and
+          agg_type->array.indices[0].index_type->low_bound.kind == BOUND_INTEGER and
+          agg_type->array.indices[0].index_type->high_bound.kind == BOUND_INTEGER) {
+        Type_Info *index_type = agg_type->array.indices[0].index_type;
+        int64_t subtype_low  = (int64_t) Type_Bound_Value (index_type->low_bound);
+        int64_t subtype_high = (int64_t) Type_Bound_Value (index_type->high_bound);
+        if (subtype_low != (int64_t)(-2147483648LL) or
+            subtype_high != (int64_t) 2147483647LL) {
+          context.check_index_subtype  = true;
+          context.index_subtype_static = true;
+          context.index_subtype_low    = subtype_low;
+          context.index_subtype_high   = subtype_high;
+          context.index_subtype        = index_type;
         }
       }
 
-      // RM 4.3.2: for constrained arrays WITHOUT OTHERS, the aggregate                             
-      // bounds (min-low, max-high across all named choices) must match                             
-      // the constraint bounds - even for null ranges. Track at runtime                            
-      // so we handle dynamic (function-call) choice bounds.                                       
-      //                                                                                            
-      uint32_t agg_bnd_lo_var = 0, agg_bnd_hi_var = 0;
-      bool track_named_bounds = agg_type->array.is_constrained and
-        ac.has_named and not ac.has_others;
-      if (track_named_bounds) {
-        LLVM_Rep ait = Integer_Arith_Rep ();
-        agg_bnd_lo_var = Emit_Temp ();
-        Emit ("  %%t%u = alloca %s  ; track agg min-low\n",
-           agg_bnd_lo_var, LLVM_Rep_To_String (ait));
-        uint32_t il = Emit_Static_Int (2147483647LL, ait).reg;
-        Emit ("  store %s %%t%u, ptr %%t%u\n", LLVM_Rep_To_String (ait), il, agg_bnd_lo_var);
-        agg_bnd_hi_var = Emit_Temp ();
-        Emit ("  %%t%u = alloca %s  ; track agg max-high\n",
-           agg_bnd_hi_var, LLVM_Rep_To_String (ait));
-        uint32_t ih = Emit_Static_Int ((int128_t)-2147483648LL, ait).reg;
-        Emit ("  store %s %%t%u, ptr %%t%u\n", LLVM_Rep_To_String (ait), ih, agg_bnd_hi_var);
-      }
+      // RM 4.3.2: for constrained arrays WITHOUT OTHERS, the aggregate span
+      // (min-low, max-high across all named choices) must match the
+      // constraint bounds - even for null ranges - so track it at runtime
+      // and compare after the choices are lowered.
+      context.track_named_bounds = agg_type->array.is_constrained and
+        shape.has_named and not shape.has_others;
+      check_named_bounds_match = context.track_named_bounds;
 
-      // For dynamic aggregates with named range association (1..H1 => val),
-      // generate a loop to initialize all elements
-      for (uint32_t i = 0; i < node->aggregate.items.count; i++) {
-        Syntax_Node *item = node->aggregate.items.items[i];
-        if (item->kind == NK_ASSOCIATION and item->association.choices.count > 0) {
-          Syntax_Node *choice = item->association.choices.items[0];
-          if (Is_Others_Choice (choice)) continue;
+      // RM 4.3.2(6): all inner sub-aggregates of a multidim aggregate must
+      // have the same bounds. A null aggregate (clamped byte size 0) has no
+      // components, so its consistency check is vacuous.
+      context.check_inner_consistency = multidim;
+      if (multidim)
+        context.nonnull_guard =
+          Emit_Icmp_Const ("ne", iat_bnd, clamped, 0).reg;
+    } else {
 
-          // Generate loop bounds, reusing already-evaluated                                        
-          // SSA values when the expression node was used for                                       
-          // the aggregate's overall bounds (avoids double                                          
-          // evaluation of side-effecting expressions).                                            
-          //                                                                                        
-          if (choice->kind == NK_RANGE) {
-            uint32_t rng_low_val, rng_high_val;
-            LLVM_Rep rng_low_ty = Integer_Arith_Rep ();
-            LLVM_Rep rng_high_ty = Integer_Arith_Rep ();
-            if (Is_Static_Int_Node (choice->range.low)) {
-              rng_low_val = Emit_Static_Int (Static_Int_Value (choice->range.low), Integer_Arith_Rep ()).reg;
-            } else if (bound_low_expr and choice->range.low == bound_low_expr) {
-              rng_low_val = low_val;  // reuse
-            } else {
-              LLVM_Value rng_low_v = Generate_Expression (choice->range.low);
-              rng_low_val = rng_low_v.reg;
-              rng_low_ty = rng_low_v.rep;
-            }
-            if (Is_Static_Int_Node (choice->range.high)) {
-              rng_high_val = Emit_Static_Int (Static_Int_Value (choice->range.high), Integer_Arith_Rep ()).reg;
-            } else if (bound_high_expr and choice->range.high == bound_high_expr) {
-              rng_high_val = high_val;  // reuse
-            } else {
-              LLVM_Value rng_high_v = Generate_Expression (choice->range.high);
-              rng_high_val = rng_high_v.reg;
-              rng_high_ty = rng_high_v.rep;
-            }
-
-            // Coerce range bounds to the aggregate index type from their REAL
-            // type (a narrow range bound like CHARACTER is i8; assuming i32
-            // here would no-op and leave it i8 for the i32 compares below).
-            //
-            LLVM_Rep agg_idx_type = Integer_Arith_Rep ();
-            if (LLVM_Rep_Is_Int (rng_low_ty))
-              rng_low_val = Emit_Convert (rng_low_val, rng_low_ty, agg_idx_type).reg;
-            if (LLVM_Rep_Is_Int (rng_high_ty))
-              rng_high_val = Emit_Convert (rng_high_val, rng_high_ty, agg_idx_type).reg;
-
-            // Update overall aggregate bounds tracking
-            if (track_named_bounds)
-              Emit_Track_Agg_Bounds (agg_bnd_lo_var, agg_bnd_hi_var,
-                                     rng_low_val, rng_high_val, agg_idx_type);
-
-            // RM 4.3.2(3): non-null range choice bounds must                                       
-            // belong to the index subtype. Check at runtime.                                     
-            // Only check when index_type has meaningful bounds                                     
-            // (named subtype like STA, not anonymous ranges).                                     
-            //                                                                                      
-            if (agg_type->array.indices and
-              agg_type->array.indices[0].index_type and
-              agg_type->array.indices[0].index_type->low_bound.kind == BOUND_INTEGER and
-              agg_type->array.indices[0].index_type->high_bound.kind == BOUND_INTEGER) {
-              Type_Info *idx_t = agg_type->array.indices[0].index_type;
-              int64_t is_lo = (int64_t)Type_Bound_Value (idx_t->low_bound);
-              int64_t is_hi = (int64_t)Type_Bound_Value (idx_t->high_bound);
-
-              // Skip check if bounds are full INTEGER range (no real subtype)
-              if (is_lo != (int64_t)(-2147483648LL) or
-                is_hi != (int64_t)2147483647LL) {
-
-                // Only check for non-null ranges (lo <= hi)
-                LLVM_I1 null_rng = Emit_Icmp ("sgt", agg_idx_type, rng_low_val, rng_high_val);
-                uint32_t skip_lbl = Emit_Open_Skip_If (null_rng.reg);
-                Emit_Range_Check_With_Raise (rng_low_val, is_lo, is_hi, agg_idx_type,
-                  "dynamic aggregate index subtype check");
-                Emit_Range_Check_With_Raise (rng_high_val, is_lo, is_hi, agg_idx_type,
-                  "dynamic aggregate index subtype check");
-                Emit_Close_Null_Skip (skip_lbl);
-              }
-            }
-            Type_Info *elem_ti = agg_type->array.element_type;
-            bool ecomp = Agg_Elem_Is_Composite (elem_ti, multidim);
-            uint32_t loop_var = Emit_Alloca_Store (agg_idx_type, rng_low_val);
-            uint32_t loop_start = cg->label_id++;
-            uint32_t loop_body = cg->label_id++;
-            uint32_t loop_end = cg->label_id++;
-            Emit_Label_Here (loop_start);
-            uint32_t cur_idx = Emit_Result_Instruction ("load %s, ptr %%t%u\n", LLVM_Rep_To_String (agg_idx_type), loop_var);
-            LLVM_I1 cmp = Emit_Icmp ("sle", agg_idx_type, cur_idx, rng_high_val);
-            Emit ("  br i1 %%t%u, label %%L%u, label %%L%u\n", cmp.reg, loop_body, loop_end);
-            cg->block_terminated = true;
-            Emit_Label_Here (loop_body);
-
-            // RM 4.3.2(6): expression evaluated once per component
-            uint32_t val = Agg_Resolve_Elem (item->association.expression, multidim,
-              ecomp, agg_type, elem_type, elem_ti);
-
-            // RM 4.3.2(6): inner consistency tracking for named range
-            if (check_inner_consistency and cg->inner_agg_bnd_n > 0)
-              Emit_Inner_Consistency_Track (dyn_inner_trk_lo, dyn_inner_trk_hi,
-                dyn_inner_trk_first, dyn_inner_trk_mm,
-                dyn_n_inner_dims,
-                Array_Bound_LLVM_Rep (agg_type));
-            uint32_t arr_idx = Emit_Result_Instruction ("sub %s %%t%u, %%t%u\n", LLVM_Rep_To_String (agg_idx_type), cur_idx, low_val);
-            Agg_Store_At_Dynamic (base, val, arr_idx,
-              agg_idx_type, elem_type, elem_size, rt_row_size, ecomp);
-
-            // Increment and loop
-            uint32_t next_idx = Emit_Result_Instruction ("add %s %%t%u, 1\n", LLVM_Rep_To_String (agg_idx_type), cur_idx);
-            Emit ("  store %s %%t%u, ptr %%t%u\n", LLVM_Rep_To_String (agg_idx_type), next_idx, loop_var);
-            Emit ("  br label %%L%u\n", loop_start);
-            cg->block_terminated = true;
-            Emit_Label_Here (loop_end);
-
-          // Single-index named association: INDEX => expr.
-          // Evaluate the index, compute offset, store once.
-          } else {
-            LLVM_Value idx_v = Generate_Expression (choice);
-            LLVM_Rep agg_idx_type = Integer_Arith_Rep ();
-            uint32_t idx_val = Emit_Convert (idx_v.reg, idx_v.rep, agg_idx_type).reg;
-
-            // Update overall aggregate bounds for single-index
-            if (track_named_bounds)
-              Emit_Track_Agg_Bounds (agg_bnd_lo_var, agg_bnd_hi_var,
-                                     idx_val, idx_val, agg_idx_type);
-            Type_Info *elem_ti = agg_type->array.element_type;
-            bool ecomp = Agg_Elem_Is_Composite (elem_ti, multidim);
-            uint32_t val = Agg_Resolve_Elem (item->association.expression, multidim,
-              ecomp, agg_type, elem_type, elem_ti);
-
-            // RM 4.3.2(6): inner sub-aggregate bounds consistency
-            if (check_inner_consistency and cg->inner_agg_bnd_n > 0)
-              Emit_Inner_Consistency_Track (dyn_inner_trk_lo, dyn_inner_trk_hi,
-                dyn_inner_trk_first, dyn_inner_trk_mm,
-                dyn_n_inner_dims,
-                Array_Bound_LLVM_Rep (agg_type));
-            uint32_t arr_idx = Emit_Result_Instruction ("sub %s %%t%u, %%t%u\n", LLVM_Rep_To_String (agg_idx_type), idx_val, low_val);
-            Agg_Store_At_Dynamic (base, val, arr_idx,
-              agg_idx_type, elem_type, elem_size, rt_row_size, ecomp);
-          }
-        }
-      }
-
-      // RM 4.3.2: post-loop check - overall aggregate choice bounds                                
-      // must match the constraint bounds for constrained arrays                                    
-      // without OTHERS. Applies even for null arrays.                                            
-      //                                                                                            
-      if (track_named_bounds) {
-        LLVM_Rep ait = Integer_Arith_Rep ();
-        uint32_t fl = Emit_Result_Instruction ("load %s, ptr %%t%u\n", LLVM_Rep_To_String (ait), agg_bnd_lo_var);
-        uint32_t fh = Emit_Result_Instruction ("load %s, ptr %%t%u\n", LLVM_Rep_To_String (ait), agg_bnd_hi_var);
-        Emit_Aggregate_Bound_Match_Check (fl, low_val, fh, high_val, ait,
-          "aggregate named range vs constraint");
-      }
-
-      // For multidim constrained arrays, also check inner dimension
-      // bounds from the first inner sub-aggregate's named range
-      // against the type's inner constraint. Runs OUTSIDE the outer
-      // loop so null outer ranges still get checked (RM 4.3.2).
-      // Skipped when dim-1's "constraint" is merely its index subtype's full
-      // range (an unconstrained target: A : A_12, A_12 IS ARRAY (I<>, I<>)) —
-      // the inner aggregate then defines its own bounds within the index
-      // subtype, with no constraint to equal.
-      Type_Info *ix1 = agg_ndims > 1 ? agg_type->array.indices[1].index_type : NULL;
-      bool dim1_constraint_is_index_subtype = ix1 and
-        ix1->low_bound.kind  == BOUND_INTEGER and ix1->high_bound.kind == BOUND_INTEGER and
-        dim_lo[1].kind == BOUND_INTEGER and dim_hi[1].kind == BOUND_INTEGER and
-        Type_Bound_Value (ix1->low_bound)  == Type_Bound_Value (dim_lo[1]) and
-        Type_Bound_Value (ix1->high_bound) == Type_Bound_Value (dim_hi[1]);
-      if (agg_type->array.is_constrained and multidim and
-        agg_ndims > 1 and ac.has_named and not ac.has_others and
-        not dim1_constraint_is_index_subtype) {
-        for (uint32_t ai = 0; ai < node->aggregate.items.count; ai++) {
-          Syntax_Node *aitem = node->aggregate.items.items[ai];
-          if (aitem->kind != NK_ASSOCIATION) continue;
-          if (aitem->association.choices.count > 0 and
-            Is_Others_Choice (aitem->association.choices.items[0]))
-            continue;
-          Syntax_Node *inner = aitem->association.expression;
-          if (not inner or inner->kind != NK_AGGREGATE) continue;
-
-          // Find first named range in inner aggregate
-          for (uint32_t ii = 0; ii < inner->aggregate.items.count; ii++) {
-            Syntax_Node *iit = inner->aggregate.items.items[ii];
-            if (iit->kind != NK_ASSOCIATION or
-              iit->association.choices.count == 0) continue;
-            Syntax_Node *ich = iit->association.choices.items[0];
-            if (Is_Others_Choice (ich)) continue;
-            if (ich->kind != NK_RANGE) continue;
-            LLVM_Rep ait = Integer_Arith_Rep ();
-            LLVM_Value ir_lo_v = Generate_Expression (ich->range.low);
-            uint32_t ir_lo = Coerce_To_Rep (ir_lo_v.reg, ir_lo_v.rep, ait);
-            LLVM_Value ir_hi_v = Generate_Expression (ich->range.high);
-            uint32_t ir_hi = Coerce_To_Rep (ir_hi_v.reg, ir_hi_v.rep, ait);
-            uint32_t exp_lo = Emit_Single_Bound (&dim_lo[1], ait);
-            uint32_t exp_hi = Emit_Single_Bound (&dim_hi[1], ait);
-            LLVM_I1 ilo_ne = Emit_Icmp ("ne", ait, ir_lo, exp_lo);
-            LLVM_I1 ihi_ne = Emit_Icmp ("ne", ait, ir_hi, exp_hi);
-            uint32_t imm = Emit_Result_Instruction ("or i1 %%t%u, %%t%u\n", ilo_ne.reg, ihi_ne.reg);
-            Emit_Raise_Constraint_Error_When ((LLVM_I1){ imm },
-              "inner aggregate named range vs constraint");
-            goto inner_dim_check_done;
-          }
-          break;  // only check first non-others association
-        }
-        inner_dim_check_done: ;
-      }
-
-      // RM 4.3.3(5): OTHERS fills positions not covered by positional
-      // or named associations. Skip the first n_positional slots.
-      if (has_others) {
-        Type_Info *elem_ti = agg_type->array.element_type;
-        bool ecomp = Agg_Elem_Is_Composite (elem_ti, multidim);
-
-        // Start index = low + n_positional (skip already-filled slots)
-        LLVM_Rep oth_idx_type = Integer_Arith_Rep ();
-        uint32_t start_val;
-        if (n_positional > 0) {
-          start_val = Emit_Temp ();
-          Emit ("  %%t%u = add %s %%t%u, %u  ; skip %u positional\n",
-             start_val, LLVM_Rep_To_String (oth_idx_type), low_val, n_positional, n_positional);
-        } else {
-          start_val = low_val;
-        }
-
-        // Find the OTHERS expression for re-evaluation (RM 4.3.3(5))
-        Syntax_Node *oth_expr = NULL;
-        for (uint32_t oi = 0; oi < node->aggregate.items.count; oi++) {
-          Syntax_Node *oitem = node->aggregate.items.items[oi];
-          if (oitem->kind == NK_ASSOCIATION and oitem->association.choices.count > 0 and
-            Is_Others_Choice (oitem->association.choices.items[0])) {
-            oth_expr = oitem->association.expression;
-            break;
-          }
-        }
-        uint32_t loop_var = Emit_Alloca_Store (oth_idx_type, start_val);
-        uint32_t loop_start = cg->label_id++;
-        uint32_t loop_body = cg->label_id++;
-        uint32_t loop_end = cg->label_id++;
-        Emit_Label_Here (loop_start);
-        uint32_t cur_idx = Emit_Result_Instruction ("load %s, ptr %%t%u\n", LLVM_Rep_To_String (oth_idx_type), loop_var);
-        LLVM_I1 cmp = Emit_Icmp ("sle", oth_idx_type, cur_idx, high_val);
-        Emit ("  br i1 %%t%u, label %%L%u, label %%L%u\n", cmp.reg, loop_body, loop_end);
-        cg->block_terminated = true;
-        Emit_Label_Here (loop_body);
-
-        // RM 4.3.3(5): re-evaluate per component
-        uint32_t loop_others_val = oth_expr
-          ? Agg_Resolve_Elem (oth_expr, multidim,
-              ecomp, agg_type, elem_type, elem_ti)
-          : others_val;
-        uint32_t arr_idx = Emit_Result_Instruction ("sub %s %%t%u, %%t%u\n", LLVM_Rep_To_String (oth_idx_type), cur_idx, low_val);
-        Agg_Store_At_Dynamic (base, loop_others_val, arr_idx,
-          oth_idx_type, elem_type, elem_size, rt_row_size, ecomp);
-        uint32_t next_idx = Emit_Result_Instruction ("add %s %%t%u, 1\n", LLVM_Rep_To_String (oth_idx_type), cur_idx);
-        Emit ("  store %s %%t%u, ptr %%t%u\n", LLVM_Rep_To_String (oth_idx_type), next_idx, loop_var);
-        Emit ("  br label %%L%u\n", loop_start);
-        cg->block_terminated = true;
-        Emit_Label_Here (loop_end);
-      }
-
-      // RM 4.3.2(6): post-loop inner consistency mismatch check. A null
-      // aggregate (clamped byte size 0) has no components, so sub-aggregate
-      // bound consistency is vacuous - only raise when the aggregate is
-      // non-null.
-      if (check_inner_consistency) {
-        uint32_t mm_val = Emit_Result_Instruction ("load i1, ptr %%t%u\n", dyn_inner_trk_mm);
-        LLVM_I1 nonnull = Emit_Icmp_Const ("ne", iat_bnd, clamped, 0);
-        uint32_t raise_mm = Emit_Result_Instruction ("and i1 %%t%u, %%t%u\n", mm_val, nonnull.reg);
-        Emit_Raise_Constraint_Error_When ((LLVM_I1){ raise_mm },
-          "inner sub-aggregate bounds mismatch (dynamic path)");
-      }
-
-      // Report actual aggregate bounds to outer multidim aggregate.
-      // bnd[0] = this aggregate's own first-dimension bounds.
-      // bnd[1..] = deeper inner dimensions' bounds (from inner tracking).
-      // This is critical for 1D dynamic aggregates nested in a multidim
-      // parent — the early report at line 26255 was wiped by 26598's
-      // clear-before-associations. Mirrors the static path at 27972.
-      // Skip when bounds_are_synthetic (positional with stale constraint
-      // got fake count-derived bounds, not the actual constraint values).
-      if (cg->in_agg_component > 0 and not bounds_are_synthetic) {
-        cg->inner_agg_bnd_lo[0] = low_val;
-        cg->inner_agg_bnd_hi[0] = high_val;
-        cg->inner_agg_bnd_rep[0] = iat_bnd;
-        int dim_count = 1;
-        if (check_inner_consistency) {
-          LLVM_Rep bt = Array_Bound_LLVM_Rep (agg_type);
-          for (int d = 0; d < dyn_n_inner_dims and dim_count < MAX_AGG_DIMS; d++) {
-            cg->inner_agg_bnd_lo[dim_count] = Emit_Temp ();
-            Emit ("  %%t%u = load %s, ptr %%t%u  ; dyn deep inner lo [dim %d]\n",
-               cg->inner_agg_bnd_lo[dim_count], LLVM_Rep_To_String (bt), dyn_inner_trk_lo[d], d);
-            cg->inner_agg_bnd_hi[dim_count] = Emit_Temp ();
-            Emit ("  %%t%u = load %s, ptr %%t%u  ; dyn deep inner hi [dim %d]\n",
-               cg->inner_agg_bnd_hi[dim_count], LLVM_Rep_To_String (bt), dyn_inner_trk_hi[d], d);
-            cg->inner_agg_bnd_rep[dim_count] = bt;
-            dim_count++;
-          }
-        }
-        cg->inner_agg_bnd_n = dim_count;
-      }
-
-      // Dynamic-bounds aggregate result: return SSA fat pointer { ptr, ptr }.
-      // Multidim bounds pointer contains ALL dimension bounds in flat layout
-      // [lo0, hi0, lo1, hi1, ...] so multi-dim indexing works.
-      {
-        LLVM_Rep agg_bt = Array_Bound_LLVM_Rep (agg_type);
-        if (multidim and agg_ndims > 1) {
-          uint32_t md_lo[8], md_hi[8];
-          md_lo[0] = low_val;
-          md_hi[0] = high_val;
-          for (uint32_t d = 1; d < agg_ndims; d++) {
-            md_lo[d] = rt_inner_lo[d] ? rt_inner_lo[d]
-                 : Emit_Static_Int (Type_Bound_Value (dim_lo[d]), iat_bnd).reg;
-            md_hi[d] = rt_inner_hi[d] ? rt_inner_hi[d]
-                 : Emit_Static_Int (Type_Bound_Value (dim_hi[d]), iat_bnd).reg;
-          }
-          return Emit_Fat_Pointer_MultiDim (base, md_lo, md_hi, agg_ndims, iat_bnd, agg_bt).reg;
-        }
-        // low_val/high_val are at the aggregate working type (iat_bnd); the
-        // bounds block stores at agg_bt (the index bound width). Coerce to
-        // honor the helper's "bounds at bt" contract.
-        uint32_t lo_b = Emit_Convert (low_val, iat_bnd, agg_bt).reg;
-        uint32_t hi_b = Emit_Convert (high_val, iat_bnd, agg_bt).reg;
-        return Emit_Fat_Pointer_Dynamic (base, lo_b, hi_b, agg_bt).reg;
-      }
-    }
-
-    // Static bounds: use compile-time allocation and unrolled initialization
-    uint32_t base = Emit_Temp ();
-    int128_t low = Type_Bound_Value (low_bound);
-    int128_t high = Type_Bound_Value (high_bound);
-    int128_t count = high - low + 1;
-    if (count < 1) count = 1;  // Ensure at least 1 element for safety
-
-    // Report bounds to outer multidim aggregate for consistency check
-    if (cg->in_agg_component > 0) {
-      LLVM_Rep ait = Integer_Arith_Rep ();
-      cg->inner_agg_bnd_lo[0] = Emit_Static_Int (low, ait).reg;
-      cg->inner_agg_bnd_hi[0] = Emit_Static_Int (high, ait).reg;
-      cg->inner_agg_bnd_rep[0] = ait;
-      cg->inner_agg_bnd_n = 1;
-    }
-
-    // RM 4.3.2(3): index subtype bounds for aggregate constraint checking.                        
-    // Each choice bound of a non-null range must belong to the index                               
-    // subtype. This check applies when:                                                           
-    //   (a) the type is unconstrained (choices define aggregate bounds),                           
-    //   (b) it's a constrained subtype of an unconstrained base                                    
-    //       (T IS BASE (5..7) where BASE IS ARRAY (ST RANGE <>)),                                  
-    //   (c) directly constrained with named index type                                             
-    //       (ARRAY (STA RANGE 5..6, ...) where STA IS INTEGER RANGE 4..7);                         
-    //       choice bounds must belong to the index type (STA = 4..7).                             
-    //                                                                                              
-    bool has_unconstrained_base = Type_Is_Unconstrained_Array (agg_type->base_type);
-    bool need_idx_subtype_check = not agg_type->array.is_constrained or
-                    has_unconstrained_base;
-    // Index subtype bounds: from the unconstrained base's index type, else from
-    // a directly-unconstrained type's index type.
-    int128_t idx_sub_lo = low, idx_sub_hi = high;
-    bool idx_sub_static = true;       // index subtype bounds known at compile time
-    Type_Info *idx_subtype = NULL;    // the index subtype, for runtime bound eval
-    Type_Info *idx_src =
-      (has_unconstrained_base and agg_type->base_type->array.index_count > 0 and
-       agg_type->base_type->array.indices and
-       agg_type->base_type->array.indices[0].index_type) ? agg_type->base_type :
-      (not agg_type->array.is_constrained and agg_type->array.index_count > 0 and
-       agg_type->array.indices and agg_type->array.indices[0].index_type) ? agg_type
-      : NULL;
-    if (idx_src) {
-      idx_subtype = idx_src->array.indices[0].index_type;
-      // A dynamic index subtype (e.g. INTEGER RANGE IDENT_INT(1)..IDENT_INT(30))
-      // cannot be folded — Type_Bound_Value yields 0, which would make the
-      // compile-time check reject every choice. Mark it so the check uses the
-      // subtype's runtime bounds instead.
-      idx_sub_static = idx_subtype->low_bound.kind  == BOUND_INTEGER and
-                       idx_subtype->high_bound.kind == BOUND_INTEGER;
-      idx_sub_lo = Type_Bound_Value (idx_subtype->low_bound);
-      idx_sub_hi = Type_Bound_Value (idx_subtype->high_bound);
-    }
-
-    // RM 4.3.2(3): for named aggregates of unconstrained types, the                                
-    // bounds are determined by the choices. The lower bound is the                                
-    // minimum of all range-low values; the upper bound is the maximum                              
-    // of all range-high values. For a null range (L..H where L>H),                                
-    // the bounds stay L..H because we track lows and highs separately.                            
-    //                                                                                              
-    bool has_choice_lo = false, has_choice_hi = false;
-    bool early_has_others = false;
-    bool has_dynamic_choice = false;  // non-integer range bounds
-    int128_t choice_lo = 0, choice_hi = 0;
-    for (uint32_t ci = 0; ci < node->aggregate.items.count; ci++) {
-      Syntax_Node *cit = node->aggregate.items.items[ci];
-      if (cit->kind != NK_ASSOCIATION) continue;
-      for (uint32_t cc = 0; cc < cit->association.choices.count; cc++) {
-        Syntax_Node *ch = cit->association.choices.items[cc];
-        if (Is_Others_Choice (ch)) { early_has_others = true; continue; }
-        if (ch->kind == NK_RANGE) {
-          if (Is_Static_Int_Node (ch->range.low)) {
-            int128_t v = Static_Int_Value (ch->range.low);
-            if (not has_choice_lo or v < choice_lo) choice_lo = v;
-            has_choice_lo = true;
-          } else {
-            has_dynamic_choice = true;
-          }
-          if (Is_Static_Int_Node (ch->range.high)) {
-            int128_t v = Static_Int_Value (ch->range.high);
-            if (not has_choice_hi or v > choice_hi) choice_hi = v;
-            has_choice_hi = true;
-          } else {
-            has_dynamic_choice = true;
-          }
-        } else if (Is_Static_Int_Node (ch)) {
-          int128_t v = Static_Int_Value (ch);
-          if (not has_choice_lo or v < choice_lo) choice_lo = v;
-          has_choice_lo = true;
-          if (not has_choice_hi or v > choice_hi) choice_hi = v;
-          has_choice_hi = true;
-        }
-      }
-    }
-
-    // Dynamic choice bounds (e.g. T'RANGE): find the first NK_RANGE                                
-    // choice with non-integer bounds and use its expressions as                                    
-    // the aggregate bounds for the dynamic path.                                                  
-    //                                                                                              
-    if (has_dynamic_choice and not early_has_others) {
-      for (uint32_t ci = 0; ci < node->aggregate.items.count and dynamic_bounds; ci++) {
-        Syntax_Node *cit = node->aggregate.items.items[ci];
-        if (cit->kind != NK_ASSOCIATION) continue;
-        for (uint32_t cc = 0; cc < cit->association.choices.count; cc++) {
-          Syntax_Node *ch = cit->association.choices.items[cc];
-          if (ch->kind == NK_RANGE) {
-            Syntax_Node *rb[2] = { ch->range.low, ch->range.high };
-            Type_Bound  *db[2] = { &dim_lo[0], &dim_hi[0] };
-            Type_Bound  *bb[2] = { &low_bound, &high_bound };
-            for (int s = 0; s < 2; s++)
-              if (rb[s]->kind != NK_INTEGER) {
-                *db[s] = (Type_Bound){ .kind = BOUND_EXPR, .expr = rb[s] };
-                *bb[s] = *db[s];
-              }
-            break;
-          }
-        }
-        break;
-      }
-
-    // RM 4.3.2(5): Named aggregate bounds are determined by the                                    
-    // lowest and highest choices. For aggregates without OTHERS,                                  
-    // the aggregate storage uses choice bounds (sliding occurs at                                  
-    // assignment for constrained targets). With OTHERS, the                                       
-    // aggregate must cover the full type range.                                                   
-    //                                                                                              
-    } else if (has_choice_lo and has_choice_hi and not early_has_others) {
-      low = choice_lo;
-      high = choice_hi;
+      // Static bounds: use compile-time allocation and unrolled initialization
+      base = Emit_Temp ();
+      low = Type_Bound_Value (low_bound);
+      high = Type_Bound_Value (high_bound);
       count = high - low + 1;
-      if (count < 1) count = 1;
-    }
+      if (count < 1) count = 1;  // Ensure at least 1 element for safety
 
-    // RM 4.3.2(6): For constrained array subtypes, the aggregate bounds                            
-    // must match the constraint bounds. For positional aggregates, the                            
-    // lower bound is INDEX_SUBTYPE'FIRST (from the base unconstrained                              
-    // type), which may differ from the constraint. For named aggregates                           
-    // without OTHERS, the bounds come from the choices.                                           
-    //                                                                                              
-    if (agg_type->array.is_constrained and
-      agg_type->array.indices[0].low_bound.kind == BOUND_INTEGER and
-      agg_type->array.indices[0].high_bound.kind == BOUND_INTEGER) {
-      int128_t con_lo = Type_Bound_Value (agg_type->array.indices[0].low_bound);
-      int128_t con_hi = Type_Bound_Value (agg_type->array.indices[0].high_bound);
-
-      // RM 4.3.2(5): Count must match constraint size.
-      if (n_positional > 0 and not has_named and has_unconstrained_base) {
-        int128_t expected = con_hi - con_lo + 1;
-        if ((int128_t)n_positional != expected) {
-          Emit_Raise_And_Continue ("positional aggregate count vs constraint");
-        }
-
-        // RM 4.3.2: A parenthesized aggregate ((a,b,c)) uses                                       
-        // INDEX_SUBTYPE'FIRST as lower bound, which may differ from                                
-        // the constraint. Detect and raise CONSTRAINT_ERROR.                                     
-        //                                                                                          
-        if (node->aggregate.is_parenthesized and agg_type->base_type) {
-          Type_Info *base = agg_type->base_type;
-          if (base->array.index_count > 0 and
-            base->array.indices[0].index_type) {
-            Type_Info *idx_ty = base->array.indices[0].index_type;
-            if (idx_ty->low_bound.kind == BOUND_INTEGER) {
-              if (idx_ty->low_bound.int_value != con_lo) {
-                Emit_Raise_And_Continue ("parenthesized aggregate bounds vs constraint");
-              }
-
-            // Dynamic INDEX_SUBTYPE'FIRST: runtime comparison
-            } else {
-              LLVM_Rep ait = Integer_Arith_Rep ();
-              uint32_t isf = Emit_Coerce_Val (Emit_Bound_Value (&idx_ty->low_bound), ait).reg;
-              uint32_t clo_v = Emit_Static_Int (con_lo, ait).reg;
-              LLVM_I1 ne = Emit_Icmp ("ne", ait, isf, clo_v);
-              Emit_Raise_Constraint_Error_When (ne,
-                "parenthesized aggregate bounds vs constraint (dyn idx)");
-            }
-          }
-        }
-      }
-      if (has_choice_lo and has_choice_hi and not early_has_others
-        and not has_dynamic_choice) {
-
-        // RM 4.3.2(4): a named array aggregate without OTHERS takes its bounds
-        // from its choices (low..high here), independently of the target subtype.
-        // What the bounds must then satisfy depends on the consumer:
-        //   • Only an array ASSIGNMENT slides (RM 5.2.1): when this aggregate is
-        //     the top-level RHS of an assignment statement, just the LENGTH need
-        //     agree, e.g. (WED..FRI => 0, SAT..SUN => 1) := ARR_DAY(MON..FRI).
-        //   • Every other consumer — a parameter/default value, a qualified
-        //     expression, or a COMPONENT of an enclosing aggregate — requires the
-        //     value to BELONG to the constrained subtype (RM 4.3.2 / 3.6.1), so
-        //     its bounds must EQUAL the constraint; a component never slides.
-        // Index-value legality against the index subtype is enforced separately by
-        // the per-choice index-subtype check. (con_lo/con_hi is the dim-0
-        // constraint; inner sub-aggregates are checked against the inner one.)
-        bool slide_context = cg->in_assignment_rhs and cg->in_agg_component == 0;
-
-        // A "constraint" that is merely the index subtype's own full range is
-        // not a narrowing constraint: the target is unconstrained (A : A_12,
-        // A_12 IS ARRAY (I RANGE <>, ...)), so the named aggregate defines its
-        // own bounds within the index subtype (RM 4.3.2(4)), and there is no
-        // constraint for them to equal. Per-choice index-subtype membership is
-        // checked separately. Only a real narrowing constraint requires the
-        // aggregate bounds to match.
-        Type_Info *ix = agg_type->array.indices[0].index_type;
-        bool constraint_is_index_subtype = ix and
-          ix->low_bound.kind  == BOUND_INTEGER and
-          ix->high_bound.kind == BOUND_INTEGER and
-          Type_Bound_Value (ix->low_bound)  == con_lo and
-          Type_Bound_Value (ix->high_bound) == con_hi;
-
-        bool bad;
-        if (constraint_is_index_subtype) {
-          bad = false;
-        } else if (slide_context) {
-          int128_t agg_len = high - low + 1;       if (agg_len < 0) agg_len = 0;
-          int128_t con_len = con_hi - con_lo + 1;  if (con_len < 0) con_len = 0;
-          bad = (agg_len != con_len);
-        } else {
-          bad = (low != con_lo or high != con_hi);
-        }
-        if (bad) {
-          Emit_Raise_And_Continue (slide_context
-            ? "named aggregate length vs constraint"
-            : "named aggregate bounds vs constraint");
-        }
-      }
-    }
-
-    // RM 4.3.2(6): Dynamic constraint check in the static path.                                   
-    // Positional overrides may convert BOUND_EXPR → BOUND_INTEGER, routing                         
-    // through the static path even though the TYPE's constraint is dynamic.                       
-    // Detect this and emit a runtime check against the original bounds.                           
-    // Skip when bounds reference discriminants whose disc_agg_temp                                 
-    // hasn't been set up yet (not safely evaluable; RM 3.7.1).                                    
-    //                                                                                              
-    {
-      bool bounds_ref_disc_s = false;
-      for (uint32_t d = 0; d < agg_ndims and not bounds_ref_disc_s; d++) {
-        Type_Bound *b[2] = {&agg_type->array.indices[d].low_bound,
-                  &agg_type->array.indices[d].high_bound};
-        // Unsafe to evaluate in the static path: a discriminant bound whose
-        // disc_agg_temp is unset (RM 3.7.1), or any BOUND_EXPR without a cached
-        // temp (re-evaluating would repeat side effects, RM 3.2.1).
-        for (int bi = 0; bi < 2; bi++) {
-          if (Bound_Is_Expression (b[bi]) and
-              ((b[bi]->expr->symbol and
-                b[bi]->expr->symbol->kind == SYMBOL_DISCRIMINANT and
-                b[bi]->expr->symbol->disc_agg_temp == 0)
-               or (not b[bi]->cached_temp and
-                   (not b[bi]->expr->symbol or
-                    b[bi]->expr->symbol->kind != SYMBOL_DISCRIMINANT))))
-            bounds_ref_disc_s = true;
-        }
-      }
-    if (agg_type->array.is_constrained and not bounds_ref_disc_s and
-      (agg_type->array.indices[0].low_bound.kind == BOUND_EXPR or
-       agg_type->array.indices[0].high_bound.kind == BOUND_EXPR)) {
-      bool has_unc_base_d = Type_Is_Unconstrained_Array (agg_type->base_type);
-      if (has_unc_base_d) {
+      // Report bounds to outer multidim aggregate for consistency check
+      if (cg->in_agg_component > 0) {
         LLVM_Rep ait = Integer_Arith_Rep ();
-        if (n_positional > 0 and not has_named) {
-          uint32_t clo = Emit_Coerce_Val (Emit_Bound_Value (&agg_type->array.indices[0].low_bound), ait).reg;
-          uint32_t chi = Emit_Coerce_Val (Emit_Bound_Value (&agg_type->array.indices[0].high_bound), ait).reg;
-          {
+        cg->inner_agg_bnd_lo[0] = Emit_Static_Int (low, ait).reg;
+        cg->inner_agg_bnd_hi[0] = Emit_Static_Int (high, ait).reg;
+        cg->inner_agg_bnd_rep[0] = ait;
+        cg->inner_agg_bnd_n = 1;
+      }
 
-            // RM 4.3.2(5): For a positional aggregate of a constrained                             
-            // subtype (whether sub-aggregate or direct), only the count                            
-            // must match the constraint - the lower bound is determined                            
-            // by the constraint, not by INDEX_SUBTYPE'FIRST.                                      
-            //                                                                                      
-            uint32_t n_pos = Emit_Static_Int ((int128_t)n_positional, ait).reg;
-            uint32_t cdiff = Emit_Result_Instruction ("sub %s %%t%u, %%t%u\n", LLVM_Rep_To_String (ait), chi, clo);
-            uint32_t ccnt = Emit_Result_Instruction ("add %s %%t%u, 1\n", LLVM_Rep_To_String (ait), cdiff);
-            LLVM_I1 mismatch = Emit_Icmp ("ne", ait, n_pos, ccnt);
-            Emit_Raise_Constraint_Error_When (mismatch,
-              "positional aggregate count vs dynamic constraint");
+      // RM 4.3.2(3): index subtype bounds for aggregate constraint checking.                        
+      // Each choice bound of a non-null range must belong to the index                               
+      // subtype. This check applies when:                                                           
+      //   (a) the type is unconstrained (choices define aggregate bounds),                           
+      //   (b) it's a constrained subtype of an unconstrained base                                    
+      //       (T IS BASE (5..7) where BASE IS ARRAY (ST RANGE <>)),                                  
+      //   (c) directly constrained with named index type                                             
+      //       (ARRAY (STA RANGE 5..6, ...) where STA IS INTEGER RANGE 4..7);                         
+      //       choice bounds must belong to the index type (STA = 4..7).                             
+      //                                                                                              
+      bool has_unconstrained_base = Type_Is_Unconstrained_Array (agg_type->base_type);
+      bool need_idx_subtype_check = not agg_type->array.is_constrained or
+                      has_unconstrained_base;
+      // Index subtype bounds: from the unconstrained base's index type, else from
+      // a directly-unconstrained type's index type.
+      int128_t idx_sub_lo = low, idx_sub_hi = high;
+      bool idx_sub_static = true;       // index subtype bounds known at compile time
+      Type_Info *idx_subtype = NULL;    // the index subtype, for runtime bound eval
+      Type_Info *idx_src =
+        (has_unconstrained_base and agg_type->base_type->array.index_count > 0 and
+         agg_type->base_type->array.indices and
+         agg_type->base_type->array.indices[0].index_type) ? agg_type->base_type :
+        (not agg_type->array.is_constrained and agg_type->array.index_count > 0 and
+         agg_type->array.indices and agg_type->array.indices[0].index_type) ? agg_type
+        : NULL;
+      if (idx_src) {
+        idx_subtype = idx_src->array.indices[0].index_type;
+        // A dynamic index subtype (e.g. INTEGER RANGE IDENT_INT(1)..IDENT_INT(30))
+        // cannot be folded — Type_Bound_Value yields 0, which would make the
+        // compile-time check reject every choice. Mark it so the check uses the
+        // subtype's runtime bounds instead.
+        idx_sub_static = idx_subtype->low_bound.kind  == BOUND_INTEGER and
+                         idx_subtype->high_bound.kind == BOUND_INTEGER;
+        idx_sub_lo = Type_Bound_Value (idx_subtype->low_bound);
+        idx_sub_hi = Type_Bound_Value (idx_subtype->high_bound);
+      }
+
+      // RM 4.3.2(3): for named aggregates of unconstrained types, the
+      // bounds are determined by the choices. The lower bound is the
+      // minimum of all range-low values; the upper bound is the maximum
+      // of all range-high values. For a null range (L..H where L>H),
+      // the bounds stay L..H because lows and highs are tracked separately.
+      //
+      bool has_choice_lo = shape.has_static_low, has_choice_hi = shape.has_static_high;
+      bool early_has_others = shape.has_others;
+      bool has_dynamic_choice = shape.has_dynamic_range;  // non-integer range bounds
+      int128_t choice_lo = shape.minimum_low, choice_hi = shape.maximum_high;
+
+      // RM 4.3.2(5): Named aggregate bounds are determined by the
+      // lowest and highest choices. For aggregates without OTHERS,
+      // the aggregate storage uses choice bounds (sliding occurs at
+      // assignment for constrained targets). With OTHERS, the
+      // aggregate must cover the full type range. Dynamic choice bounds
+      // leave the folded low/high alone: their runtime values are seeded
+      // into the fat-pointer bounds when the choices are lowered.
+      //
+      if (not has_dynamic_choice and has_choice_lo and has_choice_hi
+        and not early_has_others) {
+        low = choice_lo;
+        high = choice_hi;
+        count = high - low + 1;
+        if (count < 1) count = 1;
+      }
+      // must match the constraint bounds. For positional aggregates, the                            
+      // lower bound is INDEX_SUBTYPE'FIRST (from the base unconstrained                              
+      // type), which may differ from the constraint. For named aggregates                           
+      // without OTHERS, the bounds come from the choices.                                           
+      //                                                                                              
+      if (agg_type->array.is_constrained and
+        agg_type->array.indices[0].low_bound.kind == BOUND_INTEGER and
+        agg_type->array.indices[0].high_bound.kind == BOUND_INTEGER) {
+        int128_t con_lo = Type_Bound_Value (agg_type->array.indices[0].low_bound);
+        int128_t con_hi = Type_Bound_Value (agg_type->array.indices[0].high_bound);
+
+        // RM 4.3.2(5): Count must match constraint size.
+        if (n_positional > 0 and not has_named and has_unconstrained_base) {
+          int128_t expected = con_hi - con_lo + 1;
+          if ((int128_t)n_positional != expected) {
+            Emit_Raise_And_Continue ("positional aggregate count vs constraint");
           }
 
-          // Parenthesized: INDEX_SUBTYPE'FIRST vs runtime constraint
-          if (node->aggregate.is_parenthesized and agg_type->base_type and
-            agg_type->base_type->array.index_count > 0 and
-            agg_type->base_type->array.indices[0].index_type) {
-            Type_Info *idx_ty = agg_type->base_type->array.indices[0].index_type;
-            uint32_t isf = (idx_ty->low_bound.kind == BOUND_INTEGER)
-              ? Emit_Static_Int (idx_ty->low_bound.int_value, ait).reg
-              : Emit_Coerce_Val (Emit_Bound_Value (&idx_ty->low_bound), ait).reg;
-            LLVM_I1 ne = Emit_Icmp ("ne", ait, isf, clo);
-            Emit_Raise_Constraint_Error_When (ne,
-              "parenthesized aggregate bounds vs dynamic constraint (static path)");
+          // RM 4.3.2: A parenthesized aggregate ((a,b,c)) uses                                       
+          // INDEX_SUBTYPE'FIRST as lower bound, which may differ from                                
+          // the constraint. Detect and raise CONSTRAINT_ERROR.                                     
+          //                                                                                          
+          if (node->aggregate.is_parenthesized and agg_type->base_type) {
+            Type_Info *base = agg_type->base_type;
+            if (base->array.index_count > 0 and
+              base->array.indices[0].index_type) {
+              Type_Info *idx_ty = base->array.indices[0].index_type;
+              if (idx_ty->low_bound.kind == BOUND_INTEGER) {
+                if (idx_ty->low_bound.int_value != con_lo) {
+                  Emit_Raise_And_Continue ("parenthesized aggregate bounds vs constraint");
+                }
+
+              // Dynamic INDEX_SUBTYPE'FIRST: runtime comparison
+              } else {
+                LLVM_Rep ait = Integer_Arith_Rep ();
+                uint32_t isf = Emit_Coerce_Val (Emit_Bound_Value (&idx_ty->low_bound), ait).reg;
+                uint32_t clo_v = Emit_Static_Int (con_lo, ait).reg;
+                LLVM_I1 ne = Emit_Icmp ("ne", ait, isf, clo_v);
+                Emit_Raise_Constraint_Error_When (ne,
+                  "parenthesized aggregate bounds vs constraint (dyn idx)");
+              }
+            }
           }
         }
         if (has_choice_lo and has_choice_hi and not early_has_others
-          and agg_ndims == 1) {
-          uint32_t nclo = Emit_Static_Int (choice_lo, ait).reg;
-          uint32_t nchi = Emit_Static_Int (choice_hi, ait).reg;
-          uint32_t clo = Emit_Coerce_Val (Emit_Bound_Value (&agg_type->array.indices[0].low_bound), ait).reg;
-          uint32_t chi = Emit_Coerce_Val (Emit_Bound_Value (&agg_type->array.indices[0].high_bound), ait).reg;
-          Emit_Aggregate_Bound_Match_Check (nclo, clo, nchi, chi, ait,
-            "named aggregate bounds vs dynamic constraint");
+          and not has_dynamic_choice) {
+
+          // RM 4.3.2(4): a named array aggregate without OTHERS takes its bounds
+          // from its choices (low..high here), independently of the target subtype.
+          // What the bounds must then satisfy depends on the consumer:
+          //   • Only an array ASSIGNMENT slides (RM 5.2.1): when this aggregate is
+          //     the top-level RHS of an assignment statement, just the LENGTH need
+          //     agree, e.g. (WED..FRI => 0, SAT..SUN => 1) := ARR_DAY(MON..FRI).
+          //   • Every other consumer — a parameter/default value, a qualified
+          //     expression, or a COMPONENT of an enclosing aggregate — requires the
+          //     value to BELONG to the constrained subtype (RM 4.3.2 / 3.6.1), so
+          //     its bounds must EQUAL the constraint; a component never slides.
+          // Index-value legality against the index subtype is enforced separately by
+          // the per-choice index-subtype check. (con_lo/con_hi is the dim-0
+          // constraint; inner sub-aggregates are checked against the inner one.)
+          bool slide_context = cg->in_assignment_rhs and cg->in_agg_component == 0;
+
+          // A "constraint" that is merely the index subtype's own full range is
+          // not a narrowing constraint: the target is unconstrained (A : A_12,
+          // A_12 IS ARRAY (I RANGE <>, ...)), so the named aggregate defines its
+          // own bounds within the index subtype (RM 4.3.2(4)), and there is no
+          // constraint for them to equal. Per-choice index-subtype membership is
+          // checked separately. Only a real narrowing constraint requires the
+          // aggregate bounds to match.
+          Type_Info *ix = agg_type->array.indices[0].index_type;
+          bool constraint_is_index_subtype = ix and
+            ix->low_bound.kind  == BOUND_INTEGER and
+            ix->high_bound.kind == BOUND_INTEGER and
+            Type_Bound_Value (ix->low_bound)  == con_lo and
+            Type_Bound_Value (ix->high_bound) == con_hi;
+
+          bool bad;
+          if (constraint_is_index_subtype) {
+            bad = false;
+          } else if (slide_context) {
+            int128_t agg_len = high - low + 1;       if (agg_len < 0) agg_len = 0;
+            int128_t con_len = con_hi - con_lo + 1;  if (con_len < 0) con_len = 0;
+            bad = (agg_len != con_len);
+          } else {
+            bad = (low != con_lo or high != con_hi);
+          }
+          if (bad) {
+            Emit_Raise_And_Continue (slide_context
+              ? "named aggregate length vs constraint"
+              : "named aggregate bounds vs constraint");
+          }
         }
       }
-    }
-    }  // end bounds_ref_disc_s scope
 
-    // RM 4.3.2(6): an aggregate belonging to a DIRECTLY-declared constrained
-    // subtype whose constraint is non-static is covered by none of the checks
-    // above — the static path needs BOUND_INTEGER bounds, the unconstrained-base
-    // path needs a base to slide from, and the dynamic-choice path re-evaluates
-    // the (unsafe) bound. Its bounds are frozen in the runtime descriptor
-    // (rt_global_id), so the count check reads those instead of re-evaluating
-    // the constraint. This is the single site that reports a mismatch for such
-    // a subtype, whether the aggregate is an object initializer, a qualified
-    // expression, or a parameter default materialised at a call.
-    {
-      bool has_unc_base = Type_Is_Unconstrained_Array (agg_type->base_type);
-      if (agg_type->array.is_constrained and agg_type->rt_global_id > 0 and
-          not has_unc_base)
-        Emit_Aggregate_Count_Vs_Constraint_Check (node, agg_type);
-    }
+      // RM 4.3.2(6): dynamic constraint check under static bounds.
+      // Positional overrides may convert BOUND_EXPR → BOUND_INTEGER, landing
+      // in this regime even though the TYPE's constraint is dynamic.
+      // Detect this and emit a runtime check against the original bounds.                           
+      // Skip when bounds reference discriminants whose disc_agg_temp                                 
+      // hasn't been set up yet (not safely evaluable; RM 3.7.1).                                    
+      //                                                                                              
+      {
+        bool bounds_ref_disc_s = false;
+        for (uint32_t d = 0; d < agg_ndims and not bounds_ref_disc_s; d++) {
+          Type_Bound *b[2] = {&agg_type->array.indices[d].low_bound,
+                    &agg_type->array.indices[d].high_bound};
+          // Unsafe to evaluate here: a discriminant bound whose
+          // disc_agg_temp is unset (RM 3.7.1), or any BOUND_EXPR without a cached
+          // temp (re-evaluating would repeat side effects, RM 3.2.1).
+          for (int bi = 0; bi < 2; bi++) {
+            if (Bound_Is_Expression (b[bi]) and
+                ((b[bi]->expr->symbol and
+                  b[bi]->expr->symbol->kind == SYMBOL_DISCRIMINANT and
+                  b[bi]->expr->symbol->disc_agg_temp == 0)
+                 or (not b[bi]->cached_temp and
+                     (not b[bi]->expr->symbol or
+                      b[bi]->expr->symbol->kind != SYMBOL_DISCRIMINANT))))
+              bounds_ref_disc_s = true;
+          }
+        }
+      if (agg_type->array.is_constrained and not bounds_ref_disc_s and
+        (agg_type->array.indices[0].low_bound.kind == BOUND_EXPR or
+         agg_type->array.indices[0].high_bound.kind == BOUND_EXPR)) {
+        bool has_unc_base_d = Type_Is_Unconstrained_Array (agg_type->base_type);
+        if (has_unc_base_d) {
+          LLVM_Rep ait = Integer_Arith_Rep ();
+          if (n_positional > 0 and not has_named) {
+            uint32_t clo = Emit_Coerce_Val (Emit_Bound_Value (&agg_type->array.indices[0].low_bound), ait).reg;
+            uint32_t chi = Emit_Coerce_Val (Emit_Bound_Value (&agg_type->array.indices[0].high_bound), ait).reg;
+            {
 
-    // For unconstrained types, track LLVM SSA values for the aggregate's
-    // actual bounds (from choice expressions) to populate the fat pointer.
-    // These are set during range-choice processing below.
-    //
-    uint32_t agg_lo_ssa = 0, agg_hi_ssa = 0;
-    uint32_t agg_d1_lo_ssa = 0, agg_d1_hi_ssa = 0;  // dim 1 inner choice SSA
+              // RM 4.3.2(5): For a positional aggregate of a constrained                             
+              // subtype (whether sub-aggregate or direct), only the count                            
+              // must match the constraint - the lower bound is determined                            
+              // by the constraint, not by INDEX_SUBTYPE'FIRST.                                      
+              //                                                                                      
+              uint32_t n_pos = Emit_Static_Int ((int128_t)n_positional, ait).reg;
+              uint32_t cdiff = Emit_Result_Instruction ("sub %s %%t%u, %%t%u\n", LLVM_Rep_To_String (ait), chi, clo);
+              uint32_t ccnt = Emit_Result_Instruction ("add %s %%t%u, 1\n", LLVM_Rep_To_String (ait), cdiff);
+              LLVM_I1 mismatch = Emit_Icmp ("ne", ait, n_pos, ccnt);
+              Emit_Raise_Constraint_Error_When (mismatch,
+                "positional aggregate count vs dynamic constraint");
+            }
 
-    // Check if element type is composite (record or constrained array).                           
-    // For composite elements, Generate_Expression returns a ptr to an alloca,                      
-    // so we must use memcpy to copy element data instead of store.                                
-    // Multi-dimensional arrays are always composite at the outer level                             
-    // because each "element" is a row (inner array).                                              
-    // Exception: fat-pointer elements ({ ptr, ptr }) are stored via                                
-    // `store` like scalars, not via memcpy.                                                       
-    //                                                                                              
-    Type_Info *elem_ti = agg_type->array.element_type;
-    // Stay identical to the per-element decision (Agg_Elem_Is_Composite) used
-    // at every store site below, or the temp's allocation and its fill
-    // disagree. A multi-dimensional aggregate's outer "element" is a ROW
-    // (memcpy), even when the scalar component is a fat pointer — the fat
-    // store path applies only at the innermost (1-D) level.
-    bool elem_is_composite = Agg_Elem_Is_Composite (elem_ti, multidim);
-
-    // An array of dynamically-sized records: every element occupies its runtime
-    // byte size, so the aggregate storage, the per-element offsets, and the
-    // per-element memcpy all flow through this size rather than a static one.
-    uint32_t agg_rt_elem = (elem_ti and Type_Is_Dynamic_Sized_Record (elem_ti))
-      ? Emit_Nested_Record_Size (elem_ti, elem_ti, NULL, 0, Byte_Size_Rep ())
-      : 0;
-
-    // TODO: mem-safety remove this after investigating OOM
-    if (count > 10000000) {
-      fprintf (stderr, "BUG: runaway aggregate count=%lld low=%lld high=%lld lk=%d hk=%d at line %d\n",
-        (long long)count, (long long)low, (long long)high, low_bound.kind, high_bound.kind, __LINE__);
-      abort ();
-    }
-    // Allocate as byte array so the size matches the actual data layout
-    if (agg_rt_elem) {
-      uint32_t total = Emit_Result_Instruction ("mul i64 %s, %%t%u  ; dyn composite array bytes\n", I128_Decimal (count), agg_rt_elem);
-      Emit ("  %%t%u = alloca i8, i64 %%t%u  ; array aggregate (dyn composite elems)\n",
-         base, total);
-    } else if (elem_is_composite) {
-      int128_t total_bytes = count * (int128_t)elem_size;
-      Emit ("  %%t%u = alloca [%s x i8]  ; array aggregate (composite elems)\n",
-         base, I128_Decimal (total_bytes));
-    } else {
-      Emit ("  %%t%u = alloca [%s x %s]  ; array aggregate\n",
-         base, I128_Decimal (count), LLVM_Rep_To_String (elem_type));
-    }
-
-    // Track which elements are initialized (for others clause)
-    bool *initialized = Arena_Allocate ((size_t)count * sizeof (bool));
-    for (int128_t i = 0; i < count; i++) initialized[i] = false;
-    Aggregate_Emission_Context agg_context = {
-      .base              = base,
-      .multidim          = multidim,
-      .elem_is_composite = elem_is_composite,
-      .agg_type          = agg_type,
-      .elem_type         = elem_type,
-      .elem_ti           = elem_ti,
-      .elem_size         = elem_size,
-      .rt_element_size   = agg_rt_elem,
-      .initialized       = initialized };
-
-    bool has_others = false;
-    Syntax_Node *others_item_expr = NULL;  // RM 4.3.3(5): re-evaluate per component
-
-    // First pass: find "others" clause and save expression node
-    for (uint32_t i = 0; i < node->aggregate.items.count; i++) {
-      Syntax_Node *item = node->aggregate.items.items[i];
-      if (item->kind == NK_ASSOCIATION and item->association.choices.count > 0) {
-        if (Is_Others_Choice (item->association.choices.items[0])) {
-          others_item_expr = item->association.expression;
-          has_others = true;
-          break;
+            // Parenthesized: INDEX_SUBTYPE'FIRST vs runtime constraint
+            if (node->aggregate.is_parenthesized and agg_type->base_type and
+              agg_type->base_type->array.index_count > 0 and
+              agg_type->base_type->array.indices[0].index_type) {
+              Type_Info *idx_ty = agg_type->base_type->array.indices[0].index_type;
+              uint32_t isf = (idx_ty->low_bound.kind == BOUND_INTEGER)
+                ? Emit_Static_Int (idx_ty->low_bound.int_value, ait).reg
+                : Emit_Coerce_Val (Emit_Bound_Value (&idx_ty->low_bound), ait).reg;
+              LLVM_I1 ne = Emit_Icmp ("ne", ait, isf, clo);
+              Emit_Raise_Constraint_Error_When (ne,
+                "parenthesized aggregate bounds vs dynamic constraint (static bounds)");
+            }
+          }
+          if (has_choice_lo and has_choice_hi and not early_has_others
+            and agg_ndims == 1) {
+            uint32_t nclo = Emit_Static_Int (choice_lo, ait).reg;
+            uint32_t nchi = Emit_Static_Int (choice_hi, ait).reg;
+            uint32_t clo = Emit_Coerce_Val (Emit_Bound_Value (&agg_type->array.indices[0].low_bound), ait).reg;
+            uint32_t chi = Emit_Coerce_Val (Emit_Bound_Value (&agg_type->array.indices[0].high_bound), ait).reg;
+            Emit_Aggregate_Bound_Match_Check (nclo, clo, nchi, chi, ait,
+              "named aggregate bounds vs dynamic constraint");
+          }
         }
       }
-    }
+      }  // end bounds_ref_disc_s scope
 
-    // RM 4.3.2(6): For constrained arrays with dynamic named choices                               
-    // and no OTHERS, track actual evaluated bounds at runtime to compare                           
-    // against the constraint. Static choices are handled above.                                  
-    //                                                                                              
-    uint32_t s_bnd_lo_var = 0, s_bnd_hi_var = 0;
-    bool s_track_dyn = agg_type->array.is_constrained and
-      has_dynamic_choice and not has_others and has_named;
-    if (s_track_dyn) {
-      LLVM_Rep bt = Array_Bound_LLVM_Rep (agg_type);
-      s_bnd_lo_var = Emit_Temp ();
-      Emit ("  %%t%u = alloca %s  ; track named min-low\n",
-         s_bnd_lo_var, LLVM_Rep_To_String (bt));
-      uint32_t il = Emit_Static_Int (2147483647LL, bt).reg;
-      Emit ("  store %s %%t%u, ptr %%t%u\n", LLVM_Rep_To_String (bt), il, s_bnd_lo_var);
-      s_bnd_hi_var = Emit_Temp ();
-      Emit ("  %%t%u = alloca %s  ; track named max-high\n",
-         s_bnd_hi_var, LLVM_Rep_To_String (bt));
-      uint32_t ih = Emit_Static_Int ((int128_t)-2147483648LL, bt).reg;
-      Emit ("  store %s %%t%u, ptr %%t%u\n", LLVM_Rep_To_String (bt), ih, s_bnd_hi_var);
-    }
-
-    // RM 4.3.2(6): For multidim aggregates, track inner sub-aggregate                              
-    // bounds for consistency checking across rows. The check is                                   
-    // deferred so all sub-aggregates are evaluated (for side effects)                              
-    // before raising CONSTRAINT_ERROR.                                                            
-    //                                                                                              
-    uint32_t inner_trk_lo[MAX_AGG_DIMS] = {0};
-    uint32_t inner_trk_hi[MAX_AGG_DIMS] = {0};
-    uint32_t inner_trk_first = 0, inner_trk_mm = 0;
-    int n_inner_dims = 0;
-    bool check_inner_consistency = multidim and agg_ndims > 1
-      and not has_others;
-    if (check_inner_consistency) {
-      n_inner_dims = agg_ndims - 1;
-      if (n_inner_dims > MAX_AGG_DIMS) n_inner_dims = MAX_AGG_DIMS;
-      LLVM_Rep bt = Array_Bound_LLVM_Rep (agg_type);
-      for (int d = 0; d < n_inner_dims; d++) {
-        inner_trk_lo[d] = Emit_Temp ();
-        Emit ("  %%t%u = alloca %s  ; expected inner lo [dim %d]\n",
-           inner_trk_lo[d], LLVM_Rep_To_String (bt), d);
-        inner_trk_hi[d] = Emit_Temp ();
-        Emit ("  %%t%u = alloca %s  ; expected inner hi [dim %d]\n",
-           inner_trk_hi[d], LLVM_Rep_To_String (bt), d);
+      // RM 4.3.2(6): an aggregate belonging to a DIRECTLY-declared constrained
+      // subtype whose constraint is non-static is covered by none of the checks
+      // above — the static regime needs BOUND_INTEGER bounds, the unconstrained-base
+      // path needs a base to slide from, and the dynamic-choice path re-evaluates
+      // the (unsafe) bound. Its bounds are frozen in the runtime descriptor
+      // (rt_global_id), so the count check reads those instead of re-evaluating
+      // the constraint. This is the single site that reports a mismatch for such
+      // a subtype, whether the aggregate is an object initializer, a qualified
+      // expression, or a parameter default materialised at a call.
+      {
+        bool has_unc_base = Type_Is_Unconstrained_Array (agg_type->base_type);
+        if (agg_type->array.is_constrained and agg_type->rt_global_id > 0 and
+            not has_unc_base)
+          Emit_Aggregate_Count_Vs_Constraint_Check (node, agg_type);
       }
-      inner_trk_first = Emit_Temp ();
-      Emit ("  %%t%u = alloca i1  ; first inner seen?\n",
-         inner_trk_first);
-      Emit ("  store i1 0, ptr %%t%u\n", inner_trk_first);
-      inner_trk_mm = Emit_Temp ();
-      Emit ("  %%t%u = alloca i1  ; inner mismatch flag\n",
-         inner_trk_mm);
-      Emit ("  store i1 0, ptr %%t%u\n", inner_trk_mm);
+
+      // Check if element type is composite (record or constrained array).                           
+      // For composite elements, Generate_Expression returns a ptr to an alloca,                      
+      // so we must use memcpy to copy element data instead of store.                                
+      // Multi-dimensional arrays are always composite at the outer level                             
+      // because each "element" is a row (inner array).                                              
+      // Exception: fat-pointer elements ({ ptr, ptr }) are stored via                                
+      // `store` like scalars, not via memcpy.                                                       
+      //                                                                                              
+
+      // An array of dynamically-sized records: every element occupies its runtime
+      // byte size, so the aggregate storage, the per-element offsets, and the
+      // per-element memcpy all flow through this size rather than a static one.
+      uint32_t agg_rt_elem = (elem_ti and Type_Is_Dynamic_Sized_Record (elem_ti))
+        ? Emit_Nested_Record_Size (elem_ti, elem_ti, NULL, 0, Byte_Size_Rep ())
+        : 0;
+
+      // TODO: mem-safety remove this after investigating OOM
+      if (count > 10000000) {
+        fprintf (stderr, "BUG: runaway aggregate count=%lld low=%lld high=%lld lk=%d hk=%d at line %d\n",
+          (long long)count, (long long)low, (long long)high, low_bound.kind, high_bound.kind, __LINE__);
+        abort ();
+      }
+      // Allocate as byte array so the size matches the actual data layout
+      if (agg_rt_elem) {
+        uint32_t total = Emit_Result_Instruction ("mul i64 %s, %%t%u  ; dyn composite array bytes\n", I128_Decimal (count), agg_rt_elem);
+        Emit ("  %%t%u = alloca i8, i64 %%t%u  ; array aggregate (dyn composite elems)\n",
+           base, total);
+      } else if (context.elem_is_composite) {
+        int128_t total_bytes = count * (int128_t)elem_size;
+        Emit ("  %%t%u = alloca [%s x i8]  ; array aggregate (composite elems)\n",
+           base, I128_Decimal (total_bytes));
+      } else {
+        Emit ("  %%t%u = alloca [%s x %s]  ; array aggregate\n",
+           base, I128_Decimal (count), LLVM_Rep_To_String (elem_type));
+      }
+
+      // Track which elements are initialized (for others clause)
+      bool *initialized = Arena_Allocate ((size_t)count * sizeof (bool));
+      for (int128_t i = 0; i < count; i++) initialized[i] = false;
+
+      // ── Populate the emission context (static-bounds regime) ─────────────
+      context.base = base;
+      context.index_rep = LLVM_Rep_Or (Array_Bound_LLVM_Rep (agg_type),
+                                       Integer_Arith_Rep ());
+      context.low  = Aggregate_Operand_Static (low);
+      context.high = Aggregate_Operand_Static (high);
+      context.initialized = initialized;
+      context.count = count;
+      context.rt_element_size = agg_rt_elem;
+      context.rt_element_size_rep = Byte_Size_Rep ();
+      context.check_index_subtype  = need_idx_subtype_check;
+      context.index_subtype_static = idx_sub_static;
+      context.index_subtype_low    = idx_sub_lo;
+      context.index_subtype_high   = idx_sub_hi;
+      context.index_subtype        = idx_subtype;
+
+      // RM 4.3.2(6): a constrained aggregate whose named choices carry
+      // runtime bounds tracks its actual span, for upward bound reporting
+      // to an enclosing aggregate. (Static choice spans were checked against
+      // the constraint at compile time above; sliding contexts are exempt,
+      // RM 5.2.1(3).)
+      context.track_named_bounds = agg_type->array.is_constrained and
+        has_dynamic_choice and not shape.has_others and has_named;
+
+      // RM 4.3.2(6): inner sub-aggregate consistency across rows; the check
+      // is deferred so all sub-aggregates are evaluated (for side effects)
+      // before raising CONSTRAINT_ERROR.
+      context.check_inner_consistency = multidim and not shape.has_others;
+
+      // Pre-materialize the low bound where a runtime store will subtract
+      // it, so emitted loops do not rebuild the constant per iteration.
+      if (shape.has_dynamic_range or shape.has_dynamic_single_choice)
+        context.low.reg = Emit_Static_Int (low, context.index_rep).reg;
     }
 
-    // Clear inner bounds before the association loop so that stale                                 
-    // values from early bounds reporting don't cause false inner-                                  
-    // consistency mismatches when an element is a non-aggregate                                    
-    // (e.g. string literal).                                                                      
-    //                                                                                              
+    if (context.check_inner_consistency) {
+      context.inner_dimension_count = (int) agg_ndims - 1;
+      if (context.inner_dimension_count > MAX_AGG_DIMS)
+        context.inner_dimension_count = MAX_AGG_DIMS;
+    }
+    Agg_Init_Named_Tracking (&context);
+    Agg_Init_Inner_Tracking (&context);
+
+    // The runtime OTHERS fill must skip the components covered by the named
+    // choices; reserve one span slot per choice (RM 4.3.3(5)).
+    if (not context.initialized and shape.has_others and shape.has_named) {
+      uint32_t total_choices = 0;
+      for (uint32_t i = 0; i < node->aggregate.items.count; i++)
+        if (node->aggregate.items.items[i]->kind == NK_ASSOCIATION)
+          total_choices += node->aggregate.items.items[i]->association.choices.count;
+      if (total_choices > 0) {
+        context.covered_low  = Arena_Allocate (total_choices * sizeof (Aggregate_Operand));
+        context.covered_high = Arena_Allocate (total_choices * sizeof (Aggregate_Operand));
+      }
+    }
+
+
+    // ── Per-choice lowering (RM 4.3.2) ─────────────────────────────────────
+    // Clear inner bounds before the association loop so that stale values
+    // from early bounds reporting don't cause false inner-consistency
+    // mismatches when an element is a non-aggregate (e.g. string literal).
     cg->inner_agg_bnd_n = 0;
-
-    // Second pass: initialize elements
-    uint32_t positional_idx = 0;
+    uint32_t positional_index = 0;
     for (uint32_t i = 0; i < node->aggregate.items.count; i++) {
       Syntax_Node *item = node->aggregate.items.items[i];
 
-      // Named association: handle each choice
-      if (item->kind == NK_ASSOCIATION) {
-        for (uint32_t c = 0; c < item->association.choices.count; c++) {
-          Syntax_Node *choice = item->association.choices.items[c];
-          if (Is_Others_Choice (choice)) {
-            continue;  // Handle in third pass
+      // Positional component: its flat index is its ordinal (RM 4.3.2(4)).
+      if (item->kind != NK_ASSOCIATION) {
+        if (context.initialized == NULL or
+            positional_index < (uint32_t) context.count)
+          Agg_Emit_Component_Flat (&context, item,
+            Aggregate_Operand_Static ((int128_t) positional_index), true);
+        positional_index++;
+        continue;
+      }
+
+      for (uint32_t c = 0; c < item->association.choices.count; c++) {
+        Syntax_Node *choice = item->association.choices.items[c];
+        if (Is_Others_Choice (choice)) continue;  // deferred to the fill pass
+
+        // Single choice: one component at one index, always non-null.
+        // (Type-mark and T'RANGE choices were desugared to ranges up front.)
+        if (choice->kind != NK_RANGE) {
+          Aggregate_Operand choice_index = Agg_Choice_Operand (&context, choice, -1);
+          Agg_Track_Named_Span (&context, choice_index, choice_index);
+          Agg_Check_Choice_Index_Subtype (&context, choice_index, choice_index);
+          Agg_Register_Covered_Span (&context, choice_index, choice_index);
+          Agg_Emit_Component (&context, item->association.expression,
+                              choice_index, true);
+          continue;
+        }
+
+        // Range choice L..H: the expression is evaluated once per component.
+        Aggregate_Operand choice_low  = Agg_Choice_Operand (&context, choice->range.low, 0);
+        Aggregate_Operand choice_high = Agg_Choice_Operand (&context, choice->range.high, 1);
+        Agg_Track_Named_Span (&context, choice_low, choice_high);
+        Agg_Check_Choice_Index_Subtype (&context, choice_low, choice_high);
+        Agg_Register_Covered_Span (&context, choice_low, choice_high);
+
+        // Multidim inner aggregates with runtime choice bounds cannot be
+        // lowered by recursing per row: the inner bounds H,I of
+        // (F..G => (H..I => J)) are evaluated ONCE, while J is evaluated
+        // once per component (RM 4.3.2(6)). Detect and inline them.
+        bool inline_multidim = false;
+        if (context.initialized and multidim and
+            item->association.expression->kind == NK_AGGREGATE) {
+          Syntax_Node *ia = item->association.expression;
+          for (uint32_t qi = 0; qi < ia->aggregate.items.count; qi++) {
+            Syntax_Node *qit = ia->aggregate.items.items[qi];
+            if (qit->kind != NK_ASSOCIATION) continue;
+            for (uint32_t qc = 0; qc < qit->association.choices.count; qc++) {
+              Syntax_Node *qch = qit->association.choices.items[qc];
+              if (qch->kind == NK_RANGE) {
+                if (not Is_Static_Int_Node (qch->range.low))
+                  inline_multidim = true;
+                if (not Is_Static_Int_Node (qch->range.high))
+                  inline_multidim = true;
+              }
+            }
           }
+        }
 
-          // Range choice: 1..5 => value                                                            
-          // RM 4.3.2: the expression is evaluated ONCE PER                                         
-          // COMPONENT, so Generate_Expression must be called                                       
-          // inside the per-element loop.                                                          
-          //                                                                                        
-          if (choice->kind == NK_RANGE) {
-            int128_t rng_low, rng_high;
-            uint32_t rng_lo_ssa = 0, rng_hi_ssa = 0;
-            bool must_eval_low  = not Is_Static_Int_Node (choice->range.low);
-            bool must_eval_high = not Is_Static_Int_Node (choice->range.high);
-            // Evaluate each range bound: a static value, or generated and widened
-            // to the index rep -- also seeding the aggregate's dynamic bounds.
-            Syntax_Node *rb_node[2]     = { choice->range.low, choice->range.high };
-            bool         rb_must[2]     = { must_eval_low, must_eval_high };
-            int128_t    *rb_rng[2]      = { &rng_low, &rng_high };
-            uint32_t    *rb_ssa[2]      = { &rng_lo_ssa, &rng_hi_ssa };
-            uint32_t    *rb_agg_ssa[2]  = { &agg_lo_ssa, &agg_hi_ssa };
-            int128_t     rb_fallback[2] = { low, high };
-            for (int b = 0; b < 2; b++) {
-              if (not rb_must[b]) { *rb_rng[b] = Static_Int_Value (rb_node[b]); continue; }
-              LLVM_Value ev = Generate_Expression (rb_node[b]);
-              *rb_rng[b] = rb_fallback[b];
+        if (inline_multidim) {
+          // The outer window: the choice span when compile-time known, else
+          // the whole aggregate (preserving null ranges: high < low iterates
+          // zero times).
+          int128_t eff_lo = choice_low.value, eff_hi = choice_high.value;
+          if (not (choice_low.is_static and choice_high.is_static)) {
+            eff_lo = low;
+            eff_hi = high;
+          }
+          Syntax_Node *inner_agg = item->association.expression;
+          int128_t inner_low  = Type_Bound_Value (dim_lo[1]);
+          int128_t inner_high = Type_Bound_Value (dim_hi[1]);
+          int128_t inner_count = (inner_high >= inner_low)
+                     ? (inner_high - inner_low + 1) : 0;
+
+          // Evaluate inner choice bounds once for side effects, even when
+          // the outer range is null (RM 4.3.2(6)). Also check inner bounds
+          // against the dim 1 index subtype and capture SSA values for the
+          // fat pointer.
+          int128_t inner_idx_sub_lo = inner_low, inner_idx_sub_hi = inner_high;
+          Type_Info *dim1_src =
+            (Type_Is_Unconstrained_Array (agg_type->base_type) and
+             agg_type->base_type->array.index_count > 1 and
+             agg_type->base_type->array.indices and
+             agg_type->base_type->array.indices[1].index_type) ? agg_type->base_type :
+            (not agg_type->array.is_constrained and agg_type->array.index_count > 1 and
+             agg_type->array.indices and agg_type->array.indices[1].index_type) ? agg_type
+            : NULL;
+          if (dim1_src) {
+            inner_idx_sub_lo = Type_Bound_Value (dim1_src->array.indices[1].index_type->low_bound);
+            inner_idx_sub_hi = Type_Bound_Value (dim1_src->array.indices[1].index_type->high_bound);
+          }
+          Syntax_Node *inner_val_expr = NULL;
+          uint32_t inner_lo_ssa = 0, inner_hi_ssa = 0;
+          for (uint32_t qi = 0; qi < inner_agg->aggregate.items.count; qi++) {
+            Syntax_Node *qi_item = inner_agg->aggregate.items.items[qi];
+            if (qi_item->kind != NK_ASSOCIATION) continue;
+            if (not inner_val_expr)
+              inner_val_expr = qi_item->association.expression;
+            for (uint32_t qc = 0; qc < qi_item->association.choices.count; qc++) {
+              Syntax_Node *qch = qi_item->association.choices.items[qc];
+              if (qch->kind != NK_RANGE) continue;
+              uint32_t ilo_s = 0, ihi_s = 0;
+              bool ilo_expr = not Is_Static_Int_Node (qch->range.low);
+              bool ihi_expr = not Is_Static_Int_Node (qch->range.high);
+              bool          ib_expr[2]  = { ilo_expr, ihi_expr };
+              Syntax_Node  *ib_node[2]  = { qch->range.low, qch->range.high };
+              uint32_t     *ib_out[2]   = { &ilo_s, &ihi_s };
+              uint32_t     *ib_inner[2] = { &inner_lo_ssa, &inner_hi_ssa };
+              uint32_t     *ib_d1[2]    = { &context.dim1_choice_low_ssa,
+                                            &context.dim1_choice_high_ssa };
+              for (int b = 0; b < 2; b++) {
+                if (not ib_expr[b]) continue;
+                LLVM_Value ev = Generate_Expression (ib_node[b]);
+                LLVM_Rep bt = Array_Bound_LLVM_Rep (agg_type);
+                *ib_out[b] = Emit_Coerce_Val (ev, bt).reg;
+                if (not *ib_inner[b]) *ib_inner[b] = *ib_out[b];
+                if (not *ib_d1[b]) *ib_d1[b] = *ib_out[b];
+              }
+
+              // RM 4.3.2(3): inner dim non-null range bounds must belong
+              // to the dim 1 index subtype.
               LLVM_Rep bt = Array_Bound_LLVM_Rep (agg_type);
-              *rb_ssa[b] = Emit_Coerce_Val (ev, bt).reg;
-              if (not agg_type->array.is_constrained and *rb_agg_ssa[b] == 0)
-                *rb_agg_ssa[b] = *rb_ssa[b];
-            }
-
-            // Track dynamic named range bounds for constraint check
-            if (s_track_dyn) {
-              LLVM_Rep bt = Array_Bound_LLVM_Rep (agg_type);
-              uint32_t lo_v = rng_lo_ssa ? rng_lo_ssa
-                : Emit_Static_Int (rng_low, bt).reg;
-              uint32_t hi_v = rng_hi_ssa ? rng_hi_ssa
-                : Emit_Static_Int (rng_high, bt).reg;
-
-              // Widen the running bounds: lo = min(lo, lo_v), hi = max(hi, hi_v).
-              Emit_Update_Bound (s_bnd_lo_var, lo_v, "slt", bt);
-              Emit_Update_Bound (s_bnd_hi_var, hi_v, "sgt", bt);
-            }
-
-            // RM 4.3.2(3): for a non-null range, the bounds must                                   
-            // belong to the index subtype. Raise CONSTRAINT_ERROR                                 
-            // if not. Null ranges (lo > hi) are exempt.                                          
-            //                                                                                      
-            if (need_idx_subtype_check) {
-              LLVM_Rep bt = Array_Bound_LLVM_Rep (agg_type);
-
-              // Both choice bounds and the index subtype static: compile-time check.
-              if (idx_sub_static and not must_eval_low and not must_eval_high) {
-                if (rng_low <= rng_high and
-                  (rng_low < idx_sub_lo or rng_low > idx_sub_hi or
-                   rng_high < idx_sub_lo or rng_high > idx_sub_hi)) {
-                  Emit_Raise_And_Continue ("aggregate index check");
+              if (not ilo_expr and not ihi_expr) {
+                int128_t rlo = Static_Int_Value (qch->range.low);
+                int128_t rhi = Static_Int_Value (qch->range.high);
+                if (rlo <= rhi and
+                  (rlo < inner_idx_sub_lo or rlo > inner_idx_sub_hi or
+                   rhi < inner_idx_sub_lo or rhi > inner_idx_sub_hi)) {
+                  Emit_Raise_And_Continue ("aggregate inner index check");
                 }
-
-              // Otherwise a runtime check: a non-null choice range must lie within
-              // the index subtype, whose bounds are loaded at run time when the
-              // subtype itself is dynamic.
               } else {
-                uint32_t lo_s = rng_lo_ssa ? rng_lo_ssa
-                        : Emit_Static_Int (rng_low, bt).reg;
-                uint32_t hi_s = rng_hi_ssa ? rng_hi_ssa
-                        : Emit_Static_Int (rng_high, bt).reg;
-
-                // Is range non-null? (lo <= hi)
-                LLVM_I1 null_cmp = Emit_Icmp ("sgt", bt, lo_s, hi_s);
-                uint32_t skip_lbl = cg->label_id++;
-                uint32_t chk_lbl  = cg->label_id++;
-                Emit ("  br i1 %%t%u, label %%L%u, label %%L%u  ; null range?\n",
-                   null_cmp.reg, skip_lbl, chk_lbl);
-                cg->block_terminated = true;
-                Emit_Label_Here (chk_lbl);
-                if (idx_sub_static) {
-                  Emit_Range_Check_With_Raise (lo_s,
-                    (int64_t)idx_sub_lo, (int64_t)idx_sub_hi,
-                    bt, "aggregate index subtype check");
-                  Emit_Range_Check_With_Raise (hi_s,
-                    (int64_t)idx_sub_lo, (int64_t)idx_sub_hi,
-                    bt, "aggregate index subtype check");
-                } else {
-                  uint32_t isl = Emit_Single_Bound (&idx_subtype->low_bound,  bt);
-                  uint32_t ish = Emit_Single_Bound (&idx_subtype->high_bound, bt);
-                  uint32_t bad[4] = {
-                    Emit_Icmp ("slt", bt, lo_s, isl).reg, Emit_Icmp ("sgt", bt, lo_s, ish).reg,
-                    Emit_Icmp ("slt", bt, hi_s, isl).reg, Emit_Icmp ("sgt", bt, hi_s, ish).reg };
-                  uint32_t any = bad[0];
-                  for (int q = 1; q < 4; q++) { 
-                    uint32_t t2 = Emit_Result_Instruction ("or i1 %%t%u, %%t%u\n", any, bad[q]); any = t2; }
-                  Emit_Check_With_Raise (any, true, "aggregate index subtype check (dynamic)");
-                }
-                Emit_Label_Here (skip_lbl);
+                uint32_t lo_v = ilo_s ? ilo_s
+                  : Emit_Static_Int (Static_Int_Value (qch->range.low), bt).reg;
+                uint32_t hi_v = ihi_s ? ihi_s
+                  : Emit_Static_Int (Static_Int_Value (qch->range.high), bt).reg;
+                LLVM_I1 nc = Emit_Icmp ("sgt", bt, lo_v, hi_v);
+                uint32_t sk = Emit_Open_Skip_If (nc.reg);
+                Emit_Range_Check_With_Raise (lo_v,
+                  (int64_t)inner_idx_sub_lo, (int64_t)inner_idx_sub_hi,
+                  bt, "aggregate inner index subtype check");
+                Emit_Range_Check_With_Raise (hi_v,
+                  (int64_t)inner_idx_sub_lo, (int64_t)inner_idx_sub_hi,
+                  bt, "aggregate inner index subtype check");
+                Emit_Close_Null_Skip (sk);
               }
             }
+          }
 
-            // Detect multidim inner aggregates with expression
-            // bounds that must be evaluated exactly once.
-            bool inline_multidim = false;
-            if (multidim and item->association.expression->kind == NK_AGGREGATE) {
-              Syntax_Node *ia = item->association.expression;
-              for (uint32_t qi = 0; qi < ia->aggregate.items.count; qi++) {
-                Syntax_Node *qit = ia->aggregate.items.items[qi];
-                if (qit->kind != NK_ASSOCIATION) continue;
-                for (uint32_t qc = 0; qc < qit->association.choices.count; qc++) {
-                  Syntax_Node *qch = qit->association.choices.items[qc];
-                  if (qch->kind == NK_RANGE) {
-                    if (not Is_Static_Int_Node (qch->range.low))
-                      inline_multidim = true;
-                    if (not Is_Static_Int_Node (qch->range.high))
-                      inline_multidim = true;
-                  }
+          // Nested loop: for each (row, col) cell, evaluate J and store at
+          // the flat offset in row-major order. The stored cell is a SCALAR
+          // at a scalar flat index, not a row.
+          if (inner_val_expr) {
+            Aggregate_Emission_Context cell_context = context;
+            cell_context.elem_is_composite = false;
+            for (int128_t oi = eff_lo; oi <= eff_hi; oi++) {
+              int128_t oai = oi - low;
+              if (oai < 0 or oai >= count) continue;
+              for (int128_t ci = inner_low; ci <= inner_high; ci++) {
+                int128_t flat = oai * inner_count + (ci - inner_low);
+                cg->in_agg_component++;
+                LLVM_Value val_v = Generate_Expression (inner_val_expr);
+                cg->in_agg_component--;
+                uint32_t val = Emit_Convert (val_v.reg, val_v.rep, elem_type).reg;
+                Agg_Store_At (&cell_context, val, Aggregate_Operand_Static (flat));
+              }
+              context.initialized[oai] = true;
+            }
+          }
+          continue;
+        }
+
+        // For multidim with compile-time inner bounds, check the inner
+        // aggregate's static choices against the dim 1 index subtype.
+        if (context.initialized and multidim and
+            item->association.expression->kind == NK_AGGREGATE) {
+          int128_t isl = Type_Bound_Value (dim_lo[1]);
+          int128_t ish = Type_Bound_Value (dim_hi[1]);
+          if (Type_Is_Unconstrained_Array (agg_type->base_type) and
+            agg_type->base_type->array.index_count > 1 and
+            agg_type->base_type->array.indices and
+            agg_type->base_type->array.indices[1].index_type) {
+            isl = Type_Bound_Value (agg_type->base_type->array.indices[1].index_type->low_bound);
+            ish = Type_Bound_Value (agg_type->base_type->array.indices[1].index_type->high_bound);
+          } else if (not agg_type->array.is_constrained and
+                 agg_type->array.index_count > 1 and
+                 agg_type->array.indices and
+                 agg_type->array.indices[1].index_type) {
+            isl = Type_Bound_Value (agg_type->array.indices[1].index_type->low_bound);
+            ish = Type_Bound_Value (agg_type->array.indices[1].index_type->high_bound);
+          }
+          Syntax_Node *ia = item->association.expression;
+          for (uint32_t qi = 0; qi < ia->aggregate.items.count; qi++) {
+            Syntax_Node *qit = ia->aggregate.items.items[qi];
+            if (qit->kind != NK_ASSOCIATION) continue;
+            for (uint32_t qc = 0; qc < qit->association.choices.count; qc++) {
+              Syntax_Node *qch = qit->association.choices.items[qc];
+              if (Is_Others_Choice (qch)) continue;
+              if (qch->kind == NK_RANGE and
+                Is_Static_Int_Node (qch->range.low) and
+                Is_Static_Int_Node (qch->range.high)) {
+                int128_t rlo = Static_Int_Value (qch->range.low);
+                int128_t rhi = Static_Int_Value (qch->range.high);
+                if (rlo <= rhi and
+                  (rlo < isl or rlo > ish or rhi < isl or rhi > ish)) {
+                  Emit_Raise_And_Continue ("aggregate inner index check");
+                }
+              } else if (Is_Static_Int_Node (qch)) {
+                int128_t v = Static_Int_Value (qch);
+                if (v < isl or v > ish) {
+                  Emit_Raise_And_Continue ("aggregate inner index check");
                 }
               }
             }
-
-            // Multidimensional aggregate with expression bounds:                                   
-            // inline the inner aggregate. RM 4.3.2(6): for                                        
-            // (F..G => (H..I => J)), the inner bounds H,I are                                      
-            // evaluated once; the value J is evaluated once per                                    
-            // component (outer × inner, zero if null).                                            
-            //                                                                                      
-            if (inline_multidim) {
-              Syntax_Node *inner_agg = item->association.expression;
-              int128_t inner_low  = Type_Bound_Value (dim_lo[1]);
-              int128_t inner_high = Type_Bound_Value (dim_hi[1]);
-              int128_t inner_count = (inner_high >= inner_low)
-                         ? (inner_high - inner_low + 1) : 0;
-
-              // Evaluate inner choice bounds once for side effects,                                
-              // even when the outer range is null (RM 4.3.2(6)).                                  
-              // Also check inner bounds against dim 1 index subtype                                
-              // and capture SSA values for fat pointer.                                           
-              //                                                                                    
-              int128_t inner_idx_sub_lo = inner_low, inner_idx_sub_hi = inner_high;
-              Type_Info *dim1_src =
-                (Type_Is_Unconstrained_Array (agg_type->base_type) and
-                 agg_type->base_type->array.index_count > 1 and
-                 agg_type->base_type->array.indices and
-                 agg_type->base_type->array.indices[1].index_type) ? agg_type->base_type :
-                (not agg_type->array.is_constrained and agg_type->array.index_count > 1 and
-                 agg_type->array.indices and agg_type->array.indices[1].index_type) ? agg_type
-                : NULL;
-              if (dim1_src) {
-                inner_idx_sub_lo = Type_Bound_Value (dim1_src->array.indices[1].index_type->low_bound);
-                inner_idx_sub_hi = Type_Bound_Value (dim1_src->array.indices[1].index_type->high_bound);
-              }
-              Syntax_Node *inner_val_expr = NULL;
-              uint32_t inner_lo_ssa = 0, inner_hi_ssa = 0;
-              for (uint32_t qi = 0; qi < inner_agg->aggregate.items.count; qi++) {
-                Syntax_Node *qi_item = inner_agg->aggregate.items.items[qi];
-                if (qi_item->kind != NK_ASSOCIATION) continue;
-                if (not inner_val_expr)
-                  inner_val_expr = qi_item->association.expression;
-                for (uint32_t qc = 0; qc < qi_item->association.choices.count; qc++) {
-                  Syntax_Node *qch = qi_item->association.choices.items[qc];
-                  if (qch->kind == NK_RANGE) {
-                    uint32_t ilo_s = 0, ihi_s = 0;
-                    bool ilo_expr = not Is_Static_Int_Node (qch->range.low);
-                    bool ihi_expr = not Is_Static_Int_Node (qch->range.high);
-                    bool          ib_expr[2]  = { ilo_expr, ihi_expr };
-                    Syntax_Node  *ib_node[2]  = { qch->range.low, qch->range.high };
-                    uint32_t     *ib_out[2]   = { &ilo_s, &ihi_s };
-                    uint32_t     *ib_inner[2] = { &inner_lo_ssa, &inner_hi_ssa };
-                    uint32_t     *ib_d1[2]    = { &agg_d1_lo_ssa, &agg_d1_hi_ssa };
-                    for (int b = 0; b < 2; b++) {
-                      if (not ib_expr[b]) continue;
-                      LLVM_Value ev = Generate_Expression (ib_node[b]);
-                      LLVM_Rep bt = Array_Bound_LLVM_Rep (agg_type);
-                      *ib_out[b] = Emit_Coerce_Val (ev, bt).reg;
-                      if (not *ib_inner[b]) *ib_inner[b] = *ib_out[b];
-                      if (not *ib_d1[b]) *ib_d1[b] = *ib_out[b];
-                    }
-
-                    // RM 4.3.2(3): inner dim non-null range bounds
-                    // must belong to dim 1 index subtype.
-                    {
-                      LLVM_Rep bt = Array_Bound_LLVM_Rep (agg_type);
-                      if (not ilo_expr and not ihi_expr) {
-                        int128_t rlo = Static_Int_Value (qch->range.low);
-                        int128_t rhi = Static_Int_Value (qch->range.high);
-                        if (rlo <= rhi and
-                          (rlo < inner_idx_sub_lo or rlo > inner_idx_sub_hi or
-                           rhi < inner_idx_sub_lo or rhi > inner_idx_sub_hi)) {
-                          Emit_Raise_And_Continue ("aggregate inner index check");
-                        }
-                      } else {
-                        uint32_t lo_v = ilo_s ? ilo_s
-                          : Emit_Static_Int (Static_Int_Value (qch->range.low), bt).reg;
-                        uint32_t hi_v = ihi_s ? ihi_s
-                          : Emit_Static_Int (Static_Int_Value (qch->range.high), bt).reg;
-                        LLVM_I1 nc = Emit_Icmp ("sgt", bt, lo_v, hi_v);
-                        uint32_t sk = cg->label_id++;
-                        uint32_t ck = cg->label_id++;
-                        Emit ("  br i1 %%t%u, label %%L%u, label %%L%u  ; inner null?\n",
-                           nc.reg, sk, ck);
-                        cg->block_terminated = true;
-                        Emit_Label_Here (ck);
-                        Emit_Range_Check_With_Raise (lo_v,
-                          (int64_t)inner_idx_sub_lo, (int64_t)inner_idx_sub_hi,
-                          bt, "aggregate inner index subtype check");
-                        Emit_Range_Check_With_Raise (hi_v,
-                          (int64_t)inner_idx_sub_lo, (int64_t)inner_idx_sub_hi,
-                          bt, "aggregate inner index subtype check");
-                        Emit_Label_Here (sk);
-                      }
-                    }
-                  }
-                }
-              }
-
-              // Nested loop: for each (row, col) cell, evaluate J                                  
-              // and store at the flat offset in row-major order.                                  
-              // When outer choice bounds are dynamic, fall back to                                 
-              // type-count iteration (positions 0..count-1) since                                  
-              // we can't iterate a C loop over runtime values.                                    
-              //                                                                                    
-              if (inner_val_expr) {
-                int128_t eff_lo = rng_low, eff_hi = rng_high;
-                if (must_eval_low or must_eval_high) {
-                  eff_lo = low;
-                  eff_hi = high;  // preserves null range (high<low → 0 iter)
-                }
-                for (int128_t oi = eff_lo; oi <= eff_hi; oi++) {
-                  int128_t oai = oi - low;
-                  if (oai < 0 or oai >= count) continue;
-                  for (int128_t ci = inner_low; ci <= inner_high; ci++) {
-                    int128_t flat = oai * inner_count + (ci - inner_low);
-                    cg->in_agg_component++;
-                    LLVM_Value val_v = Generate_Expression (inner_val_expr);
-                    cg->in_agg_component--;
-                    uint32_t val = Emit_Convert (val_v.reg, val_v.rep, elem_type).reg;
-                    Agg_Store_At_Static (base, val, flat,
-                      elem_type, elem_size, false, agg_rt_elem);
-                  }
-                  initialized[oai] = true;
-                }
-              }
-
-            // For multidim with static inner bounds, check inner
-            // aggregate choices against dim 1 index subtype.
-            } else {
-              if (multidim and item->association.expression->kind == NK_AGGREGATE) {
-                int128_t isl = Type_Bound_Value (dim_lo[1]);
-                int128_t ish = Type_Bound_Value (dim_hi[1]);
-                if (Type_Is_Unconstrained_Array (agg_type->base_type) and
-                  agg_type->base_type->array.index_count > 1 and
-                  agg_type->base_type->array.indices and
-                  agg_type->base_type->array.indices[1].index_type) {
-                  isl = Type_Bound_Value (agg_type->base_type->array.indices[1].index_type->low_bound);
-                  ish = Type_Bound_Value (agg_type->base_type->array.indices[1].index_type->high_bound);
-                } else if (not agg_type->array.is_constrained and
-                       agg_type->array.index_count > 1 and
-                       agg_type->array.indices and
-                       agg_type->array.indices[1].index_type) {
-                  isl = Type_Bound_Value (agg_type->array.indices[1].index_type->low_bound);
-                  ish = Type_Bound_Value (agg_type->array.indices[1].index_type->high_bound);
-                }
-                Syntax_Node *ia = item->association.expression;
-                for (uint32_t qi = 0; qi < ia->aggregate.items.count; qi++) {
-                  Syntax_Node *qit = ia->aggregate.items.items[qi];
-                  if (qit->kind != NK_ASSOCIATION) continue;
-                  for (uint32_t qc = 0; qc < qit->association.choices.count; qc++) {
-                    Syntax_Node *qch = qit->association.choices.items[qc];
-                    if (Is_Others_Choice (qch)) continue;
-                    if (qch->kind == NK_RANGE and
-                      Is_Static_Int_Node (qch->range.low) and
-                      Is_Static_Int_Node (qch->range.high)) {
-                      int128_t rlo = Static_Int_Value (qch->range.low);
-                      int128_t rhi = Static_Int_Value (qch->range.high);
-                      if (rlo <= rhi and
-                        (rlo < isl or rlo > ish or rhi < isl or rhi > ish)) {
-                        Emit_Raise_And_Continue ("aggregate inner index check");
-                      }
-                    } else if (Is_Static_Int_Node (qch)) {
-                      int128_t v = Static_Int_Value (qch);
-                      if (v < isl or v > ish) {
-                        Emit_Raise_And_Continue ("aggregate inner index check");
-                      }
-                    }
-                  }
-                }
-              }
-
-              // Non-multidim (or non-aggregate inner expression):
-              // evaluate expression per component (RM 4.3.2(6)).
-              for (int128_t idx = rng_low; idx <= rng_high; idx++) {
-                int128_t arr_idx = idx - low;
-                if (arr_idx >= 0 and arr_idx < count)
-                  Agg_Emit_Component_At (&agg_context,
-                    item->association.expression, arr_idx);
-              }
-
-              // RM 4.3.2(6): track inner bounds for consistency
-              if (check_inner_consistency and cg->inner_agg_bnd_n > 0)
-                Emit_Inner_Consistency_Track (inner_trk_lo, inner_trk_hi,
-                  inner_trk_first, inner_trk_mm,
-                  n_inner_dims, Array_Bound_LLVM_Rep (agg_type));
-            }
-          } else if (choice->kind == NK_IDENTIFIER and choice->symbol and
-                 choice->symbol->kind == SYMBOL_TYPE and choice->symbol->type) {
-
-            // Type name as choice: T => val means T'FIRST..T'LAST => val
-            // (RM 4.3.2(4)). Re-evaluate expression per component.
-            Type_Info *ct = choice->symbol->type;
-            int128_t rng_low = Type_Bound_Value (ct->low_bound);
-            int128_t rng_high = Type_Bound_Value (ct->high_bound);
-            for (int128_t idx = rng_low; idx <= rng_high; idx++) {
-              int128_t arr_idx = idx - low;
-              if (arr_idx >= 0 and arr_idx < count)
-                Agg_Emit_Component_At (&agg_context,
-                  item->association.expression, arr_idx);
-            }
-
-          // Single index: 3 => value (or -1 => value)
-          } else if (Is_Static_Int_Node (choice)) {
-
-            // RM 4.3.2(3): single index always non-null; must be
-            // in the index subtype.
-            int128_t cv = Static_Int_Value (choice);
-            if (need_idx_subtype_check) {
-              if (cv < idx_sub_lo or cv > idx_sub_hi) {
-                Emit_Raise_And_Continue ("aggregate index check");
-              }
-            }
-
-            // Track single index for dynamic bounds constraint check
-            if (s_track_dyn) {
-              LLVM_Rep bt = Array_Bound_LLVM_Rep (agg_type);
-              uint32_t iv = Emit_Static_Int (cv, bt).reg;
-              Emit_Update_Bound (s_bnd_lo_var, iv, "slt", bt);
-              Emit_Update_Bound (s_bnd_hi_var, iv, "sgt", bt);
-            }
-            int128_t idx = cv - low;
-            if (idx >= 0 and idx < count)
-              Agg_Emit_Component_At (&agg_context,
-                item->association.expression, idx);
-
-            // RM 4.3.2(6): track inner bounds for consistency
-            if (check_inner_consistency and cg->inner_agg_bnd_n > 0)
-              Emit_Inner_Consistency_Track (inner_trk_lo, inner_trk_hi,
-                inner_trk_first, inner_trk_mm,
-                n_inner_dims, Array_Bound_LLVM_Rep (agg_type));
           }
         }
 
-      // Positional association
-      } else {
-        if (positional_idx < (uint32_t)count) {
-          Agg_Emit_Component_At (&agg_context, item, (int128_t)positional_idx);
-          positional_idx++;
-
-          // RM 4.3.2(6): track inner bounds for consistency
-          if (check_inner_consistency and cg->inner_agg_bnd_n > 0)
-            Emit_Inner_Consistency_Track (inner_trk_lo, inner_trk_hi,
-              inner_trk_first, inner_trk_mm,
-              n_inner_dims, Array_Bound_LLVM_Rep (agg_type));
-        }
+        Agg_Fill_Range (&context, item->association.expression,
+                        choice_low, choice_high);
       }
     }
 
-    // Report actual aggregate bounds to outer multidim aggregate.
-    // bnd[0] = this aggregate's own first-dimension bounds.
-    // bnd[1..] = deeper inner dimensions' bounds (from inner tracking).
-    // This overrides the early reporting (pre-choice processing).
-    //
-    if (cg->in_agg_component > 0) {
-      LLVM_Rep bt = Array_Bound_LLVM_Rep (agg_type);
-      int dim_count = 0;
-      if (s_track_dyn) {
-        cg->inner_agg_bnd_lo[0] = Emit_Temp ();
-        Emit ("  %%t%u = load %s, ptr %%t%u  ; inner actual lo\n",
-           cg->inner_agg_bnd_lo[0], LLVM_Rep_To_String (bt), s_bnd_lo_var);
-        cg->inner_agg_bnd_hi[0] = Emit_Temp ();
-        Emit ("  %%t%u = load %s, ptr %%t%u  ; inner actual hi\n",
-           cg->inner_agg_bnd_hi[0], LLVM_Rep_To_String (bt), s_bnd_hi_var);
-      } else {
-        cg->inner_agg_bnd_lo[0] = Emit_Static_Int (low, bt).reg;
-        cg->inner_agg_bnd_hi[0] = Emit_Static_Int (high, bt).reg;
-      }
-      cg->inner_agg_bnd_rep[0] = bt;
-      dim_count = 1;
 
-      // Propagate tracked inner dimensions' bounds upward
-      if (check_inner_consistency) {
-        for (int d = 0; d < n_inner_dims and dim_count < MAX_AGG_DIMS; d++) {
-          cg->inner_agg_bnd_lo[dim_count] = Emit_Temp ();
-          Emit ("  %%t%u = load %s, ptr %%t%u  ; deep inner lo [dim %d]\n",
-             cg->inner_agg_bnd_lo[dim_count], LLVM_Rep_To_String (bt), inner_trk_lo[d], d);
-          cg->inner_agg_bnd_hi[dim_count] = Emit_Temp ();
-          Emit ("  %%t%u = load %s, ptr %%t%u  ; deep inner hi [dim %d]\n",
-             cg->inner_agg_bnd_hi[dim_count], LLVM_Rep_To_String (bt), inner_trk_hi[d], d);
-          cg->inner_agg_bnd_rep[dim_count] = bt;
-          dim_count++;
-        }
-      }
-      cg->inner_agg_bnd_n = dim_count;
+    // RM 4.3.2: the overall named-choice span must match the constraint
+    // bounds of a runtime-bounds constrained aggregate without OTHERS -
+    // even for null ranges.
+    if (check_named_bounds_match) {
+      const char *tracked_rep = LLVM_Rep_To_String (context.index_rep);
+      uint32_t final_low = Emit_Result_Instruction ("load %s, ptr %%t%u\n",
+        tracked_rep, context.named_low_variable);
+      uint32_t final_high = Emit_Result_Instruction ("load %s, ptr %%t%u\n",
+        tracked_rep, context.named_high_variable);
+      Emit_Aggregate_Bound_Match_Check (final_low,
+        Agg_Operand_Register (&context, context.low), final_high,
+        Agg_Operand_Register (&context, context.high), context.index_rep,
+        "aggregate named range vs constraint");
     }
 
-    // Note: For the static path, dynamic named bounds vs constraint                                
-    // is NOT checked here because sliding occurs at assignment                                     
-    // (RM 5.2.1(3)). Array-of-array components are checked at                                     
-    // line ~27238 (has_unconstrained_base condition).
-    //
+    // For multidim constrained arrays, also check inner dimension
+    // bounds from the first inner sub-aggregate's named range
+    // against the type's inner constraint. Runs OUTSIDE the outer
+    // loop so null outer ranges still get checked (RM 4.3.2).
+    // Skipped when dim-1's "constraint" is merely its index subtype's full
+    // range (an unconstrained target: A : A_12, A_12 IS ARRAY (I<>, I<>)) —
+    // the inner aggregate then defines its own bounds within the index
+    // subtype, with no constraint to equal.
+    Type_Info *ix1 = agg_ndims > 1 ? agg_type->array.indices[1].index_type : NULL;
+    bool dim1_constraint_is_index_subtype = ix1 and
+      ix1->low_bound.kind  == BOUND_INTEGER and ix1->high_bound.kind == BOUND_INTEGER and
+      dim_lo[1].kind == BOUND_INTEGER and dim_hi[1].kind == BOUND_INTEGER and
+      Type_Bound_Value (ix1->low_bound)  == Type_Bound_Value (dim_lo[1]) and
+      Type_Bound_Value (ix1->high_bound) == Type_Bound_Value (dim_hi[1]);
+    if (dynamic_bounds and agg_type->array.is_constrained and multidim and
+      agg_ndims > 1 and shape.has_named and not shape.has_others and
+      not dim1_constraint_is_index_subtype) {
+      for (uint32_t ai = 0; ai < node->aggregate.items.count; ai++) {
+        Syntax_Node *aitem = node->aggregate.items.items[ai];
+        if (aitem->kind != NK_ASSOCIATION) continue;
+        if (aitem->association.choices.count > 0 and
+          Is_Others_Choice (aitem->association.choices.items[0]))
+          continue;
+        Syntax_Node *inner = aitem->association.expression;
+        if (not inner or inner->kind != NK_AGGREGATE) continue;
 
+        // Find first named range in inner aggregate
+        for (uint32_t ii = 0; ii < inner->aggregate.items.count; ii++) {
+          Syntax_Node *iit = inner->aggregate.items.items[ii];
+          if (iit->kind != NK_ASSOCIATION or
+            iit->association.choices.count == 0) continue;
+          Syntax_Node *ich = iit->association.choices.items[0];
+          if (Is_Others_Choice (ich)) continue;
+          if (ich->kind != NK_RANGE) continue;
+          LLVM_Rep ait = Integer_Arith_Rep ();
+          LLVM_Value ir_lo_v = Generate_Expression (ich->range.low);
+          uint32_t ir_lo = Coerce_To_Rep (ir_lo_v.reg, ir_lo_v.rep, ait);
+          LLVM_Value ir_hi_v = Generate_Expression (ich->range.high);
+          uint32_t ir_hi = Coerce_To_Rep (ir_hi_v.reg, ir_hi_v.rep, ait);
+          uint32_t exp_lo = Emit_Single_Bound (&dim_lo[1], ait);
+          uint32_t exp_hi = Emit_Single_Bound (&dim_hi[1], ait);
+          LLVM_I1 ilo_ne = Emit_Icmp ("ne", ait, ir_lo, exp_lo);
+          LLVM_I1 ihi_ne = Emit_Icmp ("ne", ait, ir_hi, exp_hi);
+          uint32_t imm = Emit_Result_Instruction ("or i1 %%t%u, %%t%u\n", ilo_ne.reg, ihi_ne.reg);
+          Emit_Raise_Constraint_Error_When ((LLVM_I1){ imm },
+            "inner aggregate named range vs constraint");
+          goto inner_dim_check_done;
+        }
+        break;  // only check first non-others association
+      }
+      inner_dim_check_done: ;
+    }
     // RM 4.3.2: a NAMED inner sub-aggregate states its bounds explicitly; those
     // do not slide and must equal the corresponding inner index constraint
     // (positional inner aggregates do slide and are handled by the consistency
     // check plus assignment). Walk one level per inner dimension and, where the
     // sub-aggregate's choice span and the constraint are both static, compare.
-    if (agg_type->array.is_constrained and agg_type->array.index_count > 1) {
+    if (not dynamic_bounds and
+        agg_type->array.is_constrained and agg_type->array.index_count > 1) {
       LLVM_Rep chk_iat = Integer_Arith_Rep ();
       Syntax_Node *lvl = node;
       for (uint32_t d = 0; d + 1 < agg_type->array.index_count and
@@ -35797,89 +35563,119 @@ uint32_t Generate_Aggregate (Syntax_Node *node) {
       }
     }
 
-    // RM 4.3.2(6): Check inner sub-aggregate bounds consistency.
-    // After all rows are processed, check if any had mismatched bounds.                           
-    // Also check first-seen bounds against the second dimension constraint.                       
-    // Only check if at least one inner sub-aggregate was tracked.                                 
-    //                                                                                              
-    if (check_inner_consistency) {
-      uint32_t was_seen = Emit_Result_Instruction ("load i1, ptr %%t%u  ; any inner seen?\n", inner_trk_first);
-      uint32_t skip_lbl = cg->label_id++;
-      uint32_t do_check_lbl = cg->label_id++;
+
+    // RM 4.3.2(6): after all rows are processed, raise if any inner
+    // sub-aggregate had mismatched bounds. Vacuous when no inner
+    // sub-aggregate was tracked (a null aggregate tracks none).
+    if (context.check_inner_consistency) {
+      uint32_t was_seen = Emit_Result_Instruction ("load i1, ptr %%t%u  ; any inner seen?\n",
+        context.inner_track_first);
+      uint32_t skip_label  = cg->label_id++;
+      uint32_t check_label = cg->label_id++;
       Emit ("  br i1 %%t%u, label %%L%u, label %%L%u\n",
-         was_seen, do_check_lbl, skip_lbl);
+         was_seen, check_label, skip_label);
       cg->block_terminated = true;
-      Emit_Label_Here (do_check_lbl);
-
-      // RM 4.3.2(6): Only check consistency across rows.                                          
-      // For multidim, sliding handles bounds adjustment to constraint.                            
-      // So do NOT compare inner bounds against constraint here.                                   
-      //                                                                                            
-      uint32_t mm = Emit_Result_Instruction ("load i1, ptr %%t%u  ; inner mismatch?\n", inner_trk_mm);
-      Emit_Raise_Constraint_Error_When ((LLVM_I1){ mm },
+      Emit_Label_Here (check_label);
+      uint32_t mismatch = Emit_Result_Instruction ("load i1, ptr %%t%u  ; inner mismatch?\n",
+        context.inner_track_mismatch);
+      if (context.nonnull_guard)
+        mismatch = Emit_Result_Instruction ("and i1 %%t%u, %%t%u\n",
+          mismatch, context.nonnull_guard);
+      Emit_Raise_Constraint_Error_When ((LLVM_I1){ mismatch },
         "sub-aggregate bounds mismatch (RM 4.3.2(6))");
-      Emit_Label_Here (skip_lbl);
+      Emit_Label_Here (skip_label);
     }
 
-    // Third pass: fill uninitialized with "others" value.                                         
-    // RM 4.3.3(5): the expression is evaluated once per component,                                 
-    // so allocators produce distinct objects for each element.                                    
-    //                                                                                              
-    if (has_others and others_item_expr) {
-      for (int128_t idx = 0; idx < count; idx++) {
-        if (not initialized[idx])
-          Agg_Emit_Component_At (&agg_context, others_item_expr, idx);
+
+    // OTHERS fills the components no other association covers (RM 4.3.3(5)).
+    if (shape.has_others)
+      Agg_Fill_Others (&context, shape.others_expression, n_positional);
+
+
+    // Report actual aggregate bounds to the enclosing multidim aggregate.
+    // bnd[0] = this aggregate's own first-dimension bounds; bnd[1..] = the
+    // deeper dimensions' bounds from inner tracking. This overrides the
+    // early report, and runs after the OTHERS fill so a sub-aggregate
+    // generated there cannot clobber it. Skipped when the bounds are
+    // synthetic (count-derived, not the actual constraint values).
+    if (cg->in_agg_component > 0 and not bounds_are_synthetic) {
+      const char *bound_rep = LLVM_Rep_To_String (context.index_rep);
+      int dim_count = 0;
+      if (context.track_named_bounds and not check_named_bounds_match) {
+        // The tracked named span IS the aggregate's actual bounds when the
+        // choices carried runtime bounds within a static-bounds subtype.
+        cg->inner_agg_bnd_lo[0] = Emit_Result_Instruction (
+          "load %s, ptr %%t%u  ; inner actual lo\n", bound_rep, context.named_low_variable);
+        cg->inner_agg_bnd_hi[0] = Emit_Result_Instruction (
+          "load %s, ptr %%t%u  ; inner actual hi\n", bound_rep, context.named_high_variable);
+      } else {
+        cg->inner_agg_bnd_lo[0] = Agg_Operand_Register (&context, context.low);
+        cg->inner_agg_bnd_hi[0] = Agg_Operand_Register (&context, context.high);
       }
-    }
+      cg->inner_agg_bnd_rep[0] = context.index_rep;
+      dim_count = 1;
 
-    // Wrap in a fat pointer when the caller expects { ptr, ptr }.                                 
-    // This is required for unconstrained types AND constrained types                               
-    // with dynamic bounds (BOUND_EXPR): consumers read both as
-    // { ptr, ptr } - and positional aggregates may
-    // override BOUND_EXPR → BOUND_INTEGER in dim_hi, routing through                               
-    // the static path even though the TYPE still has dynamic bounds.                              
-    // Multi-dimensional arrays store bounds for ALL dimensions.                                   
-    //                                                                                              
-    if (not agg_type->array.is_constrained or
-      Type_Has_Dynamic_Bounds (agg_type)) {
-      LLVM_Rep agg_bt = Array_Bound_LLVM_Rep (agg_type);
-      if (multidim) {
-        uint32_t mlo[8], mhi[8];
-
-        // Dimension 0 uses the (possibly overridden) choice-based
-        // low/high; other dimensions use type bounds.
-        for (uint32_t d = 0; d < agg_ndims; d++) {
-          int128_t   dv[2]    = { (d == 0) ? low  : Type_Bound_Value (dim_lo[d]),
-                                  (d == 0) ? high : Type_Bound_Value (dim_hi[d]) };
-          uint32_t  *out[2]   = { &mlo[d], &mhi[d] };
-          uint32_t   d0ssa[2] = { agg_lo_ssa, agg_hi_ssa };
-          uint32_t   d1ssa[2] = { agg_d1_lo_ssa, agg_d1_hi_ssa };
-          const char *tag[2]  = { "lo", "hi" };
-          for (int s = 0; s < 2; s++) {
-            if (d == 0 and d0ssa[s] != 0)      *out[s] = d0ssa[s];
-            else if (d == 1 and d1ssa[s] != 0) *out[s] = d1ssa[s];
-            else {
-              *out[s] = Emit_Temp ();
-              Emit ("  %%t%u = add %s 0, %s  ; dim%u %s\n", *out[s],
-                 LLVM_Rep_To_String (agg_bt), I128_Decimal (dv[s]), d, tag[s]);
-            }
-          }
+      // Propagate tracked inner dimensions' bounds upward
+      if (context.check_inner_consistency) {
+        const char *inner_rep = LLVM_Rep_To_String (context.inner_track_rep);
+        for (int d = 0; d < context.inner_dimension_count and dim_count < MAX_AGG_DIMS; d++) {
+          cg->inner_agg_bnd_lo[dim_count] = Emit_Result_Instruction (
+            "load %s, ptr %%t%u  ; deep inner lo [dim %d]\n", inner_rep,
+            context.inner_track_low[d], d);
+          cg->inner_agg_bnd_hi[dim_count] = Emit_Result_Instruction (
+            "load %s, ptr %%t%u  ; deep inner hi [dim %d]\n", inner_rep,
+            context.inner_track_high[d], d);
+          cg->inner_agg_bnd_rep[dim_count] = context.inner_track_rep;
+          dim_count++;
         }
-        return Emit_Fat_Pointer_MultiDim (base, mlo, mhi, agg_ndims, agg_bt, agg_bt).reg;
       }
-
-      // Use SSA-evaluated choice bounds if available (expression                                   
-      // bounds like IDENT_INT (6)), otherwise use the compile-time                                 
-      // low/high already overridden from static choice values.                                    
-      //                                                                                            
-      uint32_t low_temp  = agg_lo_ssa ? agg_lo_ssa
-                         : Emit_Static_Int_Comment (low, agg_bt, "static agg low").reg;
-      uint32_t high_temp = agg_hi_ssa ? agg_hi_ssa
-                         : Emit_Static_Int_Comment (high, agg_bt, "static agg high").reg;
-      return Emit_Fat_Pointer_Dynamic (base, low_temp, high_temp, agg_bt).reg;
+      cg->inner_agg_bnd_n = dim_count;
     }
-    return base;
+
+
+    // ── Result: raw storage, or a fat pointer when consumers need bounds ───
+    // A fat pointer { ptr, ptr } is required for unconstrained types AND
+    // constrained types with dynamic bounds; a multidim bounds block carries
+    // ALL dimension bounds in flat layout [lo0, hi0, lo1, hi1, ...].
+    {
+      LLVM_Rep agg_bt = Array_Bound_LLVM_Rep (agg_type);
+      bool needs_fat_pointer = dynamic_bounds or
+        not agg_type->array.is_constrained or Type_Has_Dynamic_Bounds (agg_type);
+      if (not needs_fat_pointer)
+        return base;
+      if (multidim) {
+        uint32_t multidim_lo[8], multidim_hi[8];
+
+        // Dimension 0: the aggregate's own bounds; choice-seeded when an
+        // unconstrained aggregate evaluated runtime choice bounds.
+        multidim_lo[0] = context.choice_low_ssa ? context.choice_low_ssa
+                       : Agg_Operand_Register (&context, context.low);
+        multidim_hi[0] = context.choice_high_ssa ? context.choice_high_ssa
+                       : Agg_Operand_Register (&context, context.high);
+
+        // Inner dimensions: runtime-evaluated bounds when present, dim-1
+        // choice seeds from an inlined inner aggregate, else type bounds.
+        for (uint32_t d = 1; d < agg_ndims; d++) {
+          multidim_lo[d] = rt_inner_lo[d] ? rt_inner_lo[d]
+            : (d == 1 and context.dim1_choice_low_ssa) ? context.dim1_choice_low_ssa
+            : Emit_Static_Int (Type_Bound_Value (dim_lo[d]), context.index_rep).reg;
+          multidim_hi[d] = rt_inner_hi[d] ? rt_inner_hi[d]
+            : (d == 1 and context.dim1_choice_high_ssa) ? context.dim1_choice_high_ssa
+            : Emit_Static_Int (Type_Bound_Value (dim_hi[d]), context.index_rep).reg;
+        }
+        return Emit_Fat_Pointer_MultiDim (base, multidim_lo, multidim_hi,
+          agg_ndims, context.index_rep, agg_bt).reg;
+      }
+      uint32_t result_low = context.choice_low_ssa ? context.choice_low_ssa
+                          : Agg_Operand_Register (&context, context.low);
+      uint32_t result_high = context.choice_high_ssa ? context.choice_high_ssa
+                           : Agg_Operand_Register (&context, context.high);
+      result_low  = Emit_Convert (result_low,  context.index_rep, agg_bt).reg;
+      result_high = Emit_Convert (result_high, context.index_rep, agg_bt).reg;
+      return Emit_Fat_Pointer_Dynamic (base, result_low, result_high, agg_bt).reg;
+    }
   }
+
 
   // Record aggregate - allocate [N x i8] and fill fields by offset
   if (Type_Is_Record (agg_type)) {
@@ -35971,21 +35767,11 @@ uint32_t Generate_Aggregate (Syntax_Node *node) {
     bool *initialized = Arena_Allocate (comp_count * sizeof (bool));
     for (uint32_t i = 0; i < comp_count; i++) initialized[i] = false;
 
-    // Default value for "others" clause
-    Syntax_Node *others_expr = NULL;
-    bool has_others = false;
-
-    // First pass: find "others" clause (defer generation to third pass)
-    for (uint32_t i = 0; i < node->aggregate.items.count; i++) {
-      Syntax_Node *item = node->aggregate.items.items[i];
-      if (item->kind == NK_ASSOCIATION and item->association.choices.count > 0) {
-        if (Is_Others_Choice (item->association.choices.items[0])) {
-          others_expr = item->association.expression;
-          has_others = true;
-          break;
-        }
-      }
-    }
+    // The OTHERS association, whose value generation is deferred to the
+    // third pass.
+    Aggregate_Shape record_shape = Scan_Aggregate_Shape (node);
+    Syntax_Node *others_expr = record_shape.others_expression;
+    bool has_others = record_shape.has_others;
 
     // Wrap disc_alloc array for the helper API
     Disc_Alloc_Info da_info = { .entries = disc_alloc, .count = disc_alloc_count };
@@ -36008,15 +35794,8 @@ uint32_t Generate_Aggregate (Syntax_Node *node) {
       // The variant is governed by the discriminant NAMED in the variant part
       // (RM 3.7.3), not necessarily the first: `CASE E` when D precedes E must
       // read E's value, not D's. Locate that discriminant's position.
-      int32_t gov_index = 0;
-      if (agg_type->record.variant_part_node) {
-        String_Slice gname =
-          agg_type->record.variant_part_node->variant_part.discriminant;
-        for (uint32_t d = 0; d < agg_type->record.discriminant_count; d++)
-          if (Slice_Equal_Ignore_Case (agg_type->record.components[d].name, gname)) {
-            gov_index = (int32_t) d; break;
-          }
-      }
+      int32_t gov_index = Governing_Discriminant_Index (agg_type);
+      if (gov_index < 0) gov_index = 0;
       Syntax_Node *gov_expr = NULL;
       uint32_t pcount = 0;
       for (uint32_t i = 0; i < node->aggregate.items.count; i++) {
@@ -36826,11 +36605,9 @@ void Emit_Apply_Component_Defaults (Type_Info *ty, uint32_t base, int sel_varian
     uint32_t apply_skip = 0;
     if (sel_variant == -2 and comp->variant_index >= 0 and
         ty->record.variant_count > 0) {
-      if (apply_gov_val == 0 and ty->record.variant_part_node) {
-        String_Slice gname =
-          ty->record.variant_part_node->variant_part.discriminant;
-        int32_t gpi = Find_Record_Component (ty, gname);
-        if (gpi >= 0 and (uint32_t) gpi < ty->record.discriminant_count) {
+      if (apply_gov_val == 0) {
+        int32_t gpi = Governing_Discriminant_Index (ty);
+        if (gpi >= 0) {
           Component_Info *gc = &ty->record.components[gpi];
           apply_gov_rep = LLVM_Rep_Or (Type_To_Rep (gc->component_type),
                                        Integer_Arith_Rep ());
@@ -37036,10 +36813,9 @@ void Emit_Check_Nested_Disc_Constraints (Type_Info *ty, uint32_t base) {
   // value — otherwise it cannot tell which arm is present (RM 3.7.3).
   uint32_t gov_val = 0;
   LLVM_Rep gov_rep = LL_REP_VOID;
-  if (ty->record.variant_count > 0 and ty->record.variant_part_node) {
-    String_Slice gname = ty->record.variant_part_node->variant_part.discriminant;
-    int32_t gpi = Find_Record_Component (ty, gname);
-    if (gpi >= 0 and (uint32_t) gpi < ty->record.discriminant_count) {
+  if (ty->record.variant_count > 0) {
+    int32_t gpi = Governing_Discriminant_Index (ty);
+    if (gpi >= 0) {
       Component_Info *gc = &ty->record.components[gpi];
       gov_rep = LLVM_Rep_Or (Type_To_Rep (gc->component_type),
                              Integer_Arith_Rep ());
@@ -44512,11 +44288,9 @@ obj_decl_init:
         // the variant unknown, which would build (and wrongly check) a component
         // that is absent for the default discriminant.
         if (ty->record.variant_count > 0 and decl_sel_variant == -2 and
-            decl_rt_disc_val == 0 and ty->record.variant_part_node) {
-          String_Slice gname =
-            ty->record.variant_part_node->variant_part.discriminant;
-          int32_t gpi = Find_Record_Component (ty, gname);
-          if (gpi >= 0 and (uint32_t) gpi < ty->record.discriminant_count) {
+            decl_rt_disc_val == 0) {
+          int32_t gpi = Governing_Discriminant_Index (ty);
+          if (gpi >= 0) {
             Component_Info *gc = &ty->record.components[gpi];
             decl_rt_disc_type = LLVM_Rep_Or (Type_To_Rep (gc->component_type),
                                              LLVM_Rep_Int (32, false));
@@ -44877,11 +44651,9 @@ obj_decl_init:
           // not have the -5..10 arm's C1 : REC (D3, ..) checked).
           uint32_t nest_gov_val = 0;
           LLVM_Rep nest_gov_rep = LL_REP_VOID;
-          if (ct->record.variant_count > 0 and ct->record.variant_part_node) {
-            String_Slice gname =
-              ct->record.variant_part_node->variant_part.discriminant;
-            int32_t gpi = Find_Record_Component (ct, gname);
-            if (gpi >= 0 and (uint32_t) gpi < ct->record.discriminant_count) {
+          if (ct->record.variant_count > 0) {
+            int32_t gpi = Governing_Discriminant_Index (ct);
+            if (gpi >= 0) {
               Component_Info *gc = &ct->record.components[gpi];
               nest_gov_rep = LLVM_Rep_Or (Type_To_Rep (gc->component_type),
                                           Integer_Arith_Rep ());
