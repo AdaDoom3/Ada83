@@ -232,5 +232,27 @@ Remaining in this cluster (deeper, deferred): cd2a52e/cd2a52f/cd2a54e still fail
 on 'LAST — they need the fixed-point ARITHMETIC width decoupled from the
 SIZE-capped STORAGE width (the scaled 'LAST 128 overflows i8 in the comparison
 operator too). Pervasive change across bounds/attributes/comparisons; separate
-effort. Other cd clusters still open: record representation clauses (cd1009n/x/
-y/z, cd4051b/c/d), address clauses (cd5011g etc.), collection STORAGE_SIZE.
+effort.
+
+RECORD REPRESENTATION CLAUSES — investigated, reverted (no clean win yet):
+The parser at Parse (record rep) PARSES the `RANGE first..last` of a component
+clause and DISCARDS it (comment "bit_range is now part of the expression" is
+false), and resolution only set byte_offset for an NK_INTEGER position, not a
+folded expression. A fix that captures the range and folds the position via
+Eval_Const_Numeric made cd4051b/cd4051d pass, but two blockers stopped a clean
+landing:
+  1. cd1009n/x/y/z position is `n * UNITS_PER_INTEGER`, a named number whose
+     initializer is (INTEGER'SIZE + SYSTEM.STORAGE_UNIT - 1)/SYSTEM.STORAGE_UNIT.
+     The folder can't evaluate it: named numbers store no precomputed value
+     (frame_offset is 0), they re-evaluate their init, and SYSTEM.STORAGE_UNIT
+     (ALI-loaded from rts/system.ads) does not fold. Needs a reliable
+     named-number static value or foldable SYSTEM constants.
+  2. Deriving bit_size from a sub-natural range denotes a PACKED bit field
+     whose load/store codegen does not implement — forcing it corrupted values
+     (cd1c03h). And even setting only byte_offset/bit_offset perturbed derived-
+     record layout inheritance (cd1c03h regressed), unresolved.
+Reverted to keep the tree regression-free. Proper record-rep support needs
+named-number/SYSTEM folding AND bit-field load/store — a substantial feature.
+
+Other cd clusters still open: address clauses (cd5011g etc.), collection
+STORAGE_SIZE (cd2b11d/e, cd7205c), derived SIZE/SMALL inheritance (cd1c03a/e).
