@@ -513,6 +513,10 @@ const Source_Location No_Location = {.filename = NULL, .line = 0, .column = 0};
 // Global error counter
 int Error_Count = 0;
 
+// Shared core of the diagnostic reporters: `file:line:col: severity: message`.
+void Report_Diagnostic (Source_Location location, const char *severity,
+                        const char *format, va_list args);
+
 // Emit a diagnostic message and increment Error_Count without stopping.
 void Report_Error (Source_Location location, const char *format, ...);
 void Report_Warning (Source_Location location, const char *format, ...);
@@ -822,6 +826,74 @@ Token_Kind Lookup_Keyword (String_Slice name) {
       return (Token_Kind)k;
   }
   return TK_IDENTIFIER;
+}
+
+// One row per Ada operator designator. Single source of truth for the
+// token <-> source-text name mapping, the operator's class (RM 4.5), and its
+// LLVM comparison predicates (NULL for non-comparison operators).
+//
+// The names are bare (unquoted): the lexer strips quotes from operator symbol
+// declarations (RM 6.1), so symbol table entries store bare names like
+// +, mod, **. Match that convention here.
+typedef struct {
+  Token_Kind   token;
+  String_Slice operator_name;
+  bool         is_comparison;             // = /= < <= > >=
+  bool         is_logical;                // and or xor not
+  bool         is_arithmetic;             // + - * / mod rem ** abs
+  bool         is_concatenation;          // &
+  bool         is_unary;                  // abs not
+  const char  *integer_predicate_signed;  // icmp predicate
+  const char  *integer_predicate_unsigned;
+  const char  *float_predicate;           // fcmp predicate (ordered; unordered
+                                          // for /= so NaN compares unequal)
+} Token_Operator_Properties;
+
+const Token_Operator_Properties Token_Operator_Table[] = {
+  { .token = TK_PLUS,      .operator_name = S("+"),   .is_arithmetic = true },
+  { .token = TK_MINUS,     .operator_name = S("-"),   .is_arithmetic = true },
+  { .token = TK_STAR,      .operator_name = S("*"),   .is_arithmetic = true },
+  { .token = TK_SLASH,     .operator_name = S("/"),   .is_arithmetic = true },
+  { .token = TK_MOD,       .operator_name = S("mod"), .is_arithmetic = true },
+  { .token = TK_REM,       .operator_name = S("rem"), .is_arithmetic = true },
+  { .token = TK_EXPON,     .operator_name = S("**"),  .is_arithmetic = true },
+  { .token = TK_ABS,       .operator_name = S("abs"), .is_arithmetic = true, .is_unary = true },
+  { .token = TK_AMPERSAND, .operator_name = S("&"),   .is_concatenation = true },
+  { .token = TK_AND,       .operator_name = S("and"), .is_logical = true },
+  { .token = TK_OR,        .operator_name = S("or"),  .is_logical = true },
+  { .token = TK_XOR,       .operator_name = S("xor"), .is_logical = true },
+  { .token = TK_NOT,       .operator_name = S("not"), .is_logical = true, .is_unary = true },
+  { .token = TK_EQ,        .operator_name = S("="),   .is_comparison = true,
+    .integer_predicate_signed = "eq",  .integer_predicate_unsigned = "eq",  .float_predicate = "oeq" },
+  { .token = TK_NE,        .operator_name = S("/="),  .is_comparison = true,
+    .integer_predicate_signed = "ne",  .integer_predicate_unsigned = "ne",  .float_predicate = "une" },
+  { .token = TK_LT,        .operator_name = S("<"),   .is_comparison = true,
+    .integer_predicate_signed = "slt", .integer_predicate_unsigned = "ult", .float_predicate = "olt" },
+  { .token = TK_LE,        .operator_name = S("<="),  .is_comparison = true,
+    .integer_predicate_signed = "sle", .integer_predicate_unsigned = "ule", .float_predicate = "ole" },
+  { .token = TK_GT,        .operator_name = S(">"),   .is_comparison = true,
+    .integer_predicate_signed = "sgt", .integer_predicate_unsigned = "ugt", .float_predicate = "ogt" },
+  { .token = TK_GE,        .operator_name = S(">="),  .is_comparison = true,
+    .integer_predicate_signed = "sge", .integer_predicate_unsigned = "uge", .float_predicate = "oge" },
+};
+
+enum { Token_Operator_Count = sizeof (Token_Operator_Table) / sizeof (Token_Operator_Table[0]) };
+
+// Row for an operator token, or NULL when the token is not an operator.
+const Token_Operator_Properties *Operator_Properties_By_Token (Token_Kind token) {
+  for (uint32_t i = 0; i < Token_Operator_Count; i++)
+    if (Token_Operator_Table[i].token == token)
+      return &Token_Operator_Table[i];
+  return NULL;
+}
+
+// Row for an operator's bare source-text name (e.g. "+", "mod"), or NULL
+// when the name is not an operator designator.
+const Token_Operator_Properties *Operator_Properties_By_Name (String_Slice name) {
+  for (uint32_t i = 0; i < Token_Operator_Count; i++)
+    if (Slice_Equal_Ignore_Case (name, Token_Operator_Table[i].operator_name))
+      return &Token_Operator_Table[i];
+  return NULL;
 }
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
@@ -1754,7 +1826,10 @@ Syntax_Node *Parse_Name                    (Parser *p);
 Syntax_Node *Parse_Simple_Name             (Parser *p);
 Syntax_Node *Parse_Choice                  (Parser *p);
 Syntax_Node *Parse_Range                   (Parser *p);
+Syntax_Node *Parse_Range_Continuation_After_Expression (Parser *p, Syntax_Node *first_expression, Source_Location loc);
 void         Parse_Association_List        (Parser *p, Node_List *list);
+void         Parse_Identifier_List         (Parser *p, Node_List *names);
+void         Parse_Name_List               (Parser *p, Node_List *names);
 void         Parse_Parameter_List          (Parser *p, Node_List *params);
 
 Syntax_Node *Parse_Subtype_Indication      (Parser *p);
@@ -1766,6 +1841,7 @@ Syntax_Node *Parse_Access_Type             (Parser *p);
 Syntax_Node *Parse_Derived_Type            (Parser *p);
 Syntax_Node *Parse_Discrete_Range          (Parser *p);
 Syntax_Node *Parse_Variant_Part            (Parser *p);
+void         Parse_Component_Declaration_List (Parser *p, Node_List *components, bool stop_at_when);
 Syntax_Node *Parse_Discriminant_Part       (Parser *p);
 
 Syntax_Node *Parse_Statement               (Parser *p);
@@ -2633,6 +2709,9 @@ void       Analyze_Expr         (Syntax_Node *node);
 Type_Info *Resolve_In_Context   (Syntax_Node *node, Type_Info *context);
 Type_Info *Resolve_Binary_Op    (Syntax_Node *node);
 bool       Resolve_Char_As_Enum (Syntax_Node *char_node, Type_Info *enum_type); // !!!
+// Position of the character literal 'character' among an enumeration's
+// declared literals, or -1 when the type declares no such literal.
+int64_t    Enumeration_Character_Literal_Position (Type_Info *enumeration_type, char character);
 
 bool Declarations_Create_Task_Dependents (Node_List *list);
 uint32_t Next_Master_Scope_Id (void);
@@ -2655,6 +2734,7 @@ bool   Eval_Const_Rational (Syntax_Node *node, Rational *out);
 double Eval_Const_Numeric  (Syntax_Node *node);
 
 // ???
+char       *Decimal_Digits_Backward (char *buffer_end, uint128_t value);
 const char *I128_Decimal (int128_t  value);
 const char *U128_Decimal (uint128_t value);
 
@@ -3047,7 +3127,6 @@ bool     Emit_Nested_Frame_Arg          (Symbol *proc, uint32_t precomp);
 // underlying body. Call this on a callable symbol before emitting `@name`
 // or checking static-chain nesting; renames do not generate their own body.
 Symbol  *Resolve_Subprogram_Rename      (Symbol *sym);
-Symbol  *Operator_Call_Target           (Symbol *sym);
 // Map an operator's source-text name (e.g. "+", "<=", "mod") to its Token_Kind.
 // Returns TK_EOF if the name isn't an operator.
 Token_Kind Token_From_Op_Name           (String_Slice name);
@@ -3079,6 +3158,7 @@ void Emit_Check_With_Raise_Named (uint32_t    cond,
                             bool        raise_on_true,
                             const char *exc_name,
                             const char *comment);
+void Emit_Raise_Constraint_Error_When (LLVM_I1 condition, const char *comment);
 
 // RM 4.6 array conversion: raise CONSTRAINT_ERROR when the operand and target
 // array types have component subtypes whose constraints differ.
@@ -3276,6 +3356,7 @@ void Emit_Fat_Pointer_Insertvalue_Named  (const char *prefix,
                                           const char *high_expr,
                                           LLVM_Rep bt);
 
+void Emit_Named_Width_Conversion      (const char *src, const char *dst, const char *conversion_op, LLVM_Rep from, LLVM_Rep to);
 void Emit_Narrow_Named_From_Intrinsic (const char *src, const char *dst, LLVM_Rep bt);
 void Emit_Widen_Named_For_Intrinsic   (const char *src, const char *dst, LLVM_Rep bt);
 
@@ -3450,11 +3531,11 @@ LLVM_Value Convert_Real_To_Fixed  (uint32_t     val,
 
 bool     Aggregate_Produces_Fat_Pointer (const Type_Info *t);
 void     Ensure_Runtime_Type_Globals    (Type_Info *t);
-LLVM_Value Emit_Bool_Array_Binop          (uint32_t    left,
-                                         uint32_t    right,
-                                         Type_Info  *result_type,
-                                         const char *ir_op);
-LLVM_Value Emit_Bool_Array_Not            (uint32_t operand, Type_Info *result_type);
+LLVM_Value Emit_Bool_Array_Op             (uint32_t    left,
+                                           uint32_t    right,
+                                           bool        is_not,
+                                           Type_Info  *result_type,
+                                           const char *ir_op);
 LLVM_Value Emit_Bool_Array_Op_Fat         (uint32_t    left_fat,
                                            uint32_t    right_fat,
                                            bool        is_not,
@@ -4216,6 +4297,12 @@ char *Lookup_Path_Body     (String_Slice name);
 bool  Has_Precompiled_LL   (String_Slice name);
 
 void  Load_Package_Spec (String_Slice name, char *src);
+// Recursively load the spec of every package named in a compilation unit
+// context's WITH clauses (RM 10.1.1). NULL context is a no-op.
+void  Load_With_Clause_Dependencies (Syntax_Node *context);
+// Resolve a compilation unit context's USE clauses (RM 8.4) so the WITH'd
+// packages' contents are directly visible. NULL context is a no-op.
+void  Resolve_Context_Use_Clauses   (Syntax_Node *context);
 char *Read_File         (const char *path, size_t *out_size);
 char *Read_File_Simple  (const char *path);
 
@@ -4410,14 +4497,18 @@ bool Closest_Name_Found (const Closest_Name_Search *search) {
 // §5.2 Error Handling - Accumulating diagnostic reports
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 
+void Report_Diagnostic (Source_Location location, const char *severity,
+                        const char *format, va_list args) {
+  fprintf (stderr, "%s:%u:%u: %s: ",
+           location.filename ? location.filename : "<unknown>",
+           location.line, location.column, severity);
+  vfprintf (stderr, format, args);
+  fputc ('\n', stderr);
+}
 void Report_Error (Source_Location location, const char *format, ...) {
   va_list args;
   va_start (args, format);
-  fprintf (stderr, "%s:%u:%u: error: ",
-           location.filename ? location.filename : "<unknown>",
-           location.line, location.column);
-  vfprintf (stderr, format, args);
-  fputc ('\n', stderr);
+  Report_Diagnostic (location, "error", format, args);
   va_end (args);
   Error_Count++;
 }
@@ -4427,22 +4518,14 @@ void Report_Error (Source_Location location, const char *format, ...) {
 void Report_Warning (Source_Location location, const char *format, ...) {
   va_list args;
   va_start (args, format);
-  fprintf (stderr, "%s:%u:%u: warning: ",
-           location.filename ? location.filename : "<unknown>",
-           location.line, location.column);
-  vfprintf (stderr, format, args);
-  fputc ('\n', stderr);
+  Report_Diagnostic (location, "warning", format, args);
   va_end (args);
 }
 __attribute__ ((unused, noreturn))
 void Fatal_Error (Source_Location location, const char *format, ...) {
   va_list args;
   va_start (args, format);
-  fprintf (stderr, "%s:%u:%u: INTERNAL ERROR: ",
-           location.filename ? location.filename : "<unknown>",
-           location.line, location.column);
-  vfprintf (stderr, format, args);
-  fputc ('\n', stderr);
+  Report_Diagnostic (location, "INTERNAL ERROR", format, args);
   va_end (args);
   exit (1);
 }
@@ -5636,18 +5719,30 @@ void Parser_Check_End_Name (Parser *parser, String_Slice expected_name) {
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 
 // IN copies in, OUT copies out, IN OUT does both. Mode defaults to IN when omitted.  
+// Parse a comma-separated identifier_list, pushing one NK_IDENTIFIER node per
+// name. Shared kernel of every declaration form that names several entities
+// at once (parameters, objects, discriminants, components, generic formals).
+void Parse_Identifier_List (Parser *p, Node_List *names) {
+  do {
+    Syntax_Node *id = Node_New (NK_IDENTIFIER, Parser_Location (p));
+    id->string_val.text = Parser_Identifier (p);
+    Node_List_Push (names, id);
+  } while (Parser_Match (p, TK_COMMA));
+}
+
+// Parse a comma-separated list of names. Shared kernel of the USE clause,
+// the WITH clause, and the ABORT statement.
+void Parse_Name_List (Parser *p, Node_List *names) {
+  do {
+    Node_List_Push (names, Parse_Name (p));
+  } while (Parser_Match (p, TK_COMMA));
+}
 void Parse_Parameter_List (Parser *p, Node_List *params) {
   if (not Parser_Match (p, TK_LPAREN)) return;
   do {
     Source_Location location = Parser_Location (p);
     Syntax_Node   *param    = Node_New (NK_PARAM_SPEC, location);
-
-    // Identifier list
-    do {
-      Syntax_Node *id = Node_New (NK_IDENTIFIER, Parser_Location (p));
-      id->string_val.text = Parser_Identifier (p);
-      Node_List_Push (&param->param_spec.names, id);
-    } while (Parser_Match (p, TK_COMMA));
+    Parse_Identifier_List (p, &param->param_spec.names);
     Parser_Expect (p, TK_COLON);
 
     // Mode
@@ -6061,37 +6156,7 @@ Syntax_Node *Parse_Choice (Parser *p) {
   if (Parser_Match (p, TK_OTHERS)) {
     return Node_New (NK_OTHERS, loc);
   }
-  Syntax_Node *expr = Parse_Expression (p);
-
-  // Check if this is a range: expr .. expr
-  if (Parser_Match (p, TK_DOTDOT)) {
-    Syntax_Node *range = Node_New (NK_RANGE, loc);
-    range->range.low = expr;
-    range->range.high = Parse_Expression (p);
-    return range;
-  }
-
-  // Check for subtype_mark RANGE low..high (discrete_subtype_indication)
-  // This handles index constraints like: INTEGER RANGE 1..10
-  if (Parser_Match (p, TK_RANGE)) {
-    Syntax_Node *ind = Node_New (NK_SUBTYPE_INDICATION, loc);
-    ind->subtype_ind.subtype_mark = expr;
-    Syntax_Node *constraint = Node_New (NK_RANGE_CONSTRAINT, loc);
-    Syntax_Node *range_low = Parse_Expression (p);
-    if (Parser_Match (p, TK_DOTDOT)) {
-      Syntax_Node *range_node = Node_New (NK_RANGE, loc);
-      range_node->range.low = range_low;
-      range_node->range.high = Parse_Expression (p);
-      constraint->range_constraint.range = range_node;
-
-    // Just a range attribute or name
-    } else {
-      constraint->range_constraint.range = range_low;
-    }
-    ind->subtype_ind.constraint = constraint;
-    return ind;
-  }
-  return expr;
+  return Parse_Range_Continuation_After_Expression (p, Parse_Expression (p), loc);
 }
 void Parse_Association_List (Parser *p, Node_List *list) {
   if (Parser_At (p, TK_RPAREN)) return;  // Empty list
@@ -6239,26 +6304,24 @@ Syntax_Node *Parse_Expression (Parser *p) {
 // §9.9 Range Parsing                                                                               
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 
-Syntax_Node *Parse_Range(Parser *p) {
-  Source_Location loc = Parser_Location (p);
-
-  // BOX: <> for unconstrained
-  if (Parser_Match (p, TK_BOX)) {
-    return Node_New (NK_RANGE, loc);  // Empty range = unconstrained
-  }
-  Syntax_Node *low = Parse_Expression (p);
+// Shared tail of Parse_Choice and Parse_Range: given an already-parsed first
+// expression, complete a range (`first .. high`), a discrete subtype
+// indication (`mark RANGE constraint`, e.g. "INTEGER RANGE 1..10"), or return
+// the expression itself (a subtype name used as a range).
+Syntax_Node *Parse_Range_Continuation_After_Expression (Parser *p,
+                                                        Syntax_Node *first_expression,
+                                                        Source_Location loc) {
   if (Parser_Match (p, TK_DOTDOT)) {
     Syntax_Node *node = Node_New (NK_RANGE, loc);
-    node->range.low = low;
+    node->range.low = first_expression;
     node->range.high = Parse_Expression (p);
     return node;
   }
 
   // Check for subtype_mark RANGE low..high (discrete subtype definition)
-  // e.g., "INTEGER RANGE 1..10" or "STAT RANGE 1..5"
   if (Parser_Match (p, TK_RANGE)) {
     Syntax_Node *ind = Node_New (NK_SUBTYPE_INDICATION, loc);
-    ind->subtype_ind.subtype_mark = low;
+    ind->subtype_ind.subtype_mark = first_expression;
 
     // Now parse the actual range constraint
     Syntax_Node *constraint = Node_New (NK_RANGE_CONSTRAINT, loc);
@@ -6276,9 +6339,16 @@ Syntax_Node *Parse_Range(Parser *p) {
     ind->subtype_ind.constraint = constraint;
     return ind;
   }
+  return first_expression;
+}
+Syntax_Node *Parse_Range(Parser *p) {
+  Source_Location loc = Parser_Location (p);
 
-  // Could be a subtype name used as a range
-  return low;
+  // BOX: <> for unconstrained
+  if (Parser_Match (p, TK_BOX)) {
+    return Node_New (NK_RANGE, loc);  // Empty range = unconstrained
+  }
+  return Parse_Range_Continuation_After_Expression (p, Parse_Expression (p), loc);
 }
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
@@ -6526,9 +6596,7 @@ Syntax_Node *Parse_Abort_Statement(Parser *p) {
   Source_Location loc = Parser_Location (p);
   Parser_Expect (p, TK_ABORT);
   Syntax_Node *node = Node_New (NK_ABORT, loc);
-  do {
-    Node_List_Push (&node->abort_stmt.task_names, Parse_Name (p));
-  } while (Parser_Match (p, TK_COMMA));
+  Parse_Name_List (p, &node->abort_stmt.task_names);
   return node;
 }
 
@@ -6949,13 +7017,7 @@ void Parse_Statement_Sequence (Parser *p, Node_List *list) {
 Syntax_Node *Parse_Object_Declaration(Parser *p) {
   Source_Location loc = Parser_Location (p);
   Syntax_Node *node = Node_New (NK_OBJECT_DECL, loc);
-
-  // Identifier list
-  do {
-    Syntax_Node *id = Node_New (NK_IDENTIFIER, Parser_Location (p));
-    id->string_val.text = Parser_Identifier (p);
-    Node_List_Push (&node->object_decl.names, id);
-  } while (Parser_Match (p, TK_COMMA));
+  Parse_Identifier_List (p, &node->object_decl.names);
   Parser_Expect (p, TK_COLON);
 
   // Check for exception declaration: identifier_list : EXCEPTION [RENAMES name]
@@ -7013,13 +7075,7 @@ Syntax_Node *Parse_Discriminant_Part (Parser *p) {
   do {
     Source_Location d_loc = Parser_Location (p);
     Syntax_Node *disc = Node_New (NK_DISCRIMINANT_SPEC, d_loc);
-
-    // Name list
-    do {
-      Syntax_Node *id = Node_New (NK_IDENTIFIER, Parser_Location (p));
-      id->string_val.text = Parser_Identifier (p);
-      Node_List_Push (&disc->discriminant.names, id);
-    } while (Parser_Match (p, TK_COMMA));
+    Parse_Identifier_List (p, &disc->discriminant.names);
     Parser_Expect (p, TK_COLON);
     disc->discriminant.disc_type = Parse_Subtype_Indication (p);
     if (Parser_Match (p, TK_ASSIGN)) {
@@ -7179,16 +7235,15 @@ Syntax_Node *Parse_Discrete_Range(Parser *p) {
   return name;
 }
 
-Syntax_Node *Parse_Record_Type (Parser *p) {
-  Source_Location loc = Parser_Location (p);
-  Parser_Expect (p, TK_RECORD);
-  Syntax_Node *node = Node_New (NK_RECORD_TYPE, loc);
-
-  // NULL; as empty component statement (vs NULL RECORD which is parsed elsewhere)
-  // Skip this check - NULL inside record body is handled in the loop below
-
-  // Component list
-  while (not Parser_At (p, TK_END) and not Parser_At (p, TK_CASE) and not Parser_At (p, TK_EOF)) {
+// Parse the component declarations of a record type or of one variant
+// alternative: `identifier_list : subtype_indication [:= default];` repeated,
+// with `null;` accepted as an empty component list. Stops at END, at CASE
+// (a variant part follows), at EOF, and — inside a variant alternative
+// (stop_at_when) — at WHEN.
+void Parse_Component_Declaration_List (Parser *p, Node_List *components,
+                                       bool stop_at_when) {
+  while (not (stop_at_when and Parser_At (p, TK_WHEN)) and
+       not Parser_At (p, TK_END) and not Parser_At (p, TK_CASE) and not Parser_At (p, TK_EOF)) {
     if (not Parser_Check_Progress (p)) break;
 
     // NULL; as empty component list
@@ -7199,21 +7254,21 @@ Syntax_Node *Parse_Record_Type (Parser *p) {
     }
     Source_Location c_loc = Parser_Location (p);
     Syntax_Node *comp = Node_New (NK_COMPONENT_DECL, c_loc);
-
-    // Component names
-    do {
-      Syntax_Node *id = Node_New (NK_IDENTIFIER, Parser_Location (p));
-      id->string_val.text = Parser_Identifier (p);
-      Node_List_Push (&comp->component.names, id);
-    } while (Parser_Match (p, TK_COMMA));
+    Parse_Identifier_List (p, &comp->component.names);
     Parser_Expect (p, TK_COLON);
     comp->component.component_type = Parse_Subtype_Indication (p);
     if (Parser_Match (p, TK_ASSIGN)) {
       comp->component.init = Parse_Expression (p);
     }
-    Node_List_Push (&node->record_type.components, comp);
+    Node_List_Push (components, comp);
     Parser_Expect (p, TK_SEMICOLON);
   }
+}
+Syntax_Node *Parse_Record_Type (Parser *p) {
+  Source_Location loc = Parser_Location (p);
+  Parser_Expect (p, TK_RECORD);
+  Syntax_Node *node = Node_New (NK_RECORD_TYPE, loc);
+  Parse_Component_Declaration_List (p, &node->record_type.components, false);
 
   // Variant part
   if (Parser_At (p, TK_CASE)) {
@@ -7241,33 +7296,7 @@ Syntax_Node *Parse_Variant_Part (Parser *p) {
       Node_List_Push (&variant->variant.choices, Parse_Choice (p));
     } while (Parser_Match (p, TK_BAR));
     Parser_Expect (p, TK_ARROW);
-
-    // Components in this variant
-    while (not Parser_At (p, TK_WHEN) and not Parser_At (p, TK_END) and
-         not Parser_At (p, TK_CASE) and not Parser_At (p, TK_EOF)) {
-      if (not Parser_Check_Progress (p)) break;
-
-      // NULL; as empty component list in variant
-      if (Parser_At (p, TK_NULL)) {
-        Parser_Advance (p);
-        Parser_Expect (p, TK_SEMICOLON);
-        continue;
-      }
-      Source_Location c_loc = Parser_Location (p);
-      Syntax_Node *comp = Node_New (NK_COMPONENT_DECL, c_loc);
-      do {
-        Syntax_Node *id = Node_New (NK_IDENTIFIER, Parser_Location (p));
-        id->string_val.text = Parser_Identifier (p);
-        Node_List_Push (&comp->component.names, id);
-      } while (Parser_Match (p, TK_COMMA));
-      Parser_Expect (p, TK_COLON);
-      comp->component.component_type = Parse_Subtype_Indication (p);
-      if (Parser_Match (p, TK_ASSIGN)) {
-        comp->component.init = Parse_Expression (p);
-      }
-      Node_List_Push (&variant->variant.components, comp);
-      Parser_Expect (p, TK_SEMICOLON);
-    }
+    Parse_Component_Declaration_List (p, &variant->variant.components, true);
 
     // Nested variant part
     if (Parser_At (p, TK_CASE)) {
@@ -7584,13 +7613,7 @@ void Parse_Generic_Formal_Part (Parser *p, Node_List *formals) {
     // Generic object formal: identifier_list : [mode] type [:= default]
     if (Parser_At (p, TK_IDENTIFIER)) {
       Syntax_Node *formal = Node_New (NK_GENERIC_OBJECT_PARAM, loc);
-
-      // Parse identifier list
-      do {
-        Syntax_Node *id = Node_New (NK_IDENTIFIER, Parser_Location (p));
-        id->string_val.text = Parser_Identifier (p);
-        Node_List_Push (&formal->generic_object_param.names, id);
-      } while (Parser_Match (p, TK_COMMA));
+      Parse_Identifier_List (p, &formal->generic_object_param.names);
       Parser_Expect (p, TK_COLON);
 
       // Parse mode: IN (default), OUT, or IN OUT
@@ -7697,18 +7720,14 @@ Syntax_Node *Parse_Use_Clause (Parser *p) {
   Source_Location loc = Parser_Location (p);
   Parser_Expect (p, TK_USE);
   Syntax_Node *node = Node_New (NK_USE_CLAUSE, loc);
-  do {
-    Node_List_Push (&node->use_clause.names, Parse_Name (p));
-  } while (Parser_Match (p, TK_COMMA));
+  Parse_Name_List (p, &node->use_clause.names);
   return node;
 }
 Syntax_Node *Parse_With_Clause (Parser *p) {
   Source_Location loc = Parser_Location (p);
   Parser_Expect (p, TK_WITH);
   Syntax_Node *node = Node_New (NK_WITH_CLAUSE, loc);
-  do {
-    Node_List_Push (&node->use_clause.names, Parse_Name (p));
-  } while (Parser_Match (p, TK_COMMA));
+  Parse_Name_List (p, &node->use_clause.names);
   return node;
 }
 
@@ -10736,25 +10755,12 @@ Type_Info *Resolve_Selected (Syntax_Node *node) {
       //                                                                                            
       {
         String_Slice sel = node->selected.selector;
-        bool is_comparison = (Slice_Equal_Ignore_Case (sel, S("=")) or
-                              Slice_Equal_Ignore_Case (sel, S("/=")) or
-                              Slice_Equal_Ignore_Case (sel, S("<")) or
-                              Slice_Equal_Ignore_Case (sel, S("<=")) or
-                              Slice_Equal_Ignore_Case (sel, S(">")) or
-                              Slice_Equal_Ignore_Case (sel, S(">=")));
-        bool is_logical = (Slice_Equal_Ignore_Case (sel, S("and")) or
-                           Slice_Equal_Ignore_Case (sel, S("or")) or
-                           Slice_Equal_Ignore_Case (sel, S("xor")) or
-                           Slice_Equal_Ignore_Case (sel, S("not")));
-        bool is_arith = (Slice_Equal_Ignore_Case (sel, S("+")) or
-                         Slice_Equal_Ignore_Case (sel, S("-")) or
-                         Slice_Equal_Ignore_Case (sel, S("*")) or
-                         Slice_Equal_Ignore_Case (sel, S("/")) or
-                         Slice_Equal_Ignore_Case (sel, S("mod")) or
-                         Slice_Equal_Ignore_Case (sel, S("rem")) or
-                         Slice_Equal_Ignore_Case (sel, S("**")) or
-                         Slice_Equal_Ignore_Case (sel, S("abs")));
-        bool is_concat = Slice_Equal_Ignore_Case (sel, S("&"));
+        const Token_Operator_Properties *operator_properties =
+          Operator_Properties_By_Name (sel);
+        bool is_comparison = operator_properties and operator_properties->is_comparison;
+        bool is_logical    = operator_properties and operator_properties->is_logical;
+        bool is_arith      = operator_properties and operator_properties->is_arithmetic;
+        bool is_concat     = operator_properties and operator_properties->is_concatenation;
 
         // Find first type in the package's exports
         if (is_comparison or is_arith or is_logical or is_concat) {
@@ -10773,8 +10779,7 @@ Type_Info *Resolve_Selected (Syntax_Node *node) {
             }
           }
           if (op_type) {
-            bool is_unary = (Slice_Equal_Ignore_Case (sel, S("abs")) or
-                     Slice_Equal_Ignore_Case (sel, S("not")));
+            bool is_unary = operator_properties->is_unary;
             bool returns_bool = is_comparison;
 
             // Create a synthetic predefined operator symbol
@@ -10859,49 +10864,38 @@ Type_Info *Resolve_Selected (Syntax_Node *node) {
   return sm->type_integer;  // Error recovery
 }
 
-// Get the operator name string for a token kind
+// Get the operator name string for a token kind: the bare (unquoted)
+// designator from the operator table, or "" for non-operator tokens.
 String_Slice Operator_Name (Token_Kind op) {
-
-  // Return bare (unquoted) operator designators. The lexer strips quotes                          
-  // from operator symbol declarations (RM 6.1), so symbol table entries                            
-  // store bare names like +, mod, **. Match that convention here.                                
-  //                                                                                                
-  switch (op) {
-    case TK_PLUS:      return S("+");
-    case TK_MINUS:     return S("-");
-    case TK_STAR:      return S("*");
-    case TK_SLASH:     return S("/");
-    case TK_MOD:       return S("mod");
-    case TK_REM:       return S("rem");
-    case TK_EXPON:     return S("**");
-    case TK_AMPERSAND: return S("&");
-    case TK_AND:       return S("and");
-    case TK_OR:        return S("or");
-    case TK_XOR:       return S("xor");
-    case TK_EQ:        return S("=");
-    case TK_NE:        return S("/=");
-    case TK_LT:        return S("<");
-    case TK_LE:        return S("<=");
-    case TK_GT:        return S(">");
-    case TK_GE:        return S(">=");
-    case TK_NOT:       return S("not");
-    case TK_ABS:       return S("abs");
-    default:           return S("");
-  }
+  const Token_Operator_Properties *properties = Operator_Properties_By_Token (op);
+  return properties ? properties->operator_name : S("");
 }
 
-// Resolve a character literal as an enumeration literal given a context type.                     
-// Used for comparisons and assignments where a character literal should be                         
-// interpreted as an enumeration value. Returns true if resolved.                                  
-//                                                                                                  
+int64_t Enumeration_Character_Literal_Position (Type_Info *enumeration_type,
+                                                char character) {
+  for (uint32_t j = 0; j < enumeration_type->enumeration.literal_count; j++) {
+    String_Slice literal_name = enumeration_type->enumeration.literals[j];
+    if (literal_name.length == 3 and
+      literal_name.data[0] == '\'' and
+      literal_name.data[1] == character and
+      literal_name.data[2] == '\'')
+      return (int64_t) j;
+  }
+  return -1;
+}
+
+// Resolve a character literal as an enumeration literal given a context type.
+// Used for comparisons and assignments where a character literal should be
+// interpreted as an enumeration value. Returns true if resolved.
+//
 bool Resolve_Char_As_Enum (Syntax_Node *char_node, Type_Info *enum_type) {
   if (not char_node or char_node->kind != NK_CHARACTER or not enum_type)
     return false;
 
-  // Find base enumeration type by following both parent_type and base_type chains.                
-  // parent_type is used for derived types (TYPE T IS NEW X)                                        
-  // base_type is used for constrained subtypes (SUBTYPE S IS X RANGE ...)                          
-  //                                                                                                
+  // Find base enumeration type by following both parent_type and base_type chains.
+  // parent_type is used for derived types (TYPE T IS NEW X)
+  // base_type is used for constrained subtypes (SUBTYPE S IS X RANGE ...)
+  //
   Type_Info *base_enum = enum_type;
   while (base_enum) {
     if (base_enum->parent_type)
@@ -10919,20 +10913,16 @@ bool Resolve_Char_As_Enum (Syntax_Node *char_node, Type_Info *enum_type) {
   char ch = lit_text.length >= 2 ? lit_text.data[1] : 0;
 
   // Look for matching character literal in enum
-  for (uint32_t j = 0; j < base_enum->enumeration.literal_count; j++) {
-    String_Slice lit_name = base_enum->enumeration.literals[j];
-    if (lit_name.length == 3 and
-      lit_name.data[0] == '\'' and
-      lit_name.data[1] == ch and
-      lit_name.data[2] == '\'') {
+  int64_t position = Enumeration_Character_Literal_Position (base_enum, ch);
+  if (position >= 0) {
 
-      // Found matching enum literal - find symbol with matching type
-      Symbol *lit_sym = Symbol_Find_By_Type (lit_name, base_enum);
-      if (lit_sym and lit_sym->kind == SYMBOL_LITERAL) {
-        char_node->symbol = lit_sym;
-        char_node->type = enum_type;
-        return true;
-      }
+    // Found matching enum literal - find symbol with matching type
+    String_Slice lit_name = base_enum->enumeration.literals[position];
+    Symbol *lit_sym = Symbol_Find_By_Type (lit_name, base_enum);
+    if (lit_sym and lit_sym->kind == SYMBOL_LITERAL) {
+      char_node->symbol = lit_sym;
+      char_node->type = enum_type;
+      return true;
     }
   }
   return false;
@@ -12072,17 +12062,9 @@ double Eval_Const_Numeric_Impl (Syntax_Node *node) {
             // Extract the character from 'X' format
             String_Slice lit_text = inner->string_val.text;
             char ch = lit_text.length >= 2 ? lit_text.data[1] : 0;
-
-            // Look for matching character literal in enum
-            for (uint32_t j = 0; j < qual_type->enumeration.literal_count; j++) {
-              String_Slice lit_name = qual_type->enumeration.literals[j];
-              if (lit_name.length == 3 and
-                lit_name.data[0] == '\'' and
-                lit_name.data[1] == ch and
-                lit_name.data[2] == '\'') {
-                return (double)j;  // Position in enumeration
-              }
-            }
+            int64_t position = Enumeration_Character_Literal_Position (qual_type, ch);
+            if (position >= 0)
+              return (double) position;  // Position in enumeration
           }
         }
         return Eval_Const_Numeric (inner);
@@ -12407,19 +12389,26 @@ bool Bound_Fold_Static (Type_Bound *bound, int64_t open_default, int64_t *out) {
   return false;
 }
 
-// Format an int128_t as a decimal string. Returns pointer to a static                             
-// thread-local buffer. Handles the full range -2^127 .. 2^127-1.                                 
-// Used for emitting i128 constants in LLVM IR (which accepts arbitrary                             
-// width decimal literals).                                                                        
-//                                                                                                  
+// Write the decimal digits of a nonzero value backward into a buffer,
+// NUL-terminating at buffer_end. Returns the position of the first digit.
+char *Decimal_Digits_Backward (char *buffer_end, uint128_t value) {
+  char *cursor = buffer_end;
+  *cursor      = '\0';
+  while (value) { *--cursor = '0' + (char) (value % 10); value /= 10; }
+  return cursor;
+}
+
+// Format an int128_t as a decimal string. Returns pointer to a static
+// thread-local buffer. Handles the full range -2^127 .. 2^127-1.
+// Used for emitting i128 constants in LLVM IR (which accepts arbitrary
+// width decimal literals).
+//
 const char *I128_Decimal (int128_t value) {
   static _Thread_local char buf[42];  // -170141183460469231731687303715884105728 + NUL
   if (value == 0) return "0";
-  char *cursor      = buf + sizeof (buf) - 1;
-  *cursor            = '\0';
   bool      negative = value < 0;
   uint128_t absolute = negative ? (uint128_t) (-(value + 1)) + 1 : (uint128_t) value;
-  while (absolute) { *--cursor = '0' + (char) (absolute % 10); absolute /= 10; }
+  char *cursor = Decimal_Digits_Backward (buf + sizeof (buf) - 1, absolute);
   if (negative) *--cursor = '-';
   return cursor;
 }
@@ -12429,10 +12418,7 @@ const char *I128_Decimal (int128_t value) {
 const char *U128_Decimal (uint128_t value) {
   static _Thread_local char buf[40];  // 340282366920938463463374607431768211455 + NUL
   if (value == 0) return "0";
-  char *cursor = buf + sizeof (buf) - 1;
-  *cursor       = '\0';
-  while (value) { *--cursor = '0' + (char) (value % 10); value /= 10; }
-  return cursor;
+  return Decimal_Digits_Backward (buf + sizeof (buf) - 1, value);
 }
 
 // Get array element count for constrained arrays, 0 for unconstrained
@@ -13503,21 +13489,16 @@ Type_Info *Resolve_Expression (Syntax_Node *node) {
             // Look for matching character literal in enum
             if (Type_Is_Enumeration (enum_type) and
               enum_type->enumeration.literals) {
-              for (uint32_t j = 0; j < enum_type->enumeration.literal_count; j++) {
-                String_Slice lit_name = enum_type->enumeration.literals[j];
-                if (lit_name.length == 3 and
-                  lit_name.data[0] == '\'' and
-                  lit_name.data[1] == ch and
-                  lit_name.data[2] == '\'') {
+              int64_t position = Enumeration_Character_Literal_Position (enum_type, ch);
+              if (position >= 0) {
 
-                  // Found matching enum literal - set symbol with type match
-                  Symbol *lit_sym = Symbol_Find_By_Type (lit_name, enum_type);
-                  if (lit_sym and lit_sym->kind == SYMBOL_LITERAL) {
-                    arg->symbol = lit_sym;
-                    arg->type = prefix_type;
-                    resolved_as_enum = true;
-                  }
-                  break;
+                // Found matching enum literal - set symbol with type match
+                String_Slice lit_name = enum_type->enumeration.literals[position];
+                Symbol *lit_sym = Symbol_Find_By_Type (lit_name, enum_type);
+                if (lit_sym and lit_sym->kind == SYMBOL_LITERAL) {
+                  arg->symbol = lit_sym;
+                  arg->type = prefix_type;
+                  resolved_as_enum = true;
                 }
               }
             }
@@ -14084,17 +14065,10 @@ Type_Info *Resolve_Expression (Syntax_Node *node) {
                       // Extract the character from 'X' format
                       String_Slice lit_text = inner->string_val.text;
                       char ch = lit_text.length >= 2 ? lit_text.data[1] : 0;
-
-                      // Look for matching character literal in enum
-                      for (uint32_t j = 0; j < qual_type->enumeration.literal_count; j++) {
-                        String_Slice lit_name = qual_type->enumeration.literals[j];
-                        if (lit_name.length == 3 and
-                          lit_name.data[0] == '\'' and
-                          lit_name.data[1] == ch and
-                          lit_name.data[2] == '\'') {
-                          *out = (int64_t)j;  // Position in enumeration
-                          return true;
-                        }
+                      int64_t position = Enumeration_Character_Literal_Position (qual_type, ch);
+                      if (position >= 0) {
+                        *out = position;  // Position in enumeration
+                        return true;
                       }
                     }
                   }
@@ -17038,6 +17012,20 @@ void Apply_Pragma_Convention (Symbol *sym, Syntax_Node *conv_node) {
     sym->convention = CONVENTION_INTRINSIC;
 }
 
+// Shared prologue of the Import/Export/Convention pragma arms, whose argument
+// list starts (convention, entity, ...): unwrap both arguments and look the
+// entity up. Returns NULL when the argument list is too short, the entity is
+// not an identifier, or no symbol with that name is visible.
+// *out_convention receives the unwrapped convention argument (or NULL).
+Symbol *Pragma_Entity_Symbol (Node_List *arguments, Syntax_Node **out_convention) {
+  *out_convention = NULL;
+  if (arguments->count < 2) return NULL;
+  *out_convention = Unwrap_Association (arguments->items[0]);
+  Syntax_Node *entity = Unwrap_Association (arguments->items[1]);
+  if (not (entity and entity->kind == NK_IDENTIFIER)) return NULL;
+  return Symbol_Find (entity->string_val.text);
+}
+
 // Match a name against an instance's resolved actual bindings; return the
 // bound actual type, or NULL when the name is not a formal type of the
 // instance.
@@ -19940,49 +19928,32 @@ void Resolve_Declaration (Syntax_Node *node) {
 
         // pragma Import (Convention, Entity, External_Name, Link_Name)
         else if (Slice_Equal_Ignore_Case (pragma_name, S("IMPORT"))) {
-          if (node->pragma_node.arguments.count >= 2) {
+          Syntax_Node *conv_node = NULL;
+          Symbol *sym = Pragma_Entity_Symbol (&node->pragma_node.arguments, &conv_node);
+          if (sym) {
+            sym->is_imported = true;
+            Apply_Pragma_Convention (sym, conv_node);
 
-            // Get convention
-            Syntax_Node *conv_arg = node->pragma_node.arguments.items[0];
-            Syntax_Node *conv_node = Unwrap_Association (conv_arg);
-
-            // Get entity
-            Syntax_Node *ent_arg = node->pragma_node.arguments.items[1];
-            Syntax_Node *ent_node = Unwrap_Association (ent_arg);
-            if (ent_node and ent_node->kind == NK_IDENTIFIER) {
-              Symbol *sym = Symbol_Find (ent_node->string_val.text);
-              if (sym) {
-                sym->is_imported = true;
-
-                // Set convention
-                Apply_Pragma_Convention (sym, conv_node);
-
-                // Get external name if provided
-                Apply_Pragma_External_Name (sym, &node->pragma_node.arguments);
-              }
-            }
+            // Get external name if provided
+            Apply_Pragma_External_Name (sym, &node->pragma_node.arguments);
           }
         }
 
         // pragma Export (Convention, Entity, External_Name)
         else if (Slice_Equal_Ignore_Case (pragma_name, S("EXPORT"))) {
-          if (node->pragma_node.arguments.count >= 2) {
-            Syntax_Node *conv_arg = node->pragma_node.arguments.items[0];
-            Syntax_Node *conv_node = Unwrap_Association (conv_arg);
-            Syntax_Node *ent_arg = node->pragma_node.arguments.items[1];
-            Syntax_Node *ent_node = Unwrap_Association (ent_arg);
-            if (ent_node and ent_node->kind == NK_IDENTIFIER) {
-              Symbol *sym = Symbol_Find (ent_node->string_val.text);
-              if (sym) {
-                sym->is_exported = true;
-                if (conv_node and conv_node->kind == NK_IDENTIFIER) {
-                  String_Slice conv = conv_node->string_val.text;
-                  if (Slice_Equal_Ignore_Case (conv, S("C")))
-                    sym->convention = CONVENTION_C;
-                }
-                Apply_Pragma_External_Name (sym, &node->pragma_node.arguments);
-              }
+          Syntax_Node *conv_node = NULL;
+          Symbol *sym = Pragma_Entity_Symbol (&node->pragma_node.arguments, &conv_node);
+          if (sym) {
+            sym->is_exported = true;
+
+            // Unlike the Import arm, only convention C is recognized here;
+            // STDCALL and INTRINSIC name no export mechanism and are ignored.
+            if (conv_node and conv_node->kind == NK_IDENTIFIER) {
+              String_Slice conv = conv_node->string_val.text;
+              if (Slice_Equal_Ignore_Case (conv, S("C")))
+                sym->convention = CONVENTION_C;
             }
+            Apply_Pragma_External_Name (sym, &node->pragma_node.arguments);
           }
         }
 
@@ -20000,16 +19971,9 @@ void Resolve_Declaration (Syntax_Node *node) {
 
         // pragma Convention (convention, entity)
         else if (Slice_Equal_Ignore_Case (pragma_name, S("CONVENTION"))) {
-          if (node->pragma_node.arguments.count >= 2) {
-            Syntax_Node *conv_arg = node->pragma_node.arguments.items[0];
-            Syntax_Node *conv_node = Unwrap_Association (conv_arg);
-            Syntax_Node *ent_arg = node->pragma_node.arguments.items[1];
-            Syntax_Node *ent_node = Unwrap_Association (ent_arg);
-            if (ent_node and ent_node->kind == NK_IDENTIFIER) {
-              Symbol *sym = Symbol_Find (ent_node->string_val.text);
-              if (sym) Apply_Pragma_Convention (sym, conv_node);
-            }
-          }
+          Syntax_Node *conv_node = NULL;
+          Symbol *sym = Pragma_Entity_Symbol (&node->pragma_node.arguments, &conv_node);
+          if (sym) Apply_Pragma_Convention (sym, conv_node);
         }
 
         // pragma Pure / pragma Preelaborate (RM 10.5): mark the named
@@ -22084,6 +22048,12 @@ bool Subprogram_Needs_Static_Chain (Symbol *sym) {
 // elsewhere in lvalue/identifier generation. We detect subprogram renames
 // by the symbol kind, which is set when the rename declaration is processed.
 //
+// For an operator node, the result is the symbol the call actually
+// dispatches to — a generic formal subprogram is a rename of its actual, so
+// the peel covers instances too. Generate_Binary_Op, Expression_Is_Boolean
+// and Expression_LLVM_Rep all route through here so the emitted call and its
+// consumers agree on the result representation.
+//
 Symbol *Resolve_Subprogram_Rename (Symbol *sym) {
   if (not sym) return sym;
   if (sym->rename_target) return sym->rename_target;  // memoized peel
@@ -22105,15 +22075,6 @@ Symbol *Resolve_Subprogram_Rename (Symbol *sym) {
   return sym->rename_target = root;
 }
 
-// The symbol an operator node's call actually dispatches to: peel renames
-// (RM 8.5) — a generic formal subprogram is a rename of its actual, so the
-// peel covers instances too. Generate_Binary_Op, Expression_Is_Boolean and
-// Expression_LLVM_Rep all route through here so the emitted call and its
-// consumers agree on the result representation.
-Symbol *Operator_Call_Target (Symbol *sym) {
-  return Resolve_Subprogram_Rename (sym);
-}
-
 // Map an Ada operator's source-text name to its Token_Kind. Returns TK_EOF
 // for names that are not operators (used as a sentinel). The translation is
 // needed when a subprogram rename peels to a predefined operator whose name
@@ -22122,26 +22083,8 @@ Symbol *Operator_Call_Target (Symbol *sym) {
 // re-express the rename's name as the matching token.
 //
 Token_Kind Token_From_Op_Name (String_Slice name) {
-  if (Slice_Equal_Ignore_Case (name, S("+")))   return TK_PLUS;
-  if (Slice_Equal_Ignore_Case (name, S("-")))   return TK_MINUS;
-  if (Slice_Equal_Ignore_Case (name, S("*")))   return TK_STAR;
-  if (Slice_Equal_Ignore_Case (name, S("/")))   return TK_SLASH;
-  if (Slice_Equal_Ignore_Case (name, S("**")))  return TK_EXPON;
-  if (Slice_Equal_Ignore_Case (name, S("&")))   return TK_AMPERSAND;
-  if (Slice_Equal_Ignore_Case (name, S("=")))   return TK_EQ;
-  if (Slice_Equal_Ignore_Case (name, S("/=")))  return TK_NE;
-  if (Slice_Equal_Ignore_Case (name, S("<")))   return TK_LT;
-  if (Slice_Equal_Ignore_Case (name, S("<=")))  return TK_LE;
-  if (Slice_Equal_Ignore_Case (name, S(">")))   return TK_GT;
-  if (Slice_Equal_Ignore_Case (name, S(">=")))  return TK_GE;
-  if (Slice_Equal_Ignore_Case (name, S("and"))) return TK_AND;
-  if (Slice_Equal_Ignore_Case (name, S("or")))  return TK_OR;
-  if (Slice_Equal_Ignore_Case (name, S("xor"))) return TK_XOR;
-  if (Slice_Equal_Ignore_Case (name, S("mod"))) return TK_MOD;
-  if (Slice_Equal_Ignore_Case (name, S("rem"))) return TK_REM;
-  if (Slice_Equal_Ignore_Case (name, S("abs"))) return TK_ABS;
-  if (Slice_Equal_Ignore_Case (name, S("not"))) return TK_NOT;
-  return TK_EOF;
+  const Token_Operator_Properties *properties = Operator_Properties_By_Name (name);
+  return properties ? properties->token : TK_EOF;
 }
 
 // Is sym an uplevel reference requiring access through __parent_frame?
@@ -22516,32 +22459,21 @@ void Emit_Discriminant_Check (uint32_t actual, uint32_t expected,
   Emit_Check_With_Raise (cmp.reg, true, "discriminant check failed");
 }
 
-// Return the LLVM fcmp predicate for a comparison operator.
-// Uses ordered predicates for relational ops, unordered for NE (IEEE NaN handling).
+// Return the LLVM fcmp predicate for a comparison operator (from the
+// operator table). Defaults to "oeq" for non-comparison tokens.
 const char *Float_Cmp_Predicate (int op) {
-  switch (op) {
-    case TK_EQ: return "oeq";
-    case TK_NE: return "une";
-    case TK_LT: return "olt";
-    case TK_LE: return "ole";
-    case TK_GT: return "ogt";
-    case TK_GE: return "oge";
-    default:    return "oeq";
-  }
+  const Token_Operator_Properties *properties = Operator_Properties_By_Token ((Token_Kind) op);
+  return (properties and properties->float_predicate) ? properties->float_predicate : "oeq";
 }
 
-// Return the LLVM icmp predicate for a comparison operator.
-// Selects signed or unsigned predicate based on is_unsigned flag.
+// Return the LLVM icmp predicate for a comparison operator (from the
+// operator table). Selects signed or unsigned predicate based on the
+// is_unsigned flag; defaults to "eq" for non-comparison tokens.
 const char *Int_Cmp_Predicate (int op, bool is_unsigned) {
-  switch (op) {
-    case TK_EQ: return "eq";
-    case TK_NE: return "ne";
-    case TK_LT: return is_unsigned ? "ult" : "slt";
-    case TK_LE: return is_unsigned ? "ule" : "sle";
-    case TK_GT: return is_unsigned ? "ugt" : "sgt";
-    case TK_GE: return is_unsigned ? "uge" : "sge";
-    default:    return "eq";
-  }
+  const Token_Operator_Properties *properties = Operator_Properties_By_Token ((Token_Kind) op);
+  if (not properties or not properties->integer_predicate_signed) return "eq";
+  return is_unsigned ? properties->integer_predicate_unsigned
+                     : properties->integer_predicate_signed;
 }
 
 // Check if expression produces boolean (i1) result directly.                                      
@@ -22555,7 +22487,7 @@ bool Expression_Is_Boolean (Syntax_Node *node) {
   // Mirror Expression_Llvm_Type's user-function path so the two agree.
   if ((node->kind == NK_BINARY_OP or node->kind == NK_UNARY_OP) and
       node->symbol and node->symbol->kind == SYMBOL_FUNCTION) {
-    Symbol *tgt = Operator_Call_Target (node->symbol);
+    Symbol *tgt = Resolve_Subprogram_Rename (node->symbol);
     if (tgt and not tgt->is_predefined) return false;
   }
   if (node->kind == NK_BINARY_OP) {
@@ -22590,7 +22522,7 @@ LLVM_Rep Expression_LLVM_Rep (Syntax_Node *node) {
   // precedence over the boolean-i1 fast path below.
   if (node and (node->kind == NK_BINARY_OP or node->kind == NK_UNARY_OP) and
       node->symbol and node->symbol->kind == SYMBOL_FUNCTION) {
-    Symbol *target = Operator_Call_Target (node->symbol);
+    Symbol *target = Resolve_Subprogram_Rename (node->symbol);
     if (target and not target->is_predefined and target->return_type) {
       return Type_To_Rep (target->return_type);
     }
@@ -23561,23 +23493,31 @@ void Emit_Memcpy (uint32_t dst, uint32_t src, uint32_t size_reg) {
      dst, src, size_reg);
 }
 
+// Shared core of the symbol-destination memcpy emitters: `size_operand` is
+// the already-formatted i64 byte count (a decimal constant or an SSA name).
+void Emit_Memcpy_To_Symbol_Sized (Symbol *dst, uint32_t src,
+                                  const char *size_operand, const char *comment) {
+  Emit ("  call void @llvm.memcpy.p0.p0.i64(ptr ");
+  Emit_Symbol_Storage (dst);
+  Emit (", ptr %%t%u, i64 %s, i1 false)%s%s\n",
+     src, size_operand, comment ? "  ; " : "", comment ? comment : "");
+}
+
 // memcpy `bytes` constant bytes from value register `src` into symbol `dst`'s
 // storage. `comment`, when non-NULL, is appended as a trailing IR comment.
 void Emit_Memcpy_To_Symbol (Symbol *dst, uint32_t src, int64_t bytes, const char *comment) {
-  Emit ("  call void @llvm.memcpy.p0.p0.i64(ptr ");
-  Emit_Symbol_Storage (dst);
-  Emit (", ptr %%t%u, i64 %lld, i1 false)%s%s\n",
-     src, (long long)bytes, comment ? "  ; " : "", comment ? comment : "");
+  char size_operand[24];
+  snprintf (size_operand, sizeof (size_operand), "%lld", (long long) bytes);
+  Emit_Memcpy_To_Symbol_Sized (dst, src, size_operand, comment);
 }
 
 // Register-sized variant of Emit_Memcpy_To_Symbol: the byte count comes from a
 // runtime SSA value rather than a compile-time constant. Used when the size is
 // only known at elaboration (e.g. Emit_Type_Byte_Size for a dynamic record).
 void Emit_Memcpy_To_Symbol_Reg (Symbol *dst, uint32_t src, uint32_t size_reg, const char *comment) {
-  Emit ("  call void @llvm.memcpy.p0.p0.i64(ptr ");
-  Emit_Symbol_Storage (dst);
-  Emit (", ptr %%t%u, i64 %%t%u, i1 false)%s%s\n",
-     src, size_reg, comment ? "  ; " : "", comment ? comment : "");
+  char size_operand[16];
+  snprintf (size_operand, sizeof (size_operand), "%%t%u", size_reg);
+  Emit_Memcpy_To_Symbol_Sized (dst, src, size_operand, comment);
 }
 
 // Extract data pointer from fat pointer.
@@ -24335,6 +24275,22 @@ void Emit_Check_With_Raise (uint32_t cond,
   Emit_Check_With_Raise_Named (cond, raise_on_true, "constraint_error", comment);
 }
 
+// Raise CONSTRAINT_ERROR when `condition` holds, else fall through to a
+// fresh continuation block. Mints the continuation label BEFORE the raise
+// label — the complement of Emit_Check_With_Raise, which mints raise-then-
+// continue. Each minting order keeps its own helper; do not fold them, or
+// every emitted label in one family renumbers.
+void Emit_Raise_Constraint_Error_When (LLVM_I1 condition, const char *comment) {
+  uint32_t continue_label = cg->label_id++;
+  uint32_t raise_label    = cg->label_id++;
+  Emit ("  br i1 %%t%u, label %%L%u, label %%L%u\n",
+     condition.reg, raise_label, continue_label);
+  cg->block_terminated = true;
+  Emit_Label_Here (raise_label);
+  Emit_Raise_Constraint_Error (comment);
+  Emit_Label_Here (continue_label);
+}
+
 // RM 3.9: a call to a subprogram whose body has not yet been elaborated raises
 // PROGRAM_ERROR. The callee's elaboration flag is a local alloca that is false
 // until the body declaration elaborates; the check loads it and raises when it
@@ -24848,43 +24804,36 @@ void Emit_Fat_Pointer_Extractvalue_Named (const char *src_name, const char *data
   Emit ("  %%%s = load %s, ptr %%%s_gep\n", high_name, LLVM_Rep_To_String (bt), high_name);
 }
 
-// Emit a named-SSA widen from bound type to INTEGER width for intrinsic/RTS use.                  
-// If bt is already at INTEGER width, emits a no-op copy (add 0).                                  
-// src_name:  name of the source SSA value (in bt)                                                  
-// dst_name:  name for the widened value                                                            
-// bt:        the bound type string                                                                 
-// Uses sext (signed extension) - for unsigned types use the _Unsigned variant.                    
-//                                                                                                  
-void Emit_Widen_Named_For_Intrinsic (const char *src_name, const char *dst_name, LLVM_Rep bt)
+// Emit a named-SSA width conversion: `%dst = <op> <from> %src to <to>`.
+// If the two representations are equal, emits a no-op copy (add 0) instead,
+// so the destination name is always defined.
+void Emit_Named_Width_Conversion (const char *src_name, const char *dst_name,
+                                  const char *conversion_op, LLVM_Rep from, LLVM_Rep to)
 {
-  LLVM_Rep iat = Integer_Arith_Rep ();
-  LLVM_Rep bt_s = bt;
-  LLVM_Rep iat_s = iat;
-
-  // Already at INTEGER width - emit a trivial add-0 to create the alias
-  if (LLVM_Rep_Equal (bt, iat)) {
-    Emit ("  %%%s = add %s %%%s, 0\n", dst_name, LLVM_Rep_To_String (iat_s), src_name);
+  if (LLVM_Rep_Equal (from, to)) {
+    Emit ("  %%%s = add %s %%%s, 0\n", dst_name, LLVM_Rep_To_String (to), src_name);
   } else {
-    Emit ("  %%%s = sext %s %%%s to %s\n", dst_name, LLVM_Rep_To_String (bt_s), src_name, LLVM_Rep_To_String (iat_s));
+    Emit ("  %%%s = %s %s %%%s to %s\n", dst_name, conversion_op, LLVM_Rep_To_String (from), src_name, LLVM_Rep_To_String (to));
   }
 }
 
-// Emit a named-SSA narrow from INTEGER width to bound type after intrinsic/RTS.                   
-// If bt is already at INTEGER width, emits a no-op copy.                                          
-// src_name:  name of the source SSA value (INTEGER width)                                          
-// dst_name:  name for the narrowed bt value                                                        
-// bt:        the target bound type string                                                          
-//                                                                                                  
+// Emit a named-SSA widen from bound type to INTEGER width for intrinsic/RTS use.
+// src_name:  name of the source SSA value (in bt)
+// dst_name:  name for the widened value
+// bt:        the bound type
+// Uses sext (signed extension).
+void Emit_Widen_Named_For_Intrinsic (const char *src_name, const char *dst_name, LLVM_Rep bt)
+{
+  Emit_Named_Width_Conversion (src_name, dst_name, "sext", bt, Integer_Arith_Rep ());
+}
+
+// Emit a named-SSA narrow from INTEGER width to bound type after intrinsic/RTS.
+// src_name:  name of the source SSA value (INTEGER width)
+// dst_name:  name for the narrowed bt value
+// bt:        the target bound type
 void Emit_Narrow_Named_From_Intrinsic (const char *src_name, const char *dst_name, LLVM_Rep bt)
 {
-  LLVM_Rep iat = Integer_Arith_Rep ();
-  LLVM_Rep bt_s = bt;
-  LLVM_Rep iat_s = iat;
-  if (LLVM_Rep_Equal (bt, iat)) {
-    Emit ("  %%%s = add %s %%%s, 0\n", dst_name, LLVM_Rep_To_String (iat_s), src_name);
-  } else {
-    Emit ("  %%%s = trunc %s %%%s to %s\n", dst_name, LLVM_Rep_To_String (iat_s), src_name, LLVM_Rep_To_String (bt_s));
-  }
+  Emit_Named_Width_Conversion (src_name, dst_name, "trunc", Integer_Arith_Rep (), bt);
 }
 
 // Build a null fat pointer value: { ptr null, ptr null }.
@@ -25337,12 +25286,7 @@ LLVM_Value Generate_String_Literal (Syntax_Node *node) {
       // Position of the character literal 'ch' among the component enum's
       // literals. A character absent from the base type cannot be a value of
       // it at all, so treat it as out of range (RM 4.2).
-      pos = -1;
-      for (uint32_t j = 0; j < elem_root->enumeration.literal_count; j++) {
-        String_Slice lit = elem_root->enumeration.literals[j];
-        if (lit.length == 3 and lit.data[0] == '\'' and
-            (unsigned char) lit.data[1] == ch and lit.data[2] == '\'') { pos = (int64_t) j; break; }
-      }
+      pos = Enumeration_Character_Literal_Position (elem_root, (char) ch);
       if (pos < 0) { out_of_range = true; pos = 0; }
     } else {
       pos = (int64_t) ch;  // predefined CHARACTER: position == ASCII code
@@ -26504,45 +26448,35 @@ uint32_t Generate_Composite_Address (Syntax_Node *node) {
 }
 
 // ─── Boolean Array Elementwise Op (RM 4.5.1) ─────────────────────────────────────────────────────
-// Unrolled loop applying `ir_op` (and/or/xor) byte-by-byte.                                       
-// Returns alloca ptr to result. Binary variant (two operands).                                   
-//                                                                                                  
-LLVM_Value Emit_Bool_Array_Binop (uint32_t left, uint32_t right, Type_Info *result_type, const char *ir_op)
+// Static-bound twin of Emit_Bool_Array_Op_Fat: unrolled loop applying `ir_op`
+// (and/or/xor) byte-by-byte over raw data pointers. Returns alloca ptr to the
+// result. `right` is ignored for NOT (is_not); NOT is realised as `xor 1`.
+//
+LLVM_Value Emit_Bool_Array_Op (uint32_t left, uint32_t right, bool is_not,
+                               Type_Info *result_type, const char *ir_op)
 {
   int128_t count = Array_Element_Count (result_type);
   uint32_t extent = (count > 0) ? (uint32_t)count
                   : (result_type->size > 0 ? result_type->size : 1);
-  uint32_t dst = Emit_Result_Instruction ("alloca [%u x i8]  ; bool array %s result\n", extent, ir_op);
+  uint32_t dst = is_not
+    ? Emit_Result_Instruction ("alloca [%u x i8]  ; bool array NOT result\n", extent)
+    : Emit_Result_Instruction ("alloca [%u x i8]  ; bool array %s result\n", extent, ir_op);
   for (uint32_t i = 0; i < extent; i++) {
-    uint32_t lp = Emit_Temp (), rp = Emit_Temp ();
-    uint32_t lv = Emit_Temp (), rv = Emit_Temp ();
+    uint32_t lp = Emit_Temp (), rp = is_not ? 0 : Emit_Temp ();
+    uint32_t lv = Emit_Temp (), rv = is_not ? 0 : Emit_Temp ();
     uint32_t ov = Emit_Temp (), dp = Emit_Temp ();
     Emit ("  %%t%u = getelementptr i8, ptr %%t%u, i32 %u\n", lp, left, i);
-    Emit ("  %%t%u = getelementptr i8, ptr %%t%u, i32 %u\n", rp, right, i);
+    if (not is_not)
+      Emit ("  %%t%u = getelementptr i8, ptr %%t%u, i32 %u\n", rp, right, i);
     Emit ("  %%t%u = load i8, ptr %%t%u\n", lv, lp);
-    Emit ("  %%t%u = load i8, ptr %%t%u\n", rv, rp);
-    Emit ("  %%t%u = %s i8 %%t%u, %%t%u\n", ov, ir_op, lv, rv);
+    if (not is_not)
+      Emit ("  %%t%u = load i8, ptr %%t%u\n", rv, rp);
+    if (is_not)
+      Emit ("  %%t%u = xor i8 %%t%u, 1\n", ov, lv);
+    else
+      Emit ("  %%t%u = %s i8 %%t%u, %%t%u\n", ov, ir_op, lv, rv);
     Emit ("  %%t%u = getelementptr i8, ptr %%t%u, i32 %u\n", dp, dst, i);
     Emit ("  store i8 %%t%u, ptr %%t%u\n", ov, dp);
-  }
-  return Val_Rep (dst, LL_REP_PTR);
-}
-
-// Unary NOT for boolean arrays: xor each byte with 1.
-LLVM_Value Emit_Bool_Array_Not (uint32_t operand, Type_Info *result_type)
-{
-  int128_t count = Array_Element_Count (result_type);
-  uint32_t extent = (count > 0) ? (uint32_t)count
-                  : (result_type->size > 0 ? result_type->size : 1);
-  uint32_t dst = Emit_Result_Instruction ("alloca [%u x i8]  ; bool array NOT result\n", extent);
-  for (uint32_t i = 0; i < extent; i++) {
-    uint32_t sp = Emit_Temp (), sv = Emit_Temp ();
-    uint32_t nv = Emit_Temp (), dp = Emit_Temp ();
-    Emit ("  %%t%u = getelementptr i8, ptr %%t%u, i32 %u\n", sp, operand, i);
-    Emit ("  %%t%u = load i8, ptr %%t%u\n", sv, sp);
-    Emit ("  %%t%u = xor i8 %%t%u, 1\n", nv, sv);
-    Emit ("  %%t%u = getelementptr i8, ptr %%t%u, i32 %u\n", dp, dst, i);
-    Emit ("  store i8 %%t%u, ptr %%t%u\n", nv, dp);
   }
   return Val_Rep (dst, LL_REP_PTR);
 }
@@ -26843,7 +26777,7 @@ LLVM_Value Generate_Binary_Op (Syntax_Node *node) {
   // the instantiation's actual (RM 12.3) — a rename does not emit its own
   // body, and a formal's calls dispatch to the actual. A derived operator
   // (RM 3.4) further forwards to the parent's body via its ultimate operation.
-  Symbol *call_target = Ultimate_Operation (Operator_Call_Target (node->symbol));
+  Symbol *call_target = Ultimate_Operation (Resolve_Subprogram_Rename (node->symbol));
 
   // User-defined operator: generate function call (RM 6.7)
   if (call_target and call_target->kind == SYMBOL_FUNCTION and
@@ -27600,13 +27534,7 @@ LLVM_Value Emit_Binary_Op_Predefined (Syntax_Node *node) {
           LLVM_I1 is_zero = Emit_Fcmp_Zero ("oeq", lhs_ftype, left);
           LLVM_I1 is_neg = Emit_Icmp_Const ("slt", right_int_type, right, 0);
           LLVM_I1 bad = Emit_And_I1 (is_zero, is_neg);
-          uint32_t ok_label = Emit_Label ();
-          uint32_t bad_label = Emit_Label ();
-          Emit ("  br i1 %%t%u, label %%L%u, label %%L%u\n", bad.reg, bad_label, ok_label);
-          cg->block_terminated = true;
-          Emit_Label_Here (bad_label);
-          Emit_Raise_Constraint_Error ("0.0 ** negative (RM 4.5.6)");
-          Emit_Label_Here (ok_label);
+          Emit_Raise_Constraint_Error_When (bad, "0.0 ** negative (RM 4.5.6)");
 
           // Convert integer exponent to matching float type
           uint32_t exp_float = Emit_Result_Instruction ("sitofp %s %%t%u to %s\n", LLVM_Rep_To_String (right_int_type), right, LLVM_Rep_To_String (lhs_ftype));
@@ -27682,7 +27610,7 @@ LLVM_Value Emit_Binary_Op_Predefined (Syntax_Node *node) {
           if (l_fat and r_fat)
             return Emit_Bool_Array_Op_Fat (left, right, false, result_type, llvm_op);
 
-          // Static operands: Emit_Bool_Array_Binop needs raw data pointers for
+          // Static operands: Emit_Bool_Array_Op needs raw data pointers for
           // its byte-wise GEPs, so extract data ptr from any fat value.
           Type_Info *lty = node->binary.left ? node->binary.left->type : NULL;
           Type_Info *rty = node->binary.right ? node->binary.right->type : NULL;
@@ -27690,7 +27618,7 @@ LLVM_Value Emit_Binary_Op_Predefined (Syntax_Node *node) {
             left = Emit_Fat_Pointer_Data (left, Array_Bound_LLVM_Rep (lty ? lty : result_type)).reg;
           if (r_fat)
             right = Emit_Fat_Pointer_Data (right, Array_Bound_LLVM_Rep (rty ? rty : result_type)).reg;
-          return Emit_Bool_Array_Binop (left, right, result_type, llvm_op);
+          return Emit_Bool_Array_Op (left, right, false, result_type, llvm_op);
         } else if (Type_Is_Unsigned (result_type)) {
           LLVM_Rep common_rep = LLVM_Rep_Wider_Int (left_int_type, right_int_type);
           left = Emit_Convert_Ext (left, left_int_type, common_rep, true).reg;
@@ -28407,12 +28335,7 @@ LLVM_Value Emit_Binary_Op_Predefined (Syntax_Node *node) {
     if (node->binary.op == TK_SLASH and
       not Check_Is_Suppressed (result_type, NULL, CHK_DIVISION)) {
       LLVM_I1 fz = Emit_Fcmp_Zero ("oeq", float_type_str, right);
-      uint32_t ok = Emit_Label (), bad = Emit_Label ();
-      Emit ("  br i1 %%t%u, label %%L%u, label %%L%u\n", fz.reg, bad, ok);
-      cg->block_terminated = true;
-      Emit_Label_Here (bad);
-      Emit_Raise_Constraint_Error ("float division by zero");
-      Emit_Label_Here (ok);
+      Emit_Raise_Constraint_Error_When (fz, "float division by zero");
     }
     Emit ("  %%t%u = %s %s %%t%u, %%t%u\n", t, op, LLVM_Rep_To_String (float_type_str), left, right);
   }
@@ -28424,7 +28347,7 @@ LLVM_Value Emit_Binary_Op_Predefined (Syntax_Node *node) {
   // the instantiation's actual (RM 12.3). If the resolved target is a
   // predefined operator (`"-" RENAMES "abs"` etc.), fall through to the
   // inline-operator path below instead of calling a never-emitted body.
-  Symbol *peeled = Operator_Call_Target (node->symbol);
+  Symbol *peeled = Resolve_Subprogram_Rename (node->symbol);
 
   // RM 8.5: a user-defined operator renaming a predefined operator with a
   // DIFFERENT symbol name (FUNCTION "+" (X : NEW_INT) RETURN NEW_INT
@@ -28543,7 +28466,7 @@ LLVM_Value Emit_Binary_Op_Predefined (Syntax_Node *node) {
           // its real (ptr) rep rather than falling through to the common scalar
           // return, which would relabel the pointer as the operand's int width
           // and feed a bogus i8 to an array consumer (e.g. NOT A = B).
-          return Emit_Bool_Array_Not (operand, res_type);
+          return Emit_Bool_Array_Op (operand, 0, true, res_type, "xor");
 
         // Boolean NOT: flip as i1, then return at the operand's storage width
         // (BOOLEAN is i8). result_type is op_type below, so the register must
@@ -29253,7 +29176,7 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
         if (Type_Is_Bool_Array (ty0)) {
           if (LLVM_Rep_Is_Fat_Pointer (arg0_v.rep))
             return Emit_Bool_Array_Op_Fat (v0, 0, true, ty0, "xor");
-          return Emit_Bool_Array_Not (v0, ty0);
+          return Emit_Bool_Array_Op (v0, 0, true, ty0, "xor");
         }
         v0 = Emit_Convert (v0, t0, LLVM_Rep_Int (1, false)).reg;
         uint32_t result = Emit_Result_Instruction ("xor i1 %%t%u, true\n", v0);
@@ -29721,12 +29644,8 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
               uint32_t a_len = Emit_Fat_Pointer_Length_Dim (args[param_idx], abt, d).reg;
               uint32_t f_len = Emit_Length_From_Bounds (blo[d], bhi[d], abt).reg;
               LLVM_I1 ne = Emit_Icmp ("ne", abt, a_len, f_len);
-              uint32_t ok = cg->label_id++, bad = cg->label_id++;
-              Emit ("  br i1 %%t%u, label %%L%u, label %%L%u\n", ne.reg, bad, ok);
-              cg->block_terminated = true;
-              Emit_Label_Here (bad);
-              Emit_Raise_Constraint_Error ("actual array length vs constrained formal (RM 6.4.1)");
-              Emit_Label_Here (ok);
+              Emit_Raise_Constraint_Error_When (ne,
+                "actual array length vs constrained formal (RM 6.4.1)");
             }
             args[param_idx] = Emit_Fat_Pointer_MultiDim (data_ptr, blo, bhi, ndims, abt, abt).reg;
           } else if (Expression_Produces_Fat_Pointer (arg, actual_type) and
@@ -29748,12 +29667,8 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
                 Emit_Single_Bound (&formal_type->array.indices[d].low_bound,  abt),
                 Emit_Single_Bound (&formal_type->array.indices[d].high_bound, abt), abt).reg;
               LLVM_I1 ne = Emit_Icmp ("ne", abt, a_len, f_len);
-              uint32_t ok = cg->label_id++, bad = cg->label_id++;
-              Emit ("  br i1 %%t%u, label %%L%u, label %%L%u\n", ne.reg, bad, ok);
-              cg->block_terminated = true;
-              Emit_Label_Here (bad);
-              Emit_Raise_Constraint_Error ("actual array length vs constrained formal (RM 6.4.1)");
-              Emit_Label_Here (ok);
+              Emit_Raise_Constraint_Error_When (ne,
+                "actual array length vs constrained formal (RM 6.4.1)");
             }
             args[param_idx] = Emit_Fat_Pointer_Data (args[param_idx], abt).reg;
           } else {
@@ -33994,12 +33909,7 @@ void Agg_Rec_Disc_Post (LLVM_Value val_in, Component_Info *comp, uint32_t disc_o
     if (exp_v == 0) exp_v = Emit_Static_Int (0, dt).reg;
   }
   LLVM_I1 ne = Emit_Icmp ("ne", dt, val, exp_v);
-  uint32_t ok_l = cg->label_id++, fl_l = cg->label_id++;
-  Emit ("  br i1 %%t%u, label %%L%u, label %%L%u\n", ne.reg, fl_l, ok_l);
-  cg->block_terminated = true;
-  Emit_Label_Here (fl_l);
-  Emit_Raise_Constraint_Error ("discriminant value vs constraint");
-  Emit_Label_Here (ok_l);
+  Emit_Raise_Constraint_Error_When (ne, "discriminant value vs constraint");
 }
 
 // Count how many discriminants precede component index `ci`.
@@ -34691,14 +34601,8 @@ uint32_t Generate_Aggregate (Syntax_Node *node) {
               uint32_t con_len = Emit_Result_Instruction ("sub %s %%t%u, %%t%u\n", LLVM_Rep_To_String (ait), chi, clo);
               uint32_t con_cnt = Emit_Result_Instruction ("add %s %%t%u, 1\n", LLVM_Rep_To_String (ait), con_len);
               LLVM_I1 mismatch = Emit_Icmp ("ne", ait, n_pos, con_cnt);
-              uint32_t ok_lbl = cg->label_id++;
-              uint32_t fail_lbl = cg->label_id++;
-              Emit ("  br i1 %%t%u, label %%L%u, label %%L%u\n",
-                 mismatch.reg, fail_lbl, ok_lbl);
-              cg->block_terminated = true;
-              Emit_Label_Here (fail_lbl);
-              Emit_Raise_Constraint_Error ("positional aggregate count vs dynamic constraint");
-              Emit_Label_Here (ok_lbl);
+              Emit_Raise_Constraint_Error_When (mismatch,
+                "positional aggregate count vs dynamic constraint");
             }
 
             // RM 4.3.2: Parenthesized aggregate - INDEX_SUBTYPE'FIRST                              
@@ -34715,14 +34619,8 @@ uint32_t Generate_Aggregate (Syntax_Node *node) {
                 : Emit_Coerce_Val (Emit_Bound_Value (&idx_ty->low_bound), ait).reg;
               uint32_t con_lo = Emit_Single_Bound (&agg_type->array.indices[0].low_bound, ait);
               LLVM_I1 ne = Emit_Icmp ("ne", ait, isf, con_lo);
-              uint32_t ok2 = cg->label_id++;
-              uint32_t fail2 = cg->label_id++;
-              Emit ("  br i1 %%t%u, label %%L%u, label %%L%u\n",
-                 ne.reg, fail2, ok2);
-              cg->block_terminated = true;
-              Emit_Label_Here (fail2);
-              Emit_Raise_Constraint_Error ("parenthesized aggregate bounds vs dynamic constraint");
-              Emit_Label_Here (ok2);
+              Emit_Raise_Constraint_Error_When (ne,
+                "parenthesized aggregate bounds vs dynamic constraint");
             }
           }
           if (ac.has_named and not ac.has_others) {
@@ -34802,15 +34700,8 @@ uint32_t Generate_Aggregate (Syntax_Node *node) {
             : Emit_Coerce_Val (Emit_Bound_Value (&idx_ty->low_bound), ait).reg;
           uint32_t con_lo = Emit_Single_Bound (&agg_type->array.indices[0].low_bound, ait);
           LLVM_I1 ne = Emit_Icmp ("ne", ait, isf, con_lo);
-          uint32_t ok_p = cg->label_id++;
-          uint32_t fail_p = cg->label_id++;
-          Emit ("  br i1 %%t%u, label %%L%u, label %%L%u\n",
-             ne.reg, fail_p, ok_p);
-          cg->block_terminated = true;
-          Emit_Label_Here (fail_p);
-          Emit_Raise_Constraint_Error (
+          Emit_Raise_Constraint_Error_When (ne,
             "parenthesized aggregate bounds vs stale dynamic constraint");
-          Emit_Label_Here (ok_p);
         }
       }
       }  // end bounds_ref_disc scope
@@ -35095,14 +34986,8 @@ uint32_t Generate_Aggregate (Syntax_Node *node) {
             LLVM_I1 ilo_ne = Emit_Icmp ("ne", ait, ir_lo, exp_lo);
             LLVM_I1 ihi_ne = Emit_Icmp ("ne", ait, ir_hi, exp_hi);
             uint32_t imm = Emit_Result_Instruction ("or i1 %%t%u, %%t%u\n", ilo_ne.reg, ihi_ne.reg);
-            uint32_t iok = cg->label_id++;
-            uint32_t ifail = cg->label_id++;
-            Emit ("  br i1 %%t%u, label %%L%u, label %%L%u\n",
-               imm, ifail, iok);
-            cg->block_terminated = true;
-            Emit_Label_Here (ifail);
-            Emit_Raise_Constraint_Error ("inner aggregate named range vs constraint");
-            Emit_Label_Here (iok);
+            Emit_Raise_Constraint_Error_When ((LLVM_I1){ imm },
+              "inner aggregate named range vs constraint");
             goto inner_dim_check_done;
           }
           break;  // only check first non-others association
@@ -35171,14 +35056,8 @@ uint32_t Generate_Aggregate (Syntax_Node *node) {
         uint32_t mm_val = Emit_Result_Instruction ("load i1, ptr %%t%u\n", dyn_inner_trk_mm);
         LLVM_I1 nonnull = Emit_Icmp_Const ("ne", iat_bnd, clamped, 0);
         uint32_t raise_mm = Emit_Result_Instruction ("and i1 %%t%u, %%t%u\n", mm_val, nonnull.reg);
-        uint32_t ok_lbl = cg->label_id++;
-        uint32_t fail_lbl = cg->label_id++;
-        Emit ("  br i1 %%t%u, label %%L%u, label %%L%u\n",
-           raise_mm, fail_lbl, ok_lbl);
-        cg->block_terminated = true;
-        Emit_Label_Here (fail_lbl);
-        Emit_Raise_Constraint_Error ("inner sub-aggregate bounds mismatch (dynamic path)");
-        Emit_Label_Here (ok_lbl);
+        Emit_Raise_Constraint_Error_When ((LLVM_I1){ raise_mm },
+          "inner sub-aggregate bounds mismatch (dynamic path)");
       }
 
       // Report actual aggregate bounds to outer multidim aggregate.
@@ -35386,9 +35265,7 @@ uint32_t Generate_Aggregate (Syntax_Node *node) {
       if (n_positional > 0 and not has_named and has_unconstrained_base) {
         int128_t expected = con_hi - con_lo + 1;
         if ((int128_t)n_positional != expected) {
-          Emit_Raise_Constraint_Error ("positional aggregate count vs constraint");
-          uint32_t cont = cg->label_id++;
-          Emit_Label_Here (cont);
+          Emit_Raise_And_Continue ("positional aggregate count vs constraint");
         }
 
         // RM 4.3.2: A parenthesized aggregate ((a,b,c)) uses                                       
@@ -35402,9 +35279,7 @@ uint32_t Generate_Aggregate (Syntax_Node *node) {
             Type_Info *idx_ty = base->array.indices[0].index_type;
             if (idx_ty->low_bound.kind == BOUND_INTEGER) {
               if (idx_ty->low_bound.int_value != con_lo) {
-                Emit_Raise_Constraint_Error ("parenthesized aggregate bounds vs constraint");
-                uint32_t cont = cg->label_id++;
-                Emit_Label_Here (cont);
+                Emit_Raise_And_Continue ("parenthesized aggregate bounds vs constraint");
               }
 
             // Dynamic INDEX_SUBTYPE'FIRST: runtime comparison
@@ -35413,14 +35288,8 @@ uint32_t Generate_Aggregate (Syntax_Node *node) {
               uint32_t isf = Emit_Coerce_Val (Emit_Bound_Value (&idx_ty->low_bound), ait).reg;
               uint32_t clo_v = Emit_Static_Int (con_lo, ait).reg;
               LLVM_I1 ne = Emit_Icmp ("ne", ait, isf, clo_v);
-              uint32_t ok = cg->label_id++;
-              uint32_t fail = cg->label_id++;
-              Emit ("  br i1 %%t%u, label %%L%u, label %%L%u\n",
-                 ne.reg, fail, ok);
-              cg->block_terminated = true;
-              Emit_Label_Here (fail);
-              Emit_Raise_Constraint_Error ("parenthesized aggregate bounds vs constraint (dyn idx)");
-              Emit_Label_Here (ok);
+              Emit_Raise_Constraint_Error_When (ne,
+                "parenthesized aggregate bounds vs constraint (dyn idx)");
             }
           }
         }
@@ -35468,11 +35337,9 @@ uint32_t Generate_Aggregate (Syntax_Node *node) {
           bad = (low != con_lo or high != con_hi);
         }
         if (bad) {
-          Emit_Raise_Constraint_Error (slide_context
+          Emit_Raise_And_Continue (slide_context
             ? "named aggregate length vs constraint"
             : "named aggregate bounds vs constraint");
-          uint32_t cont = cg->label_id++;
-          Emit_Label_Here (cont);
         }
       }
     }
@@ -35525,14 +35392,8 @@ uint32_t Generate_Aggregate (Syntax_Node *node) {
             uint32_t cdiff = Emit_Result_Instruction ("sub %s %%t%u, %%t%u\n", LLVM_Rep_To_String (ait), chi, clo);
             uint32_t ccnt = Emit_Result_Instruction ("add %s %%t%u, 1\n", LLVM_Rep_To_String (ait), cdiff);
             LLVM_I1 mismatch = Emit_Icmp ("ne", ait, n_pos, ccnt);
-            uint32_t ok_lbl = cg->label_id++;
-            uint32_t fail_lbl = cg->label_id++;
-            Emit ("  br i1 %%t%u, label %%L%u, label %%L%u\n",
-               mismatch.reg, fail_lbl, ok_lbl);
-            cg->block_terminated = true;
-            Emit_Label_Here (fail_lbl);
-            Emit_Raise_Constraint_Error ("positional aggregate count vs dynamic constraint");
-            Emit_Label_Here (ok_lbl);
+            Emit_Raise_Constraint_Error_When (mismatch,
+              "positional aggregate count vs dynamic constraint");
           }
 
           // Parenthesized: INDEX_SUBTYPE'FIRST vs runtime constraint
@@ -35544,14 +35405,8 @@ uint32_t Generate_Aggregate (Syntax_Node *node) {
               ? Emit_Static_Int (idx_ty->low_bound.int_value, ait).reg
               : Emit_Coerce_Val (Emit_Bound_Value (&idx_ty->low_bound), ait).reg;
             LLVM_I1 ne = Emit_Icmp ("ne", ait, isf, clo);
-            uint32_t ok2 = cg->label_id++;
-            uint32_t fail2 = cg->label_id++;
-            Emit ("  br i1 %%t%u, label %%L%u, label %%L%u\n",
-               ne.reg, fail2, ok2);
-            cg->block_terminated = true;
-            Emit_Label_Here (fail2);
-            Emit_Raise_Constraint_Error ("parenthesized aggregate bounds vs dynamic constraint (static path)");
-            Emit_Label_Here (ok2);
+            Emit_Raise_Constraint_Error_When (ne,
+              "parenthesized aggregate bounds vs dynamic constraint (static path)");
           }
         }
         if (has_choice_lo and has_choice_hi and not early_has_others
@@ -35784,9 +35639,7 @@ uint32_t Generate_Aggregate (Syntax_Node *node) {
                 if (rng_low <= rng_high and
                   (rng_low < idx_sub_lo or rng_low > idx_sub_hi or
                    rng_high < idx_sub_lo or rng_high > idx_sub_hi)) {
-                  Emit_Raise_Constraint_Error ("aggregate index check");
-                  uint32_t cont = cg->label_id++;
-                  Emit_Label_Here (cont);
+                  Emit_Raise_And_Continue ("aggregate index check");
                 }
 
               // Otherwise a runtime check: a non-null choice range must lie within
@@ -35918,9 +35771,7 @@ uint32_t Generate_Aggregate (Syntax_Node *node) {
                         if (rlo <= rhi and
                           (rlo < inner_idx_sub_lo or rlo > inner_idx_sub_hi or
                            rhi < inner_idx_sub_lo or rhi > inner_idx_sub_hi)) {
-                          Emit_Raise_Constraint_Error ("aggregate inner index check");
-                          uint32_t cont = cg->label_id++;
-                          Emit_Label_Here (cont);
+                          Emit_Raise_And_Continue ("aggregate inner index check");
                         }
                       } else {
                         uint32_t lo_v = ilo_s ? ilo_s
@@ -36011,16 +35862,12 @@ uint32_t Generate_Aggregate (Syntax_Node *node) {
                       int128_t rhi = Static_Int_Value (qch->range.high);
                       if (rlo <= rhi and
                         (rlo < isl or rlo > ish or rhi < isl or rhi > ish)) {
-                        Emit_Raise_Constraint_Error ("aggregate inner index check");
-                        uint32_t cont = cg->label_id++;
-                        Emit_Label_Here (cont);
+                        Emit_Raise_And_Continue ("aggregate inner index check");
                       }
                     } else if (Is_Static_Int_Node (qch)) {
                       int128_t v = Static_Int_Value (qch);
                       if (v < isl or v > ish) {
-                        Emit_Raise_Constraint_Error ("aggregate inner index check");
-                        uint32_t cont = cg->label_id++;
-                        Emit_Label_Here (cont);
+                        Emit_Raise_And_Continue ("aggregate inner index check");
                       }
                     }
                   }
@@ -36077,9 +35924,7 @@ uint32_t Generate_Aggregate (Syntax_Node *node) {
             int128_t cv = Static_Int_Value (choice);
             if (need_idx_subtype_check) {
               if (cv < idx_sub_lo or cv > idx_sub_hi) {
-                Emit_Raise_Constraint_Error ("aggregate index check");
-                uint32_t cont = cg->label_id++;
-                Emit_Label_Here (cont);
+                Emit_Raise_And_Continue ("aggregate index check");
               }
             }
 
@@ -36233,14 +36078,8 @@ uint32_t Generate_Aggregate (Syntax_Node *node) {
       // So do NOT compare inner bounds against constraint here.                                   
       //                                                                                            
       uint32_t mm = Emit_Result_Instruction ("load i1, ptr %%t%u  ; inner mismatch?\n", inner_trk_mm);
-      uint32_t ok_lbl = cg->label_id++;
-      uint32_t fail_lbl = cg->label_id++;
-      Emit ("  br i1 %%t%u, label %%L%u, label %%L%u\n",
-         mm, fail_lbl, ok_lbl);
-      cg->block_terminated = true;
-      Emit_Label_Here (fail_lbl);
-      Emit_Raise_Constraint_Error ("sub-aggregate bounds mismatch (RM 4.3.2(6))");
-      Emit_Label_Here (ok_lbl);
+      Emit_Raise_Constraint_Error_When ((LLVM_I1){ mm },
+        "sub-aggregate bounds mismatch (RM 4.3.2(6))");
       Emit_Label_Here (skip_lbl);
     }
 
@@ -36959,13 +36798,7 @@ void Emit_Aggregate_Bound_Match_Check (uint32_t a_lo, uint32_t b_lo,
     Emit ("  %%t%u = and i1 %%t%u, %%t%u\n",
           fail, endpoints_differ, not_both_null);
   }
-  uint32_t ok_lbl = cg->label_id++;
-  uint32_t fail_lbl = cg->label_id++;
-  Emit ("  br i1 %%t%u, label %%L%u, label %%L%u\n", fail, fail_lbl, ok_lbl);
-  cg->block_terminated = true;
-  Emit_Label_Here (fail_lbl);
-  Emit_Raise_Constraint_Error (raise_msg);
-  Emit_Label_Here (ok_lbl);
+  Emit_Raise_Constraint_Error_When ((LLVM_I1){ fail }, raise_msg);
 }
 
 // Runtime variant guard for dynamic discriminant values: when a component
@@ -38291,14 +38124,8 @@ LLVM_Value Generate_Expression (Syntax_Node *node) {
                  if (etype and etype->kind == TYPE_ENUMERATION and
                    etype->enumeration.literals and etype->enumeration.literal_count > 0) {
                    char target = node->string_val.text.data[1];
-                   for (uint32_t j = 0; j < etype->enumeration.literal_count; j++) {
-                     String_Slice lit = etype->enumeration.literals[j];
-                     if (lit.length == 3 and lit.data[0] == '\'' and
-                       lit.data[1] == target and lit.data[2] == '\'') {
-                       ch = (int64_t)j;
-                       break;
-                     }
-                   }
+                   int64_t position = Enumeration_Character_Literal_Position (etype, target);
+                   if (position >= 0) ch = position;
                  }
                }
 
@@ -53996,6 +53823,30 @@ bool Try_Load_From_ALI (String_Slice name) {
   return true;
 }
 
+void Load_With_Clause_Dependencies (Syntax_Node *context) {
+  if (not context) return;
+  Node_List *withs = &context->context.with_clauses;
+  for (uint32_t i = 0; i < withs->count; i++) {
+    Syntax_Node *with_node = withs->items[i];
+    for (uint32_t j = 0; j < with_node->use_clause.names.count; j++) {
+      Syntax_Node *pkg_name = with_node->use_clause.names.items[j];
+      if (pkg_name->kind == NK_IDENTIFIER) {
+        char *pkg_src = Lookup_Path (pkg_name->string_val.text);
+        if (pkg_src) {
+          Load_Package_Spec (pkg_name->string_val.text, pkg_src);
+        }
+      }
+    }
+  }
+}
+
+void Resolve_Context_Use_Clauses (Syntax_Node *context) {
+  if (not context) return;
+  Node_List *uses = &context->context.use_clauses;
+  for (uint32_t i = 0; i < uses->count; i++)
+    Resolve_Declaration (uses->items[i]);
+}
+
 // Load and resolve a package specification
 void Load_Package_Spec (String_Slice name, char *src) {
   if (not src) return;
@@ -54037,21 +53888,7 @@ void Load_Package_Spec (String_Slice name, char *src) {
   }
 
   // Recursively load WITH'd packages
-  if (cu->compilation_unit.context) {
-    Node_List *withs = &cu->compilation_unit.context->context.with_clauses;
-    for (uint32_t i = 0; i < withs->count; i++) {
-      Syntax_Node *with_node = withs->items[i];
-      for (uint32_t j = 0; j < with_node->use_clause.names.count; j++) {
-        Syntax_Node *pkg_name = with_node->use_clause.names.items[j];
-        if (pkg_name->kind == NK_IDENTIFIER) {
-          char *pkg_src = Lookup_Path (pkg_name->string_val.text);
-          if (pkg_src) {
-            Load_Package_Spec (pkg_name->string_val.text, pkg_src);
-          }
-        }
-      }
-    }
-  }
+  Load_With_Clause_Dependencies (cu->compilation_unit.context);
 
   // The spec's context (WITH clauses, Elaborate pragmas) feeds the
   // elaboration graph here — a loaded spec's compilation unit never
@@ -54075,12 +53912,7 @@ void Load_Package_Spec (String_Slice name, char *src) {
 
       // Resolve the spec's USE clauses (RM 8.4): its declarations may
       // name entities of WITH'd packages directly.
-      if (cu->compilation_unit.context) {
-        Node_List *spec_uses =
-          &cu->compilation_unit.context->context.use_clauses;
-        for (uint32_t i = 0; i < spec_uses->count; i++)
-          Resolve_Declaration (spec_uses->items[i]);
-      }
+      Resolve_Context_Use_Clauses (cu->compilation_unit.context);
 
       // Push package scope
       Symbol_Manager_Push_Scope (pkg_sym);
@@ -54130,12 +53962,7 @@ void Load_Package_Spec (String_Slice name, char *src) {
       // Resolve USE clauses from the loaded unit's context so types from
       // WITH'd packages (e.g. TEXT_IO.FILE_TYPE) are visible when
       // resolving the procedure's parameter types.
-      if (cu->compilation_unit.context) {
-        Node_List *uses = &cu->compilation_unit.context->context.use_clauses;
-        for (uint32_t i = 0; i < uses->count; i++) {
-          Resolve_Declaration (uses->items[i]);
-        }
-      }
+      Resolve_Context_Use_Clauses (cu->compilation_unit.context);
       // Delegate to Resolve_Declaration which fully handles the body
       // (param resolution, body declarations, statements). This sets
       // unit->symbol as a side effect of NK_PROCEDURE_BODY handling.
@@ -54226,23 +54053,8 @@ void Load_Package_Spec (String_Slice name, char *src) {
 
         // Process the body cu's WITH/USE clauses so types referenced
         // by the body (e.g. UNCHECKED_CONVERSION) are visible.
-        if (more_cu->compilation_unit.context) {
-          Node_List *withs = &more_cu->compilation_unit.context->context.with_clauses;
-          for (uint32_t i = 0; i < withs->count; i++) {
-            Syntax_Node *wnode = withs->items[i];
-            for (uint32_t j = 0; j < wnode->use_clause.names.count; j++) {
-              Syntax_Node *pname = wnode->use_clause.names.items[j];
-              if (pname->kind == NK_IDENTIFIER) {
-                char *psrc = Lookup_Path (pname->string_val.text);
-                if (psrc) Load_Package_Spec (pname->string_val.text, psrc);
-              }
-            }
-          }
-          Node_List *uses = &more_cu->compilation_unit.context->context.use_clauses;
-          for (uint32_t i = 0; i < uses->count; i++) {
-            Resolve_Declaration (uses->items[i]);
-          }
-        }
+        Load_With_Clause_Dependencies (more_cu->compilation_unit.context);
+        Resolve_Context_Use_Clauses (more_cu->compilation_unit.context);
 
         // Resolve the body in the generic scope so identifiers bind to
         // symbols. Mirrors the package-body branch below.
@@ -54420,34 +54232,14 @@ void Load_Package_Spec (String_Slice name, char *src) {
       Syntax_Node *body_unit = body_cu->compilation_unit.unit;
 
       // Recursively load WITH'd packages from body
-      if (body_cu->compilation_unit.context) {
-        Node_List *withs = &body_cu->compilation_unit.context->context.with_clauses;
-        for (uint32_t i = 0; i < withs->count; i++) {
-          Syntax_Node *with_node = withs->items[i];
-          for (uint32_t j = 0; j < with_node->use_clause.names.count; j++) {
-            Syntax_Node *pkg_name = with_node->use_clause.names.items[j];
-            if (pkg_name->kind == NK_IDENTIFIER) {
-              char *pkg_src = Lookup_Path (pkg_name->string_val.text);
-              if (pkg_src) {
-                Load_Package_Spec (pkg_name->string_val.text, pkg_src);
-              }
-            }
-          }
-        }
-      }
+      Load_With_Clause_Dependencies (body_cu->compilation_unit.context);
 
       // The body's own context also carries elaboration edges.
       Elab_Register_Context_Dependencies (body_cu);
 
       // Resolve the body's USE clauses so the WITH'd packages' contents
-      // are directly visible while the body resolves (RM 8.4) — the
-      // subprogram-unit branch already did this; package bodies missed it.
-      if (body_cu->compilation_unit.context) {
-        Node_List *body_uses =
-          &body_cu->compilation_unit.context->context.use_clauses;
-        for (uint32_t i = 0; i < body_uses->count; i++)
-          Resolve_Declaration (body_uses->items[i]);
-      }
+      // are directly visible while the body resolves (RM 8.4).
+      Resolve_Context_Use_Clauses (body_cu->compilation_unit.context);
 
       // Look up the package symbol
       if (body_unit->kind == NK_PACKAGE_BODY) {
