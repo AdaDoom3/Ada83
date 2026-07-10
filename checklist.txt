@@ -296,14 +296,32 @@ STORAGE_SIZE (cd2b11d/e, cd7205c), derived SMALL inheritance (cd1c03e),
 derived record POSITION/FIRST_BIT/LAST_BIT inheritance (cd1c04e — separate
 record-layout mechanism, not the scalar 'SIZE path).
 
-BIGGEST REMAINING LEVERS (from full-suite gap analysis, ~119 FAIL + 72
-compile-skips hidden in the skip bucket):
-  * `&` catenation on derived/array types routes to the scalar binary-op
-    switch (token 33 = TK_AMPERSAND) and aborts at the arithmetic default
-    (~ada83.c:28347) instead of the concatenation path. ~10 compile-skips
-    (c34005a/d/g/j, c45347a/c/d, c64005c/d, cc3220a) + likely several c34
-    derived-op FAILs. Highest tests-per-effort; a real inherited-predefined-
-    operation fix, not an expander hack.
+CATENATION ("&") RESOLUTION REWRITE — LANDED (+9, zero regressions):
+The (component & component) form of RM 4.5.3 — `C1 & C2` yielding a one-
+dimensional array whose type comes only from context — was unimplemented, and
+two goblins masked it:
+  1. Analyze_Binary's empty-set fallback fabricated a scalar interpretation from
+     the LEFT operand (`is_cmp ? boolean : L->type`) whenever no operator interp
+     was built. For (C,C) this handed back the component type, so the node was
+     never seen as needing context and codegen aborted ("unhandled binary
+     operator 33"). Fixed: skip that fallback for concatenation (`not is_concat`)
+     so the interp set stays empty and the context pass owns it.
+  2. The NK_APPLY `"&"(A,B)` path blindly defaulted the result to STRING,
+     ignoring an array context already seeded on the node. Fixed: keep the array
+     context when present; STRING only as the CHARACTER & CHARACTER default.
+New: Resolve_Context_Catenation + Catenation_Operand_Target (static helpers by
+Resolve_Operand). When Resolve_In_Context finds no interpretation for `&`, it
+derives the result array type from the applicable context (Type_Base of the
+context array, or STRING for a character operand with no array context), drives
+each operand against the array or its component, and sets the node type to the
+context subtype. The (array & *) forms are untouched — they always build an
+interpretation and flow through the ordinary operand-propagation path.
+Cleared the `&`-on-derived-array compile-skip cluster: c34005a/d/j, c45347a/c/d,
+c64005c, cc3220a pass; c34005g now compiles and fails on a SEPARATE, pre-
+existing slice bug (INCORRECT SLICE (VALUE)) — honest skip->fail, not a
+regression. Class C 1704->1713, skips 153->144, FAIL unchanged.
+
+OTHER REMAINING LEVERS (from full-suite gap analysis):
   * Object renaming (RM 8.5) must yield a true alias (pointer to the renamed
     object), currently copies → segv/CE/wrong. Coherent set c85005a-e,
     c85006f/g (~7 tests).

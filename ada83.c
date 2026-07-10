@@ -11922,8 +11922,13 @@ Type_Info *Resolve_Apply (Syntax_Node *node) {
           node->type = left_type;
         } else if (Type_Is_String (right_type)) {
           node->type = right_type;
+        } else if (Type_Is_Array_Like (node->type)) {
+          // Component & component: the result array type is supplied by the
+          // applicable context already seeded on this node (RM 4.5.3). Keep it.
         } else {
-          node->type = sm->type_string;  // Default for character concat
+          // CHARACTER & CHARACTER with no array context: the predefined
+          // catenation for STRING applies (RM 4.5.3, component CHARACTER).
+          node->type = sm->type_string;
         }
         return node->type;
       }
@@ -13516,7 +13521,11 @@ void Analyze_Binary (Syntax_Node *n) {
   }
 
   // Never hand downstream an empty set: default to left type (BOOLEAN for cmp).
-  if (out->count == 0)
+  // A "&" whose operands built no interpretation is the (component & component)
+  // form (RM 4.5.3): its result array type is context-determined, so leave the
+  // set empty for Resolve_In_Context to derive it rather than fabricating a
+  // scalar interpretation from the left component.
+  if (out->count == 0 and not is_concat)
     Interp_Add (out, NULL, is_cmp ? sm->type_boolean : L->type,
                 L ? L->type : NULL, R ? R->type : NULL, 0);
 }
@@ -13710,6 +13719,51 @@ static void Resolve_Operand (Syntax_Node *o, Type_Info *opnd_typ) {
   }
 }
 
+// RM 4.5.3: choose the target type for one operand of "&" given the result
+// array type ARR and its component type ELEM. An operand already typed as the
+// array (or a same-base array) contributes the array; every other operand is a
+// single component.
+static Type_Info *Catenation_Operand_Target (Syntax_Node *o, Type_Info *arr,
+                                             Type_Info *elem) {
+  Type_Info *ot = o ? o->type : NULL;
+  if (Type_Is_Array_Like (ot) and Type_Base (ot) == arr) return arr;
+  return elem;
+}
+
+// RM 4.5.3 (component & component): the one catenation form whose result array
+// type appears in neither operand — both sides are components — so the array
+// type is taken solely from the applicable context. Reached from
+// Resolve_In_Context when Analyze_Binary built no interpretation (no operand was
+// an array); the (array & *) forms always build an interpretation and are
+// resolved through the ordinary operand-propagation path below.
+static Type_Info *Resolve_Context_Catenation (Syntax_Node *n, Type_Info *ctx) {
+  Type_Info *arr = Type_Is_Array_Like (ctx) ? Type_Base (ctx) : NULL;
+  // With no array context the only predefined catenation whose array type is
+  // known without an array operand is STRING (component CHARACTER): `'a' & 'b'`.
+  if (not arr) {
+    Type_Info *lt = n->binary.left  ? n->binary.left->type  : NULL;
+    Type_Info *rt = n->binary.right ? n->binary.right->type : NULL;
+    if (Type_Is_Character_Type (lt) or Type_Is_Character_Type (rt) or
+        (n->binary.left  and n->binary.left->kind  == NK_CHARACTER) or
+        (n->binary.right and n->binary.right->kind == NK_CHARACTER))
+      arr = sm->type_string;
+  }
+  if (not arr or arr->array.index_count != 1) {
+    Report_Error (n->location,
+      "catenation of components requires a one-dimensional array context");
+    return n->type;
+  }
+  Type_Info *elem = arr->array.element_type;
+  Resolve_Operand (n->binary.left,
+                   Catenation_Operand_Target (n->binary.left,  arr, elem));
+  Resolve_Operand (n->binary.right,
+                   Catenation_Operand_Target (n->binary.right, arr, elem));
+  // Keep the context subtype when it names one (its index constraint bounds the
+  // result); otherwise the unconstrained base is the result type.
+  n->type = (Type_Base (ctx) == arr) ? ctx : arr;
+  return n->type;
+}
+
 // Top-down: commit the interpretation the context selects, then propagate each
 // operand's target type down to the child. The interpretation's opnd[] profile
 // already encodes heterogeneous operands (CHARACTER & STRING, fixed * INTEGER,
@@ -13728,7 +13782,13 @@ Type_Info *Resolve_In_Context (Syntax_Node *n, Type_Info *ctx) {
   if (n->kind != NK_BINARY_OP and n->kind != NK_UNARY_OP)
     return n->type;                       // leaf: already committed by Analyze
   Interpretation *pick = Select_Interp (n->interps, ctx);
-  if (not pick) return n->type;
+  if (not pick) {
+    // The (component & component) catenation form builds no interpretation
+    // bottom-up — its array type is context-determined (RM 4.5.3).
+    if (n->kind == NK_BINARY_OP and n->binary.op == TK_AMPERSAND)
+      return Resolve_Context_Catenation (n, ctx);
+    return n->type;
+  }
   n->type = pick->typ;
   n->symbol = pick->nam;
 
