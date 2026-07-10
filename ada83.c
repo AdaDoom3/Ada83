@@ -2159,6 +2159,10 @@ bool     Type_Bound_Is_Set                (Type_Bound  b);
 bool     Bound_Is_Expression              (const Type_Bound *bound);
 double   Type_Bound_Float_Value           (Type_Bound  b);
 int128_t Array_Element_Count              (Type_Info  *t);
+Type_Bound Array_Dimension_Effective_Bound (Type_Info *array_type,
+                                            uint32_t   dimension,
+                                            bool       want_high,
+                                            bool      *out_from_index_type);
 uint32_t Array_Element_Byte_Size          (Type_Info  *array_type,
                                            uint32_t    missing_fallback,
                                            uint32_t    zero_size_fallback);
@@ -12601,6 +12605,28 @@ const char *U128_Decimal (uint128_t value) {
   static _Thread_local char buf[40];  // 340282366920938463463374607431768211455 + NUL
   if (value == 0) return "0";
   return Decimal_Digits_Backward (buf + sizeof (buf) - 1, value);
+}
+
+// Effective bound of one array dimension (RM 3.6.1): the dimension's own
+// bound when it carries one, else the index subtype's bound — an
+// unconstrained dimension records its range only on the index type.
+// out_from_index_type (optional) reports which source answered, so emit
+// sites can attribute the bound in IR comments.
+Type_Bound Array_Dimension_Effective_Bound (Type_Info *array_type,
+                                            uint32_t   dimension,
+                                            bool       want_high,
+                                            bool      *out_from_index_type) {
+  Index_Info *index = &array_type->array.indices[dimension];
+  Type_Bound bound = want_high ? index->high_bound : index->low_bound;
+  bool from_index_type = false;
+  if (bound.kind != BOUND_INTEGER and bound.kind != BOUND_EXPR and
+      index->index_type) {
+    bound = want_high ? index->index_type->high_bound
+                      : index->index_type->low_bound;
+    from_index_type = true;
+  }
+  if (out_from_index_type) *out_from_index_type = from_index_type;
+  return bound;
 }
 
 // Get array element count for constrained arrays, 0 for unconstrained
@@ -27835,16 +27861,10 @@ LLVM_Value Emit_Binary_Op_Predefined (Syntax_Node *node) {
             range_bt = rbt;
           } else if (Type_Is_Array_Like (arr_type) and rdim < arr_type->array.index_count) {
             LLVM_Rep iat = Integer_Arith_Rep ();
-            Type_Bound lb = arr_type->array.indices[rdim].low_bound;
-            Type_Bound hb = arr_type->array.indices[rdim].high_bound;
-
-            // If bounds not set on array, derive from index type
-            if (lb.kind != BOUND_INTEGER and lb.kind != BOUND_EXPR and
-              arr_type->array.indices[rdim].index_type) {
-              Type_Info *idx_ty = arr_type->array.indices[rdim].index_type;
-              lb = idx_ty->low_bound;
-              hb = idx_ty->high_bound;
-            }
+            Type_Bound lb = Array_Dimension_Effective_Bound (arr_type, rdim,
+                                                             false, NULL);
+            Type_Bound hb = Array_Dimension_Effective_Bound (arr_type, rdim,
+                                                             true, NULL);
             range_low  = Emit_Single_Bound (&lb, iat);
             range_high = Emit_Single_Bound (&hb, iat);
 
@@ -31269,23 +31289,18 @@ LLVM_Value Emit_Bound_Attribute (uint32_t t,
         return Val_Rep (bound, attr_bt);
       }
     } else if (dim < prefix_type->array.index_count) {
-      Type_Bound b = is_low ? prefix_type->array.indices[dim].low_bound
-                  : prefix_type->array.indices[dim].high_bound;
+      bool from_index_type = false;
+      Type_Bound b = Array_Dimension_Effective_Bound (prefix_type, dim,
+                                                      not is_low,
+                                                      &from_index_type);
 
       // Dynamic bound expression (e.g., TYPE AA IS ARRAY (SNI,..) where SNI has dynamic range)
       if (Bound_Is_Expression (&b)) {
-        Emit_Dynamic_Array_Bound (t, b, attr, tag, dim, "dynamic");
+        Emit_Dynamic_Array_Bound (t, b, attr, tag, dim,
+                                  from_index_type ? "from idx_type" : "dynamic");
       } else if (b.kind == BOUND_INTEGER or Type_Bound_Is_Set (b)) {
-        Emit_Static_Array_Bound (t, Type_Bound_Value (b), attr, tag, dim, "");
-
-      // Bounds not set on array - derive from index type's bounds
-      } else if (prefix_type->array.indices[dim].index_type) {
-        Type_Info *idx_ty = prefix_type->array.indices[dim].index_type;
-        Type_Bound ib = is_low ? idx_ty->low_bound : idx_ty->high_bound;
-        if (Bound_Is_Expression (&ib))
-          Emit_Dynamic_Array_Bound (t, ib, attr, tag, dim, "from idx_type");
-        else
-          Emit_Static_Array_Bound (t, Type_Bound_Value (ib), attr, tag, dim, " from idx_type");
+        Emit_Static_Array_Bound (t, Type_Bound_Value (b), attr, tag, dim,
+                                 from_index_type ? " from idx_type" : "");
 
       // Fallback: emit 0
       } else {
@@ -31611,16 +31626,10 @@ LLVM_Value Generate_Attribute (Syntax_Node *node) {
           return Val_Rep (len, Integer_Arith_Rep ());
         }
       } else if (dim < prefix_type->array.index_count) {
-        Type_Bound lb = prefix_type->array.indices[dim].low_bound;
-        Type_Bound hb = prefix_type->array.indices[dim].high_bound;
-
-        // If bounds not set, try deriving from index_type
-        if (lb.kind != BOUND_INTEGER and lb.kind != BOUND_EXPR and
-          prefix_type->array.indices[dim].index_type) {
-          Type_Info *idx_ty = prefix_type->array.indices[dim].index_type;
-          lb = idx_ty->low_bound;
-          hb = idx_ty->high_bound;
-        }
+        Type_Bound lb = Array_Dimension_Effective_Bound (prefix_type, dim,
+                                                         false, NULL);
+        Type_Bound hb = Array_Dimension_Effective_Bound (prefix_type, dim,
+                                                         true, NULL);
 
         // Dynamic length: generate high - low + 1 at runtime
         if (lb.kind == BOUND_EXPR or hb.kind == BOUND_EXPR) {
@@ -31663,13 +31672,8 @@ LLVM_Value Generate_Attribute (Syntax_Node *node) {
         // Use dim-aware accessor for multi-dimensional arrays.
         return Emit_Fat_Pointer_Low_Dim (fat, rng_bt, dim);
       } else if (dim < prefix_type->array.index_count) {
-        Type_Bound lb = prefix_type->array.indices[dim].low_bound;
-
-        // If bounds not set, try deriving from index_type
-        if (lb.kind != BOUND_INTEGER and lb.kind != BOUND_EXPR and
-          prefix_type->array.indices[dim].index_type) {
-          lb = prefix_type->array.indices[dim].index_type->low_bound;
-        }
+        Type_Bound lb = Array_Dimension_Effective_Bound (prefix_type, dim,
+                                                         false, NULL);
         if (Bound_Is_Expression (&lb)) {
           LLVM_Value v_v = Generate_Expression (lb.expr);
           uint32_t v = v_v.reg;
