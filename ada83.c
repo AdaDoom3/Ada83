@@ -2803,12 +2803,23 @@ LLVM_Value  Val_Rep_Impl (const char *call_func, int call_line,
 // so that, with `-g`, each IR line carries a trailing `; @ FUNC:LINE` comment.
 void Emit_Impl              (const char *src_func, int src_line, const char *format, ...) __attribute__((format(printf, 3, 4)));
 #define Emit(...) Emit_Impl (__func__, __LINE__, __VA_ARGS__)
+// Mint a fresh SSA temporary and emit one instruction line defining it:
+// `  %tN = <formatted text>`. Returns N. The caller's format string carries
+// everything after the `=` (including the trailing newline, when the line is
+// complete). NOTE: argument expressions are evaluated before the temporary is
+// minted, so they must not emit IR or mint temporaries themselves.
+uint32_t Emit_Result_Instruction_Impl (const char *src_func, int src_line, const char *format, ...) __attribute__((format(printf, 3, 4)));
+#define Emit_Result_Instruction(...) Emit_Result_Instruction_Impl (__func__, __LINE__, __VA_ARGS__)
 // Emit an LLVM debug-location comment anchoring the next instruction to source.
 void Emit_Location          (Source_Location location);
 // Emit a basic-block label, closing the previous block if it has no terminator.
 void Emit_Label_Here        (uint32_t label);
 // If the current block lacks a terminator, emit an unconditional "br label %N".
 void Emit_Branch_If_Needed  (uint32_t label);
+// Close an emitted runtime-support function that returns void: optionally a
+// fallthrough branch to its shared named `done` block, then the block itself,
+// `ret void`, and the closing brace.
+void Emit_Void_Function_Epilogue (bool branch_to_done);
 // Append formatted text to the string-constant accumulator (for @.str.N globals).
 void Emit_String_Const      (const char *format, ...);
 // Append a single character to the string-constant accumulator.
@@ -3192,6 +3203,7 @@ LLVM_Value  Emit_Static_Int_Comment   (int128_t    value, LLVM_Rep    rep,
 LLVM_I1     Emit_Icmp_Const            (const char *op,    LLVM_Rep    type,
                                         uint32_t    lhs,   int64_t     rhs);
 LLVM_I1     Emit_Icmp_Null_Ptr         (const char *op,    uint32_t    ptr);
+LLVM_I1     Emit_Boolean_Truth_Test    (uint32_t    value);
 LLVM_I1     Emit_Icmp_Ptr              (const char *op,    uint32_t    lhs,    uint32_t  rhs);
 LLVM_I1     Emit_Fcmp_Zero             (const char *op,    LLVM_Rep    type,   uint32_t  lhs);
 LLVM_I1     Emit_Icmp                  (const char *op,    LLVM_Rep    type,
@@ -8837,8 +8849,7 @@ uint32_t Emit_Actual_Constrained_Flag (Syntax_Node *actual) {
   Type_Info *ty = a ? a->type   : NULL;
 
   if (s and s->has_runtime_constrained_flag) {
-    uint32_t r = Emit_Temp ();
-    Emit ("  %%t%u = load i8, ptr ", r);
+    uint32_t r = Emit_Result_Instruction ("load i8, ptr ");
     Emit_Constrained_Slot_Ref (s);
     Emit ("  ; propagate actual 'CONSTRAINED\n");
     return r;
@@ -8852,10 +8863,9 @@ uint32_t Emit_Actual_Constrained_Flag (Syntax_Node *actual) {
     (s and s->kind == SYMBOL_PARAMETER and
      Parameter_Symbol_Mode (s) == PARAM_IN);
 
-  uint32_t r = Emit_Temp ();
-  Emit ("  %%t%u = add i8 0, %d  ; actual 'CONSTRAINED (RM 3.7.4)\n",
-        r, constrained ? 1 : 0);
-  return r;
+  return Emit_Static_Int_Comment (constrained ? 1 : 0,
+                                  Type_To_Rep (sm->type_boolean),
+                                  "actual 'CONSTRAINED (RM 3.7.4)").reg;
 }
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
@@ -20935,8 +20945,7 @@ LLVM_Value Val_Rep_Impl (const char *call_func, int call_line,
 // need a branch condition convert back to i1 at the br/select (the one place
 // i1 is legitimate).
 LLVM_Value Emit_Bool_Value (LLVM_I1 i1_reg) {
-  uint32_t z = Emit_Temp ();
-  Emit ("  %%t%u = zext i1 %%t%u to %s\n", z, i1_reg.reg, BOOL_LLVM_TYPE);
+  uint32_t z = Emit_Result_Instruction ("zext i1 %%t%u to %s\n", i1_reg.reg, BOOL_LLVM_TYPE);
   return Val_Of_Type (z, sm->type_boolean);
 }
 
@@ -21314,6 +21323,34 @@ void Emit_Impl (const char *src_func, int src_line, const char *format, ...) {
 }
 #define Emit(...) Emit_Impl (__func__, __LINE__, __VA_ARGS__)
 
+// Mint a fresh SSA temporary and emit the instruction line defining it.
+// The caller's arguments are formatted into a buffer FIRST (stack buffer with
+// heap fallback, same style as Emit_Impl), the temporary is minted second, and
+// the assembled `  %tN = <text>` line goes through Emit_Impl so -g site
+// attribution and the producer-honesty shadow both see one complete line.
+uint32_t Emit_Result_Instruction_Impl (const char *src_func, int src_line,
+                                       const char *format, ...) {
+  char  stack_buf [4096];
+  char *buf  = stack_buf;
+  int   need;
+  va_list args;
+  va_start (args, format);
+  va_list args_copy;
+  va_copy (args_copy, args);
+  need = vsnprintf (stack_buf, sizeof (stack_buf), format, args_copy);
+  va_end (args_copy);
+  if (need >= (int) sizeof (stack_buf)) {
+    buf  = malloc ((size_t) need + 1);
+    need = vsnprintf (buf, (size_t) need + 1, format, args);
+  }
+  va_end (args);
+
+  uint32_t result = Emit_Temp ();
+  Emit_Impl (src_func, src_line, "  %%t%u = %s", result, buf);
+  if (buf != stack_buf) free (buf);
+  return result;
+}
+
 // Emit a source location comment for debugging: ; [filename:line:col]
 void Emit_Location (Source_Location location) {
   if (location.line > 0) {
@@ -21343,6 +21380,16 @@ void Emit_Branch_If_Needed (uint32_t label) {
     Emit ("  br label %%L%u\n", label);
     cg->block_terminated = true;
   }
+}
+
+// Close an emitted runtime-support function that returns void. These
+// hand-written IR bodies use named labels (a shared `done` exit block), not
+// the numbered %LN labels the block-tracking helpers manage.
+void Emit_Void_Function_Epilogue (bool branch_to_done) {
+  if (branch_to_done) Emit ("  br label %%done\n");
+  Emit ("done:\n");
+  Emit ("  ret void\n");
+  Emit ("}\n\n");
 }
 
 // Emit a floating-point constant at the correct precision for the given
@@ -21630,8 +21677,7 @@ void Emit_Symbol_Addr (uint32_t reg, Symbol *sym) {
 // read, write, taken address for parameter passing — routes through this
 // helper so the rename stays bound to the object first designated.
 uint32_t Emit_Rename_Address (Symbol *sym) {
-  uint32_t reg = Emit_Temp ();
-  Emit ("  %%t%u = load ptr, ptr ", reg);
+  uint32_t reg = Emit_Result_Instruction ("load ptr, ptr ");
   Emit_Symbol_Storage (sym->rename_address_slot);
   Emit ("  ; RM 8.5 renamed address\n");
   return reg;
@@ -22033,8 +22079,7 @@ bool Emit_Nested_Frame_Arg (Symbol *proc, uint32_t precomp) {
 
 // Emit raise sequence for a named exception: ptrtoint + call __ada_raise + unreachable.
 void Emit_Raise_Exception (const char *exc_name, const char *comment) {
-  uint32_t exc = Emit_Temp ();
-  Emit ("  %%t%u = ptrtoint ptr @__exc.%s to " PTR_INT_TYPE "\n", exc, exc_name);
+  uint32_t exc = Emit_Result_Instruction ("ptrtoint ptr @__exc.%s to " PTR_INT_TYPE "\n", exc_name);
   Emit ("  call void @__ada_raise(i64 %%t%u)  ; %s\n", exc, comment);
   Emit ("  unreachable\n");
   cg->block_terminated = true;  // unreachable terminates block
@@ -22077,8 +22122,7 @@ LLVM_Value Emit_Overflow_Checked_Op (
 
   // Plain operation (wraps for modular, or check suppressed)
   if (is_unsigned or suppressed) {
-    uint32_t t = Emit_Temp ();
-    Emit ("  %%t%u = %s %s %%t%u, %%t%u\n", t, op, LLVM_Rep_To_String (llvm_type), left, right);
+    uint32_t t = Emit_Result_Instruction ("%s %s %%t%u, %%t%u\n", op, LLVM_Rep_To_String (llvm_type), left, right);
 
     // Modular non-power-of-2: caller handles urem wrapping
     return Val_Of_Type (t, result_type);
@@ -22092,21 +22136,16 @@ LLVM_Value Emit_Overflow_Checked_Op (
   else {
 
     // No intrinsic for div/rem - fall back to plain
-    uint32_t t = Emit_Temp ();
-    Emit ("  %%t%u = %s %s %%t%u, %%t%u\n", t, op, LLVM_Rep_To_String (llvm_type), left, right);
+    uint32_t t = Emit_Result_Instruction ("%s %s %%t%u, %%t%u\n", op, LLVM_Rep_To_String (llvm_type), left, right);
     return Val_Of_Type (t, result_type);
   }
 
   // Emit: %pair = call {iN, i1} @llvm.sOP.with.overflow.iN(iN %left, iN %right)
-  uint32_t pair = Emit_Temp ();
-  Emit ("  %%t%u = call {%s, i1} @llvm.%s.with.overflow.%s(%s %%t%u, %s %%t%u)\n",
-     pair, LLVM_Rep_To_String (llvm_type), intrinsic_op, LLVM_Rep_To_String (llvm_type), LLVM_Rep_To_String (llvm_type), left, LLVM_Rep_To_String (llvm_type), right);
+  uint32_t pair = Emit_Result_Instruction ("call {%s, i1} @llvm.%s.with.overflow.%s(%s %%t%u, %s %%t%u)\n", LLVM_Rep_To_String (llvm_type), intrinsic_op, LLVM_Rep_To_String (llvm_type), LLVM_Rep_To_String (llvm_type), left, LLVM_Rep_To_String (llvm_type), right);
 
   // Extract result and overflow flag
-  uint32_t result = Emit_Temp ();
-  Emit ("  %%t%u = extractvalue {%s, i1} %%t%u, 0\n", result, LLVM_Rep_To_String (llvm_type), pair);
-  uint32_t ovf = Emit_Temp ();
-  Emit ("  %%t%u = extractvalue {%s, i1} %%t%u, 1\n", ovf, LLVM_Rep_To_String (llvm_type), pair);
+  uint32_t result = Emit_Result_Instruction ("extractvalue {%s, i1} %%t%u, 0\n", LLVM_Rep_To_String (llvm_type), pair);
+  uint32_t ovf = Emit_Result_Instruction ("extractvalue {%s, i1} %%t%u, 1\n", LLVM_Rep_To_String (llvm_type), pair);
 
   // Branch on overflow
   Emit_Check_With_Raise (ovf, true, "arithmetic overflow");
@@ -22145,10 +22184,8 @@ void Emit_Signed_Division_Overflow_Check (uint32_t dividend, uint32_t divisor,
   // Get type minimum: for iN, min = -(1 << (N-1)).
   // In LLVM, the min of i32 is -2147483648, i64 is -9223372036854775808.
   // We compute the min using shl + sign.
-  uint32_t min_val = Emit_Temp ();
-  Emit ("  %%t%u = shl %s 1, %u  ; type min magnitude\n", min_val, LLVM_Rep_To_String (rep), rep.bits - 1);
-  uint32_t neg_min = Emit_Temp ();
-  Emit ("  %%t%u = sub %s 0, %%t%u  ; negate to get actual min\n", neg_min, LLVM_Rep_To_String (rep), min_val);
+  uint32_t min_val = Emit_Result_Instruction ("shl %s 1, %u  ; type min magnitude\n", LLVM_Rep_To_String (rep), rep.bits - 1);
+  uint32_t neg_min = Emit_Result_Instruction ("sub %s 0, %%t%u  ; negate to get actual min\n", LLVM_Rep_To_String (rep), min_val);
 
   // Check dividend == min
   LLVM_I1 cmp_min = Emit_Icmp ("eq", rep, dividend, neg_min);
@@ -22181,8 +22218,7 @@ uint32_t Emit_Index_Check (LLVM_Value index_v,
 
   // index > high?
   LLVM_I1 cmp_hi = Emit_Icmp (gt, index_str, index, high_bound);
-  uint32_t out_of_range = Emit_Temp ();
-  Emit ("  %%t%u = or i1 %%t%u, %%t%u\n", out_of_range, cmp_lo.reg, cmp_hi.reg);
+  uint32_t out_of_range = Emit_Result_Instruction ("or i1 %%t%u, %%t%u\n", cmp_lo.reg, cmp_hi.reg);
   Emit_Check_With_Raise (out_of_range, true, "index check failed");
   return index;
 }
@@ -22204,15 +22240,14 @@ void Emit_Slice_Bound_Check (uint32_t slice_lo, uint32_t slice_hi,
   LLVM_I1 b = Emit_Icmp ("sgt", iat, slice_lo, arr_hi);
   LLVM_I1 c = Emit_Icmp ("slt", iat, slice_hi, arr_lo);
   LLVM_I1 d = Emit_Icmp ("sgt", iat, slice_hi, arr_hi);
-  uint32_t ab = Emit_Temp (); Emit ("  %%t%u = or i1 %%t%u, %%t%u\n", ab, a.reg, b.reg);
-  uint32_t cd = Emit_Temp (); Emit ("  %%t%u = or i1 %%t%u, %%t%u\n", cd, c.reg, d.reg);
-  uint32_t any = Emit_Temp (); Emit ("  %%t%u = or i1 %%t%u, %%t%u\n", any, ab, cd);
+   uint32_t ab = Emit_Result_Instruction ("or i1 %%t%u, %%t%u\n", a.reg, b.reg);
+   uint32_t cd = Emit_Result_Instruction ("or i1 %%t%u, %%t%u\n", c.reg, d.reg);
+   uint32_t any = Emit_Result_Instruction ("or i1 %%t%u, %%t%u\n", ab, cd);
   Emit ("  br i1 %%t%u, label %%L%u, label %%L%u\n", any, fail_lbl, ok_lbl);
   cg->block_terminated = true;
   Emit_Label_Here (fail_lbl);
   Emit_Raise_Constraint_Error ("slice bound outside array");
   Emit_Label_Here (ok_lbl);
-  cg->block_terminated = false;
 }
 
 // Emit_Length_Check - array length mismatch check (RM 4.5.2, 5.2.1).
@@ -22481,22 +22516,18 @@ LLVM_Value Emit_Convert_Ext (uint32_t src, LLVM_Rep src_rep,
     }
 
   } else if (src_is_float and dst_is_ptr) {
-    uint32_t int_temp = Emit_Temp ();
-    Emit ("  %%t%u = fptosi %s %%t%u to i64\n", int_temp, LLVM_Rep_To_String (src_s), src);
+    uint32_t int_temp = Emit_Result_Instruction ("fptosi %s %%t%u to i64\n", LLVM_Rep_To_String (src_s), src);
     Emit ("  %%t%u = inttoptr " PTR_INT_TYPE " %%t%u to ptr\n", t, int_temp);
 
   } else if (src_is_float and not dst_is_ptr) {
     // float → integer (or other non-ptr); fat handled by fall-through below.
-    uint32_t rounded = Emit_Temp ();
-    Emit ("  %%t%u = call %s @llvm.round.%s(%s %%t%u)\n",
-       rounded, LLVM_Rep_To_String (src_s), src_s.bits == 32 ? "f32" : "f64",
+    uint32_t rounded = Emit_Result_Instruction ("call %s @llvm.round.%s(%s %%t%u)\n", LLVM_Rep_To_String (src_s), src_s.bits == 32 ? "f32" : "f64",
        LLVM_Rep_To_String (src_s), src);
     Emit ("  %%t%u = %s %s %%t%u to %s\n", t,
        is_unsigned ? "fptoui" : "fptosi", LLVM_Rep_To_String (src_s), rounded, LLVM_Rep_To_String (dst_s));
 
   } else if (src_is_ptr and dst_is_float) {
-    uint32_t int_temp = Emit_Temp ();
-    Emit ("  %%t%u = ptrtoint ptr %%t%u to " PTR_INT_TYPE "\n", int_temp, src);
+    uint32_t int_temp = Emit_Result_Instruction ("ptrtoint ptr %%t%u to " PTR_INT_TYPE "\n", src);
     Emit ("  %%t%u = %s i64 %%t%u to %s\n", t,
        is_unsigned ? "uitofp" : "sitofp", int_temp, LLVM_Rep_To_String (dst_s));
 
@@ -22530,26 +22561,21 @@ LLVM_Value Emit_Convert_Ext (uint32_t src, LLVM_Rep src_rep,
     Emit ("  br i1 %%t%u, label %%L%u, label %%L%u\n", is_null.reg, null_lbl, ok_lbl);
     cg->block_terminated = true;
     Emit_Label_Here (ok_lbl);
-    uint32_t loaded = Emit_Temp ();
-    Emit ("  %%t%u = load %s, ptr %%t%u\n", loaded, LLVM_Rep_To_String (dst_s), src);
+    uint32_t loaded = Emit_Result_Instruction ("load %s, ptr %%t%u\n", LLVM_Rep_To_String (dst_s), src);
     Emit ("  br label %%L%u\n", merge_lbl);
     cg->block_terminated = true;
     Emit_Label_Here (null_lbl);
-    Emit ("  br label %%L%u\n", merge_lbl);
-    cg->block_terminated = true;
     Emit_Label_Here (merge_lbl);
     Emit ("  %%t%u = phi %s [ %%t%u, %%L%u ], [ zeroinitializer, %%L%u ]\n",
        t, LLVM_Rep_To_String (dst_s), loaded, ok_lbl, null_lbl);
     cg->block_terminated = false;
 
   } else if (src_is_fat and dst_is_int) {
-    uint32_t data = Emit_Temp ();
-    Emit ("  %%t%u = extractvalue %s %%t%u, 0\n", data, LLVM_Rep_To_String (src_s), src);
+    uint32_t data = Emit_Result_Instruction ("extractvalue %s %%t%u, 0\n", LLVM_Rep_To_String (src_s), src);
     Emit ("  %%t%u = ptrtoint ptr %%t%u to %s\n", t, data, LLVM_Rep_To_String (dst_s));
 
   } else if (src_is_int and dst_is_fat) {
-    uint32_t ptr_temp = Emit_Temp ();
-    Emit ("  %%t%u = inttoptr %s %%t%u to ptr\n", ptr_temp, LLVM_Rep_To_String (src_s), src);
+    uint32_t ptr_temp = Emit_Result_Instruction ("inttoptr %s %%t%u to ptr\n", LLVM_Rep_To_String (src_s), src);
     Emit ("  %%t%u = load %s, ptr %%t%u\n", t, LLVM_Rep_To_String (dst_s), ptr_temp);
 
   } else if (src_is_fat or dst_is_fat) {
@@ -22640,9 +22666,7 @@ uint32_t Emit_Bound_Value_Typed (Type_Bound *bound, LLVM_Rep *out_rep) {
     LLVM_Rep bound_rep  = iat;
     if (int_val < (int128_t)INT32_MIN or int_val > (int128_t)INT32_MAX)
       bound_rep = LLVM_Rep_Int (64, false);
-    uint32_t result = Emit_Temp ();
-    Emit ("  %%t%u = add %s 0, %s  ; float-to-int bound (%g)\n",
-       result, LLVM_Rep_To_String (bound_rep), I128_Decimal (int_val), bound->float_value);
+    uint32_t result = Emit_Result_Instruction ("add %s 0, %s  ; float-to-int bound (%g)\n", LLVM_Rep_To_String (bound_rep), I128_Decimal (int_val), bound->float_value);
     if (out_rep) *out_rep = bound_rep;
     return result;
 
@@ -22673,10 +22697,8 @@ uint32_t Emit_Fixed_Bound_Mantissa (Type_Bound *bound, double small, LLVM_Rep fi
     LLVM_Rep ct = bound->cached_rep;
     if (LLVM_Rep_Is_Float (ct)) {
       uint64_t sb; memcpy (&sb, &small, sizeof (sb));
-      uint32_t st = Emit_Temp ();
-      Emit ("  %%t%u = fadd double 0.0, 0x%016llX\n", st, (unsigned long long)sb);
-      uint32_t dv = Emit_Temp ();
-      Emit ("  %%t%u = fdiv double %%t%u, %%t%u\n", dv, out, st);
+      uint32_t st = Emit_Result_Instruction ("fadd double 0.0, 0x%016llX\n", (unsigned long long)sb);
+      uint32_t dv = Emit_Result_Instruction ("fdiv double %%t%u, %%t%u\n", out, st);
       out = Emit_Temp ();
       Emit ("  %%t%u = fptosi double %%t%u to %s\n", out, dv, LLVM_Rep_To_String (fix_rep));
     } else if (LLVM_Rep_Is_Int (ct) and not LLVM_Rep_Equal (ct, fix_rep)) {
@@ -22686,9 +22708,7 @@ uint32_t Emit_Fixed_Bound_Mantissa (Type_Bound *bound, double small, LLVM_Rep fi
   }
   if (bound->kind == BOUND_FLOAT) {
     int128_t iv = (int128_t)(bound->float_value / small);
-    uint32_t out = Emit_Temp ();
-    Emit ("  %%t%u = add %s 0, %s  ; fixed bound (%g/small)\n",
-       out, LLVM_Rep_To_String (fix_rep), I128_Decimal (iv), bound->float_value);
+    uint32_t out = Emit_Result_Instruction ("add %s 0, %s  ; fixed bound (%g/small)\n", LLVM_Rep_To_String (fix_rep), I128_Decimal (iv), bound->float_value);
     return out;
   }
   if (bound->kind == BOUND_EXPR and bound->expr) {
@@ -22698,12 +22718,9 @@ uint32_t Emit_Fixed_Bound_Mantissa (Type_Bound *bound, double small, LLVM_Rep fi
       (bound->expr->type and bound->expr->type->kind == TYPE_UNIVERSAL_REAL);
     if (fv_float) {
       uint64_t sb; memcpy (&sb, &small, sizeof (sb));
-      uint32_t st = Emit_Temp ();
-      Emit ("  %%t%u = fadd double 0.0, 0x%016llX\n", st, (unsigned long long)sb);
-      uint32_t dv = Emit_Temp ();
-      Emit ("  %%t%u = fdiv double %%t%u, %%t%u\n", dv, fv.reg, st);
-      uint32_t out = Emit_Temp ();
-      Emit ("  %%t%u = fptosi double %%t%u to %s\n", out, dv, LLVM_Rep_To_String (fix_rep));
+      uint32_t st = Emit_Result_Instruction ("fadd double 0.0, 0x%016llX\n", (unsigned long long)sb);
+      uint32_t dv = Emit_Result_Instruction ("fdiv double %%t%u, %%t%u\n", fv.reg, st);
+      uint32_t out = Emit_Result_Instruction ("fptosi double %%t%u to %s\n", dv, LLVM_Rep_To_String (fix_rep));
       return out;
     }
     LLVM_Rep fv_src = LLVM_Rep_Or (fv.rep, Type_To_Rep (bound->expr->type));
@@ -22955,7 +22972,6 @@ static uint32_t Emit_Constraint_Check_Internal (uint32_t val, LLVM_Rep val_rep,
   Emit_Label_Here (raise_label);  // raise CONSTRAINT_ERROR
   Emit_Raise_Constraint_Error ("bound check");
   Emit_Label_Here (cont_label);
-  cg->block_terminated = false;
   return val;
 }
 
@@ -23181,12 +23197,8 @@ void Emit_Discrete_Range_Mark_Check (Syntax_Node *range_node) {
 // Build a fat pointer SSA value { data, bounds } from two pointer registers via
 // the canonical insertvalue pair; returns the result register.
 uint32_t Emit_Build_Fat_Pointer (uint32_t data_reg, uint32_t bounds_reg) {
-  uint32_t partial = Emit_Temp ();
-  Emit ("  %%t%u = insertvalue " FAT_PTR_TYPE " undef, ptr %%t%u, 0\n",
-     partial, data_reg);
-  uint32_t result = Emit_Temp ();
-  Emit ("  %%t%u = insertvalue " FAT_PTR_TYPE " %%t%u, ptr %%t%u, 1\n",
-     result, partial, bounds_reg);
+  uint32_t partial = Emit_Result_Instruction ("insertvalue " FAT_PTR_TYPE " undef, ptr %%t%u, 0\n", data_reg);
+  uint32_t result = Emit_Result_Instruction ("insertvalue " FAT_PTR_TYPE " %%t%u, ptr %%t%u, 1\n", partial, bounds_reg);
   return result;
 }
 
@@ -23199,19 +23211,14 @@ LLVM_Value Emit_Fat_Pointer (uint32_t data_ptr,
   const char *bounds_struct = Bounds_Type_For (bt);
 
   // Allocate bounds struct { bt, bt } on stack - native type
-  uint32_t bounds_alloca = Emit_Temp ();
-  Emit ("  %%t%u = alloca %s\n", bounds_alloca, bounds_struct);
+  uint32_t bounds_alloca = Emit_Result_Instruction ("alloca %s\n", bounds_struct);
 
   // Store low bound in native bt
-  uint32_t low_gep = Emit_Temp ();
-  Emit ("  %%t%u = getelementptr %s, ptr %%t%u, i32 0, i32 0\n",
-     low_gep, bounds_struct, bounds_alloca);
+  uint32_t low_gep = Emit_Result_Instruction ("getelementptr %s, ptr %%t%u, i32 0, i32 0\n", bounds_struct, bounds_alloca);
   Emit ("  store %s %s, ptr %%t%u\n", LLVM_Rep_To_String (bt), I128_Decimal (low), low_gep);
 
   // Store high bound in native bt
-  uint32_t high_gep = Emit_Temp ();
-  Emit ("  %%t%u = getelementptr %s, ptr %%t%u, i32 0, i32 1\n",
-     high_gep, bounds_struct, bounds_alloca);
+  uint32_t high_gep = Emit_Result_Instruction ("getelementptr %s, ptr %%t%u, i32 0, i32 1\n", bounds_struct, bounds_alloca);
   Emit ("  store %s %s, ptr %%t%u\n", LLVM_Rep_To_String (bt), I128_Decimal (high), high_gep);
 
   return Val_Rep (Emit_Build_Fat_Pointer (data_ptr, bounds_alloca), LL_REP_FAT);
@@ -23225,8 +23232,7 @@ LLVM_Value Emit_Fat_Pointer (uint32_t data_ptr,
 LLVM_Value Emit_Widen_For_Intrinsic (uint32_t val, LLVM_Rep from_rep) {
   LLVM_Rep iat = Integer_Arith_Rep ();
   if (LLVM_Rep_Equal (from_rep, iat)) return Val_Rep (val, from_rep);
-  uint32_t widened = Emit_Temp ();
-  Emit ("  %%t%u = sext %s %%t%u to %s\n", widened,
+  uint32_t widened = Emit_Result_Instruction ("sext %s %%t%u to %s\n",
         LLVM_Rep_To_String (from_rep), val, LLVM_Rep_To_String (iat));
   return Val_Rep (widened, iat);
 }
@@ -23236,8 +23242,7 @@ LLVM_Value Emit_Widen_For_Intrinsic (uint32_t val, LLVM_Rep from_rep) {
 LLVM_Value Emit_Extend_To_I64 (uint32_t val, LLVM_Rep from_rep) {
   LLVM_Rep i64_rep = LLVM_Rep_Int (64, false);
   if (LLVM_Rep_Equal (from_rep, i64_rep)) return Val_Rep (val, from_rep);
-  uint32_t extended = Emit_Temp ();
-  Emit ("  %%t%u = sext %s %%t%u to i64\n", extended,
+  uint32_t extended = Emit_Result_Instruction ("sext %s %%t%u to i64\n",
         LLVM_Rep_To_String (from_rep), val);
   return Val_Rep (extended, i64_rep);
 }
@@ -23252,21 +23257,18 @@ LLVM_Value Fat_Ptr_As_Value (uint32_t fat_ptr) {
 // Raw fat-pointer field extraction from an SSA fat value: field 0 is the data
 // pointer, field 1 is the bounds pointer. Both return the result register.
 uint32_t Emit_Extract_Fat_Data (uint32_t fat_reg) {
-  uint32_t data = Emit_Temp ();
-  Emit ("  %%t%u = extractvalue " FAT_PTR_TYPE " %%t%u, 0\n", data, fat_reg);
+  uint32_t data = Emit_Result_Instruction ("extractvalue " FAT_PTR_TYPE " %%t%u, 0\n", fat_reg);
   return data;
 }
 uint32_t Emit_Extract_Fat_Bounds (uint32_t fat_reg) {
-  uint32_t bptr = Emit_Temp ();
-  Emit ("  %%t%u = extractvalue " FAT_PTR_TYPE " %%t%u, 1\n", bptr, fat_reg);
+  uint32_t bptr = Emit_Result_Instruction ("extractvalue " FAT_PTR_TYPE " %%t%u, 1\n", fat_reg);
   return bptr;
 }
 
 // Load a fat pointer { data, bounds } from the memory at pointer register
 // `ptr_reg`; returns the loaded SSA fat value's register.
 uint32_t Emit_Load_Fat (uint32_t ptr_reg) {
-  uint32_t fat = Emit_Temp ();
-  Emit ("  %%t%u = load " FAT_PTR_TYPE ", ptr %%t%u\n", fat, ptr_reg);
+  uint32_t fat = Emit_Result_Instruction ("load " FAT_PTR_TYPE ", ptr %%t%u\n", ptr_reg);
   return fat;
 }
 
@@ -23274,18 +23276,15 @@ uint32_t Emit_Load_Fat (uint32_t ptr_reg) {
 // i8-indexed GEP; returns the loaded register. For discriminant/component
 // field reads where no per-field debug annotation is wanted.
 uint32_t Emit_Load_Field (uint32_t base, uint32_t byte_offset, LLVM_Rep rep) {
-  uint32_t p = Emit_Temp ();
-  Emit ("  %%t%u = getelementptr i8, ptr %%t%u, i64 %u\n", p, base, byte_offset);
-  uint32_t v = Emit_Temp ();
-  Emit ("  %%t%u = load %s, ptr %%t%u\n", v, LLVM_Rep_To_String (rep), p);
+  uint32_t p = Emit_Result_Instruction ("getelementptr i8, ptr %%t%u, i64 %u\n", base, byte_offset);
+  uint32_t v = Emit_Result_Instruction ("load %s, ptr %%t%u\n", LLVM_Rep_To_String (rep), p);
   return v;
 }
 
 // Address of byte `byte_offset` within local symbol `sym`'s storage (i8-indexed
 // GEP); returns the result register.
 uint32_t Emit_Symbol_Field_Addr (Symbol *sym, uint32_t byte_offset) {
-  uint32_t p = Emit_Temp ();
-  Emit ("  %%t%u = getelementptr i8, ptr %%", p);
+  uint32_t p = Emit_Result_Instruction ("getelementptr i8, ptr %%");
   Emit_Symbol_Name (sym);
   Emit (", i64 %u\n", byte_offset);
   return p;
@@ -23295,16 +23294,14 @@ uint32_t Emit_Symbol_Field_Addr (Symbol *sym, uint32_t byte_offset) {
 // symbol `sym`'s storage; returns the loaded register.
 uint32_t Emit_Load_Symbol_Field (Symbol *sym, uint32_t byte_offset, LLVM_Rep rep) {
   uint32_t p = Emit_Symbol_Field_Addr (sym, byte_offset);
-  uint32_t v = Emit_Temp ();
-  Emit ("  %%t%u = load %s, ptr %%t%u\n", v, LLVM_Rep_To_String (rep), p);
+  uint32_t v = Emit_Result_Instruction ("load %s, ptr %%t%u\n", LLVM_Rep_To_String (rep), p);
   return v;
 }
 
 // Allocate a scalar slot of representation `rep`, store `val` into it, and
 // return the slot pointer register.
 uint32_t Emit_Alloca_Store (LLVM_Rep rep, uint32_t val) {
-  uint32_t slot = Emit_Temp ();
-  Emit ("  %%t%u = alloca %s\n", slot, LLVM_Rep_To_String (rep));
+  uint32_t slot = Emit_Result_Instruction ("alloca %s\n", LLVM_Rep_To_String (rep));
   Emit ("  store %s %%t%u, ptr %%t%u\n", LLVM_Rep_To_String (rep), val, slot);
   return slot;
 }
@@ -23325,9 +23322,7 @@ uint32_t Freeze_Disc_Value_Global (LLVM_Rep rep, uint32_t val) {
 }
 
 uint32_t Emit_Load_Preeval_Global (uint32_t gid, LLVM_Rep want) {
-  uint32_t raw = Emit_Temp ();
-  Emit ("  %%t%u = load " RT_DESC_TYPE ", ptr @__rt_cbnd_%u  ; preeval disc val\n",
-        raw, gid);
+  uint32_t raw = Emit_Result_Instruction ("load " RT_DESC_TYPE ", ptr @__rt_cbnd_%u  ; preeval disc val\n", gid);
   return Emit_Convert (raw, LLVM_Rep_Int (64, false), want).reg;
 }
 
@@ -23372,11 +23367,8 @@ LLVM_Value Emit_Fat_Pointer_Bound (uint32_t fat_ptr,
                     LLVM_Rep bt, uint32_t field_index) {
   const char *bounds_struct = Bounds_Type_For (bt);
   uint32_t bptr = Emit_Extract_Fat_Bounds (fat_ptr);
-  uint32_t gep = Emit_Temp ();
-  Emit ("  %%t%u = getelementptr %s, ptr %%t%u, i32 0, i32 %u\n",
-     gep, bounds_struct, bptr, field_index);
-  uint32_t val = Emit_Temp ();
-  Emit ("  %%t%u = load %s, ptr %%t%u\n", val, LLVM_Rep_To_String (bt), gep);
+  uint32_t gep = Emit_Result_Instruction ("getelementptr %s, ptr %%t%u, i32 0, i32 %u\n", bounds_struct, bptr, field_index);
+  uint32_t val = Emit_Result_Instruction ("load %s, ptr %%t%u\n", LLVM_Rep_To_String (bt), gep);
   return Val_Rep (val, bt);
 }
 #define Emit_Fat_Pointer_Low(fp, bt)  Emit_Fat_Pointer_Bound ((fp), (bt), 0)
@@ -23390,11 +23382,8 @@ LLVM_Value Emit_Fat_Pointer_Bound (uint32_t fat_ptr,
 // (dimension d's low is at 2d, high at 2d+1).
 LLVM_Value Emit_Fat_Pointer_Flat_Bound (uint32_t fat_ptr, LLVM_Rep bt, uint32_t slot) {
   uint32_t bptr = Emit_Extract_Fat_Bounds (fat_ptr);
-  uint32_t gep = Emit_Temp ();
-  Emit ("  %%t%u = getelementptr %s, ptr %%t%u, i32 %u\n",
-     gep, LLVM_Rep_To_String (bt), bptr, slot);
-  uint32_t val = Emit_Temp ();
-  Emit ("  %%t%u = load %s, ptr %%t%u\n", val, LLVM_Rep_To_String (bt), gep);
+  uint32_t gep = Emit_Result_Instruction ("getelementptr %s, ptr %%t%u, i32 %u\n", LLVM_Rep_To_String (bt), bptr, slot);
+  uint32_t val = Emit_Result_Instruction ("load %s, ptr %%t%u\n", LLVM_Rep_To_String (bt), gep);
   return Val_Rep (val, bt);
 }
 LLVM_Value Emit_Fat_Pointer_Low_Dim (uint32_t fat_ptr, LLVM_Rep bt, uint32_t dim) {
@@ -23424,11 +23413,9 @@ void Emit_Load_RT_Array_Bounds (uint32_t rtid, uint32_t ndims,
                                 uint32_t *blo, uint32_t *bhi, LLVM_Rep work) {
   LLVM_Rep desc = LLVM_Rep_Int (64, false);
   for (uint32_t d = 0; d < ndims and d < 8; d++) {
-    uint32_t lr = Emit_Temp ();
-    Emit ("  %%t%u = load " RT_DESC_TYPE ", ptr @__rt_type_%u_lo%u\n", lr, rtid, d);
+    uint32_t lr = Emit_Result_Instruction ("load " RT_DESC_TYPE ", ptr @__rt_type_%u_lo%u\n", rtid, d);
     blo[d] = LLVM_Rep_Equal (work, desc) ? lr : Emit_Convert (lr, desc, work).reg;
-    uint32_t hr = Emit_Temp ();
-    Emit ("  %%t%u = load " RT_DESC_TYPE ", ptr @__rt_type_%u_hi%u\n", hr, rtid, d);
+    uint32_t hr = Emit_Result_Instruction ("load " RT_DESC_TYPE ", ptr @__rt_type_%u_hi%u\n", rtid, d);
     bhi[d] = LLVM_Rep_Equal (work, desc) ? hr : Emit_Convert (hr, desc, work).reg;
   }
 }
@@ -23438,19 +23425,15 @@ void Emit_Load_RT_Array_Bounds (uint32_t rtid, uint32_t ndims,
 void Emit_Store_Bound_Pair (uint32_t bounds_ptr, LLVM_Rep bt, uint32_t dim,
                             uint32_t lo, uint32_t hi) {
   const char *s = LLVM_Rep_To_String (bt);
-  uint32_t lp = Emit_Temp ();
-  Emit ("  %%t%u = getelementptr %s, ptr %%t%u, i32 %u\n", lp, s, bounds_ptr, dim * 2);
+  uint32_t lp = Emit_Result_Instruction ("getelementptr %s, ptr %%t%u, i32 %u\n", s, bounds_ptr, dim * 2);
   Emit ("  store %s %%t%u, ptr %%t%u\n", s, lo, lp);
-  uint32_t hp = Emit_Temp ();
-  Emit ("  %%t%u = getelementptr %s, ptr %%t%u, i32 %u\n", hp, s, bounds_ptr, dim * 2 + 1);
+  uint32_t hp = Emit_Result_Instruction ("getelementptr %s, ptr %%t%u, i32 %u\n", s, bounds_ptr, dim * 2 + 1);
   Emit ("  store %s %%t%u, ptr %%t%u\n", s, hi, hp);
 }
 
 uint32_t Emit_Alloc_Bounds_MultiDim (uint32_t *bounds_lo, uint32_t *bounds_hi, uint32_t ndims, LLVM_Rep src_rep, LLVM_Rep bt)
 {
-  uint32_t bounds_alloca = Emit_Temp ();
-  Emit ("  %%t%u = alloca [%u x %s]  ; bounds for %u dims\n",
-     bounds_alloca, ndims * 2, LLVM_Rep_To_String (bt), ndims);
+  uint32_t bounds_alloca = Emit_Result_Instruction ("alloca [%u x %s]  ; bounds for %u dims\n", ndims * 2, LLVM_Rep_To_String (bt), ndims);
   for (uint32_t dim = 0; dim < ndims; dim++) {
     // Bounds temps arrive at src_rep (the rep the caller built them at); coerce
     // to the bounds block's element type bt (e.g. i32 -> i8 for a small-range
@@ -23533,14 +23516,12 @@ uint32_t Emit_Flat_Element_Index (Node_List *args, Type_Info *array_type,
       // Subtract the dimension's low bound.
       if (has_dynamic_low and dyn_fat) {
         uint32_t lo_d = Emit_Convert (Emit_Fat_Pointer_Low_Dim (dyn_fat, dyn_bt, d).reg, dyn_bt, iat).reg;
-        uint32_t adj = Emit_Temp ();
-        Emit ("  %%t%u = sub %s %%t%u, %%t%u  ; dim %u dyn low adj\n", adj, LLVM_Rep_To_String (iat), dim_idx, lo_d, d);
+        uint32_t adj = Emit_Result_Instruction ("sub %s %%t%u, %%t%u  ; dim %u dyn low adj\n", LLVM_Rep_To_String (iat), dim_idx, lo_d, d);
         dim_idx = adj;
       } else {
         int128_t lo_d = Type_Bound_Value (array_type->array.indices[d].low_bound);
         if (lo_d != 0) {
-          uint32_t adj = Emit_Temp ();
-          Emit ("  %%t%u = sub %s %%t%u, %s  ; dim %u low adj\n", adj, LLVM_Rep_To_String (iat), dim_idx, I128_Decimal (lo_d), d);
+          uint32_t adj = Emit_Result_Instruction ("sub %s %%t%u, %s  ; dim %u low adj\n", LLVM_Rep_To_String (iat), dim_idx, I128_Decimal (lo_d), d);
           dim_idx = adj;
         }
       }
@@ -23551,13 +23532,11 @@ uint32_t Emit_Flat_Element_Index (Node_List *args, Type_Info *array_type,
         for (uint32_t d2 = d + 1; d2 < ndims; d2++) {
           uint32_t len_d2 = Emit_Convert (Emit_Fat_Pointer_Length_Dim (dyn_fat, dyn_bt, d2).reg, dyn_bt, iat).reg;
           if (stride_val == 0) { stride_val = len_d2; continue; }
-          uint32_t product = Emit_Temp ();
-          Emit ("  %%t%u = mul %s %%t%u, %%t%u\n", product, LLVM_Rep_To_String (iat), stride_val, len_d2);
+          uint32_t product = Emit_Result_Instruction ("mul %s %%t%u, %%t%u\n", LLVM_Rep_To_String (iat), stride_val, len_d2);
           stride_val = product;
         }
         if (stride_val != 0) {
-          uint32_t scaled = Emit_Temp ();
-          Emit ("  %%t%u = mul %s %%t%u, %%t%u  ; dim %u dyn stride\n", scaled, LLVM_Rep_To_String (iat), dim_idx, stride_val, d);
+          uint32_t scaled = Emit_Result_Instruction ("mul %s %%t%u, %%t%u  ; dim %u dyn stride\n", LLVM_Rep_To_String (iat), dim_idx, stride_val, d);
           dim_idx = scaled;
         }
       } else {
@@ -23569,15 +23548,13 @@ uint32_t Emit_Flat_Element_Index (Node_List *args, Type_Info *array_type,
           if (cnt2 > 0) stride *= (uint32_t)cnt2;
         }
         if (stride > 1) {
-          uint32_t scaled = Emit_Temp ();
-          Emit ("  %%t%u = mul %s %%t%u, %u  ; dim %u stride\n", scaled, LLVM_Rep_To_String (iat), dim_idx, stride, d);
+          uint32_t scaled = Emit_Result_Instruction ("mul %s %%t%u, %u  ; dim %u stride\n", LLVM_Rep_To_String (iat), dim_idx, stride, d);
           dim_idx = scaled;
         }
       }
       if (d == 0) flat_idx = dim_idx;
       else {
-        uint32_t sum = Emit_Temp ();
-        Emit ("  %%t%u = add %s %%t%u, %%t%u  ; accum flat idx\n", sum, LLVM_Rep_To_String (iat), flat_idx, dim_idx);
+        uint32_t sum = Emit_Result_Instruction ("add %s %%t%u, %%t%u  ; accum flat idx\n", LLVM_Rep_To_String (iat), flat_idx, dim_idx);
         flat_idx = sum;
       }
     }
@@ -23605,14 +23582,12 @@ uint32_t Emit_Flat_Element_Index (Node_List *args, Type_Info *array_type,
   }
   if (has_dynamic_low) {
     uint32_t lo_conv = Emit_Convert (dyn_low, dyn_bt, iat).reg;
-    uint32_t adj = Emit_Temp ();
-    Emit ("  %%t%u = sub %s %%t%u, %%t%u  ; adjust for dynamic low bound\n", adj, LLVM_Rep_To_String (iat), idx, lo_conv);
+    uint32_t adj = Emit_Result_Instruction ("sub %s %%t%u, %%t%u  ; adjust for dynamic low bound\n", LLVM_Rep_To_String (iat), idx, lo_conv);
     idx = adj;
   } else {
     int128_t low_bound = Array_Low_Bound (array_type);
     if (low_bound != 0) {
-      uint32_t adj = Emit_Temp ();
-      Emit ("  %%t%u = sub %s %%t%u, %s\n", adj, LLVM_Rep_To_String (iat), idx, I128_Decimal (low_bound));
+      uint32_t adj = Emit_Result_Instruction ("sub %s %%t%u, %s\n", LLVM_Rep_To_String (iat), idx, I128_Decimal (low_bound));
       idx = adj;
     }
   }
@@ -23628,19 +23603,14 @@ uint32_t Emit_Flat_Element_Index (Node_List *args, Type_Info *array_type,
 uint32_t Emit_Alloc_Bounds_Struct (uint32_t low_temp, uint32_t high_temp, LLVM_Rep bt)
 {
   const char *bounds_struct = Bounds_Type_For (bt);
-  uint32_t bounds_alloca = Emit_Temp ();
-  Emit ("  %%t%u = alloca %s\n", bounds_alloca, bounds_struct);
+  uint32_t bounds_alloca = Emit_Result_Instruction ("alloca %s\n", bounds_struct);
 
   // Convert bounds to target type if needed
   /* low_temp already bt */
   /* high_temp already bt */
-  uint32_t low_gep = Emit_Temp ();
-  Emit ("  %%t%u = getelementptr %s, ptr %%t%u, i32 0, i32 0\n",
-     low_gep, bounds_struct, bounds_alloca);
+  uint32_t low_gep = Emit_Result_Instruction ("getelementptr %s, ptr %%t%u, i32 0, i32 0\n", bounds_struct, bounds_alloca);
   Emit ("  store %s %%t%u, ptr %%t%u\n", LLVM_Rep_To_String (bt), low_temp, low_gep);
-  uint32_t high_gep = Emit_Temp ();
-  Emit ("  %%t%u = getelementptr %s, ptr %%t%u, i32 0, i32 1\n",
-     high_gep, bounds_struct, bounds_alloca);
+  uint32_t high_gep = Emit_Result_Instruction ("getelementptr %s, ptr %%t%u, i32 0, i32 1\n", bounds_struct, bounds_alloca);
   Emit ("  store %s %%t%u, ptr %%t%u\n", LLVM_Rep_To_String (bt), high_temp, high_gep);
   return bounds_alloca;
 }
@@ -23663,18 +23633,12 @@ uint32_t Emit_Heap_Bounds_Struct (uint32_t low_temp, uint32_t high_temp, LLVM_Re
   uint16_t bit_width = LLVM_Rep_Is_Int (bt) ? bt.bits : 32;
   uint64_t bounds_size = (uint64_t)(bit_width / 8) * 2;
   if (bounds_size == 0) bounds_size = 8;
-  uint32_t bounds_ptr = Emit_Temp ();
-  Emit ("  %%t%u = call ptr @malloc (i64 %llu)\n",
-     bounds_ptr, (unsigned long long)bounds_size);
+  uint32_t bounds_ptr = Emit_Result_Instruction ("call ptr @malloc (i64 %llu)\n", (unsigned long long)bounds_size);
   /* low_temp already bt */
   /* high_temp already bt */
-  uint32_t low_gep = Emit_Temp ();
-  Emit ("  %%t%u = getelementptr %s, ptr %%t%u, i32 0, i32 0\n",
-     low_gep, bounds_struct, bounds_ptr);
+  uint32_t low_gep = Emit_Result_Instruction ("getelementptr %s, ptr %%t%u, i32 0, i32 0\n", bounds_struct, bounds_ptr);
   Emit ("  store %s %%t%u, ptr %%t%u\n", LLVM_Rep_To_String (bt), low_temp, low_gep);
-  uint32_t high_gep = Emit_Temp ();
-  Emit ("  %%t%u = getelementptr %s, ptr %%t%u, i32 0, i32 1\n",
-     high_gep, bounds_struct, bounds_ptr);
+  uint32_t high_gep = Emit_Result_Instruction ("getelementptr %s, ptr %%t%u, i32 0, i32 1\n", bounds_struct, bounds_ptr);
   Emit ("  store %s %%t%u, ptr %%t%u\n", LLVM_Rep_To_String (bt), high_temp, high_gep);
   return bounds_ptr;
 }
@@ -23710,9 +23674,7 @@ uint32_t Emit_Fat_Total_Elements (uint32_t fat_ptr, LLVM_Rep bt, uint32_t ndims)
   uint32_t total = Emit_Fat_Pointer_Length_Dim (fat_ptr, bt, 0).reg;
   for (uint32_t d = 1; d < ndims; d++) {
     uint32_t dim_len = Emit_Fat_Pointer_Length_Dim (fat_ptr, bt, d).reg;
-    uint32_t product = Emit_Temp ();
-    Emit ("  %%t%u = mul %s %%t%u, %%t%u\n",
-       product, LLVM_Rep_To_String (bt), total, dim_len);
+    uint32_t product = Emit_Result_Instruction ("mul %s %%t%u, %%t%u\n", LLVM_Rep_To_String (bt), total, dim_len);
     total = product;
   }
   return total;
@@ -23725,13 +23687,10 @@ uint32_t Emit_Fat_Total_Elements (uint32_t fat_ptr, LLVM_Rep bt, uint32_t ndims)
 //                                                                                                  
 LLVM_Value Emit_Length_From_Bounds (uint32_t low, uint32_t high, LLVM_Rep bt)
 {
-  uint32_t diff = Emit_Temp ();
-  Emit ("  %%t%u = sub %s %%t%u, %%t%u\n", diff, LLVM_Rep_To_String (bt), high, low);
-  uint32_t raw = Emit_Temp ();
-  Emit ("  %%t%u = add %s %%t%u, 1\n", raw, LLVM_Rep_To_String (bt), diff);
+  uint32_t diff = Emit_Result_Instruction ("sub %s %%t%u, %%t%u\n", LLVM_Rep_To_String (bt), high, low);
+  uint32_t raw = Emit_Result_Instruction ("add %s %%t%u, 1\n", LLVM_Rep_To_String (bt), diff);
   LLVM_I1 neg = Emit_Icmp_Const ("slt", bt, raw, 0);
-  uint32_t len = Emit_Temp ();
-  Emit ("  %%t%u = select i1 %%t%u, %s 0, %s %%t%u\n", len, neg.reg, LLVM_Rep_To_String (bt), LLVM_Rep_To_String (bt), raw);
+  uint32_t len = Emit_Result_Instruction ("select i1 %%t%u, %s 0, %s %%t%u\n", neg.reg, LLVM_Rep_To_String (bt), LLVM_Rep_To_String (bt), raw);
   return Val_Rep (len, bt);
 }
 
@@ -23763,18 +23722,15 @@ LLVM_Value Emit_Array_Byte_Size (Type_Info *array_type, uint32_t fat_ptr) {
                                   : Emit_Fat_Pointer_Length_Dim (fat_ptr, bound_rep, dimension).reg;
     uint32_t dimension_length_64 = Emit_Convert (dimension_length, bound_rep, LLVM_Rep_Int (64, false)).reg;  // sext from index width
     if (dimension == 0) { length_product = dimension_length_64; continue; }
-    uint32_t next_product = Emit_Temp ();
-    Emit ("  %%t%u = mul i64 %%t%u, %%t%u\n", next_product, length_product, dimension_length_64);
+    uint32_t next_product = Emit_Result_Instruction ("mul i64 %%t%u, %%t%u\n", length_product, dimension_length_64);
     length_product = next_product;
   }
 
-  uint32_t total_size = Emit_Temp ();
-  Emit ("  %%t%u = mul i64 %%t%u, %u  ; * element size\n", total_size, length_product, element_size);
+  uint32_t total_size = Emit_Result_Instruction ("mul i64 %%t%u, %u  ; * element size\n", length_product, element_size);
 
   // Clamp negative (null-range) sizes to 0.
   LLVM_I1 is_negative = Emit_Icmp_Const ("slt", LLVM_Rep_Int (64, false), total_size, 0);
-  uint32_t clamped_size = Emit_Temp ();
-  Emit ("  %%t%u = select i1 %%t%u, i64 0, i64 %%t%u\n", clamped_size, is_negative.reg, total_size);
+  uint32_t clamped_size = Emit_Result_Instruction ("select i1 %%t%u, i64 0, i64 %%t%u\n", is_negative.reg, total_size);
   return Val_Rep (clamped_size, LLVM_Rep_Int (64, false));
 }
 
@@ -23814,13 +23770,10 @@ void Emit_Fat_To_Array_Memcpy (uint32_t fat_val,
 //                                                                                                  
 LLVM_Value Emit_Length_Clamped (uint32_t low, uint32_t high, LLVM_Rep bt)
 {
-  uint32_t diff = Emit_Temp ();
-  Emit ("  %%t%u = sub %s %%t%u, %%t%u\n", diff, LLVM_Rep_To_String (bt), high, low);
-  uint32_t unclamped = Emit_Temp ();
-  Emit ("  %%t%u = add %s %%t%u, 1\n", unclamped, LLVM_Rep_To_String (bt), diff);
+  uint32_t diff = Emit_Result_Instruction ("sub %s %%t%u, %%t%u\n", LLVM_Rep_To_String (bt), high, low);
+  uint32_t unclamped = Emit_Result_Instruction ("add %s %%t%u, 1\n", LLVM_Rep_To_String (bt), diff);
   LLVM_I1 is_null = Emit_Icmp ("sgt", bt, low, high);
-  uint32_t len = Emit_Temp ();
-  Emit ("  %%t%u = select i1 %%t%u, %s 0, %s %%t%u\n", len, is_null.reg, LLVM_Rep_To_String (bt), LLVM_Rep_To_String (bt), unclamped);
+  uint32_t len = Emit_Result_Instruction ("select i1 %%t%u, %s 0, %s %%t%u\n", is_null.reg, LLVM_Rep_To_String (bt), LLVM_Rep_To_String (bt), unclamped);
   return Val_Rep (len, bt);
 }
 
@@ -23829,38 +23782,41 @@ LLVM_Value Emit_Length_Clamped (uint32_t low, uint32_t high, LLVM_Rep bt)
 // This is the standard LLVM IR pattern for loading constants.                                     
 //                                                                                                  
 LLVM_Value Emit_Static_Int (int128_t value, LLVM_Rep rep) {
-  uint32_t result = Emit_Temp ();
-  Emit ("  %%t%u = add %s 0, %s\n", result, LLVM_Rep_To_String (rep), I128_Decimal (value));
+  uint32_t result = Emit_Result_Instruction ("add %s 0, %s\n", LLVM_Rep_To_String (rep), I128_Decimal (value));
   return Val_Rep (result, rep);
 }
 
 // As Emit_Static_Int, but annotates the emitted line with a trailing IR comment
 // (`  ; <comment>`). Used where the constant-load carries a human-readable tag.
 LLVM_Value Emit_Static_Int_Comment (int128_t value, LLVM_Rep rep, const char *comment) {
-  uint32_t result = Emit_Temp ();
-  Emit ("  %%t%u = add %s 0, %s  ; %s\n", result, LLVM_Rep_To_String (rep), I128_Decimal (value), comment);
+  uint32_t result = Emit_Result_Instruction ("add %s 0, %s  ; %s\n", LLVM_Rep_To_String (rep), I128_Decimal (value), comment);
   return Val_Rep (result, rep);
 }
 
 // Emit `%t = icmp <op> <type> %lhs, %rhs` and return the i1 result.
 LLVM_I1 Emit_Icmp (const char *op, LLVM_Rep type, uint32_t lhs, uint32_t rhs) {
-  uint32_t t = Emit_Temp ();
-  Emit ("  %%t%u = icmp %s %s %%t%u, %%t%u\n", t, op, LLVM_Rep_To_String (type), lhs, rhs);
+  uint32_t t = Emit_Result_Instruction ("icmp %s %s %%t%u, %%t%u\n", op, LLVM_Rep_To_String (type), lhs, rhs);
   return (LLVM_I1){ t };
 }
 
 // Emit `%t = icmp <op> <type> %lhs, <integer literal>` and return the i1 result.
 LLVM_I1 Emit_Icmp_Const (const char *op, LLVM_Rep type, uint32_t lhs, int64_t rhs) {
-  uint32_t t = Emit_Temp ();
-  Emit ("  %%t%u = icmp %s %s %%t%u, %lld\n", t, op, LLVM_Rep_To_String (type), lhs, (long long) rhs);
+  uint32_t t = Emit_Result_Instruction ("icmp %s %s %%t%u, %lld\n", op, LLVM_Rep_To_String (type), lhs, (long long) rhs);
   return (LLVM_I1){ t };
 }
 
 // Emit `%t = icmp <op> ptr %ptr, null` and return the i1 result.
 LLVM_I1 Emit_Icmp_Null_Ptr (const char *op, uint32_t ptr) {
-  uint32_t t = Emit_Temp ();
-  Emit ("  %%t%u = icmp %s ptr %%t%u, null\n", t, op, ptr);
+  uint32_t t = Emit_Result_Instruction ("icmp %s ptr %%t%u, null\n", op, ptr);
   return (LLVM_I1){ t };
+}
+
+// Truth test of a stored BOOLEAN value: BOOLEAN's representation is i8
+// (RM 3.5.3), so a branch condition needs `icmp ne <bool> %value, 0` to
+// recover the transient i1. The boolean type string is derived from
+// Standard.BOOLEAN's rep, never hardcoded.
+LLVM_I1 Emit_Boolean_Truth_Test (uint32_t value) {
+  return Emit_Icmp_Const ("ne", Type_To_Rep (sm->type_boolean), value, 0);
 }
 
 // RM 4.8(6) / 6.4.1: when an access value flows to a context with a constrained
@@ -23895,11 +23851,8 @@ void Emit_Access_Designated_Disc_Check (uint32_t acc_val, LLVM_Rep acc_rep,
     for (uint32_t di = 0; di < des->record.discriminant_count; di++) {
       Component_Info *dc = &des->record.components[di];
       LLVM_Rep dt = Type_To_Rep (dc->component_type);
-      uint32_t dp = Emit_Temp ();
-      Emit ("  %%t%u = getelementptr i8, ptr %%t%u, i64 %u\n", dp, ptr, dc->byte_offset);
-      uint32_t dv = Emit_Temp ();
-      Emit ("  %%t%u = load %s, ptr %%t%u  ; access disc %.*s\n",
-         dv, LLVM_Rep_To_String (dt), dp, (int)dc->name.length, dc->name.data);
+      uint32_t dp = Emit_Result_Instruction ("getelementptr i8, ptr %%t%u, i64 %u\n", ptr, dc->byte_offset);
+      uint32_t dv = Emit_Result_Instruction ("load %s, ptr %%t%u  ; access disc %.*s\n", LLVM_Rep_To_String (dt), dp, (int)dc->name.length, dc->name.data);
       uint32_t cv = Emit_Disc_Constraint_Value (des, di, dt).reg;
       if (cv == 0) cv = Emit_Static_Int (0, dt).reg;
       Emit_Discriminant_Check (dv, cv, dt, des);
@@ -23915,8 +23868,7 @@ void Emit_Access_Designated_Disc_Check (uint32_t acc_val, LLVM_Rep acc_rep,
       uint32_t exp_hi = Emit_Single_Bound (&des->array.indices[d].high_bound, bt);
       LLVM_I1 lo_ne = Emit_Icmp ("ne", bt, actual_lo, exp_lo);
       LLVM_I1 hi_ne = Emit_Icmp ("ne", bt, actual_hi, exp_hi);
-      uint32_t bad = Emit_Temp ();
-      Emit ("  %%t%u = or i1 %%t%u, %%t%u\n", bad, lo_ne.reg, hi_ne.reg);
+      uint32_t bad = Emit_Result_Instruction ("or i1 %%t%u, %%t%u\n", lo_ne.reg, hi_ne.reg);
       Emit_Check_With_Raise (bad, true, "access designated array bounds (RM 4.8)");
     }
   }
@@ -23927,22 +23879,19 @@ void Emit_Access_Designated_Disc_Check (uint32_t acc_val, LLVM_Rep acc_rep,
 
 // Emit `%t = icmp <op> ptr %lhs, %rhs` and return the i1 result.
 LLVM_I1 Emit_Icmp_Ptr (const char *op, uint32_t lhs, uint32_t rhs) {
-  uint32_t t = Emit_Temp ();
-  Emit ("  %%t%u = icmp %s ptr %%t%u, %%t%u\n", t, op, lhs, rhs);
+  uint32_t t = Emit_Result_Instruction ("icmp %s ptr %%t%u, %%t%u\n", op, lhs, rhs);
   return (LLVM_I1){ t };
 }
 
 // Emit `%t = fcmp <op> <type> %lhs, 0.0` and return the i1 result.
 LLVM_I1 Emit_Fcmp_Zero (const char *op, LLVM_Rep type, uint32_t lhs) {
-  uint32_t t = Emit_Temp ();
-  Emit ("  %%t%u = fcmp %s %s %%t%u, 0.0\n", t, op, LLVM_Rep_To_String (type), lhs);
+  uint32_t t = Emit_Result_Instruction ("fcmp %s %s %%t%u, 0.0\n", op, LLVM_Rep_To_String (type), lhs);
   return (LLVM_I1){ t };
 }
 
 // Emit `%t = fcmp <op> <type> %lhs, %rhs` and return the i1 result.
 LLVM_I1 Emit_Fcmp (const char *op, LLVM_Rep type, uint32_t lhs, uint32_t rhs) {
-  uint32_t t = Emit_Temp ();
-  Emit ("  %%t%u = fcmp %s %s %%t%u, %%t%u\n", t, op, LLVM_Rep_To_String (type), lhs, rhs);
+  uint32_t t = Emit_Result_Instruction ("fcmp %s %s %%t%u, %%t%u\n", op, LLVM_Rep_To_String (type), lhs, rhs);
   return (LLVM_I1){ t };
 }
 
@@ -23953,20 +23902,15 @@ LLVM_I1 Emit_Fcmp (const char *op, LLVM_Rep type, uint32_t lhs, uint32_t rhs) {
 uint32_t Emit_Scale_By_Small (uint32_t val, double small, bool divide, LLVM_Rep frep) {
   uint64_t bits;
   memcpy (&bits, &small, sizeof (bits));
-  uint32_t small_t = Emit_Temp ();
-  Emit ("  %%t%u = fadd %s 0.0, 0x%016llX  ; SMALL=%g\n",
-     small_t, LLVM_Rep_To_String (frep), (unsigned long long)bits, small);
-  uint32_t r = Emit_Temp ();
-  Emit ("  %%t%u = %s %s %%t%u, %%t%u  ; %s SMALL\n",
-     r, divide ? "fdiv" : "fmul", LLVM_Rep_To_String (frep), val, small_t,
+  uint32_t small_t = Emit_Result_Instruction ("fadd %s 0.0, 0x%016llX  ; SMALL=%g\n", LLVM_Rep_To_String (frep), (unsigned long long)bits, small);
+  uint32_t r = Emit_Result_Instruction ("%s %s %%t%u, %%t%u  ; %s SMALL\n", divide ? "fdiv" : "fmul", LLVM_Rep_To_String (frep), val, small_t,
      divide ? "value/" : "mantissa*");
   return r;
 }
 
 // Emit `%t = and i1 %a, %b` and return the i1 result.
 LLVM_I1 Emit_And_I1 (LLVM_I1 a, LLVM_I1 b) {
-  uint32_t t = Emit_Temp ();
-  Emit ("  %%t%u = and i1 %%t%u, %%t%u\n", t, a.reg, b.reg);
+  uint32_t t = Emit_Result_Instruction ("and i1 %%t%u, %%t%u\n", a.reg, b.reg);
   return (LLVM_I1){ t };
 }
 
@@ -23994,15 +23938,13 @@ LLVM_I1 Emit_In_Range (LLVM_Value val, LLVM_Value lo, LLVM_Value hi, bool is_uns
 
 // Emit `%t = xor i1 %a, 1` (boolean negation) and return the i1 result.
 LLVM_I1 Emit_Not_I1 (LLVM_I1 a) {
-  uint32_t t = Emit_Temp ();
-  Emit ("  %%t%u = xor i1 %%t%u, 1\n", t, a.reg);
+  uint32_t t = Emit_Result_Instruction ("xor i1 %%t%u, 1\n", a.reg);
   return (LLVM_I1){ t };
 }
 
 // Emit `%t = add i1 0, <0|1>  ; <comment>` (a materialized i1 constant).
 LLVM_I1 Emit_I1_Const (int value, const char *comment) {
-  uint32_t t = Emit_Temp ();
-  Emit ("  %%t%u = add i1 0, %d  ; %s\n", t, value ? 1 : 0, comment);
+  uint32_t t = Emit_Result_Instruction ("add i1 0, %d  ; %s\n", value ? 1 : 0, comment);
   return (LLVM_I1){ t };
 }
 
@@ -24012,9 +23954,7 @@ LLVM_I1 Emit_I1_Const (int value, const char *comment) {
 LLVM_I1 Emit_Short_Circuit_Phi (const char *prefix, const char *first_const,
                                 uint32_t check_label, uint32_t reg,
                                 uint32_t merge_label) {
-  uint32_t t = Emit_Temp ();
-  Emit ("  %%t%u = phi i1 [ %s, %%%s_check%u ], [ %%t%u, %%%s_merge%u ]\n",
-     t, first_const, prefix, check_label, reg, prefix, merge_label);
+  uint32_t t = Emit_Result_Instruction ("phi i1 [ %s, %%%s_check%u ], [ %%t%u, %%%s_merge%u ]\n", first_const, prefix, check_label, reg, prefix, merge_label);
   return (LLVM_I1){ t };
 }
 
@@ -24159,7 +24099,6 @@ void Emit_Check_With_Raise_Named (uint32_t cond, bool raise_on_true,
   Emit_Label_Here (raise_label);
   Emit_Raise_Exception (exc_name, comment);
   Emit_Label_Here (cont_label);
-  cg->block_terminated = false;
 }
 
 void Emit_Check_With_Raise (uint32_t cond,
@@ -24183,17 +24122,9 @@ void Emit_Elaboration_Check (Symbol *callee) {
     Emit_String_Const ("@%.*s.elab = external global i1\n",
                        (int)ef.length, ef.data);
   }
-  uint32_t flag = Emit_Temp ();
-  Emit ("  %%t%u = load i1, ptr @%.*s.elab  ; access-before-elaboration flag of %.*s\n",
-        flag, (int)ef.length, ef.data, (int)callee->name.length, callee->name.data);
-  uint32_t raise_label = cg->label_id++;
-  uint32_t cont_label  = cg->label_id++;
-  Emit ("  br i1 %%t%u, label %%L%u, label %%L%u\n", flag, cont_label, raise_label);
-  cg->block_terminated = true;
-  Emit_Label_Here (raise_label);
-  Emit_Raise_Program_Error ("subprogram body not yet elaborated (RM 3.9)");
-  Emit_Label_Here (cont_label);
-  cg->block_terminated = false;
+  uint32_t flag = Emit_Result_Instruction ("load i1, ptr @%.*s.elab  ; access-before-elaboration flag of %.*s\n", (int)ef.length, ef.data, (int)callee->name.length, callee->name.data);
+  Emit_Check_With_Raise_Named (flag, false, "program_error",
+                               "subprogram body not yet elaborated (RM 3.9)");
 }
 
 // RM 4.6: an array type conversion checks that any constraint on the component
@@ -24215,8 +24146,7 @@ void Emit_Component_Constraint_Check (Type_Info *sct, Type_Info *dct) {
         Emit_Single_Bound (&sct->low_bound,  work), Emit_Single_Bound (&dct->low_bound,  work)).reg;
       uint32_t hi_ne = Emit_Icmp ("ne", work,
         Emit_Single_Bound (&sct->high_bound, work), Emit_Single_Bound (&dct->high_bound, work)).reg;
-      uint32_t differ = Emit_Temp ();
-      Emit ("  %%t%u = or i1 %%t%u, %%t%u  ; component range constraint differs\n", differ, lo_ne, hi_ne);
+      uint32_t differ = Emit_Result_Instruction ("or i1 %%t%u, %%t%u  ; component range constraint differs\n", lo_ne, hi_ne);
       Emit_Check_With_Raise (differ, true, "component subtype range constraint mismatch (RM 4.6)");
     }
     return;
@@ -24255,8 +24185,7 @@ void Emit_Component_Constraint_Check (Type_Info *sct, Type_Info *dct) {
                Type_Bound_Is_Set (*dlo) and Type_Bound_Is_Set (*dhi))) continue;
       uint32_t lo_ne = Emit_Icmp ("ne", work, Emit_Single_Bound (slo, work), Emit_Single_Bound (dlo, work)).reg;
       uint32_t hi_ne = Emit_Icmp ("ne", work, Emit_Single_Bound (shi, work), Emit_Single_Bound (dhi, work)).reg;
-      uint32_t differ = Emit_Temp ();
-      Emit ("  %%t%u = or i1 %%t%u, %%t%u  ; component array bound differs\n", differ, lo_ne, hi_ne);
+      uint32_t differ = Emit_Result_Instruction ("or i1 %%t%u, %%t%u  ; component array bound differs\n", lo_ne, hi_ne);
       Emit_Check_With_Raise (differ, true, "component subtype array bound mismatch (RM 4.6)");
     }
     Emit_Component_Constraint_Check (sct->array.element_type, dct->array.element_type);
@@ -24305,7 +24234,6 @@ void Emit_Range_Check_With_Raise (uint32_t val,
   Emit_Label_Here (raise_label);
   Emit_Raise_Constraint_Error (comment);
   Emit_Label_Here (hi_ok);
-  cg->block_terminated = false;
 }
 
 // Emit a type bound as a temp: handles BOUND_INTEGER, BOUND_EXPR, BOUND_FLOAT.
@@ -24358,9 +24286,7 @@ void Emit_Fat_Pointer_Copy_To_Name (uint32_t fat_ptr,
                            dst_type->array.element_type->size > 0)
                           ? dst_type->array.element_type->size : 1;
   if (element_size != 1) {
-    uint32_t bytes = Emit_Temp ();
-    Emit ("  %%t%u = mul %s %%t%u, %u  ; * element size\n",
-       bytes, LLVM_Rep_To_String (bt), len, element_size);
+    uint32_t bytes = Emit_Result_Instruction ("mul %s %%t%u, %u  ; * element size\n", LLVM_Rep_To_String (bt), len, element_size);
     len = bytes;
   }
   uint32_t len64 = Emit_Extend_To_I64 (len, bt).reg;
@@ -24409,15 +24335,13 @@ void Emit_Store_Fat_Pointer_Fields_To_Symbol
   uint32_t bounds_alloca = Emit_Alloc_Bounds_Struct (low_temp, high_temp, bt);
 
   // Store data ptr (field 0 of { ptr, ptr })
-  uint32_t data_slot = Emit_Temp ();
-  Emit ("  %%t%u = getelementptr " FAT_PTR_TYPE ", ptr ", data_slot);
+  uint32_t data_slot = Emit_Result_Instruction ("getelementptr " FAT_PTR_TYPE ", ptr ");
   Emit_Symbol_Storage (sym);
   Emit (", i32 0, i32 0\n");
   Emit ("  store ptr %%t%u, ptr %%t%u\n", data_ptr, data_slot);
 
   // Store bounds ptr (field 1 of { ptr, ptr })
-  uint32_t bounds_slot = Emit_Temp ();
-  Emit ("  %%t%u = getelementptr " FAT_PTR_TYPE ", ptr ", bounds_slot);
+  uint32_t bounds_slot = Emit_Result_Instruction ("getelementptr " FAT_PTR_TYPE ", ptr ");
   Emit_Symbol_Storage (sym);
   Emit (", i32 0, i32 1\n");
   Emit ("  store ptr %%t%u, ptr %%t%u\n", bounds_alloca, bounds_slot);
@@ -24431,9 +24355,7 @@ void Emit_Store_Fat_Pointer_Fields_To_Symbol
 // Emit minimum of two values:  result = (left < right) ? left : right
 LLVM_Value Emit_Min_Value (uint32_t left, uint32_t right, LLVM_Rep rep) {
   LLVM_I1 cmp = Emit_Icmp ("slt", rep, left, right);
-  uint32_t result = Emit_Temp ();
-  Emit ("  %%t%u = select i1 %%t%u, %s %%t%u, %s %%t%u\n",
-     result, cmp.reg, LLVM_Rep_To_String (rep), left, LLVM_Rep_To_String (rep), right);
+  uint32_t result = Emit_Result_Instruction ("select i1 %%t%u, %s %%t%u, %s %%t%u\n", cmp.reg, LLVM_Rep_To_String (rep), left, LLVM_Rep_To_String (rep), right);
   return Val_Rep (result, rep);
 }
 
@@ -24450,8 +24372,7 @@ Exception_Setup Emit_Exception_Handler_Setup (void) {
   // every master entered after this point was abandoned by the longjmp;
   // the unwind completes them (RM 9.4: a master left by an exception still
   // waits for its dependents) before the handler code runs.
-  uint32_t saved_master = Emit_Temp ();
-  Emit ("  %%t%u = call ptr @__ada_master_current()\n", saved_master);
+  uint32_t saved_master = Emit_Result_Instruction ("call ptr @__ada_master_current()\n");
 
   setup.handler_frame = Emit_Temp ();
   Emit ("  %%t%u = alloca { ptr, [200 x i8] }, align 16  ; handler frame\n", setup.handler_frame);
@@ -24459,8 +24380,7 @@ Exception_Setup Emit_Exception_Handler_Setup (void) {
   setup.jmp_buf = Emit_Temp ();
   Emit ("  %%t%u = getelementptr { ptr, [200 x i8] }, ptr %%t%u, i32 0, i32 1\n",
      setup.jmp_buf, setup.handler_frame);
-  uint32_t setjmp_result = Emit_Temp ();
-  Emit ("  %%t%u = call " C_INT_TYPE " @setjmp(ptr %%t%u)\n", setjmp_result, setup.jmp_buf);
+  uint32_t setjmp_result = Emit_Result_Instruction ("call " C_INT_TYPE " @setjmp(ptr %%t%u)\n", setup.jmp_buf);
   LLVM_I1 is_normal = Emit_Icmp_Const ("eq", LL_REP_C_INT, setjmp_result, 0);
   setup.normal_label  = Emit_Label ();
   setup.handler_label = Emit_Label ();
@@ -24472,7 +24392,6 @@ Exception_Setup Emit_Exception_Handler_Setup (void) {
   // Handler entry: complete the abandoned masters, then the caller's
   // handler code at handler_label.
   Emit_Label_Here (unwind_label);
-  cg->block_terminated = false;
   Emit ("  call void @__ada_master_unwind(ptr %%t%u)\n", saved_master);
   Emit ("  br label %%L%u\n", setup.handler_label);
   cg->block_terminated = true;
@@ -24482,8 +24401,7 @@ Exception_Setup Emit_Exception_Handler_Setup (void) {
 // Emit code to get current exception identity (after exception raised).
 // Returns temp holding i64 exception ID.
 uint32_t Emit_Current_Exception_Id (void) {
-  uint32_t exc_id = Emit_Temp ();
-  Emit ("  %%t%u = call i64 @__ada_current_exception()\n", exc_id);
+  uint32_t exc_id = Emit_Result_Instruction ("call i64 @__ada_current_exception()\n");
   return exc_id;
 }
 
@@ -24502,7 +24420,6 @@ void Generate_Exception_Dispatch (Node_List *handlers,
     if (not handler) continue;
     if (next_handler != 0) {
       Emit_Label_Here (next_handler);
-      cg->block_terminated = false;
     }
     next_handler = Emit_Label ();
     uint32_t handler_body = Emit_Label ();
@@ -24522,8 +24439,7 @@ void Generate_Exception_Dispatch (Node_List *handlers,
       for (uint32_t j = 0; j < handler->handler.exceptions.count; j++) {
         Syntax_Node *exc_name = handler->handler.exceptions.items[j];
         if (exc_name->symbol) {
-          uint32_t exc_ptr = Emit_Temp ();
-          Emit ("  %%t%u = ptrtoint ptr ", exc_ptr);
+          uint32_t exc_ptr = Emit_Result_Instruction ("ptrtoint ptr ");
           Emit_Exception_Ref (exc_name->symbol);
           Emit (" to i64\n");
           LLVM_I1 match = Emit_Icmp ("eq", LLVM_Rep_Int (64, false), exc_id, exc_ptr);
@@ -24535,7 +24451,6 @@ void Generate_Exception_Dispatch (Node_List *handlers,
           Emit ("  br i1 %%t%u, label %%L%u, label %%L%u\n", match.reg, handler_body, fail_label);
           if (not is_last) {
             Emit_Label_Here (fail_label);
-            cg->block_terminated = false;
           }
         }
       }
@@ -24544,7 +24459,6 @@ void Generate_Exception_Dispatch (Node_List *handlers,
 
     // Handler body
     Emit_Label_Here (handler_body);
-    cg->block_terminated = false;
     Generate_Statement_List (&handler->handler.statements);
     Emit_Branch_If_Needed (end_label);
   }
@@ -24554,7 +24468,6 @@ void Generate_Exception_Dispatch (Node_List *handlers,
   // simply completes the task, so fall through to the caller's end label.
   if (next_handler != 0) {
     Emit_Label_Here (next_handler);
-    cg->block_terminated = false;
     if (reraise_on_no_match) {
       Emit ("  call void @__ada_reraise()\n");
       Emit ("  unreachable\n");
@@ -24585,12 +24498,10 @@ void Generate_Guarded_Elaboration (Node_List *statements, Node_List *handlers) {
     Emit ("  call void @__ada_pop_handler()\n");
   Emit_Branch_If_Needed (end_label);
   Emit_Label_Here (setup.handler_label);
-  cg->block_terminated = false;
   Emit ("  call void @__ada_pop_handler()\n");
   uint32_t exc_id = Emit_Current_Exception_Id ();
   Generate_Exception_Dispatch (handlers, exc_id, end_label, true);
   Emit_Label_Here (end_label);
-  cg->block_terminated = false;
 }
 
 // Emit lexicographic array comparison for unconstrained arrays.
@@ -24615,26 +24526,20 @@ uint32_t Emit_Array_Lex_Compare (uint32_t left_ptr, uint32_t right_ptr, uint32_t
   uint32_t min_len = Emit_Min_Value (left_len, right_len, bt).reg;
 
   // byte_size = min_len * elem_size
-  uint32_t byte_size_nat = Emit_Temp ();
-  Emit ("  %%t%u = mul %s %%t%u, %u\n", byte_size_nat, LLVM_Rep_To_String (bt), min_len, elem_size);
+  uint32_t byte_size_nat = Emit_Result_Instruction ("mul %s %%t%u, %u\n", LLVM_Rep_To_String (bt), min_len, elem_size);
   uint32_t byte_size = Emit_Extend_To_I64 (byte_size_nat, bt).reg;
 
   // prefix_cmp = memcmp (left_data, right_data, byte_size)
-  uint32_t prefix_cmp = Emit_Temp ();
-  Emit ("  %%t%u = call " C_INT_TYPE " @memcmp (ptr %%t%u, ptr %%t%u, i64 %%t%u)\n",
-     prefix_cmp, left_data, right_data, byte_size);
+  uint32_t prefix_cmp = Emit_Result_Instruction ("call " C_INT_TYPE " @memcmp (ptr %%t%u, ptr %%t%u, i64 %%t%u)\n", left_data, right_data, byte_size);
 
   // If prefix differs, return prefix_cmp; otherwise return len_diff. The
   // length difference is signed (shorter array sorts first) and must match
   // memcmp's i32 result rep; convert from the bound rep, which may be
   // narrower, equal, or wider than i32.
-  uint32_t len_diff = Emit_Temp ();
-  Emit ("  %%t%u = sub %s %%t%u, %%t%u\n", len_diff, LLVM_Rep_To_String (bt), left_len, right_len);
+  uint32_t len_diff = Emit_Result_Instruction ("sub %s %%t%u, %%t%u\n", LLVM_Rep_To_String (bt), left_len, right_len);
   uint32_t len_diff32 = Emit_Convert (len_diff, bt, LL_REP_C_INT).reg;
   LLVM_I1 prefix_zero = Emit_Icmp_Const ("eq", LL_REP_C_INT, prefix_cmp, 0);
-  uint32_t result = Emit_Temp ();
-  Emit ("  %%t%u = select i1 %%t%u, i32 %%t%u, i32 %%t%u\n",
-     result, prefix_zero.reg, len_diff32, prefix_cmp);
+  uint32_t result = Emit_Result_Instruction ("select i1 %%t%u, i32 %%t%u, i32 %%t%u\n", prefix_zero.reg, len_diff32, prefix_cmp);
   return result;
 }
 
@@ -24798,8 +24703,7 @@ uint32_t Generate_Lvalue (Syntax_Node *node) {
     // variable's address, read from the per-instance pointer cell that
     // the instantiation point stored (RM 12.1.1 renaming semantics).
     if (sym->is_instance_in_out_binding) {
-      uint32_t cell = Emit_Temp ();
-      Emit ("  %%t%u = load ptr, ptr ", cell);
+      uint32_t cell = Emit_Result_Instruction ("load ptr, ptr ");
       Emit_Global_Ref (sym);
       Emit ("\n");
       return cell;
@@ -25020,19 +24924,13 @@ uint32_t Generate_Lvalue (Syntax_Node *node) {
           Type_Bound *b = &prefix_type->array.indices[0].low_bound;
           alo = Emit_Single_Bound (b, bt);
         }
-        uint32_t rel = Emit_Temp ();
-        Emit ("  %%t%u = sub %s %%t%u, %%t%u  ; slice offset from base\n",
-           rel, LLVM_Rep_To_String (bt), lo, alo);
+        uint32_t rel = Emit_Result_Instruction ("sub %s %%t%u, %%t%u  ; slice offset from base\n", LLVM_Rep_To_String (bt), lo, alo);
         uint32_t rel64 = Emit_Convert (rel, bt, arith).reg;
         Type_Info *elem = prefix_type->array.element_type;
         uint32_t esz = elem ? elem->size : 1;
         if (esz == 0) esz = 1;
-        uint32_t byte_off = Emit_Temp ();
-        Emit ("  %%t%u = mul %s %%t%u, %u\n",
-           byte_off, LLVM_Rep_To_String (arith), rel64, esz);
-        uint32_t ptr = Emit_Temp ();
-        Emit ("  %%t%u = getelementptr i8, ptr %%t%u, %s %%t%u  ; slice lvalue\n",
-           ptr, base, LLVM_Rep_To_String (arith), byte_off);
+        uint32_t byte_off = Emit_Result_Instruction ("mul %s %%t%u, %u\n", LLVM_Rep_To_String (arith), rel64, esz);
+        uint32_t ptr = Emit_Result_Instruction ("getelementptr i8, ptr %%t%u, %s %%t%u  ; slice lvalue\n", base, LLVM_Rep_To_String (arith), byte_off);
         return ptr;
       }
 
@@ -25058,9 +24956,7 @@ uint32_t Generate_Lvalue (Syntax_Node *node) {
           uint32_t esz = Emit_Nested_Record_Size (elem_type_info, elem_type_info,
                                                   NULL, 0, szt);
           uint32_t fidx = Emit_Convert (flat_idx, idx_lv_iat, szt).reg;
-          uint32_t offset = Emit_Temp ();
-          Emit ("  %%t%u = mul i64 %%t%u, %%t%u  ; dynamic element stride\n",
-             offset, fidx, esz);
+          uint32_t offset = Emit_Result_Instruction ("mul i64 %%t%u, %%t%u  ; dynamic element stride\n", fidx, esz);
           Emit ("  %%t%u = getelementptr i8, ptr %%t%u, i64 %%t%u  ; dyn composite elem\n",
              ptr, base, offset);
           return ptr;
@@ -25073,9 +24969,7 @@ uint32_t Generate_Lvalue (Syntax_Node *node) {
             not Type_Has_Dynamic_Bounds (elem_type_info)));
         if (composite_inline) {
           uint64_t bytes = (uint64_t)elem_type_info->size;
-          uint32_t offset = Emit_Temp ();
-          Emit ("  %%t%u = mul %s %%t%u, %llu\n",
-             offset, LLVM_Rep_To_String (idx_lv_iat), flat_idx, (unsigned long long)bytes);
+          uint32_t offset = Emit_Result_Instruction ("mul %s %%t%u, %llu\n", LLVM_Rep_To_String (idx_lv_iat), flat_idx, (unsigned long long)bytes);
           Emit ("  %%t%u = getelementptr i8, ptr %%t%u, %s %%t%u  ; composite elem lvalue\n",
              ptr, base, LLVM_Rep_To_String (idx_lv_iat), offset);
         } else {
@@ -25260,9 +25154,7 @@ LLVM_Value Generate_String_Literal (Syntax_Node *node) {
   }
 
   // Get pointer to string data
-  uint32_t data_ptr = Emit_Temp ();
-  Emit ("  %%t%u = getelementptr [%u x %s], ptr @.str%u, i64 0, i64 0\n",
-     data_ptr, len, byte_sized ? "i8" : elem_ty, str_id);
+  uint32_t data_ptr = Emit_Result_Instruction ("getelementptr [%u x %s], ptr @.str%u, i64 0, i64 0\n", len, byte_sized ? "i8" : elem_ty, str_id);
 
   // A character outside the component subtype makes the aggregate value
   // illegal; raise now (RM 4.2). The raise terminates the block, so return an
@@ -25282,15 +25174,13 @@ LLVM_Value Generate_String_Literal (Syntax_Node *node) {
     const char *ety = LLVM_Rep_To_String (elem_rep);
     if (not lo_static) {
       uint32_t lo_reg = Emit_Single_Bound (&elem->low_bound, elem_rep);
-      uint32_t bad = Emit_Temp ();
-      Emit ("  %%t%u = icmp slt %s %lld, %%t%u\n", bad, ety, (long long) min_pos, lo_reg);
+      uint32_t bad = Emit_Result_Instruction ("icmp slt %s %lld, %%t%u\n", ety, (long long) min_pos, lo_reg);
       Emit_Check_With_Raise (bad, true,
         "string literal value not in component subtype (RM 4.2)");
     }
     if (not hi_static) {
       uint32_t hi_reg = Emit_Single_Bound (&elem->high_bound, elem_rep);
-      uint32_t bad = Emit_Temp ();
-      Emit ("  %%t%u = icmp sgt %s %lld, %%t%u\n", bad, ety, (long long) max_pos, hi_reg);
+      uint32_t bad = Emit_Result_Instruction ("icmp sgt %s %lld, %%t%u\n", ety, (long long) max_pos, hi_reg);
       Emit_Check_With_Raise (bad, true,
         "string literal value not in component subtype (RM 4.2)");
     }
@@ -25357,15 +25247,11 @@ LLVM_Value Generate_String_Literal (Syntax_Node *node) {
         // known here.
         hi_reg = Emit_Temp ();
         if (len == 0) {
-          uint32_t ov_pair = Emit_Temp ();
-          Emit ("  %%t%u = call {%s, i1} @llvm.ssub.with.overflow.%s(%s %%t%u, %s 1)\n",
-             ov_pair, LLVM_Rep_To_String (bt), LLVM_Rep_To_String (bt),
+          uint32_t ov_pair = Emit_Result_Instruction ("call {%s, i1} @llvm.ssub.with.overflow.%s(%s %%t%u, %s 1)\n", LLVM_Rep_To_String (bt), LLVM_Rep_To_String (bt),
              LLVM_Rep_To_String (bt), lo_reg, LLVM_Rep_To_String (bt));
           Emit ("  %%t%u = extractvalue {%s, i1} %%t%u, 0\n",
              hi_reg, LLVM_Rep_To_String (bt), ov_pair);
-          uint32_t ov_bit = Emit_Temp ();
-          Emit ("  %%t%u = extractvalue {%s, i1} %%t%u, 1\n",
-             ov_bit, LLVM_Rep_To_String (bt), ov_pair);
+          uint32_t ov_bit = Emit_Result_Instruction ("extractvalue {%s, i1} %%t%u, 1\n", LLVM_Rep_To_String (bt), ov_pair);
           Emit_Check_With_Raise (ov_bit, true,
             "null string literal bound out of index base type (RM 4.2)");
         } else {
@@ -25409,16 +25295,12 @@ Type_Info *Enum_Rep_Base (Type_Info *t) {
 uint32_t Emit_Enum_Code_To_Pos (uint32_t code_reg, Type_Info *base, LLVM_Rep rep) {
   if (not base or not base->enumeration.rep_values) return code_reg;
   const char *ty = LLVM_Rep_To_String (rep);
-  uint32_t acc = Emit_Temp ();
-  Emit ("  %%t%u = add %s 0, 0  ; enum code->pos\n", acc, ty);
+  uint32_t acc = Emit_Static_Int_Comment (0, rep, "enum code->pos").reg;
   for (uint32_t i = 1; i < base->enumeration.literal_count; i++) {
     int64_t  ci  = base->enumeration.rep_values[i];
-    uint32_t cmp = Emit_Temp ();
-    Emit ("  %%t%u = icmp sge %s %%t%u, %lld\n", cmp, ty, code_reg, (long long)ci);
-    uint32_t z = Emit_Temp ();
-    Emit ("  %%t%u = zext i1 %%t%u to %s\n", z, cmp, ty);
-    uint32_t nacc = Emit_Temp ();
-    Emit ("  %%t%u = add %s %%t%u, %%t%u\n", nacc, ty, acc, z);
+    LLVM_I1 cmp = Emit_Icmp_Const ("sge", rep, code_reg, ci);
+    uint32_t z = Emit_Result_Instruction ("zext i1 %%t%u to %s\n", cmp.reg, ty);
+    uint32_t nacc = Emit_Result_Instruction ("add %s %%t%u, %%t%u\n", ty, acc, z);
     acc = nacc;
   }
   return acc;
@@ -25429,16 +25311,12 @@ uint32_t Emit_Enum_Code_To_Pos (uint32_t code_reg, Type_Info *base, LLVM_Rep rep
 uint32_t Emit_Enum_Pos_To_Code (uint32_t pos_reg, Type_Info *base, LLVM_Rep rep) {
   if (not base or not base->enumeration.rep_values) return pos_reg;
   const char *ty = LLVM_Rep_To_String (rep);
-  uint32_t cur = Emit_Temp ();
-  Emit ("  %%t%u = add %s 0, %lld  ; enum pos->code\n", cur, ty,
-        (long long)base->enumeration.rep_values[0]);
+  uint32_t cur = Emit_Static_Int_Comment (base->enumeration.rep_values[0], rep,
+                                          "enum pos->code").reg;
   for (uint32_t i = 1; i < base->enumeration.literal_count; i++) {
     int64_t  ci  = base->enumeration.rep_values[i];
-    uint32_t cmp = Emit_Temp ();
-    Emit ("  %%t%u = icmp eq %s %%t%u, %u\n", cmp, ty, pos_reg, i);
-    uint32_t sel = Emit_Temp ();
-    Emit ("  %%t%u = select i1 %%t%u, %s %lld, %s %%t%u\n",
-          sel, cmp, ty, (long long)ci, ty, cur);
+    LLVM_I1 cmp = Emit_Icmp_Const ("eq", rep, pos_reg, i);
+    uint32_t sel = Emit_Result_Instruction ("select i1 %%t%u, %s %lld, %s %%t%u\n", cmp.reg, ty, (long long)ci, ty, cur);
     cur = sel;
   }
   return cur;
@@ -25454,14 +25332,12 @@ LLVM_Value Generate_Identifier (Syntax_Node *node) {
   // the actual variable (RM 12.1.1). Reading the formal loads the cell,
   // then loads the value through it.
   if (sym->is_instance_in_out_binding) {
-    uint32_t cell = Emit_Temp ();
-    Emit ("  %%t%u = load ptr, ptr ", cell);
+    uint32_t cell = Emit_Result_Instruction ("load ptr, ptr ");
     Emit_Global_Ref (sym);
     Emit ("\n");
     LLVM_Rep value_rep = sym->type ? Type_To_Rep (sym->type)
                                    : Integer_Arith_Rep ();
-    uint32_t value = Emit_Temp ();
-    Emit ("  %%t%u = load %s, ptr %%t%u\n", value,
+    uint32_t value = Emit_Result_Instruction ("load %s, ptr %%t%u\n",
           LLVM_Rep_To_String (value_rep), cell);
     return Val_Rep (value, value_rep);
   }
@@ -25485,8 +25361,7 @@ LLVM_Value Generate_Identifier (Syntax_Node *node) {
     if (sym->rename_address_slot) {
       uint32_t addr_reg = Emit_Rename_Address (sym);
       LLVM_Rep type_rep = Type_To_Rep (sym->type);
-      uint32_t v = Emit_Temp ();
-      Emit ("  %%t%u = load %s, ptr %%t%u\n", v,
+      uint32_t v = Emit_Result_Instruction ("load %s, ptr %%t%u\n",
             LLVM_Rep_To_String (type_rep), addr_reg);
       return Val_Rep (v, type_rep);
     }
@@ -25786,8 +25661,7 @@ LLVM_I1 Generate_Record_Equality (uint32_t left_ptr,
   // discriminant selects a different variant, so the AND must survive across
   // basic blocks. Comparing an inactive variant's components would read the
   // unused tail of the record and spuriously report inequality (RM 4.5.2).
-  uint32_t res_flag = Emit_Temp ();
-  Emit ("  %%t%u = alloca i1\n", res_flag);
+  uint32_t res_flag = Emit_Result_Instruction ("alloca i1\n");
   Emit ("  store i1 true, ptr %%t%u\n", res_flag);
 
   // The discriminant governing the variant part; loaded once from the left
@@ -25834,14 +25708,10 @@ LLVM_I1 Generate_Record_Equality (uint32_t left_ptr,
       uint32_t disc_val_rt[16];
       Emit_Load_Instance_Discs (record_type, left_ptr, disc_val_rt, dc, szt);
       uint32_t sz = Emit_Component_Footprint (record_type, i, disc_val_rt, dc, szt);
-      uint32_t mc = Emit_Temp ();
-      Emit ("  %%t%u = call " C_INT_TYPE " @memcmp (ptr %%t%u, ptr %%t%u, i64 %%t%u)\n",
-         mc, left_gep, right_gep, sz);
+      uint32_t mc = Emit_Result_Instruction ("call " C_INT_TYPE " @memcmp (ptr %%t%u, ptr %%t%u, i64 %%t%u)\n", left_gep, right_gep, sz);
       cmp = Emit_Icmp_Const ("eq", LL_REP_C_INT, mc, 0);
-      uint32_t cur_eq = Emit_Temp ();
-      Emit ("  %%t%u = load i1, ptr %%t%u\n", cur_eq, res_flag);
-      uint32_t nxt_eq = Emit_Temp ();
-      Emit ("  %%t%u = and i1 %%t%u, %%t%u\n", nxt_eq, cur_eq, cmp.reg);
+      uint32_t cur_eq = Emit_Result_Instruction ("load i1, ptr %%t%u\n", res_flag);
+      uint32_t nxt_eq = Emit_Result_Instruction ("and i1 %%t%u, %%t%u\n", cur_eq, cmp.reg);
       Emit ("  store i1 %%t%u, ptr %%t%u\n", nxt_eq, res_flag);
       Emit_Close_Variant_Guard (variant_skip);
       continue;
@@ -25897,8 +25767,7 @@ LLVM_I1 Generate_Record_Equality (uint32_t left_ptr,
       Emit ("  %%t%u = sub %s %%t%u, %lld\n",
          extent, LLVM_Rep_To_String (disc_llvm), disc_val, (long long)(low_val - 1));
       if (elem_size > 1) {
-        uint32_t mul = Emit_Temp ();
-        Emit ("  %%t%u = mul %s %%t%u, %u\n", mul, LLVM_Rep_To_String (disc_llvm), extent, elem_size);
+        uint32_t mul = Emit_Result_Instruction ("mul %s %%t%u, %u\n", LLVM_Rep_To_String (disc_llvm), extent, elem_size);
         extent = mul;
       }
 
@@ -25908,9 +25777,7 @@ LLVM_I1 Generate_Record_Equality (uint32_t left_ptr,
       Emit ("  %%t%u = select i1 %%t%u, %s 0, %s %%t%u\n",
          clamped, is_neg.reg, LLVM_Rep_To_String (disc_llvm), LLVM_Rep_To_String (disc_llvm), extent);
       Emit ("  %%t%u = sext %s %%t%u to i64\n", size64, LLVM_Rep_To_String (disc_llvm), clamped);
-      uint32_t memcmp_result = Emit_Temp ();
-      Emit ("  %%t%u = call " C_INT_TYPE " @memcmp (ptr %%t%u, ptr %%t%u, i64 %%t%u)\n",
-         memcmp_result, left_gep, right_gep, size64);
+      uint32_t memcmp_result = Emit_Result_Instruction ("call " C_INT_TYPE " @memcmp (ptr %%t%u, ptr %%t%u, i64 %%t%u)\n", left_gep, right_gep, size64);
       cmp = Emit_Icmp_Const ("eq", LL_REP_C_INT, memcmp_result, 0);
 
     // Constrained array with static bounds - use array equality directly on pointers
@@ -25949,15 +25816,12 @@ LLVM_I1 Generate_Record_Equality (uint32_t left_ptr,
 
     // AND this component's result into the accumulator (inside the guard, so a
     // skipped variant component leaves the accumulator untouched = equal).
-    uint32_t cur = Emit_Temp ();
-    Emit ("  %%t%u = load i1, ptr %%t%u\n", cur, res_flag);
-    uint32_t nxt = Emit_Temp ();
-    Emit ("  %%t%u = and i1 %%t%u, %%t%u\n", nxt, cur, cmp.reg);
+    uint32_t cur = Emit_Result_Instruction ("load i1, ptr %%t%u\n", res_flag);
+    uint32_t nxt = Emit_Result_Instruction ("and i1 %%t%u, %%t%u\n", cur, cmp.reg);
     Emit ("  store i1 %%t%u, ptr %%t%u\n", nxt, res_flag);
     Emit_Close_Variant_Guard (variant_skip);
   }
-  uint32_t final_eq = Emit_Temp ();
-  Emit ("  %%t%u = load i1, ptr %%t%u\n", final_eq, res_flag);
+  uint32_t final_eq = Emit_Result_Instruction ("load i1, ptr %%t%u\n", res_flag);
   return (LLVM_I1){ final_eq };
 }
 
@@ -26042,8 +25906,7 @@ LLVM_I1 Generate_Array_Equality (LLVM_Value left_v,
     // equality that respects the active discriminant; AND the results in memory
     // since each record comparison may span basic blocks.
     if (elem_type and count > 0 and Equality_Needs_Componentwise (elem_type)) {
-      uint32_t res_flag = Emit_Temp ();
-      Emit ("  %%t%u = alloca i1\n", res_flag);
+      uint32_t res_flag = Emit_Result_Instruction ("alloca i1\n");
       Emit ("  store i1 true, ptr %%t%u\n", res_flag);
       for (int128_t e = 0; e < count; e++) {
         uint32_t le = Emit_Temp (), re = Emit_Temp ();
@@ -26060,8 +25923,7 @@ LLVM_I1 Generate_Array_Equality (LLVM_Value left_v,
         Emit ("  %%t%u = and i1 %%t%u, %%t%u\n", nxt, cur, ee.reg);
         Emit ("  store i1 %%t%u, ptr %%t%u\n", nxt, res_flag);
       }
-      uint32_t fin = Emit_Temp ();
-      Emit ("  %%t%u = load i1, ptr %%t%u\n", fin, res_flag);
+      uint32_t fin = Emit_Result_Instruction ("load i1, ptr %%t%u\n", res_flag);
       return (LLVM_I1){ fin };
     }
 
@@ -26110,14 +25972,11 @@ LLVM_I1 Generate_Array_Equality (LLVM_Value left_v,
       total_elems = l_conv;
       right_elems = r_conv;
     } else {
-      uint32_t merged = Emit_Temp ();
-      Emit ("  %%t%u = and i1 %%t%u, %%t%u\n", merged, all_len_eq, dim_eq.reg);
+      uint32_t merged = Emit_Result_Instruction ("and i1 %%t%u, %%t%u\n", all_len_eq, dim_eq.reg);
       all_len_eq = merged;
-      uint32_t lp = Emit_Temp ();
-      Emit ("  %%t%u = mul %s %%t%u, %%t%u\n", lp, LLVM_Rep_To_String (aeq_iat), total_elems, l_conv);
+      uint32_t lp = Emit_Result_Instruction ("mul %s %%t%u, %%t%u\n", LLVM_Rep_To_String (aeq_iat), total_elems, l_conv);
       total_elems = lp;
-      uint32_t rp = Emit_Temp ();
-      Emit ("  %%t%u = mul %s %%t%u, %%t%u\n", rp, LLVM_Rep_To_String (aeq_iat), right_elems, r_conv);
+      uint32_t rp = Emit_Result_Instruction ("mul %s %%t%u, %%t%u\n", LLVM_Rep_To_String (aeq_iat), right_elems, r_conv);
       right_elems = rp;
     }
   }
@@ -26129,8 +25988,7 @@ LLVM_I1 Generate_Array_Equality (LLVM_Value left_v,
   // Compute byte size for memcmp: total_elems * scalar_elem_size
   uint32_t elem_size = array_type->array.element_type ?
              array_type->array.element_type->size : 1;
-  uint32_t byte_size = Emit_Temp ();
-  Emit ("  %%t%u = mul %s %%t%u, %u\n", byte_size, LLVM_Rep_To_String (aeq_iat), total_elems, elem_size);
+  uint32_t byte_size = Emit_Result_Instruction ("mul %s %%t%u, %u\n", LLVM_Rep_To_String (aeq_iat), total_elems, elem_size);
   uint32_t byte_size_64 = Emit_Extend_To_I64 (byte_size, aeq_iat).reg;
 
   // Call memcmp
@@ -26143,8 +26001,7 @@ LLVM_I1 Generate_Array_Equality (LLVM_Value left_v,
   LLVM_I1 r_null = Emit_Icmp_Const ("eq", aeq_iat, right_elems, 0);
   uint32_t both_null = Emit_And_I1 (l_null, r_null).reg;
   uint32_t matched = Emit_And_I1 ((LLVM_I1){ all_len_eq }, (LLVM_I1){ data_eq }).reg;
-  uint32_t result = Emit_Temp ();
-  Emit ("  %%t%u = or i1 %%t%u, %%t%u\n", result, both_null, matched);
+  uint32_t result = Emit_Result_Instruction ("or i1 %%t%u, %%t%u\n", both_null, matched);
   return (LLVM_I1){ result };
 }
 
@@ -26159,8 +26016,7 @@ uint32_t Generate_Composite_Address (Syntax_Node *node) {
       // actual variable's address, read from the per-instance pointer
       // cell (RM 12.1.1 renaming semantics).
       if (sym->is_instance_in_out_binding) {
-        uint32_t cell = Emit_Temp ();
-        Emit ("  %%t%u = load ptr, ptr ", cell);
+        uint32_t cell = Emit_Result_Instruction ("load ptr, ptr ");
         Emit_Global_Ref (sym);
         Emit ("\n");
         return cell;
@@ -26285,15 +26141,13 @@ uint32_t Generate_Composite_Address (Syntax_Node *node) {
         LLVM_Rep start_rep = Expression_LLVM_Rep (start_node);
         if (LLVM_Rep_Is_Int (start_rep) and not LLVM_Rep_Equal (start_rep, idx_t))
           start = Emit_Convert (start, start_rep, idx_t).reg;
-        uint32_t adj = Emit_Temp ();
-        Emit ("  %%t%u = sub %s %%t%u, %%t%u\n", adj, LLVM_Rep_To_String (idx_t), start, low_rt);
+        uint32_t adj = Emit_Result_Instruction ("sub %s %%t%u, %%t%u\n", LLVM_Rep_To_String (idx_t), start, low_rt);
         uint32_t byte_off = adj;
         if (elem_size != 1) {
           byte_off = Emit_Temp ();
           Emit ("  %%t%u = mul %s %%t%u, %u\n", byte_off, LLVM_Rep_To_String (idx_t), adj, elem_size);
         }
-        uint32_t addr = Emit_Temp ();
-        Emit ("  %%t%u = getelementptr i8, ptr %%t%u, %s %%t%u\n", addr, data, LLVM_Rep_To_String (idx_t), byte_off);
+        uint32_t addr = Emit_Result_Instruction ("getelementptr i8, ptr %%t%u, %s %%t%u\n", data, LLVM_Rep_To_String (idx_t), byte_off);
         return addr;
       }
 
@@ -26340,8 +26194,7 @@ uint32_t Generate_Composite_Address (Syntax_Node *node) {
           byte_off = Emit_Temp ();
           Emit ("  %%t%u = mul %s %%t%u, %u\n", byte_off, LLVM_Rep_To_String (slice_idx_t), adj, elem_size);
         }
-        uint32_t addr = Emit_Temp ();
-        Emit ("  %%t%u = getelementptr i8, ptr %%t%u, %s %%t%u\n", addr, base, LLVM_Rep_To_String (slice_idx_t), byte_off);
+        uint32_t addr = Emit_Result_Instruction ("getelementptr i8, ptr %%t%u, %s %%t%u\n", base, LLVM_Rep_To_String (slice_idx_t), byte_off);
         return addr;
       }
       uint32_t base;
@@ -26376,8 +26229,7 @@ uint32_t Generate_Composite_Address (Syntax_Node *node) {
       } else {
         Emit ("  %%t%u = mul %s %%t%u, %u\n", byte_off, LLVM_Rep_To_String (comp_idx_t), adj_idx, elem_size);
       }
-      uint32_t addr = Emit_Temp ();
-      Emit ("  %%t%u = getelementptr i8, ptr %%t%u, %s %%t%u\n", addr, base, LLVM_Rep_To_String (comp_idx_t), byte_off);
+      uint32_t addr = Emit_Result_Instruction ("getelementptr i8, ptr %%t%u, %s %%t%u\n", base, LLVM_Rep_To_String (comp_idx_t), byte_off);
       return addr;
     }
 
@@ -26391,10 +26243,8 @@ uint32_t Generate_Composite_Address (Syntax_Node *node) {
       LLVM_Rep str_idx_t = Integer_Arith_Rep ();
       uint32_t low_conv = Emit_Convert (low, str_bt, str_idx_t).reg;
       uint32_t idx = Generate_Expression (node->apply.arguments.items[0]).reg;
-      uint32_t adj_idx = Emit_Temp ();
-      Emit ("  %%t%u = sub %s %%t%u, %%t%u\n", adj_idx, LLVM_Rep_To_String (str_idx_t), idx, low_conv);
-      uint32_t addr = Emit_Temp ();
-      Emit ("  %%t%u = getelementptr i8, ptr %%t%u, %s %%t%u\n", addr, data, LLVM_Rep_To_String (str_idx_t), adj_idx);
+      uint32_t adj_idx = Emit_Result_Instruction ("sub %s %%t%u, %%t%u\n", LLVM_Rep_To_String (str_idx_t), idx, low_conv);
+      uint32_t addr = Emit_Result_Instruction ("getelementptr i8, ptr %%t%u, %s %%t%u\n", data, LLVM_Rep_To_String (str_idx_t), adj_idx);
       return addr;
     }
   }
@@ -26433,8 +26283,7 @@ LLVM_Value Emit_Bool_Array_Binop (uint32_t left, uint32_t right, Type_Info *resu
   int128_t count = Array_Element_Count (result_type);
   uint32_t extent = (count > 0) ? (uint32_t)count
                   : (result_type->size > 0 ? result_type->size : 1);
-  uint32_t dst = Emit_Temp ();
-  Emit ("  %%t%u = alloca [%u x i8]  ; bool array %s result\n", dst, extent, ir_op);
+  uint32_t dst = Emit_Result_Instruction ("alloca [%u x i8]  ; bool array %s result\n", extent, ir_op);
   for (uint32_t i = 0; i < extent; i++) {
     uint32_t lp = Emit_Temp (), rp = Emit_Temp ();
     uint32_t lv = Emit_Temp (), rv = Emit_Temp ();
@@ -26456,8 +26305,7 @@ LLVM_Value Emit_Bool_Array_Not (uint32_t operand, Type_Info *result_type)
   int128_t count = Array_Element_Count (result_type);
   uint32_t extent = (count > 0) ? (uint32_t)count
                   : (result_type->size > 0 ? result_type->size : 1);
-  uint32_t dst = Emit_Temp ();
-  Emit ("  %%t%u = alloca [%u x i8]  ; bool array NOT result\n", dst, extent);
+  uint32_t dst = Emit_Result_Instruction ("alloca [%u x i8]  ; bool array NOT result\n", extent);
   for (uint32_t i = 0; i < extent; i++) {
     uint32_t sp = Emit_Temp (), sv = Emit_Temp ();
     uint32_t nv = Emit_Temp (), dp = Emit_Temp ();
@@ -26496,21 +26344,15 @@ LLVM_Value Emit_Bool_Array_Op_Fat (uint32_t left_fat, uint32_t right_fat,
     Emit_Length_Check (len, rlen, bt, result_type);
   }
 
-  uint32_t dst = Emit_Temp ();
-  Emit ("  %%t%u = alloca i8, i64 %%t%u  ; dyn bool array result\n", dst, len64);
-  uint32_t iv = Emit_Temp ();
-  Emit ("  %%t%u = alloca i64  ; dyn bool array index\n", iv);
+  uint32_t dst = Emit_Result_Instruction ("alloca i8, i64 %%t%u  ; dyn bool array result\n", len64);
+  uint32_t iv = Emit_Result_Instruction ("alloca i64  ; dyn bool array index\n");
   Emit ("  store i64 0, ptr %%t%u\n", iv);
 
   uint32_t head = cg->label_id++, body = cg->label_id++, done = cg->label_id++;
-  Emit ("  br label %%L%u\n", head);
-  cg->block_terminated = true;
   Emit_Label_Here (head);
-  uint32_t cur = Emit_Temp ();
-  Emit ("  %%t%u = load i64, ptr %%t%u\n", cur, iv);
-  uint32_t cmp = Emit_Temp ();
-  Emit ("  %%t%u = icmp slt i64 %%t%u, %%t%u\n", cmp, cur, len64);
-  Emit ("  br i1 %%t%u, label %%L%u, label %%L%u\n", cmp, body, done);
+  uint32_t cur = Emit_Result_Instruction ("load i64, ptr %%t%u\n", iv);
+  LLVM_I1 cmp = Emit_Icmp ("slt", LLVM_Rep_Int (64, false), cur, len64);
+  Emit ("  br i1 %%t%u, label %%L%u, label %%L%u\n", cmp.reg, body, done);
   cg->block_terminated = true;
   Emit_Label_Here (body);
   uint32_t lp = Emit_Temp (), lv = Emit_Temp (), ov = Emit_Temp (), dp = Emit_Temp ();
@@ -26526,8 +26368,7 @@ LLVM_Value Emit_Bool_Array_Op_Fat (uint32_t left_fat, uint32_t right_fat,
   }
   Emit ("  %%t%u = getelementptr i8, ptr %%t%u, i64 %%t%u\n", dp, dst, cur);
   Emit ("  store i8 %%t%u, ptr %%t%u\n", ov, dp);
-  uint32_t nx = Emit_Temp ();
-  Emit ("  %%t%u = add i64 %%t%u, 1\n", nx, cur);
+  uint32_t nx = Emit_Result_Instruction ("add i64 %%t%u, 1\n", cur);
   Emit ("  store i64 %%t%u, ptr %%t%u\n", nx, iv);
   Emit ("  br label %%L%u\n", head);
   cg->block_terminated = true;
@@ -26551,8 +26392,7 @@ uint32_t Normalize_To_Fat_Pointer (Syntax_Node *expr, uint32_t raw, Type_Info *t
   if (Expression_Produces_Fat_Pointer (expr, type))
     return raw;
   if (Type_Is_Character (type)) {
-    uint32_t ca = Emit_Temp ();
-    Emit ("  %%t%u = alloca i8\n", ca);
+    uint32_t ca = Emit_Result_Instruction ("alloca i8\n");
 
     LLVM_Rep src_rep = expr ? Expression_LLVM_Rep (expr) : Integer_Arith_Rep ();
     uint32_t ct = Emit_Convert (raw, src_rep, LLVM_Rep_Int (8, false)).reg;
@@ -26733,20 +26573,16 @@ LLVM_Value Emit_Exact_Rescale (uint32_t value, LLVM_Rep value_rep,
                                unsigned long long divisor,
                                LLVM_Rep destination_rep)
 {
-  uint32_t wide = Emit_Temp ();
-  Emit ("  %%t%u = sext %s %%t%u to i128\n", wide, LLVM_Rep_To_String (value_rep), value);
+  uint32_t wide = Emit_Result_Instruction ("sext %s %%t%u to i128\n", LLVM_Rep_To_String (value_rep), value);
   if (multiplier != 1) {
-    uint32_t product = Emit_Temp ();
-    Emit ("  %%t%u = mul i128 %%t%u, %llu\n", product, wide, multiplier);
+    uint32_t product = Emit_Result_Instruction ("mul i128 %%t%u, %llu\n", wide, multiplier);
     wide = product;
   }
   if (divisor != 1) {
-    uint32_t quotient = Emit_Temp ();
-    Emit ("  %%t%u = sdiv i128 %%t%u, %llu\n", quotient, wide, divisor);
+    uint32_t quotient = Emit_Result_Instruction ("sdiv i128 %%t%u, %llu\n", wide, divisor);
     wide = quotient;
   }
-  uint32_t narrow = Emit_Temp ();
-  Emit ("  %%t%u = trunc i128 %%t%u to %s\n", narrow, wide, LLVM_Rep_To_String (destination_rep));
+  uint32_t narrow = Emit_Result_Instruction ("trunc i128 %%t%u to %s\n", wide, LLVM_Rep_To_String (destination_rep));
   return Val_Rep (narrow, destination_rep);
 }
 
@@ -26758,10 +26594,8 @@ LLVM_Value Emit_Exact_Rescale (uint32_t value, LLVM_Rep value_rep,
 LLVM_Value Convert_Real_To_Fixed (uint32_t val, double small, LLVM_Rep fix_rep)
 {
   uint32_t divided = Emit_Scale_By_Small (val, small, true, LLVM_Rep_Float (64));
-  uint32_t rounded = Emit_Temp ();
-  Emit ("  %%t%u = call double @llvm.round.f64(double %%t%u)\n", rounded, divided);
-  uint32_t scaled = Emit_Temp ();
-  Emit ("  %%t%u = fptosi double %%t%u to %s\n", scaled, rounded, LLVM_Rep_To_String (fix_rep));
+  uint32_t rounded = Emit_Result_Instruction ("call double @llvm.round.f64(double %%t%u)\n", divided);
+  uint32_t scaled = Emit_Result_Instruction ("fptosi double %%t%u to %s\n", rounded, LLVM_Rep_To_String (fix_rep));
   return Val_Rep (scaled, fix_rep);
 }
 // Generate_Binary_Op — dispatch a binary operator node to either a user-defined
@@ -26840,8 +26674,7 @@ LLVM_Value Generate_Binary_Op (Syntax_Node *node) {
     bool callee_is_nested = Subprogram_Needs_Static_Chain (call_target);
     uint32_t frame_pre = callee_is_nested ?
       Precompute_Nested_Frame_Arg (call_target) : 0;
-    uint32_t result = Emit_Temp ();
-    Emit ("  %%t%u = call %s @", result, LLVM_Rep_To_String (ret_rep));
+    uint32_t result = Emit_Result_Instruction ("call %s @", LLVM_Rep_To_String (ret_rep));
     Emit_Symbol_Name (call_target);
     Emit ("(");
     if (callee_is_nested) {
@@ -26855,8 +26688,7 @@ LLVM_Value Generate_Binary_Op (Syntax_Node *node) {
     // negates).
     if (node->binary.op == TK_NE and call_target->name.length == 1 and
         call_target->name.data[0] == '=') {
-      uint32_t neg = Emit_Temp ();
-      Emit ("  %%t%u = xor %s %%t%u, 1\n", neg,
+      uint32_t neg = Emit_Result_Instruction ("xor %s %%t%u, 1\n",
             LLVM_Rep_To_String (ret_rep), result);
       return Val_Rep (neg, ret_rep);
     }
@@ -26947,8 +26779,7 @@ LLVM_Value Emit_Binary_Op_Predefined (Syntax_Node *node) {
       LLVM_I1 len_eq = Emit_Icmp ("eq", slice_bt, left_len, right_len);
 
       // Compare data with memcmp
-      uint32_t byte_size_nat = Emit_Temp ();
-      Emit ("  %%t%u = mul %s %%t%u, %u\n", byte_size_nat, LLVM_Rep_To_String (slice_bt), left_len, elem_size);
+      uint32_t byte_size_nat = Emit_Result_Instruction ("mul %s %%t%u, %u\n", LLVM_Rep_To_String (slice_bt), left_len, elem_size);
       uint32_t byte_size = Emit_Extend_To_I64 (byte_size_nat, slice_bt).reg;
       uint32_t data_eq = Emit_Memcmp_Eq (left_data, right_data, byte_size, 0, true).reg;
 
@@ -27012,9 +26843,7 @@ LLVM_Value Emit_Binary_Op_Predefined (Syntax_Node *node) {
       }
       if (left_type->equality_func_name) {
         LLVM_Rep arg_type = Type_To_Rep (left_type);
-        uint32_t eq_reg = Emit_Temp ();
-        Emit ("  %%t%u = call i1 @%s(%s %%t%u, %s %%t%u)\n",
-           eq_reg, left_type->equality_func_name, LLVM_Rep_To_String (arg_type), left_ptr, LLVM_Rep_To_String (arg_type), right_ptr);
+        uint32_t eq_reg = Emit_Result_Instruction ("call i1 @%s(%s %%t%u, %s %%t%u)\n", left_type->equality_func_name, LLVM_Rep_To_String (arg_type), left_ptr, LLVM_Rep_To_String (arg_type), right_ptr);
         eq_result = (LLVM_I1){ eq_reg };
       } else {
         if (Type_Is_Record (left_type)) {
@@ -27213,8 +27042,7 @@ LLVM_Value Emit_Binary_Op_Predefined (Syntax_Node *node) {
     uint32_t right_len1 = Emit_Length_From_Bounds (right_low, right_high, cat_bt).reg;
 
     // Total length
-    uint32_t total_len = Emit_Temp ();
-    Emit ("  %%t%u = add %s %%t%u, %%t%u\n", total_len, LLVM_Rep_To_String (cat_bt), left_len1, right_len1);
+    uint32_t total_len = Emit_Result_Instruction ("add %s %%t%u, %%t%u\n", LLVM_Rep_To_String (cat_bt), left_len1, right_len1);
 
     // Check result length against index SUBTYPE bounds (RM 4.5.3(7)).                             
     // The check is against the index subtype (e.g., POSITIVE for STRING),                          
@@ -27265,8 +27093,7 @@ LLVM_Value Emit_Binary_Op_Predefined (Syntax_Node *node) {
     uint32_t Emit_Element_Bytes (uint32_t element_len) {
       uint32_t len_64 = Emit_Extend_To_I64 (element_len, cat_bt).reg;
       if (element_size == 1) return len_64;
-      uint32_t bytes = Emit_Temp ();
-      Emit ("  %%t%u = mul i64 %%t%u, %u  ; * element size\n", bytes, len_64, element_size);
+      uint32_t bytes = Emit_Result_Instruction ("mul i64 %%t%u, %u  ; * element size\n", len_64, element_size);
       return bytes;
     }
     uint32_t total_bytes = Emit_Element_Bytes (total_len);
@@ -27274,17 +27101,13 @@ LLVM_Value Emit_Binary_Op_Predefined (Syntax_Node *node) {
     uint32_t right_bytes = Emit_Element_Bytes (right_len1);
 
     // Allocate space on secondary stack
-    uint32_t result_data = Emit_Temp ();
-    Emit ("  %%t%u = call ptr @__ada_sec_stack_alloc(i64 %%t%u)\n",
-       result_data, total_bytes);
+    uint32_t result_data = Emit_Result_Instruction ("call ptr @__ada_sec_stack_alloc(i64 %%t%u)\n", total_bytes);
 
     // Copy left string using llvm.memcpy
     Emit_Memcpy (result_data, left_data, left_bytes);
 
     // Calculate destination for right string
-    uint32_t right_dest = Emit_Temp ();
-    Emit ("  %%t%u = getelementptr i8, ptr %%t%u, i64 %%t%u\n",
-       right_dest, result_data, left_bytes);
+    uint32_t right_dest = Emit_Result_Instruction ("getelementptr i8, ptr %%t%u, i64 %%t%u\n", result_data, left_bytes);
 
     // Copy right string
     Emit_Memcpy (right_dest, right_data, right_bytes);
@@ -27317,12 +27140,8 @@ LLVM_Value Emit_Binary_Op_Predefined (Syntax_Node *node) {
       res_lo = Emit_Static_Int (idx_first, cat_bt).reg;
     }
     // high = low + total_len - 1
-    uint32_t res_hi_tmp = Emit_Temp ();
-    Emit ("  %%t%u = add %s %%t%u, %%t%u\n",
-       res_hi_tmp, LLVM_Rep_To_String (cat_bt), res_lo, total_len);
-    uint32_t res_hi = Emit_Temp ();
-    Emit ("  %%t%u = sub %s %%t%u, 1  ; low + total_len - 1\n",
-       res_hi, LLVM_Rep_To_String (cat_bt), res_hi_tmp);
+    uint32_t res_hi_tmp = Emit_Result_Instruction ("add %s %%t%u, %%t%u\n", LLVM_Rep_To_String (cat_bt), res_lo, total_len);
+    uint32_t res_hi = Emit_Result_Instruction ("sub %s %%t%u, 1  ; low + total_len - 1\n", LLVM_Rep_To_String (cat_bt), res_hi_tmp);
 
     // RM 4.5.3: when the left operand is a null array the result IS the right
     // operand, so its high bound is the right operand's own high — not
@@ -27330,10 +27149,8 @@ LLVM_Value Emit_Binary_Op_Predefined (Syntax_Node *node) {
     // loses the right operand's bounds (e.g. A(1..0) & A(2..0) must be 2..0).
     if (left_is_array) {
       LLVM_I1 left_null = Emit_Icmp_Const ("eq", cat_bt, left_len1, 0);
-      uint32_t res_hi2 = Emit_Temp ();
-      Emit ("  %%t%u = select i1 %%t%u, %s %%t%u, %s %%t%u"
-         "  ; RM 4.5.3 result high (null-left → right's high)\n",
-         res_hi2, left_null.reg, LLVM_Rep_To_String (cat_bt), right_high,
+      uint32_t res_hi2 = Emit_Result_Instruction ("select i1 %%t%u, %s %%t%u, %s %%t%u"
+         "  ; RM 4.5.3 result high (null-left → right's high)\n", left_null.reg, LLVM_Rep_To_String (cat_bt), right_high,
          LLVM_Rep_To_String (cat_bt), res_hi);
       res_hi = res_hi2;
     }
@@ -27484,15 +27301,12 @@ LLVM_Value Emit_Binary_Op_Predefined (Syntax_Node *node) {
       unsigned long long num = (unsigned long long) factor_num;
       unsigned long long den = (unsigned long long) factor_den;
 
-      uint32_t left_wide = Emit_Temp ();
-      Emit ("  %%t%u = sext %s %%t%u to i128\n", left_wide, fix_str, left);
-      uint32_t right_wide = Emit_Temp ();
-      Emit ("  %%t%u = sext %s %%t%u to i128\n", right_wide, fix_str, right);
+      uint32_t left_wide = Emit_Result_Instruction ("sext %s %%t%u to i128\n", fix_str, left);
+      uint32_t right_wide = Emit_Result_Instruction ("sext %s %%t%u to i128\n", fix_str, right);
 
       uint32_t quotient;
       if (node->binary.op == TK_STAR) {
-        uint32_t product = Emit_Temp ();
-        Emit ("  %%t%u = mul i128 %%t%u, %%t%u\n", product, left_wide, right_wide);
+        uint32_t product = Emit_Result_Instruction ("mul i128 %%t%u, %%t%u\n", left_wide, right_wide);
         uint32_t scaled = product;
         if (num != 1) {
           scaled = Emit_Temp ();
@@ -27562,15 +27376,11 @@ LLVM_Value Emit_Binary_Op_Predefined (Syntax_Node *node) {
           Emit ("  br i1 %%t%u, label %%L%u, label %%L%u\n", bad.reg, bad_label, ok_label);
           cg->block_terminated = true;
           Emit_Label_Here (bad_label);
-          cg->block_terminated = false;
           Emit_Raise_Constraint_Error ("0.0 ** negative (RM 4.5.6)");
           Emit_Label_Here (ok_label);
-          cg->block_terminated = false;
 
           // Convert integer exponent to matching float type
-          uint32_t exp_float = Emit_Temp ();
-          Emit ("  %%t%u = sitofp %s %%t%u to %s\n",
-             exp_float, LLVM_Rep_To_String (right_int_type), right, LLVM_Rep_To_String (lhs_ftype));
+          uint32_t exp_float = Emit_Result_Instruction ("sitofp %s %%t%u to %s\n", LLVM_Rep_To_String (right_int_type), right, LLVM_Rep_To_String (lhs_ftype));
           Emit ("  %%t%u = call %s @%s(%s %%t%u, %s %%t%u)\n",
              t, LLVM_Rep_To_String (lhs_ftype), pow_intrinsic, LLVM_Rep_To_String (lhs_ftype), left, LLVM_Rep_To_String (lhs_ftype), exp_float);
           pow_result_rep = lhs_ftype;
@@ -27916,19 +27726,16 @@ LLVM_Value Emit_Binary_Op_Predefined (Syntax_Node *node) {
             LLVM_Rep iat2 = Integer_Arith_Rep ();
             if (LLVM_Rep_Is_Float (lo_type)) {
               uint32_t src = fp_scale ? Emit_Scale_By_Small (lo, fp_small, true, lo_type) : lo;
-              uint32_t cv = Emit_Temp ();
-              Emit ("  %%t%u = fptosi %s %%t%u to %s\n", cv, LLVM_Rep_To_String (lo_type), src, LLVM_Rep_To_String (iat2));
+              uint32_t cv = Emit_Result_Instruction ("fptosi %s %%t%u to %s\n", LLVM_Rep_To_String (lo_type), src, LLVM_Rep_To_String (iat2));
               lo = cv; lo_type = iat2;
             }
             if (LLVM_Rep_Is_Float (hi_type)) {
               uint32_t src = fp_scale ? Emit_Scale_By_Small (hi, fp_small, true, hi_type) : hi;
-              uint32_t cv = Emit_Temp ();
-              Emit ("  %%t%u = fptosi %s %%t%u to %s\n", cv, LLVM_Rep_To_String (hi_type), src, LLVM_Rep_To_String (iat2));
+              uint32_t cv = Emit_Result_Instruction ("fptosi %s %%t%u to %s\n", LLVM_Rep_To_String (hi_type), src, LLVM_Rep_To_String (iat2));
               hi = cv; hi_type = iat2;
             }
             if (LLVM_Rep_Is_Float (left_int_type)) {
-              uint32_t cv = Emit_Temp ();
-              Emit ("  %%t%u = fptosi %s %%t%u to %s\n", cv, LLVM_Rep_To_String (left_int_type), left, LLVM_Rep_To_String (iat2));
+              uint32_t cv = Emit_Result_Instruction ("fptosi %s %%t%u to %s\n", LLVM_Rep_To_String (left_int_type), left, LLVM_Rep_To_String (iat2));
               left = cv; left_int_type = iat2;
             }
             in_range = Emit_In_Range ((LLVM_Value){ left, left_int_type },
@@ -28131,9 +27938,7 @@ LLVM_Value Emit_Binary_Op_Predefined (Syntax_Node *node) {
                 Emit_Convert (vhi, bt, iat).reg, Emit_Convert (chi, hr, iat).reg));
             }
             if (decided) {
-              uint32_t res = Emit_Temp ();
-              Emit ("  %%t%u = or i1 %%t%u, %%t%u  ; null or bounds match\n",
-                 res, is_null.reg, belongs.reg);
+              uint32_t res = Emit_Result_Instruction ("or i1 %%t%u, %%t%u  ; null or bounds match\n", is_null.reg, belongs.reg);
               t = negate ? Emit_Not_I1 ((LLVM_I1){ res }).reg : res;
               return Emit_Bool_Value ((LLVM_I1){ t });
             }
@@ -28167,9 +27972,7 @@ LLVM_Value Emit_Binary_Op_Predefined (Syntax_Node *node) {
               belongs = Emit_And_I1 (belongs, Emit_Icmp ("eq", drep, vval, cval));
             }
             if (decided) {
-              uint32_t res = Emit_Temp ();
-              Emit ("  %%t%u = or i1 %%t%u, %%t%u  ; null or discriminants match\n",
-                 res, is_null.reg, belongs.reg);
+              uint32_t res = Emit_Result_Instruction ("or i1 %%t%u, %%t%u  ; null or discriminants match\n", is_null.reg, belongs.reg);
               t = negate ? Emit_Not_I1 ((LLVM_I1){ res }).reg : res;
               return Emit_Bool_Value ((LLVM_I1){ t });
             }
@@ -28300,13 +28103,11 @@ LLVM_Value Emit_Binary_Op_Predefined (Syntax_Node *node) {
     is_float = true;
     float_type_str = LLVM_Rep_Is_Float (left_int_type) ? left_int_type : right_int_type;
     if (not LLVM_Rep_Is_Float (left_int_type)) {
-      uint32_t cv = Emit_Temp ();
-    Emit ("  %%t%u = sitofp %s %%t%u to %s\n", cv, LLVM_Rep_To_String (left_int_type), left, LLVM_Rep_To_String (float_type_str));
+    uint32_t cv = Emit_Result_Instruction ("sitofp %s %%t%u to %s\n", LLVM_Rep_To_String (left_int_type), left, LLVM_Rep_To_String (float_type_str));
       left = cv;
     }
     if (not LLVM_Rep_Is_Float (right_int_type)) {
-      uint32_t cv = Emit_Temp ();
-    Emit ("  %%t%u = sitofp %s %%t%u to %s\n", cv, LLVM_Rep_To_String (right_int_type), right, LLVM_Rep_To_String (float_type_str));
+    uint32_t cv = Emit_Result_Instruction ("sitofp %s %%t%u to %s\n", LLVM_Rep_To_String (right_int_type), right, LLVM_Rep_To_String (float_type_str));
       right = cv;
     }
   }
@@ -28331,15 +28132,11 @@ LLVM_Value Emit_Binary_Op_Predefined (Syntax_Node *node) {
       // srem result has sign of dividend. When signs differ, add divisor.
       if (binop == TK_MOD and not lhs_unsigned) {
         LLVM_I1 r_ne_zero = Emit_Icmp_Const ("ne", common_rep, t, 0);
-        uint32_t r_xor_b = Emit_Temp ();
-        Emit ("  %%t%u = xor %s %%t%u, %%t%u\n", r_xor_b, LLVM_Rep_To_String (common_rep), t, right);
+        uint32_t r_xor_b = Emit_Result_Instruction ("xor %s %%t%u, %%t%u\n", LLVM_Rep_To_String (common_rep), t, right);
         LLVM_I1 signs_differ = Emit_Icmp_Const ("slt", common_rep, r_xor_b, 0);
         LLVM_I1 need_fix = Emit_And_I1 (r_ne_zero, signs_differ);
-        uint32_t r_plus_b = Emit_Temp ();
-        Emit ("  %%t%u = add %s %%t%u, %%t%u\n", r_plus_b, LLVM_Rep_To_String (common_rep), t, right);
-        uint32_t mod_result = Emit_Temp ();
-        Emit ("  %%t%u = select i1 %%t%u, %s %%t%u, %s %%t%u\n",
-           mod_result, need_fix.reg, LLVM_Rep_To_String (common_rep), r_plus_b, LLVM_Rep_To_String (common_rep), t);
+        uint32_t r_plus_b = Emit_Result_Instruction ("add %s %%t%u, %%t%u\n", LLVM_Rep_To_String (common_rep), t, right);
+        uint32_t mod_result = Emit_Result_Instruction ("select i1 %%t%u, %s %%t%u, %s %%t%u\n", need_fix.reg, LLVM_Rep_To_String (common_rep), r_plus_b, LLVM_Rep_To_String (common_rep), t);
         t = mod_result;
       }
     }
@@ -28363,11 +28160,9 @@ LLVM_Value Emit_Binary_Op_Predefined (Syntax_Node *node) {
       // Check if modulus is a power of 2: if so, no masking needed
       if ((m & (m - 1)) != 0) {
         if (binop == TK_PLUS or binop == TK_MINUS or binop == TK_STAR) {
-          uint32_t mod_val = Emit_Temp ();
-          Emit ("  %%t%u = add %s 0, %s  ; modulus\n", mod_val, LLVM_Rep_To_String (common_rep),
+          uint32_t mod_val = Emit_Result_Instruction ("add %s 0, %s  ; modulus\n", LLVM_Rep_To_String (common_rep),
              U128_Decimal (m));
-          uint32_t wrapped = Emit_Temp ();
-          Emit ("  %%t%u = urem %s %%t%u, %%t%u\n", wrapped, LLVM_Rep_To_String (common_rep), t, mod_val);
+          uint32_t wrapped = Emit_Result_Instruction ("urem %s %%t%u, %%t%u\n", LLVM_Rep_To_String (common_rep), t, mod_val);
           t = wrapped;
         }
       }
@@ -28387,10 +28182,8 @@ LLVM_Value Emit_Binary_Op_Predefined (Syntax_Node *node) {
       Emit ("  br i1 %%t%u, label %%L%u, label %%L%u\n", fz.reg, bad, ok);
       cg->block_terminated = true;
       Emit_Label_Here (bad);
-      cg->block_terminated = false;
       Emit_Raise_Constraint_Error ("float division by zero");
       Emit_Label_Here (ok);
-      cg->block_terminated = false;
     }
     Emit ("  %%t%u = %s %s %%t%u, %%t%u\n", t, op, LLVM_Rep_To_String (float_type_str), left, right);
   }
@@ -28446,8 +28239,7 @@ LLVM_Value Emit_Binary_Op_Predefined (Syntax_Node *node) {
     bool callee_is_nested = Subprogram_Needs_Static_Chain (call_target);
     uint32_t frame_pre = callee_is_nested ?
       Precompute_Nested_Frame_Arg (call_target) : 0;
-    uint32_t result = Emit_Temp ();
-    Emit ("  %%t%u = call %s @", result, ret_type);
+    uint32_t result = Emit_Result_Instruction ("call %s @", ret_type);
     Emit_Symbol_Name (call_target);
     Emit ("(");
     if (callee_is_nested) {
@@ -28492,11 +28284,9 @@ LLVM_Value Emit_Binary_Op_Predefined (Syntax_Node *node) {
         if (res_type and res_type->kind == TYPE_MODULAR and res_type->modulus > 0) {
           uint128_t m = res_type->modulus;
           if ((m & (m - 1)) != 0) {
-            uint32_t mod_val = Emit_Temp ();
-            Emit ("  %%t%u = add %s 0, %s  ; modulus\n", mod_val, LLVM_Rep_To_String (unary_int_type),
+            uint32_t mod_val = Emit_Result_Instruction ("add %s 0, %s  ; modulus\n", LLVM_Rep_To_String (unary_int_type),
                U128_Decimal (m));
-            uint32_t wrapped = Emit_Temp ();
-            Emit ("  %%t%u = urem %s %%t%u, %%t%u\n", wrapped, LLVM_Rep_To_String (unary_int_type), t, mod_val);
+            uint32_t wrapped = Emit_Result_Instruction ("urem %s %%t%u, %%t%u\n", LLVM_Rep_To_String (unary_int_type), t, mod_val);
             t = wrapped;
           }
         }
@@ -28536,8 +28326,7 @@ LLVM_Value Emit_Binary_Op_Predefined (Syntax_Node *node) {
           if (LLVM_Rep_Is_Int (op_type) && LLVM_Rep_Bits (op_type) == 1) {
             Emit ("  %%t%u = xor i1 %%t%u, 1\n", t, operand);
           } else {
-            uint32_t flipped = Emit_Temp ();
-            Emit ("  %%t%u = xor i1 %%t%u, 1\n", flipped, operand);
+            uint32_t flipped = Emit_Result_Instruction ("xor i1 %%t%u, 1\n", operand);
             Emit ("  %%t%u = zext i1 %%t%u to %s\n", t, flipped, LLVM_Rep_To_String (op_type));
           }
         }
@@ -28546,8 +28335,7 @@ LLVM_Value Emit_Binary_Op_Predefined (Syntax_Node *node) {
     case TK_ABS:
       {
         if (is_float) {
-          uint32_t neg = Emit_Temp ();
-          Emit ("  %%t%u = fsub %s 0.0, %%t%u\n", neg, LLVM_Rep_To_String (float_type), operand);
+          uint32_t neg = Emit_Result_Instruction ("fsub %s 0.0, %%t%u\n", LLVM_Rep_To_String (float_type), operand);
           LLVM_I1 cmp = Emit_Fcmp_Zero ("olt", float_type, operand);
           Emit ("  %%t%u = select i1 %%t%u, %s %%t%u, %s %%t%u\n",
              t, cmp.reg, LLVM_Rep_To_String (float_type), neg, LLVM_Rep_To_String (float_type), operand);
@@ -28681,12 +28469,9 @@ static Syntax_Node *Family_Index_Range_Node (Syntax_Node *node) {
 uint32_t Emit_Widen_To_Entry_Slot (uint32_t reg, LLVM_Rep rep) {
   if (LLVM_Rep_Is_Float (rep)) {
     uint32_t w = LLVM_Rep_Bits (rep);
-    uint32_t bits = Emit_Temp ();
-    Emit ("  %%t%u = bitcast %s %%t%u to i%u\n",
-          bits, LLVM_Rep_To_String (rep), reg, w);
+    uint32_t bits = Emit_Result_Instruction ("bitcast %s %%t%u to i%u\n", LLVM_Rep_To_String (rep), reg, w);
     if (w >= 64) return bits;
-    uint32_t ext = Emit_Temp ();
-    Emit ("  %%t%u = zext i%u %%t%u to i64\n", ext, w, bits);
+    uint32_t ext = Emit_Result_Instruction ("zext i%u %%t%u to i64\n", w, bits);
     return ext;
   }
   return Emit_Convert (reg, rep, LLVM_Rep_Int (64, false)).reg;
@@ -28779,19 +28564,9 @@ void Emit_Aggregate_Count_Vs_Constraint_Check (Syntax_Node *agg, Type_Info *para
       f_lo = Emit_Convert (f_lo, iat, iat).reg;
       f_hi = Emit_Convert (f_hi, iat, iat).reg;
     }
-    uint32_t diff = Emit_Temp ();
-    Emit ("  %%t%u = sub %s %%t%u, %%t%u\n",
-       diff, LLVM_Rep_To_String (iat), f_hi, f_lo);
-    uint32_t con_len = Emit_Temp ();
-    Emit ("  %%t%u = add %s %%t%u, 1\n", con_len, LLVM_Rep_To_String (iat), diff);
     // A null constraint range yields a negative span; clamp to 0 (RM 3.6.1).
-    LLVM_I1 neg = Emit_Icmp_Const ("slt", iat, con_len, 0);
-    uint32_t clamped = Emit_Temp ();
-    Emit ("  %%t%u = select i1 %%t%u, %s 0, %s %%t%u\n",
-       clamped, neg.reg, LLVM_Rep_To_String (iat), LLVM_Rep_To_String (iat), con_len);
-    uint32_t agg_len = Emit_Temp ();
-    Emit ("  %%t%u = add %s 0, %u  ; agg dim %u count\n",
-       agg_len, LLVM_Rep_To_String (iat), agg_dim_lengths[d], d);
+    uint32_t clamped = Emit_Length_From_Bounds (f_lo, f_hi, iat).reg;
+    uint32_t agg_len = Emit_Result_Instruction ("add %s 0, %u  ; agg dim %u count\n", LLVM_Rep_To_String (iat), agg_dim_lengths[d], d);
     Emit_Length_Check (agg_len, clamped, iat, param_type);
   }
 }
@@ -28811,11 +28586,9 @@ uint32_t Emit_Entry_Default_To_Slot (Syntax_Node *def, Type_Info *param_type) {
     uint32_t fat_val = Normalize_To_Fat_Pointer (def, raw,
                          def->type ? def->type : param_type,
                          Array_Bound_LLVM_Rep (param_type));
-    uint32_t spill = Emit_Temp ();
-    Emit ("  %%t%u = alloca " FAT_PTR_TYPE ", align 8  ; spill fat entry default\n", spill);
+    uint32_t spill = Emit_Result_Instruction ("alloca " FAT_PTR_TYPE ", align 8  ; spill fat entry default\n");
     Emit ("  store " FAT_PTR_TYPE " %%t%u, ptr %%t%u\n", fat_val, spill);
-    uint32_t addr = Emit_Temp ();
-    Emit ("  %%t%u = ptrtoint ptr %%t%u to i64\n", addr, spill);
+    uint32_t addr = Emit_Result_Instruction ("ptrtoint ptr %%t%u to i64\n", spill);
     return addr;
   }
 
@@ -28854,18 +28627,14 @@ void Emit_Blocking_Entry_Call (uint32_t task_ptr, uint32_t entry_idx_64,
      task_ptr, entry_idx_64, param_block);
   if (guard_abort) {
     Emit ("  call i32 @pthread_mutex_lock(ptr @__rv_mutex)\n");
-    uint32_t ap = Emit_Temp ();
-    Emit ("  %%t%u = getelementptr i8, ptr %%__self_tcb, i64 61\n", ap);
-    uint32_t apv = Emit_Temp ();
-    Emit ("  %%t%u = load i8, ptr %%t%u\n", apv, ap);
+    uint32_t ap = Emit_Result_Instruction ("getelementptr i8, ptr %%__self_tcb, i64 61\n");
+    uint32_t apv = Emit_Result_Instruction ("load i8, ptr %%t%u\n", ap);
     Emit ("  call i32 @pthread_mutex_unlock(ptr @__rv_mutex)\n");
-    uint32_t aborted = Emit_Temp ();
-    Emit ("  %%t%u = icmp ne i8 %%t%u, 0\n", aborted, apv);
+    LLVM_I1 aborted = Emit_Boolean_Truth_Test (apv);
     uint32_t cont = cg->label_id++;
     Emit ("  br i1 %%t%u, label %%L%u, label %%L%u\n",
-       aborted, cg->task_body_done_label, cont);
+       aborted.reg, cg->task_body_done_label, cont);
     Emit_Label_Here (cont);
-    cg->block_terminated = false;
   }
 }
 
@@ -28888,9 +28657,7 @@ void Emit_Entry_Family_Index_Check (Symbol *entry_sym, uint32_t idx_val) {
                     Expression_LLVM_Rep (range->range.high), iat).reg;
     LLVM_I1 below = Emit_Icmp ("slt", iat, idx_val, lo);
     LLVM_I1 above = Emit_Icmp ("sgt", iat, idx_val, hi);
-    uint32_t bad = Emit_Temp ();
-    Emit ("  %%t%u = or i1 %%t%u, %%t%u  ; family index out of range\n",
-       bad, below.reg, above.reg);
+    uint32_t bad = Emit_Result_Instruction ("or i1 %%t%u, %%t%u  ; family index out of range\n", below.reg, above.reg);
     Emit_Check_With_Raise (bad, true, "entry family index out of range (RM 9.5)");
   } else if (constraint and constraint->type and
              Type_Is_Discrete (constraint->type)) {
@@ -28983,8 +28750,7 @@ uint32_t Emit_Task_Pointer_From_Selected (Syntax_Node *selected_prefix) {
     LLVM_Value value = Generate_Expression (selected_prefix);
     if (Type_Is_Task (selected_prefix->type))
       return value.reg;
-    uint32_t tcb = Emit_Temp ();
-    Emit ("  %%t%u = load ptr, ptr %%t%u  ; deref access-to-task\n", tcb, value.reg);
+    uint32_t tcb = Emit_Result_Instruction ("load ptr, ptr %%t%u  ; deref access-to-task\n", value.reg);
     return tcb;
   }
 
@@ -28999,9 +28765,7 @@ uint32_t Emit_Task_Pointer_From_Selected (Syntax_Node *selected_prefix) {
     LLVM_Value result = Generate_Expression (selected_prefix);
     if (Type_Is_Task (selected_prefix->type))
       return result.reg;
-    uint32_t tcb = Emit_Temp ();
-    Emit ("  %%t%u = load ptr, ptr %%t%u  ; deref access-to-task\n",
-       tcb, result.reg);
+    uint32_t tcb = Emit_Result_Instruction ("load ptr, ptr %%t%u  ; deref access-to-task\n", result.reg);
     return tcb;
   }
 
@@ -29014,9 +28778,7 @@ uint32_t Emit_Task_Pointer_From_Selected (Syntax_Node *selected_prefix) {
       selected_prefix->unary.operand->symbol and
       selected_prefix->unary.operand->symbol->kind == SYMBOL_FUNCTION) {
     LLVM_Value access_value = Generate_Expression (selected_prefix->unary.operand);
-    uint32_t tcb = Emit_Temp ();
-    Emit ("  %%t%u = load ptr, ptr %%t%u  ; deref access-to-task\n",
-       tcb, access_value.reg);
+    uint32_t tcb = Emit_Result_Instruction ("load ptr, ptr %%t%u  ; deref access-to-task\n", access_value.reg);
     return tcb;
   }
 
@@ -29032,8 +28794,7 @@ uint32_t Emit_Task_Pointer_From_Selected (Syntax_Node *selected_prefix) {
     // Tree-copy instance IN OUT binding of a task: the pointer cell holds
     // the task VARIABLE's address and the variable holds the TCB — two
     // loads (RM 12.1.1 renaming semantics).
-    uint32_t variable_addr = Emit_Temp ();
-    Emit ("  %%t%u = load ptr, ptr ", variable_addr);
+    uint32_t variable_addr = Emit_Result_Instruction ("load ptr, ptr ");
     Emit_Global_Ref (task_sym);
     Emit ("\n");
     Emit ("  %%t%u = load ptr, ptr %%t%u  ; task via IN OUT binding\n",
@@ -29054,8 +28815,7 @@ uint32_t Emit_Task_Pointer_From_Selected (Syntax_Node *selected_prefix) {
     Emit ("L%u:\n", from_label);
     Emit ("  br i1 %%t%u, label %%L%u, label %%L%u\n", is_null.reg, join_label, ok_label);
     Emit ("L%u:\n", ok_label);
-    uint32_t loaded = Emit_Temp ();
-    Emit ("  %%t%u = load ptr, ptr %%t%u  ; deref access-to-task\n", loaded, access_value);
+    uint32_t loaded = Emit_Result_Instruction ("load ptr, ptr %%t%u  ; deref access-to-task\n", access_value);
     Emit ("  br label %%L%u\n", join_label);
     Emit ("L%u:\n", join_label);
     Emit ("  %%t%u = phi ptr [ null, %%L%u ], [ %%t%u, %%L%u ]\n",
@@ -29230,8 +28990,7 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
           LLVM_Rep got  = result_v.rep;
           LLVM_Rep want = (sym and sym->return_type) ? Type_To_Rep (sym->return_type) : LLVM_Rep_Int (8, false);
           if (LLVM_Rep_Is_Int (got) && LLVM_Rep_Bits (got) == 1 && not (LLVM_Rep_Is_Int (want) && LLVM_Rep_Bits (want) == 1)) {
-            uint32_t widened = Emit_Temp ();
-            Emit ("  %%t%u = zext i1 %%t%u to %s\n", widened, result, LLVM_Rep_To_String (want));
+            uint32_t widened = Emit_Result_Instruction ("zext i1 %%t%u to %s\n", result, LLVM_Rep_To_String (want));
             return Val_Rep (widened, want);
           }
         }
@@ -29253,9 +29012,7 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
         uint32_t zero = Emit_Static_Int (0, t0).reg;
         uint32_t neg = Emit_Overflow_Checked_Op (zero, v0, "sub", t0, ty0).reg;
         LLVM_I1 cmp = Emit_Icmp_Const ("slt", t0, v0, 0);
-        uint32_t result = Emit_Temp ();
-        Emit ("  %%t%u = select i1 %%t%u, %s %%t%u, %s %%t%u\n",
-           result, cmp.reg, LLVM_Rep_To_String (t0), neg, LLVM_Rep_To_String (t0), v0);
+        uint32_t result = Emit_Result_Instruction ("select i1 %%t%u, %s %%t%u, %s %%t%u\n", cmp.reg, LLVM_Rep_To_String (t0), neg, LLVM_Rep_To_String (t0), v0);
         return Val_Rep (result, t0);
       }
       if (Slice_Equal_Ignore_Case (op_name, S("not"))) {
@@ -29270,15 +29027,11 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
           return Emit_Bool_Array_Not (v0, ty0);
         }
         v0 = Emit_Convert (v0, t0, LLVM_Rep_Int (1, false)).reg;
-        uint32_t result = Emit_Temp ();
-        Emit ("  %%t%u = xor i1 %%t%u, true\n", result, v0);
-        uint32_t widened = Emit_Temp ();
-        Emit ("  %%t%u = zext i1 %%t%u to i8\n", widened, result);
-        return Val_Rep (widened, LLVM_Rep_Int (8, false));
+        uint32_t result = Emit_Result_Instruction ("xor i1 %%t%u, true\n", v0);
+        return Emit_Bool_Value ((LLVM_I1){ result });
       }
       if (Slice_Equal_Ignore_Case (op_name, S("-"))) {
-        uint32_t result = Emit_Temp ();
-        Emit ("  %%t%u = sub %s 0, %%t%u\n", result, LLVM_Rep_To_String (t0), v0);
+        uint32_t result = Emit_Result_Instruction ("sub %s 0, %%t%u\n", LLVM_Rep_To_String (t0), v0);
         return Val_Rep (result, t0);
       }
       // Unary "+" is identity (RM 4.5.4): yield the operand unchanged rather
@@ -29431,8 +29184,7 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
           LLVM_Rep ld_ty = Type_To_Rep (formal_type);
 
           // Alloca temp for isolated copy
-          uint32_t temp = Emit_Temp ();
-          Emit ("  %%t%u = alloca %s  ; copy-in/copy-out temp\n", temp, LLVM_Rep_To_String (ld_ty));
+          uint32_t temp = Emit_Result_Instruction ("alloca %s  ; copy-in/copy-out temp\n", LLVM_Rep_To_String (ld_ty));
 
           // Copy-in: load from actual, check constraint, store to temp.
           // RM 6.4.1(7): for a type-conversion actual TYPE(X) the value passed
@@ -29441,8 +29193,7 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
           // equal to the formal subtype makes the range check a no-op and an
           // out-of-range operand slips through before the call.
           if (pmode == PARAM_IN_OUT) {
-            uint32_t val = Emit_Temp ();
-            Emit ("  %%t%u = load %s, ptr %%t%u\n", val, LLVM_Rep_To_String (ld_ty), actual_addr);
+            uint32_t val = Emit_Result_Instruction ("load %s, ptr %%t%u\n", LLVM_Rep_To_String (ld_ty), actual_addr);
             Type_Info *src_type = (addr_node and addr_node->type) ? addr_node->type
                                                                   : arg->type;
             Emit_Constraint_Check_Val (Val_Rep (val, ld_ty), formal_type, src_type);
@@ -29511,8 +29262,6 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
             }
             if (bounds_mismatch) {
               uint32_t bad = cg->label_id++, cont = cg->label_id++;
-              Emit ("  br label %%L%u\n", bad);
-              cg->block_terminated = true;
               Emit_Label_Here (bad);
               Emit_Raise_Constraint_Error ("actual array bounds vs constrained formal (RM 6.4.1)");
               Emit_Label_Here (cont);
@@ -29536,16 +29285,14 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
             uint32_t hi = Emit_Convert (Generate_Expression (rng->range.high).reg,
                             Expression_LLVM_Rep (rng->range.high), bt).reg;
             LLVM_Value fat = Emit_Fat_Pointer_Dynamic (actual_addr, lo, hi, bt);
-            uint32_t slot = Emit_Temp ();
-            Emit ("  %%t%u = alloca " FAT_PTR_TYPE
-                  "  ; by-ref fat ptr for slice actual\n", slot);
+            uint32_t slot = Emit_Result_Instruction ("alloca " FAT_PTR_TYPE
+                  "  ; by-ref fat ptr for slice actual\n");
             Emit ("  store " FAT_PTR_TYPE " %%t%u, ptr %%t%u\n", fat.reg, slot);
             args[param_idx] = slot;
           } else if (formal_needs_fat and actual_inline_array) {
             LLVM_Value fat = Emit_Fat_Pointer_For_Lvalue (actual_addr, actual_type);
-            uint32_t slot = Emit_Temp ();
-            Emit ("  %%t%u = alloca " FAT_PTR_TYPE
-                  "  ; by-ref fat ptr for unconstrained formal\n", slot);
+            uint32_t slot = Emit_Result_Instruction ("alloca " FAT_PTR_TYPE
+                  "  ; by-ref fat ptr for unconstrained formal\n");
             Emit ("  store " FAT_PTR_TYPE " %%t%u, ptr %%t%u\n", fat.reg, slot);
             args[param_idx] = slot;
           } else {
@@ -29556,8 +29303,7 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
           if (pmode == PARAM_IN_OUT and formal_type and
             Type_Is_Scalar (formal_type)) {
             LLVM_Rep ld_ty = Type_To_Rep (formal_type);
-            uint32_t cur_val = Emit_Temp ();
-            Emit ("  %%t%u = load %s, ptr %%t%u\n", cur_val, LLVM_Rep_To_String (ld_ty), args[param_idx]);
+            uint32_t cur_val = Emit_Result_Instruction ("load %s, ptr %%t%u\n", LLVM_Rep_To_String (ld_ty), args[param_idx]);
             Emit_Constraint_Check_Val (Val_Rep (cur_val, ld_ty), formal_type, arg->type);
           }
 
@@ -29617,8 +29363,7 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
              task_actual->apply.resolution == APPLY_CALL);
           if (actual_is_value) {
             LLVM_Value task_value = Generate_Expression (task_actual);
-            uint32_t slot = Emit_Temp ();
-            Emit ("  %%t%u = alloca ptr  ; task function-result slot\n", slot);
+            uint32_t slot = Emit_Result_Instruction ("alloca ptr  ; task function-result slot\n");
             Emit ("  store ptr %%t%u, ptr %%t%u\n", task_value.reg, slot);
             args[param_idx] = slot;
           } else {
@@ -29692,8 +29437,6 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
             if (bounds_mismatch and
                 not Check_Is_Suppressed (formal_type, NULL, CHK_LENGTH)) {
               uint32_t bad = cg->label_id++, cont = cg->label_id++;
-              Emit ("  br label %%L%u\n", bad);
-              cg->block_terminated = true;
               Emit_Label_Here (bad);
               Emit_Raise_Constraint_Error ("actual array bounds vs constrained formal (RM 6.4.1)");
               Emit_Label_Here (cont);
@@ -29842,9 +29585,7 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
       if (src_sz == 0) src_sz = 8;
       if (dst_sz == 0) dst_sz = 8;
       uint32_t buf_sz = src_sz > dst_sz ? src_sz : dst_sz;
-      uint32_t buf = Emit_Temp ();
-      Emit ("  %%t%u = alloca [%u x i8]  ; UNCHECKED_CONVERSION buffer\n",
-         buf, buf_sz);
+      uint32_t buf = Emit_Result_Instruction ("alloca [%u x i8]  ; UNCHECKED_CONVERSION buffer\n", buf_sz);
 
       // When the target is wider than the source, the surplus bytes would
       // otherwise read uninitialized stack. Zero the buffer first so the padding
@@ -29918,8 +29659,7 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
         // return the ptr to the buffer; caller will memcpy it.
         return Val_Rep (buf, LL_REP_PTR);
       }
-      uint32_t res = Emit_Temp ();
-      Emit ("  %%t%u = load %s, ptr %%t%u  ; UC dst\n", res, LLVM_Rep_To_String (dst_llvm), buf);
+      uint32_t res = Emit_Result_Instruction ("load %s, ptr %%t%u  ; UC dst\n", LLVM_Rep_To_String (dst_llvm), buf);
       // An unchecked conversion INTO an enumeration with a representation clause
       // receives the internal code; fold it back to the stored position so the
       // result is a well-formed value (the inverse of the source fold above).
@@ -30108,9 +29848,7 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
       // buffer address as the TCB and 'CALLABLE/'TERMINATED/entry calls read the
       // wrong memory.
       if (Type_Is_Task (sym->return_type)) {
-        uint32_t handle = Emit_Temp ();
-        Emit ("  %%t%u = load ptr, ptr %%t%u  ; task BIP result handle\n",
-           handle, bip_dest);
+        uint32_t handle = Emit_Result_Instruction ("load ptr, ptr %%t%u  ; task BIP result handle\n", bip_dest);
         t = handle;
       }
     }
@@ -30128,9 +29866,7 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
 
       // Scalar/access copy-back
       if (copyback_addr[i]) {
-        uint32_t ret_val = Emit_Temp ();
-        Emit ("  %%t%u = load %s, ptr %%t%u  ; copy-out\n",
-           ret_val, LLVM_Rep_To_String(copyback_llvm[i]), args[i]);
+        uint32_t ret_val = Emit_Result_Instruction ("load %s, ptr %%t%u  ; copy-out\n", LLVM_Rep_To_String(copyback_llvm[i]), args[i]);
 
         // RM 6.4.1(17): on return from OUT/IN OUT scalar param, the
         // value must satisfy the actual's subtype constraint. Apply
@@ -30165,8 +29901,7 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
         Type_Info *actual_type = arg->type;
         if (actual_type and Type_Is_Scalar (actual_type)) {
           LLVM_Rep ld_ty = Type_To_Rep (actual_type);
-          uint32_t ret_val = Emit_Temp ();
-          Emit ("  %%t%u = load %s, ptr %%t%u  ; OUT/INOUT result\n", ret_val, LLVM_Rep_To_String(ld_ty), args[i]);
+          uint32_t ret_val = Emit_Result_Instruction ("load %s, ptr %%t%u  ; OUT/INOUT result\n", LLVM_Rep_To_String(ld_ty), args[i]);
           Emit_Constraint_Check_Val (Val_Rep (ret_val, ld_ty), actual_type, NULL);
         } else if (actual_type and Type_Is_Record (actual_type) and
                    actual_type->record.has_disc_constraints) {
@@ -30201,9 +29936,7 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
         LLVM_Value data_byte_size  = Emit_Array_Byte_Size (rt, t);
 
         // Allocate local buffer and copy data
-        uint32_t local_buffer = Emit_Temp ();
-        Emit ("  %%t%u = alloca i8, i64 %%t%u  ; copy func return data\n",
-           local_buffer, data_byte_size.reg);
+        uint32_t local_buffer = Emit_Result_Instruction ("alloca i8, i64 %%t%u  ; copy func return data\n", data_byte_size.reg);
         Emit_Memcpy (local_buffer, old_data, data_byte_size.reg);
 
         // Also copy bounds to a local alloca. The bounds struct is
@@ -30213,8 +29946,7 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
         uint32_t old_bounds = Emit_Extract_Fat_Bounds (t);
         uint32_t bound_byte_width = rt_bt.bits / Bits_Per_Unit;
         uint32_t bounds_byte_size = dimension_count * 2 * bound_byte_width;
-        uint32_t local_bounds = Emit_Temp ();
-        Emit ("  %%t%u = alloca [%u x i8]  ; local bounds copy\n", local_bounds, bounds_byte_size);
+        uint32_t local_bounds = Emit_Result_Instruction ("alloca [%u x i8]  ; local bounds copy\n", bounds_byte_size);
         Emit ("  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %u, i1 false)  ; copy return bounds\n",
           local_bounds, old_bounds, bounds_byte_size);
 
@@ -30395,9 +30127,7 @@ entry_path:
               actual_high->kind == BOUND_INTEGER and
               (formal_low->int_value  != actual_low->int_value or
                formal_high->int_value != actual_high->int_value)) {
-            uint32_t always = Emit_Temp ();
-            Emit ("  %%t%u = icmp eq i32 0, 0  ; bounds mismatch, always raise\n",
-                  always);
+            uint32_t always = Emit_Result_Instruction ("icmp eq i32 0, 0  ; bounds mismatch, always raise\n");
             Emit_Check_With_Raise (always, true,
               "array bounds mismatch in entry call (RM 6.4.1)");
           }
@@ -30429,17 +30159,14 @@ entry_path:
               value_node ? value_node->type : slot_formal,
               Array_Bound_LLVM_Rep (slot_formal))
           : arg_val;
-        uint32_t spill = Emit_Temp ();
-        Emit ("  %%t%u = alloca " FAT_PTR_TYPE ", align 8  ; spill fat entry arg\n", spill);
+        uint32_t spill = Emit_Result_Instruction ("alloca " FAT_PTR_TYPE ", align 8  ; spill fat entry arg\n");
         Emit ("  store " FAT_PTR_TYPE " %%t%u, ptr %%t%u\n", fat_val, spill);
         arg_val = Emit_Temp ();
         Emit ("  %%t%u = ptrtoint ptr %%t%u to i64\n", arg_val, spill);
       } else {
         arg_val = Emit_Widen_To_Entry_Slot (arg_val, arg_t);
       }
-      uint32_t arg_ptr = Emit_Temp ();
-      Emit ("  %%t%u = getelementptr [%u x i64], ptr %%t%u, i64 0, i64 %u\n",
-         arg_ptr, param_count, param_block, slot);
+      uint32_t arg_ptr = Emit_Result_Instruction ("getelementptr [%u x i64], ptr %%t%u, i64 0, i64 %u\n", param_count, param_block, slot);
       Emit ("  store i64 %%t%u, ptr %%t%u\n", arg_val, arg_ptr);
     }
 
@@ -30452,9 +30179,7 @@ entry_path:
         if (not dflt) continue;
         uint32_t dval = Emit_Entry_Default_To_Slot (dflt,
                           sym->parameters[s].param_type);
-        uint32_t dptr = Emit_Temp ();
-        Emit ("  %%t%u = getelementptr [%u x i64], ptr %%t%u, i64 0, i64 %u\n",
-           dptr, block_slots, param_block, s);
+        uint32_t dptr = Emit_Result_Instruction ("getelementptr [%u x i64], ptr %%t%u, i64 0, i64 %u\n", block_slots, param_block, s);
         Emit ("  store i64 %%t%u, ptr %%t%u  ; default parameter\n", dval, dptr);
       }
     }
@@ -30485,9 +30210,7 @@ entry_path:
         }
         uint32_t flag64 = Emit_Convert (flag, LLVM_Rep_Int (8, false),
                                         LLVM_Rep_Int (64, false)).reg;
-        uint32_t fptr = Emit_Temp ();
-        Emit ("  %%t%u = getelementptr i64, ptr %%t%u, i64 %u\n",
-           fptr, param_block, flag_slot);
+        uint32_t fptr = Emit_Result_Instruction ("getelementptr i64, ptr %%t%u, i64 %u\n", param_block, flag_slot);
         Emit ("  store i64 %%t%u, ptr %%t%u  ; 'CONSTRAINED flag\n", flag64, fptr);
         flag_slot++;
       }
@@ -30546,22 +30269,16 @@ entry_path:
     // call that did not rendezvous, the block still holds the value stored
     // above, so the store is a self-assignment.
     for (uint32_t k = 0; k < out_actual_count; k++) {
-      uint32_t slot_ptr = Emit_Temp ();
-      Emit ("  %%t%u = getelementptr [%u x i64], ptr %%t%u, i64 0, i64 %u\n",
-         slot_ptr, param_count, param_block, out_actuals[k].slot);
+      uint32_t slot_ptr = Emit_Result_Instruction ("getelementptr [%u x i64], ptr %%t%u, i64 0, i64 %u\n", param_count, param_block, out_actuals[k].slot);
 
       // A fat access was spilled: the slot holds the spill address, and the
       // acceptor updated the fat pointer there in place. Load the returned
       // access value from the spill, check its designated object against the
       // actual's subtype (RM 6.4.1), then store it into the actual.
       if (out_actuals[k].is_fat_access) {
-        uint32_t addr = Emit_Temp ();
-        Emit ("  %%t%u = load i64, ptr %%t%u\n", addr, slot_ptr);
-        uint32_t spill = Emit_Temp ();
-        Emit ("  %%t%u = inttoptr i64 %%t%u to ptr\n", spill, addr);
-        uint32_t fat = Emit_Temp ();
-        Emit ("  %%t%u = load " FAT_PTR_TYPE ", ptr %%t%u  ; returned access\n",
-           fat, spill);
+        uint32_t addr = Emit_Result_Instruction ("load i64, ptr %%t%u\n", slot_ptr);
+        uint32_t spill = Emit_Result_Instruction ("inttoptr i64 %%t%u to ptr\n", addr);
+        uint32_t fat = Emit_Result_Instruction ("load " FAT_PTR_TYPE ", ptr %%t%u  ; returned access\n", spill);
         if (out_actuals[k].actual_type)
           Emit_Access_Designated_Disc_Check (fat, out_actuals[k].rep,
                              out_actuals[k].actual_type);
@@ -30569,8 +30286,7 @@ entry_path:
            fat, out_actuals[k].address);
         continue;
       }
-      uint32_t raw = Emit_Temp ();
-      Emit ("  %%t%u = load i64, ptr %%t%u\n", raw, slot_ptr);
+      uint32_t raw = Emit_Result_Instruction ("load i64, ptr %%t%u\n", slot_ptr);
       uint32_t narrowed = Emit_Convert (raw, LLVM_Rep_Int (64, false),
                                         out_actuals[k].rep).reg;
 
@@ -30794,8 +30510,7 @@ index_path: ;
         Emit ("  %%t%u = getelementptr i8, ptr %%t%u, %s %%t%u\n",
            data_ptr, base, LLVM_Rep_To_String (sl_iat), offset);
       } else {
-        uint32_t byte_off = Emit_Temp ();
-        Emit ("  %%t%u = mul %s %%t%u, %u\n", byte_off, LLVM_Rep_To_String (sl_iat), offset, elem_size);
+        uint32_t byte_off = Emit_Result_Instruction ("mul %s %%t%u, %u\n", LLVM_Rep_To_String (sl_iat), offset, elem_size);
         Emit ("  %%t%u = getelementptr i8, ptr %%t%u, %s %%t%u\n",
            data_ptr, base, LLVM_Rep_To_String (sl_iat), byte_off);
       }
@@ -30954,10 +30669,8 @@ type_conversion:
                 uint32_t hi_out = Emit_Temp ();
                 Emit ("  %%t%u = or i1 %%t%u, %%t%u  ; high bound outside index subtype\n", hi_out,
                       Emit_Icmp ("slt", work, src_hi, ilo).reg, Emit_Icmp ("sgt", work, src_hi, ihi).reg);
-                uint32_t out = Emit_Temp ();
-                Emit ("  %%t%u = or i1 %%t%u, %%t%u\n", out, lo_out, hi_out);
-                uint32_t raise = Emit_Temp ();
-                Emit ("  %%t%u = and i1 %%t%u, %%t%u  ; non-null dim bound outside index subtype\n", raise, non_null, out);
+                uint32_t out = Emit_Result_Instruction ("or i1 %%t%u, %%t%u\n", lo_out, hi_out);
+                uint32_t raise = Emit_Result_Instruction ("and i1 %%t%u, %%t%u  ; non-null dim bound outside index subtype\n", non_null, out);
                 Emit_Check_With_Raise (raise, true, "array bound outside target index subtype (RM 4.6)");
               }
             }
@@ -31007,8 +30720,7 @@ type_conversion:
         // Fixed > Float: convert integer to float, multiply by SMALL
         if (Type_Is_Fixed_Point (src_type) and Type_Is_Float_Representation (dst_type)) {
           LLVM_Rep dst_llvm = Type_To_Rep (dst_type);
-          uint32_t t1 = Emit_Temp ();
-          Emit ("  %%t%u = sitofp %s %%t%u to %s  ; fixed>float\n", t1, LLVM_Rep_To_String (result_v.rep), result, LLVM_Rep_To_String (dst_llvm));
+          uint32_t t1 = Emit_Result_Instruction ("sitofp %s %%t%u to %s  ; fixed>float\n", LLVM_Rep_To_String (result_v.rep), result, LLVM_Rep_To_String (dst_llvm));
           uint32_t t2 = Emit_Scale_By_Small (t1, Fixed_Repr_Small (src_type), false, dst_llvm);
           return Val_Rep (t2, dst_llvm);
 
@@ -31021,8 +30733,7 @@ type_conversion:
           // float width.
           LLVM_Rep src_llvm = result_rep;
           uint32_t t1 = Emit_Scale_By_Small (result, Fixed_Repr_Small (dst_type), true, src_llvm);
-          uint32_t t1r = Emit_Temp ();
-          Emit ("  %%t%u = call %s @llvm.round.%s(%s %%t%u)\n", t1r,
+          uint32_t t1r = Emit_Result_Instruction ("call %s @llvm.round.%s(%s %%t%u)\n",
              LLVM_Rep_To_String (src_llvm), src_llvm.bits == 32 ? "f32" : "f64",
              LLVM_Rep_To_String (src_llvm), t1);
           uint32_t t2 = Emit_Temp ();
@@ -31077,16 +30788,13 @@ type_conversion:
           LLVM_Rep fix_int_rep = result_v.rep;
 
           // Stored scaled integer > double > * SMALL > round > fptosi
-          uint32_t f1 = Emit_Temp ();
-          Emit ("  %%t%u = sitofp %s %%t%u to double  ; fixed>double\n",
-             f1, LLVM_Rep_To_String (fix_int_rep), result);
+          uint32_t f1 = Emit_Result_Instruction ("sitofp %s %%t%u to double  ; fixed>double\n", LLVM_Rep_To_String (fix_int_rep), result);
           uint32_t f2 = Emit_Temp ();
           uint64_t small_bits;
           memcpy (&small_bits, &small, sizeof (small_bits));
           Emit ("  %%t%u = fmul double %%t%u, 0x%016llX  ; scale by SMALL\n",
              f2, f1, (unsigned long long)small_bits);
-          uint32_t f3 = Emit_Temp ();
-          Emit ("  %%t%u = call double @llvm.round.f64(double %%t%u)\n", f3, f2);
+          uint32_t f3 = Emit_Result_Instruction ("call double @llvm.round.f64(double %%t%u)\n", f2);
           uint32_t t2 = Emit_Temp ();
           LLVM_Rep dst_llvm = Type_To_Rep (dst_type);
           Emit ("  %%t%u = fptosi double %%t%u to %s  ; fixed>integer\n",
@@ -31174,8 +30882,7 @@ LLVM_Value Generate_Selected (Syntax_Node *node) {
 
     // For scalar types, load the value
     LLVM_Rep type_rep = Type_To_Rep (designated);
-    uint32_t t = Emit_Temp ();
-    Emit ("  %%t%u = load %s, ptr %%t%u  ; load via .ALL\n", t, LLVM_Rep_To_String (type_rep), ptr);
+    uint32_t t = Emit_Result_Instruction ("load %s, ptr %%t%u  ; load via .ALL\n", LLVM_Rep_To_String (type_rep), ptr);
 
     // no widening at load - value stays at native type width.
     // Conversions happen at use sites via Emit_Convert.
@@ -31311,8 +31018,7 @@ LLVM_Value Generate_Selected (Syntax_Node *node) {
         if (in_any_sibling.reg == 0) {
           in_any_sibling = in_sib;
         } else {
-          uint32_t o = Emit_Temp ();
-          Emit ("  %%t%u = or i1 %%t%u, %%t%u\n", o, in_any_sibling.reg, in_sib.reg);
+          uint32_t o = Emit_Result_Instruction ("or i1 %%t%u, %%t%u\n", in_any_sibling.reg, in_sib.reg);
           in_any_sibling = (LLVM_I1){ o };
         }
       }
@@ -31369,9 +31075,7 @@ LLVM_Value Generate_Selected (Syntax_Node *node) {
     if (is_disc_dep) {
       LLVM_Rep bnd_type = Array_Bound_LLVM_Rep (field_type);
       uint32_t ndims = field_type->array.index_count;
-      uint32_t bounds_alloca = Emit_Temp ();
-      Emit ("  %%t%u = alloca [%u x %s]\n",
-         bounds_alloca, ndims * 2, LLVM_Rep_To_String(bnd_type));
+      uint32_t bounds_alloca = Emit_Result_Instruction ("alloca [%u x %s]\n", ndims * 2, LLVM_Rep_To_String(bnd_type));
 
       // The record base is `base` directly — reconstructing it as ptr minus the
       // STATIC byte_offset would be wrong for a component after a capless one,
@@ -31393,8 +31097,7 @@ LLVM_Value Generate_Selected (Syntax_Node *node) {
             // A non-disc bound frozen at the record type's elaboration
             // (RM 3.7.1): read the stored value, never re-evaluate.
             if (b->preeval_global) {
-              uint32_t g = Emit_Temp ();
-              Emit ("  %%t%u = load " RT_DESC_TYPE ", ptr @__rt_cbnd_%u\n", g, b->preeval_global);
+              uint32_t g = Emit_Result_Instruction ("load " RT_DESC_TYPE ", ptr @__rt_cbnd_%u\n", b->preeval_global);
               return Emit_Convert (g, LLVM_Rep_Int (64, false), bnd_type).reg;
             }
             if (b->expr->symbol) {
@@ -31434,13 +31137,11 @@ LLVM_Value Generate_Selected (Syntax_Node *node) {
   if (Type_Is_Access (field_type)) {
     bool acc_is_fat = Type_Needs_Fat_Pointer (field_type);
     LLVM_Rep acc_rep = acc_is_fat ? LL_REP_FAT : LL_REP_PTR;
-    uint32_t t = Emit_Temp ();
-    Emit ("  %%t%u = load %s, ptr %%t%u  ; .%.*s (access)\n", t, LLVM_Rep_To_String (acc_rep), ptr,
+    uint32_t t = Emit_Result_Instruction ("load %s, ptr %%t%u  ; .%.*s (access)\n", LLVM_Rep_To_String (acc_rep), ptr,
        node->selected.selector.length > 20 ? 20 : (int)node->selected.selector.length, node->selected.selector.data);
     return Val_Rep (t, acc_rep);
   }
-  uint32_t t = Emit_Temp ();
-  Emit ("  %%t%u = load %s, ptr %%t%u  ; .%.*s\n", t, LLVM_Rep_To_String (field_llvm_type), ptr,
+  uint32_t t = Emit_Result_Instruction ("load %s, ptr %%t%u  ; .%.*s\n", LLVM_Rep_To_String (field_llvm_type), ptr,
      node->selected.selector.length > 20 ? 20 : (int)node->selected.selector.length, node->selected.selector.data);
 
   // no widening at load - value stays at native type width.
@@ -31647,10 +31348,8 @@ LLVM_Value Emit_Bound_Attribute (uint32_t t,
           or (b.expr->type and b.expr->type->kind == TYPE_UNIVERSAL_REAL);
         if (fv_float) {
           uint64_t sb; memcpy (&sb, &small, sizeof (sb));
-          uint32_t st = Emit_Temp ();
-          Emit ("  %%t%u = fadd double 0.0, 0x%016llX\n", st, (unsigned long long)sb);
-          uint32_t dv = Emit_Temp ();
-          Emit ("  %%t%u = fdiv double %%t%u, %%t%u\n", dv, fv, st);
+          uint32_t st = Emit_Result_Instruction ("fadd double 0.0, 0x%016llX\n", (unsigned long long)sb);
+          uint32_t dv = Emit_Result_Instruction ("fdiv double %%t%u, %%t%u\n", fv, st);
           Emit ("  %%t%u = fptosi double %%t%u to %s\n", t, dv, LLVM_Rep_To_String (bound_s));
         } else {
           LLVM_Rep fv_src = LLVM_Rep_Is_Int (fv_rep) ? fv_rep : Type_To_Rep (b.expr->type);
@@ -31704,17 +31403,14 @@ uint32_t Emit_Fixed_Range_Mantissa (Type_Info *ft, double small) {
   uint32_t hi = Emit_Fixed_Bound_Mantissa (&ft->high_bound, small, i64r);
   uint32_t abs_of[2], in[2] = { lo, hi };
   for (int k = 0; k < 2; k++) {
-    uint32_t neg = Emit_Temp ();
-    Emit ("  %%t%u = sub %s 0, %%t%u\n", neg, s, in[k]);
+    uint32_t neg = Emit_Result_Instruction ("sub %s 0, %%t%u\n", s, in[k]);
     LLVM_I1 isneg = Emit_Icmp_Const ("slt", i64r, in[k], 0);
     abs_of[k] = Emit_Temp ();
     Emit ("  %%t%u = select i1 %%t%u, %s %%t%u, %s %%t%u\n",
        abs_of[k], isneg.reg, s, neg, s, in[k]);
   }
   LLVM_I1 lo_bigger = Emit_Icmp ("sgt", i64r, abs_of[0], abs_of[1]);
-  uint32_t mx = Emit_Temp ();
-  Emit ("  %%t%u = select i1 %%t%u, %s %%t%u, %s %%t%u\n",
-     mx, lo_bigger.reg, s, abs_of[0], s, abs_of[1]);
+  uint32_t mx = Emit_Result_Instruction ("select i1 %%t%u, %s %%t%u, %s %%t%u\n", lo_bigger.reg, s, abs_of[0], s, abs_of[1]);
   return mx;
 }
 
@@ -31725,16 +31421,12 @@ uint32_t Emit_Fixed_Range_Mantissa (Type_Info *ft, double small) {
 uint32_t Emit_Fixed_Mantissa_Runtime (Type_Info *ft, double small) {
   LLVM_Rep i64r = LLVM_Rep_Int (64, false), i32r = Integer_Arith_Rep ();
   uint32_t m = Emit_Fixed_Range_Mantissa (ft, small);
-  uint32_t m1 = Emit_Temp ();
-  Emit ("  %%t%u = sub i64 %%t%u, 1\n", m1, m);
-  uint32_t clz = Emit_Temp ();
-  Emit ("  %%t%u = call i64 @llvm.ctlz.i64(i64 %%t%u, i1 false)\n", clz, m1);
-  uint32_t bits = Emit_Temp ();
-  Emit ("  %%t%u = sub i64 64, %%t%u\n", bits, clz);
+  uint32_t m1 = Emit_Result_Instruction ("sub i64 %%t%u, 1\n", m);
+  uint32_t clz = Emit_Result_Instruction ("call i64 @llvm.ctlz.i64(i64 %%t%u, i1 false)\n", m1);
+  uint32_t bits = Emit_Result_Instruction ("sub i64 64, %%t%u\n", clz);
   uint32_t bits32 = Emit_Convert (bits, i64r, i32r).reg;
   LLVM_I1 below1 = Emit_Icmp_Const ("slt", i32r, bits32, 1);
-  uint32_t res = Emit_Temp ();
-  Emit ("  %%t%u = select i1 %%t%u, i32 1, i32 %%t%u\n", res, below1.reg, bits32);
+  uint32_t res = Emit_Result_Instruction ("select i1 %%t%u, i32 1, i32 %%t%u\n", below1.reg, bits32);
   return res;
 }
 
@@ -31764,27 +31456,21 @@ uint32_t Emit_Fixed_Fore_Runtime (Type_Info *ft, double small) {
   uint32_t l_cond = cg->label_id++, l_body = cg->label_id++, l_done = cg->label_id++;
   Emit ("  br label %%L%u\n", l_cond);
   Emit_Label_Here (l_cond);
-  uint32_t v = Emit_Temp ();
-  Emit ("  %%t%u = load i64, ptr %%t%u\n", v, v_slot);
+  uint32_t v = Emit_Result_Instruction ("load i64, ptr %%t%u\n", v_slot);
   LLVM_I1 more = Emit_Icmp_Const ("sge", i64r, v, 10);
   Emit ("  br i1 %%t%u, label %%L%u, label %%L%u\n", more.reg, l_body, l_done);
   cg->block_terminated = true;
   Emit_Label_Here (l_body);
-  uint32_t vd = Emit_Temp ();
-  Emit ("  %%t%u = sdiv i64 %%t%u, 10\n", vd, v);
+  uint32_t vd = Emit_Result_Instruction ("sdiv i64 %%t%u, 10\n", v);
   Emit ("  store i64 %%t%u, ptr %%t%u\n", vd, v_slot);
-  uint32_t nd = Emit_Temp ();
-  Emit ("  %%t%u = load i32, ptr %%t%u\n", nd, nd_slot);
-  uint32_t nd1 = Emit_Temp ();
-  Emit ("  %%t%u = add i32 %%t%u, 1\n", nd1, nd);
+  uint32_t nd = Emit_Result_Instruction ("load i32, ptr %%t%u\n", nd_slot);
+  uint32_t nd1 = Emit_Result_Instruction ("add i32 %%t%u, 1\n", nd);
   Emit ("  store i32 %%t%u, ptr %%t%u\n", nd1, nd_slot);
   Emit ("  br label %%L%u\n", l_cond);
   cg->block_terminated = true;
   Emit_Label_Here (l_done);
-  uint32_t nd_final = Emit_Temp ();
-  Emit ("  %%t%u = load i32, ptr %%t%u\n", nd_final, nd_slot);
-  uint32_t fore = Emit_Temp ();
-  Emit ("  %%t%u = add i32 %%t%u, 1  ; 'FORE (sign + digits)\n", fore, nd_final);
+  uint32_t nd_final = Emit_Result_Instruction ("load i32, ptr %%t%u\n", nd_slot);
+  uint32_t fore = Emit_Result_Instruction ("add i32 %%t%u, 1  ; 'FORE (sign + digits)\n", nd_final);
   return fore;
 }
 
@@ -31794,17 +31480,12 @@ uint32_t Emit_Fixed_Large_Runtime (Type_Info *ft, double small) {
   LLVM_Rep i64r = LLVM_Rep_Int (64, false);
   uint32_t m = Emit_Fixed_Mantissa_Runtime (ft, small);
   uint32_t m64 = Emit_Convert (m, Integer_Arith_Rep (), i64r).reg;
-  uint32_t pow2 = Emit_Temp ();
-  Emit ("  %%t%u = shl i64 1, %%t%u\n", pow2, m64);
-  uint32_t span = Emit_Temp ();
-  Emit ("  %%t%u = sub i64 %%t%u, 1\n", span, pow2);
-  uint32_t spand = Emit_Temp ();
-  Emit ("  %%t%u = sitofp i64 %%t%u to double\n", spand, span);
+  uint32_t pow2 = Emit_Result_Instruction ("shl i64 1, %%t%u\n", m64);
+  uint32_t span = Emit_Result_Instruction ("sub i64 %%t%u, 1\n", pow2);
+  uint32_t spand = Emit_Result_Instruction ("sitofp i64 %%t%u to double\n", span);
   uint64_t sb; memcpy (&sb, &small, sizeof (sb));
-  uint32_t sc = Emit_Temp ();
-  Emit ("  %%t%u = fadd double 0.0, 0x%016llX  ; SMALL=%g\n", sc, (unsigned long long)sb, small);
-  uint32_t large = Emit_Temp ();
-  Emit ("  %%t%u = fmul double %%t%u, %%t%u  ; 'LARGE\n", large, spand, sc);
+  uint32_t sc = Emit_Result_Instruction ("fadd double 0.0, 0x%016llX  ; SMALL=%g\n", (unsigned long long)sb, small);
+  uint32_t large = Emit_Result_Instruction ("fmul double %%t%u, %%t%u  ; 'LARGE\n", spand, sc);
   return large;
 }
 
@@ -31854,9 +31535,8 @@ LLVM_Value Generate_Attribute (Syntax_Node *node) {
       ? Emit_Fat_Pointer_Data (acc_val.reg, Array_Bound_LLVM_Rep (
           prefix_type->access.designated_type)).reg
       : acc_val.reg;
-    uint32_t is_null_check = Emit_Temp ();
-    Emit ("  %%t%u = icmp eq ptr %%t%u, null\n", is_null_check, data_ptr);
-    Emit_Check_With_Raise (is_null_check, true,
+    LLVM_I1 is_null_check = Emit_Icmp_Null_Ptr ("eq", data_ptr);
+    Emit_Check_With_Raise (is_null_check.reg, true,
       "access-to-object attribute prefix is null");
     prefix_type = prefix_type->access.designated_type;
   }
@@ -32075,8 +31755,7 @@ LLVM_Value Generate_Attribute (Syntax_Node *node) {
           for (uint32_t d = 0; d < ndims; d++) {
             uint32_t len = Emit_Convert (
               Emit_Fat_Pointer_Length_Dim (fat, fbt, d).reg, fbt, iat).reg;
-            uint32_t mul = Emit_Temp ();
-            Emit ("  %%t%u = mul %s %%t%u, %%t%u\n", mul, LLVM_Rep_To_String (iat), total, len);
+            uint32_t mul = Emit_Result_Instruction ("mul %s %%t%u, %%t%u\n", LLVM_Rep_To_String (iat), total, len);
             total = mul;
           }
           Emit ("  %%t%u = mul %s %%t%u, %lld  ; 'SIZE = length * component bits\n",
@@ -32099,8 +31778,7 @@ LLVM_Value Generate_Attribute (Syntax_Node *node) {
           if (lo == 0 or hi == 0) { ok = false; break; }
           uint32_t len = Emit_Length_From_Bounds (
             Emit_Convert (lo, lr, iat).reg, Emit_Convert (hi, hr, iat).reg, iat).reg;
-          uint32_t mul = Emit_Temp ();
-          Emit ("  %%t%u = mul %s %%t%u, %%t%u\n", mul, LLVM_Rep_To_String (iat), total, len);
+          uint32_t mul = Emit_Result_Instruction ("mul %s %%t%u, %%t%u\n", LLVM_Rep_To_String (iat), total, len);
           total = mul;
         }
         if (ok) {
@@ -32212,8 +31890,7 @@ LLVM_Value Generate_Attribute (Syntax_Node *node) {
       // Overlay object (RM 13.5 address clause): its address IS the value
       // stored in the hidden cell, not the (nonexistent) own storage.
       } else if (sym->address_cell) {
-        uint32_t cell_ptr = Emit_Temp ();
-        Emit ("  %%t%u = load ptr, ptr ", cell_ptr);
+        uint32_t cell_ptr = Emit_Result_Instruction ("load ptr, ptr ");
         Emit_Symbol_Storage (sym->address_cell);
         Emit ("\n");
         Emit ("  %%t%u = ptrtoint ptr %%t%u to i64  ; 'ADDRESS (overlay)\n",
@@ -32317,8 +31994,7 @@ LLVM_Value Generate_Attribute (Syntax_Node *node) {
       // Bound check: SUCC vs high, PRED vs low
       Type_Bound limit = is_succ ? base->high_bound : base->low_bound;
       if (base and limit.kind == BOUND_INTEGER) {
-        uint32_t cmp = Emit_Temp ();
-        Emit ("  %%t%u = icmp %s %s %%t%u, %s\n", cmp,
+        uint32_t cmp = Emit_Result_Instruction ("icmp %s %s %%t%u, %s\n",
            is_succ ? "sgt" : "slt", LLVM_Rep_To_String (wide_iat), t, I128_Decimal (limit.int_value));
         Emit_Check_With_Raise (cmp, true, is_succ ? "'SUCC" : "'PRED");
       }
@@ -32600,19 +32276,11 @@ LLVM_Value Generate_Attribute (Syntax_Node *node) {
         uint32_t str_len_raw = Emit_Convert (str_len_bt, val_bt, val_iat).reg;
 
         // Trim leading/trailing spaces
-        uint32_t lead_off = Emit_Temp ();
-        Emit ("  %%t%u = call %s @__ada_count_leading_spaces(ptr %%t%u, %s %%t%u)\n",
-           lead_off, LLVM_Rep_To_String (val_iat), str_ptr_raw, LLVM_Rep_To_String (val_iat), str_len_raw);
-        uint32_t trail_off = Emit_Temp ();
-        Emit ("  %%t%u = call %s @__ada_count_trailing_spaces(ptr %%t%u, %s %%t%u)\n",
-           trail_off, LLVM_Rep_To_String (val_iat), str_ptr_raw, LLVM_Rep_To_String (val_iat), str_len_raw);
-        uint32_t str_ptr = Emit_Temp ();
-        Emit ("  %%t%u = getelementptr i8, ptr %%t%u, %s %%t%u\n",
-           str_ptr, str_ptr_raw, LLVM_Rep_To_String (val_iat), lead_off);
-        uint32_t trim_total = Emit_Temp ();
-        Emit ("  %%t%u = add %s %%t%u, %%t%u\n", trim_total, LLVM_Rep_To_String (val_iat), lead_off, trail_off);
-        uint32_t str_len = Emit_Temp ();
-        Emit ("  %%t%u = sub %s %%t%u, %%t%u\n", str_len, LLVM_Rep_To_String (val_iat), str_len_raw, trim_total);
+        uint32_t lead_off = Emit_Result_Instruction ("call %s @__ada_count_leading_spaces(ptr %%t%u, %s %%t%u)\n", LLVM_Rep_To_String (val_iat), str_ptr_raw, LLVM_Rep_To_String (val_iat), str_len_raw);
+        uint32_t trail_off = Emit_Result_Instruction ("call %s @__ada_count_trailing_spaces(ptr %%t%u, %s %%t%u)\n", LLVM_Rep_To_String (val_iat), str_ptr_raw, LLVM_Rep_To_String (val_iat), str_len_raw);
+        uint32_t str_ptr = Emit_Result_Instruction ("getelementptr i8, ptr %%t%u, %s %%t%u\n", str_ptr_raw, LLVM_Rep_To_String (val_iat), lead_off);
+        uint32_t trim_total = Emit_Result_Instruction ("add %s %%t%u, %%t%u\n", LLVM_Rep_To_String (val_iat), lead_off, trail_off);
+        uint32_t str_len = Emit_Result_Instruction ("sub %s %%t%u, %%t%u\n", LLVM_Rep_To_String (val_iat), str_len_raw, trim_total);
         cg->needs_trim_helpers = true;
 
         // Must be exactly 3 chars: 'x'
@@ -32624,14 +32292,10 @@ LLVM_Value Generate_Attribute (Syntax_Node *node) {
         Emit ("Lcval_ok%u:\n", ok_label);
 
         // Check first and last chars are single quotes
-        uint32_t c0_ptr = Emit_Temp ();
-        Emit ("  %%t%u = getelementptr i8, ptr %%t%u, %s 0\n", c0_ptr, str_ptr, LLVM_Rep_To_String (val_iat));
-        uint32_t c0 = Emit_Temp ();
-        Emit ("  %%t%u = load i8, ptr %%t%u\n", c0, c0_ptr);
-        uint32_t c2_ptr = Emit_Temp ();
-        Emit ("  %%t%u = getelementptr i8, ptr %%t%u, %s 2\n", c2_ptr, str_ptr, LLVM_Rep_To_String (val_iat));
-        uint32_t c2 = Emit_Temp ();
-        Emit ("  %%t%u = load i8, ptr %%t%u\n", c2, c2_ptr);
+        uint32_t c0_ptr = Emit_Result_Instruction ("getelementptr i8, ptr %%t%u, %s 0\n", str_ptr, LLVM_Rep_To_String (val_iat));
+        uint32_t c0 = Emit_Result_Instruction ("load i8, ptr %%t%u\n", c0_ptr);
+        uint32_t c2_ptr = Emit_Result_Instruction ("getelementptr i8, ptr %%t%u, %s 2\n", str_ptr, LLVM_Rep_To_String (val_iat));
+        uint32_t c2 = Emit_Result_Instruction ("load i8, ptr %%t%u\n", c2_ptr);
         LLVM_I1 q0 = Emit_Icmp_Const ("eq", LLVM_Rep_Int (8, false), c0, 39);
         LLVM_I1 q2 = Emit_Icmp_Const ("eq", LLVM_Rep_Int (8, false), c2, 39);
         LLVM_I1 both_q = Emit_And_I1 (q0, q2);
@@ -32640,10 +32304,8 @@ LLVM_Value Generate_Attribute (Syntax_Node *node) {
         Emit ("Lcval_ext%u:\n", extract_label);
 
         // Extract the character at position 1
-        uint32_t c1_ptr = Emit_Temp ();
-        Emit ("  %%t%u = getelementptr i8, ptr %%t%u, %s 1\n", c1_ptr, str_ptr, LLVM_Rep_To_String (val_iat));
-        uint32_t c1 = Emit_Temp ();
-        Emit ("  %%t%u = load i8, ptr %%t%u\n", c1, c1_ptr);
+        uint32_t c1_ptr = Emit_Result_Instruction ("getelementptr i8, ptr %%t%u, %s 1\n", str_ptr, LLVM_Rep_To_String (val_iat));
+        uint32_t c1 = Emit_Result_Instruction ("load i8, ptr %%t%u\n", c1_ptr);
         t = c1;
         Emit ("  br label %%Lcval_end%u\n", end_label);
 
@@ -32664,19 +32326,11 @@ LLVM_Value Generate_Attribute (Syntax_Node *node) {
         uint32_t str_len_raw = Emit_Convert (str_len_bt, val_bt, val_iat).reg;
 
         // Trim leading/trailing spaces
-        uint32_t lead_off = Emit_Temp ();
-        Emit ("  %%t%u = call %s @__ada_count_leading_spaces(ptr %%t%u, %s %%t%u)\n",
-           lead_off, LLVM_Rep_To_String (val_iat), str_ptr_raw, LLVM_Rep_To_String (val_iat), str_len_raw);
-        uint32_t trail_off = Emit_Temp ();
-        Emit ("  %%t%u = call %s @__ada_count_trailing_spaces(ptr %%t%u, %s %%t%u)\n",
-           trail_off, LLVM_Rep_To_String (val_iat), str_ptr_raw, LLVM_Rep_To_String (val_iat), str_len_raw);
-        uint32_t str_ptr = Emit_Temp ();
-        Emit ("  %%t%u = getelementptr i8, ptr %%t%u, %s %%t%u\n",
-           str_ptr, str_ptr_raw, LLVM_Rep_To_String (val_iat), lead_off);
-        uint32_t trim_total = Emit_Temp ();
-        Emit ("  %%t%u = add %s %%t%u, %%t%u\n", trim_total, LLVM_Rep_To_String (val_iat), lead_off, trail_off);
-        uint32_t str_len = Emit_Temp ();
-        Emit ("  %%t%u = sub %s %%t%u, %%t%u\n", str_len, LLVM_Rep_To_String (val_iat), str_len_raw, trim_total);
+        uint32_t lead_off = Emit_Result_Instruction ("call %s @__ada_count_leading_spaces(ptr %%t%u, %s %%t%u)\n", LLVM_Rep_To_String (val_iat), str_ptr_raw, LLVM_Rep_To_String (val_iat), str_len_raw);
+        uint32_t trail_off = Emit_Result_Instruction ("call %s @__ada_count_trailing_spaces(ptr %%t%u, %s %%t%u)\n", LLVM_Rep_To_String (val_iat), str_ptr_raw, LLVM_Rep_To_String (val_iat), str_len_raw);
+        uint32_t str_ptr = Emit_Result_Instruction ("getelementptr i8, ptr %%t%u, %s %%t%u\n", str_ptr_raw, LLVM_Rep_To_String (val_iat), lead_off);
+        uint32_t trim_total = Emit_Result_Instruction ("add %s %%t%u, %%t%u\n", LLVM_Rep_To_String (val_iat), lead_off, trail_off);
+        uint32_t str_len = Emit_Result_Instruction ("sub %s %%t%u, %%t%u\n", LLVM_Rep_To_String (val_iat), str_len_raw, trim_total);
         cg->needs_trim_helpers = true;
 
         // Check for "TRUE" (length 4) and "FALSE" (length 5)
@@ -32684,8 +32338,7 @@ LLVM_Value Generate_Attribute (Syntax_Node *node) {
         Emit_String_Const ("@.val_str%u = private unnamed_addr constant [5 x i8] c\"TRUE\\00\"\n", true_str_id);
         uint32_t false_str_id = cg->string_id++;
         Emit_String_Const ("@.val_str%u = private unnamed_addr constant [6 x i8] c\"FALSE\\00\"\n", false_str_id);
-        uint32_t result_alloc = Emit_Temp ();
-        Emit ("  %%t%u = alloca %s\n", result_alloc, LLVM_Rep_To_String (val_iat));
+        uint32_t result_alloc = Emit_Result_Instruction ("alloca %s\n", LLVM_Rep_To_String (val_iat));
         Emit ("  store %s 0, ptr %%t%u\n", LLVM_Rep_To_String (val_iat), result_alloc);
         uint32_t check_true = cg->label_id++;
         uint32_t check_false_len = cg->label_id++;
@@ -32699,9 +32352,7 @@ LLVM_Value Generate_Attribute (Syntax_Node *node) {
         LLVM_I1 len4 = Emit_Icmp_Const ("eq", val_iat, str_len, 4);
         Emit ("  br i1 %%t%u, label %%Lbval_ct%u, label %%Lbval_cfl%u\n", len4.reg, check_true, check_false_len);
         Emit ("Lbval_ct%u:\n", check_true);
-        uint32_t cmp_true = Emit_Temp ();
-        Emit ("  %%t%u = call i32 @strncasecmp (ptr %%t%u, ptr @.val_str%u, i64 4)\n",
-           cmp_true, str_ptr, true_str_id);
+        uint32_t cmp_true = Emit_Result_Instruction ("call i32 @strncasecmp (ptr %%t%u, ptr @.val_str%u, i64 4)\n", str_ptr, true_str_id);
         LLVM_I1 is_true = Emit_Icmp_Const ("eq", LL_REP_C_INT, cmp_true, 0);
         Emit ("  br i1 %%t%u, label %%Lbval_mt%u, label %%Lbval_cfl%u\n", is_true.reg, match_true, check_false_len);
         Emit ("Lbval_mt%u:\n", match_true);
@@ -32713,9 +32364,7 @@ LLVM_Value Generate_Attribute (Syntax_Node *node) {
         LLVM_I1 len5 = Emit_Icmp_Const ("eq", val_iat, str_len, 5);
         Emit ("  br i1 %%t%u, label %%Lbval_cf%u, label %%Lbval_nm%u\n", len5.reg, check_false, no_match);
         Emit ("Lbval_cf%u:\n", check_false);
-        uint32_t cmp_false = Emit_Temp ();
-        Emit ("  %%t%u = call i32 @strncasecmp (ptr %%t%u, ptr @.val_str%u, i64 5)\n",
-           cmp_false, str_ptr, false_str_id);
+        uint32_t cmp_false = Emit_Result_Instruction ("call i32 @strncasecmp (ptr %%t%u, ptr @.val_str%u, i64 5)\n", str_ptr, false_str_id);
         LLVM_I1 is_false = Emit_Icmp_Const ("eq", LL_REP_C_INT, cmp_false, 0);
         Emit ("  br i1 %%t%u, label %%Lbval_mf%u, label %%Lbval_nm%u\n", is_false.reg, match_false, no_match);
         Emit ("Lbval_mf%u:\n", match_false);
@@ -32756,26 +32405,17 @@ LLVM_Value Generate_Attribute (Syntax_Node *node) {
           uint32_t str_len_raw = Emit_Convert (str_len_bt, val_bt, val_iat).reg;
 
           // Trim leading/trailing spaces via runtime helpers (Ada RM 3.5)
-          uint32_t lead_off = Emit_Temp ();
-          Emit ("  %%t%u = call %s @__ada_count_leading_spaces(ptr %%t%u, %s %%t%u)\n",
-             lead_off, LLVM_Rep_To_String (val_iat), str_ptr_raw, LLVM_Rep_To_String (val_iat), str_len_raw);
+          uint32_t lead_off = Emit_Result_Instruction ("call %s @__ada_count_leading_spaces(ptr %%t%u, %s %%t%u)\n", LLVM_Rep_To_String (val_iat), str_ptr_raw, LLVM_Rep_To_String (val_iat), str_len_raw);
 
           // Backward scan for trailing spaces
-          uint32_t trail_off = Emit_Temp ();
-          Emit ("  %%t%u = call %s @__ada_count_trailing_spaces(ptr %%t%u, %s %%t%u)\n",
-             trail_off, LLVM_Rep_To_String (val_iat), str_ptr_raw, LLVM_Rep_To_String (val_iat), str_len_raw);
+          uint32_t trail_off = Emit_Result_Instruction ("call %s @__ada_count_trailing_spaces(ptr %%t%u, %s %%t%u)\n", LLVM_Rep_To_String (val_iat), str_ptr_raw, LLVM_Rep_To_String (val_iat), str_len_raw);
 
           // Trimmed pointer and length
-          uint32_t str_ptr = Emit_Temp ();
-          Emit ("  %%t%u = getelementptr i8, ptr %%t%u, %s %%t%u\n",
-             str_ptr, str_ptr_raw, LLVM_Rep_To_String (val_iat), lead_off);
-          uint32_t trim_total = Emit_Temp ();
-          Emit ("  %%t%u = add %s %%t%u, %%t%u\n", trim_total, LLVM_Rep_To_String (val_iat), lead_off, trail_off);
-          uint32_t str_len = Emit_Temp ();
-          Emit ("  %%t%u = sub %s %%t%u, %%t%u\n", str_len, LLVM_Rep_To_String (val_iat), str_len_raw, trim_total);
+          uint32_t str_ptr = Emit_Result_Instruction ("getelementptr i8, ptr %%t%u, %s %%t%u\n", str_ptr_raw, LLVM_Rep_To_String (val_iat), lead_off);
+          uint32_t trim_total = Emit_Result_Instruction ("add %s %%t%u, %%t%u\n", LLVM_Rep_To_String (val_iat), lead_off, trail_off);
+          uint32_t str_len = Emit_Result_Instruction ("sub %s %%t%u, %%t%u\n", LLVM_Rep_To_String (val_iat), str_len_raw, trim_total);
           cg->needs_trim_helpers = true;
-          uint32_t result_alloc = Emit_Temp ();
-          Emit ("  %%t%u = alloca %s\n", result_alloc, LLVM_Rep_To_String (val_iat));
+          uint32_t result_alloc = Emit_Result_Instruction ("alloca %s\n", LLVM_Rep_To_String (val_iat));
           Emit ("  store %s 0, ptr %%t%u\n", LLVM_Rep_To_String (val_iat), result_alloc);
           uint32_t end_label = cg->label_id++;
           for (uint32_t i = 0; i < enum_type->enumeration.literal_count; i++) {
@@ -33462,12 +33102,8 @@ LLVM_Value Generate_Attribute (Syntax_Node *node) {
     Emit_Label_Here (nil_l);
     Emit ("  br label %%L%u\n", done_l);
     Emit_Label_Here (ok_l);
-    uint32_t gep = Emit_Temp ();
-    Emit ("  %%t%u = getelementptr i8, ptr %%t%u, i64 57\n", gep, handle);
-    uint32_t val = Emit_Temp ();
-    Emit ("  %%t%u = load i8, ptr %%t%u\n", val, gep);
-    Emit ("  br label %%L%u\n", done_l);
-    cg->block_terminated = true;
+    uint32_t gep = Emit_Result_Instruction ("getelementptr i8, ptr %%t%u, i64 57\n", handle);
+    uint32_t val = Emit_Result_Instruction ("load i8, ptr %%t%u\n", gep);
     Emit_Label_Here (done_l);
     Emit ("  %%t%u = phi i8 [ 0, %%L%u ], [ %%t%u, %%L%u ]\n", t, nil_l, val, ok_l);
     return Val_Rep (t, LLVM_Rep_Int (8, false));
@@ -33621,8 +33257,7 @@ uint32_t Emit_Record_Field_Ptr (uint32_t base, Type_Info *record_type,
   uint32_t rt = Record_RT_Global_Id (record_type);
   uint32_t fp = Emit_Temp ();
   if (rt > 0) {
-    uint32_t off = Emit_Temp ();
-    Emit ("  %%t%u = load " RT_DESC_TYPE ", ptr @__rt_rec_%u_off%u\n", off, rt, comp_idx);
+    uint32_t off = Emit_Result_Instruction ("load " RT_DESC_TYPE ", ptr @__rt_rec_%u_off%u\n", rt, comp_idx);
     Emit ("  %%t%u = getelementptr i8, ptr %%t%u, i64 %%t%u  ; rt field\n", fp, base, off);
     return fp;
   }
@@ -33801,9 +33436,8 @@ uint32_t Agg_Resolve_Elem (Syntax_Node *expr,
   //
   if (elem_is_composite) {
     if (LLVM_Rep_Is_Fat_Pointer (val_v.rep)) {
-      uint32_t dp = Emit_Temp ();
-      Emit ("  %%t%u = extractvalue " FAT_PTR_TYPE
-         " %%t%u, 0\n", dp, val);
+      uint32_t dp = Emit_Result_Instruction ("extractvalue " FAT_PTR_TYPE
+         " %%t%u, 0\n", val);
       val = dp;
     } else if (Expression_Produces_Fat_Pointer (expr, expr->type)) {
       val = Emit_Fat_Pointer_Data (val,
@@ -33850,9 +33484,7 @@ void Agg_Store_At_Static (uint32_t base, uint32_t val,
   // A dynamically-sized record element: byte offset and copy length are the
   // runtime element size (RM 3.6.1), the static index scaled at run time.
   if (rt_elem_size) {
-    uint32_t off = Emit_Temp ();
-    Emit ("  %%t%u = mul i64 %s, %%t%u  ; dyn element offset\n",
-       off, I128_Decimal (idx), rt_elem_size);
+    uint32_t off = Emit_Result_Instruction ("mul i64 %s, %%t%u  ; dyn element offset\n", I128_Decimal (idx), rt_elem_size);
     Emit ("  %%t%u = getelementptr i8, ptr %%t%u, i64 %%t%u\n", ptr, base, off);
     Emit ("  call void @llvm.memcpy.p0.p0.i64("
        "ptr %%t%u, ptr %%t%u, i64 %%t%u, i1 false)\n", ptr, val, rt_elem_size);
@@ -33890,12 +33522,9 @@ void Agg_Store_At_Dynamic (uint32_t base,
     else
       Emit ("  %%t%u = mul %s %%t%u, %u\n",
          byte_off, LLVM_Rep_To_String (idx_type), arr_idx, elem_size);
-    uint32_t ptr = Emit_Temp ();
-    Emit ("  %%t%u = getelementptr i8, ptr %%t%u, %s %%t%u\n",
-       ptr, base, LLVM_Rep_To_String (idx_type), byte_off);
+    uint32_t ptr = Emit_Result_Instruction ("getelementptr i8, ptr %%t%u, %s %%t%u\n", base, LLVM_Rep_To_String (idx_type), byte_off);
     if (rt_row_size) {
-      uint32_t sz64 = Emit_Temp ();
-      Emit ("  %%t%u = sext i32 %%t%u to i64\n", sz64, rt_row_size);
+      uint32_t sz64 = Emit_Result_Instruction ("sext i32 %%t%u to i64\n", rt_row_size);
       Emit ("  call void @llvm.memcpy.p0.p0.i64("
          "ptr %%t%u, ptr %%t%u, i64 %%t%u, i1 false)\n",
          ptr, val, sz64);
@@ -33905,9 +33534,7 @@ void Agg_Store_At_Dynamic (uint32_t base,
          ptr, val, elem_size);
     }
   } else {
-    uint32_t ptr = Emit_Temp ();
-    Emit ("  %%t%u = getelementptr %s, ptr %%t%u, %s %%t%u\n",
-       ptr, LLVM_Rep_To_String (elem_type), base, LLVM_Rep_To_String (idx_type), arr_idx);
+    uint32_t ptr = Emit_Result_Instruction ("getelementptr %s, ptr %%t%u, %s %%t%u\n", LLVM_Rep_To_String (elem_type), base, LLVM_Rep_To_String (idx_type), arr_idx);
     Emit ("  store %s %%t%u, ptr %%t%u\n", LLVM_Rep_To_String (elem_type), val, ptr);
   }
 }
@@ -33982,8 +33609,7 @@ void Emit_Inner_Consistency_Track (
   cg->inner_agg_bnd_n = 0;  // consumed
 
   // Emit runtime branching: first-seen → store; else → compare
-  uint32_t fs = Emit_Temp ();
-  Emit ("  %%t%u = load i1, ptr %%t%u\n", fs, inner_trk_first);
+  uint32_t fs = Emit_Result_Instruction ("load i1, ptr %%t%u\n", inner_trk_first);
   uint32_t st_lbl = cg->label_id++;
   uint32_t ck_lbl = cg->label_id++;
   uint32_t dn_lbl = cg->label_id++;
@@ -34007,35 +33633,23 @@ void Emit_Inner_Consistency_Track (
   Emit_Label_Here (ck_lbl);
   uint32_t accum = 0;  // tracks accumulated mismatch SSA
   for (int d = 0; d < n_child; d++) {
-    uint32_t elo = Emit_Temp ();
-    Emit ("  %%t%u = load %s, ptr %%t%u\n",
-       elo, LLVM_Rep_To_String (bt), inner_trk_lo[d]);
-    uint32_t ehi = Emit_Temp ();
-    Emit ("  %%t%u = load %s, ptr %%t%u\n",
-       ehi, LLVM_Rep_To_String (bt), inner_trk_hi[d]);
+    uint32_t elo = Emit_Result_Instruction ("load %s, ptr %%t%u\n", LLVM_Rep_To_String (bt), inner_trk_lo[d]);
+    uint32_t ehi = Emit_Result_Instruction ("load %s, ptr %%t%u\n", LLVM_Rep_To_String (bt), inner_trk_hi[d]);
     LLVM_I1 nl = Emit_Icmp ("ne", bt, child_lo[d], elo);
     LLVM_I1 nh = Emit_Icmp ("ne", bt, child_hi[d], ehi);
-    uint32_t dim_mm = Emit_Temp ();
-    Emit ("  %%t%u = or i1 %%t%u, %%t%u\n", dim_mm, nl.reg, nh.reg);
+    uint32_t dim_mm = Emit_Result_Instruction ("or i1 %%t%u, %%t%u\n", nl.reg, nh.reg);
     if (accum == 0) {
       accum = dim_mm;
     } else {
-      uint32_t merged = Emit_Temp ();
-      Emit ("  %%t%u = or i1 %%t%u, %%t%u\n",
-         merged, accum, dim_mm);
+      uint32_t merged = Emit_Result_Instruction ("or i1 %%t%u, %%t%u\n", accum, dim_mm);
       accum = merged;
     }
   }
 
   // Merge into the global mismatch flag
-  uint32_t old_mm = Emit_Temp ();
-  Emit ("  %%t%u = load i1, ptr %%t%u\n", old_mm, inner_trk_mm);
-  uint32_t new_mm = Emit_Temp ();
-  Emit ("  %%t%u = or i1 %%t%u, %%t%u\n",
-     new_mm, old_mm, accum ? accum : old_mm);
+  uint32_t old_mm = Emit_Result_Instruction ("load i1, ptr %%t%u\n", inner_trk_mm);
+  uint32_t new_mm = Emit_Result_Instruction ("or i1 %%t%u, %%t%u\n", old_mm, accum ? accum : old_mm);
   Emit ("  store i1 %%t%u, ptr %%t%u\n", new_mm, inner_trk_mm);
-  Emit ("  br label %%L%u\n", dn_lbl);
-  cg->block_terminated = true;
   Emit_Label_Here (dn_lbl);
 }
 
@@ -34291,11 +33905,9 @@ uint32_t Disc_Ordinal_Before (Type_Info *type_info, uint32_t comp_index) {
 // comparison `pred` selects ("slt" widens a low/min, "sgt" widens a high/max).
 void Emit_Update_Bound (uint32_t var, uint32_t val, const char *pred, LLVM_Rep ait) {
   const char *s = LLVM_Rep_To_String (ait);
-  uint32_t cur = Emit_Temp ();
-  Emit ("  %%t%u = load %s, ptr %%t%u\n", cur, s, var);
+  uint32_t cur = Emit_Result_Instruction ("load %s, ptr %%t%u\n", s, var);
   LLVM_I1 c = Emit_Icmp (pred, ait, val, cur);
-  uint32_t nv = Emit_Temp ();
-  Emit ("  %%t%u = select i1 %%t%u, %s %%t%u, %s %%t%u\n", nv, c.reg, s, val, s, cur);
+  uint32_t nv = Emit_Result_Instruction ("select i1 %%t%u, %s %%t%u, %s %%t%u\n", c.reg, s, val, s, cur);
   Emit ("  store %s %%t%u, ptr %%t%u\n", s, nv, var);
 }
 
@@ -34379,15 +33991,11 @@ uint32_t Generate_Aggregate (Syntax_Node *node) {
     if (agg_type->rt_global_id > 0 and n_positional == 0) {
       for (uint32_t d = 0; d < agg_ndims; d++) {
         if (dim_lo[d].kind == BOUND_EXPR and dim_lo[d].expr) {
-          uint32_t lo_t = Emit_Temp ();
-          Emit ("  %%t%u = load " RT_DESC_TYPE ", ptr @__rt_type_%u_lo%u\n",
-             lo_t, agg_type->rt_global_id, d);
+          uint32_t lo_t = Emit_Result_Instruction ("load " RT_DESC_TYPE ", ptr @__rt_type_%u_lo%u\n", agg_type->rt_global_id, d);
           dim_lo[d].cached_temp = lo_t; dim_lo[d].cached_rep = LLVM_Rep_Int (64, false);
         }
         if (dim_hi[d].kind == BOUND_EXPR and dim_hi[d].expr) {
-          uint32_t hi_t = Emit_Temp ();
-          Emit ("  %%t%u = load " RT_DESC_TYPE ", ptr @__rt_type_%u_hi%u\n",
-             hi_t, agg_type->rt_global_id, d);
+          uint32_t hi_t = Emit_Result_Instruction ("load " RT_DESC_TYPE ", ptr @__rt_type_%u_hi%u\n", agg_type->rt_global_id, d);
           dim_hi[d].cached_temp = hi_t; dim_hi[d].cached_rep = LLVM_Rep_Int (64, false);
         }
       }
@@ -34808,9 +34416,7 @@ uint32_t Generate_Aggregate (Syntax_Node *node) {
           if (d == 1)
             rt_row_elems = dim_len;
           else {
-            uint32_t prod = Emit_Temp ();
-            Emit ("  %%t%u = mul %s %%t%u, %%t%u\n",
-               prod, LLVM_Rep_To_String (iat_bnd), rt_row_elems, dim_len);
+            uint32_t prod = Emit_Result_Instruction ("mul %s %%t%u, %%t%u\n", LLVM_Rep_To_String (iat_bnd), rt_row_elems, dim_len);
             rt_row_elems = prod;
           }
         }
@@ -34849,8 +34455,6 @@ uint32_t Generate_Aggregate (Syntax_Node *node) {
               Emit_Range_Check_With_Raise (rt_inner_hi[d],
                 is_lo, is_hi, iat_bnd,
                 "dynamic aggregate inner index subtype check");
-              Emit ("  br label %%L%u\n", sk);
-              cg->block_terminated = true;
               Emit_Label_Here (sk);
             }
           }
@@ -34903,13 +34507,10 @@ uint32_t Generate_Aggregate (Syntax_Node *node) {
       // Clamp byte_size to 0 for null ranges (RM 3.6.1)
       LLVM_I1 neg_chk_i1 = Emit_Icmp_Const ("slt", iat_bnd, byte_size, 0);
       uint32_t neg_chk = neg_chk_i1.reg;
-      uint32_t clamped = Emit_Temp ();
-      Emit ("  %%t%u = select i1 %%t%u, %s 0, %s %%t%u\n",
-         clamped, neg_chk, LLVM_Rep_To_String (iat_bnd), LLVM_Rep_To_String (iat_bnd), byte_size);
+      uint32_t clamped = Emit_Result_Instruction ("select i1 %%t%u, %s 0, %s %%t%u\n", neg_chk, LLVM_Rep_To_String (iat_bnd), LLVM_Rep_To_String (iat_bnd), byte_size);
 
       // Dynamic stack allocation
-      uint32_t base = Emit_Temp ();
-      Emit ("  %%t%u = alloca i8, %s %%t%u  ; dynamic array aggregate\n", base, LLVM_Rep_To_String (iat_bnd), clamped);
+      uint32_t base = Emit_Result_Instruction ("alloca i8, %s %%t%u  ; dynamic array aggregate\n", LLVM_Rep_To_String (iat_bnd), clamped);
 
       // Classify items: find OTHERS clause (value generated in loop below)
       Agg_Class ac = ac_early;  // reuse early classification
@@ -34966,12 +34567,8 @@ uint32_t Generate_Aggregate (Syntax_Node *node) {
               // determined by the constraint.                                                     
               //                                                                                    
               uint32_t n_pos = Emit_Static_Int ((int128_t)ac.n_positional, ait).reg;
-              uint32_t con_len = Emit_Temp ();
-              Emit ("  %%t%u = sub %s %%t%u, %%t%u\n",
-                 con_len, LLVM_Rep_To_String (ait), chi, clo);
-              uint32_t con_cnt = Emit_Temp ();
-              Emit ("  %%t%u = add %s %%t%u, 1\n",
-                 con_cnt, LLVM_Rep_To_String (ait), con_len);
+              uint32_t con_len = Emit_Result_Instruction ("sub %s %%t%u, %%t%u\n", LLVM_Rep_To_String (ait), chi, clo);
+              uint32_t con_cnt = Emit_Result_Instruction ("add %s %%t%u, 1\n", LLVM_Rep_To_String (ait), con_len);
               LLVM_I1 mismatch = Emit_Icmp ("ne", ait, n_pos, con_cnt);
               uint32_t ok_lbl = cg->label_id++;
               uint32_t fail_lbl = cg->label_id++;
@@ -35153,8 +34750,7 @@ uint32_t Generate_Aggregate (Syntax_Node *node) {
           // RM 4.3.2: check scalar element against subtype
           if (not ecomp and elem_ti and Type_Is_Scalar (elem_ti))
             val = Emit_Constraint_Check_Val ((LLVM_Value){ val, elem_type }, elem_ti, item->type).reg;
-          uint32_t pidx = Emit_Temp ();
-          Emit ("  %%t%u = add %s 0, %u\n", pidx, LLVM_Rep_To_String (ait), positional_idx);
+          uint32_t pidx = Emit_Static_Int (positional_idx, ait).reg;
           Agg_Store_At_Dynamic (base, val, pidx, ait,
             elem_type, elem_size, rt_row_size, ecomp);
           positional_idx++;
@@ -35265,11 +34861,8 @@ uint32_t Generate_Aggregate (Syntax_Node *node) {
             uint32_t loop_start = cg->label_id++;
             uint32_t loop_body = cg->label_id++;
             uint32_t loop_end = cg->label_id++;
-            Emit ("  br label %%L%u\n", loop_start);
-            cg->block_terminated = true;
             Emit_Label_Here (loop_start);
-            uint32_t cur_idx = Emit_Temp ();
-            Emit ("  %%t%u = load %s, ptr %%t%u\n", cur_idx, LLVM_Rep_To_String (agg_idx_type), loop_var);
+            uint32_t cur_idx = Emit_Result_Instruction ("load %s, ptr %%t%u\n", LLVM_Rep_To_String (agg_idx_type), loop_var);
             LLVM_I1 cmp = Emit_Icmp ("sle", agg_idx_type, cur_idx, rng_high_val);
             Emit ("  br i1 %%t%u, label %%L%u, label %%L%u\n", cmp.reg, loop_body, loop_end);
             cg->block_terminated = true;
@@ -35285,20 +34878,16 @@ uint32_t Generate_Aggregate (Syntax_Node *node) {
                 dyn_inner_trk_first, dyn_inner_trk_mm,
                 dyn_n_inner_dims,
                 Array_Bound_LLVM_Rep (agg_type));
-            uint32_t arr_idx = Emit_Temp ();
-            Emit ("  %%t%u = sub %s %%t%u, %%t%u\n",
-               arr_idx, LLVM_Rep_To_String (agg_idx_type), cur_idx, low_val);
+            uint32_t arr_idx = Emit_Result_Instruction ("sub %s %%t%u, %%t%u\n", LLVM_Rep_To_String (agg_idx_type), cur_idx, low_val);
             Agg_Store_At_Dynamic (base, val, arr_idx,
               agg_idx_type, elem_type, elem_size, rt_row_size, ecomp);
 
             // Increment and loop
-            uint32_t next_idx = Emit_Temp ();
-            Emit ("  %%t%u = add %s %%t%u, 1\n", next_idx, LLVM_Rep_To_String (agg_idx_type), cur_idx);
+            uint32_t next_idx = Emit_Result_Instruction ("add %s %%t%u, 1\n", LLVM_Rep_To_String (agg_idx_type), cur_idx);
             Emit ("  store %s %%t%u, ptr %%t%u\n", LLVM_Rep_To_String (agg_idx_type), next_idx, loop_var);
             Emit ("  br label %%L%u\n", loop_start);
             cg->block_terminated = true;
             Emit_Label_Here (loop_end);
-            cg->block_terminated = false;
 
           // Single-index named association: INDEX => expr.
           // Evaluate the index, compute offset, store once.
@@ -35322,9 +34911,7 @@ uint32_t Generate_Aggregate (Syntax_Node *node) {
                 dyn_inner_trk_first, dyn_inner_trk_mm,
                 dyn_n_inner_dims,
                 Array_Bound_LLVM_Rep (agg_type));
-            uint32_t arr_idx = Emit_Temp ();
-            Emit ("  %%t%u = sub %s %%t%u, %%t%u\n",
-               arr_idx, LLVM_Rep_To_String (agg_idx_type), idx_val, low_val);
+            uint32_t arr_idx = Emit_Result_Instruction ("sub %s %%t%u, %%t%u\n", LLVM_Rep_To_String (agg_idx_type), idx_val, low_val);
             Agg_Store_At_Dynamic (base, val, arr_idx,
               agg_idx_type, elem_type, elem_size, rt_row_size, ecomp);
           }
@@ -35337,12 +34924,8 @@ uint32_t Generate_Aggregate (Syntax_Node *node) {
       //                                                                                            
       if (track_named_bounds) {
         LLVM_Rep ait = Integer_Arith_Rep ();
-        uint32_t fl = Emit_Temp ();
-        Emit ("  %%t%u = load %s, ptr %%t%u\n",
-           fl, LLVM_Rep_To_String (ait), agg_bnd_lo_var);
-        uint32_t fh = Emit_Temp ();
-        Emit ("  %%t%u = load %s, ptr %%t%u\n",
-           fh, LLVM_Rep_To_String (ait), agg_bnd_hi_var);
+        uint32_t fl = Emit_Result_Instruction ("load %s, ptr %%t%u\n", LLVM_Rep_To_String (ait), agg_bnd_lo_var);
+        uint32_t fh = Emit_Result_Instruction ("load %s, ptr %%t%u\n", LLVM_Rep_To_String (ait), agg_bnd_hi_var);
         Emit_Aggregate_Bound_Match_Check (fl, low_val, fh, high_val, ait,
           "aggregate named range vs constraint");
       }
@@ -35390,9 +34973,7 @@ uint32_t Generate_Aggregate (Syntax_Node *node) {
             uint32_t exp_hi = Emit_Single_Bound (&dim_hi[1], ait);
             LLVM_I1 ilo_ne = Emit_Icmp ("ne", ait, ir_lo, exp_lo);
             LLVM_I1 ihi_ne = Emit_Icmp ("ne", ait, ir_hi, exp_hi);
-            uint32_t imm = Emit_Temp ();
-            Emit ("  %%t%u = or i1 %%t%u, %%t%u\n",
-               imm, ilo_ne.reg, ihi_ne.reg);
+            uint32_t imm = Emit_Result_Instruction ("or i1 %%t%u, %%t%u\n", ilo_ne.reg, ihi_ne.reg);
             uint32_t iok = cg->label_id++;
             uint32_t ifail = cg->label_id++;
             Emit ("  br i1 %%t%u, label %%L%u, label %%L%u\n",
@@ -35439,11 +35020,8 @@ uint32_t Generate_Aggregate (Syntax_Node *node) {
         uint32_t loop_start = cg->label_id++;
         uint32_t loop_body = cg->label_id++;
         uint32_t loop_end = cg->label_id++;
-        Emit ("  br label %%L%u\n", loop_start);
-        cg->block_terminated = true;
         Emit_Label_Here (loop_start);
-        uint32_t cur_idx = Emit_Temp ();
-        Emit ("  %%t%u = load %s, ptr %%t%u\n", cur_idx, LLVM_Rep_To_String (oth_idx_type), loop_var);
+        uint32_t cur_idx = Emit_Result_Instruction ("load %s, ptr %%t%u\n", LLVM_Rep_To_String (oth_idx_type), loop_var);
         LLVM_I1 cmp = Emit_Icmp ("sle", oth_idx_type, cur_idx, high_val);
         Emit ("  br i1 %%t%u, label %%L%u, label %%L%u\n", cmp.reg, loop_body, loop_end);
         cg->block_terminated = true;
@@ -35454,18 +35032,14 @@ uint32_t Generate_Aggregate (Syntax_Node *node) {
           ? Agg_Resolve_Elem (oth_expr, multidim,
               ecomp, agg_type, elem_type, elem_ti)
           : others_val;
-        uint32_t arr_idx = Emit_Temp ();
-        Emit ("  %%t%u = sub %s %%t%u, %%t%u\n",
-           arr_idx, LLVM_Rep_To_String (oth_idx_type), cur_idx, low_val);
+        uint32_t arr_idx = Emit_Result_Instruction ("sub %s %%t%u, %%t%u\n", LLVM_Rep_To_String (oth_idx_type), cur_idx, low_val);
         Agg_Store_At_Dynamic (base, loop_others_val, arr_idx,
           oth_idx_type, elem_type, elem_size, rt_row_size, ecomp);
-        uint32_t next_idx = Emit_Temp ();
-        Emit ("  %%t%u = add %s %%t%u, 1\n", next_idx, LLVM_Rep_To_String (oth_idx_type), cur_idx);
+        uint32_t next_idx = Emit_Result_Instruction ("add %s %%t%u, 1\n", LLVM_Rep_To_String (oth_idx_type), cur_idx);
         Emit ("  store %s %%t%u, ptr %%t%u\n", LLVM_Rep_To_String (oth_idx_type), next_idx, loop_var);
         Emit ("  br label %%L%u\n", loop_start);
         cg->block_terminated = true;
         Emit_Label_Here (loop_end);
-        cg->block_terminated = false;
       }
 
       // RM 4.3.2(6): post-loop inner consistency mismatch check. A null
@@ -35473,12 +35047,9 @@ uint32_t Generate_Aggregate (Syntax_Node *node) {
       // bound consistency is vacuous - only raise when the aggregate is
       // non-null.
       if (check_inner_consistency) {
-        uint32_t mm_val = Emit_Temp ();
-        Emit ("  %%t%u = load i1, ptr %%t%u\n",
-           mm_val, dyn_inner_trk_mm);
+        uint32_t mm_val = Emit_Result_Instruction ("load i1, ptr %%t%u\n", dyn_inner_trk_mm);
         LLVM_I1 nonnull = Emit_Icmp_Const ("ne", iat_bnd, clamped, 0);
-        uint32_t raise_mm = Emit_Temp ();
-        Emit ("  %%t%u = and i1 %%t%u, %%t%u\n", raise_mm, mm_val, nonnull.reg);
+        uint32_t raise_mm = Emit_Result_Instruction ("and i1 %%t%u, %%t%u\n", mm_val, nonnull.reg);
         uint32_t ok_lbl = cg->label_id++;
         uint32_t fail_lbl = cg->label_id++;
         Emit ("  br i1 %%t%u, label %%L%u, label %%L%u\n",
@@ -35830,10 +35401,8 @@ uint32_t Generate_Aggregate (Syntax_Node *node) {
             // by the constraint, not by INDEX_SUBTYPE'FIRST.                                      
             //                                                                                      
             uint32_t n_pos = Emit_Static_Int ((int128_t)n_positional, ait).reg;
-            uint32_t cdiff = Emit_Temp ();
-            Emit ("  %%t%u = sub %s %%t%u, %%t%u\n", cdiff, LLVM_Rep_To_String (ait), chi, clo);
-            uint32_t ccnt = Emit_Temp ();
-            Emit ("  %%t%u = add %s %%t%u, 1\n", ccnt, LLVM_Rep_To_String (ait), cdiff);
+            uint32_t cdiff = Emit_Result_Instruction ("sub %s %%t%u, %%t%u\n", LLVM_Rep_To_String (ait), chi, clo);
+            uint32_t ccnt = Emit_Result_Instruction ("add %s %%t%u, 1\n", LLVM_Rep_To_String (ait), cdiff);
             LLVM_I1 mismatch = Emit_Icmp ("ne", ait, n_pos, ccnt);
             uint32_t ok_lbl = cg->label_id++;
             uint32_t fail_lbl = cg->label_id++;
@@ -35933,9 +35502,7 @@ uint32_t Generate_Aggregate (Syntax_Node *node) {
     }
     // Allocate as byte array so the size matches the actual data layout
     if (agg_rt_elem) {
-      uint32_t total = Emit_Temp ();
-      Emit ("  %%t%u = mul i64 %s, %%t%u  ; dyn composite array bytes\n",
-         total, I128_Decimal (count), agg_rt_elem);
+      uint32_t total = Emit_Result_Instruction ("mul i64 %s, %%t%u  ; dyn composite array bytes\n", I128_Decimal (count), agg_rt_elem);
       Emit ("  %%t%u = alloca i8, i64 %%t%u  ; array aggregate (dyn composite elems)\n",
          base, total);
     } else if (elem_is_composite) {
@@ -36132,12 +35699,10 @@ uint32_t Generate_Aggregate (Syntax_Node *node) {
                     Emit_Icmp ("slt", bt, lo_s, isl).reg, Emit_Icmp ("sgt", bt, lo_s, ish).reg,
                     Emit_Icmp ("slt", bt, hi_s, isl).reg, Emit_Icmp ("sgt", bt, hi_s, ish).reg };
                   uint32_t any = bad[0];
-                  for (int q = 1; q < 4; q++) { uint32_t t2 = Emit_Temp ();
-                    Emit ("  %%t%u = or i1 %%t%u, %%t%u\n", t2, any, bad[q]); any = t2; }
+                  for (int q = 1; q < 4; q++) { 
+                    uint32_t t2 = Emit_Result_Instruction ("or i1 %%t%u, %%t%u\n", any, bad[q]); any = t2; }
                   Emit_Check_With_Raise (any, true, "aggregate index subtype check (dynamic)");
                 }
-                Emit ("  br label %%L%u\n", skip_lbl);
-                cg->block_terminated = true;
                 Emit_Label_Here (skip_lbl);
               }
             }
@@ -36254,8 +35819,6 @@ uint32_t Generate_Aggregate (Syntax_Node *node) {
                         Emit_Range_Check_With_Raise (hi_v,
                           (int64_t)inner_idx_sub_lo, (int64_t)inner_idx_sub_hi,
                           bt, "aggregate inner index subtype check");
-                        Emit ("  br label %%L%u\n", sk);
-                        cg->block_terminated = true;
                         Emit_Label_Here (sk);
                       }
                     }
@@ -36536,9 +36099,7 @@ uint32_t Generate_Aggregate (Syntax_Node *node) {
     // Only check if at least one inner sub-aggregate was tracked.                                 
     //                                                                                              
     if (check_inner_consistency) {
-      uint32_t was_seen = Emit_Temp ();
-      Emit ("  %%t%u = load i1, ptr %%t%u  ; any inner seen?\n",
-         was_seen, inner_trk_first);
+      uint32_t was_seen = Emit_Result_Instruction ("load i1, ptr %%t%u  ; any inner seen?\n", inner_trk_first);
       uint32_t skip_lbl = cg->label_id++;
       uint32_t do_check_lbl = cg->label_id++;
       Emit ("  br i1 %%t%u, label %%L%u, label %%L%u\n",
@@ -36550,9 +36111,7 @@ uint32_t Generate_Aggregate (Syntax_Node *node) {
       // For multidim, sliding handles bounds adjustment to constraint.                            
       // So do NOT compare inner bounds against constraint here.                                   
       //                                                                                            
-      uint32_t mm = Emit_Temp ();
-      Emit ("  %%t%u = load i1, ptr %%t%u  ; inner mismatch?\n",
-         mm, inner_trk_mm);
+      uint32_t mm = Emit_Result_Instruction ("load i1, ptr %%t%u  ; inner mismatch?\n", inner_trk_mm);
       uint32_t ok_lbl = cg->label_id++;
       uint32_t fail_lbl = cg->label_id++;
       Emit ("  br i1 %%t%u, label %%L%u, label %%L%u\n",
@@ -36561,8 +36120,6 @@ uint32_t Generate_Aggregate (Syntax_Node *node) {
       Emit_Label_Here (fail_lbl);
       Emit_Raise_Constraint_Error ("sub-aggregate bounds mismatch (RM 4.3.2(6))");
       Emit_Label_Here (ok_lbl);
-      Emit ("  br label %%L%u\n", skip_lbl);
-      cg->block_terminated = true;
       Emit_Label_Here (skip_lbl);
     }
 
@@ -36713,8 +36270,7 @@ uint32_t Generate_Aggregate (Syntax_Node *node) {
         if (not resolved) resolved = Discriminant_Type_In_Record (agg_type, disc_sym);
         if (not resolved) resolved = disc_exprs[e]->type;
         LLVM_Rep disc_rep = LLVM_Rep_Or (resolved ? Type_To_Rep (resolved) : LL_REP_VOID, Integer_Arith_Rep ());
-        uint32_t dt = Emit_Temp ();
-        Emit ("  %%t%u = alloca %s  ; disc for aggregate\n", dt, LLVM_Rep_To_String (disc_rep));
+        uint32_t dt = Emit_Result_Instruction ("alloca %s  ; disc for aggregate\n", LLVM_Rep_To_String (disc_rep));
         disc_sym->disc_agg_temp = dt;
         if (disc_alloc_count < 16)
           disc_alloc[disc_alloc_count++] = (typeof(disc_alloc[0])){disc_sym, dt};
@@ -37106,8 +36662,7 @@ LLVM_Value Generate_Qualified (Syntax_Node *node) {
       uint32_t dst_hi = Emit_Bound_Value_Typed (dhi, NULL);
       LLVM_I1 lo_ne = Emit_Icmp ("ne", iat, src_lo, dst_lo);
       LLVM_I1 hi_ne = Emit_Icmp ("ne", iat, src_hi, dst_hi);
-      uint32_t bad = Emit_Temp ();
-      Emit ("  %%t%u = or i1 %%t%u, %%t%u\n", bad, lo_ne.reg, hi_ne.reg);
+      uint32_t bad = Emit_Result_Instruction ("or i1 %%t%u, %%t%u\n", lo_ne.reg, hi_ne.reg);
       Emit_Check_With_Raise (bad, true, "qualified expr array bounds (RM 4.7)");
     }
   }
@@ -37129,29 +36684,14 @@ LLVM_Value Generate_Qualified (Syntax_Node *node) {
 // pairs (dimension d at indices d*2 and d*2+1). Returns a temp at `bt` width.
 uint32_t Emit_Flattened_Array_Size (uint32_t bounds_ptr, uint32_t ndim,
                                     uint32_t elem_size, LLVM_Rep bt) {
-  uint32_t tsz = Emit_Temp ();
-  Emit ("  %%t%u = add %s 0, %u\n", tsz, LLVM_Rep_To_String (bt), elem_size);
+  uint32_t tsz = Emit_Static_Int (elem_size, bt).reg;
   for (uint32_t d = 0; d < ndim; d++) {
-    uint32_t lp = Emit_Temp ();
-    Emit ("  %%t%u = getelementptr %s, ptr %%t%u, i32 %u\n",
-       lp, LLVM_Rep_To_String (bt), bounds_ptr, d * 2);
-    uint32_t lo = Emit_Temp ();
-    Emit ("  %%t%u = load %s, ptr %%t%u\n", lo, LLVM_Rep_To_String (bt), lp);
-    uint32_t hp = Emit_Temp ();
-    Emit ("  %%t%u = getelementptr %s, ptr %%t%u, i32 %u\n",
-       hp, LLVM_Rep_To_String (bt), bounds_ptr, d * 2 + 1);
-    uint32_t hi = Emit_Temp ();
-    Emit ("  %%t%u = load %s, ptr %%t%u\n", hi, LLVM_Rep_To_String (bt), hp);
-    uint32_t cnt = Emit_Temp ();
-    Emit ("  %%t%u = sub %s %%t%u, %%t%u\n", cnt, LLVM_Rep_To_String (bt), hi, lo);
-    uint32_t c1 = Emit_Temp ();
-    Emit ("  %%t%u = add %s %%t%u, 1\n", c1, LLVM_Rep_To_String (bt), cnt);
-    LLVM_I1 neg = Emit_Icmp_Const ("slt", bt, c1, 0);
-    uint32_t cl = Emit_Temp ();
-    Emit ("  %%t%u = select i1 %%t%u, %s 0, %s %%t%u\n",
-       cl, neg.reg, LLVM_Rep_To_String (bt), LLVM_Rep_To_String (bt), c1);
-    uint32_t nt = Emit_Temp ();
-    Emit ("  %%t%u = mul %s %%t%u, %%t%u\n", nt, LLVM_Rep_To_String (bt), tsz, cl);
+    uint32_t lp = Emit_Result_Instruction ("getelementptr %s, ptr %%t%u, i32 %u\n", LLVM_Rep_To_String (bt), bounds_ptr, d * 2);
+    uint32_t lo = Emit_Result_Instruction ("load %s, ptr %%t%u\n", LLVM_Rep_To_String (bt), lp);
+    uint32_t hp = Emit_Result_Instruction ("getelementptr %s, ptr %%t%u, i32 %u\n", LLVM_Rep_To_String (bt), bounds_ptr, d * 2 + 1);
+    uint32_t hi = Emit_Result_Instruction ("load %s, ptr %%t%u\n", LLVM_Rep_To_String (bt), hp);
+    uint32_t cl = Emit_Length_From_Bounds (lo, hi, bt).reg;
+    uint32_t nt = Emit_Result_Instruction ("mul %s %%t%u, %%t%u\n", LLVM_Rep_To_String (bt), tsz, cl);
     tsz = nt;
   }
   return tsz;
@@ -37184,9 +36724,7 @@ void Emit_Record_Component_Default (Component_Info *comp, uint32_t comp_ptr,
     }
     }
     if (has_rt_size) {
-      uint32_t rtsz = Emit_Temp ();
-      Emit ("  %%t%u = load " RT_DESC_TYPE ", ptr @__rt_type_%u_size\n",
-         rtsz, comp_type->rt_global_id);
+      uint32_t rtsz = Emit_Result_Instruction ("load " RT_DESC_TYPE ", ptr @__rt_type_%u_size\n", comp_type->rt_global_id);
       Emit_Memcpy (comp_ptr, data_ptr, rtsz);
     } else {
       Emit ("  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %u, i1 false)"
@@ -37286,20 +36824,16 @@ void Emit_Aggregate_Bound_Match_Check (uint32_t a_lo, uint32_t b_lo,
   // NULLA 1..0 both null but the qualified check must still raise).
   LLVM_I1 a_null = Emit_Icmp ("sgt", ait, a_lo, a_hi);
   LLVM_I1 b_null = Emit_Icmp ("sgt", ait, b_lo, b_hi);
-  uint32_t both_null = Emit_Temp ();
-  Emit ("  %%t%u = and i1 %%t%u, %%t%u\n", both_null, a_null.reg, b_null.reg);
+  uint32_t both_null = Emit_Result_Instruction ("and i1 %%t%u, %%t%u\n", a_null.reg, b_null.reg);
   LLVM_I1 ne_lo = Emit_Icmp ("ne", ait, a_lo, b_lo);
   LLVM_I1 ne_hi = Emit_Icmp ("ne", ait, a_hi, b_hi);
-  uint32_t endpoints_differ = Emit_Temp ();
-  Emit ("  %%t%u = or i1 %%t%u, %%t%u\n",
-        endpoints_differ, ne_lo.reg, ne_hi.reg);
+  uint32_t endpoints_differ = Emit_Result_Instruction ("or i1 %%t%u, %%t%u\n", ne_lo.reg, ne_hi.reg);
   uint32_t fail;
   if (cg->in_qualified_expr) {
     fail = endpoints_differ;
     (void)both_null;
   } else {
-    uint32_t not_both_null = Emit_Temp ();
-    Emit ("  %%t%u = xor i1 %%t%u, 1\n", not_both_null, both_null);
+    uint32_t not_both_null = Emit_Result_Instruction ("xor i1 %%t%u, 1\n", both_null);
     fail = Emit_Temp ();
     Emit ("  %%t%u = and i1 %%t%u, %%t%u\n",
           fail, endpoints_differ, not_both_null);
@@ -37351,13 +36885,10 @@ uint32_t Emit_Variant_Disc_Guard (Component_Info *comp, Type_Info *ty,
         uint32_t hi = Emit_Static_Int (ty->record.variants[vi].disc_value_high, disc_type).reg;
         LLVM_I1 lt = Emit_Icmp ("slt", disc_type, disc_val, lo);
         LLVM_I1 gt = Emit_Icmp ("sgt", disc_type, disc_val, hi);
-        uint32_t outside = Emit_Temp ();
-        Emit ("  %%t%u = or i1 %%t%u, %%t%u  ; disc outside this arm\n",
-           outside, lt.reg, gt.reg);
+        uint32_t outside = Emit_Result_Instruction ("or i1 %%t%u, %%t%u  ; disc outside this arm\n", lt.reg, gt.reg);
         if (first) { in_others = outside; first = false; }
         else {
-          uint32_t merged = Emit_Temp ();
-          Emit ("  %%t%u = and i1 %%t%u, %%t%u\n", merged, in_others, outside);
+          uint32_t merged = Emit_Result_Instruction ("and i1 %%t%u, %%t%u\n", in_others, outside);
           in_others = merged;
         }
       }
@@ -37378,8 +36909,6 @@ uint32_t Emit_Variant_Disc_Guard (Component_Info *comp, Type_Info *ty,
 // the skip label and position there. No-op when skip_label is 0.
 void Emit_Close_Variant_Guard (uint32_t skip_label) {
   if (skip_label) {
-    Emit ("  br label %%L%u\n", skip_label);
-    cg->block_terminated = true;
     Emit_Label_Here (skip_label);
   }
 }
@@ -37402,10 +36931,7 @@ uint32_t Emit_Open_Null_Skip (uint32_t ptr_reg) {
   return Emit_Open_Skip_If (Emit_Icmp_Null_Ptr ("eq", ptr_reg).reg);
 }
 void Emit_Close_Null_Skip (uint32_t skip) {
-  Emit ("  br label %%L%u\n", skip);
-  cg->block_terminated = true;
   Emit_Label_Here (skip);
-  cg->block_terminated = false;
 }
 
 // Unconditionally raise CONSTRAINT_ERROR (tagged `msg`), then open a fresh
@@ -37425,8 +36951,7 @@ void Emit_Store_Disc_Values (Type_Info *rec, uint32_t base, bool check_subtype) 
   for (uint32_t di = 0; di < rec->record.discriminant_count; di++) {
     Component_Info *dc = &rec->record.components[di];
     LLVM_Rep dt = Type_To_Rep (dc->component_type);
-    uint32_t dp = Emit_Temp ();
-    Emit ("  %%t%u = getelementptr i8, ptr %%t%u, i64 %u\n", dp, base, dc->byte_offset);
+    uint32_t dp = Emit_Result_Instruction ("getelementptr i8, ptr %%t%u, i64 %u\n", base, dc->byte_offset);
     uint32_t val = Emit_Disc_Constraint_Value (rec, di, dt).reg;
     if (val == 0) val = Emit_Static_Int (0, dt).reg;
     if (check_subtype and dc->component_type and Type_Is_Scalar (dc->component_type))
@@ -37511,9 +37036,7 @@ void Emit_Init_Record_Defaults (Type_Info *rec, uint32_t base) {
       // an array of such records) — recurse into it (RM 3.7).
       Type_Info *ict = ncomp->component_type;
       if (ict and Type_Is_Record (ict) and Type_Has_Component_Defaults (ict)) {
-        uint32_t ip = Emit_Temp ();
-        Emit ("  %%t%u = getelementptr i8, ptr %%t%u, i64 %u  ; %.*s nested defaults\n",
-           ip, base, ncomp->byte_offset, (int)ncomp->name.length, ncomp->name.data);
+        uint32_t ip = Emit_Result_Instruction ("getelementptr i8, ptr %%t%u, i64 %u  ; %.*s nested defaults\n", base, ncomp->byte_offset, (int)ncomp->name.length, ncomp->name.data);
         Emit_Init_Record_Defaults (ict, ip);
       } else if (ict and Type_Is_Constrained_Array (ict) and
                  ict->array.element_type and
@@ -37523,9 +37046,7 @@ void Emit_Init_Record_Defaults (Type_Info *rec, uint32_t base) {
         int128_t icount = Array_Element_Count (ict);
         uint32_t iesz = iel->size > 0 ? iel->size : 8;
         for (int128_t ei = 0; ei < icount and ei < 1024; ei++) {
-          uint32_t ep = Emit_Temp ();
-          Emit ("  %%t%u = getelementptr i8, ptr %%t%u, i64 %lld  ; %.*s[%lld] defaults\n",
-             ep, base, (long long)(ncomp->byte_offset + ei * iesz),
+          uint32_t ep = Emit_Result_Instruction ("getelementptr i8, ptr %%t%u, i64 %lld  ; %.*s[%lld] defaults\n", base, (long long)(ncomp->byte_offset + ei * iesz),
              (int)ncomp->name.length, ncomp->name.data, (long long)ei);
           Emit_Init_Record_Defaults (iel, ep);
         }
@@ -37535,8 +37056,7 @@ void Emit_Init_Record_Defaults (Type_Info *rec, uint32_t base) {
     if (ncomp->is_discriminant and rec->record.has_disc_constraints) continue;
     uint32_t nval = Generate_Expression (ncomp->default_expr).reg;
     if (nval == 0) continue;
-    uint32_t ndp = Emit_Temp ();
-    Emit ("  %%t%u = getelementptr i8, ptr %%t%u, i64 %u\n", ndp, base, ncomp->byte_offset);
+    uint32_t ndp = Emit_Result_Instruction ("getelementptr i8, ptr %%t%u, i64 %u\n", base, ncomp->byte_offset);
     Type_Info *nct = ncomp->component_type;
     if (nct and Type_Is_Composite (nct) and nct->size > 0)
       Emit ("  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %u, i1 false)\n",
@@ -37586,9 +37106,7 @@ void Emit_Apply_Component_Defaults (Type_Info *ty, uint32_t base, int sel_varian
       if (dc->default_expr) continue;   // bound by the main loop
       uint32_t dptr = Emit_Temp ();
       if (ty->rt_global_id > 0) {
-        uint32_t rt_off = Emit_Temp ();
-        Emit ("  %%t%u = load " RT_DESC_TYPE ", ptr @__rt_rec_%u_off%u\n",
-           rt_off, ty->rt_global_id, di);
+        uint32_t rt_off = Emit_Result_Instruction ("load " RT_DESC_TYPE ", ptr @__rt_rec_%u_off%u\n", ty->rt_global_id, di);
         Emit ("  %%t%u = getelementptr i8, ptr %%t%u, i64 %%t%u  ; %.*s disc bind\n",
            dptr, base, rt_off, (int)dc->name.length, dc->name.data);
       } else
@@ -37608,9 +37126,7 @@ void Emit_Apply_Component_Defaults (Type_Info *ty, uint32_t base, int sel_varian
       // resolves L (RM 3.7.1) instead of an unbound discriminant symbol.
       uint32_t dptr = Emit_Temp ();
       if (ty->rt_global_id > 0) {
-        uint32_t rt_off = Emit_Temp ();
-        Emit ("  %%t%u = load " RT_DESC_TYPE ", ptr @__rt_rec_%u_off%u\n",
-           rt_off, ty->rt_global_id, ci);
+        uint32_t rt_off = Emit_Result_Instruction ("load " RT_DESC_TYPE ", ptr @__rt_rec_%u_off%u\n", ty->rt_global_id, ci);
         Emit ("  %%t%u = getelementptr i8, ptr %%t%u, i64 %%t%u  ; %.*s disc bind\n",
            dptr, base, rt_off, (int)comp->name.length, comp->name.data);
       } else
@@ -37692,9 +37208,7 @@ void Emit_Apply_Component_Defaults (Type_Info *ty, uint32_t base, int sel_varian
     }
     uint32_t comp_ptr = Emit_Temp ();
     if (ty->rt_global_id > 0) {
-      uint32_t rt_off = Emit_Temp ();
-      Emit ("  %%t%u = load " RT_DESC_TYPE ", ptr @__rt_rec_%u_off%u\n",
-         rt_off, ty->rt_global_id, ci);
+      uint32_t rt_off = Emit_Result_Instruction ("load " RT_DESC_TYPE ", ptr @__rt_rec_%u_off%u\n", ty->rt_global_id, ci);
       Emit ("  %%t%u = getelementptr i8, ptr %%t%u, i64 %%t%u  ; %.*s rt default\n",
          comp_ptr, base, rt_off, (int)comp->name.length, comp->name.data);
     } else
@@ -37737,9 +37251,7 @@ void Emit_Check_Disc_Array_Bounds (Symbol *sym, Type_Info *rec, uint32_t base_of
       if (bd[s]->kind == BOUND_INTEGER) {
         v[s] = Emit_Static_Int (bd[s]->int_value, iat).reg;
       } else if (bd[s]->kind == BOUND_EXPR and bd[s]->preeval_global) {
-        uint32_t fv = Emit_Temp ();
-        Emit ("  %%t%u = load " RT_DESC_TYPE ", ptr @__rt_cbnd_%u  ; frozen array bound\n",
-           fv, bd[s]->preeval_global);
+        uint32_t fv = Emit_Result_Instruction ("load " RT_DESC_TYPE ", ptr @__rt_cbnd_%u  ; frozen array bound\n", bd[s]->preeval_global);
         v[s] = Emit_Convert (fv, LLVM_Rep_Int (64, false), iat).reg;
         dynamic[s] = true;
       } else if (bd[s]->kind == BOUND_EXPR and bd[s]->expr and bd[s]->expr->symbol) {
@@ -37835,9 +37347,7 @@ void Emit_Check_Nested_Disc_Constraints (Type_Info *ty, uint32_t base) {
     if (dsym->disc_agg_temp != 0) continue;
     int32_t pdi = Find_Record_Component (ty, dsym->name);
     if (pdi >= 0 and (uint32_t) pdi < ty->record.discriminant_count) {
-      uint32_t dp = Emit_Temp ();
-      Emit ("  %%t%u = getelementptr i8, ptr %%t%u, i64 %u\n",
-         dp, base, ty->record.components[pdi].byte_offset);
+      uint32_t dp = Emit_Result_Instruction ("getelementptr i8, ptr %%t%u, i64 %u\n", base, ty->record.components[pdi].byte_offset);
       dsym->disc_agg_temp = dp;
       bound[nb++] = dsym;
     }
@@ -38067,9 +37577,7 @@ LLVM_Value Generate_Allocator (Syntax_Node *node) {
         elem_size = init_type->array.element_type->size;
       if (elem_size == 0) elem_size = 1;
       if (elem_size > 1) {
-        uint32_t byte_len = Emit_Temp ();
-        Emit ("  %%t%u = mul %s %%t%u, %u\n",
-           byte_len, LLVM_Rep_To_String (new_bt), len_t, elem_size);
+        uint32_t byte_len = Emit_Result_Instruction ("mul %s %%t%u, %u\n", LLVM_Rep_To_String (new_bt), len_t, elem_size);
         len_t_64 = Emit_Extend_To_I64 (byte_len, new_bt).reg;
       } else {
         len_t_64 = Emit_Extend_To_I64 (len_t, new_bt).reg;
@@ -38090,23 +37598,18 @@ LLVM_Value Generate_Allocator (Syntax_Node *node) {
         uint32_t dhi = Emit_Convert (
           Emit_Single_Bound (&init_type->array.indices[d].high_bound, new_bt), new_bt, liat).reg;
         uint32_t dlen = Emit_Length_From_Bounds (dlo, dhi, liat).reg;
-        uint32_t prod = Emit_Temp ();
-        Emit ("  %%t%u = mul %s %%t%u, %%t%u\n",
-           prod, LLVM_Rep_To_String (liat), total, dlen);
+        uint32_t prod = Emit_Result_Instruction ("mul %s %%t%u, %%t%u\n", LLVM_Rep_To_String (liat), total, dlen);
         total = prod;
       }
       uint32_t esz = init_type->array.element_type
         ? init_type->array.element_type->size : 1;
       if (esz == 0) esz = 1;
-      uint32_t tbytes = Emit_Temp ();
-      Emit ("  %%t%u = mul %s %%t%u, %u  ; multi-dim byte length\n",
-         tbytes, LLVM_Rep_To_String (liat), total, esz);
+      uint32_t tbytes = Emit_Result_Instruction ("mul %s %%t%u, %u  ; multi-dim byte length\n", LLVM_Rep_To_String (liat), total, esz);
       len_t_64 = Emit_Extend_To_I64 (tbytes, liat).reg;
     }
 
     // Allocate heap space for array data
-    uint32_t heap_ptr = Emit_Temp ();
-    Emit ("  %%t%u = call ptr @__ada_allocate (i64 %%t%u)\n", heap_ptr, len_t_64);
+    uint32_t heap_ptr = Emit_Result_Instruction ("call ptr @__ada_allocate (i64 %%t%u)\n", len_t_64);
 
     // Copy data: memcpy (heap_ptr, src_data, length)
     Emit_Memcpy (heap_ptr, src_data, len_t_64);
@@ -38138,8 +37641,7 @@ LLVM_Value Generate_Allocator (Syntax_Node *node) {
           Emit_Alloc_Bound_Check_Dim (tgt_des, d, lo_ts[d], hi_ts[d], new_bt);
       }
       uint32_t bnd_sz = 2 * ndims * (LLVM_Rep_Bits (new_bt) / 8);
-      uint32_t bnds = Emit_Temp ();
-      Emit ("  %%t%u = call ptr @malloc (i64 %u)  ; multi-dim bounds\n", bnds, bnd_sz);
+      uint32_t bnds = Emit_Result_Instruction ("call ptr @malloc (i64 %u)  ; multi-dim bounds\n", bnd_sz);
       for (uint32_t d = 0; d < ndims; d++)
         Emit_Store_Bound_Pair (bnds, new_bt, d, lo_ts[d], hi_ts[d]);
       return Val_Rep (Emit_Build_Fat_Pointer (heap_ptr, bnds), LL_REP_FAT);
@@ -38183,18 +37685,14 @@ LLVM_Value Generate_Allocator (Syntax_Node *node) {
         uint32_t lo_c = Emit_Convert (low_ts[d], new_bt, alloc_iat).reg;
         uint32_t dim_len = Emit_Length_From_Bounds (lo_c, hi_c, alloc_iat).reg;
         total_elems = (d == 0) ? dim_len : ({
-          uint32_t prod = Emit_Temp ();
-          Emit ("  %%t%u = mul %s %%t%u, %%t%u\n",
-             prod, LLVM_Rep_To_String (alloc_iat), total_elems, dim_len);
+          uint32_t prod = Emit_Result_Instruction ("mul %s %%t%u, %%t%u\n", LLVM_Rep_To_String (alloc_iat), total_elems, dim_len);
           prod;
         });
       }
 
-      uint32_t byte_size = Emit_Temp ();
-      Emit ("  %%t%u = mul %s %%t%u, %u\n", byte_size, LLVM_Rep_To_String (alloc_iat), total_elems, elem_size);
+      uint32_t byte_size = Emit_Result_Instruction ("mul %s %%t%u, %u\n", LLVM_Rep_To_String (alloc_iat), total_elems, elem_size);
       uint32_t byte_size_64 = Emit_Extend_To_I64 (byte_size, alloc_iat).reg;
-      uint32_t heap_ptr = Emit_Temp ();
-      Emit ("  %%t%u = call ptr @__ada_allocate (i64 %%t%u)\n", heap_ptr, byte_size_64);
+      uint32_t heap_ptr = Emit_Result_Instruction ("call ptr @__ada_allocate (i64 %%t%u)\n", byte_size_64);
 
       // RM 4.8(6): allocated bounds are checked against the target access
       // type's designated array bounds, in both the multi-dim and 1D paths.
@@ -38208,8 +37706,7 @@ LLVM_Value Generate_Allocator (Syntax_Node *node) {
       if (ndims > 1) {
         // Allocate bounds: 2 * ndims entries
         uint32_t bnd_sz = 2 * ndims * (LLVM_Rep_Bits (new_bt) / 8);
-        uint32_t bnds = Emit_Temp ();
-        Emit ("  %%t%u = call ptr @malloc (i64 %u)  ; multi-dim bounds\n", bnds, bnd_sz);
+        uint32_t bnds = Emit_Result_Instruction ("call ptr @malloc (i64 %u)  ; multi-dim bounds\n", bnd_sz);
         for (uint32_t d = 0; d < ndims and d < 8; d++)
           Emit_Store_Bound_Pair (bnds, new_bt, d, low_ts[d], high_ts[d]);
         // RM 4.8(6): Check allocated bounds against target access type bounds
@@ -38353,8 +37850,7 @@ LLVM_Value Generate_Allocator (Syntax_Node *node) {
     Type_Info *ty = designated;
 
     // Zero-initialize first to handle unset fields cleanly
-    uint32_t sz64 = Emit_Temp ();
-    Emit ("  %%t%u = add i64 0, %llu\n", sz64, (unsigned long long)alloc_size);
+    uint32_t sz64 = Emit_Static_Int (alloc_size, LLVM_Rep_Int (64, false)).reg;
     Emit ("  call void @llvm.memset.p0.i64(ptr %%t%u, i8 0, i64 %%t%u, i1 false)"
        "  ; zero-init record\n", t, sz64);
 
@@ -38398,9 +37894,7 @@ LLVM_Value Generate_Allocator (Syntax_Node *node) {
       if (not has_defaults) continue;
 
       // Initialize nested record's disc constraints and component defaults.
-      uint32_t comp_ptr = Emit_Temp ();
-      Emit ("  %%t%u = getelementptr i8, ptr %%t%u, i64 %u  ; nested %.*s\n",
-         comp_ptr, t, comp->byte_offset,
+      uint32_t comp_ptr = Emit_Result_Instruction ("getelementptr i8, ptr %%t%u, i64 %u  ; nested %.*s\n", t, comp->byte_offset,
          (int)comp->name.length, comp->name.data);
       Emit_Init_Record_Defaults (ct, comp_ptr);
     }
@@ -38443,9 +37937,7 @@ LLVM_Value Generate_Allocator (Syntax_Node *node) {
           int128_t count = Array_Element_Count (designated);
           uint32_t esz = elem_ty->size > 0 ? elem_ty->size : 8;
           for (int128_t ei = 0; ei < count and ei < 1024; ei++) {
-            uint32_t ep = Emit_Temp ();
-            Emit ("  %%t%u = getelementptr i8, ptr %%t%u, i64 %lld  ; elem[%lld]\n",
-               ep, t, (long long)(ei * esz), (long long)ei);
+            uint32_t ep = Emit_Result_Instruction ("getelementptr i8, ptr %%t%u, i64 %lld  ; elem[%lld]\n", t, (long long)(ei * esz), (long long)ei);
             // Initialize element record's disc constraints and defaults.
             Emit_Init_Record_Defaults (elem_ty, ep);
           }
@@ -38469,9 +37961,7 @@ LLVM_Value Generate_Allocator (Syntax_Node *node) {
     if (access_master_id == 0 and Type_Is_Access (access_type))
       access_master_id = access_type->access.master_scope_id;
     if (access_master_id) {
-      uint32_t found = Emit_Temp ();
-      Emit ("  %%t%u = call ptr @__ada_master_find(i64 %u)\n",
-         found, access_master_id);
+      uint32_t found = Emit_Result_Instruction ("call ptr @__ada_master_find(i64 %u)\n", access_master_id);
       snprintf (alloc_master_arg, sizeof alloc_master_arg,
                 "ptr %%t%u", found);
     }
@@ -38483,8 +37973,7 @@ LLVM_Value Generate_Allocator (Syntax_Node *node) {
     // RM 3.9 / AI-00149: activating the task before its body is elaborated
     // raises PROGRAM_ERROR (not TASKING_ERROR).
     Emit_Elaboration_Check (designated->defining_symbol);
-    uint32_t handle_tmp = Emit_Temp ();
-    Emit ("  %%t%u = call ptr @__ada_task_start(ptr @", handle_tmp);
+    uint32_t handle_tmp = Emit_Result_Instruction ("call ptr @__ada_task_start(ptr @");
     Emit_Task_Function_Name (designated->defining_symbol, designated->name);
     Emit (", %s, %s)\n", Task_Parent_Frame_Argument (), alloc_master_arg);
     Emit ("  store ptr %%t%u, ptr %%t%u  ; store task handle\n", handle_tmp, t);
@@ -38497,8 +37986,7 @@ LLVM_Value Generate_Allocator (Syntax_Node *node) {
                                    alloc_master_arg);
     Emit_Component_Task_Operation (designated, t, COMPONENT_TASK_ACTIVATE, 0,
                                    "ptr null");
-    uint32_t failed_flag = Emit_Temp ();
-    Emit ("  %%t%u = alloca i8\n", failed_flag);
+    uint32_t failed_flag = Emit_Result_Instruction ("alloca i8\n");
     Emit ("  store i8 0, ptr %%t%u\n", failed_flag);
     Emit_Component_Task_Operation (designated, t, COMPONENT_TASK_WAIT,
                                    failed_flag, "ptr null");
@@ -38530,9 +38018,7 @@ LLVM_Value Generate_Allocator (Syntax_Node *node) {
       Type_Is_Scalar (tgt_des) and not Type_Is_Record (tgt_des)) {
       // Load the stored value back for checking
       LLVM_Rep dt = Type_To_Rep (tgt_des);
-      uint32_t loaded = Emit_Temp ();
-      Emit ("  %%t%u = load %s, ptr %%t%u  ; load for alloc constraint check\n",
-         loaded, LLVM_Rep_To_String (dt), t);
+      uint32_t loaded = Emit_Result_Instruction ("load %s, ptr %%t%u  ; load for alloc constraint check\n", LLVM_Rep_To_String (dt), t);
       Emit_Constraint_Check_Val (Val_Rep (loaded, dt), tgt_des, alloc_ty);
     }
 
@@ -38540,9 +38026,7 @@ LLVM_Value Generate_Allocator (Syntax_Node *node) {
     if (node->allocator.expression and alloc_ty and
       Type_Is_Scalar (alloc_ty) and not Type_Is_Record (alloc_ty)) {
       LLVM_Rep dt = Type_To_Rep (alloc_ty);
-      uint32_t loaded = Emit_Temp ();
-      Emit ("  %%t%u = load %s, ptr %%t%u  ; load for subtype check\n",
-         loaded, LLVM_Rep_To_String (dt), t);
+      uint32_t loaded = Emit_Result_Instruction ("load %s, ptr %%t%u  ; load for subtype check\n", LLVM_Rep_To_String (dt), t);
       Emit_Constraint_Check_Val (Val_Rep (loaded, dt), alloc_ty, NULL);
     }
 
@@ -38702,8 +38186,8 @@ LLVM_Value Generate_Expression (Syntax_Node *node) {
                LLVM_Rep ch_rep = node->type ? Type_To_Rep (node->type) : LLVM_Rep_Int (8, false);
                Emit ("  %%t%u = add %s 0, %lld\n", t, LLVM_Rep_To_String (ch_rep), (long long)ch);
                return Val_Rep (t, ch_rep); }
-    case NK_NULL:       { uint32_t t = Emit_Temp ();
-               Emit ("  %%t%u = inttoptr " PTR_INT_TYPE " 0 to ptr\n", t);
+    case NK_NULL:       { 
+               uint32_t t = Emit_Result_Instruction ("inttoptr " PTR_INT_TYPE " 0 to ptr\n");
                return Val_Rep (t, LL_REP_PTR); }
     case NK_IDENTIFIER: return Generate_Identifier (node);
     case NK_SELECTED:   return Generate_Selected (node);
@@ -38752,7 +38236,6 @@ void Generate_Statement_List (Node_List *list) {
       if (not will_emit_label) {
         uint32_t dead_label = cg->label_id++;
         Emit_Label_Here (dead_label);
-        cg->block_terminated = false;
 
       // The next statement emits its own label - reset block_terminated
       // so it adds an instruction to its label block properly
@@ -39027,34 +38510,21 @@ void Generate_Assignment_Body (Syntax_Node *node, Syntax_Node *target) {
              Expression_LLVM_Rep (arg->range.low), usa_t).reg;
 
           // Subtract dynamic low bound from fat pointer
-          uint32_t adj = Emit_Temp ();
-          Emit ("  %%t%u = sub %s %%t%u, %%t%u"
-             "  ; adjust for dynamic low bound\n",
-             adj, LLVM_Rep_To_String (usa_t), dest_low_expr, fat_low_conv);
-          uint32_t dest_ptr = Emit_Temp ();
-          Emit ("  %%t%u = getelementptr i8, ptr %%t%u, %s %%t%u\n",
-             dest_ptr, dest_base, LLVM_Rep_To_String (usa_t), adj);
+          uint32_t adj = Emit_Result_Instruction ("sub %s %%t%u, %%t%u"
+             "  ; adjust for dynamic low bound\n", LLVM_Rep_To_String (usa_t), dest_low_expr, fat_low_conv);
+          uint32_t dest_ptr = Emit_Result_Instruction ("getelementptr i8, ptr %%t%u, %s %%t%u\n", dest_base, LLVM_Rep_To_String (usa_t), adj);
 
           // Generate source and copy
           Syntax_Node *src = node->assignment.value;
           uint32_t dest_high_expr = Generate_Expression (arg->range.high).reg;
           dest_high_expr = Emit_Convert (dest_high_expr,
              Expression_LLVM_Rep (arg->range.high), usa_t).reg;
-          uint32_t length = Emit_Temp ();
-          Emit ("  %%t%u = sub %s %%t%u, %%t%u\n",
-             length, LLVM_Rep_To_String (usa_t), dest_high_expr, dest_low_expr);
-          uint32_t len_raw = Emit_Temp ();
-          Emit ("  %%t%u = add %s %%t%u, 1\n", len_raw, LLVM_Rep_To_String (usa_t), length);
           // RM 4.1.2: a null slice (high < low) has length 0, not a negative
           // count. Clamp so the length check matches a null source and the
           // memcpy copies nothing.
-          LLVM_I1 len_neg = Emit_Icmp_Const ("slt", usa_t, len_raw, 0);
-          uint32_t len_plus_one = Emit_Temp ();
-          Emit ("  %%t%u = select i1 %%t%u, %s 0, %s %%t%u\n", len_plus_one,
-             len_neg.reg, LLVM_Rep_To_String (usa_t), LLVM_Rep_To_String (usa_t), len_raw);
-          uint32_t byte_len_nat = Emit_Temp ();
-          Emit ("  %%t%u = mul %s %%t%u, %u\n",
-             byte_len_nat, LLVM_Rep_To_String (usa_t), len_plus_one, elem_sz);
+          uint32_t len_plus_one =
+            Emit_Length_From_Bounds (dest_low_expr, dest_high_expr, usa_t).reg;
+          uint32_t byte_len_nat = Emit_Result_Instruction ("mul %s %%t%u, %u\n", LLVM_Rep_To_String (usa_t), len_plus_one, elem_sz);
           uint32_t byte_len = Emit_Extend_To_I64 (byte_len_nat, usa_t).reg;
 
           // Get source data
@@ -39114,8 +38584,7 @@ void Generate_Assignment_Body (Syntax_Node *node, Syntax_Node *target) {
           uint32_t arr_hi_c = Emit_Static_Int (arr_hi_i, csa_t).reg;
           Emit_Slice_Bound_Check (dest_lo_raw, dest_hi_raw, arr_lo_c, arr_hi_c, csa_t);
         }
-        uint32_t length = Emit_Temp ();
-        Emit ("  %%t%u = sub %s %%t%u, %%t%u\n", length, LLVM_Rep_To_String (csa_t), dest_hi_raw, dest_lo_raw);
+        uint32_t length = Emit_Result_Instruction ("sub %s %%t%u, %%t%u\n", LLVM_Rep_To_String (csa_t), dest_hi_raw, dest_lo_raw);
 
         // Destination pointer: adjust low bound to array-relative index, then
         // scale to bytes (the GEP is byte-addressed, so an element index must
@@ -39127,20 +38596,15 @@ void Generate_Assignment_Body (Syntax_Node *node, Syntax_Node *target) {
           Emit ("  %%t%u = sub %s %%t%u, %s\n", dest_idx, LLVM_Rep_To_String (csa_t), dest_lo_raw, I128_Decimal (low_bound));
         }
         if (elem_sz != 1) {
-          uint32_t scaled = Emit_Temp ();
-          Emit ("  %%t%u = mul %s %%t%u, %u\n", scaled, LLVM_Rep_To_String (csa_t), dest_idx, elem_sz);
+          uint32_t scaled = Emit_Result_Instruction ("mul %s %%t%u, %u\n", LLVM_Rep_To_String (csa_t), dest_idx, elem_sz);
           dest_idx = scaled;
         }
-        uint32_t dest_ptr = Emit_Temp ();
-        Emit ("  %%t%u = getelementptr i8, ptr %%t%u, %s %%t%u\n",
-           dest_ptr, dest_base, LLVM_Rep_To_String (csa_t), dest_idx);
+        uint32_t dest_ptr = Emit_Result_Instruction ("getelementptr i8, ptr %%t%u, %s %%t%u\n", dest_base, LLVM_Rep_To_String (csa_t), dest_idx);
 
         // Ada RM 5.2.1: sliding semantics - source slides to destination.
         Syntax_Node *src = node->assignment.value;
-        uint32_t len_plus_one = Emit_Temp ();
-        Emit ("  %%t%u = add %s %%t%u, 1\n", len_plus_one, LLVM_Rep_To_String (csa_t), length);
-        uint32_t byte_len = Emit_Temp ();
-        Emit ("  %%t%u = mul %s %%t%u, %u\n", byte_len, LLVM_Rep_To_String (csa_t), len_plus_one, elem_sz);
+        uint32_t len_plus_one = Emit_Result_Instruction ("add %s %%t%u, 1\n", LLVM_Rep_To_String (csa_t), length);
+        uint32_t byte_len = Emit_Result_Instruction ("mul %s %%t%u, %u\n", LLVM_Rep_To_String (csa_t), len_plus_one, elem_sz);
         uint32_t byte_len_64 = Emit_Extend_To_I64 (byte_len, csa_t).reg;
 
         // Determine source data pointer
@@ -39184,11 +38648,9 @@ void Generate_Assignment_Body (Syntax_Node *node, Syntax_Node *target) {
             // RM 5.2.1: the source slice and the target slice must have the
             // same length (the value slides, but the lengths must match).
             {
-              uint32_t sc = Emit_Temp ();
-              Emit ("  %%t%u = sub %s %%t%u, %%t%u\n", sc,
+              uint32_t sc = Emit_Result_Instruction ("sub %s %%t%u, %%t%u\n",
                  LLVM_Rep_To_String (csa_t), src_end, src_start);
-              uint32_t sc1 = Emit_Temp ();
-              Emit ("  %%t%u = add %s %%t%u, 1\n", sc1,
+              uint32_t sc1 = Emit_Result_Instruction ("add %s %%t%u, 1\n",
                  LLVM_Rep_To_String (csa_t), sc);
               Emit_Length_Check (sc1, len_plus_one, csa_t, arr_type);
             }
@@ -39206,20 +38668,15 @@ void Generate_Assignment_Body (Syntax_Node *node, Syntax_Node *target) {
             }
             if (src_is_uncon) {
               uint32_t src_fat_cvt = Emit_Convert (src_fat_low, ssb, csa_t).reg;
-              uint32_t adj = Emit_Temp ();
-              Emit ("  %%t%u = sub %s %%t%u, %%t%u\n",
-                 adj, LLVM_Rep_To_String (csa_t), src_start, src_fat_cvt);
+              uint32_t adj = Emit_Result_Instruction ("sub %s %%t%u, %%t%u\n", LLVM_Rep_To_String (csa_t), src_start, src_fat_cvt);
               src_start = adj;
             } else if (src_low_bound != 0) {
-              uint32_t adj = Emit_Temp ();
-              Emit ("  %%t%u = sub %s %%t%u, %s\n",
-                 adj, LLVM_Rep_To_String (csa_t), src_start, I128_Decimal (src_low_bound));
+              uint32_t adj = Emit_Result_Instruction ("sub %s %%t%u, %s\n", LLVM_Rep_To_String (csa_t), src_start, I128_Decimal (src_low_bound));
               src_start = adj;
             }
             // Scale the element index to bytes for the byte-addressed GEP.
             if (elem_sz != 1) {
-              uint32_t scaled = Emit_Temp ();
-              Emit ("  %%t%u = mul %s %%t%u, %u\n", scaled, LLVM_Rep_To_String (csa_t), src_start, elem_sz);
+              uint32_t scaled = Emit_Result_Instruction ("mul %s %%t%u, %u\n", LLVM_Rep_To_String (csa_t), src_start, elem_sz);
               src_start = scaled;
             }
             src_ptr = Emit_Temp ();
@@ -39483,18 +38940,15 @@ void Generate_Assignment_Body (Syntax_Node *node, Syntax_Node *target) {
 
         // Get length from bounds
         LLVM_Rep bt = Array_Bound_LLVM_Rep (assign_type);
-        uint32_t bnd_ptr = Emit_Temp ();
-        Emit ("  %%t%u = extractvalue %s %%t%u, 1\n", bnd_ptr, LLVM_Rep_To_String (value_type), value);
+        uint32_t bnd_ptr = Emit_Result_Instruction ("extractvalue %s %%t%u, 1\n", LLVM_Rep_To_String (value_type), value);
         uint32_t lo = Emit_Temp (), hi = Emit_Temp ();
         Emit ("  %%t%u = load %s, ptr %%t%u\n", lo, LLVM_Rep_To_String (bt), bnd_ptr);
         uint32_t hi_gep = Emit_Temp ();
         int bt_sz = LLVM_Rep_Bits (bt) / 8;
         Emit ("  %%t%u = getelementptr i8, ptr %%t%u, i64 %d\n", hi_gep, bnd_ptr, bt_sz);
         Emit ("  %%t%u = load %s, ptr %%t%u\n", hi, LLVM_Rep_To_String (bt), hi_gep);
-        uint32_t len = Emit_Temp ();
-        Emit ("  %%t%u = sub %s %%t%u, %%t%u\n", len, LLVM_Rep_To_String (bt), hi, lo);
-        uint32_t len1 = Emit_Temp ();
-        Emit ("  %%t%u = add %s %%t%u, 1\n", len1, LLVM_Rep_To_String (bt), len);
+        uint32_t len = Emit_Result_Instruction ("sub %s %%t%u, %%t%u\n", LLVM_Rep_To_String (bt), hi, lo);
+        uint32_t len1 = Emit_Result_Instruction ("add %s %%t%u, 1\n", LLVM_Rep_To_String (bt), len);
         uint32_t elem_sz = assign_type->array.element_type
           ? assign_type->array.element_type->size : 1;
         if (elem_sz == 0) elem_sz = 1;
@@ -39628,8 +39082,7 @@ void Generate_Assignment_Body (Syntax_Node *node, Syntax_Node *target) {
     else if (target_sym->has_runtime_constrained_flag and
              ty->record.has_discriminants) {
       LLVM_Rep iat_dc = Integer_Arith_Rep ();
-      uint32_t flag = Emit_Temp ();
-      Emit ("  %%t%u = load i8, ptr ", flag);
+      uint32_t flag = Emit_Result_Instruction ("load i8, ptr ");
       Emit_Constrained_Slot_Ref (target_sym);
       Emit ("  ; runtime 'CONSTRAINED\n");
       LLVM_I1 unconstrained = Emit_Icmp_Const ("eq", LLVM_Rep_Int (8, false), flag, 0);
@@ -39643,9 +39096,7 @@ void Generate_Assignment_Body (Syntax_Node *node, Syntax_Node *target) {
           tgt_dv = Emit_Convert (tgt_dv, dt, iat_dc).reg;
         }
         LLVM_I1 eq = Emit_Icmp ("eq", iat_dc, src_dv, tgt_dv);
-        uint32_t ok = Emit_Temp ();
-        Emit ("  %%t%u = or i1 %%t%u, %%t%u  ; unconstrained or unchanged\n",
-              ok, unconstrained.reg, eq.reg);
+        uint32_t ok = Emit_Result_Instruction ("or i1 %%t%u, %%t%u  ; unconstrained or unchanged\n", unconstrained.reg, eq.reg);
         Emit_Check_With_Raise (ok, false,
           "discriminant change on constrained actual (RM 3.7.4)");
       }
@@ -39737,13 +39188,10 @@ void Generate_Assignment_Body (Syntax_Node *node, Syntax_Node *target) {
         uint32_t src_total = Emit_Fat_Total_Elements (src_ptr, ca_bt, ndims);
         LLVM_I1 src_null = Emit_Icmp_Const ("eq", ca_bt, src_total, 0);
         LLVM_I1 dst_null = Emit_Icmp_Const ("eq", ca_bt, dst_total, 0);
-        uint32_t both_null = Emit_Temp ();
-        Emit ("  %%t%u = and i1 %%t%u, %%t%u\n", both_null, src_null.reg, dst_null.reg);
+        uint32_t both_null = Emit_Result_Instruction ("and i1 %%t%u, %%t%u\n", src_null.reg, dst_null.reg);
         LLVM_I1 mismatch = Emit_Icmp ("ne", ca_bt, src_len, dst_len);
-        uint32_t not_both_null = Emit_Temp ();
-        Emit ("  %%t%u = xor i1 %%t%u, true\n", not_both_null, both_null);
-        uint32_t fail = Emit_Temp ();
-        Emit ("  %%t%u = and i1 %%t%u, %%t%u\n", fail, mismatch.reg, not_both_null);
+        uint32_t not_both_null = Emit_Result_Instruction ("xor i1 %%t%u, true\n", both_null);
+        uint32_t fail = Emit_Result_Instruction ("and i1 %%t%u, %%t%u\n", mismatch.reg, not_both_null);
         Emit_Check_With_Raise (fail, true, "length check failed");
       }
       if (target_is_fat) {
@@ -39836,9 +39284,7 @@ void Generate_Assignment_Body (Syntax_Node *node, Syntax_Node *target) {
       dest_total_elems = Emit_Fat_Pointer_Length_Dim (existing_fat, ua_bt, 0).reg;
       for (uint32_t d = 1; d < ndims; d++) {
         uint32_t dim_len = Emit_Fat_Pointer_Length_Dim (existing_fat, ua_bt, d).reg;
-        uint32_t prod = Emit_Temp ();
-        Emit ("  %%t%u = mul %s %%t%u, %%t%u\n",
-           prod, LLVM_Rep_To_String (ua_bt), dest_total_elems, dim_len);
+        uint32_t prod = Emit_Result_Instruction ("mul %s %%t%u, %%t%u\n", LLVM_Rep_To_String (ua_bt), dest_total_elems, dim_len);
         dest_total_elems = prod;
       }
     }
@@ -39866,10 +39312,8 @@ void Generate_Assignment_Body (Syntax_Node *node, Syntax_Node *target) {
     // (ptr to { ptr, ptr }), not a loaded value. Promote to fat.
     if (not src_is_fat and src->kind == NK_AGGREGATE and src_type and
       Type_Is_Array_Like (src_type) and not src_type->array.is_constrained) {
-      uint32_t loaded_fat = Emit_Temp ();
-      Emit ("  %%t%u = load " FAT_PTR_TYPE ", ptr %%t%u"
-           "  ; load agg fat ptr alloca\n",
-         loaded_fat, src_val);
+      uint32_t loaded_fat = Emit_Result_Instruction ("load " FAT_PTR_TYPE ", ptr %%t%u"
+           "  ; load agg fat ptr alloca\n", src_val);
       src_val = loaded_fat;
       src_is_fat = true;
     }
@@ -39889,13 +39333,10 @@ void Generate_Assignment_Body (Syntax_Node *node, Syntax_Node *target) {
       uint32_t src_total = Emit_Fat_Total_Elements (src_val, ua_bt, ndims);
       LLVM_I1 src_null = Emit_Icmp_Const ("eq", ua_bt, src_total, 0);
       LLVM_I1 dst_null = Emit_Icmp_Const ("eq", ua_bt, dest_total_elems, 0);
-      uint32_t both_null = Emit_Temp ();
-      Emit ("  %%t%u = and i1 %%t%u, %%t%u\n", both_null, src_null.reg, dst_null.reg);
+      uint32_t both_null = Emit_Result_Instruction ("and i1 %%t%u, %%t%u\n", src_null.reg, dst_null.reg);
       LLVM_I1 mismatch = Emit_Icmp ("ne", ua_bt, src_len, dest_dim1_len);
-      uint32_t not_both_null = Emit_Temp ();
-      Emit ("  %%t%u = xor i1 %%t%u, true\n", not_both_null, both_null);
-      uint32_t fail = Emit_Temp ();
-      Emit ("  %%t%u = and i1 %%t%u, %%t%u\n", fail, mismatch.reg, not_both_null);
+      uint32_t not_both_null = Emit_Result_Instruction ("xor i1 %%t%u, true\n", both_null);
+      uint32_t fail = Emit_Result_Instruction ("and i1 %%t%u, %%t%u\n", mismatch.reg, not_both_null);
       Emit_Check_With_Raise (fail, true, "length check failed");
       uint32_t src_data = Emit_Fat_Pointer_Data (src_val, ua_bt).reg;
       Emit ("  call void @llvm.memcpy.p0.p0.i64("
@@ -39941,19 +39382,15 @@ void Generate_Assignment_Body (Syntax_Node *node, Syntax_Node *target) {
     }
     LLVM_Rep src_ftype = Float_LLVM_Rep_Of (value_type);
     // Ada RM 4.6: round to nearest before truncation
-    uint32_t rounded = Emit_Temp ();
-    Emit ("  %%t%u = call %s @llvm.round.%s(%s %%t%u)\n",
-       rounded, LLVM_Rep_To_String (src_ftype), LLVM_Rep_To_String (src_ftype), LLVM_Rep_To_String (src_ftype), value);
-    uint32_t t = Emit_Temp ();
-    Emit ("  %%t%u = fptosi %s %%t%u to %s\n", t, LLVM_Rep_To_String (src_ftype), rounded, LLVM_Rep_To_String (type_rep));
+    uint32_t rounded = Emit_Result_Instruction ("call %s @llvm.round.%s(%s %%t%u)\n", LLVM_Rep_To_String (src_ftype), LLVM_Rep_To_String (src_ftype), LLVM_Rep_To_String (src_ftype), value);
+    uint32_t t = Emit_Result_Instruction ("fptosi %s %%t%u to %s\n", LLVM_Rep_To_String (src_ftype), rounded, LLVM_Rep_To_String (type_rep));
     value = t;
 
   // Integer to float: use sitofp - use native src/dst types
   } else if (not is_src_float and is_dst_float) {
     LLVM_Rep src_type = Expression_LLVM_Rep (node->assignment.value);
     LLVM_Rep dst_ftype = Float_LLVM_Rep_Of (ty);
-    uint32_t t = Emit_Temp ();
-    Emit ("  %%t%u = sitofp %s %%t%u to %s\n", t, LLVM_Rep_To_String (src_type), value, LLVM_Rep_To_String (dst_ftype));
+    uint32_t t = Emit_Result_Instruction ("sitofp %s %%t%u to %s\n", LLVM_Rep_To_String (src_type), value, LLVM_Rep_To_String (dst_ftype));
     value = t;
 
   // Float to float: may need conversion if sizes differ.
@@ -40065,7 +39502,7 @@ void Generate_Loop_Statement (Syntax_Node *node) {
       cg->block_terminated = true;
     }
     Emit_Label_Here (label_sym->llvm_label_id);  // loop label
-    cg->block_terminated = false;  // New block started
+      // New block started
   } else {
     Emit ("  ; LOOP (anonymous)\n");
   }
@@ -40188,9 +39625,7 @@ void Generate_Return_Statement (Syntax_Node *node) {
     if (expr->kind == NK_NULL and ret_type and Type_Is_Access (ret_type) and
       Type_Needs_Fat_Pointer (ret_type)) {
       const char *fp_type = FAT_PTR_TYPE;
-      uint32_t z = Emit_Temp ();
-      Emit ("  %%t%u = insertvalue %s zeroinitializer, ptr null, 0  ; null fat ptr\n",
-         z, fp_type);
+      uint32_t z = Emit_Result_Instruction ("insertvalue %s zeroinitializer, ptr null, 0  ; null fat ptr\n", fp_type);
       Emit ("  ret %s %%t%u\n", fp_type, z);
       cg->block_terminated = true;
       return;
@@ -40226,12 +39661,9 @@ void Generate_Return_Statement (Syntax_Node *node) {
       // intended integer (8.5/1e-5 ≈ 849999.9999); a bare fptosi truncates it to
       // 849999 while every other float→fixed conversion rounds to 850000 — the
       // two representations of the same literal must match (c44003e).
-      uint32_t rounded = Emit_Temp ();
-      Emit ("  %%t%u = call %s @llvm.round.%s(%s %%t%u)\n",
-         rounded, LLVM_Rep_To_String (src_fty_rep), LLVM_Rep_To_String (src_fty_rep),
+      uint32_t rounded = Emit_Result_Instruction ("call %s @llvm.round.%s(%s %%t%u)\n", LLVM_Rep_To_String (src_fty_rep), LLVM_Rep_To_String (src_fty_rep),
          LLVM_Rep_To_String (src_fty_rep), div_t);
-      uint32_t conv_t = Emit_Temp ();
-      Emit ("  %%t%u = fptosi %s %%t%u to %s\n", conv_t, LLVM_Rep_To_String (src_fty_rep), rounded, LLVM_Rep_To_String (ret_rep));
+      uint32_t conv_t = Emit_Result_Instruction ("fptosi %s %%t%u to %s\n", LLVM_Rep_To_String (src_fty_rep), rounded, LLVM_Rep_To_String (ret_rep));
       value = Val_Rep (conv_t, ret_rep);
     } else {
       // Convert from the value's own emitted rep, not a re-derivation of the
@@ -40285,23 +39717,19 @@ void Generate_Return_Statement (Syntax_Node *node) {
         uint32_t conv = Emit_Convert (dim_len, rbt, Integer_Arith_Rep ()).reg;
         if (d == 0) { total = conv; }
         else {
-          uint32_t product = Emit_Temp ();
-          Emit ("  %%t%u = mul %s %%t%u, %%t%u\n", product, LLVM_Rep_To_String (Integer_Arith_Rep ()), total, conv);
+          uint32_t product = Emit_Result_Instruction ("mul %s %%t%u, %%t%u\n", LLVM_Rep_To_String (Integer_Arith_Rep ()), total, conv);
           total = product;
         }
       }
-      uint32_t bsz = Emit_Temp ();
-      Emit ("  %%t%u = mul %s %%t%u, %u\n", bsz, LLVM_Rep_To_String (Integer_Arith_Rep ()), total, scalar_sz);
+      uint32_t bsz = Emit_Result_Instruction ("mul %s %%t%u, %u\n", LLVM_Rep_To_String (Integer_Arith_Rep ()), total, scalar_sz);
       uint32_t bsz64 = Emit_Extend_To_I64 (bsz, Integer_Arith_Rep ()).reg;
-      uint32_t sec_data = Emit_Temp ();
-      Emit ("  %%t%u = call ptr @__ada_sec_stack_alloc(i64 %%t%u)\n", sec_data, bsz64);
+      uint32_t sec_data = Emit_Result_Instruction ("call ptr @__ada_sec_stack_alloc(i64 %%t%u)\n", bsz64);
       Emit_Memcpy (sec_data, old_data, bsz64);
 
       // Copy bounds to secondary stack too (also on callee stack)
       uint32_t old_bnd = Emit_Extract_Fat_Bounds (value.reg);
       uint32_t bnd_bytes = ndims * 2 * (LLVM_Rep_Bits (rbt) / 8);
-      uint32_t sec_bnd = Emit_Temp ();
-      Emit ("  %%t%u = call ptr @__ada_sec_stack_alloc(i64 %u)\n", sec_bnd, bnd_bytes);
+      uint32_t sec_bnd = Emit_Result_Instruction ("call ptr @__ada_sec_stack_alloc(i64 %u)\n", bnd_bytes);
       Emit ("  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %u, i1 false)\n",
          sec_bnd, old_bnd, bnd_bytes);
 
@@ -40337,8 +39765,7 @@ void Generate_Return_Statement (Syntax_Node *node) {
     // the secondary stack so the caller's reference stays valid after return.
     if (ret_type and Type_Is_Record (ret_type) and ret_type->size > 0 and
         not LLVM_Rep_Is_Fat_Pointer (value.rep)) {
-      uint32_t sec = Emit_Temp ();
-      Emit ("  %%t%u = call ptr @__ada_sec_stack_alloc(i64 %u)\n", sec, ret_type->size);
+      uint32_t sec = Emit_Result_Instruction ("call ptr @__ada_sec_stack_alloc(i64 %u)\n", ret_type->size);
       Emit ("  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %u, i1 false)"
             "  ; record return copy\n", sec, value.reg, ret_type->size);
       value = Val_Rep (sec, value.rep);
@@ -40652,8 +40079,6 @@ void Generate_For_Loop (Syntax_Node *node) {
           // check doesn't assume the narrow subtype width and sext an i32.
           Emit_Constraint_Check_Val (low_v, st, NULL);
           Emit_Constraint_Check_Val (high_v, st, NULL);
-          Emit ("  br label %%L%u\n", skip_lbl);
-          cg->block_terminated = true;
           Emit_Label_Here (skip_lbl);
         }
 
@@ -40699,8 +40124,6 @@ void Generate_For_Loop (Syntax_Node *node) {
 
   // Loop start - check condition
   Emit ("  ; -- loop header (L%u)\n", loop_start);
-  Emit ("  br label %%L%u\n", loop_start);
-  cg->block_terminated = true;
   Emit_Label_Here (loop_start);
   uint32_t cur = Emit_Temp ();
   if (loop_var) {
@@ -40779,8 +40202,7 @@ void Generate_Raise_Statement (Syntax_Node *node) {
       Emit ("\n");
 
       // Store exception identity and call __ada_raise
-      uint32_t exc_addr = Emit_Temp ();
-      Emit ("  %%t%u = ptrtoint ptr ", exc_addr);
+      uint32_t exc_addr = Emit_Result_Instruction ("ptrtoint ptr ");
       Emit_Exception_Ref (exc);
       Emit (" to i64\n");
       Emit ("  call void @__ada_raise(i64 %%t%u)\n", exc_addr);
@@ -40814,7 +40236,7 @@ void Generate_Block_Statement (Syntax_Node *node) {
     }
     Emit ("  ; -- block entry (L%u)\n", label_sym->llvm_label_id);
     Emit_Label_Here (label_sym->llvm_label_id);  // block label
-    cg->block_terminated = false;  // New block started
+      // New block started
   }
 
   // Block with optional declarations and exception handlers
@@ -40829,8 +40251,7 @@ void Generate_Block_Statement (Syntax_Node *node) {
 
     // Allocate handler frame first (needed for stack allocation order)
     Emit ("  ; -- alloca exception handler frame\n");
-    uint32_t handler_frame = Emit_Temp ();
-    Emit ("  %%t%u = alloca { ptr, [200 x i8] }, align 16  ; handler frame\n", handler_frame);
+    uint32_t handler_frame = Emit_Result_Instruction ("alloca { ptr, [200 x i8] }, align 16  ; handler frame\n");
 
     // Generate declarations BEFORE setting up the exception handler.
     // This ensures exceptions in declarative part propagate outward.
@@ -40848,19 +40269,15 @@ void Generate_Block_Statement (Syntax_Node *node) {
     // Capture the master context (this block's own master, when it has one)
     // so the handler can complete masters abandoned by a longjmp out of a
     // nested statement (RM 9.4).
-    uint32_t saved_master = Emit_Temp ();
-    Emit ("  %%t%u = call ptr @__ada_master_current()\n", saved_master);
+    uint32_t saved_master = Emit_Result_Instruction ("call ptr @__ada_master_current()\n");
 
     // Push exception handler
     Emit ("  ; -- push handler and call setjmp\n");
     Emit ("  call void @__ada_push_handler(ptr %%t%u)\n", handler_frame);
 
     // Call setjmp on the jmp_buf field (field 1)
-    uint32_t jmp_buf = Emit_Temp ();
-    Emit ("  %%t%u = getelementptr { ptr, [200 x i8] }, ptr %%t%u, i32 0, i32 1\n",
-       jmp_buf, handler_frame);
-    uint32_t setjmp_result = Emit_Temp ();
-    Emit ("  %%t%u = call " C_INT_TYPE " @setjmp(ptr %%t%u)\n", setjmp_result, jmp_buf);
+    uint32_t jmp_buf = Emit_Result_Instruction ("getelementptr { ptr, [200 x i8] }, ptr %%t%u, i32 0, i32 1\n", handler_frame);
+    uint32_t setjmp_result = Emit_Result_Instruction ("call " C_INT_TYPE " @setjmp(ptr %%t%u)\n", jmp_buf);
 
     // Branch based on setjmp return
     LLVM_I1 is_normal = Emit_Icmp_Const ("eq", LL_REP_C_INT, setjmp_result, 0);
@@ -40898,7 +40315,6 @@ void Generate_Block_Statement (Syntax_Node *node) {
     // (RM 9.4) before any handler code runs.
     Emit ("  ; -- EXCEPTION handler entry (L%u)\n", handler_label);
     Emit_Label_Here (handler_label);
-    cg->block_terminated = false;
     Emit ("  call void @__ada_pop_handler()\n");
     Emit ("  call void @__ada_master_unwind(ptr %%t%u)\n", saved_master);
 
@@ -40912,7 +40328,6 @@ void Generate_Block_Statement (Syntax_Node *node) {
     // alternatives (RM 9.7.1), join dependents, leave the runtime record.
     Emit ("  ; -- END BLOCK (L%u)\n", end_label);
     Emit_Label_Here (end_label);
-    cg->block_terminated = false;
     Emit_Master_Exit (master);
 
     // Restore exception context
@@ -40963,26 +40378,21 @@ void Emit_Accept_Out_Param_Writeback (Node_List *parameters, uint32_t params_ptr
         }
         bool is_array = pt and pt->kind == TYPE_ARRAY;
         uint32_t type_size = pt ? pt->size : 0;
-        uint32_t slot_ptr = Emit_Temp ();
-        Emit ("  %%t%u = getelementptr i64, ptr %%t%u, i64 %u\n",
-           slot_ptr, params_ptr, param_idx);
+        uint32_t slot_ptr = Emit_Result_Instruction ("getelementptr i64, ptr %%t%u, i64 %u\n", params_ptr, param_idx);
 
         if (is_array) {
           // The block slot holds the caller's data pointer; copy the local
           // back through it. Dynamically sized arrays keep their existing
           // (no copy-back) limitation.
           if (type_size > 0) {
-            uint32_t pv = Emit_Temp ();
-            Emit ("  %%t%u = load i64, ptr %%t%u\n", pv, slot_ptr);
-            uint32_t dst = Emit_Temp ();
-            Emit ("  %%t%u = inttoptr " PTR_INT_TYPE " %%t%u to ptr\n", dst, pv);
+            uint32_t pv = Emit_Result_Instruction ("load i64, ptr %%t%u\n", slot_ptr);
+            uint32_t dst = Emit_Result_Instruction ("inttoptr " PTR_INT_TYPE " %%t%u to ptr\n", pv);
             Emit ("  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%", dst);
             Emit_Symbol_Name (name->symbol);
             Emit (", i64 %u, i1 false)  ; OUT array copy-back\n", type_size);
           }
         } else {
-          uint32_t v = Emit_Temp ();
-          Emit ("  %%t%u = load i64, ptr %%", v);
+          uint32_t v = Emit_Result_Instruction ("load i64, ptr %%");
           Emit_Symbol_Name (name->symbol);
           Emit ("\n");
           Emit ("  store i64 %%t%u, ptr %%t%u  ; OUT param writeback\n", v, slot_ptr);
@@ -41045,9 +40455,7 @@ void Generate_Statement (Syntax_Node *node) {
               if (def) {
                 uint32_t val = Emit_Entry_Default_To_Slot (def,
                                  entry_sym->parameters[p].param_type);
-                uint32_t pp = Emit_Temp ();
-                Emit ("  %%t%u = getelementptr [%u x i64], ptr %%t%u, i64 0, i64 %u\n",
-                   pp, n_params, param_block, p);
+                uint32_t pp = Emit_Result_Instruction ("getelementptr [%u x i64], ptr %%t%u, i64 0, i64 %u\n", n_params, param_block, p);
                 Emit ("  store i64 %%t%u, ptr %%t%u\n", val, pp);
               }
             }
@@ -41091,8 +40499,7 @@ void Generate_Statement (Syntax_Node *node) {
           if (proc->kind == SYMBOL_FUNCTION) {
             const char *ret_type = proc->return_type ?
               LLVM_Rep_To_String (Type_To_Rep (proc->return_type)) : "i32";
-            uint32_t t = Emit_Temp ();
-            Emit ("  %%t%u = call %s @", t, ret_type);
+            Emit_Result_Instruction ("call %s @", ret_type);
           } else {
             Emit ("  call void @");
           }
@@ -41117,8 +40524,7 @@ void Generate_Statement (Syntax_Node *node) {
             Type_Is_Task (proc->parent->type)) {
           Emit ("  ; Entry call (renamed): %.*s\n",
              (int)proc->name.length, proc->name.data);
-          uint32_t param_block = Emit_Temp ();
-          Emit ("  %%t%u = inttoptr " PTR_INT_TYPE " 0 to ptr  ; no parameters\n", param_block);
+          uint32_t param_block = Emit_Result_Instruction ("inttoptr " PTR_INT_TYPE " 0 to ptr  ; no parameters\n");
           uint32_t task_ptr = Emit_Temp ();
           Emit_Load_Ptr_From_Symbol (task_ptr, proc->parent);
           uint32_t entry_idx = Emit_Entry_Index (proc, 0);
@@ -41193,9 +40599,8 @@ void Generate_Statement (Syntax_Node *node) {
                     if (def and def->kind == NK_STRING and
                       pt->array.index_count > 0) {
                       LLVM_Rep bt = Array_Bound_LLVM_Rep (pt);
-                      uint32_t dp = Emit_Temp ();
-                      Emit ("  %%t%u = extractvalue " FAT_PTR_TYPE
-                         " %%t%u, 0\n", dp, val);
+                      uint32_t dp = Emit_Result_Instruction ("extractvalue " FAT_PTR_TYPE
+                         " %%t%u, 0\n", val);
                       uint32_t lo = Emit_Single_Bound (&pt->array.indices[0].low_bound, bt);
                       uint32_t hi = Emit_Single_Bound (&pt->array.indices[0].high_bound, bt);
                       val = Emit_Fat_Pointer_Dynamic (dp, lo, hi, bt).reg;
@@ -41395,16 +40800,13 @@ void Generate_Statement (Syntax_Node *node) {
         Type_Info *delay_type = node->delay_stmt.expression->type;
         if (delay_type and Type_Is_Fixed_Point (delay_type)) {
           LLVM_Rep fix_llvm = Type_To_Rep (delay_type);
-          uint32_t dbl_val = Emit_Temp ();
-          Emit ("  %%t%u = sitofp %s %%t%u to double\n", dbl_val, LLVM_Rep_To_String (fix_llvm), val);
+          uint32_t dbl_val = Emit_Result_Instruction ("sitofp %s %%t%u to double\n", LLVM_Rep_To_String (fix_llvm), val);
           val = Emit_Scale_By_Small (dbl_val, Fixed_Small (delay_type), false, LLVM_Rep_Float (64));
         }
 
         // Convert to microseconds (assuming Duration in seconds)
-        uint32_t us = Emit_Temp ();
-        Emit ("  %%t%u = fmul double %%t%u, 1.0e6\n", us, val);
-        uint32_t us_int = Emit_Temp ();
-        Emit ("  %%t%u = fptoui double %%t%u to i64\n", us_int, us);
+        uint32_t us = Emit_Result_Instruction ("fmul double %%t%u, 1.0e6\n", val);
+        uint32_t us_int = Emit_Result_Instruction ("fptoui double %%t%u to i64\n", us);
         Emit ("  call void @__ada_delay(i64 %%t%u)\n", us_int);
       }
       break;
@@ -41434,33 +40836,25 @@ void Generate_Statement (Syntax_Node *node) {
 
         // Wait for entry call - widen entry index for RTS ABI
         uint32_t entry_idx_64 = Emit_Extend_To_I64 (entry_idx, Integer_Arith_Rep ()).reg;
-        uint32_t caller_ptr = Emit_Temp ();
-        Emit ("  %%t%u = call ptr @__ada_accept_wait(ptr %%__self_tcb, i64 %%t%u)\n",
-           caller_ptr, entry_idx_64);
+        uint32_t caller_ptr = Emit_Result_Instruction ("call ptr @__ada_accept_wait(ptr %%__self_tcb, i64 %%t%u)\n", entry_idx_64);
 
         // RM 9.10: __ada_accept_wait returns null when this task was aborted
         // while blocked on the accept — abandon the accept and run the task's
         // termination epilogue (no rest of the body, no handlers).
         if (cg->in_task_body and cg->task_body_done_label) {
-          uint32_t isnull = Emit_Temp ();
-          Emit ("  %%t%u = icmp eq ptr %%t%u, null\n", isnull, caller_ptr);
+          LLVM_I1 isnull = Emit_Icmp_Null_Ptr ("eq", caller_ptr);
           uint32_t acc_cont = cg->label_id++;
           Emit ("  br i1 %%t%u, label %%L%u, label %%L%u\n",
-             isnull, cg->task_body_done_label, acc_cont);
+             isnull.reg, cg->task_body_done_label, acc_cont);
           Emit_Label_Here (acc_cont);
-          cg->block_terminated = false;
         }
 
         // Extract params pointer from rendezvous record.                                          
         // RV layout: { ptr task, i64 entry_idx, ptr params, i8 complete, ptr next }                
         // Params is at offset 2 (the third pointer-sized slot).                                   
         //                                                                                          
-        uint32_t params_slot = Emit_Temp ();
-        Emit ("  %%t%u = getelementptr ptr, ptr %%t%u, i64 2\n",
-           params_slot, caller_ptr);
-        uint32_t params_ptr = Emit_Temp ();
-        Emit ("  %%t%u = load ptr, ptr %%t%u  ; params from rv record\n",
-           params_ptr, params_slot);
+        uint32_t params_slot = Emit_Result_Instruction ("getelementptr ptr, ptr %%t%u, i64 2\n", caller_ptr);
+        uint32_t params_ptr = Emit_Result_Instruction ("load ptr, ptr %%t%u  ; params from rv record\n", params_slot);
 
         // Generate parameters - allocate space and copy from caller's parameter block.            
         // For composite types (arrays/records), allocate the full type size                        
@@ -41496,19 +40890,15 @@ void Generate_Statement (Syntax_Node *node) {
                 uint32_t type_size = pt ? pt->size : 0;
 
                 // Load source pointer from params block
-                uint32_t pp = Emit_Temp ();
-                Emit ("  %%t%u = getelementptr i64, ptr %%t%u, i64 %u\n",
-                   pp, params_ptr, param_idx);
-                uint32_t pv = Emit_Temp ();
-                Emit ("  %%t%u = load i64, ptr %%t%u\n", pv, pp);
+                uint32_t pp = Emit_Result_Instruction ("getelementptr i64, ptr %%t%u, i64 %u\n", params_ptr, param_idx);
+                uint32_t pv = Emit_Result_Instruction ("load i64, ptr %%t%u\n", pp);
 
                 // Array parameter: alloca correct size, memcpy from source.                       
                 // For static sizes, use compile-time constant.                                    
                 // For dynamic sizes (bounds are BOUND_EXPR), compute at runtime.                  
                 //                                                                                  
                 if (is_array) {
-                  uint32_t src = Emit_Temp ();
-                  Emit ("  %%t%u = inttoptr " PTR_INT_TYPE " %%t%u to ptr\n", src, pv);
+                  uint32_t src = Emit_Result_Instruction ("inttoptr " PTR_INT_TYPE " %%t%u to ptr\n", pv);
 
                   // Unconstrained or dynamic-bounds array (fat): the slot holds
                   // the address of the caller's fat pointer { data, bounds };
@@ -41535,11 +40925,8 @@ void Generate_Statement (Syntax_Node *node) {
                     if (elem_sz == 0) elem_sz = 4;
 
                     // 1. Dereference caller's fat ptr to get data_ptr
-                    uint32_t dp_gep = Emit_Temp ();
-                    Emit ("  %%t%u = getelementptr " FAT_PTR_TYPE ", ptr %%t%u, i32 0, i32 0\n",
-                       dp_gep, src);
-                    uint32_t data_ptr = Emit_Temp ();
-                    Emit ("  %%t%u = load ptr, ptr %%t%u\n", data_ptr, dp_gep);
+                    uint32_t dp_gep = Emit_Result_Instruction ("getelementptr " FAT_PTR_TYPE ", ptr %%t%u, i32 0, i32 0\n", src);
+                    uint32_t data_ptr = Emit_Result_Instruction ("load ptr, ptr %%t%u\n", dp_gep);
 
                     // 2. Evaluate type bounds, compute data byte size
                     uint32_t lo_regs[16], hi_regs[16];
@@ -41550,47 +40937,33 @@ void Generate_Statement (Syntax_Node *node) {
                       uint32_t dlen = Emit_Length_From_Bounds (lo_regs[d], hi_regs[d], iat).reg;
                       if (d == 0) { total = dlen; }
                       else {
-                        uint32_t p2 = Emit_Temp ();
-                        Emit ("  %%t%u = mul %s %%t%u, %%t%u\n",
-                           p2, LLVM_Rep_To_String (iat), total, dlen);
+                        uint32_t p2 = Emit_Result_Instruction ("mul %s %%t%u, %%t%u\n", LLVM_Rep_To_String (iat), total, dlen);
                         total = p2;
                       }
                     }
-                    uint32_t bsz = Emit_Temp ();
-                    Emit ("  %%t%u = mul %s %%t%u, %u\n",
-                       bsz, LLVM_Rep_To_String (iat), total, elem_sz);
+                    uint32_t bsz = Emit_Result_Instruction ("mul %s %%t%u, %u\n", LLVM_Rep_To_String (iat), total, elem_sz);
                     LLVM_I1 neg_chk = Emit_Icmp_Const ("slt", iat, bsz, 0);
-                    uint32_t csz = Emit_Temp ();
-                    Emit ("  %%t%u = select i1 %%t%u, %s 0, %s %%t%u\n",
-                       csz, neg_chk.reg, LLVM_Rep_To_String (iat), LLVM_Rep_To_String (iat), bsz);
+                    uint32_t csz = Emit_Result_Instruction ("select i1 %%t%u, %s 0, %s %%t%u\n", neg_chk.reg, LLVM_Rep_To_String (iat), LLVM_Rep_To_String (iat), bsz);
 
                     // 3. Alloca for local data copy, memcpy from data_ptr
-                    uint32_t data_alloca = Emit_Temp ();
-                    Emit ("  %%t%u = alloca i8, %s %%t%u, align 8\n",
-                       data_alloca, LLVM_Rep_To_String (iat), csz);
+                    uint32_t data_alloca = Emit_Result_Instruction ("alloca i8, %s %%t%u, align 8\n", LLVM_Rep_To_String (iat), csz);
                     uint32_t csz64 = Emit_Extend_To_I64 (csz, iat).reg;
                     Emit_Memcpy (data_alloca, data_ptr, csz64);
 
                     // 4. Alloca for local bounds struct [2*ndims x i32]
-                    uint32_t bounds_alloca = Emit_Temp ();
-                    Emit ("  %%t%u = alloca [%u x i32]\n",
-                       bounds_alloca, 2 * ndims);
+                    uint32_t bounds_alloca = Emit_Result_Instruction ("alloca [%u x i32]\n", 2 * ndims);
                     for (uint32_t d = 0; d < ndims and d < 16; d++)
                       Emit_Store_Bound_Pair (bounds_alloca, iat, d, lo_regs[d], hi_regs[d]);
 
                     // 5. Create fat pointer variable { data_ptr, bounds_ptr }
                     Emit_Local_Ref (name->symbol);
                     Emit (" = alloca " FAT_PTR_TYPE ", align 8\n");
-                    uint32_t fp_d = Emit_Temp ();
-                    Emit ("  %%t%u = getelementptr " FAT_PTR_TYPE ", ptr %%",
-                       fp_d);
+                    uint32_t fp_d = Emit_Result_Instruction ("getelementptr " FAT_PTR_TYPE ", ptr %%");
                     Emit_Symbol_Name (name->symbol);
                     Emit (", i32 0, i32 0\n");
                     Emit ("  store ptr %%t%u, ptr %%t%u\n",
                        data_alloca, fp_d);
-                    uint32_t fp_b = Emit_Temp ();
-                    Emit ("  %%t%u = getelementptr " FAT_PTR_TYPE ", ptr %%",
-                       fp_b);
+                    uint32_t fp_b = Emit_Result_Instruction ("getelementptr " FAT_PTR_TYPE ", ptr %%");
                     Emit_Symbol_Name (name->symbol);
                     Emit (", i32 0, i32 1\n");
                     Emit ("  store ptr %%t%u, ptr %%t%u\n",
@@ -41610,15 +40983,10 @@ void Generate_Statement (Syntax_Node *node) {
                   // appended, and spilled to the named slot the attribute reads.
                   if (Parameter_Needs_Constrained_Flag (
                         (Parameter_Mode) param->param_spec.mode, pt)) {
-                    uint32_t cf = Emit_Temp ();
-                    Emit ("  %%t%u = getelementptr i64, ptr %%t%u, i64 %u\n",
-                       cf, params_ptr,
+                    uint32_t cf = Emit_Result_Instruction ("getelementptr i64, ptr %%t%u, i64 %u\n", params_ptr,
                        accept_total_params + accept_flag_ordinal);
-                    uint32_t cfv = Emit_Temp ();
-                    Emit ("  %%t%u = load i64, ptr %%t%u  ; 'CONSTRAINED flag\n",
-                       cfv, cf);
-                    uint32_t cf8 = Emit_Temp ();
-                    Emit ("  %%t%u = trunc i64 %%t%u to i8\n", cf8, cfv);
+                    uint32_t cfv = Emit_Result_Instruction ("load i64, ptr %%t%u  ; 'CONSTRAINED flag\n", cf);
+                    uint32_t cf8 = Emit_Result_Instruction ("trunc i64 %%t%u to i8\n", cfv);
                     name->symbol->has_runtime_constrained_flag = true;
                     Emit ("  ");
                     Emit_Constrained_Slot_Ref (name->symbol);
@@ -41682,7 +41050,6 @@ void Generate_Statement (Syntax_Node *node) {
           cg->accept_end_label  = aend;
 
           Emit_Label_Here (aexc.normal_label);
-          cg->block_terminated = false;
           Generate_Statement_List (&node->accept_stmt.statements);
           Emit ("  call void @__ada_pop_handler()\n");
           Emit_Accept_Out_Param_Writeback (&node->accept_stmt.parameters, params_ptr);
@@ -41697,7 +41064,6 @@ void Generate_Statement (Syntax_Node *node) {
           cg->accept_end_label  = s_acc_end;
 
           Emit_Label_Here (aexc.handler_label);
-          cg->block_terminated = false;
           Emit ("  call void @__ada_pop_handler()\n");
           uint32_t eid = Emit_Current_Exception_Id ();
           Emit ("  %%t%u_ep = getelementptr i64, ptr %%t%u, i64 5\n", eid, caller_ptr);
@@ -41711,7 +41077,6 @@ void Generate_Statement (Syntax_Node *node) {
           cg->exception_jmp_buf       = s_j;
           cg->in_exception_region     = s_r;
           Emit_Label_Here (aend);
-          cg->block_terminated = false;
         }
       }
       break;
@@ -41760,18 +41125,14 @@ void Generate_Statement (Syntax_Node *node) {
               Type_Info *dt = d->delay_stmt.expression->type;
               if (dt and Type_Is_Fixed_Point (dt)) {
                 LLVM_Rep fr = Type_To_Rep (dt);
-                uint32_t db = Emit_Temp ();
-                Emit ("  %%t%u = sitofp %s %%t%u to double\n", db, LLVM_Rep_To_String (fr), dur);
+                uint32_t db = Emit_Result_Instruction ("sitofp %s %%t%u to double\n", LLVM_Rep_To_String (fr), dur);
                 double sm = dt->fixed.small; if (sm <= 0) sm = dt->fixed.delta > 0 ? dt->fixed.delta : 1.0;
                 uint64_t sb; memcpy (&sb, &sm, sizeof (sb));
-                uint32_t sec = Emit_Temp ();
-                Emit ("  %%t%u = fmul double %%t%u, 0x%016llX\n", sec, db, (unsigned long long)sb);
+                uint32_t sec = Emit_Result_Instruction ("fmul double %%t%u, 0x%016llX\n", db, (unsigned long long)sb);
                 dur = sec;
               }
-              uint32_t us = Emit_Temp ();
-              Emit ("  %%t%u = fmul double %%t%u, 1.0e6\n", us, dur);
-              uint32_t usi = Emit_Temp ();
-              Emit ("  %%t%u = fptoui double %%t%u to i64\n", usi, us);
+              uint32_t us = Emit_Result_Instruction ("fmul double %%t%u, 1.0e6\n", dur);
+              uint32_t usi = Emit_Result_Instruction ("fptoui double %%t%u to i64\n", us);
               cg->entry_call_timeout_temp = usi;
             }
 
@@ -41782,14 +41143,12 @@ void Generate_Statement (Syntax_Node *node) {
             cg->entry_call_timeout_temp = 0;
 
             uint32_t acc_l = cg->label_id++, not_l = cg->label_id++;
-            uint32_t accb = Emit_Temp ();
-            Emit ("  %%t%u = icmp ne i8 %%t%u, 0\n", accb, res);
-            Emit ("  br i1 %%t%u, label %%L%u, label %%L%u\n", accb, acc_l, not_l);
+            LLVM_I1 accb = Emit_Boolean_Truth_Test (res);
+            Emit ("  br i1 %%t%u, label %%L%u, label %%L%u\n", accb.reg, acc_l, not_l);
             cg->block_terminated = true;
 
             // Accepted: run the statements following the entry call.
             Emit_Label_Here (acc_l);
-            cg->block_terminated = false;
             uint32_t acc_end = (delay_idx >= 0) ? (uint32_t)delay_idx : alts->count;
             for (uint32_t i = 1; i < acc_end; i++)
               Generate_Statement (alts->items[i]);
@@ -41799,17 +41158,13 @@ void Generate_Statement (Syntax_Node *node) {
             // Not accepted: the `else` part (conditional) or the delay's
             // statements (timed).
             Emit_Label_Here (not_l);
-            cg->block_terminated = false;
             if (has_else) {
               Generate_Statement (node->select_stmt.else_part);
             } else if (delay_idx >= 0) {
               for (uint32_t i = (uint32_t)delay_idx + 1; i < alts->count; i++)
                 Generate_Statement (alts->items[i]);
             }
-            Emit ("  br label %%L%u\n", done_label);
-            cg->block_terminated = true;
             Emit_Label_Here (done_label);
-            cg->block_terminated = false;
             break;
           }
         }
@@ -41882,33 +41237,23 @@ void Generate_Statement (Syntax_Node *node) {
             Type_Info *dur_type = dalt->delay_stmt.expression->type;
             if (dur_type and Type_Is_Fixed_Point (dur_type)) {
               LLVM_Rep fix_llvm = Type_To_Rep (dur_type);
-              uint32_t dbl_val = Emit_Temp ();
-              Emit ("  %%t%u = sitofp %s %%t%u to double\n", dbl_val, LLVM_Rep_To_String (fix_llvm), dur);
+              uint32_t dbl_val = Emit_Result_Instruction ("sitofp %s %%t%u to double\n", LLVM_Rep_To_String (fix_llvm), dur);
               dur = Emit_Scale_By_Small (dbl_val, Fixed_Small (dur_type), false, LLVM_Rep_Float (64));
             }
-            uint32_t us = Emit_Temp ();
-            Emit ("  %%t%u = fmul double %%t%u, 1.0e6\n", us, dur);
-            uint32_t us_int = Emit_Temp ();
-            Emit ("  %%t%u = fptoui double %%t%u to i64\n", us_int, us);
+            uint32_t us = Emit_Result_Instruction ("fmul double %%t%u, 1.0e6\n", dur);
+            uint32_t us_int = Emit_Result_Instruction ("fptoui double %%t%u to i64\n", us);
             uint32_t open_i1;
             if (i < MAX_SELECT_GUARDS and guard_slots[i]) {
-              uint32_t gv = Emit_Temp ();
-              Emit ("  %%t%u = load i8, ptr %%t%u\n", gv, guard_slots[i]);
-              open_i1 = Emit_Temp ();
-              Emit ("  %%t%u = icmp ne i8 %%t%u, 0\n", open_i1, gv);
+              uint32_t gv = Emit_Result_Instruction ("load i8, ptr %%t%u\n", guard_slots[i]);
+              open_i1 = Emit_Boolean_Truth_Test (gv).reg;
             } else {
               open_i1 = Emit_Temp ();
               Emit ("  %%t%u = icmp eq i1 0, 0  ; unguarded delay: open\n", open_i1);
             }
-            uint32_t cur = Emit_Temp ();
-            Emit ("  %%t%u = load i64, ptr %%t%u\n", cur, delay_budget_slot);
-            uint32_t lt = Emit_Temp ();
-            Emit ("  %%t%u = icmp ult i64 %%t%u, %%t%u\n", lt, us_int, cur);
-            uint32_t take = Emit_Temp ();
-            Emit ("  %%t%u = and i1 %%t%u, %%t%u\n", take, open_i1, lt);
-            uint32_t nb = Emit_Temp ();
-            Emit ("  %%t%u = select i1 %%t%u, i64 %%t%u, i64 %%t%u\n",
-               nb, take, us_int, cur);
+            uint32_t cur = Emit_Result_Instruction ("load i64, ptr %%t%u\n", delay_budget_slot);
+            LLVM_I1 lt = Emit_Icmp ("ult", LLVM_Rep_Int (64, true), us_int, cur);
+            LLVM_I1 take = Emit_And_I1 ((LLVM_I1){ open_i1 }, lt);
+            uint32_t nb = Emit_Result_Instruction ("select i1 %%t%u, i64 %%t%u, i64 %%t%u\n", take.reg, us_int, cur);
             Emit ("  store i64 %%t%u, ptr %%t%u\n", nb, delay_budget_slot);
           }
         }
@@ -41937,35 +41282,28 @@ void Generate_Statement (Syntax_Node *node) {
             for (uint32_t i = 0; i < node->select_stmt.alternatives.count and
                  i < MAX_SELECT_GUARDS; i++) {
               if (not guard_slots[i]) continue;
-              uint32_t gv = Emit_Temp ();
-              Emit ("  %%t%u = load i8, ptr %%t%u\n", gv, guard_slots[i]);
+              uint32_t gv = Emit_Result_Instruction ("load i8, ptr %%t%u\n", guard_slots[i]);
               if (any_open) {
-                uint32_t acc = Emit_Temp ();
-                Emit ("  %%t%u = or i8 %%t%u, %%t%u\n", acc, any_open, gv);
+                uint32_t acc = Emit_Result_Instruction ("or i8 %%t%u, %%t%u\n", any_open, gv);
                 any_open = acc;
               } else {
                 any_open = gv;
               }
             }
             if (any_open) {
-              uint32_t open_i1 = Emit_Temp ();
-              Emit ("  %%t%u = icmp ne i8 %%t%u, 0\n", open_i1, any_open);
+              LLVM_I1 open_i1 = Emit_Boolean_Truth_Test (any_open);
               uint32_t ok_l = cg->label_id++, pe_l = cg->label_id++;
-              Emit ("  br i1 %%t%u, label %%L%u, label %%L%u\n", open_i1, ok_l, pe_l);
+              Emit ("  br i1 %%t%u, label %%L%u, label %%L%u\n", open_i1.reg, ok_l, pe_l);
               cg->block_terminated = true;
               Emit_Label_Here (pe_l);
-              cg->block_terminated = false;
               Emit_Raise_Program_Error ("all alternatives closed (RM 9.7.1)");
               Emit_Label_Here (ok_l);
-              cg->block_terminated = false;
             }
           }
         }
 
         if (select_retries) {
           retry_label = cg->label_id++;
-          Emit ("  br label %%L%u\n", retry_label);
-          cg->block_terminated = true;
           Emit_Label_Here (retry_label);  // selective wait retry
         }
         bool skipped_delay = false;  // Track if current iteration was a skipped delay
@@ -41976,12 +41314,10 @@ void Generate_Statement (Syntax_Node *node) {
         // terminate alternative, also mark the task as willing to terminate
         // (TCB+58) for the RM 9.7.1 consensus.
         if (cg->in_task_body) {
-          uint32_t wsel = Emit_Temp ();
-          Emit ("  %%t%u = getelementptr i64, ptr %%__self_tcb, i64 6\n", wsel);
+          uint32_t wsel = Emit_Result_Instruction ("getelementptr i64, ptr %%__self_tcb, i64 6\n");
           Emit ("  store i64 -2, ptr %%t%u  ; in selective wait\n", wsel);
           if (has_terminate) {
-            uint32_t att = Emit_Temp ();
-            Emit ("  %%t%u = getelementptr i8, ptr %%__self_tcb, i64 58\n", att);
+            uint32_t att = Emit_Result_Instruction ("getelementptr i8, ptr %%__self_tcb, i64 58\n");
             Emit ("  store i8 1, ptr %%t%u  ; at terminate alternative\n", att);
           }
         }
@@ -41999,10 +41335,8 @@ void Generate_Statement (Syntax_Node *node) {
               {
                 uint32_t guard;
                 if (i < MAX_SELECT_GUARDS and guard_slots[i]) {
-                  uint32_t gv = Emit_Temp ();
-                  Emit ("  %%t%u = load i8, ptr %%t%u\n", gv, guard_slots[i]);
-                  guard = Emit_Temp ();
-                  Emit ("  %%t%u = icmp ne i8 %%t%u, 0\n", guard, gv);
+                  uint32_t gv = Emit_Result_Instruction ("load i8, ptr %%t%u\n", guard_slots[i]);
+                  guard = Emit_Boolean_Truth_Test (gv).reg;
                 } else {
                   Syntax_Node *guard_expr = alt->association.choices.items[0];
                   guard = Generate_Expression (guard_expr).reg;
@@ -42032,10 +41366,8 @@ void Generate_Statement (Syntax_Node *node) {
                 if (alt->accept_stmt.guard) {
                   uint32_t g;
                   if (i < MAX_SELECT_GUARDS and guard_slots[i]) {
-                    uint32_t gv = Emit_Temp ();
-                    Emit ("  %%t%u = load i8, ptr %%t%u\n", gv, guard_slots[i]);
-                    g = Emit_Temp ();
-                    Emit ("  %%t%u = icmp ne i8 %%t%u, 0\n", g, gv);
+                    uint32_t gv = Emit_Result_Instruction ("load i8, ptr %%t%u\n", guard_slots[i]);
+                    g = Emit_Boolean_Truth_Test (gv).reg;
                   } else {
                     g = Generate_Expression (alt->accept_stmt.guard).reg;
                     LLVM_Rep gt = Expression_LLVM_Rep (alt->accept_stmt.guard);
@@ -42046,7 +41378,6 @@ void Generate_Statement (Syntax_Node *node) {
                      g, open_l, next_label);
                   cg->block_terminated = true;
                   Emit_Label_Here (open_l);
-                  cg->block_terminated = false;
                 }
 
                 // Get entry index - combine base index with family index.
@@ -42066,9 +41397,7 @@ void Generate_Statement (Syntax_Node *node) {
 
                 // Check if entry call is pending - widen for RTS ABI
                 uint32_t entry_idx_64 = Emit_Extend_To_I64 (entry_idx, Integer_Arith_Rep ()).reg;
-                uint32_t caller_ptr = Emit_Temp ();
-                Emit ("  %%t%u = call ptr @__ada_accept_try(ptr %%__self_tcb, i64 %%t%u)\n",
-                   caller_ptr, entry_idx_64);
+                uint32_t caller_ptr = Emit_Result_Instruction ("call ptr @__ada_accept_try(ptr %%__self_tcb, i64 %%t%u)\n", entry_idx_64);
                 LLVM_I1 has_caller = Emit_Icmp_Null_Ptr ("ne", caller_ptr);
                 Emit ("  br i1 %%t%u, label %%L%u, label %%L%u\n",
                    has_caller.reg, cg->label_id, next_label);
@@ -42080,9 +41409,7 @@ void Generate_Statement (Syntax_Node *node) {
                 // starts with the target task pointer).
                 uint32_t sel_params_ptr = 0;
                 if (alt->accept_stmt.parameters.count > 0) {
-                  uint32_t pbp = Emit_Temp ();
-                  Emit ("  %%t%u = getelementptr i8, ptr %%t%u, i64 16\n",
-                     pbp, caller_ptr);
+                  uint32_t pbp = Emit_Result_Instruction ("getelementptr i8, ptr %%t%u, i64 16\n", caller_ptr);
                   sel_params_ptr = Emit_Temp ();
                   Emit ("  %%t%u = load ptr, ptr %%t%u  ; rendezvous params\n",
                      sel_params_ptr, pbp);
@@ -42096,11 +41423,8 @@ void Generate_Statement (Syntax_Node *node) {
 
                       if (pname and pname->symbol) {
                         // Load the parameter word from the caller's block.
-                        uint32_t param_ptr = Emit_Temp ();
-                        Emit ("  %%t%u = getelementptr i64, ptr %%t%u, i64 %u\n",
-                           param_ptr, sel_params_ptr, sel_param_idx);
-                        uint32_t param_val = Emit_Temp ();
-                        Emit ("  %%t%u = load i64, ptr %%t%u\n", param_val, param_ptr);
+                        uint32_t param_ptr = Emit_Result_Instruction ("getelementptr i64, ptr %%t%u, i64 %u\n", sel_params_ptr, sel_param_idx);
+                        uint32_t param_val = Emit_Result_Instruction ("load i64, ptr %%t%u\n", param_ptr);
 
                         Type_Info *spt = pname->symbol->type;
                         if (spt and (Type_Is_Record (spt) or
@@ -42116,9 +41440,7 @@ void Generate_Statement (Syntax_Node *node) {
                         } else if (spt and Type_Is_Array_Like (spt) and spt->size > 0) {
                           // Statically sized array: slot holds the data address;
                           // copy it into a local buffer.
-                          uint32_t asrc = Emit_Temp ();
-                          Emit ("  %%t%u = inttoptr " PTR_INT_TYPE " %%t%u to ptr\n",
-                             asrc, param_val);
+                          uint32_t asrc = Emit_Result_Instruction ("inttoptr " PTR_INT_TYPE " %%t%u to ptr\n", param_val);
                           Emit_Local_Ref (pname->symbol);
                           Emit (" = alloca [%u x i8], align 8\n", spt->size);
                           Emit_Memcpy_To_Symbol (pname->symbol, asrc, spt->size, NULL);
@@ -42185,15 +41507,12 @@ void Generate_Statement (Syntax_Node *node) {
                 // termination (master complete, whole sibling subtree
                 // quiescent), 0 when an entry call arrived — re-sweep the
                 // accept alternatives.
-                uint32_t decision = Emit_Temp ();
-                uint32_t go = Emit_Temp ();
                 uint32_t term_l = cg->label_id++;
                 uint32_t keep_l = cg->label_id++;
-                Emit ("  %%t%u = call i8 @__ada_term_wait(ptr %%__self_tcb)\n",
-                   decision);
-                Emit ("  %%t%u = icmp ne i8 %%t%u, 0\n", go, decision);
+                uint32_t decision = Emit_Result_Instruction ("call i8 @__ada_term_wait(ptr %%__self_tcb)\n");
+                LLVM_I1 go = Emit_Boolean_Truth_Test (decision);
                 Emit ("  br i1 %%t%u, label %%L%u, label %%L%u\n",
-                   go, term_l, keep_l);
+                   go.reg, term_l, keep_l);
                 Emit_Label_Here (term_l);
 
                 // RM 9.4: a task selected for termination completes its own
@@ -42203,9 +41522,7 @@ void Generate_Statement (Syntax_Node *node) {
                 // master ladder as a RETURN exit: raise the done flags
                 // (releasing inner terminate alternatives), join dependents,
                 // leave the records.
-                uint32_t cmp = Emit_Temp ();
-                Emit ("  %%t%u = getelementptr i8, ptr %%__self_tcb, i64 24\n",
-                   cmp);
+                uint32_t cmp = Emit_Result_Instruction ("getelementptr i8, ptr %%__self_tcb, i64 24\n");
                 Emit ("  store i8 1, ptr %%t%u  ; completed (terminate)\n",
                    cmp);
                 Emit_Master_Cleanup_For_Return ();
@@ -42213,7 +41530,6 @@ void Generate_Statement (Syntax_Node *node) {
                 Emit ("  ret ptr null\n");
                 cg->block_terminated = true;
                 Emit_Label_Here (keep_l);
-                cg->block_terminated = false;
                 // Pace the re-sweep: the queued call may be for an entry
                 // whose alternative is closed this execution (RM 9.7.1 still
                 // forbids terminating) — without the sleep that corner spins
@@ -42254,25 +41570,20 @@ void Generate_Statement (Syntax_Node *node) {
         // Delay alternative: keep polling until the deadline, then run the
         // delay alternative's statements.
         } else if (has_delay) {
-          uint32_t rem = Emit_Temp ();
-          Emit ("  %%t%u = load i64, ptr %%t%u\n", rem, delay_budget_slot);
-          uint32_t still = Emit_Temp ();
-          Emit ("  %%t%u = icmp sgt i64 %%t%u, 0\n", still, rem);
+          uint32_t rem = Emit_Result_Instruction ("load i64, ptr %%t%u\n", delay_budget_slot);
+          LLVM_I1 still = Emit_Icmp_Const ("sgt", LLVM_Rep_Int (64, false), rem, 0);
           uint32_t wait_l = cg->label_id++;
           uint32_t expire_l = cg->label_id++;
-          Emit ("  br i1 %%t%u, label %%L%u, label %%L%u\n", still, wait_l, expire_l);
+          Emit ("  br i1 %%t%u, label %%L%u, label %%L%u\n", still.reg, wait_l, expire_l);
           cg->block_terminated = true;
           Emit_Label_Here (wait_l);
-          cg->block_terminated = false;
           Emit ("  %%t%u = call i32 @usleep(i32 100)  ; selective wait poll\n",
              Emit_Temp ());
-          uint32_t dec = Emit_Temp ();
-          Emit ("  %%t%u = sub i64 %%t%u, 100\n", dec, rem);
+          uint32_t dec = Emit_Result_Instruction ("sub i64 %%t%u, 100\n", rem);
           Emit ("  store i64 %%t%u, ptr %%t%u\n", dec, delay_budget_slot);
           Emit ("  br label %%L%u\n", retry_label);
           cg->block_terminated = true;
           Emit_Label_Here (expire_l);
-          cg->block_terminated = false;
           Emit ("  br label %%L%u\n", delay_label);
 
         // No else, no delay (and the terminate alternative, when present,
@@ -42289,7 +41600,6 @@ void Generate_Statement (Syntax_Node *node) {
         // the (first) NK_DELAY and the next alternative.
         if (has_delay and first_delay_index >= 0) {
           Emit_Label_Here (delay_label);
-          cg->block_terminated = false;
           for (uint32_t i = (uint32_t)first_delay_index + 1;
                i < node->select_stmt.alternatives.count; i++) {
             Syntax_Node *trail = node->select_stmt.alternatives.items[i];
@@ -42305,12 +41615,10 @@ void Generate_Statement (Syntax_Node *node) {
         Emit_Label_Here (done_label);
         // Leaving the selective wait: no longer accepting or terminating.
         if (cg->in_task_body) {
-          uint32_t wclr = Emit_Temp ();
-          Emit ("  %%t%u = getelementptr i64, ptr %%__self_tcb, i64 6\n", wclr);
+          uint32_t wclr = Emit_Result_Instruction ("getelementptr i64, ptr %%__self_tcb, i64 6\n");
           Emit ("  store i64 -1, ptr %%t%u  ; left selective wait\n", wclr);
           if (has_terminate) {
-            uint32_t atc = Emit_Temp ();
-            Emit ("  %%t%u = getelementptr i8, ptr %%__self_tcb, i64 58\n", atc);
+            uint32_t atc = Emit_Result_Instruction ("getelementptr i8, ptr %%__self_tcb, i64 58\n");
             Emit ("  store i8 0, ptr %%t%u  ; no longer at terminate\n", atc);
           }
         }
@@ -42339,7 +41647,6 @@ void Generate_Statement (Syntax_Node *node) {
           Emit ("  ret ptr null\n");
           cg->block_terminated = true;
           Emit_Label_Here (cont_l);
-          cg->block_terminated = false;
         }
       }
       break;
@@ -42358,7 +41665,7 @@ void Generate_Statement (Syntax_Node *node) {
             cg->block_terminated = true;
           }
           Emit_Label_Here (label_sym->llvm_label_id);  // user label
-          cg->block_terminated = false;  // New block started
+            // New block started
         }
 
         // Generate the labeled statement
@@ -42559,38 +41866,29 @@ void Emit_Component_Task_Operation (Type_Info *ty, uint32_t base,
   if (Type_Is_Task (ty)) {
     switch (op) {
       case COMPONENT_TASK_CREATE: {
-        uint32_t tcb = Emit_Temp ();
-        Emit ("  %%t%u = call ptr @__ada_task_create(ptr @", tcb);
+        uint32_t tcb = Emit_Result_Instruction ("call ptr @__ada_task_create(ptr @");
         Emit_Task_Function_Name (ty->defining_symbol, ty->name);
         Emit (", %s, %s)\n", Task_Parent_Frame_Argument (), master_arg);
         Emit ("  store ptr %%t%u, ptr %%t%u  ; component task tcb\n", tcb, base);
         break;
       }
       case COMPONENT_TASK_ACTIVATE: {
-        uint32_t tcb = Emit_Temp ();
-        Emit ("  %%t%u = load ptr, ptr %%t%u\n", tcb, base);
+        uint32_t tcb = Emit_Result_Instruction ("load ptr, ptr %%t%u\n", base);
         Emit ("  call void @__ada_task_activate(ptr %%t%u)\n", tcb);
         break;
       }
       case COMPONENT_TASK_WAIT: {
-        uint32_t tcb = Emit_Temp ();
-        Emit ("  %%t%u = load ptr, ptr %%t%u\n", tcb, base);
-        uint32_t st = Emit_Temp ();
-        Emit ("  %%t%u = call i8 @__ada_activation_wait(ptr %%t%u)\n", st, tcb);
-        uint32_t failed = Emit_Temp ();
-        Emit ("  %%t%u = icmp eq i8 %%t%u, 2\n", failed, st);
-        uint32_t fz = Emit_Temp ();
-        Emit ("  %%t%u = zext i1 %%t%u to i8\n", fz, failed);
-        uint32_t old = Emit_Temp ();
-        Emit ("  %%t%u = load i8, ptr %%t%u\n", old, failed_flag);
-        uint32_t acc = Emit_Temp ();
-        Emit ("  %%t%u = or i8 %%t%u, %%t%u\n", acc, old, fz);
+        uint32_t tcb = Emit_Result_Instruction ("load ptr, ptr %%t%u\n", base);
+        uint32_t st = Emit_Result_Instruction ("call i8 @__ada_activation_wait(ptr %%t%u)\n", tcb);
+        LLVM_I1 failed = Emit_Icmp_Const ("eq", LLVM_Rep_Int (8, false), st, 2);
+        uint32_t fz = Emit_Bool_Value (failed).reg;
+        uint32_t old = Emit_Result_Instruction ("load i8, ptr %%t%u\n", failed_flag);
+        uint32_t acc = Emit_Result_Instruction ("or i8 %%t%u, %%t%u\n", old, fz);
         Emit ("  store i8 %%t%u, ptr %%t%u\n", acc, failed_flag);
         break;
       }
       case COMPONENT_TASK_JOIN: {
-        uint32_t tcb = Emit_Temp ();
-        Emit ("  %%t%u = load ptr, ptr %%t%u\n", tcb, base);
+        uint32_t tcb = Emit_Result_Instruction ("load ptr, ptr %%t%u\n", base);
         Emit ("  call void @__ada_task_join(ptr %%t%u)\n", tcb);
         break;
       }
@@ -42602,9 +41900,7 @@ void Emit_Component_Task_Operation (Type_Info *ty, uint32_t base,
     for (uint32_t i = 0; i < ty->record.component_count; i++) {
       Component_Info *comp = &ty->record.components[i];
       if (not Type_Has_Task_Component (comp->component_type)) continue;
-      uint32_t cp = Emit_Temp ();
-      Emit ("  %%t%u = getelementptr i8, ptr %%t%u, i64 %u  ; .%.*s\n",
-         cp, base, comp->byte_offset,
+      uint32_t cp = Emit_Result_Instruction ("getelementptr i8, ptr %%t%u, i64 %u  ; .%.*s\n", base, comp->byte_offset,
          (int)comp->name.length, comp->name.data);
       Emit_Component_Task_Operation (comp->component_type, cp, op, failed_flag,
                                      master_arg);
@@ -42618,9 +41914,7 @@ void Emit_Component_Task_Operation (Type_Info *ty, uint32_t base,
     uint32_t esz = ty->array.element_type->size > 0 ? ty->array.element_type->size : 8;
     // Statically bounded arrays only; unrolled like Emit_Init_Record_Defaults.
     for (int128_t e = 0; e < count and e < 1024; e++) {
-      uint32_t ep = Emit_Temp ();
-      Emit ("  %%t%u = getelementptr i8, ptr %%t%u, i64 %lld  ; [%lld]\n",
-         ep, base, (long long)(e * esz), (long long)e);
+      uint32_t ep = Emit_Result_Instruction ("getelementptr i8, ptr %%t%u, i64 %lld  ; [%lld]\n", base, (long long)(e * esz), (long long)e);
       Emit_Component_Task_Operation (ty->array.element_type, ep, op, failed_flag,
                                      master_arg);
     }
@@ -42644,23 +41938,18 @@ void Emit_Pending_Entry_Operation (Symbol *obj,
 // TASKING_ERROR in the activator when any activation failed (RM 9.3(7)),
 // after ALL activations have been waited for.
 void Emit_Activation_Failure_Check (uint32_t failed_flag) {
-  uint32_t flag = Emit_Temp ();
-  Emit ("  %%t%u = load i8, ptr %%t%u\n", flag, failed_flag);
-  uint32_t any = Emit_Temp ();
-  Emit ("  %%t%u = icmp ne i8 %%t%u, 0\n", any, flag);
+  uint32_t flag = Emit_Result_Instruction ("load i8, ptr %%t%u\n", failed_flag);
+  LLVM_I1 any = Emit_Boolean_Truth_Test (flag);
   uint32_t ok_label = Emit_Label ();
   uint32_t raise_label = Emit_Label ();
-  Emit ("  br i1 %%t%u, label %%L%u, label %%L%u\n", any, raise_label, ok_label);
+  Emit ("  br i1 %%t%u, label %%L%u, label %%L%u\n", any.reg, raise_label, ok_label);
   cg->block_terminated = true;
   Emit_Label_Here (raise_label);
-  cg->block_terminated = false;
-  uint32_t exc = Emit_Temp ();
-  Emit ("  %%t%u = ptrtoint ptr @__exc.tasking_error to i64\n", exc);
+  uint32_t exc = Emit_Result_Instruction ("ptrtoint ptr @__exc.tasking_error to i64\n");
   Emit ("  call void @__ada_raise(i64 %%t%u)  ; activation failed (RM 9.3)\n", exc);
   Emit ("  unreachable\n");
   cg->block_terminated = true;
   Emit_Label_Here (ok_label);
-  cg->block_terminated = false;
 }
 
 // Activate the pending-activation entries in [from, to): spawn all threads
@@ -42685,8 +41974,7 @@ void Emit_Activate_Pending_Tasks_Range (uint32_t from, uint32_t to) {
     Emit_Pending_Entry_Operation (cg->pending_activations[i],
                                   COMPONENT_TASK_ACTIVATE, 0);
 
-  uint32_t failed_flag = Emit_Temp ();
-  Emit ("  %%t%u = alloca i8\n", failed_flag);
+  uint32_t failed_flag = Emit_Result_Instruction ("alloca i8\n");
   Emit ("  store i8 0, ptr %%t%u\n", failed_flag);
   for (uint32_t i = from; i < to; i++)
     Emit_Pending_Entry_Operation (cg->pending_activations[i],
@@ -42755,15 +42043,9 @@ uint32_t Emit_Task_Control_Block_For_Prefix (Syntax_Node *prefix) {
   Emit_Label_Here (nil_l);
   Emit ("  br label %%L%u\n", done_l);
   Emit_Label_Here (load_l);
-  uint32_t tcb = Emit_Temp ();
-  Emit ("  %%t%u = load ptr, ptr %%t%u  ; TCB from designated cell\n",
-     tcb, value);
-  Emit ("  br label %%L%u\n", done_l);
-  cg->block_terminated = true;
+  uint32_t tcb = Emit_Result_Instruction ("load ptr, ptr %%t%u  ; TCB from designated cell\n", value);
   Emit_Label_Here (done_l);
-  uint32_t merged = Emit_Temp ();
-  Emit ("  %%t%u = phi ptr [ null, %%L%u ], [ %%t%u, %%L%u ]\n",
-     merged, nil_l, tcb, load_l);
+  uint32_t merged = Emit_Result_Instruction ("phi ptr [ null, %%L%u ], [ %%t%u, %%L%u ]\n", nil_l, tcb, load_l);
   return merged;
 }
 
@@ -42845,8 +42127,7 @@ void Emit_Master_Exit (Master_Scope scope) {
 // Allocate a master's done flag on the heap (stable for the lifetime of its
 // dependents, which outlive the frame), initialised to 0. Returns its temp.
 uint32_t Emit_Master_Flag_Enter (void) {
-  uint32_t f = Emit_Temp ();
-  Emit ("  %%t%u = call ptr @malloc (i64 1)  ; master done-flag\n", f);
+  uint32_t f = Emit_Result_Instruction ("call ptr @malloc (i64 1)  ; master done-flag\n");
   Emit ("  store i8 0, ptr %%t%u\n", f);
   return f;
 }
@@ -43093,9 +42374,7 @@ void Emit_Nested_Disc_Checks (Type_Info *parent_type,
           // A non-discriminant bound was evaluated once at type elaboration
           // (RM 3.7.1). Load that frozen value rather than re-evaluating the
           // expression, which would repeat its side effects.
-          uint32_t v = Emit_Temp ();
-          Emit ("  %%t%u = load " RT_DESC_TYPE ", ptr @__rt_cbnd_%u  ; frozen component bound\n",
-             v, bound->preeval_global);
+          uint32_t v = Emit_Result_Instruction ("load " RT_DESC_TYPE ", ptr @__rt_cbnd_%u  ; frozen component bound\n", bound->preeval_global);
           bval = Emit_Convert (v, LLVM_Rep_Int (64, false), bt).reg;
         } else if (bound->kind == BOUND_EXPR and bound->expr) {
           Syntax_Node *bexpr = bound->expr;
@@ -43216,32 +42495,20 @@ void Emit_Bind_Bounded_Array_Storage (Symbol *sym, uint32_t *dim_lo,
   for (uint32_t d = 0; d < ndims; d++) {
     uint32_t lo = Emit_Extend_To_I64 (dim_lo[d], iat).reg;
     uint32_t hi = Emit_Extend_To_I64 (dim_hi[d], iat).reg;
-    uint32_t diff = Emit_Temp ();
-    Emit ("  %%t%u = sub i64 %%t%u, %%t%u\n", diff, hi, lo);
-    uint32_t raw = Emit_Temp ();
-    Emit ("  %%t%u = add i64 %%t%u, 1\n", raw, diff);
     // A null dimension (high < low) contributes length 0, not a wrapped count.
-    uint32_t neg = Emit_Temp ();
-    Emit ("  %%t%u = icmp slt i64 %%t%u, 0\n", neg, raw);
-    uint32_t len = Emit_Temp ();
-    Emit ("  %%t%u = select i1 %%t%u, i64 0, i64 %%t%u\n", len, neg, raw);
+    uint32_t len = Emit_Length_From_Bounds (lo, hi, LLVM_Rep_Int (64, false)).reg;
     if (d == 0) total = len;
     else {
-      uint32_t p = Emit_Temp ();
-      Emit ("  %%t%u = mul i64 %%t%u, %%t%u\n", p, total, len);
+      uint32_t p = Emit_Result_Instruction ("mul i64 %%t%u, %%t%u\n", total, len);
       total = p;
     }
   }
-  uint32_t bsz64 = Emit_Temp ();
-  Emit ("  %%t%u = mul i64 %%t%u, %u\n", bsz64, total, element_size);
-  uint32_t too_large = Emit_Temp ();
-  Emit ("  %%t%u = icmp ugt i64 %%t%u, 2147483647\n", too_large, bsz64);
-  Emit_Check_With_Raise_Named (too_large, true, "storage_error",
+  uint32_t bsz64 = Emit_Result_Instruction ("mul i64 %%t%u, %u\n", total, element_size);
+  LLVM_I1 too_large = Emit_Icmp_Const ("ugt", LLVM_Rep_Int (64, true), bsz64, 2147483647);
+  Emit_Check_With_Raise_Named (too_large.reg, true, "storage_error",
      "array object size exceeds INTEGER range (RM 11.1)");
-  uint32_t bsz = Emit_Temp ();
-  Emit ("  %%t%u = trunc i64 %%t%u to %s\n", bsz, bsz64, LLVM_Rep_To_String (iat));
-  uint32_t dp = Emit_Temp ();
-  Emit ("  %%t%u = alloca i8, %s %%t%u  ; %s\n", dp, LLVM_Rep_To_String (iat), bsz, tag);
+  uint32_t bsz = Emit_Result_Instruction ("trunc i64 %%t%u to %s\n", bsz64, LLVM_Rep_To_String (iat));
+  uint32_t dp = Emit_Result_Instruction ("alloca i8, %s %%t%u  ; %s\n", LLVM_Rep_To_String (iat), bsz, tag);
   // RM 3.2.1(20): if any leaf is an access type it must default to NULL.
   // The alloca gives us uninitialized stack — memset so the NULLs (and any
   // records-of-access transitively) are observable at declaration.
@@ -43372,11 +42639,8 @@ void Emit_Array_Index_Constraint_Check (Type_Info *array_type) {
     LLVM_I1 nonnull   = Emit_Icmp ("sle", work, lo, hi);
     LLVM_I1 below     = Emit_Icmp ("slt", work, lo, ilo);
     LLVM_I1 above     = Emit_Icmp ("sgt", work, hi, ihi);
-    uint32_t out = Emit_Temp ();
-    Emit ("  %%t%u = or i1 %%t%u, %%t%u\n", out, below.reg, above.reg);
-    uint32_t bad = Emit_Temp ();
-    Emit ("  %%t%u = and i1 %%t%u, %%t%u  ; RM 3.6.1 index range vs index subtype\n",
-       bad, nonnull.reg, out);
+    uint32_t out = Emit_Result_Instruction ("or i1 %%t%u, %%t%u\n", below.reg, above.reg);
+    uint32_t bad = Emit_Result_Instruction ("and i1 %%t%u, %%t%u  ; RM 3.6.1 index range vs index subtype\n", nonnull.reg, out);
     Emit_Check_With_Raise (bad, true, "index range not compatible with index subtype (RM 3.6.1)");
   }
 }
@@ -43560,20 +42824,11 @@ uint32_t Emit_Runtime_Disc_Component_Size (Type_Info *comp, const uint32_t *disc
         val[b] = disc_val[di_found];
       }
     }
-    uint32_t diff = Emit_Temp ();
-    Emit ("  %%t%u = sub %s %%t%u, %%t%u\n", diff, s, val[1], val[0]);
-    uint32_t len = Emit_Temp ();
-    Emit ("  %%t%u = add %s %%t%u, 1\n", len, s, diff);
-    LLVM_I1 neg = Emit_Icmp_Const ("slt", szt, len, 0);
-    uint32_t clen = Emit_Temp ();
-    Emit ("  %%t%u = select i1 %%t%u, %s 0, %s %%t%u\n", clen, neg.reg, s, s, len);
-    uint32_t nt = Emit_Temp ();
-    Emit ("  %%t%u = mul %s %%t%u, %%t%u\n", nt, s, total, clen);
+    uint32_t clen = Emit_Length_From_Bounds (val[0], val[1], szt).reg;
+    uint32_t nt = Emit_Result_Instruction ("mul %s %%t%u, %%t%u\n", s, total, clen);
     total = nt;
   }
-  uint32_t bytes = Emit_Temp ();
-  Emit ("  %%t%u = mul %s %%t%u, %u  ; * element size\n",
-     bytes, s, total, comp->array.element_type->size);
+  uint32_t bytes = Emit_Result_Instruction ("mul %s %%t%u, %u  ; * element size\n", s, total, comp->array.element_type->size);
   return bytes;
 }
 
@@ -43632,9 +42887,7 @@ uint32_t Emit_Component_Footprint (Type_Info *rec, uint32_t ci, const uint32_t *
     Type_Info cprobe = *ct; cprobe.array.element_type = &elem_unit;
     uint32_t count = Emit_Runtime_Disc_Component_Size (
       &cprobe, disc_val, rec->record.components, dc, szt);
-    uint32_t bytes = Emit_Temp ();
-    Emit ("  %%t%u = mul %s %%t%u, %%t%u  ; array of dynamic records\n",
-       bytes, LLVM_Rep_To_String (szt), count, esz);
+    uint32_t bytes = Emit_Result_Instruction ("mul %s %%t%u, %%t%u  ; array of dynamic records\n", LLVM_Rep_To_String (szt), count, esz);
     return bytes;
   }
 
@@ -43657,8 +42910,7 @@ uint32_t Emit_Record_Offset_Upto (Type_Info *rec, const uint32_t *disc_val,
   uint32_t off = Emit_Static_Int (0, szt).reg;
   for (uint32_t ci = 0; ci < upto; ci++) {
     uint32_t fp = Emit_Component_Footprint (rec, ci, disc_val, dc, szt);
-    uint32_t no = Emit_Temp ();
-    Emit ("  %%t%u = add %s %%t%u, %%t%u\n", no, LLVM_Rep_To_String (szt), off, fp);
+    uint32_t no = Emit_Result_Instruction ("add %s %%t%u, %%t%u\n", LLVM_Rep_To_String (szt), off, fp);
     off = no;
   }
   return off;
@@ -43673,11 +42925,8 @@ void Emit_Load_Instance_Discs (Type_Info *rec, uint32_t base, uint32_t *disc_val
     Component_Info *d = &rec->record.components[di];
     LLVM_Rep dt = d->component_type ? Type_To_Rep (d->component_type)
                                     : Integer_Arith_Rep ();
-    uint32_t p = Emit_Temp ();
-    Emit ("  %%t%u = getelementptr i8, ptr %%t%u, i64 %u\n", p, base, d->byte_offset);
-    uint32_t v = Emit_Temp ();
-    Emit ("  %%t%u = load %s, ptr %%t%u  ; instance discriminant\n",
-       v, LLVM_Rep_To_String (dt), p);
+    uint32_t p = Emit_Result_Instruction ("getelementptr i8, ptr %%t%u, i64 %u\n", base, d->byte_offset);
+    uint32_t v = Emit_Result_Instruction ("load %s, ptr %%t%u  ; instance discriminant\n", LLVM_Rep_To_String (dt), p);
     disc_val[di] = Emit_Convert (v, dt, szt).reg;
   }
 }
@@ -43732,8 +42981,7 @@ void Emit_Constrained_Disc_Record_Size_Descriptor (Type_Info *rec) {
   for (uint32_t ci = 0; ci < n; ci++) {
     Emit ("  store " RT_DESC_TYPE " %%t%u, ptr @__rt_rec_%u_off%u\n", offset, rid, ci);
     uint32_t fp = Emit_Component_Footprint (rec, ci, disc_val, dc, szt);
-    uint32_t no = Emit_Temp ();
-    Emit ("  %%t%u = add i64 %%t%u, %%t%u\n", no, offset, fp);
+    uint32_t no = Emit_Result_Instruction ("add i64 %%t%u, %%t%u\n", offset, fp);
     offset = no;
   }
   Emit ("  store " RT_DESC_TYPE " %%t%u, ptr @__rt_rec_%u_size\n", offset, rid);
@@ -43935,8 +43183,7 @@ void Generate_Object_Declaration (Syntax_Node *node) {
         if (not node->object_decl.init) {
           Type_Info *ty = sym->type;
           if (ty and Type_Is_Record (ty) and ty->record.has_disc_constraints) {
-            uint32_t rbase = Emit_Temp ();
-            Emit ("  %%t%u = getelementptr i8, ptr ", rbase);
+            uint32_t rbase = Emit_Result_Instruction ("getelementptr i8, ptr ");
             Emit_Symbol_Ref (sym);
             Emit (", i64 0\n");
             Emit_Store_Disc_Values (ty, rbase, true);
@@ -43947,8 +43194,7 @@ void Generate_Object_Declaration (Syntax_Node *node) {
           // FUN's body is not yet elaborated that call raises PROGRAM_ERROR
           // (RM 3.9, c39006a); the instance path had skipped defaults entirely.
           if (ty and Type_Is_Record (ty) and Type_Has_Component_Defaults (ty)) {
-            uint32_t dbase = Emit_Temp ();
-            Emit ("  %%t%u = getelementptr i8, ptr ", dbase);
+            uint32_t dbase = Emit_Result_Instruction ("getelementptr i8, ptr ");
             Emit_Symbol_Ref (sym);
             Emit (", i64 0\n");
             Emit_Init_Record_Defaults (ty, dbase);
@@ -43960,8 +43206,7 @@ void Generate_Object_Declaration (Syntax_Node *node) {
           if (ty and (Type_Is_Record (ty) or
                       (Type_Is_Constrained_Array (ty) and
                        not Type_Has_Dynamic_Bounds (ty)))) {
-            uint32_t destination = Emit_Temp ();
-            Emit ("  %%t%u = getelementptr i8, ptr ", destination);
+            uint32_t destination = Emit_Result_Instruction ("getelementptr i8, ptr ");
             Emit_Symbol_Ref (sym);
             Emit (", i64 0\n");
             if (Type_Is_Constrained_Array (ty)) {
@@ -43970,17 +43215,15 @@ void Generate_Object_Declaration (Syntax_Node *node) {
                 Emit_Fat_To_Array_Memcpy (Fat_Ptr_As_Value (source.reg).reg,
                                           destination, ty);
               } else {
-                uint32_t size_temp = Emit_Temp ();
-                Emit ("  %%t%u = add i64 0, %u\n", size_temp,
-                      ty->size ? ty->size : 1);
+                uint32_t size_temp =
+                  Emit_Static_Int (ty->size ? ty->size : 1, LLVM_Rep_Int (64, false)).reg;
                 Emit_Memcpy (destination, source.reg, size_temp);
               }
             } else {
               uint32_t source_addr =
                 Generate_Composite_Address (node->object_decl.init);
-              uint32_t size_temp = Emit_Temp ();
-              Emit ("  %%t%u = add i64 0, %u\n", size_temp,
-                    ty->size ? ty->size : 1);
+              uint32_t size_temp =
+                Emit_Static_Int (ty->size ? ty->size : 1, LLVM_Rep_Int (64, false)).reg;
               Emit_Memcpy (destination, source_addr, size_temp);
             }
           } else {
@@ -44284,17 +43527,13 @@ void Generate_Object_Declaration (Syntax_Node *node) {
       // the storage, publish the pointer in the frame slot for uplevel access,
       // and let the local name denote the storage directly.
       if (ty and Type_Is_Record (ty) and ty->rt_global_id > 0) {
-        uint32_t rtsz = Emit_Temp ();
-        Emit ("  %%t%u = load " RT_DESC_TYPE ", ptr @__rt_rec_%u_size\n",
-           rtsz, ty->rt_global_id);
+        uint32_t rtsz = Emit_Result_Instruction ("load " RT_DESC_TYPE ", ptr @__rt_rec_%u_size\n", ty->rt_global_id);
         Emit_Local_Ref (sym);
         Emit (" = alloca i8, i64 %%t%u  ; dynamic record (frame-indirect)\n", rtsz);
         Emit ("  call void @llvm.memset.p0.i64(ptr %%");
         Emit_Symbol_Name (sym);
         Emit (", i8 0, i64 %%t%u, i1 false)\n", rtsz);
-        uint32_t fslot = Emit_Temp ();
-        Emit ("  %%t%u = getelementptr i8, ptr %%__frame_base, i64 %lld\n",
-           fslot, (long long)offset);
+        uint32_t fslot = Emit_Result_Instruction ("getelementptr i8, ptr %%__frame_base, i64 %lld\n", (long long)offset);
         Emit ("  store ptr %%");
         Emit_Symbol_Name (sym);
         Emit (", ptr %%t%u  ; publish dynamic record to frame\n", fslot);
@@ -44325,16 +43564,13 @@ void Generate_Object_Declaration (Syntax_Node *node) {
         Type_Info *fe = ty ? ty->array.element_type : NULL;
         if (not node->object_decl.init and is_constrained_array and array_count > 0 and
             fe and Type_Is_Record (fe) and Type_Has_Component_Defaults (fe) and elem_size > 0) {
-          uint32_t fbase = Emit_Temp ();
-          Emit ("  %%t%u = getelementptr i8, ptr %%", fbase);
+          uint32_t fbase = Emit_Result_Instruction ("getelementptr i8, ptr %%");
           Emit_Symbol_Name (sym);
           Emit (", i64 0\n");
           Emit ("  call void @llvm.memset.p0.i64(ptr %%t%u, i8 0, i64 %llu, i1 false)\n",
              fbase, (unsigned long long)(array_count * elem_size));
           for (int128_t ei = 0; ei < array_count and ei < 1024; ei++) {
-            uint32_t ep = Emit_Temp ();
-            Emit ("  %%t%u = getelementptr i8, ptr %%t%u, i64 %lld  ; elem[%lld] defaults\n",
-               ep, fbase, (long long)(ei * elem_size), (long long)ei);
+            uint32_t ep = Emit_Result_Instruction ("getelementptr i8, ptr %%t%u, i64 %lld  ; elem[%lld] defaults\n", fbase, (long long)(ei * elem_size), (long long)ei);
             Emit_Init_Record_Defaults (fe, ep);
           }
         }
@@ -44391,14 +43627,11 @@ void Generate_Object_Declaration (Syntax_Node *node) {
           Emit (", i8 0, i64 %llu, i1 false)  ; RM 3.2.1(20)/3.7 defaults\n",
              (unsigned long long)null_bytes);
           if (wants_defaults) {
-            uint32_t arr_base = Emit_Temp ();
-            Emit ("  %%t%u = getelementptr i8, ptr %%", arr_base);
+            uint32_t arr_base = Emit_Result_Instruction ("getelementptr i8, ptr %%");
             Emit_Symbol_Name (sym);
             Emit (", i64 0\n");
             for (int128_t ei = 0; ei < array_count and ei < 1024; ei++) {
-              uint32_t ep = Emit_Temp ();
-              Emit ("  %%t%u = getelementptr i8, ptr %%t%u, i64 %lld  ; elem[%lld] defaults\n",
-                 ep, arr_base, (long long)(ei * elem_size), (long long)ei);
+              uint32_t ep = Emit_Result_Instruction ("getelementptr i8, ptr %%t%u, i64 %lld  ; elem[%lld] defaults\n", arr_base, (long long)(ei * elem_size), (long long)ei);
               Emit_Init_Record_Defaults (elem_ty, ep);
             }
           }
@@ -44407,9 +43640,7 @@ void Generate_Object_Declaration (Syntax_Node *node) {
 
     // Record with dynamic-sized components: load runtime size
     } else if (is_record and ty and ty->rt_global_id > 0) {
-      uint32_t rtsz = Emit_Temp ();
-      Emit ("  %%t%u = load " RT_DESC_TYPE ", ptr @__rt_rec_%u_size\n",
-         rtsz, ty->rt_global_id);
+      uint32_t rtsz = Emit_Result_Instruction ("load " RT_DESC_TYPE ", ptr @__rt_rec_%u_size\n", ty->rt_global_id);
       Emit_Local_Ref (sym);
       Emit (" = alloca i8, i64 %%t%u  ; record rt alloca\n", rtsz);
 
@@ -44478,15 +43709,12 @@ void Generate_Object_Declaration (Syntax_Node *node) {
           if (all_ok) {
             uint32_t total_len = 0;
             for (uint32_t d = 0; d < ndims; d++) {
-              uint32_t diff_d = Emit_Temp ();
-              Emit ("  %%t%u = sub %s %%t%u, %%t%u\n", diff_d, LLVM_Rep_To_String (bt), dim_hi[d], dim_lo[d]);
-              uint32_t len_d = Emit_Temp ();
-              Emit ("  %%t%u = add %s %%t%u, 1\n", len_d, LLVM_Rep_To_String (bt), diff_d);
+              uint32_t diff_d = Emit_Result_Instruction ("sub %s %%t%u, %%t%u\n", LLVM_Rep_To_String (bt), dim_hi[d], dim_lo[d]);
+              uint32_t len_d = Emit_Result_Instruction ("add %s %%t%u, 1\n", LLVM_Rep_To_String (bt), diff_d);
               if (d == 0) {
                 total_len = len_d;
               } else {
-                uint32_t prod = Emit_Temp ();
-                Emit ("  %%t%u = mul %s %%t%u, %%t%u\n", prod, LLVM_Rep_To_String (bt), total_len, len_d);
+                uint32_t prod = Emit_Result_Instruction ("mul %s %%t%u, %%t%u\n", LLVM_Rep_To_String (bt), total_len, len_d);
                 total_len = prod;
               }
             }
@@ -44494,15 +43722,11 @@ void Generate_Object_Declaration (Syntax_Node *node) {
             // Multiply by element size
             uint32_t elem_sz = ty->array.element_type ? ty->array.element_type->size : 4;
             if (elem_sz == 0) elem_sz = 4;
-            uint32_t byte_len = Emit_Temp ();
-            Emit ("  %%t%u = mul %s %%t%u, %u  ; total bytes\n",
-               byte_len, LLVM_Rep_To_String (bt), total_len, elem_sz);
+            uint32_t byte_len = Emit_Result_Instruction ("mul %s %%t%u, %u  ; total bytes\n", LLVM_Rep_To_String (bt), total_len, elem_sz);
             uint32_t byte_len64 = Emit_Extend_To_I64 (byte_len, bt).reg;
 
             // Allocate data storage
-            uint32_t data_alloc = Emit_Temp ();
-            Emit ("  %%t%u = alloca i8, i64 %%t%u  ; constrained uncon array data\n",
-               data_alloc, byte_len64);
+            uint32_t data_alloc = Emit_Result_Instruction ("alloca i8, i64 %%t%u  ; constrained uncon array data\n", byte_len64);
 
             // Build fat pointer with multi-dim bounds
             uint32_t fat;
@@ -44561,8 +43785,7 @@ void Generate_Object_Declaration (Syntax_Node *node) {
         // __ada_task_start does for single package-level tasks.
         Emit_Component_Task_Operation (ty, base, COMPONENT_TASK_ACTIVATE, 0,
                                        "ptr null");
-        uint32_t failed_flag = Emit_Temp ();
-        Emit ("  %%t%u = alloca i8\n", failed_flag);
+        uint32_t failed_flag = Emit_Result_Instruction ("alloca i8\n");
         Emit ("  store i8 0, ptr %%t%u\n", failed_flag);
         Emit_Component_Task_Operation (ty, base, COMPONENT_TASK_WAIT,
                                        failed_flag, "ptr null");
@@ -44741,9 +43964,8 @@ obj_decl_init:
             uint32_t len_64   = Emit_Extend_To_I64 (len, init_bt).reg;
 
             // Allocate local data storage sized by source bounds
-            uint32_t local_data = Emit_Temp ();
-            Emit ("  %%t%u = alloca i8, i64 %%t%u"
-               "  ; constrained-by-init data\n", local_data, len_64);
+            uint32_t local_data = Emit_Result_Instruction ("alloca i8, i64 %%t%u"
+               "  ; constrained-by-init data\n", len_64);
 
             // Copy source data to local storage
             Emit ("  call void @llvm.memcpy.p0.p0.i64("
@@ -44806,10 +44028,8 @@ obj_decl_init:
               init_ty->array.indices[0].high_bound);
 
             // Allocate local data storage
-            uint32_t local_data = Emit_Temp ();
-            Emit ("  %%t%u = alloca i8, i64 %s"
-               "  ; con-to-uncon data\n",
-               local_data, I128_Decimal (byte_len));
+            uint32_t local_data = Emit_Result_Instruction ("alloca i8, i64 %s"
+               "  ; con-to-uncon data\n", I128_Decimal (byte_len));
 
             // Copy data
             Emit ("  call void @llvm.memcpy.p0.p0.i64("
@@ -45064,9 +44284,8 @@ obj_decl_init:
 
           // Widen byte_len to i64 for alloca and memcpy intrinsics
           uint32_t byte_len_64 = Emit_Extend_To_I64 (byte_len, uai_iat).reg;
-          uint32_t local_data = Emit_Temp ();
-          Emit ("  %%t%u = alloca i8, i64 %%t%u"
-             "  ; uncon array init data\n", local_data, byte_len_64);
+          uint32_t local_data = Emit_Result_Instruction ("alloca i8, i64 %%t%u"
+             "  ; uncon array init data\n", byte_len_64);
           Emit ("  call void @llvm.memcpy.p0.p0.i64("
              "ptr %%t%u, ptr %%t%u, i64 %%t%u, i1 false)\n",
              local_data, src_data, byte_len_64);
@@ -45473,12 +44692,7 @@ obj_decl_init:
           // alloca from the record's own slot. Re-evaluating the
           // constraint expression here would repeat its side effects —
           // each constraint is evaluated exactly once (RM 3.7.2).
-          uint32_t slot_addr = Emit_Temp ();
-          Emit ("  %%t%u = getelementptr i8, ptr %%t%u, i64 %u\n",
-                slot_addr, rbase, dc->byte_offset);
-          uint32_t val = Emit_Temp ();
-          Emit ("  %%t%u = load %s, ptr %%t%u\n",
-                val, LLVM_Rep_To_String (dt), slot_addr);
+          uint32_t val = Emit_Load_Field (rbase, dc->byte_offset, dt);
           Bind_Disc_For_Dependent_Bounds (ty, dc->name, Emit_Alloca_Store (dt, val),
                                           disc_temps, &disc_temp_count, 16);
         }
@@ -45546,9 +44760,7 @@ obj_decl_init:
           Emit_Symbol_Name (sym);
           Emit (", i64 %u\n",
              ty->record.components[0].byte_offset);
-          uint32_t ld = Emit_Temp ();
-          Emit ("  %%t%u = load %s, ptr %%t%u\n",
-             ld, LLVM_Rep_To_String (decl_rt_disc_type), decl_rt_disc_val);
+          uint32_t ld = Emit_Result_Instruction ("load %s, ptr %%t%u\n", LLVM_Rep_To_String (decl_rt_disc_type), decl_rt_disc_val);
           decl_rt_disc_val = ld;
         }
       }
@@ -45635,14 +44847,11 @@ obj_decl_init:
           uint32_t dp;
           if (ty->rt_global_id > 0) {
             uint32_t base = Emit_Symbol_Field_Addr (sym, 0);
-            uint32_t roff = Emit_Temp ();
-            Emit ("  %%t%u = load " RT_DESC_TYPE ", ptr @__rt_rec_%u_off%u\n",
-               roff, ty->rt_global_id, ci);
+            uint32_t roff = Emit_Result_Instruction ("load " RT_DESC_TYPE ", ptr @__rt_rec_%u_off%u\n", ty->rt_global_id, ci);
             dp = Emit_Temp ();
             Emit ("  %%t%u = getelementptr i8, ptr %%t%u, i64 %%t%u\n", dp, base, roff);
             if (dc->byte_offset) {
-              uint32_t dp2 = Emit_Temp ();
-              Emit ("  %%t%u = getelementptr i8, ptr %%t%u, i64 %u\n", dp2, dp, dc->byte_offset);
+              uint32_t dp2 = Emit_Result_Instruction ("getelementptr i8, ptr %%t%u, i64 %u\n", dp, dc->byte_offset);
               dp = dp2;
             }
           } else {
@@ -45843,9 +45052,7 @@ obj_decl_init:
               data_ptr = Emit_Extract_Fat_Data (Emit_Load_Fat (val));
             }
             if (sc_rt) {
-              uint32_t rtsz = Emit_Temp ();
-              Emit ("  %%t%u = load " RT_DESC_TYPE ", ptr @__rt_type_%u_size\n",
-                 rtsz, sc_type->rt_global_id);
+              uint32_t rtsz = Emit_Result_Instruction ("load " RT_DESC_TYPE ", ptr @__rt_type_%u_size\n", sc_type->rt_global_id);
               Emit_Memcpy (sp, data_ptr, rtsz);
             } else {
               Emit ("  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %u, i1 false)"
@@ -46360,11 +45567,9 @@ static uint32_t Emit_Agreement_Bound (Type_Bound *bound,
       if (LLVM_Rep_Is_Float (bv.rep)) {
         uint32_t small_temp = Emit_Temp ();
         Emit_Float_Constant (small_temp, bv.rep, small, "fixed small");
-        uint32_t scaled = Emit_Temp ();
-        Emit ("  %%t%u = fdiv %s %%t%u, %%t%u\n", scaled,
+        uint32_t scaled = Emit_Result_Instruction ("fdiv %s %%t%u, %%t%u\n",
               LLVM_Rep_To_String (bv.rep), bv.reg, small_temp);
-        uint32_t result = Emit_Temp ();
-        Emit ("  %%t%u = fptosi %s %%t%u to %s\n", result,
+        uint32_t result = Emit_Result_Instruction ("fptosi %s %%t%u to %s\n",
               LLVM_Rep_To_String (bv.rep), scaled, LLVM_Rep_To_String (rep));
         return result;
       }
@@ -46405,8 +45610,7 @@ static void Emit_Value_Agreement_Check (Type_Bound *formal_bound,
   const char *compare = LLVM_Rep_Is_Float (rep) ? "fcmp une" : "icmp ne";
   uint32_t formal_value = Emit_Agreement_Bound (formal_bound, domain, rep);
   uint32_t actual_value = Emit_Agreement_Bound (actual_bound, domain, rep);
-  uint32_t differs = Emit_Temp ();
-  Emit ("  %%t%u = %s %s %%t%u, %%t%u\n", differs, compare,
+  uint32_t differs = Emit_Result_Instruction ("%s %s %%t%u, %%t%u\n", compare,
         LLVM_Rep_To_String (rep), formal_value, actual_value);
   Emit_Check_With_Raise (differs, true, what);
 }
@@ -46547,8 +45751,7 @@ void Emit_Instance_Binding_Elaboration (Symbol *inst_sym) {
         Emit_String_Const (" = linkonce_odr global [%u x i8]"
                            " zeroinitializer\n", byte_size);
       }
-      uint32_t destination = Emit_Temp ();
-      Emit ("  %%t%u = getelementptr i8, ptr ", destination);
+      uint32_t destination = Emit_Result_Instruction ("getelementptr i8, ptr ");
       Emit_Global_Ref (binding);
       Emit (", i64 0\n");
       if (Type_Is_Constrained_Array (binding->type)) {
@@ -46591,9 +45794,7 @@ void Emit_Instance_Binding_Elaboration (Symbol *inst_sym) {
               int128_t flen = (fhi >= flo) ? (fhi - flo + 1) : 0;
               int128_t alen = (ahi >= alo) ? (ahi - alo + 1) : 0;
               if (flen != alen) {
-                uint32_t always = Emit_Temp ();
-                Emit ("  %%t%u = icmp eq i32 0, 0  ; static length mismatch\n",
-                      always);
+                uint32_t always = Emit_Result_Instruction ("icmp eq i32 0, 0  ; static length mismatch\n");
                 Emit_Check_With_Raise (always, true,
                   "array length mismatch at instantiation (RM 12.3.1)");
                 break;
@@ -46608,8 +45809,7 @@ void Emit_Instance_Binding_Elaboration (Symbol *inst_sym) {
           Emit_Fat_To_Array_Memcpy (Fat_Ptr_As_Value (source.reg).reg,
                                     destination, binding->type);
         } else {
-          uint32_t size_temp = Emit_Temp ();
-          Emit ("  %%t%u = add i64 0, %u\n", size_temp, byte_size);
+          uint32_t size_temp = Emit_Static_Int (byte_size, LLVM_Rep_Int (64, false)).reg;
           Emit_Memcpy (destination, source.reg, size_temp);
         }
       } else {
@@ -46622,8 +45822,7 @@ void Emit_Instance_Binding_Elaboration (Symbol *inst_sym) {
             binding->type->record.has_disc_constraints)
           Emit_Record_Discriminant_Constraint_Checks (source_addr,
                                                       binding->type);
-        uint32_t size_temp = Emit_Temp ();
-        Emit ("  %%t%u = add i64 0, %u\n", size_temp, byte_size);
+        uint32_t size_temp = Emit_Static_Int (byte_size, LLVM_Rep_Int (64, false)).reg;
         Emit_Memcpy (destination, source_addr, size_temp);
       }
     } else if (binding->is_instance_in_binding) {
@@ -46774,9 +45973,7 @@ void Generate_Subprogram_Body (Syntax_Node *node) {
 
     // Store static chain: parent's frame at offset frame_size
     if (is_nested) {
-      uint32_t slot = Emit_Temp ();
-      Emit ("  %%t%u = getelementptr i8, ptr %%__frame_base, i64 %lld\n",
-         slot, (long long)frame_size);
+      uint32_t slot = Emit_Result_Instruction ("getelementptr i8, ptr %%__frame_base, i64 %lld\n", (long long)frame_size);
       Emit ("  store ptr %%__parent_frame, ptr %%t%u\n", slot);
     }
   }
@@ -46825,9 +46022,7 @@ void Generate_Subprogram_Body (Syntax_Node *node) {
         // same object (a by-ref parameter's value lives at *%p, not in the frame).
         if (has_nested and sym->scope) {
           param_sym->param_by_reference = true;
-          uint32_t slot = Emit_Temp ();
-          Emit ("  %%t%u = getelementptr i8, ptr %%__frame_base, i64 %lld\n",
-             slot, (long long)param_sym->frame_offset);
+          uint32_t slot = Emit_Result_Instruction ("getelementptr i8, ptr %%__frame_base, i64 %lld\n", (long long)param_sym->frame_offset);
           Emit ("  store ptr %%p%u, ptr %%t%u\n", i, slot);
         }
 
@@ -46880,7 +46075,6 @@ void Generate_Subprogram_Body (Syntax_Node *node) {
 
     // Exception handler entry
     Emit_Label_Here (exc.handler_label);
-    cg->block_terminated = false;
     Emit ("  call void @__ada_pop_handler()\n");
 
     // Dispatch to exception handlers
@@ -47032,9 +46226,7 @@ void Emit_Parent_Frame_Aliases (Symbol *enclosing_subprogram) {
           bool dyn_rec = Type_Is_Record (var->type) and
                          Type_Is_Dynamic_Size (var->type);
           if (var->param_by_reference or dyn_rec) {
-            uint32_t slot = Emit_Temp ();
-            Emit ("  %%t%u = getelementptr i8, ptr %s, i64 %lld\n",
-               slot, chain_base, (long long)(var->frame_offset));
+            uint32_t slot = Emit_Result_Instruction ("getelementptr i8, ptr %s, i64 %lld\n", chain_base, (long long)(var->frame_offset));
             Emit ("  %%__frame.");
             Emit_Symbol_Name (var);
             Emit (" = load ptr, ptr %%t%u\n", slot);
@@ -47053,12 +46245,9 @@ void Emit_Parent_Frame_Aliases (Symbol *enclosing_subprogram) {
     if (not next_level) break;
     int64_t link_offset = (level_scope and level_scope->frame_size > 0)
       ? level_scope->frame_size : 8;
-    uint32_t link = Emit_Temp ();
-    Emit ("  %%t%u = getelementptr i8, ptr %s, i64 %lld"
-          "  ; static chain slot\n",
-          link, chain_base, (long long)link_offset);
-    uint32_t chained = Emit_Temp ();
-    Emit ("  %%t%u = load ptr, ptr %%t%u\n", chained, link);
+    uint32_t link = Emit_Result_Instruction ("getelementptr i8, ptr %s, i64 %lld"
+          "  ; static chain slot\n", chain_base, (long long)link_offset);
+    uint32_t chained = Emit_Result_Instruction ("load ptr, ptr %%t%u\n", link);
     snprintf (chain_base, sizeof (chain_base), "%%t%u", chained);
     level_sym = next_level;
   }
@@ -47137,7 +46326,7 @@ void Generate_Task_Body (Syntax_Node *node) {
   // task body's own WHEN handlers do not apply to it.
   Exception_Setup decl_exc = Emit_Exception_Handler_Setup ();
   Emit_Label_Here (decl_exc.normal_label);
-  cg->block_terminated = false;  // Reset after br target label
+    // Reset after br target label
   Master_Scope master = Emit_Master_Enter_If (
     node->task_body.is_task_master, node->task_body.master_scope_id);
   Generate_Declaration_List (&node->task_body.declarations);
@@ -47165,11 +46354,9 @@ void Generate_Task_Body (Syntax_Node *node) {
   uint32_t handled_done = Emit_Label ();
   Exception_Setup silent_exc = Emit_Exception_Handler_Setup ();
   Emit_Label_Here (silent_exc.normal_label);
-  cg->block_terminated = false;
 
   Exception_Setup stmt_exc = Emit_Exception_Handler_Setup ();
   Emit_Label_Here (stmt_exc.normal_label);
-  cg->block_terminated = false;
   // RM 9.10: expose the termination epilogue so a blocking entry call in the
   // body can branch here when an abort was deferred until the rendezvous ended.
   uint32_t saved_task_done = cg->task_body_done_label;
@@ -47181,7 +46368,6 @@ void Generate_Task_Body (Syntax_Node *node) {
   Emit_Branch_If_Needed (handled_done);
 
   Emit_Label_Here (stmt_exc.handler_label);
-  cg->block_terminated = false;
   Emit ("  call void @__ada_pop_handler()\n");   // leave the inner guard
   if (has_task_handlers) {
     uint32_t exc_id = Emit_Current_Exception_Id ();
@@ -47197,7 +46383,6 @@ void Generate_Task_Body (Syntax_Node *node) {
   // Normal completion or a WHEN handler that finished without raising: leave the
   // outer silent guard and complete.
   Emit_Label_Here (handled_done);
-  cg->block_terminated = false;
   Emit ("  call void @__ada_pop_handler()\n");
   Emit ("  br label %%L%u\n", body_done);
   cg->block_terminated = true;
@@ -47205,16 +46390,12 @@ void Generate_Task_Body (Syntax_Node *node) {
   // A handler (or unmatched propagation) raised: swallow it and complete
   // silently — a task exception is never propagated (RM 11.5).
   Emit_Label_Here (silent_exc.handler_label);
-  cg->block_terminated = false;
   Emit ("  call void @__ada_pop_handler()\n");
-  Emit ("  br label %%L%u\n", body_done);
-  cg->block_terminated = true;
 
   // RM 9.4: the task is COMPLETED when its statements end or an exception is
   // handled — callers get TASKING_ERROR from here on; TERMINATED (TCB+57,
   // stored by the wrapper) follows the dependent waits in Emit_Master_Exit.
   Emit_Label_Here (body_done);
-  cg->block_terminated = false;
   Emit ("  %%__cmp_slot = getelementptr i8, ptr %%__self_tcb, i64 24\n");
   Emit ("  store i8 1, ptr %%__cmp_slot  ; completed\n");
   Emit_Master_Exit (master);  // RM 9.7.1 + 9.4
@@ -47224,7 +46405,6 @@ void Generate_Task_Body (Syntax_Node *node) {
   // 2 (still-unset slot) so the activator raises TASKING_ERROR, then the task
   // ends silently.
   Emit_Label_Here (decl_exc.handler_label);
-  cg->block_terminated = false;
   Emit ("  call void @__ada_pop_handler()\n");
   Emit ("  %%__as_slot.h = getelementptr i8, ptr %%__self_tcb, i64 56\n");
   Emit ("  %%__as_cur = load i8, ptr %%__as_slot.h\n");
@@ -47288,26 +46468,18 @@ void Elaborate_Dynamic_Array_Bounds (Type_Info *elab_ty) {
     Emit ("  store " RT_DESC_TYPE " %%t%u, ptr @__rt_type_%u_hi%u\n", hi_r, rtid, d);
 
     // dim_count = max(hi - lo + 1, 0)
-    uint32_t diff = Emit_Temp ();
-    Emit ("  %%t%u = sub i64 %%t%u, %%t%u\n", diff, hi_r, lo_r);
-    uint32_t cnt = Emit_Temp ();
-    Emit ("  %%t%u = add i64 %%t%u, 1\n", cnt, diff);
+    uint32_t diff = Emit_Result_Instruction ("sub i64 %%t%u, %%t%u\n", hi_r, lo_r);
+    uint32_t cnt = Emit_Result_Instruction ("add i64 %%t%u, 1\n", diff);
     LLVM_I1 neg = Emit_Icmp_Const ("slt", LLVM_Rep_Int (64, false), cnt, 0);
-    uint32_t clamped = Emit_Temp ();
-    Emit ("  %%t%u = select i1 %%t%u, i64 0, i64 %%t%u\n",
-       clamped, neg.reg, cnt);
+    uint32_t clamped = Emit_Result_Instruction ("select i1 %%t%u, i64 0, i64 %%t%u\n", neg.reg, cnt);
     if (d == 0) {
       count_reg = clamped;
     } else {
-      uint32_t prod = Emit_Temp ();
-      Emit ("  %%t%u = mul i64 %%t%u, %%t%u\n",
-         prod, count_reg, clamped);
+      uint32_t prod = Emit_Result_Instruction ("mul i64 %%t%u, %%t%u\n", count_reg, clamped);
       count_reg = prod;
     }
   }
-  uint32_t total = Emit_Temp ();
-  Emit ("  %%t%u = mul i64 %%t%u, %u  ; type elab size\n",
-     total, count_reg, esz);
+  uint32_t total = Emit_Result_Instruction ("mul i64 %%t%u, %u  ; type elab size\n", count_reg, esz);
   Emit ("  store " RT_DESC_TYPE " %%t%u, ptr @__rt_type_%u_size\n", total, rtid);
 }
 
@@ -47887,8 +47059,7 @@ void Generate_Declaration (Syntax_Node *node) {
             if (not task_obj) continue;
 
             // Start the task and store handle in the global
-            uint32_t handle_tmp = Emit_Temp ();
-            Emit ("  %%t%u = call ptr @__ada_task_start(ptr @", handle_tmp);
+            uint32_t handle_tmp = Emit_Result_Instruction ("call ptr @__ada_task_start(ptr @");
             Emit_Task_Function_Name (decl->symbol, decl->task_spec.name);
             Emit (", ptr null, ptr null)\n");
             Emit ("  store ptr %%t%u, ptr @", handle_tmp);
@@ -48158,8 +47329,7 @@ void Generate_Declaration (Syntax_Node *node) {
           // Create the task control block now, but DEFER thread start to the
           // master's activation point (RM 9.3). Record the object so the
           // enclosing declarative part activates it at `begin`.
-          uint32_t handle_tmp = Emit_Temp ();
-          Emit ("  %%t%u = call ptr @__ada_task_create(ptr @", handle_tmp);
+          uint32_t handle_tmp = Emit_Result_Instruction ("call ptr @__ada_task_create(ptr @");
           Emit_Task_Function_Name (node->symbol, node->task_spec.name);
 
           // Pass the static link for uplevel access (null at library level)
@@ -48363,8 +47533,7 @@ void Generate_Declaration (Syntax_Node *node) {
                  csz, ct->rt_global_id);
             } else
               csz = Emit_Static_Int (ct ? ct->size : 0, LLVM_Rep_Int (64, false)).reg;
-            uint32_t noff = Emit_Temp ();
-            Emit ("  %%t%u = add i64 %%t%u, %%t%u\n", noff, off_r, csz);
+            uint32_t noff = Emit_Result_Instruction ("add i64 %%t%u, %%t%u\n", off_r, csz);
             off_r = noff;
           }
           Emit ("  store " RT_DESC_TYPE " %%t%u, ptr @__rt_rec_%u_size\n", off_r, rid);
@@ -48771,8 +47940,7 @@ void Generate_Declaration (Syntax_Node *node) {
           Generate_Expression (node->rep_clause.expression);
         uint32_t addr64 = Emit_Convert (clause_value.reg, clause_value.rep,
           LLVM_Rep_Int (64, false)).reg;
-        uint32_t overlay_ptr = Emit_Temp ();
-        Emit ("  %%t%u = inttoptr i64 %%t%u to ptr\n", overlay_ptr, addr64);
+        uint32_t overlay_ptr = Emit_Result_Instruction ("inttoptr i64 %%t%u to ptr\n", addr64);
         Emit ("  store ptr %%t%u, ptr ", overlay_ptr);
         Emit_Symbol_Storage (cell);
         Emit ("\n");
@@ -48880,9 +48048,7 @@ void Generate_Type_Equality_Function (Type_Info *t) {
         uint32_t elem_size = t->array.element_type ?
                    t->array.element_type->size : 4;
         int64_t total_size = count * elem_size;
-        uint32_t result = Emit_Temp ();
-        Emit ("  %%t%u = call " C_INT_TYPE " @memcmp (ptr %%0, ptr %%1, i64 %lld)\n",
-           result, (long long)total_size);
+        uint32_t result = Emit_Result_Instruction ("call " C_INT_TYPE " @memcmp (ptr %%0, ptr %%1, i64 %lld)\n", (long long)total_size);
         LLVM_I1 cmp = Emit_Icmp_Const ("eq", LL_REP_C_INT, result, 0);
         Emit ("  ret i1 %%t%u\n", cmp.reg);
       }
@@ -50044,10 +49210,7 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   Emit ("  %%link = getelementptr { ptr, [200 x i8] }, ptr %%cur, i32 0, i32 0\n");
   Emit ("  %%prev = load ptr, ptr %%link\n");
   Emit ("  %%_s = call i32 @pthread_setspecific(i32 %%k, ptr %%prev)\n");
-  Emit ("  br label %%done\n");
-  Emit ("done:\n");
-  Emit ("  ret void\n");
-  Emit ("}\n\n");
+  Emit_Void_Function_Epilogue (true);
 
   // Lazy pthread-TLS key for the per-thread current-exception id.
   Emit ("define linkonce_odr i32 @__ada_exc_key() {\n");
@@ -50153,9 +49316,7 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   Emit ("  %%r = call i32 @nanosleep(ptr %%ts, ptr %%ts)\n");
   Emit ("  %%interrupted = icmp ne i32 %%r, 0\n");
   Emit ("  br i1 %%interrupted, label %%loop, label %%done\n");
-  Emit ("done:\n");
-  Emit ("  ret void\n");
-  Emit ("}\n\n");
+  Emit_Void_Function_Epilogue (false);
 
   // CALENDAR.CLOCK backend (RT_TIME): current wall-clock time as a DURATION
   // value (seconds since the Unix epoch, matching CALENDAR's EPOCH=2440588).
@@ -50194,10 +49355,7 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   Emit ("release:\n");
   Emit ("  %%cf = getelementptr i8, ptr %%prv, i64 24\n");
   Emit ("  store i8 1, ptr %%cf  ; rv complete: releases the blocked caller\n");
-  Emit ("  br label %%done\n");
-  Emit ("done:\n");
-  Emit ("  ret void\n");
-  Emit ("}\n\n");
+  Emit_Void_Function_Epilogue (true);
 
   // Abort a task (RM 9.10): make it (and its dependents) abnormal. This ONLY
   // sets the abort-pending flag, releases any queued entry call, and wakes
@@ -50229,10 +49387,7 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   Emit ("  br label %%done\n");
   Emit ("unlock:\n");
   Emit ("  %%_u2 = call i32 @pthread_mutex_unlock(ptr @__rv_mutex)\n");
-  Emit ("  br label %%done\n");
-  Emit ("done:\n");
-  Emit ("  ret void\n");
-  Emit ("}\n\n");
+  Emit_Void_Function_Epilogue (true);
 
   // Task terminate: graceful task termination (for terminate alternative).                        
   // Per RM 9.7.1: a terminate alternative is selected when the task's                              
@@ -50398,10 +49553,7 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   Emit ("  %%_l2 = call i32 @pthread_mutex_lock(ptr @__rv_mutex)\n");
   Emit ("  call void @__ada_awake_dec(ptr %%mrec)\n");
   Emit ("  %%_u2 = call i32 @pthread_mutex_unlock(ptr @__rv_mutex)\n");
-  Emit ("  br label %%done\n");
-  Emit ("done:\n");
-  Emit ("  ret void\n");
-  Emit ("}\n\n");
+  Emit_Void_Function_Epilogue (true);
 
   // Wait until a task finishes activating — its declarative part has been
   // elaborated (RM 9.3: the activator continues only after all activated
@@ -50538,9 +49690,7 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   Emit ("step:\n");
   Emit ("  %%np = getelementptr ptr, ptr %%node, i64 1\n");
   Emit ("  br label %%loop\n");
-  Emit ("done:\n");
-  Emit ("  ret void\n");
-  Emit ("}\n\n");
+  Emit_Void_Function_Epilogue (false);
 
   // ── RM 9.7.1 terminate consensus: counter maintenance ──────────────────
   // awake_count (master rec +32) counts dependents that were activated and
@@ -50623,10 +49773,7 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   Emit ("  store i8 1, ptr %%flag  ; master complete\n");
   Emit ("  %%_b = call i32 @pthread_cond_broadcast(ptr @__term_cond)\n");
   Emit ("  %%_u = call i32 @pthread_mutex_unlock(ptr @__rv_mutex)\n");
-  Emit ("  br label %%done\n");
-  Emit ("done:\n");
-  Emit ("  ret void\n");
-  Emit ("}\n\n");
+  Emit_Void_Function_Epilogue (true);
 
   // Decrement a master's awake count; caller holds @__rv_mutex. When the
   // count reaches zero and the owner is parked at a terminate alternative,
@@ -50650,10 +49797,7 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   Emit ("  br i1 %%noown, label %%done, label %%try\n");
   Emit ("try:\n");
   Emit ("  call void @__ada_try_passify(ptr %%owner)\n");
-  Emit ("  br label %%done\n");
-  Emit ("done:\n");
-  Emit ("  ret void\n");
-  Emit ("}\n\n");
+  Emit_Void_Function_Epilogue (true);
 
   // Make a task passive if it qualifies (parked at terminate, queue empty,
   // every owned master quiescent); caller holds @__rv_mutex. Going passive
@@ -50700,10 +49844,7 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   Emit ("  %%mp = getelementptr ptr, ptr %%tcb, i64 4\n");
   Emit ("  %%mrec = load ptr, ptr %%mp\n");
   Emit ("  call void @__ada_awake_dec(ptr %%mrec)\n");
-  Emit ("  br label %%done\n");
-  Emit ("done:\n");
-  Emit ("  ret void\n");
-  Emit ("}\n\n");
+  Emit_Void_Function_Epilogue (true);
 
   // Inverse cascade: a passive task becomes awake again (an entry call
   // arrived); caller holds @__rv_mutex. Re-increment its enclosing master
@@ -50734,10 +49875,7 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   Emit ("  br label %%bc\n");
   Emit ("bc:\n");
   Emit ("  %%_b = call i32 @pthread_cond_broadcast(ptr @__term_cond)\n");
-  Emit ("  br label %%done\n");
-  Emit ("done:\n");
-  Emit ("  ret void\n");
-  Emit ("}\n\n");
+  Emit_Void_Function_Epilogue (true);
 
   // Park at an open terminate alternative until the consensus decides
   // (RM 9.7.1): returns 1 = selected for termination (caller runs its
@@ -50914,9 +50052,7 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   Emit ("  %%prev = load ptr, ptr %%pp\n");
   Emit ("  %%_s = call i32 @pthread_setspecific(i32 %%k, ptr %%prev)\n");
   Emit ("  br label %%check\n");
-  Emit ("done:\n");
-  Emit ("  ret void\n");
-  Emit ("}\n\n");
+  Emit_Void_Function_Epilogue (false);
 
   // Leave a master (RM 9.4): join every dependent task registered while this
   // master was current, then pop the master stack. Dependents registered by
@@ -50975,10 +50111,7 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   Emit ("join:\n");
   Emit ("  %%_j = call i32 @pthread_join(ptr %%tid, ptr null)\n");
   Emit ("  store ptr null, ptr %%tid_slot  ; joined\n");
-  Emit ("  br label %%done\n");
-  Emit ("done:\n");
-  Emit ("  ret void\n");
-  Emit ("}\n\n");
+  Emit_Void_Function_Epilogue (true);
 
   // Create and immediately activate (RM 9.3: tasks created by an allocator are
   // activated as part of evaluating the allocator, and the activator waits for
@@ -51541,9 +50674,7 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   Emit ("  %%9 = load ptr, ptr %%8\n");
   Emit ("  call void @free (ptr %%p)\n");
   Emit ("  br label %%loop\n");
-  Emit ("done:\n");
-  Emit ("  ret void\n");
-  Emit ("}\n\n");
+  Emit_Void_Function_Epilogue (false);
 
   // TEXT_IO inline implementation (Ada 83 RM §14)
   Emit ("; TEXT_IO runtime\n");
