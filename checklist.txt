@@ -381,6 +381,25 @@ c45282a/ce3110a/ce3114b are pre-existing flakes — all fail on the pre-change
 binary in isolation; c45282a is a pre-existing lli-JIT crash, the ce pair the
 known fd/file family — and settled back to PASS on the next run.)
 
+QUALIFIED-AGGREGATE OBJECT INIT — LANDED (+1 c45672a, crash fix): initializing
+a variable from a QUALIFIED aggregate (`A : ARR := ARR'(...)`) was silently
+dropped: the object-init codegen matched only `init->kind == NK_AGGREGATE`, so a
+NK_QUALIFIED wrapper fell through every branch and the variable was never
+stored. For a dynamically-bounded (fat-pointer) array the later use then read an
+uninitialized descriptor and segfaulted (c45672a: `NOT A3` where
+A3:ARR(IDENT_INT(3)..IDENT_INT(4)):=ARR'(TRUE,FALSE)). New Object_Init_Aggregate
+helper unwraps a qualified aggregate; both the array and record init branches use
+it. For a constrained array destination the inner aggregate is re-seeded with the
+object's type so its fat pointer carries the object's bounds (initialization
+slides, RM 5.2.1) — matching the unqualified path. Class C 1732->1733, zero
+regressions.
+Still open (pre-existing, NOT caused by this change — fails on the array-only
+binary too): a qualified aggregate for a discriminated record with a dynamic
+component (`REC'(N=>2, S=>STRING(1..N), V=>...)`) misplaces the trailing
+component (R.V). Separate discriminated-record-layout goblin.
+Skipped as environmental: c45114a (`ARRAY(1..INTEGER'LAST)` — a 2-billion-element
+boolean array, allocation-bound not a compiler goblin).
+
 OTHER REMAINING LEVERS (from full-suite gap analysis):
   * Object renaming (RM 8.5) must yield a true alias (pointer to the renamed
     object), currently copies → segv/CE/wrong. Coherent set c85005a-e,

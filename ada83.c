@@ -43108,6 +43108,21 @@ uint32_t Emit_Record_Aggregate_Instance_Size (Syntax_Node *node, Type_Info *agg_
                                   agg_type->record.component_count, szt);
 }
 
+// An object initializer that is an aggregate, seen through an optional
+// qualification: `X : T := T'(...)` and `X : T := (...)` denote the same
+// initializing aggregate. Returns the aggregate node, or NULL when the
+// initializer is not (a qualification of) an aggregate. The qualification is a
+// type assertion only — for initialization the aggregate still slides to the
+// object's constraint (RM 5.2.1) — so callers treat both forms identically.
+static Syntax_Node *Object_Init_Aggregate (Syntax_Node *init) {
+  if (not init) return NULL;
+  if (init->kind == NK_AGGREGATE) return init;
+  if (init->kind == NK_QUALIFIED and init->qualified.expression and
+      init->qualified.expression->kind == NK_AGGREGATE)
+    return init->qualified.expression;
+  return NULL;
+}
+
 void Generate_Object_Declaration (Syntax_Node *node) {
   bool use_frame = cg->current_nesting_level > 0;
   bool is_package_level = (cg->current_function == NULL);
@@ -44109,7 +44124,8 @@ obj_decl_init:
       // aggregate) occur in the correct order. Cache the values so they                           
       // aren't re-evaluated during the discriminant store.                                        
       //                                                                                            
-      } else if (is_record and node->object_decl.init->kind == NK_AGGREGATE) {
+      } else if (is_record and Object_Init_Aggregate (node->object_decl.init)) {
+        Syntax_Node *rec_agg_node = Object_Init_Aggregate (node->object_decl.init);
         LLVM_Value disc_cached[16] = {0};
         uint32_t disc_count = 0;
         if (ty->record.has_disc_constraints and ty->record.disc_constraint_values) {
@@ -44132,7 +44148,7 @@ obj_decl_init:
         }
 
         // Record aggregate initialization - copy from aggregate to variable
-        uint32_t agg_ptr = Generate_Expression (node->object_decl.init).reg;
+        uint32_t agg_ptr = Generate_Expression (rec_agg_node).reg;
 
         // Clear disc cache after aggregate generation
         cg->disc_cache_count = 0;
@@ -44165,18 +44181,30 @@ obj_decl_init:
       // Works for both constrained and unconstrained arrays with aggregate initializers.          
       // For arrays with dynamic bounds, the aggregate already returns a fat pointer.              
       //                                                                                            
-      } else if (is_any_array and node->object_decl.init->kind == NK_AGGREGATE) {
-        Type_Info *agg_type = node->object_decl.init->type;
+      } else if (is_any_array and Object_Init_Aggregate (node->object_decl.init)) {
+        Syntax_Node *agg_node = Object_Init_Aggregate (node->object_decl.init);
+
+        // A qualified aggregate of an unconstrained type (`ARR'(...)` where ARR
+        // is `array (INDEX range <>) of ...`) carries the aggregate's default
+        // INDEX'FIRST-based bounds, but initialization slides to the object's
+        // own constraint (RM 5.2.1). Re-seed the inner aggregate with the
+        // constrained destination type so its fat pointer carries the object's
+        // bounds — exactly as an unqualified aggregate does through context.
+        if (agg_node != node->object_decl.init and
+            Type_Is_Constrained_Array (ty))
+          agg_node->type = ty;
+
+        Type_Info *agg_type = agg_node->type;
         bool dest_needs_fat = Type_Has_Dynamic_Bounds (ty) or Type_Is_Unconstrained_Array (ty);
 
-        // Generate_Aggregate returns a fat ptr alloca when the aggregate                           
-        // type is unconstrained OR has dynamic bounds in ANY dimension.                           
-        // Detect this so we copy the fat ptr instead of re-wrapping.                              
-        //                                                                                          
+        // Generate_Aggregate returns a fat ptr alloca when the aggregate
+        // type is unconstrained OR has dynamic bounds in ANY dimension.
+        // Detect this so we copy the fat ptr instead of re-wrapping.
+        //
         bool agg_returns_fat = agg_type and
           (not agg_type->array.is_constrained or
            Type_Has_Dynamic_Bounds (agg_type));
-        uint32_t agg_ptr = Generate_Expression (node->object_decl.init).reg;
+        uint32_t agg_ptr = Generate_Expression (agg_node).reg;
 
         // Aggregate returns SSA fat pointer { ptr, ptr }; store to destination.
         if (dest_needs_fat and agg_returns_fat) {
