@@ -47259,11 +47259,6 @@ void Generate_Type_Equality_Function (Type_Info *t) {
   if (not t or not t->equality_func_name) return;
   const char *func_name = t->equality_func_name;
 
-  // Determine parameter type: unconstrained and dynamic-bound constrained
-  // arrays are represented as fat pointers { ptr, ptr } at runtime.
-  bool is_fat = Type_Needs_Fat_Pointer (t);
-  LLVM_Rep eq_bt = is_fat ? Array_Bound_LLVM_Rep (t) : Integer_Arith_Rep ();
-
   // Emit function definition with linkonce_odr for linker deduplication
   Emit ("\n; Implicit equality for type %.*s\n",
      (int)t->name.length, t->name.data);
@@ -47316,66 +47311,21 @@ void Generate_Type_Equality_Function (Type_Info *t) {
         Emit ("  ret i1 %%t%u\n", cmp.reg);
       }
 
-    // Unconstrained array equality (per RM 4.5.2):                                                 
-    // Fat pointer layout: { ptr data, ptr bounds }                                                 
-    // where bounds > { bt low, bt high }                                                           
-    // Compare lengths first, then data if lengths match.                                          
-    //                                                                                              
+    // Fat-pointer array (unconstrained or dynamic-bound constrained).
+    // Materialize the two fat parameters as ordinary registers and delegate
+    // to Generate_Array_Equality — the recursive source of truth, which
+    // compares every dimension's length and handles elements that need
+    // componentwise comparison (RM 4.5.2).
     } else {
-      uint32_t elem_size = t->array.element_type ?
-                 t->array.element_type->size : 1;
-      const char *eq_bst = Bounds_Type_For (eq_bt);
-
-      // Extract data pointers (field 0)
-      Emit ("  %%left_data = extractvalue " FAT_PTR_TYPE " %%0, 0\n");
-      Emit ("  %%right_data = extractvalue " FAT_PTR_TYPE " %%1, 0\n");
-
-      // Extract bounds pointers (field 1)
-      Emit ("  %%left_bptr = extractvalue " FAT_PTR_TYPE " %%0, 1\n");
-      Emit ("  %%right_bptr = extractvalue " FAT_PTR_TYPE " %%1, 1\n");
-
-      // Load bounds from left fat pointer in native bt
-      Emit ("  %%left_lo_gep = getelementptr %s, ptr %%left_bptr, i32 0, i32 0\n", eq_bst);
-      Emit ("  %%left_low = load %s, ptr %%left_lo_gep\n", LLVM_Rep_To_String (eq_bt));
-      Emit ("  %%left_hi_gep = getelementptr %s, ptr %%left_bptr, i32 0, i32 1\n", eq_bst);
-      Emit ("  %%left_high = load %s, ptr %%left_hi_gep\n", LLVM_Rep_To_String (eq_bt));
-      Emit ("  %%left_len = sub %s %%left_high, %%left_low\n", LLVM_Rep_To_String (eq_bt));
-      Emit ("  %%left_len1 = add %s %%left_len, 1\n", LLVM_Rep_To_String (eq_bt));
-
-      // Load bounds from right fat pointer in native bt
-      Emit ("  %%right_lo_gep = getelementptr %s, ptr %%right_bptr, i32 0, i32 0\n", eq_bst);
-      Emit ("  %%right_low = load %s, ptr %%right_lo_gep\n", LLVM_Rep_To_String (eq_bt));
-      Emit ("  %%right_hi_gep = getelementptr %s, ptr %%right_bptr, i32 0, i32 1\n", eq_bst);
-      Emit ("  %%right_high = load %s, ptr %%right_hi_gep\n", LLVM_Rep_To_String (eq_bt));
-      Emit ("  %%right_len = sub %s %%right_high, %%right_low\n", LLVM_Rep_To_String (eq_bt));
-      Emit ("  %%right_len1 = add %s %%right_len, 1\n", LLVM_Rep_To_String (eq_bt));
-
-      // Compare lengths in native bt
-      Emit ("  %%len_eq = icmp eq %s %%left_len1, %%right_len1\n", LLVM_Rep_To_String (eq_bt));
-
-      // Convert to INTEGER width for memcmp byte size computation
-      LLVM_Rep iat_eq = Integer_Arith_Rep ();
-      if (not LLVM_Rep_Equal (eq_bt, iat_eq)) {
-        uint32_t eq_bits = LLVM_Rep_Bits (eq_bt), iat_bits = LLVM_Rep_Bits (iat_eq);
-        const char *conv_op = (iat_bits > eq_bits) ? "sext" : "trunc";
-        Emit ("  %%left_len1_w = %s %s %%left_len1 to %s\n", conv_op, LLVM_Rep_To_String (eq_bt), LLVM_Rep_To_String (iat_eq));
-        Emit ("  %%byte_size = mul %s %%left_len1_w, %u\n", LLVM_Rep_To_String (iat_eq), elem_size);
-      } else {
-        Emit ("  %%byte_size = mul %s %%left_len1, %u\n", LLVM_Rep_To_String (iat_eq), elem_size);
-      }
-
-      // memcmp requires i64 for size_t - extend if needed
-      if (LLVM_Rep_Bits (iat_eq) != 64) {
-        Emit ("  %%byte_size64 = sext %s %%byte_size to i64\n", LLVM_Rep_To_String (iat_eq));
-        Emit ("  %%memcmp_res = call " C_INT_TYPE " @memcmp (ptr %%left_data, ptr %%right_data, i64 %%byte_size64)\n");
-      } else {
-        Emit ("  %%memcmp_res = call " C_INT_TYPE " @memcmp (ptr %%left_data, ptr %%right_data, i64 %%byte_size)\n");
-      }
-      Emit ("  %%data_eq = icmp eq i32 %%memcmp_res, 0\n");
-
-      // Result: lengths match AND data matches
-      Emit ("  %%result = and i1 %%len_eq, %%data_eq\n");
-      Emit ("  ret i1 %%result\n");
+      uint32_t left_data    = Emit_Result_Instruction ("extractvalue " FAT_PTR_TYPE " %%0, 0\n");
+      uint32_t left_bounds  = Emit_Result_Instruction ("extractvalue " FAT_PTR_TYPE " %%0, 1\n");
+      uint32_t left_fat     = Emit_Build_Fat_Pointer (left_data, left_bounds);
+      uint32_t right_data   = Emit_Result_Instruction ("extractvalue " FAT_PTR_TYPE " %%1, 0\n");
+      uint32_t right_bounds = Emit_Result_Instruction ("extractvalue " FAT_PTR_TYPE " %%1, 1\n");
+      uint32_t right_fat    = Emit_Build_Fat_Pointer (right_data, right_bounds);
+      LLVM_I1 r = Generate_Array_Equality (Val_Of_Type (left_fat, t),
+                                           Val_Of_Type (right_fat, t), t);
+      Emit ("  ret i1 %%t%u\n", r.reg);
     }
 
   // Unknown composite type - conservatively return false (not equal).
