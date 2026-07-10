@@ -25711,6 +25711,16 @@ LLVM_Value Generate_Identifier (Syntax_Node *node) {
     // reassigned after `V renames P.ALL`) does not affect what V denotes.
     if (sym->rename_address_slot) {
       uint32_t addr_reg = Emit_Rename_Address (sym);
+      // Read the captured object exactly as the ordinary variable path does
+      // (the SYMBOL_VARIABLE case below): a by-reference composite's address IS
+      // its value, so return it without a load — loading would read the array's
+      // or record's first word as a spurious pointer (a segfault when that value
+      // is then used as an address, e.g. an array rename passed by reference as
+      // an entry parameter). Only a by-value scalar or access is loaded through
+      // the captured address.
+      if (not Type_Needs_Fat_Pointer (sym->type) and
+          (Type_Is_Constrained_Array (sym->type) or Type_Is_Record (sym->type)))
+        return Val_Rep (addr_reg, Type_To_Rep (sym->type));
       LLVM_Rep type_rep = Type_To_Rep (sym->type);
       uint32_t v = Emit_Result_Instruction ("load %s, ptr %%t%u\n",
             LLVM_Rep_To_String (type_rep), addr_reg);

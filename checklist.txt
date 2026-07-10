@@ -321,6 +321,26 @@ c64005c, cc3220a pass; c34005g now compiles and fails on a SEPARATE, pre-
 existing slice bug (INCORRECT SLICE (VALUE)) — honest skip->fail, not a
 regression. Class C 1704->1713, skips 153->144, FAIL unchanged.
 
+OBJECT RENAMING (RM 8.5) — COMPOSITE-RENAME VALUE FIX LANDED (+1 c85005a):
+An object rename captures its target's address once at elaboration into a hidden
+pointer slot; reads go through Emit_Rename_Address. The value-read path
+(Generate_Identifier) unconditionally did `load Type_To_Rep(type), addr` — right
+for a scalar, but for a by-reference COMPOSITE (array/record) the rep is `ptr`
+and the value of such an object IS its address, so the load read the array's
+first word as a spurious pointer. Passing an array rename by reference as an
+entry (task rendezvous) parameter then marshalled that garbage word as the
+parameter address and the acceptor's copy-back memcpy'd through it -> SIGSEGV
+(c85005a; native gdb backtrace pinned it in the task entry body). Fix: mirror
+the ordinary SYMBOL_VARIABLE path — a constrained-array/record rename returns
+the captured address without a load; only scalars/access load. Full Class C
+1713->1714, zero regressions.
+Still open in the cluster: c85006f/g — SLICE renames (`ADJECTIVES : STRING
+renames S(10..24)`). The rename keeps the slice's underlying array type
+(unconstrained), so 'FIRST/'LAST/'LENGTH read the base bounds (1..) instead of
+the slice's (10..24) and indexing is off. Needs a constrained subtype built from
+the slice's range for the rename symbol (RM 8.5: the renamed object's constraint
+is used, not any type mark).
+
 OTHER REMAINING LEVERS (from full-suite gap analysis):
   * Object renaming (RM 8.5) must yield a true alias (pointer to the renamed
     object), currently copies → segv/CE/wrong. Coherent set c85005a-e,
