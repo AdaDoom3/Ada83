@@ -10031,8 +10031,34 @@ bool Type_Covers (Type_Info *expected, Type_Info *actual) {
   return false;
 }
 
+// The first-named type of `t`: walk the subtype (base_type) chain up to the
+// type that introduced the name, but stop at a derivation boundary — a derived
+// type carries parent_type, and though it shares its parent's base_type for
+// representation, it is a DISTINCT type (RM 3.4). So a subtype of INTEGER
+// resolves to INTEGER's base, while `type MY is new INTEGER` resolves to MY.
+static Type_Info *Named_Type (Type_Info *t) {
+  while (t and t->parent_type == NULL and t->base_type and t->base_type != t)
+    t = t->base_type;
+  return t;
+}
+
+// Whether a user-defined subprogram formal of type `formal` accepts an actual
+// of type `actual` in overload resolution. Unlike Type_Covers — which lets a
+// type and a type derived from it cover each other so that shared literals
+// resolve — a subprogram is applicable only to its OWN type: a derived type is
+// distinct (RM 3.4) and inherits its own operations at the point of derivation
+// rather than borrowing the parent's. A universal literal still converts to
+// the formal. This keeps an operator redefined for a parent type (a "=" for
+// INTEGER) from capturing a derived type's operands (c67005b).
+static bool Formal_Accepts_Actual (Type_Info *formal, Type_Info *actual) {
+  if (not formal or not actual) return true;
+  if (Type_Is_Universal (formal) or Type_Is_Universal (actual))
+    return Type_Covers (formal, actual);
+  return Named_Type (formal) == Named_Type (actual);
+}
+
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
-// §11.6.3 Parameter Conformance                                                                    
+// §11.6.3 Parameter Conformance
 //                                                                                                  
 // Check if an argument list matches a subprogram's parameter profile.                             
 // Per RM 6.4.1: actual parameters must be type conformant with formals.                           
@@ -13440,10 +13466,23 @@ void Analyze_Binary (Syntax_Node *n) {
           f->is_predefined) continue;
       Type_Info *p0 = f->parameters[0].param_type;
       Type_Info *p1 = f->parameters[1].param_type;
+      // Equality is the operator whose redefinition must not leak across a
+      // derivation boundary: a derived type keeps the predefined equality it
+      // inherited at derivation (RM 6.7, c67005b). Match "=" / "/=" by exact
+      // named type; other operators keep the permissive coverage (a derived
+      // numeric type shares its parent's representation, and some library
+      // types — CALENDAR.TIME as DURATION — are represented through one
+      // another and rely on it).
+      bool exact_equality = (op == TK_EQ or op == TK_NE);
       bool ok = false;
       for (uint32_t i = 0; i < nlt and not ok; i++)
-        for (uint32_t j = 0; j < nrt and not ok; j++)
-          if (Type_Covers (p0, lts[i]) and Type_Covers (p1, rts[j])) ok = true;
+        for (uint32_t j = 0; j < nrt and not ok; j++) {
+          bool l_ok = exact_equality ? Formal_Accepts_Actual (p0, lts[i])
+                                     : Type_Covers (p0, lts[i]);
+          bool r_ok = exact_equality ? Formal_Accepts_Actual (p1, rts[j])
+                                     : Type_Covers (p1, rts[j]);
+          if (l_ok and r_ok) ok = true;
+        }
       // A flexible operand (aggregate) matches any formal it can adopt.
       if (nlt == 0 or nrt == 0) ok = true;
       if (ok)

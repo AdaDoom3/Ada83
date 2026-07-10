@@ -171,3 +171,33 @@ implementation limit and fails on clean HEAD in isolation too).
 The same missing check also affects TYPE CONVERSIONS to a constrained access
 subtype (c46054a) — a different codegen path (not done here; c46 also carries
 the independent hard failure c46022a, so the group is not completable now).
+
+═══════════════════════════════════════════════════════════════════════════════
+THIRD GROUP (continue): c67  (14 tests: 13 pass, 0 fail, 1 N/A) -> COMPLETE
+═══════════════════════════════════════════════════════════════════════════════
+Target failure: c67005b — "if equality is redefined for a scalar type, case
+statements still use predefined equality". All three sub-failures were one root
+cause: a comparison of a value of MY (TYPE MY IS NEW INTEGER) wrongly resolved
+to a "=" redefined for INTEGER. MY is a DISTINCT type (RM 3.4) that keeps the
+predefined equality inherited at the point of derivation; a "=" declared for
+INTEGER after the derivation is not MY's.
+
+Root cause: Type_Covers lets a type and a type derived from it cover each other
+(so shared integer/enumeration literals resolve), and Type_Base collapses a
+derived type onto its parent's representation. So the user INTEGER "=" matched
+MY operands in overload resolution.
+
+Fix: Named_Type walks the subtype (base_type) chain but stops at a derivation
+boundary (parent_type set) — a subtype of INTEGER resolves to INTEGER's base,
+while MY resolves to MY. Formal_Accepts_Actual matches a user operator's formal
+to an actual by exact named type (universals still convert via Type_Covers).
+
+Scope: applied to the EQUALITY operators ("=", "/=") only. parent_type is
+overloaded — CALENDAR.TIME is represented THROUGH DURATION (TIME->parent_type =
+DURATION), so treating them as distinct broke the CALENDAR "+"/"-" resolution
+(c96005e) that relies on the loose coverage. Equality is exactly the RM 6.7
+operator whose redefinition must not cross a derivation boundary, so scoping
+there is correct and leaves arithmetic on the existing permissive path.
+
+Gate: full Class C — c67005b FAIL->PASS, zero regressions (c97307a is the
+known flaky tasking test).
