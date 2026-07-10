@@ -2142,6 +2142,9 @@ bool     Type_Bound_Is_Compile_Time_Known (Type_Bound  b);
 bool     Type_Bound_Is_Set                (Type_Bound  b);
 double   Type_Bound_Float_Value           (Type_Bound  b);
 int128_t Array_Element_Count              (Type_Info  *t);
+uint32_t Array_Element_Byte_Size          (Type_Info  *array_type,
+                                           uint32_t    missing_fallback,
+                                           uint32_t    zero_size_fallback);
 int128_t Array_Low_Bound                  (Type_Info  *t);
 void     Compute_Static_Array_Size        (Type_Info  *constrained_type,
                                            uint32_t    default_element_size);
@@ -3271,6 +3274,11 @@ void Emit_Discriminant_Check (uint32_t    actual,
 // check widens to the comparison rep internally. There is no bare-reg form -
 // the rep MUST come from the producer.
 LLVM_Value Emit_Constraint_Check_Val (LLVM_Value value, Type_Info *target, Type_Info *source);
+void Emit_Range_Within_Mark_Check (LLVM_Rep rep,
+                                   uint32_t constraint_low_temp,
+                                   uint32_t constraint_high_temp,
+                                   uint32_t mark_low_temp,
+                                   uint32_t mark_high_temp);
 void Emit_Range_Constraint_Compat_Check (Type_Bound *constraint_low,
                                          Type_Bound *constraint_high,
                                          Type_Info  *type_mark);
@@ -3326,6 +3334,10 @@ uint32_t   Emit_Load_Fat              (uint32_t  ptr_reg);
 uint32_t   Emit_Load_Field            (uint32_t  base, uint32_t byte_offset, LLVM_Rep rep);
 uint32_t   Emit_Symbol_Field_Addr     (Symbol   *sym, uint32_t byte_offset);
 uint32_t   Emit_Alloca_Store          (LLVM_Rep  rep, uint32_t val);
+void       Emit_Store_Bounds_Struct_Field (uint32_t bounds_ptr, LLVM_Rep bt,
+                                           uint32_t field_index, const char *operand);
+void       Emit_Store_Bounds_Struct_Pair  (uint32_t bounds_ptr, LLVM_Rep bt,
+                                           uint32_t low_temp, uint32_t high_temp);
 uint32_t   Freeze_Disc_Value_Global   (LLVM_Rep  rep, uint32_t val);
 uint32_t   Emit_Load_Preeval_Global   (uint32_t  gid, LLVM_Rep want);
 void       Emit_Memcpy                (uint32_t  dst, uint32_t src, uint32_t size_reg);
@@ -3410,6 +3422,8 @@ LLVM_Value  Emit_Bound_Value          (Type_Bound *bound);
 uint32_t    Emit_Bound_Value_Typed    (Type_Bound *bound, LLVM_Rep *out_rep);
 uint32_t    Emit_Fixed_Bound_Mantissa (Type_Bound *bound, double small, LLVM_Rep fix_rep);
 uint32_t    Emit_Single_Bound         (Type_Bound *bound, LLVM_Rep    target_rep);
+uint32_t    Emit_Array_Dimension_Bound (Type_Info *array_type, uint32_t dimension,
+                                        bool want_high, LLVM_Rep target_rep);
 Bound_Temps Emit_Bounds               (Type_Info  *type,  uint32_t dim);
 Bound_Temps Emit_Bounds_From_Fat      (uint32_t    fat,   LLVM_Rep bt);
 Bound_Temps Emit_Bounds_From_Fat_Dim  (uint32_t    fat,   LLVM_Rep bt, uint32_t dim);
@@ -3489,6 +3503,9 @@ LLVM_Value Generate_Real_Literal      (Syntax_Node *node);
 LLVM_Value Generate_String_Literal    (Syntax_Node *node);
 LLVM_Value Generate_Identifier        (Syntax_Node *node);
 LLVM_Value Generate_Binary_Op         (Syntax_Node *node);
+bool       Emit_Discriminants_Match   (Type_Info   *constrained_type,
+                                       uint32_t     record_pointer,
+                                       LLVM_I1     *belongs);
 LLVM_Value Emit_Binary_Op_Predefined  (Syntax_Node *node);
 LLVM_Value Generate_Unary_Op          (Syntax_Node *node);
 LLVM_Value Generate_Apply             (Syntax_Node *node);
@@ -3597,6 +3614,8 @@ LLVM_Value Emit_Disc_Constraint_Value (Type_Info  *type_info,
                                       LLVM_Rep    disc_type);
 void Emit_Nested_Disc_Checks (Type_Info *parent_type,
                               uint32_t gov_disc_val, LLVM_Rep gov_disc_rep);
+void Elaborate_Discriminant_Constraint_Checks (Type_Info *constrained_type,
+                                               bool use_frozen_constraint_values);
 void Emit_Comp_Disc_Check    (uint32_t   ptr, Type_Info *comp_ti);
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
@@ -3692,6 +3711,11 @@ uint32_t Emit_Record_Aggregate_Instance_Size (Syntax_Node *node, Type_Info *agg_
 void Emit_Array_Index_Constraint_Check (Type_Info *array_type);
 void Emit_Disc_Dependent_Component_Checks (Type_Info *rec);
 void Emit_Frozen_Component_Constraint_Check (Type_Info *rec);
+void Emit_Preeval_Disc_Constraint_Checks (Type_Info *constrained_type);
+void Emit_Subcomponent_Disc_Constraint_Checks (Symbol *sym, Type_Info *parent_record,
+                                               uint32_t prefix_offset,
+                                               Type_Info *constrained_type,
+                                               bool check_static_values);
 void Emit_Incomplete_Deferred_Disc_Checks (Type_Info *completed);
 void Emit_Access_Disc_Constraint_Range_Check (Type_Info *t);
 void Emit_Pending_Global_Initializers (void);
@@ -3786,6 +3810,24 @@ void Agg_Store_At_Dynamic (uint32_t    base,
                            uint32_t    elem_size,
                            uint32_t    rt_row_size,
                            bool        is_composite);
+
+// Threaded state of one array aggregate's static-index emission: the target
+// storage, the element layout facts every store needs, and the initialized
+// map the OTHERS pass consults.
+typedef struct {
+  uint32_t   base;               // aggregate storage (alloca temp)
+  bool       multidim;           // outer level of a multi-dimensional aggregate?
+  bool       elem_is_composite;  // element stored by memcpy rather than store
+  Type_Info *agg_type;           // the aggregate's array type
+  LLVM_Rep   elem_type;          // LLVM rep for scalar element stores
+  Type_Info *elem_ti;            // element subtype (drives the scalar check)
+  uint32_t   elem_size;          // static element byte size
+  uint32_t   rt_element_size;    // runtime element size temp (0 = static)
+  bool      *initialized;        // per-flat-index "was stored" map
+} Aggregate_Emission_Context;
+
+void Agg_Emit_Component_At (Aggregate_Emission_Context *context,
+                            Syntax_Node *expression, int128_t index);
 
 uint32_t Agg_Comp_Byte_Size (Type_Info *ti, Syntax_Node *src);
 void     Agg_Rec_Store      (uint32_t        val,
@@ -12471,6 +12513,20 @@ int128_t Array_Element_Count (Type_Info *type_info) {
     total *= length;
   }
   return total;
+}
+
+// Static byte size of one element of `array_type`, for size arithmetic.
+// `missing_fallback` substitutes when the array or its element type is
+// unknown; `zero_size_fallback` substitutes when the element's flat size is
+// 0 (a dynamically sized or fat-stored element). Call sites deliberately
+// choose different fallbacks, so both are explicit parameters.
+uint32_t Array_Element_Byte_Size (Type_Info *array_type, uint32_t missing_fallback,
+                                  uint32_t zero_size_fallback) {
+  uint32_t element_size = (array_type and array_type->array.element_type)
+                            ? array_type->array.element_type->size
+                            : missing_fallback;
+  if (element_size == 0) element_size = zero_size_fallback;
+  return element_size;
 }
 
 // Get array low bound for index adjustment
@@ -23006,6 +23062,25 @@ LLVM_Value Emit_Constraint_Check_Val (LLVM_Value value,
 // (e.g. I5 RANGE 0..P), the constraint bounds must lie within the                                  
 // base type's range. Emit runtime checks for any BOUND_EXPR bound.                               
 //                                                                                                  
+// Shared tail of the range-constraint compatibility check (RM 3.5(4)): a
+// null constraint range (low > high) is always compatible, so the bound
+// comparisons are skipped for it; a non-null range raises CONSTRAINT_ERROR
+// when either constraint bound lies outside the mark's range. All four
+// operands are temps at `rep`.
+void Emit_Range_Within_Mark_Check (LLVM_Rep rep,
+                                   uint32_t constraint_low_temp,
+                                   uint32_t constraint_high_temp,
+                                   uint32_t mark_low_temp,
+                                   uint32_t mark_high_temp) {
+  LLVM_I1 is_null_range = Emit_Icmp ("sgt", rep, constraint_low_temp, constraint_high_temp);
+  uint32_t skip = Emit_Open_Skip_If (is_null_range.reg);
+  LLVM_I1 low_outside = Emit_Icmp ("slt", rep, constraint_low_temp, mark_low_temp);
+  Emit_Check_With_Raise (low_outside.reg, true, "subtype low bound");
+  LLVM_I1 high_outside = Emit_Icmp ("sgt", rep, constraint_high_temp, mark_high_temp);
+  Emit_Check_With_Raise (high_outside.reg, true, "subtype high bound");
+  Emit_Close_Null_Skip (skip);
+}
+
 void Emit_Range_Constraint_Compat_Check (Type_Bound *constraint_low,
                                          Type_Bound *constraint_high,
                                          Type_Info  *type_mark) {
@@ -23095,13 +23170,7 @@ void Emit_Range_Constraint_Compat_Check (Type_Bound *constraint_low,
     uint32_t bhi = Emit_Fixed_Bound_Mantissa (mark_high,       small, fix_rep);
     uint32_t clo = Emit_Fixed_Bound_Mantissa (constraint_low,  small, fix_rep);
     uint32_t chi = Emit_Fixed_Bound_Mantissa (constraint_high, small, fix_rep);
-    LLVM_I1 is_null_range = Emit_Icmp ("sgt", fix_rep, clo, chi);
-    uint32_t skip = Emit_Open_Skip_If (is_null_range.reg);
-    LLVM_I1 low_outside = Emit_Icmp ("slt", fix_rep, clo, blo);
-    Emit_Check_With_Raise (low_outside.reg, true, "subtype low bound");
-    LLVM_I1 high_outside = Emit_Icmp ("sgt", fix_rep, chi, bhi);
-    Emit_Check_With_Raise (high_outside.reg, true, "subtype high bound");
-    Emit_Close_Null_Skip (skip);
+    Emit_Range_Within_Mark_Check (fix_rep, clo, chi, blo, bhi);
     return;
   }
 
@@ -23135,7 +23204,6 @@ void Emit_Range_Constraint_Compat_Check (Type_Bound *constraint_low,
   mark_high_rep = LLVM_Rep_Or (mark_high_rep, iat);
   blo = Emit_Convert (blo, mark_low_rep,  iat).reg;
   bhi = Emit_Convert (bhi, mark_high_rep, iat).reg;
-  LLVM_Rep iat_s = iat;
 
   // Check each constraint bound against the mark's range.
   // RM 3.5(4): the bounds must belong to the type mark's range only for a
@@ -23145,13 +23213,7 @@ void Emit_Range_Constraint_Compat_Check (Type_Bound *constraint_low,
   clo = Emit_Convert (clo, LLVM_Rep_Or (constraint_low_rep, iat), iat).reg;
   uint32_t chi = Emit_Bound_Value_Typed (constraint_high, &constraint_high_rep);
   chi = Emit_Convert (chi, LLVM_Rep_Or (constraint_high_rep, iat), iat).reg;
-  LLVM_I1 is_null_range = Emit_Icmp ("sgt", iat_s, clo, chi);
-  uint32_t skip = Emit_Open_Skip_If (is_null_range.reg);
-  LLVM_I1 low_outside = Emit_Icmp ("slt", iat_s, clo, blo);
-  Emit_Check_With_Raise (low_outside.reg, true, "subtype low bound");
-  LLVM_I1 high_outside = Emit_Icmp ("sgt", iat_s, chi, bhi);
-  Emit_Check_With_Raise (high_outside.reg, true, "subtype high bound");
-  Emit_Close_Null_Skip (skip);
+  Emit_Range_Within_Mark_Check (iat, clo, chi, blo, bhi);
 }
 
 void Emit_Subtype_Constraint_Compat_Check (Type_Info *subtype,
@@ -23225,21 +23287,33 @@ uint32_t Emit_Build_Fat_Pointer (uint32_t data_reg, uint32_t bounds_reg) {
 // bt = bound LLVM type (e.g., "i32").
 // Allocates bounds struct on stack, stores lo/hi, builds { ptr, ptr }.
 //
+// Store `operand` (pre-formatted LLVM value text: an SSA name or a decimal
+// literal) into field `field_index` (0 = low, 1 = high) of the bounds struct
+// { bt, bt } at `bounds_ptr`.
+void Emit_Store_Bounds_Struct_Field (uint32_t bounds_ptr, LLVM_Rep bt,
+                                     uint32_t field_index, const char *operand) {
+  const char *bounds_struct = Bounds_Type_For (bt);
+  uint32_t field_gep = Emit_Result_Instruction ("getelementptr %s, ptr %%t%u, i32 0, i32 %u\n", bounds_struct, bounds_ptr, field_index);
+  Emit ("  store %s %s, ptr %%t%u\n", LLVM_Rep_To_String (bt), operand, field_gep);
+}
+
+// Store the low/high bound temps (already at bt) into the bounds struct at
+// `bounds_ptr`.
+void Emit_Store_Bounds_Struct_Pair (uint32_t bounds_ptr, LLVM_Rep bt,
+                                    uint32_t low_temp, uint32_t high_temp) {
+  char operand[16];
+  snprintf (operand, sizeof (operand), "%%t%u", low_temp);
+  Emit_Store_Bounds_Struct_Field (bounds_ptr, bt, 0, operand);
+  snprintf (operand, sizeof (operand), "%%t%u", high_temp);
+  Emit_Store_Bounds_Struct_Field (bounds_ptr, bt, 1, operand);
+}
+
 LLVM_Value Emit_Fat_Pointer (uint32_t data_ptr,
                   int128_t low, int128_t high, LLVM_Rep bt) {
-  const char *bounds_struct = Bounds_Type_For (bt);
-
   // Allocate bounds struct { bt, bt } on stack - native type
-  uint32_t bounds_alloca = Emit_Result_Instruction ("alloca %s\n", bounds_struct);
-
-  // Store low bound in native bt
-  uint32_t low_gep = Emit_Result_Instruction ("getelementptr %s, ptr %%t%u, i32 0, i32 0\n", bounds_struct, bounds_alloca);
-  Emit ("  store %s %s, ptr %%t%u\n", LLVM_Rep_To_String (bt), I128_Decimal (low), low_gep);
-
-  // Store high bound in native bt
-  uint32_t high_gep = Emit_Result_Instruction ("getelementptr %s, ptr %%t%u, i32 0, i32 1\n", bounds_struct, bounds_alloca);
-  Emit ("  store %s %s, ptr %%t%u\n", LLVM_Rep_To_String (bt), I128_Decimal (high), high_gep);
-
+  uint32_t bounds_alloca = Emit_Result_Instruction ("alloca %s\n", Bounds_Type_For (bt));
+  Emit_Store_Bounds_Struct_Field (bounds_alloca, bt, 0, I128_Decimal (low));
+  Emit_Store_Bounds_Struct_Field (bounds_alloca, bt, 1, I128_Decimal (high));
   return Val_Rep (Emit_Build_Fat_Pointer (data_ptr, bounds_alloca), LL_REP_FAT);
 }
 
@@ -23629,16 +23703,8 @@ uint32_t Emit_Flat_Element_Index (Node_List *args, Type_Info *array_type,
 //                                                                                                  
 uint32_t Emit_Alloc_Bounds_Struct (uint32_t low_temp, uint32_t high_temp, LLVM_Rep bt)
 {
-  const char *bounds_struct = Bounds_Type_For (bt);
-  uint32_t bounds_alloca = Emit_Result_Instruction ("alloca %s\n", bounds_struct);
-
-  // Convert bounds to target type if needed
-  /* low_temp already bt */
-  /* high_temp already bt */
-  uint32_t low_gep = Emit_Result_Instruction ("getelementptr %s, ptr %%t%u, i32 0, i32 0\n", bounds_struct, bounds_alloca);
-  Emit ("  store %s %%t%u, ptr %%t%u\n", LLVM_Rep_To_String (bt), low_temp, low_gep);
-  uint32_t high_gep = Emit_Result_Instruction ("getelementptr %s, ptr %%t%u, i32 0, i32 1\n", bounds_struct, bounds_alloca);
-  Emit ("  store %s %%t%u, ptr %%t%u\n", LLVM_Rep_To_String (bt), high_temp, high_gep);
+  uint32_t bounds_alloca = Emit_Result_Instruction ("alloca %s\n", Bounds_Type_For (bt));
+  Emit_Store_Bounds_Struct_Pair (bounds_alloca, bt, low_temp, high_temp);
   return bounds_alloca;
 }
 LLVM_Value Emit_Fat_Pointer_Dynamic (uint32_t data_ptr,
@@ -23654,19 +23720,12 @@ LLVM_Value Emit_Fat_Pointer_Dynamic (uint32_t data_ptr,
 //                                                                                                  
 uint32_t Emit_Heap_Bounds_Struct (uint32_t low_temp, uint32_t high_temp, LLVM_Rep bt)
 {
-  const char *bounds_struct = Bounds_Type_For (bt);
-
   // Compute size of bounds struct: 2 * sizeof (bound_type)
   uint16_t bit_width = LLVM_Rep_Is_Int (bt) ? bt.bits : 32;
   uint64_t bounds_size = (uint64_t)(bit_width / 8) * 2;
   if (bounds_size == 0) bounds_size = 8;
   uint32_t bounds_ptr = Emit_Result_Instruction ("call ptr @malloc (i64 %llu)\n", (unsigned long long)bounds_size);
-  /* low_temp already bt */
-  /* high_temp already bt */
-  uint32_t low_gep = Emit_Result_Instruction ("getelementptr %s, ptr %%t%u, i32 0, i32 0\n", bounds_struct, bounds_ptr);
-  Emit ("  store %s %%t%u, ptr %%t%u\n", LLVM_Rep_To_String (bt), low_temp, low_gep);
-  uint32_t high_gep = Emit_Result_Instruction ("getelementptr %s, ptr %%t%u, i32 0, i32 1\n", bounds_struct, bounds_ptr);
-  Emit ("  store %s %%t%u, ptr %%t%u\n", LLVM_Rep_To_String (bt), high_temp, high_gep);
+  Emit_Store_Bounds_Struct_Pair (bounds_ptr, bt, low_temp, high_temp);
   return bounds_ptr;
 }
 
@@ -24042,6 +24101,54 @@ uint32_t Emit_Single_Bound (Type_Bound *bound, LLVM_Rep target_rep) {
     return val;
   }
   return Emit_Static_Int (0, target_rep).reg;  // Fallback for unset bounds
+}
+
+// One dimension bound of a constrained-but-dynamic array, at `target_rep`
+// (RM 3.3.1 / 3.6.1). A static bound is materialised directly; a bound
+// expression reuses the subtype elaboration's cached temp so a side-effectful
+// expression is not re-evaluated, and is coerced from its real (possibly
+// narrow) integer type - float-represented bound expressions are left at
+// their own representation. A dimension with no bound of its own falls back
+// to its index type's bound, and failing that to the 1 .. 0 defaults.
+uint32_t Emit_Array_Dimension_Bound (Type_Info *array_type, uint32_t dimension,
+                                     bool want_high, LLVM_Rep target_rep) {
+  Index_Info *index = &array_type->array.indices[dimension];
+  Type_Bound bound = want_high ? index->high_bound : index->low_bound;
+  if (bound.kind == BOUND_INTEGER)
+    return Emit_Static_Int (bound.int_value, target_rep).reg;
+
+  // RM 3.3.1: reuse the cached temp from subtype elaboration to avoid
+  // re-evaluating side-effectful expressions.
+  if (bound.kind == BOUND_EXPR and bound.expr) {
+    uint32_t value = bound.cached_temp ? bound.cached_temp
+      : Generate_Expression (bound.expr).reg;
+    if (not Type_Is_Float_Representation (bound.expr->type)) {
+      // Both freshly-generated and cached temps may be at the bound's narrow
+      // type (e.g. SMALL RANGE 1..100 as i8). Coerce from the value's REAL
+      // type to target_rep so downstream sub/add see matching widths;
+      // assuming i32 here would no-op an i8 bound and leave it.
+      LLVM_Rep vty = LLVM_Rep_Or (Expression_LLVM_Rep (bound.expr), Integer_Arith_Rep ());
+      if (LLVM_Rep_Is_Int (vty) and not LLVM_Rep_Equal (vty, target_rep))
+        value = Emit_Convert (value, vty, target_rep).reg;
+    }
+    return value;
+  }
+
+  // Derive from the index type's bound (e.g. BOOLEAN'FIRST=0, NI'FIRST=-3).
+  if (index->index_type) {
+    Type_Info *index_type = index->index_type;
+    Type_Bound *index_bound = want_high ? &index_type->high_bound
+                                        : &index_type->low_bound;
+    if (index_bound->kind == BOUND_EXPR and index_bound->expr) {
+      uint32_t value = Generate_Expression (index_bound->expr).reg;
+      LLVM_Rep vty = Expression_LLVM_Rep (index_bound->expr);
+      if (LLVM_Rep_Is_Int (vty) and not LLVM_Rep_Equal (vty, target_rep))
+        value = Emit_Convert (value, vty, target_rep).reg;
+      return value;
+    }
+    return Emit_Static_Int (Type_Bound_Value (*index_bound), target_rep).reg;
+  }
+  return Emit_Static_Int (want_high ? 0 : 1, target_rep).reg;
 }
 
 // Emit_Bounds: Extract both bounds from a Type_Info for a specific dimension.                     
@@ -26740,6 +26847,30 @@ LLVM_Value Generate_Binary_Op (Syntax_Node *node) {
 // after rename peeling, and (Stage 2) from Generate_Apply when a predefined
 // operator is invoked in functional form (`P."+"(X,Y)`).
 //
+// RM 4.5.2 membership: AND onto `belongs` one equality per discriminant of
+// the record at `record_pointer` against `constrained_type`'s discriminant
+// constraint (an expression, or a static value). Returns false - leaving
+// `belongs` partially accumulated - when some discriminant has no recorded
+// constraint source; the caller then falls through to its default handling.
+bool Emit_Discriminants_Match (Type_Info *constrained_type,
+                               uint32_t record_pointer, LLVM_I1 *belongs) {
+  for (uint32_t d = 0; d < constrained_type->record.discriminant_count; d++) {
+    Component_Info *dc = &constrained_type->record.components[d];
+    LLVM_Rep drep = LLVM_Rep_Or (Type_To_Rep (dc->component_type), Integer_Arith_Rep ());
+    uint32_t vval = Emit_Load_Field (record_pointer, dc->byte_offset, drep);
+    uint32_t cval;
+    if (constrained_type->record.disc_constraint_exprs and
+        constrained_type->record.disc_constraint_exprs[d])
+      cval = Emit_Coerce_Val (Generate_Expression (
+               constrained_type->record.disc_constraint_exprs[d]), drep).reg;
+    else if (constrained_type->record.disc_constraint_values)
+      cval = Emit_Static_Int (constrained_type->record.disc_constraint_values[d], drep).reg;
+    else return false;
+    *belongs = Emit_And_I1 (*belongs, Emit_Icmp ("eq", drep, vval, cval));
+  }
+  return true;
+}
+
 LLVM_Value Emit_Binary_Op_Predefined (Syntax_Node *node) {
 
   // Check if this is equality/inequality on composite types
@@ -27903,21 +28034,7 @@ LLVM_Value Emit_Binary_Op_Predefined (Syntax_Node *node) {
               range_type->record.discriminant_count > 0) {
             uint32_t rec_ptr = left_v.reg;
             LLVM_I1 belongs = { Emit_I1_Const (1, "record membership seed").reg };
-            bool decided = true;
-            for (uint32_t d = 0; d < range_type->record.discriminant_count; d++) {
-              Component_Info *dc = &range_type->record.components[d];
-              LLVM_Rep drep = LLVM_Rep_Or (Type_To_Rep (dc->component_type), Integer_Arith_Rep ());
-              uint32_t vval = Emit_Load_Field (rec_ptr, dc->byte_offset, drep);
-              uint32_t cval;
-              if (range_type->record.disc_constraint_exprs and
-                  range_type->record.disc_constraint_exprs[d])
-                cval = Emit_Coerce_Val (Generate_Expression (
-                         range_type->record.disc_constraint_exprs[d]), drep).reg;
-              else if (range_type->record.disc_constraint_values)
-                cval = Emit_Static_Int (range_type->record.disc_constraint_values[d], drep).reg;
-              else { decided = false; break; }
-              belongs = Emit_And_I1 (belongs, Emit_Icmp ("eq", drep, vval, cval));
-            }
+            bool decided = Emit_Discriminants_Match (range_type, rec_ptr, &belongs);
             if (decided) {
               t = negate ? Emit_Not_I1 (belongs).reg : belongs.reg;
               return Emit_Bool_Value ((LLVM_I1){ t });
@@ -27972,20 +28089,7 @@ LLVM_Value Emit_Binary_Op_Predefined (Syntax_Node *node) {
               : left_v.reg;
             LLVM_I1 is_null = Emit_Icmp_Null_Ptr ("eq", rec_ptr);
             LLVM_I1 belongs = { Emit_I1_Const (1, "access-record membership seed").reg };
-            bool decided = true;
-            for (uint32_t d = 0; d < des->record.discriminant_count; d++) {
-              Component_Info *dc = &des->record.components[d];
-              LLVM_Rep drep = LLVM_Rep_Or (Type_To_Rep (dc->component_type), Integer_Arith_Rep ());
-              uint32_t vval = Emit_Load_Field (rec_ptr, dc->byte_offset, drep);
-              uint32_t cval;
-              if (des->record.disc_constraint_exprs and des->record.disc_constraint_exprs[d])
-                cval = Emit_Coerce_Val (Generate_Expression (
-                         des->record.disc_constraint_exprs[d]), drep).reg;
-              else if (des->record.disc_constraint_values)
-                cval = Emit_Static_Int (des->record.disc_constraint_values[d], drep).reg;
-              else { decided = false; break; }
-              belongs = Emit_And_I1 (belongs, Emit_Icmp ("eq", drep, vval, cval));
-            }
+            bool decided = Emit_Discriminants_Match (des, rec_ptr, &belongs);
             if (decided) {
               uint32_t res = Emit_Result_Instruction ("or i1 %%t%u, %%t%u  ; null or discriminants match\n", is_null.reg, belongs.reg);
               t = negate ? Emit_Not_I1 ((LLVM_I1){ res }).reg : res;
@@ -33354,6 +33458,23 @@ uint32_t Agg_Resolve_Elem (Syntax_Node *expr,
   return val;
 }
 
+// One aggregate component at a static index: resolve the element value,
+// apply the scalar subtype constraint check (RM 4.3.2), store it at `index`,
+// and mark that slot initialized.
+void Agg_Emit_Component_At (Aggregate_Emission_Context *context,
+                            Syntax_Node *expression, int128_t index) {
+  uint32_t val = Agg_Resolve_Elem (expression, context->multidim,
+    context->elem_is_composite, context->agg_type, context->elem_type,
+    context->elem_ti);
+  if (not context->elem_is_composite and context->elem_ti and
+      Type_Is_Scalar (context->elem_ti))
+    val = Emit_Constraint_Check_Val ((LLVM_Value){ val, context->elem_type },
+      context->elem_ti, expression->type).reg;
+  Agg_Store_At_Static (context->base, val, index, context->elem_type,
+    context->elem_size, context->elem_is_composite, context->rt_element_size);
+  context->initialized[(size_t)index] = true;
+}
+
 // ── Agg_Store_At: store element at a given array index. ──────────────────────────────────────────
 //                                                                                                  
 //   base      - SSA temp for the array's alloca                                                    
@@ -35347,9 +35468,17 @@ uint32_t Generate_Aggregate (Syntax_Node *node) {
     // Track which elements are initialized (for others clause)
     bool *initialized = Arena_Allocate ((size_t)count * sizeof (bool));
     for (int128_t i = 0; i < count; i++) initialized[i] = false;
+    Aggregate_Emission_Context agg_context = {
+      .base              = base,
+      .multidim          = multidim,
+      .elem_is_composite = elem_is_composite,
+      .agg_type          = agg_type,
+      .elem_type         = elem_type,
+      .elem_ti           = elem_ti,
+      .elem_size         = elem_size,
+      .rt_element_size   = agg_rt_elem,
+      .initialized       = initialized };
 
-    // Default value for "others" clause (if any)
-    uint32_t others_val = 0;
     bool has_others = false;
     Syntax_Node *others_item_expr = NULL;  // RM 4.3.3(5): re-evaluate per component
 
@@ -35732,15 +35861,9 @@ uint32_t Generate_Aggregate (Syntax_Node *node) {
               // evaluate expression per component (RM 4.3.2(6)).
               for (int128_t idx = rng_low; idx <= rng_high; idx++) {
                 int128_t arr_idx = idx - low;
-                if (arr_idx >= 0 and arr_idx < count) {
-                  uint32_t val = Agg_Resolve_Elem (item->association.expression, multidim,
-                    elem_is_composite, agg_type, elem_type, elem_ti);
-                  if (not elem_is_composite and elem_ti and Type_Is_Scalar (elem_ti))
-                    val = Emit_Constraint_Check_Val ((LLVM_Value){ val, elem_type }, elem_ti, item->association.expression->type).reg;
-                  Agg_Store_At_Static (base, val, arr_idx,
-                    elem_type, elem_size, elem_is_composite, agg_rt_elem);
-                  initialized[arr_idx] = true;
-                }
+                if (arr_idx >= 0 and arr_idx < count)
+                  Agg_Emit_Component_At (&agg_context,
+                    item->association.expression, arr_idx);
               }
 
               // RM 4.3.2(6): track inner bounds for consistency
@@ -35759,15 +35882,9 @@ uint32_t Generate_Aggregate (Syntax_Node *node) {
             int128_t rng_high = Type_Bound_Value (ct->high_bound);
             for (int128_t idx = rng_low; idx <= rng_high; idx++) {
               int128_t arr_idx = idx - low;
-              if (arr_idx >= 0 and arr_idx < count) {
-                uint32_t val = Agg_Resolve_Elem (item->association.expression, multidim,
-                  elem_is_composite, agg_type, elem_type, elem_ti);
-                if (not elem_is_composite and elem_ti and Type_Is_Scalar (elem_ti))
-                  val = Emit_Constraint_Check_Val ((LLVM_Value){ val, elem_type }, elem_ti, item->association.expression->type).reg;
-                Agg_Store_At_Static (base, val, arr_idx,
-                  elem_type, elem_size, elem_is_composite, agg_rt_elem);
-                initialized[arr_idx] = true;
-              }
+              if (arr_idx >= 0 and arr_idx < count)
+                Agg_Emit_Component_At (&agg_context,
+                  item->association.expression, arr_idx);
             }
 
           // Single index: 3 => value (or -1 => value)
@@ -35790,15 +35907,9 @@ uint32_t Generate_Aggregate (Syntax_Node *node) {
               Emit_Update_Bound (s_bnd_hi_var, iv, "sgt", bt);
             }
             int128_t idx = cv - low;
-            if (idx >= 0 and idx < count) {
-              uint32_t val = Agg_Resolve_Elem (item->association.expression, multidim,
-                elem_is_composite, agg_type, elem_type, elem_ti);
-              if (not elem_is_composite and elem_ti and Type_Is_Scalar (elem_ti))
-                val = Emit_Constraint_Check_Val ((LLVM_Value){ val, elem_type }, elem_ti, item->association.expression->type).reg;
-              Agg_Store_At_Static (base, val, idx,
-                elem_type, elem_size, elem_is_composite, agg_rt_elem);
-              initialized[idx] = true;
-            }
+            if (idx >= 0 and idx < count)
+              Agg_Emit_Component_At (&agg_context,
+                item->association.expression, idx);
 
             // RM 4.3.2(6): track inner bounds for consistency
             if (check_inner_consistency and cg->inner_agg_bnd_n > 0)
@@ -35811,15 +35922,7 @@ uint32_t Generate_Aggregate (Syntax_Node *node) {
       // Positional association
       } else {
         if (positional_idx < (uint32_t)count) {
-          uint32_t val = Agg_Resolve_Elem (item, multidim,
-            elem_is_composite, agg_type, elem_type, elem_ti);
-
-          // RM 4.3.2: check scalar element against subtype constraint
-          if (not elem_is_composite and elem_ti and Type_Is_Scalar (elem_ti))
-            val = Emit_Constraint_Check_Val ((LLVM_Value){ val, elem_type }, elem_ti, item->type).reg;
-          Agg_Store_At_Static (base, val, (int128_t)positional_idx,
-            elem_type, elem_size, elem_is_composite, agg_rt_elem);
-          initialized[positional_idx] = true;
+          Agg_Emit_Component_At (&agg_context, item, (int128_t)positional_idx);
           positional_idx++;
 
           // RM 4.3.2(6): track inner bounds for consistency
@@ -35943,17 +36046,8 @@ uint32_t Generate_Aggregate (Syntax_Node *node) {
     //                                                                                              
     if (has_others and others_item_expr) {
       for (int128_t idx = 0; idx < count; idx++) {
-        if (not initialized[idx]) {
-          others_val = Agg_Resolve_Elem (others_item_expr,
-            multidim, elem_is_composite, agg_type,
-            elem_type, elem_ti);
-
-          // RM 4.3.2: check scalar element against subtype
-          if (not elem_is_composite and elem_ti and Type_Is_Scalar (elem_ti))
-              others_val = Emit_Constraint_Check_Val ((LLVM_Value) { others_val, elem_type }, elem_ti, others_item_expr->type).reg;
-          Agg_Store_At_Static (base, others_val, idx,
-            elem_type, elem_size, elem_is_composite, agg_rt_elem);
-        }
+        if (not initialized[idx])
+          Agg_Emit_Component_At (&agg_context, others_item_expr, idx);
       }
     }
 
@@ -37342,9 +37436,7 @@ LLVM_Value Generate_Allocator (Syntax_Node *node) {
                      - init_type->array.indices[d].low_bound.int_value + 1;
           length *= (dl < 0) ? 0 : dl;  // Null range (RM 3.6.1)
         }
-        uint32_t elem_size = init_type->array.element_type ?
-                   init_type->array.element_type->size : 1;
-        if (elem_size == 0) elem_size = 1;
+        uint32_t elem_size = Array_Element_Byte_Size (init_type, 1, 1);
         len_t = Emit_Static_Int (length * elem_size, Integer_Arith_Rep ()).reg;
         len_is_bytes = true;
 
@@ -37353,9 +37445,7 @@ LLVM_Value Generate_Allocator (Syntax_Node *node) {
         low_t = Emit_Static_Int (1, con_bt).reg;
         high_t = Emit_Static_Int (1, con_bt).reg;
         len_t = Emit_Temp ();
-        uint32_t elem_size = init_type->array.element_type ?
-                   init_type->array.element_type->size : 1;
-        if (elem_size == 0) elem_size = 8;
+        uint32_t elem_size = Array_Element_Byte_Size (init_type, 1, 8);
         Emit ("  %%t%u = add %s 0, %u\n", len_t, LLVM_Rep_To_String (Integer_Arith_Rep ()), elem_size);
         len_is_bytes = true;
       }
@@ -37380,10 +37470,7 @@ LLVM_Value Generate_Allocator (Syntax_Node *node) {
     // len_t is in new_bt (element count) from Emit_Fat_Pointer_Length.
     // Multiply by element size to get byte count for malloc/memcpy.
     } else {
-      uint32_t elem_size = 1;
-      if (init_type and init_type->array.element_type)
-        elem_size = init_type->array.element_type->size;
-      if (elem_size == 0) elem_size = 1;
+      uint32_t elem_size = Array_Element_Byte_Size (init_type, 1, 1);
       if (elem_size > 1) {
         uint32_t byte_len = Emit_Result_Instruction ("mul %s %%t%u, %u\n", LLVM_Rep_To_String (new_bt), len_t, elem_size);
         len_t_64 = Emit_Extend_To_I64 (byte_len, new_bt).reg;
@@ -37409,9 +37496,7 @@ LLVM_Value Generate_Allocator (Syntax_Node *node) {
         uint32_t prod = Emit_Result_Instruction ("mul %s %%t%u, %%t%u\n", LLVM_Rep_To_String (liat), total, dlen);
         total = prod;
       }
-      uint32_t esz = init_type->array.element_type
-        ? init_type->array.element_type->size : 1;
-      if (esz == 0) esz = 1;
+      uint32_t esz = Array_Element_Byte_Size (init_type, 1, 1);
       uint32_t tbytes = Emit_Result_Instruction ("mul %s %%t%u, %u  ; multi-dim byte length\n", LLVM_Rep_To_String (liat), total, esz);
       len_t_64 = Emit_Extend_To_I64 (tbytes, liat).reg;
     }
@@ -37473,9 +37558,7 @@ LLVM_Value Generate_Allocator (Syntax_Node *node) {
       LLVM_Rep new_bt = Array_Bound_LLVM_Rep (designated);
       LLVM_Rep alloc_iat = Integer_Arith_Rep ();
       uint32_t ndims = subtype->array.index_count;
-      uint32_t elem_size = subtype->array.element_type ?
-                 subtype->array.element_type->size : 8;
-      if (elem_size == 0) elem_size = 8;
+      uint32_t elem_size = Array_Element_Byte_Size (subtype, 8, 8);
 
       // Generate bounds for all dimensions, compute total element count
       uint32_t low_ts[8] = {0}, high_ts[8] = {0};
@@ -37546,9 +37629,7 @@ LLVM_Value Generate_Allocator (Syntax_Node *node) {
     // Constrained array: compute actual byte size from element count
     if (Type_Is_Constrained_Array (designated)) {
       int128_t count = Array_Element_Count (designated);
-      uint32_t elem_sz = designated->array.element_type ?
-                 designated->array.element_type->size : 1;
-      if (elem_sz == 0) elem_sz = 8;
+      uint32_t elem_sz = Array_Element_Byte_Size (designated, 1, 8);
       alloc_size = (uint64_t)(count > 0 ? count : 1) * elem_sz;
       designated_is_composite = true;
     } else {
@@ -37608,9 +37689,7 @@ LLVM_Value Generate_Allocator (Syntax_Node *node) {
           inner = inner->qualified.expression;
 
         int128_t type_count = Array_Element_Count (designated);
-        uint32_t esz = designated->array.element_type ?
-                 designated->array.element_type->size : 4;
-        if (esz == 0) esz = 4;
+        uint32_t esz = Array_Element_Byte_Size (designated, 4, 4);
 
         if (inner->kind == NK_AGGREGATE) {
           uint32_t pos_count = inner->aggregate.items.count;
@@ -37743,7 +37822,7 @@ LLVM_Value Generate_Allocator (Syntax_Node *node) {
           if (elem_ty->record.components[nci].default_expr) { has_defs = true; break; }
         if (has_defs) {
           int128_t count = Array_Element_Count (designated);
-          uint32_t esz = elem_ty->size > 0 ? elem_ty->size : 8;
+          uint32_t esz = Array_Element_Byte_Size (designated, 8, 8);
           for (int128_t ei = 0; ei < count and ei < 1024; ei++) {
             uint32_t ep = Emit_Result_Instruction ("getelementptr i8, ptr %%t%u, i64 %lld  ; elem[%lld]\n", t, (long long)(ei * esz), (long long)ei);
             // Initialize element record's disc constraints and defaults.
@@ -41993,6 +42072,100 @@ LLVM_Value Emit_Disc_Constraint_Value (Type_Info *type_info, uint32_t disc_index
 // constraints, resolve discriminant values from the parent's now-known                             
 // constraints and check pre-evaluated values against their disc subtypes.                         
 //                                                                                                  
+// RM 3.7.2: elaborate the discriminant constraint recorded on
+// `constrained_type` - pre-evaluate what must be frozen, then range-check the
+// constraint values against each discriminant's subtype. Shared by the type
+// and subtype declaration arms of Generate_Declaration.
+//
+// If ANY constraint expression depends on a discriminant, the whole
+// constraint is discriminant-dependent: the non-disc expressions are
+// pre-evaluated once (RM 3.7.1) into frozen globals and every check is
+// deferred until the constraint is applied explicitly (RM 3.7.2(3)).
+//
+// Otherwise each constraint value is checked against its discriminant's
+// subtype now. `use_frozen_constraint_values` selects how that value is
+// obtained:
+//   true  - via Emit_Disc_Constraint_Value, which reads the frozen
+//           evaluate-once value; a function constraint is NOT called again
+//           (the type-declaration behavior).
+//   false - by re-evaluating disc_constraint_exprs (falling back to the
+//           static values); a side-effecting constraint function is called
+//           again here, although RM 3.7.2 evaluates a discriminant
+//           constraint exactly once (the subtype-declaration behavior,
+//           preserved as-is).
+void Elaborate_Discriminant_Constraint_Checks (Type_Info *constrained_type,
+                                               bool use_frozen_constraint_values)
+{
+  bool any_refs_disc = false;
+  if (constrained_type->record.disc_constraint_exprs) {
+    for (uint32_t di = 0; di < constrained_type->record.discriminant_count; di++) {
+      if (not constrained_type->record.disc_constraint_exprs[di]) continue;
+      Symbol *disc_refs[8]; uint32_t drc = 0;
+      Collect_Disc_Symbols_In_Expr (
+        constrained_type->record.disc_constraint_exprs[di],
+        disc_refs, &drc, 8);
+      if (drc > 0) { any_refs_disc = true; break; }
+    }
+  }
+
+  // Pre-evaluate non-disc expressions and cache in frozen globals. This
+  // ensures they are evaluated once at elaboration (RM 3.7.1) but not
+  // checked until constraint application. Skip if already pre-evaluated
+  // (same constrained type referenced by multiple enclosing types).
+  if (any_refs_disc) {
+    if (constrained_type->record.disc_constraint_preeval)
+      return;  // Already pre-evaluated
+    constrained_type->record.disc_constraint_preeval = Arena_Allocate (
+      constrained_type->record.discriminant_count * sizeof (uint32_t));
+    memset (constrained_type->record.disc_constraint_preeval, 0,
+         constrained_type->record.discriminant_count * sizeof (uint32_t));
+    for (uint32_t di = 0; di < constrained_type->record.discriminant_count; di++) {
+      if (not constrained_type->record.disc_constraint_exprs or
+        not constrained_type->record.disc_constraint_exprs[di]) continue;
+      Symbol *disc_refs[8]; uint32_t drc = 0;
+      Collect_Disc_Symbols_In_Expr (
+        constrained_type->record.disc_constraint_exprs[di],
+        disc_refs, &drc, 8);
+
+      // Non-disc expression: evaluate once, store to a frozen global
+      if (drc == 0) {
+        Component_Info *dc = &constrained_type->record.components[di];
+        LLVM_Rep dt = Type_To_Rep (dc->component_type);
+        uint32_t val = Emit_Coerce_Val (
+          Generate_Expression (constrained_type->record.disc_constraint_exprs[di]), dt).reg;
+        constrained_type->record.disc_constraint_preeval[di] =
+          Freeze_Disc_Value_Global (dt, val);
+      }
+    }
+    return;  // All checks deferred for disc-dependent constraints
+  }
+
+  for (uint32_t di = 0; di < constrained_type->record.discriminant_count; di++) {
+    Component_Info *dc = &constrained_type->record.components[di];
+    Type_Info *disc_type = dc->component_type;
+    if (not disc_type or not Type_Is_Scalar (disc_type)) continue;
+    LLVM_Rep dt = Type_To_Rep (disc_type);
+    uint32_t val = 0;
+    if (use_frozen_constraint_values) {
+      // Read the frozen constraint value (preeval) rather than re-evaluating
+      // the constraint expression (RM 3.2.1) - a function constraint must
+      // not be called again here.
+      val = Emit_Disc_Constraint_Value (constrained_type, di, dt).reg;
+    } else if (constrained_type->record.disc_constraint_exprs and
+      constrained_type->record.disc_constraint_exprs[di]) {
+      val = Emit_Coerce_Val (
+        Generate_Expression (constrained_type->record.disc_constraint_exprs[di]), dt).reg;
+    } else if (constrained_type->record.disc_constraint_values) {
+      val = Emit_Static_Int (constrained_type->record.disc_constraint_values[di], dt).reg;
+    }
+    if (val > 0)
+      Emit_Constraint_Check_Val (Val_Rep (val, dt), disc_type, NULL);
+  }
+
+  // RM 3.7.2(3): also check nested component disc constraints
+  Emit_Nested_Disc_Checks (constrained_type, 0, LL_REP_VOID);
+}
+
 void Emit_Nested_Disc_Checks (Type_Info *parent_type,
                               uint32_t gov_disc_val, LLVM_Rep gov_disc_rep)
 {
@@ -42476,6 +42649,90 @@ void Emit_Disc_Dependent_Component_Checks (Type_Info *rec) {
 // where at least one discriminant lacks a default. Only fixed-part components
 // are checked; a variant component's presence is not settled until the
 // governing discriminant is bound at object creation.
+// RM 3.7.1/3.7.2: check each frozen (evaluate-once) discriminant-constraint
+// value recorded on `constrained_type` against its discriminant's subtype.
+// The preeval table must exist; empty slots are skipped.
+void Emit_Preeval_Disc_Constraint_Checks (Type_Info *constrained_type) {
+  for (uint32_t di = 0; di < constrained_type->record.discriminant_count; di++) {
+    if (not constrained_type->record.disc_constraint_preeval[di]) continue;
+    Component_Info *dc = &constrained_type->record.components[di];
+    if (not dc->component_type or not Type_Is_Scalar (dc->component_type))
+      continue;
+    LLVM_Rep dt = Type_To_Rep (dc->component_type);
+    uint32_t val = Emit_Load_Preeval_Global (
+      constrained_type->record.disc_constraint_preeval[di], dt);
+    Emit_Constraint_Check_Val (Val_Rep (val, dt), dc->component_type, NULL);
+  }
+}
+
+// RM 3.7.2: check the discriminant constraint of the record component subtype
+// `constrained_type`, whose enclosing record `parent_record` sits at byte
+// `prefix_offset` within `sym`'s storage.
+//   - A constraint expression naming one of the parent's discriminants is
+//     checked against the parent's stored discriminant value (the
+//     discriminant has no standalone alloca).
+//   - A frozen (evaluate-once, RM 3.7.1) constraint is checked via its
+//     preeval global.
+//   - A bare static constraint value is checked only when
+//     `check_static_values`: components one nesting level deeper check it
+//     (c37213k-style, 0 outside the discriminant's subtype), while direct
+//     components leave it to the subtype's own elaboration.
+void Emit_Subcomponent_Disc_Constraint_Checks (Symbol *sym, Type_Info *parent_record,
+                                               uint32_t prefix_offset,
+                                               Type_Info *constrained_type,
+                                               bool check_static_values) {
+  if (constrained_type->kind == TYPE_RECORD and
+      constrained_type->record.has_disc_constraints and
+      constrained_type->record.disc_constraint_exprs) {
+    for (uint32_t di = 0; di < constrained_type->record.discriminant_count; di++) {
+      if (not constrained_type->record.disc_constraint_exprs[di]) continue;
+      Syntax_Node *cexpr = constrained_type->record.disc_constraint_exprs[di];
+      int32_t pdi = cexpr->symbol ?
+        Find_Record_Component (parent_record, cexpr->symbol->name) : -1;
+      if (pdi >= 0 and (uint32_t) pdi < parent_record->record.discriminant_count) {
+        Component_Info *pdc = &parent_record->record.components[pdi];
+        LLVM_Rep dt = Type_To_Rep (pdc->component_type);
+        uint32_t dv = Emit_Load_Symbol_Field (sym, prefix_offset + pdc->byte_offset, dt);
+        Component_Info *sub_dc = &constrained_type->record.components[di];
+        if (sub_dc->component_type and Type_Is_Scalar (sub_dc->component_type))
+          Emit_Constraint_Check_Val (Val_Rep (dv, dt), sub_dc->component_type,
+            pdc->component_type);
+      }
+    }
+  }
+
+  // A nested discriminant given by a non-discriminant expression took its
+  // value once, at type elaboration (RM 3.7.1); that frozen value is checked
+  // against the nested discriminant's subtype.
+  if (constrained_type->kind == TYPE_RECORD and
+      constrained_type->record.disc_constraint_preeval)
+    Emit_Preeval_Disc_Constraint_Checks (constrained_type);
+
+  // A static constraint value that neither depends on a discriminant nor was
+  // frozen (REC (D3, 0), the 0) is also checked against the nested
+  // discriminant's subtype - the disc-dependent expr and preeval passes above
+  // skip it because it has no expr and no frozen global.
+  if (check_static_values and constrained_type->kind == TYPE_RECORD and
+      constrained_type->record.has_disc_constraints and
+      constrained_type->record.disc_constraint_values) {
+    for (uint32_t di = 0; di < constrained_type->record.discriminant_count; di++) {
+      if (constrained_type->record.disc_constraint_exprs and
+          constrained_type->record.disc_constraint_exprs[di])
+        continue;
+      if (constrained_type->record.disc_constraint_preeval and
+          constrained_type->record.disc_constraint_preeval[di])
+        continue;
+      Component_Info *sub_dc = &constrained_type->record.components[di];
+      if (not sub_dc->component_type or not Type_Is_Scalar (sub_dc->component_type))
+        continue;
+      LLVM_Rep dt = Type_To_Rep (sub_dc->component_type);
+      uint32_t val = Emit_Static_Int (
+        constrained_type->record.disc_constraint_values[di], dt).reg;
+      Emit_Constraint_Check_Val (Val_Rep (val, dt), sub_dc->component_type, NULL);
+    }
+  }
+}
+
 void Emit_Frozen_Component_Constraint_Check (Type_Info *rec) {
   if (not cg->current_function or not Type_Is_Record (rec) or
       not rec->record.has_discriminants or rec->record.all_defaults)
@@ -42489,16 +42746,7 @@ void Emit_Frozen_Component_Constraint_Check (Type_Info *rec) {
         not ct->record.disc_constraint_preeval or
         not ct->record.base_incomplete_at_constraint)
       continue;
-    for (uint32_t di = 0; di < ct->record.discriminant_count; di++) {
-      if (not ct->record.disc_constraint_preeval[di]) continue;
-      Component_Info *dc = &ct->record.components[di];
-      if (not dc->component_type or not Type_Is_Scalar (dc->component_type))
-        continue;
-      LLVM_Rep dt = Type_To_Rep (dc->component_type);
-      uint32_t v = Emit_Load_Preeval_Global (
-        ct->record.disc_constraint_preeval[di], dt);
-      Emit_Constraint_Check_Val (Val_Rep (v, dt), dc->component_type, NULL);
-    }
+    Emit_Preeval_Disc_Constraint_Checks (ct);
   }
 }
 
@@ -44396,71 +44644,8 @@ obj_decl_init:
       if (ndims_decl > 8) ndims_decl = 8;
       uint32_t dim_lo_decl[8], dim_hi_decl[8];
       for (uint32_t d = 0; d < ndims_decl; d++) {
-        Type_Bound low_b = ty->array.indices[d].low_bound;
-        Type_Bound high_b = ty->array.indices[d].high_bound;
-
-        // Get low bound
-        if (low_b.kind == BOUND_INTEGER) {
-          dim_lo_decl[d] = Emit_Static_Int (low_b.int_value, iat_decl).reg;
-
-        // RM 3.3.1: Reuse cached temp from subtype elaboration
-        // to avoid re-evaluating side-effectful expressions.
-        } else if (low_b.kind == BOUND_EXPR and low_b.expr) {
-          dim_lo_decl[d] = low_b.cached_temp ? low_b.cached_temp
-            : Generate_Expression (low_b.expr).reg;
-          if (not Type_Is_Float_Representation (low_b.expr->type)) {
-            // Both freshly-generated and cached temps may be at the bound's
-            // narrow type (e.g. SMALL RANGE 1..100 as i8). Coerce from the
-            // value's REAL type to iat_decl so downstream sub/add see matching
-            // widths; assuming i32 here would no-op an i8 bound and leave it.
-            LLVM_Rep vty = LLVM_Rep_Or (Expression_LLVM_Rep (low_b.expr), Integer_Arith_Rep ());
-            if (LLVM_Rep_Is_Int (vty) and not LLVM_Rep_Equal (vty, iat_decl))
-              dim_lo_decl[d] = Emit_Convert (dim_lo_decl[d], vty, iat_decl).reg;
-          }
-
-        // Derive from index type's low bound (e.g., BOOLEAN'FIRST=0, NI'FIRST=-3)
-        } else if (ty->array.indices[d].index_type) {
-          Type_Info *idx_ty = ty->array.indices[d].index_type;
-          if (idx_ty->low_bound.kind == BOUND_EXPR and idx_ty->low_bound.expr) {
-            dim_lo_decl[d] = Generate_Expression (idx_ty->low_bound.expr).reg;
-            LLVM_Rep vty = Expression_LLVM_Rep (idx_ty->low_bound.expr);
-            if (LLVM_Rep_Is_Int (vty) and not LLVM_Rep_Equal (vty, iat_decl))
-              dim_lo_decl[d] = Emit_Convert (dim_lo_decl[d], vty, iat_decl).reg;
-          } else {
-            dim_lo_decl[d] = Emit_Static_Int (Type_Bound_Value (idx_ty->low_bound), iat_decl).reg;
-          }
-        } else {
-          dim_lo_decl[d] = Emit_Static_Int (1, iat_decl).reg;
-        }
-
-        // Get high bound
-        if (high_b.kind == BOUND_INTEGER) {
-          dim_hi_decl[d] = Emit_Static_Int (high_b.int_value, iat_decl).reg;
-        } else if (high_b.kind == BOUND_EXPR and high_b.expr) {
-          dim_hi_decl[d] = high_b.cached_temp ? high_b.cached_temp
-            : Generate_Expression (high_b.expr).reg;
-          if (not Type_Is_Float_Representation (high_b.expr->type)) {
-            // Same coercion as low_bound: coerce from the value's real type
-            // (narrow bounds stay narrow otherwise) to iat_decl.
-            LLVM_Rep vty = LLVM_Rep_Or (Expression_LLVM_Rep (high_b.expr), Integer_Arith_Rep ());
-            if (LLVM_Rep_Is_Int (vty) and not LLVM_Rep_Equal (vty, iat_decl))
-              dim_hi_decl[d] = Emit_Convert (dim_hi_decl[d], vty, iat_decl).reg;
-          }
-
-        // Derive from index type's high bound
-        } else if (ty->array.indices[d].index_type) {
-          Type_Info *idx_ty = ty->array.indices[d].index_type;
-          if (idx_ty->high_bound.kind == BOUND_EXPR and idx_ty->high_bound.expr) {
-            dim_hi_decl[d] = Generate_Expression (idx_ty->high_bound.expr).reg;
-            LLVM_Rep vty = Expression_LLVM_Rep (idx_ty->high_bound.expr);
-            if (LLVM_Rep_Is_Int (vty) and not LLVM_Rep_Equal (vty, iat_decl))
-              dim_hi_decl[d] = Emit_Convert (dim_hi_decl[d], vty, iat_decl).reg;
-          } else {
-            dim_hi_decl[d] = Emit_Static_Int (Type_Bound_Value (idx_ty->high_bound), iat_decl).reg;
-          }
-        } else {
-          dim_hi_decl[d] = Emit_Static_Int (0, iat_decl).reg;
-        }
+        dim_lo_decl[d] = Emit_Array_Dimension_Bound (ty, d, false, iat_decl);
+        dim_hi_decl[d] = Emit_Array_Dimension_Bound (ty, d, true,  iat_decl);
       }
 
       uint32_t elem_sz = elem_size > 0 ? elem_size :
@@ -44984,106 +45169,13 @@ obj_decl_init:
             if (Type_Is_Array_Like (nct) and nct->array.index_count > 0)
               Emit_Check_Disc_Array_Bounds (sym, ct, nest_off, nct);
 
-            // Nested record subcomponent with disc constraints
-            if (nct->kind == TYPE_RECORD and nct->record.has_disc_constraints and
-              nct->record.disc_constraint_exprs) {
-              for (uint32_t nsdi = 0; nsdi < nct->record.discriminant_count; nsdi++) {
-                if (not nct->record.disc_constraint_exprs[nsdi]) continue;
-                Syntax_Node *ncexpr = nct->record.disc_constraint_exprs[nsdi];
-                int32_t npdi = ncexpr->symbol ?
-                  Find_Record_Component (ct, ncexpr->symbol->name) : -1;
-                if (npdi >= 0 and (uint32_t) npdi < ct->record.discriminant_count) {
-                  Component_Info *npdc = &ct->record.components[npdi];
-                  LLVM_Rep ndt2 = Type_To_Rep (npdc->component_type);
-                  uint32_t ndv2 = Emit_Load_Symbol_Field (sym, nest_off + npdc->byte_offset, ndt2);
-                  Component_Info *nsub = &nct->record.components[nsdi];
-                  if (nsub->component_type and Type_Is_Scalar (nsub->component_type))
-                    Emit_Constraint_Check_Val (Val_Rep (ndv2, ndt2), nsub->component_type,
-                      npdc->component_type);
-                }
-              }
-            }
-
-            // A frozen non-discriminant nested constraint one level deeper —
-            // REC (D, F1) inside an unconstrained record component — is checked
-            // against the nested discriminant subtype using its evaluate-once
-            // value (RM 3.7.1/3.7.2).
-            if (nct->kind == TYPE_RECORD and nct->record.disc_constraint_preeval) {
-              for (uint32_t nsdi = 0; nsdi < nct->record.discriminant_count; nsdi++) {
-                if (not nct->record.disc_constraint_preeval[nsdi]) continue;
-                Component_Info *nsub = &nct->record.components[nsdi];
-                if (not nsub->component_type or not Type_Is_Scalar (nsub->component_type))
-                  continue;
-                LLVM_Rep ndt3 = Type_To_Rep (nsub->component_type);
-                uint32_t nval3 = Emit_Load_Preeval_Global (
-                  nct->record.disc_constraint_preeval[nsdi], ndt3);
-                Emit_Constraint_Check_Val (Val_Rep (nval3, ndt3), nsub->component_type, NULL);
-              }
-            }
-
-            // A static constraint value that neither depends on a discriminant
-            // nor was frozen (REC (D3, 0), the 0) is also checked against the
-            // nested discriminant's subtype — the disc-dependent expr and
-            // preeval loops above skip it because it has no expr and no frozen
-            // global (c37213k: 0 lies outside REC's SM index subtype).
-            if (nct->kind == TYPE_RECORD and nct->record.has_disc_constraints and
-                nct->record.disc_constraint_values) {
-              for (uint32_t nsdi = 0; nsdi < nct->record.discriminant_count; nsdi++) {
-                if (nct->record.disc_constraint_exprs and
-                    nct->record.disc_constraint_exprs[nsdi])
-                  continue;
-                if (nct->record.disc_constraint_preeval and
-                    nct->record.disc_constraint_preeval[nsdi])
-                  continue;
-                Component_Info *nsub = &nct->record.components[nsdi];
-                if (not nsub->component_type or not Type_Is_Scalar (nsub->component_type))
-                  continue;
-                LLVM_Rep ndt4 = Type_To_Rep (nsub->component_type);
-                uint32_t nval4 = Emit_Static_Int (
-                  nct->record.disc_constraint_values[nsdi], ndt4).reg;
-                Emit_Constraint_Check_Val (Val_Rep (nval4, ndt4), nsub->component_type, NULL);
-              }
-            }
+            Emit_Subcomponent_Disc_Constraint_Checks (sym, ct, nest_off,
+                                                       nct, true);
             Emit_Close_Variant_Guard (nest_skip);
           }
         }
 
-        // Check record subcomponent with disc constraints
-        if (ct->kind == TYPE_RECORD and ct->record.has_disc_constraints and
-          ct->record.disc_constraint_exprs) {
-          for (uint32_t sdi = 0; sdi < ct->record.discriminant_count; sdi++) {
-            if (not ct->record.disc_constraint_exprs[sdi]) continue;
-            Syntax_Node *cexpr = ct->record.disc_constraint_exprs[sdi];
-            int32_t pdi = cexpr->symbol ?
-              Find_Record_Component (ty, cexpr->symbol->name) : -1;
-            if (pdi >= 0 and (uint32_t) pdi < ty->record.discriminant_count) {
-              // Load parent disc from record
-              Component_Info *pdc = &ty->record.components[pdi];
-              LLVM_Rep dt = Type_To_Rep (pdc->component_type);
-              uint32_t dv = Emit_Load_Symbol_Field (sym, pdc->byte_offset, dt);
-              Component_Info *sub_dc = &ct->record.components[sdi];
-              if (sub_dc->component_type and Type_Is_Scalar (sub_dc->component_type))
-                Emit_Constraint_Check_Val (Val_Rep (dv, dt), sub_dc->component_type,
-                  pdc->component_type);
-            }
-          }
-        }
-
-        // A nested record's discriminant given by a non-discriminant expression
-        // (REC (D, F1)) took its value once, at type elaboration (RM 3.7.1); that
-        // frozen value is checked against the nested discriminant's subtype.
-        if (ct->kind == TYPE_RECORD and ct->record.disc_constraint_preeval) {
-          for (uint32_t sdi = 0; sdi < ct->record.discriminant_count; sdi++) {
-            if (not ct->record.disc_constraint_preeval[sdi]) continue;
-            Component_Info *sub_dc = &ct->record.components[sdi];
-            if (not sub_dc->component_type or not Type_Is_Scalar (sub_dc->component_type))
-              continue;
-            LLVM_Rep dt = Type_To_Rep (sub_dc->component_type);
-            uint32_t val = Emit_Load_Preeval_Global (
-              ct->record.disc_constraint_preeval[sdi], dt);
-            Emit_Constraint_Check_Val (Val_Rep (val, dt), sub_dc->component_type, NULL);
-          }
-        }
+        Emit_Subcomponent_Disc_Constraint_Checks (sym, ty, 0, ct, false);
 
         // Close runtime variant guard
         Emit_Close_Variant_Guard (post_rt_skip);
@@ -47380,78 +47472,10 @@ void Generate_Declaration (Syntax_Node *node) {
           }
         }
         #undef HAS_DISC_CONSTR
-        for (uint32_t ti = 0; ti < disc_check_count; ti++) {
-          Type_Info *dct = disc_check_types[ti];
-
-          // RM 3.7.2: If ANY disc constraint depends on a discriminant,                            
-          // the whole constraint is disc-dependent. Pre-evaluate                                  
-          // non-disc expressions for later use but defer all checks                                
-          // until the constraint is applied explicitly (RM 3.7.2(3)).                             
-          //                                                                                        
-          bool any_refs_disc = false;
-          if (dct->record.disc_constraint_exprs) {
-            for (uint32_t di = 0; di < dct->record.discriminant_count; di++) {
-              if (not dct->record.disc_constraint_exprs[di]) continue;
-              Symbol *disc_refs[8]; uint32_t drc = 0;
-              Collect_Disc_Symbols_In_Expr (
-                dct->record.disc_constraint_exprs[di],
-                disc_refs, &drc, 8);
-              if (drc > 0) { any_refs_disc = true; break; }
-            }
-          }
-
-          // Pre-evaluate non-disc expressions and cache in allocas.                               
-          // This ensures they are evaluated once at type elaboration                               
-          // (RM 3.7.1) but not checked until constraint application.                              
-          // Skip if already pre-evaluated (same constrained type                                   
-          // referenced by multiple enclosing types).                                              
-          //                                                                                        
-          if (any_refs_disc) {
-            if (dct->record.disc_constraint_preeval) {
-              continue;  // Already pre-evaluated
-            }
-            dct->record.disc_constraint_preeval = Arena_Allocate (
-              dct->record.discriminant_count * sizeof (uint32_t));
-            memset (dct->record.disc_constraint_preeval, 0,
-                 dct->record.discriminant_count * sizeof (uint32_t));
-            for (uint32_t di = 0; di < dct->record.discriminant_count; di++) {
-              if (not dct->record.disc_constraint_exprs or
-                not dct->record.disc_constraint_exprs[di]) continue;
-              Symbol *disc_refs[8]; uint32_t drc = 0;
-              Collect_Disc_Symbols_In_Expr (
-                dct->record.disc_constraint_exprs[di],
-                disc_refs, &drc, 8);
-
-              // Non-disc expression: evaluate once, store to alloca
-              if (drc == 0) {
-                Component_Info *dc = &dct->record.components[di];
-                LLVM_Rep dt = Type_To_Rep (dc->component_type);
-                uint32_t val = Emit_Coerce_Val (
-                  Generate_Expression (dct->record.disc_constraint_exprs[di]), dt).reg;
-                dct->record.disc_constraint_preeval[di] =
-                  Freeze_Disc_Value_Global (dt, val);
-              }
-            }
-            continue;  // Skip all checks for disc-dependent types
-          }
-          // (A non-disc-dependent dynamic discriminant constraint is frozen in
-          // the ordered per-component pass above; the checks below read it.)
-          for (uint32_t di = 0; di < dct->record.discriminant_count; di++) {
-            Component_Info *dc = &dct->record.components[di];
-            Type_Info *disc_type = dc->component_type;
-            if (not disc_type or not Type_Is_Scalar (disc_type)) continue;
-            LLVM_Rep dt = Type_To_Rep (disc_type);
-            // Read the frozen constraint value (preeval) rather than
-            // re-evaluating the constraint expression (RM 3.2.1) — a function
-            // constraint must not be called again here.
-            uint32_t val = Emit_Disc_Constraint_Value (dct, di, dt).reg;
-            if (val > 0)
-              Emit_Constraint_Check_Val (Val_Rep (val, dt), disc_type, NULL);
-          }
-
-          // RM 3.7.2(3): Also check nested component disc constraints
-          Emit_Nested_Disc_Checks (dct, 0, LL_REP_VOID);
-        }
+        // (A non-disc-dependent dynamic discriminant constraint is frozen in
+        // the ordered per-component pass above; the checks read it.)
+        for (uint32_t ti = 0; ti < disc_check_count; ti++)
+          Elaborate_Discriminant_Constraint_Checks (disc_check_types[ti], true);
       }
       break;
     }
@@ -47585,72 +47609,8 @@ void Generate_Declaration (Syntax_Node *node) {
       if (sub_type and (sub_type->kind == TYPE_RECORD or
         sub_type->kind == TYPE_PRIVATE or
         sub_type->kind == TYPE_LIMITED_PRIVATE) and
-        sub_type->record.has_disc_constraints) {
-
-        // RM 3.7.2: If ANY disc constraint depends on a discriminant,
-        // pre-evaluate non-disc parts and defer checks.
-        bool any_refs_disc = false;
-        if (sub_type->record.disc_constraint_exprs) {
-          for (uint32_t di = 0; di < sub_type->record.discriminant_count; di++) {
-            if (not sub_type->record.disc_constraint_exprs[di]) continue;
-            Symbol *disc_refs[8]; uint32_t drc = 0;
-            Collect_Disc_Symbols_In_Expr (
-              sub_type->record.disc_constraint_exprs[di],
-              disc_refs, &drc, 8);
-            if (drc > 0) { any_refs_disc = true; break; }
-          }
-        }
-
-        // Pre-evaluate non-disc expressions (RM 3.7.1).
-        // Skip if already pre-evaluated.
-        if (any_refs_disc) {
-          if (sub_type->record.disc_constraint_preeval) {
-
-            // Already done
-          } else {
-            sub_type->record.disc_constraint_preeval = Arena_Allocate (
-              sub_type->record.discriminant_count * sizeof (uint32_t));
-            memset (sub_type->record.disc_constraint_preeval, 0,
-                 sub_type->record.discriminant_count * sizeof (uint32_t));
-          for (uint32_t di = 0; di < sub_type->record.discriminant_count; di++) {
-            if (not sub_type->record.disc_constraint_exprs or
-              not sub_type->record.disc_constraint_exprs[di]) continue;
-            Symbol *disc_refs[8]; uint32_t drc = 0;
-            Collect_Disc_Symbols_In_Expr (
-              sub_type->record.disc_constraint_exprs[di],
-              disc_refs, &drc, 8);
-            if (drc == 0) {
-              Component_Info *dc = &sub_type->record.components[di];
-              LLVM_Rep dt = Type_To_Rep (dc->component_type);
-              uint32_t val = Emit_Coerce_Val (
-                Generate_Expression (sub_type->record.disc_constraint_exprs[di]), dt).reg;
-              sub_type->record.disc_constraint_preeval[di] =
-                Freeze_Disc_Value_Global (dt, val);
-            }
-          }
-          }  // end else (not already preeval'd)
-        } else {
-          for (uint32_t di = 0; di < sub_type->record.discriminant_count; di++) {
-            Component_Info *dc = &sub_type->record.components[di];
-            Type_Info *disc_type = dc->component_type;
-            if (not disc_type or not Type_Is_Scalar (disc_type)) continue;
-            LLVM_Rep dt = Type_To_Rep (disc_type);
-            uint32_t val = 0;
-            if (sub_type->record.disc_constraint_exprs and
-              sub_type->record.disc_constraint_exprs[di]) {
-              val = Emit_Coerce_Val (
-                Generate_Expression (sub_type->record.disc_constraint_exprs[di]), dt).reg;
-            } else if (sub_type->record.disc_constraint_values) {
-              val = Emit_Static_Int (sub_type->record.disc_constraint_values[di], dt).reg;
-            }
-            if (val > 0)
-              Emit_Constraint_Check_Val (Val_Rep (val, dt), disc_type, NULL);
-          }
-
-          // RM 3.7.2(3): Also check nested component disc constraints
-          Emit_Nested_Disc_Checks (sub_type, 0, LL_REP_VOID);
-        }
-      }
+        sub_type->record.has_disc_constraints)
+        Elaborate_Discriminant_Constraint_Checks (sub_type, false);
       break;
     }
 
