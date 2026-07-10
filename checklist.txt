@@ -139,3 +139,35 @@ PROGRESS LOG
 RESULT: c42 group is 13/13 (100%). Two long-standing string-literal-bound
         bugs fixed at their source (resolution + a missing RM 4.3.2 runtime
         check), no expander hacks, net +4 suite passes.
+
+═══════════════════════════════════════════════════════════════════════════════
+SECOND GROUP (continue): c47  (12 tests: 11 pass, 0 fail, 1 N/A) -> COMPLETE
+═══════════════════════════════════════════════════════════════════════════════
+Target failure: c47009a — a qualified expression whose type mark is a
+CONSTRAINED ACCESS subtype must raise CONSTRAINT_ERROR when a non-null
+operand's designated object has index bounds / discriminant values that differ
+from the access constraint (RM 3.7.2 / 4.7). The check was missing entirely.
+
+Root cause & fix (upstream, reusing existing machinery):
+  1. Generate_Qualified had scalar / record / constrained-array checks but none
+     for a constrained ACCESS subtype. Added Emit_Access_Subtype_Constraint_
+     Check — the value-carrying twin of the allocator's slot-based Emit_Deref_*
+     checks: for access-to-unconstrained-array the operand is a fat pointer
+     whose bounds are the designated object's (compare per dimension); for
+     access-to-record the operand is a pointer to the designated record
+     (compare discriminants). NULL satisfies any access constraint (RM 4.8(4)),
+     so each check skips a null designator.
+  2. ACC6 sub-case: the designated type was still the PRIVATE view (a subtype
+     ACC6S IS ACC6(6) is legal in the visible part before the full type). The
+     access-subtype-constraint builder required Type_Is_Record(designated) and
+     skipped the private view, so no constraint was recorded. A discriminated
+     private view already carries its known discriminant part (RM 7.4.1), so
+     the builder and the new check now accept Type_Is_Private too.
+
+Gate: full Class C — c47009a FAIL->PASS, zero real regressions (ce3116a is a
+pre-existing environmental flake: it exhausts file descriptors probing the
+implementation limit and fails on clean HEAD in isolation too).
+
+The same missing check also affects TYPE CONVERSIONS to a constrained access
+subtype (c46054a) — a different codegen path (not done here; c46 also carries
+the independent hard failure c46022a, so the group is not completable now).

@@ -3556,6 +3556,12 @@ uint32_t   Emit_Fixed_Mantissa_Runtime (Type_Info *ft, double small);
 uint32_t   Emit_Fixed_Fore_Runtime    (Type_Info *ft, double small);
 uint32_t   Emit_Fixed_Large_Runtime   (Type_Info *ft, double small);
 LLVM_Value Generate_Qualified         (Syntax_Node *node);
+// Raise CONSTRAINT_ERROR unless a non-null access value's designated object
+// satisfies a constrained access subtype's index/discriminant constraint.
+void       Emit_Access_Subtype_Constraint_Check (uint32_t     value_reg,
+                                                 LLVM_Rep     value_rep,
+                                                 Type_Info   *access_subtype,
+                                                 const char  *msg);
 LLVM_Value Generate_Allocator         (Syntax_Node *node);
 uint32_t   Generate_Aggregate         (Syntax_Node *node);
 uint32_t   Generate_Composite_Address (Syntax_Node *node);
@@ -15172,8 +15178,14 @@ Type_Info *Resolve_Expression (Syntax_Node *node) {
         // RM 3.7.1: Access-to-discriminated-record with disc constraint.
         // NEW A_UR1(6) → A_UR1 is ACCESS UR1, (6) constrains disc A=6.
         // Create a constrained access type whose designated is UR1(A=6).
+        // The designated type may still be the PRIVATE view (a subtype like
+        // ACC6S IS ACC6(6) is legal in the visible part before the full type):
+        // a discriminated private view already carries its known discriminant
+        // part (RM 7.4.1), so constrain through it just as for a record.
         if (constraint and constraint->kind == NK_INDEX_CONSTRAINT and
-          Type_Is_Access (base_type) and Type_Is_Record (base_type->access.designated_type) and
+          Type_Is_Access (base_type) and
+          (Type_Is_Record (base_type->access.designated_type) or
+           Type_Is_Private (base_type->access.designated_type)) and
           base_type->access.designated_type->record.has_discriminants) {
           Type_Info *des_base = base_type->access.designated_type;
           uint32_t n_args = (uint32_t)constraint->index_constraint.ranges.count;
@@ -36264,6 +36276,13 @@ LLVM_Value Generate_Qualified (Syntax_Node *node) {
     }
   }
 
+  // RM 3.7.2: a type mark denoting a constrained access subtype checks that the
+  // operand's designated object matches the access constraint (index bounds or
+  // discriminants); a non-null mismatch raises CONSTRAINT_ERROR.
+  if (Type_Is_Access (dst_type))
+    Emit_Access_Subtype_Constraint_Check (result.reg, src_llvm, dst_type,
+      "qualified expr access constraint (RM 3.7.2)");
+
   if (src_type and src_type != dst_type) {
     LLVM_Rep dst_llvm = Type_To_Rep (dst_type);
     if (not LLVM_Rep_Equal (src_llvm, dst_llvm)) {
@@ -36998,6 +37017,45 @@ void Emit_Deref_Array_Bound_Check (Type_Info *des, uint32_t slot, const char *ms
     Emit_Check_With_Raise (chi.reg, true, msg);
   }
   Emit_Close_Null_Skip (skip);
+}
+
+// RM 3.7.2: converting or qualifying a value to a CONSTRAINED access subtype
+// requires a non-null operand's designated object to have the index bounds or
+// discriminant values fixed by the constraint; a mismatch raises
+// CONSTRAINT_ERROR. NULL satisfies any access constraint (RM 4.8(4)), so each
+// check skips a null designator. The operand value is in hand — a fat pointer
+// for access-to-unconstrained-array (whose bounds are the designated object's)
+// or a plain pointer to the designated record — so this is the value-carrying
+// twin of the slot-based Emit_Deref_* checks the allocator uses.
+void Emit_Access_Subtype_Constraint_Check (uint32_t value_reg, LLVM_Rep value_rep,
+    Type_Info *access_subtype, const char *msg) {
+  Type_Info *des = Type_Is_Access (access_subtype)
+                     ? access_subtype->access.designated_type : NULL;
+  if (not des) return;
+
+  if (Type_Is_Constrained_Array (des) and des->array.index_count > 0 and
+      LLVM_Rep_Is_Fat_Pointer (value_rep)) {
+    LLVM_Rep abt = Array_Bound_LLVM_Rep (des);
+    uint32_t skip = Emit_Open_Null_Skip (Emit_Extract_Fat_Data (value_reg));
+    for (uint32_t d = 0; d < des->array.index_count; d++) {
+      uint32_t elo = Emit_Type_Bound (&des->array.indices[d].low_bound, abt);
+      uint32_t ehi = Emit_Type_Bound (&des->array.indices[d].high_bound, abt);
+      if (not elo or not ehi) continue;
+      uint32_t act_lo = Emit_Fat_Pointer_Low_Dim  (value_reg, abt, d).reg;
+      uint32_t act_hi = Emit_Fat_Pointer_High_Dim (value_reg, abt, d).reg;
+      Emit_Check_With_Raise (Emit_Icmp ("ne", abt, act_lo, elo).reg, true, msg);
+      Emit_Check_With_Raise (Emit_Icmp ("ne", abt, act_hi, ehi).reg, true, msg);
+    }
+    Emit_Close_Null_Skip (skip);
+  } else if ((Type_Is_Record (des) or Type_Is_Private (des)) and
+             des->record.has_disc_constraints and
+             (des->record.disc_constraint_values or
+              des->record.disc_constraint_exprs) and
+             LLVM_Rep_Is_Pointer (value_rep)) {
+    uint32_t skip = Emit_Open_Null_Skip (value_reg);
+    Emit_Disc_Match_Checks (des, value_reg, msg);
+    Emit_Close_Null_Skip (skip);
+  }
 }
 
 LLVM_Value Generate_Allocator (Syntax_Node *node) {
