@@ -2143,6 +2143,8 @@ bool     Type_Bound_Is_Set                (Type_Bound  b);
 double   Type_Bound_Float_Value           (Type_Bound  b);
 int128_t Array_Element_Count              (Type_Info  *t);
 int128_t Array_Low_Bound                  (Type_Info  *t);
+void     Compute_Static_Array_Size        (Type_Info  *constrained_type,
+                                           uint32_t    default_element_size);
 
 int         Float_Effective_Digits (const Type_Info *t);
 
@@ -2257,6 +2259,24 @@ typedef struct {
   Symbol  *to[MAX_INSTANCE_REMAPS];
   uint32_t count;
 } Instance_Remap;
+
+// Shared kernels of the wrapper synthesizers below. Materialize a
+// wrapper's parameter profile from a formal subprogram's parameter list:
+// count and allocate the binding's Parameter_Info array, resolve each
+// type mark against the instance's bindings (on a clone, so the template
+// spec stays undecorated), install a SYMBOL_PARAMETER for every name in
+// the wrapper's scope, resolve the return type, and append one decorated
+// reference node per parameter to `parameter_references` for use as the
+// wrapper body's actuals.
+void Materialize_Wrapper_Profile (Symbol *binding, Syntax_Node *formal,
+                                  Node_List *parameter_references);
+
+// Wrap `result_expression` as the single RETURN statement of a synthesized
+// function body named after the binding, and record that body as the
+// binding's declaration so the instance emits it like any subprogram.
+void Attach_Wrapper_Function_Body (Symbol *binding,
+                                   Syntax_Node *result_expression,
+                                   Source_Location location);
 
 // Synthesize a resolved wrapper body on `binding`:
 //   function <formal> (L, R) return BOOLEAN is
@@ -2699,6 +2719,11 @@ Type_Info *Resolve_Expression   (Syntax_Node *node);
 void       Seed_Expected_Type    (Syntax_Node *expr, Type_Info *expected);
 bool       Index_Bound_From_Range_Attr (Syntax_Node *idx, Index_Info *info);
 bool       Resolve_Range_Attr_Index    (Syntax_Node *range, Index_Info *info);
+void       Resolve_Index_Constraint_Dimension (Syntax_Node *discrete_range,
+                                               Index_Info  *dimension,
+                                               Type_Info   *base_type,
+                                               uint32_t     dimension_index,
+                                               bool         record_range_mark);
 void        Analyze_Identifier  (Syntax_Node *node);
 Type_Info *Resolve_Selected     (Syntax_Node *node);
 Type_Info *Resolve_Apply        (Syntax_Node *node);
@@ -2727,6 +2752,9 @@ void Freeze_Declaration_List (Node_List *list);
 void Populate_Package_Exports    (Symbol    *pkg_sym, Syntax_Node *pkg_spec);
 void Preregister_Labels          (Node_List *list);
 void Install_Declaration_Symbols (Node_List *decls);
+void Install_Parameter_Symbols   (Node_List *parameters, Symbol *subprogram);
+void Resolve_Subprogram_Body_Interior (Syntax_Node *body,
+                                       bool freeze_declarations);
 void Install_Derived_Operations  (Scope     *spec_scope);
 
 bool   Is_Integer_Expr     (Syntax_Node *node);
@@ -3467,6 +3495,15 @@ LLVM_Value Generate_Apply             (Syntax_Node *node);
 LLVM_Value Generate_Selected          (Syntax_Node *node);
 LLVM_Value Generate_Attribute         (Syntax_Node *node);
 
+// Registers of a 'VALUE string argument after blank stripping (RM 3.5.5):
+// the address of the first non-blank character and the trimmed length at
+// the integer working width.
+typedef struct {
+  uint32_t pointer_register;
+  uint32_t length_register;
+} Trimmed_String_Registers;
+Trimmed_String_Registers Emit_Trimmed_String_Argument (uint32_t string_register);
+
 // The shared tail of a constant-valued integer attribute arm: load `value`
 // into the caller's pre-allocated result register `t`, tagged with the
 // attribute's IR comment, and return it at the integer working width.
@@ -3799,6 +3836,26 @@ void Generate_Implicit_Operators     (void);
 void Generate_Exception_Globals      (void);
 void Generate_Extern_Declarations    (Syntax_Node *node);
 void Generate_Compilation_Unit       (Syntax_Node *node);
+
+// Shared emitters for the exponent handling of the __ada_parse_integer
+// runtime (RM 2.4): the decimal and the based literal arm each emit an
+// exponent digit-scan loop, a power loop, and signed-return tails that
+// differ only in names and in the power loop's multiplier (10 for a
+// decimal literal, the runtime %base for a based one).
+void Emit_Exponent_Digit_Scan_Loop (const char *label_prefix,
+                                    const char *start_value,
+                                    const char *apply_label,
+                                    const char *underscore_after_value,
+                                    const char *underscore_clear_value,
+                                    const char *sbt, const char *it);
+void Emit_Exponent_Power_Loop      (const char *label_prefix,
+                                    const char *apply_label,
+                                    const char *exponent_value,
+                                    const char *sign_label,
+                                    const char *multiplier,
+                                    const char *it);
+void Emit_Integer_Value_Signed_Return (const char *stem, const char *value,
+                                       const char *it);
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 //
@@ -11616,31 +11673,7 @@ Type_Info *Resolve_Apply (Syntax_Node *node) {
             }
 
             // Compute size - only for fully static bounds
-            {
-              bool all_static = true;
-              int128_t count = 1;
-              for (uint32_t i = 0; i < arg_count; i++) {
-                Type_Bound *lo_b = &constrained->array.indices[i].low_bound;
-                Type_Bound *hi_b = &constrained->array.indices[i].high_bound;
-                if (lo_b->kind == BOUND_EXPR or hi_b->kind == BOUND_EXPR) {
-                  all_static = false; break;
-                }
-                int128_t lo = Type_Bound_Value (*lo_b);
-                int128_t hi = Type_Bound_Value (*hi_b);
-                int128_t dim = hi - lo + 1;
-                if (dim < 0) dim = 0;
-                count *= dim;
-              }
-              if (not all_static) {
-                constrained->size = 0;
-              } else if (all_static and count >= 0) {
-                uint32_t elem_size = constrained->array.element_type ?
-                           constrained->array.element_type->size : 1;
-                if (elem_size == 0 and Type_Needs_Fat_Pointer_Load (constrained->array.element_type))
-                  elem_size = FAT_PTR_ALLOC_SIZE;
-                constrained->size = (uint32_t)(count * elem_size);
-              }
-            }
+            Compute_Static_Array_Size (constrained, 1);
           }
           node->type = constrained;
           node->apply.resolution = APPLY_SUBTYPE_CONSTRAINT;
@@ -12447,6 +12480,33 @@ int128_t Array_Low_Bound (Type_Info *type_info) {
   return Type_Bound_Value (type_info->array.indices[0].low_bound);
 }
 
+// Compute the static storage size of a constrained array type: the element
+// count (product of each dimension's extent, RM 3.6.1) times the element
+// size. Only fully static bounds yield a size — a bound captured as an
+// expression (Assign_Eval_Bound yields BOUND_EXPR only when it is not a
+// compile-time constant) makes the size a runtime quantity, recorded as 0
+// so later layout treats it as unknown (RM 3.7.1). An element type that is
+// itself unknown falls back to default_element_size bytes; an element held
+// through a fat pointer sizes as one.
+void Compute_Static_Array_Size (Type_Info *constrained_type,
+                                uint32_t default_element_size) {
+  for (uint32_t i = 0; i < constrained_type->array.index_count; i++) {
+    if (constrained_type->array.indices[i].low_bound.kind  == BOUND_EXPR or
+        constrained_type->array.indices[i].high_bound.kind == BOUND_EXPR) {
+      constrained_type->size = 0;
+      return;
+    }
+  }
+  int128_t count = Array_Element_Count (constrained_type);
+  if (count < 0) return;
+  uint32_t element_size = constrained_type->array.element_type
+    ? constrained_type->array.element_type->size : default_element_size;
+  if (element_size == 0 and
+      Type_Needs_Fat_Pointer_Load (constrained_type->array.element_type))
+    element_size = FAT_PTR_ALLOC_SIZE;
+  constrained_type->size = (uint32_t)(count * element_size);
+}
+
 // Maximum byte size of a constrained array whose bounds may be dynamic. Each
 // dimension is taken at its widest possible extent so later components in the
 // same record sit at fixed offsets (RM 3.7.1). A statically-known bound uses its
@@ -12826,6 +12886,77 @@ bool Resolve_Range_Attr_Index (Syntax_Node *range, Index_Info *info) {
   Assign_Eval_Bound (&info->low_bound,  lo, true);
   Assign_Eval_Bound (&info->high_bound, hi, true);
   return true;
+}
+
+// Resolve one discrete_range of an index constraint into DIMENSION
+// (RM 3.6.1). The dimension's index type is inherited from the same
+// dimension of the unconstrained base array type (e.g. POSITIVE for
+// STRING). The discrete_range takes one of four forms, each with its own
+// bounds capture: an explicit range (L .. H), a subtype indication with
+// its own range (V RANGE L .. H), a P'RANGE attribute, or a bare scalar
+// subtype mark whose own bounds span the dimension. When
+// record_range_mark is set, an explicit subtype mark on the second form
+// is recorded so elaboration also checks the range against that mark
+// (RM 3.5); the access-designated caller does not apply that check.
+void Resolve_Index_Constraint_Dimension (Syntax_Node *discrete_range,
+                                         Index_Info  *dimension,
+                                         Type_Info   *base_type,
+                                         uint32_t     dimension_index,
+                                         bool         record_range_mark) {
+  Resolve_Expression (discrete_range);
+
+  // Inherit index_type from base (e.g., POSITIVE for STRING)
+  if (base_type->array.index_count > dimension_index and
+      base_type->array.indices[dimension_index].index_type) {
+    dimension->index_type = base_type->array.indices[dimension_index].index_type;
+  } else {
+    dimension->index_type = sm->type_integer;
+  }
+
+  // An explicit range: a bound that evaluates at compile time becomes
+  // BOUND_INTEGER; otherwise the expression reference is stored for
+  // later evaluation.
+  if (discrete_range->kind == NK_RANGE) {
+    Assign_Eval_Bound (&dimension->low_bound,  discrete_range->range.low,  true);
+    Assign_Eval_Bound (&dimension->high_bound, discrete_range->range.high, true);
+
+  // A subtype indication with its own range (e.g. U (V RANGE 1 .. X),
+  // STRING (POSITIVE RANGE X .. 10)): the bounds are that explicit
+  // range, captured dynamically.
+  } else if (discrete_range->kind == NK_SUBTYPE_INDICATION and
+             discrete_range->subtype_ind.constraint and
+             discrete_range->subtype_ind.constraint->kind == NK_RANGE_CONSTRAINT and
+             discrete_range->subtype_ind.constraint->range_constraint.range and
+             discrete_range->subtype_ind.constraint->range_constraint.range->kind == NK_RANGE) {
+    Syntax_Node *explicit_range =
+      discrete_range->subtype_ind.constraint->range_constraint.range;
+    Assign_Eval_Bound (&dimension->low_bound,  explicit_range->range.low,  true);
+    Assign_Eval_Bound (&dimension->high_bound, explicit_range->range.high, true);
+
+    // RM 3.5: the discrete_range's explicit subtype mark constrains its
+    // own range too (e.g. MID_WEEK RANGE SUN..TUE requires SUN..TUE
+    // within MID_WEEK), in ADDITION to the array's index subtype
+    // (RM 3.6.1). Record the mark so elaboration checks both;
+    // index_type stays the base index subtype for the 3.6.1 check.
+    if (record_range_mark and
+        discrete_range->subtype_ind.subtype_mark and
+        discrete_range->subtype_ind.subtype_mark->type and
+        Type_Is_Scalar (discrete_range->subtype_ind.subtype_mark->type))
+      dimension->range_mark = discrete_range->subtype_ind.subtype_mark->type;
+
+  // P'RANGE index constraint (RM 3.6.1): a constrained prefix supplies
+  // static bounds, an unconstrained one its value's 'FIRST and 'LAST
+  // (see Resolve_Range_Attr_Index).
+  } else if (Resolve_Range_Attr_Index (discrete_range, dimension)) {
+    // handled by the helper
+
+  // A bare subtype-mark index constraint (BOOLEAN, a subtype with its
+  // own range, possibly carrying a dynamic bound): the dimension spans
+  // that subtype's own bounds.
+  } else if (discrete_range->type and Type_Is_Scalar (discrete_range->type)) {
+    dimension->low_bound  = discrete_range->type->low_bound;
+    dimension->high_bound = discrete_range->type->high_bound;
+  }
 }
 
 // RM 6.6 / 4.3: seed an as-yet-untyped expression with its expected type so
@@ -14144,44 +14275,8 @@ Type_Info *Resolve_Expression (Syntax_Node *node) {
         // suggesting the bound can't be determined at compile time                                 
         // (e.g. discriminant references). RM 3.6.1                                                 
         //                                                                                          
-        if (array_type->array.is_constrained and array_type->array.index_count > 0) {
-          bool all_static = true;
-          int128_t count = 1;
-          for (uint32_t i = 0; i < array_type->array.index_count; i++) {
-            Type_Bound *lo_b = &array_type->array.indices[i].low_bound;
-            Type_Bound *hi_b = &array_type->array.indices[i].high_bound;
-            if ((lo_b->kind == BOUND_EXPR or lo_b->kind == BOUND_NONE) and
-              lo_b->kind != BOUND_INTEGER) {
-
-              // A bound captured as an expression (Assign_Eval_Bound yields
-              // BOUND_EXPR only when not a compile-time constant) makes the
-              // size a runtime quantity.
-              if (lo_b->kind == BOUND_EXPR) {
-                all_static = false; break;
-              }
-            }
-            if ((hi_b->kind == BOUND_EXPR or hi_b->kind == BOUND_NONE) and
-              hi_b->kind != BOUND_INTEGER) {
-              if (hi_b->kind == BOUND_EXPR) {
-                all_static = false; break;
-              }
-            }
-            int128_t lo = Type_Bound_Value (*lo_b);
-            int128_t hi = Type_Bound_Value (*hi_b);
-            int128_t dim = hi - lo + 1;
-            if (dim < 0) dim = 0;
-            count *= dim;
-          }
-          if (not all_static) {
-            array_type->size = 0;
-          } else if (all_static and count >= 0) {
-            uint32_t elem_size = array_type->array.element_type ?
-                       array_type->array.element_type->size : 8;
-            if (elem_size == 0 and Type_Needs_Fat_Pointer_Load (array_type->array.element_type))
-              elem_size = FAT_PTR_ALLOC_SIZE;
-            array_type->size = (uint32_t)(count * elem_size);
-          }
-        }
+        if (array_type->array.is_constrained and array_type->array.index_count > 0)
+          Compute_Static_Array_Size (array_type, 8);
         node->type = array_type;
         return array_type;
       }
@@ -14846,50 +14941,10 @@ Type_Info *Resolve_Expression (Syntax_Node *node) {
           if (des_con->array.index_count > 0) {
             des_con->array.indices = Arena_Allocate (
               des_con->array.index_count * sizeof (Index_Info));
-            for (uint32_t i = 0; i < des_con->array.index_count; i++) {
-              Syntax_Node *range = constraint->index_constraint.ranges.items[i];
-              Resolve_Expression (range);
-              Index_Info *info = &des_con->array.indices[i];
-
-              // Inherit index_type from base (e.g., POSITIVE for STRING)
-              if (des_base->array.index_count > i and des_base->array.indices[i].index_type) {
-                info->index_type = des_base->array.indices[i].index_type;
-              } else {
-                info->index_type = sm->type_integer;
-              }
-              // An index constraint's discrete_range takes one of four forms,
-              // exactly as for a constrained array subtype (RM 3.6.1); the
-              // access-designated path must handle all of them, not only an
-              // explicit range, or a bare type-mark dimension (e.g. the BOOLEAN
-              // in A ('A'..'Z', E1..E2, BOOLEAN)) keeps its default 0..0 bounds
-              // and every later bounds check compares against the wrong extent.
-              if (range->kind == NK_RANGE) {
-                Syntax_Node *bound_expr[2] = { range->range.low, range->range.high };
-                Type_Bound *bound_slot[2] = { &info->low_bound, &info->high_bound };
-                for (uint32_t b = 0; b < 2; b++)
-                  Assign_Eval_Bound (bound_slot[b], bound_expr[b], true);
-
-              // A subtype-indication with its own range (U (V RANGE 1 .. X)).
-              } else if (range->kind == NK_SUBTYPE_INDICATION and
-                         range->subtype_ind.constraint and
-                         range->subtype_ind.constraint->kind == NK_RANGE_CONSTRAINT and
-                         range->subtype_ind.constraint->range_constraint.range and
-                         range->subtype_ind.constraint->range_constraint.range->kind == NK_RANGE) {
-                Syntax_Node *rng = range->subtype_ind.constraint->range_constraint.range;
-                Assign_Eval_Bound (&info->low_bound,  rng->range.low,  true);
-                Assign_Eval_Bound (&info->high_bound, rng->range.high, true);
-
-              // A P'RANGE index constraint.
-              } else if (Resolve_Range_Attr_Index (range, info)) {
-                // handled by the helper
-
-              // A bare subtype-mark index constraint (BOOLEAN, a subtype with its
-              // own range): the dimension spans that subtype's own bounds.
-              } else if (range->type and Type_Is_Scalar (range->type)) {
-                info->low_bound  = range->type->low_bound;
-                info->high_bound = range->type->high_bound;
-              }
-            }
+            for (uint32_t i = 0; i < des_con->array.index_count; i++)
+              Resolve_Index_Constraint_Dimension (
+                constraint->index_constraint.ranges.items[i],
+                &des_con->array.indices[i], des_base, i, false);
           }
           Type_Info *acc_con = Type_New (TYPE_ACCESS, base_type->name);
           *acc_con = *base_type;
@@ -14995,94 +15050,12 @@ Type_Info *Resolve_Expression (Syntax_Node *node) {
                     rb[b]->type = bt;
                 }
               }
-              Resolve_Expression (range);
-              Index_Info *info = &constrained->array.indices[i];
-
-              // Inherit index_type from base (e.g., POSITIVE for STRING)
-              if (base_type->array.index_count > i and base_type->array.indices[i].index_type) {
-                info->index_type = base_type->array.indices[i].index_type;
-              } else {
-                info->index_type = sm->type_integer;
-              }
-
-              // Try to evaluate bounds as static constants. A bound that
-              // evaluates at compile time becomes BOUND_INTEGER; otherwise
-              // the expression reference is stored for later evaluation.
-              if (range->kind == NK_RANGE) {
-                Syntax_Node *bound_expr[2] = { range->range.low, range->range.high };
-                Type_Bound *bound_slot[2] = { &info->low_bound, &info->high_bound };
-                for (uint32_t b = 0; b < 2; b++)
-                  Assign_Eval_Bound (bound_slot[b], bound_expr[b], true);
-
-              // A subtype-indication index constraint with its own range
-              // (e.g. U (V RANGE 1 .. X), STRING (POSITIVE RANGE X .. 10)):
-              // the bounds are that explicit range, captured dynamically.
-              } else if (range->kind == NK_SUBTYPE_INDICATION and
-                         range->subtype_ind.constraint and
-                         range->subtype_ind.constraint->kind == NK_RANGE_CONSTRAINT and
-                         range->subtype_ind.constraint->range_constraint.range and
-                         range->subtype_ind.constraint->range_constraint.range->kind == NK_RANGE) {
-                Syntax_Node *rng = range->subtype_ind.constraint->range_constraint.range;
-                Assign_Eval_Bound (&info->low_bound,  rng->range.low,  true);
-                Assign_Eval_Bound (&info->high_bound, rng->range.high, true);
-                // RM 3.5: the discrete_range's explicit subtype mark constrains
-                // its own range too (e.g. MID_WEEK RANGE SUN..TUE requires
-                // SUN..TUE within MID_WEEK), in ADDITION to the array's index
-                // subtype (RM 3.6.1). Record the mark so elaboration checks both;
-                // index_type stays the base index subtype for the 3.6.1 check.
-                if (range->subtype_ind.subtype_mark and
-                    range->subtype_ind.subtype_mark->type and
-                    Type_Is_Scalar (range->subtype_ind.subtype_mark->type))
-                  info->range_mark = range->subtype_ind.subtype_mark->type;
-
-              // P'RANGE index constraint (RM 3.6.1): a constrained prefix
-              // supplies static bounds, an unconstrained one its value's 'FIRST
-              // and 'LAST (see Resolve_Range_Attr_Index).
-              } else if (Resolve_Range_Attr_Index (range, info)) {
-                // handled by the helper
-
-              // A subtype-mark index constraint (e.g. STRING (S), U (T) with
-              // SUBTYPE S IS INTEGER RANGE 1 .. X): the index range is that
-              // subtype's own range, which may carry a dynamic bound.
-              } else if (range->type and Type_Is_Scalar (range->type)) {
-                info->low_bound  = range->type->low_bound;
-                info->high_bound = range->type->high_bound;
-              }
+              Resolve_Index_Constraint_Dimension (range,
+                &constrained->array.indices[i], base_type, i, true);
             }
 
             // Compute size - only for fully static bounds
-            {
-              bool all_static = true;
-              int128_t count = 1;
-              for (uint32_t i = 0; i < constrained->array.index_count; i++) {
-                Type_Bound *lo_b = &constrained->array.indices[i].low_bound;
-                Type_Bound *hi_b = &constrained->array.indices[i].high_bound;
-                // A bound captured as an expression (Assign_Eval_Bound yields
-                // BOUND_EXPR only when it is not a compile-time constant) makes
-                // the object's size a runtime quantity. Capturing X'FIRST and
-                // X'LAST of an unconstrained-array prefix lands here.
-                if (lo_b->kind == BOUND_EXPR or hi_b->kind == BOUND_EXPR) {
-                  all_static = false; break;
-                }
-                int128_t lo = Type_Bound_Value (*lo_b);
-                int128_t hi = Type_Bound_Value (*hi_b);
-                int128_t dim = hi - lo + 1;
-                if (dim < 0) dim = 0;
-                count *= dim;
-              }
-
-              // Discriminant-dependent bounds: size unknown at compile
-              // time. Mark with 0 so record layout uses max. (RM 3.7.1)
-              if (not all_static) {
-                constrained->size = 0;
-              } else if (all_static and count >= 0) {
-                uint32_t elem_size = constrained->array.element_type ?
-                           constrained->array.element_type->size : 1;
-                if (elem_size == 0 and Type_Needs_Fat_Pointer_Load (constrained->array.element_type))
-                  elem_size = FAT_PTR_ALLOC_SIZE;
-                constrained->size = (uint32_t)(count * elem_size);
-              }
-            }
+            Compute_Static_Array_Size (constrained, 1);
           }
           node->type = constrained;
           return constrained;
@@ -16135,6 +16108,56 @@ void Assign_Access_Type_Masters (Node_List *list, uint32_t scope_id) {
   }
 }
 
+// Install the parameters of a subprogram profile into the current scope
+// (RM 6.1): resolve each parameter specification's type mark, create a
+// SYMBOL_PARAMETER for every defining name, and link the name node to it.
+// When the owning subprogram symbol is supplied, each created symbol is also
+// recorded in the corresponding Parameter_Info slot so code generation
+// reaches the same symbols the resolved body references.
+void Install_Parameter_Symbols (Node_List *parameters, Symbol *subprogram) {
+  uint32_t parameter_index = 0;
+  for (uint32_t i = 0; i < parameters->count; i++) {
+    Syntax_Node *specification = parameters->items[i];
+    if (not specification or specification->kind != NK_PARAM_SPEC) continue;
+    if (specification->param_spec.param_type)
+      Resolve_Expression (specification->param_spec.param_type);
+    for (uint32_t j = 0; j < specification->param_spec.names.count; j++) {
+      Syntax_Node *name = specification->param_spec.names.items[j];
+      Symbol *parameter_sym = Symbol_New (SYMBOL_PARAMETER,
+        name->string_val.text, name->location);
+      if (specification->param_spec.param_type)
+        parameter_sym->type = specification->param_spec.param_type->type;
+      Symbol_Add (parameter_sym);
+      name->symbol = parameter_sym;
+      if (subprogram and parameter_index < subprogram->parameter_count)
+        subprogram->parameters[parameter_index].param_sym = parameter_sym;
+      parameter_index++;
+    }
+  }
+}
+
+// Resolve the interior of a subprogram body: the declarative part, the
+// RM 9.4 task-master bookkeeping that part implies, the statement sequence,
+// and the exception handlers. An ordinary body freezes its declarative part
+// at its end (RM 13.14); generic template bodies and instance body clones
+// resolve without that freeze, so those callers pass false.
+void Resolve_Subprogram_Body_Interior (Syntax_Node *body,
+                                       bool freeze_declarations) {
+  Resolve_Declaration_List (&body->subprogram_body.declarations);
+  body->subprogram_body.is_task_master =
+    Declarations_Create_Task_Dependents (&body->subprogram_body.declarations);
+  if (body->subprogram_body.is_task_master) {
+    body->subprogram_body.master_scope_id = Next_Master_Scope_Id ();
+    Assign_Access_Type_Masters (&body->subprogram_body.declarations,
+                                body->subprogram_body.master_scope_id);
+  }
+  if (freeze_declarations)
+    Freeze_Declaration_List (&body->subprogram_body.declarations);
+  Resolve_Statement_List (&body->subprogram_body.statements);
+  for (uint32_t i = 0; i < body->subprogram_body.handlers.count; i++)
+    Resolve_Statement (body->subprogram_body.handlers.items[i]);
+}
+
 void Resolve_Statement_List (Node_List *list) {
 
   // First pass: register all labels to allow forward gotos
@@ -16527,27 +16550,7 @@ void Resolve_Statement (Syntax_Node *node) {
       Symbol_Manager_Push_Scope (sm->current_scope->owner);
 
       // Resolve accept parameters
-      for (uint32_t i = 0; i < node->accept_stmt.parameters.count; i++) {
-        Syntax_Node *param = node->accept_stmt.parameters.items[i];
-        if (param and param->kind == NK_PARAM_SPEC) {
-          if (param->param_spec.param_type) {
-            Resolve_Expression (param->param_spec.param_type);
-          }
-
-          // Add parameter names to scope for the accept body
-          for (uint32_t j = 0; j < param->param_spec.names.count; j++) {
-            Syntax_Node *name = param->param_spec.names.items[j];
-            if (name and name->kind == NK_IDENTIFIER) {
-              Symbol *param_sym = Symbol_New (SYMBOL_PARAMETER,
-                name->string_val.text, name->location);
-              if (param->param_spec.param_type)
-                param_sym->type = param->param_spec.param_type->type;
-              Symbol_Add (param_sym);
-              name->symbol = param_sym;
-            }
-          }
-        }
-      }
+      Install_Parameter_Symbols (&node->accept_stmt.parameters, NULL);
 
       // Overloaded entries share a name; the accept denotes the overload whose
       // parameter profile matches this accept's, not merely the first found by
@@ -17278,6 +17281,75 @@ void Install_Generic_Formal_Symbols (Symbol *generic_symbol) {
   }
 }
 
+void Materialize_Wrapper_Profile (Symbol *binding, Syntax_Node *formal,
+                                  Node_List *parameter_references) {
+  Source_Location location = formal->location;
+  Node_List *formal_parameters = &formal->generic_subprog_param.parameters;
+  uint32_t total_parameters = 0;
+  for (uint32_t i = 0; i < formal_parameters->count; i++) {
+    Syntax_Node *ps = formal_parameters->items[i];
+    if (ps and ps->kind == NK_PARAM_SPEC)
+      total_parameters += ps->param_spec.names.count;
+  }
+  binding->parameter_count = total_parameters;
+  binding->parameters = total_parameters
+    ? Arena_Allocate (total_parameters * sizeof (Parameter_Info)) : NULL;
+
+  uint32_t index = 0;
+  for (uint32_t i = 0; i < formal_parameters->count; i++) {
+    Syntax_Node *ps = formal_parameters->items[i];
+    if (not ps or ps->kind != NK_PARAM_SPEC) continue;
+    Type_Info *parameter_type = NULL;
+    if (ps->param_spec.param_type) {
+      Syntax_Node *mark = Clone_Subtree (ps->param_spec.param_type);
+      Resolve_Expression (mark);
+      parameter_type = mark->type;
+    }
+    for (uint32_t j = 0; j < ps->param_spec.names.count; j++) {
+      Syntax_Node *parameter_name = ps->param_spec.names.items[j];
+      Symbol *parameter_sym = Symbol_New (SYMBOL_PARAMETER,
+        parameter_name->string_val.text, location);
+      parameter_sym->type = parameter_type;
+      Symbol_Add (parameter_sym);
+      binding->parameters[index] = (Parameter_Info){
+        .name       = parameter_name->string_val.text,
+        .param_type = parameter_type,
+        .mode       = (Parameter_Mode) ps->param_spec.mode,
+        .param_sym  = parameter_sym,
+      };
+      Syntax_Node *reference = Node_New (NK_IDENTIFIER, location);
+      reference->string_val.text = parameter_name->string_val.text;
+      reference->symbol = parameter_sym;
+      reference->type   = parameter_type;
+      Node_List_Push (parameter_references, reference);
+      index++;
+    }
+  }
+  if (formal->generic_subprog_param.return_type) {
+    Syntax_Node *return_mark =
+      Clone_Subtree (formal->generic_subprog_param.return_type);
+    Resolve_Expression (return_mark);
+    binding->return_type = return_mark->type;
+    binding->type        = binding->return_type;
+  }
+}
+
+void Attach_Wrapper_Function_Body (Symbol *binding,
+                                   Syntax_Node *result_expression,
+                                   Source_Location location) {
+  Syntax_Node *return_stmt = Node_New (NK_RETURN, location);
+  return_stmt->return_stmt.expression = result_expression;
+  Syntax_Node *wrapper_spec = Node_New (NK_FUNCTION_SPEC, location);
+  wrapper_spec->subprogram_spec.name = binding->name;
+  wrapper_spec->symbol = binding;
+  Syntax_Node *wrapper_body = Node_New (NK_FUNCTION_BODY, location);
+  wrapper_body->subprogram_body.specification = wrapper_spec;
+  Node_List_Push (&wrapper_body->subprogram_body.statements, return_stmt);
+  wrapper_body->symbol = binding;
+  binding->declaration = wrapper_body;
+  binding->is_instance_wrapper = true;
+}
+
 void Synthesize_Negated_Equality_Wrapper (Symbol *binding, Symbol *equality,
                                           Source_Location location) {
   Type_Info *operand_type = equality->parameter_count >= 1
@@ -17322,20 +17394,9 @@ void Synthesize_Negated_Equality_Wrapper (Symbol *binding, Symbol *equality,
   negation->unary.op      = TK_NOT;
   negation->unary.operand = equality_call;
   negation->type          = boolean_type;
-  Syntax_Node *return_stmt = Node_New (NK_RETURN, location);
-  return_stmt->return_stmt.expression = negation;
 
-  Syntax_Node *wrapper_spec = Node_New (NK_FUNCTION_SPEC, location);
-  wrapper_spec->subprogram_spec.name = binding->name;
-  wrapper_spec->symbol = binding;
-  Syntax_Node *wrapper_body = Node_New (NK_FUNCTION_BODY, location);
-  wrapper_body->subprogram_body.specification = wrapper_spec;
-  Node_List_Push (&wrapper_body->subprogram_body.statements, return_stmt);
-  wrapper_body->symbol = binding;
-
+  Attach_Wrapper_Function_Body (binding, negation, location);
   binding->scope = sm->current_scope;
-  binding->declaration = wrapper_body;
-  binding->is_instance_wrapper = true;
   Symbol_Manager_Pop_Scope ();
 }
 
@@ -17346,77 +17407,21 @@ void Synthesize_Attribute_Wrapper (Symbol *binding,
   Source_Location location = formal->location;
   Symbol_Manager_Push_Scope (binding);
 
-  // Parameters mirror the formal subprogram's profile; their type marks
-  // resolve against the instance's bindings (formal types -> actual views).
-  Node_List *formal_parameters = &formal->generic_subprog_param.parameters;
-  uint32_t total_parameters = 0;
-  for (uint32_t i = 0; i < formal_parameters->count; i++) {
-    Syntax_Node *ps = formal_parameters->items[i];
-    if (ps and ps->kind == NK_PARAM_SPEC)
-      total_parameters += ps->param_spec.names.count;
-  }
-  binding->parameter_count = total_parameters;
-  binding->parameters = total_parameters
-    ? Arena_Allocate (total_parameters * sizeof (Parameter_Info)) : NULL;
-
   Syntax_Node *attribute_call =
     Clone_Subtree_Keep_Decorations (attribute_node);
   for (uint32_t m = 0; m < remap->count; m++)
     Reassign_Symbol_References (attribute_call, remap->from[m], remap->to[m]);
   attribute_call->attribute.arguments = (Node_List){0};
 
-  uint32_t index = 0;
-  for (uint32_t i = 0; i < formal_parameters->count; i++) {
-    Syntax_Node *ps = formal_parameters->items[i];
-    if (not ps or ps->kind != NK_PARAM_SPEC) continue;
-    Type_Info *parameter_type = NULL;
-    if (ps->param_spec.param_type) {
-      Syntax_Node *mark = Clone_Subtree (ps->param_spec.param_type);
-      Resolve_Expression (mark);
-      parameter_type = mark->type;
-    }
-    for (uint32_t j = 0; j < ps->param_spec.names.count; j++) {
-      Syntax_Node *parameter_name = ps->param_spec.names.items[j];
-      Symbol *parameter_sym = Symbol_New (SYMBOL_PARAMETER,
-        parameter_name->string_val.text, location);
-      parameter_sym->type = parameter_type;
-      Symbol_Add (parameter_sym);
-      binding->parameters[index] = (Parameter_Info){
-        .name       = parameter_name->string_val.text,
-        .param_type = parameter_type,
-        .mode       = (Parameter_Mode) ps->param_spec.mode,
-        .param_sym  = parameter_sym,
-      };
-      Syntax_Node *argument = Node_New (NK_IDENTIFIER, location);
-      argument->string_val.text = parameter_name->string_val.text;
-      argument->symbol = parameter_sym;
-      argument->type   = parameter_type;
-      Node_List_Push (&attribute_call->attribute.arguments, argument);
-      index++;
-    }
-  }
-  if (formal->generic_subprog_param.return_type) {
-    Syntax_Node *return_mark =
-      Clone_Subtree (formal->generic_subprog_param.return_type);
-    Resolve_Expression (return_mark);
-    binding->return_type = return_mark->type;
-    binding->type        = binding->return_type;
-  }
+  // Parameters mirror the formal subprogram's profile; their type marks
+  // resolve against the instance's bindings (formal types -> actual views).
+  // Each parameter becomes an argument of the wrapped attribute call.
+  Materialize_Wrapper_Profile (binding, formal,
+                               &attribute_call->attribute.arguments);
   attribute_call->type = binding->return_type;
 
-  Syntax_Node *return_stmt = Node_New (NK_RETURN, location);
-  return_stmt->return_stmt.expression = attribute_call;
-  Syntax_Node *wrapper_spec = Node_New (NK_FUNCTION_SPEC, location);
-  wrapper_spec->subprogram_spec.name = binding->name;
-  wrapper_spec->symbol = binding;
-  Syntax_Node *wrapper_body = Node_New (NK_FUNCTION_BODY, location);
-  wrapper_body->subprogram_body.specification = wrapper_spec;
-  Node_List_Push (&wrapper_body->subprogram_body.statements, return_stmt);
-  wrapper_body->symbol = binding;
-
+  Attach_Wrapper_Function_Body (binding, attribute_call, location);
   binding->scope = sm->current_scope;
-  binding->declaration = wrapper_body;
-  binding->is_instance_wrapper = true;
   Symbol_Manager_Pop_Scope ();
 }
 
@@ -17426,82 +17431,25 @@ void Synthesize_Operator_Wrapper (Symbol *binding, Token_Kind operator_token,
   Source_Location location = formal->location;
   Symbol_Manager_Push_Scope (binding);
 
-  Node_List *formal_parameters = &formal->generic_subprog_param.parameters;
-  uint32_t total_parameters = 0;
-  for (uint32_t i = 0; i < formal_parameters->count; i++) {
-    Syntax_Node *ps = formal_parameters->items[i];
-    if (ps and ps->kind == NK_PARAM_SPEC)
-      total_parameters += ps->param_spec.names.count;
-  }
-  binding->parameter_count = total_parameters;
-  binding->parameters = total_parameters
-    ? Arena_Allocate (total_parameters * sizeof (Parameter_Info)) : NULL;
+  Node_List parameter_references = {0};
+  Materialize_Wrapper_Profile (binding, formal, &parameter_references);
 
-  Syntax_Node *operands[2] = { NULL, NULL };
-  uint32_t index = 0;
-  for (uint32_t i = 0; i < formal_parameters->count; i++) {
-    Syntax_Node *ps = formal_parameters->items[i];
-    if (not ps or ps->kind != NK_PARAM_SPEC) continue;
-    Type_Info *parameter_type = NULL;
-    if (ps->param_spec.param_type) {
-      Syntax_Node *mark = Clone_Subtree (ps->param_spec.param_type);
-      Resolve_Expression (mark);
-      parameter_type = mark->type;
-    }
-    for (uint32_t j = 0; j < ps->param_spec.names.count; j++) {
-      Syntax_Node *parameter_name = ps->param_spec.names.items[j];
-      Symbol *parameter_sym = Symbol_New (SYMBOL_PARAMETER,
-        parameter_name->string_val.text, location);
-      parameter_sym->type = parameter_type;
-      Symbol_Add (parameter_sym);
-      binding->parameters[index] = (Parameter_Info){
-        .name       = parameter_name->string_val.text,
-        .param_type = parameter_type,
-        .mode       = (Parameter_Mode) ps->param_spec.mode,
-        .param_sym  = parameter_sym,
-      };
-      if (index < 2) {
-        Syntax_Node *reference = Node_New (NK_IDENTIFIER, location);
-        reference->string_val.text = parameter_name->string_val.text;
-        reference->symbol = parameter_sym;
-        reference->type   = parameter_type;
-        operands[index] = reference;
-      }
-      index++;
-    }
-  }
-  if (formal->generic_subprog_param.return_type) {
-    Syntax_Node *return_mark =
-      Clone_Subtree (formal->generic_subprog_param.return_type);
-    Resolve_Expression (return_mark);
-    binding->return_type = return_mark->type;
-    binding->type        = binding->return_type;
-  }
-
+  // A two-parameter profile wraps a binary operator, a one-parameter
+  // profile a unary one; any other arity synthesizes no body.
   Syntax_Node *expression = NULL;
-  if (total_parameters == 2 and operands[0] and operands[1]) {
+  if (binding->parameter_count == 2) {
     expression = Node_New (NK_BINARY_OP, location);
     expression->binary.op    = operator_token;
-    expression->binary.left  = operands[0];
-    expression->binary.right = operands[1];
-  } else if (total_parameters == 1 and operands[0]) {
+    expression->binary.left  = parameter_references.items[0];
+    expression->binary.right = parameter_references.items[1];
+  } else if (binding->parameter_count == 1) {
     expression = Node_New (NK_UNARY_OP, location);
     expression->unary.op      = operator_token;
-    expression->unary.operand = operands[0];
+    expression->unary.operand = parameter_references.items[0];
   }
   if (expression) {
     expression->type = binding->return_type;
-    Syntax_Node *return_stmt = Node_New (NK_RETURN, location);
-    return_stmt->return_stmt.expression = expression;
-    Syntax_Node *wrapper_spec = Node_New (NK_FUNCTION_SPEC, location);
-    wrapper_spec->subprogram_spec.name = binding->name;
-    wrapper_spec->symbol = binding;
-    Syntax_Node *wrapper_body = Node_New (NK_FUNCTION_BODY, location);
-    wrapper_body->subprogram_body.specification = wrapper_spec;
-    Node_List_Push (&wrapper_body->subprogram_body.statements, return_stmt);
-    wrapper_body->symbol = binding;
-    binding->declaration = wrapper_body;
-    binding->is_instance_wrapper = true;
+    Attach_Wrapper_Function_Body (binding, expression, location);
   }
   binding->scope = sm->current_scope;
   Symbol_Manager_Pop_Scope ();
@@ -18480,17 +18428,7 @@ bool Instantiate_Generic_Subprogram (Symbol *instance_sym, Symbol *template_sym)
   // Resolve the clone as an ordinary body: declarations (the bindings
   // first), master bookkeeping, statements, handlers.
   if (body_clone) {
-    Resolve_Declaration_List (&body_clone->subprogram_body.declarations);
-    body_clone->subprogram_body.is_task_master =
-      Declarations_Create_Task_Dependents (&body_clone->subprogram_body.declarations);
-    if (body_clone->subprogram_body.is_task_master) {
-      body_clone->subprogram_body.master_scope_id = Next_Master_Scope_Id ();
-      Assign_Access_Type_Masters (&body_clone->subprogram_body.declarations,
-                                  body_clone->subprogram_body.master_scope_id);
-    }
-    Resolve_Statement_List (&body_clone->subprogram_body.statements);
-    for (uint32_t i = 0; i < body_clone->subprogram_body.handlers.count; i++)
-      Resolve_Statement (body_clone->subprogram_body.handlers.items[i]);
+    Resolve_Subprogram_Body_Interior (body_clone, false);
     body_clone->symbol = instance_sym;
   }
   instance_sym->scope = sm->current_scope;
@@ -19260,30 +19198,9 @@ void Resolve_Declaration (Syntax_Node *node) {
           // declaration was analyzed, and re-install here for the body.
           Install_Generic_Formal_Symbols (matching_generic);
 
-          // Add body parameters to scope
-          if (spec) {
-            Node_List *params = &spec->subprogram_spec.parameters;
-            for (uint32_t i = 0; i < params->count; i++) {
-              Syntax_Node *param = params->items[i];
-
-              // Resolve parameter type (may reference generic formals)
-              if (param and param->kind == NK_PARAM_SPEC) {
-                if (param->param_spec.param_type)
-                  Resolve_Expression (param->param_spec.param_type);
-
-                // Add each parameter name as a symbol
-                for (uint32_t j = 0; j < param->param_spec.names.count; j++) {
-                  Syntax_Node *name = param->param_spec.names.items[j];
-                  Symbol *param_sym = Symbol_New (SYMBOL_PARAMETER,
-                    name->string_val.text, name->location);
-                  if (param->param_spec.param_type)
-                    param_sym->type = param->param_spec.param_type->type;
-                  Symbol_Add (param_sym);
-                  name->symbol = param_sym;
-                }
-              }
-            }
-          }
+          // Add body parameters to scope (types may reference generic formals)
+          if (spec)
+            Install_Parameter_Symbols (&spec->subprogram_spec.parameters, NULL);
 
           // Formals are in scope: resolve IS-name formal-subprogram
           // defaults (RM 12.1.3).
@@ -19292,21 +19209,8 @@ void Resolve_Declaration (Syntax_Node *node) {
             Resolve_Generic_Formal_Subprogram_Defaults (
               &matching_generic->declaration->generic_decl.formals);
 
-          // Resolve declarations and statements in the generic body
-          Resolve_Declaration_List (&node->subprogram_body.declarations);
-          node->subprogram_body.is_task_master =
-            Declarations_Create_Task_Dependents (&node->subprogram_body.declarations);
-          if (node->subprogram_body.is_task_master) {
-            node->subprogram_body.master_scope_id = Next_Master_Scope_Id ();
-            Assign_Access_Type_Masters (&node->subprogram_body.declarations,
-                                        node->subprogram_body.master_scope_id);
-          }
-          Resolve_Statement_List (&node->subprogram_body.statements);
-
-          // Resolve exception handlers
-          for (uint32_t i = 0; i < node->subprogram_body.handlers.count; i++) {
-            Resolve_Statement (node->subprogram_body.handlers.items[i]);
-          }
+          // Resolve declarations, statements, and handlers in the generic body
+          Resolve_Subprogram_Body_Interior (node, false);
           Symbol_Manager_Pop_Scope ();
           break;
         }
@@ -19360,58 +19264,12 @@ void Resolve_Declaration (Syntax_Node *node) {
         }
 
         // Add parameters to scope and link to Parameter_Info
-        if (spec) {
-          Symbol *func_sym = node->symbol;
-          uint32_t param_idx = 0;
-          Node_List *params = &spec->subprogram_spec.parameters;
-          for (uint32_t i = 0; i < params->count; i++) {
-            Syntax_Node *param = params->items[i];
+        if (spec)
+          Install_Parameter_Symbols (&spec->subprogram_spec.parameters,
+                                     node->symbol);
 
-            // Resolve parameter type
-            if (param->kind == NK_PARAM_SPEC) {
-              if (param->param_spec.param_type) {
-                Resolve_Expression (param->param_spec.param_type);
-              }
-
-              // Add each parameter name as a symbol
-              for (uint32_t j = 0; j < param->param_spec.names.count; j++) {
-                Syntax_Node *name = param->param_spec.names.items[j];
-                Symbol *param_sym = Symbol_New (SYMBOL_PARAMETER,
-                  name->string_val.text, name->location);
-                if (param->param_spec.param_type) {
-                  param_sym->type = param->param_spec.param_type->type;
-                }
-                Symbol_Add (param_sym);
-                name->symbol = param_sym;
-
-                // Link to Parameter_Info for code generation
-                if (func_sym and param_idx < func_sym->parameter_count) {
-                  func_sym->parameters[param_idx].param_sym = param_sym;
-                }
-                param_idx++;
-              }
-            }
-          }
-        }
-
-        // Resolve declarations and statements
-        Resolve_Declaration_List (&node->subprogram_body.declarations);
-        node->subprogram_body.is_task_master =
-          Declarations_Create_Task_Dependents (&node->subprogram_body.declarations);
-        if (node->subprogram_body.is_task_master) {
-          node->subprogram_body.master_scope_id = Next_Master_Scope_Id ();
-          Assign_Access_Type_Masters (&node->subprogram_body.declarations,
-                                      node->subprogram_body.master_scope_id);
-        }
-
-        // Freeze all types at end of declarative part (RM 13.14)
-        Freeze_Declaration_List (&node->subprogram_body.declarations);
-        Resolve_Statement_List (&node->subprogram_body.statements);
-
-        // Resolve exception handlers
-        for (uint32_t i = 0; i < node->subprogram_body.handlers.count; i++) {
-          Resolve_Statement (node->subprogram_body.handlers.items[i]);
-        }
+        // Resolve declarations, statements, and handlers
+        Resolve_Subprogram_Body_Interior (node, true);
         Symbol_Manager_Pop_Scope ();
       }
       break;
@@ -31641,6 +31499,27 @@ LLVM_Value Emit_Attribute_Integer_Constant (uint32_t t, int64_t value,
   return Val_Rep (t, rep);
 }
 
+// Extract a 'VALUE string argument's data pointer and length from its fat
+// pointer and strip leading and trailing blanks (RM 3.5.5) via the runtime
+// space-counting helpers, which this marks as needed.
+Trimmed_String_Registers Emit_Trimmed_String_Argument (uint32_t string_register) {
+  LLVM_Rep bound_rep = String_Bound_Rep ();
+  LLVM_Rep arith_rep = Integer_Arith_Rep ();
+  uint32_t data_register  = Emit_Fat_Pointer_Data (string_register, bound_rep).reg;
+  uint32_t length_bound   = Emit_Fat_Pointer_Length (string_register, bound_rep).reg;
+  uint32_t raw_length     = Emit_Convert (length_bound, bound_rep, arith_rep).reg;
+  uint32_t leading_count  = Emit_Result_Instruction ("call %s @__ada_count_leading_spaces(ptr %%t%u, %s %%t%u)\n", LLVM_Rep_To_String (arith_rep), data_register, LLVM_Rep_To_String (arith_rep), raw_length);
+  uint32_t trailing_count = Emit_Result_Instruction ("call %s @__ada_count_trailing_spaces(ptr %%t%u, %s %%t%u)\n", LLVM_Rep_To_String (arith_rep), data_register, LLVM_Rep_To_String (arith_rep), raw_length);
+  uint32_t trimmed_pointer = Emit_Result_Instruction ("getelementptr i8, ptr %%t%u, %s %%t%u\n", data_register, LLVM_Rep_To_String (arith_rep), leading_count);
+  uint32_t trimmed_total   = Emit_Result_Instruction ("add %s %%t%u, %%t%u\n", LLVM_Rep_To_String (arith_rep), leading_count, trailing_count);
+  uint32_t trimmed_length  = Emit_Result_Instruction ("sub %s %%t%u, %%t%u\n", LLVM_Rep_To_String (arith_rep), raw_length, trimmed_total);
+  cg->needs_trim_helpers = true;
+  return (Trimmed_String_Registers){
+    .pointer_register = trimmed_pointer,
+    .length_register  = trimmed_length,
+  };
+}
+
 LLVM_Value Generate_Attribute (Syntax_Node *node) {
   Type_Info *prefix_type = node->attribute.prefix->type;
   String_Slice attr = node->attribute.name;   // diagnostics and IR comments
@@ -32410,19 +32289,12 @@ LLVM_Value Generate_Attribute (Syntax_Node *node) {
 
       // Character'VALUE - parse "'x'" format, strip leading/trailing spaces (RM 3.5.5)
       } else if (Type_Is_Character (classify_type)) {
-        LLVM_Rep val_bt = String_Bound_Rep ();
         LLVM_Rep val_iat = Integer_Arith_Rep ();
-        uint32_t str_ptr_raw = Emit_Fat_Pointer_Data (str_val, val_bt).reg;
-        uint32_t str_len_bt = Emit_Fat_Pointer_Length (str_val, val_bt).reg;
-        uint32_t str_len_raw = Emit_Convert (str_len_bt, val_bt, val_iat).reg;
 
         // Trim leading/trailing spaces
-        uint32_t lead_off = Emit_Result_Instruction ("call %s @__ada_count_leading_spaces(ptr %%t%u, %s %%t%u)\n", LLVM_Rep_To_String (val_iat), str_ptr_raw, LLVM_Rep_To_String (val_iat), str_len_raw);
-        uint32_t trail_off = Emit_Result_Instruction ("call %s @__ada_count_trailing_spaces(ptr %%t%u, %s %%t%u)\n", LLVM_Rep_To_String (val_iat), str_ptr_raw, LLVM_Rep_To_String (val_iat), str_len_raw);
-        uint32_t str_ptr = Emit_Result_Instruction ("getelementptr i8, ptr %%t%u, %s %%t%u\n", str_ptr_raw, LLVM_Rep_To_String (val_iat), lead_off);
-        uint32_t trim_total = Emit_Result_Instruction ("add %s %%t%u, %%t%u\n", LLVM_Rep_To_String (val_iat), lead_off, trail_off);
-        uint32_t str_len = Emit_Result_Instruction ("sub %s %%t%u, %%t%u\n", LLVM_Rep_To_String (val_iat), str_len_raw, trim_total);
-        cg->needs_trim_helpers = true;
+        Trimmed_String_Registers trimmed = Emit_Trimmed_String_Argument (str_val);
+        uint32_t str_ptr = trimmed.pointer_register;
+        uint32_t str_len = trimmed.length_register;
 
         // Must be exactly 3 chars: 'x'
         LLVM_I1 len3 = Emit_Icmp_Const ("eq", val_iat, str_len, 3);
@@ -32460,19 +32332,12 @@ LLVM_Value Generate_Attribute (Syntax_Node *node) {
 
       // Boolean'VALUE - match "TRUE"/"FALSE" case-insensitively, strip spaces (RM 3.5.5)
       } else if (Type_Is_Boolean (classify_type)) {
-        LLVM_Rep val_bt = String_Bound_Rep ();
         LLVM_Rep val_iat = Integer_Arith_Rep ();
-        uint32_t str_ptr_raw = Emit_Fat_Pointer_Data (str_val, val_bt).reg;
-        uint32_t str_len_bt = Emit_Fat_Pointer_Length (str_val, val_bt).reg;
-        uint32_t str_len_raw = Emit_Convert (str_len_bt, val_bt, val_iat).reg;
 
         // Trim leading/trailing spaces
-        uint32_t lead_off = Emit_Result_Instruction ("call %s @__ada_count_leading_spaces(ptr %%t%u, %s %%t%u)\n", LLVM_Rep_To_String (val_iat), str_ptr_raw, LLVM_Rep_To_String (val_iat), str_len_raw);
-        uint32_t trail_off = Emit_Result_Instruction ("call %s @__ada_count_trailing_spaces(ptr %%t%u, %s %%t%u)\n", LLVM_Rep_To_String (val_iat), str_ptr_raw, LLVM_Rep_To_String (val_iat), str_len_raw);
-        uint32_t str_ptr = Emit_Result_Instruction ("getelementptr i8, ptr %%t%u, %s %%t%u\n", str_ptr_raw, LLVM_Rep_To_String (val_iat), lead_off);
-        uint32_t trim_total = Emit_Result_Instruction ("add %s %%t%u, %%t%u\n", LLVM_Rep_To_String (val_iat), lead_off, trail_off);
-        uint32_t str_len = Emit_Result_Instruction ("sub %s %%t%u, %%t%u\n", LLVM_Rep_To_String (val_iat), str_len_raw, trim_total);
-        cg->needs_trim_helpers = true;
+        Trimmed_String_Registers trimmed = Emit_Trimmed_String_Argument (str_val);
+        uint32_t str_ptr = trimmed.pointer_register;
+        uint32_t str_len = trimmed.length_register;
 
         // Check for "TRUE" (length 4) and "FALSE" (length 5)
         uint32_t true_str_id = cg->string_id++;
@@ -32539,23 +32404,12 @@ LLVM_Value Generate_Attribute (Syntax_Node *node) {
 
           // Enum'VALUE: compare input against each literal (case-insensitive).
           // Ada RM 3.5.5: leading/trailing blanks are stripped first.
-          LLVM_Rep val_bt = String_Bound_Rep ();
-          uint32_t str_ptr_raw = Emit_Fat_Pointer_Data (str_val, val_bt).reg;
-          uint32_t str_len_bt = Emit_Fat_Pointer_Length (str_val, val_bt).reg;
           LLVM_Rep val_iat = Integer_Arith_Rep ();
-          uint32_t str_len_raw = Emit_Convert (str_len_bt, val_bt, val_iat).reg;
-
-          // Trim leading/trailing spaces via runtime helpers (Ada RM 3.5)
-          uint32_t lead_off = Emit_Result_Instruction ("call %s @__ada_count_leading_spaces(ptr %%t%u, %s %%t%u)\n", LLVM_Rep_To_String (val_iat), str_ptr_raw, LLVM_Rep_To_String (val_iat), str_len_raw);
-
-          // Backward scan for trailing spaces
-          uint32_t trail_off = Emit_Result_Instruction ("call %s @__ada_count_trailing_spaces(ptr %%t%u, %s %%t%u)\n", LLVM_Rep_To_String (val_iat), str_ptr_raw, LLVM_Rep_To_String (val_iat), str_len_raw);
 
           // Trimmed pointer and length
-          uint32_t str_ptr = Emit_Result_Instruction ("getelementptr i8, ptr %%t%u, %s %%t%u\n", str_ptr_raw, LLVM_Rep_To_String (val_iat), lead_off);
-          uint32_t trim_total = Emit_Result_Instruction ("add %s %%t%u, %%t%u\n", LLVM_Rep_To_String (val_iat), lead_off, trail_off);
-          uint32_t str_len = Emit_Result_Instruction ("sub %s %%t%u, %%t%u\n", LLVM_Rep_To_String (val_iat), str_len_raw, trim_total);
-          cg->needs_trim_helpers = true;
+          Trimmed_String_Registers trimmed = Emit_Trimmed_String_Argument (str_val);
+          uint32_t str_ptr = trimmed.pointer_register;
+          uint32_t str_len = trimmed.length_register;
           uint32_t result_alloc = Emit_Result_Instruction ("alloca %s\n", LLVM_Rep_To_String (val_iat));
           Emit ("  store %s 0, ptr %%t%u\n", LLVM_Rep_To_String (val_iat), result_alloc);
           uint32_t end_label = cg->label_id++;
@@ -48258,6 +48112,112 @@ void Generate_Extern_Declarations (Syntax_Node *node) {
 // A compilation unit is the quantum of separate compilation.                                      
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 
+// Digit-scan loop of a literal exponent: digits with embedded single
+// underscores accumulate (an exponent is always written in base ten) into
+// <label_prefix>_v, branching to apply_label at end of input or to %bad on
+// a malformed exponent. Entry is from <label_prefix>_fc_plus with the scan
+// start index in start_value. underscore_after_value and
+// underscore_clear_value name the two underscore-legality scratch values,
+// which the two instantiations spell differently.
+void Emit_Exponent_Digit_Scan_Loop (const char *label_prefix,
+                                    const char *start_value,
+                                    const char *apply_label,
+                                    const char *underscore_after_value,
+                                    const char *underscore_clear_value,
+                                    const char *sbt, const char *it) {
+  Emit ("%sloop:\n", label_prefix);
+  Emit ("  %%%s_i = phi %s [ %%%s, %%%s_fc_plus ], [ %%%s_ni, %%%s_cont ]\n",
+        label_prefix, sbt, start_value, label_prefix, label_prefix, label_prefix);
+  Emit ("  %%%s_v = phi %s [ 0, %%%s_fc_plus ], [ %%%s_nv, %%%s_cont ]\n",
+        label_prefix, it, label_prefix, label_prefix, label_prefix);
+  Emit ("  %%%s_had_dig = phi i1 [ false, %%%s_fc_plus ], [ true, %%%s_cont ]\n",
+        label_prefix, label_prefix, label_prefix);
+  Emit ("  %%%s_last_u = phi i1 [ false, %%%s_fc_plus ], [ %%%s_next_u, %%%s_cont ]\n",
+        label_prefix, label_prefix, label_prefix, label_prefix);
+  Emit ("  %%%s_done = icmp sge %s %%%s_i, %%end\n", label_prefix, sbt, label_prefix);
+  Emit ("  br i1 %%%s_done, label %%%s_check_end, label %%%s_body\n",
+        label_prefix, label_prefix, label_prefix);
+  Emit ("%s_check_end:\n", label_prefix);
+
+  // Must have seen a digit and not end on an underscore (no trailing '_').
+  Emit ("  %%%s_not_trail = xor i1 %%%s_last_u, true\n", label_prefix, label_prefix);
+  Emit ("  %%%s_end_ok = and i1 %%%s_had_dig, %%%s_not_trail\n",
+        label_prefix, label_prefix, label_prefix);
+  Emit ("  br i1 %%%s_end_ok, label %%%s, label %%bad\n", label_prefix, apply_label);
+  Emit ("%s_body:\n", label_prefix);
+  Emit ("  %%%s_p = getelementptr i8, ptr %%buf, %s %%%s_i\n",
+        label_prefix, sbt, label_prefix);
+  Emit ("  %%%s_c = load i8, ptr %%%s_p\n", label_prefix, label_prefix);
+  Emit ("  %%%s_ge0 = icmp uge i8 %%%s_c, 48\n", label_prefix, label_prefix);
+  Emit ("  %%%s_le9 = icmp ule i8 %%%s_c, 57\n", label_prefix, label_prefix);
+  Emit ("  %%%s_isdig = and i1 %%%s_ge0, %%%s_le9\n",
+        label_prefix, label_prefix, label_prefix);
+  Emit ("  br i1 %%%s_isdig, label %%%s_accum, label %%%s_check_u\n",
+        label_prefix, label_prefix, label_prefix);
+  Emit ("%s_check_u:\n", label_prefix);
+
+  // Underscore allowed only immediately after a digit (no leading, trailing,
+  // or consecutive underscores in the exponent).
+  Emit ("  %%%s_is_u = icmp eq i8 %%%s_c, 95\n", label_prefix, label_prefix);
+  Emit ("  %%%s = and i1 %%%s_is_u, %%%s_had_dig\n",
+        underscore_after_value, label_prefix, label_prefix);
+  Emit ("  %%%s = xor i1 %%%s_last_u, true\n",
+        underscore_clear_value, label_prefix);
+  Emit ("  %%%s_u_ok = and i1 %%%s, %%%s\n",
+        label_prefix, underscore_after_value, underscore_clear_value);
+  Emit ("  br i1 %%%s_u_ok, label %%%s_cont, label %%bad\n",
+        label_prefix, label_prefix);
+  Emit ("%s_accum:\n", label_prefix);
+  Emit ("  %%%s_d = sub i8 %%%s_c, 48\n", label_prefix, label_prefix);
+  Emit ("  %%%s_dw = zext i8 %%%s_d to %s\n", label_prefix, label_prefix, it);
+  Emit ("  %%%s_mul = mul %s %%%s_v, 10\n", label_prefix, it, label_prefix);
+  Emit ("  %%%s_nv_a = add %s %%%s_mul, %%%s_dw\n",
+        label_prefix, it, label_prefix, label_prefix);
+  Emit ("  br label %%%s_cont\n", label_prefix);
+  Emit ("%s_cont:\n", label_prefix);
+  Emit ("  %%%s_nv = phi %s [ %%%s_nv_a, %%%s_accum ], [ %%%s_v, %%%s_check_u ]\n",
+        label_prefix, it, label_prefix, label_prefix, label_prefix, label_prefix);
+  Emit ("  %%%s_next_u = phi i1 [ false, %%%s_accum ], [ true, %%%s_check_u ]\n",
+        label_prefix, label_prefix, label_prefix);
+  Emit ("  %%%s_ni = add %s %%%s_i, 1\n", label_prefix, sbt, label_prefix);
+  Emit ("  br label %%%sloop\n", label_prefix);
+}
+
+// Power loop applying a scanned exponent: <label_prefix>p_acc becomes
+// multiplier ** exponent by repeated multiplication, entered from
+// apply_label with the exponent in exponent_value, exiting to sign_label.
+void Emit_Exponent_Power_Loop (const char *label_prefix,
+                               const char *apply_label,
+                               const char *exponent_value,
+                               const char *sign_label,
+                               const char *multiplier,
+                               const char *it) {
+  Emit ("  br label %%%spow_loop\n", label_prefix);
+  Emit ("%spow_loop:\n", label_prefix);
+  Emit ("  %%%sp_acc = phi %s [ 1, %%%s ], [ %%%sp_next, %%%spow_body ]\n",
+        label_prefix, it, apply_label, label_prefix, label_prefix);
+  Emit ("  %%%sp_rem = phi %s [ %s, %%%s ], [ %%%sp_dec, %%%spow_body ]\n",
+        label_prefix, it, exponent_value, apply_label, label_prefix, label_prefix);
+  Emit ("  %%%sp_done = icmp sle %s %%%sp_rem, 0\n", label_prefix, it, label_prefix);
+  Emit ("  br i1 %%%sp_done, label %%%s, label %%%spow_body\n",
+        label_prefix, sign_label, label_prefix);
+  Emit ("%spow_body:\n", label_prefix);
+  Emit ("  %%%sp_next = mul %s %%%sp_acc, %s\n",
+        label_prefix, it, label_prefix, multiplier);
+  Emit ("  %%%sp_dec = sub %s %%%sp_rem, 1\n", label_prefix, it, label_prefix);
+  Emit ("  br label %%%spow_loop\n", label_prefix);
+}
+
+// Final negate-and-return of a parsed magnitude: apply the sign captured in
+// %is_neg to `value` and return it, naming the temporaries after `stem`.
+void Emit_Integer_Value_Signed_Return (const char *stem, const char *value,
+                                       const char *it) {
+  Emit ("  %%neg_%s = sub %s 0, %s\n", stem, it, value);
+  Emit ("  %%ret_%s = select i1 %%is_neg, %s %%neg_%s, %s %s\n",
+        stem, it, stem, it, value);
+  Emit ("  ret %s %%ret_%s\n", it, stem);
+}
+
 void Generate_Compilation_Unit (Syntax_Node *node) {
   if (not node) return;
 
@@ -48583,63 +48543,18 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   Emit ("  %%eb_s1 = add %s %%eb_s0, 1\n", sbt);
   Emit ("  %%eb_s = select i1 %%eb_fc_isplus, %s %%eb_s1, %s %%eb_s0\n", sbt, sbt);
   Emit ("  br label %%ebloop\n");
-  Emit ("ebloop:\n");
-  Emit ("  %%eb_i = phi %s [ %%eb_s, %%eb_fc_plus ], [ %%eb_ni, %%eb_cont ]\n", sbt);
-  Emit ("  %%eb_v = phi %s [ 0, %%eb_fc_plus ], [ %%eb_nv, %%eb_cont ]\n", it);
-  Emit ("  %%eb_had_dig = phi i1 [ false, %%eb_fc_plus ], [ true, %%eb_cont ]\n");
-  Emit ("  %%eb_last_u = phi i1 [ false, %%eb_fc_plus ], [ %%eb_next_u, %%eb_cont ]\n");
-  Emit ("  %%eb_done = icmp sge %s %%eb_i, %%end\n", sbt);
-  Emit ("  br i1 %%eb_done, label %%eb_check_end, label %%eb_body\n");
-  Emit ("eb_check_end:\n");
-  Emit ("  %%eb_not_trail = xor i1 %%eb_last_u, true\n");
-  Emit ("  %%eb_end_ok = and i1 %%eb_had_dig, %%eb_not_trail\n");
-  Emit ("  br i1 %%eb_end_ok, label %%apply_exp_based, label %%bad\n");
-  Emit ("eb_body:\n");
-  Emit ("  %%eb_p = getelementptr i8, ptr %%buf, %s %%eb_i\n", sbt);
-  Emit ("  %%eb_c = load i8, ptr %%eb_p\n");
-  Emit ("  %%eb_ge0 = icmp uge i8 %%eb_c, 48\n");
-  Emit ("  %%eb_le9 = icmp ule i8 %%eb_c, 57\n");
-  Emit ("  %%eb_isdig = and i1 %%eb_ge0, %%eb_le9\n");
-  Emit ("  br i1 %%eb_isdig, label %%eb_accum, label %%eb_check_u\n");
-  Emit ("eb_check_u:\n");
-  Emit ("  %%eb_is_u = icmp eq i8 %%eb_c, 95\n");
-  Emit ("  %%eb_u_after = and i1 %%eb_is_u, %%eb_had_dig\n");
-  Emit ("  %%eb_u_nc = xor i1 %%eb_last_u, true\n");
-  Emit ("  %%eb_u_ok = and i1 %%eb_u_after, %%eb_u_nc\n");
-  Emit ("  br i1 %%eb_u_ok, label %%eb_cont, label %%bad\n");
-  Emit ("eb_accum:\n");
-  Emit ("  %%eb_d = sub i8 %%eb_c, 48\n");
-  Emit ("  %%eb_dw = zext i8 %%eb_d to %s\n", it);
-  Emit ("  %%eb_mul = mul %s %%eb_v, 10\n", it);
-  Emit ("  %%eb_nv_a = add %s %%eb_mul, %%eb_dw\n", it);
-  Emit ("  br label %%eb_cont\n");
-  Emit ("eb_cont:\n");
-  Emit ("  %%eb_nv = phi %s [ %%eb_nv_a, %%eb_accum ], [ %%eb_v, %%eb_check_u ]\n", it);
-  Emit ("  %%eb_next_u = phi i1 [ false, %%eb_accum ], [ true, %%eb_check_u ]\n");
-  Emit ("  %%eb_ni = add %s %%eb_i, 1\n", sbt);
-  Emit ("  br label %%ebloop\n");
+  Emit_Exponent_Digit_Scan_Loop ("eb", "eb_s", "apply_exp_based",
+                                 "eb_u_after", "eb_u_nc", sbt, it);
 
   // Apply exponent for based literal: result = b_val * base^exp
   Emit ("apply_exp_based:\n");
-  Emit ("  br label %%bpow_loop\n");
-  Emit ("bpow_loop:\n");
-  Emit ("  %%bp_acc = phi %s [ 1, %%apply_exp_based ], [ %%bp_next, %%bpow_body ]\n", it);
-  Emit ("  %%bp_rem = phi %s [ %%eb_v, %%apply_exp_based ], [ %%bp_dec, %%bpow_body ]\n", it);
-  Emit ("  %%bp_done = icmp sle %s %%bp_rem, 0\n", it);
-  Emit ("  br i1 %%bp_done, label %%apply_sign_based_e, label %%bpow_body\n");
-  Emit ("bpow_body:\n");
-  Emit ("  %%bp_next = mul %s %%bp_acc, %%base\n", it);
-  Emit ("  %%bp_dec = sub %s %%bp_rem, 1\n", it);
-  Emit ("  br label %%bpow_loop\n");
+  Emit_Exponent_Power_Loop ("b", "apply_exp_based", "%eb_v",
+                            "apply_sign_based_e", "%base", it);
   Emit ("apply_sign_based_e:\n");
   Emit ("  %%based_scaled = mul %s %%b_val, %%bp_acc\n", it);
-  Emit ("  %%neg_based_e = sub %s 0, %%based_scaled\n", it);
-  Emit ("  %%ret_based_e = select i1 %%is_neg, %s %%neg_based_e, %s %%based_scaled\n", it, it);
-  Emit ("  ret %s %%ret_based_e\n", it);
+  Emit_Integer_Value_Signed_Return ("based_e", "%based_scaled", it);
   Emit ("apply_sign_based:\n");
-  Emit ("  %%neg_based = sub %s 0, %%b_val\n", it);
-  Emit ("  %%ret_based = select i1 %%is_neg, %s %%neg_based, %s %%b_val\n", it, it);
-  Emit ("  ret %s %%ret_based\n", it);
+  Emit_Integer_Value_Signed_Return ("based", "%b_val", it);
 
   // Decimal exponent path
   Emit ("exp_start_d:\n");
@@ -48668,64 +48583,16 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   Emit ("  %%ed_fc_isdig = and i1 %%ed_fc_ge0, %%ed_fc_le9\n");
   Emit ("  %%ed_fc_ok = or i1 %%ed_fc_isplus, %%ed_fc_isdig\n");
   Emit ("  br i1 %%ed_fc_ok, label %%edloop, label %%bad\n");
-  Emit ("edloop:\n");
-  Emit ("  %%ed_i = phi %s [ %%ed_real_s, %%ed_fc_plus ], [ %%ed_ni, %%ed_cont ]\n", sbt);
-  Emit ("  %%ed_v = phi %s [ 0, %%ed_fc_plus ], [ %%ed_nv, %%ed_cont ]\n", it);
-  Emit ("  %%ed_had_dig = phi i1 [ false, %%ed_fc_plus ], [ true, %%ed_cont ]\n");
-  Emit ("  %%ed_last_u = phi i1 [ false, %%ed_fc_plus ], [ %%ed_next_u, %%ed_cont ]\n");
-  Emit ("  %%ed_done = icmp sge %s %%ed_i, %%end\n", sbt);
-  Emit ("  br i1 %%ed_done, label %%ed_check_end, label %%ed_body\n");
-  Emit ("ed_check_end:\n");
-
-  // Must have seen a digit and not end on an underscore (no trailing '_').
-  Emit ("  %%ed_not_trail = xor i1 %%ed_last_u, true\n");
-  Emit ("  %%ed_end_ok = and i1 %%ed_had_dig, %%ed_not_trail\n");
-  Emit ("  br i1 %%ed_end_ok, label %%apply_exp_d, label %%bad\n");
-  Emit ("ed_body:\n");
-  Emit ("  %%ed_p = getelementptr i8, ptr %%buf, %s %%ed_i\n", sbt);
-  Emit ("  %%ed_c = load i8, ptr %%ed_p\n");
-  Emit ("  %%ed_ge0 = icmp uge i8 %%ed_c, 48\n");
-  Emit ("  %%ed_le9 = icmp ule i8 %%ed_c, 57\n");
-  Emit ("  %%ed_isdig = and i1 %%ed_ge0, %%ed_le9\n");
-  Emit ("  br i1 %%ed_isdig, label %%ed_accum, label %%ed_check_u\n");
-  Emit ("ed_check_u:\n");
-
-  // Underscore allowed only immediately after a digit (no leading, trailing,
-  // or consecutive underscores in the exponent).
-  Emit ("  %%ed_is_u = icmp eq i8 %%ed_c, 95\n");
-  Emit ("  %%ed_u_after_dig = and i1 %%ed_is_u, %%ed_had_dig\n");
-  Emit ("  %%ed_u_not_consec = xor i1 %%ed_last_u, true\n");
-  Emit ("  %%ed_u_ok = and i1 %%ed_u_after_dig, %%ed_u_not_consec\n");
-  Emit ("  br i1 %%ed_u_ok, label %%ed_cont, label %%bad\n");
-  Emit ("ed_accum:\n");
-  Emit ("  %%ed_d = sub i8 %%ed_c, 48\n");
-  Emit ("  %%ed_dw = zext i8 %%ed_d to %s\n", it);
-  Emit ("  %%ed_mul = mul %s %%ed_v, 10\n", it);
-  Emit ("  %%ed_nv_a = add %s %%ed_mul, %%ed_dw\n", it);
-  Emit ("  br label %%ed_cont\n");
-  Emit ("ed_cont:\n");
-  Emit ("  %%ed_nv = phi %s [ %%ed_nv_a, %%ed_accum ], [ %%ed_v, %%ed_check_u ]\n", it);
-  Emit ("  %%ed_next_u = phi i1 [ false, %%ed_accum ], [ true, %%ed_check_u ]\n");
-  Emit ("  %%ed_ni = add %s %%ed_i, 1\n", sbt);
-  Emit ("  br label %%edloop\n");
+  Emit_Exponent_Digit_Scan_Loop ("ed", "ed_real_s", "apply_exp_d",
+                                 "ed_u_after_dig", "ed_u_not_consec", sbt, it);
 
   // Apply decimal exponent: result = mantissa * 10^exp
   Emit ("apply_exp_d:\n");
-  Emit ("  br label %%dpow_loop\n");
-  Emit ("dpow_loop:\n");
-  Emit ("  %%dp_acc = phi %s [ 1, %%apply_exp_d ], [ %%dp_next, %%dpow_body ]\n", it);
-  Emit ("  %%dp_rem = phi %s [ %%ed_v, %%apply_exp_d ], [ %%dp_dec, %%dpow_body ]\n", it);
-  Emit ("  %%dp_done = icmp sle %s %%dp_rem, 0\n", it);
-  Emit ("  br i1 %%dp_done, label %%apply_sign_de, label %%dpow_body\n");
-  Emit ("dpow_body:\n");
-  Emit ("  %%dp_next = mul %s %%dp_acc, 10\n", it);
-  Emit ("  %%dp_dec = sub %s %%dp_rem, 1\n", it);
-  Emit ("  br label %%dpow_loop\n");
+  Emit_Exponent_Power_Loop ("d", "apply_exp_d", "%ed_v",
+                            "apply_sign_de", "10", it);
   Emit ("apply_sign_de:\n");
   Emit ("  %%de_scaled = mul %s %%d1_val, %%dp_acc\n", it);
-  Emit ("  %%neg_de = sub %s 0, %%de_scaled\n", it);
-  Emit ("  %%ret_de = select i1 %%is_neg, %s %%neg_de, %s %%de_scaled\n", it, it);
-  Emit ("  ret %s %%ret_de\n", it);
+  Emit_Integer_Value_Signed_Return ("de", "%de_scaled", it);
 
   // Simple decimal result (no exponent, no base) - apply sign
   Emit ("apply_sign:\n");
@@ -48733,9 +48600,7 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   // Check for trailing underscore
   Emit ("  br i1 %%d1_last_under, label %%bad, label %%apply_sign_ok\n");
   Emit ("apply_sign_ok:\n");
-  Emit ("  %%neg_d = sub %s 0, %%d1_val\n", it);
-  Emit ("  %%ret_d = select i1 %%is_neg, %s %%neg_d, %s %%d1_val\n", it, it);
-  Emit ("  ret %s %%ret_d\n", it);
+  Emit_Integer_Value_Signed_Return ("d", "%d1_val", it);
 
   // Error: raise CONSTRAINT_ERROR
   Emit ("bad:\n");
@@ -54064,25 +53929,8 @@ void Load_Package_Spec (String_Slice name, char *src) {
           Install_Generic_Formal_Symbols (gen_sym);
         // Install spec's parameters
         Syntax_Node *bspec = more_unit->subprogram_body.specification;
-        if (bspec) {
-          Node_List *params = &bspec->subprogram_spec.parameters;
-          for (uint32_t i = 0; i < params->count; i++) {
-            Syntax_Node *ps = params->items[i];
-            if (ps and ps->kind == NK_PARAM_SPEC) {
-              if (ps->param_spec.param_type)
-                Resolve_Expression (ps->param_spec.param_type);
-              for (uint32_t j = 0; j < ps->param_spec.names.count; j++) {
-                Syntax_Node *nm = ps->param_spec.names.items[j];
-                Symbol *param_sym = Symbol_New (SYMBOL_PARAMETER,
-                  nm->string_val.text, nm->location);
-                if (ps->param_spec.param_type)
-                  param_sym->type = ps->param_spec.param_type->type;
-                Symbol_Add (param_sym);
-                nm->symbol = param_sym;
-              }
-            }
-          }
-        }
+        if (bspec)
+          Install_Parameter_Symbols (&bspec->subprogram_spec.parameters, NULL);
         Resolve_Declaration_List (&more_unit->subprogram_body.declarations);
         Resolve_Statement_List (&more_unit->subprogram_body.statements);
         Symbol_Manager_Pop_Scope ();
