@@ -451,6 +451,16 @@ SIX-RANDOM-TESTS SWEEP (this session):
     count x element size for arrays) since a locally-declared array type's own
     size field is not always populated. Full Class C gate: c45114a PASS, zero
     real regressions (ce3116a is the known fd flake).
+    Completed the architecture across every allocation path (second gate, zero
+    regressions): (a) the frame path — a huge object in a procedure with nested
+    subprograms inflated the single whole-function frame alloca and segfaulted
+    at entry; Symbol_Assign_Frame_Slot now caps such an object's slot to a
+    pointer placeholder so the frame stays allocatable, and its frame-elaboration
+    emits the STORAGE_ERROR raise (verified: raised in an inner block, caught by
+    the enclosing handler, RM 11.2). (b) the dynamic bounded-array path
+    (Emit_Bind_Bounded_Array_Storage) now uses the same MAX_STACK_OBJECT_BYTES
+    ceiling instead of the looser 2**31 representability bound, which also keeps
+    its trunc-to-index from wrapping.
   ce3704a PASS (was FAIL) — Integer_IO GET returned 0. Not an RTS bug: inside a
     generic instance whose actual is a DERIVED numeric type (TYPE NI IS NEW
     INTEGER), the formal type's instance view copied the actual's parent_type,

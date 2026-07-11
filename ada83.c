@@ -2176,6 +2176,9 @@ bool     Type_Bound_Is_Set                (Type_Bound  b);
 bool     Bound_Is_Expression              (const Type_Bound *bound);
 double   Type_Bound_Float_Value           (Type_Bound  b);
 int128_t Array_Element_Count              (Type_Info  *t);
+// Compile-time storage size of an object type (int128, -1 if not statically
+// known), for the RM 11.1 stack-object limit check.
+int128_t Static_Object_Byte_Size          (Type_Info  *ty);
 Type_Bound Array_Dimension_Effective_Bound (Type_Info *array_type,
                                             uint32_t   dimension,
                                             bool       want_high,
@@ -9744,6 +9747,11 @@ void Symbol_Assign_Frame_Slot (Symbol *sym, Scope *scope) {
         (int)sym->name.length, sym->name.data);
     var_size = 8;
   }
+  // RM 11.1: an object too large for the stack reserves only a placeholder slot
+  // so the whole frame stays allocatable; its elaboration raises STORAGE_ERROR
+  // (Generate_Object_Declaration), after which references to it are unreachable.
+  if (Static_Object_Byte_Size (sym->type) > (int128_t) MAX_STACK_OBJECT_BYTES)
+    var_size = POINTER_ALLOC_SIZE;
   scope->frame_size += var_size;
 }
 
@@ -42562,9 +42570,10 @@ void Emit_Bind_Bounded_Array_Storage (Symbol *sym, uint32_t *dim_lo,
     }
   }
   uint32_t bsz64 = Emit_Result_Instruction ("mul i64 %%t%u, %u\n", total, element_size);
-  LLVM_I1 too_large = Emit_Icmp_Const ("ugt", LLVM_Rep_Int (64, true), bsz64, 2147483647);
-  Emit_Check_With_Raise_Named (too_large.reg, true, "storage_error",
-     "array object size exceeds INTEGER range (RM 11.1)");
+  // RM 11.1: raise STORAGE_ERROR when the array is too large for the stack. The
+  // ceiling is well below INTEGER'LAST, so this also keeps the trunc-to-index
+  // below from wrapping an over-2**31 byte count into a small — or zero — size.
+  Emit_Storage_Error_If_Oversized_Dynamic (bsz64);
   uint32_t bsz = Emit_Result_Instruction ("trunc i64 %%t%u to %s\n", bsz64, LLVM_Rep_To_String (iat));
   uint32_t dp = Emit_Result_Instruction ("alloca i8, %s %%t%u  ; %s\n", LLVM_Rep_To_String (iat), bsz, tag);
   // RM 3.2.1(20): if any leaf is an access type it must default to NULL.
@@ -43687,9 +43696,14 @@ void Generate_Object_Declaration (Syntax_Node *node) {
         Emit_Symbol_Name (sym);
         Emit (", ptr %%t%u  ; publish dynamic record to frame\n", fslot);
       } else {
-      Emit_Local_Ref (sym);
-      Emit (" = getelementptr i8, ptr %%__frame_base, i64 %lld\n",
-         (long long)offset);
+        Emit_Local_Ref (sym);
+        Emit (" = getelementptr i8, ptr %%__frame_base, i64 %lld\n",
+           (long long)offset);
+        // RM 11.1: this object's frame slot was capped to a placeholder because
+        // it cannot fit on the stack (Symbol_Assign_Frame_Slot); raise
+        // STORAGE_ERROR at its elaboration, reaching the enclosing scope.
+        if (Static_Object_Byte_Size (ty) > (int128_t) MAX_STACK_OBJECT_BYTES)
+          Emit_Storage_Error_If_Oversized_Static ((uint64_t) Static_Object_Byte_Size (ty));
       }
 
       // RM 3.2.1(20): access components default to NULL. A frame-allocated
