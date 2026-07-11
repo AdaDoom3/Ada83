@@ -112,6 +112,17 @@ enum {Default_Chunk_Size = 1 << 24}; // 16 MiB
 // A single machine pointer (thin access value, task TCB handle, etc.) - 8 bytes on 64-bit
 #define POINTER_ALLOC_SIZE 8
 
+// RM 11.1: an automatic (stack) object whose storage exceeds this ceiling is
+// treated as unallocatable and raises STORAGE_ERROR at its elaboration rather
+// than emitting an alloca the machine stack cannot satisfy (which would fault
+// with no Ada exception). The bound is deliberately generous — far above any
+// realistic local object — so it fires only for pathological declarations such
+// as ARRAY (1 .. INTEGER'LAST) OF BOOLEAN. A precise per-thread limit would
+// need runtime stack-extent probing; this compile-time ceiling is the honest
+// approximation for objects whose size is or approaches the whole address
+// space.
+#define MAX_STACK_OBJECT_BYTES (256u * 1024u * 1024u)
+
 // ???
 #define STRING_BOUNDS_STRUCT "{i32, i32}"
 #define STRING_BOUND_TYPE    "i32"
@@ -3219,6 +3230,11 @@ void Emit_Check_With_Raise_Named (uint32_t    cond,
                             const char *exc_name,
                             const char *comment);
 void Emit_Raise_Constraint_Error_When (LLVM_I1 condition, const char *comment);
+// RM 11.1: raise STORAGE_ERROR at an object's elaboration when its storage
+// exceeds the stack ceiling (MAX_STACK_OBJECT_BYTES). The static variant takes
+// a compile-time byte count; the dynamic variant an i64 register.
+void Emit_Storage_Error_If_Oversized_Static  (uint64_t bytes);
+void Emit_Storage_Error_If_Oversized_Dynamic (uint32_t size_reg_i64);
 
 // RM 4.6 array conversion: raise CONSTRAINT_ERROR when the operand and target
 // array types have component subtypes whose constraints differ.
@@ -12753,6 +12769,23 @@ uint32_t Array_Element_Byte_Size (Type_Info *array_type, uint32_t missing_fallba
                             : missing_fallback;
   if (element_size == 0) element_size = zero_size_fallback;
   return element_size;
+}
+
+// Compile-time storage size of an object type for the RM 11.1 stack-limit
+// check, returned as a 128-bit value so a size approaching the whole address
+// space does not wrap the 32-bit size field. A constrained array multiplies
+// its element count by its element size (its own `size` field is populated
+// only for types that reached Compute_Static_Array_Size); other types report
+// their recorded byte size. Returns -1 when no static size is known (dynamic
+// bounds), leaving the runtime storage check to catch an oversized elaboration.
+int128_t Static_Object_Byte_Size (Type_Info *ty) {
+  if (not ty) return -1;
+  if (Type_Is_Array_Like (ty) and ty->array.is_constrained) {
+    int128_t count = Array_Element_Count (ty);
+    if (count <= 0) return ty->size ? (int128_t) ty->size : -1;
+    return count * (int128_t) Array_Element_Byte_Size (ty, 1, 1);
+  }
+  return ty->size ? (int128_t) ty->size : -1;
 }
 
 // Get array low bound for index adjustment
@@ -22609,6 +22642,31 @@ void Emit_Raise_Exception (const char *exc_name, const char *comment) {
 }
 #define Emit_Raise_Constraint_Error(comment) Emit_Raise_Exception ("constraint_error", comment)
 #define Emit_Raise_Program_Error(comment)    Emit_Raise_Exception ("program_error", comment)
+
+// RM 11.1: raise STORAGE_ERROR when an automatic object's storage exceeds the
+// stack ceiling. Both variants emit a conditional check (not an unconditional
+// raise) so control flow after the declaration stays well-formed: the object's
+// remaining elaboration lands in the fall-through block, unreachable at run
+// time but valid IR. Emit at the elaboration point so the exception reaches the
+// enclosing scope (RM 11.2), never the object's own block handler.
+//
+// The static variant takes a compile-time byte count and folds to a constant
+// branch; the dynamic variant takes an i64 register holding a runtime size.
+void Emit_Storage_Error_If_Oversized_Static (uint64_t bytes) {
+  if (bytes <= MAX_STACK_OBJECT_BYTES) return;
+  uint32_t cond = Emit_Result_Instruction (
+    "icmp ugt i64 %llu, %u  ; RM 11.1 stack storage limit\n",
+    (unsigned long long) bytes, (unsigned) MAX_STACK_OBJECT_BYTES);
+  Emit_Check_With_Raise_Named (cond, true, "storage_error",
+    "object too large for the stack (RM 11.1)");
+}
+void Emit_Storage_Error_If_Oversized_Dynamic (uint32_t size_reg_i64) {
+  uint32_t cond = Emit_Result_Instruction (
+    "icmp ugt i64 %%t%u, %u  ; RM 11.1 stack storage limit\n",
+    size_reg_i64, (unsigned) MAX_STACK_OBJECT_BYTES);
+  Emit_Check_With_Raise_Named (cond, true, "storage_error",
+    "object too large for the stack (RM 11.1)");
+}
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 // §13.2.1 Granular Runtime Check Emission                                                         
@@ -43618,6 +43676,7 @@ void Generate_Object_Declaration (Syntax_Node *node) {
       // and let the local name denote the storage directly.
       if (Type_Is_Record (ty) and ty->rt_global_id > 0) {
         uint32_t rtsz = Emit_Result_Instruction ("load " RT_DESC_TYPE ", ptr @__rt_rec_%u_size\n", ty->rt_global_id);
+        Emit_Storage_Error_If_Oversized_Dynamic (rtsz);   // RM 11.1
         Emit_Local_Ref (sym);
         Emit (" = alloca i8, i64 %%t%u  ; dynamic record (frame-indirect)\n", rtsz);
         Emit ("  call void @llvm.memset.p0.i64(ptr %%");
@@ -43685,6 +43744,15 @@ void Generate_Object_Declaration (Syntax_Node *node) {
       Emit (" = alloca " FAT_PTR_TYPE "\n");
 
     // Constrained array with static bounds: allocate [N x element_type]
+    } else if (is_constrained_array and array_count > 0 and
+               Static_Object_Byte_Size (ty) > (int128_t) MAX_STACK_OBJECT_BYTES) {
+      // RM 11.1: no stack can hold this array. Emit a placeholder slot so the
+      // now-unreachable remainder still references valid storage, then raise
+      // STORAGE_ERROR at elaboration (propagates to the enclosing scope).
+      Emit_Local_Ref (sym);
+      Emit (" = alloca i8  ; RM 11.1 oversized-array placeholder\n");
+      Emit_Storage_Error_If_Oversized_Static ((uint64_t) Static_Object_Byte_Size (ty));
+
     } else if (is_constrained_array and array_count > 0) {
       Emit_Local_Ref (sym);
 
@@ -43731,6 +43799,7 @@ void Generate_Object_Declaration (Syntax_Node *node) {
     // Record with dynamic-sized components: load runtime size
     } else if (is_record and ty and ty->rt_global_id > 0) {
       uint32_t rtsz = Emit_Result_Instruction ("load " RT_DESC_TYPE ", ptr @__rt_rec_%u_size\n", ty->rt_global_id);
+      Emit_Storage_Error_If_Oversized_Dynamic (rtsz);   // RM 11.1
       Emit_Local_Ref (sym);
       Emit (" = alloca i8, i64 %%t%u  ; record rt alloca\n", rtsz);
 
@@ -43741,24 +43810,40 @@ void Generate_Object_Declaration (Syntax_Node *node) {
 
     // Record type: allocate [N x i8] for the record size
     } else if (is_record and record_size > 0) {
-      Emit_Local_Ref (sym);
-      Emit (" = alloca [%u x i8]  ; record type\n", record_size);
+      if ((uint64_t) record_size > MAX_STACK_OBJECT_BYTES) {
+        // RM 11.1: too large for the stack — placeholder slot + raise.
+        Emit_Local_Ref (sym);
+        Emit (" = alloca i8  ; RM 11.1 oversized-record placeholder\n");
+        Emit_Storage_Error_If_Oversized_Static ((uint64_t) record_size);
+      } else {
+        Emit_Local_Ref (sym);
+        Emit (" = alloca [%u x i8]  ; record type\n", record_size);
 
-      // Zero-init all record types so that padding bytes are clean                                 
-      // (for memcmp equality) and nested record component defaults                                 
-      // start from a known state (RM 3.3.1, 4.5.2).                                               
-      //                                                                                            
-      if (Type_Is_Record (ty)) {
-        Emit ("  call void @llvm.memset.p0.i64(ptr %%");
-        Emit_Symbol_Name (sym);
-        Emit (", i8 0, i64 %u, i1 false)\n", record_size);
-        // Component defaults (RM 3.7) are applied once, by the
-        // obj_decl_init record path below (Emit_Apply_Component_Defaults);
-        // applying them here as well ran side-effectful defaults twice.
+        // Zero-init all record types so that padding bytes are clean
+        // (for memcmp equality) and nested record component defaults
+        // start from a known state (RM 3.3.1, 4.5.2).
+        //
+        if (Type_Is_Record (ty)) {
+          Emit ("  call void @llvm.memset.p0.i64(ptr %%");
+          Emit_Symbol_Name (sym);
+          Emit (", i8 0, i64 %u, i1 false)\n", record_size);
+          // Component defaults (RM 3.7) are applied once, by the
+          // obj_decl_init record path below (Emit_Apply_Component_Defaults);
+          // applying them here as well ran side-effectful defaults twice.
+        }
       }
     } else {
+      int128_t obj_bytes = Static_Object_Byte_Size (ty);
       Emit_Local_Ref (sym);
-      Emit (" = alloca %s\n", LLVM_Rep_To_String (type_rep));
+      if (obj_bytes > (int128_t) MAX_STACK_OBJECT_BYTES) {
+        // RM 11.1: no stack can hold this object. Emit a placeholder slot so the
+        // now-unreachable remainder of the block still references valid storage,
+        // then raise STORAGE_ERROR at elaboration.
+        Emit (" = alloca i8  ; RM 11.1 oversized-object placeholder\n");
+        Emit_Storage_Error_If_Oversized_Static ((uint64_t) obj_bytes);
+      } else {
+        Emit (" = alloca %s\n", LLVM_Rep_To_String (type_rep));
+      }
 
       // For unconstrained array/string variables with explicit index
 

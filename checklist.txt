@@ -434,13 +434,23 @@ SIX-RANDOM-TESTS SWEEP (this session):
   Bonus (same gate, from the cd5011g fixed-point store fix generalizing to
     other overlay/address-clause tests): cd5012e, cd5013g, cd5014v now PASS.
 
-  c45114a NOT a small fix — declares ARRAY(1..INTEGER'LAST) OF BOOLEAN (~2GB
-    stack object); pass path is the outer block's WHEN STORAGE_ERROR handler.
-    Compiler uses one whole-function frame alloca (ada83.c:45880) with no
-    per-declaration allocation point to intercept and no way to route the
-    exception to the correct enclosing scope (RM 11.1: exceptions in a
-    declarative part propagate outward). Needs per-block storage allocation —
-    architectural, deferred.
+  c45114a PASS (was SIGSEGV) — RM 11.1 STORAGE_ERROR on oversized elaboration.
+    Declares ARRAY(1..INTEGER'LAST) OF BOOLEAN (~2GB stack object); pass path is
+    the outer block's WHEN STORAGE_ERROR handler. Verified first that the
+    compiler already scopes declarative-part exceptions correctly (an exception
+    in an inner block's declarations propagates to the ENCLOSING handler, not
+    the block's own — RM 11.2), so raising at the declaration point gives the
+    right scope. Architecture: MAX_STACK_OBJECT_BYTES ceiling (256 MiB) above
+    which an automatic object is treated as unallocatable. At each local-object
+    allocation site (constrained array, static record, general), when the
+    compile-time size exceeds the ceiling, emit a placeholder slot (so the
+    now-unreachable remainder still references valid storage) and a conditional
+    STORAGE_ERROR raise (Emit_Storage_Error_If_Oversized_Static). Dynamic-sized
+    records get the runtime-size variant (_Dynamic) before their alloca.
+    Static_Object_Byte_Size computes the compile-time size in int128 (element
+    count x element size for arrays) since a locally-declared array type's own
+    size field is not always populated. Full Class C gate: c45114a PASS, zero
+    real regressions (ce3116a is the known fd flake).
   ce3704a PASS (was FAIL) — Integer_IO GET returned 0. Not an RTS bug: inside a
     generic instance whose actual is a DERIVED numeric type (TYPE NI IS NEW
     INTEGER), the formal type's instance view copied the actual's parent_type,
