@@ -13816,6 +13816,17 @@ static void Resolve_Operand (Syntax_Node *o, Type_Info *opnd_typ) {
     if ((o->kind == NK_STRING or o->kind == NK_AGGREGATE) and
         Type_Is_Constrained_Array (opnd_typ))
       opnd_typ = Type_Base (opnd_typ);
+    // Likewise a record aggregate compared against a discriminated record
+    // view: a predefined-equality operand has the BASE type, and the
+    // aggregate carries its own discriminants — pinning it to the sibling
+    // operand's constrained view (which may carry its constraint through
+    // discriminant values rather than the constrained flag, e.g. the
+    // designated subtype of a constrained access type) raised
+    // CONSTRAINT_ERROR where equality must just yield FALSE (RM 4.5.2; the
+    // variant-aware comparator handles unequal discriminants).
+    if (o->kind == NK_AGGREGATE and Type_Is_Record (opnd_typ) and
+        opnd_typ->record.has_discriminants)
+      opnd_typ = Type_Base (opnd_typ);
     o->type = opnd_typ;
     Resolve_Expression (o);
   }
@@ -17738,6 +17749,10 @@ void Install_Generic_Formal_Symbols (Symbol *generic_symbol) {
                 subprogram_sym->parameters[index].param_type = parameter_type;
                 subprogram_sym->parameters[index].mode =
                   (Parameter_Mode) ps->param_spec.mode;
+                // RM 12.1.3: calls through the formal use the FORMAL's own
+                // default expressions (never the actual's).
+                subprogram_sym->parameters[index].default_value =
+                  ps->param_spec.default_expr;
                 index++;
               }
             }
@@ -18169,11 +18184,48 @@ void Bind_Generic_Formals_To_Actuals (Symbol *instance_sym,
                                                    formal->location);
             } else if (actual_subprogram) {
               binding->renamed_object   = (Syntax_Node *) actual_subprogram;
-              binding->parameters       = actual_subprogram->parameters;
               binding->parameter_count  = actual_subprogram->parameter_count;
               binding->return_type      = actual_subprogram->return_type;
               if (not binding->return_type) binding->return_type = actual_subprogram->type;
               binding->type             = binding->return_type;
+
+              // RM 12.3(19)/12.1.3: a call through the formal uses the
+              // ACTUAL's parameter subtypes but the FORMAL's own default
+              // expressions — and no default at all where the formal
+              // declares none, even if the actual has one. Sharing the
+              // actual's parameter array leaked its defaults into the
+              // instance; build the binding's own array instead, with each
+              // formal default cloned and remapped into the instance.
+              binding->parameters = Arena_Allocate (
+                binding->parameter_count * sizeof (Parameter_Info));
+              for (uint32_t pi = 0; pi < binding->parameter_count; pi++) {
+                binding->parameters[pi] = actual_subprogram->parameters[pi];
+                binding->parameters[pi].default_value = NULL;
+              }
+              uint32_t position = 0;
+              Node_List *formal_params =
+                &formal->generic_subprog_param.parameters;
+              for (uint32_t si = 0; si < formal_params->count; si++) {
+                Syntax_Node *spec = formal_params->items[si];
+                if (not spec or spec->kind != NK_PARAM_SPEC) continue;
+                for (uint32_t ni = 0; ni < spec->param_spec.names.count; ni++) {
+                  if (position >= binding->parameter_count) break;
+                  if (spec->param_spec.default_expr) {
+                    Syntax_Node *dflt = Clone_Subtree_Keep_Decorations (
+                      spec->param_spec.default_expr);
+                    for (uint32_t m = 0; m < remap->count; m++)
+                      Reassign_Symbol_References (dflt,
+                                                  remap->from[m], remap->to[m]);
+                    // The template never resolves formal-part defaults (their
+                    // formal types are per-instance); resolve the clone here,
+                    // where the instance bindings are in scope, so the call
+                    // sites can emit it.
+                    Resolve_Expression (dflt);
+                    binding->parameters[position].default_value = dflt;
+                  }
+                  position++;
+                }
+              }
             }
             Symbol_Add (binding);
 
@@ -26144,9 +26196,25 @@ LLVM_Value Generate_Identifier (Syntax_Node *node) {
       // emit a wrong 0-arg call but at least won't crash here).
       } else if (actual->kind == SYMBOL_FUNCTION and
                  actual->parameter_count > 0) {
+        // RM 6.4.2: default expressions belong to the VIEW the call names —
+        // for a generic formal subprogram, the formal's own declared
+        // defaults, never the bound actual's (RM 12.1.3). The peeled symbol
+        // supplies the body; the named symbol supplies the defaults. Only a
+        // RESOLVED default can be emitted — a formal default the template
+        // never resolved (it references formal types re-typed per instance)
+        // falls back to the actual's profile rather than reaching codegen
+        // untyped. Resolving those at template time is the remaining gap.
+        bool view_defaults_usable =
+          sym->parameters and sym->parameter_count == actual->parameter_count;
+        for (uint32_t i = 0; view_defaults_usable and
+                             i < sym->parameter_count; i++) {
+          Syntax_Node *d = sym->parameters[i].default_value;
+          if (d and not d->type) view_defaults_usable = false;
+        }
+        Symbol *default_view = view_defaults_usable ? sym : actual;
         bool all_default = true;
         for (uint32_t i = 0; i < actual->parameter_count; i++) {
-          if (not actual->parameters[i].default_value) {
+          if (not default_view->parameters[i].default_value) {
             all_default = false; break;
           }
         }
@@ -26158,7 +26226,7 @@ LLVM_Value Generate_Identifier (Syntax_Node *node) {
           app->type = actual->return_type;
           for (uint32_t i = 0; i < actual->parameter_count; i++) {
             Node_List_Push (&app->apply.arguments,
-                            actual->parameters[i].default_value);
+                            default_view->parameters[i].default_value);
           }
           return Generate_Apply (app);
         }
@@ -29454,6 +29522,11 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
 
   if (sym and sym->renamed_entry_name)
     entry_rename_sym = sym;
+  // RM 6.4.2: default expressions belong to the VIEW the call names — for a
+  // generic formal subprogram, the formal's own declared defaults, never the
+  // bound actual's (RM 12.1.3). The rename peel finds the BODY to call; the
+  // named view is kept for the default-argument lookup further down.
+  Symbol *named_view_sym = sym;
   sym = Resolve_Subprogram_Rename (sym);
 
   // A call through a procedure-renames-entry peeled to the entry symbol:
@@ -30232,12 +30305,19 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
     // interleave with the call's argument list.
     // Fill every uncovered slot from its default (RM 6.4.2) — leading
     // or trailing; a named association may skip any defaulted formal.
+    // Defaults come from the named view's profile (the formal's own defaults
+    // for a call through a generic formal subprogram); fall back to the
+    // resolved symbol when the view's profile does not line up (shape guard).
+    Symbol *default_view =
+      (named_view_sym and named_view_sym->parameters and
+       named_view_sym->parameter_count == sym->parameter_count)
+      ? named_view_sym : sym;
     if (sym->parameters) {
       for (uint32_t p = 0; p < sym->parameter_count and p < slot_count; p++) {
         if (slot_covered[p]) continue;
-        Syntax_Node *def = sym->parameters[p].default_value;
+        Syntax_Node *def = default_view->parameters[p].default_value;
         if (not def) continue;  // not reachable for a legal call
-        Type_Info *pt = sym->parameters[p].param_type;
+        Type_Info *pt = default_view->parameters[p].param_type;
         slot_covered[p] = true;
         slot_is_default[p] = true;
         is_byref[p] = false;
