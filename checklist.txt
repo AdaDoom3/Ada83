@@ -441,7 +441,18 @@ SIX-RANDOM-TESTS SWEEP (this session):
     exception to the correct enclosing scope (RM 11.1: exceptions in a
     declarative part propagate outward). Needs per-block storage allocation —
     architectural, deferred.
-  ce3704a / c83030a — under investigation.
+  ce3704a PASS (was FAIL) — Integer_IO GET returned 0. Not an RTS bug: inside a
+    generic instance whose actual is a DERIVED numeric type (TYPE NI IS NEW
+    INTEGER), the formal type's instance view copied the actual's parent_type,
+    so Covers_Only_Via_Derivation (ada83.c ~10084) saw the formal view and the
+    actual as sibling derivations of INTEGER and rejected the actual as an
+    argument for the formal. This discarded the correct GET(FILE, ITEM) overload
+    and left GET(ITEM, WIDTH) — binding the file handle to ITEM and the target
+    to WIDTH, so the integer was never read. Fix: peel generic-actual-views
+    (RM 12.1.2: a formal type IS its actual) at the top of the predicate; NUM
+    peels to NI and the same-type guard returns false. Full Class C gate:
+    +6 passes (ce3704a + bonus ce2401f, ce3116a, ce3704b, ce3804a, ce3804i —
+    all generic numeric-IO on derived actuals), zero regressions.
 
 AGGREGATE NAMED-CHOICE INDEX-SUBTYPE CHECK — CORRECTNESS FIX (no test delta yet):
 Aggregate_Choice_Out_Of_Range statically raised CONSTRAINT_ERROR for a named

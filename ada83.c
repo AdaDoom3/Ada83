@@ -2151,6 +2151,11 @@ Type_Info *Type_Designated        (const Type_Info *t);
 
 Type_Info *Type_Base (Type_Info *t);
 Type_Info *Type_Root (Type_Info *t);
+// Within a generic instance a formal type denotes its actual (RM 12.1.2). The
+// instance's view is a distinct Type_Info flagged is_generic_actual_view; this
+// follows it back to the underlying actual so type comparisons treat them as
+// one type.
+Type_Info *Peel_Generic_Actual_View (Type_Info *t);
 Type_Info *Discriminant_Type_In_Record (Type_Info *record_type, Symbol *disc_sym);
 
 int128_t Type_Bound_Value                 (Type_Bound  bound);
@@ -10082,6 +10087,13 @@ static bool Formal_Accepts_Actual (Type_Info *formal, Type_Info *actual) {
 // DURATION "<". Subtypes (same base), universals, and composite/access types
 // are left to Type_Covers.
 bool Covers_Only_Via_Derivation (Type_Info *param, Type_Info *arg) {
+  // RM 12.1.2: inside a generic instance a formal type IS its actual, never a
+  // sibling of it. A formal view built from a derived actual (TYPE NI IS NEW
+  // INTEGER) copies the actual's parent_type, so without peeling the view and
+  // the actual would look like two sibling derivations of INTEGER and this
+  // predicate would spuriously reject the actual as an argument for the formal.
+  param = Peel_Generic_Actual_View (param);
+  arg   = Peel_Generic_Actual_View (arg);
   if (not param or not arg or param == arg) return false;
   if (Type_Is_Universal (param) or Type_Is_Universal (arg)) return false;
   if (Type_Is_Array_Like (param) or Type_Is_Access (param) or Type_Is_Record (param) or
