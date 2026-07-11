@@ -123,6 +123,11 @@ enum {Default_Chunk_Size = 1 << 24}; // 16 MiB
 // space.
 #define MAX_STACK_OBJECT_BYTES (256u * 1024u * 1024u)
 
+// Automatic objects at or above this size get a runtime stack-extent probe
+// (__ada_stack_check) before their alloca; smaller ones are covered by the
+// probe's safety margin and skip the call.
+#define STACK_PROBE_THRESHOLD_BYTES (64u * 1024u)
+
 // ???
 #define STRING_BOUNDS_STRUCT "{i32, i32}"
 #define STRING_BOUND_TYPE    "i32"
@@ -3234,10 +3239,12 @@ void Emit_Check_With_Raise_Named (uint32_t    cond,
                             const char *comment);
 void Emit_Raise_Constraint_Error_When (LLVM_I1 condition, const char *comment);
 // RM 11.1: raise STORAGE_ERROR at an object's elaboration when its storage
-// exceeds the stack ceiling (MAX_STACK_OBJECT_BYTES). The static variant takes
-// a compile-time byte count; the dynamic variant an i64 register.
-void Emit_Storage_Error_If_Oversized_Static  (uint64_t bytes);
-void Emit_Storage_Error_If_Oversized_Dynamic (uint32_t size_reg_i64);
+// exceeds what the stack provides. The Oversized variant is the structural
+// raise for placeholder-slot objects beyond MAX_STACK_OBJECT_BYTES; the probe
+// variants emit an __ada_stack_check call testing the actual remaining stack.
+void Emit_Storage_Error_If_Oversized_Static (uint64_t bytes);
+void Emit_Stack_Probe_Static                (uint64_t bytes);
+void Emit_Stack_Probe_Dynamic               (uint32_t size_reg_i64);
 
 // RM 4.6 array conversion: raise CONSTRAINT_ERROR when the operand and target
 // array types have component subtypes whose constraints differ.
@@ -22651,15 +22658,21 @@ void Emit_Raise_Exception (const char *exc_name, const char *comment) {
 #define Emit_Raise_Constraint_Error(comment) Emit_Raise_Exception ("constraint_error", comment)
 #define Emit_Raise_Program_Error(comment)    Emit_Raise_Exception ("program_error", comment)
 
-// RM 11.1: raise STORAGE_ERROR when an automatic object's storage exceeds the
-// stack ceiling. Both variants emit a conditional check (not an unconditional
-// raise) so control flow after the declaration stays well-formed: the object's
-// remaining elaboration lands in the fall-through block, unreachable at run
-// time but valid IR. Emit at the elaboration point so the exception reaches the
-// enclosing scope (RM 11.2), never the object's own block handler.
+// RM 11.1: raise STORAGE_ERROR when an automatic object's storage exceeds what
+// the stack can provide. Emit at the elaboration point so the exception reaches
+// the enclosing scope (RM 11.2), never the object's own block handler.
 //
-// The static variant takes a compile-time byte count and folds to a constant
-// branch; the dynamic variant takes an i64 register holding a runtime size.
+// Emit_Storage_Error_If_Oversized_Static covers the STRUCTURAL case: an object
+// beyond MAX_STACK_OBJECT_BYTES received only a placeholder slot (no alloca of
+// its real size exists), so its elaboration must raise no matter how much stack
+// the machine actually has. The check is conditional (not an unconditional
+// terminator) so control flow after the declaration stays well-formed IR.
+//
+// The two probe variants cover the EXTENT case: the object's alloca is emitted,
+// and __ada_stack_check compares its size against the current thread's actual
+// remaining stack (getrlimit-derived) at run time, raising STORAGE_ERROR when
+// it cannot fit. The static variant skips the call for objects too small to
+// matter; the dynamic variant probes unconditionally since the size is unknown.
 void Emit_Storage_Error_If_Oversized_Static (uint64_t bytes) {
   if (bytes <= MAX_STACK_OBJECT_BYTES) return;
   uint32_t cond = Emit_Result_Instruction (
@@ -22668,12 +22681,14 @@ void Emit_Storage_Error_If_Oversized_Static (uint64_t bytes) {
   Emit_Check_With_Raise_Named (cond, true, "storage_error",
     "object too large for the stack (RM 11.1)");
 }
-void Emit_Storage_Error_If_Oversized_Dynamic (uint32_t size_reg_i64) {
-  uint32_t cond = Emit_Result_Instruction (
-    "icmp ugt i64 %%t%u, %u  ; RM 11.1 stack storage limit\n",
-    size_reg_i64, (unsigned) MAX_STACK_OBJECT_BYTES);
-  Emit_Check_With_Raise_Named (cond, true, "storage_error",
-    "object too large for the stack (RM 11.1)");
+void Emit_Stack_Probe_Static (uint64_t bytes) {
+  if (bytes < STACK_PROBE_THRESHOLD_BYTES) return;
+  Emit ("  call void @__ada_stack_check(i64 %llu)  ; RM 11.1 stack extent probe\n",
+     (unsigned long long) bytes);
+}
+void Emit_Stack_Probe_Dynamic (uint32_t size_reg_i64) {
+  Emit ("  call void @__ada_stack_check(i64 %%t%u)  ; RM 11.1 stack extent probe\n",
+     size_reg_i64);
 }
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
@@ -42570,10 +42585,14 @@ void Emit_Bind_Bounded_Array_Storage (Symbol *sym, uint32_t *dim_lo,
     }
   }
   uint32_t bsz64 = Emit_Result_Instruction ("mul i64 %%t%u, %u\n", total, element_size);
-  // RM 11.1: raise STORAGE_ERROR when the array is too large for the stack. The
-  // ceiling is well below INTEGER'LAST, so this also keeps the trunc-to-index
-  // below from wrapping an over-2**31 byte count into a small — or zero — size.
-  Emit_Storage_Error_If_Oversized_Dynamic (bsz64);
+  // RM 11.1: probe the actual remaining stack for this runtime-sized array.
+  Emit_Stack_Probe_Dynamic (bsz64);
+  // Independent structural guard: the trunc-to-index below must never wrap an
+  // over-2**31 byte count into a small — or zero — size. On a machine whose
+  // stack limit exceeds 2 GiB the probe alone would pass such a count through.
+  LLVM_I1 unrepresentable = Emit_Icmp_Const ("ugt", LLVM_Rep_Int (64, true), bsz64, 2147483647);
+  Emit_Check_With_Raise_Named (unrepresentable.reg, true, "storage_error",
+     "array object size exceeds INTEGER range (RM 11.1)");
   uint32_t bsz = Emit_Result_Instruction ("trunc i64 %%t%u to %s\n", bsz64, LLVM_Rep_To_String (iat));
   uint32_t dp = Emit_Result_Instruction ("alloca i8, %s %%t%u  ; %s\n", LLVM_Rep_To_String (iat), bsz, tag);
   // RM 3.2.1(20): if any leaf is an access type it must default to NULL.
@@ -43685,7 +43704,7 @@ void Generate_Object_Declaration (Syntax_Node *node) {
       // and let the local name denote the storage directly.
       if (Type_Is_Record (ty) and ty->rt_global_id > 0) {
         uint32_t rtsz = Emit_Result_Instruction ("load " RT_DESC_TYPE ", ptr @__rt_rec_%u_size\n", ty->rt_global_id);
-        Emit_Storage_Error_If_Oversized_Dynamic (rtsz);   // RM 11.1
+        Emit_Stack_Probe_Dynamic (rtsz);   // RM 11.1 stack extent probe
         Emit_Local_Ref (sym);
         Emit (" = alloca i8, i64 %%t%u  ; dynamic record (frame-indirect)\n", rtsz);
         Emit ("  call void @llvm.memset.p0.i64(ptr %%");
@@ -43768,6 +43787,9 @@ void Generate_Object_Declaration (Syntax_Node *node) {
       Emit_Storage_Error_If_Oversized_Static ((uint64_t) Static_Object_Byte_Size (ty));
 
     } else if (is_constrained_array and array_count > 0) {
+      int128_t static_bytes = Static_Object_Byte_Size (ty);
+      if (static_bytes > 0)
+        Emit_Stack_Probe_Static ((uint64_t) static_bytes);
       Emit_Local_Ref (sym);
 
       // Element is record or constrained array - use byte array
@@ -43813,7 +43835,7 @@ void Generate_Object_Declaration (Syntax_Node *node) {
     // Record with dynamic-sized components: load runtime size
     } else if (is_record and ty and ty->rt_global_id > 0) {
       uint32_t rtsz = Emit_Result_Instruction ("load " RT_DESC_TYPE ", ptr @__rt_rec_%u_size\n", ty->rt_global_id);
-      Emit_Storage_Error_If_Oversized_Dynamic (rtsz);   // RM 11.1
+      Emit_Stack_Probe_Dynamic (rtsz);   // RM 11.1 stack extent probe
       Emit_Local_Ref (sym);
       Emit (" = alloca i8, i64 %%t%u  ; record rt alloca\n", rtsz);
 
@@ -43830,6 +43852,7 @@ void Generate_Object_Declaration (Syntax_Node *node) {
         Emit (" = alloca i8  ; RM 11.1 oversized-record placeholder\n");
         Emit_Storage_Error_If_Oversized_Static ((uint64_t) record_size);
       } else {
+        Emit_Stack_Probe_Static ((uint64_t) record_size);
         Emit_Local_Ref (sym);
         Emit (" = alloca [%u x i8]  ; record type\n", record_size);
 
@@ -46020,6 +46043,11 @@ void Generate_Subprogram_Body (Syntax_Node *node) {
       ? sym->scope->frame_size : 8;
     int64_t alloca_size = is_nested ? frame_size + 8 : frame_size;
     Emit ("  ; Frame for nested function access\n");
+    // A large frame (many medium-sized locals; single oversized objects were
+    // already capped to placeholder slots) can still exceed the stack: probe
+    // before allocating. The raise here propagates out of the subprogram —
+    // its own handlers are not yet active at frame setup (RM 11.2).
+    Emit_Stack_Probe_Static ((uint64_t) alloca_size);
     Emit ("  %%__frame_base = alloca i8, i64 %lld\n", (long long)alloca_size);
 
     // Store static chain: parent's frame at offset frame_size
@@ -48298,6 +48326,7 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   Emit ("declare ptr @calloc (i64, i64)\n");
   Emit ("declare ptr @realloc (ptr, i64)\n");
   Emit ("declare void @free (ptr)\n");
+  Emit ("declare i32 @getrlimit(i32, ptr)\n");
   Emit ("declare i32 @usleep(i32)\n");
   Emit ("declare i32 @nanosleep(ptr, ptr)\n");
   Emit ("declare i32 @clock_gettime(i32, ptr)\n");
@@ -48979,6 +49008,63 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   Emit ("ok:\n");
   Emit ("  store i64 %%new, ptr @__heap_used\n");
   Emit ("  ret ptr %%p\n");
+  Emit ("raise:\n");
+  Emit ("  %%e = ptrtoint ptr @__exc.storage_error to " PTR_INT_TYPE "\n");
+  Emit ("  call void @__ada_raise(i64 %%e)\n");
+  Emit ("  unreachable\n");
+  Emit ("}\n\n");
+
+  // Stack-extent probe (RM 11.1): raise STORAGE_ERROR when an automatic
+  // object of %size bytes cannot fit in the current thread's remaining
+  // stack. The anchor global is thread-local so each task thread measures
+  // its own stack, lazily snapshotting the stack pointer on the thread's
+  // first probe (≈ its stack top; anything consumed before that first
+  // probe is absorbed by the safety margin). The limit comes from
+  // getrlimit(RLIMIT_STACK), cached after the first query; an unlimited
+  // or unqueryable stack falls back to a large or conservative default
+  // respectively. A 256 KiB margin is reserved for the runtime's own
+  // needs (raise machinery, handler frames) below the probed object.
+  Emit ("@__stk_anchor = linkonce_odr thread_local global i64 0\n");
+  Emit ("@__stk_limit  = linkonce_odr global i64 0\n");
+  Emit ("define linkonce_odr void @__ada_stack_check(i64 %%size) {\n");
+  Emit ("entry:\n");
+  Emit ("  %%here_p = alloca i8\n");
+  Emit ("  %%here = ptrtoint ptr %%here_p to i64\n");
+  Emit ("  %%a0 = load i64, ptr @__stk_anchor\n");
+  Emit ("  %%fresh = icmp eq i64 %%a0, 0\n");
+  Emit ("  br i1 %%fresh, label %%anchor, label %%limit\n");
+  Emit ("anchor:\n");
+  Emit ("  store i64 %%here, ptr @__stk_anchor\n");
+  Emit ("  br label %%limit\n");
+  Emit ("limit:\n");
+  Emit ("  %%a = phi i64 [%%here, %%anchor], [%%a0, %%entry]\n");
+  Emit ("  %%l0 = load i64, ptr @__stk_limit\n");
+  Emit ("  %%nolim = icmp eq i64 %%l0, 0\n");
+  Emit ("  br i1 %%nolim, label %%query, label %%check\n");
+  Emit ("query:\n");
+  Emit ("  %%rl = alloca [2 x i64]\n");
+  Emit ("  %%rc = call i32 @getrlimit(i32 3, ptr %%rl)  ; RLIMIT_STACK\n");
+  Emit ("  %%rc_ok = icmp eq i32 %%rc, 0\n");
+  Emit ("  %%cur = load i64, ptr %%rl\n");
+  Emit ("  %%inf = icmp eq i64 %%cur, -1  ; RLIM_INFINITY\n");
+  Emit ("  %%l1 = select i1 %%inf, i64 1099511627776, i64 %%cur  ; unlimited -> 1 TiB\n");
+  Emit ("  %%l2 = select i1 %%rc_ok, i64 %%l1, i64 8388608  ; unqueryable -> 8 MiB\n");
+  Emit ("  store i64 %%l2, ptr @__stk_limit\n");
+  Emit ("  br label %%check\n");
+  Emit ("check:\n");
+  Emit ("  %%l = phi i64 [%%l2, %%query], [%%l0, %%limit]\n");
+  Emit ("  %%down = sub i64 %%a, %%here  ; stack grows downward\n");
+  Emit ("  %%neg = icmp slt i64 %%down, 0\n");
+  Emit ("  %%used = select i1 %%neg, i64 0, i64 %%down\n");
+  Emit ("  %%occ = add i64 %%used, 262144  ; + safety margin\n");
+  Emit ("  %%room = icmp ult i64 %%occ, %%l\n");
+  Emit ("  br i1 %%room, label %%fit, label %%raise\n");
+  Emit ("fit:\n");
+  Emit ("  %%avail = sub i64 %%l, %%occ\n");
+  Emit ("  %%big = icmp ugt i64 %%size, %%avail\n");
+  Emit ("  br i1 %%big, label %%raise, label %%done\n");
+  Emit ("done:\n");
+  Emit ("  ret void\n");
   Emit ("raise:\n");
   Emit ("  %%e = ptrtoint ptr @__exc.storage_error to " PTR_INT_TYPE "\n");
   Emit ("  call void @__ada_raise(i64 %%e)\n");
