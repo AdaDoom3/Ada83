@@ -400,6 +400,33 @@ component (R.V). Separate discriminated-record-layout goblin.
 Skipped as environmental: c45114a (`ARRAY(1..INTEGER'LAST)` — a 2-billion-element
 boolean array, allocation-bound not a compiler goblin).
 
+AGGREGATE NAMED-CHOICE INDEX-SUBTYPE CHECK — CORRECTNESS FIX (no test delta yet):
+Aggregate_Choice_Out_Of_Range statically raised CONSTRAINT_ERROR for a named
+array aggregate whose choices differed from the TARGET's index constraint, using
+arr->indices[0] (the object constraint) and only dimension 0. RM 4.3.2: the
+choices must belong to the INDEX SUBTYPE, and an assignment slides — so
+`A : BASE(5..7); A := (6..8 => (5..7 => 0))` (BASE index subtype ST 4..8) is
+legal. Fixed: read the subtype from Type_Base(arr) (strips the object constraint,
+keeps an anonymous array's own range) and recurse through every dimension. The
+outer-dimension false raise is gone (verified) and out-of-subtype still raises.
+Zero regressions. Does NOT yet flip c43211a/c43213a: those need a SECOND,
+independent fix — the runtime "named aggregate bounds vs constraint" check
+(~ada83.c:35439) treats a multi-dimensional array's INNER dimension as a non-
+sliding component (slide_context = in_assignment_rhs && in_agg_component == 0).
+Per RM 5.2.1 every dimension of a whole-array assignment slides; the inner
+row (reduced-dimension row_type built at ~ada83.c:14276) needs to stay slide-
+eligible. That fix touches the aggregate generator's dimension-vs-component
+recursion — deferred as a focused follow-up.
+
+DISCRIMINATED-RECORD LAYOUT (investigated, no landable fix): a component after a
+dynamic-size component in an UNBOUNDED-discriminant record (`type R(N:INTEGER:=2)
+is record S:STRING(1..N); V:INTEGER`) overlaps at a static offset -> V corrupted.
+The bounded case (N:INTEGER range 1..10) works. Setting record size 0 to force the
+runtime path made it worse (the runtime sizing doesn't support this shape) —
+reverted. Likely no ACATS tests use unbounded mutable discriminated records.
+c34006d/c34007p/r use BOUNDED discriminants and pass in minimal repro, so their
+CONSTRAINT_ERRORs are a different, still-unlocated goblin.
+
 OTHER REMAINING LEVERS (from full-suite gap analysis):
   * Object renaming (RM 8.5) must yield a true alias (pointer to the renamed
     object), currently copies → segv/CE/wrong. Coherent set c85005a-e,

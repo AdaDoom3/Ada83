@@ -38134,48 +38134,75 @@ static uint32_t Emit_Assignment_Target_Address (Symbol *target_sym) {
   return addr;
 }
 
+// Only a SYNTACTIC literal (integer or character) is trusted as a static index
+// value. A bare identifier may carry an alternate enumeration-literal
+// interpretation (an overloaded name that is also an enum literal, c87b31a's
+// G/H), whose position is unrelated to the choice's resolved value — reading it
+// would spuriously reject a valid aggregate.
+#define STATIC_LIT_INDEX(n) ((n) and ((n)->kind == NK_INTEGER or            \
+    (n)->kind == NK_CHARACTER or                                            \
+    ((n)->kind == NK_UNARY_OP and (n)->unary.operand and                   \
+     (n)->unary.operand->kind == NK_INTEGER)) and Is_Static_Int_Node (n))
+
+// One dimension of the recursive named-choice check: test this level's choices
+// against dimension `dim`'s index subtype, then recurse into each nested
+// aggregate for the next dimension (a multi-dimensional aggregate nests one
+// aggregate per dimension, RM 4.3.2).
+static bool Aggregate_Dim_Out_Of_Range (Syntax_Node *agg, Type_Info *base_arr,
+                                        uint32_t dim) {
+  if (not agg or agg->kind != NK_AGGREGATE or dim >= base_arr->array.index_count)
+    return false;
+  Index_Info *ii = &base_arr->array.indices[dim];
+  Type_Bound lo = ii->low_bound, hi = ii->high_bound;
+  bool have_bounds = (lo.kind == BOUND_INTEGER and hi.kind == BOUND_INTEGER);
+  for (uint32_t i = 0; i < agg->aggregate.items.count; i++) {
+    Syntax_Node *item = agg->aggregate.items.items[i];
+    Syntax_Node *value = item;
+    if (item->kind == NK_ASSOCIATION) {
+      value = item->association.expression;
+      for (uint32_t c = 0; have_bounds and c < item->association.choices.count; c++) {
+        Syntax_Node *ch = item->association.choices.items[c];
+        if (Is_Others_Choice (ch)) continue;
+        int128_t clo, chi;
+        if (STATIC_LIT_INDEX (ch)) clo = chi = Static_Int_Value (ch);
+        else if (ch->kind == NK_RANGE and STATIC_LIT_INDEX (ch->range.low) and
+                 STATIC_LIT_INDEX (ch->range.high)) {
+          clo = Static_Int_Value (ch->range.low);
+          chi = Static_Int_Value (ch->range.high);
+        } else continue;
+        if (clo <= chi and (clo < lo.int_value or chi > hi.int_value)) return true;
+      }
+    }
+    if (dim + 1 < base_arr->array.index_count and
+        Aggregate_Dim_Out_Of_Range (value, base_arr, dim + 1))
+      return true;
+  }
+  return false;
+}
+
 // RM 4.3.2: a named choice of an aggregate for a CONSTRAINED array subtype
-// denotes an index that must belong to the index subtype — the choices are
-// index values, not slidable bounds. Returns true when a STATIC choice lies
-// outside the (static) first-dimension constraint, so the enclosing construct
-// must raise CONSTRAINT_ERROR (`A1 (1..3) := (2..4 => 0)`). The check is done
-// here at the statement level rather than inside Generate_Aggregate, whose
-// element/loop IR would entangle with a raise injected mid-build.
+// denotes an index that must belong to the INDEX SUBTYPE — the choices are
+// index values, not slidable bounds — so a static choice outside the index
+// subtype makes the enclosing construct raise CONSTRAINT_ERROR (`A1 (1..3) :=
+// (2..4 => 0)` where A1's index subtype is 1..3). The subtype is the object's,
+// not its constraint: an assignment slides, so `A : BASE(5..7) := (6..8 => ...)`
+// is legal when BASE's index subtype (ST, 4..8) contains 6..8. Type_Base strips
+// the object constraint (BASE(5..7) -> ST) while keeping an anonymous
+// constrained array's own range as its subtype. Every dimension is checked. The
+// check is done at the statement level rather than inside Generate_Aggregate,
+// whose element/loop IR would entangle with a raise injected mid-build.
 bool Aggregate_Choice_Out_Of_Range (Syntax_Node *agg, Type_Info *arr) {
   if (not agg or agg->kind != NK_AGGREGATE or
       not Type_Is_Constrained_Array (arr) or arr->array.index_count == 0)
     return false;
-  Type_Bound lo = arr->array.indices[0].low_bound;
-  Type_Bound hi = arr->array.indices[0].high_bound;
-  if (lo.kind != BOUND_INTEGER or hi.kind != BOUND_INTEGER) return false;
-  // Only a SYNTACTIC literal (integer or character) is trusted as a static index
-  // value. A bare identifier may carry an alternate enumeration-literal
-  // interpretation (an overloaded name that is also an enum literal, c87b31a's
-  // G/H), whose position is unrelated to the choice's resolved value — reading it
-  // would spuriously reject a valid aggregate.
-  #define STATIC_LIT_INDEX(n) ((n) and ((n)->kind == NK_INTEGER or            \
-      (n)->kind == NK_CHARACTER or                                            \
-      ((n)->kind == NK_UNARY_OP and (n)->unary.operand and                   \
-       (n)->unary.operand->kind == NK_INTEGER)) and Is_Static_Int_Node (n))
-  for (uint32_t i = 0; i < agg->aggregate.items.count; i++) {
-    Syntax_Node *item = agg->aggregate.items.items[i];
-    if (item->kind != NK_ASSOCIATION) continue;
-    for (uint32_t c = 0; c < item->association.choices.count; c++) {
-      Syntax_Node *ch = item->association.choices.items[c];
-      if (Is_Others_Choice (ch)) continue;
-      int128_t clo, chi;
-      if (STATIC_LIT_INDEX (ch)) clo = chi = Static_Int_Value (ch);
-      else if (ch->kind == NK_RANGE and STATIC_LIT_INDEX (ch->range.low) and
-               STATIC_LIT_INDEX (ch->range.high)) {
-        clo = Static_Int_Value (ch->range.low);
-        chi = Static_Int_Value (ch->range.high);
-      } else continue;
-      if (clo <= chi and (clo < lo.int_value or chi > hi.int_value)) return true;
-    }
-  }
-  #undef STATIC_LIT_INDEX
-  return false;
+  Type_Info *base = Type_Base (arr);
+  if (not (base and Type_Is_Array_Like (base) and
+           base->array.index_count == arr->array.index_count and
+           base->array.indices))
+    base = arr;
+  return Aggregate_Dim_Out_Of_Range (agg, base, 0);
 }
+#undef STATIC_LIT_INDEX
 
 void Generate_Assignment (Syntax_Node *node) {
   Syntax_Node *target = node->assignment.target;
