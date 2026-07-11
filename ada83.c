@@ -2029,6 +2029,11 @@ struct Type_Info {
       uint32_t    index_count;    // Number of dimensions
       Type_Info  *element_type;   // Component type of the array
       bool        is_constrained; // True for constrained (bounds known statically)
+      bool        is_dimension_row; // Implicit row type of a multi-dimensional
+                                    // aggregate's inner dimensions: such a row
+                                    // slides with the whole array in an
+                                    // assignment (RM 5.2.1), unlike a true
+                                    // component aggregate, which never slides.
     } array;
 
     // when TYPE_RECORD =>
@@ -3007,6 +3012,9 @@ typedef struct {
   uint32_t     rt_type_counter;                 // Counter for runtime type descriptors
   uint32_t     in_agg_component;                // Nesting depth inside aggregate generation
   bool         in_assignment_rhs;               // True while generating an assignment-statement RHS (RM 5.2.1 sliding context)
+  bool         agg_dimension_rows_slide;        // Enclosing aggregate is in slide context, so its
+                                                // inner dimension rows slide too (RM 5.2.1); a row
+                                                // inside a non-sliding component aggregate does not.
   bool         in_qualified_expr;               // True while generating the operand of a qualified expression (RM 4.7 — no sliding, exact bounds match)
   uint32_t     inner_agg_bnd_lo [MAX_AGG_DIMS]; // Low-bound temps for inner dimensions
   uint32_t     inner_agg_bnd_hi [MAX_AGG_DIMS]; // High-bound temps for inner dimensions
@@ -3595,6 +3603,9 @@ void       Emit_Access_Subtype_Constraint_Check (uint32_t     value_reg,
                                                  const char  *msg);
 LLVM_Value Generate_Allocator         (Syntax_Node *node);
 uint32_t   Generate_Aggregate         (Syntax_Node *node);
+// The full aggregate generator; call only through Generate_Aggregate, which
+// establishes the RM 5.2.1 dimension-row slide inheritance around it.
+uint32_t   Generate_Aggregate_Body    (Syntax_Node *node);
 uint32_t   Generate_Composite_Address (Syntax_Node *node);
 LLVM_Value Generate_Bound_Value       (Type_Bound   bound,
                                        LLVM_Rep     target_rep);
@@ -14357,6 +14368,10 @@ Type_Info *Resolve_Expression (Syntax_Node *node) {
               // own bounds from the choices (RM 4.3.2(4)) rather than being
               // pinned to — and checked against — the index subtype's full range.
               row_type->array.is_constrained = agg_type->array.is_constrained;
+              // A row is a DIMENSION of the enclosing aggregate, not a component
+              // value: in an assignment it slides along with the whole array
+              // (RM 5.2.1), which the aggregate bounds check must honour.
+              row_type->array.is_dimension_row = true;
               row_type->array.index_count = agg_type->array.index_count - 1;
               row_type->array.indices = Arena_Allocate (
                 row_type->array.index_count * sizeof (Index_Info));
@@ -34672,7 +34687,25 @@ void Emit_Index_Bounds_Constraint_Check (uint32_t lo_val, uint32_t hi_val,
 // §13.9 Aggregate Helpers (body)
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 
+// Establish the RM 5.2.1 slide inheritance for one aggregate, then generate it.
+// An array aggregate slides when it is the top-level RHS of an assignment, or
+// when it is an inner DIMENSION ROW of an aggregate that itself slides — a row
+// is part of the same array value, not a component. Any other nested aggregate
+// (a record aggregate, or a true component value such as an array-of-arrays
+// element) resets the inheritance: components never slide (RM 4.3.2 / 3.6.1).
 uint32_t Generate_Aggregate (Syntax_Node *node) {
+  bool saved_rows_slide = cg->agg_dimension_rows_slide;
+  Type_Info *agg_type = node->type;
+  bool is_array = agg_type and Type_Is_Array_Like (agg_type);
+  cg->agg_dimension_rows_slide = cg->in_assignment_rhs and is_array and
+    (cg->in_agg_component == 0 or
+     (agg_type->array.is_dimension_row and saved_rows_slide));
+  uint32_t result = Generate_Aggregate_Body (node);
+  cg->agg_dimension_rows_slide = saved_rows_slide;
+  return result;
+}
+
+uint32_t Generate_Aggregate_Body (Syntax_Node *node) {
   Type_Info *agg_type = node->type;
 
   // Normalize T'RANGE choices → T'FIRST..T'LAST (recursively)
@@ -34908,24 +34941,49 @@ uint32_t Generate_Aggregate (Syntax_Node *node) {
         for (uint32_t d = 1; d < agg_ndims and inner_agg; d++) {
           if (inner_agg->kind != NK_AGGREGATE) break;
 
-          // Extract choice bounds from inner sub-aggregate
-          bool found = false;
-          for (uint32_t ci = 0; ci < inner_agg->aggregate.items.count and not found; ci++) {
-            Syntax_Node *cit = inner_agg->aggregate.items.items[ci];
-            if (cit->kind != NK_ASSOCIATION) continue;
-            for (uint32_t cc = 0; cc < cit->association.choices.count and not found; cc++) {
-              Syntax_Node *ch = cit->association.choices.items[cc];
-              if (ch->kind == NK_RANGE) {
-                dim_lo[d] = Is_Static_Int_Node (ch->range.low)
-                  ? (Type_Bound){.kind=BOUND_INTEGER,
-                     .int_value=Static_Int_Value (ch->range.low)}
-                  : (Type_Bound){.kind=BOUND_EXPR, .expr=ch->range.low};
-                dim_hi[d] = Is_Static_Int_Node (ch->range.high)
-                  ? (Type_Bound){.kind=BOUND_INTEGER,
-                     .int_value=Static_Int_Value (ch->range.high)}
-                  : (Type_Bound){.kind=BOUND_EXPR, .expr=ch->range.high};
-                found = true;
+          // Extract choice bounds from the inner sub-aggregate. RM 4.3.2(5):
+          // the aggregate's bounds are the MINIMUM low and MAXIMUM high over
+          // all its choices — range choices AND single index choices alike
+          // (e.g. (3 => -2, 4 => -3) spans 3..4). When every choice is
+          // static, fold the span; otherwise fall back to the first dynamic
+          // range's expressions.
+          {
+            int128_t min_lo = 0, max_hi = 0;
+            bool have_static = false;
+            Syntax_Node *dyn_lo = NULL, *dyn_hi = NULL;
+            for (uint32_t ci = 0; ci < inner_agg->aggregate.items.count; ci++) {
+              Syntax_Node *cit = inner_agg->aggregate.items.items[ci];
+              if (cit->kind != NK_ASSOCIATION) continue;
+              for (uint32_t cc = 0; cc < cit->association.choices.count; cc++) {
+                Syntax_Node *ch = cit->association.choices.items[cc];
+                if (Is_Others_Choice (ch)) continue;
+                int128_t clo, chi;
+                if (ch->kind == NK_RANGE) {
+                  if (Is_Static_Int_Node (ch->range.low) and
+                      Is_Static_Int_Node (ch->range.high)) {
+                    clo = Static_Int_Value (ch->range.low);
+                    chi = Static_Int_Value (ch->range.high);
+                  } else {
+                    if (not dyn_lo) { dyn_lo = ch->range.low; dyn_hi = ch->range.high; }
+                    continue;
+                  }
+                } else if (Is_Static_Int_Node (ch)) {
+                  clo = chi = Static_Int_Value (ch);
+                } else {
+                  if (not dyn_lo) { dyn_lo = dyn_hi = ch; }
+                  continue;
+                }
+                if (not have_static or clo < min_lo) min_lo = clo;
+                if (not have_static or chi > max_hi) max_hi = chi;
+                have_static = true;
               }
+            }
+            if (have_static) {
+              dim_lo[d] = (Type_Bound){ .kind = BOUND_INTEGER, .int_value = min_lo };
+              dim_hi[d] = (Type_Bound){ .kind = BOUND_INTEGER, .int_value = max_hi };
+            } else if (dyn_lo) {
+              dim_lo[d] = (Type_Bound){ .kind = BOUND_EXPR, .expr = dyn_lo };
+              dim_hi[d] = (Type_Bound){ .kind = BOUND_EXPR, .expr = dyn_hi };
             }
           }
 
@@ -35528,6 +35586,8 @@ uint32_t Generate_Aggregate (Syntax_Node *node) {
           //   • Only an array ASSIGNMENT slides (RM 5.2.1): when this aggregate is
           //     the top-level RHS of an assignment statement, just the LENGTH need
           //     agree, e.g. (WED..FRI => 0, SAT..SUN => 1) := ARR_DAY(MON..FRI).
+          //   • An inner DIMENSION ROW of a sliding aggregate slides with it —
+          //     every dimension of the assigned value converts together.
           //   • Every other consumer — a parameter/default value, a qualified
           //     expression, or a COMPONENT of an enclosing aggregate — requires the
           //     value to BELONG to the constrained subtype (RM 4.3.2 / 3.6.1), so
@@ -35535,7 +35595,9 @@ uint32_t Generate_Aggregate (Syntax_Node *node) {
           // Index-value legality against the index subtype is enforced separately by
           // the per-choice index-subtype check. (con_lo/con_hi is the dim-0
           // constraint; inner sub-aggregates are checked against the inner one.)
-          bool slide_context = cg->in_assignment_rhs and cg->in_agg_component == 0;
+          // The eligibility itself is computed once per aggregate by the
+          // Generate_Aggregate wrapper, including the row inheritance.
+          bool slide_context = cg->agg_dimension_rows_slide;
 
           // A "constraint" that is merely the index subtype's own full range is
           // not a narrowing constraint: the target is unconstrained (A : A_12,
@@ -36042,11 +36104,21 @@ uint32_t Generate_Aggregate (Syntax_Node *node) {
           uint32_t ir_hi = Coerce_To_Rep (ir_hi_v.reg, ir_hi_v.rep, ait);
           uint32_t exp_lo = Emit_Single_Bound (&dim_lo[1], ait);
           uint32_t exp_hi = Emit_Single_Bound (&dim_hi[1], ait);
-          LLVM_I1 ilo_ne = Emit_Icmp ("ne", ait, ir_lo, exp_lo);
-          LLVM_I1 ihi_ne = Emit_Icmp ("ne", ait, ir_hi, exp_hi);
-          uint32_t imm = Emit_Result_Instruction ("or i1 %%t%u, %%t%u\n", ilo_ne.reg, ihi_ne.reg);
-          Emit_Raise_Constraint_Error_When ((LLVM_I1){ imm },
-            "inner aggregate named range vs constraint");
+          if (cg->agg_dimension_rows_slide) {
+            // RM 5.2.1: in an assignment every dimension slides — the rows
+            // need only the constrained LENGTH, not the same bounds.
+            uint32_t agg_len = Emit_Length_From_Bounds (ir_lo, ir_hi, ait).reg;
+            uint32_t con_len = Emit_Length_From_Bounds (exp_lo, exp_hi, ait).reg;
+            LLVM_I1 len_ne = Emit_Icmp ("ne", ait, agg_len, con_len);
+            Emit_Raise_Constraint_Error_When (len_ne,
+              "inner aggregate named length vs constraint");
+          } else {
+            LLVM_I1 ilo_ne = Emit_Icmp ("ne", ait, ir_lo, exp_lo);
+            LLVM_I1 ihi_ne = Emit_Icmp ("ne", ait, ir_hi, exp_hi);
+            uint32_t imm = Emit_Result_Instruction ("or i1 %%t%u, %%t%u\n", ilo_ne.reg, ihi_ne.reg);
+            Emit_Raise_Constraint_Error_When ((LLVM_I1){ imm },
+              "inner aggregate named range vs constraint");
+          }
           goto inner_dim_check_done;
         }
         break;  // only check first non-others association
@@ -36079,12 +36151,24 @@ uint32_t Generate_Aggregate (Syntax_Node *node) {
           if (Is_Others_Choice (ch) or ch->kind != NK_RANGE) continue;
           if (Is_Static_Int_Node (ch->range.low) and Is_Static_Int_Node (ch->range.high) and
               clo_b->kind == BOUND_INTEGER and chi_b->kind == BOUND_INTEGER) {
-            uint32_t alo = Emit_Static_Int (Static_Int_Value (ch->range.low),  chk_iat).reg;
-            uint32_t ahi = Emit_Static_Int (Static_Int_Value (ch->range.high), chk_iat).reg;
-            uint32_t clo = Emit_Static_Int (clo_b->int_value, chk_iat).reg;
-            uint32_t chi = Emit_Static_Int (chi_b->int_value, chk_iat).reg;
-            Emit_Aggregate_Bound_Match_Check (alo, clo, ahi, chi, chk_iat,
-              "inner aggregate named range vs constraint");
+            if (cg->agg_dimension_rows_slide) {
+              // RM 5.2.1: in an assignment every dimension slides — the rows
+              // need only the constrained LENGTH; fold the check statically.
+              int128_t agg_len = Static_Int_Value (ch->range.high)
+                               - Static_Int_Value (ch->range.low) + 1;
+              int128_t con_len = chi_b->int_value - clo_b->int_value + 1;
+              if (agg_len < 0) agg_len = 0;
+              if (con_len < 0) con_len = 0;
+              if (agg_len != con_len)
+                Emit_Raise_And_Continue ("inner aggregate named length vs constraint");
+            } else {
+              uint32_t alo = Emit_Static_Int (Static_Int_Value (ch->range.low),  chk_iat).reg;
+              uint32_t ahi = Emit_Static_Int (Static_Int_Value (ch->range.high), chk_iat).reg;
+              uint32_t clo = Emit_Static_Int (clo_b->int_value, chk_iat).reg;
+              uint32_t chi = Emit_Static_Int (chi_b->int_value, chk_iat).reg;
+              Emit_Aggregate_Bound_Match_Check (alo, clo, ahi, chi, chk_iat,
+                "inner aggregate named range vs constraint");
+            }
           }
           break;
         }
