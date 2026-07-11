@@ -45,12 +45,22 @@ package body SEQUENTIAL_IO is
       Name     : String(1..1024);
    end record;
    FCBs     : array(1..99) of FCB;
-   Next_FCB : Integer := 1;
 
    function Is_Open_Index(Idx : Integer) return Boolean is
    begin
       return Idx >= 1 and then Idx <= 99 and then FCBs(Idx).Is_Open;
    end Is_Open_Index;
+
+   -- First control block not currently in use, so slots freed by CLOSE and
+   -- DELETE are reclaimed (RM 14.4 places no lifetime cap on internal files).
+   -- Returns 0 when the table is full.
+   function Free_FCB_Index return Integer is
+   begin
+      for I in FCBs'Range loop
+         if not FCBs(I).Is_Open then return I; end if;
+      end loop;
+      return 0;
+   end Free_FCB_Index;
 
    -- Raise STATUS_ERROR unless FILE denotes an open external file (RM 14.4).
    function Require_Open(FILE : FILE_TYPE) return Integer is
@@ -81,9 +91,9 @@ package body SEQUENTIAL_IO is
       Mode_Str : String(1..4);
    begin
       if Is_Open_Index(FILE.Handle) then raise STATUS_ERROR; end if;
-      if Next_FCB > 99 then raise USE_ERROR; end if;
+      Idx := Free_FCB_Index;
+      if Idx = 0 then raise USE_ERROR; end if;
       if not Creating and then NAME'Length = 0 then raise NAME_ERROR; end if;
-      Idx := Next_FCB;
 
       if Creating then
          Mode_Str := ('w', '+', 'b', Character'Val(0));   -- truncate, read/write
@@ -109,7 +119,6 @@ package body SEQUENTIAL_IO is
 
       FCBs(Idx).Mode    := MODE;
       FCBs(Idx).Is_Open := True;
-      Next_FCB := Next_FCB + 1;
       FILE := (Handle => Idx);
    end Attach;
 
@@ -199,13 +208,18 @@ package body SEQUENTIAL_IO is
       end if;
    end READ;
 
+   -- Flush after a successful fwrite: several internal files may denote the
+   -- same external file (RM 14.1), and a reader through another stream must
+   -- see this write, not the on-disk state it predates.
    procedure WRITE(FILE : in FILE_TYPE; ITEM : in ELEMENT_TYPE) is
-      Idx : Integer := Require_Open(FILE);
+      Idx    : Integer := Require_Open(FILE);
+      Ignore : Integer;
    begin
       if FCBs(Idx).Mode = IN_FILE then raise MODE_ERROR; end if;
       if C_Fwrite(ITEM'Address, Element_Bytes, 1, FCBs(Idx).Stream) /= 1 then
          raise DEVICE_ERROR;
       end if;
+      Ignore := C_Fflush(FCBs(Idx).Stream);
    end WRITE;
 
    function END_OF_FILE(FILE : in FILE_TYPE) return Boolean is

@@ -91,7 +91,6 @@ package body TEXT_IO is
    Current_In_Idx  : Integer := 1;
    Current_Out_Idx : Integer := 2;
    Current_Err_Idx : Integer := 3;
-   Next_FCB        : Integer := 4;
 
    Null_Address : constant SYSTEM.ADDRESS := SYSTEM.ADDRESS(0);
 
@@ -156,6 +155,18 @@ package body TEXT_IO is
       return Idx >= 1 and Idx <= 99 and then FCBs(Idx).Is_Open;
    end Is_Open_Index;
 
+   -- First control block not in use, starting past the three standard files,
+   -- so slots freed by CLOSE and DELETE are reclaimed (RM 14.4 places no
+   -- lifetime cap on internal files). Returns 0 (the closed sentinel) when
+   -- the table is full.
+   function Free_FCB_Index return Integer is
+   begin
+      for I in 4 .. 99 loop
+         if not FCBs(I).Is_Open then return I; end if;
+      end loop;
+      return 0;
+   end Free_FCB_Index;
+
    -- Raise STATUS_ERROR unless Idx denotes an open file (RM 14.4).
    procedure Require_Open(Idx : Integer) is
    begin
@@ -198,12 +209,10 @@ package body TEXT_IO is
          raise STATUS_ERROR;
       end if;
 
-      if Next_FCB > 99 then
+      Idx := Free_FCB_Index;
+      if Idx = 0 then
          raise USE_ERROR;
       end if;
-
-      Idx := Next_FCB;
-      Next_FCB := Next_FCB + 1;
 
       case MODE is
          when IN_FILE =>
@@ -214,11 +223,11 @@ package body TEXT_IO is
             Mode_Str := ('a', Character'Val(0), Character'Val(0));
       end case;
 
+      -- A failed fopen leaves the slot unmarked, so it stays free.
       if NAME'Length > 0 then
          To_C_String(NAME, Name_Buf, Name_Len);
          FCBs(Idx).Stream := C_Fopen(Name_Buf'Address, Mode_Str'Address);
          if FCBs(Idx).Stream = Null_Address then
-            Next_FCB := Next_FCB - 1;
             raise NAME_ERROR;
          end if;
          FCBs(Idx).Name_Len := NAME'Length;
@@ -226,7 +235,6 @@ package body TEXT_IO is
       else
          FCBs(Idx).Stream := C_Tmpfile;   -- anonymous temporary file
          if FCBs(Idx).Stream = Null_Address then
-            Next_FCB := Next_FCB - 1;
             raise USE_ERROR;
          end if;
          FCBs(Idx).Name_Len := 0;
@@ -265,16 +273,14 @@ package body TEXT_IO is
          raise STATUS_ERROR;
       end if;
 
-      if Next_FCB > 99 then
-         raise USE_ERROR;
-      end if;
-
       if NAME'Length = 0 then
          raise NAME_ERROR;
       end if;
 
-      Idx := Next_FCB;
-      Next_FCB := Next_FCB + 1;
+      Idx := Free_FCB_Index;
+      if Idx = 0 then
+         raise USE_ERROR;
+      end if;
 
       case MODE is
          when IN_FILE =>
@@ -292,8 +298,7 @@ package body TEXT_IO is
       To_C_String(NAME, Name_Buf, Name_Len);
       FCBs(Idx).Stream := C_Fopen(Name_Buf'Address, Mode_Str'Address);
       if FCBs(Idx).Stream = Null_Address then
-         Next_FCB := Next_FCB - 1;
-         raise NAME_ERROR;
+         raise NAME_ERROR;   -- slot never marked open; stays free
       end if;
 
       FCBs(Idx).Mode := MODE;

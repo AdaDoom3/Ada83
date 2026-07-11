@@ -13445,9 +13445,15 @@ void Analyze_Binary (Syntax_Node *n) {
     Type_Info *tested = R ? (R->symbol and (R->symbol->kind == SYMBOL_TYPE or
                                             R->symbol->kind == SYMBOL_SUBTYPE)
                              ? R->symbol->type : R->type) : NULL;
+    // Seed the BASE type, not the tested subtype: membership ASKS whether the
+    // value satisfies the subtype's constraint (RM 4.5.2), so the operand must
+    // carry its own bounds. Seeding the constrained subtype made a string
+    // literal inherit the subtype's bounds (membership then compared them
+    // against themselves — always TRUE) and made an aggregate raise
+    // CONSTRAINT_ERROR against the very constraint being tested.
     if (L and tested and not L->type and
         (L->kind == NK_AGGREGATE or L->kind == NK_STRING))
-      L->type = tested;                  // seed applicable context
+      L->type = Type_Base (tested);      // seed applicable context
     Resolve_Expression (L);
     n->type = sm->type_boolean;
     Interp_Add (Node_Interps_Reset (n), NULL, sm->type_boolean,
@@ -14147,12 +14153,37 @@ Type_Info *Resolve_Expression (Syntax_Node *node) {
             }
             break;
 
-          // VAL, SUCC, PRED return the base type (for scalar types)
+          // VAL, SUCC, PRED return the BASE type (RM 3.5.5): S'VAL(0) is a
+          // value of the base, checked against a subtype only when a later
+          // assignment or conversion imposes one. Typing it with the prefix
+          // SUBTYPE made downstream range checks elide (source bounds equal
+          // target bounds), losing the required constraint check. Strip only
+          // a SUBTYPE declaration's constraint (one base hop): a type
+          // declaration IS its own first subtype here, and hopping it (or
+          // walking Type_Base to the root) would land on a different type
+          // identity — the derivation parent or INTEGER — breaking overload
+          // resolution, which needs T'VAL to denote a value of type T.
           case ATTRIBUTE_VAL:
           case ATTRIBUTE_SUCC:
-          case ATTRIBUTE_PRED:
-            node->type = prefix_type ? prefix_type : sm->type_integer;
+          case ATTRIBUTE_PRED: {
+            // A SUBTYPE prefix is identified by its declaring symbol, not by
+            // the type graph (Type_Info is shared/copied too freely to stamp);
+            // one base hop strips its constraint. A generic formal's prefix is
+            // its actual-VIEW, whose base_type the binder already set to the
+            // ACTUAL's base (RM 12.1.2) — a formal bound to a subtype must not
+            // pin 'VAL to the subtype's constraint. In both cases the result
+            // is the prefix type's own base.
+            Symbol *pre_sym = node->attribute.prefix
+                            ? node->attribute.prefix->symbol : NULL;
+            bool strip_constraint =
+              (pre_sym and pre_sym->kind == SYMBOL_SUBTYPE) or
+              (prefix_type and prefix_type->is_generic_actual_view);
+            if (strip_constraint and prefix_type and prefix_type->base_type)
+              node->type = prefix_type->base_type;
+            else
+              node->type = prefix_type ? prefix_type : sm->type_integer;
             break;
+          }
 
           // POS returns universal integer
           case ATTRIBUTE_POS:
