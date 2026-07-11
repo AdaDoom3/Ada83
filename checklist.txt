@@ -400,6 +400,49 @@ component (R.V). Separate discriminated-record-layout goblin.
 Skipped as environmental: c45114a (`ARRAY(1..INTEGER'LAST)` — a 2-billion-element
 boolean array, allocation-bound not a compiler goblin).
 
+SIX-RANDOM-TESTS SWEEP (this session):
+  cd4051d PASS (was FAIL) — record rep clause `'LAST_BIT`. Component clause
+    resolution read RANGE low into bit_offset but discarded RANGE high, leaving
+    bit_size at the component's natural width, so 'LAST_BIT = first_bit+8-1
+    instead of the clause's last bit. Now reads the high bound into bit_size
+    (ada83.c ~20918). bit_size feeds only 'LAST_BIT and the bit-level equality
+    accounting (26269) — load/store keys off byte_offset, so this is safe.
+  ca1108a PASS (was FAIL) — `Symbols not found: main`. The subunit-vs-whole-
+    program classifier (ada83.c ~55043) required an in-file parent to be a
+    non-separate library unit, so a NESTED subunit (parent is itself a subunit
+    stub in the same file) was misclassified as a separate-subunit compile and
+    @main was suppressed. Dropped the `not ...separate_parent` clause; parent
+    is now found by symbol identity alone.
+  cd5011g PASS (was FAIL) — fixed-point assignment through a dereference. A
+    `FOR FP USE AT addr` overlay routes `FP := 3.0` through the scalar `.ALL`
+    store, which used rep-only Emit_Convert and skipped the real->fixed /SMALL
+    scaling (stored 3 instead of 24). Added Emit_Convert_Scalar_To_Type helper
+    (ada83.c ~27018) applying the fixed-point rule; routed both the `.ALL` and
+    selected-component scalar stores through it (generalizes beyond address
+    clauses to any real->fixed store via .all or a selected access target).
+  c83030a PASS (was SIGSEGV) — RM 8.3 overload resolution inside a nested
+    scope. A bare function name in BOOLEAN context (`IF F THEN`) misbound to an
+    inner F RETURN INTEGER instead of the visible outer F RETURN BOOLEAN,
+    because the interpretation-collection gate (ada83.c ~13334) only gathered
+    the full cross-scope overload set when the innermost binding's same-region
+    is_overloaded flag was set. An inner subprogram alone in its region left
+    that flag clear, so the outer homograph-by-name-only sibling never entered
+    the candidate set and the lone inner interpretation won by default (here:
+    unbounded self-recursion -> stack overflow). Now collects whenever the
+    innermost binding is a subprogram; Score_Interpretation picks the
+    context-matching result. Full Class C gate: +7 passes, zero regressions.
+  Bonus (same gate, from the cd5011g fixed-point store fix generalizing to
+    other overlay/address-clause tests): cd5012e, cd5013g, cd5014v now PASS.
+
+  c45114a NOT a small fix — declares ARRAY(1..INTEGER'LAST) OF BOOLEAN (~2GB
+    stack object); pass path is the outer block's WHEN STORAGE_ERROR handler.
+    Compiler uses one whole-function frame alloca (ada83.c:45880) with no
+    per-declaration allocation point to intercept and no way to route the
+    exception to the correct enclosing scope (RM 11.1: exceptions in a
+    declarative part propagate outward). Needs per-block storage allocation —
+    architectural, deferred.
+  ce3704a / c83030a — under investigation.
+
 AGGREGATE NAMED-CHOICE INDEX-SUBTYPE CHECK — CORRECTNESS FIX (no test delta yet):
 Aggregate_Choice_Out_Of_Range statically raised CONSTRAINT_ERROR for a named
 array aggregate whose choices differed from the TARGET's index constraint, using

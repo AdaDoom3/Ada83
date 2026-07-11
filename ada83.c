@@ -3612,6 +3612,13 @@ uint32_t Wrap_Constrained_As_Fat  (Syntax_Node *expr,
 LLVM_Value Convert_Real_To_Fixed  (uint32_t     val,
                                    double       small,
                                    LLVM_Rep     fix_rep);
+// Convert an already-generated scalar VALUE to DEST's representation for a
+// store, applying fixed-point /SMALL scaling (RM 3.5.9) when a real value
+// targets a fixed-point type. DEST_REP is DEST's store representation, passed
+// in so the caller's own fallback applies when DEST is unknown.
+uint32_t   Emit_Convert_Scalar_To_Type (LLVM_Value value_v,
+                                        Type_Info *dest,
+                                        LLVM_Rep   dest_rep);
 
 bool     Aggregate_Produces_Fat_Pointer (const Type_Info *t);
 void     Ensure_Runtime_Type_Globals    (Type_Info *t);
@@ -13324,7 +13331,15 @@ void Analyze_Identifier (Syntax_Node *n) {
   // types (BOOLEAN.FALSE, MYBOOL.FALSE) may not be flagged is_overloaded on
   // the symbol, but their interpretations must all be exposed so
   // Resolve_In_Context can pick the one matching the applicable ctx.
-  bool collect_all = sym->is_overloaded or sym->kind == SYMBOL_LITERAL;
+  //
+  // A bare subprogram name likewise needs the full cross-scope overload set:
+  // an inner declaration hides an outer one only when they are homographs
+  // (RM 8.3), so an inner F RETURN INTEGER does not hide an outer
+  // F RETURN BOOLEAN. is_overloaded is a same-region flag and misses that
+  // case, so collect whenever the innermost binding is a subprogram and let
+  // Score_Interpretation pick the one matching the applicable context.
+  bool collect_all = sym->is_overloaded or sym->kind == SYMBOL_LITERAL
+                     or Symbol_Is_Subprogram (sym);
   if (collect_all) {
     Interp_List all;
     Collect_Interpretations (n->string_val.text, &all);
@@ -20908,13 +20923,14 @@ void Resolve_Declaration (Syntax_Node *node) {
                     Component_Info *comp = &target_type->record.components[j];
 
                     // RM 13.4: `comp AT p RANGE f .. l` places the component at
-                    // byte p with its first stored bit at f. Both p and f are
-                    // static expressions (often products of named numbers such
-                    // as 2 * UNITS_PER_INTEGER), so fold them rather than
-                    // accepting only integer literals. bit_size is left at the
-                    // component's natural width: a sub-natural range denotes a
-                    // packed bit field, whose load/store this generator does not
-                    // implement, and forcing it would corrupt the value.
+                    // byte p with its stored bits spanning f .. l. All three of
+                    // p, f, and l are static expressions (often products of named
+                    // numbers such as 2 * UNITS_PER_INTEGER), so fold them rather
+                    // than accepting only integer literals. The range width
+                    // l - f + 1 becomes the component's bit_size, which feeds the
+                    // 'LAST_BIT attribute and the bit-level equality accounting.
+                    // Component load/store keys off byte_offset (GEP), not
+                    // bit_size, so recording a sub-natural width here is safe.
                     if (Slice_Equal_Ignore_Case (comp->name, comp_name)) {
                       Syntax_Node *pos_expr = cc->association.expression;
                       if (pos_expr) {
@@ -20929,6 +20945,13 @@ void Resolve_Declaration (Syntax_Node *node) {
                         Resolve_Expression (low);
                         double f = Eval_Const_Numeric (low);
                         if (not isnan (f)) comp->bit_offset = (uint32_t) f;
+                        Syntax_Node *high = cc->association.choices.items[1]->range.high;
+                        if (high) {
+                          Resolve_Expression (high);
+                          double l = Eval_Const_Numeric (high);
+                          if (not isnan (f) and not isnan (l) and l >= f)
+                            comp->bit_size = (uint32_t) (l - f + 1);
+                        }
                       }
                       break;
                     }
@@ -26999,6 +27022,15 @@ LLVM_Value Convert_Real_To_Fixed (uint32_t val, double small, LLVM_Rep fix_rep)
   uint32_t rounded = Emit_Result_Instruction ("call double @llvm.round.f64(double %%t%u)\n", divided);
   uint32_t scaled = Emit_Result_Instruction ("fptosi double %%t%u to %s\n", rounded, LLVM_Rep_To_String (fix_rep));
   return Val_Rep (scaled, fix_rep);
+}
+uint32_t Emit_Convert_Scalar_To_Type (LLVM_Value value_v, Type_Info *dest, LLVM_Rep dest_rep) {
+  if (dest and Type_Is_Fixed_Point (dest) and LLVM_Rep_Is_Float (value_v.rep)) {
+    uint32_t dval = value_v.reg;
+    if (value_v.rep.bits != 64)
+      dval = Emit_Convert (value_v.reg, value_v.rep, LLVM_Rep_Float (64)).reg;
+    return Convert_Real_To_Fixed (dval, Fixed_Repr_Small (dest), dest_rep).reg;
+  }
+  return Emit_Convert (value_v.reg, value_v.rep, dest_rep).reg;
 }
 // Generate_Binary_Op — dispatch a binary operator node to either a user-defined
 // function call (RM 6.7) or, after rename peeling (RM 8.5), the predefined-op
@@ -38745,7 +38777,7 @@ void Generate_Assignment_Body (Syntax_Node *node, Syntax_Node *target) {
       // Scalar / access types: store value directly
       LLVM_Rep dest_type = Type_To_Rep (designated);
       LLVM_Value value_v = Generate_Expression (node->assignment.value);
-      uint32_t value = Emit_Convert (value_v.reg, value_v.rep, dest_type).reg;
+      uint32_t value = Emit_Convert_Scalar_To_Type (value_v, designated, dest_type);
       Emit ("  store %s %%t%u, ptr %%t%u  ; .ALL assignment\n",
          LLVM_Rep_To_String (dest_type), value, ptr);
       return;
@@ -38868,7 +38900,7 @@ void Generate_Assignment_Body (Syntax_Node *node, Syntax_Node *target) {
     if (not assign_type) assign_type = target->type;
     if (not assign_type and node->assignment.value) assign_type = node->assignment.value->type;
     LLVM_Rep store_rep = assign_type ? Type_To_Rep (assign_type) : Integer_Arith_Rep ();
-    value = Emit_Convert (value, value_v.rep, store_rep).reg;
+    value = Emit_Convert_Scalar_To_Type (Val_Rep (value, value_v.rep), assign_type, store_rep);
     Emit ("  store %s %%t%u, ptr %%t%u  ; selected assign\n",
        LLVM_Rep_To_String (store_rep), value, addr);
     return;
@@ -55031,6 +55063,12 @@ void Compile_File (const char *input_path, const char *output_path) {
   // programs): then everything is in-module and this is an ordinary
   // whole-program compile. Subunit mode applies only when some subunit's
   // parent is NOT compiled by this invocation.
+  //
+  // The parent is located purely by symbol identity; it may itself be a
+  // subunit (a nested subunit's immediate parent is another subunit stub),
+  // so do not require the in-file parent to be a non-separate library unit.
+  // In a genuine separate compile the parent symbol is simply absent from
+  // this file, so parent_in_file stays false and subunit mode still applies.
   bool subunit_compilation = false;
   for (int i = 0; i < unit_count; i++) {
     if (not units[i] or not units[i]->compilation_unit.separate_parent)
@@ -55039,8 +55077,7 @@ void Compile_File (const char *input_path, const char *output_path) {
     bool parent_in_file = false;
     for (int j = 0; j < unit_count; j++) {
       Syntax_Node *other = units[j] ? units[j]->compilation_unit.unit : NULL;
-      if (other and other->symbol and other->symbol == parent_symbol and
-          not units[j]->compilation_unit.separate_parent) {
+      if (other and other->symbol and other->symbol == parent_symbol) {
         parent_in_file = true;
         break;
       }
