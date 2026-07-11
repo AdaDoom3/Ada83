@@ -501,6 +501,28 @@ reverted. Likely no ACATS tests use unbounded mutable discriminated records.
 c34006d/c34007p/r use BOUNDED discriminants and pass in minimal repro, so their
 CONSTRAINT_ERRORs are a different, still-unlocated goblin.
 
+GENERIC IN OUT OBJECT BINDINGS — INVESTIGATED, REVERTED, NEEDS ONE DESIGN PASS
+(cc1018a, cc3106b, cc3120a, cc3121a): an IN OUT formal object's global is a
+bare pointer cell holding the actual's address (Emit_Instance_Binding_
+Elaboration, first branch). Reader special-cases exist in Generate_Identifier /
+Generate_Composite_Address / assignment-target, but two primitives index or
+fat-load the CELL ITSELF: Emit_Symbol_Addr (array-index "constrained path")
+writes past the cell into the neighbouring binding globals (cc1018a, cc3106b
+segfault); Emit_Load_Fat_Pointer reads {ptr,ptr} from an 8-byte cell (cc3120a
+spurious length-check CE). Incremental patching FAILED and was reverted: a
+universal deref in Emit_Symbol_Addr double-derefs paths that pre-resolve the
+binding (broke c85005c/e — entry IN OUT formals + generics); storing a real
+fat pointer {actual data, actual bounds} in the binding global for array
+formals fixed the fat readers but re-broke cc3106b's flat-actual writes.
+The correct shape (also per the cc3 investigation): unify IN OUT bindings with
+the existing RM 8.5 rename machinery (rename_address_slot) so ALL readers get
+the one-deref semantics from one place, deleting the scattered
+is_instance_in_out_binding special cases — a single design pass over binder +
+elaboration + every reader, with c85005c/e and cc3106b/cc3120a/cc3121a as the
+matrix. Also pending from the same investigation: IN bindings of composites
+alias instead of copying (cc3120a "PARAMETER SCREW_UP", cc3121a segfault) —
+the elaboration's scalar/fat branch must deep-copy composites (RM 12.1.1).
+
 OTHER REMAINING LEVERS (from full-suite gap analysis):
   * Object renaming (RM 8.5) must yield a true alias (pointer to the renamed
     object), currently copies → segv/CE/wrong. Coherent set c85005a-e,

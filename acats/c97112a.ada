@@ -36,7 +36,7 @@ BEGIN
                     BEFORE := CLOCK;
                     DELAY 1.0;  -- TODO: acats-delay-deviation: before was 10.0
                     AFTER  := CLOCK;
-                    IF AFTER - BEFORE < 10.0 THEN
+                    IF AFTER - BEFORE < 1.0 THEN  -- TODO: acats-delay-deviation: before was 10.0
                          FAILED ("INSUFFICIENT DELAY (A)");
                     END IF;
                OR
@@ -75,7 +75,7 @@ BEGIN
                     BEFORE := CLOCK;
                     DELAY 1.0;  -- TODO: acats-delay-deviation: before was 10.0
                     AFTER  := CLOCK;
-                    IF AFTER - BEFORE < 10.0 THEN
+                    IF AFTER - BEFORE < 1.0 THEN  -- TODO: acats-delay-deviation: before was 10.0
                          FAILED ("INSUFFICIENT DELAY (B-1)");
                     END IF;
                ELSE
@@ -89,7 +89,7 @@ BEGIN
                     BEFORE := CLOCK;
                     DELAY 1.0;  -- TODO: acats-delay-deviation: before was 10.0
                     AFTER  := CLOCK;
-                    IF AFTER - BEFORE < 10.0 THEN
+                    IF AFTER - BEFORE < 1.0 THEN  -- TODO: acats-delay-deviation: before was 10.0
                          FAILED ("INSUFFICIENT DELAY (B-2)");
                     END IF;
                END SELECT;

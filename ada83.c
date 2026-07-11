@@ -30694,6 +30694,13 @@ entry_path:
             addr_node ? addr_node->type : NULL;
           out_actuals[out_actual_count].is_fat_access = fat_access;
           out_actual_count++;
+
+          // RM 6.4.1(7): an OUT-mode conversion's pre-call value is never
+          // read, so the conversion itself must not be evaluated on the way
+          // in — its range check would raise on a stale out-of-range operand.
+          // Marshal the bare operand's current value instead.
+          if (mode == PARAM_OUT and addr_node != value_node)
+            value_node = addr_node;
         }
       }
       LLVM_Value arg_v = Generate_Expression (value_node);

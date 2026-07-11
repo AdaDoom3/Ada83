@@ -137,6 +137,31 @@ run_in_lib(){
       exec timeout "$secs" lli "$@" "$ROOT/$RESULTS_DIR/$n.bc" )
 }
 
+# ACATS program-sequence families: these tests reopen an external file CREATED
+# BY A DIFFERENT MAIN PROGRAM (the preceding letter). Print that predecessor,
+# or nothing for an ordinary self-contained test.
+seq_predecessor(){
+    case $1 in
+        ce2108b) echo ce2108a;;
+        ce2108d) echo ce2108c;;
+        ce2108f) echo ce2108e;;
+        ce2108h) echo ce2108g;;
+    esac
+}
+
+# Build and run $1's predecessor $2 inside $1's own .lib directory so the
+# external file the successor reopens exists there. Failures are ignored — the
+# successor then simply reports its own NAME_ERROR as before.
+run_seq_predecessor(){
+    local n=$1 pred=$2
+    timeout 20 ./ada83 "acats/$pred.ada" > "$RESULTS_DIR/$n.pred.ll" 2>/dev/null &&
+    timeout 10 llvm-link -o "$RESULTS_DIR/$n.pred.bc" "$RESULTS_DIR/$n.pred.ll" \
+        acats/report.ll 2>/dev/null &&
+    ( cd "$RESULTS_DIR/$n.lib" 2>/dev/null &&
+      timeout "$TEST_TIMEOUT" lli "$ROOT/$RESULTS_DIR/$n.pred.bc" >/dev/null 2>&1 )
+    return 0
+}
+
 run_one(){
     local f=$1 n=$(basename "$1" .ada) q=${1##*/}; q=${q:0:1}
     # Fragments (end in digit, not 'm') are compiled by their family's main.
@@ -165,6 +190,8 @@ run_one(){
             echo "c skip $n BIND:unresolved_symbols"
             return
         fi
+        local pred=$(seq_predecessor "$n")
+        [[ -n $pred ]] && run_seq_predecessor "$n" "$pred"
         local rc=0
         run_in_lib "$TEST_TIMEOUT" "$n" > $LOGS_DIR/$n.out 2>&1 || rc=$?
         if ((rc==124 || rc==137)); then
@@ -286,6 +313,7 @@ run_one(){
 ROOT=$PWD
 export ROOT
 export -f run_one gather_files compile_set run_in_lib pct
+export -f seq_predecessor run_seq_predecessor
 export START_MS TEST_TIMEOUT
 
 # Outer per-test cap (defense in depth): a hung test can never hang the suite,
