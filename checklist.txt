@@ -531,6 +531,29 @@ store when both binding and actual are fat. The same idiom was already inline
 in the unconstrained-array function-return path (RM 6.5) — that copy is now the
 same helper, so the two by-value fat copies share one definition.
 
+cc3121a — BLOCKED on array-of-discriminated-records default-init (NOT the fat
+IN-binding path). Investigated: the test has four blocks; 1 (unconstrained
+array IN), 2 (discriminated record IN, FUNCTION), and 4 (discriminated record
+IN, PACKAGE) all PASS on the current build — the fat IN-binding + record
+machinery handles them. Block 3 (unconstrained IN formal of ARRAY2 = array of
+REC2, a mutable discriminated record) has TWO pre-existing defects, both
+independent of the binding model:
+  (a) BASE bug — an array object whose element type is a record with default
+      discriminants/components is allocated as a bare "dynamic uninit array"
+      (Emit_Bind_Bounded_Array_Storage, ada83.c:42738); the per-element
+      discriminants and defaults are never applied, so OBJ_ARA2(6).D reads
+      uninitialised memory (a plain OBJ_ARA2(6).D read, no generic, already
+      returns the wrong value). Single record objects ARE initialised via
+      Emit_Apply_Component_Defaults(ty, base, ...) (ada83.c:37296) — the fix is
+      a runtime loop over the (possibly dynamic) element count calling that
+      helper per element address after the array storage is bound.
+  (b) A stack smash (return address overwritten with REC2 data {1,1}) on the
+      generic-instance path, on top of (a). Emit_Fat_Array_Deep_Copy is NOT the
+      writer: __ada_sec_stack_alloc is a heap bump-allocator, and the full
+      Class C gate shows the deep-copy caused zero regressions.
+Poor ratio for the 90% push (one test, needs a from-scratch array-element
+default-init feature plus a separate crash fix); left for a dedicated pass.
+
 ONE SEPARATE GAP STILL OPEN (unmasked by the rename unification):
   * c85005c/e — CROSS-TASK NESTED-FRAME bug, unrelated to the binding model.
     With GA1 now read correctly, the main task calls a nested PROC1 whose IN OUT
