@@ -543,16 +543,25 @@ DYNAMICALLY bounded array). Two defects:
       inline object-decl path (which already did this). A minimal fat-path
       array-of-mutable-record reproducer now reads the right defaults; full
       Class C 1773 -> 1774, zero regressions.
-  (b) BLOCKED — REC2 (a record with a dynamically-bounded array component) is
-      sized INCONSISTENTLY across subsystems: frame layout reserves ~48 bytes
-      for OBJ_ARA2 (3 elems, so ~16/elem), the object-decl init memsets
-      array_count * REC2->size = 3*168 = 504 (Generate_Object_Declaration
-      :43964), and the fat-array stride is 56. The 504-byte memset overruns the
-      299-byte frame and smashes the return address (gdb watchpoint on T's
-      return slot catches __memset_evex writing 0 through it). Fixing this means
-      reconciling variable-size-record sizing across record-layout, frame-
-      layout, and array-stride — a fundamental type-system change with broad
-      regression surface, deferred to a dedicated pass.
+  (b) BLOCKED — REC2's component A : ARRAY1(D..IDENT_INT(4)) has a dynamically
+      bounded array, so REC2 is a VARIABLE-SIZE record, and the compiler has no
+      single representation for an array of them. The paths disagree:
+        - frame layout reserves 48 bytes for OBJ_ARA2 = 3 * 16, i.e. it treats
+          each element as a 16-byte FAT-POINTER slot (indirect element);
+        - the object-decl default-init memsets array_count * REC2->size =
+          3 * 168 = 504 (Generate_Object_Declaration:43964), i.e. it treats the
+          element as INLINE max-sized storage;
+        - the fat-array stride elsewhere is 56.
+      The 504-byte inline memset overruns the 299-byte frame (OBJ_ARA2 at +251)
+      and smashes T's return address (gdb watchpoint catches __memset_evex
+      writing 0 through it). The root decision — is an array element of a
+      variable-size record stored inline-at-max-size or behind a fat pointer? —
+      is made inconsistently; REC2->size itself (168) is also suspect for a
+      record whose static max is ~40 bytes. Reconciling this spans record
+      layout, frame layout, array element storage, indexing, and aggregates:
+      a fundamental representation change with broad regression surface,
+      deferred to a dedicated pass. NB IDENT_INT(4) is what forces the dynamic
+      view; ARRAY1(D..4) would give REC2 a clean static max.
 
 ONE SEPARATE GAP STILL OPEN (unmasked by the rename unification):
   * c85005c/e — CROSS-TASK NESTED-FRAME bug, unrelated to the binding model.
