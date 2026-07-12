@@ -42779,6 +42779,43 @@ void Emit_Bind_Bounded_Array_Storage (Symbol *sym, uint32_t *dim_lo,
     Emit ("  call void @llvm.memset.p0.i64(ptr %%t%u, i8 0, i64 %%t%u, i1 false)  ; RM 3.2.1(20) access NULL\n",
           dp, bsz64_2);
   }
+  // RM 3.6.1: an array object whose element type is a record carrying
+  // discriminant or component defaults default-initializes EACH element,
+  // exactly as a standalone record object does (Emit_Apply_Component_Defaults).
+  // The alloca above is raw storage; loop over the element count applying the
+  // record defaults at each element's address so e.g. a mutable record's
+  // discriminant reads its default rather than uninitialized memory.
+  Type_Info *element_type = sym and sym->type ? sym->type->array.element_type
+                                              : NULL;
+  if (element_type and Type_Is_Record (element_type) and
+      Type_Has_Component_Defaults (element_type)) {
+    LLVM_Rep i64r = LLVM_Rep_Int (64, false);
+    uint32_t index_slot = Emit_Alloca_Store (i64r, Emit_Static_Int (0, i64r).reg);
+    uint32_t loop_head = cg->label_id++;
+    uint32_t loop_body = cg->label_id++;
+    uint32_t loop_end  = cg->label_id++;
+    Emit ("  br label %%L%u\n", loop_head);
+    cg->block_terminated = true;
+    Emit_Label_Here (loop_head);
+    uint32_t index = Emit_Result_Instruction ("load i64, ptr %%t%u\n", index_slot);
+    LLVM_I1 more = Emit_Icmp ("ult", i64r, index, total);
+    Emit ("  br i1 %%t%u, label %%L%u, label %%L%u\n", more.reg, loop_body, loop_end);
+    cg->block_terminated = true;
+    Emit_Label_Here (loop_body);
+    uint32_t byte_offset = Emit_Result_Instruction ("mul i64 %%t%u, %u\n",
+                                                     index, element_size);
+    uint32_t element_addr = Emit_Result_Instruction (
+      "getelementptr i8, ptr %%t%u, i64 %%t%u\n", dp, byte_offset);
+    Symbol *seen[16]; uint32_t seen_count = 0;
+    Emit_Apply_Component_Defaults (element_type, element_addr, -2, false,
+                                   seen, &seen_count, 16);
+    for (uint32_t s = 0; s < seen_count; s++) seen[s]->disc_agg_temp = 0;
+    uint32_t next = Emit_Result_Instruction ("add i64 %%t%u, 1\n", index);
+    Emit ("  store i64 %%t%u, ptr %%t%u\n", next, index_slot);
+    Emit ("  br label %%L%u\n", loop_head);
+    cg->block_terminated = true;
+    Emit_Label_Here (loop_end);
+  }
   if (ndims > 1) {
     uint32_t fat = Emit_Fat_Pointer_MultiDim (dp, dim_lo, dim_hi, ndims, iat, fat_bt).reg;
     Emit_Store_Fat_Pointer_To_Symbol (fat, sym, fat_bt);
