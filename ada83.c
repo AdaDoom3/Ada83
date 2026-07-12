@@ -3405,6 +3405,7 @@ uint32_t   Freeze_Disc_Value_Global   (LLVM_Rep  rep, uint32_t val);
 uint32_t   Emit_Load_Preeval_Global   (uint32_t  gid, LLVM_Rep want);
 void       Emit_Memcpy                (uint32_t  dst, uint32_t src, uint32_t size_reg);
 uint32_t   Emit_Build_Fat_Pointer     (uint32_t  data_reg, uint32_t bounds_reg);
+LLVM_Value Emit_Fat_Array_Deep_Copy   (LLVM_Value fat, Type_Info *type);
 uint32_t   Emit_Open_Null_Skip        (uint32_t  ptr_reg);
 uint32_t   Emit_Open_Skip_If          (uint32_t  cond_reg);
 void       Emit_Raise_And_Continue    (const char *msg);
@@ -23769,6 +23770,47 @@ uint32_t Emit_Build_Fat_Pointer (uint32_t data_reg, uint32_t bounds_reg) {
   return result;
 }
 
+// Deep-copy a fat array value's data and bounds onto the secondary stack,
+// returning a fat pointer that owns independent storage. Used where by-value
+// semantics require insulation from later changes to the source: an
+// unconstrained-array function result outliving its callee frame (RM 6.5) and
+// a generic IN formal-object binding of a dynamically-bounded array, which
+// RM 12.3 copies at instantiation. The copy lives for the current dynamic
+// scope (secondary-stack extent), which spans the instance's use in both cases.
+LLVM_Value Emit_Fat_Array_Deep_Copy (LLVM_Value fat, Type_Info *type) {
+  LLVM_Rep bt = Array_Bound_LLVM_Rep (type);
+  uint32_t old_data = Emit_Fat_Pointer_Data (fat.reg, bt).reg;
+  uint32_t ndims = type->array.index_count;
+  if (ndims < 1) ndims = 1;
+  uint32_t scalar_sz = type->array.element_type
+                     ? type->array.element_type->size : 1;
+  uint32_t total = 0;
+  for (uint32_t d = 0; d < ndims; d++) {
+    uint32_t dl = Emit_Fat_Pointer_Low_Dim (fat.reg, bt, d).reg;
+    uint32_t dh = Emit_Fat_Pointer_High_Dim (fat.reg, bt, d).reg;
+    uint32_t dim_len = Emit_Length_From_Bounds (dl, dh, bt).reg;
+    uint32_t conv = Emit_Convert (dim_len, bt, Integer_Arith_Rep ()).reg;
+    total = (d == 0) ? conv
+      : Emit_Result_Instruction ("mul %s %%t%u, %%t%u\n",
+          LLVM_Rep_To_String (Integer_Arith_Rep ()), total, conv);
+  }
+  uint32_t bsz = Emit_Result_Instruction ("mul %s %%t%u, %u\n",
+    LLVM_Rep_To_String (Integer_Arith_Rep ()), total, scalar_sz);
+  uint32_t bsz64 = Emit_Extend_To_I64 (bsz, Integer_Arith_Rep ()).reg;
+  uint32_t sec_data = Emit_Result_Instruction (
+    "call ptr @__ada_sec_stack_alloc(i64 %%t%u)\n", bsz64);
+  Emit_Memcpy (sec_data, old_data, bsz64);
+
+  uint32_t old_bnd = Emit_Extract_Fat_Bounds (fat.reg);
+  uint32_t bnd_bytes = ndims * 2 * (LLVM_Rep_Bits (bt) / 8);
+  uint32_t sec_bnd = Emit_Result_Instruction (
+    "call ptr @__ada_sec_stack_alloc(i64 %u)\n", bnd_bytes);
+  Emit ("  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %u,"
+        " i1 false)\n", sec_bnd, old_bnd, bnd_bytes);
+
+  return Val_Rep (Emit_Build_Fat_Pointer (sec_data, sec_bnd), LL_REP_FAT);
+}
+
 // Create a fat pointer from data pointer and constant bounds.
 // bt = bound LLVM type (e.g., "i32").
 // Allocates bounds struct on stack, stores lo/hi, builds { ptr, ptr }.
@@ -39873,40 +39915,7 @@ void Generate_Return_Statement (Syntax_Node *node) {
     //                                                                                              
     if (Type_Is_Unconstrained_Array (ret_type) and
       LLVM_Rep_Is_Fat_Pointer (ret_rep)) {
-      LLVM_Rep rbt = Array_Bound_LLVM_Rep (ret_type);
-      uint32_t old_data = Emit_Fat_Pointer_Data (value.reg, rbt).reg;
-
-      // Compute total byte size from bounds
-      uint32_t ndims = ret_type->array.index_count;
-      if (ndims < 1) ndims = 1;
-      uint32_t scalar_sz = ret_type->array.element_type ?
-                 ret_type->array.element_type->size : 1;
-      uint32_t total = 0;
-      for (uint32_t d = 0; d < ndims; d++) {
-        uint32_t dl = Emit_Fat_Pointer_Low_Dim (value.reg, rbt, d).reg;
-        uint32_t dh = Emit_Fat_Pointer_High_Dim (value.reg, rbt, d).reg;
-        uint32_t dim_len = Emit_Length_From_Bounds (dl, dh, rbt).reg;
-        uint32_t conv = Emit_Convert (dim_len, rbt, Integer_Arith_Rep ()).reg;
-        if (d == 0) { total = conv; }
-        else {
-          uint32_t product = Emit_Result_Instruction ("mul %s %%t%u, %%t%u\n", LLVM_Rep_To_String (Integer_Arith_Rep ()), total, conv);
-          total = product;
-        }
-      }
-      uint32_t bsz = Emit_Result_Instruction ("mul %s %%t%u, %u\n", LLVM_Rep_To_String (Integer_Arith_Rep ()), total, scalar_sz);
-      uint32_t bsz64 = Emit_Extend_To_I64 (bsz, Integer_Arith_Rep ()).reg;
-      uint32_t sec_data = Emit_Result_Instruction ("call ptr @__ada_sec_stack_alloc(i64 %%t%u)\n", bsz64);
-      Emit_Memcpy (sec_data, old_data, bsz64);
-
-      // Copy bounds to secondary stack too (also on callee stack)
-      uint32_t old_bnd = Emit_Extract_Fat_Bounds (value.reg);
-      uint32_t bnd_bytes = ndims * 2 * (LLVM_Rep_Bits (rbt) / 8);
-      uint32_t sec_bnd = Emit_Result_Instruction ("call ptr @__ada_sec_stack_alloc(i64 %u)\n", bnd_bytes);
-      Emit ("  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %u, i1 false)\n",
-         sec_bnd, old_bnd, bnd_bytes);
-
-      // Rebuild fat pointer with secondary stack data and bounds
-      value = Val_Rep (Emit_Build_Fat_Pointer (sec_data, sec_bnd), LL_REP_FAT);
+      value = Emit_Fat_Array_Deep_Copy (value, ret_type);
     }
 
     // RM 6.5: a by-value *constrained* array result is likewise a pointer to
@@ -46087,6 +46096,20 @@ void Emit_Instance_Binding_Elaboration (Symbol *inst_sym) {
       }
       LLVM_Value actual_value =
         Generate_Expression (binding->instance_actual);
+
+      // RM 12.3: an IN formal object is COPIED at instantiation. A dynamically
+      // bounded array actual is a fat pointer whose descriptor would otherwise
+      // alias the actual's own data buffer, so a later change to the actual
+      // would show through the formal (cc3120a's "PARAMETER SCREW_UP"). Deep-
+      // copy the data onto the secondary stack; static-size composites already
+      // copy through the byte-array-global branch above.
+      if (LLVM_Rep_Is_Fat_Pointer (binding_rep) and
+          LLVM_Rep_Is_Fat_Pointer (actual_value.rep)) {
+        Type_Info *geom = Type_Is_Array_Like (binding->type)
+          ? binding->type : binding->instance_actual->type;
+        if (Type_Is_Array_Like (geom))
+          actual_value = Emit_Fat_Array_Deep_Copy (actual_value, geom);
+      }
 
       // RM 12.3.1 / 12.1.1(6): the actual for an IN parameter is checked
       // against the formal's subtype constraint at instantiation, exactly as

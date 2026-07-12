@@ -518,14 +518,20 @@ discriminant-constraint check, and the elaboration that fills the cell.
 Result (rc-aware harness): +4 (cc1018a, cc3106b, c85005a, c85005b), full
 Class C 1768 -> 1772/1773, zero real regressions.
 
-TWO SEPARATE GAPS THIS UNMASKED (were hidden behind the fixed bug):
-  * cc3120a — fat FORMAL bound to a FLAT (constrained) actual. The cell points
-    at the actual's flat data, but a fat-view read loads {ptr,ptr} from it and
-    gets garbage bounds. Went CE -> logic-FAIL (no longer crashes). Fix: when
-    Type_Needs_Fat_Pointer(binding->type) and the actual is flat, the
-    elaboration must materialise a fat location {actual_data, static bounds}
-    (linkonce_odr {ptr,ptr} + a bounds-array global) and point the cell at it,
-    so the cell uniformly points at a location matching the formal's rep.
+GENERIC IN OBJECT BINDING OF A DYNAMIC-BOUNDS ARRAY — DEEP-COPY (DONE, cc3120a)
+RM 12.3 copies an IN formal object at instantiation. A static-size composite
+already deep-copies via a byte-array global; a DYNAMICALLY bounded array actual
+is a fat pointer, and the elaboration was storing the fat DESCRIPTOR into the
+binding global — so the formal's data pointer aliased the actual's own buffer,
+and a later write to the actual showed through the formal (cc3120a "PARAMETER
+SCREW_UP": P2 tracked A3 after A3 := "XYZ"). Fix: Emit_Fat_Array_Deep_Copy
+copies the actual's data and bounds onto the secondary stack and rebuilds a fat
+pointer over the fresh storage; the IN-binding elaboration calls it before the
+store when both binding and actual are fat. The same idiom was already inline
+in the unconstrained-array function-return path (RM 6.5) — that copy is now the
+same helper, so the two by-value fat copies share one definition.
+
+ONE SEPARATE GAP STILL OPEN (unmasked by the rename unification):
   * c85005c/e — CROSS-TASK NESTED-FRAME bug, unrelated to the binding model.
     With GA1 now read correctly, the main task calls a nested PROC1 whose IN OUT
     unconstrained-array param aliases an ENTRY formal (TA1) living in another
