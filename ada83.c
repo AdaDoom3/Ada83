@@ -18133,8 +18133,22 @@ void Bind_Generic_Formals_To_Actuals (Symbol *instance_sym,
               binding->parent           = instance_sym;
               binding->is_package_level = true;
               binding->instance_actual  = actual_expr;
-              if (in_out) binding->is_instance_in_out_binding = true;
-              else        binding->is_instance_in_binding     = true;
+              if (in_out) {
+                binding->is_instance_in_out_binding = true;
+                // RM 12.1.1: the binding renames the actual. Its global cell
+                // holds the actual's address — exactly what an RM 8.5 object-
+                // rename address slot holds — so point rename_address_slot at
+                // the cell itself (self-reference: Emit_Symbol_Storage yields
+                // the cell's own global). Every storage access then routes
+                // through the one rename-aware deref (Emit_Symbol_Addr,
+                // Emit_Load_From_Symbol, Emit_Load_Fat_Pointer, …) rather than
+                // a per-site is_instance_in_out_binding branch; the array-index
+                // and fat-pointer-load paths, which never had such a branch,
+                // become correct for free.
+                binding->rename_address_slot = binding;
+              } else {
+                binding->is_instance_in_binding = true;
+              }
               Symbol_Add (binding);
               if (formal_name->symbol and remap->count < MAX_INSTANCE_REMAPS) {
                 remap->from[remap->count] = formal_name->symbol;
@@ -25309,16 +25323,6 @@ uint32_t Generate_Lvalue (Syntax_Node *node) {
     Symbol *sym = node->symbol;
     if (not sym) return 0;
 
-    // Tree-copy instance IN OUT binding: the lvalue is the actual
-    // variable's address, read from the per-instance pointer cell that
-    // the instantiation point stored (RM 12.1.1 renaming semantics).
-    if (sym->is_instance_in_out_binding) {
-      uint32_t cell = Emit_Result_Instruction ("load ptr, ptr ");
-      Emit_Global_Ref (sym);
-      Emit ("\n");
-      return cell;
-    }
-
     // For RENAMES: redirect to renamed object. A rename exported from a
     // generic instance denotes an entity of THAT instance: activate the
     // instance context so formal-object references inside the renamed
@@ -25952,20 +25956,6 @@ LLVM_Value Generate_Identifier (Syntax_Node *node) {
   Symbol *sym = node->symbol;
   if (not sym) {
     Fatal_Error (node->location, "unresolved identifier reached codegen");
-  }
-
-  // Tree-copy instance IN OUT binding: a per-instance pointer cell renames
-  // the actual variable (RM 12.1.1). Reading the formal loads the cell,
-  // then loads the value through it.
-  if (sym->is_instance_in_out_binding) {
-    uint32_t cell = Emit_Result_Instruction ("load ptr, ptr ");
-    Emit_Global_Ref (sym);
-    Emit ("\n");
-    LLVM_Rep value_rep = sym->type ? Type_To_Rep (sym->type)
-                                   : Integer_Arith_Rep ();
-    uint32_t value = Emit_Result_Instruction ("load %s, ptr %%t%u\n",
-          LLVM_Rep_To_String (value_rep), cell);
-    return Val_Rep (value, value_rep);
   }
 
   // For RENAMES: redirect to the renamed object. A rename exported from
@@ -26659,16 +26649,6 @@ uint32_t Generate_Composite_Address (Syntax_Node *node) {
   if (node->kind == NK_IDENTIFIER) {
     Symbol *sym = node->symbol;
     if (sym) {
-      // Tree-copy instance IN OUT binding: the composite's address is the
-      // actual variable's address, read from the per-instance pointer
-      // cell (RM 12.1.1 renaming semantics).
-      if (sym->is_instance_in_out_binding) {
-        uint32_t cell = Emit_Result_Instruction ("load ptr, ptr ");
-        Emit_Global_Ref (sym);
-        Emit ("\n");
-        return cell;
-      }
-
       // A rename redirects to the renamed entity's storage, under the
       // owning instance's context when the rename came from one.
       // A USE-visible alias denotes the original entity — follow it.
@@ -29407,16 +29387,6 @@ uint32_t Emit_Task_Pointer_From_Selected (Syntax_Node *selected_prefix) {
   uint32_t task_ptr = Emit_Temp ();
   if (not task_sym) {
     Emit ("  %%t%u = inttoptr " PTR_INT_TYPE " 0 to ptr  ; current task\n", task_ptr);
-  } else if (task_sym->is_instance_in_out_binding) {
-
-    // Tree-copy instance IN OUT binding of a task: the pointer cell holds
-    // the task VARIABLE's address and the variable holds the TCB — two
-    // loads (RM 12.1.1 renaming semantics).
-    uint32_t variable_addr = Emit_Result_Instruction ("load ptr, ptr ");
-    Emit_Global_Ref (task_sym);
-    Emit ("\n");
-    Emit ("  %%t%u = load ptr, ptr %%t%u  ; task via IN OUT binding\n",
-          task_ptr, variable_addr);
   } else if (Type_Is_Access (task_sym->type)) {
     // Implicit dereference (RM 4.1.3): the access value designates the
     // allocated task OBJECT, which itself holds the TCB pointer — so two
@@ -29786,7 +29756,6 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
           (addr_node->symbol->kind == SYMBOL_VARIABLE or
            addr_node->symbol->kind == SYMBOL_PARAMETER or
            addr_node->symbol->kind == SYMBOL_CONSTANT) and
-          not addr_node->symbol->is_instance_in_out_binding and
           not addr_node->symbol->rename_address_slot;
         if (is_simple_var_ref) {
           actual_addr = Emit_Temp ();
@@ -38446,18 +38415,13 @@ void Generate_Statement_List (Node_List *list) {
   }
 }
 // Materialize the address a symbol-targeted assignment stores through:
-// ordinarily the symbol's own storage, but a tree-copy instance IN OUT
-// binding stores through the actual variable's address held in its
-// per-instance pointer cell (RM 12.1.1 renaming semantics).
+// ordinarily the symbol's own storage, but for an RM 8.5 object rename or an
+// RM 12.1.1 instance IN OUT binding (both carrying rename_address_slot)
+// Emit_Symbol_Addr loads the captured target address, so the write reaches
+// the renamed object / actual variable rather than the indirection cell.
 static uint32_t Emit_Assignment_Target_Address (Symbol *target_sym) {
   uint32_t addr = Emit_Temp ();
-  if (target_sym->is_instance_in_out_binding) {
-    Emit ("  %%t%u = load ptr, ptr ", addr);
-    Emit_Global_Ref (target_sym);
-    Emit ("  ; IN OUT binding target\n");
-  } else {
-    Emit_Symbol_Addr (addr, target_sym);
-  }
+  Emit_Symbol_Addr (addr, target_sym);
   return addr;
 }
 

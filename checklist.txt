@@ -501,27 +501,39 @@ reverted. Likely no ACATS tests use unbounded mutable discriminated records.
 c34006d/c34007p/r use BOUNDED discriminants and pass in minimal repro, so their
 CONSTRAINT_ERRORs are a different, still-unlocated goblin.
 
-GENERIC IN OUT OBJECT BINDINGS — INVESTIGATED, REVERTED, NEEDS ONE DESIGN PASS
-(cc1018a, cc3106b, cc3120a, cc3121a): an IN OUT formal object's global is a
-bare pointer cell holding the actual's address (Emit_Instance_Binding_
-Elaboration, first branch). Reader special-cases exist in Generate_Identifier /
-Generate_Composite_Address / assignment-target, but two primitives index or
-fat-load the CELL ITSELF: Emit_Symbol_Addr (array-index "constrained path")
-writes past the cell into the neighbouring binding globals (cc1018a, cc3106b
-segfault); Emit_Load_Fat_Pointer reads {ptr,ptr} from an 8-byte cell (cc3120a
-spurious length-check CE). Incremental patching FAILED and was reverted: a
-universal deref in Emit_Symbol_Addr double-derefs paths that pre-resolve the
-binding (broke c85005c/e — entry IN OUT formals + generics); storing a real
-fat pointer {actual data, actual bounds} in the binding global for array
-formals fixed the fat readers but re-broke cc3106b's flat-actual writes.
-The correct shape (also per the cc3 investigation): unify IN OUT bindings with
-the existing RM 8.5 rename machinery (rename_address_slot) so ALL readers get
-the one-deref semantics from one place, deleting the scattered
-is_instance_in_out_binding special cases — a single design pass over binder +
-elaboration + every reader, with c85005c/e and cc3106b/cc3120a/cc3121a as the
-matrix. Also pending from the same investigation: IN bindings of composites
-alias instead of copying (cc3120a "PARAMETER SCREW_UP", cc3121a segfault) —
-the elaboration's scalar/fat branch must deep-copy composites (RM 12.1.1).
+GENERIC IN OUT OBJECT BINDINGS — UNIFIED WITH RM 8.5 RENAME MACHINERY (DONE)
+A generic formal IN OUT object (RM 12.1.1) renames its actual; its global cell
+holds the actual's address — exactly what an RM 8.5 object-rename address slot
+holds. The binder now sets binding->rename_address_slot = binding (the cell is
+its own indirection slot), so EVERY storage access routes through the one
+rename-aware deref that Emit_Symbol_Addr / Emit_Load_From_Symbol /
+Emit_Load_Ptr_From_Symbol / Emit_Load_Fat_Pointer already implement. The five
+scattered is_instance_in_out_binding reader special-cases (Generate_Lvalue,
+Generate_Identifier, Generate_Composite_Address, Emit_Assignment_Target_Address,
+Emit_Task_Pointer_From_Selected) are DELETED — the array-index and
+fat-pointer-load paths, which never had such a branch (the actual bug), become
+correct for free. Net −36 lines. The flag survives only at the four genuinely
+semantic sites: storage naming (Emit_Symbol_Name), 'CONSTRAINED, the
+discriminant-constraint check, and the elaboration that fills the cell.
+Result (rc-aware harness): +4 (cc1018a, cc3106b, c85005a, c85005b), full
+Class C 1768 -> 1772/1773, zero real regressions.
+
+TWO SEPARATE GAPS THIS UNMASKED (were hidden behind the fixed bug):
+  * cc3120a — fat FORMAL bound to a FLAT (constrained) actual. The cell points
+    at the actual's flat data, but a fat-view read loads {ptr,ptr} from it and
+    gets garbage bounds. Went CE -> logic-FAIL (no longer crashes). Fix: when
+    Type_Needs_Fat_Pointer(binding->type) and the actual is flat, the
+    elaboration must materialise a fat location {actual_data, static bounds}
+    (linkonce_odr {ptr,ptr} + a bounds-array global) and point the cell at it,
+    so the cell uniformly points at a location matching the formal's rep.
+  * c85005c/e — CROSS-TASK NESTED-FRAME bug, unrelated to the binding model.
+    With GA1 now read correctly, the main task calls a nested PROC1 whose IN OUT
+    unconstrained-array param aliases an ENTRY formal (TA1) living in another
+    task's accept frame; PROC1 spins on a garbage-length array assignment (gdb:
+    proc1_s222 hot, other tasks parked). Pre-existing (proven by IR diff: only
+    GA1's read changed); was masked by the earlier GA1 CE. c85005c now TIMES
+    OUT (was fast CE) — same FAIL verdict, worse latency. Separate subsystem
+    (tasking x nested frames x entry-formal renames).
 
 OTHER REMAINING LEVERS (from full-suite gap analysis):
   * Object renaming (RM 8.5) must yield a true alias (pointer to the renamed
