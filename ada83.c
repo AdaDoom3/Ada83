@@ -3649,6 +3649,8 @@ uint32_t Normalize_To_Fat_Pointer (Syntax_Node *expr,
                                    LLVM_Rep     bt);
 void     Emit_Blocking_Entry_Call  (uint32_t task_ptr, uint32_t entry_idx_64,
                                     uint32_t param_block);
+void     Emit_Entry_Call_Dispatch  (uint32_t task_ptr, uint32_t entry_idx,
+                                    uint32_t param_block);
 uint32_t Wrap_Constrained_As_Fat  (Syntax_Node *expr,
                                    Type_Info   *type,
                                    LLVM_Rep     bt);
@@ -29283,6 +29285,27 @@ void Emit_Blocking_Entry_Call (uint32_t task_ptr, uint32_t entry_idx_64,
   }
 }
 
+// Dispatch an entry call (RM 9.5). Under a conditional or timed select
+// (entry_call_try_mode, RM 9.7.2/9.7.3) the non-blocking / deadline variant
+// runs and records its rendezvous flag in entry_call_result_temp; otherwise the
+// ordinary blocking call. `entry_idx` is widened to the RTS ABI's i64 here.
+void Emit_Entry_Call_Dispatch (uint32_t task_ptr, uint32_t entry_idx,
+                               uint32_t param_block) {
+  uint32_t entry_idx_64 = Emit_Extend_To_I64 (entry_idx, Integer_Arith_Rep ()).reg;
+  if (cg->entry_call_try_mode) {
+    uint32_t res = Emit_Temp ();
+    if (cg->entry_call_timeout_temp)
+      Emit ("  %%t%u = call i8 @__ada_entry_call_try(ptr %%t%u, i64 %%t%u, ptr %%t%u, i64 %%t%u)\n",
+         res, task_ptr, entry_idx_64, param_block, cg->entry_call_timeout_temp);
+    else
+      Emit ("  %%t%u = call i8 @__ada_entry_call_try(ptr %%t%u, i64 %%t%u, ptr %%t%u, i64 0)\n",
+         res, task_ptr, entry_idx_64, param_block);
+    cg->entry_call_result_temp = res;
+  } else {
+    Emit_Blocking_Entry_Call (task_ptr, entry_idx_64, param_block);
+  }
+}
+
 // RM 9.5(6): an entry-family index outside the family's declared discrete range
 // raises CONSTRAINT_ERROR — checked both at a call (T.E (I)) and at an accept
 // (ACCEPT E (I)). idx_val is a value temp already at Integer_Arith_Rep.
@@ -30882,21 +30905,7 @@ entry_path:
     uint32_t entry_idx = Emit_Entry_Index (sym, is_entry_family ? family_idx_temp : 0);
 
     // Call runtime entry call function - extend entry index to i64 for RTS ABI
-    uint32_t entry_idx_64 = Emit_Extend_To_I64 (entry_idx, Integer_Arith_Rep ()).reg;
-    // Conditional/timed entry call: non-blocking / deadline variant returning a
-    // rendezvoused flag (RM 9.7.2/9.7.3).
-    if (cg->entry_call_try_mode) {
-      uint32_t res = Emit_Temp ();
-      if (cg->entry_call_timeout_temp)
-        Emit ("  %%t%u = call i8 @__ada_entry_call_try(ptr %%t%u, i64 %%t%u, ptr %%t%u, i64 %%t%u)\n",
-           res, task_ptr, entry_idx_64, param_block, cg->entry_call_timeout_temp);
-      else
-        Emit ("  %%t%u = call i8 @__ada_entry_call_try(ptr %%t%u, i64 %%t%u, ptr %%t%u, i64 0)\n",
-           res, task_ptr, entry_idx_64, param_block);
-      cg->entry_call_result_temp = res;
-    } else {
-      Emit_Blocking_Entry_Call (task_ptr, entry_idx_64, param_block);
-    }
+    Emit_Entry_Call_Dispatch (task_ptr, entry_idx, param_block);
 
     // Copy OUT / IN OUT scalars back from the parameter block (the acceptor
     // wrote them before completing the rendezvous). On a timed/conditional
@@ -39963,6 +39972,28 @@ void Generate_Return_Statement (Syntax_Node *node) {
     cg->block_terminated = true;
   }
 }
+
+// A case choice's branch tail (RM 5.4): take the alternative when `match_reg`
+// holds, else fall to the next choice — a fresh label when more choices follow,
+// otherwise the caller's `next_check` (next alternative or the case end label).
+void Emit_Case_Choice_Branch (uint32_t match_reg, uint32_t alt_label,
+                              uint32_t next_check, bool has_more) {
+  uint32_t next_choice = has_more ? Emit_Label () : next_check;
+  Emit ("  br i1 %%t%u, label %%L%u, label %%L%u\n",
+     match_reg, alt_label, next_choice);
+  if (has_more) Emit_Label_Here (next_choice);
+}
+
+// A range-valued case choice (WHEN low..high, or a subtype's range).
+void Emit_Case_Range_Choice (uint32_t selector, uint32_t low, uint32_t high,
+                             LLVM_Rep case_type, uint32_t alt_label,
+                             uint32_t next_check, bool has_more) {
+  LLVM_I1 both = Emit_In_Range ((LLVM_Value){ selector, case_type },
+                 (LLVM_Value){ low, case_type }, (LLVM_Value){ high, case_type },
+                 false);
+  Emit_Case_Choice_Branch (both.reg, alt_label, next_check, has_more);
+}
+
 void Generate_Case_Statement (Syntax_Node *node) {
 
   // CASE expr IS WHEN choice => stmts; ... END CASE;
@@ -40013,15 +40044,8 @@ void Generate_Case_Statement (Syntax_Node *node) {
           low = Emit_Convert (low, low_t, case_type).reg;
         if (not LLVM_Rep_Equal (high_t, case_type))
           high = Emit_Convert (high, high_t, case_type).reg;
-        LLVM_I1 both = Emit_In_Range ((LLVM_Value){ selector, case_type },
-                       (LLVM_Value){ low, case_type }, (LLVM_Value){ high, case_type }, false);
-        uint32_t next_choice = (j + 1 < alt->association.choices.count) ?
-                     Emit_Label () : next_check;
-        Emit ("  br i1 %%t%u, label %%L%u, label %%L%u\n",
-           both.reg, alt_labels[i], next_choice);
-        if (j + 1 < alt->association.choices.count) {
-          Emit_Label_Here (next_choice);
-        }
+        Emit_Case_Range_Choice (selector, low, high, case_type, alt_labels[i],
+                                next_check, j + 1 < alt->association.choices.count);
 
       // Subtype range: WHEN T RANGE low..high => (RM 5.4)
       } else if (choice->kind == NK_SUBTYPE_INDICATION) {
@@ -40051,15 +40075,8 @@ void Generate_Case_Statement (Syntax_Node *node) {
           low = Emit_Convert (low, low_rep, case_type).reg;
         if (not LLVM_Rep_Equal (high_rep, case_type))
           high = Emit_Convert (high, high_rep, case_type).reg;
-        LLVM_I1 both = Emit_In_Range ((LLVM_Value){ selector, case_type },
-                       (LLVM_Value){ low, case_type }, (LLVM_Value){ high, case_type }, false);
-        uint32_t next_choice = (j + 1 < alt->association.choices.count) ?
-                     Emit_Label () : next_check;
-        Emit ("  br i1 %%t%u, label %%L%u, label %%L%u\n",
-           both.reg, alt_labels[i], next_choice);
-        if (j + 1 < alt->association.choices.count) {
-          Emit_Label_Here (next_choice);
-        }
+        Emit_Case_Range_Choice (selector, low, high, case_type, alt_labels[i],
+                                next_check, j + 1 < alt->association.choices.count);
       } else if (choice->symbol and
              (choice->symbol->kind == SYMBOL_TYPE or
             choice->symbol->kind == SYMBOL_SUBTYPE) and
@@ -40096,14 +40113,8 @@ void Generate_Case_Statement (Syntax_Node *node) {
           val = Emit_Convert (val, val_type, case_type).reg;
         }
         LLVM_I1 cmp_i1 = Emit_Icmp ("eq", case_type, selector, val);
-        uint32_t cmp = cmp_i1.reg;
-        uint32_t next_choice = (j + 1 < alt->association.choices.count) ?
-                     Emit_Label () : next_check;
-        Emit ("  br i1 %%t%u, label %%L%u, label %%L%u\n",
-           cmp, alt_labels[i], next_choice);
-        if (j + 1 < alt->association.choices.count) {
-          Emit_Label_Here (next_choice);
-        }
+        Emit_Case_Choice_Branch (cmp_i1.reg, alt_labels[i], next_check,
+                                 j + 1 < alt->association.choices.count);
       }
     }
     if (i + 1 < num_alts) {
@@ -40648,19 +40659,7 @@ void Generate_Statement (Syntax_Node *node) {
           // Call runtime entry call function - widen entry index for RTS ABI.
           // Conditional/timed entry call (RM 9.7.2/9.7.3) uses the
           // non-blocking / deadline variant, like the parameterized path.
-          uint32_t entry_idx_64 = Emit_Extend_To_I64 (entry_idx, Integer_Arith_Rep ()).reg;
-          if (cg->entry_call_try_mode) {
-            uint32_t res = Emit_Temp ();
-            if (cg->entry_call_timeout_temp)
-              Emit ("  %%t%u = call i8 @__ada_entry_call_try(ptr %%t%u, i64 %%t%u, ptr %%t%u, i64 %%t%u)\n",
-                 res, task_ptr, entry_idx_64, param_block, cg->entry_call_timeout_temp);
-            else
-              Emit ("  %%t%u = call i8 @__ada_entry_call_try(ptr %%t%u, i64 %%t%u, ptr %%t%u, i64 0)\n",
-                 res, task_ptr, entry_idx_64, param_block);
-            cg->entry_call_result_temp = res;
-          } else {
-            Emit_Blocking_Entry_Call (task_ptr, entry_idx_64, param_block);
-          }
+          Emit_Entry_Call_Dispatch (task_ptr, entry_idx, param_block);
         } else if (Symbol_Is_Subprogram (entry_sym)) {
 
           // Qualified procedure call like Pkg.Proc - generate actual call
@@ -40704,19 +40703,7 @@ void Generate_Statement (Syntax_Node *node) {
           uint32_t task_ptr = Emit_Temp ();
           Emit_Load_Ptr_From_Symbol (task_ptr, proc->parent);
           uint32_t entry_idx = Emit_Entry_Index (proc, 0);
-          uint32_t entry_idx_64 = Emit_Extend_To_I64 (entry_idx, Integer_Arith_Rep ()).reg;
-          if (cg->entry_call_try_mode) {
-            uint32_t res = Emit_Temp ();
-            if (cg->entry_call_timeout_temp)
-              Emit ("  %%t%u = call i8 @__ada_entry_call_try(ptr %%t%u, i64 %%t%u, ptr %%t%u, i64 %%t%u)\n",
-                 res, task_ptr, entry_idx_64, param_block, cg->entry_call_timeout_temp);
-            else
-              Emit ("  %%t%u = call i8 @__ada_entry_call_try(ptr %%t%u, i64 %%t%u, ptr %%t%u, i64 0)\n",
-                 res, task_ptr, entry_idx_64, param_block);
-            cg->entry_call_result_temp = res;
-          } else {
-            Emit_Blocking_Entry_Call (task_ptr, entry_idx_64, param_block);
-          }
+          Emit_Entry_Call_Dispatch (task_ptr, entry_idx, param_block);
           break;
         }
 
