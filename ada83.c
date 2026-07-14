@@ -3020,6 +3020,16 @@ typedef struct {
   uint32_t     inner_agg_bnd_hi [MAX_AGG_DIMS]; // High-bound temps for inner dimensions
   LLVM_Rep     inner_agg_bnd_rep[MAX_AGG_DIMS]; // Rep each lo/hi temp was produced at
   int          inner_agg_bnd_n;                 // Number of inner aggregate bound pairs
+  // RM 4.3.2 applicable index constraint: an OTHERS aggregate takes its
+  // first-dimension bounds from context, not its own choices. When the context
+  // is an unconstrained array target those bounds are runtime (a fat pointer's
+  // 'FIRST/'LAST), so the assignment publishes them here for the immediately
+  // generated aggregate to consume; consumed-and-cleared so nested aggregates
+  // fall back to their own type's bounds.
+  bool         applicable_index_active;         // A constraint is published for the next aggregate
+  uint32_t     applicable_index_lo;             // Runtime first-dimension low bound
+  uint32_t     applicable_index_hi;             // Runtime first-dimension high bound
+  LLVM_Rep     applicable_index_bt;             // Rep the lo/hi temps were produced at
   LLVM_Value   disc_cache [MAX_DISC_CACHE];     // Cached discriminant values (typed)
   uint32_t     disc_cache_count;                // Number of entries in the disc cache
   Type_Info   *disc_cache_type;                 // Record type the disc cache belongs to
@@ -24604,6 +24614,16 @@ LLVM_Value Emit_Memcmp_Eq (uint32_t left_ptr, uint32_t right_ptr, uint32_t byte_
 // Emit a single bound (low or high) from a Type_Bound structure.
 // Handles all three bound kinds: INTEGER, EXPR, FLOAT.
 uint32_t Emit_Single_Bound (Type_Bound *bound, LLVM_Rep target_rep) {
+  // A bound already evaluated into a register (a memoized constraint
+  // expression, or an applicable index constraint published as a runtime
+  // value) is emitted directly — its register is authoritative regardless of
+  // the source kind, and re-deriving it would re-run any side effects.
+  if (bound->cached_temp) {
+    if (LLVM_Rep_Is_Int (bound->cached_rep) and LLVM_Rep_Is_Int (target_rep) and
+        not LLVM_Rep_Equal (bound->cached_rep, target_rep))
+      return Emit_Convert (bound->cached_temp, bound->cached_rep, target_rep).reg;
+    return bound->cached_temp;
+  }
   if (bound->kind == BOUND_INTEGER) {
     return Emit_Static_Int (bound->int_value, target_rep).reg;
   } else if (bound->kind == BOUND_FLOAT) {
@@ -34885,6 +34905,25 @@ uint32_t Generate_Aggregate_Body (Syntax_Node *node) {
     uint32_t n_positional = shape.positional_count;
     bool has_named = shape.has_named;
 
+    // RM 4.3.2: an OTHERS aggregate has no first-dimension bounds of its own —
+    // it takes the applicable index constraint's. When that constraint is an
+    // unconstrained array target, the assignment published its runtime bounds
+    // here; adopt them as this dimension's (BOUND_EXPR + cached register) so the
+    // aggregate sizes to the target through the runtime-bounds regime instead of
+    // the index subtype's full range. Snapshot then clear, so a nested element
+    // aggregate falls back to its own type's bounds rather than the outer's.
+    bool have_applicable_index = cg->applicable_index_active;
+    uint32_t applicable_index_lo = cg->applicable_index_lo;
+    uint32_t applicable_index_hi = cg->applicable_index_hi;
+    LLVM_Rep applicable_index_bt = cg->applicable_index_bt;
+    cg->applicable_index_active = false;
+    if (have_applicable_index and shape.has_others and agg_ndims >= 1) {
+      dim_lo[0] = (Type_Bound){ .kind = BOUND_EXPR, .cached_temp = applicable_index_lo,
+                                .cached_rep = applicable_index_bt };
+      dim_hi[0] = (Type_Bound){ .kind = BOUND_EXPR, .cached_temp = applicable_index_hi,
+                                .cached_rep = applicable_index_bt };
+    }
+
     // RM 3.6.1: a constrained array subtype whose constraint is non-static is
     // elaborated ONCE; its bounds are then frozen in the type's runtime
     // descriptor. A NAMED / OTHERS aggregate of such a subtype must read those
@@ -39533,8 +39572,21 @@ void Generate_Assignment_Body (Syntax_Node *node, Syntax_Node *target) {
          dest_bytes_64, dest_len_64, elem_sz);
     }
 
+    // RM 4.3.2: the target is the applicable index constraint for an OTHERS
+    // aggregate RHS. Its bounds are only known at run time (this is an
+    // unconstrained array — a fat pointer), so publish them for the aggregate
+    // about to be generated; it adopts them for its first dimension instead of
+    // the index subtype's full range (which would overflow aggregate sizing).
+    if (src->kind == NK_AGGREGATE) {
+      cg->applicable_index_active = true;
+      cg->applicable_index_lo = Emit_Fat_Pointer_Low  (existing_fat, ua_bt).reg;
+      cg->applicable_index_hi = Emit_Fat_Pointer_High (existing_fat, ua_bt).reg;
+      cg->applicable_index_bt = ua_bt;
+    }
+
     // Generate source and copy data to existing storage
     uint32_t src_val = Generate_Expression (src).reg;
+    cg->applicable_index_active = false;  // consumed by the aggregate, or moot
 
     // Aggregates with unconstrained type return a fat pointer ALLOCA
     // (ptr to { ptr, ptr }), not a loaded value. Promote to fat.

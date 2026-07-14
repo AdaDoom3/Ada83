@@ -577,24 +577,21 @@ OTHER REMAINING LEVERS (from full-suite gap analysis):
   * Object renaming (RM 8.5) must yield a true alias (pointer to the renamed
     object), currently copies → segv/CE/wrong. Coherent set c85005a-e,
     c85006f/g (~7 tests).
-  * Others/named aggregate assigned to an UNCONSTRAINED array target crashes
-    the compiler: the aggregate has no bounds of its own and falls back to the
-    index subtype's full range (POSITIVE'LAST = 2**31-1), tripping the runaway
-    guard (Generate_Aggregate_Body ~ada83.c:35883, abort()). The target's bounds
-    are the applicable index constraint (RM 4.3.2) but are RUNTIME (a fat
-    pointer), so this cannot be resolved to a static type. Investigated a codegen
-    fix (give the aggregate a constrained view whose outer bounds are synthetic
-    target'FIRST/'LAST attribute nodes, in the unconstrained-target branch of
-    Generate_Assignment_Body ~39537) — it worked for a PROCEDURE OUT formal but
-    was a hack (fabricating + hand-typing AST nodes in the expander, mutating
-    node->type around the call) and did NOT cover the ENTRY-accept OUT-formal
-    path that c85006a actually hits, so it was dropped. The right shape is a
-    single target-driven fill: when the RHS is an others/named aggregate and the
-    LHS is a fat-pointer array, size and fill from the LHS's runtime bounds
-    through ONE path that both the procedure- and entry-formal assignment sites
-    call — no synthetic nodes. NB c85006a is aggregate-blocked; c85006b-e get
-    past it and then fail on the separate IN OUT formal component/slice renaming
-    (CONSTRAINT_ERROR), so this lever alone lands at most c85006a.
+  * Others aggregate to an UNCONSTRAINED array target — FIXED (c85006a). The
+    aggregate had no first-dimension bounds of its own and fell back to the index
+    subtype's full range (POSITIVE'LAST = 2**31-1), tripping the runaway guard
+    (Generate_Aggregate_Body abort()). RM 4.3.2's applicable index constraint is
+    the target, whose bounds are RUNTIME (a fat pointer), so it has no static
+    type to attach. Made "the applicable index constraint" a first-class codegen
+    concept: a cg channel (applicable_index_lo/hi/bt) the unconstrained-array
+    assignment publishes from the target's fat 'FIRST/'LAST, which an OTHERS
+    aggregate consumes as its first dimension's runtime bounds (BOUND_EXPR +
+    cached register) — routing it through the existing runtime-bounds regime.
+    Emit_Single_Bound now honours a precomputed cached register for any bound.
+    No synthetic AST nodes, no type mutation; covers procedure- and entry-formal
+    targets alike. c85006b-e get past the crash and then fail on the SEPARATE
+    IN OUT formal component/slice renaming (CONSTRAINT_ERROR) — the object-rename
+    lever above.
   * Large multi-fix areas (no single lever): generics (~29), TEXT_IO/*_IO RTS
     (~22), representation clauses (~18, packed bit-fields still the hard part),
     tasking (~19, some real, some delay-scaling flakiness).
