@@ -28042,6 +28042,11 @@ LLVM_Value Emit_Binary_Op_Predefined (Syntax_Node *node) {
           Emit ("  %%t%u = sdiv i128 %%t%u, %llu\n", quotient, scaled, den);
         }
       } else {
+        // RM 4.5.5: a fixed-point division by zero raises NUMERIC_ERROR /
+        // CONSTRAINT_ERROR, not a hardware trap. The rescale widens the divisor
+        // into i128, so guard the source operand (zero there ⇒ zero divisor)
+        // before the sdiv, exactly as the integer path does.
+        Emit_Division_Check (right, fix_type, result_type);
         uint32_t dividend = left_wide;
         if (num != 1) {
           dividend = Emit_Temp ();
