@@ -43771,7 +43771,25 @@ void Generate_Object_Declaration (Syntax_Node *node) {
       Symbol *slot = nm->symbol->rename_address_slot;
       Emit_Local_Ref (slot);
       Emit (" = alloca ptr  ; RM 8.5 renamed address slot\n");
-      uint32_t addr = Generate_Lvalue (node->object_decl.init);
+
+      // The denotation of an unconstrained (or dynamic-bounds) array is a fat
+      // pointer { data, bounds }, and every later read through the slot loads
+      // one from the captured address. Plain Generate_Lvalue would hand back
+      // the bare data pointer (a fat access's .ALL, a slice, …), and loading a
+      // fat from array data reads element bytes as a descriptor — garbage
+      // bounds, then a crash. Snapshot the descriptor into its own slot and
+      // capture that address: RM 8.5 fixes the object now, so a later change to
+      // the underlying access must not disturb the rename either.
+      uint32_t addr;
+      if (Type_Needs_Fat_Pointer (nm->symbol->type)) {
+        LLVM_Value fatv = Generate_Expression (node->object_decl.init);
+        uint32_t spill = Emit_Result_Instruction (
+          "alloca " FAT_PTR_TYPE ", align 8  ; RM 8.5 fat rename snapshot\n");
+        Emit ("  store " FAT_PTR_TYPE " %%t%u, ptr %%t%u\n", fatv.reg, spill);
+        addr = spill;
+      } else {
+        addr = Generate_Lvalue (node->object_decl.init);
+      }
       Emit ("  store ptr %%t%u, ptr ", addr);
       Emit_Symbol_Storage (slot);
       Emit ("\n");
