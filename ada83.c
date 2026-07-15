@@ -13542,10 +13542,22 @@ void Analyze_Binary (Syntax_Node *n) {
     // literal inherit the subtype's bounds (membership then compared them
     // against themselves — always TRUE) and made an aggregate raise
     // CONSTRAINT_ERROR against the very constraint being tested.
-    if (L and tested and not L->type and
-        (L->kind == NK_AGGREGATE or L->kind == NK_STRING))
-      L->type = Type_Base (tested);      // seed applicable context
-    Resolve_Expression (L);
+    // RM 4.5.2: the tested subtype supplies the left operand's applicable
+    // context. A bare character literal there denotes the tested type's own
+    // literal — its enumeration position — not predefined CHARACTER, so an
+    // unnatural-order user character type (`'M' in ST`) tests by position
+    // (c45211a). Resolve it against the tested base directly; the generic
+    // path would reset it to CHARACTER.
+    if (L and L->kind == NK_CHARACTER and tested and
+        Type_Is_Character_Type (tested) and
+        Resolve_Char_As_Enum (L, Type_Base (tested))) {
+      // resolved to the enumeration literal; nothing more to do for L
+    } else {
+      if (L and tested and not L->type and
+          (L->kind == NK_AGGREGATE or L->kind == NK_STRING))
+        L->type = Type_Base (tested);      // seed applicable context
+      Resolve_Expression (L);
+    }
     n->type = sm->type_boolean;
     Interp_Add (Node_Interps_Reset (n), NULL, sm->type_boolean,
                 L ? L->type : NULL, NULL, 0);
