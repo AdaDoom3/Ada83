@@ -26818,10 +26818,14 @@ uint32_t Generate_Composite_Address (Syntax_Node *node) {
 
       Syntax_Node *arg0 = node->apply.arguments.items[0];
 
-      // A constrained array with dynamic bounds is stored as a fat pointer, so
-      // its data pointer and low bound are runtime values; the flat-data path
-      // below would treat the fat-pointer struct itself as the element storage.
-      if (Type_Has_Dynamic_Bounds (array_type) and not access_to_array) {
+      // Any fat-pointer-stored array — unconstrained, or constrained with
+      // dynamic bounds — carries its data pointer and low bound at run time; the
+      // flat-data path below would treat the fat-pointer struct itself as the
+      // element storage (the narrower dynamic-bounds test missed the
+      // unconstrained case, so a composite element of an unconstrained array
+      // read the descriptor bytes as data — RM 3.6). This mirrors the scalar
+      // index path's Type_Needs_Fat_Pointer test.
+      if (Type_Needs_Fat_Pointer (array_type) and not access_to_array) {
         LLVM_Rep dbt = Array_Bound_LLVM_Rep (array_type);
         LLVM_Rep idx_t = Integer_Arith_Rep ();
         uint32_t fat = Generate_Expression (node->apply.prefix).reg;
