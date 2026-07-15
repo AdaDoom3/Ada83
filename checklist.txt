@@ -623,9 +623,16 @@ OTHER REMAINING LEVERS (from full-suite gap analysis):
     one-expression range; now resolves the implicit dereference (RM 4.1). This
     was the whole c85006e hang: the allocated-task stop loop over AT1'RANGE
     signalled only the first task, so the master blocked joining the rest.
-  * c85006 family now a/b/d/e/f/g PASS. Only c85006c remains: a teardown hang
-    in the SUBPROGRAM-IN-OUT-formal variant (no allocator / access-array), a
-    distinct tasking-teardown issue (cf. c85005c).
+  * c85006 family now a/b/d/e/f/g PASS. Only c85006c remains (ENTRY IN OUT
+    formal variant). Native build SEGVs (lli masks it as a hang) in proc1_s265
+    called from the MAIN_TASK body: `mov (%rcx),%ecx` with rcx a malformed
+    fat-pointer field (0x7fff0000000700). LEAD: PROC1 is nested inside the
+    ACCEPT START body and reads the ENCLOSING entry's IN OUT fat formals
+    (REC.RP1.ALL, AP1(PAP1'FIRST), AV1(J)) via uplevel frame access — a
+    rendezvous fat formal reached from a nested subprogram's static link.
+    Isolated reproducers that rename+repass an entry fat formal to a proc all
+    PASS; the missing ingredient is the nested proc's UPLEVEL read of the
+    entry formal. Overlaps the c85005 object-rename-alias cluster.
   * Large multi-fix areas (no single lever): generics (~29), TEXT_IO/*_IO RTS
     (~22), representation clauses (~18, packed bit-fields still the hard part),
     tasking (~19, some real, some delay-scaling flakiness).
