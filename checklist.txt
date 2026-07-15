@@ -642,6 +642,20 @@ OTHER REMAINING LEVERS (from full-suite gap analysis):
   * BOTH the c85005 (a-e) and c85006 (a-g) object-rename families are now fully
     GREEN. The unifying theme was fat-pointer / uplevel-frame representation of
     renamed and entry-passed unconstrained arrays and records.
+  * c85014a — FIXED. Renaming an entry whose task prefix is an overloaded
+    parameterless function (ENTRY2 (J1,J2) renames F.ENTER, F returns T1 or T2)
+    picked the first F, ignoring the rename's profile. Added
+    Resolve_Entry_Rename_Overloaded_Prefix: pick the F whose result task type
+    has an ENTER matching the rename profile (count + base type, rejecting
+    cross-derivation so INT != INTEGER).
+  * c85014b — PARTIAL. Its ENTRY renames now resolve (the fix above), but it
+    still fails on FUNK4: a FUNCTION rename `FUNK4 (SUBINT1) RETURN SUBINT0
+    renames FUNKX` where FUNKX overloads on NATURAL/POSITIVE (base INTEGER) vs
+    SUBINT0/SUBINT1 (base INT). That goes through the NK_IDENTIFIER path
+    (Resolve_Overloaded_Call + Filter_By_Arguments), which accepts a base-INT
+    subtype for a base-INTEGER parameter — the general derived-type looseness in
+    Covers_Only_Via_Derivation when a SUBTYPE layer sits on the derived type.
+    Fixing it touches core overload resolution (regression risk) — deferred.
   * Large multi-fix areas (no single lever): generics (~29), TEXT_IO/*_IO RTS
     (~22), representation clauses (~18, packed bit-fields still the hard part),
     tasking (~19, some real, some delay-scaling flakiness).
