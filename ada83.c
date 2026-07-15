@@ -10832,15 +10832,11 @@ Symbol *Resolve_Entry_Rename_Overloaded_Prefix (Syntax_Node *renamed,
   Collect_Interpretations (prefix->string_val.text, &interps);
   if (interps.count < 2) return NULL;  // not overloaded; ordinary path suffices
 
+  // RM 8.5.1 requires type conformance: same parameter count and, per
+  // parameter, the same BASE type — so an ENTER (I1 : INT) rename picks T2's
+  // entry over T1's ENTER (I1 : INTEGER), which a looser numeric-compatibility
+  // test would wrongly accept as well.
   uint32_t np = rename_sym->parameter_count;
-  Type_Info **atypes = Arena_Allocate (np * sizeof (Type_Info *));
-  String_Slice *anames = Arena_Allocate (np * sizeof (String_Slice));
-  for (uint32_t i = 0; i < np; i++) {
-    atypes[i] = rename_sym->parameters[i].param_type;
-    anames[i] = (String_Slice){0};
-  }
-  Argument_Info args = {.types = atypes, .count = np, .names = anames};
-
   for (uint32_t c = 0; c < interps.count; c++) {
     Symbol *fn = interps.items[c].nam;
     Type_Info *rt = interps.items[c].typ;
@@ -10856,7 +10852,25 @@ Symbol *Resolve_Entry_Rename_Overloaded_Prefix (Syntax_Node *renamed,
       if (not entry or entry->kind != SYMBOL_ENTRY) continue;
       if (not Slice_Equal_Ignore_Case (entry->name, renamed->selected.selector))
         continue;
-      if (not Arguments_Match_Profile (entry, &args)) continue;
+      if (entry->parameter_count != np) continue;
+      bool profile_ok = true;
+      for (uint32_t i = 0; i < np; i++) {
+        Type_Info *ep = entry->parameters[i].param_type;
+        Type_Info *rp = rename_sym->parameters[i].param_type;
+        // Same base type (subtypes conform), but a derived type must NOT match
+        // its own parent: `NEW INTEGER` synthesises base_type = INTEGER, so the
+        // base test alone would let ENTER (INTEGER) satisfy a rename with an INT
+        // parameter. Reject a pair related through the parent_type derivation
+        // chain (RM 3.4 / 8.5.1 type conformance).
+        if (Type_Base (ep) != Type_Base (rp)) { profile_ok = false; break; }
+        bool cross_derivation = false;
+        for (Type_Info *a = ep ? ep->parent_type : NULL; a; a = a->parent_type)
+          if (a == rp) { cross_derivation = true; break; }
+        for (Type_Info *a = rp ? rp->parent_type : NULL; a; a = a->parent_type)
+          if (a == ep) { cross_derivation = true; break; }
+        if (cross_derivation) { profile_ok = false; break; }
+      }
+      if (not profile_ok) continue;
       prefix->symbol = fn;
       prefix->type = rt;
       renamed->symbol = entry;
