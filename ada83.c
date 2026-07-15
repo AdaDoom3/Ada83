@@ -2782,6 +2782,8 @@ void       Resolve_Index_Constraint_Dimension (Syntax_Node *discrete_range,
 void        Analyze_Identifier  (Syntax_Node *node);
 Type_Info *Resolve_Selected     (Syntax_Node *node);
 Type_Info *Resolve_Apply        (Syntax_Node *node);
+Symbol    *Resolve_Entry_Rename_Overloaded_Prefix (Syntax_Node *renamed,
+                                                   Symbol *rename_sym);
 // Two-pass overload resolution (RM 8.6): Analyze_Expr collects the candidate
 // interpretation set on a node bottom-up; Resolve_In_Context filters that set by
 // the required type and commits a unique interpretation top-down.
@@ -10810,6 +10812,59 @@ Symbol *Task_Entry_Owner (Type_Info *task_type) {
     if (t->defining_symbol and t->defining_symbol->exported_count > 0)
       return t->defining_symbol;
   return task_type ? task_type->defining_symbol : NULL;
+}
+
+// RM 8.5.1: renaming an entry whose task prefix is an overloaded parameterless
+// function — `ENTRY2 (J1, J2) renames F.ENTER` where F returns T1 or T2 — must
+// use the rename's OWN parameter profile to choose which F, hence which task
+// type, hence which ENTER. Ordinary resolution of F.ENTER has no such context
+// and takes the first F. Select the interpretation of F whose result task type
+// has an entry named by the selector with a matching profile; set the prefix's
+// symbol and type to that function and return the chosen entry. Returns NULL
+// when the pattern does not apply, leaving ordinary resolution to run.
+Symbol *Resolve_Entry_Rename_Overloaded_Prefix (Syntax_Node *renamed,
+                                                Symbol *rename_sym) {
+  if (not renamed or renamed->kind != NK_SELECTED or not rename_sym) return NULL;
+  Syntax_Node *prefix = renamed->selected.prefix;
+  if (not prefix or prefix->kind != NK_IDENTIFIER) return NULL;
+
+  Interp_List interps;
+  Collect_Interpretations (prefix->string_val.text, &interps);
+  if (interps.count < 2) return NULL;  // not overloaded; ordinary path suffices
+
+  uint32_t np = rename_sym->parameter_count;
+  Type_Info **atypes = Arena_Allocate (np * sizeof (Type_Info *));
+  String_Slice *anames = Arena_Allocate (np * sizeof (String_Slice));
+  for (uint32_t i = 0; i < np; i++) {
+    atypes[i] = rename_sym->parameters[i].param_type;
+    anames[i] = (String_Slice){0};
+  }
+  Argument_Info args = {.types = atypes, .count = np, .names = anames};
+
+  for (uint32_t c = 0; c < interps.count; c++) {
+    Symbol *fn = interps.items[c].nam;
+    Type_Info *rt = interps.items[c].typ;
+    if (not fn or fn->kind != SYMBOL_FUNCTION or not rt) continue;
+    Type_Info *task_type = Type_Is_Task (rt) ? rt
+      : (Type_Is_Access (rt) and Type_Is_Task (Type_Designated (rt)))
+          ? Type_Designated (rt) : NULL;
+    if (not task_type) continue;
+    Symbol *owner = Task_Entry_Owner (task_type);
+    if (not owner) continue;
+    for (uint32_t e = 0; e < owner->exported_count; e++) {
+      Symbol *entry = owner->exported[e];
+      if (not entry or entry->kind != SYMBOL_ENTRY) continue;
+      if (not Slice_Equal_Ignore_Case (entry->name, renamed->selected.selector))
+        continue;
+      if (not Arguments_Match_Profile (entry, &args)) continue;
+      prefix->symbol = fn;
+      prefix->type = rt;
+      renamed->symbol = entry;
+      renamed->type = entry->type;
+      return entry;
+    }
+  }
+  return NULL;
 }
 
 // RM 9.1: only the ancestor task type that declares the task body owns the
@@ -19736,6 +19791,12 @@ void Resolve_Declaration (Syntax_Node *node) {
             renamed_sym = Resolve_Overloaded_Call (
               ren->string_val.text, &args, sym->return_type);
             if (renamed_sym) ren->symbol = renamed_sym;
+          } else if (ren->kind == NK_SELECTED and total_params > 0) {
+
+            // RM 8.5.1: `renames F.ENTER` where F is an overloaded
+            // parameterless function — pick F (hence the task type, hence the
+            // entry) by the rename's own profile, not the first F.
+            renamed_sym = Resolve_Entry_Rename_Overloaded_Prefix (ren, sym);
           }
           if (not renamed_sym) {
             Resolve_Expression (ren);
