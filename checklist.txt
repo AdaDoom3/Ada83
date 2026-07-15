@@ -633,7 +633,15 @@ OTHER REMAINING LEVERS (from full-suite gap analysis):
     { data, bounds } / constrained bytes copied in for by-value-ish formals
     (Emit_Bind_Accept_Formal_To_Frame), and for a RECORD, publish the caller's
     address in the slot + mark param_by_reference so the reader dereferences the
-    live object (no bind-time snapshot). Only c85005e remains (separate hang).
+    live object (no bind-time snapshot).
+  * c85005e (last of the cluster) — FIXED. Renaming an unconstrained array via
+    an access .ALL (X : ARRAY1 renames AP.ALL) captured the bare DATA pointer,
+    but reads load a fat { data, bounds } from the captured address — so it read
+    element bytes as a descriptor (garbage bounds -> crash). Now snapshots the
+    fat descriptor to its own slot and captures that address (RM 8.5 fix-now).
+  * BOTH the c85005 (a-e) and c85006 (a-g) object-rename families are now fully
+    GREEN. The unifying theme was fat-pointer / uplevel-frame representation of
+    renamed and entry-passed unconstrained arrays and records.
   * Large multi-fix areas (no single lever): generics (~29), TEXT_IO/*_IO RTS
     (~22), representation clauses (~18, packed bit-fields still the hard part),
     tasking (~19, some real, some delay-scaling flakiness).
