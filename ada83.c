@@ -28491,8 +28491,16 @@ LLVM_Value Emit_Binary_Op_Predefined (Syntax_Node *node) {
         }
 
         // RM 4.10: If both sides are static universal_real, fold
-        // the comparison at compile time using exact rationals.
-        if (left_is_float and right_is_float) {
+        // the comparison at compile time using exact rationals. Restrict to
+        // genuine universal_real operands: a specific floating type (e.g.
+        // FLOAT5(big_int)) rounds its value to a model number, and comparing
+        // that rounded value against the OTHER operand's exact rational is
+        // asymmetric — it wrongly reports FLOAT5(N) /= N.0 as unequal (c46022a).
+        // Let such typed comparisons fall through to the runtime path, which
+        // rounds both operands to the same machine type.
+        if (left_is_float and right_is_float and
+            Type_Is_Universal_Real (left_type) and
+            Type_Is_Universal_Real (right_type)) {
           Rational lq, rq;
           bool l_ok = Eval_Const_Rational (node->binary.left, &lq);
           bool r_ok = Eval_Const_Rational (node->binary.right, &rq);
