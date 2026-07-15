@@ -608,6 +608,24 @@ OTHER REMAINING LEVERS (from full-suite gap analysis):
     generic package body. Net -6 lines. (c85006c still TIMES OUT — tasking
     teardown, the c85005c family; c85006e is a separate fat-pointer GEP type
     error on renaming a slice of an ALLOCATOR-created array.)
+  * Access-to-fat-array indexing/slicing fed the fat { data, bounds } value
+    straight into a getelementptr base — FIXED. The fat-array branch that
+    unpacks data+low now also fires for the access case (the access value IS
+    the fat pointer). Malformed-IR / descriptor-as-data bug (RM 3.6/3.10).
+  * Allocated unconstrained array of tasks (NEW ARR_TSK(1..N)) never created
+    its tasks — FIXED (c93004f). The fat-pointer allocation path returned
+    before the composite-task code, which anyway only unrolls static arrays;
+    added a runtime-counted create/activate/wait loop
+    (Emit_Runtime_Array_Task_Operation) driven from the fat path (RM 9.2/9.3).
+  * FOR loop over P'RANGE where P is access-to-array iterated ONCE — FIXED
+    (c85006e, and the teardown-hang it caused). The access prefix matched
+    neither the unconstrained nor constrained branch and fell to a degenerate
+    one-expression range; now resolves the implicit dereference (RM 4.1). This
+    was the whole c85006e hang: the allocated-task stop loop over AT1'RANGE
+    signalled only the first task, so the master blocked joining the rest.
+  * c85006 family now a/b/d/e/f/g PASS. Only c85006c remains: a teardown hang
+    in the SUBPROGRAM-IN-OUT-formal variant (no allocator / access-array), a
+    distinct tasking-teardown issue (cf. c85005c).
   * Large multi-fix areas (no single lever): generics (~29), TEXT_IO/*_IO RTS
     (~22), representation clauses (~18, packed bit-fields still the hard part),
     tasking (~19, some real, some delay-scaling flakiness).
