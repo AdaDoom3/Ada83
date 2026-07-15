@@ -26825,8 +26825,12 @@ uint32_t Generate_Composite_Address (Syntax_Node *node) {
       // element storage (the narrower dynamic-bounds test missed the
       // unconstrained case, so a composite element of an unconstrained array
       // read the descriptor bytes as data — RM 3.6). This mirrors the scalar
-      // index path's Type_Needs_Fat_Pointer test.
-      if (Type_Needs_Fat_Pointer (array_type) and not access_to_array) {
+      // index path's Type_Needs_Fat_Pointer test. An access-to-fat-array is
+      // handled here too (RM 3.10): the access value the prefix evaluates to
+      // IS itself the fat pointer, so the same data/low extraction applies —
+      // the plain-access branches below stay for the thin (static-constrained)
+      // case, where the access value already IS the array data pointer.
+      if (Type_Needs_Fat_Pointer (array_type)) {
         LLVM_Rep dbt = Array_Bound_LLVM_Rep (array_type);
         LLVM_Rep idx_t = Integer_Arith_Rep ();
         uint32_t fat = Generate_Expression (node->apply.prefix).reg;
