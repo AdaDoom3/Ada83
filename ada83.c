@@ -9705,6 +9705,19 @@ void Symbol_Add (Symbol *sym) {
         return;
       }
 
+      // A USE-visible alias (RM 8.4) is not a same-region conflict: a new
+      // immediately-visible declaration of the same name hides the alias rather
+      // than being rejected. The overloadable-vs-overloadable case was handled
+      // above (the chain keeps both, preference scoring picks); this reaches the
+      // kinds that otherwise fall through to the skip-return — e.g. an object
+      // declaration hiding a use-visible enumeration literal (`E13 : INTEGER`
+      // over the literal E13, c83031a). Skip the alias and keep scanning so
+      // `sym` is added; Collect_Interpretations drops the cancelled alias.
+      if (existing->visibility == VIS_USE_VISIBLE) {
+        existing = existing->next_in_bucket;
+        continue;
+      }
+
       // Same symbol already exists at this scope - skip
       return;
     }
@@ -10317,6 +10330,30 @@ void Collect_Interpretations (String_Slice name,
           };
       }
     }
+  }
+
+  // RM 8.4: a use-visible declaration is cancelled by an immediately-visible
+  // homograph. A non-overloadable declaration (object, type, exception, ...)
+  // is a homograph of EVERY declaration of that name (RM 8.3), so its immediate
+  // visibility hides every use-visible alias — e.g. a local `E13 : INTEGER`
+  // hides the use-visible enumeration literal E13 (c83031a). The overloadable
+  // vs overloadable case (a derived operation and its use-visible parent) turns
+  // on the profile and is left to preference scoring.
+  bool has_immediate_nonoverloadable = false;
+  for (uint32_t i = 0; i < interps->count; i++) {
+    Symbol *s = interps->items[i].nam;
+    if (s->visibility == VIS_IMMEDIATELY_VISIBLE and
+        not Symbol_Is_Subprogram (s) and s->kind != SYMBOL_LITERAL) {
+      has_immediate_nonoverloadable = true;
+      break;
+    }
+  }
+  if (has_immediate_nonoverloadable) {
+    uint32_t w = 0;
+    for (uint32_t i = 0; i < interps->count; i++)
+      if (interps->items[i].nam->visibility != VIS_USE_VISIBLE)
+        interps->items[w++] = interps->items[i];
+    interps->count = w;
   }
 }
 
