@@ -3766,6 +3766,14 @@ void Emit_Component_Task_Operation (Type_Info *ty, uint32_t base,
 void Emit_Pending_Entry_Operation  (Symbol *obj,
                                     Component_Task_Operation_Kind op,
                                     uint32_t failed_flag);
+void Emit_Runtime_Array_Task_Operation (Type_Info *elem_type, uint32_t data,
+                                    uint32_t count, uint32_t elem_size,
+                                    Component_Task_Operation_Kind op,
+                                    uint32_t failed_flag,
+                                    const char *master_arg);
+void Emit_Alloc_Task_Master_Arg    (Type_Info *access_type,
+                                    Type_Info *ctx_access,
+                                    char *buffer, size_t buffer_len);
 void Emit_Activation_Failure_Check (uint32_t failed_flag);
 const char *Task_Parent_Frame_Argument (void);
 const char *Task_Master_Record_Argument (void);
@@ -37984,6 +37992,30 @@ LLVM_Value Generate_Allocator (Syntax_Node *node) {
       uint32_t byte_size_64 = Emit_Extend_To_I64 (byte_size, alloc_iat).reg;
       uint32_t heap_ptr = Emit_Result_Instruction ("call ptr @__ada_allocate (i64 %%t%u)\n", byte_size_64);
 
+      // RM 9.2/9.3: an allocated array whose elements contain tasks activates
+      // every one of those tasks as part of evaluating the allocator. The
+      // element count is a run-time value here, so create, activate, then wait
+      // in runtime-counted loops — all tasks of the allocation activate
+      // together before the allocator value is available.
+      Type_Info *task_elem = subtype->array.element_type;
+      if (task_elem and Type_Has_Task_Component (task_elem)) {
+        char alloc_master[32];
+        Emit_Alloc_Task_Master_Arg (access_type, ctx_access,
+                                    alloc_master, sizeof alloc_master);
+        Emit_Runtime_Array_Task_Operation (task_elem, heap_ptr, total_elems,
+                                           elem_size, COMPONENT_TASK_CREATE, 0,
+                                           alloc_master);
+        Emit_Runtime_Array_Task_Operation (task_elem, heap_ptr, total_elems,
+                                           elem_size, COMPONENT_TASK_ACTIVATE, 0,
+                                           "ptr null");
+        uint32_t alloc_failed = Emit_Result_Instruction ("alloca i8\n");
+        Emit ("  store i8 0, ptr %%t%u\n", alloc_failed);
+        Emit_Runtime_Array_Task_Operation (task_elem, heap_ptr, total_elems,
+                                           elem_size, COMPONENT_TASK_WAIT,
+                                           alloc_failed, "ptr null");
+        Emit_Activation_Failure_Check (alloc_failed);
+      }
+
       // RM 4.8(6): allocated bounds are checked against the target access
       // type's designated array bounds, in both the multi-dim and 1D paths.
       Type_Info *tgt = node->allocator.target_access_type;
@@ -38239,18 +38271,9 @@ LLVM_Value Generate_Allocator (Syntax_Node *node) {
   // type is library-level: its master is the program (null record — the
   // program-exit join covers it).
   char alloc_master_arg[32] = "ptr null";
-  if (designated and Type_Has_Task_Component (designated)) {
-    Type_Info *master_source = ctx_access ? ctx_access : access_type;
-    uint32_t access_master_id = Type_Is_Access (master_source)
-                              ? master_source->access.master_scope_id : 0;
-    if (access_master_id == 0 and Type_Is_Access (access_type))
-      access_master_id = access_type->access.master_scope_id;
-    if (access_master_id) {
-      uint32_t found = Emit_Result_Instruction ("call ptr @__ada_master_find(i64 %u)\n", access_master_id);
-      snprintf (alloc_master_arg, sizeof alloc_master_arg,
-                "ptr %%t%u", found);
-    }
-  }
+  if (designated and Type_Has_Task_Component (designated))
+    Emit_Alloc_Task_Master_Arg (access_type, ctx_access,
+                                alloc_master_arg, sizeof alloc_master_arg);
 
   // RM 9.2: Allocating a task type via NEW activates the task immediately.
   // The allocated memory stores the thread handle (ptr-sized).
@@ -42150,6 +42173,58 @@ void Emit_Component_Task_Operation (Type_Info *ty, uint32_t base,
                                      master_arg);
     }
     return;
+  }
+}
+
+// Apply one task operation to every element of a heap array whose element
+// count is only known at run time — an unconstrained-array allocator with
+// task components (RM 9.3). Emits a counted loop: for i in [0, count),
+// apply `op` to the element at data + i*elem_size, recursing through
+// Emit_Component_Task_Operation so the element may itself be a task, a
+// record with task components, or a statically bounded array of them.
+void Emit_Runtime_Array_Task_Operation (Type_Info *elem_type, uint32_t data,
+                                        uint32_t count, uint32_t elem_size,
+                                        Component_Task_Operation_Kind op,
+                                        uint32_t failed_flag,
+                                        const char *master_arg) {
+  if (not elem_type or not Type_Has_Task_Component (elem_type)) return;
+  LLVM_Rep it = Integer_Arith_Rep ();
+  const char *its = LLVM_Rep_To_String (it);
+  uint32_t idx = Emit_Result_Instruction ("alloca %s  ; runtime task-loop index\n", its);
+  Emit ("  store %s 0, ptr %%t%u\n", its, idx);
+  uint32_t head = Emit_Label (), body = Emit_Label (), done = Emit_Label ();
+  Emit_Label_Here (head);
+  uint32_t cur = Emit_Result_Instruction ("load %s, ptr %%t%u\n", its, idx);
+  uint32_t cmp = Emit_Result_Instruction ("icmp slt %s %%t%u, %%t%u\n", its, cur, count);
+  Emit ("  br i1 %%t%u, label %%L%u, label %%L%u\n", cmp, body, done);
+  cg->block_terminated = true;
+  Emit_Label_Here (body);
+  uint32_t off = Emit_Result_Instruction ("mul %s %%t%u, %u\n", its, cur, elem_size);
+  uint32_t off64 = Emit_Extend_To_I64 (off, it).reg;
+  uint32_t ep = Emit_Result_Instruction ("getelementptr i8, ptr %%t%u, i64 %%t%u  ; task elem\n", data, off64);
+  Emit_Component_Task_Operation (elem_type, ep, op, failed_flag, master_arg);
+  uint32_t nxt = Emit_Result_Instruction ("add %s %%t%u, 1\n", its, cur);
+  Emit ("  store %s %%t%u, ptr %%t%u\n", its, nxt, idx);
+  Emit ("  br label %%L%u\n", head);
+  cg->block_terminated = true;
+  Emit_Label_Here (done);
+}
+
+// RM 9.4: resolve the master a task created by an allocator depends on — the
+// master that elaborated the ACCESS TYPE, found by its static scope id on the
+// running thread's master chain (id 0 = library level → the program master,
+// a null record). Writes "ptr %tN" or "ptr null" into `buffer`.
+void Emit_Alloc_Task_Master_Arg (Type_Info *access_type, Type_Info *ctx_access,
+                                 char *buffer, size_t buffer_len) {
+  snprintf (buffer, buffer_len, "ptr null");
+  Type_Info *master_source = ctx_access ? ctx_access : access_type;
+  uint32_t access_master_id = Type_Is_Access (master_source)
+                            ? master_source->access.master_scope_id : 0;
+  if (access_master_id == 0 and Type_Is_Access (access_type))
+    access_master_id = access_type->access.master_scope_id;
+  if (access_master_id) {
+    uint32_t found = Emit_Result_Instruction ("call ptr @__ada_master_find(i64 %u)\n", access_master_id);
+    snprintf (buffer, buffer_len, "ptr %%t%u", found);
   }
 }
 
