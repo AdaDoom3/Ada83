@@ -656,6 +656,17 @@ OTHER REMAINING LEVERS (from full-suite gap analysis):
     subtype for a base-INTEGER parameter — the general derived-type looseness in
     Covers_Only_Via_Derivation when a SUBTYPE layer sits on the derived type.
     Fixing it touches core overload resolution (regression risk) — deferred.
+  * c45211a — FIXED. `'M' in ST` where ST subtypes an unnatural-order user
+    character enum tested predefined CHARACTER 'M' (ASCII code) against ST's
+    range instead of the enum literal 'M' (its position). Membership seeded the
+    tested type only for aggregates/strings; extended it to a bare character
+    literal via Resolve_Char_As_Enum (as comparison operands already do).
+  * NEXT LEADS (all deeper/riskier, individually isolable):
+    - c34015b / c83031a: a derived enumeration literal is a predefined
+      operation hidden by an explicit homograph subprogram (RM 8.3 visibility).
+    - c85014b FUNK4: derived-subtype conformance in Resolve_Overloaded_Call.
+    - c91007a: entry-family index elaboration CONSTRAINT_ERROR must abort task
+      activation in that declarative part (RM 9.3).
   * Large multi-fix areas (no single lever): generics (~29), TEXT_IO/*_IO RTS
     (~22), representation clauses (~18, packed bit-fields still the hard part),
     tasking (~19, some real, some delay-scaling flakiness).
