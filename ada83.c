@@ -40232,7 +40232,14 @@ void Generate_For_Loop (Syntax_Node *node) {
 
   // Allocate loop variable - use native Integer type, not i64
   LLVM_Rep loop_type = Integer_Arith_Rep ();
-  if (loop_var) {
+  // The loop variable's storage must be the one every reference resolves to.
+  // A variable that lives in an enclosing frame (e.g. a generic instance body
+  // whose locals are laid out in the parent frame) is reached through its
+  // __frame alias, not a fresh local alloca — allocating one here would leave
+  // the loop's init/step writing a local the body never reads (it reads the
+  // frame slot). Only a genuinely local loop variable gets an alloca; all
+  // accesses below go through Emit_Symbol_Storage, which picks the right one.
+  if (loop_var and not Is_Uplevel_Access (loop_var)) {
     Emit ("  ; -- alloca loop variable %.*s\n",
        (int)loop_var->name.length, loop_var->name.data);
     Emit_Local_Ref (loop_var);
@@ -40362,8 +40369,8 @@ void Generate_For_Loop (Syntax_Node *node) {
     Emit ("  ; -- init %.*s := %s bound\n",
        (int)loop_var->name.length, loop_var->name.data,
        is_reverse ? "high" : "low");
-    Emit ("  store %s %%t%u, ptr %%", LLVM_Rep_To_String (loop_type), is_reverse ? high_val : low_val);
-    Emit_Symbol_Name (loop_var);
+    Emit ("  store %s %%t%u, ptr ", LLVM_Rep_To_String (loop_type), is_reverse ? high_val : low_val);
+    Emit_Symbol_Storage (loop_var);
     Emit ("\n");
   }
 
@@ -40374,8 +40381,8 @@ void Generate_For_Loop (Syntax_Node *node) {
   if (loop_var) {
     Emit ("  ; -- load current %.*s\n",
        (int)loop_var->name.length, loop_var->name.data);
-    Emit ("  %%t%u = load %s, ptr %%", cur, LLVM_Rep_To_String (loop_type));
-    Emit_Symbol_Name (loop_var);
+    Emit ("  %%t%u = load %s, ptr ", cur, LLVM_Rep_To_String (loop_type));
+    Emit_Symbol_Storage (loop_var);
     Emit ("\n");
   }
   LLVM_I1 cond = is_reverse
@@ -40417,8 +40424,8 @@ void Generate_For_Loop (Syntax_Node *node) {
       Emit ("  %%t%u = add %s %%t%u, 1  ; %.*s + 1\n",
          next, LLVM_Rep_To_String (loop_type), cur, (int)loop_var->name.length, loop_var->name.data);
     }
-    Emit ("  store %s %%t%u, ptr %%", LLVM_Rep_To_String (loop_type), next);
-    Emit_Symbol_Name (loop_var);
+    Emit ("  store %s %%t%u, ptr ", LLVM_Rep_To_String (loop_type), next);
+    Emit_Symbol_Storage (loop_var);
     Emit ("\n");
   }
   Emit ("  ; -- back to loop header\n");
