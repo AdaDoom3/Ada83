@@ -22702,6 +22702,24 @@ void Emit_Symbol_Storage (Symbol *sym) {
   }
 }
 
+// An accept formal is frame-resident whenever a nested subprogram in the
+// accept body can read it uplevel (RM 6.2): the task body is a nested context
+// and the formal was given a frame slot, so the prologue emitted its
+// %__frame.<name> alias. Bind the formal's local name to that slot — a no-op
+// GEP off the alias — so the accept body (through %<name>) and any nested
+// reader (through %__frame.<name>) share one storage location. The caller then
+// writes the incoming value through %<name>. Returns false when the formal is
+// not frame-resident, in which case the caller keeps its own local binding.
+bool Emit_Bind_Accept_Formal_To_Frame (Symbol *sym) {
+  if (not cg->is_nested or not sym or not sym->frame_offset_assigned)
+    return false;
+  Emit_Local_Ref (sym);
+  Emit (" = getelementptr i8, ptr %%__frame.");
+  Emit_Symbol_Name (sym);
+  Emit (", i64 0  ; accept formal frame slot (uplevel-readable)\n");
+  return true;
+}
+
 // Load a scalar of representation `rep` from `sym`'s storage into register `reg`.
 void Emit_Load_From_Symbol (uint32_t reg, LLVM_Rep rep, Symbol *sym) {
   if (sym and sym->rename_address_slot) {
@@ -41184,14 +41202,33 @@ void Generate_Statement (Syntax_Node *node) {
                   // bind the formal to it by reference (the caller is blocked
                   // for the rendezvous, so its data and bounds are stable).
                   if (Type_Needs_Fat_Pointer (pt)) {
-                    Emit_Local_Ref (name->symbol);
-                    Emit (" = inttoptr " PTR_INT_TYPE " %%t%u to ptr\n", pv);
+
+                    // A nested subprogram in the accept body reads this fat
+                    // formal through its frame slot (a stable getelementptr the
+                    // prologue emits before the rendezvous). Bind the formal to
+                    // that slot and copy the caller's fat pointer { data, bounds }
+                    // into it; element writes still reach the caller's storage
+                    // through the shared data pointer. Otherwise bind the formal
+                    // by reference to the caller's fat directly.
+                    if (Emit_Bind_Accept_Formal_To_Frame (name->symbol)) {
+                      uint32_t cfa = Emit_Result_Instruction ("inttoptr " PTR_INT_TYPE " %%t%u to ptr\n", pv);
+                      uint32_t fat = Emit_Result_Instruction ("load " FAT_PTR_TYPE ", ptr %%t%u  ; caller fat\n", cfa);
+                      Emit ("  store " FAT_PTR_TYPE " %%t%u, ptr %%", fat);
+                      Emit_Symbol_Name (name->symbol);
+                      Emit ("\n");
+                    } else {
+                      Emit_Local_Ref (name->symbol);
+                      Emit (" = inttoptr " PTR_INT_TYPE " %%t%u to ptr\n", pv);
+                    }
 
                   // Statically sized constrained array: the slot holds the data
-                  // address; copy it into a local buffer.
+                  // address; copy it into the formal's storage (a local buffer,
+                  // or its frame slot when a nested subprogram reads it uplevel).
                   } else if (type_size > 0) {
-                    Emit_Local_Ref (name->symbol);
-                    Emit (" = alloca [%u x i8], align 8\n", type_size);
+                    if (not Emit_Bind_Accept_Formal_To_Frame (name->symbol)) {
+                      Emit_Local_Ref (name->symbol);
+                      Emit (" = alloca [%u x i8], align 8\n", type_size);
+                    }
                     Emit_Memcpy_To_Symbol (name->symbol, src, type_size, NULL);
 
                   // Dynamic bounds: src is caller's fat ptr { data_ptr, bounds_ptr }.
@@ -41283,13 +41320,24 @@ void Generate_Statement (Syntax_Node *node) {
                 // caller checks the returned designated bounds on copy-back.
                 } else if (pt and Type_Is_Access (Type_Underlying (pt)) and
                            Type_Needs_Fat_Pointer (pt)) {
-                  Emit_Local_Ref (name->symbol);
-                  Emit (" = inttoptr " PTR_INT_TYPE " %%t%u to ptr\n", pv);
+                  if (Emit_Bind_Accept_Formal_To_Frame (name->symbol)) {
+                    uint32_t cfa = Emit_Result_Instruction ("inttoptr " PTR_INT_TYPE " %%t%u to ptr\n", pv);
+                    uint32_t fat = Emit_Result_Instruction ("load " FAT_PTR_TYPE ", ptr %%t%u  ; caller fat access\n", cfa);
+                    Emit ("  store " FAT_PTR_TYPE " %%t%u, ptr %%", fat);
+                    Emit_Symbol_Name (name->symbol);
+                    Emit ("\n");
+                  } else {
+                    Emit_Local_Ref (name->symbol);
+                    Emit (" = inttoptr " PTR_INT_TYPE " %%t%u to ptr\n", pv);
+                  }
 
-                // Scalar: alloca i64, store value directly
+                // Scalar: store the value into its storage — the frame slot when
+                // a nested subprogram reads it uplevel, else a fresh local.
                 } else {
-                  Emit_Local_Ref (name->symbol);
-                  Emit (" = alloca i64, align 8\n");
+                  if (not Emit_Bind_Accept_Formal_To_Frame (name->symbol)) {
+                    Emit_Local_Ref (name->symbol);
+                    Emit (" = alloca i64, align 8\n");
+                  }
                   Emit ("  store i64 %%t%u, ptr %%", pv);
                   Emit_Symbol_Name (name->symbol);
                   Emit ("\n");
