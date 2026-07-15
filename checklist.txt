@@ -623,16 +623,17 @@ OTHER REMAINING LEVERS (from full-suite gap analysis):
     one-expression range; now resolves the implicit dereference (RM 4.1). This
     was the whole c85006e hang: the allocated-task stop loop over AT1'RANGE
     signalled only the first task, so the master blocked joining the rest.
-  * c85006 family now a/b/d/e/f/g PASS. Only c85006c remains (ENTRY IN OUT
-    formal variant). Native build SEGVs (lli masks it as a hang) in proc1_s265
-    called from the MAIN_TASK body: `mov (%rcx),%ecx` with rcx a malformed
-    fat-pointer field (0x7fff0000000700). LEAD: PROC1 is nested inside the
-    ACCEPT START body and reads the ENCLOSING entry's IN OUT fat formals
-    (REC.RP1.ALL, AP1(PAP1'FIRST), AV1(J)) via uplevel frame access — a
-    rendezvous fat formal reached from a nested subprogram's static link.
-    Isolated reproducers that rename+repass an entry fat formal to a proc all
-    PASS; the missing ingredient is the nested proc's UPLEVEL read of the
-    entry formal. Overlaps the c85005 object-rename-alias cluster.
+  * c85006 family now a-g ALL PASS; c85005a-d PASS too. Root cause of the
+    c85006c crash / c85005c hang: an entry formal read UPLEVEL by a subprogram
+    nested in the accept body. The rendezvous bound each formal to a fresh
+    local (scalar alloca / SSA pointer) and never wrote the formal's FRAME slot,
+    but the nested reader reaches it through %__frame.<name> — so it read
+    uninitialised memory (wrong scalar; garbage fat descriptor -> SEGV). FIXED
+    by binding an uplevel-read formal into its frame slot: scalar value / fat
+    { data, bounds } / constrained bytes copied in for by-value-ish formals
+    (Emit_Bind_Accept_Formal_To_Frame), and for a RECORD, publish the caller's
+    address in the slot + mark param_by_reference so the reader dereferences the
+    live object (no bind-time snapshot). Only c85005e remains (separate hang).
   * Large multi-fix areas (no single lever): generics (~29), TEXT_IO/*_IO RTS
     (~22), representation clauses (~18, packed bit-fields still the hard part),
     tasking (~19, some real, some delay-scaling flakiness).
