@@ -13795,6 +13795,28 @@ static Interpretation *Select_Interp (Interp_List *l, Type_Info *ctx) {
   if (nc == 0) for (uint32_t i = 0; i < l->count; i++) c[nc++] = &l->items[i];
   if (nc == 1) return c[0];
 
+  // 1b. RM 8.3(15): an enumeration literal is a predefined (implicit) operation,
+  //     hidden by an explicit homograph — a parameterless function of the same
+  //     name and result base type. When both are candidates, drop the literal so
+  //     the user function is the one directly visible (c34015b, c83031a).
+  {
+    uint32_t w = 0;
+    for (uint32_t i = 0; i < nc; i++) {
+      bool hidden_literal = false;
+      if (c[i]->nam and c[i]->nam->kind == SYMBOL_LITERAL)
+        for (uint32_t j = 0; j < nc; j++)
+          if (c[j]->nam and c[j]->nam->kind == SYMBOL_FUNCTION and
+              c[j]->nam->parameter_count == 0 and
+              Type_Base (c[j]->typ) == Type_Base (c[i]->typ)) {
+            hidden_literal = true;
+            break;
+          }
+      if (not hidden_literal) c[w++] = c[i];
+    }
+    nc = w;
+    if (nc == 1) return c[0];
+  }
+
   // 2. RM 6.7 / 8.3: a user-declared operator hides its predefined homograph —
   //    same operand profile AND same result base type. A predefined interp is
   //    synthesized from the ACTUAL operand types, so a user op that hides one
