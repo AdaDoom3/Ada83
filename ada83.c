@@ -38795,10 +38795,19 @@ void Generate_Assignment_Body (Syntax_Node *node, Syntax_Node *target) {
           uint32_t dest_low_expr =
             Emit_Coerce_Val (Generate_Expression (arg->range.low), usa_t).reg;
 
-          // Subtract dynamic low bound from fat pointer
+          // Destination start = dest_base + (slice_low - array_low) elements.
+          // The GEP is byte-addressed, so the element offset must be scaled by
+          // the element size — otherwise a slice that does not start at the
+          // array's low bound writes element_size-1 bytes short of its target
+          // (harmless only for one-byte elements, which is why it long escaped
+          // notice).
           uint32_t adj = Emit_Result_Instruction ("sub %s %%t%u, %%t%u"
-             "  ; adjust for dynamic low bound\n", LLVM_Rep_To_String (usa_t), dest_low_expr, fat_low_conv);
-          uint32_t dest_ptr = Emit_Result_Instruction ("getelementptr i8, ptr %%t%u, %s %%t%u\n", dest_base, LLVM_Rep_To_String (usa_t), adj);
+             "  ; slice start index - array low\n", LLVM_Rep_To_String (usa_t), dest_low_expr, fat_low_conv);
+          uint32_t adj_bytes = adj;
+          if (elem_sz != 1)
+            adj_bytes = Emit_Result_Instruction ("mul %s %%t%u, %u"
+               "  ; * element size\n", LLVM_Rep_To_String (usa_t), adj, elem_sz);
+          uint32_t dest_ptr = Emit_Result_Instruction ("getelementptr i8, ptr %%t%u, %s %%t%u\n", dest_base, LLVM_Rep_To_String (usa_t), adj_bytes);
 
           // Generate source and copy
           Syntax_Node *src = node->assignment.value;
