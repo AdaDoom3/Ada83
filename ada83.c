@@ -40303,28 +40303,42 @@ void Generate_For_Loop (Syntax_Node *node) {
     Type_Info *prefix_type = range->attribute.prefix->type;
     Symbol *prefix_sym = range->attribute.prefix->symbol;
 
-    // Check if this is an unconstrained array needing runtime bounds
+    // RM 4.1: P'RANGE where P is access-to-array denotes the designated array
+    // (implicit dereference). Resolve through the access so the iteration uses
+    // the designated array's bounds — otherwise an access prefix matches
+    // neither the unconstrained nor the constrained branch below and falls to
+    // the degenerate single-expression case (a one-element range).
+    Type_Info *designated = Type_Designated (prefix_type);
+    Type_Info *arr_type = (designated and Type_Is_Array_Like (designated))
+                        ? designated : prefix_type;
+    bool via_access = (arr_type != prefix_type);
+
+    // Check if this is a fat-pointer array needing runtime bounds. A direct
+    // unconstrained array carries them in its own descriptor; an access to a
+    // fat array carries them in the access value the symbol holds — either way
+    // Emit_Load_Fat_Pointer reads the { data, bounds } from the symbol.
     Syntax_Node *range_arg_f = range->attribute.arguments.count > 0
                  ? range->attribute.arguments.items[0] : NULL;
     uint32_t for_dim = Get_Dimension_Index (range_arg_f);
-    if (Type_Is_Unconstrained_Array (prefix_type) and
+    bool needs_runtime_bounds = via_access
+      ? Type_Needs_Fat_Pointer (prefix_type)
+      : Type_Is_Unconstrained_Array (arr_type);
+    if (needs_runtime_bounds and
       prefix_sym and (prefix_sym->kind == SYMBOL_PARAMETER or
                prefix_sym->kind == SYMBOL_VARIABLE or
                prefix_sym->kind == SYMBOL_CONSTANT or
                prefix_sym->kind == SYMBOL_DISCRIMINANT)) {
-      LLVM_Rep loop_bt = Array_Bound_LLVM_Rep (prefix_type);
+      LLVM_Rep loop_bt = Array_Bound_LLVM_Rep (arr_type);
       uint32_t fat = Emit_Load_Fat_Pointer (prefix_sym, loop_bt).reg;
       Bound_Temps bounds = Emit_Bounds_From_Fat_Dim (fat, loop_bt, for_dim);
       low_v = Val_Rep (bounds.low_temp, loop_bt);
       high_v = Val_Rep (bounds.high_temp, loop_bt);
 
-    // Constrained array - use compile-time bounds
-    } else if (Type_Is_Array_Like (prefix_type)) {
-      Syntax_Node *range_arg = range->attribute.arguments.count > 0
-                   ? range->attribute.arguments.items[0] : NULL;
-      uint32_t dim = Get_Dimension_Index (range_arg);
-      if (dim < prefix_type->array.index_count) {
-        Bound_Temps bounds = Emit_Bounds (prefix_type, dim);
+    // Constrained array (direct or access-to-constrained) - static bounds
+    } else if (Type_Is_Array_Like (arr_type)) {
+      uint32_t dim = for_dim;
+      if (dim < arr_type->array.index_count) {
+        Bound_Temps bounds = Emit_Bounds (arr_type, dim);
         low_v = Val_Rep (bounds.low_temp, bounds.bound_rep);
         high_v = Val_Rep (bounds.high_temp, bounds.bound_rep);
       } else {
