@@ -592,6 +592,22 @@ OTHER REMAINING LEVERS (from full-suite gap analysis):
     targets alike. c85006b-e get past the crash and then fail on the SEPARATE
     IN OUT formal component/slice renaming (CONSTRAINT_ERROR) — the object-rename
     lever above.
+  * Tasks in an INSTANTIATED generic package body were never created/activated
+    — FIXED (c85006d). An instance's package-level objects are per-instance
+    GLOBALS even when the instantiation nests in a subprogram, so
+    Generate_Object_Declaration takes a special instance-global fast path that
+    emitted the global, ran record discriminants/defaults/initializers, and
+    returned — with NO task-creation step. A task object (or a composite with
+    task components) thus got a null global slot and its first entry call raised
+    TASKING_ERROR. Unified the previously-duplicated single-task and
+    task-component elaboration into one slot-aware helper
+    (Emit_Object_Task_Elaboration) that creates the TCB(s) into the object's OWN
+    storage via Emit_Symbol_Addr — correct for frame slots, local allocas, AND
+    instance globals — and called it from both the normal path and the
+    instance-global fast path. Minimal repro: a task declared in an instantiated
+    generic package body. Net -6 lines. (c85006c still TIMES OUT — tasking
+    teardown, the c85005c family; c85006e is a separate fat-pointer GEP type
+    error on renaming a slice of an ALLOCATOR-created array.)
   * Large multi-fix areas (no single lever): generics (~29), TEXT_IO/*_IO RTS
     (~22), representation clauses (~18, packed bit-fields still the hard part),
     tasking (~19, some real, some delay-scaling flakiness).

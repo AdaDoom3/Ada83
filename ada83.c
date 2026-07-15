@@ -3783,6 +3783,7 @@ void Generate_Declaration           (Syntax_Node *node);
 void Elaborate_Dynamic_Array_Bounds (Type_Info   *elab_ty);
 void Elaborate_Dynamic_Scalar_Bounds (Type_Info  *elab_ty);
 void Generate_Object_Declaration    (Syntax_Node *node);
+void Emit_Object_Task_Elaboration   (Symbol *sym, Type_Info *ty);
 bool Record_Needs_Runtime_Layout (Type_Info *rec);
 bool Record_Fully_Static_Foldable (Type_Info *rec);
 bool Type_Is_Dynamic_Sized_Record (Type_Info *ct);
@@ -43556,6 +43557,41 @@ static Syntax_Node *Object_Init_Aggregate (Syntax_Node *init) {
   return NULL;
 }
 
+// Elaborate the task(s) a freshly declared object contains (RM 9.3). The
+// TCB(s) are created now, into the object's OWN storage — a frame slot, a
+// local alloca, or an instance-level global — all reached through the
+// slot-aware Emit_Symbol_Addr, so this is correct wherever the object
+// lives. A task declared inside a subprogram or a (possibly instantiated)
+// package body defers its thread start to the enclosing master's `begin`
+// via the pending-activation list; a library/package-level object with no
+// enclosing function activates and waits for its tasks immediately, raising
+// TASKING_ERROR on activation failure. A plain task object and a composite
+// with task components are handled by the one recursive walk.
+void Emit_Object_Task_Elaboration (Symbol *sym, Type_Info *ty) {
+  if (not sym or not ty or
+      not (Type_Is_Task (ty) or Type_Has_Task_Component (ty)))
+    return;
+
+  uint32_t base = Emit_Temp ();
+  Emit_Symbol_Addr (base, sym);
+  Emit_Component_Task_Operation (ty, base, COMPONENT_TASK_CREATE, 0,
+                                 Task_Master_Record_Argument ());
+
+  if (cg->current_function) {
+    Pending_Activation_Append (sym);
+  } else {
+    // Package elaboration: activate immediately and wait, like
+    // __ada_task_start does for a single package-level task.
+    Emit_Component_Task_Operation (ty, base, COMPONENT_TASK_ACTIVATE, 0,
+                                   "ptr null");
+    uint32_t failed_flag = Emit_Result_Instruction ("alloca i8\n");
+    Emit ("  store i8 0, ptr %%t%u\n", failed_flag);
+    Emit_Component_Task_Operation (ty, base, COMPONENT_TASK_WAIT,
+                                   failed_flag, "ptr null");
+    Emit_Activation_Failure_Check (failed_flag);
+  }
+}
+
 void Generate_Object_Declaration (Syntax_Node *node) {
   bool use_frame = cg->current_nesting_level > 0;
   bool is_package_level = (cg->current_function == NULL);
@@ -43629,6 +43665,12 @@ void Generate_Object_Declaration (Syntax_Node *node) {
         Symbol *sym = name_node ? name_node->symbol : NULL;
         if (not sym) continue;
         Emit_Instance_Global_Definition (sym);
+        // A task object (or a composite with task components) declared at an
+        // instance's package level: create its TCB(s) into the global and
+        // register them for activation at the instance body's `begin`
+        // (RM 9.3). The general per-object path below never runs for these
+        // globals, so their tasks would otherwise never be created.
+        Emit_Object_Task_Elaboration (sym, sym->type);
         // No initializer: a constrained discriminated record instance object
         // still elaborates its discriminant constraint into the global
         // (RM 3.7.2), exactly as a non-instance object declaration does — the
@@ -44229,57 +44271,9 @@ void Generate_Object_Declaration (Syntax_Node *node) {
       }
     }
 
-    // Start task if this is a task type object                                                     
-    // Task objects are started immediately at elaboration.                                        
-    // The task body function is named @task_TYPENAME where TYPENAME                                
-    // is the task type name (not the object name).                                                
-    // For task types defined outside the generic, no instance prefix.                             
-    // For single tasks inside generics, the body has an instance prefix.                          
-    //                                                                                              
-    if (Type_Is_Task (ty)) {
-      uint32_t handle_tmp = Emit_Temp ();
-      // Local task objects are created now but activated at the master's
-      // `begin` (RM 9.3); package-level ones keep elaboration-time start.
-      bool deferred = cg->current_function != NULL;
-      Emit ("  %%t%u = call ptr @%s(ptr @", handle_tmp,
-         deferred ? "__ada_task_create" : "__ada_task_start");
-      Emit_Task_Function_Name (ty->defining_symbol, ty->name);
-
-      // Pass the static link for uplevel access (null at package level)
-      // and the enclosing master record (RM 9.4).
-      Emit (", %s, %s)\n", Task_Parent_Frame_Argument (),
-         Task_Master_Record_Argument ());
-
-      // Store thread handle in task object for later join/abort
-      Emit ("  store ptr %%t%u, ptr %%", handle_tmp);
-      Emit_Symbol_Name (sym);
-      Emit ("\n");
-
-      if (deferred)
-        Pending_Activation_Append (sym);
-
-    // Composite object containing task components (records/arrays of tasks,
-    // recursively): create every component TCB now, defer thread start to
-    // the master's activation point like a plain task object (RM 9.3).
-    } else if (ty and Type_Has_Task_Component (ty)) {
-      uint32_t base = Emit_Temp ();
-      Emit_Symbol_Addr (base, sym);
-      Emit_Component_Task_Operation (ty, base, COMPONENT_TASK_CREATE, 0,
-                                     Task_Master_Record_Argument ());
-      if (cg->current_function) {
-        Pending_Activation_Append (sym);
-      } else {
-        // Package elaboration: activate immediately and wait, like
-        // __ada_task_start does for single package-level tasks.
-        Emit_Component_Task_Operation (ty, base, COMPONENT_TASK_ACTIVATE, 0,
-                                       "ptr null");
-        uint32_t failed_flag = Emit_Result_Instruction ("alloca i8\n");
-        Emit ("  store i8 0, ptr %%t%u\n", failed_flag);
-        Emit_Component_Task_Operation (ty, base, COMPONENT_TASK_WAIT,
-                                       failed_flag, "ptr null");
-        Emit_Activation_Failure_Check (failed_flag);
-      }
-    }
+    // Create the object's task(s) and register/start their activation
+    // (RM 9.3): plain task object or any composite with task components.
+    Emit_Object_Task_Elaboration (sym, ty);
 obj_decl_init:
 
     // RM 3.3.1(5) + RM 3.6(5): Elaborate subtype indication by                                     
