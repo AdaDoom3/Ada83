@@ -41294,6 +41294,23 @@ void Generate_Statement (Syntax_Node *node) {
                   Emit_Local_Ref (name->symbol);
                   Emit (" = inttoptr " PTR_INT_TYPE " %%t%u to ptr\n", pv);
 
+                  // A nested subprogram in the accept body reads this record
+                  // uplevel. Bind it by reference (RM 6.2): mark the formal so
+                  // the nested reader's frame alias loads a pointer, and publish
+                  // the caller's record address in the formal's frame slot (its
+                  // %__frame.<name>, which the prologue emitted as the slot's
+                  // address). The reader then dereferences the caller's live
+                  // object, so IN OUT updates and later reads stay consistent —
+                  // not a bind-time snapshot.
+                  if (cg->is_nested and name->symbol->frame_offset_assigned) {
+                    name->symbol->param_by_reference = true;
+                    Emit ("  store ptr %%");
+                    Emit_Symbol_Name (name->symbol);
+                    Emit (", ptr %%__frame.");
+                    Emit_Symbol_Name (name->symbol);
+                    Emit ("  ; publish uplevel record by-reference\n");
+                  }
+
                   // RM 3.7.4: a mutable OUT/IN OUT formal takes its 'CONSTRAINED
                   // from the caller's flag, read from the trailing slot the call
                   // appended, and spilled to the named slot the attribute reads.
