@@ -2733,6 +2733,15 @@ typedef struct Interp_List {
 } Interp_List;
 
 bool Type_Covers             (Type_Info    *expected, Type_Info    *actual);
+// As Type_Covers, but `allow_derivation` gates the RM 3.4 shared-root rule that
+// treats a derived type and an ancestor as mutually compatible. Assignment and
+// explicit conversion want it on; overload resolution (RM 8.7, which matches an
+// interpretation's type exactly) wants it off, so a parent operation cannot
+// masquerade as the derived type and vice versa.
+bool Type_Covers_Ex          (Type_Info    *expected, Type_Info    *actual,
+                              bool allow_derivation);
+// Overload-resolution coverage: Type_Covers with the shared-root rule disabled.
+bool Type_Covers_Strict      (Type_Info    *expected, Type_Info    *actual);
 bool Type_Limited_View_Active (const Type_Info *t);
 bool Arguments_Match_Profile (Symbol       *sym,      Argument_Info *args);
 void Collect_Interpretations (String_Slice  name,     Interp_List   *list);
@@ -9978,6 +9987,15 @@ bool Type_Limited_View_Active (const Type_Info *t) {
 }
 
 bool Type_Covers (Type_Info *expected, Type_Info *actual) {
+  return Type_Covers_Ex (expected, actual, true);
+}
+
+bool Type_Covers_Strict (Type_Info *expected, Type_Info *actual) {
+  return Type_Covers_Ex (expected, actual, false);
+}
+
+bool Type_Covers_Ex (Type_Info *expected, Type_Info *actual,
+                     bool allow_derivation) {
 
   // Null types are permissive (incomplete analysis)
   if (not expected or not actual) return true;
@@ -10007,14 +10025,17 @@ bool Type_Covers (Type_Info *expected, Type_Info *actual) {
   if (base_exp == base_act) return true;
   if (base_exp == actual or expected == base_act) return true;
 
-  // For derived types, check if they share the same root type (RM 3.4).                           
-  // This handles enumeration/integer literals from parent types being                              
-  // compatible with derived types. E.g., if T is new PARENT, then                                  
-  // enumeration literal E4 from PARENT is compatible with T.                                      
-  //                                                                                                
-  Type_Info *root_exp = Type_Root (expected);
-  Type_Info *root_act = Type_Root (actual);
-  if (root_exp and root_act and root_exp == root_act) return true;
+  // For derived types, check if they share the same root type (RM 3.4). This
+  // lets a parent type's value flow into a derived context (assignment and
+  // explicit conversion). It is DISABLED for overload resolution, where a
+  // parent operation must not masquerade as the derived type: otherwise
+  // `Derived'(X) = Parent_Literal` synthesises a spurious parent-typed
+  // comparison and the reference is ambiguous (c34015b, c83031a).
+  if (allow_derivation) {
+    Type_Info *root_exp = Type_Root (expected);
+    Type_Info *root_act = Type_Root (actual);
+    if (root_exp and root_act and root_exp == root_act) return true;
+  }
 
   // SYSTEM.ADDRESS compatibility (RM 13.7): all ADDRESS types are interoperable                    
   // This handles the case where 'ADDRESS attribute returns a built-in ADDRESS                      
@@ -13635,7 +13656,7 @@ void Analyze_Binary (Syntax_Node *n) {
         }
       }
       if (is_cmp and (Numeric_Compatible (lt, rt) or
-                      Type_Covers (lt, rt) or Type_Covers (rt, lt))) {
+                      Type_Covers_Strict (lt, rt) or Type_Covers_Strict (rt, lt))) {
         // RM 4.5.2 / 4.10: comparing a universal operand with a concrete-typed
         // one performs the concrete comparison — the universal converts. Both
         // operands take the concrete peer so it flows back down to the
