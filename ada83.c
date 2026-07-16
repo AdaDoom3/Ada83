@@ -21366,6 +21366,29 @@ void Resolve_Declaration (Syntax_Node *node) {
               if (attribute_kind == ATTRIBUTE_SIZE) {
                 target_type->specified_bit_size = (uint32_t)value;
                 target_type->size = (uint32_t)((value + 7) / 8);
+
+                // A fixed-point type squeezed below its declared range keeps
+                // only the model numbers its representation can hold: clamp
+                // static bounds to the sized mantissa, so T'LAST is the
+                // largest representable multiple of SMALL rather than a
+                // mantissa that wraps in the narrowed rep (cd2a52e: DELTA
+                // 2**-4 RANGE 0.0 .. 8.0 with 'SIZE 7 has T'LAST = 7.9375).
+                if (Type_Is_Fixed_Point (target_type)) {
+                  double small = Fixed_Repr_Small (target_type);
+                  uint32_t bits = (uint32_t)To_Bits (target_type->size);
+                  if (small > 0.0 and bits >= 2 and bits <= 64) {
+                    double max_val =
+                      (double)(((int64_t)1 << (bits - 1)) - 1) * small;
+                    double min_val =
+                      (double)(-((int64_t)1 << (bits - 1))) * small;
+                    if (target_type->high_bound.kind == BOUND_FLOAT and
+                        target_type->high_bound.float_value > max_val)
+                      target_type->high_bound.float_value = max_val;
+                    if (target_type->low_bound.kind == BOUND_FLOAT and
+                        target_type->low_bound.float_value < min_val)
+                      target_type->low_bound.float_value = min_val;
+                  }
+                }
               } else if (attribute_kind == ATTRIBUTE_ALIGNMENT) {
                 target_type->alignment = (uint32_t)value;
               } else if (attribute_kind == ATTRIBUTE_STORAGE_SIZE) {
