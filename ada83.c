@@ -10717,6 +10717,22 @@ void Symbol_Manager_Init_Predefined (void) {
   sm->type_duration->size       = 8;  // 64-bit for high precision
   sm->type_duration->fixed.delta = 0.00001;  // 10 microsecond resolution
 
+  // DURATION's range is implementation-defined (RM 9.6) but must exist: with
+  // no bounds, 'MANTISSA has no range to size, 'FIRST/'LAST/'LARGE read
+  // nothing, and every run-time range check tests against an empty interval.
+  // Use the model range of a 52-bit mantissa at this SMALL — ±(2**52 - 1) *
+  // 1.0E-5, about ±4.5E13 seconds — which comfortably contains CALENDAR's
+  // TIME span (±2E11 seconds around the epoch) and keeps 'MANTISSA * 'SMALL
+  // arithmetic inside 64-bit integers (cc1223a computes 2 ** 'MANTISSA - 1
+  // at run time).
+  {
+    double duration_large = (double) ((1LL << 52) - 1) * 0.00001;
+    sm->type_duration->low_bound  =
+      (Type_Bound){ .kind = BOUND_FLOAT, .float_value = -duration_large };
+    sm->type_duration->high_bound =
+      (Type_Bound){ .kind = BOUND_FLOAT, .float_value = duration_large };
+  }
+
   sm->type_universal_integer       = Type_New (TYPE_UNIVERSAL_INTEGER, S ("universal_integer"));
   sm->type_universal_integer->size = 4;  // 32 bits - same as INTEGER (RM 3.5.4)
 
