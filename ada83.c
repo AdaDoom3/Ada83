@@ -10301,6 +10301,81 @@ bool Arguments_Match_Profile (Symbol *sym, Argument_Info *args) {
 // Gather candidates first, filter later. Visibility determines the set.                           
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 
+// ── RM 8.4 use-clause visibility ────────────────────────────────────────────
+// A declaration a use clause would make directly visible is NOT visible where a
+// homograph is immediately visible (RM 8.4(11)). One predicate + one filter
+// serve every interpretation set: names gathered across scopes and the operator
+// sets built during expression analysis. The rule lives here rather than being
+// re-derived at each use site.
+
+// RM 8.3: overloadable declarations are subprograms, enumeration literals and
+// entries; a predefined operation (an interpretation with no symbol) is one too.
+static bool Interp_Overloadable (const Interpretation *in) {
+  if (not in->nam) return true;
+  return Symbol_Is_Subprogram (in->nam) or in->nam->kind == SYMBOL_LITERAL
+      or in->nam->kind == SYMBOL_ENTRY;
+}
+
+// Formal type of operand `i`: the operator builders record it in opnd[], an
+// ordinary subprogram or literal carries it on the symbol's parameter list.
+static Type_Info *Interp_Formal_Type (const Interpretation *in, uint32_t i) {
+  if (i < 2 and in->opnd[i]) return in->opnd[i];
+  if (in->nam and i < in->nam->parameter_count)
+    return in->nam->parameters[i].param_type;
+  return NULL;
+}
+
+static uint32_t Interp_Arity (const Interpretation *in) {
+  if (in->nam and (Symbol_Is_Subprogram (in->nam) or in->nam->kind == SYMBOL_ENTRY))
+    return in->nam->parameter_count;
+  return (in->opnd[0] ? 1u : 0u) + (in->opnd[1] ? 1u : 0u);
+}
+
+// RM 8.3: two same-named declarations are homographs when either is not
+// overloadable, or both are overloadable with matching parameter and result
+// profiles.
+static bool Interps_Are_Homographs (const Interpretation *a,
+                                    const Interpretation *b) {
+  if (not Interp_Overloadable (a) or not Interp_Overloadable (b)) return true;
+  // Two ordinary subprograms: defer to the established homograph test, which
+  // compares profiles with Types_Same_Named (distinguishing sibling types such
+  // as INT and INT2 that share a representation base).
+  if (a->nam and b->nam and Symbol_Is_Subprogram (a->nam) and
+      Symbol_Is_Subprogram (b->nam))
+    return Subprograms_Are_Homographs (a->nam, b->nam);
+  // At least one is a predefined operation or an enumeration literal: compare
+  // operand and result profiles the same way.
+  if (not Types_Same_Named (a->typ, b->typ)) return false;
+  uint32_t arity = Interp_Arity (a);
+  if (arity != Interp_Arity (b)) return false;
+  for (uint32_t i = 0; i < arity; i++)
+    if (not Types_Same_Named (Interp_Formal_Type (a, i), Interp_Formal_Type (b, i)))
+      return false;
+  return true;
+}
+
+// RM 8.4: drop each use-visible interpretation cancelled by an immediately
+// visible homograph in the same set. Only real declarations hide (a predefined
+// operator that a user redefinition replaces is not itself a hiding homograph —
+// RM 6.7 — so cancellation is driven by symbols, not synthesised predefineds).
+static void Cancel_Use_Visible_Homographs (Interp_List *l) {
+  uint32_t w = 0;
+  for (uint32_t i = 0; i < l->count; i++) {
+    Symbol *s = l->items[i].nam;
+    bool cancelled = false;
+    if (s and s->visibility == VIS_USE_VISIBLE)
+      for (uint32_t d = 0; d < l->count and not cancelled; d++) {
+        if (d == i) continue;
+        Symbol *g = l->items[d].nam;
+        if (g and g->visibility == VIS_IMMEDIATELY_VISIBLE and
+            Interps_Are_Homographs (&l->items[i], &l->items[d]))
+          cancelled = true;
+      }
+    if (not cancelled) l->items[w++] = l->items[i];
+  }
+  l->count = w;
+}
+
 // Collect all visible interpretations of a name
 void Collect_Interpretations (String_Slice name,
                   Interp_List *interps) {
@@ -10332,29 +10407,7 @@ void Collect_Interpretations (String_Slice name,
     }
   }
 
-  // RM 8.4: a use-visible declaration is cancelled by an immediately-visible
-  // homograph. A non-overloadable declaration (object, type, exception, ...)
-  // is a homograph of EVERY declaration of that name (RM 8.3), so its immediate
-  // visibility hides every use-visible alias — e.g. a local `E13 : INTEGER`
-  // hides the use-visible enumeration literal E13 (c83031a). The overloadable
-  // vs overloadable case (a derived operation and its use-visible parent) turns
-  // on the profile and is left to preference scoring.
-  bool has_immediate_nonoverloadable = false;
-  for (uint32_t i = 0; i < interps->count; i++) {
-    Symbol *s = interps->items[i].nam;
-    if (s->visibility == VIS_IMMEDIATELY_VISIBLE and
-        not Symbol_Is_Subprogram (s) and s->kind != SYMBOL_LITERAL) {
-      has_immediate_nonoverloadable = true;
-      break;
-    }
-  }
-  if (has_immediate_nonoverloadable) {
-    uint32_t w = 0;
-    for (uint32_t i = 0; i < interps->count; i++)
-      if (interps->items[i].nam->visibility != VIS_USE_VISIBLE)
-        interps->items[w++] = interps->items[i];
-    interps->count = w;
-  }
+  Cancel_Use_Visible_Homographs (interps);
 }
 
 // Gather every overload of SELECTOR that PACKAGE makes visible, for the
@@ -13773,6 +13826,10 @@ void Analyze_Binary (Syntax_Node *n) {
     }
   }
 
+  // RM 8.4: a use-visible user operator is cancelled by an immediately-visible
+  // homograph (e.g. a redefinition in the enclosing region).
+  Cancel_Use_Visible_Homographs (out);
+
   // Never hand downstream an empty set: default to left type (BOOLEAN for cmp).
   // A "&" whose operands built no interpretation is the (component & component)
   // form (RM 4.5.3): its result array type is context-determined, so leave the
@@ -13819,6 +13876,11 @@ void Analyze_Unary (Syntax_Node *n) {
                     cand.items[k].scope_depth);
     }
   }
+
+  // RM 8.4: cancel any use-visible unary operator hidden by an immediately
+  // visible homograph, as the binary path does.
+  Cancel_Use_Visible_Homographs (out);
+
   if (out->count == 0)
     Interp_Add (out, NULL, op == TK_NOT ? sm->type_boolean : R->type,
                 R ? R->type : NULL, NULL, 0);
