@@ -14530,17 +14530,14 @@ Type_Info *Resolve_Expression (Syntax_Node *node) {
             node->type = sm->type_address;
             break;
 
-          // BASE attribute returns the base type (RM 3.3.2)
-          //
-          // T'BASE is a type, used as prefix for other attributes like T'BASE'FIRST
-          // The type should be the base type of the prefix type.
-          // For derived types (TYPE T IS NEW X), follow parent_type chain.
-          // For constrained subtypes (SUBTYPE S IS X RANGE ...), follow base_type chain.
-          // Use Type_Root to handle both cases and find the root type.
-          //
+          // T'BASE denotes the BASE TYPE of T (RM 3.3.3) — a type, used as a
+          // prefix for further attributes (T'BASE'FIRST). That is Type_Base:
+          // a derived type's own (possibly anonymous) base, carrying the full
+          // unconstrained range — never an ancestor across the derivation
+          // boundary, which Type_Root would reach.
           case ATTRIBUTE_BASE:
             if (prefix_type) {
-              Type_Info *base = Type_Root (prefix_type);
+              Type_Info *base = Type_Base (prefix_type);
               node->type = base ? base : prefix_type;
             } else {
               node->type = sm->type_integer;
@@ -15155,20 +15152,34 @@ Type_Info *Resolve_Expression (Syntax_Node *node) {
           derived->base_type     = base;
         }
 
-        // RM 3.4: deriving from a constrained discrete subtype (e.g.
-        // `type S is new P range L..H`, or `type S is new SUB` where SUB is a
-        // constrained subtype of P) introduces an unconstrained base S'BASE
-        // that holds every value of the parent's base type, while S itself
-        // carries the constraint. Without a distinct base, a base-range value
-        // (an inherited enumeration literal outside S's range) would be typed
-        // with S's constraint and wrongly pass an assignment range check.
-        if ((Type_Is_Enumeration (parent) or parent->kind == TYPE_INTEGER)
-            and not node->derived_type.constraint and Type_Base (parent) != parent) {
+        // RM 3.4: deriving from a constrained discrete or floating subtype
+        // (e.g. `type S is new P range L..H`, or `type S is new SUB` where SUB
+        // is a constrained subtype of P) introduces an unconstrained base
+        // S'BASE that holds every value of the parent's base type, while S
+        // itself carries the constraint. Without a distinct base, a base-range
+        // value (an inherited enumeration literal outside S's range) would be
+        // typed with S's constraint and wrongly pass an assignment range
+        // check, and S'BASE'FIRST would read S's own constrained bound
+        // (c34001d: `NEW SUBPARENT RANGE TRUE..TRUE` must keep BOOLEAN'FIRST
+        // on its base). A DIGITS constraint carried by the derivation itself
+        // (`NEW PARENT DIGITS 4`) equally makes the derived type a constrained
+        // first subtype — the base keeps the parent's accuracy, and the
+        // constraint is applied to `derived` below (c34003c: T'BASE'DIGITS
+        // stays 5).
+        if ((Type_Is_Discrete (parent) or Type_Is_Float (parent))
+            and (Type_Base (parent) != parent
+                 or node->derived_type.constraint)) {
           Type_Info *parent_base = Type_Base (parent);
           Type_Info *base = Type_New (parent_base->kind, S(""));
           base->parent_type  = parent_base;
-          if (Type_Is_Enumeration (parent_base))
+          // Enumeration, boolean and character types carry their literal
+          // table in the enumeration payload; 'IMAGE and 'WIDTH on the base
+          // need it.
+          if (Type_Is_Enumeration (parent_base) or
+              Type_Is_Boolean (parent_base) or Type_Is_Character (parent_base))
             base->enumeration = parent_base->enumeration;
+          if (Type_Is_Float (parent_base))
+            base->flt = parent_base->flt;
           base->low_bound    = parent_base->low_bound;
           base->high_bound   = parent_base->high_bound;
           base->size         = parent_base->size;
@@ -46676,9 +46687,12 @@ void Emit_Instance_Binding_Elaboration (Symbol *inst_sym) {
                           binding->instance_actual
                             ? binding->instance_actual->type : NULL);
 
-      uint32_t stored = Emit_Convert (actual_value.reg,
-                                      actual_value.rep,
-                                      binding_rep).reg;
+      // Value-level conversion, not rep-level: a real actual bound to a
+      // fixed-point formal stores the /SMALL-scaled mantissa (RM 3.5.9), which
+      // a raw double->i64 rep conversion would silently drop (cc1223a:
+      // D => FIXED'DELTA stored round(0.1) = 0 instead of mantissa 2).
+      uint32_t stored = Emit_Convert_Scalar_To_Type (actual_value,
+                                                     binding_type, binding_rep);
       Emit ("  store %s %%t%u, ptr ",
             LLVM_Rep_To_String (binding_rep), stored);
       Emit_Global_Ref (binding);
@@ -53950,10 +53964,14 @@ Syntax_Node *Clone_Subtree_Keep_Decorations (Syntax_Node *node) {
 
 void Reassign_Symbol_References (Syntax_Node *node, Symbol *from, Symbol *to) {
   if (not node or not from or not to) return;
-  if (node->symbol == from) {
-    node->symbol = to;
-    if (to->type and node->type == from->type) node->type = to->type;
-  }
+  if (node->symbol == from) node->symbol = to;
+  // A reference to the remapped entity may live in the TYPE decoration alone:
+  // an attribute such as T'BASE carries the formal placeholder's Type_Info as
+  // node->type with no symbol reference at all. Swing those too, or an
+  // instance evaluates the template placeholder — unset bounds — instead of
+  // the actual's view (cc1220a: T'BASE'FIRST as a formal-object default).
+  if (from->type and to->type and node->type == from->type)
+    node->type = to->type;
   for (const Syntax_Tree_Edge *edge = Syntax_Tree_Shape[node->kind];
        edge->offset; edge++) {
     void *child = (char *) node + edge->offset;
