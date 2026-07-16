@@ -2118,6 +2118,8 @@ struct Type_Info {
                                          // to the actual's PREDEFINED ones
                                          // even when redefined (RM 12.1.2
                                          // (41-42))
+  struct Type_Info *generic_actual;      // The actual type this view denotes;
+                                         // Peel_Generic_Actual_View follows it
   Generic_Def_Kind generic_formal_class; // Which formal class (private, discrete,
                                          // range <>, digits <>, ...) when
                                          // is_generic_formal; drives the class's
@@ -2747,6 +2749,7 @@ bool Type_Covers_Ex          (Type_Info    *expected, Type_Info    *actual,
 bool Type_Covers_Strict      (Type_Info    *expected, Type_Info    *actual);
 bool Type_Limited_View_Active (const Type_Info *t);
 bool Type_Private_View_Active (const Type_Info *t);
+Type_Info *Effective_Type_View (Type_Info *t);
 bool Arguments_Match_Profile (Symbol       *sym,      Argument_Info *args);
 void Collect_Interpretations (String_Slice  name,     Interp_List   *list);
 void Collect_Package_Interpretations (Symbol *package, String_Slice selector,
@@ -10014,6 +10017,19 @@ bool Type_Private_View_Active (const Type_Info *t) {
   return t and t->declared_private and Outside_Defining_Package (t);
 }
 
+// The type a view denotes at the CURRENT point. A generic-actual view is the
+// instance's window onto its actual: inside the instance the formal type's own
+// operations govern and the view stays opaque (RM 12.1.2 — a user operator
+// visible at the instantiation site must not capture the formal's operands,
+// c74409b); outside the instance, its profile exposes the actual itself, so
+// the view peels to it (an instance "="(INTEGER, INTEGER) is an INTEGER
+// equality to its clients, c67002d). Every other type denotes itself.
+Type_Info *Effective_Type_View (Type_Info *t) {
+  if (t and Type_Has_Generic_Actual_View (t) and Outside_Defining_Package (t))
+    return Peel_Generic_Actual_View (t);
+  return t;
+}
+
 bool Type_Covers (Type_Info *expected, Type_Info *actual) {
   return Type_Covers_Ex (expected, actual, true);
 }
@@ -10344,13 +10360,34 @@ static bool Interps_Are_Homographs (const Interpretation *a,
   return true;
 }
 
-// RM 8.4: drop each use-visible interpretation cancelled by an immediately
-// visible homograph in the same set. Cancellation is driven by symbols only:
-// extending it to synthesised predefined operations (a USE'd "-"(INT, INT)
-// against INT's own predefined "-", c84009a) additionally requires the
-// selection pass to understand that an inner explicit operator hides a
-// predefined one across generic-instance views (c67002d vs c74409b), which the
-// Hides_Type machinery does not yet express on the clean type graph.
+// The predefined operations of a type are implicitly declared at the type's
+// declaration and are directly visible exactly where that declaration is
+// (RM 8.4). True when `t`'s declaring scope is on the current scope chain; a
+// type reachable only through a USE clause or an expanded name is not. An
+// anonymous or builtin view (no defining symbol) counts as directly visible.
+static bool Type_Declaration_Directly_Visible (Type_Info *t) {
+  while (t and not t->defining_symbol and t->base_type and t->base_type != t)
+    t = t->base_type;
+  Symbol *s = t ? t->defining_symbol : NULL;
+  if (not s or not s->defining_scope) return true;
+  for (Scope *scope = sm->current_scope; scope; scope = scope->parent)
+    if (scope == s->defining_scope) return true;
+  return false;
+}
+
+// Does this interpretation denote a directly-visible declaration? A symbol
+// carries its own visibility; a predefined operation (no symbol) shares the
+// visibility of its operand type's declaration.
+static bool Interp_Directly_Visible (const Interpretation *in) {
+  if (in->nam) return in->nam->visibility == VIS_IMMEDIATELY_VISIBLE;
+  return Type_Declaration_Directly_Visible (in->opnd[0] ? in->opnd[0]
+                                                        : in->typ);
+}
+
+// RM 8.4: drop each use-visible interpretation cancelled by a directly-visible
+// homograph in the same set — an immediately visible declaration, or a
+// predefined operation of a directly-visible type (a USE clause must not let a
+// package's "-"(INT, INT) shadow INT's own predefined "-", c84009a).
 static void Cancel_Use_Visible_Homographs (Interp_List *l) {
   uint32_t w = 0;
   for (uint32_t i = 0; i < l->count; i++) {
@@ -10359,8 +10396,7 @@ static void Cancel_Use_Visible_Homographs (Interp_List *l) {
     if (s and s->visibility == VIS_USE_VISIBLE)
       for (uint32_t d = 0; d < l->count and not cancelled; d++) {
         if (d == i) continue;
-        Symbol *g = l->items[d].nam;
-        if (g and g->visibility == VIS_IMMEDIATELY_VISIBLE and
+        if (Interp_Directly_Visible (&l->items[d]) and
             Interps_Are_Homographs (&l->items[i], &l->items[d]))
           cancelled = true;
       }
@@ -13538,8 +13574,8 @@ static Type_Info *Arith_Result_Type (Type_Info *lt, Type_Info *rt) {
   return lt;
 }
 
-// Do two candidate operand types belong to the same numeric class, so a
-// predefined arithmetic/comparison operator applies to them (RM 4.5)?
+// Do two candidate operand types take one predefined arithmetic/comparison
+// operator (RM 4.5)?
 static bool Numeric_Compatible (Type_Info *a, Type_Info *b) {
   if (not Type_Is_Numeric (a) or not Type_Is_Numeric (b)) return false;
   // RM 4.6: universal_integer implicitly converts to any numeric type,
@@ -13550,7 +13586,12 @@ static bool Numeric_Compatible (Type_Info *a, Type_Info *b) {
       return true;
     return false;
   }
-  return Type_Covers (a, b) or Type_Covers (b, a);
+  // Same domain: a predefined operator exists per TYPE, so both operands must
+  // denote one type — subtypes conform, a universal converts to the other's
+  // type (RM 4.6). Distinct types merely sharing a root are NOT compatible:
+  // there is no predefined "/=" between INT and its parent INTEGER (c84009a).
+  if (Type_Is_Universal (a) or Type_Is_Universal (b)) return true;
+  return Type_Base (a) == Type_Base (b);
 }
 
 // Build the interpretation set of a binary operator from its operands' sets.
@@ -13939,19 +13980,21 @@ static Interpretation *Select_Interp (Interp_List *l, Type_Info *ctx) {
   //    any hidden predefined from the candidate set.
   // A predefined interp's operand IS the actual operand type, synthesized from
   // the operands; a user op hides it when their operand and result types denote
-  // the same type. That is exact identity, or the actual is a genuine subtype of
-  // the user's formal — same base and kind (a user "<"(STRING) hides the
-  // predefined "<" carrying the actual STRING(1..2)). The base_type link is
-  // followed ONE hop and only for a real subtype: it is overloaded in this type
-  // model to also name a distinct integer type's shared Standard.INTEGER base
-  // (so the kind/one-hop guard keeps siblings LT1/LT2 distinct, c74211b) and a
-  // generic formal's instantiation actual (excluded via the actual-view check,
-  // so a user "="(LP_ARRAY) does NOT hide the formal type's predefined "=" in
-  // an instantiated generic body, c74409b).
+  // the same type. On the clean graph that is Type_Base equality — a subtype
+  // matches its base (a user "<"(STRING) hides the predefined "<" carrying the
+  // actual STRING(1..2)), while sibling and derived types keep distinct bases
+  // (c74211b). Generic-actual views resolve by location through
+  // Effective_Type_View: opaque inside their instance, the actual outside.
   bool Hides_Type (Type_Info *actual, Type_Info *formal) {
     if (not actual or not formal) return actual == formal;
-    if (actual == formal) return true;
-    return actual->base_type == formal and not Type_Has_Generic_Actual_View (actual);
+    Type_Info *va = Effective_Type_View (actual);
+    Type_Info *vf = Effective_Type_View (formal);
+    // A view still opaque here (inside its instance) stashes its actual in
+    // base_type, so Type_Base would tunnel through it: compare opaque views
+    // by identity only (c74409b).
+    if (Type_Has_Generic_Actual_View (va) or Type_Has_Generic_Actual_View (vf))
+      return va == vf;
+    return Type_Base (va) == Type_Base (vf);
   }
   Interpretation *user_hit = NULL;   // user op that hides a predefined homograph
   {
@@ -17501,23 +17544,12 @@ void Resolve_Declaration_List (Node_List *list) {
 // RM 12.1.2: a generic formal type denotes its actual within an instance. The
 // binding is a renamed copy of the actual (so the formal's predefined operators
 // stay bound to the actual's); peel it back to the actual type the instance was
-// given, which is what an instance's external profile must expose.
+// given — the generic_actual link recorded at the binding — which is what an
+// instance's external profile must expose. The loop resolves an instance
+// nested in an instance, whose actual is itself a view.
 Type_Info *Peel_Generic_Actual_View (Type_Info *t) {
-  while (t and t->is_generic_actual_view) {
-    if (t->defining_symbol and t->defining_symbol->type and
-        t->defining_symbol->type != t) {
-      t = t->defining_symbol->type;
-      continue;
-    }
-    // Predefined types (e.g. STRING) have no defining_symbol on their
-    // Type_Info, but the actual_view built by Bind_Generic_Formals_To_Actuals
-    // stashes the actual type in base_type. Follow that.
-    if (t->base_type and t->base_type != t) {
-      t = t->base_type;
-      continue;
-    }
-    break;
-  }
+  while (t and t->is_generic_actual_view and t->generic_actual)
+    t = t->generic_actual;
   return t;
 }
 
@@ -18307,7 +18339,16 @@ void Bind_Generic_Formals_To_Actuals (Symbol *instance_sym,
             actual_view->base_type =
               actual_type->base_type ? actual_type->base_type : actual_type;
             actual_view->is_generic_actual_view = true;
+            actual_view->generic_actual = actual_type;
             binding->type = actual_view;
+
+            // The struct copy above brought the ACTUAL's defining_symbol
+            // along, which would make the view claim the actual's home
+            // package as its own. The view is a new declaration whose
+            // declaration is this binding: inside-the-instance tests
+            // (Outside_Defining_Package, via Effective_Type_View) hinge on
+            // the view's home being the instance, not the actual's package.
+            actual_view->defining_symbol = binding;
             Symbol_Add (binding);
             if (formal->symbol and remap->count < MAX_INSTANCE_REMAPS) {
               remap->from[remap->count] = formal->symbol;
