@@ -2097,6 +2097,9 @@ struct Type_Info {
   uint32_t    suppressed_checks;  // Bitmask of CHK_* flags suppressed by pragma
   bool        is_packed;          // True when pragma Pack has been applied
   bool        is_limited;         // True for limited types (no assignment or equality)
+  bool        declared_private;   // Declared PRIVATE (or LIMITED PRIVATE): outside the
+                                  // defining package only =, /= and declared operators
+                                  // exist (RM 7.4.2); survives the full-view completion
   bool        is_frozen;          // True once the representation has been finalised
   Task_Component_State_Kind task_component_state; // Type_Has_Task_Component memo
   int32_t governing_discriminant_memo; // Governing_Discriminant_Index memo: 0 = not yet
@@ -2743,6 +2746,7 @@ bool Type_Covers_Ex          (Type_Info    *expected, Type_Info    *actual,
 // Overload-resolution coverage: Type_Covers with the shared-root rule disabled.
 bool Type_Covers_Strict      (Type_Info    *expected, Type_Info    *actual);
 bool Type_Limited_View_Active (const Type_Info *t);
+bool Type_Private_View_Active (const Type_Info *t);
 bool Arguments_Match_Profile (Symbol       *sym,      Argument_Info *args);
 void Collect_Interpretations (String_Slice  name,     Interp_List   *list);
 void Collect_Package_Interpretations (Symbol *package, String_Slice selector,
@@ -9986,17 +9990,28 @@ bool Types_Match_By_Name (Type_Info *expected, Type_Info *actual) {
       or (Type_Is_Fixed_Point (expected) and Type_Is_Fixed_Point (actual));
 }
 
-// Is the LIMITED view of this type the governing one here? True when the
-// type is limited private and the current scope chain is OUTSIDE its
-// defining package (RM 7.4.4); inside, the full view applies.
-bool Type_Limited_View_Active (const Type_Info *t) {
-  if (not t or not t->is_limited) return false;
+// Is the current scope chain outside the package that declared `t`? The
+// partial view of a private type governs exactly there; inside the package
+// (its spec's private part or its body) the full view applies (RM 7.4).
+static bool Outside_Defining_Package (const Type_Info *t) {
   Symbol *defining_package = t->defining_symbol
     ? t->defining_symbol->parent : NULL;
-  if (not defining_package) return t->is_limited;
+  if (not defining_package) return true;
   for (Scope *scope = sm->current_scope; scope; scope = scope->parent)
     if (scope->owner == defining_package) return false;
   return true;
+}
+
+// Is the LIMITED view of this type the governing one here? (RM 7.4.4)
+bool Type_Limited_View_Active (const Type_Info *t) {
+  return t and t->is_limited and Outside_Defining_Package (t);
+}
+
+// Is the PRIVATE (partial) view of this type the governing one here? Where it
+// is, the type has no predefined arithmetic, ordering, logical or catenation
+// operators — only =, /= and its explicitly declared operators (RM 7.4.2).
+bool Type_Private_View_Active (const Type_Info *t) {
+  return t and t->declared_private and Outside_Defining_Package (t);
 }
 
 bool Type_Covers (Type_Info *expected, Type_Info *actual) {
@@ -10143,49 +10158,27 @@ bool Type_Covers_Ex (Type_Info *expected, Type_Info *actual,
   return false;
 }
 
-// The first-named type of `t`: walk the subtype (base_type) chain up to the
-// type that introduced the name, but stop at a derivation boundary — a derived
-// type carries parent_type, and though it shares its parent's base_type for
-// representation, it is a DISTINCT type (RM 3.4). So a subtype of INTEGER
-// resolves to INTEGER's base, while `type MY is new INTEGER` resolves to MY.
-static Type_Info *Named_Type (Type_Info *t) {
-  while (t and t->parent_type == NULL and t->base_type and t->base_type != t)
-    t = t->base_type;
-  return t;
-}
-
-// Whether a user-defined subprogram formal of type `formal` accepts an actual
-// of type `actual` in overload resolution. Unlike Type_Covers — which lets a
-// type and a type derived from it cover each other so that shared literals
-// resolve — a subprogram is applicable only to its OWN type: a derived type is
-// distinct (RM 3.4) and inherits its own operations at the point of derivation
-// rather than borrowing the parent's. A universal literal still converts to
-// the formal. This keeps an operator redefined for a parent type (a "=" for
-// INTEGER) from capturing a derived type's operands (c67005b).
-static bool Formal_Accepts_Actual (Type_Info *formal, Type_Info *actual) {
-  if (not formal or not actual) return true;
-  if (Type_Is_Universal (formal) or Type_Is_Universal (actual))
-    return Type_Covers (formal, actual);
-  return Named_Type (formal) == Named_Type (actual);
-}
-
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 // §11.6.3 Parameter Conformance
-//                                                                                                  
-// Check if an argument list matches a subprogram's parameter profile.                             
-// Per RM 6.4.1: actual parameters must be type conformant with formals.                           
+//
+// Check if an argument list matches a subprogram's parameter profile.
+// Per RM 6.4.1: actual parameters must be type conformant with formals.
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 
-// Check if arguments match a symbol's parameter profile
-// True when `param` and `arg` are distinct scalar/discrete/real types that
-// "cover" each other ONLY through the derived-type root rule (RM 3.4) — e.g. a
-// parent-type argument against a derived-type parameter. Such a pair is NOT a
-// valid overload match: a value of one type does not implicitly satisfy a
-// parameter of the other without an explicit conversion (RM 8.6). Without this,
-// e.g. CALENDAR."<"(TIME) wrongly matches DURATION operands inside its own body
-// (DURATION(L) < DURATION(R)) and recurses instead of binding the predefined
-// DURATION "<". Subtypes (same base), universals, and composite/access types
-// are left to Type_Covers.
+// True when `param` and `arg` are DISTINCT scalar types related only through
+// derivation (RM 3.4): one is an ancestor of the other, or the two share an
+// ancestor. Such a pair is not a valid overload match — a value of one type
+// does not implicitly satisfy a parameter of the other without an explicit
+// conversion (RM 8.6). Without this, e.g. CALENDAR."<"(TIME) wrongly matches
+// DURATION operands inside its own body (DURATION(L) < DURATION(R)) and
+// recurses instead of binding the predefined DURATION "<".
+//
+// The test rests on the type-graph invariant that base_type never crosses a
+// derivation boundary (a first subtype reaches its own anonymous base, whose
+// parent_type reaches the parent's base): same Type_Base = same type (subtypes
+// conform), different Type_Base with the same Type_Root = distinct types
+// related only by derivation. Universals still convert; composite and access
+// types are left entirely to Type_Covers.
 bool Covers_Only_Via_Derivation (Type_Info *param, Type_Info *arg) {
   // RM 12.1.2: inside a generic instance a formal type IS its actual, never a
   // sibling of it. A formal view built from a derived actual (TYPE NI IS NEW
@@ -10194,45 +10187,42 @@ bool Covers_Only_Via_Derivation (Type_Info *param, Type_Info *arg) {
   // predicate would spuriously reject the actual as an argument for the formal.
   param = Peel_Generic_Actual_View (param);
   arg   = Peel_Generic_Actual_View (arg);
-  if (not param or not arg or param == arg) return false;
+  if (not param or not arg) return false;
   if (Type_Is_Universal (param) or Type_Is_Universal (arg)) return false;
   if (Type_Is_Array_Like (param) or Type_Is_Access (param) or Type_Is_Record (param) or
       Type_Is_Array_Like (arg)   or Type_Is_Access (arg)   or Type_Is_Record (arg))
     return false;
-  // Reject sibling derivations (RM 3.4): TYPE A IS NEW INTEGER;
-  // TYPE B IS NEW INTEGER; a value of B is not implicitly usable as A
-  // (c87b07e: `FUNCTION "-"(NUMBER) RENAMES "+"` must not resolve "+"
-  // to the user "+"(NEW_INT) already in scope). Type_Covers accepts them
-  // via a shared root, but the RM does not. Checked BEFORE the subtype
-  // early-return, since user integer derivations synthesize base_type =
-  // INTEGER on both, which would otherwise slip the pair through as
-  // "same base". Sibling means: NEITHER is in the other's ancestor
-  // chain, but a common ancestor exists.
-  if (param->parent_type and arg->parent_type) {
-    bool param_ancestor_of_arg = false, arg_ancestor_of_param = false;
-    for (Type_Info *a = arg->parent_type; a; a = a->parent_type)
-      if (a == param) { param_ancestor_of_arg = true; break; }
-    for (Type_Info *a = param->parent_type; a; a = a->parent_type)
-      if (a == arg) { arg_ancestor_of_param = true; break; }
-    if (not param_ancestor_of_arg and not arg_ancestor_of_param) {
-      for (Type_Info *ap = param->parent_type; ap; ap = ap->parent_type)
-        for (Type_Info *aa = arg->parent_type; aa; aa = aa->parent_type)
-          if (ap == aa) return true;
-    }
-  }
   Type_Info *bp = Type_Base (param), *ba = Type_Base (arg);
-  if (bp == ba or bp == arg or param == ba) return false;  // subtype-related
-  // Reject both ancestry directions (RM 3.4): a PARENT-type argument supplied
-  // to a DERIVED-type parameter (the CALENDAR."<" recursion), and a
-  // DERIVED-type argument supplied to a PARENT-type parameter (CALENDAR."-"
-  // (TIME, DURATION) capturing TIME - TIME). Neither conversion is implicit.
-  for (Type_Info *a = param->parent_type; a; a = a->parent_type) {
-    if (a == arg or a == ba) return true;
-  }
-  for (Type_Info *a = arg->parent_type; a; a = a->parent_type) {
-    if (a == param or a == bp) return true;
-  }
-  return false;
+  if (bp == ba) return false;                    // same type: subtype-related
+  return Type_Root (bp) == Type_Root (ba);      // distinct types, common ancestor
+}
+
+// The overload-resolution applicability test shared by ordinary calls and
+// operators (RM 8.7): a formal accepts an actual when its type covers the
+// actual's AND the two are not merely related through a derivation boundary (a
+// value of a derived type does not implicitly satisfy a parameter of the parent
+// type, nor the reverse — RM 3.4). Universal literals still convert.
+bool Overload_Formal_Accepts (Type_Info *formal, Type_Info *actual) {
+  return Type_Covers (formal, actual)
+         and not Covers_Only_Via_Derivation (formal, actual);
+}
+
+// A predefined-operator stand-in (Symbol_Manager_Init_Predefined registers one
+// symbol per numeric class so `RENAMES "+"` can denote a predefined operator —
+// RM 4.5 / 8.5) stands for the operator of EVERY type in its class: its
+// INTEGER profile matches any integer type, its FLOAT profile any floating
+// type. Class membership, not type identity, decides its applicability. Fixed
+// point stays outside both classes — a fixed operand's predefined operation
+// works on the scaled mantissa, which the stand-in's float profile would
+// misrepresent, and such calls take the direct operator path instead
+// (c45331a: "+"(LEFT => F_VAR, RIGHT => F_VAR)).
+static bool Predefined_Operator_Accepts (Type_Info *formal, Type_Info *actual) {
+  if (not formal or not actual) return true;
+  if (Type_Is_Integer_Like (formal))
+    return Type_Is_Integer_Like (actual) or Type_Is_Universal_Integer (actual);
+  if (Type_Is_Float (formal))
+    return Type_Is_Float (actual) or Type_Is_Universal_Real (actual);
+  return Type_Covers (formal, actual);
 }
 
 bool Arguments_Match_Profile (Symbol *sym, Argument_Info *args) {
@@ -10273,14 +10263,14 @@ bool Arguments_Match_Profile (Symbol *sym, Argument_Info *args) {
     if (param_idx < sym->parameter_count) {
       param_covered[param_idx] = true;
     }
-    if (not Type_Covers (param_type, arg_type)
-        or Covers_Only_Via_Derivation (param_type, arg_type)) {
+    bool (*accepts) (Type_Info *, Type_Info *) =
+      sym->is_predefined ? Predefined_Operator_Accepts : Overload_Formal_Accepts;
+    if (not accepts (param_type, arg_type)) {
       // RM 6.6: try alternative interpretation if available (e.g. user
       // `<` returns INT but predefined `<` returns BOOLEAN for the same
       // operand types — the alt may match where the primary didn't).
       Type_Info *alt = (args->alt_types ? args->alt_types[i] : NULL);
-      if (not alt or not Type_Covers (param_type, alt)
-          or Covers_Only_Via_Derivation (param_type, alt)) {
+      if (not alt or not accepts (param_type, alt)) {
         return false;
       }
     }
@@ -10355,9 +10345,12 @@ static bool Interps_Are_Homographs (const Interpretation *a,
 }
 
 // RM 8.4: drop each use-visible interpretation cancelled by an immediately
-// visible homograph in the same set. Only real declarations hide (a predefined
-// operator that a user redefinition replaces is not itself a hiding homograph —
-// RM 6.7 — so cancellation is driven by symbols, not synthesised predefineds).
+// visible homograph in the same set. Cancellation is driven by symbols only:
+// extending it to synthesised predefined operations (a USE'd "-"(INT, INT)
+// against INT's own predefined "-", c84009a) additionally requires the
+// selection pass to understand that an inner explicit operator hides a
+// predefined one across generic-instance views (c67002d vs c74409b), which the
+// Hides_Type machinery does not yet express on the clean type graph.
 static void Cancel_Use_Visible_Homographs (Interp_List *l) {
   uint32_t w = 0;
   for (uint32_t i = 0; i < l->count; i++) {
@@ -10968,18 +10961,10 @@ Symbol *Resolve_Entry_Rename_Overloaded_Prefix (Syntax_Node *renamed,
       for (uint32_t i = 0; i < np; i++) {
         Type_Info *ep = entry->parameters[i].param_type;
         Type_Info *rp = rename_sym->parameters[i].param_type;
-        // Same base type (subtypes conform), but a derived type must NOT match
-        // its own parent: `NEW INTEGER` synthesises base_type = INTEGER, so the
-        // base test alone would let ENTER (INTEGER) satisfy a rename with an INT
-        // parameter. Reject a pair related through the parent_type derivation
-        // chain (RM 3.4 / 8.5.1 type conformance).
+        // RM 8.5.1 type conformance: same base type. Subtypes conform; a
+        // derived type and its parent have distinct bases (the base_type link
+        // never crosses a derivation boundary) and so do not.
         if (Type_Base (ep) != Type_Base (rp)) { profile_ok = false; break; }
-        bool cross_derivation = false;
-        for (Type_Info *a = ep ? ep->parent_type : NULL; a; a = a->parent_type)
-          if (a == rp) { cross_derivation = true; break; }
-        for (Type_Info *a = rp ? rp->parent_type : NULL; a; a = a->parent_type)
-          if (a == ep) { cross_derivation = true; break; }
-        if (cross_derivation) { profile_ok = false; break; }
       }
       if (not profile_ok) continue;
       prefix->symbol = fn;
@@ -13708,7 +13693,18 @@ void Analyze_Binary (Syntax_Node *n) {
     Type_Info *lt = lts[i];
     for (uint32_t j = 0; j < nrt; j++) {
       Type_Info *rt = rts[j];
-      if (is_arith) {
+
+      // RM 7.4.2: where a private type's partial view governs, the type has
+      // no predefined arithmetic, ordering, logical or catenation operators —
+      // only =, /= and its explicitly declared ones (collected below). Without
+      // this, a synthesised predefined interpretation shadows the package's
+      // own operator: `10.9 + NOW` outside CALENDAR must denote
+      // CALENDAR."+"(DURATION, TIME), not a predefined TIME addition
+      // (c96005e).
+      bool private_view = Type_Private_View_Active (lt) or
+                          Type_Private_View_Active (rt);
+
+      if (is_arith and not private_view) {
         if (op == TK_EXPON) {
           // RM 4.5.6: "**"(T, Integer) return T. Base takes the result type,
           // exponent is Standard.Integer; a universal_integer exponent coerces
@@ -13745,8 +13741,10 @@ void Analyze_Binary (Syntax_Node *n) {
           Interp_Add (out, NULL, res, res, res, 0);
         }
       }
-      if (is_cmp and (Numeric_Compatible (lt, rt) or
-                      Type_Covers_Strict (lt, rt) or Type_Covers_Strict (rt, lt))) {
+      bool is_ordering = is_cmp and op != TK_EQ and op != TK_NE;
+      if (is_cmp and not (is_ordering and private_view) and
+          (Numeric_Compatible (lt, rt) or
+           Type_Covers_Strict (lt, rt) or Type_Covers_Strict (rt, lt))) {
         // RM 4.5.2 / 4.10: comparing a universal operand with a concrete-typed
         // one performs the concrete comparison — the universal converts. Both
         // operands take the concrete peer so it flows back down to the
@@ -13756,7 +13754,8 @@ void Analyze_Binary (Syntax_Node *n) {
                           ? rt : lt;
         Interp_Add (out, NULL, sm->type_boolean, opnd, opnd, 0);
       }
-      if (is_bool and (Type_Is_Boolean (lt) or Type_Is_Bool_Array (lt)) and
+      if (is_bool and not private_view and
+          (Type_Is_Boolean (lt) or Type_Is_Bool_Array (lt)) and
           (Type_Covers (lt, rt) or Type_Covers (rt, lt))) {
         // AND THEN / OR ELSE / AND / OR / XOR are predefined per boolean type T
         // with signature (T, T) -> T (RM 4.4 / 4.5.1). Distinct sibling booleans
@@ -13765,7 +13764,7 @@ void Analyze_Binary (Syntax_Node *n) {
         if (lt == rt or (Type_Base (lt) == Type_Base (rt)))
           Interp_Add (out, NULL, lt, lt, lt, 0);
       }
-      if (is_concat) {
+      if (is_concat and not private_view) {
         // RM 4.5.3: concatenation is the one operator with heterogeneous
         // operands — each side is either the array (base) type or the element
         // type. Record the per-operand target so a user "&"(CHARACTER, STRING)
@@ -13801,23 +13800,11 @@ void Analyze_Binary (Syntax_Node *n) {
           f->is_predefined) continue;
       Type_Info *p0 = f->parameters[0].param_type;
       Type_Info *p1 = f->parameters[1].param_type;
-      // Equality is the operator whose redefinition must not leak across a
-      // derivation boundary: a derived type keeps the predefined equality it
-      // inherited at derivation (RM 6.7, c67005b). Match "=" / "/=" by exact
-      // named type; other operators keep the permissive coverage (a derived
-      // numeric type shares its parent's representation, and some library
-      // types — CALENDAR.TIME as DURATION — are represented through one
-      // another and rely on it).
-      bool exact_equality = (op == TK_EQ or op == TK_NE);
       bool ok = false;
       for (uint32_t i = 0; i < nlt and not ok; i++)
-        for (uint32_t j = 0; j < nrt and not ok; j++) {
-          bool l_ok = exact_equality ? Formal_Accepts_Actual (p0, lts[i])
-                                     : Type_Covers (p0, lts[i]);
-          bool r_ok = exact_equality ? Formal_Accepts_Actual (p1, rts[j])
-                                     : Type_Covers (p1, rts[j]);
-          if (l_ok and r_ok) ok = true;
-        }
+        for (uint32_t j = 0; j < nrt and not ok; j++)
+          if (Overload_Formal_Accepts (p0, lts[i]) and
+              Overload_Formal_Accepts (p1, rts[j])) ok = true;
       // A flexible operand (aggregate) matches any formal it can adopt.
       if (nlt == 0 or nrt == 0) ok = true;
       if (ok)
@@ -13851,6 +13838,9 @@ void Analyze_Unary (Syntax_Node *n) {
 
   for (uint32_t j = 0; ri and j < ri->count; j++) {
     Type_Info *rt = ri->items[j].typ;
+    // RM 7.4.2: no predefined operators where a private type's partial view
+    // governs (mirrors the binary synthesis).
+    if (Type_Private_View_Active (rt)) continue;
     if ((op == TK_PLUS or op == TK_MINUS or op == TK_ABS) and Type_Is_Numeric (rt))
       Interp_Add (out, NULL, rt, rt, NULL, 0);
     if (op == TK_NOT and (Type_Is_Boolean (rt) or Type_Is_Bool_Array (rt)))
@@ -13870,7 +13860,7 @@ void Analyze_Unary (Syntax_Node *n) {
       Type_Info *p0 = f->parameters[0].param_type;
       bool ok = false;
       for (uint32_t j = 0; ri and j < ri->count and not ok; j++)
-        if (Type_Covers (p0, ri->items[j].typ)) ok = true;
+        if (Overload_Formal_Accepts (p0, ri->items[j].typ)) ok = true;
       if (ok)
         Interp_Add (out, f, f->return_type ? f->return_type : f->type, p0, NULL,
                     cand.items[k].scope_depth);
@@ -16394,6 +16384,23 @@ Type_Info *Resolve_Expression (Syntax_Node *node) {
             int_type->size = 8;  // Default to 64-bit
             int_type->alignment = 8;
           }
+
+          // RM 3.5.4: `TYPE T IS RANGE L..H` is a derivation from a predefined
+          // integer type — T is the constrained first subtype of an anonymous
+          // derived base holding the predefined type's full range. Build that
+          // base here so the type-graph invariant holds: base_type never
+          // crosses a derivation boundary; the base's parent_type records the
+          // derivation. (Stamping base_type = INTEGER directly would make T
+          // look like a subtype of INTEGER, erasing the distinction every
+          // overload-resolution predicate depends on.)
+          Type_Info *int_base = Type_New (TYPE_INTEGER, S(""));
+          int_base->parent_type = sm->type_integer;
+          int_base->low_bound   = sm->type_integer->low_bound;
+          int_base->high_bound  = sm->type_integer->high_bound;
+          int_base->size        = sm->type_integer->size;
+          int_base->alignment   = sm->type_integer->alignment;
+          int_type->base_type   = int_base;
+
           node->type = int_type;
           return int_type;
         }
@@ -19262,7 +19269,9 @@ static Type_Info *Slice_Rename_Subtype (Syntax_Node *slice) {
     (Type_Bound){ .kind = BOUND_INTEGER, .int_value = lo->integer_lit.value };
   sub->array.indices[0].high_bound =
     (Type_Bound){ .kind = BOUND_INTEGER, .int_value = hi->integer_lit.value };
-  sub->parent_type = Type_Base (base);
+  // A slice's type is a constrained view of the SAME array type (RM 4.1.2) —
+  // a subtype link, not a derivation.
+  sub->base_type = Type_Base (base);
 
   int64_t len = hi->integer_lit.value - lo->integer_lit.value + 1;
   if (len < 0) len = 0;
@@ -19514,13 +19523,6 @@ void Resolve_Declaration (Syntax_Node *node) {
             // task-bearing composite: forget any memoized answer.
             type->task_component_state = TASK_COMPONENT_UNKNOWN;
 
-            // For user-defined integer types (TYPE T IS RANGE L..R), the declared                  
-            // type is the "first subtype" and needs a base type (RM 3.5.4).                       
-            // Use INTEGER as the base type for constraint checking in 'PRED/'SUCC.                
-            //                                                                                      
-            if (def_type->kind == TYPE_INTEGER and type->base_type == NULL) {
-              type->base_type = sm->type_integer;
-            }
             if (Type_Is_Array_Like (def_type)) {
               type->array = def_type->array;
             } else if (Type_Is_Fixed_Point (def_type)) {
@@ -19673,6 +19675,11 @@ void Resolve_Declaration (Syntax_Node *node) {
           // full-view completion (RM 7.4.4): no assignment, no predefined
           // equality, no literals, whatever the completion turns out to be.
           type->is_limited = node->type_decl.is_limited;
+
+          // Privateness likewise survives completion: outside the defining
+          // package the partial view governs, and only =, /= and the
+          // explicitly declared operators exist (RM 7.4.2).
+          type->declared_private = true;
           if (has_discriminants) {
             Component_Info *comps = Arena_Allocate (
               disc_count * sizeof (Component_Info));
