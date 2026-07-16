@@ -2108,6 +2108,10 @@ struct Type_Info {
                                        // Top-level (outside the kind union) like the
                                        // task memo, so it never aliases another variant.
   int64_t     storage_size;       // 'Storage_Size attribute value, or -1 if unset
+  Syntax_Node *storage_size_expr;    // Non-static 'STORAGE_SIZE clause expression
+                                     // (RM 13.2 allows one); evaluated once at the
+                                     // clause's elaboration into the global below
+  uint32_t    storage_size_preeval;  // @__rt_cbnd_<n> id of the frozen value, or 0
   const char *equality_func_name; // Mangled name of the compiler-generated "=" function
   uint32_t    rt_global_id;       // Runtime type identifier for exception dispatch
   bool        is_generic_formal;    // True when this type stands for a generic
@@ -21354,6 +21358,14 @@ void Resolve_Declaration (Syntax_Node *node) {
           if (node->rep_clause.attribute.data and target_type) {
             String_Slice attr = node->rep_clause.attribute;
             if (node->rep_clause.expression) {
+              // RM 13.2: a SIZE/STORAGE_SIZE specification is an expression
+              // of some integer type — that context resolves an overloaded
+              // name in the clause (c87b62b: FOR L'STORAGE_SIZE USE F(1024)
+              // must pick the integer-returning F).
+              if ((node->rep_clause.attribute_kind == ATTRIBUTE_SIZE or
+                   node->rep_clause.attribute_kind == ATTRIBUTE_STORAGE_SIZE)
+                  and not node->rep_clause.expression->type)
+                node->rep_clause.expression->type = sm->type_integer;
               Resolve_Expression (node->rep_clause.expression);
 
               // Evaluate constant expression (handles T'SIZE/2 etc.)
@@ -21393,6 +21405,12 @@ void Resolve_Declaration (Syntax_Node *node) {
                 target_type->alignment = (uint32_t)value;
               } else if (attribute_kind == ATTRIBUTE_STORAGE_SIZE) {
                 target_type->storage_size = value;
+                // RM 13.2: a collection/task storage size need not be static.
+                // Record the expression; the clause's elaboration point
+                // freezes its value into a module global that the attribute
+                // reads back (cd2b11d: FOR T'STORAGE_SIZE USE IDENT_INT(256)).
+                if (isnan (dval))
+                  target_type->storage_size_expr = node->rep_clause.expression;
 
               // For fixed-point: set small value. The specification is a
               // static real expression (RM 13.2) — often a named number such
@@ -34036,8 +34054,15 @@ LLVM_Value Generate_Attribute (Syntax_Node *node) {
   if (attribute_kind == ATTRIBUTE_STORAGE_SIZE) {
     int64_t ss = 0;
     Type_Info *st = prefix_type;
-    while (st and st->storage_size == 0 and st->parent_type)
+    while (st and st->storage_size == 0 and not st->storage_size_preeval and
+           st->parent_type)
       st = st->parent_type;
+    // A non-static clause expression was frozen at the clause's elaboration
+    // (RM 13.2): read the module global back.
+    if (st and st->storage_size_preeval)
+      return Val_Rep (Emit_Load_Preeval_Global (st->storage_size_preeval,
+                                                Integer_Arith_Rep ()),
+                      Integer_Arith_Rep ());
     if (st and st->storage_size != 0)
       ss = st->storage_size;
     else if (prefix_type)
@@ -48659,6 +48684,18 @@ void Generate_Declaration (Syntax_Node *node) {
       if (not overlaid and node->rep_clause.entity_name and
           node->rep_clause.entity_name->kind == NK_IDENTIFIER)
         overlaid = Symbol_Find (node->rep_clause.entity_name->string_val.text);
+
+      // A non-static 'STORAGE_SIZE expression is evaluated once, here at the
+      // clause's elaboration (RM 13.2); the attribute reads the frozen value.
+      if (node->rep_clause.attribute_kind == ATTRIBUTE_STORAGE_SIZE and
+          overlaid and overlaid->type and
+          overlaid->type->storage_size_expr and
+          not overlaid->type->storage_size_preeval) {
+        LLVM_Value v =
+          Generate_Expression (overlaid->type->storage_size_expr);
+        overlaid->type->storage_size_preeval =
+          Freeze_Disc_Value_Global (v.rep, v.reg);
+      }
       if (node->rep_clause.is_address_clause and overlaid and
           overlaid->address_cell and node->rep_clause.expression) {
         Symbol *cell = overlaid->address_cell;
