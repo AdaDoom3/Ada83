@@ -2028,6 +2028,9 @@ struct Type_Info {
       Index_Info *indices;        // Per-dimension index type and bounds
       uint32_t    index_count;    // Number of dimensions
       Type_Info  *element_type;   // Component type of the array
+      Type_Info  *unconstrained_base; // RM 3.6 anonymous unconstrained base of a
+                                      // constrained array TYPE, materialized
+                                      // lazily by Array_Unconstrained_Base
       bool        is_constrained; // True for constrained (bounds known statically)
       bool        is_dimension_row; // Implicit row type of a multi-dimensional
                                     // aggregate's inner dimensions: such a row
@@ -2185,6 +2188,7 @@ Type_Info *Type_Designated        (const Type_Info *t);
 
 Type_Info *Type_Base (Type_Info *t);
 Type_Info *Type_Root (Type_Info *t);
+Type_Info *Array_Unconstrained_Base (Type_Info *t);
 // Within a generic instance a formal type denotes its actual (RM 12.1.2). The
 // instance's view is a distinct Type_Info flagged is_generic_actual_view; this
 // follows it back to the underlying actual so type comparisons treat them as
@@ -4062,6 +4066,7 @@ void     Agg_Rec_Disc_Post  (LLVM_Value       val,
 uint32_t Disc_Ordinal_Before             (Type_Info *type_info, uint32_t comp_index);
 int32_t  Find_Record_Component           (Type_Info *record_type, String_Slice name);
 int32_t  Governing_Discriminant_Index    (Type_Info *record_type);
+int32_t  Aggregate_Selected_Variant      (Syntax_Node *aggregate, Type_Info *record_type);
 uint32_t Record_RT_Global_Id             (Type_Info *t);
 uint32_t Emit_Record_Field_Ptr           (uint32_t base, Type_Info *record_type, uint32_t comp_idx, uint32_t byte_offset);
 Type_Info *Underlying_Record_Type        (Type_Info *t);
@@ -9217,6 +9222,40 @@ Type_Info *Type_Base (Type_Info *type_info) {
   return type_info;
 }
 
+// RM 3.6: a constrained array type definition (`type A is array (1..3) of T`)
+// implicitly declares an anonymous UNCONSTRAINED base sharing A's index and
+// component types, with A a constrained subtype of it. Slices, and flexible
+// operands in a non-applicable-index-constraint context (RM 4.3.2: a string
+// literal or aggregate operand of an operator fixes its own bounds from its
+// length), are values of that base. The predefined STRING already provides
+// its own unconstrained base; for user array types the base is materialized
+// here on first demand and memoized so every use sees one identity.
+Type_Info *Array_Unconstrained_Base (Type_Info *type_info) {
+  Type_Info *base = Type_Base (type_info);
+  if (not Type_Is_Constrained_Array (base) or base->kind == TYPE_STRING)
+    return base;
+  if (not base->array.unconstrained_base) {
+    Type_Info *anon = Type_New (TYPE_ARRAY, base->name);
+    anon->size      = base->size;
+    anon->alignment = base->alignment;
+    anon->array     = base->array;
+    anon->array.is_constrained = false;
+    anon->array.unconstrained_base = anon;
+    // Fresh per-dimension Index_Info so bound caching on the constrained
+    // type is never shared. The bound VALUES carry over as placeholders —
+    // exactly the predefined STRING pattern (POSITIVE'FIRST..'LAST): a
+    // positional aggregate overrides high to low + N - 1, a named one takes
+    // both bounds from its choices, and array equality reads lengths, so
+    // the placeholder values themselves are never load-bearing.
+    anon->array.indices =
+      Arena_Allocate (base->array.index_count * sizeof (Index_Info));
+    for (uint32_t i = 0; i < base->array.index_count; i++)
+      anon->array.indices[i] = base->array.indices[i];
+    base->array.unconstrained_base = anon;
+  }
+  return base->array.unconstrained_base;
+}
+
 // Type_Root: Follow both base_type and parent_type chains to find the root                         
 // ancestor type. This is used for derived type compatibility checking where                        
 // we need to find the ultimate parent enumeration/integer type.                                   
@@ -11999,14 +12038,40 @@ Type_Info *Resolve_Apply (Syntax_Node *node) {
       // - Aggregates like FN ((1,2,3)) where the aggregate needs the                               
       //   parameter type to determine its type (RM 4.3).                                          
       //                                                                                            
-      for (uint32_t i = 0; i < arg_count and i < prefix_sym->parameter_count; i++) {
+      // RM 8.5: through a renaming, formal NAMES belong to the view the call
+      // denotes, while formal CONSTRAINTS belong to the RENAMED entity — the
+      // renaming's own constraints are ignored (c85013a case B: PROC2's
+      // STA2(11..15) view over PROC1's STA1(1..5) types an aggregate actual
+      // as STA1, giving it bounds 1..5). Profiles correspond by position.
+      Symbol *constraint_sym = Resolve_Subprogram_Rename (prefix_sym);
+      if (not (constraint_sym and Symbol_Is_Subprogram (constraint_sym) and
+               constraint_sym->parameters and
+               constraint_sym->parameter_count == prefix_sym->parameter_count))
+        constraint_sym = prefix_sym;
+      for (uint32_t i = 0; i < arg_count; i++) {
         Syntax_Node *arg = node->apply.arguments.items[i];
+        int32_t formal = (int32_t) i;
 
-        // Handle named associations
+        // A named association maps to the formal it NAMES, not the i-th one
+        // (RM 6.4.1) — a renaming may reorder or rename formals relative to
+        // the renamed subprogram (c85013a: PROCA(D => (5,4,3,2,1)) must type
+        // the aggregate by formal D, not by first-position C).
         if (arg->kind == NK_ASSOCIATION and arg->association.expression) {
+          if (arg->association.choices.count > 0 and
+              arg->association.choices.items[0]->kind == NK_IDENTIFIER) {
+            formal = -1;
+            for (uint32_t j = 0; j < prefix_sym->parameter_count; j++)
+              if (Slice_Equal_Ignore_Case (prefix_sym->parameters[j].name,
+                    arg->association.choices.items[0]->string_val.text)) {
+                formal = (int32_t) j;
+                break;
+              }
+          }
           arg = arg->association.expression;
         }
-        Type_Info *param_type = prefix_sym->parameters[i].param_type;
+        if (formal < 0 or formal >= (int32_t) prefix_sym->parameter_count)
+          continue;
+        Type_Info *param_type = constraint_sym->parameters[formal].param_type;
         if (arg->kind == NK_CHARACTER) {
           Resolve_Char_As_Enum (arg, param_type);
         }
@@ -13695,6 +13760,20 @@ void Analyze_Identifier (Syntax_Node *n) {
   }
 }
 
+// What a "flexible" operand — one with no interpretations of its own — can
+// possibly denote (RM 8.6 applicable interpretations): an aggregate only a
+// composite type (RM 4.3), a string literal only a one-dimensional array
+// with a character component (RM 4.2), any other node anything. Bounds both
+// the sibling-type adoption in Analyze_Binary and the array-vs-component
+// choice for catenation operands.
+static bool Flexible_Can_Denote (Syntax_Node *o, Type_Info *t) {
+  if (o and o->kind == NK_AGGREGATE) return Type_Is_Composite (t);
+  if (o and o->kind == NK_STRING)
+    return Type_Is_Array_Like (t) and t->array.index_count == 1 and
+           Type_Is_Character_Type (t->array.element_type);
+  return true;
+}
+
 void Analyze_Binary (Syntax_Node *n) {
   Syntax_Node *L = n->binary.left, *R = n->binary.right;
   Token_Kind op = n->binary.op;
@@ -13752,21 +13831,11 @@ void Analyze_Binary (Syntax_Node *n) {
   // Candidate operand-type lists. A "flexible" operand (an aggregate, or a
   // string literal with no committed type) has no interps of its own — it takes
   // its type from the sibling/context (RM 4.3, 4.2), so let it adopt the other
-  // operand's candidate types. Adoption is bounded by what the literal form can
-  // possibly denote (RM 8.6 applicable interpretations): an aggregate only a
-  // composite type (RM 4.3), a string literal only a one-dimensional array with
-  // a character component (RM 4.2). Without the bound, a sibling whose interp
-  // set mixes scalar and composite results — `user_op(A, B) /= (1 .. 3 => 7)`
-  // where "<=" is redefined to return the array — leaks its scalar candidate
-  // into the aggregate and resolution drives the aggregate into a type it
-  // cannot denote (c44003a..g).
-  bool Flexible_Can_Denote (Syntax_Node *o, Type_Info *t) {
-    if (o and o->kind == NK_AGGREGATE) return Type_Is_Composite (t);
-    if (o and o->kind == NK_STRING)
-      return Type_Is_Array_Like (t) and t->array.index_count == 1 and
-             Type_Is_Character_Type (t->array.element_type);
-    return true;
-  }
+  // operand's candidate types — bounded by Flexible_Can_Denote. Without the
+  // bound, a sibling whose interp set mixes scalar and composite results —
+  // `user_op(A, B) /= (1 .. 3 => 7)` where "<=" is redefined to return the
+  // array — leaks its scalar candidate into the aggregate and resolution
+  // drives the aggregate into a type it cannot denote (c44003a..g).
   Type_Info *lts[MAX_INTERPRETATIONS], *rts[MAX_INTERPRETATIONS];
   uint32_t nlt = 0, nrt = 0;
   for (uint32_t i = 0; li and i < li->count and nlt < MAX_INTERPRETATIONS; i++)
@@ -14150,10 +14219,23 @@ static void Resolve_Operand (Syntax_Node *o, Type_Info *opnd_typ) {
     // it does not inherit a constrained operand subtype's bounds. Seeding the
     // unconstrained base makes `S(3..4) = "CD"` compare by length rather than
     // giving the literal the whole array's 1..N bounds (a length mismatch that
-    // wrongly makes the operands unequal).
+    // wrongly makes the operands unequal). For a POSITIONAL aggregate against
+    // a user-declared constrained array TYPE, the unconstrained base is the
+    // RM 3.6 anonymous one (cc3225a: `(1, 2) /= PAC_VAR(1 .. 2)` compares two
+    // 2-element values, not a 3-element aggregate against a 2-element slice).
+    // A NAMED aggregate already carries its bounds in its choices, which the
+    // constrained-type lowering honors — and keeping it on the constrained
+    // view preserves the discriminant-dependent element handling
+    // (c37213e subtest 13: `X /= (1..5 => (-6, 0))` must not evaluate the
+    // unselected variant's component constraint).
     if ((o->kind == NK_STRING or o->kind == NK_AGGREGATE) and
-        Type_Is_Constrained_Array (opnd_typ))
-      opnd_typ = Type_Base (opnd_typ);
+        Type_Is_Constrained_Array (opnd_typ)) {
+      bool positional = o->kind == NK_AGGREGATE;
+      for (uint32_t i = 0; positional and i < o->aggregate.items.count; i++)
+        positional = o->aggregate.items.items[i]->kind != NK_ASSOCIATION;
+      opnd_typ = positional ? Array_Unconstrained_Base (opnd_typ)
+                            : Type_Base (opnd_typ);
+    }
     // Likewise a record aggregate compared against a discriminated record
     // view: a predefined-equality operand has the BASE type, and the
     // aggregate carries its own discriminants — pinning it to the sibling
@@ -14178,6 +14260,10 @@ static Type_Info *Catenation_Operand_Target (Syntax_Node *o, Type_Info *arr,
                                              Type_Info *elem) {
   Type_Info *ot = o ? o->type : NULL;
   if (Type_Is_Array_Like (ot) and Type_Base (ot) == arr) return arr;
+  // An untyped flexible operand is the ARRAY operand whenever it cannot
+  // denote the component type: `(1, 2) & X` catenates a two-element array
+  // with the component X, not two components (cc3225a).
+  if (o and not ot and not Flexible_Can_Denote (o, elem)) return arr;
   return elem;
 }
 
@@ -14300,6 +14386,42 @@ Type_Info *Resolve_Binary_Op (Syntax_Node *node) {
     Seed_Catenation_Operands (node, Type_Base (ctx));
   Analyze_Binary (node);
   return Resolve_In_Context (node, ctx);
+}
+
+// RM 4.7: resolve the operand of a qualified expression with the named
+// subtype as its applicable context. An aggregate takes the type outright,
+// and every overloadable form — a call, an operator, a bare identifier, a
+// string — resolves its overloads against it (RM 6.6): `WHOLE'(F2(0,0))`
+// picks the F2 returning WHOLE, `CITRUS'(ORANGE)` picks CITRUS.ORANGE over
+// HUE.ORANGE, and `PREC'(F)` picks the parameterless F returning PREC
+// (c47002d — reached through an allocator, whose parser destructures
+// `NEW T'(expr)`; the allocator resolver shares this path).
+static void Resolve_Qualified_Operand (Syntax_Node *expr, Type_Info *qualifying) {
+  if (not expr) return;
+  if (qualifying and not expr->type and
+      (expr->kind == NK_AGGREGATE or expr->kind == NK_APPLY or
+       expr->kind == NK_BINARY_OP or expr->kind == NK_IDENTIFIER or
+       expr->kind == NK_STRING))
+    expr->type = qualifying;
+  Resolve_Expression (expr);
+  if (not qualifying) return;
+
+  // Re-resolve overloaded literals against the qualifying type (RM 4.7):
+  // WEEKEND'(SAT) must pick WEEKEND.SAT, not WEEK.SAT; CHAR'('B') must use
+  // CHAR's position for 'B', not the ASCII code.
+  if (expr->kind == NK_IDENTIFIER) {
+    if (not Type_Covers (qualifying, expr->type) and
+        not Type_Covers (expr->type, qualifying)) {
+      Symbol *s = Symbol_Find_By_Type (expr->string_val.text, qualifying);
+      if (s) {
+        expr->symbol = s;
+        expr->type = (s->kind == SYMBOL_FUNCTION and s->return_type)
+                     ? s->return_type : s->type ? s->type : qualifying;
+      }
+    }
+  } else if (expr->kind == NK_CHARACTER) {
+    Resolve_Char_As_Enum (expr, qualifying);
+  }
 }
 
 Type_Info *Resolve_Expression (Syntax_Node *node) {
@@ -14622,40 +14744,8 @@ Type_Info *Resolve_Expression (Syntax_Node *node) {
 
       // Resolve subtype mark first to get the type
       Resolve_Expression (node->qualified.subtype_mark);
-
-      // Propagate type to expression (critical for aggregates).
-      // Also propagate to NK_APPLY/NK_BINARY_OP/NK_IDENTIFIER so
-      // overload res (RM 6.6) sees qualifying type as context:
-      // `WHOLE'(F2(0,0))` picks F2 returning WHOLE; `CITRUS'(ORANGE)`
-      // picks CITRUS.ORANGE over HUE.ORANGE.
-      if (node->qualified.expression and
-        node->qualified.subtype_mark->type and
-        not node->qualified.expression->type and
-        (node->qualified.expression->kind == NK_AGGREGATE or
-         node->qualified.expression->kind == NK_APPLY or
-         node->qualified.expression->kind == NK_BINARY_OP or
-         node->qualified.expression->kind == NK_IDENTIFIER or
-         node->qualified.expression->kind == NK_STRING)) {
-        node->qualified.expression->type = node->qualified.subtype_mark->type;
-      }
-      Resolve_Expression (node->qualified.expression);
-
-      // Re-resolve overloaded literals against qualifying type (RM 4.7):                           
-      // WEEKEND'(SAT) must pick WEEKEND.SAT, not WEEK.SAT;                                         
-      // CHAR'('B') must use CHAR position, not ASCII code.                                        
-      //                                                                                            
-      if (node->qualified.expression and node->qualified.subtype_mark->type) {
-        Type_Info *qt = node->qualified.subtype_mark->type;
-        Syntax_Node *inner = node->qualified.expression;
-        if (inner->kind == NK_IDENTIFIER) {
-          if (not Type_Covers (qt, inner->type) and not Type_Covers (inner->type, qt)) {
-            Symbol *s = Symbol_Find_By_Type (inner->string_val.text, qt);
-            if (s) { inner->symbol = s; inner->type = s->type ? s->type : qt; }
-          }
-        } else if (inner->kind == NK_CHARACTER) {
-          Resolve_Char_As_Enum (inner, qt);
-        }
-      }
+      Resolve_Qualified_Operand (node->qualified.expression,
+                                 node->qualified.subtype_mark->type);
       node->type = node->qualified.subtype_mark->type;
       return node->type;
     case NK_AGGREGATE:
@@ -14663,6 +14753,7 @@ Type_Info *Resolve_Expression (Syntax_Node *node) {
         Type_Info *agg_type = node->type;
         bool is_record_agg = Type_Is_Record (agg_type);
         uint32_t positional_idx = 0;
+        int32_t selected_variant = -2;   // -2 = not yet computed
         for (uint32_t i = 0; i < node->aggregate.items.count; i++) {
           Syntax_Node *item = node->aggregate.items.items[i];
 
@@ -14707,6 +14798,22 @@ Type_Info *Resolve_Expression (Syntax_Node *node) {
 
           // Positional item in record aggregate - propagate component type
           } else if (is_record_agg) {
+            // RM 4.3.1 + 3.7.3: positional element N maps to the Nth component
+            // of the fixed part plus the SELECTED variant, so skip the other
+            // variants' components. Selection is deferred until the walk
+            // reaches a variant component: by then the governing
+            // discriminant's item (positionally earlier, RM 4.3.1) has been
+            // resolved, so its enumeration-literal value is readable.
+            if (selected_variant == -2 and
+                positional_idx < agg_type->record.component_count and
+                agg_type->record.components[positional_idx].variant_index >= 0)
+              selected_variant = Aggregate_Selected_Variant (node, agg_type);
+            while (selected_variant >= 0 and
+                   positional_idx < agg_type->record.component_count and
+                   agg_type->record.components[positional_idx].variant_index >= 0 and
+                   agg_type->record.components[positional_idx].variant_index
+                     != selected_variant)
+              positional_idx++;
             if (positional_idx < agg_type->record.component_count) {
               Type_Info *comp_type = agg_type->record.components[positional_idx].component_type;
               if (comp_type and not item->type and
@@ -14848,16 +14955,11 @@ Type_Info *Resolve_Expression (Syntax_Node *node) {
     // Parser destructures T'(agg) so expression is directly the aggregate
     case NK_ALLOCATOR:
 
-      // Resolve subtype mark first to get allocated type
+      // Resolve subtype mark first to get allocated type; the initializer is
+      // the destructured qualified operand and resolves as one (RM 4.7/4.8).
       Resolve_Expression (node->allocator.subtype_mark);
-      if (node->allocator.expression) {
-        if (node->allocator.expression->kind == NK_AGGREGATE and
-          node->allocator.subtype_mark and
-          node->allocator.subtype_mark->type) {
-          node->allocator.expression->type = node->allocator.subtype_mark->type;
-        }
-        Resolve_Expression (node->allocator.expression);
-      }
+      Resolve_Qualified_Operand (node->allocator.expression,
+        node->allocator.subtype_mark ? node->allocator.subtype_mark->type : NULL);
 
       // Create access type pointing to allocated type
       {
@@ -30245,6 +30347,18 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
     // Hidden 'CONSTRAINED flag reg per slot (RM 3.7.4), 0 = slot needs none.
     uint32_t *constr_flag = Arena_Allocate (slot_count * sizeof (uint32_t));
     memset (constr_flag, 0, slot_count * sizeof (uint32_t));
+
+    // RM 8.5 / 12.1.3: formal NAMES and DEFAULTS belong to the view the call
+    // denotes — a renaming (or generic formal subprogram) declares its own,
+    // possibly renamed and re-defaulted relative to the renamed subprogram
+    // (c85013a: PROCA(D => V) names the rename's D, and an omitted C takes
+    // PROCA's default, not PROC1's A default). Modes, types, and the body
+    // stay with the peeled symbol. Shape guard: fall back to the peeled
+    // symbol when the view carries no aligned profile of its own.
+    Symbol *view =
+      (named_view_sym and named_view_sym->parameters and
+       named_view_sym->parameter_count == sym->parameter_count)
+      ? named_view_sym : sym;
     for (uint32_t i = 0; i < node->apply.arguments.count; i++) {
       Syntax_Node *arg_node = node->apply.arguments.items[i];
       Syntax_Node *arg = arg_node;  // Actual expression to evaluate
@@ -30254,13 +30368,14 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
       if (arg_node->kind == NK_ASSOCIATION) {
         arg = arg_node->association.expression;
 
-        // Look up formal parameter by name to get correct index
-        if (arg_node->association.choices.count > 0 and sym->parameters) {
+        // Look up formal parameter by name — in the VIEW's profile — to get
+        // the correct slot index.
+        if (arg_node->association.choices.count > 0 and view->parameters) {
           Syntax_Node *name_node = arg_node->association.choices.items[0];
           if (name_node and name_node->kind == NK_IDENTIFIER) {
             String_Slice param_name = name_node->string_val.text;
-            for (uint32_t p = 0; p < sym->parameter_count; p++) {
-              if (Slice_Equal_Ignore_Case (sym->parameters[p].name, param_name)) {
+            for (uint32_t p = 0; p < view->parameter_count; p++) {
+              if (Slice_Equal_Ignore_Case (view->parameters[p].name, param_name)) {
                 param_idx = p;
                 break;
               }
@@ -30828,19 +30943,13 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
     // interleave with the call's argument list.
     // Fill every uncovered slot from its default (RM 6.4.2) — leading
     // or trailing; a named association may skip any defaulted formal.
-    // Defaults come from the named view's profile (the formal's own defaults
-    // for a call through a generic formal subprogram); fall back to the
-    // resolved symbol when the view's profile does not line up (shape guard).
-    Symbol *default_view =
-      (named_view_sym and named_view_sym->parameters and
-       named_view_sym->parameter_count == sym->parameter_count)
-      ? named_view_sym : sym;
+    // Defaults come from the VIEW's profile, like the name lookup above.
     if (sym->parameters) {
       for (uint32_t p = 0; p < sym->parameter_count and p < slot_count; p++) {
         if (slot_covered[p]) continue;
-        Syntax_Node *def = default_view->parameters[p].default_value;
+        Syntax_Node *def = view->parameters[p].default_value;
         if (not def) continue;  // not reachable for a legal call
-        Type_Info *pt = default_view->parameters[p].param_type;
+        Type_Info *pt = view->parameters[p].param_type;
         slot_covered[p] = true;
         slot_is_default[p] = true;
         is_byref[p] = false;
@@ -34298,6 +34407,78 @@ int32_t Governing_Discriminant_Index (Type_Info *record_type) {
   return memo > 0 ? memo - 1 : -1;
 }
 
+// The variant a record aggregate selects (RM 3.7.3 / 4.3.1). Both the
+// resolver's and the generator's positional component mapping must skip the
+// components of every other variant — otherwise the Nth positional element
+// lands on the Nth FLAT component, which for a variant record can be a
+// different variant's field (e.g. an ARRAY_OF_INT mapped onto the
+// overlapping B:BOOLEAN slot). The governing discriminant's value comes
+// from the aggregate itself — authoritative, since it may select a variant
+// other than the subtype's default constraint — or, when the aggregate does
+// not supply it, from the subtype constraint. Returns the variant index, or
+// -1 when the type has no variant part or the governing value is not
+// static. Callers treat -1 as "no skipping".
+int32_t Aggregate_Selected_Variant (Syntax_Node *aggregate, Type_Info *record_type) {
+  if (not Type_Is_Record (record_type) or
+      not record_type->record.has_discriminants or
+      record_type->record.variant_count == 0) return -1;
+  int32_t gov_index = Governing_Discriminant_Index (record_type);
+  if (gov_index < 0) gov_index = 0;
+
+  // Locate the aggregate item that supplies the governing discriminant:
+  // the gov_index'th positional item, or the association naming it.
+  Syntax_Node *gov_expr = NULL;
+  uint32_t positional = 0;
+  for (uint32_t i = 0; i < aggregate->aggregate.items.count; i++) {
+    Syntax_Node *item = aggregate->aggregate.items.items[i];
+    if (item->kind == NK_ASSOCIATION) {
+      for (uint32_t c = 0; c < item->association.choices.count; c++) {
+        Syntax_Node *choice = item->association.choices.items[c];
+        if (choice->kind == NK_IDENTIFIER and
+            Find_Record_Component (record_type, choice->string_val.text) == gov_index)
+          gov_expr = item->association.expression;
+      }
+    } else {
+      if ((int32_t) positional == gov_index) gov_expr = item;
+      positional++;
+    }
+  }
+
+  // Its static value: an integer literal, a resolved enumeration literal, or
+  // any other static expression the folder can evaluate. A negative literal
+  // is unary minus over an integer (`-6`, not an NK_INTEGER), and a named
+  // number folds too; NaN means "not static" (c37213g).
+  int64_t gov = 0; bool gov_known = false;
+  if (gov_expr) {
+    if (gov_expr->kind == NK_INTEGER) {
+      gov = (int64_t) gov_expr->integer_lit.value; gov_known = true;
+    } else if (gov_expr->symbol and gov_expr->symbol->kind == SYMBOL_LITERAL) {
+      gov = (int64_t) gov_expr->symbol->frame_offset; gov_known = true;
+    } else {
+      double folded = Eval_Const_Numeric (gov_expr);
+      if (folded == folded) { gov = (int64_t) folded; gov_known = true; }
+    }
+  }
+  if (not gov_known and record_type->record.disc_constraint_values and
+      (not record_type->record.disc_constraint_exprs or
+       not record_type->record.disc_constraint_exprs[0])) {
+    gov = record_type->record.disc_constraint_values[0];
+    gov_known = true;
+  }
+  if (not gov_known) return -1;
+
+  // Range match wins; OTHERS is the fallback when no later range matches.
+  int32_t others_variant = -1;
+  for (uint32_t vi = 0; vi < record_type->record.variant_count; vi++) {
+    if (gov >= record_type->record.variants[vi].disc_value_low and
+        gov <= record_type->record.variants[vi].disc_value_high)
+      return (int32_t) vi;
+    if (record_type->record.variants[vi].is_others)
+      others_variant = (int32_t) vi;
+  }
+  return others_variant;
+}
+
 // Check if a choice is "others"
 bool Is_Others_Choice (Syntax_Node *choice) {
   return choice and (choice->kind == NK_OTHERS or
@@ -37043,75 +37224,8 @@ uint32_t Generate_Aggregate_Body (Syntax_Node *node) {
     Disc_Alloc_Info da_info = { .entries = disc_alloc, .count = disc_alloc_count };
 
     // Pre-determine the selected variant (RM 3.7.3) so positional component
-    // mapping skips components belonging to other variants — otherwise the Nth
-    // positional element lands on the Nth flat component, which for a variant
-    // record can be a different variant's field (e.g. F:FLOAT mapped onto the
-    // overlapping S:STRING slot). The variant is governed by the first
-    // discriminant; its value comes from the subtype constraint or, for an
-    // unconstrained aggregate, the discriminant element itself.
-    int32_t selected_variant = -1;
-    if (agg_type->record.has_discriminants and agg_type->record.variant_count > 0) {
-      int64_t gov = 0; bool gov_known = false;
-      // The aggregate's own discriminant value is authoritative — it overrides
-      // the subtype's default constraint (an unconstrained type with defaults
-      // still carries disc_constraint_values, but the aggregate may select a
-      // different variant). Only fall back to the constraint when the aggregate
-      // doesn't supply the governing discriminant.
-      // The variant is governed by the discriminant NAMED in the variant part
-      // (RM 3.7.3), not necessarily the first: `CASE E` when D precedes E must
-      // read E's value, not D's. Locate that discriminant's position.
-      int32_t gov_index = Governing_Discriminant_Index (agg_type);
-      if (gov_index < 0) gov_index = 0;
-      Syntax_Node *gov_expr = NULL;
-      uint32_t pcount = 0;
-      for (uint32_t i = 0; i < node->aggregate.items.count; i++) {
-        Syntax_Node *it = node->aggregate.items.items[i];
-        if (it->kind == NK_ASSOCIATION) {
-          for (uint32_t c = 0; c < it->association.choices.count; c++) {
-            Syntax_Node *ch = it->association.choices.items[c];
-            if (ch->kind == NK_IDENTIFIER and
-              Find_Record_Component (agg_type, ch->string_val.text) == gov_index)
-              gov_expr = it->association.expression;
-          }
-        } else {
-          if ((int32_t) pcount == gov_index) gov_expr = it;
-          pcount++;
-        }
-      }
-      if (gov_expr) {
-        if (gov_expr->kind == NK_INTEGER) {
-          gov = (int64_t) gov_expr->integer_lit.value; gov_known = true;
-        } else if (gov_expr->symbol and
-               gov_expr->symbol->kind == SYMBOL_LITERAL) {
-          gov = (int64_t) gov_expr->symbol->frame_offset; gov_known = true;
-        } else {
-          // A negative literal is unary minus over an integer (`-6`, not an
-          // NK_INTEGER), and a named number or static expression folds too. Any
-          // of these must select the variant, or the field pass maps positional
-          // components to the wrong arm — e.g. building the -5..10 arm's array
-          // component for a value that belongs in OTHERS, whose scalar it then
-          // dereferences as a fat pointer (c37213g). NaN means "not static".
-          double cv = Eval_Const_Numeric (gov_expr);
-          if (cv == cv) { gov = (int64_t) cv; gov_known = true; }
-        }
-      }
-      if (not gov_known and agg_type->record.disc_constraint_values and
-        (not agg_type->record.disc_constraint_exprs or
-         not agg_type->record.disc_constraint_exprs[0])) {
-        gov = agg_type->record.disc_constraint_values[0];
-        gov_known = true;
-      }
-      if (gov_known) {
-        for (uint32_t vi = 0; vi < agg_type->record.variant_count; vi++) {
-          if (gov >= agg_type->record.variants[vi].disc_value_low and
-            gov <= agg_type->record.variants[vi].disc_value_high) {
-            selected_variant = (int32_t) vi; break;
-          }
-          if (agg_type->record.variants[vi].is_others)
-            selected_variant = (int32_t) vi;
-        }
-      }
-    }
+    // mapping skips components belonging to other variants.
+    int32_t selected_variant = Aggregate_Selected_Variant (node, agg_type);
 
     // ── Second pass: initialize fields ───────────────────────────────────────────────────────────
     // Both named (field_name => expr) and positional (expr, expr, ...)                             
