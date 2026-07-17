@@ -46915,6 +46915,18 @@ void Generate_Subprogram_Body (Syntax_Node *node) {
   bool saved_in_accept_body = cg->in_accept_body;
   cg->in_accept_body = false;
 
+  // RM 11.1: runaway recursion must raise STORAGE_ERROR, not fault the
+  // process. Probe the remaining stack in every prologue — the request
+  // covers this frame plus a typical-frame floor, so exhaustion is caught
+  // while margin remains for the raise machinery (cb1010a/d, cb7001a: small
+  // recursive frames never trip the large-object probes).
+  {
+    int64_t probe_frame = (sym->scope and sym->scope->frame_size > 0)
+                        ? sym->scope->frame_size : 0;
+    Emit ("  call void @__ada_stack_check(i64 %lld)  ; RM 11.1 recursion probe\n",
+          (long long)(probe_frame + 512));
+  }
+
   // Check if this function has nested subprograms (in declarations or DECLARE blocks)
   bool has_nested = Has_Nested_Subprograms (&node->subprogram_body.declarations,
                         &node->subprogram_body.statements);
