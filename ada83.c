@@ -3007,6 +3007,11 @@ typedef struct {
   String_Slice *declared_symbol_names;    // Mangled names with a module `declare`
   uint32_t      declared_symbol_name_count;
   uint32_t      declared_symbol_name_capacity;
+  Symbol  *library_elab_flag_syms[64];    // Library-level bodies whose RM 3.9
+                                          // elaboration-flag store must run in
+                                          // main's elaboration sequence (a store
+                                          // at module scope is not legal IR)
+  uint32_t library_elab_flag_count;
 
   // Address markers
   Symbol   *address_markers[256]; // Symbols needing @__address_marker globals
@@ -47778,12 +47783,23 @@ void Generate_Declaration (Syntax_Node *node) {
 
       // RM 3.9: the body's declaration point is where it becomes elaborated.
       // Set its flag true here so calls reached afterward pass the check; calls
-      // reached earlier (in preceding initializations) still saw false.
+      // reached earlier (in preceding initializations) still saw false. A
+      // LIBRARY-level body is generated at module scope, where a store is not
+      // legal IR — its declaration point is its slot in the program's
+      // elaboration sequence, so defer the store to main's elaboration walk
+      // (c39005a).
       if (node->symbol and node->symbol->elab_flag_id != 0) {
-        String_Slice ef = Symbol_Mangle_Name (node->symbol);
-        Emit ("  store i1 true, ptr @%.*s.elab  ; %.*s body elaborated\n",
-              (int)ef.length, ef.data,
-              (int)node->symbol->name.length, node->symbol->name.data);
+        if (cg->current_function) {
+          String_Slice ef = Symbol_Mangle_Name (node->symbol);
+          Emit ("  store i1 true, ptr @%.*s.elab  ; %.*s body elaborated\n",
+                (int)ef.length, ef.data,
+                (int)node->symbol->name.length, node->symbol->name.data);
+        } else if (cg->library_elab_flag_count <
+                   sizeof cg->library_elab_flag_syms
+                   / sizeof cg->library_elab_flag_syms[0]) {
+          cg->library_elab_flag_syms[cg->library_elab_flag_count++] =
+            node->symbol;
+        }
       }
 
       // Defer nested subprogram bodies - emit after enclosing function
@@ -47799,12 +47815,20 @@ void Generate_Declaration (Syntax_Node *node) {
 
       // RM 3.9: a (generic) package body's declaration point is where it
       // becomes elaborated; set its flag true so a later instantiation passes
-      // the access-before-elaboration check.
+      // the access-before-elaboration check. Library-level bodies defer the
+      // store to main's elaboration walk — module scope admits no store.
       if (node->symbol and node->symbol->elab_flag_id != 0) {
-        String_Slice ef = Symbol_Mangle_Name (node->symbol);
-        Emit ("  store i1 true, ptr @%.*s.elab  ; %.*s body elaborated\n",
-              (int)ef.length, ef.data,
-              (int)node->symbol->name.length, node->symbol->name.data);
+        if (cg->current_function) {
+          String_Slice ef = Symbol_Mangle_Name (node->symbol);
+          Emit ("  store i1 true, ptr @%.*s.elab  ; %.*s body elaborated\n",
+                (int)ef.length, ef.data,
+                (int)node->symbol->name.length, node->symbol->name.data);
+        } else if (cg->library_elab_flag_count <
+                   sizeof cg->library_elab_flag_syms
+                   / sizeof cg->library_elab_flag_syms[0]) {
+          cg->library_elab_flag_syms[cg->library_elab_flag_count++] =
+            node->symbol;
+        }
       }
 
       // A package-body stub (PACKAGE BODY X IS SEPARATE;): the subunit's
@@ -56410,10 +56434,28 @@ void Compile_File (const char *input_path, const char *output_path) {
       ? Arena_Allocate (cg->elab_func_count * sizeof (bool)) : NULL;
     for (uint32_t i = 0; i < cg->elab_func_count; i++)
       elab_called[i] = false;
+    // A library-level body's RM 3.9 elaboration flag sets at ITS slot in
+    // this sequence (deferred from module-scope generation, where a store
+    // is not legal IR). NULL emits every store not yet emitted — the
+    // closing sweep for units the order walk did not cover.
+    void Emit_Library_Elab_Flag_Stores (Symbol *unit) {
+      for (uint32_t k = 0; k < cg->library_elab_flag_count; k++) {
+        Symbol *flagged = cg->library_elab_flag_syms[k];
+        if (not flagged) continue;
+        if (unit and flagged != unit) continue;
+        String_Slice ef = Symbol_Mangle_Name (flagged);
+        Emit ("  store i1 true, ptr @%.*s.elab  ; %.*s body elaborated\n",
+              (int)ef.length, ef.data,
+              (int)flagged->name.length, flagged->name.data);
+        cg->library_elab_flag_syms[k] = NULL;
+      }
+    }
     if (elab_order_count > 0 and elab_status == ELAB_ORDER_OK) {
       for (uint32_t i = 0; i < elab_order_count; i++) {
+        Symbol *order_sym = Elab_Get_Order_Symbol (i);
+        if (order_sym) Emit_Library_Elab_Flag_Stores (order_sym);
         if (not Elab_Needs_Elab_Call (i)) continue;
-        Symbol *sym = Elab_Get_Order_Symbol (i);
+        Symbol *sym = order_sym;
         if (not sym) continue;
         for (uint32_t k = 0; k < cg->elab_func_count; k++)
           if (cg->elab_funcs[k] == sym) elab_called[k] = true;
@@ -56440,6 +56482,8 @@ void Compile_File (const char *input_path, const char *output_path) {
         Emit ("___elab()\n");
       }
     }
+    // Library-body elaboration flags the order walk did not place.
+    Emit_Library_Elab_Flag_Stores (NULL);
     for (uint32_t i = 0; i < Bodyless_Required_Package_Count; i++) {
       Emit ("  call void @");
       Emit_Symbol_Name (Bodyless_Required_Packages[i]);
