@@ -33,8 +33,12 @@ PLAN
 [x] Diagnose fail #2 (c44003e): universal preference in Select_Interp
 [x] Fix both structurally in §12 resolution (no expander changes needed)
 [x] Verify: c44 group passes 5/5
-[ ] Verify: full class C shows no regressions (running)
-[ ] Commit + push to claude/ada83-refactor-tests-8jn4ch
+[x] Verify: full class C shows no regressions — ZERO regressions,
+    NINE progressions (1794 -> 1803 of 1976; fails unchanged at 63):
+      c44003a c44003d c44003e c44003f c44003g   (target group, now 5/5)
+      c23001a c23006a c23006b c23006c           (same aggregate root
+                                                 cause; c23 now green)
+[x] Commit + push to claude/ada83-refactor-tests-8jn4ch
 
 WORK LOG
 --------
