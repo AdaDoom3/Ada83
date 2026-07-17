@@ -21680,6 +21680,13 @@ void Resolve_Declaration (Syntax_Node *node) {
                     inst_sym->actual_bindings[actual_idx].builtin_operator = TK_NE;
                   }
                 }
+                // TODO (cc3601a): an explicit attribute actual ('SUCC,
+                // 'PRED, 'IMAGE, 'VALUE — RM 12.3.6) should bind via
+                // actual_attribute like an attribute DEFAULT does; a naive
+                // binding here synthesized a wrapper with the wrong profile
+                // in nested multi-instance contexts, so it stays unbound
+                // (a compile-time error) until the wrapper synthesis is
+                // proven against cc3601a's full shape.
                 else {
 
                   // Look up the actual subprogram symbol; an overloaded
