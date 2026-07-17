@@ -2112,6 +2112,10 @@ struct Type_Info {
                                      // (RM 13.2 allows one); evaluated once at the
                                      // clause's elaboration into the global below
   uint32_t    storage_size_preeval;  // @__rt_cbnd_<n> id of the frozen value, or 0
+  uint32_t    collection_budget_global; // Access types: @__rt_sscap_<n> id of the
+                                        // collection's REMAINING storage units,
+                                        // debited by each allocator (RM 13.2); 0 =
+                                        // no specified collection size (unbounded)
   const char *equality_func_name; // Mangled name of the compiler-generated "=" function
   uint32_t    rt_global_id;       // Runtime type identifier for exception dispatch
   bool        is_generic_formal;    // True when this type stands for a generic
@@ -3270,6 +3274,7 @@ LLVM_Value Emit_Coerce_Val         (LLVM_Value value, LLVM_Rep desired_rep);
 
 // ???
 void Emit_Raise_Exception  (const char *exc_name, const char *comment);
+void Emit_Collection_Budget_Debit (Type_Info *access_type, uint32_t size64);
 void Emit_Check_With_Raise (uint32_t    cond,
                             bool        raise_on_true,
                             const char *comment);
@@ -23155,6 +23160,37 @@ void Emit_Raise_Exception (const char *exc_name, const char *comment) {
 #define Emit_Raise_Constraint_Error(comment) Emit_Raise_Exception ("constraint_error", comment)
 #define Emit_Raise_Program_Error(comment)    Emit_Raise_Exception ("program_error", comment)
 
+// RM 13.2 / 11.1: an allocator for an access type whose collection size was
+// specified draws its storage from that bounded collection. Debit the
+// collection's budget global by the request, raising STORAGE_ERROR when the
+// remaining units cannot cover it. Derived access types and access subtypes
+// share the root type's collection, reached through the base/parent chain.
+// `size64` is the request in storage units as an i64 temp.
+void Emit_Collection_Budget_Debit (Type_Info *access_type, uint32_t size64) {
+  Type_Info *st = access_type;
+  while (st and not st->collection_budget_global) {
+    Type_Info *up = st->base_type and st->base_type != st ? st->base_type
+                  : st->parent_type != st ? st->parent_type : NULL;
+    st = up;
+  }
+  if (not st) return;
+  uint32_t gid = st->collection_budget_global;
+  uint32_t remaining = Emit_Result_Instruction (
+    "load i64, ptr @__rt_sscap_%u  ; collection remaining\n", gid);
+  uint32_t over = Emit_Result_Instruction (
+    "icmp ugt i64 %%t%u, %%t%u\n", size64, remaining);
+  uint32_t raise_label = Emit_Label (), ok_label = Emit_Label ();
+  Emit ("  br i1 %%t%u, label %%L%u, label %%L%u\n",
+        over, raise_label, ok_label);
+  cg->block_terminated = true;
+  Emit_Label_Here (raise_label);
+  Emit_Raise_Exception ("storage_error", "collection exhausted (RM 13.2)");
+  Emit_Label_Here (ok_label);
+  uint32_t left = Emit_Result_Instruction (
+    "sub i64 %%t%u, %%t%u\n", remaining, size64);
+  Emit ("  store i64 %%t%u, ptr @__rt_sscap_%u\n", left, gid);
+}
+
 // RM 11.1: raise STORAGE_ERROR when an automatic object's storage exceeds what
 // the stack can provide. Emit at the elaboration point so the exception reaches
 // the enclosing scope (RM 11.2), never the object's own block handler.
@@ -38113,6 +38149,13 @@ LLVM_Value Generate_Allocator (Syntax_Node *node) {
   if (not access_type)
     Fatal_Error (node->location, "Generate_Allocator: allocator has no access type");
 
+  // The NAMED access type whose collection this allocation draws from
+  // (RM 13.2): the context access type when one was propagated — node->type
+  // may be an anonymous access view that never carries the collection budget.
+  Type_Info *collection_type = node->allocator.target_access_type
+                             ? node->allocator.target_access_type
+                             : access_type;
+
   // Fat pointer decision must match Type_Needs_Fat_Pointer / Type_To_Rep.
   // Access to unconstrained arrays always uses fat pointer, even when
   // the access subtype adds a constraint (RM 3.10).
@@ -38288,6 +38331,7 @@ LLVM_Value Generate_Allocator (Syntax_Node *node) {
     }
 
     // Allocate heap space for array data
+    Emit_Collection_Budget_Debit (collection_type, len_t_64);
     uint32_t heap_ptr = Emit_Result_Instruction ("call ptr @__ada_allocate (i64 %%t%u)\n", len_t_64);
 
     // Copy data: memcpy (heap_ptr, src_data, length)
@@ -38368,6 +38412,7 @@ LLVM_Value Generate_Allocator (Syntax_Node *node) {
 
       uint32_t byte_size = Emit_Result_Instruction ("mul %s %%t%u, %u\n", LLVM_Rep_To_String (alloc_iat), total_elems, elem_size);
       uint32_t byte_size_64 = Emit_Extend_To_I64 (byte_size, alloc_iat).reg;
+      Emit_Collection_Budget_Debit (collection_type, byte_size_64);
       uint32_t heap_ptr = Emit_Result_Instruction ("call ptr @__ada_allocate (i64 %%t%u)\n", byte_size_64);
 
       // RM 9.2/9.3: an allocated array whose elements contain tasks activates
@@ -38455,9 +38500,12 @@ LLVM_Value Generate_Allocator (Syntax_Node *node) {
   // gated by the same predicate for consistency.
   if (Type_Is_Dynamic_Size (designated) and Type_Is_Record (designated)) {
     uint32_t sz = Emit_Type_Byte_Size (designated);
+    Emit_Collection_Budget_Debit (collection_type, sz);
     Emit ("  %%t%u = call ptr @__ada_allocate (i64 %%t%u)\n", t, sz);
   } else {
-  Emit ("  %%t%u = call ptr @__ada_allocate (i64 %llu)\n", t, (unsigned long long)alloc_size);
+    Emit_Collection_Budget_Debit (collection_type,
+      Emit_Static_Int ((int64_t)alloc_size, LLVM_Rep_Int (64, false)).reg);
+    Emit ("  %%t%u = call ptr @__ada_allocate (i64 %llu)\n", t, (unsigned long long)alloc_size);
   }
 
   // If there's an initializer, copy it into the allocated memory
@@ -48685,16 +48733,33 @@ void Generate_Declaration (Syntax_Node *node) {
           node->rep_clause.entity_name->kind == NK_IDENTIFIER)
         overlaid = Symbol_Find (node->rep_clause.entity_name->string_val.text);
 
-      // A non-static 'STORAGE_SIZE expression is evaluated once, here at the
-      // clause's elaboration (RM 13.2); the attribute reads the frozen value.
+      // A 'STORAGE_SIZE specification elaborates here (RM 13.2): a non-static
+      // expression is evaluated once and frozen for the attribute to read
+      // back, and an ACCESS type's collection additionally gets its budget
+      // global — the remaining storage units every allocator debits.
       if (node->rep_clause.attribute_kind == ATTRIBUTE_STORAGE_SIZE and
-          overlaid and overlaid->type and
-          overlaid->type->storage_size_expr and
-          not overlaid->type->storage_size_preeval) {
-        LLVM_Value v =
-          Generate_Expression (overlaid->type->storage_size_expr);
-        overlaid->type->storage_size_preeval =
-          Freeze_Disc_Value_Global (v.rep, v.reg);
+          overlaid and overlaid->type) {
+        Type_Info *collection = overlaid->type;
+        uint32_t specified64 = 0;
+        if (collection->storage_size_expr and
+            not collection->storage_size_preeval) {
+          LLVM_Value v = Generate_Expression (collection->storage_size_expr);
+          collection->storage_size_preeval =
+            Freeze_Disc_Value_Global (v.rep, v.reg);
+          specified64 = Emit_Convert (v.reg, v.rep,
+                                      LLVM_Rep_Int (64, false)).reg;
+        } else if (not collection->storage_size_expr and
+                   collection->storage_size > 0) {
+          specified64 = Emit_Static_Int (collection->storage_size,
+                                         LLVM_Rep_Int (64, false)).reg;
+        }
+        if (specified64 and Type_Is_Access (collection) and
+            not collection->collection_budget_global) {
+          uint32_t gid = ++cg->rt_type_counter;
+          Emit_String_Const ("@__rt_sscap_%u = internal global i64 0\n", gid);
+          Emit ("  store i64 %%t%u, ptr @__rt_sscap_%u\n", specified64, gid);
+          collection->collection_budget_global = gid;
+        }
       }
       if (node->rep_clause.is_address_clause and overlaid and
           overlaid->address_cell and node->rep_clause.expression) {
