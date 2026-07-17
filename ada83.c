@@ -3004,6 +3004,9 @@ typedef struct {
   // e.g., "fread". Track the external names already declared and emit each once.
   String_Slice emitted_extern_names[512]; // External names with a live module declare
   uint32_t     emitted_extern_name_count; // Number of entries in emitted_extern_names
+  String_Slice *declared_symbol_names;    // Mangled names with a module `declare`
+  uint32_t      declared_symbol_name_count;
+  uint32_t      declared_symbol_name_capacity;
 
   // Address markers
   Symbol   *address_markers[256]; // Symbols needing @__address_marker globals
@@ -3215,6 +3218,7 @@ String_Slice Symbol_Mangle_Name    (Symbol      *sym);
 String_Slice Mangle_Qualified_Name (String_Slice parent, String_Slice name);
 // Emit "@mangled_name" (the define/declare name) for a symbol.
 void         Emit_Symbol_Name      (Symbol *sym);
+String_Slice Symbol_Emitted_Name   (Symbol *sym);
 // Emit "@mangled_name" as a reference (call target or global address).
 void         Emit_Symbol_Ref       (Symbol *sym);
 // Emit the alloca or global declaration that provides storage for a symbol.
@@ -3862,6 +3866,7 @@ void Emit_Instance_Wrapper_Bodies (Symbol *inst_sym);
 
 // ???
 void Emit_Extern_Subprogram  (Symbol *sym);
+bool Module_Declare_Name_Once (Symbol *sym);
 void Register_Pending_Extern  (Symbol *sym);
 void Flush_Pending_Externs    (void);
 // One source of truth for a subprogram's LLVM signature spelling. The
@@ -22759,42 +22764,34 @@ uint32_t Emit_Rename_Address (Symbol *sym) {
   return reg;
 }
 
-// Emit symbol name for LLVM identifier (uses unified Symbol_Mangle_Name)
-void Emit_Symbol_Name (Symbol *sym) {
-  if (not sym) {
-    Emit ("unknown");
-    return;
-  }
+// The exact byte sequence emitted as `sym`'s LLVM identifier — the symbol's
+// module-level identity. Anything that reasons about emitted names (the
+// declare-once registry) must key on THIS, not on Symbol_Mangle_Name alone,
+// whose spelling the rules below override for imports and instance clones.
+String_Slice Symbol_Emitted_Name (Symbol *sym) {
+  if (not sym) return S ("unknown");
 
   // A USE-visible alias denotes the same entity as the original; every
   // naming rule below must see the original (mirrors Symbol_Mangle_Name).
   while (sym->aliased) sym = sym->aliased;
 
   // For imported symbols with external name, use that directly
+  // (stripping the quotes a pragma Import string literal carries).
   if (sym->is_imported and sym->external_name.length > 0) {
     String_Slice name = sym->external_name;
-
-    // Strip quotes if present (from pragma Import)
     if (name.length >= 2 and name.data[0] == '"' and name.data[name.length - 1] == '"') {
       name.data++;
       name.length -= 2;
     }
-    for (uint32_t i = 0; i < name.length; i++) {
-      fputc (name.data[i], cg->output);
-    }
-    return;
+    return name;
   }
 
   // Tree-copy instance formal-object bindings own their storage name —
   // Symbol_Mangle_Name already yields <instance>__<formal>_sN — and are
-  // exempt from every instance-name rewriting rule below (those serve the
+  // exempt from the instance-name rewriting rule below (it serves the
   // substitution-at-emission machinery).
-  if (sym->is_instance_in_binding or sym->is_instance_in_out_binding) {
-    String_Slice mangled = Symbol_Mangle_Name (sym);
-    for (uint32_t i = 0; i < mangled.length; i++)
-      fputc (mangled.data[i], cg->output);
-    return;
-  }
+  if (sym->is_instance_in_binding or sym->is_instance_in_out_binding)
+    return Symbol_Mangle_Name (sym);
 
   // An instance's exported variable/constant clone names the same storage
   // the template path above names: <instance>__<var>. References from
@@ -22806,24 +22803,28 @@ void Emit_Symbol_Name (Symbol *sym) {
     sym->parent and sym->parent->kind == SYMBOL_PACKAGE and
     sym->parent->generic_template) {
     String_Slice inst_mangled = Symbol_Mangle_Name (sym->parent);
-    for (uint32_t i = 0; i < inst_mangled.length; i++) {
-      fputc (inst_mangled.data[i], cg->output);
-    }
-    Emit ("__");
+    uint32_t length = inst_mangled.length + 2 + sym->name.length;
+    char *buffer = Arena_Allocate (length);
+    memcpy (buffer, inst_mangled.data, inst_mangled.length);
+    buffer[inst_mangled.length]     = '_';
+    buffer[inst_mangled.length + 1] = '_';
     for (uint32_t i = 0; i < sym->name.length; i++) {
       char ch = sym->name.data[i];
       if (ch >= 'A' and ch <= 'Z') ch = ch - 'A' + 'a';
-      fputc (ch, cg->output);
+      buffer[inst_mangled.length + 2 + i] = ch;
     }
-    return;
+    return (String_Slice){ .data = buffer, .length = length };
   }
 
+  // Unified mangling (lowercase, parent__name format, _sN suffix)
+  return Symbol_Mangle_Name (sym);
+}
 
-  // Use unified mangling (lowercase, parent__name format, _sN suffix)
-  String_Slice mangled = Symbol_Mangle_Name (sym);
-  for (uint32_t i = 0; i < mangled.length; i++) {
-    fputc (mangled.data[i], cg->output);
-  }
+// Emit symbol name for LLVM identifier.
+void Emit_Symbol_Name (Symbol *sym) {
+  String_Slice name = Symbol_Emitted_Name (sym);
+  for (uint32_t i = 0; i < name.length; i++)
+    fputc (name.data[i], cg->output);
 }
 
 // Emit symbol reference with appropriate prefix (@ for global, % for local)
@@ -42513,6 +42514,33 @@ bool Is_Builtin_Function (String_Slice name) {
 }
 
 // Emit function signature for extern declaration
+// One module-level `declare` per mangled name. Distinct Symbol instances can
+// denote one entity — a package re-analysed for each compilation unit of a
+// multi-unit source file — so per-symbol emitted flags cannot catch the
+// duplicate, and LLVM rejects a repeated declare of one name (cd5003c).
+// True on first registration; false when the name is already declared.
+// Imported symbols keep their own external-name registry.
+bool Module_Declare_Name_Once (Symbol *sym) {
+  if (sym->is_imported and sym->external_name.length > 0) return true;
+  String_Slice mangled = Symbol_Emitted_Name (sym);
+  for (uint32_t i = 0; i < cg->declared_symbol_name_count; i++)
+    if (Slice_Equal (cg->declared_symbol_names[i], mangled)) return false;
+  if (cg->declared_symbol_name_count == cg->declared_symbol_name_capacity) {
+    uint32_t grown = cg->declared_symbol_name_capacity
+                   ? cg->declared_symbol_name_capacity * 2 : 128;
+    String_Slice *names = Arena_Allocate (grown * sizeof (String_Slice));
+    for (uint32_t i = 0; i < cg->declared_symbol_name_count; i++)
+      names[i] = cg->declared_symbol_names[i];
+    cg->declared_symbol_names = names;
+    cg->declared_symbol_name_capacity = grown;
+  }
+  // Symbol_Mangle_Name (behind Symbol_Emitted_Name) hands out a rotating
+  // static buffer: copy the bytes, or the registry's entries mutate under it.
+  cg->declared_symbol_names[cg->declared_symbol_name_count++] =
+    Slice_Duplicate (mangled);
+  return true;
+}
+
 void Emit_Extern_Subprogram (Symbol *sym) {
   if (not sym) return;
   if (not Symbol_Is_Subprogram (sym)) return;
@@ -42545,6 +42573,7 @@ void Emit_Extern_Subprogram (Symbol *sym) {
   // OUT / IN OUT formals, hidden 'CONSTRAINED flags appended). Call sites
   // already lower arguments this way, so a value-typed declare for a
   // by-reference formal would make llvm-link reject the module pair.
+  if (not Module_Declare_Name_Once (sym)) return;
   Emit ("declare %s @", Subprogram_Return_Rep_String (sym));
   Emit_Symbol_Name (sym);
   Emit_Formal_Parameter_List (sym, false, false);
@@ -56293,6 +56322,7 @@ void Compile_File (const char *input_path, const char *output_path) {
       }
       continue;
     }
+    if (not Module_Declare_Name_Once (callee)) continue;
     Emit ("declare %s @", Subprogram_Return_Rep_String (callee));
     Emit_Symbol_Name (callee);
     Emit_Formal_Parameter_List (callee, Subprogram_Needs_Static_Chain (callee),
