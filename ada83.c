@@ -22556,6 +22556,15 @@ bool Symbol_Is_Global (Symbol *sym) {
     if (Symbol_Is_Subprogram (ancestor)) {
       return false;  // Inside a subprogram - use local (%) prefix
     }
+    // A task body is emitted as a function: a local whose parent chain
+    // passes through a task (task type, or single task object) lives in
+    // that function's frame exactly like a subprogram local. Without this
+    // the walk sails on to the enclosing package and classifies a library
+    // task's body local as module-global — the declaration emits an alloca
+    // while every use reads an undefined @global (c94004a).
+    if (ancestor->type and Type_Is_Task (ancestor->type)) {
+      return false;
+    }
     if (ancestor->kind == SYMBOL_GENERIC and ancestor->generic_unit and
       ancestor->generic_unit->kind != NK_PACKAGE_SPEC) {
       return false;  // Inside a generic subprogram - local
@@ -47148,8 +47157,12 @@ void Emit_Task_Function_Name (Symbol *task_sym, String_Slice fallback_name) {
   // while emitting an instance.
   Symbol *resolved = NULL;
   if (task_sym and task_sym->type) {
-    // A derived task type reuses its parent's body (RM 9.1); name that body.
-    Type_Info *body_type = Task_Body_Type (task_sym->type);
+    // A formal type's view of a task actual denotes the actual's one body
+    // (RM 12.3): peel the view before resolving, or an instance's task
+    // object references a body named after the FORMAL that nothing defines
+    // (c94010a). A derived task type reuses its parent's body (RM 9.1).
+    Type_Info *body_type =
+      Task_Body_Type (Peel_Generic_Actual_View (task_sym->type));
     resolved = body_type->defining_symbol ? body_type->defining_symbol : task_sym;
   } else if (task_sym)
     resolved = task_sym;
