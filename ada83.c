@@ -39048,6 +39048,20 @@ bool Aggregate_Choice_Out_Of_Range (Syntax_Node *agg, Type_Info *arr) {
 }
 #undef STATIC_LIT_INDEX
 
+// The type whose RANGE bounds the assignment's RHS VALUE, for range-check
+// elision. A name (variable, component, call) yields a value of its subtype,
+// so the subtype's bounds hold; an operator node's result ranges over the
+// BASE type (RM 4.5) even though it is typed by the operand subtype — using
+// the subtype's bounds there would elide the very check that catches
+// I + 1 overflowing I's own subtype (cb2005a).
+static Type_Info *Assignment_Source_Range_Type (Syntax_Node *node) {
+  Syntax_Node *value = node->assignment.value;
+  if (not value) return NULL;
+  if (value->kind == NK_BINARY_OP or value->kind == NK_UNARY_OP)
+    return Type_Base (value->type);
+  return value->type;
+}
+
 void Generate_Assignment (Syntax_Node *node) {
   Syntax_Node *target = node->assignment.target;
 
@@ -40163,8 +40177,8 @@ void Generate_Assignment_Body (Syntax_Node *node, Syntax_Node *target) {
     // e.g. a narrow enum/CHARACTER value the prediction calls i32).
     LLVM_Rep src_rep = value_v.rep;
     if (Type_Is_Scalar (ty)) {
-      Type_Info *src_type_info = node->assignment.value->type;
-      Emit_Constraint_Check_Val ((LLVM_Value){ value, src_rep }, ty, src_type_info);
+      Emit_Constraint_Check_Val ((LLVM_Value){ value, src_rep }, ty,
+                                 Assignment_Source_Range_Type (node));
     }
     value = Emit_Convert (value, src_rep, type_rep).reg;
   }
@@ -40175,8 +40189,8 @@ void Generate_Assignment_Body (Syntax_Node *node, Syntax_Node *target) {
   // (value may have been fptrunc'd/fpext'd above).
   //
   if (Type_Is_Scalar (ty) and (is_src_float or is_dst_float)) {
-    Type_Info *src_type_info = node->assignment.value->type;
-    Emit_Constraint_Check_Val ((LLVM_Value){ value, type_rep }, ty, src_type_info);
+    Emit_Constraint_Check_Val ((LLVM_Value){ value, type_rep }, ty,
+                               Assignment_Source_Range_Type (node));
   }
   // RM 3.10 / 5.2: assigning to a variable of a constrained access subtype
   // (e.g. S2 IS ARR_NAME(3..6) or ACCESS REC(5)), a non-null value must
