@@ -1,0 +1,38 @@
+═══════════════════════════════════════════════════════════════════════════
+CHECKLIST — ada83.c refactor: drive one ACATS C-group to 100%
+═══════════════════════════════════════════════════════════════════════════
+
+ORIGINAL PROMPT
+---------------
+In the pursuit of high-quality code (low line count (e.g. low undue
+complexity) and high feature/correctness) - refactor and fix ada83.c to
+pass a single C-test group completely (e.g. cXX) with much better
+Haskell-like C99 and smart code-golfing with, ironically, textbook
+"Literate Programming" style.
+
+Do NOT skip around - when you encounter a complex problem look at it as an
+opportunity to finally attack a big issue. Remember to follow the flow
+upstream to avoid hacking up the expander.
+
+Create a file to track everything called "checklist.txt" and include this
+prompt in it.
+
+Focus on skipped tests.
+
+PLAN
+----
+[x] Build compiler (clean: gcc -O3 -Wall, no warnings)
+[ ] Survey: full class-C run to map pass/fail/skip per group
+[ ] Pick target group cXX — prefer one with skips (compile failures / N-A)
+    that are tractable as ONE structural fix, not scattered hacks
+[ ] For each skip: diagnose root cause, follow flow upstream
+    (parser → semantics → expander), fix structurally
+[ ] Refactor touched code: literate style, low line count, no duplication
+[ ] Verify: group passes 100%; full class C shows no regressions
+[ ] Commit + push to claude/ada83-refactor-tests-8jn4ch
+
+TARGET GROUP: (tbd)
+
+WORK LOG
+--------
+(entries added as work proceeds)
