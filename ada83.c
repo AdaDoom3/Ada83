@@ -2710,6 +2710,7 @@ bool    Symbol_Is_Subprogram        (const Symbol *sym);
 void    Symbol_Assign_Frame_Slot    (Symbol *sym, Scope *scope);
 Symbol *Symbol_Find         (String_Slice name);
 Symbol *Symbol_Find_By_Type (String_Slice name, Type_Info *expected_type);
+Symbol *Package_Denoted      (Symbol *package_symbol);
 Symbol *Symbol_Find_Closest (String_Slice name);
 Symbol *Single_Task_Object_Denoted (Symbol *sym);
 bool    Symbol_Has_Stable_Library_Name (const Symbol *sym);
@@ -9558,8 +9559,13 @@ void Symbol_Manager_Pop_Scope (void) {
     //                                                                                              
     Scope *child = sm->current_scope;
     Scope *parent = child->parent;
-    bool is_function_body_scope = (Symbol_Is_Subprogram (child->owner) and
-      child->owner->scope == child);
+    // A frame-owning body scope: a subprogram's, or a task body's (a task
+    // body owns a per-instance frame and is a static-chain level, so its
+    // storage must NOT leak into the enclosing function's alias set —
+    // nested units reach it through the chain instead).
+    bool is_function_body_scope = child->owner and child->owner->scope == child
+      and (Symbol_Is_Subprogram (child->owner) or
+           Type_Is_Task (child->owner->type));
 
     // This is a block scope (DECLARE/loop/etc), not a subprogram's own body scope.
     // Propagate its storage-bearing symbols to parent's frame_vars for alias generation.
@@ -9940,6 +9946,19 @@ Symbol *Symbol_Find_Closest (String_Slice name) {
         if (search.best_distance < distance_before) best = sym;
       }
   return Closest_Name_Found (&search) ? best : NULL;
+}
+
+// RM 8.5: a package renaming denotes the SAME package — peel to the
+// original so consumers see the complete, live export list. A renaming
+// declared INSIDE the renamed package (`PACKAGE PACKA RENAMES PACK1` in
+// PACK1's own visible part, c85011a) snapshots a still-growing export
+// array; the original always carries the finished one.
+Symbol *Package_Denoted (Symbol *package_symbol) {
+  while (package_symbol and package_symbol->kind == SYMBOL_PACKAGE and
+         package_symbol->renamed_object and
+         ((Symbol *) package_symbol->renamed_object)->kind == SYMBOL_PACKAGE)
+    package_symbol = (Symbol *) package_symbol->renamed_object;
+  return package_symbol;
 }
 
 // Find symbol by name and type (for enumeration literal disambiguation)
@@ -11279,6 +11298,33 @@ Type_Info *Resolve_Selected (Syntax_Node *node) {
   //                                                                                                
   } else {
     Symbol *prefix_sym = node->selected.prefix->symbol;
+
+    // RM 8.5: a package renaming denotes the SAME package — peel to the
+    // original so lookups see the complete, live export list (c85011a).
+    prefix_sym = Package_Denoted (prefix_sym);
+
+    // RM 12.3: within a generic unit, the unit's name denotes the current
+    // instance — GEN.X inside GEN's own template resolves X exactly as a
+    // direct name in the current scope (c94008c: SHARED.SET called from
+    // within generic package SHARED's own body). The same applies while an
+    // INSTANCE body clone is being re-resolved: the enclosing scope is then
+    // owned by the instance symbol, whose template back-link names the
+    // prefix.
+    if (prefix_sym and prefix_sym->kind == SYMBOL_GENERIC) {
+      bool inside_template = false;
+      for (Scope *s = sm->current_scope; s and not inside_template; s = s->parent)
+        inside_template = s->owner == prefix_sym or
+          (s->owner and s->owner->generic_template == prefix_sym);
+      if (inside_template) {
+        Symbol *s = Symbol_Find (node->selected.selector);
+        if (s) {
+          node->symbol = s;
+          node->type = (s->kind == SYMBOL_FUNCTION and s->return_type)
+                       ? s->return_type : s->type;
+          return node->type;
+        }
+      }
+    }
 
     // Search package's exported symbols
     if (prefix_sym and prefix_sym->kind == SYMBOL_PACKAGE) {
@@ -14260,6 +14306,11 @@ static Type_Info *Catenation_Operand_Target (Syntax_Node *o, Type_Info *arr,
                                              Type_Info *elem) {
   Type_Info *ot = o ? o->type : NULL;
   if (Type_Is_Array_Like (ot) and Type_Base (ot) == arr) return arr;
+  // An operand that is itself a catenation yields the array type (RM 4.5.3)
+  // — `R2 & A1(2) & (A2(1) & R1)` chains component catenations whose every
+  // link is a value of the one result array type (c45347a).
+  if (o and o->kind == NK_BINARY_OP and o->binary.op == TK_AMPERSAND)
+    return arr;
   // An untyped flexible operand is the ARRAY operand whenever it cannot
   // denote the component type: `(1, 2) & X` catenates a two-element array
   // with the component X, not two components (cc3225a).
@@ -17509,6 +17560,26 @@ void Resolve_Statement (Syntax_Node *node) {
       // Resolve accept parameters
       Install_Parameter_Symbols (&node->accept_stmt.parameters, NULL);
 
+      // Accept formals marshal BY VALUE through the rendezvous record (with
+      // copy-back at the accept's end) — EXCEPT records, whose slot holds
+      // the CALLER'S RECORD ADDRESS (the accept lowering binds them by
+      // reference, RM 6.2). Flag record formals NOW, at resolution time: a
+      // nested unit inside the accept body may have its frame aliases
+      // EMITTED before the accept's own lowering runs (deferred-body
+      // ordering), and its alias must load the pointer rather than treat
+      // the slot as the record itself (c85005c: PROC1 reads MAIN_TASK's
+      // IN OUT record accept formal uplevel).
+      for (uint32_t pi = 0; pi < node->accept_stmt.parameters.count; pi++) {
+        Syntax_Node *ps = node->accept_stmt.parameters.items[pi];
+        if (not ps or ps->kind != NK_PARAM_SPEC) continue;
+        Type_Info *pt = ps->param_spec.param_type
+                      ? ps->param_spec.param_type->type : NULL;
+        if (not Type_Is_Record (Type_Underlying (pt))) continue;
+        for (uint32_t nj = 0; nj < ps->param_spec.names.count; nj++)
+          if (ps->param_spec.names.items[nj]->symbol)
+            ps->param_spec.names.items[nj]->symbol->param_by_reference = true;
+      }
+
       // Overloaded entries share a name; the accept denotes the overload whose
       // parameter profile matches this accept's, not merely the first found by
       // name (RM 9.5(2)). Match on parameter count and types so each accept
@@ -20090,6 +20161,20 @@ void Resolve_Declaration (Syntax_Node *node) {
         }
         Symbol *target = node->package_renaming.old_name ?
                  node->package_renaming.old_name->symbol : NULL;
+
+        // RM 12.3: within a generic package, the unit's name denotes the
+        // current instance — so a renaming of the generic inside its own
+        // template (`PACKAGE PACKB RENAMES GPACK` in GPACK) denotes each
+        // instance itself. When this declaration is re-resolved inside an
+        // instance, rebind the target to that instance's package symbol
+        // (c85011a: PACK2.PACKB.J).
+        if (target and target->kind == SYMBOL_GENERIC)
+          for (Scope *s = sm->current_scope; s; s = s->parent)
+            if (s->owner and s->owner->kind == SYMBOL_PACKAGE and
+                s->owner->generic_template == target) {
+              target = s->owner;
+              break;
+            }
         Symbol *sym = Symbol_New (SYMBOL_PACKAGE,
                       node->package_renaming.new_name,
                       node->location);
@@ -20680,13 +20765,16 @@ void Resolve_Declaration (Syntax_Node *node) {
         Syntax_Node *pkg_name_node = node->use_clause.names.items[i];
         Resolve_Expression (pkg_name_node);
 
-        // Find the package symbol
+        // Find the package symbol. A renaming denotes the SAME package
+        // (RM 8.5) — peel so USE installs the complete, live export list
+        // (c85011a: USE PACK1.PACKA, where PACKA renames PACK1 from inside).
         Symbol *pkg_sym = NULL;
         if (pkg_name_node->kind == NK_IDENTIFIER) {
           pkg_sym = Symbol_Find (pkg_name_node->string_val.text);
         } else if (pkg_name_node->symbol) {
           pkg_sym = pkg_name_node->symbol;
         }
+        pkg_sym = Package_Denoted (pkg_sym);
 
         // Helper macro: add use-visible alias for a symbol
         if (pkg_sym and pkg_sym->kind == SYMBOL_PACKAGE) {
@@ -41900,21 +41988,23 @@ void Generate_Statement (Syntax_Node *node) {
                   Emit_Local_Ref (name->symbol);
                   Emit (" = inttoptr " PTR_INT_TYPE " %%t%u to ptr\n", pv);
 
-                  // A nested subprogram in the accept body reads this record
-                  // uplevel. Bind it by reference (RM 6.2): mark the formal so
-                  // the nested reader's frame alias loads a pointer, and publish
-                  // the caller's record address in the formal's frame slot (its
-                  // %__frame.<name>, which the prologue emitted as the slot's
-                  // address). The reader then dereferences the caller's live
-                  // object, so IN OUT updates and later reads stay consistent —
-                  // not a bind-time snapshot.
-                  if (cg->is_nested and name->symbol->frame_offset_assigned) {
+                  // A nested unit in the accept body reads this record uplevel.
+                  // Bind it by reference (RM 6.2): publish the caller's record
+                  // address in the formal's slot of the TASK'S OWN frame and
+                  // mark it by-reference, so a nested reader's alias loads the
+                  // pointer and dereferences the caller's live object — IN OUT
+                  // updates and later reads stay consistent, not a bind-time
+                  // snapshot.
+                  if (cg->current_nesting_level > 0 and
+                      name->symbol->frame_offset_assigned) {
                     name->symbol->param_by_reference = true;
+                    uint32_t slot = Emit_Result_Instruction (
+                      "getelementptr i8, ptr %%__frame_base, i64 %lld\n",
+                      (long long) name->symbol->frame_offset);
                     Emit ("  store ptr %%");
                     Emit_Symbol_Name (name->symbol);
-                    Emit (", ptr %%__frame.");
-                    Emit_Symbol_Name (name->symbol);
-                    Emit ("  ; publish uplevel record by-reference\n");
+                    Emit (", ptr %%t%u  ; publish uplevel record by-reference\n",
+                          slot);
                   }
 
                   // RM 3.7.4: a mutable OUT/IN OUT formal takes its 'CONSTRAINED
@@ -42583,14 +42673,22 @@ void Generate_Statement (Syntax_Node *node) {
         uint32_t task_ptr = Generate_Expression (task_name).reg;
         Emit ("  call void @__ada_task_abort (ptr %%t%u)\n", task_ptr);
 
-        // RM 9.10: a task aborting itself does not execute the statement that
-        // follows the abort. pthread_cancel of the running thread is deferred to
-        // the next cancellation point, so end the task body here when the target
-        // is this task.
+        // RM 9.10: a task aborting itself — directly, or by aborting an
+        // ANCESTOR, whose dependents (including this task) become abnormal
+        // with it — does not execute the statement that follows the abort.
+        // pthread_cancel of the running thread is deferred to the next
+        // cancellation point, so end the task body here when SELF became
+        // abnormal: read this task's own abort-pending flag, which
+        // __ada_abort_subtree just set if we were in the target's subtree
+        // (c94020a: T41 aborts its parent T4).
         if (cg->in_task_body) {
+          uint32_t flag_ptr = Emit_Result_Instruction (
+            "getelementptr i8, ptr %%__self_tcb, i64 61\n");
+          uint32_t flag = Emit_Result_Instruction (
+            "load i8, ptr %%t%u  ; own abort-pending (abnormal) flag\n", flag_ptr);
           uint32_t isself = Emit_Temp ();
           uint32_t self_l = cg->label_id++, cont_l = cg->label_id++;
-          Emit ("  %%t%u = icmp eq ptr %%t%u, %%__self_tcb\n", isself, task_ptr);
+          Emit ("  %%t%u = icmp ne i8 %%t%u, 0\n", isself, flag);
           Emit ("  br i1 %%t%u, label %%L%u, label %%L%u\n", isself, self_l, cont_l);
           Emit_Label_Here (self_l);
           Emit ("  call void @__ada_pop_handler()\n");
@@ -46469,6 +46567,21 @@ bool Has_Nested_In_Statements (Node_List *statements) {
       if (Has_Nested_In_Statements (&stmt->if_stmt.else_stmts)) return true;
     } else if (stmt->kind == NK_LOOP) {
       if (Has_Nested_In_Statements (&stmt->loop_stmt.statements)) return true;
+
+    // An ACCEPT body is a sequence of statements like any other (RM 9.5) —
+    // a DECLARE block inside it can hold nested subprograms that reach this
+    // frame (c85005c: PROC1 declared inside ACCEPT START's block).
+    } else if (stmt->kind == NK_ACCEPT) {
+      if (Has_Nested_In_Statements (&stmt->accept_stmt.statements)) return true;
+    } else if (stmt->kind == NK_SELECT) {
+      for (uint32_t j = 0; j < stmt->select_stmt.alternatives.count; j++) {
+        Syntax_Node *alt = stmt->select_stmt.alternatives.items[j];
+        if (alt and Has_Nested_In_Statements (&(Node_List){ .items = &alt, .count = 1 }))
+          return true;
+      }
+      if (stmt->select_stmt.else_part and
+          Has_Nested_In_Statements (&(Node_List){ .items = &stmt->select_stmt.else_part, .count = 1 }))
+        return true;
     } else if (stmt->kind == NK_CASE) {
       for (uint32_t j = 0; j < stmt->case_stmt.alternatives.count; j++) {
         Syntax_Node *alt = stmt->case_stmt.alternatives.items[j];

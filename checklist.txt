@@ -91,3 +91,65 @@ DISCOVERED, OUT OF GROUP SCOPE (not fixed here)
 - `USR'IMAGE` on a fixed-point type emits invalid IR: `sext i64 to i32`
   (invalid cast opcode; should be trunc). Hit while probing with
   TEXT_IO.PUT_LINE of a fixed 'IMAGE. Worth its own investigation.
+
+═══════════════════════════════════════════════════════════════════════════
+ROUND 2 — "continue for the rest of the skips" (fix, never skip→fail)
+═══════════════════════════════════════════════════════════════════════════
+
+FIXED AND VERIFIED (each = structural root cause, no expander hacks)
+--------------------------------------------------------------------
+[x] Variant selection shared §12/§13 (Aggregate_Selected_Variant):
+    c52001a, ce2201g
+[x] RM 3.6 anonymous unconstrained array base (Array_Unconstrained_Base),
+    scoped to POSITIONAL operand aggregates: cc3225a
+    (named aggregates keep the constrained view — c37213e-family stays green)
+[x] Flexible_Can_Denote shared predicate bounds sibling-type adoption and
+    catenation operand choice; nested "&" chains type as the array:
+    c45347a, c45347c, c45347d
+[x] Named call arguments map by NAME in the view's profile; constraints
+    from the RENAMED profile (RM 8.5/6.4.1): c85013a
+[x] Qualified operand resolution shared with destructured allocators
+    (Resolve_Qualified_Operand, RM 4.7/4.8): c47002d
+[x] RM 9.1 self-task references: 'CALLABLE/'TERMINATED/ABORT via type name
+    (c91004b, c9a011a), self entry call TT1.E1 (c91004c)
+[x] Task bodies are static-chain levels: own %__frame_base when they have
+    nested units, scope linked to symbol, Find_Enclosing_Subprogram and
+    the frame-var propagation boundary treat task-body owners as frame
+    levels; accept formals bind into the task's own frame: c9a006a,
+    c85005c, c85006c, c41308c + library-level leaf tasks (part of c94005b)
+[x] Accept formals marshal BY VALUE except records (caller address) —
+    record formals flagged param_by_reference at RESOLUTION time
+    (deferred-body emission order made codegen-time flagging unsound)
+[x] ACCEPT/SELECT statements traversed by Has_Nested_In_Statements
+[x] RM 9.10 abort epilogue checks SELF's abnormal flag (covers aborting an
+    ancestor): c94020a
+[x] RM 12.3 generic self-reference (GEN.X inside template or instance
+    clone); package renaming peel (Package_Denoted) in selected-component,
+    USE clause, and instance rebinding of template self-renames:
+    c85011a/c94008c progressed (remaining errors are later, distinct)
+
+KNOWN REMAINING (each diagnosed, not yet fixed)
+-----------------------------------------------
+- probei.ada (scratchpad): by-ref RECORD accept formal renamed then passed
+  on — write does not reach caller (pre-existing; not covered by ACATS
+  pass set today)
+- c94005b: multi-unit source file WITH'ing a unit defined earlier in the
+  SAME file emits it twice (library mgmt §14/§17)
+- ca5004a/b: bodyless library package with task object gets no synthesized
+  elaboration function (task never created → TASKING_ERROR)
+- c94008c/d: generic formal subprogram actual matching ("parameter 1 of
+  the actual for formal subprogram 'SET' has the wrong type")
+- c85011a: USE of renamed packages — fixed in source (Package_Denoted in
+  USE path) pending verification
+- Parser gaps: expression bounds in index constraints (c41106a `INTEGER'LAST
+  - 4 ..`, c52102b/d `-4 .. X`), expanded-name GOTO targets (c41307d),
+  character-literal renames (c85019a, cc1307b), generic unit name forms
+  (c86005b)
+- c59001b: forward GOTO to labels declared later (undefined label L311)
+- c83033a: INTERNAL ERROR Generate_Apply unclassified
+- c95085b/c: untyped aggregate in codegen (entry OUT formals)
+- Generic formal matching strictness cluster: cc1207b cd1009i cc3224a
+  cc3603a cc1305b cc3601a cc3120b
+- Multi-file families: ca1013a6m ca1020d/e3m ca3009a6m ca5003b5m c86004*
+  c83024e1m c83f01* cc1307a/b (undefined identifiers across units)
+- 'IMAGE on fixed-point emits invalid sext (from round 1)
