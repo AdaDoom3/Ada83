@@ -20484,8 +20484,12 @@ void Resolve_Declaration (Syntax_Node *node) {
         }
         node->symbol = task_sym;
 
-        // Push scope for task body
+        // Push scope for task body. Link it to the symbol (as subprogram and
+        // package analysis do): the task body owns a per-instance frame, and
+        // the static-chain walkers need its scope's layout to alias its
+        // locals from nested units (RM 9.1).
         Symbol_Manager_Push_Scope (task_sym);
+        task_sym->scope = sm->current_scope;
 
         // Import entries from task spec into body scope (RM 9.1)                                   
         // Entries declared in the task spec are visible inside the task body.                     
@@ -23028,10 +23032,18 @@ void Emit_Exception_Ref (Symbol *exc) {
 // needs access to the outermost procedure's frame.                                                
 // Returns NULL if no enclosing function/procedure found.                                          
 //                                                                                                  
+// The nearest enclosing FRAME-OWNING level of the static chain: a
+// subprogram, or a task body (RM 9.1 — a task body owns a per-instance
+// frame exactly like a subprogram when it declares nested units; its owner
+// symbol is the task type, or the object for a single task). Packages are
+// transparent — their declarations share the enclosing frame.
 Symbol *Find_Enclosing_Subprogram (Symbol *sym) {
   Symbol *ancestor = sym ? sym->parent : NULL;
   while (ancestor) {
     if (Symbol_Is_Subprogram (ancestor))
+      return ancestor;
+    if (Type_Is_Task (ancestor->type) and ancestor->scope and
+        ancestor->scope->owner == ancestor)
       return ancestor;
     ancestor = ancestor->parent;
   }
@@ -23195,20 +23207,22 @@ void Emit_Symbol_Storage (Symbol *sym) {
 }
 
 // An accept formal is frame-resident whenever a nested subprogram in the
-// accept body can read it uplevel (RM 6.2): the task body is a nested context
-// and the formal was given a frame slot, so the prologue emitted its
-// %__frame.<name> alias. Bind the formal's local name to that slot — a no-op
-// GEP off the alias — so the accept body (through %<name>) and any nested
-// reader (through %__frame.<name>) share one storage location. The caller then
-// writes the incoming value through %<name>. Returns false when the formal is
-// not frame-resident, in which case the caller keeps its own local binding.
+// accept body can read it uplevel (RM 6.2): the formal has a slot in the
+// TASK BODY's own frame — the task is a static-chain level — so bind the
+// formal's local name to that slot. The accept body (through %<name>) and
+// any nested reader (through its %__frame.<name> alias off this task's
+// frame) then share one storage location; the caller writes the incoming
+// value through %<name>. A leaf task body allocates no frame, and can
+// contain no nested reader — return false so the caller keeps the formal
+// as a plain local binding.
 bool Emit_Bind_Accept_Formal_To_Frame (Symbol *sym) {
-  if (not cg->is_nested or not sym or not sym->frame_offset_assigned)
+  if (not sym or not sym->frame_offset_assigned or
+      cg->current_nesting_level == 0)
     return false;
   Emit_Local_Ref (sym);
-  Emit (" = getelementptr i8, ptr %%__frame.");
-  Emit_Symbol_Name (sym);
-  Emit (", i64 0  ; accept formal frame slot (uplevel-readable)\n");
+  Emit (" = getelementptr i8, ptr %%__frame_base, i64 %lld"
+        "  ; accept formal frame slot (uplevel-readable)\n",
+        (long long) sym->frame_offset);
   return true;
 }
 
@@ -26884,6 +26898,15 @@ LLVM_Value Generate_Identifier (Syntax_Node *node) {
       }
     } break;
     default:
+      // RM 9.1: within its own body, a task unit's name denotes the task
+      // currently executing that body — the TCB the body received.
+      // 'CALLABLE, 'TERMINATED, membership tests, and ABORT all consume it
+      // as a task handle (c91004b: `IF NOT TT1'CALLABLE` inside TT1's body).
+      if (cg->in_task_body and sym->type and Type_Is_Task (sym->type) and
+          cg->current_function and cg->current_function->type == sym->type) {
+        Emit ("  %%t%u = getelementptr i8, ptr %%__self_tcb, i64 0  ; task self (RM 9.1)\n", t);
+        return Val_Rep (t, LL_REP_PTR);
+      }
       Emit ("  %%t%u = add %s 0, 0  ; unhandled symbol kind\n", t, LLVM_Rep_To_String (Integer_Arith_Rep ()));
       return Val_Rep (t, Integer_Arith_Rep ());
   }
@@ -30064,6 +30087,13 @@ uint32_t Emit_Task_Pointer_From_Selected (Syntax_Node *selected_prefix) {
     Emit ("L%u:\n", join_label);
     Emit ("  %%t%u = phi ptr [ null, %%L%u ], [ %%t%u, %%L%u ]\n",
        task_ptr, from_label, loaded, ok_label);
+  } else if (task_sym->kind == SYMBOL_TYPE and Type_Is_Task (task_sym->type) and
+             cg->in_task_body and cg->current_function and
+             cg->current_function->type == task_sym->type) {
+    // RM 9.1: within its own body, the task type's name denotes the task
+    // currently executing the body (c91004c: `TT1.E1` — a conditional
+    // entry call on self). The type symbol has no storage to load.
+    Emit ("  %%t%u = getelementptr i8, ptr %%__self_tcb, i64 0  ; task self (RM 9.1)\n", task_ptr);
   } else if (Type_Is_Task (task_sym->type)) {
     // A task object variable holds a pointer to its TCB; load it. The entry
     // queue lives in the TCB, so the caller must pass the TCB value (matching
@@ -47452,15 +47482,34 @@ void Generate_Task_Body (Syntax_Node *node) {
   cg->enclosing_function = saved_current_function;  // Access parent's vars
   cg->in_task_body = true;  // Task entry points return ptr for pthread
 
-  // A task function never allocates a %__frame_base of its own: its locals
-  // are allocas, and enclosing-scope variables arrive through the
-  // %__parent_frame aliases above. Deferred emission would otherwise leak
-  // the ENCLOSING function's has-nested flag into the task's declarations.
-  cg->current_nesting_level = 0;
+  // A LEAF task function allocates no %__frame_base: its locals are allocas,
+  // and enclosing-scope variables arrive through the %__parent_frame aliases
+  // below. (Deferred emission would otherwise leak the ENCLOSING function's
+  // has-nested flag into the task's declarations.) A task body WITH nested
+  // units is a static-chain level like any subprogram: its locals live in a
+  // per-instance frame so nested subprograms and tasks reach them through
+  // the chain (RM 9.1 — c9a006a: a task nested in task REGISTER's body
+  // aborting REGISTER's local task object), and the received %__parent_frame
+  // is stored at the frame's end as the chain link.
+  bool task_has_nested = Has_Nested_Subprograms (&node->task_body.declarations,
+                                                 &node->task_body.statements);
+  cg->current_nesting_level = task_has_nested ? 1 : 0;
 
   // Reset temp counter for new function
   uint32_t saved_temp = cg->temp_id;
   cg->temp_id = 1;
+
+  if (task_has_nested) {
+    Symbol *tsym = node->symbol;
+    int64_t frame_size = (tsym->scope and tsym->scope->frame_size > 0)
+                       ? tsym->scope->frame_size : 8;
+    Emit ("  ; Frame for nested function access\n");
+    Emit_Stack_Probe_Static ((uint64_t) frame_size + 8);
+    Emit ("  %%__frame_base = alloca i8, i64 %lld\n", (long long)(frame_size + 8));
+    uint32_t slot = Emit_Result_Instruction (
+      "getelementptr i8, ptr %%__frame_base, i64 %lld\n", (long long)frame_size);
+    Emit ("  store ptr %%__parent_frame, ptr %%t%u\n", slot);
+  }
 
   // Create frame aliases for accessing enclosing scope variables.
   // Task bodies can reference variables from the enclosing scope (RM 9.1).
