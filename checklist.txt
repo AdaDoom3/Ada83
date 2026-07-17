@@ -257,3 +257,8 @@ STILL OPEN (diagnosed)
 - c86002b/c86004b/c: library units named STANDARD / multi-file homographs.
 - cc3120b (entry family via generic formal task?), cc3224a (formal array
   index matching), cc3603a, cc1305b (ran, outcome unverified).
+
+VALIDATION (run 4, final): 1837/1976 pass (92%), 60 fail, 79 skip.
+Zero regressions vs original baseline AND vs previous run.
+Session total: 1794 -> 1837 (+43 passes), fails 63 -> 60, skips 119 -> 79.
+New this round: c86005a c86005b c86005e c86006a (+ c97307a flake passed).
