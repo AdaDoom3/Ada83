@@ -19,20 +19,71 @@ prompt in it.
 
 Focus on skipped tests.
 
+TARGET GROUP: c44 (RM 4.4 expressions — operator precedence with
+user-defined operator overloads). Chosen because ALL FIVE tests
+(c44003a/d/e/f/g) were SKIPPED — the compiler emitted invalid LLVM IR
+(use of undefined %t0) so nothing in the group even linked.
+
 PLAN
 ----
 [x] Build compiler (clean: gcc -O3 -Wall, no warnings)
-[ ] Survey: full class-C run to map pass/fail/skip per group
-[ ] Pick target group cXX — prefer one with skips (compile failures / N-A)
-    that are tractable as ONE structural fix, not scattered hacks
-[ ] For each skip: diagnose root cause, follow flow upstream
-    (parser → semantics → expander), fix structurally
-[ ] Refactor touched code: literate style, low line count, no duplication
-[ ] Verify: group passes 100%; full class C shows no regressions
+[x] Survey: full class-C run — baseline 1794/1976 pass, 63 fail, 119 skip
+[x] Pick target group: c44 — 5/5 skipped, one shared root cause
+[x] Diagnose skip #1: flexible-operand adoption in Analyze_Binary
+[x] Diagnose fail #2 (c44003e): universal preference in Select_Interp
+[x] Fix both structurally in §12 resolution (no expander changes needed)
+[x] Verify: c44 group passes 5/5
+[ ] Verify: full class C shows no regressions (running)
 [ ] Commit + push to claude/ada83-refactor-tests-8jn4ch
-
-TARGET GROUP: (tbd)
 
 WORK LOG
 --------
-(entries added as work proceeds)
+1. Survey run (test_results/c-20260717-152813-4406): c44 was the only
+   group with 100% of its tests skipped. All five died the same way:
+   llvm-link rejected the IR with `use of undefined value '%t0'`,
+   preceded by `warning: Generate_Aggregate: unhandled aggregate type
+   kind=1` (kind 1 = TYPE_BOOLEAN).
+
+2. Root cause #1 — Analyze_Binary flexible-operand adoption (§12).
+   In `(I1 MOD I2 <= I5) /= (1 .. 3 => 7)` the inner "<=" legitimately
+   carries two interpretations: predefined "<=" -> BOOLEAN and the user
+   "<="(ARR,ARR) -> ARR. The aggregate operand has no interpretations of
+   its own (RM 4.3 flexible operand), and Analyze_Binary let it adopt the
+   sibling's candidate types WHOLESALE — including BOOLEAN. That built a
+   spurious "/="(BOOLEAN,BOOLEAN) interpretation which Select_Interp
+   picked, driving the aggregate into a scalar type it cannot denote; the
+   expander then had nothing to emit and produced the %t0 placeholder.
+   FIX (upstream, in resolution, not the expander): adoption is now
+   bounded by what the literal form can possibly denote (RM 8.6
+   applicable interpretations): an aggregate only a composite type
+   (RM 4.3), a string literal only a one-dimensional character array
+   (RM 4.2). Nested predicate Flexible_Can_Denote in Analyze_Binary.
+   Result: c44003a/d/f/g pass; c44003e progressed to a runtime FAIL.
+
+3. Root cause #2 — Select_Interp universal preference (§12).
+   c44003e section 3 (fixed-point USR with user "AND" ">=" "+" "-" "/"
+   "**"): `-3.5 - 11.0` in a USR context computed -14.5 instead of -3.5.
+   The candidates for the binary "-" are (universal_real) and the
+   predefined "-"(USR,USR) whose operand type was contributed by the
+   nested USER unary "-"(USR) interpretation. Step 3 of Select_Interp
+   (RM 4.10 universal preference) returned the universal interpretation
+   because its escape clause only recognized USER-NAMED candidates
+   matching the context. But per RM 4.6 an implicit universal conversion
+   applies iff there is no legal interpretation without it, and only a
+   literal, named number, or attribute is a convertible operand — an
+   operator RESULT is not. So a universal interpretation can never
+   legally satisfy a concrete numeric context; the literals convert
+   instead and the concrete operation governs (which then resolves the
+   nested unary minus to the user "-"(USR) -> 7.5 -> 7.5-11.0 = -3.5).
+   FIX: the escape now recognizes ANY concrete candidate denoting the
+   context type — user-declared or predefined — while keeping the
+   NEW-derivation exclusion (c87b07d) and the no-context / universal-
+   context behavior (c87b07a) intact.
+
+4. c44 group: 5/5 PASSED.
+
+DISCOVERED, OUT OF GROUP SCOPE (not fixed here)
+-----------------------------------------------
+- `USR'IMAGE` on a fixed-point type emits invalid IR: `sext i64 to i32`
+  (invalid cast opcode; should be trunc). Hit while probing with
+  TEXT_IO.PUT_LINE of a fixed 'IMAGE. Worth its own investigation.

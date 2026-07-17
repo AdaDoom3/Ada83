@@ -13752,15 +13752,31 @@ void Analyze_Binary (Syntax_Node *n) {
   // Candidate operand-type lists. A "flexible" operand (an aggregate, or a
   // string literal with no committed type) has no interps of its own — it takes
   // its type from the sibling/context (RM 4.3, 4.2), so let it adopt the other
-  // operand's candidate types.
+  // operand's candidate types. Adoption is bounded by what the literal form can
+  // possibly denote (RM 8.6 applicable interpretations): an aggregate only a
+  // composite type (RM 4.3), a string literal only a one-dimensional array with
+  // a character component (RM 4.2). Without the bound, a sibling whose interp
+  // set mixes scalar and composite results — `user_op(A, B) /= (1 .. 3 => 7)`
+  // where "<=" is redefined to return the array — leaks its scalar candidate
+  // into the aggregate and resolution drives the aggregate into a type it
+  // cannot denote (c44003a..g).
+  bool Flexible_Can_Denote (Syntax_Node *o, Type_Info *t) {
+    if (o and o->kind == NK_AGGREGATE) return Type_Is_Composite (t);
+    if (o and o->kind == NK_STRING)
+      return Type_Is_Array_Like (t) and t->array.index_count == 1 and
+             Type_Is_Character_Type (t->array.element_type);
+    return true;
+  }
   Type_Info *lts[MAX_INTERPRETATIONS], *rts[MAX_INTERPRETATIONS];
   uint32_t nlt = 0, nrt = 0;
   for (uint32_t i = 0; li and i < li->count and nlt < MAX_INTERPRETATIONS; i++)
     lts[nlt++] = li->items[i].typ;
   for (uint32_t i = 0; ri and i < ri->count and nrt < MAX_INTERPRETATIONS; i++)
     rts[nrt++] = ri->items[i].typ;
-  if (nlt == 0) { for (uint32_t i = 0; i < nrt; i++) lts[i] = rts[i]; nlt = nrt; }
-  if (nrt == 0) { for (uint32_t i = 0; i < nlt; i++) rts[i] = lts[i]; nrt = nlt; }
+  if (nlt == 0) { for (uint32_t i = 0; i < nrt; i++)
+    if (Flexible_Can_Denote (L, rts[i])) lts[nlt++] = rts[i]; }
+  if (nrt == 0) { for (uint32_t i = 0; i < nlt; i++)
+    if (Flexible_Can_Denote (R, lts[i])) rts[nrt++] = lts[i]; }
 
   // Predefined interpretations, synthesized per operand-type pair. Predefined
   // arithmetic operators are not stored per type; the result type comes from
@@ -14052,29 +14068,38 @@ static Interpretation *Select_Interp (Interp_List *l, Type_Info *ctx) {
   }
 
   // 3. RM 4.10: a predefined operation whose operands are universal matches the
-  //    universal operands with NO implicit conversion, and is preferred over a
-  //    user operation whose formals are a specific numeric type (which would
-  //    convert the universals). This is why `NATURAL'POS (3+3)` uses predefined
-  //    "+" (c87b07a). The exception: a context that concretely demands a user
-  //    interp's own result type (exact identity or a subtype relationship that
-  //    is NOT a NEW-derivation) keeps that user op (c87b07d guards the reverse
-  //    — a user "+"(NEW_INT) must NOT win for a plain INTEGER context).
+  //    universal operands with NO implicit conversion, and is preferred over an
+  //    operation whose formals are a specific numeric type (which would convert
+  //    the universals). This is why `NATURAL'POS (3+3)` uses predefined "+"
+  //    (c87b07a). The exception: a context that concretely demands a candidate's
+  //    own result type (exact identity or a subtype relationship that is NOT a
+  //    NEW-derivation) keeps that candidate — RM 4.6: a universal OPERATOR
+  //    RESULT is not a convertible operand (only a literal, named number, or
+  //    attribute is), so the universal interpretation cannot legally satisfy a
+  //    concrete context; the literals convert instead and the concrete
+  //    operation governs. The concrete candidate may be user-declared
+  //    (c87b07a: NATURAL'POS (1+1) uses "+"(NATURAL)) or predefined with its
+  //    operand type contributed by a nested user op (c44003e: `-3.5 - 11.0`
+  //    against fixed USR takes predefined "-"(USR), whose operands then
+  //    resolve the inner unary minus to the user "-"(USR)). c87b07d guards
+  //    the derivation exclusion — a user "+"(NEW_INT) must NOT win for a
+  //    plain INTEGER context.
   {
     Interpretation *pu = NULL;
     for (uint32_t i = 0; i < nc; i++)
       if (not c[i]->nam and Type_Is_Universal (c[i]->opnd[0]))
         pu = c[i];
     if (pu) {
-      bool ctx_needs_user = false;
+      bool ctx_demands_concrete = false;
       if (ctx and not Type_Is_Universal (ctx))
         for (uint32_t i = 0; i < nc; i++) {
           Type_Info *t = c[i]->typ;
-          if (not c[i]->nam or not t) continue;
+          if (c[i] == pu or not t or Type_Is_Universal (t)) continue;
           if (t->parent_type == ctx or ctx->parent_type == t) continue;
           if (t == ctx or (t->base_type and t->base_type == ctx) or
-              (ctx->base_type and ctx->base_type == t)) { ctx_needs_user = true; break; }
+              (ctx->base_type and ctx->base_type == t)) { ctx_demands_concrete = true; break; }
         }
-      if (not ctx_needs_user) return pu;
+      if (not ctx_demands_concrete) return pu;
     }
   }
 
