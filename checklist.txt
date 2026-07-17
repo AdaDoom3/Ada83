@@ -230,3 +230,30 @@ FINAL VERDICT (full class C, run c-20260717-191631-23969)
   timing on the PRE-SESSION binary too (verified twice at fe252b5 under
   identical serial conditions) — pre-existing timing sensitivity, not a
   regression from this work.
+
+═══════════════════════════════════════════════════════════════════════════
+ROUND 4 — continued skips
+═══════════════════════════════════════════════════════════════════════════
+[x] c86005a: ASCII's members are no longer installed as BARE names — they
+    are visible only as ASCII.X or under USE ASCII (RM C.3), so user
+    library units named NUL/ENQ/LF/SI resolve (this was the test's point).
+[x] c86006a: STANDARD now exports its predefined types (BOOLEAN, INTEGER,
+    FLOAT, CHARACTER, STRING) beside ASCII, so STANDARD."NOT"/"AND"/...
+    synthesize against BOOLEAN and STANDARD.TRUE/.BOOLEAN resolve.
+[x] c94008c (semantic part): generic formal subprogram actuals rebind to
+    the CONFORMING overload of the bound name (RM 12.3.6,
+    Actual_Conforms_To_Formal_Subprogram + Collect_Interpretations sweep);
+    operator-string actuals for types without pre-built operator symbols
+    synthesize a conforming predefined symbol from the substituted formal
+    profile (partially lands cc3601a).
+
+STILL OPEN (diagnosed)
+----------------------
+- cc3601a: instantiations whose operator-string actual never produced a
+  binding at all ("missing actual for F1") — the binding-creation site
+  needs the same synthesis as validation.
+- c94008c (codegen tail): '%tN' i8 vs ptr in the instance body.
+- c94008d: SEPARATE subunit of a generic instance ("no compiled body").
+- c86002b/c86004b/c: library units named STANDARD / multi-file homographs.
+- cc3120b (entry family via generic formal task?), cc3224a (formal array
+  index matching), cc3603a, cc1305b (ran, outcome unverified).

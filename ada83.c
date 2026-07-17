@@ -10929,10 +10929,18 @@ void Symbol_Manager_Init_Predefined (void) {
   pkg_ascii->parent = pkg_standard;  // Child of STANDARD
   Symbol_Add (pkg_ascii);
 
-  // STANDARD exports ASCII
-  pkg_standard->exported = Arena_Allocate (1 * sizeof (Symbol*));
-  pkg_standard->exported_count = 1;
-  pkg_standard->exported[0] = pkg_ascii;
+  // STANDARD exports its predefined declarations (RM C): ASCII and the
+  // predefined types — the exported list feeds selected-component
+  // resolution and its predefined-operator synthesis, so STANDARD."NOT"
+  // finds BOOLEAN and STANDARD."&" finds STRING (c86006a).
+  {
+    Symbol *std_exports[] = { pkg_ascii, sym_boolean, sym_integer,
+                              sym_float, sym_character, sym_string };
+    uint32_t n = sizeof (std_exports) / sizeof (std_exports[0]);
+    pkg_standard->exported = Arena_Allocate (n * sizeof (Symbol*));
+    pkg_standard->exported_count = n;
+    for (uint32_t i = 0; i < n; i++) pkg_standard->exported[i] = std_exports[i];
+  }
 
   // ASCII control characters and named constants
   static const struct { const char *name; uint8_t val; } ascii_chars[] = {
@@ -10966,7 +10974,10 @@ void Symbol_Manager_Init_Predefined (void) {
     ch->parent = pkg_ascii;
     ch->frame_offset = ascii_chars[i].val;  // Store char value
     ch->is_named_number = true;  // Treat as compile-time constant
-    Symbol_Add (ch);
+    // Deliberately NOT Symbol_Add'ed: ASCII's members are visible only as
+    // ASCII.X or under USE ASCII (RM C.3) — both resolve through the
+    // exported list. Installing them as bare names shadowed user library
+    // units that legally reuse the names (c86005a: PACKAGE NUL, ENQ, LF).
     pkg_ascii->exported[i] = ch;
   }
 
@@ -18985,6 +18996,51 @@ void Instantiating_Set_Pop (void) {
   if (Instantiating_Template_Count > 0) Instantiating_Template_Count--;
 }
 
+// RM 12.3.6: does a candidate actual subprogram CONFORM to a generic formal
+// subprogram's profile, with the instance's formal-type marks substituted?
+// Pure query — the caller decides whether a mismatch is an error or a cue to
+// try another overload of the same name (c94008c: two use-visible SETs; the
+// one whose profile matches the instance's ELEMENT_TYPE is the actual).
+static bool Actual_Conforms_To_Formal_Subprogram (Symbol *actual,
+                                                  Syntax_Node *formal,
+                                                  Symbol *instance_sym) {
+  if (not Symbol_Is_Subprogram (actual)) return false;
+  bool formal_is_function = formal->generic_subprog_param.is_function;
+  if (formal_is_function != (actual->kind == SYMBOL_FUNCTION)) return false;
+  Node_List *formal_parameters = &formal->generic_subprog_param.parameters;
+  uint32_t formal_parameter_count = 0;
+  for (uint32_t p = 0; p < formal_parameters->count; p++) {
+    Syntax_Node *ps = formal_parameters->items[p];
+    if (ps and ps->kind == NK_PARAM_SPEC)
+      formal_parameter_count += ps->param_spec.names.count;
+  }
+  if (actual->parameter_count != formal_parameter_count) return false;
+  uint32_t index = 0;
+  for (uint32_t p = 0; p < formal_parameters->count; p++) {
+    Syntax_Node *ps = formal_parameters->items[p];
+    if (not ps or ps->kind != NK_PARAM_SPEC) continue;
+    Type_Info *formal_parameter_type =
+      Formal_Mark_Actual_Type (instance_sym, ps->param_spec.param_type);
+    for (uint32_t n = 0; n < ps->param_spec.names.count; n++, index++) {
+      if (index >= actual->parameter_count) return false;
+      if ((Parameter_Mode) ps->param_spec.mode !=
+          actual->parameters[index].mode) return false;
+      if (formal_parameter_type and
+          not Same_Base_Type (formal_parameter_type,
+                              actual->parameters[index].param_type))
+        return false;
+    }
+  }
+  if (formal_is_function) {
+    Type_Info *formal_result = Formal_Mark_Actual_Type (
+      instance_sym, formal->generic_subprog_param.return_type);
+    if (formal_result and
+        not Same_Base_Type (formal_result, actual->return_type))
+      return false;
+  }
+  return true;
+}
+
 void Validate_Generic_Actuals (Symbol *instance_sym, Symbol *template_sym,
                                Syntax_Node **slot_actual_nodes,
                                uint32_t slot_count) {
@@ -19214,6 +19270,62 @@ void Validate_Generic_Actuals (Symbol *instance_sym, Symbol *template_sym,
           break;
         }
         Symbol *actual = binding ? binding->actual_subprogram : NULL;
+
+        // The binding resolved by NAME; when that name is overloaded, the
+        // actual is whichever visible overload CONFORMS to the substituted
+        // formal profile (RM 12.3.6) — rebind before validating, so the
+        // detailed diagnostics below fire only when nothing conforms.
+        if (Symbol_Is_Subprogram (actual) and
+            not Actual_Conforms_To_Formal_Subprogram (actual, formal,
+                                                      instance_sym)) {
+          Interp_List candidates;
+          Collect_Interpretations (actual->name, &candidates);
+          for (uint32_t ci = 0; ci < candidates.count; ci++) {
+            Symbol *cand = candidates.items[ci].nam;
+            if (cand and cand != actual and
+                Actual_Conforms_To_Formal_Subprogram (cand, formal,
+                                                      instance_sym)) {
+              binding->actual_subprogram = cand;
+              actual = cand;
+              break;
+            }
+          }
+
+          // An operator-string actual whose predefined operation has no
+          // materialized symbol (only INTEGER and FLOAT operators are
+          // pre-built): synthesize one carrying the formal's substituted
+          // profile — by construction conforming — and let the operator
+          // emitters dispatch on its name (cc3601a: "XOR", "<" on BOOLEAN).
+          if (not Actual_Conforms_To_Formal_Subprogram (actual, formal,
+                                                        instance_sym) and
+              Token_From_Op_Name (actual->name) != TK_EOF) {
+            Symbol *op_sym = Symbol_New (SYMBOL_FUNCTION, actual->name,
+                                         No_Location);
+            op_sym->is_predefined = true;
+            Node_List *fps = &formal->generic_subprog_param.parameters;
+            uint32_t np = 0;
+            for (uint32_t p = 0; p < fps->count; p++)
+              if (fps->items[p] and fps->items[p]->kind == NK_PARAM_SPEC)
+                np += fps->items[p]->param_spec.names.count;
+            op_sym->parameter_count = np;
+            op_sym->parameters = Arena_Allocate (np * sizeof (Parameter_Info));
+            uint32_t pi = 0;
+            for (uint32_t p = 0; p < fps->count; p++) {
+              Syntax_Node *ps = fps->items[p];
+              if (not ps or ps->kind != NK_PARAM_SPEC) continue;
+              Type_Info *pt = Formal_Mark_Actual_Type (instance_sym,
+                                                       ps->param_spec.param_type);
+              for (uint32_t n = 0; n < ps->param_spec.names.count; n++, pi++)
+                op_sym->parameters[pi] = (Parameter_Info){
+                  .name = pi ? S ("RIGHT") : S ("LEFT"),
+                  .param_type = pt, .mode = PARAM_IN };
+            }
+            op_sym->return_type = Formal_Mark_Actual_Type (
+              instance_sym, formal->generic_subprog_param.return_type);
+            binding->actual_subprogram = op_sym;
+            actual = op_sym;
+          }
+        }
         if (Symbol_Is_Subprogram (actual)) {
           bool formal_is_function = formal->generic_subprog_param.is_function;
           bool actual_is_function = actual->kind == SYMBOL_FUNCTION;
