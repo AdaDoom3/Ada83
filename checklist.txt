@@ -153,3 +153,71 @@ KNOWN REMAINING (each diagnosed, not yet fixed)
 - Multi-file families: ca1013a6m ca1020d/e3m ca3009a6m ca5003b5m c86004*
   c83024e1m c83f01* cc1307a/b (undefined identifiers across units)
 - 'IMAGE on fixed-point emits invalid sext (from round 1)
+
+═══════════════════════════════════════════════════════════════════════════
+ROUND 3 — finish moved tests to PASS (never skip→fail)
+═══════════════════════════════════════════════════════════════════════════
+
+[x] c85018a + probef: bare call through PROCEDURE-renames-entry now routes
+    through the full apply machinery (family index from the rename's
+    hidden elaboration slot, RM 8.5); the rename's own formal NAMES and
+    DEFAULTS govern entry calls (entry_view in marshaling + default fill
+    + 'CONSTRAINED slot mapping). The old "Entry call (renamed)" shortcut
+    (wrong index 0, no defaults → permanent hang) is deleted.
+[x] cc1207b: a generic instance package body's begin now activates the
+    tasks of its SPEC CLONE (inst_sym->declaration is the instantiation
+    node; the recorded activation range lives on instance_spec) — the
+    entry call in the instance body no longer deadlocks on an unactivated
+    task (RM 9.3(3)). Formal-private actuals with discriminants accepted
+    for discriminated formal private types (RM 12.1.2, cc1207b's inner
+    NEW PACK (R)).
+[x] cd1009i + probelp: limitedness follows the FULL view after a private
+    type's completion (RM 7.4.4) — is_limited is recomputed from the
+    completion, so private-part instantiations with non-limited formals
+    accept a LIMITED PRIVATE type completed by a scalar.
+[x] c95085b: RM 6.4.1 record-actual check at ENTRY calls — discriminants
+    must equal a constrained formal's constraint, checked in the caller
+    via shared Emit_Discriminants_Match before any rendezvous.
+[x] c95085c: four fixes —
+    (1) Emit_Length_From_Bounds computes in i64: 3 .. INTEGER'FIRST is a
+        null range, not a wrapped 2^31 memcpy (crash);
+    (2) RM 6.4.1 array-actual BOUNDS-equality check at entry calls for fat
+        and flat dynamic actuals (per dimension, rendezvous never slides);
+    (3) static-static entry bounds check generalized from 1 dimension to N
+        (subtest D: 3-D actual with a short middle dimension);
+    (4) RM 4.3.2(6) inner named range vs constraint for multidim
+        aggregates with a dynamic inner choice, plus the deferred
+        inner-consistency epilogue also compares against the TYPE's own
+        inner constraint.
+
+ROUND 3 (continued) — regression fixes and remaining map
+--------------------------------------------------------
+[x] c43211a: the new inner-named-range check respects SLIDING contexts
+    (assignment RHS compares LENGTH, RM 5.2.1) and requires static type
+    bounds before comparing.
+[x] ce3706c: reverted the blanket `is_limited = def_type->is_limited` at
+    private completion — unnecessary (the completion's KIND mutation
+    already clears limitedness for Type_Is_Limited; the GEN_DEF_PRIVATE
+    check peels with Type_Underlying) and it broke TEXT_IO FILE_TYPE
+    behavior. cd1009i still passes.
+[x] ca5004a: a bodyless LIBRARY package spec with task objects (single
+    tasks or objects of WITH'd task types) synthesizes the <pkg>___elab a
+    body would provide, starting each task, ordered via the §15 graph.
+[x] c93005b: timeout was load contention, passes quiet.
+[~] c97307a: timed-entry-call cancellation — fails under load on BOTH the
+    previous commit and the working tree (passed in suite runs #1-#5);
+    load-sensitive scaled-delay test, needs a quiet re-run to confirm.
+
+STILL-REMAINING SKIPS (diagnosed root causes, unfixed)
+------------------------------------------------------
+- §14 unit supersession within one file: re-declared spec of the same
+  unit must obsolete the earlier spec+body (ca5004b duplicate globals,
+  c94005b duplicate @f).
+- c94008c/d: generic formal subprogram actual matching (SET wrong-type).
+- Expanded-name and multi-file clusters (c86*, ca1*, ca3*, c83f*),
+  parse gaps (c41307d GOTO expanded names, c85019a/cc1307b character
+  operator renames, c86005b generic unit names), c73007a/c67005d
+  selected-component forms, c83033a internal error, cc3120b/cc3601a/
+  cc3603a/cc1305b/cc3224a generic-actual matching, c95067a frame alias
+  in package-nested-in-task, c94006a, cc3607b, cd2/cd5/cda clusters,
+  'IMAGE on fixed point (invalid sext).

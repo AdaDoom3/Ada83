@@ -12212,6 +12212,39 @@ Type_Info *Resolve_Apply (Syntax_Node *node) {
       }
       node->symbol = prefix_sym;
       node->apply.resolution = APPLY_ENTRY_CALL;
+
+      // An entry call's actuals resolve against the entry's profile like a
+      // procedure's (RM 9.5 / 6.4): a flexible actual — an aggregate, a
+      // string, a character literal — takes the formal's type
+      // (c95085b: TSK1.E ((2,"AA"))). Named associations map by name.
+      for (uint32_t i = 0; i < node->apply.arguments.count; i++) {
+        Syntax_Node *arg = node->apply.arguments.items[i];
+        int32_t formal = (int32_t) i;
+        if (arg->kind == NK_ASSOCIATION and arg->association.expression) {
+          if (arg->association.choices.count > 0 and
+              arg->association.choices.items[0]->kind == NK_IDENTIFIER) {
+            formal = -1;
+            for (uint32_t j = 0; j < prefix_sym->parameter_count; j++)
+              if (Slice_Equal_Ignore_Case (prefix_sym->parameters[j].name,
+                    arg->association.choices.items[0]->string_val.text)) {
+                formal = (int32_t) j;
+                break;
+              }
+          }
+          arg = arg->association.expression;
+        }
+        if (formal < 0 or formal >= (int32_t) prefix_sym->parameter_count)
+          continue;
+        Type_Info *param_type = prefix_sym->parameters[formal].param_type;
+        if (not param_type) continue;
+        if (arg->kind == NK_CHARACTER)
+          Resolve_Char_As_Enum (arg, param_type);
+        if (not arg->type and
+            (arg->kind == NK_AGGREGATE or arg->kind == NK_STRING)) {
+          arg->type = param_type;
+          Resolve_Expression (arg);
+        }
+      }
       return NULL;
     }
 
@@ -12230,8 +12263,15 @@ Type_Info *Resolve_Apply (Syntax_Node *node) {
       for (uint32_t i = 0; i < inner->apply.arguments.count; i++)
         Node_List_Push (&flat, inner->apply.arguments.items[i]);
       for (uint32_t i = 0; i < node->apply.arguments.count; i++) {
-        Resolve_Expression (node->apply.arguments.items[i]);
-        Node_List_Push (&flat, node->apply.arguments.items[i]);
+        Syntax_Node *actual = node->apply.arguments.items[i];
+        // A named association's choice is a FORMAL name, not an expression —
+        // the entry-call slot mapper resolves it against the entry's profile
+        // (c85018a: T.ENT1 (TRUE) (A => 6)). Only the value resolves here.
+        if (actual->kind == NK_ASSOCIATION)
+          Resolve_Expression (actual->association.expression);
+        else
+          Resolve_Expression (actual);
+        Node_List_Push (&flat, actual);
       }
       node->apply.arguments  = flat;
       node->apply.prefix     = inner->apply.prefix;
@@ -19005,7 +19045,11 @@ void Validate_Generic_Actuals (Symbol *instance_sym, Symbol *template_sym,
                 (int) formal_name.length, formal_name.data);
             break;
           case GEN_DEF_PRIVATE: { // RM 12.3.2
-            if (Type_Is_Limited (actual) or
+            // Judge limitedness by the FULL view: after the full type
+            // declaration, the partial limited-private view no longer
+            // governs (RM 7.4.1) — an instantiation in the private part
+            // with the completed type is legal (cd1009i).
+            if (Type_Is_Limited (Type_Underlying ((Type_Info *) actual)) or
                 Type_Has_Task_Component ((Type_Info *) actual))
               Report_Error (location,
                 "actual for non-limited formal private type '%.*s' "
@@ -19020,7 +19064,14 @@ void Validate_Generic_Actuals (Symbol *instance_sym, Symbol *template_sym,
                 formal_disc_count += ds->discriminant.names.count;
             }
             if (formal_disc_count > 0) {
-              bool actual_has_discs = Type_Is_Record (actual) and
+              // The actual may itself be a formal private type of an
+              // enclosing generic (cc1207b: `NEW PACK (R)` inside a generic
+              // whose formal R (D : INTEGER) IS PRIVATE): private views
+              // carry their known discriminants in .record too (RM 12.1.2).
+              bool actual_has_discs =
+                (Type_Is_Record (actual) or
+                 actual->kind == TYPE_PRIVATE or
+                 actual->kind == TYPE_LIMITED_PRIVATE) and
                 actual->record.has_discriminants;
               if (not actual_has_discs or
                   actual->record.discriminant_count != formal_disc_count)
@@ -19833,6 +19884,7 @@ void Resolve_Declaration (Syntax_Node *node) {
             // The completion may have turned a private view into a
             // task-bearing composite: forget any memoized answer.
             type->task_component_state = TASK_COMPONENT_UNKNOWN;
+
 
             if (Type_Is_Array_Like (def_type)) {
               type->array = def_type->array;
@@ -25009,6 +25061,20 @@ uint32_t Emit_Fat_Total_Elements (uint32_t fat_ptr, LLVM_Rep bt, uint32_t ndims)
 //                                                                                                  
 LLVM_Value Emit_Length_From_Bounds (uint32_t low, uint32_t high, LLVM_Rep bt)
 {
+  // high - low overflows the bound width when a null range inverts across
+  // most of the type: 3 .. INTEGER'FIRST must yield 0, not a wrapped
+  // 2^31-scale count that a memcpy then trusts (c95085c). Compute in a
+  // wider register, clamp, and narrow back.
+  if (bt.bits < 64) {
+    LLVM_Rep wide = LLVM_Rep_Int (64, false);
+    uint32_t low_w  = Emit_Convert (low, bt, wide).reg;
+    uint32_t high_w = Emit_Convert (high, bt, wide).reg;
+    uint32_t diff = Emit_Result_Instruction ("sub i64 %%t%u, %%t%u\n", high_w, low_w);
+    uint32_t raw  = Emit_Result_Instruction ("add i64 %%t%u, 1\n", diff);
+    LLVM_I1 neg = Emit_Icmp_Const ("slt", wide, raw, 0);
+    uint32_t len_w = Emit_Result_Instruction ("select i1 %%t%u, i64 0, i64 %%t%u\n", neg.reg, raw);
+    return Emit_Convert (len_w, wide, bt);
+  }
   uint32_t diff = Emit_Result_Instruction ("sub %s %%t%u, %%t%u\n", LLVM_Rep_To_String (bt), high, low);
   uint32_t raw = Emit_Result_Instruction ("add %s %%t%u, 1\n", LLVM_Rep_To_String (bt), diff);
   LLVM_I1 neg = Emit_Icmp_Const ("slt", bt, raw, 0);
@@ -31442,10 +31508,15 @@ entry_path:
 
     // Store arguments into parameter block (skip family index for entry families).
     // Each actual may be NK_ASSOCIATION (NAME => VALUE); reorder by matching
-    // the choice name against the entry's formal parameter list.
+    // the choice name against the VIEW's formal parameter list — through a
+    // renaming, the rename's own formal names govern (RM 8.5, c85018a).
     // OUT / IN OUT scalar actuals get their values copied back from the
     // parameter block after the rendezvous (RM 9.5, 6.4). Capture each
     // actual's address now, before the call.
+    Symbol *entry_view =
+      (entry_rename_sym and entry_rename_sym->parameters and
+       entry_rename_sym->parameter_count == sym->parameter_count)
+      ? entry_rename_sym : sym;
     struct { uint32_t address; uint32_t slot; LLVM_Rep rep;
              Type_Info *actual_type; bool is_fat_access; } out_actuals[32];
     uint32_t out_actual_count = 0;
@@ -31453,7 +31524,8 @@ entry_path:
     for (uint32_t i = first_param_idx; i < node->apply.arguments.count; i++) {
       Syntax_Node *arg = node->apply.arguments.items[i];
       Syntax_Node *value_node = NULL;
-      uint32_t slot = Entry_Call_Argument_Slot (sym, arg, i - first_param_idx,
+      uint32_t slot = Entry_Call_Argument_Slot (entry_view, arg,
+                                                i - first_param_idx,
                                                 &value_node);
       if (slot < 64) slot_filled[slot] = true;
       if (sym->parameters and slot < sym->parameter_count and
@@ -31534,21 +31606,23 @@ entry_path:
         if (formal_array and actual_array and
             Type_Is_Constrained_Array (formal_array) and
             Type_Is_Constrained_Array (actual_array) and
-            formal_array->array.index_count == 1 and
-            actual_array->array.index_count == 1) {
-          Type_Bound *formal_low  = &formal_array->array.indices[0].low_bound;
-          Type_Bound *formal_high = &formal_array->array.indices[0].high_bound;
-          Type_Bound *actual_low  = &actual_array->array.indices[0].low_bound;
-          Type_Bound *actual_high = &actual_array->array.indices[0].high_bound;
-          if (formal_low->kind  == BOUND_INTEGER and
-              actual_low->kind  == BOUND_INTEGER and
-              formal_high->kind == BOUND_INTEGER and
-              actual_high->kind == BOUND_INTEGER and
-              (formal_low->int_value  != actual_low->int_value or
-               formal_high->int_value != actual_high->int_value)) {
-            uint32_t always = Emit_Result_Instruction ("icmp eq i32 0, 0  ; bounds mismatch, always raise\n");
-            Emit_Check_With_Raise (always, true,
-              "array bounds mismatch in entry call (RM 6.4.1)");
+            formal_array->array.index_count == actual_array->array.index_count) {
+          for (uint32_t d = 0; d < formal_array->array.index_count; d++) {
+            Type_Bound *formal_low  = &formal_array->array.indices[d].low_bound;
+            Type_Bound *formal_high = &formal_array->array.indices[d].high_bound;
+            Type_Bound *actual_low  = &actual_array->array.indices[d].low_bound;
+            Type_Bound *actual_high = &actual_array->array.indices[d].high_bound;
+            if (formal_low->kind  == BOUND_INTEGER and
+                actual_low->kind  == BOUND_INTEGER and
+                formal_high->kind == BOUND_INTEGER and
+                actual_high->kind == BOUND_INTEGER and
+                (formal_low->int_value  != actual_low->int_value or
+                 formal_high->int_value != actual_high->int_value)) {
+              uint32_t always = Emit_Result_Instruction ("icmp eq i32 0, 0  ; bounds mismatch, always raise\n");
+              Emit_Check_With_Raise (always, true,
+                "array bounds mismatch in entry call (RM 6.4.1)");
+              break;
+            }
           }
         }
       }
@@ -31572,6 +31646,63 @@ entry_path:
                              Type_Is_Access (Type_Underlying (slot_formal)) and
                              Type_Needs_Fat_Pointer (slot_formal) and
                              LLVM_Rep_Is_Fat_Pointer (arg_t);
+      // RM 6.4.1: a record actual must BELONG to the formal's constrained
+      // subtype — each discriminant equal to the constraint — checked at the
+      // call, before any rendezvous (c95085b: TSK1.E ((IDENT_INT(2),"AA"))
+      // and TSK1.E (R) with R.N /= 3 raise CONSTRAINT_ERROR in the caller).
+      {
+        Type_Info *slot_under = Type_Underlying (slot_formal);
+        if (Type_Is_Record (slot_under) and
+            slot_under->record.has_disc_constraints and
+            slot_under->record.discriminant_count > 0 and
+            arg_t.kind == LL_PTR) {
+          LLVM_I1 belongs = { Emit_I1_Const (1, "record actual belongs seed").reg };
+          if (Emit_Discriminants_Match (slot_under, arg_val, &belongs))
+            Emit_Raise_Constraint_Error_When (Emit_Not_I1 (belongs),
+              "record actual vs constrained formal (RM 6.4.1)");
+        }
+
+        // RM 6.4.1: an array actual's BOUNDS must equal a statically-
+        // constrained formal's — a rendezvous does not slide — checked in
+        // the caller, before any rendezvous (c95085c: "AB" for STRING(1..3),
+        // and dynamically-bounded variables for static formals, all raise
+        // CONSTRAINT_ERROR). A fat actual carries its bounds; a flat one
+        // reads them from its subtype's (possibly runtime) bounds.
+        if (Type_Is_Constrained_Array (slot_under) and not slot_fat_array) {
+          Type_Info *actual_type = value_node ? value_node->type : NULL;
+          bool fat_actual = LLVM_Rep_Is_Fat_Pointer (arg_t);
+          bool flat_dyn_actual = not fat_actual and
+            Type_Is_Constrained_Array (actual_type) and
+            actual_type != slot_under and
+            Type_Has_Dynamic_Bounds (actual_type);
+          LLVM_Rep bound_rep = Array_Bound_LLVM_Rep (slot_under);
+          uint32_t dims = slot_under->array.index_count ?
+                          slot_under->array.index_count : 1;
+          for (uint32_t d = 0; (fat_actual or flat_dyn_actual) and d < dims;
+               d++) {
+            Type_Bound flo = slot_under->array.indices[d].low_bound;
+            Type_Bound fhi = slot_under->array.indices[d].high_bound;
+            if (flo.kind != BOUND_INTEGER or fhi.kind != BOUND_INTEGER)
+              continue;
+            uint32_t alo, ahi;
+            if (fat_actual) {
+              Bound_Temps ab = Emit_Bounds_From_Fat_Dim (arg_val, bound_rep, d);
+              alo = ab.low_temp;
+              ahi = ab.high_temp;
+            } else {
+              Bound_Temps ab = Emit_Bounds (actual_type, d);
+              alo = Emit_Convert (ab.low_temp,  ab.bound_rep, bound_rep).reg;
+              ahi = Emit_Convert (ab.high_temp, ab.bound_rep, bound_rep).reg;
+            }
+            uint32_t flo_reg =
+              Emit_Static_Int (Type_Bound_Value (flo), bound_rep).reg;
+            uint32_t fhi_reg =
+              Emit_Static_Int (Type_Bound_Value (fhi), bound_rep).reg;
+            Emit_Aggregate_Bound_Match_Check (alo, flo_reg, ahi, fhi_reg,
+              bound_rep, "array actual bounds vs constrained formal (RM 6.4.1)");
+          }
+        }
+      }
       if (slot_fat_array or slot_fat_access) {
         uint32_t fat_val = slot_fat_array
           ? Normalize_To_Fat_Pointer (value_node, arg_v,
@@ -31590,14 +31721,17 @@ entry_path:
     }
 
     // Fill the default value for each formal the call omitted (RM 6.4.2): the
-    // default expression is evaluated at the point of the call, once per call.
+    // default expression is evaluated at the point of the call, once per
+    // call. Through a renaming the RENAME's own defaults govern (RM 8.5);
+    // profiles correspond by position (c85018a: ENTA's C := 5 default, not
+    // the renamed entry's A := 1).
     if (sym->parameters) {
       for (uint32_t s = 0; s < sym->parameter_count and s < 64; s++) {
         if (slot_filled[s]) continue;
-        Syntax_Node *dflt = sym->parameters[s].default_value;
+        Syntax_Node *dflt = entry_view->parameters[s].default_value;
         if (not dflt) continue;
         uint32_t dval = Emit_Entry_Default_To_Slot (dflt,
-                          sym->parameters[s].param_type);
+                          entry_view->parameters[s].param_type);
         uint32_t dptr = Emit_Result_Instruction ("getelementptr [%u x i64], ptr %%t%u, i64 0, i64 %u\n", block_slots, param_block, s);
         Emit ("  store i64 %%t%u, ptr %%t%u  ; default parameter\n", dval, dptr);
       }
@@ -31616,7 +31750,7 @@ entry_path:
         Syntax_Node *actual = NULL;
         for (uint32_t i = first_param_idx; i < node->apply.arguments.count; i++) {
           Syntax_Node *vn = NULL;
-          uint32_t s = Entry_Call_Argument_Slot (sym,
+          uint32_t s = Entry_Call_Argument_Slot (entry_view,
                          node->apply.arguments.items[i], i - first_param_idx, &vn);
           if (s == p) { actual = vn; break; }
         }
@@ -36968,6 +37102,35 @@ uint32_t Generate_Aggregate_Body (Syntax_Node *node) {
                   (int64_t)inner_idx_sub_lo, (int64_t)inner_idx_sub_hi,
                   bt, "aggregate inner index subtype check");
                 Emit_Close_Null_Skip (sk);
+
+                // RM 4.3.2(6): for a CONSTRAINED type, an inner aggregate
+                // consisting of one named range must fit the inner
+                // dimension's constraint — a dynamic (1..IDENT_INT(2) => 0)
+                // row for a 1..3 dimension raises CONSTRAINT_ERROR
+                // (c95085c subtest B). In a SLIDING context (assignment RHS,
+                // RM 5.2.1) only the LENGTH need agree (c43211a case B:
+                // (IDENT(4)..6 => 1) assigns into a 5..7 dimension).
+                if (agg_type->array.is_constrained and
+                    dim_lo[1].kind == BOUND_INTEGER and
+                    dim_hi[1].kind == BOUND_INTEGER and
+                    inner_agg->aggregate.items.count == 1 and
+                    qi_item->association.choices.count == 1) {
+                  if (cg->agg_dimension_rows_slide) {
+                    int128_t type_len = inner_high - inner_low + 1;
+                    if (type_len < 0) type_len = 0;
+                    uint32_t alen = Emit_Length_From_Bounds (lo_v, hi_v, bt).reg;
+                    Emit_Raise_Constraint_Error_When (
+                      Emit_Icmp ("ne", bt, alen,
+                                 Emit_Static_Int (type_len, bt).reg),
+                      "inner named range length vs constraint (RM 4.3.2)");
+                  } else {
+                    uint32_t constraint_lo = Emit_Static_Int (inner_low, bt).reg;
+                    uint32_t constraint_hi = Emit_Static_Int (inner_high, bt).reg;
+                    Emit_Aggregate_Bound_Match_Check (lo_v, constraint_lo,
+                      hi_v, constraint_hi, bt,
+                      "inner named range vs constraint (RM 4.3.2)");
+                  }
+                }
               }
             }
           }
@@ -37194,6 +37357,38 @@ uint32_t Generate_Aggregate_Body (Syntax_Node *node) {
           mismatch, context.nonnull_guard);
       Emit_Raise_Constraint_Error_When ((LLVM_I1){ mismatch },
         "sub-aggregate bounds mismatch (RM 4.3.2(6))");
+
+      // For a CONSTRAINED aggregate type the inner dimensions must also
+      // match the TYPE's own constraint — mutually consistent rows of the
+      // wrong LENGTH are still wrong (c95085c: (1..3 => (1..IDENT_INT(2)
+      // => 0)) for a 3x3 type raises CONSTRAINT_ERROR).
+      if (agg_type->array.is_constrained) {
+        for (int d = 0; d < context.inner_dimension_count; d++) {
+          uint32_t dim = (uint32_t) d + 1;
+          if (dim >= agg_type->array.index_count) break;
+          Type_Bound type_lo = agg_type->array.indices[dim].low_bound;
+          Type_Bound type_hi = agg_type->array.indices[dim].high_bound;
+          if (type_lo.kind != BOUND_INTEGER or type_hi.kind != BOUND_INTEGER)
+            continue;
+          int128_t type_len =
+            Type_Bound_Value (type_hi) - Type_Bound_Value (type_lo) + 1;
+          if (type_len < 0) type_len = 0;
+          const char *rep = LLVM_Rep_To_String (context.inner_track_rep);
+          uint32_t inner_lo = Emit_Result_Instruction ("load %s, ptr %%t%u\n",
+            rep, context.inner_track_low[d]);
+          uint32_t inner_hi = Emit_Result_Instruction ("load %s, ptr %%t%u\n",
+            rep, context.inner_track_high[d]);
+          uint32_t inner_len = Emit_Length_From_Bounds (
+            inner_lo, inner_hi, context.inner_track_rep).reg;
+          uint32_t want = Emit_Static_Int (type_len, context.inner_track_rep).reg;
+          LLVM_I1 ne = Emit_Icmp ("ne", context.inner_track_rep, inner_len, want);
+          if (context.nonnull_guard)
+            ne.reg = Emit_Result_Instruction ("and i1 %%t%u, %%t%u\n",
+              ne.reg, context.nonnull_guard);
+          Emit_Raise_Constraint_Error_When (ne,
+            "inner dimension vs constraint (RM 4.3.2(6))");
+        }
+      }
       Emit_Label_Here (skip_label);
     }
 
@@ -41568,19 +41763,17 @@ void Generate_Statement (Syntax_Node *node) {
         Symbol *original_sym = target->symbol;  // Keep for defaults
         Symbol *proc = Resolve_Subprogram_Rename (original_sym);
 
-        // A procedure-renames-entry peeled to the entry: emit an entry call.
-        // The target task is the entry's enclosing single-task object (the
-        // entry symbol's parent), like the generic-actual-entry fallback.
-        if (proc and proc->kind == SYMBOL_ENTRY and proc->parent and
-            proc->parent->kind == SYMBOL_VARIABLE and
-            Type_Is_Task (proc->parent->type)) {
-          Emit ("  ; Entry call (renamed): %.*s\n",
-             (int)proc->name.length, proc->name.data);
-          uint32_t param_block = Emit_Result_Instruction ("inttoptr " PTR_INT_TYPE " 0 to ptr  ; no parameters\n");
-          uint32_t task_ptr = Emit_Temp ();
-          Emit_Load_Ptr_From_Symbol (task_ptr, proc->parent);
-          uint32_t entry_idx = Emit_Entry_Index (proc, 0);
-          Emit_Entry_Call_Dispatch (task_ptr, entry_idx, param_block);
+        // A procedure-renames-entry peeled to an entry: route the bare call
+        // through the full apply machinery — the rename's bound task and
+        // family index (RM 8.5, hidden elaboration slots) and the rename's
+        // own parameter defaults (RM 6.4.2) all live in entry_path there
+        // (c85018a: `ENTA;` calling a defaulted entry FAMILY member).
+        if (proc and proc->kind == SYMBOL_ENTRY) {
+          Syntax_Node *entry_app = Node_New (NK_APPLY, target->location);
+          entry_app->apply.prefix = target;
+          entry_app->apply.resolution = APPLY_ENTRY_CALL;
+          entry_app->symbol = original_sym;
+          Generate_Apply (entry_app);
           break;
         }
 
@@ -48080,6 +48273,97 @@ void Generate_Declaration (Syntax_Node *node) {
         node->package_spec.pending_activation_count =
           cg->pending_activation_count - pkg_saved_pa;
 
+        // RM 9.3: a LIBRARY package spec WITHOUT a body still activates the
+        // tasks its declarations create. Synthesize the <pkg>___elab a body
+        // would have provided — starting each single-task object — and join
+        // the elaboration order exactly like a body would (ca5004a: T : TSK
+        // in bodyless CA5004A1 is entry-called during a DEPENDENT body's
+        // elaboration, so it must be running by then).
+        {
+          Symbol *spec_sym = node->symbol;
+          bool spec_has_task_objects = false;
+          Node_List *spec_parts[2] = { &node->package_spec.visible_decls,
+                                       &node->package_spec.private_decls };
+          for (int k = 0; k < 2 and not spec_has_task_objects; k++)
+            for (uint32_t i = 0; i < spec_parts[k]->count; i++) {
+              Syntax_Node *d = spec_parts[k]->items[i];
+              if (not d) continue;
+              if (d->kind == NK_TASK_SPEC and not d->task_spec.is_type)
+                spec_has_task_objects = true;
+              if (d->kind == NK_OBJECT_DECL)
+                for (uint32_t nj = 0; nj < d->object_decl.names.count; nj++) {
+                  Symbol *os = d->object_decl.names.items[nj]->symbol;
+                  if (os and Type_Is_Task (os->type))
+                    spec_has_task_objects = true;
+                }
+              if (spec_has_task_objects) break;
+            }
+          if (spec_has_task_objects and not cg->current_function and
+              spec_sym and not spec_sym->elab_defined and
+              not Body_Already_Loaded (spec_sym->name)) {
+            spec_sym->elab_defined = true;
+            uint32_t saved_temp = cg->temp_id;
+            cg->temp_id = 1;
+            Emit ("define void @");
+            Emit_Symbol_Name (spec_sym);
+            Emit ("___elab() {\nentry:\n");
+            for (int k = 0; k < 2; k++)
+              for (uint32_t i = 0; i < spec_parts[k]->count; i++) {
+                Syntax_Node *d = spec_parts[k]->items[i];
+                if (not d) continue;
+
+                // TASK X IS ... — a single task; its function is its own.
+                if (d->kind == NK_TASK_SPEC and not d->task_spec.is_type and
+                    d->symbol) {
+                  Symbol *task_obj = NULL;
+                  Scope *tscope = d->symbol->defining_scope;
+                  if (tscope)
+                    for (uint32_t si = 0; si < tscope->symbol_count; si++) {
+                      Symbol *cur = tscope->symbols[si];
+                      if (cur and cur->kind == SYMBOL_VARIABLE and
+                          Type_Is_Task (cur->type) and
+                          Slice_Equal_Ignore_Case (cur->name,
+                                                   d->task_spec.name)) {
+                        task_obj = cur;
+                        break;
+                      }
+                    }
+                  if (not task_obj) continue;
+                  uint32_t handle = Emit_Result_Instruction (
+                    "call ptr @__ada_task_start(ptr @");
+                  Emit_Task_Function_Name (d->symbol, d->task_spec.name);
+                  Emit (", ptr null, ptr null)\n");
+                  Emit ("  store ptr %%t%u, ptr @", handle);
+                  Emit_Symbol_Name (task_obj);
+                  Emit ("\n");
+                }
+
+                // T : TSK — an object of a task TYPE (possibly one WITH'd
+                // from another unit); its function is the type's.
+                if (d->kind == NK_OBJECT_DECL)
+                  for (uint32_t nj = 0; nj < d->object_decl.names.count; nj++) {
+                    Symbol *obj = d->object_decl.names.items[nj]->symbol;
+                    if (not obj or not Type_Is_Task (obj->type) or
+                        not obj->type->defining_symbol)
+                      continue;
+                    uint32_t handle = Emit_Result_Instruction (
+                      "call ptr @__ada_task_start(ptr @");
+                    Emit_Task_Function_Name (obj->type->defining_symbol,
+                                             obj->type->name);
+                    Emit (", ptr null, ptr null)\n");
+                    Emit ("  store ptr %%t%u, ptr @", handle);
+                    Emit_Symbol_Name (obj);
+                    Emit ("\n");
+                  }
+              }
+            Emit ("  ret void\n}\n\n");
+            cg->temp_id = saved_temp;
+            Append_Elab_Function (spec_sym);
+            Elab_Register_Unit (spec_sym->name, true, spec_sym,
+                                false, false, true);
+          }
+        }
+
         // RM 7.4: Deferred constant completion - copy the private part                             
         // completion's value to the visible part deferred constant's                               
         // storage so that references from outside the package see the                              
@@ -48303,14 +48587,23 @@ void Generate_Declaration (Syntax_Node *node) {
         // bodyless package's spec tasks instead wait for the enclosing
         // master's begin). Entries stay recorded for the enclosing join.
         if (cg->current_function) {
-          if (pkg_sym and pkg_sym->declaration and
-              pkg_sym->declaration->kind == NK_PACKAGE_SPEC) {
-            Syntax_Node *pkg_spec = pkg_sym->declaration;
+          // A generic instance's symbol points its `declaration` at the
+          // instantiation node; the recorded activation range lives on the
+          // resolved SPEC CLONE (cc1207b: the instance body's begin must
+          // activate the instance's spec task before calling its entry).
+          Syntax_Node *pkg_spec =
+            (pkg_sym and pkg_sym->declaration and
+             pkg_sym->declaration->kind == NK_PACKAGE_SPEC)
+              ? pkg_sym->declaration
+            : (pkg_sym and pkg_sym->instance_spec and
+               pkg_sym->instance_spec->kind == NK_PACKAGE_SPEC)
+              ? pkg_sym->instance_spec
+              : NULL;
+          if (pkg_spec)
             Emit_Activate_Pending_Tasks_Range (
               pkg_spec->package_spec.pending_activation_first,
               pkg_spec->package_spec.pending_activation_first
                 + pkg_spec->package_spec.pending_activation_count);
-          }
           Emit_Activate_Pending_Tasks (pkg_body_saved_pa);
         }
 
