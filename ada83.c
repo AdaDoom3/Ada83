@@ -7254,18 +7254,22 @@ Syntax_Node *Parse_Select_Statement(Parser *p) {
 
 Syntax_Node *Parse_Statement (Parser *p) {
   Source_Location loc = Parser_Location (p);
-  Source_Location label_loc = loc;
 
-  // Check for label(s): <<label>> or identifier:
-  // Ada allows multiple labels before a statement: <<L1>> <<L2>> stmt;
-  String_Slice label = Empty_Slice;
+  // Check for label(s) (RM 5.1): <<L1>> <<L2>> stmt — EVERY label names this
+  // statement position and is a distinct GOTO target (c59001b), so all are
+  // collected, not just the last. An `identifier :` immediately before a
+  // loop or block is that construct's NAME and is consumed by it instead.
+  String_Slice label_names[16];
+  Source_Location label_locations[16];
+  uint32_t label_count = 0;
 
   // Handle multiple consecutive labels
   while (Parser_At (p, TK_LSHIFT) or
        (Parser_At (p, TK_IDENTIFIER) and Parser_Peek_At (p, TK_COLON))) {
+    String_Slice one = Empty_Slice;
+    Source_Location one_loc = Parser_Location (p);
     if (Parser_Match (p, TK_LSHIFT)) {
-      if (label.length == 0) label_loc = loc;  // Save first label location
-      label = Parser_Identifier (p);
+      one = Parser_Identifier (p);
       Parser_Expect (p, TK_RSHIFT);
 
     // Lookahead for "identifier :" (label) vs assignment/call
@@ -7276,8 +7280,7 @@ Syntax_Node *Parse_Statement (Parser *p) {
 
       // This is a label
       if (Parser_Match (p, TK_COLON)) {
-        if (label.length == 0) label_loc = loc;  // Save first label location
-        label = id;
+        one = id;
 
       // Not a label - restore and let assignment/call handle it
       } else {
@@ -7285,6 +7288,10 @@ Syntax_Node *Parse_Statement (Parser *p) {
         p->lexer = saved_lexer;
         break;
       }
+    }
+    if (one.length and label_count < 16) {
+      label_names[label_count] = one;
+      label_locations[label_count++] = one_loc;
     }
     loc = Parser_Location (p);  // Update location to after labels
   }
@@ -7296,12 +7303,15 @@ Syntax_Node *Parse_Statement (Parser *p) {
     stmt = Node_New (NK_NULL_STMT, loc);
   }
 
-  // Compound statements - loops and blocks handle labels as names
+  // Compound statements — the nearest preceding label is the loop's/block's
+  // NAME; any earlier labels wrap it as ordinary statement labels below.
   else if (Parser_At (p, TK_LOOP) or Parser_At (p, TK_WHILE) or Parser_At (p, TK_FOR)) {
-    return Parse_Loop_Statement (p, label);  // Loop keeps label as name
+    stmt = Parse_Loop_Statement (p, label_count ? label_names[--label_count]
+                                                : Empty_Slice);
   }
   else if (Parser_At (p, TK_DECLARE) or Parser_At (p, TK_BEGIN)) {
-    return Parse_Block_Statement (p, label);  // Block keeps label as name
+    stmt = Parse_Block_Statement (p, label_count ? label_names[--label_count]
+                                                 : Empty_Slice);
   }
   else if (Parser_At (p, TK_IF)) stmt = Parse_If_Statement (p);
   else if (Parser_At (p, TK_CASE)) stmt = Parse_Case_Statement (p);
@@ -7322,14 +7332,15 @@ Syntax_Node *Parse_Statement (Parser *p) {
   // Assignment or procedure call
   else stmt = Parse_Assignment_Or_Call (p);
 
-  // Wrap in NK_LABEL if a label was present (except for loop/block which handle labels)
-  if (label.length > 0 and stmt != NULL) {
-    Syntax_Node *label_node = Node_New (NK_LABEL, label_loc);
-    label_node->label_node.name = label;
-    label_node->label_node.statement = stmt;
-    label_node->label_node.symbol = NULL;  // Set during resolution
-    return label_node;
-  }
+  // Wrap the statement in the collected labels, innermost = last written.
+  if (stmt)
+    for (uint32_t k = label_count; k-- > 0;) {
+      Syntax_Node *label_node = Node_New (NK_LABEL, label_locations[k]);
+      label_node->label_node.name = label_names[k];
+      label_node->label_node.statement = stmt;
+      label_node->label_node.symbol = NULL;  // Set during resolution
+      stmt = label_node;
+    }
   return stmt;
 }
 void Parse_Statement_Sequence (Parser *p, Node_List *list) {
@@ -7531,18 +7542,13 @@ Syntax_Node *Parse_Array_Type (Parser *p) {
 Syntax_Node *Parse_Discrete_Range(Parser *p) {
   Source_Location loc = Parser_Location (p);
 
-  // Check if this starts with an integer literal (anonymous range)
-  if (Parser_At (p, TK_INTEGER) or Parser_At (p, TK_CHARACTER)) {
-    Syntax_Node *range = Node_New (NK_RANGE, loc);
-    range->range.low = Parse_Expression (p);
-    if (Parser_Match (p, TK_DOTDOT)) {
-      range->range.high = Parse_Expression (p);
-    }
-    return range;
-  }
-
-  // Otherwise try to parse as name, then check for range or constraint
-  Syntax_Node *name = Parse_Name (p);
+  // RM 3.6.1 / 3.5: discrete_range ::= discrete_subtype_indication | range,
+  // and a range's bounds are SIMPLE EXPRESSIONS — `INTEGER'LAST - 4 ..
+  // INTEGER'LAST` and `-4 .. IDENT_INT(4)` are as legal as bare names
+  // (c41106a, c52102b). Parse one expression first; the token that follows
+  // decides which alternative this is (RANGE -> subtype indication,
+  // `..` -> this was the low bound, else a bare type mark).
+  Syntax_Node *name = Parse_Expression (p);
 
   // Type RANGE low..high or Type RANGE <>
   if (Parser_Match (p, TK_RANGE)) {
@@ -17000,6 +17006,19 @@ void Preregister_Labels (Node_List *list) {
     Symbol **label_sym_ptr = NULL;
     switch (node->kind) {
       case NK_LABEL:
+        // `<< A >> << B >> stmt` parses as a nested label chain; every link
+        // names this same list position and must be visible to forward
+        // GOTOs in the sequence (c59001b). Register the tail links here and
+        // let the shared path below register the head.
+        for (Syntax_Node *link = node->label_node.statement;
+             link and link->kind == NK_LABEL;
+             link = link->label_node.statement) {
+          Symbol *tail_sym = Symbol_New (SYMBOL_LABEL, link->label_node.name,
+                                         link->location);
+          tail_sym->type = sm->type_address;
+          Symbol_Add (tail_sym);
+          link->label_node.symbol = tail_sym;
+        }
         label_name = node->label_node.name;
         label_sym_ptr = &node->label_node.symbol;
         break;
@@ -17724,6 +17743,13 @@ void Install_Declaration_Symbols (Node_List *decls) {
     }
     if (decl->symbol) Symbol_Add (decl->symbol);
     if (task_obj_sym) Symbol_Add (task_obj_sym);
+
+    // RM 8.4: a USE clause in the spec extends its effect to the end of the
+    // package's scope — including the private part and the BODY. Re-apply
+    // it in the scope being populated so its use-visible aliases exist
+    // there too (c84008a: types from USE'd PACK1 named in PACK2's body).
+    if (decl->kind == NK_USE_CLAUSE)
+      Resolve_Declaration (decl);
 
     // Multi-name object declarations: install each named symbol
     if (decl->kind == NK_OBJECT_DECL)
@@ -21027,20 +21053,35 @@ void Resolve_Declaration (Syntax_Node *node) {
       }
       break;
     case NK_EXCEPTION_DECL:
+    case NK_EXCEPTION_RENAMING:
 
       // Exception declaration: E : exception;
-      for (uint32_t i = 0; i < node->exception_decl.names.count; i++) {
-        Syntax_Node *name_node = node->exception_decl.names.items[i];
-        if (name_node and name_node->kind == NK_IDENTIFIER) {
-          Symbol *sym = Symbol_New (SYMBOL_EXCEPTION,
-                       name_node->string_val.text,
-                       name_node->location);
-          Symbol_Add (sym);
-          name_node->symbol = sym;
+      // or renaming: E2 : exception RENAMES E1 (RM 8.5) — a NEW NAME for
+      // the SAME exception: raises and handlers through either name must
+      // agree on identity, so the alias records its target and
+      // Emit_Exception_Ref peels to the root (one @__exc global, c85009a).
+      {
+        Symbol *renamed_target = NULL;
+        if (node->exception_decl.renamed) {
+          Resolve_Expression (node->exception_decl.renamed);
+          Symbol *t = node->exception_decl.renamed->symbol;
+          if (t and t->kind == SYMBOL_EXCEPTION) renamed_target = t;
+        }
+        for (uint32_t i = 0; i < node->exception_decl.names.count; i++) {
+          Syntax_Node *name_node = node->exception_decl.names.items[i];
+          if (name_node and name_node->kind == NK_IDENTIFIER) {
+            Symbol *sym = Symbol_New (SYMBOL_EXCEPTION,
+                         name_node->string_val.text,
+                         name_node->location);
+            sym->renamed_object = (Syntax_Node *) renamed_target;
+            Symbol_Add (sym);
+            name_node->symbol = sym;
 
-          // Add to global exception list for codegen
-          if (Exception_Symbol_Count < 256) {
-            Exception_Symbols[Exception_Symbol_Count++] = sym;
+            // Add to global exception list for codegen — an alias emits no
+            // global of its own; its target already has one.
+            if (not renamed_target and Exception_Symbol_Count < 256) {
+              Exception_Symbols[Exception_Symbol_Count++] = sym;
+            }
           }
         }
       }
@@ -23085,6 +23126,11 @@ void Emit_Exception_Identity_Global (const char *mangled) {
 // Emit @__exc.<name> reference for an exception symbol and track the name
 // so Generate_Exception_Globals can emit matching definitions.
 void Emit_Exception_Ref (Symbol *exc) {
+
+  // RM 8.5: a renamed exception IS its target — one identity, one global.
+  while (exc and exc->renamed_object and
+         ((Symbol *) exc->renamed_object)->kind == SYMBOL_EXCEPTION)
+    exc = (Symbol *) exc->renamed_object;
 
   // Capture the exception name by temporarily redirecting output
   FILE *real_out = cg->output;
