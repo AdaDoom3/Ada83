@@ -221,3 +221,12 @@ STILL-REMAINING SKIPS (diagnosed root causes, unfixed)
   cc3603a/cc1305b/cc3224a generic-actual matching, c95067a frame alias
   in package-nested-in-task, c94006a, cc3607b, cd2/cd5/cda clusters,
   'IMAGE on fixed point (invalid sext).
+
+FINAL VERDICT (full class C, run c-20260717-191631-23969)
+---------------------------------------------------------
+  pass 1794 -> 1832 (92%)   fail 63 -> 61   skip 119 -> 83
+  39 progressions, 0 regressions caused by this session.
+  c97307a (timed entry call cancellation) flips PASS/FAIL by machine
+  timing on the PRE-SESSION binary too (verified twice at fe252b5 under
+  identical serial conditions) — pre-existing timing sensitivity, not a
+  regression from this work.
