@@ -9477,6 +9477,18 @@ void Resolve_Generic_Formal_Subprogram_Defaults (Node_List *formals) {
     Syntax_Node *default_name = formal->generic_subprog_param.default_name;
     if (not default_name or formal->generic_subprog_param.default_box) continue;
     if (default_name->symbol) continue;  // already resolved
+    // An operator designator (IS "&") may denote a PREDEFINED operator that
+    // exists as no named symbol — failure to resolve is not an error; the
+    // instantiation binds it as a builtin (RM 12.1.3, cc1307a).
+    if ((default_name->kind == NK_IDENTIFIER or
+         default_name->kind == NK_STRING) and
+        Token_From_Op_Name (default_name->string_val.text) != TK_EOF) {
+      bool saved_suppressed = Diagnostics_Suppressed;
+      Diagnostics_Suppressed = true;
+      Resolve_Expression (default_name);
+      Diagnostics_Suppressed = saved_suppressed;
+      continue;
+    }
     Resolve_Expression (default_name);
   }
 }
@@ -11449,6 +11461,43 @@ Type_Info *Resolve_Selected (Syntax_Node *node) {
         record_type->record.components[found_component].component_type;
       return node->type;
     }
+
+    // RM 8.6: the selector participates in resolving an overloaded CALL
+    // prefix — F(args).IB denotes the F whose result record carries IB, so
+    // a bottom-up commit to a different overload re-resolves against the
+    // one that fits (c87b37d: F(5<5).IB picks F(INTEGER) RETURN REC2 and
+    // re-drives 5<5 as the user "<" returning INTEGER).
+    if (node->selected.prefix->kind == NK_APPLY and
+        node->selected.prefix->apply.prefix and
+        node->selected.prefix->apply.prefix->kind == NK_IDENTIFIER) {
+      Syntax_Node *call = node->selected.prefix;
+      Interp_List cand;
+      Collect_Interpretations (call->apply.prefix->string_val.text, &cand);
+      for (uint32_t i = 0; i < cand.count; i++) {
+        Symbol *f = cand.items[i].nam;
+        if (not f or f->kind != SYMBOL_FUNCTION or f == call->symbol)
+          continue;
+        Type_Info *result_rec = f->return_type
+          ? Underlying_Record_Type (f->return_type) : NULL;
+        if (not result_rec or
+            Find_Record_Component (result_rec, node->selected.selector) < 0)
+          continue;
+        call->symbol = NULL;
+        call->type = f->return_type;
+        call->apply.resolution = APPLY_UNRESOLVED;
+        Type_Info *retry = Resolve_Expression (call);
+        Type_Info *retry_rec = retry ? Underlying_Record_Type (retry) : NULL;
+        int32_t retry_component = retry_rec
+          ? Find_Record_Component (retry_rec, node->selected.selector) : -1;
+        if (retry_component >= 0) {
+          node->selected.component_index = retry_component;
+          node->type =
+            retry_rec->record.components[retry_component].component_type;
+          return node->type;
+        }
+        break;
+      }
+    }
     Closest_Name_Search search = Closest_Name_Begin (node->selected.selector);
     for (uint32_t i = 0; i < record_type->record.component_count; i++)
       Closest_Name_Consider (&search, record_type->record.components[i].name);
@@ -12262,7 +12311,23 @@ Type_Info *Resolve_Apply (Syntax_Node *node) {
           Type_Info *idx_t = rt->array.indices[j].index_type;
           Type_Info *arg_t = arg_types ? arg_types[j] : NULL;
           if (idx_t and arg_t and not Type_Covers (idx_t, arg_t)) {
-            indices_ok = false; break;
+            // A literal subscript is context-typed (RM 4.2, 8.6): the
+            // bottom-up pass committed it to SOME homonymous literal, but it
+            // fits this candidate whenever the index type declares (or
+            // inherits) a literal of that name (c87b23a: A (3, C, TRUE)
+            // across four instances whose index types are sibling
+            // enumerations and derived booleans).
+            Syntax_Node *arg_node =
+              Unwrap_Association (node->apply.arguments.items[j]);
+            bool literal_fits = false;
+            if (arg_node and arg_node->kind == NK_IDENTIFIER and
+                arg_node->symbol and arg_node->symbol->kind == SYMBOL_LITERAL)
+              literal_fits =
+                Symbol_Find_By_Type (arg_node->string_val.text, idx_t) != NULL
+                or Type_Root (idx_t) == Type_Root (arg_t);
+            else if (arg_node and arg_node->kind == NK_CHARACTER)
+              literal_fits = Type_Is_Character_Type (idx_t);
+            if (not literal_fits) { indices_ok = false; break; }
           }
         }
         if (not indices_ok) continue;
@@ -13050,6 +13115,16 @@ Type_Info *Resolve_Apply (Syntax_Node *node) {
           Syntax_Node *arg = node->apply.arguments.items[i];
           if (arg and arg->kind == NK_CHARACTER)
             Resolve_Char_As_Enum (arg, indexed_type->array.indices[i].index_type);
+          // An identifier subscript naming a homonymous literal rebinds to
+          // the INDEX type's literal — positions differ between sibling
+          // enumerations (c87b23a).
+          Type_Info *idx_t = indexed_type->array.indices[i].index_type;
+          if (arg and arg->kind == NK_IDENTIFIER and arg->symbol and
+              arg->symbol->kind == SYMBOL_LITERAL and idx_t and
+              not Type_Covers (idx_t, arg->type)) {
+            Symbol *lit = Symbol_Find_By_Type (arg->string_val.text, idx_t);
+            if (lit) { arg->symbol = lit; arg->type = lit->type; }
+          }
         }
       }
     }
@@ -18825,6 +18900,17 @@ void Install_Generic_Formal_Symbols (Symbol *generic_symbol) {
           type_sym->type = type;
           formal->symbol = type_sym;
 
+          // A formal access type names its designated subtype in the formal
+          // part (RM 12.1.2: TYPE L IS ACCESS S): resolve the mark so an
+          // implicit dereference in the template — LINK1.D — reaches the
+          // designated record's components (cc3128a).
+          if (formal->generic_type_param.def_kind == GEN_DEF_ACCESS and
+              formal->generic_type_param.def_detail) {
+            Resolve_Expression (formal->generic_type_param.def_detail);
+            type->access.designated_type =
+              formal->generic_type_param.def_detail->type;
+          }
+
           // Known discriminants of a formal private type (RM 12.1.2):
           // resolve each discriminant's type and lay the discriminants out
           // as components so selected names like P.D resolve in the
@@ -19281,6 +19367,26 @@ void Bind_Generic_Formals_To_Actuals (Symbol *instance_sym,
             // (Outside_Defining_Package, via Effective_Type_View) hinge on
             // the view's home being the instance, not the actual's package.
             actual_view->defining_symbol = binding;
+
+            // RM 12.3.5: a formal access type's designated subtype is the
+            // one STATED IN THE FORMAL — inside the generic, allocators and
+            // constraint checks act on it, not on whatever (matching but
+            // possibly differently constrained) designated subtype the
+            // actual carries (cc3128a). A designated mark naming an earlier
+            // formal type maps to that formal's own actual view.
+            if (formal->generic_type_param.def_kind == GEN_DEF_ACCESS and
+                formal->symbol and formal->symbol->type and
+                Type_Is_Access (formal->symbol->type) and
+                formal->symbol->type->access.designated_type) {
+              Type_Info *formal_designated =
+                formal->symbol->type->access.designated_type;
+              if (formal_designated->is_generic_formal) {
+                Type_Info *mapped = Generic_Actual_Type_By_Name (
+                  instance_sym, formal_designated->name);
+                if (mapped) formal_designated = mapped;
+              }
+              actual_view->access.designated_type = formal_designated;
+            }
 
             // RM 12.1: within the generic, the discriminants of a formal
             // private type are known by the FORMAL's names — RECVAR3.G with
@@ -22598,6 +22704,19 @@ void Resolve_Declaration (Syntax_Node *node) {
                   if (literal and actual_idx < total_actual_slots)
                     inst_sym->actual_bindings[actual_idx].actual_subprogram =
                       literal;
+
+                // Operator-designator default (IS "&"): a visible user
+                // operator rode in on default_sym above; otherwise the
+                // designator denotes the PREDEFINED operator, bound as a
+                // builtin exactly like an operator-string actual
+                // (RM 12.1.3, cc1307a).
+                } else if (default_name->kind == NK_IDENTIFIER or
+                           default_name->kind == NK_STRING) {
+                  Token_Kind op_token =
+                    Token_From_Op_Name (default_name->string_val.text);
+                  if (op_token != TK_EOF and actual_idx < total_actual_slots)
+                    inst_sym->actual_bindings[actual_idx].builtin_operator =
+                      op_token;
                 }
               }
               actual_idx++;
@@ -48762,6 +48881,16 @@ void Emit_Instance_Binding_Elaboration (Symbol *inst_sym) {
         actual_value = Emit_Constraint_Check_Val (actual_value, binding->type,
                           binding->instance_actual
                             ? binding->instance_actual->type : NULL);
+
+      // RM 12.3.1 / 3.7.2: an actual bound to a formal object of an ACCESS
+      // type must, when non-null, designate an object satisfying the
+      // formal's designated constraint — checked at the instantiation
+      // (cc3128a). A formal access type's actual-view carries the FORMAL's
+      // designated subtype (RM 12.3.5), so the binding's own type is the
+      // authority for both formal-typed and concrete marks.
+      if (Type_Is_Access (binding->type))
+        Emit_Access_Designated_Disc_Check (actual_value.reg,
+                                           actual_value.rep, binding->type);
 
       // Value-level conversion, not rep-level: a real actual bound to a
       // fixed-point formal stores the /SMALL-scaled mantissa (RM 3.5.9), which

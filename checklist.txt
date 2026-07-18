@@ -632,3 +632,42 @@ ROUND 11 — visibility skips (c45347b, c46033a, c73007a, c83027c,
     (is_separate); a subunit's own CU (separate_parent) and a
     SYMBOL_GENERIC pairing are no main program — the driver was
     emitting @main around the generic subunit PROC1.
+
+═══════════════════════════════════════════════════════════════════════════
+ROUND 12 — index overloading and formal access types (final round)
+═══════════════════════════════════════════════════════════════════════════
+[x] c87b23a: a literal subscript is context-typed (RM 4.2, 8.6) — the
+    call-and-index candidate scoring accepts an identifier/character
+    literal subscript whenever the candidate's index type declares a
+    literal of that name (Symbol_Find_By_Type) or shares its root, and
+    the APPLY_INDEX argument rebind re-resolves homonymous literals to
+    the INDEX type's literal (positions differ between sibling enums).
+[x] c87b37d: RM 8.6 — the selector of F(args).IB participates in
+    resolving the overloaded call prefix; on a component miss,
+    Resolve_Selected re-resolves the call against the overload whose
+    result record carries the component.
+[x] cc1307a: an operator designator as a formal-subprogram DEFAULT
+    (IS "&") may denote a predefined operator that exists as no named
+    symbol — resolution failure is suppressed and the instantiation
+    binds it as a builtin, exactly like an operator-string ACTUAL.
+    (Operator strings parse as NK_IDENTIFIER, not NK_STRING.)
+[x] cc3128a (two parts):
+    - a formal access type's designated subtype mark (TYPE L IS ACCESS
+      S) is resolved onto the formal Type_Info, so template-side
+      implicit dereferences (LINK1.D) reach the designated record.
+    - RM 12.3.5: a formal access type's designated subtype is the one
+      STATED IN THE FORMAL — the instance's actual-view carries it
+      (mapped through Generic_Actual_Type_By_Name when the mark names an
+      earlier formal), so allocators and checks inside the generic act
+      on the formal's constraint. The binding elaboration then checks a
+      non-null access actual against the binding's own type
+      (Emit_Access_Designated_Disc_Check) — no side-channel type field.
+STILL OPEN: c86002a/b2m, c86004b/c2m STANDARD homographs; multi-file
+    ca* families; cc1225a; cd1009i; c83024e1m; BIND:unresolved cluster
+    (cc1301a, cc3504d/h, cc3605a, cd2a32a, cd2b11a, cd5003a, cd5011i/s,
+    cda101b, cda201a, ce3906f, c39006f3m, c83f01d0m, c83f03d0m,
+    c95067a, ca*); N/A-correct: c64103a/c/d, c95084a.
+NOTE: c94011a is contention-flaky (1-in-8 FAILED under 4-way load, both
+    at HEAD and with this round's changes — verified by A/B stash test).
+    It is a scaled-delay 'TERMINATED test; see the ACATS delay deviation
+    note. Not a regression of this round.
