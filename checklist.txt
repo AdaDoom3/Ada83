@@ -513,3 +513,63 @@ ROUND 9 — parameter marshaling and membership (1858 -> 1863)
     for type marks (the right operand of a membership is not a value).
 STILL OPEN: c83027a, c83051a, c94008d hang, STANDARD homographs,
     multi-file ca* families.
+
+═══════════════════════════════════════════════════════════════════════════
+ROUND 10 — homograph defaults and expanded-name operators
+═══════════════════════════════════════════════════════════════════════════
+[x] c83027a: Emit_Init_Record_Defaults (the instance-global / nested-
+    component default path) was a degraded duplicate of
+    Emit_Apply_Component_Defaults — no discriminant binding, no variant
+    guards, no scalar range checks. A component default reading a
+    discriminant (D : INTEGER := A, RM 3.7.1) lowered to an undefined
+    local. Refactored to delegate its per-component work to
+    Emit_Apply_Component_Defaults (binds each discriminant's
+    disc_agg_temp to the stored field) and keep only the recursion into
+    nested composite defaults plus Emit_Check_Nested_Disc_Constraints.
+[x] c83051a (three distinct defects):
+    - Generate_Binary_Op promotes to float arithmetic when the operand
+      reps turn out float (fixed / integer in double rep), but left the
+      opcode chosen for integers — emitted `sdiv double`. The promotion
+      now re-selects fadd/fsub/fmul/fdiv.
+    - BPACK."/="(ARY, (...)): predefined operators of a type declared in
+      P exist as no named symbol (array equality, array "<"), so the
+      expanded-name member lookup could only land on a homograph of a
+      different type (the derived boolean's "/="). When the by-name
+      pick's profile does not cover the actuals, Resolve_Apply now
+      probes the infix reading (clone + suppressed diagnostics) and
+      adopts it — the same fallback the unqualified operator-call path
+      already had (RM 8.3, 6.7).
+    - The RM 4.8 allocator element-count check classified the aggregate
+      by the near-dead aggregate.is_named flag (set only for extension
+      aggregates), so NEW T9B'(1..5 => .., 6..10 => ..) was treated as
+      positional-with-2-elements: unconditional CE raise plus a memcpy
+      capped at 2 bytes. Classification now uses Scan_Aggregate_Shape.
+    - Also: an aggregate ACTUAL's type is context-only (RM 4.3) — the
+      call-argument retype fires whenever the formal does not cover the
+      pre-pass guess, not just when the aggregate is untyped.
+[x] c48009e/f regression repair (found by the suite): the old broken
+    positional classification had been accidentally raising CE for
+    NAMED aggregates under NEW T'(..). The real rule (RM 4.3.2 / 4.7):
+    a named aggregate's bounds come from its sole choice, and
+    qualification by a constrained array subtype requires bound
+    EQUALITY — null against null included. Implemented once as
+    Emit_Qualified_Aggregate_Bounds_Check, called from both
+    qualification spellings: Generate_Qualified (T'(agg)) and the
+    allocator (NEW T'(agg) — the parser unwraps the qualified node, so
+    Generate_Qualified never sees it).
+[x] c94008d: Declarations_Create_Task_Dependents now sees through
+    NK_GENERIC_INST into the instance's expanded spec/body (RM 12.3):
+    a task inside a generic package instance depends on the scope that
+    instantiates it (RM 9.4). Without this the instantiating scope
+    never became a master — no done flag was ever raised, and the
+    instance's SHARE tasks parked at terminate alternatives slept
+    through the teardown join (main deadlocked in pthread_join).
+[x] Consolidation: the operator-in-call-notation synthesis (operand
+    collection with RM 6.1 LEFT/RIGHT named-association mapping +
+    NK_BINARY_OP/NK_UNARY_OP construction) now lives in one helper,
+    Synthesize_Infix_From_Apply, used by both the unqualified and the
+    expanded-name fallbacks — the expanded-name path thereby gains the
+    LEFT/RIGHT mapping it previously lacked.
+STILL OPEN: c86002b/c86004b STANDARD homographs, multi-file ca*
+    families, remaining COMPILE-error skips (cc1225a, cc1307a, cc3128a,
+    c45347b, c46033a, c73007a, c83027c, c83030c, c83033a, ...).

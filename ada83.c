@@ -2819,6 +2819,7 @@ void       Resolve_Index_Constraint_Dimension (Syntax_Node *discrete_range,
 void        Analyze_Identifier  (Syntax_Node *node);
 Type_Info *Resolve_Selected     (Syntax_Node *node);
 Type_Info *Resolve_Apply        (Syntax_Node *node);
+Syntax_Node *Synthesize_Infix_From_Apply (Syntax_Node *node, Token_Kind opk);
 Symbol    *Resolve_Entry_Rename_Overloaded_Prefix (Syntax_Node *renamed,
                                                    Symbol *rename_sym);
 // Two-pass overload resolution (RM 8.6): Analyze_Expr collects the candidate
@@ -3656,6 +3657,8 @@ uint32_t   Emit_Fixed_Mantissa_Runtime (Type_Info *ft, double small);
 uint32_t   Emit_Fixed_Fore_Runtime    (Type_Info *ft, double small);
 uint32_t   Emit_Fixed_Large_Runtime   (Type_Info *ft, double small);
 LLVM_Value Generate_Qualified         (Syntax_Node *node);
+void       Emit_Qualified_Aggregate_Bounds_Check (Syntax_Node *agg,
+                                                  Type_Info *mark_type);
 // Raise CONSTRAINT_ERROR unless a non-null access value's designated object
 // satisfies a constrained access subtype's index/discriminant constraint.
 void       Emit_Access_Subtype_Constraint_Check (uint32_t     value_reg,
@@ -11978,6 +11981,43 @@ static bool Repick_Nested_Call (Syntax_Node *call, Type_Info *ctx, Nested_Use us
   return true;
 }
 
+// RM 6.7 / 4.5: rebuild an operator applied in function-call notation —
+// `"+"(A,B)`, `"<"(LEFT=>A, RIGHT=>B)`, `"abs"(RIGHT => X)` — as the
+// equivalent infix/prefix operator node. A unary operator's sole parameter
+// is named RIGHT (RM 6.1), so RIGHT maps to the only operand of a
+// one-argument call and to the second of a two-argument call. Returns NULL
+// when the operands do not form a complete operator application. The
+// synthesized node inherits the apply's context type.
+Syntax_Node *Synthesize_Infix_From_Apply (Syntax_Node *node, Token_Kind opk) {
+  uint32_t arg_count = (uint32_t)node->apply.arguments.count;
+  if (arg_count < 1 or arg_count > 2) return NULL;
+  Syntax_Node *ops[2] = { NULL, NULL };
+  for (uint32_t i = 0; i < arg_count; i++) {
+    Syntax_Node *a = node->apply.arguments.items[i];
+    uint32_t pos = i;
+    if (a->kind == NK_ASSOCIATION) {
+      if (a->association.choices.count == 1 and
+          a->association.choices.items[0]->kind == NK_IDENTIFIER) {
+        String_Slice nm = a->association.choices.items[0]->string_val.text;
+        if (Slice_Equal_Ignore_Case (nm, S ("LEFT")))  pos = 0;
+        else if (Slice_Equal_Ignore_Case (nm, S ("RIGHT"))) pos = (arg_count == 1) ? 0 : 1;
+      }
+      a = a->association.expression;
+    }
+    if (pos < 2) ops[pos] = a;
+  }
+  if (not ops[0] or (arg_count == 2 and not ops[1])) return NULL;
+  Syntax_Node *syn = Node_New (arg_count == 2 ? NK_BINARY_OP : NK_UNARY_OP,
+                               node->location);
+  if (arg_count == 2) {
+    syn->binary.op = opk; syn->binary.left = ops[0]; syn->binary.right = ops[1];
+  } else {
+    syn->unary.op = opk; syn->unary.operand = ops[0];
+  }
+  syn->type = node->type;
+  return syn;
+}
+
 Type_Info *Resolve_Apply (Syntax_Node *node) {
   Type_Info *outer_ctx = node->type;   // applicable context supplied by the caller
 
@@ -12127,34 +12167,8 @@ Type_Info *Resolve_Apply (Syntax_Node *node) {
       // universal minus even though a user "-"(INTEGER) also fits).
       Token_Kind opk = Token_From_Op_Name (prefix->string_val.text);
       if (opk != TK_EOF and arg_count >= 1 and arg_count <= 2) {
-        Syntax_Node *ops[2] = { NULL, NULL };
-        for (uint32_t i = 0; i < arg_count; i++) {
-          Syntax_Node *a = node->apply.arguments.items[i];
-          uint32_t pos = i;
-          if (a->kind == NK_ASSOCIATION) {
-            if (a->association.choices.count == 1 and
-              a->association.choices.items[0]->kind == NK_IDENTIFIER) {
-              String_Slice nm = a->association.choices.items[0]->string_val.text;
-              // A unary operator's sole parameter is named RIGHT (RM 4.5/6.1):
-              // "+"(RIGHT => X) is the unary plus on X, so its operand is ops[0],
-              // not ops[1]. Only a two-argument call has a LEFT/RIGHT pair.
-              if (Slice_Equal_Ignore_Case (nm, S ("LEFT")))  pos = 0;
-              else if (Slice_Equal_Ignore_Case (nm, S ("RIGHT"))) pos = (arg_count == 1) ? 0 : 1;
-            }
-            a = a->association.expression;
-          }
-          if (pos < 2) ops[pos] = a;
-        }
-        if (ops[0] and (arg_count == 1 or ops[1])) {
-          Syntax_Node *syn = Node_New (arg_count == 2 ? NK_BINARY_OP : NK_UNARY_OP,
-                         node->location);
-          if (arg_count == 2) {
-            syn->binary.op = opk; syn->binary.left = ops[0]; syn->binary.right = ops[1];
-          } else {
-            syn->unary.op = opk; syn->unary.operand = ops[0];
-          }
-          syn->type = node->type;
-
+        Syntax_Node *syn = Synthesize_Infix_From_Apply (node, opk);
+        if (syn) {
           // Probe the infix interpretation on a CLONE with diagnostics off:
           // when the context does NOT force a concrete numeric type and the
           // probe yields a UNIVERSAL result, the RM 4.6 conversion-free
@@ -12253,6 +12267,44 @@ Type_Info *Resolve_Apply (Syntax_Node *node) {
           }
         }
       }
+
+      // RM 8.3 / 6.7: P."op"(A,B) may denote a predefined operator of a type
+      // declared in P that exists as no named symbol — array "<", composite
+      // equality, ... — so the by-name member lookup above can only land on a
+      // homograph of a DIFFERENT type (BPACK."/=" over T9A arrays finds the
+      // derived boolean's "/="). When the pick's profile does not cover the
+      // actuals, the infix machinery owns the operator, exactly as in the
+      // unqualified operator-call path below (c83051a).
+      Token_Kind sel_opk = Token_From_Op_Name (prefix->selected.selector);
+      if (sel_opk != TK_EOF and arg_count >= 1 and arg_count <= 2 and
+          prefix_sym->parameters and
+          prefix_sym->parameter_count == arg_count) {
+        bool profile_covers = true;
+        for (uint32_t i = 0; i < arg_count; i++)
+          if (arg_types[i] and prefix_sym->parameters[i].param_type and
+              not Type_Covers (prefix_sym->parameters[i].param_type,
+                               arg_types[i]))
+            profile_covers = false;
+        if (not profile_covers) {
+          Syntax_Node *syn = Synthesize_Infix_From_Apply (node, sel_opk);
+          if (syn) {
+            Syntax_Node *trial = Clone_Subtree (syn);
+            bool saved_suppressed = Diagnostics_Suppressed;
+            Diagnostics_Suppressed = true;
+            Type_Info *trial_rt = Resolve_Expression (trial);
+            Diagnostics_Suppressed = saved_suppressed;
+            if (trial_rt) {
+              Type_Info *rt = Resolve_Expression (syn);
+              if (rt) {
+                node->type = rt;
+                node->symbol = syn->symbol;
+                node->apply.resolution = APPLY_OPERATOR;
+                return rt;
+              }
+            }
+          }
+        }
+      }
     }
   }
   Type_Info *prefix_type = prefix->type;
@@ -12340,8 +12392,12 @@ Type_Info *Resolve_Apply (Syntax_Node *node) {
           Resolve_Char_As_Enum (arg, param_type);
         }
 
-        // Propagate type to aggregate arguments
-        if (arg->kind == NK_AGGREGATE and not arg->type and param_type) {
+        // Propagate type to aggregate arguments. RM 4.3: an aggregate takes
+        // its type from context alone — a type guessed during a context-free
+        // pre-pass (needed to filter overloads) is never authoritative, so
+        // retype whenever the formal does not cover what the aggregate wears.
+        if (arg->kind == NK_AGGREGATE and param_type and
+            (not arg->type or not Type_Covers (param_type, arg->type))) {
           arg->type = param_type;
           Resolve_Expression (arg);
         }
@@ -17389,6 +17445,28 @@ bool Declarations_Create_Task_Dependents (Node_List *list) {
     if (d->kind == NK_PACKAGE_BODY) {
       if (Declarations_Create_Task_Dependents (&d->package_body.declarations))
         return true;
+    }
+
+    // A generic package instantiation declares whatever the instance's
+    // expanded spec and body declare (RM 12.3): a task inside the instance
+    // depends on the scope performing the instantiation (RM 9.4). Without
+    // this the scope never becomes a master — its done flag is never
+    // raised and an instance task parked at a terminate alternative sleeps
+    // through the teardown join (c94008d's SHARE tasks).
+    if (d->kind == NK_GENERIC_INST and d->symbol) {
+      Syntax_Node *expansions[2] = { d->symbol->instance_spec,
+                                     d->symbol->instance_body };
+      for (int e = 0; e < 2; e++) {
+        Syntax_Node *unit = expansions[e];
+        if (not unit) continue;
+        if (unit->kind == NK_PACKAGE_SPEC and
+            (Declarations_Create_Task_Dependents (&unit->package_spec.visible_decls) or
+             Declarations_Create_Task_Dependents (&unit->package_spec.private_decls)))
+          return true;
+        if (unit->kind == NK_PACKAGE_BODY and
+            Declarations_Create_Task_Dependents (&unit->package_body.declarations))
+          return true;
+      }
     }
   }
   return false;
@@ -30345,6 +30423,16 @@ LLVM_Value Emit_Binary_Op_Predefined (Syntax_Node *node) {
   }
   if (not is_float and (LLVM_Rep_Is_Float (left_int_type) or LLVM_Rep_Is_Float (right_int_type))) {
     is_float = true;
+    // The opcode was chosen while the operator still looked integral (a fixed
+    // ÷ integer in a float representation, a derived float, …) — re-select it
+    // for float arithmetic or the emitted instruction is ill-typed (sdiv double).
+    switch (node->binary.op) {
+      case TK_PLUS:  op = "fadd"; break;
+      case TK_MINUS: op = "fsub"; break;
+      case TK_STAR:  op = "fmul"; break;
+      case TK_SLASH: op = "fdiv"; break;
+      default: break;
+    }
     float_type_str = LLVM_Rep_Is_Float (left_int_type) ? left_int_type : right_int_type;
     if (not LLVM_Rep_Is_Float (left_int_type)) {
     uint32_t cv = Emit_Result_Instruction ("sitofp %s %%t%u to %s\n", LLVM_Rep_To_String (left_int_type), left, LLVM_Rep_To_String (float_type_str));
@@ -38635,6 +38723,55 @@ uint32_t Generate_Aggregate_Body (Syntax_Node *node) {
       node->location.line);
   return 0;
 }
+// RM 4.3.2 / 4.7: the bounds of a named array aggregate come from its sole
+// choice, and qualification by a constrained array subtype requires them to
+// EQUAL the type mark's first-dimension bounds — even between two null
+// ranges (c48009e: CA3_2'(4..2 => 5) with CA3_2 bounds 3..2 raises
+// CONSTRAINT_ERROR). Both spellings of qualification reach this: the
+// explicit T'(agg) via Generate_Qualified, and NEW T'(agg) via the
+// allocator, whose parser unwraps the qualified node.
+void Emit_Qualified_Aggregate_Bounds_Check (Syntax_Node *agg,
+                                            Type_Info *mark_type) {
+  if (not (agg and agg->kind == NK_AGGREGATE and
+           Type_Is_Constrained_Array (mark_type) and
+           agg->aggregate.items.count == 1))
+    return;
+  Syntax_Node *assoc = agg->aggregate.items.items[0];
+  if (assoc->kind != NK_ASSOCIATION or assoc->association.choices.count != 1)
+    return;
+  Syntax_Node *choice = assoc->association.choices.items[0];
+  Syntax_Node *choice_lo = NULL, *choice_hi = NULL;
+  bool is_type_mark = choice->symbol and
+    (choice->symbol->kind == SYMBOL_TYPE or
+     choice->symbol->kind == SYMBOL_SUBTYPE);
+  if (choice->kind == NK_RANGE) {
+    choice_lo = choice->range.low;
+    choice_hi = choice->range.high;
+  } else if (not Is_Others_Choice (choice) and not is_type_mark and
+             choice->kind != NK_SUBTYPE_INDICATION) {
+    choice_lo = choice_hi = choice;   // (I => E) has bounds I .. I
+  }
+  Type_Bound *mark_lo = &mark_type->array.indices[0].low_bound;
+  Type_Bound *mark_hi = &mark_type->array.indices[0].high_bound;
+  if (not (choice_lo and choice_hi and
+           mark_lo->kind != BOUND_NONE and mark_hi->kind != BOUND_NONE))
+    return;
+  LLVM_Rep iat = Integer_Arith_Rep ();
+  LLVM_Value alo_v = Generate_Expression (choice_lo);
+  LLVM_Value ahi_v = choice_hi == choice_lo
+    ? alo_v : Generate_Expression (choice_hi);
+  uint32_t agg_lo = Emit_Convert (alo_v.reg, alo_v.rep, iat).reg;
+  uint32_t agg_hi = Emit_Convert (ahi_v.reg, ahi_v.rep, iat).reg;
+  uint32_t mk_lo = Emit_Bound_Value_Typed (mark_lo, NULL);
+  uint32_t mk_hi = Emit_Bound_Value_Typed (mark_hi, NULL);
+  if (not (agg_lo and agg_hi and mk_lo and mk_hi)) return;
+  LLVM_I1 lo_ne = Emit_Icmp ("ne", iat, agg_lo, mk_lo);
+  LLVM_I1 hi_ne = Emit_Icmp ("ne", iat, agg_hi, mk_hi);
+  uint32_t bad = Emit_Result_Instruction ("or i1 %%t%u, %%t%u\n", lo_ne.reg, hi_ne.reg);
+  Emit_Check_With_Raise (bad, true,
+    "qualified aggregate bounds (RM 4.3.2, 4.7)");
+}
+
 LLVM_Value Generate_Qualified (Syntax_Node *node) {
   // RM 4.8: Propagate target access type to allocator in qualified expression
   // context so disc/bounds constraint checks fire (e.g., ACTB'(NEW TB(2))).
@@ -38722,6 +38859,13 @@ LLVM_Value Generate_Qualified (Syntax_Node *node) {
       Emit_Check_With_Raise (bad, true, "qualified expr array bounds (RM 4.7)");
     }
   }
+
+  // RM 4.3.2 / 4.7: a named array aggregate takes its bounds from its sole
+  // choice, but the constrained-type aggregate emitter materializes it
+  // directly in type-mark layout — no fat pointer, so the general check
+  // above never sees the choice's bounds.
+  if (not LLVM_Rep_Is_Fat_Pointer (src_llvm))
+    Emit_Qualified_Aggregate_Bounds_Check (node->qualified.expression, dst_type);
 
   // RM 3.7.2: a type mark denoting a constrained access subtype checks that the
   // operand's designated object matches the access constraint (index bounds or
@@ -39085,43 +39229,37 @@ bool Type_Contains_Access (Type_Info *t) {
 void Emit_Init_Record_Defaults (Type_Info *rec, uint32_t base) {
   if (rec->record.has_disc_constraints and rec->record.disc_constraint_values)
     Emit_Store_Disc_Values (rec, base, false);
+
+  // Apply this record's own component defaults through the general machinery —
+  // it binds each discriminant to its stored field so a self-referential
+  // default (D : INTEGER := A, with A a discriminant) resolves through the
+  // record's storage, guards run-time variants, and range-checks scalars.
+  Symbol *bound_discs[16]; uint32_t bound_count = 0;
+  Emit_Apply_Component_Defaults (rec, base, -2, rec->record.has_disc_constraints,
+                                 bound_discs, &bound_count, 16);
+  for (uint32_t i = 0; i < bound_count; i++) bound_discs[i]->disc_agg_temp = 0;
+
   for (uint32_t nci = 0; nci < rec->record.component_count; nci++) {
     Component_Info *ncomp = &rec->record.components[nci];
-    if (not ncomp->default_expr) {
-      // A composite component without its own default may still carry defaults
-      // INSIDE its type (a record component whose type defaults its fields, or
-      // an array of such records) — recurse into it (RM 3.7).
-      Type_Info *ict = ncomp->component_type;
-      if (Type_Is_Record (ict) and Type_Has_Component_Defaults (ict)) {
-        uint32_t ip = Emit_Result_Instruction ("getelementptr i8, ptr %%t%u, i64 %u  ; %.*s nested defaults\n", base, ncomp->byte_offset, (int)ncomp->name.length, ncomp->name.data);
-        Emit_Init_Record_Defaults (ict, ip);
-      } else if (Type_Is_Constrained_Array (ict) and
-                 Type_Is_Record (ict->array.element_type) and
-                 Type_Has_Component_Defaults (ict->array.element_type)) {
-        Type_Info *iel = ict->array.element_type;
-        int128_t icount = Array_Element_Count (ict);
-        uint32_t iesz = iel->size > 0 ? iel->size : 8;
-        for (int128_t ei = 0; ei < icount and ei < 1024; ei++) {
-          uint32_t ep = Emit_Result_Instruction ("getelementptr i8, ptr %%t%u, i64 %lld  ; %.*s[%lld] defaults\n", base, (long long)(ncomp->byte_offset + ei * iesz),
-             (int)ncomp->name.length, ncomp->name.data, (long long)ei);
-          Emit_Init_Record_Defaults (iel, ep);
-        }
+    if (ncomp->default_expr) continue;
+    // A composite component without its own default may still carry defaults
+    // INSIDE its type (a record component whose type defaults its fields, or
+    // an array of such records) — recurse into it (RM 3.7).
+    Type_Info *ict = ncomp->component_type;
+    if (Type_Is_Record (ict) and Type_Has_Component_Defaults (ict)) {
+      uint32_t ip = Emit_Result_Instruction ("getelementptr i8, ptr %%t%u, i64 %u  ; %.*s nested defaults\n", base, ncomp->byte_offset, (int)ncomp->name.length, ncomp->name.data);
+      Emit_Init_Record_Defaults (ict, ip);
+    } else if (Type_Is_Constrained_Array (ict) and
+               Type_Is_Record (ict->array.element_type) and
+               Type_Has_Component_Defaults (ict->array.element_type)) {
+      Type_Info *iel = ict->array.element_type;
+      int128_t icount = Array_Element_Count (ict);
+      uint32_t iesz = iel->size > 0 ? iel->size : 8;
+      for (int128_t ei = 0; ei < icount and ei < 1024; ei++) {
+        uint32_t ep = Emit_Result_Instruction ("getelementptr i8, ptr %%t%u, i64 %lld  ; %.*s[%lld] defaults\n", base, (long long)(ncomp->byte_offset + ei * iesz),
+           (int)ncomp->name.length, ncomp->name.data, (long long)ei);
+        Emit_Init_Record_Defaults (iel, ep);
       }
-      continue;
-    }
-    if (ncomp->is_discriminant and rec->record.has_disc_constraints) continue;
-    LLVM_Value nval_v = Generate_Expression (ncomp->default_expr);
-    uint32_t nval = nval_v.reg;
-    if (nval == 0) continue;
-    uint32_t ndp = Emit_Result_Instruction ("getelementptr i8, ptr %%t%u, i64 %u\n", base, ncomp->byte_offset);
-    Type_Info *nct = ncomp->component_type;
-    if (Type_Is_Composite (nct) and nct->size > 0)
-      Emit ("  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %u, i1 false)\n",
-         ndp, nval, nct->size);
-    else {
-      LLVM_Rep ndt = Type_To_Rep (nct);
-      nval = Emit_Convert (nval, nval_v.rep, ndt).reg;
-      Emit ("  store %s %%t%u, ptr %%t%u\n", LLVM_Rep_To_String (ndt), nval, ndp);
     }
   }
 
@@ -39911,17 +40049,18 @@ LLVM_Value Generate_Allocator (Syntax_Node *node) {
         uint32_t esz = Array_Element_Byte_Size (designated, 4, 4);
 
         if (inner->kind == NK_AGGREGATE) {
-          uint32_t pos_count = inner->aggregate.items.count;
-          if (not inner->aggregate.is_named and
-            pos_count > 0 and (int128_t)pos_count != type_count) {
-            // Positional element count mismatch — raise CE
-            Emit_Raise_Constraint_Error ("allocator array element count (RM 4.8)");
-          }
-          // Cap memcpy at source aggregate size to prevent read overflow
-          if (not inner->aggregate.is_named) {
-            uint64_t src_sz = (uint64_t)pos_count * esz;
+          Aggregate_Shape agg_shape = Scan_Aggregate_Shape (inner);
+          if (not agg_shape.has_named and agg_shape.positional_count > 0) {
+            if ((int128_t)agg_shape.positional_count != type_count)
+              // Positional element count mismatch — raise CE
+              Emit_Raise_Constraint_Error ("allocator array element count (RM 4.8)");
+            // Cap memcpy at source aggregate size to prevent read overflow
+            uint64_t src_sz = (uint64_t)agg_shape.positional_count * esz;
             if (src_sz < copy_size) copy_size = src_sz;
           }
+          // NEW T'(choice => ..) is a qualification the parser unwrapped:
+          // a sole named choice's bounds must equal T's (RM 4.3.2, 4.7).
+          Emit_Qualified_Aggregate_Bounds_Check (inner, designated);
         }
       }
 
