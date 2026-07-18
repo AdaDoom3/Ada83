@@ -773,3 +773,36 @@ NOTE: c97307a (timed entry call cancellation) fails deterministically
     Round 14 gate: 1896 pass / 56 fail / 24 skip, zero regressions.
 NOTE cda201a: BIND fixed; now fails wanting real bit-packed arrays
     (PRAGMA PACK on ARRAY OF BOOLEAN) — representation feature, open.
+
+── Round 15: frame layout, subunit families, scope cleanup ───────────────
+[x] Library-package state never consumes frame offsets
+    (Symbol_Has_Library_Storage, deliberately narrower than
+    Symbol_Is_Global): a loaded REPORT's variables shifted every later
+    local by whatever happened to load first, so a subunit compilation
+    WITHing more units than its parent disagreed with the parent's
+    layout for the same source (ca1107a: parent wrote I at 4, subunit
+    read it at 8).
+[x] Symbol_Assign_Frame_Slot aligns each slot to its natural size class
+    — layout no longer leans on accidental padding from neighbors.
+[x] A package body nested inside a subunit's body elaborates inline in
+    the already-open ___elab: the subunit-over-parent-frame path opened
+    a fresh define mid-function (c83f01d1's PACKAGE BODY P).
+[x] The library-body ___elab drains deferred nested subprogram bodies
+    after closing (c39006f2's CHECK was called but never emitted).
+[x] Access-subtype membership reads designated bounds/discriminants
+    ONLY on the non-null path (RM 4.5.2: null belongs to every access
+    subtype): the unconditional bounds load dereferenced a null fat
+    pointer's garbage descriptor — latent for years, exposed by the
+    layout change (c45282a).
+[x] Scope.is_accept_formal_scope is GONE: the accept case preregisters
+    its body's labels in the enclosing region before pushing the formal
+    scope (RM 5.1), and Preregister_Labels is idempotent — no
+    scope-walking flag.
+    Round 15 gate: 1898 pass / 56 fail / 22 skip, zero regressions;
+    c83f01d0m, c83f03d0m off skip.
+OPEN (next round): c39006f block-package state classified global while
+    declared in ___elab block statements (needs a statement-part
+    discriminator); ca1009a/ca3004f '@<unit>' presence-anchor
+    unresolved; harness still links only post-main fragments — the
+    principled all-fragments link needs the compiler to stop re-emitting
+    strong definitions for units present in the per-test library.

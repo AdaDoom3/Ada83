@@ -2675,7 +2675,6 @@ struct Scope {
   Symbol   *buckets [SYMBOL_TABLE_SIZE]; // Hash-bucket heads for O(1) name lookup
   Scope    *parent;                      // Enclosing scope (NULL for the global scope)
   Symbol   *owner;                       // Package or subprogram that owns this scope
-  bool      is_accept_formal_scope;      // Accept-statement formal scope: not an RM 5.1 label region
   uint32_t  nesting_level;               // Static nesting depth (0 = global)
   Symbol  **symbols;                     // Flat array of all symbols in declaration order
   uint32_t  symbol_count;                // Number of symbols currently in the scope
@@ -2731,6 +2730,7 @@ void    Symbol_Add          (Symbol *sym);
 bool    Symbol_Is_Deferred_Constant (Symbol *sym);
 bool    Symbol_Is_Subprogram        (const Symbol *sym);
 void    Symbol_Assign_Frame_Slot    (Symbol *sym, Scope *scope);
+bool    Symbol_Has_Library_Storage  (Symbol *sym);
 Symbol *Symbol_Find         (String_Slice name);
 Symbol *Symbol_Find_By_Type (String_Slice name, Type_Info *expected_type);
 Symbol *Package_Denoted      (Symbol *package_symbol);
@@ -9920,9 +9920,11 @@ void Symbol_Add (Symbol *sym) {
         if (sym->type) existing->type = sym->type;
         // The visible deferred declaration skipped frame allocation because
         // the private-type view sizes only the discriminant part. Now that
-        // the completion supplies the full type, carve the slot.
+        // the completion supplies the full type, carve the slot — unless the
+        // constant is library-package state, which lives in a global.
         if (not existing->frame_offset_assigned and
-            existing->visibility != VIS_USE_VISIBLE) {
+            existing->visibility != VIS_USE_VISIBLE and
+            not Symbol_Has_Library_Storage (existing)) {
           Symbol_Assign_Frame_Slot (existing, scope);
         }
         sym->deferred_completion_of = existing;
@@ -9978,14 +9980,39 @@ void Symbol_Add (Symbol *sym) {
   // enclosing frame never allocated (RM 3.7.4 layout is set by the
   // original declaration, not the USE-clause).
   //
+  // Global-storage symbols (library-package state) never consume frame
+  // offsets: they are emitted as module-level @globals, and a phantom slot
+  // here shifts every LATER local's offset by however many library units
+  // happened to load first — a subunit compilation WITHing more units than
+  // its parent then disagrees with the parent's frame layout for the same
+  // source (ca1107a: the parent laid its local package's I at 4, the
+  // subunit — which also loaded the library homograph — read it at 8).
   if ((sym->kind == SYMBOL_VARIABLE or sym->kind == SYMBOL_PARAMETER or
      sym->kind == SYMBOL_CONSTANT or sym->kind == SYMBOL_DISCRIMINANT) and
     not (sym->kind == SYMBOL_CONSTANT and sym->is_named_number) and
     sym->visibility != VIS_USE_VISIBLE and
     not Symbol_Is_Deferred_Constant (sym) and
-    not sym->frame_offset_assigned) {
+    not sym->frame_offset_assigned and
+    not Symbol_Has_Library_Storage (sym)) {
     Symbol_Assign_Frame_Slot (sym, scope);
   }
+}
+
+// A symbol whose parent chain reaches the library level without crossing a
+// frame-owning construct — subprogram, task, or generic template — lives in
+// module-level storage. This is deliberately NARROWER than Symbol_Is_Global:
+// generic formals and instance package state keep their frame slots exactly
+// as before; only true library-package state (a loaded REPORT's variables)
+// is excluded from the frame counter.
+bool Symbol_Has_Library_Storage (Symbol *sym) {
+  if (sym->kind == SYMBOL_PARAMETER or sym->kind == SYMBOL_DISCRIMINANT)
+    return false;
+  for (Symbol *ancestor = sym->parent; ancestor; ancestor = ancestor->parent) {
+    if (Symbol_Is_Subprogram (ancestor)) return false;
+    if (ancestor->type and Type_Is_Task (ancestor->type)) return false;
+    if (ancestor->kind == SYMBOL_GENERIC) return false;
+  }
+  return sym->parent != NULL;
 }
 
 // A deferred constant (RM 7.4) has its full type declared later in the
@@ -10002,7 +10029,6 @@ bool Symbol_Is_Deferred_Constant (Symbol *sym) {
 
 void Symbol_Assign_Frame_Slot (Symbol *sym, Scope *scope) {
   sym->frame_offset_assigned = true;
-  sym->frame_offset = scope->frame_size;
   uint32_t var_size = sym->type ? sym->type->size : 8;
 
   // Fat pointers for dynamic/unconstrained arrays (or access thereto) need
@@ -10048,6 +10074,18 @@ void Symbol_Assign_Frame_Slot (Symbol *sym, Scope *scope) {
   // (Generate_Object_Declaration), after which references to it are unreachable.
   if (Static_Object_Byte_Size (sym->type) > (int128_t) MAX_STACK_OBJECT_BYTES)
     var_size = POINTER_ALLOC_SIZE;
+
+  // Natural alignment: a slot's offset rounds up to its size class (1, 2, 4,
+  // then 8 for anything pointer-sized or larger). Frame layout must not
+  // depend on its neighbors for alignment — an odd-sized local would
+  // otherwise misalign every pointer and fat-pointer slot after it.
+  int64_t alignment = 8;
+  if (var_size < 8) {
+    alignment = 1;
+    while ((uint32_t) alignment < var_size) alignment <<= 1;
+  }
+  scope->frame_size = (scope->frame_size + alignment - 1) & ~(alignment - 1);
+  sym->frame_offset = scope->frame_size;
   scope->frame_size += var_size;
 }
 
@@ -17757,13 +17795,11 @@ void Preregister_Labels (Node_List *list) {
 
   // RM 5.1: labels, block names, and loop names are implicitly declared at
   // the end of the declarative part of the innermost enclosing BODY or
-  // BLOCK. An accept statement's formal scope is not such a region, so a
-  // label inside an accept body belongs to the enclosing body — reachable
-  // as T.LABEL through the task name (c41307d's T.BLK.B).
-  Scope *saved_scope = sm->current_scope;
-  while (sm->current_scope->is_accept_formal_scope and
-         sm->current_scope->parent)
-    sm->current_scope = sm->current_scope->parent;
+  // BLOCK — registration happens with that region's scope current. A
+  // construct that pushes a non-region scope around a statement list (an
+  // accept statement's formal scope) preregisters the list BEFORE pushing;
+  // idempotence here makes the later Resolve_Statement_List pass a no-op
+  // for already-registered labels.
   for (uint32_t i = 0; i < list->count; i++) {
     Syntax_Node *node = list->items[i];
     if (not node) continue;
@@ -17779,6 +17815,7 @@ void Preregister_Labels (Node_List *list) {
         for (Syntax_Node *link = node->label_node.statement;
              link and link->kind == NK_LABEL;
              link = link->label_node.statement) {
+          if (link->label_node.symbol) continue;
           Symbol *tail_sym = Symbol_New (SYMBOL_LABEL, link->label_node.name,
                                          link->location);
           tail_sym->type = sm->type_address;
@@ -17799,14 +17836,14 @@ void Preregister_Labels (Node_List *list) {
       default:
         break;
     }
-    if (label_name.data and label_name.length > 0) {
+    if (label_name.data and label_name.length > 0 and
+        not (label_sym_ptr and *label_sym_ptr)) {
       Symbol *label_sym = Symbol_New (SYMBOL_LABEL, label_name, label_loc);
       label_sym->type = sm->type_address;
       Symbol_Add (label_sym);
       if (label_sym_ptr) *label_sym_ptr = label_sym;
     }
   }
-  sm->current_scope = saved_scope;
 }
 // RM 9.4: is the construct owning this declarative part a task master? True
 // when the declarations create task dependents: a single task object; an
@@ -18372,13 +18409,20 @@ void Resolve_Statement (Syntax_Node *node) {
         Resolve_Expression (node->accept_stmt.guard);
       }
 
-      // Push new scope for accept parameters - use current scope owner                             
-      // so parameters are considered local (not global) for naming.                               
-      // Each accept statement needs its own scope because multiple accepts                         
-      // in a selective wait may have parameters with the same name.                               
-      //                                                                                            
+      // The accept body's labels declare in the ENCLOSING region (RM 5.1:
+      // an accept's formal scope is not a body or block) — register them
+      // now, before the formal scope is pushed, so a label inside the
+      // accept is reachable as T.LABEL through the task name (c41307d's
+      // T.BLK.B). Preregister_Labels is idempotent; the body's own
+      // Resolve_Statement_List pass re-registers nothing.
+      Preregister_Labels (&node->accept_stmt.statements);
+
+      // Push new scope for accept parameters - use current scope owner
+      // so parameters are considered local (not global) for naming.
+      // Each accept statement needs its own scope because multiple accepts
+      // in a selective wait may have parameters with the same name.
+      //
       Symbol_Manager_Push_Scope (sm->current_scope->owner);
-      sm->current_scope->is_accept_formal_scope = true;
 
       // Resolve accept parameters
       Install_Parameter_Symbols (&node->accept_stmt.parameters, NULL);
@@ -30923,31 +30967,50 @@ LLVM_Value Emit_Binary_Op_Predefined (Syntax_Node *node) {
           // Membership in a constrained access-to-array subtype (RM 3.3.2):
           // a null value always belongs; a non-null value belongs iff its
           // designated array's index bounds equal the subtype's constraint.
+          // The bounds live behind the value's descriptor pointer, so they
+          // may be READ only on the non-null path — a null access's bounds
+          // pointer is garbage and dereferencing it traps (c45282a).
           if (Type_Is_Access (range_type) and
               Type_Is_Constrained_Array (range_type->access.designated_type) and
               LLVM_Rep_Is_Fat_Pointer (left_v.rep)) {
             Type_Info *des = range_type->access.designated_type;
             LLVM_Rep bt = Array_Bound_LLVM_Rep (des);
             LLVM_Rep iat = Integer_Arith_Rep ();
-            uint32_t data = Emit_Fat_Pointer_Data (left_v.reg, bt).reg;
-            LLVM_I1 is_null = Emit_Icmp_Null_Ptr ("eq", data);
-            LLVM_I1 belongs = { Emit_I1_Const (1, "access membership seed").reg };
-            bool decided = true;
-            for (uint32_t d = 0; d < des->array.index_count; d++) {
+
+            // The constraint's own bounds need no value: evaluate them first
+            // to learn whether the test is expressible at all.
+            uint32_t clo_regs[8], chi_regs[8];
+            LLVM_Rep  clo_reps[8], chi_reps[8];
+            bool decided = des->array.index_count <= 8;
+            for (uint32_t d = 0; decided and d < des->array.index_count; d++) {
               Index_Info *ix = &des->array.indices[d];
-              LLVM_Rep lr = LL_REP_VOID, hr = LL_REP_VOID;
-              uint32_t clo = Emit_Bound_Value_Typed (&ix->low_bound,  &lr);
-              uint32_t chi = Emit_Bound_Value_Typed (&ix->high_bound, &hr);
-              if (clo == 0 or chi == 0) { decided = false; break; }
-              uint32_t vlo = Emit_Fat_Pointer_Low_Dim  (left_v.reg, bt, d).reg;
-              uint32_t vhi = Emit_Fat_Pointer_High_Dim (left_v.reg, bt, d).reg;
-              belongs = Emit_And_I1 (belongs, Emit_Icmp ("eq", iat,
-                Emit_Convert (vlo, bt, iat).reg, Emit_Convert (clo, lr, iat).reg));
-              belongs = Emit_And_I1 (belongs, Emit_Icmp ("eq", iat,
-                Emit_Convert (vhi, bt, iat).reg, Emit_Convert (chi, hr, iat).reg));
+              clo_reps[d] = LL_REP_VOID; chi_reps[d] = LL_REP_VOID;
+              clo_regs[d] = Emit_Bound_Value_Typed (&ix->low_bound,  &clo_reps[d]);
+              chi_regs[d] = Emit_Bound_Value_Typed (&ix->high_bound, &chi_reps[d]);
+              if (clo_regs[d] == 0 or chi_regs[d] == 0) decided = false;
             }
             if (decided) {
-              uint32_t res = Emit_Result_Instruction ("or i1 %%t%u, %%t%u  ; null or bounds match\n", is_null.reg, belongs.reg);
+              uint32_t data = Emit_Fat_Pointer_Data (left_v.reg, bt).reg;
+              LLVM_I1 is_null = Emit_Icmp_Null_Ptr ("eq", data);
+              uint32_t res_slot = Emit_Result_Instruction (
+                "alloca i1  ; access membership result\n");
+              Emit ("  store i1 1, ptr %%t%u  ; null belongs\n", res_slot);
+              uint32_t skip = Emit_Open_Skip_If (is_null.reg);
+              LLVM_I1 belongs = { Emit_I1_Const (1, "access membership seed").reg };
+              for (uint32_t d = 0; d < des->array.index_count; d++) {
+                uint32_t vlo = Emit_Fat_Pointer_Low_Dim  (left_v.reg, bt, d).reg;
+                uint32_t vhi = Emit_Fat_Pointer_High_Dim (left_v.reg, bt, d).reg;
+                belongs = Emit_And_I1 (belongs, Emit_Icmp ("eq", iat,
+                  Emit_Convert (vlo, bt, iat).reg,
+                  Emit_Convert (clo_regs[d], clo_reps[d], iat).reg));
+                belongs = Emit_And_I1 (belongs, Emit_Icmp ("eq", iat,
+                  Emit_Convert (vhi, bt, iat).reg,
+                  Emit_Convert (chi_regs[d], chi_reps[d], iat).reg));
+              }
+              Emit ("  store i1 %%t%u, ptr %%t%u\n", belongs.reg, res_slot);
+              Emit_Close_Null_Skip (skip);
+              uint32_t res = Emit_Result_Instruction (
+                "load i1, ptr %%t%u  ; null or bounds match\n", res_slot);
               t = negate ? Emit_Not_I1 ((LLVM_I1){ res }).reg : res;
               return Emit_Bool_Value ((LLVM_I1){ t });
             }
@@ -30955,7 +31018,8 @@ LLVM_Value Emit_Binary_Op_Predefined (Syntax_Node *node) {
 
           // Membership in a constrained access-to-record subtype (RM 3.3.2):
           // a null value belongs; a non-null value belongs iff its designated
-          // record's discriminants equal the subtype's constraint.
+          // record's discriminants equal the subtype's constraint — read only
+          // on the non-null path, exactly as for arrays above.
           if (Type_Is_Access (range_type) and
               Type_Is_Record (range_type->access.designated_type) and
               range_type->access.designated_type->record.has_disc_constraints) {
@@ -30964,10 +31028,17 @@ LLVM_Value Emit_Binary_Op_Predefined (Syntax_Node *node) {
               ? Emit_Fat_Pointer_Data (left_v.reg, Array_Bound_LLVM_Rep (des)).reg
               : left_v.reg;
             LLVM_I1 is_null = Emit_Icmp_Null_Ptr ("eq", rec_ptr);
+            uint32_t res_slot = Emit_Result_Instruction (
+              "alloca i1  ; access-record membership result\n");
+            Emit ("  store i1 1, ptr %%t%u  ; null belongs\n", res_slot);
+            uint32_t skip = Emit_Open_Skip_If (is_null.reg);
             LLVM_I1 belongs = { Emit_I1_Const (1, "access-record membership seed").reg };
             bool decided = Emit_Discriminants_Match (des, rec_ptr, &belongs);
+            Emit ("  store i1 %%t%u, ptr %%t%u\n", belongs.reg, res_slot);
+            Emit_Close_Null_Skip (skip);
             if (decided) {
-              uint32_t res = Emit_Result_Instruction ("or i1 %%t%u, %%t%u  ; null or discriminants match\n", is_null.reg, belongs.reg);
+              uint32_t res = Emit_Result_Instruction (
+                "load i1, ptr %%t%u  ; null or discriminants match\n", res_slot);
               t = negate ? Emit_Not_I1 ((LLVM_I1){ res }).reg : res;
               return Emit_Bool_Value ((LLVM_I1){ t });
             }
@@ -50435,7 +50506,11 @@ void Generate_Declaration (Syntax_Node *node) {
         // emits as one elaboration function over that frame. %__frame_base
         // aliases %__parent_frame and the ordinary frame-mode declaration
         // machinery lays the package's variables into their shared slots.
-        if (cg->subunit_parent and pkg_sym and
+        // Only the subunit ITSELF opens the function: a package body nested
+        // inside it elaborates inline in the already-open ___elab
+        // (c83f01d1's PACKAGE BODY P) — a fresh define mid-function is
+        // malformed IR.
+        if (cg->subunit_parent and pkg_sym and not cg->current_function and
             Find_Enclosing_Subprogram (pkg_sym)) {
           uint32_t subunit_saved_deferred = cg->deferred_count;
           pkg_sym->elab_defined = true;
@@ -50585,6 +50660,7 @@ void Generate_Declaration (Syntax_Node *node) {
       } else if (not cg->current_function and
                  not node->package_body.elab_generated) {
         node->package_body.elab_generated = true;
+        uint32_t body_saved_deferred = cg->deferred_count;
         if (pkg_sym) pkg_sym->elab_defined = true;
         // A subunit package body runs its elaboration as a function over
         // the parent's frame, exactly like a task body: uniform
@@ -50686,10 +50762,15 @@ void Generate_Declaration (Syntax_Node *node) {
         cg->current_function = saved_current_function;
         cg->is_nested = saved_is_nested;
 
-        // Track this elaboration function for calling from main.                                  
-        // Also register with the §15 elaboration graph for                                         
-        // proper dependency-ordered elaboration.                                                  
-        //                                                                                          
+        // Nested subprograms declared in the body's declarative part or its
+        // statement blocks (c39006f2's CHECK) deferred while the elaboration
+        // function was open; emit them now, at module level.
+        Process_Deferred_Bodies (body_saved_deferred);
+
+        // Track this elaboration function for calling from main.
+        // Also register with the §15 elaboration graph for
+        // proper dependency-ordered elaboration.
+        //
         if (pkg_sym) {
           Append_Elab_Function (pkg_sym);
 
