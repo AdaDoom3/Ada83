@@ -446,3 +446,22 @@ STILL OPEN in the BIND cluster (diagnosed this round):
 - c83025c: duplicate elab function (homograph package names)
 - c83027a: %a_s102 undefined (homograph resolution)
 - c83051a: invalid operand type
+
+ROUND 8 (continued) — universal preference for operator call notation
+---------------------------------------------------------------------
+[x] c87b40a: `"-"(-1)` / `"ABS"(+1)` under a universal comparison must
+    denote the predefined universal operators even though user homographs
+    fit (RM 4.6: an implicit conversion applies only when no legal
+    interpretation exists without it — and an expression result is not a
+    convertible operand, so a concrete context excludes the universal
+    reading while a free context demands it). The operator-notation apply
+    path now PROBES the infix interpretation on a clone (new
+    Diagnostics_Suppressed flag silences the tentative pass) and adopts
+    it only when the context is not concrete and the probe yields a
+    universal result; otherwise the by-name lookup arbitrates user
+    operators exactly as before, and the infix machinery remains the
+    fallback for predefined operators that are not named symbols.
+    Slice range bounds that pre-resolved UNIVERSAL re-arbitrate against
+    the index subtype once the slice is classified (c87b24b:
+    PI ("+"(3) .. "-"(5)) calls the INTEGER-returning user operators).
+    Validated: 1853 passes, all twelve first-cut regressions recovered.

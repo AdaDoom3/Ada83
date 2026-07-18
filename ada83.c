@@ -4830,8 +4830,14 @@ bool Closest_Name_Found (const Closest_Name_Search *search) {
 // §5.2 Error Handling - Accumulating diagnostic reports
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 
+// A tentative resolution pass — probing an alternative interpretation for
+// legality without committing to it — sets this so its expected failures
+// never reach the user or the error count.
+bool Diagnostics_Suppressed = false;
+
 void Report_Diagnostic (Source_Location location, const char *severity,
                         const char *format, va_list args) {
+  if (Diagnostics_Suppressed) return;
   fprintf (stderr, "%s:%u:%u: %s: ",
            location.filename ? location.filename : "<unknown>",
            location.line, location.column, severity);
@@ -4843,7 +4849,7 @@ void Report_Error (Source_Location location, const char *format, ...) {
   va_start (args, format);
   Report_Diagnostic (location, "error", format, args);
   va_end (args);
-  Error_Count++;
+  if (not Diagnostics_Suppressed) Error_Count++;
 }
 // Located, non-fatal warning. Does not affect Error_Count or compilation — used
 // e.g. when a runtime check is statically known to fail (RM permits compiling
@@ -12088,26 +12094,17 @@ Type_Info *Resolve_Apply (Syntax_Node *node) {
         chose_index_interp = true;
       }
     }
-    if (not prefix_sym)
-    prefix_sym = Resolve_Overloaded_Call (prefix->string_val.text, &args, call_ctx);
-    if (prefix_sym) {
-      prefix->symbol = prefix_sym;
-      prefix->type = (prefix_sym->kind == SYMBOL_FUNCTION) ?
-               prefix_sym->return_type : prefix_sym->type;
-
-    // Fall back to simple lookup for non-callable names
-    } else {
+    if (not prefix_sym) {
       // RM 6.7 / 4.5.2: operator in function-call notation — `"+"(A,B)` /
-      // `"<"(A,B)` / `"+"(LEFT=>A, RIGHT=>B)`. Re-resolve as the infix operator,
-      // which handles predefined operators (including array relational/equality
-      // ops that are not registered as named symbols) AND user-defined operators
-      // through one overload machinery. This must run BEFORE the by-name lookup
-      // below: that lookup binds an operator symbol purely by name, so for e.g.
-      // `"<"(ARR1, ARR2)` it would otherwise grab a user-defined "<"(INTEGER,
-      // INTEGER) whose profile does not match the array actuals, instead of the
-      // predefined array "<" the infix form correctly selects. Resolve_Overloaded_Call
-      // already returned the user operator when its profile DID match, so reaching
-      // here means no named operator fits the actuals.
+      // `"<"(A,B)` / `"+"(LEFT=>A, RIGHT=>B)`. Re-resolve as the infix
+      // operator FIRST: the infix machinery weighs user-defined operators,
+      // predefined operators, and the universal interpretations together
+      // through one overload resolution — a by-name lookup commits to a
+      // user operator on profile match alone, which both misreads
+      // `"<"(ARR1, ARR2)` (predefined array "<" is not a named symbol)
+      // and violates the RM 4.6 conversion-free preference (c87b40a:
+      // `"-"(-1)` under a universal "<" must denote the predefined
+      // universal minus even though a user "-"(INTEGER) also fits).
       Token_Kind opk = Token_From_Op_Name (prefix->string_val.text);
       if (opk != TK_EOF and arg_count >= 1 and arg_count <= 2) {
         Syntax_Node *ops[2] = { NULL, NULL };
@@ -12137,26 +12134,77 @@ Type_Info *Resolve_Apply (Syntax_Node *node) {
             syn->unary.op = opk; syn->unary.operand = ops[0];
           }
           syn->type = node->type;
-          Type_Info *rt = Resolve_Expression (syn);
-          if (rt) {
-            node->type = rt;
-            node->symbol = syn->symbol;
-            // This apply IS the operator (RM 6.7): the emitter lowers it through
-            // the same predefined-operator path as `A op B`. Leaving it
-            // APPLY_UNRESOLVED would trip the codegen's verdict guard.
-            node->apply.resolution = APPLY_OPERATOR;
-            return rt;
+
+          // Probe the infix interpretation on a CLONE with diagnostics off:
+          // when the context does NOT force a concrete numeric type and the
+          // probe yields a UNIVERSAL result, the RM 4.6 conversion-free
+          // preference makes it the correct reading — the by-name lookup
+          // (which commits to a user operator on bare profile match) must
+          // not run (c87b40a: `"-"(-1)` under a universal "<"). Under a
+          // CONCRETE context the universal result — an expression, not a
+          // convertible operand (RM 4.6) — could never convert to it, so
+          // the user operator is the only legal reading and the by-name
+          // lookup decides (c87b02a's operator-symbol initializers).
+          bool context_is_concrete = call_ctx and
+            not Type_Is_Universal (call_ctx);
+          Syntax_Node *trial = context_is_concrete
+            ? NULL : Clone_Subtree (syn);
+          Type_Info *trial_rt = NULL;
+          if (trial) {
+            bool saved_suppressed = Diagnostics_Suppressed;
+            Diagnostics_Suppressed = true;
+            trial_rt = Resolve_Expression (trial);
+            Diagnostics_Suppressed = saved_suppressed;
+          }
+          if (trial_rt and Type_Is_Universal (trial_rt)) {
+            Type_Info *rt = Resolve_Expression (syn);
+            if (rt) {
+              node->type = rt;
+              node->symbol = syn->symbol;
+              node->apply.resolution = APPLY_OPERATOR;
+              return rt;
+            }
+          }
+
+          // By-name lookup: a user-defined operator whose profile matches.
+          prefix_sym = Resolve_Overloaded_Call (prefix->string_val.text,
+                                                &args, call_ctx);
+
+          // Neither universal nor user-named: the infix machinery still
+          // owns the predefined operators that are not named symbols
+          // (array "<", equality on composites, ...).
+          if (not prefix_sym) {
+            Type_Info *rt = Resolve_Expression (syn);
+            if (rt) {
+              node->type = rt;
+              node->symbol = syn->symbol;
+              // This apply IS the operator (RM 6.7): the emitter lowers it
+              // through the same predefined-operator path as `A op B`.
+              // Leaving it APPLY_UNRESOLVED would trip the codegen's
+              // verdict guard.
+              node->apply.resolution = APPLY_OPERATOR;
+              return rt;
+            }
           }
         }
       }
+      if (not prefix_sym)
+        prefix_sym = Resolve_Overloaded_Call (prefix->string_val.text, &args, call_ctx);
+    }
+    if (prefix_sym) {
+      prefix->symbol = prefix_sym;
+      prefix->type = (prefix_sym->kind == SYMBOL_FUNCTION) ?
+               prefix_sym->return_type : prefix_sym->type;
 
+    // Fall back to simple lookup for non-callable names
+    } else {
       prefix_sym = Symbol_Find (prefix->string_val.text);
       if (prefix_sym) {
         prefix->symbol = prefix_sym;
         prefix->type = (prefix_sym->kind == SYMBOL_FUNCTION)
                      ? prefix_sym->return_type : prefix_sym->type;
       }
-      }
+    }
     }
 
   // For complex prefix (selected, etc.), resolve normally
@@ -12718,6 +12766,32 @@ Type_Info *Resolve_Apply (Syntax_Node *node) {
           rng->range.high = hi;
         }
         node->apply.arguments.items[i] = rng;
+      }
+
+      // The bounds pre-resolved without the index context; a bound that
+      // came out UNIVERSAL re-arbitrates against the index subtype — an
+      // operator in call notation must then pick the concrete-returning
+      // user operator (c87b24b: PI ("+" (3) .. "-" (5)) calls the
+      // INTEGER-returning user "+"/"-", not the universal predefined ones).
+      {
+        Type_Info *slice_index_type =
+          (indexed_type->kind == TYPE_ARRAY and indexed_type->array.indices)
+            ? indexed_type->array.indices[0].index_type : sm->type_integer;
+        for (uint32_t i = 0; slice_index_type and i < arg_count; i++) {
+          Syntax_Node *a = node->apply.arguments.items[i];
+          if (not a or a->kind != NK_RANGE) continue;
+          Syntax_Node *sides[2] = { a->range.low, a->range.high };
+          for (int s = 0; s < 2; s++) {
+            Syntax_Node *bound = sides[s];
+            if (bound and bound->kind == NK_APPLY and
+                Type_Is_Universal (bound->type)) {
+              bound->type = slice_index_type;
+              bound->symbol = NULL;
+              bound->apply.resolution = APPLY_UNRESOLVED;
+              Resolve_Expression (bound);
+            }
+          }
+        }
       }
 
     // Indexing: result type is the element type
