@@ -3846,6 +3846,7 @@ void Emit_Activation_Failure_Check (uint32_t failed_flag);
 const char *Task_Parent_Frame_Argument (void);
 const char *Task_Master_Record_Argument (void);
 uint32_t Emit_Task_Control_Block_For_Prefix (Syntax_Node *prefix);
+void Emit_Accept_Parameter_Bindings (Node_List *parameters, uint32_t params_ptr);
 void Emit_Accept_Out_Param_Writeback (Node_List *parameters, uint32_t params_ptr);
 void Emit_Join_Dependent_Tasks      (uint32_t from);
 void Emit_Master_Cleanup_For_Return (void);
@@ -25401,6 +25402,7 @@ uint32_t Emit_Fixed_Bound_Mantissa (Type_Bound *bound, double small, LLVM_Rep fi
     uint32_t out = Emit_Result_Instruction ("add %s 0, %s  ; fixed bound (%g/small)\n", LLVM_Rep_To_String (fix_rep), I128_Decimal (iv), bound->float_value);
     return out;
   }
+
   if (Bound_Is_Expression (bound)) {
     LLVM_Value fv = Generate_Expression (bound->expr);
     bool fv_float = LLVM_Rep_Is_Float (fv.rep) or
@@ -43254,6 +43256,225 @@ void Generate_Block_Statement (Syntax_Node *node) {
     Emit ("  ; -- END BLOCK\n");
   }
 }
+// RM 9.5: bind the accept's formals to the caller's parameter block at the
+// start of a rendezvous. One binder serves both the plain ACCEPT statement
+// and an accept alternative of a selective wait — the block layout is the
+// same ({ i64 slot per formal, then one trailing i64 per hidden 'CONSTRAINED
+// flag (RM 3.7.4) }), and so are the binding rules: by-reference for records,
+// fat arrays, and fat access values; copy-in for constrained arrays and
+// scalars; frame-slot publication when a nested unit reads a formal uplevel.
+// Must mirror Emit_Accept_Out_Param_Writeback's slot numbering exactly.
+void Emit_Accept_Parameter_Bindings (Node_List *parameters, uint32_t params_ptr) {
+
+  // Total formal count: the caller appended the hidden 'CONSTRAINED flags
+  // (RM 3.7.4) after this many parameter slots.
+  uint32_t accept_total_params = 0;
+  for (uint32_t i = 0; i < parameters->count; i++) {
+    Syntax_Node *param = parameters->items[i];
+    if (param and param->kind == NK_PARAM_SPEC)
+      accept_total_params += param->param_spec.names.count;
+  }
+  uint32_t accept_flag_ordinal = 0;
+
+  uint32_t param_idx = 0;
+  for (uint32_t i = 0; i < parameters->count; i++) {
+    Syntax_Node *param = parameters->items[i];
+    if (param and param->kind == NK_PARAM_SPEC) {
+      for (uint32_t j = 0; j < param->param_spec.names.count; j++) {
+        Syntax_Node *name = param->param_spec.names.items[j];
+        if (name and name->symbol) {
+          Type_Info *pt = name->symbol->type;
+          // STRING is TYPE_STRING, not TYPE_ARRAY — use the array-like
+          // predicate so an unconstrained STRING formal is bound as a fat
+          // pointer (the reader loads a {ptr,ptr} from its storage); the
+          // old kind==TYPE_ARRAY test dropped it to the scalar path, which
+          // stored the spilled fat's address as a bare i64 and then read a
+          // fat struct back from it (a null bounds pointer, then a crash on
+          // S'FIRST).
+          bool is_array = Type_Is_Array_Like (pt);
+          uint32_t type_size = pt ? pt->size : 0;
+
+          // Load source pointer from params block
+          uint32_t pp = Emit_Result_Instruction ("getelementptr i64, ptr %%t%u, i64 %u\n", params_ptr, param_idx);
+          uint32_t pv = Emit_Result_Instruction ("load i64, ptr %%t%u\n", pp);
+
+          // Array parameter: alloca correct size, memcpy from source.
+          // For static sizes, use compile-time constant.
+          // For dynamic sizes (bounds are BOUND_EXPR), compute at runtime.
+          //
+          if (is_array) {
+            uint32_t src = Emit_Result_Instruction ("inttoptr " PTR_INT_TYPE " %%t%u to ptr\n", pv);
+
+            // Unconstrained or dynamic-bounds array (fat): the slot holds
+            // the address of the caller's fat pointer { data, bounds };
+            // bind the formal to it by reference (the caller is blocked
+            // for the rendezvous, so its data and bounds are stable).
+            if (Type_Needs_Fat_Pointer (pt)) {
+
+              // A nested subprogram in the accept body reads this fat
+              // formal through its frame slot (a stable getelementptr the
+              // prologue emits before the rendezvous). Bind the formal to
+              // that slot and copy the caller's fat pointer { data, bounds }
+              // into it; element writes still reach the caller's storage
+              // through the shared data pointer. Otherwise bind the formal
+              // by reference to the caller's fat directly.
+              if (Emit_Bind_Accept_Formal_To_Frame (name->symbol)) {
+                uint32_t cfa = Emit_Result_Instruction ("inttoptr " PTR_INT_TYPE " %%t%u to ptr\n", pv);
+                uint32_t fat = Emit_Result_Instruction ("load " FAT_PTR_TYPE ", ptr %%t%u  ; caller fat\n", cfa);
+                Emit ("  store " FAT_PTR_TYPE " %%t%u, ptr %%", fat);
+                Emit_Symbol_Name (name->symbol);
+                Emit ("\n");
+              } else {
+                Emit_Local_Ref (name->symbol);
+                Emit (" = inttoptr " PTR_INT_TYPE " %%t%u to ptr\n", pv);
+              }
+
+            // Statically sized constrained array: the slot holds the data
+            // address; copy it into the formal's storage (a local buffer,
+            // or its frame slot when a nested subprogram reads it uplevel).
+            } else if (type_size > 0) {
+              if (not Emit_Bind_Accept_Formal_To_Frame (name->symbol)) {
+                Emit_Local_Ref (name->symbol);
+                Emit (" = alloca [%u x i8], align 8\n", type_size);
+              }
+              Emit_Memcpy_To_Symbol (name->symbol, src, type_size, NULL);
+
+            // Dynamic bounds: src is caller's fat ptr { data_ptr, bounds_ptr }.
+            // Create a proper local fat pointer so 'LENGTH etc. work.
+            } else {
+              LLVM_Rep iat = Integer_Arith_Rep ();
+              uint32_t ndims = pt->array.index_count;
+              uint32_t elem_sz = pt->array.element_type ?
+                         pt->array.element_type->size : 4;
+              if (elem_sz == 0) elem_sz = 4;
+
+              // 1. Dereference caller's fat ptr to get data_ptr
+              uint32_t dp_gep = Emit_Result_Instruction ("getelementptr " FAT_PTR_TYPE ", ptr %%t%u, i32 0, i32 0\n", src);
+              uint32_t data_ptr = Emit_Result_Instruction ("load ptr, ptr %%t%u\n", dp_gep);
+
+              // 2. Evaluate type bounds, compute data byte size
+              uint32_t lo_regs[16], hi_regs[16];
+              uint32_t total = 0;
+              for (uint32_t d = 0; d < ndims and d < 16; d++) {
+                lo_regs[d] = Emit_Bound_Value (&pt->array.indices[d].low_bound).reg;
+                hi_regs[d] = Emit_Bound_Value (&pt->array.indices[d].high_bound).reg;
+                uint32_t dlen = Emit_Length_From_Bounds (lo_regs[d], hi_regs[d], iat).reg;
+                if (d == 0) { total = dlen; }
+                else {
+                  uint32_t p2 = Emit_Result_Instruction ("mul %s %%t%u, %%t%u\n", LLVM_Rep_To_String (iat), total, dlen);
+                  total = p2;
+                }
+              }
+              uint32_t bsz = Emit_Result_Instruction ("mul %s %%t%u, %u\n", LLVM_Rep_To_String (iat), total, elem_sz);
+              LLVM_I1 neg_chk = Emit_Icmp_Const ("slt", iat, bsz, 0);
+              uint32_t csz = Emit_Result_Instruction ("select i1 %%t%u, %s 0, %s %%t%u\n", neg_chk.reg, LLVM_Rep_To_String (iat), LLVM_Rep_To_String (iat), bsz);
+
+              // 3. Alloca for local data copy, memcpy from data_ptr
+              uint32_t data_alloca = Emit_Result_Instruction ("alloca i8, %s %%t%u, align 8\n", LLVM_Rep_To_String (iat), csz);
+              uint32_t csz64 = Emit_Extend_To_I64 (csz, iat).reg;
+              Emit_Memcpy (data_alloca, data_ptr, csz64);
+
+              // 4. Alloca for local bounds struct [2*ndims x i32]
+              uint32_t bounds_alloca = Emit_Result_Instruction ("alloca [%u x i32]\n", 2 * ndims);
+              for (uint32_t d = 0; d < ndims and d < 16; d++)
+                Emit_Store_Bound_Pair (bounds_alloca, iat, d, lo_regs[d], hi_regs[d]);
+
+              // 5. Create fat pointer variable { data_ptr, bounds_ptr }
+              Emit_Local_Ref (name->symbol);
+              Emit (" = alloca " FAT_PTR_TYPE ", align 8\n");
+              uint32_t fp_d = Emit_Result_Instruction ("getelementptr " FAT_PTR_TYPE ", ptr %%");
+              Emit_Symbol_Name (name->symbol);
+              Emit (", i32 0, i32 0\n");
+              Emit ("  store ptr %%t%u, ptr %%t%u\n",
+                 data_alloca, fp_d);
+              uint32_t fp_b = Emit_Result_Instruction ("getelementptr " FAT_PTR_TYPE ", ptr %%");
+              Emit_Symbol_Name (name->symbol);
+              Emit (", i32 0, i32 1\n");
+              Emit ("  store ptr %%t%u, ptr %%t%u\n",
+                 bounds_alloca, fp_b);
+            }
+
+          // By-reference record (RM 6.2): the slot holds the caller's
+          // record address; bind the formal directly to it so field and
+          // discriminant access dereference the caller's object (aliased
+          // for the rendezvous, so IN OUT / OUT updates reach it).
+          } else if (Type_Is_Record (pt)) {
+            Emit_Local_Ref (name->symbol);
+            Emit (" = inttoptr " PTR_INT_TYPE " %%t%u to ptr\n", pv);
+
+            // A nested unit in the accept body reads this record uplevel.
+            // Bind it by reference (RM 6.2): publish the caller's record
+            // address in the formal's slot of the TASK'S OWN frame and
+            // mark it by-reference, so a nested reader's alias loads the
+            // pointer and dereferences the caller's live object — IN OUT
+            // updates and later reads stay consistent, not a bind-time
+            // snapshot.
+            if (cg->current_nesting_level > 0 and
+                name->symbol->frame_offset_assigned) {
+              name->symbol->param_by_reference = true;
+              uint32_t slot = Emit_Result_Instruction (
+                "getelementptr i8, ptr %%__frame_base, i64 %lld\n",
+                (long long) name->symbol->frame_offset);
+              Emit ("  store ptr %%");
+              Emit_Symbol_Name (name->symbol);
+              Emit (", ptr %%t%u  ; publish uplevel record by-reference\n",
+                    slot);
+            }
+
+            // RM 3.7.4: a mutable OUT/IN OUT formal takes its 'CONSTRAINED
+            // from the caller's flag, read from the trailing slot the call
+            // appended, and spilled to the named slot the attribute reads.
+            if (Parameter_Needs_Constrained_Flag (
+                  (Parameter_Mode) param->param_spec.mode, pt)) {
+              uint32_t cf = Emit_Result_Instruction ("getelementptr i64, ptr %%t%u, i64 %u\n", params_ptr,
+                 accept_total_params + accept_flag_ordinal);
+              uint32_t cfv = Emit_Result_Instruction ("load i64, ptr %%t%u  ; 'CONSTRAINED flag\n", cf);
+              uint32_t cf8 = Emit_Result_Instruction ("trunc i64 %%t%u to i8\n", cfv);
+              name->symbol->has_runtime_constrained_flag = true;
+              Emit ("  ");
+              Emit_Constrained_Slot_Ref (name->symbol);
+              Emit (" = alloca i8  ; hidden 'CONSTRAINED flag\n");
+              Emit ("  store i8 %%t%u, ptr ", cf8);
+              Emit_Constrained_Slot_Ref (name->symbol);
+              Emit ("\n");
+              accept_flag_ordinal++;
+            }
+
+          // Fat access (ACCESS to an unconstrained array/string): the slot
+          // holds the address of the caller's spilled fat pointer {data,
+          // bounds}; bind the formal to it by reference so reads and an
+          // OUT/IN OUT write reach the caller's storage (RM 6.2), and the
+          // caller checks the returned designated bounds on copy-back.
+          } else if (pt and Type_Is_Access (Type_Underlying (pt)) and
+                     Type_Needs_Fat_Pointer (pt)) {
+            if (Emit_Bind_Accept_Formal_To_Frame (name->symbol)) {
+              uint32_t cfa = Emit_Result_Instruction ("inttoptr " PTR_INT_TYPE " %%t%u to ptr\n", pv);
+              uint32_t fat = Emit_Result_Instruction ("load " FAT_PTR_TYPE ", ptr %%t%u  ; caller fat access\n", cfa);
+              Emit ("  store " FAT_PTR_TYPE " %%t%u, ptr %%", fat);
+              Emit_Symbol_Name (name->symbol);
+              Emit ("\n");
+            } else {
+              Emit_Local_Ref (name->symbol);
+              Emit (" = inttoptr " PTR_INT_TYPE " %%t%u to ptr\n", pv);
+            }
+
+          // Scalar: store the value into its storage — the frame slot when
+          // a nested subprogram reads it uplevel, else a fresh local.
+          } else {
+            if (not Emit_Bind_Accept_Formal_To_Frame (name->symbol)) {
+              Emit_Local_Ref (name->symbol);
+              Emit (" = alloca i64, align 8\n");
+            }
+            Emit ("  store i64 %%t%u, ptr %%", pv);
+            Emit_Symbol_Name (name->symbol);
+            Emit ("\n");
+          }
+          param_idx++;
+        }
+      }
+    }
+  }
+}
 // RM 9.5: at the end of a rendezvous, the values of OUT and IN OUT formals
 // are copied back to the caller. Scalars are written into their parameter-
 // block slot (the caller reads the slot back after __ada_entry_call returns);
@@ -43731,219 +43952,8 @@ void Generate_Statement (Syntax_Node *node) {
         uint32_t params_slot = Emit_Result_Instruction ("getelementptr ptr, ptr %%t%u, i64 2\n", caller_ptr);
         uint32_t params_ptr = Emit_Result_Instruction ("load ptr, ptr %%t%u  ; params from rv record\n", params_slot);
 
-        // Generate parameters - allocate space and copy from caller's parameter block.            
-        // For composite types (arrays/records), allocate the full type size                        
-        // and memcpy from the pointer in the params block.                                        
-        // For scalars, load the i64 value directly.                                               
-        //                                                                                          
-        // Total formal count: the caller appended the hidden 'CONSTRAINED flags
-        // (RM 3.7.4) after this many parameter slots.
-        uint32_t accept_total_params = 0;
-        for (uint32_t i = 0; i < node->accept_stmt.parameters.count; i++) {
-          Syntax_Node *param = node->accept_stmt.parameters.items[i];
-          if (param and param->kind == NK_PARAM_SPEC)
-            accept_total_params += param->param_spec.names.count;
-        }
-        uint32_t accept_flag_ordinal = 0;
-
-        uint32_t param_idx = 0;
-        for (uint32_t i = 0; i < node->accept_stmt.parameters.count; i++) {
-          Syntax_Node *param = node->accept_stmt.parameters.items[i];
-          if (param and param->kind == NK_PARAM_SPEC) {
-            for (uint32_t j = 0; j < param->param_spec.names.count; j++) {
-              Syntax_Node *name = param->param_spec.names.items[j];
-              if (name and name->symbol) {
-                Type_Info *pt = name->symbol->type;
-                // STRING is TYPE_STRING, not TYPE_ARRAY — use the array-like
-                // predicate so an unconstrained STRING formal is bound as a fat
-                // pointer (the reader loads a {ptr,ptr} from its storage); the
-                // old kind==TYPE_ARRAY test dropped it to the scalar path, which
-                // stored the spilled fat's address as a bare i64 and then read a
-                // fat struct back from it (a null bounds pointer, then a crash on
-                // S'FIRST).
-                bool is_array = Type_Is_Array_Like (pt);
-                uint32_t type_size = pt ? pt->size : 0;
-
-                // Load source pointer from params block
-                uint32_t pp = Emit_Result_Instruction ("getelementptr i64, ptr %%t%u, i64 %u\n", params_ptr, param_idx);
-                uint32_t pv = Emit_Result_Instruction ("load i64, ptr %%t%u\n", pp);
-
-                // Array parameter: alloca correct size, memcpy from source.                       
-                // For static sizes, use compile-time constant.                                    
-                // For dynamic sizes (bounds are BOUND_EXPR), compute at runtime.                  
-                //                                                                                  
-                if (is_array) {
-                  uint32_t src = Emit_Result_Instruction ("inttoptr " PTR_INT_TYPE " %%t%u to ptr\n", pv);
-
-                  // Unconstrained or dynamic-bounds array (fat): the slot holds
-                  // the address of the caller's fat pointer { data, bounds };
-                  // bind the formal to it by reference (the caller is blocked
-                  // for the rendezvous, so its data and bounds are stable).
-                  if (Type_Needs_Fat_Pointer (pt)) {
-
-                    // A nested subprogram in the accept body reads this fat
-                    // formal through its frame slot (a stable getelementptr the
-                    // prologue emits before the rendezvous). Bind the formal to
-                    // that slot and copy the caller's fat pointer { data, bounds }
-                    // into it; element writes still reach the caller's storage
-                    // through the shared data pointer. Otherwise bind the formal
-                    // by reference to the caller's fat directly.
-                    if (Emit_Bind_Accept_Formal_To_Frame (name->symbol)) {
-                      uint32_t cfa = Emit_Result_Instruction ("inttoptr " PTR_INT_TYPE " %%t%u to ptr\n", pv);
-                      uint32_t fat = Emit_Result_Instruction ("load " FAT_PTR_TYPE ", ptr %%t%u  ; caller fat\n", cfa);
-                      Emit ("  store " FAT_PTR_TYPE " %%t%u, ptr %%", fat);
-                      Emit_Symbol_Name (name->symbol);
-                      Emit ("\n");
-                    } else {
-                      Emit_Local_Ref (name->symbol);
-                      Emit (" = inttoptr " PTR_INT_TYPE " %%t%u to ptr\n", pv);
-                    }
-
-                  // Statically sized constrained array: the slot holds the data
-                  // address; copy it into the formal's storage (a local buffer,
-                  // or its frame slot when a nested subprogram reads it uplevel).
-                  } else if (type_size > 0) {
-                    if (not Emit_Bind_Accept_Formal_To_Frame (name->symbol)) {
-                      Emit_Local_Ref (name->symbol);
-                      Emit (" = alloca [%u x i8], align 8\n", type_size);
-                    }
-                    Emit_Memcpy_To_Symbol (name->symbol, src, type_size, NULL);
-
-                  // Dynamic bounds: src is caller's fat ptr { data_ptr, bounds_ptr }.
-                  // Create a proper local fat pointer so 'LENGTH etc. work.
-                  } else {
-                    LLVM_Rep iat = Integer_Arith_Rep ();
-                    uint32_t ndims = pt->array.index_count;
-                    uint32_t elem_sz = pt->array.element_type ?
-                               pt->array.element_type->size : 4;
-                    if (elem_sz == 0) elem_sz = 4;
-
-                    // 1. Dereference caller's fat ptr to get data_ptr
-                    uint32_t dp_gep = Emit_Result_Instruction ("getelementptr " FAT_PTR_TYPE ", ptr %%t%u, i32 0, i32 0\n", src);
-                    uint32_t data_ptr = Emit_Result_Instruction ("load ptr, ptr %%t%u\n", dp_gep);
-
-                    // 2. Evaluate type bounds, compute data byte size
-                    uint32_t lo_regs[16], hi_regs[16];
-                    uint32_t total = 0;
-                    for (uint32_t d = 0; d < ndims and d < 16; d++) {
-                      lo_regs[d] = Emit_Bound_Value (&pt->array.indices[d].low_bound).reg;
-                      hi_regs[d] = Emit_Bound_Value (&pt->array.indices[d].high_bound).reg;
-                      uint32_t dlen = Emit_Length_From_Bounds (lo_regs[d], hi_regs[d], iat).reg;
-                      if (d == 0) { total = dlen; }
-                      else {
-                        uint32_t p2 = Emit_Result_Instruction ("mul %s %%t%u, %%t%u\n", LLVM_Rep_To_String (iat), total, dlen);
-                        total = p2;
-                      }
-                    }
-                    uint32_t bsz = Emit_Result_Instruction ("mul %s %%t%u, %u\n", LLVM_Rep_To_String (iat), total, elem_sz);
-                    LLVM_I1 neg_chk = Emit_Icmp_Const ("slt", iat, bsz, 0);
-                    uint32_t csz = Emit_Result_Instruction ("select i1 %%t%u, %s 0, %s %%t%u\n", neg_chk.reg, LLVM_Rep_To_String (iat), LLVM_Rep_To_String (iat), bsz);
-
-                    // 3. Alloca for local data copy, memcpy from data_ptr
-                    uint32_t data_alloca = Emit_Result_Instruction ("alloca i8, %s %%t%u, align 8\n", LLVM_Rep_To_String (iat), csz);
-                    uint32_t csz64 = Emit_Extend_To_I64 (csz, iat).reg;
-                    Emit_Memcpy (data_alloca, data_ptr, csz64);
-
-                    // 4. Alloca for local bounds struct [2*ndims x i32]
-                    uint32_t bounds_alloca = Emit_Result_Instruction ("alloca [%u x i32]\n", 2 * ndims);
-                    for (uint32_t d = 0; d < ndims and d < 16; d++)
-                      Emit_Store_Bound_Pair (bounds_alloca, iat, d, lo_regs[d], hi_regs[d]);
-
-                    // 5. Create fat pointer variable { data_ptr, bounds_ptr }
-                    Emit_Local_Ref (name->symbol);
-                    Emit (" = alloca " FAT_PTR_TYPE ", align 8\n");
-                    uint32_t fp_d = Emit_Result_Instruction ("getelementptr " FAT_PTR_TYPE ", ptr %%");
-                    Emit_Symbol_Name (name->symbol);
-                    Emit (", i32 0, i32 0\n");
-                    Emit ("  store ptr %%t%u, ptr %%t%u\n",
-                       data_alloca, fp_d);
-                    uint32_t fp_b = Emit_Result_Instruction ("getelementptr " FAT_PTR_TYPE ", ptr %%");
-                    Emit_Symbol_Name (name->symbol);
-                    Emit (", i32 0, i32 1\n");
-                    Emit ("  store ptr %%t%u, ptr %%t%u\n",
-                       bounds_alloca, fp_b);
-                  }
-
-                // By-reference record (RM 6.2): the slot holds the caller's
-                // record address; bind the formal directly to it so field and
-                // discriminant access dereference the caller's object (aliased
-                // for the rendezvous, so IN OUT / OUT updates reach it).
-                } else if (Type_Is_Record (pt)) {
-                  Emit_Local_Ref (name->symbol);
-                  Emit (" = inttoptr " PTR_INT_TYPE " %%t%u to ptr\n", pv);
-
-                  // A nested unit in the accept body reads this record uplevel.
-                  // Bind it by reference (RM 6.2): publish the caller's record
-                  // address in the formal's slot of the TASK'S OWN frame and
-                  // mark it by-reference, so a nested reader's alias loads the
-                  // pointer and dereferences the caller's live object — IN OUT
-                  // updates and later reads stay consistent, not a bind-time
-                  // snapshot.
-                  if (cg->current_nesting_level > 0 and
-                      name->symbol->frame_offset_assigned) {
-                    name->symbol->param_by_reference = true;
-                    uint32_t slot = Emit_Result_Instruction (
-                      "getelementptr i8, ptr %%__frame_base, i64 %lld\n",
-                      (long long) name->symbol->frame_offset);
-                    Emit ("  store ptr %%");
-                    Emit_Symbol_Name (name->symbol);
-                    Emit (", ptr %%t%u  ; publish uplevel record by-reference\n",
-                          slot);
-                  }
-
-                  // RM 3.7.4: a mutable OUT/IN OUT formal takes its 'CONSTRAINED
-                  // from the caller's flag, read from the trailing slot the call
-                  // appended, and spilled to the named slot the attribute reads.
-                  if (Parameter_Needs_Constrained_Flag (
-                        (Parameter_Mode) param->param_spec.mode, pt)) {
-                    uint32_t cf = Emit_Result_Instruction ("getelementptr i64, ptr %%t%u, i64 %u\n", params_ptr,
-                       accept_total_params + accept_flag_ordinal);
-                    uint32_t cfv = Emit_Result_Instruction ("load i64, ptr %%t%u  ; 'CONSTRAINED flag\n", cf);
-                    uint32_t cf8 = Emit_Result_Instruction ("trunc i64 %%t%u to i8\n", cfv);
-                    name->symbol->has_runtime_constrained_flag = true;
-                    Emit ("  ");
-                    Emit_Constrained_Slot_Ref (name->symbol);
-                    Emit (" = alloca i8  ; hidden 'CONSTRAINED flag\n");
-                    Emit ("  store i8 %%t%u, ptr ", cf8);
-                    Emit_Constrained_Slot_Ref (name->symbol);
-                    Emit ("\n");
-                    accept_flag_ordinal++;
-                  }
-
-                // Fat access (ACCESS to an unconstrained array/string): the slot
-                // holds the address of the caller's spilled fat pointer {data,
-                // bounds}; bind the formal to it by reference so reads and an
-                // OUT/IN OUT write reach the caller's storage (RM 6.2), and the
-                // caller checks the returned designated bounds on copy-back.
-                } else if (pt and Type_Is_Access (Type_Underlying (pt)) and
-                           Type_Needs_Fat_Pointer (pt)) {
-                  if (Emit_Bind_Accept_Formal_To_Frame (name->symbol)) {
-                    uint32_t cfa = Emit_Result_Instruction ("inttoptr " PTR_INT_TYPE " %%t%u to ptr\n", pv);
-                    uint32_t fat = Emit_Result_Instruction ("load " FAT_PTR_TYPE ", ptr %%t%u  ; caller fat access\n", cfa);
-                    Emit ("  store " FAT_PTR_TYPE " %%t%u, ptr %%", fat);
-                    Emit_Symbol_Name (name->symbol);
-                    Emit ("\n");
-                  } else {
-                    Emit_Local_Ref (name->symbol);
-                    Emit (" = inttoptr " PTR_INT_TYPE " %%t%u to ptr\n", pv);
-                  }
-
-                // Scalar: store the value into its storage — the frame slot when
-                // a nested subprogram reads it uplevel, else a fresh local.
-                } else {
-                  if (not Emit_Bind_Accept_Formal_To_Frame (name->symbol)) {
-                    Emit_Local_Ref (name->symbol);
-                    Emit (" = alloca i64, align 8\n");
-                  }
-                  Emit ("  store i64 %%t%u, ptr %%", pv);
-                  Emit_Symbol_Name (name->symbol);
-                  Emit ("\n");
-                }
-                param_idx++;
-              }
-            }
-          }
-        }
+        Emit_Accept_Parameter_Bindings (&node->accept_stmt.parameters,
+                                        params_ptr);
 
         // Execute the accept body under a handler that bridges any exception to
         // the caller (RM 9.5(16)): record the exception id in the rendezvous
@@ -44359,49 +44369,8 @@ void Generate_Statement (Syntax_Node *node) {
                   Emit ("  %%t%u = load ptr, ptr %%t%u  ; rendezvous params\n",
                      sel_params_ptr, pbp);
                 }
-                uint32_t sel_param_idx = 0;
-                for (uint32_t pi = 0; pi < alt->accept_stmt.parameters.count; pi++) {
-                  Syntax_Node *param = alt->accept_stmt.parameters.items[pi];
-                  if (param and param->kind == NK_PARAM_SPEC) {
-                    for (uint32_t pj = 0; pj < param->param_spec.names.count; pj++) {
-                      Syntax_Node *pname = param->param_spec.names.items[pj];
-
-                      if (pname and pname->symbol) {
-                        // Load the parameter word from the caller's block.
-                        uint32_t param_ptr = Emit_Result_Instruction ("getelementptr i64, ptr %%t%u, i64 %u\n", sel_params_ptr, sel_param_idx);
-                        uint32_t param_val = Emit_Result_Instruction ("load i64, ptr %%t%u\n", param_ptr);
-
-                        Type_Info *spt = pname->symbol->type;
-                        if (spt and (Type_Is_Record (spt) or
-                            (Type_Is_Array_Like (spt) and Type_Needs_Fat_Pointer (spt)) or
-                            (Type_Is_Access (Type_Underlying (spt)) and
-                             Type_Needs_Fat_Pointer (spt)))) {
-                          // By-reference record, fat array, or fat access: the
-                          // slot holds the address of the caller's (spilled)
-                          // object; bind to it directly so an OUT/IN OUT write
-                          // reaches the caller's storage.
-                          Emit_Local_Ref (pname->symbol);
-                          Emit (" = inttoptr " PTR_INT_TYPE " %%t%u to ptr\n", param_val);
-                        } else if (Type_Is_Array_Like (spt) and spt->size > 0) {
-                          // Statically sized array: slot holds the data address;
-                          // copy it into a local buffer.
-                          uint32_t asrc = Emit_Result_Instruction ("inttoptr " PTR_INT_TYPE " %%t%u to ptr\n", param_val);
-                          Emit_Local_Ref (pname->symbol);
-                          Emit (" = alloca [%u x i8], align 8\n", spt->size);
-                          Emit_Memcpy_To_Symbol (pname->symbol, asrc, spt->size, NULL);
-                        } else {
-                          // Scalar/access: the slot holds the value directly.
-                          Emit_Local_Ref (pname->symbol);
-                          Emit (" = alloca i64, align 8\n");
-                          Emit ("  store i64 %%t%u, ptr %%", param_val);
-                          Emit_Symbol_Name (pname->symbol);
-                          Emit ("\n");
-                        }
-                        sel_param_idx++;
-                      }
-                    }
-                  }
-                }
+                Emit_Accept_Parameter_Bindings (&alt->accept_stmt.parameters,
+                                                sel_params_ptr);
 
                 // Execute the rendezvous body (RM 9.5), complete the rendezvous
                 // (unblocking the caller), THEN run the alternative's trailing

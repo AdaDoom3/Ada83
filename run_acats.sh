@@ -298,10 +298,27 @@ run_one_timed(){
     local out rc=0
     out=$(timeout $((2*TEST_TIMEOUT+5)) bash -c 'run_one "$1"' _ "$f" 2>/dev/null) || rc=$?
     if ((rc==124 || rc==137)); then
-        echo "$q fail $n TIMEOUT:exceeded_$((2*TEST_TIMEOUT+5))s"
-    elif [[ -n $out ]]; then
-        echo "$out"
+        out="$q fail $n TIMEOUT:exceeded_$((2*TEST_TIMEOUT+5))s"
     fi
+    # Transient-artifact hygiene: per-test outputs are large (a scratch file a
+    # test CREATEs in its .lib CWD can reach gigabytes — ce3411b's SET_COL to
+    # COUNT'LAST legitimately pads ~2 GB of spaces) and a full run of them
+    # once filled the disk. A passing/skipped test keeps nothing; a failing
+    # test keeps its .bc and per-unit .ll/.ali for debugging, but never
+    # runtime scratch files.
+    case " $out " in
+        *" fail "*)
+            [[ -d $RESULTS_DIR/$n.lib ]] && \
+                find "$RESULTS_DIR/$n.lib" -type f ! -name '*.ll' ! -name '*.ali' -delete
+            ;;
+        *)
+            rm -rf "$RESULTS_DIR/$n.lib" "$RESULTS_DIR/$n.bc"
+            ;;
+    esac
+    # A silent result (foundation file) must not fail the function: under
+    # `set -e -o pipefail` a nonzero worker status kills the whole driver
+    # pipeline before tally_results ever runs.
+    if [[ -n $out ]]; then echo "$out"; fi
 }
 export -f run_one_timed
 
