@@ -415,3 +415,34 @@ ROUND 7 (final) — instance task storage + graft infrastructure
     yet activated). Same family as the known c94021a gap. Next session:
     trace __ada_term_wait consensus vs the procedure-level master's done
     flag for instance tasks.
+
+═══════════════════════════════════════════════════════════════════════════
+ROUND 8 — the BIND cluster (IR-invalid codegen)
+═══════════════════════════════════════════════════════════════════════════
+[x] c41103a, c41103b, c41107a: slice-prefixed element access.
+    Generate_Lvalue's non-symbol prefix fallback unpacks fat-valued
+    prefixes (a slice value's data/bounds) instead of GEP-ing the fat
+    struct; Generate_Composite_Address's scalar-element branch subtracts
+    the PREFIX SLICE's own low bound (N3(2..5)(4) is N3(4) at offset
+    4 - 2), mirroring the nested-slice branch.
+[x] c41323a: float negation and ABS in function notation ("-"(X),
+    "ABS"(X)) emitted integer sub / ssub.with.overflow on floats — now
+    fneg / llvm.fabs.
+[x] c41328a: Has_Nested_Subprograms recurses into nested packages at ANY
+    depth (Declarations_Reach_Frame) — P.Q's subprograms two package
+    levels down take the enclosing procedure's static chain, so the
+    frame must exist.
+[x] c85016a: FUNCTION SUCC (I : INTEGER) RETURN INTEGER RENAMES
+    INTEGER'SUCC — attribute renamings synthesize a wrapper body through
+    the same Attach_Wrapper_Function_Body machinery as generic attribute
+    actuals; the renaming's codegen defers/emits it, and the wrapper
+    counts toward the enclosing frame decision.
+
+STILL OPEN in the BIND cluster (diagnosed this round):
+- c64106d: %rec3_s109.constr undefined ('CONSTRAINED flag slot)
+- c64108a: fat vs ptr in parameter passing
+- c74004a: ptr vs fat mismatch (private type completion view?)
+- c74305b: @c74305b__p6 undefined (deferred body never emitted?)
+- c83025c: duplicate elab function (homograph package names)
+- c83027a: %a_s102 undefined (homograph resolution)
+- c83051a: invalid operand type

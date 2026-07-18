@@ -20766,6 +20766,39 @@ void Resolve_Declaration (Syntax_Node *node) {
             // RM 8.5(3): FUNCTION SEA RETURN CHARACTER RENAMES 'C' — the
             // literal is the renamed parameterless function.
             renamed_sym = Character_Literal_As_Function (ren, sym->return_type);
+          } else if (ren->kind == NK_ATTRIBUTE) {
+
+            // RM 8.5(3): renaming an attribute that denotes a function
+            // (INTEGER'SUCC, 'PRED, 'IMAGE, 'VALUE — c85016a). Synthesize
+            // a wrapper whose body applies the attribute to the rename's
+            // own parameters, exactly as generic attribute actuals do.
+            if (ren->attribute.prefix)
+              Resolve_Expression (ren->attribute.prefix);
+            Symbol_Manager_Push_Scope (sym);
+            Syntax_Node *attribute_call = Clone_Subtree_Keep_Decorations (ren);
+            attribute_call->attribute.arguments = (Node_List){0};
+            for (uint32_t pi = 0; pi < sym->parameter_count; pi++) {
+              Symbol *param_sym = Symbol_New (SYMBOL_PARAMETER,
+                sym->parameters[pi].name, node->location);
+              param_sym->type = sym->parameters[pi].param_type;
+              Symbol_Add (param_sym);
+              sym->parameters[pi].param_sym = param_sym;
+              Syntax_Node *reference = Node_New (NK_IDENTIFIER,
+                                                 node->location);
+              reference->string_val.text = sym->parameters[pi].name;
+              reference->symbol = param_sym;
+              reference->type = param_sym->type;
+              Node_List_Push (&attribute_call->attribute.arguments,
+                              reference);
+            }
+            attribute_call->type = sym->return_type;
+            Attach_Wrapper_Function_Body (sym, attribute_call,
+                                          node->location);
+            sym->scope = sm->current_scope;
+            Symbol_Manager_Pop_Scope ();
+            Symbol_Add (sym);
+            node->symbol = sym;
+            break;
           }
           if (not renamed_sym) {
             Resolve_Expression (ren);
@@ -26848,7 +26881,24 @@ uint32_t Generate_Lvalue (Syntax_Node *node) {
         dynamic_high = Emit_Fat_Pointer_High (fat, bt).reg;
         has_dynamic_low = true;
       } else {
-        base = Generate_Expression (node->apply.prefix).reg;
+
+        // A statically-bounded prefix can still ARRIVE as a fat value —
+        // a slice expression (N3(2..5)(2) := 8) yields { data, bounds }
+        // whose data points at the slice's first element and whose bounds
+        // are the slice's own. Unpack it exactly as the dynamic case does;
+        // treating the fat struct as the data pointer indexes garbage.
+        LLVM_Value raw_v = Generate_Expression (node->apply.prefix);
+        if (LLVM_Rep_Is_Fat_Pointer (raw_v.rep)) {
+          LLVM_Rep bt = Array_Bound_LLVM_Rep (prefix_type);
+          dyn_lv_bt = bt;
+          dyn_fat = raw_v.reg;
+          base = Emit_Fat_Pointer_Data (raw_v.reg, bt).reg;
+          dynamic_low = Emit_Fat_Pointer_Low (raw_v.reg, bt).reg;
+          dynamic_high = Emit_Fat_Pointer_High (raw_v.reg, bt).reg;
+          has_dynamic_low = true;
+        } else {
+          base = raw_v.reg;
+        }
       }
 
       // Slice as lvalue (RM 4.1.2): a slice A(L..H) denotes the sub-array
@@ -28245,7 +28295,25 @@ uint32_t Generate_Composite_Address (Syntax_Node *node) {
       if (LLVM_Rep_Is_Int (idx_v.rep) and not LLVM_Rep_Equal (idx_v.rep, comp_idx_t))
         idx = Emit_Convert (idx, idx_v.rep, comp_idx_t).reg;
       uint32_t adj_idx = idx;
-      if (low != 0) {
+
+      // A slice prefix's base pointer denotes the slice's first element,
+      // whose index is the slice's OWN low bound — the slice's result type
+      // still carries the underlying array's low bound, and subtracting
+      // that would land on the wrong element (N3(2..5)(4) is N3(4), at
+      // offset 4 - 2 from the slice base; RM 4.1.2).
+      Syntax_Node *elem_pfx = node->apply.prefix;
+      bool elem_pfx_is_slice = elem_pfx and elem_pfx->kind == NK_APPLY and
+        elem_pfx->apply.resolution == APPLY_SLICE and
+        elem_pfx->apply.arguments.count == 1 and
+        elem_pfx->apply.arguments.items[0]->kind == NK_RANGE;
+      if (elem_pfx_is_slice) {
+        uint32_t slice_lo = Emit_Coerce_Val (
+          Generate_Expression (
+            elem_pfx->apply.arguments.items[0]->range.low),
+          comp_idx_t).reg;
+        adj_idx = Emit_Result_Instruction ("sub %s %%t%u, %%t%u\n",
+          LLVM_Rep_To_String (comp_idx_t), idx, slice_lo);
+      } else if (low != 0) {
         adj_idx = Emit_Temp ();
         Emit ("  %%t%u = sub %s %%t%u, %lld\n", adj_idx, LLVM_Rep_To_String (comp_idx_t), idx, (long long)low);
       }
@@ -31044,6 +31112,13 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
 
       // ABS with overflow check: ABS (MIN_INT) overflows
       if (Slice_Equal_Ignore_Case (op_name, S("abs"))) {
+        if (LLVM_Rep_Is_Float (t0)) {
+          uint32_t result = Emit_Result_Instruction (
+            "call %s @llvm.fabs.%s(%s %%t%u)\n",
+            LLVM_Rep_To_String (t0), t0.bits == 32 ? "f32" : "f64",
+            LLVM_Rep_To_String (t0), v0);
+          return Val_Rep (result, t0);
+        }
         uint32_t zero = Emit_Static_Int (0, t0).reg;
         uint32_t neg = Emit_Overflow_Checked_Op (zero, v0, "sub", t0, ty0).reg;
         LLVM_I1 cmp = Emit_Icmp_Const ("slt", t0, v0, 0);
@@ -31066,7 +31141,11 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
         return Emit_Bool_Value ((LLVM_I1){ result });
       }
       if (Slice_Equal_Ignore_Case (op_name, S("-"))) {
-        uint32_t result = Emit_Result_Instruction ("sub %s 0, %%t%u\n", LLVM_Rep_To_String (t0), v0);
+        uint32_t result = LLVM_Rep_Is_Float (t0)
+          ? Emit_Result_Instruction ("fneg %s %%t%u\n",
+                                     LLVM_Rep_To_String (t0), v0)
+          : Emit_Result_Instruction ("sub %s 0, %%t%u\n",
+                                     LLVM_Rep_To_String (t0), v0);
         return Val_Rep (result, t0);
       }
       // Unary "+" is identity (RM 4.5.4): yield the operand unchanged rather
@@ -47438,13 +47517,46 @@ bool Has_Nested_In_Statements (Node_List *statements) {
   }
   return false;
 }
+// One declaration list of the frame owner or of a package nested in it (to
+// ANY depth — c41328a's P.Q hides its subprograms two package levels down):
+// true when it declares anything that will take this frame's static chain.
+static bool Declarations_Reach_Frame (Node_List *declarations) {
+  if (not declarations) return false;
+  for (uint32_t i = 0; i < declarations->count; i++) {
+    Syntax_Node *decl = declarations->items[i];
+    if (not decl) continue;
+    switch (decl->kind) {
+      case NK_PROCEDURE_SPEC:
+      case NK_FUNCTION_SPEC:
+      case NK_PROCEDURE_BODY:
+      case NK_FUNCTION_BODY:
+      case NK_TASK_BODY:
+      case NK_GENERIC_INST:
+        return true;
+
+      // A SEPARATE package-body stub: the subunit's elaboration runs as a
+      // function over THIS frame (RM 10.2), so the frame must exist.
+      case NK_PACKAGE_BODY:
+        if (decl->package_body.is_separate) return true;
+        if (Declarations_Reach_Frame (&decl->package_body.declarations))
+          return true;
+        break;
+      case NK_PACKAGE_SPEC:
+        if (Declarations_Reach_Frame (&decl->package_spec.visible_decls) or
+            Declarations_Reach_Frame (&decl->package_spec.private_decls))
+          return true;
+        break;
+      default: break;
+    }
+  }
+  return false;
+}
+
 bool Has_Nested_Subprograms (Node_List *declarations, Node_List *statements) {
 
-  // Check declarations for procedure/function/task bodies.                                        
-  // Task bodies access enclosing scope variables just like nested                                  
-  // subprograms (RM 9.1), so the enclosing scope needs frame allocation.                          
-  // Also check inside nested packages - their subprograms need frame access too.                  
-  //                                                                                                
+  // Check declarations for subprogram/task bodies — directly here or inside
+  // nested packages at any depth. A nested package's subprograms take this
+  // frame's static chain (RM 9.1: task bodies count for the same reason).
   if (declarations) {
     for (uint32_t i = 0; i < declarations->count; i++) {
       Syntax_Node *decl = declarations->items[i];
@@ -47456,46 +47568,19 @@ bool Has_Nested_Subprograms (Node_List *declarations, Node_List *statements) {
         return true;
       }
 
-      // A SEPARATE package-body stub: the subunit's elaboration runs as a
-      // function over THIS frame (RM 10.2), so the frame must exist.
-      if (decl->kind == NK_PACKAGE_BODY and decl->package_body.is_separate)
+      // An attribute renaming carries a synthesized wrapper FUNCTION whose
+      // call sites pass this frame as the static chain (c85016a).
+      if (decl->kind == NK_SUBPROGRAM_RENAMING and decl->symbol and
+          decl->symbol->is_instance_wrapper)
         return true;
-
-      // Check inside nested package specs / bodies for any kind of subprogram
-      // that would need access to our frame. Generic instantiations and task
-      // bodies count too: an instantiated generic is a real subprogram whose
-      // `Find_Enclosing_Subprogram` returns *this* function, and codegen will
-      // emit `%__frame_base` at the call site — so the frame must exist here.
-      if (decl->kind == NK_PACKAGE_SPEC) {
-        Node_List *pkg_visible = &decl->package_spec.visible_decls;
-        Node_List *pkg_private = &decl->package_spec.private_decls;
-        Node_List *parts[2] = { pkg_visible, pkg_private };
-        for (int k = 0; k < 2; k++) {
-          for (uint32_t j = 0; j < parts[k]->count; j++) {
-            Syntax_Node *pd = parts[k]->items[j];
-            if (pd and (pd->kind == NK_PROCEDURE_SPEC or
-                  pd->kind == NK_FUNCTION_SPEC or
-                  pd->kind == NK_PROCEDURE_BODY or
-                  pd->kind == NK_FUNCTION_BODY or
-                  pd->kind == NK_TASK_BODY or
-                  pd->kind == NK_GENERIC_INST))
-              return true;
-          }
-        }
-      }
-
-      // Check inside nested package bodies for any subprogram-shaped decl.
-      if (decl->kind == NK_PACKAGE_BODY) {
-        Node_List *pkg_decls = &decl->package_body.declarations;
-        for (uint32_t j = 0; j < pkg_decls->count; j++) {
-          Syntax_Node *pd = pkg_decls->items[j];
-          if (pd and (pd->kind == NK_PROCEDURE_BODY or
-                pd->kind == NK_FUNCTION_BODY or
-                pd->kind == NK_TASK_BODY or
-                pd->kind == NK_GENERIC_INST))
-            return true;
-        }
-      }
+      if (decl->kind == NK_PACKAGE_SPEC and
+          (Declarations_Reach_Frame (&decl->package_spec.visible_decls) or
+           Declarations_Reach_Frame (&decl->package_spec.private_decls)))
+        return true;
+      if (decl->kind == NK_PACKAGE_BODY and
+          (decl->package_body.is_separate or
+           Declarations_Reach_Frame (&decl->package_body.declarations)))
+        return true;
     }
   }
 
@@ -50043,6 +50128,20 @@ void Generate_Declaration (Syntax_Node *node) {
     // entry calls through the rename read them back.
     case NK_SUBPROGRAM_RENAMING: {
       Symbol *rename_sym = node->symbol;
+
+      // An attribute renaming carries a synthesized wrapper body
+      // (RM 8.5(3), c85016a) — emit it like an instance wrapper.
+      if (rename_sym and rename_sym->is_instance_wrapper and
+          rename_sym->declaration and
+          rename_sym->declaration->kind == NK_FUNCTION_BODY) {
+        if (not rename_sym->declaration->subprogram_body.code_generated) {
+          if (cg->current_function)
+            Defer_Subprogram_Body (rename_sym->declaration);
+          else
+            Generate_Subprogram_Body (rename_sym->declaration);
+        }
+        break;
+      }
       if (not rename_sym or not rename_sym->renamed_entry_name or
           not rename_sym->rename_task_slot or not cg->current_function)
         break;
