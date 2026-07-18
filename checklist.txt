@@ -487,3 +487,29 @@ ROUND 8 (continued) — visibility and elaboration structure
 STILL OPEN: c64108a (element-of-dereferenced-function-result as IN OUT
     actual still routes through the rvalue fallback), c64106d, c74004a,
     c83027a, c83051a, c94008d hang, c86002b/c86004b STANDARD homographs.
+
+═══════════════════════════════════════════════════════════════════════════
+ROUND 9 — parameter marshaling and membership (1858 -> 1863)
+═══════════════════════════════════════════════════════════════════════════
+[x] c64108a (+c64109c): all actual-parameter name forms.
+    - X.ALL of a FAT access value as a by-ref actual: the access value IS
+      the descriptor — evaluated once (data slot as address; spilled whole
+      for an unconstrained formal).
+    - Discriminant-dependent components (R.S : STRING(1..N)) as actuals
+      spill Generate_Selected's aliasing fat descriptor (RM 3.7.4 bounds
+      from the record instance).
+    - Implicit dereference in Generate_Composite_Address accepts
+      access-to-STRING designated types (Type_Is_Array_Like, not just
+      TYPE_ARRAY).
+[x] c64106d (+cc1227a): the RM 3.7.4 hidden 'CONSTRAINED flag is frame-
+    published beside the parameter's slot (one extra pointer-size unit
+    reserved at Symbol_Assign_Frame_Slot for discriminated-record
+    formals); Emit_Parent_Frame_Aliases emits %__frame.<name>.constr,
+    Emit_Constrained_Slot_Ref reads through it uplevel, and the flag is
+    marked at resolution so deferred nested bodies see it.
+[x] c74004a: 'VALUE normalizes a statically constrained string argument
+    to a fat pointer; membership in a TYPE MARK with no expressible range
+    (float DIGITS types) is TRUE — the equality fallback must never fire
+    for type marks (the right operand of a membership is not a value).
+STILL OPEN: c83027a, c83051a, c94008d hang, STANDARD homographs,
+    multi-file ca* families.

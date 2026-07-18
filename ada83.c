@@ -9526,6 +9526,11 @@ bool Parameter_Needs_Constrained_Flag (Parameter_Mode mode, Type_Info *type) {
 // assignment sites (load) name it through here so they agree.
 void Emit_Constrained_Slot_Ref (Symbol *sym) {
   Emit ("%%");
+
+  // An uplevel reference reads the frame-published copy through the
+  // %__frame. alias the function header emitted (RM 3.7.4 flag of an
+  // enclosing subprogram's formal, c64106d).
+  if (Is_Uplevel_Access (sym)) Emit ("__frame.");
   Emit_Symbol_Name (sym);
   Emit (".constr");
 }
@@ -9946,6 +9951,14 @@ void Symbol_Assign_Frame_Slot (Symbol *sym, Scope *scope) {
   if (sym->kind == SYMBOL_PARAMETER and var_size < POINTER_ALLOC_SIZE) {
     var_size = POINTER_ALLOC_SIZE;
   }
+
+  // A discriminated-record formal may carry the RM 3.7.4 hidden
+  // 'CONSTRAINED flag, which nested subprograms reach through the frame
+  // exactly like the parameter itself — reserve its byte (padded to keep
+  // slot alignment) right after the parameter's slot.
+  if (sym->kind == SYMBOL_PARAMETER and Type_Is_Record (sym->type) and
+      sym->type->record.has_discriminants)
+    var_size += POINTER_ALLOC_SIZE;
   if (var_size == 0) {
     Report_Warning (sym->location,
         "variable '%.*s' has zero size, defaulting to 8 bytes",
@@ -17443,6 +17456,14 @@ void Install_Parameter_Symbols (Node_List *parameters, Symbol *subprogram) {
         name->string_val.text, name->location);
       if (specification->param_spec.param_type)
         parameter_sym->type = specification->param_spec.param_type->type;
+
+      // Mark at resolution (not first at prologue emission) so a nested
+      // body emitted before its encloser's prologue still sees the flag
+      // and aliases the frame-published copy (RM 3.7.4, c64106d).
+      if (Parameter_Needs_Constrained_Flag (
+            (Parameter_Mode) specification->param_spec.mode,
+            parameter_sym->type))
+        parameter_sym->has_runtime_constrained_flag = true;
       Symbol_Add (parameter_sym);
       name->symbol = parameter_sym;
       if (subprogram and parameter_index < subprogram->parameter_count)
@@ -28291,11 +28312,12 @@ uint32_t Generate_Composite_Address (Syntax_Node *node) {
   if (node->kind == NK_APPLY and node->apply.arguments.count == 1) {
     Type_Info *prefix_type = node->apply.prefix ? node->apply.prefix->type : NULL;
 
-    // Handle implicit dereference: PT (I) where PT is access-to-array (RM 4.1)
+    // Handle implicit dereference: PT (I) where PT is access-to-array —
+    // including access-to-STRING (RM 4.1; c64108a's F1(2)(1)).
     Type_Info *array_type = prefix_type;
     bool access_to_array = false;
     Type_Info *designated = Type_Designated (prefix_type);
-    if (designated and designated->kind == TYPE_ARRAY) {
+    if (Type_Is_Array_Like (designated)) {
       array_type = designated;
       access_to_array = true;
     }
@@ -30280,6 +30302,19 @@ LLVM_Value Emit_Binary_Op_Predefined (Syntax_Node *node) {
             if (negate) { LLVM_I1 nx = Emit_Not_I1 (in_range); t = nx.reg; }
             else        { t = in_range.reg; }
 
+          // A TYPE MARK with no expressible range (a float DIGITS type
+          // whose bounds were never constrained — c74004a's FLT): every
+          // value of the type belongs (RM 4.5.2). The right operand of a
+          // membership is never evaluated as a value, so the equality
+          // fallback below must not fire for type marks.
+          } else if (node->binary.right and node->binary.right->symbol and
+                     (node->binary.right->symbol->kind == SYMBOL_TYPE or
+                      node->binary.right->symbol->kind == SYMBOL_SUBTYPE)) {
+            uint32_t always =
+              Emit_I1_Const (1, "type membership, no constraint").reg;
+            if (negate) { Emit ("  %%t%u = xor i1 %%t%u, 1\n", t, always); }
+            else        { t = always; }
+
           // Fallback: equality with right operand value
           } else {
             LLVM_I1 eq;
@@ -31390,6 +31425,15 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
         // references (from a nested subprogram into the enclosing
         // frame) emit %__frame.X instead of %X.
         uint32_t actual_addr;
+
+        // X.ALL of a FAT access value: the access value IS the actual's
+        // descriptor. Evaluate it exactly once — the data slot serves as
+        // the address, and the whole value serves an unconstrained formal
+        // (c64108a: P1 (F1(2).ALL, ...)).
+        uint32_t deref_fat_value = 0;
+        bool addr_is_fat_deref = Node_Is_Dereference (addr_node) and
+          addr_node->unary.operand and
+          Type_Needs_Fat_Pointer (addr_node->unary.operand->type);
         // Expanded names (STANDARD.PKG.X) resolve to the same variable
         // symbol as a bare identifier - take its address directly via
         // Emit_Symbol_Storage so we don't go through Generate_Composite_Address
@@ -31401,7 +31445,13 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
            addr_node->symbol->kind == SYMBOL_PARAMETER or
            addr_node->symbol->kind == SYMBOL_CONSTANT) and
           not addr_node->symbol->rename_address_slot;
-        if (is_simple_var_ref) {
+        if (addr_is_fat_deref) {
+          LLVM_Value access_value =
+            Generate_Expression (addr_node->unary.operand);
+          Emit_Access_Check (access_value, addr_node->unary.operand->type);
+          deref_fat_value = access_value.reg;
+          actual_addr = Emit_Extract_Fat_Data (access_value.reg);
+        } else if (is_simple_var_ref) {
           actual_addr = Emit_Temp ();
           Emit_Symbol_Addr (actual_addr, addr_node->symbol);
         } else if (addr_node->symbol and
@@ -31512,7 +31562,16 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
             addr_node->apply.arguments.count == 1 and
             addr_node->apply.arguments.items[0]->kind == NK_RANGE;
 
-          if (formal_needs_fat and addr_is_slice) {
+          if (formal_needs_fat and deref_fat_value) {
+
+            // The dereferenced access value carries the designated array's
+            // own descriptor — pass a spilled copy of it (RM 6.4.1).
+            uint32_t slot = Emit_Result_Instruction ("alloca " FAT_PTR_TYPE
+                  "  ; by-ref fat ptr for dereferenced actual\n");
+            Emit ("  store " FAT_PTR_TYPE " %%t%u, ptr %%t%u\n",
+               deref_fat_value, slot);
+            args[param_idx] = slot;
+          } else if (formal_needs_fat and addr_is_slice) {
             Syntax_Node *rng = addr_node->apply.arguments.items[0];
             LLVM_Rep bt = String_Bound_Rep ();
             uint32_t lo = Emit_Coerce_Val (Generate_Expression (rng->range.low), bt).reg;
@@ -31522,6 +31581,31 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
                   "  ; by-ref fat ptr for slice actual\n");
             Emit ("  store " FAT_PTR_TYPE " %%t%u, ptr %%t%u\n", fat.reg, slot);
             args[param_idx] = slot;
+          } else if (formal_needs_fat and addr_node->kind == NK_SELECTED and
+                     Type_Is_Constrained_Array (actual_type) and
+                     Type_Has_Dynamic_Bounds (actual_type)) {
+
+            // A discriminant-dependent component (R.S : STRING (1..N)):
+            // its bounds live in the record instance, and Generate_Selected
+            // already builds the aliasing fat descriptor from the field
+            // address plus the loaded discriminant (RM 3.7.1) — spill that
+            // (c64108a: P1 (R1.S, R2.S, R3.S)).
+            LLVM_Value component = Generate_Expression (addr_node);
+            if (LLVM_Rep_Is_Fat_Pointer (component.rep)) {
+              uint32_t slot = Emit_Result_Instruction ("alloca " FAT_PTR_TYPE
+                    "  ; by-ref fat ptr for discriminated component\n");
+              Emit ("  store " FAT_PTR_TYPE " %%t%u, ptr %%t%u\n",
+                 component.reg, slot);
+              args[param_idx] = slot;
+            } else {
+              LLVM_Value fat =
+                Emit_Fat_Pointer_For_Lvalue (component.reg, actual_type);
+              uint32_t slot = Emit_Result_Instruction ("alloca " FAT_PTR_TYPE
+                    "  ; by-ref fat ptr for unconstrained formal\n");
+              Emit ("  store " FAT_PTR_TYPE " %%t%u, ptr %%t%u\n",
+                 fat.reg, slot);
+              args[param_idx] = slot;
+            }
           } else if (formal_needs_fat and actual_inline_array) {
             LLVM_Value fat = Emit_Fat_Pointer_For_Lvalue (actual_addr, actual_type);
             uint32_t slot = Emit_Result_Instruction ("alloca " FAT_PTR_TYPE
@@ -34507,7 +34591,15 @@ LLVM_Value Generate_Attribute (Syntax_Node *node) {
   // T'VALUE (s) - parse string to type (RM 3.5.5)
   if (attribute_kind == ATTRIBUTE_VALUE) {
     if (first_arg) {
-      uint32_t str_val = Generate_Expression (first_arg).reg;
+      LLVM_Value str_raw = Generate_Expression (first_arg);
+
+      // The runtime takes a FAT string; a statically constrained argument
+      // (ST : STRING (1..2), c74004a's PR'VALUE (ST)) arrives as a plain
+      // data pointer — wrap it with its subtype's bounds.
+      uint32_t str_val = LLVM_Rep_Is_Fat_Pointer (str_raw.rep)
+        ? str_raw.reg
+        : Normalize_To_Fat_Pointer (first_arg, str_raw, first_arg->type,
+                                    String_Bound_Rep ());
       if (Type_Is_Integer_Like (classify_type) or
         Type_Is_Universal_Integer (classify_type)) {
 
@@ -48360,12 +48452,22 @@ void Generate_Subprogram_Body (Syntax_Node *node) {
       // attribute and assignment sites can find by symbol name.
       if (Parameter_Needs_Constrained_Flag (mode, pt)) {
         param_sym->has_runtime_constrained_flag = true;
-        Emit ("  ");
-        Emit_Constrained_Slot_Ref (param_sym);
-        Emit (" = alloca i8  ; hidden 'CONSTRAINED flag\n");
-        Emit ("  store i8 %%__constr_p%u, ptr ", i);
-        Emit_Constrained_Slot_Ref (param_sym);
-        Emit ("\n");
+        Emit ("  %%");
+        Emit_Symbol_Name (param_sym);
+        Emit (".constr = alloca i8  ; hidden 'CONSTRAINED flag\n");
+        Emit ("  store i8 %%__constr_p%u, ptr %%", i);
+        Emit_Symbol_Name (param_sym);
+        Emit (".constr\n");
+
+        // Publish the flag into the frame beside the parameter's slot so
+        // nested subprograms read it through the static chain (c64106d:
+        // REC3'CONSTRAINED inside a nested procedure).
+        if (has_nested and sym->scope) {
+          uint32_t flag_slot = Emit_Result_Instruction (
+            "getelementptr i8, ptr %%__frame_base, i64 %lld\n",
+            (long long)(param_sym->frame_offset + POINTER_ALLOC_SIZE));
+          Emit ("  store i8 %%__constr_p%u, ptr %%t%u\n", i, flag_slot);
+        }
       }
 
       // Create an alias so the parameter name points to caller's storage
@@ -48595,6 +48697,16 @@ void Emit_Parent_Frame_Aliases (Symbol *enclosing_subprogram) {
             Emit_Symbol_Name (var);
             Emit (" = getelementptr i8, ptr %s, i64 %lld\n",
                chain_base, (long long)(var->frame_offset));
+          }
+
+          // The RM 3.7.4 hidden 'CONSTRAINED flag published beside the
+          // parameter's slot (c64106d: REC3'CONSTRAINED read uplevel).
+          if (var->has_runtime_constrained_flag) {
+            Emit ("  %%__frame.");
+            Emit_Symbol_Name (var);
+            Emit (".constr = getelementptr i8, ptr %s, i64 %lld\n",
+               chain_base,
+               (long long)(var->frame_offset + POINTER_ALLOC_SIZE));
           }
         }
       }
