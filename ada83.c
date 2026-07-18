@@ -4601,6 +4601,13 @@ extern bool          Debug_Emit_Locations;
 extern bool          Clone_Self_Check;
 extern uint32_t      Include_Path_Count;
 extern Syntax_Node **Loaded_Package_Bodies;  // arena-grown, no cap
+
+// Package bodies present in the CURRENT compilation's unit list — recorded
+// before code generation so the spec-only elaboration decision can ask
+// "does a body I will emit host these initializers?" (a body merely KNOWN
+// to the library is not enough: it may never be linked in — spprt13).
+void Note_Compilation_Package_Bodies     (Syntax_Node **units, int unit_count);
+bool Compilation_Provides_Package_Body   (String_Slice name);
 extern int           Loaded_Body_Count;
 void  Queue_Loaded_Body (Syntax_Node *cu);
 
@@ -21745,6 +21752,12 @@ void Resolve_Declaration (Syntax_Node *node) {
         } else if (gen_name->symbol) {
           template = gen_name->symbol;
         }
+
+        // A USE-visible alias denotes the original generic — and only the
+        // original receives its body when the package body arrives later
+        // (c74305b: USE PK before PACKAGE BODY PK left the alias bodyless,
+        // so the instance was never cloned).
+        while (template and template->aliased) template = template->aliased;
         if (not template or template->kind != SYMBOL_GENERIC) {
           Report_Error (node->location, "expected a generic unit name");
           break;
@@ -22130,15 +22143,34 @@ void Resolve_Declaration (Syntax_Node *node) {
                   }
                 }
 
-              // IS <> default: resolve to a visible subprogram
-              // with the same name as the formal (RM 12.3(6))
+              // IS <> default: resolve to a visible subprogram with the
+              // same name as the formal (RM 12.3(6)) — the one whose
+              // profile CONFORMS after formal-type substitution, not
+              // whichever homograph the table finds first (cc3607b).
               } else if (formal->generic_subprog_param.default_box) {
                 Symbol *default_sym = Symbol_Find (
                   formal->generic_subprog_param.name);
-                if (Symbol_Is_Subprogram (default_sym)) {
-                  if (actual_idx < total_actual_slots)
-                    inst_sym->actual_bindings[actual_idx].actual_subprogram = default_sym;
-                }
+                Symbol *conforming = NULL;
+
+                // RM 8.4(5): a use-visible alias is hidden by any directly
+                // visible homograph — scan direct candidates first, aliases
+                // only as a fallback.
+                for (int pass = 0; pass < 2 and not conforming; pass++)
+                  for (Symbol *candidate = default_sym; candidate;
+                       candidate = candidate->next_overload) {
+                    if ((candidate->aliased != NULL) != (pass == 1)) continue;
+                    if (Actual_Conforms_To_Formal_Subprogram (candidate,
+                                                              formal,
+                                                              inst_sym)) {
+                      conforming = candidate;
+                      break;
+                    }
+                  }
+                if (not conforming and Symbol_Is_Subprogram (default_sym))
+                  conforming = default_sym;
+                if (conforming and actual_idx < total_actual_slots)
+                  inst_sym->actual_bindings[actual_idx].actual_subprogram =
+                    conforming;
 
               // IS name default (RM 12.1.3): the name was resolved when
               // the generic's body was analyzed (formals in scope). A
@@ -28230,10 +28262,14 @@ uint32_t Generate_Composite_Address (Syntax_Node *node) {
   // .ALL dereference: address of P.ALL = value of P (the pointer itself).
   // Evaluating the operand as an expression handles every operand form
   // uniformly — access variable, rename, alias, or parameterless function
-  // returning an access value (implicit call, RM 4.1.3).
+  // returning an access value (implicit call, RM 4.1.3). An access to an
+  // unconstrained array is a FAT value; the designated storage is its data
+  // slot, not the descriptor pair (c64108a: F1(2).ALL as an IN OUT actual).
   if (Node_Is_Dereference (node) and node->unary.operand) {
     LLVM_Value acc = Generate_Expression (node->unary.operand);
     Emit_Access_Check (acc, node->unary.operand->type);  // RM 4.1: null .ALL -> CE
+    if (LLVM_Rep_Is_Fat_Pointer (acc.rep))
+      return Emit_Extract_Fat_Data (acc.reg);
     return acc.reg;
   }
 
@@ -28263,7 +28299,7 @@ uint32_t Generate_Composite_Address (Syntax_Node *node) {
       array_type = designated;
       access_to_array = true;
     }
-    if (array_type and array_type->kind == TYPE_ARRAY) {
+    if (Type_Is_Array_Like (array_type)) {
       uint32_t elem_size = array_type->array.element_type
                  ? array_type->array.element_type->size : 1;
       if (elem_size == 0) elem_size = 1;
@@ -53348,8 +53384,16 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   // address.
   {
     Syntax_Node *cu_unit = node->compilation_unit.unit;
+
+    // Only when no BODY of this package is emitted by THIS compilation:
+    // that body's own ___elab hosts the same initializers, and defining
+    // both is an IR-level duplicate (c83025c). A body merely known to the
+    // library does not count — it may never be linked (spprt13's spec-only
+    // address constants).
     if (cu_unit and cu_unit->kind == NK_PACKAGE_SPEC and cu_unit->symbol
-        and cg->pending_global_init_count > 0) {
+        and cg->pending_global_init_count > 0
+        and not Compilation_Provides_Package_Body (
+              cu_unit->package_spec.name)) {
       Symbol *pkg = cu_unit->symbol;
       Emit ("\n; Spec-only package elaboration\n");
       Emit ("define void @");
@@ -56177,6 +56221,29 @@ bool Package_Spec_Requires_Body (Syntax_Node *pkg_spec) {
   return false;
 }
 
+#define MAX_COMPILATION_BODIES 64
+static String_Slice Compilation_Body_Names[MAX_COMPILATION_BODIES];
+static uint32_t     Compilation_Body_Count = 0;
+
+void Note_Compilation_Package_Bodies (Syntax_Node **units, int unit_count) {
+  Compilation_Body_Count = 0;
+  for (int i = 0; i < unit_count; i++) {
+    Syntax_Node *unit = units[i] ? units[i]->compilation_unit.unit : NULL;
+    if (unit and unit->kind == NK_PACKAGE_BODY and
+        not unit->package_body.is_separate and
+        Compilation_Body_Count < MAX_COMPILATION_BODIES)
+      Compilation_Body_Names[Compilation_Body_Count++] =
+        unit->package_body.name;
+  }
+}
+
+bool Compilation_Provides_Package_Body (String_Slice name) {
+  for (uint32_t i = 0; i < Compilation_Body_Count; i++)
+    if (Slice_Equal_Ignore_Case (Compilation_Body_Names[i], name))
+      return true;
+  return false;
+}
+
 // A subunit among the CURRENT compilation's units satisfies a stub just as
 // a library-compiled one does (RM 10.2: subunits may share the compilation
 // with their parent — c94008d keeps SEPARATE (SHARED_C94008D) TASK BODY
@@ -57844,6 +57911,7 @@ void Compile_File (const char *input_path, const char *output_path) {
   // declaration with the correct ABI for their @main presence anchors.
   for (uint32_t i = 0; i < Missing_Body_Subprogram_Count; i++)
     Append_Separate_Callee (Missing_Body_Subprograms[i]);
+  Note_Compilation_Package_Bodies (units, unit_count);
   for (int i = 0; i < unit_count; i++) {
     cg->subunit_parent =
       (units[i] and units[i]->compilation_unit.separate_parent)

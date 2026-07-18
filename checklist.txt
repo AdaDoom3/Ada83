@@ -465,3 +465,25 @@ ROUND 8 (continued) — universal preference for operator call notation
     the index subtype once the slice is classified (c87b24b:
     PI ("+"(3) .. "-"(5)) calls the INTEGER-returning user operators).
     Validated: 1853 passes, all twelve first-cut regressions recovered.
+
+ROUND 8 (continued) — visibility and elaboration structure
+----------------------------------------------------------
+[x] c74305b: instantiating through a USE-visible alias — the alias never
+    receives the generic body when the package body arrives after the USE
+    clause; the instantiation now peels ->aliased to the original.
+[x] c83025c (+c86007a): the spec-only package ___elab is suppressed only
+    when a body of that package is emitted by THIS compilation (new
+    Note_Compilation_Package_Bodies registry recorded before generation).
+    First cut used Body_Already_Loaded and broke every spprt13-based
+    cd5* address-clause test (a body merely known to the library may
+    never be linked); registry fix restored them and picked up cd5003h.
+[x] cc3607b: IS <> box defaults pick the visible subprogram whose profile
+    CONFORMS (Actual_Conforms_To_Formal_Subprogram over the overload
+    chain), with RM 8.4(5) direct-visibility preference: a use-visible
+    alias is hidden by a directly visible homograph.
+[x] .ALL as a composite prefix extracts the fat access value's data slot
+    (c64108a partial); Generate_Composite_Address's element path accepts
+    TYPE_STRING prefixes (Type_Is_Array_Like).
+STILL OPEN: c64108a (element-of-dereferenced-function-result as IN OUT
+    actual still routes through the rvalue fallback), c64106d, c74004a,
+    c83027a, c83051a, c94008d hang, c86002b/c86004b STANDARD homographs.
