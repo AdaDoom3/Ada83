@@ -2153,9 +2153,14 @@ package body TEXT_IO is
    package body ENUMERATION_IO is
 
       -- ENUM'IMAGE, lowered to lower case when SET so requests it (RM 14.3.9).
+      -- The case transformation applies to identifier images only: a
+      -- character-literal image (leading quote) is written exactly as typed.
       function Cased_Image(Item : ENUM; Set : TYPE_SET) return String is
          Img : String := ENUM'IMAGE(Item);
       begin
+         if Img'Length > 0 and then Img(Img'First) = ''' then
+            return Img;
+         end if;
          if Set = LOWER_CASE then
             for I in Img'Range loop
                if Img(I) >= 'A' and Img(I) <= 'Z' then
