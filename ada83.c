@@ -1179,6 +1179,12 @@ struct Syntax_Node {
     struct {
       Syntax_Node *prefix;   // The dotted prefix expression
       String_Slice selector; // The selected component name
+      int32_t component_index; // Record component slot the resolver picked,
+                               // -1 until then. The emitter must honor it:
+                               // a formal private type's discriminant name
+                               // can collide with a component of the actual
+                               // (RM 12.1), which a by-name re-lookup at
+                               // emission cannot re-arbitrate (cc3240a)
     } selected;
 
     // when NK_ATTRIBUTE =>
@@ -2138,6 +2144,11 @@ struct Type_Info {
                                          // (41-42))
   struct Type_Info *generic_actual;      // The actual type this view denotes;
                                          // Peel_Generic_Actual_View follows it
+  struct Type_Info *generic_formal_disc_view; // The formal private type's own
+                                         // record view: its discriminant NAMES
+                                         // map positionally onto the actual's
+                                         // (RM 12.1) for component lookup
+                                         // inside the generic (c83027c)
   Generic_Def_Kind generic_formal_class; // Which formal class (private, discrete,
                                          // range <>, digits <>, ...) when
                                          // is_generic_formal; drives the class's
@@ -4079,6 +4090,9 @@ void     Agg_Rec_Disc_Post  (LLVM_Value       val,
 
 uint32_t Disc_Ordinal_Before             (Type_Info *type_info, uint32_t comp_index);
 int32_t  Find_Record_Component           (Type_Info *record_type, String_Slice name);
+bool     Type_Record_View_Live           (const Type_Info *t);
+int32_t  Selected_Component_Slot         (const Syntax_Node *sel_node,
+                                          Type_Info *record_type);
 int32_t  Governing_Discriminant_Index    (Type_Info *record_type);
 int32_t  Aggregate_Selected_Variant      (Syntax_Node *aggregate, Type_Info *record_type);
 uint32_t Record_RT_Global_Id             (Type_Info *t);
@@ -6368,6 +6382,7 @@ Syntax_Node *Parse_Name (Parser *p) {
       // P.'C' - character literal as enum member (RM 4.1.3)
       } else if (Parser_At (p, TK_CHARACTER)) {
         Syntax_Node *sel = Node_New (NK_SELECTED, postfix_loc);
+        sel->selected.component_index = -1;
         sel->selected.prefix = node;
         sel->selected.selector = Slice_Duplicate (p->current_token.text);
         Parser_Advance (p);
@@ -6376,6 +6391,7 @@ Syntax_Node *Parse_Name (Parser *p) {
       // P."+" - operator symbol (RM 6.1)
       } else if (Parser_At (p, TK_STRING)) {
         Syntax_Node *sel = Node_New (NK_SELECTED, postfix_loc);
+        sel->selected.component_index = -1;
         sel->selected.prefix = node;
         sel->selected.selector = Slice_Duplicate (p->current_token.text);
         Parser_Advance (p);
@@ -6384,6 +6400,7 @@ Syntax_Node *Parse_Name (Parser *p) {
       // Selection: prefix.component
       } else {
         Syntax_Node *sel = Node_New (NK_SELECTED, postfix_loc);
+        sel->selected.component_index = -1;
         sel->selected.prefix = node;
         sel->selected.selector = Parser_Identifier (p);
         node = sel;
@@ -6507,6 +6524,7 @@ Syntax_Node *Parse_Simple_Name (Parser *p) {
     if (Parser_Match (p, TK_DOT)) {
       Source_Location sel_loc = Parser_Location (p);
       Syntax_Node *sel = Node_New (NK_SELECTED, sel_loc);
+      sel->selected.component_index = -1;
       sel->selected.prefix = node;
 
       // Accept character literal ('C') or operator string ("+") after dot
@@ -9981,6 +9999,10 @@ void Symbol_Assign_Frame_Slot (Symbol *sym, Scope *scope) {
 // (the declaration's carrier for entries and the body completion) denotes
 // the implicit object variable; find it in the type's defining scope.
 Symbol *Single_Task_Object_Denoted (Symbol *sym) {
+  // A use-visible alias denotes the original (RM 8.4); the object scan below
+  // needs the original's defining scope, and codegen needs the symbol whose
+  // name the object was emitted under.
+  while (sym and sym->aliased) sym = sym->aliased;
   if (not sym or sym->kind != SYMBOL_TYPE or not Type_Is_Task (sym->type) or
       not sym->declaration or sym->declaration->kind != NK_TASK_SPEC or
       sym->declaration->task_spec.is_type)
@@ -10500,12 +10522,71 @@ static uint32_t Interp_Arity (const Interpretation *in) {
   return (in->opnd[0] ? 1u : 0u) + (in->opnd[1] ? 1u : 0u);
 }
 
+// RM 12.3: inside a generic subprogram's own declarative region, its name
+// denotes the CURRENT INSTANCE — an ordinary, overloadable subprogram with
+// the unit's profile. Returns that profile compared against `other` when the
+// interpretation is such a generic (0 = differ, 1 = homograph), or -1 when
+// the current-instance reading does not apply and the caller must use the
+// non-overloadable rule.
+static int Generic_Current_Instance_Homograph (const Interpretation *gen,
+                                               const Interpretation *other) {
+  Symbol *g = gen->nam;
+  if (not g or g->kind != SYMBOL_GENERIC or not g->generic_unit) return -1;
+  Syntax_Node *gu = g->generic_unit;
+  if (gu->kind != NK_FUNCTION_SPEC and gu->kind != NK_PROCEDURE_SPEC) return -1;
+  bool inside = false;
+  for (Scope *sc = sm->current_scope; sc; sc = sc->parent)
+    if (sc->owner == g or
+        (sc->owner and sc->owner->generic_template == g)) {
+      // The region of the generic itself, or of one of its instances —
+      // whose body clone re-resolves in the reconstructed template
+      // environment and must see the same names the template saw.
+      inside = true;
+      break;
+    }
+  if (not inside) return -1;
+  Symbol *o = other->nam;
+  if (not o or not Symbol_Is_Subprogram (o)) return -1;
+  Type_Info *g_ret = (gu->kind == NK_FUNCTION_SPEC and
+                      gu->subprogram_spec.return_type)
+                     ? gu->subprogram_spec.return_type->type : NULL;
+  Type_Info *o_ret = o->return_type;
+  if ((g_ret == NULL) != (o_ret == NULL)) return 0;
+  if (g_ret and o_ret and not Types_Same_Named (g_ret, o_ret)) return 0;
+  uint32_t gp = 0;
+  for (uint32_t i = 0; i < gu->subprogram_spec.parameters.count; i++) {
+    Syntax_Node *ps = gu->subprogram_spec.parameters.items[i];
+    if (ps and ps->kind == NK_PARAM_SPEC) gp += ps->param_spec.names.count;
+  }
+  if (gp != o->parameter_count) return 0;
+  uint32_t k = 0;
+  for (uint32_t i = 0; i < gu->subprogram_spec.parameters.count; i++) {
+    Syntax_Node *ps = gu->subprogram_spec.parameters.items[i];
+    if (not ps or ps->kind != NK_PARAM_SPEC) continue;
+    Type_Info *pt = ps->param_spec.param_type
+                    ? ps->param_spec.param_type->type : NULL;
+    for (uint32_t j = 0; j < ps->param_spec.names.count; j++, k++)
+      if (pt and o->parameters[k].param_type and
+          not Types_Same_Named (pt, o->parameters[k].param_type))
+        return 0;
+  }
+  return 1;
+}
+
 // RM 8.3: two same-named declarations are homographs when either is not
 // overloadable, or both are overloadable with matching parameter and result
 // profiles.
 static bool Interps_Are_Homographs (const Interpretation *a,
                                     const Interpretation *b) {
-  if (not Interp_Overloadable (a) or not Interp_Overloadable (b)) return true;
+  if (not Interp_Overloadable (a) or not Interp_Overloadable (b)) {
+    // A generic subprogram seen from within its own region hides only the
+    // homographs of its current-instance profile (RM 12.3; c83030c: bare F3
+    // recurses while F3(A) still reaches the use-visible F3(INTEGER)).
+    int ci = Generic_Current_Instance_Homograph (a, b);
+    if (ci < 0) ci = Generic_Current_Instance_Homograph (b, a);
+    if (ci >= 0) return ci != 0;
+    return true;
+  }
   // Two ordinary subprograms: defer to the established homograph test, which
   // compares profiles with Types_Same_Named (distinguishing sibling types such
   // as INT and INT2 that share a representation base).
@@ -10643,6 +10724,24 @@ void Filter_By_Arguments (Interp_List *interps, Argument_Info *args) {
     if (sym->kind == SYMBOL_LITERAL) {
       if (args and args->count == 0)
         interps->items[write_idx++] = interps->items[i];
+      continue;
+    }
+
+    // RM 12.3: within its own region a generic subprogram's name denotes the
+    // current instance, whose profile is the unit's own — a call giving more
+    // arguments than that profile takes cannot denote it, and keeping it
+    // would outscore a use-visible overload that does fit (c83030c: F3(A)
+    // under a parameterless generic F3 must leave only F3(INTEGER)).
+    if (sym->kind == SYMBOL_GENERIC and sym->generic_unit and
+        (sym->generic_unit->kind == NK_FUNCTION_SPEC or
+         sym->generic_unit->kind == NK_PROCEDURE_SPEC)) {
+      uint32_t unit_params = 0;
+      Node_List *specs = &sym->generic_unit->subprogram_spec.parameters;
+      for (uint32_t k = 0; k < specs->count; k++)
+        if (specs->items[k] and specs->items[k]->kind == NK_PARAM_SPEC)
+          unit_params += specs->items[k]->param_spec.names.count;
+      if (args and args->count > unit_params) continue;
+      interps->items[write_idx++] = interps->items[i];
       continue;
     }
 
@@ -11338,12 +11437,17 @@ Type_Info *Resolve_Selected (Syntax_Node *node) {
 
   // Look up component
   if (has_components) {
-    for (uint32_t i = 0; i < record_type->record.component_count; i++) {
-      if (Slice_Equal_Ignore_Case (record_type->record.components[i].name,
-                    node->selected.selector)) {
-        node->type = record_type->record.components[i].component_type;
-        return node->type;
-      }
+    // Find_Record_Component also resolves a formal private type's
+    // discriminant names inside a generic (RM 12.1, c83027c). Record the
+    // slot on the node — under a formal/actual name collision the emitter
+    // cannot re-derive it from the selector (cc3240a).
+    int32_t found_component =
+      Find_Record_Component (record_type, node->selected.selector);
+    if (found_component >= 0) {
+      node->selected.component_index = found_component;
+      node->type =
+        record_type->record.components[found_component].component_type;
+      return node->type;
     }
     Closest_Name_Search search = Closest_Name_Begin (node->selected.selector);
     for (uint32_t i = 0; i < record_type->record.component_count; i++)
@@ -11366,6 +11470,13 @@ Type_Info *Resolve_Selected (Syntax_Node *node) {
     Type_Info *task_type = Type_Is_Task (record_type) ? record_type
                : record_type->access.designated_type;
     Symbol *type_sym = Task_Entry_Owner (task_type);
+    // The prefix may be a use-visible alias of the task (RM 8.4) — codegen
+    // reads the TCB through the prefix symbol's emitted name, which only the
+    // denoted object symbol carries (c73007a: TASK1.FUNC1 under USE PACK).
+    if (node->selected.prefix->symbol and
+        node->selected.prefix->symbol->aliased)
+      node->selected.prefix->symbol =
+        Single_Task_Object_Denoted (node->selected.prefix->symbol);
     if (type_sym) {
       for (uint32_t i = 0; i < type_sym->exported_count; i++) {
         if (Slice_Equal_Ignore_Case (type_sym->exported[i]->name,
@@ -11466,6 +11577,11 @@ Type_Info *Resolve_Selected (Syntax_Node *node) {
 
     // Search package's exported symbols
     if (prefix_sym and prefix_sym->kind == SYMBOL_PACKAGE) {
+      // A use-visible package alias carries neither scope nor exported list
+      // of its own — the expanded name denotes the ORIGINAL package
+      // (RM 8.4; c73007a: PACK1.FUNC1 with PACK1 visible via USE PACK).
+      while (prefix_sym->aliased) prefix_sym = prefix_sym->aliased;
+      node->selected.prefix->symbol = prefix_sym;
       for (uint32_t i = 0; i < prefix_sym->exported_count; i++) {
         if (Slice_Equal_Ignore_Case (prefix_sym->exported[i]->name,
                        node->selected.selector)) {
@@ -11678,15 +11794,21 @@ Type_Info *Resolve_Selected (Syntax_Node *node) {
     if (prefix_sym and prefix_sym->kind == SYMBOL_LABEL and prefix_sym->scope) {
       Scope *block_scope = prefix_sym->scope;
       uint32_t hash = Symbol_Hash_Name (node->selected.selector);
-      for (Symbol *s = block_scope->buckets[hash]; s; s = s->next_in_bucket) {
-        if (Slice_Equal_Ignore_Case (s->name, node->selected.selector) and
-          s->defining_scope == block_scope) {
+      // Two passes: an expression-position selector denotes the block's
+      // ENTITY, not a statement label that happens to share its name
+      // (c83033a: B1.RED with both a derived RED and a <<RED>> label) — a
+      // label matters only as a goto target, so it is the fallback.
+      for (int pass = 0; pass < 2; pass++)
+        for (Symbol *s = block_scope->buckets[hash]; s; s = s->next_in_bucket) {
+          if (not Slice_Equal_Ignore_Case (s->name, node->selected.selector) or
+              s->defining_scope != block_scope)
+            continue;
+          if ((s->kind == SYMBOL_LABEL) != (pass == 1)) continue;
           node->symbol = s;
           node->type = (s->kind == SYMBOL_FUNCTION and s->return_type)
                  ? s->return_type : s->type;
           return node->type;
         }
-      }
     }
   }
   {
@@ -12245,6 +12367,47 @@ Type_Info *Resolve_Apply (Syntax_Node *node) {
   } else {
     Resolve_Expression (prefix);
     prefix_sym = prefix->symbol;
+
+    // Expanded-name call L.F (...) through a BLOCK LABEL prefix: the label
+    // branch of Resolve_Selected likewise commits to the first member with no
+    // view of the actuals — redo across the block's homonyms (skipping
+    // statement labels) so the profile decides (c83033a: B1.RED(3, B1.RED)
+    // is the derived function; bare B1.RED the literal).
+    if (prefix->kind == NK_SELECTED and prefix_sym and
+        prefix->selected.prefix->symbol and
+        prefix->selected.prefix->symbol->kind == SYMBOL_LABEL and
+        prefix->selected.prefix->symbol->scope) {
+      Scope *block_scope = prefix->selected.prefix->symbol->scope;
+      Interp_List interps; interps.count = 0;
+      uint32_t hash = Symbol_Hash_Name (prefix->selected.selector);
+      for (Symbol *s = block_scope->buckets[hash]; s; s = s->next_in_bucket) {
+        if (not Slice_Equal_Ignore_Case (s->name, prefix->selected.selector) or
+            s->defining_scope != block_scope or s->kind == SYMBOL_LABEL)
+          continue;
+        for (Symbol *o = s; o and interps.count < MAX_INTERPRETATIONS;
+             o = o->next_overload) {
+          bool duplicate = false;
+          for (uint32_t i = 0; i < interps.count; i++)
+            if (interps.items[i].nam == o) { duplicate = true; break; }
+          if (not duplicate and o->kind != SYMBOL_LABEL)
+            interps.items[interps.count++] = (Interpretation){
+              .nam = o,
+              .typ = (o->kind == SYMBOL_FUNCTION) ? o->return_type : o->type,
+              .scope_depth = 0
+            };
+        }
+      }
+      if (interps.count > 0) {
+        if (args.count > 0) Filter_By_Arguments (&interps, &args);
+        Symbol *chosen = Disambiguate (&interps, node->type, &args);
+        if (chosen) {
+          prefix_sym     = chosen;
+          prefix->symbol = chosen;
+          prefix->type   = (chosen->kind == SYMBOL_FUNCTION)
+                           ? chosen->return_type : chosen->type;
+        }
+      }
+    }
 
     // Expanded-name call P.F (...): F may be overloaded within P, but
     // Resolve_Selected commits to the first matching member with no view of
@@ -14314,16 +14477,45 @@ void Analyze_Binary (Syntax_Node *n) {
       if (is_concat and not private_view) {
         // RM 4.5.3: concatenation is the one operator with heterogeneous
         // operands — each side is either the array (base) type or the element
-        // type. Record the per-operand target so a user "&"(CHARACTER, STRING)
-        // and the predefined one are distinguished by their full profile.
-        Type_Info *arr = Type_Is_Array_Like (lt) ? lt
-                       : Type_Is_Array_Like (rt) ? rt : NULL;
-        if (arr) {
+        // type, giving array&array, array&component and component&array (all
+        // yielding the base; component&component is context-determined and
+        // handled by the empty-set path below). An operand that is itself an
+        // array may be EITHER the array side or a component of an
+        // array-of-arrays (c45347b: A & A2(1) & AR1 where A's component type
+        // is the array ARR), so consider both operands as the candidate array
+        // type and add every form the operand pair satisfies — never assume
+        // an array-like operand is the array side.
+        Type_Info *cands[2] = { Type_Is_Array_Like (lt) ? lt : NULL,
+                                Type_Is_Array_Like (rt) ? rt : NULL };
+        if (cands[0] and cands[1] and
+            Type_Base (cands[0]) == Type_Base (cands[1]))
+          cands[1] = NULL;
+        for (int c = 0; c < 2; c++) {
+          Type_Info *arr = cands[c];
+          if (not arr) continue;
           Type_Info *base = Type_Base (arr);
           Type_Info *elem = arr->array.element_type;
-          Type_Info *o0 = Type_Is_Array_Like (lt) ? base : elem;
-          Type_Info *o1 = Type_Is_Array_Like (rt) ? base : elem;
-          Interp_Add (out, NULL, base, o0, o1, 0);
+          // A string literal is context-typed (RM 4.2): even after the
+          // bottom-up pass stamped it STRING, it denotes ANY character-array
+          // base, so it satisfies the array side of that base's "&"
+          // (c45345a: SMALL_STRING'("ABCD") & "EF" must build the
+          // SMALL_STRING interp whose result bound check raises).
+          bool lt_is_arr = Type_Is_Array_Like (lt) and
+            (Type_Base (lt) == base or
+             (L and L->kind == NK_STRING and Type_Is_Character_Type (elem)));
+          bool rt_is_arr = Type_Is_Array_Like (rt) and
+            (Type_Base (rt) == base or
+             (R and R->kind == NK_STRING and Type_Is_Character_Type (elem)));
+          bool lt_is_elem = elem and
+            (Type_Covers (elem, lt) or Type_Covers (lt, elem));
+          bool rt_is_elem = elem and
+            (Type_Covers (elem, rt) or Type_Covers (rt, elem));
+          if (lt_is_arr and rt_is_arr)
+            Interp_Add (out, NULL, base, base, base, 0);
+          if (lt_is_arr and rt_is_elem)
+            Interp_Add (out, NULL, base, base, elem, 0);
+          if (lt_is_elem and rt_is_arr)
+            Interp_Add (out, NULL, base, elem, base, 0);
         }
       }
     }
@@ -14717,10 +14909,42 @@ Type_Info *Resolve_In_Context (Syntax_Node *n, Type_Info *ctx) {
       return Resolve_Context_Catenation (n, ctx);
     return n->type;
   }
+  // ARR & ARR is ambiguous between array&array (yielding ARR) and the
+  // component&component reading (yielding the context's array type) when the
+  // operand type is itself another array type's component (RM 4.5.3,
+  // c45347b: A'(AR2 & A1(2)) with A's component type ARR). The bottom-up set
+  // holds only the former; when the context demands an array the pick cannot
+  // deliver — and the pick's result would itself be a component of that
+  // context — the context reading is the legal one.
+  if (n->kind == NK_BINARY_OP and n->binary.op == TK_AMPERSAND and
+      ctx and Type_Is_Array_Like (ctx) and
+      not Type_Covers (ctx, pick->typ) and
+      Type_Base (ctx)->array.element_type and
+      Type_Covers (Type_Base (ctx)->array.element_type, pick->typ))
+    return Resolve_Context_Catenation (n, ctx);
   n->type = pick->typ;
   n->symbol = pick->nam;
 
   if (n->kind == NK_UNARY_OP) {
+    // RM 8.6: the context type constrains the whole expression. An overloaded
+    // call operand (`-IDENT(X)` with one IDENT instance per fixed type,
+    // c46033a) is committed bottom-up to an arbitrary overload; when that
+    // pick cannot satisfy the context, re-drive the call against it — the
+    // predefined arithmetic unary operators return their operand type
+    // (RM 4.5.4), so the operand's target IS the context.
+    if (ctx and pick and not pick->nam and not Type_Covers (ctx, pick->typ) and
+        (n->unary.op == TK_MINUS or n->unary.op == TK_PLUS or
+         n->unary.op == TK_ABS) and
+        n->unary.operand and n->unary.operand->kind == NK_APPLY) {
+      Syntax_Node *op = n->unary.operand;
+      op->type = ctx;
+      op->symbol = NULL;
+      Type_Info *rt = Resolve_Expression (op);
+      if (rt and Type_Covers (ctx, rt)) {
+        n->type = rt;
+        return n->type;
+      }
+    }
     if (n->unary.op != TK_ALL)
       Resolve_Operand (n->unary.operand, pick->opnd[0]);
     return n->type;
@@ -19057,6 +19281,25 @@ void Bind_Generic_Formals_To_Actuals (Symbol *instance_sym,
             // (Outside_Defining_Package, via Effective_Type_View) hinge on
             // the view's home being the instance, not the actual's package.
             actual_view->defining_symbol = binding;
+
+            // RM 12.1: within the generic, the discriminants of a formal
+            // private type are known by the FORMAL's names — RECVAR3.G with
+            // formal (G : INTEGER) bound to actual REC (Z : INTEGER)
+            // selects the actual's first discriminant (c83027c). The view
+            // keeps the ACTUAL's component names (an instance subtype
+            // escaping the generic must still select by them, cc3203a's
+            // P1VP.D) and carries the formal view for the positional
+            // name-fallback in component lookup.
+            {
+              Type_Info *formal_view =
+                formal->symbol ? formal->symbol->type : NULL;
+              if ((formal->generic_type_param.def_kind == GEN_DEF_PRIVATE or
+                   formal->generic_type_param.def_kind == GEN_DEF_LIMITED_PRIVATE)
+                  and formal_view and Type_Is_Record (actual_view) and
+                  formal_view->record.has_discriminants and
+                  actual_view->record.has_discriminants)
+                actual_view->generic_formal_disc_view = formal_view;
+            }
             Symbol_Add (binding);
             if (formal->symbol and remap->count < MAX_INSTANCE_REMAPS) {
               remap->from[remap->count] = formal->symbol;
@@ -19129,8 +19372,38 @@ void Bind_Generic_Formals_To_Actuals (Symbol *instance_sym,
               // formal's base type — an assignment or entry copy-back checks
               // against the actual's constraint (c95085o's Z : T (1..5)).
               if (in_out and actual_expr->type and object_type and
-                  Type_Covers (object_type, actual_expr->type))
+                  Type_Covers (object_type, actual_expr->type)) {
                 binding->type = actual_expr->type;
+                // A formal-typed object keeps the RM 12.1 discriminant name
+                // view even while wearing the actual's subtype: TX.A inside
+                // the generic selects the discriminant the FORMAL calls A
+                // (cc3240a). The copy leaves the shared actual subtype
+                // untouched — and is made only when some formal discriminant
+                // NAME actually differs, so same-named formals keep the one
+                // shared subtype and stay assignment-identical (cc1204a).
+                bool formal_disc_name_differs = false;
+                if (object_type->generic_formal_disc_view and
+                    Type_Record_View_Live (actual_expr->type)) {
+                  Type_Info *fdv = object_type->generic_formal_disc_view;
+                  uint32_t shared = fdv->record.discriminant_count;
+                  if (actual_expr->type->record.discriminant_count < shared)
+                    shared = actual_expr->type->record.discriminant_count;
+                  for (uint32_t di = 0; di < shared; di++)
+                    if (not Slice_Equal_Ignore_Case (
+                          fdv->record.components[di].name,
+                          actual_expr->type->record.components[di].name))
+                      formal_disc_name_differs = true;
+                }
+                if (formal_disc_name_differs) {
+                  Type_Info *constrained_view =
+                    Type_New (actual_expr->type->kind, actual_expr->type->name);
+                  *constrained_view = *actual_expr->type;
+                  constrained_view->generic_formal_disc_view =
+                    object_type->generic_formal_disc_view;
+                  constrained_view->defining_symbol = binding;
+                  binding->type = constrained_view;
+                }
+              }
               binding->parent           = instance_sym;
               binding->is_package_level = true;
               binding->instance_actual  = actual_expr;
@@ -21045,6 +21318,21 @@ void Resolve_Declaration (Syntax_Node *node) {
         Syntax_Node *spec = node->subprogram_body.specification;
         String_Slice body_name = spec ? spec->subprogram_spec.name : (String_Slice){0};
         Symbol *matching_generic = Symbol_Find (body_name);
+
+        // RM 10.2 / 12.1: a body STUB completing a generic subprogram still
+        // resolves its profile within the generic's formal part (X : T,
+        // c83030c); the subunit later provides the actual generic body and
+        // pairs itself through this same branch when it resolves.
+        if (matching_generic and matching_generic->kind == SYMBOL_GENERIC and
+            node->subprogram_body.is_separate) {
+          node->symbol = matching_generic;
+          Symbol_Manager_Push_Scope (matching_generic);
+          Install_Generic_Formal_Symbols (matching_generic);
+          if (spec)
+            Install_Parameter_Symbols (&spec->subprogram_spec.parameters, NULL);
+          Symbol_Manager_Pop_Scope ();
+          break;
+        }
 
         // This body completes a generic - store it and resolve it.
         // Push scope with generic formals so T, F etc. are visible.
@@ -26956,7 +27244,7 @@ uint32_t Generate_Lvalue (Syntax_Node *node) {
     if (Type_Is_Record (record_type)) {
       uint32_t byte_offset = 0;
       uint32_t comp_idx = 0;
-      int32_t ci = Find_Record_Component (record_type, node->selected.selector);
+      int32_t ci = Selected_Component_Slot (node, record_type);
       if (ci >= 0) {
         byte_offset = record_type->record.components[ci].byte_offset;
         comp_idx = (uint32_t) ci;
@@ -28348,7 +28636,7 @@ uint32_t Generate_Composite_Address (Syntax_Node *node) {
       // Find field offset and component index
       uint32_t offset = 0;
       uint32_t comp_idx = 0;
-      int32_t ci = Find_Record_Component (record_type, node->selected.selector);
+      int32_t ci = Selected_Component_Slot (node, record_type);
       if (ci >= 0) {
         offset = record_type->record.components[ci].byte_offset;
         comp_idx = (uint32_t) ci;
@@ -33378,7 +33666,7 @@ LLVM_Value Generate_Selected (Syntax_Node *node) {
   uint32_t byte_offset = 0;
   Type_Info *field_type = NULL;
   int32_t field_variant_index = -1;
-  int32_t fci = Find_Record_Component (record_type, node->selected.selector);
+  int32_t fci = Selected_Component_Slot (node, record_type);
   if (fci >= 0) {
     Component_Info *fc = &record_type->record.components[fci];
     byte_offset = fc->byte_offset;
@@ -33493,7 +33781,7 @@ LLVM_Value Generate_Selected (Syntax_Node *node) {
     base = Generate_Lvalue (node->selected.prefix);
   }
   // Find component index for runtime offset lookup
-  int32_t cidx = Find_Record_Component (record_type, node->selected.selector);
+  int32_t cidx = Selected_Component_Slot (node, record_type);
   uint32_t comp_idx = cidx >= 0 ? (uint32_t) cidx : 0;
   uint32_t ptr = Emit_Record_Field_Ptr (base, record_type, comp_idx, byte_offset);
 
@@ -35596,8 +35884,59 @@ uint32_t Emit_Record_Field_Ptr (uint32_t base, Type_Info *record_type,
   return fp;
 }
 
+// The component slot a selected node denotes: the resolver's recorded pick
+// when present — mandatory under a formal/actual discriminant name collision
+// (RM 12.1, cc3240a), which a by-name lookup cannot re-arbitrate — else a
+// by-name lookup for nodes synthesized after resolution.
+int32_t Selected_Component_Slot (const Syntax_Node *sel_node,
+                                 Type_Info *record_type) {
+  int32_t recorded = sel_node->selected.component_index;
+  if (recorded >= 0 and
+      (uint32_t)recorded < record_type->record.component_count)
+    return recorded;
+  return Find_Record_Component (record_type, sel_node->selected.selector);
+}
+
+// A type whose record view is live: a proper record, or a private /
+// limited-private view carrying discriminant components (RM 3.7.4, 7.4.2).
+bool Type_Record_View_Live (const Type_Info *t) {
+  return t and (t->kind == TYPE_RECORD or t->kind == TYPE_PRIVATE or
+                t->kind == TYPE_LIMITED_PRIVATE);
+}
+
+// True when the current resolution point lies within the region of the
+// instance (or its template) that installed `view` as a formal-type binding —
+// where RM 12.1 says the FORMAL's discriminant names govern.
+static bool Inside_View_Instance_Region (const Type_Info *view) {
+  Symbol *binding = view->defining_symbol;
+  Symbol *owner = (binding and binding->defining_scope)
+                  ? binding->defining_scope->owner : NULL;
+  if (not owner) return false;
+  for (Scope *sc = sm->current_scope; sc; sc = sc->parent)
+    if (sc->owner == owner or
+        (owner->generic_template and sc->owner == owner->generic_template))
+      return true;
+  return false;
+}
+
 int32_t Find_Record_Component (Type_Info *record_type, String_Slice name) {
-  if (not Type_Is_Record (record_type)) return -1;
+  if (not Type_Record_View_Live (record_type)) return -1;
+  // RM 12.1: inside the generic (an instance body clone re-resolving there),
+  // the discriminants of a formal private type are known by the FORMAL's
+  // names, mapping positionally onto the actual's — and those names take
+  // precedence over a same-named component of the actual (cc3240a: TX.A is
+  // the discriminant the formal calls A, not the actual's component A).
+  // Outside the instance the actual's own names govern (cc3203a: P1VP.D).
+  Type_Info *formal_view = record_type->generic_formal_disc_view;
+  if (formal_view and Type_Record_View_Live (formal_view) and
+      Inside_View_Instance_Region (record_type)) {
+    uint32_t shared = formal_view->record.discriminant_count;
+    if (record_type->record.discriminant_count < shared)
+      shared = record_type->record.discriminant_count;
+    for (uint32_t i = 0; i < shared; i++)
+      if (Slice_Equal_Ignore_Case (formal_view->record.components[i].name, name))
+        return (int32_t)i;
+  }
   for (uint32_t i = 0; i < record_type->record.component_count; i++) {
     if (Slice_Equal_Ignore_Case (record_type->record.components[i].name, name)) {
       return (int32_t)i;
@@ -41145,7 +41484,7 @@ void Generate_Assignment_Body (Syntax_Node *node, Syntax_Node *target) {
         record_type = prefix_type->access.designated_type;
       }
       if (Type_Is_Record (record_type)) {
-        int32_t ci = Find_Record_Component (record_type, target->selected.selector);
+        int32_t ci = Selected_Component_Slot (target, record_type);
         if (ci >= 0) assign_type = record_type->record.components[ci].component_type;
       }
     }
@@ -53687,10 +54026,15 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   if (unit and unit->kind == NK_PROCEDURE_BODY and unit->symbol) {
     Symbol *main_sym = unit->symbol;
 
-    // Check if this is a library-level procedure (no parameters)
-    // and NOT a SEPARATE subunit
+    // Check if this is a library-level procedure (no parameters) and NOT a
+    // SEPARATE subunit: is_separate marks only the STUB — a subunit's own
+    // compilation unit is recognized by its SEPARATE (parent) clause. A
+    // generic subprogram's subunit body pairs with the SYMBOL_GENERIC and
+    // is no main program either (ca2009d).
     if (main_sym->parameter_count == 0 and
+        main_sym->kind == SYMBOL_PROCEDURE and
         not unit->subprogram_body.is_separate and
+        not node->compilation_unit.separate_parent and
         not cg->generating_loaded_unit) {
       cg->main_candidate = main_sym;
     }

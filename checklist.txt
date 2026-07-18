@@ -573,3 +573,62 @@ ROUND 10 — homograph defaults and expanded-name operators
 STILL OPEN: c86002b/c86004b STANDARD homographs, multi-file ca*
     families, remaining COMPILE-error skips (cc1225a, cc1307a, cc3128a,
     c45347b, c46033a, c73007a, c83027c, c83030c, c83033a, ...).
+
+═══════════════════════════════════════════════════════════════════════════
+ROUND 11 — visibility skips (c45347b, c46033a, c73007a, c83027c,
+           c83030c, c83033a)
+═══════════════════════════════════════════════════════════════════════════
+[x] c45347b: catenation interps enumerate every RM 4.5.3 form each
+    operand pair satisfies — an array-typed operand may be the ARRAY
+    side or a COMPONENT of an array-of-arrays; the old synthesis
+    assumed array-like ⇒ array side. Plus: ARR & ARR under an array
+    context whose element covers the pick's result re-reads as the
+    component&component form (Resolve_In_Context).
+[x] c46033a: RM 8.6 context re-drive for `-IDENT(X)` — an overloaded
+    call operand of an arithmetic unary op re-resolves against the
+    context type when the bottom-up pick cannot satisfy it (the
+    predefined unary ops return their operand type, RM 4.5.4).
+[x] c73007a: a use-visible PACKAGE alias carries no scope/exported list
+    — the expanded name PACK1.FUNC1 peels to the original (RM 8.4);
+    task-entry prefixes likewise peel via Single_Task_Object_Denoted.
+[x] c83027c: RM 12.1 — the discriminants of a generic formal private
+    type are known inside the generic by the FORMAL's names; the
+    instance binding's actual-view now grafts those names onto the
+    actual's discriminant components (layout unchanged).
+[x] c83030c (three parts):
+    - a body STUB completing a generic subprogram resolves its profile
+      inside the generic's formal part (X : T); the subunit pairs
+      itself as the generic body through the existing branch.
+    - RM 12.3: within a generic subprogram's own region (or an
+      instance's body clone re-resolving in the reconstructed template
+      environment) the unit's name denotes the CURRENT INSTANCE — an
+      overloadable subprogram that hides only same-profile homographs.
+      Generic_Current_Instance_Homograph implements the profile
+      comparison inside Cancel_Use_Visible_Homographs' non-overloadable
+      rule; Filter_By_Arguments drops the generic when the call gives
+      more arguments than the unit's profile takes.
+[x] c83033a: an expression-position selector through a block-label
+    prefix denotes the block's ENTITY, not a statement label sharing
+    its name (two-pass member search); Resolve_Apply redoes the pick
+    across the block's homonyms with the actuals in view, as the
+    package-prefix path already did.
+[x] Round-11 regression repairs (found by the suite):
+    - cc3203a/cc3240a: the formal-name graft leaked outside the
+      instance. Reworked as a VIEW-dependent mapping: the actual's
+      names stay on the view; generic_formal_disc_view carries the
+      formal's; Find_Record_Component prefers the formal names only
+      inside the instance/template region (Inside_View_Instance_Region)
+      and the actual's outside. Under a formal/actual name COLLISION
+      (cc3240a's TX.A) the resolver's pick is recorded on the node
+      (selected.component_index) and the emitter honors it via
+      Selected_Component_Slot — a by-name re-lookup at emission cannot
+      re-arbitrate. An IN OUT formal object wearing the actual's
+      subtype gets a copy carrying the disc view.
+    - c45345a: a STRING-typed string literal stays context-flexible for
+      catenation (RM 4.2) — it satisfies the array side of ANY
+      character-array base, so SMALL_STRING'("ABCD") & "EF" builds the
+      SMALL_STRING interp whose RM 4.5.3 bound check raises.
+[x] ca2009d: the main-program candidate check excluded only STUBS
+    (is_separate); a subunit's own CU (separate_parent) and a
+    SYMBOL_GENERIC pairing are no main program — the driver was
+    emitting @main around the generic subunit PROC1.
