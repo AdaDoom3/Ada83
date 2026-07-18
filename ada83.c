@@ -1179,6 +1179,12 @@ struct Syntax_Node {
     struct {
       Syntax_Node *prefix;   // The dotted prefix expression
       String_Slice selector; // The selected component name
+      int32_t component_index; // Record component slot the resolver picked,
+                               // -1 until then. The emitter must honor it:
+                               // a formal private type's discriminant name
+                               // can collide with a component of the actual
+                               // (RM 12.1), which a by-name re-lookup at
+                               // emission cannot re-arbitrate (cc3240a)
     } selected;
 
     // when NK_ATTRIBUTE =>
@@ -1450,6 +1456,11 @@ struct Syntax_Node {
       Syntax_Node *guard;      // WHEN guard for a select delay alternative
     } delay_stmt;
 
+    // when NK_NULL_STMT (as a select TERMINATE alternative) =>
+    struct {
+      Syntax_Node *guard;      // WHEN guard for a select terminate alternative
+    } null_stmt;
+
     // when NK_ABORT =>
     struct {
       Node_List task_names; // Task objects to abort
@@ -1653,6 +1664,8 @@ struct Syntax_Node {
       Syntax_Node *context;         // Context clause
       Syntax_Node *unit;            // The library unit
       Syntax_Node *separate_parent; // Separate parent or NULL
+      bool grafted_into_generic;    // Subunit grafted into its generic parent's
+                                    // template; no standalone resolution/emission
     } compilation_unit;
   };
 };
@@ -1732,7 +1745,7 @@ extern const Syntax_Tree_Edge Syntax_Tree_Shape[NK_COUNT][6];
   X (NK_EXIT, KID (exit_stmt.condition)) \
   X (NK_GOTO) \
   X (NK_RAISE, KID (raise_stmt.exception_name)) \
-  X (NK_NULL_STMT) \
+  X (NK_NULL_STMT, KID (null_stmt.guard)) \
   X (NK_LABEL, KID (label_node.statement)) \
   X (NK_ACCEPT, KID (accept_stmt.index), KIDS (accept_stmt.parameters), KIDS (accept_stmt.statements), KID (accept_stmt.guard)) \
   X (NK_SELECT, KIDS (select_stmt.alternatives), KID (select_stmt.else_part)) \
@@ -2028,6 +2041,9 @@ struct Type_Info {
       Index_Info *indices;        // Per-dimension index type and bounds
       uint32_t    index_count;    // Number of dimensions
       Type_Info  *element_type;   // Component type of the array
+      Type_Info  *unconstrained_base; // RM 3.6 anonymous unconstrained base of a
+                                      // constrained array TYPE, materialized
+                                      // lazily by Array_Unconstrained_Base
       bool        is_constrained; // True for constrained (bounds known statically)
       bool        is_dimension_row; // Implicit row type of a multi-dimensional
                                     // aggregate's inner dimensions: such a row
@@ -2128,6 +2144,11 @@ struct Type_Info {
                                          // (41-42))
   struct Type_Info *generic_actual;      // The actual type this view denotes;
                                          // Peel_Generic_Actual_View follows it
+  struct Type_Info *generic_formal_disc_view; // The formal private type's own
+                                         // record view: its discriminant NAMES
+                                         // map positionally onto the actual's
+                                         // (RM 12.1) for component lookup
+                                         // inside the generic (c83027c)
   Generic_Def_Kind generic_formal_class; // Which formal class (private, discrete,
                                          // range <>, digits <>, ...) when
                                          // is_generic_formal; drives the class's
@@ -2185,6 +2206,7 @@ Type_Info *Type_Designated        (const Type_Info *t);
 
 Type_Info *Type_Base (Type_Info *t);
 Type_Info *Type_Root (Type_Info *t);
+Type_Info *Array_Unconstrained_Base (Type_Info *t);
 // Within a generic instance a formal type denotes its actual (RM 12.1.2). The
 // instance's view is a distinct Type_Info flagged is_generic_actual_view; this
 // follows it back to the underlying actual so type comparisons treat them as
@@ -2483,6 +2505,10 @@ struct Symbol {
 
   // Addressing
   uint32_t        unique_id;         // Compiler-unique serial number for mangling
+  String_Slice    mangled_memo;      // Mangled name frozen at first emission:
+                                     // codegen-synthesized homographs must not
+                                     // flip an already-emitted symbol's
+                                     // spelling (is_overloaded, scope moves)
   uint32_t        nesting_level;     // Static nesting depth for uplevel access
   int64_t         frame_offset;      // Byte offset within the enclosing stack frame
   Scope          *scope;             // Body scope owned by this symbol (pkg/subp)
@@ -2704,8 +2730,10 @@ void    Symbol_Add          (Symbol *sym);
 bool    Symbol_Is_Deferred_Constant (Symbol *sym);
 bool    Symbol_Is_Subprogram        (const Symbol *sym);
 void    Symbol_Assign_Frame_Slot    (Symbol *sym, Scope *scope);
+bool    Symbol_Has_Library_Storage  (Symbol *sym);
 Symbol *Symbol_Find         (String_Slice name);
 Symbol *Symbol_Find_By_Type (String_Slice name, Type_Info *expected_type);
+Symbol *Package_Denoted      (Symbol *package_symbol);
 Symbol *Symbol_Find_Closest (String_Slice name);
 Symbol *Single_Task_Object_Denoted (Symbol *sym);
 bool    Symbol_Has_Stable_Library_Name (const Symbol *sym);
@@ -2806,6 +2834,7 @@ void       Resolve_Index_Constraint_Dimension (Syntax_Node *discrete_range,
 void        Analyze_Identifier  (Syntax_Node *node);
 Type_Info *Resolve_Selected     (Syntax_Node *node);
 Type_Info *Resolve_Apply        (Syntax_Node *node);
+Syntax_Node *Synthesize_Infix_From_Apply (Syntax_Node *node, Token_Kind opk);
 Symbol    *Resolve_Entry_Rename_Overloaded_Prefix (Syntax_Node *renamed,
                                                    Symbol *rename_sym);
 // Two-pass overload resolution (RM 8.6): Analyze_Expr collects the candidate
@@ -2886,6 +2915,14 @@ typedef struct {
   uint32_t saved_pa; // pending_activation_count at scope entry
 } Master_Stack_Entry;
 
+// A library-scope elaboration action deferred into the owning unit's ___elab
+// function (RM 7.2): either a dynamic object initializer, or a whole
+// declaration whose elaboration emits runtime code.
+typedef enum {
+  PENDING_ELABORATION_OBJECT_INITIALIZER_KIND,
+  PENDING_ELABORATION_DECLARATION_KIND,
+} Pending_Elaboration_Kind;
+
 // What Emit_Master_Enter_If hands back to a scope: everything its matching
 // Emit_Master_Exit needs. `entered` is false for a taskless scope (no flag,
 // no record, nothing pushed) — the exit then only restores the pending count.
@@ -2949,13 +2986,22 @@ typedef struct {
   uint32_t     master_depth;
   uint32_t     master_capacity;
 
-  // Library-level objects whose initializer is not a static literal (RM 3.2.1).
-  // Their globals are emitted zero-initialized; the enclosing package body's
-  // elaboration function evaluates each initializer and stores it, in
-  // declaration order (RM 7.2). Filled by Generate_Object_Declaration's
-  // global branch, drained by the package-body elaboration emitter.
-  struct { Symbol *symbol; Syntax_Node *init; } pending_global_inits[256];
-  uint32_t     pending_global_init_count;
+  // Library-scope elaboration deferred into the owning unit's ___elab
+  // function — module scope admits no instructions (RM 7.2). Two shapes, kept
+  // in one list so they drain in declaration order: an object whose
+  // initializer is not a static literal (its global is emitted
+  // zero-initialized; the drain evaluates and stores it), and a declaration
+  // whose elaboration emits runtime code (subtype compatibility checks,
+  // RM 13.5 address overlays) — the drain re-enters Generate_Declaration for
+  // it inside the elaboration function. Filled at library scope, drained by
+  // the package-body / spec-only elaboration emitters.
+  struct {
+    Pending_Elaboration_Kind kind;
+    Symbol      *symbol;   // OBJECT_INITIALIZER: the object; DECLARATION: unused
+    Syntax_Node *node;     // OBJECT_INITIALIZER: the initializer expression;
+                           // DECLARATION: the declaration node itself
+  } pending_library_elaborations[256];
+  uint32_t     pending_library_elaboration_count;
 
   // Nested subprograms (static chain)
   Symbol *enclosing_function; // Immediately enclosing function for uplevel access
@@ -3173,6 +3219,7 @@ void Emit_Float_Constant    (uint32_t    result,
 // on the rep fields.
 LLVM_Rep    Type_To_Rep            (Type_Info       *t);
 LLVM_Rep    Array_Bound_LLVM_Rep   (const Type_Info *t);
+bool        Index_Type_Is_Unconstraining (const Type_Info *idx);
 const char *Bounds_Type_For        (LLVM_Rep         bound_rep);
 LLVM_Rep    Float_LLVM_Rep_Of      (const Type_Info *t);
 int         Bounds_Alloc_Size      (LLVM_Rep         bound_rep);
@@ -3283,7 +3330,8 @@ LLVM_Value Emit_Coerce_Val         (LLVM_Value value, LLVM_Rep desired_rep);
 
 // ???
 void Emit_Raise_Exception  (const char *exc_name, const char *comment);
-void Emit_Collection_Budget_Debit (Type_Info *access_type, uint32_t size64);
+void Emit_Collection_Budget_Debit  (Type_Info *access_type, uint32_t size64);
+void Emit_Collection_Budget_Credit (Type_Info *access_type, uint32_t size64);
 void Emit_Check_With_Raise (uint32_t    cond,
                             bool        raise_on_true,
                             const char *comment);
@@ -3642,6 +3690,8 @@ uint32_t   Emit_Fixed_Mantissa_Runtime (Type_Info *ft, double small);
 uint32_t   Emit_Fixed_Fore_Runtime    (Type_Info *ft, double small);
 uint32_t   Emit_Fixed_Large_Runtime   (Type_Info *ft, double small);
 LLVM_Value Generate_Qualified         (Syntax_Node *node);
+void       Emit_Qualified_Aggregate_Bounds_Check (Syntax_Node *agg,
+                                                  Type_Info *mark_type);
 // Raise CONSTRAINT_ERROR unless a non-null access value's designated object
 // satisfies a constrained access subtype's index/discriminant constraint.
 void       Emit_Access_Subtype_Constraint_Check (uint32_t     value_reg,
@@ -3814,6 +3864,7 @@ void Emit_Activation_Failure_Check (uint32_t failed_flag);
 const char *Task_Parent_Frame_Argument (void);
 const char *Task_Master_Record_Argument (void);
 uint32_t Emit_Task_Control_Block_For_Prefix (Syntax_Node *prefix);
+void Emit_Accept_Parameter_Bindings (Node_List *parameters, uint32_t params_ptr);
 void Emit_Accept_Out_Param_Writeback (Node_List *parameters, uint32_t params_ptr);
 void Emit_Join_Dependent_Tasks      (uint32_t from);
 void Emit_Master_Cleanup_For_Return (void);
@@ -3855,7 +3906,9 @@ void Emit_Subcomponent_Disc_Constraint_Checks (Symbol *sym, Type_Info *parent_re
                                                bool check_static_values);
 void Emit_Incomplete_Deferred_Disc_Checks (Type_Info *completed);
 void Emit_Access_Disc_Constraint_Range_Check (Type_Info *t);
-void Emit_Pending_Global_Initializers (void);
+void Emit_Pending_Library_Elaborations (void);
+void Defer_Library_Elaboration (Pending_Elaboration_Kind kind,
+                                Symbol *symbol, Syntax_Node *node);
 void Generate_Subprogram_Body       (Syntax_Node *node);
 void Generate_Task_Body             (Syntax_Node *node);
 // Elaborate a tree-copy instance's formal-object bindings at the
@@ -3920,6 +3973,7 @@ typedef struct {
   bool         has_dynamic_range;          // Some range choice bound is non-static
   bool         has_dynamic_single_choice;  // Some single (non-range) choice is non-static
   Syntax_Node *first_dynamic_range;        // First range choice with a non-static bound
+  Syntax_Node *first_dynamic_single_choice; // First non-static single (non-range) choice
   Syntax_Node *first_item_expression;      // First item's value (positional item or association expression)
   Syntax_Node *first_association_expression; // First named association's expression
 } Aggregate_Shape;
@@ -4061,7 +4115,11 @@ void     Agg_Rec_Disc_Post  (LLVM_Value       val,
 
 uint32_t Disc_Ordinal_Before             (Type_Info *type_info, uint32_t comp_index);
 int32_t  Find_Record_Component           (Type_Info *record_type, String_Slice name);
+bool     Type_Record_View_Live           (const Type_Info *t);
+int32_t  Selected_Component_Slot         (const Syntax_Node *sel_node,
+                                          Type_Info *record_type);
 int32_t  Governing_Discriminant_Index    (Type_Info *record_type);
+int32_t  Aggregate_Selected_Variant      (Syntax_Node *aggregate, Type_Info *record_type);
 uint32_t Record_RT_Global_Id             (Type_Info *t);
 uint32_t Emit_Record_Field_Ptr           (uint32_t base, Type_Info *record_type, uint32_t comp_idx, uint32_t byte_offset);
 Type_Info *Underlying_Record_Type        (Type_Info *t);
@@ -4585,6 +4643,13 @@ extern bool          Debug_Emit_Locations;
 extern bool          Clone_Self_Check;
 extern uint32_t      Include_Path_Count;
 extern Syntax_Node **Loaded_Package_Bodies;  // arena-grown, no cap
+
+// Package bodies present in the CURRENT compilation's unit list — recorded
+// before code generation so the spec-only elaboration decision can ask
+// "does a body I will emit host these initializers?" (a body merely KNOWN
+// to the library is not enough: it may never be linked in — spprt13).
+void Note_Compilation_Package_Bodies     (Syntax_Node **units, int unit_count);
+bool Compilation_Provides_Package_Body   (String_Slice name);
 extern int           Loaded_Body_Count;
 void  Queue_Loaded_Body (Syntax_Node *cu);
 
@@ -4814,8 +4879,14 @@ bool Closest_Name_Found (const Closest_Name_Search *search) {
 // §5.2 Error Handling - Accumulating diagnostic reports
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 
+// A tentative resolution pass — probing an alternative interpretation for
+// legality without committing to it — sets this so its expected failures
+// never reach the user or the error count.
+bool Diagnostics_Suppressed = false;
+
 void Report_Diagnostic (Source_Location location, const char *severity,
                         const char *format, va_list args) {
+  if (Diagnostics_Suppressed) return;
   fprintf (stderr, "%s:%u:%u: %s: ",
            location.filename ? location.filename : "<unknown>",
            location.line, location.column, severity);
@@ -4827,7 +4898,7 @@ void Report_Error (Source_Location location, const char *format, ...) {
   va_start (args, format);
   Report_Diagnostic (location, "error", format, args);
   va_end (args);
-  Error_Count++;
+  if (not Diagnostics_Suppressed) Error_Count++;
 }
 // Located, non-fatal warning. Does not affect Error_Count or compilation — used
 // e.g. when a runtime check is statically known to fail (RM permits compiling
@@ -6304,6 +6375,16 @@ Syntax_Node *Parse_Name (Parser *p) {
     node = Node_New (NK_IDENTIFIER, loc);
     node->string_val.text = Slice_Duplicate (p->current_token.text);
     Parser_Advance (p);
+
+  // Character literal as name: an enumeration literal is a parameterless
+  // function (RM 6.1), so it stands wherever a function name is required —
+  // a renaming target (RM 8.5(3)) or a generic formal subprogram default
+  // (RM 12.1.3).
+  } else if (Parser_At (p, TK_CHARACTER)) {
+    node = Node_New (NK_CHARACTER, loc);
+    node->string_val.text = Slice_Duplicate (p->current_token.text);
+    Parser_Advance (p);
+    return node;
   } else {
     Parser_Error_At_Current (p, "name");
     return Node_New (NK_IDENTIFIER, loc);
@@ -6326,6 +6407,7 @@ Syntax_Node *Parse_Name (Parser *p) {
       // P.'C' - character literal as enum member (RM 4.1.3)
       } else if (Parser_At (p, TK_CHARACTER)) {
         Syntax_Node *sel = Node_New (NK_SELECTED, postfix_loc);
+        sel->selected.component_index = -1;
         sel->selected.prefix = node;
         sel->selected.selector = Slice_Duplicate (p->current_token.text);
         Parser_Advance (p);
@@ -6334,6 +6416,7 @@ Syntax_Node *Parse_Name (Parser *p) {
       // P."+" - operator symbol (RM 6.1)
       } else if (Parser_At (p, TK_STRING)) {
         Syntax_Node *sel = Node_New (NK_SELECTED, postfix_loc);
+        sel->selected.component_index = -1;
         sel->selected.prefix = node;
         sel->selected.selector = Slice_Duplicate (p->current_token.text);
         Parser_Advance (p);
@@ -6342,6 +6425,7 @@ Syntax_Node *Parse_Name (Parser *p) {
       // Selection: prefix.component
       } else {
         Syntax_Node *sel = Node_New (NK_SELECTED, postfix_loc);
+        sel->selected.component_index = -1;
         sel->selected.prefix = node;
         sel->selected.selector = Parser_Identifier (p);
         node = sel;
@@ -6465,6 +6549,7 @@ Syntax_Node *Parse_Simple_Name (Parser *p) {
     if (Parser_Match (p, TK_DOT)) {
       Source_Location sel_loc = Parser_Location (p);
       Syntax_Node *sel = Node_New (NK_SELECTED, sel_loc);
+      sel->selected.component_index = -1;
       sel->selected.prefix = node;
 
       // Accept character literal ('C') or operator string ("+") after dot
@@ -6915,6 +7000,12 @@ Syntax_Node *Parse_Goto_Statement(Parser *p) {
   Parser_Expect (p, TK_GOTO);
   Syntax_Node *node = Node_New (NK_GOTO, loc);
   node->goto_stmt.name = Parser_Identifier (p);
+
+  // RM 4.1.3: the target may be an expanded name (BLOCK.LABEL). A label is
+  // unique within the enclosing body, so the final selector identifies the
+  // target; the prefixes only name enclosing constructs.
+  while (Parser_Match (p, TK_DOT))
+    node->goto_stmt.name = Parser_Identifier (p);
   return node;
 }
 Syntax_Node *Parse_Raise_Statement(Parser *p) {
@@ -7197,6 +7288,7 @@ Syntax_Node *Parse_Select_Statement(Parser *p) {
     }
     if (Parser_Match (p, TK_TERMINATE)) {
       Syntax_Node *term = Node_New (NK_NULL_STMT, alt_loc);
+      term->null_stmt.guard = alt_guard;
       Node_List_Push (&node->select_stmt.alternatives, term);
       Parser_Expect (p, TK_SEMICOLON);
     } else if (Parser_Match (p, TK_DELAY)) {
@@ -7248,18 +7340,22 @@ Syntax_Node *Parse_Select_Statement(Parser *p) {
 
 Syntax_Node *Parse_Statement (Parser *p) {
   Source_Location loc = Parser_Location (p);
-  Source_Location label_loc = loc;
 
-  // Check for label(s): <<label>> or identifier:
-  // Ada allows multiple labels before a statement: <<L1>> <<L2>> stmt;
-  String_Slice label = Empty_Slice;
+  // Check for label(s) (RM 5.1): <<L1>> <<L2>> stmt — EVERY label names this
+  // statement position and is a distinct GOTO target (c59001b), so all are
+  // collected, not just the last. An `identifier :` immediately before a
+  // loop or block is that construct's NAME and is consumed by it instead.
+  String_Slice label_names[16];
+  Source_Location label_locations[16];
+  uint32_t label_count = 0;
 
   // Handle multiple consecutive labels
   while (Parser_At (p, TK_LSHIFT) or
        (Parser_At (p, TK_IDENTIFIER) and Parser_Peek_At (p, TK_COLON))) {
+    String_Slice one = Empty_Slice;
+    Source_Location one_loc = Parser_Location (p);
     if (Parser_Match (p, TK_LSHIFT)) {
-      if (label.length == 0) label_loc = loc;  // Save first label location
-      label = Parser_Identifier (p);
+      one = Parser_Identifier (p);
       Parser_Expect (p, TK_RSHIFT);
 
     // Lookahead for "identifier :" (label) vs assignment/call
@@ -7270,8 +7366,7 @@ Syntax_Node *Parse_Statement (Parser *p) {
 
       // This is a label
       if (Parser_Match (p, TK_COLON)) {
-        if (label.length == 0) label_loc = loc;  // Save first label location
-        label = id;
+        one = id;
 
       // Not a label - restore and let assignment/call handle it
       } else {
@@ -7279,6 +7374,10 @@ Syntax_Node *Parse_Statement (Parser *p) {
         p->lexer = saved_lexer;
         break;
       }
+    }
+    if (one.length and label_count < 16) {
+      label_names[label_count] = one;
+      label_locations[label_count++] = one_loc;
     }
     loc = Parser_Location (p);  // Update location to after labels
   }
@@ -7290,12 +7389,15 @@ Syntax_Node *Parse_Statement (Parser *p) {
     stmt = Node_New (NK_NULL_STMT, loc);
   }
 
-  // Compound statements - loops and blocks handle labels as names
+  // Compound statements — the nearest preceding label is the loop's/block's
+  // NAME; any earlier labels wrap it as ordinary statement labels below.
   else if (Parser_At (p, TK_LOOP) or Parser_At (p, TK_WHILE) or Parser_At (p, TK_FOR)) {
-    return Parse_Loop_Statement (p, label);  // Loop keeps label as name
+    stmt = Parse_Loop_Statement (p, label_count ? label_names[--label_count]
+                                                : Empty_Slice);
   }
   else if (Parser_At (p, TK_DECLARE) or Parser_At (p, TK_BEGIN)) {
-    return Parse_Block_Statement (p, label);  // Block keeps label as name
+    stmt = Parse_Block_Statement (p, label_count ? label_names[--label_count]
+                                                 : Empty_Slice);
   }
   else if (Parser_At (p, TK_IF)) stmt = Parse_If_Statement (p);
   else if (Parser_At (p, TK_CASE)) stmt = Parse_Case_Statement (p);
@@ -7316,14 +7418,15 @@ Syntax_Node *Parse_Statement (Parser *p) {
   // Assignment or procedure call
   else stmt = Parse_Assignment_Or_Call (p);
 
-  // Wrap in NK_LABEL if a label was present (except for loop/block which handle labels)
-  if (label.length > 0 and stmt != NULL) {
-    Syntax_Node *label_node = Node_New (NK_LABEL, label_loc);
-    label_node->label_node.name = label;
-    label_node->label_node.statement = stmt;
-    label_node->label_node.symbol = NULL;  // Set during resolution
-    return label_node;
-  }
+  // Wrap the statement in the collected labels, innermost = last written.
+  if (stmt)
+    for (uint32_t k = label_count; k-- > 0;) {
+      Syntax_Node *label_node = Node_New (NK_LABEL, label_locations[k]);
+      label_node->label_node.name = label_names[k];
+      label_node->label_node.statement = stmt;
+      label_node->label_node.symbol = NULL;  // Set during resolution
+      stmt = label_node;
+    }
   return stmt;
 }
 void Parse_Statement_Sequence (Parser *p, Node_List *list) {
@@ -7525,18 +7628,13 @@ Syntax_Node *Parse_Array_Type (Parser *p) {
 Syntax_Node *Parse_Discrete_Range(Parser *p) {
   Source_Location loc = Parser_Location (p);
 
-  // Check if this starts with an integer literal (anonymous range)
-  if (Parser_At (p, TK_INTEGER) or Parser_At (p, TK_CHARACTER)) {
-    Syntax_Node *range = Node_New (NK_RANGE, loc);
-    range->range.low = Parse_Expression (p);
-    if (Parser_Match (p, TK_DOTDOT)) {
-      range->range.high = Parse_Expression (p);
-    }
-    return range;
-  }
-
-  // Otherwise try to parse as name, then check for range or constraint
-  Syntax_Node *name = Parse_Name (p);
+  // RM 3.6.1 / 3.5: discrete_range ::= discrete_subtype_indication | range,
+  // and a range's bounds are SIMPLE EXPRESSIONS — `INTEGER'LAST - 4 ..
+  // INTEGER'LAST` and `-4 .. IDENT_INT(4)` are as legal as bare names
+  // (c41106a, c52102b). Parse one expression first; the token that follows
+  // decides which alternative this is (RANGE -> subtype indication,
+  // `..` -> this was the low bound, else a bare type mark).
+  Syntax_Node *name = Parse_Expression (p);
 
   // Type RANGE low..high or Type RANGE <>
   if (Parser_Match (p, TK_RANGE)) {
@@ -9217,6 +9315,40 @@ Type_Info *Type_Base (Type_Info *type_info) {
   return type_info;
 }
 
+// RM 3.6: a constrained array type definition (`type A is array (1..3) of T`)
+// implicitly declares an anonymous UNCONSTRAINED base sharing A's index and
+// component types, with A a constrained subtype of it. Slices, and flexible
+// operands in a non-applicable-index-constraint context (RM 4.3.2: a string
+// literal or aggregate operand of an operator fixes its own bounds from its
+// length), are values of that base. The predefined STRING already provides
+// its own unconstrained base; for user array types the base is materialized
+// here on first demand and memoized so every use sees one identity.
+Type_Info *Array_Unconstrained_Base (Type_Info *type_info) {
+  Type_Info *base = Type_Base (type_info);
+  if (not Type_Is_Constrained_Array (base) or base->kind == TYPE_STRING)
+    return base;
+  if (not base->array.unconstrained_base) {
+    Type_Info *anon = Type_New (TYPE_ARRAY, base->name);
+    anon->size      = base->size;
+    anon->alignment = base->alignment;
+    anon->array     = base->array;
+    anon->array.is_constrained = false;
+    anon->array.unconstrained_base = anon;
+    // Fresh per-dimension Index_Info so bound caching on the constrained
+    // type is never shared. The bound VALUES carry over as placeholders —
+    // exactly the predefined STRING pattern (POSITIVE'FIRST..'LAST): a
+    // positional aggregate overrides high to low + N - 1, a named one takes
+    // both bounds from its choices, and array equality reads lengths, so
+    // the placeholder values themselves are never load-bearing.
+    anon->array.indices =
+      Arena_Allocate (base->array.index_count * sizeof (Index_Info));
+    for (uint32_t i = 0; i < base->array.index_count; i++)
+      anon->array.indices[i] = base->array.indices[i];
+    base->array.unconstrained_base = anon;
+  }
+  return base->array.unconstrained_base;
+}
+
 // Type_Root: Follow both base_type and parent_type chains to find the root                         
 // ancestor type. This is used for derived type compatibility checking where                        
 // we need to find the ultimate parent enumeration/integer type.                                   
@@ -9370,6 +9502,18 @@ void Resolve_Generic_Formal_Subprogram_Defaults (Node_List *formals) {
     Syntax_Node *default_name = formal->generic_subprog_param.default_name;
     if (not default_name or formal->generic_subprog_param.default_box) continue;
     if (default_name->symbol) continue;  // already resolved
+    // An operator designator (IS "&") may denote a PREDEFINED operator that
+    // exists as no named symbol — failure to resolve is not an error; the
+    // instantiation binds it as a builtin (RM 12.1.3, cc1307a).
+    if ((default_name->kind == NK_IDENTIFIER or
+         default_name->kind == NK_STRING) and
+        Token_From_Op_Name (default_name->string_val.text) != TK_EOF) {
+      bool saved_suppressed = Diagnostics_Suppressed;
+      Diagnostics_Suppressed = true;
+      Resolve_Expression (default_name);
+      Diagnostics_Suppressed = saved_suppressed;
+      continue;
+    }
     Resolve_Expression (default_name);
   }
 }
@@ -9378,7 +9522,31 @@ void Mark_Package_Level_Objects (Node_List *declarations) {
   if (not declarations) return;
   for (uint32_t i = 0; i < declarations->count; i++) {
     Syntax_Node *decl = declarations->items[i];
-    if (not decl or decl->kind != NK_OBJECT_DECL) continue;
+    if (not decl) continue;
+
+    // A SINGLE task declared at package level is a package-level object
+    // too — its TCB slot must be module-level storage, not a slot in
+    // whichever frame elaborates the package (an instance of a library
+    // generic elaborated inside a procedure otherwise names a frame alias
+    // no other function has, c94008d).
+    if (decl->kind == NK_TASK_SPEC and not decl->task_spec.is_type and
+        decl->symbol) {
+
+      // The spec node's symbol is the task TYPE; the object is the
+      // homonymous VARIABLE beside it (mirrors the elaboration emitter).
+      Scope *task_scope = decl->symbol->defining_scope;
+      for (uint32_t s = 0; task_scope and s < task_scope->symbol_count; s++) {
+        Symbol *candidate = task_scope->symbols[s];
+        if (candidate and candidate->kind == SYMBOL_VARIABLE and
+            Type_Is_Task (candidate->type) and
+            Slice_Equal_Ignore_Case (candidate->name, decl->task_spec.name)) {
+          candidate->is_package_level = true;
+          break;
+        }
+      }
+      continue;
+    }
+    if (decl->kind != NK_OBJECT_DECL) continue;
     for (uint32_t j = 0; j < decl->object_decl.names.count; j++) {
       Syntax_Node *name_node = decl->object_decl.names.items[j];
       if (name_node and name_node->symbol)
@@ -9416,6 +9584,11 @@ bool Parameter_Needs_Constrained_Flag (Parameter_Mode mode, Type_Info *type) {
 // assignment sites (load) name it through here so they agree.
 void Emit_Constrained_Slot_Ref (Symbol *sym) {
   Emit ("%%");
+
+  // An uplevel reference reads the frame-published copy through the
+  // %__frame. alias the function header emitted (RM 3.7.4 flag of an
+  // enclosing subprogram's formal, c64106d).
+  if (Is_Uplevel_Access (sym)) Emit ("__frame.");
   Emit_Symbol_Name (sym);
   Emit (".constr");
 }
@@ -9519,8 +9692,13 @@ void Symbol_Manager_Pop_Scope (void) {
     //                                                                                              
     Scope *child = sm->current_scope;
     Scope *parent = child->parent;
-    bool is_function_body_scope = (Symbol_Is_Subprogram (child->owner) and
-      child->owner->scope == child);
+    // A frame-owning body scope: a subprogram's, or a task body's (a task
+    // body owns a per-instance frame and is a static-chain level, so its
+    // storage must NOT leak into the enclosing function's alias set —
+    // nested units reach it through the chain instead).
+    bool is_function_body_scope = child->owner and child->owner->scope == child
+      and (Symbol_Is_Subprogram (child->owner) or
+           Type_Is_Task (child->owner->type));
 
     // This is a block scope (DECLARE/loop/etc), not a subprogram's own body scope.
     // Propagate its storage-bearing symbols to parent's frame_vars for alias generation.
@@ -9681,6 +9859,26 @@ void Symbol_Add (Symbol *sym) {
         sym->next_overload = existing->next_overload;
         existing->next_overload = sym;
         sym->parent = scope->owner;
+        sym->defining_scope = scope;
+        sym->nesting_level = scope->nesting_level;
+
+        // The linear symbols[] enumeration must carry EVERY symbol of the
+        // scope, chained overloads included — Emit_Instance_Wrapper_Bodies,
+        // Emit_Instance_Binding_Elaboration and the package-level markers
+        // walk it, and a second same-named formal-subprogram binding that
+        // never entered it was a wrapper whose body never emitted
+        // (cc1301a's four post-type formals).
+        if (scope->symbol_count >= scope->symbol_capacity) {
+          uint32_t grown_capacity =
+            scope->symbol_capacity ? scope->symbol_capacity * 2 : 16;
+          Symbol **grown = Arena_Allocate (grown_capacity * sizeof (Symbol*));
+          if (scope->symbols)
+            memcpy (grown, scope->symbols,
+                    scope->symbol_count * sizeof (Symbol*));
+          scope->symbols = grown;
+          scope->symbol_capacity = grown_capacity;
+        }
+        scope->symbols[scope->symbol_count++] = sym;
 
         // RM 8.3: when an explicitly declared subprogram and an implicitly
         // declared (derived) homograph coexist in one declarative region, the
@@ -9722,9 +9920,11 @@ void Symbol_Add (Symbol *sym) {
         if (sym->type) existing->type = sym->type;
         // The visible deferred declaration skipped frame allocation because
         // the private-type view sizes only the discriminant part. Now that
-        // the completion supplies the full type, carve the slot.
+        // the completion supplies the full type, carve the slot — unless the
+        // constant is library-package state, which lives in a global.
         if (not existing->frame_offset_assigned and
-            existing->visibility != VIS_USE_VISIBLE) {
+            existing->visibility != VIS_USE_VISIBLE and
+            not Symbol_Has_Library_Storage (existing)) {
           Symbol_Assign_Frame_Slot (existing, scope);
         }
         sym->deferred_completion_of = existing;
@@ -9780,14 +9980,39 @@ void Symbol_Add (Symbol *sym) {
   // enclosing frame never allocated (RM 3.7.4 layout is set by the
   // original declaration, not the USE-clause).
   //
+  // Global-storage symbols (library-package state) never consume frame
+  // offsets: they are emitted as module-level @globals, and a phantom slot
+  // here shifts every LATER local's offset by however many library units
+  // happened to load first — a subunit compilation WITHing more units than
+  // its parent then disagrees with the parent's frame layout for the same
+  // source (ca1107a: the parent laid its local package's I at 4, the
+  // subunit — which also loaded the library homograph — read it at 8).
   if ((sym->kind == SYMBOL_VARIABLE or sym->kind == SYMBOL_PARAMETER or
      sym->kind == SYMBOL_CONSTANT or sym->kind == SYMBOL_DISCRIMINANT) and
     not (sym->kind == SYMBOL_CONSTANT and sym->is_named_number) and
     sym->visibility != VIS_USE_VISIBLE and
     not Symbol_Is_Deferred_Constant (sym) and
-    not sym->frame_offset_assigned) {
+    not sym->frame_offset_assigned and
+    not Symbol_Has_Library_Storage (sym)) {
     Symbol_Assign_Frame_Slot (sym, scope);
   }
+}
+
+// A symbol whose parent chain reaches the library level without crossing a
+// frame-owning construct — subprogram, task, or generic template — lives in
+// module-level storage. This is deliberately NARROWER than Symbol_Is_Global:
+// generic formals and instance package state keep their frame slots exactly
+// as before; only true library-package state (a loaded REPORT's variables)
+// is excluded from the frame counter.
+bool Symbol_Has_Library_Storage (Symbol *sym) {
+  if (sym->kind == SYMBOL_PARAMETER or sym->kind == SYMBOL_DISCRIMINANT)
+    return false;
+  for (Symbol *ancestor = sym->parent; ancestor; ancestor = ancestor->parent) {
+    if (Symbol_Is_Subprogram (ancestor)) return false;
+    if (ancestor->type and Type_Is_Task (ancestor->type)) return false;
+    if (ancestor->kind == SYMBOL_GENERIC) return false;
+  }
+  return sym->parent != NULL;
 }
 
 // A deferred constant (RM 7.4) has its full type declared later in the
@@ -9804,7 +10029,6 @@ bool Symbol_Is_Deferred_Constant (Symbol *sym) {
 
 void Symbol_Assign_Frame_Slot (Symbol *sym, Scope *scope) {
   sym->frame_offset_assigned = true;
-  sym->frame_offset = scope->frame_size;
   uint32_t var_size = sym->type ? sym->type->size : 8;
 
   // Fat pointers for dynamic/unconstrained arrays (or access thereto) need
@@ -9831,6 +10055,14 @@ void Symbol_Assign_Frame_Slot (Symbol *sym, Scope *scope) {
   if (sym->kind == SYMBOL_PARAMETER and var_size < POINTER_ALLOC_SIZE) {
     var_size = POINTER_ALLOC_SIZE;
   }
+
+  // A discriminated-record formal may carry the RM 3.7.4 hidden
+  // 'CONSTRAINED flag, which nested subprograms reach through the frame
+  // exactly like the parameter itself — reserve its byte (padded to keep
+  // slot alignment) right after the parameter's slot.
+  if (sym->kind == SYMBOL_PARAMETER and Type_Is_Record (sym->type) and
+      sym->type->record.has_discriminants)
+    var_size += POINTER_ALLOC_SIZE;
   if (var_size == 0) {
     Report_Warning (sym->location,
         "variable '%.*s' has zero size, defaulting to 8 bytes",
@@ -9842,6 +10074,18 @@ void Symbol_Assign_Frame_Slot (Symbol *sym, Scope *scope) {
   // (Generate_Object_Declaration), after which references to it are unreachable.
   if (Static_Object_Byte_Size (sym->type) > (int128_t) MAX_STACK_OBJECT_BYTES)
     var_size = POINTER_ALLOC_SIZE;
+
+  // Natural alignment: a slot's offset rounds up to its size class (1, 2, 4,
+  // then 8 for anything pointer-sized or larger). Frame layout must not
+  // depend on its neighbors for alignment — an odd-sized local would
+  // otherwise misalign every pointer and fat-pointer slot after it.
+  int64_t alignment = 8;
+  if (var_size < 8) {
+    alignment = 1;
+    while ((uint32_t) alignment < var_size) alignment <<= 1;
+  }
+  scope->frame_size = (scope->frame_size + alignment - 1) & ~(alignment - 1);
+  sym->frame_offset = scope->frame_size;
   scope->frame_size += var_size;
 }
 
@@ -9850,6 +10094,10 @@ void Symbol_Assign_Frame_Slot (Symbol *sym, Scope *scope) {
 // (the declaration's carrier for entries and the body completion) denotes
 // the implicit object variable; find it in the type's defining scope.
 Symbol *Single_Task_Object_Denoted (Symbol *sym) {
+  // A use-visible alias denotes the original (RM 8.4); the object scan below
+  // needs the original's defining scope, and codegen needs the symbol whose
+  // name the object was emitted under.
+  while (sym and sym->aliased) sym = sym->aliased;
   if (not sym or sym->kind != SYMBOL_TYPE or not Type_Is_Task (sym->type) or
       not sym->declaration or sym->declaration->kind != NK_TASK_SPEC or
       sym->declaration->task_spec.is_type)
@@ -9901,6 +10149,19 @@ Symbol *Symbol_Find_Closest (String_Slice name) {
         if (search.best_distance < distance_before) best = sym;
       }
   return Closest_Name_Found (&search) ? best : NULL;
+}
+
+// RM 8.5: a package renaming denotes the SAME package — peel to the
+// original so consumers see the complete, live export list. A renaming
+// declared INSIDE the renamed package (`PACKAGE PACKA RENAMES PACK1` in
+// PACK1's own visible part, c85011a) snapshots a still-growing export
+// array; the original always carries the finished one.
+Symbol *Package_Denoted (Symbol *package_symbol) {
+  while (package_symbol and package_symbol->kind == SYMBOL_PACKAGE and
+         package_symbol->renamed_object and
+         ((Symbol *) package_symbol->renamed_object)->kind == SYMBOL_PACKAGE)
+    package_symbol = (Symbol *) package_symbol->renamed_object;
+  return package_symbol;
 }
 
 // Find symbol by name and type (for enumeration literal disambiguation)
@@ -10356,12 +10617,71 @@ static uint32_t Interp_Arity (const Interpretation *in) {
   return (in->opnd[0] ? 1u : 0u) + (in->opnd[1] ? 1u : 0u);
 }
 
+// RM 12.3: inside a generic subprogram's own declarative region, its name
+// denotes the CURRENT INSTANCE — an ordinary, overloadable subprogram with
+// the unit's profile. Returns that profile compared against `other` when the
+// interpretation is such a generic (0 = differ, 1 = homograph), or -1 when
+// the current-instance reading does not apply and the caller must use the
+// non-overloadable rule.
+static int Generic_Current_Instance_Homograph (const Interpretation *gen,
+                                               const Interpretation *other) {
+  Symbol *g = gen->nam;
+  if (not g or g->kind != SYMBOL_GENERIC or not g->generic_unit) return -1;
+  Syntax_Node *gu = g->generic_unit;
+  if (gu->kind != NK_FUNCTION_SPEC and gu->kind != NK_PROCEDURE_SPEC) return -1;
+  bool inside = false;
+  for (Scope *sc = sm->current_scope; sc; sc = sc->parent)
+    if (sc->owner == g or
+        (sc->owner and sc->owner->generic_template == g)) {
+      // The region of the generic itself, or of one of its instances —
+      // whose body clone re-resolves in the reconstructed template
+      // environment and must see the same names the template saw.
+      inside = true;
+      break;
+    }
+  if (not inside) return -1;
+  Symbol *o = other->nam;
+  if (not o or not Symbol_Is_Subprogram (o)) return -1;
+  Type_Info *g_ret = (gu->kind == NK_FUNCTION_SPEC and
+                      gu->subprogram_spec.return_type)
+                     ? gu->subprogram_spec.return_type->type : NULL;
+  Type_Info *o_ret = o->return_type;
+  if ((g_ret == NULL) != (o_ret == NULL)) return 0;
+  if (g_ret and o_ret and not Types_Same_Named (g_ret, o_ret)) return 0;
+  uint32_t gp = 0;
+  for (uint32_t i = 0; i < gu->subprogram_spec.parameters.count; i++) {
+    Syntax_Node *ps = gu->subprogram_spec.parameters.items[i];
+    if (ps and ps->kind == NK_PARAM_SPEC) gp += ps->param_spec.names.count;
+  }
+  if (gp != o->parameter_count) return 0;
+  uint32_t k = 0;
+  for (uint32_t i = 0; i < gu->subprogram_spec.parameters.count; i++) {
+    Syntax_Node *ps = gu->subprogram_spec.parameters.items[i];
+    if (not ps or ps->kind != NK_PARAM_SPEC) continue;
+    Type_Info *pt = ps->param_spec.param_type
+                    ? ps->param_spec.param_type->type : NULL;
+    for (uint32_t j = 0; j < ps->param_spec.names.count; j++, k++)
+      if (pt and o->parameters[k].param_type and
+          not Types_Same_Named (pt, o->parameters[k].param_type))
+        return 0;
+  }
+  return 1;
+}
+
 // RM 8.3: two same-named declarations are homographs when either is not
 // overloadable, or both are overloadable with matching parameter and result
 // profiles.
 static bool Interps_Are_Homographs (const Interpretation *a,
                                     const Interpretation *b) {
-  if (not Interp_Overloadable (a) or not Interp_Overloadable (b)) return true;
+  if (not Interp_Overloadable (a) or not Interp_Overloadable (b)) {
+    // A generic subprogram seen from within its own region hides only the
+    // homographs of its current-instance profile (RM 12.3; c83030c: bare F3
+    // recurses while F3(A) still reaches the use-visible F3(INTEGER)).
+    int ci = Generic_Current_Instance_Homograph (a, b);
+    if (ci < 0) ci = Generic_Current_Instance_Homograph (b, a);
+    if (ci >= 0) return ci != 0;
+    return true;
+  }
   // Two ordinary subprograms: defer to the established homograph test, which
   // compares profiles with Types_Same_Named (distinguishing sibling types such
   // as INT and INT2 that share a representation base).
@@ -10499,6 +10819,24 @@ void Filter_By_Arguments (Interp_List *interps, Argument_Info *args) {
     if (sym->kind == SYMBOL_LITERAL) {
       if (args and args->count == 0)
         interps->items[write_idx++] = interps->items[i];
+      continue;
+    }
+
+    // RM 12.3: within its own region a generic subprogram's name denotes the
+    // current instance, whose profile is the unit's own — a call giving more
+    // arguments than that profile takes cannot denote it, and keeping it
+    // would outscore a use-visible overload that does fit (c83030c: F3(A)
+    // under a parameterless generic F3 must leave only F3(INTEGER)).
+    if (sym->kind == SYMBOL_GENERIC and sym->generic_unit and
+        (sym->generic_unit->kind == NK_FUNCTION_SPEC or
+         sym->generic_unit->kind == NK_PROCEDURE_SPEC)) {
+      uint32_t unit_params = 0;
+      Node_List *specs = &sym->generic_unit->subprogram_spec.parameters;
+      for (uint32_t k = 0; k < specs->count; k++)
+        if (specs->items[k] and specs->items[k]->kind == NK_PARAM_SPEC)
+          unit_params += specs->items[k]->param_spec.names.count;
+      if (args and args->count > unit_params) continue;
+      interps->items[write_idx++] = interps->items[i];
       continue;
     }
 
@@ -10865,10 +11203,18 @@ void Symbol_Manager_Init_Predefined (void) {
   pkg_ascii->parent = pkg_standard;  // Child of STANDARD
   Symbol_Add (pkg_ascii);
 
-  // STANDARD exports ASCII
-  pkg_standard->exported = Arena_Allocate (1 * sizeof (Symbol*));
-  pkg_standard->exported_count = 1;
-  pkg_standard->exported[0] = pkg_ascii;
+  // STANDARD exports its predefined declarations (RM C): ASCII and the
+  // predefined types — the exported list feeds selected-component
+  // resolution and its predefined-operator synthesis, so STANDARD."NOT"
+  // finds BOOLEAN and STANDARD."&" finds STRING (c86006a).
+  {
+    Symbol *std_exports[] = { pkg_ascii, sym_boolean, sym_integer,
+                              sym_float, sym_character, sym_string };
+    uint32_t n = sizeof (std_exports) / sizeof (std_exports[0]);
+    pkg_standard->exported = Arena_Allocate (n * sizeof (Symbol*));
+    pkg_standard->exported_count = n;
+    for (uint32_t i = 0; i < n; i++) pkg_standard->exported[i] = std_exports[i];
+  }
 
   // ASCII control characters and named constants
   static const struct { const char *name; uint8_t val; } ascii_chars[] = {
@@ -10902,7 +11248,10 @@ void Symbol_Manager_Init_Predefined (void) {
     ch->parent = pkg_ascii;
     ch->frame_offset = ascii_chars[i].val;  // Store char value
     ch->is_named_number = true;  // Treat as compile-time constant
-    Symbol_Add (ch);
+    // Deliberately NOT Symbol_Add'ed: ASCII's members are visible only as
+    // ASCII.X or under USE ASCII (RM C.3) — both resolve through the
+    // exported list. Installing them as bare names shadowed user library
+    // units that legally reuse the names (c86005a: PACKAGE NUL, ENQ, LF).
     pkg_ascii->exported[i] = ch;
   }
 
@@ -11183,11 +11532,53 @@ Type_Info *Resolve_Selected (Syntax_Node *node) {
 
   // Look up component
   if (has_components) {
-    for (uint32_t i = 0; i < record_type->record.component_count; i++) {
-      if (Slice_Equal_Ignore_Case (record_type->record.components[i].name,
-                    node->selected.selector)) {
-        node->type = record_type->record.components[i].component_type;
-        return node->type;
+    // Find_Record_Component also resolves a formal private type's
+    // discriminant names inside a generic (RM 12.1, c83027c). Record the
+    // slot on the node — under a formal/actual name collision the emitter
+    // cannot re-derive it from the selector (cc3240a).
+    int32_t found_component =
+      Find_Record_Component (record_type, node->selected.selector);
+    if (found_component >= 0) {
+      node->selected.component_index = found_component;
+      node->type =
+        record_type->record.components[found_component].component_type;
+      return node->type;
+    }
+
+    // RM 8.6: the selector participates in resolving an overloaded CALL
+    // prefix — F(args).IB denotes the F whose result record carries IB, so
+    // a bottom-up commit to a different overload re-resolves against the
+    // one that fits (c87b37d: F(5<5).IB picks F(INTEGER) RETURN REC2 and
+    // re-drives 5<5 as the user "<" returning INTEGER).
+    if (node->selected.prefix->kind == NK_APPLY and
+        node->selected.prefix->apply.prefix and
+        node->selected.prefix->apply.prefix->kind == NK_IDENTIFIER) {
+      Syntax_Node *call = node->selected.prefix;
+      Interp_List cand;
+      Collect_Interpretations (call->apply.prefix->string_val.text, &cand);
+      for (uint32_t i = 0; i < cand.count; i++) {
+        Symbol *f = cand.items[i].nam;
+        if (not f or f->kind != SYMBOL_FUNCTION or f == call->symbol)
+          continue;
+        Type_Info *result_rec = f->return_type
+          ? Underlying_Record_Type (f->return_type) : NULL;
+        if (not result_rec or
+            Find_Record_Component (result_rec, node->selected.selector) < 0)
+          continue;
+        call->symbol = NULL;
+        call->type = f->return_type;
+        call->apply.resolution = APPLY_UNRESOLVED;
+        Type_Info *retry = Resolve_Expression (call);
+        Type_Info *retry_rec = retry ? Underlying_Record_Type (retry) : NULL;
+        int32_t retry_component = retry_rec
+          ? Find_Record_Component (retry_rec, node->selected.selector) : -1;
+        if (retry_component >= 0) {
+          node->selected.component_index = retry_component;
+          node->type =
+            retry_rec->record.components[retry_component].component_type;
+          return node->type;
+        }
+        break;
       }
     }
     Closest_Name_Search search = Closest_Name_Begin (node->selected.selector);
@@ -11211,6 +11602,13 @@ Type_Info *Resolve_Selected (Syntax_Node *node) {
     Type_Info *task_type = Type_Is_Task (record_type) ? record_type
                : record_type->access.designated_type;
     Symbol *type_sym = Task_Entry_Owner (task_type);
+    // The prefix may be a use-visible alias of the task (RM 8.4) — codegen
+    // reads the TCB through the prefix symbol's emitted name, which only the
+    // denoted object symbol carries (c73007a: TASK1.FUNC1 under USE PACK).
+    if (node->selected.prefix->symbol and
+        node->selected.prefix->symbol->aliased)
+      node->selected.prefix->symbol =
+        Single_Task_Object_Denoted (node->selected.prefix->symbol);
     if (type_sym) {
       for (uint32_t i = 0; i < type_sym->exported_count; i++) {
         if (Slice_Equal_Ignore_Case (type_sym->exported[i]->name,
@@ -11218,6 +11616,33 @@ Type_Info *Resolve_Selected (Syntax_Node *node) {
           node->symbol = type_sym->exported[i];
           node->type = type_sym->exported[i]->type;
           return node->type;
+        }
+      }
+
+      // RM 4.1.3: within the task body, an expanded name T.X denotes an
+      // entity declared in the body itself — the idiom for reaching a
+      // task-local variable shadowed by an accept formal (cc3120b's
+      // `T1.I := I` inside ACCEPT PUT (I : ...)). Applies only when the
+      // task's body scope encloses the point of use. A task TYPE's body
+      // scope hangs on the type symbol; a SINGLE task's on the object
+      // symbol the body resolved under — consult both.
+      Symbol *body_owners[2] = { type_sym, node->selected.prefix->symbol };
+      for (uint32_t o = 0; o < 2; o++) {
+        Scope *body_scope = body_owners[o] ? body_owners[o]->scope : NULL;
+        if (not body_scope) continue;
+        for (Scope *enclosing = sm->current_scope; enclosing;
+             enclosing = enclosing->parent) {
+          if (enclosing != body_scope) continue;
+          for (uint32_t i = 0; i < body_scope->symbol_count; i++) {
+            Symbol *entity = body_scope->symbols[i];
+            if (entity and Slice_Equal_Ignore_Case (entity->name,
+                             node->selected.selector)) {
+              node->symbol = entity;
+              node->type = entity->type;
+              return node->type;
+            }
+          }
+          break;
         }
       }
     }
@@ -11241,8 +11666,54 @@ Type_Info *Resolve_Selected (Syntax_Node *node) {
   } else {
     Symbol *prefix_sym = node->selected.prefix->symbol;
 
+    // RM 8.5: a package renaming denotes the SAME package — peel to the
+    // original so lookups see the complete, live export list (c85011a).
+    prefix_sym = Package_Denoted (prefix_sym);
+
+    // RM 12.3: within a generic unit, the unit's name denotes the current
+    // instance — GEN.X inside GEN's own template resolves X exactly as a
+    // direct name in the current scope (c94008c: SHARED.SET called from
+    // within generic package SHARED's own body). The same applies while an
+    // INSTANCE body clone is being re-resolved: the enclosing scope is then
+    // owned by the instance symbol, whose template back-link names the
+    // prefix.
+    if (prefix_sym and prefix_sym->kind == SYMBOL_GENERIC) {
+      Scope *unit_region = NULL;
+      for (Scope *s = sm->current_scope; s and not unit_region; s = s->parent)
+        if (s->owner == prefix_sym or
+            (s->owner and s->owner->generic_template == prefix_sym))
+          unit_region = s;
+      if (unit_region) {
+
+        // The expanded name denotes an entity of the UNIT's own region —
+        // its scope's bucket chain first (c94008c: SHARED.SET inside the
+        // task body must find the package's SET, not the task's entry SET
+        // that plain visibility would surface) — with full-visibility
+        // lookup as the fallback for enclosing-scope entities.
+        Symbol *s = NULL;
+        uint32_t hash = Symbol_Hash_Name (node->selected.selector);
+        for (Symbol *c = unit_region->buckets[hash]; c; c = c->next_in_bucket)
+          if (Slice_Equal_Ignore_Case (c->name, node->selected.selector)) {
+            s = c;
+            break;
+          }
+        if (not s) s = Symbol_Find (node->selected.selector);
+        if (s) {
+          node->symbol = s;
+          node->type = (s->kind == SYMBOL_FUNCTION and s->return_type)
+                       ? s->return_type : s->type;
+          return node->type;
+        }
+      }
+    }
+
     // Search package's exported symbols
     if (prefix_sym and prefix_sym->kind == SYMBOL_PACKAGE) {
+      // A use-visible package alias carries neither scope nor exported list
+      // of its own — the expanded name denotes the ORIGINAL package
+      // (RM 8.4; c73007a: PACK1.FUNC1 with PACK1 visible via USE PACK).
+      while (prefix_sym->aliased) prefix_sym = prefix_sym->aliased;
+      node->selected.prefix->symbol = prefix_sym;
       for (uint32_t i = 0; i < prefix_sym->exported_count; i++) {
         if (Slice_Equal_Ignore_Case (prefix_sym->exported[i]->name,
                        node->selected.selector)) {
@@ -11393,13 +11864,54 @@ Type_Info *Resolve_Selected (Syntax_Node *node) {
     // This handles cases like MAIN.A_B_C where MAIN is a procedure
     // and A_B_C is an enum literal or type declared within it.
     //
-    if (Symbol_Is_Subprogram (prefix_sym) and
-      prefix_sym->scope) {
-      Scope *subp_scope = prefix_sym->scope;
+    if (Symbol_Is_Subprogram (prefix_sym)) {
+
+      // A renaming prefix — most importantly the RM 12.1(7) self-binding a
+      // subprogram instance installs under its template's name — denotes
+      // the renamed subprogram; the scope test below must see that one.
+      Symbol *denoted = Resolve_Subprogram_Rename (prefix_sym);
+      Scope *subp_scope = denoted->scope ? denoted->scope : prefix_sym->scope;
+      if (subp_scope) {
+        uint32_t hash = Symbol_Hash_Name (node->selected.selector);
+        for (Symbol *s = subp_scope->buckets[hash]; s; s = s->next_in_bucket) {
+          if (Slice_Equal_Ignore_Case (s->name, node->selected.selector) and
+            s->visibility >= VIS_IMMEDIATELY_VISIBLE) {
+            node->symbol = s;
+            node->type = s->type;
+            return node->type;
+          }
+        }
+      }
+
+      // RM 4.1.3(18): inside the named subprogram's own body, the expanded
+      // name denotes what the simple name denotes — including entities in a
+      // scope wrapping the body, such as a generic instance's formal
+      // bindings (M.S inside an instance of generic procedure M, c41307d).
+      for (Scope *enclosing = sm->current_scope; enclosing;
+           enclosing = enclosing->parent) {
+        if (enclosing != subp_scope and enclosing->owner != denoted and
+            enclosing->owner != prefix_sym)
+          continue;
+        Symbol *s = Symbol_Find (node->selected.selector);
+        if (s) {
+          node->symbol = s;
+          node->type = (s->kind == SYMBOL_FUNCTION and s->return_type)
+                       ? s->return_type : s->type;
+          return node->type;
+        }
+        break;
+      }
+    }
+
+    // RM 4.1.3(20): within an accept statement, the entry name prefixes its
+    // own formals — E.A denotes accept formal A (c41307d). The entry symbol
+    // carries the live accept scope only while that accept's body resolves.
+    if (prefix_sym and prefix_sym->kind == SYMBOL_ENTRY and prefix_sym->scope) {
+      Scope *accept_scope = prefix_sym->scope;
       uint32_t hash = Symbol_Hash_Name (node->selected.selector);
-      for (Symbol *s = subp_scope->buckets[hash]; s; s = s->next_in_bucket) {
+      for (Symbol *s = accept_scope->buckets[hash]; s; s = s->next_in_bucket) {
         if (Slice_Equal_Ignore_Case (s->name, node->selected.selector) and
-          s->visibility >= VIS_IMMEDIATELY_VISIBLE) {
+            s->defining_scope == accept_scope) {
           node->symbol = s;
           node->type = s->type;
           return node->type;
@@ -11414,15 +11926,21 @@ Type_Info *Resolve_Selected (Syntax_Node *node) {
     if (prefix_sym and prefix_sym->kind == SYMBOL_LABEL and prefix_sym->scope) {
       Scope *block_scope = prefix_sym->scope;
       uint32_t hash = Symbol_Hash_Name (node->selected.selector);
-      for (Symbol *s = block_scope->buckets[hash]; s; s = s->next_in_bucket) {
-        if (Slice_Equal_Ignore_Case (s->name, node->selected.selector) and
-          s->defining_scope == block_scope) {
+      // Two passes: an expression-position selector denotes the block's
+      // ENTITY, not a statement label that happens to share its name
+      // (c83033a: B1.RED with both a derived RED and a <<RED>> label) — a
+      // label matters only as a goto target, so it is the fallback.
+      for (int pass = 0; pass < 2; pass++)
+        for (Symbol *s = block_scope->buckets[hash]; s; s = s->next_in_bucket) {
+          if (not Slice_Equal_Ignore_Case (s->name, node->selected.selector) or
+              s->defining_scope != block_scope)
+            continue;
+          if ((s->kind == SYMBOL_LABEL) != (pass == 1)) continue;
           node->symbol = s;
           node->type = (s->kind == SYMBOL_FUNCTION and s->return_type)
                  ? s->return_type : s->type;
           return node->type;
         }
-      }
     }
   }
   {
@@ -11717,6 +12235,43 @@ static bool Repick_Nested_Call (Syntax_Node *call, Type_Info *ctx, Nested_Use us
   return true;
 }
 
+// RM 6.7 / 4.5: rebuild an operator applied in function-call notation —
+// `"+"(A,B)`, `"<"(LEFT=>A, RIGHT=>B)`, `"abs"(RIGHT => X)` — as the
+// equivalent infix/prefix operator node. A unary operator's sole parameter
+// is named RIGHT (RM 6.1), so RIGHT maps to the only operand of a
+// one-argument call and to the second of a two-argument call. Returns NULL
+// when the operands do not form a complete operator application. The
+// synthesized node inherits the apply's context type.
+Syntax_Node *Synthesize_Infix_From_Apply (Syntax_Node *node, Token_Kind opk) {
+  uint32_t arg_count = (uint32_t)node->apply.arguments.count;
+  if (arg_count < 1 or arg_count > 2) return NULL;
+  Syntax_Node *ops[2] = { NULL, NULL };
+  for (uint32_t i = 0; i < arg_count; i++) {
+    Syntax_Node *a = node->apply.arguments.items[i];
+    uint32_t pos = i;
+    if (a->kind == NK_ASSOCIATION) {
+      if (a->association.choices.count == 1 and
+          a->association.choices.items[0]->kind == NK_IDENTIFIER) {
+        String_Slice nm = a->association.choices.items[0]->string_val.text;
+        if (Slice_Equal_Ignore_Case (nm, S ("LEFT")))  pos = 0;
+        else if (Slice_Equal_Ignore_Case (nm, S ("RIGHT"))) pos = (arg_count == 1) ? 0 : 1;
+      }
+      a = a->association.expression;
+    }
+    if (pos < 2) ops[pos] = a;
+  }
+  if (not ops[0] or (arg_count == 2 and not ops[1])) return NULL;
+  Syntax_Node *syn = Node_New (arg_count == 2 ? NK_BINARY_OP : NK_UNARY_OP,
+                               node->location);
+  if (arg_count == 2) {
+    syn->binary.op = opk; syn->binary.left = ops[0]; syn->binary.right = ops[1];
+  } else {
+    syn->unary.op = opk; syn->unary.operand = ops[0];
+  }
+  syn->type = node->type;
+  return syn;
+}
+
 Type_Info *Resolve_Apply (Syntax_Node *node) {
   Type_Info *outer_ctx = node->type;   // applicable context supplied by the caller
 
@@ -11839,7 +12394,23 @@ Type_Info *Resolve_Apply (Syntax_Node *node) {
           Type_Info *idx_t = rt->array.indices[j].index_type;
           Type_Info *arg_t = arg_types ? arg_types[j] : NULL;
           if (idx_t and arg_t and not Type_Covers (idx_t, arg_t)) {
-            indices_ok = false; break;
+            // A literal subscript is context-typed (RM 4.2, 8.6): the
+            // bottom-up pass committed it to SOME homonymous literal, but it
+            // fits this candidate whenever the index type declares (or
+            // inherits) a literal of that name (c87b23a: A (3, C, TRUE)
+            // across four instances whose index types are sibling
+            // enumerations and derived booleans).
+            Syntax_Node *arg_node =
+              Unwrap_Association (node->apply.arguments.items[j]);
+            bool literal_fits = false;
+            if (arg_node and arg_node->kind == NK_IDENTIFIER and
+                arg_node->symbol and arg_node->symbol->kind == SYMBOL_LITERAL)
+              literal_fits =
+                Symbol_Find_By_Type (arg_node->string_val.text, idx_t) != NULL
+                or Type_Root (idx_t) == Type_Root (arg_t);
+            else if (arg_node and arg_node->kind == NK_CHARACTER)
+              literal_fits = Type_Is_Character_Type (idx_t);
+            if (not literal_fits) { indices_ok = false; break; }
           }
         }
         if (not indices_ok) continue;
@@ -11853,8 +12424,77 @@ Type_Info *Resolve_Apply (Syntax_Node *node) {
         chose_index_interp = true;
       }
     }
-    if (not prefix_sym)
-    prefix_sym = Resolve_Overloaded_Call (prefix->string_val.text, &args, call_ctx);
+    if (not prefix_sym) {
+      // RM 6.7 / 4.5.2: operator in function-call notation — `"+"(A,B)` /
+      // `"<"(A,B)` / `"+"(LEFT=>A, RIGHT=>B)`. Re-resolve as the infix
+      // operator FIRST: the infix machinery weighs user-defined operators,
+      // predefined operators, and the universal interpretations together
+      // through one overload resolution — a by-name lookup commits to a
+      // user operator on profile match alone, which both misreads
+      // `"<"(ARR1, ARR2)` (predefined array "<" is not a named symbol)
+      // and violates the RM 4.6 conversion-free preference (c87b40a:
+      // `"-"(-1)` under a universal "<" must denote the predefined
+      // universal minus even though a user "-"(INTEGER) also fits).
+      Token_Kind opk = Token_From_Op_Name (prefix->string_val.text);
+      if (opk != TK_EOF and arg_count >= 1 and arg_count <= 2) {
+        Syntax_Node *syn = Synthesize_Infix_From_Apply (node, opk);
+        if (syn) {
+          // Probe the infix interpretation on a CLONE with diagnostics off:
+          // when the context does NOT force a concrete numeric type and the
+          // probe yields a UNIVERSAL result, the RM 4.6 conversion-free
+          // preference makes it the correct reading — the by-name lookup
+          // (which commits to a user operator on bare profile match) must
+          // not run (c87b40a: `"-"(-1)` under a universal "<"). Under a
+          // CONCRETE context the universal result — an expression, not a
+          // convertible operand (RM 4.6) — could never convert to it, so
+          // the user operator is the only legal reading and the by-name
+          // lookup decides (c87b02a's operator-symbol initializers).
+          bool context_is_concrete = call_ctx and
+            not Type_Is_Universal (call_ctx);
+          Syntax_Node *trial = context_is_concrete
+            ? NULL : Clone_Subtree (syn);
+          Type_Info *trial_rt = NULL;
+          if (trial) {
+            bool saved_suppressed = Diagnostics_Suppressed;
+            Diagnostics_Suppressed = true;
+            trial_rt = Resolve_Expression (trial);
+            Diagnostics_Suppressed = saved_suppressed;
+          }
+          if (trial_rt and Type_Is_Universal (trial_rt)) {
+            Type_Info *rt = Resolve_Expression (syn);
+            if (rt) {
+              node->type = rt;
+              node->symbol = syn->symbol;
+              node->apply.resolution = APPLY_OPERATOR;
+              return rt;
+            }
+          }
+
+          // By-name lookup: a user-defined operator whose profile matches.
+          prefix_sym = Resolve_Overloaded_Call (prefix->string_val.text,
+                                                &args, call_ctx);
+
+          // Neither universal nor user-named: the infix machinery still
+          // owns the predefined operators that are not named symbols
+          // (array "<", equality on composites, ...).
+          if (not prefix_sym) {
+            Type_Info *rt = Resolve_Expression (syn);
+            if (rt) {
+              node->type = rt;
+              node->symbol = syn->symbol;
+              // This apply IS the operator (RM 6.7): the emitter lowers it
+              // through the same predefined-operator path as `A op B`.
+              // Leaving it APPLY_UNRESOLVED would trip the codegen's
+              // verdict guard.
+              node->apply.resolution = APPLY_OPERATOR;
+              return rt;
+            }
+          }
+        }
+      }
+      if (not prefix_sym)
+        prefix_sym = Resolve_Overloaded_Call (prefix->string_val.text, &args, call_ctx);
+    }
     if (prefix_sym) {
       prefix->symbol = prefix_sym;
       prefix->type = (prefix_sym->kind == SYMBOL_FUNCTION) ?
@@ -11862,72 +12502,60 @@ Type_Info *Resolve_Apply (Syntax_Node *node) {
 
     // Fall back to simple lookup for non-callable names
     } else {
-      // RM 6.7 / 4.5.2: operator in function-call notation — `"+"(A,B)` /
-      // `"<"(A,B)` / `"+"(LEFT=>A, RIGHT=>B)`. Re-resolve as the infix operator,
-      // which handles predefined operators (including array relational/equality
-      // ops that are not registered as named symbols) AND user-defined operators
-      // through one overload machinery. This must run BEFORE the by-name lookup
-      // below: that lookup binds an operator symbol purely by name, so for e.g.
-      // `"<"(ARR1, ARR2)` it would otherwise grab a user-defined "<"(INTEGER,
-      // INTEGER) whose profile does not match the array actuals, instead of the
-      // predefined array "<" the infix form correctly selects. Resolve_Overloaded_Call
-      // already returned the user operator when its profile DID match, so reaching
-      // here means no named operator fits the actuals.
-      Token_Kind opk = Token_From_Op_Name (prefix->string_val.text);
-      if (opk != TK_EOF and arg_count >= 1 and arg_count <= 2) {
-        Syntax_Node *ops[2] = { NULL, NULL };
-        for (uint32_t i = 0; i < arg_count; i++) {
-          Syntax_Node *a = node->apply.arguments.items[i];
-          uint32_t pos = i;
-          if (a->kind == NK_ASSOCIATION) {
-            if (a->association.choices.count == 1 and
-              a->association.choices.items[0]->kind == NK_IDENTIFIER) {
-              String_Slice nm = a->association.choices.items[0]->string_val.text;
-              // A unary operator's sole parameter is named RIGHT (RM 4.5/6.1):
-              // "+"(RIGHT => X) is the unary plus on X, so its operand is ops[0],
-              // not ops[1]. Only a two-argument call has a LEFT/RIGHT pair.
-              if (Slice_Equal_Ignore_Case (nm, S ("LEFT")))  pos = 0;
-              else if (Slice_Equal_Ignore_Case (nm, S ("RIGHT"))) pos = (arg_count == 1) ? 0 : 1;
-            }
-            a = a->association.expression;
-          }
-          if (pos < 2) ops[pos] = a;
-        }
-        if (ops[0] and (arg_count == 1 or ops[1])) {
-          Syntax_Node *syn = Node_New (arg_count == 2 ? NK_BINARY_OP : NK_UNARY_OP,
-                         node->location);
-          if (arg_count == 2) {
-            syn->binary.op = opk; syn->binary.left = ops[0]; syn->binary.right = ops[1];
-          } else {
-            syn->unary.op = opk; syn->unary.operand = ops[0];
-          }
-          syn->type = node->type;
-          Type_Info *rt = Resolve_Expression (syn);
-          if (rt) {
-            node->type = rt;
-            node->symbol = syn->symbol;
-            // This apply IS the operator (RM 6.7): the emitter lowers it through
-            // the same predefined-operator path as `A op B`. Leaving it
-            // APPLY_UNRESOLVED would trip the codegen's verdict guard.
-            node->apply.resolution = APPLY_OPERATOR;
-            return rt;
-          }
-        }
-      }
-
       prefix_sym = Symbol_Find (prefix->string_val.text);
       if (prefix_sym) {
         prefix->symbol = prefix_sym;
         prefix->type = (prefix_sym->kind == SYMBOL_FUNCTION)
                      ? prefix_sym->return_type : prefix_sym->type;
       }
-      }
+    }
     }
 
   // For complex prefix (selected, etc.), resolve normally
   } else {
     Resolve_Expression (prefix);
     prefix_sym = prefix->symbol;
+
+    // Expanded-name call L.F (...) through a BLOCK LABEL prefix: the label
+    // branch of Resolve_Selected likewise commits to the first member with no
+    // view of the actuals — redo across the block's homonyms (skipping
+    // statement labels) so the profile decides (c83033a: B1.RED(3, B1.RED)
+    // is the derived function; bare B1.RED the literal).
+    if (prefix->kind == NK_SELECTED and prefix_sym and
+        prefix->selected.prefix->symbol and
+        prefix->selected.prefix->symbol->kind == SYMBOL_LABEL and
+        prefix->selected.prefix->symbol->scope) {
+      Scope *block_scope = prefix->selected.prefix->symbol->scope;
+      Interp_List interps; interps.count = 0;
+      uint32_t hash = Symbol_Hash_Name (prefix->selected.selector);
+      for (Symbol *s = block_scope->buckets[hash]; s; s = s->next_in_bucket) {
+        if (not Slice_Equal_Ignore_Case (s->name, prefix->selected.selector) or
+            s->defining_scope != block_scope or s->kind == SYMBOL_LABEL)
+          continue;
+        for (Symbol *o = s; o and interps.count < MAX_INTERPRETATIONS;
+             o = o->next_overload) {
+          bool duplicate = false;
+          for (uint32_t i = 0; i < interps.count; i++)
+            if (interps.items[i].nam == o) { duplicate = true; break; }
+          if (not duplicate and o->kind != SYMBOL_LABEL)
+            interps.items[interps.count++] = (Interpretation){
+              .nam = o,
+              .typ = (o->kind == SYMBOL_FUNCTION) ? o->return_type : o->type,
+              .scope_depth = 0
+            };
+        }
+      }
+      if (interps.count > 0) {
+        if (args.count > 0) Filter_By_Arguments (&interps, &args);
+        Symbol *chosen = Disambiguate (&interps, node->type, &args);
+        if (chosen) {
+          prefix_sym     = chosen;
+          prefix->symbol = chosen;
+          prefix->type   = (chosen->kind == SYMBOL_FUNCTION)
+                           ? chosen->return_type : chosen->type;
+        }
+      }
+    }
 
     // Expanded-name call P.F (...): F may be overloaded within P, but
     // Resolve_Selected commits to the first matching member with no view of
@@ -11947,6 +12575,44 @@ Type_Info *Resolve_Apply (Syntax_Node *node) {
             prefix->symbol = chosen;
             prefix->type   = (chosen->kind == SYMBOL_FUNCTION) ?
                              chosen->return_type : chosen->type;
+          }
+        }
+      }
+
+      // RM 8.3 / 6.7: P."op"(A,B) may denote a predefined operator of a type
+      // declared in P that exists as no named symbol — array "<", composite
+      // equality, ... — so the by-name member lookup above can only land on a
+      // homograph of a DIFFERENT type (BPACK."/=" over T9A arrays finds the
+      // derived boolean's "/="). When the pick's profile does not cover the
+      // actuals, the infix machinery owns the operator, exactly as in the
+      // unqualified operator-call path below (c83051a).
+      Token_Kind sel_opk = Token_From_Op_Name (prefix->selected.selector);
+      if (sel_opk != TK_EOF and arg_count >= 1 and arg_count <= 2 and
+          prefix_sym->parameters and
+          prefix_sym->parameter_count == arg_count) {
+        bool profile_covers = true;
+        for (uint32_t i = 0; i < arg_count; i++)
+          if (arg_types[i] and prefix_sym->parameters[i].param_type and
+              not Type_Covers (prefix_sym->parameters[i].param_type,
+                               arg_types[i]))
+            profile_covers = false;
+        if (not profile_covers) {
+          Syntax_Node *syn = Synthesize_Infix_From_Apply (node, sel_opk);
+          if (syn) {
+            Syntax_Node *trial = Clone_Subtree (syn);
+            bool saved_suppressed = Diagnostics_Suppressed;
+            Diagnostics_Suppressed = true;
+            Type_Info *trial_rt = Resolve_Expression (trial);
+            Diagnostics_Suppressed = saved_suppressed;
+            if (trial_rt) {
+              Type_Info *rt = Resolve_Expression (syn);
+              if (rt) {
+                node->type = rt;
+                node->symbol = syn->symbol;
+                node->apply.resolution = APPLY_OPERATOR;
+                return rt;
+              }
+            }
           }
         }
       }
@@ -11999,20 +12665,50 @@ Type_Info *Resolve_Apply (Syntax_Node *node) {
       // - Aggregates like FN ((1,2,3)) where the aggregate needs the                               
       //   parameter type to determine its type (RM 4.3).                                          
       //                                                                                            
-      for (uint32_t i = 0; i < arg_count and i < prefix_sym->parameter_count; i++) {
+      // RM 8.5: through a renaming, formal NAMES belong to the view the call
+      // denotes, while formal CONSTRAINTS belong to the RENAMED entity — the
+      // renaming's own constraints are ignored (c85013a case B: PROC2's
+      // STA2(11..15) view over PROC1's STA1(1..5) types an aggregate actual
+      // as STA1, giving it bounds 1..5). Profiles correspond by position.
+      Symbol *constraint_sym = Resolve_Subprogram_Rename (prefix_sym);
+      if (not (constraint_sym and Symbol_Is_Subprogram (constraint_sym) and
+               constraint_sym->parameters and
+               constraint_sym->parameter_count == prefix_sym->parameter_count))
+        constraint_sym = prefix_sym;
+      for (uint32_t i = 0; i < arg_count; i++) {
         Syntax_Node *arg = node->apply.arguments.items[i];
+        int32_t formal = (int32_t) i;
 
-        // Handle named associations
+        // A named association maps to the formal it NAMES, not the i-th one
+        // (RM 6.4.1) — a renaming may reorder or rename formals relative to
+        // the renamed subprogram (c85013a: PROCA(D => (5,4,3,2,1)) must type
+        // the aggregate by formal D, not by first-position C).
         if (arg->kind == NK_ASSOCIATION and arg->association.expression) {
+          if (arg->association.choices.count > 0 and
+              arg->association.choices.items[0]->kind == NK_IDENTIFIER) {
+            formal = -1;
+            for (uint32_t j = 0; j < prefix_sym->parameter_count; j++)
+              if (Slice_Equal_Ignore_Case (prefix_sym->parameters[j].name,
+                    arg->association.choices.items[0]->string_val.text)) {
+                formal = (int32_t) j;
+                break;
+              }
+          }
           arg = arg->association.expression;
         }
-        Type_Info *param_type = prefix_sym->parameters[i].param_type;
+        if (formal < 0 or formal >= (int32_t) prefix_sym->parameter_count)
+          continue;
+        Type_Info *param_type = constraint_sym->parameters[formal].param_type;
         if (arg->kind == NK_CHARACTER) {
           Resolve_Char_As_Enum (arg, param_type);
         }
 
-        // Propagate type to aggregate arguments
-        if (arg->kind == NK_AGGREGATE and not arg->type and param_type) {
+        // Propagate type to aggregate arguments. RM 4.3: an aggregate takes
+        // its type from context alone — a type guessed during a context-free
+        // pre-pass (needed to filter overloads) is never authoritative, so
+        // retype whenever the formal does not cover what the aggregate wears.
+        if (arg->kind == NK_AGGREGATE and param_type and
+            (not arg->type or not Type_Covers (param_type, arg->type))) {
           arg->type = param_type;
           Resolve_Expression (arg);
         }
@@ -12095,6 +12791,39 @@ Type_Info *Resolve_Apply (Syntax_Node *node) {
       }
       node->symbol = prefix_sym;
       node->apply.resolution = APPLY_ENTRY_CALL;
+
+      // An entry call's actuals resolve against the entry's profile like a
+      // procedure's (RM 9.5 / 6.4): a flexible actual — an aggregate, a
+      // string, a character literal — takes the formal's type
+      // (c95085b: TSK1.E ((2,"AA"))). Named associations map by name.
+      for (uint32_t i = 0; i < node->apply.arguments.count; i++) {
+        Syntax_Node *arg = node->apply.arguments.items[i];
+        int32_t formal = (int32_t) i;
+        if (arg->kind == NK_ASSOCIATION and arg->association.expression) {
+          if (arg->association.choices.count > 0 and
+              arg->association.choices.items[0]->kind == NK_IDENTIFIER) {
+            formal = -1;
+            for (uint32_t j = 0; j < prefix_sym->parameter_count; j++)
+              if (Slice_Equal_Ignore_Case (prefix_sym->parameters[j].name,
+                    arg->association.choices.items[0]->string_val.text)) {
+                formal = (int32_t) j;
+                break;
+              }
+          }
+          arg = arg->association.expression;
+        }
+        if (formal < 0 or formal >= (int32_t) prefix_sym->parameter_count)
+          continue;
+        Type_Info *param_type = prefix_sym->parameters[formal].param_type;
+        if (not param_type) continue;
+        if (arg->kind == NK_CHARACTER)
+          Resolve_Char_As_Enum (arg, param_type);
+        if (not arg->type and
+            (arg->kind == NK_AGGREGATE or arg->kind == NK_STRING)) {
+          arg->type = param_type;
+          Resolve_Expression (arg);
+        }
+      }
       return NULL;
     }
 
@@ -12113,8 +12842,15 @@ Type_Info *Resolve_Apply (Syntax_Node *node) {
       for (uint32_t i = 0; i < inner->apply.arguments.count; i++)
         Node_List_Push (&flat, inner->apply.arguments.items[i]);
       for (uint32_t i = 0; i < node->apply.arguments.count; i++) {
-        Resolve_Expression (node->apply.arguments.items[i]);
-        Node_List_Push (&flat, node->apply.arguments.items[i]);
+        Syntax_Node *actual = node->apply.arguments.items[i];
+        // A named association's choice is a FORMAL name, not an expression —
+        // the entry-call slot mapper resolves it against the entry's profile
+        // (c85018a: T.ENT1 (TRUE) (A => 6)). Only the value resolves here.
+        if (actual->kind == NK_ASSOCIATION)
+          Resolve_Expression (actual->association.expression);
+        else
+          Resolve_Expression (actual);
+        Node_List_Push (&flat, actual);
       }
       node->apply.arguments  = flat;
       node->apply.prefix     = inner->apply.prefix;
@@ -12419,6 +13155,32 @@ Type_Info *Resolve_Apply (Syntax_Node *node) {
         node->apply.arguments.items[i] = rng;
       }
 
+      // The bounds pre-resolved without the index context; a bound that
+      // came out UNIVERSAL re-arbitrates against the index subtype — an
+      // operator in call notation must then pick the concrete-returning
+      // user operator (c87b24b: PI ("+" (3) .. "-" (5)) calls the
+      // INTEGER-returning user "+"/"-", not the universal predefined ones).
+      {
+        Type_Info *slice_index_type =
+          (indexed_type->kind == TYPE_ARRAY and indexed_type->array.indices)
+            ? indexed_type->array.indices[0].index_type : sm->type_integer;
+        for (uint32_t i = 0; slice_index_type and i < arg_count; i++) {
+          Syntax_Node *a = node->apply.arguments.items[i];
+          if (not a or a->kind != NK_RANGE) continue;
+          Syntax_Node *sides[2] = { a->range.low, a->range.high };
+          for (int s = 0; s < 2; s++) {
+            Syntax_Node *bound = sides[s];
+            if (bound and bound->kind == NK_APPLY and
+                Type_Is_Universal (bound->type)) {
+              bound->type = slice_index_type;
+              bound->symbol = NULL;
+              bound->apply.resolution = APPLY_UNRESOLVED;
+              Resolve_Expression (bound);
+            }
+          }
+        }
+      }
+
     // Indexing: result type is the element type
     } else {
       node->type = indexed_type->array.element_type;
@@ -12436,6 +13198,16 @@ Type_Info *Resolve_Apply (Syntax_Node *node) {
           Syntax_Node *arg = node->apply.arguments.items[i];
           if (arg and arg->kind == NK_CHARACTER)
             Resolve_Char_As_Enum (arg, indexed_type->array.indices[i].index_type);
+          // An identifier subscript naming a homonymous literal rebinds to
+          // the INDEX type's literal — positions differ between sibling
+          // enumerations (c87b23a).
+          Type_Info *idx_t = indexed_type->array.indices[i].index_type;
+          if (arg and arg->kind == NK_IDENTIFIER and arg->symbol and
+              arg->symbol->kind == SYMBOL_LITERAL and idx_t and
+              not Type_Covers (idx_t, arg->type)) {
+            Symbol *lit = Symbol_Find_By_Type (arg->string_val.text, idx_t);
+            if (lit) { arg->symbol = lit; arg->type = lit->type; }
+          }
         }
       }
     }
@@ -13695,6 +14467,59 @@ void Analyze_Identifier (Syntax_Node *n) {
   }
 }
 
+// What a "flexible" operand — one with no interpretations of its own — can
+// possibly denote (RM 8.6 applicable interpretations): an aggregate only a
+// composite type (RM 4.3), a string literal only a one-dimensional array
+// with a character component (RM 4.2), any other node anything. Bounds both
+// the sibling-type adoption in Analyze_Binary and the array-vs-component
+// choice for catenation operands.
+static bool Flexible_Can_Denote (Syntax_Node *o, Type_Info *t) {
+  if (o and o->kind == NK_AGGREGATE) return Type_Is_Composite (t);
+  if (o and o->kind == NK_STRING)
+    return Type_Is_Array_Like (t) and t->array.index_count == 1 and
+           Type_Is_Character_Type (t->array.element_type);
+  return true;
+}
+
+// RM 12.1.2(41-42): inside a generic instance, a formal type's operator is
+// the FORMAL subprogram when the generic declares one — only otherwise does
+// the actual's predefined operation apply. True when `t` is a generic-actual
+// view (still opaque, i.e. we are inside the instance) whose instance binds a
+// formal subprogram for `op` accepting this type; the predefined
+// interpretation must then not be synthesized.
+static bool Formal_Operator_Governs (Type_Info *t, Token_Kind op) {
+  if (not t) return false;
+  Type_Info *view = Effective_Type_View (t);
+  if (not Type_Has_Generic_Actual_View (view)) return false;
+  Symbol *type_binding = view->defining_symbol;
+  Symbol *instance = (type_binding and type_binding->defining_scope)
+                     ? type_binding->defining_scope->owner : NULL;
+  if (not instance or not instance->generic_template) return false;
+  // During the instance body clone's own resolution the instance symbol has
+  // not adopted its scope yet — the live pushed scope owned by the instance
+  // is the binding home then.
+  Scope *instance_scope = instance->scope;
+  if (not instance_scope)
+    for (Scope *sc = sm->current_scope; sc; sc = sc->parent)
+      if (sc->owner == instance) { instance_scope = sc; break; }
+  if (not instance_scope) return false;
+  String_Slice op_name = Operator_Name (op);
+  if (not op_name.length) return false;
+  Type_Info *subject = view->generic_actual ? view->generic_actual : view;
+  for (uint32_t i = 0; i < instance_scope->symbol_count; i++) {
+    Symbol *s = instance_scope->symbols[i];
+    if (not s or not Symbol_Is_Subprogram (s)) continue;
+    if (not (s->renamed_object or s->is_instance_wrapper)) continue;
+    if (not Slice_Equal_Ignore_Case (s->name, op_name)) continue;
+    for (uint32_t p = 0; p < s->parameter_count; p++) {
+      Type_Info *pt = s->parameters[p].param_type;
+      if (pt and Type_Base (pt) == Type_Base (subject))
+        return true;
+    }
+  }
+  return false;
+}
+
 void Analyze_Binary (Syntax_Node *n) {
   Syntax_Node *L = n->binary.left, *R = n->binary.right;
   Token_Kind op = n->binary.op;
@@ -13752,15 +14577,21 @@ void Analyze_Binary (Syntax_Node *n) {
   // Candidate operand-type lists. A "flexible" operand (an aggregate, or a
   // string literal with no committed type) has no interps of its own — it takes
   // its type from the sibling/context (RM 4.3, 4.2), so let it adopt the other
-  // operand's candidate types.
+  // operand's candidate types — bounded by Flexible_Can_Denote. Without the
+  // bound, a sibling whose interp set mixes scalar and composite results —
+  // `user_op(A, B) /= (1 .. 3 => 7)` where "<=" is redefined to return the
+  // array — leaks its scalar candidate into the aggregate and resolution
+  // drives the aggregate into a type it cannot denote (c44003a..g).
   Type_Info *lts[MAX_INTERPRETATIONS], *rts[MAX_INTERPRETATIONS];
   uint32_t nlt = 0, nrt = 0;
   for (uint32_t i = 0; li and i < li->count and nlt < MAX_INTERPRETATIONS; i++)
     lts[nlt++] = li->items[i].typ;
   for (uint32_t i = 0; ri and i < ri->count and nrt < MAX_INTERPRETATIONS; i++)
     rts[nrt++] = ri->items[i].typ;
-  if (nlt == 0) { for (uint32_t i = 0; i < nrt; i++) lts[i] = rts[i]; nlt = nrt; }
-  if (nrt == 0) { for (uint32_t i = 0; i < nlt; i++) rts[i] = lts[i]; nrt = nlt; }
+  if (nlt == 0) { for (uint32_t i = 0; i < nrt; i++)
+    if (Flexible_Can_Denote (L, rts[i])) lts[nlt++] = rts[i]; }
+  if (nrt == 0) { for (uint32_t i = 0; i < nlt; i++)
+    if (Flexible_Can_Denote (R, lts[i])) rts[nrt++] = lts[i]; }
 
   // Predefined interpretations, synthesized per operand-type pair. Predefined
   // arithmetic operators are not stored per type; the result type comes from
@@ -13780,7 +14611,15 @@ void Analyze_Binary (Syntax_Node *n) {
       bool private_view = Type_Private_View_Active (lt) or
                           Type_Private_View_Active (rt);
 
-      if (is_arith and not private_view) {
+      // RM 12.1.2: where the instance declares a FORMAL subprogram for an
+      // operator of a formal type, that binding IS the type's operator
+      // inside the instance — the actual's predefined one does not exist
+      // there, so no predefined interpretation is synthesized (cc1301a:
+      // `Y * X` on the formal INTEGER must reach the formal "*").
+      bool formal_op_governs =
+        Formal_Operator_Governs (lt, op) or Formal_Operator_Governs (rt, op);
+
+      if (is_arith and not private_view and not formal_op_governs) {
         if (op == TK_EXPON) {
           // RM 4.5.6: "**"(T, Integer) return T. Base takes the result type,
           // exponent is Standard.Integer; a universal_integer exponent coerces
@@ -13843,16 +14682,45 @@ void Analyze_Binary (Syntax_Node *n) {
       if (is_concat and not private_view) {
         // RM 4.5.3: concatenation is the one operator with heterogeneous
         // operands — each side is either the array (base) type or the element
-        // type. Record the per-operand target so a user "&"(CHARACTER, STRING)
-        // and the predefined one are distinguished by their full profile.
-        Type_Info *arr = Type_Is_Array_Like (lt) ? lt
-                       : Type_Is_Array_Like (rt) ? rt : NULL;
-        if (arr) {
+        // type, giving array&array, array&component and component&array (all
+        // yielding the base; component&component is context-determined and
+        // handled by the empty-set path below). An operand that is itself an
+        // array may be EITHER the array side or a component of an
+        // array-of-arrays (c45347b: A & A2(1) & AR1 where A's component type
+        // is the array ARR), so consider both operands as the candidate array
+        // type and add every form the operand pair satisfies — never assume
+        // an array-like operand is the array side.
+        Type_Info *cands[2] = { Type_Is_Array_Like (lt) ? lt : NULL,
+                                Type_Is_Array_Like (rt) ? rt : NULL };
+        if (cands[0] and cands[1] and
+            Type_Base (cands[0]) == Type_Base (cands[1]))
+          cands[1] = NULL;
+        for (int c = 0; c < 2; c++) {
+          Type_Info *arr = cands[c];
+          if (not arr) continue;
           Type_Info *base = Type_Base (arr);
           Type_Info *elem = arr->array.element_type;
-          Type_Info *o0 = Type_Is_Array_Like (lt) ? base : elem;
-          Type_Info *o1 = Type_Is_Array_Like (rt) ? base : elem;
-          Interp_Add (out, NULL, base, o0, o1, 0);
+          // A string literal is context-typed (RM 4.2): even after the
+          // bottom-up pass stamped it STRING, it denotes ANY character-array
+          // base, so it satisfies the array side of that base's "&"
+          // (c45345a: SMALL_STRING'("ABCD") & "EF" must build the
+          // SMALL_STRING interp whose result bound check raises).
+          bool lt_is_arr = Type_Is_Array_Like (lt) and
+            (Type_Base (lt) == base or
+             (L and L->kind == NK_STRING and Type_Is_Character_Type (elem)));
+          bool rt_is_arr = Type_Is_Array_Like (rt) and
+            (Type_Base (rt) == base or
+             (R and R->kind == NK_STRING and Type_Is_Character_Type (elem)));
+          bool lt_is_elem = elem and
+            (Type_Covers (elem, lt) or Type_Covers (lt, elem));
+          bool rt_is_elem = elem and
+            (Type_Covers (elem, rt) or Type_Covers (rt, elem));
+          if (lt_is_arr and rt_is_arr)
+            Interp_Add (out, NULL, base, base, base, 0);
+          if (lt_is_arr and rt_is_elem)
+            Interp_Add (out, NULL, base, base, elem, 0);
+          if (lt_is_elem and rt_is_arr)
+            Interp_Add (out, NULL, base, elem, base, 0);
         }
       }
     }
@@ -14020,16 +14888,33 @@ static Interpretation *Select_Interp (Interp_List *l, Type_Info *ctx) {
   // actual STRING(1..2)), while sibling and derived types keep distinct bases
   // (c74211b). Generic-actual views resolve by location through
   // Effective_Type_View: opaque inside their instance, the actual outside.
-  bool Hides_Type (Type_Info *actual, Type_Info *formal) {
+  bool Hides_Type (Type_Info *actual, Type_Info *formal, bool peel_views) {
     if (not actual or not formal) return actual == formal;
     Type_Info *va = Effective_Type_View (actual);
     Type_Info *vf = Effective_Type_View (formal);
     // A view still opaque here (inside its instance) stashes its actual in
     // base_type, so Type_Base would tunnel through it: compare opaque views
-    // by identity only (c74409b).
-    if (Type_Has_Generic_Actual_View (va) or Type_Has_Generic_Actual_View (vf))
-      return va == vf;
+    // by identity only (c74409b) — EXCEPT when the user candidate is the
+    // instance's own formal-subprogram binding: it carries the ACTUAL's
+    // parameter subtypes (RM 12.3) while the operands wear the view, and
+    // RM 12.1.2 makes it THE operator of the formal type inside the
+    // instance (cc1301a: a formal "*" must hide the view's predefined "*").
+    if (Type_Has_Generic_Actual_View (va) or Type_Has_Generic_Actual_View (vf)) {
+      if (va == vf) return true;
+      if (not peel_views) return false;
+      Type_Info *pa = Type_Has_Generic_Actual_View (va) ? va->generic_actual : va;
+      Type_Info *pf = Type_Has_Generic_Actual_View (vf) ? vf->generic_actual : vf;
+      return pa and pf and Type_Base (pa) == Type_Base (pf);
+    }
     return Type_Base (va) == Type_Base (vf);
+  }
+  // The instance-scope view of a formal subprogram: a rename binding or a
+  // synthesized wrapper living directly in a generic instance's scope.
+  bool Is_Instance_Formal_Binding (Symbol *s) {
+    if (not s) return false;
+    if (not (s->renamed_object or s->is_instance_wrapper)) return false;
+    Symbol *owner = s->defining_scope ? s->defining_scope->owner : NULL;
+    return owner and owner->generic_template;
   }
   Interpretation *user_hit = NULL;   // user op that hides a predefined homograph
   {
@@ -14037,14 +14922,16 @@ static Interpretation *Select_Interp (Interp_List *l, Type_Info *ctx) {
     for (uint32_t i = 0; i < nc; i++) {
       bool hidden = false;
       if (not c[i]->nam)
-        for (uint32_t j = 0; j < nc; j++)
-          if (c[j]->nam and Hides_Type (c[i]->opnd[0], c[j]->opnd[0]) and
-              Hides_Type (c[i]->opnd[1], c[j]->opnd[1]) and
-              Hides_Type (c[i]->typ, c[j]->typ)) {
+        for (uint32_t j = 0; j < nc; j++) {
+          bool peel = Is_Instance_Formal_Binding (c[j]->nam);
+          if (c[j]->nam and Hides_Type (c[i]->opnd[0], c[j]->opnd[0], peel) and
+              Hides_Type (c[i]->opnd[1], c[j]->opnd[1], peel) and
+              Hides_Type (c[i]->typ, c[j]->typ, peel)) {
             hidden = true;
             if (not user_hit) user_hit = c[j];
             break;
           }
+        }
       if (not hidden) c[w++] = c[i];
     }
     nc = w;
@@ -14052,29 +14939,38 @@ static Interpretation *Select_Interp (Interp_List *l, Type_Info *ctx) {
   }
 
   // 3. RM 4.10: a predefined operation whose operands are universal matches the
-  //    universal operands with NO implicit conversion, and is preferred over a
-  //    user operation whose formals are a specific numeric type (which would
-  //    convert the universals). This is why `NATURAL'POS (3+3)` uses predefined
-  //    "+" (c87b07a). The exception: a context that concretely demands a user
-  //    interp's own result type (exact identity or a subtype relationship that
-  //    is NOT a NEW-derivation) keeps that user op (c87b07d guards the reverse
-  //    — a user "+"(NEW_INT) must NOT win for a plain INTEGER context).
+  //    universal operands with NO implicit conversion, and is preferred over an
+  //    operation whose formals are a specific numeric type (which would convert
+  //    the universals). This is why `NATURAL'POS (3+3)` uses predefined "+"
+  //    (c87b07a). The exception: a context that concretely demands a candidate's
+  //    own result type (exact identity or a subtype relationship that is NOT a
+  //    NEW-derivation) keeps that candidate — RM 4.6: a universal OPERATOR
+  //    RESULT is not a convertible operand (only a literal, named number, or
+  //    attribute is), so the universal interpretation cannot legally satisfy a
+  //    concrete context; the literals convert instead and the concrete
+  //    operation governs. The concrete candidate may be user-declared
+  //    (c87b07a: NATURAL'POS (1+1) uses "+"(NATURAL)) or predefined with its
+  //    operand type contributed by a nested user op (c44003e: `-3.5 - 11.0`
+  //    against fixed USR takes predefined "-"(USR), whose operands then
+  //    resolve the inner unary minus to the user "-"(USR)). c87b07d guards
+  //    the derivation exclusion — a user "+"(NEW_INT) must NOT win for a
+  //    plain INTEGER context.
   {
     Interpretation *pu = NULL;
     for (uint32_t i = 0; i < nc; i++)
       if (not c[i]->nam and Type_Is_Universal (c[i]->opnd[0]))
         pu = c[i];
     if (pu) {
-      bool ctx_needs_user = false;
+      bool ctx_demands_concrete = false;
       if (ctx and not Type_Is_Universal (ctx))
         for (uint32_t i = 0; i < nc; i++) {
           Type_Info *t = c[i]->typ;
-          if (not c[i]->nam or not t) continue;
+          if (c[i] == pu or not t or Type_Is_Universal (t)) continue;
           if (t->parent_type == ctx or ctx->parent_type == t) continue;
           if (t == ctx or (t->base_type and t->base_type == ctx) or
-              (ctx->base_type and ctx->base_type == t)) { ctx_needs_user = true; break; }
+              (ctx->base_type and ctx->base_type == t)) { ctx_demands_concrete = true; break; }
         }
-      if (not ctx_needs_user) return pu;
+      if (not ctx_demands_concrete) return pu;
     }
   }
 
@@ -14125,10 +15021,23 @@ static void Resolve_Operand (Syntax_Node *o, Type_Info *opnd_typ) {
     // it does not inherit a constrained operand subtype's bounds. Seeding the
     // unconstrained base makes `S(3..4) = "CD"` compare by length rather than
     // giving the literal the whole array's 1..N bounds (a length mismatch that
-    // wrongly makes the operands unequal).
+    // wrongly makes the operands unequal). For a POSITIONAL aggregate against
+    // a user-declared constrained array TYPE, the unconstrained base is the
+    // RM 3.6 anonymous one (cc3225a: `(1, 2) /= PAC_VAR(1 .. 2)` compares two
+    // 2-element values, not a 3-element aggregate against a 2-element slice).
+    // A NAMED aggregate already carries its bounds in its choices, which the
+    // constrained-type lowering honors — and keeping it on the constrained
+    // view preserves the discriminant-dependent element handling
+    // (c37213e subtest 13: `X /= (1..5 => (-6, 0))` must not evaluate the
+    // unselected variant's component constraint).
     if ((o->kind == NK_STRING or o->kind == NK_AGGREGATE) and
-        Type_Is_Constrained_Array (opnd_typ))
-      opnd_typ = Type_Base (opnd_typ);
+        Type_Is_Constrained_Array (opnd_typ)) {
+      bool positional = o->kind == NK_AGGREGATE;
+      for (uint32_t i = 0; positional and i < o->aggregate.items.count; i++)
+        positional = o->aggregate.items.items[i]->kind != NK_ASSOCIATION;
+      opnd_typ = positional ? Array_Unconstrained_Base (opnd_typ)
+                            : Type_Base (opnd_typ);
+    }
     // Likewise a record aggregate compared against a discriminated record
     // view: a predefined-equality operand has the BASE type, and the
     // aggregate carries its own discriminants — pinning it to the sibling
@@ -14153,6 +15062,15 @@ static Type_Info *Catenation_Operand_Target (Syntax_Node *o, Type_Info *arr,
                                              Type_Info *elem) {
   Type_Info *ot = o ? o->type : NULL;
   if (Type_Is_Array_Like (ot) and Type_Base (ot) == arr) return arr;
+  // An operand that is itself a catenation yields the array type (RM 4.5.3)
+  // — `R2 & A1(2) & (A2(1) & R1)` chains component catenations whose every
+  // link is a value of the one result array type (c45347a).
+  if (o and o->kind == NK_BINARY_OP and o->binary.op == TK_AMPERSAND)
+    return arr;
+  // An untyped flexible operand is the ARRAY operand whenever it cannot
+  // denote the component type: `(1, 2) & X` catenates a two-element array
+  // with the component X, not two components (cc3225a).
+  if (o and not ot and not Flexible_Can_Denote (o, elem)) return arr;
   return elem;
 }
 
@@ -14215,10 +15133,42 @@ Type_Info *Resolve_In_Context (Syntax_Node *n, Type_Info *ctx) {
       return Resolve_Context_Catenation (n, ctx);
     return n->type;
   }
+  // ARR & ARR is ambiguous between array&array (yielding ARR) and the
+  // component&component reading (yielding the context's array type) when the
+  // operand type is itself another array type's component (RM 4.5.3,
+  // c45347b: A'(AR2 & A1(2)) with A's component type ARR). The bottom-up set
+  // holds only the former; when the context demands an array the pick cannot
+  // deliver — and the pick's result would itself be a component of that
+  // context — the context reading is the legal one.
+  if (n->kind == NK_BINARY_OP and n->binary.op == TK_AMPERSAND and
+      ctx and Type_Is_Array_Like (ctx) and
+      not Type_Covers (ctx, pick->typ) and
+      Type_Base (ctx)->array.element_type and
+      Type_Covers (Type_Base (ctx)->array.element_type, pick->typ))
+    return Resolve_Context_Catenation (n, ctx);
   n->type = pick->typ;
   n->symbol = pick->nam;
 
   if (n->kind == NK_UNARY_OP) {
+    // RM 8.6: the context type constrains the whole expression. An overloaded
+    // call operand (`-IDENT(X)` with one IDENT instance per fixed type,
+    // c46033a) is committed bottom-up to an arbitrary overload; when that
+    // pick cannot satisfy the context, re-drive the call against it — the
+    // predefined arithmetic unary operators return their operand type
+    // (RM 4.5.4), so the operand's target IS the context.
+    if (ctx and pick and not pick->nam and not Type_Covers (ctx, pick->typ) and
+        (n->unary.op == TK_MINUS or n->unary.op == TK_PLUS or
+         n->unary.op == TK_ABS) and
+        n->unary.operand and n->unary.operand->kind == NK_APPLY) {
+      Syntax_Node *op = n->unary.operand;
+      op->type = ctx;
+      op->symbol = NULL;
+      Type_Info *rt = Resolve_Expression (op);
+      if (rt and Type_Covers (ctx, rt)) {
+        n->type = rt;
+        return n->type;
+      }
+    }
     if (n->unary.op != TK_ALL)
       Resolve_Operand (n->unary.operand, pick->opnd[0]);
     return n->type;
@@ -14275,6 +15225,42 @@ Type_Info *Resolve_Binary_Op (Syntax_Node *node) {
     Seed_Catenation_Operands (node, Type_Base (ctx));
   Analyze_Binary (node);
   return Resolve_In_Context (node, ctx);
+}
+
+// RM 4.7: resolve the operand of a qualified expression with the named
+// subtype as its applicable context. An aggregate takes the type outright,
+// and every overloadable form — a call, an operator, a bare identifier, a
+// string — resolves its overloads against it (RM 6.6): `WHOLE'(F2(0,0))`
+// picks the F2 returning WHOLE, `CITRUS'(ORANGE)` picks CITRUS.ORANGE over
+// HUE.ORANGE, and `PREC'(F)` picks the parameterless F returning PREC
+// (c47002d — reached through an allocator, whose parser destructures
+// `NEW T'(expr)`; the allocator resolver shares this path).
+static void Resolve_Qualified_Operand (Syntax_Node *expr, Type_Info *qualifying) {
+  if (not expr) return;
+  if (qualifying and not expr->type and
+      (expr->kind == NK_AGGREGATE or expr->kind == NK_APPLY or
+       expr->kind == NK_BINARY_OP or expr->kind == NK_IDENTIFIER or
+       expr->kind == NK_STRING))
+    expr->type = qualifying;
+  Resolve_Expression (expr);
+  if (not qualifying) return;
+
+  // Re-resolve overloaded literals against the qualifying type (RM 4.7):
+  // WEEKEND'(SAT) must pick WEEKEND.SAT, not WEEK.SAT; CHAR'('B') must use
+  // CHAR's position for 'B', not the ASCII code.
+  if (expr->kind == NK_IDENTIFIER) {
+    if (not Type_Covers (qualifying, expr->type) and
+        not Type_Covers (expr->type, qualifying)) {
+      Symbol *s = Symbol_Find_By_Type (expr->string_val.text, qualifying);
+      if (s) {
+        expr->symbol = s;
+        expr->type = (s->kind == SYMBOL_FUNCTION and s->return_type)
+                     ? s->return_type : s->type ? s->type : qualifying;
+      }
+    }
+  } else if (expr->kind == NK_CHARACTER) {
+    Resolve_Char_As_Enum (expr, qualifying);
+  }
 }
 
 Type_Info *Resolve_Expression (Syntax_Node *node) {
@@ -14597,40 +15583,8 @@ Type_Info *Resolve_Expression (Syntax_Node *node) {
 
       // Resolve subtype mark first to get the type
       Resolve_Expression (node->qualified.subtype_mark);
-
-      // Propagate type to expression (critical for aggregates).
-      // Also propagate to NK_APPLY/NK_BINARY_OP/NK_IDENTIFIER so
-      // overload res (RM 6.6) sees qualifying type as context:
-      // `WHOLE'(F2(0,0))` picks F2 returning WHOLE; `CITRUS'(ORANGE)`
-      // picks CITRUS.ORANGE over HUE.ORANGE.
-      if (node->qualified.expression and
-        node->qualified.subtype_mark->type and
-        not node->qualified.expression->type and
-        (node->qualified.expression->kind == NK_AGGREGATE or
-         node->qualified.expression->kind == NK_APPLY or
-         node->qualified.expression->kind == NK_BINARY_OP or
-         node->qualified.expression->kind == NK_IDENTIFIER or
-         node->qualified.expression->kind == NK_STRING)) {
-        node->qualified.expression->type = node->qualified.subtype_mark->type;
-      }
-      Resolve_Expression (node->qualified.expression);
-
-      // Re-resolve overloaded literals against qualifying type (RM 4.7):                           
-      // WEEKEND'(SAT) must pick WEEKEND.SAT, not WEEK.SAT;                                         
-      // CHAR'('B') must use CHAR position, not ASCII code.                                        
-      //                                                                                            
-      if (node->qualified.expression and node->qualified.subtype_mark->type) {
-        Type_Info *qt = node->qualified.subtype_mark->type;
-        Syntax_Node *inner = node->qualified.expression;
-        if (inner->kind == NK_IDENTIFIER) {
-          if (not Type_Covers (qt, inner->type) and not Type_Covers (inner->type, qt)) {
-            Symbol *s = Symbol_Find_By_Type (inner->string_val.text, qt);
-            if (s) { inner->symbol = s; inner->type = s->type ? s->type : qt; }
-          }
-        } else if (inner->kind == NK_CHARACTER) {
-          Resolve_Char_As_Enum (inner, qt);
-        }
-      }
+      Resolve_Qualified_Operand (node->qualified.expression,
+                                 node->qualified.subtype_mark->type);
       node->type = node->qualified.subtype_mark->type;
       return node->type;
     case NK_AGGREGATE:
@@ -14638,6 +15592,7 @@ Type_Info *Resolve_Expression (Syntax_Node *node) {
         Type_Info *agg_type = node->type;
         bool is_record_agg = Type_Is_Record (agg_type);
         uint32_t positional_idx = 0;
+        int32_t selected_variant = -2;   // -2 = not yet computed
         for (uint32_t i = 0; i < node->aggregate.items.count; i++) {
           Syntax_Node *item = node->aggregate.items.items[i];
 
@@ -14682,6 +15637,22 @@ Type_Info *Resolve_Expression (Syntax_Node *node) {
 
           // Positional item in record aggregate - propagate component type
           } else if (is_record_agg) {
+            // RM 4.3.1 + 3.7.3: positional element N maps to the Nth component
+            // of the fixed part plus the SELECTED variant, so skip the other
+            // variants' components. Selection is deferred until the walk
+            // reaches a variant component: by then the governing
+            // discriminant's item (positionally earlier, RM 4.3.1) has been
+            // resolved, so its enumeration-literal value is readable.
+            if (selected_variant == -2 and
+                positional_idx < agg_type->record.component_count and
+                agg_type->record.components[positional_idx].variant_index >= 0)
+              selected_variant = Aggregate_Selected_Variant (node, agg_type);
+            while (selected_variant >= 0 and
+                   positional_idx < agg_type->record.component_count and
+                   agg_type->record.components[positional_idx].variant_index >= 0 and
+                   agg_type->record.components[positional_idx].variant_index
+                     != selected_variant)
+              positional_idx++;
             if (positional_idx < agg_type->record.component_count) {
               Type_Info *comp_type = agg_type->record.components[positional_idx].component_type;
               if (comp_type and not item->type and
@@ -14823,16 +15794,11 @@ Type_Info *Resolve_Expression (Syntax_Node *node) {
     // Parser destructures T'(agg) so expression is directly the aggregate
     case NK_ALLOCATOR:
 
-      // Resolve subtype mark first to get allocated type
+      // Resolve subtype mark first to get allocated type; the initializer is
+      // the destructured qualified operand and resolves as one (RM 4.7/4.8).
       Resolve_Expression (node->allocator.subtype_mark);
-      if (node->allocator.expression) {
-        if (node->allocator.expression->kind == NK_AGGREGATE and
-          node->allocator.subtype_mark and
-          node->allocator.subtype_mark->type) {
-          node->allocator.expression->type = node->allocator.subtype_mark->type;
-        }
-        Resolve_Expression (node->allocator.expression);
-      }
+      Resolve_Qualified_Operand (node->allocator.expression,
+        node->allocator.subtype_mark ? node->allocator.subtype_mark->type : NULL);
 
       // Create access type pointing to allocated type
       {
@@ -14944,6 +15910,7 @@ Type_Info *Resolve_Expression (Syntax_Node *node) {
             } else if (idx->type) {
               info->index_type = idx->type;
             }
+
             if (range_node and range_node->kind == NK_RANGE and
               range_node->range.low and range_node->range.high) {
 
@@ -15048,6 +16015,17 @@ Type_Info *Resolve_Expression (Syntax_Node *node) {
                 };
               }
             }
+
+            // RM 3.6.1(2): a discrete range with universal_integer bounds
+            // (ARRAY (1 .. 3)) has index type INTEGER. The range itself
+            // stays in Index_Info — it is the array's index range, not a
+            // constraint narrowing the index type (a bounded index type
+            // would wrongly re-check nulls and formals against it). The
+            // universal type must not remain: it fails same-base-type
+            // matching against INTEGER subtypes (cc3224a's formal array
+            // ARRAY (INT) vs actual ARRAY (1 .. 3)).
+            if (Type_Is_Universal_Integer (info->index_type))
+              info->index_type = sm->type_integer;
 
             // RM 3.6.1: an index given as a bare type/subtype mark (e.g.
             // BOOLEAN, with no explicit range) takes that subtype's own
@@ -16814,6 +17792,14 @@ void Populate_Package_Exports (Symbol *pkg_sym, Syntax_Node *pkg_spec) {
 //   2. The .label field of NK_BLOCK or NK_LOOP nodes (Ada allows naming blocks/loops)              
 //                                                                                                  
 void Preregister_Labels (Node_List *list) {
+
+  // RM 5.1: labels, block names, and loop names are implicitly declared at
+  // the end of the declarative part of the innermost enclosing BODY or
+  // BLOCK — registration happens with that region's scope current. A
+  // construct that pushes a non-region scope around a statement list (an
+  // accept statement's formal scope) preregisters the list BEFORE pushing;
+  // idempotence here makes the later Resolve_Statement_List pass a no-op
+  // for already-registered labels.
   for (uint32_t i = 0; i < list->count; i++) {
     Syntax_Node *node = list->items[i];
     if (not node) continue;
@@ -16822,6 +17808,20 @@ void Preregister_Labels (Node_List *list) {
     Symbol **label_sym_ptr = NULL;
     switch (node->kind) {
       case NK_LABEL:
+        // `<< A >> << B >> stmt` parses as a nested label chain; every link
+        // names this same list position and must be visible to forward
+        // GOTOs in the sequence (c59001b). Register the tail links here and
+        // let the shared path below register the head.
+        for (Syntax_Node *link = node->label_node.statement;
+             link and link->kind == NK_LABEL;
+             link = link->label_node.statement) {
+          if (link->label_node.symbol) continue;
+          Symbol *tail_sym = Symbol_New (SYMBOL_LABEL, link->label_node.name,
+                                         link->location);
+          tail_sym->type = sm->type_address;
+          Symbol_Add (tail_sym);
+          link->label_node.symbol = tail_sym;
+        }
         label_name = node->label_node.name;
         label_sym_ptr = &node->label_node.symbol;
         break;
@@ -16836,7 +17836,8 @@ void Preregister_Labels (Node_List *list) {
       default:
         break;
     }
-    if (label_name.data and label_name.length > 0) {
+    if (label_name.data and label_name.length > 0 and
+        not (label_sym_ptr and *label_sym_ptr)) {
       Symbol *label_sym = Symbol_New (SYMBOL_LABEL, label_name, label_loc);
       label_sym->type = sm->type_address;
       Symbol_Add (label_sym);
@@ -16891,6 +17892,28 @@ bool Declarations_Create_Task_Dependents (Node_List *list) {
     if (d->kind == NK_PACKAGE_BODY) {
       if (Declarations_Create_Task_Dependents (&d->package_body.declarations))
         return true;
+    }
+
+    // A generic package instantiation declares whatever the instance's
+    // expanded spec and body declare (RM 12.3): a task inside the instance
+    // depends on the scope performing the instantiation (RM 9.4). Without
+    // this the scope never becomes a master — its done flag is never
+    // raised and an instance task parked at a terminate alternative sleeps
+    // through the teardown join (c94008d's SHARE tasks).
+    if (d->kind == NK_GENERIC_INST and d->symbol) {
+      Syntax_Node *expansions[2] = { d->symbol->instance_spec,
+                                     d->symbol->instance_body };
+      for (int e = 0; e < 2; e++) {
+        Syntax_Node *unit = expansions[e];
+        if (not unit) continue;
+        if (unit->kind == NK_PACKAGE_SPEC and
+            (Declarations_Create_Task_Dependents (&unit->package_spec.visible_decls) or
+             Declarations_Create_Task_Dependents (&unit->package_spec.private_decls)))
+          return true;
+        if (unit->kind == NK_PACKAGE_BODY and
+            Declarations_Create_Task_Dependents (&unit->package_body.declarations))
+          return true;
+      }
     }
   }
   return false;
@@ -16958,6 +17981,14 @@ void Install_Parameter_Symbols (Node_List *parameters, Symbol *subprogram) {
         name->string_val.text, name->location);
       if (specification->param_spec.param_type)
         parameter_sym->type = specification->param_spec.param_type->type;
+
+      // Mark at resolution (not first at prologue emission) so a nested
+      // body emitted before its encloser's prologue still sees the flag
+      // and aliases the frame-published copy (RM 3.7.4, c64106d).
+      if (Parameter_Needs_Constrained_Flag (
+            (Parameter_Mode) specification->param_spec.mode,
+            parameter_sym->type))
+        parameter_sym->has_runtime_constrained_flag = true;
       Symbol_Add (parameter_sym);
       name->symbol = parameter_sym;
       if (subprogram and parameter_index < subprogram->parameter_count)
@@ -17205,6 +18236,12 @@ void Resolve_Statement (Syntax_Node *node) {
         if (is_for_loop) {
           Symbol *enclosing_owner = sm->current_scope->owner;
           Symbol_Manager_Push_Scope (enclosing_owner);
+
+          // RM 4.1.3(19): the loop name prefixes the loop parameter —
+          // LP.I inside loop LP denotes I (c41307d). Link the scope so the
+          // label-prefix lookup can search it.
+          if (node->loop_stmt.label_symbol)
+            node->loop_stmt.label_symbol->scope = sm->current_scope;
           Syntax_Node *loop_id = iter->binary.left;
 
           // Resolve range expression FIRST to get its type
@@ -17372,15 +18409,43 @@ void Resolve_Statement (Syntax_Node *node) {
         Resolve_Expression (node->accept_stmt.guard);
       }
 
-      // Push new scope for accept parameters - use current scope owner                             
-      // so parameters are considered local (not global) for naming.                               
-      // Each accept statement needs its own scope because multiple accepts                         
-      // in a selective wait may have parameters with the same name.                               
-      //                                                                                            
+      // The accept body's labels declare in the ENCLOSING region (RM 5.1:
+      // an accept's formal scope is not a body or block) — register them
+      // now, before the formal scope is pushed, so a label inside the
+      // accept is reachable as T.LABEL through the task name (c41307d's
+      // T.BLK.B). Preregister_Labels is idempotent; the body's own
+      // Resolve_Statement_List pass re-registers nothing.
+      Preregister_Labels (&node->accept_stmt.statements);
+
+      // Push new scope for accept parameters - use current scope owner
+      // so parameters are considered local (not global) for naming.
+      // Each accept statement needs its own scope because multiple accepts
+      // in a selective wait may have parameters with the same name.
+      //
       Symbol_Manager_Push_Scope (sm->current_scope->owner);
 
       // Resolve accept parameters
       Install_Parameter_Symbols (&node->accept_stmt.parameters, NULL);
+
+      // Accept formals marshal BY VALUE through the rendezvous record (with
+      // copy-back at the accept's end) — EXCEPT records, whose slot holds
+      // the CALLER'S RECORD ADDRESS (the accept lowering binds them by
+      // reference, RM 6.2). Flag record formals NOW, at resolution time: a
+      // nested unit inside the accept body may have its frame aliases
+      // EMITTED before the accept's own lowering runs (deferred-body
+      // ordering), and its alias must load the pointer rather than treat
+      // the slot as the record itself (c85005c: PROC1 reads MAIN_TASK's
+      // IN OUT record accept formal uplevel).
+      for (uint32_t pi = 0; pi < node->accept_stmt.parameters.count; pi++) {
+        Syntax_Node *ps = node->accept_stmt.parameters.items[pi];
+        if (not ps or ps->kind != NK_PARAM_SPEC) continue;
+        Type_Info *pt = ps->param_spec.param_type
+                      ? ps->param_spec.param_type->type : NULL;
+        if (not Type_Is_Record (Type_Underlying (pt))) continue;
+        for (uint32_t nj = 0; nj < ps->param_spec.names.count; nj++)
+          if (ps->param_spec.names.items[nj]->symbol)
+            ps->param_spec.names.items[nj]->symbol->param_by_reference = true;
+      }
 
       // Overloaded entries share a name; the accept denotes the overload whose
       // parameter profile matches this accept's, not merely the first found by
@@ -17411,8 +18476,18 @@ void Resolve_Statement (Syntax_Node *node) {
         }
       }
 
-      // Resolve accept body statements
-      Resolve_Statement_List (&node->accept_stmt.statements);
+      // Resolve accept body statements. While they resolve, the entry's
+      // symbol carries this accept's formal scope so the RM 4.1.3(20)
+      // expanded name E.FORMAL finds the formal (c41307d's E1.A); the
+      // previous value is restored on exit — nested accepts for the SAME
+      // entry are illegal (RM 9.5), so one saved slot suffices.
+      {
+        Symbol *accepted_entry = node->accept_stmt.entry_sym;
+        Scope *saved_entry_scope = accepted_entry ? accepted_entry->scope : NULL;
+        if (accepted_entry) accepted_entry->scope = sm->current_scope;
+        Resolve_Statement_List (&node->accept_stmt.statements);
+        if (accepted_entry) accepted_entry->scope = saved_entry_scope;
+      }
 
       // Pop accept scope
       Symbol_Manager_Pop_Scope ();
@@ -17422,7 +18497,19 @@ void Resolve_Statement (Syntax_Node *node) {
       // SELECT statement - resolve alternatives and ELSE part
       for (uint32_t i = 0; i < node->select_stmt.alternatives.count; i++) {
         Syntax_Node *alt = node->select_stmt.alternatives.items[i];
-        if (alt) Resolve_Statement (alt);
+        if (not alt) continue;
+
+        // A terminate alternative's WHEN guard (RM 9.7.1) — a BOOLEAN
+        // condition, evaluated once at the start of the wait.
+        if (alt->kind == NK_NULL_STMT and alt->null_stmt.guard) {
+          Syntax_Node *guard = alt->null_stmt.guard;
+          if (not guard->type and sm->type_boolean and
+              (guard->kind == NK_IDENTIFIER or guard->kind == NK_APPLY or
+               guard->kind == NK_BINARY_OP or guard->kind == NK_UNARY_OP))
+            guard->type = sm->type_boolean;
+          Resolve_Expression (guard);
+        }
+        Resolve_Statement (alt);
       }
       if (node->select_stmt.else_part) {
         Resolve_Statement (node->select_stmt.else_part);
@@ -17526,6 +18613,13 @@ void Install_Declaration_Symbols (Node_List *decls) {
     }
     if (decl->symbol) Symbol_Add (decl->symbol);
     if (task_obj_sym) Symbol_Add (task_obj_sym);
+
+    // RM 8.4: a USE clause in the spec extends its effect to the end of the
+    // package's scope — including the private part and the BODY. Re-apply
+    // it in the scope being populated so its use-visible aliases exist
+    // there too (c84008a: types from USE'd PACK1 named in PACK2's body).
+    if (decl->kind == NK_USE_CLAUSE)
+      Resolve_Declaration (decl);
 
     // Multi-name object declarations: install each named symbol
     if (decl->kind == NK_OBJECT_DECL)
@@ -17961,6 +19055,17 @@ void Install_Generic_Formal_Symbols (Symbol *generic_symbol) {
           type_sym->type = type;
           formal->symbol = type_sym;
 
+          // A formal access type names its designated subtype in the formal
+          // part (RM 12.1.2: TYPE L IS ACCESS S): resolve the mark so an
+          // implicit dereference in the template — LINK1.D — reaches the
+          // designated record's components (cc3128a).
+          if (formal->generic_type_param.def_kind == GEN_DEF_ACCESS and
+              formal->generic_type_param.def_detail) {
+            Resolve_Expression (formal->generic_type_param.def_detail);
+            type->access.designated_type =
+              formal->generic_type_param.def_detail->type;
+          }
+
           // Known discriminants of a formal private type (RM 12.1.2):
           // resolve each discriminant's type and lay the discriminants out
           // as components so selected names like P.D resolve in the
@@ -18047,6 +19152,51 @@ void Install_Generic_Formal_Symbols (Symbol *generic_symbol) {
       // Formal subprogram (RM 12.1.3): full parameter profile so calls in
       // the template overload-resolve against it.
       case NK_GENERIC_SUBPROGRAM_PARAM: {
+        // RM 12.1/12.1.3: the formal part elaborates LINEARLY — an IS-name
+        // default resolves seeing only the formals declared BEFORE it, never
+        // itself or a later homograph (cc1301a: `WITH FUNCTION "*" IS "-"`
+        // ahead of a formal "-" must bind the enclosing scope's "-").
+        // Resolving here, before this formal's own symbol installs, gives
+        // exactly that horizon; the post-install sweep skips already-resolved
+        // names.
+        {
+          Syntax_Node *default_name =
+            formal->generic_subprog_param.default_name;
+          if (default_name and not formal->generic_subprog_param.default_box
+              and not default_name->symbol) {
+            Node_List one = { .items = &formal, .count = 1 };
+            Resolve_Generic_Formal_Subprogram_Defaults (&one);
+          }
+
+          // The profile's type marks resolve under the same linear horizon:
+          // a mark BEFORE the formal type declaration denotes the enclosing
+          // scope's type, one AFTER denotes the formal (cc1301a declares
+          // NEXT (Q : INTEGER) on both sides of TYPE INTEGER IS RANGE <>).
+          Node_List *profile = &formal->generic_subprog_param.parameters;
+          for (uint32_t pi = 0; pi < profile->count; pi++) {
+            Syntax_Node *ps = profile->items[pi];
+            if (ps and ps->kind == NK_PARAM_SPEC and
+                ps->param_spec.param_type and
+                not ps->param_spec.param_type->type)
+              Resolve_Expression (ps->param_spec.param_type);
+          }
+          if (formal->generic_subprog_param.return_type and
+              not formal->generic_subprog_param.return_type->type)
+            Resolve_Expression (formal->generic_subprog_param.return_type);
+          if (getenv ("ADA83_DBG_FML")) {
+            for (uint32_t pi = 0; pi < profile->count; pi++) {
+              Syntax_Node *ps = profile->items[pi];
+              if (ps and ps->kind == NK_PARAM_SPEC and ps->param_spec.param_type)
+                fprintf (stderr, "DBG fml %.*s@%u: mark type=%p gf=%d\n",
+                  (int)formal->generic_subprog_param.name.length,
+                  formal->generic_subprog_param.name.data,
+                  formal->location.line,
+                  (void*)ps->param_spec.param_type->type,
+                  ps->param_spec.param_type->type
+                    ? (int)ps->param_spec.param_type->type->is_generic_formal : -1);
+            }
+          }
+        }
         if (not formal->symbol) {
           Symbol *subprogram_sym = Symbol_New (
             formal->generic_subprog_param.is_function
@@ -18324,10 +19474,32 @@ void Bind_Generic_Formals_To_Actuals (Symbol *instance_sym,
               Type_Is_Array_Like (actual_type)) {
             for (uint32_t d = 0; d < definition->array_type.indices.count and
                                  d < actual_type->array.index_count; d++) {
+
+              // A constrained actual's index range lives in its Index_Info,
+              // not on the index type (ARRAY (1 .. 3) has index type
+              // INTEGER, RM 3.6.1(2)). Build a bounded view of the index
+              // for the comparison so the agreement check sees 1 .. 3, not
+              // INTEGER'RANGE (cc3224a: formal ARRAY (INT) with INT being
+              // INTEGER RANGE 1 .. 3).
+              Index_Info *actual_index = &actual_type->array.indices[d];
+              Type_Info *actual_index_view = actual_index->index_type;
+              if (actual_index_view and actual_type->array.is_constrained and
+                  (actual_index->low_bound.kind != BOUND_NONE or
+                   actual_index->high_bound.kind != BOUND_NONE)) {
+                Type_Info *bounded = Type_New (actual_index_view->kind,
+                                               actual_index_view->name);
+                *bounded = *actual_index_view;
+                bounded->base_type = actual_index_view;
+                if (actual_index->low_bound.kind != BOUND_NONE)
+                  bounded->low_bound = actual_index->low_bound;
+                if (actual_index->high_bound.kind != BOUND_NONE)
+                  bounded->high_bound = actual_index->high_bound;
+                actual_index_view = bounded;
+              }
               RECORD_AGREEMENT (
                 Formal_Mark_Actual_Type (instance_sym,
                   definition->array_type.indices.items[d]),
-                actual_type->array.indices[d].index_type,
+                actual_index_view,
                 "index subtype agreement (RM 12.3.4)");
             }
             RECORD_AGREEMENT (
@@ -18395,6 +19567,45 @@ void Bind_Generic_Formals_To_Actuals (Symbol *instance_sym,
             // (Outside_Defining_Package, via Effective_Type_View) hinge on
             // the view's home being the instance, not the actual's package.
             actual_view->defining_symbol = binding;
+
+            // RM 12.3.5: a formal access type's designated subtype is the
+            // one STATED IN THE FORMAL — inside the generic, allocators and
+            // constraint checks act on it, not on whatever (matching but
+            // possibly differently constrained) designated subtype the
+            // actual carries (cc3128a). A designated mark naming an earlier
+            // formal type maps to that formal's own actual view.
+            if (formal->generic_type_param.def_kind == GEN_DEF_ACCESS and
+                formal->symbol and formal->symbol->type and
+                Type_Is_Access (formal->symbol->type) and
+                formal->symbol->type->access.designated_type) {
+              Type_Info *formal_designated =
+                formal->symbol->type->access.designated_type;
+              if (formal_designated->is_generic_formal) {
+                Type_Info *mapped = Generic_Actual_Type_By_Name (
+                  instance_sym, formal_designated->name);
+                if (mapped) formal_designated = mapped;
+              }
+              actual_view->access.designated_type = formal_designated;
+            }
+
+            // RM 12.1: within the generic, the discriminants of a formal
+            // private type are known by the FORMAL's names — RECVAR3.G with
+            // formal (G : INTEGER) bound to actual REC (Z : INTEGER)
+            // selects the actual's first discriminant (c83027c). The view
+            // keeps the ACTUAL's component names (an instance subtype
+            // escaping the generic must still select by them, cc3203a's
+            // P1VP.D) and carries the formal view for the positional
+            // name-fallback in component lookup.
+            {
+              Type_Info *formal_view =
+                formal->symbol ? formal->symbol->type : NULL;
+              if ((formal->generic_type_param.def_kind == GEN_DEF_PRIVATE or
+                   formal->generic_type_param.def_kind == GEN_DEF_LIMITED_PRIVATE)
+                  and formal_view and Type_Is_Record (actual_view) and
+                  formal_view->record.has_discriminants and
+                  actual_view->record.has_discriminants)
+                actual_view->generic_formal_disc_view = formal_view;
+            }
             Symbol_Add (binding);
             if (formal->symbol and remap->count < MAX_INSTANCE_REMAPS) {
               remap->from[remap->count] = formal->symbol;
@@ -18467,8 +19678,38 @@ void Bind_Generic_Formals_To_Actuals (Symbol *instance_sym,
               // formal's base type — an assignment or entry copy-back checks
               // against the actual's constraint (c95085o's Z : T (1..5)).
               if (in_out and actual_expr->type and object_type and
-                  Type_Covers (object_type, actual_expr->type))
+                  Type_Covers (object_type, actual_expr->type)) {
                 binding->type = actual_expr->type;
+                // A formal-typed object keeps the RM 12.1 discriminant name
+                // view even while wearing the actual's subtype: TX.A inside
+                // the generic selects the discriminant the FORMAL calls A
+                // (cc3240a). The copy leaves the shared actual subtype
+                // untouched — and is made only when some formal discriminant
+                // NAME actually differs, so same-named formals keep the one
+                // shared subtype and stay assignment-identical (cc1204a).
+                bool formal_disc_name_differs = false;
+                if (object_type->generic_formal_disc_view and
+                    Type_Record_View_Live (actual_expr->type)) {
+                  Type_Info *fdv = object_type->generic_formal_disc_view;
+                  uint32_t shared = fdv->record.discriminant_count;
+                  if (actual_expr->type->record.discriminant_count < shared)
+                    shared = actual_expr->type->record.discriminant_count;
+                  for (uint32_t di = 0; di < shared; di++)
+                    if (not Slice_Equal_Ignore_Case (
+                          fdv->record.components[di].name,
+                          actual_expr->type->record.components[di].name))
+                      formal_disc_name_differs = true;
+                }
+                if (formal_disc_name_differs) {
+                  Type_Info *constrained_view =
+                    Type_New (actual_expr->type->kind, actual_expr->type->name);
+                  *constrained_view = *actual_expr->type;
+                  constrained_view->generic_formal_disc_view =
+                    object_type->generic_formal_disc_view;
+                  constrained_view->defining_symbol = binding;
+                  binding->type = constrained_view;
+                }
+              }
               binding->parent           = instance_sym;
               binding->is_package_level = true;
               binding->instance_actual  = actual_expr;
@@ -18618,20 +19859,29 @@ Type_Info *Formal_Mark_Actual_Type (Symbol *instance_sym,
   if (mark->kind == NK_SUBTYPE_INDICATION)
     mark = mark->subtype_ind.subtype_mark;
   if (not mark or mark->kind != NK_IDENTIFIER) return mark ? mark->type : NULL;
+  // A mark already resolved to a CONCRETE type denotes that type — the
+  // name-keyed formal mapping must not capture it: a formal type may share
+  // its name with an enclosing type it hides only from its declaration
+  // onward (cc1301a: NEXT (Q : INTEGER) before TYPE INTEGER IS RANGE <>
+  // means STANDARD.INTEGER; after it, the formal).
+  if (mark->type and not mark->type->is_generic_formal) return mark->type;
   Type_Info *bound =
     Generic_Actual_Type_By_Name (instance_sym, mark->string_val.text);
   if (bound) return bound;
-  if (mark->type and not mark->type->is_generic_formal) return mark->type;
   Symbol *named = Symbol_Find (mark->string_val.text);
   return (named and (named->kind == SYMBOL_TYPE or
                      named->kind == SYMBOL_SUBTYPE)) ? named->type : NULL;
 }
 
-// Same base type, looking through subtype and actual-view chains.
+// Same base type, looking through subtype and actual-view chains. Root
+// equality is NOT enough: a derived type never conforms to its parent's
+// profile (RM 12.3.6; cc1301a's std and NEWINT homonym formals must bind
+// distinct actuals).
 static bool Same_Base_Type (Type_Info *left, Type_Info *right) {
   if (not left or not right) return true;  // unresolved side: no verdict
-  return Type_Base (left) == Type_Base (right) or
-         Type_Root (left) == Type_Root (right);
+  left  = Peel_Generic_Actual_View (left);
+  right = Peel_Generic_Actual_View (right);
+  return Type_Base (left) == Type_Base (right);
 }
 
 // A name legal as the actual for an IN OUT formal object: a variable, a
@@ -18721,6 +19971,51 @@ void Instantiating_Set_Pop (void) {
   if (Instantiating_Template_Count > 0) Instantiating_Template_Count--;
 }
 
+// RM 12.3.6: does a candidate actual subprogram CONFORM to a generic formal
+// subprogram's profile, with the instance's formal-type marks substituted?
+// Pure query — the caller decides whether a mismatch is an error or a cue to
+// try another overload of the same name (c94008c: two use-visible SETs; the
+// one whose profile matches the instance's ELEMENT_TYPE is the actual).
+static bool Actual_Conforms_To_Formal_Subprogram (Symbol *actual,
+                                                  Syntax_Node *formal,
+                                                  Symbol *instance_sym) {
+  if (not Symbol_Is_Subprogram (actual)) return false;
+  bool formal_is_function = formal->generic_subprog_param.is_function;
+  if (formal_is_function != (actual->kind == SYMBOL_FUNCTION)) return false;
+  Node_List *formal_parameters = &formal->generic_subprog_param.parameters;
+  uint32_t formal_parameter_count = 0;
+  for (uint32_t p = 0; p < formal_parameters->count; p++) {
+    Syntax_Node *ps = formal_parameters->items[p];
+    if (ps and ps->kind == NK_PARAM_SPEC)
+      formal_parameter_count += ps->param_spec.names.count;
+  }
+  if (actual->parameter_count != formal_parameter_count) return false;
+  uint32_t index = 0;
+  for (uint32_t p = 0; p < formal_parameters->count; p++) {
+    Syntax_Node *ps = formal_parameters->items[p];
+    if (not ps or ps->kind != NK_PARAM_SPEC) continue;
+    Type_Info *formal_parameter_type =
+      Formal_Mark_Actual_Type (instance_sym, ps->param_spec.param_type);
+    for (uint32_t n = 0; n < ps->param_spec.names.count; n++, index++) {
+      if (index >= actual->parameter_count) return false;
+      if ((Parameter_Mode) ps->param_spec.mode !=
+          actual->parameters[index].mode) return false;
+      if (formal_parameter_type and
+          not Same_Base_Type (formal_parameter_type,
+                              actual->parameters[index].param_type))
+        return false;
+    }
+  }
+  if (formal_is_function) {
+    Type_Info *formal_result = Formal_Mark_Actual_Type (
+      instance_sym, formal->generic_subprog_param.return_type);
+    if (formal_result and
+        not Same_Base_Type (formal_result, actual->return_type))
+      return false;
+  }
+  return true;
+}
+
 void Validate_Generic_Actuals (Symbol *instance_sym, Symbol *template_sym,
                                Syntax_Node **slot_actual_nodes,
                                uint32_t slot_count) {
@@ -18781,7 +20076,11 @@ void Validate_Generic_Actuals (Symbol *instance_sym, Symbol *template_sym,
                 (int) formal_name.length, formal_name.data);
             break;
           case GEN_DEF_PRIVATE: { // RM 12.3.2
-            if (Type_Is_Limited (actual) or
+            // Judge limitedness by the FULL view: after the full type
+            // declaration, the partial limited-private view no longer
+            // governs (RM 7.4.1) — an instantiation in the private part
+            // with the completed type is legal (cd1009i).
+            if (Type_Is_Limited (Type_Underlying ((Type_Info *) actual)) or
                 Type_Has_Task_Component ((Type_Info *) actual))
               Report_Error (location,
                 "actual for non-limited formal private type '%.*s' "
@@ -18796,7 +20095,14 @@ void Validate_Generic_Actuals (Symbol *instance_sym, Symbol *template_sym,
                 formal_disc_count += ds->discriminant.names.count;
             }
             if (formal_disc_count > 0) {
-              bool actual_has_discs = Type_Is_Record (actual) and
+              // The actual may itself be a formal private type of an
+              // enclosing generic (cc1207b: `NEW PACK (R)` inside a generic
+              // whose formal R (D : INTEGER) IS PRIVATE): private views
+              // carry their known discriminants in .record too (RM 12.1.2).
+              bool actual_has_discs =
+                (Type_Is_Record (actual) or
+                 actual->kind == TYPE_PRIVATE or
+                 actual->kind == TYPE_LIMITED_PRIVATE) and
                 actual->record.has_discriminants;
               if (not actual_has_discs or
                   actual->record.discriminant_count != formal_disc_count)
@@ -18939,6 +20245,62 @@ void Validate_Generic_Actuals (Symbol *instance_sym, Symbol *template_sym,
           break;
         }
         Symbol *actual = binding ? binding->actual_subprogram : NULL;
+
+        // The binding resolved by NAME; when that name is overloaded, the
+        // actual is whichever visible overload CONFORMS to the substituted
+        // formal profile (RM 12.3.6) — rebind before validating, so the
+        // detailed diagnostics below fire only when nothing conforms.
+        if (Symbol_Is_Subprogram (actual) and
+            not Actual_Conforms_To_Formal_Subprogram (actual, formal,
+                                                      instance_sym)) {
+          Interp_List candidates;
+          Collect_Interpretations (actual->name, &candidates);
+          for (uint32_t ci = 0; ci < candidates.count; ci++) {
+            Symbol *cand = candidates.items[ci].nam;
+            if (cand and cand != actual and
+                Actual_Conforms_To_Formal_Subprogram (cand, formal,
+                                                      instance_sym)) {
+              binding->actual_subprogram = cand;
+              actual = cand;
+              break;
+            }
+          }
+
+          // An operator-string actual whose predefined operation has no
+          // materialized symbol (only INTEGER and FLOAT operators are
+          // pre-built): synthesize one carrying the formal's substituted
+          // profile — by construction conforming — and let the operator
+          // emitters dispatch on its name (cc3601a: "XOR", "<" on BOOLEAN).
+          if (not Actual_Conforms_To_Formal_Subprogram (actual, formal,
+                                                        instance_sym) and
+              Token_From_Op_Name (actual->name) != TK_EOF) {
+            Symbol *op_sym = Symbol_New (SYMBOL_FUNCTION, actual->name,
+                                         No_Location);
+            op_sym->is_predefined = true;
+            Node_List *fps = &formal->generic_subprog_param.parameters;
+            uint32_t np = 0;
+            for (uint32_t p = 0; p < fps->count; p++)
+              if (fps->items[p] and fps->items[p]->kind == NK_PARAM_SPEC)
+                np += fps->items[p]->param_spec.names.count;
+            op_sym->parameter_count = np;
+            op_sym->parameters = Arena_Allocate (np * sizeof (Parameter_Info));
+            uint32_t pi = 0;
+            for (uint32_t p = 0; p < fps->count; p++) {
+              Syntax_Node *ps = fps->items[p];
+              if (not ps or ps->kind != NK_PARAM_SPEC) continue;
+              Type_Info *pt = Formal_Mark_Actual_Type (instance_sym,
+                                                       ps->param_spec.param_type);
+              for (uint32_t n = 0; n < ps->param_spec.names.count; n++, pi++)
+                op_sym->parameters[pi] = (Parameter_Info){
+                  .name = pi ? S ("RIGHT") : S ("LEFT"),
+                  .param_type = pt, .mode = PARAM_IN };
+            }
+            op_sym->return_type = Formal_Mark_Actual_Type (
+              instance_sym, formal->generic_subprog_param.return_type);
+            binding->actual_subprogram = op_sym;
+            actual = op_sym;
+          }
+        }
         if (Symbol_Is_Subprogram (actual)) {
           bool formal_is_function = formal->generic_subprog_param.is_function;
           bool actual_is_function = actual->kind == SYMBOL_FUNCTION;
@@ -19158,9 +20520,14 @@ bool Instantiate_Generic_Package (Symbol *instance_sym, Symbol *template_sym) {
   // The scope's flat symbol array holds only overload-chain HEADS; the
   // export list flattens each chain so homographs (e.g. RESET/RESET) are
   // individually visible to USE clauses and member lookup. The creation-
-  // sequence window keeps later (private-part / body) homographs out.
+  // sequence window keeps bindings and later (private-part / body)
+  // homographs out — and it is the ONLY reliable filter: a spec subprogram
+  // homonymous with a formal-subprogram binding (SET in an instance whose
+  // formal actual is also named SET, c94008c) chains onto the BINDING's
+  // overload head, below binding_count in the flat array, so every head
+  // must be scanned.
   uint32_t export_count = 0;
-  for (uint32_t i = binding_count; i < visible_count; i++)
+  for (uint32_t i = 0; i < visible_count; i++)
     for (Symbol *entity = instance_scope->symbols[i]; entity;
          entity = entity->next_overload)
       if (entity->creation_sequence >  visible_sequence_low and
@@ -19169,7 +20536,7 @@ bool Instantiate_Generic_Package (Symbol *instance_sym, Symbol *template_sym) {
   instance_sym->exported_count = 0;
   instance_sym->exported = export_count
     ? Arena_Allocate (export_count * sizeof (Symbol *)) : NULL;
-  for (uint32_t i = binding_count; i < visible_count; i++)
+  for (uint32_t i = 0; i < visible_count; i++)
     for (Symbol *entity = instance_scope->symbols[i]; entity;
          entity = entity->next_overload)
       if (entity->creation_sequence >  visible_sequence_low and
@@ -19367,6 +20734,36 @@ static Type_Info *Slice_Rename_Subtype (Syntax_Node *slice) {
   sub->size = (uint32_t)(len * elem_size);
   sub->alignment = elem ? elem->alignment : 1;
   return sub;
+}
+
+// RM 6.1: a character literal denotes an enumeration literal, which is a
+// parameterless function. Resolve one standing in a function-name position
+// (a renaming target, a generic formal subprogram actual or default) against
+// the expected result type. Predefined CHARACTER installs no literal symbols,
+// so its literals are synthesized here with position = character code.
+static Symbol *Character_Literal_As_Function (Syntax_Node *char_node,
+                                              Type_Info *result_type) {
+  if (not char_node or char_node->kind != NK_CHARACTER) return NULL;
+  if (Resolve_Char_As_Enum (char_node, result_type))
+    return char_node->symbol;
+  if (result_type and Type_Is_Character (result_type) and
+      char_node->string_val.text.length >= 2) {
+    Symbol *literal = Symbol_New (SYMBOL_LITERAL, char_node->string_val.text,
+                                  char_node->location);
+    literal->type = result_type;
+    literal->frame_offset =
+      (int64_t)(unsigned char)char_node->string_val.text.data[1];
+    char_node->symbol = literal;
+    return literal;
+  }
+  if (char_node->string_val.text.data) {
+    Symbol *literal = Symbol_Find (char_node->string_val.text);
+    if (literal and literal->kind == SYMBOL_LITERAL) {
+      char_node->symbol = literal;
+      return literal;
+    }
+  }
+  return NULL;
 }
 
 void Resolve_Declaration (Syntax_Node *node) {
@@ -19610,6 +21007,7 @@ void Resolve_Declaration (Syntax_Node *node) {
             // task-bearing composite: forget any memoized answer.
             type->task_component_state = TASK_COMPONENT_UNKNOWN;
 
+
             if (Type_Is_Array_Like (def_type)) {
               type->array = def_type->array;
             } else if (Type_Is_Fixed_Point (def_type)) {
@@ -19848,12 +21246,29 @@ void Resolve_Declaration (Syntax_Node *node) {
         Symbol *scope_owner = sm->current_scope ? sm->current_scope->owner : NULL;
         Symbol *sym = Symbol_Find (node->subprogram_spec.name);
 
-        // Only match specs from the current declarative region. An implicitly
-        // declared inherited operation (RM 3.4) is never completed by an
-        // explicit declaration; the explicit one is a homograph that hides it.
+        // Only match specs from the current declarative region. Owner
+        // equality alone is not the region test: an unlabeled inner block
+        // shares its owner with the enclosing subprogram, and a same-profile
+        // body there is a hiding homograph (RM 8.3), not a completion
+        // (cc1301a's two BUMPs). The discriminator: a spec whose defining
+        // scope STRICTLY ENCLOSES the current one belongs to an outer
+        // region; a spec in the same scope, or in the sibling scope a
+        // package spec resolved under (its body completes it, RM 7.1),
+        // shares the region. An implicitly declared inherited operation
+        // (RM 3.4) is never completed by an explicit declaration.
         while (sym) {
+          bool spec_scope_encloses = false;
+          for (Scope *enclosing = sm->current_scope
+                 ? sm->current_scope->parent : NULL;
+               enclosing; enclosing = enclosing->parent)
+            if (enclosing == sym->defining_scope) {
+              spec_scope_encloses = true;
+              break;
+            }
+          bool same_region = sym->parent == scope_owner
+                             and not spec_scope_encloses;
           if (sym->kind == expected_kind and sym->parameter_count == total_params
-            and sym->parent == scope_owner and not Subprogram_Is_Implicit (sym)) {
+            and same_region and not Subprogram_Is_Implicit (sym)) {
 
             // Check parameter types match
             bool types_match = true;
@@ -19963,6 +21378,20 @@ void Resolve_Declaration (Syntax_Node *node) {
         }
         Symbol *target = node->package_renaming.old_name ?
                  node->package_renaming.old_name->symbol : NULL;
+
+        // RM 12.3: within a generic package, the unit's name denotes the
+        // current instance — so a renaming of the generic inside its own
+        // template (`PACKAGE PACKB RENAMES GPACK` in GPACK) denotes each
+        // instance itself. When this declaration is re-resolved inside an
+        // instance, rebind the target to that instance's package symbol
+        // (c85011a: PACK2.PACKB.J).
+        if (target and target->kind == SYMBOL_GENERIC)
+          for (Scope *s = sm->current_scope; s; s = s->parent)
+            if (s->owner and s->owner->kind == SYMBOL_PACKAGE and
+                s->owner->generic_template == target) {
+              target = s->owner;
+              break;
+            }
         Symbol *sym = Symbol_New (SYMBOL_PACKAGE,
                       node->package_renaming.new_name,
                       node->location);
@@ -20059,6 +21488,102 @@ void Resolve_Declaration (Syntax_Node *node) {
             // parameterless function — pick F (hence the task type, hence the
             // entry) by the rename's own profile, not the first F.
             renamed_sym = Resolve_Entry_Rename_Overloaded_Prefix (ren, sym);
+
+            // RM 8.5.4: `renames PKG.NAME` where the package exports
+            // homographs of NAME — a generic instance exports both its own
+            // UPDATE and the UPDATE bound as a formal-subprogram actual
+            // (c94008c) — picks the one conforming to the rename's own
+            // profile, not the first exported name match.
+            if (not renamed_sym) {
+              Resolve_Expression (ren->selected.prefix);
+              Symbol *pkg = Package_Denoted (ren->selected.prefix->symbol);
+              if (pkg and pkg->kind == SYMBOL_PACKAGE) {
+
+                // Candidates: the exported list, then the package scope's
+                // bucket chain (a generic instance keeps most of its
+                // declarations there), each with its overload chain.
+                uint32_t bucket = Symbol_Hash_Name (ren->selected.selector);
+                Symbol *pools[2] = {
+                  NULL,
+                  pkg->scope ? pkg->scope->buckets[bucket] : NULL
+                };
+                for (int pool = 0; pool < 2 and not renamed_sym; pool++) {
+                  uint32_t export_index = 0;
+                  Symbol *chain = pools[pool];
+                  for (;;) {
+                    Symbol *candidate = chain;
+                    if (pool == 0) {
+                      if (export_index >= pkg->exported_count) break;
+                      candidate = pkg->exported[export_index++];
+                    } else if (not candidate) {
+                      break;
+                    } else {
+                      chain = chain->next_in_bucket;
+                    }
+                    for (Symbol *c = candidate; c; c = c->next_overload) {
+                      if (not Slice_Equal_Ignore_Case (c->name,
+                              ren->selected.selector) or
+                          not Symbol_Is_Subprogram (c) or
+                          c->parameter_count != total_params)
+                        continue;
+                      bool conforms =
+                        (c->return_type == NULL) == (sym->return_type == NULL);
+                      if (conforms and sym->return_type)
+                        conforms = Same_Base_Type (c->return_type,
+                                                   sym->return_type);
+                      for (uint32_t pi = 0; conforms and pi < total_params; pi++)
+                        conforms = Same_Base_Type (
+                          Peel_Generic_Actual_View (c->parameters[pi].param_type),
+                          sym->parameters[pi].param_type);
+                      if (conforms) {
+                        renamed_sym = c;
+                        ren->symbol = c;
+                        break;
+                      }
+                    }
+                    if (renamed_sym) break;
+                  }
+                }
+              }
+            }
+          } else if (ren->kind == NK_CHARACTER) {
+
+            // RM 8.5(3): FUNCTION SEA RETURN CHARACTER RENAMES 'C' — the
+            // literal is the renamed parameterless function.
+            renamed_sym = Character_Literal_As_Function (ren, sym->return_type);
+          } else if (ren->kind == NK_ATTRIBUTE) {
+
+            // RM 8.5(3): renaming an attribute that denotes a function
+            // (INTEGER'SUCC, 'PRED, 'IMAGE, 'VALUE — c85016a). Synthesize
+            // a wrapper whose body applies the attribute to the rename's
+            // own parameters, exactly as generic attribute actuals do.
+            if (ren->attribute.prefix)
+              Resolve_Expression (ren->attribute.prefix);
+            Symbol_Manager_Push_Scope (sym);
+            Syntax_Node *attribute_call = Clone_Subtree_Keep_Decorations (ren);
+            attribute_call->attribute.arguments = (Node_List){0};
+            for (uint32_t pi = 0; pi < sym->parameter_count; pi++) {
+              Symbol *param_sym = Symbol_New (SYMBOL_PARAMETER,
+                sym->parameters[pi].name, node->location);
+              param_sym->type = sym->parameters[pi].param_type;
+              Symbol_Add (param_sym);
+              sym->parameters[pi].param_sym = param_sym;
+              Syntax_Node *reference = Node_New (NK_IDENTIFIER,
+                                                 node->location);
+              reference->string_val.text = sym->parameters[pi].name;
+              reference->symbol = param_sym;
+              reference->type = param_sym->type;
+              Node_List_Push (&attribute_call->attribute.arguments,
+                              reference);
+            }
+            attribute_call->type = sym->return_type;
+            Attach_Wrapper_Function_Body (sym, attribute_call,
+                                          node->location);
+            sym->scope = sm->current_scope;
+            Symbol_Manager_Pop_Scope ();
+            Symbol_Add (sym);
+            node->symbol = sym;
+            break;
           }
           if (not renamed_sym) {
             Resolve_Expression (ren);
@@ -20125,6 +21650,21 @@ void Resolve_Declaration (Syntax_Node *node) {
         Syntax_Node *spec = node->subprogram_body.specification;
         String_Slice body_name = spec ? spec->subprogram_spec.name : (String_Slice){0};
         Symbol *matching_generic = Symbol_Find (body_name);
+
+        // RM 10.2 / 12.1: a body STUB completing a generic subprogram still
+        // resolves its profile within the generic's formal part (X : T,
+        // c83030c); the subunit later provides the actual generic body and
+        // pairs itself through this same branch when it resolves.
+        if (matching_generic and matching_generic->kind == SYMBOL_GENERIC and
+            node->subprogram_body.is_separate) {
+          node->symbol = matching_generic;
+          Symbol_Manager_Push_Scope (matching_generic);
+          Install_Generic_Formal_Symbols (matching_generic);
+          if (spec)
+            Install_Parameter_Symbols (&spec->subprogram_spec.parameters, NULL);
+          Symbol_Manager_Pop_Scope ();
+          break;
+        }
 
         // This body completes a generic - store it and resolve it.
         // Push scope with generic formals so T, F etc. are visible.
@@ -20357,8 +21897,12 @@ void Resolve_Declaration (Syntax_Node *node) {
         }
         node->symbol = task_sym;
 
-        // Push scope for task body
+        // Push scope for task body. Link it to the symbol (as subprogram and
+        // package analysis do): the task body owns a per-instance frame, and
+        // the static-chain walkers need its scope's layout to alias its
+        // locals from nested units (RM 9.1).
         Symbol_Manager_Push_Scope (task_sym);
+        task_sym->scope = sm->current_scope;
 
         // Import entries from task spec into body scope (RM 9.1)                                   
         // Entries declared in the task spec are visible inside the task body.                     
@@ -20549,13 +22093,16 @@ void Resolve_Declaration (Syntax_Node *node) {
         Syntax_Node *pkg_name_node = node->use_clause.names.items[i];
         Resolve_Expression (pkg_name_node);
 
-        // Find the package symbol
+        // Find the package symbol. A renaming denotes the SAME package
+        // (RM 8.5) — peel so USE installs the complete, live export list
+        // (c85011a: USE PACK1.PACKA, where PACKA renames PACK1 from inside).
         Symbol *pkg_sym = NULL;
         if (pkg_name_node->kind == NK_IDENTIFIER) {
           pkg_sym = Symbol_Find (pkg_name_node->string_val.text);
         } else if (pkg_name_node->symbol) {
           pkg_sym = pkg_name_node->symbol;
         }
+        pkg_sym = Package_Denoted (pkg_sym);
 
         // Helper macro: add use-visible alias for a symbol
         if (pkg_sym and pkg_sym->kind == SYMBOL_PACKAGE) {
@@ -20808,20 +22355,35 @@ void Resolve_Declaration (Syntax_Node *node) {
       }
       break;
     case NK_EXCEPTION_DECL:
+    case NK_EXCEPTION_RENAMING:
 
       // Exception declaration: E : exception;
-      for (uint32_t i = 0; i < node->exception_decl.names.count; i++) {
-        Syntax_Node *name_node = node->exception_decl.names.items[i];
-        if (name_node and name_node->kind == NK_IDENTIFIER) {
-          Symbol *sym = Symbol_New (SYMBOL_EXCEPTION,
-                       name_node->string_val.text,
-                       name_node->location);
-          Symbol_Add (sym);
-          name_node->symbol = sym;
+      // or renaming: E2 : exception RENAMES E1 (RM 8.5) — a NEW NAME for
+      // the SAME exception: raises and handlers through either name must
+      // agree on identity, so the alias records its target and
+      // Emit_Exception_Ref peels to the root (one @__exc global, c85009a).
+      {
+        Symbol *renamed_target = NULL;
+        if (node->exception_decl.renamed) {
+          Resolve_Expression (node->exception_decl.renamed);
+          Symbol *t = node->exception_decl.renamed->symbol;
+          if (t and t->kind == SYMBOL_EXCEPTION) renamed_target = t;
+        }
+        for (uint32_t i = 0; i < node->exception_decl.names.count; i++) {
+          Syntax_Node *name_node = node->exception_decl.names.items[i];
+          if (name_node and name_node->kind == NK_IDENTIFIER) {
+            Symbol *sym = Symbol_New (SYMBOL_EXCEPTION,
+                         name_node->string_val.text,
+                         name_node->location);
+            sym->renamed_object = (Syntax_Node *) renamed_target;
+            Symbol_Add (sym);
+            name_node->symbol = sym;
 
-          // Add to global exception list for codegen
-          if (Exception_Symbol_Count < 256) {
-            Exception_Symbols[Exception_Symbol_Count++] = sym;
+            // Add to global exception list for codegen — an alias emits no
+            // global of its own; its target already has one.
+            if (not renamed_target and Exception_Symbol_Count < 256) {
+              Exception_Symbols[Exception_Symbol_Count++] = sym;
+            }
           }
         }
       }
@@ -20909,6 +22471,12 @@ void Resolve_Declaration (Syntax_Node *node) {
         } else if (gen_name->symbol) {
           template = gen_name->symbol;
         }
+
+        // A USE-visible alias denotes the original generic — and only the
+        // original receives its body when the package body arrives later
+        // (c74305b: USE PK before PACKAGE BODY PK left the alias bodyless,
+        // so the instance was never cloned).
+        while (template and template->aliased) template = template->aliased;
         if (not template or template->kind != SYMBOL_GENERIC) {
           Report_Error (node->location, "expected a generic unit name");
           break;
@@ -20931,12 +22499,15 @@ void Resolve_Declaration (Syntax_Node *node) {
         // Propagate INTRINSIC convention from template so the call site
         // can recognize the instance as needing inline lowering (e.g.
         // UNCHECKED_CONVERSION) instead of an external call.
-        // The pragma CONVENTION(INTRINSIC, UNCHECKED_CONVERSION) in
-        // rts/unchecked_conversion.ads is processed elsewhere; recognize
-        // the predefined intrinsic generics by name as a fallback.
+        // The pragma CONVENTION(INTRINSIC, ...) trailing the library unit in
+        // rts/unchecked_conversion.ads and rts/unchecked_deallocation.ads is
+        // not yet applied by the loader; recognize the two predefined
+        // intrinsic generics (RM 13.10) by name as a fallback.
         if (template->convention == CONVENTION_INTRINSIC or
             Slice_Equal_Ignore_Case (template->name,
-                                     S("UNCHECKED_CONVERSION")))
+                                     S("UNCHECKED_CONVERSION")) or
+            Slice_Equal_Ignore_Case (template->name,
+                                     S("UNCHECKED_DEALLOCATION")))
           inst_sym->convention = CONVENTION_INTRINSIC;
 
         // Process generic actuals and build mapping
@@ -21118,8 +22689,16 @@ void Resolve_Declaration (Syntax_Node *node) {
                 // the instance substitute it.
                 } else if (formal->generic_object_param.default_expr and
                            actual_idx < total_actual_slots) {
-                  inst_sym->actual_bindings[actual_idx].actual_expr =
+                  Syntax_Node *default_expr =
                     formal->generic_object_param.default_expr;
+
+                  // A character-literal default resolves against the formal's
+                  // type, exactly as a character-literal actual does — its
+                  // value is the enumeration position, not the character code.
+                  if (obj_type and default_expr->kind == NK_CHARACTER)
+                    Resolve_Char_As_Enum (default_expr, obj_type);
+                  inst_sym->actual_bindings[actual_idx].actual_expr =
+                    default_expr;
                   Syntax_Node *fname = formal->generic_object_param.names.items[j];
                   if (fname)
                     inst_sym->actual_bindings[actual_idx].formal_name =
@@ -21221,17 +22800,22 @@ void Resolve_Declaration (Syntax_Node *node) {
                   }
                 }
 
-                // Handle character literals as enum literals: '&' from ADD_OPS
+                // A character literal as the actual: it denotes an
+                // enumeration literal, which is a parameterless function
+                // (RM 12.3.6). Resolve it against the substituted formal
+                // type so an overloaded literal picks the right type's
+                // literal, not whichever homograph the table finds first.
                 else if (name_node->kind == NK_CHARACTER) {
-
-                  // Character literal as enum literal (parameterless function)
-                  if (name_node->string_val.text.data) {
-                    Symbol *lit = Symbol_Find (name_node->string_val.text);
-                    if (lit and lit->kind == SYMBOL_LITERAL) {
-                      name_node->symbol = lit;
-                      inst_sym->actual_bindings[actual_idx].actual_subprogram = lit;
-                    }
-                  }
+                  Type_Info *expected_type = Formal_Mark_Actual_Type (
+                    inst_sym, formal->generic_subprog_param.return_type);
+                  for (uint32_t k = 0;
+                       expected_type == NULL and k < total_actual_slots; k++)
+                    expected_type = inst_sym->actual_bindings[k].actual_type;
+                  Symbol *literal =
+                    Character_Literal_As_Function (name_node, expected_type);
+                  if (literal)
+                    inst_sym->actual_bindings[actual_idx].actual_subprogram =
+                      literal;
                 }
                 // Expanded-name "/=" actual (PK."/="): the same RM 6.7
                 // negation as the direct designator — resolve the package's
@@ -21256,6 +22840,16 @@ void Resolve_Declaration (Syntax_Node *node) {
                     inst_sym->actual_bindings[actual_idx].builtin_operator = TK_NE;
                   }
                 }
+                // An attribute as the actual (RM 12.3.6: 'SUCC, 'PRED,
+                // 'IMAGE, 'VALUE denote functions): record it — the wrapper
+                // synthesizer turns it into a callable body, exactly as for
+                // an attribute DEFAULT (cc3601a: "WEEKDAY'SUCC").
+                else if (name_node->kind == NK_ATTRIBUTE) {
+                  if (name_node->attribute.prefix)
+                    Resolve_Expression (name_node->attribute.prefix);
+                  inst_sym->actual_bindings[actual_idx].actual_attribute =
+                    name_node;
+                }
                 else {
 
                   // Look up the actual subprogram symbol; an overloaded
@@ -21271,15 +22865,55 @@ void Resolve_Declaration (Syntax_Node *node) {
                   }
                 }
 
-              // IS <> default: resolve to a visible subprogram
-              // with the same name as the formal (RM 12.3(6))
+              // IS <> default: resolve to a visible subprogram with the
+              // same name as the formal (RM 12.3(6)) — the one whose
+              // profile CONFORMS after formal-type substitution, not
+              // whichever homograph the table finds first (cc3607b).
               } else if (formal->generic_subprog_param.default_box) {
-                Symbol *default_sym = Symbol_Find (
-                  formal->generic_subprog_param.name);
-                if (Symbol_Is_Subprogram (default_sym)) {
-                  if (actual_idx < total_actual_slots)
-                    inst_sym->actual_bindings[actual_idx].actual_subprogram = default_sym;
+                // RM 12.3(6): the box default binds a VISIBLE subprogram of
+                // the formal's name whose profile conforms after formal-type
+                // substitution. Every visible homonym is a candidate — one
+                // scope's bucket chain is not the visibility set (cc1301a:
+                // NEXT (NEWINT) lives two scopes out from the instantiation,
+                // past a std-profile NEXT in the enclosing block). Collected
+                // near-to-far, the first conforming candidate is the RM 8.3
+                // hiding winner; RM 8.4(5) keeps use-visible aliases behind
+                // directly visible ones.
+                Interp_List box_candidates;
+                Collect_Interpretations (formal->generic_subprog_param.name,
+                                         &box_candidates);
+                Symbol *conforming = NULL;
+                for (int pass = 0; pass < 2 and not conforming; pass++)
+                  for (uint32_t bc = 0; bc < box_candidates.count; bc++) {
+                    Symbol *candidate = box_candidates.items[bc].nam;
+                    if (not candidate) continue;
+                    if ((candidate->aliased != NULL) != (pass == 1)) continue;
+                    if (Actual_Conforms_To_Formal_Subprogram (candidate,
+                                                              formal,
+                                                              inst_sym)) {
+                      conforming = candidate;
+                      break;
+                    }
+                  }
+                if (not conforming) {
+                  // An operator formal with no conforming user operator
+                  // takes the formal type's PREDEFINED operator (RM 12.1.3,
+                  // 12.3.6) — the wrapper synthesizer builds its body.
+                  Token_Kind operator_token = Token_From_Op_Name (
+                    formal->generic_subprog_param.name);
+                  if (operator_token != TK_EOF) {
+                    if (actual_idx < total_actual_slots)
+                      inst_sym->actual_bindings[actual_idx].builtin_operator =
+                        operator_token;
+                  } else {
+                    Symbol *head = Symbol_Find (
+                      formal->generic_subprog_param.name);
+                    if (Symbol_Is_Subprogram (head)) conforming = head;
+                  }
                 }
+                if (conforming and actual_idx < total_actual_slots)
+                  inst_sym->actual_bindings[actual_idx].actual_subprogram =
+                    conforming;
 
               // IS name default (RM 12.1.3): the name was resolved when
               // the generic's body was analyzed (formals in scope). A
@@ -21305,6 +22939,34 @@ void Resolve_Declaration (Syntax_Node *node) {
                 } else if (default_name->kind == NK_ATTRIBUTE) {
                   if (actual_idx < total_actual_slots)
                     inst_sym->actual_bindings[actual_idx].actual_attribute = default_name;
+
+                // Character-literal default (IS 'S'): the literal is a
+                // parameterless function of the formal's result type
+                // (RM 12.1.3), resolved against the substituted actual type.
+                } else if (default_name->kind == NK_CHARACTER) {
+                  Type_Info *expected_type = Formal_Mark_Actual_Type (
+                    inst_sym, formal->generic_subprog_param.return_type);
+                  for (uint32_t k = 0;
+                       expected_type == NULL and k < total_actual_slots; k++)
+                    expected_type = inst_sym->actual_bindings[k].actual_type;
+                  Symbol *literal =
+                    Character_Literal_As_Function (default_name, expected_type);
+                  if (literal and actual_idx < total_actual_slots)
+                    inst_sym->actual_bindings[actual_idx].actual_subprogram =
+                      literal;
+
+                // Operator-designator default (IS "&"): a visible user
+                // operator rode in on default_sym above; otherwise the
+                // designator denotes the PREDEFINED operator, bound as a
+                // builtin exactly like an operator-string actual
+                // (RM 12.1.3, cc1307a).
+                } else if (default_name->kind == NK_IDENTIFIER or
+                           default_name->kind == NK_STRING) {
+                  Token_Kind op_token =
+                    Token_From_Op_Name (default_name->string_val.text);
+                  if (op_token != TK_EOF and actual_idx < total_actual_slots)
+                    inst_sym->actual_bindings[actual_idx].builtin_operator =
+                      op_token;
                 }
               }
               actual_idx++;
@@ -21790,6 +23452,65 @@ void Resolve_Compilation_Unit (Syntax_Node *node) {
     // transitive subunit chain that materializes level by level.
     parent_sym = Load_Subunit_Parent (node->compilation_unit.separate_parent);
     node->compilation_unit.separate_parent->symbol = parent_sym;
+
+    // A subunit of a GENERIC unit completes the template's stub: graft the
+    // body into the template AST so every instantiation clones the real
+    // body (RM 10.2 + 12.3). The subunit has no standalone compilation of
+    // its own — its formal types exist only inside instances — so the CU
+    // is marked and skips ordinary resolution and emission.
+    if (parent_sym and parent_sym->kind == SYMBOL_GENERIC and
+        parent_sym->generic_body and node->compilation_unit.unit) {
+      Syntax_Node *unit = node->compilation_unit.unit;
+      Node_List *body_declarations = NULL;
+      switch (parent_sym->generic_body->kind) {
+        case NK_PACKAGE_BODY:
+          body_declarations =
+            &parent_sym->generic_body->package_body.declarations;
+          break;
+        case NK_PROCEDURE_BODY:
+        case NK_FUNCTION_BODY:
+          body_declarations =
+            &parent_sym->generic_body->subprogram_body.declarations;
+          break;
+        default: break;
+      }
+      String_Slice unit_name = {0};
+      switch (unit->kind) {
+        case NK_PROCEDURE_BODY:
+        case NK_FUNCTION_BODY: unit_name = Get_Subprogram_Name (unit); break;
+        case NK_PACKAGE_BODY:  unit_name = unit->package_body.name;    break;
+        case NK_TASK_BODY:     unit_name = unit->task_body.name;       break;
+        default: break;
+      }
+      if (body_declarations and unit_name.length)
+        for (uint32_t d = 0; d < body_declarations->count; d++) {
+          Syntax_Node *stub = body_declarations->items[d];
+          if (not stub or stub->kind != unit->kind) continue;
+          String_Slice stub_name = {0};
+          switch (stub->kind) {
+            case NK_PROCEDURE_BODY:
+            case NK_FUNCTION_BODY:
+              if (stub->subprogram_body.is_separate)
+                stub_name = Get_Subprogram_Name (stub);
+              break;
+            case NK_PACKAGE_BODY:
+              if (stub->package_body.is_separate)
+                stub_name = stub->package_body.name;
+              break;
+            case NK_TASK_BODY:
+              if (stub->task_body.is_separate)
+                stub_name = stub->task_body.name;
+              break;
+            default: break;
+          }
+          if (stub_name.length and
+              Slice_Equal_Ignore_Case (stub_name, unit_name)) {
+            body_declarations->items[d] = unit;
+            node->compilation_unit.grafted_into_generic = true;
+            return;
+          }
+        }
+    }
     if (not parent_sym) {
       Syntax_Node *parent = node->compilation_unit.separate_parent;
       String_Slice shown = Flatten_Dotted_Name (parent);
@@ -22701,6 +24422,15 @@ String_Slice Symbol_Mangle_Name (Symbol *sym) {
   // scope, which must not change the emitted symbol name).
   while (sym and sym->aliased) sym = sym->aliased;
 
+  // A name already emitted is FROZEN: mangling reads mutable facts
+  // (is_overloaded, the defining scope chain), and codegen itself creates
+  // homographs (synthesized operator wrappers) after some references have
+  // been emitted — the definition and every reference must keep one
+  // spelling (cc1301a: the formal "-" default's wrapper flipped the user
+  // "-" to overloaded between its define and a later call).
+  if (sym and sym->mangled_memo.length)
+    return sym->mangled_memo;
+
   static char bufs[4][512];
   static int buf_idx = 0;
   char *buf = bufs[buf_idx++ & 3];
@@ -22720,6 +24450,13 @@ String_Slice Symbol_Mangle_Name (Symbol *sym) {
     pos += snprintf (buf + pos, 512 - pos, "_s%u", sym->unique_id);
   }
   buf[pos] = '\0';
+
+  // Freeze only once emission is underway: during resolution the facts the
+  // name depends on are still legitimately settling.
+  if (sym and cg) {
+    sym->mangled_memo = Slice_Duplicate ((String_Slice){buf, pos});
+    return sym->mangled_memo;
+  }
   return (String_Slice){buf, pos};
 }
 
@@ -22760,6 +24497,18 @@ void Emit_Symbol_Addr (uint32_t reg, Symbol *sym) {
     Emit ("  %%t%u = load ptr, ptr ", reg);
     Emit_Symbol_Storage (sym->rename_address_slot);
     Emit ("  ; RM 8.5 renamed address\n");
+    return;
+  }
+
+  // An RM 13.5 overlay (FOR X USE AT ...) allocates no storage of its own:
+  // the object lives at the clause's address, held by the hidden address
+  // cell. Its address is the cell's VALUE — uniform here so every consumer
+  // (indexed lvalue bases, loads, parameter passing) dereferences the
+  // overlay instead of naming never-allocated storage.
+  if (sym and sym->address_cell) {
+    Emit ("  %%t%u = load ptr, ptr ", reg);
+    Emit_Symbol_Storage (sym->address_cell);
+    Emit ("  ; RM 13.5 overlay address\n");
     return;
   }
   Emit ("  %%t%u = getelementptr i8, ptr ", reg);
@@ -22867,6 +24616,11 @@ void Emit_Exception_Identity_Global (const char *mangled) {
 // so Generate_Exception_Globals can emit matching definitions.
 void Emit_Exception_Ref (Symbol *exc) {
 
+  // RM 8.5: a renamed exception IS its target — one identity, one global.
+  while (exc and exc->renamed_object and
+         ((Symbol *) exc->renamed_object)->kind == SYMBOL_EXCEPTION)
+    exc = (Symbol *) exc->renamed_object;
+
   // Capture the exception name by temporarily redirecting output
   FILE *real_out = cg->output;
   char buf[256];
@@ -22901,10 +24655,18 @@ void Emit_Exception_Ref (Symbol *exc) {
 // needs access to the outermost procedure's frame.                                                
 // Returns NULL if no enclosing function/procedure found.                                          
 //                                                                                                  
+// The nearest enclosing FRAME-OWNING level of the static chain: a
+// subprogram, or a task body (RM 9.1 — a task body owns a per-instance
+// frame exactly like a subprogram when it declares nested units; its owner
+// symbol is the task type, or the object for a single task). Packages are
+// transparent — their declarations share the enclosing frame.
 Symbol *Find_Enclosing_Subprogram (Symbol *sym) {
   Symbol *ancestor = sym ? sym->parent : NULL;
   while (ancestor) {
     if (Symbol_Is_Subprogram (ancestor))
+      return ancestor;
+    if (Type_Is_Task (ancestor->type) and ancestor->scope and
+        ancestor->scope->owner == ancestor)
       return ancestor;
     ancestor = ancestor->parent;
   }
@@ -23068,20 +24830,22 @@ void Emit_Symbol_Storage (Symbol *sym) {
 }
 
 // An accept formal is frame-resident whenever a nested subprogram in the
-// accept body can read it uplevel (RM 6.2): the task body is a nested context
-// and the formal was given a frame slot, so the prologue emitted its
-// %__frame.<name> alias. Bind the formal's local name to that slot — a no-op
-// GEP off the alias — so the accept body (through %<name>) and any nested
-// reader (through %__frame.<name>) share one storage location. The caller then
-// writes the incoming value through %<name>. Returns false when the formal is
-// not frame-resident, in which case the caller keeps its own local binding.
+// accept body can read it uplevel (RM 6.2): the formal has a slot in the
+// TASK BODY's own frame — the task is a static-chain level — so bind the
+// formal's local name to that slot. The accept body (through %<name>) and
+// any nested reader (through its %__frame.<name> alias off this task's
+// frame) then share one storage location; the caller writes the incoming
+// value through %<name>. A leaf task body allocates no frame, and can
+// contain no nested reader — return false so the caller keeps the formal
+// as a plain local binding.
 bool Emit_Bind_Accept_Formal_To_Frame (Symbol *sym) {
-  if (not cg->is_nested or not sym or not sym->frame_offset_assigned)
+  if (not sym or not sym->frame_offset_assigned or
+      cg->current_nesting_level == 0)
     return false;
   Emit_Local_Ref (sym);
-  Emit (" = getelementptr i8, ptr %%__frame.");
-  Emit_Symbol_Name (sym);
-  Emit (", i64 0  ; accept formal frame slot (uplevel-readable)\n");
+  Emit (" = getelementptr i8, ptr %%__frame_base, i64 %lld"
+        "  ; accept formal frame slot (uplevel-readable)\n",
+        (long long) sym->frame_offset);
   return true;
 }
 
@@ -23204,6 +24968,27 @@ void Emit_Collection_Budget_Debit (Type_Info *access_type, uint32_t size64) {
   uint32_t left = Emit_Result_Instruction (
     "sub i64 %%t%u, %%t%u\n", remaining, size64);
   Emit ("  store i64 %%t%u, ptr @__rt_sscap_%u\n", left, gid);
+}
+
+// RM 13.10.1: deallocating an object returns its storage to the access
+// type's bounded collection — the inverse of Emit_Collection_Budget_Debit,
+// reached through the same base/parent chain. No-op when no collection size
+// was specified.
+void Emit_Collection_Budget_Credit (Type_Info *access_type, uint32_t size64) {
+  Type_Info *st = access_type;
+  while (st and not st->collection_budget_global) {
+    Type_Info *up = st->base_type and st->base_type != st ? st->base_type
+                  : st->parent_type != st ? st->parent_type : NULL;
+    st = up;
+  }
+  if (not st) return;
+  uint32_t gid = st->collection_budget_global;
+  uint32_t remaining = Emit_Result_Instruction (
+    "load i64, ptr @__rt_sscap_%u  ; collection remaining\n", gid);
+  uint32_t back = Emit_Result_Instruction (
+    "add i64 %%t%u, %%t%u  ; deallocation returns storage\n",
+    remaining, size64);
+  Emit ("  store i64 %%t%u, ptr @__rt_sscap_%u\n", back, gid);
 }
 
 // RM 11.1: raise STORAGE_ERROR when an automatic object's storage exceeds what
@@ -23715,6 +25500,17 @@ uint32_t Emit_Fixed_Bound_Mantissa (Type_Bound *bound, double small, LLVM_Rep fi
   if (bound->kind == BOUND_FLOAT) {
     int128_t iv = (int128_t)(bound->float_value / small);
     uint32_t out = Emit_Result_Instruction ("add %s 0, %s  ; fixed bound (%g/small)\n", LLVM_Rep_To_String (fix_rep), I128_Decimal (iv), bound->float_value);
+    return out;
+  }
+
+  // An integer bound on a real-typed range holds the mathematical value (a
+  // folded conversion such as FIX (3)), same as FOLD_BOUND and
+  // Bound_Static_Double read it — scale it to mantissa units like any other
+  // real bound.
+  if (bound->kind == BOUND_INTEGER) {
+    double value = (double) bound->int_value;
+    int128_t iv = (int128_t)(value / small);
+    uint32_t out = Emit_Result_Instruction ("add %s 0, %s  ; fixed bound (%g/small)\n", LLVM_Rep_To_String (fix_rep), I128_Decimal (iv), value);
     return out;
   }
   if (Bound_Is_Expression (bound)) {
@@ -24734,6 +26530,20 @@ uint32_t Emit_Fat_Total_Elements (uint32_t fat_ptr, LLVM_Rep bt, uint32_t ndims)
 //                                                                                                  
 LLVM_Value Emit_Length_From_Bounds (uint32_t low, uint32_t high, LLVM_Rep bt)
 {
+  // high - low overflows the bound width when a null range inverts across
+  // most of the type: 3 .. INTEGER'FIRST must yield 0, not a wrapped
+  // 2^31-scale count that a memcpy then trusts (c95085c). Compute in a
+  // wider register, clamp, and narrow back.
+  if (bt.bits < 64) {
+    LLVM_Rep wide = LLVM_Rep_Int (64, false);
+    uint32_t low_w  = Emit_Convert (low, bt, wide).reg;
+    uint32_t high_w = Emit_Convert (high, bt, wide).reg;
+    uint32_t diff = Emit_Result_Instruction ("sub i64 %%t%u, %%t%u\n", high_w, low_w);
+    uint32_t raw  = Emit_Result_Instruction ("add i64 %%t%u, 1\n", diff);
+    LLVM_I1 neg = Emit_Icmp_Const ("slt", wide, raw, 0);
+    uint32_t len_w = Emit_Result_Instruction ("select i1 %%t%u, i64 0, i64 %%t%u\n", neg.reg, raw);
+    return Emit_Convert (len_w, wide, bt);
+  }
   uint32_t diff = Emit_Result_Instruction ("sub %s %%t%u, %%t%u\n", LLVM_Rep_To_String (bt), high, low);
   uint32_t raw = Emit_Result_Instruction ("add %s %%t%u, 1\n", LLVM_Rep_To_String (bt), diff);
   LLVM_I1 neg = Emit_Icmp_Const ("slt", bt, raw, 0);
@@ -25863,7 +27673,7 @@ uint32_t Generate_Lvalue (Syntax_Node *node) {
     if (Type_Is_Record (record_type)) {
       uint32_t byte_offset = 0;
       uint32_t comp_idx = 0;
-      int32_t ci = Find_Record_Component (record_type, node->selected.selector);
+      int32_t ci = Selected_Component_Slot (node, record_type);
       if (ci >= 0) {
         byte_offset = record_type->record.components[ci].byte_offset;
         comp_idx = (uint32_t) ci;
@@ -25893,6 +27703,16 @@ uint32_t Generate_Lvalue (Syntax_Node *node) {
         if (node->symbol->rename_address_slot)
           return Emit_Rename_Address (node->symbol);
         return Generate_Lvalue (node->symbol->renamed_object);
+      }
+
+      // RM 4.1.3: a package-qualified parameterless FUNCTION name (PKG.F)
+      // as a composite prefix is an implicit call — same as the
+      // NK_IDENTIFIER arm; a function symbol has no storage to address.
+      if (node->symbol->kind == SYMBOL_FUNCTION) {
+        LLVM_Value result = Generate_Expression (node);
+        if (LLVM_Rep_Is_Fat_Pointer (result.rep))
+          return Emit_Extract_Fat_Data (result.reg);
+        return result.reg;
       }
       uint32_t addr = Emit_Temp ();
       Emit_Symbol_Addr (addr, node->symbol);
@@ -25983,7 +27803,24 @@ uint32_t Generate_Lvalue (Syntax_Node *node) {
         dynamic_high = Emit_Fat_Pointer_High (fat, bt).reg;
         has_dynamic_low = true;
       } else {
-        base = Generate_Expression (node->apply.prefix).reg;
+
+        // A statically-bounded prefix can still ARRIVE as a fat value —
+        // a slice expression (N3(2..5)(2) := 8) yields { data, bounds }
+        // whose data points at the slice's first element and whose bounds
+        // are the slice's own. Unpack it exactly as the dynamic case does;
+        // treating the fat struct as the data pointer indexes garbage.
+        LLVM_Value raw_v = Generate_Expression (node->apply.prefix);
+        if (LLVM_Rep_Is_Fat_Pointer (raw_v.rep)) {
+          LLVM_Rep bt = Array_Bound_LLVM_Rep (prefix_type);
+          dyn_lv_bt = bt;
+          dyn_fat = raw_v.reg;
+          base = Emit_Fat_Pointer_Data (raw_v.reg, bt).reg;
+          dynamic_low = Emit_Fat_Pointer_Low (raw_v.reg, bt).reg;
+          dynamic_high = Emit_Fat_Pointer_High (raw_v.reg, bt).reg;
+          has_dynamic_low = true;
+        } else {
+          base = raw_v.reg;
+        }
       }
 
       // Slice as lvalue (RM 4.1.2): a slice A(L..H) denotes the sub-array
@@ -26156,6 +27993,19 @@ LLVM_Value Generate_Real_Literal (Syntax_Node *node) {
   Emit ("  %%t%u = fadd double 0.0, 0x%016llX\n", result, (unsigned long long)raw_bits);
   return Val_Rep (result, LLVM_Rep_Float (64));
 }
+// RM 3.6.1(2): ARRAY (1 .. 3) has index TYPE plain INTEGER — the range
+// lives only in Index_Info. An index type that is absent, boundless, or
+// spans all of INTEGER therefore does not constrain; a consumer needing
+// the index SUBTYPE must fall back to the dimension's own bounds.
+bool Index_Type_Is_Unconstraining (const Type_Info *idx) {
+  if (not idx) return true;
+  if (idx->low_bound.kind == BOUND_NONE) return true;
+  return idx->low_bound.kind  == BOUND_INTEGER and
+         idx->high_bound.kind == BOUND_INTEGER and
+         idx->low_bound.int_value  == (int128_t) INT32_MIN and
+         idx->high_bound.int_value == (int128_t) INT32_MAX;
+}
+
 LLVM_Value Generate_String_Literal (Syntax_Node *node) {
 
   // Allocate string constant
@@ -26295,9 +28145,10 @@ LLVM_Value Generate_String_Literal (Syntax_Node *node) {
   if (node->string_val.is_parenthesized and string_type and len > 0 and
       string_type->array.index_count > 0) {
     Index_Info *first_index = &string_type->array.indices[0];
-    Type_Bound first = first_index->index_type
-                         ? first_index->index_type->low_bound
-                         : first_index->low_bound;
+    Type_Bound first =
+      not Index_Type_Is_Unconstraining (first_index->index_type)
+        ? first_index->index_type->low_bound
+        : first_index->low_bound;
     if (first.kind == BOUND_INTEGER) {
       lo = first.int_value;
       hi = lo + (int128_t) len - 1;
@@ -26657,9 +28508,14 @@ LLVM_Value Generate_Identifier (Syntax_Node *node) {
       Symbol *actual = Ultimate_Operation (Resolve_Subprogram_Rename (sym));
       Note_Separate_Boundary_Callee (actual);
 
-      // Check if actual is an enumeration literal (e.g., RED, YELLOW)
-      if (actual->kind == SYMBOL_LITERAL and Type_Is_Enumeration (actual->type)) {
-        int64_t pos = Enum_Literal_Position (actual->type, actual->name);
+      // A literal used as a function (RM 6.1: an enumeration literal is a
+      // parameterless function). A literal of a non-enumeration character
+      // type (predefined CHARACTER, BOOLEAN) carries its position directly
+      // in frame_offset.
+      if (actual->kind == SYMBOL_LITERAL and actual->type) {
+        int64_t pos = Type_Is_Enumeration (actual->type)
+          ? Enum_Literal_Position (actual->type, actual->name)
+          : actual->frame_offset;
         LLVM_Rep efty = Type_To_Rep (actual->type);
         Emit ("  %%t%u = add %s 0, %lld  ; enum literal as function\n",
            t, LLVM_Rep_To_String (efty), (long long)pos);
@@ -26757,6 +28613,15 @@ LLVM_Value Generate_Identifier (Syntax_Node *node) {
       }
     } break;
     default:
+      // RM 9.1: within its own body, a task unit's name denotes the task
+      // currently executing that body — the TCB the body received.
+      // 'CALLABLE, 'TERMINATED, membership tests, and ABORT all consume it
+      // as a task handle (c91004b: `IF NOT TT1'CALLABLE` inside TT1's body).
+      if (cg->in_task_body and sym->type and Type_Is_Task (sym->type) and
+          cg->current_function and cg->current_function->type == sym->type) {
+        Emit ("  %%t%u = getelementptr i8, ptr %%__self_tcb, i64 0  ; task self (RM 9.1)\n", t);
+        return Val_Rep (t, LL_REP_PTR);
+      }
       Emit ("  %%t%u = add %s 0, 0  ; unhandled symbol kind\n", t, LLVM_Rep_To_String (Integer_Arith_Rep ()));
       return Val_Rep (t, Integer_Arith_Rep ());
   }
@@ -27156,6 +29021,19 @@ uint32_t Generate_Composite_Address (Syntax_Node *node) {
     }
   }
 
+  // RM 4.1.3: a package-qualified parameterless FUNCTION name (PKG.F) used
+  // as a composite prefix is an implicit call — the composite's address is
+  // the call's result pointer, mirroring the direct-name case above.
+  if (node->kind == NK_SELECTED and node->symbol and
+      node->symbol->kind == SYMBOL_FUNCTION and
+      not Type_Is_Record (node->selected.prefix
+                          ? node->selected.prefix->type : NULL)) {
+    LLVM_Value result = Generate_Expression (node);
+    if (LLVM_Rep_Is_Fat_Pointer (result.rep))
+      return Emit_Extract_Fat_Data (result.reg);
+    return result.reg;
+  }
+
   // Field access: Rec.Field - compute address of field
   if (node->kind == NK_SELECTED) {
     Type_Info *prefix_type = node->selected.prefix ? node->selected.prefix->type : NULL;
@@ -27187,7 +29065,7 @@ uint32_t Generate_Composite_Address (Syntax_Node *node) {
       // Find field offset and component index
       uint32_t offset = 0;
       uint32_t comp_idx = 0;
-      int32_t ci = Find_Record_Component (record_type, node->selected.selector);
+      int32_t ci = Selected_Component_Slot (node, record_type);
       if (ci >= 0) {
         offset = record_type->record.components[ci].byte_offset;
         comp_idx = (uint32_t) ci;
@@ -27200,10 +29078,14 @@ uint32_t Generate_Composite_Address (Syntax_Node *node) {
   // .ALL dereference: address of P.ALL = value of P (the pointer itself).
   // Evaluating the operand as an expression handles every operand form
   // uniformly — access variable, rename, alias, or parameterless function
-  // returning an access value (implicit call, RM 4.1.3).
+  // returning an access value (implicit call, RM 4.1.3). An access to an
+  // unconstrained array is a FAT value; the designated storage is its data
+  // slot, not the descriptor pair (c64108a: F1(2).ALL as an IN OUT actual).
   if (Node_Is_Dereference (node) and node->unary.operand) {
     LLVM_Value acc = Generate_Expression (node->unary.operand);
     Emit_Access_Check (acc, node->unary.operand->type);  // RM 4.1: null .ALL -> CE
+    if (LLVM_Rep_Is_Fat_Pointer (acc.rep))
+      return Emit_Extract_Fat_Data (acc.reg);
     return acc.reg;
   }
 
@@ -27222,18 +29104,32 @@ uint32_t Generate_Composite_Address (Syntax_Node *node) {
     }
     return v.reg;
   }
+
+  // A function-call apply (including an UNCHECKED_CONVERSION instance whose
+  // result is composite) produces a value; the composite's address is the
+  // call result's storage. The resolver's APPLY_CALL verdict is the oracle —
+  // without this, a call with one argument whose callee returns an array
+  // falls into the indexing path below, which "calls" the callee with no
+  // arguments and indexes the result by the actual (cda201a).
+  if (node->kind == NK_APPLY and node->apply.resolution == APPLY_CALL) {
+    LLVM_Value v = Generate_Expression (node);
+    if (LLVM_Rep_Is_Fat_Pointer (v.rep))
+      return Emit_Extract_Fat_Data (v.reg);
+    return v.reg;
+  }
   if (node->kind == NK_APPLY and node->apply.arguments.count == 1) {
     Type_Info *prefix_type = node->apply.prefix ? node->apply.prefix->type : NULL;
 
-    // Handle implicit dereference: PT (I) where PT is access-to-array (RM 4.1)
+    // Handle implicit dereference: PT (I) where PT is access-to-array —
+    // including access-to-STRING (RM 4.1; c64108a's F1(2)(1)).
     Type_Info *array_type = prefix_type;
     bool access_to_array = false;
     Type_Info *designated = Type_Designated (prefix_type);
-    if (designated and designated->kind == TYPE_ARRAY) {
+    if (Type_Is_Array_Like (designated)) {
       array_type = designated;
       access_to_array = true;
     }
-    if (array_type and array_type->kind == TYPE_ARRAY) {
+    if (Type_Is_Array_Like (array_type)) {
       uint32_t elem_size = array_type->array.element_type
                  ? array_type->array.element_type->size : 1;
       if (elem_size == 0) elem_size = 1;
@@ -27339,7 +29235,25 @@ uint32_t Generate_Composite_Address (Syntax_Node *node) {
       if (LLVM_Rep_Is_Int (idx_v.rep) and not LLVM_Rep_Equal (idx_v.rep, comp_idx_t))
         idx = Emit_Convert (idx, idx_v.rep, comp_idx_t).reg;
       uint32_t adj_idx = idx;
-      if (low != 0) {
+
+      // A slice prefix's base pointer denotes the slice's first element,
+      // whose index is the slice's OWN low bound — the slice's result type
+      // still carries the underlying array's low bound, and subtracting
+      // that would land on the wrong element (N3(2..5)(4) is N3(4), at
+      // offset 4 - 2 from the slice base; RM 4.1.2).
+      Syntax_Node *elem_pfx = node->apply.prefix;
+      bool elem_pfx_is_slice = elem_pfx and elem_pfx->kind == NK_APPLY and
+        elem_pfx->apply.resolution == APPLY_SLICE and
+        elem_pfx->apply.arguments.count == 1 and
+        elem_pfx->apply.arguments.items[0]->kind == NK_RANGE;
+      if (elem_pfx_is_slice) {
+        uint32_t slice_lo = Emit_Coerce_Val (
+          Generate_Expression (
+            elem_pfx->apply.arguments.items[0]->range.low),
+          comp_idx_t).reg;
+        adj_idx = Emit_Result_Instruction ("sub %s %%t%u, %%t%u\n",
+          LLVM_Rep_To_String (comp_idx_t), idx, slice_lo);
+      } else if (low != 0) {
         adj_idx = Emit_Temp ();
         Emit ("  %%t%u = sub %s %%t%u, %lld\n", adj_idx, LLVM_Rep_To_String (comp_idx_t), idx, (long long)low);
       }
@@ -29053,31 +30967,50 @@ LLVM_Value Emit_Binary_Op_Predefined (Syntax_Node *node) {
           // Membership in a constrained access-to-array subtype (RM 3.3.2):
           // a null value always belongs; a non-null value belongs iff its
           // designated array's index bounds equal the subtype's constraint.
+          // The bounds live behind the value's descriptor pointer, so they
+          // may be READ only on the non-null path — a null access's bounds
+          // pointer is garbage and dereferencing it traps (c45282a).
           if (Type_Is_Access (range_type) and
               Type_Is_Constrained_Array (range_type->access.designated_type) and
               LLVM_Rep_Is_Fat_Pointer (left_v.rep)) {
             Type_Info *des = range_type->access.designated_type;
             LLVM_Rep bt = Array_Bound_LLVM_Rep (des);
             LLVM_Rep iat = Integer_Arith_Rep ();
-            uint32_t data = Emit_Fat_Pointer_Data (left_v.reg, bt).reg;
-            LLVM_I1 is_null = Emit_Icmp_Null_Ptr ("eq", data);
-            LLVM_I1 belongs = { Emit_I1_Const (1, "access membership seed").reg };
-            bool decided = true;
-            for (uint32_t d = 0; d < des->array.index_count; d++) {
+
+            // The constraint's own bounds need no value: evaluate them first
+            // to learn whether the test is expressible at all.
+            uint32_t clo_regs[8], chi_regs[8];
+            LLVM_Rep  clo_reps[8], chi_reps[8];
+            bool decided = des->array.index_count <= 8;
+            for (uint32_t d = 0; decided and d < des->array.index_count; d++) {
               Index_Info *ix = &des->array.indices[d];
-              LLVM_Rep lr = LL_REP_VOID, hr = LL_REP_VOID;
-              uint32_t clo = Emit_Bound_Value_Typed (&ix->low_bound,  &lr);
-              uint32_t chi = Emit_Bound_Value_Typed (&ix->high_bound, &hr);
-              if (clo == 0 or chi == 0) { decided = false; break; }
-              uint32_t vlo = Emit_Fat_Pointer_Low_Dim  (left_v.reg, bt, d).reg;
-              uint32_t vhi = Emit_Fat_Pointer_High_Dim (left_v.reg, bt, d).reg;
-              belongs = Emit_And_I1 (belongs, Emit_Icmp ("eq", iat,
-                Emit_Convert (vlo, bt, iat).reg, Emit_Convert (clo, lr, iat).reg));
-              belongs = Emit_And_I1 (belongs, Emit_Icmp ("eq", iat,
-                Emit_Convert (vhi, bt, iat).reg, Emit_Convert (chi, hr, iat).reg));
+              clo_reps[d] = LL_REP_VOID; chi_reps[d] = LL_REP_VOID;
+              clo_regs[d] = Emit_Bound_Value_Typed (&ix->low_bound,  &clo_reps[d]);
+              chi_regs[d] = Emit_Bound_Value_Typed (&ix->high_bound, &chi_reps[d]);
+              if (clo_regs[d] == 0 or chi_regs[d] == 0) decided = false;
             }
             if (decided) {
-              uint32_t res = Emit_Result_Instruction ("or i1 %%t%u, %%t%u  ; null or bounds match\n", is_null.reg, belongs.reg);
+              uint32_t data = Emit_Fat_Pointer_Data (left_v.reg, bt).reg;
+              LLVM_I1 is_null = Emit_Icmp_Null_Ptr ("eq", data);
+              uint32_t res_slot = Emit_Result_Instruction (
+                "alloca i1  ; access membership result\n");
+              Emit ("  store i1 1, ptr %%t%u  ; null belongs\n", res_slot);
+              uint32_t skip = Emit_Open_Skip_If (is_null.reg);
+              LLVM_I1 belongs = { Emit_I1_Const (1, "access membership seed").reg };
+              for (uint32_t d = 0; d < des->array.index_count; d++) {
+                uint32_t vlo = Emit_Fat_Pointer_Low_Dim  (left_v.reg, bt, d).reg;
+                uint32_t vhi = Emit_Fat_Pointer_High_Dim (left_v.reg, bt, d).reg;
+                belongs = Emit_And_I1 (belongs, Emit_Icmp ("eq", iat,
+                  Emit_Convert (vlo, bt, iat).reg,
+                  Emit_Convert (clo_regs[d], clo_reps[d], iat).reg));
+                belongs = Emit_And_I1 (belongs, Emit_Icmp ("eq", iat,
+                  Emit_Convert (vhi, bt, iat).reg,
+                  Emit_Convert (chi_regs[d], chi_reps[d], iat).reg));
+              }
+              Emit ("  store i1 %%t%u, ptr %%t%u\n", belongs.reg, res_slot);
+              Emit_Close_Null_Skip (skip);
+              uint32_t res = Emit_Result_Instruction (
+                "load i1, ptr %%t%u  ; null or bounds match\n", res_slot);
               t = negate ? Emit_Not_I1 ((LLVM_I1){ res }).reg : res;
               return Emit_Bool_Value ((LLVM_I1){ t });
             }
@@ -29085,7 +31018,8 @@ LLVM_Value Emit_Binary_Op_Predefined (Syntax_Node *node) {
 
           // Membership in a constrained access-to-record subtype (RM 3.3.2):
           // a null value belongs; a non-null value belongs iff its designated
-          // record's discriminants equal the subtype's constraint.
+          // record's discriminants equal the subtype's constraint — read only
+          // on the non-null path, exactly as for arrays above.
           if (Type_Is_Access (range_type) and
               Type_Is_Record (range_type->access.designated_type) and
               range_type->access.designated_type->record.has_disc_constraints) {
@@ -29094,10 +31028,17 @@ LLVM_Value Emit_Binary_Op_Predefined (Syntax_Node *node) {
               ? Emit_Fat_Pointer_Data (left_v.reg, Array_Bound_LLVM_Rep (des)).reg
               : left_v.reg;
             LLVM_I1 is_null = Emit_Icmp_Null_Ptr ("eq", rec_ptr);
+            uint32_t res_slot = Emit_Result_Instruction (
+              "alloca i1  ; access-record membership result\n");
+            Emit ("  store i1 1, ptr %%t%u  ; null belongs\n", res_slot);
+            uint32_t skip = Emit_Open_Skip_If (is_null.reg);
             LLVM_I1 belongs = { Emit_I1_Const (1, "access-record membership seed").reg };
             bool decided = Emit_Discriminants_Match (des, rec_ptr, &belongs);
+            Emit ("  store i1 %%t%u, ptr %%t%u\n", belongs.reg, res_slot);
+            Emit_Close_Null_Skip (skip);
             if (decided) {
-              uint32_t res = Emit_Result_Instruction ("or i1 %%t%u, %%t%u  ; null or discriminants match\n", is_null.reg, belongs.reg);
+              uint32_t res = Emit_Result_Instruction (
+                "load i1, ptr %%t%u  ; null or discriminants match\n", res_slot);
               t = negate ? Emit_Not_I1 ((LLVM_I1){ res }).reg : res;
               return Emit_Bool_Value ((LLVM_I1){ t });
             }
@@ -29196,6 +31137,19 @@ LLVM_Value Emit_Binary_Op_Predefined (Syntax_Node *node) {
             if (negate) { LLVM_I1 nx = Emit_Not_I1 (in_range); t = nx.reg; }
             else        { t = in_range.reg; }
 
+          // A TYPE MARK with no expressible range (a float DIGITS type
+          // whose bounds were never constrained — c74004a's FLT): every
+          // value of the type belongs (RM 4.5.2). The right operand of a
+          // membership is never evaluated as a value, so the equality
+          // fallback below must not fire for type marks.
+          } else if (node->binary.right and node->binary.right->symbol and
+                     (node->binary.right->symbol->kind == SYMBOL_TYPE or
+                      node->binary.right->symbol->kind == SYMBOL_SUBTYPE)) {
+            uint32_t always =
+              Emit_I1_Const (1, "type membership, no constraint").reg;
+            if (negate) { Emit ("  %%t%u = xor i1 %%t%u, 1\n", t, always); }
+            else        { t = always; }
+
           // Fallback: equality with right operand value
           } else {
             LLVM_I1 eq;
@@ -29226,6 +31180,16 @@ LLVM_Value Emit_Binary_Op_Predefined (Syntax_Node *node) {
   }
   if (not is_float and (LLVM_Rep_Is_Float (left_int_type) or LLVM_Rep_Is_Float (right_int_type))) {
     is_float = true;
+    // The opcode was chosen while the operator still looked integral (a fixed
+    // ÷ integer in a float representation, a derived float, …) — re-select it
+    // for float arithmetic or the emitted instruction is ill-typed (sdiv double).
+    switch (node->binary.op) {
+      case TK_PLUS:  op = "fadd"; break;
+      case TK_MINUS: op = "fsub"; break;
+      case TK_STAR:  op = "fmul"; break;
+      case TK_SLASH: op = "fdiv"; break;
+      default: break;
+    }
     float_type_str = LLVM_Rep_Is_Float (left_int_type) ? left_int_type : right_int_type;
     if (not LLVM_Rep_Is_Float (left_int_type)) {
     uint32_t cv = Emit_Result_Instruction ("sitofp %s %%t%u to %s\n", LLVM_Rep_To_String (left_int_type), left, LLVM_Rep_To_String (float_type_str));
@@ -29937,6 +31901,13 @@ uint32_t Emit_Task_Pointer_From_Selected (Syntax_Node *selected_prefix) {
     Emit ("L%u:\n", join_label);
     Emit ("  %%t%u = phi ptr [ null, %%L%u ], [ %%t%u, %%L%u ]\n",
        task_ptr, from_label, loaded, ok_label);
+  } else if (task_sym->kind == SYMBOL_TYPE and Type_Is_Task (task_sym->type) and
+             cg->in_task_body and cg->current_function and
+             cg->current_function->type == task_sym->type) {
+    // RM 9.1: within its own body, the task type's name denotes the task
+    // currently executing the body (c91004c: `TT1.E1` — a conditional
+    // entry call on self). The type symbol has no storage to load.
+    Emit ("  %%t%u = getelementptr i8, ptr %%__self_tcb, i64 0  ; task self (RM 9.1)\n", task_ptr);
   } else if (Type_Is_Task (task_sym->type)) {
     // A task object variable holds a pointer to its TCB; load it. The entry
     // queue lives in the TCB, so the caller must pass the TCB value (matching
@@ -30131,6 +32102,13 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
 
       // ABS with overflow check: ABS (MIN_INT) overflows
       if (Slice_Equal_Ignore_Case (op_name, S("abs"))) {
+        if (LLVM_Rep_Is_Float (t0)) {
+          uint32_t result = Emit_Result_Instruction (
+            "call %s @llvm.fabs.%s(%s %%t%u)\n",
+            LLVM_Rep_To_String (t0), t0.bits == 32 ? "f32" : "f64",
+            LLVM_Rep_To_String (t0), v0);
+          return Val_Rep (result, t0);
+        }
         uint32_t zero = Emit_Static_Int (0, t0).reg;
         uint32_t neg = Emit_Overflow_Checked_Op (zero, v0, "sub", t0, ty0).reg;
         LLVM_I1 cmp = Emit_Icmp_Const ("slt", t0, v0, 0);
@@ -30153,7 +32131,11 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
         return Emit_Bool_Value ((LLVM_I1){ result });
       }
       if (Slice_Equal_Ignore_Case (op_name, S("-"))) {
-        uint32_t result = Emit_Result_Instruction ("sub %s 0, %%t%u\n", LLVM_Rep_To_String (t0), v0);
+        uint32_t result = LLVM_Rep_Is_Float (t0)
+          ? Emit_Result_Instruction ("fneg %s %%t%u\n",
+                                     LLVM_Rep_To_String (t0), v0)
+          : Emit_Result_Instruction ("sub %s 0, %%t%u\n",
+                                     LLVM_Rep_To_String (t0), v0);
         return Val_Rep (result, t0);
       }
       // Unary "+" is identity (RM 4.5.4): yield the operand unchanged rather
@@ -30191,6 +32173,83 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
   // This prevents aliasing - P(I, I, I) uses independent copies.                                  
   //                                                                                                
   if (Symbol_Is_Subprogram (sym)) {
+
+    // RM 13.10.1: UNCHECKED_DEALLOCATION is an intrinsic generic; an
+    // instance has no body to call. FREE (X): when X is not null, reclaim
+    // its object's storage — crediting the access type's bounded collection
+    // (RM 13.2) — then set X to null. A designated TASK keeps executing
+    // (RM 13.10.1): only the access variable is nulled, its control block
+    // outlives the name (cda101b).
+    if (sym->convention == CONVENTION_INTRINSIC and
+        sym->generic_template and
+        Slice_Equal_Ignore_Case (sym->generic_template->name,
+                                 S("UNCHECKED_DEALLOCATION")) and
+        node->apply.arguments.count == 1) {
+      Syntax_Node *actual =
+        Unwrap_Association (node->apply.arguments.items[0]);
+      Type_Info *access_type = actual->type;
+      Type_Info *designated  = Type_Designated (access_type);
+      bool       fat         = Type_Needs_Fat_Pointer (access_type);
+      uint32_t   slot        = Generate_Lvalue (actual);
+
+      Emit ("  ; UNCHECKED_DEALLOCATION (intrinsic)\n");
+      uint32_t data;
+      if (fat) {
+        uint32_t fat_value = Emit_Load_Fat (slot);
+        data = Emit_Extract_Fat_Data (fat_value);
+      } else {
+        data = Emit_Result_Instruction ("load ptr, ptr %%t%u\n", slot);
+      }
+      LLVM_I1 is_null = Emit_Icmp_Null_Ptr ("eq", data);
+      uint32_t skip_free = Emit_Open_Skip_If (is_null.reg);
+
+      if (not Type_Is_Task (designated)) {
+
+        // Storage reclaimed: credit the collection by the same measure the
+        // allocator debited — the data byte size, computed from the fat
+        // descriptor's bounds for an unconstrained designated array, or the
+        // designated subtype's static size otherwise.
+        uint32_t size64;
+        if (fat and designated and Type_Is_Array_Like (designated) and
+            designated->array.index_count > 0) {
+          LLVM_Rep bt  = Array_Bound_LLVM_Rep (designated);
+          LLVM_Rep iat = Integer_Arith_Rep ();
+          uint32_t fat_value = Emit_Load_Fat (slot);
+          uint32_t elem_size = Array_Element_Byte_Size (designated, 8, 8);
+          uint32_t total = 0;
+          for (uint32_t d = 0; d < designated->array.index_count and d < 8;
+               d++) {
+            uint32_t lo = Emit_Convert (
+              Emit_Fat_Pointer_Low_Dim (fat_value, bt, d).reg, bt, iat).reg;
+            uint32_t hi = Emit_Convert (
+              Emit_Fat_Pointer_High_Dim (fat_value, bt, d).reg, bt, iat).reg;
+            uint32_t len = Emit_Length_From_Bounds (lo, hi, iat).reg;
+            total = d == 0 ? len
+                  : Emit_Result_Instruction ("mul %s %%t%u, %%t%u\n",
+                      LLVM_Rep_To_String (iat), total, len);
+          }
+          uint32_t bytes = Emit_Result_Instruction ("mul %s %%t%u, %u\n",
+            LLVM_Rep_To_String (iat), total, elem_size);
+          size64 = Emit_Extend_To_I64 (bytes, iat).reg;
+        } else {
+          uint32_t static_size = designated and designated->size
+                                   ? designated->size : 8;
+          size64 = Emit_Result_Instruction ("add i64 0, %u  ; designated size\n",
+                                            static_size);
+        }
+        Emit_Collection_Budget_Credit (access_type, size64);
+        Emit ("  call void @free (ptr %%t%u)\n", data);
+      }
+      Emit_Close_Null_Skip (skip_free);
+
+      // X := null, unconditionally — an already-null actual stays null.
+      if (fat)
+        Emit ("  store " FAT_PTR_TYPE " zeroinitializer, ptr %%t%u\n", slot);
+      else
+        Emit ("  store ptr null, ptr %%t%u\n", slot);
+      return Val_Rep (0, LL_REP_VOID);
+    }
+
     // Arguments marshal into PARAMETER-SLOT order: a named association
     // (NAME => V) lands in its formal's slot, and defaults fill any
     // uncovered slot — leading or trailing (RM 6.4.2). The old model
@@ -30220,6 +32279,18 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
     // Hidden 'CONSTRAINED flag reg per slot (RM 3.7.4), 0 = slot needs none.
     uint32_t *constr_flag = Arena_Allocate (slot_count * sizeof (uint32_t));
     memset (constr_flag, 0, slot_count * sizeof (uint32_t));
+
+    // RM 8.5 / 12.1.3: formal NAMES and DEFAULTS belong to the view the call
+    // denotes — a renaming (or generic formal subprogram) declares its own,
+    // possibly renamed and re-defaulted relative to the renamed subprogram
+    // (c85013a: PROCA(D => V) names the rename's D, and an omitted C takes
+    // PROCA's default, not PROC1's A default). Modes, types, and the body
+    // stay with the peeled symbol. Shape guard: fall back to the peeled
+    // symbol when the view carries no aligned profile of its own.
+    Symbol *view =
+      (named_view_sym and named_view_sym->parameters and
+       named_view_sym->parameter_count == sym->parameter_count)
+      ? named_view_sym : sym;
     for (uint32_t i = 0; i < node->apply.arguments.count; i++) {
       Syntax_Node *arg_node = node->apply.arguments.items[i];
       Syntax_Node *arg = arg_node;  // Actual expression to evaluate
@@ -30229,13 +32300,14 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
       if (arg_node->kind == NK_ASSOCIATION) {
         arg = arg_node->association.expression;
 
-        // Look up formal parameter by name to get correct index
-        if (arg_node->association.choices.count > 0 and sym->parameters) {
+        // Look up formal parameter by name — in the VIEW's profile — to get
+        // the correct slot index.
+        if (arg_node->association.choices.count > 0 and view->parameters) {
           Syntax_Node *name_node = arg_node->association.choices.items[0];
           if (name_node and name_node->kind == NK_IDENTIFIER) {
             String_Slice param_name = name_node->string_val.text;
-            for (uint32_t p = 0; p < sym->parameter_count; p++) {
-              if (Slice_Equal_Ignore_Case (sym->parameters[p].name, param_name)) {
+            for (uint32_t p = 0; p < view->parameter_count; p++) {
+              if (Slice_Equal_Ignore_Case (view->parameters[p].name, param_name)) {
                 param_idx = p;
                 break;
               }
@@ -30275,6 +32347,15 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
         // references (from a nested subprogram into the enclosing
         // frame) emit %__frame.X instead of %X.
         uint32_t actual_addr;
+
+        // X.ALL of a FAT access value: the access value IS the actual's
+        // descriptor. Evaluate it exactly once — the data slot serves as
+        // the address, and the whole value serves an unconstrained formal
+        // (c64108a: P1 (F1(2).ALL, ...)).
+        uint32_t deref_fat_value = 0;
+        bool addr_is_fat_deref = Node_Is_Dereference (addr_node) and
+          addr_node->unary.operand and
+          Type_Needs_Fat_Pointer (addr_node->unary.operand->type);
         // Expanded names (STANDARD.PKG.X) resolve to the same variable
         // symbol as a bare identifier - take its address directly via
         // Emit_Symbol_Storage so we don't go through Generate_Composite_Address
@@ -30286,7 +32367,13 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
            addr_node->symbol->kind == SYMBOL_PARAMETER or
            addr_node->symbol->kind == SYMBOL_CONSTANT) and
           not addr_node->symbol->rename_address_slot;
-        if (is_simple_var_ref) {
+        if (addr_is_fat_deref) {
+          LLVM_Value access_value =
+            Generate_Expression (addr_node->unary.operand);
+          Emit_Access_Check (access_value, addr_node->unary.operand->type);
+          deref_fat_value = access_value.reg;
+          actual_addr = Emit_Extract_Fat_Data (access_value.reg);
+        } else if (is_simple_var_ref) {
           actual_addr = Emit_Temp ();
           Emit_Symbol_Addr (actual_addr, addr_node->symbol);
         } else if (addr_node->symbol and
@@ -30397,7 +32484,16 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
             addr_node->apply.arguments.count == 1 and
             addr_node->apply.arguments.items[0]->kind == NK_RANGE;
 
-          if (formal_needs_fat and addr_is_slice) {
+          if (formal_needs_fat and deref_fat_value) {
+
+            // The dereferenced access value carries the designated array's
+            // own descriptor — pass a spilled copy of it (RM 6.4.1).
+            uint32_t slot = Emit_Result_Instruction ("alloca " FAT_PTR_TYPE
+                  "  ; by-ref fat ptr for dereferenced actual\n");
+            Emit ("  store " FAT_PTR_TYPE " %%t%u, ptr %%t%u\n",
+               deref_fat_value, slot);
+            args[param_idx] = slot;
+          } else if (formal_needs_fat and addr_is_slice) {
             Syntax_Node *rng = addr_node->apply.arguments.items[0];
             LLVM_Rep bt = String_Bound_Rep ();
             uint32_t lo = Emit_Coerce_Val (Generate_Expression (rng->range.low), bt).reg;
@@ -30407,6 +32503,31 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
                   "  ; by-ref fat ptr for slice actual\n");
             Emit ("  store " FAT_PTR_TYPE " %%t%u, ptr %%t%u\n", fat.reg, slot);
             args[param_idx] = slot;
+          } else if (formal_needs_fat and addr_node->kind == NK_SELECTED and
+                     Type_Is_Constrained_Array (actual_type) and
+                     Type_Has_Dynamic_Bounds (actual_type)) {
+
+            // A discriminant-dependent component (R.S : STRING (1..N)):
+            // its bounds live in the record instance, and Generate_Selected
+            // already builds the aliasing fat descriptor from the field
+            // address plus the loaded discriminant (RM 3.7.1) — spill that
+            // (c64108a: P1 (R1.S, R2.S, R3.S)).
+            LLVM_Value component = Generate_Expression (addr_node);
+            if (LLVM_Rep_Is_Fat_Pointer (component.rep)) {
+              uint32_t slot = Emit_Result_Instruction ("alloca " FAT_PTR_TYPE
+                    "  ; by-ref fat ptr for discriminated component\n");
+              Emit ("  store " FAT_PTR_TYPE " %%t%u, ptr %%t%u\n",
+                 component.reg, slot);
+              args[param_idx] = slot;
+            } else {
+              LLVM_Value fat =
+                Emit_Fat_Pointer_For_Lvalue (component.reg, actual_type);
+              uint32_t slot = Emit_Result_Instruction ("alloca " FAT_PTR_TYPE
+                    "  ; by-ref fat ptr for unconstrained formal\n");
+              Emit ("  store " FAT_PTR_TYPE " %%t%u, ptr %%t%u\n",
+                 fat.reg, slot);
+              args[param_idx] = slot;
+            }
           } else if (formal_needs_fat and actual_inline_array) {
             LLVM_Value fat = Emit_Fat_Pointer_For_Lvalue (actual_addr, actual_type);
             uint32_t slot = Emit_Result_Instruction ("alloca " FAT_PTR_TYPE
@@ -30803,19 +32924,13 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
     // interleave with the call's argument list.
     // Fill every uncovered slot from its default (RM 6.4.2) — leading
     // or trailing; a named association may skip any defaulted formal.
-    // Defaults come from the named view's profile (the formal's own defaults
-    // for a call through a generic formal subprogram); fall back to the
-    // resolved symbol when the view's profile does not line up (shape guard).
-    Symbol *default_view =
-      (named_view_sym and named_view_sym->parameters and
-       named_view_sym->parameter_count == sym->parameter_count)
-      ? named_view_sym : sym;
+    // Defaults come from the VIEW's profile, like the name lookup above.
     if (sym->parameters) {
       for (uint32_t p = 0; p < sym->parameter_count and p < slot_count; p++) {
         if (slot_covered[p]) continue;
-        Syntax_Node *def = default_view->parameters[p].default_value;
+        Syntax_Node *def = view->parameters[p].default_value;
         if (not def) continue;  // not reachable for a legal call
-        Type_Info *pt = default_view->parameters[p].param_type;
+        Type_Info *pt = view->parameters[p].param_type;
         slot_covered[p] = true;
         slot_is_default[p] = true;
         is_byref[p] = false;
@@ -31144,10 +33259,15 @@ entry_path:
 
     // Store arguments into parameter block (skip family index for entry families).
     // Each actual may be NK_ASSOCIATION (NAME => VALUE); reorder by matching
-    // the choice name against the entry's formal parameter list.
+    // the choice name against the VIEW's formal parameter list — through a
+    // renaming, the rename's own formal names govern (RM 8.5, c85018a).
     // OUT / IN OUT scalar actuals get their values copied back from the
     // parameter block after the rendezvous (RM 9.5, 6.4). Capture each
     // actual's address now, before the call.
+    Symbol *entry_view =
+      (entry_rename_sym and entry_rename_sym->parameters and
+       entry_rename_sym->parameter_count == sym->parameter_count)
+      ? entry_rename_sym : sym;
     struct { uint32_t address; uint32_t slot; LLVM_Rep rep;
              Type_Info *actual_type; bool is_fat_access; } out_actuals[32];
     uint32_t out_actual_count = 0;
@@ -31155,7 +33275,8 @@ entry_path:
     for (uint32_t i = first_param_idx; i < node->apply.arguments.count; i++) {
       Syntax_Node *arg = node->apply.arguments.items[i];
       Syntax_Node *value_node = NULL;
-      uint32_t slot = Entry_Call_Argument_Slot (sym, arg, i - first_param_idx,
+      uint32_t slot = Entry_Call_Argument_Slot (entry_view, arg,
+                                                i - first_param_idx,
                                                 &value_node);
       if (slot < 64) slot_filled[slot] = true;
       if (sym->parameters and slot < sym->parameter_count and
@@ -31236,21 +33357,23 @@ entry_path:
         if (formal_array and actual_array and
             Type_Is_Constrained_Array (formal_array) and
             Type_Is_Constrained_Array (actual_array) and
-            formal_array->array.index_count == 1 and
-            actual_array->array.index_count == 1) {
-          Type_Bound *formal_low  = &formal_array->array.indices[0].low_bound;
-          Type_Bound *formal_high = &formal_array->array.indices[0].high_bound;
-          Type_Bound *actual_low  = &actual_array->array.indices[0].low_bound;
-          Type_Bound *actual_high = &actual_array->array.indices[0].high_bound;
-          if (formal_low->kind  == BOUND_INTEGER and
-              actual_low->kind  == BOUND_INTEGER and
-              formal_high->kind == BOUND_INTEGER and
-              actual_high->kind == BOUND_INTEGER and
-              (formal_low->int_value  != actual_low->int_value or
-               formal_high->int_value != actual_high->int_value)) {
-            uint32_t always = Emit_Result_Instruction ("icmp eq i32 0, 0  ; bounds mismatch, always raise\n");
-            Emit_Check_With_Raise (always, true,
-              "array bounds mismatch in entry call (RM 6.4.1)");
+            formal_array->array.index_count == actual_array->array.index_count) {
+          for (uint32_t d = 0; d < formal_array->array.index_count; d++) {
+            Type_Bound *formal_low  = &formal_array->array.indices[d].low_bound;
+            Type_Bound *formal_high = &formal_array->array.indices[d].high_bound;
+            Type_Bound *actual_low  = &actual_array->array.indices[d].low_bound;
+            Type_Bound *actual_high = &actual_array->array.indices[d].high_bound;
+            if (formal_low->kind  == BOUND_INTEGER and
+                actual_low->kind  == BOUND_INTEGER and
+                formal_high->kind == BOUND_INTEGER and
+                actual_high->kind == BOUND_INTEGER and
+                (formal_low->int_value  != actual_low->int_value or
+                 formal_high->int_value != actual_high->int_value)) {
+              uint32_t always = Emit_Result_Instruction ("icmp eq i32 0, 0  ; bounds mismatch, always raise\n");
+              Emit_Check_With_Raise (always, true,
+                "array bounds mismatch in entry call (RM 6.4.1)");
+              break;
+            }
           }
         }
       }
@@ -31274,6 +33397,63 @@ entry_path:
                              Type_Is_Access (Type_Underlying (slot_formal)) and
                              Type_Needs_Fat_Pointer (slot_formal) and
                              LLVM_Rep_Is_Fat_Pointer (arg_t);
+      // RM 6.4.1: a record actual must BELONG to the formal's constrained
+      // subtype — each discriminant equal to the constraint — checked at the
+      // call, before any rendezvous (c95085b: TSK1.E ((IDENT_INT(2),"AA"))
+      // and TSK1.E (R) with R.N /= 3 raise CONSTRAINT_ERROR in the caller).
+      {
+        Type_Info *slot_under = Type_Underlying (slot_formal);
+        if (Type_Is_Record (slot_under) and
+            slot_under->record.has_disc_constraints and
+            slot_under->record.discriminant_count > 0 and
+            arg_t.kind == LL_PTR) {
+          LLVM_I1 belongs = { Emit_I1_Const (1, "record actual belongs seed").reg };
+          if (Emit_Discriminants_Match (slot_under, arg_val, &belongs))
+            Emit_Raise_Constraint_Error_When (Emit_Not_I1 (belongs),
+              "record actual vs constrained formal (RM 6.4.1)");
+        }
+
+        // RM 6.4.1: an array actual's BOUNDS must equal a statically-
+        // constrained formal's — a rendezvous does not slide — checked in
+        // the caller, before any rendezvous (c95085c: "AB" for STRING(1..3),
+        // and dynamically-bounded variables for static formals, all raise
+        // CONSTRAINT_ERROR). A fat actual carries its bounds; a flat one
+        // reads them from its subtype's (possibly runtime) bounds.
+        if (Type_Is_Constrained_Array (slot_under) and not slot_fat_array) {
+          Type_Info *actual_type = value_node ? value_node->type : NULL;
+          bool fat_actual = LLVM_Rep_Is_Fat_Pointer (arg_t);
+          bool flat_dyn_actual = not fat_actual and
+            Type_Is_Constrained_Array (actual_type) and
+            actual_type != slot_under and
+            Type_Has_Dynamic_Bounds (actual_type);
+          LLVM_Rep bound_rep = Array_Bound_LLVM_Rep (slot_under);
+          uint32_t dims = slot_under->array.index_count ?
+                          slot_under->array.index_count : 1;
+          for (uint32_t d = 0; (fat_actual or flat_dyn_actual) and d < dims;
+               d++) {
+            Type_Bound flo = slot_under->array.indices[d].low_bound;
+            Type_Bound fhi = slot_under->array.indices[d].high_bound;
+            if (flo.kind != BOUND_INTEGER or fhi.kind != BOUND_INTEGER)
+              continue;
+            uint32_t alo, ahi;
+            if (fat_actual) {
+              Bound_Temps ab = Emit_Bounds_From_Fat_Dim (arg_val, bound_rep, d);
+              alo = ab.low_temp;
+              ahi = ab.high_temp;
+            } else {
+              Bound_Temps ab = Emit_Bounds (actual_type, d);
+              alo = Emit_Convert (ab.low_temp,  ab.bound_rep, bound_rep).reg;
+              ahi = Emit_Convert (ab.high_temp, ab.bound_rep, bound_rep).reg;
+            }
+            uint32_t flo_reg =
+              Emit_Static_Int (Type_Bound_Value (flo), bound_rep).reg;
+            uint32_t fhi_reg =
+              Emit_Static_Int (Type_Bound_Value (fhi), bound_rep).reg;
+            Emit_Aggregate_Bound_Match_Check (alo, flo_reg, ahi, fhi_reg,
+              bound_rep, "array actual bounds vs constrained formal (RM 6.4.1)");
+          }
+        }
+      }
       if (slot_fat_array or slot_fat_access) {
         uint32_t fat_val = slot_fat_array
           ? Normalize_To_Fat_Pointer (value_node, arg_v,
@@ -31292,14 +33472,17 @@ entry_path:
     }
 
     // Fill the default value for each formal the call omitted (RM 6.4.2): the
-    // default expression is evaluated at the point of the call, once per call.
+    // default expression is evaluated at the point of the call, once per
+    // call. Through a renaming the RENAME's own defaults govern (RM 8.5);
+    // profiles correspond by position (c85018a: ENTA's C := 5 default, not
+    // the renamed entry's A := 1).
     if (sym->parameters) {
       for (uint32_t s = 0; s < sym->parameter_count and s < 64; s++) {
         if (slot_filled[s]) continue;
-        Syntax_Node *dflt = sym->parameters[s].default_value;
+        Syntax_Node *dflt = entry_view->parameters[s].default_value;
         if (not dflt) continue;
         uint32_t dval = Emit_Entry_Default_To_Slot (dflt,
-                          sym->parameters[s].param_type);
+                          entry_view->parameters[s].param_type);
         uint32_t dptr = Emit_Result_Instruction ("getelementptr [%u x i64], ptr %%t%u, i64 0, i64 %u\n", block_slots, param_block, s);
         Emit ("  store i64 %%t%u, ptr %%t%u  ; default parameter\n", dval, dptr);
       }
@@ -31318,7 +33501,7 @@ entry_path:
         Syntax_Node *actual = NULL;
         for (uint32_t i = first_param_idx; i < node->apply.arguments.count; i++) {
           Syntax_Node *vn = NULL;
-          uint32_t s = Entry_Call_Argument_Slot (sym,
+          uint32_t s = Entry_Call_Argument_Slot (entry_view,
                          node->apply.arguments.items[i], i - first_param_idx, &vn);
           if (s == p) { actual = vn; break; }
         }
@@ -32029,7 +34212,7 @@ LLVM_Value Generate_Selected (Syntax_Node *node) {
   uint32_t byte_offset = 0;
   Type_Info *field_type = NULL;
   int32_t field_variant_index = -1;
-  int32_t fci = Find_Record_Component (record_type, node->selected.selector);
+  int32_t fci = Selected_Component_Slot (node, record_type);
   if (fci >= 0) {
     Component_Info *fc = &record_type->record.components[fci];
     byte_offset = fc->byte_offset;
@@ -32144,7 +34327,7 @@ LLVM_Value Generate_Selected (Syntax_Node *node) {
     base = Generate_Lvalue (node->selected.prefix);
   }
   // Find component index for runtime offset lookup
-  int32_t cidx = Find_Record_Component (record_type, node->selected.selector);
+  int32_t cidx = Selected_Component_Slot (node, record_type);
   uint32_t comp_idx = cidx >= 0 ? (uint32_t) cidx : 0;
   uint32_t ptr = Emit_Record_Field_Ptr (base, record_type, comp_idx, byte_offset);
 
@@ -33330,7 +35513,15 @@ LLVM_Value Generate_Attribute (Syntax_Node *node) {
   // T'VALUE (s) - parse string to type (RM 3.5.5)
   if (attribute_kind == ATTRIBUTE_VALUE) {
     if (first_arg) {
-      uint32_t str_val = Generate_Expression (first_arg).reg;
+      LLVM_Value str_raw = Generate_Expression (first_arg);
+
+      // The runtime takes a FAT string; a statically constrained argument
+      // (ST : STRING (1..2), c74004a's PR'VALUE (ST)) arrives as a plain
+      // data pointer — wrap it with its subtype's bounds.
+      uint32_t str_val = LLVM_Rep_Is_Fat_Pointer (str_raw.rep)
+        ? str_raw.reg
+        : Normalize_To_Fat_Pointer (first_arg, str_raw, first_arg->type,
+                                    String_Bound_Rep ());
       if (Type_Is_Integer_Like (classify_type) or
         Type_Is_Universal_Integer (classify_type)) {
 
@@ -33395,7 +35586,11 @@ LLVM_Value Generate_Attribute (Syntax_Node *node) {
         // Fail - raise CONSTRAINT_ERROR
         Emit ("Lcval_fail%u:\n", fail_label);
         Emit_Raise_Constraint_Error ("VALUE no match");
+        // Lcval_end is the live continuation reached by the extract branch;
+        // the raise above marked the block terminated, so clear that before
+        // the caller emits code after the label.
         Emit ("Lcval_end%u:\n", end_label);
+        cg->block_terminated = false;
         // CHARACTER'VALUE yields the i8 character code; tag it honestly rather
         // than the shared i32 fall-through.
         return Val_Rep (t, Type_To_Rep (classify_type));
@@ -33450,7 +35645,11 @@ LLVM_Value Generate_Attribute (Syntax_Node *node) {
         // No match - raise CONSTRAINT_ERROR
         Emit ("Lbval_nm%u:\n", no_match);
         Emit_Raise_Constraint_Error ("VALUE no match");
+        // Lbval_end is the live continuation reached by the match branches;
+        // the raise above marked the block terminated, so clear that before
+        // emitting code that follows the label.
         Emit ("Lbval_end%u:\n", end_label);
+        cg->block_terminated = false;
         Emit ("  %%t%u = load %s, ptr %%t%u\n", t, LLVM_Rep_To_String (val_iat), result_alloc);
         LLVM_Rep bool_result_t = Type_To_Rep (classify_type);
         if (LLVM_Rep_Is_Int (bool_result_t))
@@ -34239,8 +36438,59 @@ uint32_t Emit_Record_Field_Ptr (uint32_t base, Type_Info *record_type,
   return fp;
 }
 
+// The component slot a selected node denotes: the resolver's recorded pick
+// when present — mandatory under a formal/actual discriminant name collision
+// (RM 12.1, cc3240a), which a by-name lookup cannot re-arbitrate — else a
+// by-name lookup for nodes synthesized after resolution.
+int32_t Selected_Component_Slot (const Syntax_Node *sel_node,
+                                 Type_Info *record_type) {
+  int32_t recorded = sel_node->selected.component_index;
+  if (recorded >= 0 and
+      (uint32_t)recorded < record_type->record.component_count)
+    return recorded;
+  return Find_Record_Component (record_type, sel_node->selected.selector);
+}
+
+// A type whose record view is live: a proper record, or a private /
+// limited-private view carrying discriminant components (RM 3.7.4, 7.4.2).
+bool Type_Record_View_Live (const Type_Info *t) {
+  return t and (t->kind == TYPE_RECORD or t->kind == TYPE_PRIVATE or
+                t->kind == TYPE_LIMITED_PRIVATE);
+}
+
+// True when the current resolution point lies within the region of the
+// instance (or its template) that installed `view` as a formal-type binding —
+// where RM 12.1 says the FORMAL's discriminant names govern.
+static bool Inside_View_Instance_Region (const Type_Info *view) {
+  Symbol *binding = view->defining_symbol;
+  Symbol *owner = (binding and binding->defining_scope)
+                  ? binding->defining_scope->owner : NULL;
+  if (not owner) return false;
+  for (Scope *sc = sm->current_scope; sc; sc = sc->parent)
+    if (sc->owner == owner or
+        (owner->generic_template and sc->owner == owner->generic_template))
+      return true;
+  return false;
+}
+
 int32_t Find_Record_Component (Type_Info *record_type, String_Slice name) {
-  if (not Type_Is_Record (record_type)) return -1;
+  if (not Type_Record_View_Live (record_type)) return -1;
+  // RM 12.1: inside the generic (an instance body clone re-resolving there),
+  // the discriminants of a formal private type are known by the FORMAL's
+  // names, mapping positionally onto the actual's — and those names take
+  // precedence over a same-named component of the actual (cc3240a: TX.A is
+  // the discriminant the formal calls A, not the actual's component A).
+  // Outside the instance the actual's own names govern (cc3203a: P1VP.D).
+  Type_Info *formal_view = record_type->generic_formal_disc_view;
+  if (formal_view and Type_Record_View_Live (formal_view) and
+      Inside_View_Instance_Region (record_type)) {
+    uint32_t shared = formal_view->record.discriminant_count;
+    if (record_type->record.discriminant_count < shared)
+      shared = record_type->record.discriminant_count;
+    for (uint32_t i = 0; i < shared; i++)
+      if (Slice_Equal_Ignore_Case (formal_view->record.components[i].name, name))
+        return (int32_t)i;
+  }
   for (uint32_t i = 0; i < record_type->record.component_count; i++) {
     if (Slice_Equal_Ignore_Case (record_type->record.components[i].name, name)) {
       return (int32_t)i;
@@ -34271,6 +36521,78 @@ int32_t Governing_Discriminant_Index (Type_Info *record_type) {
   }
   int32_t memo = record_type->governing_discriminant_memo;
   return memo > 0 ? memo - 1 : -1;
+}
+
+// The variant a record aggregate selects (RM 3.7.3 / 4.3.1). Both the
+// resolver's and the generator's positional component mapping must skip the
+// components of every other variant — otherwise the Nth positional element
+// lands on the Nth FLAT component, which for a variant record can be a
+// different variant's field (e.g. an ARRAY_OF_INT mapped onto the
+// overlapping B:BOOLEAN slot). The governing discriminant's value comes
+// from the aggregate itself — authoritative, since it may select a variant
+// other than the subtype's default constraint — or, when the aggregate does
+// not supply it, from the subtype constraint. Returns the variant index, or
+// -1 when the type has no variant part or the governing value is not
+// static. Callers treat -1 as "no skipping".
+int32_t Aggregate_Selected_Variant (Syntax_Node *aggregate, Type_Info *record_type) {
+  if (not Type_Is_Record (record_type) or
+      not record_type->record.has_discriminants or
+      record_type->record.variant_count == 0) return -1;
+  int32_t gov_index = Governing_Discriminant_Index (record_type);
+  if (gov_index < 0) gov_index = 0;
+
+  // Locate the aggregate item that supplies the governing discriminant:
+  // the gov_index'th positional item, or the association naming it.
+  Syntax_Node *gov_expr = NULL;
+  uint32_t positional = 0;
+  for (uint32_t i = 0; i < aggregate->aggregate.items.count; i++) {
+    Syntax_Node *item = aggregate->aggregate.items.items[i];
+    if (item->kind == NK_ASSOCIATION) {
+      for (uint32_t c = 0; c < item->association.choices.count; c++) {
+        Syntax_Node *choice = item->association.choices.items[c];
+        if (choice->kind == NK_IDENTIFIER and
+            Find_Record_Component (record_type, choice->string_val.text) == gov_index)
+          gov_expr = item->association.expression;
+      }
+    } else {
+      if ((int32_t) positional == gov_index) gov_expr = item;
+      positional++;
+    }
+  }
+
+  // Its static value: an integer literal, a resolved enumeration literal, or
+  // any other static expression the folder can evaluate. A negative literal
+  // is unary minus over an integer (`-6`, not an NK_INTEGER), and a named
+  // number folds too; NaN means "not static" (c37213g).
+  int64_t gov = 0; bool gov_known = false;
+  if (gov_expr) {
+    if (gov_expr->kind == NK_INTEGER) {
+      gov = (int64_t) gov_expr->integer_lit.value; gov_known = true;
+    } else if (gov_expr->symbol and gov_expr->symbol->kind == SYMBOL_LITERAL) {
+      gov = (int64_t) gov_expr->symbol->frame_offset; gov_known = true;
+    } else {
+      double folded = Eval_Const_Numeric (gov_expr);
+      if (folded == folded) { gov = (int64_t) folded; gov_known = true; }
+    }
+  }
+  if (not gov_known and record_type->record.disc_constraint_values and
+      (not record_type->record.disc_constraint_exprs or
+       not record_type->record.disc_constraint_exprs[0])) {
+    gov = record_type->record.disc_constraint_values[0];
+    gov_known = true;
+  }
+  if (not gov_known) return -1;
+
+  // Range match wins; OTHERS is the fallback when no later range matches.
+  int32_t others_variant = -1;
+  for (uint32_t vi = 0; vi < record_type->record.variant_count; vi++) {
+    if (gov >= record_type->record.variants[vi].disc_value_low and
+        gov <= record_type->record.variants[vi].disc_value_high)
+      return (int32_t) vi;
+    if (record_type->record.variants[vi].is_others)
+      others_variant = (int32_t) vi;
+  }
+  return others_variant;
 }
 
 // Check if a choice is "others"
@@ -34405,6 +36727,8 @@ Aggregate_Shape Scan_Aggregate_Shape (Syntax_Node *node) {
         shape.has_static_high = true;
       } else {
         shape.has_dynamic_single_choice = true;
+        if (not shape.first_dynamic_single_choice)
+          shape.first_dynamic_single_choice = choice;
       }
     }
   }
@@ -35681,6 +38005,17 @@ uint32_t Generate_Aggregate_Body (Syntax_Node *node) {
           high_bound = dim_hi[0];
         }
       }
+    } else if (shape.first_dynamic_single_choice and
+               not agg_type->array.is_constrained) {
+
+      // RM 4.3.2: a non-static choice is only legal as the aggregate's sole
+      // choice, so a dynamic single choice determines BOTH bounds exactly:
+      // (I => E) has bounds I .. I.
+      Syntax_Node *ch = shape.first_dynamic_single_choice;
+      dim_lo[0] = (Type_Bound){.kind = BOUND_EXPR, .expr = ch};
+      dim_hi[0] = dim_lo[0];
+      low_bound  = dim_lo[0];
+      high_bound = dim_hi[0];
     }
     // RM 3.5: a named choice written `S RANGE L..H` requires the range L..H to
     // be compatible with the subtype mark S, checked when the aggregate is
@@ -36598,6 +38933,35 @@ uint32_t Generate_Aggregate_Body (Syntax_Node *node) {
                   (int64_t)inner_idx_sub_lo, (int64_t)inner_idx_sub_hi,
                   bt, "aggregate inner index subtype check");
                 Emit_Close_Null_Skip (sk);
+
+                // RM 4.3.2(6): for a CONSTRAINED type, an inner aggregate
+                // consisting of one named range must fit the inner
+                // dimension's constraint — a dynamic (1..IDENT_INT(2) => 0)
+                // row for a 1..3 dimension raises CONSTRAINT_ERROR
+                // (c95085c subtest B). In a SLIDING context (assignment RHS,
+                // RM 5.2.1) only the LENGTH need agree (c43211a case B:
+                // (IDENT(4)..6 => 1) assigns into a 5..7 dimension).
+                if (agg_type->array.is_constrained and
+                    dim_lo[1].kind == BOUND_INTEGER and
+                    dim_hi[1].kind == BOUND_INTEGER and
+                    inner_agg->aggregate.items.count == 1 and
+                    qi_item->association.choices.count == 1) {
+                  if (cg->agg_dimension_rows_slide) {
+                    int128_t type_len = inner_high - inner_low + 1;
+                    if (type_len < 0) type_len = 0;
+                    uint32_t alen = Emit_Length_From_Bounds (lo_v, hi_v, bt).reg;
+                    Emit_Raise_Constraint_Error_When (
+                      Emit_Icmp ("ne", bt, alen,
+                                 Emit_Static_Int (type_len, bt).reg),
+                      "inner named range length vs constraint (RM 4.3.2)");
+                  } else {
+                    uint32_t constraint_lo = Emit_Static_Int (inner_low, bt).reg;
+                    uint32_t constraint_hi = Emit_Static_Int (inner_high, bt).reg;
+                    Emit_Aggregate_Bound_Match_Check (lo_v, constraint_lo,
+                      hi_v, constraint_hi, bt,
+                      "inner named range vs constraint (RM 4.3.2)");
+                  }
+                }
               }
             }
           }
@@ -36824,6 +39188,38 @@ uint32_t Generate_Aggregate_Body (Syntax_Node *node) {
           mismatch, context.nonnull_guard);
       Emit_Raise_Constraint_Error_When ((LLVM_I1){ mismatch },
         "sub-aggregate bounds mismatch (RM 4.3.2(6))");
+
+      // For a CONSTRAINED aggregate type the inner dimensions must also
+      // match the TYPE's own constraint — mutually consistent rows of the
+      // wrong LENGTH are still wrong (c95085c: (1..3 => (1..IDENT_INT(2)
+      // => 0)) for a 3x3 type raises CONSTRAINT_ERROR).
+      if (agg_type->array.is_constrained) {
+        for (int d = 0; d < context.inner_dimension_count; d++) {
+          uint32_t dim = (uint32_t) d + 1;
+          if (dim >= agg_type->array.index_count) break;
+          Type_Bound type_lo = agg_type->array.indices[dim].low_bound;
+          Type_Bound type_hi = agg_type->array.indices[dim].high_bound;
+          if (type_lo.kind != BOUND_INTEGER or type_hi.kind != BOUND_INTEGER)
+            continue;
+          int128_t type_len =
+            Type_Bound_Value (type_hi) - Type_Bound_Value (type_lo) + 1;
+          if (type_len < 0) type_len = 0;
+          const char *rep = LLVM_Rep_To_String (context.inner_track_rep);
+          uint32_t inner_lo = Emit_Result_Instruction ("load %s, ptr %%t%u\n",
+            rep, context.inner_track_low[d]);
+          uint32_t inner_hi = Emit_Result_Instruction ("load %s, ptr %%t%u\n",
+            rep, context.inner_track_high[d]);
+          uint32_t inner_len = Emit_Length_From_Bounds (
+            inner_lo, inner_hi, context.inner_track_rep).reg;
+          uint32_t want = Emit_Static_Int (type_len, context.inner_track_rep).reg;
+          LLVM_I1 ne = Emit_Icmp ("ne", context.inner_track_rep, inner_len, want);
+          if (context.nonnull_guard)
+            ne.reg = Emit_Result_Instruction ("and i1 %%t%u, %%t%u\n",
+              ne.reg, context.nonnull_guard);
+          Emit_Raise_Constraint_Error_When (ne,
+            "inner dimension vs constraint (RM 4.3.2(6))");
+        }
+      }
       Emit_Label_Here (skip_label);
     }
 
@@ -37018,75 +39414,8 @@ uint32_t Generate_Aggregate_Body (Syntax_Node *node) {
     Disc_Alloc_Info da_info = { .entries = disc_alloc, .count = disc_alloc_count };
 
     // Pre-determine the selected variant (RM 3.7.3) so positional component
-    // mapping skips components belonging to other variants — otherwise the Nth
-    // positional element lands on the Nth flat component, which for a variant
-    // record can be a different variant's field (e.g. F:FLOAT mapped onto the
-    // overlapping S:STRING slot). The variant is governed by the first
-    // discriminant; its value comes from the subtype constraint or, for an
-    // unconstrained aggregate, the discriminant element itself.
-    int32_t selected_variant = -1;
-    if (agg_type->record.has_discriminants and agg_type->record.variant_count > 0) {
-      int64_t gov = 0; bool gov_known = false;
-      // The aggregate's own discriminant value is authoritative — it overrides
-      // the subtype's default constraint (an unconstrained type with defaults
-      // still carries disc_constraint_values, but the aggregate may select a
-      // different variant). Only fall back to the constraint when the aggregate
-      // doesn't supply the governing discriminant.
-      // The variant is governed by the discriminant NAMED in the variant part
-      // (RM 3.7.3), not necessarily the first: `CASE E` when D precedes E must
-      // read E's value, not D's. Locate that discriminant's position.
-      int32_t gov_index = Governing_Discriminant_Index (agg_type);
-      if (gov_index < 0) gov_index = 0;
-      Syntax_Node *gov_expr = NULL;
-      uint32_t pcount = 0;
-      for (uint32_t i = 0; i < node->aggregate.items.count; i++) {
-        Syntax_Node *it = node->aggregate.items.items[i];
-        if (it->kind == NK_ASSOCIATION) {
-          for (uint32_t c = 0; c < it->association.choices.count; c++) {
-            Syntax_Node *ch = it->association.choices.items[c];
-            if (ch->kind == NK_IDENTIFIER and
-              Find_Record_Component (agg_type, ch->string_val.text) == gov_index)
-              gov_expr = it->association.expression;
-          }
-        } else {
-          if ((int32_t) pcount == gov_index) gov_expr = it;
-          pcount++;
-        }
-      }
-      if (gov_expr) {
-        if (gov_expr->kind == NK_INTEGER) {
-          gov = (int64_t) gov_expr->integer_lit.value; gov_known = true;
-        } else if (gov_expr->symbol and
-               gov_expr->symbol->kind == SYMBOL_LITERAL) {
-          gov = (int64_t) gov_expr->symbol->frame_offset; gov_known = true;
-        } else {
-          // A negative literal is unary minus over an integer (`-6`, not an
-          // NK_INTEGER), and a named number or static expression folds too. Any
-          // of these must select the variant, or the field pass maps positional
-          // components to the wrong arm — e.g. building the -5..10 arm's array
-          // component for a value that belongs in OTHERS, whose scalar it then
-          // dereferences as a fat pointer (c37213g). NaN means "not static".
-          double cv = Eval_Const_Numeric (gov_expr);
-          if (cv == cv) { gov = (int64_t) cv; gov_known = true; }
-        }
-      }
-      if (not gov_known and agg_type->record.disc_constraint_values and
-        (not agg_type->record.disc_constraint_exprs or
-         not agg_type->record.disc_constraint_exprs[0])) {
-        gov = agg_type->record.disc_constraint_values[0];
-        gov_known = true;
-      }
-      if (gov_known) {
-        for (uint32_t vi = 0; vi < agg_type->record.variant_count; vi++) {
-          if (gov >= agg_type->record.variants[vi].disc_value_low and
-            gov <= agg_type->record.variants[vi].disc_value_high) {
-            selected_variant = (int32_t) vi; break;
-          }
-          if (agg_type->record.variants[vi].is_others)
-            selected_variant = (int32_t) vi;
-        }
-      }
-    }
+    // mapping skips components belonging to other variants.
+    int32_t selected_variant = Aggregate_Selected_Variant (node, agg_type);
 
     // ── Second pass: initialize fields ───────────────────────────────────────────────────────────
     // Both named (field_name => expr) and positional (expr, expr, ...)                             
@@ -37287,6 +39616,55 @@ uint32_t Generate_Aggregate_Body (Syntax_Node *node) {
       node->location.line);
   return 0;
 }
+// RM 4.3.2 / 4.7: the bounds of a named array aggregate come from its sole
+// choice, and qualification by a constrained array subtype requires them to
+// EQUAL the type mark's first-dimension bounds — even between two null
+// ranges (c48009e: CA3_2'(4..2 => 5) with CA3_2 bounds 3..2 raises
+// CONSTRAINT_ERROR). Both spellings of qualification reach this: the
+// explicit T'(agg) via Generate_Qualified, and NEW T'(agg) via the
+// allocator, whose parser unwraps the qualified node.
+void Emit_Qualified_Aggregate_Bounds_Check (Syntax_Node *agg,
+                                            Type_Info *mark_type) {
+  if (not (agg and agg->kind == NK_AGGREGATE and
+           Type_Is_Constrained_Array (mark_type) and
+           agg->aggregate.items.count == 1))
+    return;
+  Syntax_Node *assoc = agg->aggregate.items.items[0];
+  if (assoc->kind != NK_ASSOCIATION or assoc->association.choices.count != 1)
+    return;
+  Syntax_Node *choice = assoc->association.choices.items[0];
+  Syntax_Node *choice_lo = NULL, *choice_hi = NULL;
+  bool is_type_mark = choice->symbol and
+    (choice->symbol->kind == SYMBOL_TYPE or
+     choice->symbol->kind == SYMBOL_SUBTYPE);
+  if (choice->kind == NK_RANGE) {
+    choice_lo = choice->range.low;
+    choice_hi = choice->range.high;
+  } else if (not Is_Others_Choice (choice) and not is_type_mark and
+             choice->kind != NK_SUBTYPE_INDICATION) {
+    choice_lo = choice_hi = choice;   // (I => E) has bounds I .. I
+  }
+  Type_Bound *mark_lo = &mark_type->array.indices[0].low_bound;
+  Type_Bound *mark_hi = &mark_type->array.indices[0].high_bound;
+  if (not (choice_lo and choice_hi and
+           mark_lo->kind != BOUND_NONE and mark_hi->kind != BOUND_NONE))
+    return;
+  LLVM_Rep iat = Integer_Arith_Rep ();
+  LLVM_Value alo_v = Generate_Expression (choice_lo);
+  LLVM_Value ahi_v = choice_hi == choice_lo
+    ? alo_v : Generate_Expression (choice_hi);
+  uint32_t agg_lo = Emit_Convert (alo_v.reg, alo_v.rep, iat).reg;
+  uint32_t agg_hi = Emit_Convert (ahi_v.reg, ahi_v.rep, iat).reg;
+  uint32_t mk_lo = Emit_Bound_Value_Typed (mark_lo, NULL);
+  uint32_t mk_hi = Emit_Bound_Value_Typed (mark_hi, NULL);
+  if (not (agg_lo and agg_hi and mk_lo and mk_hi)) return;
+  LLVM_I1 lo_ne = Emit_Icmp ("ne", iat, agg_lo, mk_lo);
+  LLVM_I1 hi_ne = Emit_Icmp ("ne", iat, agg_hi, mk_hi);
+  uint32_t bad = Emit_Result_Instruction ("or i1 %%t%u, %%t%u\n", lo_ne.reg, hi_ne.reg);
+  Emit_Check_With_Raise (bad, true,
+    "qualified aggregate bounds (RM 4.3.2, 4.7)");
+}
+
 LLVM_Value Generate_Qualified (Syntax_Node *node) {
   // RM 4.8: Propagate target access type to allocator in qualified expression
   // context so disc/bounds constraint checks fire (e.g., ACTB'(NEW TB(2))).
@@ -37374,6 +39752,13 @@ LLVM_Value Generate_Qualified (Syntax_Node *node) {
       Emit_Check_With_Raise (bad, true, "qualified expr array bounds (RM 4.7)");
     }
   }
+
+  // RM 4.3.2 / 4.7: a named array aggregate takes its bounds from its sole
+  // choice, but the constrained-type aggregate emitter materializes it
+  // directly in type-mark layout — no fat pointer, so the general check
+  // above never sees the choice's bounds.
+  if (not LLVM_Rep_Is_Fat_Pointer (src_llvm))
+    Emit_Qualified_Aggregate_Bounds_Check (node->qualified.expression, dst_type);
 
   // RM 3.7.2: a type mark denoting a constrained access subtype checks that the
   // operand's designated object matches the access constraint (index bounds or
@@ -37737,43 +40122,37 @@ bool Type_Contains_Access (Type_Info *t) {
 void Emit_Init_Record_Defaults (Type_Info *rec, uint32_t base) {
   if (rec->record.has_disc_constraints and rec->record.disc_constraint_values)
     Emit_Store_Disc_Values (rec, base, false);
+
+  // Apply this record's own component defaults through the general machinery —
+  // it binds each discriminant to its stored field so a self-referential
+  // default (D : INTEGER := A, with A a discriminant) resolves through the
+  // record's storage, guards run-time variants, and range-checks scalars.
+  Symbol *bound_discs[16]; uint32_t bound_count = 0;
+  Emit_Apply_Component_Defaults (rec, base, -2, rec->record.has_disc_constraints,
+                                 bound_discs, &bound_count, 16);
+  for (uint32_t i = 0; i < bound_count; i++) bound_discs[i]->disc_agg_temp = 0;
+
   for (uint32_t nci = 0; nci < rec->record.component_count; nci++) {
     Component_Info *ncomp = &rec->record.components[nci];
-    if (not ncomp->default_expr) {
-      // A composite component without its own default may still carry defaults
-      // INSIDE its type (a record component whose type defaults its fields, or
-      // an array of such records) — recurse into it (RM 3.7).
-      Type_Info *ict = ncomp->component_type;
-      if (Type_Is_Record (ict) and Type_Has_Component_Defaults (ict)) {
-        uint32_t ip = Emit_Result_Instruction ("getelementptr i8, ptr %%t%u, i64 %u  ; %.*s nested defaults\n", base, ncomp->byte_offset, (int)ncomp->name.length, ncomp->name.data);
-        Emit_Init_Record_Defaults (ict, ip);
-      } else if (Type_Is_Constrained_Array (ict) and
-                 Type_Is_Record (ict->array.element_type) and
-                 Type_Has_Component_Defaults (ict->array.element_type)) {
-        Type_Info *iel = ict->array.element_type;
-        int128_t icount = Array_Element_Count (ict);
-        uint32_t iesz = iel->size > 0 ? iel->size : 8;
-        for (int128_t ei = 0; ei < icount and ei < 1024; ei++) {
-          uint32_t ep = Emit_Result_Instruction ("getelementptr i8, ptr %%t%u, i64 %lld  ; %.*s[%lld] defaults\n", base, (long long)(ncomp->byte_offset + ei * iesz),
-             (int)ncomp->name.length, ncomp->name.data, (long long)ei);
-          Emit_Init_Record_Defaults (iel, ep);
-        }
+    if (ncomp->default_expr) continue;
+    // A composite component without its own default may still carry defaults
+    // INSIDE its type (a record component whose type defaults its fields, or
+    // an array of such records) — recurse into it (RM 3.7).
+    Type_Info *ict = ncomp->component_type;
+    if (Type_Is_Record (ict) and Type_Has_Component_Defaults (ict)) {
+      uint32_t ip = Emit_Result_Instruction ("getelementptr i8, ptr %%t%u, i64 %u  ; %.*s nested defaults\n", base, ncomp->byte_offset, (int)ncomp->name.length, ncomp->name.data);
+      Emit_Init_Record_Defaults (ict, ip);
+    } else if (Type_Is_Constrained_Array (ict) and
+               Type_Is_Record (ict->array.element_type) and
+               Type_Has_Component_Defaults (ict->array.element_type)) {
+      Type_Info *iel = ict->array.element_type;
+      int128_t icount = Array_Element_Count (ict);
+      uint32_t iesz = iel->size > 0 ? iel->size : 8;
+      for (int128_t ei = 0; ei < icount and ei < 1024; ei++) {
+        uint32_t ep = Emit_Result_Instruction ("getelementptr i8, ptr %%t%u, i64 %lld  ; %.*s[%lld] defaults\n", base, (long long)(ncomp->byte_offset + ei * iesz),
+           (int)ncomp->name.length, ncomp->name.data, (long long)ei);
+        Emit_Init_Record_Defaults (iel, ep);
       }
-      continue;
-    }
-    if (ncomp->is_discriminant and rec->record.has_disc_constraints) continue;
-    LLVM_Value nval_v = Generate_Expression (ncomp->default_expr);
-    uint32_t nval = nval_v.reg;
-    if (nval == 0) continue;
-    uint32_t ndp = Emit_Result_Instruction ("getelementptr i8, ptr %%t%u, i64 %u\n", base, ncomp->byte_offset);
-    Type_Info *nct = ncomp->component_type;
-    if (Type_Is_Composite (nct) and nct->size > 0)
-      Emit ("  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u, i64 %u, i1 false)\n",
-         ndp, nval, nct->size);
-    else {
-      LLVM_Rep ndt = Type_To_Rep (nct);
-      nval = Emit_Convert (nval, nval_v.rep, ndt).reg;
-      Emit ("  store %s %%t%u, ptr %%t%u\n", LLVM_Rep_To_String (ndt), nval, ndp);
     }
   }
 
@@ -38563,17 +40942,18 @@ LLVM_Value Generate_Allocator (Syntax_Node *node) {
         uint32_t esz = Array_Element_Byte_Size (designated, 4, 4);
 
         if (inner->kind == NK_AGGREGATE) {
-          uint32_t pos_count = inner->aggregate.items.count;
-          if (not inner->aggregate.is_named and
-            pos_count > 0 and (int128_t)pos_count != type_count) {
-            // Positional element count mismatch — raise CE
-            Emit_Raise_Constraint_Error ("allocator array element count (RM 4.8)");
-          }
-          // Cap memcpy at source aggregate size to prevent read overflow
-          if (not inner->aggregate.is_named) {
-            uint64_t src_sz = (uint64_t)pos_count * esz;
+          Aggregate_Shape agg_shape = Scan_Aggregate_Shape (inner);
+          if (not agg_shape.has_named and agg_shape.positional_count > 0) {
+            if ((int128_t)agg_shape.positional_count != type_count)
+              // Positional element count mismatch — raise CE
+              Emit_Raise_Constraint_Error ("allocator array element count (RM 4.8)");
+            // Cap memcpy at source aggregate size to prevent read overflow
+            uint64_t src_sz = (uint64_t)agg_shape.positional_count * esz;
             if (src_sz < copy_size) copy_size = src_sz;
           }
+          // NEW T'(choice => ..) is a qualification the parser unwrapped:
+          // a sole named choice's bounds must equal T's (RM 4.3.2, 4.7).
+          Emit_Qualified_Aggregate_Bounds_Check (inner, designated);
         }
       }
 
@@ -39121,6 +41501,29 @@ void Generate_Assignment_Body (Syntax_Node *node, Syntax_Node *target) {
       target = target_base->renamed_object;
   }
 
+  // RM 4.8 / RM 13.2: an allocator assigned to an access-typed target draws
+  // from the TARGET's named access type — its designated-subtype checks and
+  // its bounded collection both key off that type, and the allocator node's
+  // own type is an anonymous access view that carries neither. Propagate
+  // before ANY target-shape branch evaluates the value, so an array-element
+  // or record-component target (cd2b11a's ACC_ARRAY (I) := NEW ...) is
+  // covered the same as a plain variable.
+  //
+  // A component's access subtype may carry PER-OBJECT constraints
+  // (discriminant-dependent bounds, RM 3.7.1) whose values live in the
+  // enclosing object, not the type — re-evaluating their bound expressions
+  // here is wrong (c37010a re-runs a side-effectful function, c37010b names
+  // a discriminant with no storage in scope). Until per-object constraints
+  // are materialized, a non-identifier target contributes only its BASE
+  // type: the collection identity survives, the unevaluable subtype check
+  // does not.
+  if (node->assignment.value and
+      node->assignment.value->kind == NK_ALLOCATOR and
+      target->type and Type_Is_Access (target->type))
+    node->assignment.value->allocator.target_access_type =
+      target->kind == NK_IDENTIFIER ? target->type
+                                    : Type_Base (target->type);
+
   // Handle indexed component target (array element or slice assignment)
   if (target->kind == NK_APPLY) {
 
@@ -39658,7 +42061,7 @@ void Generate_Assignment_Body (Syntax_Node *node, Syntax_Node *target) {
         record_type = prefix_type->access.designated_type;
       }
       if (Type_Is_Record (record_type)) {
-        int32_t ci = Find_Record_Component (record_type, target->selected.selector);
+        int32_t ci = Selected_Component_Slot (target, record_type);
         if (ci >= 0) assign_type = record_type->record.components[ci].component_type;
       }
     }
@@ -40133,12 +42536,6 @@ void Generate_Assignment_Body (Syntax_Node *node, Syntax_Node *target) {
     }
     return;
   }
-
-  // RM 4.8: Propagate target access type to allocator for constraint checks.
-  // When assigning NEW T or NEW T'(X) to an access variable, the allocator
-  // must check that T's constraints are compatible with the access subtype.
-  if (Type_Is_Access (ty) and node->assignment.value->kind == NK_ALLOCATOR)
-    node->assignment.value->allocator.target_access_type = ty;
 
   LLVM_Value value_v = Generate_Expression (node->assignment.value);
   uint32_t value = value_v.reg;
@@ -41111,6 +43508,225 @@ void Generate_Block_Statement (Syntax_Node *node) {
     Emit ("  ; -- END BLOCK\n");
   }
 }
+// RM 9.5: bind the accept's formals to the caller's parameter block at the
+// start of a rendezvous. One binder serves both the plain ACCEPT statement
+// and an accept alternative of a selective wait — the block layout is the
+// same ({ i64 slot per formal, then one trailing i64 per hidden 'CONSTRAINED
+// flag (RM 3.7.4) }), and so are the binding rules: by-reference for records,
+// fat arrays, and fat access values; copy-in for constrained arrays and
+// scalars; frame-slot publication when a nested unit reads a formal uplevel.
+// Must mirror Emit_Accept_Out_Param_Writeback's slot numbering exactly.
+void Emit_Accept_Parameter_Bindings (Node_List *parameters, uint32_t params_ptr) {
+
+  // Total formal count: the caller appended the hidden 'CONSTRAINED flags
+  // (RM 3.7.4) after this many parameter slots.
+  uint32_t accept_total_params = 0;
+  for (uint32_t i = 0; i < parameters->count; i++) {
+    Syntax_Node *param = parameters->items[i];
+    if (param and param->kind == NK_PARAM_SPEC)
+      accept_total_params += param->param_spec.names.count;
+  }
+  uint32_t accept_flag_ordinal = 0;
+
+  uint32_t param_idx = 0;
+  for (uint32_t i = 0; i < parameters->count; i++) {
+    Syntax_Node *param = parameters->items[i];
+    if (param and param->kind == NK_PARAM_SPEC) {
+      for (uint32_t j = 0; j < param->param_spec.names.count; j++) {
+        Syntax_Node *name = param->param_spec.names.items[j];
+        if (name and name->symbol) {
+          Type_Info *pt = name->symbol->type;
+          // STRING is TYPE_STRING, not TYPE_ARRAY — use the array-like
+          // predicate so an unconstrained STRING formal is bound as a fat
+          // pointer (the reader loads a {ptr,ptr} from its storage); the
+          // old kind==TYPE_ARRAY test dropped it to the scalar path, which
+          // stored the spilled fat's address as a bare i64 and then read a
+          // fat struct back from it (a null bounds pointer, then a crash on
+          // S'FIRST).
+          bool is_array = Type_Is_Array_Like (pt);
+          uint32_t type_size = pt ? pt->size : 0;
+
+          // Load source pointer from params block
+          uint32_t pp = Emit_Result_Instruction ("getelementptr i64, ptr %%t%u, i64 %u\n", params_ptr, param_idx);
+          uint32_t pv = Emit_Result_Instruction ("load i64, ptr %%t%u\n", pp);
+
+          // Array parameter: alloca correct size, memcpy from source.
+          // For static sizes, use compile-time constant.
+          // For dynamic sizes (bounds are BOUND_EXPR), compute at runtime.
+          //
+          if (is_array) {
+            uint32_t src = Emit_Result_Instruction ("inttoptr " PTR_INT_TYPE " %%t%u to ptr\n", pv);
+
+            // Unconstrained or dynamic-bounds array (fat): the slot holds
+            // the address of the caller's fat pointer { data, bounds };
+            // bind the formal to it by reference (the caller is blocked
+            // for the rendezvous, so its data and bounds are stable).
+            if (Type_Needs_Fat_Pointer (pt)) {
+
+              // A nested subprogram in the accept body reads this fat
+              // formal through its frame slot (a stable getelementptr the
+              // prologue emits before the rendezvous). Bind the formal to
+              // that slot and copy the caller's fat pointer { data, bounds }
+              // into it; element writes still reach the caller's storage
+              // through the shared data pointer. Otherwise bind the formal
+              // by reference to the caller's fat directly.
+              if (Emit_Bind_Accept_Formal_To_Frame (name->symbol)) {
+                uint32_t cfa = Emit_Result_Instruction ("inttoptr " PTR_INT_TYPE " %%t%u to ptr\n", pv);
+                uint32_t fat = Emit_Result_Instruction ("load " FAT_PTR_TYPE ", ptr %%t%u  ; caller fat\n", cfa);
+                Emit ("  store " FAT_PTR_TYPE " %%t%u, ptr %%", fat);
+                Emit_Symbol_Name (name->symbol);
+                Emit ("\n");
+              } else {
+                Emit_Local_Ref (name->symbol);
+                Emit (" = inttoptr " PTR_INT_TYPE " %%t%u to ptr\n", pv);
+              }
+
+            // Statically sized constrained array: the slot holds the data
+            // address; copy it into the formal's storage (a local buffer,
+            // or its frame slot when a nested subprogram reads it uplevel).
+            } else if (type_size > 0) {
+              if (not Emit_Bind_Accept_Formal_To_Frame (name->symbol)) {
+                Emit_Local_Ref (name->symbol);
+                Emit (" = alloca [%u x i8], align 8\n", type_size);
+              }
+              Emit_Memcpy_To_Symbol (name->symbol, src, type_size, NULL);
+
+            // Dynamic bounds: src is caller's fat ptr { data_ptr, bounds_ptr }.
+            // Create a proper local fat pointer so 'LENGTH etc. work.
+            } else {
+              LLVM_Rep iat = Integer_Arith_Rep ();
+              uint32_t ndims = pt->array.index_count;
+              uint32_t elem_sz = pt->array.element_type ?
+                         pt->array.element_type->size : 4;
+              if (elem_sz == 0) elem_sz = 4;
+
+              // 1. Dereference caller's fat ptr to get data_ptr
+              uint32_t dp_gep = Emit_Result_Instruction ("getelementptr " FAT_PTR_TYPE ", ptr %%t%u, i32 0, i32 0\n", src);
+              uint32_t data_ptr = Emit_Result_Instruction ("load ptr, ptr %%t%u\n", dp_gep);
+
+              // 2. Evaluate type bounds, compute data byte size
+              uint32_t lo_regs[16], hi_regs[16];
+              uint32_t total = 0;
+              for (uint32_t d = 0; d < ndims and d < 16; d++) {
+                lo_regs[d] = Emit_Bound_Value (&pt->array.indices[d].low_bound).reg;
+                hi_regs[d] = Emit_Bound_Value (&pt->array.indices[d].high_bound).reg;
+                uint32_t dlen = Emit_Length_From_Bounds (lo_regs[d], hi_regs[d], iat).reg;
+                if (d == 0) { total = dlen; }
+                else {
+                  uint32_t p2 = Emit_Result_Instruction ("mul %s %%t%u, %%t%u\n", LLVM_Rep_To_String (iat), total, dlen);
+                  total = p2;
+                }
+              }
+              uint32_t bsz = Emit_Result_Instruction ("mul %s %%t%u, %u\n", LLVM_Rep_To_String (iat), total, elem_sz);
+              LLVM_I1 neg_chk = Emit_Icmp_Const ("slt", iat, bsz, 0);
+              uint32_t csz = Emit_Result_Instruction ("select i1 %%t%u, %s 0, %s %%t%u\n", neg_chk.reg, LLVM_Rep_To_String (iat), LLVM_Rep_To_String (iat), bsz);
+
+              // 3. Alloca for local data copy, memcpy from data_ptr
+              uint32_t data_alloca = Emit_Result_Instruction ("alloca i8, %s %%t%u, align 8\n", LLVM_Rep_To_String (iat), csz);
+              uint32_t csz64 = Emit_Extend_To_I64 (csz, iat).reg;
+              Emit_Memcpy (data_alloca, data_ptr, csz64);
+
+              // 4. Alloca for local bounds struct [2*ndims x i32]
+              uint32_t bounds_alloca = Emit_Result_Instruction ("alloca [%u x i32]\n", 2 * ndims);
+              for (uint32_t d = 0; d < ndims and d < 16; d++)
+                Emit_Store_Bound_Pair (bounds_alloca, iat, d, lo_regs[d], hi_regs[d]);
+
+              // 5. Create fat pointer variable { data_ptr, bounds_ptr }
+              Emit_Local_Ref (name->symbol);
+              Emit (" = alloca " FAT_PTR_TYPE ", align 8\n");
+              uint32_t fp_d = Emit_Result_Instruction ("getelementptr " FAT_PTR_TYPE ", ptr %%");
+              Emit_Symbol_Name (name->symbol);
+              Emit (", i32 0, i32 0\n");
+              Emit ("  store ptr %%t%u, ptr %%t%u\n",
+                 data_alloca, fp_d);
+              uint32_t fp_b = Emit_Result_Instruction ("getelementptr " FAT_PTR_TYPE ", ptr %%");
+              Emit_Symbol_Name (name->symbol);
+              Emit (", i32 0, i32 1\n");
+              Emit ("  store ptr %%t%u, ptr %%t%u\n",
+                 bounds_alloca, fp_b);
+            }
+
+          // By-reference record (RM 6.2): the slot holds the caller's
+          // record address; bind the formal directly to it so field and
+          // discriminant access dereference the caller's object (aliased
+          // for the rendezvous, so IN OUT / OUT updates reach it).
+          } else if (Type_Is_Record (pt)) {
+            Emit_Local_Ref (name->symbol);
+            Emit (" = inttoptr " PTR_INT_TYPE " %%t%u to ptr\n", pv);
+
+            // A nested unit in the accept body reads this record uplevel.
+            // Bind it by reference (RM 6.2): publish the caller's record
+            // address in the formal's slot of the TASK'S OWN frame and
+            // mark it by-reference, so a nested reader's alias loads the
+            // pointer and dereferences the caller's live object — IN OUT
+            // updates and later reads stay consistent, not a bind-time
+            // snapshot.
+            if (cg->current_nesting_level > 0 and
+                name->symbol->frame_offset_assigned) {
+              name->symbol->param_by_reference = true;
+              uint32_t slot = Emit_Result_Instruction (
+                "getelementptr i8, ptr %%__frame_base, i64 %lld\n",
+                (long long) name->symbol->frame_offset);
+              Emit ("  store ptr %%");
+              Emit_Symbol_Name (name->symbol);
+              Emit (", ptr %%t%u  ; publish uplevel record by-reference\n",
+                    slot);
+            }
+
+            // RM 3.7.4: a mutable OUT/IN OUT formal takes its 'CONSTRAINED
+            // from the caller's flag, read from the trailing slot the call
+            // appended, and spilled to the named slot the attribute reads.
+            if (Parameter_Needs_Constrained_Flag (
+                  (Parameter_Mode) param->param_spec.mode, pt)) {
+              uint32_t cf = Emit_Result_Instruction ("getelementptr i64, ptr %%t%u, i64 %u\n", params_ptr,
+                 accept_total_params + accept_flag_ordinal);
+              uint32_t cfv = Emit_Result_Instruction ("load i64, ptr %%t%u  ; 'CONSTRAINED flag\n", cf);
+              uint32_t cf8 = Emit_Result_Instruction ("trunc i64 %%t%u to i8\n", cfv);
+              name->symbol->has_runtime_constrained_flag = true;
+              Emit ("  ");
+              Emit_Constrained_Slot_Ref (name->symbol);
+              Emit (" = alloca i8  ; hidden 'CONSTRAINED flag\n");
+              Emit ("  store i8 %%t%u, ptr ", cf8);
+              Emit_Constrained_Slot_Ref (name->symbol);
+              Emit ("\n");
+              accept_flag_ordinal++;
+            }
+
+          // Fat access (ACCESS to an unconstrained array/string): the slot
+          // holds the address of the caller's spilled fat pointer {data,
+          // bounds}; bind the formal to it by reference so reads and an
+          // OUT/IN OUT write reach the caller's storage (RM 6.2), and the
+          // caller checks the returned designated bounds on copy-back.
+          } else if (pt and Type_Is_Access (Type_Underlying (pt)) and
+                     Type_Needs_Fat_Pointer (pt)) {
+            if (Emit_Bind_Accept_Formal_To_Frame (name->symbol)) {
+              uint32_t cfa = Emit_Result_Instruction ("inttoptr " PTR_INT_TYPE " %%t%u to ptr\n", pv);
+              uint32_t fat = Emit_Result_Instruction ("load " FAT_PTR_TYPE ", ptr %%t%u  ; caller fat access\n", cfa);
+              Emit ("  store " FAT_PTR_TYPE " %%t%u, ptr %%", fat);
+              Emit_Symbol_Name (name->symbol);
+              Emit ("\n");
+            } else {
+              Emit_Local_Ref (name->symbol);
+              Emit (" = inttoptr " PTR_INT_TYPE " %%t%u to ptr\n", pv);
+            }
+
+          // Scalar: store the value into its storage — the frame slot when
+          // a nested subprogram reads it uplevel, else a fresh local.
+          } else {
+            if (not Emit_Bind_Accept_Formal_To_Frame (name->symbol)) {
+              Emit_Local_Ref (name->symbol);
+              Emit (" = alloca i64, align 8\n");
+            }
+            Emit ("  store i64 %%t%u, ptr %%", pv);
+            Emit_Symbol_Name (name->symbol);
+            Emit ("\n");
+          }
+          param_idx++;
+        }
+      }
+    }
+  }
+}
 // RM 9.5: at the end of a rendezvous, the values of OUT and IN OUT formals
 // are copied back to the caller. Scalars are written into their parameter-
 // block slot (the caller reads the slot back after __ada_entry_call returns);
@@ -41265,19 +43881,17 @@ void Generate_Statement (Syntax_Node *node) {
         Symbol *original_sym = target->symbol;  // Keep for defaults
         Symbol *proc = Resolve_Subprogram_Rename (original_sym);
 
-        // A procedure-renames-entry peeled to the entry: emit an entry call.
-        // The target task is the entry's enclosing single-task object (the
-        // entry symbol's parent), like the generic-actual-entry fallback.
-        if (proc and proc->kind == SYMBOL_ENTRY and proc->parent and
-            proc->parent->kind == SYMBOL_VARIABLE and
-            Type_Is_Task (proc->parent->type)) {
-          Emit ("  ; Entry call (renamed): %.*s\n",
-             (int)proc->name.length, proc->name.data);
-          uint32_t param_block = Emit_Result_Instruction ("inttoptr " PTR_INT_TYPE " 0 to ptr  ; no parameters\n");
-          uint32_t task_ptr = Emit_Temp ();
-          Emit_Load_Ptr_From_Symbol (task_ptr, proc->parent);
-          uint32_t entry_idx = Emit_Entry_Index (proc, 0);
-          Emit_Entry_Call_Dispatch (task_ptr, entry_idx, param_block);
+        // A procedure-renames-entry peeled to an entry: route the bare call
+        // through the full apply machinery — the rename's bound task and
+        // family index (RM 8.5, hidden elaboration slots) and the rename's
+        // own parameter defaults (RM 6.4.2) all live in entry_path there
+        // (c85018a: `ENTA;` calling a defaulted entry FAMILY member).
+        if (proc and proc->kind == SYMBOL_ENTRY) {
+          Syntax_Node *entry_app = Node_New (NK_APPLY, target->location);
+          entry_app->apply.prefix = target;
+          entry_app->apply.resolution = APPLY_ENTRY_CALL;
+          entry_app->symbol = original_sym;
+          Generate_Apply (entry_app);
           break;
         }
 
@@ -41590,217 +44204,8 @@ void Generate_Statement (Syntax_Node *node) {
         uint32_t params_slot = Emit_Result_Instruction ("getelementptr ptr, ptr %%t%u, i64 2\n", caller_ptr);
         uint32_t params_ptr = Emit_Result_Instruction ("load ptr, ptr %%t%u  ; params from rv record\n", params_slot);
 
-        // Generate parameters - allocate space and copy from caller's parameter block.            
-        // For composite types (arrays/records), allocate the full type size                        
-        // and memcpy from the pointer in the params block.                                        
-        // For scalars, load the i64 value directly.                                               
-        //                                                                                          
-        // Total formal count: the caller appended the hidden 'CONSTRAINED flags
-        // (RM 3.7.4) after this many parameter slots.
-        uint32_t accept_total_params = 0;
-        for (uint32_t i = 0; i < node->accept_stmt.parameters.count; i++) {
-          Syntax_Node *param = node->accept_stmt.parameters.items[i];
-          if (param and param->kind == NK_PARAM_SPEC)
-            accept_total_params += param->param_spec.names.count;
-        }
-        uint32_t accept_flag_ordinal = 0;
-
-        uint32_t param_idx = 0;
-        for (uint32_t i = 0; i < node->accept_stmt.parameters.count; i++) {
-          Syntax_Node *param = node->accept_stmt.parameters.items[i];
-          if (param and param->kind == NK_PARAM_SPEC) {
-            for (uint32_t j = 0; j < param->param_spec.names.count; j++) {
-              Syntax_Node *name = param->param_spec.names.items[j];
-              if (name and name->symbol) {
-                Type_Info *pt = name->symbol->type;
-                // STRING is TYPE_STRING, not TYPE_ARRAY — use the array-like
-                // predicate so an unconstrained STRING formal is bound as a fat
-                // pointer (the reader loads a {ptr,ptr} from its storage); the
-                // old kind==TYPE_ARRAY test dropped it to the scalar path, which
-                // stored the spilled fat's address as a bare i64 and then read a
-                // fat struct back from it (a null bounds pointer, then a crash on
-                // S'FIRST).
-                bool is_array = Type_Is_Array_Like (pt);
-                uint32_t type_size = pt ? pt->size : 0;
-
-                // Load source pointer from params block
-                uint32_t pp = Emit_Result_Instruction ("getelementptr i64, ptr %%t%u, i64 %u\n", params_ptr, param_idx);
-                uint32_t pv = Emit_Result_Instruction ("load i64, ptr %%t%u\n", pp);
-
-                // Array parameter: alloca correct size, memcpy from source.                       
-                // For static sizes, use compile-time constant.                                    
-                // For dynamic sizes (bounds are BOUND_EXPR), compute at runtime.                  
-                //                                                                                  
-                if (is_array) {
-                  uint32_t src = Emit_Result_Instruction ("inttoptr " PTR_INT_TYPE " %%t%u to ptr\n", pv);
-
-                  // Unconstrained or dynamic-bounds array (fat): the slot holds
-                  // the address of the caller's fat pointer { data, bounds };
-                  // bind the formal to it by reference (the caller is blocked
-                  // for the rendezvous, so its data and bounds are stable).
-                  if (Type_Needs_Fat_Pointer (pt)) {
-
-                    // A nested subprogram in the accept body reads this fat
-                    // formal through its frame slot (a stable getelementptr the
-                    // prologue emits before the rendezvous). Bind the formal to
-                    // that slot and copy the caller's fat pointer { data, bounds }
-                    // into it; element writes still reach the caller's storage
-                    // through the shared data pointer. Otherwise bind the formal
-                    // by reference to the caller's fat directly.
-                    if (Emit_Bind_Accept_Formal_To_Frame (name->symbol)) {
-                      uint32_t cfa = Emit_Result_Instruction ("inttoptr " PTR_INT_TYPE " %%t%u to ptr\n", pv);
-                      uint32_t fat = Emit_Result_Instruction ("load " FAT_PTR_TYPE ", ptr %%t%u  ; caller fat\n", cfa);
-                      Emit ("  store " FAT_PTR_TYPE " %%t%u, ptr %%", fat);
-                      Emit_Symbol_Name (name->symbol);
-                      Emit ("\n");
-                    } else {
-                      Emit_Local_Ref (name->symbol);
-                      Emit (" = inttoptr " PTR_INT_TYPE " %%t%u to ptr\n", pv);
-                    }
-
-                  // Statically sized constrained array: the slot holds the data
-                  // address; copy it into the formal's storage (a local buffer,
-                  // or its frame slot when a nested subprogram reads it uplevel).
-                  } else if (type_size > 0) {
-                    if (not Emit_Bind_Accept_Formal_To_Frame (name->symbol)) {
-                      Emit_Local_Ref (name->symbol);
-                      Emit (" = alloca [%u x i8], align 8\n", type_size);
-                    }
-                    Emit_Memcpy_To_Symbol (name->symbol, src, type_size, NULL);
-
-                  // Dynamic bounds: src is caller's fat ptr { data_ptr, bounds_ptr }.
-                  // Create a proper local fat pointer so 'LENGTH etc. work.
-                  } else {
-                    LLVM_Rep iat = Integer_Arith_Rep ();
-                    uint32_t ndims = pt->array.index_count;
-                    uint32_t elem_sz = pt->array.element_type ?
-                               pt->array.element_type->size : 4;
-                    if (elem_sz == 0) elem_sz = 4;
-
-                    // 1. Dereference caller's fat ptr to get data_ptr
-                    uint32_t dp_gep = Emit_Result_Instruction ("getelementptr " FAT_PTR_TYPE ", ptr %%t%u, i32 0, i32 0\n", src);
-                    uint32_t data_ptr = Emit_Result_Instruction ("load ptr, ptr %%t%u\n", dp_gep);
-
-                    // 2. Evaluate type bounds, compute data byte size
-                    uint32_t lo_regs[16], hi_regs[16];
-                    uint32_t total = 0;
-                    for (uint32_t d = 0; d < ndims and d < 16; d++) {
-                      lo_regs[d] = Emit_Bound_Value (&pt->array.indices[d].low_bound).reg;
-                      hi_regs[d] = Emit_Bound_Value (&pt->array.indices[d].high_bound).reg;
-                      uint32_t dlen = Emit_Length_From_Bounds (lo_regs[d], hi_regs[d], iat).reg;
-                      if (d == 0) { total = dlen; }
-                      else {
-                        uint32_t p2 = Emit_Result_Instruction ("mul %s %%t%u, %%t%u\n", LLVM_Rep_To_String (iat), total, dlen);
-                        total = p2;
-                      }
-                    }
-                    uint32_t bsz = Emit_Result_Instruction ("mul %s %%t%u, %u\n", LLVM_Rep_To_String (iat), total, elem_sz);
-                    LLVM_I1 neg_chk = Emit_Icmp_Const ("slt", iat, bsz, 0);
-                    uint32_t csz = Emit_Result_Instruction ("select i1 %%t%u, %s 0, %s %%t%u\n", neg_chk.reg, LLVM_Rep_To_String (iat), LLVM_Rep_To_String (iat), bsz);
-
-                    // 3. Alloca for local data copy, memcpy from data_ptr
-                    uint32_t data_alloca = Emit_Result_Instruction ("alloca i8, %s %%t%u, align 8\n", LLVM_Rep_To_String (iat), csz);
-                    uint32_t csz64 = Emit_Extend_To_I64 (csz, iat).reg;
-                    Emit_Memcpy (data_alloca, data_ptr, csz64);
-
-                    // 4. Alloca for local bounds struct [2*ndims x i32]
-                    uint32_t bounds_alloca = Emit_Result_Instruction ("alloca [%u x i32]\n", 2 * ndims);
-                    for (uint32_t d = 0; d < ndims and d < 16; d++)
-                      Emit_Store_Bound_Pair (bounds_alloca, iat, d, lo_regs[d], hi_regs[d]);
-
-                    // 5. Create fat pointer variable { data_ptr, bounds_ptr }
-                    Emit_Local_Ref (name->symbol);
-                    Emit (" = alloca " FAT_PTR_TYPE ", align 8\n");
-                    uint32_t fp_d = Emit_Result_Instruction ("getelementptr " FAT_PTR_TYPE ", ptr %%");
-                    Emit_Symbol_Name (name->symbol);
-                    Emit (", i32 0, i32 0\n");
-                    Emit ("  store ptr %%t%u, ptr %%t%u\n",
-                       data_alloca, fp_d);
-                    uint32_t fp_b = Emit_Result_Instruction ("getelementptr " FAT_PTR_TYPE ", ptr %%");
-                    Emit_Symbol_Name (name->symbol);
-                    Emit (", i32 0, i32 1\n");
-                    Emit ("  store ptr %%t%u, ptr %%t%u\n",
-                       bounds_alloca, fp_b);
-                  }
-
-                // By-reference record (RM 6.2): the slot holds the caller's
-                // record address; bind the formal directly to it so field and
-                // discriminant access dereference the caller's object (aliased
-                // for the rendezvous, so IN OUT / OUT updates reach it).
-                } else if (Type_Is_Record (pt)) {
-                  Emit_Local_Ref (name->symbol);
-                  Emit (" = inttoptr " PTR_INT_TYPE " %%t%u to ptr\n", pv);
-
-                  // A nested subprogram in the accept body reads this record
-                  // uplevel. Bind it by reference (RM 6.2): mark the formal so
-                  // the nested reader's frame alias loads a pointer, and publish
-                  // the caller's record address in the formal's frame slot (its
-                  // %__frame.<name>, which the prologue emitted as the slot's
-                  // address). The reader then dereferences the caller's live
-                  // object, so IN OUT updates and later reads stay consistent —
-                  // not a bind-time snapshot.
-                  if (cg->is_nested and name->symbol->frame_offset_assigned) {
-                    name->symbol->param_by_reference = true;
-                    Emit ("  store ptr %%");
-                    Emit_Symbol_Name (name->symbol);
-                    Emit (", ptr %%__frame.");
-                    Emit_Symbol_Name (name->symbol);
-                    Emit ("  ; publish uplevel record by-reference\n");
-                  }
-
-                  // RM 3.7.4: a mutable OUT/IN OUT formal takes its 'CONSTRAINED
-                  // from the caller's flag, read from the trailing slot the call
-                  // appended, and spilled to the named slot the attribute reads.
-                  if (Parameter_Needs_Constrained_Flag (
-                        (Parameter_Mode) param->param_spec.mode, pt)) {
-                    uint32_t cf = Emit_Result_Instruction ("getelementptr i64, ptr %%t%u, i64 %u\n", params_ptr,
-                       accept_total_params + accept_flag_ordinal);
-                    uint32_t cfv = Emit_Result_Instruction ("load i64, ptr %%t%u  ; 'CONSTRAINED flag\n", cf);
-                    uint32_t cf8 = Emit_Result_Instruction ("trunc i64 %%t%u to i8\n", cfv);
-                    name->symbol->has_runtime_constrained_flag = true;
-                    Emit ("  ");
-                    Emit_Constrained_Slot_Ref (name->symbol);
-                    Emit (" = alloca i8  ; hidden 'CONSTRAINED flag\n");
-                    Emit ("  store i8 %%t%u, ptr ", cf8);
-                    Emit_Constrained_Slot_Ref (name->symbol);
-                    Emit ("\n");
-                    accept_flag_ordinal++;
-                  }
-
-                // Fat access (ACCESS to an unconstrained array/string): the slot
-                // holds the address of the caller's spilled fat pointer {data,
-                // bounds}; bind the formal to it by reference so reads and an
-                // OUT/IN OUT write reach the caller's storage (RM 6.2), and the
-                // caller checks the returned designated bounds on copy-back.
-                } else if (pt and Type_Is_Access (Type_Underlying (pt)) and
-                           Type_Needs_Fat_Pointer (pt)) {
-                  if (Emit_Bind_Accept_Formal_To_Frame (name->symbol)) {
-                    uint32_t cfa = Emit_Result_Instruction ("inttoptr " PTR_INT_TYPE " %%t%u to ptr\n", pv);
-                    uint32_t fat = Emit_Result_Instruction ("load " FAT_PTR_TYPE ", ptr %%t%u  ; caller fat access\n", cfa);
-                    Emit ("  store " FAT_PTR_TYPE " %%t%u, ptr %%", fat);
-                    Emit_Symbol_Name (name->symbol);
-                    Emit ("\n");
-                  } else {
-                    Emit_Local_Ref (name->symbol);
-                    Emit (" = inttoptr " PTR_INT_TYPE " %%t%u to ptr\n", pv);
-                  }
-
-                // Scalar: store the value into its storage — the frame slot when
-                // a nested subprogram reads it uplevel, else a fresh local.
-                } else {
-                  if (not Emit_Bind_Accept_Formal_To_Frame (name->symbol)) {
-                    Emit_Local_Ref (name->symbol);
-                    Emit (" = alloca i64, align 8\n");
-                  }
-                  Emit ("  store i64 %%t%u, ptr %%", pv);
-                  Emit_Symbol_Name (name->symbol);
-                  Emit ("\n");
-                }
-                param_idx++;
-              }
-            }
-          }
-        }
+        Emit_Accept_Parameter_Bindings (&node->accept_stmt.parameters,
+                                        params_ptr);
 
         // Execute the accept body under a handler that bridges any exception to
         // the caller (RM 9.5(16)): record the exception id in the rendezvous
@@ -41985,6 +44390,8 @@ void Generate_Statement (Syntax_Node *node) {
             guard_expr = alt->accept_stmt.guard;
           else if (alt and alt->kind == NK_DELAY and alt->delay_stmt.guard)
             guard_expr = alt->delay_stmt.guard;
+          else if (alt and alt->kind == NK_NULL_STMT and alt->null_stmt.guard)
+            guard_expr = alt->null_stmt.guard;
           if (not guard_expr) continue;
           LLVM_Value guard_v = Generate_Expression (guard_expr);
           uint32_t g = Emit_Convert (guard_v.reg, guard_v.rep,
@@ -42055,6 +44462,7 @@ void Generate_Statement (Syntax_Node *node) {
             bool guarded =
               (alt->kind == NK_ACCEPT and alt->accept_stmt.guard) or
               (alt->kind == NK_DELAY and alt->delay_stmt.guard) or
+              (alt->kind == NK_NULL_STMT and alt->null_stmt.guard) or
               (alt->kind == NK_ASSOCIATION);
             if (not guarded) { every_alt_guarded = false; break; }
           }
@@ -42098,8 +44506,26 @@ void Generate_Statement (Syntax_Node *node) {
           uint32_t wsel = Emit_Result_Instruction ("getelementptr i64, ptr %%__self_tcb, i64 6\n");
           Emit ("  store i64 -2, ptr %%t%u  ; in selective wait\n", wsel);
           if (has_terminate) {
+
+            // A guarded terminate alternative counts toward the RM 9.7.1
+            // consensus only when its guard is TRUE (open); store the
+            // pre-evaluated guard value rather than a constant.
+            uint32_t willing = 0;
+            for (uint32_t i = 0; i < node->select_stmt.alternatives.count and
+                 i < MAX_SELECT_GUARDS; i++) {
+              Syntax_Node *alt = node->select_stmt.alternatives.items[i];
+              if (not alt or alt->kind != NK_NULL_STMT) continue;
+              if (alt->null_stmt.guard and guard_slots[i])
+                willing = Emit_Result_Instruction ("load i8, ptr %%t%u\n",
+                                                   guard_slots[i]);
+              break;
+            }
             uint32_t att = Emit_Result_Instruction ("getelementptr i8, ptr %%__self_tcb, i64 58\n");
-            Emit ("  store i8 1, ptr %%t%u  ; at terminate alternative\n", att);
+            if (willing)
+              Emit ("  store i8 %%t%u, ptr %%t%u  ; at terminate alternative (iff open)\n",
+                 willing, att);
+            else
+              Emit ("  store i8 1, ptr %%t%u  ; at terminate alternative\n", att);
           }
         }
 
@@ -42195,49 +44621,8 @@ void Generate_Statement (Syntax_Node *node) {
                   Emit ("  %%t%u = load ptr, ptr %%t%u  ; rendezvous params\n",
                      sel_params_ptr, pbp);
                 }
-                uint32_t sel_param_idx = 0;
-                for (uint32_t pi = 0; pi < alt->accept_stmt.parameters.count; pi++) {
-                  Syntax_Node *param = alt->accept_stmt.parameters.items[pi];
-                  if (param and param->kind == NK_PARAM_SPEC) {
-                    for (uint32_t pj = 0; pj < param->param_spec.names.count; pj++) {
-                      Syntax_Node *pname = param->param_spec.names.items[pj];
-
-                      if (pname and pname->symbol) {
-                        // Load the parameter word from the caller's block.
-                        uint32_t param_ptr = Emit_Result_Instruction ("getelementptr i64, ptr %%t%u, i64 %u\n", sel_params_ptr, sel_param_idx);
-                        uint32_t param_val = Emit_Result_Instruction ("load i64, ptr %%t%u\n", param_ptr);
-
-                        Type_Info *spt = pname->symbol->type;
-                        if (spt and (Type_Is_Record (spt) or
-                            (Type_Is_Array_Like (spt) and Type_Needs_Fat_Pointer (spt)) or
-                            (Type_Is_Access (Type_Underlying (spt)) and
-                             Type_Needs_Fat_Pointer (spt)))) {
-                          // By-reference record, fat array, or fat access: the
-                          // slot holds the address of the caller's (spilled)
-                          // object; bind to it directly so an OUT/IN OUT write
-                          // reaches the caller's storage.
-                          Emit_Local_Ref (pname->symbol);
-                          Emit (" = inttoptr " PTR_INT_TYPE " %%t%u to ptr\n", param_val);
-                        } else if (Type_Is_Array_Like (spt) and spt->size > 0) {
-                          // Statically sized array: slot holds the data address;
-                          // copy it into a local buffer.
-                          uint32_t asrc = Emit_Result_Instruction ("inttoptr " PTR_INT_TYPE " %%t%u to ptr\n", param_val);
-                          Emit_Local_Ref (pname->symbol);
-                          Emit (" = alloca [%u x i8], align 8\n", spt->size);
-                          Emit_Memcpy_To_Symbol (pname->symbol, asrc, spt->size, NULL);
-                        } else {
-                          // Scalar/access: the slot holds the value directly.
-                          Emit_Local_Ref (pname->symbol);
-                          Emit (" = alloca i64, align 8\n");
-                          Emit ("  store i64 %%t%u, ptr %%", param_val);
-                          Emit_Symbol_Name (pname->symbol);
-                          Emit ("\n");
-                        }
-                        sel_param_idx++;
-                      }
-                    }
-                  }
-                }
+                Emit_Accept_Parameter_Bindings (&alt->accept_stmt.parameters,
+                                                sel_params_ptr);
 
                 // Execute the rendezvous body (RM 9.5), complete the rendezvous
                 // (unblocking the caller), THEN run the alternative's trailing
@@ -42281,6 +44666,18 @@ void Generate_Statement (Syntax_Node *node) {
               // end this task via the normal task-body return — the wrapper then
               // marks it completed, so the master's join returns and 'TERMINATED
               // reads true. Otherwise sleep and re-poll the accept alternatives.
+              // A FALSE guard closes the alternative: no parking, no consensus.
+              if (alt->null_stmt.guard and i < MAX_SELECT_GUARDS and
+                  guard_slots[i]) {
+                uint32_t gv = Emit_Result_Instruction ("load i8, ptr %%t%u\n",
+                                                       guard_slots[i]);
+                LLVM_I1 open = Emit_Boolean_Truth_Test (gv);
+                uint32_t open_l = cg->label_id++;
+                Emit ("  br i1 %%t%u, label %%L%u, label %%L%u  ; terminate guard\n",
+                   open.reg, open_l, next_label);
+                cg->block_terminated = true;
+                Emit_Label_Here (open_l);
+              }
               Emit ("  ; terminate alternative - park until consensus or call\n");
               if (cg->in_task_body) {
                 // Park in __ada_term_wait (RM 9.7.1): sleeps on the consensus
@@ -42414,14 +44811,22 @@ void Generate_Statement (Syntax_Node *node) {
         uint32_t task_ptr = Generate_Expression (task_name).reg;
         Emit ("  call void @__ada_task_abort (ptr %%t%u)\n", task_ptr);
 
-        // RM 9.10: a task aborting itself does not execute the statement that
-        // follows the abort. pthread_cancel of the running thread is deferred to
-        // the next cancellation point, so end the task body here when the target
-        // is this task.
+        // RM 9.10: a task aborting itself — directly, or by aborting an
+        // ANCESTOR, whose dependents (including this task) become abnormal
+        // with it — does not execute the statement that follows the abort.
+        // pthread_cancel of the running thread is deferred to the next
+        // cancellation point, so end the task body here when SELF became
+        // abnormal: read this task's own abort-pending flag, which
+        // __ada_abort_subtree just set if we were in the target's subtree
+        // (c94020a: T41 aborts its parent T4).
         if (cg->in_task_body) {
+          uint32_t flag_ptr = Emit_Result_Instruction (
+            "getelementptr i8, ptr %%__self_tcb, i64 61\n");
+          uint32_t flag = Emit_Result_Instruction (
+            "load i8, ptr %%t%u  ; own abort-pending (abnormal) flag\n", flag_ptr);
           uint32_t isself = Emit_Temp ();
           uint32_t self_l = cg->label_id++, cont_l = cg->label_id++;
-          Emit ("  %%t%u = icmp eq ptr %%t%u, %%__self_tcb\n", isself, task_ptr);
+          Emit ("  %%t%u = icmp ne i8 %%t%u, 0\n", isself, flag);
           Emit ("  br i1 %%t%u, label %%L%u, label %%L%u\n", isself, self_l, cont_l);
           Emit_Label_Here (self_l);
           Emit ("  call void @__ada_pop_handler()\n");
@@ -43551,19 +45956,43 @@ uint32_t Emit_Disc_Value (Type_Info *ty, uint32_t di, LLVM_Rep dt,
   return v ? v : Emit_Static_Int (0, dt).reg;
 }
 
-// Drain the deferred library-level initializers (see pending_global_inits):
-// evaluate each initializer expression and store it to its global, in
-// declaration order (RM 7.2). Called from the package body's elaboration
-// function emitter.
-void Emit_Pending_Global_Initializers (void) {
-  for (uint32_t i = 0; i < cg->pending_global_init_count; i++) {
-    Symbol      *sym  = cg->pending_global_inits[i].symbol;
-    Syntax_Node *init = cg->pending_global_inits[i].init;
+// Drain the deferred library-scope elaboration actions (see
+// pending_library_elaborations), in declaration order (RM 7.2): evaluate and
+// store each dynamic object initializer, and re-enter Generate_Declaration
+// for each deferred declaration so its elaboration code (subtype checks,
+// address overlays) lands inside the elaboration function now open. Called
+// from the package-body / spec-only elaboration function emitters.
+// Queue one library-scope elaboration action for the owning unit's ___elab
+// function. Order is preserved: actions drain in the order queued, which is
+// declaration order (RM 7.2).
+void Defer_Library_Elaboration (Pending_Elaboration_Kind kind,
+                                Symbol *symbol, Syntax_Node *node) {
+  if (cg->pending_library_elaboration_count
+      >= sizeof cg->pending_library_elaborations
+         / sizeof cg->pending_library_elaborations[0])
+    return;
+  cg->pending_library_elaborations[cg->pending_library_elaboration_count].kind   = kind;
+  cg->pending_library_elaborations[cg->pending_library_elaboration_count].symbol = symbol;
+  cg->pending_library_elaborations[cg->pending_library_elaboration_count].node   = node;
+  cg->pending_library_elaboration_count++;
+}
+
+void Emit_Pending_Library_Elaborations (void) {
+  for (uint32_t i = 0; i < cg->pending_library_elaboration_count; i++) {
+    Pending_Elaboration_Kind kind = cg->pending_library_elaborations[i].kind;
+    Symbol      *sym  = cg->pending_library_elaborations[i].symbol;
+    Syntax_Node *node = cg->pending_library_elaborations[i].node;
+
+    if (kind == PENDING_ELABORATION_DECLARATION_KIND) {
+      Generate_Declaration (node);
+      continue;
+    }
+
     Type_Info   *ty   = sym->type;
     LLVM_Rep     dst  = Type_To_Rep (ty);
 
     Emit ("  ; elaborate %.*s\n", (int)sym->name.length, sym->name.data);
-    LLVM_Value value = Generate_Expression (init);
+    LLVM_Value value = Generate_Expression (node);
 
     // Float value into a fixed-point object: scale to the stored mantissa.
     if (Type_Is_Fixed_Point (ty) and LLVM_Rep_Is_Float (value.rep)) {
@@ -43579,7 +46008,7 @@ void Emit_Pending_Global_Initializers (void) {
     Emit_Symbol_Name (sym);
     Emit ("\n");
   }
-  cg->pending_global_init_count = 0;
+  cg->pending_library_elaboration_count = 0;
 }
 
 // RM 3.6.1: elaborating a constrained array subtype indication checks that
@@ -43599,14 +46028,14 @@ void Emit_Array_Index_Constraint_Check (Type_Info *array_type) {
   // For the index-subtype comparison, prefer this array's own base index
   // type (from A's unconstrained declaration) over whatever the constraint
   // expression left in `ix->index_type`. A constraint like
-  // `V : A (A_9_11'RANGE)` may leak A_9_11's index type (INTEGER, whose
-  // bounds are BOUND_NONE) into `ix->index_type`, which then trips the
-  // BOUND_INTEGER guard below and the whole check silently skips.
+  // `V : A (A_9_11'RANGE)` leaks A_9_11's index type into `ix->index_type`
+  // — either boundless or plain INTEGER (RM 3.6.1(2)) — and comparing
+  // against THAT instead of A's index subtype silently skips the check.
   Type_Info *base_arr = array_type->base_type;
   for (uint32_t d = 0; d < array_type->array.index_count; d++) {
     Index_Info *ix = &array_type->array.indices[d];
     Type_Info *idx = ix->index_type;
-    if ((not idx or idx->low_bound.kind == BOUND_NONE) and
+    if (Index_Type_Is_Unconstraining (idx) and
         Type_Is_Array_Like (base_arr) and
         d < base_arr->array.index_count and
         base_arr->array.indices[d].index_type)
@@ -44572,13 +47001,9 @@ void Generate_Object_Declaration (Syntax_Node *node) {
       // shapes (arrays, records, fat pointers) keep their existing paths.
       if (node->object_decl.init and not has_static_init
           and not is_constrained_array and not is_record
-          and not LLVM_Rep_Is_Fat_Pointer (type_rep)
-          and cg->pending_global_init_count
-              < sizeof cg->pending_global_inits / sizeof cg->pending_global_inits[0]) {
-        cg->pending_global_inits[cg->pending_global_init_count].symbol = sym;
-        cg->pending_global_inits[cg->pending_global_init_count].init = node->object_decl.init;
-        cg->pending_global_init_count++;
-      }
+          and not LLVM_Rep_Is_Fat_Pointer (type_rep))
+        Defer_Library_Elaboration (PENDING_ELABORATION_OBJECT_INITIALIZER_KIND,
+                                   sym, node->object_decl.init);
       // Linkage: a unit compiled as the FILE'S OWN content emits the
       // authoritative definition (strong); the same spec INLINED into a
       // consumer (loaded unit) emits a discardable copy that merges with
@@ -46300,6 +48725,21 @@ bool Has_Nested_In_Statements (Node_List *statements) {
       if (Has_Nested_In_Statements (&stmt->if_stmt.else_stmts)) return true;
     } else if (stmt->kind == NK_LOOP) {
       if (Has_Nested_In_Statements (&stmt->loop_stmt.statements)) return true;
+
+    // An ACCEPT body is a sequence of statements like any other (RM 9.5) —
+    // a DECLARE block inside it can hold nested subprograms that reach this
+    // frame (c85005c: PROC1 declared inside ACCEPT START's block).
+    } else if (stmt->kind == NK_ACCEPT) {
+      if (Has_Nested_In_Statements (&stmt->accept_stmt.statements)) return true;
+    } else if (stmt->kind == NK_SELECT) {
+      for (uint32_t j = 0; j < stmt->select_stmt.alternatives.count; j++) {
+        Syntax_Node *alt = stmt->select_stmt.alternatives.items[j];
+        if (alt and Has_Nested_In_Statements (&(Node_List){ .items = &alt, .count = 1 }))
+          return true;
+      }
+      if (stmt->select_stmt.else_part and
+          Has_Nested_In_Statements (&(Node_List){ .items = &stmt->select_stmt.else_part, .count = 1 }))
+        return true;
     } else if (stmt->kind == NK_CASE) {
       for (uint32_t j = 0; j < stmt->case_stmt.alternatives.count; j++) {
         Syntax_Node *alt = stmt->case_stmt.alternatives.items[j];
@@ -46315,13 +48755,46 @@ bool Has_Nested_In_Statements (Node_List *statements) {
   }
   return false;
 }
+// One declaration list of the frame owner or of a package nested in it (to
+// ANY depth — c41328a's P.Q hides its subprograms two package levels down):
+// true when it declares anything that will take this frame's static chain.
+static bool Declarations_Reach_Frame (Node_List *declarations) {
+  if (not declarations) return false;
+  for (uint32_t i = 0; i < declarations->count; i++) {
+    Syntax_Node *decl = declarations->items[i];
+    if (not decl) continue;
+    switch (decl->kind) {
+      case NK_PROCEDURE_SPEC:
+      case NK_FUNCTION_SPEC:
+      case NK_PROCEDURE_BODY:
+      case NK_FUNCTION_BODY:
+      case NK_TASK_BODY:
+      case NK_GENERIC_INST:
+        return true;
+
+      // A SEPARATE package-body stub: the subunit's elaboration runs as a
+      // function over THIS frame (RM 10.2), so the frame must exist.
+      case NK_PACKAGE_BODY:
+        if (decl->package_body.is_separate) return true;
+        if (Declarations_Reach_Frame (&decl->package_body.declarations))
+          return true;
+        break;
+      case NK_PACKAGE_SPEC:
+        if (Declarations_Reach_Frame (&decl->package_spec.visible_decls) or
+            Declarations_Reach_Frame (&decl->package_spec.private_decls))
+          return true;
+        break;
+      default: break;
+    }
+  }
+  return false;
+}
+
 bool Has_Nested_Subprograms (Node_List *declarations, Node_List *statements) {
 
-  // Check declarations for procedure/function/task bodies.                                        
-  // Task bodies access enclosing scope variables just like nested                                  
-  // subprograms (RM 9.1), so the enclosing scope needs frame allocation.                          
-  // Also check inside nested packages - their subprograms need frame access too.                  
-  //                                                                                                
+  // Check declarations for subprogram/task bodies — directly here or inside
+  // nested packages at any depth. A nested package's subprograms take this
+  // frame's static chain (RM 9.1: task bodies count for the same reason).
   if (declarations) {
     for (uint32_t i = 0; i < declarations->count; i++) {
       Syntax_Node *decl = declarations->items[i];
@@ -46333,46 +48806,19 @@ bool Has_Nested_Subprograms (Node_List *declarations, Node_List *statements) {
         return true;
       }
 
-      // A SEPARATE package-body stub: the subunit's elaboration runs as a
-      // function over THIS frame (RM 10.2), so the frame must exist.
-      if (decl->kind == NK_PACKAGE_BODY and decl->package_body.is_separate)
+      // An attribute renaming carries a synthesized wrapper FUNCTION whose
+      // call sites pass this frame as the static chain (c85016a).
+      if (decl->kind == NK_SUBPROGRAM_RENAMING and decl->symbol and
+          decl->symbol->is_instance_wrapper)
         return true;
-
-      // Check inside nested package specs / bodies for any kind of subprogram
-      // that would need access to our frame. Generic instantiations and task
-      // bodies count too: an instantiated generic is a real subprogram whose
-      // `Find_Enclosing_Subprogram` returns *this* function, and codegen will
-      // emit `%__frame_base` at the call site — so the frame must exist here.
-      if (decl->kind == NK_PACKAGE_SPEC) {
-        Node_List *pkg_visible = &decl->package_spec.visible_decls;
-        Node_List *pkg_private = &decl->package_spec.private_decls;
-        Node_List *parts[2] = { pkg_visible, pkg_private };
-        for (int k = 0; k < 2; k++) {
-          for (uint32_t j = 0; j < parts[k]->count; j++) {
-            Syntax_Node *pd = parts[k]->items[j];
-            if (pd and (pd->kind == NK_PROCEDURE_SPEC or
-                  pd->kind == NK_FUNCTION_SPEC or
-                  pd->kind == NK_PROCEDURE_BODY or
-                  pd->kind == NK_FUNCTION_BODY or
-                  pd->kind == NK_TASK_BODY or
-                  pd->kind == NK_GENERIC_INST))
-              return true;
-          }
-        }
-      }
-
-      // Check inside nested package bodies for any subprogram-shaped decl.
-      if (decl->kind == NK_PACKAGE_BODY) {
-        Node_List *pkg_decls = &decl->package_body.declarations;
-        for (uint32_t j = 0; j < pkg_decls->count; j++) {
-          Syntax_Node *pd = pkg_decls->items[j];
-          if (pd and (pd->kind == NK_PROCEDURE_BODY or
-                pd->kind == NK_FUNCTION_BODY or
-                pd->kind == NK_TASK_BODY or
-                pd->kind == NK_GENERIC_INST))
-            return true;
-        }
-      }
+      if (decl->kind == NK_PACKAGE_SPEC and
+          (Declarations_Reach_Frame (&decl->package_spec.visible_decls) or
+           Declarations_Reach_Frame (&decl->package_spec.private_decls)))
+        return true;
+      if (decl->kind == NK_PACKAGE_BODY and
+          (decl->package_body.is_separate or
+           Declarations_Reach_Frame (&decl->package_body.declarations)))
+        return true;
     }
   }
 
@@ -46833,6 +49279,25 @@ void Emit_Instance_Binding_Elaboration (Symbol *inst_sym) {
       LLVM_Value actual_value =
         Generate_Expression (binding->instance_actual);
 
+      // A statically constrained array actual bound to a formal whose type is
+      // unconstrained (e.g. a formal private type whose actual is an
+      // unconstrained array type) arrives as a plain data pointer. Wrap it
+      // into a fat pointer carrying the actual subtype's bounds so the
+      // descriptor store below is well-formed; the deep copy that follows
+      // then detaches it from the actual's storage.
+      if (LLVM_Rep_Is_Fat_Pointer (binding_rep) and
+          not LLVM_Rep_Is_Fat_Pointer (actual_value.rep)) {
+        Type_Info *actual_type = binding->instance_actual->type;
+        Type_Info *geometry = Type_Is_Array_Like (binding_type)
+          ? binding_type : actual_type;
+        if (Type_Is_Array_Like (actual_type))
+          actual_value = Val_Rep (
+            Normalize_To_Fat_Pointer (binding->instance_actual, actual_value,
+                                      actual_type,
+                                      Array_Bound_LLVM_Rep (geometry)),
+            binding_rep);
+      }
+
       // RM 12.3: an IN formal object is COPIED at instantiation. A dynamically
       // bounded array actual is a fat pointer whose descriptor would otherwise
       // alias the actual's own data buffer, so a later change to the actual
@@ -46855,6 +49320,16 @@ void Emit_Instance_Binding_Elaboration (Symbol *inst_sym) {
         actual_value = Emit_Constraint_Check_Val (actual_value, binding->type,
                           binding->instance_actual
                             ? binding->instance_actual->type : NULL);
+
+      // RM 12.3.1 / 3.7.2: an actual bound to a formal object of an ACCESS
+      // type must, when non-null, designate an object satisfying the
+      // formal's designated constraint — checked at the instantiation
+      // (cc3128a). A formal access type's actual-view carries the FORMAL's
+      // designated subtype (RM 12.3.5), so the binding's own type is the
+      // authority for both formal-typed and concrete marks.
+      if (Type_Is_Access (binding->type))
+        Emit_Access_Designated_Disc_Check (actual_value.reg,
+                                           actual_value.rep, binding->type);
 
       // Value-level conversion, not rep-level: a real actual bound to a
       // fixed-point formal stores the /SMALL-scaled mantissa (RM 3.5.9), which
@@ -47023,12 +49498,22 @@ void Generate_Subprogram_Body (Syntax_Node *node) {
       // attribute and assignment sites can find by symbol name.
       if (Parameter_Needs_Constrained_Flag (mode, pt)) {
         param_sym->has_runtime_constrained_flag = true;
-        Emit ("  ");
-        Emit_Constrained_Slot_Ref (param_sym);
-        Emit (" = alloca i8  ; hidden 'CONSTRAINED flag\n");
-        Emit ("  store i8 %%__constr_p%u, ptr ", i);
-        Emit_Constrained_Slot_Ref (param_sym);
-        Emit ("\n");
+        Emit ("  %%");
+        Emit_Symbol_Name (param_sym);
+        Emit (".constr = alloca i8  ; hidden 'CONSTRAINED flag\n");
+        Emit ("  store i8 %%__constr_p%u, ptr %%", i);
+        Emit_Symbol_Name (param_sym);
+        Emit (".constr\n");
+
+        // Publish the flag into the frame beside the parameter's slot so
+        // nested subprograms read it through the static chain (c64106d:
+        // REC3'CONSTRAINED inside a nested procedure).
+        if (has_nested and sym->scope) {
+          uint32_t flag_slot = Emit_Result_Instruction (
+            "getelementptr i8, ptr %%__frame_base, i64 %lld\n",
+            (long long)(param_sym->frame_offset + POINTER_ALLOC_SIZE));
+          Emit ("  store i8 %%__constr_p%u, ptr %%t%u\n", i, flag_slot);
+        }
       }
 
       // Create an alias so the parameter name points to caller's storage
@@ -47259,6 +49744,16 @@ void Emit_Parent_Frame_Aliases (Symbol *enclosing_subprogram) {
             Emit (" = getelementptr i8, ptr %s, i64 %lld\n",
                chain_base, (long long)(var->frame_offset));
           }
+
+          // The RM 3.7.4 hidden 'CONSTRAINED flag published beside the
+          // parameter's slot (c64106d: REC3'CONSTRAINED read uplevel).
+          if (var->has_runtime_constrained_flag) {
+            Emit ("  %%__frame.");
+            Emit_Symbol_Name (var);
+            Emit (".constr = getelementptr i8, ptr %s, i64 %lld\n",
+               chain_base,
+               (long long)(var->frame_offset + POINTER_ALLOC_SIZE));
+          }
         }
       }
     }
@@ -47313,15 +49808,34 @@ void Generate_Task_Body (Syntax_Node *node) {
   cg->enclosing_function = saved_current_function;  // Access parent's vars
   cg->in_task_body = true;  // Task entry points return ptr for pthread
 
-  // A task function never allocates a %__frame_base of its own: its locals
-  // are allocas, and enclosing-scope variables arrive through the
-  // %__parent_frame aliases above. Deferred emission would otherwise leak
-  // the ENCLOSING function's has-nested flag into the task's declarations.
-  cg->current_nesting_level = 0;
+  // A LEAF task function allocates no %__frame_base: its locals are allocas,
+  // and enclosing-scope variables arrive through the %__parent_frame aliases
+  // below. (Deferred emission would otherwise leak the ENCLOSING function's
+  // has-nested flag into the task's declarations.) A task body WITH nested
+  // units is a static-chain level like any subprogram: its locals live in a
+  // per-instance frame so nested subprograms and tasks reach them through
+  // the chain (RM 9.1 — c9a006a: a task nested in task REGISTER's body
+  // aborting REGISTER's local task object), and the received %__parent_frame
+  // is stored at the frame's end as the chain link.
+  bool task_has_nested = Has_Nested_Subprograms (&node->task_body.declarations,
+                                                 &node->task_body.statements);
+  cg->current_nesting_level = task_has_nested ? 1 : 0;
 
   // Reset temp counter for new function
   uint32_t saved_temp = cg->temp_id;
   cg->temp_id = 1;
+
+  if (task_has_nested) {
+    Symbol *tsym = node->symbol;
+    int64_t frame_size = (tsym->scope and tsym->scope->frame_size > 0)
+                       ? tsym->scope->frame_size : 8;
+    Emit ("  ; Frame for nested function access\n");
+    Emit_Stack_Probe_Static ((uint64_t) frame_size + 8);
+    Emit ("  %%__frame_base = alloca i8, i64 %lld\n", (long long)(frame_size + 8));
+    uint32_t slot = Emit_Result_Instruction (
+      "getelementptr i8, ptr %%__frame_base, i64 %lld\n", (long long)frame_size);
+    Emit ("  store ptr %%__parent_frame, ptr %%t%u\n", slot);
+  }
 
   // Create frame aliases for accessing enclosing scope variables.
   // Task bodies can reference variables from the enclosing scope (RM 9.1).
@@ -47733,6 +50247,112 @@ void Generate_Declaration (Syntax_Node *node) {
         node->package_spec.pending_activation_count =
           cg->pending_activation_count - pkg_saved_pa;
 
+        // RM 9.3: a LIBRARY package spec WITHOUT a body still activates the
+        // tasks its declarations create. Synthesize the <pkg>___elab a body
+        // would have provided — starting each single-task object — and join
+        // the elaboration order exactly like a body would (ca5004a: T : TSK
+        // in bodyless CA5004A1 is entry-called during a DEPENDENT body's
+        // elaboration, so it must be running by then).
+        {
+          Symbol *spec_sym = node->symbol;
+          bool spec_has_task_objects = false;
+          Node_List *spec_parts[2] = { &node->package_spec.visible_decls,
+                                       &node->package_spec.private_decls };
+          for (int k = 0; k < 2 and not spec_has_task_objects; k++)
+            for (uint32_t i = 0; i < spec_parts[k]->count; i++) {
+              Syntax_Node *d = spec_parts[k]->items[i];
+              if (not d) continue;
+              if (d->kind == NK_TASK_SPEC and not d->task_spec.is_type)
+                spec_has_task_objects = true;
+              if (d->kind == NK_OBJECT_DECL)
+                for (uint32_t nj = 0; nj < d->object_decl.names.count; nj++) {
+                  Symbol *os = d->object_decl.names.items[nj]->symbol;
+                  if (os and Type_Is_Task (os->type))
+                    spec_has_task_objects = true;
+                }
+              if (spec_has_task_objects) break;
+            }
+          if (spec_has_task_objects and not cg->current_function and
+              spec_sym and not spec_sym->elab_defined and
+              not Body_Already_Loaded (spec_sym->name)) {
+            spec_sym->elab_defined = true;
+            uint32_t saved_temp = cg->temp_id;
+            cg->temp_id = 1;
+            Emit ("define void @");
+            Emit_Symbol_Name (spec_sym);
+            Emit ("___elab() {\nentry:\n");
+
+            // The unit's deferred library-scope elaborations (dynamic
+            // initializers, subtype checks, overlays) drain here when no
+            // body will host them — this define preempts the spec-only
+            // synthesis at the compilation-unit tail (elab_defined).
+            if (not Compilation_Provides_Package_Body (
+                  node->package_spec.name)) {
+              Symbol *task_saved_function = cg->current_function;
+              bool    task_saved_term     = cg->block_terminated;
+              cg->current_function = spec_sym;
+              cg->block_terminated = false;
+              Emit_Pending_Library_Elaborations ();
+              cg->current_function = task_saved_function;
+              cg->block_terminated = task_saved_term;
+            }
+            for (int k = 0; k < 2; k++)
+              for (uint32_t i = 0; i < spec_parts[k]->count; i++) {
+                Syntax_Node *d = spec_parts[k]->items[i];
+                if (not d) continue;
+
+                // TASK X IS ... — a single task; its function is its own.
+                if (d->kind == NK_TASK_SPEC and not d->task_spec.is_type and
+                    d->symbol) {
+                  Symbol *task_obj = NULL;
+                  Scope *tscope = d->symbol->defining_scope;
+                  if (tscope)
+                    for (uint32_t si = 0; si < tscope->symbol_count; si++) {
+                      Symbol *cur = tscope->symbols[si];
+                      if (cur and cur->kind == SYMBOL_VARIABLE and
+                          Type_Is_Task (cur->type) and
+                          Slice_Equal_Ignore_Case (cur->name,
+                                                   d->task_spec.name)) {
+                        task_obj = cur;
+                        break;
+                      }
+                    }
+                  if (not task_obj) continue;
+                  uint32_t handle = Emit_Result_Instruction (
+                    "call ptr @__ada_task_start(ptr @");
+                  Emit_Task_Function_Name (d->symbol, d->task_spec.name);
+                  Emit (", ptr null, ptr null)\n");
+                  Emit ("  store ptr %%t%u, ptr @", handle);
+                  Emit_Symbol_Name (task_obj);
+                  Emit ("\n");
+                }
+
+                // T : TSK — an object of a task TYPE (possibly one WITH'd
+                // from another unit); its function is the type's.
+                if (d->kind == NK_OBJECT_DECL)
+                  for (uint32_t nj = 0; nj < d->object_decl.names.count; nj++) {
+                    Symbol *obj = d->object_decl.names.items[nj]->symbol;
+                    if (not obj or not Type_Is_Task (obj->type) or
+                        not obj->type->defining_symbol)
+                      continue;
+                    uint32_t handle = Emit_Result_Instruction (
+                      "call ptr @__ada_task_start(ptr @");
+                    Emit_Task_Function_Name (obj->type->defining_symbol,
+                                             obj->type->name);
+                    Emit (", ptr null, ptr null)\n");
+                    Emit ("  store ptr %%t%u, ptr @", handle);
+                    Emit_Symbol_Name (obj);
+                    Emit ("\n");
+                  }
+              }
+            Emit ("  ret void\n}\n\n");
+            cg->temp_id = saved_temp;
+            Append_Elab_Function (spec_sym);
+            Elab_Register_Unit (spec_sym->name, true, spec_sym,
+                                false, false, true);
+          }
+        }
+
         // RM 7.4: Deferred constant completion - copy the private part                             
         // completion's value to the visible part deferred constant's                               
         // storage so that references from outside the package see the                              
@@ -47835,7 +50455,13 @@ void Generate_Declaration (Syntax_Node *node) {
       // module defines @<x>___elab(ptr) under the same stable name; this
       // module declares it and calls it at the stub's elaboration point
       // with the enclosing frame (RM 10.2: the subunit's body elaborates
-      // where the stub stands).
+      // where the stub stands). A GENERIC's stub sets only the elaboration
+      // flag above: elaborating a generic body establishes it for
+      // instantiation and runs nothing (RM 12.2) — the body's code is
+      // cloned into each instance, so no ___elab exists to call.
+      if (node->package_body.is_separate and node->symbol and
+          node->symbol->kind == SYMBOL_GENERIC)
+        break;
       if (node->package_body.is_separate and node->symbol) {
 
         // The declaration is deferred to the post-generation flush: in a
@@ -47866,13 +50492,25 @@ void Generate_Declaration (Syntax_Node *node) {
       {
         Symbol *pkg_sym = node->symbol;  // Use symbol from semantic analysis
 
+        // A GENERIC package body emits no code of its own — the body's
+        // declarations and statements are cloned into each instance
+        // (RM 12.2). This precedes the subunit path below: a generic
+        // subunit body must not become a runnable ___elab that executes
+        // the template's statements against unbound formals.
+        if (pkg_sym and pkg_sym->kind == SYMBOL_GENERIC)
+          break;
+
         // A SUBUNIT package body whose parent chain nests in a subprogram:
         // all its state lives in the PARENT's frame (offsets agree — both
         // compilations resolve the same parent source), so the whole body
         // emits as one elaboration function over that frame. %__frame_base
         // aliases %__parent_frame and the ordinary frame-mode declaration
         // machinery lays the package's variables into their shared slots.
-        if (cg->subunit_parent and pkg_sym and
+        // Only the subunit ITSELF opens the function: a package body nested
+        // inside it elaborates inline in the already-open ___elab
+        // (c83f01d1's PACKAGE BODY P) — a fresh define mid-function is
+        // malformed IR.
+        if (cg->subunit_parent and pkg_sym and not cg->current_function and
             Find_Enclosing_Subprogram (pkg_sym)) {
           uint32_t subunit_saved_deferred = cg->deferred_count;
           pkg_sym->elab_defined = true;
@@ -47918,11 +50556,6 @@ void Generate_Declaration (Syntax_Node *node) {
           break;
         }
 
-        // Skip generic package bodies - code is generated only for instances
-        if (pkg_sym and pkg_sym->kind == SYMBOL_GENERIC) {
-          break;
-        }
-
         // For library-level package bodies (separate compilation), emit the                        
         // associated spec's visible/private declarations as globals. The spec                     
         // is loaded from a separate .ads file and never visited by codegen,                        
@@ -47956,14 +50589,23 @@ void Generate_Declaration (Syntax_Node *node) {
         // bodyless package's spec tasks instead wait for the enclosing
         // master's begin). Entries stay recorded for the enclosing join.
         if (cg->current_function) {
-          if (pkg_sym and pkg_sym->declaration and
-              pkg_sym->declaration->kind == NK_PACKAGE_SPEC) {
-            Syntax_Node *pkg_spec = pkg_sym->declaration;
+          // A generic instance's symbol points its `declaration` at the
+          // instantiation node; the recorded activation range lives on the
+          // resolved SPEC CLONE (cc1207b: the instance body's begin must
+          // activate the instance's spec task before calling its entry).
+          Syntax_Node *pkg_spec =
+            (pkg_sym and pkg_sym->declaration and
+             pkg_sym->declaration->kind == NK_PACKAGE_SPEC)
+              ? pkg_sym->declaration
+            : (pkg_sym and pkg_sym->instance_spec and
+               pkg_sym->instance_spec->kind == NK_PACKAGE_SPEC)
+              ? pkg_sym->instance_spec
+              : NULL;
+          if (pkg_spec)
             Emit_Activate_Pending_Tasks_Range (
               pkg_spec->package_spec.pending_activation_first,
               pkg_spec->package_spec.pending_activation_first
                 + pkg_spec->package_spec.pending_activation_count);
-          }
           Emit_Activate_Pending_Tasks (pkg_body_saved_pa);
         }
 
@@ -48018,6 +50660,7 @@ void Generate_Declaration (Syntax_Node *node) {
       } else if (not cg->current_function and
                  not node->package_body.elab_generated) {
         node->package_body.elab_generated = true;
+        uint32_t body_saved_deferred = cg->deferred_count;
         if (pkg_sym) pkg_sym->elab_defined = true;
         // A subunit package body runs its elaboration as a function over
         // the parent's frame, exactly like a task body: uniform
@@ -48064,7 +50707,7 @@ void Generate_Declaration (Syntax_Node *node) {
         // RM 7.2: elaborate the declarative part first — store each deferred
         // library-level initializer (declaration order), before the package's
         // tasks activate and before its initialization statements run.
-        Emit_Pending_Global_Initializers ();
+        Emit_Pending_Library_Elaborations ();
 
         // Start package-level tasks declared in the spec or the body.
         if (has_pkg_tasks) {
@@ -48119,10 +50762,15 @@ void Generate_Declaration (Syntax_Node *node) {
         cg->current_function = saved_current_function;
         cg->is_nested = saved_is_nested;
 
-        // Track this elaboration function for calling from main.                                  
-        // Also register with the §15 elaboration graph for                                         
-        // proper dependency-ordered elaboration.                                                  
-        //                                                                                          
+        // Nested subprograms declared in the body's declarative part or its
+        // statement blocks (c39006f2's CHECK) deferred while the elaboration
+        // function was open; emit them now, at module level.
+        Process_Deferred_Bodies (body_saved_deferred);
+
+        // Track this elaboration function for calling from main.
+        // Also register with the §15 elaboration graph for
+        // proper dependency-ordered elaboration.
+        //
         if (pkg_sym) {
           Append_Elab_Function (pkg_sym);
 
@@ -48189,7 +50837,7 @@ void Generate_Declaration (Syntax_Node *node) {
               cg->block_terminated = false;
               cg->temp_id = 1;
               Emit_Instance_Binding_Elaboration (inst_sym);
-              Emit_Pending_Global_Initializers ();
+              Emit_Pending_Library_Elaborations ();
               Emit ("  ret void\n}\n");
               cg->current_function = saved_function;
               cg->temp_id = saved_temp;
@@ -48355,12 +51003,26 @@ void Generate_Declaration (Syntax_Node *node) {
             // Task start is deferred to package body elaboration
           // Allocate task object - use frame if nested, else stack
           } else {
-          Emit_Local_Ref (obj_sym);
-          if (cg->current_nesting_level > 0) {
-            Emit (" = getelementptr i8, ptr %%__frame_base, i64 %lld  ; task in frame\n",
-               (long long)obj_sym->frame_offset);
+          // A package-level task object of a generic instance is module
+          // storage — every function of the instance names @<sym>, never a
+          // frame slot of whichever function elaborated the instantiation.
+          bool instance_global = Symbol_Is_Global (obj_sym);
+          if (instance_global) {
+            if (not obj_sym->extern_emitted) {
+              obj_sym->extern_emitted = true;
+              Emit_String_Const ("@");
+              Emit_String_Const_Symbol_Name (obj_sym);
+              Emit_String_Const (" = linkonce_odr global ptr null"
+                                 "  ; instance task object\n");
+            }
           } else {
-            Emit (" = alloca ptr  ; task control block\n");
+            Emit_Local_Ref (obj_sym);
+            if (cg->current_nesting_level > 0) {
+              Emit (" = getelementptr i8, ptr %%__frame_base, i64 %lld  ; task in frame\n",
+                 (long long)obj_sym->frame_offset);
+            } else {
+              Emit (" = alloca ptr  ; task control block\n");
+            }
           }
 
           // Create the task control block now, but DEFER thread start to the
@@ -48375,9 +51037,15 @@ void Generate_Declaration (Syntax_Node *node) {
              Task_Master_Record_Argument ());
 
           // Store the TCB pointer in the task object.
-          Emit ("  store ptr %%t%u, ptr %%", handle_tmp);
-          Emit_Symbol_Name (obj_sym);
-          Emit ("\n");
+          if (instance_global) {
+            Emit ("  store ptr %%t%u, ptr ", handle_tmp);
+            Emit_Global_Ref (obj_sym);
+            Emit ("\n");
+          } else {
+            Emit ("  store ptr %%t%u, ptr %%", handle_tmp);
+            Emit_Symbol_Name (obj_sym);
+            Emit ("\n");
+          }
 
           Pending_Activation_Append (obj_sym);
           }
@@ -48630,6 +51298,16 @@ void Generate_Declaration (Syntax_Node *node) {
       Symbol *sub_sym = node->symbol;
       Type_Info *sub_type = sub_sym ? sub_sym->type : NULL;
 
+      // A library-scope subtype declaration elaborates inside the owning
+      // unit's ___elab function — module scope admits no instructions, and
+      // dropping the checks would skip required RM 3.3.2 elaboration
+      // semantics.
+      if (not cg->current_function) {
+        Defer_Library_Elaboration (PENDING_ELABORATION_DECLARATION_KIND,
+                                   NULL, node);
+        break;
+      }
+
       // RM 3.3.1: a constrained array subtype with runtime bounds (e.g.
       // ARRAY_TYPE (1 .. IDENT_INT (5))) elaborates its bounds here so its
       // @__rt_type globals are populated before any use.
@@ -48638,17 +51316,14 @@ void Generate_Declaration (Syntax_Node *node) {
       // RM 3.3.2 / 3.5(4): a range constraint with dynamic bounds is
       // checked against the type mark's range when the SUBTYPE elaborates
       // (a non-null range with a bound outside the type mark raises
-      // CONSTRAINT_ERROR here, not at first use). Library-level subtype
-      // declarations emit at module scope where no instructions can live;
-      // their elaboration checks stay with the object paths.
-      if (cg->current_function)
-        Emit_Subtype_Constraint_Compat_Check (sub_type, NULL);
+      // CONSTRAINT_ERROR here, not at first use).
+      Emit_Subtype_Constraint_Compat_Check (sub_type, NULL);
 
       // RM 3.5/3.6.1: an array subtype's index constraint (SUBTYPE S IS
       // WEEK_ARRAY (MID_WEEK RANGE MON..WED)) checks each discrete range against
       // its index subtype and, when written `S RANGE L..H`, against S — exactly
       // as a constrained array TYPE declaration does.
-      if (cg->current_function and Type_Is_Array_Like (sub_type)) {
+      if (Type_Is_Array_Like (sub_type)) {
         for (uint32_t d = 0; d < sub_type->array.index_count; d++) {
           Emit_Range_Constraint_Compat_Check (
             &sub_type->array.indices[d].low_bound,
@@ -48664,10 +51339,8 @@ void Generate_Declaration (Syntax_Node *node) {
       // CONS (1)) checks its discriminant-dependent component constraints when
       // the subtype elaborates. Access-to-record subtypes (SUBTYPE SUBACC IS
       // ACC (VAL)) get their disc-constraint range check here too (c37211e).
-      if (cg->current_function) {
-        Emit_Disc_Dependent_Component_Checks (sub_type);
-        Emit_Access_Disc_Constraint_Range_Check (sub_type);
-      }
+      Emit_Disc_Dependent_Component_Checks (sub_type);
+      Emit_Access_Disc_Constraint_Range_Check (sub_type);
 
       Type_Info *acc_base = sub_type ? sub_type->base_type : NULL;
 
@@ -48762,6 +51435,20 @@ void Generate_Declaration (Syntax_Node *node) {
     // entry calls through the rename read them back.
     case NK_SUBPROGRAM_RENAMING: {
       Symbol *rename_sym = node->symbol;
+
+      // An attribute renaming carries a synthesized wrapper body
+      // (RM 8.5(3), c85016a) — emit it like an instance wrapper.
+      if (rename_sym and rename_sym->is_instance_wrapper and
+          rename_sym->declaration and
+          rename_sym->declaration->kind == NK_FUNCTION_BODY) {
+        if (not rename_sym->declaration->subprogram_body.code_generated) {
+          if (cg->current_function)
+            Defer_Subprogram_Body (rename_sym->declaration);
+          else
+            Generate_Subprogram_Body (rename_sym->declaration);
+        }
+        break;
+      }
       if (not rename_sym or not rename_sym->renamed_entry_name or
           not rename_sym->rename_task_slot or not cg->current_function)
         break;
@@ -48819,6 +51506,15 @@ void Generate_Declaration (Syntax_Node *node) {
     // object's declared initialization through the overlay (the assignment
     // redirects via the object's renamed_object dereference).
     case NK_REPRESENTATION_CLAUSE: {
+      // A library-scope representation clause elaborates inside the owning
+      // unit's ___elab function: a STORAGE_SIZE expression evaluates and
+      // freezes, an RM 13.5 overlay evaluates and stores its target address.
+      // Module scope admits no instructions.
+      if (not cg->current_function) {
+        Defer_Library_Elaboration (PENDING_ELABORATION_DECLARATION_KIND,
+                                   NULL, node);
+        break;
+      }
       Symbol *overlaid = node->rep_clause.entity_name
         ? node->rep_clause.entity_name->symbol : NULL;
       if (not overlaid and node->rep_clause.entity_name and
@@ -49300,6 +51996,10 @@ void Emit_Integer_Value_Signed_Return (const char *stem, const char *value,
 
 void Generate_Compilation_Unit (Syntax_Node *node) {
   if (not node) return;
+
+  // A subunit grafted into its generic parent's template emits only
+  // through instantiations — nothing stands alone here.
+  if (node->compilation_unit.grafted_into_generic) return;
 
   // Generate LLVM module header (only once per file)
   if (not cg->header_emitted) {
@@ -51325,6 +54025,46 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   Emit ("  ret i1 %%r\n");
   Emit ("}\n\n");
 
+  // An entry call that is about to raise TASKING_ERROR because its target is
+  // ABNORMAL (abort-pending) first waits for the target to actually terminate
+  // (RM 9.4: an abnormal task completes at its next abort completion point and
+  // its teardown then publishes TERMINATED). This makes the RM 9.9 observable
+  // ordering deterministic: after the caller sees TASKING_ERROR, T'TERMINATED
+  // is already true (c9a006a). Two exclusions keep it deadlock-free:
+  //   - a target that merely COMPLETED normally raises immediately — its
+  //     termination can be delayed indefinitely by still-running dependents;
+  //   - a caller that is itself abort-pending raises immediately — it may be a
+  //     dependent the dying master is joining, and must unwind first.
+  // Caller holds @__rv_mutex; the task wrapper broadcasts @__term_cond after
+  // setting TERMINATED under the same mutex, so the wait cannot miss the wake.
+  Emit ("define linkonce_odr void @__ada_await_abnormal_teardown(ptr %%task, ptr %%self) {\n");
+  Emit ("entry:\n");
+  Emit ("  br label %%loop\n");
+  Emit ("loop:\n");
+  Emit ("  %%tp = getelementptr i8, ptr %%task, i64 57\n");
+  Emit ("  %%term = load i8, ptr %%tp\n");
+  Emit ("  %%isterm = icmp ne i8 %%term, 0\n");
+  Emit ("  br i1 %%isterm, label %%done, label %%chk_abnormal\n");
+  Emit ("chk_abnormal:\n");
+  Emit ("  %%ap = getelementptr i8, ptr %%task, i64 61\n");
+  Emit ("  %%apv = load i8, ptr %%ap\n");
+  Emit ("  %%isab = icmp ne i8 %%apv, 0\n");
+  Emit ("  br i1 %%isab, label %%chk_self, label %%done\n");
+  Emit ("chk_self:\n");
+  Emit ("  %%selfnull = icmp eq ptr %%self, null\n");
+  Emit ("  br i1 %%selfnull, label %%wait, label %%chk_self_ab\n");
+  Emit ("chk_self_ab:\n");
+  Emit ("  %%sap = getelementptr i8, ptr %%self, i64 61\n");
+  Emit ("  %%sapv = load i8, ptr %%sap\n");
+  Emit ("  %%sab = icmp ne i8 %%sapv, 0\n");
+  Emit ("  br i1 %%sab, label %%done, label %%wait\n");
+  Emit ("wait:\n");
+  Emit ("  %%_w = call i32 @pthread_cond_wait(ptr @__term_cond, ptr @__rv_mutex)\n");
+  Emit ("  br label %%loop\n");
+  Emit ("done:\n");
+  Emit ("  ret void\n");
+  Emit ("}\n\n");
+
   // T'CALLABLE (RM 9.9): callable iff not completed, terminated, or abnormal.
   Emit ("define linkonce_odr i8 @__ada_task_callable(ptr %%tcb) {\n");
   Emit ("entry:\n");
@@ -51437,12 +54177,14 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   Emit ("  store ptr null, ptr %%prvpt\n");
   Emit ("  br label %%te_raise\n");
   Emit ("te_raise:\n");
+  Emit ("  call void @__ada_await_abnormal_teardown(ptr %%task, ptr %%self)\n");
   Emit ("  call i32 @pthread_mutex_unlock(ptr @__rv_mutex)\n");
   Emit ("  call void @free (ptr %%rv)\n");
   Emit ("  %%teid2 = ptrtoint ptr @__exc.tasking_error to " PTR_INT_TYPE "\n");
   Emit ("  call void @__ada_raise(i64 %%teid2)\n");
   Emit ("  unreachable\n");
   Emit ("raise_te_locked:\n");
+  Emit ("  call void @__ada_await_abnormal_teardown(ptr %%task, ptr %%self)\n");
   Emit ("  call i32 @pthread_mutex_unlock(ptr @__rv_mutex)\n");
   Emit ("  call void @free (ptr %%rv)\n");
   Emit ("  %%teid3 = ptrtoint ptr @__exc.tasking_error to " PTR_INT_TYPE "\n");
@@ -51848,9 +54590,19 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   // address.
   {
     Syntax_Node *cu_unit = node->compilation_unit.unit;
+
+    // Only when no BODY of this package is emitted by THIS compilation:
+    // that body's own ___elab hosts the same initializers, and defining
+    // both is an IR-level duplicate (c83025c). A body merely known to the
+    // library does not count — it may never be linked (spprt13's spec-only
+    // address constants).
     if (cu_unit and cu_unit->kind == NK_PACKAGE_SPEC and cu_unit->symbol
-        and cg->pending_global_init_count > 0) {
+        and cg->pending_library_elaboration_count > 0
+        and not cu_unit->symbol->elab_defined
+        and not Compilation_Provides_Package_Body (
+              cu_unit->package_spec.name)) {
       Symbol *pkg = cu_unit->symbol;
+      pkg->elab_defined = true;
       Emit ("\n; Spec-only package elaboration\n");
       Emit ("define void @");
       Emit_Symbol_Name (pkg);
@@ -51861,7 +54613,7 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
       cg->current_function = pkg;
       cg->temp_id          = 1;
       cg->block_terminated = false;
-      Emit_Pending_Global_Initializers ();
+      Emit_Pending_Library_Elaborations ();
       if (not cg->block_terminated) Emit ("  ret void\n");
       Emit ("}\n");
       cg->current_function = saved_function;
@@ -51892,10 +54644,15 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   if (unit and unit->kind == NK_PROCEDURE_BODY and unit->symbol) {
     Symbol *main_sym = unit->symbol;
 
-    // Check if this is a library-level procedure (no parameters)
-    // and NOT a SEPARATE subunit
+    // Check if this is a library-level procedure (no parameters) and NOT a
+    // SEPARATE subunit: is_separate marks only the STUB — a subunit's own
+    // compilation unit is recognized by its SEPARATE (parent) clause. A
+    // generic subprogram's subunit body pairs with the SYMBOL_GENERIC and
+    // is no main program either (ca2009d).
     if (main_sym->parameter_count == 0 and
+        main_sym->kind == SYMBOL_PROCEDURE and
         not unit->subprogram_body.is_separate and
+        not node->compilation_unit.separate_parent and
         not cg->generating_loaded_unit) {
       cg->main_candidate = main_sym;
     }
@@ -54109,8 +56866,16 @@ bool Elab_Needs_Elab_Call (uint32_t index) {
   // Preelaborate units without explicit elab code don't need calls
   if (v->is_preelaborate and not v->needs_elab_code) return false;
 
-  // Only bodies generate __elab functions
-  return v->kind == UNIT_BODY or v->kind == UNIT_BODY_ONLY;
+  // A body's ___elab is called at the body's position in the order.
+  if (v->kind == UNIT_BODY or v->kind == UNIT_BODY_ONLY) return true;
+
+  // A bodyless spec with a SYNTHESIZED ___elab (dynamic initializers,
+  // deferred subtype checks, address overlays) is called at the spec's
+  // position — leaving it to the tail sweep would run it after its
+  // dependents, reading uninitialized state (cd5003a: PKG2's overlay
+  // address reads SPPRT13's dynamic constants).
+  return v->kind == UNIT_SPEC and v->needs_elab_code and
+         v->symbol and v->symbol->elab_defined;
 }
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
@@ -54677,12 +57442,67 @@ bool Package_Spec_Requires_Body (Syntax_Node *pkg_spec) {
   return false;
 }
 
+#define MAX_COMPILATION_BODIES 64
+static String_Slice Compilation_Body_Names[MAX_COMPILATION_BODIES];
+static uint32_t     Compilation_Body_Count = 0;
+
+void Note_Compilation_Package_Bodies (Syntax_Node **units, int unit_count) {
+  Compilation_Body_Count = 0;
+  for (int i = 0; i < unit_count; i++) {
+    Syntax_Node *unit = units[i] ? units[i]->compilation_unit.unit : NULL;
+    if (unit and unit->kind == NK_PACKAGE_BODY and
+        not unit->package_body.is_separate and
+        Compilation_Body_Count < MAX_COMPILATION_BODIES)
+      Compilation_Body_Names[Compilation_Body_Count++] =
+        unit->package_body.name;
+  }
+}
+
+bool Compilation_Provides_Package_Body (String_Slice name) {
+  for (uint32_t i = 0; i < Compilation_Body_Count; i++)
+    if (Slice_Equal_Ignore_Case (Compilation_Body_Names[i], name))
+      return true;
+  return false;
+}
+
+// A subunit among the CURRENT compilation's units satisfies a stub just as
+// a library-compiled one does (RM 10.2: subunits may share the compilation
+// with their parent — c94008d keeps SEPARATE (SHARED_C94008D) TASK BODY
+// SHARE in the same file as the generic and the main).
+static bool Current_Compilation_Provides_Subunit (Syntax_Node **units,
+                                                  int unit_count,
+                                                  String_Slice parent_name,
+                                                  String_Slice stub_name) {
+  for (int i = 0; i < unit_count; i++) {
+    Syntax_Node *cu = units[i];
+    if (not cu or not cu->compilation_unit.separate_parent) continue;
+    Syntax_Node *parent = cu->compilation_unit.separate_parent;
+    if (parent->kind != NK_IDENTIFIER) continue;
+    if (not Slice_Equal_Ignore_Case (parent->string_val.text, parent_name))
+      continue;
+    Syntax_Node *unit = cu->compilation_unit.unit;
+    if (not unit) continue;
+    String_Slice unit_name = {0};
+    switch (unit->kind) {
+      case NK_PROCEDURE_BODY:
+      case NK_FUNCTION_BODY: unit_name = Get_Subprogram_Name (unit); break;
+      case NK_PACKAGE_BODY:  unit_name = unit->package_body.name;    break;
+      case NK_TASK_BODY:     unit_name = unit->task_body.name;       break;
+      default: break;
+    }
+    if (Slice_Equal_Ignore_Case (unit_name, stub_name)) return true;
+  }
+  return false;
+}
+
 // RM 10.2 stub completeness of a LOADED unit: every body stub in a
 // WITH'd dependency must have a compiled subunit in the library by the
 // time a main program is compiled. The compilation that contains the
 // stub itself is exempt — its subunit may legitimately follow later.
 static void Require_Loaded_Stub_Subunits (String_Slice parent_name,
-                                          Node_List *declarations) {
+                                          Node_List *declarations,
+                                          Syntax_Node **units,
+                                          int unit_count) {
   for (uint32_t i = 0; i < declarations->count; i++) {
     Syntax_Node *decl = declarations->items[i];
     if (not decl) continue;
@@ -54710,7 +57530,9 @@ static void Require_Loaded_Stub_Subunits (String_Slice parent_name,
     dotted[parent_name.length] = '.';
     memcpy (dotted + parent_name.length + 1, stub_name.data, stub_name.length);
     String_Slice dotted_name = { dotted, (uint32_t)dotted_length };
-    if (not Library_Catalog_Find (dotted_name, CATALOG_UNIT_SUBUNIT))
+    if (not Library_Catalog_Find (dotted_name, CATALOG_UNIT_SUBUNIT) and
+        not Current_Compilation_Provides_Subunit (units, unit_count,
+                                                  parent_name, stub_name))
       Report_Error (decl->location,
         "subunit '%.*s' has no compiled body in the library (RM 10.2)",
         (int)dotted_name.length, dotted_name.data);
@@ -54760,11 +57582,13 @@ void Require_Complete_Library (Syntax_Node **units, int unit_count) {
             case NK_PROCEDURE_BODY:
             case NK_FUNCTION_BODY:
               Require_Loaded_Stub_Subunits (
-                with_name, &generic_body->subprogram_body.declarations);
+                with_name, &generic_body->subprogram_body.declarations,
+                units, unit_count);
               break;
             case NK_PACKAGE_BODY:
               Require_Loaded_Stub_Subunits (
-                with_name, &generic_body->package_body.declarations);
+                with_name, &generic_body->package_body.declarations,
+                units, unit_count);
               break;
             default: break;
           }
@@ -54779,12 +57603,14 @@ void Require_Complete_Library (Syntax_Node **units, int unit_count) {
     switch (unit->kind) {
       case NK_PACKAGE_BODY:
         Require_Loaded_Stub_Subunits (unit->package_body.name,
-                                      &unit->package_body.declarations);
+                                      &unit->package_body.declarations,
+                                      units, unit_count);
         break;
       case NK_PROCEDURE_BODY:
       case NK_FUNCTION_BODY:
         Require_Loaded_Stub_Subunits (Get_Subprogram_Name (unit),
-                                      &unit->subprogram_body.declarations);
+                                      &unit->subprogram_body.declarations,
+                                      units, unit_count);
         break;
       default: break;
     }
@@ -54863,9 +57689,12 @@ void Load_Package_Spec (String_Slice name, char *src) {
   // any recursive lookup overwrites the flag.
   bool predefined_unit = Lookup_Path_Resolved_From_Rts;
 
-  // Check if already loaded
+  // Check if already loaded — a GENERIC library unit counts (reloading one
+  // from the catalog would shadow the in-file symbol whose template AST
+  // carries later graftings, e.g. a subunit completing its stub, c94008d).
   Symbol *existing = Symbol_Find (name);
-  if (existing and existing->kind == SYMBOL_PACKAGE and existing->declaration) {
+  if (existing and existing->declaration and
+      (existing->kind == SYMBOL_PACKAGE or existing->kind == SYMBOL_GENERIC)) {
     return;  // Already loaded
   }
 
@@ -56175,6 +59004,52 @@ Big_Integer *Big_Integer_From_Decimal_SIMD (const char *text) {
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 
 
+// The library identity of a compilation unit (RM 10.1): its unit name plus
+// whether it stands as the unit's SPEC, its BODY, or both — a subprogram
+// body or a library instantiation serves as its own spec. Subunits replace
+// by dotted name through the catalog, not through this in-set scan.
+bool Compilation_Unit_Identity (Syntax_Node *cu, String_Slice *name,
+                                bool *is_spec, bool *is_body) {
+  if (not cu or not cu->compilation_unit.unit) return false;
+  if (cu->compilation_unit.separate_parent) return false;
+  Syntax_Node *u = cu->compilation_unit.unit;
+  switch (u->kind) {
+    case NK_PACKAGE_SPEC:
+      *name = u->package_spec.name;    *is_spec = true;  *is_body = false;
+      return true;
+    case NK_PACKAGE_BODY:
+      *name = u->package_body.name;    *is_spec = false; *is_body = true;
+      return true;
+    case NK_PROCEDURE_BODY:
+    case NK_FUNCTION_BODY:
+      // A body never REPLACES a declaration of its name — it completes one
+      // (a generic subprogram's body after the generic declaration,
+      // c23006e). It stands as its own spec only when no declaration
+      // precedes it, which the replacement scan needs no flag for: body
+      // replaces body, and a later spec obsoletes it.
+      *name = Get_Subprogram_Name (u); *is_spec = false; *is_body = true;
+      return true;
+    case NK_PROCEDURE_SPEC:
+    case NK_FUNCTION_SPEC:
+      *name = u->subprogram_spec.name; *is_spec = true;  *is_body = false;
+      return true;
+    case NK_GENERIC_DECL: {
+      Syntax_Node *g = u->generic_decl.unit;
+      if (not g) return false;
+      if (g->kind == NK_PACKAGE_SPEC) *name = g->package_spec.name;
+      else                            *name = g->subprogram_spec.name;
+      *is_spec = true; *is_body = false;
+      return true;
+    }
+    case NK_GENERIC_INST:
+      *name = u->generic_inst.instance_name;
+      *is_spec = true; *is_body = true;
+      return true;
+    default:
+      return false;
+  }
+}
+
 void Compile_File (const char *input_path, const char *output_path) {
 
   // Reset loaded bodies for this compilation, then prime the program
@@ -56223,6 +59098,33 @@ void Compile_File (const char *input_path, const char *output_path) {
   if (Clone_Self_Check)
     for (int i = 0; i < unit_count; i++)
       units[i] = Clone_Subtree (units[i]);
+
+  // RM 10.1: within one compile set a later compilation unit REPLACES an
+  // earlier one of the same identity, and a later spec makes an earlier
+  // body of the unit obsolete. Replaced units vanish from the compilation —
+  // never resolved, never emitted (ca5004b: PACKAGE CA5004B0 recompiled
+  // with a new spec drops both the old spec and its now-obsolete body).
+  {
+    int keep = 0;
+    for (int i = 0; i < unit_count; i++) {
+      String_Slice name_i; bool spec_i, body_i;
+      bool replaced = false;
+      if (Compilation_Unit_Identity (units[i], &name_i, &spec_i, &body_i))
+        for (int k = i + 1; k < unit_count and not replaced; k++) {
+          String_Slice name_k; bool spec_k, body_k;
+          if (not Compilation_Unit_Identity (units[k], &name_k,
+                                             &spec_k, &body_k))
+            continue;
+          if (not Slice_Equal_Ignore_Case (name_i, name_k)) continue;
+          if ((spec_i and spec_k) or (body_i and body_k))
+            replaced = true;                   // same category recompiled
+          else if (body_i and spec_k)
+            replaced = true;                   // new spec obsoletes the body
+        }
+      if (not replaced) units[keep++] = units[i];
+    }
+    unit_count = keep;
+  }
 
   // Semantic analysis for all units
   Symbol_Manager_Init ();
@@ -56303,6 +59205,7 @@ void Compile_File (const char *input_path, const char *output_path) {
   // declaration with the correct ABI for their @main presence anchors.
   for (uint32_t i = 0; i < Missing_Body_Subprogram_Count; i++)
     Append_Separate_Callee (Missing_Body_Subprograms[i]);
+  Note_Compilation_Package_Bodies (units, unit_count);
   for (int i = 0; i < unit_count; i++) {
     cg->subunit_parent =
       (units[i] and units[i]->compilation_unit.separate_parent)
