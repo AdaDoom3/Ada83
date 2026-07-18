@@ -2915,6 +2915,14 @@ typedef struct {
   uint32_t saved_pa; // pending_activation_count at scope entry
 } Master_Stack_Entry;
 
+// A library-scope elaboration action deferred into the owning unit's ___elab
+// function (RM 7.2): either a dynamic object initializer, or a whole
+// declaration whose elaboration emits runtime code.
+typedef enum {
+  PENDING_ELABORATION_OBJECT_INITIALIZER_KIND,
+  PENDING_ELABORATION_DECLARATION_KIND,
+} Pending_Elaboration_Kind;
+
 // What Emit_Master_Enter_If hands back to a scope: everything its matching
 // Emit_Master_Exit needs. `entered` is false for a taskless scope (no flag,
 // no record, nothing pushed) — the exit then only restores the pending count.
@@ -2978,13 +2986,22 @@ typedef struct {
   uint32_t     master_depth;
   uint32_t     master_capacity;
 
-  // Library-level objects whose initializer is not a static literal (RM 3.2.1).
-  // Their globals are emitted zero-initialized; the enclosing package body's
-  // elaboration function evaluates each initializer and stores it, in
-  // declaration order (RM 7.2). Filled by Generate_Object_Declaration's
-  // global branch, drained by the package-body elaboration emitter.
-  struct { Symbol *symbol; Syntax_Node *init; } pending_global_inits[256];
-  uint32_t     pending_global_init_count;
+  // Library-scope elaboration deferred into the owning unit's ___elab
+  // function — module scope admits no instructions (RM 7.2). Two shapes, kept
+  // in one list so they drain in declaration order: an object whose
+  // initializer is not a static literal (its global is emitted
+  // zero-initialized; the drain evaluates and stores it), and a declaration
+  // whose elaboration emits runtime code (subtype compatibility checks,
+  // RM 13.5 address overlays) — the drain re-enters Generate_Declaration for
+  // it inside the elaboration function. Filled at library scope, drained by
+  // the package-body / spec-only elaboration emitters.
+  struct {
+    Pending_Elaboration_Kind kind;
+    Symbol      *symbol;   // OBJECT_INITIALIZER: the object; DECLARATION: unused
+    Syntax_Node *node;     // OBJECT_INITIALIZER: the initializer expression;
+                           // DECLARATION: the declaration node itself
+  } pending_library_elaborations[256];
+  uint32_t     pending_library_elaboration_count;
 
   // Nested subprograms (static chain)
   Symbol *enclosing_function; // Immediately enclosing function for uplevel access
@@ -3313,7 +3330,8 @@ LLVM_Value Emit_Coerce_Val         (LLVM_Value value, LLVM_Rep desired_rep);
 
 // ???
 void Emit_Raise_Exception  (const char *exc_name, const char *comment);
-void Emit_Collection_Budget_Debit (Type_Info *access_type, uint32_t size64);
+void Emit_Collection_Budget_Debit  (Type_Info *access_type, uint32_t size64);
+void Emit_Collection_Budget_Credit (Type_Info *access_type, uint32_t size64);
 void Emit_Check_With_Raise (uint32_t    cond,
                             bool        raise_on_true,
                             const char *comment);
@@ -3888,7 +3906,9 @@ void Emit_Subcomponent_Disc_Constraint_Checks (Symbol *sym, Type_Info *parent_re
                                                bool check_static_values);
 void Emit_Incomplete_Deferred_Disc_Checks (Type_Info *completed);
 void Emit_Access_Disc_Constraint_Range_Check (Type_Info *t);
-void Emit_Pending_Global_Initializers (void);
+void Emit_Pending_Library_Elaborations (void);
+void Defer_Library_Elaboration (Pending_Elaboration_Kind kind,
+                                Symbol *symbol, Syntax_Node *node);
 void Generate_Subprogram_Body       (Syntax_Node *node);
 void Generate_Task_Body             (Syntax_Node *node);
 // Elaborate a tree-copy instance's formal-object bindings at the
@@ -22435,12 +22455,15 @@ void Resolve_Declaration (Syntax_Node *node) {
         // Propagate INTRINSIC convention from template so the call site
         // can recognize the instance as needing inline lowering (e.g.
         // UNCHECKED_CONVERSION) instead of an external call.
-        // The pragma CONVENTION(INTRINSIC, UNCHECKED_CONVERSION) in
-        // rts/unchecked_conversion.ads is processed elsewhere; recognize
-        // the predefined intrinsic generics by name as a fallback.
+        // The pragma CONVENTION(INTRINSIC, ...) trailing the library unit in
+        // rts/unchecked_conversion.ads and rts/unchecked_deallocation.ads is
+        // not yet applied by the loader; recognize the two predefined
+        // intrinsic generics (RM 13.10) by name as a fallback.
         if (template->convention == CONVENTION_INTRINSIC or
             Slice_Equal_Ignore_Case (template->name,
-                                     S("UNCHECKED_CONVERSION")))
+                                     S("UNCHECKED_CONVERSION")) or
+            Slice_Equal_Ignore_Case (template->name,
+                                     S("UNCHECKED_DEALLOCATION")))
           inst_sym->convention = CONVENTION_INTRINSIC;
 
         // Process generic actuals and build mapping
@@ -24432,6 +24455,18 @@ void Emit_Symbol_Addr (uint32_t reg, Symbol *sym) {
     Emit ("  ; RM 8.5 renamed address\n");
     return;
   }
+
+  // An RM 13.5 overlay (FOR X USE AT ...) allocates no storage of its own:
+  // the object lives at the clause's address, held by the hidden address
+  // cell. Its address is the cell's VALUE — uniform here so every consumer
+  // (indexed lvalue bases, loads, parameter passing) dereferences the
+  // overlay instead of naming never-allocated storage.
+  if (sym and sym->address_cell) {
+    Emit ("  %%t%u = load ptr, ptr ", reg);
+    Emit_Symbol_Storage (sym->address_cell);
+    Emit ("  ; RM 13.5 overlay address\n");
+    return;
+  }
   Emit ("  %%t%u = getelementptr i8, ptr ", reg);
   Emit_Symbol_Storage (sym);
   Emit (", i64 0\n");
@@ -24889,6 +24924,27 @@ void Emit_Collection_Budget_Debit (Type_Info *access_type, uint32_t size64) {
   uint32_t left = Emit_Result_Instruction (
     "sub i64 %%t%u, %%t%u\n", remaining, size64);
   Emit ("  store i64 %%t%u, ptr @__rt_sscap_%u\n", left, gid);
+}
+
+// RM 13.10.1: deallocating an object returns its storage to the access
+// type's bounded collection — the inverse of Emit_Collection_Budget_Debit,
+// reached through the same base/parent chain. No-op when no collection size
+// was specified.
+void Emit_Collection_Budget_Credit (Type_Info *access_type, uint32_t size64) {
+  Type_Info *st = access_type;
+  while (st and not st->collection_budget_global) {
+    Type_Info *up = st->base_type and st->base_type != st ? st->base_type
+                  : st->parent_type != st ? st->parent_type : NULL;
+    st = up;
+  }
+  if (not st) return;
+  uint32_t gid = st->collection_budget_global;
+  uint32_t remaining = Emit_Result_Instruction (
+    "load i64, ptr @__rt_sscap_%u  ; collection remaining\n", gid);
+  uint32_t back = Emit_Result_Instruction (
+    "add i64 %%t%u, %%t%u  ; deallocation returns storage\n",
+    remaining, size64);
+  Emit ("  store i64 %%t%u, ptr @__rt_sscap_%u\n", back, gid);
 }
 
 // RM 11.1: raise STORAGE_ERROR when an automatic object's storage exceeds what
@@ -25403,6 +25459,16 @@ uint32_t Emit_Fixed_Bound_Mantissa (Type_Bound *bound, double small, LLVM_Rep fi
     return out;
   }
 
+  // An integer bound on a real-typed range holds the mathematical value (a
+  // folded conversion such as FIX (3)), same as FOLD_BOUND and
+  // Bound_Static_Double read it — scale it to mantissa units like any other
+  // real bound.
+  if (bound->kind == BOUND_INTEGER) {
+    double value = (double) bound->int_value;
+    int128_t iv = (int128_t)(value / small);
+    uint32_t out = Emit_Result_Instruction ("add %s 0, %s  ; fixed bound (%g/small)\n", LLVM_Rep_To_String (fix_rep), I128_Decimal (iv), value);
+    return out;
+  }
   if (Bound_Is_Expression (bound)) {
     LLVM_Value fv = Generate_Expression (bound->expr);
     bool fv_float = LLVM_Rep_Is_Float (fv.rep) or
@@ -28994,6 +29060,19 @@ uint32_t Generate_Composite_Address (Syntax_Node *node) {
     }
     return v.reg;
   }
+
+  // A function-call apply (including an UNCHECKED_CONVERSION instance whose
+  // result is composite) produces a value; the composite's address is the
+  // call result's storage. The resolver's APPLY_CALL verdict is the oracle —
+  // without this, a call with one argument whose callee returns an array
+  // falls into the indexing path below, which "calls" the callee with no
+  // arguments and indexes the result by the actual (cda201a).
+  if (node->kind == NK_APPLY and node->apply.resolution == APPLY_CALL) {
+    LLVM_Value v = Generate_Expression (node);
+    if (LLVM_Rep_Is_Fat_Pointer (v.rep))
+      return Emit_Extract_Fat_Data (v.reg);
+    return v.reg;
+  }
   if (node->kind == NK_APPLY and node->apply.arguments.count == 1) {
     Type_Info *prefix_type = node->apply.prefix ? node->apply.prefix->type : NULL;
 
@@ -32023,6 +32102,83 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
   // This prevents aliasing - P(I, I, I) uses independent copies.                                  
   //                                                                                                
   if (Symbol_Is_Subprogram (sym)) {
+
+    // RM 13.10.1: UNCHECKED_DEALLOCATION is an intrinsic generic; an
+    // instance has no body to call. FREE (X): when X is not null, reclaim
+    // its object's storage — crediting the access type's bounded collection
+    // (RM 13.2) — then set X to null. A designated TASK keeps executing
+    // (RM 13.10.1): only the access variable is nulled, its control block
+    // outlives the name (cda101b).
+    if (sym->convention == CONVENTION_INTRINSIC and
+        sym->generic_template and
+        Slice_Equal_Ignore_Case (sym->generic_template->name,
+                                 S("UNCHECKED_DEALLOCATION")) and
+        node->apply.arguments.count == 1) {
+      Syntax_Node *actual =
+        Unwrap_Association (node->apply.arguments.items[0]);
+      Type_Info *access_type = actual->type;
+      Type_Info *designated  = Type_Designated (access_type);
+      bool       fat         = Type_Needs_Fat_Pointer (access_type);
+      uint32_t   slot        = Generate_Lvalue (actual);
+
+      Emit ("  ; UNCHECKED_DEALLOCATION (intrinsic)\n");
+      uint32_t data;
+      if (fat) {
+        uint32_t fat_value = Emit_Load_Fat (slot);
+        data = Emit_Extract_Fat_Data (fat_value);
+      } else {
+        data = Emit_Result_Instruction ("load ptr, ptr %%t%u\n", slot);
+      }
+      LLVM_I1 is_null = Emit_Icmp_Null_Ptr ("eq", data);
+      uint32_t skip_free = Emit_Open_Skip_If (is_null.reg);
+
+      if (not Type_Is_Task (designated)) {
+
+        // Storage reclaimed: credit the collection by the same measure the
+        // allocator debited — the data byte size, computed from the fat
+        // descriptor's bounds for an unconstrained designated array, or the
+        // designated subtype's static size otherwise.
+        uint32_t size64;
+        if (fat and designated and Type_Is_Array_Like (designated) and
+            designated->array.index_count > 0) {
+          LLVM_Rep bt  = Array_Bound_LLVM_Rep (designated);
+          LLVM_Rep iat = Integer_Arith_Rep ();
+          uint32_t fat_value = Emit_Load_Fat (slot);
+          uint32_t elem_size = Array_Element_Byte_Size (designated, 8, 8);
+          uint32_t total = 0;
+          for (uint32_t d = 0; d < designated->array.index_count and d < 8;
+               d++) {
+            uint32_t lo = Emit_Convert (
+              Emit_Fat_Pointer_Low_Dim (fat_value, bt, d).reg, bt, iat).reg;
+            uint32_t hi = Emit_Convert (
+              Emit_Fat_Pointer_High_Dim (fat_value, bt, d).reg, bt, iat).reg;
+            uint32_t len = Emit_Length_From_Bounds (lo, hi, iat).reg;
+            total = d == 0 ? len
+                  : Emit_Result_Instruction ("mul %s %%t%u, %%t%u\n",
+                      LLVM_Rep_To_String (iat), total, len);
+          }
+          uint32_t bytes = Emit_Result_Instruction ("mul %s %%t%u, %u\n",
+            LLVM_Rep_To_String (iat), total, elem_size);
+          size64 = Emit_Extend_To_I64 (bytes, iat).reg;
+        } else {
+          uint32_t static_size = designated and designated->size
+                                   ? designated->size : 8;
+          size64 = Emit_Result_Instruction ("add i64 0, %u  ; designated size\n",
+                                            static_size);
+        }
+        Emit_Collection_Budget_Credit (access_type, size64);
+        Emit ("  call void @free (ptr %%t%u)\n", data);
+      }
+      Emit_Close_Null_Skip (skip_free);
+
+      // X := null, unconditionally — an already-null actual stays null.
+      if (fat)
+        Emit ("  store " FAT_PTR_TYPE " zeroinitializer, ptr %%t%u\n", slot);
+      else
+        Emit ("  store ptr null, ptr %%t%u\n", slot);
+      return Val_Rep (0, LL_REP_VOID);
+    }
+
     // Arguments marshal into PARAMETER-SLOT order: a named association
     // (NAME => V) lands in its formal's slot, and defaults fill any
     // uncovered slot — leading or trailing (RM 6.4.2). The old model
@@ -35359,7 +35515,11 @@ LLVM_Value Generate_Attribute (Syntax_Node *node) {
         // Fail - raise CONSTRAINT_ERROR
         Emit ("Lcval_fail%u:\n", fail_label);
         Emit_Raise_Constraint_Error ("VALUE no match");
+        // Lcval_end is the live continuation reached by the extract branch;
+        // the raise above marked the block terminated, so clear that before
+        // the caller emits code after the label.
         Emit ("Lcval_end%u:\n", end_label);
+        cg->block_terminated = false;
         // CHARACTER'VALUE yields the i8 character code; tag it honestly rather
         // than the shared i32 fall-through.
         return Val_Rep (t, Type_To_Rep (classify_type));
@@ -35414,7 +35574,11 @@ LLVM_Value Generate_Attribute (Syntax_Node *node) {
         // No match - raise CONSTRAINT_ERROR
         Emit ("Lbval_nm%u:\n", no_match);
         Emit_Raise_Constraint_Error ("VALUE no match");
+        // Lbval_end is the live continuation reached by the match branches;
+        // the raise above marked the block terminated, so clear that before
+        // emitting code that follows the label.
         Emit ("Lbval_end%u:\n", end_label);
+        cg->block_terminated = false;
         Emit ("  %%t%u = load %s, ptr %%t%u\n", t, LLVM_Rep_To_String (val_iat), result_alloc);
         LLVM_Rep bool_result_t = Type_To_Rep (classify_type);
         if (LLVM_Rep_Is_Int (bool_result_t))
@@ -41266,6 +41430,29 @@ void Generate_Assignment_Body (Syntax_Node *node, Syntax_Node *target) {
       target = target_base->renamed_object;
   }
 
+  // RM 4.8 / RM 13.2: an allocator assigned to an access-typed target draws
+  // from the TARGET's named access type — its designated-subtype checks and
+  // its bounded collection both key off that type, and the allocator node's
+  // own type is an anonymous access view that carries neither. Propagate
+  // before ANY target-shape branch evaluates the value, so an array-element
+  // or record-component target (cd2b11a's ACC_ARRAY (I) := NEW ...) is
+  // covered the same as a plain variable.
+  //
+  // A component's access subtype may carry PER-OBJECT constraints
+  // (discriminant-dependent bounds, RM 3.7.1) whose values live in the
+  // enclosing object, not the type — re-evaluating their bound expressions
+  // here is wrong (c37010a re-runs a side-effectful function, c37010b names
+  // a discriminant with no storage in scope). Until per-object constraints
+  // are materialized, a non-identifier target contributes only its BASE
+  // type: the collection identity survives, the unevaluable subtype check
+  // does not.
+  if (node->assignment.value and
+      node->assignment.value->kind == NK_ALLOCATOR and
+      target->type and Type_Is_Access (target->type))
+    node->assignment.value->allocator.target_access_type =
+      target->kind == NK_IDENTIFIER ? target->type
+                                    : Type_Base (target->type);
+
   // Handle indexed component target (array element or slice assignment)
   if (target->kind == NK_APPLY) {
 
@@ -42278,12 +42465,6 @@ void Generate_Assignment_Body (Syntax_Node *node, Syntax_Node *target) {
     }
     return;
   }
-
-  // RM 4.8: Propagate target access type to allocator for constraint checks.
-  // When assigning NEW T or NEW T'(X) to an access variable, the allocator
-  // must check that T's constraints are compatible with the access subtype.
-  if (Type_Is_Access (ty) and node->assignment.value->kind == NK_ALLOCATOR)
-    node->assignment.value->allocator.target_access_type = ty;
 
   LLVM_Value value_v = Generate_Expression (node->assignment.value);
   uint32_t value = value_v.reg;
@@ -45704,19 +45885,43 @@ uint32_t Emit_Disc_Value (Type_Info *ty, uint32_t di, LLVM_Rep dt,
   return v ? v : Emit_Static_Int (0, dt).reg;
 }
 
-// Drain the deferred library-level initializers (see pending_global_inits):
-// evaluate each initializer expression and store it to its global, in
-// declaration order (RM 7.2). Called from the package body's elaboration
-// function emitter.
-void Emit_Pending_Global_Initializers (void) {
-  for (uint32_t i = 0; i < cg->pending_global_init_count; i++) {
-    Symbol      *sym  = cg->pending_global_inits[i].symbol;
-    Syntax_Node *init = cg->pending_global_inits[i].init;
+// Drain the deferred library-scope elaboration actions (see
+// pending_library_elaborations), in declaration order (RM 7.2): evaluate and
+// store each dynamic object initializer, and re-enter Generate_Declaration
+// for each deferred declaration so its elaboration code (subtype checks,
+// address overlays) lands inside the elaboration function now open. Called
+// from the package-body / spec-only elaboration function emitters.
+// Queue one library-scope elaboration action for the owning unit's ___elab
+// function. Order is preserved: actions drain in the order queued, which is
+// declaration order (RM 7.2).
+void Defer_Library_Elaboration (Pending_Elaboration_Kind kind,
+                                Symbol *symbol, Syntax_Node *node) {
+  if (cg->pending_library_elaboration_count
+      >= sizeof cg->pending_library_elaborations
+         / sizeof cg->pending_library_elaborations[0])
+    return;
+  cg->pending_library_elaborations[cg->pending_library_elaboration_count].kind   = kind;
+  cg->pending_library_elaborations[cg->pending_library_elaboration_count].symbol = symbol;
+  cg->pending_library_elaborations[cg->pending_library_elaboration_count].node   = node;
+  cg->pending_library_elaboration_count++;
+}
+
+void Emit_Pending_Library_Elaborations (void) {
+  for (uint32_t i = 0; i < cg->pending_library_elaboration_count; i++) {
+    Pending_Elaboration_Kind kind = cg->pending_library_elaborations[i].kind;
+    Symbol      *sym  = cg->pending_library_elaborations[i].symbol;
+    Syntax_Node *node = cg->pending_library_elaborations[i].node;
+
+    if (kind == PENDING_ELABORATION_DECLARATION_KIND) {
+      Generate_Declaration (node);
+      continue;
+    }
+
     Type_Info   *ty   = sym->type;
     LLVM_Rep     dst  = Type_To_Rep (ty);
 
     Emit ("  ; elaborate %.*s\n", (int)sym->name.length, sym->name.data);
-    LLVM_Value value = Generate_Expression (init);
+    LLVM_Value value = Generate_Expression (node);
 
     // Float value into a fixed-point object: scale to the stored mantissa.
     if (Type_Is_Fixed_Point (ty) and LLVM_Rep_Is_Float (value.rep)) {
@@ -45732,7 +45937,7 @@ void Emit_Pending_Global_Initializers (void) {
     Emit_Symbol_Name (sym);
     Emit ("\n");
   }
-  cg->pending_global_init_count = 0;
+  cg->pending_library_elaboration_count = 0;
 }
 
 // RM 3.6.1: elaborating a constrained array subtype indication checks that
@@ -46725,13 +46930,9 @@ void Generate_Object_Declaration (Syntax_Node *node) {
       // shapes (arrays, records, fat pointers) keep their existing paths.
       if (node->object_decl.init and not has_static_init
           and not is_constrained_array and not is_record
-          and not LLVM_Rep_Is_Fat_Pointer (type_rep)
-          and cg->pending_global_init_count
-              < sizeof cg->pending_global_inits / sizeof cg->pending_global_inits[0]) {
-        cg->pending_global_inits[cg->pending_global_init_count].symbol = sym;
-        cg->pending_global_inits[cg->pending_global_init_count].init = node->object_decl.init;
-        cg->pending_global_init_count++;
-      }
+          and not LLVM_Rep_Is_Fat_Pointer (type_rep))
+        Defer_Library_Elaboration (PENDING_ELABORATION_OBJECT_INITIALIZER_KIND,
+                                   sym, node->object_decl.init);
       // Linkage: a unit compiled as the FILE'S OWN content emits the
       // authoritative definition (strong); the same spec INLINED into a
       // consumer (loaded unit) emits a discardable copy that merges with
@@ -50009,6 +50210,21 @@ void Generate_Declaration (Syntax_Node *node) {
             Emit ("define void @");
             Emit_Symbol_Name (spec_sym);
             Emit ("___elab() {\nentry:\n");
+
+            // The unit's deferred library-scope elaborations (dynamic
+            // initializers, subtype checks, overlays) drain here when no
+            // body will host them — this define preempts the spec-only
+            // synthesis at the compilation-unit tail (elab_defined).
+            if (not Compilation_Provides_Package_Body (
+                  node->package_spec.name)) {
+              Symbol *task_saved_function = cg->current_function;
+              bool    task_saved_term     = cg->block_terminated;
+              cg->current_function = spec_sym;
+              cg->block_terminated = false;
+              Emit_Pending_Library_Elaborations ();
+              cg->current_function = task_saved_function;
+              cg->block_terminated = task_saved_term;
+            }
             for (int k = 0; k < 2; k++)
               for (uint32_t i = 0; i < spec_parts[k]->count; i++) {
                 Syntax_Node *d = spec_parts[k]->items[i];
@@ -50168,7 +50384,13 @@ void Generate_Declaration (Syntax_Node *node) {
       // module defines @<x>___elab(ptr) under the same stable name; this
       // module declares it and calls it at the stub's elaboration point
       // with the enclosing frame (RM 10.2: the subunit's body elaborates
-      // where the stub stands).
+      // where the stub stands). A GENERIC's stub sets only the elaboration
+      // flag above: elaborating a generic body establishes it for
+      // instantiation and runs nothing (RM 12.2) — the body's code is
+      // cloned into each instance, so no ___elab exists to call.
+      if (node->package_body.is_separate and node->symbol and
+          node->symbol->kind == SYMBOL_GENERIC)
+        break;
       if (node->package_body.is_separate and node->symbol) {
 
         // The declaration is deferred to the post-generation flush: in a
@@ -50198,6 +50420,14 @@ void Generate_Declaration (Syntax_Node *node) {
       }
       {
         Symbol *pkg_sym = node->symbol;  // Use symbol from semantic analysis
+
+        // A GENERIC package body emits no code of its own — the body's
+        // declarations and statements are cloned into each instance
+        // (RM 12.2). This precedes the subunit path below: a generic
+        // subunit body must not become a runnable ___elab that executes
+        // the template's statements against unbound formals.
+        if (pkg_sym and pkg_sym->kind == SYMBOL_GENERIC)
+          break;
 
         // A SUBUNIT package body whose parent chain nests in a subprogram:
         // all its state lives in the PARENT's frame (offsets agree — both
@@ -50248,11 +50478,6 @@ void Generate_Declaration (Syntax_Node *node) {
           // function emit now, at module level — the subunit's whole
           // payload (ca1002's P) lives here.
           Process_Deferred_Bodies (subunit_saved_deferred);
-          break;
-        }
-
-        // Skip generic package bodies - code is generated only for instances
-        if (pkg_sym and pkg_sym->kind == SYMBOL_GENERIC) {
           break;
         }
 
@@ -50406,7 +50631,7 @@ void Generate_Declaration (Syntax_Node *node) {
         // RM 7.2: elaborate the declarative part first — store each deferred
         // library-level initializer (declaration order), before the package's
         // tasks activate and before its initialization statements run.
-        Emit_Pending_Global_Initializers ();
+        Emit_Pending_Library_Elaborations ();
 
         // Start package-level tasks declared in the spec or the body.
         if (has_pkg_tasks) {
@@ -50531,7 +50756,7 @@ void Generate_Declaration (Syntax_Node *node) {
               cg->block_terminated = false;
               cg->temp_id = 1;
               Emit_Instance_Binding_Elaboration (inst_sym);
-              Emit_Pending_Global_Initializers ();
+              Emit_Pending_Library_Elaborations ();
               Emit ("  ret void\n}\n");
               cg->current_function = saved_function;
               cg->temp_id = saved_temp;
@@ -50992,6 +51217,16 @@ void Generate_Declaration (Syntax_Node *node) {
       Symbol *sub_sym = node->symbol;
       Type_Info *sub_type = sub_sym ? sub_sym->type : NULL;
 
+      // A library-scope subtype declaration elaborates inside the owning
+      // unit's ___elab function — module scope admits no instructions, and
+      // dropping the checks would skip required RM 3.3.2 elaboration
+      // semantics.
+      if (not cg->current_function) {
+        Defer_Library_Elaboration (PENDING_ELABORATION_DECLARATION_KIND,
+                                   NULL, node);
+        break;
+      }
+
       // RM 3.3.1: a constrained array subtype with runtime bounds (e.g.
       // ARRAY_TYPE (1 .. IDENT_INT (5))) elaborates its bounds here so its
       // @__rt_type globals are populated before any use.
@@ -51000,17 +51235,14 @@ void Generate_Declaration (Syntax_Node *node) {
       // RM 3.3.2 / 3.5(4): a range constraint with dynamic bounds is
       // checked against the type mark's range when the SUBTYPE elaborates
       // (a non-null range with a bound outside the type mark raises
-      // CONSTRAINT_ERROR here, not at first use). Library-level subtype
-      // declarations emit at module scope where no instructions can live;
-      // their elaboration checks stay with the object paths.
-      if (cg->current_function)
-        Emit_Subtype_Constraint_Compat_Check (sub_type, NULL);
+      // CONSTRAINT_ERROR here, not at first use).
+      Emit_Subtype_Constraint_Compat_Check (sub_type, NULL);
 
       // RM 3.5/3.6.1: an array subtype's index constraint (SUBTYPE S IS
       // WEEK_ARRAY (MID_WEEK RANGE MON..WED)) checks each discrete range against
       // its index subtype and, when written `S RANGE L..H`, against S — exactly
       // as a constrained array TYPE declaration does.
-      if (cg->current_function and Type_Is_Array_Like (sub_type)) {
+      if (Type_Is_Array_Like (sub_type)) {
         for (uint32_t d = 0; d < sub_type->array.index_count; d++) {
           Emit_Range_Constraint_Compat_Check (
             &sub_type->array.indices[d].low_bound,
@@ -51026,10 +51258,8 @@ void Generate_Declaration (Syntax_Node *node) {
       // CONS (1)) checks its discriminant-dependent component constraints when
       // the subtype elaborates. Access-to-record subtypes (SUBTYPE SUBACC IS
       // ACC (VAL)) get their disc-constraint range check here too (c37211e).
-      if (cg->current_function) {
-        Emit_Disc_Dependent_Component_Checks (sub_type);
-        Emit_Access_Disc_Constraint_Range_Check (sub_type);
-      }
+      Emit_Disc_Dependent_Component_Checks (sub_type);
+      Emit_Access_Disc_Constraint_Range_Check (sub_type);
 
       Type_Info *acc_base = sub_type ? sub_type->base_type : NULL;
 
@@ -51195,6 +51425,15 @@ void Generate_Declaration (Syntax_Node *node) {
     // object's declared initialization through the overlay (the assignment
     // redirects via the object's renamed_object dereference).
     case NK_REPRESENTATION_CLAUSE: {
+      // A library-scope representation clause elaborates inside the owning
+      // unit's ___elab function: a STORAGE_SIZE expression evaluates and
+      // freezes, an RM 13.5 overlay evaluates and stores its target address.
+      // Module scope admits no instructions.
+      if (not cg->current_function) {
+        Defer_Library_Elaboration (PENDING_ELABORATION_DECLARATION_KIND,
+                                   NULL, node);
+        break;
+      }
       Symbol *overlaid = node->rep_clause.entity_name
         ? node->rep_clause.entity_name->symbol : NULL;
       if (not overlaid and node->rep_clause.entity_name and
@@ -54277,10 +54516,12 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
     // library does not count — it may never be linked (spprt13's spec-only
     // address constants).
     if (cu_unit and cu_unit->kind == NK_PACKAGE_SPEC and cu_unit->symbol
-        and cg->pending_global_init_count > 0
+        and cg->pending_library_elaboration_count > 0
+        and not cu_unit->symbol->elab_defined
         and not Compilation_Provides_Package_Body (
               cu_unit->package_spec.name)) {
       Symbol *pkg = cu_unit->symbol;
+      pkg->elab_defined = true;
       Emit ("\n; Spec-only package elaboration\n");
       Emit ("define void @");
       Emit_Symbol_Name (pkg);
@@ -54291,7 +54532,7 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
       cg->current_function = pkg;
       cg->temp_id          = 1;
       cg->block_terminated = false;
-      Emit_Pending_Global_Initializers ();
+      Emit_Pending_Library_Elaborations ();
       if (not cg->block_terminated) Emit ("  ret void\n");
       Emit ("}\n");
       cg->current_function = saved_function;
@@ -56544,8 +56785,16 @@ bool Elab_Needs_Elab_Call (uint32_t index) {
   // Preelaborate units without explicit elab code don't need calls
   if (v->is_preelaborate and not v->needs_elab_code) return false;
 
-  // Only bodies generate __elab functions
-  return v->kind == UNIT_BODY or v->kind == UNIT_BODY_ONLY;
+  // A body's ___elab is called at the body's position in the order.
+  if (v->kind == UNIT_BODY or v->kind == UNIT_BODY_ONLY) return true;
+
+  // A bodyless spec with a SYNTHESIZED ___elab (dynamic initializers,
+  // deferred subtype checks, address overlays) is called at the spec's
+  // position — leaving it to the tail sweep would run it after its
+  // dependents, reading uninitialized state (cd5003a: PKG2's overlay
+  // address reads SPPRT13's dynamic constants).
+  return v->kind == UNIT_SPEC and v->needs_elab_code and
+         v->symbol and v->symbol->elab_defined;
 }
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════

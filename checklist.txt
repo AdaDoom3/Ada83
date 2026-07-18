@@ -714,3 +714,62 @@ ROUND 13 — library/multi-file systems rewrite (part 1)
 NOTE: c97307a (timed entry call cancellation) fails deterministically
     when run SOLO at HEAD as well — load-sensitive scheduling, same
     family as c94011a; suite outcome flips with machine load.
+
+── Round 14: rendezvous binder, library elaboration, intrinsics ──────────
+[x] One accept-formal binder (Emit_Accept_Parameter_Bindings) serves
+    ACCEPT and the selective wait's accept alternative: the alternative
+    carried a stripped duplicate — no 'CONSTRAINED spill (RM 3.7.4), no
+    uplevel frame publication, no fat binding (c95067a).
+[x] run_acats.sh keeps nothing for a passing test and only .ll/.ali/.bc
+    for a failing one — a test's runtime scratch (ce3411b SET_COLs to
+    COUNT'LAST → ~2 GB of spaces) once filled the disk. A silent worker
+    (foundation file) must still return success under set -e -o pipefail.
+[x] Emit_Fixed_Bound_Mantissa scales BOUND_INTEGER like every other
+    reader of real-typed bounds (value semantics): FIX (3) as a subtype
+    bound emitted the raw literal at i32 — malformed icmp i64/i32 and an
+    unscaled compare (cc3504d, cc3504h).
+[x] Library-scope elaboration is DEFERRED, never dropped: the pending
+    list (Defer_Library_Elaboration) generalizes pending_global_inits to
+    whole declarations — subtype compatibility checks (RM 3.3.2) and
+    representation clauses (STORAGE_SIZE, RM 13.5 overlays) drain inside
+    the owning unit's ___elab in declaration order. The old path emitted
+    instructions at module scope (cc3605a) or silently skipped required
+    checks behind cg->current_function guards.
+[x] Elab_Needs_Elab_Call emits a bodyless spec's SYNTHESIZED ___elab at
+    the spec's position in the elaboration order; leaving it to the tail
+    sweep ran it after its dependents (cd5003a: PKG2's overlay read
+    SPPRT13's dynamic address constants before they elaborated).
+[x] A GENERIC package body emits no code — hoisted ahead of the subunit
+    path, whose runnable ___elab executed the template's statements
+    against unbound formals (ca2009a); the generic stub sets only its
+    RM 3.9 elaboration flag, there is no ___elab to call (RM 12.2).
+[x] Generate_Composite_Address honors the resolver's APPLY_CALL verdict:
+    a one-argument call whose callee returns an array fell into the
+    indexing path, "calling" the callee with no arguments and indexing
+    the result by the actual (cda201a, cd2a32a).
+[x] UNCHECKED_DEALLOCATION is an intrinsic (RM 13.10.1): FREE (X) frees
+    a non-null object, credits the bounded collection (inverse of the
+    allocator's debit, RM 13.2), and nulls X; a designated TASK keeps
+    executing — null-out only (cda101b). The INTRINSIC-convention name
+    fallback covers it alongside UNCHECKED_CONVERSION.
+[x] The allocator's target access type propagates from the TOP of
+    Generate_Assignment_Body — an array-element target took the
+    element-store path before the old propagation point, so NEW drew
+    from the allocator's anonymous access view and bypassed the
+    collection budget (cd2b11a).
+[x] Character/Boolean 'VALUE end labels clear block_terminated exactly
+    as the enumeration path does — the raise arm's stale flag suppressed
+    the enclosing construct's fall-through branch (ce3906f).
+[x] ENUMERATION_IO Cased_Image (rts/text_io.adb) leaves character-
+    literal images as typed: RM 14.3.9's case transformation applies to
+    identifier images only (ce3906f).
+[x] Emit_Symbol_Addr dereferences an RM 13.5 overlay's address cell:
+    the overlaid object has no storage of its own, and the indexed-
+    lvalue base named it directly (cd5011i, cd5011s).
+[x] Allocator target propagation contributes only the BASE access type
+    for non-identifier targets: a component's access subtype carries
+    per-object constraints (RM 3.7.1) whose bound expressions cannot be
+    re-evaluated at the assignment site (c37010a, c37010b).
+    Round 14 gate: 1896 pass / 56 fail / 24 skip, zero regressions.
+NOTE cda201a: BIND fixed; now fails wanting real bit-packed arrays
+    (PRAGMA PACK on ARRAY OF BOOLEAN) — representation feature, open.
