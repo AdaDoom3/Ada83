@@ -671,3 +671,46 @@ NOTE: c94011a is contention-flaky (1-in-8 FAILED under 4-way load, both
     at HEAD and with this round's changes — verified by A/B stash test).
     It is a scaled-delay 'TERMINATED test; see the ACATS delay deviation
     note. Not a regression of this round.
+
+═══════════════════════════════════════════════════════════════════════════
+ROUND 13 — library/multi-file systems rewrite (part 1)
+═══════════════════════════════════════════════════════════════════════════
+[x] RM 10.1 unit replacement: Compilation_Unit_Identity + a supersede
+    scan in Compile_File — a later spec/body of the same unit replaces
+    the earlier; a later spec obsoletes an earlier body; replaced units
+    are never resolved or emitted (ca5004b). A subprogram BODY never
+    replaces a declaration — it completes one (c23006e kept its generic
+    declarations).
+[x] Spec/body pairing region test: owner equality alone let an inner
+    unlabeled block's same-profile body "complete" the enclosing
+    subprogram's spec (cc1301a's two BUMPs). The discriminator: a spec
+    whose defining scope STRICTLY ENCLOSES the current one is an outer
+    region's; same-scope and sibling-scope (package spec/body, RM 7.1)
+    pairings stand.
+[x] Symbol_Mangle_Name memoizes per symbol at first emission: codegen
+    itself creates homographs (synthesized operator wrappers) that
+    flipped is_overloaded between a definition and a later reference.
+[x] Scope symbols[] now carries EVERY symbol, chained overloads
+    included — Emit_Instance_Wrapper_Bodies, binding elaboration and
+    package-level marking walk it, and a second same-named formal-
+    subprogram binding was a wrapper whose body never emitted.
+[x] Generic formal part elaborates LINEARLY (RM 12.1): an IS-name
+    default and the profile's type marks resolve seeing only PRIOR
+    formals — `WITH FUNCTION "*" IS "-"` ahead of a formal "-" binds
+    the enclosing scope's "-", and NEXT (Q : INTEGER) on either side of
+    TYPE INTEGER IS RANGE <> denotes std INTEGER vs the formal
+    (cc1301a). Formal_Mark_Actual_Type trusts a concretely resolved
+    mark over the name-keyed formal mapping.
+[x] RM 12.3(6) box defaults: candidates come from
+    Collect_Interpretations (full visibility, near-to-far), not one
+    scope's bucket chain; conformance compares view-peeled BASE types
+    (root-tunneling let a derived type conform to its parent's
+    profile); an unmatched operator formal falls back to the formal
+    type's PREDEFINED operator as a builtin wrapper.
+[x] RM 12.1.2(41-42): where the instance declares a formal operator
+    for a formal type, the actual's predefined operator does not exist
+    inside the instance — Formal_Operator_Governs suppresses the
+    predefined interpretation's synthesis.
+NOTE: c97307a (timed entry call cancellation) fails deterministically
+    when run SOLO at HEAD as well — load-sensitive scheduling, same
+    family as c94011a; suite outcome flips with machine load.

@@ -2505,6 +2505,10 @@ struct Symbol {
 
   // Addressing
   uint32_t        unique_id;         // Compiler-unique serial number for mangling
+  String_Slice    mangled_memo;      // Mangled name frozen at first emission:
+                                     // codegen-synthesized homographs must not
+                                     // flip an already-emitted symbol's
+                                     // spelling (is_overloaded, scope moves)
   uint32_t        nesting_level;     // Static nesting depth for uplevel access
   int64_t         frame_offset;      // Byte offset within the enclosing stack frame
   Scope          *scope;             // Body scope owned by this symbol (pkg/subp)
@@ -9834,6 +9838,26 @@ void Symbol_Add (Symbol *sym) {
         sym->next_overload = existing->next_overload;
         existing->next_overload = sym;
         sym->parent = scope->owner;
+        sym->defining_scope = scope;
+        sym->nesting_level = scope->nesting_level;
+
+        // The linear symbols[] enumeration must carry EVERY symbol of the
+        // scope, chained overloads included — Emit_Instance_Wrapper_Bodies,
+        // Emit_Instance_Binding_Elaboration and the package-level markers
+        // walk it, and a second same-named formal-subprogram binding that
+        // never entered it was a wrapper whose body never emitted
+        // (cc1301a's four post-type formals).
+        if (scope->symbol_count >= scope->symbol_capacity) {
+          uint32_t grown_capacity =
+            scope->symbol_capacity ? scope->symbol_capacity * 2 : 16;
+          Symbol **grown = Arena_Allocate (grown_capacity * sizeof (Symbol*));
+          if (scope->symbols)
+            memcpy (grown, scope->symbols,
+                    scope->symbol_count * sizeof (Symbol*));
+          scope->symbols = grown;
+          scope->symbol_capacity = grown_capacity;
+        }
+        scope->symbols[scope->symbol_count++] = sym;
 
         // RM 8.3: when an explicitly declared subprogram and an implicitly
         // declared (derived) homograph coexist in one declarative region, the
@@ -14398,6 +14422,45 @@ static bool Flexible_Can_Denote (Syntax_Node *o, Type_Info *t) {
   return true;
 }
 
+// RM 12.1.2(41-42): inside a generic instance, a formal type's operator is
+// the FORMAL subprogram when the generic declares one — only otherwise does
+// the actual's predefined operation apply. True when `t` is a generic-actual
+// view (still opaque, i.e. we are inside the instance) whose instance binds a
+// formal subprogram for `op` accepting this type; the predefined
+// interpretation must then not be synthesized.
+static bool Formal_Operator_Governs (Type_Info *t, Token_Kind op) {
+  if (not t) return false;
+  Type_Info *view = Effective_Type_View (t);
+  if (not Type_Has_Generic_Actual_View (view)) return false;
+  Symbol *type_binding = view->defining_symbol;
+  Symbol *instance = (type_binding and type_binding->defining_scope)
+                     ? type_binding->defining_scope->owner : NULL;
+  if (not instance or not instance->generic_template) return false;
+  // During the instance body clone's own resolution the instance symbol has
+  // not adopted its scope yet — the live pushed scope owned by the instance
+  // is the binding home then.
+  Scope *instance_scope = instance->scope;
+  if (not instance_scope)
+    for (Scope *sc = sm->current_scope; sc; sc = sc->parent)
+      if (sc->owner == instance) { instance_scope = sc; break; }
+  if (not instance_scope) return false;
+  String_Slice op_name = Operator_Name (op);
+  if (not op_name.length) return false;
+  Type_Info *subject = view->generic_actual ? view->generic_actual : view;
+  for (uint32_t i = 0; i < instance_scope->symbol_count; i++) {
+    Symbol *s = instance_scope->symbols[i];
+    if (not s or not Symbol_Is_Subprogram (s)) continue;
+    if (not (s->renamed_object or s->is_instance_wrapper)) continue;
+    if (not Slice_Equal_Ignore_Case (s->name, op_name)) continue;
+    for (uint32_t p = 0; p < s->parameter_count; p++) {
+      Type_Info *pt = s->parameters[p].param_type;
+      if (pt and Type_Base (pt) == Type_Base (subject))
+        return true;
+    }
+  }
+  return false;
+}
+
 void Analyze_Binary (Syntax_Node *n) {
   Syntax_Node *L = n->binary.left, *R = n->binary.right;
   Token_Kind op = n->binary.op;
@@ -14489,7 +14552,15 @@ void Analyze_Binary (Syntax_Node *n) {
       bool private_view = Type_Private_View_Active (lt) or
                           Type_Private_View_Active (rt);
 
-      if (is_arith and not private_view) {
+      // RM 12.1.2: where the instance declares a FORMAL subprogram for an
+      // operator of a formal type, that binding IS the type's operator
+      // inside the instance — the actual's predefined one does not exist
+      // there, so no predefined interpretation is synthesized (cc1301a:
+      // `Y * X` on the formal INTEGER must reach the formal "*").
+      bool formal_op_governs =
+        Formal_Operator_Governs (lt, op) or Formal_Operator_Governs (rt, op);
+
+      if (is_arith and not private_view and not formal_op_governs) {
         if (op == TK_EXPON) {
           // RM 4.5.6: "**"(T, Integer) return T. Base takes the result type,
           // exponent is Standard.Integer; a universal_integer exponent coerces
@@ -14758,16 +14829,33 @@ static Interpretation *Select_Interp (Interp_List *l, Type_Info *ctx) {
   // actual STRING(1..2)), while sibling and derived types keep distinct bases
   // (c74211b). Generic-actual views resolve by location through
   // Effective_Type_View: opaque inside their instance, the actual outside.
-  bool Hides_Type (Type_Info *actual, Type_Info *formal) {
+  bool Hides_Type (Type_Info *actual, Type_Info *formal, bool peel_views) {
     if (not actual or not formal) return actual == formal;
     Type_Info *va = Effective_Type_View (actual);
     Type_Info *vf = Effective_Type_View (formal);
     // A view still opaque here (inside its instance) stashes its actual in
     // base_type, so Type_Base would tunnel through it: compare opaque views
-    // by identity only (c74409b).
-    if (Type_Has_Generic_Actual_View (va) or Type_Has_Generic_Actual_View (vf))
-      return va == vf;
+    // by identity only (c74409b) — EXCEPT when the user candidate is the
+    // instance's own formal-subprogram binding: it carries the ACTUAL's
+    // parameter subtypes (RM 12.3) while the operands wear the view, and
+    // RM 12.1.2 makes it THE operator of the formal type inside the
+    // instance (cc1301a: a formal "*" must hide the view's predefined "*").
+    if (Type_Has_Generic_Actual_View (va) or Type_Has_Generic_Actual_View (vf)) {
+      if (va == vf) return true;
+      if (not peel_views) return false;
+      Type_Info *pa = Type_Has_Generic_Actual_View (va) ? va->generic_actual : va;
+      Type_Info *pf = Type_Has_Generic_Actual_View (vf) ? vf->generic_actual : vf;
+      return pa and pf and Type_Base (pa) == Type_Base (pf);
+    }
     return Type_Base (va) == Type_Base (vf);
+  }
+  // The instance-scope view of a formal subprogram: a rename binding or a
+  // synthesized wrapper living directly in a generic instance's scope.
+  bool Is_Instance_Formal_Binding (Symbol *s) {
+    if (not s) return false;
+    if (not (s->renamed_object or s->is_instance_wrapper)) return false;
+    Symbol *owner = s->defining_scope ? s->defining_scope->owner : NULL;
+    return owner and owner->generic_template;
   }
   Interpretation *user_hit = NULL;   // user op that hides a predefined homograph
   {
@@ -14775,14 +14863,16 @@ static Interpretation *Select_Interp (Interp_List *l, Type_Info *ctx) {
     for (uint32_t i = 0; i < nc; i++) {
       bool hidden = false;
       if (not c[i]->nam)
-        for (uint32_t j = 0; j < nc; j++)
-          if (c[j]->nam and Hides_Type (c[i]->opnd[0], c[j]->opnd[0]) and
-              Hides_Type (c[i]->opnd[1], c[j]->opnd[1]) and
-              Hides_Type (c[i]->typ, c[j]->typ)) {
+        for (uint32_t j = 0; j < nc; j++) {
+          bool peel = Is_Instance_Formal_Binding (c[j]->nam);
+          if (c[j]->nam and Hides_Type (c[i]->opnd[0], c[j]->opnd[0], peel) and
+              Hides_Type (c[i]->opnd[1], c[j]->opnd[1], peel) and
+              Hides_Type (c[i]->typ, c[j]->typ, peel)) {
             hidden = true;
             if (not user_hit) user_hit = c[j];
             break;
           }
+        }
       if (not hidden) c[w++] = c[i];
     }
     nc = w;
@@ -18997,6 +19087,51 @@ void Install_Generic_Formal_Symbols (Symbol *generic_symbol) {
       // Formal subprogram (RM 12.1.3): full parameter profile so calls in
       // the template overload-resolve against it.
       case NK_GENERIC_SUBPROGRAM_PARAM: {
+        // RM 12.1/12.1.3: the formal part elaborates LINEARLY — an IS-name
+        // default resolves seeing only the formals declared BEFORE it, never
+        // itself or a later homograph (cc1301a: `WITH FUNCTION "*" IS "-"`
+        // ahead of a formal "-" must bind the enclosing scope's "-").
+        // Resolving here, before this formal's own symbol installs, gives
+        // exactly that horizon; the post-install sweep skips already-resolved
+        // names.
+        {
+          Syntax_Node *default_name =
+            formal->generic_subprog_param.default_name;
+          if (default_name and not formal->generic_subprog_param.default_box
+              and not default_name->symbol) {
+            Node_List one = { .items = &formal, .count = 1 };
+            Resolve_Generic_Formal_Subprogram_Defaults (&one);
+          }
+
+          // The profile's type marks resolve under the same linear horizon:
+          // a mark BEFORE the formal type declaration denotes the enclosing
+          // scope's type, one AFTER denotes the formal (cc1301a declares
+          // NEXT (Q : INTEGER) on both sides of TYPE INTEGER IS RANGE <>).
+          Node_List *profile = &formal->generic_subprog_param.parameters;
+          for (uint32_t pi = 0; pi < profile->count; pi++) {
+            Syntax_Node *ps = profile->items[pi];
+            if (ps and ps->kind == NK_PARAM_SPEC and
+                ps->param_spec.param_type and
+                not ps->param_spec.param_type->type)
+              Resolve_Expression (ps->param_spec.param_type);
+          }
+          if (formal->generic_subprog_param.return_type and
+              not formal->generic_subprog_param.return_type->type)
+            Resolve_Expression (formal->generic_subprog_param.return_type);
+          if (getenv ("ADA83_DBG_FML")) {
+            for (uint32_t pi = 0; pi < profile->count; pi++) {
+              Syntax_Node *ps = profile->items[pi];
+              if (ps and ps->kind == NK_PARAM_SPEC and ps->param_spec.param_type)
+                fprintf (stderr, "DBG fml %.*s@%u: mark type=%p gf=%d\n",
+                  (int)formal->generic_subprog_param.name.length,
+                  formal->generic_subprog_param.name.data,
+                  formal->location.line,
+                  (void*)ps->param_spec.param_type->type,
+                  ps->param_spec.param_type->type
+                    ? (int)ps->param_spec.param_type->type->is_generic_formal : -1);
+            }
+          }
+        }
         if (not formal->symbol) {
           Symbol *subprogram_sym = Symbol_New (
             formal->generic_subprog_param.is_function
@@ -19659,20 +19794,29 @@ Type_Info *Formal_Mark_Actual_Type (Symbol *instance_sym,
   if (mark->kind == NK_SUBTYPE_INDICATION)
     mark = mark->subtype_ind.subtype_mark;
   if (not mark or mark->kind != NK_IDENTIFIER) return mark ? mark->type : NULL;
+  // A mark already resolved to a CONCRETE type denotes that type — the
+  // name-keyed formal mapping must not capture it: a formal type may share
+  // its name with an enclosing type it hides only from its declaration
+  // onward (cc1301a: NEXT (Q : INTEGER) before TYPE INTEGER IS RANGE <>
+  // means STANDARD.INTEGER; after it, the formal).
+  if (mark->type and not mark->type->is_generic_formal) return mark->type;
   Type_Info *bound =
     Generic_Actual_Type_By_Name (instance_sym, mark->string_val.text);
   if (bound) return bound;
-  if (mark->type and not mark->type->is_generic_formal) return mark->type;
   Symbol *named = Symbol_Find (mark->string_val.text);
   return (named and (named->kind == SYMBOL_TYPE or
                      named->kind == SYMBOL_SUBTYPE)) ? named->type : NULL;
 }
 
-// Same base type, looking through subtype and actual-view chains.
+// Same base type, looking through subtype and actual-view chains. Root
+// equality is NOT enough: a derived type never conforms to its parent's
+// profile (RM 12.3.6; cc1301a's std and NEWINT homonym formals must bind
+// distinct actuals).
 static bool Same_Base_Type (Type_Info *left, Type_Info *right) {
   if (not left or not right) return true;  // unresolved side: no verdict
-  return Type_Base (left) == Type_Base (right) or
-         Type_Root (left) == Type_Root (right);
+  left  = Peel_Generic_Actual_View (left);
+  right = Peel_Generic_Actual_View (right);
+  return Type_Base (left) == Type_Base (right);
 }
 
 // A name legal as the actual for an IN OUT formal object: a variable, a
@@ -21037,12 +21181,29 @@ void Resolve_Declaration (Syntax_Node *node) {
         Symbol *scope_owner = sm->current_scope ? sm->current_scope->owner : NULL;
         Symbol *sym = Symbol_Find (node->subprogram_spec.name);
 
-        // Only match specs from the current declarative region. An implicitly
-        // declared inherited operation (RM 3.4) is never completed by an
-        // explicit declaration; the explicit one is a homograph that hides it.
+        // Only match specs from the current declarative region. Owner
+        // equality alone is not the region test: an unlabeled inner block
+        // shares its owner with the enclosing subprogram, and a same-profile
+        // body there is a hiding homograph (RM 8.3), not a completion
+        // (cc1301a's two BUMPs). The discriminator: a spec whose defining
+        // scope STRICTLY ENCLOSES the current one belongs to an outer
+        // region; a spec in the same scope, or in the sibling scope a
+        // package spec resolved under (its body completes it, RM 7.1),
+        // shares the region. An implicitly declared inherited operation
+        // (RM 3.4) is never completed by an explicit declaration.
         while (sym) {
+          bool spec_scope_encloses = false;
+          for (Scope *enclosing = sm->current_scope
+                 ? sm->current_scope->parent : NULL;
+               enclosing; enclosing = enclosing->parent)
+            if (enclosing == sym->defining_scope) {
+              spec_scope_encloses = true;
+              break;
+            }
+          bool same_region = sym->parent == scope_owner
+                             and not spec_scope_encloses;
           if (sym->kind == expected_kind and sym->parameter_count == total_params
-            and sym->parent == scope_owner and not Subprogram_Is_Implicit (sym)) {
+            and same_region and not Subprogram_Is_Implicit (sym)) {
 
             // Check parameter types match
             bool types_match = true;
@@ -22641,16 +22802,23 @@ void Resolve_Declaration (Syntax_Node *node) {
               // profile CONFORMS after formal-type substitution, not
               // whichever homograph the table finds first (cc3607b).
               } else if (formal->generic_subprog_param.default_box) {
-                Symbol *default_sym = Symbol_Find (
-                  formal->generic_subprog_param.name);
+                // RM 12.3(6): the box default binds a VISIBLE subprogram of
+                // the formal's name whose profile conforms after formal-type
+                // substitution. Every visible homonym is a candidate — one
+                // scope's bucket chain is not the visibility set (cc1301a:
+                // NEXT (NEWINT) lives two scopes out from the instantiation,
+                // past a std-profile NEXT in the enclosing block). Collected
+                // near-to-far, the first conforming candidate is the RM 8.3
+                // hiding winner; RM 8.4(5) keeps use-visible aliases behind
+                // directly visible ones.
+                Interp_List box_candidates;
+                Collect_Interpretations (formal->generic_subprog_param.name,
+                                         &box_candidates);
                 Symbol *conforming = NULL;
-
-                // RM 8.4(5): a use-visible alias is hidden by any directly
-                // visible homograph — scan direct candidates first, aliases
-                // only as a fallback.
                 for (int pass = 0; pass < 2 and not conforming; pass++)
-                  for (Symbol *candidate = default_sym; candidate;
-                       candidate = candidate->next_overload) {
+                  for (uint32_t bc = 0; bc < box_candidates.count; bc++) {
+                    Symbol *candidate = box_candidates.items[bc].nam;
+                    if (not candidate) continue;
                     if ((candidate->aliased != NULL) != (pass == 1)) continue;
                     if (Actual_Conforms_To_Formal_Subprogram (candidate,
                                                               formal,
@@ -22659,8 +22827,22 @@ void Resolve_Declaration (Syntax_Node *node) {
                       break;
                     }
                   }
-                if (not conforming and Symbol_Is_Subprogram (default_sym))
-                  conforming = default_sym;
+                if (not conforming) {
+                  // An operator formal with no conforming user operator
+                  // takes the formal type's PREDEFINED operator (RM 12.1.3,
+                  // 12.3.6) — the wrapper synthesizer builds its body.
+                  Token_Kind operator_token = Token_From_Op_Name (
+                    formal->generic_subprog_param.name);
+                  if (operator_token != TK_EOF) {
+                    if (actual_idx < total_actual_slots)
+                      inst_sym->actual_bindings[actual_idx].builtin_operator =
+                        operator_token;
+                  } else {
+                    Symbol *head = Symbol_Find (
+                      formal->generic_subprog_param.name);
+                    if (Symbol_Is_Subprogram (head)) conforming = head;
+                  }
+                }
                 if (conforming and actual_idx < total_actual_slots)
                   inst_sym->actual_bindings[actual_idx].actual_subprogram =
                     conforming;
@@ -24172,6 +24354,15 @@ String_Slice Symbol_Mangle_Name (Symbol *sym) {
   // scope, which must not change the emitted symbol name).
   while (sym and sym->aliased) sym = sym->aliased;
 
+  // A name already emitted is FROZEN: mangling reads mutable facts
+  // (is_overloaded, the defining scope chain), and codegen itself creates
+  // homographs (synthesized operator wrappers) after some references have
+  // been emitted — the definition and every reference must keep one
+  // spelling (cc1301a: the formal "-" default's wrapper flipped the user
+  // "-" to overloaded between its define and a later call).
+  if (sym and sym->mangled_memo.length)
+    return sym->mangled_memo;
+
   static char bufs[4][512];
   static int buf_idx = 0;
   char *buf = bufs[buf_idx++ & 3];
@@ -24191,6 +24382,13 @@ String_Slice Symbol_Mangle_Name (Symbol *sym) {
     pos += snprintf (buf + pos, 512 - pos, "_s%u", sym->unique_id);
   }
   buf[pos] = '\0';
+
+  // Freeze only once emission is underway: during resolution the facts the
+  // name depends on are still legitimately settling.
+  if (sym and cg) {
+    sym->mangled_memo = Slice_Duplicate ((String_Slice){buf, pos});
+    return sym->mangled_memo;
+  }
   return (String_Slice){buf, pos};
 }
 
@@ -58507,6 +58705,52 @@ Big_Integer *Big_Integer_From_Decimal_SIMD (const char *text) {
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 
 
+// The library identity of a compilation unit (RM 10.1): its unit name plus
+// whether it stands as the unit's SPEC, its BODY, or both — a subprogram
+// body or a library instantiation serves as its own spec. Subunits replace
+// by dotted name through the catalog, not through this in-set scan.
+bool Compilation_Unit_Identity (Syntax_Node *cu, String_Slice *name,
+                                bool *is_spec, bool *is_body) {
+  if (not cu or not cu->compilation_unit.unit) return false;
+  if (cu->compilation_unit.separate_parent) return false;
+  Syntax_Node *u = cu->compilation_unit.unit;
+  switch (u->kind) {
+    case NK_PACKAGE_SPEC:
+      *name = u->package_spec.name;    *is_spec = true;  *is_body = false;
+      return true;
+    case NK_PACKAGE_BODY:
+      *name = u->package_body.name;    *is_spec = false; *is_body = true;
+      return true;
+    case NK_PROCEDURE_BODY:
+    case NK_FUNCTION_BODY:
+      // A body never REPLACES a declaration of its name — it completes one
+      // (a generic subprogram's body after the generic declaration,
+      // c23006e). It stands as its own spec only when no declaration
+      // precedes it, which the replacement scan needs no flag for: body
+      // replaces body, and a later spec obsoletes it.
+      *name = Get_Subprogram_Name (u); *is_spec = false; *is_body = true;
+      return true;
+    case NK_PROCEDURE_SPEC:
+    case NK_FUNCTION_SPEC:
+      *name = u->subprogram_spec.name; *is_spec = true;  *is_body = false;
+      return true;
+    case NK_GENERIC_DECL: {
+      Syntax_Node *g = u->generic_decl.unit;
+      if (not g) return false;
+      if (g->kind == NK_PACKAGE_SPEC) *name = g->package_spec.name;
+      else                            *name = g->subprogram_spec.name;
+      *is_spec = true; *is_body = false;
+      return true;
+    }
+    case NK_GENERIC_INST:
+      *name = u->generic_inst.instance_name;
+      *is_spec = true; *is_body = true;
+      return true;
+    default:
+      return false;
+  }
+}
+
 void Compile_File (const char *input_path, const char *output_path) {
 
   // Reset loaded bodies for this compilation, then prime the program
@@ -58555,6 +58799,33 @@ void Compile_File (const char *input_path, const char *output_path) {
   if (Clone_Self_Check)
     for (int i = 0; i < unit_count; i++)
       units[i] = Clone_Subtree (units[i]);
+
+  // RM 10.1: within one compile set a later compilation unit REPLACES an
+  // earlier one of the same identity, and a later spec makes an earlier
+  // body of the unit obsolete. Replaced units vanish from the compilation —
+  // never resolved, never emitted (ca5004b: PACKAGE CA5004B0 recompiled
+  // with a new spec drops both the old spec and its now-obsolete body).
+  {
+    int keep = 0;
+    for (int i = 0; i < unit_count; i++) {
+      String_Slice name_i; bool spec_i, body_i;
+      bool replaced = false;
+      if (Compilation_Unit_Identity (units[i], &name_i, &spec_i, &body_i))
+        for (int k = i + 1; k < unit_count and not replaced; k++) {
+          String_Slice name_k; bool spec_k, body_k;
+          if (not Compilation_Unit_Identity (units[k], &name_k,
+                                             &spec_k, &body_k))
+            continue;
+          if (not Slice_Equal_Ignore_Case (name_i, name_k)) continue;
+          if ((spec_i and spec_k) or (body_i and body_k))
+            replaced = true;                   // same category recompiled
+          else if (body_i and spec_k)
+            replaced = true;                   // new spec obsoletes the body
+        }
+      if (not replaced) units[keep++] = units[i];
+    }
+    unit_count = keep;
+  }
 
   // Semantic analysis for all units
   Symbol_Manager_Init ();
