@@ -262,3 +262,156 @@ VALIDATION (run 4, final): 1837/1976 pass (92%), 60 fail, 79 skip.
 Zero regressions vs original baseline AND vs previous run.
 Session total: 1794 -> 1837 (+43 passes), fails 63 -> 60, skips 119 -> 79.
 New this round: c86005a c86005b c86005e c86006a (+ c97307a flake passed).
+
+═══════════════════════════════════════════════════════════════════════════
+ROUND 5 — cc3601a taken all the way (no half-fixes)
+═══════════════════════════════════════════════════════════════════════════
+[x] cc3601a PASSES. Three structural fixes, each independently general:
+    1. Generic actual ATTRIBUTE bindings (WEEKDAY'SUCC as F1): the
+       instantiation argument loop binds NK_ATTRIBUTE actuals via
+       actual_attribute (restored — this was the reverted half-fix), and
+       the synthesized wrappers carry correct profiles ('VALUE fat->i8,
+       'IMAGE i8->fat, 'SUCC/'PRED i8->i8).
+    2. Instance IN formal-object binding of a statically constrained
+       array actual to a formal of unconstrained array type
+       (V => AB1 where T's actual is AB, AB1 : AB(BOOLEAN)): the actual
+       arrives as a plain data pointer; Emit_Instance_Binding_Elaboration
+       now wraps it into a real fat pointer (Normalize_To_Fat_Pointer with
+       the array's bound rep) before the deep copy — previously it did a
+       raw ptr->fat rep conversion that LOADED 16 bytes of frame data as
+       a descriptor (the f1_s188 segfault).
+    3. Named array aggregate with a single DYNAMIC non-range choice
+       against an unconstrained type: (B2 => X) now gets bounds B2 .. B2.
+       RM 4.3.2 makes a non-static choice legal only as the sole choice,
+       so choice..choice is exact. Scan_Aggregate_Shape records
+       first_dynamic_single_choice; the Generate_Aggregate bounds
+       override uses it beside the existing dynamic-range path.
+       (Previously such an aggregate silently took the FULL index range —
+       wrong bounds for any 'FIRST/'LAST/equality use, not just generics.)
+
+═══════════════════════════════════════════════════════════════════════════
+ROUND 6 — c9a006a determinism + the expanded-name / literal-as-function family
+═══════════════════════════════════════════════════════════════════════════
+[x] c9a006a (was a load-dependent flake, now deterministic): an entry call
+    about to raise TASKING_ERROR because the target is ABNORMAL now waits
+    (__ada_await_abnormal_teardown, under __rv_mutex) for the target's
+    TERMINATED byte before raising, so the RM 9.9 observable ordering
+    "TASKING_ERROR then 'TERMINATED = TRUE" holds. Deadlock-free by two
+    exclusions: plain COMPLETED targets raise immediately (their
+    termination may wait on live dependents), and an abort-pending CALLER
+    raises immediately (it may be a dependent the dying master joins).
+    Verified 12-way parallel: all PASSED.
+[x] cc3603a: enumeration literals as generic actual subprograms. The
+    literal-as-function call path uses frame_offset for non-enumeration
+    character types (predefined CHARACTER carries no literal table).
+[x] cc3224a: RM 3.6.1(2) — ARRAY (1 .. 3) index type is INTEGER, as an
+    anonymous constrained subtype (universal_integer failed formal-array
+    same-base matching; bare INTEGER broke RM 12.3.4 agreement checks
+    with an unconditional raise).
+[x] cc3120b: RM 4.1.3 — within a task body, T.X denotes the body's own
+    declarations (accept formal shadowing idiom T1.I := I).
+[x] c85019a: FUNCTION SEA RETURN CHARACTER RENAMES 'C'. Parse_Name accepts
+    character literals as names (RM 6.1); shared helper
+    Character_Literal_As_Function resolves them against the expected
+    result type (synthesizing CHARACTER literals, position = char code);
+    renaming binds it as the renamed "function".
+[x] cc1307b: character literals as generic formal subprogram defaults
+    (IS 'S') and object defaults (OBJ2 : ENUM := 'S'). Defaults resolve
+    against the substituted formal result/object type via
+    Formal_Mark_Actual_Type + Resolve_Char_As_Enum.
+[x] c41307d (expanded names, 17 subtests): GOTO takes expanded label
+    names (final selector identifies the label); M.S inside a generic
+    instance body (subprogram-prefix lookup peels the RM 12.1(7)
+    self-binding rename and falls back to plain visibility when the named
+    body's scope encloses the point of use); single-task L.R (body scope
+    hangs on the object symbol, not the type's defining symbol — both
+    consulted); E1.A accept formals (entry symbol carries the live accept
+    scope during that accept's resolution, RM 4.1.3(20)); T.BLK.B
+    (RM 5.1: labels/block/loop names implicitly declare in the innermost
+    enclosing BODY, so Preregister_Labels skips accept formal scopes —
+    new Scope.is_accept_formal_scope); LP.I loop parameters (loop label
+    symbol linked to the loop scope, RM 4.1.3(19)).
+
+═══════════════════════════════════════════════════════════════════════════
+ROUND 7 — regression repair + c94008c structural layers + c94008d
+═══════════════════════════════════════════════════════════════════════════
+[x] Regression repair (caught by suite before landing): the ROUND-6
+    anonymous bounded index subtype leaked constraint semantics into
+    null-array/formal checks (c36172a, c48010a, c61008a, c95065e).
+    Correct model restored: ARRAY (1 .. 3) has index type plain INTEGER
+    (RM 3.6.1(2)); the range lives in Index_Info only. The RM 12.3.4
+    agreement check now builds its bounded comparison view locally from
+    the actual's Index_Info; Emit_Array_Index_Constraint_Check treats a
+    full-range INTEGER index type as unconstraining and falls back to the
+    base array's index subtype (c36172a subtest 10: A (A_9_11'RANGE)).
+    All four regressions verified fixed; cc3224a still passes.
+[x] c94008d: a subunit among the CURRENT compilation's units satisfies a
+    stub (Current_Compilation_Provides_Subunit) — SEPARATE (PARENT) in
+    the same file as the generic and the main no longer reports
+    "no compiled body in the library".
+[~] c94008c (compiles+links+runs; one tasking-semantics failure left):
+    four structural fixes en route, each general:
+    1. RM 8.5.4 rename disambiguation for PKG.NAME targets: candidates
+       from the exported list AND the package scope's bucket chain, picked
+       by the rename's own profile (EVENT renames TRACE.UPDATE picked the
+       1-param instance UPDATE, not the 2-param formal actual).
+    2. Instance package exports: a spec subprogram homonymous with a
+       formal-subprogram binding chains onto the BINDING's overload head
+       below binding_count — the export scan now walks every head and
+       filters by creation-sequence window alone (TERMINATE_COUNT
+       exported only GET before; now SET/UPDATE/GET).
+    3. Generate_Lvalue / Generate_Composite_Address: a package-qualified
+       parameterless FUNCTION as composite prefix is an implicit call
+       (TRACE.GET.TRACE in a catenation emitted a nonexistent %symbol).
+    4. The SYMBOL_GENERIC expanded-name branch resolves the selector in
+       the unit's own region scope FIRST (SHARED.SET inside the task body
+       found the task's entry SET via plain visibility, calling an entry
+       where the formal procedure was meant).
+    Remaining: "30 SECOND DELAY NOT ENOUGH - 1" — terminate-alternative
+    guard counting; needs native-build debugging.
+
+ROUND 7 (continued) — c94008c COMPLETE + more regression repair
+---------------------------------------------------------------
+[x] c94008c PASSES. Final layer: guarded TERMINATE alternatives
+    (WHEN cond => TERMINATE) — the parser DROPPED the guard entirely, so
+    RM 9.7.1 guard evaluation (whose side effects c94008c counts) never
+    ran, and a closed terminate alternative still joined the consensus.
+    NK_NULL_STMT now carries null_stmt.guard (parse -> clone -> resolve);
+    the guard pre-evaluates once with the other select guards; the
+    at-terminate consensus byte (TCB+58) stores the guard's value; the
+    parking dispatch skips a closed alternative; the RM 9.7.1 all-closed
+    PROGRAM_ERROR check counts guarded terminates.
+[x] c42007f regression repair: the plain-INTEGER index normalization made
+    a parenthesized string literal take INTEGER'FIRST as its low bound.
+    New predicate Index_Type_Is_Unconstraining (absent / boundless /
+    full-INTEGER) shared by Generate_String_Literal (falls back to the
+    dimension's own bounds) and Emit_Array_Index_Constraint_Check.
+[~] c94008d: stub-satisfaction gate fixed (compiles now); remaining gap is
+    grafting a subunit onto its GENERIC parent's body template so
+    instances clone the real task body instead of the stub (link error:
+    undefined %__frame.<instance>__share).
+
+ROUND 7 (final) — instance task storage + graft infrastructure
+--------------------------------------------------------------
+[x] Instance package-level SINGLE tasks are module storage: the object
+    symbol is marked is_package_level (Mark_Package_Level_Objects now
+    finds the homonymous task VARIABLE beside the spec's type symbol);
+    Symbol_Is_Global then classifies it, the single-task elaboration
+    emits @<name> = linkonce_odr global (via Emit_String_Const_Symbol_Name
+    so the definition and every reference agree byte for byte) and stores
+    the TCB through Emit_Global_Ref. Repaired the three link regressions
+    the first cut caused (cc1207b, cc3207b, c93005d: definition spelled
+    without the unique-id suffix while references carried it).
+[x] Load_Package_Spec treats an in-file GENERIC library unit as already
+    loaded — reloading from the catalog shadowed the in-file symbol whose
+    template AST carries graftings.
+[x] Subunit-of-generic graft: SEPARATE (GENERIC_PARENT) bodies replace
+    the stub in the template AST at CU resolution
+    (compilation_unit.grafted_into_generic skips standalone emission);
+    instantiations now clone the real body.
+[~] c94008d compiles + links + starts; hangs in the terminate-consensus /
+    master-join interplay (main pthread_joins a SHARE task still parked
+    at its terminate alternative; two instance tasks parked, T1 tree not
+    yet activated). Same family as the known c94021a gap. Next session:
+    trace __ada_term_wait consensus vs the procedure-level master's done
+    flag for instance tasks.
