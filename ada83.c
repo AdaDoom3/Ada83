@@ -1666,6 +1666,7 @@ struct Syntax_Node {
       Syntax_Node *separate_parent; // Separate parent or NULL
       bool grafted_into_generic;    // Subunit grafted into its generic parent's
                                     // template; no standalone resolution/emission
+      bool context_inherited;       // Spec's applicable context already folded in
     } compilation_unit;
   };
 };
@@ -2854,6 +2855,9 @@ void Assign_Access_Type_Masters (Node_List *list, uint32_t scope_id);
 void Resolve_Statement        (Syntax_Node *node);
 void Resolve_Declaration      (Syntax_Node *node);
 void Resolve_Compilation_Unit (Syntax_Node *node);
+String_Slice Unit_Simple_Name  (Syntax_Node *unit);
+Syntax_Node *Spec_Context_Clause (String_Slice unit_name);
+void Fold_Spec_Context_Into_Body (Syntax_Node *node);
 void Resolve_Declaration_List (Node_List   *list);
 void Resolve_Statement_List   (Node_List   *list);
 
@@ -19898,8 +19902,16 @@ static bool Actual_Is_Renameable_Variable (Syntax_Node *node) {
       if (sym->kind == SYMBOL_PARAMETER) return true;
       return false;
     }
-    case NK_SELECTED:
+    case NK_SELECTED: {
+      // An expanded name Package.Entity denotes Entity, so its variable-ness
+      // is the selected entity's — not the package prefix's. A record
+      // component or element instead inherits it from the prefixed object.
+      Symbol *sym = node->symbol;
+      if (sym and sym->kind == SYMBOL_VARIABLE)  return true;
+      if (sym and sym->kind == SYMBOL_PARAMETER) return true;
+      if (sym and sym->kind == SYMBOL_CONSTANT)  return false;
       return Actual_Is_Renameable_Variable (node->selected.prefix);
+    }
     case NK_APPLY:
       return Actual_Is_Renameable_Variable (node->apply.prefix);
     case NK_UNARY_OP:  // X.ALL
@@ -23411,8 +23423,79 @@ Symbol *Load_Subunit_Parent (Syntax_Node *name_node) {
   return NULL;
 }
 
+// The simple name a compilation unit defines — the key under which the
+// program library catalogs it. Empty slice for kinds that are not library
+// units in their own right.
+String_Slice Unit_Simple_Name (Syntax_Node *unit) {
+  if (not unit) return (String_Slice){ NULL, 0 };
+  switch (unit->kind) {
+    case NK_PACKAGE_SPEC:   return unit->package_spec.name;
+    case NK_PACKAGE_BODY:   return unit->package_body.name;
+    case NK_PROCEDURE_SPEC:
+    case NK_FUNCTION_SPEC:
+    case NK_PROCEDURE_BODY:
+    case NK_FUNCTION_BODY:  return Get_Subprogram_Name (unit);
+    case NK_TASK_BODY:      return unit->task_body.name;
+    case NK_GENERIC_DECL:   return Unit_Simple_Name (unit->generic_decl.unit);
+    default:                return (String_Slice){ NULL, 0 };
+  }
+}
+
+// RM 10.1.1: reconstruct the context clause of a separately compiled library
+// unit DECLARATION, so its body can inherit it. The declaration lives in the
+// program library; its source file may hold several units, so parse them all
+// and return the context of the one whose name matches. NULL when no spec for
+// the name is on record (e.g. a subprogram that is its own declaration).
+Syntax_Node *Spec_Context_Clause (String_Slice unit_name) {
+  if (not unit_name.length) return NULL;
+  char *src = Catalog_Read_Source (unit_name, CATALOG_UNIT_SPEC);
+  if (not src) return NULL;
+  Parser parser = Parser_New (src, strlen (src), "<spec>");
+  for (int guard = 0; guard < 64 and not parser.had_error and
+                      parser.current_token.kind != TK_EOF; guard++) {
+    Syntax_Node *cu = Parse_Compilation_Unit (&parser);
+    if (not cu) break;
+    if (Slice_Equal_Ignore_Case (
+          Unit_Simple_Name (cu->compilation_unit.unit), unit_name))
+      return cu->compilation_unit.context;
+  }
+  return NULL;
+}
+
+// RM 10.1.1: the with and use clauses of a library unit's DECLARATION also
+// apply to the secondary unit that gives its body — whether repeated there or
+// not. Fold the spec's context into this body's own so the "applicable" clause
+// set is a single list every later pass reads: name resolution, extern
+// emission, and elaboration ordering all consult node->compilation_unit.context.
+// A subunit inherits its parent's context through the parent scope instead, and
+// the fold is idempotent (guarded) since the node is shared between passes.
+void Fold_Spec_Context_Into_Body (Syntax_Node *node) {
+  if (node->compilation_unit.context_inherited) return;
+  node->compilation_unit.context_inherited = true;
+  if (node->compilation_unit.separate_parent) return;
+  Syntax_Node *unit = node->compilation_unit.unit;
+  bool is_body = unit and (unit->kind == NK_PACKAGE_BODY or
+                           unit->kind == NK_PROCEDURE_BODY or
+                           unit->kind == NK_FUNCTION_BODY);
+  Syntax_Node *spec_ctx =
+    is_body ? Spec_Context_Clause (Unit_Simple_Name (unit)) : NULL;
+  if (not spec_ctx) return;
+  Syntax_Node *ctx = node->compilation_unit.context;
+  if (not ctx) {
+    ctx = Node_New (NK_CONTEXT_CLAUSE, node->location);
+    node->compilation_unit.context = ctx;
+  }
+  for (uint32_t i = 0; i < spec_ctx->context.with_clauses.count; i++)
+    Node_List_Push (&ctx->context.with_clauses,
+                    spec_ctx->context.with_clauses.items[i]);
+  for (uint32_t i = 0; i < spec_ctx->context.use_clauses.count; i++)
+    Node_List_Push (&ctx->context.use_clauses,
+                    spec_ctx->context.use_clauses.items[i]);
+}
+
 void Resolve_Compilation_Unit (Syntax_Node *node) {
   if (not node) return;
+  Fold_Spec_Context_Into_Body (node);
 
   // Load WITH'd packages from include paths
   if (node->compilation_unit.context) {
@@ -51996,6 +52079,8 @@ void Emit_Integer_Value_Signed_Return (const char *stem, const char *value,
 
 void Generate_Compilation_Unit (Syntax_Node *node) {
   if (not node) return;
+  Fold_Spec_Context_Into_Body (node);  // Idempotent; guarantees the inherited
+                                        // context is present for extern emission.
 
   // A subunit grafted into its generic parent's template emits only
   // through instantiations — nothing stands alone here.
@@ -57716,8 +57801,25 @@ void Load_Package_Spec (String_Slice name, char *src) {
   size_t fn_len = name.length + 4;  // ".ads"
   char *filename = Arena_Allocate (fn_len + 1);
   snprintf (filename, fn_len + 1, "%.*s.ads", (int)name.length, name.data);
+  // A source file may hold several compilation units (a library subprogram's
+  // spec sitting beside an independent one, ACATS fragments). Parse them in
+  // turn and keep the one whose defined name is the unit we were asked for —
+  // never assume it is the first. If none matches by name (a unit kind we do
+  // not key on), fall back to the first, preserving the single-unit behaviour.
   Parser parser = Parser_New (src, strlen (src), filename);
-  Syntax_Node *cu = Parse_Compilation_Unit (&parser);
+  Syntax_Node *cu = NULL, *first = NULL;
+  for (int guard = 0; guard < 64 and not parser.had_error and
+                      parser.current_token.kind != TK_EOF; guard++) {
+    Syntax_Node *candidate = Parse_Compilation_Unit (&parser);
+    if (not candidate) break;
+    if (not first) first = candidate;
+    if (Slice_Equal_Ignore_Case (
+          Unit_Simple_Name (candidate->compilation_unit.unit), name)) {
+      cu = candidate;
+      break;
+    }
+  }
+  if (not cu) cu = first;
   if (not cu) {
     Loading_Set_Remove (name);
     return;

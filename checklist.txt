@@ -1,0 +1,135 @@
+================================================================================
+TASK PROMPT (verbatim)
+================================================================================
+In the pursuit of high-quality code (low line count (e.g. low undue complexity)
+and high feature/correctness) - refactor and fix ada83.c to pass a single
+C-test group completely (e.g. cXX) with much better Haskell-like C99 and smart
+code-golfing with, ironically, textbook "Literate Programming" style.
+
+Do NOT skip around - when you encounter a complex problem look at it as an
+opportunity to finally attack a big issue. Remember to follow the flow upstream
+to avoid hacking up the expander.
+
+Create a file to track everything called "checklist.txt" and include this
+prompt in it.
+
+Focus on skipped tests.
+
+================================================================================
+WORKING NOTES
+================================================================================
+Branch: claude/ada83-refactor-tests-v6g081
+
+Harness note: the FIRST run after `make` can show spurious BIND:unresolved_symbols
+skips because report.ll is regenerated while parallel workers link against it.
+Re-running the group clears them. So: always confirm a skip is PERSISTENT across
+two runs before treating it as a real compiler defect.
+
+Verified:
+- c34: 67/67 (100%) on second run. First run showed 4 transient BIND skips
+  (c34001 a/c/d/f). Not a real defect.
+
+================================================================================
+HARNESS FIX (done)
+================================================================================
+Root cause of the transient c34001 "BIND:unresolved_symbols" skips: the five
+`timeout 2 llvm-link ...` sites used a 2-second cap. Under 16-way parallelism
+with a cold page cache (first run after `make`), llvm-link's first-touch disk
+reads blow past 2s, `timeout` SIGKILLs it (exit 124/137), and the harness
+mislabels that kill as "BIND:unresolved_symbols" -> a false *skip*. A genuine
+unresolved-symbol error (a real compiler/runtime defect) and a load-induced
+kill were indistinguishable, so real skips could not be trusted.
+
+Fix (run_acats.sh):
+- Factored the 5 duplicated link invocations into one `link_program` helper
+  that sets LINK_STATUS = ok | timeout | unresolved from llvm-link's exit code.
+- Raised the cap to LINK_TIMEOUT (default 20s, env-overridable).
+- A timeout is now a distinct `fail ... TIMEOUT:llvm-link` line, never a skip.
+  Class L (expected link rejection) no longer counts a timeout as a pass.
+- Net: fewer lines, DRY, and the skip list is now trustworthy.
+
+================================================================================
+SURVEY OF SKIPPED TESTS (genuine, persistent)
+================================================================================
+(filling in...)
+
+================================================================================
+TARGET GROUP: c83 (primary) — one blocker, c83024e1m
+  Also advancing c86 (c86004b/c) which share the same big issue.
+================================================================================
+Survey (full Class C, old harness): 1899 pass / 55 fail / 22 skip.
+The genuine COMPILE/BIND skips cluster around SEPARATE COMPILATION:
+  - c83024e1m: separately compiled (generic) package body — undefined REPORT
+    (IDENT_INT/FAILED) + undefined spec decls (A/B/C). Root: RM 10.1.1.
+  - c86004b/c: library subprogram body/subunit + STANDARD.M naming.
+  - c86002a/b: user library unit NAMED "STANDARD" (obscure).
+  - ca10xx/ca20xx/ca30xx/ca50xx: separate generic instantiation units, subunits.
+
+================================================================================
+BIG ISSUE: RM 10.1.1 applicable-with-clause inheritance + library-subprogram
+           separate compilation
+================================================================================
+RM 8.6 + 10.1.1: library units are declared in package STANDARD; the with/use
+clauses of a unit's DECLARATION apply to the secondary unit giving its body
+(repeated or not), and a compilation unit's clauses apply to its subunits.
+
+Changes made to ada83.c:
+1. Unit_Simple_Name / Spec_Context_Clause helpers (§12): reconstruct a spec's
+   context from the program library, matching the right unit in a multi-unit
+   source file.
+2. Fold_Spec_Context_Into_Body (§12): folds the spec's with/use clauses into
+   the body's OWN context node once (guarded), so every downstream pass —
+   resolution, extern emission (Generate_Extern_Declarations), elaboration —
+   reads one "applicable context". Called from Resolve_Compilation_Unit AND
+   Generate_Compilation_Unit.
+3. Load_Package_Spec: parse ALL units in a source file and select the one whose
+   defined name matches (was: always the first) — a library subprogram spec can
+   sit beside an independent unit (c86004b0.ada).
+4. Load_Package_Spec already-loaded guard extended to a library SUBPROGRAM whose
+   body is loaded, so it is not re-resolved (which minted duplicate parameter
+   symbols -> SSA-id mismatch).
+5. Generate_Extern_Declarations: emit a plain extern `declare` for a WITH'd
+   library SUBPROGRAM (was: only packages handled).
+6. Emit_Function_Header: WITH-loaded bodies get linkonce_odr linkage so
+   identical eager copies merge at link (like loaded globals / runtime helpers).
+7. Tail body-loader: emit a WITH'd library subprogram's separately compiled body
+   inline (linkonce), symmetric with the package-body arm.
+
+FINAL LANDED CHANGE SET (ada83.c) — minimal, correct, c83-closing:
+1. Unit_Simple_Name (covers package/subprogram/task/generic units).
+2. Spec_Context_Clause — reconstruct a spec's context from the program library,
+   selecting the matching unit in a multi-unit source file.
+3. Fold_Spec_Context_Into_Body — fold spec with/use into the body's own context
+   (guarded, idempotent); called from Resolve_Compilation_Unit AND
+   Generate_Compilation_Unit.
+4. Load_Package_Spec — select the unit in a multi-unit file whose name matches
+   the request (was: always the first); fall back to first for unkeyed kinds.
+   [Also fixed a regression: generics (NK_GENERIC_DECL) must be keyed by their
+    inner unit's name, else LENGTH_CHECK/ENUM_CHECK stopped loading.]
+5. Actual_Is_Renameable_Variable — an expanded name Package.Var is a variable
+   iff the SELECTED entity is (was: checked the package prefix -> always false),
+   fixing IN OUT generic actuals like NEW P (Pkg.Var).
+
+REVERTED (explored for c86004b's self-contained-main, not needed / risky):
+   linkonce on loaded bodies, eager subprogram-body emission in the tail,
+   extern for WITH'd subprograms, subprogram double-resolution guard. c86004b2m
+   returns to a clean BIND skip (baseline), no regression.
+
+RESULT: c83 = 38/38 (100%), was 37/38. c86 unchanged (9 pass / 4 skip).
+c86002a/b (user unit named STANDARD) and c86004c (subunit + generic) remain
+genuine skips — separate, deeper features, out of scope for this landing.
+
+HARNESS FIX validated: the false first-run BIND skips are gone.
+
+FINAL VALIDATION (full Class C):
+- Baseline (survey): 1899 pass / 55 fail / 22 skip.
+- After changes:     1900 pass / 56 fail / 20 skip.
+- Per-test diff: ZERO regressions (no pass -> non-pass).
+  * IMPROVEMENT: c83024e1m  skip(COMPILE) -> PASS.
+  * PROGRESS:    ca1020e3m  skip(COMPILE) -> fail(runtime check). It now COMPILES
+    (context inheritance + multi-unit loading) and runs, exposing a deeper
+    generic-instantiation-replacement gap — not a regression from a passing state.
+- Harness fix validated: c34 first-run after a fresh rebuild is 67/67 with 0
+  skips (previously 4 transient false BIND skips from the 2 s llvm-link cap).
+
+TARGET c83: 37/38 (97%) -> 38/38 (100%). COMPLETE.
