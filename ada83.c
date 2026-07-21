@@ -2145,6 +2145,12 @@ struct Type_Info {
                                          // (41-42))
   struct Type_Info *generic_actual;      // The actual type this view denotes;
                                          // Peel_Generic_Actual_View follows it
+  bool        formal_private_view;       // Actual-view bound to a formal PRIVATE
+                                         // type: the generic body saw only the
+                                         // constraint-free private view, so an
+                                         // OUT/IN OUT copy-back through it must
+                                         // not gain the actual's scalar range
+                                         // check (RM 12.3; ce2205b, ce2405a)
   struct Type_Info *generic_formal_disc_view; // The formal private type's own
                                          // record view: its discriminant NAMES
                                          // map positionally onto the actual's
@@ -19562,6 +19568,9 @@ void Bind_Generic_Formals_To_Actuals (Symbol *instance_sym,
               actual_type->base_type ? actual_type->base_type : actual_type;
             actual_view->is_generic_actual_view = true;
             actual_view->generic_actual = actual_type;
+            actual_view->formal_private_view =
+              formal->generic_type_param.def_kind == GEN_DEF_PRIVATE or
+              formal->generic_type_param.def_kind == GEN_DEF_LIMITED_PRIVATE;
             binding->type = actual_view;
 
             // The struct copy above brought the ACTUAL's defining_symbol
@@ -33193,7 +33202,16 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
                  op->apply.arguments.count == 1)
             op = op->apply.arguments.items[0];
           Type_Info *actual_type = op ? op->type : (arg ? arg->type : NULL);
-          if (Type_Is_Scalar (actual_type))
+          // RM 12.3 (shared-generic view): when the callee's formal parameter
+          // is of a generic formal PRIVATE type, its body saw only the
+          // constraint-free private view, so no scalar range check exists on
+          // the copy-back — a value read from an external file that lies
+          // outside the actual subtype yields DATA_ERROR-or-nothing, never
+          // CONSTRAINT_ERROR (ce2205b, ce2405a).
+          Type_Info *formal_type = (sym->parameters and i < sym->parameter_count)
+                                   ? sym->parameters[i].param_type : NULL;
+          bool formal_private = formal_type and formal_type->formal_private_view;
+          if (Type_Is_Scalar (actual_type) and not formal_private)
             ret_val = Emit_Constraint_Check_Val ((LLVM_Value){ ret_val, copyback_llvm[i] }, actual_type, NULL).reg;
           // RM 6.4.1: on return through an access OUT/IN OUT actual of a
           // constrained access subtype, the copied-back value's designated
@@ -33211,7 +33229,10 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
       // assigned a value of another variant).
       } else if (is_byref[i]) {
         Type_Info *actual_type = arg->type;
-        if (Type_Is_Scalar (actual_type)) {
+        Type_Info *formal_type = (sym->parameters and i < sym->parameter_count)
+                                 ? sym->parameters[i].param_type : NULL;
+        bool formal_private = formal_type and formal_type->formal_private_view;
+        if (Type_Is_Scalar (actual_type) and not formal_private) {
           LLVM_Rep ld_ty = Type_To_Rep (actual_type);
           uint32_t ret_val = Emit_Result_Instruction ("load %s, ptr %%t%u  ; OUT/INOUT result\n", LLVM_Rep_To_String(ld_ty), args[i]);
           Emit_Constraint_Check_Val (Val_Rep (ret_val, ld_ty), actual_type, NULL);

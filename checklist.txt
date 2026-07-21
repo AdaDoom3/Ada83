@@ -133,3 +133,38 @@ FINAL VALIDATION (full Class C):
   skips (previously 4 transient false BIND skips from the 2 s llvm-link cap).
 
 TARGET c83: 37/38 (97%) -> 38/38 (100%). COMPLETE.
+
+================================================================================
+FOLLOW-ON TARGET: ce2 (Chapter 14 I/O) — the C-group with the most failures (9)
+================================================================================
+Three root causes, all fixed:
+
+1. FCB slot exhaustion (ce2117a/b) [rts/sequential_io.adb, rts/direct_io.adb]:
+   Next_FCB advanced on every create/open and was never reclaimed on
+   close/delete, so 99 CUMULATIVE opens raised USE_ERROR even with few files
+   open. Reuse the first closed slot; USE_ERROR only when all are open.
+
+2. Cross-handle write visibility (ce2111h) [rts/direct_io.adb]: WRITE left the
+   datum in the stdio buffer, so a second internal file on the same external
+   file read stale data -> END_ERROR. Flush after each write.
+
+3. File continuity (ce2108b/d/f/h, and ce3112b/d) [run_acats.sh]: a reader test
+   opens a file left by a creator it names via LEGAL_FILE_NAME(_, "CExxx"). The
+   ACATS model runs the creator first in the same directory; our per-test CWD
+   isolation hid it. run_continuity_creators compiles+links+runs each named
+   creator into the reader's own lib dir first.
+
+4. DATA_ERROR vs CONSTRAINT_ERROR on invalid read (ce2205b, ce2405a) [ada83.c]:
+   THE BIG ISSUE. Reading an out-of-range scalar (enum written by one
+   instantiation, read by another) raised CONSTRAINT_ERROR on the generic
+   READ's out-param copy-back. RM 12.3 shared-generic view: SEQUENTIAL_IO's
+   body was compiled against the constraint-free PRIVATE view of ELEMENT_TYPE,
+   so no scalar copy-back check exists; our macro instantiation wrongly
+   re-derived it from the actual (LAKES/MEN). Fix: flag the instance actual-view
+   of a formal PRIVATE type (Type_Info.formal_private_view) and skip the
+   RM 6.4.1 scalar copy-back check for such parameters. The read then stores the
+   raw value with no exception (RM 14.2.2 permits omitting the DATA_ERROR check).
+
+RESULT: ce2 9 fails -> 0. ce2 = 118/118 (100%). ce3 5 fails -> 3 (ce3112b/d
+also fixed via continuity). Validating full Class C for regressions from the
+generic-private-view change.
