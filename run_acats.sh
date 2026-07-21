@@ -157,6 +157,25 @@ link_program(){
     return $rc
 }
 
+# ACATS Chapter-14 file continuity: a reader test (ce2108b, ce3112b, …) opens an
+# external file left behind by a creator it names with LEGAL_FILE_NAME(_,
+# "CExxx"). The ACATS model runs the creator first in the SAME directory; our
+# per-test CWD isolation would otherwise hide the file. Compile, link, and run
+# each named creator INTO THE READER'S OWN lib dir so its files are waiting when
+# the reader opens them. Best-effort: a creator that will not build just leaves
+# the reader to report the missing file as it would have without this step.
+run_continuity_creators(){
+    local reader=$1 lib=$2 self=${1,,} c
+    for c in $(grep -oiE 'legal_file_name[ ]*\([^)]*"ce[0-9a-z]+"' "acats/$reader.ada" 2>/dev/null \
+               | grep -oiE '"ce[0-9a-z]+"' | tr -d '"' | tr 'A-Z' 'a-z' | sort -u); do
+        [[ $c == "$self" || ! -f acats/$c.ada ]] && continue
+        ./ada83 "acats/$c.ada" -o "$lib/$c.ll" >/dev/null 2>&1 || continue
+        timeout "$LINK_TIMEOUT" llvm-link -o "$lib/$c.bc" "$lib/$c.ll" \
+            acats/report.ll >/dev/null 2>&1 || continue
+        ( cd "$lib" && exec timeout "$TEST_TIMEOUT" lli "$c.bc" ) >/dev/null 2>&1 || true
+    done
+}
+
 run_one(){
     local f=$1 n=$(basename "$1" .ada) q=${1##*/}; q=${q:0:1}
     # Fragments (end in digit, not 'm') are compiled by their family's main.
@@ -186,6 +205,7 @@ run_one(){
                                           || echo "c skip $n BIND:unresolved_symbols"
             return
         fi
+        run_continuity_creators "$n" "$RESULTS_DIR/$n.lib"
         local rc=0
         run_in_lib "$TEST_TIMEOUT" "$n" > $LOGS_DIR/$n.out 2>&1 || rc=$?
         if ((rc==124 || rc==137)); then
@@ -314,7 +334,7 @@ run_one(){
 }
 ROOT=$PWD
 export ROOT
-export -f run_one gather_files compile_set run_in_lib link_program pct
+export -f run_one gather_files compile_set run_in_lib link_program run_continuity_creators pct
 export START_MS TEST_TIMEOUT LINK_TIMEOUT
 
 # Outer per-test cap (defense in depth): a hung test can never hang the suite,
