@@ -227,7 +227,7 @@ Zero regressions at every step (per-test diffs).
 ================================================================================
 FOLLOW-ON TARGET: cc (Chapter 12 generics) — next group with most fails (8)
 ================================================================================
-Diverse root causes (like c9). cc: 8 fails -> 3 fails. Fixed:
+Diverse root causes (like c9). cc: 8 fails -> 1 fail. Fixed:
 - cc1302a [ada83.c, RM 12.3.6]: a generic default subprogram given by an
   attribute (WITH FUNCTION SUCC(X:T) RETURN T IS T'SUCC) denotes the attribute's
   own operation, whose parameter/result subtypes are T'BASE, not the formal's
@@ -253,15 +253,26 @@ Diverse root causes (like c9). cc: 8 fails -> 3 fails. Fixed:
   was lowered to bounded INTEGER. Fix: fold static universal_real arithmetic
   (and the fixed-point model attributes MANTISSA/SMALL/LARGE) exactly.
 
-Remaining cc fails (deep, distinct):
-- cc1224a: generic formal ARRAY TYPES (FARR1..7) whose instance views lose their
-  index_type -> Array_Bound_LLVM_Rep can't derive a bound rep -> bad array copy
-  -> CONSTRAINT_ERROR at instantiation. Deep §16 formal-array-type resolution
-  (a bound-rep peel to the actual view was tried and does NOT fix it — the view
-  itself has no resolved index).
-- cc1226b: "=" on a formal nonlimited private type (INTEGER actual) — relies on
-  two DISTINCT uninitialised values comparing unequal (undefined behaviour), not
-  a real operator bug.
-- cc3012a: an explicit "<" for a derived type (via generic instance) must hide
-  the inherited predefined "<" (RM 8.3); we pick the predefined one. Plus a
-  CONSTRAINT_ERROR. Deep §11 name-resolution/visibility.
+- cc3012a [RM 4.2/3.4]: NOT a hiding bug (earlier theory was wrong — traced
+  with instrumentation). A character literal was committed to predefined
+  CHARACTER bottom-up, so a user operator on a derived character type never
+  entered the candidate set and hiding never ran. Fix: character literals are
+  flexible operands (like aggregates/string literals) typed top-down from the
+  chosen operand type; two sibling literals default to CHARACTER;
+  Resolve_Operand commits the chosen character type when Resolve_Char_As_Enum
+  has no literal symbol to offer.
+- cc1224a [RM 4.3.2]: NOT §16 formal-array types (earlier theory wrong — the
+  failure reproduces with no generic at all). Two aggregate inner-dimension
+  check sites folded a static "choice outside index subtype" verdict from
+  Type_Bound_Value of DYNAMIC subtype bounds (garbage) and emitted an
+  unconditional raise for a legal 2-dim aggregate. Fix: fold only from
+  compile-time-known bounds (the inner aggregate's own emission carries the
+  runtime check); duplicated dim-1 subtype derivation factored into
+  Aggregate_Inner_Index_Subtype. The benign "Array_Bound_LLVM_Rep: no index
+  type for FARR*" note remains (fallback i32 is correct there).
+
+Remaining cc fail (1):
+- cc1226b: "=" on a formal nonlimited private type (INTEGER actual) — the test
+  requires two DISTINCT uninitialised INTEGER locals to compare unequal
+  (undefined values), not a real operator bug. Would need deliberate
+  scrambling of uninitialized scalars to "pass"; not worth distorting codegen.
