@@ -39711,6 +39711,15 @@ uint32_t Generate_Aggregate_Body (Syntax_Node *node) {
     // forms use the unified Agg_Rec_Store / Agg_Rec_Disc_Post helpers.                            
     //                                                                                              
     uint32_t positional_idx = 0;
+    // RM 3.7.2: a discriminant governs the subtype — and so the size — of its
+    // dependent components, so its value must reach the aggregate's
+    // discriminant bindings before a dependent component evaluates its bounds.
+    // Association order is the writer's choice ((REC => "ABC", A => 5),
+    // c43214f case 4) and RM 4.3 leaves component evaluation order
+    // unspecified: walk named discriminant associations first, everything
+    // else second. Positional items need no hoisting — discriminants are the
+    // leading components, and positional associations precede named ones.
+    for (int pass = 0; pass < 2; pass++)
     for (uint32_t i = 0; i < node->aggregate.items.count; i++) {
       Syntax_Node *item = node->aggregate.items.items[i];
 
@@ -39723,6 +39732,7 @@ uint32_t Generate_Aggregate_Body (Syntax_Node *node) {
             int32_t ci = Find_Record_Component (agg_type, choice->string_val.text);
             if (ci < 0) continue;
             Component_Info *comp = &agg_type->record.components[ci];
+            if ((pass == 0) != (bool) comp->is_discriminant) continue;
             cg->in_agg_component++;
             LLVM_Value val_v = Generate_Expression (item->association.expression);
             uint32_t val = val_v.reg;
@@ -39740,7 +39750,7 @@ uint32_t Generate_Aggregate_Body (Syntax_Node *node) {
         }
 
       // Positional: initialize component by position
-      } else {
+      } else if (pass == 1) {
         // Skip components of non-selected variants so positional element N maps
         // to the Nth component of the fixed part + the active variant.
         while (positional_idx < comp_count) {
