@@ -14545,6 +14545,7 @@ static bool Flexible_Can_Denote (Syntax_Node *o, Type_Info *t) {
   if (o and o->kind == NK_STRING)
     return Type_Is_Array_Like (t) and t->array.index_count == 1 and
            Type_Is_Character_Type (t->array.element_type);
+  if (o and o->kind == NK_CHARACTER) return Type_Is_Character_Type (t);
   return true;
 }
 
@@ -14659,6 +14660,11 @@ void Analyze_Binary (Syntax_Node *n) {
     if (Flexible_Can_Denote (L, rts[i])) lts[nlt++] = rts[i]; }
   if (nrt == 0) { for (uint32_t i = 0; i < nlt; i++)
     if (Flexible_Can_Denote (R, lts[i])) rts[nrt++] = lts[i]; }
+  // Two sibling character literals give each other no context ('A' < 'B'):
+  // fall back to predefined CHARACTER, the RM 4.2 default when no other
+  // character type is applicable.
+  if (nlt == 0 and L and L->kind == NK_CHARACTER) lts[nlt++] = sm->type_character;
+  if (nrt == 0 and R and R->kind == NK_CHARACTER) rts[nrt++] = sm->type_character;
 
   // Predefined interpretations, synthesized per operand-type pair. Predefined
   // arithmetic operators are not stored per type; the result type comes from
@@ -14896,8 +14902,16 @@ void Analyze_Expr (Syntax_Node *n) {
   if (n->kind == NK_IDENTIFIER) { Analyze_Identifier (n); return; }
   // An aggregate has no type of its own — it is a flexible operand that takes
   // its type from the operator's chosen operand type in the top-down pass
-  // (RM 4.3). Leave its interp set empty and defer resolution.
-  if (n->kind == NK_AGGREGATE and not n->type) { Node_Interps_Reset (n); return; }
+  // (RM 4.3). The same holds for a character literal: RM 4.2 overloads it on
+  // EVERY visible character type (a derived character type inherits the
+  // literals, RM 3.4), so committing it to predefined CHARACTER here would
+  // exclude a user operator on such a type from the candidate set (cc3012a's
+  // "<" instance on a NEW CHARACTER type). Leave the interp set empty and
+  // defer resolution; Resolve_Operand hands the chosen operand type to
+  // Resolve_Char_As_Enum.
+  if ((n->kind == NK_AGGREGATE or n->kind == NK_CHARACTER) and not n->type) {
+    Node_Interps_Reset (n); return;
+  }
   Type_Info *t = Resolve_Expression (n);
   Interp_Add (Node_Interps_Reset (n), n->symbol, t, t, NULL, 0);
 }
@@ -15079,7 +15093,12 @@ static void Resolve_Operand (Syntax_Node *o, Type_Info *opnd_typ) {
   } else if (o->kind == NK_CHARACTER and opnd_typ) {
     // Character literal as an enum literal in operand context (c25004a:
     // 'C' compared against an ENUM value picks ENUM.'C', not CHARACTER 'C').
-    Resolve_Char_As_Enum (o, opnd_typ);
+    // When the target has no such literal SYMBOL (predefined CHARACTER, whose
+    // literals are positional, not in the symbol table), commit the target
+    // type directly — a flexible literal reaches codegen typed either way.
+    if (not Resolve_Char_As_Enum (o, opnd_typ) and
+        Type_Is_Character_Type (opnd_typ))
+      o->type = opnd_typ;
   } else if (opnd_typ and (not o->type or o->kind == NK_AGGREGATE or
                            o->kind == NK_STRING)) {
     // RM 4.3.2: an operator operand is not one of the applicable-index-
