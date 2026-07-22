@@ -51163,10 +51163,39 @@ void Generate_Declaration (Syntax_Node *node) {
         Syntax_Node *entry = node->task_spec.entries.items[e];
         if (not entry or entry->kind != NK_ENTRY_DECL) continue;
         for (uint32_t c = 0; c < entry->entry_decl.index_constraints.count; c++) {
-          Syntax_Node *range =
-            Family_Index_Range_Node (entry->entry_decl.index_constraints.items[c]);
-          if (range and range->range.low)  Generate_Expression (range->range.low);
-          if (range and range->range.high) Generate_Expression (range->range.high);
+          Syntax_Node *cnode = entry->entry_decl.index_constraints.items[c];
+          Syntax_Node *range = Family_Index_Range_Node (cnode);
+          if (not range or not range->range.low or not range->range.high) {
+            if (range and range->range.low) Generate_Expression (range->range.low);
+            continue;
+          }
+          LLVM_Rep iat = Integer_Arith_Rep ();
+          uint32_t lo = Emit_Coerce_Val (Generate_Expression (range->range.low), iat).reg;
+          uint32_t hi = Emit_Coerce_Val (Generate_Expression (range->range.high), iat).reg;
+
+          // RM 3.5(4): the bounds of a non-null index range must each belong to
+          // the index subtype; otherwise CONSTRAINT_ERROR is raised here, at the
+          // spec's elaboration, so no task of this declarative part is ever
+          // activated (c91007a). A null range (low > high) is unconstrained.
+          Type_Info *isub =
+            (cnode->kind == NK_SUBTYPE_INDICATION and cnode->subtype_ind.subtype_mark)
+            ? (cnode->subtype_ind.subtype_mark->type
+               ? cnode->subtype_ind.subtype_mark->type
+               : (cnode->subtype_ind.subtype_mark->symbol
+                  ? cnode->subtype_ind.subtype_mark->symbol->type : NULL))
+            : NULL;
+          if (isub and Type_Is_Discrete (isub)) {
+            LLVM_I1 nonnull = Emit_Icmp ("sle", iat, lo, hi);
+            uint32_t chk = cg->label_id++, skip = cg->label_id++;
+            Emit ("  br i1 %%t%u, label %%L%u, label %%L%u\n", nonnull.reg, chk, skip);
+            cg->block_terminated = true;
+            Emit_Label_Here (chk);
+            Emit_Constraint_Check_Val (Val_Rep (lo, iat), isub, NULL);
+            Emit_Constraint_Check_Val (Val_Rep (hi, iat), isub, NULL);
+            Emit ("  br label %%L%u\n", skip);
+            cg->block_terminated = true;
+            Emit_Label_Here (skip);
+          }
         }
       }
 
