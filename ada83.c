@@ -27922,6 +27922,7 @@ uint32_t Generate_Lvalue (Syntax_Node *node) {
   if (Node_Is_Dereference (node)) {
     uint32_t ptr = Generate_Expression (node->unary.operand).reg;
     Type_Info *acc_ty = node->unary.operand ? node->unary.operand->type : NULL;
+    Emit_Access_Check (Val_Of_Type (ptr, acc_ty), acc_ty);  // RM 4.1: null .ALL -> CE
     if (acc_ty and Type_Needs_Fat_Pointer (acc_ty)) {
       LLVM_Rep bt = Array_Bound_LLVM_Rep (acc_ty);
       return Emit_Fat_Pointer_Data (ptr, bt).reg;
