@@ -166,5 +166,45 @@ Three root causes, all fixed:
    raw value with no exception (RM 14.2.2 permits omitting the DATA_ERROR check).
 
 RESULT: ce2 9 fails -> 0. ce2 = 118/118 (100%). ce3 5 fails -> 3 (ce3112b/d
-also fixed via continuity). Validating full Class C for regressions from the
-generic-private-view change.
+also fixed via continuity).
+
+================================================================================
+FOLLOW-ON TARGET: c9 (Chapter 9 tasking) — the C-group with the most failures (13)
+================================================================================
+Diverse root causes; fixed 9 of 13 (honest accounting below).
+
+COMPILER FIXES (ada83.c), all full-suite validated with zero regressions:
+- c97113a, c97115a: a selective wait evaluated an entry-family index lazily
+  (only when its own alternative was selected). RM 9.7.1 requires every OPEN
+  alternative's index evaluated after the guards, before rendezvous. Now
+  pre-evaluated into slots that the accept generation reloads.
+- c97302a: a timed entry call evaluated its delay before the call's arguments.
+  RM 9.7.3 order is index -> parameters -> delay. Deferred to
+  Emit_Entry_Call_Dispatch (after the args).
+- c91006a: a task spec's entry-family index bounds (RM 3.1/9.1) were never
+  elaborated. Now evaluated in textual order at the spec's elaboration.
+
+DELAY DEVIATIONS (acats sources, the documented 10x scaling the auto-scaler
+missed):
+- c94004a/b/c: DELAY DURATION(IDENT_INT(120)) -> 12 (real 120s library-task
+  delay; verified correct at a 140s cap).
+- c97112a, c97120a: paired accuracy check "< 10.0" scaled to "< 1.0" to match
+  the already-scaled DELAY 1.0 (else always "INSUFFICIENT DELAY").
+
+REMAINING c9 fails (honest — these are NOT fixed, and some are not achievable):
+- c98003b: rendezvous executed at the caller's priority — needs real priority
+  scheduling; likely impractical to make deterministic.
+- c97307a: timed-call-cancellation. LOAD-FLAKY: passes under full-suite
+  parallel load, fails 5/5 in isolation — verified to fail identically WITHOUT
+  any of my changes (so not a regression; the CLAUDE.md determinism claim does
+  not hold for it).
+- c91007a: task activation order (failure names a different task run-to-run) —
+  likely the same load-sensitivity.
+- c93007a: PROGRAM_ERROR when a task in a RECORD, or via NEW, is activated
+  before its body is elaborated. The elaboration-flag mechanism exists but the
+  activation check only covers direct task objects (Type_Is_Task), not
+  composite- or access-embedded ones. Deep; not attempted.
+- c94001c: indirect dependent task termination before a function returns
+  (RM 9.4 master semantics). Deep; not attempted.
+
+Net c9: 13 fails -> 5 (or 4 excluding the load-flaky c97307a). No regressions.

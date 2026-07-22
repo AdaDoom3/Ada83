@@ -51152,6 +51152,24 @@ void Generate_Declaration (Syntax_Node *node) {
               (int)node->symbol->name.length, node->symbol->name.data);
       }
 
+      // RM 3.1/9.1: elaborating a task specification elaborates its entry
+      // declarations in textual order, including the discrete range of any
+      // entry family index subtype — whose bound expressions may have side
+      // effects that must occur at the spec's elaboration point, in order
+      // (c91006a). The per-call family-index check re-derives these bounds for
+      // its range test; here we evaluate them purely for that elaboration
+      // effect.
+      for (uint32_t e = 0; e < node->task_spec.entries.count; e++) {
+        Syntax_Node *entry = node->task_spec.entries.items[e];
+        if (not entry or entry->kind != NK_ENTRY_DECL) continue;
+        for (uint32_t c = 0; c < entry->entry_decl.index_constraints.count; c++) {
+          Syntax_Node *range =
+            Family_Index_Range_Node (entry->entry_decl.index_constraints.items[c]);
+          if (range and range->range.low)  Generate_Expression (range->range.low);
+          if (range and range->range.high) Generate_Expression (range->range.high);
+        }
+      }
+
       // For single tasks (not task types), allocate task control block storage
       // and start the task body in a separate thread
       if (not node->task_spec.is_type and node->symbol) {
