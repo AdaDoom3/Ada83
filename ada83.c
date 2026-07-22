@@ -2990,6 +2990,11 @@ typedef struct {
   bool         entry_call_try_mode;
   uint32_t     entry_call_timeout_temp;
   uint32_t     entry_call_result_temp;
+  // RM 9.7.3: the delay of a timed entry call is evaluated AFTER the entry
+  // name, its family index, and its parameter associations. Carry the delay
+  // expression here so the entry-call codegen can evaluate it at that point,
+  // once the arguments are in hand, rather than up front (c97302a).
+  Syntax_Node *entry_call_delay_expr;
 
   // Active masters in the current function (RM 9.4). RETURN statements must
   // complete every enclosing master — raise its done flag, join its dependents
@@ -31809,6 +31814,22 @@ void Emit_Blocking_Entry_Call (uint32_t task_ptr, uint32_t entry_idx_64,
   }
 }
 
+// Convert a timed entry call's delay expression to an i64 microsecond budget
+// (RM 9.7.3). A fixed-point delay is scaled by its 'SMALL to seconds first.
+static uint32_t Emit_Delay_Microseconds (Syntax_Node *delay_expr) {
+  uint32_t dur = Generate_Expression (delay_expr).reg;
+  Type_Info *dt = delay_expr->type;
+  if (Type_Is_Fixed_Point (dt)) {
+    LLVM_Rep fr = Type_To_Rep (dt);
+    uint32_t db = Emit_Result_Instruction ("sitofp %s %%t%u to double\n", LLVM_Rep_To_String (fr), dur);
+    double sm = dt->fixed.small; if (sm <= 0) sm = dt->fixed.delta > 0 ? dt->fixed.delta : 1.0;
+    uint64_t sb; memcpy (&sb, &sm, sizeof (sb));
+    dur = Emit_Result_Instruction ("fmul double %%t%u, 0x%016llX\n", db, (unsigned long long)sb);
+  }
+  uint32_t us = Emit_Result_Instruction ("fmul double %%t%u, 1.0e6\n", dur);
+  return Emit_Result_Instruction ("fptoui double %%t%u to i64\n", us);
+}
+
 // Dispatch an entry call (RM 9.5). Under a conditional or timed select
 // (entry_call_try_mode, RM 9.7.2/9.7.3) the non-blocking / deadline variant
 // runs and records its rendezvous flag in entry_call_result_temp; otherwise the
@@ -31816,6 +31837,14 @@ void Emit_Blocking_Entry_Call (uint32_t task_ptr, uint32_t entry_idx_64,
 void Emit_Entry_Call_Dispatch (uint32_t task_ptr, uint32_t entry_idx,
                                uint32_t param_block) {
   uint32_t entry_idx_64 = Emit_Extend_To_I64 (entry_idx, Integer_Arith_Rep ()).reg;
+  // RM 9.7.3: a timed call's delay is evaluated only now — after the entry
+  // name, family index, and parameters (all folded into task_ptr / entry_idx /
+  // param_block above) — never before them (c97302a).
+  if (cg->entry_call_delay_expr) {
+    Syntax_Node *d = cg->entry_call_delay_expr;
+    cg->entry_call_delay_expr = NULL;
+    cg->entry_call_timeout_temp = Emit_Delay_Microseconds (d);
+  }
   if (cg->entry_call_try_mode) {
     uint32_t res = Emit_Temp ();
     if (cg->entry_call_timeout_temp)
@@ -44417,30 +44446,19 @@ void Generate_Statement (Syntax_Node *node) {
             for (uint32_t i = 1; i < alts->count; i++)
               if (alts->items[i] and alts->items[i]->kind == NK_DELAY) { delay_idx = (int)i; break; }
 
-            // Timeout budget in microseconds (0 = poll once = conditional).
+            // Timeout budget (0 = poll once = conditional). RM 9.7.3 defers
+            // the delay's evaluation to after the call's arguments, so hand the
+            // expression to the entry-call codegen rather than evaluating here.
             cg->entry_call_timeout_temp = 0;
-            if (delay_idx >= 0) {
-              Syntax_Node *d = alts->items[delay_idx];
-              uint32_t dur = Generate_Expression (d->delay_stmt.expression).reg;
-              Type_Info *dt = d->delay_stmt.expression->type;
-              if (Type_Is_Fixed_Point (dt)) {
-                LLVM_Rep fr = Type_To_Rep (dt);
-                uint32_t db = Emit_Result_Instruction ("sitofp %s %%t%u to double\n", LLVM_Rep_To_String (fr), dur);
-                double sm = dt->fixed.small; if (sm <= 0) sm = dt->fixed.delta > 0 ? dt->fixed.delta : 1.0;
-                uint64_t sb; memcpy (&sb, &sm, sizeof (sb));
-                uint32_t sec = Emit_Result_Instruction ("fmul double %%t%u, 0x%016llX\n", db, (unsigned long long)sb);
-                dur = sec;
-              }
-              uint32_t us = Emit_Result_Instruction ("fmul double %%t%u, 1.0e6\n", dur);
-              uint32_t usi = Emit_Result_Instruction ("fptoui double %%t%u to i64\n", us);
-              cg->entry_call_timeout_temp = usi;
-            }
+            cg->entry_call_delay_expr =
+              delay_idx >= 0 ? alts->items[delay_idx]->delay_stmt.expression : NULL;
 
             cg->entry_call_try_mode = true;
             Generate_Statement (first);
             uint32_t res = cg->entry_call_result_temp;
             cg->entry_call_try_mode = false;
             cg->entry_call_timeout_temp = 0;
+            cg->entry_call_delay_expr = NULL;
 
             uint32_t acc_l = cg->label_id++, not_l = cg->label_id++;
             LLVM_I1 accb = Emit_Boolean_Truth_Test (res);
