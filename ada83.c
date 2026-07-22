@@ -19409,6 +19409,26 @@ void Synthesize_Attribute_Wrapper (Symbol *binding,
   // Each parameter becomes an argument of the wrapped attribute call.
   Materialize_Wrapper_Profile (binding, formal,
                                &attribute_call->attribute.arguments);
+
+  // RM 12.3.6: a default subprogram given by an attribute (T'SUCC, T'PRED,
+  // T'IMAGE, ...) denotes the attribute's OWN operation, whose parameter and
+  // result subtypes are the base type — not the formal subprogram's declared
+  // (possibly constrained) subtype. Keeping the formal's subtype would
+  // range-check a base-valued argument or result against the constraint —
+  // e.g. SUCC(T'LAST) yields the value one past a constrained T (cc1302a).
+  // Widen the wrapper's scalar profile subtypes to their base accordingly.
+  for (uint32_t i = 0; i < binding->parameter_count; i++) {
+    Type_Info *pt = binding->parameters[i].param_type;
+    if (pt and Type_Is_Scalar (pt)) {
+      Type_Info *base = Type_Root (pt);
+      binding->parameters[i].param_type = base;
+      if (binding->parameters[i].param_sym)
+        binding->parameters[i].param_sym->type = base;
+    }
+  }
+  if (binding->return_type and Type_Is_Scalar (binding->return_type))
+    binding->return_type = Type_Root (binding->return_type);
+
   attribute_call->type = binding->return_type;
 
   Attach_Wrapper_Function_Body (binding, attribute_call, location);

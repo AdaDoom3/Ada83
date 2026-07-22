@@ -223,3 +223,27 @@ Now:              1920 pass / 36 fail / 20 skip.
 Groups brought to 100%: c83 (37->38), ce2 (109->118).
 c9 (tasking): 13 fails -> 4.
 Zero regressions at every step (per-test diffs).
+
+================================================================================
+FOLLOW-ON TARGET: cc (Chapter 12 generics) — next group with most fails (8)
+================================================================================
+Diverse root causes (like c9). Fixed so far:
+- cc1302a [ada83.c, RM 12.3.6]: a generic default subprogram given by an
+  attribute (WITH FUNCTION SUCC(X:T) RETURN T IS T'SUCC) denotes the attribute's
+  own operation, whose parameter/result subtypes are T'BASE, not the formal's
+  declared (constrained) subtype. The wrapper kept the formal's subtype, so
+  SUCC(T'LAST) — a base value one past a constrained T — was range-checked
+  against the constraint and raised CONSTRAINT_ERROR. Fix: widen the attribute
+  wrapper's scalar parameter/result subtypes to their base.
+
+Remaining cc fails (deep, diverse — honest):
+- cc1223a, cc1224a: CONSTRAINT_ERROR on formal fixed-point / array-type
+  operations inside a generic. Deep fixed-point-in-generics.
+- cc1226b: "=" on a formal nonlimited private type (INTEGER actual) — relies on
+  distinct uninitialised values; needs investigation.
+- cc1311b: a default SUBPROGRAM (named, not attribute) with different parameter
+  subtypes than the formal — RM 12.3.6 for named defaults (same principle as
+  cc1302a but a different wrapper path). Not yet attempted.
+- cc3012a: generic instances overloading "<" — wrong result then CONSTRAINT_ERROR.
+- cc3121a: segfault in a generic.
+- cc3123b: evaluation order of generic IN-parameter defaults (RM 12.3.1).
