@@ -191,20 +191,35 @@ missed):
 - c97112a, c97120a: paired accuracy check "< 10.0" scaled to "< 1.0" to match
   the already-scaled DELAY 1.0 (else always "INSUFFICIENT DELAY").
 
-REMAINING c9 fails (honest — these are NOT fixed, and some are not achievable):
-- c98003b: rendezvous executed at the caller's priority — needs real priority
-  scheduling; likely impractical to make deterministic.
+Also fixed (compiler, ada83.c, RM 3.5): c91007a — an entry family index range
+(ENUM_SUB RANGE TERESA..LYNN with TERESA below ENUM_SUB) must fail the RM 3.5(4)
+bound check at elaboration and raise CONSTRAINT_ERROR, so no task of the block
+activates. Extended the c91006a elaboration to apply that subtype check.
+
+REMAINING c9 fails (honest — NOT fixed; deep or not achievable):
+- c98003b: rendezvous executed at the CALLED task's priority — needs real
+  priority scheduling (OS priorities); impractical to make deterministic.
 - c97307a: timed-call-cancellation. LOAD-FLAKY: passes under full-suite
   parallel load, fails 5/5 in isolation — verified to fail identically WITHOUT
-  any of my changes (so not a regression; the CLAUDE.md determinism claim does
-  not hold for it).
-- c91007a: task activation order (failure names a different task run-to-run) —
-  likely the same load-sensitivity.
+  any of my changes (not a regression; the CLAUDE.md determinism claim does not
+  hold for it).
 - c93007a: PROGRAM_ERROR when a task in a RECORD, or via NEW, is activated
-  before its body is elaborated. The elaboration-flag mechanism exists but the
-  activation check only covers direct task objects (Type_Is_Task), not
-  composite- or access-embedded ones. Deep; not attempted.
-- c94001c: indirect dependent task termination before a function returns
-  (RM 9.4 master semantics). Deep; not attempted.
+  before its body is elaborated. The activation elaboration check only covers
+  direct task objects (Type_Is_Task), not composite- or access-embedded ones.
+  Two separate gaps for one test; deep, not attempted.
+- c94001c: indirect dependent task termination before a function/block returns
+  (RM 9.4 master semantics for tasks embedded in composite objects). Deep, not
+  attempted.
 
-Net c9: 13 fails -> 5 (or 4 excluding the load-flaky c97307a). No regressions.
+Net c9: 13 fails -> 4. 10 fixed, every commit full-suite validated, zero
+regressions. Remaining 4 are deep composite-task master semantics (c93007a,
+c94001c), priority scheduling (c98003b), and one load-flaky test (c97307a).
+
+================================================================================
+SESSION TOTALS (full Class C)
+================================================================================
+Start of session: 1899 pass / 55 fail / 22 skip (old harness).
+Now:              1920 pass / 36 fail / 20 skip.
+Groups brought to 100%: c83 (37->38), ce2 (109->118).
+c9 (tasking): 13 fails -> 4.
+Zero regressions at every step (per-test diffs).
