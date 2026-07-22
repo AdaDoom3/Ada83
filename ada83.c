@@ -13476,6 +13476,19 @@ double Eval_Const_Numeric_Impl (Syntax_Node *node) {
       if (Type_Is_Fixed_Point (ty)) {
         if (attribute_kind == ATTRIBUTE_DELTA)
           return ty->fixed.delta;
+        // T'MANTISSA is a static universal_integer (RM 3.5.10). Folding it lets
+        // a static expression built from it — notably T'LARGE's defining formula
+        // (2**MANTISSA - 1) * SMALL — evaluate exactly here rather than falling
+        // to a runtime path that computes 2**MANTISSA in bounded INTEGER and
+        // overflows for a fine-grained type like DURATION (MANTISSA = 52).
+        if (attribute_kind == ATTRIBUTE_MANTISSA) {
+          double small = Fixed_Small (ty);
+          double bound = fmax (fabs (Type_Bound_Float_Value (ty->low_bound)),
+                               fabs (Type_Bound_Float_Value (ty->high_bound)));
+          if (bound > 0 and small > 0)
+            return (double) Fixed_Point_Mantissa (bound, small);
+          return 0.0/0.0;  // non-static range: not a compile-time constant
+        }
         if (attribute_kind == ATTRIBUTE_SMALL or
             attribute_kind == ATTRIBUTE_LARGE or
             attribute_kind == ATTRIBUTE_SAFE_SMALL or
@@ -13590,6 +13603,37 @@ bool Eval_Const_Rational (Syntax_Node *node, Rational *out) {
         node->apply.prefix->symbol->kind == SYMBOL_TYPE)
         return Eval_Const_Rational (node->apply.arguments.items[0], out);
       return false;
+    case NK_ATTRIBUTE: {
+      // Fixed-point model attributes are static and EXACTLY rational (RM
+      // 3.5.10): T'SMALL is a power of two, T'MANTISSA an integer, T'LARGE the
+      // exact product (2**MANTISSA - 1) * SMALL. Folding them exactly here lets
+      // a static expression built from them fold too — the fold at the "/="
+      // comparison then avoids the runtime path, which computes 2**MANTISSA in
+      // bounded INTEGER and overflows for a fine type like DURATION (MANTISSA =
+      // 52). Only FIXED attributes fold: a floating type's model attributes
+      // carry base-type accuracy an exact rational would misrepresent (c35712a).
+      Type_Info *ty = node->attribute.prefix ? node->attribute.prefix->type : NULL;
+      if (not ty or not Type_Is_Fixed_Point (ty)) return false;
+      Attribute_Kind ak = node->attribute.kind;
+      if (ak != ATTRIBUTE_MANTISSA and ak != ATTRIBUTE_SMALL and
+          ak != ATTRIBUTE_LARGE) return false;
+      double small_d = Fixed_Small (ty);
+      double bound = fmax (fabs (Type_Bound_Float_Value (ty->low_bound)),
+                           fabs (Type_Bound_Float_Value (ty->high_bound)));
+      if (not (bound > 0 and small_d > 0)) return false;  // non-static range
+      int64_t mantissa = Fixed_Point_Mantissa (bound, small_d);
+      if (mantissa < 0 or mantissa > 62) return false;    // 2**mantissa must fit
+      if (ak == ATTRIBUTE_MANTISSA) { *out = Rational_From_Int (mantissa); return true; }
+      unsigned long long sn, sd;
+      Fixed_Small_As_Rational (small_d, &sn, &sd);
+      Rational small_q = Rational_Div (Rational_From_Int ((int64_t) sn),
+                                       Rational_From_Int ((int64_t) sd));
+      if (ak == ATTRIBUTE_SMALL) { *out = small_q; return true; }
+      // ATTRIBUTE_LARGE = (2**MANTISSA - 1) * SMALL
+      Rational two_pow = Rational_Pow (Rational_From_Int (2), (int) mantissa);
+      *out = Rational_Mul (Rational_Sub (two_pow, Rational_From_Int (1)), small_q);
+      return true;
+    }
     case NK_UNARY_OP: {
       Rational operand;
       if (not Eval_Const_Rational (node->unary.operand, &operand)) return false;
@@ -29909,6 +29953,24 @@ LLVM_Value Emit_Binary_Op_Predefined (Syntax_Node *node) {
 
   // Check if this is equality/inequality on composite types
   Type_Info *left_type = node->binary.left ? node->binary.left->type : NULL;
+
+  // A static universal_real arithmetic expression folds to an exact rational
+  // (RM 4.10). Emit the folded constant instead of generating operand code:
+  // the runtime path would compute an integer factor like (2**MANTISSA - 1) in
+  // bounded INTEGER and overflow for a fine fixed type (cc1223a: DURATION has
+  // MANTISSA = 52, so 2**MANTISSA does not fit Standard.Integer). Comparisons
+  // keep their own dedicated fold further below; this covers the arithmetic.
+  if ((node->binary.op == TK_STAR or node->binary.op == TK_SLASH or
+       node->binary.op == TK_PLUS or node->binary.op == TK_MINUS) and
+      Type_Is_Universal_Real (node->type)) {
+    Rational q;
+    if (Eval_Const_Rational (node, &q)) {
+      uint32_t r = Emit_Temp ();
+      Emit_Float_Constant (r, LLVM_Rep_Float (64), Rational_To_Double (q),
+                           "folded static universal_real");
+      return Val_Rep (r, LLVM_Rep_Float (64));
+    }
+  }
   if ((node->binary.op == TK_EQ or node->binary.op == TK_NE) and
     Type_Is_Composite (left_type)) {
 
