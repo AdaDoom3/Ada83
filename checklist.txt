@@ -227,23 +227,41 @@ Zero regressions at every step (per-test diffs).
 ================================================================================
 FOLLOW-ON TARGET: cc (Chapter 12 generics) — next group with most fails (8)
 ================================================================================
-Diverse root causes (like c9). Fixed so far:
+Diverse root causes (like c9). cc: 8 fails -> 3 fails. Fixed:
 - cc1302a [ada83.c, RM 12.3.6]: a generic default subprogram given by an
   attribute (WITH FUNCTION SUCC(X:T) RETURN T IS T'SUCC) denotes the attribute's
   own operation, whose parameter/result subtypes are T'BASE, not the formal's
-  declared (constrained) subtype. The wrapper kept the formal's subtype, so
-  SUCC(T'LAST) — a base value one past a constrained T — was range-checked
-  against the constraint and raised CONSTRAINT_ERROR. Fix: widen the attribute
-  wrapper's scalar parameter/result subtypes to their base.
+  declared (constrained) subtype. Fix: widen the attribute wrapper's scalar
+  parameter/result subtypes to their base.
+- cc1311b [RM 12.3.6, named defaults]: a default value used for an omitted
+  actual was stored with only a rep coercion — no subtype check. When the call
+  is serviced by a peeled actual subprogram whose parameter subtype is narrower
+  than the formal's, the actual's subtype governs. Fix: mirror the explicit-
+  actual checks in the default-fill path, keyed to the peeled symbol's profile.
+- cc3121a [RM 3.6.1/3.7]: arrays of discriminated records. Three bugs: the
+  inline per-element default-init ran for a dynamic-bounds (fat-pointer) array
+  and smashed the frame; the bounded-storage per-element init used a shallow
+  helper that skipped nested record components; and a nested component's
+  discriminant bound to an enclosing one was stored as static 0. Fixed all
+  three (keep discriminant bindings alive across the nested recursion, drop
+  before the constraint check).
+- cc3123b [RM 12.3(80)]: explicit generic actuals must be evaluated before any
+  default expression. Fix: two-pass binding elaboration — explicit actuals
+  first, then defaults, both in declaration order.
+- cc1223a [RM 3.5.10/4.10]: T'LARGE = (2**MANTISSA-1)*SMALL overflowed at
+  runtime for DURATION (MANTISSA=52) because the static universal expression
+  was lowered to bounded INTEGER. Fix: fold static universal_real arithmetic
+  (and the fixed-point model attributes MANTISSA/SMALL/LARGE) exactly.
 
-Remaining cc fails (deep, diverse — honest):
-- cc1223a, cc1224a: CONSTRAINT_ERROR on formal fixed-point / array-type
-  operations inside a generic. Deep fixed-point-in-generics.
+Remaining cc fails (deep, distinct):
+- cc1224a: generic formal ARRAY TYPES (FARR1..7) whose instance views lose their
+  index_type -> Array_Bound_LLVM_Rep can't derive a bound rep -> bad array copy
+  -> CONSTRAINT_ERROR at instantiation. Deep §16 formal-array-type resolution
+  (a bound-rep peel to the actual view was tried and does NOT fix it — the view
+  itself has no resolved index).
 - cc1226b: "=" on a formal nonlimited private type (INTEGER actual) — relies on
-  distinct uninitialised values; needs investigation.
-- cc1311b: a default SUBPROGRAM (named, not attribute) with different parameter
-  subtypes than the formal — RM 12.3.6 for named defaults (same principle as
-  cc1302a but a different wrapper path). Not yet attempted.
-- cc3012a: generic instances overloading "<" — wrong result then CONSTRAINT_ERROR.
-- cc3121a: segfault in a generic.
-- cc3123b: evaluation order of generic IN-parameter defaults (RM 12.3.1).
+  two DISTINCT uninitialised values comparing unequal (undefined behaviour), not
+  a real operator bug.
+- cc3012a: an explicit "<" for a derived type (via generic instance) must hide
+  the inherited predefined "<" (RM 8.3); we pick the predefined one. Plus a
+  CONSTRAINT_ERROR. Deep §11 name-resolution/visibility.
