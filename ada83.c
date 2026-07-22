@@ -2563,6 +2563,10 @@ struct Symbol {
                                        // indirect through it (RM 12.1.1)
   Syntax_Node *instance_actual;        // The resolved actual expression the
                                        // binding elaborates from
+  bool     instance_actual_is_default; // The binding elaborates from the
+                                       // formal's DEFAULT, not an explicit
+                                       // actual: RM 12.3(80) evaluates every
+                                       // explicit actual before any default
   bool     is_instance_wrapper;        // Synthesized instance-level wrapper
                                        // body for a non-plain formal-
                                        // subprogram actual ("/=" negation,
@@ -19755,6 +19759,13 @@ void Bind_Generic_Formals_To_Actuals (Symbol *instance_sym,
               binding->parent           = instance_sym;
               binding->is_package_level = true;
               binding->instance_actual  = actual_expr;
+              // RM 12.3(80): the elaboration order distinguishes an explicit
+              // actual from a defaulted one — record which this binding is.
+              binding->instance_actual_is_default =
+                (slot >= instance_sym->actual_binding_count) or
+                (instance_sym->actual_bindings[slot].actual_expr == NULL) or
+                (instance_sym->actual_bindings[slot].actual_expr ==
+                 formal->generic_object_param.default_expr);
               if (in_out) {
                 binding->is_instance_in_out_binding = true;
                 // RM 12.1.1: the binding renames the actual. Its global cell
@@ -49394,9 +49405,16 @@ static void Emit_Instance_Formal_Agreement_Checks (Symbol *inst_sym) {
 void Emit_Instance_Binding_Elaboration (Symbol *inst_sym) {
   Emit_Instance_Formal_Agreement_Checks (inst_sym);
   if (not inst_sym->scope) return;
+  // RM 12.3(80): every explicit generic actual is evaluated before any default
+  // expression. Walk the bindings twice in declaration order — explicit actuals
+  // (pass 0), then defaulted ones (pass 1) — so the side effects of the actual
+  // expressions and a default that references an earlier formal (cc3123b's
+  // GEN_INT2 := (F, GEN_INT1)) observe the required order.
+  for (int pass = 0; pass < 2; pass++)
   for (uint32_t i = 0; i < inst_sym->scope->symbol_count; i++) {
     Symbol *binding = inst_sym->scope->symbols[i];
     if (not binding or not binding->instance_actual) continue;
+    if (binding->instance_actual_is_default != (pass == 1)) continue;
     if (binding->is_instance_in_out_binding) {
       if (not binding->extern_emitted) {
         binding->extern_emitted = true;
