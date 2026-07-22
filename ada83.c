@@ -40305,7 +40305,12 @@ void Emit_Init_Record_Defaults (Type_Info *rec, uint32_t base) {
   Symbol *bound_discs[16]; uint32_t bound_count = 0;
   Emit_Apply_Component_Defaults (rec, base, -2, rec->record.has_disc_constraints,
                                  bound_discs, &bound_count, 16);
-  for (uint32_t i = 0; i < bound_count; i++) bound_discs[i]->disc_agg_temp = 0;
+  // Keep the discriminants bound (disc_agg_temp) through the nested-component
+  // recursion below: a subcomponent constrained by an enclosing discriminant
+  // (B : REC1 (D)) resolves its constraint through Emit_Disc_Constraint_Value,
+  // which reads the bound discriminant. Resetting the bindings before the
+  // recursion would leave that reference unbound and store a static 0 for the
+  // subcomponent discriminant instead of the enclosing value (cc3121a).
 
   for (uint32_t nci = 0; nci < rec->record.component_count; nci++) {
     Component_Info *ncomp = &rec->record.components[nci];
@@ -40330,6 +40335,11 @@ void Emit_Init_Record_Defaults (Type_Info *rec, uint32_t base) {
       }
     }
   }
+  // The nested recursion is done; drop the discriminant bindings before the
+  // constraint check below so it reads each discriminant's STORED runtime value
+  // (c37213d: an index check keyed on a defaulted discriminant must see the
+  // actual value, not the bound default).
+  for (uint32_t i = 0; i < bound_count; i++) bound_discs[i]->disc_agg_temp = 0;
 
   // RM 3.7.2: with the discriminants now stored (from the constraint or the
   // defaults just applied), check every discriminant-dependent component
@@ -46098,10 +46108,13 @@ void Emit_Bind_Bounded_Array_Storage (Symbol *sym, uint32_t *dim_lo,
   }
   // RM 3.6.1: an array object whose element type is a record carrying
   // discriminant or component defaults default-initializes EACH element,
-  // exactly as a standalone record object does (Emit_Apply_Component_Defaults).
+  // exactly as a standalone record object does (Emit_Init_Record_Defaults).
   // The alloca above is raw storage; loop over the element count applying the
   // record defaults at each element's address so e.g. a mutable record's
-  // discriminant reads its default rather than uninitialized memory.
+  // discriminant reads its default rather than uninitialized memory, and a
+  // nested record component's discriminant is bound from the enclosing one
+  // (cc3121a: REC2's B : REC1 (D) needs B.D set from D, which the shallow
+  // per-component pass does not reach).
   Type_Info *element_type = sym and sym->type ? sym->type->array.element_type
                                               : NULL;
   if (element_type and Type_Is_Record (element_type) and
@@ -46123,10 +46136,7 @@ void Emit_Bind_Bounded_Array_Storage (Symbol *sym, uint32_t *dim_lo,
                                                      index, element_size);
     uint32_t element_addr = Emit_Result_Instruction (
       "getelementptr i8, ptr %%t%u, i64 %%t%u\n", dp, byte_offset);
-    Symbol *seen[16]; uint32_t seen_count = 0;
-    Emit_Apply_Component_Defaults (element_type, element_addr, -2, false,
-                                   seen, &seen_count, 16);
-    for (uint32_t s = 0; s < seen_count; s++) seen[s]->disc_agg_temp = 0;
+    Emit_Init_Record_Defaults (element_type, element_addr);
     uint32_t next = Emit_Result_Instruction ("add i64 %%t%u, 1\n", index);
     Emit ("  store i64 %%t%u, ptr %%t%u\n", next, index_slot);
     Emit ("  br label %%L%u\n", loop_head);
@@ -47350,9 +47360,16 @@ void Generate_Object_Declaration (Syntax_Node *node) {
       // RM 3.7: a frame-allocated array whose element is a record with
       // component or discriminant defaults still needs each element
       // initialized — the alloca path below does this, so mirror it here.
+      // A dynamic-bounds array does NOT live inline in the frame: its slot is
+      // a fat pointer and its storage is bound later by the dynamic-bounds
+      // branch (Emit_Bind_Bounded_Array_Storage), which initializes each
+      // element itself. Running the inline init here would memset a statically
+      // guessed element count over the 16-byte fat-pointer slot and smash the
+      // frame (cc3121a: an ARRAY2 (IDENT_INT(6) .. 8) of a defaulted record).
       {
         Type_Info *fe = ty ? ty->array.element_type : NULL;
         if (not node->object_decl.init and is_constrained_array and array_count > 0 and
+            not Type_Has_Dynamic_Bounds (ty) and
             Type_Is_Record (fe) and Type_Has_Component_Defaults (fe) and elem_size > 0) {
           uint32_t fbase = Emit_Result_Instruction ("getelementptr i8, ptr %%");
           Emit_Symbol_Name (sym);
