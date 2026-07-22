@@ -33116,6 +33116,24 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
           args[p]  = Coerce_To_Rep (dv.reg, dv.rep, prep);
           slot_default_rep[p] = prep;
         }
+
+        // RM 12.3.6 / 6.4.1: a default value used for an omitted actual must,
+        // like an explicit actual, satisfy the ACTUAL subprogram's parameter
+        // subtype. For a generic formal subprogram or a renaming, that subtype
+        // lives on the peeled symbol (sym) and can differ from the view's
+        // declared subtype the default expression was written against —
+        // cc1311b defaults a value of the formal's subtype into an actual whose
+        // parameter subtype is narrower and expects CONSTRAINT_ERROR. Mirror
+        // the explicit-actual checks, keyed to sym's profile rather than pt.
+        if (p < sym->parameter_count and sym->parameters[p].param_type) {
+          Type_Info *actual_pt = sym->parameters[p].param_type;
+          LLVM_Rep drep = slot_default_rep[p];
+          args[p] = Emit_Constraint_Check_Val (
+                      (LLVM_Value){ args[p], drep }, actual_pt, pt).reg;
+          if (Type_Is_Access (actual_pt))
+            Emit_Access_Designated_Disc_Check (args[p], drep, actual_pt);
+          Emit_Record_Discriminant_Constraint_Checks (args[p], actual_pt);
+        }
       }
     }
     // Precompute the hidden 'CONSTRAINED flag (RM 3.7.4) for each by-reference
