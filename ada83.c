@@ -37436,6 +37436,21 @@ void Agg_Check_Choice_Index_Subtype (Aggregate_Emission_Context *context,
   Emit_Close_Null_Skip (skip);
 }
 
+// The index subtype governing dimension 1 of a multi-dimensional aggregate's
+// type, when the type records one: the unconstrained base's second index, or
+// the aggregate type's own when it is itself unconstrained. NULL when neither
+// records an index type (the caller falls back to the dimension bounds).
+static Type_Info *Aggregate_Inner_Index_Subtype (Type_Info *agg_type) {
+  Type_Info *base = agg_type->base_type;
+  if (Type_Is_Unconstrained_Array (base) and base->array.index_count > 1 and
+      base->array.indices and base->array.indices[1].index_type)
+    return base->array.indices[1].index_type;
+  if (not agg_type->array.is_constrained and agg_type->array.index_count > 1 and
+      agg_type->array.indices and agg_type->array.indices[1].index_type)
+    return agg_type->array.indices[1].index_type;
+  return NULL;
+}
+
 // Record a named choice's span so the runtime OTHERS fill can skip it.
 void Agg_Register_Covered_Span (Aggregate_Emission_Context *context,
                                 Aggregate_Operand low_choice, Aggregate_Operand high_choice) {
@@ -39135,17 +39150,21 @@ uint32_t Generate_Aggregate_Body (Syntax_Node *node) {
           // against the dim 1 index subtype and capture SSA values for the
           // fat pointer.
           int128_t inner_idx_sub_lo = inner_low, inner_idx_sub_hi = inner_high;
-          Type_Info *dim1_src =
-            (Type_Is_Unconstrained_Array (agg_type->base_type) and
-             agg_type->base_type->array.index_count > 1 and
-             agg_type->base_type->array.indices and
-             agg_type->base_type->array.indices[1].index_type) ? agg_type->base_type :
-            (not agg_type->array.is_constrained and agg_type->array.index_count > 1 and
-             agg_type->array.indices and agg_type->array.indices[1].index_type) ? agg_type
-            : NULL;
-          if (dim1_src) {
-            inner_idx_sub_lo = Type_Bound_Value (dim1_src->array.indices[1].index_type->low_bound);
-            inner_idx_sub_hi = Type_Bound_Value (dim1_src->array.indices[1].index_type->high_bound);
+          // A compile-time verdict (and the static-bound runtime checks below)
+          // is only honest when the subtype's bounds are compile-time known:
+          // Type_Bound_Value on a dynamic bound (SUBINT RANGE IDENT_INT(1) ..
+          // IDENT_INT(6), cc1224a) yields nothing meaningful and folded an
+          // unconditional raise for a legal aggregate. When dynamic, skip —
+          // the inner aggregate's own emission checks its choices against the
+          // subtype's runtime bounds (Agg_Check_Choice_Index_Subtype).
+          bool inner_sub_static = true;
+          Type_Info *inner_sub = Aggregate_Inner_Index_Subtype (agg_type);
+          if (inner_sub) {
+            inner_sub_static =
+              Type_Bound_Is_Compile_Time_Known (inner_sub->low_bound) and
+              Type_Bound_Is_Compile_Time_Known (inner_sub->high_bound);
+            inner_idx_sub_lo = Type_Bound_Value (inner_sub->low_bound);
+            inner_idx_sub_hi = Type_Bound_Value (inner_sub->high_bound);
           }
           Syntax_Node *inner_val_expr = NULL;
           uint32_t inner_lo_ssa = 0, inner_hi_ssa = 0;
@@ -39181,7 +39200,7 @@ uint32_t Generate_Aggregate_Body (Syntax_Node *node) {
               if (not ilo_expr and not ihi_expr) {
                 int128_t rlo = Static_Int_Value (qch->range.low);
                 int128_t rhi = Static_Int_Value (qch->range.high);
-                if (rlo <= rhi and
+                if (inner_sub_static and rlo <= rhi and
                   (rlo < inner_idx_sub_lo or rlo > inner_idx_sub_hi or
                    rhi < inner_idx_sub_lo or rhi > inner_idx_sub_hi)) {
                   Emit_Raise_And_Continue ("aggregate inner index check");
@@ -39193,13 +39212,14 @@ uint32_t Generate_Aggregate_Body (Syntax_Node *node) {
                   : Emit_Static_Int (Static_Int_Value (qch->range.high), bt).reg;
                 LLVM_I1 nc = Emit_Icmp ("sgt", bt, lo_v, hi_v);
                 uint32_t sk = Emit_Open_Skip_If (nc.reg);
-                Emit_Range_Check_With_Raise (lo_v,
-                  (int64_t)inner_idx_sub_lo, (int64_t)inner_idx_sub_hi,
-                  bt, "aggregate inner index subtype check");
-                Emit_Range_Check_With_Raise (hi_v,
-                  (int64_t)inner_idx_sub_lo, (int64_t)inner_idx_sub_hi,
-                  bt, "aggregate inner index subtype check");
-                Emit_Close_Null_Skip (sk);
+                if (inner_sub_static) {
+                  Emit_Range_Check_With_Raise (lo_v,
+                    (int64_t)inner_idx_sub_lo, (int64_t)inner_idx_sub_hi,
+                    bt, "aggregate inner index subtype check");
+                  Emit_Range_Check_With_Raise (hi_v,
+                    (int64_t)inner_idx_sub_lo, (int64_t)inner_idx_sub_hi,
+                    bt, "aggregate inner index subtype check");
+                }
 
                 // RM 4.3.2(6): for a CONSTRAINED type, an inner aggregate
                 // consisting of one named range must fit the inner
@@ -39229,6 +39249,7 @@ uint32_t Generate_Aggregate_Body (Syntax_Node *node) {
                       "inner named range vs constraint (RM 4.3.2)");
                   }
                 }
+                Emit_Close_Null_Skip (sk);
               }
             }
           }
@@ -39262,18 +39283,19 @@ uint32_t Generate_Aggregate_Body (Syntax_Node *node) {
             item->association.expression->kind == NK_AGGREGATE) {
           int128_t isl = Type_Bound_Value (dim_lo[1]);
           int128_t ish = Type_Bound_Value (dim_hi[1]);
-          if (Type_Is_Unconstrained_Array (agg_type->base_type) and
-            agg_type->base_type->array.index_count > 1 and
-            agg_type->base_type->array.indices and
-            agg_type->base_type->array.indices[1].index_type) {
-            isl = Type_Bound_Value (agg_type->base_type->array.indices[1].index_type->low_bound);
-            ish = Type_Bound_Value (agg_type->base_type->array.indices[1].index_type->high_bound);
-          } else if (not agg_type->array.is_constrained and
-                 agg_type->array.index_count > 1 and
-                 agg_type->array.indices and
-                 agg_type->array.indices[1].index_type) {
-            isl = Type_Bound_Value (agg_type->array.indices[1].index_type->low_bound);
-            ish = Type_Bound_Value (agg_type->array.indices[1].index_type->high_bound);
+          // Same honesty rule as the row fast path above: fold a verdict only
+          // from compile-time-known subtype bounds; a dynamic subtype's check
+          // is the inner aggregate's own runtime one.
+          bool inner_sub_static =
+            Type_Bound_Is_Compile_Time_Known (dim_lo[1]) and
+            Type_Bound_Is_Compile_Time_Known (dim_hi[1]);
+          Type_Info *inner_sub = Aggregate_Inner_Index_Subtype (agg_type);
+          if (inner_sub) {
+            inner_sub_static =
+              Type_Bound_Is_Compile_Time_Known (inner_sub->low_bound) and
+              Type_Bound_Is_Compile_Time_Known (inner_sub->high_bound);
+            isl = Type_Bound_Value (inner_sub->low_bound);
+            ish = Type_Bound_Value (inner_sub->high_bound);
           }
           Syntax_Node *ia = item->association.expression;
           for (uint32_t qi = 0; qi < ia->aggregate.items.count; qi++) {
@@ -39287,13 +39309,13 @@ uint32_t Generate_Aggregate_Body (Syntax_Node *node) {
                 Is_Static_Int_Node (qch->range.high)) {
                 int128_t rlo = Static_Int_Value (qch->range.low);
                 int128_t rhi = Static_Int_Value (qch->range.high);
-                if (rlo <= rhi and
+                if (inner_sub_static and rlo <= rhi and
                   (rlo < isl or rlo > ish or rhi < isl or rhi > ish)) {
                   Emit_Raise_And_Continue ("aggregate inner index check");
                 }
               } else if (Is_Static_Int_Node (qch)) {
                 int128_t v = Static_Int_Value (qch);
-                if (v < isl or v > ish) {
+                if (inner_sub_static and (v < isl or v > ish)) {
                   Emit_Raise_And_Continue ("aggregate inner index check");
                 }
               }
