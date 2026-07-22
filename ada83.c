@@ -1442,6 +1442,10 @@ struct Syntax_Node {
                                 // completes (select-alternative trailing stmts)
       Symbol       *entry_sym;  // Resolved entry symbol
       Syntax_Node  *guard;      // Select-alternative guard (WHEN cond), or NULL
+      uint32_t codegen_index_slot; // Codegen: a selective wait pre-evaluated the
+                                   // family index into this alloca (RM 9.7.1);
+                                   // accept generation reloads it instead of
+                                   // re-evaluating. 0 when not in a select.
     } accept_stmt;
 
     // when NK_SELECT =>
@@ -44276,7 +44280,13 @@ void Generate_Statement (Syntax_Node *node) {
         // For simple entries: entry_idx = base * 1000                                              
         //                                                                                          
         uint32_t acc_family = 0;
-        if (node->accept_stmt.index) {
+        if (node->accept_stmt.codegen_index_slot) {
+          // A selective wait already evaluated and range-checked this family
+          // index once (RM 9.7.1); reload it rather than evaluating again.
+          acc_family = Emit_Result_Instruction ("load %s, ptr %%t%u\n",
+             LLVM_Rep_To_String (Integer_Arith_Rep ()),
+             node->accept_stmt.codegen_index_slot);
+        } else if (node->accept_stmt.index) {
           LLVM_Value acc_family_v = Generate_Expression (node->accept_stmt.index);
           acc_family = Emit_Convert (acc_family_v.reg, acc_family_v.rep,
                                      Integer_Arith_Rep ()).reg;
@@ -44506,6 +44516,54 @@ void Generate_Statement (Syntax_Node *node) {
           Emit ("  store i8 %%t%u, ptr %%t%u\n", g, guard_slots[i]);
         }
 
+        // RM 9.7.1: the entry index of every OPEN accept alternative for an
+        // entry family is evaluated here — after all the guards and before any
+        // rendezvous is attempted — not lazily when that one alternative is
+        // finally selected (c97113a, c97115a: only the E1 caller rendezvouses,
+        // yet the other open families' indices must still be evaluated). Each
+        // open index is evaluated and range-checked once into an alloca that
+        // the accept generation reloads; a guarded index is evaluated only when
+        // its guard is open. A guarded accept alternative arrives wrapped in an
+        // NK_ASSOCIATION (guard, accept); an unguarded one is a bare NK_ACCEPT.
+        for (uint32_t i = 0; i < node->select_stmt.alternatives.count and
+             i < MAX_SELECT_GUARDS; i++) {
+          Syntax_Node *alt = node->select_stmt.alternatives.items[i];
+          Syntax_Node *accept = NULL;
+          if (alt and alt->kind == NK_ACCEPT) accept = alt;
+          else if (alt and alt->kind == NK_ASSOCIATION and
+                   alt->association.expression and
+                   alt->association.expression->kind == NK_ACCEPT)
+            accept = alt->association.expression;
+          if (not accept or not accept->accept_stmt.index) continue;
+
+          LLVM_Rep ar = Integer_Arith_Rep ();
+          uint32_t slot = Emit_Temp ();
+          Emit ("  %%t%u = alloca %s  ; open accept family index (RM 9.7.1)\n",
+             slot, LLVM_Rep_To_String (ar));
+          uint32_t skip_l = 0;
+          if (guard_slots[i]) {
+            uint32_t gv = Emit_Result_Instruction ("load i8, ptr %%t%u\n",
+                                                   guard_slots[i]);
+            LLVM_I1 open = Emit_Boolean_Truth_Test (gv);
+            uint32_t eval_l = cg->label_id++; skip_l = cg->label_id++;
+            Emit ("  br i1 %%t%u, label %%L%u, label %%L%u\n",
+               open.reg, eval_l, skip_l);
+            cg->block_terminated = true;
+            Emit_Label_Here (eval_l);
+          }
+          LLVM_Value iv = Generate_Expression (accept->accept_stmt.index);
+          uint32_t iv_reg = Emit_Convert (iv.reg, iv.rep, ar).reg;
+          Emit_Entry_Family_Index_Check (accept->accept_stmt.entry_sym, iv_reg);
+          Emit ("  store %s %%t%u, ptr %%t%u\n",
+             LLVM_Rep_To_String (ar), iv_reg, slot);
+          if (skip_l) {
+            Emit ("  br label %%L%u\n", skip_l);
+            cg->block_terminated = true;
+            Emit_Label_Here (skip_l);
+          }
+          accept->accept_stmt.codegen_index_slot = slot;
+        }
+
         // Delay alternative deadline (RM 9.7.1): every delay expression is
         // evaluated once, at the start of the selective wait; the budget is
         // the MINIMUM over the OPEN delay alternatives (closed guards do
@@ -44694,7 +44752,13 @@ void Generate_Statement (Syntax_Node *node) {
                 // Get entry index - combine base index with family index.
                 // Formula: entry_idx = base * 1000 + family_arg
                 uint32_t sel_family = 0;
-                if (alt->accept_stmt.index) {
+                if (alt->accept_stmt.codegen_index_slot) {
+                  // Pre-evaluated once, above, with all the other open indices
+                  // (RM 9.7.1); reload rather than re-evaluate.
+                  sel_family = Emit_Result_Instruction ("load %s, ptr %%t%u\n",
+                     LLVM_Rep_To_String (Integer_Arith_Rep ()),
+                     alt->accept_stmt.codegen_index_slot);
+                } else if (alt->accept_stmt.index) {
                   LLVM_Value sel_family_v = Generate_Expression (alt->accept_stmt.index);
                   sel_family = Emit_Convert (sel_family_v.reg, sel_family_v.rep,
                                              Integer_Arith_Rep ()).reg;
