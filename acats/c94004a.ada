@@ -30,7 +30,7 @@ PRAGMA ELABORATE (REPORT);
 PACKAGE BODY C94004A_PKG IS
 
      TASK BODY TT IS
-          I : INTEGER := IDENT_INT (120);
+          I : INTEGER := IDENT_INT (12);  -- TODO: acats-delay-deviation: before was 120
      BEGIN
           ACCEPT E;
           COMMENT ("DELAY LIBRARY TASK FOR TWO MINUTES");
