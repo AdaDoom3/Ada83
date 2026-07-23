@@ -21,31 +21,95 @@ WORKING RULES (from CLAUDE.md)
 - Correctness/quality is the metric; PASS deltas are noise mid-refactor.
 - Structural fixes over hacks; follow the flow upstream, don't patch the
   expander.
-- Delete old definitions first; compiler errors are the worklist.
-- Full Ada-convention names; spec/body split intact (section N declared in
-  spec block, defined in body block).
+- Full Ada-convention names; spec/body split intact.
 - Suite green is a landing constraint, not a direction.
 
-STATUS LEGEND:  [ ] todo   [~] in progress   [x] done   [-] not applicable
+STATUS LEGEND:  [ ] todo   [~] in progress   [x] done   [-] deferred
 
-PHASE 0 - BASELINE
-------------------
-[~] Build compiler clean (gcc -O3 -Wall: zero warnings)      -- clean
-[~] Full class B run -> baseline pass/fail list
-[ ] Triage failures into root-cause buckets (upstream causes, not
-    per-test symptoms)
+PROGRESS SNAPSHOT
+-----------------
+Baseline:  B 336/1350 (24%)   A 140/140   C 1968/1973 (5 skips)
+Current:   B 491/1350 (36%)   A 140/140   C 1973/1973 (100%)
 
-PHASE 1..N - ROOT-CAUSE BUCKETS (filled in after triage)
---------------------------------------------------------
-(to be populated)
+LANDED (by root cause, sequential through the groups)
+-----------------------------------------------------
+[x] Parser error recovery: statement/declaration-boundary resync, paren-list
+    recovery, stray END IF/LOOP/CASE/SELECT swallowing, reserved-word-as-
+    identifier consumption, progress guarantee in Parser_Synchronize (b2x++)
+[x] RM 2.3/2.4 lexical grammar: identifier underscores, numeric literal
+    validator (underscore/point/exponent/base/digit rules), separator
+    detection, control chars in comments/strings/char literals, string EOL,
+    %-string quotation rule, pragma () rejection (b22-b2a)
+[x] RM 5.1 pragma-only statement sequences (b28001f-q)
+[x] RM 8.3 homographs: Symbol_Add reports duplicates; use-visible imports
+    void vs direct homographs (RM 8.4); implicit declarations hidden;
+    instance placeholders/wrappers exempt; idempotent re-analysis of
+    object/type/package/subprogram/literal declarations (b83 family + C fixes)
+[x] RM 3.2.1 object initializer covering + RM 7.4.4 limited init +
+    RM 7.4.3 deferred constants + RM 3.2.2 number declarations (b32xxx)
+[x] RM 3.3.2 constraint-form gate (range/index/discriminant/digits/delta v.
+    type class, also through access and derived definitions, private views)
+    (b33201-203, b33202d/203d)
+[x] RM 3.6.1 index constraint needs unconstrained array; positional
+    discriminant form needs discriminated type (b33204a)
+[x] RM 3.3 circular type definitions (Type_Reaches, no more segfault)
+[x] RM 3.3.1 type name hidden in own definition; RM 3.8.1 no deriving from
+    incomplete; premature incomplete use in object decls; plain TYPE X;
+    now TYPE_INCOMPLETE (b33002a, b38105a)
+[x] RM 3.4/4.6 conversions: Conversion_Is_Legal (numeric/derivation/array
+    shape); scalar parent-derived implicit mixing rejected
+    (Covers_Only_Via_Derivation, named-step rule) (b34xxx explicit parts)
+[x] RM Annex A attribute prefix classes + 'BASE only as attribute prefix
+    (b35004a, b35501x, b35803a, b35a01a, b33301x, b36216a)
+[x] RM 3.5.1 duplicate enum literals (char literals case-sensitive)
+[x] RM 3.5.4 integer type bounds static+integer, integer context seeding;
+    Expression_Is_Static (RM 4.9) incl. operator function forms
+[x] RM 3.6/3.7 array index discrete, component constrained; record
+    component defaults typed; discriminants discrete type marks with
+    typed defaults (b36001a, b37004a, b37101a/104a/106a)
+[x] RM 3.9 basic declarations precede bodies (b39004a-i); rts/text_io and
+    rts/calendar restructured to comply
+[x] rts/system.ads NAME literal PRIORITY -> ADA83 (RM 8.3 violation)
+[x] RM 4.1.1 indexed components: arity per dimension + index type covering
+    (b41101a/c); A'RANGE(N) now yields dimension N's index type
+[x] RM 4.3/4.3.1 aggregate shape rules: OTHERS last and alone, positional
+    before named, one value per record component, no aggregates for
+    limited types (b43001m, b43002e-k)
+[x] rts/text_io.adb COUNT-vs-INTEGER comparisons made explicit (11 sites
+    of real type errors the lax resolver had been absorbing)
 
-LANDING
--------
-[ ] Full class B suite re-run: no regressions vs baseline, failures fixed
-[ ] Class A/C spot runs to confirm no collateral damage
-[ ] gcc -O3 -Wall clean
-[ ] Commit + push to claude/ada83-b-tests-refactor-q8715w
+OPEN (next in sequence)
+-----------------------
+[ ] Operator no-interpretation diagnosis (silent guess fallback in the
+    binary resolver): needs literal/aggregate re-resolution against
+    derived types first (c34001d class); the report was tried and pulled
+[ ] Index-type strictness incl. derivation-only covering: same blocker
+[ ] b34xxx implicit-conversion remainder (arrays/records strictness needs
+    faithful derived-op profiles for composites first; deferred after
+    c34005r/u segfault + c34006l regression with naive strictness)
+[ ] b32106a distinct anonymous array types per object (structural array
+    covering too permissive; needs array type identity by declaration)
+[ ] b36102a/103a/105a discrete range bound type agreement
+[ ] b36171c/e/h/i empty index constraints / boxes (parser)
+[ ] b37102a discriminant use in index constraints of components
+[ ] b37201-b37311 variant/discriminant constraint form details
+[ ] b38003-b38203 access constraint round 2, b38101x completion-required
+[ ] b41xxx names/prefixes, b43xxx aggregates, b44xxx expressions
+[ ] b45xxx operators (66 tests: relational result types, boolean ops,
+    universal fixed), needs strict STANDARD.BOOLEAN result modeling
+[ ] b48/b49 allocators/static expressions
+[ ] b5x statements (case completeness/choices biggest)
+[ ] b6x subprograms (parameter modes, conformance)
+[ ] b74xxx private types (48), b83/85/86 visibility remainder
+[ ] b91-97 tasking, ba/bc generics contract model, bd rep clauses
+[ ] Landing: full A/C/B run, zero regressions, gcc -O3 -Wall clean
 
 RUN LOG
 -------
-2026-07-23  baseline class B run started
+2026-07-23  baseline B 336; parser recovery + lexical batch -> 395
+2026-07-23  homographs + object-decl checks + rts PRIORITY fix -> 434
+2026-07-23  constraint gate + idempotent analysis + expanded-name overloads
+            -> 453; C suite reached 100% (1973/1973)
+2026-07-23  attributes/conversions/static rules/RM 3.9 -> 483; C 100% kept
+2026-07-23  indexed components, aggregate shape rules, A'RANGE(N) typing,
+            rts COUNT fixes -> 491; A and C fully green at stop point

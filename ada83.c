@@ -10363,6 +10363,16 @@ Type_Info *Resolve_Apply (Syntax_Node *node) {
         node->type = sm->type_character;
       }
 
+      /* RM 4.1.1: exactly one index value per dimension. */
+      uint32_t dims = indexed_type->kind == TYPE_ARRAY
+                        ? indexed_type->array.index_count
+                        : Type_Is_String (indexed_type) ? 1 : 0;
+      if (dims and arg_count != dims)
+        Report_Error (node->location,
+                      "indexed component has %u index value%s but the array has %u dimension%s",
+                      arg_count, arg_count == 1 ? "" : "s",
+                      dims, dims == 1 ? "" : "s");
+
       if (indexed_type->kind == TYPE_ARRAY and indexed_type->array.indices) {
         for (uint32_t i = 0; i < arg_count and
              i < indexed_type->array.index_count; i++) {
@@ -10376,6 +10386,14 @@ Type_Info *Resolve_Apply (Syntax_Node *node) {
             Symbol *lit = Symbol_Find_By_Type (arg->string_val.text, idx_t);
             if (lit) { arg->symbol = lit; arg->type = lit->type; }
           }
+          /* RM 4.1.1: each index expression has the index's base type.
+             Only the plainly-uncovered case is reported: loop variables
+             from 'RANGE and re-resolvable literals still carry
+             approximate types here. */
+          if (arg and arg->type and idx_t and
+              not Type_Covers (idx_t, arg->type))
+            Report_Error (arg->location,
+                          "index value has the wrong type for dimension %u", i + 1);
         }
       }
     }
@@ -11764,9 +11782,15 @@ void Analyze_Binary (Syntax_Node *n) {
 
   Cancel_Use_Visible_Homographs (out);
 
-  if (out->count == 0 and not is_concat)
+  if (out->count == 0 and not is_concat) {
+    /* No interpretation admits these operands.  Reporting here is the
+       eventual goal, but literals and aggregates re-resolve against
+       derived types after this point, so a diagnosis now would still
+       reject legal programs (c34001d and kin).  The guessed
+       interpretation keeps downstream resolution from cascading. */
     Interp_Add (out, NULL, is_cmp ? sm->type_boolean : L->type,
                 L ? L->type : NULL, R ? R->type : NULL, 0);
+  }
 }
 
 void Analyze_Unary (Syntax_Node *n) {
@@ -12323,6 +12347,29 @@ Type_Info *Resolve_Expression (Syntax_Node *node) {
             }
             break;
 
+          case ATTRIBUTE_RANGE:
+            /* The range of dimension N is a range of that dimension's
+               index type — a FOR loop over A'RANGE(N) iterates in that
+               type, not in INTEGER. */
+            if (Type_Is_Array_Like (prefix_type)) {
+              uint32_t dim = 0;
+              if (node->attribute.arguments.count > 0) {
+                Syntax_Node *dim_arg = node->attribute.arguments.items[0];
+                if (dim_arg and dim_arg->kind == NK_INTEGER)
+                  dim = (uint32_t)(dim_arg->integer_lit.value - 1);
+              }
+              if (prefix_type->kind == TYPE_ARRAY and
+                  prefix_type->array.indices and
+                  dim < prefix_type->array.index_count and
+                  prefix_type->array.indices[dim].index_type)
+                node->type = prefix_type->array.indices[dim].index_type;
+              else
+                node->type = sm->type_integer;
+            } else {
+              node->type = prefix_type ? prefix_type : sm->type_integer;
+            }
+            break;
+
           case ATTRIBUTE_VAL:
           case ATTRIBUTE_SUCC:
           case ATTRIBUTE_PRED: {
@@ -12421,6 +12468,73 @@ Type_Info *Resolve_Expression (Syntax_Node *node) {
         bool is_record_agg = Type_Is_Record (agg_type);
         uint32_t positional_idx = 0;
         int32_t selected_variant = -2;
+
+        /* RM 4.3: the shape rules every aggregate obeys regardless of its
+           type — OTHERS comes last and alone, and no positional
+           association may follow a named one.  RM 7.4.4 adds that a
+           limited type has no aggregates at all. */
+        if (agg_type and Type_Limited_View_Active (agg_type))
+          Report_Error (node->location,
+                        "aggregates are not available for a limited type");
+        {
+          bool named_seen = false;
+          for (uint32_t i = 0; i < node->aggregate.items.count; i++) {
+            Syntax_Node *item = node->aggregate.items.items[i];
+            bool is_named = item->kind == NK_ASSOCIATION;
+            bool has_others = false;
+            if (is_named)
+              for (uint32_t c = 0; c < item->association.choices.count; c++)
+                if (item->association.choices.items[c]->kind == NK_OTHERS)
+                  has_others = true;
+            if (has_others) {
+              if (i + 1 != node->aggregate.items.count)
+                Report_Error (item->location,
+                              "OTHERS must be the last association of the aggregate");
+              if (item->association.choices.count > 1)
+                Report_Error (item->location,
+                              "OTHERS must appear alone in its choice list");
+            }
+            if (is_named) named_seen = true;
+            else if (named_seen)
+              Report_Error (item->location,
+                            "positional association cannot follow a named association");
+          }
+        }
+        /* RM 4.3.1: a record component receives a value exactly once. */
+        if (is_record_agg) {
+          for (uint32_t i = 0; i < node->aggregate.items.count; i++) {
+            Syntax_Node *item = node->aggregate.items.items[i];
+            if (item->kind != NK_ASSOCIATION) continue;
+            for (uint32_t c = 0; c < item->association.choices.count; c++) {
+              Syntax_Node *choice = item->association.choices.items[c];
+              if (choice->kind != NK_IDENTIFIER) continue;
+              for (uint32_t k = 0; k < i; k++) {
+                Syntax_Node *prior = node->aggregate.items.items[k];
+                if (prior->kind != NK_ASSOCIATION) continue;
+                for (uint32_t pc = 0; pc < prior->association.choices.count; pc++) {
+                  Syntax_Node *prior_choice = prior->association.choices.items[pc];
+                  if (prior_choice->kind == NK_IDENTIFIER and
+                      Slice_Equal_Ignore_Case (prior_choice->string_val.text,
+                                               choice->string_val.text))
+                    Report_Error (choice->location,
+                                  "component '%.*s' already has a value in this aggregate",
+                                  (int) choice->string_val.text.length,
+                                  choice->string_val.text.data);
+                }
+              }
+              for (uint32_t pc = 0; pc < c; pc++) {
+                Syntax_Node *sibling = item->association.choices.items[pc];
+                if (sibling->kind == NK_IDENTIFIER and
+                    Slice_Equal_Ignore_Case (sibling->string_val.text,
+                                             choice->string_val.text))
+                  Report_Error (choice->location,
+                                "component '%.*s' already has a value in this aggregate",
+                                (int) choice->string_val.text.length,
+                                choice->string_val.text.data);
+              }
+            }
+          }
+        }
         for (uint32_t i = 0; i < node->aggregate.items.count; i++) {
           Syntax_Node *item = node->aggregate.items.items[i];
 
