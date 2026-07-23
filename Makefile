@@ -1,54 +1,59 @@
-# Makefile for Ada83 Compiler
 
 CC = gcc
 CFLAGS = -O3 -Wall
-LLC = llc
-ADA83 = ./ada83
+LIBS = -lm -lpthread
 
-RUNTIME_LIBS = -lm
+ifeq ($(OS),Windows_NT)
+BLOB = tools/win64/llvmc_blob.o
+else
+BLOB =
+endif
 
-.PHONY: all clean clean-test compiler help
+all: ada83 provision-llvm
 
-all: compiler
+ada83: ada83.c $(BLOB)
+	$(CC) $(CFLAGS) -o ada83 ada83.c $(BLOB) $(LIBS) -march=native
 
-compiler: ada83
+tools/win64/LLVM-C.dll: tools/win64/LLVM-C.dll.zst
+	zstd -d -f $< -o $@
 
-# Build the compiler
-ada83: ada83.c
-	$(CC) $(CFLAGS) -o ada83 ada83.c -lm -lpthread -march=native
+tools/win64/llvmc_blob.o: tools/win64/LLVM-C.dll
+	cd tools/win64 && objcopy -I binary -O pe-x86-64 LLVM-C.dll llvmc_blob.o
 
-# Pattern rules for compiling Ada programs
-%.ll: %.adb $(ADA83)
-	$(ADA83) $< > $@
+SUDO := $(shell [ $$(id -u) -eq 0 ] || echo sudo)
+provision-llvm:
+ifeq ($(OS),Windows_NT)
+	@:
+else
+	-@if ldconfig -p 2>/dev/null | grep -q libLLVM; then \
+	  :; \
+	elif command -v apt-get >/dev/null 2>&1; then \
+	  echo "libLLVM not found - installing (apt)"; \
+	  $(SUDO) apt-get install -y --no-install-recommends llvm; \
+	elif command -v dnf >/dev/null 2>&1; then \
+	  echo "libLLVM not found - installing (dnf)"; \
+	  $(SUDO) dnf install -y llvm-libs; \
+	elif command -v pacman >/dev/null 2>&1; then \
+	  echo "libLLVM not found - installing (pacman)"; \
+	  $(SUDO) pacman -S --noconfirm llvm-libs; \
+	elif command -v zypper >/dev/null 2>&1; then \
+	  echo "libLLVM not found - installing (zypper)"; \
+	  $(SUDO) zypper install -y libLLVM; \
+	elif command -v apk >/dev/null 2>&1; then \
+	  echo "libLLVM not found - installing (apk)"; \
+	  $(SUDO) apk add llvm-libs; \
+	else \
+	  echo "libLLVM not found and no known package manager;"; \
+	  echo "install your distribution's llvm package for --native support"; \
+	fi
+endif
 
-%.s: %.ll
-	$(LLC) $< -o $@
-
-%.exe: %.s
-	$(CC) $< $(RUNTIME_LIBS) -o $@
-
-# Clean build artifacts (NOT source files!)
 clean:
-	rm -f ada83 *.o *.ll *.s *.exe
-	rm -f a.out core
+	rm -f ada83 *.o *.ll *.s *.exe a.out core
+	rm -f tools/win64/LLVM-C.dll tools/win64/llvmc_blob.o
 	rm -rf test_results acats_logs acats/report.ll
-	@echo "Clean complete"
 
-# Clean only test artifacts (keep compiler)
 clean-test:
 	rm -rf test_results acats_logs acats/report.ll
-	@echo "Test artifacts cleaned"
 
-# Help target
-help:
-	@echo "Ada83 Compiler Makefile"
-	@echo ""
-	@echo "Targets:"
-	@echo "  make              - Build compiler"
-	@echo "  make clean        - Clean build artifacts"
-	@echo "  make <prog>.exe   - Compile Ada program <prog>.adb to executable"
-	@echo ""
-	@echo "Examples:"
-	@echo "  make program.exe   # Compile program.adb to executable"
-
-.SECONDARY:  # Keep intermediate files
+.PHONY: all provision-llvm clean clean-test

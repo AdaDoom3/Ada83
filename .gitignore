@@ -12,6 +12,7 @@ test_results/
 acats_logs/
 test_summary.txt
 test_output.txt
+X*.TMP
 *.ll
 !rts/rt.ll
 !rts/rt_wrappers.ll
@@ -27,3 +28,6 @@ T*.ll
 vgcore.*
 ada83.c.pre-propagation
 test_derived_runtime
+tools/win64/LLVM-C.dll
+tools/win64/llvmc_blob.o
+!tools/win64/LLVM-C.dll.zst

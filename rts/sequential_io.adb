@@ -45,7 +45,6 @@ package body SEQUENTIAL_IO is
       Name     : String(1..1024);
    end record;
    FCBs     : array(1..99) of FCB;
-   Next_FCB : Integer := 1;
 
    function Is_Open_Index(Idx : Integer) return Boolean is
    begin
@@ -81,9 +80,15 @@ package body SEQUENTIAL_IO is
       Mode_Str : String(1..4);
    begin
       if Is_Open_Index(FILE.Handle) then raise STATUS_ERROR; end if;
-      if Next_FCB > 99 then raise USE_ERROR; end if;
+      -- Reuse a closed slot: a CLOSE/DELETE frees its FCB, so USE_ERROR is
+      -- raised only when all slots are actually open (RM 14.2.1), not after
+      -- 99 cumulative opens as a monotonic counter would (ce2117a).
+      Idx := 0;
+      for J in FCBs'Range loop
+         if not FCBs(J).Is_Open then Idx := J; exit; end if;
+      end loop;
+      if Idx = 0 then raise USE_ERROR; end if;
       if not Creating and then NAME'Length = 0 then raise NAME_ERROR; end if;
-      Idx := Next_FCB;
 
       if Creating then
          Mode_Str := ('w', '+', 'b', Character'Val(0));   -- truncate, read/write
@@ -109,7 +114,6 @@ package body SEQUENTIAL_IO is
 
       FCBs(Idx).Mode    := MODE;
       FCBs(Idx).Is_Open := True;
-      Next_FCB := Next_FCB + 1;
       FILE := (Handle => Idx);
    end Attach;
 

@@ -39,6 +39,7 @@ set -euo pipefail
 
 NPROC=${JOBS:-${NPROC:-$(nproc 2>/dev/null || echo 4)}}
 TEST_TIMEOUT=${TEST_TIMEOUT:-30}
+LINK_TIMEOUT=${LINK_TIMEOUT:-20}
 BASELINE=${BASELINE:-acats.baseline}
 START_MS=$(date +%s%3N)
 
@@ -137,6 +138,44 @@ run_in_lib(){
       exec timeout "$secs" lli "$@" "$ROOT/$RESULTS_DIR/$n.bc" )
 }
 
+# Whole-program link of MAIN_LL + surviving fragments + report.ll into $n.bc.
+# llvm-link is CPU-trivial, but first-touch disk under N-way parallelism can
+# blow a tight cap, so the timeout is generous; a kill (124/137) is reported as
+# LINK_STATUS=timeout, kept distinct from a genuine unresolved-symbol error
+# (LINK_STATUS=unresolved), so load artifacts can never masquerade as
+# missing-runtime "skips". Returns llvm-link's own status.
+link_program(){
+    local n=$1 rc=0
+    timeout "$LINK_TIMEOUT" llvm-link -o "$RESULTS_DIR/$n.bc" "$MAIN_LL" \
+        ${LINK_AFTER_MAIN[@]+"${LINK_AFTER_MAIN[@]}"} acats/report.ll \
+        2>"$LOGS_DIR/$n.link" || rc=$?
+    case $rc in
+        0)       LINK_STATUS=ok ;;
+        124|137) LINK_STATUS=timeout ;;
+        *)       LINK_STATUS=unresolved ;;
+    esac
+    return $rc
+}
+
+# ACATS Chapter-14 file continuity: a reader test (ce2108b, ce3112b, …) opens an
+# external file left behind by a creator it names with LEGAL_FILE_NAME(_,
+# "CExxx"). The ACATS model runs the creator first in the SAME directory; our
+# per-test CWD isolation would otherwise hide the file. Compile, link, and run
+# each named creator INTO THE READER'S OWN lib dir so its files are waiting when
+# the reader opens them. Best-effort: a creator that will not build just leaves
+# the reader to report the missing file as it would have without this step.
+run_continuity_creators(){
+    local reader=$1 lib=$2 self=${1,,} c
+    for c in $(grep -oiE 'legal_file_name[ ]*\([^)]*"ce[0-9a-z]+"' "acats/$reader.ada" 2>/dev/null \
+               | grep -oiE '"ce[0-9a-z]+"' | tr -d '"' | tr 'A-Z' 'a-z' | sort -u); do
+        [[ $c == "$self" || ! -f acats/$c.ada ]] && continue
+        ./ada83 "acats/$c.ada" -o "$lib/$c.ll" >/dev/null 2>&1 || continue
+        timeout "$LINK_TIMEOUT" llvm-link -o "$lib/$c.bc" "$lib/$c.ll" \
+            acats/report.ll >/dev/null 2>&1 || continue
+        ( cd "$lib" && exec timeout "$TEST_TIMEOUT" lli "$c.bc" ) >/dev/null 2>&1 || true
+    done
+}
+
 run_one(){
     local f=$1 n=$(basename "$1" .ada) q=${1##*/}; q=${q:0:1}
     # Fragments (end in digit, not 'm') are compiled by their family's main.
@@ -161,10 +200,12 @@ run_one(){
             echo "c fail $n OBSOLETE:$(head -1 $LOGS_DIR/$n.bind 2>/dev/null|cut -c1-50)"
             return
         fi
-        if ! timeout 2 llvm-link -o $RESULTS_DIR/$n.bc "$MAIN_LL" ${LINK_AFTER_MAIN[@]+"${LINK_AFTER_MAIN[@]}"} acats/report.ll 2>$LOGS_DIR/$n.link; then
-            echo "c skip $n BIND:unresolved_symbols"
+        if ! link_program "$n"; then
+            [[ $LINK_STATUS == timeout ]] && echo "c fail $n TIMEOUT:llvm-link_exceeded_${LINK_TIMEOUT}s" \
+                                          || echo "c skip $n BIND:unresolved_symbols"
             return
         fi
+        run_continuity_creators "$n" "$RESULTS_DIR/$n.lib"
         local rc=0
         run_in_lib "$TEST_TIMEOUT" "$n" > $LOGS_DIR/$n.out 2>&1 || rc=$?
         if ((rc==124 || rc==137)); then
@@ -199,8 +240,10 @@ run_one(){
             echo "a skip $n COMPILE[$COMPILE_FAILED]:$(head -1 $LOGS_DIR/$n.err 2>/dev/null|cut -c1-50)"; return; fi
         if [[ -n $BIND_FAILED ]]; then
             echo "a fail $n OBSOLETE:$(head -1 $LOGS_DIR/$n.bind 2>/dev/null|cut -c1-50)"; return; fi
-        if ! timeout 2 llvm-link -o $RESULTS_DIR/$n.bc "$MAIN_LL" ${LINK_AFTER_MAIN[@]+"${LINK_AFTER_MAIN[@]}"} acats/report.ll 2>$LOGS_DIR/$n.link; then
-            echo "a skip $n BIND:unresolved_symbols"; return; fi
+        if ! link_program "$n"; then
+            [[ $LINK_STATUS == timeout ]] && echo "a fail $n TIMEOUT:llvm-link_exceeded_${LINK_TIMEOUT}s" \
+                                          || echo "a skip $n BIND:unresolved_symbols"
+            return; fi
         local rc=0
         run_in_lib "$TEST_TIMEOUT" "$n" > $LOGS_DIR/$n.out 2>&1 || rc=$?
         if ((rc==124 || rc==137)); then
@@ -236,8 +279,10 @@ run_one(){
             echo "d skip $n COMPILE[$COMPILE_FAILED]:$(head -1 $LOGS_DIR/$n.err 2>/dev/null|cut -c1-50)"; return; fi
         if [[ -n $BIND_FAILED ]]; then
             echo "d fail $n OBSOLETE:$(head -1 $LOGS_DIR/$n.bind 2>/dev/null|cut -c1-50)"; return; fi
-        if ! timeout 2 llvm-link -o $RESULTS_DIR/$n.bc "$MAIN_LL" ${LINK_AFTER_MAIN[@]+"${LINK_AFTER_MAIN[@]}"} acats/report.ll 2>/dev/null; then
-            echo "d skip $n BIND"; return; fi
+        if ! link_program "$n"; then
+            [[ $LINK_STATUS == timeout ]] && echo "d fail $n TIMEOUT:llvm-link_exceeded_${LINK_TIMEOUT}s" \
+                                          || echo "d skip $n BIND"
+            return; fi
         if run_in_lib "$TEST_TIMEOUT" "$n" > $LOGS_DIR/$n.out 2>&1 && grep -q PASSED $LOGS_DIR/$n.out; then
             echo "d pass $n PASSED"
         else
@@ -249,8 +294,10 @@ run_one(){
             echo "e skip $n COMPILE[$COMPILE_FAILED]:$(head -1 $LOGS_DIR/$n.err 2>/dev/null|cut -c1-50)"; return; fi
         if [[ -n $BIND_FAILED ]]; then
             echo "e skip $n BIND_REJECT:$(head -1 $LOGS_DIR/$n.bind 2>/dev/null|cut -c1-50)"; return; fi
-        if ! timeout 2 llvm-link -o $RESULTS_DIR/$n.bc "$MAIN_LL" ${LINK_AFTER_MAIN[@]+"${LINK_AFTER_MAIN[@]}"} acats/report.ll 2>/dev/null; then
-            echo "e skip $n BIND"; return; fi
+        if ! link_program "$n"; then
+            [[ $LINK_STATUS == timeout ]] && echo "e fail $n TIMEOUT:llvm-link_exceeded_${LINK_TIMEOUT}s" \
+                                          || echo "e skip $n BIND"
+            return; fi
         run_in_lib "$TEST_TIMEOUT" "$n" > $LOGS_DIR/$n.out 2>&1 || true
         if grep -q "TENTATIVELY PASSED" $LOGS_DIR/$n.out 2>/dev/null; then
             echo "e pass $n INSPECT:requires_manual_verification"
@@ -266,12 +313,14 @@ run_one(){
                 echo "l pass $n BIND_REJECT:$(head -1 $LOGS_DIR/$n.bind 2>/dev/null|cut -c1-40)"
                 return
             fi
-            if timeout 2 llvm-link -o $RESULTS_DIR/$n.bc "$MAIN_LL" ${LINK_AFTER_MAIN[@]+"${LINK_AFTER_MAIN[@]}"} acats/report.ll 2>$LOGS_DIR/$n.link; then
+            if link_program "$n"; then
                 if run_in_lib 1 "$n" > $LOGS_DIR/$n.out 2>&1; then
                     echo "l fail $n WRONG_EXEC:should_not_execute"
                 else
                     echo "l pass $n BIND_REJECT:execution_blocked"
                 fi
+            elif [[ $LINK_STATUS == timeout ]]; then
+                echo "l fail $n TIMEOUT:llvm-link_exceeded_${LINK_TIMEOUT}s"
             else
                 echo "l pass $n LINK_REJECT:binding_failed_as_expected"
             fi
@@ -285,8 +334,8 @@ run_one(){
 }
 ROOT=$PWD
 export ROOT
-export -f run_one gather_files compile_set run_in_lib pct
-export START_MS TEST_TIMEOUT
+export -f run_one gather_files compile_set run_in_lib link_program run_continuity_creators pct
+export START_MS TEST_TIMEOUT LINK_TIMEOUT
 
 # Outer per-test cap (defense in depth): a hung test can never hang the suite,
 # even if an inner `timeout` is bypassed by a runaway grandchild. On a

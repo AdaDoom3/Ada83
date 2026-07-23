@@ -1,90 +1,144 @@
 # Ada83 Compiler
 
-Single-file Ada 83 (ANSI/MIL-STD-1815A) compiler targeting LLVM IR.
+Single-file Ada 83 (ANSI/MIL-STD-1815A) compiler with an LLVM backend.
 
-## Prerequisites
-
-Build the compiler:
-
-- **`gcc`** — the compiler is a single C file built with `-march=native -lm -lpthread`.
-  Clang works too (`make CC=clang`).
-- **GNU `make`**.
-- A 64-bit host with `__int128` support (x86-64 or ARM64).
-
-Run compiled Ada programs and the ACATS test suite (LLVM ≥ 14 recommended):
-
-- **`lli`** — LLVM IR interpreter / JIT used to execute `.ll` and `.bc` files.
-- **`llvm-link`** — links the program's `.ll` with `acats/report.ll` and any
-  runtime packages.
-- **`llc`** — only needed if you go through native assembly (`make %.exe`).
-
-On Debian/Ubuntu: `apt install build-essential llvm` (provides `lli`,
-`llvm-link`, `llc`).
-On Arch:           `pacman -S base-devel llvm`.
-On macOS:          `brew install llvm` (then ensure `$(brew --prefix llvm)/bin`
-is on `PATH`).
-
-Test harness (`run_acats.sh`) additionally needs: **`bash`**, GNU **`xargs`**,
-**`timeout`**, **`bc`**, **`nproc`**, and standard POSIX utilities (`grep`,
-`sort`, `head`, `cut`, `basename`). All ship with `coreutils` /
-`findutils` / `bc` on Linux; on macOS install GNU versions
-(`brew install coreutils findutils bc`) or expect minor harness breakage.
-
-Quick check that everything is on `PATH`:
-
-```sh
-gcc --version && lli --version && llvm-link --version && llc --version
-```
+The compiler is one C file that builds with nothing but a C compiler. It
+emits textual LLVM IR by default, and with `--native` it finishes the whole
+pipeline itself — parse, optimize, lower to a host object, link — through a
+copy of libLLVM it locates and loads **at run time**. LLVM is never a
+build-time dependency.
 
 ## Building
 
 ```sh
-make all
+make
 ```
+
+That needs only:
+
+- **`gcc`** or **`clang`** (`make CC=clang`) — the compiler is a single C
+  file built with `-O3 -march=native -lm -lpthread`.
+- **GNU `make`**.
+- A 64-bit host with `__int128` support (x86-64 or AArch64).
+
+On Linux, `make` also provisions the system libLLVM used by `--native`
+if it is missing (probing `apt`, `dnf`, `pacman`, `zypper`, `apk`). This
+step failing is fine — the compiler builds and works without LLVM; only
+`--native` needs it, and it prints an actionable hint when the library
+is absent. On Windows (MSYS2), `make` instead embeds the vendored
+libLLVM from `tools/win64/` — see the platform notes.
 
 ## Usage
 
+### Source to executable in one step
+
 ```
-./ada83 file.ada -o output.ll          # compile one file
-./ada83 file.ada                       # output to stdout
+./ada83 --native program.ada -o program
+./program
+./ada83 --native main.ada library.ll -o main   # extra .ll modules are
+                                               # linked in-process
+```
+
+`--native` runs the full pipeline in-process: the emitted IR is parsed,
+optimized (`default<O2>`), and lowered to a host object file through
+LLVM's C API, then linked into an executable by the first system C
+compiler found (`$CC`, `cc`, `clang`, `gcc` — linking one object file is
+the only step delegated, because lld has no stable C API and every
+development machine has a `cc`). No intermediate files are left behind.
+
+How the backend finds LLVM, in probe order:
+
+1. `ADA83_LLVM_LIB` — explicit path to a libLLVM shared library.
+2. **Windows**: a copy embedded in `ada83.exe` itself (see below), then
+   `LLVM-C.dll` next to the executable.
+3. The system library: `libLLVM.so` and its versioned sonames (LLVM 17+)
+   on Linux, `libLLVM.dylib` from Homebrew or the Xcode Command Line
+   Tools on macOS.
+
+LLVM-C is a stable ABI, so the compiler declares the handful of entry
+points it needs itself and `dlopen`s whatever major version the host has
+— which is why none of this is needed at build time.
+
+### Textual IR (the default)
+
+```
+./ada83 file.ada -o output.ll          # compile one file to LLVM IR
+./ada83 file.ada                       # IR to stdout
 ./ada83 a.ada b.ada c.ada              # parallel compile (multi-file)
 ./ada83 -I /extra/path file.ada        # add include search path
+./ada83 -g file.ada                    # annotate IR with emitter source sites
+```
+
+The textual pipeline is `.ada` → `.ll` → link → execute, using external
+LLVM tools if you have them:
+
+```
+lli program.ll                                        # interpret / JIT
+llc program.ll -o program.s && cc program.s -lm -lpthread -o program
+llvm-link -o all.bc program.ll rts/report.ll && lli all.bc   # extra .ll libs
 ```
 
 ### Include path auto-discovery
 
-The compiler automatically adds these directories to the include search
-path — no `-I` flags are needed for the common case:
+WITH'd units are located and compiled automatically — no `-I` needed for
+the common case. Search order: explicit `-I` paths, then `<exe_dir>/rts`
+(the runtime library, resolved relative to the `ada83` binary), the input
+file's directory, and `.`.
 
-1. `<exe_dir>/rts` — the runtime library, located relative to the `ada83`
-   binary (resolved via `/proc/self/exe`).
-2. The directory containing the input file (e.g. compiling `acats/foo.ada`
-   adds `acats/`).
-3. `.` — the current working directory.
+## Platform notes
 
-Explicit `-I` paths are searched first, before the auto-discovered ones.
+### Windows
 
-### Running programs
+`make` under MSYS2 produces a fully standalone `ada83.exe`: the
+repository vendors upstream MSYS2's libLLVM — unmodified, recompressed
+alone so only the one required file is carried (provenance and checksum
+in `tools/win64/README.md`) — and the build decompresses and embeds it
+as a binary blob automatically. On first `--native` use the blob is
+extracted once — size-tagged, atomically — into `%LOCALAPPDATA%\ada83`
+and loaded from there. (Extract-and-load is deliberate: manually mapping
+a DLL from memory bypasses the Windows loader's TLS, dependency, and
+unwind handling.) Shipping `LLVM-C.dll` next to `ada83.exe` also works —
+`LoadLibrary` searches the executable's directory first.
 
-The compilation pipeline is: `.ada` -> `.ll` (LLVM IR) -> link -> execute.
+Native links of *emitted programs* need `Synchronization.lib` — the
+specialized rendezvous wait parks on `WaitOnAddress`/`WakeByAddressAll`.
+This is automatic everywhere it can be: `--native` passes it to the
+link itself, and MSVC-style linkers (lld-link, link.exe) honor the
+`/DEFAULTLIB` directive embedded in the emitted IR. Only a manual MinGW
+GNU ld link needs the explicit `-lsynchronization` (GNU ld ignores the
+embedded directive). `lli` needs nothing — the symbols
+resolve from kernelbase in-process. The rest of the runtime rides
+winpthreads (MSYS2/MinGW).
 
-```
-./ada83 program.ada -o program.ll
-lli program.ll                         # interpret directly
-# or:
-llc program.ll -o program.s && gcc program.s -lm -o program
-```
+### macOS
 
-Programs that WITH library packages need linking:
+`--native` uses the Homebrew or Xcode Command Line Tools libLLVM
+(probed automatically); the final link uses the system `cc`, which every
+Mac with CLT has.
 
-```
-llvm-link -o program.bc program.ll rts/report.ll
-lli program.bc
-```
+### Linux
+
+`make` provisions libLLVM through the distribution's package manager if
+missing. Everything else is stock: `cc`, `libm`, `libpthread`.
+
+## The tasking runtime
+
+Programs with tasks get a rendezvous runtime emitted into the module
+(`linkonce_odr`, so multi-module links merge cleanly). It is dispatched
+at compiler build time for the build host, like the SIMD fast paths:
+
+- **Linux x86-64 / AArch64**: a completion wait spins briefly — PAUSE /
+  YIELD between probes — then parks on a private futex keyed to the
+  rendezvous record's own completion word; completion wakes exactly that
+  waiter.
+- **Windows x86-64 / AArch64**: the same spin phase, parking via
+  `WaitOnAddress` / `WakeByAddressAll`.
+- **Every other host**: a portable pthreads mutex/condvar path with
+  identical semantics.
 
 ## Testing
 
-Run the ACATS (Ada Compiler Validation Capability) test suite:
+Run the ACATS (Ada Compiler Validation Capability) conformance suite:
 
 ```
 bash run_acats.sh g a       # class A (acceptance) tests
@@ -94,6 +148,12 @@ bash run_acats.sh q c32     # just group c32
 bash run_acats.sh f         # full suite (all classes)
 NPROC=4 bash run_acats.sh f # limit parallelism
 ```
+
+The harness executes tests under `lli`, so it needs external LLVM tools:
+`lli`, `llvm-link`, and **`bash`**, GNU **`xargs`**, **`timeout`**,
+**`bc`**, **`nproc`** plus standard POSIX utilities. On Debian/Ubuntu:
+`apt install llvm`; on macOS: `brew install llvm coreutils findutils bc`
+(and put `$(brew --prefix llvm)/bin` on `PATH`).
 
 ### ACATS delay deviation (temporary, development only)
 
