@@ -21,11 +21,12 @@ That needs only:
 - **GNU `make`**.
 - A 64-bit host with `__int128` support (x86-64 or AArch64).
 
-`make` also runs a best-effort `make install-llvm`, which provisions the
-system libLLVM used by `--native` if it is missing (probes `apt`, `dnf`,
-`pacman`, `zypper`, `apk`). This step failing is fine — the compiler
-builds and works without LLVM; only `--native` needs it, and it prints an
-actionable hint when the library is absent.
+On Linux, `make` also provisions the system libLLVM used by `--native`
+if it is missing (probing `apt`, `dnf`, `pacman`, `zypper`, `apk`). This
+step failing is fine — the compiler builds and works without LLVM; only
+`--native` needs it, and it prints an actionable hint when the library
+is absent. On Windows (MSYS2), `make` instead embeds the vendored
+libLLVM from `tools/win64/` — see the platform notes.
 
 ## Usage
 
@@ -34,6 +35,8 @@ actionable hint when the library is absent.
 ```
 ./ada83 --native program.ada -o program
 ./program
+./ada83 --native main.ada library.ll -o main   # extra .ll modules are
+                                               # linked in-process
 ```
 
 `--native` runs the full pipeline in-process: the emitted IR is parsed,
@@ -99,10 +102,11 @@ unwind handling.) Shipping `LLVM-C.dll` next to `ada83.exe` also works —
 
 Native links of *emitted programs* need `Synchronization.lib` — the
 specialized rendezvous wait parks on `WaitOnAddress`/`WakeByAddressAll`.
-This is automatic everywhere it can be: MSVC-style linkers (lld-link,
-link.exe) honor the `/DEFAULTLIB` directive embedded in the emitted IR,
-and the Makefile's `RUNTIME_LIBS` adds `-lsynchronization` for MinGW's
-GNU ld, which ignores that directive. `lli` needs nothing — the symbols
+This is automatic everywhere it can be: `--native` passes it to the
+link itself, and MSVC-style linkers (lld-link, link.exe) honor the
+`/DEFAULTLIB` directive embedded in the emitted IR. Only a manual MinGW
+GNU ld link needs the explicit `-lsynchronization` (GNU ld ignores the
+embedded directive). `lli` needs nothing — the symbols
 resolve from kernelbase in-process. The rest of the runtime rides
 winpthreads (MSYS2/MinGW).
 
