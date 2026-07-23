@@ -33651,6 +33651,10 @@ entry_path:
           entry_flag_count++;
     uint32_t block_slots = param_count + entry_flag_count;
 
+    // The parameter block (and every argument temp built into it) lives
+    // only until the copy-backs below finish; scope it so an entry call
+    // inside a loop does not grow the frame every iteration.
+    uint32_t entry_sp = Emit_Result_Instruction ("call ptr @llvm.stacksave.p0()\n");
     uint32_t param_block = Emit_Temp ();
     if (block_slots > 0) {
       Emit ("  %%t%u = alloca [%u x i64]  ; entry call parameters\n",
@@ -33999,6 +34003,7 @@ entry_path:
          LLVM_Rep_To_String (out_actuals[k].rep), narrowed,
          out_actuals[k].address);
     }
+    Emit ("  call void @llvm.stackrestore.p0(ptr %%t%u)\n", entry_sp);
     return NO_VALUE;
   }
 
@@ -44769,6 +44774,14 @@ void Generate_Statement (Syntax_Node *node) {
         bool has_delay = false;
         uint32_t delay_label = 0;
 
+        // Every execution of a selective wait allocas bookkeeping (guard
+        // slots, family indices, delay budget, the open-entry list); scope
+        // it so a server loop does not grow its frame each iteration. All
+        // re-entrant paths rejoin at done_label, where the frame pointer is
+        // restored; exits that leave the frame entirely (EXIT, abort
+        // epilogue, exceptions) do not re-execute the select.
+        uint32_t select_sp = Emit_Result_Instruction ("call ptr @llvm.stacksave.p0()\n");
+
         // Conditional entry call (`select CALL; else S;`) or timed entry call
         // (`select CALL; or delay D; S;`) — RM 9.7.2/9.7.3. The first
         // alternative is an entry call (not accept/delay/terminate). Emit the
@@ -45280,8 +45293,12 @@ void Generate_Statement (Syntax_Node *node) {
                 // (releasing inner terminate alternatives), join dependents,
                 // leave the records.
                 uint32_t cmp = Emit_Result_Instruction ("getelementptr i8, ptr %%__self_tcb, i64 24\n");
+                Emit ("  call i32 @pthread_mutex_lock(ptr @__rv_mutex)\n");
                 Emit ("  store i8 1, ptr %%t%u  ; completed (terminate)\n",
                    cmp);
+                Emit ("  call void @__ada_release_callers(ptr %%__self_tcb)\n");
+                Emit ("  call i32 @pthread_cond_broadcast(ptr @__term_cond)\n");
+                Emit ("  call i32 @pthread_mutex_unlock(ptr @__rv_mutex)\n");
                 Emit_Master_Cleanup_For_Return ();
                 Emit ("  call void @__ada_pop_handler()\n");
                 Emit ("  ret ptr null\n");
@@ -45385,6 +45402,7 @@ void Generate_Statement (Syntax_Node *node) {
             Emit ("  store i8 0, ptr %%t%u  ; no longer at terminate\n", atc);
           }
         }
+        Emit ("  call void @llvm.stackrestore.p0(ptr %%t%u)\n", select_sp);
         #undef MAX_SELECT_GUARDS
       }
       break;
@@ -50640,8 +50658,15 @@ void Generate_Task_Body (Syntax_Node *node) {
   // handled — callers get TASKING_ERROR from here on; TERMINATED (TCB+57,
   // stored by the wrapper) follows the dependent waits in Emit_Master_Exit.
   Emit_Label_Here (body_done);
+  Emit ("  call i32 @pthread_mutex_lock(ptr @__rv_mutex)\n");
   Emit ("  %%__cmp_slot = getelementptr i8, ptr %%__self_tcb, i64 24\n");
   Emit ("  store i8 1, ptr %%__cmp_slot  ; completed\n");
+  // RM 9.5(16): completed means callers get TASKING_ERROR — release the
+  // parked ones NOW, before the dependent joins below (a dependent calling
+  // back would otherwise deadlock the join, c95040c).
+  Emit ("  call void @__ada_release_callers(ptr %%__self_tcb)\n");
+  Emit ("  call i32 @pthread_cond_broadcast(ptr @__term_cond)\n");
+  Emit ("  call i32 @pthread_mutex_unlock(ptr @__rv_mutex)\n");
   Emit_Master_Exit (master);  // RM 9.7.1 + 9.4
   Emit ("  ret ptr null\n");
 
@@ -52784,6 +52809,17 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   Emit ("declare i32 @pthread_mutex_unlock(ptr)\n");
   Emit ("declare i32 @pthread_cond_wait(ptr, ptr)\n");
   Emit ("declare i32 @pthread_cond_timedwait(ptr, ptr, ptr)\n");
+  // Stack scoping for statements that alloca per execution (entry-call
+  // parameter blocks, selective-wait bookkeeping): a loop around them must
+  // not grow the frame each iteration.
+  Emit ("declare ptr @llvm.stacksave.p0()\n");
+  Emit ("declare void @llvm.stackrestore.p0(ptr)\n");
+#if defined(__linux__) and (defined(SIMD_X86_64) or defined(SIMD_ARM64))
+  Emit ("declare i64 @syscall(i64, ...)\n");
+#endif
+#ifdef SIMD_X86_64
+  Emit ("declare void @llvm.x86.sse2.pause()\n");
+#endif
   Emit ("declare i32 @pthread_cond_signal(ptr)\n");
   Emit ("declare i32 @pthread_cond_broadcast(ptr)\n");
   Emit ("declare i32 @pthread_key_create(ptr, ptr)\n");
@@ -53611,6 +53647,140 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   Emit ("  ret void\n");
   Emit ("}\n\n");
 
+  // ── Rendezvous wait/wake primitives — §18-style host dispatch ─────────
+  // Chosen when the COMPILER is built, exactly as the SIMD tiers are: the
+  // emitted runtime targets the build host. On Linux/x86-64 and
+  // Linux/AArch64 a completion wait runs a bounded spin — PAUSE (x86) or
+  // YIELD (ARM) between probes, covering the short accept-body window with
+  // no syscall — then parks on a private futex keyed to the completion
+  // word itself, and the completer wakes exactly that waiter. Every other
+  // host takes the portable pthreads path over @__rv_mutex/@__term_cond.
+  //
+  // Conventions: __ada_wait_word REQUIRES @__rv_mutex NOT held (the
+  // portable version blocks on it); __ada_wake_word runs UNDER the lock
+  // and only issues the direct wake — the existing @__term_cond broadcast
+  // at each completion site remains the portable wake channel.
+#ifdef SIMD_X86_64
+  Emit ("define linkonce_odr void @__ada_cpu_relax() alwaysinline {\n");
+  Emit ("  call void @llvm.x86.sse2.pause()\n");
+  Emit ("  ret void\n");
+  Emit ("}\n\n");
+#elif defined(SIMD_ARM64)
+  Emit ("define linkonce_odr void @__ada_cpu_relax() alwaysinline {\n");
+  Emit ("  call void asm sideeffect \"yield\", \"~{memory}\"()\n");
+  Emit ("  ret void\n");
+  Emit ("}\n\n");
+#else
+  Emit ("define linkonce_odr void @__ada_cpu_relax() alwaysinline {\n");
+  Emit ("  ret void\n");
+  Emit ("}\n\n");
+#endif
+
+#if defined(__linux__) and (defined(SIMD_X86_64) or defined(SIMD_ARM64))
+#ifdef SIMD_X86_64
+  #define ADA_SYS_FUTEX "202"
+#else
+  #define ADA_SYS_FUTEX "98"
+#endif
+  // FUTEX_WAIT_PRIVATE = 128, FUTEX_WAKE_PRIVATE = 129. The wait re-checks
+  // the word before every park (futex itself re-checks atomically in the
+  // kernel), so a wake between probe and park is never lost.
+  Emit ("define linkonce_odr void @__ada_wait_word(ptr %%w, i32 %%expected) {\n");
+  Emit ("entry:\n");
+  Emit ("  br label %%outer\n");
+  Emit ("outer:\n");
+  Emit ("  br label %%spin\n");
+  Emit ("spin:\n");
+  Emit ("  %%i = phi i32 [ 0, %%outer ], [ %%i2, %%again ]\n");
+  Emit ("  %%v = load atomic i32, ptr %%w acquire, align 4\n");
+  Emit ("  %%done = icmp ne i32 %%v, %%expected\n");
+  Emit ("  br i1 %%done, label %%out, label %%pause\n");
+  Emit ("pause:\n");
+  Emit ("  call void @__ada_cpu_relax()\n");
+  Emit ("  %%i2 = add i32 %%i, 1\n");
+  Emit ("  %%more = icmp ult i32 %%i2, 256\n");
+  Emit ("  br i1 %%more, label %%again, label %%park\n");
+  Emit ("again:\n");
+  Emit ("  br label %%spin\n");
+  Emit ("park:\n");
+  Emit ("  %%exp64 = sext i32 %%expected to i64\n");
+  Emit ("  %%_rc = call i64 (i64, ...) @syscall(i64 " ADA_SYS_FUTEX ", ptr %%w, i64 128, i64 %%exp64, ptr null)\n");
+  Emit ("  br label %%outer\n");
+  Emit ("out:\n");
+  Emit ("  ret void\n");
+  Emit ("}\n\n");
+
+  Emit ("define linkonce_odr void @__ada_wake_word(ptr %%w) {\n");
+  Emit ("  %%_rc = call i64 (i64, ...) @syscall(i64 " ADA_SYS_FUTEX ", ptr %%w, i64 129, i64 2147483647, ptr null)\n");
+  Emit ("  ret void\n");
+  Emit ("}\n\n");
+#undef ADA_SYS_FUTEX
+#else
+  Emit ("define linkonce_odr void @__ada_wait_word(ptr %%w, i32 %%expected) {\n");
+  Emit ("entry:\n");
+  Emit ("  call i32 @pthread_mutex_lock(ptr @__rv_mutex)\n");
+  Emit ("  br label %%loop\n");
+  Emit ("loop:\n");
+  Emit ("  %%v = load atomic i32, ptr %%w acquire, align 4\n");
+  Emit ("  %%done = icmp ne i32 %%v, %%expected\n");
+  Emit ("  br i1 %%done, label %%out, label %%wait\n");
+  Emit ("wait:\n");
+  Emit ("  call i32 @pthread_cond_wait(ptr @__term_cond, ptr @__rv_mutex)\n");
+  Emit ("  br label %%loop\n");
+  Emit ("out:\n");
+  Emit ("  call i32 @pthread_mutex_unlock(ptr @__rv_mutex)\n");
+  Emit ("  ret void\n");
+  Emit ("}\n\n");
+
+  // Portable wake rides the completion sites' @__term_cond broadcast.
+  Emit ("define linkonce_odr void @__ada_wake_word(ptr %%w) {\n");
+  Emit ("  ret void\n");
+  Emit ("}\n\n");
+#endif
+
+  // RM 9.10 / RM 9.5: a dying task releases every caller still parked on
+  // one of its rendezvous — queued calls never accepted, and calls taken
+  // into a rendezvous that will now never complete — with TASKING_ERROR
+  // bridged into the record. Runs UNDER @__rv_mutex; the caller's own
+  // broadcast (or wake) follows at the call site.
+  Emit ("define linkonce_odr void @__ada_release_callers(ptr %%tcb) {\n");
+  Emit ("entry:\n");
+  Emit ("  %%te = ptrtoint ptr @__exc.tasking_error to i64\n");
+  Emit ("  %%qhp = getelementptr ptr, ptr %%tcb, i64 5\n");
+  Emit ("  %%svp = getelementptr i8, ptr %%tcb, i64 88\n");
+  Emit ("  br label %%qloop\n");
+  Emit ("qloop:\n");
+  Emit ("  %%q = load ptr, ptr %%qhp\n");
+  Emit ("  %%qend = icmp eq ptr %%q, null\n");
+  Emit ("  br i1 %%qend, label %%sloop, label %%qrel\n");
+  Emit ("qrel:\n");
+  Emit ("  %%qnxp = getelementptr ptr, ptr %%q, i64 4\n");
+  Emit ("  %%qnx = load ptr, ptr %%qnxp\n");
+  Emit ("  store ptr %%qnx, ptr %%qhp\n");
+  Emit ("  %%qep = getelementptr i64, ptr %%q, i64 5\n");
+  Emit ("  store i64 %%te, ptr %%qep\n");
+  Emit ("  %%qcp = getelementptr i8, ptr %%q, i64 24\n");
+  Emit ("  store atomic i32 1, ptr %%qcp release, align 4\n");
+  Emit ("  call void @__ada_wake_word(ptr %%qcp)\n");
+  Emit ("  br label %%qloop\n");
+  Emit ("sloop:\n");
+  Emit ("  %%s = load ptr, ptr %%svp\n");
+  Emit ("  %%send = icmp eq ptr %%s, null\n");
+  Emit ("  br i1 %%send, label %%done, label %%srel\n");
+  Emit ("srel:\n");
+  Emit ("  %%snxp = getelementptr ptr, ptr %%s, i64 4\n");
+  Emit ("  %%snx = load ptr, ptr %%snxp\n");
+  Emit ("  store ptr %%snx, ptr %%svp\n");
+  Emit ("  %%sep = getelementptr i64, ptr %%s, i64 5\n");
+  Emit ("  store i64 %%te, ptr %%sep\n");
+  Emit ("  %%scp = getelementptr i8, ptr %%s, i64 24\n");
+  Emit ("  store atomic i32 1, ptr %%scp release, align 4\n");
+  Emit ("  call void @__ada_wake_word(ptr %%scp)\n");
+  Emit ("  br label %%sloop\n");
+  Emit ("done:\n");
+  Emit ("  ret void\n");
+  Emit ("}\n\n");
+
   // Exception handling: raise
   Emit ("define linkonce_odr void @__ada_raise(i64 %%exc_id) {\n");
   Emit ("  %%xk = load i32, ptr @__exc_key\n");
@@ -53738,7 +53908,8 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   Emit ("  br i1 %%was, label %%release, label %%done\n");
   Emit ("release:\n");
   Emit ("  %%cf = getelementptr i8, ptr %%prv, i64 24\n");
-  Emit ("  store i8 1, ptr %%cf  ; rv complete: releases the blocked caller\n");
+  Emit ("  store atomic i32 1, ptr %%cf release, align 4  ; rv complete: releases the blocked caller\n");
+  Emit ("  call void @__ada_wake_word(ptr %%cf)\n");
   Emit_Void_Function_Epilogue (true);
 
   // Abort a task (RM 9.10): make it (and its dependents) abnormal. This ONLY
@@ -53805,6 +53976,7 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   Emit ("  store i8 1, ptr %%2  ; mark completed\n");
   Emit ("  %%3 = getelementptr i8, ptr %%tcb, i64 57\n");
   Emit ("  store i8 1, ptr %%3  ; mark terminated (dependents awaited)\n");
+  Emit ("  call void @__ada_release_callers(ptr %%tcb)\n");
   Emit ("  %%pp = getelementptr i8, ptr %%tcb, i64 59\n");
   Emit ("  %%p = load i8, ptr %%pp\n");
   Emit ("  %%waspassive = icmp ne i8 %%p, 0\n");
@@ -53825,7 +53997,7 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   // task is created during elaboration but activated later, at the enclosing
   // master's `begin`). The thread handle (TCB+16) is left null; an unactivated
   // task therefore has a null handle and is skipped by the join.
-  // TCB layout (88 bytes, calloc-zeroed):
+  // TCB layout (96 bytes, calloc-zeroed):
   //   0  func           8  parent_frame   16 thread_handle  24 completed (i8)
   //   32 master_done_ptr 40 entry_queue (FIFO RV list head)
   //   48 waiting_entry (i64: entry index this task is blocked at an accept for,
@@ -53850,12 +54022,16 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   //      accept alternatives' encoded entry indices for the current
   //      selective wait, closed slots holding -1. Frame-local storage of
   //      the select; null and meaningless unless waiting_entry is -2.)
+  //   88 serving_rv (head of the rendezvous records this task has taken
+  //      into rendezvous and not yet completed, linked through rv+32 —
+  //      free after the dequeue. A dying task completes each with
+  //      TASKING_ERROR so its callers never park forever, RM 9.10.)
   // Offset 32 holds the enclosing MASTER RECORD ({ deps, prev, done_flag,
   //   owner_tcb, awake_count }), not the bare flag.
   // Per-task queue → per-entry FIFO without cross-task interference (RM 9.5).
   Emit ("define linkonce_odr ptr @__ada_task_create(ptr %%task_func, ptr %%parent_frame, ptr %%master) {\n");
   Emit ("entry:\n");
-  Emit ("  %%tcb = call ptr @calloc (i64 1, i64 88)\n");
+  Emit ("  %%tcb = call ptr @calloc (i64 1, i64 96)\n");
   Emit ("  store ptr %%task_func, ptr %%tcb\n");
   Emit ("  %%1 = getelementptr ptr, ptr %%tcb, i64 1\n");
   Emit ("  store ptr %%parent_frame, ptr %%1\n");
@@ -53912,6 +54088,7 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   Emit ("  store i8 1, ptr %%cs  ; completed, never activated\n");
   Emit ("  %%as = getelementptr i8, ptr %%tcb, i64 56\n");
   Emit ("  store i8 1, ptr %%as\n");
+  Emit ("  call void @__ada_release_callers(ptr %%tcb)\n");
   Emit ("  call i32 @pthread_cond_broadcast(ptr @__term_cond)\n");
   Emit ("  call i32 @pthread_mutex_unlock(ptr @__rv_mutex)\n");
   Emit_Void_Function_Epilogue (true);
@@ -54395,8 +54572,10 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   Emit ("  call void @__ada_flag_complete(ptr %%df)  ; master complete (unwind)\n");
   Emit ("  br label %%complete_pass\n");
   // Pass 1: complete never-activated dependents so blocked callers get
-  // TASKING_ERROR instead of deadlocking the joins below.
+  // TASKING_ERROR instead of deadlocking the joins below. Under
+  // @__rv_mutex — the marking and the caller release mutate shared state.
   Emit ("complete_pass:\n");
+  Emit ("  call i32 @pthread_mutex_lock(ptr @__rv_mutex)\n");
   Emit ("  %%head = load ptr, ptr %%cur\n");
   Emit ("  br label %%cloop\n");
   Emit ("cloop:\n");
@@ -54414,6 +54593,7 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   Emit ("  store i8 1, ptr %%ccmp  ; completed without activation (RM 9.3)\n");
   Emit ("  %%cterm = getelementptr i8, ptr %%ctcb, i64 57\n");
   Emit ("  store i8 1, ptr %%cterm  ; and terminated\n");
+  Emit ("  call void @__ada_release_callers(ptr %%ctcb)\n");
   Emit ("  br label %%cstep\n");
   Emit ("cstep:\n");
   Emit ("  %%cnp = getelementptr ptr, ptr %%cnode, i64 1\n");
@@ -54421,6 +54601,8 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   Emit ("  br label %%cloop\n");
   // Pass 2: join the activated dependents (idempotent; null handles skip).
   Emit ("join_pass:\n");
+  Emit ("  call i32 @pthread_cond_broadcast(ptr @__term_cond)\n");
+  Emit ("  call i32 @pthread_mutex_unlock(ptr @__rv_mutex)\n");
   Emit ("  br label %%jloop\n");
   Emit ("jloop:\n");
   Emit ("  %%jnode = phi ptr [ %%head, %%join_pass ], [ %%jnext, %%jbody ]\n");
@@ -54625,7 +54807,7 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   Emit ("  %%pp = getelementptr ptr, ptr %%rv, i64 2\n");
   Emit ("  store ptr %%params, ptr %%pp\n");
   Emit ("  %%cfp = getelementptr i8, ptr %%rv, i64 24\n");
-  Emit ("  store i8 0, ptr %%cfp\n");
+  Emit ("  store i32 0, ptr %%cfp  ; completion word\n");
   Emit ("  %%nxp = getelementptr ptr, ptr %%rv, i64 4\n");
   Emit ("  store ptr null, ptr %%nxp\n");
   Emit ("  %%exp0 = getelementptr i64, ptr %%rv, i64 5\n");
@@ -54735,8 +54917,8 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   Emit ("  store i64 %%ns2, ptr %%nsp\n");
   Emit ("  br label %%wloop\n");
   Emit ("wloop:\n");
-  Emit ("  %%c = load i8, ptr %%cfp\n");
-  Emit ("  %%ok = icmp ne i8 %%c, 0\n");
+  Emit ("  %%c = load atomic i32, ptr %%cfp acquire, align 4\n");
+  Emit ("  %%ok = icmp ne i32 %%c, 0\n");
   Emit ("  br i1 %%ok, label %%wdone, label %%chkdead\n");
   Emit ("chkdead:\n");
   Emit ("  %%dead1 = call i1 @__ada_task_dead(ptr %%task)\n");
@@ -54744,7 +54926,9 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   Emit ("wblock:\n");
   Emit ("  br i1 %%zerob, label %%uwait, label %%twait\n");
   Emit ("uwait:\n");
-  Emit ("  call i32 @pthread_cond_wait(ptr @__term_cond, ptr @__rv_mutex)\n");
+  Emit ("  call i32 @pthread_mutex_unlock(ptr @__rv_mutex)\n");
+  Emit ("  call void @__ada_wait_word(ptr %%cfp, i32 0)\n");
+  Emit ("  call i32 @pthread_mutex_lock(ptr @__rv_mutex)\n");
   Emit ("  br label %%wloop\n");
   Emit ("twait:\n");
   Emit ("  %%rc = call i32 @pthread_cond_timedwait(ptr @__term_cond, ptr @__rv_mutex, ptr %%ts)\n");
@@ -54760,8 +54944,8 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   Emit ("  ret i8 0\n");
   // Acceptor holds the record: committed — completion or death only.
   Emit ("cwloop:\n");
-  Emit ("  %%c2 = load i8, ptr %%cfp\n");
-  Emit ("  %%done2 = icmp ne i8 %%c2, 0\n");
+  Emit ("  %%c2 = load atomic i32, ptr %%cfp acquire, align 4\n");
+  Emit ("  %%done2 = icmp ne i32 %%c2, 0\n");
   Emit ("  br i1 %%done2, label %%wdone, label %%cdead\n");
   Emit ("cdead:\n");
   Emit ("  %%dead2 = call i1 @__ada_task_dead(ptr %%task)\n");
@@ -54884,7 +55068,7 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   Emit ("  %%pp = getelementptr ptr, ptr %%rv, i64 2\n");
   Emit ("  store ptr %%params, ptr %%pp\n");
   Emit ("  %%cfp = getelementptr i8, ptr %%rv, i64 24\n");
-  Emit ("  store i8 0, ptr %%cfp\n");
+  Emit ("  store i32 0, ptr %%cfp  ; completion word\n");
   Emit ("  %%exp0 = getelementptr i64, ptr %%rv, i64 5\n");
   Emit ("  store i64 0, ptr %%exp0\n");
   Emit ("  %%nxp = getelementptr ptr, ptr %%rv, i64 4\n");
@@ -54937,33 +55121,15 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   // call, and any acceptor blocked in accept_wait.
   Emit ("  call void @__ada_unpassify(ptr %%task)\n");
   Emit ("  call i32 @pthread_cond_broadcast(ptr @__term_cond)\n");
-  Emit ("  br label %%wait\n");
-  Emit ("wait:\n");
-  Emit ("  %%c = load i8, ptr %%cfp\n");
-  Emit ("  %%done_p = icmp ne i8 %%c, 0\n");
-  Emit ("  br i1 %%done_p, label %%finish, label %%chkdead1\n");
-  Emit ("chkdead1:\n");
-  // Target died/became abnormal while we waited and the call was never accepted:
-  // unlink our record and raise TASKING_ERROR.
-  Emit ("  %%d1 = call i1 @__ada_task_dead(ptr %%task)\n");
-  Emit ("  br i1 %%d1, label %%te_dequeue, label %%dowait\n");
-  Emit ("dowait:\n");
-  Emit ("  call i32 @pthread_cond_wait(ptr @__term_cond, ptr @__rv_mutex)\n");
-  Emit ("  br label %%wait\n");
-  Emit ("te_dequeue:\n");
-  Emit ("  %%_rm = call i8 @__ada_queue_unlink(ptr %%task, ptr %%rv)\n");
-  Emit ("  br i1 %%selfok, label %%te_clr, label %%te_raise\n");
-  Emit ("te_clr:\n");
-  Emit ("  %%prvpt = getelementptr ptr, ptr %%self, i64 9\n");
-  Emit ("  store ptr null, ptr %%prvpt\n");
-  Emit ("  br label %%te_raise\n");
-  Emit ("te_raise:\n");
-  Emit ("  call void @__ada_await_abnormal_teardown(ptr %%task, ptr %%self)\n");
+  // Wait OUTSIDE the lock on the record's own completion word. Every path
+  // that can end this rendezvous completes the word: the acceptor
+  // (accept_complete), an abort of the CALLER (abort_release_call), and
+  // the TARGET dying in any way (release_callers bridges TASKING_ERROR
+  // into the record) — so no dead-polling is needed here at all.
   Emit ("  call i32 @pthread_mutex_unlock(ptr @__rv_mutex)\n");
-  Emit ("  call void @free (ptr %%rv)\n");
-  Emit ("  %%teid2 = ptrtoint ptr @__exc.tasking_error to " PTR_INT_TYPE "\n");
-  Emit ("  call void @__ada_raise(i64 %%teid2)\n");
-  Emit ("  unreachable\n");
+  Emit ("  call void @__ada_wait_word(ptr %%cfp, i32 0)\n");
+  Emit ("  call i32 @pthread_mutex_lock(ptr @__rv_mutex)\n");
+  Emit ("  br label %%finish\n");
   Emit ("raise_te_locked:\n");
   Emit ("  call void @__ada_await_abnormal_teardown(ptr %%task, ptr %%self)\n");
   Emit ("  call i32 @pthread_mutex_unlock(ptr @__rv_mutex)\n");
@@ -54972,8 +55138,9 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   Emit ("  call void @__ada_raise(i64 %%teid3)\n");
   Emit ("  unreachable\n");
   Emit ("finish:\n");
-  // Rendezvous complete (by the acceptor, or released by an abort). Clear
-  // pending_rv, take the bridged exception id, unlock, free, re-raise if any.
+  // Rendezvous complete (by the acceptor, an abort, or the target's death).
+  // Clear pending_rv under the lock (an aborter dereferences it there),
+  // take the bridged exception id, unlock, free, re-raise if any.
   Emit ("  br i1 %%selfok, label %%clr_prv, label %%post_clr\n");
   Emit ("clr_prv:\n");
   Emit ("  %%prvpd = getelementptr ptr, ptr %%self, i64 9\n");
@@ -55027,7 +55194,15 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   Emit ("  %%prevnxp = getelementptr ptr, ptr %%prev, i64 4\n");
   Emit ("  store ptr %%curnx, ptr %%prevnxp\n");
   Emit ("  br label %%rmdone\n");
+  // Taken into rendezvous: push onto self's serving list (rv+32 is free
+  // once dequeued) so a death before accept_complete still releases the
+  // caller (RM 9.10).
   Emit ("rmdone:\n");
+  Emit ("  %%svp = getelementptr i8, ptr %%self, i64 88\n");
+  Emit ("  %%sh = load ptr, ptr %%svp\n");
+  Emit ("  %%curnxp2 = getelementptr ptr, ptr %%cur, i64 4\n");
+  Emit ("  store ptr %%sh, ptr %%curnxp2\n");
+  Emit ("  store ptr %%cur, ptr %%svp\n");
   Emit ("  ret ptr %%cur\n");
   Emit ("none:\n");
   Emit ("  ret ptr null\n");
@@ -55041,6 +55216,27 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   // conditional-call readiness); cleared once a call is taken.
   Emit ("  %%wep = getelementptr i64, ptr %%self, i64 6\n");
   Emit ("  store i64 %%entry_idx, ptr %%wep\n");
+  // Bounded spin on a racy queue peek before the lock: the ping-pong shape
+  // has the call arriving within this window, and the locked take below
+  // re-checks properly. The abort peek keeps a spin from delaying RM 9.10.
+  Emit ("  %%qhp0 = getelementptr ptr, ptr %%self, i64 5\n");
+  Emit ("  %%apf0 = getelementptr i8, ptr %%self, i64 61\n");
+  Emit ("  br label %%peek\n");
+  Emit ("peek:\n");
+  Emit ("  %%pi = phi i32 [ 0, %%entry ], [ %%pi2, %%pnext ]\n");
+  Emit ("  %%ph = load atomic ptr, ptr %%qhp0 monotonic, align 8\n");
+  Emit ("  %%phit = icmp ne ptr %%ph, null\n");
+  Emit ("  br i1 %%phit, label %%locked, label %%pchk\n");
+  Emit ("pchk:\n");
+  Emit ("  %%pab = load atomic i8, ptr %%apf0 monotonic, align 1\n");
+  Emit ("  %%pabt = icmp ne i8 %%pab, 0\n");
+  Emit ("  br i1 %%pabt, label %%locked, label %%pnext\n");
+  Emit ("pnext:\n");
+  Emit ("  call void @__ada_cpu_relax()\n");
+  Emit ("  %%pi2 = add i32 %%pi, 1\n");
+  Emit ("  %%pmore = icmp ult i32 %%pi2, 256\n");
+  Emit ("  br i1 %%pmore, label %%peek, label %%locked\n");
+  Emit ("locked:\n");
   Emit ("  call i32 @pthread_mutex_lock(ptr @__rv_mutex)\n");
   Emit ("  br label %%loop\n");
   Emit ("loop:\n");
@@ -55147,6 +55343,24 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   // re-sweeps its alternatives after every return.
   Emit ("define linkonce_odr i8 @__ada_select_block(ptr %%self, i64 %%timeout_us) {\n");
   Emit ("entry:\n");
+  Emit ("  %%qhp0 = getelementptr ptr, ptr %%self, i64 5\n");
+  Emit ("  %%apf0 = getelementptr i8, ptr %%self, i64 61\n");
+  Emit ("  br label %%peek\n");
+  Emit ("peek:\n");
+  Emit ("  %%pi = phi i32 [ 0, %%entry ], [ %%pi2, %%pnext ]\n");
+  Emit ("  %%ph = load atomic ptr, ptr %%qhp0 monotonic, align 8\n");
+  Emit ("  %%phit = icmp ne ptr %%ph, null\n");
+  Emit ("  br i1 %%phit, label %%locked, label %%pchk\n");
+  Emit ("pchk:\n");
+  Emit ("  %%pab = load atomic i8, ptr %%apf0 monotonic, align 1\n");
+  Emit ("  %%pabt = icmp ne i8 %%pab, 0\n");
+  Emit ("  br i1 %%pabt, label %%locked, label %%pnext\n");
+  Emit ("pnext:\n");
+  Emit ("  call void @__ada_cpu_relax()\n");
+  Emit ("  %%pi2 = add i32 %%pi, 1\n");
+  Emit ("  %%pmore = icmp ult i32 %%pi2, 256\n");
+  Emit ("  br i1 %%pmore, label %%peek, label %%locked\n");
+  Emit ("locked:\n");
   Emit ("  call i32 @pthread_mutex_lock(ptr @__rv_mutex)\n");
   Emit ("  %%apf = getelementptr i8, ptr %%self, i64 61\n");
   Emit ("  %%ap = load i8, ptr %%apf\n");
@@ -55225,8 +55439,30 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   Emit ("define linkonce_odr void @__ada_accept_complete(ptr %%rv) {\n");
   Emit ("entry:\n");
   Emit ("  call i32 @pthread_mutex_lock(ptr @__rv_mutex)\n");
+  // Off the server's serving list first (the death path must not complete
+  // it twice), then publish completion and wake the caller directly.
+  Emit ("  %%tgt = load ptr, ptr %%rv\n");
+  Emit ("  %%svp = getelementptr i8, ptr %%tgt, i64 88\n");
+  Emit ("  br label %%wl\n");
+  Emit ("wl:\n");
+  Emit ("  %%linkp = phi ptr [ %%svp, %%entry ], [ %%nxp, %%adv ]\n");
+  Emit ("  %%cur = load ptr, ptr %%linkp\n");
+  Emit ("  %%isnull = icmp eq ptr %%cur, null\n");
+  Emit ("  br i1 %%isnull, label %%pub, label %%chk\n");
+  Emit ("chk:\n");
+  Emit ("  %%nxp = getelementptr ptr, ptr %%cur, i64 4\n");
+  Emit ("  %%ism = icmp eq ptr %%cur, %%rv\n");
+  Emit ("  br i1 %%ism, label %%unlink, label %%adv\n");
+  Emit ("adv:\n");
+  Emit ("  br label %%wl\n");
+  Emit ("unlink:\n");
+  Emit ("  %%nx = load ptr, ptr %%nxp\n");
+  Emit ("  store ptr %%nx, ptr %%linkp\n");
+  Emit ("  br label %%pub\n");
+  Emit ("pub:\n");
   Emit ("  %%1 = getelementptr i8, ptr %%rv, i64 24\n");
-  Emit ("  store i8 1, ptr %%1  ; complete = true\n");
+  Emit ("  store atomic i32 1, ptr %%1 release, align 4  ; complete\n");
+  Emit ("  call void @__ada_wake_word(ptr %%1)\n");
   Emit ("  call i32 @pthread_cond_broadcast(ptr @__term_cond)\n");
   Emit ("  call i32 @pthread_mutex_unlock(ptr @__rv_mutex)\n");
   Emit ("  ret void\n");
