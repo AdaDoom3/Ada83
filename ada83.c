@@ -7537,6 +7537,15 @@ void Symbol_Add (Symbol *sym) {
         continue;
       }
 
+      /* A library unit may itself be named STANDARD; the predefined
+         package does not hide a WITH'd unit of that name (RM 8.6,
+         c86002): the loaded unit is inserted ahead of it. */
+      if (existing->kind == SYMBOL_PACKAGE and
+          not existing->declaration and
+          existing->scope == sm->global_scope and
+          Slice_Equal_Ignore_Case (existing->name, S("STANDARD")))
+        break;
+
       return;
     }
     existing = existing->next_in_bucket;
@@ -15226,7 +15235,11 @@ void Validate_Generic_Actuals (Symbol *instance_sym, Symbol *template_sym,
                 (int) formal_name.length, formal_name.data);
             break;
           case GEN_DEF_PRIVATE: {
-            if (Type_Is_Limited (Type_Underlying ((Type_Info *) actual)) or
+            /* Limitedness is a property of the view at the point of
+               instantiation: inside the declaring package's private
+               part or body the full view governs (cd1009i). */
+            if (Type_Limited_View_Active (Type_Underlying ((Type_Info *) actual)) or
+                Type_Is_Task (Type_Underlying ((Type_Info *) actual)) or
                 Type_Has_Task_Component ((Type_Info *) actual))
               Report_Error (location,
                 "actual for non-limited formal private type '%.*s' "
@@ -44848,6 +44861,12 @@ void Load_Package_Spec (String_Slice name, char *src) {
        existing->declaration->kind == NK_GENERIC_INST)) {
     return;
   }
+  /* A library subprogram whose body is already in: loading again would
+     re-resolve the body and split its symbol identities. */
+  if (existing and Symbol_Is_Subprogram (existing) and
+      Body_Already_Loaded (name)) {
+    return;
+  }
 
   if (Loading_Set_Contains (name)) {
     return;
@@ -45018,6 +45037,7 @@ void Load_Package_Spec (String_Slice name, char *src) {
         gen_sym->generic_body = more_unit;
         more_unit->symbol = gen_sym;
 
+        Fold_Spec_Context_Into_Body (more_cu);
         Load_With_Clause_Dependencies (more_cu->compilation_unit.context);
         Resolve_Context_Use_Clauses (more_cu->compilation_unit.context);
 
@@ -45148,6 +45168,7 @@ void Load_Package_Spec (String_Slice name, char *src) {
     if (body_cu and body_cu->compilation_unit.unit) {
       Syntax_Node *body_unit = body_cu->compilation_unit.unit;
 
+      Fold_Spec_Context_Into_Body (body_cu);
       Load_With_Clause_Dependencies (body_cu->compilation_unit.context);
 
       Elab_Register_Context_Dependencies (body_cu);

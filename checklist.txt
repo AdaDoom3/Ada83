@@ -60,19 +60,28 @@ STATUS LOG
         fragments no longer abort a family compile
 [x] Full Class C: 1950 pass / 17 fail / 9 skip — zero regressions.
 
-REMAINING SKIPS (run c-20260723-130x)
---------------------------------------
-G2  Chapter 8.6 STANDARD-replacement tests — 3
-    [ ] c86002a2m  COMPILE: type mismatch @36
-    [ ] c86002b2m  COMPILE: cannot resolve @82
-    [ ] c86004c2m  COMPILE: cannot resolve 'EQU…' in C86004C0_GEN.ads
-[ ] c39006f3m  BIND:unresolved_symbols
-[ ] cd1009i    COMPILE: "actual for non-limited …" @31
-G4  Runtime N/A — 4 (verify genuinely N/A vs missing feature)
-    [ ] c64103a c95084a  "only one integer base type"
-    [ ] c64103c c64103d  "N/A -P1 (D)"
+[x] ALL FIXABLE SKIPS CLOSED — Class C now 1955 pass / 17 fail / 4 skip,
+    zero regressions vs the original baseline.
+    - c39006f3m: block-scoped packages/objects were module-globals in
+      Symbol_Is_Global but locals at the definition site; symbols now
+      carry declared_in_statements and the two sites agree. Instance
+      packages keep global data; their dynamic-bounds arrays now get
+      heap data + bounds stored into the linkonce fat-pointer global.
+    - c86004c2m (+kept c86004b2m green): a loaded body now inherits its
+      spec's context clause (Fold_Spec_Context_Into_Body in the loader);
+      an already-loaded library subprogram is not re-resolved by a
+      second WITH.
+    - c86002a2m/c86002b2m: a WITH'd library unit named STANDARD shadows
+      the predefined package for selected/callable uses (RM 8.6).
+    - cd1009i: limitedness of a generic actual judged by the view at
+      the instantiation point (Type_Limited_View_Active), so a private
+      part can instantiate with its own completed full view.
+[x] G4 VERIFIED GENUINE — c64103a c64103c c64103d c95084a report
+    NOT APPLICABLE because this implementation has exactly one integer
+    base type ('BASE'LAST equal across all range types); that is a
+    conformant ACATS outcome, not a missing feature.
 
-FAILS (17; address after skips)
+FAILS (17; the remaining work)
 --------------------------------------
 c42007i c43103b c45252a c45282b c55b06a c64104c c87b10a c98003b
 cb7001a cc1226b cd1c04e cd4024b cd4031a cda201a ce3111c ce3208a
