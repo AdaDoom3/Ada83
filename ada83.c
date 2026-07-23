@@ -1960,6 +1960,7 @@ typedef struct Interp_List {
 } Interp_List;
 
 bool Type_Reaches            (Type_Info    *type_info, Type_Info   *target, int depth);
+bool Conversion_Is_Legal     (Type_Info    *target,   Type_Info    *operand);
 bool Type_Covers             (Type_Info    *expected, Type_Info    *actual);
 bool Type_Covers_Ex          (Type_Info    *expected, Type_Info    *actual,
                               bool allow_derivation);
@@ -2829,6 +2830,7 @@ bool      Bound_Pair_Overflows  (Type_Bound low, Type_Bound high);
 bool      Is_Others_Choice      (Syntax_Node *choice);
 bool      Aggregate_Has_Others  (Syntax_Node *agg);
 bool      Is_Static_Int_Node    (Syntax_Node *n);
+bool      Expression_Is_Static  (Syntax_Node *expr);
 bool      Agg_Elem_Is_Composite (Type_Info *elem, bool multidim);
 
 void      Emit_Array_Component_Belongs_Check (uint32_t     fat_reg,
@@ -8084,6 +8086,43 @@ bool Type_Reaches (Type_Info *type_info, Type_Info *target, int depth) {
   return false;
 }
 
+/* RM 4.6: an explicit conversion is legal only between closely related
+   types — any two numeric types, types related by derivation, or array
+   types of the same dimensionality whose index types are convertible and
+   whose component types share a base.  Views whose structure is opaque
+   here (private, incomplete, formal) are left to other rules. */
+bool Conversion_Is_Legal (Type_Info *target, Type_Info *operand) {
+  if (not target or not operand) return true;
+  Type_Info *t = Effective_Type_View (target);
+  Type_Info *o = Effective_Type_View (operand);
+  if (not t or not o) return true;
+  if (t->kind == TYPE_UNKNOWN or o->kind == TYPE_UNKNOWN or
+      t->kind == TYPE_INCOMPLETE or o->kind == TYPE_INCOMPLETE or
+      Type_Is_Private (t) or Type_Is_Private (o) or
+      t->is_generic_formal or o->is_generic_formal)
+    return true;
+  if (Type_Is_Numeric (t) and Type_Is_Numeric (o)) return true;
+  if (Type_Root (t) == Type_Root (o)) return true;
+  if (Type_Is_Array_Like (t) and Type_Is_Array_Like (o)) {
+    uint32_t tdims = Type_Is_String (t) ? 1 : t->array.index_count;
+    uint32_t odims = Type_Is_String (o) ? 1 : o->array.index_count;
+    if (tdims != odims and tdims and odims) return false;
+    Type_Info *te = Type_Is_String (t) ? sm->type_character : t->array.element_type;
+    Type_Info *oe = Type_Is_String (o) ? sm->type_character : o->array.element_type;
+    if (te and oe and Type_Root (te) != Type_Root (oe) and
+        not (Type_Is_Character_Type (te) and Type_Is_Character_Type (oe)))
+      return false;
+    for (uint32_t i = 0; i < tdims and not Type_Is_String (t) and
+                         not Type_Is_String (o); i++) {
+      Type_Info *ti = i < t->array.index_count ? t->array.indices[i].index_type : NULL;
+      Type_Info *oi = i < o->array.index_count ? o->array.indices[i].index_type : NULL;
+      if (ti and oi and not Conversion_Is_Legal (ti, oi)) return false;
+    }
+    return true;
+  }
+  return false;
+}
+
 bool Type_Covers (Type_Info *expected, Type_Info *actual) {
   return Type_Covers_Ex (expected, actual, true);
 }
@@ -8196,16 +8235,30 @@ bool Type_Covers_Ex (Type_Info *expected, Type_Info *actual,
 }
 
 
+/* RM 3.4: a derived type is a distinct type from its parent — the two
+   are inter-convertible but never interchangeable.  Resolution's
+   covering test walks the derivation chain, so this companion predicate
+   detects the case where THAT WALK was the only reason for the match:
+   same root, different base.  Inherited operations are materialized as
+   real symbols with remapped profiles (Create_Derived_Operation), so
+   rejecting the parent/derived mix here removes no legal call. */
 bool Covers_Only_Via_Derivation (Type_Info *param, Type_Info *arg) {
   param = Peel_Generic_Actual_View (param);
   arg   = Peel_Generic_Actual_View (arg);
   if (not param or not arg) return false;
   if (Type_Is_Universal (param) or Type_Is_Universal (arg)) return false;
-  if (Type_Is_Array_Like (param) or Type_Is_Access (param) or Type_Is_Record (param) or
-      Type_Is_Array_Like (arg)   or Type_Is_Access (arg)   or Type_Is_Record (arg))
+  /* Arrays and accesses still lean on derivation-walking in resolution
+     (anonymous bases from constrained views, instance clones); records
+     and scalars have faithful inherited-operation symbols and can be
+     held to the RM rule. */
+  if (Type_Is_Array_Like (param) or Type_Is_Access (param) or
+      Type_Is_Record (param) or
+      Type_Is_Array_Like (arg)   or Type_Is_Access (arg) or
+      Type_Is_Record (arg))
     return false;
   Type_Info *bp = Type_Base (param), *ba = Type_Base (arg);
   if (bp == ba) return false;
+  if (Types_Same_Named (bp, ba)) return false;
   return Type_Root (bp) == Type_Root (ba);
 }
 
@@ -10080,6 +10133,11 @@ Type_Info *Resolve_Apply (Syntax_Node *node) {
       }
 
       if (arg_count == 1) {
+        Syntax_Node *operand = node->apply.arguments.items[0];
+        if (operand and operand->type and
+            not Conversion_Is_Legal (prefix_sym->type, operand->type))
+          Report_Error (node->location,
+                        "illegal type conversion between unrelated types");
         node->type = prefix_sym->type;
         node->apply.resolution = APPLY_TYPE_CONVERSION;
         return node->type;
@@ -12071,7 +12129,23 @@ Type_Info *Resolve_Expression (Syntax_Node *node) {
     case NK_APPLY:
       return Resolve_Apply (node);
     case NK_ATTRIBUTE:
-      Resolve_Expression (node->attribute.prefix);
+      /* RM 3.3.3: T'BASE is not a type mark on its own — it may stand
+         only as the prefix of another attribute.  The sanction travels
+         via a depth counter because the prefix resolves through the
+         same dispatch. */
+      {
+        static int base_prefix_sanctioned;
+        bool sanctions_base = node->attribute.prefix and
+          node->attribute.prefix->kind == NK_ATTRIBUTE and
+          node->attribute.prefix->attribute.kind == ATTRIBUTE_BASE;
+        if (sanctions_base) base_prefix_sanctioned++;
+        Resolve_Expression (node->attribute.prefix);
+        if (sanctions_base) base_prefix_sanctioned--;
+        if (node->attribute.kind == ATTRIBUTE_BASE and
+            not base_prefix_sanctioned)
+          Report_Error (node->location,
+                        "'BASE may only be used as the prefix of another attribute");
+      }
 
       {
         Type_Info *prefix_type = node->attribute.prefix->type;
@@ -12138,6 +12212,65 @@ Type_Info *Resolve_Expression (Syntax_Node *node) {
         if (designated and
             not Attribute_Properties_Table[attribute_kind].prefix_is_type_view) {
           prefix_type = designated;
+        }
+
+        /* RM Annex A: each attribute admits one class of prefix.  One
+           gate here covers every use site; a prefix whose class is
+           opaque (unresolved, formal) is left to other rules. */
+        if (prefix_type and not prefix_type->is_generic_formal and
+            prefix_type->kind != TYPE_UNKNOWN) {
+          const char *required = NULL;
+          switch (attribute_kind) {
+            case ATTRIBUTE_FIRST: case ATTRIBUTE_LAST:
+              if (not Type_Is_Scalar (prefix_type) and
+                  not Type_Is_Array_Like (prefix_type))
+                required = "a scalar or array";
+              break;
+            case ATTRIBUTE_LENGTH: case ATTRIBUTE_RANGE:
+              if (not Type_Is_Array_Like (prefix_type))
+                required = "an array";
+              break;
+            case ATTRIBUTE_POS:  case ATTRIBUTE_VAL:
+            case ATTRIBUTE_SUCC: case ATTRIBUTE_PRED:
+              if (not Type_Is_Discrete (prefix_type))
+                required = "a discrete";
+              break;
+            case ATTRIBUTE_WIDTH: case ATTRIBUTE_IMAGE:
+            case ATTRIBUTE_VALUE:
+              /* RM 3.5.5 says discrete; real prefixes are admitted as the
+                 implementation extension the runtime's FLOAT_IO rests on. */
+              if (not Type_Is_Discrete (prefix_type) and
+                  not Type_Is_Real (prefix_type))
+                required = "a discrete";
+              break;
+            case ATTRIBUTE_DIGITS:  case ATTRIBUTE_EPSILON:
+            case ATTRIBUTE_EMAX:    case ATTRIBUTE_SAFE_EMAX:
+            case ATTRIBUTE_MODEL_EPSILON: case ATTRIBUTE_MODEL_SMALL:
+            case ATTRIBUTE_MACHINE_RADIX: case ATTRIBUTE_MACHINE_MANTISSA:
+            case ATTRIBUTE_MACHINE_EMAX:  case ATTRIBUTE_MACHINE_EMIN:
+              if (not Type_Is_Float (prefix_type) and
+                  prefix_type->kind != TYPE_UNIVERSAL_REAL)
+                required = "a floating point";
+              break;
+            case ATTRIBUTE_DELTA: case ATTRIBUTE_FORE: case ATTRIBUTE_AFT:
+              if (not Type_Is_Fixed_Point (prefix_type))
+                required = "a fixed point";
+              break;
+            case ATTRIBUTE_MANTISSA: case ATTRIBUTE_SMALL: case ATTRIBUTE_LARGE:
+            case ATTRIBUTE_SAFE_SMALL: case ATTRIBUTE_SAFE_LARGE:
+            case ATTRIBUTE_MACHINE_ROUNDS: case ATTRIBUTE_MACHINE_OVERFLOWS:
+              if (not Type_Is_Real (prefix_type) and
+                  not Type_Is_Integer_Like (prefix_type))
+                required = "a real";
+              break;
+            default:
+              break;
+          }
+          if (required)
+            Report_Error (node->location,
+                          "attribute '%.*s requires %s prefix",
+                          (int) node->attribute.name.length,
+                          node->attribute.name.data, required);
         }
 
         switch (attribute_kind) {
@@ -12616,9 +12749,28 @@ Type_Info *Resolve_Expression (Syntax_Node *node) {
           }
         }
 
+        /* RM 3.6: every index is of a discrete type. */
+        for (uint32_t i = 0; i < array_type->array.index_count; i++) {
+          Type_Info *it = array_type->array.indices[i].index_type;
+          if (it and it->kind != TYPE_UNKNOWN and not it->is_generic_formal and
+              not Type_Is_Discrete (it))
+            Report_Error (node->array_type.indices.items[i]->location,
+                          "array index type must be discrete");
+        }
+
         if (node->array_type.component_type) {
           Resolve_Expression (node->array_type.component_type);
           array_type->array.element_type = node->array_type.component_type->type;
+
+          /* RM 3.6: the component subtype of an array cannot itself be an
+             unconstrained array type mark. */
+          Type_Info *et = array_type->array.element_type;
+          if (et and Type_Is_Array_Like (et) and
+              node->array_type.component_type->kind != NK_SUBTYPE_INDICATION and
+              not et->array.is_constrained and
+              not et->is_generic_formal)
+            Report_Error (node->array_type.component_type->location,
+                          "array component type cannot be an unconstrained array");
         } else {
           array_type->array.element_type = sm->type_integer;
         }
@@ -12666,6 +12818,12 @@ Type_Info *Resolve_Expression (Syntax_Node *node) {
           node->type = NULL;
           return NULL;
         }
+
+        /* RM 3.8.1: an incomplete type cannot serve as a parent type —
+           only access definitions may name it before its completion. */
+        if (parent->kind == TYPE_INCOMPLETE or parent->kind == TYPE_UNKNOWN)
+          Report_Error (node->location,
+                        "cannot derive from a type before its full declaration");
 
         /* The parser rewrites NEW T DIGITS n / NEW T DELTA n into a
            NK_REAL_TYPE constraint rider, so the subtype-indication gate
@@ -12887,6 +13045,18 @@ Type_Info *Resolve_Expression (Syntax_Node *node) {
                          comp->component.component_type->type : sm->type_integer;
             uint32_t comp_size = comp_type ? comp_type->size : 8;
 
+            /* RM 3.7: a record component's subtype must be constrained —
+               an unconstrained array type mark cannot stand alone (an
+               unconstrained discriminated type may: its discriminant
+               defaults constrain it). */
+            if (comp_type and Type_Is_Array_Like (comp_type) and
+                not comp_type->array.is_constrained and
+                not comp_type->is_generic_formal and
+                comp->component.component_type and
+                comp->component.component_type->kind != NK_SUBTYPE_INDICATION)
+              Report_Error (comp->component.component_type->location,
+                            "record component cannot be of an unconstrained array type");
+
             if (comp_type and comp_size == 0 and Type_Is_Constrained_Array (comp_type)
               and comp_type->array.index_count > 0)
               comp_size = Max_Constrained_Array_Size (comp_type);
@@ -12894,6 +13064,13 @@ Type_Info *Resolve_Expression (Syntax_Node *node) {
             if (comp->component.init) {
               Seed_Expected_Type (comp->component.init, comp_type);
               Resolve_Expression (comp->component.init);
+              /* RM 3.7: the default expression has the component's type. */
+              if (comp_type and comp->component.init->type and
+                  not (Type_Is_Character_Type (comp->component.init->type) and
+                       Type_Is_Character_Type (comp_type)) and
+                  not Type_Covers (comp_type, comp->component.init->type))
+                Report_Error (comp->component.init->location,
+                              "component default value has wrong type");
             }
             for (uint32_t j = 0; j < comp->component.names.count; j++) {
               Component_Info *info = &record_type->record.components[comp_idx++];
@@ -13760,6 +13937,18 @@ Type_Info *Resolve_Expression (Syntax_Node *node) {
             if (range->kind == NK_RANGE and range->range.low and range->range.high) {
               Syntax_Node *bound_expr[2] = { range->range.low, range->range.high };
               Type_Bound *bound_slot[2] = { &int_type->low_bound, &int_type->high_bound };
+              /* RM 3.5.4: the bounds of an integer type definition are
+                 static expressions of some integer type. */
+              for (uint32_t b = 0; b < 2; b++) {
+                Type_Info *bt = bound_expr[b]->type;
+                if (bt and not Type_Is_Integer_Like (bt) and
+                    not Type_Is_Universal_Integer (bt))
+                  Report_Error (bound_expr[b]->location,
+                                "bound of an integer type definition must be an integer");
+                else if (not Expression_Is_Static (bound_expr[b]))
+                  Report_Error (bound_expr[b]->location,
+                                "bound of an integer type definition must be static");
+              }
               for (uint32_t b = 0; b < 2; b++) {
                 Syntax_Node *bound = bound_expr[b];
                 if (bound->kind == NK_INTEGER) {
@@ -16544,6 +16733,14 @@ void Resolve_Declaration (Syntax_Node *node) {
       if (node->object_decl.object_type) {
         Resolve_Expression (node->object_decl.object_type);
 
+        /* RM 3.6.1: an object cannot be of an unconstrained array
+           definition — the definition form (not a mark of an
+           unconstrained type, which an initial value may constrain). */
+        if (node->object_decl.object_type->kind == NK_ARRAY_TYPE and
+            not node->object_decl.object_type->array_type.is_constrained)
+          Report_Error (node->object_decl.object_type->location,
+                        "object declaration cannot use an unconstrained array definition");
+
         if (node->object_decl.object_type->type)
           Freeze_Type (node->object_decl.object_type->type);
       }
@@ -16599,6 +16796,15 @@ void Resolve_Declaration (Syntax_Node *node) {
           Report_Error (init->location,
                         "object of a limited type cannot be initialized");
       }
+
+      /* RM 3.2.2: a number declaration (constant without a type mark)
+         requires a static expression of a universal type. */
+      if (node->object_decl.is_constant and not node->object_decl.object_type and
+          not node->object_decl.is_rename and node->object_decl.init and
+          node->object_decl.init->type and
+          not Type_Is_Universal (node->object_decl.init->type))
+        Report_Error (node->object_decl.init->location,
+                      "a number declaration requires a universal static expression");
 
       /* RM 7.4.3: a constant may lack its initial value only as a deferred
          constant — directly in a package visible part, of a private type
@@ -16701,8 +16907,14 @@ void Resolve_Declaration (Syntax_Node *node) {
           sym->type = type;
           type->defining_symbol = sym;
           Symbol_Add (sym);
+          /* RM 3.3.1: the identifier being declared is not visible inside
+             its own type definition (TYPE G IS ACCESS G is illegal; the
+             legal recursion spells the incomplete declaration first). */
+          sym->visibility = VIS_HIDDEN;
         }
         node->symbol = sym;
+        if (not node->type_decl.definition)
+          sym->visibility = VIS_IMMEDIATELY_VISIBLE;
 
         bool has_discriminants = node->type_decl.discriminants.count > 0;
 
@@ -16734,6 +16946,16 @@ void Resolve_Declaration (Syntax_Node *node) {
               Type_Info *disc_type = sm->type_integer;
               if (disc_spec->discriminant.disc_type) {
                 disc_type = Resolve_Expression (disc_spec->discriminant.disc_type);
+                /* RM 3.7.1: a discriminant is of a discrete type, named by
+                   a type mark (a constrained indication is not a mark). */
+                if (disc_type and disc_type->kind != TYPE_UNKNOWN and
+                    not disc_type->is_generic_formal and
+                    not Type_Is_Discrete (disc_type))
+                  Report_Error (disc_spec->discriminant.disc_type->location,
+                                "discriminant type must be discrete");
+                if (disc_spec->discriminant.disc_type->kind == NK_SUBTYPE_INDICATION)
+                  Report_Error (disc_spec->discriminant.disc_type->location,
+                                "discriminant type must be a type mark, not a subtype indication");
               }
 
               if (disc_spec->discriminant.default_expr) {
@@ -16743,6 +16965,11 @@ void Resolve_Declaration (Syntax_Node *node) {
                    de->kind == NK_AGGREGATE or de->kind == NK_IDENTIFIER))
                   de->type = disc_type;
                 Resolve_Expression (de);
+                /* RM 3.7.1: the default has the discriminant's type. */
+                if (disc_type and de->type and
+                    not Type_Covers (disc_type, de->type))
+                  Report_Error (de->location,
+                                "discriminant default value has wrong type");
               }
 
               for (uint32_t j = 0; j < disc_spec->discriminant.names.count; j++) {
@@ -16760,6 +16987,7 @@ void Resolve_Declaration (Syntax_Node *node) {
 
         if (node->type_decl.definition) {
           Type_Info *def_type = Resolve_Expression (node->type_decl.definition);
+          sym->visibility = VIS_IMMEDIATELY_VISIBLE;
 
           if (def_type and Type_Reaches (def_type, type, 0)) {
             Report_Error (node->location,
@@ -16837,6 +17065,17 @@ void Resolve_Declaration (Syntax_Node *node) {
                 Node_List *lits = &node->type_decl.definition->enum_type.literals;
                 for (uint32_t i = 0; i < lits->count; i++) {
                   Syntax_Node *lit = lits->items[i];
+                  /* RM 3.5.1: the literals of one enumeration type are
+                     distinct identifiers. */
+                  for (uint32_t j = 0; j < i; j++)
+                    if (Slice_Equal_Ignore_Case (lit->string_val.text,
+                          lits->items[j]->string_val.text)) {
+                      Report_Error (lit->location,
+                                    "duplicate enumeration literal '%.*s'",
+                                    (int) lit->string_val.text.length,
+                                    lit->string_val.text.data);
+                      break;
+                    }
                   if (not lit->symbol) {
                     Symbol *lit_sym = Symbol_New (SYMBOL_LITERAL, lit->string_val.text, lit->location);
                     lit_sym->type = type;
@@ -29789,6 +30028,46 @@ bool Is_Others_Choice (Syntax_Node *choice) {
 bool Aggregate_Has_Others (Syntax_Node *agg) {
   if (not agg or agg->kind != NK_AGGREGATE) return false;
   return Scan_Aggregate_Shape (agg).has_others;
+}
+
+/* RM 4.9: a static expression is built from literals, named numbers,
+   constants initialized statically, predefined operators over static
+   operands, and static attributes.  Attributes are admitted whenever the
+   prefix is scalar or array — the few dynamic-subtype cases this lets
+   through cost a missed diagnostic, never a wrong rejection. */
+bool Expression_Is_Static (Syntax_Node *expr) {
+  if (not expr) return false;
+  switch (expr->kind) {
+    case NK_INTEGER: case NK_REAL: case NK_CHARACTER:
+      return true;
+    case NK_IDENTIFIER: case NK_SELECTED: {
+      Symbol *sym = expr->symbol;
+      if (not sym) return false;
+      if (sym->kind == SYMBOL_LITERAL) return true;
+      if (sym->kind != SYMBOL_CONSTANT) return false;
+      if (sym->is_named_number) return true;
+      return Type_Is_Scalar (sym->type) and
+             sym->declaration and sym->declaration->kind == NK_OBJECT_DECL and
+             Expression_Is_Static (sym->declaration->object_decl.init);
+    }
+    case NK_UNARY_OP:
+      return Expression_Is_Static (expr->unary.operand);
+    case NK_BINARY_OP:
+      return Expression_Is_Static (expr->binary.left) and
+             Expression_Is_Static (expr->binary.right);
+    case NK_QUALIFIED:
+      return Expression_Is_Static (expr->qualified.expression);
+    case NK_APPLY:
+      return expr->apply.resolution == APPLY_TYPE_CONVERSION and
+             expr->apply.arguments.count == 1 and
+             Expression_Is_Static (expr->apply.arguments.items[0]);
+    case NK_ATTRIBUTE: {
+      Type_Info *pt = expr->attribute.prefix ? expr->attribute.prefix->type : NULL;
+      return Type_Is_Scalar (pt) or Type_Is_Array_Like (pt);
+    }
+    default:
+      return false;
+  }
 }
 
 bool Is_Static_Int_Node (Syntax_Node *n) {
