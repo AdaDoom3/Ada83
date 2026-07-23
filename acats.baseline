@@ -840,10 +840,7 @@ c64005a	pass
 c64005b	pass
 c64005c	pass
 c64005d0m	pass
-c64103a	skip
 c64103b	pass
-c64103c	skip
-c64103d	skip
 c64103e	pass
 c64103f	pass
 c64104a	pass
@@ -1195,7 +1192,6 @@ c95076a	pass
 c95078a	pass
 c95080b	pass
 c95082g	pass
-c95084a	skip
 c95085a	pass
 c95085b	pass
 c95085c	pass
@@ -1286,7 +1282,6 @@ c97305d	pass
 c97307a	pass
 c98001b	pass
 c98001c	pass
-c98003b	fail
 c99004a	pass
 c99005a	pass
 c9a003a	pass
@@ -1404,7 +1399,6 @@ cc1222a	pass
 cc1223a	pass
 cc1224a	pass
 cc1225a	pass
-cc1226b	fail
 cc1227a	pass
 cc1301a	pass
 cc1302a	pass
@@ -1959,7 +1953,6 @@ ce3812a	pass
 ce3814a	pass
 ce3815a	pass
 ce3901a	pass
-ce3902b	fail
 ce3904a	pass
 ce3904b	pass
 ce3905a	pass

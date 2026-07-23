@@ -260,8 +260,10 @@ run_one(){
         if ((rc==0)); then
             if grep -q PASSED $LOGS_DIR/$n.out 2>/dev/null; then
                 echo "c pass $n PASSED"
-            elif grep -q NOT.APPLICABLE $LOGS_DIR/$n.out 2>/dev/null; then
-                echo "c skip $n N/A:$(grep -o 'NOT.APPLICABLE.*' $LOGS_DIR/$n.out|head -1|cut -c1-40)"
+            elif grep -q '^NOT APPLICABLE:' $LOGS_DIR/$n.out 2>/dev/null; then
+                # Only REPORT.NOT_APPLICABLE's own line counts; a COMMENT
+                # merely mentioning the words must not mask a failure.
+                echo "c skip $n N/A:$(grep -o '^NOT APPLICABLE:.*' $LOGS_DIR/$n.out|head -1|cut -c1-40)"
             elif grep -q FAILED $LOGS_DIR/$n.out 2>/dev/null; then
                 echo "c fail $n FAILED:$(grep FAILED $LOGS_DIR/$n.out|head -1|cut -c1-50)"
             else

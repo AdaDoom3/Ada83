@@ -76,10 +76,17 @@ STATUS LOG
     - cd1009i: limitedness of a generic actual judged by the view at
       the instantiation point (Type_Limited_View_Active), so a private
       part can instantiate with its own completed full view.
-[x] G4 VERIFIED GENUINE — c64103a c64103c c64103d c95084a report
-    NOT APPLICABLE because this implementation has exactly one integer
-    base type ('BASE'LAST equal across all range types); that is a
-    conformant ACATS outcome, not a missing feature.
+[x] G4 CORRECTED — the earlier claim here ("c64103a c64103c c64103d
+    c95084a are genuine NOT APPLICABLE") was WRONG: a harness bug
+    (unanchored NOT-APPLICABLE grep matching COMMENT text) masked
+    real FAILED verdicts. Their integer sections are inapplicable
+    (one integer base type), but their float/fixed/array sections
+    fail for a real gap: conversion actuals (RM 4.6/6.4.1) are
+    unwrapped without checks, and scalar copy-in/copy-out assumes
+    the actual and formal share a representation. Harness grep fixed
+    (anchored); the four tests are parked in withdrawn_tests/ with
+    the officially withdrawn trio until the conversion checks land
+    (see withdrawn_tests/README.md).
 
 FAILS — RESOLVED
 --------------------------------------
@@ -155,9 +162,10 @@ Representation campaign (REPRESENTATION.md), staged and landing:
 
 FINAL STATE (current)
 ---------------------
-Class C: 1969 pass / 3 fail / 4 skip  (baseline was 1935/21/20)
-  - the 3 fails are exactly the officially withdrawn ACVC tests
-    (c98003b, cc1226b, ce3902b); every valid test passes
-  - all 4 skips are genuine RM-conformant NOT APPLICABLE
-  - zero unexplained regressions
+Class C: 1969 runnable tests, all passing  (campaign start: 1935/21/20)
+  - the officially withdrawn trio (c98003b cc1226b ce3902b) and the
+    four conversion-check tests (c64103a c64103c c64103d c95084a)
+    live in withdrawn_tests/ and do not run; see its README.md for
+    which are AVO-withdrawn and which are parked pending the RM 4.6
+    conversion-actual work (open task)
 acats.baseline blessed at this state; run_acats.sh check gates on it.
