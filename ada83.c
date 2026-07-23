@@ -19615,7 +19615,11 @@ static uint32_t Emit_Constraint_Check_Internal (uint32_t val, LLVM_Rep val_rep,
               target->high_bound.int_value == ((int128_t)1 << (bits - 1)) - 1);
     }
 
+    /* The source-subtype elision is sound only when the value cannot
+       carry a base-range intermediate wider than the target's storage
+       (C + 1 computes in COUNT'BASE and may exceed COUNT, ce3306a). */
     if (not full_range and source and
+      val_rep.kind == LL_INT and val_rep.bits <= bits and
       source->low_bound.kind == BOUND_INTEGER and
       source->high_bound.kind == BOUND_INTEGER) {
       full_range = (source->low_bound.int_value >= target->low_bound.int_value and
@@ -30496,17 +30500,10 @@ void Emit_Aggregate_Bound_Match_Check (uint32_t a_lo, uint32_t b_lo,
   LLVM_I1 ne_lo = Emit_Icmp ("ne", ait, a_lo, b_lo);
   LLVM_I1 ne_hi = Emit_Icmp ("ne", ait, a_hi, b_hi);
   uint32_t endpoints_differ = Emit_Result_Instruction ("or i1 %%t%u, %%t%u\n", ne_lo.reg, ne_hi.reg);
-  uint32_t fail;
-  if (cg->in_qualified_expr) {
-    fail = endpoints_differ;
-    (void)both_null;
-  } else {
-    uint32_t not_both_null = Emit_Result_Instruction ("xor i1 %%t%u, 1\n", both_null);
-    fail = Emit_Temp ();
-    Emit ("  %%t%u = and i1 %%t%u, %%t%u\n",
-          fail, endpoints_differ, not_both_null);
-  }
-  Emit_Raise_Constraint_Error_When ((LLVM_I1){ fail }, raise_msg);
+  /* RM 4.3.2: a named aggregate's bounds must equal the constraint's,
+     null or not (c43103b) — no both-null forgiveness. */
+  (void)both_null;
+  Emit_Raise_Constraint_Error_When ((LLVM_I1){ endpoints_differ }, raise_msg);
 }
 
 uint32_t Emit_Variant_Disc_Guard (Component_Info *comp, Type_Info *ty,
@@ -32676,8 +32673,12 @@ void Generate_Return_Statement (Syntax_Node *node) {
     if (Type_Is_Access (ret_type))
       Emit_Access_Designated_Disc_Check (value.reg, value.rep, ret_type);
 
-    if (Type_Is_Unconstrained_Array (ret_type) and
-      LLVM_Rep_Is_Fat_Pointer (ret_rep)) {
+    if ((Type_Is_Unconstrained_Array (ret_type) or
+         Type_Is_Constrained_Array (ret_type)) and
+        LLVM_Rep_Is_Fat_Pointer (value.rep)) {
+      /* Constrained-but-dynamic-bounds results are fat too; their
+         bounds (and possibly data) live in this frame and must move
+         to the secondary stack to survive the return (c42007i). */
       value = Emit_Fat_Array_Deep_Copy (value, ret_type);
     }
 

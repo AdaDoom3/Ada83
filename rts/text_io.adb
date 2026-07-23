@@ -69,9 +69,12 @@ package body TEXT_IO is
       Name        : String(1..1024);
       Form_Len    : Integer;
       Form        : String(1..256);
-      Col         : POSITIVE_COUNT;
-      Line        : POSITIVE_COUNT;
-      Page        : POSITIVE_COUNT;
+      -- Internal counters hold one past COUNT'LAST: writing at column
+      -- COUNT'LAST legitimately advances to COUNT'LAST + 1, whereupon
+      -- COL/LINE/PAGE raise LAYOUT_ERROR (RM 14.3.5).
+      Col         : Integer;
+      Line        : Integer;
+      Page        : Integer;
       Line_Length : COUNT;
       Page_Length : COUNT;
       Is_Standard : Boolean;
@@ -80,6 +83,11 @@ package body TEXT_IO is
       Page_Active : Boolean;  -- content written on the current page since the
                               -- last page terminator (drives the final
                               -- line/page terminator emitted at CLOSE)
+      Shared      : Boolean;  -- stream is (or was) shared with another
+                              -- internal file on the same external file
+      Write_Pos   : Integer;  -- this internal file's own write offset
+                              -- within a shared stream: writers do not
+                              -- move the shared (read) cursor (ce3111)
    end record;
 
    type FCB_Array is array (0 .. 99) of File_Control_Block;
@@ -130,6 +138,7 @@ package body TEXT_IO is
       FCBs(Idx).Is_Standard := True;
       FCBs(Idx).Look_Count := 0;
       FCBs(Idx).Page_Active := False;
+      FCBs(Idx).Shared := False;
    end Init_Standard_File;
 
    procedure Init_Standard_Files is
@@ -168,6 +177,23 @@ package body TEXT_IO is
    -- Flush every open file already associated with the external file NAME, so
    -- that writes buffered against one internal file become visible to another
    -- internal file about to be opened on the same external file (RM 14.1).
+   -- Another OPEN internal file already associated with this external
+   -- file, or 0. Sharing internal files use one stream, so they see a
+   -- single common file position (ce3111).
+   function Find_Open_By_Name(NAME : String) return Integer is
+   begin
+      if NAME'Length /= 0 then
+         for I in 4 .. 99 loop
+            if FCBs(I).Is_Open and then FCBs(I).Stream /= Null_Address
+               and then FCBs(I).Name_Len = NAME'Length
+               and then FCBs(I).Name(1 .. FCBs(I).Name_Len) = NAME then
+               return I;
+            end if;
+         end loop;
+      end if;
+      return 0;
+   end Find_Open_By_Name;
+
    procedure Flush_External(NAME : String) is
       Dummy : Integer;
    begin
@@ -209,9 +235,9 @@ package body TEXT_IO is
          when IN_FILE =>
             Mode_Str := ('r', Character'Val(0), Character'Val(0));
          when OUT_FILE =>
-            Mode_Str := ('w', Character'Val(0), Character'Val(0));
+            Mode_Str := ('w', '+', Character'Val(0));
          when APPEND_FILE =>
-            Mode_Str := ('a', Character'Val(0), Character'Val(0));
+            Mode_Str := ('a', '+', Character'Val(0));
       end case;
 
       if NAME'Length > 0 then
@@ -246,6 +272,7 @@ package body TEXT_IO is
       FCBs(Idx).Is_Standard := False;
       FCBs(Idx).Look_Count := 0;
       FCBs(Idx).Page_Active := False;
+      FCBs(Idx).Shared := False;
 
       FILE := (HANDLE => Idx);
    end CREATE;
@@ -265,6 +292,18 @@ package body TEXT_IO is
          raise STATUS_ERROR;
       end if;
 
+      -- RM 14.3.1: a file object serving as the current default input
+      -- or output cannot be reopened with a mode inconsistent with
+      -- that role.
+      if FILE.HANDLE /= 0 then
+         if FILE.HANDLE = Current_Out_Idx and MODE = IN_FILE then
+            raise MODE_ERROR;
+         end if;
+         if FILE.HANDLE = Current_In_Idx and MODE /= IN_FILE then
+            raise MODE_ERROR;
+         end if;
+      end if;
+
       if Next_FCB > 99 then
          raise USE_ERROR;
       end if;
@@ -280,21 +319,47 @@ package body TEXT_IO is
          when IN_FILE =>
             Mode_Str := ('r', Character'Val(0), Character'Val(0));
          when OUT_FILE =>
-            Mode_Str := ('w', Character'Val(0), Character'Val(0));
+            Mode_Str := ('w', '+', Character'Val(0));
          when APPEND_FILE =>
-            Mode_Str := ('a', Character'Val(0), Character'Val(0));
+            Mode_Str := ('a', '+', Character'Val(0));
       end case;
 
       -- Make any writes buffered against the same external file visible before
       -- this internal file starts reading it.
       Flush_External(NAME);
 
-      To_C_String(NAME, Name_Buf, Name_Len);
-      FCBs(Idx).Stream := C_Fopen(Name_Buf'Address, Mode_Str'Address);
-      if FCBs(Idx).Stream = Null_Address then
-         Next_FCB := Next_FCB - 1;
-         raise NAME_ERROR;
-      end if;
+      declare
+         Sharer : Integer := Find_Open_By_Name(NAME);
+         Dummy  : Integer;
+      begin
+         if Sharer /= 0 then
+            FCBs(Idx).Stream := FCBs(Sharer).Stream;
+            if not FCBs(Sharer).Shared then
+               -- the existing user's writes so far sit at the cursor
+               FCBs(Sharer).Write_Pos := C_Ftell(FCBs(Sharer).Stream);
+               FCBs(Sharer).Shared := True;
+            end if;
+            FCBs(Idx).Shared := True;
+            FCBs(Idx).Write_Pos := 0;
+            if MODE = APPEND_FILE then
+               Dummy := C_Fseek(FCBs(Idx).Stream, 0, 2);  -- SEEK_END
+               FCBs(Idx).Write_Pos := C_Ftell(FCBs(Idx).Stream);
+            elsif MODE = IN_FILE then
+               -- a newly opened reader starts at the beginning; the
+               -- cursor is common, so all sharing readers follow file
+               -- position from here on (ce3111a/c)
+               Dummy := C_Fseek(FCBs(Idx).Stream, 0, 0);
+            end if;
+         else
+            To_C_String(NAME, Name_Buf, Name_Len);
+            FCBs(Idx).Stream := C_Fopen(Name_Buf'Address, Mode_Str'Address);
+            FCBs(Idx).Shared := False;
+            if FCBs(Idx).Stream = Null_Address then
+               Next_FCB := Next_FCB - 1;
+               raise NAME_ERROR;
+            end if;
+         end if;
+      end;
 
       FCBs(Idx).Mode := MODE;
       FCBs(Idx).Is_Open := True;
@@ -313,6 +378,16 @@ package body TEXT_IO is
       FCBs(Idx).Look_Count := 0;
       FCBs(Idx).Page_Active := False;
 
+      -- A default file that is reopened keeps its role (RM 14.3.1).
+      if FILE.HANDLE /= 0 then
+         if FILE.HANDLE = Current_Out_Idx then
+            Current_Out_Idx := Idx;
+         end if;
+         if FILE.HANDLE = Current_In_Idx then
+            Current_In_Idx := Idx;
+         end if;
+      end if;
+
       FILE := (HANDLE => Idx);
    end OPEN;
 
@@ -325,22 +400,45 @@ package body TEXT_IO is
       if FCBs(Idx).Is_Standard then
          raise USE_ERROR;
       end if;
-      -- Close the final line and page so the external file is well-formed:
-      -- a non-empty page ends with a line terminator then a page terminator,
-      -- before the file terminator (RM 14.3.1).
-      if FCBs(Idx).Mode /= IN_FILE and FCBs(Idx).Page_Active then
-         if FCBs(Idx).Col > 1 then
-            Raw_Put(Idx, 10);  -- terminate the partial last line
+      -- With a shared stream, only the last internal file to close
+      -- finishes and closes the external file; terminators then go at
+      -- the stream's end, past every sharer's writes.
+      declare
+         Still_Shared : Boolean := False;
+      begin
+         if FCBs(Idx).Shared then
+            for I in 4 .. 99 loop
+               if I /= Idx and then FCBs(I).Is_Open
+                  and then FCBs(I).Stream = FCBs(Idx).Stream then
+                  Still_Shared := True;
+               end if;
+            end loop;
          end if;
-         Raw_Put(Idx, 12);     -- page terminator
-         FCBs(Idx).Page_Active := False;
-      end if;
-      if FCBs(Idx).Stream /= Null_Address then
-         Dummy := C_Fclose(FCBs(Idx).Stream);
-      end if;
+         -- Close the final line and page so the external file is
+         -- well-formed: a non-empty page ends with a line terminator
+         -- then a page terminator, before the file terminator
+         -- (RM 14.3.1).
+         if not Still_Shared then
+            if FCBs(Idx).Shared and FCBs(Idx).Stream /= Null_Address then
+               Dummy := C_Fseek(FCBs(Idx).Stream, 0, 2);  -- SEEK_END
+               FCBs(Idx).Shared := False;  -- terminators append plainly
+            end if;
+            if FCBs(Idx).Mode /= IN_FILE and FCBs(Idx).Page_Active then
+               if FCBs(Idx).Col > 1 then
+                  Raw_Put(Idx, 10);  -- terminate the partial last line
+               end if;
+               Raw_Put(Idx, 12);     -- page terminator
+               FCBs(Idx).Page_Active := False;
+            end if;
+            if FCBs(Idx).Stream /= Null_Address then
+               Dummy := C_Fclose(FCBs(Idx).Stream);
+            end if;
+         end if;
+      end;
       FCBs(Idx).Is_Open := False;
       FCBs(Idx).Stream := Null_Address;
-      FILE.HANDLE := 0;  -- the handle now denotes a closed file
+      -- The handle keeps denoting this (now closed) file: reopening
+      -- the same object must recognize a default-file role (RM 14.3.1).
    end CLOSE;
 
    procedure DELETE(FILE : in Out FILE_TYPE) is
@@ -399,7 +497,22 @@ package body TEXT_IO is
          FCBs(Idx).Page_Active := False;
       end if;
 
-      if FCBs(Idx).Name_Len > 0 then
+      if FCBs(Idx).Shared and FCBs(Idx).Stream /= Null_Address then
+         -- The stream is shared with another internal file: reopening
+         -- would strand the sharer, so rewind positions in place.
+         Dummy := C_Fflush(FCBs(Idx).Stream);
+         if MODE = IN_FILE then
+            -- the read cursor is common property: resetting one
+            -- sharer must not move another sharer's position
+            -- (ce3115a); only this file's lookahead is discarded
+            null;
+         elsif MODE = OUT_FILE then
+            FCBs(Idx).Write_Pos := 0;
+         else
+            Dummy := C_Fseek(FCBs(Idx).Stream, 0, 2);   -- SEEK_END
+            FCBs(Idx).Write_Pos := C_Ftell(FCBs(Idx).Stream);
+         end if;
+      elsif FCBs(Idx).Name_Len > 0 then
          -- Named file: close and reopen in the new mode.
          if FCBs(Idx).Stream /= Null_Address then
             Dummy := C_Fclose(FCBs(Idx).Stream);
@@ -408,9 +521,9 @@ package body TEXT_IO is
             when IN_FILE =>
                Mode_Str := ('r', Character'Val(0), Character'Val(0));
             when OUT_FILE =>
-               Mode_Str := ('w', Character'Val(0), Character'Val(0));
+               Mode_Str := ('w', '+', Character'Val(0));
             when APPEND_FILE =>
-               Mode_Str := ('a', Character'Val(0), Character'Val(0));
+               Mode_Str := ('a', '+', Character'Val(0));
          end case;
          To_C_String(FCBs(Idx).Name(1..FCBs(Idx).Name_Len), Name_Buf, Name_Len);
          FCBs(Idx).Stream := C_Fopen(Name_Buf'Address, Mode_Str'Address);
@@ -612,12 +725,24 @@ package body TEXT_IO is
       return PAGE_LENGTH((HANDLE => Current_Out_Idx));
    end PAGE_LENGTH;
 
-   -- Output character to file
+   -- Output character to file. On a shared stream every writer keeps
+   -- its own offset and leaves the common cursor (owned by readers)
+   -- where it was.
    procedure Raw_Put(Idx : Integer; C : Integer) is
       Dummy : Integer;
+      Saved : Integer;
    begin
       if FCBs(Idx).Stream /= Null_Address then
-         Dummy := C_Fputc(C, FCBs(Idx).Stream);
+         if FCBs(Idx).Shared then
+            Saved := C_Ftell(FCBs(Idx).Stream);
+            Dummy := C_Fseek(FCBs(Idx).Stream, FCBs(Idx).Write_Pos, 0);
+            Dummy := C_Fputc(C, FCBs(Idx).Stream);
+            FCBs(Idx).Write_Pos := FCBs(Idx).Write_Pos + 1;
+            Dummy := C_Fflush(FCBs(Idx).Stream);
+            Dummy := C_Fseek(FCBs(Idx).Stream, Saved, 0);
+         else
+            Dummy := C_Fputc(C, FCBs(Idx).Stream);
+         end if;
       end if;
    end Raw_Put;
 
@@ -955,7 +1080,10 @@ package body TEXT_IO is
    begin
       Ensure_Init;
       Require_Open(Idx);
-      return FCBs(Idx).Col;
+      if FCBs(Idx).Col > Integer(COUNT'LAST) then
+         raise LAYOUT_ERROR;  -- position exceeds COUNT'LAST (RM 14.3.5)
+      end if;
+      return POSITIVE_COUNT(FCBs(Idx).Col);
    end COL;
 
    function COL return POSITIVE_COUNT is
@@ -968,7 +1096,10 @@ package body TEXT_IO is
    begin
       Ensure_Init;
       Require_Open(Idx);
-      return FCBs(Idx).Line;
+      if FCBs(Idx).Line > Integer(COUNT'LAST) then
+         raise LAYOUT_ERROR;  -- position exceeds COUNT'LAST (RM 14.3.5)
+      end if;
+      return POSITIVE_COUNT(FCBs(Idx).Line);
    end LINE;
 
    function LINE return POSITIVE_COUNT is
@@ -981,7 +1112,10 @@ package body TEXT_IO is
    begin
       Ensure_Init;
       Require_Open(Idx);
-      return FCBs(Idx).Page;
+      if FCBs(Idx).Page > Integer(COUNT'LAST) then
+         raise LAYOUT_ERROR;  -- position exceeds COUNT'LAST (RM 14.3.5)
+      end if;
+      return POSITIVE_COUNT(FCBs(Idx).Page);
    end PAGE;
 
    function PAGE return POSITIVE_COUNT is
