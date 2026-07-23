@@ -13174,6 +13174,14 @@ Type_Info *Resolve_Expression (Syntax_Node *node) {
           fixed_type->fixed.scale = scale;
 
           if (node->real_type.range) {
+            /* RM 8.7: bounds of a real type definition are expected
+               to be of some real type (c87b10a). */
+            if (node->real_type.range->kind == NK_RANGE) {
+              Seed_Expected_Type (node->real_type.range->range.low,
+                                  sm->type_universal_real);
+              Seed_Expected_Type (node->real_type.range->range.high,
+                                  sm->type_universal_real);
+            }
             Resolve_Expression (node->real_type.range);
             Syntax_Node *range = node->real_type.range;
 
@@ -13206,6 +13214,12 @@ Type_Info *Resolve_Expression (Syntax_Node *node) {
           }
 
           if (node->real_type.range) {
+            if (node->real_type.range->kind == NK_RANGE) {
+              Seed_Expected_Type (node->real_type.range->range.low,
+                                  sm->type_universal_real);
+              Seed_Expected_Type (node->real_type.range->range.high,
+                                  sm->type_universal_real);
+            }
             Resolve_Expression (node->real_type.range);
           }
 
@@ -22684,6 +22698,21 @@ LLVM_Value Convert_Real_To_Fixed (uint32_t val, double small, LLVM_Rep fix_rep)
 {
   uint32_t divided = Emit_Scale_By_Small (val, small, true, LLVM_Rep_Float (64));
   uint32_t rounded = Emit_Result_Instruction ("call double @llvm.round.f64(double %%t%u)\n", divided);
+  /* A scaled value outside the representation makes fptosi poison;
+     the RM wants CONSTRAINT/NUMERIC_ERROR instead (c45252a). */
+  {
+    double magnitude = ldexp (1.0, fix_rep.bits > 0 ? fix_rep.bits - 1 : 63);
+    uint32_t too_high = Emit_Result_Instruction (
+      "fcmp oge double %%t%u, 0x%016llX\n", rounded,
+      (unsigned long long)({ double d = magnitude; uint64_t b; memcpy (&b, &d, 8); b; }));
+    uint32_t too_low = Emit_Result_Instruction (
+      "fcmp olt double %%t%u, 0x%016llX\n", rounded,
+      (unsigned long long)({ double d = -magnitude; uint64_t b; memcpy (&b, &d, 8); b; }));
+    uint32_t out_of_range = Emit_Result_Instruction (
+      "or i1 %%t%u, %%t%u\n", too_high, too_low);
+    Emit_Raise_Constraint_Error_When ((LLVM_I1){ out_of_range },
+      "real value outside fixed representation (RM 4.5.7)");
+  }
   uint32_t scaled = Emit_Result_Instruction ("fptosi double %%t%u to %s\n", rounded, LLVM_Rep_To_String (fix_rep));
   return Val_Rep (scaled, fix_rep);
 }
@@ -23732,8 +23761,12 @@ LLVM_Value Emit_Binary_Op_Predefined (Syntax_Node *node) {
           }
 
           if (Type_Is_Access (range_type) and
-              Type_Is_Record (range_type->access.designated_type) and
+              range_type->access.designated_type and
+              (Type_Is_Record (range_type->access.designated_type) or
+               Type_Is_Private (range_type->access.designated_type)) and
               range_type->access.designated_type->record.has_disc_constraints) {
+            /* A private designated view carries the same record layout
+               and discriminant constraint as its full view (c45282b). */
             Type_Info *des = range_type->access.designated_type;
             uint32_t rec_ptr = LLVM_Rep_Is_Fat_Pointer (left_v.rep)
               ? Emit_Fat_Pointer_Data (left_v.reg, Array_Bound_LLVM_Rep (des)).reg
@@ -24894,6 +24927,45 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
             Emit_Constraint_Check_Val (Val_Rep (cur_val, ld_ty), formal_type, arg->type);
           }
 
+          /* Dynamic-bounds actual against a statically constrained
+             array formal: check at run time — exact bounds for OUT and
+             IN OUT (no value conversion, so no sliding), lengths
+             otherwise (RM 6.4.1, c64104c case E). */
+          if (formal_type and Type_Is_Constrained_Array (formal_type) and
+              not Type_Has_Dynamic_Bounds (formal_type) and
+              formal_type->array.index_count > 0 and
+              actual_type and Type_Is_Constrained_Array (actual_type) and
+              Type_Has_Dynamic_Bounds (actual_type) and
+              Type_Needs_Fat_Pointer (actual_type) and
+              is_simple_var_ref and
+              not Check_Is_Suppressed (formal_type, NULL, CHK_LENGTH)) {
+            LLVM_Rep abt = Array_Bound_LLVM_Rep (actual_type);
+            uint32_t actual_fat = Emit_Load_Fat_Pointer (addr_node->symbol, abt).reg;
+            uint32_t ndims = formal_type->array.index_count;
+            if (ndims > 8) ndims = 8;
+            bool exact_bounds = pmode != MODE_IN;
+            for (uint32_t d = 0; d < ndims; d++) {
+              uint32_t f_lo = Emit_Single_Bound (&formal_type->array.indices[d].low_bound, abt);
+              uint32_t f_hi = Emit_Single_Bound (&formal_type->array.indices[d].high_bound, abt);
+              uint32_t a_lo = Emit_Fat_Pointer_Low_Dim (actual_fat, abt, d).reg;
+              uint32_t a_hi = Emit_Fat_Pointer_High_Dim (actual_fat, abt, d).reg;
+              if (exact_bounds) {
+                LLVM_I1 ne_lo = Emit_Icmp ("ne", abt, a_lo, f_lo);
+                LLVM_I1 ne_hi = Emit_Icmp ("ne", abt, a_hi, f_hi);
+                uint32_t differ = Emit_Result_Instruction (
+                  "or i1 %%t%u, %%t%u\n", ne_lo.reg, ne_hi.reg);
+                Emit_Raise_Constraint_Error_When ((LLVM_I1){ differ },
+                  "actual array bounds vs constrained formal (RM 6.4.1)");
+              } else {
+                uint32_t a_len = Emit_Length_From_Bounds (a_lo, a_hi, abt).reg;
+                uint32_t f_len = Emit_Length_From_Bounds (f_lo, f_hi, abt).reg;
+                LLVM_I1 ne = Emit_Icmp ("ne", abt, a_len, f_len);
+                Emit_Raise_Constraint_Error_When (ne,
+                  "actual array length vs constrained formal (RM 6.4.1)");
+              }
+            }
+          }
+
           Type_Info *disc_check_type = formal_type;
           if (sym->parent_operation and param_idx < sym->parent_operation->parameter_count)
             disc_check_type = sym->parent_operation->parameters[param_idx].param_type;
@@ -24985,6 +25057,23 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
             }
           }
 
+          /* A string literal's length is its own, whatever subtype the
+             resolver seeded it with; a static mismatch against a
+             constrained formal raises at the call (RM 6.4.1, c64104c). */
+          if (arg->kind == NK_STRING and
+              Type_Is_Constrained_Array (formal_type) and
+              formal_type->array.index_count == 1 and
+              not Type_Has_Dynamic_Bounds (formal_type) and
+              not Check_Is_Suppressed (formal_type, NULL, CHK_LENGTH)) {
+            int128_t formal_low  = Type_Bound_Value (formal_type->array.indices[0].low_bound);
+            int128_t formal_high = Type_Bound_Value (formal_type->array.indices[0].high_bound);
+            int128_t formal_length = formal_high - formal_low + 1;
+            if (formal_length < 0) formal_length = 0;
+            if ((int128_t) arg->string_val.text.length != formal_length)
+              Emit_Raise_And_Continue (
+                "string literal length vs constrained formal (RM 6.4.1)");
+          }
+
           if (formal_needs_fat and actual_is_constrained) {
             bool already_fat = LLVM_Rep_Is_Fat_Pointer (arg_v.rep) or
                        Expression_Produces_Fat_Pointer (arg, actual_type);
@@ -25006,12 +25095,29 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
               bhi[d] = Emit_Single_Bound (&formal_type->array.indices[d].high_bound, abt);
             }
 
+            bool exact_bounds =
+              sym->parameters[param_idx].mode == MODE_OUT or
+              sym->parameters[param_idx].mode == MODE_IN_OUT;
             for (uint32_t d = 0; d < ndims; d++) {
-              uint32_t a_len = Emit_Fat_Pointer_Length_Dim (args[param_idx], abt, d).reg;
-              uint32_t f_len = Emit_Length_From_Bounds (blo[d], bhi[d], abt).reg;
-              LLVM_I1 ne = Emit_Icmp ("ne", abt, a_len, f_len);
-              Emit_Raise_Constraint_Error_When (ne,
-                "actual array length vs constrained formal (RM 6.4.1)");
+              if (exact_bounds) {
+                /* No value conversion happens for OUT / IN OUT array
+                   actuals, so no sliding: bounds must equal the
+                   formal's (RM 6.4.1, c64104c case E). */
+                uint32_t a_lo = Emit_Fat_Pointer_Low_Dim (args[param_idx], abt, d).reg;
+                uint32_t a_hi = Emit_Fat_Pointer_High_Dim (args[param_idx], abt, d).reg;
+                LLVM_I1 ne_lo = Emit_Icmp ("ne", abt, a_lo, blo[d]);
+                LLVM_I1 ne_hi = Emit_Icmp ("ne", abt, a_hi, bhi[d]);
+                uint32_t differ = Emit_Result_Instruction (
+                  "or i1 %%t%u, %%t%u\n", ne_lo.reg, ne_hi.reg);
+                Emit_Raise_Constraint_Error_When ((LLVM_I1){ differ },
+                  "actual array bounds vs constrained formal (RM 6.4.1)");
+              } else {
+                uint32_t a_len = Emit_Fat_Pointer_Length_Dim (args[param_idx], abt, d).reg;
+                uint32_t f_len = Emit_Length_From_Bounds (blo[d], bhi[d], abt).reg;
+                LLVM_I1 ne = Emit_Icmp ("ne", abt, a_len, f_len);
+                Emit_Raise_Constraint_Error_When (ne,
+                  "actual array length vs constrained formal (RM 6.4.1)");
+              }
             }
             args[param_idx] = Emit_Fat_Pointer_MultiDim (data_ptr, blo, bhi, ndims, abt, abt).reg;
           } else if (Expression_Produces_Fat_Pointer (arg, actual_type) and
@@ -30494,15 +30600,19 @@ void Emit_Index_Subtype_Bound_Check (Type_Info *idx_ty, uint32_t lo, uint32_t hi
 void Emit_Aggregate_Bound_Match_Check (uint32_t a_lo, uint32_t b_lo,
                                        uint32_t a_hi, uint32_t b_hi,
                                        LLVM_Rep ait, const char *raise_msg) {
-  LLVM_I1 a_null = Emit_Icmp ("sgt", ait, a_lo, a_hi);
-  LLVM_I1 b_null = Emit_Icmp ("sgt", ait, b_lo, b_hi);
-  uint32_t both_null = Emit_Result_Instruction ("and i1 %%t%u, %%t%u\n", a_null.reg, b_null.reg);
+  if (not cg->in_qualified_expr and cg->agg_dimension_rows_slide) {
+    /* Assignment slides: only the lengths must agree (c52103s). */
+    uint32_t a_len = Emit_Length_Clamped (a_lo, a_hi, ait).reg;
+    uint32_t b_len = Emit_Length_Clamped (b_lo, b_hi, ait).reg;
+    LLVM_I1 ne = Emit_Icmp ("ne", ait, a_len, b_len);
+    Emit_Raise_Constraint_Error_When (ne, raise_msg);
+    return;
+  }
+  /* Elsewhere the bounds must equal the constraint's, null or not
+     (RM 4.3.2, c43103b). */
   LLVM_I1 ne_lo = Emit_Icmp ("ne", ait, a_lo, b_lo);
   LLVM_I1 ne_hi = Emit_Icmp ("ne", ait, a_hi, b_hi);
   uint32_t endpoints_differ = Emit_Result_Instruction ("or i1 %%t%u, %%t%u\n", ne_lo.reg, ne_hi.reg);
-  /* RM 4.3.2: a named aggregate's bounds must equal the constraint's,
-     null or not (c43103b) — no both-null forgiveness. */
-  (void)both_null;
   Emit_Raise_Constraint_Error_When ((LLVM_I1){ endpoints_differ }, raise_msg);
 }
 

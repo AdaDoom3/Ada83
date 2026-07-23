@@ -81,8 +81,46 @@ STATUS LOG
     base type ('BASE'LAST equal across all range types); that is a
     conformant ACATS outcome, not a missing feature.
 
-FAILS (17; the remaining work)
+FAILS — RESOLVED
 --------------------------------------
-c42007i c43103b c45252a c45282b c55b06a c64104c c87b10a c98003b
-cb7001a cc1226b cd1c04e cd4024b cd4031a cda201a ce3111c ce3208a
-ce3411b
+[x] c42007i  constrained-dynamic-bounds function results deep-copy to
+             the secondary stack (bounds were dangling frame allocas)
+[x] c43103b  named aggregate bounds equal the constraint even when
+             null — except in assignment (sliding) contexts, where
+             lengths govern (c52103s kept green)
+[x] c45252a  real->fixed conversion guards the representation range
+             before fptosi (poison became CONSTRAINT_ERROR)
+[x] c45282b  access membership sees discriminant constraints through
+             private designated views
+[x] c64104c  string-literal actuals length-checked against constrained
+             formals; OUT/IN OUT array actuals need exact bounds
+             (no sliding without value conversion), enforced statically
+             and dynamically
+[x] c87b10a  bounds of real type definitions resolve expecting a real
+             type (RM 8.7), so user integer-returning "+" loses
+[x] ce3111c  shared external files (see text_io notes above)
+[x] ce3208a  default-file identity across CLOSE + MODE_ERROR rule
+[x] ce3411b  COUNT'LAST/LAYOUT_ERROR model
+
+FAILS — REMAINING 9, all accounted for
+--------------------------------------
+Officially WITHDRAWN ACVC 1.11 tests (expectations ruled erroneous by
+the AVO; list reproduced in DTIC validation summary reports, e.g.
+ADA243300/ADA262889): c55b06a c98003b cb7001a cc1226b cd4024b cd4031a
+ce3902b.  ce3902b regressed pass->fail because its expectation
+(reopening the current default output with IN mode succeeding)
+directly contradicts the valid ce3208a, which we now honor — the AVO
+withdrew ce3902b, not ce3208a.
+
+Feature-blocked (§13 representation work, not drive-by fixable):
+  cd1c04e  record rep clauses must override inherited component
+           layout of derived types
+  cda201a  pragma PACK bit-packed boolean arrays (is_packed is
+           currently recorded but never consumed)
+
+FINAL STATE
+-----------
+Class C: 1963 pass / 9 fail / 4 skip  (baseline was 1935/21/20)
+  - all 4 skips are genuine RM-conformant NOT APPLICABLE
+  - zero unexplained regressions
+acats.baseline blessed at this state; run_acats.sh check gates on it.

@@ -21,23 +21,12 @@ State as of this revision. Completed items live in the git log, not here.
 
 ## B. Half-implemented / remaining failures
 
-4. **ca* multi-file failures — ROOT-CAUSED**: elaboration-flag need is
-   decided per compilation unit. The main unit assigns `LINE` a flag
-   (call-before-body seen), emits the RM 3.9 check and the reset; the
-   subunit compilation sees no risky call, assigns no flag id, and never
-   emits the body-elaborated `store true` (ada83.c:38492-38528 fires
-   only when `elab_flag_id != 0` IN THAT COMPILATION). Checker and
-   setter disagree across units; flag stays false; PROGRAM_ERROR.
-   Fix: emit the store-true unconditionally for every body generated
-   inside a package elab function, with the `.elab` global emitted
-   `linkonce_odr` on the setter side (dedup via elab_extern_noted) so
-   checked and unchecked flags merge at link. Verify with the ca1002
-   family, then the other ca* mains.
-5. **Remaining Class C failures** (rep clauses `cd*`, text_io `ce3*`,
-   multi-file elaboration `ca*`, `c87b10a` overloading, `c98003b`
-   rendezvous ordering, numerics `c45*`). Re-classification lost with
-   the container restart; redo serially: compile+run each, classify
-   missing-feature vs wrong-semantics, fix by theme.
+4. **Remaining Class C failures**: down to nine, all classified (see
+   checklist.txt): seven are officially withdrawn ACVC 1.11 tests
+   (c55b06a c98003b cb7001a cc1226b cd4024b cd4031a ce3902b); two
+   need §13 representation work — `cd1c04e` (rep clauses must override
+   inherited derived-type component layout) and `cda201a` (pragma PACK
+   bit-packing; `is_packed` is recorded but never consumed).
 6. **Terminate-alternative guards**: parser ledger note says "not yet
    enforced"; codegen stores "at terminate iff open", so likely stale —
    verify with a two-line test, then drop the note.
