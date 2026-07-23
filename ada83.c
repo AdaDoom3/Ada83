@@ -26268,6 +26268,9 @@ LLVM_Value Emit_Bound_Attribute (uint32_t t,
                                  from_index_type ? " from idx_type" : "");
 
       } else {
+        Report_Error (prefix_expr ? prefix_expr->location
+                                  : (Source_Location){0},
+          "internal: array bound '%s(%u) is not computable here", tag, dim + 1);
         Emit_Static_Array_Bound (t, 0, attr, tag, dim, " unknown");
       }
     }
