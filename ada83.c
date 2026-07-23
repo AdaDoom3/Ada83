@@ -1814,6 +1814,7 @@ struct Symbol {
   bool     definition_emitted;
   bool     separate_callee_noted;
   bool     body_is_separate_stub;
+  bool     declared_in_statements;
   bool     frame_offset_assigned;
   bool     param_by_reference;
   bool     has_runtime_constrained_flag;
@@ -1891,6 +1892,7 @@ typedef struct {
   uint32_t   visibility_cutoff;
   Scope     *cutoff_exempt_scope;
   bool       in_package_visible_part;
+  uint32_t   statement_depth;
 } Symbol_Manager;
 
 extern Symbol_Manager *sm;
@@ -13572,9 +13574,11 @@ void Resolve_Statement_List (Node_List *list) {
 
   Preregister_Labels (list);
 
+  sm->statement_depth++;
   for (uint32_t i = 0; i < list->count; i++) {
     Resolve_Statement (list->items[i]);
   }
+  sm->statement_depth--;
 }
 void Resolve_Statement (Syntax_Node *node) {
   if (not node) return;
@@ -15880,6 +15884,10 @@ void Resolve_Declaration (Syntax_Node *node) {
           node->object_decl.is_constant ? SYMBOL_CONSTANT : SYMBOL_VARIABLE,
           name_node->string_val.text,
           name_node->location);
+        /* Declared inside a compound statement (block declare part):
+           storage is a local of the function the statements compile
+           into, never a module global. */
+        sym->declared_in_statements = sm->statement_depth > 0;
 
         if (node->object_decl.is_rename and node->object_decl.init) {
           sym->type            = node->object_decl.init->type;
@@ -16774,6 +16782,11 @@ void Resolve_Declaration (Syntax_Node *node) {
       {
         Symbol *sym = Symbol_New (SYMBOL_PACKAGE, node->package_spec.name, node->location);
         sym->declaration = node;
+        /* A package inside a compound statement (a block's declare
+           part) lives in the enclosing dynamic context, not in static
+           storage — its objects are locals of whatever function the
+           statements compile into. */
+        sym->declared_in_statements = sm->statement_depth > 0;
         Symbol_Add (sym);
         node->symbol = sym;
         Symbol_Manager_Push_Scope (sym);
@@ -16851,7 +16864,8 @@ void Resolve_Declaration (Syntax_Node *node) {
         }
         Resolve_Declaration_List (&node->package_body.declarations);
 
-        if (not Find_Enclosing_Subprogram (pkg_sym))
+        if (not Find_Enclosing_Subprogram (pkg_sym) and
+            not (pkg_sym and pkg_sym->declared_in_statements))
           Mark_Package_Level_Objects (&node->package_body.declarations);
 
         Freeze_Declaration_List (&node->package_body.declarations);
@@ -18662,6 +18676,11 @@ bool Symbol_Is_Global (Symbol *sym) {
 
   Symbol *ancestor = sym->parent;
   while (ancestor) {
+    if (ancestor->kind == SYMBOL_PACKAGE and
+        ancestor->declared_in_statements and
+        not ancestor->generic_template) {
+      return false;
+    }
     if ((sym->kind == SYMBOL_VARIABLE or sym->kind == SYMBOL_CONSTANT) and
         sym->is_package_level) {
       if (ancestor->kind == SYMBOL_GENERIC and ancestor->generic_unit and
@@ -18673,6 +18692,10 @@ bool Symbol_Is_Global (Symbol *sym) {
       }
     }
     if (Symbol_Is_Subprogram (ancestor)) {
+      return false;
+    }
+    if ((sym->kind == SYMBOL_VARIABLE or sym->kind == SYMBOL_CONSTANT) and
+        sym->declared_in_statements and not sym->is_package_level) {
       return false;
     }
     if (ancestor->type and Type_Is_Task (ancestor->type)) {
@@ -35715,6 +35738,48 @@ void Generate_Instance_Global_Object_Declaration (Syntax_Node *node) {
     Emit_Object_Task_Elaboration (sym, sym->type);
 
     Type_Info *ty = sym->type;
+    if (ty and Type_Is_Array_Like (ty) and Type_Needs_Fat_Pointer (ty) and
+        not node->object_decl.init) {
+      /* The global is a fat pointer; the array's extent is dynamic, so
+         give it heap data and bounds and store the fat pointer. */
+      LLVM_Rep work = Integer_Arith_Rep ();
+      LLVM_Rep bt   = Array_Bound_LLVM_Rep (ty);
+      const char *ws = LLVM_Rep_To_String (work);
+      uint32_t ndims = ty->array.index_count ? ty->array.index_count : 1;
+      if (ndims > MAX_AGG_DIMS) ndims = MAX_AGG_DIMS;
+      uint32_t elem_size = ty->array.element_type and
+                           ty->array.element_type->size
+                         ? ty->array.element_type->size : 1;
+      uint32_t element_count = 0;
+      uint32_t blo[MAX_AGG_DIMS], bhi[MAX_AGG_DIMS];
+      for (uint32_t d = 0; d < ndims; d++) {
+        blo[d] = Emit_Type_Bound (&ty->array.indices[d].low_bound, work);
+        bhi[d] = Emit_Type_Bound (&ty->array.indices[d].high_bound, work);
+        uint32_t length = Emit_Length_Clamped (blo[d], bhi[d], work).reg;
+        element_count = d == 0 ? length
+          : Emit_Result_Instruction ("mul %s %%t%u, %%t%u\n",
+                                     ws, element_count, length);
+      }
+      uint32_t byte_count = Emit_Result_Instruction (
+        "mul %s %%t%u, %u  ; instance array bytes\n",
+        ws, element_count, elem_size);
+      uint32_t byte_count_64 =
+        Emit_Convert (byte_count, work, LLVM_Rep_Int (64, false)).reg;
+      uint32_t data_ptr = Emit_Result_Instruction (
+        "call ptr @__ada_allocate (i64 %%t%u)\n", byte_count_64);
+      uint32_t bounds_ptr = Emit_Result_Instruction (
+        "call ptr @__ada_allocate (i64 %u)\n",
+        ndims * 2 * (bt.bits / 8));
+      for (uint32_t d = 0; d < ndims; d++)
+        Emit_Store_Bound_Pair (bounds_ptr, bt, d,
+                               Emit_Coerce_Val (Val_Rep (blo[d], work), bt).reg,
+                               Emit_Coerce_Val (Val_Rep (bhi[d], work), bt).reg);
+      uint32_t fat = Emit_Build_Fat_Pointer (data_ptr, bounds_ptr);
+      Emit ("  store " FAT_PTR_TYPE " %%t%u, ptr ", fat);
+      Emit_Symbol_Ref (sym);
+      Emit ("\n");
+      continue;
+    }
     if (not node->object_decl.init) {
       if (Type_Is_Record (ty) and ty->record.has_disc_constraints) {
         uint32_t rbase = Emit_Result_Instruction ("getelementptr i8, ptr ");

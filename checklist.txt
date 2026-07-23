@@ -33,29 +33,47 @@ STATUS LOG
 ----------
 [x] Baseline Class C run: 1935 pass / 21 fail / 20 skip (of 1976)
     results: test_results/c-20260723-115818-3689
+[x] G1 CLOSED — all 46 ca* tests pass; +4 former fails fixed too.
+    Root causes fixed (all upstream, no expander hacks):
+      - WITH of library-level generic instantiations never loaded
+        (loader, ALI writer, Unit_Simple_Name)
+      - RM 10.1 replacement rule missing in Lookup_Path
+      - hand-rolled loaded-body resolution drifted from
+        Resolve_Declaration (never set pkg scope -> subunit parents
+        unresolvable); deleted in favor of Resolve_Declaration
+      - subunit modules emitted strong defs of parent-owned globals
+      - separate package-body stubs lost their elab call at library
+        level (deferred into enclosing elab function now)
+      - whole-loaded units emitted strong function defs -> multiply
+        defined at llvm-link; now linkonce_odr (Loaded_Define_Linkage)
+      - cross-file subprogram bodies (spec and body in different
+        compilations) never loaded
+      - RM 10.2 subunit context clauses not elaborated before ancestor
+        body (Load_Subunit_Context_Closure)
+      - RM 3.9 elaboration flags were per-compilation state; now
+        linkonce_odr globals, set unconditionally at body elaboration,
+        with the dynamic cross-package check gated by pragma ELABORATE
+        edges (Elab_Body_Forced_Before) — fixes ca1002a3m ca1014a0m
+        ca5006a ca1020e3m and the whole flaky ca-elab family
+      - harness: fragments link per RM 10.1 replacement (latest
+        provider per unit, ancestor-aware for subunits); rejected
+        fragments no longer abort a family compile
+[x] Full Class C: 1950 pass / 17 fail / 9 skip — zero regressions.
 
-SKIP GROUPS (baseline c-20260723-115818)
---------------------------------------------
-G1  Multi-file library management (§14/§15/§17) — 12 tests, biggest root cause
-    COMPILE: ca1013a6m ca1020d3m ca2002a0m ca3002a2m ca3009a6m ca5003b5m
-    BIND:    ca1009a4m ca1105b3m ca1107a1m ca3004f4m c39006f3m c86004b2m
-    [ ] root-cause each; expect shared causes in subunit ('separate')
-        resolution and cross-file library visibility
-
-G2  Chapter 8/10 name visibility — 3 tests
+REMAINING SKIPS (run c-20260723-130x)
+--------------------------------------
+G2  Chapter 8.6 STANDARD-replacement tests — 3
     [ ] c86002a2m  COMPILE: type mismatch @36
     [ ] c86002b2m  COMPILE: cannot resolve @82
-    [ ] c86004c2m  COMPILE: cannot resolve selected component in spec
+    [ ] c86004c2m  COMPILE: cannot resolve 'EQU…' in C86004C0_GEN.ads
+[ ] c39006f3m  BIND:unresolved_symbols
+[ ] cd1009i    COMPILE: "actual for non-limited …" @31
+G4  Runtime N/A — 4 (verify genuinely N/A vs missing feature)
+    [ ] c64103a c95084a  "only one integer base type"
+    [ ] c64103c c64103d  "N/A -P1 (D)"
 
-G3  Rep-clause generics — 1 test
-    [ ] cd1009i    COMPILE: "actual for non-limited …" @31
-
-G4  Runtime N/A — 4 tests (verify genuinely N/A vs missing feature)
-    [ ] c64103a c95084a  "only one integer base type" — likely genuine
-    [ ] c64103c c64103d  "N/A -P1 (D)" — investigate
-
-FAILS (secondary; address after skips)
+FAILS (17; address after skips)
 --------------------------------------
 c42007i c43103b c45252a c45282b c55b06a c64104c c87b10a c98003b
-ca1002a3m ca1014a0m ca1020e3m ca5006a cb7001a cc1226b cd1c04e cd4024b
-cd4031a cda201a ce3111c ce3208a ce3411b
+cb7001a cc1226b cd1c04e cd4024b cd4031a cda201a ce3111c ce3208a
+ce3411b
