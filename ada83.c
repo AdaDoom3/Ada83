@@ -1834,6 +1834,7 @@ struct Symbol {
   bool     has_runtime_constrained_flag;
   bool     owned_by_subunit_module;
   bool     is_predefined;
+  bool     is_implicit_declaration;
   bool     needs_address_marker;
   bool     is_identity_function;
   bool     declared_in_visible_part;
@@ -1958,6 +1959,7 @@ typedef struct Interp_List {
   uint32_t       count;
 } Interp_List;
 
+bool Type_Reaches            (Type_Info    *type_info, Type_Info   *target, int depth);
 bool Type_Covers             (Type_Info    *expected, Type_Info    *actual);
 bool Type_Covers_Ex          (Type_Info    *expected, Type_Info    *actual,
                               bool allow_derivation);
@@ -7817,8 +7819,19 @@ void Symbol_Add (Symbol *sym) {
          or never reaches Symbol_Add at all, so what is left is a genuine
          duplicate.  The new symbol is still dropped; the diagnostic is
          the difference. */
+      /* RM 8.4: a use clause never makes a homograph of a directly
+         visible declaration visible — the import is simply void. */
+      if (sym->visibility == VIS_USE_VISIBLE) return;
       if (not sym->is_predefined and not existing->is_predefined and
-          sm->global_scope != scope)
+          sm->global_scope != scope and
+          /* Instantiation installs both the formal's placeholder and the
+             actual's binding under the formal's name; that pairing is the
+             mechanism of instantiation, not a homograph. */
+          not (sym->type and sym->type->is_generic_formal) and
+          not (existing->type and existing->type->is_generic_formal) and
+          not sym->is_instance_wrapper and not existing->is_instance_wrapper and
+          not sym->is_implicit_declaration and
+          not existing->is_implicit_declaration)
         Report_Error (sym->location,
                       "'%.*s' is already declared in this scope",
                       (int) sym->name.length, sym->name.data);
@@ -8045,6 +8058,30 @@ Type_Info *Effective_Type_View (Type_Info *t) {
   if (t and Type_Has_Generic_Actual_View (t) and Outside_Defining_Package (t))
     return Peel_Generic_Actual_View (t);
   return t;
+}
+
+/* Does TYPE_INFO's structure reach TARGET without passing through an
+   access type?  RM 3.3: that is exactly a circular type definition —
+   recursion is only legal through an access type.  The depth cap merely
+   bounds the walk on malformed lattices. */
+bool Type_Reaches (Type_Info *type_info, Type_Info *target, int depth) {
+  if (not type_info or depth > 32) return false;
+  if (type_info == target) return true;
+  if (Type_Reaches (type_info->base_type, target, depth + 1)) return true;
+  if (Type_Is_Array_Like (type_info)) {
+    if (Type_Reaches (type_info->array.element_type, target, depth + 1))
+      return true;
+    for (uint32_t i = 0; i < type_info->array.index_count; i++)
+      if (type_info->array.indices and
+          Type_Reaches (type_info->array.indices[i].index_type, target, depth + 1))
+        return true;
+  }
+  if (Type_Is_Record (type_info))
+    for (uint32_t i = 0; i < type_info->record.component_count; i++)
+      if (Type_Reaches (type_info->record.components[i].component_type,
+                        target, depth + 1))
+        return true;
+  return false;
 }
 
 bool Type_Covers (Type_Info *expected, Type_Info *actual) {
@@ -9086,17 +9123,43 @@ Type_Info *Resolve_Selected (Syntax_Node *node) {
     if (prefix_sym and prefix_sym->kind == SYMBOL_PACKAGE) {
       while (prefix_sym->aliased) prefix_sym = prefix_sym->aliased;
       node->selected.prefix->symbol = prefix_sym;
+      /* An expanded name can be overloaded (two enumeration types with
+         the same literal, say): the context's expected type — seeded
+         into node->type before resolution — picks among the matches,
+         with the first match kept as the fallback. */
+      Type_Info *expected = node->type;
+      Symbol *fallback = NULL;
       for (uint32_t i = 0; i < prefix_sym->exported_count; i++) {
         if (Slice_Equal_Ignore_Case (prefix_sym->exported[i]->name,
                        node->selected.selector)) {
 
           Symbol *sel =
             Single_Task_Object_Denoted (prefix_sym->exported[i]);
+          if (expected) {
+            Symbol *match = NULL;
+            for (Symbol *c = sel; c; c = c->next_overload)
+              if (c->type and Type_Covers (expected, c->type)) {
+                match = c;
+                break;
+              }
+            if (match) {
+              sel = match;
+            } else {
+              if (not fallback) fallback = sel;
+              continue;
+            }
+          }
           node->symbol = sel;
           node->type = (sel->kind == SYMBOL_FUNCTION and sel->return_type)
                  ? sel->return_type : sel->type;
           return node->type;
         }
+      }
+      if (fallback) {
+        node->symbol = fallback;
+        node->type = (fallback->kind == SYMBOL_FUNCTION and fallback->return_type)
+               ? fallback->return_type : fallback->type;
+        return node->type;
       }
 
       if (prefix_sym->scope) {
@@ -11325,6 +11388,7 @@ void Seed_Expected_Type (Syntax_Node *expr, Type_Info *expected) {
   switch (expr->kind) {
     case NK_AGGREGATE: case NK_APPLY:      case NK_BINARY_OP:
     case NK_UNARY_OP:  case NK_IDENTIFIER: case NK_STRING:
+    case NK_SELECTED:
       expr->type = expected;
       break;
     default:
@@ -12603,6 +12667,20 @@ Type_Info *Resolve_Expression (Syntax_Node *node) {
           return NULL;
         }
 
+        /* The parser rewrites NEW T DIGITS n / NEW T DELTA n into a
+           NK_REAL_TYPE constraint rider, so the subtype-indication gate
+           never saw it; apply RM 3.3.2 here instead. */
+        if (node->derived_type.constraint and
+            node->derived_type.constraint->kind == NK_REAL_TYPE) {
+          bool digits_form = node->derived_type.constraint->real_type.precision != NULL;
+          bool legal = digits_form ? Type_Is_Float (parent)
+                                   : Type_Is_Fixed_Point (parent);
+          if (Type_Private_View_Active (parent)) legal = false;
+          if (not legal)
+            Report_Error (node->derived_type.constraint->location,
+                          "constraint form is not allowed for this type");
+        }
+
         Type_Info *derived = Type_New (parent->kind, S(""));
         derived->parent_type = parent;
         derived->size = parent->size;
@@ -12634,6 +12712,10 @@ Type_Info *Resolve_Expression (Syntax_Node *node) {
           derived->fixed = parent->fixed;
         } else if (Type_Is_Float (parent)) {
           derived->flt = parent->flt;
+        } else if (Type_Is_Private (parent)) {
+          /* A private parent's discriminants (a formal private type with
+             a discriminant part, say) travel with the derivation. */
+          derived->record = parent->record;
         }
 
         if (Type_Is_Constrained_Array (parent)) {
@@ -13088,6 +13170,63 @@ Type_Info *Resolve_Expression (Syntax_Node *node) {
         }
 
         Syntax_Node *constraint = node->subtype_ind.constraint;
+
+        /* RM 3.3.2: each constraint form suits one class of type — range
+           for scalars, index for unconstrained arrays, discriminant for
+           discriminated records, digits for floating point, delta for
+           fixed point (each also through an access type).  A mismatched
+           pair is illegal no matter how the subtype is then used.  The
+           parser files positional discriminant constraints under
+           NK_INDEX_CONSTRAINT, so that form admits both classes. */
+        if (constraint) {
+          Type_Info *view       = Effective_Type_View (base_type);
+          Type_Info *designated = Type_Designated (view);
+          Type_Info *target     = designated ? designated : view;
+          bool legal = true;
+          switch (constraint->kind) {
+            case NK_RANGE_CONSTRAINT:
+              legal = Type_Is_Scalar (view);
+              break;
+            case NK_INDEX_CONSTRAINT:
+              /* RM 3.6.1: an index constraint requires an UNCONSTRAINED
+                 array type; the positional discriminant constraints the
+                 parser files here require a discriminated type. */
+              legal = (Type_Is_Array_Like (target) and
+                       not target->array.is_constrained)
+                   or ((Type_Is_Record (target) or Type_Is_Private (target)) and
+                       target->record.has_discriminants)
+                   or target->kind == TYPE_INCOMPLETE
+                   or target->kind == TYPE_UNKNOWN;
+              break;
+            case NK_DISCRIMINANT_CONSTRAINT:
+              legal = not (Type_Is_Scalar (target) or Type_Is_Array_Like (target)) and
+                      not ((Type_Is_Record (target) or Type_Is_Private (target)) and
+                           not target->record.has_discriminants);
+              break;
+            case NK_DIGITS_CONSTRAINT:
+              legal = Type_Is_Float (view) or view->kind == TYPE_UNIVERSAL_REAL;
+              break;
+            case NK_DELTA_CONSTRAINT:
+              legal = Type_Is_Fixed_Point (view);
+              break;
+            default:
+              break;
+          }
+          /* RM 7.4.2: outside its defining package only the private view
+             of the type is known, and that view admits no scalar
+             constraint even when the full type is scalar. */
+          if (legal and Type_Private_View_Active (view) and
+              (constraint->kind == NK_RANGE_CONSTRAINT or
+               constraint->kind == NK_DIGITS_CONSTRAINT or
+               constraint->kind == NK_DELTA_CONSTRAINT))
+            legal = false;
+          if (not legal) {
+            Report_Error (constraint->location,
+                          "constraint form is not allowed for this type");
+            node->type = base_type;
+            return base_type;
+          }
+        }
 
         if (constraint and constraint->kind == NK_INDEX_CONSTRAINT and
           Type_Is_Access (base_type) and Type_Is_Array_Like (base_type->access.designated_type)) {
@@ -14884,6 +15023,22 @@ void Install_Generic_Formal_Symbols (Symbol *generic_symbol) {
               formal->generic_type_param.def_detail->type;
           }
 
+          /* A formal array type's definition names real index and
+             component subtypes: resolve it both for its own legality
+             (constraint forms, RM 3.3.2) and so the formal carries the
+             structure the instantiation contract will be matched
+             against. */
+          if (formal->generic_type_param.def_kind == GEN_DEF_ARRAY and
+              formal->generic_type_param.def_detail) {
+            Resolve_Expression (formal->generic_type_param.def_detail);
+            Type_Info *def = formal->generic_type_param.def_detail->type;
+            if (def and Type_Is_Array_Like (def)) {
+              type->array = def->array;
+              type->size = def->size;
+              type->alignment = def->alignment;
+            }
+          }
+
           if (formal->generic_type_param.discriminants.count > 0) {
             uint32_t discriminant_count = 0;
             for (uint32_t di = 0;
@@ -16161,10 +16316,14 @@ bool Instantiate_Generic_Package (Symbol *instance_sym, Symbol *template_sym) {
   uint32_t binding_count = sm->current_scope->symbol_count;
 
   uint32_t visible_sequence_low = sm->next_creation_sequence;
+  bool saved_visible_part = sm->in_package_visible_part;
+  sm->in_package_visible_part = true;
   Resolve_Declaration_List (&spec_clone->package_spec.visible_decls);
+  sm->in_package_visible_part = false;
   uint32_t visible_count = sm->current_scope->symbol_count;
   uint32_t visible_sequence_high = sm->next_creation_sequence;
   Resolve_Declaration_List (&spec_clone->package_spec.private_decls);
+  sm->in_package_visible_part = saved_visible_part;
   Mark_Package_Level_Objects (&spec_clone->package_spec.visible_decls);
   Mark_Package_Level_Objects (&spec_clone->package_spec.private_decls);
 
@@ -16418,18 +16577,54 @@ void Resolve_Declaration (Syntax_Node *node) {
         }
 
         /* RM 3.2.1: the initial value is of the object's declared subtype;
-           the same covering rule the assignment statement applies. */
+           the same covering rule the assignment statement applies.  A
+           character literal is overloadable onto any character type, so
+           that pairing is never a mismatch. */
         if (not node->object_decl.is_rename and
             node->object_decl.object_type and
             node->object_decl.object_type->type and
             init->type and
+            not (Type_Is_Character_Type (init->type) and
+                 Type_Is_Character_Type (node->object_decl.object_type->type)) and
             not Type_Covers (node->object_decl.object_type->type, init->type))
           Report_Error (init->location,
                         "initial value has wrong type for the declared object");
+
+        /* RM 7.4.4: where the limited view of the type is in force there
+           is no assignment, and initialization is assignment. */
+        if (not node->object_decl.is_rename and
+            node->object_decl.object_type and
+            node->object_decl.object_type->type and
+            Type_Limited_View_Active (node->object_decl.object_type->type))
+          Report_Error (init->location,
+                        "object of a limited type cannot be initialized");
+      }
+
+      /* RM 7.4.3: a constant may lack its initial value only as a deferred
+         constant — directly in a package visible part, of a private type
+         declared there. */
+      if (node->object_decl.is_constant and not node->object_decl.init and
+          not node->object_decl.is_rename) {
+        Type_Info *ct = node->object_decl.object_type
+                          ? node->object_decl.object_type->type : NULL;
+        bool is_private_type = ct and
+          (ct->kind == TYPE_PRIVATE or ct->kind == TYPE_LIMITED_PRIVATE or
+           ct->declared_private);
+        if (not (sm->in_package_visible_part and is_private_type))
+          Report_Error (node->location,
+                        "constant declaration requires an initialization");
       }
 
       for (uint32_t i = 0; i < node->object_decl.names.count; i++) {
         Syntax_Node *name_node = node->object_decl.names.items[i];
+        /* Analysis of a declarative region must be idempotent: a block's
+           declarations are visited once per pass, and only the first
+           visit may mint the symbol — otherwise the second visit's fresh
+           Symbol would be a false homograph of the first. */
+        if (name_node->symbol) {
+          Symbol_Add (name_node->symbol);
+          continue;
+        }
         Symbol *sym = Symbol_New (
           node->object_decl.is_constant ? SYMBOL_CONSTANT : SYMBOL_VARIABLE,
           name_node->string_val.text,
@@ -16484,7 +16679,12 @@ void Resolve_Declaration (Syntax_Node *node) {
         Symbol *existing = Symbol_Find (node->type_decl.name);
         Symbol *sym;
         Type_Info *type;
-        if (existing and existing->kind == SYMBOL_TYPE and
+        /* Idempotent re-analysis: the first visit minted the symbol. */
+        if (node->symbol) {
+          sym = node->symbol;
+          type = sym->type;
+          Symbol_Add (sym);
+        } else if (existing and existing->kind == SYMBOL_TYPE and
           existing->type and (existing->type->kind == TYPE_UNKNOWN or
           existing->type->kind == TYPE_PRIVATE or
           existing->type->kind == TYPE_LIMITED_PRIVATE or
@@ -16505,6 +16705,14 @@ void Resolve_Declaration (Syntax_Node *node) {
         node->symbol = sym;
 
         bool has_discriminants = node->type_decl.discriminants.count > 0;
+
+        /* RM 3.7.1: a discriminant part is only ever attached to a record
+           type declaration (or to the incomplete/private declarations that
+           will be completed by one, which carry no definition here). */
+        if (has_discriminants and node->type_decl.definition and
+            node->type_decl.definition->kind != NK_RECORD_TYPE)
+          Report_Error (node->location,
+                        "only a record type declaration may have a discriminant part");
 
         uint32_t disc_count = 0;
         bool all_have_defaults = true;
@@ -16553,6 +16761,11 @@ void Resolve_Declaration (Syntax_Node *node) {
         if (node->type_decl.definition) {
           Type_Info *def_type = Resolve_Expression (node->type_decl.definition);
 
+          if (def_type and Type_Reaches (def_type, type, 0)) {
+            Report_Error (node->location,
+                          "type definition is circular (recursion is only legal through an access type)");
+            def_type = NULL;
+          }
           if (def_type) {
             type->kind        = def_type->kind;
             type->size        = def_type->size;
@@ -16574,7 +16787,7 @@ void Resolve_Declaration (Syntax_Node *node) {
               type->fixed = def_type->fixed;
             } else if (Type_Is_Float (def_type)) {
               type->flt = def_type->flt;
-            } else if (Type_Is_Record (def_type)) {
+            } else if (Type_Is_Record (def_type) or Type_Is_Private (def_type)) {
               Type_Info **saved_views = type->record.incomplete_constrained_views;
               uint32_t    saved_view_count = type->record.incomplete_constrained_count;
               type->record = def_type->record;
@@ -16624,11 +16837,13 @@ void Resolve_Declaration (Syntax_Node *node) {
                 Node_List *lits = &node->type_decl.definition->enum_type.literals;
                 for (uint32_t i = 0; i < lits->count; i++) {
                   Syntax_Node *lit = lits->items[i];
-                  Symbol *lit_sym = Symbol_New (SYMBOL_LITERAL, lit->string_val.text, lit->location);
-                  lit_sym->type = type;
-                  lit_sym->frame_offset = (int64_t)i;
-                  Symbol_Add (lit_sym);
-                  lit->symbol = lit_sym;
+                  if (not lit->symbol) {
+                    Symbol *lit_sym = Symbol_New (SYMBOL_LITERAL, lit->string_val.text, lit->location);
+                    lit_sym->type = type;
+                    lit_sym->frame_offset = (int64_t)i;
+                    lit->symbol = lit_sym;
+                  }
+                  Symbol_Add (lit->symbol);
                 }
               }
 
@@ -16641,6 +16856,9 @@ void Resolve_Declaration (Syntax_Node *node) {
                   Symbol *lit_sym = Symbol_New (SYMBOL_LITERAL, lit_name, node->location);
                   lit_sym->type = literal_type;
                   lit_sym->frame_offset = (int64_t)i;
+                  /* RM 8.3: an implicit declaration is hidden by, never in
+                     conflict with, an explicit homograph. */
+                  lit_sym->is_implicit_declaration = true;
                   Symbol_Add (lit_sym);
                 }
               }
@@ -16747,6 +16965,13 @@ void Resolve_Declaration (Syntax_Node *node) {
         Symbol_Kind expected_kind = node->kind == NK_PROCEDURE_SPEC ?
                        SYMBOL_PROCEDURE : SYMBOL_FUNCTION;
         Symbol *scope_owner = sm->current_scope ? sm->current_scope->owner : NULL;
+        /* Idempotent re-analysis: this spec node already owns a symbol —
+           re-minting one would chain a false overload (and re-claim a
+           body slot). */
+        if (node->symbol) {
+          Symbol_Add (node->symbol);
+          goto spec_matched;
+        }
         Symbol *sym = Symbol_Find (node->subprogram_spec.name);
 
         while (sym) {
@@ -17330,13 +17555,16 @@ void Resolve_Declaration (Syntax_Node *node) {
       break;
     case NK_PACKAGE_SPEC:
       {
-        Symbol *sym = Symbol_New (SYMBOL_PACKAGE, node->package_spec.name, node->location);
-        sym->declaration = node;
-        /* A package inside a compound statement (a block's declare
-           part) lives in the enclosing dynamic context, not in static
-           storage — its objects are locals of whatever function the
-           statements compile into. */
-        sym->declared_in_statements = sm->statement_depth > 0;
+        Symbol *sym = node->symbol;   /* idempotent re-analysis */
+        if (not sym) {
+          sym = Symbol_New (SYMBOL_PACKAGE, node->package_spec.name, node->location);
+          sym->declaration = node;
+          /* A package inside a compound statement (a block's declare
+             part) lives in the enclosing dynamic context, not in static
+             storage — its objects are locals of whatever function the
+             statements compile into. */
+          sym->declared_in_statements = sm->statement_depth > 0;
+        }
         Symbol_Add (sym);
         node->symbol = sym;
         Symbol_Manager_Push_Scope (sym);
@@ -17757,12 +17985,14 @@ void Resolve_Declaration (Syntax_Node *node) {
           name = unit->package_spec.name;
         }
 
-        Symbol *sym = Symbol_New (SYMBOL_GENERIC, name, node->location);
-        sym->declaration = node;
-        sym->generic_unit = unit;
-
-        if (node->generic_decl.formals.count > 0) {
-          sym->generic_formals = node->generic_decl.formals.items[0];
+        Symbol *sym = node->symbol;   /* idempotent re-analysis */
+        if (not sym) {
+          sym = Symbol_New (SYMBOL_GENERIC, name, node->location);
+          sym->declaration = node;
+          sym->generic_unit = unit;
+          if (node->generic_decl.formals.count > 0) {
+            sym->generic_formals = node->generic_decl.formals.items[0];
+          }
         }
         Symbol_Add (sym);
         node->symbol = sym;
@@ -17770,8 +18000,12 @@ void Resolve_Declaration (Syntax_Node *node) {
         Symbol_Manager_Push_Scope (sym);
         Install_Generic_Formal_Symbols (sym);
         if (unit->kind == NK_PACKAGE_SPEC) {
+          bool saved_visible_part = sm->in_package_visible_part;
+          sm->in_package_visible_part = true;
           Resolve_Declaration_List (&unit->package_spec.visible_decls);
+          sm->in_package_visible_part = false;
           Resolve_Declaration_List (&unit->package_spec.private_decls);
+          sm->in_package_visible_part = saved_visible_part;
           Mark_Package_Level_Objects (&unit->package_spec.visible_decls);
           Mark_Package_Level_Objects (&unit->package_spec.private_decls);
         } else if (unit->kind == NK_PROCEDURE_SPEC or
