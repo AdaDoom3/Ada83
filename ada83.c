@@ -172,6 +172,7 @@ enum {
 };
 
 uint64_t To_Bits    (uint64_t bytes) {return bytes * Bits_Per_Unit;}
+uint64_t To_Bytes   (uint64_t bits)  {return (bits + Bits_Per_Unit - 1) / Bits_Per_Unit;}
 
 size_t Align_To (size_t size, size_t alignment) {
   return alignment ? ((size + alignment - 1) & ~(alignment - 1)) : size;
@@ -10975,6 +10976,17 @@ void Analyze_Binary (Syntax_Node *n) {
           (L->kind == NK_AGGREGATE or L->kind == NK_STRING))
         L->type = Type_Base (tested);
       Resolve_Expression (L);
+
+      /* A range's character-literal bounds belong to the tested
+         operand's type, which an enumeration may overload; they were
+         resolved before the operand was known (c55b06a). */
+      if (L and L->type and R and R->kind == NK_RANGE and
+          Type_Is_Enumeration (Type_Base (L->type))) {
+        Syntax_Node *bounds[2] = { R->range.low, R->range.high };
+        for (int b = 0; b < 2; b++)
+          if (bounds[b] and bounds[b]->kind == NK_CHARACTER)
+            Resolve_Char_As_Enum (bounds[b], Type_Base (L->type));
+      }
     }
     n->type = sm->type_boolean;
     Interp_Add (Node_Interps_Reset (n), NULL, sm->type_boolean,
@@ -12116,6 +12128,16 @@ Type_Info *Resolve_Expression (Syntax_Node *node) {
           derived->array = parent->array;
         } else if (Type_Is_Record (parent)) {
           derived->record = parent->record;
+          /* Layout is a property of each type: a representation
+             clause on the derived type must not reach the parent's
+             component array (cd1c04e). */
+          if (parent->record.component_count) {
+            Component_Info *layout_copy = Arena_Allocate (
+              parent->record.component_count * sizeof (Component_Info));
+            memcpy (layout_copy, parent->record.components,
+                    parent->record.component_count * sizeof (Component_Info));
+            derived->record.components = layout_copy;
+          }
         } else if (Type_Is_Access (parent)) {
           derived->access = parent->access;
         } else if (Type_Is_Fixed_Point (parent)) {
@@ -17807,16 +17829,22 @@ void Resolve_Declaration (Syntax_Node *node) {
               }
             }
 
-            uint32_t rep_extent = 0;
+            uint32_t rep_extent_bits = 0;
             for (uint32_t j = 0; j < target_type->record.component_count; j++) {
               Component_Info *comp = &target_type->record.components[j];
-              uint32_t comp_bytes = comp->component_type and
-                                    comp->component_type->size > 0
-                                      ? comp->component_type->size : 1;
-              uint32_t end = comp->byte_offset + comp_bytes;
-              if (end > rep_extent) rep_extent = end;
+              uint32_t comp_bits = comp->bit_size > 0
+                ? comp->bit_size
+                : (uint32_t)To_Bits (comp->component_type and
+                                     comp->component_type->size > 0
+                                       ? comp->component_type->size : 1);
+              uint32_t end_bits = (uint32_t)To_Bits (comp->byte_offset)
+                                + comp->bit_offset + comp_bits;
+              if (end_bits > rep_extent_bits) rep_extent_bits = end_bits;
             }
+            uint32_t rep_extent = (uint32_t)To_Bytes (rep_extent_bits);
             if (rep_extent > target_type->size) target_type->size = rep_extent;
+            if (rep_extent_bits > 0)
+              target_type->specified_bit_size = rep_extent_bits;
           }
 
           if (node->rep_clause.is_address_clause) {
@@ -22716,6 +22744,23 @@ LLVM_Value Convert_Real_To_Fixed (uint32_t val, double small, LLVM_Rep fix_rep)
   uint32_t scaled = Emit_Result_Instruction ("fptosi double %%t%u to %s\n", rounded, LLVM_Rep_To_String (fix_rep));
   return Val_Rep (scaled, fix_rep);
 }
+/* RM 4.5.7: with MACHINE_OVERFLOWS true, a real operation whose result
+   lies outside the base type's range raises NUMERIC_ERROR; IEEE
+   arithmetic signals that as an infinite result (cb7001a). */
+void Emit_Float_Overflow_Check (uint32_t reg, LLVM_Rep float_rep,
+                                Type_Info *result_type) {
+  if (result_type and Check_Is_Suppressed (result_type, NULL, CHK_OVERFLOW))
+    return;
+  const char *fs = LLVM_Rep_To_String (float_rep);
+  uint32_t magnitude = Emit_Result_Instruction (
+    "call %s @llvm.fabs.%s(%s %%t%u)\n",
+    fs, float_rep.bits == 32 ? "f32" : "f64", fs, reg);
+  uint32_t infinite = Emit_Result_Instruction (
+    "fcmp oeq %s %%t%u, 0x7FF0000000000000\n", fs, magnitude);
+  Emit_Check_With_Raise_Named (infinite, true, "numeric_error",
+                               "real overflow (RM 4.5.7)");
+}
+
 uint32_t Emit_Convert_Scalar_To_Type (LLVM_Value value_v, Type_Info *dest, LLVM_Rep dest_rep) {
   if (dest and Type_Is_Fixed_Point (dest) and LLVM_Rep_Is_Float (value_v.rep)) {
     uint32_t dval = value_v.reg;
@@ -23325,6 +23370,8 @@ LLVM_Value Emit_Binary_Op_Predefined (Syntax_Node *node) {
           uint32_t exp_float = Emit_Result_Instruction ("sitofp %s %%t%u to %s\n", LLVM_Rep_To_String (right_int_type), right, LLVM_Rep_To_String (lhs_ftype));
           Emit ("  %%t%u = call %s @%s(%s %%t%u, %s %%t%u)\n",
              t, LLVM_Rep_To_String (lhs_ftype), pow_intrinsic, LLVM_Rep_To_String (lhs_ftype), left, LLVM_Rep_To_String (lhs_ftype), exp_float);
+          if (Type_Is_Float (result_type))
+            Emit_Float_Overflow_Check (t, lhs_ftype, result_type);
           pow_result_rep = lhs_ftype;
 
         } else {
@@ -23965,6 +24012,8 @@ LLVM_Value Emit_Binary_Op_Predefined (Syntax_Node *node) {
       Emit_Raise_Constraint_Error_When (fz, "float division by zero");
     }
     Emit ("  %%t%u = %s %s %%t%u, %%t%u\n", t, op, LLVM_Rep_To_String (float_type_str), left, right);
+    if (Type_Is_Float (result_type))
+      Emit_Float_Overflow_Check (t, float_type_str, result_type);
   }
   return Val_Rep (t, float_type_str);
 
