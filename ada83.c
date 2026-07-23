@@ -4295,7 +4295,8 @@ typedef struct {
   String_Slice source_name;     // Filename of the source
   uint32_t     source_checksum; // CRC32 of the source text
   Scope       *frame_scope;     // The unit's scope, for frame-layout F lines
-  bool         is_body;         // True for a package body, false for a spec
+  bool         is_body;         // True for a body unit, false for a spec
+  bool         is_package;      // Package unit (spec or body); false = subprogram/task
   bool         is_subunit;      // True for a SEPARATE subunit (name is PARENT.CHILD)
   bool         is_generic;      // True for a generic unit
   bool         is_preelaborate; // Pragma Preelaborate applies
@@ -4400,8 +4401,11 @@ typedef struct {
   uint32_t          with_unit_count;
 
   // RM 7.1/10.2 completeness facts: whether a spec requires a body
-  // (ALI RB flag), and which subunits a body's stubs demand (ST lines).
+  // (ALI RB flag), whether the unit is a subprogram (ALI SU flag — a
+  // subprogram's body may answer a spec lookup, a package's may not),
+  // and which subunits a body's stubs demand (ST lines).
   bool              requires_body;
+  bool              is_subprogram;
   String_Slice     *stub_names;
   uint32_t          stub_count;
 } Catalog_Entry;
@@ -9698,15 +9702,9 @@ void Symbol_Manager_Push_Scope (Symbol *owner) {
   sm->current_scope = scope;
 }
 void Symbol_Manager_Pop_Scope (void) {
-
-  // Propagate frame_size up to parent - parent needs to allocate enough
-  // space for all variables, including those in nested blocks.
   if (sm->current_scope->parent) {
-    if (sm->current_scope->frame_size > sm->current_scope->parent->frame_size) {
-      sm->current_scope->parent->frame_size = sm->current_scope->frame_size;
-    }
 
-    // Propagate frame variables from child scope to parent scope.                                 
+    // Propagate frame variables from child scope to parent scope.
     // Variables in DECLARE blocks share the enclosing function's frame,                            
     // so nested functions need frame aliases for ALL variables, not just                           
     // those in the immediate parent scope. Only skip if this scope IS the                          
@@ -9724,8 +9722,21 @@ void Symbol_Manager_Pop_Scope (void) {
            Type_Is_Task (child->owner->type));
 
     // This is a block scope (DECLARE/loop/etc), not a subprogram's own body scope.
-    // Propagate its storage-bearing symbols to parent's frame_vars for alias generation.
+    // Propagate its storage-bearing symbols to parent's frame_vars for alias
+    // generation, and its frame_size — block variables share the enclosing
+    // function's frame, so the function must allocate room for them. A
+    // FUNCTION body scope propagates NEITHER: a nested function's storage
+    // lives in its own frame (it inherits the parent's frame_size at push
+    // only to keep chain-wide offsets unique), and inflating the parent's
+    // frame_size here would move the parent's static-chain slot after the
+    // parent function was already emitted with the smaller size — a subunit
+    // compilation then chases the chain at an offset the separately compiled
+    // parent never wrote (c64005d: three levels of subunits, each compilation
+    // inflating its parent differently and reading a garbage grandparent
+    // frame pointer).
     if (not is_function_body_scope) {
+      if (child->frame_size > parent->frame_size)
+        parent->frame_size = child->frame_size;
       for (uint32_t i = 0; i < child->symbol_count; i++) {
         Symbol *var = child->symbols[i];
         if (var and (var->kind == SYMBOL_VARIABLE or
@@ -23751,6 +23762,15 @@ void Resolve_Compilation_Unit (Syntax_Node *node) {
             if (name and name->symbol) {
               name->symbol->is_package_level = true;
               name->symbol->owned_by_subunit_module = true;
+              // An RM 13.5 address clause turned this object into an overlay
+              // whose hidden __at cell holds its storage — the cell is the
+              // object's real state and must move with it, or its frame slot
+              // lands past the frame the parent's module already sized
+              // (cd5003c).
+              if (name->symbol->address_cell) {
+                name->symbol->address_cell->is_package_level = true;
+                name->symbol->address_cell->owned_by_subunit_module = true;
+              }
             }
           }
         }
@@ -43071,8 +43091,15 @@ void Generate_Return_Statement (Syntax_Node *node) {
       // Generate expression and copy to __BIPaccess destination
       // Composite: generate expression (gives ptr), memcpy to dest
       if (Type_Is_Record (ret_type) or Type_Is_Array_Like (ret_type)) {
-        uint32_t value = Generate_Expression (expr).reg;
-        if (Type_Is_Dynamic_Size (ret_type) and Type_Is_Record (ret_type)) {
+        LLVM_Value value_v = Generate_Expression (expr);
+        uint32_t value = value_v.reg;
+        if (value_v.rep.kind == LL_INT or value_v.rep.kind == LL_FLOAT) {
+          // A composite lowered to a first-class scalar (e.g. a folded
+          // aggregate of a single-scalar record) arrives as the value
+          // itself, not an address to copy from.
+          Emit ("  store %s %%t%u, ptr %%__BIPaccess  ; BIP return\n",
+             LLVM_Rep_To_String (value_v.rep), value);
+        } else if (Type_Is_Dynamic_Size (ret_type) and Type_Is_Record (ret_type)) {
           uint32_t sz = Emit_Type_Byte_Size (ret_type);
           Emit ("  call void @llvm.memcpy.p0.p0.i64(ptr %%__BIPaccess, ptr %%t%u, i64 %%t%u, i1 false)  ; BIP return\n",
              value, sz);
@@ -55561,10 +55588,12 @@ void ALI_Collect_Unit (ALI_Info *ali, Syntax_Node *cu,
     case NK_PACKAGE_SPEC:
       u->unit_name = unit->package_spec.name;
       u->is_body = false;
+      u->is_package = true;
       break;
     case NK_PACKAGE_BODY:
       u->unit_name = unit->package_body.name;
       u->is_body = true;
+      u->is_package = true;
       break;
     case NK_PROCEDURE_BODY:
     case NK_PROCEDURE_SPEC:
@@ -55587,8 +55616,10 @@ void ALI_Collect_Unit (ALI_Info *ali, Syntax_Node *cu,
       u->is_generic = true;
       if (unit->generic_decl.unit) {
         Syntax_Node *inner = unit->generic_decl.unit;
-        if (inner->kind == NK_PACKAGE_SPEC)
+        if (inner->kind == NK_PACKAGE_SPEC) {
           u->unit_name = inner->package_spec.name;
+          u->is_package = true;
+        }
         else if (inner->kind == NK_PROCEDURE_SPEC or inner->kind == NK_FUNCTION_SPEC)
           u->unit_name = inner->subprogram_spec.name;
       }
@@ -55764,8 +55795,11 @@ void ALI_Write (FILE *out, ALI_Info *ali) {
     if (u->is_preelaborate) fprintf (out, " PR");
     if (u->is_pure) fprintf (out, " PU");
     if (not u->has_elaboration) fprintf (out, " NE");
-    if (not u->is_body) fprintf (out, " PK");
-    else fprintf (out, " SU");
+    // PK/SU discriminate the unit KIND (package vs subprogram), for either
+    // spec or body — GNAT ALI semantics. A spec lookup may accept a
+    // subprogram's body entry (the body is its own declaration, RM 10.1)
+    // but never a package's (a package body declares nothing, RM 7.1).
+    fprintf (out, u->is_package ? " PK" : " SU");
     if (u->requires_body) fprintf (out, " RB");
     fprintf (out, "\n");
 
@@ -56269,17 +56303,19 @@ void Library_Catalog_Load_Directory (const char *directory) {
           }
           if (strcmp (subunit_flag, "SB") == 0)
             kind = CATALOG_UNIT_SUBUNIT;
-          bool requires_body = false;
+          bool requires_body = false, is_subprogram = false;
           {
             size_t line_length = line_end ? (size_t)(line_end - line)
                                           : strlen (line);
-            for (size_t p = 0; p + 3 <= line_length; p++)
-              if (line[p] == ' ' and line[p + 1] == 'R' and
-                  line[p + 2] == 'B' and
-                  (p + 3 == line_length or line[p + 3] == ' ')) {
+            for (size_t p = 0; p + 3 <= line_length; p++) {
+              if (line[p] != ' ' or
+                  not (p + 3 == line_length or line[p + 3] == ' '))
+                continue;
+              if (line[p + 1] == 'R' and line[p + 2] == 'B')
                 requires_body = true;
-                break;
-              }
+              if (line[p + 1] == 'S' and line[p + 2] == 'U')
+                is_subprogram = true;
+            }
           }
           char joined_path[512];
           if (strchr (file_token, '/'))
@@ -56300,6 +56336,7 @@ void Library_Catalog_Load_Directory (const char *directory) {
             current_unit = NULL;
           } else {
             current_unit->requires_body = requires_body;
+            current_unit->is_subprogram = is_subprogram;
           }
           slots = NULL;
           slot_count = 0;
@@ -57478,11 +57515,16 @@ char *Lookup_Path(String_Slice name) {
   char *from_catalog = Catalog_Read_Source (name, CATALOG_UNIT_SPEC);
   if (from_catalog) return from_catalog;
 
-  // A library SUBPROGRAM has only a body entry; the catalog's pick (the
-  // NEWEST compilation, RM 10.3 replacement) must outrank a name-derived
-  // file that happens to exist with an older version.
-  from_catalog = Catalog_Read_Source (name, CATALOG_UNIT_BODY);
-  if (from_catalog) return from_catalog;
+  // A library SUBPROGRAM has only a body entry, and that body IS its
+  // declaration (RM 10.1); the catalog's pick (the NEWEST compilation,
+  // RM 10.3 replacement) must outrank a name-derived file that happens
+  // to exist with an older version. A PACKAGE body declares nothing
+  // (RM 7.1) — serving it as the spec would lose every spec symbol.
+  Catalog_Entry *body_entry = Library_Catalog_Find (name, CATALOG_UNIT_BODY);
+  if (body_entry and body_entry->is_subprogram) {
+    from_catalog = Catalog_Read_Source (name, CATALOG_UNIT_BODY);
+    if (from_catalog) return from_catalog;
+  }
   return Lookup_Path_Ext (name, "ads");
 }
 

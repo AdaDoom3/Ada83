@@ -194,7 +194,7 @@ package body TEXT_IO is
    begin
       Ensure_Init;
 
-      if Is_Open_Index(Integer(FILE)) then
+      if Is_Open_Index(FILE.HANDLE) then
          raise STATUS_ERROR;
       end if;
 
@@ -247,7 +247,7 @@ package body TEXT_IO is
       FCBs(Idx).Look_Count := 0;
       FCBs(Idx).Page_Active := False;
 
-      FILE := FILE_TYPE(Idx);
+      FILE := (HANDLE => Idx);
    end CREATE;
 
    procedure OPEN(FILE : in Out FILE_TYPE;
@@ -261,7 +261,7 @@ package body TEXT_IO is
    begin
       Ensure_Init;
 
-      if Is_Open_Index(Integer(FILE)) then
+      if Is_Open_Index(FILE.HANDLE) then
          raise STATUS_ERROR;
       end if;
 
@@ -313,11 +313,11 @@ package body TEXT_IO is
       FCBs(Idx).Look_Count := 0;
       FCBs(Idx).Page_Active := False;
 
-      FILE := FILE_TYPE(Idx);
+      FILE := (HANDLE => Idx);
    end OPEN;
 
    procedure CLOSE(FILE : in Out FILE_TYPE) is
-      Idx : Integer := Integer(FILE);
+      Idx : Integer := FILE.HANDLE;
       Dummy : Integer;
    begin
       Ensure_Init;
@@ -340,11 +340,11 @@ package body TEXT_IO is
       end if;
       FCBs(Idx).Is_Open := False;
       FCBs(Idx).Stream := Null_Address;
-      FILE := 0;  -- the handle now denotes a closed file
+      FILE.HANDLE := 0;  -- the handle now denotes a closed file
    end CLOSE;
 
    procedure DELETE(FILE : in Out FILE_TYPE) is
-      Idx : Integer := Integer(FILE);
+      Idx : Integer := FILE.HANDLE;
       Name_Buf : String(1..1025);
       Name_Len : Natural;
       Dummy : Integer;
@@ -363,11 +363,11 @@ package body TEXT_IO is
       end if;
       FCBs(Idx).Is_Open := False;
       FCBs(Idx).Stream := Null_Address;
-      FILE := 0;  -- the handle now denotes a closed file
+      FILE.HANDLE := 0;  -- the handle now denotes a closed file
    end DELETE;
 
    procedure RESET(FILE : in Out FILE_TYPE; MODE : in FILE_MODE) is
-      Idx : Integer := Integer(FILE);
+      Idx : Integer := FILE.HANDLE;
       Name_Buf : String(1..1025);
       Name_Len : Natural;
       Mode_Str : String(1..3);
@@ -432,13 +432,13 @@ package body TEXT_IO is
    end RESET;
 
    procedure RESET(FILE : in Out FILE_TYPE) is
-      Idx : Integer := Integer(FILE);
+      Idx : Integer := FILE.HANDLE;
    begin
       RESET(FILE, FCBs(Idx).Mode);
    end RESET;
 
    function MODE(FILE : in FILE_TYPE) return FILE_MODE is
-      Idx : Integer := Integer(FILE);
+      Idx : Integer := FILE.HANDLE;
    begin
       Ensure_Init;
       Require_Open(Idx);
@@ -446,7 +446,7 @@ package body TEXT_IO is
    end MODE;
 
    function NAME(FILE : in FILE_TYPE) return STRING is
-      Idx : Integer := Integer(FILE);
+      Idx : Integer := FILE.HANDLE;
    begin
       Ensure_Init;
       Require_Open(Idx);
@@ -457,7 +457,7 @@ package body TEXT_IO is
    end NAME;
 
    function FORM(FILE : in FILE_TYPE) return STRING is
-      Idx : Integer := Integer(FILE);
+      Idx : Integer := FILE.HANDLE;
    begin
       Ensure_Init;
       Require_Open(Idx);
@@ -468,7 +468,7 @@ package body TEXT_IO is
    end FORM;
 
    function IS_OPEN(FILE : in FILE_TYPE) return BOOLEAN is
-      Idx : Integer := Integer(FILE);
+      Idx : Integer := FILE.HANDLE;
    begin
       Ensure_Init;
       if Idx < 0 or Idx > 99 then
@@ -482,25 +482,25 @@ package body TEXT_IO is
    procedure SET_INPUT(FILE : in FILE_TYPE) is
    begin
       Ensure_Init;
-      Require_Open(Integer(FILE));
-      if FCBs(Integer(FILE)).Mode /= IN_FILE then raise MODE_ERROR; end if;
-      Current_In_Idx := Integer(FILE);
+      Require_Open(FILE.HANDLE);
+      if FCBs(FILE.HANDLE).Mode /= IN_FILE then raise MODE_ERROR; end if;
+      Current_In_Idx := FILE.HANDLE;
    end SET_INPUT;
 
    procedure SET_OUTPUT(FILE : in FILE_TYPE) is
    begin
       Ensure_Init;
-      Require_Open(Integer(FILE));
-      if FCBs(Integer(FILE)).Mode = IN_FILE then raise MODE_ERROR; end if;
-      Current_Out_Idx := Integer(FILE);
+      Require_Open(FILE.HANDLE);
+      if FCBs(FILE.HANDLE).Mode = IN_FILE then raise MODE_ERROR; end if;
+      Current_Out_Idx := FILE.HANDLE;
    end SET_OUTPUT;
 
    procedure SET_ERROR(FILE : in FILE_TYPE) is
    begin
       Ensure_Init;
-      Require_Open(Integer(FILE));
-      if FCBs(Integer(FILE)).Mode = IN_FILE then raise MODE_ERROR; end if;
-      Current_Err_Idx := Integer(FILE);
+      Require_Open(FILE.HANDLE);
+      if FCBs(FILE.HANDLE).Mode = IN_FILE then raise MODE_ERROR; end if;
+      Current_Err_Idx := FILE.HANDLE;
    end SET_ERROR;
 
    function STANDARD_INPUT return FILE_TYPE is
@@ -524,23 +524,23 @@ package body TEXT_IO is
    function CURRENT_INPUT return FILE_TYPE is
    begin
       Ensure_Init;
-      return FILE_TYPE(Current_In_Idx);
+      return (HANDLE => Current_In_Idx);
    end CURRENT_INPUT;
 
    function CURRENT_OUTPUT return FILE_TYPE is
    begin
       Ensure_Init;
-      return FILE_TYPE(Current_Out_Idx);
+      return (HANDLE => Current_Out_Idx);
    end CURRENT_OUTPUT;
 
    function CURRENT_ERROR return FILE_TYPE is
    begin
       Ensure_Init;
-      return FILE_TYPE(Current_Err_Idx);
+      return (HANDLE => Current_Err_Idx);
    end CURRENT_ERROR;
 
    procedure FLUSH(FILE : in FILE_TYPE) is
-      Idx : Integer := Integer(FILE);
+      Idx : Integer := FILE.HANDLE;
       Dummy : Integer;
    begin
       Ensure_Init;
@@ -551,13 +551,13 @@ package body TEXT_IO is
 
    procedure FLUSH is
    begin
-      FLUSH(FILE_TYPE(Current_Out_Idx));
+      FLUSH((HANDLE => Current_Out_Idx));
    end FLUSH;
 
    -- Line/Page Length Control
 
    procedure SET_LINE_LENGTH(FILE : in FILE_TYPE; TO : in COUNT) is
-      Idx : Integer := Integer(FILE);
+      Idx : Integer := FILE.HANDLE;
    begin
       Ensure_Init;
       Require_Open(Idx);
@@ -567,11 +567,11 @@ package body TEXT_IO is
 
    procedure SET_LINE_LENGTH(TO : in COUNT) is
    begin
-      SET_LINE_LENGTH(FILE_TYPE(Current_Out_Idx), TO);
+      SET_LINE_LENGTH((HANDLE => Current_Out_Idx), TO);
    end SET_LINE_LENGTH;
 
    procedure SET_PAGE_LENGTH(FILE : in FILE_TYPE; TO : in COUNT) is
-      Idx : Integer := Integer(FILE);
+      Idx : Integer := FILE.HANDLE;
    begin
       Ensure_Init;
       Require_Open(Idx);
@@ -581,11 +581,11 @@ package body TEXT_IO is
 
    procedure SET_PAGE_LENGTH(TO : in COUNT) is
    begin
-      SET_PAGE_LENGTH(FILE_TYPE(Current_Out_Idx), TO);
+      SET_PAGE_LENGTH((HANDLE => Current_Out_Idx), TO);
    end SET_PAGE_LENGTH;
 
    function LINE_LENGTH(FILE : in FILE_TYPE) return COUNT is
-      Idx : Integer := Integer(FILE);
+      Idx : Integer := FILE.HANDLE;
    begin
       Ensure_Init;
       Require_Open(Idx);
@@ -595,11 +595,11 @@ package body TEXT_IO is
 
    function LINE_LENGTH return COUNT is
    begin
-      return LINE_LENGTH(FILE_TYPE(Current_Out_Idx));
+      return LINE_LENGTH((HANDLE => Current_Out_Idx));
    end LINE_LENGTH;
 
    function PAGE_LENGTH(FILE : in FILE_TYPE) return COUNT is
-      Idx : Integer := Integer(FILE);
+      Idx : Integer := FILE.HANDLE;
    begin
       Ensure_Init;
       Require_Open(Idx);
@@ -609,7 +609,7 @@ package body TEXT_IO is
 
    function PAGE_LENGTH return COUNT is
    begin
-      return PAGE_LENGTH(FILE_TYPE(Current_Out_Idx));
+      return PAGE_LENGTH((HANDLE => Current_Out_Idx));
    end PAGE_LENGTH;
 
    -- Output character to file
@@ -662,7 +662,7 @@ package body TEXT_IO is
    -- Line/Page Operations
 
    procedure NEW_LINE(FILE : in FILE_TYPE; SPACING : in POSITIVE_COUNT := 1) is
-      Idx : Integer := Integer(FILE);
+      Idx : Integer := FILE.HANDLE;
    begin
       Ensure_Init;
       Require_Open(Idx);
@@ -686,11 +686,11 @@ package body TEXT_IO is
 
    procedure NEW_LINE(SPACING : in POSITIVE_COUNT := 1) is
    begin
-      NEW_LINE(FILE_TYPE(Current_Out_Idx), SPACING);
+      NEW_LINE((HANDLE => Current_Out_Idx), SPACING);
    end NEW_LINE;
 
    procedure SKIP_LINE(FILE : in FILE_TYPE; SPACING : in POSITIVE_COUNT := 1) is
-      Idx : Integer := Integer(FILE);
+      Idx : Integer := FILE.HANDLE;
       C : Integer;
    begin
       Ensure_Init;
@@ -730,11 +730,11 @@ package body TEXT_IO is
 
    procedure SKIP_LINE(SPACING : in POSITIVE_COUNT := 1) is
    begin
-      SKIP_LINE(FILE_TYPE(Current_In_Idx), SPACING);
+      SKIP_LINE((HANDLE => Current_In_Idx), SPACING);
    end SKIP_LINE;
 
    function END_OF_LINE(FILE : in FILE_TYPE) return BOOLEAN is
-      Idx : Integer := Integer(FILE);
+      Idx : Integer := FILE.HANDLE;
       C : Integer;
    begin
       Ensure_Init;
@@ -748,11 +748,11 @@ package body TEXT_IO is
 
    function END_OF_LINE return BOOLEAN is
    begin
-      return END_OF_LINE(FILE_TYPE(Current_In_Idx));
+      return END_OF_LINE((HANDLE => Current_In_Idx));
    end END_OF_LINE;
 
    procedure NEW_PAGE(FILE : in FILE_TYPE) is
-      Idx : Integer := Integer(FILE);
+      Idx : Integer := FILE.HANDLE;
    begin
       Ensure_Init;
       Require_Open(Idx);
@@ -775,11 +775,11 @@ package body TEXT_IO is
 
    procedure NEW_PAGE is
    begin
-      NEW_PAGE(FILE_TYPE(Current_Out_Idx));
+      NEW_PAGE((HANDLE => Current_Out_Idx));
    end NEW_PAGE;
 
    procedure SKIP_PAGE(FILE : in FILE_TYPE) is
-      Idx : Integer := Integer(FILE);
+      Idx : Integer := FILE.HANDLE;
       C : Integer;
    begin
       Ensure_Init;
@@ -811,11 +811,11 @@ package body TEXT_IO is
 
    procedure SKIP_PAGE is
    begin
-      SKIP_PAGE(FILE_TYPE(Current_In_Idx));
+      SKIP_PAGE((HANDLE => Current_In_Idx));
    end SKIP_PAGE;
 
    function END_OF_PAGE(FILE : in FILE_TYPE) return BOOLEAN is
-      Idx : Integer := Integer(FILE);
+      Idx : Integer := FILE.HANDLE;
       C0, C1 : Integer;
    begin
       Ensure_Init;
@@ -836,11 +836,11 @@ package body TEXT_IO is
 
    function END_OF_PAGE return BOOLEAN is
    begin
-      return END_OF_PAGE(FILE_TYPE(Current_In_Idx));
+      return END_OF_PAGE((HANDLE => Current_In_Idx));
    end END_OF_PAGE;
 
    function END_OF_FILE(FILE : in FILE_TYPE) return BOOLEAN is
-      Idx : Integer := Integer(FILE);
+      Idx : Integer := FILE.HANDLE;
       C0, C1 : Integer;
    begin
       Ensure_Init;
@@ -863,13 +863,13 @@ package body TEXT_IO is
 
    function END_OF_FILE return BOOLEAN is
    begin
-      return END_OF_FILE(FILE_TYPE(Current_In_Idx));
+      return END_OF_FILE((HANDLE => Current_In_Idx));
    end END_OF_FILE;
 
    -- Column/Line/Page Position
 
    procedure SET_COL(FILE : in FILE_TYPE; TO : in POSITIVE_COUNT) is
-      Idx : Integer := Integer(FILE);
+      Idx : Integer := FILE.HANDLE;
       C : Integer;
    begin
       Ensure_Init;
@@ -913,11 +913,11 @@ package body TEXT_IO is
 
    procedure SET_COL(TO : in POSITIVE_COUNT) is
    begin
-      SET_COL(FILE_TYPE(Current_Out_Idx), TO);
+      SET_COL((HANDLE => Current_Out_Idx), TO);
    end SET_COL;
 
    procedure SET_LINE(FILE : in FILE_TYPE; TO : in POSITIVE_COUNT) is
-      Idx : Integer := Integer(FILE);
+      Idx : Integer := FILE.HANDLE;
    begin
       Ensure_Init;
       Require_Open(Idx);
@@ -947,11 +947,11 @@ package body TEXT_IO is
 
    procedure SET_LINE(TO : in POSITIVE_COUNT) is
    begin
-      SET_LINE(FILE_TYPE(Current_Out_Idx), TO);
+      SET_LINE((HANDLE => Current_Out_Idx), TO);
    end SET_LINE;
 
    function COL(FILE : in FILE_TYPE) return POSITIVE_COUNT is
-      Idx : Integer := Integer(FILE);
+      Idx : Integer := FILE.HANDLE;
    begin
       Ensure_Init;
       Require_Open(Idx);
@@ -960,11 +960,11 @@ package body TEXT_IO is
 
    function COL return POSITIVE_COUNT is
    begin
-      return COL(FILE_TYPE(Current_Out_Idx));
+      return COL((HANDLE => Current_Out_Idx));
    end COL;
 
    function LINE(FILE : in FILE_TYPE) return POSITIVE_COUNT is
-      Idx : Integer := Integer(FILE);
+      Idx : Integer := FILE.HANDLE;
    begin
       Ensure_Init;
       Require_Open(Idx);
@@ -973,11 +973,11 @@ package body TEXT_IO is
 
    function LINE return POSITIVE_COUNT is
    begin
-      return LINE(FILE_TYPE(Current_Out_Idx));
+      return LINE((HANDLE => Current_Out_Idx));
    end LINE;
 
    function PAGE(FILE : in FILE_TYPE) return POSITIVE_COUNT is
-      Idx : Integer := Integer(FILE);
+      Idx : Integer := FILE.HANDLE;
    begin
       Ensure_Init;
       Require_Open(Idx);
@@ -986,13 +986,13 @@ package body TEXT_IO is
 
    function PAGE return POSITIVE_COUNT is
    begin
-      return PAGE(FILE_TYPE(Current_Out_Idx));
+      return PAGE((HANDLE => Current_Out_Idx));
    end PAGE;
 
    -- Character I/O
 
    procedure GET(FILE : in FILE_TYPE; ITEM : out CHARACTER) is
-      Idx : Integer := Integer(FILE);
+      Idx : Integer := FILE.HANDLE;
       C : Integer;
    begin
       Ensure_Init;
@@ -1021,11 +1021,11 @@ package body TEXT_IO is
 
    procedure GET(ITEM : out CHARACTER) is
    begin
-      GET(FILE_TYPE(Current_In_Idx), ITEM);
+      GET((HANDLE => Current_In_Idx), ITEM);
    end GET;
 
    procedure PUT(FILE : in FILE_TYPE; ITEM : in CHARACTER) is
-      Idx : Integer := Integer(FILE);
+      Idx : Integer := FILE.HANDLE;
    begin
       Ensure_Init;
       Require_Open(Idx);
@@ -1043,7 +1043,7 @@ package body TEXT_IO is
 
    procedure PUT(ITEM : in CHARACTER) is
    begin
-      PUT(FILE_TYPE(Current_Out_Idx), ITEM);
+      PUT((HANDLE => Current_Out_Idx), ITEM);
    end PUT;
 
    -- String I/O
@@ -1057,7 +1057,7 @@ package body TEXT_IO is
 
    procedure GET(ITEM : out STRING) is
    begin
-      GET(FILE_TYPE(Current_In_Idx), ITEM);
+      GET((HANDLE => Current_In_Idx), ITEM);
    end GET;
 
    procedure PUT(FILE : in FILE_TYPE; ITEM : in STRING) is
@@ -1069,11 +1069,11 @@ package body TEXT_IO is
 
    procedure PUT(ITEM : in STRING) is
    begin
-      PUT(FILE_TYPE(Current_Out_Idx), ITEM);
+      PUT((HANDLE => Current_Out_Idx), ITEM);
    end PUT;
 
    procedure GET_LINE(FILE : in FILE_TYPE; ITEM : out STRING; LAST : out NATURAL) is
-      Idx : Integer := Integer(FILE);
+      Idx : Integer := FILE.HANDLE;
       C : Integer;
       First_Idx : constant Integer := Integer(ITEM'First);
       Last_Idx  : constant Integer := Integer(ITEM'Last);
@@ -1117,7 +1117,7 @@ package body TEXT_IO is
 
    procedure GET_LINE(ITEM : out STRING; LAST : out NATURAL) is
    begin
-      GET_LINE(FILE_TYPE(Current_In_Idx), ITEM, LAST);
+      GET_LINE((HANDLE => Current_In_Idx), ITEM, LAST);
    end GET_LINE;
 
    procedure PUT_LINE(FILE : in FILE_TYPE; ITEM : in STRING) is
@@ -1128,7 +1128,7 @@ package body TEXT_IO is
 
    procedure PUT_LINE(ITEM : in STRING) is
    begin
-      PUT_LINE(FILE_TYPE(Current_Out_Idx), ITEM);
+      PUT_LINE((HANDLE => Current_Out_Idx), ITEM);
    end PUT_LINE;
 
    -- Shared field helpers for the numeric and enumeration IO generics.
@@ -1453,7 +1453,7 @@ package body TEXT_IO is
    -- bounded line length (RM 14.3.5): the item must fit on a line at all, and
    -- if it will not fit in what remains of the current line, start a new one.
    procedure Check_On_One_Line(FILE : FILE_TYPE; Length : Integer) is
-      Idx : Integer := Integer(FILE);
+      Idx : Integer := FILE.HANDLE;
    begin
       if FCBs(Idx).Line_Length /= UNBOUNDED then
          if COUNT(Length) > FCBs(Idx).Line_Length then
@@ -1467,7 +1467,7 @@ package body TEXT_IO is
    -- Emit Item verbatim, without the per-character line-length wrapping that
    -- PUT applies; the caller has already validated the item fits (RM 14.3.5).
    procedure Put_Raw(FILE : FILE_TYPE; Item : String) is
-      Idx : Integer := Integer(FILE);
+      Idx : Integer := FILE.HANDLE;
    begin
       for I in Item'Range loop
          Raw_Put(Idx, Character'Pos(Item(I)));
@@ -1478,7 +1478,7 @@ package body TEXT_IO is
 
    -- Emit Pad blank columns verbatim.
    procedure Put_Blanks(FILE : FILE_TYPE; Pad : Integer) is
-      Idx : Integer := Integer(FILE);
+      Idx : Integer := FILE.HANDLE;
    begin
       for I in 1 .. Pad loop
          Raw_Put(Idx, 32);
@@ -1903,7 +1903,7 @@ package body TEXT_IO is
       end Image_In_Base;
 
       procedure GET(FILE : in FILE_TYPE; ITEM : out NUM; WIDTH : in FIELD := 0) is
-         Idx : Integer := Integer(FILE);
+         Idx : Integer := FILE.HANDLE;
          Buf : String(1 .. 256);
          Len : Integer;
       begin
@@ -1932,7 +1932,7 @@ package body TEXT_IO is
 
       procedure GET(ITEM : out NUM; WIDTH : in FIELD := 0) is
       begin
-         GET(FILE_TYPE(Current_In_Idx), ITEM, WIDTH);
+         GET((HANDLE => Current_In_Idx), ITEM, WIDTH);
       end GET;
 
       procedure PUT(FILE : in FILE_TYPE; ITEM : in NUM;
@@ -1940,15 +1940,15 @@ package body TEXT_IO is
                     BASE : in NUMBER_BASE := DEFAULT_BASE) is
       begin
          Ensure_Init;
-         Require_Open(Integer(FILE));
-         if FCBs(Integer(FILE)).Mode = IN_FILE then raise MODE_ERROR; end if;
+         Require_Open(FILE.HANDLE);
+         if FCBs(FILE.HANDLE).Mode = IN_FILE then raise MODE_ERROR; end if;
          Put_Right_Justified(FILE, Image_In_Base(ITEM, BASE), Integer(WIDTH));
       end PUT;
 
       procedure PUT(ITEM : in NUM; WIDTH : in FIELD := DEFAULT_WIDTH;
                     BASE : in NUMBER_BASE := DEFAULT_BASE) is
       begin
-         PUT(FILE_TYPE(Current_Out_Idx), ITEM, WIDTH, BASE);
+         PUT((HANDLE => Current_Out_Idx), ITEM, WIDTH, BASE);
       end PUT;
 
       procedure GET(FROM : in STRING; ITEM : out NUM; LAST : out POSITIVE) is
@@ -1987,7 +1987,7 @@ package body TEXT_IO is
 
    package body FLOAT_IO is
       procedure GET(FILE : in FILE_TYPE; ITEM : out NUM; WIDTH : in FIELD := 0) is
-         Idx : Integer := Integer(FILE);
+         Idx : Integer := FILE.HANDLE;
          Buf : String(1 .. 256);
          Len : Integer;
       begin
@@ -2013,7 +2013,7 @@ package body TEXT_IO is
 
       procedure GET(ITEM : out NUM; WIDTH : in FIELD := 0) is
       begin
-         GET(FILE_TYPE(Current_In_Idx), ITEM, WIDTH);
+         GET((HANDLE => Current_In_Idx), ITEM, WIDTH);
       end GET;
 
       procedure PUT(FILE : in FILE_TYPE; ITEM : in NUM;
@@ -2021,15 +2021,15 @@ package body TEXT_IO is
                     EXP : in FIELD := DEFAULT_EXP) is
       begin
          Ensure_Init;
-         Require_Open(Integer(FILE));
-         if FCBs(Integer(FILE)).Mode = IN_FILE then raise MODE_ERROR; end if;
+         Require_Open(FILE.HANDLE);
+         if FCBs(FILE.HANDLE).Mode = IN_FILE then raise MODE_ERROR; end if;
          Format_Real(FILE, FLOAT(ITEM), Integer(FORE), Integer(AFT), Integer(EXP));
       end PUT;
 
       procedure PUT(ITEM : in NUM; FORE : in FIELD := DEFAULT_FORE;
                     AFT : in FIELD := DEFAULT_AFT; EXP : in FIELD := DEFAULT_EXP) is
       begin
-         PUT(FILE_TYPE(Current_Out_Idx), ITEM, FORE, AFT, EXP);
+         PUT((HANDLE => Current_Out_Idx), ITEM, FORE, AFT, EXP);
       end PUT;
 
       procedure GET(FROM : in STRING; ITEM : out NUM; LAST : out POSITIVE) is
@@ -2068,7 +2068,7 @@ package body TEXT_IO is
 
    package body FIXED_IO is
       procedure GET(FILE : in FILE_TYPE; ITEM : out NUM; WIDTH : in FIELD := 0) is
-         Idx : Integer := Integer(FILE);
+         Idx : Integer := FILE.HANDLE;
          Buf : String(1 .. 256);
          Len : Integer;
       begin
@@ -2097,7 +2097,7 @@ package body TEXT_IO is
 
       procedure GET(ITEM : out NUM; WIDTH : in FIELD := 0) is
       begin
-         GET(FILE_TYPE(Current_In_Idx), ITEM, WIDTH);
+         GET((HANDLE => Current_In_Idx), ITEM, WIDTH);
       end GET;
 
       procedure PUT(FILE : in FILE_TYPE; ITEM : in NUM;
@@ -2105,15 +2105,15 @@ package body TEXT_IO is
                     EXP : in FIELD := DEFAULT_EXP) is
       begin
          Ensure_Init;
-         Require_Open(Integer(FILE));
-         if FCBs(Integer(FILE)).Mode = IN_FILE then raise MODE_ERROR; end if;
+         Require_Open(FILE.HANDLE);
+         if FCBs(FILE.HANDLE).Mode = IN_FILE then raise MODE_ERROR; end if;
          Format_Real(FILE, FLOAT(ITEM), Integer(FORE), Integer(AFT), Integer(EXP));
       end PUT;
 
       procedure PUT(ITEM : in NUM; FORE : in FIELD := DEFAULT_FORE;
                     AFT : in FIELD := DEFAULT_AFT; EXP : in FIELD := DEFAULT_EXP) is
       begin
-         PUT(FILE_TYPE(Current_Out_Idx), ITEM, FORE, AFT, EXP);
+         PUT((HANDLE => Current_Out_Idx), ITEM, FORE, AFT, EXP);
       end PUT;
 
       procedure GET(FROM : in STRING; ITEM : out NUM; LAST : out POSITIVE) is
@@ -2172,7 +2172,7 @@ package body TEXT_IO is
       end Cased_Image;
 
       procedure GET(FILE : in FILE_TYPE; ITEM : out ENUM) is
-         Idx : Integer := Integer(FILE);
+         Idx : Integer := FILE.HANDLE;
          Buf : String(1 .. 256);
          P   : Integer := 0;
          C   : Integer;
@@ -2240,7 +2240,7 @@ package body TEXT_IO is
 
       procedure GET(ITEM : out ENUM) is
       begin
-         GET(FILE_TYPE(Current_In_Idx), ITEM);
+         GET((HANDLE => Current_In_Idx), ITEM);
       end GET;
 
       procedure PUT(FILE : in FILE_TYPE; ITEM : in ENUM;
@@ -2248,15 +2248,15 @@ package body TEXT_IO is
                     SET : in TYPE_SET := DEFAULT_SETTING) is
       begin
          Ensure_Init;
-         Require_Open(Integer(FILE));
-         if FCBs(Integer(FILE)).Mode = IN_FILE then raise MODE_ERROR; end if;
+         Require_Open(FILE.HANDLE);
+         if FCBs(FILE.HANDLE).Mode = IN_FILE then raise MODE_ERROR; end if;
          Put_Left_Justified(FILE, Cased_Image(ITEM, SET), Integer(WIDTH));
       end PUT;
 
       procedure PUT(ITEM : in ENUM; WIDTH : in FIELD := DEFAULT_WIDTH;
                     SET : in TYPE_SET := DEFAULT_SETTING) is
       begin
-         PUT(FILE_TYPE(Current_Out_Idx), ITEM, WIDTH, SET);
+         PUT((HANDLE => Current_Out_Idx), ITEM, WIDTH, SET);
       end PUT;
 
       procedure GET(FROM : in STRING; ITEM : out ENUM; LAST : out POSITIVE) is
