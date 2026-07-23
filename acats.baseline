@@ -2330,7 +2330,10 @@ c64005a	pass
 c64005b	pass
 c64005c	pass
 c64005d0m	pass
+c64103a	pass
 c64103b	pass
+c64103c	pass
+c64103d	pass
 c64103e	pass
 c64103f	pass
 c64104a	pass
@@ -2682,6 +2685,7 @@ c95076a	pass
 c95078a	pass
 c95080b	pass
 c95082g	pass
+c95084a	pass
 c95085a	pass
 c95085b	pass
 c95085c	pass
@@ -3498,7 +3502,7 @@ ed4022c	pass
 ed7002b	pass
 ee2201d	pass
 ee2201e	pass
-ee2401d	skip
+ee2401d	pass
 ee2401g	pass
 ee3203a	pass
 ee3204a	pass

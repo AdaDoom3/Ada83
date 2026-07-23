@@ -2544,6 +2544,7 @@ bool       Emit_Discriminants_Match   (Type_Info   *constrained_type,
                                        uint32_t     record_pointer,
                                        LLVM_I1     *belongs);
 LLVM_Value Emit_Binary_Op_Predefined  (Syntax_Node *node);
+LLVM_Value Emit_Checked_Scalar_Conversion (LLVM_Value value, Type_Info *src_type, Type_Info *dst_type);
 LLVM_Value Generate_Unary_Op          (Syntax_Node *node);
 LLVM_Value Generate_Apply             (Syntax_Node *node);
 LLVM_Value Generate_Selected          (Syntax_Node *node);
@@ -15502,26 +15503,6 @@ void Validate_Generic_Actuals (Symbol *instance_sym, Symbol *template_sym,
   if (not generic_decl or generic_decl->kind != NK_GENERIC_DECL) return;
   Node_List *formals = &generic_decl->generic_decl.formals;
 
-  /* pragma CONSTRAINED_ELEMENT_TYPE (implementation-defined, used by
-     the runtime's SEQUENTIAL_IO and DIRECT_IO): every formal type's
-     actual must be constrained, because file elements are stored as
-     fixed-size values with no room for bounds (RM 14.2). */
-  bool requires_constrained = false;
-  for (uint32_t i = 0; i < formals->count; i++)
-    if (formals->items[i] and formals->items[i]->kind == NK_PRAGMA and
-        Slice_Equal_Ignore_Case (formals->items[i]->pragma_node.name,
-                                 S("CONSTRAINED_ELEMENT_TYPE")))
-      requires_constrained = true;
-  if (requires_constrained)
-    for (uint32_t b = 0; b < instance_sym->actual_binding_count; b++) {
-      Type_Info *actual = instance_sym->actual_bindings[b].actual_type;
-      if (actual and Type_Is_Array_Like (actual) and
-          not actual->array.is_constrained)
-        Report_Error (instance_sym->location,
-          "the element type of a sequential or direct file must be "
-          "constrained (RM 14.2)");
-    }
-
   uint32_t slot = 0;
   for (uint32_t i = 0; i < formals->count; i++) {
     Syntax_Node *formal = formals->items[i];
@@ -24708,6 +24689,20 @@ static Syntax_Node *Family_Index_Range_Node (Syntax_Node *node) {
   return Subtype_Indication_Explicit_Range (node);
 }
 
+/* The dual of Emit_Widen_To_Entry_Slot: recover a value from the
+   i64 slot it traveled in, bit-for-bit for floats. */
+uint32_t Emit_Narrow_From_Entry_Slot (uint32_t reg, LLVM_Rep rep) {
+  if (LLVM_Rep_Is_Float (rep)) {
+    uint32_t width = LLVM_Rep_Bits (rep);
+    uint32_t bits = reg;
+    if (width < 64)
+      bits = Emit_Result_Instruction ("trunc i64 %%t%u to i%u\n", reg, width);
+    return Emit_Result_Instruction ("bitcast i%u %%t%u to %s\n",
+      width, bits, LLVM_Rep_To_String (rep));
+  }
+  return Emit_Convert (reg, LLVM_Rep_Int (64, false), rep).reg;
+}
+
 uint32_t Emit_Widen_To_Entry_Slot (uint32_t reg, LLVM_Rep rep) {
   if (LLVM_Rep_Is_Float (rep)) {
     uint32_t w = LLVM_Rep_Bits (rep);
@@ -25047,6 +25042,115 @@ uint32_t Entry_Call_Argument_Slot (Symbol *entry_sym, Syntax_Node *arg,
   return slot;
 }
 
+/* Scalar conversion with the RM 4.6 semantics and checks — fixed-point
+   rescaling by exact rationals, float/fixed crossings, and the range
+   check against the target subtype.  The one implementation, shared by
+   value conversions and by conversions used as parameter actuals. */
+LLVM_Value Emit_Checked_Scalar_Conversion (LLVM_Value value,
+                                           Type_Info *src_type,
+                                           Type_Info *dst_type) {
+  uint32_t result = value.reg;
+  LLVM_Rep result_rep = value.rep;
+      if (src_type and dst_type and src_type != dst_type) {
+
+        if (Type_Is_Fixed_Point (src_type) and Type_Is_Float_Representation (dst_type)) {
+          LLVM_Rep dst_llvm = Type_To_Rep (dst_type);
+          uint32_t t1 = Emit_Result_Instruction ("sitofp %s %%t%u to %s  ; fixed>float\n", LLVM_Rep_To_String (value.rep), result, LLVM_Rep_To_String (dst_llvm));
+          uint32_t t2 = Emit_Scale_By_Small (t1, Fixed_Repr_Small (src_type), false, dst_llvm);
+          return Val_Rep (t2, dst_llvm);
+
+        } else if (Type_Is_Float_Representation (src_type) and Type_Is_Fixed_Point (dst_type)) {
+          LLVM_Rep src_llvm = result_rep;
+          uint32_t t1 = Emit_Scale_By_Small (result, Fixed_Repr_Small (dst_type), true, src_llvm);
+          uint32_t t1r = Emit_Result_Instruction ("call %s @llvm.round.%s(%s %%t%u)\n",
+             LLVM_Rep_To_String (src_llvm), src_llvm.bits == 32 ? "f32" : "f64",
+             LLVM_Rep_To_String (src_llvm), t1);
+          uint32_t t2 = Emit_Temp ();
+          LLVM_Rep dst_llvm = Type_To_Rep (dst_type);
+          Emit ("  %%t%u = fptosi %s %%t%u to %s  ; float>fixed\n", t2, LLVM_Rep_To_String(src_llvm), t1r, LLVM_Rep_To_String(dst_llvm));
+          Emit_Constraint_Check_Val (Val_Rep (t2, dst_llvm), dst_type, NULL);
+          return Val_Rep (t2, dst_llvm);
+
+        } else if (Type_Is_Fixed_Point (dst_type) and src_type and
+               (src_type->kind == TYPE_INTEGER or
+                src_type->kind == TYPE_MODULAR or
+                src_type->kind == TYPE_UNIVERSAL_INTEGER)) {
+          unsigned long long small_num, small_den;
+          Fixed_Small_As_Rational (Fixed_Repr_Small (dst_type), &small_num, &small_den);
+          LLVM_Value rescaled = Emit_Exact_Rescale (result, result_rep, small_den,
+                                     small_num, Type_To_Rep (dst_type));
+          Emit_Constraint_Check_Val (rescaled, dst_type, NULL);
+          return rescaled;
+
+        } else if (Type_Is_Fixed_Point (src_type) and Type_Is_Fixed_Point (dst_type)) {
+          unsigned long long src_num, src_den, dst_num, dst_den;
+          Fixed_Small_As_Rational (Fixed_Repr_Small (src_type), &src_num, &src_den);
+          Fixed_Small_As_Rational (Fixed_Repr_Small (dst_type), &dst_num, &dst_den);
+          unsigned __int128 factor_num = (unsigned __int128) src_num * dst_den;
+          unsigned __int128 factor_den = (unsigned __int128) src_den * dst_num;
+          unsigned __int128 a = factor_num, b = factor_den;
+          while (b) { unsigned __int128 r = a % b; a = b; b = r; }
+          LLVM_Value rescaled = Emit_Exact_Rescale (result, value.rep,
+                                     (unsigned long long) (factor_num / a),
+                                     (unsigned long long) (factor_den / a),
+                                     Type_To_Rep (dst_type));
+          Emit_Constraint_Check_Val (rescaled, dst_type, NULL);
+          return rescaled;
+
+        } else if (Type_Is_Fixed_Point (src_type) and dst_type and
+               (dst_type->kind == TYPE_INTEGER or
+                dst_type->kind == TYPE_MODULAR or
+                dst_type->kind == TYPE_UNIVERSAL_INTEGER)) {
+          double small = Fixed_Repr_Small (src_type);
+          LLVM_Rep fix_int_rep = value.rep;
+
+          uint32_t f1 = Emit_Result_Instruction ("sitofp %s %%t%u to double  ; fixed>double\n", LLVM_Rep_To_String (fix_int_rep), result);
+          uint32_t f2 = Emit_Temp ();
+          uint64_t small_bits;
+          memcpy (&small_bits, &small, sizeof (small_bits));
+          Emit ("  %%t%u = fmul double %%t%u, 0x%016llX  ; scale by SMALL\n",
+             f2, f1, (unsigned long long)small_bits);
+          uint32_t f3 = Emit_Result_Instruction ("call double @llvm.round.f64(double %%t%u)\n", f2);
+          uint32_t t2 = Emit_Temp ();
+          LLVM_Rep dst_llvm = Type_To_Rep (dst_type);
+          Emit ("  %%t%u = fptosi double %%t%u to %s  ; fixed>integer\n",
+             t2, f3, LLVM_Rep_To_String (dst_llvm));
+          if (Type_Is_Scalar (dst_type))
+            Emit_Constraint_Check_Val ((LLVM_Value){ t2, dst_llvm }, dst_type, src_type);
+          return Val_Rep (t2, dst_llvm);
+        }
+
+        LLVM_Rep src_llvm = value.rep;
+        LLVM_Rep dst_llvm = Type_To_Rep (dst_type);
+        bool conv_unsigned = Type_Is_Unsigned (src_type) or Type_Is_Unsigned (dst_type);
+        if (!LLVM_Rep_Equal (src_llvm, dst_llvm)) {
+          result = Emit_Convert_Ext (result, src_llvm, dst_llvm, conv_unsigned).reg;
+          result_rep = dst_llvm;
+          /* Narrowing between float representations overflows to
+             infinity, which no model number ever is (RM 4.5.7). */
+          if (LLVM_Rep_Is_Float (src_llvm) and LLVM_Rep_Is_Float (dst_llvm) and
+              dst_llvm.bits < src_llvm.bits)
+            Emit_Float_Overflow_Check (result, dst_llvm, dst_type);
+        }
+
+        if (Type_Is_Scalar (dst_type)) {
+          Emit_Constraint_Check_Val ((LLVM_Value){ result, dst_llvm }, dst_type, NULL);
+        }
+
+      } else if (Type_Is_Scalar (dst_type)) {
+        Emit_Constraint_Check_Val ((LLVM_Value){ result, result_rep }, dst_type, NULL);
+      }
+
+      {
+        LLVM_Rep dst_rep = Type_To_Rep (dst_type);
+        if (Type_Is_Scalar (dst_type) and not LLVM_Rep_Equal (result_rep, dst_rep)
+            and (LLVM_Rep_Is_Int (result_rep) or LLVM_Rep_Is_Float (result_rep))
+            and (LLVM_Rep_Is_Int (dst_rep) or LLVM_Rep_Is_Float (dst_rep)))
+          result = Emit_Convert (result, result_rep, dst_rep).reg;
+      }
+      return Val_Of_Type (result, dst_type);
+}
+
 LLVM_Value Generate_Apply (Syntax_Node *node) {
   Symbol *sym = node->apply.prefix->symbol;
 
@@ -25326,10 +25430,16 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
         Parameter_Mode_Kind pmode = sym->parameters[param_idx].mode;
         Type_Info *formal_type = sym->parameters[param_idx].param_type;
 
+        /* A type conversion used as an OUT / IN OUT actual is not
+           just unwrapped: RM 6.4.1 requires the conversion's checks
+           on the way in and again on the way back.  The unwrap keeps
+           the outermost conversion in hand. */
+        Syntax_Node *actual_conversion = NULL;
         Syntax_Node *addr_node = arg;
         while (addr_node and addr_node->kind == NK_APPLY and
              addr_node->apply.resolution == APPLY_TYPE_CONVERSION and
              addr_node->apply.arguments.count == 1) {
+          if (not actual_conversion) actual_conversion = addr_node;
           addr_node = addr_node->apply.arguments.items[0];
         }
 
@@ -25397,6 +25507,9 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
               pab.dynamic_high, pab.bound_rep);
           }
 
+          Type_Info *actual_object_type =
+            (addr_node and addr_node->type) ? addr_node->type : arg->type;
+
           if (pmode == MODE_IN_OUT) {
             uint32_t val;
             if (packed_actual_array) {
@@ -25405,12 +25518,21 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
                 Integer_Arith_Rep ());
               val = LLVM_Rep_Equal (element.rep, ld_ty) ? element.reg
                   : Emit_Convert (element.reg, element.rep, ld_ty).reg;
+            } else if (actual_conversion and Type_Is_Scalar (formal_type)) {
+              /* Load in the actual's own representation, then apply
+                 the conversion — checks included — into the formal's. */
+              LLVM_Rep actual_rep = Type_To_Rep (actual_object_type);
+              uint32_t raw = Emit_Result_Instruction ("load %s, ptr %%t%u\n",
+                LLVM_Rep_To_String (actual_rep), actual_addr);
+              LLVM_Value converted = Emit_Checked_Scalar_Conversion (
+                Val_Rep (raw, actual_rep), actual_object_type, formal_type);
+              val = LLVM_Rep_Equal (converted.rep, ld_ty) ? converted.reg
+                  : Emit_Convert (converted.reg, converted.rep, ld_ty).reg;
             } else {
               val = Emit_Result_Instruction ("load %s, ptr %%t%u\n", LLVM_Rep_To_String (ld_ty), actual_addr);
             }
-            Type_Info *src_type = (addr_node and addr_node->type) ? addr_node->type
-                                                                  : arg->type;
-            Emit_Constraint_Check_Val (Val_Rep (val, ld_ty), formal_type, src_type);
+            Emit_Constraint_Check_Val (Val_Rep (val, ld_ty), formal_type,
+                                       actual_object_type);
             Emit_Access_Designated_Disc_Check (val, ld_ty, formal_type);
             Emit ("  store %s %%t%u, ptr %%t%u  ; copy-in\n", LLVM_Rep_To_String (ld_ty), val, temp);
           }
@@ -25462,7 +25584,29 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
             addr_node->apply.arguments.count == 1 and
             addr_node->apply.arguments.items[0]->kind == NK_RANGE;
 
-          if (formal_needs_fat and deref_fat_value) {
+          if (actual_conversion and Type_Is_Array_Like (formal_type)) {
+            /* RM 4.6 / 6.4.1: the conversion's own checks (component
+               constraints, index subtype bounds, lengths) fire before
+               the call.  The converted view shares the actual's data,
+               so passing it preserves by-reference semantics. */
+            LLVM_Value view = Generate_Expression (actual_conversion);
+            if (formal_needs_fat) {
+              uint32_t fat = LLVM_Rep_Is_Fat_Pointer (view.rep) ? view.reg
+                : Emit_Fat_Pointer_For_Lvalue (view.reg,
+                    actual_conversion->type ? actual_conversion->type
+                                            : actual_type).reg;
+              uint32_t slot = Emit_Result_Instruction ("alloca " FAT_PTR_TYPE
+                    "  ; by-ref fat ptr for converted actual\n");
+              Emit ("  store " FAT_PTR_TYPE " %%t%u, ptr %%t%u\n", fat, slot);
+              args[param_idx] = slot;
+            } else if (LLVM_Rep_Is_Fat_Pointer (view.rep)) {
+              args[param_idx] = Emit_Fat_Pointer_Data (view.reg,
+                Array_Bound_LLVM_Rep (actual_type)).reg;
+            } else {
+              args[param_idx] = view.reg;
+            }
+
+          } else if (formal_needs_fat and deref_fat_value) {
 
             uint32_t slot = Emit_Result_Instruction ("alloca " FAT_PTR_TYPE
                   "  ; by-ref fat ptr for dereferenced actual\n");
@@ -26112,24 +26256,37 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
 
       } else if (copyback_addr[i]) {
         uint32_t ret_val = Emit_Result_Instruction ("load %s, ptr %%t%u  ; copy-out\n", LLVM_Rep_To_String(copyback_llvm[i]), args[i]);
+        LLVM_Rep store_rep = copyback_llvm[i];
 
         {
           Syntax_Node *op = arg;
+          bool through_conversion = false;
           while (op and op->kind == NK_APPLY and
                  op->apply.resolution == APPLY_TYPE_CONVERSION and
-                 op->apply.arguments.count == 1)
+                 op->apply.arguments.count == 1) {
+            through_conversion = true;
             op = op->apply.arguments.items[0];
+          }
           Type_Info *actual_type = op ? op->type : (arg ? arg->type : NULL);
           Type_Info *formal_type = (sym->parameters and i < sym->parameter_count)
                                    ? sym->parameters[i].param_type : NULL;
           bool formal_private = formal_type and formal_type->formal_private_view;
-          if (Type_Is_Scalar (actual_type) and not formal_private)
+          if (through_conversion and Type_Is_Scalar (actual_type) and
+              not formal_private) {
+            /* RM 6.4.1: after the call, the formal's value converts
+               back to the actual's type — checks included — and is
+               stored in the actual's own representation. */
+            LLVM_Value back = Emit_Checked_Scalar_Conversion (
+              Val_Rep (ret_val, copyback_llvm[i]), formal_type, actual_type);
+            ret_val = back.reg;
+            store_rep = back.rep;
+          } else if (Type_Is_Scalar (actual_type) and not formal_private)
             ret_val = Emit_Constraint_Check_Val ((LLVM_Value){ ret_val, copyback_llvm[i] }, actual_type, NULL).reg;
           else if (Type_Is_Access (actual_type))
             Emit_Access_Designated_Disc_Check (ret_val, copyback_llvm[i], actual_type);
         }
         Emit ("  store %s %%t%u, ptr %%t%u  ; copy-back to actual\n",
-           LLVM_Rep_To_String(copyback_llvm[i]), ret_val, copyback_addr[i]);
+           LLVM_Rep_To_String(store_rep), ret_val, copyback_addr[i]);
 
       } else if (is_byref[i]) {
         Type_Info *actual_type = arg->type;
@@ -26231,7 +26388,8 @@ entry_path:
        entry_rename_sym->parameter_count == sym->parameter_count)
       ? entry_rename_sym : sym;
     struct { uint32_t address; uint32_t slot; LLVM_Rep rep;
-             Type_Info *actual_type; bool is_fat_access; } out_actuals[32];
+             Type_Info *actual_type; Type_Info *formal_type;
+             bool is_fat_access; bool through_conversion; } out_actuals[32];
     uint32_t out_actual_count = 0;
 
     for (uint32_t i = first_param_idx; i < node->apply.arguments.count; i++) {
@@ -26253,15 +26411,20 @@ entry_path:
         if ((mode == MODE_OUT or mode == MODE_IN_OUT) and
             formal_type and not Type_Is_Composite (formal_type) and
             (LLVM_Rep_Is_Int (formal_rep) or LLVM_Rep_Is_Pointer (formal_rep) or
-             fat_access)) {
+             LLVM_Rep_Is_Float (formal_rep) or fat_access)) {
           Syntax_Node *addr_node = value_node;
+          bool via_conversion = false;
           while (addr_node and addr_node->kind == NK_APPLY and
                  addr_node->apply.resolution == APPLY_TYPE_CONVERSION and
-                 addr_node->apply.arguments.count == 1)
+                 addr_node->apply.arguments.count == 1) {
+            via_conversion = true;
             addr_node = addr_node->apply.arguments.items[0];
+          }
           out_actuals[out_actual_count].address     = Generate_Lvalue (addr_node);
           out_actuals[out_actual_count].slot        = slot;
           out_actuals[out_actual_count].rep         = Type_To_Rep (formal_type);
+          out_actuals[out_actual_count].formal_type = formal_type;
+          out_actuals[out_actual_count].through_conversion = via_conversion;
           out_actuals[out_actual_count].actual_type =
             addr_node ? addr_node->type : NULL;
           out_actuals[out_actual_count].is_fat_access = fat_access;
@@ -26464,19 +26627,29 @@ entry_path:
         continue;
       }
       uint32_t raw = Emit_Result_Instruction ("load i64, ptr %%t%u\n", slot_ptr);
-      uint32_t narrowed = Emit_Convert (raw, LLVM_Rep_Int (64, false),
-                                        out_actuals[k].rep).reg;
+      uint32_t narrowed = Emit_Narrow_From_Entry_Slot (raw, out_actuals[k].rep);
 
       Type_Info *copyback_type = out_actuals[k].actual_type;
+      LLVM_Rep store_rep = out_actuals[k].rep;
       if (Type_Is_Access (copyback_type))
         Emit_Access_Designated_Disc_Check (narrowed, out_actuals[k].rep,
                            copyback_type);
+      else if (out_actuals[k].through_conversion and copyback_type and
+               Type_Is_Scalar (copyback_type)) {
+        /* RM 6.4.1: the formal's value converts back to the actual's
+           type — checks included — in the actual's representation. */
+        LLVM_Value back = Emit_Checked_Scalar_Conversion (
+          Val_Rep (narrowed, out_actuals[k].rep),
+          out_actuals[k].formal_type, copyback_type);
+        narrowed = back.reg;
+        store_rep = back.rep;
+      }
       else if (copyback_type and not Type_Is_Composite (copyback_type))
         Emit_Constraint_Check_Val (
           Val_Rep (narrowed, out_actuals[k].rep),
           copyback_type, NULL);
       Emit ("  store %s %%t%u, ptr %%t%u  ; OUT param copy-back\n",
-         LLVM_Rep_To_String (out_actuals[k].rep), narrowed,
+         LLVM_Rep_To_String (store_rep), narrowed,
          out_actuals[k].address);
     }
     Emit ("  call void @llvm.stackrestore.p0(ptr %%t%u)\n", entry_sp);
@@ -26722,6 +26895,69 @@ type_conversion:
         Emit_Component_Constraint_Check (src_type->array.element_type,
                                          dst_type->array.element_type);
 
+        /* RM 4.6 checks that need no runtime bounds: a statically
+           bounded operand checks its bounds against the target's
+           index subtypes (unconstrained target, non-null dimensions)
+           or its lengths against the target's (constrained target). */
+        if (Type_Is_Constrained_Array (src_type) and
+            not Type_Has_Dynamic_Bounds (src_type)) {
+          uint32_t check_dims = dst_type->array.index_count;
+          if (check_dims > src_type->array.index_count)
+            check_dims = src_type->array.index_count;
+
+          /* A null array converts to a null target freely: with no
+             components to transfer, per-dimension lengths need not
+             agree (c64105e cases C and D). */
+          bool src_known_null = false, dst_known_null = false;
+          for (uint32_t d = 0; d < check_dims; d++) {
+            Type_Bound *sl = &src_type->array.indices[d].low_bound;
+            Type_Bound *sh = &src_type->array.indices[d].high_bound;
+            if (sl->kind == BOUND_INTEGER and sh->kind == BOUND_INTEGER and
+                sl->int_value > sh->int_value)
+              src_known_null = true;
+            if (not dst_unc and not Type_Has_Dynamic_Bounds (dst_type)) {
+              Type_Bound *dl = &dst_type->array.indices[d].low_bound;
+              Type_Bound *dh = &dst_type->array.indices[d].high_bound;
+              if (dl->kind == BOUND_INTEGER and dh->kind == BOUND_INTEGER and
+                  dl->int_value > dh->int_value)
+                dst_known_null = true;
+            }
+          }
+          bool both_null = src_known_null and dst_known_null;
+
+          for (uint32_t d = 0; d < check_dims and not both_null; d++) {
+            Type_Bound *s_lo_b = &src_type->array.indices[d].low_bound;
+            Type_Bound *s_hi_b = &src_type->array.indices[d].high_bound;
+            if (s_lo_b->kind != BOUND_INTEGER or s_hi_b->kind != BOUND_INTEGER)
+              continue;
+            int128_t s_lo = s_lo_b->int_value, s_hi = s_hi_b->int_value;
+            if (dst_unc) {
+              Type_Info *index_subtype = dst_type->array.indices[d].index_type;
+              if (s_lo <= s_hi and index_subtype and
+                  index_subtype->low_bound.kind == BOUND_INTEGER and
+                  index_subtype->high_bound.kind == BOUND_INTEGER) {
+                int128_t i_lo = index_subtype->low_bound.int_value;
+                int128_t i_hi = index_subtype->high_bound.int_value;
+                if (s_lo < i_lo or s_lo > i_hi or s_hi < i_lo or s_hi > i_hi)
+                  Emit_Raise_And_Continue (
+                    "array bound outside target index subtype (RM 4.6)");
+              }
+            } else if (not Type_Has_Dynamic_Bounds (dst_type)) {
+              Type_Bound *d_lo_b = &dst_type->array.indices[d].low_bound;
+              Type_Bound *d_hi_b = &dst_type->array.indices[d].high_bound;
+              if (d_lo_b->kind == BOUND_INTEGER and
+                  d_hi_b->kind == BOUND_INTEGER) {
+                int128_t src_len = s_hi >= s_lo ? s_hi - s_lo + 1 : 0;
+                int128_t dst_len = d_hi_b->int_value >= d_lo_b->int_value
+                  ? d_hi_b->int_value - d_lo_b->int_value + 1 : 0;
+                if (src_len != dst_len)
+                  Emit_Raise_And_Continue (
+                    "array conversion length mismatch (RM 4.6)");
+              }
+            }
+          }
+        }
+
         bool src_is_fat = Expression_Produces_Fat_Pointer (arg, src_type);
 
         bool dst_is_fat = dst_unc or Type_Has_Dynamic_Bounds (dst_type);
@@ -26796,99 +27032,7 @@ type_conversion:
         Emit_Access_Subtype_Constraint_Check (result, result_rep, dst_type,
           "access conversion constraint (RM 4.6)");
 
-      if (src_type and dst_type and src_type != dst_type) {
-
-        if (Type_Is_Fixed_Point (src_type) and Type_Is_Float_Representation (dst_type)) {
-          LLVM_Rep dst_llvm = Type_To_Rep (dst_type);
-          uint32_t t1 = Emit_Result_Instruction ("sitofp %s %%t%u to %s  ; fixed>float\n", LLVM_Rep_To_String (result_v.rep), result, LLVM_Rep_To_String (dst_llvm));
-          uint32_t t2 = Emit_Scale_By_Small (t1, Fixed_Repr_Small (src_type), false, dst_llvm);
-          return Val_Rep (t2, dst_llvm);
-
-        } else if (Type_Is_Float_Representation (src_type) and Type_Is_Fixed_Point (dst_type)) {
-          LLVM_Rep src_llvm = result_rep;
-          uint32_t t1 = Emit_Scale_By_Small (result, Fixed_Repr_Small (dst_type), true, src_llvm);
-          uint32_t t1r = Emit_Result_Instruction ("call %s @llvm.round.%s(%s %%t%u)\n",
-             LLVM_Rep_To_String (src_llvm), src_llvm.bits == 32 ? "f32" : "f64",
-             LLVM_Rep_To_String (src_llvm), t1);
-          uint32_t t2 = Emit_Temp ();
-          LLVM_Rep dst_llvm = Type_To_Rep (dst_type);
-          Emit ("  %%t%u = fptosi %s %%t%u to %s  ; float>fixed\n", t2, LLVM_Rep_To_String(src_llvm), t1r, LLVM_Rep_To_String(dst_llvm));
-          Emit_Constraint_Check_Val (Val_Rep (t2, dst_llvm), dst_type, NULL);
-          return Val_Rep (t2, dst_llvm);
-
-        } else if (Type_Is_Fixed_Point (dst_type) and src_type and
-               (src_type->kind == TYPE_INTEGER or
-                src_type->kind == TYPE_MODULAR or
-                src_type->kind == TYPE_UNIVERSAL_INTEGER)) {
-          unsigned long long small_num, small_den;
-          Fixed_Small_As_Rational (Fixed_Repr_Small (dst_type), &small_num, &small_den);
-          LLVM_Value rescaled = Emit_Exact_Rescale (result, result_rep, small_den,
-                                     small_num, Type_To_Rep (dst_type));
-          Emit_Constraint_Check_Val (rescaled, dst_type, NULL);
-          return rescaled;
-
-        } else if (Type_Is_Fixed_Point (src_type) and Type_Is_Fixed_Point (dst_type)) {
-          unsigned long long src_num, src_den, dst_num, dst_den;
-          Fixed_Small_As_Rational (Fixed_Repr_Small (src_type), &src_num, &src_den);
-          Fixed_Small_As_Rational (Fixed_Repr_Small (dst_type), &dst_num, &dst_den);
-          unsigned __int128 factor_num = (unsigned __int128) src_num * dst_den;
-          unsigned __int128 factor_den = (unsigned __int128) src_den * dst_num;
-          unsigned __int128 a = factor_num, b = factor_den;
-          while (b) { unsigned __int128 r = a % b; a = b; b = r; }
-          LLVM_Value rescaled = Emit_Exact_Rescale (result, result_v.rep,
-                                     (unsigned long long) (factor_num / a),
-                                     (unsigned long long) (factor_den / a),
-                                     Type_To_Rep (dst_type));
-          Emit_Constraint_Check_Val (rescaled, dst_type, NULL);
-          return rescaled;
-
-        } else if (Type_Is_Fixed_Point (src_type) and dst_type and
-               (dst_type->kind == TYPE_INTEGER or
-                dst_type->kind == TYPE_MODULAR or
-                dst_type->kind == TYPE_UNIVERSAL_INTEGER)) {
-          double small = Fixed_Repr_Small (src_type);
-          LLVM_Rep fix_int_rep = result_v.rep;
-
-          uint32_t f1 = Emit_Result_Instruction ("sitofp %s %%t%u to double  ; fixed>double\n", LLVM_Rep_To_String (fix_int_rep), result);
-          uint32_t f2 = Emit_Temp ();
-          uint64_t small_bits;
-          memcpy (&small_bits, &small, sizeof (small_bits));
-          Emit ("  %%t%u = fmul double %%t%u, 0x%016llX  ; scale by SMALL\n",
-             f2, f1, (unsigned long long)small_bits);
-          uint32_t f3 = Emit_Result_Instruction ("call double @llvm.round.f64(double %%t%u)\n", f2);
-          uint32_t t2 = Emit_Temp ();
-          LLVM_Rep dst_llvm = Type_To_Rep (dst_type);
-          Emit ("  %%t%u = fptosi double %%t%u to %s  ; fixed>integer\n",
-             t2, f3, LLVM_Rep_To_String (dst_llvm));
-          if (Type_Is_Scalar (dst_type))
-            Emit_Constraint_Check_Val ((LLVM_Value){ t2, dst_llvm }, dst_type, src_type);
-          return Val_Rep (t2, dst_llvm);
-        }
-
-        LLVM_Rep src_llvm = result_v.rep;
-        LLVM_Rep dst_llvm = Type_To_Rep (dst_type);
-        bool conv_unsigned = Type_Is_Unsigned (src_type) or Type_Is_Unsigned (dst_type);
-        if (!LLVM_Rep_Equal (src_llvm, dst_llvm)) {
-          result = Emit_Convert_Ext (result, src_llvm, dst_llvm, conv_unsigned).reg;
-          result_rep = dst_llvm;
-        }
-
-        if (Type_Is_Scalar (dst_type)) {
-          Emit_Constraint_Check_Val ((LLVM_Value){ result, dst_llvm }, dst_type, NULL);
-        }
-
-      } else if (Type_Is_Scalar (dst_type)) {
-        Emit_Constraint_Check_Val ((LLVM_Value){ result, result_rep }, dst_type, NULL);
-      }
-
-      {
-        LLVM_Rep dst_rep = Type_To_Rep (dst_type);
-        if (Type_Is_Scalar (dst_type) and not LLVM_Rep_Equal (result_rep, dst_rep)
-            and (LLVM_Rep_Is_Int (result_rep) or LLVM_Rep_Is_Float (result_rep))
-            and (LLVM_Rep_Is_Int (dst_rep) or LLVM_Rep_Is_Float (dst_rep)))
-          result = Emit_Convert (result, result_rep, dst_rep).reg;
-      }
-      return Val_Of_Type (result, dst_type);
+      return Emit_Checked_Scalar_Conversion (result_v, src_type, dst_type);
     }
   }
   Fatal_Error (node->location, "Generate_Apply: unhandled call expression form");

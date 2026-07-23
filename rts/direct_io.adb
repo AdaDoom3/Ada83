@@ -32,13 +32,20 @@ package body DIRECT_IO is
    Seek_End     : constant Integer := 2;
 
    -- One element occupies its raw representation, rounded up to whole bytes.
-   Element_Bytes : constant Integer := (ELEMENT_TYPE'SIZE + 7) / 8;
+   -- Every element of a direct file occupies one fixed-size slot, so
+   -- SET_INDEX is pure arithmetic. The slot capacity is established by
+   -- the first WRITE (each written value must have the same size) and
+   -- persists in a four-byte file header, so a reopened file recovers
+   -- it; each slot also begins with its value's byte length, which for
+   -- an unconstrained ELEMENT_TYPE is the object's own dynamic size.
+   Header_Bytes : constant Integer := 4;
 
    type FCB is record
       Stream   : SYSTEM.ADDRESS := Null_Address;
       Mode     : FILE_MODE      := INOUT_FILE;
       Is_Open  : Boolean        := False;
       Index    : POSITIVE_COUNT := 1;
+      Slot     : Integer        := 0;   -- 0: no element written yet
       Name_Len : Natural        := 0;
       Name     : String(1..1024);
    end record;
@@ -67,9 +74,10 @@ package body DIRECT_IO is
       Buffer(J) := Character'Val(0);
    end To_C_String;
 
-   -- Position the stream at the first byte of element Element_Index.
+   -- Position the stream at the length prefix of element Element_Index.
    procedure Seek_To(Idx : Integer; Element_Index : POSITIVE_COUNT) is
-      Offset : Integer := Integer(Element_Index - 1) * Element_Bytes;
+      Offset : Integer := Header_Bytes
+                        + Integer(Element_Index - 1) * (4 + FCBs(Idx).Slot);
       Ignore : Integer;
    begin
       Ignore := C_Fseek(FCBs(Idx).Stream, Offset, Seek_Set);
@@ -80,12 +88,42 @@ package body DIRECT_IO is
       Ignore : Integer;
       Bytes  : Integer;
    begin
+      if FCBs(Idx).Slot = 0 then return 0; end if;
       Ignore := C_Fflush(FCBs(Idx).Stream);
       Ignore := C_Fseek(FCBs(Idx).Stream, 0, Seek_End);
       Bytes  := C_Ftell(FCBs(Idx).Stream);
-      if Bytes <= 0 then return 0; end if;
-      return COUNT(Bytes / Element_Bytes);
+      if Bytes <= Header_Bytes then return 0; end if;
+      return COUNT((Bytes - Header_Bytes) / (4 + FCBs(Idx).Slot));
    end Element_Count;
+
+   -- First WRITE fixes the slot capacity and records it in the file
+   -- header; later writes must match it, since positions are computed,
+   -- not searched.
+   procedure Establish_Slot(Idx : Integer; Item_Bytes : Integer) is
+      Header : Integer := Item_Bytes;
+      Ignore : Integer;
+   begin
+      if FCBs(Idx).Slot = 0 then
+         FCBs(Idx).Slot := Item_Bytes;
+         Ignore := C_Fseek(FCBs(Idx).Stream, 0, Seek_Set);
+         if C_Fwrite(Header'Address, Header_Bytes, 1, FCBs(Idx).Stream) /= 1 then
+            raise DEVICE_ERROR;
+         end if;
+      elsif FCBs(Idx).Slot /= Item_Bytes then
+         raise USE_ERROR;
+      end if;
+   end Establish_Slot;
+
+   -- A reopened file recovers its slot capacity from the header.
+   procedure Recover_Slot(Idx : Integer) is
+      Header : Integer := 0;
+      Ignore : Integer;
+   begin
+      Ignore := C_Fseek(FCBs(Idx).Stream, 0, Seek_Set);
+      if C_Fread(Header'Address, Header_Bytes, 1, FCBs(Idx).Stream) = 1 then
+         FCBs(Idx).Slot := Header;
+      end if;
+   end Recover_Slot;
 
    -- CREATE and OPEN both take a fresh control block for FILE. CREATE truncates
    -- (or makes an anonymous temporary when NAME is null); OPEN requires the
@@ -133,6 +171,10 @@ package body DIRECT_IO is
       FCBs(Idx).Mode    := MODE;
       FCBs(Idx).Is_Open := True;
       FCBs(Idx).Index   := 1;
+      FCBs(Idx).Slot    := 0;
+      if not Creating then
+         Recover_Slot(Idx);
+      end if;
       FILE := (Handle => Idx);
    end Attach;
 
@@ -218,54 +260,71 @@ package body DIRECT_IO is
       return Is_Open_Index(FILE.Handle);
    end IS_OPEN;
 
+   procedure Read_At(Idx : Integer; ITEM : out ELEMENT_TYPE;
+                     FROM : in POSITIVE_COUNT) is
+      Stored_Bytes : Integer := 0;
+      Item_Bytes   : Integer := (ITEM'SIZE + 7) / 8;
+   begin
+      if FCBs(Idx).Mode = OUT_FILE then raise MODE_ERROR; end if;
+      Seek_To(Idx, FROM);
+      if C_Fread(Stored_Bytes'Address, 4, 1, FCBs(Idx).Stream) /= 1 then
+         raise END_ERROR;
+      end if;
+      if Stored_Bytes /= Item_Bytes then
+         -- The element cannot be interpreted, but the read has still
+         -- consumed its position: reading continues at the next
+         -- element after the handler (RM 14.2.4).
+         FCBs(Idx).Index := FROM + 1;
+         raise DATA_ERROR;
+      end if;
+      if C_Fread(ITEM'Address, Stored_Bytes, 1, FCBs(Idx).Stream) /= 1 then
+         raise END_ERROR;
+      end if;
+      FCBs(Idx).Index := FROM + 1;
+   end Read_At;
+
    procedure READ(FILE : in FILE_TYPE; ITEM : out ELEMENT_TYPE;
                   FROM : in POSITIVE_COUNT) is
       Idx : Integer := Require_Open(FILE);
    begin
-      if FCBs(Idx).Mode = OUT_FILE then raise MODE_ERROR; end if;
-      Seek_To(Idx, FROM);
-      if C_Fread(ITEM'Address, Element_Bytes, 1, FCBs(Idx).Stream) /= 1 then
-         raise END_ERROR;
-      end if;
-      FCBs(Idx).Index := FROM + 1;
+      Read_At(Idx, ITEM, FROM);
    end READ;
 
    procedure READ(FILE : in FILE_TYPE; ITEM : out ELEMENT_TYPE) is
       Idx : Integer := Require_Open(FILE);
    begin
-      if FCBs(Idx).Mode = OUT_FILE then raise MODE_ERROR; end if;
-      Seek_To(Idx, FCBs(Idx).Index);
-      if C_Fread(ITEM'Address, Element_Bytes, 1, FCBs(Idx).Stream) /= 1 then
-         raise END_ERROR;
-      end if;
-      FCBs(Idx).Index := FCBs(Idx).Index + 1;
+      Read_At(Idx, ITEM, FCBs(Idx).Index);
    end READ;
 
-   procedure WRITE(FILE : in FILE_TYPE; ITEM : in ELEMENT_TYPE;
-                   TO : in POSITIVE_COUNT) is
-      Idx    : Integer := Require_Open(FILE);
-      Ignore : Integer;
+   procedure Write_At(Idx : Integer; ITEM : in ELEMENT_TYPE;
+                      TO : in POSITIVE_COUNT) is
+      Item_Bytes : Integer := (ITEM'SIZE + 7) / 8;
+      Ignore     : Integer;
    begin
       if FCBs(Idx).Mode = IN_FILE then raise MODE_ERROR; end if;
+      Establish_Slot(Idx, Item_Bytes);
       Seek_To(Idx, TO);
-      if C_Fwrite(ITEM'Address, Element_Bytes, 1, FCBs(Idx).Stream) /= 1 then
+      if C_Fwrite(Item_Bytes'Address, 4, 1, FCBs(Idx).Stream) /= 1 then
+         raise DEVICE_ERROR;
+      end if;
+      if C_Fwrite(ITEM'Address, Item_Bytes, 1, FCBs(Idx).Stream) /= 1 then
          raise DEVICE_ERROR;
       end if;
       Ignore := C_Fflush(FCBs(Idx).Stream);  -- make it visible to other handles
       FCBs(Idx).Index := TO + 1;
+   end Write_At;
+
+   procedure WRITE(FILE : in FILE_TYPE; ITEM : in ELEMENT_TYPE;
+                   TO : in POSITIVE_COUNT) is
+      Idx : Integer := Require_Open(FILE);
+   begin
+      Write_At(Idx, ITEM, TO);
    end WRITE;
 
    procedure WRITE(FILE : in FILE_TYPE; ITEM : in ELEMENT_TYPE) is
-      Idx    : Integer := Require_Open(FILE);
-      Ignore : Integer;
+      Idx : Integer := Require_Open(FILE);
    begin
-      if FCBs(Idx).Mode = IN_FILE then raise MODE_ERROR; end if;
-      Seek_To(Idx, FCBs(Idx).Index);
-      if C_Fwrite(ITEM'Address, Element_Bytes, 1, FCBs(Idx).Stream) /= 1 then
-         raise DEVICE_ERROR;
-      end if;
-      Ignore := C_Fflush(FCBs(Idx).Stream);  -- make it visible to other handles
-      FCBs(Idx).Index := FCBs(Idx).Index + 1;
+      Write_At(Idx, ITEM, FCBs(Idx).Index);
    end WRITE;
 
    procedure SET_INDEX(FILE : in FILE_TYPE; TO : in POSITIVE_COUNT) is

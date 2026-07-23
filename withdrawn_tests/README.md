@@ -31,41 +31,13 @@ compiler because the expectations themselves are wrong.
   the valid test ce3208a requires (and which this compiler
   implements); the AVO withdrew ce3902b and kept ce3208a.
 
-## Parked pending compiler work — NOT officially withdrawn
+## Formerly parked, now restored to acats/
 
-These four are valid tests that this compiler currently fails. They
-were long mis-graded as NOT APPLICABLE by a harness bug (an
-unanchored grep matched the words "NOT APPLICABLE" inside COMMENT
-lines, masking real FAILED results; fixed in `run_acats.sh` to match
-only REPORT.NOT_APPLICABLE's own output line). They are parked here
-to keep the suite green while the missing checks are implemented,
-and should be moved back into `acats/` when that lands.
-
-All four fail for the same root cause: type conversions used as
-OUT / IN OUT actual parameters are unwrapped by the call marshaling
-without emitting the RM 4.6 / RM 6.4.1 conversion checks, and the
-scalar copy-in/copy-out path assumes the actual and the formal share
-one representation.
-
-- **c64103a** — scalar IN OUT conversion actuals: converting a
-  DIGITS-MAX value into a DIGITS-1 formal must raise before the call
-  (float narrowing range check), and the copy-back conversion into
-  the actual's type must be checked likewise; same for fixed-point
-  types with different smalls (value rescaling plus range check).
-
-- **c64103c** — array IN OUT conversion actuals: CONSTRAINT_ERROR is
-  required before the call when component subtype constraints differ,
-  when a bound of the operand lies outside the target's index subtype
-  (non-null dimensions, unconstrained formal), or when per-dimension
-  lengths differ (constrained formal).
-
-- **c64103d** — the OUT-mode twin of c64103c.
-
-- **c95084a** — the task-entry twin of c64103a (the entry-call
-  marshaling path needs the same conversion checks).
-
-Sections of c64103a/c95084a that report "ONLY ONE INTEGER BASE TYPE"
-are genuinely inapplicable here (every integer range type derives
-from one 64-bit base, so no value can exceed a formal's base range) —
-but that is a comment in their output, not their verdict; the tests
-fail on the float, fixed, and array sections above.
+c64103a, c64103c, c64103d, and c95084a lived here while type
+conversions used as OUT / IN OUT actuals lacked their RM 4.6 / 6.4.1
+checks. That work landed — scalar conversion actuals load and store
+in the actual's own representation with checked conversions both
+ways (subprogram and entry calls alike), and array conversion actuals
+run the conversion's component-constraint, index-subtype, and length
+checks before the call — so all four are back in `acats/` and pass.
+Only the three AVO-withdrawn tests above remain here.

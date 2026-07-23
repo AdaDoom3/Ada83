@@ -174,29 +174,52 @@ CLASSES A / D / E / L CAMPAIGN
     the ALI still records the ST stub, so the bind closure sees the
     subunit's WITH dependencies (la5008o3m: obsolete dependency of a
     generic's subunit task body now refuses to bind).
-[x] E 33/34 — REPORT rewritten over TEXT_IO (line accounting visible
+[x] E 34/34 — REPORT rewritten over TEXT_IO (line accounting visible
     to tests, ee3412c) with SPECIAL_ACTION/TENTATIVELY PASSED (15
     tests unblocked); pragmas allowed in case-alternative position and
     among generic formals (RM 2.8); sequential files carry per-element
     byte-length framing so unconstrained element types work outright
     (ee2201d) — enabled by two more folder fixes ('SIZE of dynamic
     objects must not fold; 'ADDRESS of a fat object is its data);
-    DIRECT_IO rejects unconstrained elements via
-    pragma CONSTRAINED_ELEMENT_TYPE (fixed-slot addressing cannot
-    carry variable-size records; GNAT rejects likewise), which
-    ee2401d's own "N/A => ERROR" marker sanctions — the E grader now
-    honors the ACVC's in-source alternative-outcome markers exactly as
-    the B grader honors "-- ERROR" markers.
-    Remaining non-pass: ee2401d only (official NOT APPLICABLE).
+    direct files gained the same support (ee2401d): the slot capacity
+    is fixed by the first WRITE, persisted in a four-byte file header,
+    and every slot carries its value's byte length, so SET_INDEX stays
+    pure arithmetic and a READ of an unwritten slot raises DATA_ERROR
+    while still advancing the index (RM 14.2.4); the interim
+    CONSTRAINED_ELEMENT_TYPE restriction pragma was deleted.
+    The E grader honors the ACVC's in-source alternative-outcome
+    markers ("PASSED => ERROR" etc.) exactly as the B grader honors
+    "-- ERROR" markers.
+
+RM 4.6 CONVERSION-ACTUAL CAMPAIGN (closed)
+------------------------------------------
+[x] Emit_Checked_Scalar_Conversion extracted from the value-conversion
+    path: the one implementation of scalar conversion semantics
+    (fixed-point rescaling, float/fixed crossings, float narrowing
+    overflow, target range check), shared by value conversions and by
+    conversions used as parameter actuals.
+[x] Subprogram byref marshaling: scalar conversion actuals copy in
+    from the actual's own representation through the checked
+    conversion, and copy back through the reverse conversion into the
+    actual's representation (the old path loaded and stored with the
+    formal's rep regardless — silently wrong for f32/f64 mixes).
+[x] Array conversion actuals pass the generated conversion view, so
+    component-constraint, index-subtype, and length checks fire before
+    the call; the value-conversion path gained the static-operand
+    variants of those checks.
+[x] Entry calls: same conversion semantics on copy-back; float OUT /
+    IN OUT entry parameters are now captured at all, traveling
+    bit-for-bit via Emit_Narrow_From_Entry_Slot (previously floats
+    were silently excluded from entry copy-back).
+[x] c64103a c64103c c64103d c95084a restored from withdrawn_tests/
+    and PASS; only the AVO-withdrawn trio remains parked.
 
 FINAL STATE (current)
 ---------------------
-  A 140/140   B 336/1350 (campaign not started)   C 1969/1969
-  D 17/17     E 33/34 (ee2401d = official N/A)    L 47/47
+  A 140/140   B 336/1350 (campaign not started)   C 1973/1973
+  D 17/17     E 34/34                             L 47/47
   - Class C campaign start was 1935/21/20; every valid test passes
-  - the officially withdrawn trio (c98003b cc1226b ce3902b) and the
-    four conversion-check tests (c64103a c64103c c64103d c95084a)
-    live in withdrawn_tests/ and do not run; see its README.md for
-    which are AVO-withdrawn and which are parked pending the RM 4.6
-    conversion-actual work (open task)
+  - only the officially withdrawn trio (c98003b cc1226b ce3902b)
+    sits in withdrawn_tests/, each with its erroneous expectation
+    documented in README.md
 acats.baseline covers all six classes; run_acats.sh check gates on it.
