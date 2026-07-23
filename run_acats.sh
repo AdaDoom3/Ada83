@@ -100,8 +100,14 @@ compile_set(){
     for part in "${COMPILE_FILES[@]}"; do
         pn=$(basename "$part" .ada)
         if ! timeout 4 ./ada83 "$part" -o $lib/$pn.ll >/dev/null 2>$LOGS_DIR/$n.err; then
-            COMPILE_FAILED=$pn
-            return 1
+            # ACATS ships intentionally-erroneous fragments (ca3009a, …):
+            # a rejected submission updates nothing and processing goes on.
+            # Only the main unit failing to compile fails the set.
+            if [[ $pn == "$n" ]]; then
+                COMPILE_FAILED=$pn
+                return 1
+            fi
+            continue
         fi
         if [[ $pn == "$n" ]]; then
             MAIN_LL=$lib/$pn.ll

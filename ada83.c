@@ -3120,7 +3120,8 @@ Catalog_Entry *Library_Catalog_Register_At (String_Slice unit_name,
 void           Library_Catalog_Load_Directory (const char *directory);
 void           Library_Catalog_Reset          (void);
 void           Library_Catalog_Require_Consistent (String_Slice unit_name,
-                                                   Source_Location location);
+                                                   Source_Location location,
+                                                   bool at_bind_time);
 int            Library_Bind_Check                 (String_Slice main_unit);
 
 String_Slice LLVM_Type_Basic (String_Slice ada_type);
@@ -42878,18 +42879,23 @@ Catalog_Entry *Library_Catalog_Register_At (String_Slice unit_name,
 }
 
 void Library_Catalog_Require_Consistent (String_Slice unit_name,
-                                         Source_Location location) {
+                                         Source_Location location,
+                                         bool at_bind_time) {
   Catalog_Entry *spec_entry = Library_Catalog_Find (unit_name, CATALOG_UNIT_SPEC);
   Catalog_Entry *body_entry = Library_Catalog_Find (unit_name, CATALOG_UNIT_BODY);
 
   if (body_entry and body_entry->source_file.length == 0) body_entry = NULL;
 
+  /* An obsolete body is an RM 10.3 error only when the program is
+     bound; while compiling, the stale body is simply not loaded and a
+     later recompilation may still replace it. */
   if (spec_entry and body_entry and spec_entry->requires_body and
       body_entry->recorded_at < spec_entry->recorded_at) {
-    Report_Error (location,
-      "body of unit '%.*s' is obsolete: it was compiled before the "
-      "unit's current specification (RM 10.3)",
-      (int)unit_name.length, unit_name.data);
+    if (at_bind_time)
+      Report_Error (location,
+        "body of unit '%.*s' is obsolete: it was compiled before the "
+        "unit's current specification (RM 10.3)",
+        (int)unit_name.length, unit_name.data);
     return;
   }
   if (not body_entry) return;
@@ -42922,7 +42928,7 @@ int Library_Bind_Check (String_Slice main_unit) {
     String_Slice unit_name = worklist[visited_count++];
 
     int errors_before = Error_Count;
-    Library_Catalog_Require_Consistent (unit_name, no_location);
+    Library_Catalog_Require_Consistent (unit_name, no_location, true);
     errors += Error_Count - errors_before;
 
     for (uint32_t i = 0; i < Catalog_Entry_Count; i++) {
@@ -44349,6 +44355,18 @@ static void Append_Symbol_Grown (Symbol ***items, uint32_t *count,
 }
 
 void Append_Bodyless_Required_Package (Symbol *package_symbol) {
+  /* The body will come from another module at link time, so calls into
+     this package cross a separate-compilation boundary, and its spec
+     data is owned by that module. */
+  if (package_symbol) {
+    package_symbol->body_is_separate_stub = true;
+    for (uint32_t i = 0; i < package_symbol->exported_count; i++) {
+      Symbol *exported = package_symbol->exported[i];
+      if (exported and (exported->kind == SYMBOL_VARIABLE or
+                        exported->kind == SYMBOL_CONSTANT))
+        exported->is_package_level = true;
+    }
+  }
   Append_Symbol_Grown (&Bodyless_Required_Packages,
                        &Bodyless_Required_Package_Count,
                        &Bodyless_Required_Package_Capacity, package_symbol);
@@ -44502,7 +44520,7 @@ void Require_Complete_Library (Syntax_Node **units, int unit_count) {
         Syntax_Node *name_node = with_node->use_clause.names.items[j];
         if (name_node->kind != NK_IDENTIFIER) continue;
         String_Slice with_name = name_node->string_val.text;
-        Library_Catalog_Require_Consistent (with_name, name_node->location);
+        Library_Catalog_Require_Consistent (with_name, name_node->location, false);
         Symbol *with_symbol = Symbol_Find (with_name);
         if (with_symbol and with_symbol->kind == SYMBOL_GENERIC and
             not with_symbol->generic_body and
@@ -44853,10 +44871,13 @@ void Load_Package_Spec (String_Slice name, char *src) {
     return;
   }
   {
+    /* An obsolete body (older than the unit's current spec, or older
+       than a spec it WITHs) is never loaded: RM 10.3 makes it an error
+       only if it is still obsolete at bind time, by when a replacement
+       compilation provides the body's code and elaboration. */
     Catalog_Entry *own_body = Library_Catalog_Find (name, CATALOG_UNIT_BODY);
     Catalog_Entry *own_spec = Library_Catalog_Find (name, CATALOG_UNIT_SPEC);
-    if (own_body and own_body->source_file.length and own_spec and
-        not own_spec->requires_body) {
+    if (own_body and own_body->source_file.length and own_spec) {
       bool body_obsolete =
         own_spec->recorded_at > own_body->recorded_at;
       for (uint32_t w = 0; w < own_body->with_unit_count and
@@ -44867,10 +44888,13 @@ void Load_Package_Spec (String_Slice name, char *src) {
           body_obsolete = true;
       }
       if (body_obsolete) {
-        if (cu->compilation_unit.unit and
-            cu->compilation_unit.unit->kind == NK_PACKAGE_SPEC) {
+        Syntax_Node *spec_unit = cu->compilation_unit.unit;
+        if (spec_unit and spec_unit->kind == NK_PACKAGE_SPEC) {
           Mark_Body_Loaded (name);
-          Queue_Loaded_Body (cu);
+          if (own_spec->requires_body and spec_unit->symbol)
+            Append_Bodyless_Required_Package (spec_unit->symbol);
+          else
+            Queue_Loaded_Body (cu);
         }
         return;
       }
@@ -44933,6 +44957,11 @@ void Load_Package_Spec (String_Slice name, char *src) {
           Resolve_Declaration (body_unit);
           Queue_Loaded_Body (body_cu);
         }
+      }
+      else if (body_unit->kind == NK_PROCEDURE_BODY or
+               body_unit->kind == NK_FUNCTION_BODY) {
+        Resolve_Declaration (body_unit);
+        Queue_Loaded_Body (body_cu);
       }
     }
   }
