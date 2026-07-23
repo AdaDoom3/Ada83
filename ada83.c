@@ -52826,6 +52826,9 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   Emit ("declare void @llvm.stackrestore.p0(ptr)\n");
 #if defined(__linux__) and (defined(SIMD_X86_64) or defined(SIMD_ARM64))
   Emit ("declare i64 @syscall(i64, ...)\n");
+#elif defined(_WIN32) and (defined(SIMD_X86_64) or defined(SIMD_ARM64))
+  Emit ("declare i32 @WaitOnAddress(ptr, ptr, i64, i32)\n");
+  Emit ("declare void @WakeByAddressAll(ptr)\n");
 #endif
 #ifdef SIMD_X86_64
   Emit ("declare void @llvm.x86.sse2.pause()\n");
@@ -53659,12 +53662,15 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
 
   // ── Rendezvous wait/wake primitives — §18-style host dispatch ─────────
   // Chosen when the COMPILER is built, exactly as the SIMD tiers are: the
-  // emitted runtime targets the build host. On Linux/x86-64 and
-  // Linux/AArch64 a completion wait runs a bounded spin — PAUSE (x86) or
-  // YIELD (ARM) between probes, covering the short accept-body window with
-  // no syscall — then parks on a private futex keyed to the completion
-  // word itself, and the completer wakes exactly that waiter. Every other
-  // host takes the portable pthreads path over @__rv_mutex/@__term_cond.
+  // emitted runtime targets the build host. On x86-64 and AArch64 a
+  // completion wait runs a bounded spin — PAUSE (x86) or YIELD (ARM)
+  // between probes, covering the short accept-body window with no
+  // syscall — then parks directly on the completion word itself: a
+  // private futex on Linux, WaitOnAddress on Windows (kernelbase /
+  // Synchronization.lib, Windows 8+; the surrounding runtime still rides
+  // winpthreads there). The completer wakes exactly that waiter. Every
+  // other host takes the portable pthreads path over
+  // @__rv_mutex/@__term_cond.
   //
   // Conventions: __ada_wait_word REQUIRES @__rv_mutex NOT held (the
   // portable version blocks on it); __ada_wake_word runs UNDER the lock
@@ -53725,6 +53731,40 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   Emit ("  ret void\n");
   Emit ("}\n\n");
 #undef ADA_SYS_FUTEX
+#elif defined(_WIN32) and (defined(SIMD_X86_64) or defined(SIMD_ARM64))
+  // WaitOnAddress re-checks the word against *CompareAddress atomically in
+  // the kernel before sleeping, so a wake between probe and park is never
+  // lost — the same guarantee futex gives. INFINITE = -1.
+  Emit ("define linkonce_odr void @__ada_wait_word(ptr %%w, i32 %%expected) {\n");
+  Emit ("entry:\n");
+  Emit ("  %%cmp = alloca i32, align 4\n");
+  Emit ("  store i32 %%expected, ptr %%cmp\n");
+  Emit ("  br label %%outer\n");
+  Emit ("outer:\n");
+  Emit ("  br label %%spin\n");
+  Emit ("spin:\n");
+  Emit ("  %%i = phi i32 [ 0, %%outer ], [ %%i2, %%again ]\n");
+  Emit ("  %%v = load atomic i32, ptr %%w acquire, align 4\n");
+  Emit ("  %%done = icmp ne i32 %%v, %%expected\n");
+  Emit ("  br i1 %%done, label %%out, label %%pause\n");
+  Emit ("pause:\n");
+  Emit ("  call void @__ada_cpu_relax()\n");
+  Emit ("  %%i2 = add i32 %%i, 1\n");
+  Emit ("  %%more = icmp ult i32 %%i2, 256\n");
+  Emit ("  br i1 %%more, label %%again, label %%park\n");
+  Emit ("again:\n");
+  Emit ("  br label %%spin\n");
+  Emit ("park:\n");
+  Emit ("  %%_rc = call i32 @WaitOnAddress(ptr %%w, ptr %%cmp, i64 4, i32 -1)\n");
+  Emit ("  br label %%outer\n");
+  Emit ("out:\n");
+  Emit ("  ret void\n");
+  Emit ("}\n\n");
+
+  Emit ("define linkonce_odr void @__ada_wake_word(ptr %%w) {\n");
+  Emit ("  call void @WakeByAddressAll(ptr %%w)\n");
+  Emit ("  ret void\n");
+  Emit ("}\n\n");
 #else
   Emit ("define linkonce_odr void @__ada_wait_word(ptr %%w, i32 %%expected) {\n");
   Emit ("entry:\n");
@@ -54033,8 +54073,9 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   //
   // Wake channels. Two, by event kind:
   //   - The rendezvous COMPLETION word (rv+24, i32 0=pending 1=complete,
-  //     release-published): its waiter is woken directly — spin-then-futex
-  //     on Linux x86-64/AArch64, @__term_cond broadcast elsewhere.
+  //     release-published): its waiter is woken directly — bounded spin,
+  //     then futex (Linux) or WaitOnAddress (Windows) on x86-64/AArch64;
+  //     @__term_cond broadcast on other hosts.
   //   - Every other state change — queue arrival, activation, master flag,
   //     consensus, abort — broadcasts @__term_cond; waiters re-check their
   //     predicate under the lock, so spurious wakes are harmless and lost
