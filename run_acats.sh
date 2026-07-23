@@ -328,10 +328,27 @@ run_one(){
         fi
         ;;
     e)
+        # Several E tests state alternative pass criteria in their own
+        # sources: rejection is the documented passing outcome when the
+        # implementation requires recompilation (ea3003*), refuses extra
+        # units per AI-00255 (ea1003b), or rejects an instantiation whose
+        # support is optional ("N/A => ERROR", ee2401d-style). These are
+        # the ACVC's machine-readable criteria, same standing as the
+        # "-- ERROR" markers the class-B grader consumes.
+        e_reject(){
+            local n=$1 stage=$2 detail=$3
+            if grep -q "PASSED => ERROR\|IN THIS CASE RECOMPILATION IS\|SHOULD NOT BE LINKABLE" "$f"; then
+                echo "e pass $n ${stage}_REJECT_DOCUMENTED_PASS"
+            elif grep -q "N/A => ERROR\|NON-APPLICABLE IF THE INSTANTIATION" "$f"; then
+                echo "e skip $n N/A:${stage}_rejection_sanctioned"
+            else
+                echo "e skip $n ${stage}:$detail"
+            fi
+        }
         if ! compile_set "$n"; then
-            echo "e skip $n COMPILE[$COMPILE_FAILED]:$(head -1 $LOGS_DIR/$n.err 2>/dev/null|cut -c1-50)"; return; fi
+            e_reject "$n" COMPILE "$(head -1 $LOGS_DIR/$n.err 2>/dev/null|cut -c1-50)"; return; fi
         if [[ -n $BIND_FAILED ]]; then
-            echo "e skip $n BIND_REJECT:$(head -1 $LOGS_DIR/$n.bind 2>/dev/null|cut -c1-50)"; return; fi
+            e_reject "$n" BIND "$(head -1 $LOGS_DIR/$n.bind 2>/dev/null|cut -c1-50)"; return; fi
         if ! link_program "$n"; then
             [[ $LINK_STATUS == timeout ]] && echo "e fail $n TIMEOUT:llvm-link_exceeded_${LINK_TIMEOUT}s" \
                                           || echo "e skip $n BIND"

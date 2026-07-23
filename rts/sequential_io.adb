@@ -194,20 +194,39 @@ package body SEQUENTIAL_IO is
       return Is_Open_Index(FILE.Handle);
    end IS_OPEN;
 
+   -- Each element is framed by its byte length. For a constrained
+   -- ELEMENT_TYPE the length is the same for every element; for an
+   -- unconstrained one (RM 14.2.2 leaves support optional) it is the
+   -- written object's own size, which is what lets values of differing
+   -- lengths share one file and be read back into equal-sized objects.
    procedure READ(FILE : in FILE_TYPE; ITEM : out ELEMENT_TYPE) is
       Idx : Integer := Require_Open(FILE);
+      Stored_Bytes : Integer;
+      Item_Bytes   : constant Integer := (ITEM'SIZE + 7) / 8;
    begin
       if FCBs(Idx).Mode = OUT_FILE then raise MODE_ERROR; end if;
-      if C_Fread(ITEM'Address, Element_Bytes, 1, FCBs(Idx).Stream) /= 1 then
+      if C_Fread(Stored_Bytes'Address, 4, 1, FCBs(Idx).Stream) /= 1 then
+         raise END_ERROR;
+      end if;
+      if Stored_Bytes /= Item_Bytes then
+         raise DATA_ERROR;
+      end if;
+      if C_Fread(ITEM'Address, Stored_Bytes, 1, FCBs(Idx).Stream) /= 1 then
          raise END_ERROR;
       end if;
    end READ;
 
    procedure WRITE(FILE : in FILE_TYPE; ITEM : in ELEMENT_TYPE) is
       Idx : Integer := Require_Open(FILE);
+      -- Addressed for the header write, so it must have storage: a
+      -- constant may live only as a folded value.
+      Item_Bytes : Integer := (ITEM'SIZE + 7) / 8;
    begin
       if FCBs(Idx).Mode = IN_FILE then raise MODE_ERROR; end if;
-      if C_Fwrite(ITEM'Address, Element_Bytes, 1, FCBs(Idx).Stream) /= 1 then
+      if C_Fwrite(Item_Bytes'Address, 4, 1, FCBs(Idx).Stream) /= 1 then
+         raise DEVICE_ERROR;
+      end if;
+      if C_Fwrite(ITEM'Address, Item_Bytes, 1, FCBs(Idx).Stream) /= 1 then
          raise DEVICE_ERROR;
       end if;
    end WRITE;

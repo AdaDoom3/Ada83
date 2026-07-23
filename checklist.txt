@@ -160,12 +160,43 @@ Representation campaign (REPRESENTATION.md), staged and landing:
       final partial byte under a runtime mask, branch-guarded so
       null arrays never read out of bounds
 
+CLASSES A / D / E / L CAMPAIGN
+------------------------------
+[x] A 140/140 — two IR bugs fixed: 'SIZE of a type named by expanded
+    name emitted a dead lvalue for the type prefix (a83041d); 'ADDRESS
+    of a renaming resolved through the lvalue path instead of the
+    rename's own (nonexistent) storage (a85007d).
+[x] D 17/17 — named numbers and static integer comparisons now fold
+    through Eval_Universal_Integer (exact int128, RM 4.10) instead of
+    the rounding double folder (d4a002b, d4a004b).
+[x] L 47/47 — a subunit grafted into its generic parent's body kept
+    its library identity: the graft is marked is_grafted_subunit and
+    the ALI still records the ST stub, so the bind closure sees the
+    subunit's WITH dependencies (la5008o3m: obsolete dependency of a
+    generic's subunit task body now refuses to bind).
+[x] E 33/34 — REPORT rewritten over TEXT_IO (line accounting visible
+    to tests, ee3412c) with SPECIAL_ACTION/TENTATIVELY PASSED (15
+    tests unblocked); pragmas allowed in case-alternative position and
+    among generic formals (RM 2.8); sequential files carry per-element
+    byte-length framing so unconstrained element types work outright
+    (ee2201d) — enabled by two more folder fixes ('SIZE of dynamic
+    objects must not fold; 'ADDRESS of a fat object is its data);
+    DIRECT_IO rejects unconstrained elements via
+    pragma CONSTRAINED_ELEMENT_TYPE (fixed-slot addressing cannot
+    carry variable-size records; GNAT rejects likewise), which
+    ee2401d's own "N/A => ERROR" marker sanctions — the E grader now
+    honors the ACVC's in-source alternative-outcome markers exactly as
+    the B grader honors "-- ERROR" markers.
+    Remaining non-pass: ee2401d only (official NOT APPLICABLE).
+
 FINAL STATE (current)
 ---------------------
-Class C: 1969 runnable tests, all passing  (campaign start: 1935/21/20)
+  A 140/140   B 336/1350 (campaign not started)   C 1969/1969
+  D 17/17     E 33/34 (ee2401d = official N/A)    L 47/47
+  - Class C campaign start was 1935/21/20; every valid test passes
   - the officially withdrawn trio (c98003b cc1226b ce3902b) and the
     four conversion-check tests (c64103a c64103c c64103d c95084a)
     live in withdrawn_tests/ and do not run; see its README.md for
     which are AVO-withdrawn and which are parked pending the RM 4.6
     conversion-actual work (open task)
-acats.baseline blessed at this state; run_acats.sh check gates on it.
+acats.baseline covers all six classes; run_acats.sh check gates on it.

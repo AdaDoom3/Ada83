@@ -1075,6 +1075,7 @@ struct Syntax_Node {
       Node_List    statements;
       Node_List    handlers;
       bool         is_separate;
+      bool         is_grafted_subunit;
       bool         code_generated;
       bool         is_task_master;
       uint32_t     master_scope_id;
@@ -1095,6 +1096,7 @@ struct Syntax_Node {
       Node_List    statements;
       Node_List    handlers;
       bool         is_separate;
+      bool         is_grafted_subunit;
       bool         elab_generated;
       Scope       *enclosing_body_scope;
     } package_body;
@@ -1116,6 +1118,7 @@ struct Syntax_Node {
       Node_List    statements;
       Node_List    handlers;
       bool         is_separate;
+      bool         is_grafted_subunit;
       bool         is_task_master;
       uint32_t     master_scope_id;
     } task_body;
@@ -2024,6 +2027,7 @@ void Install_Derived_Operations  (Scope     *spec_scope);
 bool   Is_Integer_Expr     (Syntax_Node *node);
 bool   Eval_Const_Rational (Syntax_Node *node, Rational *out);
 double Eval_Const_Numeric  (Syntax_Node *node);
+bool   Eval_Universal_Integer (Syntax_Node *node, int128_t *out);
 
 char       *Decimal_Digits_Backward (char *buffer_end, uint128_t value);
 const char *I128_Decimal (int128_t  value);
@@ -5411,6 +5415,12 @@ Syntax_Node *Parse_Case_Statement(Parser *p) {
   node->case_stmt.expression = Parse_Expression (p);
   Parser_Expect (p, TK_IS);
 
+  /* RM 2.8: a pragma may appear wherever an alternative may. */
+  while (Parser_At (p, TK_PRAGMA)) {
+    Parse_Pragma (p);
+    Parser_Expect (p, TK_SEMICOLON);
+  }
+
   while (Parser_At (p, TK_WHEN)) {
     Source_Location alt_loc = Parser_Location (p);
     Parser_Advance (p);
@@ -5426,6 +5436,9 @@ Syntax_Node *Parse_Case_Statement(Parser *p) {
     alt->association.expression = stmts;
     Node_List_Push (&node->case_stmt.alternatives, alt);
   }
+  if (node->case_stmt.alternatives.count == 0)
+    Report_Error (Parser_Location (p),
+      "a case statement requires at least one alternative (RM 5.4)");
   Parser_Expect (p, TK_END);
   Parser_Expect (p, TK_CASE);
   return node;
@@ -6102,6 +6115,15 @@ void Parse_Generic_Formal_Part (Parser *p, Node_List *formals) {
        not Parser_At (p, TK_PACKAGE) and not Parser_At (p, TK_EOF)) {
     if (not Parser_Check_Progress (p)) break;
     Source_Location loc = Parser_Location (p);
+
+    if (Parser_At (p, TK_PRAGMA)) {
+      /* RM 2.8: pragmas are allowed among generic formals.  They ride
+         in the formal list; consumers key on node kind and skip them. */
+      Syntax_Node *pragma_node = Parse_Pragma (p);
+      Parser_Expect (p, TK_SEMICOLON);
+      Node_List_Push (formals, pragma_node);
+      continue;
+    }
 
     if (Parser_Match (p, TK_TYPE)) {
       Syntax_Node *formal = Node_New (NK_GENERIC_TYPE_PARAM, loc);
@@ -10074,6 +10096,107 @@ bool Is_Integer_Expr (Syntax_Node *node) {
       return false;
   }
 }
+/* Exact universal-integer folding (RM 4.10: static universal
+   expressions are evaluated exactly, in no machine type).  The double
+   folder below rounds beyond 2**53; this one refuses instead —
+   a false return means "not statically an integer", never "roughly".
+   int128 covers every value a legal Ada 83 static integer expression
+   can denote through a 64-bit implementation's named numbers. */
+bool Eval_Universal_Integer (Syntax_Node *node, int128_t *out) {
+  if (not node) return false;
+  switch (node->kind) {
+    case NK_INTEGER:
+      if (node->integer_lit.big_value)
+        return Big_Integer_To_Int128 (node->integer_lit.big_value, out);
+      *out = node->integer_lit.value;
+      return true;
+
+    case NK_QUALIFIED:
+      return Eval_Universal_Integer (node->qualified.expression, out);
+
+    case NK_IDENTIFIER:
+    case NK_SELECTED: {
+      Symbol *sym = node->symbol;
+      if (not sym) return false;
+      if (sym->kind == SYMBOL_LITERAL) { *out = sym->frame_offset; return true; }
+      if (sym->kind == SYMBOL_CONSTANT and sym->declaration and
+          sym->declaration->kind == NK_OBJECT_DECL and
+          sym->declaration->object_decl.init and
+          (sym->is_named_number or (sym->type and Type_Is_Discrete (sym->type))))
+        return Eval_Universal_Integer (sym->declaration->object_decl.init, out);
+      return false;
+    }
+
+    case NK_UNARY_OP: {
+      int128_t v;
+      Token_Kind op = node->unary.op;
+      if (node->symbol) {
+        Symbol *target =
+          Ultimate_Operation (Resolve_Subprogram_Rename (node->symbol));
+        if (not target or not target->is_predefined) return false;
+        Token_Kind renamed = Token_From_Op_Name (target->name);
+        if (renamed != TK_EOF) op = renamed;
+      }
+      if (not Eval_Universal_Integer (node->unary.operand, &v)) return false;
+      switch (op) {
+        case TK_MINUS: *out = -v;              return true;
+        case TK_PLUS:  *out = v;               return true;
+        case TK_ABS:   *out = v < 0 ? -v : v;  return true;
+        default:       return false;
+      }
+    }
+
+    case NK_BINARY_OP: {
+      int128_t a, b;
+      /* Only the predefined operators have these semantics; a node
+         resolved to a user-defined operator (or renamed to a
+         different predefined one) folds under that operator or not
+         at all. */
+      Token_Kind op = node->binary.op;
+      if (node->symbol) {
+        Symbol *target =
+          Ultimate_Operation (Resolve_Subprogram_Rename (node->symbol));
+        if (not target or not target->is_predefined) return false;
+        Token_Kind renamed = Token_From_Op_Name (target->name);
+        if (renamed != TK_EOF) op = renamed;
+      }
+      if (not Eval_Universal_Integer (node->binary.left, &a) or
+          not Eval_Universal_Integer (node->binary.right, &b)) return false;
+      switch (op) {
+        case TK_PLUS:  return not __builtin_add_overflow (a, b, out);
+        case TK_MINUS: return not __builtin_sub_overflow (a, b, out);
+        case TK_STAR:  return not __builtin_mul_overflow (a, b, out);
+        case TK_SLASH:
+          if (b == 0) return false;
+          *out = a / b;
+          return true;
+        case TK_REM:
+          if (b == 0) return false;
+          *out = a % b;
+          return true;
+        case TK_MOD: {
+          if (b == 0) return false;
+          int128_t r = a % b;
+          if (r != 0 and (r < 0) != (b < 0)) r += b;
+          *out = r;
+          return true;
+        }
+        case TK_EXPON: {
+          if (b < 0) return false;
+          int128_t r = 1;
+          for (int128_t i = 0; i < b; i++)
+            if (__builtin_mul_overflow (r, a, &r)) return false;
+          *out = r;
+          return true;
+        }
+        default: return false;
+      }
+    }
+
+    default: return false;
+  }
+}
+
 double Eval_Const_Numeric_Impl (Syntax_Node *node);
 
 double Eval_Const_Numeric (Syntax_Node *node) {
@@ -10176,8 +10299,15 @@ double Eval_Const_Numeric_Impl (Syntax_Node *node) {
       Type_Info *ty = node->attribute.prefix ? node->attribute.prefix->type : NULL;
       Attribute_Kind attribute_kind = node->attribute.kind;
       if (not ty) return 0.0/0.0;
-      if (attribute_kind == ATTRIBUTE_SIZE)
+      if (attribute_kind == ATTRIBUTE_SIZE) {
+        /* An object of an unconstrained or dynamic-bounds type has a
+           size of its own that no static fold can know. */
+        if (ty->size == 0 or
+            (Type_Is_Array_Like (ty) and
+             (not ty->array.is_constrained or Type_Has_Dynamic_Bounds (ty))))
+          return 0.0/0.0;
         return (double)(ty->size * 8);
+      }
       if (attribute_kind == ATTRIBUTE_FIRST) {
         if (ty->low_bound.kind == BOUND_INTEGER) return (double)ty->low_bound.int_value;
         if (ty->low_bound.kind == BOUND_FLOAT)   return ty->low_bound.float_value;
@@ -15371,6 +15501,27 @@ void Validate_Generic_Actuals (Symbol *instance_sym, Symbol *template_sym,
   Syntax_Node *generic_decl = template_sym->declaration;
   if (not generic_decl or generic_decl->kind != NK_GENERIC_DECL) return;
   Node_List *formals = &generic_decl->generic_decl.formals;
+
+  /* pragma CONSTRAINED_ELEMENT_TYPE (implementation-defined, used by
+     the runtime's SEQUENTIAL_IO and DIRECT_IO): every formal type's
+     actual must be constrained, because file elements are stored as
+     fixed-size values with no room for bounds (RM 14.2). */
+  bool requires_constrained = false;
+  for (uint32_t i = 0; i < formals->count; i++)
+    if (formals->items[i] and formals->items[i]->kind == NK_PRAGMA and
+        Slice_Equal_Ignore_Case (formals->items[i]->pragma_node.name,
+                                 S("CONSTRAINED_ELEMENT_TYPE")))
+      requires_constrained = true;
+  if (requires_constrained)
+    for (uint32_t b = 0; b < instance_sym->actual_binding_count; b++) {
+      Type_Info *actual = instance_sym->actual_bindings[b].actual_type;
+      if (actual and Type_Is_Array_Like (actual) and
+          not actual->array.is_constrained)
+        Report_Error (instance_sym->location,
+          "the element type of a sequential or direct file must be "
+          "constrained (RM 14.2)");
+    }
+
   uint32_t slot = 0;
   for (uint32_t i = 0; i < formals->count; i++) {
     Syntax_Node *formal = formals->items[i];
@@ -18360,6 +18511,19 @@ void Resolve_Compilation_Unit (Syntax_Node *node) {
           }
           if (stub_name.length and
               Slice_Equal_Ignore_Case (stub_name, unit_name)) {
+            /* The graft erases the stub, but the library still owns a
+               subunit: the ALI must keep saying so (bind closure and
+               RM 10.3 staleness both hang off the ST record). */
+            switch (unit->kind) {
+              case NK_PROCEDURE_BODY:
+              case NK_FUNCTION_BODY:
+                unit->subprogram_body.is_grafted_subunit = true; break;
+              case NK_PACKAGE_BODY:
+                unit->package_body.is_grafted_subunit = true; break;
+              case NK_TASK_BODY:
+                unit->task_body.is_grafted_subunit = true; break;
+              default: break;
+            }
             body_declarations->items[d] = unit;
             node->compilation_unit.grafted_into_generic = true;
             return;
@@ -22019,8 +22183,15 @@ LLVM_Value Generate_Identifier (Syntax_Node *node) {
         Syntax_Node *decl = sym->declaration;
 
         if (decl and decl->kind == NK_OBJECT_DECL and decl->object_decl.init) {
-          double cv = Eval_Const_Numeric (decl->object_decl.init);
+          int128_t exact;
           LLVM_Rep named_t = ty ? Type_To_Rep (ty) : Integer_Arith_Rep ();
+          if (not Type_Is_Float_Representation (ty) and
+              Eval_Universal_Integer (decl->object_decl.init, &exact)) {
+            Emit ("  %%t%u = add %s 0, %s  ; named number (exact)\n",
+               t, LLVM_Rep_To_String (named_t), I128_Decimal (exact));
+            return Val_Rep (t, named_t);
+          }
+          double cv = Eval_Const_Numeric (decl->object_decl.init);
           if (cv == cv) {
             if (Type_Is_Float_Representation (ty)) {
               uint64_t bits; memcpy (&bits, &cv, sizeof (bits));
@@ -23168,6 +23339,28 @@ bool Emit_Discriminants_Match (Type_Info *constrained_type,
 LLVM_Value Emit_Binary_Op_Predefined (Syntax_Node *node) {
 
   Type_Info *left_type = node->binary.left ? node->binary.left->type : NULL;
+
+  /* RM 4.10: a static integer comparison is decided exactly — never
+     in a machine type whose range the operands may exceed. */
+  if (node->binary.op == TK_EQ or node->binary.op == TK_NE or
+      node->binary.op == TK_LT or node->binary.op == TK_LE or
+      node->binary.op == TK_GT or node->binary.op == TK_GE) {
+    int128_t lv, rv;
+    if (not Type_Is_Float_Representation (left_type) and
+        not Type_Is_Composite (left_type) and
+        Eval_Universal_Integer (node->binary.left, &lv) and
+        Eval_Universal_Integer (node->binary.right, &rv)) {
+      bool truth =
+        node->binary.op == TK_EQ ? lv == rv :
+        node->binary.op == TK_NE ? lv != rv :
+        node->binary.op == TK_LT ? lv <  rv :
+        node->binary.op == TK_LE ? lv <= rv :
+        node->binary.op == TK_GT ? lv >  rv : lv >= rv;
+      uint32_t r = Emit_Result_Instruction (
+        "add i8 0, %d  ; static comparison (exact)\n", truth ? 1 : 0);
+      return Val_Rep (r, LLVM_Rep_Int (8, false));
+    }
+  }
 
   if ((node->binary.op == TK_STAR or node->binary.op == TK_SLASH or
        node->binary.op == TK_PLUS or node->binary.op == TK_MINUS) and
@@ -27359,9 +27552,14 @@ LLVM_Value Generate_Attribute (Syntax_Node *node) {
     LLVM_Rep iat = Integer_Arith_Rep ();
 
     Syntax_Node *pfx = node->attribute.prefix;
-    if (pfx and (pfx->kind == NK_APPLY or pfx->kind == NK_SELECTED)) {
+    bool pfx_denotes_type = pfx and pfx->symbol and
+      (pfx->symbol->kind == SYMBOL_TYPE or
+       pfx->symbol->kind == SYMBOL_SUBTYPE);
+    if (pfx and not pfx_denotes_type and
+        (pfx->kind == NK_APPLY or pfx->kind == NK_SELECTED)) {
       /* 'SIZE is answered from the type; a packed element has no
-         address to take, and needs none. */
+         address to take, and needs none.  An expanded name denoting
+         a type (P.A'SIZE) names no storage at all. */
       Type_Info *apfx = pfx->kind == NK_APPLY and pfx->apply.prefix
                           ? pfx->apply.prefix->type : NULL;
       if (not (Type_Is_Bit_Packed_Array (apfx) or
@@ -27378,27 +27576,33 @@ LLVM_Value Generate_Attribute (Syntax_Node *node) {
 
       bool unconstrained = not prefix_type->array.is_constrained;
       if (unconstrained or Type_Has_Dynamic_Bounds (prefix_type)) {
-        int128_t static_elems = 1;
-        bool all_static = (ndims > 0);
-        for (uint32_t d = 0; d < ndims and all_static; d++) {
-          Type_Info  *ixt = prefix_type->array.indices[d].index_type;
-          Type_Bound *lo = unconstrained ? (ixt ? &ixt->low_bound  : NULL)
-                                         : &prefix_type->array.indices[d].low_bound;
-          Type_Bound *hi = unconstrained ? (ixt ? &ixt->high_bound : NULL)
-                                         : &prefix_type->array.indices[d].high_bound;
-          if (lo and hi and lo->kind == BOUND_INTEGER and hi->kind == BOUND_INTEGER) {
-            int128_t len = hi->int_value - lo->int_value + 1;
-            static_elems *= (len < 0 ? 0 : len);
-          } else all_static = false;
-        }
-        if (all_static and static_elems >= 0 and static_elems * comp_bits <= INT64_MAX)
-          return Emit_Attribute_Integer_Constant (t,
-            (int64_t)(static_elems * comp_bits), "'SIZE = extent in bits");
-
         bool prefix_is_type =
           (node->attribute.prefix->kind == NK_ATTRIBUTE and
            node->attribute.prefix->attribute.kind == ATTRIBUTE_BASE)
           or (prefix_sym and prefix_sym->kind == SYMBOL_TYPE);
+
+        /* An OBJECT of an unconstrained type answers with its own
+           bounds; only a TYPE prefix may fall back to the index
+           subtype's static extent. */
+        if (not (needs_runtime_bounds and not prefix_is_type)) {
+          int128_t static_elems = 1;
+          bool all_static = (ndims > 0);
+          for (uint32_t d = 0; d < ndims and all_static; d++) {
+            Type_Info  *ixt = prefix_type->array.indices[d].index_type;
+            Type_Bound *lo = unconstrained ? (ixt ? &ixt->low_bound  : NULL)
+                                           : &prefix_type->array.indices[d].low_bound;
+            Type_Bound *hi = unconstrained ? (ixt ? &ixt->high_bound : NULL)
+                                           : &prefix_type->array.indices[d].high_bound;
+            if (lo and hi and lo->kind == BOUND_INTEGER and hi->kind == BOUND_INTEGER) {
+              int128_t len = hi->int_value - lo->int_value + 1;
+              static_elems *= (len < 0 ? 0 : len);
+            } else all_static = false;
+          }
+          if (all_static and static_elems >= 0 and static_elems * comp_bits <= INT64_MAX)
+            return Emit_Attribute_Integer_Constant (t,
+              (int64_t)(static_elems * comp_bits), "'SIZE = extent in bits");
+        }
+
         if (needs_runtime_bounds and not prefix_is_type) {
           LLVM_Rep fbt = Array_Bound_LLVM_Rep (prefix_type);
           uint32_t fat = (prefix_sym and not Symbol_Is_Subprogram (prefix_sym))
@@ -27479,6 +27683,15 @@ LLVM_Value Generate_Attribute (Syntax_Node *node) {
       }
     }
     Symbol *sym = pfx->symbol;
+    if (sym and (sym->renamed_object or sym->rename_address_slot) and
+        not Symbol_Is_Subprogram (sym) and sym->kind != SYMBOL_PACKAGE) {
+      /* A renaming has no storage of its own; its address is the
+         renamed object's, which the lvalue path already resolves. */
+      uint32_t renamed_addr = Generate_Lvalue (pfx);
+      Emit ("  %%t%u = ptrtoint ptr %%t%u to " PTR_INT_TYPE
+            "  ; 'ADDRESS (renamed)\n", t, renamed_addr);
+      return Val_Rep (t, LLVM_Rep_Int (64, false));
+    }
     while (sym and sym->aliased) sym = sym->aliased;
     if (sym) {
 
@@ -27525,6 +27738,15 @@ LLVM_Value Generate_Attribute (Syntax_Node *node) {
         Emit ("\n");
         Emit ("  %%t%u = ptrtoint ptr %%t%u to " PTR_INT_TYPE "  ; 'ADDRESS (overlay)\n",
            t, cell_ptr);
+
+      } else if (sym->type and Type_Needs_Fat_Pointer (sym->type)) {
+        /* The object's address is its data, not the descriptor that
+           carries the data pointer and bounds. */
+        LLVM_Rep fat_bt = Array_Bound_LLVM_Rep (sym->type);
+        uint32_t fat = Emit_Load_Fat_Pointer (sym, fat_bt).reg;
+        uint32_t data = Emit_Fat_Pointer_Data (fat, fat_bt).reg;
+        Emit ("  %%t%u = ptrtoint ptr %%t%u to " PTR_INT_TYPE
+              "  ; 'ADDRESS (array data)\n", t, data);
 
       } else {
         Emit ("  %%t%u = ptrtoint ptr ", t);
@@ -43851,15 +44073,18 @@ void ALI_Collect_Unit (ALI_Info *ali, Syntax_Node *cu,
       switch (decl->kind) {
         case NK_PROCEDURE_BODY:
         case NK_FUNCTION_BODY:
-          if (decl->subprogram_body.is_separate)
+          if (decl->subprogram_body.is_separate or
+              decl->subprogram_body.is_grafted_subunit)
             stub_name = Get_Subprogram_Name (decl);
           break;
         case NK_PACKAGE_BODY:
-          if (decl->package_body.is_separate)
+          if (decl->package_body.is_separate or
+              decl->package_body.is_grafted_subunit)
             stub_name = decl->package_body.name;
           break;
         case NK_TASK_BODY:
-          if (decl->task_body.is_separate)
+          if (decl->task_body.is_separate or
+              decl->task_body.is_grafted_subunit)
             stub_name = decl->task_body.name;
           break;
         default: break;
