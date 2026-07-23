@@ -1,0 +1,38 @@
+════════════════════════════════════════════════════════════════════════════
+ CHECKLIST — Class-C skipped-test refactor campaign
+════════════════════════════════════════════════════════════════════════════
+
+ORIGINAL PROMPT
+---------------
+In the pursuit of high-quality code (low line count (e.g. low undue
+complexity) and high feature/correctness) - refactor and fix ada83.c all
+C-tests completely (e.g. cXX) with much better Haskell-like C99 and smart
+code-golfing with, ironically, textbook "Literate Programming" style.
+
+Do NOT skip around - when you encounter a complex problem look at it as an
+opportunity to finally attack a big issue. Remember to follow the flow
+upstream to avoid hacking up the expander.
+
+Create a file to track everything called "checklist.txt" and include this
+prompt in it.
+
+Focus on skipped tests.
+
+METHOD
+------
+1. Run full Class C suite; enumerate every `skip` result and its cause
+   (COMPILE[…] = front-end rejects legal code; BIND = unresolved symbols
+   at llvm-link; N/A = test reports NOT APPLICABLE at runtime).
+2. Group skips by root cause, not by test. Fix the deepest shared cause
+   first (upstream: parser → semantics → expander → emit).
+3. Re-run affected groups after each fix; record deltas here.
+4. Land only structurally correct fixes — no expander hacks, no
+   special-cases keyed to test names.
+
+STATUS LOG
+----------
+[ ] Baseline Class C run — in progress (enumerating skips)
+
+SKIP GROUPS (to be filled from baseline run)
+--------------------------------------------
+(pending)
