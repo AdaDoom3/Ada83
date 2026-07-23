@@ -28,3 +28,6 @@ T*.ll
 vgcore.*
 ada83.c.pre-propagation
 test_derived_runtime
+tools/win64/LLVM-C.dll
+tools/win64/llvmc_blob.o
+!tools/win64/LLVM-C.dll.zst

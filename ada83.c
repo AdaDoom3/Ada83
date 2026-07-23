@@ -24,6 +24,7 @@
 //  §17. File Loading       Include-path search, source file I/O                                
 //  §18. Vector Paths       SIMD-accelerated scanning on x86-64 and ARM64                       
 //  §19. Driver             Command-line parsing and top-level orchestration                    
+//  §20. Native Backend     In-process IR -> executable via runtime-loaded LLVM-C                
 //
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 //
@@ -4690,6 +4691,7 @@ extern const char   *Rts_Include_Path;
 extern bool          Lookup_Path_Resolved_From_Rts;
 extern bool          Debug_Emit_Locations;
 extern bool          Clone_Self_Check;
+extern bool          Native_Mode;
 extern uint32_t      Include_Path_Count;
 extern Syntax_Node **Loaded_Package_Bodies;  // arena-grown, no cap
 
@@ -4803,6 +4805,28 @@ void  Compile_File       (const char *input_path, const char *output_path);
 void  Derive_Output_Path (const char *input, char *out, size_t out_size);
 void *Compile_Worker     (void *arg);
 int   main               (int argc, char *argv[]);
+
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+// §20. Native Backend - In-process IR -> executable via runtime-loaded LLVM-C
+//
+// `--native -o prog` finishes the pipeline inside the compiler: the emitted IR is parsed,
+// optimized (default<O2>), and lowered to a host object file through LLVM's C API — with ZERO
+// build-time LLVM dependency. LLVM-C is a stable C ABI, so the entry points are declared here
+// as function-pointer types and resolved with dlopen/dlsym at RUN time from whatever libLLVM
+// the host has: the distro package on Linux, Homebrew or Xcode's on macOS, or an LLVM-C.dll
+// dropped next to ada83.exe on Windows (LoadLibrary searches the executable's directory
+// first — vendoring the DLL in the distribution is the whole install story).
+// ADA83_LLVM_LIB overrides the probe. The final step — linking one object file — is delegated
+// to the first system C compiler found ($CC, cc, clang, gcc), because that is the one tool
+// every development machine already has and the only part of LLVM with no stable C API (lld).
+//
+// The compiler still emits textual .ll by default; --native is additive.
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+
+typedef struct Llvm_C_Api Llvm_C_Api;
+bool Llvm_C_Api_Load          (Llvm_C_Api *api, char *err, size_t err_size);
+int  Native_Backend_Compile   (const char *ir_path, const char *const *extra_ir,
+                               int extra_count, const char *exe_path);
 
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
@@ -58307,6 +58331,10 @@ bool            Debug_Emit_Locations      = false;
 // wrong edge in SYNTAX_TREE_SHAPE.
 bool            Clone_Self_Check          = false;
 
+// --native: finish in-process, IR -> host executable via the runtime-loaded
+// LLVM-C backend (§20).
+bool            Native_Mode               = false;
+
 // Track loaded package bodies for code generation (arena-grown, no cap)
 Syntax_Node   **Loaded_Package_Bodies      = NULL;
 int             Loaded_Body_Count          = 0;
@@ -60771,7 +60799,11 @@ void *Compile_Worker (void *arg) {
 int main (int argc, char *argv[]) {
   if (argc < 2) {
     fprintf (stderr,
-      "Usage: %s [-I path] [-g] [--clone-check] <input.ada ...> [-o output.ll]\n"
+      "Usage: %s [-I path] [-g] [--native] [--clone-check] <input.ada ...> [-o output.ll]\n"
+      "  --native\n"
+      "        Finish in-process: parse, optimize, and lower the IR to a host\n"
+      "        executable via a runtime-loaded libLLVM. Requires a single\n"
+      "        input and -o <executable>.\n"
       "  -g    Annotate each emitted IR line with `; @ FUNC:LINE` of the\n"
       "        C source site in ada83.c that produced it (codegen debug).\n"
       "  --clone-check\n"
@@ -60818,6 +60850,8 @@ int main (int argc, char *argv[]) {
       output = argv[++i];
     } else if (strcmp (argv[i], "-g") == 0) {
       Debug_Emit_Locations = true;
+    } else if (strcmp (argv[i], "--native") == 0) {
+      Native_Mode = true;
     } else if (strcmp (argv[i], "--clone-check") == 0) {
       Clone_Self_Check = true;
     } else if (argv[i][0] != '-') {
@@ -60829,9 +60863,33 @@ int main (int argc, char *argv[]) {
     fprintf (stderr, "Error: no input file specified\n");
     return 1;
   }
-  if (output and input_count > 1) {
+  if (output and input_count > 1 and not Native_Mode) {
     fprintf (stderr, "Error: -o cannot be used with multiple input files\n");
     return 1;
+  }
+  // Native mode: exactly one Ada source plus any number of pre-compiled
+  // .ll modules to link in-process.
+  const char *native_extra[256];
+  int native_extra_count = 0;
+  if (Native_Mode) {
+    int ada_index = -1;
+    for (int i = 0; i < input_count; i++) {
+      size_t len = strlen (inputs[i]);
+      if (len > 3 and strcmp (inputs[i] + len - 3, ".ll") == 0) {
+        native_extra[native_extra_count++] = inputs[i];
+      } else if (ada_index < 0) {
+        ada_index = i;
+      } else {
+        ada_index = -2;   // more than one Ada source
+      }
+    }
+    if (not output or ada_index < 0) {
+      fprintf (stderr, "Error: --native requires one Ada source (plus "
+                       "optional .ll modules) and -o <executable>\n");
+      return 1;
+    }
+    inputs[0] = inputs[ada_index];
+    input_count = 1;
   }
 
   // ── Auto-discover rts path from executable location ────────────────────────────────────────────
@@ -60884,6 +60942,20 @@ int main (int argc, char *argv[]) {
   // ── Compile ────────────────────────────────────────────────────────────────────────────────────
   // Single file - existing sequential behaviour
   if (input_count == 1) {
+    if (Native_Mode) {
+      char ir_path[PATH_MAX];
+      snprintf (ir_path, sizeof (ir_path), "%s.native.ll", output);
+      Compile_File (inputs[0], ir_path);
+      Arena_Free_All ();
+      char ali_path[PATH_MAX];
+      snprintf (ali_path, sizeof (ali_path), "%s.native.ali", output);
+      if (Error_Count > 0) { remove (ir_path); remove (ali_path); return 1; }
+      int status = Native_Backend_Compile (ir_path, native_extra,
+                                           native_extra_count, output);
+      remove (ir_path);
+      remove (ali_path);
+      return status;
+    }
     Compile_File (inputs[0], output);
     Arena_Free_All ();
     return Error_Count > 0 ? 1 : 0;
@@ -61032,4 +61104,335 @@ int main (int argc, char *argv[]) {
   if (failed > 0)
     fprintf (stderr, "%d of %d compilations failed\n", failed, input_count);
   return failed > 0 ? 1 : 0;
+}
+
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+// §20. NATIVE BACKEND - In-Process IR -> Executable via Runtime-Loaded LLVM-C
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+
+#ifdef _WIN32
+  #include <windows.h>
+  static void *Backend_Library_Open (const char *name)
+    { return (void *) LoadLibraryA (name); }
+  static void *Backend_Symbol (void *handle, const char *name)
+    { return (void *) GetProcAddress ((HMODULE) handle, name); }
+#else
+  #include <dlfcn.h>
+  static void *Backend_Library_Open (const char *name)
+    { return dlopen (name, RTLD_NOW | RTLD_LOCAL); }
+  static void *Backend_Symbol (void *handle, const char *name)
+    { return dlsym (handle, name); }
+#endif
+
+// The slice of LLVM-C this backend drives. All of these have been ABI-stable
+// across every LLVM major release this probe list covers; they are declared
+// here precisely so that NO LLVM header (and no build-time LLVM at all) is
+// needed to build the compiler.
+typedef int Llvm_Bool;                       // LLVMBool: zero is success
+struct Llvm_C_Api {
+  void *library;
+
+  void       *(*Context_Create)             (void);
+  void        (*Context_Dispose)            (void *context);
+  Llvm_Bool   (*Buffer_From_File)           (const char *path, void **buffer, char **error);
+  Llvm_Bool   (*Parse_Ir)                   (void *context, void *buffer, void **module, char **error);
+  void        (*Module_Dispose)             (void *module);
+  void        (*Dispose_Message)            (char *message);
+
+  void        (*Init_Target_Info)           (void);
+  void        (*Init_Target)                (void);
+  void        (*Init_Target_Mc)             (void);
+  void        (*Init_Asm_Printer)           (void);
+  void        (*Init_Asm_Parser)            (void);
+
+  char       *(*Default_Triple)             (void);
+  Llvm_Bool   (*Target_From_Triple)         (const char *triple, void **target, char **error);
+  char       *(*Host_Cpu_Name)              (void);
+  char       *(*Host_Cpu_Features)          (void);
+  void       *(*Create_Target_Machine)      (void *target, const char *triple, const char *cpu,
+                                             const char *features, int opt_level, int reloc,
+                                             int code_model);
+  void        (*Target_Machine_Dispose)     (void *machine);
+  void       *(*Create_Target_Data_Layout)  (void *machine);
+  void        (*Set_Module_Data_Layout)     (void *module, void *layout);
+  void        (*Dispose_Target_Data)        (void *layout);
+  void        (*Set_Target)                 (void *module, const char *triple);
+
+  void       *(*Pass_Options_Create)        (void);
+  void        (*Pass_Options_Dispose)       (void *options);
+  void       *(*Run_Passes)                 (void *module, const char *passes, void *machine,
+                                             void *options);            // LLVMErrorRef; null OK
+  char       *(*Error_Message)              (void *error);              // consumes the error
+  void        (*Dispose_Error_Message)      (char *message);
+
+  Llvm_Bool   (*Emit_To_File)               (void *machine, void *module, const char *path,
+                                             int file_type, char **error);
+  Llvm_Bool   (*Link_Modules)               (void *destination, void *source); // consumes source
+};
+
+// The emitted runtime targets the build host (§18 doctrine), so the backend
+// initializes exactly the host's target family.
+#ifdef SIMD_ARM64
+  #define BACKEND_ARCH "AArch64"
+#else
+  #define BACKEND_ARCH "X86"
+#endif
+
+// Optional embedded libLLVM (Windows single-file distribution): the build
+// may link LLVM-C.dll into the executable as a binary blob (`make
+// embed-llvm`, which objcopys tools/win64/LLVM-C.dll); these weak symbols
+// are non-null exactly when it did. First use extracts the blob — once,
+// size-tagged, atomically via rename — into %LOCALAPPDATA%\ada83 and
+// loads it from there. Extraction is the supported way to run a DLL
+// carried inside an executable: manually mapping it from memory would
+// bypass the Windows loader (TLS, dependency resolution, unwind tables).
+#ifdef _WIN32
+extern const unsigned char _binary_LLVM_C_dll_start[] __attribute__((weak));
+extern const unsigned char _binary_LLVM_C_dll_end[]   __attribute__((weak));
+
+static const char *Backend_Extract_Embedded_Library (void) {
+  if (not _binary_LLVM_C_dll_start or not _binary_LLVM_C_dll_end) return NULL;
+  size_t size = (size_t) (_binary_LLVM_C_dll_end - _binary_LLVM_C_dll_start);
+  const char *base = getenv ("LOCALAPPDATA");
+  if (size == 0 or not base) return NULL;
+
+  static char path[PATH_MAX];
+  char directory[PATH_MAX], temp_path[PATH_MAX];
+  snprintf (directory, sizeof (directory), "%s\\ada83", base);
+  snprintf (path, sizeof (path), "%s\\LLVM-C-%zu.dll", directory, size);
+  CreateDirectoryA (directory, NULL);
+
+  struct stat existing;
+  if (stat (path, &existing) == 0 and (size_t) existing.st_size == size)
+    return path;   // already extracted by an earlier run
+
+  snprintf (temp_path, sizeof (temp_path), "%s.tmp%lu", path,
+            (unsigned long) GetCurrentProcessId ());
+  FILE *out = fopen (temp_path, "wb");
+  if (not out) return NULL;
+  size_t written = fwrite (_binary_LLVM_C_dll_start, 1, size, out);
+  fclose (out);
+  if (written != size) { remove (temp_path); return NULL; }
+  if (rename (temp_path, path) != 0) {
+    remove (temp_path);
+    // Losing an extraction race to a concurrent run is fine iff the
+    // winner's copy is in place.
+    if (stat (path, &existing) != 0 or (size_t) existing.st_size != size)
+      return NULL;
+  }
+  return path;
+}
+#endif
+
+// Probe order: explicit override, the unversioned dev symlink, then recent
+// major versions in both sonaming styles (libLLVM.so.N and Debian's
+// libLLVM-N.so), then the platform dylib/DLL names. On Windows, LoadLibrary
+// searches the executable's own directory first — shipping LLVM-C.dll next
+// to ada83.exe is the complete install story.
+bool Llvm_C_Api_Load (Llvm_C_Api *api, char *err, size_t err_size) {
+  static const char *const candidates[] = {
+#ifdef _WIN32
+    "LLVM-C.dll", "libLLVM.dll",
+    "libLLVM-22.dll", "libLLVM-21.dll", "libLLVM-20.dll",
+    "libLLVM-19.dll", "libLLVM-18.dll", "libLLVM-17.dll",
+#elif defined(__APPLE__)
+    "libLLVM.dylib",
+    "/opt/homebrew/opt/llvm/lib/libLLVM.dylib",
+    "/usr/local/opt/llvm/lib/libLLVM.dylib",
+    "/Library/Developer/CommandLineTools/usr/lib/libLLVM.dylib",
+#else
+    "libLLVM.so",
+    "libLLVM.so.22",   "libLLVM-22.so",
+    "libLLVM.so.21",   "libLLVM-21.so",
+    "libLLVM.so.20",   "libLLVM-20.so",
+    "libLLVM.so.19",   "libLLVM-19.so",
+    "libLLVM.so.18.1", "libLLVM.so.18", "libLLVM-18.so",
+    "libLLVM.so.17",   "libLLVM-17.so",
+#endif
+  };
+
+  memset (api, 0, sizeof (*api));
+  const char *override = getenv ("ADA83_LLVM_LIB");
+  if (override)
+    api->library = Backend_Library_Open (override);
+#ifdef _WIN32
+  if (not api->library) {
+    const char *embedded = Backend_Extract_Embedded_Library ();
+    if (embedded)
+      api->library = Backend_Library_Open (embedded);
+  }
+#endif
+  for (size_t i = 0; not api->library and i < sizeof (candidates) / sizeof (*candidates); i++)
+    api->library = Backend_Library_Open (candidates[i]);
+  if (not api->library) {
+    snprintf (err, err_size,
+      "no libLLVM found (set ADA83_LLVM_LIB, install the llvm package, or "
+      "place LLVM-C.dll beside the executable)");
+    return false;
+  }
+
+  struct { void **slot; const char *name; } table[] = {
+    { (void **) &api->Context_Create,            "LLVMContextCreate" },
+    { (void **) &api->Context_Dispose,           "LLVMContextDispose" },
+    { (void **) &api->Buffer_From_File,          "LLVMCreateMemoryBufferWithContentsOfFile" },
+    { (void **) &api->Parse_Ir,                  "LLVMParseIRInContext" },
+    { (void **) &api->Module_Dispose,            "LLVMDisposeModule" },
+    { (void **) &api->Dispose_Message,           "LLVMDisposeMessage" },
+    { (void **) &api->Init_Target_Info,          "LLVMInitialize" BACKEND_ARCH "TargetInfo" },
+    { (void **) &api->Init_Target,               "LLVMInitialize" BACKEND_ARCH "Target" },
+    { (void **) &api->Init_Target_Mc,            "LLVMInitialize" BACKEND_ARCH "TargetMC" },
+    { (void **) &api->Init_Asm_Printer,          "LLVMInitialize" BACKEND_ARCH "AsmPrinter" },
+    { (void **) &api->Init_Asm_Parser,           "LLVMInitialize" BACKEND_ARCH "AsmParser" },
+    { (void **) &api->Default_Triple,            "LLVMGetDefaultTargetTriple" },
+    { (void **) &api->Target_From_Triple,        "LLVMGetTargetFromTriple" },
+    { (void **) &api->Host_Cpu_Name,             "LLVMGetHostCPUName" },
+    { (void **) &api->Host_Cpu_Features,         "LLVMGetHostCPUFeatures" },
+    { (void **) &api->Create_Target_Machine,     "LLVMCreateTargetMachine" },
+    { (void **) &api->Target_Machine_Dispose,    "LLVMDisposeTargetMachine" },
+    { (void **) &api->Create_Target_Data_Layout, "LLVMCreateTargetDataLayout" },
+    { (void **) &api->Set_Module_Data_Layout,    "LLVMSetModuleDataLayout" },
+    { (void **) &api->Dispose_Target_Data,       "LLVMDisposeTargetData" },
+    { (void **) &api->Set_Target,                "LLVMSetTarget" },
+    { (void **) &api->Pass_Options_Create,       "LLVMCreatePassBuilderOptions" },
+    { (void **) &api->Pass_Options_Dispose,      "LLVMDisposePassBuilderOptions" },
+    { (void **) &api->Run_Passes,                "LLVMRunPasses" },
+    { (void **) &api->Error_Message,             "LLVMGetErrorMessage" },
+    { (void **) &api->Dispose_Error_Message,     "LLVMDisposeErrorMessage" },
+    { (void **) &api->Emit_To_File,              "LLVMTargetMachineEmitToFile" },
+    { (void **) &api->Link_Modules,              "LLVMLinkModules2" },
+  };
+  for (size_t i = 0; i < sizeof (table) / sizeof (*table); i++) {
+    *table[i].slot = Backend_Symbol (api->library, table[i].name);
+    if (not *table[i].slot) {
+      snprintf (err, err_size, "libLLVM found but lacks %s "
+                "(too old? need LLVM 17+)", table[i].name);
+      return false;
+    }
+  }
+  return true;
+}
+
+// Link one object file into an executable with the first system C compiler
+// found — the only pipeline step with no stable LLVM C API (lld), and the
+// one tool every development machine already has.
+static int Backend_Link (const char *obj_path, const char *exe_path) {
+  const char *cc = getenv ("CC");
+  const char *probes[] = { cc, "cc", "clang", "gcc" };
+  for (size_t i = 0; i < sizeof (probes) / sizeof (*probes); i++) {
+    if (not probes[i]) continue;
+    char command[PATH_MAX * 3];
+    snprintf (command, sizeof (command),
+              "%s \"%s\" -o \"%s\" -lm -lpthread"
+#ifdef _WIN32
+              " -lsynchronization"
+#endif
+              , probes[i], obj_path, exe_path);
+    int status = system (command);
+    if (status == 0) return 0;
+    // Exit 127 = shell could not find the tool: try the next probe.
+    // Any other failure is a real link error from a real linker.
+    if (not (WIFEXITED (status) and WEXITSTATUS (status) == 127)) return 1;
+  }
+  fprintf (stderr, "error: no C compiler found to link with "
+                   "(set CC, or install cc/clang/gcc)\n");
+  return 1;
+}
+
+int Native_Backend_Compile (const char *ir_path, const char *const *extra_ir,
+                            int extra_count, const char *exe_path) {
+  static Llvm_C_Api api;
+  char err[256];
+  if (not Llvm_C_Api_Load (&api, err, sizeof (err))) {
+    fprintf (stderr, "error: --native unavailable: %s\n", err);
+    return 1;
+  }
+
+  api.Init_Target_Info ();
+  api.Init_Target ();
+  api.Init_Target_Mc ();
+  api.Init_Asm_Printer ();
+  api.Init_Asm_Parser ();
+
+  void *context = api.Context_Create ();
+  char *message = NULL;
+  void *buffer  = NULL;
+  int   status  = 1;
+  void *module = NULL, *machine = NULL;
+  char *triple = NULL, *cpu = NULL, *features = NULL;
+
+  if (api.Buffer_From_File (ir_path, &buffer, &message)) {
+    fprintf (stderr, "error: %s\n", message ? message : ir_path);
+    goto done;
+  }
+  // Parse_Ir consumes the buffer regardless of outcome.
+  if (api.Parse_Ir (context, buffer, &module, &message)) {
+    fprintf (stderr, "error: IR parse: %s\n", message ? message : "unknown");
+    goto done;
+  }
+
+  // Additional IR modules (separately compiled units, e.g. a library's
+  // .ll) — the in-process equivalent of llvm-link. Link_Modules consumes
+  // the source module on success and failure alike.
+  for (int extra = 0; extra < extra_count; extra++) {
+    void *extra_buffer = NULL, *extra_module = NULL;
+    if (api.Buffer_From_File (extra_ir[extra], &extra_buffer, &message)) {
+      fprintf (stderr, "error: %s\n", message ? message : extra_ir[extra]);
+      goto done;
+    }
+    if (api.Parse_Ir (context, extra_buffer, &extra_module, &message)) {
+      fprintf (stderr, "error: IR parse (%s): %s\n", extra_ir[extra],
+               message ? message : "unknown");
+      goto done;
+    }
+    if (api.Link_Modules (module, extra_module)) {
+      fprintf (stderr, "error: linking module %s\n", extra_ir[extra]);
+      goto done;
+    }
+  }
+
+  triple   = api.Default_Triple ();
+  cpu      = api.Host_Cpu_Name ();
+  features = api.Host_Cpu_Features ();
+  void *target = NULL;
+  if (api.Target_From_Triple (triple, &target, &message)) {
+    fprintf (stderr, "error: %s\n", message ? message : triple);
+    goto done;
+  }
+  // 3 = aggressive, 2 = PIC, 0 = default code model.
+  machine = api.Create_Target_Machine (target, triple, cpu, features, 3, 2, 0);
+  api.Set_Target (module, triple);
+  void *layout = api.Create_Target_Data_Layout (machine);
+  api.Set_Module_Data_Layout (module, layout);
+  api.Dispose_Target_Data (layout);
+
+  void *options = api.Pass_Options_Create ();
+  void *pass_error = api.Run_Passes (module, "default<O2>", machine, options);
+  api.Pass_Options_Dispose (options);
+  if (pass_error) {
+    char *pass_message = api.Error_Message (pass_error);
+    fprintf (stderr, "error: optimization: %s\n", pass_message);
+    api.Dispose_Error_Message (pass_message);
+    goto done;
+  }
+
+  char obj_path[PATH_MAX];
+  snprintf (obj_path, sizeof (obj_path), "%s.o", exe_path);
+  // 1 = object file.
+  if (api.Emit_To_File (machine, module, obj_path, 1, &message)) {
+    fprintf (stderr, "error: code emission: %s\n", message ? message : obj_path);
+    goto done;
+  }
+
+  status = Backend_Link (obj_path, exe_path);
+  remove (obj_path);
+
+done:
+  if (message)  api.Dispose_Message (message);
+  if (triple)   api.Dispose_Message (triple);
+  if (cpu)      api.Dispose_Message (cpu);
+  if (features) api.Dispose_Message (features);
+  if (module)   api.Module_Dispose (module);
+  if (machine)  api.Target_Machine_Dispose (machine);
+  api.Context_Dispose (context);
+  return status;
 }
