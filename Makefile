@@ -1,10 +1,3 @@
-# Ada83 compiler. `make` is the whole story:
-#   - builds ./ada83 (one C file; LLVM is never a build-time dependency)
-#   - on Linux, best-effort provisions the runtime-loaded libLLVM that
-#     `--native` uses, probing the distribution's package manager
-#   - on Windows (MSYS2), decompresses the vendored libLLVM under
-#     tools/win64/ and embeds it into ada83.exe, making the executable a
-#     fully standalone single-file toolchain
 
 CC = gcc
 CFLAGS = -O3 -Wall
@@ -21,20 +14,12 @@ all: ada83 provision-llvm
 ada83: ada83.c $(BLOB)
 	$(CC) $(CFLAGS) -o ada83 ada83.c $(BLOB) $(LIBS) -march=native
 
-# The vendored DLL is upstream MSYS2's libLLVM, unmodified, recompressed
-# alone so the repository carries only the one file --native requires
-# (provenance and checksum: tools/win64/README.md). zstd is always present
-# under MSYS2 — pacman itself depends on it. objcopy turns the DLL into a
-# linkable blob; §20's weak symbols pick it up and extract it to
-# %LOCALAPPDATA% on first --native use.
 tools/win64/LLVM-C.dll: tools/win64/LLVM-C.dll.zst
 	zstd -d -f $< -o $@
 
 tools/win64/llvmc_blob.o: tools/win64/LLVM-C.dll
 	cd tools/win64 && objcopy -I binary -O pe-x86-64 LLVM-C.dll llvmc_blob.o
 
-# Provision libLLVM for --native (runtime-dlopen'd; never a build
-# dependency). Failure is non-fatal — --native prints an actionable hint.
 SUDO := $(shell [ $$(id -u) -eq 0 ] || echo sudo)
 provision-llvm:
 ifeq ($(OS),Windows_NT)
