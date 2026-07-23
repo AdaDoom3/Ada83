@@ -786,7 +786,7 @@ c54a42g	pass
 c55b03a	pass
 c55b04a	pass
 c55b05a	pass
-c55b06a	fail
+c55b06a	pass
 c55b06b	pass
 c55b08a	pass
 c55b09a	pass
@@ -1379,7 +1379,7 @@ cb4013a	pass
 cb5001a	pass
 cb5001b	pass
 cb5002a	pass
-cb7001a	fail
+cb7001a	pass
 cb7001b	pass
 cb7003a	pass
 cb7004a	pass
@@ -1526,7 +1526,7 @@ cd1c03i	pass
 cd1c04a	pass
 cd1c04b	pass
 cd1c04d	pass
-cd1c04e	fail
+cd1c04e	pass
 cd1d01a	pass
 cd1d01b	pass
 cd1d01c	pass

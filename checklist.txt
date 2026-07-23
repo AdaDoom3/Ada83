@@ -102,25 +102,35 @@ FAILS — RESOLVED
 [x] ce3208a  default-file identity across CLOSE + MODE_ERROR rule
 [x] ce3411b  COUNT'LAST/LAYOUT_ERROR model
 
-FAILS — REMAINING 9, all accounted for
+FAILS — REMAINING 6, all accounted for
 --------------------------------------
+Fixed since the last blessing (d367df8): c55b06a (membership range
+char-literal bounds resolve against the tested enumeration), cb7001a
+(RM 4.5.7 NUMERIC_ERROR on infinite float results), cd1c04e (derived
+records own a copy of the parent component layout; rep-clause extents
+computed in bits).
+
 Officially WITHDRAWN ACVC 1.11 tests (expectations ruled erroneous by
 the AVO; list reproduced in DTIC validation summary reports, e.g.
-ADA243300/ADA262889): c55b06a c98003b cb7001a cc1226b cd4024b cd4031a
-ce3902b.  ce3902b regressed pass->fail because its expectation
-(reopening the current default output with IN mode succeeding)
-directly contradicts the valid ce3208a, which we now honor — the AVO
-withdrew ce3902b, not ce3208a.
+ADA243300/ADA262889): c98003b cc1226b ce3902b.  ce3902b regressed
+pass->fail because its expectation (reopening the current default
+output with IN mode succeeding) directly contradicts the valid
+ce3208a, which we now honor — the AVO withdrew ce3902b, not ce3208a.
 
-Feature-blocked (§13 representation work, not drive-by fixable):
-  cd1c04e  record rep clauses must override inherited component
-           layout of derived types
-  cda201a  pragma PACK bit-packed boolean arrays (is_packed is
-           currently recorded but never consumed)
+Feature-blocked (§13 representation work, in progress):
+  cda201a  pragma PACK bit-packed boolean arrays
+  cd4024b  bit-packed arrays with dynamic bounds (LENGTH_CHECK) plus
+           bit-granular record component clauses
+  cd4031a  bit-granular record component clauses in codegen
+  Design flaws being fixed underneath, not patched around:
+    - array byte-extent is hand-computed at ~6 sites with divergent
+      fallbacks; extent becomes bit-measured with one owner
+    - element access assumes elements have byte addresses; a single
+      element-access layer (load/store) replaces the per-site geps
 
-FINAL STATE
------------
-Class C: 1963 pass / 9 fail / 4 skip  (baseline was 1935/21/20)
+FINAL STATE (current)
+---------------------
+Class C: 1966 pass / 6 fail / 4 skip  (baseline was 1935/21/20)
   - all 4 skips are genuine RM-conformant NOT APPLICABLE
   - zero unexplained regressions
 acats.baseline blessed at this state; run_acats.sh check gates on it.
