@@ -2943,8 +2943,6 @@ void Emit_Integer_Value_Signed_Return (const char *stem, const char *value,
 
 #define BIP_ALLOC_NAME  "__BIPalloc"
 #define BIP_ACCESS_NAME "__BIPaccess"
-#define BIP_MASTER_NAME "__BIPmaster"
-#define BIP_CHAIN_NAME  "__BIPchain"
 #define BIP_FINAL_NAME  "__BIPfinal"
 
 typedef enum {
@@ -15018,6 +15016,14 @@ static bool Same_Base_Type (Type_Info *left, Type_Info *right) {
   return Type_Base (left) == Type_Base (right);
 }
 
+static bool Type_In_Derivation_Class_Of (Type_Info *actual, Type_Info *parent) {
+  parent = Type_Base (Peel_Generic_Actual_View (parent));
+  for (Type_Info *t = Type_Base (Peel_Generic_Actual_View (actual)); t;
+       t = t->parent_type ? Type_Base (t->parent_type) : NULL)
+    if (t == parent) return true;
+  return false;
+}
+
 static bool Actual_Is_Renameable_Variable (Syntax_Node *node) {
   if (not node) return false;
   if (node->kind == NK_ASSOCIATION) node = node->association.expression;
@@ -15307,8 +15313,15 @@ void Validate_Generic_Actuals (Symbol *instance_sym, Symbol *template_sym,
                 "type '%.*s' does not match",
                 (int) formal_name.length, formal_name.data);
           } break;
-          case GEN_DEF_DERIVED:
-            break;
+          case GEN_DEF_DERIVED: {
+            Type_Info *parent = Formal_Mark_Actual_Type (
+              instance_sym, formal->generic_type_param.def_detail);
+            if (parent and not Type_In_Derivation_Class_Of (actual, parent))
+              Report_Error (location,
+                "actual for formal derived type '%.*s' must share the "
+                "parent type's derivation class",
+                (int) formal_name.length, formal_name.data);
+          } break;
         }
         slot++;
       } break;
@@ -42182,8 +42195,6 @@ bool BIP_Is_BIP_Function (const Symbol *func) {
 
 #define BIP_ALLOC_NAME   "__BIPalloc"
 #define BIP_ACCESS_NAME  "__BIPaccess"
-#define BIP_MASTER_NAME  "__BIPmaster"
-#define BIP_CHAIN_NAME   "__BIPchain"
 #define BIP_FINAL_NAME   "__BIPfinal"
 
 uint32_t BIP_Extra_Formal_Count (const Symbol *func) {
