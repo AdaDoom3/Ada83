@@ -44901,10 +44901,15 @@ void Generate_Statement (Syntax_Node *node) {
 
         // Advertise that this task is in a selective wait (RM 9.7.2): a
         // conditional caller treats -2 as potentially ready and lets the
-        // accept_try below grab the call iff its entry is open. With a
+        // accept_try below grab the call iff its entry is open. ONLY a
+        // selective wait that can BLOCK advertises: one with an ELSE part
+        // is a single poll that never waits, so no rendezvous with it can
+        // start "immediately" through the queue — advertising it let a
+        // conditional caller park a call on a task that had already taken
+        // its else branch, observably via E'COUNT (c97201x). With a
         // terminate alternative, also mark the task as willing to terminate
         // (TCB+58) for the RM 9.7.1 consensus.
-        if (cg->in_task_body) {
+        if (cg->in_task_body and not has_else) {
           uint32_t wsel = Emit_Result_Instruction ("getelementptr i64, ptr %%__self_tcb, i64 6\n");
           Emit ("  store i64 -2, ptr %%t%u  ; in selective wait\n", wsel);
           if (has_terminate) {
@@ -54340,20 +54345,33 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   Emit ("  %%exp0 = getelementptr i64, ptr %%rv, i64 5\n");
   Emit ("  store i64 0, ptr %%exp0\n");
   Emit ("  %%tnull = icmp eq ptr %%task, null\n");
-  Emit ("  br i1 %%tnull, label %%raise_te, label %%chk0\n");
-  Emit ("chk0:\n");
-  // RM 9.5(16)/9.10: a completed / terminated / abnormal target can never
-  // rendezvous → TASKING_ERROR (an aborted target is abnormal, not completed).
-  Emit ("  %%dead0 = call i1 @__ada_task_dead(ptr %%task)\n");
-  Emit ("  br i1 %%dead0, label %%raise_te, label %%condchk\n");
+  Emit ("  br i1 %%tnull, label %%raise_te, label %%lock_it\n");
   Emit ("raise_te:\n");
+  Emit ("  call void @free (ptr %%rv)\n");
   Emit ("  %%teid = ptrtoint ptr @__exc.tasking_error to " PTR_INT_TYPE "\n");
   Emit ("  call void @__ada_raise(i64 %%teid)\n");
   Emit ("  unreachable\n");
+  // The dead-check, the readiness check, and the enqueue form ONE critical
+  // section: the readiness the caller observes must still hold when its
+  // call lands in the queue, or a target that just left its wait keeps the
+  // stale call parked — observably, via E'COUNT — until the budget expires.
+  Emit ("lock_it:\n");
+  Emit ("  call i32 @pthread_mutex_lock(ptr @__rv_mutex)\n");
+  // RM 9.5(16)/9.10: a completed / terminated / abnormal target can never
+  // rendezvous → TASKING_ERROR (an aborted target is abnormal, not completed).
+  Emit ("  %%dead0 = call i1 @__ada_task_dead(ptr %%task)\n");
+  Emit ("  br i1 %%dead0, label %%raise_te_locked, label %%condchk\n");
+  Emit ("raise_te_locked:\n");
+  Emit ("  call i32 @pthread_mutex_unlock(ptr @__rv_mutex)\n");
+  Emit ("  call void @free (ptr %%rv)\n");
+  Emit ("  %%teidl = ptrtoint ptr @__exc.tasking_error to " PTR_INT_TYPE "\n");
+  Emit ("  call void @__ada_raise(i64 %%teidl)\n");
+  Emit ("  unreachable\n");
   // Conditional call (timeout 0, RM 9.7.2): rendezvous only if the target is
-  // already blocked at an accept for this entry RIGHT NOW. If not, take the
-  // else part immediately (return 0) without enqueuing. Timed calls (timeout>0)
-  // skip this and wait up to the deadline.
+  // BLOCKED at an accept for this entry, or blocked in a selective wait,
+  // RIGHT NOW (a selective wait with an else part never blocks and never
+  // advertises). If not, take the else part immediately (return 0) without
+  // enqueuing. Timed calls (timeout>0) skip this and wait up to the deadline.
   Emit ("condchk:\n");
   Emit ("  %%iscond = icmp eq i64 %%timeout_us, 0\n");
   Emit ("  br i1 %%iscond, label %%readychk, label %%enq\n");
@@ -54361,14 +54379,14 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   Emit ("  %%wep = getelementptr i64, ptr %%task, i64 6\n");
   Emit ("  %%we = load i64, ptr %%wep\n");
   Emit ("  %%r1 = icmp eq i64 %%we, %%entry_idx\n");
-  Emit ("  %%r2 = icmp eq i64 %%we, -2  ; -2 = in selective wait\n");
+  Emit ("  %%r2 = icmp eq i64 %%we, -2  ; -2 = in blocked selective wait\n");
   Emit ("  %%ready = or i1 %%r1, %%r2\n");
   Emit ("  br i1 %%ready, label %%enq, label %%notready\n");
   Emit ("notready:\n");
+  Emit ("  call i32 @pthread_mutex_unlock(ptr @__rv_mutex)\n");
   Emit ("  call void @free (ptr %%rv)\n");
   Emit ("  ret i8 0\n");
   Emit ("enq:\n");
-  Emit ("  call i32 @pthread_mutex_lock(ptr @__rv_mutex)\n");
   Emit ("  %%qhp = getelementptr ptr, ptr %%task, i64 5\n");
   Emit ("  %%head = load ptr, ptr %%qhp\n");
   Emit ("  %%empty = icmp eq ptr %%head, null\n");
