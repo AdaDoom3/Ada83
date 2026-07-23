@@ -143,11 +143,15 @@ Representation campaign (REPRESENTATION.md), staged and landing:
                remaining ad-hoc extent sites are all storage-byte
                correct.  cda201a, cd2a31a-c, cd2a32a, cd4022a,
                cd1c03a and the whole packed family pass.
-  Remaining follow-ups (no Class C coverage; need hand tests first):
-    - packed slices (elementwise copy/materialization)
-    - OUT-mode packed element actuals (copyback through a temp)
-    - dynamic packed equality tail masking (dynamic-bounds compare
-      with differing padding)
+  [x] Follow-ups, hand-tested (no Class C coverage exists):
+    - packed slice rvalues materialize into fresh phase-zero buffers;
+      slice assignment copies elementwise at any phase (both the
+      static-prefix and fat-prefix paths)
+    - OUT / IN OUT packed element actuals copy in and back through
+      the element locus (a packed element has no address to pass)
+    - dynamic packed equality memcmps whole bytes and compares the
+      final partial byte under a runtime mask, branch-guarded so
+      null arrays never read out of bounds
 
 FINAL STATE (current)
 ---------------------
