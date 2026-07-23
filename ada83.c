@@ -1617,7 +1617,10 @@ Type_Bound Array_Dimension_Effective_Bound (Type_Info *array_type,
                                             uint32_t   dimension,
                                             bool       want_high,
                                             bool      *out_from_index_type);
+uint32_t Packed_Element_Width             (Type_Info  *t);
 bool     Type_Is_Bit_Packed_Array         (Type_Info  *t);
+uint64_t Array_Allocation_Pad             (Type_Info  *t);
+void     Pack_Record_Layout               (Type_Info  *record_type);
 uint64_t Array_Element_Bits               (Type_Info  *array_type);
 uint64_t Array_Element_Storage_Bytes      (Type_Info  *array_type);
 uint64_t Array_Bytes_For_Count            (Type_Info  *array_type,
@@ -2421,6 +2424,8 @@ uint32_t   Emit_Fat_Total_Elements    (uint32_t  fat_ptr, LLVM_Rep bt, uint32_t 
 LLVM_Value Emit_Array_Byte_Size       (Type_Info *array_type, uint32_t fat_ptr);
 uint32_t   Emit_Array_Storage_Bytes   (Type_Info *array_type, uint32_t length,
                                        LLVM_Rep   length_rep);
+uint32_t   Emit_Array_Allocation_Bytes (Type_Info *array_type, uint32_t length,
+                                        LLVM_Rep   length_rep);
 
 LLVM_Value Emit_Load_Fat_Pointer                 (Symbol   *sym, LLVM_Rep bt);
 LLVM_Value Emit_Load_Fat_Pointer_From_Temp       (uint32_t  ptr, LLVM_Rep bt);
@@ -2933,8 +2938,9 @@ void          Emit_Locus_Store          (Storage_Locus locus, LLVM_Value value, 
 LLVM_Value    Emit_Component_Load       (uint32_t base, Type_Info *record_type, uint32_t comp_idx);
 uint32_t      Emit_Component_Load_As    (uint32_t base, Type_Info *record_type, uint32_t comp_idx, LLVM_Rep as_rep);
 void          Emit_Component_Store      (uint32_t base, Type_Info *record_type, uint32_t comp_idx, LLVM_Value value);
-LLVM_Value    Emit_Packed_Element_Load  (uint32_t base, uint32_t flat_index, LLVM_Rep index_rep, Type_Info *element_type);
-void          Emit_Packed_Element_Store (uint32_t base, uint32_t flat_index, LLVM_Rep index_rep, LLVM_Value value);
+LLVM_Value    Emit_Packed_Element_Load  (Type_Info *array_type, uint32_t base, uint32_t flat_index, LLVM_Rep index_rep);
+void          Emit_Packed_Element_Store (Type_Info *array_type, uint32_t base, uint32_t flat_index, LLVM_Rep index_rep, LLVM_Value value);
+void          Emit_Packed_Tail_Mask     (uint32_t buffer, uint32_t total_bits_i64);
 
 /* The addressing prelude an indexed lvalue needs: the data pointer
    and, for dynamic-bounds prefixes, the fat-pointer bounds that
@@ -7643,6 +7649,7 @@ bool Symbol_Is_Deferred_Constant (Symbol *sym) {
 void Symbol_Assign_Frame_Slot (Symbol *sym, Scope *scope) {
   sym->frame_offset_assigned = true;
   uint32_t var_size = sym->type ? sym->type->size : 8;
+  var_size += (uint32_t) Array_Allocation_Pad (sym->type);
 
   if (Type_Needs_Fat_Pointer (sym->type)) {
     var_size = FAT_PTR_ALLOC_SIZE;
@@ -10512,31 +10519,45 @@ int128_t Array_Element_Count (Type_Info *type_info) {
    with the canonical 0/1 coding; every other packed array keeps its
    byte-granular stride (RM 13.1 leaves the packing degree to the
    implementation). */
-bool Type_Is_Bit_Packed_Array (Type_Info *t) {
-  if (not t or t->kind != TYPE_ARRAY or not t->is_packed) return false;
-  /* The packing degree is chosen per type family, never per use:
-     a family whose root is constrained with static bounds packs to
-     one bit; unconstrained and dynamic-bounds families keep the
-     byte stride.  Members of one family therefore always share one
-     representation. */
-  Type_Info *family = t;
-  for (int depth = 0; family->array.unconstrained_base and depth < 16; depth++)
-    family = family->array.unconstrained_base;
-  if (not family->array.is_constrained) return false;
-  if (Type_Has_Dynamic_Bounds (t) or Type_Has_Dynamic_Bounds (family))
-    return false;
+/* The bit width a packed array gives each element, or zero when the
+   array does not bit-pack.  Two-valued discrete types with the
+   canonical 0/1 coding take one bit; a discrete element whose 'SIZE
+   clause names fewer bits than its natural size takes that many.
+   Everything else keeps its byte-granular stride. */
+uint32_t Packed_Element_Width (Type_Info *t) {
+  if (not t or t->kind != TYPE_ARRAY or not t->is_packed) return 0;
   Type_Info *element = t->array.element_type;
+  if (element and Type_Is_Discrete (element) and
+      element->specified_bit_size > 0 and element->size > 0 and
+      element->specified_bit_size < To_Bits (element->size))
+    return element->specified_bit_size;
   for (int depth = 0; element and depth < 16; depth++) {
-    if (element->kind == TYPE_BOOLEAN) return true;
-    if (element->kind == TYPE_ENUMERATION)
-      return element->enumeration.literal_count == 2 and
+    if (element->kind == TYPE_BOOLEAN) return 1;
+    if (element->kind == TYPE_ENUMERATION) {
+      bool canonical = element->enumeration.literal_count == 2 and
              (not element->enumeration.rep_values or
               (element->enumeration.rep_values[0] == 0 and
                element->enumeration.rep_values[1] == 1));
+      return canonical ? 1 : 0;
+    }
     element = element->base_type ? element->base_type
                                  : element->parent_type;
   }
-  return false;
+  return 0;
+}
+
+bool Type_Is_Bit_Packed_Array (Type_Info *t) {
+  return Packed_Element_Width (t) != 0;
+}
+
+/* Runtime window loads assume the worst-case displacement of seven
+   bits, so a straddling stride may touch bytes past the value's last
+   one; allocations pad by this many bytes to make that touch always
+   legal (the same job Packed_Bytes2/4 alignment does for GNAT). */
+uint64_t Array_Allocation_Pad (Type_Info *t) {
+  uint32_t stride = Packed_Element_Width (t);
+  if (stride == 0 or stride == 1 or stride % Bits_Per_Unit == 0) return 0;
+  return To_Bytes (Bits_Per_Unit - 1 + stride) - 1;
 }
 
 /* Layout is measured in bits (REPRESENTATION.md).  The element stride
@@ -10545,7 +10566,8 @@ bool Type_Is_Bit_Packed_Array (Type_Info *t) {
    known (dynamic-size element). */
 uint64_t Array_Element_Bits (Type_Info *array_type) {
   if (not array_type or not Type_Is_Array_Like (array_type)) return 0;
-  if (Type_Is_Bit_Packed_Array (array_type)) return 1;
+  uint32_t packed_width = Packed_Element_Width (array_type);
+  if (packed_width) return packed_width;
   Type_Info *element = array_type->array.element_type;
   if (element and element->size > 0) return To_Bits (element->size);
   if (element and Type_Needs_Fat_Pointer_Load (element))
@@ -10609,6 +10631,36 @@ void Compute_Static_Array_Size (Type_Info *constrained_type,
   if (count < 0) return;
   constrained_type->size = (uint32_t) Array_Bytes_For_Count (
     constrained_type, count, To_Bits (default_element_size));
+}
+
+/* pragma PACK on a record: discrete components whose 'SIZE clause
+   names fewer bits than their natural size are laid end to end at
+   bit granularity; every other component keeps byte alignment.  A
+   record representation clause, when present, wins wholesale; a
+   record with variants or a dynamic component is left alone. */
+void Pack_Record_Layout (Type_Info *record_type) {
+  if (record_type->specified_bit_size > 0) return;
+  if (record_type->record.variant_count > 0) return;
+  if (record_type->record.component_count == 0) return;
+  uint64_t bit_cursor = 0;
+  for (uint32_t i = 0; i < record_type->record.component_count; i++) {
+    Component_Info *comp = &record_type->record.components[i];
+    Type_Info *ct = comp->component_type;
+    uint64_t natural_bits = ct and ct->size > 0 ? To_Bits (ct->size) : 0;
+    if (natural_bits == 0) return;
+    uint64_t width = (Type_Is_Discrete (ct) and
+                      ct->specified_bit_size > 0 and
+                      ct->specified_bit_size < natural_bits)
+                       ? ct->specified_bit_size : natural_bits;
+    if (width % Bits_Per_Unit == 0)
+      bit_cursor = To_Bits (To_Bytes (bit_cursor));
+    comp->byte_offset = (uint32_t) (bit_cursor / Bits_Per_Unit);
+    comp->bit_offset  = (uint32_t) (bit_cursor % Bits_Per_Unit);
+    comp->bit_size    = (uint32_t) width;
+    bit_cursor += width;
+  }
+  record_type->size = (uint32_t) To_Bytes (bit_cursor);
+  record_type->specified_bit_size = (uint32_t) bit_cursor;
 }
 
 uint32_t Max_Constrained_Array_Size (Type_Info *t) {
@@ -17161,8 +17213,16 @@ void Resolve_Declaration (Syntax_Node *node) {
                    computed at the type declaration is recomputed under
                    the packed stride (RM 13.1). */
                 if (sym->type->kind == TYPE_ARRAY and
-                    sym->type->array.is_constrained)
+                    sym->type->array.is_constrained) {
                   Compute_Static_Array_Size (sym->type, 1);
+                  int128_t packed_count = Array_Element_Count (sym->type);
+                  uint32_t packed_width = Packed_Element_Width (sym->type);
+                  if (packed_count > 0 and packed_width)
+                    sym->type->specified_bit_size =
+                      (uint32_t) (packed_count * packed_width);
+                }
+                if (Type_Is_Record (sym->type))
+                  Pack_Record_Layout (sym->type);
               }
             }
           }
@@ -20578,6 +20638,17 @@ uint32_t Emit_Array_Storage_Bytes (Type_Info *array_type, uint32_t length,
     rep_name, padded);
 }
 
+/* Storage bytes plus the window pad: what an allocation reserves, as
+   opposed to what a copy moves. */
+uint32_t Emit_Array_Allocation_Bytes (Type_Info *array_type, uint32_t length,
+                                      LLVM_Rep length_rep) {
+  uint32_t bytes = Emit_Array_Storage_Bytes (array_type, length, length_rep);
+  uint64_t pad = Array_Allocation_Pad (array_type);
+  if (pad == 0) return bytes;
+  return Emit_Result_Instruction ("add %s %%t%u, %llu  ; window pad\n",
+    LLVM_Rep_To_String (length_rep), bytes, (unsigned long long) pad);
+}
+
 LLVM_Value Emit_Array_Byte_Size (Type_Info *array_type, uint32_t fat_ptr) {
   LLVM_Rep bound_rep      = Array_Bound_LLVM_Rep (array_type);
   uint32_t dimension_count = (array_type->kind == TYPE_ARRAY)
@@ -22237,8 +22308,12 @@ LLVM_I1 Generate_Record_Equality (uint32_t left_ptr,
 
 bool Equality_Needs_Componentwise (Type_Info *t) {
   if (not t) return false;
-  if (Type_Is_Array_Like (t))
+  if (Type_Is_Array_Like (t)) {
+    /* Elements stored behind fat pointers hold addresses, never
+       values; byte comparison is meaningless for them. */
+    if (Type_Needs_Fat_Pointer_Load (t->array.element_type)) return true;
     return Equality_Needs_Componentwise (t->array.element_type);
+  }
   if (Type_Is_Record (t)) {
     if (t->record.variant_count > 0) return true;
     uint64_t covered_bits = 0;
@@ -22283,18 +22358,28 @@ LLVM_I1 Generate_Array_Equality (LLVM_Value left_v,
     }
 
     if (elem_type and count > 0 and Equality_Needs_Componentwise (elem_type)) {
+      bool elem_is_fat = Type_Needs_Fat_Pointer_Load (elem_type);
+      uint64_t stride = Array_Element_Storage_Bytes (array_type);
       uint32_t res_flag = Emit_Result_Instruction ("alloca i1\n");
       Emit ("  store i1 true, ptr %%t%u\n", res_flag);
       for (int128_t e = 0; e < count; e++) {
         uint32_t le = Emit_Temp (), re = Emit_Temp ();
         Emit ("  %%t%u = getelementptr i8, ptr %%t%u, i64 %lld\n",
-           le, left_ptr,  (long long)(e * elem_size));
+           le, left_ptr,  (long long)(e * (int64_t) stride));
         Emit ("  %%t%u = getelementptr i8, ptr %%t%u, i64 %lld\n",
-           re, right_ptr, (long long)(e * elem_size));
-        LLVM_I1 ee = Type_Is_Record (elem_type)
-          ? Generate_Record_Equality (le, re, elem_type)
-          : Generate_Array_Equality (Val_Of_Type (le, elem_type),
-                                     Val_Of_Type (re, elem_type), elem_type);
+           re, right_ptr, (long long)(e * (int64_t) stride));
+        LLVM_I1 ee;
+        if (elem_is_fat) {
+          uint32_t lf = Emit_Result_Instruction ("load " FAT_PTR_TYPE ", ptr %%t%u\n", le);
+          uint32_t rf = Emit_Result_Instruction ("load " FAT_PTR_TYPE ", ptr %%t%u\n", re);
+          ee = Generate_Array_Equality (Val_Rep (lf, LL_REP_FAT),
+                                        Val_Rep (rf, LL_REP_FAT), elem_type);
+        } else {
+          ee = Type_Is_Record (elem_type)
+            ? Generate_Record_Equality (le, re, elem_type)
+            : Generate_Array_Equality (Val_Of_Type (le, elem_type),
+                                       Val_Of_Type (re, elem_type), elem_type);
+        }
         uint32_t cur = Emit_Temp (), nxt = Emit_Temp ();
         Emit ("  %%t%u = load i1, ptr %%t%u\n", cur, res_flag);
         Emit ("  %%t%u = and i1 %%t%u, %%t%u\n", nxt, cur, ee.reg);
@@ -22308,8 +22393,9 @@ LLVM_I1 Generate_Array_Equality (LLVM_Value left_v,
       /* Whole bytes compare directly; the final partial byte is
          compared under a mask because its padding bits are free to
          differ (a byte-wise NOT clobbers them, legitimately). */
-      int64_t full_bytes = (int64_t) (count / Bits_Per_Unit);
-      uint32_t tail_bits = (uint32_t) (count % Bits_Per_Unit);
+      int128_t total_bits = count * (int128_t) Array_Element_Bits (array_type);
+      int64_t full_bytes = (int64_t) (total_bits / Bits_Per_Unit);
+      uint32_t tail_bits = (uint32_t) (total_bits % Bits_Per_Unit);
       uint32_t eq_acc = 0;
       if (full_bytes > 0)
         eq_acc = Emit_Memcmp_Eq (left_ptr, right_ptr, 0, full_bytes, false).reg;
@@ -22375,7 +22461,45 @@ LLVM_I1 Generate_Array_Equality (LLVM_Value left_v,
   uint32_t byte_size = Emit_Array_Storage_Bytes (array_type, total_elems, aeq_iat);
   uint32_t byte_size_64 = Emit_Extend_To_I64 (byte_size, aeq_iat).reg;
 
-  uint32_t data_eq = Emit_Memcmp_Eq (left_data, right_data, byte_size_64, 0, true).reg;
+  uint32_t data_eq;
+  Type_Info *aeq_elem = array_type->array.element_type;
+  if (aeq_elem and Type_Needs_Fat_Pointer_Load (aeq_elem)) {
+    /* Elements are stored as fat pointers; their bytes are addresses,
+       so equality must recurse element by element. */
+    uint32_t total_64 = Emit_Extend_To_I64 (total_elems, aeq_iat).reg;
+    uint32_t res_flag = Emit_Result_Instruction ("alloca i1\n");
+    Emit ("  store i1 true, ptr %%t%u\n", res_flag);
+    uint32_t iv = Emit_Result_Instruction ("alloca i64\n");
+    Emit ("  store i64 0, ptr %%t%u\n", iv);
+    uint32_t head = cg->label_id++, body = cg->label_id++, done = cg->label_id++;
+    Emit ("  br label %%L%u\n", head);
+    cg->block_terminated = true;
+    Emit_Label_Here (head);
+    uint32_t cur = Emit_Result_Instruction ("load i64, ptr %%t%u\n", iv);
+    LLVM_I1 more = Emit_Icmp ("slt", LLVM_Rep_Int (64, false), cur, total_64);
+    Emit ("  br i1 %%t%u, label %%L%u, label %%L%u\n", more.reg, body, done);
+    cg->block_terminated = true;
+    Emit_Label_Here (body);
+    uint32_t off = Emit_Result_Instruction ("mul i64 %%t%u, %u\n",
+      cur, FAT_PTR_ALLOC_SIZE);
+    uint32_t lp = Emit_Result_Instruction ("getelementptr i8, ptr %%t%u, i64 %%t%u\n", left_data, off);
+    uint32_t rp = Emit_Result_Instruction ("getelementptr i8, ptr %%t%u, i64 %%t%u\n", right_data, off);
+    uint32_t lf = Emit_Result_Instruction ("load " FAT_PTR_TYPE ", ptr %%t%u\n", lp);
+    uint32_t rf = Emit_Result_Instruction ("load " FAT_PTR_TYPE ", ptr %%t%u\n", rp);
+    LLVM_I1 ee = Generate_Array_Equality (Val_Rep (lf, LL_REP_FAT),
+                                          Val_Rep (rf, LL_REP_FAT), aeq_elem);
+    uint32_t acc = Emit_Result_Instruction ("load i1, ptr %%t%u\n", res_flag);
+    uint32_t nxt = Emit_Result_Instruction ("and i1 %%t%u, %%t%u\n", acc, ee.reg);
+    Emit ("  store i1 %%t%u, ptr %%t%u\n", nxt, res_flag);
+    uint32_t inc = Emit_Result_Instruction ("add i64 %%t%u, 1\n", cur);
+    Emit ("  store i64 %%t%u, ptr %%t%u\n", inc, iv);
+    Emit ("  br label %%L%u\n", head);
+    cg->block_terminated = true;
+    Emit_Label_Here (done);
+    data_eq = Emit_Result_Instruction ("load i1, ptr %%t%u\n", res_flag);
+  } else {
+    data_eq = Emit_Memcmp_Eq (left_data, right_data, byte_size_64, 0, true).reg;
+  }
 
   LLVM_I1 l_null = Emit_Icmp_Const ("eq", aeq_iat, total_elems, 0);
   LLVM_I1 r_null = Emit_Icmp_Const ("eq", aeq_iat, right_elems, 0);
@@ -25353,26 +25477,119 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
       LLVM_Rep dst_llvm = dst_ti ? Type_To_Rep (dst_ti) : Integer_Arith_Rep();
       bool src_composite = Type_Is_Composite (src_ti);
       bool dst_composite = Type_Is_Composite (dst_ti);
+      bool src_dynamic = src_composite and Type_Is_Array_Like (src_ti) and
+        (Type_Is_Unconstrained_Array (src_ti) or
+         Type_Has_Dynamic_Bounds (src_ti));
+      bool dst_dynamic = dst_composite and Type_Is_Array_Like (dst_ti) and
+        (Type_Is_Unconstrained_Array (dst_ti) or
+         Type_Has_Dynamic_Bounds (dst_ti));
       uint32_t src_sz = src_ti ? src_ti->size : 8;
       uint32_t dst_sz = dst_ti ? dst_ti->size : 8;
-      if (src_sz == 0) src_sz = 8;
-      if (dst_sz == 0) dst_sz = 8;
-      uint32_t buf_sz = src_sz > dst_sz ? src_sz : dst_sz;
-      uint32_t buf = Emit_Result_Instruction ("alloca [%u x i8]  ; UNCHECKED_CONVERSION buffer\n", buf_sz);
+      if (src_sz == 0 and not src_dynamic) src_sz = 8;
+      if (dst_sz == 0 and not dst_dynamic) dst_sz = 8;
 
-      if (buf_sz > src_sz)
-        Emit ("  call void @llvm.memset.p0.i64(ptr %%t%u, i8 0, i64 %u, i1 false)"
-              "  ; zero UC padding\n", buf, buf_sz);
+      /* The destination's bounds are its subtype's, evaluated here
+         both to size the buffer and to build the result view. */
+      uint32_t dst_lo_t = 0, dst_hi_t = 0;
+      LLVM_Rep dst_bt = LL_REP_VOID;
+      if (dst_dynamic) {
+        dst_bt = Array_Bound_LLVM_Rep (dst_ti);
+        dst_lo_t = Emit_Temp ();
+        dst_hi_t = Emit_Temp ();
+        if (dst_ti->array.index_count > 0 and
+            Bound_Is_Expression (&dst_ti->array.indices[0].low_bound)) {
+          uint32_t lo_v = Generate_Expression (
+            dst_ti->array.indices[0].low_bound.expr).reg;
+          Emit ("  %%t%u = add %s 0, %%t%u  ; UC dst lo\n", dst_lo_t, LLVM_Rep_To_String (dst_bt), lo_v);
+        } else {
+          int128_t lo = Array_Low_Bound (dst_ti);
+          Emit ("  %%t%u = add %s 0, %s  ; UC dst lo\n",
+             dst_lo_t, LLVM_Rep_To_String (dst_bt), I128_Decimal (lo));
+        }
+        if (dst_ti->array.index_count > 0 and
+            Bound_Is_Expression (&dst_ti->array.indices[0].high_bound)) {
+          uint32_t hi_v = Generate_Expression (
+            dst_ti->array.indices[0].high_bound.expr).reg;
+          Emit ("  %%t%u = add %s 0, %%t%u  ; UC dst hi\n", dst_hi_t, LLVM_Rep_To_String (dst_bt), hi_v);
+        } else {
+          int128_t hi = (dst_ti->array.index_count > 0)
+            ? Type_Bound_Value (dst_ti->array.indices[0].high_bound) : 0;
+          Emit ("  %%t%u = add %s 0, %s  ; UC dst hi\n",
+             dst_hi_t, LLVM_Rep_To_String (dst_bt), I128_Decimal (hi));
+        }
+      }
+
+      uint32_t buf;
+      uint32_t src_bytes_reg = 0;
+      if (src_dynamic or dst_dynamic) {
+        LLVM_Rep i64r = Byte_Size_Rep ();
+        uint32_t src_b;
+        if (src_dynamic) {
+          src_b = Emit_Array_Byte_Size (src_ti, args[0]).reg;
+        } else {
+          src_b = Emit_Result_Instruction ("add i64 0, %u\n", src_sz);
+        }
+        src_bytes_reg = src_b;
+        uint32_t dst_b;
+        if (dst_dynamic) {
+          uint32_t len = Emit_Length_Clamped (dst_lo_t, dst_hi_t, dst_bt).reg;
+          uint32_t db = Emit_Array_Storage_Bytes (dst_ti, len, dst_bt);
+          dst_b = Emit_Extend_To_I64 (db, dst_bt).reg;
+        } else {
+          dst_b = Emit_Result_Instruction ("add i64 0, %u\n", dst_sz);
+        }
+        LLVM_I1 src_bigger = Emit_Icmp ("ugt", i64r, src_b, dst_b);
+        uint32_t max_b = Emit_Result_Instruction (
+          "select i1 %%t%u, i64 %%t%u, i64 %%t%u\n", src_bigger.reg, src_b, dst_b);
+        uint64_t uc_pad = dst_ti ? Array_Allocation_Pad (dst_ti) : 0;
+        uint32_t alloc_b = uc_pad
+          ? Emit_Result_Instruction ("add i64 %%t%u, %llu  ; window pad\n",
+              max_b, (unsigned long long) uc_pad)
+          : max_b;
+        buf = Emit_Result_Instruction (
+          "alloca i8, i64 %%t%u  ; UNCHECKED_CONVERSION buffer (dyn)\n", alloc_b);
+        Emit ("  call void @llvm.memset.p0.i64(ptr %%t%u, i8 0, i64 %%t%u, i1 false)"
+              "  ; zero UC padding\n", buf, alloc_b);
+      } else {
+        uint32_t buf_sz = src_sz > dst_sz ? src_sz : dst_sz;
+        buf_sz += (uint32_t) (dst_ti ? Array_Allocation_Pad (dst_ti) : 0);
+        buf = Emit_Result_Instruction ("alloca [%u x i8]  ; UNCHECKED_CONVERSION buffer\n", buf_sz);
+        if (buf_sz > src_sz)
+          Emit ("  call void @llvm.memset.p0.i64(ptr %%t%u, i8 0, i64 %u, i1 false)"
+                "  ; zero UC padding\n", buf, buf_sz);
+      }
+
       if (src_composite) {
         uint32_t src_data = args[0];
-        if (Type_Is_Array_Like (src_ti) and
-            (Type_Is_Unconstrained_Array (src_ti) or
-             Type_Has_Dynamic_Bounds (src_ti))) {
+        if (src_dynamic) {
           LLVM_Rep src_bt = Array_Bound_LLVM_Rep (src_ti);
           src_data = Emit_Fat_Pointer_Data (args[0], src_bt).reg;
         }
-        Emit ("  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u,"
-              " i64 %u, i1 false)  ; UC src\n", buf, src_data, src_sz);
+        if (src_dynamic and src_bytes_reg)
+          Emit ("  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u,"
+                " i64 %%t%u, i1 false)  ; UC src\n", buf, src_data, src_bytes_reg);
+        else
+          Emit ("  call void @llvm.memcpy.p0.p0.i64(ptr %%t%u, ptr %%t%u,"
+                " i64 %u, i1 false)  ; UC src\n", buf, src_data, src_sz);
+        /* A bit-packed view owns only its value bits; whatever the
+           copy brought into the final partial byte beyond them is
+           padding, canonicalized to zero. */
+        if (Type_Is_Bit_Packed_Array (src_ti)) {
+          uint32_t bits_reg;
+          uint32_t packed_w = Packed_Element_Width (src_ti);
+          if (src_dynamic) {
+            LLVM_Rep src_bt = Array_Bound_LLVM_Rep (src_ti);
+            uint32_t len = Emit_Fat_Pointer_Length (args[0], src_bt).reg;
+            uint32_t len64 = Emit_Extend_To_I64 (len, src_bt).reg;
+            bits_reg = packed_w == 1 ? len64
+              : Emit_Result_Instruction ("mul i64 %%t%u, %u\n", len64, packed_w);
+          } else {
+            int128_t cnt = Array_Element_Count (src_ti);
+            bits_reg = Emit_Result_Instruction ("add i64 0, %s\n",
+              I128_Decimal ((cnt < 0 ? 0 : cnt) * packed_w));
+          }
+          Emit_Packed_Tail_Mask (buf, bits_reg);
+        }
       } else {
         uint32_t src_val = args[0];
         Type_Info *src_rep_base = Enum_Rep_Base (src_ti);
@@ -25381,38 +25598,57 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
         Emit ("  store %s %%t%u, ptr %%t%u  ; UC src\n", LLVM_Rep_To_String (src_llvm), src_val, buf);
       }
       if (dst_composite) {
-        if (Type_Is_Array_Like (dst_ti) and
-            (Type_Is_Unconstrained_Array (dst_ti) or
-             Type_Has_Dynamic_Bounds (dst_ti))) {
-          LLVM_Rep bt = Array_Bound_LLVM_Rep (dst_ti);
-          uint32_t lo_t = Emit_Temp ();
-          uint32_t hi_t = Emit_Temp ();
-          if (dst_ti->array.index_count > 0 and
-              Bound_Is_Expression (&dst_ti->array.indices[0].low_bound)) {
-            uint32_t lo_v = Generate_Expression (
-              dst_ti->array.indices[0].low_bound.expr).reg;
-            Emit ("  %%t%u = add %s 0, %%t%u  ; UC dst lo\n", lo_t, LLVM_Rep_To_String (bt), lo_v);
+        if (Type_Is_Bit_Packed_Array (dst_ti)) {
+          uint32_t packed_w = Packed_Element_Width (dst_ti);
+          uint32_t bits_reg;
+          if (dst_dynamic) {
+            uint32_t len = Emit_Length_Clamped (dst_lo_t, dst_hi_t, dst_bt).reg;
+            uint32_t len64 = Emit_Extend_To_I64 (len, dst_bt).reg;
+            bits_reg = packed_w == 1 ? len64
+              : Emit_Result_Instruction ("mul i64 %%t%u, %u\n", len64, packed_w);
           } else {
-            int128_t lo = Array_Low_Bound (dst_ti);
-            Emit ("  %%t%u = add %s 0, %s  ; UC dst lo\n",
-               lo_t, LLVM_Rep_To_String (bt), I128_Decimal (lo));
+            int128_t cnt = Array_Element_Count (dst_ti);
+            bits_reg = Emit_Result_Instruction ("add i64 0, %s\n",
+              I128_Decimal ((cnt < 0 ? 0 : cnt) * packed_w));
           }
-          if (dst_ti->array.index_count > 0 and
-              Bound_Is_Expression (&dst_ti->array.indices[0].high_bound)) {
-            uint32_t hi_v = Generate_Expression (
-              dst_ti->array.indices[0].high_bound.expr).reg;
-            Emit ("  %%t%u = add %s 0, %%t%u  ; UC dst hi\n", hi_t, LLVM_Rep_To_String (bt), hi_v);
-          } else {
-            int128_t hi = (dst_ti->array.index_count > 0)
-              ? Type_Bound_Value (dst_ti->array.indices[0].high_bound) : 0;
-            Emit ("  %%t%u = add %s 0, %s  ; UC dst hi\n",
-               hi_t, LLVM_Rep_To_String (bt), I128_Decimal (hi));
-          }
-          return Emit_Fat_Pointer_Dynamic (buf, lo_t, hi_t, bt);
+          Emit_Packed_Tail_Mask (buf, bits_reg);
         }
+        if (dst_dynamic)
+          return Emit_Fat_Pointer_Dynamic (buf, dst_lo_t, dst_hi_t, dst_bt);
         return Val_Rep (buf, LL_REP_PTR);
       }
       uint32_t res = Emit_Result_Instruction ("load %s, ptr %%t%u  ; UC dst\n", LLVM_Rep_To_String (dst_llvm), buf);
+      /* Reading a scalar out of a bit-packed image: the value is the
+         source's low N bits, extended to the scalar's storage width
+         by the destination's signedness — a 7-bit -63 is 0x41, not
+         its byte-wide sign extension. */
+      if (Type_Is_Bit_Packed_Array (src_ti) and LLVM_Rep_Is_Int (dst_llvm)) {
+        uint32_t packed_w = Packed_Element_Width (src_ti);
+        uint32_t storage_bits = dst_llvm.bits;
+        uint32_t bits_reg;
+        if (src_dynamic) {
+          LLVM_Rep src_bt = Array_Bound_LLVM_Rep (src_ti);
+          uint32_t len = Emit_Fat_Pointer_Length (args[0], src_bt).reg;
+          uint32_t len64 = Emit_Extend_To_I64 (len, src_bt).reg;
+          bits_reg = packed_w == 1 ? len64
+            : Emit_Result_Instruction ("mul i64 %%t%u, %u\n", len64, packed_w);
+        } else {
+          int128_t cnt = Array_Element_Count (src_ti);
+          bits_reg = Emit_Result_Instruction ("add i64 0, %s\n",
+            I128_Decimal ((cnt < 0 ? 0 : cnt) * packed_w));
+        }
+        uint32_t deficit = Emit_Result_Instruction (
+          "sub i64 %u, %%t%u\n", storage_bits, bits_reg);
+        LLVM_I1 wide = Emit_Icmp_Const ("slt", LLVM_Rep_Int (64, false), deficit, 0);
+        uint32_t clamped = Emit_Result_Instruction (
+          "select i1 %%t%u, i64 0, i64 %%t%u\n", wide.reg, deficit);
+        uint32_t shift = Emit_Convert (clamped, LLVM_Rep_Int (64, false), dst_llvm).reg;
+        uint32_t raised = Emit_Result_Instruction ("shl %s %%t%u, %%t%u\n",
+          LLVM_Rep_To_String (dst_llvm), res, shift);
+        res = Emit_Result_Instruction ("%s %s %%t%u, %%t%u\n",
+          Type_Value_Is_Signed (dst_ti) ? "ashr" : "lshr",
+          LLVM_Rep_To_String (dst_llvm), raised, shift);
+      }
       Type_Info *dst_rep_base = Enum_Rep_Base (dst_ti);
       if (dst_rep_base)
         res = Emit_Enum_Code_To_Pos (res, dst_rep_base, dst_llvm);
@@ -26135,8 +26371,7 @@ index_path: ;
 
       return Val_Rep (ptr, LL_REP_PTR);
     } else if (Type_Is_Bit_Packed_Array (array_type)) {
-      return Emit_Packed_Element_Load (base, flat_idx, idx_iat,
-                                       elem_type_info);
+      return Emit_Packed_Element_Load (array_type, base, flat_idx, idx_iat);
     } else {
       t = Emit_Temp ();
       LLVM_Rep iat_idx = Integer_Arith_Rep ();
@@ -27000,8 +27235,15 @@ LLVM_Value Generate_Attribute (Syntax_Node *node) {
     LLVM_Rep iat = Integer_Arith_Rep ();
 
     Syntax_Node *pfx = node->attribute.prefix;
-    if (pfx and (pfx->kind == NK_APPLY or pfx->kind == NK_SELECTED))
-      (void)Generate_Lvalue (pfx);
+    if (pfx and (pfx->kind == NK_APPLY or pfx->kind == NK_SELECTED)) {
+      /* 'SIZE is answered from the type; a packed element has no
+         address to take, and needs none. */
+      Type_Info *apfx = pfx->kind == NK_APPLY and pfx->apply.prefix
+                          ? pfx->apply.prefix->type : NULL;
+      if (not (Type_Is_Bit_Packed_Array (apfx) or
+               Type_Is_Bit_Packed_Array (Type_Designated (apfx))))
+        (void)Generate_Lvalue (pfx);
+    }
 
     if (Type_Is_Array_Like (prefix_type) and
         prefix_type->specified_bit_size == 0 and prefix_type->array.element_type) {
@@ -28343,55 +28585,107 @@ Array_Lvalue_Base Emit_Array_Lvalue_Base (Syntax_Node *apply_node,
   return ab;
 }
 
-/* A bit-packed element at a runtime index: bit k of the array lives
-   at byte k >> 3, bit k & 7 — LSB-first, so an overlay of a packed
-   boolean array on an integer or a clause-placed record agrees with
-   the record's FIRST_BIT numbering on this little-endian target. */
-LLVM_Value Emit_Packed_Element_Load (uint32_t base, uint32_t flat_index,
-                                     LLVM_Rep index_rep,
-                                     Type_Info *element_type) {
+/* A packed element at a runtime index: element k occupies bits
+   [k*W, k*W + W) of the array — LSB-first within each byte, so an
+   overlay of a packed array on an integer or a clause-placed record
+   agrees with the record's FIRST_BIT numbering on this little-endian
+   target.  The window is sized for the worst displacement (seven
+   bits); Array_Allocation_Pad guarantees it stays in bounds. */
+LLVM_Value Emit_Packed_Element_Load (Type_Info *array_type, uint32_t base,
+                                     uint32_t flat_index, LLVM_Rep index_rep) {
+  uint32_t width = Packed_Element_Width (array_type);
+  Type_Info *element_type = array_type->array.element_type;
+  LLVM_Rep value_rep = Type_To_Rep (element_type);
   const char *irn = LLVM_Rep_To_String (index_rep);
-  LLVM_Rep byte_rep = LLVM_Rep_Int (8, false);
+  uint32_t window_bits =
+    (uint32_t) To_Bits (To_Bytes (Bits_Per_Unit - 1 + width));
+  LLVM_Rep window_rep = LLVM_Rep_Int ((uint16_t) window_bits, false);
+  uint32_t bit_index = width == 1 ? flat_index
+    : Emit_Result_Instruction ("mul %s %%t%u, %u  ; * element bits\n",
+        irn, flat_index, width);
   uint32_t byte_index = Emit_Result_Instruction ("lshr %s %%t%u, 3\n",
-    irn, flat_index);
+    irn, bit_index);
   uint32_t ptr = Emit_Result_Instruction (
-    "getelementptr i8, ptr %%t%u, %s %%t%u  ; packed byte\n",
+    "getelementptr i8, ptr %%t%u, %s %%t%u  ; packed element\n",
     base, irn, byte_index);
-  uint32_t window = Emit_Result_Instruction ("load i8, ptr %%t%u\n", ptr);
-  uint32_t bit_index = Emit_Result_Instruction ("and %s %%t%u, 7\n",
-    irn, flat_index);
-  uint32_t bit8 = Emit_Convert (bit_index, index_rep, byte_rep).reg;
-  uint32_t shifted = Emit_Result_Instruction ("lshr i8 %%t%u, %%t%u\n",
-    window, bit8);
-  uint32_t bit = Emit_Result_Instruction ("and i8 %%t%u, 1\n", shifted);
-  return Val_Rep (bit, Type_To_Rep (element_type));
+  uint32_t window = Emit_Result_Instruction (
+    "load i%u, ptr %%t%u, align 1\n", window_bits, ptr);
+  uint32_t displacement = Emit_Result_Instruction ("and %s %%t%u, 7\n",
+    irn, bit_index);
+  uint32_t shift = Emit_Convert (displacement, index_rep, window_rep).reg;
+  uint32_t value = Emit_Result_Instruction ("lshr i%u %%t%u, %%t%u\n",
+    window_bits, window, shift);
+  if (width < window_bits)
+    value = Emit_Result_Instruction ("trunc i%u %%t%u to i%u\n",
+      window_bits, value, width);
+  if (width == value_rep.bits) return Val_Rep (value, value_rep);
+  return Val_Rep (Emit_Result_Instruction ("%s i%u %%t%u to %s\n",
+    Type_Value_Is_Signed (element_type) ? "sext" : "zext",
+    width, value, LLVM_Rep_To_String (value_rep)), value_rep);
 }
 
-void Emit_Packed_Element_Store (uint32_t base, uint32_t flat_index,
-                                LLVM_Rep index_rep, LLVM_Value value) {
-  const char *irn = LLVM_Rep_To_String (index_rep);
-  LLVM_Rep byte_rep = LLVM_Rep_Int (8, false);
-  uint32_t byte_index = Emit_Result_Instruction ("lshr %s %%t%u, 3\n",
-    irn, flat_index);
+/* Zero the padding bits of the final partial byte of a packed value
+   of TOTAL_BITS bits.  Branchless: when the bit count is a whole
+   number of bytes there is no partial byte, and the mask degenerates
+   to a no-op on byte zero. */
+void Emit_Packed_Tail_Mask (uint32_t buffer, uint32_t total_bits_i64) {
+  uint32_t tail = Emit_Result_Instruction ("and i64 %%t%u, 7\n", total_bits_i64);
+  uint32_t index = Emit_Result_Instruction ("lshr i64 %%t%u, 3\n", total_bits_i64);
+  LLVM_I1 whole = Emit_Icmp_Const ("eq", LLVM_Rep_Int (64, false), tail, 0);
+  uint32_t safe_index = Emit_Result_Instruction (
+    "select i1 %%t%u, i64 0, i64 %%t%u\n", whole.reg, index);
+  uint32_t raised = Emit_Result_Instruction ("shl i64 1, %%t%u\n", tail);
+  uint32_t mask64 = Emit_Result_Instruction ("sub i64 %%t%u, 1\n", raised);
+  uint32_t mask8 = Emit_Result_Instruction ("trunc i64 %%t%u to i8\n", mask64);
+  uint32_t mask = Emit_Result_Instruction (
+    "select i1 %%t%u, i8 -1, i8 %%t%u\n", whole.reg, mask8);
   uint32_t ptr = Emit_Result_Instruction (
-    "getelementptr i8, ptr %%t%u, %s %%t%u  ; packed byte\n",
+    "getelementptr i8, ptr %%t%u, i64 %%t%u\n", buffer, safe_index);
+  uint32_t byte = Emit_Result_Instruction ("load i8, ptr %%t%u\n", ptr);
+  uint32_t masked = Emit_Result_Instruction ("and i8 %%t%u, %%t%u\n", byte, mask);
+  Emit ("  store i8 %%t%u, ptr %%t%u\n", masked, ptr);
+}
+
+void Emit_Packed_Element_Store (Type_Info *array_type, uint32_t base,
+                                uint32_t flat_index, LLVM_Rep index_rep,
+                                LLVM_Value value) {
+  uint32_t width = Packed_Element_Width (array_type);
+  const char *irn = LLVM_Rep_To_String (index_rep);
+  uint32_t window_bits =
+    (uint32_t) To_Bits (To_Bytes (Bits_Per_Unit - 1 + width));
+  LLVM_Rep window_rep = LLVM_Rep_Int ((uint16_t) window_bits, false);
+  uint32_t bit_index = width == 1 ? flat_index
+    : Emit_Result_Instruction ("mul %s %%t%u, %u  ; * element bits\n",
+        irn, flat_index, width);
+  uint32_t byte_index = Emit_Result_Instruction ("lshr %s %%t%u, 3\n",
+    irn, bit_index);
+  uint32_t ptr = Emit_Result_Instruction (
+    "getelementptr i8, ptr %%t%u, %s %%t%u  ; packed element\n",
     base, irn, byte_index);
-  uint32_t bit_index = Emit_Result_Instruction ("and %s %%t%u, 7\n",
-    irn, flat_index);
-  uint32_t bit8 = Emit_Convert (bit_index, index_rep, byte_rep).reg;
-  uint32_t field = Emit_Result_Instruction ("shl i8 1, %%t%u\n", bit8);
-  uint32_t keep = Emit_Result_Instruction ("xor i8 %%t%u, -1\n", field);
-  uint32_t window = Emit_Result_Instruction ("load i8, ptr %%t%u\n", ptr);
-  uint32_t cleared = Emit_Result_Instruction ("and i8 %%t%u, %%t%u\n",
-    window, keep);
-  uint32_t v8 = LLVM_Rep_Equal (value.rep, byte_rep) ? value.reg
-              : Emit_Convert (value.reg, value.rep, byte_rep).reg;
-  uint32_t vbit = Emit_Result_Instruction ("and i8 %%t%u, 1\n", v8);
-  uint32_t placed = Emit_Result_Instruction ("shl i8 %%t%u, %%t%u\n",
-    vbit, bit8);
-  uint32_t merged = Emit_Result_Instruction ("or i8 %%t%u, %%t%u\n",
-    cleared, placed);
-  Emit ("  store i8 %%t%u, ptr %%t%u\n", merged, ptr);
+  uint32_t displacement = Emit_Result_Instruction ("and %s %%t%u, 7\n",
+    irn, bit_index);
+  uint32_t shift = Emit_Convert (displacement, index_rep, window_rep).reg;
+  int128_t width_mask = ((int128_t) 1 << width) - 1;
+  uint32_t field = Emit_Result_Instruction ("shl i%u %s, %%t%u\n",
+    window_bits, I128_Decimal (width_mask), shift);
+  uint32_t keep = Emit_Result_Instruction ("xor i%u %%t%u, -1\n",
+    window_bits, field);
+  uint32_t window = Emit_Result_Instruction (
+    "load i%u, ptr %%t%u, align 1\n", window_bits, ptr);
+  uint32_t cleared = Emit_Result_Instruction ("and i%u %%t%u, %%t%u\n",
+    window_bits, window, keep);
+  uint32_t narrowed = value.reg;
+  if (value.rep.bits > width)
+    narrowed = Emit_Result_Instruction ("trunc %s %%t%u to i%u\n",
+      LLVM_Rep_To_String (value.rep), value.reg, width);
+  uint32_t widened = width == window_bits ? narrowed
+    : Emit_Result_Instruction ("zext i%u %%t%u to i%u\n",
+        width, narrowed, window_bits);
+  uint32_t placed = Emit_Result_Instruction ("shl i%u %%t%u, %%t%u\n",
+    window_bits, widened, shift);
+  uint32_t merged = Emit_Result_Instruction ("or i%u %%t%u, %%t%u\n",
+    window_bits, cleared, placed);
+  Emit ("  store i%u %%t%u, ptr %%t%u, align 1\n", window_bits, merged, ptr);
 }
 
 int32_t Selected_Component_Slot (const Syntax_Node *sel_node,
@@ -28753,7 +29047,8 @@ void Agg_Store_At (Aggregate_Emission_Context *context, uint32_t value,
 
   } else if (Type_Is_Bit_Packed_Array (context->agg_type)) {
     uint32_t flat_reg = Agg_Operand_Register (context, flat_index);
-    Emit_Packed_Element_Store (context->base, flat_reg, context->index_rep,
+    Emit_Packed_Element_Store (context->agg_type, context->base, flat_reg,
+                               context->index_rep,
                                Val_Rep (value, context->elem_type));
 
   } else {
@@ -30074,7 +30369,8 @@ uint32_t Generate_Aggregate_Body (Syntax_Node *node) {
            base, I128_Decimal (total_bytes));
       } else if (Type_Is_Bit_Packed_Array (agg_type)) {
         Emit ("  %%t%u = alloca [%s x i8]  ; array aggregate (bit-packed)\n",
-           base, I128_Decimal (Array_Bytes_For_Count (agg_type, count, 0)));
+           base, I128_Decimal (Array_Bytes_For_Count (agg_type, count, 0)
+                               + Array_Allocation_Pad (agg_type)));
       } else {
         Emit ("  %%t%u = alloca [%s x %s]  ; array aggregate\n",
            base, I128_Decimal (count), LLVM_Rep_To_String (elem_type));
@@ -31027,6 +31323,11 @@ void Emit_Record_Component_Default (Component_Info *comp, uint32_t comp_ptr,
         val = Emit_Scale_By_Small (val, Fixed_Repr_Small (comp_type), true, val_type);
       }
       val = Emit_Convert (val, val_type, store_type).reg;
+      if (Component_Is_Bit_Granular (comp)) {
+        Emit_Locus_Store (Component_Locus (comp_ptr, comp),
+                          Val_Rep (val, store_type), comp_type);
+        return;
+      }
       Emit ("  store %s %%t%u, ptr %%t%u\n", LLVM_Rep_To_String (store_type), val, comp_ptr);
     }
   }
@@ -31802,8 +32103,9 @@ LLVM_Value Generate_Allocator (Syntax_Node *node) {
 
     if (Type_Is_Constrained_Array (designated)) {
       int128_t count = Array_Element_Count (designated);
-      alloc_size = (uint64_t)(count > 0 ? count : 1)
-                 * Array_Element_Storage_Bytes (designated);
+      alloc_size = Array_Bytes_For_Count (designated,
+                     count > 0 ? count : 1, To_Bits (1))
+                 + Array_Allocation_Pad (designated);
       designated_is_composite = true;
     } else {
       alloc_size = designated->size > 0 ? designated->size : 8;
@@ -32550,8 +32852,8 @@ void Generate_Assignment_Body (Syntax_Node *node, Syntax_Node *target) {
           prefix_type, ab.has_dynamic_low, ab.fat, ab.dynamic_low,
           ab.dynamic_high, ab.bound_rep);
         LLVM_Value value_v = Generate_Expression (node->assignment.value);
-        Emit_Packed_Element_Store (ab.base, flat, Integer_Arith_Rep (),
-                                   value_v);
+        Emit_Packed_Element_Store (prefix_type, ab.base, flat,
+                                   Integer_Arith_Rep (), value_v);
         return;
       }
 
@@ -32585,8 +32887,8 @@ void Generate_Assignment_Body (Syntax_Node *node, Syntax_Node *target) {
           desig, ab.has_dynamic_low, ab.fat, ab.dynamic_low,
           ab.dynamic_high, ab.bound_rep);
         LLVM_Value value_v = Generate_Expression (node->assignment.value);
-        Emit_Packed_Element_Store (ab.base, flat, Integer_Arith_Rep (),
-                                   value_v);
+        Emit_Packed_Element_Store (desig, ab.base, flat,
+                                   Integer_Arith_Rep (), value_v);
         return;
       }
       LLVM_Rep elem_type_str = Type_To_Rep (desig->array.element_type);
@@ -36780,7 +37082,8 @@ void Generate_Object_Declaration (Syntax_Node *node) {
         Emit (" = alloca [%s x [%u x i8]]\n", I128_Decimal (array_count), elem_size);
       } else if (Type_Is_Bit_Packed_Array (ty)) {
         Emit (" = alloca [%s x i8]  ; bit-packed\n",
-           I128_Decimal (Array_Bytes_For_Count (ty, array_count, 0)));
+           I128_Decimal (Array_Bytes_For_Count (ty, array_count, 0)
+                         + Array_Allocation_Pad (ty)));
       } else {
         Emit (" = alloca [%s x %s]\n", I128_Decimal (array_count), LLVM_Rep_To_String (elem_rep));
       }
@@ -36889,9 +37192,7 @@ void Generate_Object_Declaration (Syntax_Node *node) {
               }
             }
 
-            uint32_t elem_sz = ty->array.element_type ? ty->array.element_type->size : 4;
-            if (elem_sz == 0) elem_sz = 4;
-            uint32_t byte_len = Emit_Result_Instruction ("mul %s %%t%u, %u  ; total bytes\n", LLVM_Rep_To_String (bt), total_len, elem_sz);
+            uint32_t byte_len = Emit_Array_Allocation_Bytes (ty, total_len, bt);
             uint32_t byte_len64 = Emit_Extend_To_I64 (byte_len, bt).reg;
 
             uint32_t data_alloc = Emit_Result_Instruction ("alloca i8, i64 %%t%u  ; constrained uncon array data\n", byte_len64);
@@ -37003,14 +37304,17 @@ obj_decl_init:
             uint32_t src_low  = Emit_Fat_Pointer_Low (fat_ptr, init_bt).reg;
             uint32_t src_high = Emit_Fat_Pointer_High (fat_ptr, init_bt).reg;
             uint32_t len      = Emit_Fat_Pointer_Length (fat_ptr, init_bt).reg;
-            uint32_t len_64   = Emit_Extend_To_I64 (len, init_bt).reg;
+            uint32_t bytes    = Emit_Array_Storage_Bytes (ty, len, init_bt);
+            uint32_t bytes_64 = Emit_Extend_To_I64 (bytes, init_bt).reg;
+            uint32_t alloc_bytes = Emit_Array_Allocation_Bytes (ty, len, init_bt);
+            uint32_t alloc_64 = Emit_Extend_To_I64 (alloc_bytes, init_bt).reg;
 
             uint32_t local_data = Emit_Result_Instruction ("alloca i8, i64 %%t%u"
-               "  ; constrained-by-init data\n", len_64);
+               "  ; constrained-by-init data\n", alloc_64);
 
             Emit ("  call void @llvm.memcpy.p0.p0.i64("
                "ptr %%t%u, ptr %%t%u, i64 %%t%u, i1 false)\n",
-               local_data, src_data, len_64);
+               local_data, src_data, bytes_64);
 
             uint32_t dst_low = src_low, dst_high = src_high;
             if (is_constrained_array and ty->array.index_count > 0) {
@@ -37038,17 +37342,15 @@ obj_decl_init:
           if (dest_needs_fat_storage and init_ty and
             init_ty->array.index_count > 0) {
 
-            int128_t byte_len = 1;
+            int128_t elem_count = 1;
             for (uint32_t d = 0; d < init_ty->array.index_count; d++) {
               int128_t dlo = Type_Bound_Value (init_ty->array.indices[d].low_bound);
               int128_t dhi = Type_Bound_Value (init_ty->array.indices[d].high_bound);
               int128_t dim_cnt = (dhi >= dlo) ? (dhi - dlo + 1) : 0;
-              byte_len *= dim_cnt;
+              elem_count *= dim_cnt;
             }
-            uint32_t el_sz_c2u = (init_ty->array.element_type and
-              init_ty->array.element_type->size > 0) ?
-              init_ty->array.element_type->size : 1;
-            byte_len *= el_sz_c2u;
+            int128_t byte_len = (int128_t) Array_Bytes_For_Count (
+              init_ty, elem_count, To_Bits (1));
             int128_t lo = Type_Bound_Value (
               init_ty->array.indices[0].low_bound);
             int128_t hi = Type_Bound_Value (
@@ -38899,9 +39201,6 @@ void Elaborate_Dynamic_Array_Bounds (Type_Info *elab_ty) {
 
   uint32_t rtid = elab_ty->rt_global_id;
   uint32_t ndims = elab_ty->array.index_count;
-  uint32_t esz = (elab_ty->array.element_type and
-          elab_ty->array.element_type->size > 0)
-           ? elab_ty->array.element_type->size : 4;
   uint32_t count_reg = 0;
   for (uint32_t d = 0; d < ndims; d++) {
     Type_Bound lo = elab_ty->array.indices[d].low_bound;
@@ -38938,7 +39237,8 @@ void Elaborate_Dynamic_Array_Bounds (Type_Info *elab_ty) {
       count_reg = prod;
     }
   }
-  uint32_t total = Emit_Result_Instruction ("mul i64 %%t%u, %u  ; type elab size\n", count_reg, esz);
+  uint32_t total = Emit_Array_Storage_Bytes (elab_ty, count_reg,
+                                             Runtime_Descriptor_Rep ());
   Emit ("  store " RT_DESC_TYPE " %%t%u, ptr @__rt_type_%u_size\n", total, rtid);
 }
 

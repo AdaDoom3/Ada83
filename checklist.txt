@@ -129,14 +129,31 @@ Representation campaign (REPRESENTATION.md), staged and landing:
                and unconstrained families keep byte stride until
                Stage 4.  Per-type equality functions routed through
                Generate_Array_Equality (deleted a duplicated memcmp).
-  [ ] Stage 4  lift the family gate: dynamic-bounds packed arrays
-               (runtime loci), unchecked conversion with runtime-sized
-               buffers, dynamic equality tail masking, packed slices
-               (elementwise), OUT-mode packed element actuals
+  [x] Stage 4  the family gate is gone: packed arrays work with
+               dynamic bounds and general element widths (a discrete
+               element with a smaller 'SIZE packs to that width,
+               straddling bytes); pragma PACK lays records out at bit
+               granularity; unchecked conversion uses runtime-sized
+               buffers, canonicalizes packed padding, and extends
+               scalars from the packed width by destination
+               signedness; allocations pad for worst-case windows;
+               the runtime type-size descriptors, aggregate rows,
+               fat-element equality (elementwise, was memcmp-of-
+               pointers / memcmp-of-zero-bytes), and the five
+               remaining ad-hoc extent sites are all storage-byte
+               correct.  cda201a, cd2a31a-c, cd2a32a, cd4022a,
+               cd1c03a and the whole packed family pass.
+  Remaining follow-ups (no Class C coverage; need hand tests first):
+    - packed slices (elementwise copy/materialization)
+    - OUT-mode packed element actuals (copyback through a temp)
+    - dynamic packed equality tail masking (dynamic-bounds compare
+      with differing padding)
 
 FINAL STATE (current)
 ---------------------
-Class C: 1966 pass / 6 fail / 4 skip  (baseline was 1935/21/20)
+Class C: 1969 pass / 3 fail / 4 skip  (baseline was 1935/21/20)
+  - the 3 fails are exactly the officially withdrawn ACVC tests
+    (c98003b, cc1226b, ce3902b); every valid test passes
   - all 4 skips are genuine RM-conformant NOT APPLICABLE
   - zero unexplained regressions
 acats.baseline blessed at this state; run_acats.sh check gates on it.

@@ -1,6 +1,7 @@
 # Representation Design — Component Clauses and Bit Packing
 
-Status: design accepted, implementation staged (see §5).
+Status: implemented through Stage 4 (see §5); two semantic rules were
+discovered during implementation and are recorded in §3.4.
 Scope: RM 13.1–13.4 record representation clauses, `pragma PACK` on
 arrays, and every consequence they have downstream — sizing, `'SIZE`,
 `'POSITION`/`'FIRST_BIT`/`'LAST_BIT`, element and component access,
@@ -274,6 +275,35 @@ intermediate byte-materialization, no temporaries.
   exactly what `pragma PACK` trades away).
 - **Clause values are folded with the compiler's exact arithmetic**
   (§6 big integers), not `double`.
+
+### 3.4 Semantic rules discovered during implementation
+
+Two rules were forced by ACATS and by address-sensitive flakiness, and
+belong to the design:
+
+- **Padding canonicalization at conversion boundaries.** A bit-packed
+  view owns only its value bits. `UNCHECKED_CONVERSION` *into* a
+  packed view zeroes the final partial byte's padding bits (the
+  buffer's tail), and stores never touch bits outside their interval —
+  so padding read back later is deterministic. Without this, the
+  padding carries whatever the stack held, and equality through
+  scalar reinterpretation becomes ASLR-dependent (observed as a
+  50%-flaky roundtrip before the rule was adopted).
+- **Scalar extraction extends from the packed width.** Converting a
+  packed image of N bits to a scalar of B > N storage bits yields the
+  low N bits extended by the *destination's* signedness: a 7-bit
+  `-63` is `0x41`, and only an arithmetic shift pair restores `0xC1`.
+  This is the semantic the ACATS `LENGTH_CHECK` roundtrips assume,
+  and it matches what GNAT gets from converting through its N-bit
+  modular impl type.
+
+Also adopted: general element widths (a discrete element with a 'SIZE
+clause smaller than its natural size packs to that width, straddling
+byte boundaries), `pragma PACK` record layout (discrete components
+laid end to end at bit granularity, composite ones byte-aligned), and
+allocation padding of `To_Bytes(7 + W) - 1` bytes for straddling
+strides so runtime windows never leave the object — the same job
+GNAT's `Packed_Bytes2/4` alignment does.
 
 ---
 
