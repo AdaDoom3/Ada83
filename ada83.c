@@ -3901,6 +3901,8 @@ void Generate_Declaration           (Syntax_Node *node);
 void Elaborate_Dynamic_Array_Bounds (Type_Info   *elab_ty);
 void Elaborate_Dynamic_Scalar_Bounds (Type_Info  *elab_ty);
 void Generate_Object_Declaration    (Syntax_Node *node);
+bool Object_Declaration_Is_Superseded (Syntax_Node *node, Symbol *sym);
+void Generate_Instance_Global_Object_Declaration (Syntax_Node *node);
 void Emit_Object_Task_Elaboration   (Symbol *sym, Type_Info *ty);
 bool Record_Needs_Runtime_Layout (Type_Info *rec);
 bool Record_Fully_Static_Foldable (Type_Info *rec);
@@ -45572,11 +45574,19 @@ void Emit_Runtime_Array_Task_Operation (Type_Info *elem_type, uint32_t data,
 void Emit_Alloc_Task_Master_Arg (Type_Info *access_type, Type_Info *ctx_access,
                                  char *buffer, size_t buffer_len) {
   snprintf (buffer, buffer_len, "ptr null");
-  Type_Info *master_source = ctx_access ? ctx_access : access_type;
+  // A generic instance's formal access type is a VIEW of the instantiation
+  // actual; the master that elaborated the ACTUAL's declaration is the
+  // allocated task's master (RM 9.4 / RM 12.3 — c94011a), so peel views
+  // before reading the id.
+  Type_Info *master_source =
+    Peel_Generic_Actual_View (ctx_access ? ctx_access : access_type);
   uint32_t access_master_id = Type_Is_Access (master_source)
                             ? master_source->access.master_scope_id : 0;
-  if (access_master_id == 0 and Type_Is_Access (access_type))
-    access_master_id = access_type->access.master_scope_id;
+  if (access_master_id == 0 and Type_Is_Access (access_type)) {
+    Type_Info *peeled = Peel_Generic_Actual_View (access_type);
+    if (Type_Is_Access (peeled))
+      access_master_id = peeled->access.master_scope_id;
+  }
   if (access_master_id) {
     uint32_t found = Emit_Result_Instruction ("call ptr @__ada_master_find(i64 %u)\n", access_master_id);
     snprintf (buffer, buffer_len, "ptr %%t%u", found);
@@ -47050,6 +47060,87 @@ void Emit_Object_Task_Elaboration (Symbol *sym, Type_Info *ty) {
   }
 }
 
+// RM 7.4: the visible half of a deferred constant elaborates to nothing —
+// the full declaration in the private part owns storage and initialization,
+// including any default discriminant expressions (which must not be
+// evaluated at the visible declaration, c48008a). Resolution redirected
+// sym->declaration to the completion, so the superseded node identifies
+// itself by no longer being its own symbol's declaration.
+bool Object_Declaration_Is_Superseded (Syntax_Node *node, Symbol *sym) {
+  return node->object_decl.is_constant and not node->object_decl.init and
+         sym->declaration and sym->declaration != node;
+}
+
+// A tree-copy package instance's package-level objects are per-instance
+// GLOBALS even when the instantiation is nested inside a subprogram (storage
+// class must agree with Symbol_Is_Global, which classifies them global for
+// every reference path). Only the STORAGE differs from an ordinary object
+// declaration: definitions go to module level through the accumulator, and
+// every address names the global. The elaboration-point semantics — task
+// creation (RM 9.3), discriminant constraints (RM 3.7.2, c38004b),
+// component defaults (RM 3.2.1/3.9, c39006a), initialization — mirror the
+// general path through the same shared emitters; anything storage-
+// independent (the RM 4.8 allocator propagation, the RM 7.4 deferred-
+// constant skip) is handled once in Generate_Object_Declaration before the
+// paths fork, so the two can not drift apart.
+void Generate_Instance_Global_Object_Declaration (Syntax_Node *node) {
+  for (uint32_t i = 0; i < node->object_decl.names.count; i++) {
+    Syntax_Node *name_node = node->object_decl.names.items[i];
+    Symbol *sym = name_node ? name_node->symbol : NULL;
+    if (not sym) continue;
+    if (Object_Declaration_Is_Superseded (node, sym)) continue;
+    Emit_Instance_Global_Definition (sym);
+    Emit_Object_Task_Elaboration (sym, sym->type);
+
+    Type_Info *ty = sym->type;
+    if (not node->object_decl.init) {
+      if (Type_Is_Record (ty) and ty->record.has_disc_constraints) {
+        uint32_t rbase = Emit_Result_Instruction ("getelementptr i8, ptr ");
+        Emit_Symbol_Ref (sym);
+        Emit (", i64 0\n");
+        Emit_Store_Disc_Values (ty, rbase, true);
+      }
+      if (Type_Is_Record (ty) and Type_Has_Component_Defaults (ty)) {
+        uint32_t dbase = Emit_Result_Instruction ("getelementptr i8, ptr ");
+        Emit_Symbol_Ref (sym);
+        Emit (", i64 0\n");
+        Emit_Init_Record_Defaults (ty, dbase);
+      }
+      continue;
+    }
+
+    // Initialized: composites copy into the global, scalars store.
+    if (ty and (Type_Is_Record (ty) or
+                (Type_Is_Constrained_Array (ty) and
+                 not Type_Has_Dynamic_Bounds (ty)))) {
+      uint32_t destination = Emit_Result_Instruction ("getelementptr i8, ptr ");
+      Emit_Symbol_Ref (sym);
+      Emit (", i64 0\n");
+      uint32_t size_temp =
+        Emit_Static_Int (ty->size ? ty->size : 1, Byte_Size_Rep ()).reg;
+      if (Type_Is_Constrained_Array (ty)) {
+        LLVM_Value source = Generate_Expression (node->object_decl.init);
+        if (LLVM_Rep_Is_Fat_Pointer (source.rep))
+          Emit_Fat_To_Array_Memcpy (Fat_Ptr_As_Value (source.reg).reg,
+                                    destination, ty);
+        else
+          Emit_Memcpy (destination, source.reg, size_temp);
+      } else {
+        Emit_Memcpy (destination,
+                     Generate_Composite_Address (node->object_decl.init),
+                     size_temp);
+      }
+    } else {
+      LLVM_Value value = Generate_Expression (node->object_decl.init);
+      LLVM_Rep rep = ty ? Type_To_Rep (ty) : value.rep;
+      uint32_t stored = Emit_Convert (value.reg, value.rep, rep).reg;
+      Emit ("  store %s %%t%u, ptr ", LLVM_Rep_To_String (rep), stored);
+      Emit_Symbol_Ref (sym);
+      Emit ("\n");
+    }
+  }
+}
+
 void Generate_Object_Declaration (Syntax_Node *node) {
   bool use_frame = cg->current_nesting_level > 0;
   bool is_package_level = (cg->current_function == NULL);
@@ -47124,90 +47215,33 @@ void Generate_Object_Declaration (Syntax_Node *node) {
   // Emit_Single_Bound reuses those temps and the bound expression runs exactly
   // once per name.
 
-  // A tree-copy package instance's package-level objects are per-instance
-  // GLOBALS even when the instantiation is nested inside a subprogram
-  // (storage class must agree with Symbol_Is_Global, which classifies them
-  // global for every reference path). Their definitions go to module level
-  // through the accumulator; initialization runs here, at the elaboration
-  // point, exactly like any declaration's.
+  // RM 4.8 / 3.10: an initializing allocator builds its value at the
+  // declared access subtype's SHAPE (fat vs thin), checks the designated
+  // constraint, and attaches any allocated task to the master that
+  // elaborated the access type's declaration (RM 9.4, c94011a). Storage
+  // class plays no part — propagate once, ahead of the fork below, so no
+  // storage path can miss it. (Multi-name declarations share one declared
+  // type, so the first name's suffices.)
+  {
+    Syntax_Node *first = node->object_decl.names.count
+      ? node->object_decl.names.items[0] : NULL;
+    Type_Info *declared = (first and first->symbol) ? first->symbol->type : NULL;
+    if (node->object_decl.init and
+        node->object_decl.init->kind == NK_ALLOCATOR and
+        Type_Is_Access (declared))
+      node->object_decl.init->allocator.target_access_type = declared;
+  }
+
+  // Instance-global storage forks off here; semantics shared with the
+  // general path live in the emitters both call (and in the hoisted code
+  // above), never in copies.
   if (not is_package_level) {
     Syntax_Node *first_name = node->object_decl.names.count
       ? node->object_decl.names.items[0] : NULL;
     Symbol *first_sym = first_name ? first_name->symbol : NULL;
     if (first_sym and first_sym->is_package_level and
         Symbol_Is_Global (first_sym)) {
-      for (uint32_t i = 0; i < node->object_decl.names.count; i++) {
-        Syntax_Node *name_node = node->object_decl.names.items[i];
-        Symbol *sym = name_node ? name_node->symbol : NULL;
-        if (not sym) continue;
-        Emit_Instance_Global_Definition (sym);
-        // A task object (or a composite with task components) declared at an
-        // instance's package level: create its TCB(s) into the global and
-        // register them for activation at the instance body's `begin`
-        // (RM 9.3). The general per-object path below never runs for these
-        // globals, so their tasks would otherwise never be created.
-        Emit_Object_Task_Elaboration (sym, sym->type);
-        // No initializer: a constrained discriminated record instance object
-        // still elaborates its discriminant constraint into the global
-        // (RM 3.7.2), exactly as a non-instance object declaration does — the
-        // instance path otherwise leaves the discriminant zero, which then
-        // trips the assignment discriminant check (c38004b).
-        if (not node->object_decl.init) {
-          Type_Info *ty = sym->type;
-          if (Type_Is_Record (ty) and ty->record.has_disc_constraints) {
-            uint32_t rbase = Emit_Result_Instruction ("getelementptr i8, ptr ");
-            Emit_Symbol_Ref (sym);
-            Emit (", i64 0\n");
-            Emit_Store_Disc_Values (ty, rbase, true);
-          }
-          // RM 3.2.1: an instance's package-level record object with no explicit
-          // initializer still runs its component defaults at elaboration, as the
-          // non-instance path does. A default like COMP := FUN calls FUN, and if
-          // FUN's body is not yet elaborated that call raises PROGRAM_ERROR
-          // (RM 3.9, c39006a); the instance path had skipped defaults entirely.
-          if (Type_Is_Record (ty) and Type_Has_Component_Defaults (ty)) {
-            uint32_t dbase = Emit_Result_Instruction ("getelementptr i8, ptr ");
-            Emit_Symbol_Ref (sym);
-            Emit (", i64 0\n");
-            Emit_Init_Record_Defaults (ty, dbase);
-          }
-          continue;
-        }
-        if (node->object_decl.init) {
-          Type_Info *ty = sym->type;
-          if (ty and (Type_Is_Record (ty) or
-                      (Type_Is_Constrained_Array (ty) and
-                       not Type_Has_Dynamic_Bounds (ty)))) {
-            uint32_t destination = Emit_Result_Instruction ("getelementptr i8, ptr ");
-            Emit_Symbol_Ref (sym);
-            Emit (", i64 0\n");
-            if (Type_Is_Constrained_Array (ty)) {
-              LLVM_Value source = Generate_Expression (node->object_decl.init);
-              if (LLVM_Rep_Is_Fat_Pointer (source.rep)) {
-                Emit_Fat_To_Array_Memcpy (Fat_Ptr_As_Value (source.reg).reg,
-                                          destination, ty);
-              } else {
-                uint32_t size_temp =
-                  Emit_Static_Int (ty->size ? ty->size : 1, Byte_Size_Rep ()).reg;
-                Emit_Memcpy (destination, source.reg, size_temp);
-              }
-            } else {
-              uint32_t source_addr =
-                Generate_Composite_Address (node->object_decl.init);
-              uint32_t size_temp =
-                Emit_Static_Int (ty->size ? ty->size : 1, Byte_Size_Rep ()).reg;
-              Emit_Memcpy (destination, source_addr, size_temp);
-            }
-          } else {
-            LLVM_Value value = Generate_Expression (node->object_decl.init);
-            LLVM_Rep rep = ty ? Type_To_Rep (ty) : value.rep;
-            uint32_t stored = Emit_Convert (value.reg, value.rep, rep).reg;
-            Emit ("  store %s %%t%u, ptr ", LLVM_Rep_To_String (rep), stored);
-            Emit_Symbol_Ref (sym);
-            Emit ("\n");
-          }
-        }
-      }
+      Generate_Instance_Global_Object_Declaration (node);
       return;
     }
   }
@@ -47231,14 +47265,7 @@ void Generate_Object_Declaration (Syntax_Node *node) {
     Symbol *sym = name->symbol;
     if (not sym) continue;
 
-    // RM 7.4: a deferred constant declaration elaborates to nothing — the
-    // full declaration in the private part owns storage and initialization,
-    // including any default discriminant expressions (which must not be
-    // evaluated here, c48008a). Resolution redirected sym->declaration to
-    // the completion, so the superseded visible node identifies itself.
-    if (node->object_decl.is_constant and not node->object_decl.init and
-        sym->declaration and sym->declaration != node)
-      continue;
+    if (Object_Declaration_Is_Superseded (node, sym)) continue;  // RM 7.4
 
     // RM 3.2.1: For multi-name declarations (S1, S2 : T := ...),                                   
     // each name gets independent evaluation of the subtype indication                              
@@ -47267,13 +47294,6 @@ void Generate_Object_Declaration (Syntax_Node *node) {
     // subtype indication — fold the discriminant into the record's dependent
     // components now so the allocation and every later use see the real size.
     Emit_Constrained_Disc_Record_Size_Descriptor (ty);
-
-    // RM 4.8 / 3.10: propagate the declared access subtype to an initializing
-    // allocator so it builds the value at the declared SHAPE (fat vs thin) and
-    // checks the designated constraint — same as assignment / return / param.
-    if (node->object_decl.init and
-        node->object_decl.init->kind == NK_ALLOCATOR and Type_Is_Access (ty))
-      node->object_decl.init->allocator.target_access_type = ty;
 
     Syntax_Node **decl_disc_exprs = NULL;
     uint32_t decl_disc_count = 0;
@@ -53341,6 +53361,18 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   Emit ("  %%prev = load ptr, ptr %%link\n");
   Emit ("  %%_s = call i32 @pthread_setspecific(i32 %%k, ptr %%prev)\n");
   Emit_Void_Function_Epilogue (true);
+
+  // Create every per-thread key eagerly, called from main before any task
+  // thread exists. The lazy helpers' unsynchronized double-checked init is
+  // only safe once this has run; it stays in them solely so a raise during
+  // pre-main constructors cannot read an uncreated key.
+  Emit ("define linkonce_odr void @__ada_tls_init() {\n");
+  Emit ("  %%_1 = call i32 @__ada_eh_key()\n");
+  Emit ("  %%_2 = call i32 @__ada_exc_key()\n");
+  Emit ("  %%_3 = call i32 @__ada_master_key()\n");
+  Emit ("  %%_4 = call i32 @__ada_self_key()\n");
+  Emit ("  ret void\n");
+  Emit ("}\n\n");
 
   // Lazy pthread-TLS key for the per-thread current-exception id.
   Emit ("define linkonce_odr i32 @__ada_exc_key() {\n");
@@ -59839,6 +59871,15 @@ void Compile_File (const char *input_path, const char *output_path) {
     // so multi-module links never collide on it.
     Emit ("@__library_anchors = private global i64 0\n");
     Emit ("define i32 @main() {\n");
+
+    // Create every per-thread pthread key while the program is still
+    // single-threaded. The lazy key helpers double-check an init flag
+    // WITHOUT synchronization — two task threads racing the first raise
+    // each ran pthread_key_create, the loser's key orphaning the winner's
+    // thread-specific values (a raise then read exception id 0 and fell
+    // into WHEN OTHERS, c95022b under load). After this call the lazy
+    // paths always see the flag set and never create.
+    Emit ("  call void @__ada_tls_init()\n");
 
     // Call elaboration functions in computed dependency order.
     // Prefer the graph-computed order; fall back to source order.
