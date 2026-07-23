@@ -2109,8 +2109,12 @@ typedef struct {
   String_Slice *declared_symbol_names;
   uint32_t      declared_symbol_name_count;
   uint32_t      declared_symbol_name_capacity;
-  Symbol  *library_elab_flag_syms[64];
+  Symbol  *library_elab_flag_syms[512];
   uint32_t library_elab_flag_count;
+
+  String_Slice *elab_flag_names;
+  uint32_t      elab_flag_name_count;
+  uint32_t      elab_flag_name_capacity;
 
   Symbol   *address_markers[256];
   uint32_t  address_marker_count;
@@ -2266,6 +2270,8 @@ void Emit_Stack_Probe_Dynamic               (uint32_t size_reg_i64);
 void Emit_Component_Constraint_Check (Type_Info *operand_component,
                                       Type_Info *target_component);
 
+void Emit_Elab_Flag_Global  (Symbol *sym);
+void Emit_Elab_Flag_Global_Named (String_Slice mangled);
 void Emit_Elaboration_Check (Symbol *callee);
 
 void Emit_Range_Check_With_Raise (uint32_t    val,
@@ -3272,6 +3278,9 @@ uint32_t          Elab_Register_Unit   (String_Slice name,
 Elab_Order_Status Elab_Compute_Order    (void);
 uint32_t          Elab_Get_Order_Count  (void);
 Symbol           *Elab_Get_Order_Symbol (uint32_t index);
+String_Slice      Elab_Get_Order_Body_Name (uint32_t index);
+bool              Elab_Body_Forced_Before (String_Slice callee,
+                                           String_Slice caller);
 bool              Elab_Needs_Elab_Call  (uint32_t index);
 void              Elab_Register_Context_Dependencies (Syntax_Node *compilation_unit);
 void              Elab_Note_Invocation (Symbol *caller_unit, Symbol *callee);
@@ -20674,20 +20683,67 @@ void Emit_Raise_Constraint_Error_When (LLVM_I1 condition, const char *comment) {
   Emit_Label_Here (continue_label);
 }
 
+/* Every .elab flag is one linkonce_odr i1: checker, spec reset, and
+   body setter may sit in different compilations, so each module that
+   touches the flag carries a mergeable copy (at most one per module,
+   deduplicated by mangled name) and llvm-link folds the copies into a
+   single storage location. */
+void Emit_Elab_Flag_Global_Named (String_Slice mangled) {
+  for (uint32_t i = 0; i < cg->elab_flag_name_count; i++)
+    if (Slice_Equal_Ignore_Case (cg->elab_flag_names[i], mangled)) return;
+  if (cg->elab_flag_name_count == cg->elab_flag_name_capacity) {
+    uint32_t grown_capacity =
+      cg->elab_flag_name_capacity ? cg->elab_flag_name_capacity * 2 : 32;
+    String_Slice *grown =
+      Arena_Allocate (grown_capacity * sizeof (String_Slice));
+    for (uint32_t i = 0; i < cg->elab_flag_name_count; i++)
+      grown[i] = cg->elab_flag_names[i];
+    cg->elab_flag_names = grown;
+    cg->elab_flag_name_capacity = grown_capacity;
+  }
+  cg->elab_flag_names[cg->elab_flag_name_count++] = Slice_Duplicate (mangled);
+  Emit_String_Const ("@%.*s.elab = linkonce_odr global i1 false\n",
+                     (int)mangled.length, mangled.data);
+}
+
+void Emit_Elab_Flag_Global (Symbol *sym) {
+  if (sym->elab_flag_extern_noted) return;
+  sym->elab_flag_extern_noted = true;
+  Emit_Elab_Flag_Global_Named (Symbol_Mangle_Name (sym));
+}
+
 uint32_t Emit_Elaboration_Flag_Load (Symbol *callee) {
   if (not callee or (callee->elab_flag_id == 0 and not callee->needs_elab_flag))
     return 0;
   String_Slice ef = Symbol_Mangle_Name (callee);
-  if (callee->elab_flag_id == 0 and not callee->elab_flag_extern_noted) {
-    callee->elab_flag_extern_noted = true;
-    Emit_String_Const ("@%.*s.elab = external global i1\n",
-                       (int)ef.length, ef.data);
-  }
+  Emit_Elab_Flag_Global (callee);
   return Emit_Result_Instruction ("load i1, ptr @%.*s.elab  ; access-before-elaboration flag of %.*s\n", (int)ef.length, ef.data, (int)callee->name.length, callee->name.data);
 }
 
 void Emit_Elaboration_Check (Symbol *callee) {
-  uint32_t flag = Emit_Elaboration_Flag_Load (callee);
+  if (not callee) return;
+  Symbol *guard = callee;
+  /* Elaboration code of one library package calling into another: no
+     static rule guarantees the callee's body elaborated first unless a
+     pragma ELABORATE forces it, so guard on the callee's package body
+     flag (RM 3.9). */
+  if (guard->elab_flag_id == 0 and not guard->needs_elab_flag and
+      Symbol_Is_Subprogram (callee) and
+      cg->current_function and
+      cg->current_function->kind == SYMBOL_PACKAGE) {
+    Symbol *callee_root = callee;
+    while (callee_root->parent) callee_root = callee_root->parent;
+    Symbol *caller_root = cg->current_function;
+    while (caller_root->parent) caller_root = caller_root->parent;
+    if (callee_root != caller_root and
+        callee_root->kind == SYMBOL_PACKAGE and
+        not callee_root->is_predefined_unit and
+        not Elab_Body_Forced_Before (callee_root->name, caller_root->name)) {
+      callee_root->needs_elab_flag = true;
+      guard = callee_root;
+    }
+  }
+  uint32_t flag = Emit_Elaboration_Flag_Load (guard);
   if (flag)
     Emit_Check_With_Raise_Named (flag, false, "program_error",
                                  "subprogram body not yet elaborated (RM 3.9)");
@@ -38352,12 +38408,9 @@ void Generate_Declaration (Syntax_Node *node) {
       else if (node->symbol and cg->current_function) {
         Symbol *s = node->symbol;
         String_Slice ef = Symbol_Mangle_Name (s);
-        if (s->elab_flag_id == 0) {
+        if (s->elab_flag_id == 0)
           s->elab_flag_id = ++cg->next_elab_flag_id;
-          Emit_String_Const ("@%.*s.elab = global i1 false  ; %.*s\n",
-                             (int)ef.length, ef.data,
-                             (int)s->name.length, s->name.data);
-        }
+        Emit_Elab_Flag_Global (s);
         Emit ("  store i1 false, ptr @%.*s.elab  ; reset %.*s elaboration flag\n",
               (int)ef.length, ef.data, (int)s->name.length, s->name.data);
       }
@@ -38506,7 +38559,11 @@ void Generate_Declaration (Syntax_Node *node) {
     case NK_PROCEDURE_BODY:
     case NK_FUNCTION_BODY:
 
-      if (node->symbol and node->symbol->elab_flag_id != 0) {
+      /* Whether any compilation checks this body's flag is unknowable
+         here, so every body sets it (the checker may live in another
+         module — the ca1002 class of failures). */
+      if (node->symbol) {
+        Emit_Elab_Flag_Global (node->symbol);
         if (cg->current_function) {
           String_Slice ef = Symbol_Mangle_Name (node->symbol);
           Emit ("  store i1 true, ptr @%.*s.elab  ; %.*s body elaborated\n",
@@ -38529,7 +38586,8 @@ void Generate_Declaration (Syntax_Node *node) {
       break;
     case NK_PACKAGE_BODY:
 
-      if (node->symbol and node->symbol->elab_flag_id != 0) {
+      if (node->symbol) {
+        Emit_Elab_Flag_Global (node->symbol);
         if (cg->current_function) {
           String_Slice ef = Symbol_Mangle_Name (node->symbol);
           Emit ("  store i1 true, ptr @%.*s.elab  ; %.*s body elaborated\n",
@@ -38755,6 +38813,15 @@ void Generate_Declaration (Syntax_Node *node) {
                                       &node->package_body.handlers,
                                       NULL, UINT32_MAX);
         if (not cg->block_terminated) {
+          /* Elaboration of the body completed (RM 3.9) — a raise that
+             escapes the handlers leaves the flag false. */
+          if (pkg_sym) {
+            Emit_Elab_Flag_Global (pkg_sym);
+            String_Slice ef = Symbol_Mangle_Name (pkg_sym);
+            Emit ("  store i1 true, ptr @%.*s.elab  ; %.*s body elaborated\n",
+                  (int)ef.length, ef.data,
+                  (int)pkg_sym->name.length, pkg_sym->name.data);
+          }
           Emit ("  ret void\n");
         }
         Emit ("}\n\n");
@@ -38883,12 +38950,9 @@ void Generate_Declaration (Syntax_Node *node) {
 
       if (node->symbol and node->symbol->generic_body and cg->current_function) {
         String_Slice ef = Symbol_Mangle_Name (node->symbol);
-        if (node->symbol->elab_flag_id == 0) {
+        if (node->symbol->elab_flag_id == 0)
           node->symbol->elab_flag_id = ++cg->next_elab_flag_id;
-          Emit_String_Const ("@%.*s.elab = global i1 false  ; generic %.*s\n",
-                             (int)ef.length, ef.data,
-                             (int)node->symbol->name.length, node->symbol->name.data);
-        }
+        Emit_Elab_Flag_Global (node->symbol);
         Emit ("  store i1 false, ptr @%.*s.elab  ; reset generic %.*s elaboration flag\n",
               (int)ef.length, ef.data,
               (int)node->symbol->name.length, node->symbol->name.data);
@@ -38901,12 +38965,9 @@ void Generate_Declaration (Syntax_Node *node) {
 
       if (node->task_spec.is_type and node->symbol and cg->current_function) {
         String_Slice ef = Symbol_Mangle_Name (node->symbol);
-        if (node->symbol->elab_flag_id == 0) {
+        if (node->symbol->elab_flag_id == 0)
           node->symbol->elab_flag_id = ++cg->next_elab_flag_id;
-          Emit_String_Const ("@%.*s.elab = global i1 false  ; task %.*s\n",
-                             (int)ef.length, ef.data,
-                             (int)node->symbol->name.length, node->symbol->name.data);
-        }
+        Emit_Elab_Flag_Global (node->symbol);
         Emit ("  store i1 false, ptr @%.*s.elab  ; reset task %.*s elaboration flag\n",
               (int)ef.length, ef.data,
               (int)node->symbol->name.length, node->symbol->name.data);
@@ -39018,8 +39079,9 @@ void Generate_Declaration (Syntax_Node *node) {
       break;
     case NK_TASK_BODY:
 
-      if (node->symbol and node->symbol->elab_flag_id != 0) {
+      if (node->symbol and cg->current_function) {
         String_Slice ef = Symbol_Mangle_Name (node->symbol);
+        Emit_Elab_Flag_Global (node->symbol);
         Emit ("  store i1 true, ptr @%.*s.elab  ; task %.*s body elaborated\n",
               (int)ef.length, ef.data,
               (int)node->symbol->name.length, node->symbol->name.data);
@@ -43899,6 +43961,24 @@ void Elab_Register_Context_Dependencies (Syntax_Node *compilation_unit) {
   }
 }
 
+/* True when a pragma ELABORATE / ELABORATE_ALL edge forces the named
+   unit's body ahead of the caller unit's body, i.e. a call between
+   their elaborations is statically safe (RM 10.5). */
+bool Elab_Body_Forced_Before (String_Slice callee, String_Slice caller) {
+  Elab_Init ();
+  uint32_t callee_body = Elab_Find_Vertex (&g_elab_graph, callee, UNIT_BODY);
+  uint32_t caller_body = Elab_Find_Vertex (&g_elab_graph, caller, UNIT_BODY);
+  if (callee_body == 0 or caller_body == 0) return false;
+  for (uint32_t i = 0; i < g_elab_graph.edge_count; i++) {
+    const Elab_Edge *edge = &g_elab_graph.edges[i];
+    if (edge->pred_vertex_id == callee_body and
+        edge->succ_vertex_id == caller_body and
+        (edge->kind == EDGE_ELABORATE or edge->kind == EDGE_ELABORATE_ALL))
+      return true;
+  }
+  return false;
+}
+
 Elab_Order_Status Elab_Compute_Order (void) {
   Elab_Init ();
 
@@ -43917,6 +43997,14 @@ Symbol *Elab_Get_Order_Symbol(uint32_t index) {
   const Elab_Vertex *v = g_elab_graph.order[index];
   return v ? v->symbol : NULL;
 }
+String_Slice Elab_Get_Order_Body_Name (uint32_t index) {
+  if (index >= g_elab_graph.order_count) return (String_Slice){ NULL, 0 };
+  const Elab_Vertex *v = g_elab_graph.order[index];
+  if (not v or (v->kind != UNIT_BODY and v->kind != UNIT_BODY_ONLY))
+    return (String_Slice){ NULL, 0 };
+  return v->name;
+}
+
 bool Elab_Needs_Elab_Call (uint32_t index) {
   if (index >= g_elab_graph.order_count) return false;
   const Elab_Vertex *v = g_elab_graph.order[index];
@@ -45851,18 +45939,49 @@ void Compile_File (const char *input_path, const char *output_path) {
         cg->library_elab_flag_syms[k] = NULL;
       }
     }
+    /* A body vertex reaching its order position means the unit's body
+       elaboration completed there — possibly trivially, with no elab
+       function to call (a precompiled or statement-free body). The
+       flag store follows the call so checks made DURING elaboration
+       observe the truth (RM 3.9). */
+    void Emit_Order_Position_Flag (uint32_t i) {
+      String_Slice body_name = Elab_Get_Order_Body_Name (i);
+      if (not body_name.length) return;
+      Symbol *vertex_sym = Elab_Get_Order_Symbol (i);
+      /* Only library-level bodies elaborate at an order position; a
+         nested body elaborates inside its parent, and a name with no
+         symbol must at least be a compiled library unit (ALI found). */
+      if (vertex_sym and vertex_sym->parent) return;
+      String_Slice mangled;
+      char lowered[256];
+      if (vertex_sym) {
+        mangled = Symbol_Mangle_Name (vertex_sym);
+      } else {
+        uint32_t n = body_name.length < sizeof lowered
+                   ? body_name.length : (uint32_t)sizeof lowered - 1;
+        for (uint32_t k = 0; k < n; k++) {
+          char c = body_name.data[k];
+          lowered[k] = (c >= 'A' and c <= 'Z') ? c + 32 : c;
+        }
+        mangled = (String_Slice){ lowered, n };
+      }
+      Emit_Elab_Flag_Global_Named (mangled);
+      Emit ("  store i1 true, ptr @%.*s.elab  ; %.*s body elaborated\n",
+            (int)mangled.length, mangled.data,
+            (int)body_name.length, body_name.data);
+    }
     if (elab_order_count > 0 and elab_status == ELAB_ORDER_OK) {
       for (uint32_t i = 0; i < elab_order_count; i++) {
         Symbol *order_sym = Elab_Get_Order_Symbol (i);
+        if (order_sym and Elab_Needs_Elab_Call (i)) {
+          for (uint32_t k = 0; k < cg->elab_func_count; k++)
+            if (cg->elab_funcs[k] == order_sym) elab_called[k] = true;
+          Emit ("  call void @");
+          Emit_Symbol_Name (order_sym);
+          Emit ("___elab()\n");
+        }
+        Emit_Order_Position_Flag (i);
         if (order_sym) Emit_Library_Elab_Flag_Stores (order_sym);
-        if (not Elab_Needs_Elab_Call (i)) continue;
-        Symbol *sym = order_sym;
-        if (not sym) continue;
-        for (uint32_t k = 0; k < cg->elab_func_count; k++)
-          if (cg->elab_funcs[k] == sym) elab_called[k] = true;
-        Emit ("  call void @");
-        Emit_Symbol_Name (sym);
-        Emit ("___elab()\n");
       }
 
       for (uint32_t i = 0; i < cg->elab_func_count; i++) {
@@ -45870,6 +45989,7 @@ void Compile_File (const char *input_path, const char *output_path) {
         Emit ("  call void @");
         Emit_Symbol_Name (cg->elab_funcs[i]);
         Emit ("___elab()\n");
+        Emit_Library_Elab_Flag_Stores (cg->elab_funcs[i]);
       }
 
     } else {
@@ -45877,6 +45997,7 @@ void Compile_File (const char *input_path, const char *output_path) {
         Emit ("  call void @");
         Emit_Symbol_Name (cg->elab_funcs[i]);
         Emit ("___elab()\n");
+        Emit_Library_Elab_Flag_Stores (cg->elab_funcs[i]);
       }
     }
     Emit_Library_Elab_Flag_Stores (NULL);
@@ -45904,6 +46025,11 @@ void Compile_File (const char *input_path, const char *output_path) {
     Emit ("  call void @exit (i32 0)\n");
     Emit ("  ret i32 0\n");
     Emit ("}\n");
+
+    if (cg->string_const_size > 0) {
+      fprintf (cg->output, "%s", cg->string_const_buffer);
+      cg->string_const_size = 0;
+    }
   }
 
   if (cg->exc_ref_count > 0) {
