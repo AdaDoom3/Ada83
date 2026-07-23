@@ -17949,6 +17949,7 @@ String_Slice Unit_Simple_Name (Syntax_Node *unit) {
     case NK_FUNCTION_BODY:  return Get_Subprogram_Name (unit);
     case NK_TASK_BODY:      return unit->task_body.name;
     case NK_GENERIC_DECL:   return Unit_Simple_Name (unit->generic_decl.unit);
+    case NK_GENERIC_INST:   return unit->generic_inst.instance_name;
     default:                return (String_Slice){ NULL, 0 };
   }
 }
@@ -38553,6 +38554,11 @@ void Generate_Declaration (Syntax_Node *node) {
           Emit_Symbol_Name (node->symbol);
           Emit ("___elab(%s)  ; SEPARATE package body\n",
                 Task_Parent_Frame_Argument ());
+        } else {
+          /* Library level: the call belongs inside the enclosing
+             unit's elaboration function, emitted later. */
+          Defer_Library_Elaboration (PENDING_ELABORATION_DECLARATION_KIND,
+                                     NULL, node);
         }
         break;
       }
@@ -38608,7 +38614,10 @@ void Generate_Declaration (Syntax_Node *node) {
           pkg_sym->declaration->kind == NK_PACKAGE_SPEC) {
           Syntax_Node *spec = pkg_sym->declaration;
 
-          bool body_owns_globals = Package_Spec_Requires_Body (spec);
+          /* A subunit body's spec globals live in the parent unit's
+             module; here they are only merged, never owned. */
+          bool body_owns_globals = Package_Spec_Requires_Body (spec)
+                               and not cg->subunit_parent;
           bool saved_loaded_mode = cg->generating_loaded_unit;
           if (not body_owns_globals) cg->generating_loaded_unit = true;
           Generate_Declaration_List (&spec->package_spec.visible_decls);
@@ -42528,6 +42537,11 @@ void ALI_Collect_Unit (ALI_Info *ali, Syntax_Node *cu,
       }
       u->is_body = false;
       break;
+    case NK_GENERIC_INST:
+      u->unit_name = unit->generic_inst.instance_name;
+      u->is_body = false;
+      u->is_package = unit->generic_inst.unit_kind == TK_PACKAGE;
+      break;
     default:
       u->unit_name = (String_Slice){"UNKNOWN", 7};
       u->is_body = false;
@@ -44052,15 +44066,29 @@ char *Catalog_Read_Source (String_Slice name, Catalog_Unit_Kind kind) {
   return Read_File_Simple (path);
 }
 
-char *Lookup_Path(String_Slice name) {
+char *Lookup_Path (String_Slice name) {
   Lookup_Path_Resolved_From_Rts = false;
-  char *from_catalog = Catalog_Read_Source (name, CATALOG_UNIT_SPEC);
-  if (from_catalog) return from_catalog;
-
+  Catalog_Entry *spec_entry = Library_Catalog_Find (name, CATALOG_UNIT_SPEC);
   Catalog_Entry *body_entry = Library_Catalog_Find (name, CATALOG_UNIT_BODY);
+  if (spec_entry and spec_entry->source_file.length == 0) spec_entry = NULL;
+  if (body_entry and body_entry->source_file.length == 0) body_entry = NULL;
+
+  /* RM 10.1: a library subprogram body submitted after a complete
+     spec-only unit of the same name (an instantiation or a bodyless
+     spec) replaces that unit; a spec that requires a body is instead
+     completed by it. */
+  bool body_replaces_spec =
+    spec_entry and body_entry and body_entry->is_subprogram and
+    not spec_entry->requires_body and
+    body_entry->recorded_at > spec_entry->recorded_at;
+
+  if (spec_entry and not body_replaces_spec) {
+    char *src = Catalog_Read_Source (name, CATALOG_UNIT_SPEC);
+    if (src) return src;
+  }
   if (body_entry and body_entry->is_subprogram) {
-    from_catalog = Catalog_Read_Source (name, CATALOG_UNIT_BODY);
-    if (from_catalog) return from_catalog;
+    char *src = Catalog_Read_Source (name, CATALOG_UNIT_BODY);
+    if (src) return src;
   }
   return Lookup_Path_Ext (name, "ads");
 }
@@ -44602,7 +44630,8 @@ void Load_Package_Spec (String_Slice name, char *src) {
 
   Symbol *existing = Symbol_Find (name);
   if (existing and existing->declaration and
-      (existing->kind == SYMBOL_PACKAGE or existing->kind == SYMBOL_GENERIC)) {
+      (existing->kind == SYMBOL_PACKAGE or existing->kind == SYMBOL_GENERIC or
+       existing->declaration->kind == NK_GENERIC_INST)) {
     return;
   }
 
@@ -44731,8 +44760,20 @@ void Load_Package_Spec (String_Slice name, char *src) {
           Populate_Package_Exports (sym, inner);
 
           Resolve_Declaration_List (&inner->package_spec.private_decls);
+          Resolve_Generic_Formal_Subprogram_Defaults (
+            &unit->generic_decl.formals);
           Symbol_Manager_Pop_Scope ();
         }
+      }
+    }
+    else if (unit->kind == NK_GENERIC_INST) {
+
+      Resolve_Context_Use_Clauses (cu->compilation_unit.context);
+      Resolve_Declaration (unit);
+
+      if (not Body_Already_Loaded (name)) {
+        Mark_Body_Loaded (name);
+        Queue_Loaded_Body (cu);
       }
     }
   }
@@ -44889,74 +44930,7 @@ void Load_Package_Spec (String_Slice name, char *src) {
         Symbol *pkg_sym = Symbol_Find (body_name);
 
         if (pkg_sym and (pkg_sym->kind == SYMBOL_PACKAGE or pkg_sym->kind == SYMBOL_GENERIC)) {
-          body_unit->symbol = pkg_sym;
-
-          if (pkg_sym->kind == SYMBOL_GENERIC) {
-            pkg_sym->generic_body = body_unit;
-          }
-
-          Symbol_Manager_Push_Scope (pkg_sym);
-
-          Syntax_Node *spec = pkg_sym->declaration;
-          if (spec and spec->kind == NK_GENERIC_DECL) {
-            Install_Generic_Formal_Symbols (pkg_sym);
-            spec = spec->generic_decl.unit;
-          }
-          if (spec and spec->kind == NK_PACKAGE_SPEC) {
-            #define INSTALL_DECL_SYMBOLS(decl) do { \
-              if ((decl)->symbol) Symbol_Add ((decl)->symbol); \
-              if ((decl)->kind == NK_OBJECT_DECL) { \
-                for (uint32_t k = 0; k < (decl)->object_decl.names.count; k++) { \
-                  Syntax_Node *n = (decl)->object_decl.names.items[k]; \
-                  if (n->symbol) Symbol_Add (n->symbol); \
-                } \
-              } \
-              if ((decl)->kind == NK_EXCEPTION_DECL) { \
-                for (uint32_t k = 0; k < (decl)->exception_decl.names.count; k++) { \
-                  Syntax_Node *n = (decl)->exception_decl.names.items[k]; \
-                  if (n->symbol) Symbol_Add (n->symbol); \
-                } \
-              } \
-              if ((decl)->kind == NK_TYPE_DECL and (decl)->type_decl.definition and \
-                (decl)->type_decl.definition->kind == NK_ENUMERATION_TYPE) { \
-                Node_List *lits = &(decl)->type_decl.definition->enum_type.literals; \
-                for (uint32_t k = 0; k < lits->count; k++) { \
-                  if (lits->items[k]->symbol) Symbol_Add (lits->items[k]->symbol); \
-                } \
-              } \
-            } while (0)
-
-            for (uint32_t i = 0; i < spec->package_spec.visible_decls.count; i++) {
-              Syntax_Node *decl = spec->package_spec.visible_decls.items[i];
-              INSTALL_DECL_SYMBOLS (decl);
-            }
-
-            for (uint32_t i = 0; i < spec->package_spec.private_decls.count; i++) {
-              Syntax_Node *decl = spec->package_spec.private_decls.items[i];
-              INSTALL_DECL_SYMBOLS (decl);
-            }
-            #undef INSTALL_DECL_SYMBOLS
-          }
-          if (pkg_sym->kind == SYMBOL_GENERIC and pkg_sym->declaration and
-              pkg_sym->declaration->kind == NK_GENERIC_DECL)
-            Resolve_Generic_Formal_Subprogram_Defaults (
-              &pkg_sym->declaration->generic_decl.formals);
-
-          Resolve_Declaration_List (&body_unit->package_body.declarations);
-          Mark_Package_Level_Objects (&body_unit->package_body.declarations);
-
-          Freeze_Declaration_List (&body_unit->package_body.declarations);
-          Resolve_Statement_List (&body_unit->package_body.statements);
-          for (uint32_t hi = 0; hi < body_unit->package_body.handlers.count; hi++) {
-            Syntax_Node *handler = body_unit->package_body.handlers.items[hi];
-            if (handler) {
-              for (uint32_t ei = 0; ei < handler->handler.exceptions.count; ei++)
-                Resolve_Expression (handler->handler.exceptions.items[ei]);
-              Resolve_Statement_List (&handler->handler.statements);
-            }
-          }
-          Symbol_Manager_Pop_Scope ();
-
+          Resolve_Declaration (body_unit);
           Queue_Loaded_Body (body_cu);
         }
       }

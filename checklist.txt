@@ -31,8 +31,31 @@ METHOD
 
 STATUS LOG
 ----------
-[ ] Baseline Class C run — in progress (enumerating skips)
+[x] Baseline Class C run: 1935 pass / 21 fail / 20 skip (of 1976)
+    results: test_results/c-20260723-115818-3689
 
-SKIP GROUPS (to be filled from baseline run)
+SKIP GROUPS (baseline c-20260723-115818)
 --------------------------------------------
-(pending)
+G1  Multi-file library management (§14/§15/§17) — 12 tests, biggest root cause
+    COMPILE: ca1013a6m ca1020d3m ca2002a0m ca3002a2m ca3009a6m ca5003b5m
+    BIND:    ca1009a4m ca1105b3m ca1107a1m ca3004f4m c39006f3m c86004b2m
+    [ ] root-cause each; expect shared causes in subunit ('separate')
+        resolution and cross-file library visibility
+
+G2  Chapter 8/10 name visibility — 3 tests
+    [ ] c86002a2m  COMPILE: type mismatch @36
+    [ ] c86002b2m  COMPILE: cannot resolve @82
+    [ ] c86004c2m  COMPILE: cannot resolve selected component in spec
+
+G3  Rep-clause generics — 1 test
+    [ ] cd1009i    COMPILE: "actual for non-limited …" @31
+
+G4  Runtime N/A — 4 tests (verify genuinely N/A vs missing feature)
+    [ ] c64103a c95084a  "only one integer base type" — likely genuine
+    [ ] c64103c c64103d  "N/A -P1 (D)" — investigate
+
+FAILS (secondary; address after skips)
+--------------------------------------
+c42007i c43103b c45252a c45282b c55b06a c64104c c87b10a c98003b
+ca1002a3m ca1014a0m ca1020e3m ca5006a cb7001a cc1226b cd1c04e cd4024b
+cd4031a cda201a ce3111c ce3208a ce3411b
