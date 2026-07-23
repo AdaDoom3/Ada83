@@ -53127,7 +53127,6 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   // a task raising concurrently must not clobber another thread's id between
   // its longjmp and the handler's dispatch.
   Emit ("@__exc_key = linkonce_odr global i32 0\n");
-  Emit ("@__exc_key_init = linkonce_odr global i8 0\n");
   Emit ("@__fin_list = linkonce_odr global ptr null\n");
   Emit ("@__entry_queue = linkonce_odr global ptr null\n");
   // Registry of every started task, for master/program-exit join (RM 9.4).
@@ -53137,18 +53136,15 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   // join (RM 9.4). A task blocked at a `select ... or terminate` alternative
   // ends itself when this is set (termination consensus, RM 9.7.1).
   Emit ("@__master_done = linkonce_odr global i8 0\n");
-  // pthread TLS key for the per-thread exception handler stack (see
-  // __ada_eh_key); created lazily by the environment task's first push.
+  // pthread TLS key for the per-thread exception handler stack; created by
+  // __ada_tls_init at the top of main, before any thread exists.
   Emit ("@__eh_key = linkonce_odr global i32 0\n");
-  Emit ("@__eh_key_init = linkonce_odr global i8 0\n");
   // pthread TLS key for the current master record (RM 9.4 dependent tracking):
   // { ptr dependents_head, ptr prev_master }. Per-thread, so each task carries
   // its own master nesting. Tasks created at runtime (e.g. record/array
   // components) register here and are joined at the master's exit.
   Emit ("@__master_key = linkonce_odr global i32 0\n");
-  Emit ("@__master_key_init = linkonce_odr global i8 0\n");
   Emit ("@__self_key = linkonce_odr global i32 0\n");
-  Emit ("@__self_key_init = linkonce_odr global i8 0\n");
   // Terminate-consensus condition variable, paired with @__rv_mutex. 48 B of
   // zeros == PTHREAD_COND_INITIALIZER on glibc (same trick as @__rv_mutex).
   // Broadcast, never signal: one transition (a task terminating, a master
@@ -53325,24 +53321,9 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   // a process-global stack head lets one task pop or longjmp into another's
   // frames (observed: a98002a corrupting the chain). pthread TLS via
   // pthread_get/setspecific works under lli (plain libc calls), unlike IR-level
-  // thread_local. The key is created lazily by the first push — the environment
-  // task pushes during elaboration, before any task thread exists.
-  Emit ("define linkonce_odr i32 @__ada_eh_key() {\n");
-  Emit ("entry:\n");
-  Emit ("  %%inited = load i8, ptr @__eh_key_init\n");
-  Emit ("  %%go = icmp eq i8 %%inited, 0\n");
-  Emit ("  br i1 %%go, label %%mk, label %%have\n");
-  Emit ("mk:\n");
-  Emit ("  %%_kc = call i32 @pthread_key_create(ptr @__eh_key, ptr null)\n");
-  Emit ("  store i8 1, ptr @__eh_key_init\n");
-  Emit ("  br label %%have\n");
-  Emit ("have:\n");
-  Emit ("  %%k = load i32, ptr @__eh_key\n");
-  Emit ("  ret i32 %%k\n");
-  Emit ("}\n\n");
-
+  // thread_local. All keys are created by __ada_tls_init, main's first act.
   Emit ("define linkonce_odr void @__ada_push_handler(ptr %%h) {\n");
-  Emit ("  %%k = call i32 @__ada_eh_key()\n");
+  Emit ("  %%k = load i32, ptr @__eh_key\n");
   Emit ("  %%old = call ptr @pthread_getspecific(i32 %%k)\n");
   Emit ("  %%link = getelementptr { ptr, [200 x i8] }, ptr %%h, i32 0, i32 0\n");
   Emit ("  store ptr %%old, ptr %%link\n");
@@ -53352,7 +53333,7 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
 
   // Exception handling: pop handler
   Emit ("define linkonce_odr void @__ada_pop_handler() {\n");
-  Emit ("  %%k = call i32 @__ada_eh_key()\n");
+  Emit ("  %%k = load i32, ptr @__eh_key\n");
   Emit ("  %%cur = call ptr @pthread_getspecific(i32 %%k)\n");
   Emit ("  %%is_null = icmp eq ptr %%cur, null\n");
   Emit ("  br i1 %%is_null, label %%done, label %%pop\n");
@@ -53362,39 +53343,23 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   Emit ("  %%_s = call i32 @pthread_setspecific(i32 %%k, ptr %%prev)\n");
   Emit_Void_Function_Epilogue (true);
 
-  // Create every per-thread key eagerly, called from main before any task
-  // thread exists. The lazy helpers' unsynchronized double-checked init is
-  // only safe once this has run; it stays in them solely so a raise during
-  // pre-main constructors cannot read an uncreated key.
+  // The single creation point for every per-thread key, called from main
+  // before any task thread exists; every other runtime function just loads
+  // the key globals.
   Emit ("define linkonce_odr void @__ada_tls_init() {\n");
-  Emit ("  %%_1 = call i32 @__ada_eh_key()\n");
-  Emit ("  %%_2 = call i32 @__ada_exc_key()\n");
-  Emit ("  %%_3 = call i32 @__ada_master_key()\n");
-  Emit ("  %%_4 = call i32 @__ada_self_key()\n");
+  Emit ("  %%_1 = call i32 @pthread_key_create(ptr @__eh_key, ptr null)\n");
+  Emit ("  %%_2 = call i32 @pthread_key_create(ptr @__exc_key, ptr null)\n");
+  Emit ("  %%_3 = call i32 @pthread_key_create(ptr @__master_key, ptr null)\n");
+  Emit ("  %%_4 = call i32 @pthread_key_create(ptr @__self_key, ptr null)\n");
   Emit ("  ret void\n");
-  Emit ("}\n\n");
-
-  // Lazy pthread-TLS key for the per-thread current-exception id.
-  Emit ("define linkonce_odr i32 @__ada_exc_key() {\n");
-  Emit ("entry:\n");
-  Emit ("  %%inited = load i8, ptr @__exc_key_init\n");
-  Emit ("  %%go = icmp eq i8 %%inited, 0\n");
-  Emit ("  br i1 %%go, label %%mk, label %%have\n");
-  Emit ("mk:\n");
-  Emit ("  %%_kc = call i32 @pthread_key_create(ptr @__exc_key, ptr null)\n");
-  Emit ("  store i8 1, ptr @__exc_key_init\n");
-  Emit ("  br label %%have\n");
-  Emit ("have:\n");
-  Emit ("  %%k = load i32, ptr @__exc_key\n");
-  Emit ("  ret i32 %%k\n");
   Emit ("}\n\n");
 
   // Exception handling: raise
   Emit ("define linkonce_odr void @__ada_raise(i64 %%exc_id) {\n");
-  Emit ("  %%xk = call i32 @__ada_exc_key()\n");
+  Emit ("  %%xk = load i32, ptr @__exc_key\n");
   Emit ("  %%idp = inttoptr " PTR_INT_TYPE " %%exc_id to ptr\n");
   Emit ("  %%_xs = call i32 @pthread_setspecific(i32 %%xk, ptr %%idp)\n");
-  Emit ("  %%k = call i32 @__ada_eh_key()\n");
+  Emit ("  %%k = load i32, ptr @__eh_key\n");
   Emit ("  %%frame = call ptr @pthread_getspecific(i32 %%k)\n");
   Emit ("  %%is_null = icmp eq ptr %%frame, null\n");
   Emit ("  br i1 %%is_null, label %%unhandled, label %%jump\n");
@@ -53421,7 +53386,7 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
 
   // Exception handling: get current exception (per-thread)
   Emit ("define linkonce_odr i64 @__ada_current_exception() {\n");
-  Emit ("  %%xk = call i32 @__ada_exc_key()\n");
+  Emit ("  %%xk = load i32, ptr @__exc_key\n");
   Emit ("  %%idp = call ptr @pthread_getspecific(i32 %%xk)\n");
   Emit ("  %%exc = ptrtoint ptr %%idp to " PTR_INT_TYPE "\n");
   Emit ("  ret i64 %%exc\n");
@@ -53575,7 +53540,7 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   // Publish this thread's own TCB in TLS so runtime routines executing on the
   // task's thread (master enter in any subprogram it calls, abort, consensus)
   // can identify the owning task dynamically.
-  Emit ("  %%sk = call i32 @__ada_self_key()\n");
+  Emit ("  %%sk = load i32, ptr @__self_key\n");
   Emit ("  %%_ss = call i32 @pthread_setspecific(i32 %%sk, ptr %%tcb)\n");
   Emit ("  %%func = load ptr, ptr %%tcb\n");
   Emit ("  %%1 = getelementptr ptr, ptr %%tcb, i64 1\n");
@@ -53740,43 +53705,13 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   Emit ("  ret i8 %%st\n");
   Emit ("}\n\n");
 
-  // Lazy pthread-TLS key for the current master record. First use is the
-  // environment task's first master, before any task thread exists.
-  Emit ("define linkonce_odr i32 @__ada_master_key() {\n");
-  Emit ("entry:\n");
-  Emit ("  %%inited = load i8, ptr @__master_key_init\n");
-  Emit ("  %%go = icmp eq i8 %%inited, 0\n");
-  Emit ("  br i1 %%go, label %%mk, label %%have\n");
-  Emit ("mk:\n");
-  Emit ("  %%_kc = call i32 @pthread_key_create(ptr @__master_key, ptr null)\n");
-  Emit ("  store i8 1, ptr @__master_key_init\n");
-  Emit ("  br label %%have\n");
-  Emit ("have:\n");
-  Emit ("  %%k = load i32, ptr @__master_key\n");
-  Emit ("  ret i32 %%k\n");
-  Emit ("}\n\n");
-
   // Lazy pthread-TLS key for the executing task's own TCB (null on the
   // environment thread). Set by the task wrapper at thread start; read by
   // master enter (record ownership), abort, and the terminate consensus.
-  Emit ("define linkonce_odr i32 @__ada_self_key() {\n");
-  Emit ("entry:\n");
-  Emit ("  %%inited = load i8, ptr @__self_key_init\n");
-  Emit ("  %%go = icmp eq i8 %%inited, 0\n");
-  Emit ("  br i1 %%go, label %%mk, label %%have\n");
-  Emit ("mk:\n");
-  Emit ("  %%_kc = call i32 @pthread_key_create(ptr @__self_key, ptr null)\n");
-  Emit ("  store i8 1, ptr @__self_key_init\n");
-  Emit ("  br label %%have\n");
-  Emit ("have:\n");
-  Emit ("  %%k = load i32, ptr @__self_key\n");
-  Emit ("  ret i32 %%k\n");
-  Emit ("}\n\n");
-
   // The executing task's TCB, or null on the environment thread.
   Emit ("define linkonce_odr ptr @__ada_self() {\n");
   Emit ("entry:\n");
-  Emit ("  %%k = call i32 @__ada_self_key()\n");
+  Emit ("  %%k = load i32, ptr @__self_key\n");
   Emit ("  %%tcb = call ptr @pthread_getspecific(i32 %%k)\n");
   Emit ("  ret ptr %%tcb\n");
   Emit ("}\n\n");
@@ -53794,7 +53729,7 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   // the matching leave.
   Emit ("define linkonce_odr ptr @__ada_master_enter(ptr %%done_flag, i64 %%scope_id) {\n");
   Emit ("entry:\n");
-  Emit ("  %%k = call i32 @__ada_master_key()\n");
+  Emit ("  %%k = load i32, ptr @__master_key\n");
   Emit ("  %%prev = call ptr @pthread_getspecific(i32 %%k)\n");
   Emit ("  %%rec = call ptr @calloc (i64 1, i64 48)\n");
   Emit ("  %%pp = getelementptr ptr, ptr %%rec, i64 1\n");
@@ -54112,7 +54047,7 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   // The current master record of this thread (null outside any master).
   Emit ("define linkonce_odr ptr @__ada_master_current() {\n");
   Emit ("entry:\n");
-  Emit ("  %%k = call i32 @__ada_master_key()\n");
+  Emit ("  %%k = load i32, ptr @__master_key\n");
   Emit ("  %%rec = call ptr @pthread_getspecific(i32 %%k)\n");
   Emit ("  ret ptr %%rec\n");
   Emit ("}\n\n");
@@ -54124,7 +54059,7 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   // was elaborated at library level, whose master is the program.
   Emit ("define linkonce_odr ptr @__ada_master_find(i64 %%scope_id) {\n");
   Emit ("entry:\n");
-  Emit ("  %%k = call i32 @__ada_master_key()\n");
+  Emit ("  %%k = load i32, ptr @__master_key\n");
   Emit ("  %%top = call ptr @pthread_getspecific(i32 %%k)\n");
   Emit ("  br label %%loop\n");
   Emit ("loop:\n");
@@ -54209,7 +54144,7 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   Emit ("  br label %%jloop\n");
   Emit ("pop:\n");
   Emit ("  call void @__ada_master_disown(ptr %%cur)\n");
-  Emit ("  %%k = call i32 @__ada_master_key()\n");
+  Emit ("  %%k = load i32, ptr @__master_key\n");
   Emit ("  %%pp = getelementptr ptr, ptr %%cur, i64 1\n");
   Emit ("  %%prev = load ptr, ptr %%pp\n");
   Emit ("  %%_s = call i32 @pthread_setspecific(i32 %%k, ptr %%prev)\n");
@@ -54251,7 +54186,7 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   Emit ("  br label %%loop\n");
   Emit ("fin:\n");
   Emit ("  call void @__ada_master_disown(ptr %%rec)\n");
-  Emit ("  %%k = call i32 @__ada_master_key()\n");
+  Emit ("  %%k = load i32, ptr @__master_key\n");
   Emit ("  %%pp = getelementptr ptr, ptr %%rec, i64 1\n");
   Emit ("  %%prev = load ptr, ptr %%pp\n");
   Emit ("  %%_s = call i32 @pthread_setspecific(i32 %%k, ptr %%prev)\n");
@@ -59873,12 +59808,11 @@ void Compile_File (const char *input_path, const char *output_path) {
     Emit ("define i32 @main() {\n");
 
     // Create every per-thread pthread key while the program is still
-    // single-threaded. The lazy key helpers double-check an init flag
-    // WITHOUT synchronization — two task threads racing the first raise
-    // each ran pthread_key_create, the loser's key orphaning the winner's
-    // thread-specific values (a raise then read exception id 0 and fell
-    // into WHEN OTHERS, c95022b under load). After this call the lazy
-    // paths always see the flag set and never create.
+    // single-threaded; everything after simply loads the key globals.
+    // (Lazy per-key creation raced: two task threads at the program's
+    // first raise each ran pthread_key_create, the loser's key orphaning
+    // the winner's thread-specific values — a raise then read exception
+    // id 0 and fell into WHEN OTHERS, c95022b under load.)
     Emit ("  call void @__ada_tls_init()\n");
 
     // Call elaboration functions in computed dependency order.
