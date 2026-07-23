@@ -34289,6 +34289,13 @@ type_conversion:
           LLVM_Rep_Is_Pointer (result_rep))
         Emit_Disc_Match_Checks (dst_type, result, "record conversion discriminant (RM 4.6)");
 
+      // RM 4.6: a conversion to a constrained access subtype checks a non-null
+      // operand's designated object against the constraint (index bounds or
+      // discriminants); null converts freely (c46054a).
+      if (Type_Is_Access (dst_type))
+        Emit_Access_Subtype_Constraint_Check (result, result_rep, dst_type,
+          "access conversion constraint (RM 4.6)");
+
       // Special handling for fixed-point conversions (RM 4.6)
       // Fixed-point uses scaled integer representation: value = integer * SMALL
       if (src_type and dst_type and src_type != dst_type) {
@@ -41032,19 +41039,36 @@ LLVM_Value Generate_Allocator (Syntax_Node *node) {
       }
     }
 
-    // A multidimensional designated array's byte length is the product of every
-    // dimension's length times the element size, taken from the (possibly
-    // dynamic) initializer type — a fat initializer value carries only the first
-    // dimension's length, which would otherwise under-allocate the data.
-    if (Type_Is_Array_Like (init_type)
-        and init_type->array.index_count > 1) {
+    // Per-dimension ACTUAL bounds of a multidimensional initializer. A fat
+    // initializer value carries every dimension's real bounds; a non-fat one
+    // takes them from its static type. The byte length, the RM 4.8(6) checks,
+    // and the result's published bounds must all use these — the static type
+    // of `T'(aggregate)` can be unconstrained, whose index bounds are the
+    // full base range (c46054a).
+    uint32_t dim_lo[8], dim_hi[8];
+    uint32_t init_dims = Type_Is_Array_Like (init_type)
+      ? init_type->array.index_count : 0;
+    if (init_dims > 8) init_dims = 8;
+    if (init_dims > 1)
+      for (uint32_t d = 0; d < init_dims; d++) {
+        if (init_actually_fat) {
+          dim_lo[d] = Emit_Fat_Pointer_Low_Dim  (init_val, new_bt, d).reg;
+          dim_hi[d] = Emit_Fat_Pointer_High_Dim (init_val, new_bt, d).reg;
+        } else {
+          dim_lo[d] = Emit_Single_Bound (&init_type->array.indices[d].low_bound,  new_bt);
+          dim_hi[d] = Emit_Single_Bound (&init_type->array.indices[d].high_bound, new_bt);
+        }
+      }
+
+    // A multidimensional designated array's byte length is the product of
+    // every dimension's length times the element size — a fat initializer
+    // value's first-dimension length alone would under-allocate the data.
+    if (init_dims > 1) {
       LLVM_Rep liat = Integer_Arith_Rep ();
       uint32_t total = Emit_Static_Int (1, liat).reg;
-      for (uint32_t d = 0; d < init_type->array.index_count; d++) {
-        uint32_t dlo = Emit_Convert (
-          Emit_Single_Bound (&init_type->array.indices[d].low_bound,  new_bt), new_bt, liat).reg;
-        uint32_t dhi = Emit_Convert (
-          Emit_Single_Bound (&init_type->array.indices[d].high_bound, new_bt), new_bt, liat).reg;
+      for (uint32_t d = 0; d < init_dims; d++) {
+        uint32_t dlo = Emit_Convert (dim_lo[d], new_bt, liat).reg;
+        uint32_t dhi = Emit_Convert (dim_hi[d], new_bt, liat).reg;
         uint32_t dlen = Emit_Length_From_Bounds (dlo, dhi, liat).reg;
         uint32_t prod = Emit_Result_Instruction ("mul %s %%t%u, %%t%u\n", LLVM_Rep_To_String (liat), total, dlen);
         total = prod;
@@ -41074,22 +41098,18 @@ LLVM_Value Generate_Allocator (Syntax_Node *node) {
     if (ndims < 1) ndims = 1;
     if (ndims > 8) ndims = 8;
 
-    if (ndims > 1 and Type_Is_Array_Like (init_type)
-        and init_type->array.index_count >= ndims) {
-      uint32_t lo_ts[8], hi_ts[8];
+    if (ndims > 1 and init_dims >= ndims) {
       for (uint32_t d = 0; d < ndims; d++) {
-        lo_ts[d] = Emit_Single_Bound (&init_type->array.indices[d].low_bound,  new_bt);
-        hi_ts[d] = Emit_Single_Bound (&init_type->array.indices[d].high_bound, new_bt);
         if (d < designated->array.index_count)
           Emit_Index_Subtype_Bound_Check (designated->array.indices[d].index_type,
-                                          lo_ts[d], hi_ts[d], new_bt);
+                                          dim_lo[d], dim_hi[d], new_bt);
         if (tgt_chk and d < tgt_des->array.index_count)
-          Emit_Alloc_Bound_Check_Dim (tgt_des, d, lo_ts[d], hi_ts[d], new_bt);
+          Emit_Alloc_Bound_Check_Dim (tgt_des, d, dim_lo[d], dim_hi[d], new_bt);
       }
       uint32_t bnd_sz = 2 * ndims * (LLVM_Rep_Bits (new_bt) / 8);
       uint32_t bnds = Emit_Result_Instruction ("call ptr @malloc (i64 %u)  ; multi-dim bounds\n", bnd_sz);
       for (uint32_t d = 0; d < ndims; d++)
-        Emit_Store_Bound_Pair (bnds, new_bt, d, lo_ts[d], hi_ts[d]);
+        Emit_Store_Bound_Pair (bnds, new_bt, d, dim_lo[d], dim_hi[d]);
       return Val_Rep (Emit_Build_Fat_Pointer (heap_ptr, bnds), LL_REP_FAT);
     }
 
@@ -47210,6 +47230,15 @@ void Generate_Object_Declaration (Syntax_Node *node) {
     Syntax_Node *name = node->object_decl.names.items[i];
     Symbol *sym = name->symbol;
     if (not sym) continue;
+
+    // RM 7.4: a deferred constant declaration elaborates to nothing — the
+    // full declaration in the private part owns storage and initialization,
+    // including any default discriminant expressions (which must not be
+    // evaluated here, c48008a). Resolution redirected sym->declaration to
+    // the completion, so the superseded visible node identifies itself.
+    if (node->object_decl.is_constant and not node->object_decl.init and
+        sym->declaration and sym->declaration != node)
+      continue;
 
     // RM 3.2.1: For multi-name declarations (S1, S2 : T := ...),                                   
     // each name gets independent evaluation of the subtype indication                              
