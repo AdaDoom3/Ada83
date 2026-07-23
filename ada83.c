@@ -6861,11 +6861,32 @@ Syntax_Node *Parse_Declaration (Parser *p) {
   return Node_New (NK_NULL_STMT, loc);
 }
 void Parse_Declarative_Part (Parser *p, Node_List *list) {
+  /* RM 3.9: basic declarative items all precede the later items — once a
+     body (proper or stub) appears, only bodies, program unit
+     declarations, use clauses and pragmas may follow. */
+  bool body_seen = false;
   while (not Parser_At (p, TK_BEGIN) and not Parser_At (p, TK_END) and
        not Parser_At (p, TK_PRIVATE) and not Parser_At (p, TK_EOF)) {
     if (not Parser_Check_Progress (p)) break;
     Syntax_Node *decl = Parse_Declaration (p);
     Node_List_Push (list, decl);
+    if (decl) switch (decl->kind) {
+      case NK_PROCEDURE_BODY: case NK_FUNCTION_BODY:
+      case NK_PACKAGE_BODY:   case NK_TASK_BODY:
+        body_seen = true;
+        break;
+      case NK_OBJECT_DECL:    case NK_TYPE_DECL:
+      case NK_SUBTYPE_DECL:   case NK_EXCEPTION_DECL:
+      case NK_EXCEPTION_RENAMING: case NK_SUBPROGRAM_RENAMING:
+      case NK_PACKAGE_RENAMING:
+      case NK_REPRESENTATION_CLAUSE:
+        if (body_seen)
+          Report_Error (decl->location,
+                        "basic declarations must precede the bodies of a declarative part");
+        break;
+      default:
+        break;
+    }
     /* Recover at the declaration boundary (see Parse_Statement_Sequence). */
     if (p->panic_mode) Parser_Synchronize (p);
   }
@@ -13931,6 +13952,13 @@ Type_Info *Resolve_Expression (Syntax_Node *node) {
           Type_Info *int_type = Type_New (TYPE_INTEGER, S(""));
 
           if (node->integer_type.range) {
+            /* RM 3.5.4/8.7: the bounds resolve in an integer context. */
+            if (node->integer_type.range->kind == NK_RANGE) {
+              Seed_Expected_Type (node->integer_type.range->range.low,
+                                  sm->type_universal_integer);
+              Seed_Expected_Type (node->integer_type.range->range.high,
+                                  sm->type_universal_integer);
+            }
             Resolve_Expression (node->integer_type.range);
             Syntax_Node *range = node->integer_type.range;
 
@@ -16733,6 +16761,13 @@ void Resolve_Declaration (Syntax_Node *node) {
       if (node->object_decl.object_type) {
         Resolve_Expression (node->object_decl.object_type);
 
+        /* RM 3.8.1: before its full declaration, an incomplete type may
+           only appear as the designated type of an access definition. */
+        if (node->object_decl.object_type->type and
+            node->object_decl.object_type->type->kind == TYPE_INCOMPLETE)
+          Report_Error (node->object_decl.object_type->location,
+                        "premature use of an incomplete type before its full declaration");
+
         /* RM 3.6.1: an object cannot be of an unconstrained array
            definition — the definition form (not a mark of an
            unconstrained type, which an initial value may constrain). */
@@ -17067,15 +17102,21 @@ void Resolve_Declaration (Syntax_Node *node) {
                   Syntax_Node *lit = lits->items[i];
                   /* RM 3.5.1: the literals of one enumeration type are
                      distinct identifiers. */
-                  for (uint32_t j = 0; j < i; j++)
-                    if (Slice_Equal_Ignore_Case (lit->string_val.text,
-                          lits->items[j]->string_val.text)) {
+                  for (uint32_t j = 0; j < i; j++) {
+                    String_Slice a = lit->string_val.text;
+                    String_Slice b = lits->items[j]->string_val.text;
+                    bool same = (a.length and a.data[0] == '\'')
+                      ? (a.length == b.length and
+                         memcmp (a.data, b.data, a.length) == 0)
+                      : Slice_Equal_Ignore_Case (a, b);
+                    if (same) {
                       Report_Error (lit->location,
                                     "duplicate enumeration literal '%.*s'",
                                     (int) lit->string_val.text.length,
                                     lit->string_val.text.data);
                       break;
                     }
+                  }
                   if (not lit->symbol) {
                     Symbol *lit_sym = Symbol_New (SYMBOL_LITERAL, lit->string_val.text, lit->location);
                     lit_sym->type = type;
@@ -17152,6 +17193,11 @@ void Resolve_Declaration (Syntax_Node *node) {
             type->size                      = off;
           }
         }
+
+        if (not node->type_decl.definition and
+          not node->type_decl.is_private and not node->type_decl.is_limited and
+          type->kind == TYPE_UNKNOWN and not has_discriminants)
+          type->kind = TYPE_INCOMPLETE;
 
         if (not node->type_decl.definition and
           not node->type_decl.is_private and not node->type_decl.is_limited and
@@ -30057,10 +30103,25 @@ bool Expression_Is_Static (Syntax_Node *expr) {
              Expression_Is_Static (expr->binary.right);
     case NK_QUALIFIED:
       return Expression_Is_Static (expr->qualified.expression);
-    case NK_APPLY:
-      return expr->apply.resolution == APPLY_TYPE_CONVERSION and
-             expr->apply.arguments.count == 1 and
-             Expression_Is_Static (expr->apply.arguments.items[0]);
+    case NK_APPLY: {
+      if (expr->apply.resolution == APPLY_TYPE_CONVERSION)
+        return expr->apply.arguments.count == 1 and
+               Expression_Is_Static (expr->apply.arguments.items[0]);
+      Symbol *callee = expr->apply.prefix ? expr->apply.prefix->symbol : NULL;
+      if (not callee) callee = expr->symbol;
+      if (callee) callee = Ultimate_Operation (callee);
+      /* Operator-string calls over universal operands resolve to the
+         predefined operator without materializing a symbol. */
+      bool operator_form = expr->apply.resolution == APPLY_OPERATOR;
+      if ((callee and callee->kind == SYMBOL_FUNCTION and callee->is_predefined)
+          or (not callee and operator_form)) {
+        for (uint32_t i = 0; i < expr->apply.arguments.count; i++)
+          if (not Expression_Is_Static (expr->apply.arguments.items[i]))
+            return false;
+        return true;
+      }
+      return false;
+    }
     case NK_ATTRIBUTE: {
       Type_Info *pt = expr->attribute.prefix ? expr->attribute.prefix->type : NULL;
       return Type_Is_Scalar (pt) or Type_Is_Array_Like (pt);

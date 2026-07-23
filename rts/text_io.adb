@@ -91,6 +91,7 @@ package body TEXT_IO is
    end record;
 
    type FCB_Array is array (0 .. 99) of File_Control_Block;
+   Initialized : Boolean := False;
    FCBs : FCB_Array;
 
    -- Index 0 is the "no file" sentinel: a freshly declared FILE_TYPE is
@@ -147,8 +148,6 @@ package body TEXT_IO is
       Init_Standard_File (2, C_Stdout, OUT_FILE);
       Init_Standard_File (3, C_Stderr, OUT_FILE);
    end Init_Standard_Files;
-
-   Initialized : Boolean := False;
 
    procedure Ensure_Init is
    begin
@@ -1311,6 +1310,7 @@ package body TEXT_IO is
                                Allow_Point : Boolean) return Integer is
       I : Integer := First;
       Hi : constant Integer := S'Last;
+      Got, Based, Dot1, Dot2, Has_E, Frac : Boolean;
 
       function Is_Dig (Ch : Character) return Boolean is
       begin return Ch >= '0' and Ch <= '9'; end Is_Dig;
@@ -1351,8 +1351,6 @@ package body TEXT_IO is
             Got := False;
          end if;
       end Match;
-
-      Got, Based, Dot1, Dot2, Has_E, Frac : Boolean;
    begin
       Match ('+', '-', Got);                         -- optional sign
 

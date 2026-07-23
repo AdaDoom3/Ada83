@@ -6,6 +6,17 @@ PRAGMA IMPORT(LLVM,RT_TIME,"__ada_clock");
 -- Julian day number of the Unix epoch, 1970-01-01.
 EPOCH:CONSTANT:=2440588;
 
+-- A full day, as a named constant: a bare 86_400.0 next to "+" would be
+-- capturable by the TIME operators (a universal literal converts to TIME).
+DAY_SECONDS:CONSTANT DURATION:=86_400.0;
+
+-- The representable range of TIME: from 1901-01-01 00:00:00 to
+-- 2099-12-31 24:00:00 (SECONDS may be 86_400.0, RM 9.6). Assigned in the
+-- initialization part below, after JULIAN_DAY's body has elaborated
+-- (RM 3.9 puts every object declaration ahead of the bodies).
+TIME_FIRST:DURATION;
+TIME_LAST:DURATION;
+
 FUNCTION JULIAN_DAY(Y:YEAR_NUMBER;M:MONTH_NUMBER;D:DAY_NUMBER)RETURN INTEGER IS
 A:INTEGER:=(14-M)/12;
 YY:INTEGER:=Y+4800-A;
@@ -13,15 +24,6 @@ MM:INTEGER:=M+12*A-3;
 BEGIN
 RETURN D+(153*MM+2)/5+365*YY+YY/4-YY/100+YY/400-32045;
 END JULIAN_DAY;
-
--- A full day, as a named constant: a bare 86_400.0 next to "+" would be
--- capturable by the TIME operators (a universal literal converts to TIME).
-DAY_SECONDS:CONSTANT DURATION:=86_400.0;
-
--- The representable range of TIME: from 1901-01-01 00:00:00 to
--- 2099-12-31 24:00:00 (SECONDS may be 86_400.0, RM 9.6).
-TIME_FIRST:CONSTANT DURATION:=DURATION(JULIAN_DAY(1901,1,1)-EPOCH)*DAY_SECONDS;
-TIME_LAST:CONSTANT DURATION:=DURATION(JULIAN_DAY(2099,12,31)-EPOCH)*DAY_SECONDS+DAY_SECONDS;
 
 -- Days since the Unix epoch of the day containing DATE, i.e. the floor of
 -- DATE / 86_400.0. Integer conversion rounds to nearest (RM 4.6), so step
@@ -137,4 +139,7 @@ FUNCTION "<="(LEFT,RIGHT:TIME)RETURN BOOLEAN IS BEGIN RETURN DURATION(LEFT)<=DUR
 FUNCTION ">"(LEFT,RIGHT:TIME)RETURN BOOLEAN IS BEGIN RETURN DURATION(LEFT)>DURATION(RIGHT);END ">";
 FUNCTION ">="(LEFT,RIGHT:TIME)RETURN BOOLEAN IS BEGIN RETURN DURATION(LEFT)>=DURATION(RIGHT);END ">=";
 
+BEGIN
+TIME_FIRST:=DURATION(JULIAN_DAY(1901,1,1)-EPOCH)*DAY_SECONDS;
+TIME_LAST:=DURATION(JULIAN_DAY(2099,12,31)-EPOCH)*DAY_SECONDS+DAY_SECONDS;
 END CALENDAR;
