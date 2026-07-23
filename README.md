@@ -72,8 +72,17 @@ The compilation pipeline is: `.ada` -> `.ll` (LLVM IR) -> link -> execute.
 ./ada83 program.ada -o program.ll
 lli program.ll                         # interpret directly
 # or:
-llc program.ll -o program.s && gcc program.s -lm -o program
+llc program.ll -o program.s && gcc program.s -lm -lpthread -o program
 ```
+
+On a Windows host (MinGW/MSYS2), native links additionally need
+`-lsynchronization`: the specialized rendezvous wait parks with
+`WaitOnAddress`/`WakeByAddressAll` from Synchronization.lib. MSVC-style
+linkers (lld-link, link.exe) pull it automatically from the `/DEFAULTLIB`
+directive embedded in the emitted IR; the explicit flag is only for GNU ld,
+which ignores that directive. `lli` needs nothing extra — the symbols
+resolve from kernelbase in-process. The Makefile's `%.exe` rule handles
+all of this via `RUNTIME_LIBS`.
 
 Programs that WITH library packages need linking:
 

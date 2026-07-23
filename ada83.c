@@ -53765,6 +53765,12 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   Emit ("  call void @WakeByAddressAll(ptr %%w)\n");
   Emit ("  ret void\n");
   Emit ("}\n\n");
+  // The object file carries its own link dependency (the COFF .drectve
+  // mechanism behind #pragma comment(lib, ...)): lld-link and MSVC link
+  // pull Synchronization.lib automatically. GNU ld ignores the directive
+  // — MinGW builds get the library from the Makefile's RUNTIME_LIBS.
+  Emit ("!llvm.linker.options = !{!0}\n");
+  Emit ("!0 = !{!\"/DEFAULTLIB:synchronization.lib\"}\n\n");
 #else
   Emit ("define linkonce_odr void @__ada_wait_word(ptr %%w, i32 %%expected) {\n");
   Emit ("entry:\n");

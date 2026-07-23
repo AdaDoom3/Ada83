@@ -5,7 +5,15 @@ CFLAGS = -O3 -Wall
 LLC = llc
 ADA83 = ./ada83
 
-RUNTIME_LIBS = -lm
+# Emitted programs need libm and, for tasking, pthreads. A Windows host
+# additionally needs Synchronization.lib — the specialized rendezvous wait
+# parks with WaitOnAddress/WakeByAddressAll. (MSVC-style linkers pull it
+# automatically from the IR's embedded /DEFAULTLIB directive; the explicit
+# flag covers MinGW's GNU ld, which ignores that directive.)
+RUNTIME_LIBS = -lm -lpthread
+ifeq ($(OS),Windows_NT)
+RUNTIME_LIBS += -lsynchronization
+endif
 
 .PHONY: all clean clean-test compiler help
 
