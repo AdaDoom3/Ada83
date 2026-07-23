@@ -1,0 +1,51 @@
+================================================================================
+B-TEST REFACTOR & FIX CHECKLIST
+================================================================================
+
+ORIGINAL PROMPT
+---------------
+In the pursuit of high-quality code (low line count (e.g. low undue
+complexity) and high feature/correctness) - refactor and fix ada83.c all
+B-tests completely (e.g. cXX) with much better Haskell-like C99 and smart
+code-golfing with, ironically, textbook "Literate Programming" style.
+
+Do NOT skip around - when you encounter a complex problem look at it as an
+opportunity to finally attack a big issue. Remember to follow the flow
+upstream to avoid hacking up the expander.
+
+Create a file to track everything called "checklist.txt" and include this
+prompt in it.
+
+WORKING RULES (from CLAUDE.md)
+------------------------------
+- Correctness/quality is the metric; PASS deltas are noise mid-refactor.
+- Structural fixes over hacks; follow the flow upstream, don't patch the
+  expander.
+- Delete old definitions first; compiler errors are the worklist.
+- Full Ada-convention names; spec/body split intact (section N declared in
+  spec block, defined in body block).
+- Suite green is a landing constraint, not a direction.
+
+STATUS LEGEND:  [ ] todo   [~] in progress   [x] done   [-] not applicable
+
+PHASE 0 - BASELINE
+------------------
+[~] Build compiler clean (gcc -O3 -Wall: zero warnings)      -- clean
+[~] Full class B run -> baseline pass/fail list
+[ ] Triage failures into root-cause buckets (upstream causes, not
+    per-test symptoms)
+
+PHASE 1..N - ROOT-CAUSE BUCKETS (filled in after triage)
+--------------------------------------------------------
+(to be populated)
+
+LANDING
+-------
+[ ] Full class B suite re-run: no regressions vs baseline, failures fixed
+[ ] Class A/C spot runs to confirm no collateral damage
+[ ] gcc -O3 -Wall clean
+[ ] Commit + push to claude/ada83-b-tests-refactor-q8715w
+
+RUN LOG
+-------
+2026-07-23  baseline class B run started
