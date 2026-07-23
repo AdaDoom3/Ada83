@@ -2913,6 +2913,25 @@ int32_t  Governing_Discriminant_Index    (Type_Info *record_type);
 int32_t  Aggregate_Selected_Variant      (Syntax_Node *aggregate, Type_Info *record_type);
 uint32_t Record_RT_Global_Id             (Type_Info *t);
 uint32_t Emit_Record_Field_Ptr           (uint32_t base, Type_Info *record_type, uint32_t comp_idx, uint32_t byte_offset);
+
+/* A storage locus names a readable/writable interval of bits: a
+   byte-aligned address, a displacement below one storage unit, and a
+   width.  Record components and array elements both resolve to loci;
+   exactly one load and one store consume them (REPRESENTATION.md). */
+typedef struct {
+  uint32_t byte_ptr;      /* reg: address of the first storage unit  */
+  uint32_t bit_in_unit;   /* 0..7: displacement within that unit     */
+  uint32_t width_bits;    /* extent of the stored value              */
+} Storage_Locus;
+
+bool          Component_Is_Bit_Granular (const Component_Info *comp);
+bool          Type_Value_Is_Signed      (Type_Info *t);
+Storage_Locus Component_Locus           (uint32_t field_ptr, const Component_Info *comp);
+LLVM_Value    Emit_Locus_Load           (Storage_Locus locus, Type_Info *value_type);
+void          Emit_Locus_Store          (Storage_Locus locus, LLVM_Value value, Type_Info *value_type);
+LLVM_Value    Emit_Component_Load       (uint32_t base, Type_Info *record_type, uint32_t comp_idx);
+uint32_t      Emit_Component_Load_As    (uint32_t base, Type_Info *record_type, uint32_t comp_idx, LLVM_Rep as_rep);
+void          Emit_Component_Store      (uint32_t base, Type_Info *record_type, uint32_t comp_idx, LLVM_Value value);
 Type_Info *Underlying_Record_Type        (Type_Info *t);
 Type_Info *Underlying_Enumeration_Type   (Type_Info *t);
 int128_t Static_Int_Value                (Syntax_Node *n);
@@ -17833,27 +17852,63 @@ void Resolve_Declaration (Syntax_Node *node) {
                     Component_Info *comp = &target_type->record.components[j];
 
                     if (Slice_Equal_Ignore_Case (comp->name, comp_name)) {
+                      /* RM 13.4: position and bit range are static
+                         universal_integer expressions.  Values are
+                         validated non-negative and small, where the
+                         folder is exact.  The stored layout is
+                         normalized so bit_offset < Bits_Per_Unit;
+                         POSITION/FIRST_BIT then read off directly. */
+                      double p = 0.0, f = 0.0, l = -1.0;
                       Syntax_Node *pos_expr = cc->association.expression;
                       if (pos_expr) {
                         Resolve_Expression (pos_expr);
-                        double p = Eval_Const_Numeric (pos_expr);
-                        if (not isnan (p)) comp->byte_offset = (uint32_t) p;
+                        p = Eval_Const_Numeric (pos_expr);
                       }
                       if (cc->association.choices.count > 1 and
                           cc->association.choices.items[1] and
                           cc->association.choices.items[1]->kind == NK_RANGE) {
-                        Syntax_Node *low = cc->association.choices.items[1]->range.low;
-                        Resolve_Expression (low);
-                        double f = Eval_Const_Numeric (low);
-                        if (not isnan (f)) comp->bit_offset = (uint32_t) f;
+                        Syntax_Node *low  = cc->association.choices.items[1]->range.low;
                         Syntax_Node *high = cc->association.choices.items[1]->range.high;
+                        Resolve_Expression (low);
+                        f = Eval_Const_Numeric (low);
                         if (high) {
                           Resolve_Expression (high);
-                          double l = Eval_Const_Numeric (high);
-                          if (not isnan (f) and not isnan (l) and l >= f)
-                            comp->bit_size = (uint32_t) (l - f + 1);
+                          l = Eval_Const_Numeric (high);
                         }
                       }
+                      if (isnan (p) or isnan (f) or isnan (l) or
+                          p < 0 or f < 0 or p != (double)(int64_t) p or
+                          f != (double)(int64_t) f or l != (double)(int64_t) l or
+                          p > (double) UINT32_MAX or l - f + 1 > 64) {
+                        Report_Error (cc->location,
+                          "component clause values must be static, "
+                          "non-negative, and at most 64 bits wide");
+                        break;
+                      }
+                      uint64_t first_bit = (uint64_t) f;
+                      uint64_t width = l >= f ? (uint64_t) (l - f + 1) : 0;
+                      if (width == 0) break;
+                      Type_Info *ct = comp->component_type;
+                      bool whole_units = first_bit % Bits_Per_Unit == 0 and
+                                         width % Bits_Per_Unit == 0;
+                      if (ct and (Type_Is_Record (ct) or Type_Is_Array_Like (ct))
+                          and not whole_units) {
+                        Report_Error (cc->location,
+                          "a composite component must occupy whole "
+                          "storage units");
+                        break;
+                      }
+                      if (ct and Type_Is_Float_Representation (ct) and
+                          (not whole_units or width != To_Bits (ct->size))) {
+                        Report_Error (cc->location,
+                          "a floating-point component must keep its "
+                          "natural size and alignment");
+                        break;
+                      }
+                      comp->byte_offset = (uint32_t) p
+                                        + (uint32_t) (first_bit / Bits_Per_Unit);
+                      comp->bit_offset  = (uint32_t) (first_bit % Bits_Per_Unit);
+                      comp->bit_size    = (uint32_t) width;
                       break;
                     }
                   }
@@ -22055,7 +22110,8 @@ LLVM_I1 Generate_Record_Equality (uint32_t left_ptr,
     if (governing >= 0) {
       Component_Info *dc = &record_type->record.components[governing];
       disc_type = LLVM_Rep_Or (Type_To_Rep (dc->component_type), Integer_Arith_Rep ());
-      disc_val = Emit_Load_Field (left_ptr, dc->byte_offset, disc_type);
+      disc_val = Emit_Component_Load_As (left_ptr, record_type,
+                                         (uint32_t) governing, disc_type);
     }
   }
 
@@ -22104,7 +22160,7 @@ LLVM_I1 Generate_Record_Equality (uint32_t left_ptr,
         comp_type->array.indices[0].low_bound.kind == BOUND_INTEGER)
         low_val = (int64_t)comp_type->array.indices[0].low_bound.int_value;
 
-      uint32_t disc_offset = 0;
+      int32_t disc_slot = -1;
       LLVM_Rep disc_llvm = Integer_Arith_Rep ();
       if (comp_type->array.index_count > 0 and
         Bound_Is_Expression (&comp_type->array.indices[0].high_bound)) {
@@ -22112,7 +22168,7 @@ LLVM_I1 Generate_Record_Equality (uint32_t left_ptr,
         for (uint32_t d = 0; d < record_type->record.discriminant_count; d++) {
           Component_Info *dc = &record_type->record.components[d];
           if (bsym and Slice_Equal_Ignore_Case (dc->name, bsym->name)) {
-            disc_offset = dc->byte_offset;
+            disc_slot = (int32_t) d;
             if (dc->component_type != 0) {
               disc_llvm = Type_To_Rep (dc->component_type);
             }
@@ -22121,7 +22177,9 @@ LLVM_I1 Generate_Record_Equality (uint32_t left_ptr,
         }
       }
 
-      uint32_t disc_val = Emit_Load_Field (left_ptr, disc_offset, disc_llvm);
+      uint32_t disc_val = disc_slot >= 0
+        ? Emit_Component_Load_As (left_ptr, record_type, (uint32_t) disc_slot, disc_llvm)
+        : Emit_Load_Field (left_ptr, 0, disc_llvm);
       uint32_t extent = Emit_Temp ();
       uint32_t size64 = Emit_Temp ();
       Emit ("  %%t%u = sub %s %%t%u, %lld\n",
@@ -22154,10 +22212,8 @@ LLVM_I1 Generate_Record_Equality (uint32_t left_ptr,
       cmp = Emit_Icmp_Ptr ("eq", left_data, right_data);
 
     } else {
-      uint32_t left_val = Emit_Temp ();
-      uint32_t right_val = Emit_Temp ();
-      Emit ("  %%t%u = load %s, ptr %%t%u\n", left_val, LLVM_Rep_To_String (comp_llvm_type), left_gep);
-      Emit ("  %%t%u = load %s, ptr %%t%u\n", right_val, LLVM_Rep_To_String (comp_llvm_type), right_gep);
+      uint32_t left_val = Emit_Component_Load (left_ptr, record_type, i).reg;
+      uint32_t right_val = Emit_Component_Load (right_ptr, record_type, i).reg;
       if (Type_Is_Float_Representation (comp_type)) {
         cmp = Emit_Fcmp ("oeq", comp_llvm_type, left_val, right_val);
       } else {
@@ -22886,7 +22942,7 @@ bool Emit_Discriminants_Match (Type_Info *constrained_type,
   for (uint32_t d = 0; d < constrained_type->record.discriminant_count; d++) {
     Component_Info *dc = &constrained_type->record.components[d];
     LLVM_Rep drep = LLVM_Rep_Or (Type_To_Rep (dc->component_type), Integer_Arith_Rep ());
-    uint32_t vval = Emit_Load_Field (record_pointer, dc->byte_offset, drep);
+    uint32_t vval = Emit_Component_Load_As (record_pointer, constrained_type, d, drep);
     uint32_t cval;
     if (constrained_type->record.disc_constraint_exprs and
         constrained_type->record.disc_constraint_exprs[d])
@@ -24216,7 +24272,7 @@ void Emit_Record_Discriminant_Constraint_Checks (uint32_t record_address,
     Component_Info *dc = &formal_type->record.components[di];
     if (not dc->component_type) continue;
     LLVM_Rep disc_llvm = Type_To_Rep (dc->component_type);
-    uint32_t disc_val = Emit_Load_Field (record_address, dc->byte_offset, disc_llvm);
+    uint32_t disc_val = Emit_Component_Load_As (record_address, formal_type, di, disc_llvm);
     if (not LLVM_Rep_Equal (disc_llvm, iat))
       disc_val = Emit_Convert (disc_val, disc_llvm, iat).reg;
     Syntax_Node *disc_expr = formal_type->record.disc_constraint_exprs
@@ -26302,13 +26358,12 @@ LLVM_Value Generate_Selected (Syntax_Node *node) {
     (uint32_t)field_variant_index < record_type->record.variant_count) {
     Variant_Info *vinfo = &record_type->record.variants[field_variant_index];
 
-    Component_Info *disc_comp = &record_type->record.components[0];
+    uint32_t disc_slot = 0;
     {
       int32_t governing = Governing_Discriminant_Index (record_type);
-      if (governing >= 0)
-        disc_comp = &record_type->record.components[governing];
+      if (governing >= 0) disc_slot = (uint32_t) governing;
     }
-    uint32_t disc_offset = disc_comp->byte_offset;
+    Component_Info *disc_comp = &record_type->record.components[disc_slot];
     LLVM_Rep disc_llvm = Type_To_Rep (disc_comp->component_type);
 
     uint32_t rec_base;
@@ -26318,7 +26373,8 @@ LLVM_Value Generate_Selected (Syntax_Node *node) {
     } else {
       rec_base = Generate_Lvalue (node->selected.prefix);
     }
-    uint32_t disc_val = Emit_Load_Field (rec_base, disc_offset, disc_llvm);
+    uint32_t disc_val = Emit_Component_Load_As (rec_base, record_type,
+                                                disc_slot, disc_llvm);
     LLVM_Rep iat_disc = Integer_Arith_Rep ();
     if (!LLVM_Rep_Equal (disc_llvm, iat_disc)) {
       disc_val = Emit_Convert (disc_val, disc_llvm, iat_disc).reg;
@@ -26419,8 +26475,8 @@ LLVM_Value Generate_Selected (Syntax_Node *node) {
             if (b->expr->symbol) {
               int32_t dci = Find_Record_Component (record_type, b->expr->symbol->name);
               if (dci >= 0 and (uint32_t) dci < record_type->record.discriminant_count)
-                return Emit_Load_Field (rec_base,
-                  record_type->record.components[dci].byte_offset, bnd_type);
+                return Emit_Component_Load_As (rec_base, record_type,
+                                               (uint32_t) dci, bnd_type);
             }
             return Emit_Coerce_Val (Generate_Expression (b->expr), bnd_type).reg;
           }
@@ -26447,6 +26503,15 @@ LLVM_Value Generate_Selected (Syntax_Node *node) {
     uint32_t t = Emit_Result_Instruction ("load %s, ptr %%t%u  ; .%.*s (access)\n", LLVM_Rep_To_String (acc_rep), ptr,
        node->selected.selector.length > 20 ? 20 : (int)node->selected.selector.length, node->selected.selector.data);
     return Val_Rep (t, acc_rep);
+  }
+  if (cidx >= 0 and
+      Component_Is_Bit_Granular (&record_type->record.components[cidx])) {
+    Component_Info *fc = &record_type->record.components[cidx];
+    LLVM_Value loaded = Emit_Locus_Load (Component_Locus (ptr, fc),
+                                         fc->component_type);
+    return LLVM_Rep_Equal (loaded.rep, field_llvm_type) ? loaded
+      : Val_Rep (Emit_Convert (loaded.reg, loaded.rep, field_llvm_type).reg,
+                 field_llvm_type);
   }
   uint32_t t = Emit_Result_Instruction ("load %s, ptr %%t%u  ; .%.*s\n", LLVM_Rep_To_String (field_llvm_type), ptr,
      node->selected.selector.length > 20 ? 20 : (int)node->selected.selector.length, node->selected.selector.data);
@@ -28030,6 +28095,146 @@ uint32_t Emit_Record_Field_Ptr (uint32_t base, Type_Info *record_type,
   return fp;
 }
 
+/* ───────────────────────── Storage loci ─────────────────────────
+   Byte-granular values short-circuit to ordinary typed loads and
+   stores; bit-granular values go through a whole-byte window that is
+   shifted and masked.  The window derives from the locus's own
+   interval, so it never touches storage beyond the enclosing object. */
+
+bool Component_Is_Bit_Granular (const Component_Info *comp) {
+  if (comp->bit_size == 0) return false;
+  if (comp->bit_offset != 0) return true;
+  if (comp->bit_size % Bits_Per_Unit != 0) return true;
+  Type_Info *component_type = comp->component_type;
+  return component_type and component_type->size > 0 and
+         comp->bit_size != To_Bits (component_type->size);
+}
+
+/* Whether values of T can be negative, judged from its bounds: a
+   negative-capable value sign-extends out of its bit-field, all
+   others zero-extend. */
+bool Type_Value_Is_Signed (Type_Info *t) {
+  for (int depth = 0; t and depth < 16; depth++) {
+    switch (t->kind) {
+      case TYPE_BOOLEAN: case TYPE_CHARACTER: case TYPE_MODULAR:
+        return false;
+      case TYPE_ENUMERATION: {
+        return t->enumeration.rep_values and t->enumeration.literal_count > 0
+           and t->enumeration.rep_values[0] < 0;
+      }
+      default: break;
+    }
+    if (t->low_bound.kind == BOUND_INTEGER) return t->low_bound.int_value < 0;
+    if (t->low_bound.kind == BOUND_FLOAT)   return t->low_bound.float_value < 0.0;
+    t = t->base_type ? t->base_type : t->parent_type;
+  }
+  return true;
+}
+
+Storage_Locus Component_Locus (uint32_t field_ptr, const Component_Info *comp) {
+  return (Storage_Locus){
+    .byte_ptr    = field_ptr,
+    .bit_in_unit = comp->bit_offset,
+    .width_bits  = comp->bit_size,
+  };
+}
+
+uint32_t Locus_Window_Bits (Storage_Locus locus) {
+  return (uint32_t) To_Bits (To_Bytes (locus.bit_in_unit + locus.width_bits));
+}
+
+LLVM_Value Emit_Locus_Load (Storage_Locus locus, Type_Info *value_type) {
+  LLVM_Rep value_rep = Type_To_Rep (value_type);
+  uint32_t window_bits = Locus_Window_Bits (locus);
+  uint32_t value = Emit_Result_Instruction (
+    "load i%u, ptr %%t%u, align 1  ; locus window\n", window_bits, locus.byte_ptr);
+  if (locus.bit_in_unit)
+    value = Emit_Result_Instruction ("lshr i%u %%t%u, %u\n",
+      window_bits, value, locus.bit_in_unit);
+  if (locus.width_bits < window_bits)
+    value = Emit_Result_Instruction ("trunc i%u %%t%u to i%u\n",
+      window_bits, value, locus.width_bits);
+  if (locus.width_bits == value_rep.bits) return Val_Rep (value, value_rep);
+  if (locus.width_bits > value_rep.bits)
+    return Val_Rep (Emit_Result_Instruction ("trunc i%u %%t%u to %s\n",
+      locus.width_bits, value, LLVM_Rep_To_String (value_rep)), value_rep);
+  return Val_Rep (Emit_Result_Instruction ("%s i%u %%t%u to %s\n",
+    Type_Value_Is_Signed (value_type) ? "sext" : "zext",
+    locus.width_bits, value, LLVM_Rep_To_String (value_rep)), value_rep);
+}
+
+void Emit_Locus_Store (Storage_Locus locus, LLVM_Value value, Type_Info *value_type) {
+  uint32_t narrowed = value.reg;
+  if (value.rep.bits > locus.width_bits)
+    narrowed = Emit_Result_Instruction ("trunc %s %%t%u to i%u\n",
+      LLVM_Rep_To_String (value.rep), value.reg, locus.width_bits);
+  else if (value.rep.bits < locus.width_bits)
+    narrowed = Emit_Result_Instruction ("%s %s %%t%u to i%u\n",
+      Type_Value_Is_Signed (value_type) ? "sext" : "zext",
+      LLVM_Rep_To_String (value.rep), value.reg, locus.width_bits);
+  uint32_t window_bits = Locus_Window_Bits (locus);
+  if (window_bits == locus.width_bits and locus.bit_in_unit == 0) {
+    Emit ("  store i%u %%t%u, ptr %%t%u, align 1  ; locus store\n",
+       window_bits, narrowed, locus.byte_ptr);
+    return;
+  }
+  uint32_t placed = Emit_Result_Instruction ("zext i%u %%t%u to i%u\n",
+    locus.width_bits, narrowed, window_bits);
+  if (locus.bit_in_unit)
+    placed = Emit_Result_Instruction ("shl i%u %%t%u, %u\n",
+      window_bits, placed, locus.bit_in_unit);
+  int128_t field_mask = ((((int128_t) 1 << locus.width_bits) - 1)
+                         << locus.bit_in_unit);
+  int128_t keep_mask = ~field_mask & ((((int128_t) 1) << window_bits) - 1);
+  uint32_t window = Emit_Result_Instruction (
+    "load i%u, ptr %%t%u, align 1  ; locus window\n", window_bits, locus.byte_ptr);
+  uint32_t kept = Emit_Result_Instruction ("and i%u %%t%u, %s\n",
+    window_bits, window, I128_Decimal (keep_mask));
+  uint32_t merged = Emit_Result_Instruction ("or i%u %%t%u, %%t%u\n",
+    window_bits, kept, placed);
+  Emit ("  store i%u %%t%u, ptr %%t%u, align 1  ; locus store\n",
+     window_bits, merged, locus.byte_ptr);
+}
+
+/* Every access to a record component funnels through this pair. */
+LLVM_Value Emit_Component_Load (uint32_t base, Type_Info *record_type,
+                                uint32_t comp_idx) {
+  Component_Info *comp = &record_type->record.components[comp_idx];
+  uint32_t ptr = Emit_Record_Field_Ptr (base, record_type, comp_idx,
+                                        comp->byte_offset);
+  if (Component_Is_Bit_Granular (comp))
+    return Emit_Locus_Load (Component_Locus (ptr, comp), comp->component_type);
+  LLVM_Rep rep = Type_To_Rep (comp->component_type);
+  return Val_Rep (Emit_Result_Instruction ("load %s, ptr %%t%u  ; .%.*s\n",
+    LLVM_Rep_To_String (rep), ptr,
+    (int) comp->name.length, comp->name.data), rep);
+}
+
+uint32_t Emit_Component_Load_As (uint32_t base, Type_Info *record_type,
+                                 uint32_t comp_idx, LLVM_Rep as_rep) {
+  LLVM_Value v = Emit_Component_Load (base, record_type, comp_idx);
+  return LLVM_Rep_Equal (v.rep, as_rep) ? v.reg
+       : Emit_Convert (v.reg, v.rep, as_rep).reg;
+}
+
+void Emit_Component_Store (uint32_t base, Type_Info *record_type,
+                           uint32_t comp_idx, LLVM_Value value) {
+  Component_Info *comp = &record_type->record.components[comp_idx];
+  uint32_t ptr = Emit_Record_Field_Ptr (base, record_type, comp_idx,
+                                        comp->byte_offset);
+  if (Component_Is_Bit_Granular (comp)) {
+    Emit_Locus_Store (Component_Locus (ptr, comp), value,
+                      comp->component_type);
+    return;
+  }
+  LLVM_Rep rep = Type_To_Rep (comp->component_type);
+  uint32_t coerced = LLVM_Rep_Equal (value.rep, rep) ? value.reg
+                   : Emit_Convert (value.reg, value.rep, rep).reg;
+  Emit ("  store %s %%t%u, ptr %%t%u  ; .%.*s\n",
+     LLVM_Rep_To_String (rep), coerced, ptr,
+     (int) comp->name.length, comp->name.data);
+}
+
 int32_t Selected_Component_Slot (const Syntax_Node *sel_node,
                                  Type_Info *record_type) {
   int32_t recorded = sel_node->selected.component_index;
@@ -28657,7 +28862,7 @@ void Emit_Comp_Disc_Check (uint32_t ptr,
   for (uint32_t di = 0; di < comp_ti->record.discriminant_count; di++) {
     Component_Info *dc = &comp_ti->record.components[di];
     LLVM_Rep dt = Type_To_Rep (dc->component_type);
-    uint32_t dv = Emit_Load_Field (ptr, dc->byte_offset, dt);
+    uint32_t dv = Emit_Component_Load_As (ptr, comp_ti, di, dt);
     uint32_t exp_v = Emit_Disc_Constraint_Value (comp_ti, di, dt).reg;
     if (exp_v == 0)
       exp_v = Emit_Static_Int (0, dt).reg;
@@ -28837,6 +29042,11 @@ void Agg_Rec_Store (uint32_t val, LLVM_Rep val_rep, uint32_t dest_ptr,
     val = Emit_Convert (val, src_type, comp_type).reg;
     if (Type_Is_Scalar (ti)) {
       val = Emit_Constraint_Check_Val ((LLVM_Value){ val, comp_type }, ti, src_expr ? src_expr->type : NULL).reg;
+    }
+    if (Component_Is_Bit_Granular (comp)) {
+      Emit_Locus_Store (Component_Locus (dest_ptr, comp),
+                        Val_Rep (val, comp_type), ti);
+      return;
     }
     Emit ("  store %s %%t%u, ptr %%t%u\n", LLVM_Rep_To_String (comp_type), val, dest_ptr);
   }
@@ -30530,7 +30740,7 @@ LLVM_Value Generate_Qualified (Syntax_Node *node) {
       LLVM_Rep dt = Type_To_Rep (dc->component_type);
       uint32_t expected = Emit_Disc_Constraint_Value (dst_type, di, dt).reg;
       if (expected == 0) continue;
-      uint32_t actual = Emit_Load_Field (result.reg, dc->byte_offset, dt);
+      uint32_t actual = Emit_Component_Load_As (result.reg, dst_type, di, dt);
       LLVM_I1 cmp = Emit_Icmp ("ne", dt, actual, expected);
       Emit_Check_With_Raise (cmp.reg, true, "qualified expr disc match (RM 4.7)");
     }
@@ -30778,12 +30988,11 @@ void Emit_Store_Disc_Values (Type_Info *rec, uint32_t base, bool check_subtype) 
   for (uint32_t di = 0; di < rec->record.discriminant_count; di++) {
     Component_Info *dc = &rec->record.components[di];
     LLVM_Rep dt = Type_To_Rep (dc->component_type);
-    uint32_t dp = Emit_Result_Instruction ("getelementptr i8, ptr %%t%u, i64 %u\n", base, dc->byte_offset);
     uint32_t val = Emit_Disc_Constraint_Value (rec, di, dt).reg;
     if (val == 0) val = Emit_Static_Int (0, dt).reg;
     if (check_subtype and Type_Is_Scalar (dc->component_type))
       Emit_Constraint_Check_Val (Val_Rep (val, dt), dc->component_type, NULL);
-    Emit ("  store %s %%t%u, ptr %%t%u\n", LLVM_Rep_To_String (dt), val, dp);
+    Emit_Component_Store (base, rec, di, Val_Rep (val, dt));
   }
 }
 
@@ -30791,7 +31000,7 @@ void Emit_Disc_Match_Checks (Type_Info *des, uint32_t base, const char *msg) {
   for (uint32_t di = 0; di < des->record.discriminant_count; di++) {
     Component_Info *dc = &des->record.components[di];
     LLVM_Rep dt = Type_To_Rep (dc->component_type);
-    uint32_t actual = Emit_Load_Field (base, dc->byte_offset, dt);
+    uint32_t actual = Emit_Component_Load_As (base, des, di, dt);
     uint32_t expected = Emit_Disc_Constraint_Value (des, di, dt).reg;
     if (expected == 0) continue;
     LLVM_I1 cmp = Emit_Icmp ("ne", dt, actual, expected);
@@ -30919,7 +31128,8 @@ void Emit_Apply_Component_Defaults (Type_Info *ty, uint32_t base, int sel_varian
           Component_Info *gc = &ty->record.components[gpi];
           apply_gov_rep = LLVM_Rep_Or (Type_To_Rep (gc->component_type),
                                        Integer_Arith_Rep ());
-          apply_gov_val = Emit_Load_Field (base, gc->byte_offset, apply_gov_rep);
+          apply_gov_val = Emit_Component_Load_As (base, ty, (uint32_t) gpi,
+                                                  apply_gov_rep);
         }
       }
       apply_skip = Emit_Variant_Disc_Guard (comp, ty, -2,
@@ -31000,7 +31210,8 @@ void Emit_Check_Disc_Array_Bounds (Symbol *sym, Type_Info *rec, uint32_t base_of
         if (di >= 0 and (uint32_t) di < rec->record.discriminant_count) {
           Component_Info *dc = &rec->record.components[di];
           LLVM_Rep dvt = Type_To_Rep (dc->component_type);
-          uint32_t dv = Emit_Load_Symbol_Field (sym, base_off + dc->byte_offset, dvt);
+          uint32_t rec_base = Emit_Symbol_Field_Addr (sym, base_off);
+          uint32_t dv = Emit_Component_Load_As (rec_base, rec, (uint32_t) di, dvt);
           v[s] = Emit_Convert (dv, dvt, iat).reg;
           dynamic[s] = true;
         }
@@ -31087,7 +31298,7 @@ void Emit_Check_Nested_Disc_Constraints (Type_Info *ty, uint32_t base) {
       Component_Info *gc = &ty->record.components[gpi];
       gov_rep = LLVM_Rep_Or (Type_To_Rep (gc->component_type),
                              Integer_Arith_Rep ());
-      gov_val = Emit_Load_Field (base, gc->byte_offset, gov_rep);
+      gov_val = Emit_Component_Load_As (base, ty, (uint32_t) gpi, gov_rep);
     }
   }
 
@@ -32221,8 +32432,8 @@ void Generate_Assignment_Body (Syntax_Node *node, Syntax_Node *target) {
           for (uint32_t di = 0; di < designated->record.discriminant_count; di++) {
             Component_Info *dc = &designated->record.components[di];
             LLVM_Rep dt = Type_To_Rep (dc->component_type);
-            uint32_t src_dv = Emit_Load_Field (value, dc->byte_offset, dt);
-            uint32_t tgt_dv = Emit_Load_Field (ptr,   dc->byte_offset, dt);
+            uint32_t src_dv = Emit_Component_Load_As (value, designated, di, dt);
+            uint32_t tgt_dv = Emit_Component_Load_As (ptr, designated, di, dt);
             if (not LLVM_Rep_Equal (dt, iat_dc)) {
               src_dv = Emit_Convert (src_dv, dt, iat_dc).reg;
               tgt_dv = Emit_Convert (tgt_dv, dt, iat_dc).reg;
@@ -32258,6 +32469,7 @@ void Generate_Assignment_Body (Syntax_Node *node, Syntax_Node *target) {
     Type_Info *prefix_type = prefix->type;
 
     Type_Info *assign_type = NULL;
+    Component_Info *assign_comp = NULL;
     if (Type_Is_Access (prefix_type) and
       Slice_Equal_Ignore_Case (target->selected.selector, S("ALL"))) {
 
@@ -32269,9 +32481,13 @@ void Generate_Assignment_Body (Syntax_Node *node, Syntax_Node *target) {
         Type_Is_Record (prefix_type->access.designated_type)) {
         record_type = prefix_type->access.designated_type;
       }
+      record_type = Underlying_Record_Type (record_type);
       if (Type_Is_Record (record_type)) {
         int32_t ci = Selected_Component_Slot (target, record_type);
-        if (ci >= 0) assign_type = record_type->record.components[ci].component_type;
+        if (ci >= 0) {
+          assign_comp = &record_type->record.components[ci];
+          assign_type = assign_comp->component_type;
+        }
       }
     }
 
@@ -32342,6 +32558,11 @@ void Generate_Assignment_Body (Syntax_Node *node, Syntax_Node *target) {
     if (not assign_type and node->assignment.value) assign_type = node->assignment.value->type;
     LLVM_Rep store_rep = assign_type ? Type_To_Rep (assign_type) : Integer_Arith_Rep ();
     value = Emit_Convert_Scalar_To_Type (Val_Rep (value, value_v.rep), assign_type, store_rep);
+    if (assign_comp and Component_Is_Bit_Granular (assign_comp)) {
+      Emit_Locus_Store (Component_Locus (addr, assign_comp),
+                        Val_Rep (value, store_rep), assign_type);
+      return;
+    }
     Emit ("  store %s %%t%u, ptr %%t%u  ; selected assign\n",
        LLVM_Rep_To_String (store_rep), value, addr);
     return;
@@ -32392,11 +32613,11 @@ void Generate_Assignment_Body (Syntax_Node *node, Syntax_Node *target) {
         LLVM_Rep dt = Type_To_Rep (dc->component_type);
 
         LLVM_Rep iat_dc = Integer_Arith_Rep ();
-        uint32_t src_dv = Emit_Load_Field (src_ptr, dc->byte_offset, dt);
+        uint32_t src_dv = Emit_Component_Load_As (src_ptr, ty, di, dt);
         if (not LLVM_Rep_Equal (dt, iat_dc))
           src_dv = Emit_Convert (src_dv, dt, iat_dc).reg;
 
-        uint32_t tgt_dv = Emit_Load_Field (tgt_addr, dc->byte_offset, dt);
+        uint32_t tgt_dv = Emit_Component_Load_As (tgt_addr, ty, di, dt);
         if (not LLVM_Rep_Equal (dt, iat_dc))
           tgt_dv = Emit_Convert (tgt_dv, dt, iat_dc).reg;
 
@@ -32414,8 +32635,8 @@ void Generate_Assignment_Body (Syntax_Node *node, Syntax_Node *target) {
       for (uint32_t di = 0; di < ty->record.discriminant_count; di++) {
         Component_Info *dc = &ty->record.components[di];
         LLVM_Rep dt = Type_To_Rep (dc->component_type);
-        uint32_t src_dv = Emit_Load_Field (src_ptr, dc->byte_offset, dt);
-        uint32_t tgt_dv = Emit_Load_Field (tgt_addr, dc->byte_offset, dt);
+        uint32_t src_dv = Emit_Component_Load_As (src_ptr, ty, di, dt);
+        uint32_t tgt_dv = Emit_Component_Load_As (tgt_addr, ty, di, dt);
         if (not LLVM_Rep_Equal (dt, iat_dc)) {
           src_dv = Emit_Convert (src_dv, dt, iat_dc).reg;
           tgt_dv = Emit_Convert (tgt_dv, dt, iat_dc).reg;
@@ -33785,7 +34006,7 @@ void Generate_Statement (Syntax_Node *node) {
                       if (not dc->component_type) continue;
                       LLVM_Rep dt = Type_To_Rep (dc->component_type);
 
-                      uint32_t dv = Emit_Load_Field (val, dc->byte_offset, dt);
+                      uint32_t dv = Emit_Component_Load_As (val, pt, d, dt);
 
                       uint32_t cv;
                       cv = Emit_Disc_Constraint_Value (pt, d, dt).reg;
@@ -33814,7 +34035,7 @@ void Generate_Statement (Syntax_Node *node) {
                       if (not has_bounds) continue;
                       LLVM_Rep ct_llvm = Type_To_Rep (ct);
 
-                      uint32_t cv2 = Emit_Load_Field (val, comp->byte_offset, ct_llvm);
+                      uint32_t cv2 = Emit_Component_Load_As (val, pt, ci, ct_llvm);
                       Emit_Constraint_Check_Val ((LLVM_Value){ cv2, ct_llvm }, ct, NULL);
                     }
                   }
@@ -35537,7 +35758,9 @@ void Emit_Subcomponent_Disc_Constraint_Checks (Symbol *sym, Type_Info *parent_re
       if (pdi >= 0 and (uint32_t) pdi < parent_record->record.discriminant_count) {
         Component_Info *pdc = &parent_record->record.components[pdi];
         LLVM_Rep dt = Type_To_Rep (pdc->component_type);
-        uint32_t dv = Emit_Load_Symbol_Field (sym, prefix_offset + pdc->byte_offset, dt);
+        uint32_t prec_base = Emit_Symbol_Field_Addr (sym, prefix_offset);
+        uint32_t dv = Emit_Component_Load_As (prec_base, parent_record,
+                                              (uint32_t) pdi, dt);
         Component_Info *sub_dc = &constrained_type->record.components[di];
         if (Type_Is_Scalar (sub_dc->component_type))
           Emit_Constraint_Check_Val (Val_Rep (dv, dt), sub_dc->component_type,
@@ -36884,7 +37107,7 @@ obj_decl_init:
           for (uint32_t di = 0; di < ty->record.discriminant_count; di++) {
             Component_Info *dc = &ty->record.components[di];
             LLVM_Rep dt = Type_To_Rep (dc->component_type);
-            uint32_t sv = Emit_Load_Field (init_ptr, dc->byte_offset, dt);
+            uint32_t sv = Emit_Component_Load_As (init_ptr, ty, di, dt);
             uint32_t cv = Emit_Disc_Value (ty, di, dt, rec_disc_count, rec_disc_cached);
             Emit_Discriminant_Check (sv, cv, dt, ty);
           }
@@ -36974,7 +37197,7 @@ obj_decl_init:
             for (uint32_t di = 0; di < des->record.discriminant_count; di++) {
               Component_Info *dc = &des->record.components[di];
               LLVM_Rep dt = Type_To_Rep (dc->component_type);
-              uint32_t dv = Emit_Load_Field (init_ptr, dc->byte_offset, dt);
+              uint32_t dv = Emit_Component_Load_As (init_ptr, des, di, dt);
               uint32_t cv = Emit_Disc_Value (des, di, dt, acc_disc_count, acc_disc_cached);
               Emit_Discriminant_Check (dv, cv, dt, des);
             }
@@ -37095,7 +37318,7 @@ obj_decl_init:
           Component_Info *dc = &ty->record.components[di];
           LLVM_Rep dt = Type_To_Rep (dc->component_type);
 
-          uint32_t val = Emit_Load_Field (rbase, dc->byte_offset, dt);
+          uint32_t val = Emit_Component_Load_As (rbase, ty, di, dt);
           Bind_Disc_For_Dependent_Bounds (ty, dc->name, Emit_Alloca_Store (dt, val),
                                           disc_temps, &disc_temp_count, 16);
         }
@@ -37235,7 +37458,8 @@ obj_decl_init:
             if (cexpr->kind == NK_IDENTIFIER and cexpr->symbol) {
               int32_t pdi = Find_Record_Component (ty, cexpr->symbol->name);
               if (pdi >= 0 and (uint32_t) pdi < ty->record.discriminant_count) {
-                disc_val = Emit_Load_Symbol_Field (sym, ty->record.components[pdi].byte_offset, dt);
+                uint32_t ty_base = Emit_Symbol_Field_Addr (sym, 0);
+                disc_val = Emit_Component_Load_As (ty_base, ty, (uint32_t) pdi, dt);
                 found_parent_disc = true;
               }
             }
@@ -37325,7 +37549,8 @@ obj_decl_init:
               if (cexpr->kind == NK_IDENTIFIER and cexpr->symbol) {
                 int32_t pdi = Find_Record_Component (ty, cexpr->symbol->name);
                 if (pdi >= 0 and (uint32_t) pdi < ty->record.discriminant_count) {
-                  val = Emit_Load_Symbol_Field (sym, ty->record.components[pdi].byte_offset, dt);
+                  uint32_t ty_base = Emit_Symbol_Field_Addr (sym, 0);
+                  val = Emit_Component_Load_As (ty_base, ty, (uint32_t) pdi, dt);
                   resolved = true;
                 }
               }
@@ -37457,8 +37682,10 @@ obj_decl_init:
               Component_Info *gc = &ct->record.components[gpi];
               nest_gov_rep = LLVM_Rep_Or (Type_To_Rep (gc->component_type),
                                           Integer_Arith_Rep ());
-              nest_gov_val = Emit_Load_Symbol_Field (
-                sym, nest_off + gc->byte_offset, nest_gov_rep);
+              uint32_t nest_base = Emit_Symbol_Field_Addr (sym, nest_off);
+              nest_gov_val = Emit_Component_Load_As (nest_base, ct,
+                                                     (uint32_t) gpi,
+                                                     nest_gov_rep);
             }
           }
 
