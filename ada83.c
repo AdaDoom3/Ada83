@@ -1537,6 +1537,10 @@ struct Type_Info {
   bool        is_packed;
   bool        is_limited;
   bool        declared_private;
+  /* Declared in package STANDARD (set for every type created during
+     Symbol_Manager_Init_Predefined).  A predefined type is never
+     name-equivalent to a user declaration that spells the same name. */
+  bool        is_predefined;
   bool        is_frozen;
   Task_Component_State_Kind task_component_state;
   int32_t governing_discriminant_memo;
@@ -1560,6 +1564,7 @@ extern Symbol    *Exception_Symbols[256];
 extern uint32_t   Exception_Symbol_Count;
 
 Type_Info *Type_New    (Type_Kind kind, String_Slice name);
+extern bool Creating_Predefined_Types;
 Type_Info *Replicate_Component_Subtype (Type_Info *ct);
 void       Freeze_Type (Type_Info *type_info);
 
@@ -1582,6 +1587,7 @@ bool Type_Is_Limited              (const Type_Info *t);
 bool Type_Is_Integer_Like         (const Type_Info *t);
 bool Type_Is_Unsigned             (const Type_Info *t);
 bool Type_Is_Enumeration          (const Type_Info *t);
+bool Type_Has_Enumeration_Literals (const Type_Info *t);
 bool Type_Is_Boolean              (const Type_Info *t);
 bool Type_Is_Character            (const Type_Info *t);
 bool Type_Is_Character_Type       (const Type_Info *t);
@@ -1818,6 +1824,7 @@ struct Symbol {
   bool     is_overloaded;
   Symbol  *aliased;
   Symbol  *deferred_completion_of;
+  bool     is_implicit_declaration;
   bool     body_claimed;
   bool     is_pure_unit;
   bool     is_preelaborate_unit;
@@ -1902,6 +1909,10 @@ typedef struct {
   uint32_t   visibility_cutoff;
   Scope     *cutoff_exempt_scope;
   bool       in_package_visible_part;
+  /* Set by a call statement around resolving its APPLY target: the
+     called name must denote a procedure or an entry (RM 6.4), so
+     function homographs are not candidates. */
+  bool       call_statement_target;
   uint32_t   statement_depth;
 } Symbol_Manager;
 
@@ -1952,6 +1963,10 @@ typedef struct {
 typedef struct Interp_List {
   Interpretation items[MAX_INTERPRETATIONS];
   uint32_t       count;
+  /* True when the list holds only the error-recovery interpretation
+     added because no legal one exists; the operator resolvers report
+     it once operand types are known (RM 4.5). */
+  bool           used_fallback;
 } Interp_List;
 
 bool Type_Covers             (Type_Info    *expected, Type_Info    *actual);
@@ -1959,6 +1974,8 @@ bool Type_Covers_Ex          (Type_Info    *expected, Type_Info    *actual,
                               bool allow_derivation);
 bool Type_Covers_Strict      (Type_Info    *expected, Type_Info    *actual);
 bool Type_Limited_View_Active (const Type_Info *t);
+bool Type_Is_Limited_View          (Type_Info *t);
+bool Type_Has_Predefined_Ordering  (Type_Info *t);
 bool Type_Private_View_Active (const Type_Info *t);
 Type_Info *Effective_Type_View (Type_Info *t);
 bool Arguments_Match_Profile (Symbol       *sym,      Argument_Info *args);
@@ -1976,7 +1993,8 @@ Symbol *Disambiguate            (Interp_List    *interps,
                                  Argument_Info  *args);
 Symbol *Resolve_Overloaded_Call (String_Slice    name,
                                  Argument_Info  *args,
-                                 Type_Info      *context_type);
+                                 Type_Info      *context_type,
+                                 bool            require_procedure);
 
 String_Slice Operator_Name (Token_Kind op);
 
@@ -6718,10 +6736,13 @@ Syntax_Node *Parse_Compilation_Unit (Parser *p) {
 
 
 
+bool Creating_Predefined_Types = false;
+
 Type_Info *Type_New (Type_Kind kind, String_Slice name) {
   Type_Info *type_info  = Arena_Allocate (sizeof (Type_Info));
   type_info->kind       = kind;
   type_info->name       = name;
+  type_info->is_predefined = Creating_Predefined_Types;
   type_info->size       = Default_Size_Bytes;
   type_info->alignment  = Default_Align_Bytes;
 
@@ -6995,6 +7016,16 @@ bool Type_Is_Unsigned (const Type_Info *type_info) {
 }
 bool Type_Is_Enumeration (const Type_Info *type_info) {
   return type_info and type_info->kind == TYPE_ENUMERATION;
+}
+
+/* Enumeration-like with a literal table: covers boolean and character
+   types, whose literals live in the same enumeration member. */
+bool Type_Has_Enumeration_Literals (const Type_Info *type_info) {
+  return type_info and
+         (type_info->kind == TYPE_ENUMERATION or
+          type_info->kind == TYPE_BOOLEAN or
+          type_info->kind == TYPE_CHARACTER) and
+         type_info->enumeration.literal_count > 0;
 }
 bool Type_Is_Boolean (const Type_Info *type_info) { return type_info and type_info->kind == TYPE_BOOLEAN; }
 bool Type_Is_Character (const Type_Info *type_info) { return type_info and type_info->kind == TYPE_CHARACTER; }
@@ -7581,15 +7612,36 @@ void Symbol_Add (Symbol *sym) {
             sym->visibility = VIS_HIDDEN;
           else if (Subprogram_Is_Implicit (c) and not Subprogram_Is_Implicit (sym))
             c->visibility = VIS_HIDDEN;
+          else if (not Subprogram_Is_Implicit (sym) and
+                   c->visibility != VIS_USE_VISIBLE and
+                   sym->visibility != VIS_USE_VISIBLE and
+                   scope != sm->global_scope and
+                   Instantiating_Template_Count == 0)
+            /* Two explicit homographs in one declarative region (RM 8.3);
+               a body completing a spec never lands here — it claims the
+               spec's symbol instead of adding one.  Exempt: instance
+               scopes (instantiation plumbing installs formals alongside
+               their actual bindings, and the generic itself was already
+               checked at its declaration), and a pair of implicit
+               declarations — one derivation may legally produce
+               subprogram homographs (RM 8.3, a83009). */
+            Report_Error (sym->location,
+              "duplicate declaration of \"%.*s\" (homograph of the "
+              "declaration at line %u)",
+              (int)sym->name.length, sym->name.data, c->location.line);
         }
         return;
       }
 
-      if (sym->kind == SYMBOL_VARIABLE and existing->kind == SYMBOL_TYPE) {
+      /* A single task declaration introduces the anonymous task type and
+         the task object under one name; both symbols share the one
+         NK_TASK_SPEC declaration, so the pair is not a redeclaration. */
+      if (sym->kind == SYMBOL_VARIABLE and existing->kind == SYMBOL_TYPE and
+          sym->declaration and sym->declaration == existing->declaration) {
         break;
       }
 
-      if (existing->kind == SYMBOL_CONSTANT and sym->kind == SYMBOL_CONSTANT
+      if (Symbol_Is_Deferred_Constant (existing) and sym->kind == SYMBOL_CONSTANT
         and sym->declaration and sym->declaration->kind == NK_OBJECT_DECL
         and sym->declaration->object_decl.init) {
         existing->declaration = sym->declaration;
@@ -7617,6 +7669,23 @@ void Symbol_Add (Symbol *sym) {
           Slice_Equal_Ignore_Case (existing->name, S("STANDARD")))
         break;
 
+      /* Same name, same declarative region, at least one side not
+         overloadable, and no completion applies: illegal homograph
+         (RM 8.3).  Exempt: library scope (re-submitting a library unit
+         replaces it, RM 10.1); implicit declarations such as derived
+         enumeration literals (hidden by explicit homographs, RM 8.3);
+         instance scopes (instantiation plumbing — the generic was
+         checked at its declaration). */
+      if (scope != sm->global_scope and
+          sym->visibility != VIS_USE_VISIBLE and
+          not sym->is_implicit_declaration and
+          not existing->is_implicit_declaration and
+          Instantiating_Template_Count == 0 and
+          not sym->is_predefined and not existing->is_predefined)
+        Report_Error (sym->location,
+          "duplicate declaration of \"%.*s\" (homograph of the "
+          "declaration at line %u)",
+          (int)sym->name.length, sym->name.data, existing->location.line);
       return;
     }
     existing = existing->next_in_bucket;
@@ -7813,6 +7882,12 @@ bool Types_Match_By_Name (Type_Info *expected, Type_Info *actual) {
   if (not (expected->name.data and actual->name.data and
            Slice_Equal_Ignore_Case (expected->name, actual->name)))
     return false;
+  /* Name equivalence bridges the same library-level declaration seen
+     from different compilations.  A predefined type has one identity
+     per process, so a same-named non-identical type is a distinct user
+     declaration hiding it -- never equivalent. */
+  if (expected->is_predefined or actual->is_predefined)
+    return false;
   return (Type_Is_Enumeration (expected) and Type_Is_Enumeration (actual))
       or (expected->kind == TYPE_INTEGER and actual->kind == TYPE_INTEGER)
       or (Type_Is_Float (expected) and Type_Is_Float (actual))
@@ -7824,7 +7899,12 @@ static bool Outside_Defining_Package (const Type_Info *t) {
     ? t->defining_symbol->parent : NULL;
   if (not defining_package) return true;
   for (Scope *scope = sm->current_scope; scope; scope = scope->parent)
-    if (scope->owner == defining_package) return false;
+    /* Walk the owner's symbol parentage as well: a generic instance
+       declared inside the package resolves its expanded body under
+       the instance's own scope, and only the instance symbol's parent
+       chain records where the instantiation was written. */
+    for (Symbol *owner = scope->owner; owner; owner = owner->parent)
+      if (owner == defining_package) return false;
   return true;
 }
 
@@ -7834,6 +7914,50 @@ bool Type_Limited_View_Active (const Type_Info *t) {
 
 bool Type_Private_View_Active (const Type_Info *t) {
   return t and t->declared_private and Outside_Defining_Package (t);
+}
+
+/* Whether the type is limited in the view at hand, looking through
+   composites: task types always; limited private types wherever their
+   full view is not visible (including generic formal limited private,
+   which never gains one); and any composite with such a component
+   (RM 7.4.4).  Predefined equality does not exist for these. */
+bool Type_Is_Limited_View (Type_Info *t) {
+  if (not t) return false;
+  if (Type_Is_Task (t)) return true;
+  /* A generic actual's view is limited per the FORMAL's class inside
+     the instance, and per the ACTUAL everywhere else (RM 12.1.2) --
+     the legality of naming a limited actual was judged at the
+     instantiation point, where the full view may have been visible. */
+  if (t->is_generic_actual_view) {
+    Scope *instance_scope =
+      t->defining_symbol ? t->defining_symbol->defining_scope : NULL;
+    for (Scope *scope = sm->current_scope; scope; scope = scope->parent)
+      if (scope and scope == instance_scope)
+        return t->generic_formal_class == GEN_DEF_LIMITED_PRIVATE;
+    return Type_Is_Limited_View (Peel_Generic_Actual_View (t));
+  }
+  /* A declared-private type is limited only where its full view is
+     not visible; every other limited type (generic formal, derived
+     from a limited view) is limited unconditionally. */
+  if (t->is_limited and not t->declared_private) return true;
+  if (Type_Limited_View_Active (t)) return true;
+  if (Type_Is_Record (t))
+    for (uint32_t i = 0; i < t->record.component_count; i++)
+      if (Type_Is_Limited_View (t->record.components[i].component_type))
+        return true;
+  if (Type_Is_Array_Like (t))
+    return Type_Is_Limited_View (t->array.element_type);
+  return false;
+}
+
+/* The predefined ordering operators exist for scalar types (the
+   universal numeric types included) and one-dimensional arrays of a
+   discrete component type (RM 4.5.2). */
+bool Type_Has_Predefined_Ordering (Type_Info *t) {
+  if (not t) return false;
+  if (Type_Is_Scalar (t) or Type_Is_Universal (t)) return true;
+  return Type_Is_Array_Like (t) and t->array.index_count == 1 and
+         Type_Is_Discrete (t->array.element_type);
 }
 
 Type_Info *Effective_Type_View (Type_Info *t) {
@@ -7904,10 +8028,6 @@ bool Type_Covers_Ex (Type_Info *expected, Type_Info *actual,
   }
 
   if (Type_Is_Access (expected) and not actual) {
-    return true;
-  }
-
-  if (Type_Is_Boolean (expected) and Type_Is_Boolean (actual)) {
     return true;
   }
 
@@ -8328,12 +8448,26 @@ Symbol *Disambiguate(Interp_List *interps, Type_Info *context_type,
 
 Symbol *Resolve_Overloaded_Call (String_Slice name,
                                  Argument_Info *args,
-                                 Type_Info *context_type) {
+                                 Type_Info *context_type,
+                                 bool require_procedure) {
   Interp_List interps;
 
   Collect_Interpretations (name, &interps);
   if (interps.count == 0) {
     return NULL;
+  }
+
+  /* A call statement's name denotes a procedure or an entry (RM 6.4);
+     function homographs never compete there. */
+  if (require_procedure and interps.count > 1) {
+    uint32_t keep = 0;
+    for (uint32_t i = 0; i < interps.count; i++) {
+      Symbol *candidate = interps.items[i].nam;
+      if (candidate and (candidate->kind == SYMBOL_PROCEDURE or
+                         candidate->kind == SYMBOL_ENTRY))
+        interps.items[keep++] = interps.items[i];
+    }
+    if (keep > 0) interps.count = keep;
   }
 
   if (args and args->count > 0) {
@@ -8373,10 +8507,21 @@ Symbol *Resolve_Overloaded_Call (String_Slice name,
 
 void Symbol_Manager_Init_Predefined (void) {
 
+  Creating_Predefined_Types    = true;
   sm->type_boolean             = Type_New (TYPE_BOOLEAN, S ("BOOLEAN"));
   sm->type_boolean->size       = 1;
   sm->type_boolean->low_bound  = (Type_Bound){ .kind = BOUND_INTEGER, .int_value = 0 };
   sm->type_boolean->high_bound = (Type_Bound){ .kind = BOUND_INTEGER, .int_value = 1 };
+  {
+    /* BOOLEAN is an enumeration type (RM 3.5.3); its literal table
+       lets a derived boolean install FALSE and TRUE as implicit
+       literal declarations like any other derived enumeration. */
+    static String_Slice boolean_literal_names[2];
+    boolean_literal_names[0] = S ("FALSE");
+    boolean_literal_names[1] = S ("TRUE");
+    sm->type_boolean->enumeration.literals      = boolean_literal_names;
+    sm->type_boolean->enumeration.literal_count = 2;
+  }
 
   sm->type_integer             = Type_New (TYPE_INTEGER, S ("INTEGER"));
   sm->type_integer->size       = 4;
@@ -8583,6 +8728,7 @@ void Symbol_Manager_Init_Predefined (void) {
       Symbol_Add (op_sym);
     }
   }
+  Creating_Predefined_Types = false;
 }
 void Symbol_Manager_Init (void) {
   sm                 = Arena_Allocate (sizeof (Symbol_Manager));
@@ -8881,6 +9027,26 @@ Type_Info *Resolve_Selected (Syntax_Node *node) {
     if (prefix_sym and prefix_sym->kind == SYMBOL_PACKAGE) {
       while (prefix_sym->aliased) prefix_sym = prefix_sym->aliased;
       node->selected.prefix->symbol = prefix_sym;
+      /* Several exported homographs may share the name (enumeration
+         literals overloaded across the package's types): the expected
+         type decides among them (RM 8.7). */
+      Type_Info *expected = node->type ? Type_Base (node->type) : NULL;
+      if (expected)
+        for (uint32_t i = 0; i < prefix_sym->exported_count; i++) {
+          Symbol *cand = prefix_sym->exported[i];
+          if (not Slice_Equal_Ignore_Case (cand->name,
+                                           node->selected.selector))
+            continue;
+          Type_Info *cand_type = (cand->kind == SYMBOL_FUNCTION and
+                                  cand->return_type)
+                                 ? cand->return_type : cand->type;
+          if (cand_type and Type_Base (cand_type) == expected) {
+            Symbol *sel = Single_Task_Object_Denoted (cand);
+            node->symbol = sel;
+            node->type = cand_type;
+            return node->type;
+          }
+        }
       for (uint32_t i = 0; i < prefix_sym->exported_count; i++) {
         if (Slice_Equal_Ignore_Case (prefix_sym->exported[i]->name,
                        node->selected.selector)) {
@@ -9320,6 +9486,8 @@ Syntax_Node *Synthesize_Infix_From_Apply (Syntax_Node *node, Token_Kind opk) {
 
 Type_Info *Resolve_Apply (Syntax_Node *node) {
   Type_Info *outer_ctx = node->type;
+  bool statement_call = sm->call_statement_target;
+  sm->call_statement_target = false;
 
   uint32_t arg_count = (uint32_t)node->apply.arguments.count;
   Type_Info **arg_types = NULL;
@@ -9430,7 +9598,7 @@ Type_Info *Resolve_Apply (Syntax_Node *node) {
         chose_index_interp = true;
       }
     }
-    if (not prefix_sym) {
+    if (not prefix_sym or prefix_sym->is_predefined) {
       Token_Kind opk = Token_From_Op_Name (prefix->string_val.text);
       if (opk != TK_EOF and arg_count >= 1 and arg_count <= 2) {
         Syntax_Node *syn = Synthesize_Infix_From_Apply (node, opk);
@@ -9457,9 +9625,14 @@ Type_Info *Resolve_Apply (Syntax_Node *node) {
           }
 
           prefix_sym = Resolve_Overloaded_Call (prefix->string_val.text,
-                                                &args, call_ctx);
+                                                &args, call_ctx, false);
 
-          if (not prefix_sym) {
+          /* No user-declared operator matched: the call denotes a
+             predefined operator, and the infix machinery models those
+             for every type -- the materialized INTEGER/FLOAT symbols
+             do not know that a derived type's implicit operator
+             returns the derived type. */
+          if (not prefix_sym or prefix_sym->is_predefined) {
             Type_Info *rt = Resolve_Expression (syn);
             if (rt) {
               node->type = rt;
@@ -9471,7 +9644,8 @@ Type_Info *Resolve_Apply (Syntax_Node *node) {
         }
       }
       if (not prefix_sym)
-        prefix_sym = Resolve_Overloaded_Call (prefix->string_val.text, &args, call_ctx);
+        prefix_sym = Resolve_Overloaded_Call (prefix->string_val.text, &args,
+                                              call_ctx, statement_call);
     }
     if (prefix_sym) {
       prefix->symbol = prefix_sym;
@@ -11120,6 +11294,7 @@ void Seed_Expected_Type (Syntax_Node *expr, Type_Info *expected) {
   switch (expr->kind) {
     case NK_AGGREGATE: case NK_APPLY:      case NK_BINARY_OP:
     case NK_UNARY_OP:  case NK_IDENTIFIER: case NK_STRING:
+    case NK_SELECTED:
       expr->type = expected;
       break;
     default:
@@ -11131,6 +11306,7 @@ void Seed_Expected_Type (Syntax_Node *expr, Type_Info *expected) {
 static Interp_List *Node_Interps_Reset (Syntax_Node *n) {
   if (not n->interps) n->interps = Arena_Allocate (sizeof (Interp_List));
   n->interps->count = 0;
+  n->interps->used_fallback = false;
   return n->interps;
 }
 
@@ -11148,6 +11324,23 @@ static Type_Info *Arith_Result_Type (Type_Info *lt, Type_Info *rt) {
   if (Type_Is_Real (rt) and not Type_Is_Real (lt)) return rt;
   if (Type_Is_Universal (lt) and not Type_Is_Universal (rt)) return rt;
   return lt;
+}
+
+/* RM 4.5.2: the two membership operands have the same type.  Base
+   identity is the rule; the universal types stand for any type of
+   their class, and name matching bridges re-materialized library
+   types the same way Type_Covers does. */
+static bool Membership_Operand_Compatible (Type_Info *expr, Type_Info *mark) {
+  if (Type_Base (expr) == Type_Base (mark)) return true;
+  if (Type_Is_Universal_Integer (expr)) return Type_Is_Integer_Like (mark);
+  if (Type_Is_Universal_Real (expr))    return Type_Is_Real (mark);
+  if (Type_Is_Universal_Integer (mark)) return Type_Is_Integer_Like (expr);
+  if (Type_Is_Universal_Real (mark))    return Type_Is_Real (expr);
+  if (expr->name.data and mark->name.data and
+      Slice_Equal_Ignore_Case (expr->name, S ("ADDRESS")) and
+      Slice_Equal_Ignore_Case (mark->name, S ("ADDRESS")))
+    return true;
+  return Types_Match_By_Name (expr, mark);
 }
 
 static bool Numeric_Compatible (Type_Info *a, Type_Info *b) {
@@ -11318,17 +11511,31 @@ void Analyze_Binary (Syntax_Node *n) {
 
       if (is_arith and not private_view and not formal_op_governs) {
         if (op == TK_EXPON) {
-          if (Type_Is_Numeric (lt) and
-              (Type_Is_Integer_Like (rt) or Type_Is_Universal_Integer (rt)))
+          /* RM 4.5.6: the base is integer or floating (never fixed),
+             and the exponent is of the predefined type INTEGER. */
+          if (Type_Is_Numeric (lt) and Type_Base (lt)->kind != TYPE_FIXED and
+              (Type_Is_Universal_Integer (rt) or
+               Type_Base (rt) == sm->type_integer))
             Interp_Add (out, NULL, lt, lt, sm->type_integer, 0);
         } else if ((op == TK_STAR or op == TK_SLASH) and
                    (Type_Is_Fixed_Point (lt) or Type_Is_Fixed_Point (rt)) and
                    not Numeric_Compatible (lt, rt)) {
-          if (Type_Is_Fixed_Point (lt) and Type_Is_Integer_Like (rt))
+          /* RM 4.5.5: the predefined mixed multiplying operators pair
+             a fixed operand with the predefined type INTEGER only. */
+          bool rt_is_standard_integer = Type_Is_Universal_Integer (rt) or
+                                        Type_Base (rt) == sm->type_integer;
+          bool lt_is_standard_integer = Type_Is_Universal_Integer (lt) or
+                                        Type_Base (lt) == sm->type_integer;
+          if (Type_Is_Fixed_Point (lt) and rt_is_standard_integer)
             Interp_Add (out, NULL, lt, lt, sm->type_integer, 0);
-          else if (op == TK_STAR and Type_Is_Integer_Like (lt) and
+          else if (op == TK_STAR and lt_is_standard_integer and
                    Type_Is_Fixed_Point (rt))
             Interp_Add (out, NULL, rt, sm->type_integer, rt, 0);
+          else if (Type_Is_Fixed_Point (lt) and Type_Is_Fixed_Point (rt))
+            /* Fixed * fixed pairs any two fixed operands; the result
+               is universal_fixed, consumed by the enclosing
+               conversion (RM 4.5.5). */
+            Interp_Add (out, NULL, lt, lt, rt, 0);
         } else if ((op == TK_STAR or op == TK_SLASH) and
                    Type_Is_Integer_Like (lt) and rt == sm->type_universal_real) {
           Interp_Add (out, NULL, sm->type_universal_real,
@@ -11339,16 +11546,40 @@ void Analyze_Binary (Syntax_Node *n) {
                       sm->type_universal_real, sm->type_integer, 0);
         } else if (Numeric_Compatible (lt, rt)) {
           Type_Info *res = Arith_Result_Type (lt, rt);
-          Interp_Add (out, NULL, res, res, res, 0);
+          /* RM 4.5.5: mod and rem exist for integer types only, and a
+             fixed operand of "*" or "/" pairs with INTEGER or another
+             fixed operand -- never with a (universal) real one. */
+          bool fixed_mismatch = (op == TK_STAR or op == TK_SLASH) and
+            Type_Is_Fixed_Point (Type_Base (lt)) !=
+            Type_Is_Fixed_Point (Type_Base (rt)) and
+            not Type_Is_Universal_Integer (lt) and
+            not Type_Is_Universal_Integer (rt);
+          bool mod_rem_nonint = (op == TK_MOD or op == TK_REM) and
+            not Type_Is_Integer_Like (res) and
+            not Type_Is_Universal_Integer (res);
+          if (not fixed_mismatch and not mod_rem_nonint)
+            Interp_Add (out, NULL, res, res, res, 0);
         }
       }
       bool is_ordering = is_cmp and op != TK_EQ and op != TK_NE;
-      if (is_cmp and not (is_ordering and private_view) and
-          (Numeric_Compatible (lt, rt) or
-           Type_Covers_Strict (lt, rt) or Type_Covers_Strict (rt, lt))) {
+      /* Compare through generic-actual views: inside an instance a
+         formal type and its actual denote the same type. */
+      Type_Info *cmp_lt = Peel_Generic_Actual_View (lt);
+      Type_Info *cmp_rt = Peel_Generic_Actual_View (rt);
+      if (is_cmp and
+          (Numeric_Compatible (cmp_lt, cmp_rt) or
+           Type_Covers_Strict (cmp_lt, cmp_rt) or
+           Type_Covers_Strict (cmp_rt, cmp_lt))) {
         Type_Info *opnd = (Type_Is_Universal (lt) and not Type_Is_Universal (rt))
                           ? rt : lt;
-        Interp_Add (out, NULL, sm->type_boolean, opnd, opnd, 0);
+        /* RM 4.5.2: ordering needs a scalar or one-dimensional discrete
+           array type (and no private view); equality needs a type that
+           is not limited in the view at hand. */
+        bool legal = is_ordering
+          ? not private_view and Type_Has_Predefined_Ordering (opnd)
+          : not Type_Is_Limited_View (opnd);
+        if (legal)
+          Interp_Add (out, NULL, sm->type_boolean, opnd, opnd, 0);
       }
       if (is_bool and not private_view and
           (Type_Is_Boolean (lt) or Type_Is_Bool_Array (lt)) and
@@ -11357,8 +11588,11 @@ void Analyze_Binary (Syntax_Node *n) {
           Interp_Add (out, NULL, lt, lt, lt, 0);
       }
       if (is_concat and not private_view) {
-        Type_Info *cands[2] = { Type_Is_Array_Like (lt) ? lt : NULL,
-                                Type_Is_Array_Like (rt) ? rt : NULL };
+        /* RM 4.5.3: catenation is predefined for one-dimensional
+           arrays only. */
+        Type_Info *cands[2] = {
+          Type_Is_Array_Like (lt) and lt->array.index_count == 1 ? lt : NULL,
+          Type_Is_Array_Like (rt) and rt->array.index_count == 1 ? rt : NULL };
         if (cands[0] and cands[1] and
             Type_Base (cands[0]) == Type_Base (cands[1]))
           cands[1] = NULL;
@@ -11416,9 +11650,11 @@ void Analyze_Binary (Syntax_Node *n) {
 
   Cancel_Use_Visible_Homographs (out);
 
-  if (out->count == 0 and not is_concat)
+  if (out->count == 0 and not is_concat) {
+    out->used_fallback = true;
     Interp_Add (out, NULL, is_cmp ? sm->type_boolean : L->type,
                 L ? L->type : NULL, R ? R->type : NULL, 0);
+  }
 }
 
 void Analyze_Unary (Syntax_Node *n) {
@@ -11460,9 +11696,11 @@ void Analyze_Unary (Syntax_Node *n) {
 
   Cancel_Use_Visible_Homographs (out);
 
-  if (out->count == 0)
+  if (out->count == 0) {
+    out->used_fallback = true;
     Interp_Add (out, NULL, op == TK_NOT ? sm->type_boolean : R->type,
                 R ? R->type : NULL, NULL, 0);
+  }
 }
 
 void Analyze_Expr (Syntax_Node *n) {
@@ -11474,7 +11712,60 @@ void Analyze_Expr (Syntax_Node *n) {
     Node_Interps_Reset (n); return;
   }
   Type_Info *t = Resolve_Expression (n);
-  Interp_Add (Node_Interps_Reset (n), n->symbol, t, t, NULL, 0);
+  Interp_List *out = Node_Interps_Reset (n);
+  Interp_Add (out, n->symbol, t, t, NULL, 0);
+
+  /* A call to an overloaded function keeps every visible profile's
+     result type open; the operator context picks one and the operand
+     is then re-resolved against it (RM 6.6, 8.7).  Committing here to
+     the first match would hide, say, the parent-typed original of a
+     derived subprogram behind the derived one. */
+  /* An expanded name can denote any of the package's same-named
+     exports (enumeration literals overloaded across its types); keep
+     them all open for the operator context to pick from (RM 8.7). */
+  if (n->kind == NK_SELECTED and n->selected.prefix and
+      n->selected.prefix->symbol and
+      n->selected.prefix->symbol->kind == SYMBOL_PACKAGE) {
+    Symbol *package_symbol = n->selected.prefix->symbol;
+    for (uint32_t i = 0; i < package_symbol->exported_count; i++) {
+      Symbol *candidate = package_symbol->exported[i];
+      if (not candidate or candidate == n->symbol) continue;
+      if (not Slice_Equal_Ignore_Case (candidate->name,
+                                       n->selected.selector))
+        continue;
+      if (Symbol_Is_Subprogram (candidate) and
+          not Subprogram_Callable_With_No_Arguments (candidate))
+        continue;
+      Type_Info *candidate_type =
+        (candidate->kind == SYMBOL_FUNCTION and candidate->return_type)
+        ? candidate->return_type : candidate->type;
+      if (not candidate_type) continue;
+      bool duplicate = false;
+      for (uint32_t j = 0; j < out->count and not duplicate; j++)
+        duplicate = out->items[j].typ == candidate_type;
+      if (not duplicate)
+        Interp_Add (out, candidate, candidate_type, candidate_type, NULL, 0);
+    }
+  }
+
+  if (n->kind == NK_APPLY and n->apply.prefix and
+      n->apply.prefix->kind == NK_IDENTIFIER and
+      n->symbol and n->symbol->kind == SYMBOL_FUNCTION) {
+    Interp_List candidates = { .count = 0 };
+    Collect_Interpretations (n->apply.prefix->string_val.text, &candidates);
+    for (uint32_t i = 0; i < candidates.count; i++) {
+      Symbol *alt = candidates.items[i].nam;
+      if (not alt or alt == n->symbol or alt->kind != SYMBOL_FUNCTION or
+          not alt->return_type)
+        continue;
+      if (alt->parameter_count < n->apply.arguments.count) continue;
+      bool duplicate = false;
+      for (uint32_t j = 0; j < out->count and not duplicate; j++)
+        duplicate = out->items[j].typ == alt->return_type;
+      if (not duplicate)
+        Interp_Add (out, alt, alt->return_type, alt->return_type, NULL, 0);
+    }
+  }
 }
 
 static Interpretation *Select_Interp (Interp_List *l, Type_Info *ctx) {
@@ -11588,6 +11879,15 @@ static void Resolve_Operand (Syntax_Node *o, Type_Info *opnd_typ) {
     if (not Resolve_Char_As_Enum (o, opnd_typ) and
         Type_Is_Character_Type (opnd_typ))
       o->type = opnd_typ;
+  } else if ((o->kind == NK_SELECTED or o->kind == NK_APPLY) and
+             opnd_typ and o->type and
+             not Type_Covers (opnd_typ, o->type) and
+             o->interps and o->interps->count > 1) {
+    /* An expanded name or overloaded call resolved to another of its
+       meanings: re-resolve against the chosen operand type. */
+    o->type = opnd_typ;
+    o->symbol = NULL;
+    Resolve_Expression (o);
   } else if (opnd_typ and (not o->type or o->kind == NK_AGGREGATE or
                            o->kind == NK_STRING)) {
     if ((o->kind == NK_STRING or o->kind == NK_AGGREGATE) and
@@ -11720,7 +12020,36 @@ Type_Info *Resolve_Binary_Op (Syntax_Node *node) {
   if (node->binary.op == TK_AMPERSAND and Type_Is_Array_Like (ctx))
     Seed_Catenation_Operands (node, Type_Base (ctx));
   Analyze_Binary (node);
-  return Resolve_In_Context (node, ctx);
+  Type_Info *result = Resolve_In_Context (node, ctx);
+
+  Syntax_Node *L = node->binary.left, *R = node->binary.right;
+  Token_Kind op = node->binary.op;
+  if (op == TK_IN or op == TK_NOT) {
+    /* RM 4.5.2: both membership operands have the same type. */
+    Type_Info *tested = R ? (R->symbol and (R->symbol->kind == SYMBOL_TYPE or
+                                            R->symbol->kind == SYMBOL_SUBTYPE)
+                             ? R->symbol->type : R->type) : NULL;
+    /* A range's bounds may have been re-resolved against the tested
+       expression's type after the range node's own type was set
+       (character literals overloaded on an enumeration); the bound
+       carries the authoritative type. */
+    if (R and R->kind == NK_RANGE and R->range.low and R->range.low->type)
+      tested = R->range.low->type;
+    Type_Info *lt = L ? L->type : NULL;
+    if (lt and tested and not Membership_Operand_Compatible (lt, tested))
+      Report_Error (node->location,
+        "the tested expression and the type mark of a membership test "
+        "must have the same type (RM 4.5.2)");
+  } else if (node->interps and node->interps->used_fallback and
+             not node->symbol and
+             L and R and L->type and R->type) {
+    String_Slice name = Operator_Name (op);
+    Report_Error (node->location,
+      "there is no legal interpretation of operator \"%.*s\" for these "
+      "operand types",
+      (int)name.length, name.data);
+  }
+  return result;
 }
 
 static void Resolve_Qualified_Operand (Syntax_Node *expr, Type_Info *qualifying) {
@@ -11797,7 +12126,17 @@ Type_Info *Resolve_Expression (Syntax_Node *node) {
       }
       Type_Info *unary_ctx = node->type;
       Analyze_Unary (node);
-      return Resolve_In_Context (node, unary_ctx);
+      Type_Info *unary_result = Resolve_In_Context (node, unary_ctx);
+      if (node->interps and node->interps->used_fallback and
+          not node->symbol and
+          node->unary.operand and node->unary.operand->type) {
+        String_Slice name = Operator_Name (node->unary.op);
+        Report_Error (node->location,
+          "there is no legal interpretation of operator \"%.*s\" for "
+          "this operand type",
+          (int)name.length, name.data);
+      }
+      return unary_result;
     }
     case NK_APPLY:
       return Resolve_Apply (node);
@@ -11885,8 +12224,7 @@ Type_Info *Resolve_Expression (Syntax_Node *node) {
                 }
               }
 
-              if (prefix_type->kind == TYPE_ARRAY and
-                prefix_type->array.indices and
+              if (prefix_type->array.indices and
                 dim < prefix_type->array.index_count and
                 prefix_type->array.indices[dim].index_type) {
                 node->type = prefix_type->array.indices[dim].index_type;
@@ -12400,6 +12738,12 @@ Type_Info *Resolve_Expression (Syntax_Node *node) {
 
         Type_Info *derived = Type_New (parent->kind, S(""));
         derived->parent_type = parent;
+        /* RM 7.4.4: a type derived from a limited view is itself
+           limited, everywhere -- the derivation captures the parent's
+           view at the point of derivation, and no later visibility of
+           the parent's full view changes it. */
+        derived->is_limited = Type_Limited_View_Active (parent) or
+          (parent->is_limited and not parent->declared_private);
         derived->size = parent->size;
         derived->alignment = parent->alignment;
         derived->specified_bit_size = parent->specified_bit_size;
@@ -12407,8 +12751,13 @@ Type_Info *Resolve_Expression (Syntax_Node *node) {
         derived->low_bound = parent->low_bound;
         derived->high_bound = parent->high_bound;
 
-        if (Type_Is_Enumeration (parent)) {
+        if (Type_Is_Enumeration (parent) or Type_Is_Boolean (parent) or
+            Type_Is_Character (parent)) {
           derived->enumeration = parent->enumeration;
+          /* Deriving from a subtype: the subtype view may carry no
+             literal table of its own -- the base type has it. */
+          if (derived->enumeration.literal_count == 0 and Type_Base (parent))
+            derived->enumeration = Type_Base (parent)->enumeration;
         } else if (Type_Is_Array_Like (parent)) {
           derived->array = parent->array;
         } else if (Type_Is_Record (parent)) {
@@ -13619,9 +13968,8 @@ void Populate_Package_Exports (Symbol *pkg_sym, Syntax_Node *pkg_spec) {
       if (decl->type_decl.definition and
         decl->type_decl.definition->kind == NK_ENUMERATION_TYPE) {
         count += (uint32_t)decl->type_decl.definition->enum_type.literals.count;
-      } else if (decl->symbol and Type_Is_Enumeration (decl->symbol->type) and
-             decl->symbol->type->enumeration.literal_count > 0) {
-
+      } else if (decl->symbol and
+             Type_Has_Enumeration_Literals (decl->symbol->type)) {
         count += decl->symbol->type->enumeration.literal_count;
       }
     } else if (Decl_Is_Visible_Subprogram (decl)) {
@@ -13668,8 +14016,7 @@ void Populate_Package_Exports (Symbol *pkg_sym, Syntax_Node *pkg_spec) {
             pkg_sym->exported[pkg_sym->exported_count++] = lits->items[j]->symbol;
           }
         }
-      } else if (Type_Is_Enumeration (decl->symbol->type) and
-             decl->symbol->type->enumeration.literal_count > 0) {
+      } else if (Type_Has_Enumeration_Literals (decl->symbol->type)) {
 
         Type_Info *etype = decl->symbol->type;
         for (uint32_t j = 0; j < etype->enumeration.literal_count; j++) {
@@ -14020,7 +14367,10 @@ void Resolve_Statement (Syntax_Node *node) {
         }
         Resolve_In_Context (tgt, NULL);
       } else {
+        if (tgt and tgt->kind == NK_APPLY)
+          sm->call_statement_target = true;
         Resolve_Expression (tgt);
+        sm->call_statement_target = false;
       }
     } break;
     case NK_RETURN:
@@ -14347,6 +14697,10 @@ void Install_Declaration_Symbols (Node_List *decls) {
         }
       }
     }
+    /* Captured before Symbol_Add rehomes the symbol to this scope. */
+    Scope *declaration_origin_scope =
+      decl->symbol ? decl->symbol->defining_scope : NULL;
+
     if (decl->symbol) Symbol_Add (decl->symbol);
     if (task_obj_sym) Symbol_Add (task_obj_sym);
 
@@ -14370,6 +14724,27 @@ void Install_Declaration_Symbols (Node_List *decls) {
       Node_List *lits = &decl->type_decl.definition->enum_type.literals;
       for (uint32_t j = 0; j < lits->count; j++)
         if (lits->items[j]->symbol) Symbol_Add (lits->items[j]->symbol);
+    }
+
+    /* A derived enumeration-like type's literals are implicit
+       declarations with no syntax nodes of their own; carry them from
+       the scope the declaration was first resolved in. */
+    if (decl->kind == NK_TYPE_DECL and decl->symbol and
+        decl->type_decl.definition and
+        decl->type_decl.definition->kind == NK_DERIVED_TYPE and
+        Type_Has_Enumeration_Literals (decl->symbol->type)) {
+      Scope     *origin = declaration_origin_scope;
+      Type_Info *etype  = decl->symbol->type;
+      for (uint32_t j = 0; origin and j < etype->enumeration.literal_count; j++) {
+        String_Slice lit_name = etype->enumeration.literals[j];
+        uint32_t hash = Symbol_Hash_Name (lit_name);
+        for (Symbol *s = origin->buckets[hash]; s; s = s->next_in_bucket)
+          if (s->kind == SYMBOL_LITERAL and s->type == etype and
+              Slice_Equal_Ignore_Case (s->name, lit_name)) {
+            Symbol_Add (s);
+            break;
+          }
+      }
     }
   }
 }
@@ -14613,7 +14988,7 @@ Symbol *Generic_Formal_Equality_Actual (Symbol *inst_sym, Syntax_Node *formal) {
   if (Generic_Formal_Parameter_Types (inst_sym, formal, arg_types) != 2)
     return NULL;
   Argument_Info args = { .types = arg_types, .count = 2, .names = NULL };
-  Symbol *eq_op = Resolve_Overloaded_Call (S("="), &args, NULL);
+  Symbol *eq_op = Resolve_Overloaded_Call (S("="), &args, NULL, false);
   if (eq_op and eq_op->kind == SYMBOL_FUNCTION and not eq_op->is_predefined)
     return eq_op;
   return NULL;
@@ -14677,6 +15052,36 @@ void Install_Generic_Formal_Symbols (Symbol *generic_symbol) {
             Resolve_Expression (formal->generic_type_param.def_detail);
             type->access.designated_type =
               formal->generic_type_param.def_detail->type;
+          }
+
+          if (formal->generic_type_param.def_kind == GEN_DEF_ARRAY and
+              formal->generic_type_param.def_detail) {
+            /* A formal array type states its index and component
+               types (earlier formals included); attributes such as
+               'FIRST answer with the stated index type. */
+            Syntax_Node *array_definition =
+              formal->generic_type_param.def_detail;
+            Node_List *index_marks = &array_definition->array_type.indices;
+            type->array.index_count = index_marks->count;
+            type->array.indices =
+              Arena_Allocate (index_marks->count * sizeof (Index_Info));
+            for (uint32_t ix = 0; ix < index_marks->count; ix++) {
+              Syntax_Node *mark = index_marks->items[ix];
+              if (mark and mark->kind == NK_SUBTYPE_INDICATION and
+                  mark->subtype_ind.subtype_mark) {
+                Resolve_Expression (mark->subtype_ind.subtype_mark);
+                type->array.indices[ix].index_type =
+                  mark->subtype_ind.subtype_mark->type;
+              }
+            }
+            if (array_definition->array_type.component_type) {
+              Syntax_Node *component =
+                array_definition->array_type.component_type;
+              Resolve_Expression (component);
+              type->array.element_type = component->type;
+            }
+            type->array.is_constrained =
+              array_definition->array_type.is_constrained;
           }
 
           if (formal->generic_type_param.discriminants.count > 0) {
@@ -15134,6 +15539,10 @@ void Bind_Generic_Formals_To_Actuals (Symbol *instance_sym,
             actual_view->formal_private_view =
               formal->generic_type_param.def_kind == GEN_DEF_PRIVATE or
               formal->generic_type_param.def_kind == GEN_DEF_LIMITED_PRIVATE;
+            /* Recorded so view-sensitive predicates can ask which
+               formal class this view stands for (RM 12.1.2). */
+            actual_view->generic_formal_class =
+              formal->generic_type_param.def_kind;
             binding->type = actual_view;
 
             actual_view->defining_symbol = binding;
@@ -15398,44 +15807,29 @@ static bool Actual_Is_Renameable_Variable (Syntax_Node *node) {
   }
 }
 
+static bool Actual_Conforms_To_Formal_Subprogram (Symbol *actual,
+                                                  Syntax_Node *formal,
+                                                  Symbol *instance_sym);
+
+/* The name given as a generic actual may denote any member of an
+   overload family — subprograms of either kind and enumeration
+   literals alike.  Pick the interpretation that conforms to the
+   formal's profile (RM 12.3.6); keep the resolver's own choice when
+   nothing conforms, so the later validation pass reports it. */
 static Symbol *Disambiguate_Subprogram_Actual (Symbol *first,
                                                Symbol *instance_sym,
                                                Syntax_Node *formal) {
-  if (not first or not first->next_overload) return first;
-  Node_List *formal_parameters = &formal->generic_subprog_param.parameters;
-  Type_Info *formal_types[16];
-  uint32_t formal_count = 0;
-  for (uint32_t i = 0; i < formal_parameters->count; i++) {
-    Syntax_Node *ps = formal_parameters->items[i];
-    if (not ps or ps->kind != NK_PARAM_SPEC) continue;
-    Type_Info *pt = Formal_Mark_Actual_Type (instance_sym,
-                                             ps->param_spec.param_type);
-    for (uint32_t n = 0; n < ps->param_spec.names.count and
-                         formal_count < 16; n++)
-      formal_types[formal_count++] = pt;
-  }
-  Type_Info *formal_result = formal->generic_subprog_param.is_function
-    ? Formal_Mark_Actual_Type (instance_sym,
-                               formal->generic_subprog_param.return_type)
-    : NULL;
-  for (Symbol *candidate = first; candidate;
-       candidate = candidate->next_overload) {
-    if (not Symbol_Is_Subprogram (candidate))
-      continue;
-    if (candidate->parameter_count != formal_count) continue;
-    bool matches = true;
-    for (uint32_t i = 0; i < formal_count; i++)
-      if (formal_types[i] and
-          not Same_Base_Type (formal_types[i],
-                              candidate->parameters[i].param_type)) {
-        matches = false;
-        break;
-      }
-    if (matches and formal->generic_subprog_param.is_function and
-        formal_result and
-        not Same_Base_Type (formal_result, candidate->return_type))
-      matches = false;
-    if (matches) return candidate;
+  if (not first) return first;
+  if (Actual_Conforms_To_Formal_Subprogram (first, formal, instance_sym))
+    return first;
+  Interp_List candidates;
+  Collect_Interpretations (first->name, &candidates);
+  for (uint32_t i = 0; i < candidates.count; i++) {
+    Symbol *candidate = candidates.items[i].nam;
+    if (candidate and candidate != first and
+        Actual_Conforms_To_Formal_Subprogram (candidate, formal,
+                                              instance_sym))
+      return candidate;
   }
   return first;
 }
@@ -16211,6 +16605,13 @@ void Resolve_Declaration (Syntax_Node *node) {
           if (Type_Is_Enumeration (et))
             Resolve_Char_As_Enum (node->object_decl.init, et);
         }
+
+        if (node->object_decl.object_type and
+            node->object_decl.object_type->type and init->type and
+            not node->object_decl.is_rename and
+            not Type_Covers (node->object_decl.object_type->type, init->type))
+          Report_Error (init->location,
+            "the initial value must have the type of the object (RM 3.2.1)");
       }
 
       for (uint32_t i = 0; i < node->object_decl.names.count; i++) {
@@ -16349,6 +16750,9 @@ void Resolve_Declaration (Syntax_Node *node) {
 
             type->base_type   = def_type->base_type;
             type->parent_type = def_type->parent_type;
+            /* Limitedness computed at the point of derivation
+               (RM 7.4.4) must survive into the declared type. */
+            type->is_limited  = type->is_limited or def_type->is_limited;
 
             type->task_component_state = TASK_COMPONENT_UNKNOWN;
 
@@ -16401,7 +16805,8 @@ void Resolve_Declaration (Syntax_Node *node) {
               }
             } else if (Type_Is_Access (def_type)) {
               type->access = def_type->access;
-            } else if (Type_Is_Enumeration (def_type)) {
+            } else if (Type_Is_Enumeration (def_type) or
+                       Type_Is_Boolean (def_type)) {
               type->enumeration = def_type->enumeration;
 
               if (node->type_decl.definition and
@@ -16426,6 +16831,9 @@ void Resolve_Declaration (Syntax_Node *node) {
                   Symbol *lit_sym = Symbol_New (SYMBOL_LITERAL, lit_name, node->location);
                   lit_sym->type = literal_type;
                   lit_sym->frame_offset = (int64_t)i;
+                  /* Derived literals are implicit declarations: an
+                     explicit homograph hides them (RM 8.3). */
+                  lit_sym->is_implicit_declaration = true;
                   Symbol_Add (lit_sym);
                 }
               }
@@ -16728,7 +17136,7 @@ void Resolve_Declaration (Syntax_Node *node) {
             }
             Argument_Info args = {.types = arg_types, .count = total_params, .names = arg_names};
             renamed_sym = Resolve_Overloaded_Call (
-              ren->string_val.text, &args, sym->return_type);
+              ren->string_val.text, &args, sym->return_type, is_proc);
             if (renamed_sym) ren->symbol = renamed_sym;
           } else if (ren->kind == NK_SELECTED and total_params > 0) {
 
@@ -17898,7 +18306,12 @@ void Resolve_Declaration (Syntax_Node *node) {
 
                   Resolve_Expression (name_node);
                   Symbol *actual_sym = name_node->symbol;
-                  if (Symbol_Is_Subprogram (actual_sym))
+                  /* The named actual may resolve to any member of an
+                     overload chain — including an enumeration literal
+                     when a subprogram of the same name is intended;
+                     select by conformance with the formal's profile. */
+                  if (Symbol_Is_Subprogram (actual_sym) or
+                      (actual_sym and actual_sym->kind == SYMBOL_LITERAL))
                     actual_sym = Disambiguate_Subprogram_Actual (
                       actual_sym, inst_sym, formal);
                   if (actual_sym) {
@@ -23032,7 +23445,10 @@ LLVM_Value Emit_Bool_Array_Op_Fat (uint32_t left_fat, uint32_t right_fat,
 }
 
 bool Type_Is_Bool_Array (const Type_Info *t) {
-  return Type_Is_Array_Like (t) and Type_Is_Boolean (t->array.element_type);
+  /* The boolean arrays the predefined logical operators exist for:
+     one-dimensional only (RM 4.5.1). */
+  return Type_Is_Array_Like (t) and t->array.index_count == 1 and
+         Type_Is_Boolean (t->array.element_type);
 }
 
 uint32_t Normalize_To_Fat_Pointer (Syntax_Node *expr, LLVM_Value raw, Type_Info *type, LLVM_Rep bt)

@@ -1005,9 +1005,9 @@ package body TEXT_IO is
          -- on a line or page terminator) skip to the next line and keep
          -- looking; if already past TO, advance to the next line (RM 14.3.6).
          loop
-            if FCBs(Idx).Col > TO then
+            if FCBs(Idx).Col > Integer(TO) then
                SKIP_LINE(FILE);
-            elsif FCBs(Idx).Col = TO then
+            elsif FCBs(Idx).Col = Integer(TO) then
                C := Raw_Peek(Idx);
                exit when C /= 10 and C /= 12;  -- a real character sits at TO
                SKIP_LINE(FILE);                -- TO is a terminator: skip line
@@ -1026,10 +1026,10 @@ package body TEXT_IO is
          if FCBs(Idx).Line_Length /= UNBOUNDED and TO > FCBs(Idx).Line_Length then
             raise LAYOUT_ERROR;
          end if;
-         if FCBs(Idx).Col > TO then
+         if FCBs(Idx).Col > Integer(TO) then
             NEW_LINE(FILE);
          end if;
-         while FCBs(Idx).Col < TO loop
+         while FCBs(Idx).Col < Integer(TO) loop
             Raw_Put(Idx, 32);  -- space
             FCBs(Idx).Col := FCBs(Idx).Col + 1;
          end loop;
@@ -1050,8 +1050,8 @@ package body TEXT_IO is
          -- Input: skip whole lines until the line equals TO; if already past
          -- it, advance to the next page first (RM 14.3.6).
          loop
-            exit when FCBs(Idx).Line = TO;
-            if FCBs(Idx).Line > TO then
+            exit when FCBs(Idx).Line = Integer(TO);
+            if FCBs(Idx).Line > Integer(TO) then
                SKIP_PAGE(FILE);
             else
                SKIP_LINE(FILE);
@@ -1061,10 +1061,10 @@ package body TEXT_IO is
          if FCBs(Idx).Page_Length /= UNBOUNDED and TO > FCBs(Idx).Page_Length then
             raise LAYOUT_ERROR;
          end if;
-         if FCBs(Idx).Line > TO then
+         if FCBs(Idx).Line > Integer(TO) then
             NEW_PAGE(FILE);
          end if;
-         while FCBs(Idx).Line < TO loop
+         while FCBs(Idx).Line < Integer(TO) loop
             NEW_LINE(FILE);
          end loop;
       end if;
@@ -1592,7 +1592,7 @@ package body TEXT_IO is
       if FCBs(Idx).Line_Length /= UNBOUNDED then
          if COUNT(Length) > FCBs(Idx).Line_Length then
             raise LAYOUT_ERROR;
-         elsif FCBs(Idx).Col + COUNT(Length) > FCBs(Idx).Line_Length + 1 then
+         elsif FCBs(Idx).Col + Length > Integer(FCBs(Idx).Line_Length) + 1 then
             NEW_LINE(FILE);
          end if;
       end if;
