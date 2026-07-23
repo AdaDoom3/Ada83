@@ -1339,6 +1339,7 @@ String_Slice    Parser_Identifier       (Parser *p);
 void            Parser_Error            (Parser *p, const char *message);
 void            Parser_Error_At_Current (Parser *p, const char *expected);
 void            Parser_Synchronize      (Parser *p);
+void            Parser_Recover_In_Parens(Parser *p);
 bool            Parser_Check_Progress   (Parser *p);
 void            Parser_Check_End_Name   (Parser *p, String_Slice expected);
 Precedence      Get_Infix_Precedence    (Token_Kind kind);
@@ -4090,6 +4091,16 @@ void Lexer_Skip_Whitespace_And_Comments (Lexer *lex) {
       lex->current[0] == '-' and lex->current[1] == '-') {
 
       const char *end_comment = Simd_Find_Newline (lex->current, lex->source_end);
+      /* RM 2.1/2.7: a comment holds graphic characters (and the horizontal
+         tab); any other control character is an error.  One diagnostic per
+         comment is enough. */
+      for (const char *scan = lex->current; scan < end_comment; scan++)
+        if (Is_Control (*scan) and *scan != '\t') {
+          Report_Error ((Source_Location){ .line = lex->line, .column = lex->column,
+                                           .filename = lex->filename },
+                        "control character (code %d) in comment", (unsigned char) *scan);
+          break;
+        }
       lex->column += (uint32_t)(end_comment - lex->current);
       lex->current = end_comment;
     } else break;
@@ -4179,7 +4190,9 @@ void Validate_Numeric_Literal (Source_Location location, String_Slice text) {
         return;
       }
     } else if ((c == 'e' or c == 'E') and region != 1) {
-      if (not prev_digit or not (next_digit or next == '+' or next == '-')) {
+      bool after_closing = region == 2 and (prev == '#' or prev == ':');
+      if (not (prev_digit or after_closing) or
+          not (next_digit or next == '+' or next == '-')) {
         Report_Error (location, "malformed exponent in numeric literal");
         return;
       }
@@ -4435,6 +4448,10 @@ Token Scan_String_Literal (Lexer *lex) {
       char ch = Lexer_Advance (lex);
       if (Is_Control (ch))
         Report_Error (location, "control character in string literal");
+      /* RM 2.10: the % replacement form cannot carry a quotation mark —
+         a string needing one must use the " form. */
+      if (ch == '"' and delimiter == '%')
+        Report_Error (location, "quotation mark not allowed in %%-delimited string");
       Buffer_Grow_If_Full (&buffer, &capacity, length);
       buffer[length++] = ch;
     }
@@ -4660,10 +4677,29 @@ void Parser_Error_At_Current (Parser *parser, const char *expected) {
                 expected, Token_Name[parser->current_token.kind]);
 }
 
+/* Recovery inside a parenthesized list (discriminants, parameters, index
+   constraints): skip to the ';' separating list items or to the ')' that
+   closes the list — whichever comes first at this nesting depth — so one
+   bad item cannot take the list's bracketing down with it. */
+void Parser_Recover_In_Parens (Parser *parser) {
+  if (not parser->panic_mode) return;
+  parser->panic_mode = false;
+  for (int depth = 0; not Parser_At (parser, TK_EOF); Parser_Advance (parser)) {
+    Token_Kind kind = parser->current_token.kind;
+    if (kind == TK_LPAREN) depth++;
+    else if (kind == TK_RPAREN and depth-- == 0) return;
+    else if (kind == TK_SEMICOLON and depth == 0) return;
+  }
+}
+
 void Parser_Synchronize (Parser *parser) {
   parser->panic_mode = false;
-  while (not Parser_At (parser, TK_EOF)) {
-    if (parser->previous_token.kind == TK_SEMICOLON) return;
+  /* The previous-semicolon stop only counts once at least one token has
+     been consumed: an error raised at the very start of a construct
+     (previous token still the old ';') must skip the offending token, or
+     the caller would see no progress and abandon its whole loop. */
+  for (bool advanced = false; not Parser_At (parser, TK_EOF); advanced = true) {
+    if (advanced and parser->previous_token.kind == TK_SEMICOLON) return;
     switch (parser->current_token.kind) {
       case TK_BEGIN: case TK_END: case TK_IF: case TK_CASE: case TK_LOOP:
       case TK_FOR: case TK_WHILE: case TK_RETURN: case TK_DECLARE:
@@ -4767,8 +4803,12 @@ void Parse_Parameter_List (Parser *p, Node_List *params) {
       param->param_spec.default_expr = Parse_Expression (p);
     }
     Node_List_Push (params, param);
+    Parser_Recover_In_Parens (p);
   } while (Parser_Match (p, TK_SEMICOLON));
-  Parser_Expect (p, TK_RPAREN);
+  if (not Parser_Expect (p, TK_RPAREN)) {
+    Parser_Recover_In_Parens (p);
+    Parser_Match (p, TK_RPAREN);
+  }
 }
 
 Syntax_Node *Parse_Aggregate_Association (Parser *p, Syntax_Node *first_choice,
@@ -5410,8 +5450,17 @@ Syntax_Node *Parse_Pragma (Parser *p) {
   Syntax_Node *node = Node_New (NK_PRAGMA, loc);
   node->pragma_node.name = Parser_Identifier (p);
   if (Parser_Match (p, TK_LPAREN)) {
-    Parse_Association_List (p, &node->pragma_node.arguments);
-    Parser_Expect (p, TK_RPAREN);
+    /* RM 2.8: parentheses on a pragma bracket a non-empty association
+       list — PRAGMA P() is not a form of PRAGMA P. */
+    if (Parser_At (p, TK_RPAREN))
+      Report_Error (Parser_Location (p),
+                    "pragma argument list must contain at least one argument");
+    else
+      Parse_Association_List (p, &node->pragma_node.arguments);
+    if (not Parser_Expect (p, TK_RPAREN)) {
+      Parser_Recover_In_Parens (p);
+      Parser_Match (p, TK_RPAREN);
+    }
   }
   return node;
 }
@@ -5915,8 +5964,12 @@ Syntax_Node *Parse_Discriminant_Part (Parser *p) {
       disc->discriminant.default_expr = Parse_Expression (p);
     }
     Node_List_Push (&disc_list->block_stmt.declarations, disc);
+    Parser_Recover_In_Parens (p);
   } while (Parser_Match (p, TK_SEMICOLON));
-  Parser_Expect (p, TK_RPAREN);
+  if (not Parser_Expect (p, TK_RPAREN)) {
+    Parser_Recover_In_Parens (p);
+    Parser_Match (p, TK_RPAREN);
+  }
   return disc_list;
 }
 Syntax_Node *Parse_Type_Declaration(Parser *p) {
@@ -7756,6 +7809,19 @@ void Symbol_Add (Symbol *sym) {
           Slice_Equal_Ignore_Case (existing->name, S("STANDARD")))
         break;
 
+      /* RM 8.3: identifiers of two non-overloadable declarations in the
+         same declarative region are homographs — illegal.  Every legal
+         same-name pairing (completion of a deferred constant or of an
+         incomplete/private type, body over spec, single-task object over
+         its anonymous type, use-visibility) was already dispatched above
+         or never reaches Symbol_Add at all, so what is left is a genuine
+         duplicate.  The new symbol is still dropped; the diagnostic is
+         the difference. */
+      if (not sym->is_predefined and not existing->is_predefined and
+          sm->global_scope != scope)
+        Report_Error (sym->location,
+                      "'%.*s' is already declared in this scope",
+                      (int) sym->name.length, sym->name.data);
       return;
     }
     existing = existing->next_in_bucket;
@@ -16350,6 +16416,16 @@ void Resolve_Declaration (Syntax_Node *node) {
           if (Type_Is_Enumeration (et))
             Resolve_Char_As_Enum (node->object_decl.init, et);
         }
+
+        /* RM 3.2.1: the initial value is of the object's declared subtype;
+           the same covering rule the assignment statement applies. */
+        if (not node->object_decl.is_rename and
+            node->object_decl.object_type and
+            node->object_decl.object_type->type and
+            init->type and
+            not Type_Covers (node->object_decl.object_type->type, init->type))
+          Report_Error (init->location,
+                        "initial value has wrong type for the declared object");
       }
 
       for (uint32_t i = 0; i < node->object_decl.names.count; i++) {
