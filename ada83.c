@@ -2756,6 +2756,7 @@ void        Emit_Formal_Parameter_List   (Symbol *sym,
                                           bool    with_static_chain,
                                           bool    with_names);
 void Emit_Function_Header    (Symbol *sym, bool is_nested);
+const char *Loaded_Define_Linkage (void);
 void Emit_Task_Function_Name (Symbol *task_sym, String_Slice fallback_name);
 void Emit_Parent_Frame_Aliases (Symbol *enclosing_subprogram);
 void Defer_Subprogram_Body   (Syntax_Node *node);
@@ -3326,6 +3327,8 @@ bool  Has_Precompiled_LL   (String_Slice name);
 
 void  Load_Package_Spec (String_Slice name, char *src);
 void  Load_With_Clause_Dependencies (Syntax_Node *context);
+void  Load_Subunit_Context_Closure  (String_Slice subunit_dotted_name,
+                                     uint32_t     ancestor_body_vertex);
 void  Resolve_Context_Use_Clauses   (Syntax_Node *context);
 char *Read_File         (const char *path, size_t *out_size);
 char *Read_File_Simple  (const char *path);
@@ -37329,10 +37332,19 @@ void Emit_Formal_Parameter_List (Symbol *sym, bool with_static_chain,
   Emit (")");
 }
 
+/* Definitions produced while whole-loading a WITH'd unit are copies of
+   code owned by that unit's own compilation; linkonce_odr lets every
+   module holding a copy merge at link, with a strong definition (the
+   owner's, possibly newer) taking precedence. */
+const char *Loaded_Define_Linkage (void) {
+  return cg->generating_loaded_unit ? "linkonce_odr " : "";
+}
+
 void Emit_Function_Header (Symbol *sym, bool is_nested) {
   if (sym) sym->definition_emitted = true;
   cg->reg_emit_gen++;
-  Emit ("define %s @", Subprogram_Return_Rep_String (sym));
+  Emit ("define %s%s @", Loaded_Define_Linkage (),
+        Subprogram_Return_Rep_String (sym));
   Emit_Symbol_Name (sym);
   Emit_Formal_Parameter_List (sym, is_nested, true);
   Emit (" {\nentry:\n");
@@ -38020,7 +38032,7 @@ void Generate_Task_Body (Syntax_Node *node) {
   Emit ("\n; Task body: %.*s\n",
      (int)node->task_body.name.length, node->task_body.name.data);
 
-  Emit ("define ptr @");
+  Emit ("define %sptr @", Loaded_Define_Linkage ());
   Emit_Task_Function_Name (node->symbol, node->task_body.name);
   Emit ("(ptr %%__parent_frame, ptr %%__self_tcb) {\n");
   Emit ("entry:\n");
@@ -38386,7 +38398,7 @@ void Generate_Declaration (Syntax_Node *node) {
             spec_sym->elab_defined = true;
             uint32_t saved_temp = cg->temp_id;
             cg->temp_id = 1;
-            Emit ("define void @");
+            Emit ("define %svoid @", Loaded_Define_Linkage ());
             Emit_Symbol_Name (spec_sym);
             Emit ("___elab() {\nentry:\n");
 
@@ -38670,7 +38682,7 @@ void Generate_Declaration (Syntax_Node *node) {
         if (pkg_sym) pkg_sym->elab_defined = true;
         bool subunit_elab = cg->subunit_parent != NULL;
         Emit ("\n; Package body elaboration\n");
-        Emit ("define void @");
+        Emit ("define %svoid @", Loaded_Define_Linkage ());
         if (pkg_sym) {
           Emit_Symbol_Name (pkg_sym);
         } else {
@@ -38792,7 +38804,7 @@ void Generate_Declaration (Syntax_Node *node) {
             if (has_bindings) {
               Generate_Declaration (inst_sym->instance_spec);
               Emit ("\n; Instance binding + spec elaboration\n");
-              Emit ("define void @");
+              Emit ("define %svoid @", Loaded_Define_Linkage ());
               Emit_Symbol_Name (inst_sym);
               Emit ("___elab() {\nentry:\n");
               Symbol *saved_function = cg->current_function;
@@ -38839,7 +38851,7 @@ void Generate_Declaration (Syntax_Node *node) {
             }
             if (has_bindings) {
               Emit ("\n; Instance formal-object binding elaboration\n");
-              Emit ("define void @");
+              Emit ("define %svoid @", Loaded_Define_Linkage ());
               Emit_Symbol_Name (inst_sym);
               Emit ("___elab() {\nentry:\n");
               Symbol *saved_function = cg->current_function;
@@ -42119,7 +42131,7 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
       Symbol *pkg = cu_unit->symbol;
       pkg->elab_defined = true;
       Emit ("\n; Spec-only package elaboration\n");
-      Emit ("define void @");
+      Emit ("define %svoid @", Loaded_Define_Linkage ());
       Emit_Symbol_Name (pkg);
       Emit ("___elab() {\nentry:\n");
       Symbol  *saved_function = cg->current_function;
@@ -44641,6 +44653,37 @@ void Resolve_Context_Use_Clauses (Syntax_Node *context) {
     Resolve_Declaration (pragmas->items[i]);
 }
 
+/* RM 10.2: the context clauses of a subunit take effect before the
+   elaboration of the ancestor library unit's body. Subunit bodies live
+   in other modules, so their WITH'd units are loaded here (for their
+   elaboration code) and ordered ahead of the ancestor's body, walking
+   nested subunits through the library catalog. */
+void Load_Subunit_Context_Closure (String_Slice subunit_dotted_name,
+                                   uint32_t     ancestor_body_vertex) {
+  Catalog_Entry *subunit_entry =
+    Library_Catalog_Find (subunit_dotted_name, CATALOG_UNIT_SUBUNIT);
+  if (not subunit_entry) return;
+  for (uint32_t w = 0; w < subunit_entry->with_unit_count; w++) {
+    String_Slice dep_name = subunit_entry->with_units[w];
+    char *dep_src = Lookup_Path (dep_name);
+    if (dep_src) Load_Package_Spec (dep_name, dep_src);
+    uint32_t dep_spec = Elab_Reference_Unit (dep_name, UNIT_SPEC);
+    Elab_Add_Edge (&g_elab_graph, dep_spec, ancestor_body_vertex, EDGE_WITH);
+  }
+  for (uint32_t s = 0; s < subunit_entry->stub_count; s++) {
+    String_Slice stub = subunit_entry->stub_names[s];
+    size_t dotted_length =
+      (size_t)subunit_dotted_name.length + 1 + stub.length;
+    char *dotted = Arena_Allocate (dotted_length);
+    memcpy (dotted, subunit_dotted_name.data, subunit_dotted_name.length);
+    dotted[subunit_dotted_name.length] = '.';
+    memcpy (dotted + subunit_dotted_name.length + 1, stub.data, stub.length);
+    Load_Subunit_Context_Closure (
+      (String_Slice){ dotted, (uint32_t)dotted_length },
+      ancestor_body_vertex);
+  }
+}
+
 void Load_Package_Spec (String_Slice name, char *src) {
   if (not src) return;
 
@@ -44712,6 +44755,15 @@ void Load_Package_Spec (String_Slice name, char *src) {
       sm->in_package_visible_part = false;
 
       Populate_Package_Exports (pkg_sym, pkg);
+
+      /* Objects of a WITH'd library package are global data whichever
+         module ends up owning the definition. */
+      for (uint32_t ei = 0; ei < pkg_sym->exported_count; ei++) {
+        Symbol *esym = pkg_sym->exported[ei];
+        if (esym and (esym->kind == SYMBOL_VARIABLE or
+                      esym->kind == SYMBOL_CONSTANT))
+          esym->is_package_level = true;
+      }
 
       Resolve_Declaration_List (&pkg->package_spec.private_decls);
       sm->in_package_visible_part = saved_visible_part;
@@ -44956,6 +45008,24 @@ void Load_Package_Spec (String_Slice name, char *src) {
         if (pkg_sym and (pkg_sym->kind == SYMBOL_PACKAGE or pkg_sym->kind == SYMBOL_GENERIC)) {
           Resolve_Declaration (body_unit);
           Queue_Loaded_Body (body_cu);
+
+          Catalog_Entry *own_body =
+            Library_Catalog_Find (name, CATALOG_UNIT_BODY);
+          if (own_body and own_body->stub_count) {
+            Elab_Init ();
+            uint32_t ancestor_body = Elab_Reference_Unit (name, UNIT_BODY);
+            for (uint32_t s = 0; s < own_body->stub_count; s++) {
+              String_Slice stub = own_body->stub_names[s];
+              size_t dotted_length = (size_t)name.length + 1 + stub.length;
+              char *dotted = Arena_Allocate (dotted_length);
+              memcpy (dotted, name.data, name.length);
+              dotted[name.length] = '.';
+              memcpy (dotted + name.length + 1, stub.data, stub.length);
+              Load_Subunit_Context_Closure (
+                (String_Slice){ dotted, (uint32_t)dotted_length },
+                ancestor_body);
+            }
+          }
         }
       }
       else if (body_unit->kind == NK_PROCEDURE_BODY or

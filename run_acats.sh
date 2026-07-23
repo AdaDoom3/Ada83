@@ -95,7 +95,7 @@ compile_set(){
     local lib=$RESULTS_DIR/$n.lib
     mkdir -p "$lib"
     MAIN_LL=""
-    LINK_AFTER_MAIN=()
+    LINK_FRAGMENTS=()
     COMPILE_FAILED=""
     for part in "${COMPILE_FILES[@]}"; do
         pn=$(basename "$part" .ada)
@@ -111,22 +111,52 @@ compile_set(){
         fi
         if [[ $pn == "$n" ]]; then
             MAIN_LL=$lib/$pn.ll
-        elif [[ -n $MAIN_LL ]]; then
-            LINK_AFTER_MAIN+=("$lib/$pn.ll")
+        else
+            LINK_FRAGMENTS+=("$lib/$pn.ll")
         fi
     done
     [[ -n $MAIN_LL ]] || MAIN_LL=$lib/$(basename "${COMPILE_FILES[-1]}" .ada).ll
 
-    if ((${#LINK_AFTER_MAIN[@]})); then
-        local kept=() frag unit
-        for frag in "${LINK_AFTER_MAIN[@]}"; do
-            unit=$(grep -m1 '^U ' "${frag%.ll}.ali" 2>/dev/null | awk '{print $2}' | sed 's/%.*//' | tr 'A-Z.' 'a-z_')
-            if [[ -n $unit ]] && grep -q "^define.*@${unit}[(_]" "$MAIN_LL"; then
-                continue
-            fi
+    # A fragment module is linked only while it is the CURRENT provider of
+    # some unit: it is dropped when the main module whole-loaded one of its
+    # units (the compiler inlines WITH'd bodies), or when every unit it
+    # provides was superseded — re-submitted by a later compilation, or a
+    # subunit whose ancestor was recompiled (RM 10.1/10.3 replacement: the
+    # later module owns the unit's code, the earlier one is obsolete).
+    if ((${#LINK_FRAGMENTS[@]})); then
+        local kept=() frag unit i p anc u_current
+        local -a frag_units=()
+        local -A last_provider=()
+        for ((i = 0; i < ${#LINK_FRAGMENTS[@]}; i++)); do
+            frag=${LINK_FRAGMENTS[i]}
+            frag_units[i]=$(grep '^U ' "${frag%.ll}.ali" 2>/dev/null \
+                            | awk '{print $2}' | sed 's/%.*//' | tr 'A-Z' 'a-z')
+            for unit in ${frag_units[i]}; do last_provider[$unit]=$i; done
+        done
+        for ((i = 0; i < ${#LINK_FRAGMENTS[@]}; i++)); do
+            frag=${LINK_FRAGMENTS[i]}
+            local in_main=0 current=0
+            [[ -n ${frag_units[i]//[$' \n']} ]] || current=1   # no ALI: keep
+            for unit in ${frag_units[i]}; do
+                u_current=1
+                anc=$unit
+                while :; do
+                    p=${last_provider[$anc]:-$i}
+                    ((p > i)) && u_current=0
+                    [[ $anc == *.* ]] || break
+                    anc=${anc%.*}
+                done
+                ((u_current)) && current=1
+                # unit-owned symbols are @unit( or @unit__…; a single
+                # underscore (@unit_s82) is an overload homograph, not
+                # evidence the main whole-loaded this unit
+                grep -Eq "^define.*@${unit//./__}(\(|__)" "$MAIN_LL" && in_main=1
+            done
+            ((in_main)) && continue
+            ((current)) || continue
             kept+=("$frag")
         done
-        LINK_AFTER_MAIN=(${kept[@]+"${kept[@]}"})
+        LINK_FRAGMENTS=(${kept[@]+"${kept[@]}"})
     fi
 
     BIND_FAILED=""
@@ -153,7 +183,7 @@ run_in_lib(){
 link_program(){
     local n=$1 rc=0
     timeout "$LINK_TIMEOUT" llvm-link -o "$RESULTS_DIR/$n.bc" "$MAIN_LL" \
-        ${LINK_AFTER_MAIN[@]+"${LINK_AFTER_MAIN[@]}"} acats/report.ll \
+        ${LINK_FRAGMENTS[@]+"${LINK_FRAGMENTS[@]}"} acats/report.ll \
         2>"$LOGS_DIR/$n.link" || rc=$?
     case $rc in
         0)       LINK_STATUS=ok ;;
@@ -193,7 +223,7 @@ run_one(){
     # Support packages (check_file, enum_check, spprt13, …) — never contain the
     # test-name form; ACATS test names have no underscore.
     [[ $n == *_* ]] && return
-    local COMPILE_FILES MAIN_LL LINK_AFTER_MAIN COMPILE_FAILED BIND_FAILED
+    local COMPILE_FILES MAIN_LL LINK_FRAGMENTS COMPILE_FAILED BIND_FAILED
     gather_files "$f" "$n"
 
     case ${q,,} in
