@@ -194,6 +194,15 @@ typedef struct {
 #define CHK_STORAGE      ((uint32_t) 256)
 #define CHK_ALL          ((uint32_t) 0xFFFFFFFF)
 
+// Tasking restrictions (implementation-defined pragma RESTRICTIONS, and
+// pragma PROFILE (RAVENSCAR) as the deterministic-tasking bundle of all of
+// them — the Ada 83 analogue of the Ravenscar profile's static subset).
+// Each bit makes the named construct a compile-time error at resolution.
+#define RESTRICT_NO_SELECT_STATEMENTS ((uint32_t) 1)   // selective waits, conditional/timed calls
+#define RESTRICT_NO_ABORT_STATEMENTS  ((uint32_t) 2)   // ABORT
+#define RESTRICT_NO_TASK_ALLOCATORS   ((uint32_t) 4)   // NEW of a task-bearing type
+#define RESTRICT_NO_ENTRY_FAMILIES    ((uint32_t) 8)   // ENTRY E (RANGE)
+
 // IEEE Floating-Point Model
 #define IEEE_FLOAT_DIGITS      6
 #define IEEE_DOUBLE_DIGITS     15
@@ -3768,6 +3777,7 @@ uint32_t Normalize_To_Fat_Pointer (Syntax_Node *expr,
                                    LLVM_Rep     bt);
 void     Emit_Blocking_Entry_Call  (uint32_t task_ptr, uint32_t entry_idx_64,
                                     uint32_t param_block);
+void     Emit_Deferred_Abort_Check (void);
 void     Emit_Entry_Call_Dispatch  (uint32_t task_ptr, uint32_t entry_idx,
                                     uint32_t param_block);
 uint32_t Wrap_Constrained_As_Fat  (Syntax_Node *expr,
@@ -3832,7 +3842,9 @@ void Generate_Statement        (Syntax_Node *node);
 void Generate_Statement_List   (Node_List   *list);
 // RM 11.4: run a package-body elaboration statement sequence under its own
 // exception handlers (bare when there are none).
-void Generate_Guarded_Elaboration (Node_List *statements, Node_List *handlers);
+void Generate_Guarded_Elaboration (Node_List *statements, Node_List *handlers,
+                                   Syntax_Node *activate_spec,
+                                   uint32_t activate_from);
 void Generate_Assignment       (Syntax_Node *node);
 void Generate_Assignment_Body  (Syntax_Node *node, Syntax_Node *target);
 void Generate_If_Statement     (Syntax_Node *node);
@@ -3859,6 +3871,9 @@ void Generate_Raise_Statement  (Syntax_Node *node);
 void Generate_Declaration_List      (Node_List   *list);
 void Emit_Activate_Pending_Tasks    (uint32_t from);
 void Emit_Activate_Pending_Tasks_Range (uint32_t from, uint32_t to);
+void Emit_Task_Body_Elaboration_Checks (Type_Info *ty);
+uint32_t Emit_Task_Body_Unelaborated (Type_Info *ty, uint32_t acc);
+uint32_t Emit_Elaboration_Flag_Load (Symbol *callee);
 
 // Operations over every task embedded in a composite object (records and
 // arrays containing task components, recursively).
@@ -3866,7 +3881,9 @@ typedef enum {
   COMPONENT_TASK_CREATE,    // create each TCB and store it in its slot
   COMPONENT_TASK_ACTIVATE,  // spawn each task's thread
   COMPONENT_TASK_WAIT,      // wait for each activation; record failures
-  COMPONENT_TASK_JOIN       // join each task
+  COMPONENT_TASK_JOIN,      // join each task
+  COMPONENT_TASK_COMPLETE   // mark each created-but-never-activated task
+                            // completed (failed batch activation, RM 9.3)
 } Component_Task_Operation_Kind;
 void Emit_Component_Task_Operation (Type_Info *ty, uint32_t base,
                                     Component_Task_Operation_Kind op,
@@ -3885,6 +3902,7 @@ void Emit_Alloc_Task_Master_Arg    (Type_Info *access_type,
                                     char *buffer, size_t buffer_len);
 void Emit_Activation_Failure_Check (uint32_t failed_flag);
 const char *Task_Parent_Frame_Argument (void);
+const char *Task_Static_Link_Argument  (Symbol *task_sym);
 const char *Task_Master_Record_Argument (void);
 uint32_t Emit_Task_Control_Block_For_Prefix (Syntax_Node *prefix);
 void Emit_Accept_Parameter_Bindings (Node_List *parameters, uint32_t params_ptr);
@@ -3903,6 +3921,7 @@ void Elaborate_Dynamic_Scalar_Bounds (Type_Info  *elab_ty);
 void Generate_Object_Declaration    (Syntax_Node *node);
 bool Object_Declaration_Is_Superseded (Syntax_Node *node, Symbol *sym);
 void Generate_Instance_Global_Object_Declaration (Syntax_Node *node);
+Syntax_Node *Select_Alternative_Accept (Syntax_Node *alt);
 void Emit_Object_Task_Elaboration   (Symbol *sym, Type_Info *ty);
 bool Record_Needs_Runtime_Layout (Type_Info *rec);
 bool Record_Fully_Static_Foldable (Type_Info *rec);
@@ -4912,6 +4931,10 @@ bool Closest_Name_Found (const Closest_Name_Search *search) {
 // legality without committing to it — sets this so its expected failures
 // never reach the user or the error count.
 bool Diagnostics_Suppressed = false;
+
+// Active RESTRICT_* bits (pragma RESTRICTIONS / PROFILE (RAVENSCAR)):
+// resolution rejects the restricted constructs while set.
+uint32_t Active_Restrictions = 0;
 
 void Report_Diagnostic (Source_Location location, const char *severity,
                         const char *format, va_list args) {
@@ -15896,6 +15919,11 @@ Type_Info *Resolve_Expression (Syntax_Node *node) {
       // Resolve subtype mark first to get allocated type; the initializer is
       // the destructured qualified operand and resolves as one (RM 4.7/4.8).
       Resolve_Expression (node->allocator.subtype_mark);
+      if ((Active_Restrictions & RESTRICT_NO_TASK_ALLOCATORS) and
+          node->allocator.subtype_mark and
+          Type_Has_Task_Component (node->allocator.subtype_mark->type))
+        Report_Error (node->location,
+          "allocator of a task-bearing type violates restriction NO_TASK_ALLOCATORS");
       Resolve_Qualified_Operand (node->allocator.expression,
         node->allocator.subtype_mark ? node->allocator.subtype_mark->type : NULL);
 
@@ -18592,6 +18620,9 @@ void Resolve_Statement (Syntax_Node *node) {
       Symbol_Manager_Pop_Scope ();
       break;
     case NK_SELECT:
+      if (Active_Restrictions & RESTRICT_NO_SELECT_STATEMENTS)
+        Report_Error (node->location,
+          "select statement violates restriction NO_SELECT_STATEMENTS");
 
       // SELECT statement - resolve alternatives and ELSE part
       for (uint32_t i = 0; i < node->select_stmt.alternatives.count; i++) {
@@ -18635,6 +18666,9 @@ void Resolve_Statement (Syntax_Node *node) {
       }
       break;
     case NK_ABORT:
+      if (Active_Restrictions & RESTRICT_NO_ABORT_STATEMENTS)
+        Report_Error (node->location,
+          "abort statement violates restriction NO_ABORT_STATEMENTS");
 
       // ABORT statement - resolve task name expressions
       for (uint32_t i = 0; i < node->abort_stmt.task_names.count; i++) {
@@ -22002,6 +22036,10 @@ void Resolve_Declaration (Syntax_Node *node) {
             }
             // RM 9.5: the family index is a discrete range; resolve it so its
             // bounds carry types for the out-of-range check at call/accept.
+            if (entry->entry_decl.index_constraints.count and
+                (Active_Restrictions & RESTRICT_NO_ENTRY_FAMILIES))
+              Report_Error (entry->location,
+                "entry family violates restriction NO_ENTRY_FAMILIES");
             for (uint32_t j = 0; j < entry->entry_decl.index_constraints.count; j++)
               Resolve_Expression (entry->entry_decl.index_constraints.items[j]);
 
@@ -22408,6 +22446,50 @@ void Resolve_Declaration (Syntax_Node *node) {
           }
 
           // else: would apply to enclosing scope
+        }
+
+        // pragma RESTRICTIONS (restriction {, restriction}) — implementation-
+        // defined (RM 2.8 lets an implementation define pragmas; others must
+        // ignore this one). Each named restriction makes its construct a
+        // compile-time error from here on.
+        else if (Slice_Equal_Ignore_Case (pragma_name, S("RESTRICTIONS"))) {
+          for (uint32_t i = 0; i < node->pragma_node.arguments.count; i++) {
+            Syntax_Node *rn = Unwrap_Association (node->pragma_node.arguments.items[i]);
+            if (not rn or rn->kind != NK_IDENTIFIER) continue;
+            String_Slice r = rn->string_val.text;
+            if (Slice_Equal_Ignore_Case (r, S("NO_SELECT_STATEMENTS")))
+              Active_Restrictions |= RESTRICT_NO_SELECT_STATEMENTS;
+            else if (Slice_Equal_Ignore_Case (r, S("NO_ABORT_STATEMENTS")))
+              Active_Restrictions |= RESTRICT_NO_ABORT_STATEMENTS;
+            else if (Slice_Equal_Ignore_Case (r, S("NO_TASK_ALLOCATORS")))
+              Active_Restrictions |= RESTRICT_NO_TASK_ALLOCATORS;
+            else if (Slice_Equal_Ignore_Case (r, S("NO_ENTRY_FAMILIES")))
+              Active_Restrictions |= RESTRICT_NO_ENTRY_FAMILIES;
+            else
+              Report_Warning (rn->location,
+                "unrecognized restriction '%.*s' ignored",
+                (int)r.length, r.data);
+          }
+        }
+
+        // pragma PROFILE (RAVENSCAR) — implementation-defined: the
+        // deterministic-tasking bundle, this implementation's Ada 83
+        // analogue of the Ravenscar static subset. Simple entries and
+        // plain accepts stay legal (Ada 83 has no protected objects to
+        // carry them instead); everything dynamic or nondeterministic —
+        // selective waits, conditional/timed calls, ABORT, task
+        // allocators, entry families — is rejected at compile time.
+        else if (Slice_Equal_Ignore_Case (pragma_name, S("PROFILE"))) {
+          Syntax_Node *pn = node->pragma_node.arguments.count
+            ? Unwrap_Association (node->pragma_node.arguments.items[0]) : NULL;
+          if (pn and pn->kind == NK_IDENTIFIER and
+              Slice_Equal_Ignore_Case (pn->string_val.text, S("RAVENSCAR")))
+            Active_Restrictions |=
+              RESTRICT_NO_SELECT_STATEMENTS | RESTRICT_NO_ABORT_STATEMENTS |
+              RESTRICT_NO_TASK_ALLOCATORS   | RESTRICT_NO_ENTRY_FAMILIES;
+          else
+            Report_Warning (node->location,
+              "unrecognized profile ignored (this implementation defines RAVENSCAR)");
         }
 
         // pragma Import (Convention, Entity, External_Name, Link_Name)
@@ -23643,10 +23725,9 @@ void Resolve_Compilation_Unit (Syntax_Node *node) {
       }
     }
 
-    // Resolve USE clauses (make package contents visible)
-    for (uint32_t i = 0; i < ctx->context.use_clauses.count; i++) {
-      Resolve_Declaration (ctx->context.use_clauses.items[i]);
-    }
+    // Resolve USE clauses (make package contents visible) and context
+    // pragmas (configuration pragmas take effect for this unit).
+    Resolve_Context_Use_Clauses (ctx);
   }
 
   // Handle separate subunits (SEPARATE (parent) ...)
@@ -27256,20 +27337,27 @@ void Emit_Raise_Constraint_Error_When (LLVM_I1 condition, const char *comment) {
 // until the body declaration elaborates; the check loads it and raises when it
 // is still false. The flag lives in its owning function's frame, so the check
 // is only emitted while generating that same function.
-void Emit_Elaboration_Check (Symbol *callee) {
+// Load `callee`'s body-elaborated flag (RM 3.9), or 0 when the symbol
+// carries no flag. A call back across a SEPARATE boundary reads the parent
+// unit's flag; the parent's module owns the definition, so declare it
+// external here (once).
+uint32_t Emit_Elaboration_Flag_Load (Symbol *callee) {
   if (not callee or (callee->elab_flag_id == 0 and not callee->needs_elab_flag))
-    return;
+    return 0;
   String_Slice ef = Symbol_Mangle_Name (callee);
-  // A call back across a SEPARATE boundary reads the parent unit's flag; the
-  // parent's module owns the definition, so declare it external here (once).
   if (callee->elab_flag_id == 0 and not callee->elab_flag_extern_noted) {
     callee->elab_flag_extern_noted = true;
     Emit_String_Const ("@%.*s.elab = external global i1\n",
                        (int)ef.length, ef.data);
   }
-  uint32_t flag = Emit_Result_Instruction ("load i1, ptr @%.*s.elab  ; access-before-elaboration flag of %.*s\n", (int)ef.length, ef.data, (int)callee->name.length, callee->name.data);
-  Emit_Check_With_Raise_Named (flag, false, "program_error",
-                               "subprogram body not yet elaborated (RM 3.9)");
+  return Emit_Result_Instruction ("load i1, ptr @%.*s.elab  ; access-before-elaboration flag of %.*s\n", (int)ef.length, ef.data, (int)callee->name.length, callee->name.data);
+}
+
+void Emit_Elaboration_Check (Symbol *callee) {
+  uint32_t flag = Emit_Elaboration_Flag_Load (callee);
+  if (flag)
+    Emit_Check_With_Raise_Named (flag, false, "program_error",
+                                 "subprogram body not yet elaborated (RM 3.9)");
 }
 
 // RM 4.6: an array type conversion checks that any constraint on the component
@@ -27623,22 +27711,38 @@ void Generate_Exception_Dispatch (Node_List *handlers,
   }
 }
 
-// RM 11.4: a package body's elaboration statements run under the body's own
-// exception handlers. With no handlers they run bare; otherwise the normal path
-// pops the handler and jumps to the end and the handler path dispatches (and
-// re-raises on no match, since a package elaboration is not a task). Every
-// package-body elaboration path shares this — nested, library-level, and
-// SEPARATE subunit — so an exception raised while elaborating is caught the
-// same way in each (an access-before-elaboration PROGRAM_ERROR in c39006c).
-void Generate_Guarded_Elaboration (Node_List *statements, Node_List *handlers) {
-  if (not handlers or handlers->count == 0) {
-    Generate_Statement_List (statements);
-    return;
+// RM 11.4: a package body's elaboration — task ACTIVATION first (RM 9.3(3):
+// activation happens after `begin`, so an activation PROGRAM_ERROR such as
+// a not-yet-elaborated task body, RM 3.9/c93007a, is handleable), then the
+// initialization statements — runs under the body's own exception handlers.
+// With no handlers it runs bare; otherwise the normal path pops the handler
+// and jumps to the end and the handler path dispatches (and re-raises on no
+// match, since a package elaboration is not a task). Every package-body
+// elaboration path shares this — nested, library-level, and SEPARATE
+// subunit — so an exception raised while elaborating is caught the same way
+// in each (an access-before-elaboration PROGRAM_ERROR in c39006c).
+// `activate_spec` (may be NULL) supplies a spec's recorded activation range;
+// `activate_from` (UINT32_MAX = none) activates everything pending since it.
+void Generate_Guarded_Elaboration (Node_List *statements, Node_List *handlers,
+                                   Syntax_Node *activate_spec,
+                                   uint32_t activate_from) {
+  bool guarded = handlers and handlers->count > 0;
+  Exception_Setup setup = {0};
+  uint32_t end_label = 0;
+  if (guarded) {
+    setup = Emit_Exception_Handler_Setup ();
+    end_label = Emit_Label ();
+    Emit_Label_Here (setup.normal_label);
   }
-  Exception_Setup setup = Emit_Exception_Handler_Setup ();
-  uint32_t end_label = Emit_Label ();
-  Emit_Label_Here (setup.normal_label);
+  if (activate_spec)
+    Emit_Activate_Pending_Tasks_Range (
+      activate_spec->package_spec.pending_activation_first,
+      activate_spec->package_spec.pending_activation_first
+        + activate_spec->package_spec.pending_activation_count);
+  if (activate_from != UINT32_MAX)
+    Emit_Activate_Pending_Tasks (activate_from);
   Generate_Statement_List (statements);
+  if (not guarded) return;
   if (not cg->block_terminated)
     Emit ("  call void @__ada_pop_handler()\n");
   Emit_Branch_If_Needed (end_label);
@@ -31933,20 +32037,28 @@ uint32_t Emit_Entry_Default_To_Slot (Syntax_Node *def, Type_Info *param_type) {
 // lock) is visible. Outside a task body there is no %__self_tcb; a plain call.
 void Emit_Blocking_Entry_Call (uint32_t task_ptr, uint32_t entry_idx_64,
                                uint32_t param_block) {
-  bool guard_abort = cg->in_task_body and cg->task_body_done_label;
   Emit ("  call void @__ada_entry_call(ptr %%t%u, i64 %%t%u, ptr %%t%u)\n",
      task_ptr, entry_idx_64, param_block);
-  if (guard_abort) {
-    Emit ("  call i32 @pthread_mutex_lock(ptr @__rv_mutex)\n");
-    uint32_t ap = Emit_Result_Instruction ("getelementptr i8, ptr %%__self_tcb, i64 61\n");
-    uint32_t apv = Emit_Result_Instruction ("load i8, ptr %%t%u\n", ap);
-    Emit ("  call i32 @pthread_mutex_unlock(ptr @__rv_mutex)\n");
-    LLVM_I1 aborted = Emit_Boolean_Truth_Test (apv);
-    uint32_t cont = cg->label_id++;
-    Emit ("  br i1 %%t%u, label %%L%u, label %%L%u\n",
-       aborted.reg, cg->task_body_done_label, cont);
-    Emit_Label_Here (cont);
-  }
+  Emit_Deferred_Abort_Check ();
+}
+
+// RM 9.10 abort completion point: after returning from a blocking tasking
+// primitive, a task body checks abort_pending (TCB+61) and branches to its
+// termination epilogue (task_body_done_label) without running the rest of
+// the body or its handlers. The flag is read under @__rv_mutex so the
+// abort's store (made under the same lock) is visible. No-op outside a
+// task body's statements.
+void Emit_Deferred_Abort_Check (void) {
+  if (not cg->in_task_body or not cg->task_body_done_label) return;
+  Emit ("  call i32 @pthread_mutex_lock(ptr @__rv_mutex)\n");
+  uint32_t ap = Emit_Result_Instruction ("getelementptr i8, ptr %%__self_tcb, i64 61\n");
+  uint32_t apv = Emit_Result_Instruction ("load i8, ptr %%t%u\n", ap);
+  Emit ("  call i32 @pthread_mutex_unlock(ptr @__rv_mutex)\n");
+  LLVM_I1 aborted = Emit_Boolean_Truth_Test (apv);
+  uint32_t cont = cg->label_id++;
+  Emit ("  br i1 %%t%u, label %%L%u, label %%L%u\n",
+     aborted.reg, cg->task_body_done_label, cont);
+  Emit_Label_Here (cont);
 }
 
 // Convert a timed entry call's delay expression to an i64 microsecond budget
@@ -41454,15 +41566,18 @@ LLVM_Value Generate_Allocator (Syntax_Node *node) {
     // RM 3.9 / AI-00149: activating the task before its body is elaborated
     // raises PROGRAM_ERROR (not TASKING_ERROR).
     Emit_Elaboration_Check (designated->defining_symbol);
+    const char *alloc_link = Task_Static_Link_Argument (designated->defining_symbol);
     uint32_t handle_tmp = Emit_Result_Instruction ("call ptr @__ada_task_start(ptr @");
     Emit_Task_Function_Name (designated->defining_symbol, designated->name);
-    Emit (", %s, %s)\n", Task_Parent_Frame_Argument (), alloc_master_arg);
+    Emit (", %s, %s)\n", alloc_link, alloc_master_arg);
     Emit ("  store ptr %%t%u, ptr %%t%u  ; store task handle\n", handle_tmp, t);
 
   // Composite allocation containing task components: create, activate and
   // wait for each embedded task as part of evaluating the allocator
-  // (RM 9.3: same immediate activation as a plain task allocator).
+  // (RM 9.3: same immediate activation as a plain task allocator; the
+  // component tasks' bodies must already be elaborated, RM 3.9/AI-00149).
   } else if (designated and Type_Has_Task_Component (designated)) {
+    Emit_Task_Body_Elaboration_Checks (designated);
     Emit_Component_Task_Operation (designated, t, COMPONENT_TASK_CREATE, 0,
                                    alloc_master_arg);
     Emit_Component_Task_Operation (designated, t, COMPONENT_TASK_ACTIVATE, 0,
@@ -44140,6 +44255,17 @@ void Emit_Accept_Out_Param_Writeback (Node_List *parameters, uint32_t params_ptr
   }
 }
 
+// The accept statement of a selective-wait alternative: bare, or wrapped in
+// a guarded NK_ASSOCIATION; NULL for delay/terminate/else-statement shapes.
+Syntax_Node *Select_Alternative_Accept (Syntax_Node *alt) {
+  if (not alt) return NULL;
+  if (alt->kind == NK_ACCEPT) return alt;
+  if (alt->kind == NK_ASSOCIATION and alt->association.expression and
+      alt->association.expression->kind == NK_ACCEPT)
+    return alt->association.expression;
+  return NULL;
+}
+
 void Generate_Statement (Syntax_Node *node) {
   if (not node) return;
   switch (node->kind) {
@@ -44767,13 +44893,8 @@ void Generate_Statement (Syntax_Node *node) {
         // NK_ASSOCIATION (guard, accept); an unguarded one is a bare NK_ACCEPT.
         for (uint32_t i = 0; i < node->select_stmt.alternatives.count and
              i < MAX_SELECT_GUARDS; i++) {
-          Syntax_Node *alt = node->select_stmt.alternatives.items[i];
-          Syntax_Node *accept = NULL;
-          if (alt and alt->kind == NK_ACCEPT) accept = alt;
-          else if (alt and alt->kind == NK_ASSOCIATION and
-                   alt->association.expression and
-                   alt->association.expression->kind == NK_ACCEPT)
-            accept = alt->association.expression;
+          Syntax_Node *accept =
+            Select_Alternative_Accept (node->select_stmt.alternatives.items[i]);
           if (not accept or not accept->accept_stmt.index) continue;
 
           LLVM_Rep ar = Integer_Arith_Rep ();
@@ -44893,23 +45014,59 @@ void Generate_Statement (Syntax_Node *node) {
           }
         }
 
-        if (select_retries) {
-          retry_label = cg->label_id++;
-          Emit_Label_Here (retry_label);  // selective wait retry
-        }
-        bool skipped_delay = false;  // Track if current iteration was a skipped delay
-
-        // Advertise that this task is in a selective wait (RM 9.7.2): a
-        // conditional caller treats -2 as potentially ready and lets the
-        // accept_try below grab the call iff its entry is open. ONLY a
-        // selective wait that can BLOCK advertises: one with an ELSE part
-        // is a single poll that never waits, so no rendezvous with it can
-        // start "immediately" through the queue — advertising it let a
-        // conditional caller park a call on a task that had already taken
-        // its else branch, observably via E'COUNT (c97201x). With a
+        // Advertise the blocked wait (RM 9.7.2): publish the OPEN accept
+        // alternatives' encoded entry indices ({ count, idx... }, closed
+        // slots -1) at TCB+80, then -2 in waiting_entry. Guards and family
+        // indices were evaluated once above (RM 9.7.1), so the set is fixed
+        // for the whole wait and is published ONCE, before the retry loop.
+        // A conditional caller rendezvouses iff its exact entry is in the
+        // set; __ada_select_block and __ada_term_wait wake only for calls
+        // the sweep below can actually take. A select with an ELSE part is
+        // a single poll that never waits: it publishes nothing, so no
+        // conditional caller can park a call on it (c97201x). With a
         // terminate alternative, also mark the task as willing to terminate
         // (TCB+58) for the RM 9.7.1 consensus.
         if (cg->in_task_body and not has_else) {
+          uint32_t accept_count = 0;
+          for (uint32_t i = 0; i < node->select_stmt.alternatives.count; i++) {
+            Syntax_Node *alt = node->select_stmt.alternatives.items[i];
+            if (Select_Alternative_Accept (alt)) accept_count++;
+          }
+          uint32_t open_list = Emit_Temp ();
+          Emit ("  %%t%u = alloca [%u x i64]  ; open-entry list\n",
+             open_list, accept_count + 1);
+          Emit ("  store i64 %u, ptr %%t%u\n", accept_count, open_list);
+          uint32_t slot_no = 0;
+          for (uint32_t i = 0; i < node->select_stmt.alternatives.count; i++) {
+            Syntax_Node *accept =
+              Select_Alternative_Accept (node->select_stmt.alternatives.items[i]);
+            if (not accept) continue;
+            slot_no++;
+            uint32_t fam = 0;
+            if (accept->accept_stmt.codegen_index_slot)
+              fam = Emit_Result_Instruction ("load %s, ptr %%t%u\n",
+                 LLVM_Rep_To_String (Integer_Arith_Rep ()),
+                 accept->accept_stmt.codegen_index_slot);
+            uint32_t eidx = Emit_Entry_Index (accept->accept_stmt.entry_sym, fam);
+            uint32_t val = Emit_Extend_To_I64 (eidx, Integer_Arith_Rep ()).reg;
+            if (i < MAX_SELECT_GUARDS and guard_slots[i]) {
+              uint32_t gv = Emit_Result_Instruction ("load i8, ptr %%t%u\n",
+                                                     guard_slots[i]);
+              LLVM_I1 open = Emit_Boolean_Truth_Test (gv);
+              val = Emit_Result_Instruction (
+                "select i1 %%t%u, i64 %%t%u, i64 -1  ; closed guard\n",
+                open.reg, val);
+            }
+            uint32_t ep = Emit_Result_Instruction (
+              "getelementptr i64, ptr %%t%u, i64 %u\n", open_list, slot_no);
+            Emit ("  store i64 %%t%u, ptr %%t%u\n", val, ep);
+          }
+
+          // Publish under the rendezvous lock: a caller that reads -2 under
+          // the same lock must also see the list pointer and its contents.
+          Emit ("  call i32 @pthread_mutex_lock(ptr @__rv_mutex)\n");
+          uint32_t olp = Emit_Result_Instruction ("getelementptr i8, ptr %%__self_tcb, i64 80\n");
+          Emit ("  store ptr %%t%u, ptr %%t%u  ; open-entry list\n", open_list, olp);
           uint32_t wsel = Emit_Result_Instruction ("getelementptr i64, ptr %%__self_tcb, i64 6\n");
           Emit ("  store i64 -2, ptr %%t%u  ; in selective wait\n", wsel);
           if (has_terminate) {
@@ -44934,7 +45091,14 @@ void Generate_Statement (Syntax_Node *node) {
             else
               Emit ("  store i8 1, ptr %%t%u  ; at terminate alternative\n", att);
           }
+          Emit ("  call i32 @pthread_mutex_unlock(ptr @__rv_mutex)\n");
         }
+
+        if (select_retries) {
+          retry_label = cg->label_id++;
+          Emit_Label_Here (retry_label);  // selective wait retry
+        }
+        bool skipped_delay = false;  // Track if current iteration was a skipped delay
 
         // Generate alternatives
         for (uint32_t i = 0; i < node->select_stmt.alternatives.count; i++) {
@@ -45092,12 +45256,14 @@ void Generate_Statement (Syntax_Node *node) {
                 Emit_Label_Here (open_l);
               }
               Emit ("  ; terminate alternative - park until consensus or call\n");
-              if (cg->in_task_body) {
+              {
                 // Park in __ada_term_wait (RM 9.7.1): sleeps on the consensus
                 // condvar; returns 1 when this task is selected for
                 // termination (master complete, whole sibling subtree
                 // quiescent), 0 when an entry call arrived — re-sweep the
-                // accept alternatives.
+                // accept alternatives. (A selective wait exists only in a
+                // task body, RM 9.7.1 — the sweep above already relies on
+                // %__self_tcb unconditionally.)
                 uint32_t term_l = cg->label_id++;
                 uint32_t keep_l = cg->label_id++;
                 uint32_t decision = Emit_Result_Instruction ("call i8 @__ada_term_wait(ptr %%__self_tcb)\n");
@@ -45121,18 +45287,12 @@ void Generate_Statement (Syntax_Node *node) {
                 Emit ("  ret ptr null\n");
                 cg->block_terminated = true;
                 Emit_Label_Here (keep_l);
-                // Pace the re-sweep: the queued call may be for an entry
-                // whose alternative is closed this execution (RM 9.7.1 still
-                // forbids terminating) — without the sleep that corner spins
-                // hot between the sweep and the park.
-                Emit ("  %%_usel%u = call i32 @usleep(i32 1000)\n",
-                   cg->label_id);
+                // term_wait wakes for serving only when the queue holds a
+                // call some OPEN alternative can take (closed-entry calls
+                // never wake it), so the re-sweep is guaranteed to progress
+                // — branch straight back, no pacing.
                 Emit ("  br label %%L%u\n", retry_label);
                 cg->block_terminated = true;
-              } else {
-                Emit ("  %%_usel%u = call i32 @usleep(i32 1000)\n",
-                   cg->label_id);
-                Emit ("  br label %%L%u\n", retry_label);
               }
               break;
             default:
@@ -45158,8 +45318,8 @@ void Generate_Statement (Syntax_Node *node) {
           Generate_Statement (node->select_stmt.else_part);
           Emit ("  br label %%L%u\n", done_label);
 
-        // Delay alternative: keep polling until the deadline, then run the
-        // delay alternative's statements.
+        // Delay alternative: block until a serviceable call, an abort, or
+        // the deadline; charge the blocked time against the budget.
         } else if (has_delay) {
           uint32_t rem = Emit_Result_Instruction ("load i64, ptr %%t%u\n", delay_budget_slot);
           LLVM_I1 still = Emit_Icmp_Const ("sgt", LLVM_Rep_Int (64, false), rem, 0);
@@ -45168,20 +45328,29 @@ void Generate_Statement (Syntax_Node *node) {
           Emit ("  br i1 %%t%u, label %%L%u, label %%L%u\n", still.reg, wait_l, expire_l);
           cg->block_terminated = true;
           Emit_Label_Here (wait_l);
-          Emit ("  %%t%u = call i32 @usleep(i32 100)  ; selective wait poll\n",
-             Emit_Temp ());
-          uint32_t dec = Emit_Result_Instruction ("sub i64 %%t%u, 100\n", rem);
+          uint32_t t0 = Emit_Result_Instruction ("call i64 @__ada_clock()\n");
+          uint32_t expired = Emit_Result_Instruction (
+            "call i8 @__ada_select_block(ptr %%__self_tcb, i64 %%t%u)\n", rem);
+          uint32_t t1 = Emit_Result_Instruction ("call i64 @__ada_clock()\n");
+          uint32_t el10 = Emit_Result_Instruction ("sub i64 %%t%u, %%t%u\n", t1, t0);
+          uint32_t elus = Emit_Result_Instruction ("mul i64 %%t%u, 10  ; clock is 10us units\n", el10);
+          uint32_t dec = Emit_Result_Instruction ("sub i64 %%t%u, %%t%u\n", rem, elus);
           Emit ("  store i64 %%t%u, ptr %%t%u\n", dec, delay_budget_slot);
-          Emit ("  br label %%L%u\n", retry_label);
+          Emit_Deferred_Abort_Check ();
+          LLVM_I1 exp1 = Emit_Boolean_Truth_Test (expired);
+          Emit ("  br i1 %%t%u, label %%L%u, label %%L%u\n",
+             exp1.reg, expire_l, retry_label);
           cg->block_terminated = true;
           Emit_Label_Here (expire_l);
           Emit ("  br label %%L%u\n", delay_label);
 
         // No else, no delay (and the terminate alternative, when present,
-        // branched back itself): sleep briefly and retry (RM 9.7.1).
+        // branched back itself): block until a serviceable call or an
+        // abort arrives, then re-sweep (RM 9.7.1).
         } else {
-          Emit ("  %%t%u = call i32 @usleep(i32 100)  ; selective wait poll\n",
-             Emit_Temp ());
+          uint32_t blk = Emit_Temp ();
+          Emit ("  %%t%u = call i8 @__ada_select_block(ptr %%__self_tcb, i64 0)\n", blk);
+          Emit_Deferred_Abort_Check ();
           Emit ("  br label %%L%u\n", retry_label);
         }
         cg->block_terminated = true;
@@ -45204,10 +45373,13 @@ void Generate_Statement (Syntax_Node *node) {
           cg->block_terminated = true;
         }
         Emit_Label_Here (done_label);
-        // Leaving the selective wait: no longer accepting or terminating.
+        // Leaving the selective wait: no longer accepting or terminating,
+        // and the open-entry list (frame storage of this select) retires.
         if (cg->in_task_body) {
           uint32_t wclr = Emit_Result_Instruction ("getelementptr i64, ptr %%__self_tcb, i64 6\n");
           Emit ("  store i64 -1, ptr %%t%u  ; left selective wait\n", wclr);
+          uint32_t oclr = Emit_Result_Instruction ("getelementptr i8, ptr %%__self_tcb, i64 80\n");
+          Emit ("  store ptr null, ptr %%t%u  ; open-entry list retired\n", oclr);
           if (has_terminate) {
             uint32_t atc = Emit_Result_Instruction ("getelementptr i8, ptr %%__self_tcb, i64 58\n");
             Emit ("  store i8 0, ptr %%t%u  ; no longer at terminate\n", atc);
@@ -45327,7 +45499,7 @@ bool Is_Builtin_Function (String_Slice name) {
 
     // Standard C library functions (declared in runtime preamble)
     "memcmp", "setjmp", "longjmp", "exit", "malloc", "realloc", "free",
-    "usleep", "printf", "putchar", "strtod", "snprintf", "strlen",
+    "printf", "putchar", "strtod", "snprintf", "strlen",
     "fputc", "fputs", "fgetc", "fgets", "fprintf",
     "fopen", "fclose", "fflush", "feof", "ftell", "fseek",
     "ungetc", "remove", "getchar",
@@ -45457,6 +45629,27 @@ const char *Task_Parent_Frame_Argument (void) {
   return "ptr null";
 }
 
+// The static-link argument for creating a task of `task_sym`'s type: the
+// frame of the TYPE's defining scope, reached through the static chain
+// exactly as a call to a subprogram declared beside the type would reach
+// it. The task body reads its uplevel state through this frame — handing
+// it the creating context's frame instead corrupts every uplevel access
+// when the type is declared further out (c94001c case E: a task type from
+// the main procedure created inside a doubly nested task body). May emit
+// chain-walk instructions; returns a static buffer — consume within the
+// next Emit calls.
+const char *Task_Static_Link_Argument (Symbol *task_sym) {
+  static char buffer[24];
+  if (not cg->current_function or not task_sym)
+    return Task_Parent_Frame_Argument ();
+  int depth = Nested_Frame_Depth (task_sym);
+  if (depth == 0) return Task_Parent_Frame_Argument ();
+  if (depth == 1) return "ptr %__parent_frame";
+  uint32_t walked = Precompute_Nested_Frame_Arg (task_sym);
+  snprintf (buffer, sizeof buffer, "ptr %%t%u", walked);
+  return buffer;
+}
+
 // The master-record argument for __ada_task_create / __ada_task_start
 // (RM 9.4): the innermost active master's record, or null at library level
 // (the program-exit join is then the effective master). Static buffer —
@@ -45482,9 +45675,10 @@ void Emit_Component_Task_Operation (Type_Info *ty, uint32_t base,
   if (Type_Is_Task (ty)) {
     switch (op) {
       case COMPONENT_TASK_CREATE: {
+        const char *link = Task_Static_Link_Argument (ty->defining_symbol);
         uint32_t tcb = Emit_Result_Instruction ("call ptr @__ada_task_create(ptr @");
         Emit_Task_Function_Name (ty->defining_symbol, ty->name);
-        Emit (", %s, %s)\n", Task_Parent_Frame_Argument (), master_arg);
+        Emit (", %s, %s)\n", link, master_arg);
         Emit ("  store ptr %%t%u, ptr %%t%u  ; component task tcb\n", tcb, base);
         break;
       }
@@ -45506,6 +45700,11 @@ void Emit_Component_Task_Operation (Type_Info *ty, uint32_t base,
       case COMPONENT_TASK_JOIN: {
         uint32_t tcb = Emit_Result_Instruction ("load ptr, ptr %%t%u\n", base);
         Emit ("  call void @__ada_task_join(ptr %%t%u)\n", tcb);
+        break;
+      }
+      case COMPONENT_TASK_COMPLETE: {
+        uint32_t tcb = Emit_Result_Instruction ("load ptr, ptr %%t%u\n", base);
+        Emit ("  call void @__ada_task_never_activated(ptr %%t%u)\n", tcb);
         break;
       }
     }
@@ -45628,6 +45827,39 @@ void Emit_Activation_Failure_Check (uint32_t failed_flag) {
   Emit_Label_Here (ok_label);
 }
 
+// RM 3.9 / AI-00149: accumulate (OR) an "unelaborated body" i1 over every
+// task type reachable by value inside `ty` — the task itself, or task
+// components of records and arrays, however nested. Returns the updated
+// accumulator register (`acc` may be 0 = nothing accumulated yet).
+uint32_t Emit_Task_Body_Unelaborated (Type_Info *ty, uint32_t acc) {
+  if (not ty) return acc;
+  if (Type_Is_Task (ty)) {
+    uint32_t flag = Emit_Elaboration_Flag_Load (ty->defining_symbol);
+    if (not flag) return acc;
+    uint32_t not_elaborated = Emit_Result_Instruction ("xor i1 %%t%u, 1\n", flag);
+    if (not acc) return not_elaborated;
+    return Emit_Result_Instruction ("or i1 %%t%u, %%t%u\n", acc, not_elaborated);
+  }
+  if (Type_Is_Record (ty)) {
+    for (uint32_t i = 0; i < ty->record.component_count; i++)
+      acc = Emit_Task_Body_Unelaborated (ty->record.components[i].component_type, acc);
+    return acc;
+  }
+  if (Type_Is_Array_Like (ty))
+    return Emit_Task_Body_Unelaborated (ty->array.element_type, acc);
+  return acc;
+}
+
+// Raise PROGRAM_ERROR now if any task body reachable inside `ty` is not yet
+// elaborated (allocator activation, where nothing is created before the
+// check so a bare raise strands nothing).
+void Emit_Task_Body_Elaboration_Checks (Type_Info *ty) {
+  uint32_t bad = Emit_Task_Body_Unelaborated (ty, 0);
+  if (bad)
+    Emit_Check_With_Raise_Named (bad, true, "program_error",
+                                 "task body not yet elaborated (RM 3.9)");
+}
+
 // Activate the pending-activation entries in [from, to): spawn all threads
 // first (the tasks of one declarative part activate in parallel), then wait
 // for each activation to complete and raise TASKING_ERROR if any failed
@@ -45637,13 +45869,30 @@ void Emit_Activate_Pending_Tasks_Range (uint32_t from, uint32_t to) {
   if (to > cg->pending_activation_count) to = cg->pending_activation_count;
   if (from >= to) return;
 
-  // RM 3.9 / AI-00149: the tasks of one declarative part activate together, so
-  // if ANY has a body not yet elaborated, PROGRAM_ERROR is raised before the
-  // batch is activated and NONE of them runs (c39008c). Check every flag first.
-  for (uint32_t i = from; i < to; i++) {
-    Symbol *obj = cg->pending_activations[i];
-    if (obj and Type_Is_Task (obj->type))
-      Emit_Elaboration_Check (obj->type->defining_symbol);
+  // RM 3.9 / AI-00149: the tasks of one declarative part activate together,
+  // so if ANY has a body not yet elaborated — including tasks nested inside
+  // record or array components (c93007a's OBJ : REC) — PROGRAM_ERROR is
+  // raised before the batch is activated and NONE of them runs (c39008c).
+  // The batch's tasks become COMPLETED (RM 9.3): they must not resurrect at
+  // an enclosing activation point, calls to them raise TASKING_ERROR, and
+  // the master's join passes over them.
+  {
+    uint32_t bad = 0;
+    for (uint32_t i = from; i < to; i++) {
+      Symbol *obj = cg->pending_activations[i];
+      if (obj) bad = Emit_Task_Body_Unelaborated (obj->type, bad);
+    }
+    if (bad) {
+      uint32_t fail_l = cg->label_id++, ok_l = cg->label_id++;
+      Emit ("  br i1 %%t%u, label %%L%u, label %%L%u\n", bad, fail_l, ok_l);
+      cg->block_terminated = true;
+      Emit_Label_Here (fail_l);
+      for (uint32_t i = from; i < to; i++)
+        Emit_Pending_Entry_Operation (cg->pending_activations[i],
+                                      COMPONENT_TASK_COMPLETE, 0);
+      Emit_Raise_Program_Error ("task body not yet elaborated (RM 3.9)");
+      Emit_Label_Here (ok_l);
+    }
   }
 
   for (uint32_t i = from; i < to; i++)
@@ -50324,9 +50573,13 @@ void Generate_Task_Body (Syntax_Node *node) {
   Emit ("  call void @__ada_pop_handler()\n");  // leave the activation guard
 
   // RM 9.3: activation = elaboration of the declarative part. Publish
-  // completion so the activator's __ada_activation_wait can proceed.
+  // completion under the rendezvous lock and wake the activator's
+  // __ada_activation_wait.
+  Emit ("  call i32 @pthread_mutex_lock(ptr @__rv_mutex)\n");
   Emit ("  %%__as_slot = getelementptr i8, ptr %%__self_tcb, i64 56\n");
   Emit ("  store i8 1, ptr %%__as_slot  ; activation complete\n");
+  Emit ("  call i32 @pthread_cond_broadcast(ptr @__term_cond)\n");
+  Emit ("  call i32 @pthread_mutex_unlock(ptr @__rv_mutex)\n");
   Emit_Activate_Pending_Tasks (master.saved_pa);  // RM 9.3 activation point
 
   // Region 2 — the SEQUENCE OF STATEMENTS. Its exception guard is set up AFTER
@@ -50397,11 +50650,14 @@ void Generate_Task_Body (Syntax_Node *node) {
   // ends silently.
   Emit_Label_Here (decl_exc.handler_label);
   Emit ("  call void @__ada_pop_handler()\n");
+  Emit ("  call i32 @pthread_mutex_lock(ptr @__rv_mutex)\n");
   Emit ("  %%__as_slot.h = getelementptr i8, ptr %%__self_tcb, i64 56\n");
   Emit ("  %%__as_cur = load i8, ptr %%__as_slot.h\n");
   Emit ("  %%__as_unset = icmp eq i8 %%__as_cur, 0\n");
   Emit ("  %%__as_new = select i1 %%__as_unset, i8 2, i8 %%__as_cur\n");
   Emit ("  store i8 %%__as_new, ptr %%__as_slot.h\n");
+  Emit ("  call i32 @pthread_cond_broadcast(ptr @__term_cond)\n");
+  Emit ("  call i32 @pthread_mutex_unlock(ptr @__rv_mutex)\n");
   Emit ("  ret ptr null\n");
   Emit ("}\n\n");
 
@@ -50994,7 +51250,8 @@ void Generate_Declaration (Syntax_Node *node) {
           // declarative part and statements belong to this function.
           Generate_Declaration_List (&node->package_body.declarations);
           Generate_Guarded_Elaboration (&node->package_body.statements,
-                                        &node->package_body.handlers);
+                                        &node->package_body.handlers,
+                                        NULL, UINT32_MAX);
           if (not cg->block_terminated)
             Emit ("  ret void\n");
           Emit ("}\n\n");
@@ -51042,26 +51299,20 @@ void Generate_Declaration (Syntax_Node *node) {
         // its own declarative part AND the tasks its SPEC declared (a
         // bodyless package's spec tasks instead wait for the enclosing
         // master's begin). Entries stay recorded for the enclosing join.
-        if (cg->current_function) {
-          // A generic instance's symbol points its `declaration` at the
-          // instantiation node; the recorded activation range lives on the
-          // resolved SPEC CLONE (cc1207b: the instance body's begin must
-          // activate the instance's spec task before calling its entry).
-          Syntax_Node *pkg_spec =
-            (pkg_sym and pkg_sym->declaration and
-             pkg_sym->declaration->kind == NK_PACKAGE_SPEC)
-              ? pkg_sym->declaration
-            : (pkg_sym and pkg_sym->instance_spec and
-               pkg_sym->instance_spec->kind == NK_PACKAGE_SPEC)
-              ? pkg_sym->instance_spec
-              : NULL;
-          if (pkg_spec)
-            Emit_Activate_Pending_Tasks_Range (
-              pkg_spec->package_spec.pending_activation_first,
-              pkg_spec->package_spec.pending_activation_first
-                + pkg_spec->package_spec.pending_activation_count);
-          Emit_Activate_Pending_Tasks (pkg_body_saved_pa);
-        }
+        // Activation runs INSIDE the guarded elaboration below — the body's
+        // handlers apply to activation failures (RM 9.3/11.4, c93007a).
+        // A generic instance's symbol points its `declaration` at the
+        // instantiation node; the recorded activation range lives on the
+        // resolved SPEC CLONE (cc1207b: the instance body's begin must
+        // activate the instance's spec task before calling its entry).
+        Syntax_Node *activation_spec =
+          (pkg_sym and pkg_sym->declaration and
+           pkg_sym->declaration->kind == NK_PACKAGE_SPEC)
+            ? pkg_sym->declaration
+          : (pkg_sym and pkg_sym->instance_spec and
+             pkg_sym->instance_spec->kind == NK_PACKAGE_SPEC)
+            ? pkg_sym->instance_spec
+            : NULL;
 
       // Check if the package spec OR BODY has any single task declarations
       // that need starting at elaboration (RM 9.2: tasks are activated at
@@ -51094,16 +51345,15 @@ void Generate_Declaration (Syntax_Node *node) {
       // point of the package body in the enclosing declarative region.                            
       // For library-level packages, create a separate __elab function.                            
       //                                                                                            
-      bool has_init_stmts = node->package_body.statements.count > 0;
-
-      // Nested package: emit initialization inline.                                               
-      // If the package body has exception handlers (RM 11.4),                                      
-      // wrap the statements in setjmp/longjmp like subprograms.                                   
-      //                                                                                            
-      if (has_init_stmts and cg->current_function) {
-        Emit ("  ; Package body initialization (inline)\n");
+      // Nested package: emit the begin — task activation, then the
+      // initialization statements — inline, under the body's handlers
+      // (RM 11.4). Runs even without statements: activation alone still
+      // belongs to the body's begin.
+      if (cg->current_function) {
+        Emit ("  ; Package body begin (inline): activation + initialization\n");
         Generate_Guarded_Elaboration (&node->package_body.statements,
-                                      &node->package_body.handlers);
+                                      &node->package_body.handlers,
+                                      activation_spec, pkg_body_saved_pa);
 
       // Library-level package: emit the elaboration function that runs the
       // deferred library-level initializers, starts package-level tasks,
@@ -51207,7 +51457,8 @@ void Generate_Declaration (Syntax_Node *node) {
         // (RM 11.4): a library package body's BEGIN..EXCEPTION..END must catch
         // an exception raised while elaborating, just as a nested body does.
         Generate_Guarded_Elaboration (&node->package_body.statements,
-                                      &node->package_body.handlers);
+                                      &node->package_body.handlers,
+                                      NULL, UINT32_MAX);
         if (not cg->block_terminated) {
           Emit ("  ret void\n");
         }
@@ -51529,12 +51780,13 @@ void Generate_Declaration (Syntax_Node *node) {
           // Create the task control block now, but DEFER thread start to the
           // master's activation point (RM 9.3). Record the object so the
           // enclosing declarative part activates it at `begin`.
+          const char *decl_link = Task_Static_Link_Argument (node->symbol);
           uint32_t handle_tmp = Emit_Result_Instruction ("call ptr @__ada_task_create(ptr @");
           Emit_Task_Function_Name (node->symbol, node->task_spec.name);
 
           // Pass the static link for uplevel access (null at library level)
           // and the enclosing master record (RM 9.4).
-          Emit (", %s, %s)\n", Task_Parent_Frame_Argument (),
+          Emit (", %s, %s)\n", decl_link,
              Task_Master_Record_Argument ());
 
           // Store the TCB pointer in the task object.
@@ -52522,7 +52774,6 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   Emit ("declare ptr @realloc (ptr, i64)\n");
   Emit ("declare void @free (ptr)\n");
   Emit ("declare i32 @getrlimit(i32, ptr)\n");
-  Emit ("declare i32 @usleep(i32)\n");
   Emit ("declare i32 @nanosleep(ptr, ptr)\n");
   Emit ("declare i32 @clock_gettime(i32, ptr)\n");
   Emit ("declare i32 @pthread_create(ptr, ptr, ptr, ptr)\n");
@@ -52532,6 +52783,7 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   Emit ("declare i32 @pthread_mutex_lock(ptr)\n");
   Emit ("declare i32 @pthread_mutex_unlock(ptr)\n");
   Emit ("declare i32 @pthread_cond_wait(ptr, ptr)\n");
+  Emit ("declare i32 @pthread_cond_timedwait(ptr, ptr, ptr)\n");
   Emit ("declare i32 @pthread_cond_signal(ptr)\n");
   Emit ("declare i32 @pthread_cond_broadcast(ptr)\n");
   Emit ("declare i32 @pthread_key_create(ptr, ptr)\n");
@@ -53531,15 +53783,9 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   Emit ("  unreachable\n");
   Emit ("}\n\n");
 
-  // Task Control Block (TCB) layout:                                                               
-  //   offset  0: ptr  func          (task body function)                                           
-  //   offset  8: ptr  parent_frame  (enclosing scope frame)                                        
-  //   offset 16: ptr  thread_handle (pthread_t)                                                    
-  //   offset 24: i8   completed     (0=running, 1=done)                                            
-  // Total 25 bytes, rounded to 32 by malloc.                                                      
-  //                                                                                                
-
-  // Task wrapper: calls actual task body then sets completed flag.
+  // Task wrapper: calls the task body, then publishes completion and
+  // termination. (The authoritative TCB layout is documented at
+  // __ada_task_create below.)
   Emit ("define linkonce_odr ptr @__ada_task_wrapper(ptr %%tcb) {\n");
   Emit ("entry:\n");
   // Publish this thread's own TCB in TLS so runtime routines executing on the
@@ -53579,10 +53825,11 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   // task is created during elaboration but activated later, at the enclosing
   // master's `begin`). The thread handle (TCB+16) is left null; an unactivated
   // task therefore has a null handle and is skipped by the join.
-  // TCB layout (80 bytes, calloc-zeroed):
+  // TCB layout (88 bytes, calloc-zeroed):
   //   0  func           8  parent_frame   16 thread_handle  24 completed (i8)
   //   32 master_done_ptr 40 entry_queue (FIFO RV list head)
   //   48 waiting_entry (i64: entry index this task is blocked at an accept for,
+  //      -2 = blocked in a selective wait (open_entries below then says which),
   //      or -1 = not accepting; for RM 9.7.2 conditional-call readiness)
   //   56 activation_state (i8: 0 = created/activating, 1 = activated — its
   //      declarative part elaborated, 2 = activation failed — the declarative
@@ -53599,12 +53846,16 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   //   64 owned_masters (head of the intrusive { master_rec, next } list of
   //      masters this task has entered and not yet left — lets OTHER threads
   //      walk this task's subtree for transitive consensus and abort)
+  //   80 open_entries (ptr to { i64 count, i64 idx[count] }: the OPEN
+  //      accept alternatives' encoded entry indices for the current
+  //      selective wait, closed slots holding -1. Frame-local storage of
+  //      the select; null and meaningless unless waiting_entry is -2.)
   // Offset 32 holds the enclosing MASTER RECORD ({ deps, prev, done_flag,
   //   owner_tcb, awake_count }), not the bare flag.
   // Per-task queue → per-entry FIFO without cross-task interference (RM 9.5).
   Emit ("define linkonce_odr ptr @__ada_task_create(ptr %%task_func, ptr %%parent_frame, ptr %%master) {\n");
   Emit ("entry:\n");
-  Emit ("  %%tcb = call ptr @calloc (i64 1, i64 80)\n");
+  Emit ("  %%tcb = call ptr @calloc (i64 1, i64 88)\n");
   Emit ("  store ptr %%task_func, ptr %%tcb\n");
   Emit ("  %%1 = getelementptr ptr, ptr %%tcb, i64 1\n");
   Emit ("  store ptr %%parent_frame, ptr %%1\n");
@@ -53645,6 +53896,26 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   // a second call (e.g. the enclosing master's begin re-walking entries a
   // nested package body already activated) is a no-op, keyed on the
   // activation state. A null TCB (activation skipped) is also a no-op.
+  // A batch activation that raised PROGRAM_ERROR (RM 9.3 / RM 3.9) leaves
+  // its created-but-never-threaded tasks COMPLETED: entry calls raise
+  // TASKING_ERROR, 'CALLABLE is false, later activation points skip them,
+  // and joins pass over the null thread handle. Activation state 1 keeps
+  // any straggling activation_wait from reporting a second failure — the
+  // batch's PROGRAM_ERROR already did.
+  Emit ("define linkonce_odr void @__ada_task_never_activated(ptr %%tcb) {\n");
+  Emit ("entry:\n");
+  Emit ("  %%n = icmp eq ptr %%tcb, null\n");
+  Emit ("  br i1 %%n, label %%done, label %%mark\n");
+  Emit ("mark:\n");
+  Emit ("  call i32 @pthread_mutex_lock(ptr @__rv_mutex)\n");
+  Emit ("  %%cs = getelementptr i8, ptr %%tcb, i64 24\n");
+  Emit ("  store i8 1, ptr %%cs  ; completed, never activated\n");
+  Emit ("  %%as = getelementptr i8, ptr %%tcb, i64 56\n");
+  Emit ("  store i8 1, ptr %%as\n");
+  Emit ("  call i32 @pthread_cond_broadcast(ptr @__term_cond)\n");
+  Emit ("  call i32 @pthread_mutex_unlock(ptr @__rv_mutex)\n");
+  Emit_Void_Function_Epilogue (true);
+
   Emit ("define linkonce_odr void @__ada_task_activate(ptr %%tcb) {\n");
   Emit ("entry:\n");
   Emit ("  %%n = icmp eq ptr %%tcb, null\n");
@@ -53653,7 +53924,15 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   Emit ("  %%tid0_slot = getelementptr ptr, ptr %%tcb, i64 2\n");
   Emit ("  %%tid0 = load ptr, ptr %%tid0_slot\n");
   Emit ("  %%already = icmp ne ptr %%tid0, null\n");
-  Emit ("  br i1 %%already, label %%done, label %%go\n");
+  Emit ("  br i1 %%already, label %%done, label %%cmpchk\n");
+  // A task completed WITHOUT ever being activated (its batch's activation
+  // raised PROGRAM_ERROR, RM 9.3) stays completed: an enclosing activation
+  // point must not resurrect it.
+  Emit ("cmpchk:\n");
+  Emit ("  %%cmp0_slot = getelementptr i8, ptr %%tcb, i64 24\n");
+  Emit ("  %%cmp0 = load i8, ptr %%cmp0_slot\n");
+  Emit ("  %%wascmp = icmp ne i8 %%cmp0, 0\n");
+  Emit ("  br i1 %%wascmp, label %%done, label %%go\n");
   Emit ("go:\n");
   // Count the dependent as awake BEFORE the thread exists (RM 9.7.1 consensus)
   // — the wrapper's terminating decrement must never precede the increment.
@@ -53677,13 +53956,14 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   Emit ("nothread:\n");
   // No thread could be created: the task never activates. Mark it completed
   // and activation-failed so waiters get TASKING_ERROR instead of hanging,
-  // and take back its awake count.
+  // take back its awake count, and wake any activation_wait.
+  Emit ("  %%_l2 = call i32 @pthread_mutex_lock(ptr @__rv_mutex)\n");
   Emit ("  %%cmp_slot = getelementptr i8, ptr %%tcb, i64 24\n");
   Emit ("  store i8 1, ptr %%cmp_slot\n");
   Emit ("  %%as_slot = getelementptr i8, ptr %%tcb, i64 56\n");
   Emit ("  store i8 2, ptr %%as_slot\n");
-  Emit ("  %%_l2 = call i32 @pthread_mutex_lock(ptr @__rv_mutex)\n");
   Emit ("  call void @__ada_awake_dec(ptr %%mrec)\n");
+  Emit ("  call i32 @pthread_cond_broadcast(ptr @__term_cond)\n");
   Emit ("  %%_u2 = call i32 @pthread_mutex_unlock(ptr @__rv_mutex)\n");
   Emit_Void_Function_Epilogue (true);
 
@@ -53695,18 +53975,22 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   Emit ("define linkonce_odr i8 @__ada_activation_wait(ptr %%tcb) {\n");
   Emit ("entry:\n");
   Emit ("  %%n = icmp eq ptr %%tcb, null\n");
-  Emit ("  br i1 %%n, label %%null_tcb, label %%loop\n");
+  Emit ("  br i1 %%n, label %%null_tcb, label %%lock\n");
   Emit ("null_tcb:\n");
   Emit ("  ret i8 1\n");
+  Emit ("lock:\n");
+  Emit ("  call i32 @pthread_mutex_lock(ptr @__rv_mutex)\n");
+  Emit ("  br label %%loop\n");
   Emit ("loop:\n");
   Emit ("  %%as_slot = getelementptr i8, ptr %%tcb, i64 56\n");
   Emit ("  %%st = load i8, ptr %%as_slot\n");
   Emit ("  %%pending = icmp eq i8 %%st, 0\n");
-  Emit ("  br i1 %%pending, label %%spin, label %%ready\n");
-  Emit ("spin:\n");
-  Emit ("  %%_u = call i32 @usleep(i32 100)\n");
+  Emit ("  br i1 %%pending, label %%wait, label %%ready\n");
+  Emit ("wait:\n");
+  Emit ("  call i32 @pthread_cond_wait(ptr @__term_cond, ptr @__rv_mutex)\n");
   Emit ("  br label %%loop\n");
   Emit ("ready:\n");
+  Emit ("  call i32 @pthread_mutex_unlock(ptr @__rv_mutex)\n");
   Emit ("  ret i8 %%st\n");
   Emit ("}\n\n");
 
@@ -54000,10 +54284,11 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   Emit ("  %%aborted = icmp ne i8 %%cmp, 0\n");
   Emit ("  br i1 %%aborted, label %%die, label %%qchk\n");
   Emit ("qchk:\n");
-  // An arrived entry call re-awakens the task: serve it.
-  Emit ("  %%qp = getelementptr ptr, ptr %%tcb, i64 5\n");
-  Emit ("  %%q = load ptr, ptr %%qp\n");
-  Emit ("  %%hascall = icmp ne ptr %%q, null\n");
+  // An arrived entry call that some OPEN alternative can serve re-awakens
+  // the task. A call for a CLOSED entry must not: the sweep would take
+  // nothing and park again, and this check would fire again — a spin.
+  Emit ("  %%hc = call i8 @__ada_queue_has_open(ptr %%tcb)\n");
+  Emit ("  %%hascall = icmp ne i8 %%hc, 0\n");
   Emit ("  br i1 %%hascall, label %%serve, label %%passchk\n");
   Emit ("passchk:\n");
   Emit ("  call void @__ada_try_passify(ptr %%tcb)\n");
@@ -54332,6 +54617,7 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   // (conditional-call "immediately possible").
   Emit ("define linkonce_odr i8 @__ada_entry_call_try(ptr %%task, i64 %%entry_idx, ptr %%params, i64 %%timeout_us) {\n");
   Emit ("entry:\n");
+  Emit ("  %%ts = alloca [16 x i8], align 8  ; timed-wait deadline\n");
   Emit ("  %%rv = call ptr @malloc (i64 48)\n");
   Emit ("  store ptr %%task, ptr %%rv\n");
   Emit ("  %%ip = getelementptr i64, ptr %%rv, i64 1\n");
@@ -54379,9 +54665,16 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   Emit ("  %%wep = getelementptr i64, ptr %%task, i64 6\n");
   Emit ("  %%we = load i64, ptr %%wep\n");
   Emit ("  %%r1 = icmp eq i64 %%we, %%entry_idx\n");
-  Emit ("  %%r2 = icmp eq i64 %%we, -2  ; -2 = in blocked selective wait\n");
-  Emit ("  %%ready = or i1 %%r1, %%r2\n");
-  Emit ("  br i1 %%ready, label %%enq, label %%notready\n");
+  Emit ("  br i1 %%r1, label %%enq, label %%selchk\n");
+  // Blocked selective wait: ready iff THIS entry is among its published
+  // open alternatives (exact index match, families included).
+  Emit ("selchk:\n");
+  Emit ("  %%r2 = icmp eq i64 %%we, -2\n");
+  Emit ("  br i1 %%r2, label %%openchk, label %%notready\n");
+  Emit ("openchk:\n");
+  Emit ("  %%oc = call i8 @__ada_open_entry(ptr %%task, i64 %%entry_idx)\n");
+  Emit ("  %%copen = icmp ne i8 %%oc, 0\n");
+  Emit ("  br i1 %%copen, label %%enq, label %%notready\n");
   Emit ("notready:\n");
   Emit ("  call i32 @pthread_mutex_unlock(ptr @__rv_mutex)\n");
   Emit ("  call void @free (ptr %%rv)\n");
@@ -54414,47 +54707,71 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   // re-awaken and the consensus serialize.
   Emit ("  call void @__ada_unpassify(ptr %%task)\n");
   Emit ("  call i32 @pthread_cond_broadcast(ptr @__term_cond)\n");
-  Emit ("  call i32 @pthread_mutex_unlock(ptr @__rv_mutex)\n");
-  // Reaching the loop with timeout_us==0 means a conditional call whose target
-  // was ready (the not-ready case already returned); give the ready acceptor a
-  // generous budget to complete the rendezvous rather than a single poll.
+  // Wait for completion under the lock, waking on the same broadcasts every
+  // producer already sends. A conditional call (timeout 0) verified the
+  // target BLOCKED with this entry OPEN under this same lock hold, so its
+  // rendezvous is committed: wait unbounded — the only exits are completion
+  // and the target dying (TASKING_ERROR). A timed call waits to its
+  // absolute deadline, then cancels iff the acceptor has not yet dequeued
+  // the record; once dequeued the rendezvous can no longer be cancelled
+  // (RM 9.7.2/9.7.3) and the wait becomes unbounded too.
   Emit ("  %%zerob = icmp eq i64 %%timeout_us, 0\n");
-  Emit ("  %%eff_budget = select i1 %%zerob, i64 50000, i64 %%timeout_us\n");
-  Emit ("  br label %%loop\n");
-  Emit ("loop:\n");
-  Emit ("  %%rem = phi i64 [ %%eff_budget, %%enq_done ], [ %%rem2, %%cont ]\n");
-  Emit ("  %%_u = call i32 @usleep(i32 100)\n");
+  Emit ("  br i1 %%zerob, label %%wloop, label %%tsetup\n");
+  Emit ("tsetup:\n");
+  Emit ("  %%_g = call i32 @clock_gettime(i32 0, ptr %%ts)\n");
+  Emit ("  %%secp = getelementptr i8, ptr %%ts, i64 0\n");
+  Emit ("  %%nsp = getelementptr i8, ptr %%ts, i64 8\n");
+  Emit ("  %%sec = load i64, ptr %%secp\n");
+  Emit ("  %%ns = load i64, ptr %%nsp\n");
+  Emit ("  %%addsec = udiv i64 %%timeout_us, 1000000\n");
+  Emit ("  %%addus = urem i64 %%timeout_us, 1000000\n");
+  Emit ("  %%addns = mul i64 %%addus, 1000\n");
+  Emit ("  %%ns1 = add i64 %%ns, %%addns\n");
+  Emit ("  %%carry = udiv i64 %%ns1, 1000000000\n");
+  Emit ("  %%ns2 = urem i64 %%ns1, 1000000000\n");
+  Emit ("  %%sec1 = add i64 %%sec, %%addsec\n");
+  Emit ("  %%sec2 = add i64 %%sec1, %%carry\n");
+  Emit ("  store i64 %%sec2, ptr %%secp\n");
+  Emit ("  store i64 %%ns2, ptr %%nsp\n");
+  Emit ("  br label %%wloop\n");
+  Emit ("wloop:\n");
   Emit ("  %%c = load i8, ptr %%cfp\n");
   Emit ("  %%ok = icmp ne i8 %%c, 0\n");
-  Emit ("  br i1 %%ok, label %%done_ok, label %%chkdead\n");
+  Emit ("  br i1 %%ok, label %%wdone, label %%chkdead\n");
   Emit ("chkdead:\n");
   Emit ("  %%dead1 = call i1 @__ada_task_dead(ptr %%task)\n");
-  Emit ("  br i1 %%dead1, label %%deadpath, label %%tick\n");
-  Emit ("tick:\n");
-  Emit ("  %%rem2 = sub i64 %%rem, 100\n");
-  Emit ("  %%expired = icmp sle i64 %%rem2, 0\n");
-  Emit ("  br i1 %%expired, label %%timeout, label %%cont\n");
-  Emit ("cont:\n");
-  Emit ("  br label %%loop\n");
-  Emit ("timeout:\n");
-  Emit ("  %%removed = call i8 @__ada_queue_remove(ptr %%task, ptr %%rv)\n");
+  Emit ("  br i1 %%dead1, label %%deadpath, label %%wblock\n");
+  Emit ("wblock:\n");
+  Emit ("  br i1 %%zerob, label %%uwait, label %%twait\n");
+  Emit ("uwait:\n");
+  Emit ("  call i32 @pthread_cond_wait(ptr @__term_cond, ptr @__rv_mutex)\n");
+  Emit ("  br label %%wloop\n");
+  Emit ("twait:\n");
+  Emit ("  %%rc = call i32 @pthread_cond_timedwait(ptr @__term_cond, ptr @__rv_mutex, ptr %%ts)\n");
+  Emit ("  %%expired = icmp eq i32 %%rc, 110  ; ETIMEDOUT\n");
+  Emit ("  br i1 %%expired, label %%texp, label %%wloop\n");
+  Emit ("texp:\n");
+  Emit ("  %%removed = call i8 @__ada_queue_unlink(ptr %%task, ptr %%rv)\n");
   Emit ("  %%cancelled = icmp ne i8 %%removed, 0\n");
-  Emit ("  br i1 %%cancelled, label %%cancel, label %%committed\n");
+  Emit ("  br i1 %%cancelled, label %%cancel, label %%cwloop\n");
   Emit ("cancel:\n");
+  Emit ("  call i32 @pthread_mutex_unlock(ptr @__rv_mutex)\n");
   Emit ("  call void @free (ptr %%rv)\n");
   Emit ("  ret i8 0\n");
-  // The acceptor dequeued the record before the deadline: the rendezvous is
-  // in progress and can no longer be cancelled (RM 9.7.2/9.7.3) — wait for
-  // it to complete and report success.
-  Emit ("committed:\n");
+  // Acceptor holds the record: committed — completion or death only.
+  Emit ("cwloop:\n");
   Emit ("  %%c2 = load i8, ptr %%cfp\n");
   Emit ("  %%done2 = icmp ne i8 %%c2, 0\n");
-  Emit ("  br i1 %%done2, label %%done_ok, label %%commit_spin\n");
-  Emit ("commit_spin:\n");
-  Emit ("  %%_u2 = call i32 @usleep(i32 100)\n");
-  Emit ("  br label %%committed\n");
-  Emit ("done_ok:\n");
+  Emit ("  br i1 %%done2, label %%wdone, label %%cdead\n");
+  Emit ("cdead:\n");
+  Emit ("  %%dead2 = call i1 @__ada_task_dead(ptr %%task)\n");
+  Emit ("  br i1 %%dead2, label %%deadpath, label %%cwait\n");
+  Emit ("cwait:\n");
+  Emit ("  call i32 @pthread_cond_wait(ptr @__term_cond, ptr @__rv_mutex)\n");
+  Emit ("  br label %%cwloop\n");
+  Emit ("wdone:\n");
   Emit ("  %%eid = load i64, ptr %%exp0\n");
+  Emit ("  call i32 @pthread_mutex_unlock(ptr @__rv_mutex)\n");
   Emit ("  call void @free (ptr %%rv)\n");
   Emit ("  %%he = icmp ne i64 %%eid, 0\n");
   Emit ("  br i1 %%he, label %%raise_e, label %%ret1\n");
@@ -54464,7 +54781,8 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   Emit ("ret1:\n");
   Emit ("  ret i8 1\n");
   Emit ("deadpath:\n");
-  Emit ("  %%_rm = call i8 @__ada_queue_remove(ptr %%task, ptr %%rv)\n");
+  Emit ("  %%_rm = call i8 @__ada_queue_unlink(ptr %%task, ptr %%rv)\n");
+  Emit ("  call i32 @pthread_mutex_unlock(ptr @__rv_mutex)\n");
   Emit ("  call void @free (ptr %%rv)\n");
   Emit ("  %%teid2 = ptrtoint ptr @__exc.tasking_error to " PTR_INT_TYPE "\n");
   Emit ("  call void @__ada_raise(i64 %%teid2)\n");
@@ -54756,6 +55074,121 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   Emit ("  %%rv = call ptr @__ada_queue_take(ptr %%self, i64 %%entry_idx)\n");
   Emit ("  call i32 @pthread_mutex_unlock(ptr @__rv_mutex)\n");
   Emit ("  ret ptr %%rv\n");
+  Emit ("}\n\n");
+
+  // Is `entry_idx` among the OPEN alternatives of self's current blocked
+  // selective wait? The select published { i64 count, i64 idx[count] } at
+  // TCB+80 (closed alternatives hold -1, which matches no real index).
+  // Null list (not in a blocked select) matches nothing. Caller holds
+  // @__rv_mutex.
+  Emit ("define linkonce_odr i8 @__ada_open_entry(ptr %%self, i64 %%entry_idx) {\n");
+  Emit ("entry:\n");
+  Emit ("  %%olp = getelementptr i8, ptr %%self, i64 80\n");
+  Emit ("  %%ol = load ptr, ptr %%olp\n");
+  Emit ("  %%noset = icmp eq ptr %%ol, null\n");
+  Emit ("  br i1 %%noset, label %%none, label %%init\n");
+  Emit ("init:\n");
+  Emit ("  %%cnt = load i64, ptr %%ol\n");
+  Emit ("  br label %%wl\n");
+  Emit ("wl:\n");
+  Emit ("  %%i = phi i64 [ 0, %%init ], [ %%i1, %%adv ]\n");
+  Emit ("  %%more = icmp slt i64 %%i, %%cnt\n");
+  Emit ("  br i1 %%more, label %%chk, label %%none\n");
+  Emit ("chk:\n");
+  Emit ("  %%i1 = add i64 %%i, 1\n");
+  Emit ("  %%ep = getelementptr i64, ptr %%ol, i64 %%i1\n");
+  Emit ("  %%ev = load i64, ptr %%ep\n");
+  Emit ("  %%m = icmp eq i64 %%ev, %%entry_idx\n");
+  Emit ("  br i1 %%m, label %%found, label %%adv\n");
+  Emit ("adv:\n");
+  Emit ("  br label %%wl\n");
+  Emit ("found:\n");
+  Emit ("  ret i8 1\n");
+  Emit ("none:\n");
+  Emit ("  ret i8 0\n");
+  Emit ("}\n\n");
+
+  // Does the queue hold a call some OPEN alternative can serve? Exact
+  // matching against the published open-index list — an over-approximation
+  // here would wake the select's sweep, which takes nothing, and spin.
+  // Caller holds @__rv_mutex.
+  Emit ("define linkonce_odr i8 @__ada_queue_has_open(ptr %%self) {\n");
+  Emit ("entry:\n");
+  Emit ("  %%qhp = getelementptr ptr, ptr %%self, i64 5\n");
+  Emit ("  %%head0 = load ptr, ptr %%qhp\n");
+  Emit ("  br label %%wl\n");
+  Emit ("wl:\n");
+  Emit ("  %%cur = phi ptr [ %%head0, %%entry ], [ %%nx, %%adv ]\n");
+  Emit ("  %%isnull = icmp eq ptr %%cur, null\n");
+  Emit ("  br i1 %%isnull, label %%none, label %%chk\n");
+  Emit ("chk:\n");
+  Emit ("  %%ip = getelementptr i64, ptr %%cur, i64 1\n");
+  Emit ("  %%iv = load i64, ptr %%ip\n");
+  Emit ("  %%open = call i8 @__ada_open_entry(ptr %%self, i64 %%iv)\n");
+  Emit ("  %%isopen = icmp ne i8 %%open, 0\n");
+  Emit ("  br i1 %%isopen, label %%found, label %%adv\n");
+  Emit ("adv:\n");
+  Emit ("  %%nxp = getelementptr ptr, ptr %%cur, i64 4\n");
+  Emit ("  %%nx = load ptr, ptr %%nxp\n");
+  Emit ("  br label %%wl\n");
+  Emit ("found:\n");
+  Emit ("  ret i8 1\n");
+  Emit ("none:\n");
+  Emit ("  ret i8 0\n");
+  Emit ("}\n\n");
+
+  // Block a selective wait until something it could serve MIGHT have
+  // happened: a call for an open alternative arrives, an abort lands, or
+  // (timeout_us > 0) the deadline passes. Returns 1 iff the deadline
+  // passed. Wakes spuriously rather than misses: every producer — entry
+  // calls, aborts, completions, the terminate consensus — broadcasts
+  // @__term_cond under @__rv_mutex, and the queue/abort re-check here runs
+  // under the same lock, so a wakeup can never be lost. The caller
+  // re-sweeps its alternatives after every return.
+  Emit ("define linkonce_odr i8 @__ada_select_block(ptr %%self, i64 %%timeout_us) {\n");
+  Emit ("entry:\n");
+  Emit ("  call i32 @pthread_mutex_lock(ptr @__rv_mutex)\n");
+  Emit ("  %%apf = getelementptr i8, ptr %%self, i64 61\n");
+  Emit ("  %%ap = load i8, ptr %%apf\n");
+  Emit ("  %%abrt = icmp ne i8 %%ap, 0\n");
+  Emit ("  br i1 %%abrt, label %%wake, label %%qchk\n");
+  Emit ("qchk:\n");
+  Emit ("  %%has = call i8 @__ada_queue_has_open(ptr %%self)\n");
+  Emit ("  %%srv = icmp ne i8 %%has, 0\n");
+  Emit ("  br i1 %%srv, label %%wake, label %%dowait\n");
+  Emit ("dowait:\n");
+  Emit ("  %%timed = icmp sgt i64 %%timeout_us, 0\n");
+  Emit ("  br i1 %%timed, label %%twait, label %%uwait\n");
+  Emit ("uwait:\n");
+  Emit ("  call i32 @pthread_cond_wait(ptr @__term_cond, ptr @__rv_mutex)\n");
+  Emit ("  br label %%wake\n");
+  Emit ("twait:\n");
+  // Absolute deadline for pthread_cond_timedwait: now + timeout_us, with
+  // nanosecond carry into the seconds field.
+  Emit ("  %%ts = alloca [16 x i8], align 8\n");
+  Emit ("  %%_g = call i32 @clock_gettime(i32 0, ptr %%ts)\n");
+  Emit ("  %%secp = getelementptr i8, ptr %%ts, i64 0\n");
+  Emit ("  %%nsp = getelementptr i8, ptr %%ts, i64 8\n");
+  Emit ("  %%sec = load i64, ptr %%secp\n");
+  Emit ("  %%ns = load i64, ptr %%nsp\n");
+  Emit ("  %%addsec = udiv i64 %%timeout_us, 1000000\n");
+  Emit ("  %%addus = urem i64 %%timeout_us, 1000000\n");
+  Emit ("  %%addns = mul i64 %%addus, 1000\n");
+  Emit ("  %%ns1 = add i64 %%ns, %%addns\n");
+  Emit ("  %%carry = udiv i64 %%ns1, 1000000000\n");
+  Emit ("  %%ns2 = urem i64 %%ns1, 1000000000\n");
+  Emit ("  %%sec1 = add i64 %%sec, %%addsec\n");
+  Emit ("  %%sec2 = add i64 %%sec1, %%carry\n");
+  Emit ("  store i64 %%sec2, ptr %%secp\n");
+  Emit ("  store i64 %%ns2, ptr %%nsp\n");
+  Emit ("  %%rc = call i32 @pthread_cond_timedwait(ptr @__term_cond, ptr @__rv_mutex, ptr %%ts)\n");
+  Emit ("  %%expired = icmp eq i32 %%rc, 110  ; ETIMEDOUT\n");
+  Emit ("  call i32 @pthread_mutex_unlock(ptr @__rv_mutex)\n");
+  Emit ("  %%x = zext i1 %%expired to i8\n");
+  Emit ("  ret i8 %%x\n");
+  Emit ("wake:\n");
+  Emit ("  call i32 @pthread_mutex_unlock(ptr @__rv_mutex)\n");
+  Emit ("  ret i8 0\n");
   Emit ("}\n\n");
 
   // Entry'COUNT (RM 9.9): number of calls queued on entry_idx of task self.
@@ -58156,6 +58589,14 @@ void Resolve_Context_Use_Clauses (Syntax_Node *context) {
   Node_List *uses = &context->context.use_clauses;
   for (uint32_t i = 0; i < uses->count; i++)
     Resolve_Declaration (uses->items[i]);
+
+  // Context pragmas resolve through the ordinary pragma path — that is how
+  // configuration pragmas (RESTRICTIONS, PROFILE) take effect for the unit.
+  // ELABORATE/ELABORATE_ALL fall through it untouched; the elaboration
+  // graph walk reads them separately.
+  Node_List *pragmas = &context->context.pragmas;
+  for (uint32_t i = 0; i < pragmas->count; i++)
+    Resolve_Declaration (pragmas->items[i]);
 }
 
 // Load and resolve a package specification
