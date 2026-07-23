@@ -12,6 +12,7 @@ test_results/
 acats_logs/
 test_summary.txt
 test_output.txt
+X*.TMP
 *.ll
 !rts/rt.ll
 !rts/rt_wrappers.ll
