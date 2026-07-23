@@ -44867,11 +44867,14 @@ void Generate_Statement (Syntax_Node *node) {
             has_terminate = true;
           }
         }
-        // A selective wait retries until an alternative is selected when it
-        // has a terminate alternative (consensus polling), a delay
-        // alternative (poll until the deadline, RM 9.7.1 — sleeping the
-        // whole duration in one shot would refuse rendezvous for its whole
-        // span), or no else part (it then waits indefinitely).
+        // A selective wait re-sweeps its alternatives until one is
+        // selected when it has a terminate alternative (each sweep
+        // re-tries the consensus), a delay alternative (block until the
+        // deadline, waking early for arrivals — sleeping the whole
+        // duration in one shot would refuse rendezvous for its span,
+        // RM 9.7.1), or no else part (it then waits indefinitely). Each
+        // block-and-resweep round is event-driven: __ada_select_block
+        // parks until a broadcast or the budget's expiry.
         bool select_retries = has_terminate or has_delay or not has_else;
 
         // RM 9.7.1: guard conditions are evaluated ONCE, at the start of
@@ -44949,7 +44952,7 @@ void Generate_Statement (Syntax_Node *node) {
         // evaluated once, at the start of the selective wait; the budget is
         // the MINIMUM over the OPEN delay alternatives (closed guards do
         // not contribute). All delays closed leaves the sentinel: the wait
-        // then polls indefinitely, like a select with no delay.
+        // then blocks indefinitely, like a select with no delay.
         uint32_t delay_budget_slot = 0;
         int first_delay_index = -1;   // delay whose trailing statements run
         if (has_delay) {
@@ -45336,7 +45339,7 @@ void Generate_Statement (Syntax_Node *node) {
           }
         }
 
-        // Nothing was selected this polling round.
+        // Nothing was selected this sweep.
         if (has_else) {
           // Immediate else (RM 9.7.1): one poll, then the else part.
           Generate_Statement (node->select_stmt.else_part);
@@ -54986,33 +54989,28 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   // re-awaken and the consensus serialize.
   Emit ("  call void @__ada_unpassify(ptr %%task)\n");
   Emit ("  call i32 @pthread_cond_broadcast(ptr @__term_cond)\n");
-  // Wait for completion under the lock, waking on the same broadcasts every
-  // producer already sends. A conditional call (timeout 0) verified the
-  // target BLOCKED with this entry OPEN under this same lock hold, so its
-  // rendezvous is committed: wait unbounded — the only exits are completion
-  // and the target dying (TASKING_ERROR). A timed call waits to its
+  // Wait for the completion word — the ONLY thing a caller ever waits for
+  // (completion is total: acceptor, caller-abort, or target death all
+  // publish it). A conditional call (timeout 0) verified the target
+  // BLOCKED with this entry OPEN under this same lock hold, so its
+  // rendezvous is committed: wait unbounded. A timed call waits to its
   // absolute deadline, then cancels iff the acceptor has not yet dequeued
   // the record; once dequeued the rendezvous can no longer be cancelled
   // (RM 9.7.2/9.7.3) and the wait becomes unbounded too.
   Emit ("  %%zerob = icmp eq i64 %%timeout_us, 0\n");
-  Emit ("  br i1 %%zerob, label %%wloop, label %%tsetup\n");
+  Emit ("  br i1 %%zerob, label %%uwait, label %%tsetup\n");
+  Emit ("uwait:\n");
+  Emit ("  call i32 @pthread_mutex_unlock(ptr @__rv_mutex)\n");
+  Emit ("  call void @__ada_wait_word(ptr %%cfp, i32 0)\n");
+  Emit ("  call i32 @pthread_mutex_lock(ptr @__rv_mutex)\n");
+  Emit ("  br label %%wdone\n");
   Emit ("tsetup:\n");
   Emit ("  call void @__ada_abs_deadline(ptr %%ts, i64 %%timeout_us)\n");
   Emit ("  br label %%wloop\n");
   Emit ("wloop:\n");
   Emit ("  %%c = load atomic i32, ptr %%cfp acquire, align 4\n");
   Emit ("  %%ok = icmp ne i32 %%c, 0\n");
-  Emit ("  br i1 %%ok, label %%wdone, label %%chkdead\n");
-  Emit ("chkdead:\n");
-  Emit ("  %%dead1 = call i1 @__ada_task_dead(ptr %%task)\n");
-  Emit ("  br i1 %%dead1, label %%deadpath, label %%wblock\n");
-  Emit ("wblock:\n");
-  Emit ("  br i1 %%zerob, label %%uwait, label %%twait\n");
-  Emit ("uwait:\n");
-  Emit ("  call i32 @pthread_mutex_unlock(ptr @__rv_mutex)\n");
-  Emit ("  call void @__ada_wait_word(ptr %%cfp, i32 0)\n");
-  Emit ("  call i32 @pthread_mutex_lock(ptr @__rv_mutex)\n");
-  Emit ("  br label %%wloop\n");
+  Emit ("  br i1 %%ok, label %%wdone, label %%twait\n");
   Emit ("twait:\n");
   Emit ("  %%rc = call i32 @pthread_cond_timedwait(ptr @__term_cond, ptr @__rv_mutex, ptr %%ts)\n");
   Emit ("  %%expired = icmp eq i32 %%rc, 110  ; ETIMEDOUT\n");
@@ -55025,14 +55023,11 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   Emit ("  call i32 @pthread_mutex_unlock(ptr @__rv_mutex)\n");
   Emit ("  call void @free (ptr %%rv)\n");
   Emit ("  ret i8 0\n");
-  // Acceptor holds the record: committed — completion or death only.
+  // Acceptor holds the record: committed — wait for completion.
   Emit ("cwloop:\n");
   Emit ("  %%c2 = load atomic i32, ptr %%cfp acquire, align 4\n");
   Emit ("  %%done2 = icmp ne i32 %%c2, 0\n");
-  Emit ("  br i1 %%done2, label %%wdone, label %%cdead\n");
-  Emit ("cdead:\n");
-  Emit ("  %%dead2 = call i1 @__ada_task_dead(ptr %%task)\n");
-  Emit ("  br i1 %%dead2, label %%deadpath, label %%cwait\n");
+  Emit ("  br i1 %%done2, label %%wdone, label %%cwait\n");
   Emit ("cwait:\n");
   Emit ("  call i32 @pthread_cond_wait(ptr @__term_cond, ptr @__rv_mutex)\n");
   Emit ("  br label %%cwloop\n");
@@ -55047,13 +55042,6 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   Emit ("  unreachable\n");
   Emit ("ret1:\n");
   Emit ("  ret i8 1\n");
-  Emit ("deadpath:\n");
-  Emit ("  %%_rm = call i8 @__ada_queue_unlink(ptr %%task, ptr %%rv)\n");
-  Emit ("  call i32 @pthread_mutex_unlock(ptr @__rv_mutex)\n");
-  Emit ("  call void @free (ptr %%rv)\n");
-  Emit ("  %%teid2 = ptrtoint ptr @__exc.tasking_error to " PTR_INT_TYPE "\n");
-  Emit ("  call void @__ada_raise(i64 %%teid2)\n");
-  Emit ("  unreachable\n");
   Emit ("}\n\n");
 
   // A task is "dead" for the purpose of an entry call (RM 9.5(16)): it has
