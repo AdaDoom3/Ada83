@@ -3922,6 +3922,7 @@ void Generate_Object_Declaration    (Syntax_Node *node);
 bool Object_Declaration_Is_Superseded (Syntax_Node *node, Symbol *sym);
 void Generate_Instance_Global_Object_Declaration (Syntax_Node *node);
 Syntax_Node *Select_Alternative_Accept (Syntax_Node *alt);
+bool Generate_Conditional_Or_Timed_Entry_Call (Syntax_Node *node);
 void Emit_Object_Task_Elaboration   (Symbol *sym, Type_Info *ty);
 bool Record_Needs_Runtime_Layout (Type_Info *rec);
 bool Record_Fully_Static_Foldable (Type_Info *rec);
@@ -44260,6 +44261,75 @@ void Emit_Accept_Out_Param_Writeback (Node_List *parameters, uint32_t params_ptr
   }
 }
 
+// A conditional (`select CALL; else S;`) or timed (`select CALL; or delay
+// D; S;`) ENTRY CALL — RM 9.7.2/9.7.3 — masquerading as a select statement.
+// Emits the non-blocking / deadline call and branches on whether it
+// rendezvoused; returns false when the first alternative is not an entry
+// call (a true selective wait, handled by the NK_SELECT case). Needs none
+// of the selective wait's machinery: no advertisement, no bookkeeping
+// allocas, no retry loop.
+bool Generate_Conditional_Or_Timed_Entry_Call (Syntax_Node *node) {
+  if (node->select_stmt.alternatives.count == 0) return false;
+  Syntax_Node *first = node->select_stmt.alternatives.items[0];
+
+  // The entry call may sit bare (NK_APPLY), wrapped in a call statement,
+  // or be a parameterless T.E (NK_SELECTED naming an entry).
+  Syntax_Node *first_call = first;
+  if (first_call and first_call->kind == NK_CALL_STMT)
+    first_call = first_call->assignment.target;
+  bool first_is_entry_call = first_call and
+    ((first_call->kind == NK_APPLY and
+      first_call->apply.resolution == APPLY_ENTRY_CALL) or
+     (first_call->kind == NK_SELECTED and first_call->symbol and
+      first_call->symbol->kind == SYMBOL_ENTRY));
+  if (not first_is_entry_call) return false;
+
+  Node_List *alts = &node->select_stmt.alternatives;
+  int delay_idx = -1;
+  for (uint32_t i = 1; i < alts->count; i++)
+    if (alts->items[i] and alts->items[i]->kind == NK_DELAY) { delay_idx = (int)i; break; }
+
+  // Timeout budget (0 = poll once = conditional). RM 9.7.3 defers the
+  // delay's evaluation to after the call's arguments, so hand the
+  // expression to the entry-call codegen rather than evaluating here.
+  cg->entry_call_timeout_temp = 0;
+  cg->entry_call_delay_expr =
+    delay_idx >= 0 ? alts->items[delay_idx]->delay_stmt.expression : NULL;
+
+  cg->entry_call_try_mode = true;
+  Generate_Statement (first);
+  uint32_t res = cg->entry_call_result_temp;
+  cg->entry_call_try_mode = false;
+  cg->entry_call_timeout_temp = 0;
+  cg->entry_call_delay_expr = NULL;
+
+  uint32_t done_label = cg->label_id++;
+  uint32_t acc_l = cg->label_id++, not_l = cg->label_id++;
+  LLVM_I1 accb = Emit_Boolean_Truth_Test (res);
+  Emit ("  br i1 %%t%u, label %%L%u, label %%L%u\n", accb.reg, acc_l, not_l);
+  cg->block_terminated = true;
+
+  // Accepted: run the statements following the entry call.
+  Emit_Label_Here (acc_l);
+  uint32_t acc_end = (delay_idx >= 0) ? (uint32_t)delay_idx : alts->count;
+  for (uint32_t i = 1; i < acc_end; i++)
+    Generate_Statement (alts->items[i]);
+  Emit ("  br label %%L%u\n", done_label);
+  cg->block_terminated = true;
+
+  // Not accepted: the `else` part (conditional) or the delay's statements
+  // (timed).
+  Emit_Label_Here (not_l);
+  if (node->select_stmt.else_part) {
+    Generate_Statement (node->select_stmt.else_part);
+  } else if (delay_idx >= 0) {
+    for (uint32_t i = (uint32_t)delay_idx + 1; i < alts->count; i++)
+      Generate_Statement (alts->items[i]);
+  }
+  Emit_Label_Here (done_label);
+  return true;
+}
+
 // The accept statement of a selective-wait alternative: bare, or wrapped in
 // a guarded NK_ASSOCIATION; NULL for delay/terminate/else-statement shapes.
 Syntax_Node *Select_Alternative_Accept (Syntax_Node *alt) {
@@ -44768,6 +44838,9 @@ void Generate_Statement (Syntax_Node *node) {
       // Forms: selective_wait, conditional_entry_call, timed_entry_call                            
       // Runtime: check open alternatives, wait or execute else                                     
       //                                                                                            
+      // A conditional/timed ENTRY CALL is its own statement shape.
+      if (Generate_Conditional_Or_Timed_Entry_Call (node)) break;
+
       {
         uint32_t done_label = cg->label_id++;
         bool has_else = (node->select_stmt.else_part != NULL);
@@ -44781,72 +44854,6 @@ void Generate_Statement (Syntax_Node *node) {
         // restored; exits that leave the frame entirely (EXIT, abort
         // epilogue, exceptions) do not re-execute the select.
         uint32_t select_sp = Emit_Result_Instruction ("call ptr @llvm.stacksave.p0()\n");
-
-        // Conditional entry call (`select CALL; else S;`) or timed entry call
-        // (`select CALL; or delay D; S;`) — RM 9.7.2/9.7.3. The first
-        // alternative is an entry call (not accept/delay/terminate). Emit the
-        // non-blocking / deadline entry call and branch on whether it
-        // rendezvoused.
-        if (node->select_stmt.alternatives.count > 0) {
-          Syntax_Node *first = node->select_stmt.alternatives.items[0];
-
-          // The entry call may sit bare (NK_APPLY), wrapped in a call
-          // statement, or be a parameterless T.E (NK_SELECTED naming an
-          // entry).
-          Syntax_Node *first_call = first;
-          if (first_call and first_call->kind == NK_CALL_STMT)
-            first_call = first_call->assignment.target;
-          bool first_is_entry_call = first_call and
-            ((first_call->kind == NK_APPLY and
-              first_call->apply.resolution == APPLY_ENTRY_CALL) or
-             (first_call->kind == NK_SELECTED and first_call->symbol and
-              first_call->symbol->kind == SYMBOL_ENTRY));
-          if (first_is_entry_call) {
-            Node_List *alts = &node->select_stmt.alternatives;
-            int delay_idx = -1;
-            for (uint32_t i = 1; i < alts->count; i++)
-              if (alts->items[i] and alts->items[i]->kind == NK_DELAY) { delay_idx = (int)i; break; }
-
-            // Timeout budget (0 = poll once = conditional). RM 9.7.3 defers
-            // the delay's evaluation to after the call's arguments, so hand the
-            // expression to the entry-call codegen rather than evaluating here.
-            cg->entry_call_timeout_temp = 0;
-            cg->entry_call_delay_expr =
-              delay_idx >= 0 ? alts->items[delay_idx]->delay_stmt.expression : NULL;
-
-            cg->entry_call_try_mode = true;
-            Generate_Statement (first);
-            uint32_t res = cg->entry_call_result_temp;
-            cg->entry_call_try_mode = false;
-            cg->entry_call_timeout_temp = 0;
-            cg->entry_call_delay_expr = NULL;
-
-            uint32_t acc_l = cg->label_id++, not_l = cg->label_id++;
-            LLVM_I1 accb = Emit_Boolean_Truth_Test (res);
-            Emit ("  br i1 %%t%u, label %%L%u, label %%L%u\n", accb.reg, acc_l, not_l);
-            cg->block_terminated = true;
-
-            // Accepted: run the statements following the entry call.
-            Emit_Label_Here (acc_l);
-            uint32_t acc_end = (delay_idx >= 0) ? (uint32_t)delay_idx : alts->count;
-            for (uint32_t i = 1; i < acc_end; i++)
-              Generate_Statement (alts->items[i]);
-            Emit ("  br label %%L%u\n", done_label);
-            cg->block_terminated = true;
-
-            // Not accepted: the `else` part (conditional) or the delay's
-            // statements (timed).
-            Emit_Label_Here (not_l);
-            if (has_else) {
-              Generate_Statement (node->select_stmt.else_part);
-            } else if (delay_idx >= 0) {
-              for (uint32_t i = (uint32_t)delay_idx + 1; i < alts->count; i++)
-                Generate_Statement (alts->items[i]);
-            }
-            Emit_Label_Here (done_label);
-            break;
-          }
-        }
 
         // Check for delay and terminate alternatives
         bool has_terminate = false;
@@ -53781,6 +53788,73 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   Emit ("  ret void\n");
   Emit ("}\n\n");
 
+  // A fresh rendezvous record ({ task, entry_idx, params, completion i32,
+  // next, bridged-exception }, 48 bytes) — malloc'd here, freed by the
+  // CALLER once complete.
+  Emit ("define linkonce_odr ptr @__ada_rv_new(ptr %%task, i64 %%entry_idx, ptr %%params) {\n");
+  Emit ("  %%rv = call ptr @malloc (i64 48)\n");
+  Emit ("  store ptr %%task, ptr %%rv\n");
+  Emit ("  %%ip = getelementptr i64, ptr %%rv, i64 1\n");
+  Emit ("  store i64 %%entry_idx, ptr %%ip\n");
+  Emit ("  %%pp = getelementptr ptr, ptr %%rv, i64 2\n");
+  Emit ("  store ptr %%params, ptr %%pp\n");
+  Emit ("  %%cfp = getelementptr i8, ptr %%rv, i64 24\n");
+  Emit ("  store i32 0, ptr %%cfp  ; completion word\n");
+  Emit ("  %%nxp = getelementptr ptr, ptr %%rv, i64 4\n");
+  Emit ("  store ptr null, ptr %%nxp\n");
+  Emit ("  %%exp = getelementptr i64, ptr %%rv, i64 5\n");
+  Emit ("  store i64 0, ptr %%exp\n");
+  Emit ("  ret ptr %%rv\n");
+  Emit ("}\n\n");
+
+  // Fill a caller-provided timespec with now + us (nanosecond carry into
+  // seconds) for pthread_cond_timedwait.
+  Emit ("define linkonce_odr void @__ada_abs_deadline(ptr %%ts, i64 %%us) {\n");
+  Emit ("  %%_g = call i32 @clock_gettime(i32 0, ptr %%ts)\n");
+  Emit ("  %%secp = getelementptr i8, ptr %%ts, i64 0\n");
+  Emit ("  %%nsp = getelementptr i8, ptr %%ts, i64 8\n");
+  Emit ("  %%sec = load i64, ptr %%secp\n");
+  Emit ("  %%ns = load i64, ptr %%nsp\n");
+  Emit ("  %%addsec = udiv i64 %%us, 1000000\n");
+  Emit ("  %%addus = urem i64 %%us, 1000000\n");
+  Emit ("  %%addns = mul i64 %%addus, 1000\n");
+  Emit ("  %%ns1 = add i64 %%ns, %%addns\n");
+  Emit ("  %%carry = udiv i64 %%ns1, 1000000000\n");
+  Emit ("  %%ns2 = urem i64 %%ns1, 1000000000\n");
+  Emit ("  %%sec1 = add i64 %%sec, %%addsec\n");
+  Emit ("  %%sec2 = add i64 %%sec1, %%carry\n");
+  Emit ("  store i64 %%sec2, ptr %%secp\n");
+  Emit ("  store i64 %%ns2, ptr %%nsp\n");
+  Emit ("  ret void\n");
+  Emit ("}\n\n");
+
+  // Bounded spin on racy peeks of the queue head and the abort flag —
+  // PAUSE/YIELD between probes — before an acceptor takes the lock. The
+  // locked path re-checks properly; the abort peek keeps a spin from
+  // delaying RM 9.10.
+  Emit ("define linkonce_odr void @__ada_spin_for_call(ptr %%self) {\n");
+  Emit ("entry:\n");
+  Emit ("  %%qhp = getelementptr ptr, ptr %%self, i64 5\n");
+  Emit ("  %%apf = getelementptr i8, ptr %%self, i64 61\n");
+  Emit ("  br label %%peek\n");
+  Emit ("peek:\n");
+  Emit ("  %%i = phi i32 [ 0, %%entry ], [ %%i2, %%next ]\n");
+  Emit ("  %%h = load atomic ptr, ptr %%qhp monotonic, align 8\n");
+  Emit ("  %%hit = icmp ne ptr %%h, null\n");
+  Emit ("  br i1 %%hit, label %%out, label %%chk\n");
+  Emit ("chk:\n");
+  Emit ("  %%ab = load atomic i8, ptr %%apf monotonic, align 1\n");
+  Emit ("  %%abt = icmp ne i8 %%ab, 0\n");
+  Emit ("  br i1 %%abt, label %%out, label %%next\n");
+  Emit ("next:\n");
+  Emit ("  call void @__ada_cpu_relax()\n");
+  Emit ("  %%i2 = add i32 %%i, 1\n");
+  Emit ("  %%more = icmp ult i32 %%i2, 256\n");
+  Emit ("  br i1 %%more, label %%peek, label %%out\n");
+  Emit ("out:\n");
+  Emit ("  ret void\n");
+  Emit ("}\n\n");
+
   // Exception handling: raise
   Emit ("define linkonce_odr void @__ada_raise(i64 %%exc_id) {\n");
   Emit ("  %%xk = load i32, ptr @__exc_key\n");
@@ -53944,15 +54018,41 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   Emit ("  %%_u2 = call i32 @pthread_mutex_unlock(ptr @__rv_mutex)\n");
   Emit_Void_Function_Epilogue (true);
 
-  // Task terminate: graceful task termination (for terminate alternative).                        
-  // Per RM 9.7.1: a terminate alternative is selected when the task's                              
-  // master has completed and all sibling tasks are terminated or waiting                           
-  // at terminate alternatives. We terminate just this task's thread.                             
-  //                                                                                                
-  Emit ("define linkonce_odr void @__ada_task_terminate() {\n");
-  Emit ("  call void @pthread_exit (ptr null)\n");
-  Emit ("  unreachable\n");
-  Emit ("}\n\n");
+  // ═══════════════════════════════════════════════════════════════════════
+  // TASKING RUNTIME — protocol invariants
+  //
+  // Lock discipline. @__rv_mutex guards ALL cross-task mutable state: entry
+  //   queues, serving lists, waiting_entry / open_entries advertisements,
+  //   master awake counts, passive flags, and every completion publication.
+  //   @__ada_wait_word is called with the lock NOT held; @__ada_wake_word
+  //   runs UNDER it. Nothing blocks while holding the lock except the
+  //   condvar waits, which release it atomically.
+  //
+  // Wake channels. Two, by event kind:
+  //   - The rendezvous COMPLETION word (rv+24, i32 0=pending 1=complete,
+  //     release-published): its waiter is woken directly — spin-then-futex
+  //     on Linux x86-64/AArch64, @__term_cond broadcast elsewhere.
+  //   - Every other state change — queue arrival, activation, master flag,
+  //     consensus, abort — broadcasts @__term_cond; waiters re-check their
+  //     predicate under the lock, so spurious wakes are harmless and lost
+  //     wakes impossible.
+  //
+  // Completion is total. A caller parked on rv+24 is released by exactly
+  //   one of: the acceptor (accept_complete), an abort of the CALLER
+  //   (abort_release_call), or the TARGET's completion in any form —
+  //   body end, terminate alternative, abort epilogue, failed activation,
+  //   exception unwind — each of which runs @__ada_release_callers over
+  //   the target's queue AND serving list, bridging TASKING_ERROR into
+  //   the record (RM 9.5(16)/9.10). No caller ever polls for a dead task.
+  //
+  // Ownership. Rendezvous records are malloc'd and freed by the CALLER
+  //   after completion. Master records and their list nodes are freed by
+  //   @__ada_master_leave after the joins (dependents can no longer reach
+  //   them: awake decrements precede join returns, and the abort walker
+  //   reaches records only through the owned-masters list, unlinked by
+  //   then). TCBs are immortal by design — 'TERMINATED and 'CALLABLE
+  //   remain legal after termination for as long as the program runs.
+  // ═══════════════════════════════════════════════════════════════════════
 
   // Task wrapper: calls the task body, then publishes completion and
   // termination. (The authoritative TCB layout is documented at
@@ -54249,6 +54349,7 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   Emit ("  %%np2 = getelementptr ptr, ptr %%node, i64 1\n");
   Emit ("  %%next = load ptr, ptr %%np2\n");
   Emit ("  store ptr %%next, ptr %%slot\n");
+  Emit ("  call void @free (ptr %%node)\n");
   Emit ("  br label %%done\n");
   Emit ("step:\n");
   Emit ("  %%np = getelementptr ptr, ptr %%node, i64 1\n");
@@ -54643,8 +54744,8 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   Emit ("  br label %%bcast\n");
   Emit ("bcast:\n");
   Emit ("  %%_b = call i32 @pthread_cond_broadcast(ptr @__term_cond)\n");
-  Emit ("  %%_ul = call i32 @pthread_mutex_unlock(ptr @__rv_mutex)\n");
   Emit ("  %%head = load ptr, ptr %%rec\n");
+  Emit ("  %%_ul = call i32 @pthread_mutex_unlock(ptr @__rv_mutex)\n");
   Emit ("  br label %%loop\n");
   Emit ("loop:\n");
   Emit ("  %%node = phi ptr [ %%head, %%bcast ], [ %%next, %%body ]\n");
@@ -54655,6 +54756,7 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   Emit ("  call void @__ada_task_join(ptr %%tcb)\n");
   Emit ("  %%np = getelementptr ptr, ptr %%node, i64 1\n");
   Emit ("  %%next = load ptr, ptr %%np\n");
+  Emit ("  call void @free (ptr %%node)  ; dependent list node\n");
   Emit ("  br label %%loop\n");
   Emit ("fin:\n");
   Emit ("  call void @__ada_master_disown(ptr %%rec)\n");
@@ -54662,6 +54764,10 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   Emit ("  %%pp = getelementptr ptr, ptr %%rec, i64 1\n");
   Emit ("  %%prev = load ptr, ptr %%pp\n");
   Emit ("  %%_s = call i32 @pthread_setspecific(i32 %%k, ptr %%prev)\n");
+  // Joined, disowned, popped: nothing can reach the record now (every
+  // dependent decremented awake before its join returned; the abort
+  // walker reaches records only through the owned-masters list).
+  Emit ("  call void @free (ptr %%rec)\n");
   Emit ("  ret void\n");
   Emit ("}\n\n");
 
@@ -54800,18 +54906,9 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   Emit ("define linkonce_odr i8 @__ada_entry_call_try(ptr %%task, i64 %%entry_idx, ptr %%params, i64 %%timeout_us) {\n");
   Emit ("entry:\n");
   Emit ("  %%ts = alloca [16 x i8], align 8  ; timed-wait deadline\n");
-  Emit ("  %%rv = call ptr @malloc (i64 48)\n");
-  Emit ("  store ptr %%task, ptr %%rv\n");
-  Emit ("  %%ip = getelementptr i64, ptr %%rv, i64 1\n");
-  Emit ("  store i64 %%entry_idx, ptr %%ip\n");
-  Emit ("  %%pp = getelementptr ptr, ptr %%rv, i64 2\n");
-  Emit ("  store ptr %%params, ptr %%pp\n");
+  Emit ("  %%rv = call ptr @__ada_rv_new(ptr %%task, i64 %%entry_idx, ptr %%params)\n");
   Emit ("  %%cfp = getelementptr i8, ptr %%rv, i64 24\n");
-  Emit ("  store i32 0, ptr %%cfp  ; completion word\n");
-  Emit ("  %%nxp = getelementptr ptr, ptr %%rv, i64 4\n");
-  Emit ("  store ptr null, ptr %%nxp\n");
   Emit ("  %%exp0 = getelementptr i64, ptr %%rv, i64 5\n");
-  Emit ("  store i64 0, ptr %%exp0\n");
   Emit ("  %%tnull = icmp eq ptr %%task, null\n");
   Emit ("  br i1 %%tnull, label %%raise_te, label %%lock_it\n");
   Emit ("raise_te:\n");
@@ -54900,21 +54997,7 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   Emit ("  %%zerob = icmp eq i64 %%timeout_us, 0\n");
   Emit ("  br i1 %%zerob, label %%wloop, label %%tsetup\n");
   Emit ("tsetup:\n");
-  Emit ("  %%_g = call i32 @clock_gettime(i32 0, ptr %%ts)\n");
-  Emit ("  %%secp = getelementptr i8, ptr %%ts, i64 0\n");
-  Emit ("  %%nsp = getelementptr i8, ptr %%ts, i64 8\n");
-  Emit ("  %%sec = load i64, ptr %%secp\n");
-  Emit ("  %%ns = load i64, ptr %%nsp\n");
-  Emit ("  %%addsec = udiv i64 %%timeout_us, 1000000\n");
-  Emit ("  %%addus = urem i64 %%timeout_us, 1000000\n");
-  Emit ("  %%addns = mul i64 %%addus, 1000\n");
-  Emit ("  %%ns1 = add i64 %%ns, %%addns\n");
-  Emit ("  %%carry = udiv i64 %%ns1, 1000000000\n");
-  Emit ("  %%ns2 = urem i64 %%ns1, 1000000000\n");
-  Emit ("  %%sec1 = add i64 %%sec, %%addsec\n");
-  Emit ("  %%sec2 = add i64 %%sec1, %%carry\n");
-  Emit ("  store i64 %%sec2, ptr %%secp\n");
-  Emit ("  store i64 %%ns2, ptr %%nsp\n");
+  Emit ("  call void @__ada_abs_deadline(ptr %%ts, i64 %%timeout_us)\n");
   Emit ("  br label %%wloop\n");
   Emit ("wloop:\n");
   Emit ("  %%c = load atomic i32, ptr %%cfp acquire, align 4\n");
@@ -55061,18 +55144,8 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   // 32 next, 40 exception_id(i64; 0 = none).
   Emit ("define linkonce_odr void @__ada_entry_call(ptr %%task, i64 %%entry_idx, ptr %%params) {\n");
   Emit ("entry:\n");
-  Emit ("  %%rv = call ptr @malloc (i64 48)\n");
-  Emit ("  store ptr %%task, ptr %%rv\n");
-  Emit ("  %%ip = getelementptr i64, ptr %%rv, i64 1\n");
-  Emit ("  store i64 %%entry_idx, ptr %%ip\n");
-  Emit ("  %%pp = getelementptr ptr, ptr %%rv, i64 2\n");
-  Emit ("  store ptr %%params, ptr %%pp\n");
+  Emit ("  %%rv = call ptr @__ada_rv_new(ptr %%task, i64 %%entry_idx, ptr %%params)\n");
   Emit ("  %%cfp = getelementptr i8, ptr %%rv, i64 24\n");
-  Emit ("  store i32 0, ptr %%cfp  ; completion word\n");
-  Emit ("  %%exp0 = getelementptr i64, ptr %%rv, i64 5\n");
-  Emit ("  store i64 0, ptr %%exp0\n");
-  Emit ("  %%nxp = getelementptr ptr, ptr %%rv, i64 4\n");
-  Emit ("  store ptr null, ptr %%nxp\n");
   Emit ("  %%selfk = load i32, ptr @__self_key\n");
   Emit ("  %%self = call ptr @pthread_getspecific(i32 %%selfk)\n");
   Emit ("  %%selfok = icmp ne ptr %%self, null\n");
@@ -55216,27 +55289,7 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   // conditional-call readiness); cleared once a call is taken.
   Emit ("  %%wep = getelementptr i64, ptr %%self, i64 6\n");
   Emit ("  store i64 %%entry_idx, ptr %%wep\n");
-  // Bounded spin on a racy queue peek before the lock: the ping-pong shape
-  // has the call arriving within this window, and the locked take below
-  // re-checks properly. The abort peek keeps a spin from delaying RM 9.10.
-  Emit ("  %%qhp0 = getelementptr ptr, ptr %%self, i64 5\n");
-  Emit ("  %%apf0 = getelementptr i8, ptr %%self, i64 61\n");
-  Emit ("  br label %%peek\n");
-  Emit ("peek:\n");
-  Emit ("  %%pi = phi i32 [ 0, %%entry ], [ %%pi2, %%pnext ]\n");
-  Emit ("  %%ph = load atomic ptr, ptr %%qhp0 monotonic, align 8\n");
-  Emit ("  %%phit = icmp ne ptr %%ph, null\n");
-  Emit ("  br i1 %%phit, label %%locked, label %%pchk\n");
-  Emit ("pchk:\n");
-  Emit ("  %%pab = load atomic i8, ptr %%apf0 monotonic, align 1\n");
-  Emit ("  %%pabt = icmp ne i8 %%pab, 0\n");
-  Emit ("  br i1 %%pabt, label %%locked, label %%pnext\n");
-  Emit ("pnext:\n");
-  Emit ("  call void @__ada_cpu_relax()\n");
-  Emit ("  %%pi2 = add i32 %%pi, 1\n");
-  Emit ("  %%pmore = icmp ult i32 %%pi2, 256\n");
-  Emit ("  br i1 %%pmore, label %%peek, label %%locked\n");
-  Emit ("locked:\n");
+  Emit ("  call void @__ada_spin_for_call(ptr %%self)\n");
   Emit ("  call i32 @pthread_mutex_lock(ptr @__rv_mutex)\n");
   Emit ("  br label %%loop\n");
   Emit ("loop:\n");
@@ -55343,24 +55396,7 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   // re-sweeps its alternatives after every return.
   Emit ("define linkonce_odr i8 @__ada_select_block(ptr %%self, i64 %%timeout_us) {\n");
   Emit ("entry:\n");
-  Emit ("  %%qhp0 = getelementptr ptr, ptr %%self, i64 5\n");
-  Emit ("  %%apf0 = getelementptr i8, ptr %%self, i64 61\n");
-  Emit ("  br label %%peek\n");
-  Emit ("peek:\n");
-  Emit ("  %%pi = phi i32 [ 0, %%entry ], [ %%pi2, %%pnext ]\n");
-  Emit ("  %%ph = load atomic ptr, ptr %%qhp0 monotonic, align 8\n");
-  Emit ("  %%phit = icmp ne ptr %%ph, null\n");
-  Emit ("  br i1 %%phit, label %%locked, label %%pchk\n");
-  Emit ("pchk:\n");
-  Emit ("  %%pab = load atomic i8, ptr %%apf0 monotonic, align 1\n");
-  Emit ("  %%pabt = icmp ne i8 %%pab, 0\n");
-  Emit ("  br i1 %%pabt, label %%locked, label %%pnext\n");
-  Emit ("pnext:\n");
-  Emit ("  call void @__ada_cpu_relax()\n");
-  Emit ("  %%pi2 = add i32 %%pi, 1\n");
-  Emit ("  %%pmore = icmp ult i32 %%pi2, 256\n");
-  Emit ("  br i1 %%pmore, label %%peek, label %%locked\n");
-  Emit ("locked:\n");
+  Emit ("  call void @__ada_spin_for_call(ptr %%self)\n");
   Emit ("  call i32 @pthread_mutex_lock(ptr @__rv_mutex)\n");
   Emit ("  %%apf = getelementptr i8, ptr %%self, i64 61\n");
   Emit ("  %%ap = load i8, ptr %%apf\n");
@@ -55377,24 +55413,8 @@ void Generate_Compilation_Unit (Syntax_Node *node) {
   Emit ("  call i32 @pthread_cond_wait(ptr @__term_cond, ptr @__rv_mutex)\n");
   Emit ("  br label %%wake\n");
   Emit ("twait:\n");
-  // Absolute deadline for pthread_cond_timedwait: now + timeout_us, with
-  // nanosecond carry into the seconds field.
   Emit ("  %%ts = alloca [16 x i8], align 8\n");
-  Emit ("  %%_g = call i32 @clock_gettime(i32 0, ptr %%ts)\n");
-  Emit ("  %%secp = getelementptr i8, ptr %%ts, i64 0\n");
-  Emit ("  %%nsp = getelementptr i8, ptr %%ts, i64 8\n");
-  Emit ("  %%sec = load i64, ptr %%secp\n");
-  Emit ("  %%ns = load i64, ptr %%nsp\n");
-  Emit ("  %%addsec = udiv i64 %%timeout_us, 1000000\n");
-  Emit ("  %%addus = urem i64 %%timeout_us, 1000000\n");
-  Emit ("  %%addns = mul i64 %%addus, 1000\n");
-  Emit ("  %%ns1 = add i64 %%ns, %%addns\n");
-  Emit ("  %%carry = udiv i64 %%ns1, 1000000000\n");
-  Emit ("  %%ns2 = urem i64 %%ns1, 1000000000\n");
-  Emit ("  %%sec1 = add i64 %%sec, %%addsec\n");
-  Emit ("  %%sec2 = add i64 %%sec1, %%carry\n");
-  Emit ("  store i64 %%sec2, ptr %%secp\n");
-  Emit ("  store i64 %%ns2, ptr %%nsp\n");
+  Emit ("  call void @__ada_abs_deadline(ptr %%ts, i64 %%timeout_us)\n");
   Emit ("  %%rc = call i32 @pthread_cond_timedwait(ptr @__term_cond, ptr @__rv_mutex, ptr %%ts)\n");
   Emit ("  %%expired = icmp eq i32 %%rc, 110  ; ETIMEDOUT\n");
   Emit ("  call i32 @pthread_mutex_unlock(ptr @__rv_mutex)\n");
