@@ -117,16 +117,22 @@ pass->fail because its expectation (reopening the current default
 output with IN mode succeeding) directly contradicts the valid
 ce3208a, which we now honor — the AVO withdrew ce3902b, not ce3208a.
 
-Feature-blocked (§13 representation work, in progress):
-  cda201a  pragma PACK bit-packed boolean arrays
-  cd4024b  bit-packed arrays with dynamic bounds (LENGTH_CHECK) plus
-           bit-granular record component clauses
-  cd4031a  bit-granular record component clauses in codegen
-  Design flaws being fixed underneath, not patched around:
-    - array byte-extent is hand-computed at ~6 sites with divergent
-      fallbacks; extent becomes bit-measured with one owner
-    - element access assumes elements have byte addresses; a single
-      element-access layer (load/store) replaces the per-site geps
+Representation campaign (REPRESENTATION.md), staged and landing:
+  [x] Stage 1  extent unified behind Array_Element_Bits (one owner,
+               bits); six ad-hoc sites and four fallback conventions
+               deleted; sweep bit-identical
+  [x] Stage 2  Storage_Locus layer; component clauses obeyed at every
+               record access site; cd4031a + cd4024b now PASS
+  [x] Stage 3  bit-packed boolean arrays for static-bounds families;
+               cda201a now PASSES.  Packing degree is a per-family
+               choice: static-bounds families pack to 1 bit, dynamic
+               and unconstrained families keep byte stride until
+               Stage 4.  Per-type equality functions routed through
+               Generate_Array_Equality (deleted a duplicated memcmp).
+  [ ] Stage 4  lift the family gate: dynamic-bounds packed arrays
+               (runtime loci), unchecked conversion with runtime-sized
+               buffers, dynamic equality tail masking, packed slices
+               (elementwise), OUT-mode packed element actuals
 
 FINAL STATE (current)
 ---------------------
