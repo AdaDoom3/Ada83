@@ -172,7 +172,6 @@ enum {
 };
 
 uint64_t To_Bits    (uint64_t bytes) {return bytes * Bits_Per_Unit;}
-uint64_t To_Bytes   (uint64_t bits)  {return (bits + Bits_Per_Unit - 1) / Bits_Per_Unit;}
 
 size_t Align_To (size_t size, size_t alignment) {
   return alignment ? ((size + alignment - 1) & ~(alignment - 1)) : size;
@@ -201,7 +200,6 @@ static inline LLVM_Rep LLVM_Rep_Float (uint16_t bits) {
   return (LLVM_Rep){ LL_FLOAT, bits <= Width_Float ? Width_Float : Width_Double, false };
 }
 
-bool LLVM_Rep_Is_Void        (LLVM_Rep r) { return r.kind == LL_VOID; }
 bool LLVM_Rep_Is_Float       (LLVM_Rep r) { return r.kind == LL_FLOAT; }
 bool LLVM_Rep_Is_Pointer     (LLVM_Rep r) { return r.kind == LL_PTR; }
 bool LLVM_Rep_Is_Fat_Pointer (LLVM_Rep r) { return r.kind == LL_FAT_PTR; }
@@ -748,7 +746,7 @@ typedef enum {
   GEN_DEF_FIXED,   GEN_DEF_ARRAY,           GEN_DEF_ACCESS,    GEN_DEF_DERIVED
 } Generic_Def_Kind;
 
-typedef enum {GEN_MODE_IN, GEN_MODE_OUT, GEN_MODE_IN_OUT} Generic_Mode_Kind;
+
 
 typedef struct Instance_Agreement_Check {
   Type_Info  *formal_subtype;
@@ -1157,7 +1155,7 @@ struct Syntax_Node {
       Node_List        names;
       Syntax_Node     *object_type;
       Syntax_Node     *default_expr;
-      Generic_Mode_Kind mode;
+      Parameter_Mode_Kind mode;
     } generic_object_param;
 
     struct {
@@ -1669,19 +1667,19 @@ typedef enum {
   SYMBOL_COUNT
 } Symbol_Kind;
 
-typedef enum {PARAM_IN, PARAM_OUT, PARAM_IN_OUT} Parameter_Mode;
+
 
 typedef struct {
   String_Slice    name;
   Type_Info      *param_type;
-  Parameter_Mode  mode;
+  Parameter_Mode_Kind  mode;
   Syntax_Node    *default_value;
   struct Symbol  *param_sym;
 } Parameter_Info;
 
-bool Param_Is_By_Reference (Parameter_Mode mode);
+bool Param_Is_By_Reference (Parameter_Mode_Kind mode);
 
-Parameter_Mode Parameter_Symbol_Mode (Symbol *sym);
+Parameter_Mode_Kind Parameter_Symbol_Mode (Symbol *sym);
 
 void Mark_Package_Level_Objects (Node_List *declarations);
 
@@ -1739,8 +1737,8 @@ void Complete_Instance_Package_Body (Symbol *instance_sym,
 
 bool Instantiate_Generic_Subprogram (Symbol *instance_sym, Symbol *template_sym);
 
-bool Parameter_Passed_By_Reference (Parameter_Mode mode, Type_Info *type);
-bool Parameter_Needs_Constrained_Flag (Parameter_Mode mode, Type_Info *type);
+bool Parameter_Passed_By_Reference (Parameter_Mode_Kind mode, Type_Info *type);
+bool Parameter_Needs_Constrained_Flag (Parameter_Mode_Kind mode, Type_Info *type);
 void Emit_Constrained_Slot_Ref (Symbol *sym);
 uint32_t Emit_Actual_Constrained_Flag (Syntax_Node *actual);
 
@@ -3360,10 +3358,7 @@ char *Read_File_Simple  (const char *path);
 void        Simd_Detect_Features   (void);
 const char *Simd_Skip_Whitespace   (const char *cursor, const char *limit);
 const char *Simd_Find_Newline      (const char *cursor, const char *limit);
-const char *Simd_Find_Quote        (const char *cursor, const char *limit);
-const char *Simd_Find_Double_Quote (const char *cursor, const char *limit);
 const char *Simd_Scan_Identifier   (const char *cursor, const char *limit);
-const char *Simd_Scan_Digits       (const char *cursor, const char *limit);
 
 
 typedef struct {
@@ -6144,15 +6139,15 @@ void Parse_Generic_Formal_Part (Parser *p, Node_List *formals) {
       Parse_Identifier_List (p, &formal->generic_object_param.names);
       Parser_Expect (p, TK_COLON);
 
-      formal->generic_object_param.mode = GEN_MODE_IN;
+      formal->generic_object_param.mode = MODE_IN;
       if (Parser_Match (p, TK_IN)) {
         if (Parser_Match (p, TK_OUT)) {
-          formal->generic_object_param.mode = GEN_MODE_IN_OUT;
+          formal->generic_object_param.mode = MODE_IN_OUT;
         } else {
-          formal->generic_object_param.mode = GEN_MODE_IN;
+          formal->generic_object_param.mode = MODE_IN;
         }
       } else if (Parser_Match (p, TK_OUT)) {
-        formal->generic_object_param.mode = GEN_MODE_OUT;
+        formal->generic_object_param.mode = MODE_OUT;
       }
 
       formal->generic_object_param.object_type = Parse_Subtype_Indication (p);
@@ -7206,18 +7201,18 @@ void Freeze_Type (Type_Info *type_info) {
 }
 
 
-bool Param_Is_By_Reference (Parameter_Mode mode) {
-  return mode == PARAM_OUT or mode == PARAM_IN_OUT;
+bool Param_Is_By_Reference (Parameter_Mode_Kind mode) {
+  return mode == MODE_OUT or mode == MODE_IN_OUT;
 }
 
-Parameter_Mode Parameter_Symbol_Mode (Symbol *sym) {
-  if (not sym or sym->kind != SYMBOL_PARAMETER) return PARAM_IN;
+Parameter_Mode_Kind Parameter_Symbol_Mode (Symbol *sym) {
+  if (not sym or sym->kind != SYMBOL_PARAMETER) return MODE_IN;
   Symbol *sub = sym->parent;
   if (sub and sub->parameters)
     for (uint32_t i = 0; i < sub->parameter_count; i++)
       if (sub->parameters[i].param_sym == sym)
         return sub->parameters[i].mode;
-  return PARAM_IN;
+  return MODE_IN;
 }
 
 void Resolve_Generic_Formal_Subprogram_Defaults (Node_List *formals) {
@@ -7271,9 +7266,9 @@ void Mark_Package_Level_Objects (Node_List *declarations) {
   }
 }
 
-bool Parameter_Passed_By_Reference (Parameter_Mode mode, Type_Info *type) {
+bool Parameter_Passed_By_Reference (Parameter_Mode_Kind mode, Type_Info *type) {
   if (Param_Is_By_Reference (mode)) return true;
-  if (mode != PARAM_IN or not type) return false;
+  if (mode != MODE_IN or not type) return false;
   if (type->kind == TYPE_RECORD or type->kind == TYPE_TASK) return true;
   if ((type->kind == TYPE_ARRAY or type->kind == TYPE_STRING) and
       type->array.is_constrained and not Type_Has_Dynamic_Bounds (type))
@@ -7281,7 +7276,7 @@ bool Parameter_Passed_By_Reference (Parameter_Mode mode, Type_Info *type) {
   return false;
 }
 
-bool Parameter_Needs_Constrained_Flag (Parameter_Mode mode, Type_Info *type) {
+bool Parameter_Needs_Constrained_Flag (Parameter_Mode_Kind mode, Type_Info *type) {
   return Param_Is_By_Reference (mode) and Type_Is_Record (type) and
          type->record.has_discriminants and type->record.all_defaults and
          not type->record.is_constrained;
@@ -7317,7 +7312,7 @@ uint32_t Emit_Actual_Constrained_Flag (Syntax_Node *actual) {
     (s and s->is_disc_constrained) or
     (s and s->kind == SYMBOL_CONSTANT) or
     (s and s->kind == SYMBOL_PARAMETER and
-     Parameter_Symbol_Mode (s) == PARAM_IN);
+     Parameter_Symbol_Mode (s) == MODE_IN);
 
   return Emit_Static_Int_Comment (constrained ? 1 : 0,
                                   Type_To_Rep (sm->type_boolean),
@@ -8480,16 +8475,16 @@ void Symbol_Manager_Init_Predefined (void) {
         op_sym->parameters      = Arena_Allocate (2 * sizeof (Parameter_Info));
         op_sym->parameters[0]   = (Parameter_Info){ .name       = S ("LEFT"),
                                                     .param_type = numeric_type,
-                                                    .mode       = PARAM_IN };
+                                                    .mode       = MODE_IN };
         op_sym->parameters[1]   = (Parameter_Info){ .name       = S ("RIGHT"),
                                                     .param_type = numeric_type,
-                                                    .mode       = PARAM_IN };
+                                                    .mode       = MODE_IN };
       } else {
         op_sym->parameter_count = 1;
         op_sym->parameters      = Arena_Allocate (1 * sizeof (Parameter_Info));
         op_sym->parameters[0]   = (Parameter_Info){ .name       = S ("RIGHT"),
                                                     .param_type = numeric_type,
-                                                    .mode       = PARAM_IN };
+                                                    .mode       = MODE_IN };
       }
       Symbol_Add (op_sym);
     }
@@ -8894,8 +8889,8 @@ Type_Info *Resolve_Selected (Syntax_Node *node) {
             op_sym->parameter_count = is_unary ? 1 : 2;
             op_sym->parameters = Arena_Allocate (op_sym->parameter_count * sizeof (Parameter_Info));
             if (not is_unary)
-              op_sym->parameters[0] = (Parameter_Info){S("LEFT"), op_type, PARAM_IN, NULL, NULL};
-            op_sym->parameters[is_unary ? 0 : 1] = (Parameter_Info){S("RIGHT"), op_type, PARAM_IN, NULL, NULL};
+              op_sym->parameters[0] = (Parameter_Info){S("LEFT"), op_type, MODE_IN, NULL, NULL};
+            op_sym->parameters[is_unary ? 0 : 1] = (Parameter_Info){S("RIGHT"), op_type, MODE_IN, NULL, NULL};
 
             if (prefix_sym->scope) {
               uint32_t h = Symbol_Hash_Name (sel);
@@ -13533,7 +13528,7 @@ void Install_Parameter_Symbols (Node_List *parameters, Symbol *subprogram) {
         parameter_sym->type = specification->param_spec.param_type->type;
 
       if (Parameter_Needs_Constrained_Flag (
-            (Parameter_Mode) specification->param_spec.mode,
+            (Parameter_Mode_Kind) specification->param_spec.mode,
             parameter_sym->type))
         parameter_sym->has_runtime_constrained_flag = true;
       Symbol_Add (parameter_sym);
@@ -14374,7 +14369,7 @@ void Install_Generic_Formal_Symbols (Symbol *generic_symbol) {
           formal->generic_object_param.names.count > 0 and
           formal->generic_object_param.names.items[0]->symbol == NULL;
         if (first_install) {
-          if (formal->generic_object_param.mode == GEN_MODE_OUT)
+          if (formal->generic_object_param.mode == MODE_OUT)
             Report_Error (formal->location,
               "a generic formal object cannot have mode OUT");
           Type_Info *object_type = NULL;
@@ -14384,7 +14379,7 @@ void Install_Generic_Formal_Symbols (Symbol *generic_symbol) {
           }
 
           if (formal->generic_object_param.default_expr) {
-            if (formal->generic_object_param.mode != GEN_MODE_IN)
+            if (formal->generic_object_param.mode != MODE_IN)
               Report_Error (formal->location,
                 "a default expression is only allowed for a generic formal "
                 "object of mode IN");
@@ -14400,7 +14395,7 @@ void Install_Generic_Formal_Symbols (Symbol *generic_symbol) {
             Syntax_Node *name_node = formal->generic_object_param.names.items[j];
             if (not name_node or name_node->kind != NK_IDENTIFIER) continue;
             Symbol *object_sym = Symbol_New (
-              formal->generic_object_param.mode == GEN_MODE_IN_OUT
+              formal->generic_object_param.mode == MODE_IN_OUT
                 ? SYMBOL_VARIABLE : SYMBOL_CONSTANT,
               name_node->string_val.text, name_node->location);
             object_sym->type = object_type;
@@ -14480,7 +14475,7 @@ void Install_Generic_Formal_Symbols (Symbol *generic_symbol) {
                   parameter_name->string_val.text;
                 subprogram_sym->parameters[index].param_type = parameter_type;
                 subprogram_sym->parameters[index].mode =
-                  (Parameter_Mode) ps->param_spec.mode;
+                  (Parameter_Mode_Kind) ps->param_spec.mode;
                 subprogram_sym->parameters[index].default_value =
                   ps->param_spec.default_expr;
                 index++;
@@ -14536,7 +14531,7 @@ void Materialize_Wrapper_Profile (Symbol *binding, Syntax_Node *formal,
       binding->parameters[index] = (Parameter_Info){
         .name       = parameter_name->string_val.text,
         .param_type = parameter_type,
-        .mode       = (Parameter_Mode) ps->param_spec.mode,
+        .mode       = (Parameter_Mode_Kind) ps->param_spec.mode,
         .param_sym  = parameter_sym,
       };
       Syntax_Node *reference = Node_New (NK_IDENTIFIER, location);
@@ -14864,7 +14859,7 @@ void Bind_Generic_Formals_To_Actuals (Symbol *instance_sym,
             }
             if (formal_name and actual_expr) {
               bool in_out =
-                formal->generic_object_param.mode == GEN_MODE_IN_OUT;
+                formal->generic_object_param.mode == MODE_IN_OUT;
               Symbol *binding = Symbol_New (
                 in_out ? SYMBOL_VARIABLE : SYMBOL_CONSTANT,
                 formal_name->string_val.text, formal->location);
@@ -15130,7 +15125,7 @@ static bool Actual_Conforms_To_Formal_Subprogram (Symbol *actual,
       Formal_Mark_Actual_Type (instance_sym, ps->param_spec.param_type);
     for (uint32_t n = 0; n < ps->param_spec.names.count; n++, index++) {
       if (index >= actual->parameter_count) return false;
-      if ((Parameter_Mode) ps->param_spec.mode !=
+      if ((Parameter_Mode_Kind) ps->param_spec.mode !=
           actual->parameters[index].mode) return false;
       if (formal_parameter_type and
           not Same_Base_Type (formal_parameter_type,
@@ -15343,7 +15338,7 @@ void Validate_Generic_Actuals (Symbol *instance_sym, Symbol *template_sym,
               "missing actual for generic formal object '%.*s'",
               (int) object_name.length, object_name.data);
           } else if (has_actual and
-                     formal->generic_object_param.mode == GEN_MODE_IN_OUT and
+                     formal->generic_object_param.mode == MODE_IN_OUT and
                      not Actual_Is_Renameable_Variable (object_actual)) {
             Report_Error (object_location,
               "actual for IN OUT formal object '%.*s' must be a "
@@ -15408,7 +15403,7 @@ void Validate_Generic_Actuals (Symbol *instance_sym, Symbol *template_sym,
               for (uint32_t n = 0; n < ps->param_spec.names.count; n++, pi++)
                 op_sym->parameters[pi] = (Parameter_Info){
                   .name = pi ? S ("RIGHT") : S ("LEFT"),
-                  .param_type = pt, .mode = PARAM_IN };
+                  .param_type = pt, .mode = MODE_IN };
             }
             op_sym->return_type = Formal_Mark_Actual_Type (
               instance_sym, formal->generic_subprog_param.return_type);
@@ -15450,7 +15445,7 @@ void Validate_Generic_Actuals (Symbol *instance_sym, Symbol *template_sym,
                 instance_sym, ps->param_spec.param_type);
               for (uint32_t n = 0; n < ps->param_spec.names.count; n++) {
                 if (index < actual->parameter_count) {
-                  if ((Parameter_Mode) ps->param_spec.mode !=
+                  if ((Parameter_Mode_Kind) ps->param_spec.mode !=
                       actual->parameters[index].mode)
                     Report_Error (location,
                       "parameter %u of the actual for formal "
@@ -15706,7 +15701,7 @@ bool Instantiate_Generic_Subprogram (Symbol *instance_sym, Symbol *template_sym)
         instance_sym->parameters[index] = (Parameter_Info){
           .name          = parameter_name->string_val.text,
           .param_type    = parameter_type,
-          .mode          = (Parameter_Mode) parameter->param_spec.mode,
+          .mode          = (Parameter_Mode_Kind) parameter->param_spec.mode,
           .param_sym     = parameter_sym,
           .default_value = parameter->param_spec.default_expr,
         };
@@ -16253,7 +16248,7 @@ void Resolve_Declaration (Syntax_Node *node) {
                 Syntax_Node *name = ps->param_spec.names.items[j];
                 sym->parameters[param_idx].name          = name->string_val.text;
                 sym->parameters[param_idx].param_type    = pt;
-                sym->parameters[param_idx].mode          = (Parameter_Mode)ps->param_spec.mode;
+                sym->parameters[param_idx].mode          = (Parameter_Mode_Kind)ps->param_spec.mode;
                 sym->parameters[param_idx].default_value = ps->param_spec.default_expr;
                 param_idx++;
               }
@@ -16340,7 +16335,7 @@ void Resolve_Declaration (Syntax_Node *node) {
                 Syntax_Node *nm = ps->param_spec.names.items[j];
                 sym->parameters[idx].name          = nm->string_val.text;
                 sym->parameters[idx].param_type    = pt;
-                sym->parameters[idx].mode          = (Parameter_Mode)ps->param_spec.mode;
+                sym->parameters[idx].mode          = (Parameter_Mode_Kind)ps->param_spec.mode;
                 sym->parameters[idx].default_value = ps->param_spec.default_expr;
                 idx++;
               }
@@ -16672,7 +16667,7 @@ void Resolve_Declaration (Syntax_Node *node) {
                     entry_sym->parameters[pi].name = ps->param_spec.names.items[k]->string_val.text;
                     entry_sym->parameters[pi].param_type = ps->param_spec.param_type ?
                       ps->param_spec.param_type->type : NULL;
-                    entry_sym->parameters[pi].mode = (Parameter_Mode)ps->param_spec.mode;
+                    entry_sym->parameters[pi].mode = (Parameter_Mode_Kind)ps->param_spec.mode;
                     entry_sym->parameters[pi].default_value = ps->param_spec.default_expr;
                     pi++;
                   }
@@ -24633,7 +24628,7 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
       is_byref[param_idx] = byref;
 
       if (byref) {
-        Parameter_Mode pmode = sym->parameters[param_idx].mode;
+        Parameter_Mode_Kind pmode = sym->parameters[param_idx].mode;
         Type_Info *formal_type = sym->parameters[param_idx].param_type;
 
         Syntax_Node *addr_node = arg;
@@ -24679,7 +24674,7 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
 
           uint32_t temp = Emit_Result_Instruction ("alloca %s  ; copy-in/copy-out temp\n", LLVM_Rep_To_String (ld_ty));
 
-          if (pmode == PARAM_IN_OUT) {
+          if (pmode == MODE_IN_OUT) {
             uint32_t val = Emit_Result_Instruction ("load %s, ptr %%t%u\n", LLVM_Rep_To_String (ld_ty), actual_addr);
             Type_Info *src_type = (addr_node and addr_node->type) ? addr_node->type
                                                                   : arg->type;
@@ -24779,7 +24774,7 @@ LLVM_Value Generate_Apply (Syntax_Node *node) {
             args[param_idx] = actual_addr;
           }
 
-          if (pmode == PARAM_IN_OUT and Type_Is_Scalar (formal_type)) {
+          if (pmode == MODE_IN_OUT and Type_Is_Scalar (formal_type)) {
             LLVM_Rep ld_ty = Type_To_Rep (formal_type);
             uint32_t cur_val = Emit_Result_Instruction ("load %s, ptr %%t%u\n", LLVM_Rep_To_String (ld_ty), args[param_idx]);
             Emit_Constraint_Check_Val (Val_Rep (cur_val, ld_ty), formal_type, arg->type);
@@ -25312,14 +25307,14 @@ entry_path:
       if (slot < 64) slot_filled[slot] = true;
       if (sym->parameters and slot < sym->parameter_count and
           out_actual_count < 32) {
-        Parameter_Mode mode = sym->parameters[slot].mode;
+        Parameter_Mode_Kind mode = sym->parameters[slot].mode;
         Type_Info *formal_type = sym->parameters[slot].param_type;
         LLVM_Rep formal_rep = formal_type ? Type_To_Rep (formal_type)
                                           : Integer_Arith_Rep ();
         bool fat_access = formal_type and
                           Type_Is_Access (Type_Underlying (formal_type)) and
                           Type_Needs_Fat_Pointer (formal_type);
-        if ((mode == PARAM_OUT or mode == PARAM_IN_OUT) and
+        if ((mode == MODE_OUT or mode == MODE_IN_OUT) and
             formal_type and not Type_Is_Composite (formal_type) and
             (LLVM_Rep_Is_Int (formal_rep) or LLVM_Rep_Is_Pointer (formal_rep) or
              fat_access)) {
@@ -25336,7 +25331,7 @@ entry_path:
           out_actuals[out_actual_count].is_fat_access = fat_access;
           out_actual_count++;
 
-          if (mode == PARAM_OUT and addr_node != value_node)
+          if (mode == MODE_OUT and addr_node != value_node)
             value_node = addr_node;
         }
       }
@@ -25344,13 +25339,13 @@ entry_path:
       uint32_t arg_val = arg_v.reg;
 
       if (sym->parameters and slot < sym->parameter_count and
-          sym->parameters[slot].mode != PARAM_OUT)
+          sym->parameters[slot].mode != MODE_OUT)
         Emit_Access_Designated_Disc_Check (arg_val, arg_v.rep,
                        sym->parameters[slot].param_type);
 
       if (sym->parameters and slot < sym->parameter_count and
           sym->parameters[slot].param_type and
-          sym->parameters[slot].mode != PARAM_OUT and
+          sym->parameters[slot].mode != MODE_OUT and
           not Type_Is_Composite (sym->parameters[slot].param_type)) {
         arg_v = Emit_Constraint_Check_Val (arg_v,
           sym->parameters[slot].param_type,
@@ -27546,7 +27541,7 @@ LLVM_Value Generate_Attribute (Syntax_Node *node) {
         (as and as->is_disc_constrained) or
         (as and as->kind == SYMBOL_CONSTANT) or
         (as and as->kind == SYMBOL_PARAMETER and
-         Parameter_Symbol_Mode (as) == PARAM_IN) or
+         Parameter_Symbol_Mode (as) == MODE_IN) or
         (as and as->has_runtime_constrained_flag);
       if (as and as->has_runtime_constrained_flag) {
         Emit ("  %%t%u = load i8, ptr ", t);
@@ -27567,7 +27562,7 @@ LLVM_Value Generate_Attribute (Syntax_Node *node) {
       } else if (obj_sym and obj_sym->is_disc_constrained) {
         is_constrained = true;
       } else if (obj_sym and obj_sym->kind == SYMBOL_PARAMETER and
-                 Parameter_Symbol_Mode (obj_sym) == PARAM_IN) {
+                 Parameter_Symbol_Mode (obj_sym) == MODE_IN) {
         is_constrained = true;
       } else if (obj_sym and obj_sym->kind == SYMBOL_CONSTANT) {
         is_constrained = true;
@@ -32087,7 +32082,7 @@ void Generate_Assignment_Body (Syntax_Node *node, Syntax_Node *target) {
         (as and as->is_disc_constrained) or
         (as and as->kind == SYMBOL_CONSTANT) or
         (as and as->kind == SYMBOL_PARAMETER and
-         Parameter_Symbol_Mode (as) == PARAM_IN);
+         Parameter_Symbol_Mode (as) == MODE_IN);
     }
 
     uint32_t record_size = ty->size > 0 ? ty->size : 8;
@@ -33189,7 +33184,7 @@ void Emit_Accept_Parameter_Bindings (Node_List *parameters, uint32_t params_ptr)
             }
 
             if (Parameter_Needs_Constrained_Flag (
-                  (Parameter_Mode) param->param_spec.mode, pt)) {
+                  (Parameter_Mode_Kind) param->param_spec.mode, pt)) {
               uint32_t cf = Emit_Result_Instruction ("getelementptr i64, ptr %%t%u, i64 %u\n", params_ptr,
                  accept_total_params + accept_flag_ordinal);
               uint32_t cfv = Emit_Result_Instruction ("load i64, ptr %%t%u  ; 'CONSTRAINED flag\n", cf);
@@ -37778,7 +37773,7 @@ void Generate_Subprogram_Body (Syntax_Node *node) {
     Symbol *param_sym = sym->parameters[i].param_sym;
     if (param_sym) {
       LLVM_Rep type_rep = Type_To_Rep (sym->parameters[i].param_type);
-      Parameter_Mode mode = sym->parameters[i].mode;
+      Parameter_Mode_Kind mode = sym->parameters[i].mode;
 
       Type_Info *pt = sym->parameters[i].param_type;
 
@@ -45189,12 +45184,6 @@ const char *Simd_Find_Char_X86 (const char *cursor, const char *limit, char targ
 const char *Simd_Find_Newline (const char *cursor, const char *limit) {
   return Simd_Find_Char_X86 (cursor, limit, '\n');
 }
-const char *Simd_Find_Quote (const char *cursor, const char *limit) {
-  return Simd_Find_Char_X86 (cursor, limit, '\'');
-}
-const char *Simd_Find_Double_Quote (const char *cursor, const char *limit) {
-  return Simd_Find_Char_X86 (cursor, limit, '"');
-}
 
 
 const char *Simd_Scan_Identifier (const char *cursor, const char *limit) {
@@ -45214,71 +45203,6 @@ const char *Simd_Scan_Identifier (const char *cursor, const char *limit) {
 }
 
 
-const char *Simd_Scan_Digits (const char *cursor, const char *limit) {
-  Simd_Detect_Features ();
-#ifdef __AVX512BW__
-
-  if (Simd_Has_Avx512) {
-    while (cursor + 64 <= limit) {
-      uint64_t mask;
-      __asm__ volatile (
-        "vmovdqu8 (%[src]), %%zmm0\n\t"
-        "vpbroadcastb %[lo], %%zmm1\n\t"
-        "vpbroadcastb %[hi], %%zmm2\n\t"
-        "vpbroadcastb %[u], %%zmm3\n\t"
-        "vpcmpgtb %%zmm1, %%zmm0, %%k1\n\t"
-        "vpcmpgtb %%zmm0, %%zmm2, %%k2\n\t"
-        "kandd %%k1, %%k2, %%k3\n\t"
-        "vpcmpeqb %%zmm3, %%zmm0, %%k4\n\t"
-        "kord %%k3, %%k4, %%k0\n\t"
-        "kmovq %%k0, %[mask]\n\t"
-        : [mask] "=r" (mask)
-        : [src] "r" (cursor),
-          [lo] "r" ((uint32_t)('0' - 1)),
-          [hi] "r" ((uint32_t)('9' + 1)),
-          [u] "r" ((uint32_t)'_')
-        : "zmm0", "zmm1", "zmm2", "zmm3", "k0", "k1", "k2", "k3", "k4", "memory"
-      );
-      if (~mask) {
-        __asm__ volatile ("tzcntq %1, %0" : "=r" (mask) : "r" (~mask));
-        return cursor + mask;
-      }
-      cursor += 64;
-    }
-  }
-#endif
-
-  while (cursor + 32 <= limit) {
-    uint32_t mask;
-    __asm__ volatile (
-      "vmovdqu (%[src]), %%ymm0\n\t"
-      "vmovd %[lo], %%xmm1\n\t"
-      "vpbroadcastb %%xmm1, %%ymm1\n\t"
-      "vmovd %[hi], %%xmm2\n\t"
-      "vpbroadcastb %%xmm2, %%ymm2\n\t"
-      "vpcmpgtb %%ymm1, %%ymm0, %%ymm3\n\t"
-      "vpcmpgtb %%ymm0, %%ymm2, %%ymm4\n\t"
-      "vpand %%ymm3, %%ymm4, %%ymm5\n\t"
-      "vmovd %[u], %%xmm1\n\t"
-      "vpbroadcastb %%xmm1, %%ymm1\n\t"
-      "vpcmpeqb %%ymm1, %%ymm0, %%ymm1\n\t"
-      "vpor %%ymm5, %%ymm1, %%ymm0\n\t"
-      "vpmovmskb %%ymm0, %[mask]\n\t"
-      "vzeroupper\n\t"
-      : [mask] "=r" (mask)
-      : [src] "r" (cursor),
-        [lo] "r" ((uint32_t)('0' - 1)),
-        [hi] "r" ((uint32_t)('9' + 1)),
-        [u] "r" ((uint32_t)'_')
-      : "ymm0", "ymm1", "ymm2", "ymm3", "ymm4", "ymm5", "memory"
-    );
-    if (mask != 0xFFFFFFFF) return cursor + Tzcnt32 (~mask);
-    cursor += 32;
-  }
-
-  while (cursor < limit and ((*cursor >= '0' and *cursor <= '9') or *cursor == '_')) cursor++;
-  return cursor;
-}
 #elif defined(SIMD_ARM64)
 
 
@@ -45387,76 +45311,6 @@ const char *Simd_Scan_Identifier (const char *cursor, const char *limit) {
   }
   return cursor;
 }
-const char *Simd_Find_Quote (const char *cursor, const char *limit) {
-  while (cursor + 16 <= limit) {
-    uint64_t lo, hi;
-    __asm__ volatile (
-      "ldr q0, [%[src]]\n\t"
-      "movi v1.16b, #0x27\n\t"
-      "cmeq v0.16b, v0.16b, v1.16b\n\t"
-      "mov %[lo], v0.d[0]\n\t"
-      "mov %[hi], v0.d[1]\n\t"
-      : [lo] "=r" (lo), [hi] "=r" (hi)
-      : [src] "r" (cursor)
-      : "v0", "v1", "memory"
-    );
-    if (lo) return cursor + (Tzcnt64 (lo) >> 3);
-    if (hi) return cursor + 8 + (Tzcnt64 (hi) >> 3);
-    cursor += 16;
-  }
-  while (cursor < limit and *cursor != '\'') cursor++;
-  return cursor;
-}
-const char *Simd_Find_Double_Quote (const char *cursor, const char *limit) {
-  while (cursor + 16 <= limit) {
-    uint64_t lo, hi;
-    __asm__ volatile (
-      "ldr q0, [%[src]]\n\t"
-      "movi v1.16b, #0x22\n\t"
-      "cmeq v0.16b, v0.16b, v1.16b\n\t"
-      "mov %[lo], v0.d[0]\n\t"
-      "mov %[hi], v0.d[1]\n\t"
-      : [lo] "=r" (lo), [hi] "=r" (hi)
-      : [src] "r" (cursor)
-      : "v0", "v1", "memory"
-    );
-    if (lo) return cursor + (Tzcnt64 (lo) >> 3);
-    if (hi) return cursor + 8 + (Tzcnt64 (hi) >> 3);
-    cursor += 16;
-  }
-  while (cursor < limit and *cursor != '"') cursor++;
-  return cursor;
-}
-const char *Simd_Scan_Digits (const char *cursor, const char *limit) {
-  while (cursor + 16 <= limit) {
-    uint64_t lo, hi;
-    __asm__ volatile (
-      "ldr q0, [%[src]]\n\t"
-
-      "movi v1.16b, #0x2F\n\t"
-      "movi v2.16b, #0x3A\n\t"
-      "cmhi v3.16b, v0.16b, v1.16b\n\t"
-      "cmhi v4.16b, v2.16b, v0.16b\n\t"
-      "and v5.16b, v3.16b, v4.16b\n\t"
-
-      "movi v1.16b, #0x5F\n\t"
-      "cmeq v6.16b, v0.16b, v1.16b\n\t"
-
-      "orr v0.16b, v5.16b, v6.16b\n\t"
-      "mvn v0.16b, v0.16b\n\t"
-      "mov %[lo], v0.d[0]\n\t"
-      "mov %[hi], v0.d[1]\n\t"
-      : [lo] "=r" (lo), [hi] "=r" (hi)
-      : [src] "r" (cursor)
-      : "v0", "v1", "v2", "v3", "v4", "v5", "v6", "memory"
-    );
-    if (lo) return cursor + (Tzcnt64 (lo) >> 3);
-    if (hi) return cursor + 8 + (Tzcnt64 (hi) >> 3);
-    cursor += 16;
-  }
-  while (cursor < limit and ((*cursor >= '0' and *cursor <= '9') or *cursor == '_')) cursor++;
-  return cursor;
-}
 #else
 
 const char *Simd_Skip_Whitespace (const char *cursor, const char *limit) {
@@ -45479,18 +45333,6 @@ const char *Simd_Scan_Identifier (const char *cursor, const char *limit) {
       break;
     cursor++;
   }
-  return cursor;
-}
-const char *Simd_Find_Quote (const char *cursor, const char *limit) {
-  while (cursor < limit and *cursor != '\'') cursor++;
-  return cursor;
-}
-const char *Simd_Find_Double_Quote (const char *cursor, const char *limit) {
-  while (cursor < limit and *cursor != '"') cursor++;
-  return cursor;
-}
-const char *Simd_Scan_Digits (const char *cursor, const char *limit) {
-  while (cursor < limit and ((*cursor >= '0' and *cursor <= '9') or *cursor == '_')) cursor++;
   return cursor;
 }
 #endif
