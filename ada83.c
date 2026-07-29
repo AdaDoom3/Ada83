@@ -2978,6 +2978,9 @@ struct Scope {
   Symbol  **frame_vars;
   u32  frame_var_count;
   u32  frame_var_capacity;
+  Symbol  **used_packages;
+  u32  used_package_count;
+  u32  used_package_capacity;
 };
 
 typedef struct {
@@ -14962,6 +14965,8 @@ bool Index_Argument_Admits_Type (Node *argument,
 }
 
 
+u32 Expanded_Operator_Infix_Depth = 0;
+
 Type *Retry_Expanded_Operator_As_Infix (Node *apply,
                                                     Symbol *operator_symbol,
                                                     Token_Kind operator_token,
@@ -14986,11 +14991,16 @@ Type *Retry_Expanded_Operator_As_Infix (Node *apply,
   Node *trial = Clone_Subtree (infix);
   bool saved_suppressed = Diagnostics_Suppressed;
   Diagnostics_Suppressed = true;
+  Expanded_Operator_Infix_Depth++;
   Type *trial_type = Resolve_Expression (trial);
   Diagnostics_Suppressed = saved_suppressed;
-  if (not trial_type) return NULL;
+  if (not trial_type) {
+    Expanded_Operator_Infix_Depth--;
+    return NULL;
+  }
 
   Type *resolved = Resolve_Expression (infix);
+  Expanded_Operator_Infix_Depth--;
   if (not resolved) return NULL;
   *apply = *infix;
   return resolved;
@@ -15910,8 +15920,32 @@ void Analyze_Identifier (Node *n) {
     Interp_Add (out, sym, n->type, n->type, NULL);
 }
 
+void Scope_Note_Used_Package (Scope *scope, Symbol *package) {
+  if (not scope or not package) return;
+  for (u32 i = 0; i < scope->used_package_count; i++)
+    if (scope->used_packages[i] == package) return;
+  if (scope->used_package_count == scope->used_package_capacity) {
+    u32 grown = scope->used_package_capacity
+      ? scope->used_package_capacity * 2 : 4;
+    Symbol **items = Arena_Allocate (grown * sizeof *items);
+    for (u32 i = 0; i < scope->used_package_count; i++)
+      items[i] = scope->used_packages[i];
+    scope->used_packages         = items;
+    scope->used_package_capacity = grown;
+  }
+  scope->used_packages[scope->used_package_count++] = package;
+}
+
+bool Package_Is_Use_Visible (const Symbol *package) {
+  for (Scope *scope = sm->current_scope; scope; scope = scope->parent)
+    for (u32 i = 0; i < scope->used_package_count; i++)
+      if (scope->used_packages[i] == package) return true;
+  return false;
+}
+
 bool Predefined_Operator_Interp_Is_Visible (Type *operand_type) {
   if (not operand_type) return true;
+  if (Expanded_Operator_Infix_Depth) return true;
   if (Resolving_Generic_Instance ()) return true;
   Symbol *type_symbol = NULL;
   for (Type *view = operand_type; view;
@@ -15932,14 +15966,7 @@ bool Predefined_Operator_Interp_Is_Visible (Type *operand_type) {
     package = package->parent;
   if (not package or package->kind != SYMBOL_PACKAGE) return true;
   if (Inside_Region_Of (package)) return true;
-  Type *named_base =
-    Type_Base (type_symbol->type ? type_symbol->type : operand_type);
-  for (Symbol *named = Symbol_Find (type_symbol->name); named;
-       named = named->next_overload) {
-    Type *denoted = Symbol_Denoted_Type (named);
-    if (denoted and Type_Base (denoted) == named_base) return true;
-  }
-  return false;
+  return Package_Is_Use_Visible (package);
 }
 
 u32 Literal_Default_Type (Node *operand, Type **out) {
@@ -16245,7 +16272,8 @@ void Analyze_Binary (Node *n) {
     for (u32 j = 0; j < right_count; j++) {
       Type *rt = right_types[j];
 
-      if (not (Predefined_Operator_Interp_Is_Visible (lt) and
+      if (not (classes & TOKEN_CLASS_SHORT_CIRCUIT) and
+          not (Predefined_Operator_Interp_Is_Visible (lt) and
                Predefined_Operator_Interp_Is_Visible (rt)))
         continue;
 
@@ -24193,6 +24221,8 @@ void Resolve_Declaration (Node *node) {
                           (int) named->name.length, named->name.data);
           continue;
         }
+
+        Scope_Note_Used_Package (sm->current_scope, pkg_sym);
 
         if (pkg_sym->exported_count > 0) {
           for (u32 j = 0; j < pkg_sym->exported_count; j++) {
@@ -44024,6 +44054,16 @@ void Generate_For_Loop (Node *node) {
     high_v = low_v;
   }
 
+  {
+    Type *loop_base = loop_var->type ? Type_Base (loop_var->type) : NULL;
+    if (loop_base and LLVM_Rep_Is_Int (loop_rep)) {
+      if (LLVM_Rep_Is_Int (low_v.rep) and low_v.rep.bits > loop_rep.bits)
+        low_v = Emit_Constraint_Check_Val (low_v, loop_base, NULL);
+      if (LLVM_Rep_Is_Int (high_v.rep) and high_v.rep.bits > loop_rep.bits)
+        high_v = Emit_Constraint_Check_Val (high_v, loop_base, NULL);
+    }
+  }
+
   low_val = Emit_Coerce_Val (low_v, bound_rep).reg;
   high_val = Emit_Coerce_Val (high_v, bound_rep).reg;
 
@@ -57812,6 +57852,7 @@ void Load_Package_Spec (String_Slice name, char *src) {
       sm->in_package_visible_part = false;
 
       Populate_Package_Exports (pkg_sym, pkg);
+      Synthesize_Exported_Operators (pkg_sym);
 
       for (u32 ei = 0; ei < pkg_sym->exported_count; ei++) {
         Symbol *esym = pkg_sym->exported[ei];
