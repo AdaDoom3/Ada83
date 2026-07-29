@@ -8546,7 +8546,16 @@ void Parse_Parameter_List (Parser *p, Node_List *params) {
     Written_Parameter_Mode written_mode = Parse_Parameter_Mode (p);
     param->param_spec.mode            = written_mode.mode;
     param->param_spec.mode_is_written = written_mode.is_written;
-    param->param_spec.param_type = Parse_Subtype_Indication (p);
+    if (Parser_At (p, TK_PROCEDURE) or Parser_At (p, TK_FUNCTION)) {
+      Report_Error (Parser_Location (p),
+                    "a parameter cannot be a subprogram; only a type mark "
+                    "is allowed here");
+      while (not Parser_At (p, TK_SEMICOLON) and
+             not Parser_At (p, TK_RPAREN) and not Parser_At (p, TK_EOF))
+        Parser_Advance (p);
+    } else {
+      param->param_spec.param_type = Parse_Subtype_Indication (p);
+    }
     if (param->param_spec.param_type and
         param->param_spec.param_type->kind == NK_SUBTYPE_INDICATION)
       Report_Error (param->param_spec.param_type->location,
@@ -10176,6 +10185,29 @@ Node *Parse_Subprogram_Body (Parser *p, Node *spec) {
   }
   node->subprogram_body.end_location = Parser_Location (p);
   Parser_Expect (p, TK_END);
+
+  if (spec and Parser_At (p, TK_IDENTIFIER) and
+      not Slice_Equal_Ignore_Case (p->current_token.text,
+                                   spec->subprogram_spec.name)) {
+    Node_List *declarations = &node->subprogram_body.declarations;
+    for (u32 i = 0; i < declarations->count; i++) {
+      Node *declaration = declarations->items[i];
+      if (not declaration or
+          not Node_In_Any_Class (declaration,
+                                 NODE_CLASS_SUBPROGRAM_SPECIFICATION))
+        continue;
+      if (not Slice_Equal_Ignore_Case (declaration->subprogram_spec.name,
+                                       p->current_token.text))
+        continue;
+      Report_Error (declaration->location,
+                    "this reads as a declaration of '%.*s', but the END that "
+                    "names it suggests a body: was ';' written in place "
+                    "of IS?",
+                    (int) p->current_token.text.length,
+                    p->current_token.text.data);
+      break;
+    }
+  }
 
   if (spec)
     Parser_Check_End_Name (p, spec->subprogram_spec.name,
@@ -14849,6 +14881,13 @@ void Bind_Actuals_To_Formals (Node *apply, Symbol *name_view,
     if (formal < 0 or formal >= (i32) profile_view->parameter_count)
       continue;
     Type *formal_type = profile_view->parameters[formal].param_type;
+    if (not formal_type) {
+      Report_Node_Error (actual,
+                    "this call names '%.*s', whose parameter declaration "
+                    "was rejected",
+                    (int) profile_view->name.length, profile_view->name.data);
+      continue;
+    }
 
     if (formal_type and actual->type != formal_type and
         (actual->kind == NK_AGGREGATE or actual->kind == NK_STRING)) {
@@ -14858,6 +14897,14 @@ void Bind_Actuals_To_Formals (Node *apply, Symbol *name_view,
       continue;
     }
     Resolve_Operand (actual, formal_type);
+
+    if (actual->symbol and actual->symbol->kind == SYMBOL_PROCEDURE and
+        Node_In_Any_Class (actual, NODE_CLASS_SIMPLE_OR_EXPANDED_NAME))
+      Report_Node_Error (actual,
+                    "'%.*s' denotes a procedure, which has no value to pass "
+                    "as a parameter",
+                    (int) actual->symbol->name.length,
+                    actual->symbol->name.data);
   }
 }
 
@@ -40645,7 +40692,9 @@ LLVM_Value Generate_Array_Aggregate_Body (Node *node, Type *agg_type) {
   bool     check_named_bounds_match = false;
 
   if (bounds.any_dynamic) {
-    LLVM_Rep rep = Integer_Arith_Rep ();
+    LLVM_Rep rep =
+      LLVM_Rep_Or (Array_Bound_LLVM_Rep (agg_type), Integer_Arith_Rep ());
+    if (rep.bits < Integer_Arith_Rep ().bits) rep = Integer_Arith_Rep ();
     LLVM_Value low_value  = Emit_Single_Bound (&bounds.low[0], rep);
     LLVM_Value high_value =
       Emit_Aggregate_Dimension_High (&bounds, 0, low_value.reg, rep);
@@ -40826,15 +40875,17 @@ LLVM_Value Generate_Array_Aggregate_Body (Node *node, Type *agg_type) {
   }
   if (context.track_named_bounds) {
     const char *index_rep_name = LLVM_Rep_Text (context.index_rep);
+    u16 bits = context.index_rep.bits ? context.index_rep.bits : 64;
+    i128 rep_max = (((i128) 1) << (bits - 1)) - 1;
+    i128 rep_min = -(((i128) 1) << (bits - 1));
     context.named_low_variable = Emit_Frame_Slot (
       "alloca %s  ; track named min-low\n", index_rep_name);
-    u32 initial_low = Emit_Constant_Integer (2147483647LL, context.index_rep).reg;
+    u32 initial_low = Emit_Constant_Integer (rep_max, context.index_rep).reg;
     Emit ("  store %s %s, ptr %s\n",  index_rep_name,  REGISTER_TEXT (initial_low),
           REGISTER_TEXT (context.named_low_variable));
     context.named_high_variable = Emit_Frame_Slot (
       "alloca %s  ; track named max-high\n", index_rep_name);
-    u32 initial_high = Emit_Constant_Integer ((i128) -2147483648LL,
-                                             context.index_rep).reg;
+    u32 initial_high = Emit_Constant_Integer (rep_min, context.index_rep).reg;
     Emit ("  store %s %s, ptr %s\n",  index_rep_name,  REGISTER_TEXT (initial_high),
           REGISTER_TEXT (context.named_high_variable));
   }
