@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 #  Usage:
-#    bench/bench.sh                 all three, default sizes
+#    bench/bench.sh            
 #    bench/bench.sh stages
 #    bench/bench.sh compile
 #    bench/bench.sh runtime
@@ -9,10 +9,7 @@
 #    WIDE_SIZE=800 bench/bench.sh compile
 #
 #  Environment:
-#    OPT_PIPELINE  none (default) or llvm — whether to run opt between
-#                  our IR and llc.  Neither shipped pipeline does, so
-#                  "none" is what users actually get and "llvm" is what
-#                  the IR is worth once LLVM is allowed to work on it.
+#    OPT_PIPELINE  none (default) or llvm
 #    REPEATS     timed repetitions, best-of is reported (default 5)
 #    WIDE_SIZE   subprograms in the generated compile-stress unit (400)
 #    GNAT_BIN    override the GNAT bin directory
@@ -26,22 +23,13 @@ programs="$here/programs"
 stamp=$(date +%Y%m%d-%H%M%S)
 out="$here/results/$stamp"
 work="$out/work"
-#  The two compilers both write .ali files and both would read the
-#  other's.  They are not the same format, so each gets its own object
-#  tree and neither ever sees the other's artefacts.
 src_dir="$work/src"
 a83_dir="$work/ada83"
 gnat_dir="$work/gnat"
 log_dir="$out/logs"
 mkdir -p "$src_dir" "$a83_dir" "$gnat_dir" "$log_dir"
 
-#  Each run leaves a work tree of .ll, .bc and .o files that is far
-#  larger than the report.  Keep the last few and drop the rest, so a
-#  benchmarking session cannot fill the disk out from under itself.
 KEEP_RUNS=${KEEP_RUNS:-3}
-#  A run's work tree is orders of magnitude larger than its report and
-#  is only needed for the IR comparisons the report points at.  Set
-#  KEEP_WORK=0 to delete it as soon as the run finishes.
 KEEP_WORK=${KEEP_WORK:-1}
 ls -1dt "$here"/results/*/ 2>/dev/null | tail -n +$((KEEP_RUNS + 1)) \
   | while read -r old; do rm -rf "$old"; done
@@ -486,39 +474,6 @@ esac
 
 {
 echo
-rule; echo " WHAT TO DO WITH THIS"; rule
-echo
-echo " Reading the table"
-echo "   front-end ratio   ada83's own compiler speed against gnat1's."
-echo "                     This is the number to watch across a refactor:"
-echo "                     it is the only column measuring code you own."
-echo "   cold ratio        includes llc and clang.  A cold ratio far"
-echo "                     worse than the front-end ratio means the cost"
-echo "                     is in the IR handed to LLVM, not in ada83 —"
-echo "                     look at .ll size and instruction counts before"
-echo "                     touching the front end."
-echo "   warm ratio        gnatmake skips unchanged units; ada83 does not."
-echo "                     A large warm gap is an incremental-build"
-echo "                     finding, not a code-generation one."
-echo "   runtime ratio     quality of the emitted code.  Regressions here"
-echo "                     usually trace to a check that stopped folding."
-echo
-echo " Follow-ups this harness cannot answer on its own"
-echo "   - When a front-end ratio worsens, run 'stages' and diff the"
-echo "     per-stage table against the previous run in results/."
-echo "   - When 'agree?' says NO, stop benchmarking that program: the two"
-echo "     builds are computing different things and the timing is noise."
-echo "   - IR size is a leading indicator of cold-pipeline time; the"
-echo "     .ll files are kept in $a83_dir for exactly that comparison."
-echo
-echo " Known limits, so nobody reads more into a number than is there"
-echo "   - gprof samples; a program that compiles in a few milliseconds"
-echo "     produces no samples.  Raise WIDE_SIZE until it does."
-echo "   - GNAT's phase accounting and ada83's sampled profile are"
-echo "     measured differently.  Compare shapes across runs, never one"
-echo "     compiler's absolute phase time against the other's."
-echo "   - Best-of-N hides variance.  On a loaded machine, re-run rather"
-echo "     than trust a single outlier."
 echo
 echo " results   $out"
 echo " compare   diff <(grep -E '^  [a-z]' PREVIOUS/report.txt) \\"
