@@ -15910,6 +15910,38 @@ void Analyze_Identifier (Node *n) {
     Interp_Add (out, sym, n->type, n->type, NULL);
 }
 
+bool Predefined_Operator_Interp_Is_Visible (Type *operand_type) {
+  if (not operand_type) return true;
+  if (Resolving_Generic_Instance ()) return true;
+  Symbol *type_symbol = NULL;
+  for (Type *view = operand_type; view;
+       view = view->base_type != view ? view->base_type : NULL) {
+    if (view->is_generic_formal or Type_Has_Generic_Actual_View (view) or
+        Type_Is_Universal (view))
+      return true;
+    if (view->defining_symbol) {
+      type_symbol = view->defining_symbol;
+      break;
+    }
+  }
+  if (not type_symbol) return true;
+  Symbol *package = type_symbol->parent;
+  while (package and
+         not Symbol_In_Any_Class (package, SYMBOL_CLASS_PACKAGE |
+                                           SYMBOL_CLASS_GENERIC_UNIT))
+    package = package->parent;
+  if (not package or package->kind != SYMBOL_PACKAGE) return true;
+  if (Inside_Region_Of (package)) return true;
+  Type *named_base =
+    Type_Base (type_symbol->type ? type_symbol->type : operand_type);
+  for (Symbol *named = Symbol_Find (type_symbol->name); named;
+       named = named->next_overload) {
+    Type *denoted = Symbol_Denoted_Type (named);
+    if (denoted and Type_Base (denoted) == named_base) return true;
+  }
+  return false;
+}
+
 u32 Literal_Default_Type (Node *operand, Type **out) {
   if (not operand) return 0;
   if (operand->kind == NK_CHARACTER) {
@@ -16213,6 +16245,10 @@ void Analyze_Binary (Node *n) {
     for (u32 j = 0; j < right_count; j++) {
       Type *rt = right_types[j];
 
+      if (not (Predefined_Operator_Interp_Is_Visible (lt) and
+               Predefined_Operator_Interp_Is_Visible (rt)))
+        continue;
+
       bool partial_view =
         not Type_Full_Characteristics_In_Force (
               lt, CHARACTERISTICS_OF_THE_COMPONENTS) or
@@ -16343,6 +16379,11 @@ void Analyze_Binary (Node *n) {
         Report_Node_Error (operand,
           "catenation is not available for '%.*s' here: the type is private "
           "at this point", (int) type->name.length, type->name.data);
+      else if (not Predefined_Operator_Interp_Is_Visible (type))
+        Report_Node_Error (operand,
+          "the catenation operator of '%.*s' is not directly visible here; "
+          "a use clause would make it so",
+          (int) type->name.length, type->name.data);
     }
 
   if (out->count == 0 and not is_concatenation) {
@@ -16380,6 +16421,7 @@ void Analyze_Unary (Node *n) {
     Type *operand_type = operand_interps->items[i].typ;
     if (not Type_Full_Characteristics_In_Force (
               operand_type, CHARACTERISTICS_OF_THE_COMPONENTS)) continue;
+    if (not Predefined_Operator_Interp_Is_Visible (operand_type)) continue;
     if (is_arithmetic and Type_Is_Numeric (operand_type))
       Interp_Add (out, NULL, operand_type, operand_type, NULL);
     if (is_logical and (Type_Is_Boolean (operand_type) or
@@ -16615,6 +16657,15 @@ Type *Resolve_In_Context (Node *n, Type *ctx) {
     return Resolve_Context_Catenation (n, ctx);
   n->type = pick->typ;
   n->symbol = pick->nam;
+
+  if (not pick->nam and pick->typ and Type_Is_Universal (pick->typ) and
+      ctx and not Type_Is_Universal (ctx) and Type_Is_Numeric (ctx) and
+      not Predefined_Operator_Interp_Is_Visible (ctx))
+    Report_Node_Error (n,
+                  "the operator of type '%.*s' is not directly visible "
+                  "here; a use clause or an expanded operator name would "
+                  "make it so",
+                  (int) ctx->name.length, ctx->name.data);
 
   if (n->kind == NK_UNARY_OP) {
     if (ctx and pick and not pick->nam and not Type_Covers (ctx, pick->typ) and
@@ -26611,16 +26662,19 @@ bool Node_Denotes_Designator (Node *node,
 
 
 
-void Check_Designator_Not_Denoted (Node *node,
+bool Check_Designator_Not_Denoted (Node *node,
                                           Designator_Notation designator) {
-  if (not node) return;
+  if (not node) return false;
 
-  if (Node_Denotes_Designator (node, designator))
+  bool found = false;
+  if (Node_Denotes_Designator (node, designator)) {
     Report_Node_Error (node,
                   "'%.*s' is hidden within its own declaration and denotes "
                   "nothing here",
                   (int) designator.identifier.length,
                   designator.identifier.data);
+    found = true;
+  }
 
   Node_List *declared = Specification_Declared_Identifiers (node);
   for (const Syntax_Tree_Edge *edge = Syntax_Tree_Shape[node->kind];
@@ -26630,11 +26684,12 @@ void Check_Designator_Not_Denoted (Node *node,
       Node_List *list = child;
       if (list == declared) continue;
       for (u32 i = 0; i < list->count; i++)
-        Check_Designator_Not_Denoted (list->items[i], designator);
+        found |= Check_Designator_Not_Denoted (list->items[i], designator);
     } else {
-      Check_Designator_Not_Denoted (*(Node **) child, designator);
+      found |= Check_Designator_Not_Denoted (*(Node **) child, designator);
     }
   }
+  return found;
 }
 
 
@@ -28319,13 +28374,23 @@ void Check_Legality_Of_Node (Node *node,
       case NK_SUBPROGRAM_RENAMING: {
         Designator_Notation designator =
           Designator_Notation_Of (node->subprogram_spec.name);
+        bool found = false;
         for (u32 i = 0; i < node->subprogram_spec.parameters.count; i++)
-          Check_Designator_Not_Denoted (
+          found |= Check_Designator_Not_Denoted (
             node->subprogram_spec.parameters.items[i], designator);
-        Check_Designator_Not_Denoted (node->subprogram_spec.return_type,
-                                      designator);
-        Check_Designator_Not_Denoted (node->subprogram_spec.renamed,
-                                      designator);
+        found |= Check_Designator_Not_Denoted (
+          node->subprogram_spec.return_type, designator);
+        found |= Check_Designator_Not_Denoted (
+          node->subprogram_spec.renamed, designator);
+        Node *tail = node->subprogram_spec.renamed
+          ? node->subprogram_spec.renamed
+          : node->subprogram_spec.return_type;
+        if (found and tail)
+          Report_Node_Error (tail,
+                        "the declaration of '%.*s' completes with the name "
+                        "still hidden",
+                        (int) designator.identifier.length,
+                        designator.identifier.data);
         break;
       }
       case NK_ENTRY_DECL: {
