@@ -6664,11 +6664,15 @@ enum {
 extern Loading_Set   Loading_Packages;
 extern const char   *Include_Paths[MAX_INCLUDE_PATHS];
 
-extern const char   *Rts_Include_Path;
-extern bool          Lookup_Path_Resolved_From_Rts;
+extern bool          Lookup_Path_Resolved_From_Runtime;
 extern bool          Debug_Emit_Locations;
-extern bool          Clone_Self_Check;
-extern bool          Native_Mode;
+extern bool          Ir_Output_Mode;
+
+char *System_Package_Source        (void);
+void  Runtime_Library_Locate       (const char *executable_directory);
+bool  Runtime_Library_Provides     (String_Slice name, bool body);
+Node *Parse_Compilation_Unit_Named (char *source, const char *filename,
+                                    String_Slice name, bool want_body);
 extern u32      Include_Path_Count;
 extern Node **Loaded_Package_Bodies;
 
@@ -56190,9 +56194,8 @@ bool Instantiate_Generic_Package (Symbol *instance_sym, Symbol *template_sym) {
         char *body_filename = Arena_Allocate (filename_length + 1);
         snprintf (body_filename, filename_length + 1, "%.*s.adb",
                   (int) package_name.length, package_name.data);
-        Parser body_parser =
-          Parser_New (body_source, strlen (body_source), body_filename);
-        Node *body_cu = Parse_Compilation_Unit (&body_parser);
+        Node *body_cu = Parse_Compilation_Unit_Named (body_source,
+          body_filename, package_name, true);
         if (body_cu and body_cu->compilation_unit.unit and
             body_cu->compilation_unit.unit->kind == NK_PACKAGE_BODY)
           template_sym->generic_body_cache = body_cu->compilation_unit.unit;
@@ -56650,17 +56653,112 @@ void Build_Include_Path_Filename (String_Slice name, u32 index, char *out, size_
 
 char *Lookup_Path_Ext (String_Slice name, const char *primary) {
   char path[512];
+  Lookup_Path_Resolved_From_Runtime = false;
   for (u32 i = 0; i < Include_Path_Count; i++) {
     Build_Include_Path_Filename (name, i, path, sizeof (path));
     char *src = Try_Read_Ext (path, primary);
     if (not src) src = Try_Read_Ext (path, "ada");
-    if (src) {
-      Lookup_Path_Resolved_From_Rts =
-        Rts_Include_Path and Include_Paths[i] == Rts_Include_Path;
-      return src;
-    }
+    if (src) return src;
   }
-  Lookup_Path_Resolved_From_Rts = false;
+  return NULL;
+}
+
+typedef struct {
+  String_Slice name;
+  bool         spec;
+  bool         body;
+} Runtime_Unit_Identity;
+
+static char                 *Runtime_Library_Text;
+static char                  Runtime_Library_Path[PATH_MAX];
+static bool                  Runtime_Library_Load_Attempted;
+static Runtime_Unit_Identity Runtime_Units[MAX_UNITS_PER_SOURCE_FILE];
+static u32                   Runtime_Unit_Count;
+
+void Runtime_Library_Locate (const char *executable_directory) {
+  snprintf (Runtime_Library_Path, sizeof Runtime_Library_Path,
+            "%s/runtime.ada", executable_directory);
+}
+
+static void Runtime_Library_Ensure_Loaded (void) {
+  if (Runtime_Library_Load_Attempted) return;
+  Runtime_Library_Load_Attempted = true;
+  char *source = Runtime_Library_Path[0]
+    ? Read_File_Simple (Runtime_Library_Path) : NULL;
+  for (u32 i = 0; not source and i < Include_Path_Count; i++) {
+    char candidate[PATH_MAX];
+    if (snprintf (candidate, sizeof candidate, "%s/runtime.ada",
+                  Include_Paths[i]) < (int) sizeof candidate)
+      source = Read_File_Simple (candidate);
+  }
+  if (not source) return;
+  Runtime_Library_Text = source;
+  Parser parser = Parser_New (source, strlen (source), "runtime.ada");
+  while (Runtime_Unit_Count < MAX_UNITS_PER_SOURCE_FILE and
+         not parser.had_error and parser.current_token.kind != TK_EOF) {
+    Node *cu = Parse_Compilation_Unit (&parser);
+    if (not cu) break;
+    String_Slice name;
+    bool is_spec, is_body;
+    if (Compilation_Unit_Identity (cu, &name, &is_spec, &is_body))
+      Runtime_Units[Runtime_Unit_Count++] =
+        (Runtime_Unit_Identity){ name, is_spec, is_body };
+  }
+}
+
+bool Runtime_Library_Provides (String_Slice name, bool body) {
+  Runtime_Library_Ensure_Loaded ();
+  for (u32 i = 0; i < Runtime_Unit_Count; i++)
+    if (Slice_Equal_Ignore_Case (Runtime_Units[i].name, name) and
+        (body ? Runtime_Units[i].body : Runtime_Units[i].spec))
+      return true;
+  return false;
+}
+
+char *System_Package_Source (void) {
+  enum { Address_Bits = POINTER_ALLOC_SIZE * Bits_Per_Unit };
+  static char *cached;
+  if (cached) return cached;
+  enum { Size = 1024 };
+  cached = Arena_Allocate (Size);
+  snprintf (cached, Size,
+    "PACKAGE SYSTEM IS\n"
+    "TYPE ADDRESS IS PRIVATE;\n"
+    "TYPE NAME IS(ADA83);\n"
+    "MIN_INT:CONSTANT:=-(2**%d);MAX_INT:CONSTANT:=2**%d-1;\n"
+    "MAX_DIGITS:CONSTANT:=15;MAX_MANTISSA:CONSTANT:=%d;\n"
+    "FINE_DELTA:CONSTANT:=2.0**(-%d);TICK:CONSTANT:=0.01;\n"
+    "STORAGE_UNIT:CONSTANT:=%d;MEMORY_SIZE:CONSTANT:=2**%d;\n"
+    "SYSTEM_NAME:CONSTANT NAME:=ADA83;\n"
+    "SUBTYPE PRIORITY IS INTEGER RANGE 0..7;\n"
+    "NULL_ADDRESS:CONSTANT ADDRESS;\n"
+    "PRIVATE\n"
+    "TYPE ADDRESS IS RANGE -(2**%d)..2**%d-1;\n"
+    "NULL_ADDRESS:CONSTANT ADDRESS:=0;\n"
+    "END SYSTEM;\n",
+    (int) Ada_Integer_Bits - 1, (int) Ada_Integer_Bits - 1,
+    (int) Target_Max_Mantissa, (int) Target_Max_Mantissa,
+    (int) Bits_Per_Unit, (int) Ada_Integer_Bits - 1,
+    (int) Address_Bits - 1, (int) Address_Bits - 1);
+  return cached;
+}
+
+Node *Parse_Compilation_Unit_Named (char *source, const char *filename,
+                                    String_Slice name, bool want_body) {
+  Parser parser = Parser_New (source, strlen (source), filename);
+  for (int guard = 0; guard < MAX_UNITS_PER_SOURCE_FILE and
+                      not parser.had_error and
+                      parser.current_token.kind != TK_EOF; guard++) {
+    Node *cu = Parse_Compilation_Unit (&parser);
+    if (not cu) return NULL;
+    String_Slice cu_name;
+    bool is_spec, is_body;
+    if (not Compilation_Unit_Identity (cu, &cu_name, &is_spec, &is_body))
+      continue;
+    if (Slice_Equal_Ignore_Case (cu_name, name) and
+        (want_body ? is_body : is_spec))
+      return cu;
+  }
   return NULL;
 }
 
@@ -56686,7 +56784,11 @@ char *Catalog_Read_Source (String_Slice name, Catalog_Unit_Kind kind) {
 }
 
 char *Lookup_Path (String_Slice name) {
-  Lookup_Path_Resolved_From_Rts = false;
+  Lookup_Path_Resolved_From_Runtime = false;
+  if (Slice_Equal_Ignore_Case (name, S ("SYSTEM"))) {
+    Lookup_Path_Resolved_From_Runtime = true;
+    return System_Package_Source ();
+  }
   Catalog_Entry *spec_entry = Library_Catalog_Find (name, CATALOG_UNIT_SPEC);
   Catalog_Entry *body_entry = Library_Catalog_Find (name, CATALOG_UNIT_BODY);
   if (spec_entry and spec_entry->source_file.length == 0) spec_entry = NULL;
@@ -56704,19 +56806,26 @@ char *Lookup_Path (String_Slice name) {
     char *src = Catalog_Read_Source (name, CATALOG_UNIT_BODY);
     if (src) return src;
   }
-  return Lookup_Path_Ext (name, "ads");
+  char *from_files = Lookup_Path_Ext (name, "ads");
+  if (from_files) return from_files;
+  if (Runtime_Library_Provides (name, false)) {
+    Lookup_Path_Resolved_From_Runtime = true;
+    return Runtime_Library_Text;
+  }
+  return NULL;
 }
 
 char *Lookup_Path_Body (String_Slice name) {
   char *from_catalog = Catalog_Read_Source (name, CATALOG_UNIT_BODY);
   if (from_catalog) return from_catalog;
-  return Lookup_Path_Ext (name, "adb");
+  char *from_files = Lookup_Path_Ext (name, "adb");
+  if (from_files) return from_files;
+  return Runtime_Library_Provides (name, true) ? Runtime_Library_Text : NULL;
 }
 
 const char     *Include_Paths[MAX_INCLUDE_PATHS];
 u32        Include_Path_Count        = 0;
-const char     *Rts_Include_Path          = NULL;
-bool            Lookup_Path_Resolved_From_Rts = false;
+bool            Lookup_Path_Resolved_From_Runtime = false;
 
 const char *Add_Include_Path (const char *directory) {
   if (not directory or not directory[0]) return NULL;
@@ -56755,9 +56864,7 @@ bool Path_Directory (const char *path, char *out, size_t out_size) {
 
 bool            Debug_Emit_Locations      = false;
 
-bool            Clone_Self_Check          = false;
-
-bool            Native_Mode               = false;
+bool            Ir_Output_Mode            = false;
 
 Node   **Loaded_Package_Bodies      = NULL;
 int             Loaded_Body_Count          = 0;
@@ -57161,7 +57268,7 @@ void Load_Library_Subprogram_Declaration (String_Slice name) {
 void Load_Package_Spec (String_Slice name, char *src) {
   if (not src) return;
 
-  bool predefined_unit = Lookup_Path_Resolved_From_Rts;
+  bool predefined_unit = Lookup_Path_Resolved_From_Runtime;
 
   Symbol *existing = Symbol_Find (name);
   if (existing and existing->declaration and
@@ -57463,11 +57570,9 @@ void Load_Package_Spec (String_Slice name, char *src) {
   Node *body_cu = same_file_body_cu;
   if (not body_cu) {
     char *body_src = Lookup_Path_Body (name);
-    if (body_src) {
-      Parser body_parser = Parser_New (body_src, strlen (body_src),
-                                       Unit_Source_Filename (name, "adb"));
-      body_cu = Parse_Compilation_Unit (&body_parser);
-    }
+    if (body_src)
+      body_cu = Parse_Compilation_Unit_Named (body_src,
+        Unit_Source_Filename (name, "adb"), name, true);
   }
 
   Node *body_unit_written =
@@ -57747,10 +57852,6 @@ void Compile_File (const char *input_path, const char *output_path) {
     return;
   }
 
-  if (Clone_Self_Check)
-    for (int i = 0; i < unit_count; i++)
-      units[i] = Clone_Subtree (units[i]);
-
   {
     int keep = 0;
     for (int i = 0; i < unit_count; i++) {
@@ -57970,16 +58071,14 @@ void Compile_Job_Wait (Compile_Job *job) {
 int main (int argc, char *argv[]) {
   if (argc < 2) {
     fprintf (stderr,
-      "Usage: %s [-I path] [-g] [--native] [--clone-check] <input.ada ...> [-o output.ll]\n"
-      "  --native\n"
-      "        Finish in-process: parse, optimize, and lower the IR to a host\n"
-      "        executable via a runtime-loaded libLLVM. Requires a single\n"
-      "        input and -o <executable>.\n"
+      "Usage: %s [-I path] [-g] [--ir] <input.ada ...> [-o output]\n"
+      "  Default: compile one Ada source (plus optional .ll modules) to a\n"
+      "  native executable via a runtime-loaded libLLVM; -o names the\n"
+      "  executable (default: the input's base name).\n"
+      "  --ir  Emit textual LLVM IR instead: -o names the .ll file (stdout\n"
+      "        without -o); several inputs compile in parallel, one .ll each.\n"
       "  -g    Annotate each emitted IR line with `; @ FUNC:LINE` of the\n"
-      "        C source site in ada83.c that produced it (codegen debug).\n"
-      "  --clone-check\n"
-      "        Compile structural deep clones of the parsed units; output\n"
-      "        must match a normal compile (syntax shape table self-test).\n",
+      "        C source site in ada83.c that produced it (codegen debug).\n",
       argv[0]);
     return 1;
   }
@@ -58012,10 +58111,8 @@ int main (int argc, char *argv[]) {
       else { Report_Driver_Error ("-o needs a file name"); usable = false; }
     } else if (strcmp (argument, "-g") == 0) {
       Debug_Emit_Locations = true;
-    } else if (strcmp (argument, "--native") == 0) {
-      Native_Mode = true;
-    } else if (strcmp (argument, "--clone-check") == 0) {
-      Clone_Self_Check = true;
+    } else if (strcmp (argument, "--ir") == 0) {
+      Ir_Output_Mode = true;
     } else if (strcmp (argument, "--bind") == 0) {
       Report_Driver_Error ("--bind must be the first argument");
       usable = false;
@@ -58034,14 +58131,15 @@ int main (int argc, char *argv[]) {
     Report_Driver_Error ("no input file specified");
     usable = false;
   }
-  if (output and input_count > 1 and not Native_Mode) {
+  if (output and input_count > 1 and Ir_Output_Mode) {
     Report_Driver_Error ("-o cannot be used with multiple input files");
     usable = false;
   }
 
   const char *native_extra[MAX_INPUT_FILES];
   int         native_extra_count = 0;
-  if (Native_Mode and usable) {
+  char        derived_output[PATH_MAX];
+  if (not Ir_Output_Mode and usable) {
     int ada_index = -1;
     for (int i = 0; i < input_count; i++) {
       size_t length = strlen (inputs[i]);
@@ -58050,32 +58148,36 @@ int main (int argc, char *argv[]) {
       else if (ada_index < 0) ada_index = i;
       else                    ada_index = -2;
     }
-    if (not output or ada_index < 0) {
-      Report_Driver_Error ("--native requires one Ada source (plus optional "
-                           ".ll modules) and -o <executable>");
+    if (ada_index < 0) {
+      Report_Driver_Error ("a native build takes one Ada source (plus "
+                           "optional .ll modules); use --ir to batch-compile "
+                           "several sources to IR");
       usable = false;
     } else {
       inputs[0]   = inputs[ada_index];
       input_count = 1;
+      if (not output) {
+        const char *simple = Path_Simple_Name (inputs[0]);
+        const char *dot    = strrchr (simple, '.');
+        size_t stem = dot and dot != simple
+          ? (size_t) (dot - simple) : strlen (simple);
+        snprintf (derived_output, sizeof derived_output, "%.*s",
+                  (int) stem, simple);
+        output = derived_output;
+      }
     }
   }
   if (not usable) return 1;
 
   {
-    char executable[PATH_MAX], directory[PATH_MAX], runtime[PATH_MAX];
+    char executable[PATH_MAX], directory[PATH_MAX];
     ssize_t length = readlink ("/proc/self/exe", executable,
                                sizeof executable - 1);
     if (length > 0) executable[length] = '\0';
     else            snprintf (executable, sizeof executable, "%s", argv[0]);
 
-    struct stat status;
-    if (Path_Directory (executable, directory, sizeof directory) and
-        snprintf (runtime, sizeof runtime, "%s/rts", directory)
-          < (int) sizeof runtime and
-        stat (runtime, &status) == 0 and S_ISDIR (status.st_mode)) {
-      const char *stored = Add_Include_Path (runtime);
-      if (stored) Rts_Include_Path = stored;
-    }
+    if (Path_Directory (executable, directory, sizeof directory))
+      Runtime_Library_Locate (directory);
   }
   for (int i = 0; i < input_count; i++) {
     char directory[PATH_MAX];
@@ -58086,7 +58188,7 @@ int main (int argc, char *argv[]) {
   Add_Include_Path (".");
 
   if (input_count == 1) {
-    if (not Native_Mode) {
+    if (Ir_Output_Mode) {
       Compile_File (inputs[0], output);
       Arena_Free_All ();
       return Error_Count > 0 ? 1 : 0;
@@ -58298,7 +58400,8 @@ int Native_Backend_Compile (const char *ir_path, const char *const *extra_ir,
                             int extra_count, const char *exe_path) {
   char err[256];
   if (not Llvm_C_Api_Load (&Native_Backend_Llvm_Api, err, sizeof (err))) {
-    fprintf (stderr, "error: --native unavailable: %s\n", err);
+    fprintf (stderr, "error: native build unavailable (%s); "
+                     "use --ir to emit LLVM IR instead\n", err);
     return 1;
   }
 

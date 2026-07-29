@@ -1,3 +1,177 @@
+PACKAGE IO_EXCEPTIONS IS
+STATUS_ERROR:EXCEPTION;
+MODE_ERROR:EXCEPTION;
+NAME_ERROR:EXCEPTION;
+USE_ERROR:EXCEPTION;
+DEVICE_ERROR:EXCEPTION;
+END_ERROR:EXCEPTION;
+DATA_ERROR:EXCEPTION;
+LAYOUT_ERROR:EXCEPTION;
+END IO_EXCEPTIONS;
+
+PACKAGE LOW_LEVEL_IO IS
+TYPE DEVICE IS NEW INTEGER;
+TYPE DATA IS NEW INTEGER;
+PROCEDURE SEND_CONTROL(DEVICE:IN DEVICE;DATA:IN OUT DATA);
+PROCEDURE RECEIVE_CONTROL(DEVICE:IN DEVICE;DATA:IN OUT DATA);
+END LOW_LEVEL_IO;
+
+PACKAGE BODY LOW_LEVEL_IO IS
+LAST_DEVICE:DEVICE:=0;
+LAST_SEND:DATA:=0;
+LAST_RECEIVE:DATA:=0;
+PROCEDURE SEND_CONTROL(DEVICE:IN DEVICE;DATA:IN OUT DATA)IS
+BEGIN
+LAST_DEVICE:=DEVICE;
+LAST_SEND:=DATA;
+DATA:=DATA+1;
+END SEND_CONTROL;
+PROCEDURE RECEIVE_CONTROL(DEVICE:IN DEVICE;DATA:IN OUT DATA)IS
+BEGIN
+LAST_DEVICE:=DEVICE;
+LAST_RECEIVE:=DATA;
+DATA:=LAST_SEND;
+END RECEIVE_CONTROL;
+END LOW_LEVEL_IO;
+
+PACKAGE TEXT_IO IS
+TYPE FILE_TYPE IS LIMITED PRIVATE;
+TYPE FILE_MODE IS(IN_FILE,OUT_FILE,APPEND_FILE);
+TYPE COUNT IS RANGE 0..32767;
+SUBTYPE POSITIVE_COUNT IS COUNT RANGE 1..COUNT'LAST;
+UNBOUNDED:CONSTANT COUNT:=0;
+SUBTYPE FIELD IS INTEGER RANGE 0..INTEGER'LAST;
+SUBTYPE NUMBER_BASE IS INTEGER RANGE 2..16;
+TYPE TYPE_SET IS(LOWER_CASE,UPPER_CASE);
+STATUS_ERROR:EXCEPTION;
+MODE_ERROR:EXCEPTION;
+NAME_ERROR:EXCEPTION;
+USE_ERROR:EXCEPTION;
+DEVICE_ERROR:EXCEPTION;
+END_ERROR:EXCEPTION;
+DATA_ERROR:EXCEPTION;
+LAYOUT_ERROR:EXCEPTION;
+PROCEDURE CREATE(FILE:IN OUT FILE_TYPE;MODE:IN FILE_MODE:=OUT_FILE;NAME:IN STRING:="";FORM:IN STRING:="");
+PROCEDURE OPEN(FILE:IN OUT FILE_TYPE;MODE:IN FILE_MODE;NAME:IN STRING;FORM:IN STRING:="");
+PROCEDURE CLOSE(FILE:IN OUT FILE_TYPE);
+PROCEDURE DELETE(FILE:IN OUT FILE_TYPE);
+PROCEDURE RESET(FILE:IN OUT FILE_TYPE;MODE:IN FILE_MODE);
+PROCEDURE RESET(FILE:IN OUT FILE_TYPE);
+FUNCTION MODE(FILE:IN FILE_TYPE)RETURN FILE_MODE;
+FUNCTION NAME(FILE:IN FILE_TYPE)RETURN STRING;
+FUNCTION FORM(FILE:IN FILE_TYPE)RETURN STRING;
+FUNCTION IS_OPEN(FILE:IN FILE_TYPE)RETURN BOOLEAN;
+PROCEDURE SET_INPUT(FILE:IN FILE_TYPE);
+PROCEDURE SET_OUTPUT(FILE:IN FILE_TYPE);
+PROCEDURE SET_ERROR(FILE:IN FILE_TYPE);
+FUNCTION STANDARD_INPUT RETURN FILE_TYPE;
+FUNCTION STANDARD_OUTPUT RETURN FILE_TYPE;
+FUNCTION STANDARD_ERROR RETURN FILE_TYPE;
+FUNCTION CURRENT_INPUT RETURN FILE_TYPE;
+FUNCTION CURRENT_OUTPUT RETURN FILE_TYPE;
+FUNCTION CURRENT_ERROR RETURN FILE_TYPE;
+PROCEDURE FLUSH(FILE:IN FILE_TYPE);
+PROCEDURE FLUSH;
+PROCEDURE SET_LINE_LENGTH(FILE:IN FILE_TYPE;TO:IN COUNT);
+PROCEDURE SET_LINE_LENGTH(TO:IN COUNT);
+PROCEDURE SET_PAGE_LENGTH(FILE:IN FILE_TYPE;TO:IN COUNT);
+PROCEDURE SET_PAGE_LENGTH(TO:IN COUNT);
+FUNCTION LINE_LENGTH(FILE:IN FILE_TYPE)RETURN COUNT;
+FUNCTION LINE_LENGTH RETURN COUNT;
+FUNCTION PAGE_LENGTH(FILE:IN FILE_TYPE)RETURN COUNT;
+FUNCTION PAGE_LENGTH RETURN COUNT;
+PROCEDURE NEW_LINE(FILE:IN FILE_TYPE;SPACING:IN POSITIVE_COUNT:=1);
+PROCEDURE NEW_LINE(SPACING:IN POSITIVE_COUNT:=1);
+PROCEDURE SKIP_LINE(FILE:IN FILE_TYPE;SPACING:IN POSITIVE_COUNT:=1);
+PROCEDURE SKIP_LINE(SPACING:IN POSITIVE_COUNT:=1);
+FUNCTION END_OF_LINE(FILE:IN FILE_TYPE)RETURN BOOLEAN;
+FUNCTION END_OF_LINE RETURN BOOLEAN;
+PROCEDURE NEW_PAGE(FILE:IN FILE_TYPE);
+PROCEDURE NEW_PAGE;
+PROCEDURE SKIP_PAGE(FILE:IN FILE_TYPE);
+PROCEDURE SKIP_PAGE;
+FUNCTION END_OF_PAGE(FILE:IN FILE_TYPE)RETURN BOOLEAN;
+FUNCTION END_OF_PAGE RETURN BOOLEAN;
+FUNCTION END_OF_FILE(FILE:IN FILE_TYPE)RETURN BOOLEAN;
+FUNCTION END_OF_FILE RETURN BOOLEAN;
+PROCEDURE SET_COL(FILE:IN FILE_TYPE;TO:IN POSITIVE_COUNT);
+PROCEDURE SET_COL(TO:IN POSITIVE_COUNT);
+PROCEDURE SET_LINE(FILE:IN FILE_TYPE;TO:IN POSITIVE_COUNT);
+PROCEDURE SET_LINE(TO:IN POSITIVE_COUNT);
+FUNCTION COL(FILE:IN FILE_TYPE)RETURN POSITIVE_COUNT;
+FUNCTION COL RETURN POSITIVE_COUNT;
+FUNCTION LINE(FILE:IN FILE_TYPE)RETURN POSITIVE_COUNT;
+FUNCTION LINE RETURN POSITIVE_COUNT;
+FUNCTION PAGE(FILE:IN FILE_TYPE)RETURN POSITIVE_COUNT;
+FUNCTION PAGE RETURN POSITIVE_COUNT;
+PROCEDURE GET(FILE:IN FILE_TYPE;ITEM:OUT CHARACTER);
+PROCEDURE GET(ITEM:OUT CHARACTER);
+PROCEDURE PUT(FILE:IN FILE_TYPE;ITEM:IN CHARACTER);
+PROCEDURE PUT(ITEM:IN CHARACTER);
+PROCEDURE GET(FILE:IN FILE_TYPE;ITEM:OUT STRING);
+PROCEDURE GET(ITEM:OUT STRING);
+PROCEDURE PUT(FILE:IN FILE_TYPE;ITEM:IN STRING);
+PROCEDURE PUT(ITEM:IN STRING);
+PROCEDURE GET_LINE(FILE:IN FILE_TYPE;ITEM:OUT STRING;LAST:OUT NATURAL);
+PROCEDURE GET_LINE(ITEM:OUT STRING;LAST:OUT NATURAL);
+PROCEDURE PUT_LINE(FILE:IN FILE_TYPE;ITEM:IN STRING);
+PROCEDURE PUT_LINE(ITEM:IN STRING);
+GENERIC
+TYPE NUM IS RANGE<>;
+PACKAGE INTEGER_IO IS
+DEFAULT_WIDTH:FIELD:=11;
+DEFAULT_BASE:NUMBER_BASE:=10;
+PROCEDURE GET(FILE:IN FILE_TYPE;ITEM:OUT NUM;WIDTH:IN FIELD:=0);
+PROCEDURE GET(ITEM:OUT NUM;WIDTH:IN FIELD:=0);
+PROCEDURE PUT(FILE:IN FILE_TYPE;ITEM:IN NUM;WIDTH:IN FIELD:=DEFAULT_WIDTH;BASE:IN NUMBER_BASE:=DEFAULT_BASE);
+PROCEDURE PUT(ITEM:IN NUM;WIDTH:IN FIELD:=DEFAULT_WIDTH;BASE:IN NUMBER_BASE:=DEFAULT_BASE);
+PROCEDURE GET(FROM:IN STRING;ITEM:OUT NUM;LAST:OUT POSITIVE);
+PROCEDURE PUT(TO:OUT STRING;ITEM:IN NUM;BASE:IN NUMBER_BASE:=DEFAULT_BASE);
+END INTEGER_IO;
+GENERIC
+TYPE NUM IS DIGITS<>;
+PACKAGE FLOAT_IO IS
+DEFAULT_FORE:FIELD:=2;
+DEFAULT_AFT:FIELD:=NUM'DIGITS-1;
+DEFAULT_EXP:FIELD:=2;
+PROCEDURE GET(FILE:IN FILE_TYPE;ITEM:OUT NUM;WIDTH:IN FIELD:=0);
+PROCEDURE GET(ITEM:OUT NUM;WIDTH:IN FIELD:=0);
+PROCEDURE PUT(FILE:IN FILE_TYPE;ITEM:IN NUM;FORE:IN FIELD:=DEFAULT_FORE;AFT:IN FIELD:=DEFAULT_AFT;EXP:IN FIELD:=DEFAULT_EXP);
+PROCEDURE PUT(ITEM:IN NUM;FORE:IN FIELD:=DEFAULT_FORE;AFT:IN FIELD:=DEFAULT_AFT;EXP:IN FIELD:=DEFAULT_EXP);
+PROCEDURE GET(FROM:IN STRING;ITEM:OUT NUM;LAST:OUT POSITIVE);
+PROCEDURE PUT(TO:OUT STRING;ITEM:IN NUM;AFT:IN FIELD:=DEFAULT_AFT;EXP:IN FIELD:=DEFAULT_EXP);
+END FLOAT_IO;
+GENERIC
+TYPE NUM IS DELTA<>;
+PACKAGE FIXED_IO IS
+DEFAULT_FORE:FIELD:=2;
+DEFAULT_AFT:FIELD:=NUM'AFT;
+DEFAULT_EXP:FIELD:=0;
+PROCEDURE GET(FILE:IN FILE_TYPE;ITEM:OUT NUM;WIDTH:IN FIELD:=0);
+PROCEDURE GET(ITEM:OUT NUM;WIDTH:IN FIELD:=0);
+PROCEDURE PUT(FILE:IN FILE_TYPE;ITEM:IN NUM;FORE:IN FIELD:=DEFAULT_FORE;AFT:IN FIELD:=DEFAULT_AFT;EXP:IN FIELD:=DEFAULT_EXP);
+PROCEDURE PUT(ITEM:IN NUM;FORE:IN FIELD:=DEFAULT_FORE;AFT:IN FIELD:=DEFAULT_AFT;EXP:IN FIELD:=DEFAULT_EXP);
+PROCEDURE GET(FROM:IN STRING;ITEM:OUT NUM;LAST:OUT POSITIVE);
+PROCEDURE PUT(TO:OUT STRING;ITEM:IN NUM;AFT:IN FIELD:=DEFAULT_AFT;EXP:IN FIELD:=DEFAULT_EXP);
+END FIXED_IO;
+GENERIC
+TYPE ENUM IS(<>);
+PACKAGE ENUMERATION_IO IS
+DEFAULT_WIDTH:FIELD:=0;
+DEFAULT_SETTING:TYPE_SET:=UPPER_CASE;
+PROCEDURE GET(FILE:IN FILE_TYPE;ITEM:OUT ENUM);
+PROCEDURE GET(ITEM:OUT ENUM);
+PROCEDURE PUT(FILE:IN FILE_TYPE;ITEM:IN ENUM;WIDTH:IN FIELD:=DEFAULT_WIDTH;SET:IN TYPE_SET:=DEFAULT_SETTING);
+PROCEDURE PUT(ITEM:IN ENUM;WIDTH:IN FIELD:=DEFAULT_WIDTH;SET:IN TYPE_SET:=DEFAULT_SETTING);
+PROCEDURE GET(FROM:IN STRING;ITEM:OUT ENUM;LAST:OUT POSITIVE);
+PROCEDURE PUT(TO:OUT STRING;ITEM:IN ENUM;SET:IN TYPE_SET:=DEFAULT_SETTING);
+END ENUMERATION_IO;
+PRIVATE
+TYPE FILE_TYPE IS RECORD
+   HANDLE : INTEGER := 0;
+END RECORD;
+END TEXT_IO;
+
 with SYSTEM;
 
 package body TEXT_IO is
@@ -2380,3 +2554,887 @@ begin
    Init_Standard_Files;
    Initialized := True;
 end TEXT_IO;
+
+PACKAGE CALENDAR IS
+TYPE TIME IS PRIVATE;
+SUBTYPE YEAR_NUMBER IS INTEGER RANGE 1901..2099;
+SUBTYPE MONTH_NUMBER IS INTEGER RANGE 1..12;
+SUBTYPE DAY_NUMBER IS INTEGER RANGE 1..31;
+SUBTYPE DAY_DURATION IS DURATION RANGE 0.0..86_400.0;
+FUNCTION CLOCK RETURN TIME;
+FUNCTION YEAR(DATE:TIME)RETURN YEAR_NUMBER;
+FUNCTION MONTH(DATE:TIME)RETURN MONTH_NUMBER;
+FUNCTION DAY(DATE:TIME)RETURN DAY_NUMBER;
+FUNCTION SECONDS(DATE:TIME)RETURN DAY_DURATION;
+PROCEDURE SPLIT(DATE:IN TIME;YEAR:OUT YEAR_NUMBER;MONTH:OUT MONTH_NUMBER;DAY:OUT DAY_NUMBER;SECONDS:OUT DAY_DURATION);
+FUNCTION TIME_OF(YEAR:YEAR_NUMBER;MONTH:MONTH_NUMBER;DAY:DAY_NUMBER;SECONDS:DAY_DURATION:=0.0)RETURN TIME;
+FUNCTION "+"(LEFT:TIME;RIGHT:DURATION)RETURN TIME;
+FUNCTION "+"(LEFT:DURATION;RIGHT:TIME)RETURN TIME;
+FUNCTION "-"(LEFT:TIME;RIGHT:DURATION)RETURN TIME;
+FUNCTION "-"(LEFT:TIME;RIGHT:TIME)RETURN DURATION;
+FUNCTION "<"(LEFT,RIGHT:TIME)RETURN BOOLEAN;
+FUNCTION "<="(LEFT,RIGHT:TIME)RETURN BOOLEAN;
+FUNCTION ">"(LEFT,RIGHT:TIME)RETURN BOOLEAN;
+FUNCTION ">="(LEFT,RIGHT:TIME)RETURN BOOLEAN;
+TIME_ERROR:EXCEPTION;
+PRIVATE
+TYPE TIME IS NEW DURATION;
+END CALENDAR;
+
+PACKAGE BODY CALENDAR IS
+
+FUNCTION RT_TIME RETURN DURATION;
+PRAGMA IMPORT(LLVM,RT_TIME,"__ada_clock");
+
+-- Julian day number of the Unix epoch, 1970-01-01.
+EPOCH:CONSTANT:=2440588;
+
+-- A full day, as a named constant: a bare 86_400.0 next to "+" would be
+-- capturable by the TIME operators (a universal literal converts to TIME).
+DAY_SECONDS:CONSTANT DURATION:=86_400.0;
+
+-- The representable range of TIME: from 1901-01-01 00:00:00 to
+-- 2099-12-31 24:00:00 (SECONDS may be 86_400.0, RM 9.6). Assigned in the
+-- initialization part below, after JULIAN_DAY's body has elaborated
+-- (RM 3.9 puts every object declaration ahead of the bodies).
+TIME_FIRST:DURATION;
+TIME_LAST:DURATION;
+
+FUNCTION JULIAN_DAY(Y:YEAR_NUMBER;M:MONTH_NUMBER;D:DAY_NUMBER)RETURN INTEGER IS
+A:INTEGER:=(14-M)/12;
+YY:INTEGER:=Y+4800-A;
+MM:INTEGER:=M+12*A-3;
+BEGIN
+RETURN D+(153*MM+2)/5+365*YY+YY/4-YY/100+YY/400-32045;
+END JULIAN_DAY;
+
+-- Days since the Unix epoch of the day containing DATE, i.e. the floor of
+-- DATE / 86_400.0. Integer conversion rounds to nearest (RM 4.6), so step
+-- back while the resulting midnight lies after DATE.
+FUNCTION DAY_COUNT(DATE:TIME)RETURN INTEGER IS
+D:DURATION:=DURATION(DATE);
+N:INTEGER:=INTEGER(D/DAY_SECONDS);
+BEGIN
+WHILE N*DAY_SECONDS>D LOOP N:=N-1;END LOOP;
+RETURN N;
+END DAY_COUNT;
+
+FUNCTION CLOCK RETURN TIME IS BEGIN RETURN TIME(RT_TIME);END CLOCK;
+
+PROCEDURE SPLIT(DATE:IN TIME;YEAR:OUT YEAR_NUMBER;MONTH:OUT MONTH_NUMBER;DAY:OUT DAY_NUMBER;SECONDS:OUT DAY_DURATION)IS
+DAYS:INTEGER:=DAY_COUNT(DATE);
+JD:INTEGER:=EPOCH+DAYS;
+A:INTEGER:=JD+32044;
+B:INTEGER:=(4*A+3)/146097;
+C:INTEGER:=A-146097*B/4;
+DD:INTEGER:=(4*C+3)/1461;
+E:INTEGER:=C-1461*DD/4;
+M:INTEGER:=(5*E+2)/153;
+BEGIN
+DAY:=E-(153*M+2)/5+1;
+MONTH:=M+3-12*(M/10);
+YEAR:=100*B+DD-4800+M/10;
+SECONDS:=DURATION(DATE)-DAYS*DAY_SECONDS;
+END SPLIT;
+
+FUNCTION YEAR(DATE:TIME)RETURN YEAR_NUMBER IS
+Y:YEAR_NUMBER;M:MONTH_NUMBER;D:DAY_NUMBER;S:DAY_DURATION;
+BEGIN
+SPLIT(DATE,Y,M,D,S);
+RETURN Y;
+END YEAR;
+
+FUNCTION MONTH(DATE:TIME)RETURN MONTH_NUMBER IS
+Y:YEAR_NUMBER;M:MONTH_NUMBER;D:DAY_NUMBER;S:DAY_DURATION;
+BEGIN
+SPLIT(DATE,Y,M,D,S);
+RETURN M;
+END MONTH;
+
+FUNCTION DAY(DATE:TIME)RETURN DAY_NUMBER IS
+Y:YEAR_NUMBER;M:MONTH_NUMBER;D:DAY_NUMBER;S:DAY_DURATION;
+BEGIN
+SPLIT(DATE,Y,M,D,S);
+RETURN D;
+END DAY;
+
+FUNCTION SECONDS(DATE:TIME)RETURN DAY_DURATION IS
+Y:YEAR_NUMBER;M:MONTH_NUMBER;D:DAY_NUMBER;S:DAY_DURATION;
+BEGIN
+SPLIT(DATE,Y,M,D,S);
+RETURN S;
+END SECONDS;
+
+FUNCTION TIME_OF(YEAR:YEAR_NUMBER;MONTH:MONTH_NUMBER;DAY:DAY_NUMBER;SECONDS:DAY_DURATION:=0.0)RETURN TIME IS
+DAYS_IN_MONTH:INTEGER;
+BEGIN
+CASE MONTH IS
+WHEN 4|6|9|11=>DAYS_IN_MONTH:=30;
+WHEN 2=>
+IF YEAR MOD 4=0 AND THEN(YEAR MOD 100/=0 OR ELSE YEAR MOD 400=0)THEN
+DAYS_IN_MONTH:=29;
+ELSE
+DAYS_IN_MONTH:=28;
+END IF;
+WHEN OTHERS=>DAYS_IN_MONTH:=31;
+END CASE;
+IF DAY>DAYS_IN_MONTH THEN RAISE TIME_ERROR;END IF;
+RETURN TIME((JULIAN_DAY(YEAR,MONTH,DAY)-EPOCH)*DAY_SECONDS+SECONDS);
+END TIME_OF;
+
+-- RM 9.6: "+" and "-" raise TIME_ERROR when the result is not a value of
+-- type TIME. The bound is compared before adding so the check itself
+-- cannot overflow the 64-bit mantissa.
+FUNCTION "+"(LEFT:TIME;RIGHT:DURATION)RETURN TIME IS
+L:DURATION:=DURATION(LEFT);
+BEGIN
+IF RIGHT>=0.0 THEN
+IF L>TIME_LAST-RIGHT THEN RAISE TIME_ERROR;END IF;
+ELSE
+IF L<TIME_FIRST-RIGHT THEN RAISE TIME_ERROR;END IF;
+END IF;
+RETURN TIME(L+RIGHT);
+END "+";
+
+FUNCTION "+"(LEFT:DURATION;RIGHT:TIME)RETURN TIME IS
+BEGIN
+RETURN RIGHT+LEFT;
+END "+";
+
+FUNCTION "-"(LEFT:TIME;RIGHT:DURATION)RETURN TIME IS
+L:DURATION:=DURATION(LEFT);
+BEGIN
+IF RIGHT>=0.0 THEN
+IF L<TIME_FIRST+RIGHT THEN RAISE TIME_ERROR;END IF;
+ELSE
+IF L>TIME_LAST+RIGHT THEN RAISE TIME_ERROR;END IF;
+END IF;
+RETURN TIME(L-RIGHT);
+END "-";
+
+FUNCTION "-"(LEFT:TIME;RIGHT:TIME)RETURN DURATION IS
+BEGIN
+RETURN DURATION(LEFT)-DURATION(RIGHT);
+END "-";
+
+FUNCTION "<"(LEFT,RIGHT:TIME)RETURN BOOLEAN IS BEGIN RETURN DURATION(LEFT)<DURATION(RIGHT);END "<";
+FUNCTION "<="(LEFT,RIGHT:TIME)RETURN BOOLEAN IS BEGIN RETURN DURATION(LEFT)<=DURATION(RIGHT);END "<=";
+FUNCTION ">"(LEFT,RIGHT:TIME)RETURN BOOLEAN IS BEGIN RETURN DURATION(LEFT)>DURATION(RIGHT);END ">";
+FUNCTION ">="(LEFT,RIGHT:TIME)RETURN BOOLEAN IS BEGIN RETURN DURATION(LEFT)>=DURATION(RIGHT);END ">=";
+
+BEGIN
+TIME_FIRST:=(JULIAN_DAY(1901,1,1)-EPOCH)*DAY_SECONDS;
+TIME_LAST:=(JULIAN_DAY(2099,12,31)-EPOCH)*DAY_SECONDS+DAY_SECONDS;
+END CALENDAR;
+
+GENERIC
+TYPE ELEMENT_TYPE IS PRIVATE;
+PACKAGE DIRECT_IO IS
+TYPE FILE_TYPE IS LIMITED PRIVATE;
+TYPE FILE_MODE IS(IN_FILE,INOUT_FILE,OUT_FILE);
+TYPE COUNT IS RANGE 0..INTEGER'LAST;
+SUBTYPE POSITIVE_COUNT IS COUNT RANGE 1..COUNT'LAST;
+STATUS_ERROR:EXCEPTION;
+MODE_ERROR:EXCEPTION;
+NAME_ERROR:EXCEPTION;
+USE_ERROR:EXCEPTION;
+DEVICE_ERROR:EXCEPTION;
+END_ERROR:EXCEPTION;
+DATA_ERROR:EXCEPTION;
+PROCEDURE CREATE(FILE:IN OUT FILE_TYPE;MODE:IN FILE_MODE:=INOUT_FILE;NAME:IN STRING:="";FORM:IN STRING:="");
+PROCEDURE OPEN(FILE:IN OUT FILE_TYPE;MODE:IN FILE_MODE;NAME:IN STRING;FORM:IN STRING:="");
+PROCEDURE CLOSE(FILE:IN OUT FILE_TYPE);
+PROCEDURE DELETE(FILE:IN OUT FILE_TYPE);
+PROCEDURE RESET(FILE:IN OUT FILE_TYPE;MODE:IN FILE_MODE);
+PROCEDURE RESET(FILE:IN OUT FILE_TYPE);
+FUNCTION MODE(FILE:IN FILE_TYPE)RETURN FILE_MODE;
+FUNCTION NAME(FILE:IN FILE_TYPE)RETURN STRING;
+FUNCTION FORM(FILE:IN FILE_TYPE)RETURN STRING;
+FUNCTION IS_OPEN(FILE:IN FILE_TYPE)RETURN BOOLEAN;
+PROCEDURE READ(FILE:IN FILE_TYPE;ITEM:OUT ELEMENT_TYPE;FROM:IN POSITIVE_COUNT);
+PROCEDURE READ(FILE:IN FILE_TYPE;ITEM:OUT ELEMENT_TYPE);
+PROCEDURE WRITE(FILE:IN FILE_TYPE;ITEM:IN ELEMENT_TYPE;TO:IN POSITIVE_COUNT);
+PROCEDURE WRITE(FILE:IN FILE_TYPE;ITEM:IN ELEMENT_TYPE);
+PROCEDURE SET_INDEX(FILE:IN FILE_TYPE;TO:IN POSITIVE_COUNT);
+FUNCTION INDEX(FILE:IN FILE_TYPE)RETURN POSITIVE_COUNT;
+FUNCTION SIZE(FILE:IN FILE_TYPE)RETURN COUNT;
+FUNCTION END_OF_FILE(FILE:IN FILE_TYPE)RETURN BOOLEAN;
+PRIVATE
+-- A file handle indexes the control-block table, or is zero when the object
+-- denotes no open file. The default makes a freshly declared FILE_TYPE closed
+-- (RM 14.1), so CREATE and OPEN see an unopened file rather than an erroneous
+-- uninitialized index.
+TYPE FILE_TYPE IS RECORD
+   HANDLE : INTEGER := 0;
+END RECORD;
+END DIRECT_IO;
+
+with SYSTEM;
+
+package body DIRECT_IO is
+
+   -- Real external files with random access by element index (RM 14.2.4).
+   -- Every ELEMENT_TYPE value occupies a fixed number of bytes, so element N
+   -- lives at byte offset (N-1)*Element_Bytes; positioning is a seek and READ
+   -- and WRITE transfer one element through the C stdio library.
+   function C_Fopen(Name : SYSTEM.ADDRESS; Mode : SYSTEM.ADDRESS) return SYSTEM.ADDRESS;
+   pragma Import(C, C_Fopen, "fopen");
+   function C_Fclose(Stream : SYSTEM.ADDRESS) return Integer;
+   pragma Import(C, C_Fclose, "fclose");
+   function C_Fread(Ptr : SYSTEM.ADDRESS; Size : Integer; Count : Integer;
+                    Stream : SYSTEM.ADDRESS) return Integer;
+   pragma Import(C, C_Fread, "fread");
+   function C_Fwrite(Ptr : SYSTEM.ADDRESS; Size : Integer; Count : Integer;
+                     Stream : SYSTEM.ADDRESS) return Integer;
+   pragma Import(C, C_Fwrite, "fwrite");
+   function C_Remove(Name : SYSTEM.ADDRESS) return Integer;
+   pragma Import(C, C_Remove, "remove");
+   function C_Fseek(Stream : SYSTEM.ADDRESS; Offset : Integer; Whence : Integer) return Integer;
+   pragma Import(C, C_Fseek, "fseek");
+   function C_Ftell(Stream : SYSTEM.ADDRESS) return Integer;
+   pragma Import(C, C_Ftell, "ftell");
+   function C_Fflush(Stream : SYSTEM.ADDRESS) return Integer;
+   pragma Import(C, C_Fflush, "fflush");
+   function C_Tmpfile return SYSTEM.ADDRESS;
+   pragma Import(C, C_Tmpfile, "tmpfile");
+
+   Null_Address : constant SYSTEM.ADDRESS := SYSTEM.NULL_ADDRESS;
+   Seek_Set     : constant Integer := 0;
+   Seek_End     : constant Integer := 2;
+
+   -- One element occupies its raw representation, rounded up to whole bytes.
+   -- Every element of a direct file occupies one fixed-size slot, so
+   -- SET_INDEX is pure arithmetic. The slot capacity is established by
+   -- the first WRITE (each written value must have the same size) and
+   -- persists in a four-byte file header, so a reopened file recovers
+   -- it; each slot also begins with its value's byte length, which for
+   -- an unconstrained ELEMENT_TYPE is the object's own dynamic size.
+   Header_Bytes : constant Integer := 4;
+
+   type FCB is record
+      Stream   : SYSTEM.ADDRESS := Null_Address;
+      Mode     : FILE_MODE      := INOUT_FILE;
+      Is_Open  : Boolean        := False;
+      Index    : POSITIVE_COUNT := 1;
+      Slot     : Integer        := 0;   -- 0: no element written yet
+      Name_Len : Natural        := 0;
+      Name     : String(1..1024);
+   end record;
+   FCBs     : array(1..99) of FCB;
+
+   function Is_Open_Index(Idx : Integer) return Boolean is
+   begin
+      return Idx >= 1 and then Idx <= 99 and then FCBs(Idx).Is_Open;
+   end Is_Open_Index;
+
+   -- Raise STATUS_ERROR unless FILE denotes an open external file (RM 14.4).
+   function Require_Open(FILE : FILE_TYPE) return Integer is
+      Idx : Integer := FILE.Handle;
+   begin
+      if not Is_Open_Index(Idx) then raise STATUS_ERROR; end if;
+      return Idx;
+   end Require_Open;
+
+   procedure To_C_String(S : String; Buffer : out String) is
+      J : Integer := 1;
+   begin
+      for I in S'First .. S'Last loop
+         Buffer(J) := S(I);
+         J := J + 1;
+      end loop;
+      Buffer(J) := Character'Val(0);
+   end To_C_String;
+
+   -- Position the stream at the length prefix of element Element_Index.
+   procedure Seek_To(Idx : Integer; Element_Index : POSITIVE_COUNT) is
+      Offset : Integer := Header_Bytes
+                        + Integer(Element_Index - 1) * (4 + FCBs(Idx).Slot);
+      Ignore : Integer;
+   begin
+      Ignore := C_Fseek(FCBs(Idx).Stream, Offset, Seek_Set);
+   end Seek_To;
+
+   -- Number of elements currently in the external file.
+   function Element_Count(Idx : Integer) return COUNT is
+      Ignore : Integer;
+      Bytes  : Integer;
+   begin
+      if FCBs(Idx).Slot = 0 then return 0; end if;
+      Ignore := C_Fflush(FCBs(Idx).Stream);
+      Ignore := C_Fseek(FCBs(Idx).Stream, 0, Seek_End);
+      Bytes  := C_Ftell(FCBs(Idx).Stream);
+      if Bytes <= Header_Bytes then return 0; end if;
+      return COUNT((Bytes - Header_Bytes) / (4 + FCBs(Idx).Slot));
+   end Element_Count;
+
+   -- First WRITE fixes the slot capacity and records it in the file
+   -- header; later writes must match it, since positions are computed,
+   -- not searched.
+   procedure Establish_Slot(Idx : Integer; Item_Bytes : Integer) is
+      Header : Integer := Item_Bytes;
+      Ignore : Integer;
+   begin
+      if FCBs(Idx).Slot = 0 then
+         FCBs(Idx).Slot := Item_Bytes;
+         Ignore := C_Fseek(FCBs(Idx).Stream, 0, Seek_Set);
+         if C_Fwrite(Header'Address, Header_Bytes, 1, FCBs(Idx).Stream) /= 1 then
+            raise DEVICE_ERROR;
+         end if;
+      elsif FCBs(Idx).Slot /= Item_Bytes then
+         raise USE_ERROR;
+      end if;
+   end Establish_Slot;
+
+   -- A reopened file recovers its slot capacity from the header.
+   procedure Recover_Slot(Idx : Integer) is
+      Header : Integer := 0;
+      Ignore : Integer;
+   begin
+      Ignore := C_Fseek(FCBs(Idx).Stream, 0, Seek_Set);
+      if C_Fread(Header'Address, Header_Bytes, 1, FCBs(Idx).Stream) = 1 then
+         FCBs(Idx).Slot := Header;
+      end if;
+   end Recover_Slot;
+
+   -- CREATE and OPEN both take a fresh control block for FILE. CREATE truncates
+   -- (or makes an anonymous temporary when NAME is null); OPEN requires the
+   -- external file to already exist. RM 14.2.1 forbids either on an already-open
+   -- FILE.
+   procedure Attach(FILE : in out FILE_TYPE; MODE : in FILE_MODE;
+                    NAME : in String; Creating : in Boolean) is
+      Idx      : Integer;
+      Name_Buf : String(1..1026);
+      Mode_Str : String(1..4);
+   begin
+      if Is_Open_Index(FILE.Handle) then raise STATUS_ERROR; end if;
+      -- Reuse a closed slot: a CLOSE/DELETE frees its FCB, so USE_ERROR is
+      -- raised only when all slots are actually open (RM 14.2.1), not after
+      -- 99 cumulative opens as a monotonic counter would (ce2117b).
+      Idx := 0;
+      for J in FCBs'Range loop
+         if not FCBs(J).Is_Open then Idx := J; exit; end if;
+      end loop;
+      if Idx = 0 then raise USE_ERROR; end if;
+      if not Creating and then NAME'Length = 0 then raise NAME_ERROR; end if;
+
+      if Creating then
+         Mode_Str := ('w', '+', 'b', Character'Val(0));   -- truncate, read/write
+      elsif MODE = IN_FILE then
+         Mode_Str := ('r', 'b', Character'Val(0), Character'Val(0));
+      else
+         Mode_Str := ('r', '+', 'b', Character'Val(0));   -- must exist, read/write
+      end if;
+
+      if NAME'Length > 0 then
+         To_C_String(NAME, Name_Buf);
+         FCBs(Idx).Stream := C_Fopen(Name_Buf'Address, Mode_Str'Address);
+         if FCBs(Idx).Stream = Null_Address then
+            if Creating then raise USE_ERROR; else raise NAME_ERROR; end if;
+         end if;
+         FCBs(Idx).Name_Len := NAME'Length;
+         FCBs(Idx).Name(1..NAME'Length) := NAME;
+      else
+         FCBs(Idx).Stream := C_Tmpfile;
+         if FCBs(Idx).Stream = Null_Address then raise USE_ERROR; end if;
+         FCBs(Idx).Name_Len := 0;
+      end if;
+
+      FCBs(Idx).Mode    := MODE;
+      FCBs(Idx).Is_Open := True;
+      FCBs(Idx).Index   := 1;
+      FCBs(Idx).Slot    := 0;
+      if not Creating then
+         Recover_Slot(Idx);
+      end if;
+      FILE := (Handle => Idx);
+   end Attach;
+
+   procedure CREATE(FILE : in out FILE_TYPE; MODE : in FILE_MODE := INOUT_FILE;
+                    NAME : in String := ""; FORM : in String := "") is
+   begin
+      Attach(FILE, MODE, NAME, Creating => True);
+   end CREATE;
+
+   procedure OPEN(FILE : in out FILE_TYPE; MODE : in FILE_MODE;
+                  NAME : in String; FORM : in String := "") is
+   begin
+      Attach(FILE, MODE, NAME, Creating => False);
+   end OPEN;
+
+   procedure CLOSE(FILE : in out FILE_TYPE) is
+      Idx : Integer := Require_Open(FILE);
+      Ignore : Integer;
+   begin
+      Ignore := C_Fclose(FCBs(Idx).Stream);
+      FCBs(Idx).Stream  := Null_Address;
+      FCBs(Idx).Is_Open := False;
+      FILE := (Handle => 0);
+   end CLOSE;
+
+   procedure DELETE(FILE : in out FILE_TYPE) is
+      Idx : Integer := Require_Open(FILE);
+      Name_Buf : String(1..1026);
+      Ignore : Integer;
+   begin
+      Ignore := C_Fclose(FCBs(Idx).Stream);
+      if FCBs(Idx).Name_Len > 0 then
+         To_C_String(FCBs(Idx).Name(1..FCBs(Idx).Name_Len), Name_Buf);
+         Ignore := C_Remove(Name_Buf'Address);
+      end if;
+      FCBs(Idx).Stream  := Null_Address;
+      FCBs(Idx).Is_Open := False;
+      FILE := (Handle => 0);
+   end DELETE;
+
+   procedure RESET(FILE : in out FILE_TYPE; MODE : in FILE_MODE) is
+      Idx : Integer := Require_Open(FILE);
+      Ignore : Integer;
+   begin
+      Ignore := C_Fflush(FCBs(Idx).Stream);
+      Ignore := C_Fseek(FCBs(Idx).Stream, 0, Seek_Set);
+      FCBs(Idx).Mode  := MODE;
+      FCBs(Idx).Index := 1;
+   end RESET;
+
+   procedure RESET(FILE : in out FILE_TYPE) is
+   begin
+      RESET(FILE, MODE(FILE));
+   end RESET;
+
+   function MODE(FILE : in FILE_TYPE) return FILE_MODE is
+      Idx : Integer := Require_Open(FILE);
+   begin
+      return FCBs(Idx).Mode;
+   end MODE;
+
+   function NAME(FILE : in FILE_TYPE) return String is
+      Idx : Integer := Require_Open(FILE);
+   begin
+      -- A temporary file created without a name has no external name to
+      -- return, so NAME raises USE_ERROR (RM 14.2.1).
+      if FCBs(Idx).Name_Len = 0 then raise USE_ERROR; end if;
+      return FCBs(Idx).Name(1..FCBs(Idx).Name_Len);
+   end NAME;
+
+   function FORM(FILE : in FILE_TYPE) return String is
+      Idx : Integer := Require_Open(FILE);
+   begin
+      return "";
+   end FORM;
+
+   function IS_OPEN(FILE : in FILE_TYPE) return Boolean is
+   begin
+      return Is_Open_Index(FILE.Handle);
+   end IS_OPEN;
+
+   procedure Read_At(Idx : Integer; ITEM : out ELEMENT_TYPE;
+                     FROM : in POSITIVE_COUNT) is
+      Stored_Bytes : Integer := 0;
+      Item_Bytes   : Integer := (ITEM'SIZE + 7) / 8;
+   begin
+      if FCBs(Idx).Mode = OUT_FILE then raise MODE_ERROR; end if;
+      Seek_To(Idx, FROM);
+      if C_Fread(Stored_Bytes'Address, 4, 1, FCBs(Idx).Stream) /= 1 then
+         raise END_ERROR;
+      end if;
+      if Stored_Bytes /= Item_Bytes then
+         -- The element cannot be interpreted, but the read has still
+         -- consumed its position: reading continues at the next
+         -- element after the handler (RM 14.2.4).
+         FCBs(Idx).Index := FROM + 1;
+         raise DATA_ERROR;
+      end if;
+      if C_Fread(ITEM'Address, Stored_Bytes, 1, FCBs(Idx).Stream) /= 1 then
+         raise END_ERROR;
+      end if;
+      FCBs(Idx).Index := FROM + 1;
+   end Read_At;
+
+   procedure READ(FILE : in FILE_TYPE; ITEM : out ELEMENT_TYPE;
+                  FROM : in POSITIVE_COUNT) is
+      Idx : Integer := Require_Open(FILE);
+   begin
+      Read_At(Idx, ITEM, FROM);
+   end READ;
+
+   procedure READ(FILE : in FILE_TYPE; ITEM : out ELEMENT_TYPE) is
+      Idx : Integer := Require_Open(FILE);
+   begin
+      Read_At(Idx, ITEM, FCBs(Idx).Index);
+   end READ;
+
+   procedure Write_At(Idx : Integer; ITEM : in ELEMENT_TYPE;
+                      TO : in POSITIVE_COUNT) is
+      Item_Bytes : Integer := (ITEM'SIZE + 7) / 8;
+      Ignore     : Integer;
+   begin
+      if FCBs(Idx).Mode = IN_FILE then raise MODE_ERROR; end if;
+      Establish_Slot(Idx, Item_Bytes);
+      Seek_To(Idx, TO);
+      if C_Fwrite(Item_Bytes'Address, 4, 1, FCBs(Idx).Stream) /= 1 then
+         raise DEVICE_ERROR;
+      end if;
+      if C_Fwrite(ITEM'Address, Item_Bytes, 1, FCBs(Idx).Stream) /= 1 then
+         raise DEVICE_ERROR;
+      end if;
+      Ignore := C_Fflush(FCBs(Idx).Stream);  -- make it visible to other handles
+      FCBs(Idx).Index := TO + 1;
+   end Write_At;
+
+   procedure WRITE(FILE : in FILE_TYPE; ITEM : in ELEMENT_TYPE;
+                   TO : in POSITIVE_COUNT) is
+      Idx : Integer := Require_Open(FILE);
+   begin
+      Write_At(Idx, ITEM, TO);
+   end WRITE;
+
+   procedure WRITE(FILE : in FILE_TYPE; ITEM : in ELEMENT_TYPE) is
+      Idx : Integer := Require_Open(FILE);
+   begin
+      Write_At(Idx, ITEM, FCBs(Idx).Index);
+   end WRITE;
+
+   procedure SET_INDEX(FILE : in FILE_TYPE; TO : in POSITIVE_COUNT) is
+      Idx : Integer := Require_Open(FILE);
+   begin
+      FCBs(Idx).Index := TO;
+   end SET_INDEX;
+
+   function INDEX(FILE : in FILE_TYPE) return POSITIVE_COUNT is
+      Idx : Integer := Require_Open(FILE);
+   begin
+      return FCBs(Idx).Index;
+   end INDEX;
+
+   function SIZE(FILE : in FILE_TYPE) return COUNT is
+      Idx : Integer := Require_Open(FILE);
+   begin
+      return Element_Count(Idx);
+   end SIZE;
+
+   function END_OF_FILE(FILE : in FILE_TYPE) return Boolean is
+      Idx : Integer := Require_Open(FILE);
+   begin
+      if FCBs(Idx).Mode = OUT_FILE then raise MODE_ERROR; end if;
+      return COUNT(FCBs(Idx).Index) > Element_Count(Idx);
+   end END_OF_FILE;
+
+end DIRECT_IO;
+
+GENERIC
+TYPE ELEMENT_TYPE IS PRIVATE;
+PACKAGE SEQUENTIAL_IO IS
+TYPE FILE_TYPE IS LIMITED PRIVATE;
+TYPE FILE_MODE IS(IN_FILE,OUT_FILE);
+STATUS_ERROR:EXCEPTION;
+MODE_ERROR:EXCEPTION;
+NAME_ERROR:EXCEPTION;
+USE_ERROR:EXCEPTION;
+DEVICE_ERROR:EXCEPTION;
+END_ERROR:EXCEPTION;
+DATA_ERROR:EXCEPTION;
+PROCEDURE CREATE(FILE:IN OUT FILE_TYPE;MODE:IN FILE_MODE:=OUT_FILE;NAME:IN STRING:="";FORM:IN STRING:="");
+PROCEDURE OPEN(FILE:IN OUT FILE_TYPE;MODE:IN FILE_MODE;NAME:IN STRING;FORM:IN STRING:="");
+PROCEDURE CLOSE(FILE:IN OUT FILE_TYPE);
+PROCEDURE DELETE(FILE:IN OUT FILE_TYPE);
+PROCEDURE RESET(FILE:IN OUT FILE_TYPE;MODE:IN FILE_MODE);
+PROCEDURE RESET(FILE:IN OUT FILE_TYPE);
+FUNCTION MODE(FILE:IN FILE_TYPE)RETURN FILE_MODE;
+FUNCTION NAME(FILE:IN FILE_TYPE)RETURN STRING;
+FUNCTION FORM(FILE:IN FILE_TYPE)RETURN STRING;
+FUNCTION IS_OPEN(FILE:IN FILE_TYPE)RETURN BOOLEAN;
+PROCEDURE READ(FILE:IN FILE_TYPE;ITEM:OUT ELEMENT_TYPE);
+PROCEDURE WRITE(FILE:IN FILE_TYPE;ITEM:IN ELEMENT_TYPE);
+FUNCTION END_OF_FILE(FILE:IN FILE_TYPE)RETURN BOOLEAN;
+PRIVATE
+TYPE FILE_TYPE IS RECORD
+   HANDLE : INTEGER := 0;
+END RECORD;
+END SEQUENTIAL_IO;
+
+with SYSTEM;
+
+package body SEQUENTIAL_IO is
+
+   -- Real external files, mirroring TEXT_IO: each ELEMENT_TYPE value is read
+   -- and written as its raw representation through the C stdio library, so a
+   -- file created, written, closed and reopened by name returns its contents,
+   -- and DELETE removes the external file (RM 14.2).
+   function C_Fopen(Name : SYSTEM.ADDRESS; Mode : SYSTEM.ADDRESS) return SYSTEM.ADDRESS;
+   pragma Import(C, C_Fopen, "fopen");
+   function C_Fclose(Stream : SYSTEM.ADDRESS) return Integer;
+   pragma Import(C, C_Fclose, "fclose");
+   function C_Fread(Ptr : SYSTEM.ADDRESS; Size : Integer; Count : Integer;
+                    Stream : SYSTEM.ADDRESS) return Integer;
+   pragma Import(C, C_Fread, "fread");
+   function C_Fwrite(Ptr : SYSTEM.ADDRESS; Size : Integer; Count : Integer;
+                     Stream : SYSTEM.ADDRESS) return Integer;
+   pragma Import(C, C_Fwrite, "fwrite");
+   function C_Remove(Name : SYSTEM.ADDRESS) return Integer;
+   pragma Import(C, C_Remove, "remove");
+   function C_Fseek(Stream : SYSTEM.ADDRESS; Offset : Integer; Whence : Integer) return Integer;
+   pragma Import(C, C_Fseek, "fseek");
+   function C_Fflush(Stream : SYSTEM.ADDRESS) return Integer;
+   pragma Import(C, C_Fflush, "fflush");
+   function C_Fgetc(Stream : SYSTEM.ADDRESS) return Integer;
+   pragma Import(C, C_Fgetc, "fgetc");
+   function C_Ungetc(C : Integer; Stream : SYSTEM.ADDRESS) return Integer;
+   pragma Import(C, C_Ungetc, "ungetc");
+   function C_Tmpfile return SYSTEM.ADDRESS;
+   pragma Import(C, C_Tmpfile, "tmpfile");
+
+   Null_Address : constant SYSTEM.ADDRESS := SYSTEM.NULL_ADDRESS;
+   Seek_Set     : constant Integer := 0;
+
+   type FCB is record
+      Stream   : SYSTEM.ADDRESS := Null_Address;
+      Mode     : FILE_MODE      := IN_FILE;
+      Is_Open  : Boolean        := False;
+      Name_Len : Natural        := 0;
+      Name     : String(1..1024);
+   end record;
+   FCBs     : array(1..99) of FCB;
+
+   function Is_Open_Index(Idx : Integer) return Boolean is
+   begin
+      return Idx >= 1 and then Idx <= 99 and then FCBs(Idx).Is_Open;
+   end Is_Open_Index;
+
+   -- Raise STATUS_ERROR unless FILE denotes an open external file (RM 14.4).
+   function Require_Open(FILE : FILE_TYPE) return Integer is
+      Idx : Integer := FILE.Handle;
+   begin
+      if not Is_Open_Index(Idx) then raise STATUS_ERROR; end if;
+      return Idx;
+   end Require_Open;
+
+   procedure To_C_String(S : String; Buffer : out String) is
+      J : Integer := 1;
+   begin
+      for I in S'First .. S'Last loop
+         Buffer(J) := S(I);
+         J := J + 1;
+      end loop;
+      Buffer(J) := Character'Val(0);
+   end To_C_String;
+
+   -- CREATE and OPEN both take a fresh control block for FILE. CREATE truncates
+   -- (or makes an anonymous temporary when NAME is null); OPEN requires the
+   -- external file to already exist. RM 14.2.1 forbids either on an already-open
+   -- FILE.
+   procedure Attach(FILE : in out FILE_TYPE; MODE : in FILE_MODE;
+                    NAME : in String; Creating : in Boolean) is
+      Idx      : Integer;
+      Name_Buf : String(1..1026);
+      Mode_Str : String(1..4);
+   begin
+      if Is_Open_Index(FILE.Handle) then raise STATUS_ERROR; end if;
+      -- Reuse a closed slot: a CLOSE/DELETE frees its FCB, so USE_ERROR is
+      -- raised only when all slots are actually open (RM 14.2.1), not after
+      -- 99 cumulative opens as a monotonic counter would (ce2117a).
+      Idx := 0;
+      for J in FCBs'Range loop
+         if not FCBs(J).Is_Open then Idx := J; exit; end if;
+      end loop;
+      if Idx = 0 then raise USE_ERROR; end if;
+      if not Creating and then NAME'Length = 0 then raise NAME_ERROR; end if;
+
+      if Creating then
+         Mode_Str := ('w', '+', 'b', Character'Val(0));   -- truncate, read/write
+      elsif MODE = IN_FILE then
+         Mode_Str := ('r', 'b', Character'Val(0), Character'Val(0));
+      else
+         Mode_Str := ('r', '+', 'b', Character'Val(0));   -- must exist, read/write
+      end if;
+
+      if NAME'Length > 0 then
+         To_C_String(NAME, Name_Buf);
+         FCBs(Idx).Stream := C_Fopen(Name_Buf'Address, Mode_Str'Address);
+         if FCBs(Idx).Stream = Null_Address then
+            if Creating then raise USE_ERROR; else raise NAME_ERROR; end if;
+         end if;
+         FCBs(Idx).Name_Len := NAME'Length;
+         FCBs(Idx).Name(1..NAME'Length) := NAME;
+      else
+         FCBs(Idx).Stream := C_Tmpfile;
+         if FCBs(Idx).Stream = Null_Address then raise USE_ERROR; end if;
+         FCBs(Idx).Name_Len := 0;
+      end if;
+
+      FCBs(Idx).Mode    := MODE;
+      FCBs(Idx).Is_Open := True;
+      FILE := (Handle => Idx);
+   end Attach;
+
+   procedure CREATE(FILE : in out FILE_TYPE; MODE : in FILE_MODE := OUT_FILE;
+                    NAME : in String := ""; FORM : in String := "") is
+   begin
+      Attach(FILE, MODE, NAME, Creating => True);
+   end CREATE;
+
+   procedure OPEN(FILE : in out FILE_TYPE; MODE : in FILE_MODE;
+                  NAME : in String; FORM : in String := "") is
+   begin
+      Attach(FILE, MODE, NAME, Creating => False);
+   end OPEN;
+
+   procedure CLOSE(FILE : in out FILE_TYPE) is
+      Idx : Integer := Require_Open(FILE);
+      Ignore : Integer;
+   begin
+      Ignore := C_Fclose(FCBs(Idx).Stream);
+      FCBs(Idx).Stream  := Null_Address;
+      FCBs(Idx).Is_Open := False;
+      FILE := (Handle => 0);
+   end CLOSE;
+
+   procedure DELETE(FILE : in out FILE_TYPE) is
+      Idx : Integer := Require_Open(FILE);
+      Name_Buf : String(1..1026);
+      Ignore : Integer;
+   begin
+      Ignore := C_Fclose(FCBs(Idx).Stream);
+      if FCBs(Idx).Name_Len > 0 then
+         To_C_String(FCBs(Idx).Name(1..FCBs(Idx).Name_Len), Name_Buf);
+         Ignore := C_Remove(Name_Buf'Address);
+      end if;
+      FCBs(Idx).Stream  := Null_Address;
+      FCBs(Idx).Is_Open := False;
+      FILE := (Handle => 0);
+   end DELETE;
+
+   procedure RESET(FILE : in out FILE_TYPE; MODE : in FILE_MODE) is
+      Idx : Integer := Require_Open(FILE);
+      Ignore : Integer;
+   begin
+      Ignore := C_Fflush(FCBs(Idx).Stream);
+      Ignore := C_Fseek(FCBs(Idx).Stream, 0, Seek_Set);
+      FCBs(Idx).Mode := MODE;
+   end RESET;
+
+   procedure RESET(FILE : in out FILE_TYPE) is
+   begin
+      RESET(FILE, MODE(FILE));
+   end RESET;
+
+   function MODE(FILE : in FILE_TYPE) return FILE_MODE is
+      Idx : Integer := Require_Open(FILE);
+   begin
+      return FCBs(Idx).Mode;
+   end MODE;
+
+   function NAME(FILE : in FILE_TYPE) return String is
+      Idx : Integer := Require_Open(FILE);
+   begin
+      -- A temporary file created without a name has no external name to
+      -- return, so NAME raises USE_ERROR (RM 14.2.1).
+      if FCBs(Idx).Name_Len = 0 then raise USE_ERROR; end if;
+      return FCBs(Idx).Name(1..FCBs(Idx).Name_Len);
+   end NAME;
+
+   function FORM(FILE : in FILE_TYPE) return String is
+      Idx : Integer := Require_Open(FILE);
+   begin
+      return "";
+   end FORM;
+
+   function IS_OPEN(FILE : in FILE_TYPE) return Boolean is
+   begin
+      return Is_Open_Index(FILE.Handle);
+   end IS_OPEN;
+
+   -- Each element is framed by its byte length. For a constrained
+   -- ELEMENT_TYPE the length is the same for every element; for an
+   -- unconstrained one (RM 14.2.2 leaves support optional) it is the
+   -- written object's own size, which is what lets values of differing
+   -- lengths share one file and be read back into equal-sized objects.
+   procedure READ(FILE : in FILE_TYPE; ITEM : out ELEMENT_TYPE) is
+      Idx : Integer := Require_Open(FILE);
+      Stored_Bytes : Integer;
+      Item_Bytes   : constant Integer := (ITEM'SIZE + 7) / 8;
+   begin
+      if FCBs(Idx).Mode = OUT_FILE then raise MODE_ERROR; end if;
+      if C_Fread(Stored_Bytes'Address, 4, 1, FCBs(Idx).Stream) /= 1 then
+         raise END_ERROR;
+      end if;
+      if Stored_Bytes /= Item_Bytes then
+         raise DATA_ERROR;
+      end if;
+      if C_Fread(ITEM'Address, Stored_Bytes, 1, FCBs(Idx).Stream) /= 1 then
+         raise END_ERROR;
+      end if;
+   end READ;
+
+   procedure WRITE(FILE : in FILE_TYPE; ITEM : in ELEMENT_TYPE) is
+      Idx : Integer := Require_Open(FILE);
+      -- Addressed for the header write, so it must have storage: a
+      -- constant may live only as a folded value.
+      Item_Bytes : Integer := (ITEM'SIZE + 7) / 8;
+   begin
+      if FCBs(Idx).Mode = IN_FILE then raise MODE_ERROR; end if;
+      if C_Fwrite(Item_Bytes'Address, 4, 1, FCBs(Idx).Stream) /= 1 then
+         raise DEVICE_ERROR;
+      end if;
+      if C_Fwrite(ITEM'Address, Item_Bytes, 1, FCBs(Idx).Stream) /= 1 then
+         raise DEVICE_ERROR;
+      end if;
+   end WRITE;
+
+   function END_OF_FILE(FILE : in FILE_TYPE) return Boolean is
+      Idx : Integer := Require_Open(FILE);
+      C   : Integer;
+      Ignore : Integer;
+   begin
+      if FCBs(Idx).Mode = OUT_FILE then raise MODE_ERROR; end if;
+      C := C_Fgetc(FCBs(Idx).Stream);
+      if C = -1 then
+         return True;
+      else
+         Ignore := C_Ungetc(C, FCBs(Idx).Stream);
+         return False;
+      end if;
+   end END_OF_FILE;
+
+end SEQUENTIAL_IO;
+
+GENERIC
+TYPE SOURCE IS LIMITED PRIVATE;
+TYPE TARGET IS LIMITED PRIVATE;
+FUNCTION UNCHECKED_CONVERSION(S:SOURCE)RETURN TARGET;
+PRAGMA CONVENTION(INTRINSIC,UNCHECKED_CONVERSION);
+PRAGMA PURE(UNCHECKED_CONVERSION);
+
+GENERIC
+TYPE OBJECT IS LIMITED PRIVATE;
+TYPE NAME IS ACCESS OBJECT;
+PROCEDURE UNCHECKED_DEALLOCATION(X:IN OUT NAME);
+PRAGMA CONVENTION(INTRINSIC,UNCHECKED_DEALLOCATION);
+PRAGMA PURE(UNCHECKED_DEALLOCATION);
+
+
+PACKAGE MACHINE_CODE IS
+
+   TYPE ASSEMBLER_INSERTION
+          (TEMPLATE_LENGTH : POSITIVE;
+           CLOBBER_LENGTH  : NATURAL) IS
+      RECORD
+         TEMPLATE : STRING (1 .. TEMPLATE_LENGTH);
+         CLOBBERS : STRING (1 .. CLOBBER_LENGTH);
+      END RECORD;
+
+   TYPE INTEL_INSERTION
+          (TEMPLATE_LENGTH : POSITIVE;
+           CLOBBER_LENGTH  : NATURAL) IS
+      RECORD
+         TEMPLATE : STRING (1 .. TEMPLATE_LENGTH);
+         CLOBBERS : STRING (1 .. CLOBBER_LENGTH);
+      END RECORD;
+
+   TYPE INTERMEDIATE_INSERTION
+          (TEXT_LENGTH : POSITIVE) IS
+      RECORD
+         TEXT : STRING (1 .. TEXT_LENGTH);
+      END RECORD;
+
+END MACHINE_CODE;
+

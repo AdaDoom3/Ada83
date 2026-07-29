@@ -4,9 +4,11 @@ This file provides guidance to Automated Agents when working with code in this r
 
 ## Overview
 
-Single-file Ada 83 (ANSI/MIL-STD-1815A) compiler that emits LLVM IR. The entire
-compiler lives in `ada83.c` (~42k lines). Runtime packages live in `rts/`
-(Ada source), and the ACATS conformance suite lives in `acats/`.
+Single-file Ada 83 (ANSI/MIL-STD-1815A) compiler that builds native
+executables through a runtime-loaded libLLVM (and emits LLVM IR with `--ir`).
+The entire compiler lives in `ada83.c` (~42k lines). The runtime library is
+the single multi-unit source file `runtime.ada`, and the ACATS conformance
+suite lives in `acats/`.
 
 ## Note to AGENT
 
@@ -56,21 +58,26 @@ make clean                 # also removes test_results/, acats_logs/, acats/repo
 make clean-test            # keeps the compiler binary
 ```
 
-Compile and run a program (pipeline is `.ada` → `.ll` → link → execute):
+Compile and run a program (default pipeline is `.ada` → native executable via
+a runtime-loaded libLLVM; `--ir` emits textual LLVM IR instead):
 
 ```
-./ada83 file.ada -o out.ll
-./ada83 file.ada                 # to stdout
-./ada83 a.ada b.ada c.ada        # parallel multi-file compile (fork per file)
-./ada83 -I /extra/path f.ada     # explicit -I; searched before auto paths
-./ada83 -g a.ada                 # add debug Emit locations in the IR ex: `; @ Emit_Function_Header:35289`
-lli out.ll                       # interpret directly
-llvm-link -o prog.bc a.ll rts/report.ll && lli prog.bc   # for WITH'd packages
+./ada83 file.ada -o prog             # native executable (the default mode)
+./ada83 file.ada                     # native; executable named after the input
+./ada83 main.ada extra.ll -o prog    # native, linking extra IR modules in
+./ada83 --ir file.ada -o out.ll      # emit LLVM IR
+./ada83 --ir file.ada                # IR to stdout
+./ada83 --ir a.ada b.ada c.ada       # parallel multi-file IR compile (fork per file)
+./ada83 -I /extra/path f.ada         # explicit -I; searched before auto paths
+./ada83 -g --ir a.ada                # debug Emit locations, ex: `; @ Emit_Function_Header:35289`
+lli out.ll                           # interpret IR directly
 ```
 
-Include-path auto-discovery (no `-I` needed for the common case): `<exe_dir>/rts`
-(resolved via `/proc/self/exe`), the input file's directory, then `.`. Explicit
-`-I` paths search first.
+The runtime library is a single multi-unit source file, `runtime.ada`, found
+next to the executable (via `/proc/self/exe`) or on the include path; package
+SYSTEM is generated inside the compiler from the target constants. Include-path
+auto-discovery: the input file's directory, then `.`; explicit `-I` paths
+search first.
 
 ACATS test harness (parallel via `xargs`). Each invocation writes into its own
 timestamped subfolder pair — `test_results/<label>-<timestamp>-<pid>/` (IR,
@@ -79,17 +86,20 @@ so repeated or concurrent runs never overwrite each other; the header of each
 run prints both paths:
 
 ```
-bash run_acats.sh g a            # all class A (acceptance) tests
-bash run_acats.sh g b            # class B (illegality)
-bash run_acats.sh g c            # class C (executable) - default if blank
-bash run_acats.sh g d|e|l        # numerics / inspection / post-compilation
-bash run_acats.sh q c32          # one group (e.g. c32, c34)
-NPROC=4 bash run_acats.sh g c    # cap parallelism (defaults to `nproc`)
+bash test.sh run a            # all class A (acceptance) tests
+bash test.sh run b            # class B (illegality)
+bash test.sh run c            # class C (executable)
+bash test.sh run all          # every class
+bash test.sh run c32          # one group (e.g. c32, c34)
+bash test.sh check            # run + diff vs acats.baseline; exit 1 on regression
+bash test.sh bless            # run + write the baseline
+NPROC=4 bash test.sh run c    # cap parallelism (defaults to `nproc`)
 ```
 
-`run_acats.sh` rebuilds `ada83` when `ada83.c` is newer, and always recompiles
-`acats/report.adb` → `acats/report.ll` before running. Tests whose basename ends
-in a digit (not `m`) are treated as multi-file fragments and skipped.
+`test.sh` rebuilds `ada83` when `ada83.c` is newer, and always recompiles
+`acats/report.adb` to a run-private `report.ll` before running. Tests whose
+basename ends in a digit (not `m`) are treated as multi-file fragments and
+skipped.
 
 Per-class pass criteria the harness applies:
 - A: compiles, links, and `lli` exit 0
@@ -158,14 +168,15 @@ declaration in the §N spec block and the definition in the §N body block. The
 § numbers in the table of contents (top of the file) drive navigation; keep them
 in sync if you add a section.
 
-### Runtime library (`rts/`)
+### Runtime library (`runtime.ada`)
 
-Ada 83 standard packages implemented in Ada itself: `text_io`, `calendar`,
-`direct_io`, `sequential_io`, `system`, `unchecked_conversion`,
-`unchecked_deallocation`, `io_exceptions`, `low_level_io`. These are picked up
-automatically via the `<exe_dir>/rts` include path. The `.gitignore`
-whitelists `rts/rt.ll` and `rts/rt_wrappers.ll` against the global `*.ll`
-ignore.
+Ada 83 standard packages implemented in Ada itself, all in one multi-unit
+source file: `text_io`, `calendar`, `direct_io`, `sequential_io`,
+`unchecked_conversion`, `unchecked_deallocation`, `io_exceptions`,
+`low_level_io`, `machine_code`. It is found next to the compiler executable
+(via `/proc/self/exe`) or on the include path. Package `SYSTEM` is not in the
+file: the compiler generates its source from the target constants
+(`System_Package_Source` in §17), since its contents are target-dependent.
 
 ### Reference material (`reference/`)
 

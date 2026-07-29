@@ -14,8 +14,6 @@ test_summary.txt
 test_output.txt
 X*.TMP
 *.ll
-!rts/rt.ll
-!rts/rt_wrappers.ll
 *.bc
 T*.ll
 

@@ -57,7 +57,7 @@ trap 'rm -f "$REPORT_LL" "${REPORT_LL%.ll}.ali"' EXIT
 #  shared acats/report.ali is the same defect as a shared report.ll was:
 #  concurrent runs read each other's library and score tests against a
 #  unit they did not compile.
-./ada83 acats/report.adb -o "$REPORT_LL" >/dev/null 2>&1 || {
+./ada83 --ir acats/report.adb -o "$REPORT_LL" >/dev/null 2>&1 || {
     echo "FATAL: cannot compile acats/report.adb"; exit 1; }
 
 # ── Helpers ───────────────────────────────────────────────────────────────
@@ -104,7 +104,7 @@ compile_set(){
     COMPILE_FAILED=""
     for part in "${COMPILE_FILES[@]}"; do
         pn=$(basename "$part" .ada)
-        if ! timeout 4 ./ada83 "$part" -o $lib/$pn.ll >/dev/null 2>$LOGS_DIR/$n.err; then
+        if ! timeout 4 ./ada83 --ir "$part" -o $lib/$pn.ll >/dev/null 2>$LOGS_DIR/$n.err; then
             # ACATS ships intentionally-erroneous fragments (ca3009a, …):
             # a rejected submission updates nothing and processing goes on.
             # Only the main unit failing to compile fails the set.
@@ -210,7 +210,7 @@ run_continuity_creators(){
     for c in $(grep -oiE 'legal_file_name[ ]*\([^)]*"ce[0-9a-z]+"' "acats/$reader.ada" 2>/dev/null \
                | grep -oiE '"ce[0-9a-z]+"' | tr -d '"' | tr 'A-Z' 'a-z' | sort -u); do
         [[ $c == "$self" || ! -f acats/$c.ada ]] && continue
-        ./ada83 "acats/$c.ada" -o "$lib/$c.ll" >/dev/null 2>&1 || continue
+        ./ada83 --ir "acats/$c.ada" -o "$lib/$c.ll" >/dev/null 2>&1 || continue
         timeout "$LINK_TIMEOUT" llvm-link -o "$lib/$c.bc" "$lib/$c.ll" \
             "$REPORT_LL" >/dev/null 2>&1 || continue
         ( cd "$lib" && exec timeout "$TEST_TIMEOUT" lli "$c.bc" ) >/dev/null 2>&1 || true
@@ -330,7 +330,7 @@ run_one(){
             #  are two readings of one run, and submitting the same unit
             #  to the library twice would make the second submission
             #  obsolete the first.
-            if timeout 4 ./ada83 "$part" -o "$lib/${pn%.ada}.ll" \
+            if timeout 4 ./ada83 --ir "$part" -o "$lib/${pn%.ada}.ll" \
                  >/dev/null 2>$LOGS_DIR/$n.$pn.err; then :; else
                 rejected=yes
             fi
