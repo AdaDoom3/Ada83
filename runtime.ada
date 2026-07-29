@@ -271,7 +271,6 @@ package body TEXT_IO is
    Next_FCB        : Integer := 4;
 
    Null_Address : constant SYSTEM.ADDRESS := SYSTEM.NULL_ADDRESS;
-   function "=" (Left, Right : SYSTEM.ADDRESS) return BOOLEAN renames SYSTEM."=";
 
    -- S with a terminating null, for a C entry point that takes a string.
    procedure To_C_String(S : String; Buffer : out String) is
@@ -2800,7 +2799,6 @@ package body DIRECT_IO is
    pragma Import(C, C_Tmpfile, "tmpfile");
 
    Null_Address : constant SYSTEM.ADDRESS := SYSTEM.NULL_ADDRESS;
-   function "=" (Left, Right : SYSTEM.ADDRESS) return BOOLEAN renames SYSTEM."=";
    Seek_Set     : constant Integer := 0;
    Seek_End     : constant Integer := 2;
 
@@ -3186,7 +3184,6 @@ package body SEQUENTIAL_IO is
    pragma Import(C, C_Tmpfile, "tmpfile");
 
    Null_Address : constant SYSTEM.ADDRESS := SYSTEM.NULL_ADDRESS;
-   function "=" (Left, Right : SYSTEM.ADDRESS) return BOOLEAN renames SYSTEM."=";
    Seek_Set     : constant Integer := 0;
 
    type FCB is record

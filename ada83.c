@@ -13790,6 +13790,44 @@ Symbol *Disambiguate(Interp_List *interps, Type *context_type,
   Check_Aggregate_Type_Is_Determined (interps, args, best);
   Check_Name_Is_Unambiguous (interps, args, construct);
 
+  if (unranked_count > 1 and construct.filename and
+      Instantiating_Template_Count == 0) {
+    Symbol *tied[MAX_INTERPRETATIONS];
+    Type   *tied_type[MAX_INTERPRETATIONS];
+    u32 tied_count = 0;
+    for (u32 i = 0; i < interps->count; i++) {
+      if (Score_Interpretation (&interps->items[i], context_type, args)
+            != best_score)
+        continue;
+      Symbol *meaning = interps->items[i].nam;
+      if (not meaning or not interps->items[i].typ)
+        continue;
+      if (context_type and
+          Type_Base (interps->items[i].typ) != Type_Base (context_type))
+        continue;
+      bool counted = false;
+      for (u32 k = 0; k < tied_count and not counted; k++)
+        counted = Symbols_Are_One_Declaration (tied[k], meaning) or
+                  Symbol_Hides (tied[k], meaning) or
+                  Symbol_Hides (meaning, tied[k]);
+      if (not counted and tied_count < MAX_INTERPRETATIONS) {
+        tied_type[tied_count] = interps->items[i].typ;
+        tied[tied_count++]    = meaning;
+      }
+    }
+    bool same_result_pair = false;
+    for (u32 i = 0; i < tied_count and not same_result_pair; i++)
+      for (u32 k = i + 1; k < tied_count and not same_result_pair; k++)
+        same_result_pair =
+          Type_Base (tied_type[i]) == Type_Base (tied_type[k]);
+    if (same_result_pair)
+      Report_Error (construct,
+                    "'%.*s' is ambiguous: more than one declaration of it "
+                    "is a possible interpretation here and the context does "
+                    "not determine which",
+                    (int) tied[0]->name.length, tied[0]->name.data);
+  }
+
   if (unranked_count > 1 and context_type) {
     for (u32 i = 0; i < interps->count; i++) {
       if (interps->items[i].typ == context_type) {
@@ -15965,6 +16003,7 @@ bool Predefined_Operator_Interp_Is_Visible (Type *operand_type) {
                                            SYMBOL_CLASS_GENERIC_UNIT))
     package = package->parent;
   if (not package or package->kind != SYMBOL_PACKAGE) return true;
+  if (package->is_predefined_unit) return true;
   if (Inside_Region_Of (package)) return true;
   return Package_Is_Use_Visible (package);
 }
@@ -16664,6 +16703,42 @@ Type *Resolve_In_Context (Node *n, Type *ctx) {
   if (not n) return NULL;
   if (n->kind == NK_IDENTIFIER) {
     if (n->interps and n->interps->count >= 1) {
+      if (ctx and n->interps->count > 1) {
+        Interp_List filtered = Empty_Interp_List;
+        for (u32 i = 0; i < n->interps->count; i++) {
+          Interpretation *candidate = &n->interps->items[i];
+          if (candidate->nam and Symbol_Is_Overloadable (candidate->nam) and
+              candidate->typ and
+              Type_Base (candidate->typ) == Type_Base (ctx))
+            Interp_Add (&filtered, candidate->nam, candidate->typ,
+                        candidate->opnd[0], candidate->opnd[1]);
+        }
+        u32 kept = 0;
+        for (u32 i = 0; i < filtered.count; i++) {
+          Symbol *inner = Ultimate_Declaration (filtered.items[i].nam);
+          bool hidden = false;
+          for (u32 k = 0; k < filtered.count and not hidden; k++) {
+            if (k == i) continue;
+            Symbol *other = Ultimate_Declaration (filtered.items[k].nam);
+            hidden = inner and other and
+              inner->defining_scope != other->defining_scope and
+              other->defining_scope and inner->defining_scope and
+              other->defining_scope->nesting_level >
+                inner->defining_scope->nesting_level and
+              Symbols_Are_Homographs (inner, other);
+            if (not hidden and inner and other and
+                inner->kind == SYMBOL_LITERAL and
+                other->kind == SYMBOL_FUNCTION and
+                other->parameter_count == 0 and
+                Type_Base (filtered.items[k].typ) ==
+                  Type_Base (filtered.items[i].typ))
+              hidden = true;
+          }
+          if (not hidden) filtered.items[kept++] = filtered.items[i];
+        }
+        filtered.count = kept;
+        Check_Name_Is_Unambiguous (&filtered, NULL, n->location);
+      }
       Interpretation *pick = Select_Interp (n->interps, ctx);
       if (pick) { n->symbol = pick->nam; n->type = pick->typ; }
     }
@@ -18174,7 +18249,82 @@ void Resolve_Array_Aggregate_Choices (Node *item,
   }
 }
 
+u32 Distinct_Overloadable_Meanings (String_Slice name) {
+  Interp_List candidates;
+  Collect_Interpretations (name, &candidates);
+  Symbol *distinct[MAX_INTERPRETATIONS];
+  u32 count = 0;
+  for (u32 i = 0; i < candidates.count; i++) {
+    Symbol *meaning = Ultimate_Declaration (candidates.items[i].nam);
+    if (not meaning or not Symbol_Is_Overloadable (meaning)) return 0;
+    bool counted = false;
+    for (u32 k = 0; k < count and not counted; k++)
+      counted = Symbols_Are_One_Declaration (distinct[k], meaning);
+    if (not counted and count < MAX_INTERPRETATIONS)
+      distinct[count++] = meaning;
+  }
+  for (u32 i = 0; i < count; i++) {
+    bool hidden = false;
+    for (u32 k = 0; k < count and not hidden; k++) {
+      if (k == i) continue;
+      hidden = distinct[i]->defining_scope and distinct[k]->defining_scope and
+        distinct[i]->defining_scope != distinct[k]->defining_scope and
+        distinct[k]->defining_scope->nesting_level >
+          distinct[i]->defining_scope->nesting_level and
+        Symbols_Are_Homographs (distinct[i], distinct[k]);
+    }
+    if (hidden) {
+      for (u32 k = i + 1; k < count; k++) distinct[k - 1] = distinct[k];
+      count--;
+      i--;
+    }
+  }
+  return count;
+}
+
+void Require_Unambiguous_Attribute_Prefix (Node *prefix) {
+  if (not prefix) return;
+  if (prefix->kind == NK_IDENTIFIER) {
+    if (Distinct_Overloadable_Meanings (prefix->string_val.text) > 1)
+      Report_Node_Error (prefix,
+                    "the meaning of the prefix of an attribute must be "
+                    "determinable independently of the attribute; '%.*s' has "
+                    "more than one possible meaning here",
+                    (int) prefix->string_val.text.length,
+                    prefix->string_val.text.data);
+    return;
+  }
+  if (prefix->kind == NK_SELECTED and prefix->selected.prefix and
+      prefix->selected.prefix->kind == NK_IDENTIFIER) {
+    String_Slice name = prefix->selected.prefix->string_val.text;
+    Interp_List candidates;
+    Collect_Interpretations (name, &candidates);
+    u32 admitting = 0;
+    for (u32 i = 0; i < candidates.count; i++) {
+      Symbol *meaning = Ultimate_Declaration (candidates.items[i].nam);
+      if (not meaning or meaning->kind != SYMBOL_FUNCTION) continue;
+      Type *view = meaning->return_type;
+      Type *designated = Type_Designated (view);
+      if (designated) view = designated;
+      view = view ? Type_Base (view) : NULL;
+      if (view and Type_Is_Record (view) and
+          Find_Record_Component (view, prefix->selected.selector) >= 0)
+        admitting++;
+    }
+    if (admitting > 1)
+      Report_Node_Error (prefix,
+                    "the meaning of the prefix of an attribute must be "
+                    "determinable independently of the attribute; more than "
+                    "one meaning of '%.*s' admits the component '%.*s'",
+                    (int) name.length, name.data,
+                    (int) prefix->selected.selector.length,
+                    prefix->selected.selector.data);
+  }
+}
+
 Type *Resolve_Attribute (Node *node) {
+
+  Require_Unambiguous_Attribute_Prefix (node->attribute.prefix);
 
   if (node->attribute.kind == ATTRIBUTE_ASM_INPUT or
       node->attribute.kind == ATTRIBUTE_ASM_OUTPUT)
@@ -24222,7 +24372,8 @@ void Resolve_Declaration (Node *node) {
           continue;
         }
 
-        Scope_Note_Used_Package (sm->current_scope, pkg_sym);
+        Scope_Note_Used_Package (sm->current_scope,
+                                 Ultimate_Declaration (pkg_sym));
 
         if (pkg_sym->exported_count > 0) {
           for (u32 j = 0; j < pkg_sym->exported_count; j++) {
@@ -25555,6 +25706,25 @@ Type *Parameter_Subtype_In_Force (Node *specification,
         return position < profile->parameter_count
                  ? profile->parameters[position].param_type : NULL;
       position += item->param_spec.names.count;
+    }
+  }
+  Node *renamed = specification->kind == NK_SUBPROGRAM_RENAMING
+    ? specification->subprogram_spec.renamed : NULL;
+  if (renamed and renamed->kind == NK_ATTRIBUTE) {
+    Node *prefix = renamed->attribute.prefix;
+    Type *prefix_type = prefix
+      ? (Symbol_Denotes_A_Type_Mark (prefix->symbol) ? prefix->symbol->type
+                                                     : prefix->type)
+      : NULL;
+    switch (renamed->attribute.kind) {
+      case ATTRIBUTE_VALUE: return sm->type_string;
+      case ATTRIBUTE_IMAGE:
+      case ATTRIBUTE_POS:
+      case ATTRIBUTE_SUCC:
+      case ATTRIBUTE_PRED:  return prefix_type ? Type_Base (prefix_type)
+                                               : NULL;
+      case ATTRIBUTE_VAL:   return sm->type_universal_integer;
+      default:              break;
     }
   }
   Node *written = parameter->param_spec.param_type;
@@ -57841,6 +58011,7 @@ void Load_Package_Spec (String_Slice name, char *src) {
       Type *pkg_type = Type_New (TYPE_PACKAGE, pkg->package_spec.name);
       pkg_sym->type = pkg_type;
       pkg_sym->declaration = pkg;
+      pkg_sym->is_predefined_unit = predefined_unit;
       Symbol_Add (pkg_sym);
       pkg->symbol = pkg_sym;
 
