@@ -48,11 +48,25 @@ mkdir -p test_results acats_logs
 # ── Rebuild compiler if source is newer than binary ───────────────────
 if [[ ! -f ./ada83 ]] || [[ ada83.c -nt ./ada83 ]]; then
     echo "Rebuilding ada83..."
-    make -s compiler || { echo "FATAL: compiler build failed"; exit 1; }
+    make -s ada83 || { echo "FATAL: compiler build failed"; exit 1; }
 fi
 
 # ── Compile ACATS report package (always rebuild for freshness) ───────
-./ada83 acats/report.adb > acats/report.ll 2>/dev/null || {
+#  Into a path private to this invocation.  Every test links report.ll,
+#  and a shared acats/report.ll is a file two concurrent runs both
+#  rewrite -- the reader of a half-written one sees "found end of file
+#  when expecting more instructions" and scores every test in the run a
+#  link failure.  This script already promises that concurrent runs
+#  never overwrite each other; report.ll was the one place it did not
+#  keep that promise.
+export REPORT_LL="${TMPDIR:-/tmp}/ada83-report-$$.ll"
+trap 'rm -f "$REPORT_LL" "${REPORT_LL%.ll}.ali"' EXIT
+#  With -o rather than a redirect, so the ALI file lands beside the IR
+#  instead of in acats/.  The ALI set IS the program library, so a
+#  shared acats/report.ali is the same defect as a shared report.ll was:
+#  concurrent runs read each other's library and score tests against a
+#  unit they did not compile.
+./ada83 acats/report.adb -o "$REPORT_LL" >/dev/null 2>&1 || {
     echo "FATAL: cannot compile acats/report.adb"; exit 1; }
 
 # ── Helpers ───────────────────────────────────────────────────────────────
@@ -183,7 +197,7 @@ run_in_lib(){
 link_program(){
     local n=$1 rc=0
     timeout "$LINK_TIMEOUT" llvm-link -o "$RESULTS_DIR/$n.bc" "$MAIN_LL" \
-        ${LINK_FRAGMENTS[@]+"${LINK_FRAGMENTS[@]}"} acats/report.ll \
+        ${LINK_FRAGMENTS[@]+"${LINK_FRAGMENTS[@]}"} "$REPORT_LL" \
         2>"$LOGS_DIR/$n.link" || rc=$?
     case $rc in
         0)       LINK_STATUS=ok ;;
@@ -207,7 +221,7 @@ run_continuity_creators(){
         [[ $c == "$self" || ! -f acats/$c.ada ]] && continue
         ./ada83 "acats/$c.ada" -o "$lib/$c.ll" >/dev/null 2>&1 || continue
         timeout "$LINK_TIMEOUT" llvm-link -o "$lib/$c.bc" "$lib/$c.ll" \
-            acats/report.ll >/dev/null 2>&1 || continue
+            "$REPORT_LL" >/dev/null 2>&1 || continue
         ( cd "$lib" && exec timeout "$TEST_TIMEOUT" lli "$c.bc" ) >/dev/null 2>&1 || true
     done
 }
@@ -295,15 +309,53 @@ run_one(){
         fi
         ;;
     b)
-        if timeout 2 ./ada83 "$f" > $LOGS_DIR/$n.ll 2>$LOGS_DIR/$n.err; then
+        #  A class B test is graded over its whole fragment family, not
+        #  over its main file.  Thirty-one of these families put every
+        #  illegality in the fragments and none in the main, so grading
+        #  the main alone found no expected lines at all and scored 0 of
+        #  0 -- below 90% however the compiler behaves.  gather_files has
+        #  already put the family in COMPILE_FILES; a marker and a
+        #  diagnostic are compared within one file, since the two carry
+        #  independent line numbers.
+        local -a expected=() actual=()
+        local part pn i hits=0 rejected=""
+        #  Each fragment is submitted to the library with -o, exactly as
+        #  class A and C submit theirs.  Without it no ALI file is
+        #  written, so there is no program library and RM 10.3's
+        #  obsolescence rules have nothing to be violated against --
+        #  which is what made ba3's post-compilation tests unreachable
+        #  by any change to the compiler.
+        local lib=$RESULTS_DIR/$n.lib
+        mkdir -p "$lib"
+        for part in "${COMPILE_FILES[@]}"; do
+            pn=$(basename "$part")
+            i=0
+            #  ACATS writes the marker with one space and sometimes two
+            #  (bd1b01a..bd1b04d), so the separator is one-or-more.
+            while IFS= read -r l; do
+                ((++i)); [[ $l =~ --[[:space:]]+ERROR ]] && expected+=("$pn:$i")
+            done < "$part"
+            #  Compiled ONCE.  The rejection verdict and the diagnostics
+            #  are two readings of one run, and submitting the same unit
+            #  to the library twice would make the second submission
+            #  obsolete the first.
+            if timeout 4 ./ada83 "$part" -o "$lib/${pn%.ada}.ll" \
+                 >/dev/null 2>$LOGS_DIR/$n.$pn.err; then :; else
+                rejected=yes
+            fi
+            while IFS=: read -r file m _; do
+                actual+=("$(basename "$file"):$m")
+            done < <(grep "^[^:]*:[0-9]*:[0-9]*: " $LOGS_DIR/$n.$pn.err)
+        done
+        if [[ -z $rejected ]]; then
             echo "b fail $n WRONG_ACCEPT:compiled_when_should_reject"
         else
-            local -a expected=() actual=(); local i=0 hits=0
-            while IFS= read -r l; do ((++i)); [[ $l =~ --\ ERROR ]] && expected+=($i); done < "$f"
-            while IFS=: read -r _ m _; do actual+=($m); done < <(timeout 2 ./ada83 "$f" 2>&1|grep "^[^:]*:[0-9]")
+            local ef el vf vl
             for e in ${expected[@]+"${expected[@]}"}; do
+                ef=${e%:*}; el=${e##*:}
                 for v in ${actual[@]+"${actual[@]}"}; do
-                    ((v>=e-1&&v<=e+1)) && { ((++hits)); break; }
+                    vf=${v%:*}; vl=${v##*:}
+                    [[ $vf == "$ef" ]] && ((vl>=el-1&&vl<=el+1)) && { ((++hits)); break; }
                 done
             done
             local xe=${#expected[@]}
