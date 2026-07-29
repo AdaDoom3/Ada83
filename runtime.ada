@@ -207,7 +207,7 @@ package body TEXT_IO is
    function C_Fseek(Stream : SYSTEM.ADDRESS; Offset : Integer; Whence : Integer) return Integer;
    pragma Import(C, C_Fseek, "fseek");
 
-   -- A nameless CREATE makes an anonymous temporary file (RM 14.2.1);
+   -- A nameless CREATE makes an anonymous temporary file;
    -- tmpfile() opens one in "w+b" mode that is removed when closed.
    function C_Tmpfile return SYSTEM.ADDRESS;
    pragma Import(C, C_Tmpfile, "tmpfile");
@@ -239,7 +239,7 @@ package body TEXT_IO is
       Form        : String(1..256);
       -- Internal counters hold one past COUNT'LAST: writing at column
       -- COUNT'LAST legitimately advances to COUNT'LAST + 1, whereupon
-      -- COL/LINE/PAGE raise LAYOUT_ERROR (RM 14.3.5).
+      -- COL/LINE/PAGE raise LAYOUT_ERROR.
       Col         : Integer;
       Line        : Integer;
       Page        : Integer;
@@ -263,7 +263,7 @@ package body TEXT_IO is
    FCBs : FCB_Array;
 
    -- Index 0 is the "no file" sentinel: a freshly declared FILE_TYPE is
-   -- zero-initialized and therefore denotes a closed file (RM 14.1). The
+   -- zero-initialized and therefore denotes a closed file. The
    -- three standard files occupy 1, 2, 3.
    Current_In_Idx  : Integer := 1;
    Current_Out_Idx : Integer := 2;
@@ -285,7 +285,7 @@ package body TEXT_IO is
 
    -- The C stdio mode for an Ada file mode. An output or append file is
    -- opened for update, so a later RESET to IN_FILE can read back what this
-   -- file wrote (RM 14.2.1).
+   -- file wrote.
    function Open_Mode_String(Mode : FILE_MODE) return String is
    begin
       case Mode is
@@ -297,7 +297,7 @@ package body TEXT_IO is
 
    -- The layout state of a file positioned at its start: column, line and
    -- page one, no line or page bound, nothing peeked ahead, and no content
-   -- yet on the page (RM 14.3.1, RM 14.3.3).
+   -- yet on the page.
    procedure Reset_Position(Idx : Integer) is
    begin
       FCBs(Idx).Col := 1;
@@ -342,7 +342,7 @@ package body TEXT_IO is
       end if;
    end Ensure_Init;
 
-   -- True when Idx denotes a currently-open file (RM 14.1). Index 0 is the
+   -- True when Idx denotes a currently-open file. Index 0 is the
    -- closed sentinel of a never-opened FILE_TYPE. Every operation that
    -- consults a control block asks this first, directly or through
    -- Require_Open, so this is where the standard files come into being.
@@ -352,7 +352,7 @@ package body TEXT_IO is
       return (Idx >= 1 and Idx <= 99) and then FCBs(Idx).Is_Open;
    end Is_Open_Index;
 
-   -- Raise STATUS_ERROR unless Idx denotes an open file (RM 14.4).
+   -- Raise STATUS_ERROR unless Idx denotes an open file.
    procedure Require_Open(Idx : Integer) is
    begin
       if not Is_Open_Index(Idx) then raise STATUS_ERROR; end if;
@@ -384,7 +384,7 @@ package body TEXT_IO is
 
    -- Flush every open file already associated with the external file NAME, so
    -- that writes buffered against one internal file become visible to another
-   -- internal file about to be opened on the same external file (RM 14.1).
+   -- internal file about to be opened on the same external file.
    procedure Flush_External(NAME : String) is
       Dummy : Integer;
    begin
@@ -532,7 +532,7 @@ package body TEXT_IO is
       FCBs(Idx).Is_Standard := False;
       Reset_Position(Idx);
 
-      -- A default file that is reopened keeps its role (RM 14.3.1).
+      -- A default file that is reopened keeps its role.
       if FILE.HANDLE /= 0 then
          if FILE.HANDLE = Current_Out_Idx then
             Current_Out_Idx := Idx;
@@ -570,7 +570,7 @@ package body TEXT_IO is
          -- Close the final line and page so the external file is
          -- well-formed: a non-empty page ends with a line terminator
          -- then a page terminator, before the file terminator
-         -- (RM 14.3.1).
+         --.
          if not Still_Shared then
             if FCBs(Idx).Shared and FCBs(Idx).Stream /= Null_Address then
                Dummy := C_Fseek(FCBs(Idx).Stream, 0, 2);  -- SEEK_END
@@ -591,7 +591,7 @@ package body TEXT_IO is
       FCBs(Idx).Is_Open := False;
       FCBs(Idx).Stream := Null_Address;
       -- The handle keeps denoting this (now closed) file: reopening
-      -- the same object must recognize a default-file role (RM 14.3.1).
+      -- the same object must recognize a default-file role.
    end CLOSE;
 
    procedure DELETE(FILE : in Out FILE_TYPE) is
@@ -637,7 +637,7 @@ package body TEXT_IO is
       end if;
 
       -- Finalize a partially-written output file before reopening, so its last
-      -- line and page are terminated just as CLOSE would (RM 14.3.1).
+      -- line and page are terminated just as CLOSE would.
       if FCBs(Idx).Mode /= IN_FILE and FCBs(Idx).Page_Active then
          if FCBs(Idx).Col > 1 then
             Raw_Put(Idx, 10);
@@ -964,7 +964,7 @@ package body TEXT_IO is
          FCBs(Idx).Col := 1;
          FCBs(Idx).Line := FCBs(Idx).Line + 1;
          -- A page terminator immediately following the line terminator is
-         -- skipped as well (RM 14.3.4).
+         -- skipped as well.
          if Raw_Peek(Idx) = 12 then
             C := Raw_Get(Idx);
             FCBs(Idx).Line := 1;
@@ -1003,7 +1003,7 @@ package body TEXT_IO is
          raise MODE_ERROR;
       end if;
       -- A page terminator must be preceded by a line terminator, and a page
-      -- holds at least one line (RM 14.3.4): terminate a partial current line,
+      -- holds at least one line: terminate a partial current line,
       -- or supply an empty line if the page has none yet.
       if FCBs(Idx).Col /= 1 then
          NEW_LINE(FILE);
@@ -1065,7 +1065,7 @@ package body TEXT_IO is
          raise MODE_ERROR;
       end if;
       -- True when a page or file terminator is next, or a line terminator
-      -- that is itself followed by a page or file terminator (RM 14.3.4).
+      -- that is itself followed by a page or file terminator.
       C0 := Peek_N(Idx, 0);
       if C0 < 0 or C0 = 12 then return True; end if;
       if C0 = 10 then
@@ -1089,7 +1089,7 @@ package body TEXT_IO is
          raise MODE_ERROR;
       end if;
       -- True at the file terminator, or when only terminators remain before
-      -- it: EOF, LF EOF, FF EOF, or LF FF EOF (RM 14.3.10).
+      -- it: EOF, LF EOF, FF EOF, or LF FF EOF.
       C0 := Peek_N(Idx, 0);
       if C0 < 0 then return True; end if;
       if C0 = 12 then return Peek_N(Idx, 1) < 0; end if;
@@ -1117,7 +1117,7 @@ package body TEXT_IO is
          -- Input: skip characters until the column equals TO, but column TO
          -- must hold an actual character -- if the line is too short (TO falls
          -- on a line or page terminator) skip to the next line and keep
-         -- looking; if already past TO, advance to the next line (RM 14.3.6).
+         -- looking; if already past TO, advance to the next line.
          loop
             if FCBs(Idx).Col > Integer(TO) then
                SKIP_LINE(FILE);
@@ -1161,7 +1161,7 @@ package body TEXT_IO is
       Require_Open(Idx);
       if FCBs(Idx).Mode = IN_FILE then
          -- Input: skip whole lines until the line equals TO; if already past
-         -- it, advance to the next page first (RM 14.3.6).
+         -- it, advance to the next page first.
          loop
             exit when FCBs(Idx).Line = Integer(TO);
             if FCBs(Idx).Line > Integer(TO) then
@@ -1193,7 +1193,7 @@ package body TEXT_IO is
    begin
       Require_Open(Idx);
       if FCBs(Idx).Col > Integer(COUNT'LAST) then
-         raise LAYOUT_ERROR;  -- position exceeds COUNT'LAST (RM 14.3.5)
+         raise LAYOUT_ERROR;  -- position exceeds COUNT'LAST
       end if;
       return POSITIVE_COUNT(FCBs(Idx).Col);
    end COL;
@@ -1208,7 +1208,7 @@ package body TEXT_IO is
    begin
       Require_Open(Idx);
       if FCBs(Idx).Line > Integer(COUNT'LAST) then
-         raise LAYOUT_ERROR;  -- position exceeds COUNT'LAST (RM 14.3.5)
+         raise LAYOUT_ERROR;  -- position exceeds COUNT'LAST
       end if;
       return POSITIVE_COUNT(FCBs(Idx).Line);
    end LINE;
@@ -1223,7 +1223,7 @@ package body TEXT_IO is
    begin
       Require_Open(Idx);
       if FCBs(Idx).Page > Integer(COUNT'LAST) then
-         raise LAYOUT_ERROR;  -- position exceeds COUNT'LAST (RM 14.3.5)
+         raise LAYOUT_ERROR;  -- position exceeds COUNT'LAST
       end if;
       return POSITIVE_COUNT(FCBs(Idx).Page);
    end PAGE;
@@ -1304,7 +1304,7 @@ package body TEXT_IO is
 
    -- An unbounded line takes the whole string in one transfer; a bounded one
    -- has to place each character, because the line wraps as the column
-   -- crosses LINE_LENGTH (RM 14.3.5), and so does a sharing writer, whose
+   -- crosses LINE_LENGTH, and so does a sharing writer, whose
    -- private offset advances one character at a time.
    procedure PUT(FILE : in FILE_TYPE; ITEM : in STRING) is
       Idx : Integer := FILE.HANDLE;
@@ -1390,7 +1390,7 @@ package body TEXT_IO is
    -- Shared field helpers for the numeric and enumeration IO generics.
 
    -- Skip the blanks, horizontal tabs, and line/page terminators that may
-   -- precede a literal in an input field (RM 14.3.5).
+   -- precede a literal in an input field.
    procedure Skip_Blanks_And_Terminators(Idx : Integer) is
       C : Integer;
    begin
@@ -1469,7 +1469,7 @@ package body TEXT_IO is
    begin
       Match ('+', '-', Got);                         -- optional sign
 
-      -- A real literal requires an integer part before the point (RM 2.4.1);
+      -- A real literal requires an integer part before the point;
       -- the ".nnn" form is not a real literal, so a leading point ends the
       -- token immediately with no characters consumed.
       Skip_Digits (Got);
@@ -1493,7 +1493,7 @@ package body TEXT_IO is
          if Has_E then Match ('+', '-', Got); Skip_Digits (Got); end if;
       elsif Allow_Point then
          -- Decimal real literal: the exponent belongs to the literal only after
-         -- a complete "nnn.nnn" mantissa (RM 2.4.1).
+         -- a complete "nnn.nnn" mantissa.
          if I > First and then S (I - 1) /= '_' then
             Match ('.', '.', Dot1);
             if Dot1 then
@@ -1512,7 +1512,7 @@ package body TEXT_IO is
       return I - 1;
    end Scan_String_Number;
 
-   -- Read one numeric literal token from a file into Buf (RM 14.3.5),
+   -- Read one numeric literal token from a file into Buf,
    -- following the grammar of an integer literal (Allow_Point = False) or a
    -- real literal (Allow_Point = True) one character at a time, exactly as
    -- GNAT's Ada.Text_IO.Generic_Aux.Load_Integer / Load_Real do. Only the
@@ -1592,7 +1592,7 @@ package body TEXT_IO is
       if Width > 0 then
          -- A field positioned right at a line or page terminator yields no
          -- characters but is a malformed value, not end of file: Data_Error,
-         -- not End_Error (RM 14.3.5, the GNAT Before_LM rule).
+         -- not End_Error.
          Cc := Raw_Peek (Idx);
          if Cc = 10 or Cc = 12 then raise DATA_ERROR; end if;
          -- Otherwise take exactly Width characters, stopping before a line or
@@ -1603,7 +1603,7 @@ package body TEXT_IO is
             Cc := Raw_Get (Idx); Store (Cc);
          end loop;
          -- The field is consumed, but blanks and horizontal tabs that bound it
-         -- are not part of the value (RM 14.3.5): trim them before the caller's
+         -- are not part of the value: trim them before the caller's
          -- NUM'VALUE so a tab- or blank-padded field reads its number.
          declare
             Lo : Integer := 1;
@@ -1627,7 +1627,7 @@ package body TEXT_IO is
       Skip_Blanks_And_Terminators (Idx);
       Load_Char (43, 45, Loaded);          -- optional leading sign
 
-      -- A real literal requires an integer part before the point (RM 2.4.1);
+      -- A real literal requires an integer part before the point;
       -- the ".nnn" form is not accepted, so a leading point stops the token at
       -- once and leaves the cursor on it (the value is then malformed).
       Load_Digits (Loaded);
@@ -1644,7 +1644,7 @@ package body TEXT_IO is
                   Load_Extended;
                   Load_Char (46, -1, Dot2);
                   if Dot2 then Load_Extended; end if;
-                  Load_Char (35, 58, Loaded);   -- mixed base char allowed (RM J.2)
+                  Load_Char (35, 58, Loaded);   -- mixed base char allowed
                end if;
             else
                Load_Extended;
@@ -1658,7 +1658,7 @@ package body TEXT_IO is
             end if;
          elsif Allow_Point then
             -- Decimal real literal: the exponent is part of the literal only
-            -- when a complete "nnn.nnn" mantissa precedes it (RM 2.4.1). A
+            -- when a complete "nnn.nnn" mantissa precedes it. A
             -- missing point ("nnnE..") or empty fraction ("nnn.E..") stops the
             -- token there, leaving the offending character unread.
             if Local (P) /= '_' then
@@ -1690,7 +1690,7 @@ package body TEXT_IO is
 
    -- Index in FROM of the first character that is not a blank or a
    -- horizontal tab, or FROM'Last + 1 when FROM holds none: where a GET
-   -- from a string starts looking for its token (RM 14.3.5).
+   -- from a string starts looking for its token.
    function First_Nonblank(FROM : String) return Integer is
    begin
       for I in FROM'Range loop
@@ -1711,7 +1711,7 @@ package body TEXT_IO is
    end Without_Leading_Blank;
 
    -- Before emitting a self-contained item of the given length, enforce the
-   -- bounded line length (RM 14.3.5): the item must fit on a line at all, and
+   -- bounded line length: the item must fit on a line at all, and
    -- if it will not fit in what remains of the current line, start a new one.
    procedure Check_On_One_Line(FILE : FILE_TYPE; Length : Integer) is
       Idx : Integer := FILE.HANDLE;
@@ -1726,7 +1726,7 @@ package body TEXT_IO is
    end Check_On_One_Line;
 
    -- Emit Item verbatim, without the per-character line-length wrapping that
-   -- PUT applies; the caller has already validated the item fits (RM 14.3.5).
+   -- PUT applies; the caller has already validated the item fits.
    procedure Put_Raw(FILE : FILE_TYPE; Item : String) is
       Idx : Integer := FILE.HANDLE;
    begin
@@ -1777,7 +1777,7 @@ package body TEXT_IO is
       Put_Blanks(FILE, Pad);
    end Put_Left_Justified;
 
-   -- A real value in FORE.AFT[E+/-EXP] layout (RM 14.3.8). Decimal digits are
+   -- A real value in FORE.AFT[E+/-EXP] layout. Decimal digits are
    -- extracted one at a time after normalizing the magnitude to [1, 10), so no
    -- intermediate scaled integer can overflow regardless of AFT; the last kept
    -- digit is rounded half-up using one guard digit. FORE is the minimum width
@@ -1793,7 +1793,7 @@ package body TEXT_IO is
       D    : array (0 .. Max_Digits) of Integer := (others => 0);
       Nsig : Integer;
       -- A real image always shows at least one fractional digit, so AFT 0
-      -- means 1 (RM 14.3.8).
+      -- means 1.
       EAft : Integer := Aft;
       Guard, Carry, J, Int_Count, Sign_Len, Idx : Integer;
       Buf  : String (1 .. 2 * Max_Digits);
@@ -1958,7 +1958,7 @@ package body TEXT_IO is
       return Buf (1 .. P);
    end Render_Real;
 
-   -- Emit a real value in FORE.AFT[E+/-EXP] layout to a file (RM 14.3.8),
+   -- Emit a real value in FORE.AFT[E+/-EXP] layout to a file,
    -- as a single item subject to the bounded line length.
    procedure Format_Real(FILE : FILE_TYPE; Val : FLOAT;
                          Fore, Aft, Exp : Integer) is
@@ -1977,7 +1977,7 @@ package body TEXT_IO is
       else return -1; end if;
    end Hex_Digit_Value;
 
-   -- Evaluate a based real literal base#mantissa.frac#[E exp] (RM 2.4.2), whose
+   -- Evaluate a based real literal base#mantissa.frac#[E exp], whose
    -- value is (mantissa.frac in base) * base**exp. strtod (used by FLOAT'VALUE)
    -- cannot parse these, so they are handled here. Raises CONSTRAINT_ERROR on
    -- any malformed input -- base out of 2..16, a digit outside the base, a
@@ -2087,7 +2087,7 @@ package body TEXT_IO is
          if S(I) = '#' or S(I) = ':' then return Parse_Based_Real(S); end if;
       end loop;
       -- A decimal real literal must contain a point flanked by digits
-      -- (RM 2.4.1); a value with no point, or a point not preceded and
+      --; a value with no point, or a point not preceded and
       -- followed by a digit, is malformed input for a real GET.
       for I in S'Range loop
          if S(I) = '.' then Dot := I; exit; end if;
@@ -2104,7 +2104,7 @@ package body TEXT_IO is
    package body INTEGER_IO is
 
       -- The decimal image without IMAGE's leading sign-place blank, or a
-      -- based literal base#digits# for non-decimal BASE (RM 14.3.7). The
+      -- based literal base#digits# for non-decimal BASE. The
       -- magnitude is built digit-by-digit toward zero from the value's own
       -- sign, so NUM'FIRST never overflows through negation.
       function Image_In_Base(Item : NUM; Base : NUMBER_BASE) return String is
@@ -2161,7 +2161,7 @@ package body TEXT_IO is
          if FCBs(Idx).Mode /= IN_FILE then raise MODE_ERROR; end if;
          Read_Number_Token(Idx, Integer(WIDTH), False, Buf, Len);
          -- No characters: end of file if truly at the file terminator,
-         -- otherwise a non-numeric lexical element, i.e. Data_Error (RM 14.3.5).
+         -- otherwise a non-numeric lexical element, i.e. Data_Error.
          if Len = 0 then
             if Raw_Peek(Idx) < 0 then raise END_ERROR; else raise DATA_ERROR; end if;
          end if;
@@ -2171,7 +2171,7 @@ package body TEXT_IO is
             V := NUM'VALUE(Buf(1 .. Len));
             -- A value outside the subtype is a Data_Error, not the
             -- Constraint_Error the out-parameter copy-back would raise after
-            -- this body returns (RM 14.3.5).
+            -- this body returns.
             if V < NUM'FIRST or V > NUM'LAST then raise DATA_ERROR; end if;
             ITEM := V;
          exception
@@ -2203,7 +2203,7 @@ package body TEXT_IO is
          Token_Start : constant Integer := First_Nonblank(FROM);
          Token_End : Integer;
       begin
-         -- Only blanks (or an empty/null string): nothing to read (RM 14.3.5).
+         -- Only blanks (or an empty/null string): nothing to read.
          if Token_Start > FROM'Last then raise END_ERROR; end if;
          Token_End := Scan_String_Number(FROM, Token_Start, False);
          declare
@@ -2238,7 +2238,7 @@ package body TEXT_IO is
          if FCBs(Idx).Mode /= IN_FILE then raise MODE_ERROR; end if;
          Read_Number_Token(Idx, Integer(WIDTH), True, Buf, Len);
          -- No characters: end of file if truly at the file terminator,
-         -- otherwise a non-numeric lexical element, i.e. Data_Error (RM 14.3.5).
+         -- otherwise a non-numeric lexical element, i.e. Data_Error.
          if Len = 0 then
             if Raw_Peek(Idx) < 0 then raise END_ERROR; else raise DATA_ERROR; end if;
          end if;
@@ -2277,7 +2277,7 @@ package body TEXT_IO is
          Token_Start : constant Integer := First_Nonblank(FROM);
          Token_End : Integer;
       begin
-         -- Only blanks (or an empty/null string): nothing to read (RM 14.3.5).
+         -- Only blanks (or an empty/null string): nothing to read.
          if Token_Start > FROM'Last then raise END_ERROR; end if;
          Token_End := Scan_String_Number(FROM, Token_Start, True);
          declare
@@ -2312,7 +2312,7 @@ package body TEXT_IO is
          if FCBs(Idx).Mode /= IN_FILE then raise MODE_ERROR; end if;
          Read_Number_Token(Idx, Integer(WIDTH), True, Buf, Len);
          -- No characters: end of file if truly at the file terminator,
-         -- otherwise a non-numeric lexical element, i.e. Data_Error (RM 14.3.5).
+         -- otherwise a non-numeric lexical element, i.e. Data_Error.
          if Len = 0 then
             if Raw_Peek(Idx) < 0 then raise END_ERROR; else raise DATA_ERROR; end if;
          end if;
@@ -2321,7 +2321,7 @@ package body TEXT_IO is
          begin
             -- A fixed-point value is read as a real literal and converted
             -- to the type via FLOAT (rounding to the nearest multiple of its
-            -- small), since the literal syntax is the real one (RM 14.3.8).
+            -- small), since the literal syntax is the real one.
             V := NUM (Real_Value (Buf (1 .. Len)));
             if V < NUM'FIRST or V > NUM'LAST then raise DATA_ERROR; end if;
             ITEM := V;
@@ -2354,7 +2354,7 @@ package body TEXT_IO is
          Token_Start : constant Integer := First_Nonblank(FROM);
          Token_End : Integer;
       begin
-         -- Only blanks (or an empty/null string): nothing to read (RM 14.3.5).
+         -- Only blanks (or an empty/null string): nothing to read.
          if Token_Start > FROM'Last then raise END_ERROR; end if;
          Token_End := Scan_String_Number(FROM, Token_Start, True);
          declare
@@ -2381,7 +2381,7 @@ package body TEXT_IO is
 
    package body ENUMERATION_IO is
 
-      -- ENUM'IMAGE, lowered to lower case when SET so requests it (RM 14.3.9).
+      -- ENUM'IMAGE, lowered to lower case when SET so requests it.
       -- The case transformation applies to identifier images only: a
       -- character-literal image (leading quote) is written exactly as typed.
       function Cased_Image(Item : ENUM; Set : TYPE_SET) return String is
@@ -2429,7 +2429,7 @@ package body TEXT_IO is
                -- Character literal: read the quote and then up to two more
                -- characters without backtracking, so 'x' is taken whole while a
                -- bare quote or unterminated literal stops where it fails and
-               -- leaves a malformed token for the VALUE check (RM 14.3.9, the
+               -- leaves a malformed token for the VALUE check (the
                -- GNAT Get_Enum_Lit rule exercised by CE3905L).
                Take;                                      -- opening quote
                C := Raw_Peek(Idx);
@@ -2453,7 +2453,7 @@ package body TEXT_IO is
          end;
 
          -- No token: end of file only at the real terminator, otherwise a
-         -- non-enumeral lexical element, i.e. Data_Error (RM 14.3.5).
+         -- non-enumeral lexical element, i.e. Data_Error.
          if P = 0 then
             if Raw_Peek(Idx) < 0 then raise END_ERROR; else raise DATA_ERROR; end if;
          end if;
@@ -2463,7 +2463,7 @@ package body TEXT_IO is
             V := ENUM'VALUE(Buf(1 .. P));
             -- A literal outside the instantiated (sub)type is Data_Error; a
             -- value within it but outside ITEM's subtype is left to the
-            -- out-parameter check (Constraint_Error) (RM 14.3.9).
+            -- out-parameter check (Constraint_Error).
             if V < ENUM'FIRST or V > ENUM'LAST then raise DATA_ERROR; end if;
             ITEM := V;
          exception
@@ -2496,9 +2496,9 @@ package body TEXT_IO is
          Token_End : Integer;
          I : Integer := Token_Start;
       begin
-         -- Only blanks (or an empty/null string): nothing to read (RM 14.3.5).
+         -- Only blanks (or an empty/null string): nothing to read.
          if Token_Start > FROM'Last then raise END_ERROR; end if;
-         -- Mirror the file reader's enumeration-literal grammar (RM 14.3.9):
+         -- Mirror the file reader's enumeration-literal grammar:
          -- a character literal taken without backtracking, or an identifier
          -- starting with a letter that absorbs at most one trailing underscore.
          declare
@@ -2596,7 +2596,7 @@ DAY_SECONDS:CONSTANT DURATION:=86_400.0;
 -- The representable range of TIME: from 1901-01-01 00:00:00 to
 -- 2099-12-31 24:00:00 (SECONDS may be 86_400.0, RM 9.6). Assigned in the
 -- initialization part below, after JULIAN_DAY's body has elaborated
--- (RM 3.9 puts every object declaration ahead of the bodies).
+--.
 TIME_FIRST:DURATION;
 TIME_LAST:DURATION;
 
@@ -2609,7 +2609,7 @@ RETURN D+(153*MM+2)/5+365*YY+YY/4-YY/100+YY/400-32045;
 END JULIAN_DAY;
 
 -- Days since the Unix epoch of the day containing DATE, i.e. the floor of
--- DATE / 86_400.0. Integer conversion rounds to nearest (RM 4.6), so step
+-- DATE / 86_400.0. Integer conversion rounds to nearest, so step
 -- back while the resulting midnight lies after DATE.
 FUNCTION DAY_COUNT(DATE:TIME)RETURN INTEGER IS
 D:DURATION:=DURATION(DATE);
@@ -2762,7 +2762,7 @@ FUNCTION END_OF_FILE(FILE:IN FILE_TYPE)RETURN BOOLEAN;
 PRIVATE
 -- A file handle indexes the control-block table, or is zero when the object
 -- denotes no open file. The default makes a freshly declared FILE_TYPE closed
--- (RM 14.1), so CREATE and OPEN see an unopened file rather than an erroneous
+--, so CREATE and OPEN see an unopened file rather than an erroneous
 -- uninitialized index.
 TYPE FILE_TYPE IS RECORD
    HANDLE : INTEGER := 0;
@@ -2773,7 +2773,7 @@ with SYSTEM;
 
 package body DIRECT_IO is
 
-   -- Real external files with random access by element index (RM 14.2.4).
+   -- Real external files with random access by element index.
    -- Every ELEMENT_TYPE value occupies a fixed number of bytes, so element N
    -- lives at byte offset (N-1)*Element_Bytes; positioning is a seek and READ
    -- and WRITE transfer one element through the C stdio library.
@@ -2827,7 +2827,7 @@ package body DIRECT_IO is
       return Idx >= 1 and then Idx <= 99 and then FCBs(Idx).Is_Open;
    end Is_Open_Index;
 
-   -- Raise STATUS_ERROR unless FILE denotes an open external file (RM 14.4).
+   -- Raise STATUS_ERROR unless FILE denotes an open external file.
    function Require_Open(FILE : FILE_TYPE) return Integer is
       Idx : Integer := FILE.Handle;
    begin
@@ -2908,7 +2908,7 @@ package body DIRECT_IO is
    begin
       if Is_Open_Index(FILE.Handle) then raise STATUS_ERROR; end if;
       -- Reuse a closed slot: a CLOSE/DELETE frees its FCB, so USE_ERROR is
-      -- raised only when all slots are actually open (RM 14.2.1), not after
+      -- raised only when all slots are actually open, not after
       -- 99 cumulative opens as a monotonic counter would (ce2117b).
       Idx := 0;
       for J in FCBs'Range loop
@@ -3011,7 +3011,7 @@ package body DIRECT_IO is
       Idx : Integer := Require_Open(FILE);
    begin
       -- A temporary file created without a name has no external name to
-      -- return, so NAME raises USE_ERROR (RM 14.2.1).
+      -- return, so NAME raises USE_ERROR.
       if FCBs(Idx).Name_Len = 0 then raise USE_ERROR; end if;
       return FCBs(Idx).Name(1..FCBs(Idx).Name_Len);
    end NAME;
@@ -3040,7 +3040,7 @@ package body DIRECT_IO is
       if Stored_Bytes /= Item_Bytes then
          -- The element cannot be interpreted, but the read has still
          -- consumed its position: reading continues at the next
-         -- element after the handler (RM 14.2.4).
+         -- element after the handler.
          FCBs(Idx).Index := FROM + 1;
          raise DATA_ERROR;
       end if;
@@ -3159,7 +3159,7 @@ package body SEQUENTIAL_IO is
    -- Real external files, mirroring TEXT_IO: each ELEMENT_TYPE value is read
    -- and written as its raw representation through the C stdio library, so a
    -- file created, written, closed and reopened by name returns its contents,
-   -- and DELETE removes the external file (RM 14.2).
+   -- and DELETE removes the external file.
    function C_Fopen(Name : SYSTEM.ADDRESS; Mode : SYSTEM.ADDRESS) return SYSTEM.ADDRESS;
    pragma Import(C, C_Fopen, "fopen");
    function C_Fclose(Stream : SYSTEM.ADDRESS) return Integer;
@@ -3200,7 +3200,7 @@ package body SEQUENTIAL_IO is
       return Idx >= 1 and then Idx <= 99 and then FCBs(Idx).Is_Open;
    end Is_Open_Index;
 
-   -- Raise STATUS_ERROR unless FILE denotes an open external file (RM 14.4).
+   -- Raise STATUS_ERROR unless FILE denotes an open external file.
    function Require_Open(FILE : FILE_TYPE) return Integer is
       Idx : Integer := FILE.Handle;
    begin
@@ -3230,7 +3230,7 @@ package body SEQUENTIAL_IO is
    begin
       if Is_Open_Index(FILE.Handle) then raise STATUS_ERROR; end if;
       -- Reuse a closed slot: a CLOSE/DELETE frees its FCB, so USE_ERROR is
-      -- raised only when all slots are actually open (RM 14.2.1), not after
+      -- raised only when all slots are actually open, not after
       -- 99 cumulative opens as a monotonic counter would (ce2117a).
       Idx := 0;
       for J in FCBs'Range loop
@@ -3327,7 +3327,7 @@ package body SEQUENTIAL_IO is
       Idx : Integer := Require_Open(FILE);
    begin
       -- A temporary file created without a name has no external name to
-      -- return, so NAME raises USE_ERROR (RM 14.2.1).
+      -- return, so NAME raises USE_ERROR.
       if FCBs(Idx).Name_Len = 0 then raise USE_ERROR; end if;
       return FCBs(Idx).Name(1..FCBs(Idx).Name_Len);
    end NAME;
@@ -3345,7 +3345,7 @@ package body SEQUENTIAL_IO is
 
    -- Each element is framed by its byte length. For a constrained
    -- ELEMENT_TYPE the length is the same for every element; for an
-   -- unconstrained one (RM 14.2.2 leaves support optional) it is the
+   -- unconstrained one it is the
    -- written object's own size, which is what lets values of differing
    -- lengths share one file and be read back into equal-sized objects.
    procedure READ(FILE : in FILE_TYPE; ITEM : out ELEMENT_TYPE) is

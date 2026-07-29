@@ -94,7 +94,7 @@ gather_files(){
 # in the test's library dir — the .ali set IS the program library the later
 # files consult). Only the LAST/main file's .ll links (whole-program). Returns
 # nonzero on the first failing file, leaving its name in COMPILE_FAILED, then
-# runs the bind closure check (RM 10.3/10.5) leaving BIND_FAILED.
+# runs the bind closure check leaving BIND_FAILED.
 compile_set(){
     local n=$1 part pn
     local lib=$RESULTS_DIR/$n.lib
@@ -126,7 +126,7 @@ compile_set(){
     # some unit: it is dropped when the main module whole-loaded one of its
     # units (the compiler inlines WITH'd bodies), or when every unit it
     # provides was superseded — re-submitted by a later compilation, or a
-    # subunit whose ancestor was recompiled (RM 10.1/10.3 replacement: the
+    # subunit whose ancestor was recompiled (unit replacement: the
     # later module owns the unit's code, the earlier one is obsolete).
     if ((${#LINK_FRAGMENTS[@]})); then
         local kept=() frag unit i p anc u_current

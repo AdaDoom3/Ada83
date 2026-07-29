@@ -7920,7 +7920,7 @@ Token Lexer_Next_Token (Lexer *lex) {
             Report_Error (location, "control character in character literal");
           else if (not Code_Point_Is_In_ISO_646 (code_point)) {
             Report_Error (location,
-              "character 16#%02X# is not a character of the language (RM 2.1)",
+              "character 16#%02X# is not a character of the language",
               code_point);
             Lexer_Advance (lex);
             return Make_Token (TK_ERROR, location, S (""));
@@ -7964,7 +7964,7 @@ Token Lexer_Next_Token (Lexer *lex) {
                   Character_Code_Point (lex->encoding, lex->current,
                                         lex->source_end))) {
           Report_Error (Lexer_Loc (lex),
-            "character 16#%02X# is not a character of the language (RM 2.1)",
+            "character 16#%02X# is not a character of the language",
             Character_Code_Point (lex->encoding, lex->current, lex->source_end));
           reported_a_foreign_character = true;
         }
@@ -8034,7 +8034,7 @@ Token Lexer_Next_Token (Lexer *lex) {
         Report_Error (location, "unexpected character '%c'", ch);
       else
         Report_Error (location,
-          "character 16#%02X# is not a character of the language (RM 2.1)",
+          "character 16#%02X# is not a character of the language",
           code_point);
       return Make_Token (TK_ERROR, location, S (""));
     }
@@ -8640,7 +8640,7 @@ Node *Parse_Primary (Parser *p) {
     Token_Kind   op   = p->current_token.kind;
     Report_Error (location,
       "a primary cannot begin with a prefix operator; parenthesize the "
-      "operand (RM 4.4)");
+      "operand");
     Parser_Advance (p);
     Node *node  = Node_New (NK_UNARY_OP, location);
     node->unary.op      = op;
@@ -8897,7 +8897,7 @@ Node *Parse_Choice (Parser *p) {
   if (Get_Infix_Precedence (p->current_token.kind) != PREC_NONE) {
     Report_Error (Parser_Location (p),
                   "a choice is a simple expression, so a relational or a "
-                  "logical operator in one must be parenthesized (RM 3.7.3)");
+                  "logical operator in one must be parenthesized");
     return Parse_Expression_Continuation (p, simple, PREC_LOGICAL);
   }
   return Parse_Range_Continuation_After_Expression (p, simple, loc);
@@ -8948,7 +8948,7 @@ Node *Parse_Unary (Parser *p, Precedence min_prec) {
     if (min_prec > PREC_ADDITIVE)
       Report_Error (loc,
         "a unary adding operator may only begin a simple expression; "
-        "parenthesize the operand (RM 4.4)");
+        "parenthesize the operand");
     Parser_Advance (p);
     Node *node = Node_New (NK_UNARY_OP, loc);
     node->unary.op = op;
@@ -8960,7 +8960,7 @@ Node *Parse_Unary (Parser *p, Precedence min_prec) {
     Token_Kind op = p->current_token.kind;
     if (min_prec > PREC_EXPONENTIAL)
       Report_Error (loc,
-        "\"%s\" may only begin a factor; parenthesize the operand (RM 4.4)",
+        "\"%s\" may only begin a factor; parenthesize the operand",
         op == TK_NOT ? "not" : "abs");
     Parser_Advance (p);
     Node *node = Node_New (NK_UNARY_OP, loc);
@@ -9021,16 +9021,16 @@ Node *Parse_Expression_Continuation (Parser *p, Node *left,
     if (prec == PREC_LOGICAL and connective != TK_EOF and connective != op)
       Report_Error (loc,
         "an expression repeats one logical connective; mixing them needs "
-        "parentheses (RM 4.4)");
+        "parentheses");
     if (prec == PREC_LOGICAL) connective = op;
     if (prec == PREC_RELATIONAL and previous_prec == PREC_RELATIONAL)
       Report_Error (loc,
         "a relation has at most one relational operator; parenthesize the "
-        "left operand (RM 4.4)");
+        "left operand");
     if (prec == PREC_EXPONENTIAL and previous_prec == PREC_EXPONENTIAL)
       Report_Error (loc,
         "a factor has at most one \"**\"; exponentiation associates neither "
-        "way (RM 4.4)");
+        "way");
     previous_prec = prec;
 
     if (op == TK_IN or (op == TK_NOT and Parser_At (p, TK_IN))) {
@@ -9075,8 +9075,8 @@ Node *Parse_Range_Continuation_After_Expression (Parser *p,
 /* A discrete_subtype_indication's constraint, wherever a subtype mark
    already parsed as an expression turns out to be followed by RANGE, DIGITS,
    or DELTA: `type_mark RANGE range`, `type_mark DIGITS expression [RANGE
-   range]`, or `type_mark DELTA expression [RANGE range]` (RM 3.5, 3.5.7,
-   3.5.9). Returns the mark unchanged when no constraint follows, so callers
+   range]`, or `type_mark DELTA expression [RANGE range]`.
+   Returns the mark unchanged when no constraint follows, so callers
    may apply it unconditionally to whatever they parsed as a plain
    expression. */
 Node *Parse_Range_Constraint_After_Mark (Parser *p, Node *subtype_mark,
@@ -9625,21 +9625,21 @@ Node *Parse_Statement (Parser *p) {
         if (not has_statement and alt_loc.line != Parser_Location (p).line)
           Report_Error (alt_loc,
                         "an empty case alternative must be given as an "
-                        "explicit null statement (RM 5.1)");
+                        "explicit null statement");
       }
       alt->association.expression = stmts;
       Node_List_Push (&node->case_stmt.alternatives, alt);
     }
     if (node->case_stmt.alternatives.count == 0)
       Report_Error (Parser_Location (p),
-        "a case statement requires at least one alternative (RM 5.4)");
+        "a case statement requires at least one alternative");
     node->case_stmt.end_location = Parser_Location (p);
     if (Parser_At (p, TK_END) and Parser_Peek_At (p, TK_CASE)) {
       Parser_Advance (p);
       Parser_Advance (p);
     } else {
       Report_Error (node->case_stmt.end_location,
-        "a case statement must end with 'END CASE;' (RM 5.4)");
+        "a case statement must end with 'END CASE;'");
     }
     stmt = node;
   }
@@ -10084,13 +10084,13 @@ String_Slice Parse_Subprogram_Designator (Parser *p, Token_Kind unit_kind) {
     case OPERATOR_SYMBOL_NOT_AN_OPERATOR:
       Report_Error (location,
                     "\"%.*s\" is not an operator of the language and cannot "
-                    "designate a function (RM 6.7)",
+                    "designate a function",
                     (int) designator.length, designator.data);
       break;
     case OPERATOR_SYMBOL_INEQUALITY:
       Report_Error (location,
                     "explicit overloading of the inequality operator is not "
-                    "allowed (RM 6.7); declaring \"=\" declares \"/=\" with it");
+                    "allowed; declaring \"=\" declares \"/=\" with it");
       break;
   }
   return designator;
@@ -10110,7 +10110,7 @@ Node *Parse_Subprogram_Specification (Parser *p, Source_Location location,
           parameter->param_spec.mode != MODE_IN)
         Report_Node_Error (parameter,
                       "a parameter of a function has mode IN; mode %s is "
-                      "not allowed here (RM 6.5)",
+                      "not allowed here",
                       parameter->param_spec.mode == MODE_OUT ? "OUT"
                                                              : "IN OUT");
     }
@@ -10279,7 +10279,7 @@ void Parse_Generic_Type_Definition (Parser *p, Node *formal) {
   Report_Error (Parser_Location (p),
                 "expected a generic type definition: (<>), RANGE <>, "
                 "DIGITS <>, DELTA <>, an array type definition, an access "
-                "type definition, or [LIMITED] PRIVATE (RM 12.1)");
+                "type definition, or [LIMITED] PRIVATE");
   formal->generic_type_param.def_kind = GEN_DEF_PRIVATE;
   while (not Parser_At (p, TK_SEMICOLON) and not Parser_At (p, TK_EOF))
     Parser_Advance (p);
@@ -10598,7 +10598,7 @@ Node *Parse_Declaration (Parser *p) {
           if (first_representation_clause.line)
             Parser_Error (p, "an entry declaration may not follow a "
                              "representation clause in a task specification "
-                             "(RM 9.1)");
+                             "");
           Node_List_Push (&node->task_spec.entries, Parse_Entry_Declaration (p));
         } else if (Parser_At (p, TK_PRAGMA)) {
           Node_List_Push (&node->task_spec.entries, Parse_Pragma (p));
@@ -11743,7 +11743,7 @@ void Type_Become (Type *entity, const Type *definition) {
   if (not entity or not definition) return;
   entity->full_view_arrived    = true;
   /* A discriminant-constrained subtype taken on an incomplete type before
-     its full declaration (RM 3.8.1) is a separate Type object, snapshotted
+     its full declaration is a separate Type object, snapshotted
      at the point of the constraint so the deferred check it stands for
      (Emit_Incomplete_Deferred_Disc_Checks) can be emitted later; the
      snapshot predates this completion and is never otherwise revisited,
@@ -13708,7 +13708,7 @@ void Check_Name_Is_Unambiguous (Interp_List *interps,
         Report_Error (construct,
                       "'%.*s' is ambiguous: more than one declaration of it "
                       "is a possible interpretation here and the context does "
-                      "not determine which (RM 8.7)",
+                      "not determine which",
                       (int) name.length, name.data);
         return;
       }
@@ -14363,7 +14363,7 @@ Symbol *Resolve_Entry_Rename_Overloaded_Prefix (Node *renamed,
     Report_Node_Error (renamed,
                   "'%.*s' is ambiguous: more than one visible entry of this "
                   "name has the renaming's profile, and a renaming declaration "
-                  "is legal only if exactly one does (RM 8.5)",
+                  "is legal only if exactly one does",
                   (int) renamed->selected.selector.length,
                   renamed->selected.selector.data);
   return settled;
@@ -14432,7 +14432,7 @@ bool Resolve_Enclosing_Construct_Selector (Node *node) {
   if (more_than_one) {
     Report_Node_Error (node,
       "'%.*s' names more than one enclosing subprogram or accept statement, "
-      "so this expanded name is ambiguous (RM 4.1.3)",
+      "so this expanded name is ambiguous",
       (int) prefix->string_val.text.length, prefix->string_val.text.data);
     prefix->symbol = innermost;
     node->type     = sm->type_integer;
@@ -15024,7 +15024,7 @@ Type *Resolve_Apply_On_Type_Mark (Node *apply,
     const char *forbidden = Type_Conversion_Forbids_Form (operand);
     if (forbidden)
       Report_Node_Error (operand,
-                    "the operand of a type conversion must not be %s (RM 4.6)",
+                    "the operand of a type conversion must not be %s",
                     forbidden);
     if (operand and operand->type == sm->type_universal_fixed)
       operand->type = type_mark->type;
@@ -15057,7 +15057,7 @@ Type *Resolve_Apply_As_Slice (Node *apply,
   if (count != 1 or (dimensions and dimensions != 1))
     Report_Node_Error (apply,
       "a slice takes one discrete range and a prefix of a one-dimensional "
-      "array type (RM 4.1.2)");
+      "array type");
 
   Type *index_type =
     (array_type->kind == TYPE_ARRAY and array_type->array.indices)
@@ -15068,7 +15068,7 @@ Type *Resolve_Apply_As_Slice (Node *apply,
     Resolve_Discrete_Range_In_Context (argument, index_type);
     Check_Discrete_Range_Type (argument, index_type,
                                "the discrete range of a slice has the index "
-                               "type of the array (RM 4.1.2)");
+                               "type of the array");
   }
   return apply->type;
 }
@@ -15699,7 +15699,7 @@ void Range_Attribute_Endpoints (Node  *range,
       Report_Node_Error (range,
                     "the prefix of 'RANGE must be an array type, an array "
                     "object, or an access value designating an array "
-                    "(RM 3.6.2)");
+                    "");
   }
 
   Node *first = Node_New (NK_ATTRIBUTE, range->location);
@@ -15784,7 +15784,7 @@ void Analyze_Identifier (Node *n) {
       Report_Node_Error (n,
                     "'%.*s' is visible by selection only here: it is a %s of "
                     "the declaration being written, and hides every outer "
-                    "declaration of that identifier (RM 8.3)",
+                    "declaration of that identifier",
                     (int) n->string_val.text.length, n->string_val.text.data,
                     by_selection->kind == SYMBOL_COMPONENT ? "component"
                                                            : "declaration");
@@ -15800,7 +15800,7 @@ void Analyze_Identifier (Node *n) {
                     "'%.*s' is declared in the visible part of more than one "
                     "package named by a use clause, and none of those "
                     "declarations is directly visible here; name it by an "
-                    "expanded name (RM 8.4)",
+                    "expanded name",
                     (int) n->string_val.text.length, n->string_val.text.data);
       n->symbol = NULL;
       n->type = sm->type_integer;
@@ -16051,7 +16051,7 @@ bool Fixed_Row_Awaiting_Its_Context (Token_Kind op,
    division operators, with an operand of the predefined type INTEGER, are
    predefined" -- implicitly declared immediately after the type, in the
    same declarative region, exactly like the type's other predefined
-   operators (RM 3.3.3).  RM 6.7's "An operator is directly visible if and
+   operators.  RM 6.7's "An operator is directly visible if and
    only if the corresponding operator declaration is directly visible"
    therefore applies to it: outside the region that declares the fixed
    point type, and without a use clause, the operator is visible only by
@@ -16599,7 +16599,7 @@ Type *Resolve_In_Context (Node *n, Type *ctx) {
     if (mixed and not universal_involved)
       Report_Node_Error (n,
                     "the operands of \"%.*s\" are ambiguous: more than one "
-                    "type satisfies this context (RM 8.7)",
+                    "type satisfies this context",
                     (int) Operator_Name (n->binary.op).length,
                     Operator_Name (n->binary.op).data);
   }
@@ -16817,7 +16817,7 @@ void Check_Self_Determined_Discrete_Range (Node *discrete_range) {
       and not Type_Is_Universal_Integer (stated)
       and not Type_Has_Discrete_Representation (stated)) {
     Report_Node_Error (discrete_range,
-      "a discrete range is of a discrete type (RM 3.6.1)");
+      "a discrete range is of a discrete type");
     return;
   }
 
@@ -16833,13 +16833,13 @@ void Check_Self_Determined_Discrete_Range (Node *discrete_range) {
         Report_Error (bounds[b]->location,
           "both bounds are of universal_integer, and the implicit "
           "conversion to INTEGER is assumed only where each bound is a "
-          "numeric literal, a named number or an attribute (RM 3.6.1)");
+          "numeric literal, a named number or an attribute");
     return;
   }
   Check_Discrete_Range_Type (discrete_range,
                              Discrete_Range_Type (discrete_range),
                              "both bounds of this discrete range must be of "
-                             "the same discrete type (RM 3.6.1)");
+                             "the same discrete type");
 }
 
 bool Node_Is_A_Discrete_Range (Node *node) {
@@ -16870,14 +16870,14 @@ void Check_Index_Constraint_Against_Base (Type   *base_type,
       Report_Error (written ? written->location : constraint->location,
         "an index constraint provides a discrete range for each index: a "
         "range, a discrete subtype indication, or a type mark denoting a "
-        "discrete subtype (RM 3.6.1)");
+        "discrete subtype");
       continue;
     }
     Check_Discrete_Range_Type (written,
                                base_type->array.indices[i].index_type,
                                "a discrete range of an index constraint has "
                                "the type of the corresponding index "
-                               "(RM 3.6.1)");
+                               "");
   }
 }
 
@@ -16959,7 +16959,7 @@ Type *Constrain_Scalar_By_Range (Type *base_type,
 
   Check_Discrete_Range_Type (range, base_type,
                              "a range constraint's bounds have the base type "
-                             "of the type mark they constrain (RM 3.5)");
+                             "of the type mark they constrain");
 
   if (range->kind == NK_RANGE and Type_Is_Numeric (base_type)) {
     bool base_real = Type_Is_Real (base_type);
@@ -17033,7 +17033,7 @@ Type *Constrain_Record_By_Discriminants (Type *disc_target,
     if (dtype and vexpr->type and not Operand_Type_Is (dtype, vexpr->type))
       Report_Node_Error (vexpr,
         "the expression of a discriminant association has the type of the "
-        "discriminant it gives a value to (RM 3.7.2)");
+        "discriminant it gives a value to");
   }
 
   Type *rec_base = disc_target;
@@ -18103,7 +18103,7 @@ void Check_Qualified_Operand_Type (Node *type_mark,
   if (Operand_Type_Is (type_mark->type, operand->type)) return;
   Report_Node_Error (operand,
                 "the operand of a qualified expression must have the base "
-                "type of the type mark (RM 4.7)");
+                "type of the type mark");
 }
 
 Type *Allocator_Written_Subtype (Node *node) {
@@ -18168,7 +18168,7 @@ Type *Resolve_Expression (Node *node) {
           Type_Is_Character_Type (node->type->array.element_type))
         Report_Node_Error (node,
           "a string literal denotes a value of a one-dimensional array type "
-          "of a character type; '%.*s' has more than one index (RM 3.6.3)",
+          "of a character type; '%.*s' has more than one index",
           (int) node->type->name.length, node->type->name.data);
       if (not Flexible_Can_Denote (node, node->type))
         node->type = sm->type_string;
@@ -19538,14 +19538,14 @@ u32 Resolve_Parameter_Profile (Node_List *specs, Parameter_Info **out,
       if (forbidden)
         Report_Node_Error (forbidden,
                       "'%.*s' denotes a formal parameter of this formal part, "
-                      "which a default expression may not name (RM 6.1)",
+                      "which a default expression may not name",
                       (int) forbidden->symbol->name.length,
                       forbidden->symbol->name.data);
       else if (not Declared_Type_Admits_Value (parameter_type,
                                                default_expr->type))
         Report_Node_Error (default_expr,
                       "the default expression is not of the type of the "
-                      "formal parameter (RM 6.1)");
+                      "formal parameter");
     }
 
     for (u32 j = 0; j < spec->param_spec.names.count; j++) {
@@ -19673,7 +19673,7 @@ void Check_Statement_Name_Is_Visible_Where_Written (Symbol *name,
     return;
   Report_Error (name->location,
                 "'%.*s' is declared at the end of the enclosing declarative "
-                "part (RM 5.1) and an inner declaration of the same "
+                "part and an inner declaration of the same "
                 "identifier hides it here",
                 (int) name->name.length, name->name.data);
 }
@@ -20031,7 +20031,7 @@ void Select_Expanded_Call_Name_Reading (Node *name) {
     Report_Node_Error (name,
                   "'%.*s' is ambiguous: more than one declaration of it can "
                   "be called with no actual parameter part and the context "
-                  "does not determine which (RM 8.7)",
+                  "does not determine which",
                   (int) admitted->name.length, admitted->name.data);
     return;
   }
@@ -20074,7 +20074,7 @@ void Resolve_Procedure_Call_Statement (Node *node) {
       not Symbol_Is_Called_As_A_Statement (target->symbol))
     Report_Node_Error (target,
                   "'%.*s' does not denote a procedure or an entry, so it is "
-                  "not the name of a call statement (RM 6.4)",
+                  "not the name of a call statement",
                   (int) target->symbol->name.length,
                   target->symbol->name.data);
 }
@@ -20142,7 +20142,7 @@ void Require_Determinable_Case_Expression (Node *expression) {
   if (discrete_count > 1)
     Report_Node_Error (expression,
                   "the type of the expression of a case statement must be "
-                  "determinable from the expression alone (RM 5.4)");
+                  "determinable from the expression alone");
 }
 
 void Resolve_Loop_Statement (Node *node) {
@@ -20488,20 +20488,20 @@ void Resolve_Code_Statement (Node *node) {
       Report_Node_Error (node,
                     "a qualified expression is a statement only as a code "
                     "statement, ASM_INSN'(ASM (...)) with ASM_INSN from the "
-                    "predefined package MACHINE_CODE (RM 13.8)");
+                    "predefined package MACHINE_CODE");
       return;
     }
     if (not Statement_Sequence_Holds (Machine_Code_Home_Statement_Sequence,
                                       node))
       Report_Node_Error (node,
                     "a code statement is only allowed in the sequence of "
-                    "statements of a procedure body (RM 13.8)");
+                    "statements of a procedure body");
   }
 
   if (not Apply_Names_The_Asm_Intrinsic (call)) {
     Report_Node_Error (node,
                   "a code statement calls ASM from the predefined package "
-                  "MACHINE_CODE (RM 13.8)");
+                  "MACHINE_CODE");
     return;
   }
 
@@ -20573,7 +20573,7 @@ void Check_Machine_Code_Procedure_Body (Node *body) {
       continue;
     Report_Node_Error (statement,
                   "a procedure body that contains a code statement admits no "
-                  "other form of statement (RM 13.8)");
+                  "other form of statement");
   }
 
   Node_List *declarations = &body->subprogram_body.declarations;
@@ -20584,14 +20584,14 @@ void Check_Machine_Code_Procedure_Body (Node *body) {
       continue;
     Report_Node_Error (declaration,
                   "a procedure body that contains a code statement admits no "
-                  "declarative item but a use clause (RM 13.8)");
+                  "declarative item but a use clause");
   }
 
   Node_List *handlers = &body->subprogram_body.handlers;
   if (handlers->count > 0)
     Report_Error (handlers->items[0]->location,
                   "a procedure body that contains a code statement admits no "
-                  "exception handler (RM 13.8)");
+                  "exception handler");
 }
 
 void Resolve_Statement (Node *node) {
@@ -20892,7 +20892,7 @@ void Resolve_Statement (Node *node) {
       if (expression and not Type_Covers_Strict (sm->type_duration, expression->type))
         Report_Node_Error (expression,
                       "the expression of a delay statement must be of the "
-                      "predefined fixed point type DURATION (RM 9.6)");
+                      "predefined fixed point type DURATION");
     }          break;
     case NK_ABORT:             {
       if (Active_Restrictions & RESTRICT_NO_ABORT_STATEMENTS)
@@ -21536,7 +21536,7 @@ void Check_Type_Mark_Denotes_A_Type (Node *mark_node) {
   if (mark->kind != SYMBOL_TYPE and mark->kind != SYMBOL_SUBTYPE) {
     Report_Node_Error (mark_node,
                   "'%.*s' does not denote a type or a subtype and is no "
-                  "type mark (RM 3.3.2)",
+                  "type mark",
                   (int) mark->name.length, mark->name.data);
     return;
   }
@@ -21599,7 +21599,7 @@ void Declare_Discriminants (Node_List *discriminants,
       Report_Node_Error (specification,
                     "a default expression must be given for every "
                     "discriminant of a discriminant part or for none of "
-                    "them, and another discriminant here has one (RM 3.7.1)");
+                    "them, and another discriminant here has one");
 
     Type *discriminant_type = sm->type_integer;
     if (specification->discriminant.disc_type) {
@@ -21617,7 +21617,7 @@ void Declare_Discriminants (Node_List *discriminants,
                     PREFIX_ENTITY_TYPE_MARK))
         Report_Node_Error (mark,
           "a discriminant's type must be named by a type mark; this name "
-          "denotes %s (RM 3.3.2)",
+          "denotes %s",
           Prefix_Entity_Description (Prefix_Entity_Of (mark, ATTRIBUTE_UNKNOWN,
                                                        sm->current_scope)));
     }
@@ -21636,7 +21636,7 @@ void Declare_Discriminants (Node_List *discriminants,
         Report_Node_Error (forbidden,
                       "'%.*s' denotes a discriminant of this discriminant "
                       "part, which a default expression may not name "
-                      "(RM 3.7.1)",
+                      "",
                       (int) forbidden->symbol->name.length,
                       forbidden->symbol->name.data);
       else if (discriminant_type and default_expression->type and
@@ -21730,7 +21730,7 @@ void Check_Operator_Declaration (const Symbol *subprogram,
                                            subprogram->parameter_count))
     Report_Error (location,
                   "\"%.*s\" is %s, so a function that overloads it cannot "
-                  "have %u (RM 6.7)",
+                  "have %u",
                   (int) subprogram->name.length, subprogram->name.data,
                   Operator_Parameter_Count_Rule (operator_token),
                   (unsigned) subprogram->parameter_count);
@@ -21739,7 +21739,7 @@ void Check_Operator_Declaration (const Symbol *subprogram,
     if (subprogram->parameters[i].default_value) {
       Report_Error (location,
                     "a parameter of the operator \"%.*s\" cannot have a "
-                    "default expression (RM 6.7)",
+                    "default expression",
                     (int) subprogram->name.length, subprogram->name.data);
       break;
     }
@@ -21751,7 +21751,7 @@ void Check_Operator_Declaration (const Symbol *subprogram,
     if (renamed and not Slice_Equal_Ignore_Case (renamed->name, S("=")))
       Report_Error (location,
                     "a renaming declaration whose designator is \"=\" may "
-                    "only rename another equality operator (RM 6.7); "
+                    "only rename another equality operator; "
                     "'%.*s' is not one",
                     (int) renamed->name.length, renamed->name.data);
     return;
@@ -21765,7 +21765,7 @@ void Check_Operator_Declaration (const Symbol *subprogram,
     return;
   Report_Error (location,
                 "an explicit declaration of \"=\" is only allowed if both "
-                "parameters are of the same limited type (RM 6.7)");
+                "parameters are of the same limited type");
 }
 
 
@@ -21975,7 +21975,7 @@ void Check_Renaming_Parameter_Modes (const Symbol *renaming,
     Report_Error (location,
                   "the mode of parameter '%.*s' is not the mode of the "
                   "parameter it renames at the same position; parameter "
-                  "modes must be identical (RM 8.5)",
+                  "modes must be identical",
                   (int) written.length, written.data);
   }
 }
@@ -22452,7 +22452,7 @@ void Resolve_Generic_Instantiation (Node *node) {
             not (denoted and Symbol_Denotes_A_Type_Mark (denoted)))
           Report_Node_Error (mark,
                         "actual for a generic formal type must be a type mark "
-                        "(RM 12.3)");
+                        "");
         binding->actual_type = mark->type;
       }
     }
@@ -22966,7 +22966,7 @@ void Apply_Address_Clause (Node *node, Symbol *target) {
   if (Instantiating_Template_Count == 0 and not Compilation_Unit_Names_System ())
     Report_Node_Error (node,
                   "an address clause requires a with clause naming SYSTEM to "
-                  "apply to this compilation unit (RM 13.5)");
+                  "apply to this compilation unit");
 
   if (not Address_Clause_Is_Legal (node, target)) return;
 
@@ -23766,10 +23766,10 @@ void Resolve_Declaration (Node *node) {
            place within the access type's own immediate scope and after
            this declaration's full type declaration, exactly as it already
            does for a private type.  A private type declaration is only
-           ever legal within a package specification (RM 7.4), so
+           ever legal within a package specification, so
            Outside_Defining_Package's "no defining package" case is never
            exercised for one; an incomplete type declaration is legal
-           anywhere (RM 3.8.1), and outside a package there is no client
+           anywhere, and outside a package there is no client
            the two-view model has to shield anything from, so the gate is
            only recorded when a package actually encloses this
            declaration. */
@@ -24015,7 +24015,7 @@ void Resolve_Declaration (Node *node) {
               Report_Node_Error (node,
                             "the specification of '%.*s' did not compile, so "
                             "the library holds no unit for this body to "
-                            "complete (RM 10.3)",
+                            "complete",
                             (int) pkg_name.length, pkg_name.data);
           }
           if (not pkg_sym) {
@@ -24337,7 +24337,7 @@ void Resolve_Compilation_Unit (Node *node) {
       if (abbreviated)
         Report_Node_Error (parent,
           "parent unit '%.*s' is itself a subunit, so its name must be "
-          "given in full as the expanded name '%.*s' (RM 10.2)",
+          "given in full as the expanded name '%.*s'",
           (int)shown.length, shown.data,
           (int)abbreviated->unit_name.length, abbreviated->unit_name.data);
       else
@@ -24579,7 +24579,7 @@ void Check_Access_Prefix_Is_Not_An_Out_Parameter (Node *node) {
   if (not Name_Reaches_An_Out_Parameter (prefix)) return;
   Report_Node_Error (prefix,
                 "a prefix of an access type must not denote a formal "
-                "parameter of mode OUT or a subcomponent of one (RM 4.1)");
+                "parameter of mode OUT or a subcomponent of one");
 }
 
 void Check_Out_Parameter_Is_Not_Read (Node      *node,
@@ -24590,7 +24590,7 @@ void Check_Out_Parameter_Is_Not_Read (Node      *node,
 
   Report_Node_Error (node,
                 "a formal parameter of mode OUT may not be read; only the "
-                "bounds and the discriminants of one may (RM 6.2)");
+                "bounds and the discriminants of one may");
 }
 
 void Check_Actual_Parameter_Variables (Symbol *callee,
@@ -24613,7 +24613,7 @@ void Check_Actual_Parameter_Variables (Symbol *callee,
       Report_Node_Error (actual,
                     "the actual for formal '%.*s' of mode %s must not be a "
                     "formal parameter of mode OUT or a subcomponent of one "
-                    "(RM 6.2)",
+                    "",
                     (int) reached.length, reached.data,
                     profile_view->parameters[formal].mode == MODE_IN
                       ? "IN" : "IN OUT");
@@ -24630,7 +24630,7 @@ void Check_Actual_Parameter_Variables (Symbol *callee,
       Report_Node_Error (actual,
                     "the type mark of an actual written as a type conversion "
                     "must conform to '%.*s', the type mark of formal '%.*s' "
-                    "(RM 6.4.1)",
+                    "",
                     (int) declared->name.length, declared->name.data,
                     (int) profile_view->parameters[formal].name.length,
                     profile_view->parameters[formal].name.data);
@@ -24641,7 +24641,7 @@ void Check_Actual_Parameter_Variables (Symbol *callee,
     String_Slice formal_name = profile_view->parameters[formal].name;
     Report_Error (actual ? actual->location : argument->location,
                   "the actual for formal '%.*s' of mode %s must be the name "
-                  "of a variable (RM 6.4.1)",
+                  "of a variable",
                   (int) formal_name.length, formal_name.data,
                   profile_view->parameters[formal].mode == MODE_OUT
                     ? "OUT" : "IN OUT");
@@ -25198,7 +25198,7 @@ void Check_Formal_Part_Subtype (Node *written,
   if (not written or Node_In_Any_Class (written, NODE_CLASS_SIMPLE_OR_EXPANDED_NAME)) return;
   Report_Node_Error (written,
                 "%s is given by a type mark; nothing else is allowed "
-                "within a generic formal part (RM 12.1)", position);
+                "within a generic formal part", position);
 }
 
 
@@ -25209,7 +25209,7 @@ void Check_Formal_Type_Discriminant_Part (Node *formal) {
   if (not Generic_Formal_Is_Private (formal->generic_type_param.def_kind)) {
     Report_Error (discriminants->items[0]->location,
                   "only a generic formal private type may have a "
-                  "discriminant part (RM 12.1)");
+                  "discriminant part");
     return;
   }
   for (u32 i = 0; i < discriminants->count; i++) {
@@ -25218,7 +25218,7 @@ void Check_Formal_Type_Discriminant_Part (Node *formal) {
         discriminant->discriminant.default_expr)
       Report_Error (discriminant->discriminant.default_expr->location,
                     "a discriminant of a generic formal private type cannot "
-                    "have a default expression (RM 12.1.2)");
+                    "have a default expression");
   }
 }
 
@@ -25578,7 +25578,7 @@ void Check_Allocator_Constraint_Form (Node *node) {
     return;
   Report_Node_Error (constraint,
                 "an allocator's subtype indication may give only an index "
-                "constraint or a discriminant constraint (RM 4.8)");
+                "constraint or a discriminant constraint");
 }
 
 
@@ -25798,7 +25798,7 @@ void Check_Function_Body_Returns (Node *body) {
                                     : (String_Slice){NULL, 0};
   Report_Error (body->subprogram_body.end_location,
                 "the statements of function '%.*s' include no return "
-                "statement specifying the returned value (RM 6.5)",
+                "statement specifying the returned value",
                 (int) name.length, name.data);
 }
 
@@ -26577,7 +26577,7 @@ void Check_Object_Renaming_Renames_An_Object (Node *node) {
     Report_Node_Error (renamed,
                   "an object renaming declaration cannot rename an "
                   "attribute: an attribute denotes a value, not an object "
-                  "(RM 8.5)");
+                  "");
     return;
   }
   if (not renamed->symbol) return;
@@ -26600,7 +26600,7 @@ void Check_Object_Renaming_Type_Mark (Node *node) {
 
   Report_Node_Error (renamed,
                 "a renamed object must be of the base type of the type mark "
-                "(RM 8.5)");
+                "");
 }
 
 
@@ -26645,7 +26645,7 @@ void Check_Discriminant_Name_Occurrences (
     Report_Node_Error (node,
       "the discriminant '%.*s' may only be named in a component's default "
       "expression, as a variant part's discriminant, or by itself as an "
-      "index or discriminant constraint's expression (RM 3.7.1)",
+      "index or discriminant constraint's expression",
       (int) node->symbol->name.length, node->symbol->name.data);
 
   Discriminant_Name_Position below =
@@ -26742,7 +26742,7 @@ void Check_Statement_Names_Are_Distinct (Node *body) {
             Node_Statement_Name (declared.items[earlier]), name)) {
         Report_Error (declared.items[i]->location,
                       "'%.*s' is already the name of a label, a loop or a "
-                      "block in this program unit (RM 5.1)",
+                      "block in this program unit",
                       (int) name.length, name.data);
         break;
       }
@@ -27256,7 +27256,7 @@ void Check_Library_Package_Body_Has_Its_Declaration (Node *cu) {
       Report_Node_Error (unit,
                     "'%.*s' is a generic instantiation, and an instance "
                     "takes its body from the generic body, so no package "
-                    "body may be given for it (RM 12.3)",
+                    "body may be given for it",
                     (int) unit->package_body.name.length,
                     unit->package_body.name.data);
       return;
@@ -27408,7 +27408,7 @@ void Check_Body_Stub_Placement (Node *node,
     if (not Body_Stub_Is_At_Home (home, node))
       Report_Node_Error (node,
                     "a body stub is only allowed immediately within the "
-                    "declarative part of a compilation unit (RM 10.2)");
+                    "declarative part of a compilation unit");
     return;   
   }
   for (const Syntax_Tree_Edge *edge = Syntax_Tree_Shape[node->kind];
@@ -27435,7 +27435,7 @@ void Check_Body_Stub_Names (const Body_Stub_Home *home) {
       if (Token_From_Op_Name (name) != TK_EOF) {
         Report_Node_Error (stub,
                       "a subunit is named by an identifier, so \"%.*s\" "
-                      "cannot be given a body stub (RM 10.2)",
+                      "cannot be given a body stub",
                       (int) name.length, name.data);
         continue;
       }
@@ -27443,7 +27443,7 @@ void Check_Body_Stub_Names (const Body_Stub_Home *home) {
         if (Slice_Equal_Ignore_Case (Body_Stub_Simple_Name (seen[j]), name)) {
           Report_Node_Error (stub,
                         "'%.*s' already names a subunit of this compilation "
-                        "unit; subunit names must be distinct (RM 10.2)",
+                        "unit; subunit names must be distinct",
                         (int) name.length, name.data);
           break;
         }
@@ -27484,7 +27484,7 @@ void Check_Subunit_Has_Its_Body_Stub (Node *compilation_unit) {
   String_Slice parent_name = Flatten_Dotted_Name (
     compilation_unit->compilation_unit.separate_parent);
   Report_Error (compilation_unit->compilation_unit.separate_parent->location,
-    "'%.*s' gives no body stub for the subunit '%.*s' (RM 10.2)",
+    "'%.*s' gives no body stub for the subunit '%.*s'",
     (int) parent_name.length, parent_name.data,
     (int) simple_name.length, simple_name.data);
 }
@@ -27510,7 +27510,7 @@ void Check_Operand_Is_A_Primary (Node *operand, Scope *vantage) {
     Report_Node_Error (operand,
                   "this name denotes %s, and only a name that denotes an "
                   "object, a value or a named number is allowed as a primary "
-                  "(RM 4.4)", denoted);
+                  "", denoted);
 }
 
 
@@ -27522,7 +27522,7 @@ void Check_Concatenation_Operands (Node *node) {
   if ((Type_Is_String (result) ? 1u : result->array.index_count) != 1u) {
     Report_Node_Error (node,
                   "\"&\" is predefined only for a one-dimensional array type "
-                  "(RM 4.5.3)");
+                  "");
     return;
   }
 
@@ -27539,7 +27539,7 @@ void Check_Concatenation_Operands (Node *node) {
                        Type_Covers (operand->type, component))) continue;
     Report_Node_Error (operand,
                   "an operand of \"&\" must be of the array type or of its "
-                  "component type (RM 4.5.3)");
+                  "component type");
   }
 }
 
@@ -27587,14 +27587,14 @@ void Check_Goto_Statement (Node *node,
         Report_Node_Error (node,
                       "a goto statement cannot transfer control out of an "
                       "accept statement or the body of a program unit "
-                      "(RM 5.9)");
+                      "");
       return;
     }
     if (link->confines_transfer_of_control) left_a_confining_construct = true;
   }
   Report_Node_Error (node,
                 "the sequence of statements that encloses the label '%.*s' "
-                "does not enclose this goto statement (RM 5.9)",
+                "does not enclose this goto statement",
                 (int) target->name.length, target->name.data);
 }
 
@@ -27629,7 +27629,7 @@ void Check_Identifier_Denotes_Nothing_Here (Node *node,
       Slice_Equal_Ignore_Case (node->string_val.text, identifier))
     Report_Node_Error (node,
                   "'%.*s' is declared by this %s and denotes nothing within "
-                  "it (RM 8.3)",
+                  "it",
                   (int) identifier.length, identifier.data, construct);
 
   Node_List *declared = Specification_Declared_Identifiers (node);
@@ -27902,7 +27902,7 @@ void Check_Body_Specification_Conforms (Node *body) {
 
   Report_Error (difference ? difference->location : written->location,
                 "the specification of this body does not conform to the "
-                "specification of the declaration of '%.*s' (RM 6.3.1)",
+                "specification of the declaration of '%.*s'",
                 (int) written->subprogram_spec.name.length,
                 written->subprogram_spec.name.data);
 }
@@ -27921,7 +27921,7 @@ void Check_Accept_Formal_Part_Conforms (Node *accept) {
   Report_Error (difference ? difference->location : accept->location,
                 "the formal part of this accept statement does not conform "
                 "to the formal part of the declaration of entry '%.*s' "
-                "(RM 6.3.1)",
+                "",
                 (int) accept->accept_stmt.entry_name.length,
                 accept->accept_stmt.entry_name.data);
 }
@@ -27941,7 +27941,7 @@ void Check_Incomplete_Type_Discriminant_Parts (Node *incomplete,
   Report_Error (difference ? difference->location : full->location,
                 "the discriminant part of the full declaration of '%.*s' "
                 "does not conform to the one given with its incomplete type "
-                "declaration (RM 3.8.1)",
+                "declaration",
                 (int) incomplete->type_decl.name.length,
                 incomplete->type_decl.name.data);
 }
@@ -27987,7 +27987,7 @@ void Check_Private_Part_Incomplete_Type_Constraints (Node *package_spec) {
         "a discriminant constraint cannot be applied to the incomplete "
         "type '%.*s' here: its full declaration is not given in this "
         "private part, so it can only be completed in the package body, "
-        "which a client of the package never sees (RM 3.8.1, AI-83-00007)",
+        "which a client of the package never sees",
         (int) name.length, name.data);
       constrained_use_found = true;
     }
@@ -27995,7 +27995,7 @@ void Check_Private_Part_Incomplete_Type_Constraints (Node *package_spec) {
       Report_Error (package_spec->declarative_part_end,
         "the private part applies a discriminant constraint to the "
         "incomplete type '%.*s', whose full declaration is not given in "
-        "this private part (RM 3.8.1, AI-83-00007)",
+        "this private part",
         (int) name.length, name.data);
   }
 }
@@ -28014,7 +28014,7 @@ void Check_Universal_Fixed_Is_Converted (Node *node) {
   Report_Node_Error (node,
                 "the result of multiplying or dividing one fixed point value "
                 "by another must be explicitly converted to a numeric type "
-                "(RM 4.5.5)");
+                "");
 }
 
 void Check_Legality_Of_Node (Node *node,
@@ -28331,11 +28331,11 @@ void Check_Legality_Of_Node (Node *node,
           not Node_Is_Variable_Name (node->assignment.target))
         Report_Error (node->assignment.target->location,
                       "the target of an assignment must be the name of a "
-                      "variable (RM 5.2)");
+                      "variable");
       if (Statement_Is_Entry_Call (node->assignment.value))
         Report_Error (node->assignment.value->location,
                       "an entry call is a statement and yields no value, so "
-                      "it is not an expression (RM 9.5)");
+                      "it is not an expression");
       break;
     case NK_AGGREGATE:
       Check_Others_Choice                 (node, others_context);
@@ -28359,7 +28359,7 @@ void Check_Legality_Of_Node (Node *node,
                 subtype and Type_Is_Limited (subtype->type))
               Report_Node_Error (subtype,
                             "a generic formal object of mode IN cannot be of a "
-                            "limited type (RM 12.1.1)");
+                            "limited type");
           } break;
           case NK_GENERIC_TYPE_PARAM:   {
             Check_Formal_Type_Discriminant_Part (formal);
@@ -28420,7 +28420,7 @@ void Check_Legality_Of_Node (Node *node,
         Report_Error (node->object_decl.init->location,
                       "an object renaming declaration cannot rename a "
                       "subcomponent that depends on the discriminants of a "
-                      "variable of an unconstrained type (RM 8.5)");
+                      "variable of an unconstrained type");
       break;
     case NK_TYPE_DECL: case NK_SUBTYPE_DECL:
       {
@@ -28556,7 +28556,7 @@ void Check_Legality_Of_Node (Node *node,
             Report_Error (difference ? difference->location : full->location,
                           "the discriminant part of the full declaration of '%.*s' "
                           "does not conform to the one given with its private type "
-                          "declaration (RM 7.4.1)",
+                          "declaration",
                           (int) full->type_decl.name.length,
                           full->type_decl.name.data);
           else if (not full->type_decl.definition or
@@ -28564,7 +28564,7 @@ void Check_Legality_Of_Node (Node *node,
             Report_Node_Error (full,
                           "'%.*s' is declared private with a discriminant part, so "
                           "its full declaration must be a record type definition "
-                          "(RM 7.4.1)",
+                          "",
                           (int) full->type_decl.name.length,
                           full->type_decl.name.data);
         }
@@ -28639,7 +28639,7 @@ void Check_Separately_Compiled_Designator (Node *node) {
     return;
   Report_Node_Error (unit,
     "the designator of a separately compiled subprogram must be an "
-    "identifier, and \"%.*s\" is an operator symbol (RM 10.1)",
+    "identifier, and \"%.*s\" is an operator symbol",
     (int) designator.length, designator.data);
 }
 
@@ -30365,7 +30365,7 @@ void Emit_Collection_Budget_Debit (Type *access_type, u32 size64) {
   Emit_Result (
     "atomicrmw add ptr @__rt_sscap_%u, i64 %s seq_cst"
     "  ; refund the debit\n",  gid,  REGISTER_TEXT (size64));
-  Emit_Raise_Exception ("storage_error", "collection exhausted (RM 13.2)");
+  Emit_Raise_Exception ("storage_error", "collection exhausted");
   Emit_Label_Here (ok_label);
 }
 
@@ -30387,7 +30387,7 @@ void Emit_Storage_Error_If_Oversized_Static (u64 bytes) {
     (unsigned long long) bytes, (unsigned) MAX_STACK_OBJECT_BYTES) };
   Emit_Runtime_Check (permission, Check_Fails_When (too_large),
                       EXCEPTION_KIND_STORAGE_ERROR,
-                      "object too large for the stack (RM 11.1)");
+                      "object too large for the stack");
 }
 
 
@@ -30524,7 +30524,7 @@ u32 Emit_Index_Check (LLVM_Value index_v,
   Emit_Runtime_Check (permission,
                       Check_Join (Check_Fails_When (below_low),
                                   Check_Fails_When (above_high)),
-                      EXCEPTION_KIND_CONSTRAINT_ERROR, "index check failed (RM 4.1.1)");
+                      EXCEPTION_KIND_CONSTRAINT_ERROR, "index check failed");
   return index_value.reg;
 }
 
@@ -30643,7 +30643,7 @@ void Emit_Slice_Bound_Check (u32 slice_lo, u32 slice_hi,
   LLVM_I1 is_not_null = Emit_Icmp ("sle", iat, slice_lo, slice_hi);
   Emit_Runtime_Check (permission, Check_Only_When (outside, is_not_null),
                       EXCEPTION_KIND_CONSTRAINT_ERROR,
-                      "slice bound outside array (RM 4.1.2)");
+                      "slice bound outside array");
 }
 
 void Emit_Length_Check (u32 src_length, u32 dst_length,
@@ -30710,7 +30710,7 @@ u32 Emit_Constraint_Check_Internal (u32 val, LLVM_Rep val_rep,
        representation -- but the value examined here is the operand as it
        stands before this check, which is only trustworthy for that
        argument when the operand's own representation is no wider than the
-       target's. A wider operand (RM 3.5.4's SYSTEM.MIN_INT .. MAX_INT is
+       target's. A wider operand (SYSTEM.MIN_INT .. MAX_INT is
        exactly a full-range 64-bit target, and INTEGER itself is exactly a
        full-range 32-bit target) can hold a value the target's
        representation cannot, and eliding the check here would let that
@@ -30798,7 +30798,7 @@ void Emit_Range_Within_Mark_Check (Check_Permission permission,
     Emit_Icmp ("sle", rep, constraint_low_temp, constraint_high_temp);
   Emit_Runtime_Check (permission, Check_Only_When (outside, is_not_null),
                       EXCEPTION_KIND_CONSTRAINT_ERROR,
-                      "subtype bound outside type mark (RM 3.5)");
+                      "subtype bound outside type mark");
 }
 
 void Emit_Range_Constraint_Compat_Check (Type_Bound *constraint_low,
@@ -30956,7 +30956,7 @@ void Emit_Component_Constraint_Check (Type *sct, Type *dct) {
       u32 lo_ne = Emit_Icmp ("ne", work, source_low,  destination_low).reg;
       u32 hi_ne = Emit_Icmp ("ne", work, source_high, destination_high).reg;
       u32 differ = Emit_Result ("or i1 %s, %s  ; component range constraint differs\n",  REGISTER_TEXT (lo_ne),  REGISTER_TEXT (hi_ne));
-      Emit_Check_With_Raise (differ, true, "component subtype range constraint mismatch (RM 4.6)");
+      Emit_Check_With_Raise (differ, true, "component subtype range constraint mismatch");
     }
     return;
   }
@@ -30964,13 +30964,13 @@ void Emit_Component_Constraint_Check (Type *sct, Type *dct) {
   if (sct->kind == TYPE_FLOAT and dct->kind == TYPE_FLOAT) {
     if (sct->flt.digits != dct->flt.digits)
       Emit_Check_With_Raise (Emit_I1_Const (1, "float accuracy differs").reg, true,
-                             "component subtype accuracy mismatch (RM 4.6)");
+                             "component subtype accuracy mismatch");
     return;
   }
   if (sct->kind == TYPE_FIXED and dct->kind == TYPE_FIXED) {
     if (sct->fixed.delta != dct->fixed.delta or sct->fixed.small != dct->fixed.small)
       Emit_Check_With_Raise (Emit_I1_Const (1, "fixed accuracy differs").reg, true,
-                             "component subtype accuracy mismatch (RM 4.6)");
+                             "component subtype accuracy mismatch");
     return;
   }
 
@@ -30996,7 +30996,7 @@ void Emit_Component_Constraint_Check (Type *sct, Type *dct) {
       u32 lo_ne = Emit_Icmp ("ne", work, source_low,  destination_low).reg;
       u32 hi_ne = Emit_Icmp ("ne", work, source_high, destination_high).reg;
       u32 differ = Emit_Result ("or i1 %s, %s  ; component array bound differs\n",  REGISTER_TEXT (lo_ne),  REGISTER_TEXT (hi_ne));
-      Emit_Check_With_Raise (differ, true, "component subtype array bound mismatch (RM 4.6)");
+      Emit_Check_With_Raise (differ, true, "component subtype array bound mismatch");
     }
     Emit_Component_Constraint_Check (sct->array.element_type, dct->array.element_type);
     return;
@@ -31019,7 +31019,7 @@ void Emit_Component_Constraint_Check (Type *sct, Type *dct) {
         dv = Emit_Constant_Integer (dct->record.disc_constraint_values[d], work).reg;
       else continue;
       Emit_Check_With_Raise (Emit_Icmp ("ne", work, sv, dv).reg, true,
-                             "component subtype discriminant mismatch (RM 4.6)");
+                             "component subtype discriminant mismatch");
     }
     return;
   }
@@ -31987,7 +31987,7 @@ void Emit_Access_Designated_Disc_Check (u32 acc_val, LLVM_Rep acc_rep,
       LLVM_I1 lo_ne = Emit_Icmp ("ne", bt, actual_lo, exp_lo);
       LLVM_I1 hi_ne = Emit_Icmp ("ne", bt, actual_hi, exp_hi);
       u32 bad = Emit_Result ("or i1 %s, %s\n",  REGISTER_TEXT (lo_ne.reg),  REGISTER_TEXT (hi_ne.reg));
-      Emit_Check_With_Raise (bad, true, "access designated array bounds (RM 4.8)");
+      Emit_Check_With_Raise (bad, true, "access designated array bounds");
     }
   }
   Emit ("  br label %%L%u\n", lbl_end);
@@ -32813,7 +32813,7 @@ void Emit_Elaboration_Check (Symbol *callee) {
   u32 flag = Emit_Elaboration_Flag_Load (guard);
   if (flag)
     Emit_Check_With_Raise_Named (flag, false, "program_error",
-                                 "subprogram body not yet elaborated (RM 3.9)");
+                                 "subprogram body not yet elaborated");
 }
 
 void Emit_Store_Fat_Pointer_Fields_To_Symbol
@@ -33131,7 +33131,7 @@ LLVM_Value Emit_Positional_Literal_Bounds (u32    data_pointer,
     if (index_base and index_base->low_bound.kind == BOUND_INTEGER and
         high_value < index_base->low_bound.int_value) {
       Emit_Raise_And_Continue (
-        "null literal bound outside the index base type (RM 4.3.2)");
+        "null literal bound outside the index base type");
       Emit_Unreachable_Continuation ();
       high_value = low_value;
     }
@@ -33153,7 +33153,7 @@ LLVM_Value Emit_Positional_Literal_Bounds (u32    data_pointer,
       u32 overflowed = Emit_Result (
         "extractvalue {%s, i1} %s, 1\n",  bound_text,  REGISTER_TEXT (pair));
       Emit_Check_With_Raise (overflowed, true,
-        "null literal bound outside the index base type (RM 4.3.2)");
+        "null literal bound outside the index base type");
     } else {
       Emit ("  %s = add %s %s, %d\n",  REGISTER_TEXT (high_register),  bound_text,
             REGISTER_TEXT (low_register),  (int) component_count - 1);
@@ -33823,7 +33823,7 @@ LLVM_Value Convert_Real_To_Fixed (u32 val, double small, LLVM_Rep fix_rep)
 {
   u32 divided = Emit_Scale_By_Small (val, small, true, LLVM_Rep_Float (64));
   return Convert_Double_To_Integer_Representation (
-    divided, fix_rep, "real value outside fixed representation (RM 4.5.7)");
+    divided, fix_rep, "real value outside fixed representation");
 }
 void Emit_Float_Overflow_Check (u32 reg, LLVM_Rep float_rep,
                                 Type *result_type) {
@@ -33838,7 +33838,7 @@ void Emit_Float_Overflow_Check (u32 reg, LLVM_Rep float_rep,
     "fcmp oeq %s %s, 0x7FF0000000000000\n",  fs,  REGISTER_TEXT (magnitude)) };
   Emit_Runtime_Check (permission, Check_Fails_When (infinite),
                       EXCEPTION_KIND_NUMERIC_ERROR,
-                               "real overflow (RM 4.5.7)");
+                               "real overflow");
 }
 
 u32 Emit_Convert_Scalar_To_Type (LLVM_Value value_v, Type *dest, LLVM_Rep dest_rep) {
@@ -34819,7 +34819,7 @@ LLVM_Value Emit_Binary_Op_Predefined (Node *node) {
           LLVM_I1 base_is_zero    = Emit_Fcmp_Zero ("oeq", base_rep, left);
           LLVM_I1 exponent_is_neg = Emit_Icmp_Const ("slt", right_int_type, right, 0);
           Emit_Raise_Constraint_Error_When (Emit_And_I1 (base_is_zero, exponent_is_neg),
-                                            "0.0 ** negative (RM 4.5.6)");
+                                            "0.0 ** negative");
 
           u32 exponent = Emit_Convert_To_Float (Val_Rep (right, right_int_type),
                                                      NULL, base_rep).reg;
@@ -34858,7 +34858,7 @@ LLVM_Value Emit_Binary_Op_Predefined (Node *node) {
           Check_Predicate outside = Check_Join (below, above);
           Emit_Runtime_Check (permission, outside,
                               EXCEPTION_KIND_CONSTRAINT_ERROR,
-                              "exponentiation overflow (RM 4.5.6)");
+                              "exponentiation overflow");
         }
         return Val_Rep (Coerce_To_Rep (t, pow_rep, destination), destination);
       }
@@ -35283,7 +35283,7 @@ void Emit_Entry_Family_Index_Check (Symbol *entry_sym, u32 idx_val) {
     LLVM_I1 below = Emit_Icmp ("slt", iat, idx_val, lo);
     LLVM_I1 above = Emit_Icmp ("sgt", iat, idx_val, hi);
     u32 bad = Emit_Result ("or i1 %s, %s  ; family index out of range\n",  REGISTER_TEXT (below.reg),  REGISTER_TEXT (above.reg));
-    Emit_Check_With_Raise (bad, true, "entry family index out of range (RM 9.5)");
+    Emit_Check_With_Raise (bad, true, "entry family index out of range");
   } else if (constraint and Type_Has_Discrete_Representation (constraint->type)) {
     Emit_Constraint_Check_Val (Val_Rep (idx_val, iat), constraint->type, NULL);
   }
@@ -35450,7 +35450,7 @@ LLVM_Value Emit_Checked_Scalar_Conversion (LLVM_Value value,
             : Emit_Convert (result, result_rep, double_rep).reg;
           LLVM_Value truncated = Convert_Double_To_Integer_Representation (
             widened, Type_To_Rep (dst_type),
-            "real value outside the integer target's representation (RM 4.6)");
+            "real value outside the integer target's representation");
           Emit_Constraint_Check_Val (truncated, dst_type, src_type);
           return truncated;
 
@@ -35576,7 +35576,7 @@ void Emit_Static_Array_Conformance_Check (Type *formal_type,
         Type_Bound_Value (actual_type->array.indices[d].high_bound) !=
         Type_Bound_Value (formal_type->array.indices[d].high_bound)) {
       Emit_Raise_And_Continue (
-        "actual array bounds vs constrained formal (RM 6.4.1)");
+        "actual array bounds vs constrained formal");
       return;
     }
 }
@@ -35599,13 +35599,13 @@ void Emit_Fat_Actual_Conformance_Check (u32 actual_fat,
       u32 differ = Emit_Result (
         "or i1 %s, %s\n",  REGISTER_TEXT (ne_lo.reg),  REGISTER_TEXT (ne_hi.reg));
       Emit_Raise_Constraint_Error_When ((LLVM_I1){ differ },
-        "actual array bounds vs constrained formal (RM 6.4.1)");
+        "actual array bounds vs constrained formal");
     } else {
       u32 a_len = Emit_Fat_Pointer_Length_Dim (actual_fat, abt, d).reg;
       u32 f_len = Emit_Length_From_Bounds (f_lo, f_hi, abt).reg;
       LLVM_I1 ne = Emit_Icmp ("ne", abt, a_len, f_len);
       Emit_Raise_Constraint_Error_When (ne,
-        "actual array length vs constrained formal (RM 6.4.1)");
+        "actual array length vs constrained formal");
     }
   }
 }
@@ -35915,7 +35915,7 @@ void Bind_By_Value_Actual (Symbol *sym, u32 slot,
     if (formal_length < 0) formal_length = 0;
     if ((i128) actual->string_val.text.length != formal_length)
       Emit_Raise_And_Continue (
-        "string literal length vs constrained formal (RM 6.4.1)");
+        "string literal length vs constrained formal");
   }
 
   if (formal_needs_fat and actual_is_constrained) {
@@ -36167,7 +36167,7 @@ LLVM_Value Generate_Conversion_Apply (Node *node, Symbol *sym) {
             i128 i_hi = index_subtype->high_bound.int_value;
             if (s_lo < i_lo or s_lo > i_hi or s_hi < i_lo or s_hi > i_hi)
               Emit_Raise_And_Continue (
-                "array bound outside target index subtype (RM 4.6)");
+                "array bound outside target index subtype");
           }
         } else if (not Type_Has_Dynamic_Bounds (dst_type)) {
           Type_Bound *d_lo_b = &dst_type->array.indices[d].low_bound;
@@ -36178,7 +36178,7 @@ LLVM_Value Generate_Conversion_Apply (Node *node, Symbol *sym) {
               ? d_hi_b->int_value - d_lo_b->int_value + 1 : 0;
             if (src_len != dst_len)
               Emit_Raise_And_Continue (
-                "array conversion length mismatch (RM 4.6)");
+                "array conversion length mismatch");
           }
         }
       }
@@ -36233,7 +36233,7 @@ LLVM_Value Generate_Conversion_Apply (Node *node, Symbol *sym) {
               "and i1 %s, %s  ; non-null dim bound outside index subtype\n",
               REGISTER_TEXT (non_null),  REGISTER_TEXT (out));
             Emit_Check_With_Raise (raise, true,
-              "array bound outside target index subtype (RM 4.6)");
+              "array bound outside target index subtype");
           }
         }
         if (LLVM_Rep_Equal (src_bt, dst_bt)) return result_v;
@@ -36262,11 +36262,11 @@ LLVM_Value Generate_Conversion_Apply (Node *node, Symbol *sym) {
   if (Type_Is_Record (dst_type) and dst_type->record.has_disc_constraints and
       LLVM_Rep_Is_Pointer (result_v.rep))
     Emit_Disc_Match_Checks (dst_type, result_v.reg,
-                            "record conversion discriminant (RM 4.6)");
+                            "record conversion discriminant");
 
   if (Type_Is_Access (dst_type))
     Emit_Access_Subtype_Constraint_Check (result_v.reg, result_v.rep, dst_type,
-      "access conversion constraint (RM 4.6)");
+      "access conversion constraint");
 
   return Emit_Checked_Scalar_Conversion (result_v, src_type, dst_type);
 }
@@ -36424,7 +36424,7 @@ LLVM_Value Generate_Apply (Node *node) {
             LLVM_I1 belongs = { Emit_I1_Const (1, "record actual belongs seed").reg };
             if (Emit_Discriminants_Match (slot_under, arg_val, &belongs))
               Emit_Raise_Constraint_Error_When (Emit_Not_I1 (belongs),
-                "record actual vs constrained formal (RM 6.4.1)");
+                "record actual vs constrained formal");
           }
 
           if (Type_Is_Constrained_Array (slot_under) and not slot_fat_array) {
@@ -36455,7 +36455,7 @@ LLVM_Value Generate_Apply (Node *node) {
               u32 flo_reg = Emit_Constant_Integer (Type_Bound_Value (flo), bound_rep).reg;
               u32 fhi_reg = Emit_Constant_Integer (Type_Bound_Value (fhi), bound_rep).reg;
               Emit_Aggregate_Bound_Match_Check (alo, flo_reg, ahi, fhi_reg,
-                bound_rep, "array actual bounds vs constrained formal (RM 6.4.1)");
+                bound_rep, "array actual bounds vs constrained formal");
             }
           }
         }
@@ -38064,7 +38064,7 @@ LLVM_Value Generate_Attribute (Node *node) {
           : Discrete_Base_Value_Range (prefix_type);
       if (positions.is_known) {
         /* The argument's own representation may be wider than ordinary
-           INTEGER arithmetic (RM 3.5.4 makes SYSTEM.MIN_INT .. MAX_INT a
+           INTEGER arithmetic (SYSTEM.MIN_INT .. MAX_INT is a
            legal integer type definition, and its 'VAL argument can carry
            that full width) -- converting it down to Integer_Arith_Rep ()
            before the range check below would discard exactly the bits
@@ -39537,7 +39537,7 @@ void Emit_Array_Component_Belongs_Check (u32 fat_reg, LLVM_Rep bt,
     u32 mismatch = Emit_Result ("or i1 %s, %s"
       "  ; component bounds vs subtype\n",  REGISTER_TEXT (lo_ne.reg),  REGISTER_TEXT (hi_ne.reg));
     Emit_Raise_Constraint_Error_When ((LLVM_I1){ mismatch },
-      "aggregate component bounds do not equal component subtype (RM 4.3.2)");
+      "aggregate component bounds do not equal component subtype");
   }
 }
 
@@ -40426,14 +40426,14 @@ void Emit_Array_Aggregate_Constraint_Checks (
     Aggregate_Operand high = Aggregate_Operand_From_Index_Constraint (
       agg_type, 0, BOUND_END_HIGH_KIND, rep);
     Emit_Aggregate_Positional_Count_Check (shape->positional_count, low, high, rep,
-      "positional aggregate count vs constraint (RM 4.3.2)");
+      "positional aggregate count vs constraint");
 
     Type *base = agg_type->base_type;
     if (node->parenthesis_depth and Type_Is_Array_Like (base) and
         base->array.index_count > 0 and base->array.indices[0].index_type)
       Emit_Aggregate_Parenthesized_Low_Bound_Check (
         Aggregate_Operand_From_Bound (&base->array.indices[0].index_type->low_bound, rep),
-        low, rep, "parenthesized aggregate bounds vs constraint (RM 4.3.2)");
+        low, rep, "parenthesized aggregate bounds vs constraint");
   }
 
   bool check_first_dimension = shape->has_named and not shape->has_others;
@@ -40447,8 +40447,8 @@ void Emit_Array_Aggregate_Constraint_Checks (
       Aggregate_Operand_From_Bound (&bounds->high[d], rep),
       Aggregate_Operand_From_Index_Constraint (agg_type, d, BOUND_END_LOW_KIND,  rep),
       Aggregate_Operand_From_Index_Constraint (agg_type, d, BOUND_END_HIGH_KIND, rep),
-      rep, d == 0 ? "named aggregate bounds vs constraint (RM 4.3.2)"
-                  : "inner dimension bounds vs constraint (RM 4.3.2)");
+      rep, d == 0? "named aggregate bounds vs constraint"
+                  : "inner dimension bounds vs constraint");
   }
 
   if (not bounds->any_dynamic and Emitted_Definitions (agg_type)->runtime_descriptor > 0 and
@@ -40889,7 +40889,7 @@ LLVM_Value Generate_Array_Aggregate_Body (Node *node, Type *agg_type) {
     u32 mismatch = Emit_Result ("load i1, ptr %s  ; inner mismatch\n",
       REGISTER_TEXT (context.inner_track_mismatch));
     Emit_Raise_Constraint_Error_When ((LLVM_I1){ mismatch },
-      "sub-aggregate bounds mismatch (RM 4.3.2(6))");
+      "sub-aggregate bounds mismatch");
 
     if (agg_type->array.is_constrained) {
       const char *rep_name = LLVM_Rep_Text (context.inner_track_rep);
@@ -40914,7 +40914,7 @@ LLVM_Value Generate_Array_Aggregate_Body (Node *node, Type *agg_type) {
           differs.reg = Emit_Result ("and i1 %s, %s\n",
             REGISTER_TEXT (differs.reg),  REGISTER_TEXT (context.nonnull_guard));
         Emit_Raise_Constraint_Error_When (differs,
-          "inner dimension vs constraint (RM 4.3.2(6))");
+          "inner dimension vs constraint");
       }
     }
     Emit_Label_Here (skip_label);
@@ -41318,7 +41318,7 @@ void Emit_Qualified_Aggregate_Bounds_Check (Node *agg,
   LLVM_I1 hi_ne = Emit_Icmp ("ne", iat, agg_hi, mk_hi);
   u32 bad = Emit_Result ("or i1 %s, %s\n",  REGISTER_TEXT (lo_ne.reg),  REGISTER_TEXT (hi_ne.reg));
   Emit_Check_With_Raise (bad, true,
-    "qualified aggregate bounds (RM 4.3.2, 4.7)");
+    "qualified aggregate bounds");
 }
 
 u32 Emit_Flattened_Array_Size (u32 bounds_ptr, u32 ndim,
@@ -41420,10 +41420,10 @@ void Emit_Alloc_Bound_Check_Dim (Type *tgt_des, u32 dim,
   if (elo == 0 or ehi == 0) return;
   LLVM_I1 clo = Emit_Icmp ("ne", new_bt, actual_lo, elo);
   Emit_Check_With_Raise (clo.reg, true,
-    "alloc fat array lo bound (RM 4.8)");
+    "alloc fat array lo bound");
   LLVM_I1 chi = Emit_Icmp ("ne", new_bt, actual_hi, ehi);
   Emit_Check_With_Raise (chi.reg, true,
-    "alloc fat array hi bound (RM 4.8)");
+    "alloc fat array hi bound");
 }
 
 void Emit_Index_Subtype_Bound_Check (Type *idx_ty, u32 lo, u32 hi,
@@ -41769,7 +41769,7 @@ void Emit_Initialize_Record (Type *ty, u32 base) {
 
       if (Type_Is_Access (comp->component_type))
         Emit_Access_Subtype_Constraint_Check (val, val_v.rep, comp->component_type,
-          "record component default access constraint (RM 3.8)");
+          "record component default access constraint");
 
       if (Type_Is_Constrained_Array (comp->component_type) and Type_Is_Constrained_Array (de->type)) {
         LLVM_Rep bt = Integer_Arith_Rep ();
@@ -41781,7 +41781,7 @@ void Emit_Initialize_Record (Type *ty, u32 base) {
           if (clo and slo) {
             LLVM_I1 ne = Emit_Icmp ("ne", bt, clo, slo);
             Emit_Check_With_Raise (ne.reg, true,
-              "record component array default does not slide (RM 3.6.1)");
+              "record component array default does not slide");
           }
         }
       }
@@ -42149,7 +42149,7 @@ void Emit_Allocated_Array_Bound_Agreement (
           allocated_high->int_value == designated_high->int_value)
         continue;
       Report_Warning (node->location,
-        "\"CONSTRAINT_ERROR\" will be raised at run time (RM 4.8)");
+        "\"CONSTRAINT_ERROR\" will be raised at run time");
     }
 
     u32 low  = Emit_Single_Bound (allocated_low,  rep).reg;
@@ -42279,7 +42279,7 @@ void Emit_Created_Task_Activation (Type  *object_type,
   u32 unelaborated = Emit_Task_Body_Unelaborated (object_type, 0);
   if (unelaborated)
     Emit_Check_With_Raise_Named (unelaborated, true, "program_error",
-                                 "task body not yet elaborated (RM 3.9)");
+                                 "task body not yet elaborated");
 
   Emit_Created_Task_Operation (object_type, address, element_count,
                                element_size, COMPONENT_TASK_CREATE, 0,
@@ -42416,7 +42416,7 @@ LLVM_Value Generate_Expression (Node *node) {
 
       if (out_of_range) {
         LLVM_Rep raise_bt = Array_Bound_LLVM_Rep (node->type);
-        Emit_Raise_And_Continue ("string literal value not in component subtype (RM 4.2)");
+        Emit_Raise_And_Continue ("string literal value not in component subtype");
         return Val_Rep (Emit_Fat_Pointer (data_ptr, 1, (i128) len, raise_bt).reg, LL_REP_FAT);
       }
 
@@ -42426,13 +42426,13 @@ LLVM_Value Generate_Expression (Node *node) {
           u32 lo_reg = Emit_Single_Bound (&elem->low_bound, elem_rep).reg;
           u32 bad = Emit_Result ("icmp slt %s %lld, %s\n",  ety,  (long long) min_pos,  REGISTER_TEXT (lo_reg));
           Emit_Check_With_Raise (bad, true,
-            "string literal value not in component subtype (RM 4.2)");
+            "string literal value not in component subtype");
         }
         if (not hi_static) {
           u32 hi_reg = Emit_Single_Bound (&elem->high_bound, elem_rep).reg;
           u32 bad = Emit_Result ("icmp sgt %s %lld, %s\n",  ety,  (long long) max_pos,  REGISTER_TEXT (hi_reg));
           Emit_Check_With_Raise (bad, true,
-            "string literal value not in component subtype (RM 4.2)");
+            "string literal value not in component subtype");
         }
       }
 
@@ -42812,7 +42812,7 @@ LLVM_Value Generate_Expression (Node *node) {
           if (expected == 0) continue;
           u32 actual = Emit_Component_Load_As (result.reg, dst_type, di, dt);
           LLVM_I1 cmp = Emit_Icmp ("ne", dt, actual, expected);
-          Emit_Check_With_Raise (cmp.reg, true, "qualified expr disc match (RM 4.7)");
+          Emit_Check_With_Raise (cmp.reg, true, "qualified expr disc match");
         }
       }
 
@@ -42832,7 +42832,7 @@ LLVM_Value Generate_Expression (Node *node) {
           LLVM_I1 lo_ne = Emit_Icmp ("ne", iat, src_lo, dst_lo);
           LLVM_I1 hi_ne = Emit_Icmp ("ne", iat, src_hi, dst_hi);
           u32 bad = Emit_Result ("or i1 %s, %s\n",  REGISTER_TEXT (lo_ne.reg),  REGISTER_TEXT (hi_ne.reg));
-          Emit_Check_With_Raise (bad, true, "qualified expr array bounds (RM 4.7)");
+          Emit_Check_With_Raise (bad, true, "qualified expr array bounds");
         }
       }
 
@@ -42841,7 +42841,7 @@ LLVM_Value Generate_Expression (Node *node) {
 
       if (Type_Is_Access (dst_type))
         Emit_Access_Subtype_Constraint_Check (result.reg, src_llvm, dst_type,
-          "qualified expr access constraint (RM 3.7.2)");
+          "qualified expr access constraint");
 
       if (src_type and src_type != dst_type) {
         LLVM_Rep dst_llvm = Type_To_Rep (dst_type);
@@ -43005,7 +43005,7 @@ LLVM_Value Generate_Expression (Node *node) {
           (initial_value or (Type_Is_Record (allocator_subtype) and
                              allocator_subtype->record.has_discriminants)))
         Emit_Disc_Match_Checks (target_subtype, address,
-                                "allocator disc constraint (RM 4.8)");
+                                "allocator disc constraint");
 
       return Val_Rep (address, Type_To_Rep (access_type));
     }
@@ -43102,7 +43102,7 @@ void Generate_Assignment (Node *node) {
       indexed = target->type;
     if (Aggregate_Dim_Out_Of_Range (value, indexed, 0)) {
       Emit_Location (node->location);
-      Emit_Raise_Constraint_Error ("aggregate index outside subtype (RM 4.3.2)");
+      Emit_Raise_Constraint_Error ("aggregate index outside subtype");
       return;
     }
   }
@@ -43379,7 +43379,7 @@ void Generate_Assignment_Body (Node *node, Node *target) {
           Emit_Comp_Disc_Check (source_pointer, designated);
         if (designated->record.has_discriminants)
           Emit_Discriminant_Preservation_Check (designated, source_pointer,
-            address, 0, "discriminant mismatch in .ALL assignment (RM 5.2)");
+            address, 0, "discriminant mismatch in.ALL assignment");
       }
 
       if (Type_Is_Array_Like (designated) and Type_Needs_Fat_Pointer (access_type))
@@ -43470,7 +43470,7 @@ void Generate_Assignment_Body (Node *node, Node *target) {
             Emit_Icmp_Const ("eq", LLVM_Rep_Int (8, false), flag, 0).reg;
           Emit_Discriminant_Preservation_Check (target_type, source_pointer, address,
             unconstrained,
-            "discriminant change on constrained actual (RM 3.7.4)");
+            "discriminant change on constrained actual");
         }
       }
 
@@ -44365,7 +44365,7 @@ void Emit_All_Alternatives_Closed_Check (Node_List *alternatives,
   u32 open_label = Emit_Label (), closed_label = Emit_Label ();
   Emit_Branch_If (Emit_Boolean_Truth_Test (any_open), open_label, closed_label);
   Emit_Label_Here (closed_label);
-  Emit_Raise_Program_Error ("all alternatives closed (RM 9.7.1)");
+  Emit_Raise_Program_Error ("all alternatives closed");
   Emit_Label_Here (open_label);
 }
 
@@ -45507,7 +45507,7 @@ void Emit_Activate_Pending_Tasks_Range (u32 from, u32 to) {
       for (u32 i = from; i < to; i++)
         Emit_Pending_Entry_Operation (cg->pending_activations[i],
                                       COMPONENT_TASK_COMPLETE, 0);
-      Emit_Raise_Program_Error ("task body not yet elaborated (RM 3.9)");
+      Emit_Raise_Program_Error ("task body not yet elaborated");
       Emit_Label_Here (ok_l);
     }
   }
@@ -46153,7 +46153,7 @@ void Emit_Array_Index_Constraint_Check (Type *array_type) {
     LLVM_I1 is_not_null = Emit_Icmp ("sle", work, lo, hi);
     Emit_Runtime_Check (permission, Check_Only_When (outside, is_not_null),
                         EXCEPTION_KIND_CONSTRAINT_ERROR,
-                        "index range not compatible with index subtype (RM 3.6.1)");
+                        "index range not compatible with index subtype");
   }
 }
 
@@ -46854,10 +46854,10 @@ void Emit_Allocator_Bounds_Agreement (Type   *access_subtype,
 
     LLVM_I1 low_differs = Emit_Icmp ("ne", bound_rep, actual_low, expected_low);
     Emit_Check_With_Raise (low_differs.reg, true,
-      "allocated array bounds do not satisfy the access subtype (RM 4.8)");
+      "allocated array bounds do not satisfy the access subtype");
     LLVM_I1 high_differs = Emit_Icmp ("ne", bound_rep, actual_high, expected_high);
     Emit_Check_With_Raise (high_differs.reg, true,
-      "allocated array bounds do not satisfy the access subtype (RM 4.8)");
+      "allocated array bounds do not satisfy the access subtype");
   }
   Emit_Close_Null_Skip (skip);
 }
@@ -47617,7 +47617,7 @@ void Generate_Default_Initialization (Symbol             *sym,
       Emit_Stack_Probe_Dynamic (bsz64);
       LLVM_I1 unrepresentable = Emit_Icmp_Const ("ugt", LLVM_Rep_Int (64, true), bsz64, 2147483647);
       Emit_Check_With_Raise_Named (unrepresentable.reg, true, "storage_error",
-         "array object size exceeds INTEGER range (RM 11.1)");
+         "array object size exceeds INTEGER range");
       u32 bsz = Emit_Result ("trunc i64 %s to %s\n",  REGISTER_TEXT (bsz64),  LLVM_Rep_Text (iat));
       u32 dp = Emit_Result ("alloca i8, %s %s  ; %s\n",  LLVM_Rep_Text (iat),  REGISTER_TEXT (bsz),  tag);
       if (sym and sym->type and sym->type->array.element_type and
@@ -48244,7 +48244,7 @@ void Emit_Instance_Binding_Elaboration (Symbol *inst_sym) {
               i128 alen = (ahi >= alo) ? (ahi - alo + 1) : 0;
               if (flen != alen) {
                 Emit_Raise_And_Continue (
-                  "array length mismatch at instantiation (RM 12.3.1)");
+                  "array length mismatch at instantiation");
                 break;
               }
             }
@@ -50196,9 +50196,9 @@ void Emit_Program_Entry_Point () {
   if (elab_status != ELAB_ORDER_OK)
     Report_Driver_Error (
       elab_status == ELAB_ORDER_HAS_ELABORATE_ALL_CYCLE
-        ? "circular pragma Elaborate_All dependency (RM 10.5)"
+? "circular pragma Elaborate_All dependency"
         : "no consistent elaboration order exists — circular elaboration "
-          "dependency (RM 10.5)");
+          "dependency");
 
   Emit ("\n; C main entry point\n");
   Emit ("; Elaboration order computed by Standard-style algorithm (S15.7)\n");
@@ -50630,7 +50630,7 @@ void Emit_Runtime_Value_Attribute () {
   const char *rt  = LLVM_Rep_Text (iat);
   const char *it  = LLVM_Rep_Text (magnitude_rep);
 
-  Emit ("; ---- Integer'VALUE: based literals, underlines, exponent (RM 3.5.5) ----\n");
+  Emit ("; ---- Integer'VALUE: based literals, underlines, exponent ----\n");
   Emit ("define linkonce_odr %s @__ada_integer_value(" FAT_PTR_TYPE " %%str)"
         " nounwind {\n", rt);
   Emit ("entry:\n");
@@ -50961,7 +50961,7 @@ void Emit_Runtime_Value_Attribute () {
 void Emit_Runtime_Exponentiation () {
   const char *pow_t = LLVM_Rep_Text (LLVM_Rep_Int (64, false));
   Emit ("; ---- \"**\" for a signed integer: square-and-multiply, every\n"
-        ";      product checked, a negative exponent rejected (RM 4.5.6) ----\n");
+        ";      product checked, a negative exponent rejected ----\n");
   Emit ("define linkonce_odr %s @__ada_integer_pow (%s %%base, %s %%exp)"
         " nounwind {\n", pow_t, pow_t, pow_t);
   Emit ("entry:\n");
@@ -51016,7 +51016,7 @@ void Emit_Runtime_Exponentiation () {
   Emit ("}\n\n");
 
   Emit ("; ---- \"**\" for a modular type: the same square-and-multiply,\n"
-        ";      wrapping instead of checking (RM 4.5.6, RM 3.5.4) ----\n");
+        ";      wrapping instead of checking ----\n");
   Emit ("define linkonce_odr %s @__ada_modular_pow (%s %%base, %s %%exp)"
         " nounwind willreturn memory(none) {\n", pow_t, pow_t, pow_t);
   Emit ("entry:\n");
@@ -51052,7 +51052,7 @@ void Emit_Runtime_String_Trim () {
   LLVM_Rep iat     = Integer_Arith_Rep ();
   const char *it  = LLVM_Rep_Text (iat);
 
-    Emit ("; ---- 'VALUE ignores the spaces around its argument (RM 3.5.5) ----\n");
+    Emit ("; ---- 'VALUE ignores the spaces around its argument ----\n");
 
     Emit ("define linkonce_odr %s @__ada_count_leading_spaces(ptr nocapture readonly %%d,"
           " %s %%len) nounwind willreturn memory(argmem: read) {\n", it, it);
@@ -51105,8 +51105,8 @@ void Emit_Runtime_Globals () {
     "; Runtime globals (initialexec: no __tls_get_addr call)\n"
     "@__all_tasks = linkonce_odr global ptr null\n"
     "@__master_done = linkonce_odr global i8 0\n"
-    "; per-task: handler chain (RM 11.2), current exception (RM 11.4),\n"
-    "; master chain (RM 9.4), own control block (RM 9.1)\n"
+    "; per-task: handler chain, current exception,\n"
+    "; master chain, own control block\n"
     "@__handler_chain = linkonce_odr thread_local(initialexec) global ptr null\n"
     "@__current_exception = linkonce_odr thread_local(initialexec) global ptr null\n"
     "@__master_chain = linkonce_odr thread_local(initialexec) global ptr null\n"
@@ -51201,7 +51201,7 @@ void Emit_Runtime_Storage () {
     "  call void @__ada_raise(i64 %e)\n"
     "  unreachable\n"
     "}\n\n"
-    "; The secondary stack (RM 6.5): one per task, four thread-local words\n"
+    "; The secondary stack: one per task, four thread-local words\n"
     "@__ss_first = linkonce_odr thread_local(initialexec) global ptr null\n"
     "@__ss_chunk = linkonce_odr thread_local(initialexec) global ptr null\n"
     "@__ss_top   = linkonce_odr thread_local(initialexec) global i64 0\n"
@@ -51364,7 +51364,7 @@ void Emit_Runtime_Storage () {
 void Emit_Runtime_Handler_Stack () {
   Emit_Verbatim (
     "; Exception handling runtime\n"
-    "; ---- Exception handling: the per-task handler chain (RM 11.2) ----\n"
+    "; ---- Exception handling: the per-task handler chain ----\n"
     "define linkonce_odr void @__ada_push_handler(ptr %h) nounwind {\n"
     "  %old = load ptr, ptr @__handler_chain\n"
     "  %link = getelementptr { ptr, [200 x i8] }, ptr %h, i32 0, i32 0\n"
@@ -51595,7 +51595,7 @@ void Emit_Runtime_Rendezvous_Records () {
 void Emit_Runtime_Raise () {
   Emit_Verbatim (
     "; ---- Raising an exception: longjmp to the innermost handler frame,\n"
-    ";      or report and terminate when there is none (RM 11.4, 11.4.1) ----\n"
+    ";      or report and terminate when there is none ----\n"
     "define linkonce_odr void @__ada_raise(i64 %exc_id) noreturn nounwind {\n"
     "  %idp = inttoptr " PTR_INT_TYPE " %exc_id to ptr\n"
     "  store ptr %idp, ptr @__current_exception\n"
@@ -52979,7 +52979,7 @@ void Emit_Runtime_Tasking () {
 
 
 void Emit_Runtime_Text_Io () {
-  Emit ("; ---- TEXT_IO: the three standard streams (RM 14.3) ----\n");
+  Emit ("; ---- TEXT_IO: the three standard streams ----\n");
   Emit ("@stdin  = external global ptr\n");
   Emit ("@stdout = external global ptr\n");
   Emit ("@stderr = external global ptr\n");
@@ -53019,7 +53019,7 @@ void Emit_Runtime_Image_Attributes () {
     char lo_expr[64], hi_expr[64], const3_expr[64];
     snprintf (lo_expr, sizeof (lo_expr), "%s 1", sbt);
     Emit ("; ---- Integer'IMAGE: sign or leading blank, then the digits"
-          " (RM 3.5.5) ----\n");
+          " ----\n");
     Emit ("define linkonce_odr " FAT_PTR_TYPE " @__ada_integer_image(%s %%val)"
           " nounwind {\n", it);
     Emit ("entry:\n");
@@ -53034,7 +53034,7 @@ void Emit_Runtime_Image_Attributes () {
 
     snprintf (const3_expr, sizeof (const3_expr), "%s 3", sbt);
     Emit ("; ---- Character'IMAGE: the character between two quotes"
-          " (RM 3.5.5) ----\n");
+          " ----\n");
     Emit ("define linkonce_odr " FAT_PTR_TYPE " @__ada_character_image(i8 %%val)"
           " nounwind {\n");
     Emit ("entry:\n");
@@ -53049,7 +53049,7 @@ void Emit_Runtime_Image_Attributes () {
     Emit ("  ret " FAT_PTR_TYPE " %%fat2\n");
     Emit ("}\n\n");
 
-    Emit ("; ---- Float'IMAGE (RM 3.5.8) ----\n");
+    Emit ("; ---- Float'IMAGE ----\n");
     Emit ("define linkonce_odr " FAT_PTR_TYPE " @__ada_float_image(double %%val)"
           " nounwind {\n");
     Emit ("entry:\n");
@@ -53067,7 +53067,7 @@ void Emit_Runtime_Image_Attributes () {
     char row[32];
     snprintf (row, sizeof row, "{ptr, %s}", it);
 
-    Emit ("; ---- Enumeration'IMAGE: the table row for POS (RM 3.5.5) ----\n");
+    Emit ("; ---- Enumeration'IMAGE: the table row for POS ----\n");
     Emit ("define linkonce_odr " FAT_PTR_TYPE
           " @__ada_enum_image(ptr nocapture readonly %%tab, %s %%n, %s %%pos)"
           " nounwind willreturn memory(argmem: read) {\n", it, it);
@@ -53098,7 +53098,7 @@ void Emit_Runtime_Image_Attributes () {
     Emit ("}\n\n");
 
     Emit ("; ---- Enumeration'VALUE: the position of the matching row,"
-          " or -1 (RM 3.5.5) ----\n");
+          " or -1 ----\n");
     Emit ("define linkonce_odr %s @__ada_enum_value(ptr nocapture readonly %%tab,"
           " %s %%n, ptr nocapture readonly %%s, %s %%slen)"
           " nounwind willreturn memory(argmem: read) {\n", it, it, it);
@@ -53146,7 +53146,7 @@ void Emit_Runtime_Image_Attributes () {
     Emit ("}\n\n");
 
     Emit ("; ---- Enumeration'WIDTH: the widest image over the subtype's"
-          " own range (RM 3.5.5) ----\n");
+          " own range ----\n");
     Emit ("define linkonce_odr %s @__ada_enum_width(ptr nocapture readonly %%tab,"
           " %s %%n, %s %%lo, %s %%hi)"
           " nounwind willreturn memory(argmem: read) {\n", it, it, it, it);
@@ -53181,7 +53181,7 @@ void Emit_Runtime_Image_Attributes () {
     Emit ("declare %s @llvm.abs.%s(%s, i1)\n", it, it, it);
     Emit ("declare %s @llvm.umax.%s(%s, %s)\n", it, it, it, it);
     Emit ("; ---- Integer'WIDTH: digits of the wider magnitude, plus the"
-          " sign column (RM 3.5.5) ----\n");
+          " sign column ----\n");
     Emit ("define linkonce_odr %s @__ada_integer_width(%s %%lo, %s %%hi)"
           " nounwind willreturn memory(none) {\n", it, it, it);
     Emit ("entry:\n");
@@ -54299,7 +54299,7 @@ void Require_Library_Not_Obsolete (Node **units, int unit_count) {
           Report_Node_Error (named,
             "library unit '%.*s' is obsolete: a unit its declaration "
             "depends on has been recompiled since, so it must be "
-            "recompiled before a compilation unit may name it (RM 10.3)",
+            "recompiled before a compilation unit may name it",
             (int)with_name.length, with_name.data);
       }
     }
@@ -54312,7 +54312,7 @@ void Require_Library_Not_Obsolete (Node **units, int unit_count) {
     if (parent_entry and parent_entry->is_obsolete)
       Report_Node_Error (parent,
         "parent unit '%.*s' of this subunit is obsolete: it must be "
-        "recompiled before its subunits are (RM 10.3)",
+        "recompiled before its subunits are",
         (int)parent_name.length, parent_name.data);
   }
 }
@@ -54330,7 +54330,7 @@ void Library_Catalog_Require_Consistent (String_Slice unit_name,
       Report_Error (
         Catalog_Written_At (body_entry, body_entry->line, body_entry->column),
         "body of unit '%.*s' is obsolete: it was compiled before the "
-        "unit's current specification (RM 10.3)",
+        "unit's current specification",
         (int)unit_name.length, unit_name.data);
     return;
   }
@@ -54349,12 +54349,12 @@ void Library_Catalog_Require_Consistent (String_Slice unit_name,
       if (not subunit_entry) {
         if (at_bind_time)
           Report_Error (stub_written_at,
-            "subunit '%.*s' has no compiled body in the library (RM 10.2)",
+            "subunit '%.*s' has no compiled body in the library",
             (int)dotted_name.length, dotted_name.data);
       } else if (subunit_entry->recorded_at < parent->recorded_at)
         Report_Error (stub_written_at,
           "subunit '%.*s' is obsolete: it was compiled before its "
-          "parent's current body (RM 10.3)",
+          "parent's current body",
           (int)dotted_name.length, dotted_name.data);
     }
   }
@@ -54409,7 +54409,7 @@ int Library_Bind_Check (String_Slice main_unit) {
             Catalog_Written_At (entry, entry->with_units[w].line,
                                 entry->with_units[w].column),
             "unit '%.*s' is obsolete: '%.*s' was recompiled after it "
-            "(RM 10.3)",
+            "",
             (int)entry->unit_name.length, entry->unit_name.data,
             (int)dep_name.length, dep_name.data);
         }
@@ -55385,7 +55385,7 @@ void Resolve_Generic_Formal_Subprogram_Defaults (Node_List *formals) {
     if (Symbol_Is_Entry_Family (default_name->symbol))
       Report_Node_Error (default_name,
                     "the default for a generic formal subprogram cannot be "
-                    "an entry family name (RM 12.1.3)");
+                    "an entry family name");
 
     if (Symbol_Is_Subprogram (default_name->symbol))
       default_name->symbol = Conforming_Subprogram_Actual (
@@ -55490,7 +55490,7 @@ void Install_Generic_Formal_Symbols (Symbol *generic_symbol) {
               if (not Declared_Type_Admits_Value (object_type, default_expr->type))
                 Report_Node_Error (default_expr,
                               "default expression is not of the type of the "
-                              "generic formal object (RM 12.1.1)");
+                              "generic formal object");
               if (not default_expr->type) default_expr->type = object_type;
             }
           }
@@ -55710,20 +55710,20 @@ void Bind_Instance_Formal_Type (Symbol *instance_sym,
         Formal_Mark_Actual_Type (instance_sym,
                                  definition->array_type.indices.items[d]),
         index_subtype,
-        "index subtype agreement (RM 12.3.4)");
+        "index subtype agreement");
     }
     Record_Instance_Agreement (instance_sym,
       Formal_Mark_Actual_Type (instance_sym,
                                definition->array_type.component_type),
       actual_type->array.element_type,
-      "component subtype agreement (RM 12.3.4)");
+      "component subtype agreement");
   }
 
   if (def_kind == GEN_DEF_ACCESS and Type_Is_Access (actual_type))
     Record_Instance_Agreement (instance_sym,
       Formal_Mark_Actual_Type (instance_sym, definition),
       actual_type->access.designated_type,
-      "designated subtype agreement (RM 12.3.5)");
+      "designated subtype agreement");
 
   bool discriminants_correspond =
     Generic_Formal_Is_Private (def_kind) and
@@ -55735,7 +55735,7 @@ void Bind_Instance_Formal_Type (Symbol *instance_sym,
       Record_Instance_Agreement (instance_sym,
         Formal_Discriminant_Type (instance_sym, formal_view, d),
         actual_type->record.components[d].component_type,
-        "discriminant subtype agreement (RM 12.3.2)");
+        "discriminant subtype agreement");
   }
 
   Symbol *binding = Symbol_New (SYMBOL_TYPE, formal->generic_type_param.name,
@@ -56154,7 +56154,7 @@ void Check_Formal_Subprogram_Actual_Not_Ambiguous (
       "'%.*s' is ambiguous here: more than one visible subprogram has the "
       "parameter and result type profile of the generic formal subprogram, "
       "and a parameter's mode plays no part in resolving which is meant "
-      "(RM 8.7, RM 12.3.6)",
+      "",
       (int) named->name.length, named->name.data);
 }
 
@@ -57429,7 +57429,7 @@ void Require_Complete_Library (Node **units, int unit_count) {
           Node *template_unit = with_symbol->generic_unit;
           if (not template_unit or Declaration_Requires_Body (template_unit))
             Report_Node_Error (name_node,
-              "generic unit '%.*s' has no compiled body in the library (RM 10.3)",
+              "generic unit '%.*s' has no compiled body in the library",
               (int)with_name.length, with_name.data);
         }
       }
