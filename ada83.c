@@ -1038,6 +1038,14 @@ typedef enum {
      PREFIX_ENTITY_ANY, \
      PREFIX_ENTITY_SUBPROGRAM, \
      ATTRIBUTE_RESULT_PREFIX_BASE) \
+  X (ATTRIBUTE_ASM_INPUT, "ASM_INPUT", ATTRIBUTE_PREFIX_TYPE_MARK, TYPE_CLASS_ANY, \
+     PREFIX_ENTITY_ANY, \
+     PREFIX_ENTITY_SUBPROGRAM, \
+     ATTRIBUTE_RESULT_ASM_OPERAND) \
+  X (ATTRIBUTE_ASM_OUTPUT, "ASM_OUTPUT", ATTRIBUTE_PREFIX_TYPE_MARK, TYPE_CLASS_ANY, \
+     PREFIX_ENTITY_ANY, \
+     PREFIX_ENTITY_SUBPROGRAM, \
+     ATTRIBUTE_RESULT_ASM_OPERAND) \
   X (ATTRIBUTE_SUCC, "SUCC", ATTRIBUTE_PREFIX_TYPE_MARK, TYPE_CLASS_DISCRETE, \
      PREFIX_ENTITY_ANY, \
      PREFIX_ENTITY_SUBPROGRAM, \
@@ -1213,7 +1221,8 @@ typedef enum {
   ATTRIBUTE_RESULT_UNIVERSAL_REAL,
   ATTRIBUTE_RESULT_BOOLEAN,
   ATTRIBUTE_RESULT_STRING,
-  ATTRIBUTE_RESULT_ADDRESS
+  ATTRIBUTE_RESULT_ADDRESS,
+  ATTRIBUTE_RESULT_ASM_OPERAND
 } Attribute_Result_Kind;
 
 typedef struct Attribute_Properties {
@@ -3302,25 +3311,12 @@ void Resolve_Exception_Part   (Node_List   *handlers);
 void Resolve_Unit_Body_Statements (Node_List *statements);
 void Resolve_Subprogram_Body_Statement_Sequence (Node *body);
 void Check_Machine_Code_Procedure_Body (Node *body);
+void Resolve_Code_Statement (Node *node);
 
+enum { MAX_ASM_OPERANDS = 16 };
 
-typedef enum {
-  MACHINE_CODE_DIALECT_ASSEMBLER,    
-  MACHINE_CODE_DIALECT_INTEL,        
-  MACHINE_CODE_DIALECT_INTERMEDIATE, 
-  MACHINE_CODE_DIALECT_COUNT
-} Machine_Code_Dialect_Kind;
-
-typedef struct Machine_Code_Dialect_Properties {
-  String_Slice type_name;
-  String_Slice text_length_name;
-  String_Slice text_name;
-  String_Slice clobber_length_name;
-  String_Slice clobber_name;
-} Machine_Code_Dialect_Properties;
-
-extern const Machine_Code_Dialect_Properties
-  Machine_Code_Dialect_Table[MACHINE_CODE_DIALECT_COUNT];
+bool  Apply_Names_The_Asm_Intrinsic (Node *target);
+Type *Machine_Code_Operand_Type     (bool input);
 
 Node *Record_Aggregate_Component_Value (Node *aggregate,
                                                       Type   *record_type,
@@ -5964,10 +5960,19 @@ void Emit_Runtime_Storage             ();
 void Emit_Runtime_Handler_Stack       ();
 void Emit_Runtime_Synchronisation     ();
 
+typedef struct Machine_Code_Operand {
+  String_Slice constraint;
+  Node        *value;
+} Machine_Code_Operand;
+
 typedef struct Machine_Code_Insertion {
-  Machine_Code_Dialect_Kind dialect;
-  String_Slice              text;
-  String_Slice              clobbers;
+  String_Slice          template_text;
+  String_Slice          clobbers;
+  bool                  is_volatile;
+  Machine_Code_Operand *outputs;
+  u32                   output_count;
+  Machine_Code_Operand *inputs;
+  u32                   input_count;
 } Machine_Code_Insertion;
 
 void Generate_Code_Statement (Node *node);
@@ -6738,29 +6743,6 @@ Big_Integer *Big_Integer_From_Decimal (const char *text);
 #else
   #define SIMD_GENERIC 1
 #endif
-
-
-const char *Machine_Code_Target_Name () {
-#if defined(SIMD_X86_64)
-  return "x86-64";
-#elif defined(SIMD_ARM64)
-  return "AArch64";
-#else
-  return "";
-#endif
-}
-
-bool
-Machine_Code_Dialect_Is_Available (Machine_Code_Dialect_Kind dialect) {
-  if (dialect == MACHINE_CODE_DIALECT_INTERMEDIATE) return true;
-#if defined(SIMD_X86_64)
-  return true;
-#elif defined(SIMD_ARM64)
-  return dialect != MACHINE_CODE_DIALECT_INTEL;
-#else
-  return false;
-#endif
-}
 
 
 typedef u8 Byte_Vector __attribute__ ((vector_size (16)));
@@ -17071,6 +17053,8 @@ Type *Attribute_Result_Type (Node *node,
     case ATTRIBUTE_RESULT_BOOLEAN:           return sm->type_boolean;
     case ATTRIBUTE_RESULT_STRING:            return sm->type_string;
     case ATTRIBUTE_RESULT_ADDRESS:           return sm->type_address;
+    case ATTRIBUTE_RESULT_ASM_OPERAND:
+      return Machine_Code_Operand_Type (attribute_kind == ATTRIBUTE_ASM_INPUT);
 
     case ATTRIBUTE_RESULT_BASE: {
       Type *base = prefix_type ? Type_Base (prefix_type) : NULL;
@@ -17945,6 +17929,16 @@ void Resolve_Array_Aggregate_Choices (Node *item,
 }
 
 Type *Resolve_Attribute (Node *node) {
+
+  if (node->attribute.kind == ATTRIBUTE_ASM_INPUT or
+      node->attribute.kind == ATTRIBUTE_ASM_OUTPUT)
+    Report_Node_Error (node,
+                  "%.*s is only allowed as an operand of a call to ASM from "
+                  "the predefined package MACHINE_CODE",
+                  (int) Attribute_Properties_Table[node->attribute.kind]
+                          .designator.length,
+                  Attribute_Properties_Table[node->attribute.kind]
+                    .designator.data);
 
   bool sanctions_base = node->attribute.prefix and
     node->attribute.prefix->kind == NK_ATTRIBUTE and
@@ -19941,6 +19935,13 @@ void Select_Expanded_Call_Name_Reading (Node *name) {
 
 void Resolve_Procedure_Call_Statement (Node *node) {
   Node *target = node->assignment.target;
+  if (Apply_Names_The_Asm_Intrinsic (target)) {
+    node->kind = NK_CODE_STATEMENT;
+    node->code_statement.insertion = target;
+    node->code_statement.insertion_text = NULL;
+    Resolve_Code_Statement (node);
+    return;
+  }
   if (not (target and target->kind == NK_IDENTIFIER)) {
     Resolve_Expression (target);
     if (target and target->kind == NK_SELECTED)
@@ -20151,213 +20152,298 @@ bool Accept_Profile_Matches (Node_List *parameters, Symbol *entry) {
 
 
 
-const Machine_Code_Dialect_Properties
-Machine_Code_Dialect_Table[MACHINE_CODE_DIALECT_COUNT] = {
-  [MACHINE_CODE_DIALECT_ASSEMBLER] = {
-    S ("ASSEMBLER_INSERTION"),
-    S ("TEMPLATE_LENGTH"), S ("TEMPLATE"),
-    S ("CLOBBER_LENGTH"),  S ("CLOBBERS") },
-  [MACHINE_CODE_DIALECT_INTEL] = {
-    S ("INTEL_INSERTION"),
-    S ("TEMPLATE_LENGTH"), S ("TEMPLATE"),
-    S ("CLOBBER_LENGTH"),  S ("CLOBBERS") },
-  [MACHINE_CODE_DIALECT_INTERMEDIATE] = {
-    S ("INTERMEDIATE_INSERTION"),
-    S ("TEXT_LENGTH"),     S ("TEXT"),
-    { 0 },                 { 0 } },
+Type *Machine_Code_Operand_Type (bool input) {
+  Symbol *package = sm->package_machine_code;
+  if (not package) return NULL;
+  String_Slice wanted = input ? S ("ASM_INPUT_OPERAND")
+                              : S ("ASM_OUTPUT_OPERAND");
+  for (u32 i = 0; i < package->exported_count; i++) {
+    Symbol *exported = package->exported[i];
+    if (exported and exported->type and
+        Slice_Equal_Ignore_Case (exported->name, wanted))
+      return exported->type;
+  }
+  return NULL;
+}
+
+bool Apply_Names_The_Asm_Intrinsic (Node *target) {
+  if (not sm->package_machine_code) return false;
+  if (not target or target->kind != NK_APPLY) return false;
+  Node *prefix = target->apply.prefix;
+  if (not prefix) return false;
+  if (prefix->kind == NK_SELECTED) {
+    Node *package = prefix->selected.prefix;
+    if (not (package and package->kind == NK_IDENTIFIER)) return false;
+    Symbol *package_symbol = Symbol_Find (package->string_val.text);
+    return package_symbol == sm->package_machine_code and
+           Slice_Equal_Ignore_Case (prefix->selected.selector, S ("ASM"));
+  }
+  if (prefix->kind != NK_IDENTIFIER) return false;
+  if (not Slice_Equal_Ignore_Case (prefix->string_val.text, S ("ASM")))
+    return false;
+  Symbol *found = Symbol_Find (prefix->string_val.text);
+  return found and found->parent == sm->package_machine_code;
+}
+
+enum {
+  ASM_FORMAL_TEMPLATE,
+  ASM_FORMAL_OUTPUTS,
+  ASM_FORMAL_INPUTS,
+  ASM_FORMAL_CLOBBER,
+  ASM_FORMAL_VOLATILE,
+  ASM_FORMAL_COUNT
 };
 
-
-Machine_Code_Dialect_Kind Machine_Code_Dialect_Of (Type *record_type) {
-  Symbol *declaration = record_type ? record_type->defining_symbol : NULL;
-  if (not declaration) return MACHINE_CODE_DIALECT_COUNT;
-  for (int dialect = 0; dialect < MACHINE_CODE_DIALECT_COUNT; dialect++)
-    if (Slice_Equal_Ignore_Case (declaration->name,
-                                 Machine_Code_Dialect_Table[dialect].type_name))
-      return (Machine_Code_Dialect_Kind) dialect;
-  return MACHINE_CODE_DIALECT_COUNT;
-}
-
-i32 Machine_Code_Component_Index (Type *record_type,
-                                             String_Slice wanted) {
-  if (not wanted.length or not Type_Is_Record (record_type)) return -1;
-  for (u32 i = 0; i < record_type->record.component_count; i++)
-    if (Slice_Equal_Ignore_Case (record_type->record.components[i].name, wanted))
-      return (i32) i;
-  return -1;
-}
-
-String_Slice Code_Statement_Text (Node *aggregate,
-                                         Type   *record_type,
-                                         i32      component,
-                                         Source_Location location,
-                                         bool        *well_formed) {
-  Node *value = component < 0 ? NULL
-    : Record_Aggregate_Component_Value (aggregate, record_type,
-                                        (u32) component);
-  if (not value or value->kind != NK_STRING) {
-    Report_Error (location,
-                  "the text of a code statement must be given by a string "
-                  "literal (RM 13.8)");
-    *well_formed = false;
-    return Empty_Slice;
-  }
-  return value->string_val.text;
-}
-
-void Check_Code_Statement_Text_Length (Node *aggregate,
-                                              Type   *record_type,
-                                              i32      length_component,
-                                              String_Slice text,
-                                              Source_Location location,
-                                              bool        *well_formed) {
-  Node *stated = length_component < 0 ? NULL
-    : Record_Aggregate_Component_Value (aggregate, record_type,
-                                        (u32) length_component);
-  double evaluated = stated ? Eval_Const_Numeric (stated) : (double) NAN;
-  if (not stated or isnan (evaluated)) {
-    Report_Error (location,
-                  "the length a code statement states for its text must be a "
-                  "static expression (RM 13.8)");
-    *well_formed = false;
-    return;
-  }
-  if ((double) text.length != evaluated) {
-    Report_Error (location,
-                  "a code statement states a length of %lld for text that is "
-                  "%u characters long",
-                  (long long) evaluated, text.length);
-    *well_formed = false;
+static String_Slice Asm_Formal_Name (u32 slot) {
+  switch (slot) {
+    case ASM_FORMAL_TEMPLATE: return S ("TEMPLATE");
+    case ASM_FORMAL_OUTPUTS:  return S ("OUTPUTS");
+    case ASM_FORMAL_INPUTS:   return S ("INPUTS");
+    case ASM_FORMAL_CLOBBER:  return S ("CLOBBER");
+    default:                  return S ("VOLATILE");
   }
 }
 
-bool Assembler_Clobber_Byte_Is_Allowed (unsigned char byte) {
-  return (byte >= 'a' and byte <= 'z') or (byte >= 'A' and byte <= 'Z') or
-         (byte >= '0' and byte <= '9') or
-         byte == '_' or byte == '.' or byte == ',' or
-         byte == '{' or byte == '}' or byte == '~';
-}
+typedef struct {
+  Node *slots[ASM_FORMAL_COUNT];
+} Asm_Argument_Set;
 
-
-bool Intermediate_Text_Names_A_Compiler_Value (String_Slice text,
-                                                      char *which) {
-  for (u32 i = 0; i + 2 < text.length + 1 and i + 2 <= text.length; i++) {
-    if (text.data[i] != '%') continue;
-    if (i + 2 >= text.length) break;
-    char letter = text.data[i + 1];
-    char digit  = text.data[i + 2];
-    if ((letter == 't' or letter == 'L') and digit >= '0' and digit <= '9') {
-      *which = letter;
-      return true;
+static bool Collect_Asm_Arguments (Node *call, Asm_Argument_Set *set) {
+  *set = (Asm_Argument_Set){ 0 };
+  bool seen_named = false;
+  u32 positional = 0;
+  for (u32 i = 0; i < call->apply.arguments.count; i++) {
+    Node *argument = call->apply.arguments.items[i];
+    if (argument and argument->kind == NK_ASSOCIATION) {
+      seen_named = true;
+      Node_List *choices = &argument->association.choices;
+      Node *choice = choices->count == 1 ? choices->items[0] : NULL;
+      if (not (choice and choice->kind == NK_IDENTIFIER)) {
+        Report_Node_Error (argument,
+                      "an ASM argument is selected by a single formal name");
+        return false;
+      }
+      i32 slot = -1;
+      for (u32 formal = 0; formal < ASM_FORMAL_COUNT; formal++)
+        if (Slice_Equal_Ignore_Case (choice->string_val.text,
+                                     Asm_Formal_Name (formal)))
+          slot = (i32) formal;
+      if (slot < 0) {
+        Report_Node_Error (choice,
+                      "'%.*s' is not a formal parameter of ASM",
+                      (int) choice->string_val.text.length,
+                      choice->string_val.text.data);
+        return false;
+      }
+      if (set->slots[slot]) {
+        Report_Node_Error (choice,
+                      "the %.*s argument of this ASM call is already given",
+                      (int) Asm_Formal_Name ((u32) slot).length,
+                      Asm_Formal_Name ((u32) slot).data);
+        return false;
+      }
+      set->slots[slot] = argument->association.expression;
+    } else {
+      if (seen_named or positional >= ASM_FORMAL_COUNT) {
+        Report_Node_Error (argument,
+                      "a positional ASM argument may not follow a named one");
+        return false;
+      }
+      set->slots[positional++] = argument;
     }
   }
+  if (not set->slots[ASM_FORMAL_TEMPLATE]) {
+    Report_Node_Error (call, "ASM requires a TEMPLATE string");
+    return false;
+  }
+  return true;
+}
+
+static bool Asm_Static_String (Node *anchor, Node *expression,
+                               const char *what, String_Slice *out) {
+  if (expression and expression->kind == NK_STRING) {
+    *out = expression->string_val.text;
+    return true;
+  }
+  Report_Node_Error (expression ? expression : anchor,
+                "the %s of an ASM call must be a string literal", what);
   return false;
+}
+
+static bool Asm_Static_Boolean (Node *expression, bool *out) {
+  *out = false;
+  if (not expression) return true;
+  if (expression->kind == NK_IDENTIFIER) {
+    if (Slice_Equal_Ignore_Case (expression->string_val.text, S ("TRUE"))) {
+      *out = true;
+      return true;
+    }
+    if (Slice_Equal_Ignore_Case (expression->string_val.text, S ("FALSE")))
+      return true;
+  }
+  Resolve_Expression_In_Context (expression, sm->type_boolean);
+  double value = Eval_Const_Numeric (expression);
+  if (isnan (value)) {
+    Report_Node_Error (expression,
+                  "the VOLATILE argument of an ASM call must be static");
+    return false;
+  }
+  *out = value != 0.0;
+  return true;
+}
+
+static bool No_Operands_Marker (Node *expression, bool input) {
+  String_Slice wanted = input ? S ("NO_INPUT_OPERANDS")
+                              : S ("NO_OUTPUT_OPERANDS");
+  if (expression->kind == NK_IDENTIFIER)
+    return Slice_Equal_Ignore_Case (expression->string_val.text, wanted);
+  if (expression->kind == NK_SELECTED)
+    return Slice_Equal_Ignore_Case (expression->selected.selector, wanted);
+  return false;
+}
+
+static bool Collect_Asm_Operands (Node *expression, bool input,
+                                  Machine_Code_Operand **out, u32 *count) {
+  *out = NULL;
+  *count = 0;
+  if (not expression) return true;
+  if (No_Operands_Marker (expression, input)) return true;
+  Node *items[MAX_ASM_OPERANDS];
+  u32 item_count = 0;
+  if (expression->kind == NK_AGGREGATE) {
+    for (u32 i = 0; i < expression->aggregate.items.count; i++) {
+      Node *item = expression->aggregate.items.items[i];
+      if (item and item->kind == NK_ASSOCIATION) {
+        Report_Node_Error (item, "an ASM operand list is positional");
+        return false;
+      }
+      if (item_count == MAX_ASM_OPERANDS) {
+        Report_Node_Error (item, "an ASM call takes at most %d operands",
+                           MAX_ASM_OPERANDS);
+        return false;
+      }
+      items[item_count++] = item;
+    }
+  } else {
+    items[item_count++] = expression;
+  }
+  Machine_Code_Operand *operands =
+    Arena_Allocate (item_count * sizeof *operands);
+  for (u32 i = 0; i < item_count; i++) {
+    Node *item = items[i];
+    Attribute_Kind wanted = input ? ATTRIBUTE_ASM_INPUT : ATTRIBUTE_ASM_OUTPUT;
+    if (not (item and item->kind == NK_ATTRIBUTE and
+             item->attribute.kind == wanted and
+             item->attribute.arguments.count == 2)) {
+      Report_Node_Error (item ? item : expression,
+        input
+          ? "an ASM input is written T'ASM_INPUT (\"constraint\", value)"
+          : "an ASM output is written T'ASM_OUTPUT (\"constraint\", name)");
+      return false;
+    }
+    Resolve_Expression (item->attribute.prefix);
+    Type *operand_type = item->attribute.prefix->type;
+    Node *constraint = item->attribute.arguments.items[0];
+    Node *value      = item->attribute.arguments.items[1];
+    String_Slice constraint_text;
+    if (not Asm_Static_String (item, constraint, "operand constraint",
+                               &constraint_text))
+      return false;
+    Resolve_Expression_In_Context (value, operand_type);
+    item->type = Machine_Code_Operand_Type (input);
+    operands[i] = (Machine_Code_Operand){ constraint_text, value };
+  }
+  *out = operands;
+  *count = item_count;
+  return true;
+}
+
+bool Clobber_Byte_Is_Allowed (unsigned char byte) {
+  return (byte >= 'a' and byte <= 'z') or (byte >= 'A' and byte <= 'Z') or
+         (byte >= '0' and byte <= '9') or
+         byte == '_' or byte == '.' or byte == ',' or byte == ' ' or
+         byte == '{' or byte == '}' or byte == '~';
 }
 
 void Resolve_Code_Statement (Node *node) {
   Node *insertion = node->code_statement.insertion;
-  Resolve_Expression (insertion);
+  bool qualified = insertion and insertion->kind == NK_QUALIFIED;
+  Node *call = qualified ? insertion->qualified.expression : insertion;
 
-  if (not Statement_Sequence_Holds (Machine_Code_Home_Statement_Sequence, node))
-    Report_Node_Error (node,
-                  "a code statement is only allowed in the sequence of "
-                  "statements of a procedure body (RM 13.8)");
-
-  Type *type_info = insertion ? insertion->type : NULL;
-  if (not type_info) return;              
-
-  Type *record_type = Type_Base (type_info);
-  Machine_Code_Dialect_Kind dialect = MACHINE_CODE_DIALECT_COUNT;
-  if (sm->package_machine_code and
-      Defining_Package (Type_Base (type_info)) == sm->package_machine_code)
-    dialect = Machine_Code_Dialect_Of (record_type);
-  if (dialect == MACHINE_CODE_DIALECT_COUNT) {
-    Report_Node_Error (node,
-                  "a qualified expression is a statement only as a code "
-                  "statement, whose base type must be one of the insertion "
-                  "types declared in the predefined package MACHINE_CODE "
-                  "(RM 13.8)");
-    return;
-  }
-
-  if (not Machine_Code_Dialect_Is_Available (dialect)) {
-    Report_Node_Error (node,
-                  "this compiler was built for %s, which has no %.*s "
-                  "(RM 13.8 does not require machine code insertions)",
-                  Machine_Code_Target_Name ()[0] ? Machine_Code_Target_Name ()
-                                                 : "a target with no assembler",
-                  (int) Machine_Code_Dialect_Table[dialect].type_name.length,
-                  Machine_Code_Dialect_Table[dialect].type_name.data);
-    return;
-  }
-
-  const Machine_Code_Dialect_Properties *names =
-    &Machine_Code_Dialect_Table[dialect];
-  Node *aggregate = insertion->qualified.expression;
-  i32 text_component =
-    Machine_Code_Component_Index (record_type, names->text_name);
-  i32 text_length_component =
-    Machine_Code_Component_Index (record_type, names->text_length_name);
-  if (not aggregate or aggregate->kind != NK_AGGREGATE or
-      text_component < 0 or text_length_component < 0) {
-    Report_Node_Error (node,
-                  "a code statement is a record aggregate of an insertion "
-                  "type declared in MACHINE_CODE (RM 13.8)");
-    return;
-  }
-
-  bool well_formed = true;
-  String_Slice text = Code_Statement_Text (aggregate, record_type,
-                                           text_component, node->location,
-                                           &well_formed);
-  String_Slice clobbers = Empty_Slice;
-  i32 clobber_component =
-    Machine_Code_Component_Index (record_type, names->clobber_name);
-  i32 clobber_length_component =
-    Machine_Code_Component_Index (record_type, names->clobber_length_name);
-  if (names->clobber_name.length) {
-    if (clobber_component < 0 or clobber_length_component < 0) {
+  if (qualified) {
+    Resolve_Expression (insertion->qualified.subtype_mark);
+    Type *mark_type = insertion->qualified.subtype_mark->type;
+    Type *base = mark_type ? Type_Base (mark_type) : NULL;
+    bool is_asm_insn = base and
+      Slice_Equal_Ignore_Case (base->name, S ("ASM_INSN")) and
+      sm->package_machine_code and
+      Defining_Package (base) == sm->package_machine_code;
+    if (not is_asm_insn) {
       Report_Node_Error (node,
-                    "a code statement is a record aggregate of an insertion "
-                    "type declared in MACHINE_CODE (RM 13.8)");
+                    "a qualified expression is a statement only as a code "
+                    "statement, ASM_INSN'(ASM (...)) with ASM_INSN from the "
+                    "predefined package MACHINE_CODE (RM 13.8)");
       return;
     }
-    clobbers = Code_Statement_Text (aggregate, record_type, clobber_component,
-                                    node->location, &well_formed);
+    if (not Statement_Sequence_Holds (Machine_Code_Home_Statement_Sequence,
+                                      node))
+      Report_Node_Error (node,
+                    "a code statement is only allowed in the sequence of "
+                    "statements of a procedure body (RM 13.8)");
   }
-  if (not well_formed) return;
 
-  Check_Code_Statement_Text_Length (aggregate, record_type,
-    text_length_component, text, node->location, &well_formed);
-  if (names->clobber_name.length)
-    Check_Code_Statement_Text_Length (aggregate, record_type,
-      clobber_length_component, clobbers, node->location, &well_formed);
+  if (not Apply_Names_The_Asm_Intrinsic (call)) {
+    Report_Node_Error (node,
+                  "a code statement calls ASM from the predefined package "
+                  "MACHINE_CODE (RM 13.8)");
+    return;
+  }
 
+  Asm_Argument_Set arguments;
+  if (not Collect_Asm_Arguments (call, &arguments)) return;
+
+  String_Slice template_text;
+  if (not Asm_Static_String (call, arguments.slots[ASM_FORMAL_TEMPLATE],
+                             "TEMPLATE", &template_text))
+    return;
+
+  String_Slice clobbers = Empty_Slice;
+  if (arguments.slots[ASM_FORMAL_CLOBBER] and
+      not Asm_Static_String (call, arguments.slots[ASM_FORMAL_CLOBBER],
+                             "CLOBBER", &clobbers))
+    return;
   for (u32 i = 0; i < clobbers.length; i++)
-    if (not Assembler_Clobber_Byte_Is_Allowed ((unsigned char) clobbers.data[i])) {
+    if (not Clobber_Byte_Is_Allowed ((unsigned char) clobbers.data[i])) {
       Report_Node_Error (node,
                     "'%c' is not a character a machine code clobber list is "
                     "written with", clobbers.data[i]);
-      well_formed = false;
-      break;
+      return;
     }
 
-  char colliding_letter = 0;
-  if (dialect == MACHINE_CODE_DIALECT_INTERMEDIATE and
-      Intermediate_Text_Names_A_Compiler_Value (text, &colliding_letter)) {
-    Report_Node_Error (node,
-                  "a name spelled %%%c and a digit is one this compiler gives "
-                  "its own %s, so an intermediate insertion may not write one",
-                  colliding_letter,
-                  colliding_letter == 't' ? "values" : "blocks");
-    well_formed = false;
-  }
-  if (not well_formed) return;
+  bool is_volatile;
+  if (not Asm_Static_Boolean (arguments.slots[ASM_FORMAL_VOLATILE],
+                              &is_volatile))
+    return;
+
+  Machine_Code_Operand *outputs, *inputs;
+  u32 output_count, input_count;
+  if (not Collect_Asm_Operands (arguments.slots[ASM_FORMAL_OUTPUTS], false,
+                                &outputs, &output_count))
+    return;
+  if (not Collect_Asm_Operands (arguments.slots[ASM_FORMAL_INPUTS], true,
+                                &inputs, &input_count))
+    return;
 
   Machine_Code_Insertion *lowered = Arena_Allocate (sizeof *lowered);
-  lowered->dialect  = dialect;
-  lowered->text     = text;
-  lowered->clobbers = clobbers;
+  *lowered = (Machine_Code_Insertion){
+    .template_text = template_text,
+    .clobbers      = clobbers,
+    .is_volatile   = is_volatile,
+    .outputs       = outputs,
+    .output_count  = output_count,
+    .inputs        = inputs,
+    .input_count   = input_count,
+  };
   node->code_statement.insertion_text = lowered;
 }
 
@@ -20367,6 +20453,8 @@ void Check_Machine_Code_Procedure_Body (Node *body) {
   for (u32 i = 0; i < statements->count; i++) {
     Node *statement = Statement_Under_Labels (statements->items[i]);
     if (statement and statement->kind == NK_CODE_STATEMENT and
+        statement->code_statement.insertion and
+        statement->code_statement.insertion->kind == NK_QUALIFIED and
         statement->code_statement.insertion_text)
       has_code_statement = true;
   }
@@ -37739,6 +37827,10 @@ LLVM_Value Generate_Attribute (Node *node) {
 
   switch (attribute_kind) {
 
+    case ATTRIBUTE_ASM_INPUT:
+    case ATTRIBUTE_ASM_OUTPUT:
+      return NO_VALUE;
+
     case ATTRIBUTE_FIRST:
     case ATTRIBUTE_LAST:
     case ATTRIBUTE_RANGE: {
@@ -44293,33 +44385,116 @@ void Generate_Exit_Statement (Node *node) {
   Emit_Label_Here (continue_label);
 }
 
+static bool Asm_Byte_Is_Digit  (unsigned char byte) {
+  return byte >= '0' and byte <= '9';
+}
+
+static bool Asm_Byte_Is_Letter (unsigned char byte) {
+  return (byte >= 'a' and byte <= 'z') or (byte >= 'A' and byte <= 'Z');
+}
+
+static void Emit_Asm_Template_Text (String_Slice text) {
+  for (u32 i = 0; i < text.length; i++) {
+    unsigned char byte = (unsigned char) text.data[i];
+    unsigned char one  = i + 1 < text.length
+      ? (unsigned char) text.data[i + 1] : 0;
+    unsigned char two  = i + 2 < text.length
+      ? (unsigned char) text.data[i + 2] : 0;
+    if (byte == '%' and one == '%')            { Emit ("%%%%"); i += 1; }
+    else if (byte == '%' and Asm_Byte_Is_Digit (one))
+                                               { Emit ("$%c", one); i += 1; }
+    else if (byte == '%' and Asm_Byte_Is_Letter (one) and
+             Asm_Byte_Is_Digit (two))
+                                               { Emit ("${%c:%c}", two, one);
+                                                 i += 2; }
+    else if (byte == '$')                        Emit ("$$");
+    else if (LLVM_String_Byte_Is_Literal (byte)) Emit ("%c", byte);
+    else                                         Emit ("\\%02X", byte);
+  }
+}
+
+static void Emit_Asm_Constraints (const Machine_Code_Insertion *insertion) {
+  bool first = true;
+  for (u32 i = 0; i < insertion->output_count; i++, first = false) {
+    String_Slice constraint = insertion->outputs[i].constraint;
+    Emit ("%s%s%.*s", first ? "" : ",",
+          constraint.length and constraint.data[0] == '=' ? "" : "=",
+          (int) constraint.length, constraint.data);
+  }
+  for (u32 i = 0; i < insertion->input_count; i++, first = false)
+    Emit ("%s%.*s", first ? "" : ",",
+          (int) insertion->inputs[i].constraint.length,
+          insertion->inputs[i].constraint.data);
+  String_Slice clobbers = insertion->clobbers;
+  for (u32 i = 0; i < clobbers.length; ) {
+    while (i < clobbers.length and
+           (clobbers.data[i] == ' ' or clobbers.data[i] == ','))
+      i++;
+    u32 start = i;
+    while (i < clobbers.length and clobbers.data[i] != ',' and
+           clobbers.data[i] != ' ')
+      i++;
+    if (i > start) {
+      Emit ("%s~{%.*s}", first ? "" : ",", (int) (i - start),
+            clobbers.data + start);
+      first = false;
+    }
+  }
+}
+
 void Generate_Code_Statement (Node *node) {
   Machine_Code_Insertion *insertion = node->code_statement.insertion_text;
-  if (not insertion) return;            
+  if (not insertion) return;
   Emit_Location (node->location);
-  switch (insertion->dialect) {
-    case MACHINE_CODE_DIALECT_INTERMEDIATE:
-      Emit ("  %.*s\n", (int) insertion->text.length, insertion->text.data);
-      break;
-    case MACHINE_CODE_DIALECT_ASSEMBLER:
-    case MACHINE_CODE_DIALECT_INTEL:
-      Emit ("  call void asm sideeffect %s\"",
-            insertion->dialect == MACHINE_CODE_DIALECT_INTEL
-              ? "inteldialect " : "");
-      {
-        String_Slice text = insertion->text;
-        for (u32 i = 0; i < text.length; i++) {
-          unsigned char byte = (unsigned char) text.data[i];
-          if (byte == '$')                             Emit ("$$");
-          else if (LLVM_String_Byte_Is_Literal (byte)) Emit ("%c", byte);
-          else                                         Emit ("\\%02X", byte);
-        }
-      }
-      Emit ("\", \"%.*s\"()\n",
-            (int) insertion->clobbers.length, insertion->clobbers.data);
-      break;
-    case MACHINE_CODE_DIALECT_COUNT:
-      break;
+
+  u32        output_addresses[MAX_ASM_OPERANDS];
+  LLVM_Rep   output_reps[MAX_ASM_OPERANDS];
+  LLVM_Value input_values[MAX_ASM_OPERANDS];
+
+  for (u32 i = 0; i < insertion->output_count; i++) {
+    Node *target = insertion->outputs[i].value;
+    output_reps[i]      = Type_To_Rep (target->type);
+    output_addresses[i] = Generate_Lvalue (target);
+  }
+  for (u32 i = 0; i < insertion->input_count; i++)
+    input_values[i] = Generate_Expression (insertion->inputs[i].value);
+
+  bool side_effect = insertion->is_volatile or insertion->output_count == 0;
+  u32 result = insertion->output_count ? Emit_Temp () : 0;
+
+  if (insertion->output_count == 0) {
+    Emit ("  call void asm %s\"", side_effect ? "sideeffect " : "");
+  } else if (insertion->output_count == 1) {
+    Emit ("  %s = call %s asm %s\"", REGISTER_TEXT (result),
+          LLVM_Rep_Text (output_reps[0]), side_effect ? "sideeffect " : "");
+  } else {
+    Emit ("  %s = call {", REGISTER_TEXT (result));
+    for (u32 i = 0; i < insertion->output_count; i++)
+      Emit ("%s%s", i ? ", " : "", LLVM_Rep_Text (output_reps[i]));
+    Emit ("} asm %s\"", side_effect ? "sideeffect " : "");
+  }
+  Emit_Asm_Template_Text (insertion->template_text);
+  Emit ("\", \"");
+  Emit_Asm_Constraints (insertion);
+  Emit ("\"(");
+  for (u32 i = 0; i < insertion->input_count; i++)
+    Emit ("%s%s %s", i ? ", " : "", LLVM_Rep_Text (input_values[i].rep),
+          REGISTER_TEXT (input_values[i].reg));
+  Emit (")\n");
+
+  if (insertion->output_count == 1) {
+    Emit ("  store %s %s, ptr %s\n", LLVM_Rep_Text (output_reps[0]),
+          REGISTER_TEXT (result), REGISTER_TEXT (output_addresses[0]));
+  } else {
+    for (u32 i = 0; i < insertion->output_count; i++) {
+      u32 element = Emit_Temp ();
+      Emit ("  %s = extractvalue {", REGISTER_TEXT (element));
+      for (u32 k = 0; k < insertion->output_count; k++)
+        Emit ("%s%s", k ? ", " : "", LLVM_Rep_Text (output_reps[k]));
+      Emit ("} %s, %u\n", REGISTER_TEXT (result), i);
+      Emit ("  store %s %s, ptr %s\n", LLVM_Rep_Text (output_reps[i]),
+            REGISTER_TEXT (element), REGISTER_TEXT (output_addresses[i]));
+    }
   }
 }
 
