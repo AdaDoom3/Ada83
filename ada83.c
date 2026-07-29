@@ -8985,12 +8985,26 @@ Node *Parse_Membership_Right_Operand (Parser *p, Precedence prec) {
   if (Parser_At (p, TK_RANGE)) {
     Report_Error (Parser_Location (p),
                   "a membership test names a range or a type mark; a range "
-                  "constraint makes this a subtype indication, which RM 4.4 "
-                  "does not admit here");
+                  "constraint makes this a subtype indication, which is not "
+                  "admitted here");
     Parser_Advance (p);
     (void) Parse_Expression_Precedence (p, prec + 1);
     if (Parser_Match (p, TK_DOTDOT))
       (void) Parse_Expression_Precedence (p, prec + 1);
+  }
+
+  if (Parser_At (p, TK_DIGITS) or Parser_At (p, TK_DELTA)) {
+    Report_Error (Parser_Location (p),
+                  "a membership test names a range or a type mark; an "
+                  "accuracy constraint makes this a subtype indication, "
+                  "which is not admitted here");
+    Parser_Advance (p);
+    (void) Parse_Expression_Precedence (p, prec + 1);
+    if (Parser_Match (p, TK_RANGE)) {
+      (void) Parse_Expression_Precedence (p, prec + 1);
+      if (Parser_Match (p, TK_DOTDOT))
+        (void) Parse_Expression_Precedence (p, prec + 1);
+    }
   }
   return right;
 }
@@ -28106,6 +28120,14 @@ void Check_Legality_Of_Node (Node *node,
             value->kind == NK_AGGREGATE)
           for (u32 i = 0; i < value->aggregate.items.count; i++) {
             Node *item = value->aggregate.items.items[i];
+            if (not item) continue;
+            Require_Static_Expression (
+              item->kind == NK_ASSOCIATION ? item->association.expression : item,
+              "an internal code of an enumeration representation clause");
+          }
+        if (node->rep_clause.is_enum_rep)
+          for (u32 i = 0; i < node->rep_clause.component_clauses.count; i++) {
+            Node *item = node->rep_clause.component_clauses.items[i];
             if (not item) continue;
             Require_Static_Expression (
               item->kind == NK_ASSOCIATION ? item->association.expression : item,
