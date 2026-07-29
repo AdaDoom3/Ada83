@@ -3129,6 +3129,8 @@ bool          Interp_Directly_Visible (const Interpretation *in);
 Symbol *      Potentially_Visible_Declaration (const Interpretation *in);
 void          Withhold_Mixed_Potentially_Visible_Set (Interp_List *l);
 void          Cancel_Use_Visible_Homographs (Interp_List *l);
+void          Cancel_Hidden_Implicit_Homographs (Interp_List *l);
+Symbol       *Ultimate_Declaration (Symbol *s);
 bool          Hidden_By_An_Inner_Homograph (Symbol *declaration,
                                                    const Interp_List *gathered,
                                                    u32 inner_count);
@@ -13417,6 +13419,29 @@ void Withhold_Mixed_Potentially_Visible_Set (Interp_List *l) {
   l->count = w;
 }
 
+Symbol *Ultimate_Declaration (Symbol *s) {
+  while (s and s->aliased) s = s->aliased;
+  return s;
+}
+
+void Cancel_Hidden_Implicit_Homographs (Interp_List *l) {
+  u32 w = 0;
+  for (u32 i = 0; i < l->count; i++) {
+    Symbol *s = Ultimate_Declaration (l->items[i].nam);
+    bool cancelled = false;
+    if (s and Declaration_Is_Implicit (s))
+      for (u32 d = 0; d < l->count and not cancelled; d++) {
+        if (d == i) continue;
+        Symbol *e = Ultimate_Declaration (l->items[d].nam);
+        cancelled = e and not Declaration_Is_Implicit (e) and
+                    e->defining_scope == s->defining_scope and
+                    Symbols_Are_Homographs (s, e);
+      }
+    if (not cancelled) l->items[w++] = l->items[i];
+  }
+  l->count = w;
+}
+
 void Cancel_Use_Visible_Homographs (Interp_List *l) {
   Withhold_Mixed_Potentially_Visible_Set (l);
   u32 w = 0;
@@ -13514,6 +13539,7 @@ void Collect_Interpretations (String_Slice name, Interp_List *interps) {
   interps->count = kept;
 
   Cancel_Use_Visible_Homographs (interps);
+  Cancel_Hidden_Implicit_Homographs (interps);
 }
 
 
@@ -15915,7 +15941,17 @@ void Close_Operator_Interps (Interp_List *out, Token_Kind op,
         for (u32 j = 0; j < out->count and not shadowed; j++) {
           Symbol *f = out->items[j].nam;
           if (not f or f->kind != SYMBOL_FUNCTION or f->is_predefined) continue;
-          if (f->visibility == VIS_USE_VISIBLE) continue;
+          if (f->visibility == VIS_USE_VISIBLE) {
+            Symbol *original = Ultimate_Declaration (f);
+            Type *operand = p->opnd[0] ? p->opnd[0] : p->typ;
+            Type *operand_base = operand ? Type_Base (operand) : NULL;
+            Symbol *type_symbol =
+              operand_base ? operand_base->defining_symbol : NULL;
+            bool same_region = original and type_symbol and
+              original->defining_scope == type_symbol->defining_scope and
+              not Declaration_Is_Implicit (original);
+            if (not same_region) continue;
+          }
           u32 arity = p->opnd[1] ? 2 : 1;
           if (f->parameter_count != arity) continue;
           if (not f->return_type or not p->typ or
@@ -21312,8 +21348,20 @@ void Add_Use_Alias (Symbol *original) {
   alias->parent    = original->parent;
   alias->unique_id = original->unique_id;
   if (homograph) {
-    homograph->visibility = VIS_HIDDEN;
-    alias->visibility     = VIS_HIDDEN;
+    Symbol *existing_declaration = Ultimate_Declaration (homograph);
+    Symbol *incoming_declaration = Ultimate_Declaration (original);
+    bool same_region = existing_declaration and incoming_declaration and
+      existing_declaration->defining_scope ==
+        incoming_declaration->defining_scope;
+    bool existing_implicit = Declaration_Is_Implicit (existing_declaration);
+    bool incoming_implicit = Declaration_Is_Implicit (incoming_declaration);
+    if (same_region and existing_implicit != incoming_implicit) {
+      if (incoming_implicit) alias->visibility     = VIS_HIDDEN;
+      else                   homograph->visibility = VIS_HIDDEN;
+    } else {
+      homograph->visibility = VIS_HIDDEN;
+      alias->visibility     = VIS_HIDDEN;
+    }
   }
 }
 
