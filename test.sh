@@ -324,7 +324,7 @@ run_one(){
             #  ACATS writes the marker with one space and sometimes two
             #  (bd1b01a..bd1b04d), so the separator is one-or-more.
             while IFS= read -r l; do
-                ((++i)); [[ $l =~ --[[:space:]]+ERROR ]] && expected+=("$pn:$i")
+                ((++i)); [[ $l =~ --[[:space:]]+ERROR([^A-Z]|$) ]] && expected+=("$pn:$i")
             done < "$part"
             #  Compiled ONCE.  The rejection verdict and the diagnostics
             #  are two readings of one run, and submitting the same unit

@@ -9969,10 +9969,15 @@ Node *Parse_Discrete_Range(Parser *p) {
       ind->subtype_ind.is_box = true;
       return ind;
     }
-    Node *range = Node_New (NK_RANGE, loc);
-    range->range.low = Parse_Expression (p);
-    Parser_Expect (p, TK_DOTDOT);
-    range->range.high = Parse_Expression (p);
+    Node *range_low = Parse_Expression (p);
+    Node *range;
+    if (Parser_Match (p, TK_DOTDOT)) {
+      range = Node_New (NK_RANGE, loc);
+      range->range.low  = range_low;
+      range->range.high = Parse_Expression (p);
+    } else {
+      range = range_low;
+    }
 
     Node *ind = Node_New (NK_SUBTYPE_INDICATION, loc);
     ind->subtype_ind.subtype_mark = name;
@@ -15682,6 +15687,20 @@ void Range_Attribute_Endpoints (Node  *range,
                                        Node **low,
                                        Node **high) {
   Resolve_Expression (range->attribute.prefix);
+
+  {
+    Node *prefix = range->attribute.prefix;
+    Type *prefix_type = prefix->type;
+    if (Symbol_Denotes_A_Type_Mark (prefix->symbol))
+      prefix_type = prefix->symbol->type;
+    Type *designated = Type_Designated (prefix_type);
+    if (designated) prefix_type = designated;
+    if (prefix_type and not Type_Is_Array_Like (prefix_type))
+      Report_Node_Error (range,
+                    "the prefix of 'RANGE must be an array type, an array "
+                    "object, or an access value designating an array "
+                    "(RM 3.6.2)");
+  }
 
   Node *first = Node_New (NK_ATTRIBUTE, range->location);
   first->attribute.prefix = range->attribute.prefix;
@@ -23989,8 +24008,15 @@ void Resolve_Declaration (Node *node) {
         if (not pkg_sym) {
           char *spec_source = Lookup_Path (pkg_name);
           if (spec_source) {
+            u32 errors_before_load = (u32) Error_Count;
             Load_Package_Spec (pkg_name, spec_source);
             pkg_sym = Symbol_Find (pkg_name);
+            if ((u32) Error_Count > errors_before_load)
+              Report_Node_Error (node,
+                            "the specification of '%.*s' did not compile, so "
+                            "the library holds no unit for this body to "
+                            "complete (RM 10.3)",
+                            (int) pkg_name.length, pkg_name.data);
           }
           if (not pkg_sym) {
             pkg_sym = Symbol_New (SYMBOL_PACKAGE, pkg_name, node->location);
@@ -57635,6 +57661,7 @@ void Load_Package_Spec (String_Slice name, char *src) {
 
       Resolve_Declaration_List (&pkg->package_spec.private_decls);
       sm->in_package_visible_part = saved_visible_part;
+      Check_Private_Part_Incomplete_Type_Constraints (pkg);
       Symbol_Manager_Pop_Scope ();
 
       if (predefined_unit and Slice_Equal_Ignore_Case (name, S("MACHINE_CODE")))
