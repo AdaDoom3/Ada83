@@ -1,14 +1,5 @@
 #!/usr/bin/env bash
 set -euo pipefail
-# ═══════════════════════════════════════════════════════════════════════════
-# Ada83 ACATS conformance harness
-# ═══════════════════════════════════════════════════════════════════════════
-#
-# Runs the ACATS suite in parallel with per-test isolation, and — the part that
-# turns a pass-rate into a development signal — diffs each run against a
-# committed baseline of expected outcomes. A run therefore reports NEW
-# regressions and progressions, not just an absolute percentage, and `check`
-# returns a nonzero exit status when anything regressed, so it gates CI.
 #
 # Usage:
 #   run_acats.sh run   [SELECTOR]    run and print an absolute report
