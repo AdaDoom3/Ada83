@@ -27,7 +27,7 @@ package body DIRECT_IO is
    function C_Tmpfile return SYSTEM.ADDRESS;
    pragma Import(C, C_Tmpfile, "tmpfile");
 
-   Null_Address : constant SYSTEM.ADDRESS := SYSTEM.ADDRESS(0);
+   Null_Address : constant SYSTEM.ADDRESS := SYSTEM.NULL_ADDRESS;
    Seek_Set     : constant Integer := 0;
    Seek_End     : constant Integer := 2;
 
@@ -226,12 +226,8 @@ package body DIRECT_IO is
    end RESET;
 
    procedure RESET(FILE : in out FILE_TYPE) is
-      Idx : Integer := Require_Open(FILE);
-      Ignore : Integer;
    begin
-      Ignore := C_Fflush(FCBs(Idx).Stream);
-      Ignore := C_Fseek(FCBs(Idx).Stream, 0, Seek_Set);
-      FCBs(Idx).Index := 1;
+      RESET(FILE, MODE(FILE));
    end RESET;
 
    function MODE(FILE : in FILE_TYPE) return FILE_MODE is
