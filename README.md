@@ -8,19 +8,10 @@ Single-file Ada 83 (ANSI/MIL-STD-1815A) compiler with an LLVM backend.
 make
 ```
 
-That needs only:
-
 - **`gcc`** or **`clang`** (`make CC=clang`) — the compiler is a single C
   file built with `-O3 -march=native -lm -lpthread`.
 - **GNU `make`**.
 - A 64-bit host with `__int128` support (x86-64 or AArch64).
-
-On Linux, `make` also provisions the system libLLVM used by `--native`
-if it is missing (probing `apt`, `dnf`, `pacman`, `zypper`, `apk`). This
-step failing is fine — the compiler builds and works without LLVM; only
-`--native` needs it, and it prints an actionable hint when the library
-is absent. On Windows (MSYS2), `make` instead embeds the vendored
-libLLVM from `tools/win64/` — see the platform notes.
 
 ## Officially withdrawn by the AVO (ACVC 1.11)
 
