@@ -13300,7 +13300,8 @@ void Interp_Add (Interp_List *l, Symbol *nam, Type *typ,
                         Type *o0, Type *o1) {
   if (l->count >= MAX_INTERPRETATIONS) return;
   for (u32 i = 0; i < l->count; i++)
-    if (l->items[i].nam == nam and l->items[i].typ == typ) return;
+    if (l->items[i].nam == nam and l->items[i].typ == typ and
+        l->items[i].opnd[0] == o0 and l->items[i].opnd[1] == o1) return;
   if (l->count == l->capacity) {
     u32 wanted = l->capacity ? l->capacity * Interp_List_Growth_Factor
                                   : Interp_List_Initial_Capacity;
@@ -15831,7 +15832,28 @@ void Analyze_Identifier (Node *n) {
 
 u32 Literal_Default_Type (Node *operand, Type **out) {
   if (not operand) return 0;
-  if (operand->kind == NK_CHARACTER) { out[0] = sm->type_character; return 1; }
+  if (operand->kind == NK_CHARACTER) {
+    u32 count = 0;
+    out[count++] = sm->type_character;
+    Interp_List candidates;
+    Collect_Interpretations (operand->string_val.text, &candidates);
+    for (u32 i = 0; i < candidates.count and count < MAX_INTERPRETATIONS;
+         i++) {
+      Symbol *literal = candidates.items[i].nam;
+      if (not literal or literal->kind != SYMBOL_LITERAL or
+          not literal->type)
+        continue;
+      Type *base = Type_Base (literal->type);
+      if (not base or (base->kind != TYPE_ENUMERATION and
+                       base->kind != TYPE_CHARACTER))
+        continue;
+      bool counted = false;
+      for (u32 k = 0; k < count and not counted; k++)
+        counted = Type_Base (out[k]) == base;
+      if (not counted) out[count++] = literal->type;
+    }
+    return count;
+  }
   if (operand->kind == NK_STRING)    { out[0] = sm->type_string;    return 1; }
   return 0;
 }
@@ -16533,6 +16555,35 @@ Type *Resolve_In_Context (Node *n, Type *ctx) {
     return n->type;
   }
   if (n->binary.op == TK_IN or n->binary.op == TK_NOT) return n->type;
+
+  if (Token_In_Any_Class (n->binary.op, TOKEN_CLASS_RELATIONAL) and
+      n->interps and
+      n->binary.left  and n->binary.left->kind  == NK_CHARACTER and
+      n->binary.right and n->binary.right->kind == NK_CHARACTER) {
+    Type *seen = NULL;
+    bool universal_involved = false, mixed = false;
+    for (u32 i = 0; i < n->interps->count; i++) {
+      Interpretation *candidate = &n->interps->items[i];
+      if (ctx and not Type_Covers (ctx, candidate->typ)) continue;
+      Type *left_base  = candidate->opnd[0]
+        ? Type_Base (Effective_Type_View (candidate->opnd[0])) : NULL;
+      Type *right_base = candidate->opnd[1]
+        ? Type_Base (Effective_Type_View (candidate->opnd[1])) : NULL;
+      if (not left_base or Type_Is_Universal (left_base) or
+          (right_base and Type_Is_Universal (right_base))) {
+        universal_involved = true;
+        break;
+      }
+      if (not seen) seen = left_base;
+      else if (seen != left_base) mixed = true;
+    }
+    if (mixed and not universal_involved)
+      Report_Node_Error (n,
+                    "the operands of \"%.*s\" are ambiguous: more than one "
+                    "type satisfies this context (RM 8.7)",
+                    (int) Operator_Name (n->binary.op).length,
+                    Operator_Name (n->binary.op).data);
+  }
 
   if ((n->binary.op == TK_STAR or n->binary.op == TK_SLASH) and not pick->nam and
       Type_Is_Universal (pick->typ) and pick->typ != sm->type_universal_fixed and
