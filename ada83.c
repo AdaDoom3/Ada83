@@ -25872,6 +25872,19 @@ void Restricted_Incomplete_Type_Names (Restricted_Name_Set *set,
         Report_Error (item->location,
           "the incomplete type '%.*s' is never completed",
           (int) name.length, name.data);
+      else
+        for (u32 j = i + 1; j < declarations->count; j++) {
+          Node *later = declarations->items[j];
+          if (not later) continue;
+          if (later->kind != NK_PACKAGE_BODY and later->kind != NK_TASK_BODY
+              and not Node_In_Any_Class (later, NODE_CLASS_SUBPROGRAM_BODY))
+            continue;
+          Report_Error (later->location,
+            "'%.*s' is still incomplete here, and no basic declarative item "
+            "can follow a body, so it can never be completed",
+            (int) name.length, name.data);
+          break;
+        }
       continue;
     }
     Check_Incomplete_Type_Discriminant_Parts (item, full);
