@@ -3083,6 +3083,23 @@ const Interp_List Empty_Interp_List = {.items    = NULL,
                                        .count    = 0,
                                        .capacity = 0};
 
+enum { MAX_COUNTED_INTERPRETATIONS = 12 };
+
+typedef struct {
+  Type *result_type;
+  u32   ways;
+} Counted_Interpretation;
+
+typedef struct {
+  Counted_Interpretation entries[MAX_COUNTED_INTERPRETATIONS];
+  u32  count;
+  bool unknown;
+} Interpretation_Multiset;
+
+Interpretation_Multiset Expression_Interpretation_Multiset (Node *expression);
+u32 Interpretation_Ways_Covered (const Interpretation_Multiset *interpretations,
+                                 Type *context_type);
+
 bool Type_Reaches            (Type    *type_info, Type   *target, int depth);
 bool Conversion_Is_Legal     (Type    *target,   Type    *operand);
 bool Type_Covers             (Type    *expected, Type    *actual);
@@ -3342,7 +3359,8 @@ typedef enum {
 } Profile_Flags;
 void Check_Out_Parameter_Limitedness (Node *specification);
 u32 Resolve_Parameter_Profile (Node_List *specs, Parameter_Info **out,
-                                    Profile_Flags flags);
+                                    Profile_Flags flags,
+                                    Symbol *repeated_declaration);
 void Synthesize_Exported_Operators (Symbol   *pkg_sym);
 bool Operator_Admits_Type (Token_Kind op, Type *t);
 bool Implicit_Operator_Is_Declared_Here (const Symbol *exported);
@@ -3367,7 +3385,8 @@ typedef enum {
   FORMAL_PART_REPEATS_A_DECLARATION
 } Formal_Part_Kind;
 void Install_Parameter_Symbols   (Node_List *parameters, Symbol *subprogram,
-                                  Formal_Part_Kind kind);
+                                  Formal_Part_Kind kind,
+                                  Symbol *repeated_declaration);
 void Resolve_Subprogram_Body_Interior (Node *body,
                                        bool freeze_declarations);
 void Install_Implicit_Declarations (Scope   *spec_scope);
@@ -13144,8 +13163,6 @@ bool Type_Covers (Type *expected, Type *actual) {
 
 bool Declared_Type_Admits_Value (Type *declared_type, Type *value_type) {
   if (not declared_type or not value_type) return true;
-  if (Type_Is_Character_Type (value_type) and
-      Type_Is_Character_Type (declared_type)) return true;
   return Type_Covers_Strict (declared_type, value_type);
 }
 
@@ -14162,6 +14179,195 @@ Symbol *Task_Entry_Owner (Type *task_type) {
     if (t->defining_symbol and t->defining_symbol->exported_count > 0)
       return t->defining_symbol;
   return task_type ? task_type->defining_symbol : NULL;
+}
+
+Interpretation_Multiset Unknown_Interpretation_Multiset (void) {
+  return (Interpretation_Multiset){ .unknown = true };
+}
+
+void Interpretation_Multiset_Add (Interpretation_Multiset *interpretations,
+                                  Type *result_type, u32 ways) {
+  if (interpretations->unknown or not result_type or ways == 0) return;
+  Type *base = Type_Base (result_type);
+  for (u32 i = 0; i < interpretations->count; i++)
+    if (Type_Base (interpretations->entries[i].result_type) == base) {
+      interpretations->entries[i].ways += ways;
+      return;
+    }
+  if (interpretations->count == MAX_COUNTED_INTERPRETATIONS) {
+    interpretations->unknown = true;
+    return;
+  }
+  interpretations->entries[interpretations->count++] =
+    (Counted_Interpretation){ .result_type = result_type, .ways = ways };
+}
+
+u32 Interpretation_Ways_Covered (const Interpretation_Multiset *interpretations,
+                                 Type *context_type) {
+  u32 ways = 0;
+  for (u32 i = 0; i < interpretations->count; i++)
+    if (Overload_Formal_Accepts (context_type,
+                                 interpretations->entries[i].result_type))
+      ways += interpretations->entries[i].ways;
+  return ways;
+}
+
+u32 Argument_Interpretation_Ways (Node *actual, Type *expected_type) {
+  Interpretation_Multiset actual_interpretations =
+    Expression_Interpretation_Multiset (actual);
+  if (actual_interpretations.unknown)
+    return not actual->type or
+           Overload_Formal_Accepts (expected_type, actual->type) ? 1 : 0;
+  return Interpretation_Ways_Covered (&actual_interpretations, expected_type);
+}
+
+bool Interpretation_Candidate_Already_Counted (Symbol **counted, u32 count,
+                                               Symbol *candidate) {
+  for (u32 i = 0; i < count; i++)
+    if (counted[i] == candidate or
+        Symbols_Are_One_Declaration (counted[i], candidate))
+      return true;
+  return false;
+}
+
+bool Call_Formals_Accept_Positional_Count (Symbol *callee, u32 given) {
+  if (given > callee->parameter_count) return false;
+  for (u32 i = given; i < callee->parameter_count; i++)
+    if (not callee->parameters[i].default_value) return false;
+  return true;
+}
+
+Interpretation_Multiset Identifier_Interpretation_Multiset (Node *expression) {
+  Interp_List interpretations;
+  Collect_Interpretations (expression->string_val.text, &interpretations);
+  if (interpretations.count == 0) {
+    Interpretation_Multiset result = { 0 };
+    if (not expression->type) return Unknown_Interpretation_Multiset ();
+    Interpretation_Multiset_Add (&result, expression->type, 1);
+    return result;
+  }
+  Interpretation_Multiset result = { 0 };
+  Symbol *counted[MAX_INTERPRETATIONS];
+  u32 counted_count = 0;
+  for (u32 i = 0; i < interpretations.count; i++) {
+    Symbol *candidate = interpretations.items[i].nam;
+    if (not candidate) continue;
+    if (Interpretation_Candidate_Already_Counted (counted, counted_count,
+                                                  candidate))
+      continue;
+    if (counted_count < MAX_INTERPRETATIONS)
+      counted[counted_count++] = candidate;
+    if (candidate->kind == SYMBOL_FUNCTION) {
+      if (candidate->return_type and
+          Subprogram_Callable_With_No_Arguments (candidate))
+        Interpretation_Multiset_Add (&result, candidate->return_type, 1);
+    } else if (Symbol_In_Any_Class (candidate, SYMBOL_CLASS_OBJECT) or
+               candidate->kind == SYMBOL_LITERAL) {
+      Type *denoted = Symbol_Denoted_Type (candidate);
+      if (not denoted) return Unknown_Interpretation_Multiset ();
+      Interpretation_Multiset_Add (&result, denoted, 1);
+    } else if (candidate->kind == SYMBOL_PROCEDURE or
+               candidate->kind == SYMBOL_GENERIC or
+               candidate->kind == SYMBOL_PACKAGE or
+               candidate->kind == SYMBOL_TYPE or
+               candidate->kind == SYMBOL_SUBTYPE) {
+    } else {
+      return Unknown_Interpretation_Multiset ();
+    }
+  }
+  return result;
+}
+
+Interpretation_Multiset Apply_Interpretation_Multiset (Node *expression) {
+  Node_List *arguments = &expression->apply.arguments;
+  for (u32 i = 0; i < arguments->count; i++) {
+    Node *argument = arguments->items[i];
+    if (not argument or argument->kind == NK_ASSOCIATION or
+        argument->kind == NK_RANGE)
+      return Unknown_Interpretation_Multiset ();
+    if (argument->symbol and Symbol_Denotes_A_Type_Mark (argument->symbol))
+      return Unknown_Interpretation_Multiset ();
+  }
+  Node *prefix = expression->apply.prefix;
+  if (not prefix) return Unknown_Interpretation_Multiset ();
+
+  Interpretation_Multiset result = { 0 };
+
+  if (prefix->kind == NK_IDENTIFIER) {
+    Interp_List candidates;
+    Collect_Interpretations (prefix->string_val.text, &candidates);
+    Symbol *counted[MAX_INTERPRETATIONS];
+    u32 counted_count = 0;
+    for (u32 i = 0; i < candidates.count; i++) {
+      Symbol *candidate = candidates.items[i].nam;
+      if (not candidate) continue;
+      if (Interpretation_Candidate_Already_Counted (counted, counted_count,
+                                                    candidate))
+        continue;
+      if (counted_count < MAX_INTERPRETATIONS)
+        counted[counted_count++] = candidate;
+      if (candidate->kind == SYMBOL_FUNCTION and candidate->return_type and
+          arguments->count > 0 and
+          Call_Formals_Accept_Positional_Count (candidate,
+                                                arguments->count)) {
+        u32 ways = 1;
+        for (u32 a = 0; a < arguments->count and ways; a++)
+          ways *= Argument_Interpretation_Ways (
+            arguments->items[a], candidate->parameters[a].param_type);
+        Interpretation_Multiset_Add (&result, candidate->return_type, ways);
+      }
+      if (Symbol_Denotes_A_Type_Mark (candidate) and arguments->count == 1)
+        Interpretation_Multiset_Add (&result,
+                                     Symbol_Denoted_Type (candidate), 1);
+    }
+  }
+
+  Interpretation_Multiset prefix_values =
+    Expression_Interpretation_Multiset (prefix);
+  if (prefix_values.unknown) return Unknown_Interpretation_Multiset ();
+  for (u32 i = 0; i < prefix_values.count; i++) {
+    Type *array_type = prefix_values.entries[i].result_type;
+    if (not Type_Is_Array_Like (array_type)) continue;
+    if (array_type->array.index_count != arguments->count) continue;
+    if (not array_type->array.element_type) continue;
+    u32 ways = prefix_values.entries[i].ways;
+    for (u32 a = 0; a < arguments->count and ways; a++) {
+      Type *index_type = array_type->array.indices
+                       ? array_type->array.indices[a].index_type : NULL;
+      ways *= Argument_Interpretation_Ways (arguments->items[a], index_type);
+    }
+    Interpretation_Multiset_Add (&result, array_type->array.element_type,
+                                 ways);
+  }
+  return result;
+}
+
+Interpretation_Multiset Expression_Interpretation_Multiset (Node *expression) {
+  if (not expression) return Unknown_Interpretation_Multiset ();
+  switch (expression->kind) {
+    case NK_IDENTIFIER:
+      return Identifier_Interpretation_Multiset (expression);
+    case NK_APPLY:
+      return Apply_Interpretation_Multiset (expression);
+    case NK_QUALIFIED: {
+      Node *mark = expression->qualified.subtype_mark;
+      Type *mark_type = mark ? mark->type : NULL;
+      if (not mark_type) return Unknown_Interpretation_Multiset ();
+      Interpretation_Multiset inner =
+        Expression_Interpretation_Multiset (expression->qualified.expression);
+      u32 ways = inner.unknown
+               ? 1 : Interpretation_Ways_Covered (&inner, mark_type);
+      Interpretation_Multiset result = { 0 };
+      Interpretation_Multiset_Add (&result, mark_type, ways ? ways : 1);
+      return result;
+    }
+    default: {
+      Interpretation_Multiset result = { 0 };
+      if (not expression->type) return Unknown_Interpretation_Multiset ();
+      Interpretation_Multiset_Add (&result, expression->type, 1);
+      return result;
+    }
+  }
 }
 
 Type *Symbol_Denoted_Type (Symbol *sym) {
@@ -19820,6 +20026,44 @@ Symbol *Declare_Parameter_Name (Node_List *specs, u32 spec_index,
 
 
 
+void Check_Repeated_Default_Still_Denotes_One_Entity (Node *node,
+                                                      Symbol *repeated) {
+  if (not node) return;
+  if (node->kind == NK_IDENTIFIER and node->symbol and
+      (Symbol_Is_Subprogram (node->symbol) or
+       node->symbol->kind == SYMBOL_LITERAL)) {
+    Symbol *bound = Ultimate_Declaration (node->symbol);
+    Source_Location repeated_at = repeated->declaration
+                                ? repeated->declaration->location
+                                : repeated->location;
+    Interp_List homographs;
+    Collect_Interpretations (node->string_val.text, &homographs);
+    for (u32 i = 0; i < homographs.count; i++) {
+      Symbol *other = Ultimate_Declaration (homographs.items[i].nam);
+      if (not other or Symbols_Are_One_Declaration (other, bound)) continue;
+      Source_Location other_at = other->location;
+      if (not other_at.filename or not repeated_at.filename) continue;
+      if (strcmp (other_at.filename, repeated_at.filename) != 0) continue;
+      if (other_at.line < repeated_at.line or
+          (other_at.line == repeated_at.line and
+           other_at.column <= repeated_at.column)) continue;
+      Report_Node_Error (node,
+        "'%.*s' does not denote the same entity here as it does in the "
+        "declaration this formal part repeats: a later declaration of it "
+        "is also visible here",
+        (int) node->string_val.text.length, node->string_val.text.data);
+      return;
+    }
+  }
+  for (const Syntax_Tree_Edge *edge = Syntax_Tree_Shape[node->kind];
+       edge->offset; edge++) {
+    Node_List children = Node_Children_At (node, edge);
+    for (u32 i = 0; i < children.count; i++)
+      Check_Repeated_Default_Still_Denotes_One_Entity (children.items[i],
+                                                       repeated);
+  }
+}
+
 Node *Name_Denoting_A_Declaration_Of_This_Part (Node *node,
                                                               Symbol_Kind declares,
                                                               Scope *part) {
@@ -19841,7 +20085,8 @@ Node *Name_Denoting_A_Declaration_Of_This_Part (Node *node,
 
 
 u32 Resolve_Parameter_Profile (Node_List *specs, Parameter_Info **out,
-                                    Profile_Flags flags) {
+                                    Profile_Flags flags,
+                                    Symbol *repeated_declaration) {
   u32 count = 0;
   for (u32 i = 0; i < specs->count; i++) {
     Node *spec = specs->items[i];
@@ -19850,15 +20095,29 @@ u32 Resolve_Parameter_Profile (Node_List *specs, Parameter_Info **out,
   }
   *out = count ? Arena_Allocate (count * sizeof (Parameter_Info)) : NULL;
 
-  if (flags & PROFILE_REPEATS_A_DECLARATION)
+  if (flags & PROFILE_REPEATS_A_DECLARATION) {
     for (u32 i = 0; i < specs->count; i++) {
       Node *spec = specs->items[i];
       if (not spec or spec->kind != NK_PARAM_SPEC) continue;
       Node *type_mark = spec->param_spec.param_type;
       if (type_mark) Resolve_Expression (type_mark);
+      Node *default_expr = spec->param_spec.default_expr;
+      if (default_expr) {
+        Seed_Expected_Type (default_expr, type_mark ? type_mark->type : NULL);
+        Resolve_Expression (default_expr);
+        if (repeated_declaration)
+          Check_Repeated_Default_Still_Denotes_One_Entity (
+            default_expr, repeated_declaration);
+      }
+    }
+    for (u32 i = 0; i < specs->count; i++) {
+      Node *spec = specs->items[i];
+      if (not spec or spec->kind != NK_PARAM_SPEC) continue;
+      Node *type_mark = spec->param_spec.param_type;
       for (u32 j = 0; j < spec->param_spec.names.count; j++)
         Declare_Parameter_Name (specs, i, j, type_mark ? type_mark->type : NULL);
     }
+  }
 
   u32 filled = 0;
   for (u32 i = 0; i < specs->count; i++) {
@@ -19880,8 +20139,10 @@ u32 Resolve_Parameter_Profile (Node_List *specs, Parameter_Info **out,
     Node *default_expr = (flags & PROFILE_WRAPPER_VIEW)
                                   ? NULL : spec->param_spec.default_expr;
     if (default_expr) {
-      Seed_Expected_Type (default_expr, parameter_type);
-      Resolve_Expression (default_expr);
+      if (not (flags & PROFILE_REPEATS_A_DECLARATION)) {
+        Seed_Expected_Type (default_expr, parameter_type);
+        Resolve_Expression (default_expr);
+      }
       Node *forbidden =
         (flags & PROFILE_REPEATS_A_DECLARATION) ? NULL
         : Name_Denoting_A_Declaration_Of_This_Part (default_expr,
@@ -20144,12 +20405,14 @@ void Assign_Access_Type_Masters (Node_List *list, u32 scope_id) {
 }
 
 void Install_Parameter_Symbols (Node_List *parameters, Symbol *subprogram,
-                                Formal_Part_Kind kind) {
+                                Formal_Part_Kind kind,
+                                Symbol *repeated_declaration) {
   Parameter_Info *installed = NULL;
   u32 count = Resolve_Parameter_Profile (
     parameters, &installed,
     kind == FORMAL_PART_REPEATS_A_DECLARATION ? PROFILE_REPEATS_A_DECLARATION
-                                              : PROFILE_MINT_SYMBOLS);
+                                              : PROFILE_MINT_SYMBOLS,
+    repeated_declaration);
   if (not subprogram) return;
   for (u32 i = 0; i < count and i < subprogram->parameter_count; i++)
     subprogram->parameters[i].param_sym = installed[i].param_sym;
@@ -20333,6 +20596,7 @@ void Resolve_Assignment_Statement (Node *node) {
       context->record.has_disc_constraints and context->base_type)
     context = context->base_type;
 
+  int errors_before_value = Error_Count;
   Resolve_Expression_In_Context (value, context);
 
   if (value->kind == NK_CHARACTER and target->type)
@@ -20345,15 +20609,30 @@ void Resolve_Assignment_Statement (Node *node) {
   if (Name_That_Is_No_Primary (value, sm->current_scope)) return;
 
   if (not (target->type and value->type)) return;
-  if (Declared_Type_Admits_Value (target->type, value->type)) return;
 
-  bool resolved = Repick_Assignment_Target_Overload (target, value->type);
-  if (not resolved) {
-    Resolve_Operand (value, target->type);
-    resolved = Declared_Type_Admits_Value (target->type, value->type);
+  if (not Declared_Type_Admits_Value (target->type, value->type)) {
+    bool resolved = Repick_Assignment_Target_Overload (target, value->type);
+    if (not resolved) {
+      Resolve_Operand (value, target->type);
+      resolved = Declared_Type_Admits_Value (target->type, value->type);
+    }
+    if (not resolved) {
+      Report_Node_Error (node, "type mismatch in assignment");
+      return;
+    }
   }
-  if (not resolved)
-    Report_Node_Error (node, "type mismatch in assignment");
+
+  if (Error_Count == errors_before_value) {
+    Interpretation_Multiset value_interpretations =
+      Expression_Interpretation_Multiset (value);
+    if (not value_interpretations.unknown and
+        Interpretation_Ways_Covered (&value_interpretations,
+                                     target->type) > 1)
+      Report_Node_Error (value,
+                    "this expression is ambiguous: more than one "
+                    "combination of overloaded names satisfies the context "
+                    "and the context does not determine which");
+  }
 }
 
 
@@ -21097,7 +21376,8 @@ void Resolve_Statement (Node *node) {
       Symbol_Manager_Push_Scope (sm->current_scope->owner);
       sm->current_scope->opened_by_accept_statement = true;
       Install_Parameter_Symbols (&node->accept_stmt.parameters, NULL,
-                                 FORMAL_PART_REPEATS_A_DECLARATION);
+                                 FORMAL_PART_REPEATS_A_DECLARATION,
+                                 node->accept_stmt.entry_sym);
 
       for (u32 i = 0; i < node->accept_stmt.parameters.count; i++) {
         Node *specification = node->accept_stmt.parameters.items[i];
@@ -21777,10 +22057,16 @@ void Add_Use_Alias (Symbol *original) {
         incoming_declaration->defining_scope;
     bool existing_implicit = Declaration_Is_Implicit (existing_declaration);
     bool incoming_implicit = Declaration_Is_Implicit (incoming_declaration);
+    bool existing_overloadable = existing_declaration and
+      (Symbol_Is_Subprogram (existing_declaration) or
+       existing_declaration->kind == SYMBOL_LITERAL);
+    bool incoming_overloadable = incoming_declaration and
+      (Symbol_Is_Subprogram (incoming_declaration) or
+       incoming_declaration->kind == SYMBOL_LITERAL);
     if (same_region and existing_implicit != incoming_implicit) {
       if (incoming_implicit) alias->visibility     = VIS_HIDDEN;
       else                   homograph->visibility = VIS_HIDDEN;
-    } else {
+    } else if (not (existing_overloadable and incoming_overloadable)) {
       homograph->visibility = VIS_HIDDEN;
       alias->visibility     = VIS_HIDDEN;
     }
@@ -22212,7 +22498,7 @@ Formal_Part_Kind Resolve_Subprogram_Specification (
   sm->current_scope->opened_by_a_declarations_formal_part = true;
   sym->parameter_count = Resolve_Parameter_Profile (
     parameters, &sym->parameters,
-    PROFILE_EXPLICIT_DECLARATION | PROFILE_MINT_SYMBOLS);
+    PROFILE_EXPLICIT_DECLARATION | PROFILE_MINT_SYMBOLS, NULL);
   Symbol_Manager_Pop_Scope ();
   if (node->subprogram_spec.return_type) {
     Resolve_Expression (node->subprogram_spec.return_type);
@@ -22247,7 +22533,8 @@ void Resolve_Subprogram_Body (Node *node) {
     Install_Generic_Formal_Symbols (generic_template);
     if (spec) {
       Install_Parameter_Symbols (&spec->subprogram_spec.parameters, NULL,
-                                 FORMAL_PART_REPEATS_A_DECLARATION);
+                                 FORMAL_PART_REPEATS_A_DECLARATION,
+                                 generic_template);
       if (spec->subprogram_spec.return_type)
         Resolve_Expression (spec->subprogram_spec.return_type);
     }
@@ -22306,7 +22593,7 @@ void Resolve_Subprogram_Body (Node *node) {
   if (node->symbol) node->symbol->scope = sm->current_scope;
   if (spec)
     Install_Parameter_Symbols (&spec->subprogram_spec.parameters, node->symbol,
-                               formal_part_kind);
+                               formal_part_kind, node->symbol);
   Resolve_Subprogram_Body_Interior (node, true);
   Symbol_Manager_Pop_Scope ();
 }
@@ -22339,7 +22626,7 @@ void Resolve_Subprogram_Renaming (Node *node) {
     node->subprogram_spec.name, node->location);
 
   u32 total_parameters = sym->parameter_count = Resolve_Parameter_Profile (
-    &node->subprogram_spec.parameters, &sym->parameters, PROFILE_PLAIN);
+    &node->subprogram_spec.parameters, &sym->parameters, PROFILE_PLAIN, NULL);
   if (node->subprogram_spec.return_type) {
     Resolve_Expression (node->subprogram_spec.return_type);
     sym->return_type = node->subprogram_spec.return_type->type;
@@ -22602,7 +22889,7 @@ void Resolve_Generic_Subprogram_Specification (
   Symbol *generic_unit, Node *specification) {
   generic_unit->parameter_count = Resolve_Parameter_Profile (
     &specification->subprogram_spec.parameters, &generic_unit->parameters,
-    PROFILE_EXPLICIT_DECLARATION | PROFILE_MINT_SYMBOLS);
+    PROFILE_EXPLICIT_DECLARATION | PROFILE_MINT_SYMBOLS, NULL);
   if (specification->subprogram_spec.return_type)
     Resolve_Expression (specification->subprogram_spec.return_type);
 }
@@ -24265,7 +24552,7 @@ void Resolve_Declaration (Node *node) {
         sm->current_scope->opened_by_a_declarations_formal_part = true;
         entry_sym->parameter_count = Resolve_Parameter_Profile (
           &entry->entry_decl.parameters, &entry_sym->parameters,
-          PROFILE_EXPLICIT_DECLARATION | PROFILE_MINT_SYMBOLS);
+          PROFILE_EXPLICIT_DECLARATION | PROFILE_MINT_SYMBOLS, NULL);
         Symbol_Manager_Pop_Scope ();
 
         if (entry->entry_decl.index_constraints.count and
@@ -27054,8 +27341,13 @@ void Check_Declared_Identifiers_Are_Distinct (Node_List *part) {
 
 typedef struct {
   String_Slice identifier;
-  Token_Kind   operator_token;   
+  Token_Kind   operator_token;
 } Designator_Notation;
+
+typedef enum {
+  HIDING_DIRECT_ONLY,
+  HIDING_ALSO_BY_SELECTION,
+} Hiding_Extent_Kind;
 
 Designator_Notation Designator_Notation_Of (String_Slice designator) {
   return (Designator_Notation){
@@ -27065,7 +27357,8 @@ Designator_Notation Designator_Notation_Of (String_Slice designator) {
 }
 
 bool Node_Denotes_Designator (Node *node,
-                                     Designator_Notation designator) {
+                                     Designator_Notation designator,
+                                     Hiding_Extent_Kind extent) {
   switch (node->kind) {
     case NK_IDENTIFIER:
       return Slice_Equal_Ignore_Case (node->string_val.text,
@@ -27078,7 +27371,8 @@ bool Node_Denotes_Designator (Node *node,
                                       designator.identifier);
     }
     case NK_SELECTED:
-      return Slice_Equal_Ignore_Case (node->selected.selector,
+      return extent == HIDING_ALSO_BY_SELECTION and
+             Slice_Equal_Ignore_Case (node->selected.selector,
                                       designator.identifier);
     case NK_BINARY_OP:
       return designator.operator_token != TK_EOF and
@@ -27094,11 +27388,12 @@ bool Node_Denotes_Designator (Node *node,
 
 
 bool Check_Designator_Not_Denoted (Node *node,
-                                          Designator_Notation designator) {
+                                          Designator_Notation designator,
+                                          Hiding_Extent_Kind extent) {
   if (not node) return false;
 
   bool found = false;
-  if (Node_Denotes_Designator (node, designator)) {
+  if (Node_Denotes_Designator (node, designator, extent)) {
     Report_Node_Error (node,
                   "'%.*s' is hidden within its own declaration and denotes "
                   "nothing here",
@@ -27115,9 +27410,11 @@ bool Check_Designator_Not_Denoted (Node *node,
       Node_List *list = child;
       if (list == declared) continue;
       for (u32 i = 0; i < list->count; i++)
-        found |= Check_Designator_Not_Denoted (list->items[i], designator);
+        found |= Check_Designator_Not_Denoted (list->items[i], designator,
+                                               extent);
     } else {
-      found |= Check_Designator_Not_Denoted (*(Node **) child, designator);
+      found |= Check_Designator_Not_Denoted (*(Node **) child, designator,
+                                             extent);
     }
   }
   return found;
@@ -28808,11 +29105,13 @@ void Check_Legality_Of_Node (Node *node,
         bool found = false;
         for (u32 i = 0; i < node->subprogram_spec.parameters.count; i++)
           found |= Check_Designator_Not_Denoted (
-            node->subprogram_spec.parameters.items[i], designator);
+            node->subprogram_spec.parameters.items[i], designator,
+            HIDING_ALSO_BY_SELECTION);
         found |= Check_Designator_Not_Denoted (
-          node->subprogram_spec.return_type, designator);
+          node->subprogram_spec.return_type, designator,
+          HIDING_ALSO_BY_SELECTION);
         found |= Check_Designator_Not_Denoted (
-          node->subprogram_spec.renamed, designator);
+          node->subprogram_spec.renamed, designator, HIDING_DIRECT_ONLY);
         Node *tail = node->subprogram_spec.renamed
           ? node->subprogram_spec.renamed
           : node->subprogram_spec.return_type;
@@ -28829,10 +29128,12 @@ void Check_Legality_Of_Node (Node *node,
           Designator_Notation_Of (node->entry_decl.name);
         for (u32 i = 0; i < node->entry_decl.index_constraints.count; i++)
           Check_Designator_Not_Denoted (
-            node->entry_decl.index_constraints.items[i], designator);
+            node->entry_decl.index_constraints.items[i], designator,
+            HIDING_ALSO_BY_SELECTION);
         for (u32 i = 0; i < node->entry_decl.parameters.count; i++)
           Check_Designator_Not_Denoted (node->entry_decl.parameters.items[i],
-                                        designator);
+                                        designator,
+                                        HIDING_ALSO_BY_SELECTION);
         break;
       }
       case NK_ACCEPT: {
@@ -28840,7 +29141,8 @@ void Check_Legality_Of_Node (Node *node,
           Designator_Notation_Of (node->accept_stmt.entry_name);
         for (u32 i = 0; i < node->accept_stmt.parameters.count; i++)
           Check_Designator_Not_Denoted (node->accept_stmt.parameters.items[i],
-                                        designator);
+                                        designator,
+                                        HIDING_ALSO_BY_SELECTION);
         break;
       }
       case NK_GENERIC_INST: {
@@ -28848,10 +29150,11 @@ void Check_Legality_Of_Node (Node *node,
         Designator_Notation designator =
           Designator_Notation_Of (node->generic_inst.instance_name);
         Check_Designator_Not_Denoted (node->generic_inst.generic_name,
-                                      designator);
+                                      designator, HIDING_ALSO_BY_SELECTION);
         for (u32 i = 0; i < node->generic_inst.actuals.count; i++)
           Check_Designator_Not_Denoted (node->generic_inst.actuals.items[i],
-                                        designator);
+                                        designator,
+                                        HIDING_ALSO_BY_SELECTION);
         break;
       }
       default:
@@ -56148,7 +56451,7 @@ void Install_Generic_Formal_Symbols (Symbol *generic_symbol) {
             specification->subprogram_spec.name, formal->location);
           subprogram_sym->parameter_count = Resolve_Parameter_Profile (
             &specification->subprogram_spec.parameters,
-            &subprogram_sym->parameters, PROFILE_PLAIN);
+            &subprogram_sym->parameters, PROFILE_PLAIN, NULL);
           if (specification->subprogram_spec.return_type) {
             Resolve_Expression (specification->subprogram_spec.return_type);
             subprogram_sym->type =
@@ -56172,7 +56475,7 @@ void Materialize_Wrapper_Profile (Symbol *binding, Node *specification,
   Source_Location location = specification->location;
   binding->parameter_count = Resolve_Parameter_Profile (
     &specification->subprogram_spec.parameters, &binding->parameters,
-    PROFILE_MINT_SYMBOLS | PROFILE_WRAPPER_VIEW);
+    PROFILE_MINT_SYMBOLS | PROFILE_WRAPPER_VIEW, NULL);
 
   for (u32 i = 0; i < binding->parameter_count; i++) {
     Node *reference = Node_New (NK_IDENTIFIER, location);
@@ -57099,8 +57402,11 @@ bool Instantiate_Generic_Package (Symbol *instance_sym, Symbol *template_sym) {
         Node *body_cu = Parse_Compilation_Unit_Named (body_source,
           body_filename, package_name, true);
         if (body_cu and body_cu->compilation_unit.unit and
-            body_cu->compilation_unit.unit->kind == NK_PACKAGE_BODY)
+            body_cu->compilation_unit.unit->kind == NK_PACKAGE_BODY) {
+          Fold_Applicable_Context_Into_Unit (body_cu);
+          Load_With_Clause_Dependencies (body_cu->compilation_unit.context);
           template_sym->generic_body_cache = body_cu->compilation_unit.unit;
+        }
       }
     }
     body_template = template_sym->generic_body_cache;
@@ -57205,7 +57511,7 @@ bool Instantiate_Generic_Subprogram (Symbol *instance_sym, Symbol *template_sym)
   if (spec_clone) {
     instance_sym->parameter_count = Resolve_Parameter_Profile (
       &spec_clone->subprogram_spec.parameters, &instance_sym->parameters,
-      PROFILE_MINT_SYMBOLS | PROFILE_PEEL_ACTUAL_VIEW);
+      PROFILE_MINT_SYMBOLS | PROFILE_PEEL_ACTUAL_VIEW, NULL);
     if (spec_clone->subprogram_spec.return_type) {
       Resolve_Expression (spec_clone->subprogram_spec.return_type);
       if (spec_clone->subprogram_spec.return_type->type) {
@@ -58376,7 +58682,8 @@ void Load_Package_Spec (String_Slice name, char *src) {
         Node *bspec = more_unit->subprogram_body.specification;
         if (bspec)
           Install_Parameter_Symbols (&bspec->subprogram_spec.parameters, NULL,
-                                     FORMAL_PART_REPEATS_A_DECLARATION);
+                                     FORMAL_PART_REPEATS_A_DECLARATION,
+                                     gen_sym);
         Resolve_Declaration_List (&more_unit->subprogram_body.declarations);
         Resolve_Subprogram_Body_Statement_Sequence (more_unit);
         Symbol_Manager_Pop_Scope ();
@@ -58394,6 +58701,8 @@ void Load_Package_Spec (String_Slice name, char *src) {
         same_file_body_cu = more_cu;
       }
       else if (pkg_sym and pkg_sym->kind == SYMBOL_GENERIC) {
+        Fold_Applicable_Context_Into_Unit (more_cu);
+        Load_With_Clause_Dependencies (more_cu->compilation_unit.context);
         Resolve_Declaration (more_unit);
       }
     } else {
