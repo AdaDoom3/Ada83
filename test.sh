@@ -323,8 +323,18 @@ run_one(){
             i=0
             #  ACATS writes the marker with one space and sometimes two
             #  (bd1b01a..bd1b04d), so the separator is one-or-more.
+            #  A marker on a code line names that line (+/-1); a marker on a
+            #  comment-only line floats over a region (e.g. "missing body"
+            #  at the end of a declarative part) and gets a wider window.
             while IFS= read -r l; do
-                ((++i)); [[ $l =~ --[[:space:]]+ERROR([^A-Z]|$) ]] && expected+=("$pn:$i")
+                ((++i))
+                if [[ $l =~ --[[:space:]]+ERROR[[:space:]]*[:\;.] ]]; then
+                    if [[ $l =~ ^[[:space:]]*-- ]]; then
+                        expected+=("$pn:$i:3")
+                    else
+                        expected+=("$pn:$i:1")
+                    fi
+                fi
             done < "$part"
             #  Compiled ONCE.  The rejection verdict and the diagnostics
             #  are two readings of one run, and submitting the same unit
@@ -341,12 +351,13 @@ run_one(){
         if [[ -z $rejected ]]; then
             echo "b fail $n WRONG_ACCEPT:compiled_when_should_reject"
         else
-            local ef el vf vl
+            local ef el ew vf vl
             for e in ${expected[@]+"${expected[@]}"}; do
-                ef=${e%:*}; el=${e##*:}
+                ew=${e##*:}; ef=${e%%:*}
+                el=${e#*:}; el=${el%%:*}
                 for v in ${actual[@]+"${actual[@]}"}; do
                     vf=${v%:*}; vl=${v##*:}
-                    [[ $vf == "$ef" ]] && ((vl>=el-1&&vl<=el+1)) && { ((++hits)); break; }
+                    [[ $vf == "$ef" ]] && ((vl>=el-ew&&vl<=el+ew)) && { ((++hits)); break; }
                 done
             done
             local xe=${#expected[@]}

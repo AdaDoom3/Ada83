@@ -6289,6 +6289,11 @@ Catalog_Entry *Library_Catalog_Declaration_Of (String_Slice unit_name);
 Catalog_Entry *Library_Catalog_Subunit_With_Simple_Name (
                  String_Slice simple_name);
 
+extern Catalog_Entry *Catalog_Entries;
+extern u32            Catalog_Entry_Count;
+String_Slice   Library_Catalog_Conflicting_Subunit (String_Slice full_name);
+void           Check_Subunit_Identifiers_Are_Unique (Node *node);
+
 Catalog_Entry *Library_Catalog_Compilation_Unit_Named (String_Slice name);
 
 void           Library_Catalog_Mark_Obsolete      ();
@@ -10655,6 +10660,29 @@ Node *Parse_Declaration (Parser *p) {
           if (not first_representation_clause.line)
             first_representation_clause = Parser_Location (p);
           Node_List_Push (&node->task_spec.entries, Parse_Representation_Clause (p));
+        } else if (Parser_At (p, TK_SELECT)) {
+          Parser_Error (p, "a selective wait is only allowed within the "
+                           "body of a task, not its specification");
+          p->panic_mode = false;
+          u32 depth = 0;
+          while (not Parser_At (p, TK_EOF)) {
+            if (Parser_At (p, TK_SELECT)) depth++;
+            if (Parser_At (p, TK_ACCEPT))
+              Report_Error (Parser_Location (p),
+                            "an accept statement is only allowed within "
+                            "the body of a task");
+            if (Parser_At (p, TK_END)) {
+              Parser_Advance (p);
+              if (Parser_At (p, TK_SELECT) and --depth == 0) {
+                Parser_Advance (p);
+                break;
+              }
+              continue;
+            }
+            Parser_Advance (p);
+          }
+          Parser_Expect (p, TK_SEMICOLON);
+          continue;
         } else {
           Parser_Error (p, "expected ENTRY, PRAGMA, FOR, or END in task spec");
           Parser_Advance (p);
@@ -24460,6 +24488,98 @@ bool Compilation_Unit_Is_Named (Node *node, String_Slice name,
          Slice_Equal_Ignore_Case (Compilation_Unit_Full_Name (node), name);
 }
 
+static String_Slice Dotted_First_Component (String_Slice name) {
+  u32 split = 0;
+  while (split < name.length and name.data[split] != '.') split++;
+  return (String_Slice){ name.data, split };
+}
+
+static String_Slice Dotted_Last_Component (String_Slice name) {
+  u32 split = name.length;
+  while (split > 0 and name.data[split - 1] != '.') split--;
+  return (String_Slice){ name.data + split, name.length - split };
+}
+
+String_Slice Library_Catalog_Conflicting_Subunit (String_Slice full_name) {
+  String_Slice root   = Dotted_First_Component (full_name);
+  String_Slice simple = Dotted_Last_Component (full_name);
+  for (u32 i = 0; i < Catalog_Entry_Count; i++) {
+    Catalog_Entry *entry = &Catalog_Entries[i];
+    if (entry->kind == CATALOG_UNIT_SUBUNIT and
+        not Slice_Equal_Ignore_Case (entry->unit_name, full_name) and
+        Slice_Equal_Ignore_Case (Dotted_First_Component (entry->unit_name),
+                                 root) and
+        Slice_Equal_Ignore_Case (Dotted_Last_Component (entry->unit_name),
+                                 simple))
+      return entry->unit_name;
+    if (entry->kind != CATALOG_UNIT_SUBUNIT and
+        entry->kind != CATALOG_UNIT_BODY)
+      continue;
+    if (not Slice_Equal_Ignore_Case (Dotted_First_Component (entry->unit_name),
+                                     root))
+      continue;
+    for (u32 s = 0; s < entry->stub_count; s++) {
+      String_Slice stub = entry->stubs[s].name;
+      if (not Slice_Equal_Ignore_Case (stub, simple)) continue;
+      u32 total = entry->unit_name.length + 1 + stub.length;
+      char *joined = Arena_Allocate (total + 1);
+      snprintf (joined, total + 1, "%.*s.%.*s",
+                (int) entry->unit_name.length, entry->unit_name.data,
+                (int) stub.length, stub.data);
+      String_Slice candidate = { joined, total };
+      if (not Slice_Equal_Ignore_Case (candidate, full_name))
+        return candidate;
+    }
+  }
+  return (String_Slice){ NULL, 0 };
+}
+
+void Check_Subunit_Identifiers_Are_Unique (Node *node) {
+  String_Slice prefix = Compilation_Unit_Full_Name (node);
+  if (not prefix.length) return;
+
+  if (node->compilation_unit.separate_parent) {
+    String_Slice conflict = Library_Catalog_Conflicting_Subunit (prefix);
+    if (conflict.length)
+      Report_Node_Error (node->compilation_unit.unit,
+        "subunits of one ancestor unit must have distinct identifiers: "
+        "'%.*s' collides with the subunit '%.*s'",
+        (int) prefix.length, prefix.data,
+        (int) conflict.length, conflict.data);
+  }
+
+  Node *unit = node->compilation_unit.unit;
+  Node_List *declarations = NULL;
+  if (unit and unit->kind == NK_PACKAGE_BODY)
+    declarations = &unit->package_body.declarations;
+  else if (Node_In_Any_Class (unit, NODE_CLASS_SUBPROGRAM_BODY))
+    declarations = &unit->subprogram_body.declarations;
+  if (not declarations) return;
+
+  for (u32 i = 0; i < declarations->count; i++) {
+    Node *stub = declarations->items[i];
+    if (not stub) continue;
+    const bool *separate = Node_Field_At (
+      stub, Node_Kind_Property_Table[stub->kind].separate_flag);
+    if (not (separate and *separate)) continue;
+    String_Slice stub_name = Node_Program_Unit_Name (stub);
+    if (not stub_name.length) continue;
+    u32 total = prefix.length + 1 + stub_name.length;
+    char *joined = Arena_Allocate (total + 1);
+    snprintf (joined, total + 1, "%.*s.%.*s",
+              (int) prefix.length, prefix.data,
+              (int) stub_name.length, stub_name.data);
+    String_Slice conflict = Library_Catalog_Conflicting_Subunit (
+      (String_Slice){ joined, total });
+    if (conflict.length)
+      Report_Node_Error (stub,
+        "subunits of one ancestor unit must have distinct identifiers: "
+        "'%.*s' collides with the subunit '%.*s'",
+        (int) total, joined,
+        (int) conflict.length, conflict.data);
+  }
+}
+
 Node *Units_Of_This_Compilation[MAX_UNITS_PER_SOURCE_FILE];
 u32     Units_Of_This_Compilation_Count;
 
@@ -24577,6 +24697,8 @@ void Resolve_Compilation_Unit (Node *node) {
     Load_Library_Subprogram_Declaration (
       Unit_Simple_Name (node->compilation_unit.unit));
 
+  Check_Subunit_Identifiers_Are_Unique (node);
+
   Symbol *parent_sym = NULL;
   Scope  *entered_from = NULL;
   bool    entered = false;
@@ -24636,7 +24758,7 @@ void Resolve_Compilation_Unit (Node *node) {
       else
         Report_Error (parent->location,
           "parent unit '%.*s' of this subunit is not in the program "
-          "library (compile the parent first, RM 10.3)",
+          "library; the parent must be compiled first",
           (int)shown.length, shown.data);
     }
 
