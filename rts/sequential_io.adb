@@ -18,8 +18,6 @@ package body SEQUENTIAL_IO is
    pragma Import(C, C_Fwrite, "fwrite");
    function C_Remove(Name : SYSTEM.ADDRESS) return Integer;
    pragma Import(C, C_Remove, "remove");
-   function C_Feof(Stream : SYSTEM.ADDRESS) return Integer;
-   pragma Import(C, C_Feof, "feof");
    function C_Fseek(Stream : SYSTEM.ADDRESS; Offset : Integer; Whence : Integer) return Integer;
    pragma Import(C, C_Fseek, "fseek");
    function C_Fflush(Stream : SYSTEM.ADDRESS) return Integer;
@@ -31,11 +29,8 @@ package body SEQUENTIAL_IO is
    function C_Tmpfile return SYSTEM.ADDRESS;
    pragma Import(C, C_Tmpfile, "tmpfile");
 
-   Null_Address : constant SYSTEM.ADDRESS := SYSTEM.ADDRESS(0);
+   Null_Address : constant SYSTEM.ADDRESS := SYSTEM.NULL_ADDRESS;
    Seek_Set     : constant Integer := 0;
-
-   -- One element occupies its raw representation, rounded up to whole bytes.
-   Element_Bytes : constant Integer := (ELEMENT_TYPE'SIZE + 7) / 8;
 
    type FCB is record
       Stream   : SYSTEM.ADDRESS := Null_Address;
