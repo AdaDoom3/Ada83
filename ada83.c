@@ -2952,6 +2952,7 @@ struct Symbol {
   Symbol         *generic_template;
   u32        generic_spec_visibility_cutoff;
   u32        generic_body_visibility_cutoff;
+  u32        separate_stub_cutoff;
   Scope          *generic_enclosing_body_scope;
   Generic_Actual_Binding *actual_bindings;
   u32        actual_binding_count;
@@ -3002,6 +3003,7 @@ typedef struct {
   u32   next_creation_sequence;
   u32   visibility_cutoff;
   Scope     *cutoff_exempt_scope;
+  Scope     *cutoff_applies_to_scope;
   bool       in_package_visible_part;
   u32   statement_depth;
   Node *compilation_unit;
@@ -3695,6 +3697,11 @@ void          Check_Associations (Node_List *associations,
 void          Check_Discriminant_Constraint_Associations (Node *node);
 void          Check_Allocator_Constraint_Form (Node *node);
 void          Check_Private_Part_Incomplete_Type_Constraints (Node *package_spec);
+bool          Expressions_Conform (Node *written, Node *required,
+                                   Node **difference);
+bool          Specification_Parts_Conform (const Node_List *written,
+                                           const Node_List *required,
+                                           Node **difference);
 void          Check_Incomplete_Type_Discriminant_Parts (
                          Node *incomplete, Node *full);
 
@@ -12601,6 +12608,8 @@ Symbol *Symbol_New (Symbol_Kind kind, String_Slice name, Source_Location locatio
 
 bool Symbol_Visible_Under_Cutoff (Symbol *sym, Scope *scope) {
   if (sm->visibility_cutoff == 0) return true;
+  if (sm->cutoff_applies_to_scope and scope != sm->cutoff_applies_to_scope)
+    return true;
   if (sym->creation_sequence <= sm->visibility_cutoff) return true;
   for (Scope *s = scope; s; s = s->parent)
     if (s == sm->cutoff_exempt_scope) return true;
@@ -22265,6 +22274,7 @@ void Resolve_Subprogram_Body (Node *node) {
     node->symbol->body_claimed = false;
     node->symbol->body_stub_specification = spec;
     node->symbol->body_is_separate_stub   = true;
+    node->symbol->separate_stub_cutoff    = sm->next_creation_sequence;
   }
 
   Symbol_Manager_Push_Scope (node->symbol);
@@ -24262,7 +24272,10 @@ void Resolve_Declaration (Node *node) {
         Symbol_Add (task_sym);
       }
       task_sym->body_claimed = true;
-      if (node->task_body.is_separate) task_sym->body_is_separate_stub = true;
+      if (node->task_body.is_separate) {
+        task_sym->body_is_separate_stub = true;
+        task_sym->separate_stub_cutoff  = sm->next_creation_sequence;
+      }
       node->symbol = task_sym;
 
       Symbol_Manager_Push_Scope (task_sym);
@@ -24349,8 +24362,10 @@ void Resolve_Declaration (Node *node) {
       if (pkg_sym) pkg_sym->scope = sm->current_scope;
 
       Node *spec = NULL;
-      if (pkg_sym and node->package_body.is_separate)
+      if (pkg_sym and node->package_body.is_separate) {
         pkg_sym->body_is_separate_stub = true;
+        pkg_sym->separate_stub_cutoff  = sm->next_creation_sequence;
+      }
 
       if (pkg_sym and pkg_sym->kind == SYMBOL_GENERIC and
           not node->package_body.is_separate) {
@@ -24766,6 +24781,18 @@ void Resolve_Compilation_Unit (Node *node) {
       entered_from      = sm->current_scope;
       sm->current_scope = parent_sym->scope;
       entered           = true;
+
+      String_Slice child = Unit_Simple_Name (node->compilation_unit.unit);
+      for (u32 i = 0; i < parent_sym->scope->symbol_count; i++) {
+        Symbol *stub = parent_sym->scope->symbols[i];
+        if (stub and stub->body_is_separate_stub and
+            stub->separate_stub_cutoff and
+            Slice_Equal_Ignore_Case (stub->name, child)) {
+          sm->visibility_cutoff        = stub->separate_stub_cutoff;
+          sm->cutoff_applies_to_scope  = parent_sym->scope;
+          break;
+        }
+      }
     }
   }
 
@@ -24796,6 +24823,53 @@ void Resolve_Compilation_Unit (Node *node) {
 
   if (node->compilation_unit.unit) {
     Resolve_Declaration (node->compilation_unit.unit);
+
+    if (not node->compilation_unit.separate_parent and
+        Node_In_Any_Class (node->compilation_unit.unit,
+                           NODE_CLASS_SUBPROGRAM_BODY) and
+        not node->compilation_unit.unit->subprogram_body.is_separate) {
+      Node   *unit = node->compilation_unit.unit;
+      Symbol *body_symbol = unit->symbol;
+      Catalog_Entry *library_declaration = Library_Catalog_Find (
+        Unit_Simple_Name (unit), CATALOG_UNIT_SPEC);
+      bool completes_a_declaration = body_symbol and
+        body_symbol->declaration and
+        body_symbol->declaration != unit and
+        body_symbol->declaration != unit->subprogram_body.specification and
+        Node_In_Any_Class (body_symbol->declaration,
+                           NODE_CLASS_SUBPROGRAM_SPECIFICATION);
+      if (library_declaration and library_declaration->is_subprogram and
+          body_symbol and not completes_a_declaration and
+          (body_symbol->next_overload or
+           (unit->kind == NK_PROCEDURE_BODY or
+            unit->kind == NK_FUNCTION_BODY)))
+        for (Symbol *sibling = Symbol_Find (body_symbol->name); sibling;
+             sibling = sibling->next_overload) {
+          if (sibling == body_symbol or not Symbol_Is_Subprogram (sibling) or
+              not sibling->declaration or
+              not Node_In_Any_Class (sibling->declaration,
+                                     NODE_CLASS_SUBPROGRAM_SPECIFICATION))
+            continue;
+          Node *written  = unit->subprogram_body.specification;
+          Node *declared = sibling->declaration;
+          Node *difference = NULL;
+          bool fully_conforms = written and
+            Specification_Parts_Conform (&written->subprogram_spec.parameters,
+                                         &declared->subprogram_spec.parameters,
+                                         &difference) and
+            Expressions_Conform (written->subprogram_spec.return_type,
+                                 declared->subprogram_spec.return_type,
+                                 &difference);
+          if (fully_conforms) continue;
+          Report_Node_Error (unit,
+            "the specification of this body does not conform to the "
+            "specification of the declaration of '%.*s': a library unit "
+            "body completes its declaration, and library units do not "
+            "overload",
+            (int) body_symbol->name.length, body_symbol->name.data);
+          break;
+        }
+    }
 
     if (parent_sym and
         node->compilation_unit.unit->kind == NK_PACKAGE_BODY) {
@@ -24828,6 +24902,10 @@ void Resolve_Compilation_Unit (Node *node) {
 
   if (entered) {
     sm->current_scope = entered_from;
+    if (sm->cutoff_applies_to_scope) {
+      sm->visibility_cutoff       = 0;
+      sm->cutoff_applies_to_scope = NULL;
+    }
   }
   sm->compilation_unit = enclosing_compilation_unit;
 }
@@ -58663,7 +58741,27 @@ void Compile_File (const char *input_path, const char *output_path) {
           if ((spec_i and spec_k) or (body_i and body_k) or (body_i and spec_k))
             replaced = true;
         }
-      if (not replaced) units[keep++] = units[i];
+      if (not replaced) {
+        units[keep++] = units[i];
+        continue;
+      }
+      Node *context = units[i]->compilation_unit.context;
+      if (context)
+        for (u32 u = 0; u < context->context.use_clauses_written_here; u++) {
+          Node *use_clause = context->context.use_clauses.items[u];
+          if (not use_clause) continue;
+          for (u32 j = 0; j < use_clause->use_clause.names.count; j++) {
+            Node *named = use_clause->use_clause.names.items[j];
+            if (named and named->kind == NK_IDENTIFIER and
+                not Context_With_Clause_Names (context,
+                                               named->string_val.text))
+              Report_Node_Error (named,
+                            "'%.*s' is not named by a with clause of this "
+                            "context clause",
+                            (int) named->string_val.text.length,
+                            named->string_val.text.data);
+          }
+        }
     }
     unit_count = keep;
   }
