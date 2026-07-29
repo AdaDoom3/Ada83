@@ -13545,7 +13545,8 @@ void Cancel_Use_Visible_Homographs (Interp_List *l) {
         if (d == i) continue;
         if (Interp_Directly_Visible (&l->items[d]) and
             (l->items[d].nam
-               ? Symbols_Are_Homographs (s, l->items[d].nam)
+               ? (Symbols_Are_Homographs (s, l->items[d].nam) or
+                  l->items[d].nam->kind == SYMBOL_GENERIC)
                : Interps_Are_Homographs (&l->items[i], &l->items[d])))
           cancelled = true;
         bool predefined_directly_visible = false;
@@ -13837,11 +13838,21 @@ Symbol *Disambiguate(Interp_List *interps, Type *context_type,
             != best_score)
         continue;
       Symbol *meaning = interps->items[i].nam;
-      if (not meaning or not interps->items[i].typ)
-        continue;
+      if (not meaning) continue;
       if (context_type and
-          Type_Base (interps->items[i].typ) != Type_Base (context_type))
+          (not interps->items[i].typ or
+           Type_Base (interps->items[i].typ) != Type_Base (context_type)))
         continue;
+      bool arguments_fit = true;
+      for (u32 a = 0; args and a < args->count and arguments_fit; a++) {
+        Type *formal = Interp_Formal_Of_Actual (&interps->items[i], args, a);
+        Type *actual = args->types[a];
+        if (formal and actual and not Type_Is_Universal (actual) and
+            Type_Base (formal) != Type_Base (actual) and
+            not Type_Covers (formal, actual))
+          arguments_fit = false;
+      }
+      if (not arguments_fit) continue;
       bool counted = false;
       for (u32 k = 0; k < tied_count and not counted; k++)
         counted = Symbols_Are_One_Declaration (tied[k], meaning) or
@@ -13852,11 +13863,25 @@ Symbol *Disambiguate(Interp_List *interps, Type *context_type,
         tied[tied_count++]    = meaning;
       }
     }
+    bool any_visible_part = false;
+    for (u32 i = 0; i < tied_count; i++)
+      any_visible_part |= tied[i]->declared_in_visible_part;
+    if (any_visible_part) {
+      u32 kept = 0;
+      for (u32 i = 0; i < tied_count; i++)
+        if (tied[i]->declared_in_visible_part) {
+          tied_type[kept] = tied_type[i];
+          tied[kept++]    = tied[i];
+        }
+      tied_count = kept;
+    }
     bool same_result_pair = false;
     for (u32 i = 0; i < tied_count and not same_result_pair; i++)
       for (u32 k = i + 1; k < tied_count and not same_result_pair; k++)
         same_result_pair =
-          Type_Base (tied_type[i]) == Type_Base (tied_type[k]);
+          (not tied_type[i] and not tied_type[k]) or
+          (tied_type[i] and tied_type[k] and
+           Type_Base (tied_type[i]) == Type_Base (tied_type[k]));
     if (same_result_pair)
       Report_Error (construct,
                     "'%.*s' is ambiguous: more than one declaration of it "
@@ -23666,6 +23691,12 @@ bool Type_Representation_Clause_Is_Legal (
 void Resolve_Representation_Clause (Node *node) {
   if (not node->rep_clause.entity_name) return;
   Resolve_Expression (node->rep_clause.entity_name);
+
+  if (node->rep_clause.is_record_rep and
+      node->rep_clause.entity_name->kind != NK_IDENTIFIER)
+    Report_Node_Error (node->rep_clause.entity_name,
+                  "the entity of a record representation clause must be "
+                  "named by a simple name, not an expanded name");
 
   Symbol *target_symbol = node->rep_clause.entity_name->symbol;
   if (not target_symbol and
