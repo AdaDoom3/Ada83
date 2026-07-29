@@ -57010,7 +57010,7 @@ char *System_Package_Source (void) {
     "TYPE ADDRESS IS RANGE -(2**%d)..2**%d-1;\n"
     "NULL_ADDRESS:CONSTANT ADDRESS:=0;\n"
     "END SYSTEM;\n",
-    (int) Ada_Integer_Bits - 1, (int) Ada_Integer_Bits - 1,
+    (int) Ada_Widest_Integer_Bits - 1, (int) Ada_Widest_Integer_Bits - 1,
     (int) Target_Max_Mantissa, (int) Target_Max_Mantissa,
     (int) Bits_Per_Unit, (int) Ada_Integer_Bits - 1,
     (int) Address_Bits - 1, (int) Address_Bits - 1);
