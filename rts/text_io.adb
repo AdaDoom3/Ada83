@@ -3,12 +3,6 @@ with SYSTEM;
 package body TEXT_IO is
 
    -- C runtime imports
-   function C_Putchar(C : Integer) return Integer;
-   pragma Import(C, C_Putchar, "putchar");
-
-   function C_Getchar return Integer;
-   pragma Import(C, C_Getchar, "getchar");
-
    function C_Fopen(Name : SYSTEM.ADDRESS; Mode : SYSTEM.ADDRESS) return SYSTEM.ADDRESS;
    pragma Import(C, C_Fopen, "fopen");
 
@@ -21,11 +15,11 @@ package body TEXT_IO is
    function C_Fgetc(Stream : SYSTEM.ADDRESS) return Integer;
    pragma Import(C, C_Fgetc, "fgetc");
 
-   function C_Ungetc(C : Integer; Stream : SYSTEM.ADDRESS) return Integer;
-   pragma Import(C, C_Ungetc, "ungetc");
-
-   function C_Feof(Stream : SYSTEM.ADDRESS) return Integer;
-   pragma Import(C, C_Feof, "feof");
+   -- A whole string leaves for the stream in one transfer; the per-character
+   -- fputc path is kept only where a character must be placed individually.
+   function C_Fwrite(Ptr : SYSTEM.ADDRESS; Size : Integer; Count : Integer;
+                     Stream : SYSTEM.ADDRESS) return Integer;
+   pragma Import(C, C_Fwrite, "fwrite");
 
    function C_Fflush(Stream : SYSTEM.ADDRESS) return Integer;
    pragma Import(C, C_Fflush, "fflush");
@@ -91,6 +85,7 @@ package body TEXT_IO is
    end record;
 
    type FCB_Array is array (0 .. 99) of File_Control_Block;
+   Initialized : Boolean := False;
    FCBs : FCB_Array;
 
    -- Index 0 is the "no file" sentinel: a freshly declared FILE_TYPE is
@@ -101,25 +96,44 @@ package body TEXT_IO is
    Current_Err_Idx : Integer := 3;
    Next_FCB        : Integer := 4;
 
-   Null_Address : constant SYSTEM.ADDRESS := SYSTEM.ADDRESS(0);
+   Null_Address : constant SYSTEM.ADDRESS := SYSTEM.NULL_ADDRESS;
 
-   -- Helper to convert string to C string (null-terminated)
-   procedure To_C_String(S : String; Buffer : out String; Len : out Natural) is
-      J : Integer;
+   -- S with a terminating null, for a C entry point that takes a string.
+   procedure To_C_String(S : String; Buffer : out String) is
+      J : Integer := 1;
    begin
-      if S'Length > 0 then
-         J := 1;
-         for I in S'First .. S'Last loop
-            Buffer(J) := S(I);
-            J := J + 1;
-         end loop;
-         Buffer(J) := Character'Val(0);
-         Len := J;
-      else
-         Buffer(1) := Character'Val(0);
-         Len := 1;
-      end if;
+      for I in S'Range loop
+         Buffer(J) := S(I);
+         J := J + 1;
+      end loop;
+      Buffer(J) := Character'Val(0);
    end To_C_String;
+
+   -- The C stdio mode for an Ada file mode. An output or append file is
+   -- opened for update, so a later RESET to IN_FILE can read back what this
+   -- file wrote (RM 14.2.1).
+   function Open_Mode_String(Mode : FILE_MODE) return String is
+   begin
+      case Mode is
+         when IN_FILE     => return "r" & Character'Val(0);
+         when OUT_FILE    => return "w+" & Character'Val(0);
+         when APPEND_FILE => return "a+" & Character'Val(0);
+      end case;
+   end Open_Mode_String;
+
+   -- The layout state of a file positioned at its start: column, line and
+   -- page one, no line or page bound, nothing peeked ahead, and no content
+   -- yet on the page (RM 14.3.1, RM 14.3.3).
+   procedure Reset_Position(Idx : Integer) is
+   begin
+      FCBs(Idx).Col := 1;
+      FCBs(Idx).Line := 1;
+      FCBs(Idx).Page := 1;
+      FCBs(Idx).Line_Length := UNBOUNDED;
+      FCBs(Idx).Page_Length := UNBOUNDED;
+      FCBs(Idx).Look_Count := 0;
+      FCBs(Idx).Page_Active := False;
+   end Reset_Position;
 
    -- Initialize the three standard file handles at indices 1, 2, 3.
    procedure Init_Standard_File(Idx : Integer; Stream : SYSTEM.ADDRESS;
@@ -130,15 +144,9 @@ package body TEXT_IO is
       FCBs(Idx).Is_Open := True;
       FCBs(Idx).Name_Len := 0;
       FCBs(Idx).Form_Len := 0;
-      FCBs(Idx).Col := 1;
-      FCBs(Idx).Line := 1;
-      FCBs(Idx).Page := 1;
-      FCBs(Idx).Line_Length := UNBOUNDED;
-      FCBs(Idx).Page_Length := UNBOUNDED;
       FCBs(Idx).Is_Standard := True;
-      FCBs(Idx).Look_Count := 0;
-      FCBs(Idx).Page_Active := False;
       FCBs(Idx).Shared := False;
+      Reset_Position(Idx);
    end Init_Standard_File;
 
    procedure Init_Standard_Files is
@@ -148,8 +156,10 @@ package body TEXT_IO is
       Init_Standard_File (3, C_Stderr, OUT_FILE);
    end Init_Standard_Files;
 
-   Initialized : Boolean := False;
-
+   -- The three standard files exist from the first operation that looks at
+   -- a control block. This body's own elaboration creates them; the test
+   -- covers the case where it has not run, which is a program that reaches
+   -- TEXT_IO only through a separately compiled unit.
    procedure Ensure_Init is
    begin
       if not Initialized then
@@ -159,10 +169,13 @@ package body TEXT_IO is
    end Ensure_Init;
 
    -- True when Idx denotes a currently-open file (RM 14.1). Index 0 is the
-   -- closed sentinel of a never-opened FILE_TYPE.
+   -- closed sentinel of a never-opened FILE_TYPE. Every operation that
+   -- consults a control block asks this first, directly or through
+   -- Require_Open, so this is where the standard files come into being.
    function Is_Open_Index(Idx : Integer) return Boolean is
    begin
-      return Idx >= 1 and Idx <= 99 and then FCBs(Idx).Is_Open;
+      Ensure_Init;
+      return (Idx >= 1 and Idx <= 99) and then FCBs(Idx).Is_Open;
    end Is_Open_Index;
 
    -- Raise STATUS_ERROR unless Idx denotes an open file (RM 14.4).
@@ -174,34 +187,35 @@ package body TEXT_IO is
    -- Defined below; CLOSE writes the trailing terminators through it.
    procedure Raw_Put(Idx : Integer; C : Integer);
 
-   -- Flush every open file already associated with the external file NAME, so
-   -- that writes buffered against one internal file become visible to another
-   -- internal file about to be opened on the same external file (RM 14.1).
+   -- True when internal file I is open on the external file NAME. A null
+   -- NAME names no external file, so it matches nothing.
+   function Same_External(I : Integer; NAME : String) return Boolean is
+   begin
+      return NAME'Length /= 0 and then FCBs(I).Is_Open
+             and then FCBs(I).Stream /= Null_Address
+             and then FCBs(I).Name_Len = NAME'Length
+             and then FCBs(I).Name(1 .. FCBs(I).Name_Len) = NAME;
+   end Same_External;
+
    -- Another OPEN internal file already associated with this external
    -- file, or 0. Sharing internal files use one stream, so they see a
    -- single common file position (ce3111).
    function Find_Open_By_Name(NAME : String) return Integer is
    begin
-      if NAME'Length /= 0 then
-         for I in 4 .. 99 loop
-            if FCBs(I).Is_Open and then FCBs(I).Stream /= Null_Address
-               and then FCBs(I).Name_Len = NAME'Length
-               and then FCBs(I).Name(1 .. FCBs(I).Name_Len) = NAME then
-               return I;
-            end if;
-         end loop;
-      end if;
+      for I in 4 .. 99 loop
+         if Same_External(I, NAME) then return I; end if;
+      end loop;
       return 0;
    end Find_Open_By_Name;
 
+   -- Flush every open file already associated with the external file NAME, so
+   -- that writes buffered against one internal file become visible to another
+   -- internal file about to be opened on the same external file (RM 14.1).
    procedure Flush_External(NAME : String) is
       Dummy : Integer;
    begin
-      if NAME'Length = 0 then return; end if;
       for I in 4 .. 99 loop
-         if FCBs(I).Is_Open and then FCBs(I).Stream /= Null_Address
-            and then FCBs(I).Name_Len = NAME'Length
-            and then FCBs(I).Name(1 .. FCBs(I).Name_Len) = NAME then
+         if Same_External(I, NAME) then
             Dummy := C_Fflush(FCBs(I).Stream);
          end if;
       end loop;
@@ -214,11 +228,9 @@ package body TEXT_IO is
                     NAME : in STRING := "";
                     FORM : in STRING := "") is
       Idx : Integer;
-      Mode_Str : String(1..3);
+      Mode_Str : constant String := Open_Mode_String(MODE);
       Name_Buf : String(1..1025);
-      Name_Len : Natural;
    begin
-      Ensure_Init;
 
       if Is_Open_Index(FILE.HANDLE) then
          raise STATUS_ERROR;
@@ -231,17 +243,8 @@ package body TEXT_IO is
       Idx := Next_FCB;
       Next_FCB := Next_FCB + 1;
 
-      case MODE is
-         when IN_FILE =>
-            Mode_Str := ('r', Character'Val(0), Character'Val(0));
-         when OUT_FILE =>
-            Mode_Str := ('w', '+', Character'Val(0));
-         when APPEND_FILE =>
-            Mode_Str := ('a', '+', Character'Val(0));
-      end case;
-
       if NAME'Length > 0 then
-         To_C_String(NAME, Name_Buf, Name_Len);
+         To_C_String(NAME, Name_Buf);
          FCBs(Idx).Stream := C_Fopen(Name_Buf'Address, Mode_Str'Address);
          if FCBs(Idx).Stream = Null_Address then
             Next_FCB := Next_FCB - 1;
@@ -264,14 +267,8 @@ package body TEXT_IO is
       if FORM'Length > 0 then
          FCBs(Idx).Form(1..FORM'Length) := FORM;
       end if;
-      FCBs(Idx).Col := 1;
-      FCBs(Idx).Line := 1;
-      FCBs(Idx).Page := 1;
-      FCBs(Idx).Line_Length := UNBOUNDED;
-      FCBs(Idx).Page_Length := UNBOUNDED;
       FCBs(Idx).Is_Standard := False;
-      FCBs(Idx).Look_Count := 0;
-      FCBs(Idx).Page_Active := False;
+      Reset_Position(Idx);
       FCBs(Idx).Shared := False;
 
       FILE := (HANDLE => Idx);
@@ -282,11 +279,9 @@ package body TEXT_IO is
                   NAME : in STRING;
                   FORM : in STRING := "") is
       Idx : Integer;
-      Mode_Str : String(1..3);
+      Mode_Str : constant String := Open_Mode_String(MODE);
       Name_Buf : String(1..1025);
-      Name_Len : Natural;
    begin
-      Ensure_Init;
 
       if Is_Open_Index(FILE.HANDLE) then
          raise STATUS_ERROR;
@@ -315,15 +310,6 @@ package body TEXT_IO is
       Idx := Next_FCB;
       Next_FCB := Next_FCB + 1;
 
-      case MODE is
-         when IN_FILE =>
-            Mode_Str := ('r', Character'Val(0), Character'Val(0));
-         when OUT_FILE =>
-            Mode_Str := ('w', '+', Character'Val(0));
-         when APPEND_FILE =>
-            Mode_Str := ('a', '+', Character'Val(0));
-      end case;
-
       -- Make any writes buffered against the same external file visible before
       -- this internal file starts reading it.
       Flush_External(NAME);
@@ -351,7 +337,7 @@ package body TEXT_IO is
                Dummy := C_Fseek(FCBs(Idx).Stream, 0, 0);
             end if;
          else
-            To_C_String(NAME, Name_Buf, Name_Len);
+            To_C_String(NAME, Name_Buf);
             FCBs(Idx).Stream := C_Fopen(Name_Buf'Address, Mode_Str'Address);
             FCBs(Idx).Shared := False;
             if FCBs(Idx).Stream = Null_Address then
@@ -369,14 +355,8 @@ package body TEXT_IO is
       if FORM'Length > 0 then
          FCBs(Idx).Form(1..FORM'Length) := FORM;
       end if;
-      FCBs(Idx).Col := 1;
-      FCBs(Idx).Line := 1;
-      FCBs(Idx).Page := 1;
-      FCBs(Idx).Line_Length := UNBOUNDED;
-      FCBs(Idx).Page_Length := UNBOUNDED;
       FCBs(Idx).Is_Standard := False;
-      FCBs(Idx).Look_Count := 0;
-      FCBs(Idx).Page_Active := False;
+      Reset_Position(Idx);
 
       -- A default file that is reopened keeps its role (RM 14.3.1).
       if FILE.HANDLE /= 0 then
@@ -395,7 +375,6 @@ package body TEXT_IO is
       Idx : Integer := FILE.HANDLE;
       Dummy : Integer;
    begin
-      Ensure_Init;
       Require_Open(Idx);
       if FCBs(Idx).Is_Standard then
          raise USE_ERROR;
@@ -444,10 +423,8 @@ package body TEXT_IO is
    procedure DELETE(FILE : in Out FILE_TYPE) is
       Idx : Integer := FILE.HANDLE;
       Name_Buf : String(1..1025);
-      Name_Len : Natural;
       Dummy : Integer;
    begin
-      Ensure_Init;
       Require_Open(Idx);
       if FCBs(Idx).Is_Standard then
          raise USE_ERROR;
@@ -456,7 +433,7 @@ package body TEXT_IO is
          Dummy := C_Fclose(FCBs(Idx).Stream);
       end if;
       if FCBs(Idx).Name_Len > 0 then
-         To_C_String(FCBs(Idx).Name(1..FCBs(Idx).Name_Len), Name_Buf, Name_Len);
+         To_C_String(FCBs(Idx).Name(1..FCBs(Idx).Name_Len), Name_Buf);
          Dummy := C_Remove(Name_Buf'Address);
       end if;
       FCBs(Idx).Is_Open := False;
@@ -467,11 +444,9 @@ package body TEXT_IO is
    procedure RESET(FILE : in Out FILE_TYPE; MODE : in FILE_MODE) is
       Idx : Integer := FILE.HANDLE;
       Name_Buf : String(1..1025);
-      Name_Len : Natural;
-      Mode_Str : String(1..3);
+      Mode_Str : constant String := Open_Mode_String(MODE);
       Dummy : Integer;
    begin
-      Ensure_Init;
       Require_Open(Idx);
       if FCBs(Idx).Is_Standard then
          raise USE_ERROR;
@@ -517,15 +492,7 @@ package body TEXT_IO is
          if FCBs(Idx).Stream /= Null_Address then
             Dummy := C_Fclose(FCBs(Idx).Stream);
          end if;
-         case MODE is
-            when IN_FILE =>
-               Mode_Str := ('r', Character'Val(0), Character'Val(0));
-            when OUT_FILE =>
-               Mode_Str := ('w', '+', Character'Val(0));
-            when APPEND_FILE =>
-               Mode_Str := ('a', '+', Character'Val(0));
-         end case;
-         To_C_String(FCBs(Idx).Name(1..FCBs(Idx).Name_Len), Name_Buf, Name_Len);
+         To_C_String(FCBs(Idx).Name(1..FCBs(Idx).Name_Len), Name_Buf);
          FCBs(Idx).Stream := C_Fopen(Name_Buf'Address, Mode_Str'Address);
       elsif FCBs(Idx).Stream /= Null_Address then
          -- Anonymous temporary file: it has no name to reopen, so flush any
@@ -535,25 +502,17 @@ package body TEXT_IO is
       end if;
 
       FCBs(Idx).Mode := MODE;
-      FCBs(Idx).Col := 1;
-      FCBs(Idx).Line := 1;
-      FCBs(Idx).Page := 1;
-      FCBs(Idx).Line_Length := UNBOUNDED;  -- RM 14.3.3: RESET clears the
-      FCBs(Idx).Page_Length := UNBOUNDED;  -- line and page length bounds
-      FCBs(Idx).Look_Count := 0;
-      FCBs(Idx).Page_Active := False;
+      Reset_Position(Idx);   -- RM 14.3.3: RESET drops the line and page bounds
    end RESET;
 
    procedure RESET(FILE : in Out FILE_TYPE) is
-      Idx : Integer := FILE.HANDLE;
    begin
-      RESET(FILE, FCBs(Idx).Mode);
+      RESET(FILE, MODE(FILE));
    end RESET;
 
    function MODE(FILE : in FILE_TYPE) return FILE_MODE is
       Idx : Integer := FILE.HANDLE;
    begin
-      Ensure_Init;
       Require_Open(Idx);
       return FCBs(Idx).Mode;
    end MODE;
@@ -561,7 +520,6 @@ package body TEXT_IO is
    function NAME(FILE : in FILE_TYPE) return STRING is
       Idx : Integer := FILE.HANDLE;
    begin
-      Ensure_Init;
       Require_Open(Idx);
       if FCBs(Idx).Name_Len = 0 then
          return "";
@@ -572,7 +530,6 @@ package body TEXT_IO is
    function FORM(FILE : in FILE_TYPE) return STRING is
       Idx : Integer := FILE.HANDLE;
    begin
-      Ensure_Init;
       Require_Open(Idx);
       if FCBs(Idx).Form_Len = 0 then
          return "";
@@ -581,20 +538,14 @@ package body TEXT_IO is
    end FORM;
 
    function IS_OPEN(FILE : in FILE_TYPE) return BOOLEAN is
-      Idx : Integer := FILE.HANDLE;
    begin
-      Ensure_Init;
-      if Idx < 0 or Idx > 99 then
-         return False;
-      end if;
-      return FCBs(Idx).Is_Open;
+      return Is_Open_Index(FILE.HANDLE);
    end IS_OPEN;
 
    -- Default Input/Output Control
 
    procedure SET_INPUT(FILE : in FILE_TYPE) is
    begin
-      Ensure_Init;
       Require_Open(FILE.HANDLE);
       if FCBs(FILE.HANDLE).Mode /= IN_FILE then raise MODE_ERROR; end if;
       Current_In_Idx := FILE.HANDLE;
@@ -602,7 +553,6 @@ package body TEXT_IO is
 
    procedure SET_OUTPUT(FILE : in FILE_TYPE) is
    begin
-      Ensure_Init;
       Require_Open(FILE.HANDLE);
       if FCBs(FILE.HANDLE).Mode = IN_FILE then raise MODE_ERROR; end if;
       Current_Out_Idx := FILE.HANDLE;
@@ -610,7 +560,6 @@ package body TEXT_IO is
 
    procedure SET_ERROR(FILE : in FILE_TYPE) is
    begin
-      Ensure_Init;
       Require_Open(FILE.HANDLE);
       if FCBs(FILE.HANDLE).Mode = IN_FILE then raise MODE_ERROR; end if;
       Current_Err_Idx := FILE.HANDLE;
@@ -618,37 +567,31 @@ package body TEXT_IO is
 
    function STANDARD_INPUT return FILE_TYPE is
    begin
-      Ensure_Init;
-      return 1;
+      return (HANDLE => 1);
    end STANDARD_INPUT;
 
    function STANDARD_OUTPUT return FILE_TYPE is
    begin
-      Ensure_Init;
-      return 2;
+      return (HANDLE => 2);
    end STANDARD_OUTPUT;
 
    function STANDARD_ERROR return FILE_TYPE is
    begin
-      Ensure_Init;
-      return 3;
+      return (HANDLE => 3);
    end STANDARD_ERROR;
 
    function CURRENT_INPUT return FILE_TYPE is
    begin
-      Ensure_Init;
       return (HANDLE => Current_In_Idx);
    end CURRENT_INPUT;
 
    function CURRENT_OUTPUT return FILE_TYPE is
    begin
-      Ensure_Init;
       return (HANDLE => Current_Out_Idx);
    end CURRENT_OUTPUT;
 
    function CURRENT_ERROR return FILE_TYPE is
    begin
-      Ensure_Init;
       return (HANDLE => Current_Err_Idx);
    end CURRENT_ERROR;
 
@@ -656,8 +599,7 @@ package body TEXT_IO is
       Idx : Integer := FILE.HANDLE;
       Dummy : Integer;
    begin
-      Ensure_Init;
-      if FCBs(Idx).Stream /= Null_Address then
+      if Is_Open_Index(Idx) and then FCBs(Idx).Stream /= Null_Address then
          Dummy := C_Fflush(FCBs(Idx).Stream);
       end if;
    end FLUSH;
@@ -672,7 +614,6 @@ package body TEXT_IO is
    procedure SET_LINE_LENGTH(FILE : in FILE_TYPE; TO : in COUNT) is
       Idx : Integer := FILE.HANDLE;
    begin
-      Ensure_Init;
       Require_Open(Idx);
       if FCBs(Idx).Mode = IN_FILE then raise MODE_ERROR; end if;
       FCBs(Idx).Line_Length := TO;
@@ -686,7 +627,6 @@ package body TEXT_IO is
    procedure SET_PAGE_LENGTH(FILE : in FILE_TYPE; TO : in COUNT) is
       Idx : Integer := FILE.HANDLE;
    begin
-      Ensure_Init;
       Require_Open(Idx);
       if FCBs(Idx).Mode = IN_FILE then raise MODE_ERROR; end if;
       FCBs(Idx).Page_Length := TO;
@@ -700,7 +640,6 @@ package body TEXT_IO is
    function LINE_LENGTH(FILE : in FILE_TYPE) return COUNT is
       Idx : Integer := FILE.HANDLE;
    begin
-      Ensure_Init;
       Require_Open(Idx);
       if FCBs(Idx).Mode = IN_FILE then raise MODE_ERROR; end if;
       return FCBs(Idx).Line_Length;
@@ -714,7 +653,6 @@ package body TEXT_IO is
    function PAGE_LENGTH(FILE : in FILE_TYPE) return COUNT is
       Idx : Integer := FILE.HANDLE;
    begin
-      Ensure_Init;
       Require_Open(Idx);
       if FCBs(Idx).Mode = IN_FILE then raise MODE_ERROR; end if;
       return FCBs(Idx).Page_Length;
@@ -746,6 +684,17 @@ package body TEXT_IO is
       end if;
    end Raw_Put;
 
+   -- Output a whole string in one transfer. Only for an unshared stream:
+   -- a sharing writer owns a private offset that Raw_Put maintains, so it
+   -- cannot hand a run of characters straight to the stream.
+   procedure Raw_Write(Idx : Integer; Item : String) is
+      Dummy : Integer;
+   begin
+      if FCBs(Idx).Stream /= Null_Address then
+         Dummy := C_Fwrite(Item'Address, 1, Item'Length, FCBs(Idx).Stream);
+      end if;
+   end Raw_Write;
+
    -- Peek the character N positions ahead of the read cursor (0 = next),
    -- filling the pushback buffer from the stream as needed. End of file is
    -- reported as -1, and once reached every further position reads -1 too.
@@ -770,17 +719,16 @@ package body TEXT_IO is
       return Peek_N(Idx, 0);
    end Raw_Peek;
 
-   -- Read and consume the next character from the file.
+   -- Read and consume the next character from the file. Peek_N has just
+   -- filled position 0, so the buffer holds at least one character and the
+   -- count can be decremented unconditionally.
    function Raw_Get(Idx : Integer) return Integer is
-      C : Integer;
+      C : Integer := Peek_N(Idx, 0);
    begin
-      C := Peek_N(Idx, 0);
       for K in 1 .. FCBs(Idx).Look_Count - 1 loop
          FCBs(Idx).Look(K - 1) := FCBs(Idx).Look(K);
       end loop;
-      if FCBs(Idx).Look_Count > 0 then
-         FCBs(Idx).Look_Count := FCBs(Idx).Look_Count - 1;
-      end if;
+      FCBs(Idx).Look_Count := FCBs(Idx).Look_Count - 1;
       return C;
    end Raw_Get;
 
@@ -789,7 +737,6 @@ package body TEXT_IO is
    procedure NEW_LINE(FILE : in FILE_TYPE; SPACING : in POSITIVE_COUNT := 1) is
       Idx : Integer := FILE.HANDLE;
    begin
-      Ensure_Init;
       Require_Open(Idx);
       if FCBs(Idx).Mode = IN_FILE then
          raise MODE_ERROR;
@@ -800,7 +747,7 @@ package body TEXT_IO is
          FCBs(Idx).Line := FCBs(Idx).Line + 1;
          FCBs(Idx).Page_Active := True;  -- this page now holds a line
          if FCBs(Idx).Page_Length /= UNBOUNDED and
-            FCBs(Idx).Line > FCBs(Idx).Page_Length then
+            FCBs(Idx).Line > Integer(FCBs(Idx).Page_Length) then
             Raw_Put(Idx, 12);  -- FF (page terminator)
             FCBs(Idx).Line := 1;
             FCBs(Idx).Page := FCBs(Idx).Page + 1;
@@ -818,7 +765,6 @@ package body TEXT_IO is
       Idx : Integer := FILE.HANDLE;
       C : Integer;
    begin
-      Ensure_Init;
       Require_Open(Idx);
       if FCBs(Idx).Mode /= IN_FILE then
          raise MODE_ERROR;
@@ -862,7 +808,6 @@ package body TEXT_IO is
       Idx : Integer := FILE.HANDLE;
       C : Integer;
    begin
-      Ensure_Init;
       Require_Open(Idx);
       if FCBs(Idx).Mode /= IN_FILE then
          raise MODE_ERROR;
@@ -879,7 +824,6 @@ package body TEXT_IO is
    procedure NEW_PAGE(FILE : in FILE_TYPE) is
       Idx : Integer := FILE.HANDLE;
    begin
-      Ensure_Init;
       Require_Open(Idx);
       if FCBs(Idx).Mode = IN_FILE then
          raise MODE_ERROR;
@@ -907,7 +851,6 @@ package body TEXT_IO is
       Idx : Integer := FILE.HANDLE;
       C : Integer;
    begin
-      Ensure_Init;
       Require_Open(Idx);
       if FCBs(Idx).Mode /= IN_FILE then
          raise MODE_ERROR;
@@ -943,7 +886,6 @@ package body TEXT_IO is
       Idx : Integer := FILE.HANDLE;
       C0, C1 : Integer;
    begin
-      Ensure_Init;
       Require_Open(Idx);
       if FCBs(Idx).Mode /= IN_FILE then
          raise MODE_ERROR;
@@ -968,7 +910,6 @@ package body TEXT_IO is
       Idx : Integer := FILE.HANDLE;
       C0, C1 : Integer;
    begin
-      Ensure_Init;
       Require_Open(Idx);
       if FCBs(Idx).Mode /= IN_FILE then
          raise MODE_ERROR;
@@ -997,7 +938,6 @@ package body TEXT_IO is
       Idx : Integer := FILE.HANDLE;
       C : Integer;
    begin
-      Ensure_Init;
       Require_Open(Idx);
       if FCBs(Idx).Mode = IN_FILE then
          -- Input: skip characters until the column equals TO, but column TO
@@ -1005,9 +945,9 @@ package body TEXT_IO is
          -- on a line or page terminator) skip to the next line and keep
          -- looking; if already past TO, advance to the next line (RM 14.3.6).
          loop
-            if FCBs(Idx).Col > TO then
+            if FCBs(Idx).Col > Integer(TO) then
                SKIP_LINE(FILE);
-            elsif FCBs(Idx).Col = TO then
+            elsif FCBs(Idx).Col = Integer(TO) then
                C := Raw_Peek(Idx);
                exit when C /= 10 and C /= 12;  -- a real character sits at TO
                SKIP_LINE(FILE);                -- TO is a terminator: skip line
@@ -1026,10 +966,10 @@ package body TEXT_IO is
          if FCBs(Idx).Line_Length /= UNBOUNDED and TO > FCBs(Idx).Line_Length then
             raise LAYOUT_ERROR;
          end if;
-         if FCBs(Idx).Col > TO then
+         if FCBs(Idx).Col > Integer(TO) then
             NEW_LINE(FILE);
          end if;
-         while FCBs(Idx).Col < TO loop
+         while FCBs(Idx).Col < Integer(TO) loop
             Raw_Put(Idx, 32);  -- space
             FCBs(Idx).Col := FCBs(Idx).Col + 1;
          end loop;
@@ -1044,14 +984,13 @@ package body TEXT_IO is
    procedure SET_LINE(FILE : in FILE_TYPE; TO : in POSITIVE_COUNT) is
       Idx : Integer := FILE.HANDLE;
    begin
-      Ensure_Init;
       Require_Open(Idx);
       if FCBs(Idx).Mode = IN_FILE then
          -- Input: skip whole lines until the line equals TO; if already past
          -- it, advance to the next page first (RM 14.3.6).
          loop
-            exit when FCBs(Idx).Line = TO;
-            if FCBs(Idx).Line > TO then
+            exit when FCBs(Idx).Line = Integer(TO);
+            if FCBs(Idx).Line > Integer(TO) then
                SKIP_PAGE(FILE);
             else
                SKIP_LINE(FILE);
@@ -1061,10 +1000,10 @@ package body TEXT_IO is
          if FCBs(Idx).Page_Length /= UNBOUNDED and TO > FCBs(Idx).Page_Length then
             raise LAYOUT_ERROR;
          end if;
-         if FCBs(Idx).Line > TO then
+         if FCBs(Idx).Line > Integer(TO) then
             NEW_PAGE(FILE);
          end if;
-         while FCBs(Idx).Line < TO loop
+         while FCBs(Idx).Line < Integer(TO) loop
             NEW_LINE(FILE);
          end loop;
       end if;
@@ -1078,7 +1017,6 @@ package body TEXT_IO is
    function COL(FILE : in FILE_TYPE) return POSITIVE_COUNT is
       Idx : Integer := FILE.HANDLE;
    begin
-      Ensure_Init;
       Require_Open(Idx);
       if FCBs(Idx).Col > Integer(COUNT'LAST) then
          raise LAYOUT_ERROR;  -- position exceeds COUNT'LAST (RM 14.3.5)
@@ -1094,7 +1032,6 @@ package body TEXT_IO is
    function LINE(FILE : in FILE_TYPE) return POSITIVE_COUNT is
       Idx : Integer := FILE.HANDLE;
    begin
-      Ensure_Init;
       Require_Open(Idx);
       if FCBs(Idx).Line > Integer(COUNT'LAST) then
          raise LAYOUT_ERROR;  -- position exceeds COUNT'LAST (RM 14.3.5)
@@ -1110,7 +1047,6 @@ package body TEXT_IO is
    function PAGE(FILE : in FILE_TYPE) return POSITIVE_COUNT is
       Idx : Integer := FILE.HANDLE;
    begin
-      Ensure_Init;
       Require_Open(Idx);
       if FCBs(Idx).Page > Integer(COUNT'LAST) then
          raise LAYOUT_ERROR;  -- position exceeds COUNT'LAST (RM 14.3.5)
@@ -1129,7 +1065,6 @@ package body TEXT_IO is
       Idx : Integer := FILE.HANDLE;
       C : Integer;
    begin
-      Ensure_Init;
       Require_Open(Idx);
       if FCBs(Idx).Mode /= IN_FILE then
          raise MODE_ERROR;
@@ -1161,13 +1096,12 @@ package body TEXT_IO is
    procedure PUT(FILE : in FILE_TYPE; ITEM : in CHARACTER) is
       Idx : Integer := FILE.HANDLE;
    begin
-      Ensure_Init;
       Require_Open(Idx);
       if FCBs(Idx).Mode = IN_FILE then
          raise MODE_ERROR;
       end if;
       if FCBs(Idx).Line_Length /= UNBOUNDED and
-         FCBs(Idx).Col > FCBs(Idx).Line_Length then
+         FCBs(Idx).Col > Integer(FCBs(Idx).Line_Length) then
          NEW_LINE(FILE);
       end if;
       Raw_Put(Idx, CHARACTER'POS(ITEM));
@@ -1194,11 +1128,26 @@ package body TEXT_IO is
       GET((HANDLE => Current_In_Idx), ITEM);
    end GET;
 
+   -- An unbounded line takes the whole string in one transfer; a bounded one
+   -- has to place each character, because the line wraps as the column
+   -- crosses LINE_LENGTH (RM 14.3.5), and so does a sharing writer, whose
+   -- private offset advances one character at a time.
    procedure PUT(FILE : in FILE_TYPE; ITEM : in STRING) is
+      Idx : Integer := FILE.HANDLE;
    begin
-      for I in ITEM'Range loop
-         PUT(FILE, ITEM(I));
-      end loop;
+      Require_Open(Idx);
+      if FCBs(Idx).Mode = IN_FILE then
+         raise MODE_ERROR;
+      end if;
+      if FCBs(Idx).Line_Length /= UNBOUNDED or FCBs(Idx).Shared then
+         for I in ITEM'Range loop
+            PUT(FILE, ITEM(I));
+         end loop;
+      elsif ITEM'Length > 0 then
+         Raw_Write(Idx, ITEM);
+         FCBs(Idx).Col := FCBs(Idx).Col + ITEM'Length;
+         FCBs(Idx).Page_Active := True;
+      end if;
    end PUT;
 
    procedure PUT(ITEM : in STRING) is
@@ -1213,7 +1162,6 @@ package body TEXT_IO is
       Last_Idx  : constant Integer := Integer(ITEM'Last);
       I : Integer;
    begin
-      Ensure_Init;
       Require_Open(Idx);
       if FCBs(Idx).Mode /= IN_FILE then
          raise MODE_ERROR;
@@ -1294,14 +1242,6 @@ package body TEXT_IO is
       end loop;
    end Skip_Blanks_And_Terminators;
 
-   -- A digit in any base 2..16: 0-9 or A-F / a-f (RM 2.4.2).
-   function Is_Extended_Digit(C : Integer) return Boolean is
-   begin
-      return (C >= 48 and C <= 57) or
-             (C >= 65 and C <= 70) or
-             (C >= 97 and C <= 102);
-   end Is_Extended_Digit;
-
    -- Index of the last character of the numeric literal token beginning at
    -- First in S, following the integer (Allow_Point = False) or real
    -- (Allow_Point = True) grammar exactly as the file reader does. Returns
@@ -1311,6 +1251,7 @@ package body TEXT_IO is
                                Allow_Point : Boolean) return Integer is
       I : Integer := First;
       Hi : constant Integer := S'Last;
+      Got, Based, Dot1, Dot2, Has_E, Frac : Boolean;
 
       function Is_Dig (Ch : Character) return Boolean is
       begin return Ch >= '0' and Ch <= '9'; end Is_Dig;
@@ -1351,8 +1292,6 @@ package body TEXT_IO is
             Got := False;
          end if;
       end Match;
-
-      Got, Based, Dot1, Dot2, Has_E, Frac : Boolean;
    begin
       Match ('+', '-', Got);                         -- optional sign
 
@@ -1502,8 +1441,11 @@ package body TEXT_IO is
             while Hi >= Lo and then (Local (Hi) = ' ' or Local (Hi) = Character'Val (9)) loop
                Hi := Hi - 1;
             end loop;
+            --  Len is a formal parameter of mode out, which RM 6.2 allows
+            --  this body to update and not to read, so the length it is
+            --  given is written out of Lo and Hi both times.
             Len := Hi - Lo + 1;
-            if Len > 0 then Buf (Buf'First .. Buf'First + Len - 1) := Local (Lo .. Hi); end if;
+            if Hi >= Lo then Buf (Buf'First .. Buf'First + (Hi - Lo)) := Local (Lo .. Hi); end if;
          end;
          return;
       end if;
@@ -1572,6 +1514,19 @@ package body TEXT_IO is
       if P > 0 then Buf (Buf'First .. Buf'First + P - 1) := Local (1 .. P); end if;
    end Read_Number_Token;
 
+   -- Index in FROM of the first character that is not a blank or a
+   -- horizontal tab, or FROM'Last + 1 when FROM holds none: where a GET
+   -- from a string starts looking for its token (RM 14.3.5).
+   function First_Nonblank(FROM : String) return Integer is
+   begin
+      for I in FROM'Range loop
+         if FROM(I) /= ' ' and FROM(I) /= Character'Val(9) then
+            return I;
+         end if;
+      end loop;
+      return FROM'Last + 1;
+   end First_Nonblank;
+
    -- The image S with IMAGE's leading sign-place blank removed.
    function Without_Leading_Blank(S : String) return String is
    begin
@@ -1581,8 +1536,6 @@ package body TEXT_IO is
       return S;
    end Without_Leading_Blank;
 
-   -- Emit Item right-justified in a field of at least Width columns, padding
-   -- on the left with blanks (numeric PUT, RM 14.3.5).
    -- Before emitting a self-contained item of the given length, enforce the
    -- bounded line length (RM 14.3.5): the item must fit on a line at all, and
    -- if it will not fit in what remains of the current line, start a new one.
@@ -1592,7 +1545,7 @@ package body TEXT_IO is
       if FCBs(Idx).Line_Length /= UNBOUNDED then
          if COUNT(Length) > FCBs(Idx).Line_Length then
             raise LAYOUT_ERROR;
-         elsif FCBs(Idx).Col + COUNT(Length) > FCBs(Idx).Line_Length + 1 then
+         elsif FCBs(Idx).Col + Length > Integer(FCBs(Idx).Line_Length) + 1 then
             NEW_LINE(FILE);
          end if;
       end if;
@@ -1603,11 +1556,16 @@ package body TEXT_IO is
    procedure Put_Raw(FILE : FILE_TYPE; Item : String) is
       Idx : Integer := FILE.HANDLE;
    begin
-      for I in Item'Range loop
-         Raw_Put(Idx, Character'Pos(Item(I)));
-         FCBs(Idx).Col := FCBs(Idx).Col + 1;
-         FCBs(Idx).Page_Active := True;
-      end loop;
+      if Item'Length = 0 then return; end if;
+      if FCBs(Idx).Shared then
+         for I in Item'Range loop
+            Raw_Put(Idx, Character'Pos(Item(I)));
+         end loop;
+      else
+         Raw_Write(Idx, Item);
+      end if;
+      FCBs(Idx).Col := FCBs(Idx).Col + Item'Length;
+      FCBs(Idx).Page_Active := True;
    end Put_Raw;
 
    -- Emit Pad blank columns verbatim.
@@ -1645,30 +1603,6 @@ package body TEXT_IO is
       Put_Blanks(FILE, Pad);
    end Put_Left_Justified;
 
-   function Blanks(Count : Integer) return String is
-   begin
-      if Count <= 0 then return ""; end if;
-      declare
-         Pad : String(1 .. Count) := (others => ' ');
-      begin
-         return Pad;
-      end;
-   end Blanks;
-
-   -- N's decimal digits, zero-padded on the left to at least Width.
-   function Padded_Digits(N : Integer; Width : Integer) return String is
-      Img : constant String := Without_Leading_Blank (INTEGER'IMAGE (N));
-   begin
-      if Img'Length >= Width then return Img; end if;
-      declare
-         Zeros : String (1 .. Width - Img'Length) := (others => '0');
-      begin
-         return Zeros & Img;
-      end;
-   end Padded_Digits;
-
-   -- The integer part of a value in [0, 10): its leading decimal digit. Uses
-   -- round-to-nearest INTEGER conversion then corrects down to the floor.
    -- A real value in FORE.AFT[E+/-EXP] layout (RM 14.3.8). Decimal digits are
    -- extracted one at a time after normalizing the magnitude to [1, 10), so no
    -- intermediate scaled integer can overflow regardless of AFT; the last kept
@@ -1962,8 +1896,16 @@ package body TEXT_IO is
       return Mant;
    end Parse_Based_Real;
 
+   -- The runtime's own conversion of a decimal real literal to a value.
+   -- Ada 83 gives 'VALUE a discrete prefix only (Annex A), so the
+   -- conversion is named here rather than reached through a real 'VALUE
+   -- the language does not define; it strips the underscores RM 2.4.1
+   -- allows and converts exactly.
+   function Decimal_Real_Value(S : String) return FLOAT;
+   pragma Import(C, Decimal_Real_Value, "__ada_float_value");
+
    -- A real value from its literal text: based literals are evaluated here,
-   -- ordinary decimal literals by FLOAT'VALUE.
+   -- ordinary decimal literals by the runtime's decimal conversion.
    function Real_Value(S : String) return FLOAT is
       Dot : Integer := 0;
    begin
@@ -1982,7 +1924,7 @@ package body TEXT_IO is
       then
          raise DATA_ERROR;
       end if;
-      return FLOAT'VALUE(S);
+      return Decimal_Real_Value(S);
    end Real_Value;
 
    package body INTEGER_IO is
@@ -2041,7 +1983,6 @@ package body TEXT_IO is
          Buf : String(1 .. 256);
          Len : Integer;
       begin
-         Ensure_Init;
          Require_Open(Idx);
          if FCBs(Idx).Mode /= IN_FILE then raise MODE_ERROR; end if;
          Read_Number_Token(Idx, Integer(WIDTH), False, Buf, Len);
@@ -2066,14 +2007,13 @@ package body TEXT_IO is
 
       procedure GET(ITEM : out NUM; WIDTH : in FIELD := 0) is
       begin
-         GET((HANDLE => Current_In_Idx), ITEM, WIDTH);
+         GET(FILE_TYPE'(HANDLE => Current_In_Idx), ITEM, WIDTH);
       end GET;
 
       procedure PUT(FILE : in FILE_TYPE; ITEM : in NUM;
                     WIDTH : in FIELD := DEFAULT_WIDTH;
                     BASE : in NUMBER_BASE := DEFAULT_BASE) is
       begin
-         Ensure_Init;
          Require_Open(FILE.HANDLE);
          if FCBs(FILE.HANDLE).Mode = IN_FILE then raise MODE_ERROR; end if;
          Put_Right_Justified(FILE, Image_In_Base(ITEM, BASE), Integer(WIDTH));
@@ -2086,14 +2026,9 @@ package body TEXT_IO is
       end PUT;
 
       procedure GET(FROM : in STRING; ITEM : out NUM; LAST : out POSITIVE) is
-         I : Integer := FROM'First;
-         Token_Start, Token_End : Integer;
+         Token_Start : constant Integer := First_Nonblank(FROM);
+         Token_End : Integer;
       begin
-         while I <= FROM'Last and then
-               (FROM(I) = ' ' or FROM(I) = Character'Val(9)) loop
-            I := I + 1;
-         end loop;
-         Token_Start := I;
          -- Only blanks (or an empty/null string): nothing to read (RM 14.3.5).
          if Token_Start > FROM'Last then raise END_ERROR; end if;
          Token_End := Scan_String_Number(FROM, Token_Start, False);
@@ -2125,7 +2060,6 @@ package body TEXT_IO is
          Buf : String(1 .. 256);
          Len : Integer;
       begin
-         Ensure_Init;
          Require_Open(Idx);
          if FCBs(Idx).Mode /= IN_FILE then raise MODE_ERROR; end if;
          Read_Number_Token(Idx, Integer(WIDTH), True, Buf, Len);
@@ -2147,14 +2081,13 @@ package body TEXT_IO is
 
       procedure GET(ITEM : out NUM; WIDTH : in FIELD := 0) is
       begin
-         GET((HANDLE => Current_In_Idx), ITEM, WIDTH);
+         GET(FILE_TYPE'(HANDLE => Current_In_Idx), ITEM, WIDTH);
       end GET;
 
       procedure PUT(FILE : in FILE_TYPE; ITEM : in NUM;
                     FORE : in FIELD := DEFAULT_FORE; AFT : in FIELD := DEFAULT_AFT;
                     EXP : in FIELD := DEFAULT_EXP) is
       begin
-         Ensure_Init;
          Require_Open(FILE.HANDLE);
          if FCBs(FILE.HANDLE).Mode = IN_FILE then raise MODE_ERROR; end if;
          Format_Real(FILE, FLOAT(ITEM), Integer(FORE), Integer(AFT), Integer(EXP));
@@ -2167,14 +2100,9 @@ package body TEXT_IO is
       end PUT;
 
       procedure GET(FROM : in STRING; ITEM : out NUM; LAST : out POSITIVE) is
-         I : Integer := FROM'First;
-         Token_Start, Token_End : Integer;
+         Token_Start : constant Integer := First_Nonblank(FROM);
+         Token_End : Integer;
       begin
-         while I <= FROM'Last and then
-               (FROM(I) = ' ' or FROM(I) = Character'Val(9)) loop
-            I := I + 1;
-         end loop;
-         Token_Start := I;
          -- Only blanks (or an empty/null string): nothing to read (RM 14.3.5).
          if Token_Start > FROM'Last then raise END_ERROR; end if;
          Token_End := Scan_String_Number(FROM, Token_Start, True);
@@ -2206,7 +2134,6 @@ package body TEXT_IO is
          Buf : String(1 .. 256);
          Len : Integer;
       begin
-         Ensure_Init;
          Require_Open(Idx);
          if FCBs(Idx).Mode /= IN_FILE then raise MODE_ERROR; end if;
          Read_Number_Token(Idx, Integer(WIDTH), True, Buf, Len);
@@ -2231,14 +2158,13 @@ package body TEXT_IO is
 
       procedure GET(ITEM : out NUM; WIDTH : in FIELD := 0) is
       begin
-         GET((HANDLE => Current_In_Idx), ITEM, WIDTH);
+         GET(FILE_TYPE'(HANDLE => Current_In_Idx), ITEM, WIDTH);
       end GET;
 
       procedure PUT(FILE : in FILE_TYPE; ITEM : in NUM;
                     FORE : in FIELD := DEFAULT_FORE; AFT : in FIELD := DEFAULT_AFT;
                     EXP : in FIELD := DEFAULT_EXP) is
       begin
-         Ensure_Init;
          Require_Open(FILE.HANDLE);
          if FCBs(FILE.HANDLE).Mode = IN_FILE then raise MODE_ERROR; end if;
          Format_Real(FILE, FLOAT(ITEM), Integer(FORE), Integer(AFT), Integer(EXP));
@@ -2251,14 +2177,9 @@ package body TEXT_IO is
       end PUT;
 
       procedure GET(FROM : in STRING; ITEM : out NUM; LAST : out POSITIVE) is
-         I : Integer := FROM'First;
-         Token_Start, Token_End : Integer;
+         Token_Start : constant Integer := First_Nonblank(FROM);
+         Token_End : Integer;
       begin
-         while I <= FROM'Last and then
-               (FROM(I) = ' ' or FROM(I) = Character'Val(9)) loop
-            I := I + 1;
-         end loop;
-         Token_Start := I;
          -- Only blanks (or an empty/null string): nothing to read (RM 14.3.5).
          if Token_Start > FROM'Last then raise END_ERROR; end if;
          Token_End := Scan_String_Number(FROM, Token_Start, True);
@@ -2290,7 +2211,12 @@ package body TEXT_IO is
       -- The case transformation applies to identifier images only: a
       -- character-literal image (leading quote) is written exactly as typed.
       function Cased_Image(Item : ENUM; Set : TYPE_SET) return String is
-         Img : String := ENUM'IMAGE(Item);
+         -- RM 3.6.1: a variable's subtype indication must define a
+         -- constrained array subtype -- unlike a constant's, whose
+         -- bounds may come from its initial value.  Img is written to
+         -- below, so it takes its bounds from the constant instead.
+         Raw : constant String := ENUM'IMAGE(Item);
+         Img : String(Raw'Range) := Raw;
       begin
          if Img'Length > 0 and then Img(Img'First) = ''' then
             return Img;
@@ -2311,7 +2237,6 @@ package body TEXT_IO is
          P   : Integer := 0;
          C   : Integer;
       begin
-         Ensure_Init;
          Require_Open(Idx);
          if FCBs(Idx).Mode /= IN_FILE then raise MODE_ERROR; end if;
          Skip_Blanks_And_Terminators(Idx);
@@ -2381,7 +2306,6 @@ package body TEXT_IO is
                     WIDTH : in FIELD := DEFAULT_WIDTH;
                     SET : in TYPE_SET := DEFAULT_SETTING) is
       begin
-         Ensure_Init;
          Require_Open(FILE.HANDLE);
          if FCBs(FILE.HANDLE).Mode = IN_FILE then raise MODE_ERROR; end if;
          Put_Left_Justified(FILE, Cased_Image(ITEM, SET), Integer(WIDTH));
@@ -2394,14 +2318,10 @@ package body TEXT_IO is
       end PUT;
 
       procedure GET(FROM : in STRING; ITEM : out ENUM; LAST : out POSITIVE) is
-         I : Integer := FROM'First;
-         Token_Start, Token_End : Integer;
+         Token_Start : constant Integer := First_Nonblank(FROM);
+         Token_End : Integer;
+         I : Integer := Token_Start;
       begin
-         while I <= FROM'Last and then
-               (FROM(I) = ' ' or FROM(I) = Character'Val(9)) loop
-            I := I + 1;
-         end loop;
-         Token_Start := I;
          -- Only blanks (or an empty/null string): nothing to read (RM 14.3.5).
          if Token_Start > FROM'Last then raise END_ERROR; end if;
          -- Mirror the file reader's enumeration-literal grammar (RM 14.3.9):
