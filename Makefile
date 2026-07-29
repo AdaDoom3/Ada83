@@ -1,18 +1,20 @@
 
 CC = gcc
-CFLAGS = -O3 -Wall
+CFLAGS = -O3 -Wall -std=gnu2x
 LIBS = -lm -lpthread
 
 ifeq ($(OS),Windows_NT)
 BLOB = tools/win64/llvmc_blob.o
+WHOLE_PROGRAM =
 else
 BLOB =
+WHOLE_PROGRAM = -fwhole-program
 endif
 
 all: ada83 provision-llvm
 
 ada83: ada83.c $(BLOB)
-	$(CC) $(CFLAGS) -o ada83 ada83.c $(BLOB) $(LIBS) -march=native
+	$(CC) $(CFLAGS) $(WHOLE_PROGRAM) -o ada83 ada83.c $(BLOB) $(LIBS) -march=native
 
 tools/win64/LLVM-C.dll: tools/win64/LLVM-C.dll.zst
 	zstd -d -f $< -o $@
