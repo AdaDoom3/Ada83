@@ -27129,7 +27129,7 @@ bool Case_Choice_Type_Admitted (Type *governing_type, Type *choice_type) {
   return Declared_Type_Admits_Value (governing_type, choice_type);
 }
 
-void Check_Choice_Coverage (Node_List       *alternatives,
+bool Check_Choice_Coverage (Node_List       *alternatives,
                                    Type       *governing_type,
                                    Case_Coverage    coverage,
                                    Source_Location  end_location,
@@ -27211,16 +27211,21 @@ void Check_Choice_Coverage (Node_List       *alternatives,
     }
   }
 
-  if (has_others or not coverage_is_decidable) return;
-  if (coverage.kind == CASE_COVERAGE_UNBOUNDED)
+  if (has_others or not coverage_is_decidable) return true;
+  if (coverage.kind == CASE_COVERAGE_UNBOUNDED) {
     Report_Error (end_location,
                   "an others choice is required: no set of choices covers "
                   "every value of type universal_integer");
-  else if (covered_values != Discrete_Interval_Count (coverage.interval))
+    return false;
+  }
+  if (covered_values != Discrete_Interval_Count (coverage.interval)) {
     Report_Error (end_location,
                   "the choices of a %s must cover every value the %s can take; "
                   "an others choice is required",
                   construct.construct, construct.selector);
+    return false;
+  }
+  return true;
 }
 
 void Check_Case_Statement (Node *node) {
@@ -27231,11 +27236,16 @@ void Check_Case_Statement (Node *node) {
       not Type_Is_Discrete (expression_type))
     return;
 
-  Check_Choice_Coverage (&node->case_stmt.alternatives, expression_type,
-                         Case_Coverage_Of (expression),
-                         node->case_stmt.end_location,
-                         (Choice_Construct){ .construct = "case statement",
-                                             .selector  = "case expression" });
+  if (not Check_Choice_Coverage (&node->case_stmt.alternatives,
+                                 expression_type,
+                                 Case_Coverage_Of (expression),
+                                 node->case_stmt.end_location,
+                                 (Choice_Construct){
+                                   .construct = "case statement",
+                                   .selector  = "case expression" }))
+    Report_Node_Error (node,
+                  "this case statement's choices leave values of the case "
+                  "expression uncovered");
 }
 
 
