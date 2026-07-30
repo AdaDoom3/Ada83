@@ -70,6 +70,70 @@ u64 To_Bytes   (u64 bits)  {return (bits + Bits_Per_Unit - 1) / Bits_Per_Unit;}
 #define EXPAND_TO_TEXT(literal) #literal
 #define TEXT_OF(constant)       EXPAND_TO_TEXT (constant)
 
+/* The host architecture, named once and consulted both when the emitted
+   IR names its target and when a scanner chooses its instruction set.
+   An architecture this compiler has no vector code for still builds, on
+   the scalar path. */
+#if defined(__x86_64__) || defined(_M_X64)
+  #define SIMD_X86_64 1
+#elif defined(__aarch64__) || defined(_M_ARM64)
+  #define SIMD_ARM64 1
+#else
+  #define SIMD_GENERIC 1
+#endif
+
+/* Every module of textual IR names the host it was produced for, so that
+   the assembler and the interpreter size and align its types exactly as
+   the native backend does.  The native backend asks libLLVM instead and
+   overwrites both lines, so what follows governs textual output alone.
+
+   The three x86-64 layouts differ in nothing but the symbol-mangling
+   character, so they share one spine.  The AArch64 layouts differ from
+   one another in more than that and are each given whole.  A host this
+   compiler cannot name emits no target header at all, which leaves the
+   consumer its own defaults rather than a wrong answer. */
+#define X86_64_DATA_LAYOUT(mangling)                                     \
+  "e-m:" mangling "-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128"     \
+  "-n8:16:32:64-S128"
+
+#if defined(SIMD_X86_64) and defined(_WIN32)
+  #define HOST_TARGET_TRIPLE       "x86_64-w64-windows-gnu"
+  #define HOST_TARGET_DATA_LAYOUT  X86_64_DATA_LAYOUT ("w")
+#elif defined(SIMD_X86_64) and defined(__APPLE__)
+  #define HOST_TARGET_TRIPLE       "x86_64-apple-darwin"
+  #define HOST_TARGET_DATA_LAYOUT  X86_64_DATA_LAYOUT ("o")
+#elif defined(SIMD_X86_64)
+  #define HOST_TARGET_TRIPLE       "x86_64-pc-linux-gnu"
+  #define HOST_TARGET_DATA_LAYOUT  X86_64_DATA_LAYOUT ("e")
+#elif defined(SIMD_ARM64) and defined(_WIN32)
+  #define HOST_TARGET_TRIPLE       "aarch64-w64-windows-gnu"
+  #define HOST_TARGET_DATA_LAYOUT \
+    "e-m:w-p:64:64-i32:32-i64:64-i128:128-n32:64-S128"
+#elif defined(SIMD_ARM64) and defined(__APPLE__)
+  #define HOST_TARGET_TRIPLE       "arm64-apple-darwin"
+  #define HOST_TARGET_DATA_LAYOUT \
+    "e-m:o-i64:64-i128:128-n32:64-S128"
+#elif defined(SIMD_ARM64)
+  #define HOST_TARGET_TRIPLE       "aarch64-unknown-linux-gnu"
+  #define HOST_TARGET_DATA_LAYOUT \
+    "e-m:e-i8:8:32-i16:16:32-i64:64-i128:128-n32:64-S128"
+#endif
+
+#ifdef HOST_TARGET_TRIPLE
+  #define HOST_TARGET_IR_HEADER                                    \
+    "target datalayout = \"" HOST_TARGET_DATA_LAYOUT "\"\n"        \
+    "target triple = \"" HOST_TARGET_TRIPLE "\"\n\n"
+  /* Each layout above opens with "e-" and leaves pointers at their
+     64-bit default, so a host that is big-endian or not 64-bit would be
+     described wrongly by the one selected for it. */
+  _Static_assert (__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__ and
+                  sizeof (void *) * Bits_Per_Unit == Width_Ptr,
+                  "the emitted target header describes a little-endian host "
+                  "with 64-bit pointers and this host is not one");
+#else
+  #define HOST_TARGET_IR_HEADER  ""
+#endif
+
 /* Facilities the C standard does not supply, each defined once here so
    that no call site has to know which host it is running on. */
 
@@ -6788,14 +6852,6 @@ char ALI_File_Path_Text[512];
 
 /* ==== §18  SIMD ===================================================== */
 Big_Integer *Big_Integer_From_Decimal (const char *text);
-
-#if defined(__x86_64__) || defined(_M_X64)
-  #define SIMD_X86_64 1
-#elif defined(__aarch64__) || defined(_M_ARM64)
-  #define SIMD_ARM64 1
-#else
-  #define SIMD_GENERIC 1
-#endif
 
 typedef u8 Byte_Vector __attribute__ ((vector_size (16)));
 
@@ -51666,8 +51722,7 @@ void Emit_Integer_Value_Signed_Return (const char *stem, const char *value,
 void Emit_Runtime_Declarations () {
   Emit_Verbatim (
     "; Ada83 Compiler Output\n"
-    "target datalayout = \"e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128\"\n"
-    "target triple = \"x86_64-pc-linux-gnu\"\n\n"
+    HOST_TARGET_IR_HEADER
     "; External declarations\n"
     "declare i32 @memcmp (ptr, ptr, i64)\n"
     "declare i32 @strncasecmp (ptr, ptr, i64)\n"
