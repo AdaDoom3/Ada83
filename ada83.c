@@ -18,9 +18,21 @@
 #include <fcntl.h>
 #include <dirent.h>
 #include <unistd.h>
-#include <pthread.h>
 #include <sys/stat.h>
-#include <sys/wait.h>
+
+#ifdef _WIN32
+  #define WIN32_LEAN_AND_MEAN
+  #define NOMINMAX
+  #define NOGDI
+  #define NOUSER
+  #include <windows.h>
+  #include <process.h>
+#else
+  #include <sys/wait.h>
+#endif
+#ifdef __APPLE__
+  #include <mach-o/dyld.h>
+#endif
 
 /* ==== §1   Foundation =============================================== */
 typedef uint8_t  u8;
@@ -57,6 +69,108 @@ u64 To_Bytes   (u64 bits)  {return (bits + Bits_Per_Unit - 1) / Bits_Per_Unit;}
 
 #define EXPAND_TO_TEXT(literal) #literal
 #define TEXT_OF(constant)       EXPAND_TO_TEXT (constant)
+
+/* Facilities the C standard does not supply, each defined once here so
+   that no call site has to know which host it is running on. */
+
+int Host_Processor_Count () {
+#ifdef _WIN32
+  SYSTEM_INFO system_information;
+  GetSystemInfo (&system_information);
+  long count = (long) system_information.dwNumberOfProcessors;
+#else
+  long count = sysconf (_SC_NPROCESSORS_ONLN);
+#endif
+  return count > 1 ? (int) count : 1;
+}
+
+/* The absolute path of the running executable, which is where the
+   runtime library is looked for first.  A host with no way to ask falls
+   back to the path the caller was invoked by, which is the best that can
+   be offered. */
+bool Host_Executable_Path (char *buffer, size_t size, const char *invoked_as) {
+#if defined(_WIN32)
+  DWORD written = GetModuleFileNameA (NULL, buffer, (DWORD) size);
+  if (written > 0 and (size_t) written < size) return true;
+#elif defined(__APPLE__)
+  u32 capacity = (u32) size;
+  if (_NSGetExecutablePath (buffer, &capacity) == 0) return true;
+#else
+  ssize_t written = readlink ("/proc/self/exe", buffer, size - 1);
+  if (written > 0) { buffer[written] = '\0'; return true; }
+#endif
+  if (not invoked_as) return false;
+  snprintf (buffer, size, "%s", invoked_as);
+  return true;
+}
+
+/* Modification time in nanoseconds since the epoch, at whatever
+   resolution the host records it.  Only ever compared, never displayed,
+   so a host that keeps whole seconds simply compares more coarsely. */
+i64 Host_File_Modification_Time (const char *path) {
+  struct stat status;
+  if (stat (path, &status) != 0) return 0;
+#if defined(_WIN32)
+  i64 nanoseconds = 0;
+#elif defined(__APPLE__)
+  i64 nanoseconds = status.st_mtimespec.tv_nsec;
+#else
+  i64 nanoseconds = status.st_mtim.tv_nsec;
+#endif
+  return (i64) status.st_mtime * 1000000000 + nanoseconds;
+}
+
+/* The exit status of a command run through system(), which POSIX returns
+   in the wait(2) encoding and Windows returns as it stands. */
+int Host_Command_Exit_Status (int result) {
+#ifdef _WIN32
+  return result;
+#else
+  return WIFEXITED (result) ? WEXITSTATUS (result) : -1;
+#endif
+}
+
+#ifdef _WIN32
+  typedef intptr_t Host_Process;
+#else
+  typedef pid_t    Host_Process;
+#endif
+#define HOST_PROCESS_NONE ((Host_Process) -1)
+
+/* Run a program as a child process.  The argument vector is terminated
+   by a null pointer and names the program to run in its first element. */
+bool Host_Process_Start (Host_Process *process,
+                         const char *const *argument_vector) {
+  /* The path-searching forms, so that a compiler invoked by bare name
+     can still find itself when it comes to start a worker. */
+#ifdef _WIN32
+  intptr_t started = _spawnvp (_P_NOWAIT, argument_vector[0],
+                               (const char *const *) argument_vector);
+  if (started == -1) return false;
+  *process = started;
+#else
+  pid_t child = fork ();
+  if (child < 0) return false;
+  if (child == 0) {
+    execvp (argument_vector[0], (char *const *) argument_vector);
+    _exit (127);
+  }
+  *process = child;
+#endif
+  return true;
+}
+
+/* The child's exit status, or -1 if it could not be collected. */
+int Host_Process_Wait (Host_Process process) {
+  int status = 0;
+#ifdef _WIN32
+  if (_cwait (&status, process, 0) == -1) return -1;
+  return status;
+#else
+  if (waitpid (process, &status, 0) < 0) return -1;
+  return WIFEXITED (status) ? WEXITSTATUS (status) : 1;
+#endif
+}
 
 /* ==== §2   Measurement ============================================== */
 #define FAT_PTR_ALLOC_SIZE 16
@@ -3753,8 +3867,26 @@ typedef struct {
 
 enum { FAT_COMPONENT_CACHE_SIZE = 64 };
 
+/* A module is assembled in memory before it is written: the frame,
+   prologue and body of a subprogram are each accumulated apart and
+   joined once the body is closed.  These buffers do that job, in place
+   of the memory streams that only POSIX offers, and spare every emitted
+   line a trip through stdio.  Storage comes from the arena and is
+   reused, so a long compilation stops growing them early. */
 typedef struct {
-  FILE               *output;
+  char  *text;
+  size_t length;
+  size_t capacity;
+} Output_Buffer;
+
+void Output_Reserve (Output_Buffer *buffer, size_t extra);
+void Output_Write   (Output_Buffer *buffer, const char *data, size_t length);
+void Output_Put     (Output_Buffer *buffer, char character);
+void Output_Format  (Output_Buffer *buffer, const char *format, ...);
+void Output_Clear   (Output_Buffer *buffer);
+
+typedef struct {
+  Output_Buffer      *output;
   u32                 temp_id;
   u32                 label_id;
   u32                 global_id;
@@ -3889,27 +4021,18 @@ typedef struct {
   const char  *emit_line_start_func;
   int          emit_line_start_line;
 
-  FILE   *destination;
-  FILE   *prelude_stream;
-  char   *prelude_text;
-  size_t  prelude_text_size;
-  FILE   *module_stream;
-  char   *module_text;
-  size_t  module_text_size;
+  FILE          *destination;
+  Output_Buffer  prelude;
+  Output_Buffer  module;
 
-  FILE   *module_output;
-  FILE   *frame_stream;
-  FILE   *prologue_stream;
-  FILE   *body_stream;
-  char   *frame_text;
-  size_t  frame_text_size;
-  char   *prologue_text;
-  size_t  prologue_text_size;
-  char   *body_text;
-  size_t  body_text_size;
-  bool    function_body_open;
-  bool    emitting_frame_slot;
-  bool    emitting_prologue;
+  Output_Buffer *module_output;
+  Output_Buffer  frame;
+  Output_Buffer  prologue;
+  Output_Buffer  body;
+
+  bool           function_body_open;
+  bool           emitting_frame_slot;
+  bool           emitting_prologue;
 
   u32  body_call_count;
   bool prologue_is_droppable;
@@ -5855,12 +5978,20 @@ TASKING_RECORD_LAYOUT_PINNED (TASKING_LIST_NODE);
 #define TIMESPEC_OFFSET_NANOSECONDS  8
 #define TIMESPEC_SIZE               16
 
+/* The nanosecond field is a C long: 64 bits where long is, 32 bits on
+   Windows.  The seconds field is 64 bits everywhere this compiler runs. */
+#ifdef _WIN32
+  #define TIMESPEC_NANOSECONDS_BITS  32
+#else
+  #define TIMESPEC_NANOSECONDS_BITS  64
+#endif
+
 _Static_assert (
   sizeof (struct timespec) == TIMESPEC_SIZE and
   offsetof (struct timespec, tv_sec)  == TIMESPEC_OFFSET_SECONDS and
   offsetof (struct timespec, tv_nsec) == TIMESPEC_OFFSET_NANOSECONDS and
   sizeof (((struct timespec *) 0)->tv_sec)  == 8 and
-  sizeof (((struct timespec *) 0)->tv_nsec) == 8,
+  sizeof (((struct timespec *) 0)->tv_nsec) * Bits_Per_Unit == TIMESPEC_NANOSECONDS_BITS,
   "the emitted tasking runtime and <time.h> disagree about the layout "
   "of struct timespec");
 
@@ -5870,6 +6001,23 @@ _Static_assert (
   "getelementptr i8, ptr " base ", i64 " \
   TEXT_OF (TIMESPEC_OFFSET_ ## field) \
   "  ; Timespec." #field
+
+/* The width of the nanosecond field reaches the emitted runtime through
+   these two macros and nowhere else.  Both take and yield an i64, so
+   every caller is written once and is the same on every host. */
+#if TIMESPEC_NANOSECONDS_BITS == 64
+  #define TIMESPEC_LOAD_NANOSECONDS(result, slot) \
+    "  " result " = load i64, ptr " slot "\n"
+  #define TIMESPEC_STORE_NANOSECONDS(value, slot) \
+    "  store i64 " value ", ptr " slot "\n"
+#else
+  #define TIMESPEC_LOAD_NANOSECONDS(result, slot) \
+    "  " result ".field = load i" TEXT_OF (TIMESPEC_NANOSECONDS_BITS) ", ptr " slot "\n" \
+    "  " result " = sext i" TEXT_OF (TIMESPEC_NANOSECONDS_BITS) " " result ".field to i64\n"
+  #define TIMESPEC_STORE_NANOSECONDS(value, slot) \
+    "  " value ".field = trunc i64 " value " to i" TEXT_OF (TIMESPEC_NANOSECONDS_BITS) "\n" \
+    "  store i" TEXT_OF (TIMESPEC_NANOSECONDS_BITS) " " value ".field, ptr " slot "\n"
+#endif
 
 void Emit_Runtime_Declarations        ();
 void Emit_Runtime_Value_Attribute     ();
@@ -6667,10 +6815,21 @@ enum { Decimal_Group_Digits = 8 };
 u32 Read_Decimal_Group (const char *digits);
 
 typedef struct {
-  const char *input_path;
-  pid_t       worker;
-  int         exit_status;
+  const char   *input_path;
+  Host_Process  worker;
+  int           exit_status;
 } Compile_Job;
+
+/* The command line this compiler was started with.  A worker is built
+   from it directly rather than from a reconstruction of it, so that a
+   worker can never disagree with its parent about what was asked. */
+typedef struct {
+  const char        *executable;
+  int                argument_count;
+  const char *const *arguments;
+  const char *const *inputs;
+  int                input_count;
+} Driver_Command_Line;
 
 /* ==== §19  Driver =================================================== */
 bool  Read_Unit_Identity (Node *cu, Slice *name,
@@ -6679,7 +6838,10 @@ void  Compile_File            (const char *input_path,
                                const char *output_path);
 bool  Inputs_Are_Order_Sensitive (const char *const *inputs,
                                   int input_count);
-void  Compile_Job_Start       (Compile_Job *job, const char *input_path);
+bool  Argument_Is_An_Input    (const Driver_Command_Line *command_line,
+                               const char *argument);
+void  Compile_Job_Start       (Compile_Job *job, const char *input_path,
+                               const Driver_Command_Line *command_line);
 void  Compile_Job_Wait        (Compile_Job *job);
 bool  Suppress_Checks_From_Command_Line (const char *list);
 bool  Warning_Flags_From_Command_Line   (const char *argument);
@@ -6700,17 +6862,11 @@ typedef struct {
   const char                 *optimized_ir_path;
 } Native_Backend_Options;
 
-#ifdef _WIN32
-const char *Backend_Extract_Embedded_Library ();
-#endif
 bool Llvm_C_Api_Load          (Llvm_C_Api *api, char *err, size_t err_size);
 int  Native_Backend_Compile   (const char *ir_path, const char *const *extra_ir,
                                int extra_count, const char *exe_path,
                                const Native_Backend_Options *options);
 
-#ifdef _WIN32
-char Embedded_Library_Path_Text[PATH_MAX];
-#endif
 const char *const Llvm_Library_Candidate_Names[] = {
 #ifdef _WIN32
   "LLVM-C.dll", "libLLVM.dll",
@@ -29959,6 +30115,55 @@ Rep Pick_Descriptor_Rep () {
   return Make_Int_Rep (64, false);
 }
 
+void Output_Reserve (Output_Buffer *buffer, size_t extra) {
+  if (buffer->length + extra + 1 <= buffer->capacity) return;
+  size_t capacity = buffer->capacity ? buffer->capacity : 4096;
+  while (buffer->length + extra + 1 > capacity) capacity *= 2;
+  char *text = Arena_Allocate (capacity);
+  if (buffer->length) memcpy (text, buffer->text, buffer->length);
+  buffer->text     = text;
+  buffer->capacity = capacity;
+}
+
+void Output_Write (Output_Buffer *buffer, const char *data, size_t length) {
+  if (not data or length == 0) return;
+  Output_Reserve (buffer, length);
+  memcpy (buffer->text + buffer->length, data, length);
+  buffer->length += length;
+  buffer->text[buffer->length] = '\0';
+}
+
+void Output_Put (Output_Buffer *buffer, char character) {
+  Output_Write (buffer, &character, 1);
+}
+
+void Output_Format (Output_Buffer *buffer, const char *format, ...) {
+  va_list args;
+  char    scratch[1024];
+
+  va_start (args, format);
+  int written = vsnprintf (scratch, sizeof scratch, format, args);
+  va_end (args);
+  if (written < 0) return;
+
+  if ((size_t) written < sizeof scratch) {
+    Output_Write (buffer, scratch, (size_t) written);
+    return;
+  }
+  /* Too long for the scratch space, so format a second time straight
+     into the buffer, which is now known to be large enough. */
+  Output_Reserve (buffer, (size_t) written);
+  va_start (args, format);
+  vsnprintf (buffer->text + buffer->length, (size_t) written + 1, format, args);
+  va_end (args);
+  buffer->length += (size_t) written;
+}
+
+void Output_Clear (Output_Buffer *buffer) {
+  buffer->length = 0;
+  if (buffer->text) buffer->text[0] = '\0';
+}
+
 void String_Const_Reserve (size_t extra) {
   while (cg->string_const_size + extra + 1 > cg->string_const_capacity) {
     size_t new_cap = cg->string_const_capacity * 2;
@@ -29990,17 +30195,8 @@ void Emit_String_Const_Symbol (Symbol *sym) {
 }
 
 void Emit_String_Const_Symbol_Name (Symbol *sym) {
-  char  *captured = NULL;
-  size_t captured_size = 0;
-  FILE  *saved_output = cg->output;
-  cg->output = open_memstream (&captured, &captured_size);
-  Emit_Symbol_Name (sym);
-  fclose (cg->output);
-  cg->output = saved_output;
-  if (captured) {
-    Emit_String_Const ("%.*s", (int) captured_size, captured);
-    free (captured);
-  }
+  Slice name = Get_Emitted_Name (sym);
+  Emit_String_Const ("%.*s", (int) name.length, name.data);
 }
 
 Register_Spelling Register_Spelling_Of (u32 reg) {
@@ -30149,7 +30345,7 @@ void Emit_Located_Text (const char *src_func, int src_line,
     for (const char *q = p; q < chunk_end; q++) {
       if (*q != ' ' and *q != '\t') { cg->emit_line_has_content = true; break; }
     }
-    fwrite (p, 1, (size_t) (chunk_end - p), cg->output);
+    Output_Write (cg->output, p, (size_t) (chunk_end - p));
 
     if (not nl) {
       cg->emit_at_line_start = false;
@@ -30157,11 +30353,11 @@ void Emit_Located_Text (const char *src_func, int src_line,
     }
 
     if (cg->emit_line_has_content) {
-      fprintf (cg->output, "  ; @ %s:%d",
-               cg->emit_line_start_func ? cg->emit_line_start_func : "?",
-               cg->emit_line_start_line);
+      Output_Format (cg->output, "  ; @ %s:%d",
+                     cg->emit_line_start_func ? cg->emit_line_start_func : "?",
+                     cg->emit_line_start_line);
     }
-    fputc ('\n', cg->output);
+    Output_Put (cg->output, '\n');
 
     cg->emit_at_line_start    = true;
     cg->emit_line_has_content = false;
@@ -30174,17 +30370,10 @@ void Emit_Located_Text (const char *src_func, int src_line,
 void Function_Body_Begin () {
   Function_Body_End ();
   cg->module_output       = cg->output;
-  cg->frame_text          = NULL;
-  cg->frame_text_size     = 0;
-  cg->prologue_text       = NULL;
-  cg->prologue_text_size  = 0;
-  cg->body_text           = NULL;
-  cg->body_text_size      = 0;
-  cg->frame_stream        = open_memstream (&cg->frame_text, &cg->frame_text_size);
-  cg->prologue_stream     = open_memstream (&cg->prologue_text,
-                                            &cg->prologue_text_size);
-  cg->body_stream         = open_memstream (&cg->body_text,  &cg->body_text_size);
-  cg->output              = cg->body_stream;
+  Output_Clear (&cg->frame);
+  Output_Clear (&cg->prologue);
+  Output_Clear (&cg->body);
+  cg->output              = &cg->body;
   cg->function_body_open  = true;
   cg->emitting_frame_slot = false;
   cg->emitting_prologue   = false;
@@ -30200,20 +30389,16 @@ void Function_Body_End () {
   cg->emitting_frame_slot = false;
   cg->emitting_prologue   = false;
 
-  fclose (cg->frame_stream);    cg->frame_stream    = NULL;
-  fclose (cg->prologue_stream); cg->prologue_stream = NULL;
-  fclose (cg->body_stream);     cg->body_stream     = NULL;
   cg->output = cg->module_output;
 
-  fputs ("entry:\n", cg->output);
-  if (cg->frame_text) fwrite (cg->frame_text, 1, cg->frame_text_size, cg->output);
-  if (cg->prologue_text)
-    fwrite (cg->prologue_text, 1, cg->prologue_text_size, cg->output);
-  if (cg->body_text)  fwrite (cg->body_text,  1, cg->body_text_size,  cg->output);
+  Output_Write (cg->output, "entry:\n", sizeof "entry:\n" - 1);
+  Output_Write (cg->output, cg->frame.text,    cg->frame.length);
+  Output_Write (cg->output, cg->prologue.text, cg->prologue.length);
+  Output_Write (cg->output, cg->body.text,     cg->body.length);
 
-  free (cg->frame_text);    cg->frame_text    = NULL; cg->frame_text_size    = 0;
-  free (cg->prologue_text); cg->prologue_text = NULL; cg->prologue_text_size = 0;
-  free (cg->body_text);     cg->body_text     = NULL; cg->body_text_size     = 0;
+  Output_Clear (&cg->frame);
+  Output_Clear (&cg->prologue);
+  Output_Clear (&cg->body);
   cg->emit_at_line_start = true;
 }
 
@@ -30221,15 +30406,15 @@ void Frame_Slot_Begin () {
   if (cg->function_body_open and not cg->emitting_frame_slot
       and cg->emit_at_line_start) {
     cg->emitting_frame_slot = true;
-    cg->output              = cg->frame_stream;
+    cg->output              = &cg->frame;
   }
 }
 
 void Frame_Slot_End () {
   if (cg->emitting_frame_slot) {
     cg->emitting_frame_slot = false;
-    cg->output              = cg->emitting_prologue ? cg->prologue_stream
-                                                    : cg->body_stream;
+    cg->output              = cg->emitting_prologue ? &cg->prologue
+                                                    : &cg->body;
   }
 }
 
@@ -30237,19 +30422,19 @@ void Prologue_Begin () {
   if (cg->function_body_open and not cg->emitting_prologue
       and not cg->emitting_frame_slot and cg->emit_at_line_start) {
     cg->emitting_prologue = true;
-    cg->output            = cg->prologue_stream;
+    cg->output            = &cg->prologue;
   }
 }
 void Prologue_End () {
   if (cg->emitting_prologue) {
     cg->emitting_prologue = false;
-    cg->output            = cg->body_stream;
+    cg->output            = &cg->body;
   }
 }
 
 void Prologue_Discard_If_No_Call () {
   if (not cg->prologue_is_droppable or cg->body_call_count > 0) return;
-  fseek (cg->prologue_stream, 0, SEEK_SET);
+  Output_Clear (&cg->prologue);
 }
 
 void Emit_Impl (const char *src_func, int src_line, const char *format, ...) {
@@ -30278,7 +30463,7 @@ void Emit_Impl (const char *src_func, int src_line, const char *format, ...) {
   if (need < 0) return;
 
   if (not cg->emit_debug_locations) {
-    fwrite (buf, 1, (size_t) need, cg->output);
+    Output_Write (cg->output, buf, (size_t) need);
     if (need > 0) cg->emit_at_line_start = (buf[need - 1] == '\n');
   } else {
     if (starts_line) Record_Emit_Result_Type (buf);
@@ -30301,7 +30486,7 @@ char *Emit_Call_Format (const char *format, va_list args, char *stack_buf,
 }
 
 void Emit_Call_Note () {
-  if (cg->function_body_open and cg->output == cg->body_stream)
+  if (cg->function_body_open and cg->output == &cg->body)
     cg->body_call_count++;
 }
 
@@ -30382,7 +30567,7 @@ void Emit_Verbatim_Impl (const char *src_func, int src_line,
   }
 
   if (not cg->emit_debug_locations) {
-    fwrite (text, 1, length, cg->output);
+    Output_Write (cg->output, text, length);
     cg->emit_at_line_start = (text[length - 1] == '\n');
     return;
   }
@@ -31003,7 +31188,7 @@ Slice Get_Emitted_Name (Symbol *sym) {
 void Emit_Symbol_Name (Symbol *sym) {
   Slice name = Get_Emitted_Name (sym);
   for (u32 i = 0; i < name.length; i++)
-    fputc (name.data[i], cg->output);
+    Output_Put (cg->output, name.data[i]);
 }
 
 const char *Spell_Symbol (Symbol *sym) {
@@ -49556,7 +49741,7 @@ void Emit_Task_Function_Name (Symbol *task_sym, Slice fallback_name) {
     for (u32 i = 0; i < fallback_name.length; i++) {
       char ch = fallback_name.data[i];
       if (ch >= 'A' and ch <= 'Z') ch = ch - 'A' + 'a';
-      fputc (ch, cg->output);
+      Output_Put (cg->output, ch);
     }
   }
 }
@@ -50969,7 +51154,7 @@ void Lower_Implicit_Operators () {
   }
   if (cg->string_const_size > 0) {
     Emit ("\n; String constants\n");
-    fprintf (cg->output, "%s", cg->string_const_buffer);
+    Output_Write (cg->output, cg->string_const_buffer, cg->string_const_size);
     Emit ("\n");
     cg->string_const_size = 0;
   }
@@ -51215,7 +51400,7 @@ void Emit_Program_Entry_Point () {
   Emit ("}\n");
 
   if (cg->string_const_size > 0) {
-    fprintf (cg->output, "%s", cg->string_const_buffer);
+    Output_Write (cg->output, cg->string_const_buffer, cg->string_const_size);
     cg->string_const_size = 0;
   }
 }
@@ -52490,7 +52675,7 @@ void Emit_Runtime_Rendezvous_Records () {
     "  %secp = " TIMESPEC_FIELD ("%ts", SECONDS) "\n"
     "  %nsp = " TIMESPEC_FIELD ("%ts", NANOSECONDS) "\n"
     "  %sec = load i64, ptr %secp\n"
-    "  %ns = load i64, ptr %nsp\n"
+    TIMESPEC_LOAD_NANOSECONDS ("%ns", "%nsp")
     "  %addsec = udiv i64 %us, 1000000\n"
     "  %addus = urem i64 %us, 1000000\n"
     "  %addns = mul i64 %addus, 1000\n"
@@ -52500,7 +52685,7 @@ void Emit_Runtime_Rendezvous_Records () {
     "  %sec1 = add i64 %sec, %addsec\n"
     "  %sec2 = add i64 %sec1, %carry\n"
     "  store i64 %sec2, ptr %secp\n"
-    "  store i64 %ns2, ptr %nsp\n"
+    TIMESPEC_STORE_NANOSECONDS ("%ns2", "%nsp")
     "  ret void\n"
     "}\n\n"
     "define linkonce_odr void @__ada_spin_for_call(ptr %self) {\n"
@@ -52573,7 +52758,7 @@ void Emit_Runtime_Delay () {
     "  %sec_slot = " TIMESPEC_FIELD ("%ts", SECONDS) "\n"
     "  store i64 %sec, ptr %sec_slot\n"
     "  %ns_slot = " TIMESPEC_FIELD ("%ts", NANOSECONDS) "\n"
-    "  store i64 %ns, ptr %ns_slot\n"
+    TIMESPEC_STORE_NANOSECONDS ("%ns", "%ns_slot")
     "  br label %loop\n"
     "loop:\n"
     "  %r = call i32 @nanosleep(ptr %ts, ptr %ts)\n"
@@ -52591,7 +52776,7 @@ void Emit_Runtime_Clock () {
     "  %secp = " TIMESPEC_FIELD ("%ts", SECONDS) "\n"
     "  %sec = load i64, ptr %secp\n"
     "  %nsp = " TIMESPEC_FIELD ("%ts", NANOSECONDS) "\n"
-    "  %ns = load i64, ptr %nsp\n"
+    TIMESPEC_LOAD_NANOSECONDS ("%ns", "%nsp")
     "  %s100k = mul i64 %sec, 100000\n"
     "  %nsu = sdiv i64 %ns, 10000\n"
     "  %tot = add i64 %s100k, %nsu\n"
@@ -54349,32 +54534,22 @@ void Write_Reachable_Runtime_Prelude (FILE       *destination,
 void Code_Generator_Finish () {
   Function_Body_End ();
 
-  if (cg->prelude_stream) {
-    fclose (cg->prelude_stream);
-    cg->prelude_stream = NULL;
-  }
-  if (cg->module_stream) {
-    fclose (cg->module_stream);
-    cg->module_stream = NULL;
-  }
-  cg->output = cg->destination;
-
   Write_Reachable_Runtime_Prelude (cg->destination,
-                                   cg->prelude_text, cg->prelude_text_size,
-                                   cg->module_text,  cg->module_text_size);
-  if (cg->module_text)
-    fwrite (cg->module_text, 1, cg->module_text_size, cg->destination);
+                                   cg->prelude.text, cg->prelude.length,
+                                   cg->module.text,  cg->module.length);
+  if (cg->module.length)
+    fwrite (cg->module.text, 1, cg->module.length, cg->destination);
   fflush (cg->destination);
 
-  free (cg->prelude_text); cg->prelude_text = NULL; cg->prelude_text_size = 0;
-  free (cg->module_text);  cg->module_text  = NULL; cg->module_text_size  = 0;
+  Output_Clear (&cg->prelude);
+  Output_Clear (&cg->module);
 }
 
 void Emit_Module_Prologue () {
   if (cg->header_emitted) return;
   cg->header_emitted = true;
 
-  cg->output = cg->prelude_stream;
+  cg->output = &cg->prelude;
   Emit_Runtime_Declarations ();
   Emit_Runtime_Value_Attribute ();
   Emit_Runtime_Exponentiation ();
@@ -54388,7 +54563,7 @@ void Emit_Module_Prologue () {
   Emit_Runtime_Tasking ();
   Emit_Runtime_Text_Io ();
   Emit_Runtime_Image_Attributes ();
-  cg->output = cg->module_stream;
+  cg->output = &cg->module;
 
   Lower_Exception_Globals ();
   Emit ("\n");
@@ -54433,7 +54608,7 @@ void Lower_Compilation_Unit (Node *node) {
 
   if (cg->string_const_size > 0) {
     Emit ("\n; String constants\n");
-    fprintf (cg->output, "%s", cg->string_const_buffer);
+    Output_Write (cg->output, cg->string_const_buffer, cg->string_const_size);
     Emit ("\n");
     cg->string_const_size = 0;
   }
@@ -55367,11 +55542,7 @@ void Catalog_Load_Directory (const char *directory) {
     snprintf (ali_path, sizeof (ali_path), "%s/%s", directory, file_name);
     char *text = Read_File_Simple (ali_path);
     if (not text) continue;
-    struct stat ali_status;
-    i64 ali_mtime = (stat (ali_path, &ali_status) == 0)
-      ? (i64)ali_status.st_mtime * 1000000000
-        + ali_status.st_mtim.tv_nsec
-      : 0;
+    i64 ali_mtime = Host_File_Modification_Time (ali_path);
     Catalog_Entry *current_unit = NULL;
     Frame_Slot *slots = NULL;
     u32 slot_count = 0, slot_capacity = 0;
@@ -59155,11 +59326,7 @@ void Compile_File (const char *input_path, const char *output_path) {
   {
     cg                        = Arena_Allocate (sizeof (Code_Generator));
     cg->destination           = out_file;
-    cg->prelude_stream        = open_memstream (&cg->prelude_text,
-                                                &cg->prelude_text_size);
-    cg->module_stream         = open_memstream (&cg->module_text,
-                                                &cg->module_text_size);
-    cg->output                = cg->module_stream;
+    cg->output                = &cg->module;
     cg->temp_id               = 1;
     cg->label_id              = 1;
     cg->global_id             = 1;
@@ -59247,12 +59414,23 @@ void Compile_File (const char *input_path, const char *output_path) {
   free (source);
 }
 
-void Compile_Job_Start (Compile_Job *job, const char *input_path) {
+/* Whether an argument is one of the files to compile, decided by
+   identity: the input list holds the very pointers the command line was
+   given, so this asks the question exactly rather than by spelling. */
+bool Argument_Is_An_Input (const Driver_Command_Line *command_line,
+                           const char *argument) {
+  for (int i = 0; i < command_line->input_count; i++)
+    if (command_line->inputs[i] == argument) return true;
+  return false;
+}
+
+void Compile_Job_Start (Compile_Job *job, const char *input_path,
+                        const Driver_Command_Line *command_line) {
   char output_path[PATH_MAX];
 
   job->input_path  = input_path;
   job->exit_status = 0;
-  job->worker      = -1;
+  job->worker      = HOST_PROCESS_NONE;
 
   const char *slash = strrchr (input_path, '/');
   const char *dot   = strrchr (input_path, '.');
@@ -59266,12 +59444,40 @@ void Compile_Job_Start (Compile_Job *job, const char *input_path) {
   memcpy (output_path, input_path, stem);
   memcpy (output_path + stem, ".ll", sizeof ".ll");
 
-  job->worker = fork ();
-  if (job->worker == 0) {
-    Compile_File (input_path, output_path);
-    _exit (Error_Count > 0 ? 1 : 0);
+  /* This compiler again, with every option it was given, told to compile
+     the one file and where to put it.  Each file is compiled in a child
+     of its own so that it starts from a fresh arena and symbol table. */
+  size_t capacity = (size_t) (command_line->argument_count
+                              + 2 * command_line->input_count + 5);
+  const char **worker = Arena_Allocate (capacity * sizeof *worker);
+  int count = 0;
+
+  worker[count++] = command_line->executable;
+  for (int i = 1; i < command_line->argument_count; i++) {
+    const char *argument = command_line->arguments[i];
+    if (strcmp (argument, "-o") == 0)                     { i++; continue; }
+    if (Argument_Is_An_Input (command_line, argument))          continue;
+    worker[count++] = argument;
   }
-  if (job->worker < 0) {
+
+  /* The parent puts each input's own directory on the search path, so a
+     worker has to be handed that same set to resolve a `with` against a
+     unit that sits beside one of the other inputs. */
+  for (int i = 0; i < command_line->input_count; i++) {
+    char *directory = Arena_Allocate (PATH_MAX);
+    if (Is_Directory (command_line->inputs[i], directory, PATH_MAX) and
+        strcmp (directory, ".") != 0) {
+      worker[count++] = "-I";
+      worker[count++] = directory;
+    }
+  }
+
+  worker[count++] = "-o";
+  worker[count++] = output_path;
+  worker[count++] = input_path;
+  worker[count]   = NULL;
+
+  if (not Host_Process_Start (&job->worker, worker)) {
     Report_Driver_Error ("cannot start a worker for '%s': %s",
                          input_path, strerror (errno));
     job->exit_status = 1;
@@ -59279,15 +59485,15 @@ void Compile_Job_Start (Compile_Job *job, const char *input_path) {
 }
 
 void Compile_Job_Wait (Compile_Job *job) {
-  if (job->worker <= 0) return;
-  int status;
-  if (waitpid (job->worker, &status, 0) < 0) {
+  if (job->worker == HOST_PROCESS_NONE) return;
+  int status = Host_Process_Wait (job->worker);
+  if (status < 0) {
     Report_Driver_Error ("lost the worker for '%s': %s",
                          job->input_path, strerror (errno));
     job->exit_status = 1;
     return;
   }
-  job->exit_status = WIFEXITED (status) ? WEXITSTATUS (status) : 1;
+  job->exit_status = status;
 }
 
 bool Suppress_Checks_From_Command_Line (const char *list) {
@@ -59601,13 +59807,10 @@ int main (int argc, char *argv[]) {
   }
   if (not usable) return 1;
 
+  char executable[PATH_MAX];
+  Host_Executable_Path (executable, sizeof executable, argv[0]);
   {
-    char executable[PATH_MAX], directory[PATH_MAX];
-    ssize_t length = readlink ("/proc/self/exe", executable,
-                               sizeof executable - 1);
-    if (length > 0) executable[length] = '\0';
-    else            snprintf (executable, sizeof executable, "%s", argv[0]);
-
+    char directory[PATH_MAX];
     if (Is_Directory (executable, directory, sizeof directory))
       Runtime_Library_Locate (directory);
   }
@@ -59653,16 +59856,23 @@ int main (int argc, char *argv[]) {
   }
 
   Compile_Job jobs[MAX_INPUT_FILES];
-  long processors = sysconf (_SC_NPROCESSORS_ONLN);
-  int  worker_limit = processors > 1 ? (int) processors : 1;
+  int worker_limit = Host_Processor_Count ();
   if (worker_limit > input_count) worker_limit = input_count;
   if (Inputs_Are_Order_Sensitive (inputs, input_count)) worker_limit = 1;
+
+  Driver_Command_Line command_line = {
+    .executable     = executable,
+    .argument_count = argc,
+    .arguments      = (const char *const *) argv,
+    .inputs         = inputs,
+    .input_count    = input_count
+  };
 
   int oldest_running = 0;
   for (int next = 0; next < input_count; next++) {
     if (next - oldest_running >= worker_limit)
       Compile_Job_Wait (&jobs[oldest_running++]);
-    Compile_Job_Start (&jobs[next], inputs[next]);
+    Compile_Job_Start (&jobs[next], inputs[next], &command_line);
   }
   while (oldest_running < input_count)
     Compile_Job_Wait (&jobs[oldest_running++]);
@@ -59738,40 +59948,6 @@ struct Llvm_C_Api {
   #define BACKEND_ARCH "X86"
 #endif
 
-#ifdef _WIN32
-extern const unsigned char _binary_LLVM_C_dll_start[] __attribute__((weak));
-extern const unsigned char _binary_LLVM_C_dll_end[]   __attribute__((weak));
-
-const char *Backend_Extract_Embedded_Library () {
-  if (not _binary_LLVM_C_dll_start or not _binary_LLVM_C_dll_end) return NULL;
-  size_t size = (size_t) (_binary_LLVM_C_dll_end - _binary_LLVM_C_dll_start);
-  const char *base = getenv ("LOCALAPPDATA");
-  if (size == 0 or not base) return NULL;
-
-  char directory[PATH_MAX], temp_path[PATH_MAX];
-  snprintf (directory, sizeof (directory), "%s\\ada83", base);
-  snprintf (Embedded_Library_Path_Text, sizeof (Embedded_Library_Path_Text), "%s\\LLVM-C-%zu.dll", directory, size);
-  CreateDirectoryA (directory, NULL);
-
-  struct stat existing;
-  if (stat (Embedded_Library_Path_Text, &existing) == 0 and (size_t) existing.st_size == size)
-    return Embedded_Library_Path_Text;
-
-  snprintf (temp_path, sizeof (temp_path), "%s.tmp%lu", Embedded_Library_Path_Text,
-            (unsigned long) GetCurrentProcessId ());
-  FILE *out = fopen (temp_path, "wb");
-  if (not out) return NULL;
-  size_t written = fwrite (_binary_LLVM_C_dll_start, 1, size, out);
-  fclose (out);
-  if (written != size) { remove (temp_path); return NULL; }
-  if (rename (temp_path, Embedded_Library_Path_Text) != 0) {
-    remove (temp_path);
-    if (stat (Embedded_Library_Path_Text, &existing) != 0 or (size_t) existing.st_size != size)
-      return NULL;
-  }
-  return Embedded_Library_Path_Text;
-}
-#endif
 
 bool Llvm_C_Api_Load (Llvm_C_Api *api, char *err, size_t err_size) {
 
@@ -59779,13 +59955,6 @@ bool Llvm_C_Api_Load (Llvm_C_Api *api, char *err, size_t err_size) {
   const char *override = getenv ("ADA83_LLVM_LIB");
   if (override)
     api->library = Backend_Library_Open (override);
-#ifdef _WIN32
-  if (not api->library) {
-    const char *embedded = Backend_Extract_Embedded_Library ();
-    if (embedded)
-      api->library = Backend_Library_Open (embedded);
-  }
-#endif
   for (size_t i = 0; not api->library and i < sizeof (Llvm_Library_Candidate_Names) / sizeof (*Llvm_Library_Candidate_Names); i++)
     api->library = Backend_Library_Open (Llvm_Library_Candidate_Names[i]);
   if (not api->library) {
@@ -59941,7 +60110,7 @@ int Native_Backend_Compile (const char *ir_path, const char *const *extra_ir,
 #endif
               , drivers[i], obj_path, exe_path);
     int link_status = system (command);
-    if (WIFEXITED (link_status) and WEXITSTATUS (link_status) == 127) continue;
+    if (Host_Command_Exit_Status (link_status) == 127) continue;
     driver_ran = true;
     status = link_status == 0 ? 0 : 1;
     break;

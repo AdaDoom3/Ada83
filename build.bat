@@ -35,7 +35,10 @@ if /i "%~1"=="help"  goto usage
 if /i "%~1"=="/?"    goto usage
 if /i "%~1"=="-h"    goto usage
 if /i "%~1"=="clean" goto clean
-if not "%~1"==""     echo Unknown option "%~1" & goto usage
+if not "%~1"=="" (
+    echo Unknown option "%~1"
+    goto usage
+)
 goto build
 
 :build
@@ -88,7 +91,10 @@ rem  LLVM-C.dll is opened at run time rather than linked against, so it
 rem  only has to sit beside the executable.  It ships as a .zip because a
 rem  stock Windows can already unpack one, with no extra tools.
 :unpack_llvm
-if exist LLVM-C.dll echo   [ok] LLVM-C.dll is present & exit /b 0
+if exist LLVM-C.dll (
+    echo   [ok] LLVM-C.dll is present
+    exit /b 0
+)
 if not exist LLVM-C.zip (
     echo   [x] neither LLVM-C.dll nor LLVM-C.zip is here.
     echo       LLVM-C.zip ships with the sources -- restore it and re-run.
@@ -96,8 +102,10 @@ if not exist LLVM-C.zip (
 )
 echo   [..] unpacking LLVM-C.dll ^(about 140 MB, takes a moment^)
 tar -xf LLVM-C.zip >nul 2>nul
-if not exist LLVM-C.dll powershell -NoProfile -Command ^
-    "Expand-Archive -LiteralPath 'LLVM-C.zip' -DestinationPath '.' -Force" >nul 2>nul
+if not exist LLVM-C.dll (
+    powershell -NoProfile -Command ^
+        "Expand-Archive -LiteralPath 'LLVM-C.zip' -DestinationPath '.' -Force" >nul 2>nul
+)
 if not exist LLVM-C.dll (
     echo   [x] could not unpack LLVM-C.zip.
     echo       Unpack it by hand -- right-click, Extract All -- so that
@@ -138,7 +146,10 @@ if exist "%~1" exit /b 0
 exit /b 1
 
 :fetch_zig
-if exist zig\zig.exe echo   [ok] using the Zig fetched earlier & exit /b 0
+if exist zig\zig.exe (
+    echo   [ok] using the Zig fetched earlier
+    exit /b 0
+)
 echo   [..] no C compiler found -- fetching Zig %ZIG_VERSION% ^(about 80 MB^)
 powershell -NoProfile -Command ^
     "$ErrorActionPreference='Stop';" ^
