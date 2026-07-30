@@ -1,13 +1,18 @@
 # Ada83
 
-A single-file Ada 83 (ANSI/MIL-STD-1815A) compiler with an LLVM backend.
-The whole compiler is one C file, `ada83.c`; it builds native executables
-through a libLLVM loaded at run time, and emits textual LLVM IR with
-`--ir`.
+An Ada 83 (ANSI/MIL-STD-1815A) compiler in a single C file, with an LLVM
+backend.
 
-## ACATS conformance
+`ada83.c` holds the whole compiler: lexer, parser, semantics, expander, and
+LLVM IR emitter. It links against nothing but libm and libpthread. libLLVM is
+loaded at run time and used to optimise, generate code, and produce native
+executables, so building the compiler needs no LLVM headers and no LLVM
+development package.
 
-All 3561 tests of the ACATS 1.11 conformance suite pass.
+## Conformance
+
+ACATS 1.11 is the Ada Validation Organization's acceptance suite for Ada 83.
+All 3561 of its tests pass.
 
 ```
  A  Acceptance        ██████████████████████████████   140/140   100%
@@ -20,20 +25,19 @@ All 3561 tests of the ACATS 1.11 conformance suite pass.
     Total             ██████████████████████████████ 3561/3561   100%
 ```
 
-Three further tests were withdrawn by the AVO and are not counted; see
-[Withdrawn tests](#withdrawn-tests).
+Class B is the largest: 1350 programs that must be rejected, each with the
+diagnostic on the line the suite marks. Accepting too much fails class B as
+surely as accepting too little.
+
+Three tests were withdrawn by the AVO and are not counted. The reasons are
+given at the end.
 
 ## Requirements
 
-- **`gcc`** or **`clang`** (`make CC=clang`). On macOS the Xcode
-  command-line tools supply clang; `xcode-select --install` if they are
-  not already there.
-- **GNU `make`**.
-- A 64-bit host with `__int128` support (x86-64 or AArch64).
-- **libLLVM**, for building native executables. `make` installs it through
-  the system package manager, or through Homebrew on macOS, if it is not
-  already present. It is opened at run time, so no LLVM headers or
-  development package are needed to build the compiler itself.
+- GCC or Clang, on a 64-bit host with `__int128`.
+- GNU make.
+- libLLVM, for producing native executables. `make` installs it through the
+  system package manager, or through Homebrew on macOS.
 
 ## Building
 
@@ -41,24 +45,20 @@ Three further tests were withdrawn by the AVO and are not counted; see
 make
 ```
 
-This produces `./ada83`. Linux and macOS, on x86-64 and on Apple silicon,
-build from this one makefile.
+Linux and macOS build from this makefile, on x86-64 and on Apple silicon.
 
-On Windows, run `build.bat` instead. It unpacks the bundled `LLVM-C.zip`
-and builds with the first of GCC, Clang, or a privately fetched Zig that
-it finds, so a machine with no toolchain installed can still build the
-compiler. `build.bat clean` removes everything it produced.
+On Windows, run `build.bat`. It unpacks the bundled LLVM and builds with GCC,
+Clang, or Zig, whichever it finds first. If no C compiler is installed it
+downloads Zig into the build directory and uses that, so nothing has to be
+installed beforehand.
 
-## Usage
+## Use
+
+The default output is a native executable, produced through LLVM:
 
 ```sh
-./ada83 hello.ada -o hello      # native executable
-./ada83 hello.ada               # executable named after the input
-./ada83 --ir hello.ada -o out.ll   # textual LLVM IR
-./ada83 --ir a.ada b.ada c.ada     # several files, compiled in parallel
+./ada83 hello.ada -o hello
 ```
-
-Given `hello.ada`:
 
 ```ada
 with Text_IO; use Text_IO;
@@ -76,104 +76,123 @@ $ ./hello
 Hello, Ada 83!
 ```
 
-Frequently used options, with the full list under `--help`:
+The compiler emits LLVM IR, loads libLLVM, runs the pass pipeline, emits an
+object file, and calls the system linker. The IR can be taken directly:
+
+```sh
+./ada83 --ir hello.ada -o hello.ll      # textual LLVM IR
+./ada83 --emit-llvm hello.ada -o hello  # native, keeping the optimised IR
+./ada83 --ir a.ada b.ada c.ada          # several units, one process each
+lli hello.ll                            # interpret the IR
+```
 
 | Option | Effect |
 |---|---|
-| `-O0` … `-O3`, `-Os` | Optimization level (default `-O2`) |
-| `--ir` | Emit textual LLVM IR instead of an executable |
-| `--emit-llvm` | Also write the optimized IR beside the executable |
-| `--suppress=<check>` | Omit a runtime check, as `pragma SUPPRESS` would |
-| `-I <path>` | Add a directory to the source search path |
-| `-W<class>`, `-Wno-<class>` | Enable or disable a warning class |
-| `--bind <dir> <unit>` | Bind a precompiled program library |
+| `-O0` … `-O3`, `-Os` | Optimisation level, passed to the LLVM pass pipeline (default `-O2`) |
+| `--ir` | Stop at textual LLVM IR |
+| `--emit-llvm` | Build natively and also write the optimised IR |
+| `--suppress=CHECK` | Omit a runtime check, as `pragma SUPPRESS` would |
+| `-I DIR` | Add a directory to the source search path |
+| `-W CLASS`, `-Wno-CLASS` | Enable or disable a warning class |
+| `--bind DIR UNIT` | Bind a precompiled program library |
 
-## The runtime library
+The rest are under `--help`.
 
-The Ada 83 standard packages are implemented in Ada, in the single
-multi-unit source file `runtime.ada`: `text_io`, `calendar`, `direct_io`,
-`sequential_io`, `unchecked_conversion`, `unchecked_deallocation`,
-`io_exceptions`, `low_level_io`, and `machine_code`. The compiler finds it
-next to its own executable, or on the include path.
+## Runtime library
 
-Package `SYSTEM` is not in that file. Its contents are target-dependent,
-so the compiler generates its source from the target constants.
+The standard packages are written in Ada and kept in one multi-unit file,
+`runtime.ada`: `TEXT_IO`, `CALENDAR`, `DIRECT_IO`, `SEQUENTIAL_IO`,
+`UNCHECKED_CONVERSION`, `UNCHECKED_DEALLOCATION`, `IO_EXCEPTIONS`,
+`LOW_LEVEL_IO`, `MACHINE_CODE`. The compiler looks for it beside its own
+executable, then on the include path.
 
-## Repository layout
+`SYSTEM` is not in that file. Its contents are target-dependent, so the
+compiler generates its source from the target constants it was built with.
 
-| Path | Contents |
-|---|---|
-| `ada83.c` | The compiler, in one file |
-| `runtime.ada` | The Ada 83 standard packages |
-| `acats/` | The ACATS 1.11 conformance suite |
-| `reference/` | Language reference, DIANA guide, GNAT sources |
-| `test.sh` | ACATS harness |
-| `bench.sh` | Benchmarks |
-| `build.bat` | Windows build script |
+## Tests
 
-## Testing
+The suite ships as `tests.zip` and is unpacked by the harness on first use.
 
 ```sh
 bash test.sh run all      # every class
 bash test.sh run c        # one class
-bash test.sh run c32      # one group
-bash test.sh check        # run, then diff against acats.baseline
-bash test.sh bless        # run, then write the baseline
+bash test.sh run c45      # one group
+bash test.sh check        # run, then diff against the baseline
+bash test.sh help
 ```
 
-Runs are written to a timestamped `test_results/<label>-<timestamp>-<pid>/`
-alongside `acats_logs/<same>/`, so concurrent or repeated runs never
-overwrite one another. `NPROC=4` caps parallelism, which otherwise defaults
-to the processor count.
+Each run writes to its own timestamped directory under `test_results/`, with
+logs under `acats_logs/`, so concurrent runs do not overwrite one another.
 
-The harness needs `lli` and `llvm-link` on the path, and it needs Bash 4 or
-newer. macOS carries Bash 3.2 and no `timeout`, so running the suite there
-wants Homebrew:
+The harness needs `lli` and `llvm-link` on the path and Bash 4 or newer.
+macOS ships Bash 3.2 and no `timeout`, so running the suite there needs
+`brew install bash coreutils llvm`. Building the compiler needs none of that.
+
+## Benchmarks
+
+`bench.sh` measures compile time, generated-code speed at each optimisation
+level, and throughput over the conformance corpus. Where GNAT is present the
+same programs are built with it and the two are reported side by side; if it
+is absent, it is installed.
 
 ```sh
-brew install bash coreutils llvm
+bash bench.sh            # everything
+bash bench.sh codegen    # run time of the generated code
+bash bench.sh compile    # time taken to compile
+bash bench.sh corpus     # throughput over the suite
+bash bench.sh help
 ```
 
-Building the compiler itself asks for none of this.
+Every figure is the median of several timed runs taken after a warm-up, and
+is printed with the relative standard deviation of its samples, so a number
+that moved under measurement is visible as such rather than quoted as fact.
+The output of each program is compared between the two compilers, and any
+disagreement is reported alongside the timings.
 
 ## Deviations
 
-### Scaled DELAY values
+### Scaled delays
 
-Every `DELAY` in `acats/` has been scaled down by a factor of ten so that
-the suite runs quickly during development. Each one is marked in place:
+Every `DELAY` in the suite is divided by ten so the tests run quickly, and
+each is marked where it sits:
 
 ```ada
 DELAY 0.1 ;  -- TODO: acats-delay-deviation: before was 1.0
 ```
 
-This affects 104 files. Because each marker records the original value, the
-deviation is reversible: restore each scaled literal to the value named in
-its own comment, then run with `TEST_TIMEOUT=120`, since the harness default
-of 30 seconds is sized for the scaled delays.
-
+That covers 104 files. Each marker records the original value, so the change
+is reversible: restore each literal to the value in its own comment and run
+with `TEST_TIMEOUT=120`, the default cap being sized for the scaled delays.
 Timing-sensitive results should not be quoted from a scaled run.
 
 ### Withdrawn tests
 
-Three tests were officially withdrawn by the AVO and are excluded.
+**c98003b** requires that a MED-priority task make no progress while a
+LOW-caller/HIGH-acceptor rendezvous runs. That assumes strict preemptive
+priority scheduling on one processor, but RM 9.8 imposes priorities only
+among tasks sharing a processor. With tasks as OS threads on a multicore
+machine the MED task legitimately runs in parallel, and the test reports its
+own failure.
 
-- **c98003b** — requires that a MED-priority task make *no* progress
-  while a LOW-caller/HIGH-acceptor rendezvous runs. That assumes
-  strict preemptive priority scheduling on a single processor;
-  RM 9.8 imposes priorities only among tasks sharing a processor.
-  With tasks as OS threads on a multicore machine the MED task
-  legitimately runs in parallel and the test self-reports failure.
+**cc1226b** ends by requiring that two uninitialized variables of a formal
+private type compare unequal. Reading them is erroneous, and for the test's
+own actual type — a null record with two defaulted discriminants — every
+value of the type is equal, so the expectation cannot be met.
 
-- **cc1226b** — its final check demands that two *uninitialized*
-  variables of a formal private type compare unequal. Reading them is
-  erroneous to begin with, and for the test's own actual type (a null
-  record with two defaulted discriminants) every value of the type is
-  equal, so the expectation is unsatisfiable.
+**ce3902b** nominally checks `ENUMERATION_IO` parameter names, but closes the
+current default output file and reopens that same file object with `IN_FILE`
+mode while it remains the default output. That contradicts the default-file
+semantics required by ce3208a, a valid test which this compiler implements.
+The AVO withdrew ce3902b and kept ce3208a.
 
-- **ce3902b** — nominally checks ENUMERATION_IO parameter names, but
-  its plumbing closes the current default output file and re-opens
-  that same file object with IN_FILE mode while it remains the
-  default output. This contradicts the default-file semantics that
-  the valid test ce3208a requires (and which this compiler
-  implements); the AVO withdrew ce3902b and kept ce3208a.
+## Layout
+
+| Path | Contents |
+|---|---|
+| `ada83.c` | The compiler |
+| `runtime.ada` | The Ada 83 standard packages |
+| `tests.zip` | ACATS 1.11, unpacked on demand |
+| `Ada83_LRM.md` | Ada 83 language reference manual |
+| `test.sh` | Conformance harness |
+| `bench.sh` | Benchmarks |
+| `build.bat`, `LLVM-C.zip` | Windows build |
