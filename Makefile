@@ -3,30 +3,18 @@ CC = gcc
 CFLAGS = -O3 -Wall -std=gnu2x
 LIBS = -lm -lpthread
 
-ifeq ($(OS),Windows_NT)
-BLOB = tools/win64/llvmc_blob.o
-WHOLE_PROGRAM =
-else
-BLOB =
+# This makefile builds the Unix-like hosts.  Windows is built by build.bat,
+# which unpacks LLVM-C.zip beside the executable instead of relying on a
+# system libLLVM.
 WHOLE_PROGRAM = -fwhole-program
-endif
 
 all: ada83 provision-llvm
 
-ada83: ada83.c $(BLOB)
-	$(CC) $(CFLAGS) $(WHOLE_PROGRAM) -o ada83 ada83.c $(BLOB) $(LIBS) -march=native
-
-tools/win64/LLVM-C.dll: tools/win64/LLVM-C.dll.zst
-	zstd -d -f $< -o $@
-
-tools/win64/llvmc_blob.o: tools/win64/LLVM-C.dll
-	cd tools/win64 && objcopy -I binary -O pe-x86-64 LLVM-C.dll llvmc_blob.o
+ada83: ada83.c
+	$(CC) $(CFLAGS) $(WHOLE_PROGRAM) -o ada83 ada83.c $(LIBS) -march=native
 
 SUDO := $(shell [ $$(id -u) -eq 0 ] || echo sudo)
 provision-llvm:
-ifeq ($(OS),Windows_NT)
-	@:
-else
 	-@if ldconfig -p 2>/dev/null | grep -q libLLVM; then \
 	  :; \
 	elif command -v apt-get >/dev/null 2>&1; then \
@@ -48,11 +36,9 @@ else
 	  echo "libLLVM not found and no known package manager;"; \
 	  echo "install your distribution's llvm package for --native support"; \
 	fi
-endif
 
 clean:
 	rm -f ada83 *.o *.ll *.s *.exe a.out core
-	rm -f tools/win64/LLVM-C.dll tools/win64/llvmc_blob.o
 	rm -rf test_results acats_logs acats/report.ll
 
 clean-test:
