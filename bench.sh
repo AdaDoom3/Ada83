@@ -40,7 +40,6 @@ OPT=${OPT:-2}
 mode=${1:-all}
 
 ada83="$root/ada83"
-rts="$root/rts"
 
 #  ---------------------------------------------------------------- GNAT
 
@@ -131,7 +130,7 @@ failure_reason () {
 #  ada83 source -> .ll only.
 ada83_frontend () {
   run_step "$log_dir/$(basename "$1" .adb).a83-front.log" \
-    "$ada83" "$1" -o "$2" -I "$rts"
+    "$ada83" --ir "$1" -o "$2"
 }
 
 #  GNAT ships a compiled runtime; ada83's runtime is source that any
@@ -148,19 +147,9 @@ prepare_runtime () {
   #  context, so a standalone body defines names no client refers to.
   [ -f "$a83_dir/bench_support.ll" ] \
     || run_step "$log_dir/bench_support.log" \
-         "$ada83" "$here/bench_support.adb" -o "$a83_dir/bench_support.ll" \
-           -I "$rts" -I "$here"
+         "$ada83" --ir "$here/bench_support.adb" -o "$a83_dir/bench_support.ll" \
+           -I "$here"
   [ -f "$a83_dir/bench_support.ll" ] && runtime_ll+=("$a83_dir/bench_support.ll")
-  #  SYSTEM is elaborated by every program but WITHed by none of these,
-  #  so its elaboration body has to be linked in explicitly.
-  [ -f "$a83_dir/system.ll" ] \
-    || run_step "$log_dir/system.log" \
-         "$ada83" "$rts/system.ads" -o "$a83_dir/system.ll" -I "$rts"
-  [ -f "$a83_dir/system.ll" ] && runtime_ll+=("$a83_dir/system.ll")
-  local extra
-  for extra in "$rts"/rt.ll "$rts"/rt_wrappers.ll; do
-    [ -f "$extra" ] && runtime_ll+=("$extra")
-  done
 }
 runtime_ll=()
 
@@ -169,7 +158,7 @@ ada83_full () {
   local src=$1 exe=$2 base
   base=$(basename "$src" .adb)
   run_step "$log_dir/$base.a83-compile.log" \
-    "$ada83" "$src" -o "$a83_dir/$base.ll" -I "$rts" || return 1
+    "$ada83" --ir "$src" -o "$a83_dir/$base.ll" || return 1
   run_step "$log_dir/$base.a83-link.log" \
     llvm-link -o "$a83_dir/$base.bc" "$a83_dir/$base.ll" "${runtime_ll[@]}" \
     || return 1
@@ -268,7 +257,7 @@ run_stages () {
 
   "$here/gen_wide.sh" "$WIDE_SIZE" > "$src_dir/wide.adb"
 
-  ( cd "$work" && ./ada83-pg "$src_dir/wide.adb" -o wide-pg.ll -I "$rts" >/dev/null 2>&1 )
+  ( cd "$work" && ./ada83-pg --ir "$src_dir/wide.adb" -o wide-pg.ll >/dev/null 2>&1 )
   if [ ! -f "$work/gmon.out" ]; then
     echo " no gmon.out produced; skipping ada83 stage profile" \
       | tee -a "$out/report.txt"
