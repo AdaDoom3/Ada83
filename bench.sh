@@ -1,474 +1,497 @@
 #!/usr/bin/env bash
-#
-#  Usage:
-#    bench/bench.sh            
-#    bench/bench.sh stages
-#    bench/bench.sh compile
-#    bench/bench.sh runtime
-#    REPEATS=7 bench/bench.sh runtime
-#    WIDE_SIZE=800 bench/bench.sh compile
-#
-#  Environment:
-#    OPT_PIPELINE  none (default) or llvm
-#    REPEATS     timed repetitions, best-of is reported (default 5)
-#    WIDE_SIZE   subprograms in the generated compile-stress unit (400)
-#    GNAT_BIN    override the GNAT bin directory
-#    OPT         optimisation level for both back ends (default 2)
-
 set -uo pipefail
 
+usage(){ cat <<'TEXT'
+Usage: bench.sh [MODE]
+
+Measure this compiler: how fast it compiles, and how fast its output runs.
+Where GNAT is available the same programs are built with it too and the two
+are reported side by side. GNAT is installed automatically if it is missing.
+
+Modes:
+  codegen     run time of the generated code, at each optimisation level
+  compile     time taken to compile, front end and whole build
+  corpus      compile throughput over the conformance suite
+  all         every mode (default)
+  help        display this help and exit
+
+Environment:
+  REPEATS     timed repetitions after warmup (default: 7)
+  WARMUP      untimed runs before measuring (default: 1)
+  OPT         optimisation level for the compile and corpus modes (default: 2)
+  CORPUS      files to take from the conformance suite (default: 300)
+  NO_GNAT     set to 1 to skip GNAT entirely
+  NO_ANIMATE  set to 1 to draw no progress indicators
+  KEEP_WORK   set to 1 to keep the working tree
+
+Each figure is the median of REPEATS timed runs, in seconds, taken after
+WARMUP untimed runs. The value after it is the relative standard deviation
+of the samples; a "!" in place of "±" marks a spread of 5% or more, where
+the median should not be trusted without investigating. A ratio above 1.00
+means this compiler is slower than GNAT. Every program's output is compared
+between the two compilers and any disagreement is reported.
+TEXT
+}
+
+case "${1:-}" in help|-h|--help) usage; exit 0 ;; esac
+
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-root=$(cd -- "$here/.." && pwd)
-programs="$here/programs"
-stamp=$(date +%Y%m%d-%H%M%S)
-out="$here/results/$stamp"
-work="$out/work"
-src_dir="$work/src"
-a83_dir="$work/ada83"
-gnat_dir="$work/gnat"
-log_dir="$out/logs"
-mkdir -p "$src_dir" "$a83_dir" "$gnat_dir" "$log_dir"
-
-KEEP_RUNS=${KEEP_RUNS:-3}
-KEEP_WORK=${KEEP_WORK:-1}
-ls -1dt "$here"/results/*/ 2>/dev/null | tail -n +$((KEEP_RUNS + 1)) \
-  | while read -r old; do rm -rf "$old"; done
-
-REPEATS=${REPEATS:-5}
-WIDE_SIZE=${WIDE_SIZE:-400}
-OPT=${OPT:-2}
 mode=${1:-all}
+REPEATS=${REPEATS:-7}
+WARMUP=${WARMUP:-1}
+OPT=${OPT:-2}
+CORPUS=${CORPUS:-300}
+NO_GNAT=${NO_GNAT:-0}
+NO_ANIMATE=${NO_ANIMATE:-0}
+KEEP_WORK=${KEEP_WORK:-0}
 
-ada83="$root/ada83"
+ada83=$here/ada83
+work=$(mktemp -d "${TMPDIR:-/tmp}/ada83-bench-XXXXXX")
+PROGRAMS="sieve matmul recurse strings tasking"
 
-#  ---------------------------------------------------------------- GNAT
+animated=0
+[ -t 2 ] && [ "$NO_ANIMATE" != "1" ] && animated=1
+if [ "$animated" = "1" ] && exec 9>/dev/tty 2>/dev/null; then :; else exec 9>/dev/null; animated=0; fi
 
-find_gnat () {
-  if [ -n "${GNAT_BIN:-}" ]; then echo "$GNAT_BIN"; return; fi
-  local cached
-  #  A GNAT install has several bin directories; only one holds the
-  #  drivers, so ask for the driver rather than for the directory.
-  cached=$(find "$here/toolchain" -type f -name gnatmake -path '*gnat_native*' \
-             2>/dev/null | head -1)
-  if [ -n "$cached" ]; then dirname "$cached"; return; fi
-  command -v gnatmake >/dev/null 2>&1 && dirname "$(command -v gnatmake)"
+cleanup(){ show_cursor; [ "$KEEP_WORK" = "1" ] || rm -rf "$work"; }
+trap cleanup EXIT
+trap 'show_cursor; exit 130' INT
+
+hide_cursor(){ [ "$animated" = "1" ] && printf '\033[?25l' >&9; return 0; }
+show_cursor(){ [ "$animated" = "1" ] && printf '\033[?25h' >&9; return 0; }
+
+FRACTION_CHARS=("" "▏" "▎" "▍" "▌" "▋" "▊" "▉")
+
+bar(){
+    local filled=$1 width=$2 out="" full part i
+    full=${filled%.*}
+    part=$(awk -v f="$filled" -v w="$full" 'BEGIN{printf "%d",(f-w)*8}')
+    for ((i = 0; i < full; i++)); do out+="█"; done
+    if [ "$full" -lt "$width" ] && [ "$part" -gt 0 ]; then
+        out+="${FRACTION_CHARS[$part]}"
+        full=$((full+1))
+    fi
+    for ((i = full; i < width; i++)); do out+="·"; done
+    printf '%s' "$out"
 }
 
-gnat_bin=$(find_gnat)
-if [ -z "$gnat_bin" ] || [ ! -x "$gnat_bin/gnatmake" ]; then
-  echo "GNAT not found.  Install it with Alire:" >&2
-  echo "  cd $here/toolchain && ALIRE_SETTINGS_DIR=\$PWD/alire-settings \\" >&2
-  echo "      ./alr -n toolchain --select gnat_native gprbuild" >&2
-  echo "or point GNAT_BIN at an existing installation." >&2
-  exit 1
+progress(){
+    [ "$animated" = "1" ] || return 0
+    local done=$1 total=$2 label=$3 width=32 filled pct
+    filled=$(awk -v d="$done" -v t="$total" -v w="$width" 'BEGIN{printf "%.3f",(t>0?d/t:0)*w}')
+    pct=$(awk -v d="$done" -v t="$total" 'BEGIN{printf "%3d",(t>0?d*100/t:0)}')
+    printf '\r\033[2K  \033[2m%s\033[0m %s%%  \033[2m%s\033[0m' \
+        "$(bar "$filled" "$width")" "$pct" "$label" >&9
+}
+
+progress_done(){ [ "$animated" = "1" ] && printf '\r\033[2K' >&9; return 0; }
+
+PULSE_PID=""
+pulse(){
+    [ "$animated" = "1" ] || return 0
+    local label=$1
+    ( local i=0 dim
+      while :; do
+        dim=$(( (i / 2) % 4 ))
+        case $dim in
+          0) printf '\r\033[2K  \033[2m◦ %s\033[0m' "$label" >&9 ;;
+          1) printf '\r\033[2K  \033[2m◌ %s\033[0m' "$label" >&9 ;;
+          2) printf '\r\033[2K  \033[2m◍ %s\033[0m' "$label" >&9 ;;
+          3) printf '\r\033[2K  \033[2m◎ %s\033[0m' "$label" >&9 ;;
+        esac
+        i=$((i+1)); sleep 0.12
+      done ) &
+    PULSE_PID=$!
+}
+
+pulse_stop(){
+    [ -n "$PULSE_PID" ] || return 0
+    kill "$PULSE_PID" 2>/dev/null; wait "$PULSE_PID" 2>/dev/null
+    PULSE_PID=""
+    [ "$animated" = "1" ] && printf '\r\033[2K' >&9
+    return 0
+}
+
+graph(){
+    local label=$1 who=$2 value=$3 peak=$4 note=${5:-} width=30 filled
+    filled=$(awk -v v="$value" -v m="$peak" -v w="$width" 'BEGIN{printf "%.3f",(m>0?v/m:0)*w}')
+    printf '  %-9s %-6s %s %7s  %s\n' "$label" "$who" "$(bar "$filled" "$width")" "$value" "$note"
+}
+
+speedup(){
+    awk -v a="$1" -v g="$2" 'BEGIN{
+        if (a+0<=0 || g+0<=0) { print ""; exit }
+        if (g > a) printf "%.1fx faster", g/a
+        else if (a > g) printf "%.1fx slower", a/g
+        else printf "level"
+    }'
+}
+
+die(){ echo "bench.sh: $*" >&2; exit 1; }
+
+ensure_ada83(){
+    [ -x "$ada83" ] && return 0
+    pulse "building the compiler"
+    make -C "$here" -s ada83 >/dev/null 2>&1
+    pulse_stop
+    [ -x "$ada83" ] || die "cannot build $ada83"
+}
+
+sudo_if_needed(){ [ "$(id -u)" -eq 0 ] || echo sudo; }
+
+install_gnat(){
+    local s; s=$(sudo_if_needed)
+    local cmd=""
+    if   command -v apt-get >/dev/null 2>&1; then cmd="$s apt-get install -y --no-install-recommends gnat"
+    elif command -v dnf     >/dev/null 2>&1; then cmd="$s dnf install -y gcc-gnat"
+    elif command -v pacman  >/dev/null 2>&1; then cmd="$s pacman -S --noconfirm gcc-ada"
+    elif command -v zypper  >/dev/null 2>&1; then cmd="$s zypper install -y gcc-ada"
+    elif command -v apk     >/dev/null 2>&1; then cmd="$s apk add gcc-gnat"
+    elif command -v brew    >/dev/null 2>&1; then cmd="brew install gnat"
+    else return 1
+    fi
+    pulse "installing GNAT to compare against"
+    eval "$cmd" >/dev/null 2>&1
+    pulse_stop
+    command -v gnatmake >/dev/null 2>&1
+}
+
+have_gnat(){
+    [ "$NO_GNAT" = "1" ] && return 1
+    command -v gnatmake >/dev/null 2>&1 && return 0
+    install_gnat
+}
+
+write_programs(){
+    mkdir -p "$work/src"
+    cat > "$work/src/sieve.ada" <<'EOF'
+with TEXT_IO; use TEXT_IO;
+procedure SIEVE is
+   LIMIT : constant := 2_000_000;
+   type FLAGS is array (2 .. LIMIT) of BOOLEAN;
+   PRIME : FLAGS;
+   COUNT : INTEGER := 0;
+begin
+   for PASS in 1 .. 5 loop
+      COUNT := 0;
+      for I in PRIME'RANGE loop PRIME (I) := TRUE; end loop;
+      for I in PRIME'RANGE loop
+         if PRIME (I) then
+            COUNT := COUNT + 1;
+            declare
+               J : INTEGER := I * 2;
+            begin
+               while J <= LIMIT loop
+                  PRIME (J) := FALSE;
+                  J := J + I;
+               end loop;
+            end;
+         end if;
+      end loop;
+   end loop;
+   PUT_LINE ("primes:" & INTEGER'IMAGE (COUNT));
+end SIEVE;
+EOF
+    cat > "$work/src/matmul.ada" <<'EOF'
+with TEXT_IO; use TEXT_IO;
+procedure MATMUL is
+   N : constant := 400;
+   type MATRIX is array (1 .. N, 1 .. N) of FLOAT;
+   A, B, C : MATRIX;
+   SUM : FLOAT;
+begin
+   for I in 1 .. N loop
+      for J in 1 .. N loop
+         A (I, J) := FLOAT (I + J);
+         B (I, J) := FLOAT (I - J);
+         C (I, J) := 0.0;
+      end loop;
+   end loop;
+   for I in 1 .. N loop
+      for J in 1 .. N loop
+         SUM := 0.0;
+         for K in 1 .. N loop
+            SUM := SUM + A (I, K) * B (K, J);
+         end loop;
+         C (I, J) := SUM;
+      end loop;
+   end loop;
+   SUM := 0.0;
+   for I in 1 .. N loop
+      for J in 1 .. N loop
+         SUM := SUM + C (I, J);
+      end loop;
+   end loop;
+   PUT_LINE ("checksum:" & INTEGER'IMAGE (INTEGER (SUM / 1.0E9)));
+end MATMUL;
+EOF
+    cat > "$work/src/recurse.ada" <<'EOF'
+with TEXT_IO; use TEXT_IO;
+procedure RECURSE is
+   TOTAL : INTEGER := 0;
+   function FIB (N : INTEGER) return INTEGER is
+   begin
+      if N < 2 then return N; end if;
+      return FIB (N - 1) + FIB (N - 2);
+   end FIB;
+begin
+   for I in 1 .. 6 loop
+      TOTAL := TOTAL + FIB (32);
+   end loop;
+   PUT_LINE ("fib:" & INTEGER'IMAGE (TOTAL));
+end RECURSE;
+EOF
+    cat > "$work/src/strings.ada" <<'EOF'
+with TEXT_IO; use TEXT_IO;
+procedure STRINGS is
+   subtype LINE is STRING (1 .. 64);
+   BUF   : LINE := (others => 'a');
+   HITS  : INTEGER := 0;
+   function COUNT_CHAR (S : STRING; C : CHARACTER) return INTEGER is
+      N : INTEGER := 0;
+   begin
+      for I in S'RANGE loop
+         if S (I) = C then N := N + 1; end if;
+      end loop;
+      return N;
+   end COUNT_CHAR;
+begin
+   for PASS in 1 .. 3_000_000 loop
+      BUF (1 + (PASS mod 64)) := CHARACTER'VAL (97 + (PASS mod 26));
+      HITS := HITS + COUNT_CHAR (BUF (1 .. 32), 'a');
+   end loop;
+   PUT_LINE ("hits:" & INTEGER'IMAGE (HITS));
+end STRINGS;
+EOF
+    cat > "$work/src/tasking.ada" <<'EOF'
+with TEXT_IO; use TEXT_IO;
+procedure TASKING is
+   TOTAL : INTEGER := 0;
+   task SERVER is
+      entry PUSH (V : INTEGER);
+      entry DRAIN (V : out INTEGER);
+   end SERVER;
+   task body SERVER is
+      ACC : INTEGER := 0;
+   begin
+      loop
+         select
+            accept PUSH (V : INTEGER) do ACC := ACC + V; end PUSH;
+         or
+            accept DRAIN (V : out INTEGER) do V := ACC; end DRAIN;
+            exit;
+         end select;
+      end loop;
+   end SERVER;
+begin
+   for I in 1 .. 200_000 loop
+      SERVER.PUSH (1);
+   end loop;
+   SERVER.DRAIN (TOTAL);
+   PUT_LINE ("rendezvous:" & INTEGER'IMAGE (TOTAL));
+end TASKING;
+EOF
+    local p
+    for p in $PROGRAMS; do cp "$work/src/$p.ada" "$work/src/$p.adb"; done
+}
+
+measure(){
+    local samples="" t i
+    for ((i = 0; i < WARMUP; i++)); do "$@" >/dev/null 2>&1; done
+    for ((i = 0; i < REPEATS; i++)); do
+        TIMEFORMAT=%R
+        t=$( { time "$@" >/dev/null 2>&1; } 2>&1 )
+        case $t in ''|*[!0-9.]*) continue ;; esac
+        samples="$samples$t\n"
+    done
+    [ -n "$samples" ] || { printf 'x x x'; return; }
+    printf "$samples" | awk '
+        {v[NR]=$1; total+=$1}
+        END{
+            n=NR; mean=total/n
+            for (i=1;i<=n;i++) for (j=i+1;j<=n;j++) if (v[j]<v[i]) {t=v[i];v[i]=v[j];v[j]=t}
+            median = (n%2) ? v[(n+1)/2] : (v[n/2]+v[n/2+1])/2
+            for (i=1;i<=n;i++) spread += (v[i]-mean)*(v[i]-mean)
+            sd = (n>1) ? sqrt(spread/(n-1)) : 0
+            printf "%.3f %.3f %.1f", median, v[1], (mean>0 ? sd*100/mean : 0)
+        }'
+}
+
+median_of(){ set -- $1; printf '%s' "${1:-x}"; }
+rsd_of(){ set -- $1; printf '%s' "${3:-0}"; }
+
+dispersion(){
+    local r=$1
+    case $r in x) printf '%6s' "" ; return ;; esac
+    awk -v r="$r" 'BEGIN{ printf (r>=5.0) ? "  !%3.0f%%" : "  ±%3.0f%%", r }'
+}
+
+ratio(){
+    case "$1$2" in *x*) printf '%7s' "-"; return ;; esac
+    awk -v a="$1" -v b="$2" 'BEGIN{ if (b+0==0) printf "%7s","-"; else printf "%7.2f",a/b }'
+}
+
+heading(){ printf '\n  \033[1m%s\033[0m\n  %s\n\n' "$1" "$2"; }
+rule(){ printf '  %s\n' "────────────────────────────────────────────────────────────"; }
+
+build_ada83(){ "$ada83" "-O$2" "$work/src/$1.ada" -o "$work/$1.a83"; }
+build_gnat(){ ( cd "$work/src" && gnatmake -q "-O$2" "$1.adb" -o "$work/$1.gnat" ); }
+
+run_codegen(){
+    local gnat=$1 p level a g out_a out_g step=0 total
+    total=$(( $(printf '%s\n' $PROGRAMS | wc -l) * 3 ))
+    heading "GENERATED CODE" "run time of the compiled program"
+    if [ "$gnat" = "1" ]; then
+        printf '  %-9s %5s %14s %14s %8s\n' program opt ada83 gnat ratio
+    else
+        printf '  %-9s %5s %14s\n' program opt ada83
+    fi
+    rule
+    for p in $PROGRAMS; do
+        for level in 0 2 3; do
+            step=$((step+1))
+            progress "$((step-1))" "$total" "$p -O$level"
+            if ! build_ada83 "$p" "$level" >/dev/null 2>&1; then
+                progress_done
+                printf '  %-9s %5s %9s\n' "$p" "-O$level" "build"; continue
+            fi
+            out_a=$("$work/$p.a83" 2>&1 | head -1)
+            local sa; sa=$(measure "$work/$p.a83")
+            a=$(median_of "$sa"); ar=$(rsd_of "$sa")
+            if [ "$gnat" = "1" ]; then
+                if build_gnat "$p" "$level" >/dev/null 2>&1; then
+                    out_g=$("$work/$p.gnat" 2>&1 | head -1)
+                    local sg; sg=$(measure "$work/$p.gnat")
+                    g=$(median_of "$sg"); gr=$(rsd_of "$sg")
+                else
+                    g=x; gr=0; out_g=$out_a
+                fi
+                progress_done
+                printf '  %-9s %5s %8s%s %8s%s %s' "$p" "-O$level" \
+                    "$a" "$(dispersion "$ar")" "$g" "$(dispersion "$gr")" "$(ratio "$a" "$g")"
+                [ "$out_a" = "$out_g" ] || printf '   OUTPUT DIFFERS'
+                printf '\n'
+            else
+                progress_done
+                printf '  %-9s %5s %8s%s\n' "$p" "-O$level" "$a" "$(dispersion "$ar")"
+            fi
+            [ "$level" = "2" ] && eval "T_$p=\$a" && eval "G_$p=\${g:-x}"
+        done
+    done
+    progress_done
+    codegen_graph "$gnat"
+}
+
+codegen_graph(){
+    local gnat=$1 p a g peak=0
+    heading "AT -O2, SIDE BY SIDE" "bar length is time; shorter is faster"
+    for p in $PROGRAMS; do
+        eval "a=\${T_$p:-x}"; eval "g=\${G_$p:-x}"
+        case $a in x) ;; *) awk -v v="$a" -v m="$peak" 'BEGIN{exit !(v>m)}' && peak=$a ;; esac
+        [ "$gnat" = "1" ] && case $g in x) ;; *) awk -v v="$g" -v m="$peak" 'BEGIN{exit !(v>m)}' && peak=$g ;; esac
+    done
+    for p in $PROGRAMS; do
+        eval "a=\${T_$p:-x}"; eval "g=\${G_$p:-x}"
+        [ "$a" = "x" ] && continue
+        if [ "$gnat" = "1" ] && [ "$g" != "x" ]; then
+            graph "$p" "ada83" "$a" "$peak" "$(speedup "$a" "$g")"
+            graph "" "gnat" "$g" "$peak" ""
+        else
+            graph "$p" "ada83" "$a" "$peak" ""
+        fi
+    done
+}
+
+run_compile(){
+    local gnat=$1 p a g f step=0 total
+    total=$(printf '%s\n' $PROGRAMS | wc -l)
+    heading "COMPILE TIME" "front end emits LLVM IR; build adds optimisation, code generation and linking"
+    if [ "$gnat" = "1" ]; then
+        printf '  %-9s %10s %14s %14s %8s\n' program "a83 front" "a83 build" "gnat build" ratio
+    else
+        printf '  %-9s %10s %14s\n' program "a83 front" "a83 build"
+    fi
+    rule
+    for p in $PROGRAMS; do
+        step=$((step+1))
+        progress "$((step-1))" "$total" "compiling $p"
+        local sf sa sg ar gr
+        sf=$(measure "$ada83" --ir "$work/src/$p.ada" -o "$work/$p.ll"); f=$(median_of "$sf")
+        sa=$(measure "$ada83" "-O$OPT" "$work/src/$p.ada" -o "$work/$p.a83")
+        a=$(median_of "$sa"); ar=$(rsd_of "$sa")
+        if [ "$gnat" = "1" ]; then
+            sg=$(measure env sh -c "cd '$work/src' && rm -f *.ali *.o && gnatmake -q -O$OPT $p.adb -o '$work/$p.gnat'")
+            g=$(median_of "$sg"); gr=$(rsd_of "$sg")
+            progress_done
+            printf '  %-9s %10s %8s%s %8s%s %s\n' "$p" "$f" \
+                "$a" "$(dispersion "$ar")" "$g" "$(dispersion "$gr")" "$(ratio "$a" "$g")"
+        else
+            progress_done
+            printf '  %-9s %10s %8s%s\n' "$p" "$f" "$a" "$(dispersion "$ar")"
+        fi
+    done
+    progress_done
+}
+
+run_corpus(){
+    heading "CORPUS THROUGHPUT" "the conformance suite compiled to LLVM IR"
+    [ -d "$here/acats" ] || {
+        [ -f "$here/tests.zip" ] || { echo "  no corpus available"; return; }
+        pulse "unpacking the conformance suite"
+        ( cd "$here" && unzip -q tests.zip )
+        pulse_stop
+    }
+    local files count lines secs done_n=0
+    files=$(ls "$here/acats"/*.ada 2>/dev/null | head -n "$CORPUS")
+    [ -n "$files" ] || { echo "  no corpus available"; return; }
+    count=$(printf '%s\n' $files | wc -l)
+    lines=$(cat $files 2>/dev/null | wc -l)
+    local f
+    TIMEFORMAT=%R
+    secs=$( { time { for f in $files; do
+                "$ada83" --ir "$f" -o "$work/corpus.ll" >/dev/null 2>&1
+                done_n=$((done_n+1))
+                [ $((done_n % 10)) -eq 0 ] && progress "$done_n" "$count" "compiling the suite"
+             done ; } ; } 2>&1 | tail -1 )
+    progress_done
+    printf '  %-22s %s\n' "files" "$count"
+    printf '  %-22s %s\n' "lines" "$lines"
+    printf '  %-22s %s s\n' "wall time" "$secs"
+    awk -v l="$lines" -v s="$secs" 'BEGIN{ if (s+0>0) printf "  %-22s %d\n","lines per second",l/s }'
+    awk -v c="$count" -v s="$secs" 'BEGIN{ if (s+0>0) printf "  %-22s %.1f\n","files per second",c/s }'
+}
+
+hide_cursor
+ensure_ada83
+write_programs
+gnat=0
+if have_gnat; then gnat=1; fi
+
+printf '\n  \033[1mada83\033[0m   %s\n' "$("$ada83" --version 2>&1 | head -1)"
+if [ "$gnat" = "1" ]; then
+    printf '  \033[1mgnat\033[0m    %s\n' "$(gnatmake --version 2>&1 | head -1)"
+else
+    printf '  \033[1mgnat\033[0m    not available, reporting this compiler alone\n'
 fi
-
-[ -x "$ada83" ] || { echo "building ada83"; make -C "$root" >/dev/null || exit 1; }
-
-gnat_version=$("$gnat_bin/gnatmake" --version 2>/dev/null | head -1)
-
-#  This Alire toolchain ships libgnat.a but no runtime .ali files, and
-#  its bundled gcc cannot find the system C startup objects.  Without
-#  both of the following GNAT compiles and never links, so only the
-#  front-end column of this report would be real -- which is how it
-#  read until now.
-#
-#    -a           lets gnatmake recompile library units from the
-#                 adainclude sources, which is where the missing .ali
-#                 files come from.
-#    -largs -B    points the link at the system crtbegin.o.
-#
-#  Both are properties of this installation, not of GNAT, so they are
-#  discovered rather than assumed: if the .ali files are present the -a
-#  costs nothing, and if crtbegin.o is found the -B is redundant.
-gnat_adainclude=$(find "$gnat_bin/.." -type d -name adainclude 2>/dev/null | head -1)
-gnat_rts_flags=()
-[ -n "$gnat_adainclude" ] && [ -z "$(ls "$gnat_adainclude/../adalib"/*.ali 2>/dev/null)" ] \
-  && gnat_rts_flags=(-a -I"$gnat_adainclude")
-gnat_crt=$(ls -d /usr/lib/gcc/*/*/ 2>/dev/null | while read -r d; do
-             [ -f "$d/crtbegin.o" ] && echo "$d" && break; done)
-gnat_link_flags=()
-[ -n "$gnat_crt" ] && gnat_link_flags=(-largs "-B$gnat_crt")
-ada83_commit=$(cd "$root" && git rev-parse --short HEAD 2>/dev/null || echo unknown)
-
-#  ------------------------------------------------------------ utilities
-
-#  Best-of-REPEATS wall time in milliseconds.  Best rather than mean:
-#  the machine is shared with whatever else is running, so the minimum
-#  is the measurement least polluted by that.
-time_best () {
-  local best="" t start end
-  for _ in $(seq "$REPEATS"); do
-    start=$(date +%s%N)
-    "$@" >/dev/null 2>&1
-    end=$(date +%s%N)
-    t=$(( (end - start) / 1000000 ))
-    if [ -z "$best" ] || [ "$t" -lt "$best" ]; then best=$t; fi
-  done
-  echo "$best"
-}
-
-rule () { printf '%s\n' "-------------------------------------------------------------------"; }
-
-#  Every build step logs to its own file; a failure names the log and
-#  quotes its first line, so the table says WHY rather than just that.
-last_failure=""
-
-run_step () {
-  local log=$1; shift
-  if "$@" >"$log" 2>&1; then return 0; fi
-  last_failure="$log"
-  return 1
-}
-
-failure_reason () {
-  [ -n "$last_failure" ] && [ -s "$last_failure" ] || { echo "(no output)"; return; }
-  grep -m1 -E "error|Error|ERROR|undefined|cannot|fatal" "$last_failure" \
-    | cut -c1-58 || head -1 "$last_failure" | cut -c1-58
-}
-
-#  ada83 source -> .ll only.
-ada83_frontend () {
-  run_step "$log_dir/$(basename "$1" .adb).a83-front.log" \
-    "$ada83" --ir "$1" -o "$2"
-}
-
-#  GNAT ships a compiled runtime; ada83's runtime is source that any
-#  build would otherwise recompile.  Compiling it once here is what
-#  makes the two full-pipeline numbers comparable — otherwise ada83 is
-#  charged for a runtime build GNAT did at release time.
-prepare_runtime () {
-  runtime_ll=()
-  #  bench_support is a package that WITHs TEXT_IO, so compiling it
-  #  emits TEXT_IO's bodies with the same symbol numbering a client
-  #  gets — the role report.ll plays for the conformance suite.
-  #  Compiling text_io.adb directly does NOT work here: the numbering
-  #  of an overloaded subprogram's symbol depends on the compilation
-  #  context, so a standalone body defines names no client refers to.
-  [ -f "$a83_dir/bench_support.ll" ] \
-    || run_step "$log_dir/bench_support.log" \
-         "$ada83" --ir "$here/bench_support.adb" -o "$a83_dir/bench_support.ll" \
-           -I "$here"
-  [ -f "$a83_dir/bench_support.ll" ] && runtime_ll+=("$a83_dir/bench_support.ll")
-}
-runtime_ll=()
-
-#  ada83 source -> executable, through its own route.
-ada83_full () {
-  local src=$1 exe=$2 base
-  base=$(basename "$src" .adb)
-  run_step "$log_dir/$base.a83-compile.log" \
-    "$ada83" --ir "$src" -o "$a83_dir/$base.ll" || return 1
-  run_step "$log_dir/$base.a83-link.log" \
-    llvm-link -o "$a83_dir/$base.bc" "$a83_dir/$base.ll" "${runtime_ll[@]}" \
-    || return 1
-  #  LLVM's middle end, when asked for.  Neither shipped pipeline runs
-  #  it -- this harness went straight to llc and run_acats.sh uses lli
-  #  -- so mem2reg, SROA and inlining never see our IR, and the emitted
-  #  IR is very nearly the machine code.  That is a defensible choice
-  #  (it makes the front end's own output quality the thing that
-  #  matters) but it was never a decided one, so the harness now
-  #  measures both and names which is which.
-  #
-  #    OPT_PIPELINE=none  emit -> llc -> clang        (as shipped)
-  #    OPT_PIPELINE=llvm  emit -> opt -O2 -> llc -> clang
-  local stage_bc="$a83_dir/$base.bc"
-  if [ "${OPT_PIPELINE:-none}" = llvm ]; then
-    run_step "$log_dir/$base.a83-opt.log" \
-      opt "-O$OPT" -o "$a83_dir/$base.opt.bc" "$a83_dir/$base.bc" || return 1
-    stage_bc="$a83_dir/$base.opt.bc"
-  fi
-  #  PIC, because the toolchain links position-independent executables
-  #  by default and the default relocation model does not.
-  run_step "$log_dir/$base.a83-llc.log" \
-    llc "-O$OPT" --relocation-model=pic -filetype=obj \
-        -o "$a83_dir/$base.o" "$stage_bc" || return 1
-  run_step "$log_dir/$base.a83-ld.log" \
-    clang "-O$OPT" -o "$exe" "$a83_dir/$base.o" -lm -lpthread || return 1
-}
-
-gnat_frontend () {
-  run_step "$log_dir/$(basename "$1" .adb).gnat-front.log" \
-    "$gnat_bin/gcc" -c -S "-O$OPT" "$1" -o "$2"
-}
-
-#  Cold: -f forces a rebuild, so the number is the work itself.
-gnat_full () {
-  local base=${1%.adb}
-  run_step "$log_dir/$base.gnat-cold.log" \
-    "$gnat_bin/gnatmake" -f "-O$OPT" ${gnat_rts_flags[@]+"${gnat_rts_flags[@]}"} \
-      "$src_dir/$1" -o "$gnat_dir/$2" \
-      -D "$gnat_dir" -aO"$gnat_dir" ${gnat_link_flags[@]+"${gnat_link_flags[@]}"}
-}
-
-#  Warm: no -f, so gnatmake consults the ALI files and rebuilds only
-#  what changed.  With nothing changed this is the cost of deciding
-#  there is nothing to do.
-gnat_full_warm () {
-  local base=${1%.adb}
-  run_step "$log_dir/$base.gnat-warm.log" \
-    "$gnat_bin/gnatmake" "-O$OPT" ${gnat_rts_flags[@]+"${gnat_rts_flags[@]}"} \
-      "$src_dir/$1" -o "$gnat_dir/$2" \
-      -D "$gnat_dir" -aO"$gnat_dir" ${gnat_link_flags[@]+"${gnat_link_flags[@]}"}
-}
-
-#  ada83's warm path is the same pipeline: it writes ALI files with
-#  checksums for the units it loads, but it always recompiles the unit
-#  it was handed.  Measuring it against gnatmake's warm path is how the
-#  difference becomes visible rather than assumed.
-ada83_full_warm () { ada83_full "$1" "$2"; }
-
-#  --------------------------------------------------------------- header
-
-{
-echo "==================================================================="
-echo " ada83 vs GNAT — compiler and generated-code benchmark"
-echo "==================================================================="
-echo " date            $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
-echo " ada83           $ada83_commit  ($(wc -l < "$root/ada83.c") lines)"
-echo " GNAT            $gnat_version"
-echo " host            $(nproc) cores, $(uname -m)"
-echo " repetitions     $REPEATS (best-of reported)"
-echo " back-end opt    -O$OPT"
-echo " results         $out"
-echo
-echo " Front end means source to the compiler's own output: .ll for"
-echo " ada83, .s for GNAT.  Full means source to a linked executable"
-echo " through each compiler's own route, which for ada83 includes llc"
-echo " and clang — a code generator it does not own."
-} | tee "$out/report.txt"
-
-#  --------------------------------------------------------------- stages
-
-run_stages () {
-  {
-  echo; rule; echo " STAGES — where each compiler spends its own time"; rule
-  } | tee -a "$out/report.txt"
-
-  #  ada83: a -pg build, attributed by symbol.  The §-sections of
-  #  ada83.c are recognisable from the names, so the flat profile maps
-  #  onto them without needing the compiler to instrument itself.
-  if [ ! -x "$work/ada83-pg" ]; then
-    echo " building instrumented ada83 (-pg)…" | tee -a "$out/report.txt"
-    gcc -O2 -pg -w -o "$work/ada83-pg" "$root/ada83.c" -lm -lpthread || {
-      echo " could not build -pg binary; skipping ada83 stage profile" \
-        | tee -a "$out/report.txt"; return; }
-  fi
-
-  "$here/gen_wide.sh" "$WIDE_SIZE" > "$src_dir/wide.adb"
-
-  ( cd "$work" && ./ada83-pg --ir "$src_dir/wide.adb" -o wide-pg.ll >/dev/null 2>&1 )
-  if [ ! -f "$work/gmon.out" ]; then
-    echo " no gmon.out produced; skipping ada83 stage profile" \
-      | tee -a "$out/report.txt"
-  else
-    gprof -b -p "$work/ada83-pg" "$work/gmon.out" > "$out/ada83-gprof.txt" 2>/dev/null
-    {
-    echo
-    echo " ada83 — self time by stage (gprof flat profile, attributed by symbol)"
-    echo
-    #  gprof's flat profile puts self seconds in column 3 and the symbol
-    #  last on the line; a row for a symbol with no call count is
-    #  shorter than the rest, which is why the name is taken from $NF
-    #  rather than from a fixed column.  The buckets are listed and
-    #  sorted by hand because array sorting is a GNU awk extension and
-    #  this has to run wherever the benchmark does.
-    awk '
-      /^ *[0-9]/ {
-        seconds = $3 + 0; name = $NF
-        total += seconds
-        if (name ~ /^(Scan|Lex|Keyword|Token_Text|Next_Token)/)           b = "Lexer (§7)"
-        else if (name ~ /^(Parse|Node_New|Node_List|Syntax)/)             b = "Parser (§9)"
-        else if (name ~ /^(Resolve|Analyze|Select_|Interp|Overload)/)     b = "Name and overload resolution (§11-12)"
-        else if (name ~ /^(Type_|Constrain|Freeze|Component_|Discrimin)/) b = "Types (§10)"
-        else if (name ~ /^(Symbol|Scope)/)                                b = "Symbol table (§11)"
-        else if (name ~ /^(Check_|Fold|Eval|Const_|Static_)/)             b = "Checking and folding (§12)"
-        else if (name ~ /^(Generate|Emit|LLVM_|Val_)/)                    b = "Code generation (§13)"
-        else if (name ~ /^(Elab|Library|Catalog|Load_|Compile_)/)         b = "Library and elaboration (§14-15,17)"
-        else if (name ~ /^(Arena|String_|Slice|Hash|Big|U128|I128|Simd)/) b = "Foundation (§1-6,18)"
-        else                                                              b = "Other"
-        if (!(b in s)) { order[++n] = b }
-        s[b] += seconds
-      }
-      END {
-        if (total <= 0) { print "  (no samples — program too fast to profile)"; exit }
-        for (i = 1; i <= n; i++)
-          for (j = i + 1; j <= n; j++)
-            if (s[order[j]] > s[order[i]]) { t = order[i]; order[i] = order[j]; order[j] = t }
-        for (i = 1; i <= n; i++)
-          printf "   %-40s %8.2fs  %5.1f%%\n", order[i], s[order[i]],
-                 100 * s[order[i]] / total
-        printf "   %-40s %8.2fs\n", "TOTAL", total
-      }' "$out/ada83-gprof.txt"
-
-    #  The bucket table says which subsystem to look at; this says which
-    #  function to open.  A stage profile without it sends the reader
-    #  back to the raw gprof output every time.
-    echo
-    echo " ada83 — the twelve costliest symbols"
-    echo
-    awk '/^ *[0-9]/ && shown < 12 {
-           printf "   %8.2fs  %12s calls  %s\n", $3, ($4 == "" ? "-" : $4), $NF
-           shown++
-         }' "$out/ada83-gprof.txt"
-    } | tee -a "$out/report.txt"
-    rm -f "$work/gmon.out"
-  fi
-
-  #  GNAT reports its own phases.
-  {
-  echo
-  echo " GNAT — self time by phase (gnat1 -ftime-report)"
-  echo
-  } | tee -a "$out/report.txt"
-  ( cd "$gnat_dir" && "$gnat_bin/gcc" -c "-O$OPT" -ftime-report \
-      "$src_dir/wide.adb" -o wide-gnat.o ) > "$out/gnat-time-report.txt" 2>&1
-  grep -E '^ (phase|TOTAL)' "$out/gnat-time-report.txt" \
-    | sed 's/^/  /' | tee -a "$out/report.txt" \
-    || echo "  (no phase report)" | tee -a "$out/report.txt"
-
-  echo | tee -a "$out/report.txt"
-  echo " Note: the two profiles are built differently — ada83's is a" \
-    | tee -a "$out/report.txt"
-  echo " sampled flat profile of a -pg build, GNAT's is its own" \
-    | tee -a "$out/report.txt"
-  echo " instrumented phase accounting.  Compare shapes, not totals." \
-    | tee -a "$out/report.txt"
-}
-
-#  -------------------------------------------------------------- compile
-
-run_compile () {
-  {
-  echo; rule; echo " COMPILE TIME"; rule
-  echo
-  echo "  cold = a full rebuild.  warm = the same command run again with"
-  echo "  nothing changed, which is what an edit-rebuild cycle actually"
-  echo "  costs."
-  echo
-  printf "  %-10s %9s %9s %7s  %9s %9s %7s  %9s %9s %7s\n" \
-    "program" "a83 front" "gnat frnt" "ratio" \
-    "a83 cold" "gnat cold" "ratio" "a83 warm" "gnat warm" "ratio"
-  } | tee -a "$out/report.txt"
-
-  "$here/gen_wide.sh" "$WIDE_SIZE" > "$src_dir/wide.adb"
-  prepare_runtime
-
-  local srcs=() f
-  for f in "$programs"/*.adb; do srcs+=("$f"); done
-  srcs+=("$src_dir/wide.adb")
-
-  for f in "${srcs[@]}"; do
-    local base af gf ax gx aw gw ratio_f ratio_x ratio_w
-    base=$(basename "$f" .adb)
-    [ "$f" -ef "$src_dir/$base.adb" ] || cp -f "$f" "$src_dir/$base.adb"
-
-    #  One untimed build of each first: a step that fails should be
-    #  reported as a failure, not timed as if it had done the work.
-    if ! ada83_full "$src_dir/$base.adb" "$a83_dir/$base.a83"; then
-      printf "  %-10s %s\n" "$base" "ada83 BUILD FAIL: $(failure_reason)" \
-        | tee -a "$out/report.txt"; continue
+cpu_model(){
+    if [ -r /proc/cpuinfo ]; then
+        sed -n 's/^model name[[:space:]]*: //p' /proc/cpuinfo | head -1
+    else
+        sysctl -n machdep.cpu.brand_string 2>/dev/null
     fi
-    if ! gnat_full "$base.adb" "$base.gnat"; then
-      printf "  %-10s %s\n" "$base" "GNAT BUILD FAIL: $(failure_reason)" \
-        | tee -a "$out/report.txt"; continue
-    fi
-
-    af=$(time_best ada83_frontend "$src_dir/$base.adb" "$a83_dir/$base.ll")
-    gf=$(time_best gnat_frontend  "$src_dir/$base.adb" "$gnat_dir/$base.s")
-    ax=$(time_best ada83_full     "$src_dir/$base.adb" "$a83_dir/$base.a83")
-    gx=$(time_best gnat_full      "$base.adb"          "$base.gnat")
-    #  Both warm paths run against the artefacts the cold runs left.
-    aw=$(time_best ada83_full_warm "$src_dir/$base.adb" "$a83_dir/$base.a83")
-    gw=$(time_best gnat_full_warm  "$base.adb"          "$base.gnat")
-
-    ratio_f=$(awk -v a="$af" -v g="$gf" 'BEGIN{ if (g>0) printf "%.2fx", a/g; else print "-" }')
-    ratio_x=$(awk -v a="$ax" -v g="$gx" 'BEGIN{ if (g>0) printf "%.2fx", a/g; else print "-" }')
-    ratio_w=$(awk -v a="$aw" -v g="$gw" 'BEGIN{ if (g>0) printf "%.2fx", a/g; else print "-" }')
-    printf "  %-10s %7sms %7sms %7s  %7sms %7sms %7s  %7sms %7sms %7s\n" \
-      "$base" "$af" "$gf" "$ratio_f" "$ax" "$gx" "$ratio_x" \
-      "$aw" "$gw" "$ratio_w" | tee -a "$out/report.txt"
-  done
-
-  {
-  echo
-  echo "  ratio below 1.00x means ada83 is faster."
-  echo
-  echo "  A warm number far below its cold number means the compiler"
-  echo "  skipped work it had already done.  ada83 writes ALI files with"
-  echo "  checksums for the units it loads, but always recompiles the"
-  echo "  unit it was handed, so its warm and cold numbers should track"
-  echo "  each other; gnatmake's should not.  That gap is a result, not"
-  echo "  a flaw in the measurement."
-  } | tee -a "$out/report.txt"
 }
-
-#  -------------------------------------------------------------- runtime
-
-run_runtime () {
-  {
-  echo; rule; echo " RUNTIME — speed of the generated code"; rule
-  echo
-  printf "  %-14s %12s %12s %9s  %s\n" \
-    "program" "ada83" "GNAT" "ratio" "agree?"
-  } | tee -a "$out/report.txt"
-
-  prepare_runtime
-
-  local f
-  for f in "$programs"/*.adb; do
-    local base at gt ratio a_out g_out agree
-    base=$(basename "$f" .adb)
-    [ "$f" -ef "$src_dir/$base.adb" ] || cp -f "$f" "$src_dir/$base.adb"
-
-    if ! ada83_full "$src_dir/$base.adb" "$a83_dir/$base.a83"; then
-      printf "  %-14s %s\n" "$base" "ada83 BUILD FAIL: $(failure_reason)" \
-        | tee -a "$out/report.txt"
-      continue
-    fi
-    if ! gnat_full "$base.adb" "$base.gnat"; then
-      printf "  %-14s %s\n" "$base" "GNAT BUILD FAIL: $(failure_reason)" \
-        | tee -a "$out/report.txt"
-      continue
-    fi
-
-    a_out=$("$a83_dir/$base.a83" 2>&1 | tr -d ' \n')
-    g_out=$("$gnat_dir/$base.gnat" 2>&1 | tr -d ' \n')
-    if [ "$a_out" = "$g_out" ]; then agree="yes"; else agree="NO ($a_out vs $g_out)"; fi
-
-    at=$(time_best "$a83_dir/$base.a83")
-    gt=$(time_best "$gnat_dir/$base.gnat")
-    ratio=$(awk -v a="$at" -v g="$gt" 'BEGIN{ if (g>0) printf "%.2fx", a/g; else print "-" }')
-    printf "  %-14s %10sms %10sms %9s  %s\n" \
-      "$base" "$at" "$gt" "$ratio" "$agree" | tee -a "$out/report.txt"
-  done
-
-  echo | tee -a "$out/report.txt"
-  echo "  ratio below 1.00x means ada83's code is faster." \
-    | tee -a "$out/report.txt"
-  echo "  'agree' compares the two programs' output — a benchmark whose" \
-    | tee -a "$out/report.txt"
-  echo "  two builds disagree is measuring nothing." | tee -a "$out/report.txt"
-}
+printf '  \033[1mhost\033[0m    %s %s, %s cpus\n' "$(uname -s)" "$(uname -m)" \
+    "$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo '?')"
+[ -n "$(cpu_model)" ] && printf '  \033[1mcpu\033[0m     %s\n' "$(cpu_model)"
+printf '  \033[1mmethod\033[0m  median of %s timed runs after %s warmup, ± is relative standard deviation\n' \
+    "$REPEATS" "$WARMUP"
 
 case "$mode" in
-  stages)  run_stages ;;
-  compile) run_compile ;;
-  runtime) run_runtime ;;
-  all)     run_stages; run_compile; run_runtime ;;
-  *) echo "usage: bench.sh [stages|compile|runtime|all]" >&2; exit 2 ;;
+    codegen) run_codegen "$gnat" ;;
+    compile) run_compile "$gnat" ;;
+    corpus)  run_corpus ;;
+    all)     run_codegen "$gnat"; run_compile "$gnat"; run_corpus ;;
+    *)       show_cursor; echo "bench.sh: unknown mode '$mode'" >&2; usage >&2; exit 2 ;;
 esac
-
-#  ------------------------------------------------------------ verdict
-
-{
+show_cursor
 echo
-echo
-echo " results   $out"
-echo " compare   diff <(grep -E '^  [a-z]' PREVIOUS/report.txt) \\"
-echo "                <(grep -E '^  [a-z]' $out/report.txt)"
-} | tee -a "$out/report.txt"
-
-#  Reports are small and worth keeping; work trees are large and are
-#  not.  Benchmarking must never be the reason the disk fills.
-[ "$KEEP_WORK" = "0" ] && rm -rf "$work"
