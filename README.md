@@ -15,12 +15,6 @@ make
 
 ## Officially withdrawn by the AVO (ACVC 1.11)
 
-These appear on the official ACVC 1.11 withdrawal list (reproduced in
-the DTIC validation summary reports, e.g. ADA243300): the Ada
-Validation Office ruled each test's own expectation erroneous, and
-validations excluded them. They are unfixable by a conforming
-compiler because the expectations themselves are wrong.
-
 - **c98003b** — requires that a MED-priority task make *no* progress
   while a LOW-caller/HIGH-acceptor rendezvous runs. That assumes
   strict preemptive priority scheduling on a single processor;
