@@ -1,8 +1,0 @@
--- LA5008B0.ADA
-
--- JRK 11/1/85
-
-GENERIC
-FUNCTION LA5008B0 RETURN INTEGER;  -- OPTIONAL ERROR: CORRESPONDING BODY
-                                   -- NOT IN SAME COMPILATION FILE AS
-                                   -- ITS DECLARATION.

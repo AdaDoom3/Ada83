@@ -34,3 +34,6 @@ LLVM-C.dll
 # Toolchain build.bat fetches when the machine has no C compiler
 zig/
 zig.zip
+
+# The conformance suite, unpacked from tests.zip on demand
+acats/
