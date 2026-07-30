@@ -25,13 +25,15 @@ Three further tests were withdrawn by the AVO and are not counted; see
 
 ## Requirements
 
-- **`gcc`** or **`clang`** (`make CC=clang`).
+- **`gcc`** or **`clang`** (`make CC=clang`). On macOS the Xcode
+  command-line tools supply clang; `xcode-select --install` if they are
+  not already there.
 - **GNU `make`**.
 - A 64-bit host with `__int128` support (x86-64 or AArch64).
 - **libLLVM**, for building native executables. `make` installs it through
-  the system package manager if it is not already present. It is opened at
-  run time, so no LLVM headers or development package are needed to build
-  the compiler itself.
+  the system package manager, or through Homebrew on macOS, if it is not
+  already present. It is opened at run time, so no LLVM headers or
+  development package are needed to build the compiler itself.
 
 ## Building
 
@@ -39,7 +41,8 @@ Three further tests were withdrawn by the AVO and are not counted; see
 make
 ```
 
-This produces `./ada83`.
+This produces `./ada83`. Linux and macOS, on x86-64 and on Apple silicon,
+build from this one makefile.
 
 On Windows, run `build.bat` instead. It unpacks the bundled `LLVM-C.zip`
 and builds with the first of GCC, Clang, or a privately fetched Zig that
@@ -121,7 +124,17 @@ bash test.sh bless        # run, then write the baseline
 Runs are written to a timestamped `test_results/<label>-<timestamp>-<pid>/`
 alongside `acats_logs/<same>/`, so concurrent or repeated runs never
 overwrite one another. `NPROC=4` caps parallelism, which otherwise defaults
-to `nproc`.
+to the processor count.
+
+The harness needs `lli` and `llvm-link` on the path, and it needs Bash 4 or
+newer. macOS carries Bash 3.2 and no `timeout`, so running the suite there
+wants Homebrew:
+
+```sh
+brew install bash coreutils llvm
+```
+
+Building the compiler itself asks for none of this.
 
 ## Deviations
 

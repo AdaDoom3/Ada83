@@ -16,7 +16,7 @@ set -euo pipefail
 # Compatibility: `g <class>` == `run <class>`, `q <group>` == `run <group>`.
 #
 # Environment:
-#   JOBS / NPROC     parallel workers (default: nproc)
+#   JOBS / NPROC     parallel workers (default: the host's processor count)
 #   TEST_TIMEOUT     per-test run cap in seconds (default 30 — sized for the 10x
 #                    DELAY deviation in acats/ plus contention; use 120 for
 #                    pristine sources — see README.md)
@@ -28,11 +28,29 @@ set -euo pipefail
 #   test_summary.txt one-line totals
 #   results.tap      TAP stream (when TAP=1)
 
-NPROC=${JOBS:-${NPROC:-$(nproc 2>/dev/null || echo 4)}}
+NPROC=${JOBS:-${NPROC:-$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)}}
 TEST_TIMEOUT=${TEST_TIMEOUT:-30}
 LINK_TIMEOUT=${LINK_TIMEOUT:-20}
 BASELINE=${BASELINE:-acats.baseline}
-START_MS=$(date +%s%3N)
+
+# Every test runs under a cap, which needs coreutils' timeout.  Homebrew
+# installs it as gtimeout unless its gnubin directory is on PATH.
+TIMEOUT=$(command -v timeout || command -v gtimeout) || {
+    echo "FATAL: no 'timeout' command found" >&2
+    echo "       on macOS: brew install coreutils" >&2
+    exit 1
+}
+export TIMEOUT   # the test workers re-enter this script through bash -c
+
+# Milliseconds since the epoch.  %N is a GNU extension that BSD date
+# leaves as literal text, so fall back to whole seconds there.
+now_ms(){
+    local stamp
+    stamp=$(date +%s%3N 2>/dev/null)
+    [[ $stamp =~ ^[0-9]+$ ]] || stamp=$(( $(date +%s) * 1000 ))
+    printf '%s' "$stamp"
+}
+START_MS=$(now_ms)
 
 mkdir -p test_results acats_logs
 
@@ -65,7 +83,7 @@ trap 'rm -f "$REPORT_LL" "${REPORT_LL%.ll}.ali"' EXIT
 pct(){ ((${2:-0}>0)) && printf %d $((100*$1/$2)) || printf 0; }
 
 elapsed(){
-    printf %.3f "$(bc<<<"scale=4;($(date +%s%3N)-${START_MS})/1000")"
+    printf %.3f "$(bc<<<"scale=4;($(now_ms)-${START_MS})/1000")"
 }
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -104,7 +122,7 @@ compile_set(){
     COMPILE_FAILED=""
     for part in "${COMPILE_FILES[@]}"; do
         pn=$(basename "$part" .ada)
-        if ! timeout 4 ./ada83 --ir "$part" -o $lib/$pn.ll >/dev/null 2>$LOGS_DIR/$n.err; then
+        if ! "$TIMEOUT" 4 ./ada83 --ir "$part" -o $lib/$pn.ll >/dev/null 2>$LOGS_DIR/$n.err; then
             # ACATS ships intentionally-erroneous fragments (ca3009a, …):
             # a rejected submission updates nothing and processing goes on.
             # Only the main unit failing to compile fails the set.
@@ -176,7 +194,7 @@ compile_set(){
 run_in_lib(){
     local secs=$1 n=$2; shift 2
     ( cd "$RESULTS_DIR/$n.lib" 2>/dev/null || exit 127
-      exec timeout "$secs" lli "$@" "$ROOT/$RESULTS_DIR/$n.bc" )
+      exec "$TIMEOUT" "$secs" lli "$@" "$ROOT/$RESULTS_DIR/$n.bc" )
 }
 
 # Whole-program link of MAIN_LL + surviving fragments + report.ll into $n.bc.
@@ -187,7 +205,7 @@ run_in_lib(){
 # missing-runtime "skips". Returns llvm-link's own status.
 link_program(){
     local n=$1 rc=0
-    timeout "$LINK_TIMEOUT" llvm-link -o "$RESULTS_DIR/$n.bc" "$MAIN_LL" \
+    "$TIMEOUT" "$LINK_TIMEOUT" llvm-link -o "$RESULTS_DIR/$n.bc" "$MAIN_LL" \
         ${LINK_FRAGMENTS[@]+"${LINK_FRAGMENTS[@]}"} "$REPORT_LL" \
         2>"$LOGS_DIR/$n.link" || rc=$?
     case $rc in
@@ -211,9 +229,9 @@ run_continuity_creators(){
                | grep -oiE '"ce[0-9a-z]+"' | tr -d '"' | tr 'A-Z' 'a-z' | sort -u); do
         [[ $c == "$self" || ! -f acats/$c.ada ]] && continue
         ./ada83 --ir "acats/$c.ada" -o "$lib/$c.ll" >/dev/null 2>&1 || continue
-        timeout "$LINK_TIMEOUT" llvm-link -o "$lib/$c.bc" "$lib/$c.ll" \
+        "$TIMEOUT" "$LINK_TIMEOUT" llvm-link -o "$lib/$c.bc" "$lib/$c.ll" \
             "$REPORT_LL" >/dev/null 2>&1 || continue
-        ( cd "$lib" && exec timeout "$TEST_TIMEOUT" lli "$c.bc" ) >/dev/null 2>&1 || true
+        ( cd "$lib" && exec "$TIMEOUT" "$TEST_TIMEOUT" lli "$c.bc" ) >/dev/null 2>&1 || true
     done
 }
 
@@ -340,7 +358,7 @@ run_one(){
             #  are two readings of one run, and submitting the same unit
             #  to the library twice would make the second submission
             #  obsolete the first.
-            if timeout 4 ./ada83 --ir "$part" -o "$lib/${pn%.ada}.ll" \
+            if "$TIMEOUT" 4 ./ada83 --ir "$part" -o "$lib/${pn%.ada}.ll" \
                  >/dev/null 2>$LOGS_DIR/$n.$pn.err; then :; else
                 rejected=yes
             fi
@@ -454,7 +472,7 @@ run_one_timed(){
     local f=$1 n=$(basename "$1" .ada) q
     q=${f##*/}; q=${q:0:1}; q=${q,,}
     local out rc=0
-    out=$(timeout $((2*TEST_TIMEOUT+5)) bash -c 'run_one "$1"' _ "$f" 2>/dev/null) || rc=$?
+    out=$("$TIMEOUT" $((2*TEST_TIMEOUT+5)) bash -c 'run_one "$1"' _ "$f" 2>/dev/null) || rc=$?
     if ((rc==124 || rc==137)); then
         echo "$q fail $n TIMEOUT:exceeded_$((2*TEST_TIMEOUT+5))s"
     elif [[ -n $out ]]; then
