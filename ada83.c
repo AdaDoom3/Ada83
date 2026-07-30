@@ -17734,12 +17734,13 @@ Type *Derive_Attribute_Type (Node *node,
     }
 
     case ATTRIBUTE_RESULT_PREFIX_BASE: {
-      Symbol *prefix_symbol = node->attribute.prefix
-                            ? node->attribute.prefix->symbol : NULL;
-      bool strip_constraint =
-        (prefix_symbol and prefix_symbol->kind == SYMBOL_SUBTYPE) or
-        (prefix_type and prefix_type->is_generic_actual_view);
-      if (strip_constraint and prefix_type and prefix_type->base_type)
+      /* RM 3.5.5: 'VAL, 'SUCC and 'PRED each yield a value of the
+         prefix's base type, whether the prefix names a type or a
+         subtype -- a first named subtype is itself constrained, so the
+         two cases are not distinguishable here and must not be.  The
+         result may lie outside that constraint, which is precisely what
+         gives the check at the enclosing assignment or return its work. */
+      if (prefix_type and prefix_type->base_type)
         return prefix_type->base_type;
       return fallback;
     }
