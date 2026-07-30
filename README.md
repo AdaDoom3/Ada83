@@ -61,11 +61,11 @@ compiler. `build.bat clean` removes everything it produced.
 Given `hello.ada`:
 
 ```ada
-with TEXT_IO; use TEXT_IO;
-procedure HELLO is
+with Text_IO; use Text_IO;
+procedure Hello is
 begin
-   PUT_LINE ("Hello, Ada 83!");
-end HELLO;
+   Put_Line ("Hello, Ada 83!");
+end;
 ```
 
 ```
