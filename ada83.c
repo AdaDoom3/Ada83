@@ -2992,6 +2992,7 @@ typedef struct {
   Type *type_boolean;
   Type *type_integer;
   Type *type_float;
+  Type *type_long_float;
   Type *type_character;
   Type *type_string;
   Type *type_duration;
@@ -4299,6 +4300,8 @@ void Emit_Check_With_Raise_Named (u32    cond,
                             const char *exc_name,
                             const char *comment);
 void Emit_Raise_Constraint_Error_When (LLVM_I1 condition, const char *comment);
+void Emit_Float_Finite_Check (u32 reg, LLVM_Rep float_rep,
+                              const char *comment);
 void Emit_Storage_Error_If_Oversized_Static (u64 bytes);
 void Emit_Stack_Probe_Static                (u64 bytes);
 void Emit_Stack_Probe_Dynamic               (u32 size_reg_i64);
@@ -4952,8 +4955,6 @@ LLVM_Value Convert_Double_To_Integer_Representation
                                   (u32     value,
                                    LLVM_Rep     destination_rep,
                                    const char  *outside_message);
-void Emit_Float_Overflow_Check (u32 reg, LLVM_Rep float_rep,
-                                Type *result_type);
 u32   Emit_Convert_Scalar_To_Type (LLVM_Value value_v,
                                         Type *dest,
                                         LLVM_Rep   dest_rep);
@@ -13994,8 +13995,12 @@ void Symbol_Manager_Init_Predefined () {
   sm->type_integer->high_bound = (Type_Bound){ .kind = BOUND_INTEGER, .int_value = INT32_MAX };
 
   sm->type_float             = Type_New (TYPE_FLOAT, S ("FLOAT"));
-  sm->type_float->size       = 8;
-  sm->type_float->flt.digits = 15;
+  sm->type_float->size       = 4;
+  sm->type_float->flt.digits = 6;
+
+  sm->type_long_float             = Type_New (TYPE_FLOAT, S ("LONG_FLOAT"));
+  sm->type_long_float->size       = 8;
+  sm->type_long_float->flt.digits = 15;
 
   sm->type_character             = Type_New (TYPE_CHARACTER, S ("CHARACTER"));
   sm->type_character->size       = 1;
@@ -14063,6 +14068,12 @@ void Symbol_Manager_Init_Predefined () {
   sym_float->type        = sm->type_float;
   sm->type_float->defining_symbol = sym_float;
   Symbol_Add (sym_float);
+
+  Symbol *sym_long_float = Symbol_New (SYMBOL_TYPE, S ("LONG_FLOAT"),
+                                       No_Location);
+  sym_long_float->type   = sm->type_long_float;
+  sm->type_long_float->defining_symbol = sym_long_float;
+  Symbol_Add (sym_long_float);
 
   Symbol *sym_duration   = Symbol_New (SYMBOL_TYPE, S ("DURATION"), No_Location);
   sym_duration->type     = sm->type_duration;
@@ -14152,8 +14163,9 @@ void Symbol_Manager_Init_Predefined () {
   }
 
 
-  Type *bootstrap_types[] = { sm->type_integer, sm->type_float };
-  for (u32 ti = 0; ti < 2; ti++)
+  Type *bootstrap_types[] = { sm->type_integer, sm->type_float,
+                              sm->type_long_float };
+  for (u32 ti = 0; ti < 3; ti++)
     for (int kind = 0; kind < TK_COUNT; kind++) {
       Token_Kind op = (Token_Kind) kind;
       if (not Token_In_Any_Class (op, TOKEN_CLASS_OPERATOR)) continue;
@@ -25727,7 +25739,7 @@ void Require_Static_Type_Definition_Range (Node *range,
 
 void Check_Real_Type_Definition (Node *definition) {
   Node *range = definition->real_type.range;
-  Real_Model widest = Safe_Number_Model_Of (sm->type_float);
+  Real_Model widest = Safe_Number_Model_Of (sm->type_long_float);
 
   if (definition->real_type.delta) {
     if (not range)
@@ -33633,8 +33645,20 @@ LLVM_Value Emit_Extend_To_I64 (u32 val, LLVM_Rep from_rep) {
   return Val_Rep (extended, size_rep);
 }
 
+void Emit_Float_Finite_Check (u32 reg, LLVM_Rep float_rep,
+                              const char *comment) {
+  const char *fs = LLVM_Rep_Text (float_rep);
+  u32 magnitude = Emit_Call_Result (
+    "%s @llvm.fabs.%s(%s %s)",
+    fs,  float_rep.bits == 32 ? "f32" : "f64",  fs,  REGISTER_TEXT (reg));
+  LLVM_I1 infinite = { Emit_Result (
+    "fcmp oeq %s %s, 0x7FF0000000000000\n",  fs,  REGISTER_TEXT (magnitude)) };
+  Emit_Raise_Constraint_Error_When (infinite, comment);
+}
+
 u32 Emit_Scale_By_Small (u32 val, double small, bool divide, LLVM_Rep frep) {
-  u32 small_t = Emit_Result ("fadd %s 0.0, 0x%016llX  ; SMALL=%g\n", LLVM_Rep_Text (frep), Double_Bit_Pattern (small), small);
+  double stored = frep.bits == 32 ? (double) (float) small : small;
+  u32 small_t = Emit_Result ("fadd %s 0.0, 0x%016llX  ; SMALL=%g\n", LLVM_Rep_Text (frep), Double_Bit_Pattern (stored), small);
   u32 r = Emit_Result ("%s %s %s, %s  ; %s SMALL\n",  divide ? "fdiv" : "fmul",  LLVM_Rep_Text (frep),  REGISTER_TEXT (val),  REGISTER_TEXT (small_t),
      divide ? "value/" : "mantissa*");
   return r;
@@ -34716,22 +34740,6 @@ LLVM_Value Convert_Real_To_Fixed (u32 val, double small, LLVM_Rep fix_rep)
   return Convert_Double_To_Integer_Representation (
     divided, fix_rep, "real value outside fixed representation");
 }
-void Emit_Float_Overflow_Check (u32 reg, LLVM_Rep float_rep,
-                                Type *result_type) {
-  Check_Permission permission =
-    Check_Permission_For (CHECK_KIND_OVERFLOW, result_type, NULL);
-  if (not Check_Is_Required (permission)) return;
-  const char *fs = LLVM_Rep_Text (float_rep);
-  u32 magnitude = Emit_Call_Result (
-    "%s @llvm.fabs.%s(%s %s)",
-    fs,  float_rep.bits == 32 ? "f32" : "f64",  fs,  REGISTER_TEXT (reg));
-  LLVM_I1 infinite = { Emit_Result (
-    "fcmp oeq %s %s, 0x7FF0000000000000\n",  fs,  REGISTER_TEXT (magnitude)) };
-  Emit_Runtime_Check (permission, Check_Fails_When (infinite),
-                      EXCEPTION_KIND_NUMERIC_ERROR,
-                               "real overflow");
-}
-
 u32 Emit_Convert_Scalar_To_Type (LLVM_Value value_v, Type *dest, LLVM_Rep dest_rep) {
   if (dest and Type_Is_Fixed_Point (dest) and LLVM_Rep_Is_Float (value_v.rep)) {
     u32 dval = value_v.reg;
@@ -35499,12 +35507,30 @@ LLVM_Value Emit_Binary_Op_Predefined (Node *node) {
       bool right_is_element = element_is_array and right_type and
                               Type_Base (right_type) == Type_Base (element_type);
 
+      Type *left_view = left_type, *right_view = right_type;
+      if (element_type and not element_is_array and
+          not Type_Is_Array_Like (left_type) and
+          not Type_Is_String (left_type) and
+          Type_Has_Scalar_Representation (element_type)) {
+        LLVM_Rep element_rep = Type_To_Rep (element_type);
+        left_raw  = Emit_Convert (left_raw.reg, left_raw.rep, element_rep);
+        left_view = element_type;
+      }
+      if (element_type and not element_is_array and
+          not Type_Is_Array_Like (right_type) and
+          not Type_Is_String (right_type) and
+          Type_Has_Scalar_Representation (element_type)) {
+        LLVM_Rep element_rep = Type_To_Rep (element_type);
+        right_raw  = Emit_Convert (right_raw.reg, right_raw.rep, element_rep);
+        right_view = element_type;
+      }
+
       u32 left_fat  = left_is_element
         ? Emit_Fat_Pointer (left_raw.reg, 1, 1, bounds_rep).reg
-        : Normalize_To_Fat_Pointer (node->binary.left, left_raw, left_type, bounds_rep);
+        : Normalize_To_Fat_Pointer (node->binary.left, left_raw, left_view, bounds_rep);
       u32 right_fat = right_is_element
         ? Emit_Fat_Pointer (right_raw.reg, 1, 1, bounds_rep).reg
-        : Normalize_To_Fat_Pointer (node->binary.right, right_raw, right_type, bounds_rep);
+        : Normalize_To_Fat_Pointer (node->binary.right, right_raw, right_view, bounds_rep);
 
       u32 left_data  = Emit_Fat_Pointer_Data (left_fat,  bounds_rep).reg;
       u32 left_low   = Emit_Fat_Pointer_Low  (left_fat,  bounds_rep).reg;
@@ -35718,8 +35744,9 @@ LLVM_Value Emit_Binary_Op_Predefined (Node *node) {
              LLVM_Rep_Text (base_rep),  pow_intrinsic,
              LLVM_Rep_Text (base_rep),  REGISTER_TEXT (left),
              LLVM_Rep_Text (base_rep),  REGISTER_TEXT (exponent));
-          if (Type_Is_Float (result_type))
-            Emit_Float_Overflow_Check (t, base_rep, result_type);
+          if (base_rep.bits == 32 and Type_Is_Float (result_type))
+            Emit_Float_Finite_Check (t, base_rep,
+                                     "exponentiation overflowed the type");
           return Val_Rep (t, base_rep);
         }
 
@@ -35951,8 +35978,6 @@ LLVM_Value Emit_Binary_Op_Predefined (Node *node) {
   }
   Emit ("  %s = %s %s %s, %s\n",  REGISTER_TEXT (t),  op,
      LLVM_Rep_Text (float_type),  REGISTER_TEXT (left),  REGISTER_TEXT (right));
-  if (Type_Is_Float (result_type))
-    Emit_Float_Overflow_Check (t, float_type, result_type);
   return Val_Rep (t, float_type);
 }
 
@@ -36378,10 +36403,9 @@ LLVM_Value Emit_Checked_Scalar_Conversion (LLVM_Value value,
            must run before any narrowing conversion below discards the
            bits the check exists to examine -- a value the target's own
            representation cannot hold does not become checkable by first
-           forcing it into that representation. Float conversions are
-           unaffected: Emit_Float_Overflow_Check already detects overflow
-           in the narrowed IEEE result itself, so no reordering is needed
-           there. */
+           forcing it into that representation. Float conversions instead
+           check the narrowed IEEE result itself: a finite value that
+           narrows to an infinity lies outside the target type. */
         if (integer_to_integer and Type_Has_Scalar_Representation (dst_type))
           Emit_Constraint_Check_Val ((LLVM_Value){ result, src_llvm }, dst_type, NULL);
 
@@ -36390,7 +36414,8 @@ LLVM_Value Emit_Checked_Scalar_Conversion (LLVM_Value value,
           result_rep = dst_llvm;
           if (LLVM_Rep_Is_Float (src_llvm) and LLVM_Rep_Is_Float (dst_llvm) and
               dst_llvm.bits < src_llvm.bits)
-            Emit_Float_Overflow_Check (result, dst_llvm, dst_type);
+            Emit_Float_Finite_Check (result, dst_llvm,
+                                     "value outside the target float type");
         }
 
         if (not integer_to_integer and Type_Has_Scalar_Representation (dst_type)) {
@@ -47545,6 +47570,7 @@ const char *Global_Initializer_Text (const Object_Shape *shape,
 
   } else if (Type_Is_Float_Representation (shape->type)) {
     double value = has_static_value ? float_value : 0.0;
+    if (shape->rep.bits == 32) value = (double) (float) value;
     if (value == 0.0) {
       snprintf (text, size, "%s 0.0", LLVM_Rep_Text (shape->rep));
     } else {

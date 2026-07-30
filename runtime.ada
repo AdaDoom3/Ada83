@@ -176,6 +176,11 @@ with SYSTEM;
 
 package body TEXT_IO is
 
+   -- The internal real type of TEXT_IO: real values are parsed and
+   -- rendered at this precision regardless of the width of FLOAT, so
+   -- instantiations for wider NUM types lose nothing in transit.
+   type LONG_REAL is digits 15;
+
    -- C runtime imports
    function C_Fopen(Name : SYSTEM.ADDRESS; Mode : SYSTEM.ADDRESS) return SYSTEM.ADDRESS;
    pragma Import(C, C_Fopen, "fopen");
@@ -1783,12 +1788,12 @@ package body TEXT_IO is
    -- digit is rounded half-up using one guard digit. FORE is the minimum width
    -- (sign + integer digits), left-padded with blanks; the exponent carries an
    -- explicit sign and at least EXP digits.
-   function Render_Real(Val : FLOAT; Fore, Aft, Exp : Integer) return String is
+   function Render_Real(Val : LONG_REAL; Fore, Aft, Exp : Integer) return String is
       Max_Digits : constant Integer := 128;
       Big_Max    : constant Integer := 800;
       type Mantissa_Int is range 0 .. 2 ** 53;
       Neg  : Boolean := Val < 0.0;
-      M    : FLOAT := abs (Val);
+      M    : LONG_REAL := abs (Val);
       DE   : Integer := 0;             -- value is D(0).D(1)D(2)... * 10**DE
       D    : array (0 .. Max_Digits) of Integer := (others => 0);
       Nsig : Integer;
@@ -1809,8 +1814,8 @@ package body TEXT_IO is
       BD    : array (0 .. Big_Max) of Integer := (others => 0);
       BDLen : Integer := 1;
       PP    : Integer := 0;
-      Two52 : constant FLOAT := 2.0 ** 52;
-      Two53 : constant FLOAT := 2.0 ** 53;
+      Two52 : constant LONG_REAL := 2.0 ** 52;
+      Two53 : constant LONG_REAL := 2.0 ** 53;
    begin
       if M /= 0.0 then
          -- Decompose |Val| into Mant * 2**E with Mant in [2**52, 2**53), an
@@ -1960,7 +1965,7 @@ package body TEXT_IO is
 
    -- Emit a real value in FORE.AFT[E+/-EXP] layout to a file,
    -- as a single item subject to the bounded line length.
-   procedure Format_Real(FILE : FILE_TYPE; Val : FLOAT;
+   procedure Format_Real(FILE : FILE_TYPE; Val : LONG_REAL;
                          Fore, Aft, Exp : Integer) is
       Img : constant String := Render_Real (Val, Fore, Aft, Exp);
    begin
@@ -1983,14 +1988,14 @@ package body TEXT_IO is
    -- any malformed input -- base out of 2..16, a digit outside the base, a
    -- mismatched or missing closing marker, misplaced underscores, or trailing
    -- junk -- which the caller turns into DATA_ERROR.
-   function Parse_Based_Real(S : String) return FLOAT is
+   function Parse_Based_Real(S : String) return LONG_REAL is
       I : Integer := S'First;
       Last : Integer := S'Last;
       Neg : Boolean := False;
       Base : Integer := 0;
-      Base_F : FLOAT;
-      Mant : FLOAT := 0.0;
-      Scale : FLOAT;
+      Base_F : LONG_REAL;
+      Mant : LONG_REAL := 0.0;
+      Scale : LONG_REAL;
       Marker : Character;
       D : Integer;
       Exp : Integer := 0;
@@ -2007,7 +2012,7 @@ package body TEXT_IO is
          Base := Base * 10 + (Character'Pos(S(I)) - 48); I := I + 1;
       end loop;
       if Base < 2 or Base > 16 then raise CONSTRAINT_ERROR; end if;
-      Base_F := FLOAT(Base);
+      Base_F := LONG_REAL(Base);
       if I > Last then raise CONSTRAINT_ERROR; end if;
       Marker := S(I);
       if Marker /= '#' and Marker /= ':' then raise CONSTRAINT_ERROR; end if;
@@ -2019,7 +2024,7 @@ package body TEXT_IO is
          D := Hex_Digit_Value(S(I));
          if D >= 0 then
             if D >= Base then raise CONSTRAINT_ERROR; end if;
-            Mant := Mant * Base_F + FLOAT(D); After := True; I := I + 1;
+            Mant := Mant * Base_F + LONG_REAL(D); After := True; I := I + 1;
          elsif S(I) = '_' and After then After := False; I := I + 1;
          else exit; end if;
       end loop;
@@ -2032,7 +2037,7 @@ package body TEXT_IO is
             D := Hex_Digit_Value(S(I));
             if D >= 0 then
                if D >= Base then raise CONSTRAINT_ERROR; end if;
-               Scale := Scale / Base_F; Mant := Mant + FLOAT(D) * Scale;
+               Scale := Scale / Base_F; Mant := Mant + LONG_REAL(D) * Scale;
                After := True; I := I + 1;
             elsif S(I) = '_' and After then After := False; I := I + 1;
             else exit; end if;
@@ -2061,7 +2066,7 @@ package body TEXT_IO is
       if I <= Last then raise CONSTRAINT_ERROR; end if;  -- trailing junk
 
       declare
-         P : FLOAT := 1.0;
+         P : LONG_REAL := 1.0;
       begin
          for K in 1 .. Exp loop P := P * Base_F; end loop;
          if Exp_Neg then Mant := Mant / P; else Mant := Mant * P; end if;
@@ -2075,12 +2080,12 @@ package body TEXT_IO is
    -- conversion is named here rather than reached through a real 'VALUE
    -- the language does not define; it strips the underscores RM 2.4.1
    -- allows and converts exactly.
-   function Decimal_Real_Value(S : String) return FLOAT;
+   function Decimal_Real_Value(S : String) return LONG_REAL;
    pragma Import(C, Decimal_Real_Value, "__ada_float_value");
 
    -- A real value from its literal text: based literals are evaluated here,
    -- ordinary decimal literals by the runtime's decimal conversion.
-   function Real_Value(S : String) return FLOAT is
+   function Real_Value(S : String) return LONG_REAL is
       Dot : Integer := 0;
    begin
       for I in S'Range loop
@@ -2264,7 +2269,7 @@ package body TEXT_IO is
       begin
          Require_Open(FILE.HANDLE);
          if FCBs(FILE.HANDLE).Mode = IN_FILE then raise MODE_ERROR; end if;
-         Format_Real(FILE, FLOAT(ITEM), Integer(FORE), Integer(AFT), Integer(EXP));
+         Format_Real(FILE, LONG_REAL(ITEM), Integer(FORE), Integer(AFT), Integer(EXP));
       end PUT;
 
       procedure PUT(ITEM : in NUM; FORE : in FIELD := DEFAULT_FORE;
@@ -2294,7 +2299,7 @@ package body TEXT_IO is
 
       procedure PUT(TO : out STRING; ITEM : in NUM; AFT : in FIELD := DEFAULT_AFT;
                     EXP : in FIELD := DEFAULT_EXP) is
-         Img : constant String := Render_Real(FLOAT(ITEM), 1, Integer(AFT), Integer(EXP));
+         Img : constant String := Render_Real(LONG_REAL(ITEM), 1, Integer(AFT), Integer(EXP));
       begin
          if Img'Length > TO'Length then raise LAYOUT_ERROR; end if;
          for I in TO'Range loop TO(I) := ' '; end loop;
@@ -2320,7 +2325,7 @@ package body TEXT_IO is
             V : NUM;
          begin
             -- A fixed-point value is read as a real literal and converted
-            -- to the type via FLOAT (rounding to the nearest multiple of its
+            -- to the type via LONG_REAL (rounding to the nearest multiple of its
             -- small), since the literal syntax is the real one.
             V := NUM (Real_Value (Buf (1 .. Len)));
             if V < NUM'FIRST or V > NUM'LAST then raise DATA_ERROR; end if;
@@ -2341,7 +2346,7 @@ package body TEXT_IO is
       begin
          Require_Open(FILE.HANDLE);
          if FCBs(FILE.HANDLE).Mode = IN_FILE then raise MODE_ERROR; end if;
-         Format_Real(FILE, FLOAT(ITEM), Integer(FORE), Integer(AFT), Integer(EXP));
+         Format_Real(FILE, LONG_REAL(ITEM), Integer(FORE), Integer(AFT), Integer(EXP));
       end PUT;
 
       procedure PUT(ITEM : in NUM; FORE : in FIELD := DEFAULT_FORE;
@@ -2371,7 +2376,7 @@ package body TEXT_IO is
 
       procedure PUT(TO : out STRING; ITEM : in NUM; AFT : in FIELD := DEFAULT_AFT;
                     EXP : in FIELD := DEFAULT_EXP) is
-         Img : constant String := Render_Real(FLOAT(ITEM), 1, Integer(AFT), Integer(EXP));
+         Img : constant String := Render_Real(LONG_REAL(ITEM), 1, Integer(AFT), Integer(EXP));
       begin
          if Img'Length > TO'Length then raise LAYOUT_ERROR; end if;
          for I in TO'Range loop TO(I) := ' '; end loop;
