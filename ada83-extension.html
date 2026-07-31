@@ -655,14 +655,25 @@ const Style_Rules = (Root) =>
         : Text.slice (Text.indexOf (Style_Heading))))
     (Manual_Text (Root));
 
+const Strengths = {
+  indentation: 'Change only the leading whitespace of each line. Leave every ' +
+               'other character exactly where it is.',
+  layout: 'Change only whitespace: indentation, the alignment of declarations ' +
+          'and comments, and where long lines break. Do not change the casing ' +
+          'of anything.',
+  style: 'Change layout, the casing of reserved words and identifiers, the ' +
+         'canonical spelling of predefined names, and where comments sit.',
+};
+
+const Strength_Of = () =>
+  Strengths[Configured ('formatStrength', 'style')] ?? Strengths.style;
+
 const Reformat_Instruction = (Rules, Source) =>
   ['Rewrite the Ada 83 source below so that it follows the style rules that',
-   'come after it. Change only layout, the casing of reserved words and',
-   'identifiers, and where comments sit. Do not change what the program',
-   'does: add and remove nothing, reorder nothing, and spell no name',
-   'differently except in its casing. Ada 83 only, so nothing from a later',
-   'Ada. Answer with the rewritten source alone, with no explanation and no',
-   'code fence.',
+   'come after it.', Strength_Of (), 'Do not change what the program does:',
+   'add and remove nothing, reorder nothing, and spell no name differently',
+   'except in its casing. Ada 83 only, so nothing from a later Ada. Answer',
+   'with the rewritten source alone, with no explanation and no code fence.',
    '', 'The source:', '', Source, '', 'The rules:', '', Rules].join ('\n');
 
 const Unfenced = (Text) =>
@@ -733,9 +744,47 @@ const Formatting_Provider = (Root) => ({
 const Reformat_Command = () =>
   vscode.commands.executeCommand ('editor.action.formatDocument');
 
+const Opens_A_Block =
+  /(?:^|\s)(?:is|then|loop|record|declare|select|begin|do|else|private|generic)\s*$/i;
+const Closes_A_Block = /^\s*(?:end|elsif|else|exception|when|begin|private|or)\b/i;
+const Indent_Width = 2;
+
+const Indent_Of = (Line) => (/^\s*/.exec (Line))[0].length;
+
+const Standing_Before = (Document, Line) =>
+  ((Earlier) =>
+     (Earlier.length === 0 ? null : Earlier[Earlier.length - 1]))
+    (Array.from ({ length: Line }, (Ignored, Index) => Document.lineAt (Index))
+          .filter (({ text }) => text.trim () !== '' &&
+                                 !/^\s*--/.test (text)));
+
+const Wanted_Indent = (Document, Line) =>
+  ((Previous, Present) =>
+     (Previous === null
+        ? 0
+        : Math.max (0, Indent_Of (Previous.text) +
+                       (Opens_A_Block.test (Previous.text.replace (/--.*$/, ''))
+                          ? Indent_Width : 0) -
+                       (Closes_A_Block.test (Present) ? Indent_Width : 0))))
+    (Standing_Before (Document, Line), Document.lineAt (Line).text);
+
+const Reindented = (Document, Line) =>
+  ((Present, Wanted) =>
+     (Present.text.trim () === '' || Indent_Of (Present.text) === Wanted
+        ? []
+        : [vscode.TextEdit.replace (
+             new vscode.Range (Line, 0, Line, Indent_Of (Present.text)),
+             ' '.repeat (Wanted))]))
+    (Document.lineAt (Line), Wanted_Indent (Document, Line));
+
+const On_Type_Provider = {
+  provideOnTypeFormattingEdits: (Document, Position) =>
+    Reindented (Document, Position.line),
+};
+
 const Reformat_On_Save = (Root) => (Event) =>
   ((Document) => {
-     if (Configured ('autoFormat', 'off') !== 'onSave' ||
+     if (!Configured ('formatOnSave', false) ||
          !Is_Ada_Document (Document)) return;
      Event.waitUntil (
        Reformatted (Root, Document, Event.token ?? undefined)
@@ -752,6 +801,12 @@ const Reformat_Registration = (Root) =>
          Ada_Selector, Formatting_Provider (Root)),
        vscode.commands.registerCommand ('ada83.reformat', Reformat_Command),
        vscode.workspace.onWillSaveTextDocument (Reformat_On_Save (Root))];
+
+const On_Type_Registration = () =>
+  Configured ('formatOnType', false)
+    ? [vscode.languages.registerOnTypeFormattingEditProvider (
+         Ada_Selector, On_Type_Provider, '\n', ';')]
+    : [];
 
 const Ada_Selector = { scheme: 'file', language: 'ada83' };
 
@@ -965,7 +1020,8 @@ const activate = (Context) => {
                                      () => Output.show (true)),
     vscode.tasks.registerTaskProvider ('ada83', Task_Provider),
     ...Manual_Registration (Context.extensionPath),
-    ...Reformat_Registration (Context.extensionPath));
+    ...Reformat_Registration (Context.extensionPath),
+    ...On_Type_Registration ());
 };
 
 const deactivate = Stop;
@@ -1088,18 +1144,30 @@ module.exports = { activate, deactivate };
           "default": [],
           "description": "Directories searched for with-ed units, beyond the file's own and the workspace root. ${workspaceFolder} is substituted."
         },
-        "ada83.autoFormat": {
+        "ada83.formatOnType": {
+          "type": "boolean",
+          "default": false,
+          "description": "Reindent the line as you type it, by the manual's two-space rule. This is worked out here rather than asked of anything, so it is immediate and costs nothing."
+        },
+        "ada83.formatOnSave": {
+          "type": "boolean",
+          "default": false,
+          "description": "Reformat the whole file as it is saved. This asks a language model to apply the manual's style rules and keeps the answer only if it still compiles, so it costs a request per save."
+        },
+        "ada83.formatStrength": {
           "type": "string",
           "enum": [
-            "off",
-            "onSave"
+            "indentation",
+            "layout",
+            "style"
           ],
           "enumDescriptions": [
-            "Reformat only when asked.",
-            "Reformat every Ada 83 file as it is saved."
+            "Only the leading whitespace of each line.",
+            "All whitespace: indentation, alignment and where long lines break.",
+            "Everything the manual specifies, including casing and where comments sit."
           ],
-          "default": "off",
-          "description": "Apply the manual's style rules as you go. Reformatting asks a language model to apply them and keeps the result only if it still compiles, so it costs a request per save."
+          "default": "style",
+          "description": "How much a reformat is allowed to change."
         },
         "ada83.syncDelay": {
           "type": "number",
