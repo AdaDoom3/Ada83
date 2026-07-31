@@ -35,7 +35,7 @@ echo   help       Displays this help.
 echo.
 echo Makes with GCC, Clang or Zig, whichever is found first.
 echo.
-echo LLVM-C.dll and its companion DLLs are unpacked from LLVM-C.zip
+echo LLVM-C.dll and its companion DLLs are unpacked from llvm.zip
 echo and must stay with ada83.exe, which loads them when it runs.
 exit /b 0
 
@@ -63,18 +63,18 @@ exit /b 1
 
 :unpack_llvm
 if exist LLVM-C.dll exit /b 0
-if not exist LLVM-C.zip (
-    echo Cannot find LLVM-C.dll or LLVM-C.zip.
+if not exist llvm.zip (
+    echo Cannot find LLVM-C.dll or llvm.zip.
     exit /b 1
 )
 echo Unpacking LLVM-C.dll...
-tar -xf LLVM-C.zip >nul 2>nul
+tar -xf llvm.zip >nul 2>nul
 if not exist LLVM-C.dll (
     powershell -NoProfile -Command ^
-        "Expand-Archive -LiteralPath 'LLVM-C.zip' -DestinationPath '.' -Force" >nul 2>nul
+        "Expand-Archive -LiteralPath 'llvm.zip' -DestinationPath '.' -Force" >nul 2>nul
 )
 if not exist LLVM-C.dll (
-    echo Cannot unpack LLVM-C.zip. Extract it here by hand and try again.
+    echo Cannot unpack llvm.zip. Extract it here by hand and try again.
     exit /b 1
 )
 exit /b 0

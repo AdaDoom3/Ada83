@@ -361,13 +361,11 @@ appendices, and an index.
 Each chapter is divided into sections that have a common structure. Each
 section introduces its subject, gives any necessary syntax rules, and
 describes the semantics of the corresponding language constructs. Examples
-and notes, and then references, may appear at the end of a section.
+and notes may appear at the end of a section.
 
 Examples are meant to illustrate the possible forms of the constructs
 described. Notes are meant to emphasize consequences of the rules
-described in the section or elsewhere. References are meant to attract the
-attention of readers to a term or phrase having a technical meaning defined
-in another section.
+described in the section or elsewhere.
 
 The standard definition of the Ada programming language consists of the
 fourteen chapters and the three annexes, subject to the following
@@ -820,9 +818,6 @@ of characters; the rules of composition are given in this chapter.
 Pragmas, which provide certain information for the compiler, are also
 described in this chapter.
 
-References: character 2.1, compilation 10.1, lexical element 2.2, pragma
-2.8
-
 
 ### 2.1 Character Set
 
@@ -1001,10 +996,6 @@ The following names are used when referring to compound delimiters:
 
 ```
 
-References: character literal 2.5, comment 2.7, compilation 10.1, format
-effector 2.1, identifier 2.3, numeric literal 2.4, reserved word 2.9, space
-character 2.1, special character 2.1, string literal 2.6
-
 
 ### 2.3 Identifiers
 
@@ -1042,8 +1033,6 @@ Examples:
 Note:
 
 No space is allowed within an identifier since a space is a separator.
-References: digit 2.1, lower case letter 2.1, name 4.1, reserved word 2.9,
-separator 2.2, space character 2.1, upper case letter 2.1
 
 
 ### 2.4 Numeric Literals
@@ -1056,8 +1045,6 @@ the literals of the type universal_real. Integer literals are the literals
 of the type universal_integer.
 
     numeric_literal ::= decimal_literal | based_literal
-
-References: literal 4.2, universal_integer type 3.5.4, universal_real type 3.5.6
 
 
 #### 2.4.1 Decimal Literals
@@ -1106,9 +1093,6 @@ Leading zeros are allowed. No space is allowed in a numeric literal, not
 even between constituents of the exponent, since a space is a separator. A
 zero exponent is allowed for an integer literal.
 
-References: digit 2.1, lower case letter 2.1, numeric literal 2.4,
-separator 2.2, space character 2.1, upper case letter 2.1
-
 
 #### 2.4.2 Based Literals
 
@@ -1150,9 +1134,6 @@ Examples:
   16#E#E1 2#1110_0000 # -- integer literals of value 224
   16#F.FF#E+2 2#1.1111_1111_111#E11 -- real literals of value 4095.0
 
-References: digit 2.1, exponent 2.4.1, letter 2.3, lower case letter 2.1,
-numeric literal 2.4, upper case letter 2.1
-
 
 ### 2.5 Character Literals
 
@@ -1166,9 +1147,6 @@ character literal has a value that belongs to a character type.
 Examples:
 
     'A' '*' ''' ' '
-
-References: character type 3.5.2, graphic character 2.1, literal 4.2,
-space character 2.1
 
 
 ### 2.6 String Literals
@@ -1224,10 +1202,6 @@ characters). Examples of such uses of catenation are given below:
 
 ```
 
-References: ascii predefined package C, catenation operation 4.5.3,
-character value 3.5.2, constant 3.2.1, declaration 3.1, end of a line 2.2,
-graphic character 2.1, lexical element 2.2
-
 
 ### 2.7 Comments
 
@@ -1257,8 +1231,6 @@ Note:
 
 Horizontal tabulation can be used in comments, after the double hyphen,
 and is equivalent to one or more spaces (see 2.2).
-
-References: end of a line 2.2, illegal 1.6, legal 1.6, space character 2.1
 
 
 ### 2.8 Pragmas
@@ -1336,24 +1308,6 @@ Note:
 It is recommended (but not required) that implementations issue warnings
 for pragmas that are not recognized and therefore ignored.
 
-References: compilation unit 10.1, delimiter 2.2, discriminant part 3.7.1,
-exception handler 11.2, expression 4.4, formal part 6.1, identifier 2.3,
-implementation-defined pragma F, language-defined pragma B, legal 1.6, name
-4.1, reserved word 2.9, statement 5, static expression 4.9, variant 3.7.3,
-visibility 8.3
-
-Categories ending with "declaration" comprise: basic declaration 3.1,
-component declaration 3.7, entry declaration 9.5, generic parameter
-declaration 12.1
-
-Categories ending with "clause" comprise: alignment clause 13.4, component
-clause 13.4, context clause 10.1.1, representation clause 13.1, use clause
-8.4, with clause 10.1.1
-
-Categories ending with "alternative" comprise: accept alternative 9.7.1,
-case statement alternative 5.4, delay alternative 9.7.1, select alternative
-9.7.1, selective wait alternative 9.7.1, terminate alternative 9.7.1
-
 
 ### 2.9 Reserved Words
 
@@ -1392,8 +1346,6 @@ Reserved words differing only in the use of corresponding upper and lower
 case letters are considered as the same (see 2.3). In some attributes the
 identifier that appears after the apostrophe is identical to some reserved
 word.
-References: attribute 4.1.4, declaration 3.1, identifier 2.3, lower case
-letter 2.1, upper case letter 2.1
 
 
 ### 2.10 Allowable Replacements of Characters
@@ -1442,12 +1394,6 @@ declared in the predefined package ASCII. Thus the string literal "AB$CD"
 could be replaced by "AB" & ASCII.DOLLAR & "CD". Similarly, the string
 literal "ABcd" with lower case letters could be replaced by "AB" &
 ASCII.LC_C & ASCII.LC_D.
-
-References: ascii predefined package C, based literal 2.4.2, basic
-character 2.1, catenation operation 4.5.3, character value 3.5.2, delimiter
-2.2, graphic character 2.1, graphical symbol 2.1, identifier 2.3, lexical
-element 2.2, lower case letter 2.1, numeric literal 2.4, string bracket
-2.6, string literal 2.6, upper case letter 2.1
 
 
 
@@ -1539,21 +1485,6 @@ The syntax rules use the term identifier for the first occurrence of an
 identifier in some form of declaration; the term simple name is used for
 any occurrence of an identifier that already denotes some declared entity.
 
-References: attribute 4.1.4, block name 5.6, block statement 5.6,
-character literal 2.5, component declaration 3.7, declarative item 3.9,
-declarative part 3.9, deferred constant declaration 7.4, discriminant
-specification 3.7.1, elaboration 3.9, entry declaration 9.5, enumeration
-literal specification 3.5.1, exception declaration 11.1, generic
-declaration 12.1, generic instantiation 12.3, generic parameter declaration
-12.1, identifier 2.3, label 5.1, loop name 5.5, loop parameter
-specification 5.5, loop statement 5.5, name 4.1, number declaration 3.2.2,
-numeric literal 2.4, object declaration 3.2.1, operation 3.3, operator
-symbol 6.1, package declaration 7.1, parameter specification 6.1, record
-component 3.7, renaming declaration 8.5, representation clause 13.1, scope
-8.2, simple name 4.1, subprogram body 6.3, subprogram declaration 6.1,
-subtype declaration 3.3.2, task declaration 9.1, type declaration 3.3.1,
-visibility 8.3
-
 
 ### 3.2 Objects and Named Numbers
 
@@ -1626,16 +1557,6 @@ Example:
     Paul : Person_Name := new Person(Sex => M);
 
 ```
-
-References: access type 3.8, constrained array definition 3.6, component
-3.3, declaration 3.1, deferred constant declaration 7.4, designate 3.8,
-discriminant specification 3.7.1, entry 9.5, exception declaration 11.1,
-expression 4.4, formal parameter 6.1, generic formal object 12.1.1, generic
-parameter declaration 12.1, generic unit 12, generic subprogram 12.1,
-identifier 2.3, loop parameter 5.5, numeric type 3.5, parameter
-specification 6.1, scope 8.2, simple name 4.1, single task declaration 9.1,
-slice 4.1.2, static expression 4.9, subprogram 6, subtype indication 3.3.2,
-type 3.3, universal_integer type 3.5.4, universal_real type 3.5.6
 
 
 #### 3.2.1 Object Declarations
@@ -1769,19 +1690,6 @@ expression (see 4.9). In the above examples, LIMIT and LOW_LIMIT are
 initialized with static expressions, but TOLERANCE is not if DISPERSION is
 a user-defined function.
 
-References: access type 3.8, assignment 5.2, assignment compound delimiter
-5.2, component 3.3, composite type 3.3, constrained array definition 3.6,
-constrained subtype 3.3, constraint_error exception 11.1, conversion 4.6,
-declaration 3.1, default expression for a discriminant 3.7, default initial
-value for an access type 3.8, depend on a discriminant 3.7.1, designate
-3.8, discriminant 3.3, elaboration 3.9, entry 9.5, evaluation 4.5,
-expression 4.4, formal parameter 6.1, generic formal parameter 12.1 12.3,
-generic unit 12, in some order 1.6, limited type 7.4.4, mode in 6.1,
-package 7, predefined operator 4.5, primary 4.4, private type 7.4,
-qualified expression 4.7, reserved word 2.9, scalar type 3.5, slice 4.1.2,
-subcomponent 3.3, subprogram 6, subtype 3.3, subtype indication 3.3.2, task
-9, task type 9.2, type 3.3, visible part 7.2
-
 
 #### 3.2.2 Number Declarations
 
@@ -1807,10 +1715,6 @@ Examples of number declarations:
   MAX : constant := 5 -- an integer number
   POWER_16 : constant := 2**16; -- the integer 65_536
   ONE, UN, EINS : constant := 1; -- three different names for 1
-
-References: identifier 2.3, primary 4.4, static expression 4.9, type 3.3,
-universal_integer type 3.5.4, universal_real type 3.5.6, universal type
-4.1 4
 
 
 ### 3.3 Types and Subtypes
@@ -1874,12 +1778,6 @@ Note:
 
 The set of values of a subtype is a subset of the values of the base type.
 This subset need not be a proper subset; it can be an empty subset.
-
-References: access type 3.8, array type 3.6, assignment 5.2, attribute
-4.1.4, component of an array 3.6, component of a record 3.7, discriminant
-constraint 3.7.2, enumeration type 3.5.1, integer type 3.5.4, object 3.2.1,
-private type 7.4, qualified expression 4.7, real type 3.5.6, record type
-3.7, subtype declaration 3.3.2, task type 9.1, type declaration 3.3.1
 
 
 #### 3.3.1 Type Declarations
@@ -1968,15 +1866,6 @@ mutually dependent types (see 3.8.1). Private type declarations are used
 in package specifications and in generic parameter declarations (see 7.4
 and 12.1).
 
-References: access type definition 3.8, array type definition 3.6, base
-type 3.3, constrained array definition 3.6, constrained subtype 3.3,
-declaration 3.1, derived type 3.4, derived type definition 3.4,
-discriminant part 3.7.1, elaboration 3.9, enumeration type definition
-3.5.1, identifier 2.3, incomplete type declaration 3.8.1, integer type
-definition 3.5.4, multiple object declaration 3.2, numeric type 3.5,
-private type declaration 7.4, real type definition 3.5.6, reserved word
-2.9, type 3.3
-
 
 #### 3.3.2 Subtype Declarations
 
@@ -2049,16 +1938,6 @@ Note:
 
 A subtype declaration does not define a new type.
 
-References: base type 3.3, compatibility of discriminant constraints
-3.7.2, compatibility of fixed point constraints 3.5.9, compatibility of
-floating point constraints 3.5.7, compatibility of index constraints 3.6.1,
-compatibility of range constraints 3.5, constraint_error exception 11.1,
-declaration 3.1, discriminant 3.3, discriminant constraint 3.7.2,
-elaboration 3.9, evaluation 4.5, expression 4.4, floating point constraint
-3.5.7, fixed point constraint 3.5.9, index constraint 3.6.1, range
-constraint 3.5, reserved word 2.9, subtype 3.3, type 3.3, type name 3.3.1,
-unconstrained subtype 3.3
-
 
 #### 3.3.3 Classification of Operations
 
@@ -2114,17 +1993,6 @@ functions, attributes, and predefined operators. Assignment is an
 operation that operates on an object and a value. The evaluation of the
 operation corresponding to a selected component, an indexed component, or a
 slice, yields the object or value denoted by this form of name.
-
-References: aggregate 4.3, allocator 4.8, assignment 5.2, attribute 4.1.4,
-character literal 2.5, composite type 3.3, conversion 4.6, derived
-subprogram 3.4, enumeration literal 3.5.1, formal parameter 6.1, function
-6.5, indexed component 4.1.1, initial value 3.2.1, literal 4.2, membership
-test 4.5 4.5.2, null literal 3.8, numeric literal 2.4, numeric type 3.5,
-object 3.2.1, 6.1, predefined operator 4.5, qualified expression 4.7,
-selected component 4.1.3, short-circuit control form 4.5 4.5.1, slice
-4.1.2, string literal 2.6, subprogram 6, subtype 3.3, type 3.3, type
-declaration 3.3.1, universal_integer type 3.5.4, universal_real type 3.5.6,
-universal type 4.1 4
 
 
 ### 3.4 Derived Types
@@ -2298,22 +2166,6 @@ For a derived subprogram, if a parameter belongs to the derived type, the
 subtype of this parameter need not have any value in common with the
 derived subtype.
 
-References: access value 3.8, actual parameter 6.4.1, aggregate 4.3,
-attribute 4.1.4, base type 3.3, basic operation 3.3.3, boolean type 3.5.3,
-bound of a range 3.5, class of type 3.3, collection 3.8, component 3.3,
-composite type 3.3, constraint 3.3, conversion 4.6, declaration 3.1,
-declarative region 8.1, default expression 3.2.1, default initial value for
-an access type 3.8, discriminant 3.3, elaboration 3.9, entry 9.5,
-enumeration literal 3.5.1, floating point constraint 3.5.7, fixed point
-constraint 3.5.9, formal parameter 6.1, function call 6.4, generic
-declaration 12.1, immediately within 8.1, implicit declaration 3.1, literal
-4.2, mode 6.1, overloading 6.6 8.7, package 7, package specification 7.1,
-parameter association 6.4, predefined operator 4.5, private type 7.4,
-procedure 6, procedure call statement 6.4, range constraint 3.5,
-representation clause 13.1, reserved word 2.9, slice 4.1.2, subprogram 6,
-subprogram specification 6.1, subtype indication 3.3.2, subtype 3.3, type
-3.3, type definition 3.3.1, visible part 7.2
-
 
 ### 3.5 Scalar Types
 
@@ -2374,13 +2226,6 @@ T'LAST Yields the upper bound of T. The value of this attribute has
 Note:
 
 Indexing and iteration rules use values of discrete types.
-
-References: attribute 4.1.4, constraint 3.3, enumeration type 3.5.1,
-erroneous 1.6, evaluation 4.5, fixed point constraint 3.5.9, floating point
-constraint 3.5.7, index 3.6, integer type 3.5.4, loop statement 5.5, range
-attribute 3.6.2, real type 3.5.6, relational operator 4.5 4.5.2, satisfy a
-constraint 3.3, simple expression 4.4, subtype indication 3.3.2, type mark
-3.3.2
 
 
 #### 3.5.1 Enumeration Types
@@ -2444,11 +2289,6 @@ If an enumeration literal occurs in a context that does not otherwise
 suffice to determine the type of the literal, then qualification by the
 name of the enumeration type is one way to resolve the ambiguity (see 8.7).
 
-References: character literal 2.5, declaration 3.1, designator 6.1,
-elaboration 3.9, 6.1, function 6.5, identifier 2.3, name 4.1, overloading
-6.6 8.7, position number 3.5, qualified expression 4.7, relational operator
-4.5 4.5.2, type 3.3, type definition 3.3.1
-
 
 #### 3.5.2 Character Types
 
@@ -2475,10 +2315,6 @@ A conventional character set such as EBCDIC can be declared as a character
 type; the internal codes of the characters can be specified by an
 enumeration representation clause as explained in section 13.3.
 
-References: ascii predefined package C, basic character 2.1, character
-literal 2.5, constant 3.2.1, declaration 3.1, enumeration type 3.5.1,
-graphic character 2.1, identifier 2.3, literal 4.2, predefined type C, type 3.3
-
 
 #### 3.5.3 Boolean Types
 
@@ -2487,9 +2323,6 @@ There is a predefined enumeration type named BOOLEAN. It contains the two
 literals FALSE and TRUE ordered with the relation FALSE < TRUE. A boolean
 type is either the type BOOLEAN or a type that is derived, directly or
 indirectly, from a boolean type.
-
-References: derived type 3.4, enumeration literal 3.5.1, enumeration type
-3.5.1, relational operator 4.5 4.5.2, type 3.3
 
 
 #### 3.5.4 Integer Types
@@ -2580,13 +2413,6 @@ CONSTRAINT_ERROR.
 The smallest (most negative) value supported by the predefined integer
 types of an implementation is the named number SYSTEM.MIN_INT and the
 largest (most positive) value is SYSTEM.MAX_INT (see 13.7).
-
-References: anonymous type 3.3.1, belong to a subtype 3.3, bound of a
-range 3.5, constraint_error exception 11.1, conversion 4.6, identifier 2.3,
-integer literal 2.4, literal 4.2, numeric_error exception 11.1, parent type
-3.4, predefined operator 4.5, range constraint 3.5, static expression 4.9,
-subtype declaration 3.3.2, system predefined package 13.7, type 3.3, type
-declaration 3.3.1, type definition 3.3.1, universal type 4.1 4
 
 
 #### 3.5.5 Operations of Discrete Types
@@ -2756,20 +2582,6 @@ Examples:
 
 ```
 
-References: abs operator 4.5 4.5.6, assignment 5.2, attribute 4.1.4, base
-type 3.3, basic operation 3.3.3, binary adding operator 4.5 4.5.3, boolean
-type 3.5.3, bound of a range 3.5, character literal 2.5, constraint 3.3,
-constraint_error exception 11.1, conversion 4.6, discrete type 3.5,
-enumeration literal 3.5.1, exponentiating operator 4.5 4.5.6, function 6.5,
-graphic character 2.1, identifier 2.3, integer type 3.5.4, logical operator
-4.5 4.5.1, membership test 4.5 4.5.2, multiplying operator 4.5 4.5.5, not
-operator 4.5 4.5.6, numeric literal 2.4, numeric type 3.5, object 3.2,
-operation 3.3, position number 3.5, predefined operator 4.5, predefined
-type C, qualified expression 4.7, relational operator 4.5 4.5.2,
-short-circuit control form 4.5 4.5.1, string type 3.6.3, subtype 3.3, type
-3.3, unary adding operator 4.5 4.5.4, universal_integer type 3.5.4,
-universal type 4.1 4
-
 
 #### 3.5.6 Real Types
 
@@ -2829,11 +2641,6 @@ Note:
 An algorithm written to rely only upon the minimum numerical properties
 guaranteed by the type definition for model numbers will be portable
 without further precautions.
-
-References: conversion 4.6, elaboration 3.9, fixed point constraint 3.5.9,
-floating point constraint 3.5.7, literal 4.2, numeric_error exception 11.1,
-predefined operation 3.3.3, real literal 2.4, type 3.3, type definition
-3.3.1, universal type 4.10
 
 
 #### 3.5.7 Floating Point Types
@@ -2992,15 +2799,6 @@ the specified upper bound (1.0E35). Consequently the declaration of this
 type is legal only if this upper bound is in the range of the safe numbers
 of a predefined floating point type having at least 7 digits of precision.
 
-References: anonymous type 3.3.1, arithmetic operator 3.5.5 4.5, based
-literal 2.4.2, belong to a subtype 3.3, bound of a range 3.5, compatible
-3.3.2, derived type 3.4, digit 2.1, elaboration 3.1 3.9, error bound 3.5.6,
-exponent 2.4.1 integer type 3.5.4, model number 3.5.6, operation 3.3,
-predefined operator 4.5, predefined type C, range constraint 3.5, real type
-3.5.6, real type definition 3.5.6, safe number 3.5.6, simple expression
-4.4, static expression 4.9, subtype declaration 3.3.2, subtype indication
-3.3.2, subtype 3.3, type 3.3, type declaration 3.3.1, type mark 3.3.2
-
 
 #### 3.5.8 Operations of Floating Point Types
 
@@ -3121,17 +2919,6 @@ characteristics of the model numbers and those of the safe numbers:
 The attributes T'FIRST and T'LAST need not yield model or safe numbers. If
 a certain number of digits is specified in the declaration of a type or
 subtype T, the attribute T'DIGITS yields this number.
-
-References: abs operator 4.5 4.5.6, arithmetic operator 3.5.5 4.5,
-assignment 5.2, attribute 4.1.4, base type 3.3, basic operation 3.3.3,
-binary adding operator 4.5 4.5.3, bound of a range 3.5, constraint 3.3,
-conversion 4.6, digit 2.1, exponentiating operator 4.5 4.5.6, floating
-point type 3.5.7, membership test 4.5 4.5.2, model number 3.5.6,
-multiplying operator 4.5 4.5.5, numeric type 3.5, object 3.2, operation
-3.3, predefined operator 4.5, qualified expression 4.7, relational operator
-4.5 4.5.2, safe number 3.5.6, subtype 3.3, type 3.3, unary adding operator
-4.5 4.5.4, universal type 4.10, universal_integer type 3.5.4,
-universal_real type 3.5.6
 
 
 #### 3.5.9 Fixed Point Types
@@ -3272,15 +3059,6 @@ Examples:
 
 ```
 
-References: anonymous type 3.3.1, arithmetic operator 3.5.5 4.5, base type
-3.3, belong to a subtype 3.3, bound of a range 3.5, compatible 3.3.2,
-conversion 4.6, elaboration 3.9, error bound 3.5.6, length clause 13.2,
-model number 3.5.6, numeric type 3.5, operation 3.3, predefined operator
-4.5, range constraint 3.5, real type 3.5.6, real type definition 3.5.6,
-safe number 3.5.6, simple expression 4.4, static expression 4.9, subtype
-3.3, subtype declaration 3.3.2, subtype indication 3.3.2, type 3.3, type
-declaration 3.3.1, type mark 3.3.2
-
 
 #### 3.5.10 Operations of Fixed Point Types
 
@@ -3384,15 +3162,6 @@ The following relations exist between attributes of a fixed point type:
 
 
 ```
-
-References: abs operator 4.5 4.5.6, arithmetic operator 3.5.5 4.5,
-assignment 5.2, base type 3.3, basic operation 3.3.3, binary adding
-operator 4.5 4.5.3, bound of a range 3.5, conversion 4.6, delta 3.5.9,
-fixed point type 3.5.9, membership test 4.5 4.5.2, model number 3.5.6,
-multiplying operator 4.5 4.5.5, numeric type 3.5, object 3.2, operation
-3.3, qualified expression 4.7, relational operator 4.5 4.5.2, safe number
-3.5.6, subtype 3.3, unary adding operator 4.5 4.5.4, universal_integer type
-3.5.4, universal_real type 3.5.6
 
 
 ### 3.6 Array Types
@@ -3540,11 +3309,6 @@ A similar transformation applies to an object whose declaration includes a
 constrained array definition. A consequence of this is that no two such
 objects have the same type.
 
-References: anonymous type 3.3.1, bound of a range 3.5, component 3.3,
-constraint 3.3, discrete type 3.5, elaboration 3.1 3.9, in some order 1.6,
-name 4.1, object 3.2, range 3.5, subtype 3.3, subtype indication 3.3.2,
-type 3.3, type declaration 3.3.1, type definition 3.3.1, type mark 3.3.2
-
 
 #### 3.6.1 Index Constraints and Discrete Ranges
 
@@ -3677,23 +3441,6 @@ All components of an array have the same subtype. In particular, for an
 array of components that are one-dimensional arrays, this means that all
 components have the same bounds and hence the same length.
 
-References: access type 3.8, access type definition 3.8, access value 3.8,
-actual parameter 6.4.1, allocator 4.8, array bound 3.6, array component
-3.6, array type 3.6, array type definition 3.6, bound of a range 3.5,
-compatible 3.3.2, component declaration 3.7, constant 3.2.1, constrained
-array definition 3.6, constrained array subtype 3.6, conversion 4.6,
-designate 3.8, designated type 3.8, discrete range 3.6, entry 9.5, entry
-family declaration 9.5, expression 4.4, formal parameter 6.1, function 6.5,
-generic actual parameter 12.3, generic formal parameter 12.1 12.3, generic
-parameter 12.1, index 3.6, index constraint 3.6.1, index subtype 3.6,
-initial value 3.2.1, integer literal 2.4, integer type 3.5.4, iteration
-rule 5.5, mode 12.1.1, name 4.1, null range 3.5, object 3.2, object
-declaration 3.2.1, predefined type C, range 3.5, record component 3.7,
-renaming declaration 8.5, result subtype 6.1, satisfy 3.3, subprogram 6,
-subtype conversion 4.6, subtype indication 3.3.2, type mark 3.3.2,
-unconstrained array type 3.6, unconstrained subtype 3.3, universal type
-4.10, universal_integer type 3.5.4, variable 3.2.1
-
 
 #### 3.6.2 Operations of Array Types
 
@@ -3783,17 +3530,6 @@ attributes if the index type is an integer type:
 
 An array type is limited if its component type is limited (see 7.4.4).
 
-References: aggregate 4.3, array type 3.6, assignment 5.2, attribute
-4.1.4, basic operation 3.3.3, bound of a range 3.5, catenation operator 4.5
-4.5.3, character type 3.5.2, constrained array subtype 3.6, conversion 4.6,
-designator 6.1, dimension 3.6, index 3.6, indexed component 4.1.1, limited
-type 7.4.4, logical operator 4.5 4.5.1, membership test 4.5 4.5.2, not
-operator 4.5 4.5.6, null range 3.5, object 3.2, operation 3.3, predefined
-operator 4.5, qualified expression 4.7, relational operator 4.5 4.5.2,
-slice 4.1.2, static expression 4.9, string literal 2.6, subcomponent 3.3,
-type 3.3, unconstrained array type 3.6, universal type 4.10,
-universal_integer type 3.5.4
-
 
 #### 3.6.3 The Type String
 
@@ -3832,12 +3568,6 @@ type is a character type. The catenation operator is a predefined operator
 for the type STRING and for one-dimensional array types; it is represented
 as &. The relational operators <, <=, >, and >= are defined for values of
 these types, and correspond to lexicographic order (see 4.5.2).
-
-References: aggregate 4.3, array 3.6, catenation operator 4.5 4.5.3,
-character type 3.5.2, component type (of an array) 3.6, dimension 3.6,
-index 3.6, lexicographic order 4.5.2, positional aggregate 4.3, predefined
-operator 4.5, predefined type C, relational operator 4.5 4.5.2, string
-literal 2.6, subtype 3.3, type 3.3
 
 
 ### 3.7 Record Types
@@ -3946,12 +3676,6 @@ of single component declarations).
 Unlike the components of an array, the components of a record need not be
 of the same type.
 
-References: assignment compound delimiter 2.2, component 3.3, composite
-value 3.3, constraint 3.3, declaration 3.1, depend on a discriminant 3.7.1,
-discriminant 3.3, discriminant part 3.7 3.7.1, elaboration 3.9, expression
-4.4, identifier 2.3, identifier list 3.2, limited type 7.4.4, name 4.1,
-object 3.2, subtype 3.3, type 3.3, type mark 3.3.2, variant part 3.7.3
-
 
 #### 3.7.1 Discriminants
 
@@ -4047,16 +3771,6 @@ Examples:
        end record;
 
 ```
-
-References: assignment 5.2, assignment compound delimiter 2.2, bound of a
-range 3.5, component 3.3, component declaration 3.7, component of a record
-3.7, declaration 3.1, discrete type 3.5, discriminant 3.3, discriminant
-constraint 3.7.2, elaboration 3.9, expression 4.4, generic formal type
-12.1, generic parameter declaration 12.1, identifier 2.3, identifier list
-3.2, incomplete type declaration 3.8.1, index constraint 3.6.1, name 4.1,
-object 3.2, private type 7.4, private type declaration 7.4, record type
-3.7, scope 8.2, simple name 4.1, subcomponent 3.3, subtype indication
-3.3.2, type declaration 3.3.1, type mark 3.3.2, variant part 3.7.3
 
 
 #### 3.7.2 Discriminant Constraints
@@ -4187,20 +3901,6 @@ the constraint. Similarly, if the subtype of a component has a
 discriminant constraint, the discriminants of the component are
 correspondingly initialized.
 
-References: access type 3.8, access type definition 3.8, access value 3.8,
-actual parameter 6.4.1, allocator 4.8, array type definition 3.6, bound of
-a range 3.5, compatible 3.3.2, component 3.3, component declaration 3.7,
-component subtype indication 3.7, composite value 3.3, constant 3.2.1,
-constrained subtype 3.3, constraint 3.3, declaration 3.1, default
-expression for a discriminant 3.7, depend on a discriminant 3.7.1,
-designate 3.8, designated type 3.8, discriminant 3.3, elaboration 3.9,
-entry 9.5, evaluation 4.5, expression 4.4, formal parameter 6.1, generic
-actual parameter 12.3, generic formal parameter 12.1 12.3, mode in 6.1,
-mode in out 6.1, name 4.1, object 3.2, object declaration 3.2.1, renaming
-declaration 8.5, reserved word 2.9, satisfy 3.3, simple name 4.1,
-subcomponent 3.3, subprogram 6, subtype 3.3, subtype indication 3.3.2, type
-3.3, type mark 3.3.2, variable 3.2.1
-
 
 #### 3.7.3 Variant Parts
 
@@ -4296,12 +3996,6 @@ Choices with discrete values are also used in case statements and in array
 aggregates. Choices with component simple names are used in record
 aggregates.
 
-References: array aggregates 4.3.2, base type 3.3, component 3.3, component
-list 3.7, discrete range 3.6, discriminant 3.3, generic formal type 12.1.2,
-null range 3.5, record aggregate 4.3.1, range 3.5, record type 3.7, simple
-expression 4.4, simple name 4.1, static discrete range 4.9, static
-expression 4.9, static subtype 4.9, subtype 3.3
-
 
 #### 3.7.4 Operations of Record Types
 
@@ -4342,15 +4036,6 @@ Note:
 
 A record type is limited if the type of any of its components is limited
 (see 7.4.2).
-
-References: actual parameter 6.4.1, appregate 4.3, assignment 5.2,
-attribute 4.1.4, basic operation 3.3.3, boolean type 3.5.3, constant 3.2.1,
-conversion 4.6, derived type 3.4, discriminant 3.3, discriminant constraint
-3.7.2, formal parameter 6.1, generic actual parameter 12.3, generic formal
-parameter 12.1 12.3, limited type 7.4.4, membership test 4.5 4.5.2, mode
-6.1, object 3.2.1, operation 3.3, predefined operator 4.5, predefined type
-C, qualified expression 4.7, record type 3.7, relational operator 4.5
-4.5.2, selected component 4.1.3, subcomponent 3.3, subtype 3.3, type 3.3
 
 
 ### 3.8 Acess Types
@@ -4416,13 +4101,6 @@ array bounds or the discriminant values supplied implicitly or explicity
 for the corresponding allocators (see 4.8).
 
 Access values are called pointers of references in some other languages.
-
-References: allocator 4.8, array type 3.6, assignment 5.2, belong to a
-subtype 3.3, constant 3.2.1, constraint 3.3, discriminant constraint 3.7.2,
-elaboration 3.9, index constraint 3.6.1, index specification 3.6, limited
-type 7.4.4, literal 4.2, name 4.1, object 3.2.1, object declaration 3.2.1,
-reserved word 2.9, satisfy 3.3, simple name 4.1, subcomponent 3.3, subtype
-3.3, subtype indication 3.3.2, type 3.3 variable 3.2.1
 
 
 #### 3.8.1 Incomplete Type Declarations
@@ -4527,12 +4205,6 @@ Examples of mutually dependent access types:
 
 ```
 
-References: access type 3.8, access type definition 3.8, component 3.3,
-conform 6.3.1, constraint 3.3, declaraton 3.1, declarative item 3.9,
-designate 3.8, discriminant constraint 3.7.2, discriminant part 3.7.1,
-elaboration 3.9, identifier 2.3, name 4.1, subtype indication 3.3.2, type
-3.3, type mark 3.3.2
-
 
 #### 3.8.2 Operations of Access Types
 
@@ -4569,15 +4241,6 @@ access object A (see 13.7.2).
 
 Besides the basic operations, the operations of an access type include the
 predefined comparison for equality and inequality.
-
-References: access type 3.8, allocator 4.8, array type 3.6, assignment
-5.2, attribute 4.1.4, attribute designator 4.1.4, base type 3.3, basic
-operation 3.3.3, collection 3.8, constrained array subtype 3.6, conversion
-4.6, designate 3.8, designated subtype 3.8, designated type 3.8,
-discriminant 3.3, indexed component 4.1.1, literal 4.2, membership test 4.5
-4.5.2, object 3.2.1, operation 3.3, private type 7.4, qualified expression
-4.7, record type 3.7, selected component 4.1.3, slice 4.1.2, subtype 3.3,
-task type 9.1, type 3.3
 
 
 ### 3.9 Declarative Parts
@@ -4636,31 +4299,6 @@ declarative item must itself be a declarative item of this declarative part
 (and must appear later). If the body is a body stub, then a separately
 compiled subunit containing the corresponding proper body is required for
 the program unit (see 10.2).
-
-References: activation 9.3, instantiation 12.3, program_error exception
-11.1, scope 8.2, subprogram call 6.4, type 3.3, visibility 8.3
-
-Elaboration of declarations: 3.1, component declaration 3.7, deferred
-constant declaration 7.4.3, discriminant specification 3.7.1, entry
-declaration 9.5, enumeration literal specification 3.5.1, generic
-declaration 12.1, generic instantiation 12.3, incomplete type declaration
-3.8.1, loop parameter specification 5.5, number declaration 3.2.2, object
-declaration 3.2.1, package declaration 7.2, parameter specification 6.1,
-private type declaration 7.4.1, renaming declaration 8.5, subprogram
-declaration 6.1, subtype declaration 3.3.2, task declaration 9.1, type
-declaration 3.3.1
-
-Elaboration of type definitions: 3.3.1, access type definition 3.8, array
-type definition 3.6, derived type definition 3.4, enumeration type
-definition 3.5.1, integer type definition 3.5.4, real type definition
-3.5.6, record type definition 3.7
-
-Elaboration of other constructs: context clause 10.1, body stub 10.2,
-compilation unit 10.1, discriminant part 3.7.1, generic body 12.2, generic
-formal parameter 12.1 12.3, library unit 10.5, package body 7.1,
-representation clause 13.1, subprogram body 6.3, subunit 10.2, task body
-9.1, task object 9.2, task specification 9.1, use clause 8.4, with clause
-10.1.1
 
 
 
@@ -4744,15 +4382,6 @@ Examples of simple names:
 
 ```
 
-References: access type 3.8, access value 3.8, attribute 4.1.4, belong to
-a type 3.3, character literal 2.5, component 3.3, constraint_error
-exception 11.1, declaration 3.1, designate 3.8, designated type 3.8, entity
-3.1, entry 9.5, entry family 9.5, evaluation 4.5, formal parameter 6.1,
-function call 6.4, identifier 2.3, indexed component 4.1.1, mode 6.1, null
-access value 3.8, object 3.2.1, operator symbol 6.1, raising of exceptions
-11, renaming declarations 8.5, selected component 4.1.3, slice 4.1.2,
-subcomponent 3.3, type 3.3
-
 
 #### 4.1.1 Indexed Components
 
@@ -4794,12 +4423,6 @@ denotes the 20th component of PAGE(10). In the last example NEXT_FRAME(L)
 is a function call returning an access value which designates a
 two-dimensional array.
 
-References: appropriate for a type 4.1, array type 3.6, component 3.3,
-component of an array 3.6, constraint_error exception 11.1, dimension 3.6,
-entry 9.5, entry family 9.5, evaluation 4.5, expression 4.4, function call
-6.4, in some order 1.6, index 3.6, name 4.1, prefix 4.1, raising of
-exceptions 11, returned value 5.8 6.5, task object 9.2
-
 
 #### 4.1.2 Slices
 
@@ -4839,14 +4462,6 @@ Notes:
 For a one-dimensional array A, the name A(N .. N) is a slice of one
 component; its type is the base type of A. On the other hand, A(N) is a
 component of the array A and has the corresponding component type.
-
-References: appropriate for a type 4.1, array 3.6, array type 3.6, array
-value 3.8, base type 3.3, belong to a subtype 3.3, bound of a discrete
-range 3.6.1, component 3.3, component type 3.3, constant 3.2.1, constraint
-3.3, constraint_error exception 11.1, dimension 3.6, discrete range 3.6,
-evaluation 4.5, index 3.6, index range 3.6, name 4.1, null array 3.6.1,
-null range 3.5, prefix 4.1, raising of exceptions 11, type 3.3, variable
-3.2.1
 
 
 #### 4.1.3 Selected Components
@@ -4983,18 +4598,6 @@ that the simple name must be given at each level for the name of a
 subcomponent. For example, the name NEXT_CAR.OWNER.BIRTH.MONTH cannot be
 shortened (NEXT_CAR.OWNER.MONTH is not allowed).
 
-References: accept statement 9.5, access type 3.8, access value 3.8,
-appropriate for a type 4.1, block statement 5.6, body of a program unit
-3.9, character literal 2.5, component of a record 3.7, constraint_error
-exception 11.1, declaration 3.1, designate 3.8, discriminant 3.3, entity
-3.1, entry 9.5, entry family 9.5, function call 6.4, index 3.6, loop
-statement 5.5, object 3.2.1, occur immediately within 8.1, operator 4.5,
-operator symbol 6.1, overloading 8.3, package 7, predefined type C, prefix
-4.1, procedure body 6.3, program unit 6, raising of exceptions 11, record
-3.7, record component 3.7, renaming declaration 8.5, reserved word 2.9,
-simple name 4.1, subprogram 6, subunit 10.2, task 9, task object 9.2, task
-unit 9, variable 3.7.3, variant 3.7.3, visibility 8.3, visible part 3.7.3
-
 
 #### 4.1.4 Attributes
 
@@ -5049,10 +4652,6 @@ Examples of attributes:
   MESSAGE'ADDRESS -- address of the record variable MESSAGE
                         (see 3.7.2 and 13.7.2)
 
-References: appropriate for a type 4.1, basic operation 3.3.3, declared
-entity 3.1, name 4.1, prefix 4.1, reserved word 2.9, simple name 4.1,
-static expression 4.9, type 3.3, universal expression 4.1O
-
 
 ### 4.2 Literals
 
@@ -5098,14 +4697,6 @@ Examples:
 
 
 ```
-
-References: access type 3.8, aggregate 4.3, array 3.6, array bound 3.6,
-array type 3.6, character literal 2.5, character type 3.5.2, component type
-3.3, constraint_error exception 11.1, designate 3.8, dimension 3.6,
-enumeration literal 3.5.1, graphic character 2.1, integer literal 2.4, null
-access value 3.8, null literal 3.8, numeric literal 2.4, object 3.2.1, real
-literal 2.4, string literal 2.6, type 3.3, universal_integer type 3.5.4,
-universal_real type 3.5.6, visibility 8.3
 
 
 ### 4.3 Aggregates
@@ -5172,12 +4763,6 @@ be distinguished from an expression enclosed by parentheses: this is a
 consequence of the fact that named notation is required for an aggregate
 with a single component.
 
-References: array aggregate 4.3.2, array type 3.6, basic operation 3.3.3,
-choice 3.7.3, component 3.3, composite type 3.3, composite value 3.3,
-discrete range 3.6, expression 4.4, index 3.6, limited type 7.4.4, primary
-4.4, record aggregate 4.3.1, record type 3.7, simple expression 4.4, simple
-name 4.1, type 3.3, variant part 3.7.3
-
 
 #### 4.3.1 Record Aggregates
 
@@ -5237,14 +4822,6 @@ Note:
 For an aggregate with positional associations, discriminant values appear
 first since the discriminant part is given first in the record type
 declaration; they must be in the same order as in the discriminant part.
-
-References: aggregate 4.3, allocator 4.8, choice 3.7.3, component
-association 4.3, component name 3.7, constraint 3.3, constraint_error
-exception 11.1, depend on a discriminant 3.7.1, discriminant 3.3,
-discriminant part 3.7.1, evaluate 4.5, expression 4.4, in some order 1.6,
-program 10, raising of exceptions 11, record component 3.7, record type
-3.7, satisfy 3.3, static expression 4.9, subcomponent 3.3, subtype 3.3.2,
-type 3.3, variant part 3.7.3
 
 
 #### 4.3.2 Array Aggregates
@@ -5386,16 +4963,6 @@ Examples of aggregates as initial values:
   E : BIT_VECTOR(M .. N) := (others => TRUE);
   F : STRING(1 .. 1) := (1 => 'F'); -- a one component aggregate: same as "F"
 
-References: actual parameter 6.4.1, aggregate 4.3, array type 3.6,
-assignment compound delimiter 5.2, choice 3.7.3, component 3.3, component
-association 4.3, component type 3.3, constrained array subtype 3.6,
-constraint 3.3, constraint_error exception 11.1, dimension 3.6, evaluate
-4.5, expression 4.4, formal parameter 6.1, function 6.5, in some order 1.6,
-index constraint 3.6.1, index range 3.6, index subtype 3.6, index type 3.6,
-named component association 4.3, null array 3.6.1, object 3.2, positional
-component association 4.3, qualified expression 4.7, raising of exceptions
-11, static expression 4.9, subcomponent 3.3, type 3.3
-
 
 ### 4.4 Expressions
 
@@ -5477,16 +5044,6 @@ Examples of expressions:
 
 ```
 
-References: aggregate 4.3, allocator 4.8, array aggregate 4.3.2, attribute
-4.1.4, binary adding operator 4.5 4.5.3, context of overload resolution
-8.7, exponentiating operator 4.5 4.5.6, function call 6.4, multiplying
-operator 4.5 4.5.5, name 4.1, named number 3.2, null literal 3.8, numeric
-literal 2.4, object 3.2, operator 4.5, overloading 8.3, overloading an
-operator 6.7, qualified expression 4.7, range 3.5, real literal 2.4,
-relation 4.5.1, relational operator 4.5 4.5.2, result type 6.1, string
-literal 2.6, type 3.3, type conversion 4.6, type mark 3.3.2, unary adding
-operator 4.5 4.5.4, variable 3.2.1
-
 
 ### 4.5 Operators and Expression Evaluation
 
@@ -5559,14 +5116,6 @@ Examples of precedence:
 
 ```
 
-References: designator 6.1, expression 4.4, factor 4.4, implicit
-declaration 3.1, in some order 1.6, integer type 3.5.4, membership test
-4.5.2, name 4.1, numeric_error exception 11.1, overloading 6.6 8.7, raising
-of an exception 11, range 3.5, real type 3.5.6, relation 4.4, safe number
-3.5.6, short-circuit control form 4.5 4.5.1, simple expression 4.4, term
-4.4, type 3.3, type declaration 3.3.1, universal_integer type 3.5.4,
-universal_real type 3.5.6
-
 
 #### 4.5.1 Logical Operators and Short-circuit Control Forms
 
@@ -5631,13 +5180,6 @@ Examples of short-circuit control forms:
 
 
 ```
-
-References: array type 3.6, boolean type 3.5.3, bound of an index range
-3.6.1, component of an array 3.6, constraint_error exception 11.1,
-dimension 3.6, false boolean value 3.5.3, index subtype 3.6, matching
-components of arrays 4.5.2, null array 3.6.1, operation 3.3, operator 4.5,
-predefined operator 4.5, raising of exceptions 11, true boolean value
-3.5.3, type 3.3
 
 
 #### 4.5.2 Relational Operators and Membership Tests
@@ -5752,16 +5294,6 @@ equal. Two nonnull arrays have matching components if and only if the
 value of the attribute LENGTH(N) for each index position N is the same for
 both.
 
-References: access value 3.8, array type 3.6, base type 3.3, belong to a
-subtype 3.3, boolean predefined type 3.5.3, bound of a range 3.5, component
-3.3, component identifier 3.7, component type 3.3, composite type 3.3,
-designate 3.8, dimension 3.6, discrete type 3.5, evaluation 4.5, exception
-11, index 3.6, index range 3.6, limited type 7.4.4, null access value 3.8,
-null array 3.6.1, null record 3.7, object 3.2.1, operation 3.3, operator
-4.5, predefined operator 4.5, raising of exceptions 11, range 3.5, record
-type 3.7, scalar type 3.5, simple expression 4.4, subcomponent 3.3,
-successor 3.5.5, type 3.3, type mark 3.3.2
-
 
 #### 4.5.3 Binary Adding Operators
 
@@ -5821,13 +5353,6 @@ Examples:
 
 ```
 
-References: array type 3.6, character literal 2.5, component type 3.3,
-constraint_error exception 11.1, dimension 3.6, index subtype 3.6, length
-of an array 3.6.2, limited type 7.4.4, null array 3.6.1, numeric type 3.5,
-operation 3.3, operator 4.5, predefined operator 4.5, raising of exceptions
-11, range of an index subtype 3.6.1, real type 3.5.6, string literal 2.6,
-type 3.3
-
 
 #### 4.5.4 Unary Adding Operators
 
@@ -5846,9 +5371,6 @@ and the result have the same type.
 
 
 ```
-
-References: numeric type 3.5, operation 3.3, operator 4.5, predefined
-operator 4.5, type 3.3
 
 
 #### 4.5.5 Multiplying Operators
@@ -6009,13 +5531,6 @@ illustrated by the following table:
    13 -5 -2 3 -2 -13 -5 2 -3 -3
    14 -5 -2 4 -1 -14 -5 2 -4 -4
 
-References: actual parameter 6.4.1, base type 3.3, declaration 3.1, delta
-of a fixed point type 3.5.9, fixed point type 3.5.9, floating point type
-3.5.7, generic formal subprogram 12.1, integer type 3.5.4, numeric type
-3.5, numeric_error exception 11.1, predefined operator 4.5, raising of
-exceptions 11, renaming declaration 8.5, standard predefined package 8.6,
-type conversion 4.6
-
 
 #### 4.5.6 Highest Precedence Operators
 
@@ -6062,12 +5577,6 @@ value with the positive exponent. Exponentiation by a zero exponent
 delivers the value one. Exponentiation of a value of a floating point
 type is approximate (see 4.5.7). Exponentiation of an integer raises the
 exception CONSTRAINT_ERROR for a negative exponent.
-
-References: array type 3.6, boolean type 3.5.3, bound of an array 3.6.1,
-component of an array 3.6, constraint_error exception 11.1, dimensionality
-3.6, floating point type 3.5.9, index 3.6, integer type 3.5.4,
-multiplication operation 4.5.5, predefined operator 4.5, raising of
-exceptions 11
 
 
 #### 4.5.7 Accuracy of Operations with Real Operands
@@ -6154,15 +5663,6 @@ For a floating point type the numbers 15.0, 3.0, and 5.0 are always model
 numbers. Hence X/Y where X equals 15.0 and Y equals 3.0 yields exactly 5.0
 according to the above rules. In the general case, division does not yield
 model numbers and in consequence one cannot assume that (1.0/X)*X = 1.0.
-
-References: attribute 4.1.4, basic operation 3.3.3, bound of a range 3.5,
-error bound 3.5.6, exponentiation operation 4.5.6, false boolean value
-3.5.3, floating point type 3.5.9, machine_overflows attribute 13.7.1,
-membership test 4.5.2, model number 3.5.6, multiplication operation 4.5.5,
-numeric_error exception 11.1, predefined operation 3.3.3, raising of
-exceptions 11, range 3.5, real type 3.5.6, relation 4.4, relational
-operator 4.5.2 4.5, safe number 3.5.6, subtype 3.3, true boolean value
-3.5.3, type conversion 4.6, type mark 3.3.2, universal expression 4.1 4
 
 
 ### 4.6 Type Conversions
@@ -6345,17 +5845,6 @@ Examples of implicit conversions:
 
 ```
 
-References: actual parameter 6.4.1, array type 3.6, attribute 4.1.4, base
-type 3.3, belong to a subtype 3.3, component 3.3, constrained array subtype
-3.6, constraint_error exception 11.1, derived type 3.4, dimension 3.6,
-expression 4.4, floating point type 3.5.7, index 3.6, index subtype 3.6,
-index type 3.6, integer type 3.5.4, matching component 4.5.2, mode 6.1,
-name 4.1, named number 3.2, null array 3.6.1, numeric literal 2.4, numeric
-type 3.5, raising of exceptions 11, real type 3.5.6, representation 13.1,
-statement 5, subtype 3.3, type 3.3, type mark 3.3.2, unconstrained array
-type 3.6, universal_integer type 3.5.4, universal_real type 3.5.6, variable
-3.2.1
-
 
 ### 4.7 Qualified Expressions
 
@@ -6410,12 +5899,6 @@ literals, or in an array or loop parameter range where both bounds are
 overloaded enumeration literals. Explicit qualification is also used to
 specify which one of a set of overloaded parameterless functions is meant,
 or to constrain a value to a given subtype.
-
-References: aggregate 4.3, array 3.6, base type 3.3, bound of a range 3.5,
-constraint_error exception 11.1, context of overload resolution 8.7,
-enumeration literal 3.5.1, expression 4.4, function 6.5, loop parameter
-5.5, overloading 8.5, raising of exceptions 11, range 3.3, relation 4.4,
-subprogram 6, subprogram call 6.4, subtype 3.3, type 3.3, type mark 3.3.2
 
 
 ### 4.8 Allocators
@@ -6523,21 +6006,6 @@ Examples (for access types declared in section 3.8):
  new BUFFER'(SIZE => 80, POS => 0, VALUE => (1 .. 80 => 'A'))
                                                -- initialized explicitly
 
-References: access type 3.8, access type definition 3.8, access value 3.8,
-array type 3.6, block statement 5.6, bound of an array 3.6.1, collection
-3.8, constrained subtype 3.3, constraint 3.3, constraint_error exception
-11.1, context of overload resolution 8.7, derived type 3.4, designate 3.8,
-discriminant 3.3, discriminant constraint 3.7.2, elaboration 3.9,
-evaluation of a qualified expression 4.7, generic procedure 12.1, index
-constraint 3.6.1, initial value 3.2.1, initialization 3.2.1, instantiation
-12.3, length clause 13.2, library unit 10.1, main program 10.1, name 4.1,
-object 3.2.1, object declaration 3.2.1, pragma 2.8, procedure 6, qualified
-expression 4.7, raising of exceptions 11, representation clause 13.1,
-simple name 4.1, storage_error exception 11.1, subcomponent 3.3, subprogram
-body 6.3, subtype 3.3, subtype indication 3.3.2, task body 9.1, task type
-9.2, terminated task 9.4, type 3.3, type declaration 3.3.1, type mark 3.3.2
-type with discriminants 3.3
-
 
 ### 4.9 Static Expressions and Static Subtypes
 
@@ -6606,16 +6074,6 @@ be obtained by an evaluation at run time.
 Array attributes are not static: in particular, the RANGE attribute is not
 static.
 
-References: actual parameter 6.4.1, attribute 4.1.4, base type 3.3, bound
-of a range 3.5, character literal 2.5, constant 3.2.1, constant declaration
-3.2.1, discrete range 3.6, discrete type 3.5, enumeration literal 3.5.1,
-exception 11, expression 4.4, function 6.5, generic actual parameter 12.3,
-generic formal type 12.1.2, implicit declaration 3.1, initialize 3.2.1,
-model number 3.5.6, named number 3.2, numeric literal 2.4, predefined
-operator 4.5, qualified expression 4.7, raising of exceptions 11, range
-constraint 3.5, safe number 3.5.6, scalar type 3.5, subtype 3.3, type mark
-3.3.2
-
 
 ### 4.10 Universal Expressions
 
@@ -6676,13 +6134,6 @@ Examples:
 
 ```
 
-References: actual parameter 6.4.1, attribute 4.1.4, evaluation of an
-expression 4.5, floating point type 3.5.9, function 6.5, integer type
-3.5.4, multiplying operator 4.5 4.5.5, predefined operation 3.3.3, primary
-4.4, real type 3.5.6, safe number 3.5.6, system.max_int 13.7,
-system.min_int 13.7, type 3.3, universal_integer type 3.5.4, universal_real
-type 3.5.6
-
 
 
 
@@ -6700,10 +6151,6 @@ accept, select, and abort statements are described in Chapter 9 on tasks.
 Raise statements are described in Chapter 11 on exceptions, and code
 statements in Chapter 13. The remaining forms of statements are presented
 in this chapter.
-
-References: abort statement 9.10, accept statement 9.5, code statement
-13.8, delay statement 9.6, entry call statement 9.5, procedure call
-statement 6.4, raise statement 11.3, select statement 9.7
 
 
 ### 5.1 Simple and Compound Statements - Sequences of Statements
@@ -6788,18 +6235,6 @@ goto statement. An implicit declaration in a block statement may hide a
 declaration given in an outer program unit or block statement (according to
 the usual rules of hiding explained in section 8.3).
 
-References: abort statement 9.10, accept statement 9.5, assignment
-statement 5.2, block name 5.6, block statement 5.6, case statement 5.4,
-code statement 13.8, declaration 3.1, declarative part 3.9, delay statement
-9.6, entry call statement 9.5, exception 11, exit statement 5.7, generic
-body 12.1, generic unit 12, goto statement 5.9, hiding 8.3, identifier 2.3,
-if statement 5.3, implicit declaration 3.1, loop name 5.5, loop statement
-5.5, package 7, package body 7.1, procedure call statement 6.4, program
-unit 6, raise statement 11.3, raising of exceptions 11, return statement
-5.8, scope 8.2, select statement 9.7, simple name 4.1, subprogram 6,
-subprogram body 6.3, task 9, task body 9.1, task unit 9.1, terminate
-alternative 9.7.1, terminated task 9.4
-
 
 ### 5.2 Assignment Statement
 
@@ -6879,14 +6314,6 @@ interpreted as the name of a variable designated by the access value
 returned by a function call, and similarly, as a component or slice of such
 a variable (see section 8.7 for the context of overload resolution).
 
-References: access type 3.8, allocator 4.8, array 3.6, array assignment
-5.2.1, component 3.6 3.7, constraint_error exception 11.1, designate 3.8,
-discriminant 3.7.1, erroneous 1.6, evaluation 4.5, expression 4.4, function
-call 6.4, implicit type conversion 4.6, name 4.1, numeric literal 2.4,
-object 3.2, overloading 6.6 8.7, slice 4.1.2, subcomponent 3.3, subtype
-3.3, subtype conversion 4.6, type 3.3, universal_integer type 3.5.4,
-universal_real type 3.5.6, variable 3.2.1
-
 
 #### 5.2.1 Array Assignments
 
@@ -6930,10 +6357,6 @@ component assignment. In the above example, an implementation yielding A(1
 The implicit subtype conversion described above for assignment to an array
 variable is performed only for the value of the right-hand side expression
 as a whole; it is not performed for subcomponents that are array values.
-
-References: array 3.6, assignment 5.2, constraint_error exception 11.1,
-matching array components 4.5.2, slice 4.1.2, subtype conversion 4.6, type
-3.3, variable 3.2.1
 
 
 ### 5.3 If Statements
@@ -6991,9 +6414,6 @@ Examples:
     end if;
 
 ```
-
-References: boolean type 3.5.3, evaluation 4.5, expression 4.4, sequence
-of statements 5.1
 
 
 ### 5.4 Case Statements
@@ -7085,13 +6505,6 @@ An others choice is required in a case statement if the type of the
 expression is the type universal_integer (for example, if the expression is
 an integer literal), since this is the only way to cover all values of the
 type universal_integer.
-
-References: base type 3.3, choice 3.7.3, context of overload resolution
-8.7, discrete type 3.5, expression 4.4, function call 6.4, generic formal
-type 12.1, conversion 4.6, discrete type 3.5, enumeration literal 3.5.1,
-expression 4.4, name 4.1, object 3.2.1, overloading 6.6 8.7, qualified
-expression 4.7, sequence of statements 5.1, static discrete range 4.9,
-static subtype 4.9, subtype 3.3, type 3.3, type conversion 4.6, type mark 3.3.2
 
 
 ### 5.5 Loop Statements
@@ -7224,18 +6637,6 @@ range.
 Loop names are also used in exit statements, and in expanded names (in a
 prefix of the loop parameter).
 
-References: actual parameter 6.4.1, assignment statement 5.2, base type
-3.3, bound of a range 3.5, condition 5.3, constant 3.2.1, context of
-overload resolution 8.7, conversion 4.6, declaration 3.1, discrete range
-3.6.1, elaboration 3.1, entry call statement 9.5, evaluation 4.5, exit
-statement 5.7, expanded name 4.1.3, false boolean value 3.5.3, generic
-actual parameter 12.3, generic instantiation 12.3, goto statement 5.9,
-identifier 2.3, integer type 3.5.4, null range 3.5, object 3.2.1, prefix
-4.1, procedure call 6.4, raising of exceptions 11, reserved word 2.9,
-return statement 5.8, scope 8.2, sequence of statements 5.1, simple name
-4.1, terminate alternative 9.7.1, true boolean value 3.5.3 3.5.4,
-visibility 8.3
-
 
 ### 5.6 Block Statements
 
@@ -7292,11 +6693,6 @@ Within a block statement, the block name can be used in expanded names
 denoting local entities such as SWAP.TEMP in the above example (see 4.1.3
 (f)).
 
-References: declarative part 3.9, dependent task 9.4, exception handler
-11.2, exit statement 5.7, expanded name 4.1.3, goto statement 5.9, raising
-of exceptions 11, return statement 5.8, sequence of statements 5.1, simple
-name 4.1, task object 9.2
-
 
 ### 5.7 Exit Statements
 
@@ -7348,10 +6744,6 @@ Note:
 
 Several nested loops can be exited by an exit statement that names the
 outer loop.
-
-References: accept statement 9.5, condition 5.3, evaluation 4.5, generic
-body 12.1, loop name 5.5, loop statement 5.5, package body 7.1, subprogram
-body 6.3, true boolean value 3.5.3
 
 
 ### 5.8 Return Statements
@@ -7405,14 +6797,6 @@ attribute that yields a result of type universal_integer or universal_real,
 then an implicit conversion of the result is performed as described in
 section 4.6.
 
-References: accept statement 9.5, attribute A, block statement 5.6,
-constraint_error exception 11.1, expression 4.4, function body 6.3,
-function call 6.4, generic body 12.1, implicit type conversion 4.6, named
-number 3.2, numeric literal 2.4, package body 7.1, procedure body 6.3,
-reserved word 2.9, result subtype 6.1, subprogram body 6.3, subprogram
-specification 6.1, subtype 3.3, task body 9.1, type mark 3.3.2,
-universal_integer type 3.5.4, universal_real type 3.5.6
-
 
 ### 5.9 Goto Statements
 
@@ -7459,12 +6843,6 @@ Example:
 
 ```
 
-References: accept statement 9.5, block statement 5.6, case statement 5.4,
-compound statement 5.1, exception handler 11.2, frame 11.2, generic body
-12.1, if statement 5.3, label 5.1, package body 7.1, program unit 6, select
-statement 9.7, sequence of statements 5.1, statement 5.1, subprogram body
-6.3, task body 9.1, transfer of control 5.1
-
 
 
 
@@ -7482,10 +6860,6 @@ procedure call is a statement; a function call is an expression and
 returns a value. The definition of a subprogram can be given in two parts:
 a subprogram declaration defining its calling conventions, and a subprogram
 body defining its execution.
-
-References: function 6.5, function call 6.4, generic unit 12, package 7,
-procedure 6.1, procedure call 6.4, subprogram body 6.3, subprogram call
-6.4, subprogram declaration 6.1, task unit 9
 
 
 ### 6.1 Subprogram Declarations
@@ -7579,12 +6953,6 @@ calls, as described in section 6.4.2 (default expressions are not evaluated
 during the elaboration of the subprogram declaration).
 
 All subprograms can be called recursively and are reentrant.
-
-References: declaration 3.1, elaboration 3.9, evaluation 4.5, expression
-4.4, formal parameter 6.2, function 6.5, identifier 2.3, identifier list
-3.2, mode 6.2, name 4.1, elaboration has no other effect 3.9, operator 4.5,
-overloading 6.6 8.7, procedure 6, string literal 2.6, subprogram call 6.4,
-type mark 3.3.2
 
 
 ### 6.2 Formal Parameter Modes
@@ -7698,17 +7066,6 @@ formal parameter designates the same task; the same holds for a
 subcomponent of an actual parameter and the corresponding subcomponent of
 the associated formal parameter.
 
-References: access type 3.8, actual parameter 6.4.1, array type 3.6,
-assignment 5.2, bound of an array 3.6.1, constraint 3.3, depend on a
-discriminant 3.7.1, discriminant 3.7.1, entry call statement 9.5, erroneous
-1.6, evaluation 4.5, exception 11, expression 4.4, formal parameter 6.1,
-generic formal parameter 12.1, global 8.1, mode 6.1, null access value 3.8,
-object 3.2, parameter specification 6.1, private type 7.4, record type 3.7,
-scalar type 3.5, subcomponent 3.3, subprogram body 6.3, subprogram call
-statement 6.4, task 9, task type 9.2, type mark 3.3.2, unconstrained array
-type 3.6, unconstrained type with discriminants 3.7.1, unconstrained
-variable 3.2.1, variable 3.2.1
-
 
 ### 6.3 Subprogram Bodies
 
@@ -7783,14 +7140,6 @@ Example of subprogram body:
 
 ```
 
-References: actual parameter 6.4.1, body stub 10.2, conform 6.3.1,
-declaration 3.1, declarative part 3.9, declarative region 8.1, designator
-6.1, elaboration 3.9, elaboration has no other effect 3.1, exception 11,
-exception handler 11.2, formal parameter 6.1, occur immediately within 8.1,
-package 7, sequence of statements 5.1, subprogram 6, subprogram call 6.4,
-subprogram declaration 6.1, subprogram specification 6.1, visibility 8.3,
-visible part 7.2
-
 
 #### 6.3.1 Conformance Rules
 
@@ -7847,13 +7196,6 @@ the same sequence of lexical elements:
 
 ```
 
-References: actual parameter 6.4 6.4.1, allow 1.6, comment 2.7,
-declaration 3.1, deferred constant 7.4.3, direct visibility 8.3,
-discriminant part 3.7.1, expanded name 4.1.3, formal part 6.1, lexical
-element 2, name 4.1, numeric literal 2.4, operator symbol 6.1, overloading
-6.6 8.7, prefix 4.1, selected component 4.1.3, selector 4.1.3, simple name
-4.1, subprogram specification 6.1, type conversion 4.6, visibility 8.3
-
 
 #### 6.3.2 Inline Expansion of Subprograms
 
@@ -7886,12 +7228,6 @@ call of the named subprograms, an implementation is free to follow or to
 ignore the recommendation expressed by the pragma. (Note, in particular,
 that the recommendation cannot generally be followed for a recursive
 subprogram.)
-
-References: allow 1.6, compilation 10.1, compilation unit 10.1,
-declarative item 3.9, declarative part 3.9, generic subprogram 12.1,
-generic unit 12 12.1, instantiation 12.3, library unit 10.1, name 4.1,
-overloading 6.6 8.7, package specification 7.1, pragma 2.8, subprogram 6,
-subprogram body 6.3, subprogram call 6.4
 
 
 ### 6.4 Subprogram Calls
@@ -7965,10 +7301,6 @@ Examples of function calls:
 
 ```
 
-References: default expression for a formal parameter 6.1, erroneous 1.6,
-expression 4.4, formal parameter 6.1, formal part 6.1, name 4.1, simple
-name 4.1, subprogram 6, type mark 3.3.2, variable 3.2.1
-
 
 #### 6.4.1 Parameter Associations
 
@@ -8036,15 +7368,6 @@ Similarly, no check is needed if the type mark denotes an unconstrained
 type with discriminants, since the formal parameter is then constrained
 exactly as the corresponding actual parameter (see 3.7.1).
 
-References: actual parameter 6.4, array bound 3.6, array type 3.6, call of
-a subprogram 6.4, conform 6.3.1, constrained subtype 3.3, constraint 3.3,
-constraint_error exception 11.1, discriminant 3.7.1, erroneous 1.6,
-evaluation 4.5, evaluation of a name 4.1, expression 4.4, formal parameter
-6.1, mode 6.1, name 4.1, parameter association 6.4, subtype 3.3, type 3.3,
-type conversion 4.6, type mark 3.3.2, unconstrained array type 3.6,
-unconstrained type with discriminants 3.7.1, undefined value 3.2.1,
-variable 3.2.1
-
 
 #### 6.4.2 Default Parameters
 
@@ -8095,12 +7418,6 @@ parameter specification, the default expression is evaluated once for each
 omitted parameter. Hence in the above examples, the two calls of PAIR are
 equivalent.
 
-References: actual parameter 6.4.1, default expression for a formal
-parameter 6.1, evaluation 4.5, formal parameter 6.1, mode 6.1, named
-parameter association 6.4, parameter association 6.4, parameter
-specification 6.1, positional parameter association 6.4, subprogram call
-6.4
-
 
 ### 6.5 Function Subprograms
 
@@ -8132,11 +7449,6 @@ Example:
     end;
 
 ```
-
-References: exception 11, formal parameter 6.1, function 6.1, function
-body 6.3, function call 6.4, function specification 6.1, mode 6.1,
-program_error exception 11.1, raising of exceptions 11, return statement
-5.8, statement 5
 
 
 ### 6.6 Parameter and Result Type Profile - Overloading of Subprograms
@@ -8210,14 +7522,6 @@ expressions can be used for some or all actual parameters, and for the
 result, if any; the name of the subprogram can be expressed more
 explicitly as an expanded name; finally, the subprogram can be renamed.
 
-References: actual parameter 6.4.1, aggregate 4.3, base type 3.3, default
-expression for a formal parameter 6.1, entry 9.5, formal parameter 6.1,
-function 6.5, function call 6.4, hiding 8.3, identifier 2.3, illegal 1.6,
-literal 4.2, mode 6.1, named parameter association 6.4, operator symbol
-6.1, overloading 8.7, package 7, parameter of a subprogram 6.2, qualified
-expression 4.7, renaming declaration 8.5, result subtype 6.1, subprogram 6,
-subprogram specification 6.1, subtype 3.3, type 3.3
-
 
 ### 6.7 Overloading of Operators
 
@@ -8278,17 +7582,6 @@ Examples:
 
 ```
 
-References: allow 1.6, actual parameter 6.4.1, binary adding operator 4.5
-4.5.3, boolean predefined type 3.5.3, character 2.1, complementary result
-4.5.2, declaration 3.1, default expression for a formal parameter 6.1,
-designator 6.1, directly visible 8.3, equality operator 4.5, formal
-parameter 6.1, function declaration 6.1, highest precedence operator 4.5
-4.5.6, implicit declaration 3.1, inequality operator 4.5.2, limited type
-7.4.4, logical operator 4.5 4.5.1, membership test 4.5 4.5.2, multiplying
-operator 4.5 4.5.5, operator 4.5, operator symbol 6.1, overloading 6.6 8.7,
-relational operator 4.5 4.5.2, short-circuit control form 4.5 4.5.1, type
-definition 3.3.1, unary adding operator 4.5 4.5.4, visible by selection 8.3
-
 
 
 
@@ -8306,9 +7599,6 @@ declarations. More generally, packages can be used to specify groups of
 related entities including also subprograms that can be called from outside
 the package, while their inner workings remain concealed and protected from
 outside users.
-
-References: generic unit 12, program unit 6, subprogram 6, task unit 9,
-type declaration 3.3.1
 
 
 ### 7.1 Package Structure
@@ -8365,13 +7655,6 @@ cannot appear in a package specification.
 
 A package declaration is either a library package (see 10.2) or a
 declarative item declared within another program unit.
-
-References: basic declarative item 3.9, body stub 10.2, declarative item
-3.9, declarative part 3.9, exception handler 11.2, generic body 12.2,
-generic declaration 12.1, identifier 2.3, library unit 10.1, object 3.2,
-package body 7.3, program unit 6, proper body 3.9, sequence of statements
-5.1, simple name 4.1, subprogram body 6.3, subprogram declaration 6.1,
-subunit 10.2, task body 9.1, task declaration 9.1, type 3.3
 
 
 ### 7.2 Package Specifications and Declarations
@@ -8438,12 +7721,6 @@ Example of a package describing a common pool of objects and types:
 ```
 
 ```
-
-References: basic declarative item 3.9, constant 3.2.1, declarative item
-3.9, direct visibility 8.3, elaboration 3.9, expanded name 4.1.3, name 4.1,
-number declaration 3.2.2, object declaration 3.2.1, package 7, package
-declaration 7.1, package identifier 7.1, package specification 7.1, scope
-8.2, simple name 4.1, type declaration 3.3.1, use clause 8.4, variable 3.2.1
 
 
 ### 7.3 Package Bodies
@@ -8537,11 +7814,6 @@ Example of a package:
 
 ```
 
-References: declaration 3.1, declarative part 3.9, elaboration 3.1 3.9,
-exception 11, exception handler 11.2, name 4.1, package specification 7.1,
-program unit 6, program_error exception 11.1, sequence of statements 5.1,
-subprogram 6, variable 3.2.1, visible part 7.2
-
 
 ### 7.4 Private Type and Deferred Constant Declarations
 
@@ -8590,13 +7862,6 @@ Example of deferred constant declaration:
 ```ada
     Null_Key : constant Key;
 ```
-
-References: constant 3.2.1, declaration 3.1, declarative item 3.9,
-deferred constant 7.4.3, discriminant part 3.7.1, generic formal part 12.1,
-generic formal type 12.1, generic parameter declaration 12.1, identifier
-2.3, identifier list 3.2, limited type 7.4.4, package 7, private type
-7.4.1, program unit 6, subtype 3.3, type 3.3, type mark 3.3.2, visible part
-7.2
 
 
 #### 7.4.1 Private Types
@@ -8652,18 +7917,6 @@ of a private type, nor the creation by an allocator of an object of the
 private type are allowed before the full declaration of the type.
 Similarly before the full declaration, the name of the private type cannot
 be used in a generic instantiation or in a representation clause.
-
-References: allocator 4.8, array type 3.6, conform 6.3.1, declarative item
-3.9, deferred constant declaration 7.4.3, derived type 3.4, discriminant
-part 3.7.1, elaboration 3.9, entry declaration 9.5, expression 4.4, full
-type declaration 3.3.1, generic instantiation 12.3, identifier 2.3,
-incomplete type declaration 3.8.1, limited type 7.4.4, name 4.1, operation
-3.3, package 7, package specification 7.1, private part 7.2, private type
-7.4, private type declaration 7.4, record type definition 3.7,
-representation clause 13.1, reserved word 2.9, subcomponent 3.3, subprogram
-specification 6.1, subtype 3.3, subtype declaration 3.3.2, type 3.3, type
-declaration 3.3.1, type definition 3.3.1, unconstrained array type 3.6,
-variable 3.2.1, visible part 7.2
 
 
 #### 7.4.2 Operations of a Private Type
@@ -8799,17 +8052,6 @@ The value of the variable LAST_KEY, declared in the package body, remains
 unchanged between calls of the procedure GET_KEY. (See also the Notes of
 section 7.3.)
 
-References: assignment 5.2, attribute 4.1.4, basic operation 3.3.3,
-component 3.3, composite type 3.3, conversion 4.6, declaration 3.1,
-declarative region 8.1, derived subprogram 3.4, derived type 3.4, dimension
-3.6, discriminant 3.3, equality 4.5.2, full type 7.4.1, full type
-declaration 3.3.1, hiding 8.3, immediate scope 8.2, implicit declaration
-3.1, incomplete type declaration 3.8.1, membership test 4.5, operation 3.3,
-package 7, parameter of a subprogram 6.2, predefined function 8.6,
-predefined operator 4.5, private type 7.4, private type declaration 7.4,
-program unit 6, qualification 4.7, relational operator 4.5, selected
-component 4.1.3, subprogram 6, task dependence 9.4, visible part 7.2
-
 
 #### 7.4.3 Deferred Constants
 
@@ -8842,13 +8084,6 @@ The full declaration for a deferred constant that has a given private type
 must not appear before the corresponding full type declaration. This is a
 consequence of the rules defining the allowed uses of a name that denotes a
 private type (see 7.4.1).
-
-References: conform 6.3.1, constant declaration 3.2.1, declarative item
-3.9, default expression for a discriminant 3.7.1, deferred constant 7.4,
-deferred constant declaration 7.4, elaboration has no other effect 3.1,
-formal parameter 6.1, generic formal parameter 12.1 12.3, identifier 2.3,
-object declaration 3.2.1, package 7, package specification 7.1, private
-part 7.2, record component 3.7, type mark 3.3.2, visible part 7.2
 
 
 #### 7.4.4 Limited Types
@@ -8948,17 +8183,6 @@ operations of a type is desired. Such packages serve a dual purpose. They
 prevent a user from making use of the internal structure of the type. They
 also implement the notion of an encapsulated data type where the only
 operations on the type are those given in the package specification.
-
-References: aggregate 4.3, allocator 4.8, assignment 5.2, catenation
-operator 4.5, component declaration 3.7, component type 3.3, composite type
-3.3, default expression for a discriminant 3.7, deferred constant 7.4.3,
-derived type 3.4, designate 3.8, discriminant specification 3.7.1, equality
-4.5.2, formal parameter 6.1, full type 7.4.1, full type declaration 3.3.1,
-generic formal parameter 12.1 12.3, implicit declaration 3.1, initial value
-3.2.1, mode 12.1.1, object 3.2, operation 3.3, package 7, predefined
-operator 4.5, private type 7.4, private type declaration 7.4, record
-component 3.7, record type 3.7, relational operator 4.5, subcomponent 3.3,
-subprogram 6, task type 9.1 9.2, type 3.3
 
 
 ### 7.5 Example of a Table Management Package
@@ -9207,9 +8431,6 @@ identifiers are visible at various points in the text of the program are
 described in this chapter. The formulation of these rules uses the notion
 of a declarative region.
 
-References: declaration 3.1, declarative region 8.1, identifier 2.3, scope
-8.2, visibility 8.3
-
 
 ### 8.1 Declarative Region
 
@@ -9293,17 +8514,6 @@ example, subprograms, packages, task units, generic units, and block
 statements can be nested within each other, and can contain record type
 declarations, loop statements, and accept statements.
 
-References: accept statement 9.5, basic declaration 3.1, block statement
-5.6, body stub 10.2, declaration 3.1, discriminant part 3.7.1, discriminant
-specification 3.7.1, entry declaration 9.5, formal part 6.1, generic body
-12.2, generic declaration 12.1, generic parameter declaration 12.1,
-implicit declaration 3.1, incomplete type declaration 3.8.1, library unit
-10.1, loop statement 5.5, package 7, package body 7.1, package declaration
-7.1, parameter specification 6.1, private type declaration 7.4, record
-representation clause 13.4, record type 3.7, renaming declaration 8.5,
-standard package 8.6, subprogram body 6.3, subprogram declaration 6.1,
-subunit 10.2, task body 9.1, task declaration 9.1, task unit 9
-
 
 ### 8.2 Scope of Declarations
 
@@ -9357,17 +8567,6 @@ visible part of a package, the scope of an entry of the task unit extends
 to the end of the scope of the task unit, that is, to the end of the scope
 of the enclosing package. The scope of a use clause is defined in section
 8.4.
-
-References: basic operation 3.3.3, body stub 10.2, character literal 2.5,
-component declaration 3.7, declaration 3.1, declarative region 8.1,
-discriminant specification 3.7.1, entry declaration 9.5, extends 8.1,
-generic declaration 12.1, generic parameter declaration 12.1, identifier
-2.3, implicit declaration 3.1, occur immediately within 8.1, operator
-symbol 6.1, overloading 6.6 8.7, package declaration 7.1, package
-specification 7.1, parameter specification 6.1, record type 3.7, renaming
-declaration 8.5, subprogram body 6.3, subprogram declaration 6.1, task
-declaration 9.1, task unit 9, type declaration 3.3.1, use clause 8.4,
-visibility 8.3, visible part 7.2
 
 
 ### 8.3 Visibility
@@ -9582,25 +8781,6 @@ declarations are illegal:
 
 ```
 
-References: accept statement 9.5, aggregate 4.3, appropriate for a type
-4.1, argument 2.8, basic operation 3.3.3, character literal 2.5, component
-association 4.3, component declaration 3.7, compound delimiter 2.2,
-declaration 3.1, declarative region 8.1, designate 3.8, discriminant
-constraint 3.7.2, discriminant specification 3.7.1, entry call 9.5, entry
-declaration 9.5, entry family 9.5, enumeration literal specification 3.5.1,
-expanded name 4.1.3, extends 8.1, formal parameter 6.1, generic association
-12.3, generic formal parameter 12.1, generic instantiation 12.3, generic
-package 12.1, generic parameter declaration 12.1, generic unit 12,
-identifier 2.3, immediate scope 8.2, implicit declaration 3.1, lexical
-element 2.2, library unit 10.1, object 3.2, occur immediately within 8.1,
-operator 4.5, operator symbol 6.1, overloading 6.6 8.7, package 7,
-parameter 6.2, parameter association 6.4, parameter specification 6.1,
-pragma 2.8, program unit 6, record type 3.7, reserved word 2.9, scope 8.2,
-selected component 4.1.3, selector 4.1.3, simple name 4.1, subprogram 6,
-subprogram call 6.4, subprogram declaration 6.1, subprogram specification
-6.1, task type 9.1, task unit 9, type 3.3, type declaration 3.3.1, use
-clause 8.4, visible part 7.2
-
 
 ### 8.4 Use Clauses
 
@@ -9730,13 +8910,6 @@ Example of name identification with a use clause:
        end;
 
 ```
-
-References: compilation unit 10.1, context clause 10.1, declaration 3.1,
-declarative item 3.9, declarative region 8.1, direct visibility 8.3,
-elaboration 3.1 3.9, elaboration has no other effect 3.1, enumeration
-literal specification 3.5.1, extends 8.1, hiding 8.3, homograph 8.3,
-identifier 2.3, immediate scope 8.2, name 4.1, occur immediately within
-8.1, package 7, scope 8.2, subprogram declaration 6.1, visible part 7.2
 
 
 ### 8.5 Renaming Declarations
@@ -9872,20 +9045,6 @@ task type) as in
     subtype Mode is Text_IO.File_Mode;
 ```
 
-References: allow 1.6, attribute 4.1.4, base type 3.3, conditional entry
-call 9.7.2, constant 3.2.1, constrained subtype 3.3, constraint 3.3,
-declaration 3.1, default expression 6.1, depend on a discriminant 3.7.1,
-discriminant 3.7.1, elaboration 3.1 3.9, entry 9.5, entry call 9.5, entry
-call statement 9.5, entry declaration 9.5, entry family 9.5, enumeration
-literal 3.5.1, evaluation of a name 4.1, exception 11, formal parameter
-6.1, function 6.5, identifier 2.3, legal 1.6, mode 6.1, name 4.1, object
-3.2, object declaration 3.2, operator 6.7, operator declaration 6.7,
-operator symbol 6.1, package 7, parameter 6.2, parameter specification 6.1,
-procedure 6.1, procedure call statement 6.4, reserved word 2.9,
-subcomponent 3.3, subprogram 6, subprogram call 6.4, subprogram declaration
-6.1, subprogram specification 6.1, subtype 3.3.2, task object 9.2, timed
-entry call 9.7.3, type 3.3, type mark 3.3.2, variable 3.2.1, visibility 8.3
-
 
 ### 8.6 The Package Standard
 
@@ -9921,13 +9080,6 @@ itself is not visible (whether by selection or directly). However this
 operation can only be applied to operands that are visible and the
 declaration of these operands requires the visibility of either the type or
 one of its subtypes.
-
-References: applicable with clause 10.1.1, block name 5.6, block statement
-5.6, declaration 3.1, declarative region 8.1, expanded name 4.1.3, hiding
-8.3, identifier 2.3, implicit declaration 3.1, library unit 10.1, loop
-statement 5.5, main program 10.1, must 1.6, name 4.1, occur immediately
-within 8.1, operator 6.7, package 7, program unit 6, secondary unit 10.1,
-subtype 3.3, type 3.3, visibility 8.3, with clause 10.1.1
 
 
 ### 8.7 The Context of Overload Resolution
@@ -10037,39 +9189,6 @@ require conformance of two constructs since conformance requires that
 corresponding names be given the same meaning by the visibility and
 overloading rules.
 
-References: aggregate 4.3, allocator 4.8, assignment 5.2, basic operation
-3.3.3, case statement 5.4, class of type 3.3, declaration 3.1, entry 9.5,
-enumeration literal 3.5.1, exception 11, expression 4.4, formal part 6.1,
-identifier 2.3, legal 1.6, literal 4.2, loop parameter specification 5.5,
-membership test 4.5.2, name 4.1, null literal 3.8, operation 3.3.3,
-operator 4.5, overloading 6.6, pragma 2.8, representation clause 13.1,
-statement 5, static expression 4.9, static subtype 4.9, subprogram 6,
-subtype 3.3, type conversion 4.6, visibility 8.3
-
-Rules of the form (a): address clause 13.5, assignment 5.2, choice 3.7.3
-4.3.2 5.4, component association 4.3.1 4.3.2, conformance rules 9.5,
-default expression 3.7 3.7.1 6.1 12.1.1, delay statement 9.6, discrete
-range 3.6.1 5.5 9.5, discriminant constraint 3.7.2, enumeration
-representation clause 13.3, generic parameter association 12.3.1, index
-constraint 3.6.1, index expression 4.1.1 4.1.2 9.5, initial value 3.2.1,
-membership test 4.5.2, parameter association 6.4.1, parameter and result
-type profile 8.5 12.3.6, qualified expression 4.7, range constraint 3.5,
-renaming of an object 8.5, result expression 5.8
-
-Rules of the form (b): abort statement 9.10, assignment 5.2, case
-expression 5.4, condition 5.3 5.5 5.7 9.7.1, discrete range 3.6.1 5.5 9.5,
-fixed point type declaration 3.5.9, floating point type declaration 3.5.7,
-integer type declaration 3.5.4, length clause 13.2, membership test 4.4,
-number declaration 3.2.2, record representation clause 13.4, selected
-component 4.1.3, short-circuit control form 4.4, val attribute 3.5.5
-
-Rules of the form (c): indexed component 4.1.1, selected component 4.1.3,
-slice 4.1.2
-
-Rules of the form (d): aggregate 4.3, allocator 4.8, membership test 4.4,
-null literal 4.2, numeric literal 2.4, short-circuit control form 4.4,
-string literal 4.2
-
 
 
 
@@ -10112,11 +9231,6 @@ detect that the same effect can be guaranteed if parts of the actions of a
 given task are executed by different physical processors acting in
 parallel, it may choose to execute them in this way; in such a case,
 several physical processors implement a single logical processor.
-
-References: abort statement 9.10, accept statement 9.5, delay statement
-9.6, entry 9.5, entry call statement 9.5, generic unit 12, package 7,
-parameter in an entry call 9.5, program unit 6, rendezvous 9.5, select
-statement 9.7, subprogram 6, task body 9.1, task specification 9.1
 
 
 ### 9.1 Task Specifications and Task Bodies
@@ -10248,12 +9362,6 @@ A task specification specifies the interface of tasks of the task type with
 other tasks of the same or of different types, and also with the main
 program.
 
-References: declaration 3.1, declarative part 3.9, elaboration 3.9, entry
-9.5, entry declaration 9.5, exception handler 11.2, identifier 2.3, main
-program 10.1, object 3.2, object declaration 3.2.1, representation clause
-13.1, reserved word 2.9, sequence of statements 5.1, simple name 4.1, type
-3.3, type declaration 3.3.1
-
 
 ### 9.2 Task Types and Task Objects
 
@@ -10322,18 +9430,6 @@ Assignment is available for such an access type as for any access type.
 
 Subtype declarations are allowed for task types as for other types, but
 there are no constraints applicable to task types.
-
-References: access type 3.8, actual parameter 6.4.1, allocator 4.8,
-assignment 5.2, component declaration 3.7, composite type 3.3, constant
-3.2.1, constant declaration 3.2.1, constraint 3.3, designate 3.8 9.1,
-elaboration 3.9, entry 9.5, equality operator 4.5.2, formal parameter 6.2,
-formal parameter mode 6.2, generic actual parameter 12.3, generic
-association 12.3, generic formal parameter 12.1, generic formal parameter
-mode 12.1.1, generic unit 12, inequality operator 4.5.2, initialization
-3.2.1, limited type 7.4.4, object 3.2, object declaration 3.2.1, parameter
-association 6.4, private part 7.2, private type 7.4, reserved word 2.9,
-subcomponent 3.3, subprogram 6, subtype declaration 3.3.2, task body 9.1,
-type 3.3
 
 
 ### 9.3 Task Execution - Task Activation
@@ -10425,12 +9521,6 @@ several tasks are activated in parallel, the execution of any of these
 tasks need not await the end of the activation of the other tasks. A task
 may become completed during its activation either because of an exception
 or because it is aborted (see 9.10).
-
-References: allocator 4.8, completed task 9.4, declarative part 3.9,
-elaboration 3.9, entry 9.5, exception 11, handling an exception 11.4,
-package body 7.1, parallel execution 9, statement 5, subcomponent 3.3, task
-body 9.1, task object 9.2, task termination 9.4, task type 9.1,
-tasking_error exception 11.1
 
 
 ### 9.4 Task Dependence - Termination of Tasks
@@ -10554,15 +9644,6 @@ the master that elaborates the ultimate parent access type definition.
 
 A renaming declaration defines a new name for an existing entity and hence
 creates no further dependence.
-
-References: access type 3.8, allocator 4.8, block statement 5.6,
-declaration 3.1, designate 3.8 9.1, exception 11, exception handler 11.2,
-exit statement 5.7, function 6.5, goto statement 5.9, library unit 10.1,
-main program 10.1, object 3.2, open alternative 9.7.1, package 7, program
-unit 6, renaming declaration 8.5, return statement 5.8, selective wait
-9.7.1, sequence of statements 5.1, statement 5, subcomponent 3.3,
-subprogram body 6.3, subprogram call 6.4, task body 9.1, task object 9.2,
-terminate alternative 9.7.1
 
 
 ### 9.5 Entries, Entry Calls, and Accept Statements
@@ -10733,19 +9814,6 @@ If the bounds of the discrete range of an entry family are integer
 literals, the index (in an entry name or accept statement) must be of the
 predefined type INTEGER (see 3.6.1).
 
-References: abnormal task 9.10, actual parameter part 6.4, completed task
-9.4, conditional entry call 9.7.2, conformance rules 6.3.1,
-constraint_error exception 11.1, designate 9.1, discrete range 3.6.1,
-elaboration 3.1 3.9, enumeration literal 3.5.1, evaluation 4.5, expression
-4.4, formal part 6.1, identifier 2.3, indexed component 4.1.1, integer type
-3.5.4, name 4.1, object 3.2, overloading 6.6 8.7, parallel execution 9,
-prefix 4.1, procedure 6, procedure call 6.4, renaming declaration 8.5,
-return statement 5.8, scope 8.2, selected component 4.1.3, selector 4.1.3,
-sequence of statements 5.1, simple expression 4.4, simple name 4.1,
-subprogram 6, subprogram body 6.3, subprogram declaration 6.1, task 9, task
-body 9.1, task specification 9.1, tasking_error exception 11.1, timed entry
-call 9.7.3
-
 
 ### 9.6 Delay Statements, Duration, and Time
 
@@ -10862,11 +9930,6 @@ average. This interval between two successive iterations is only
 approximate. However, there will be no cumulative drift as long as the
 duration of each iteration is (sufficiently) less than INTERVAL.
 
-References: adding operator 4.5, duration C, fixed point type 3.5.9,
-function call 6.4, library unit 10.1, operator 4.5, package 7, private type
-7.4, relational operator 4.5, simple expression 4.4, statement 5, task 9,
-type 3.3
-
 
 ### 9.7 Select Statements
 
@@ -10882,9 +9945,6 @@ timed entry calls.
 
 
 ```
-
-References: selective wait 9.7.1, conditional entry call 9.7.2, timed
-entry call 9.7.3
 
 
 #### 9.7.1 Selective Waits
@@ -11031,11 +10091,6 @@ A selective wait is allowed to have several open delay alternatives. A
 selective wait is allowed to have several open accept alternatives for the
 same entry.
 
-References: accept statement 9.5, condition 5.3, declaration 3.1, delay
-expression 9.6, delay statement 9.6, duration 9.6, entry 9.5, entry call
-9.5, entry index 9.5, program_error exception 11.1, queued entry call 9.5,
-rendezvous 9.5, select statement 9.7, sequence of statements 5.1, task 9
-
 
 #### 9.7.2 Conditional Entry Calls
 
@@ -11094,12 +10149,6 @@ Example:
 
 ```
 
-References: abnormal task 9.10, accept statement 9.5, actual parameter
-part 6.4, completed task 9.4, entry call statement 9.5, entry family 9.5,
-entry index 9.5, evaluation 4.5, expression 4.4, open alternative 9.7.1,
-queued entry call 9.5, rendezvous 9.5, select statement 9.7, sequence of
-statements 5.1, task 9, tasking_error exception 11.1
-
 
 #### 9.7.3 Timed Entry Calls
 
@@ -11149,12 +10198,6 @@ Example:
 
 
 ```
-
-References: abnormal task 9.10, accept statement 9.5, actual parameter
-part 6.4, completed task 9.4, conditional entry call 9.7.2, delay
-expression 9.6, delay statement 9.6, duration 9.6, entry call statement
-9.5, entry family 9.5, entry index 9.5, evaluation 4.5, expression 4.4,
-rendezvous 9.5, sequence of statements 5.1, task 9, tasking_error exception 11.1
 
 
 ### 9.8 Priorities
@@ -11212,10 +10255,6 @@ depends on the priority of the task calling the entry. Priorities should
 be used only to indicate relative degrees of urgency; they should not be
 used for task synchronization.
 
-References: declarative part 3.9, entry call statement 9.5, integer type
-3.5.4, main program 10.1, package system 13.7, pragma 2.8, rendezvous 9.5,
-static expression 4.9, subtype 3.3, task 9, task specification 9.1
-
 
 ### 9.9 Task and Entry Attributes
 
@@ -11260,12 +10299,6 @@ Note:
 Algorithms interrogating the attribute E'COUNT should take precautions to
 allow for the increase of the value of this attribute for incoming entry
 calls, and its decrease, for example with timed entry calls.
-
-References: abnormal task 9.10, accept statement 9.5, attribute 4.1.4,
-boolean type 3.5.3, completed task 9.4, designate 9.1, entry 9.5, false
-boolean value 3.5.3, queue of entry calls 9.5, storage unit 13.7, task 9,
-task object 9.2, task type 9.1, terminated task 9.4, timed entry call
-9.7.3, true boolean value 3.5.3, universal_integer type 3.5.4
 
 
 ### 9.10 Abort Statements
@@ -11323,14 +10356,6 @@ Notes:
 An abort statement should be used only in extremely severe situations
 requiring unconditional termination. A task is allowed to abort any task,
 including itself.
-
-References: abnormal in rendezvous 11.5, accept statement 9.5, activation
-9.3, attribute 4.1.4, callable (predefined attribute) 9.9, conditional
-entry call 9.7.2, delay statement 9.6, dependent task 9.4, entry call
-statement 9.5, evaluation of a name 4.1, exception handler 11.2, false
-boolean value 3.5.3, name 4.1, queue of entry calls 9.5, rendezvous 9.5,
-select statement 9.7, statement 5, task 9, tasking_error exception 11.1,
-terminated task 9.4, timed entry call 9.7.3
 
 
 ### 9.11 Shared Variables
@@ -11409,12 +10434,6 @@ address clause.
 An implementation must restrict the objects for which the pragma SHARED is
 allowed to objects for which each of direct reading and direct updating is
 implemented as an indivisible operation.
-
-References: accept statement 9.5, activation 9.3, assignment 5.2,
-canonical order 11.6, declarative part 3.9, entry call statement 9.5,
-erroneous 1.6, global 8.1, package specification 7.1, pragma 2.8, read a
-value 6.2, rendezvous 9.5, simple name 3.1 4.1, task 9, type 3.3, update a
-value 6.2, variable 3.2.1
 
 
 ### 9.12 Example of Tasking
@@ -11507,11 +10526,6 @@ instantiation. Alternatively this construct can be a subunit, in which
 case it includes the body of a subprogram, package, task unit, or generic
 unit declared within another compilation unit.
 
-References: compilation 10.1, compilation unit 10.1, generic body 12.2,
-generic declaration 12.1, generic instantiation 12.3, package body 7.1,
-package declaration 7.1, subprogram body 6.3, subprogram declaration 6.1,
-subunit 10.2, task body 9.1, task unit 9
-
 
 ### 10.1 Compilation Units - Library Units
 
@@ -11589,16 +10603,6 @@ declared subprogram is allowed to overload a library subprogram. The
 expanded name STANDARD.L can be used for a library unit L (unless the name
 STANDARD is hidden) since library units act as declarations that occur
 immediately within the package STANDARD.
-
-References: allow 1.6, context clause 10.1.1, declaration 3.1, designator
-6.1, environment 10.4, generic declaration 12.1, generic instantiation
-12.3, hiding 8.3, identifier 2.3, library unit 10.5, local declaration 8.1,
-must 1.6, name 4.1, occur immediately within 8.1, operator 4.5, operator
-symbol 6.1, overloading 6.6 8.7, package body 7.1, package declaration 7.1,
-parameter of a subprogram 6.2, pragma 2.8, procedure 6.1, program unit 6,
-proper body 3.9, renaming declaration 8.5, simple name 4.1, standard
-package 8.6, subprogram 6, subprogram body 6.3, subprogram declaration 6.1,
-subunit 10.2, task 9, visibility 8.3
 
 
 #### 10.1.1 Context Clauses - With Clauses
@@ -11700,14 +10704,6 @@ compilation unit. For example, the body of the package REAL_OPERATIONS may
 need elementary operations provided by other packages. The latter packages
 should not be named by the with clause of QUADRATIC_EQUATION since these
 elementary operations are not directly called within its body.
-
-References: allow 1.6, compilation unit 10.1, direct visibility 8.3,
-elaboration 3.9, generic body 12.2, generic unit 12.1, hiding 8.3, instance
-12.3, library unit 10.1, main program 10.1, must 1.6, name 4.1, package 7,
-package body 7.1, package declaration 7.1, procedure 6.1, program unit 6,
-secondary unit 10.1, simple name 4.1, standard predefined package 8.6,
-subprogram body 6.3, subprogram declaration 6.1, subunit 10.2, type 3.3,
-use clause 8.4, visibility 8.3
 
 
 #### 10.1.2 Examples of Compilation Units
@@ -11836,10 +10832,6 @@ These three compilation units can be submitted in one or more compilations.
 For example, it is possible to submit the package specification and the
 package body together and in this order in a single compilation.
 
-References: compilation unit 10.1, declaration 3.1, identifier 2.3,
-package 7, package body 7.1, package specification 7.1, program 10,
-standard package 8.6, use clause 8.4, visibility 8.3, with clause 10.1.1
-
 
 ### 10.2 Subunits of Compilation Units
 
@@ -11905,17 +10897,6 @@ given within a parent unit since a library unit acts as if declared in
 STANDARD; this however does not affect the interpretation of the with
 clauses themselves, since only names of library units can appear in with
 clauses.
-
-References: compilation unit 10.1, conform 6.3.1, context clause 10.1.1,
-declaration 3.1, declarative part 3.9, direct visibility 8.3, elaboration
-3.9, expanded name 4.1.3, generic body 12.2, generic unit 12, hidden
-declaration 8.3, identifier 2.3, library unit 10.1, local declaration 8.1,
-name 4.1, occur immediately within 8.1, overloading 8.3, package 7, package
-body 7.1, package specification 7.1, program 10, program unit 6, proper
-body 3.9, renaming declaration 8.5, separate compilation 10.1, simple name
-4.1, subprogram 6, subprogram body 6.3, subprogram specification 6.1, task
-9, task body 9.1, task unit 9.1, use clause 8.4, visibility 8.3, with
-clause 10.1.1
 
 
 #### 10.2.1 Examples of Subunits
@@ -12066,11 +11047,6 @@ following are (directly) visible within the proper body of the subunit G:
 the procedure TOP, the type REAL, the variables R and S, the package
 FACILITY and the contained named number PI and subprograms F and G.
 
-References: body stub 10.2, compilation unit 10.1, identifier 2.3, local
-declaration 8.1, named number 3.2, package 7, package body 7.1, procedure
-6, procedure body 6.3, proper body 3.9, subprogram 6, type 3.3, variable
-3.2.1, visibility 8.3, with clause 10.1.1
-
 
 ### 10.3 Order of Compilation
 
@@ -12193,15 +11169,6 @@ body for this package is not required. In any case, the obsolete package
 body must not be used and can therefore be deleted from the program
 library.
 
-References: compilation 10.1, compilation unit 10.1, context clause
-10.1.1, elaboration 3.9, generic body 12.2, generic declaration 12.1,
-generic unit 12, library unit 10.1, local declaration 8.1, name 4.1,
-package 7, package body 7.1, package specification 7.1, parent unit 10.2,
-pragma inline 6.3.2, procedure 6.1, procedure body 6.3, proper body 3.9,
-secondary unit 10.1, subprogram body 6.3, subprogram declaration 6.1,
-subprogram specification 6.1, subunit 10.2, type 3.3, variable 3.2.1,
-visibility 8.3, with clause 10.1.1
-
 
 ### 10.4 The Program Library
 
@@ -12230,10 +11197,6 @@ program or of a given family of programs. These commands may permit the
 reuse of units of other program libraries. Finally, there should be
 commands for interrogating the status of the units of a program library.
 The form of these commands is not specified by the language definition.
-
-References: compilation unit 10.1, context clause 10.1.1, order of
-compilation 10.3, program 10.1, program library 10.1, subunit 10.2, use
-clause 8.4, with clause 10.1.1
 
 
 ### 10.5 Elaboration of Library Units
@@ -12278,12 +11241,6 @@ circularity exists). The elaboration of the compilation units of the
 program is performed in some order that is otherwise not defined by the
 language.
 
-References: allow 1.6, argument of a pragma 2.8, compilation unit 10.1,
-context clause 10.1.1, dependence between compilation units 10.3,
-elaboration 3.9, illegal 1.6, in some order 1.6, library unit 10.1, name
-4.1, main program 10.1, pragma 2.8, secondary unit 10.1, separate
-compilation 10.1, simple name 4.1, subunit 10.2, with clause 10.1.1
-
 
 ### 10.6 Program Optimization
 
@@ -12308,10 +11265,6 @@ An expression whose evaluation is known to raise an exception need not
 represent an error if it occurs in a statement or subprogram that is never
 executed. The compiler may warn the programmer of a potential error.
 
-References: condition 5.3, declaration 3.1, elaboration 3.9, evaluation
-4.5, exception 11, expression 4.4, false boolean value 3.5.3, program 10,
-raising of exceptions 11.3, statement 5, static expression 4.9, subprogram 6
-
 
 
 
@@ -12332,10 +11285,6 @@ statement or operation that propagates the exception. When an exception
 arises, control can be transferred to a user-provided exception handler at
 the end of a block statement or at the end of the body of a subprogram,
 package, or task unit.
-
-References: block statement 5.6, error situation 1.6, exception handler
-11.2, name 4.1, package body 7.1, propagation of an exception 11.4.1
-11.4.2, raise statement 11.3, subprogram body 6.3, task body 9.1
 
 
 ### 11.1 Exception Declarations
@@ -12436,35 +11385,6 @@ Examples of user-defined exception declarations:
 
 ```
 
-References: access value 3.8, collection 3.8, declaration 3.1, exception
-11, exception handler 11.2, generic body 12.2, generic instantiation 12.3,
-generic unit 12, identifier 2.3, implicit declaration 12.3, instantiation
-12.3, name 4.1, object 3.2, raise statement 11.3, real type 3.5.6, record
-component 3.7, return statement 5.8, subprogram 6, subprogram body 6.3,
-task 9, task body 9.1
-
-Constraint_error exception contexts: aggregate 4.3.1 4.3.2, allocator 4.8,
-assignment statement 5.2 5.2.1, constraint 3.3.2, discrete type attribute
-3.5.5, discriminant constraint 3.7.2, elaboration of a generic formal
-parameter 12.3.1 12.3.2 12.3.4 12.3.5, entry index 9.5, exponentiating
-operator 4.5.6, index constraint 3.6.1, indexed component 4.1.1, logical
-operator 4.5.1, null access value 3.8, object declaration 3.2.1, parameter
-association 6.4.1, qualified expression 4.7, range constraint 3.5, selected
-component 4.1.3, slice 4.1.2, subtype indication 3.3.2, type conversion 4.6
-
-Numeric_error exception contexts: discrete type attribute 3.5.5, implicit
-conversion 3.5.4 3.5.6 4.6, numeric operation 3.5.5 3.5.8 3.5.10, operator
-of a numeric type 4.5 4.5.7
-
-Program_error exception contexts: collection 3.8, elaboration 3.9,
-elaboration check 3.9 7.3 9.3 12.2, erroneous 1.6, incorrect order
-dependence 1.6, leaving a function 6.5, selective wait 9.7.1
-
-Storage_error exception contexts: allocator 4.8
-
-Tasking error exception contexts: abort statement 9.10, entry call 9.5
-9.7.2 9.7.3, exceptions during task communication 11.5, task activation 9.3
-
 
 ### 11.2 Exception Handlers
 
@@ -12534,12 +11454,6 @@ each exception handler as are allowed in the sequence of statements of the
 frame. For example, a return statement is allowed in a handler within a
 function body.
 
-References: block statement 5.6, declarative part 3.9, exception 11,
-exception handling 11.4, function body 6.3, generic body 12.2, generic unit
-12.1, name 4.1, package body 7.1, raise statement 11.3, return statement
-5.8, sequence of statements 5.1, statement 5, subprogram body 6.3, task
-body 9.1, task unit 9 9.1, visibility 8.3
-
 
 ### 11.3 Raise Statements
 
@@ -12569,9 +11483,6 @@ Examples:
 
 ```
 
-References: exception 11, generic unit 12, name 4.1, package 7, sequence
-of statements 5.1, subprogram 6, task unit 9
-
 
 ### 11.4 Exception Handling
 
@@ -12580,9 +11491,6 @@ When an exception is raised, normal program execution is abandoned and
 control is transferred to an exception handler. The selection of this
 handler depends on whether the exception is raised during the execution of
 statements or during the elaboration of declarations.
-
-References: declaration 3.1, elaboration 3.1 3.9, exception 11, exception
-handler 11.2, raising of exceptions 11.3, statement 5
 
 
 #### 11.4.1 Exceptions Raised During the Execution of Statements
@@ -12761,15 +11669,6 @@ a frame is not executed but is the template for the corresponding sequences
 of statements of the subprograms or packages obtained by generic
 instantiation.
 
-References: accept statement 9.5, basic operation 3.3.3, block statement
-5.6, body stub 10.2, completion 9.4, declarative item 3.9, declarative part
-3.9, dependent task 9.4, elaboration 3.1 3.9, exception 11, exception
-handler 11.2, frame 11.2, generic instantiation 12.3, generic unit 12,
-library unit 10.1, main program 10.1, numeric_error exception 11.1, package
-7, package body 7.1, predefined operator 4.5, procedure 6.1, sequence of
-statements 5.1, statement 5, subprogram 6, subprogram body 6.3, subprogram
-call 6.4, subunit 10.2, task 9, task body 9.1
-
 
 #### 11.4.2 Exceptions Raised During the Elaboration of Declarations
 
@@ -12848,13 +11747,6 @@ Example of an exception in the declarative part of a block statement (case (b)):
 
 ```
 
-References: activation 9.3, block statement 5.6, body stub 10.2, completed
-task 9.4, declarative item 3.9, declarative part 3.9, elaboration 3.1 3.9,
-exception 11, frame 11.2, library unit 10.1, main program 10.1, package
-body 7.1, package declaration 7.1, package specification 7.1, subprogram 6,
-subprogram body 6.3, subprogram call 6.4, subunit 10.2, task 9, task body
-9.1, task declaration 9.1, tasking_error exception 11.1
-
 
 ### 11.5 Exceptions Raised During Task Communication
 
@@ -12897,10 +11789,6 @@ result of an abort statement) no exception is raised in the called task.
 If the rendezvous has not yet started, the entry call is cancelled. If the
 rendezvous is in progress, it completes normally, and the called task is
 unaffected.
-
-References: abnormal task 9.10, abort statement 9.10, accept statement
-9.5, completed task 9.4, entry call 9.5, exception 11, frame 11.2,
-rendezvous 9.5, task 9, task termination 9.4, tasking_error exception 11.1
 
 
 ### 11.6 Exceptions and Optimization
@@ -13012,13 +11900,6 @@ the other hand, the evaluation of A(K) cannot be moved before begin since
 an exception would then be handled by a different handler. For this
 reason, the initialization of N in the declaration itself would exclude the
 possibility of having an undefined initial value of N in the handler.
-
-References: accept statement 9.5, accuracy of real operations 4.5.7,
-assignment 5.2, base type 3.3, basic operation 3.3.3, conversion 4.6, error
-situation 11, exception 11, exception handler 11.2, frame 11.2,
-numeric_error exception 11.1, predefined operator 4.5, predefined
-subprogram 8.6, propagation of an exception 11.4, real type 3.5.6,
-undefined value 3.2.1
 
 
 ### 11.7 Suppressing Checks
@@ -13155,24 +12036,6 @@ the occurrence of such a pragma within a given unit does not guarantee that
 the corresponding exception will not arise; the exceptions may also be
 propagated by called units.
 
-References:
-access type 3.8, access value 3.8, activation 9.3, aggregate 4.3, allocator
-4.8, array 3.6, attribute 4.1.4, block statement 5.6, collection 3.8,
-compatible 3.3.2, component of an array 3.6, component of a record 3.7,
-composite type 3.3, constraint 3.3, constraint_error exception 11.1,
-declarative part 3.9, designate 3.8, dimension 3.6, discrete range 3.6,
-discriminant 3.7.1, discriminant constraint 3.7.2, elaboration 3.1 3.9,
-erroneous 1.6, error situation 11, expanded name 4.1.3, generic body 11.1,
-generic instantiation 12.3, generic unit 12, identifier 2.3, index 3.6,
-index constraint 3.6.1, indexed component 4.1.1, null access value 3.8,
-numeric operation 3.5.5 3.5.8 3.5.10, numeric type 3.5, numeric_error
-exception 11.1, object 3.2, operation 3.3.3, package body 7.1, package
-specification 7.1, pragma 2.8, program_error exception 11.1, program unit
-6, propagation of an exception 11.4, range constraint 3.5, record type 3.7,
-simple name 4.1, slice 4.1.2, subprogram 6, subprogram body 6.3, subprogram
-call 6.4, subtype 3.3, subunit 10.2, task 9, task body 9.1, task type 9.1,
-task unit 9, type 3.3, type mark 3.3.2
-
 
 ## 12. Generic Units
 
@@ -13195,11 +12058,6 @@ that are specific to their nongeneric counterparts. For example, a generic
 subprogram can be instantiated but it cannot be called. In contrast, the
 instance of a generic subprogram is a nongeneric subprogram; hence, this
 instance can be called but it cannot be used to produce further instances.
-
-References: declaration 3.1, generic actual parameter 12.3, generic
-declaration 12.1, generic formal parameter 12.1, generic formal part 12.1,
-generic instantiation 12.3, generic package 12.1, generic subprogram 12.1,
-instance 12.3, package 7, program unit 6, subprogram 6
 
 
 ### 12.1 Generic Declarations
@@ -13339,16 +12197,6 @@ denoted entity must therefore be visible at the place of the expression.)
 Neither generic formal parameters nor their attributes are allowed
 constituents of static expressions (see 4.9).
 
-References: access type definition 3.8, array type definition 3.6,
-attribute 4.1.4, constraint 3.3, declaration 3.1, designator 6.1,
-elaboration has no other effect 3.1, entity 3.1, expression 4.4, function
-6.5, generic instantiation 12.3, identifier 2.3, identifier list 3.2,
-instance 12.3, name 4.1, object 3.2, overloading 6.6 8.7, package
-specification 7.1, parameter of a subprogram 6.2, private type definition
-7.4, procedure 6.1, reserved word 2.9, static expression 4.9, subprogram 6,
-subprogram specification 6.1, subtype indication 3.3.2, type 3.3, type mark
-3.3.2
-
 
 #### 12.1.1 Generic Formal Objects
 
@@ -13391,14 +12239,6 @@ possible (to avoid confusion) it is recommended that the name of a base
 type be used for the declaration of such a formal object. If, however, the
 base type is anonymous, it is recommended that the subtype name defined by
 the type declaration for the base type be used.
-
-References: anonymous type 3.3.1, assignment 5.2, base type 3.3, constant
-declaration 3.2, constraint 3.3, declaration 3.1, generic actual parameter
-12.3, generic formal object 12.1, generic formal parameter 12.1, generic
-instantiation 12.3, generic parameter declaration 12.1, identifier 2.3,
-limited type 7.4.4, matching generic actual parameter 12.3, mode 6.1, name
-4.1, object 3.2, simple name 4.1, subtype 3.3, type declaration 3.3, type
-mark 3.3.2, variable 3.2.1
 
 
 #### 12.1.2 Generic Formal Types
@@ -13514,21 +12354,6 @@ Example of a generic formal part declaring a formal integer type:
        SECOND : RANK := FIRST + 1; -- the operator "+" of the type RANK
 
 
-References: access type definition 3.8, allocator 4.8, array type
-definition 3.6, assignment 5.2, body of a generic unit 12.2, class of type
-3.3, constraint 3.3, declaration 3.1, declaration of a generic unit 12.1,
-discrete range 3.6, discrete type 3.5, discriminant part 3.7.1, enumeration
-type 3.5.1, equality 4.5.2, fixed point type 3.5.9, floating point type
-3.5.7, generic actual type 12.3, generic formal part 12.1, generic formal
-subprogram 12.1.3, generic formal type 12.1, generic parameter declaration
-12.1, generic type definition 12.1, indexed component 4.1.1, inequality
-4.5.2, instantiation 12.3, integer type 3.5.4, limited private type 7.4.4,
-matching generic actual type 12.3.2 12.3.3 12.3.4 12.3.5, multiplying
-operator 4.5 4.5.5, operation 3.3, operator 4.5, parent type 3.4, private
-type definition 7.4, scalar type 3.5, slice 4.1.2, standard package 8.6 C,
-subtype indication 3.3.2, type mark 3.3.2, universal_fixed 3.5.9
-
-
 #### 12.1.3 Generic Formal Subprograms
 
 
@@ -13575,14 +12400,6 @@ type declaration be used.
 The type specified for a formal parameter of a generic formal subprogram
 can be any visible type, including a generic formal type of the same
 generic formal part.
-
-References: anonymous type 3.3.1, base type 3.3, box delimiter 12.1.2,
-constraint 3.3, designator 6.1, generic actual parameter 12.3, generic
-formal function 12.1, generic formal subprogram 12.1, generic instantiation
-12.3, generic parameter declaration 12.1, identifier 2.3, matching generic
-actual subprogram 12.3.6, operator symbol 6.1, parameter of a subprogram
-6.2, renaming declaration 8.5, reserved word 2.9, scope 8.2, subprogram 6,
-subprogram specification 6.1, subtype 3.3.2, type 3.3, type mark 3.3.2
 
 
 ### 12.2 Generic Bodies
@@ -13658,10 +12475,6 @@ Example of a generic package body:
     end;
 
 ```
-
-References: body 3.9, elaboration 3.9, generic body 12.1, generic
-instantiation 12.3, generic package 12.1, generic subprogram 12.1, instance
-12.3, package body 7.1, package 7, subprogram 6, subprogram body 6.3
 
 
 ### 12.3 Generic Instantiation
@@ -13858,16 +12671,6 @@ from outside the instance are ambiguous. For example:
 
 ```
 
-References: declaration 3.1, designator 6.1, discriminant 3.7.1,
-elaboration 3.1 3.9, entity 3.1, entry name 9.5, evaluation 4.5, expression
-4.4, generic formal object 12.1, generic formal parameter 12.1, generic
-formal subprogram 12.1, generic formal type 12.1, generic parameter
-declaration 12.1, global declaration 8.1, identifier 2.3, implicit
-declaration 3.1, local declaration 8.1, mode in 12.1.1, mode in out 12.1.1,
-name 4.1, operation 3.3, operator symbol 6.1, overloading 6.6 8.7, package
-7, simple name 4.1, subprogram 6, subprogram call 6.4, subprogram name 6.1,
-subtype declaration 3.3.2, type mark 3.3.2, variable 3.2.1, visibility 8.3
-
 
 #### 12.3.1 Matching Rules for Formal Objects
 
@@ -13889,14 +12692,6 @@ Notes:
 The type of a generic actual parameter of mode in must not be a limited
 type. The constraints that apply to a generic formal parameter of mode in
 out are those of the corresponding generic actual parameter (see 12.1.1).
-
-References: constraint 3.3, constraint_error exception 11.1, expression
-4.4, formal parameter 6.1, generic actual parameter 12.3, generic formal
-object 12.1.1, generic formal parameter 12.1, generic instantiation 12.3,
-generic unit 12.1, limited type 7.4.4, matching generic actual parameter
-12.3, mode in 12.1.1, mode in out 12.1.1, mode out 6.2, name 4.1, raising
-of exceptions 11, satisfy 3.3, subcomponent 3.3, type 3.3, type mark 3.3.2,
-variable 3.2.1
 
 
 #### 12.3.2 Matching Rules for Formal Private Types
@@ -13939,16 +12734,6 @@ subtype of each discriminant of the actual type is the same as the subtype
 of the corresponding discriminant of the formal type. The exception
 CONSTRAINT_ERROR is raised if this check fails.
 
-References: array type 3.6, constraint 3.3, constraint_error exception
-11.1, default expression for a discriminant 3.7.1, derived type 3.4,
-discriminant 3.7.1, discriminant part 3.7.1, elaboration 3.9, generic
-actual type 12.3, generic body 12.2, generic formal type 12.1.2, generic
-instantiation 12.3, generic specification 12.1, limited type 7.4.4,
-matching generic actual parameter 12.3, name 4.1, private type 7.4, raising
-of exceptions 11, subtype 3.3, subtype indication 3.3.2, type 3.3, type
-with discriminants 3.3, unconstrained array type 3.6, unconstrained subtype
-3.3
-
 
 #### 12.3.3 Matching Rules for Formal Scalar Types
 
@@ -13959,11 +12744,6 @@ defined by range <> is matched by any integer subtype. A generic formal
 type defined by digits <> is matched by any floating point subtype. A
 generic formal type defined by delta <> is matched by any fixed point
 subtype. No other matches are possible for these generic formal types.
-
-References: box delimiter 12.1.2, discrete type 3.5, enumeration type
-3.5.1, fixed point type 3.5.9, floating point type 3.5.7, generic actual
-type 12.3, generic formal type 12.1.2, generic type definition 12.1,
-integer type 3.5.4, matching generic actual parameter 12.3, scalar type 3.5
 
 
 #### 12.3.4 Matching Rules for Formal Array Types
@@ -14036,13 +12816,6 @@ For the above rules, if any of the index or component types of the formal
 array type is itself a formal type, then within the instance its name
 denotes the corresponding actual subtype (see 12.3(d)).
 
-References: array type 3.6, array type definition 3.6, component of an
-array 3.6, constrained array type 3.6, constraint 3.3, constraint_error
-exception 11.1, elaboration 3.9, formal type 12.1, generic formal type
-12.1.2, generic instantiation 12.3, index 3.6, index constraint 3.6.1,
-matching generic actual parameter 12.3, raise statement 11.3, subtype 3.3,
-unconstrained array type 3.6
-
 
 #### 12.3.5 Matching Rules for Formal Access Types
 
@@ -14095,11 +12868,6 @@ Note:
 For the above rules, if the designated type is itself a formal type, then
 within the instance its name denotes the corresponding actual subtype (see
 12.3(d)).
-
-References: access type 3.8, access type definition 3.8, constraint 3.3,
-constraint_error exception 11.1, designate 3.8, elaboration 3.9, generic
-formal type 12.1.2, generic instantiation 12.3, matching generic actual
-parameter 12.3, object 3.2, raise statement 11.3, value of access type 3.8
 
 
 #### 12.3.6 Matching Rules for Formal Subprograms
@@ -14166,12 +12934,6 @@ A formal subprogram is matched by an attribute of a type if the attribute
 is a function with a matching specification. An enumeration literal of a
 given type matches a parameterless formal function whose result type is the
 given type.
-
-References: attribute 4.1.4, box delimiter 12.1.2, designator 6.1, entry
-9.5, function 6.5, generic actual type 12.3, generic formal subprogram
-12.1.3, generic formal type 12.1.2, generic instantiation 12.3, matching
-generic actual parameter 12.3, name 4.1, parameter and result type profile
-6.3, subprogram 6, subprogram specification 6.1, subtype 3.3, visibility 8.3
 
 
 ### 12.4 Example of a Generic Package
@@ -14410,19 +13172,6 @@ Note:
 
 No representation clause is allowed for a generic formal type.
 
-References: address clause 13.5, allow 1.6, body 3.9, component 3.3,
-declaration 3.1, declarative part 3.9, default expression 3.2.1,
-deferred constant declaration 7.4, derivable subprogram 3.4, derived
-type 3.4, entity 3.1, entry 9.5, enumeration representation clause
-13.3, expression 4.4, generic formal type 12.1.2, illegal 1.6, length
-clause 13.2, must 1.6, name 4.1, object 3.2, occur immediately within
-8.1, package 7, package specification 7.1, parent type 3.4, pragma
-2.8, record representation clause 13.4, representation attribute
-13.7.2, 13.7.3, subcomponent 3.3, subprogram 6, subtype 3.3, subtype
-declaration 3.3.2, task specification 9.1, task unit 9, type 3.3, type
-declaration 3.3.1
- 
-
 
 ### 13.2 Length Clauses
 
@@ -14558,17 +13307,6 @@ since the type definition requires SHORT'SMALL=2**(-7) and SHORT'MANTISSA =
 14. The length clause for DEGREE forces the model numbers to exactly span
 the range of the type.
 
-References: access type 3.8, allocator 4.8, allow 1.6, array type 3.6,
-attribute 4.1.4, collection 3.8, composite type 3.3, constraint 3.3, delta
-of a fixed point type 3.5.9, derived type 3.4, designate 3.8, elaboration
-3.9, entity 3.1, evaluation 4.5, expression 4.4, first named subtype 13.1,
-fixed point type 3.5.9, index subtype 3.6, integer type 3.5.4, must 1.6,
-numeric type 3.5, object 3.2, real type 3.5.6, record type 3.7, small of a
-fixed point type 3.5.10, static constraint 4.9, static expression 4.9,
-static subtype 4.9, storage unit 13.7, subcomponent 3.3, system package
-13.7, task 9, task activation 9.3, task specification 9.1, task type 9.2,
-type 3.3, unconstrained array type 3.6
-
 
 ### 13.3 Enumeration Representation Clauses
 
@@ -14614,13 +13352,6 @@ representation clause. In the example, because of the need to avoid the
 omitted values, these functions are likely to be less efficiently
 implemented than they could be in the absence of a representation clause.
 Similar considerations apply when such types are used for indexing.
-
-References: aggregate 4.3, array aggregate 4.3.2, array type 3.6, attribute
-of an enumeration type 3.5.5, choice 3.7.3, component 3.3, enumeration
-literal 3.5.1, enumeration type 3.5.1, function 6.5, index 3.6, index
-subtype 3.6, literal 4.2, ordering relation of an enumeration type 3.5.1,
-representation clause 13.1, simple name 4.1, static expression 4.9, type
-3.3, type declaration 3.3.1, universal_integer type 3.5.4
 
 
 ### 13.4 Record Representation Clauses
@@ -14742,12 +13473,6 @@ Note on the example:
 The record representation clause defines the record layout. The length
 clause guarantees that exactly eight storage units are used.
 
-References: allow 1.6, attribute 4.1.4, constant 3.2.1, constraint 3.3,
-discriminant 3.7.1, integer type 3.5.4, must 1.6, named number 3.2, range
-3.5, record component 3.7, record type 3.7, simple expression 4.4, simple
-name 4.1, static constraint 4.9, static expression 4.9, storage unit 13.7,
-subcomponent 3.3, system package 13.7, variant 3.7.3
-
 
 ### 13.5 Address Clauses
 
@@ -14813,13 +13538,6 @@ overload each other, they cannot be interrupt entries. The syntax does not
 allow an address clause for a library unit. An implementation may provide
 pragmas for the specification of program overlays.
 
-References: address predefined type 13.7, apply 10.1.1, compilation unit
-10.1, constant 3.2.1, entity 3.1, entry 9.5, erroneous 1.6, expression
-4.4, library unit 10.1, name 4.1, object 3.2, package 7, pragma 2.8,
-program unit 6, reserved word 2.9, simple expression 4.4, simple name 4.1,
-subprogram 6, subprogram body 6.3, system package 13.7, task body 9.1, task
-object 9.2, task unit 9, type 3.3, variable 3.2.1, with clause 10.1.1
-
 
 #### 13.5.1 Interrupts
 
@@ -14871,12 +13589,6 @@ One of the possible effects of an address clause for an interrupt entry is
 to specify the priority of the interrupt (directly or indirectly). Direct
 calls to an interrupt entry are allowed.
 
-References: accept alternative 9.7.1, accept statement 9.5, address
-predefined type 13.7, allow 1.6, conditional entry call 9.7.2, entry 9.5,
-mode 6.1, parameter of a subprogram 6.2, priority of a task 9.8, select
-alternative 9.7.1, select statement 9.7, system package 13.7, task 9,
-terminate alternative 9.7.1, timed entry call 9.7.3
-
 
 ### 13.6 Change of Representation
 
@@ -14926,9 +13638,6 @@ type conversions:
 
 
 ```
-
-References: assignment 5.2, derived type 3.4, type 3.3, type conversion
-4.6, type declaration 3.1, representation clause 13.1
 
 
 ### 13.7 The Package System
@@ -15021,12 +13730,6 @@ package SYSTEM is not visible in a compilation unit unless this package is
 mentioned by a with clause that applies (directly or indirectly) to the
 compilation unit.
 
-References: address clause 13.5, apply 10.1.1, attribute 4.1.4, compilation
-unit 10.1, must 1.6, named number 3.2, number declaration 3.2.2, numeric
-literal 2.4, package 7, package specification 7.1, pragma 2.8, program
-library 10.1, type 3.3, visibility 8.3, visible part 7.2, with clause
-10.1.1
-
 
 #### 13.7.1 System-dependent Named Numbers
 
@@ -15051,12 +13754,6 @@ FINE_DELTA The smallest delta allowed in a fixed point constraint that
              has the range constraint -1.0 .. 1.0.
 
 TICK The basic clock period, in seconds.
-
-References: allow 1.6, delta of a fixed point constraint 3.5.9, fixed point
-constraint 3.5.9, floating point constraint 3.5.7, integer type 3.5.4,
-model number 3.5.6, named number 3.2, package 7, range constraint 3.5,
-system package 13.7, type 3.3, universal_integer type 3.5.4, universal_real
-type 3.5.6 
 
 
 #### 13.7.2 Representation Attributes
@@ -15149,15 +13846,6 @@ parameter X, if parameter passing is achieved by copy, then the attribute
 X'ADDRESS yields the address of the local copy; if parameter passing is by
 reference, then the address is that of the actual parameter.
 
-References: access subtype 3.8, access type 3.8, activation 9.3, actual
-parameter 6.2, address clause 13.5, address predefined type 13.7, attribute
-4.1.4, base type 3.3, collection 3.8, component 3.3, entry 9.5, formal
-parameter 6.1 6.2, label 5.1, object 3.2, package 7, package body 7.1,
-parameter passing 6.2, program unit 6, record object 3.7, statement 5,
-storage unit 13.7, subprogram 6, subprogram body 6.3, subtype 3.3, system
-predefined package 13.7, task 9, task body 9.1, task object 9.2, task type
-9.2, task unit 9, type 3.3, universal_integer type 3.5.4
-
 
 #### 13.7.3 Representation Attributes of Real Types
 
@@ -15231,13 +13919,6 @@ and the smallest positive representable number is
 
       F'MACHINE_RADIX ** (F'MACHINE_EMIN -1)
 
-References:arithmetic operator 4.5, attribute 4.1.4, base type 3.3, boolean
-predefined type 3.5.3, false boolean value 3.5.3, fixed point type 3.5.9,
-floating point type 3.5.7, model number 3.5.6, numeric type 3.5,
-numeric_error exception 11.1, predefined operation 3.3.3, radix 3.5.7, real
-type 3.5.6, subtype 3.3, true boolean value 3.5.3, type 3.3,
-universal_integer type 3.5.4
-
 
 ### 13.8 Machine Code Insertions
 
@@ -15288,13 +13969,6 @@ Example:
       end; 
 
 ```
-
-References: allow 1.6, apply 10.1.1, comment 2.7, compilation unit 10.1,
-declarative item 3.9, exception handler 11.2, inline pragma 6.3.2, labeled
-statement 5.1, library unit 10.1, package 7, pragma 2.8, procedure 6 6.1,
-procedure body 6.3, record aggregate 4.3.1, record type 3.7, sequence of
-statements 5.1, statement 5, static expression 4.9, use clause 5.4, with
-clause 10.1.1
 
 
 ### 13.9 Interface to Other Languages
@@ -15348,12 +14022,6 @@ defined by these other language processors.
 
 The pragma INTERFACE is not defined for generic subprograms.
 
-References: allow 1.6, body stub 10.2, compilation unit 10.1, declaration
-3.1, declarative item 3.9, declarative part 3.9, function result 6.5,
-library unit 10.1, must 1.6, name 4.1, overloaded subprogram 6.6, package
-specification 7.1, parameter of a subprogram 6.2, pragma 2.8, subprogram 6,
-subprogram body 6.3, subprogram call 6.4, subprogram declaration 6.1
-
 
 ### 13.10 Unchecked Programming
 
@@ -15376,8 +14044,6 @@ unchecked type conversions.
 
 
 ```
-
-References: generic subprogram 12.1, library unit 10.1, type 3.3
 
 
 #### 13.10.1 Unchecked Storage Deallocation
@@ -15424,12 +14090,6 @@ designated by the value of this task object. The same holds for any
 subcomponent of the object designated by X, if this subcomponent is a task
 object.
 
-References: access type 3.8, apply 10.1.1, compilation unit 10.1, designate
-3.8 9.1, erroneous 1.6, generic instantiation 12.3, generic procedure 12.1,
-generic unit 12, library unit 10.1, null access value 3.8, object 3.2,
-procedure 6, procedure call 6.4, subcomponent 3.3, task 9, task object 9.2,
-visibility 8.3, with clause 10.1.1
-
 
 #### 13.10.2 Unchecked Type Conversions
 
@@ -15458,10 +14118,6 @@ UNCHECKED_CONVERSION is not visible in a compilation unit unless this
 generic function is mentioned by a with clause that applies to the
 compilation unit.
 
-References: apply 10.1.1, compilation unit 10.1, erroneous 1.6, generic
-function 12.1, instantiation 12.3, parameter of a subprogram 6.2, type 3.3,
-with clause 10.1.1
-
 
 
 
@@ -15475,10 +14131,6 @@ Additional operations for text input-output are supplied in the package
 TEXT_IO. The package IO_EXCEPTIONS defines the exceptions needed by the
 above three packages. Finally, a package LOW_LEVEL_IO is provided for
 direct control of peripheral devices.
-
-References: direct_io package 14.2 14.2.4, io_exceptions package 14.5,
-low_level_io package 14.6, sequential_io package 14.2 14.2.2, text_io
-package 14.3
 
 
 ## 14. Input-Output
@@ -15578,15 +14230,6 @@ An implementation may restrict the number of files that may be associated
 with a given external file. The effect of sharing an external file in this
 way by several file objects is implementation-dependent.
 
-References: create procedure 14.2.1, current index 14.2, current size
-14.2, delete procedure 14.2.1, direct access 14.2, direct file procedure
-14.2, direct_io package 14.1 14.2, enumeration type 3.5.1, exception 11,
-file mode 14.2.3, generic instantiation 12.3, index 14.2, input file
-14.2.2, io_exceptions package 14.5, open file 14.1, open procedure 14.2.1,
-output file 14.2.2, read procedure 14.2.4, sequential access 14.2,
-sequential file 14.2, sequential input-output 14.2.2, sequential_io package
-14.2 14.2.2, string 3.6.3, text_io package 14.3, write procedure 14.2.4
-
 
 ### 14.2 Sequential and Direct Files
 
@@ -15618,8 +14261,6 @@ property of a file object, not of an external file.
 
 All three file modes are allowed for direct files. The only allowed modes
 for sequential files are the modes IN_FILE and OUT_FILE.
-
-References: count type 14.3, file mode 14.1, in_file 14.1, out_file 14.1
 
 
 #### 14.2.1 File Management
@@ -15747,13 +14388,6 @@ effects described in section 14.3.1.
 ```
 
 
-References: current mode 14.1, current size 14.1, closed file 14.1, direct
-access 14.2, external file 14.1, file 14.1, file_mode type 14.1, file_type
-type 14.1, form string 14.1, inout_file 14.2.4, mode 14.1, name string
-14.1, name_error exception 14.4, open file 14.1, out_file 14.1,
-status_error exception 14.4, use_error exception 14.4
-
-
 #### 14.2.2 Sequential Input-Output
 
 
@@ -15797,11 +14431,6 @@ operations is attempted for a file that is not open.
 
 
 ```
-
-References: data_error exception 14.4, element 14.1, element_type 14.1,
-end_error exception 14.4, external file 14.1, file 14.1, file mode 14.1,
-file_type 14.1, in_file 14.1, mode_error exception 14.4, out_file 14.1,
-status_error exception 14.4, use_error exception 14.4
 
 
 #### 14.2.3 Specification of the Package Sequential_IO
@@ -15864,16 +14493,6 @@ status_error exception 14.4, use_error exception 14.4
     end;
 
 ```
-
-References: close procedure 14.2.1, create procedure 14.2.1, data_error
-exception 14.4, delete procedure 14.2.1, device_error exception 14.4,
-end_error exception 14.4, end_of_file function 14.2.2, file_mode 14.1,
-file_type 14.1, form function 14.2.1, in_file 14.1, io_exceptions 14.4,
-is_open function 14.2.1, mode function 14.2.1, mode_error exception 14.4,
-name function 14.2.1, name_error exception 14.4, open procedure 14.2.1,
-out_file 14.1, read procedure 14.2.2, reset procedure 14.2.1, sequential_io
-package 14.2 14.2.2, status_error exception 14.4, use_error exception 14.4,
-write procedure 14.2.2,
 
 
 #### 14.2.4 Direct Input-Output
@@ -15947,13 +14566,6 @@ is attempted for a file that is not open.
 
 ```
 
-References: count type 14.2, current index 14.2, current size 14.2,
-data_error exception 14.4, element 14.1, element_type 14.1, end_error
-exception 14.4, external file 14.1, file 14.1, file mode 14.1, file_type
-14.1, in_file 14.1, index 14.2, inout_file 14.1, mode_error exception 14.4,
-open file 14.1, positive_count 14.3, status_error exception 14.4, use_error
-exception 14.4
-
 
 #### 14.2.5 Specification of the Package Direct_IO
 
@@ -16026,18 +14638,6 @@ exception 14.4
     end;
 
 ```
-
-References close procedure 14.2.1, count type 14.2, create procedure
-14.2.1, data_error exception 14.4, default_mode 14.2.5, delete procedure
-14.2.1, device_error exception 14.4, element_type 14.2.4, end_error
-exception 14.4, end_of_file function 14.2.4, file_mode 14.2.5, file_type
-14.2.4, form function 14.2.1, in_file 14.2.4, index function 14.2.4,
-inout_file 14.2.4 14.2.1, io_exceptions package 14.4, is_open function
-14.2.1, mode function 14.2.1, mode_error exception 14.4, name function
-14.2.1, name_error exception 14.4, open procedure 14.2.1, out_file 14.2.1,
-read procedure 14.2.4, set_index procedure 14.2.4, size function 14.2.4,
-status_error exception 14.4, use_error exception 14.4, write procedure
-14.2.4 14.2.1
 
 
 ### 14.3 Text Input-Output
@@ -16134,12 +14734,6 @@ unbounded. (Consequently, output consists of a single line if the
 subprograms for explicit control of line and page structure are not used.)
 The constant UNBOUNDED is provided for this purpose.
 
-References: count type 14.3.10, default current input file 14.3.2, default
-current output file 14.3.2, external file 14.1, file 14.1, get procedure
-14.3.5, in_file 14.1, out_file 14.1, put procedure 14.3.5, read 14.2.2,
-sequential access 14.1, standard input file 14.3.2, standard output file
-14.3.2
-
 
 #### 14.3.1 File Management
 
@@ -16179,13 +14773,6 @@ For text files, the procedures have the following additional effects:
 The exception MODE_ERROR is raised by the procedure RESET upon an attempt
 to change the mode of a file that is either the current default input file,
 or the current default output file.
-
-References: create procedure 14.2.1, current column number 14.3, current
-default input file 14.3, current line number 14.3, current page number
-14.3, end_of_file 14.3, external file 14.1, file 14.1, file mode 14.1, file
-terminator 14.3, in_file 14.1, line length 14.3, mode_error exception 14.4,
-open procedure 14.2.1, out_file 14.1, page length 14.3, reset procedure
-14.2.1
 
 
 #### 14.3.2 Default Input and Output Files
@@ -16240,10 +14827,6 @@ Note:
 The standard input and the standard output files cannot be opened, closed,
 reset, or deleted, because the parameter FILE of the corresponding
 procedures has the mode in out.
-
-References: current default file 14.3, default file 14.3, file_type 14.1,
-get procedure 14.3.5, mode_error exception 14.4, put procedure 14.3.5,
-status_error exception 14.4
 
 
 #### 14.3.3 Specification of Line and Page Lengths
@@ -16301,13 +14884,6 @@ not OUT_FILE.
 
 
 ```
-
-References: count type 14.3, current default output file 14.3, external
-file 14.1, file 14.1, file_type 14.1, line 14.3, line length 14.3, line
-terminator 14.3, maximum line length 14.3, maximum page length 14.3,
-mode_error exception 14.4, open file 14.1, out_file 14.1, page 14.3, page
-length 14.3, page terminator 14.3, status_error exception 14.4, unbounded
-page length 14.3, use_error exception 14.4
 
 
 #### 14.3.4 Operations on Columns, Lines, and Pages
@@ -16546,14 +15122,6 @@ is skipped. An implementation may represent the combination of these
 terminators by a single character, provided that it is properly recognized
 at input.
 
-References: current column number 14.3, current default file 14.3, current
-line number 14.3, current page number 14.3, end_error exception 14.4, file
-14.1, file terminator 14.3, get procedure 14.3.5, in_file 14.1,
-layout_error exception 14.4, line 14.3, line number 14.3, line terminator
-14.3, maximum page length 14.3, mode_error exception 14.4, open file 14.1,
-page 14.3, page length 14.3, page terminator 14.3, positive count 14.3,
-status_error exception 14.4
-
 
 #### 14.3.5 Get and Put Procedures
 
@@ -16667,15 +15235,6 @@ Example of overridden width parameter:
 
     PUT(ITEM => -23, WIDTH => 2); -- "-23"
 
-References: blank 14.3.9, column number 14.3, current default file 14.3,
-data_error exception 14.4, end_error exception 14.4, file 14.1, fore
-14.3.8, get procedure 14.3.6 14.3.7 14.3.8 14.3.9, in_file 14.1,
-layout_error exception 14.4, line number 14.1, line terminator 14.1,
-maximum line length 14.3, mode 14.1, mode_error exception 14.4, new_file
-procedure 14.3.4, out_file 14.1, page number 14.1, page terminator 14.1,
-put procedure 14.3.6 14.3.7 14.3.8 14.3.9, skipping 14.3.7 14.3.8 14.3.9,
-status_error exception 14.4, width 14.3.5 14.3.7 14.3.9
-
 
 #### 14.3.6 Input-Output of Characters and Strings
 
@@ -16766,11 +15325,6 @@ enclosed string is output as a single string bracket character, as a
 consequence of the rule for string literals (see 2.6).
 
 A string read by GET or written by PUT can extend over several lines.
-
-References: current column number 14.3, end_error exception 14.4, file
-14.1, file terminator 14.3, get procedure 14.3.5, line 14.3, line length
-14.3, new_line procedure 14.3.4, page terminator 14.3, put procedure
-14.3.4, skipping 14.3.5
 
 
 #### 14.3.7 Input-Output for Integer Types
@@ -16888,12 +15442,6 @@ Examples:
 
 
 ```
-
-References: based literal 2.4.2, blank 14.3.5, data_error exception 14.4,
-decimal literal 2.4.1, field subtype 14.3.5, file_type 14.1, get procedure
-14.3.5, integer_io package 14.3.10, integer literal 2.4, layout_error
-exception 14.4, line terminator 14.3, put procedure 14.3.5, skipping
-14.3.5, width 14.3.5
 
 
 #### 14.3.8 Input-Output for Real Types
@@ -17060,13 +15608,6 @@ For an item with a positive value, if output to a string exactly fills the
 string without leading spaces, then output of the corresponding negative
 value will raise LAYOUT_ERROR.
 
-References: aft attribute 3.5.10, based literal 2.4.2, blank 14.3.5,
-data_error exception 14.3.5, decimal literal 2.4.1, field subtype 14.3.5,
-file_type 14.1, fixed_io package 14.3.10, floating_io package 14.3.10, fore
-attribute 3.5.10, get procedure 14.3.5, layout_error 14.3.5, line
-terminator 14.3.5, put procedure 14.3.5, real literal 2.4, skipping 14.3.5,
-width 14.3.5
-
 
 #### 14.3.9 Input-Output for Enumeration Types
 
@@ -17181,10 +15722,6 @@ enumeration values. Thus
 
 The type BOOLEAN is an enumeration type, hence ENUMERATION_IO can be
 instantiated for this type.
-
-References: blank 14.3.5, data_error 14.3.5, enumeration_io package
-14.3.10, field subtype 14.3.5, file_type 14.1, get procedure 14.3.5, line
-terminator 14.3.5, put procedure 14.3.5, skipping 14.3.5, width 14.3.5
 
 
 #### 14.3.10 Specification of the Package Text_IO
@@ -17510,17 +16047,6 @@ LAYOUT_ERROR is also raised on output by an attempt to set column or line
 numbers in excess of specified maximum line or page lengths, respectively
 (excluding the unbounded cases). It is also raised by an attempt to PUT
 too many characters to a string.
-
-References: col function 14.3.4, create procedure 14.2.1, end_of_line
-function 14.3.4, end_of_page function 14.3.4, external file 14.1, file
-14.1, form string 14.1, get procedure 14.3.5, in_file 14.1, io_exceptions
-package 14.5, line function 14.3.4, line_length function 14.3.4, name
-string 14.1, new_line procedure 14.3.4, new_page procedure 14.3.4, open
-procedure 14.2.1, out_file 14.1, page function 14.3.4, page_length function
-14.3.4, put procedure 14.3.5, read procedure 14.2.2 14.2.3, set_input
-procedure 14.3.2, set_line_length 14.3.3, set_page_length 14.3.3,
-set_output 14.3.2, skip_line procedure 14.3.4, skip_page procedure 14.3.4,
-text_io package 14.3
 
 
 ### 14.5 Specification of the Package IO_Exceptions
