@@ -18,9 +18,21 @@
 #include <fcntl.h>
 #include <dirent.h>
 #include <unistd.h>
-#include <pthread.h>
 #include <sys/stat.h>
-#include <sys/wait.h>
+
+#ifdef _WIN32
+  #define WIN32_LEAN_AND_MEAN
+  #define NOMINMAX
+  #define NOGDI
+  #define NOUSER
+  #include <windows.h>
+  #include <process.h>
+#else
+  #include <sys/wait.h>
+#endif
+#ifdef __APPLE__
+  #include <mach-o/dyld.h>
+#endif
 
 /* ==== §1   Foundation =============================================== */
 typedef uint8_t  u8;
@@ -57,6 +69,140 @@ u64 To_Bytes   (u64 bits)  {return (bits + Bits_Per_Unit - 1) / Bits_Per_Unit;}
 
 #define EXPAND_TO_TEXT(literal) #literal
 #define TEXT_OF(constant)       EXPAND_TO_TEXT (constant)
+
+#if defined(__x86_64__) || defined(_M_X64)
+  #define SIMD_X86_64 1
+#elif defined(__aarch64__) || defined(_M_ARM64)
+  #define SIMD_ARM64 1
+#else
+  #define SIMD_GENERIC 1
+#endif
+
+#define X86_64_DATA_LAYOUT(mangling)                                     \
+  "e-m:" mangling "-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128"     \
+  "-n8:16:32:64-S128"
+
+#if defined(SIMD_X86_64) and defined(_WIN32)
+  #define HOST_TARGET_TRIPLE       "x86_64-w64-windows-gnu"
+  #define HOST_TARGET_DATA_LAYOUT  X86_64_DATA_LAYOUT ("w")
+#elif defined(SIMD_X86_64) and defined(__APPLE__)
+  #define HOST_TARGET_TRIPLE       "x86_64-apple-darwin"
+  #define HOST_TARGET_DATA_LAYOUT  X86_64_DATA_LAYOUT ("o")
+#elif defined(SIMD_X86_64)
+  #define HOST_TARGET_TRIPLE       "x86_64-pc-linux-gnu"
+  #define HOST_TARGET_DATA_LAYOUT  X86_64_DATA_LAYOUT ("e")
+#elif defined(SIMD_ARM64) and defined(_WIN32)
+  #define HOST_TARGET_TRIPLE       "aarch64-w64-windows-gnu"
+  #define HOST_TARGET_DATA_LAYOUT \
+    "e-m:w-p:64:64-i32:32-i64:64-i128:128-n32:64-S128"
+#elif defined(SIMD_ARM64) and defined(__APPLE__)
+  #define HOST_TARGET_TRIPLE       "arm64-apple-darwin"
+  #define HOST_TARGET_DATA_LAYOUT \
+    "e-m:o-i64:64-i128:128-n32:64-S128"
+#elif defined(SIMD_ARM64)
+  #define HOST_TARGET_TRIPLE       "aarch64-unknown-linux-gnu"
+  #define HOST_TARGET_DATA_LAYOUT \
+    "e-m:e-i8:8:32-i16:16:32-i64:64-i128:128-n32:64-S128"
+#endif
+
+#ifdef HOST_TARGET_TRIPLE
+  #define HOST_TARGET_IR_HEADER                                    \
+    "target datalayout = \"" HOST_TARGET_DATA_LAYOUT "\"\n"        \
+    "target triple = \"" HOST_TARGET_TRIPLE "\"\n\n"
+
+  _Static_assert (__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__ and
+                  sizeof (void *) * Bits_Per_Unit == Width_Ptr,
+                  "the emitted target header describes a little-endian host "
+                  "with 64-bit pointers and this host is not one");
+#else
+  #define HOST_TARGET_IR_HEADER  ""
+#endif
+
+int Host_Processor_Count () {
+#ifdef _WIN32
+  SYSTEM_INFO system_information;
+  GetSystemInfo (&system_information);
+  long count = (long) system_information.dwNumberOfProcessors;
+#else
+  long count = sysconf (_SC_NPROCESSORS_ONLN);
+#endif
+  return count > 1 ? (int) count : 1;
+}
+
+bool Host_Executable_Path (char *buffer, size_t size, const char *invoked_as) {
+#if defined(_WIN32)
+  DWORD written = GetModuleFileNameA (NULL, buffer, (DWORD) size);
+  if (written > 0 and (size_t) written < size) return true;
+#elif defined(__APPLE__)
+  u32 capacity = (u32) size;
+  if (_NSGetExecutablePath (buffer, &capacity) == 0) return true;
+#else
+  ssize_t written = readlink ("/proc/self/exe", buffer, size - 1);
+  if (written > 0) { buffer[written] = '\0'; return true; }
+#endif
+  if (not invoked_as) return false;
+  snprintf (buffer, size, "%s", invoked_as);
+  return true;
+}
+
+i64 Host_File_Modification_Time (const char *path) {
+  struct stat status;
+  if (stat (path, &status) != 0) return 0;
+#if defined(_WIN32)
+  i64 nanoseconds = 0;
+#elif defined(__APPLE__)
+  i64 nanoseconds = status.st_mtimespec.tv_nsec;
+#else
+  i64 nanoseconds = status.st_mtim.tv_nsec;
+#endif
+  return (i64) status.st_mtime * 1000000000 + nanoseconds;
+}
+
+int Host_Command_Exit_Status (int result) {
+#ifdef _WIN32
+  return result;
+#else
+  return WIFEXITED (result) ? WEXITSTATUS (result) : -1;
+#endif
+}
+
+#ifdef _WIN32
+  typedef intptr_t Host_Process;
+#else
+  typedef pid_t    Host_Process;
+#endif
+#define HOST_PROCESS_NONE ((Host_Process) -1)
+
+bool Host_Process_Start (Host_Process *process,
+                         const char *const *argument_vector) {
+
+#ifdef _WIN32
+  intptr_t started = _spawnvp (_P_NOWAIT, argument_vector[0],
+                               (const char *const *) argument_vector);
+  if (started == -1) return false;
+  *process = started;
+#else
+  pid_t child = fork ();
+  if (child < 0) return false;
+  if (child == 0) {
+    execvp (argument_vector[0], (char *const *) argument_vector);
+    _exit (127);
+  }
+  *process = child;
+#endif
+  return true;
+}
+
+int Host_Process_Wait (Host_Process process) {
+  int status = 0;
+#ifdef _WIN32
+  if (_cwait (&status, process, 0) == -1) return -1;
+  return status;
+#else
+  if (waitpid (process, &status, 0) < 0) return -1;
+  return WIFEXITED (status) ? WEXITSTATUS (status) : 1;
+#endif
+}
 
 /* ==== §2   Measurement ============================================== */
 #define FAT_PTR_ALLOC_SIZE 16
@@ -319,12 +465,22 @@ void Report_Driver_Error   (const char *format, ...)
 void Report_Driver_Warning (const char *format, ...)
        __attribute__((format(printf, 1, 2)));
 
+#define WARNING_CLASS_TABLE(X) \
+  X (WARNING_UNUSED_VARIABLE,         "unused-variable") \
+  X (WARNING_UNUSED_BUT_SET_VARIABLE, "unused-but-set-variable") \
+  X (WARNING_UNUSED_PARAMETER,        "unused-parameter") \
+  X (WARNING_UNUSED_WITH,             "unused-with") \
+  X (WARNING_UNREACHABLE_CODE,        "unreachable-code") \
+  X (WARNING_UNACCEPTED_ENTRY,        "unaccepted-entry") \
+  X (WARNING_DEAD_STORE,              "dead-store") \
+  X (WARNING_CONSTRAINT_ERROR,        "constraint-error") \
+  X (WARNING_READ_BEFORE_ASSIGNMENT,  "read-before-assignment") \
+  X (WARNING_REDUNDANT_WITH,          "redundant-with")
+
 typedef enum {
-  WARNING_UNUSED_VARIABLE,
-  WARNING_UNUSED_BUT_SET_VARIABLE,
-  WARNING_UNUSED_PARAMETER,
-  WARNING_UNUSED_WITH,
-  WARNING_UNREACHABLE_CODE,
+#define X(kind, name) kind,
+  WARNING_CLASS_TABLE (X)
+#undef X
   WARNING_CLASS_COUNT
 } Warning_Class_Kind;
 
@@ -2847,6 +3003,8 @@ struct Symbol {
   bool is_unreferenced;
   u32  read_count;
   bool is_ever_assigned;
+  bool is_ever_accepted;
+  bool escapes_assignment_analysis;
 
   bool    extern_emitted;
   bool    extern_pending;
@@ -3293,6 +3451,30 @@ Node       *Peel_Labels                                (Node *item);
 bool        Is_Body_Stub                               (Node *node);
 const char *Spell_Transfer                             (Node *statement);
 void        Note_Unreachable_Statements                (Node_List *list);
+void        Note_Unaccepted_Entries                    (Symbol *task_type);
+
+typedef enum {
+  CONVERSION_REFUSED_OPERAND_NOT_NUMERIC_KIND,
+  CONVERSION_REFUSED_TARGET_NOT_NUMERIC_KIND,
+  CONVERSION_REFUSED_OPERAND_NOT_ARRAY_KIND,
+  CONVERSION_REFUSED_TARGET_NOT_ARRAY_KIND,
+  CONVERSION_REFUSED_DIMENSION_KIND,
+  CONVERSION_REFUSED_COMPONENT_KIND,
+  CONVERSION_REFUSED_UNRELATED_KIND
+} Conversion_Refusal_Kind;
+
+Conversion_Refusal_Kind Classify_Conversion_Refusal (Type *target, Type *operand);
+void        Reject_Illegal_Conversion       (Node *apply, Type *target, Type *operand);
+bool        Reject_Name_With_Cause          (Location location, Slice name);
+bool        Reject_Selection_With_Cause     (Node *node, Type *viewed);
+void        Reject_Unresolvable_Application (Node *node, Node *prefix, Symbol *prefix_symbol);
+Symbol     *With_Clause_Unit                           (Node *unit_name);
+void        Note_Repeated_With_Clauses                 (Node *context_clause);
+bool        Range_Check_Is_Suppressed_Here             (Type *target_subtype);
+void        Note_Certain_Constraint_Error              (Node *value_expression,
+                                                        Type *target_subtype,
+                                                        const char *construct_noun);
+void        Mark_Name_As_Escaping_Assignment_Analysis  (Node *name);
 bool        Tree_Escapes_Usage_Analysis                (Node *node);
 bool        Is_An_Unused_Candidate                     (Symbol *sym);
 void        Note_Unused_Candidates_In_Scope            (Scope *scope, Node *body);
@@ -3754,7 +3936,19 @@ typedef struct {
 enum { FAT_COMPONENT_CACHE_SIZE = 64 };
 
 typedef struct {
-  FILE               *output;
+  char  *text;
+  size_t length;
+  size_t capacity;
+} Output_Buffer;
+
+void Output_Reserve (Output_Buffer *buffer, size_t extra);
+void Output_Write   (Output_Buffer *buffer, const char *data, size_t length);
+void Output_Put     (Output_Buffer *buffer, char character);
+void Output_Format  (Output_Buffer *buffer, const char *format, ...);
+void Output_Clear   (Output_Buffer *buffer);
+
+typedef struct {
+  Output_Buffer      *output;
   u32                 temp_id;
   u32                 label_id;
   u32                 global_id;
@@ -3889,27 +4083,18 @@ typedef struct {
   const char  *emit_line_start_func;
   int          emit_line_start_line;
 
-  FILE   *destination;
-  FILE   *prelude_stream;
-  char   *prelude_text;
-  size_t  prelude_text_size;
-  FILE   *module_stream;
-  char   *module_text;
-  size_t  module_text_size;
+  FILE          *destination;
+  Output_Buffer  prelude;
+  Output_Buffer  module;
 
-  FILE   *module_output;
-  FILE   *frame_stream;
-  FILE   *prologue_stream;
-  FILE   *body_stream;
-  char   *frame_text;
-  size_t  frame_text_size;
-  char   *prologue_text;
-  size_t  prologue_text_size;
-  char   *body_text;
-  size_t  body_text_size;
-  bool    function_body_open;
-  bool    emitting_frame_slot;
-  bool    emitting_prologue;
+  Output_Buffer *module_output;
+  Output_Buffer  frame;
+  Output_Buffer  prologue;
+  Output_Buffer  body;
+
+  bool           function_body_open;
+  bool           emitting_frame_slot;
+  bool           emitting_prologue;
 
   u32  body_call_count;
   bool prologue_is_droppable;
@@ -5855,12 +6040,18 @@ TASKING_RECORD_LAYOUT_PINNED (TASKING_LIST_NODE);
 #define TIMESPEC_OFFSET_NANOSECONDS  8
 #define TIMESPEC_SIZE               16
 
+#ifdef _WIN32
+  #define TIMESPEC_NANOSECONDS_BITS  32
+#else
+  #define TIMESPEC_NANOSECONDS_BITS  64
+#endif
+
 _Static_assert (
   sizeof (struct timespec) == TIMESPEC_SIZE and
   offsetof (struct timespec, tv_sec)  == TIMESPEC_OFFSET_SECONDS and
   offsetof (struct timespec, tv_nsec) == TIMESPEC_OFFSET_NANOSECONDS and
   sizeof (((struct timespec *) 0)->tv_sec)  == 8 and
-  sizeof (((struct timespec *) 0)->tv_nsec) == 8,
+  sizeof (((struct timespec *) 0)->tv_nsec) * Bits_Per_Unit == TIMESPEC_NANOSECONDS_BITS,
   "the emitted tasking runtime and <time.h> disagree about the layout "
   "of struct timespec");
 
@@ -5870,6 +6061,20 @@ _Static_assert (
   "getelementptr i8, ptr " base ", i64 " \
   TEXT_OF (TIMESPEC_OFFSET_ ## field) \
   "  ; Timespec." #field
+
+#if TIMESPEC_NANOSECONDS_BITS == 64
+  #define TIMESPEC_LOAD_NANOSECONDS(result, slot) \
+    "  " result " = load i64, ptr " slot "\n"
+  #define TIMESPEC_STORE_NANOSECONDS(value, slot) \
+    "  store i64 " value ", ptr " slot "\n"
+#else
+  #define TIMESPEC_LOAD_NANOSECONDS(result, slot) \
+    "  " result ".field = load i" TEXT_OF (TIMESPEC_NANOSECONDS_BITS) ", ptr " slot "\n" \
+    "  " result " = sext i" TEXT_OF (TIMESPEC_NANOSECONDS_BITS) " " result ".field to i64\n"
+  #define TIMESPEC_STORE_NANOSECONDS(value, slot) \
+    "  " value ".field = trunc i64 " value " to i" TEXT_OF (TIMESPEC_NANOSECONDS_BITS) "\n" \
+    "  store i" TEXT_OF (TIMESPEC_NANOSECONDS_BITS) " " value ".field, ptr " slot "\n"
+#endif
 
 void Emit_Runtime_Declarations        ();
 void Emit_Runtime_Value_Attribute     ();
@@ -6641,14 +6846,6 @@ char ALI_File_Path_Text[512];
 /* ==== §18  SIMD ===================================================== */
 Big_Integer *Big_Integer_From_Decimal (const char *text);
 
-#if defined(__x86_64__) || defined(_M_X64)
-  #define SIMD_X86_64 1
-#elif defined(__aarch64__) || defined(_M_ARM64)
-  #define SIMD_ARM64 1
-#else
-  #define SIMD_GENERIC 1
-#endif
-
 typedef u8 Byte_Vector __attribute__ ((vector_size (16)));
 
 #define Byte_Vector_Of(byte) ((Byte_Vector){ (byte), (byte), (byte), (byte), \
@@ -6667,10 +6864,18 @@ enum { Decimal_Group_Digits = 8 };
 u32 Read_Decimal_Group (const char *digits);
 
 typedef struct {
-  const char *input_path;
-  pid_t       worker;
-  int         exit_status;
+  const char   *input_path;
+  Host_Process  worker;
+  int           exit_status;
 } Compile_Job;
+
+typedef struct {
+  const char        *executable;
+  int                argument_count;
+  const char *const *arguments;
+  const char *const *inputs;
+  int                input_count;
+} Driver_Command_Line;
 
 /* ==== §19  Driver =================================================== */
 bool  Read_Unit_Identity (Node *cu, Slice *name,
@@ -6679,7 +6884,10 @@ void  Compile_File            (const char *input_path,
                                const char *output_path);
 bool  Inputs_Are_Order_Sensitive (const char *const *inputs,
                                   int input_count);
-void  Compile_Job_Start       (Compile_Job *job, const char *input_path);
+bool  Argument_Is_An_Input    (const Driver_Command_Line *command_line,
+                               const char *argument);
+void  Compile_Job_Start       (Compile_Job *job, const char *input_path,
+                               const Driver_Command_Line *command_line);
 void  Compile_Job_Wait        (Compile_Job *job);
 bool  Suppress_Checks_From_Command_Line (const char *list);
 bool  Warning_Flags_From_Command_Line   (const char *argument);
@@ -6700,17 +6908,11 @@ typedef struct {
   const char                 *optimized_ir_path;
 } Native_Backend_Options;
 
-#ifdef _WIN32
-const char *Backend_Extract_Embedded_Library ();
-#endif
 bool Llvm_C_Api_Load          (Llvm_C_Api *api, char *err, size_t err_size);
 int  Native_Backend_Compile   (const char *ir_path, const char *const *extra_ir,
                                int extra_count, const char *exe_path,
                                const Native_Backend_Options *options);
 
-#ifdef _WIN32
-char Embedded_Library_Path_Text[PATH_MAX];
-#endif
 const char *const Llvm_Library_Candidate_Names[] = {
 #ifdef _WIN32
   "LLVM-C.dll", "libLLVM.dll",
@@ -6732,6 +6934,517 @@ const char *const Llvm_Library_Candidate_Names[] = {
 #endif
 };
 Llvm_C_Api Native_Backend_Llvm_Api;
+
+bool Diagnostics_Suppressed = false;
+
+typedef struct {
+  const char          *filename;
+  const char          *source_first;
+  const char          *source_limit;
+  Source_Encoding_Kind encoding;
+  bool                 encoding_known;
+} Registered_Source;
+
+enum { MAX_REGISTERED_SOURCES = 128 };
+
+Registered_Source Registered_Sources[MAX_REGISTERED_SOURCES];
+
+u32 Registered_Source_Count = 0;
+
+Location Last_Excerpted_Location = {.filename = NULL, .line = 0,
+                                           .column = 0};
+
+bool Warnings_Silenced = false;
+
+typedef struct {
+  Warning_Class_Kind class_kind;
+  Location    location;
+  const char        *text;
+} Pending_Warning;
+
+Pending_Warning *Pending_Warnings         = NULL;
+
+u32         Pending_Warning_Count    = 0;
+
+u32         Pending_Warning_Capacity = 0;
+
+const Machine_Format IEEE_Single_Format = {
+  .name             = "IEEE binary32",
+  .decimal_digits   = 6,
+  .radix            = 2,
+  .mantissa         = 24,
+  .exponent_maximum = 128,
+  .exponent_minimum = -125,
+  .rounds           = true,
+  .overflows        = false,
+};
+
+const Machine_Format IEEE_Double_Format = {
+  .name             = "IEEE binary64",
+  .decimal_digits   = 15,
+  .radix            = 2,
+  .mantissa         = 53,
+  .exponent_maximum = 1024,
+  .exponent_minimum = -1021,
+  .rounds           = true,
+  .overflows        = false,
+};
+
+Token_Kind Reserved_Word_Buckets[Reserved_Word_Bucket_Count];
+
+bool       Reserved_Word_Buckets_Are_Filled = false;
+
+enum { Numeric_Literal_Exponent_Limit = 1000000 };
+
+typedef struct Symbol Symbol;
+
+typedef enum {
+  GENERIC_DEFINITION_BARE,
+  GENERIC_DEFINITION_BOX,
+  GENERIC_DEFINITION_PARENTHESIZED_BOX,
+  GENERIC_DEFINITION_SUBTYPE_MARK,
+  GENERIC_DEFINITION_ARRAY
+} Generic_Definition_Syntax_Kind;
+
+const struct Generic_Definition_Form {
+  Token_Kind                     leading;
+  Generic_Def_Kind               definition_kind;
+  Generic_Definition_Syntax_Kind syntax;
+} Generic_Definition_Forms[] = {
+  { .leading = TK_PRIVATE, .definition_kind = GEN_DEF_PRIVATE,
+    .syntax  = GENERIC_DEFINITION_BARE },
+  { .leading = TK_LPAREN,  .definition_kind = GEN_DEF_DISCRETE,
+    .syntax  = GENERIC_DEFINITION_PARENTHESIZED_BOX },
+  { .leading = TK_RANGE,   .definition_kind = GEN_DEF_INTEGER,
+    .syntax  = GENERIC_DEFINITION_BOX },
+  { .leading = TK_DIGITS,  .definition_kind = GEN_DEF_FLOAT,
+    .syntax  = GENERIC_DEFINITION_BOX },
+  { .leading = TK_DELTA,   .definition_kind = GEN_DEF_FIXED,
+    .syntax  = GENERIC_DEFINITION_BOX },
+  { .leading = TK_ACCESS,  .definition_kind = GEN_DEF_ACCESS,
+    .syntax  = GENERIC_DEFINITION_SUBTYPE_MARK },
+  { .leading = TK_ARRAY,   .definition_kind = GEN_DEF_ARRAY,
+    .syntax  = GENERIC_DEFINITION_ARRAY },
+};
+
+enum { Generic_Definition_Form_Count =
+         sizeof (Generic_Definition_Forms) / sizeof (Generic_Definition_Forms[0]) };
+
+const struct Simple_Declaration_Form {
+  Token_Kind    leading;
+  Node *(*parse) (Parser *p);
+} Simple_Declaration_Forms[] = {
+  { .leading = TK_GENERIC,    .parse = Parse_Generic_Declaration },
+  { .leading = TK_TYPE,       .parse = Parse_Type_Declaration },
+  { .leading = TK_SUBTYPE,    .parse = Parse_Subtype_Declaration },
+  { .leading = TK_USE,        .parse = Parse_Use_Clause },
+  { .leading = TK_PRAGMA,     .parse = Parse_Pragma },
+  { .leading = TK_FOR,        .parse = Parse_Representation_Clause },
+  { .leading = TK_IDENTIFIER, .parse = Parse_Object_Declaration },
+};
+
+enum { Simple_Declaration_Form_Count =
+         sizeof (Simple_Declaration_Forms) / sizeof (Simple_Declaration_Forms[0]) };
+
+bool Component_Footprint_Static (Type *rec, u32 ci, const i64 *disc,
+                                 u32 dc, u32 *out);
+
+bool Record_Static_Size_With_Discs (Type *ct, const i64 *disc, u32 dc,
+                                     u32 *out);
+
+Symbol_Manager *sm;
+
+bool Resolving_Context_Clause_Names = false;
+
+typedef enum { NESTED_INDEX, NESTED_SLICE, NESTED_DEREF } Nested_Use;
+
+typedef enum {
+  SUBPROGRAM_MATCH_SILENT,
+  SUBPROGRAM_MATCH_ACTUAL,
+  SUBPROGRAM_MATCH_DEFAULT
+} Subprogram_Match_Report_Kind;
+
+u32 Active_Restrictions = 0;
+
+u32 Expanded_Operator_Infix_Depth = 0;
+
+enum {
+  Const_Peel_Qualified             = 1u << 0,
+  Const_Peel_Identifier_Conversion = 1u << 1,
+  Const_Peel_Any_Conversion        = 1u << 2,
+  Const_Peel_Constant              = 1u << 3,
+  Const_Peel_Constant_View         = 1u << 4,
+  Const_Peel_Named_Number_Constant = 1u << 5,
+  Const_Peel_Discrete_Constant     = 1u << 6,
+};
+
+double Eval_Const_Numeric_Impl (Node *node);
+
+typedef struct {
+  Type *record_type;
+  u32   component_index;
+  u32   fixed_offset;
+  u32   variant_offset;
+  u32   variant_extent;
+  u32   variant_component_count;
+  i32    variant_index;
+} Record_Layout;
+
+u32 Exception_Handler_Nesting;
+
+Node_List *Machine_Code_Home_Statement_Sequence;
+
+Symbol **Unused_Object_Candidates         = NULL;
+
+u32 Unused_Object_Candidate_Count    = 0;
+
+u32 Unused_Object_Candidate_Capacity = 0;
+
+With_Clause_Candidate *With_Clause_Candidates        = NULL;
+
+u32              With_Clause_Candidate_Count    = 0;
+
+u32              With_Clause_Candidate_Capacity = 0;
+
+typedef struct Enclosing_Loop {
+  const struct Enclosing_Loop *outer;
+  Symbol                      *name;
+  Scope                       *region;
+} Enclosing_Loop;
+
+const Enclosing_Loop *Innermost_Enclosing_Loop;
+
+typedef enum {
+  RETURN_FROM_FUNCTION,
+  RETURN_FROM_PROCEDURE,
+  RETURN_FROM_NOTHING
+} Return_Construct_Kind;
+
+typedef struct Accept_Statement_Nesting {
+  struct Accept_Statement_Nesting *outer;
+  Node                     *statement;
+} Accept_Statement_Nesting;
+
+Accept_Statement_Nesting *Accept_Statements_In_Progress;
+
+enum {
+  ASM_FORMAL_TEMPLATE,
+  ASM_FORMAL_OUTPUTS,
+  ASM_FORMAL_INPUTS,
+  ASM_FORMAL_CLOBBER,
+  ASM_FORMAL_VOLATILE,
+  ASM_FORMAL_COUNT
+};
+
+typedef struct {
+  Node *slots[ASM_FORMAL_COUNT];
+} Asm_Argument_Set;
+
+const struct {
+  bool       (*Accepts) (const Type *);
+  const char  *formal_noun;
+  const char  *required_phrase;
+} Generic_Formal_Type_Class[] = {
+  [GEN_DEF_DISCRETE] = { Has_Discrete_Representation,     "discrete",
+                         "an enumeration or integer type" },
+  [GEN_DEF_INTEGER]  = { Has_Integer_Representation, "integer",
+                         "an integer type" },
+  [GEN_DEF_FLOAT]    = { Is_Float,        "floating point",
+                         "a floating point type" },
+  [GEN_DEF_FIXED]    = { Is_Fixed_Point,  "fixed point",
+                         "a fixed point type" },
+  [GEN_DEF_ARRAY]    = { Is_Array_Like,   "array",
+                         "an array type" },
+  [GEN_DEF_ACCESS]   = { Is_Access,       "access",
+                         "an access type" }
+};
+
+typedef enum {
+  SUBPROGRAM_SPECIFICATION_OF_DECLARATION,
+  SUBPROGRAM_SPECIFICATION_OF_BODY,
+  SUBPROGRAM_SPECIFICATION_OF_SEPARATELY_COMPILED_BODY
+} Subprogram_Specification_Kind;
+
+Node *Units_Of_This_Compilation[MAX_UNITS_PER_SOURCE_FILE];
+
+u32     Units_Of_This_Compilation_Count;
+
+typedef struct {
+  const char *formal_noun;
+  const char *construct_noun;
+  bool        allows_several_names;
+  bool        allows_others;
+} Association_Construct_Rules;
+
+const Association_Construct_Rules
+Association_Construct_Table[ASSOCIATIONS_CONSTRUCT_KIND_COUNT] = {
+  [ASSOCIATIONS_OF_DISCRIMINANT_CONSTRAINT] = {
+    .formal_noun          = "discriminant",
+    .construct_noun       = "discriminant constraint",
+    .allows_several_names = true,
+    .allows_others        = false },
+  [ASSOCIATIONS_OF_RECORD_AGGREGATE] = {
+    .formal_noun          = "component",
+    .construct_noun       = "record aggregate",
+    .allows_several_names = true,
+    .allows_others        = true },
+  [ASSOCIATIONS_OF_ACTUAL_PARAMETER_PART] = {
+    .formal_noun          = "formal parameter",
+    .construct_noun       = "call",
+    .allows_several_names = false,
+    .allows_others        = false },
+};
+
+const char *const Staticness_Explanation[] = {
+  [STATICNESS_STATIC] =
+    "is static",
+  [STATICNESS_NOT_A_SCALAR_TYPE] =
+    "is not of a scalar type",
+  [STATICNESS_NOT_A_STATIC_PRIMARY] =
+    "names something other than a literal, a named number or a static constant",
+  [STATICNESS_NOT_A_PREDEFINED_OPERATION] =
+    "applies an operation that is not a predefined operator",
+  [STATICNESS_ATTRIBUTE_OF_A_NONSTATIC_SUBTYPE] =
+    "takes an attribute of a prefix that is not a static subtype",
+  [STATICNESS_QUALIFIED_BY_A_NONSTATIC_SUBTYPE] =
+    "is qualified by a subtype that is not static",
+  [STATICNESS_EVALUATION_RAISES] =
+    "raises an exception when evaluated rather than delivering a value",
+};
+
+void Require_Static_Discrete_Range (Node *choice,
+                                           const char  *role);
+
+bool Formal_Type_Needs_Constrained_Actual (const Node *node,
+                                                  Type *formal_type,
+                                                  u32 depth);
+
+const Others_Choice_Context Others_Context_Nowhere =
+  { .kind = OTHERS_CONTEXT_NONE, .subtype = NULL };
+
+const Restricted_Name_Position Restricted_Name_Position_Start = {
+  .private_type_name = PRIVATE_NAME_AS_TYPE_MARK,
+  .constant_name     = DEFERRED_CONSTANT_ELSEWHERE,
+  .incomplete_name   = INCOMPLETE_NAME_ELSEWHERE
+};
+
+void Check_Restricted_Name_Occurrences (Node *node,
+                                               const Restricted_Name_Set *set,
+                                               Restricted_Name_Position position);
+
+typedef struct {
+  Slice identifier;
+  Token_Kind   operator_token;
+} Designator_Notation;
+
+typedef enum {
+  HIDING_DIRECT_ONLY,
+  HIDING_ALSO_BY_SELECTION,
+} Hiding_Extent_Kind;
+
+typedef enum {
+  DISCRIMINANT_NAME_ADMITTED,
+  DISCRIMINANT_NAME_ADMITTED_ALONE,
+  DISCRIMINANT_NAME_ELSEWHERE
+} Discriminant_Name_Position;
+
+typedef struct {
+  i128 low;
+  i128 high;
+} Discrete_Interval;
+
+typedef enum {
+  CASE_CHOICE_OTHERS,
+  CASE_CHOICE_VALUES,
+  CASE_CHOICE_NOT_STATIC,
+  CASE_CHOICE_UNFOLDED
+} Case_Choice_Kind;
+
+typedef struct {
+  Case_Choice_Kind  kind;
+  Type        *type;
+  Discrete_Interval interval;
+} Case_Choice;
+
+typedef enum {
+  CASE_COVERAGE_OVER_INTERVAL,
+  CASE_COVERAGE_UNBOUNDED,
+  CASE_COVERAGE_UNDECIDED
+} Case_Coverage_Kind;
+
+typedef struct {
+  Case_Coverage_Kind kind;
+  Discrete_Interval  interval;
+} Case_Coverage;
+
+typedef struct {
+  const char *construct;
+  const char *selector;
+} Choice_Construct;
+
+typedef struct { Node_List *lists[2]; } Body_Stub_Home;
+
+typedef struct Enclosing_Sequence {
+  const struct Enclosing_Sequence *outer;
+  const Node_List                 *statements;
+  bool                             confines_transfer_of_control;
+} Enclosing_Sequence;
+
+typedef struct {
+  const Node_List     *names;
+  Node         *type_mark;
+  Node         *default_expression;
+  Parameter_Mode_Kind  mode;
+  bool                 mode_is_written;
+} Written_Specification;
+
+u32 Unit_Suppressed_Checks;
+
+enum { AGGREGATE_MEMSET_THRESHOLD = 4 };
+
+typedef struct {
+  Type_Bound low [MAX_AGG_DIMS];
+  Type_Bound high[MAX_AGG_DIMS];
+  u32   dimension_count;
+  bool       high_from_positional_count[MAX_AGG_DIMS];
+  u32   positional_count[MAX_AGG_DIMS];
+  bool       any_dynamic;
+  bool       inner_dynamic;
+  bool       from_applicable_index;
+} Aggregate_Emitted_Bounds;
+
+typedef struct {
+  u32 dimension_count;
+  u32 low  [MAX_AGG_DIMS];
+  u32 high [MAX_AGG_DIMS];
+  Rep rep;
+} Allocated_Array_Bounds;
+
+typedef struct {
+  bool         has_else;
+  bool         has_terminate;
+  bool         every_alternative_guarded;
+  Node *expiry_alternative;
+} Selective_Wait_Shape;
+
+void Apply_Published_Frame_Layout_Entry (Symbol *unit_sym,
+                                         Catalog_Entry *entry);
+
+u32 Crc32_Table[256];
+
+bool Crc32_Table_Initialized = false;
+
+Catalog_Entry *Catalog_Entries        = NULL;
+
+u32       Catalog_Entry_Count    = 0;
+
+u32       Catalog_Entry_Capacity = 0;
+
+Name_Index     Catalog_Index[CATALOG_UNIT_KIND_COUNT];
+
+ALI_Cache_Entry ALI_Cache[MAX_ALI_CACHE_ENTRIES];
+
+u32        ALI_Cache_Count = 0;
+
+Elab_Graph g_elab_graph;
+
+bool g_elab_graph_initialized = false;
+
+Symbol  *Instantiating_Templates[MAX_INSTANTIATION_DEPTH];
+
+u32 Instantiating_Template_Count = 0;
+
+typedef struct {
+  Slice name;
+  bool         spec;
+  bool         body;
+} Runtime_Unit_Identity;
+
+static char                 *Runtime_Library_Text;
+
+static char                  Runtime_Library_Path[PATH_MAX];
+
+static bool                  Runtime_Library_Load_Attempted;
+
+static Runtime_Unit_Identity Runtime_Units[MAX_UNITS_PER_SOURCE_FILE];
+
+static u32                   Runtime_Unit_Count;
+
+const char     *Include_Paths[MAX_INCLUDE_PATHS];
+
+u32        Include_Path_Count        = 0;
+
+bool            Lookup_Path_Resolved_From_Runtime = false;
+
+bool            Debug_Emit_Locations      = false;
+
+bool            Ir_Output_Mode            = false;
+
+Node   **Loaded_Package_Bodies      = NULL;
+
+int             Loaded_Body_Count          = 0;
+
+int      Loaded_Body_Capacity       = 0;
+
+Loading_Set Loading_Packages = {0};
+
+Symbol  **Bodyless_Required_Packages       = NULL;
+
+u32  Bodyless_Required_Package_Count  = 0;
+
+u32 Bodyless_Required_Package_Capacity = 0;
+
+Symbol  **Missing_Body_Subprograms         = NULL;
+
+u32  Missing_Body_Subprogram_Count    = 0;
+
+u32 Missing_Body_Subprogram_Capacity = 0;
+
+u32     Compilation_Body_Count = 0;
+
+typedef int Llvm_Bool;
+
+struct Llvm_C_Api {
+  void *library;
+
+  void       *(*Context_Create)             ();
+  void        (*Context_Dispose)            (void *context);
+  Llvm_Bool   (*Buffer_From_File)           (const char *path, void **buffer, char **error);
+  Llvm_Bool   (*Parse_Ir)                   (void *context, void *buffer, void **module, char **error);
+  void        (*Module_Dispose)             (void *module);
+  void        (*Dispose_Message)            (char *message);
+
+  void        (*Init_Target_Info)           ();
+  void        (*Init_Target)                ();
+  void        (*Init_Target_Mc)             ();
+  void        (*Init_Asm_Printer)           ();
+  void        (*Init_Asm_Parser)            ();
+
+  char       *(*Default_Triple)             ();
+  Llvm_Bool   (*Target_From_Triple)         (const char *triple, void **target, char **error);
+  char       *(*Host_Cpu_Name)              ();
+  char       *(*Host_Cpu_Features)          ();
+  void       *(*Create_Target_Machine)      (void *target, const char *triple, const char *cpu,
+                                             const char *features, int opt_level, int reloc,
+                                             int code_model);
+  void        (*Target_Machine_Dispose)     (void *machine);
+  void       *(*Create_Target_Data_Layout)  (void *machine);
+  void        (*Set_Module_Data_Layout)     (void *module, void *layout);
+  void        (*Dispose_Target_Data)        (void *layout);
+  void        (*Set_Target)                 (void *module, const char *triple);
+
+  void       *(*Pass_Options_Create)        ();
+  void        (*Pass_Options_Dispose)       (void *options);
+  void       *(*Run_Passes)                 (void *module, const char *passes, void *machine,
+                                             void *options);
+  char       *(*Error_Message)              (void *error);
+  void        (*Dispose_Error_Message)      (char *message);
+
+  Llvm_Bool   (*Emit_To_File)               (void *machine, void *module, const char *path,
+                                             int file_type, char **error);
+  Llvm_Bool   (*Print_Module_To_File)       (void *module, const char *path, char **error);
+  Llvm_Bool   (*Link_Modules)               (void *destination, void *source);
+};
 
 /* ==== §3   Memory =================================================== */
 void *Arena_Allocate (size_t size) {
@@ -6898,7 +7611,6 @@ bool Closest_Name_Found (const Closest_Name_Search *search) {
 }
 
 /* ==== §5   Provenance =============================================== */
-bool Diagnostics_Suppressed = false;
 
 bool Diagnostic_Color_Enabled (void) {
   static int enabled = -1;
@@ -6937,17 +7649,7 @@ const char *Spell_Color_Reset (void) {
   return Diagnostic_Color_Enabled () ? "\033[0m" : "";
 }
 
-typedef struct {
-  const char          *filename;
-  const char          *source_first;
-  const char          *source_limit;
-  Source_Encoding_Kind encoding;
-  bool                 encoding_known;
-} Registered_Source;
 
-enum { MAX_REGISTERED_SOURCES = 128 };
-Registered_Source Registered_Sources[MAX_REGISTERED_SOURCES];
-u32 Registered_Source_Count = 0;
 
 void Register_Source_For_Diagnostics (const char *filename,
                                       const char *first, const char *limit) {
@@ -6975,8 +7677,6 @@ Registered_Source *Registered_Source_Find (const char *filename) {
   return NULL;
 }
 
-Location Last_Excerpted_Location = {.filename = NULL, .line = 0,
-                                           .column = 0};
 
 void Print_Source_Excerpt (Location location) {
   if (not location.filename or location.line == 0 or location.column == 0)
@@ -7117,26 +7817,17 @@ void Report_Driver_Warning (const char *format, ...) {
 }
 
 const char *Warning_Class_Name[WARNING_CLASS_COUNT] = {
-  [WARNING_UNUSED_VARIABLE]         = "unused-variable",
-  [WARNING_UNUSED_BUT_SET_VARIABLE] = "unused-but-set-variable",
-  [WARNING_UNUSED_PARAMETER]        = "unused-parameter",
-  [WARNING_UNUSED_WITH]             = "unused-with",
-  [WARNING_UNREACHABLE_CODE]        = "unreachable-code",
+#define X(kind, name) [kind] = name,
+  WARNING_CLASS_TABLE (X)
+#undef X
 };
 bool Warning_Class_Is_Enabled[WARNING_CLASS_COUNT] = {
-  true, true, true, true, true
+#define X(kind, name) [kind] = true,
+  WARNING_CLASS_TABLE (X)
+#undef X
 };
-bool Warnings_Silenced = false;
 
-typedef struct {
-  Warning_Class_Kind class_kind;
-  Location    location;
-  const char        *text;
-} Pending_Warning;
 
-Pending_Warning *Pending_Warnings         = NULL;
-u32         Pending_Warning_Count    = 0;
-u32         Pending_Warning_Capacity = 0;
 
 void Note_Pending_Warning (Warning_Class_Kind class_kind,
                            Location    location,
@@ -7609,27 +8300,7 @@ double Rational_To_Double (Rational rational) {
   return numer_double / denom_double;
 }
 
-const Machine_Format IEEE_Single_Format = {
-  .name             = "IEEE binary32",
-  .decimal_digits   = 6,
-  .radix            = 2,
-  .mantissa         = 24,
-  .exponent_maximum = 128,
-  .exponent_minimum = -125,
-  .rounds           = true,
-  .overflows        = false,
-};
 
-const Machine_Format IEEE_Double_Format = {
-  .name             = "IEEE binary64",
-  .decimal_digits   = 15,
-  .radix            = 2,
-  .mantissa         = 53,
-  .exponent_maximum = 1024,
-  .exponent_minimum = -1021,
-  .rounds           = true,
-  .overflows        = false,
-};
 
 char *Write_Digits_Backward (char *buffer_end, u128 value) {
   char *cursor = buffer_end;
@@ -7743,8 +8414,6 @@ const char *Scan_Identifier_Text (const char *cursor, const char *limit) {
   return cursor;
 }
 
-Token_Kind Reserved_Word_Buckets[Reserved_Word_Bucket_Count];
-bool       Reserved_Word_Buckets_Are_Filled = false;
 
 u32 Hash_Reserved_Word (Slice word) {
   u32 digest = TEXT_DIGEST_SEED;
@@ -7812,7 +8481,6 @@ bool Reject_Numeric_Literal (Location location, const char *message) {
   return false;
 }
 
-enum { Numeric_Literal_Exponent_Limit = 1000000 };
 
 bool Decompose_Numeric_Literal (Location location, Slice text,
                                 Numeric_Literal_Parts *parts) {
@@ -8499,7 +9167,6 @@ Attribute_Kind Attribute_Kind_From_Name (Slice designator) {
   return ATTRIBUTE_UNKNOWN;
 }
 
-typedef struct Symbol Symbol;
 
 /* ==== §9   Parser =================================================== */
 Parser Parser_New (const char *source, size_t length, const char *filename) {
@@ -9240,13 +9907,6 @@ Node *Parse_Range_Continuation_After_Expression (Parser *p,
   return Parse_Range_Constraint_After_Mark (p, first_expression, loc);
 }
 
-/* A discrete_subtype_indication's constraint, wherever a subtype mark
-   already parsed as an expression turns out to be followed by RANGE, DIGITS,
-   or DELTA: `type_mark RANGE range`, `type_mark DIGITS expression [RANGE
-   range]`, or `type_mark DELTA expression [RANGE range]`.
-   Returns the mark unchanged when no constraint follows, so callers
-   may apply it unconditionally to whatever they parsed as a plain
-   expression. */
 Node *Parse_Range_Constraint_After_Mark (Parser *p, Node *subtype_mark,
                                                 Location loc) {
   if (Parser_Match (p, TK_RANGE)) {
@@ -10385,36 +11045,7 @@ Node *Parse_Package_Body (Parser *p) {
   return node;
 }
 
-typedef enum {
-  GENERIC_DEFINITION_BARE,
-  GENERIC_DEFINITION_BOX,
-  GENERIC_DEFINITION_PARENTHESIZED_BOX,
-  GENERIC_DEFINITION_SUBTYPE_MARK,
-  GENERIC_DEFINITION_ARRAY
-} Generic_Definition_Syntax_Kind;
 
-const struct Generic_Definition_Form {
-  Token_Kind                     leading;
-  Generic_Def_Kind               definition_kind;
-  Generic_Definition_Syntax_Kind syntax;
-} Generic_Definition_Forms[] = {
-  { .leading = TK_PRIVATE, .definition_kind = GEN_DEF_PRIVATE,
-    .syntax  = GENERIC_DEFINITION_BARE },
-  { .leading = TK_LPAREN,  .definition_kind = GEN_DEF_DISCRETE,
-    .syntax  = GENERIC_DEFINITION_PARENTHESIZED_BOX },
-  { .leading = TK_RANGE,   .definition_kind = GEN_DEF_INTEGER,
-    .syntax  = GENERIC_DEFINITION_BOX },
-  { .leading = TK_DIGITS,  .definition_kind = GEN_DEF_FLOAT,
-    .syntax  = GENERIC_DEFINITION_BOX },
-  { .leading = TK_DELTA,   .definition_kind = GEN_DEF_FIXED,
-    .syntax  = GENERIC_DEFINITION_BOX },
-  { .leading = TK_ACCESS,  .definition_kind = GEN_DEF_ACCESS,
-    .syntax  = GENERIC_DEFINITION_SUBTYPE_MARK },
-  { .leading = TK_ARRAY,   .definition_kind = GEN_DEF_ARRAY,
-    .syntax  = GENERIC_DEFINITION_ARRAY },
-};
-enum { Generic_Definition_Form_Count =
-         sizeof (Generic_Definition_Forms) / sizeof (Generic_Definition_Forms[0]) };
 
 void Parse_Generic_Type_Definition (Parser *p, Node *formal) {
   if (Parser_Match (p, TK_LIMITED)) {
@@ -10651,20 +11282,6 @@ Node *Parse_Entry_Declaration (Parser *p) {
   return entry;
 }
 
-const struct Simple_Declaration_Form {
-  Token_Kind    leading;
-  Node *(*parse) (Parser *p);
-} Simple_Declaration_Forms[] = {
-  { .leading = TK_GENERIC,    .parse = Parse_Generic_Declaration },
-  { .leading = TK_TYPE,       .parse = Parse_Type_Declaration },
-  { .leading = TK_SUBTYPE,    .parse = Parse_Subtype_Declaration },
-  { .leading = TK_USE,        .parse = Parse_Use_Clause },
-  { .leading = TK_PRAGMA,     .parse = Parse_Pragma },
-  { .leading = TK_FOR,        .parse = Parse_Representation_Clause },
-  { .leading = TK_IDENTIFIER, .parse = Parse_Object_Declaration },
-};
-enum { Simple_Declaration_Form_Count =
-         sizeof (Simple_Declaration_Forms) / sizeof (Simple_Declaration_Forms[0]) };
 
 Node *Parse_Declaration (Parser *p) {
   Location location = Get_Location (p);
@@ -11217,10 +11834,6 @@ bool Inside_Region_Of (const Symbol *owner) {
   return false;
 }
 
-/* Whether the declaration currently being resolved occurs, at any depth,
-   within a package specification or generic package -- the only
-   declarative regions RM 7.4's private types and RM 7.4.3's view-gating
-   rule are ever about. */
 bool Declared_Within_A_Package (void) {
   for (Scope *scope = sm->current_scope; scope; scope = scope->parent)
     if (scope->owner and
@@ -11255,43 +11868,18 @@ bool Has_Partial_View (const Type *t) {
   return t and t->partial_view_kind != TYPE_UNKNOWN;
 }
 
-/* RM 7.4.1's restrictions on a private type declaration's full type (no
-   unconstrained array, no sneaking in LIMITED, no deriving from it within
-   the visible part that declares it, no deferred constant of any other
-   kind) are particular to a PRIVATE type's two-view model; RM 3.8.1 places
-   no such restrictions on an incomplete type's full declaration, so a
-   consumer of that private-only rule set must ask for the narrower
-   condition, not merely "some partial view exists" -- the general
-   condition Has_Partial_View now also answers for an incomplete
-   type, per RM 7.4.3's extension of the private-type view-gating rule to
-   it (see Get_View_In_Force). */
 bool Has_Private_Partial_View (const Type *t) {
   return t and (t->partial_view_kind == TYPE_PRIVATE or
                 t->partial_view_kind == TYPE_LIMITED_PRIVATE);
 }
 
-/* Whether, ignoring which kind of partial view t has, its full view has
-   not yet arrived or is not available from here -- the two-view model's
-   boundary question on its own, asked once a caller has already decided
-   t's particular partial-view kind is subject to that model in the
-   context it is asking from (Get_View_In_Force decides this
-   unconditionally for a private type; Full_Characteristics_To_Depth
-   decides it for an incomplete type only when reached indirectly, per
-   RM 7.4.3, and asks this same question once it has). */
 bool Type_Full_View_Not_Yet_Available (const Type *t) {
   if (not t->full_view_arrived) return true;
   return Outside_Defining_Package (t);
 }
 
 Type_View_Kind Get_View_In_Force (const Type *t) {
-  /* RM 7.4 lets a private type be completed only in the private part of
-     the very package specification that declares it, so the two-view
-     model binds it unconditionally, everywhere and always.  RM 3.8.1
-     places no matching restriction on a plain incomplete type: this
-     question, asked directly of the type itself rather than through an
-     access type or a composite type's structure, is RM 7.4.3's, and that
-     rule does not reach here -- see Full_Characteristics_To_Depth for
-     where it does. */
+
   if (not (t and (t->partial_view_kind == TYPE_PRIVATE or
                   t->partial_view_kind == TYPE_LIMITED_PRIVATE)))
     return TYPE_VIEW_FULL;
@@ -11361,21 +11949,7 @@ bool Full_Characteristics_To_Depth (const Type *t,
                                            Type_View_Kind minimum_constituent_view,
                                            int depth) {
   if (not t or depth > 32) return true;
-  /* RM 7.4.3's package-boundary gate binds a private type unconditionally
-     (Get_View_In_Force says so), because RM 7.4 never lets one be
-     completed anywhere a client could read the full declaration directly
-     -- the visible part only ever shows the partial view.  RM 3.8.1
-     places no such restriction on a plain incomplete type declared and
-     completed within the very same visible part: nothing is hidden from a
-     client who reads that visible part, and depth 0 is exactly a direct
-     reference to the type by its own name, not one reached by designating
-     it through an access type or by embedding it in a composite type's
-     structure (both of which recurse to a positive depth below).
-     RM 7.4.3 only extends the gate to an incomplete type in that second,
-     indirect shape ("an access type whose designated type is ... a type
-     declared by an incomplete type declaration"), so this asks for that
-     extension itself instead of delegating the incomplete-type case to
-     Get_View_In_Force, which does not carry it. */
+
   bool partial_view_binds_here =
     t->partial_view_kind == TYPE_PRIVATE or
     t->partial_view_kind == TYPE_LIMITED_PRIVATE or
@@ -11905,13 +12479,7 @@ Type *Clone_Base_With_Rep (Type *model) {
 void Type_Become (Type *entity, const Type *definition) {
   if (not entity or not definition) return;
   entity->full_view_arrived    = true;
-  /* A discriminant-constrained subtype taken on an incomplete type before
-     its full declaration is a separate Type object, snapshotted
-     at the point of the constraint so the deferred check it stands for
-     (Emit_Incomplete_Deferred_Disc_Checks) can be emitted later; the
-     snapshot predates this completion and is never otherwise revisited,
-     so its own full_view_arrived would stay false forever unless this
-     completion is also told to the views it was taken for. */
+
   for (u32 i = 0; i < entity->incomplete_constrained_count; i++) {
     Type *view = entity->incomplete_constrained_views[i];
     if (view) view->full_view_arrived = true;
@@ -12284,10 +12852,6 @@ bool Is_Dynamic_Sized_Record (Type *ct) {
   return false;
 }
 
-bool Component_Footprint_Static (Type *rec, u32 ci, const i64 *disc,
-                                 u32 dc, u32 *out);
-bool Record_Static_Size_With_Discs (Type *ct, const i64 *disc, u32 dc,
-                                     u32 *out);
 
 bool Has_Nested_Static_Discs (Type *rec, Type *ct, const i64 *disc,
                           u32 dc, i64 *out, u32 ndc) {
@@ -12588,7 +13152,6 @@ bool Parameter_Needs_Constrained_Flag (Parameter_Mode_Kind mode, Type *type) {
          not type->record.is_constrained;
 }
 
-Symbol_Manager *sm;
 
 Scope *Scope_New (Scope *parent) {
   Scope *scope          = Arena_Allocate (sizeof (Scope));
@@ -12798,7 +13361,6 @@ bool Declaration_Is_Implicit (Symbol *s) {
   return s and (s->is_implicit_declaration or Subprogram_Is_Implicit (s));
 }
 
-bool Resolving_Context_Clause_Names = false;
 
 void Note_Symbol_Read (Symbol *sym) {
   if (Resolving_Context_Clause_Names) return;
@@ -14455,7 +15017,6 @@ Slice Spell_Operator (Token_Kind op) {
   return designator.length ? designator : S ("");
 }
 
-typedef enum { NESTED_INDEX, NESTED_SLICE, NESTED_DEREF } Nested_Use;
 
 bool Nested_Result_Covers (Symbol *f, Type *ctx, Nested_Use use) {
   Type *rt = f->return_type;
@@ -14530,11 +15091,6 @@ bool Profiles_Are_Type_Conformant (Symbol *left, Symbol *right) {
   return true;
 }
 
-typedef enum {
-  SUBPROGRAM_MATCH_SILENT,
-  SUBPROGRAM_MATCH_ACTUAL,
-  SUBPROGRAM_MATCH_DEFAULT
-} Subprogram_Match_Report_Kind;
 
 bool Check_Subprogram_Conformance (
               Symbol *actual, Node *specification,
@@ -14607,7 +15163,6 @@ bool Check_Subprogram_Conformance (
 }
 
 /* ==== §12  Semantics ================================================ */
-u32 Active_Restrictions = 0;
 
 void Check_Aggregate_Type_Is_Determined (Interp_List   *interps,
                                                 Argument_Info *args,
@@ -14792,6 +15347,366 @@ Symbol *Resolve_Entry_Rename_Overloaded_Prefix (Node *renamed,
   }
   return settled;
 }
+
+Conversion_Refusal_Kind Classify_Conversion_Refusal (Type *target, Type *operand) {
+  Type *target_base  = Get_Base (target);
+  Type *operand_base = Get_Base (operand);
+  bool  target_array  = Is_Array_Like (target_base);
+  bool  operand_array = Is_Array_Like (operand_base);
+  if (target_array and operand_array)
+    return target_base->array.index_count != operand_base->array.index_count
+         ? CONVERSION_REFUSED_DIMENSION_KIND
+         : CONVERSION_REFUSED_COMPONENT_KIND;
+  if (target_array)              return CONVERSION_REFUSED_OPERAND_NOT_ARRAY_KIND;
+  if (operand_array)             return CONVERSION_REFUSED_TARGET_NOT_ARRAY_KIND;
+  if (Is_Numeric (target_base))  return CONVERSION_REFUSED_OPERAND_NOT_NUMERIC_KIND;
+  if (Is_Numeric (operand_base)) return CONVERSION_REFUSED_TARGET_NOT_NUMERIC_KIND;
+  return CONVERSION_REFUSED_UNRELATED_KIND;
+}
+
+void Reject_Illegal_Conversion (Node *apply, Type *target, Type *operand) {
+  Slice t = Describe_Type (target);
+  Slice o = Describe_Type (operand);
+  switch (Classify_Conversion_Refusal (target, operand)) {
+    case CONVERSION_REFUSED_OPERAND_NOT_NUMERIC_KIND:
+      Reject (apply, "conversion to the numeric type '%.*s' needs a numeric "
+                     "operand, and '%.*s' is not numeric",
+              (int) t.length, t.data, (int) o.length, o.data);
+      break;
+    case CONVERSION_REFUSED_TARGET_NOT_NUMERIC_KIND:
+      Reject (apply, "a value of the numeric type '%.*s' converts only to "
+                     "another numeric type, and '%.*s' is not numeric",
+              (int) o.length, o.data, (int) t.length, t.data);
+      break;
+    case CONVERSION_REFUSED_OPERAND_NOT_ARRAY_KIND:
+      Reject (apply, "conversion to the array type '%.*s' needs an array "
+                     "operand, and '%.*s' is not an array type",
+              (int) t.length, t.data, (int) o.length, o.data);
+      break;
+    case CONVERSION_REFUSED_TARGET_NOT_ARRAY_KIND:
+      Reject (apply, "an array of type '%.*s' converts only to another array "
+                     "type, and '%.*s' is not an array type",
+              (int) o.length, o.data, (int) t.length, t.data);
+      break;
+    case CONVERSION_REFUSED_DIMENSION_KIND:
+      Reject (apply, "cannot convert '%.*s' to '%.*s': the arrays have %u and "
+                     "%u dimensions, and conversion needs the same number",
+              (int) o.length, o.data, (int) t.length, t.data,
+              Get_Base (operand)->array.index_count,
+              Get_Base (target)->array.index_count);
+      break;
+    case CONVERSION_REFUSED_COMPONENT_KIND:
+      Reject (apply, "cannot convert '%.*s' to '%.*s': array conversion needs "
+                     "components of the same base type and matching index types",
+              (int) o.length, o.data, (int) t.length, t.data);
+      break;
+    default:
+      Reject (apply, "no conversion is defined from type '%.*s' to type "
+                     "'%.*s': they are not both numeric, are not related by "
+                     "derivation, and are not compatible arrays",
+              (int) o.length, o.data, (int) t.length, t.data);
+      break;
+  }
+}
+
+bool Reject_Name_With_Cause (Location location, Slice name) {
+  for (Scope *scope = sm->current_scope; scope; scope = scope->parent)
+    for (u32 bucket = 0; bucket < SYMBOL_TABLE_SIZE; bucket++)
+      for (Symbol *candidate = scope->buckets[bucket]; candidate;
+           candidate = candidate->next_in_bucket) {
+        if (not Slices_Match (candidate->name, name)) continue;
+        if (not Symbol_Visible_Under_Cutoff (candidate, scope)) {
+          Reject_At (location,
+            "'%.*s' is not visible here: it is declared after the generic "
+            "unit being instantiated",
+            (int) name.length, name.data);
+          return true;
+        }
+        if (candidate->visibility < VIS_IMMEDIATELY_VISIBLE) {
+          Reject_At (location,
+            "'%.*s' is declared at line %u but is hidden at this point",
+            (int) name.length, name.data, candidate->location.line);
+          return true;
+        }
+      }
+  if (Lookup_Path (name)) {
+    Reject_At (location,
+      "'%.*s' names a library unit; add it to a WITH clause before naming "
+      "it here",
+      (int) name.length, name.data);
+    return true;
+  }
+  return false;
+}
+
+bool Reject_Selection_With_Cause (Node *node, Type *viewed) {
+  Slice   selector      = node->selected.selector;
+  Symbol *prefix_symbol = node->selected.prefix->symbol;
+
+  if (prefix_symbol and prefix_symbol->kind == SYMBOL_PACKAGE) {
+    Symbol *hidden = NULL;
+    if (prefix_symbol->scope)
+      for (u32 bucket = 0; not hidden and bucket < SYMBOL_TABLE_SIZE; bucket++)
+        for (Symbol *candidate = prefix_symbol->scope->buckets[bucket];
+             candidate; candidate = candidate->next_in_bucket)
+          if (Slices_Match (candidate->name, selector)) {
+            hidden = candidate;
+            break;
+          }
+    if (hidden) {
+      Reject (node,
+        "'%.*s' is declared in package '%.*s' but is not visible at this "
+        "point",
+        (int) selector.length, selector.data,
+        (int) prefix_symbol->name.length, prefix_symbol->name.data);
+      return true;
+    }
+    for (Scope *scope = sm->current_scope; scope; scope = scope->parent)
+      if (scope == prefix_symbol->scope) {
+        Reject (node,
+          "nothing named '%.*s' is declared at this point in package '%.*s'",
+          (int) selector.length, selector.data,
+          (int) prefix_symbol->name.length, prefix_symbol->name.data);
+        return true;
+      }
+    return false;
+  }
+
+  if (prefix_symbol and prefix_symbol->kind == SYMBOL_GENERIC) {
+    Reject (node,
+      "'%.*s' is a generic package; only an instance of it has nameable "
+      "components",
+      (int) prefix_symbol->name.length, prefix_symbol->name.data);
+    return true;
+  }
+
+  if (prefix_symbol and (prefix_symbol->kind == SYMBOL_PROCEDURE or
+                         prefix_symbol->kind == SYMBOL_FUNCTION)) {
+    bool inside = false;
+    for (Scope *scope = sm->current_scope; scope; scope = scope->parent)
+      if (scope->owner == prefix_symbol or scope == prefix_symbol->scope)
+        inside = true;
+    if (not inside) {
+      Reject (node,
+        "the declarations of subprogram '%.*s' can be named only from "
+        "within its own body",
+        (int) prefix_symbol->name.length, prefix_symbol->name.data);
+      return true;
+    }
+    return false;
+  }
+
+  if (viewed and viewed->kind == TYPE_INCOMPLETE and viewed->name.length) {
+    Reject (node,
+      "the full declaration of type '%.*s' has not been given yet, so it "
+      "has no nameable components",
+      (int) viewed->name.length, viewed->name.data);
+    return true;
+  }
+  if (viewed and Is_Private (viewed) and viewed->name.length) {
+    Reject (node,
+      "type '%.*s' is private here; its components are visible only inside "
+      "the package that declares it",
+      (int) viewed->name.length, viewed->name.data);
+    return true;
+  }
+  return false;
+}
+
+void Reject_Unresolvable_Application (Node *node, Node *prefix,
+                                      Symbol *prefix_symbol) {
+  Slice name = prefix->string_val.text;
+  u32   argument_count = node->apply.arguments.count;
+
+  if (not prefix_symbol) {
+    if (not Reject_Name_With_Cause (prefix->location, name))
+      Reject (node, "cannot resolve '%.*s' as callable or indexable",
+              (int) name.length, name.data);
+    return;
+  }
+
+  switch (prefix_symbol->kind) {
+    case SYMBOL_PACKAGE:
+      Reject (node,
+        "'%.*s' names a package, not a subprogram or an array, so it "
+        "cannot take arguments",
+        (int) name.length, name.data);
+      return;
+    case SYMBOL_GENERIC:
+      Reject (node,
+        "'%.*s' is generic and cannot be called directly; instantiate it "
+        "with NEW and use the instance",
+        (int) name.length, name.data);
+      return;
+    case SYMBOL_TYPE:
+    case SYMBOL_SUBTYPE:
+      Reject (node,
+        "a type conversion to '%.*s' takes exactly one operand, not %u",
+        (int) name.length, name.data, argument_count);
+      return;
+    case SYMBOL_EXCEPTION:
+      Reject (node,
+        "'%.*s' names an exception; it is raised with a RAISE statement, "
+        "not called",
+        (int) name.length, name.data);
+      return;
+    case SYMBOL_LITERAL:
+      Reject (node,
+        "'%.*s' is an enumeration literal; it takes no arguments",
+        (int) name.length, name.data);
+      return;
+    default:
+      break;
+  }
+
+  Type *prefix_type = prefix->type;
+  if (prefix_type and Is_Access (prefix_type)) {
+    Type *designated = Get_Designated (prefix_type);
+    if (designated and designated->name.length) {
+      Reject (node,
+        "'%.*s' is an access value designating type '%.*s', which is not "
+        "an array, so it cannot be indexed",
+        (int) name.length, name.data,
+        (int) designated->name.length, designated->name.data);
+      return;
+    }
+  }
+  if (prefix_type and prefix_type->name.length) {
+    Reject (node,
+      "'%.*s' is of type '%.*s', which is not an array, so it cannot be "
+      "indexed or called",
+      (int) name.length, name.data,
+      (int) prefix_type->name.length, prefix_type->name.data);
+    return;
+  }
+  Reject (node, "cannot resolve '%.*s' as callable or indexable",
+          (int) name.length, name.data);
+}
+
+
+bool Range_Check_Is_Suppressed_Here (Type *target_subtype) {
+  u32 bit = Check_Kind_Bit (CHECK_KIND_RANGE);
+  if (Unit_Suppressed_Checks & bit) return true;
+  if (target_subtype->suppressed_checks & bit) return true;
+  if (target_subtype->base_type and
+      (target_subtype->base_type->suppressed_checks & bit)) return true;
+  for (Scope *region = sm->current_scope; region; region = region->parent)
+    if (region->owner and (region->owner->suppressed_checks & bit))
+      return true;
+  return false;
+}
+
+void Note_Certain_Constraint_Error (Node *value_expression,
+                                    Type *target_subtype,
+                                    const char *construct_noun) {
+  if (Diagnostics_Suppressed or Instantiating_Template_Count > 0) return;
+  if (Loading_Packages.count > 0) return;
+  if (not value_expression or not target_subtype) return;
+  if (target_subtype->low_bound.kind  != BOUND_INTEGER or
+      target_subtype->high_bound.kind != BOUND_INTEGER) return;
+  if (not Expression_Is_Static (value_expression)) return;
+  i128 value;
+  if (not Read_Static_Whole (value_expression, &value)) return;
+  Type_Bound point = (Type_Bound){ .kind = BOUND_INTEGER, .int_value = value };
+  Type *base = Get_Base (target_subtype);
+  if (not base or base->low_bound.kind != BOUND_INTEGER or
+      base->high_bound.kind != BOUND_INTEGER) return;
+  if (not Static_Interval_Contains (&base->low_bound, &base->high_bound,
+                                    &point, &point)) return;
+  if (not Static_Interval_Excludes (&target_subtype->low_bound,
+                                    &target_subtype->high_bound,
+                                    &point, &point)) return;
+  if (Range_Check_Is_Suppressed_Here (target_subtype)) return;
+  Note_Pending_Warning (WARNING_CONSTRAINT_ERROR, value_expression->location,
+    "this %s always raises CONSTRAINT_ERROR: %s is outside the subtype's "
+    "range %s .. %s",
+    construct_noun, I128_Decimal (value),
+    I128_Decimal (target_subtype->low_bound.int_value),
+    I128_Decimal (target_subtype->high_bound.int_value));
+}
+
+void Mark_Name_As_Escaping_Assignment_Analysis (Node *name) {
+  for (int depth = 0; name and depth < 64; depth++) {
+    Symbol *reached = name->symbol;
+    if (reached and Symbol_In_Any_Class (reached, SYMBOL_CLASS_OBJECT))
+      reached->escapes_assignment_analysis = true;
+    switch (name->kind) {
+      case NK_SELECTED:
+        name = name->selected.prefix;
+        continue;
+      case NK_APPLY:
+        if (name->apply.resolution == APPLY_TYPE_CONVERSION) {
+          name = name->apply.arguments.count == 1
+                   ? Unwrap_Association (name->apply.arguments.items[0])
+                   : NULL;
+          continue;
+        }
+        name = name->apply.prefix;
+        continue;
+      default:
+        return;
+    }
+  }
+}
+
+Symbol *With_Clause_Unit (Node *unit_name) {
+  if (not unit_name or unit_name->kind != NK_IDENTIFIER) return NULL;
+  Symbol *unit = unit_name->symbol;
+  while (unit and unit->aliased) unit = unit->aliased;
+  return unit;
+}
+
+void Note_Repeated_With_Clauses (Node *context_clause) {
+  if (Diagnostics_Suppressed or Loading_Packages.count > 0) return;
+  Node_List *clauses = &context_clause->context.with_clauses;
+  u32 written = context_clause->context.with_clauses_written_here;
+  if (written > clauses->count) written = clauses->count;
+  for (u32 i = 0; i < written; i++) {
+    Node *clause = clauses->items[i];
+    if (not clause) continue;
+    for (u32 j = 0; j < clause->use_clause.names.count; j++) {
+      Node   *name = clause->use_clause.names.items[j];
+      Symbol *unit = With_Clause_Unit (name);
+      if (not unit) continue;
+      Node *earlier = NULL;
+      for (u32 k = 0; k <= i and not earlier; k++) {
+        Node *scanned = clauses->items[k];
+        if (not scanned) continue;
+        u32 name_limit = k == i ? j : scanned->use_clause.names.count;
+        for (u32 n = 0; n < name_limit and not earlier; n++)
+          if (With_Clause_Unit (scanned->use_clause.names.items[n]) == unit)
+            earlier = scanned->use_clause.names.items[n];
+      }
+      if (earlier) {
+        Note_Pending_Warning (WARNING_REDUNDANT_WITH, name->location,
+          "'%.*s' is already named in the with clause on line %u",
+          (int) unit->name.length, unit->name.data, earlier->location.line);
+        continue;
+      }
+      for (u32 k = written; k < clauses->count and not earlier; k++) {
+        Node *scanned = clauses->items[k];
+        if (not scanned) continue;
+        for (u32 n = 0;
+             n < scanned->use_clause.names.count and not earlier; n++)
+          if (With_Clause_Unit (scanned->use_clause.names.items[n]) == unit)
+            earlier = scanned->use_clause.names.items[n];
+      }
+      if (not earlier) continue;
+      if (name->location.filename and earlier->location.filename and
+          strcmp (name->location.filename, earlier->location.filename) == 0)
+        Note_Pending_Warning (WARNING_REDUNDANT_WITH, name->location,
+          "'%.*s' is already available here: the with clause on line %u of "
+          "the specification also applies to this body",
+          (int) unit->name.length, unit->name.data, earlier->location.line);
+      else
+        Note_Pending_Warning (WARNING_REDUNDANT_WITH, name->location,
+          "'%.*s' is already available here: the with clause of the "
+          "specification also applies to this body",
+          (int) unit->name.length, unit->name.data);
+    }
+  }
+}
+
 
 void Report_Selector_Not_Found (Location location,
                                        const char *lead,
@@ -15268,6 +16183,10 @@ void Bind_Actuals_To_Formals (Node *apply, Symbol *name_view,
       continue;
     }
     Resolve_Operand (actual, formal_type);
+    if (profile_view->parameters[formal].mode == MODE_IN)
+      Note_Certain_Constraint_Error (actual, formal_type, "actual parameter");
+    else
+      Mark_Name_As_Escaping_Assignment_Analysis (actual);
 
     if (actual->symbol and actual->symbol->kind == SYMBOL_PROCEDURE and
         Node_In_Any_Class (actual, NODE_CLASS_SIMPLE_OR_EXPANDED_NAME))
@@ -15331,7 +16250,6 @@ bool Index_Argument_Admits_Type (Node *argument,
   return false;
 }
 
-u32 Expanded_Operator_Infix_Depth = 0;
 
 Type *Retry_Expanded_Operator_As_Infix (Node *apply,
                                                     Symbol *operator_symbol,
@@ -15472,18 +16390,11 @@ Type *Resolve_Apply_On_Type_Mark (Node *apply,
       operand->type = type_mark->type;
     if (operand and operand->type and
         not Conversion_Is_Legal (type_mark->type, operand->type)) {
-      Slice target_name  = Describe_Type (type_mark->type);
-      Slice operand_name = Describe_Type (operand->type);
-      Reject (apply,
-                    "no conversion is defined from type '%.*s' to type "
-                    "'%.*s': the types must be numeric, derived from a "
-                    "common type, or arrays with matching index and "
-                    "component types",
-                    (int) operand_name.length, operand_name.data,
-                    (int) target_name.length, target_name.data);
+      Reject_Illegal_Conversion (apply, type_mark->type, operand->type);
     }
     apply->type = type_mark->type;
     apply->apply.resolution = APPLY_TYPE_CONVERSION;
+    Note_Certain_Constraint_Error (operand, type_mark->type, "conversion");
     return apply->type;
   }
   return NULL;
@@ -15606,15 +16517,6 @@ bool Is_Integer_Expr (Node *node) {
       return false;
   }
 }
-enum {
-  Const_Peel_Qualified             = 1u << 0,
-  Const_Peel_Identifier_Conversion = 1u << 1,
-  Const_Peel_Any_Conversion        = 1u << 2,
-  Const_Peel_Constant              = 1u << 3,
-  Const_Peel_Constant_View         = 1u << 4,
-  Const_Peel_Named_Number_Constant = 1u << 5,
-  Const_Peel_Discrete_Constant     = 1u << 6,
-};
 
 Node *Peel_Constant (Node *node, unsigned peel) {
   while (node) {
@@ -15755,7 +16657,6 @@ Universal_Integer_Kind Eval_Universal_Integer (Node *node,
   }
 }
 
-double Eval_Const_Numeric_Impl (Node *node);
 
 double Eval_Const_Numeric (Node *node) {
   if (not node) return 0.0/0.0;
@@ -16257,6 +17158,12 @@ void Analyze_Identifier (Node *n) {
       Interp_Add (out, NULL, sm->type_integer, sm->type_integer, NULL);
       return;
     }
+    if (Reject_Name_With_Cause (n->location, n->string_val.text)) {
+      n->symbol = NULL;
+      n->type = sm->type_integer;
+      Interp_Add (out, NULL, sm->type_integer, sm->type_integer, NULL);
+      return;
+    }
     Closest_Name_Search search = Closest_Name_Begin (n->string_val.text);
     for (Scope *scope = sm->current_scope; scope; scope = scope->parent)
       for (u32 bucket = 0; bucket < SYMBOL_TABLE_SIZE; bucket++)
@@ -16536,17 +17443,6 @@ bool Fixed_Row_Awaiting_Its_Context (Token_Kind op,
   return op == TK_STAR and left_integer and Is_Universal_Real (rt);
 }
 
-/* RM 3.5.10: "For each fixed point type, the following multiplication and
-   division operators, with an operand of the predefined type INTEGER, are
-   predefined" -- implicitly declared immediately after the type, in the
-   same declarative region, exactly like the type's other predefined
-   operators.  RM 6.7's "An operator is directly visible if and
-   only if the corresponding operator declaration is directly visible"
-   therefore applies to it: outside the region that declares the fixed
-   point type, and without a use clause, the operator is visible only by
-   selection, not by the infix notation this rule tests.  The type's own
-   direct visibility is asked instead of tracking use clauses separately,
-   because the mixed operator is declared exactly where the type is. */
 bool Fixed_Point_Type_Directly_Visible (Type *t) {
   if (not t or not t->defining_symbol) return true;
   Symbol *found = Symbol_Find (t->defining_symbol->name);
@@ -16565,7 +17461,7 @@ void Analyze_Binary (Node *n) {
         right->apply.resolution == APPLY_SUBTYPE_CONSTRAINT)
       Reject (right,
                     "a membership test names a range or a type mark; an index "
-                    "constraint makes this a subtype indication, which RM 4.4 "
+                    "constraint makes this a subtype indication, which "
                     "does not admit here");
 
     Type *tested = NULL;
@@ -17734,12 +18630,8 @@ Type *Derive_Attribute_Type (Node *node,
     }
 
     case ATTRIBUTE_RESULT_PREFIX_BASE: {
-      Symbol *prefix_symbol = node->attribute.prefix
-                            ? node->attribute.prefix->symbol : NULL;
-      bool strip_constraint =
-        (prefix_symbol and prefix_symbol->kind == SYMBOL_SUBTYPE) or
-        (prefix_type and prefix_type->is_generic_actual_view);
-      if (strip_constraint and prefix_type and prefix_type->base_type)
+
+      if (prefix_type and prefix_type->base_type)
         return prefix_type->base_type;
       return fallback;
     }
@@ -17772,15 +18664,6 @@ void Resolve_Range_Bound_Against_Other (Node *bound,
   Resolve_Operand (bound, other_end_type);
 }
 
-typedef struct {
-  Type *record_type;
-  u32   component_index;
-  u32   fixed_offset;
-  u32   variant_offset;
-  u32   variant_extent;
-  u32   variant_component_count;
-  i32    variant_index;
-} Record_Layout;
 
 void Add_Component_Declaration (Record_Layout *layout,
                                        Node *declaration) {
@@ -18674,6 +19557,9 @@ Type *Resolve_Attribute (Node *node) {
   if (sanctions_base) Base_Prefix_Sanctioning_Depth++;
   Resolve_Expression (node->attribute.prefix);
   if (sanctions_base) Base_Prefix_Sanctioning_Depth--;
+  if (node->attribute.kind == ATTRIBUTE_ADDRESS or
+      node->attribute.kind == ATTRIBUTE_SIZE)
+    Mark_Name_As_Escaping_Assignment_Analysis (node->attribute.prefix);
 
   if (node->attribute.kind == ATTRIBUTE_BASE and not Base_Prefix_Sanctioning_Depth)
     Reject (node,
@@ -18838,14 +19724,16 @@ Type *Resolve_Expression (Node *node) {
       } else {
         if (Resolve_Expanded_Name_Selector (node)) return node->type;
 
-        Symbol *prefix_symbol = node->selected.prefix->symbol;
-        Closest_Name_Search search = Closest_Name_Begin (node->selected.selector);
-        if (prefix_symbol and prefix_symbol->kind == SYMBOL_PACKAGE)
-          for (u32 i = 0; i < prefix_symbol->exported_count; i++)
-            Closest_Name_Consider (&search, prefix_symbol->exported[i]->name);
-        Report_Selector_Not_Found (node->location,
-                                   "cannot resolve selected component",
-                                   node->selected.selector, "", &search);
+        if (not Reject_Selection_With_Cause (node, record_type)) {
+          Symbol *prefix_symbol = node->selected.prefix->symbol;
+          Closest_Name_Search search = Closest_Name_Begin (node->selected.selector);
+          if (prefix_symbol and prefix_symbol->kind == SYMBOL_PACKAGE)
+            for (u32 i = 0; i < prefix_symbol->exported_count; i++)
+              Closest_Name_Consider (&search, prefix_symbol->exported[i]->name);
+          Report_Selector_Not_Found (node->location,
+                                     "cannot resolve selected component",
+                                     node->selected.selector, "", &search);
+        }
       }
       return sm->type_integer;
     }
@@ -19160,9 +20048,7 @@ Type *Resolve_Expression (Node *node) {
 
       node->apply.resolution = APPLY_UNRESOLVED;
       if (prefix->kind == NK_IDENTIFIER)
-        Reject (node, "cannot resolve '%.*s' as callable or indexable",
-                      (int) prefix->string_val.text.length,
-                      prefix->string_val.text.data);
+        Reject_Unresolvable_Application (node, prefix, prefix_symbol);
       return sm->type_integer;
     }
     case NK_ATTRIBUTE:  return Resolve_Attribute (node);
@@ -19173,6 +20059,9 @@ Type *Resolve_Expression (Node *node) {
                                  node->qualified.subtype_mark->type);
       Check_Qualified_Operand_Type (node->qualified.subtype_mark,
                                     node->qualified.expression);
+      Note_Certain_Constraint_Error (node->qualified.expression,
+                                     node->qualified.subtype_mark->type,
+                                     "qualified expression");
       node->type = node->qualified.subtype_mark->type;
       return node->type;
     case NK_AGGREGATE:   {
@@ -20475,7 +21364,6 @@ void Install_Parameter_Symbols (Node_List *parameters, Symbol *subprogram,
     subprogram->parameters[i].param_sym = installed[i].param_sym;
 }
 
-u32 Exception_Handler_Nesting;
 
 void Resolve_Unit_Body_Statements (Node_List *statements) {
   u32 enclosing_handlers = Exception_Handler_Nesting;
@@ -20484,7 +21372,6 @@ void Resolve_Unit_Body_Statements (Node_List *statements) {
   Exception_Handler_Nesting = enclosing_handlers;
 }
 
-Node_List *Machine_Code_Home_Statement_Sequence;
 
 void Resolve_Subprogram_Body_Statement_Sequence (Node *body) {
   Node_List *enclosing_home = Machine_Code_Home_Statement_Sequence;
@@ -20536,6 +21423,66 @@ const char *Spell_Transfer (Node *statement) {
   }
 }
 
+bool Tree_Holds_Any_Kind (Node *node, const Node_Kind *kinds, u32 count) {
+  if (not node) return false;
+  for (u32 k = 0; k < count; k++)
+    if (node->kind == kinds[k]) return true;
+  for (const Syntax_Tree_Edge *edge = Syntax_Tree_Shape[node->kind];
+       edge->offset; edge++) {
+    Node_List children = Get_Children (node, edge);
+    for (u32 i = 0; i < children.count; i++)
+      if (Tree_Holds_Any_Kind (children.items[i], kinds, count)) return true;
+  }
+  return false;
+}
+
+bool Tree_Reads_Symbol (Node *node, Symbol *sym) {
+  if (not node or not sym) return false;
+  if (node->symbol == sym) return true;
+  for (const Syntax_Tree_Edge *edge = Syntax_Tree_Shape[node->kind];
+       edge->offset; edge++) {
+    Node_List children = Get_Children (node, edge);
+    for (u32 i = 0; i < children.count; i++)
+      if (Tree_Reads_Symbol (children.items[i], sym)) return true;
+  }
+  return false;
+}
+
+Symbol *Assigned_Simple_Variable (Node *statement) {
+  if (not statement or statement->kind != NK_ASSIGNMENT) return NULL;
+  Node *target = statement->assignment.target;
+  if (not target or target->kind != NK_IDENTIFIER) return NULL;
+  Symbol *sym = target->symbol;
+  if (not sym or sym->kind != SYMBOL_VARIABLE) return NULL;
+  if (sym->aliased or sym->is_exported or sym->renamed_object) return NULL;
+  return sym;
+}
+
+void Note_Overwritten_Store (Node *first, Node *second) {
+  Symbol *sym = Assigned_Simple_Variable (first);
+  if (not sym or Assigned_Simple_Variable (second) != sym) return;
+  if (Tree_Reads_Symbol (second->assignment.value, sym)) return;
+  Note_Pending_Warning (WARNING_DEAD_STORE, first->location,
+    "this value assigned to '%.*s' is replaced on line %u before anything "
+    "reads it", (int) sym->name.length, sym->name.data,
+    second->location.line);
+}
+
+void Note_Unaccepted_Entries (Symbol *task_type) {
+  if (Diagnostics_Suppressed or Instantiating_Template_Count > 0) return;
+  if (not task_type or not task_type->exported) return;
+  for (u32 i = 0; i < task_type->exported_count; i++) {
+    Symbol *entry = task_type->exported[i];
+    if (not entry or entry->kind != SYMBOL_ENTRY) continue;
+    if (entry->is_ever_accepted) continue;
+    Note_Pending_Warning (WARNING_UNACCEPTED_ENTRY, entry->location,
+      "no accept statement for entry '%.*s' appears in the body of task "
+      "'%.*s', so every call to it waits forever",
+      (int) entry->name.length, entry->name.data,
+      (int) task_type->name.length, task_type->name.data);
+  }
+}
+
 void Note_Unreachable_Statements (Node_List *list) {
   if (Diagnostics_Suppressed or Instantiating_Template_Count > 0) return;
   for (u32 i = 0; i + 1 < list->count; i++) {
@@ -20550,6 +21497,12 @@ void Note_Unreachable_Statements (Node_List *list) {
       "this statement can never execute: the %s at line %u always "
       "transfers control away", transfer, statement->location.line);
     return;
+  }
+  for (u32 i = 0; i < list->count; i++) {
+    Node *statement = Peel_Labels (list->items[i]);
+    if (not statement) continue;
+    if (i + 1 < list->count)
+      Note_Overwritten_Store (statement, Peel_Labels (list->items[i + 1]));
   }
 }
 
@@ -20587,9 +21540,6 @@ bool Is_An_Unused_Candidate (Symbol *sym) {
   return true;
 }
 
-Symbol **Unused_Object_Candidates         = NULL;
-u32 Unused_Object_Candidate_Count    = 0;
-u32 Unused_Object_Candidate_Capacity = 0;
 
 void Note_Unused_Candidates_In_Scope (Scope *scope, Node *body) {
   if (Diagnostics_Suppressed or Instantiating_Template_Count > 0) return;
@@ -20613,9 +21563,6 @@ void Note_Unused_Candidates_In_Scope (Scope *scope, Node *body) {
   }
 }
 
-With_Clause_Candidate *With_Clause_Candidates        = NULL;
-u32              With_Clause_Candidate_Count    = 0;
-u32              With_Clause_Candidate_Capacity = 0;
 
 void Note_With_Clause_Candidate (Node *unit_name) {
   if (Diagnostics_Suppressed or Loading_Packages.count > 0) return;
@@ -20643,6 +21590,20 @@ void Report_Usage_Warnings (const char *main_source_path) {
   if (Error_Count == 0 and not Warnings_Silenced) {
     for (u32 i = 0; i < Unused_Object_Candidate_Count; i++) {
       Symbol *sym = Unused_Object_Candidates[i];
+      if (sym->kind == SYMBOL_VARIABLE and sym->read_count > 0 and
+          not sym->is_ever_assigned and
+          not sym->escapes_assignment_analysis and
+          not sym->is_package_level and
+          not sym->address_clause and
+          Has_Scalar_Representation (sym->type) and
+          sym->declaration and sym->declaration->kind == NK_OBJECT_DECL and
+          not sym->declaration->object_decl.init) {
+        Note_Pending_Warning (WARNING_READ_BEFORE_ASSIGNMENT, sym->location,
+          "variable '%.*s' is read but never assigned a value; what it "
+          "holds is whatever the stack held",
+          (int) sym->name.length, sym->name.data);
+        continue;
+      }
       if (sym->read_count > 0) continue;
       if (sym->kind == SYMBOL_PARAMETER) {
         if (sym->is_ever_assigned) continue;
@@ -20757,13 +21718,7 @@ Scope *Find_Body_Region () {
   return NULL;
 }
 
-typedef struct Enclosing_Loop {
-  const struct Enclosing_Loop *outer;
-  Symbol                      *name;
-  Scope                       *region;
-} Enclosing_Loop;
 
-const Enclosing_Loop *Innermost_Enclosing_Loop;
 
 bool Repick_Assignment_Target_Overload (Node *target,
                                                Type *value_type) {
@@ -20844,6 +21799,7 @@ void Resolve_Assignment_Statement (Node *node) {
     }
   }
 
+  Note_Certain_Constraint_Error (value, target->type, "assignment");
   if (Error_Count == errors_before_value) {
     Interpretation_Multiset value_interpretations =
       Interpret_Expression (value);
@@ -20938,11 +21894,6 @@ void Resolve_Procedure_Call_Statement (Node *node) {
                   target->symbol->name.data);
 }
 
-typedef enum {
-  RETURN_FROM_FUNCTION,
-  RETURN_FROM_PROCEDURE,
-  RETURN_FROM_NOTHING
-} Return_Construct_Kind;
 
 Node *Get_Generic_Spec (Symbol *generic_unit) {
   Node *unit = generic_unit ? generic_unit->generic_unit : NULL;
@@ -21084,12 +22035,7 @@ void Resolve_Exception_Part (Node_List *handlers) {
   }
 }
 
-typedef struct Accept_Statement_Nesting {
-  struct Accept_Statement_Nesting *outer;
-  Node                     *statement;
-} Accept_Statement_Nesting;
 
-Accept_Statement_Nesting *Accept_Statements_In_Progress;
 
 bool Accept_Profile_Matches (Node_List *parameters, Symbol *entry) {
   u32 index = 0;
@@ -21143,14 +22089,6 @@ bool Apply_Names_The_Asm_Intrinsic (Node *target) {
   return found and found->parent == sm->package_machine_code;
 }
 
-enum {
-  ASM_FORMAL_TEMPLATE,
-  ASM_FORMAL_OUTPUTS,
-  ASM_FORMAL_INPUTS,
-  ASM_FORMAL_CLOBBER,
-  ASM_FORMAL_VOLATILE,
-  ASM_FORMAL_COUNT
-};
 
 static Slice Spell_Asm_Formal (u32 slot) {
   switch (slot) {
@@ -21162,9 +22100,6 @@ static Slice Spell_Asm_Formal (u32 slot) {
   }
 }
 
-typedef struct {
-  Node *slots[ASM_FORMAL_COUNT];
-} Asm_Argument_Set;
 
 static bool Collect_Asm_Arguments (Node *call, Asm_Argument_Set *set) {
   *set = (Asm_Argument_Set){ 0 };
@@ -21640,6 +22575,8 @@ void Resolve_Statement (Node *node) {
       Check_Entry_Name_Index (node->accept_stmt.entry_sym,
                               node->accept_stmt.index ? 1 : 0,
                               node->accept_stmt.index, node->location);
+      if (node->accept_stmt.entry_sym)
+        node->accept_stmt.entry_sym->is_ever_accepted = true;
       if (node->accept_stmt.entry_sym)
         for (Accept_Statement_Nesting *outer = Accept_Statements_In_Progress;
              outer; outer = outer->outer)
@@ -22152,24 +23089,6 @@ void Type_Attach_Discriminant_Record (Type *type,
   type->record.all_defaults        = all_defaults;
 }
 
-const struct {
-  bool       (*Accepts) (const Type *);
-  const char  *formal_noun;
-  const char  *required_phrase;
-} Generic_Formal_Type_Class[] = {
-  [GEN_DEF_DISCRETE] = { Has_Discrete_Representation,     "discrete",
-                         "an enumeration or integer type" },
-  [GEN_DEF_INTEGER]  = { Has_Integer_Representation, "integer",
-                         "an integer type" },
-  [GEN_DEF_FLOAT]    = { Is_Float,        "floating point",
-                         "a floating point type" },
-  [GEN_DEF_FIXED]    = { Is_Fixed_Point,  "fixed point",
-                         "a fixed point type" },
-  [GEN_DEF_ARRAY]    = { Is_Array_Like,   "array",
-                         "an array type" },
-  [GEN_DEF_ACCESS]   = { Is_Access,       "access",
-                         "an access type" }
-};
 
 Type *Derive_Slice_Subtype (Node *slice) {
   if (not slice or slice->kind != NK_APPLY or
@@ -22614,11 +23533,6 @@ void Check_Operator_Declaration (const Symbol *subprogram,
                 "parameters are of the same limited type");
 }
 
-typedef enum {
-  SUBPROGRAM_SPECIFICATION_OF_DECLARATION,
-  SUBPROGRAM_SPECIFICATION_OF_BODY,
-  SUBPROGRAM_SPECIFICATION_OF_SEPARATELY_COMPILED_BODY
-} Subprogram_Specification_Kind;
 
 Formal_Part_Kind Resolve_Subprogram_Specification (
   Node *node, Subprogram_Specification_Kind specification_kind) {
@@ -24454,6 +25368,7 @@ void Resolve_Declaration (Node *node) {
         sym->declared_in_statements = sm->statement_depth > 0;
 
         if (node->object_decl.is_rename and node->object_decl.init) {
+          Mark_Name_As_Escaping_Assignment_Analysis (node->object_decl.init);
           Type *slice_subtype = Derive_Slice_Subtype (node->object_decl.init);
           sym->type            = slice_subtype ? slice_subtype
                                                : node->object_decl.init->type;
@@ -24617,22 +25532,7 @@ void Resolve_Declaration (Node *node) {
 
       } else if (type->kind == TYPE_UNKNOWN) {
         type->kind = TYPE_INCOMPLETE;
-        /* RM 7.4.3: "The same rules apply to the operations that are
-           implicitly declared for an access type whose designated type is
-           a private type or a type declared by an incomplete type
-           declaration."  Recording a partial view here is what lets
-           Get_View_In_Force gate the array and record operations of an
-           access type designating this incomplete type to the earliest
-           place within the access type's own immediate scope and after
-           this declaration's full type declaration, exactly as it already
-           does for a private type.  A private type declaration is only
-           ever legal within a package specification, so
-           Outside_Defining_Package's "no defining package" case is never
-           exercised for one; an incomplete type declaration is legal
-           anywhere, and outside a package there is no client
-           the two-view model has to shield anything from, so the gate is
-           only recorded when a package actually encloses this
-           declaration. */
+
         if (Declared_Within_A_Package ()) {
           type->partial_view_kind = TYPE_INCOMPLETE;
           type->partial_view_discriminant_count =
@@ -24832,6 +25732,9 @@ void Resolve_Declaration (Node *node) {
       }
       Resolve_Unit_Body_Statements (&node->task_body.statements);
       Resolve_Exception_Part (&node->task_body.handlers);
+      if (not node->task_body.is_separate and
+          not Tree_Escapes_Usage_Analysis (node))
+        Note_Unaccepted_Entries (type_sym);
       Symbol_Manager_Pop_Scope ();
     }                break;
     case NK_PACKAGE_SPEC:          {
@@ -25127,8 +26030,6 @@ void Check_Subunit_Identifiers_Are_Unique (Node *node) {
   }
 }
 
-Node *Units_Of_This_Compilation[MAX_UNITS_PER_SOURCE_FILE];
-u32     Units_Of_This_Compilation_Count;
 
 void Record_Compilation_Units (Node **units, int unit_count) {
   Units_Of_This_Compilation_Count = 0;
@@ -25239,6 +26140,7 @@ void Resolve_Compilation_Unit (Node *node) {
         }
       }
     }
+    Note_Repeated_With_Clauses (ctx);
 
     {
       bool saved_context_names = Resolving_Context_Clause_Names;
@@ -25676,31 +26578,7 @@ void Check_Actual_Parameter_Variables (Symbol *callee,
   }
 }
 
-typedef struct {
-  const char *formal_noun;
-  const char *construct_noun;
-  bool        allows_several_names;
-  bool        allows_others;
-} Association_Construct_Rules;
 
-const Association_Construct_Rules
-Association_Construct_Table[ASSOCIATIONS_CONSTRUCT_KIND_COUNT] = {
-  [ASSOCIATIONS_OF_DISCRIMINANT_CONSTRAINT] = {
-    .formal_noun          = "discriminant",
-    .construct_noun       = "discriminant constraint",
-    .allows_several_names = true,
-    .allows_others        = false },
-  [ASSOCIATIONS_OF_RECORD_AGGREGATE] = {
-    .formal_noun          = "component",
-    .construct_noun       = "record aggregate",
-    .allows_several_names = true,
-    .allows_others        = true },
-  [ASSOCIATIONS_OF_ACTUAL_PARAMETER_PART] = {
-    .formal_noun          = "formal parameter",
-    .construct_noun       = "call",
-    .allows_several_names = false,
-    .allows_others        = false },
-};
 
 i32 Find_Formal_Slot (const Association_Formal *formals,
                                          u32 formal_count,
@@ -25869,22 +26747,6 @@ void Check_Call_Actual_Parameter_Part (Symbol *callee,
                                     first_actual);
 }
 
-const char *const Staticness_Explanation[] = {
-  [STATICNESS_STATIC] =
-    "is static",
-  [STATICNESS_NOT_A_SCALAR_TYPE] =
-    "is not of a scalar type",
-  [STATICNESS_NOT_A_STATIC_PRIMARY] =
-    "names something other than a literal, a named number or a static constant",
-  [STATICNESS_NOT_A_PREDEFINED_OPERATION] =
-    "applies an operation that is not a predefined operator",
-  [STATICNESS_ATTRIBUTE_OF_A_NONSTATIC_SUBTYPE] =
-    "takes an attribute of a prefix that is not a static subtype",
-  [STATICNESS_QUALIFIED_BY_A_NONSTATIC_SUBTYPE] =
-    "is qualified by a subtype that is not static",
-  [STATICNESS_EVALUATION_RAISES] =
-    "raises an exception when evaluated rather than delivering a value",
-};
 
 void Require_Static_Expression (Node *expression,
                                        const char  *role) {
@@ -25895,8 +26757,6 @@ void Require_Static_Expression (Node *expression,
                 role, Staticness_Explanation[staticness]);
 }
 
-void Require_Static_Discrete_Range (Node *choice,
-                                           const char  *role);
 
 void Require_Static_Discrete_Range (Node *choice,
                                            const char  *role) {
@@ -26118,9 +26978,6 @@ bool Private_Completion_Needs_Constrained (const Node *spec,
   return false;
 }
 
-bool Formal_Type_Needs_Constrained_Actual (const Node *node,
-                                                  Type *formal_type,
-                                                  u32 depth);
 
 bool Instantiated_Unit_Needs_Constrained (const Node *instantiation,
                                                  Type *formal_type,
@@ -26359,8 +27216,6 @@ Name_Reading_Kind Classify_Reading (Node      *parent,
   }
 }
 
-const Others_Choice_Context Others_Context_Nowhere =
-  { .kind = OTHERS_CONTEXT_NONE, .subtype = NULL };
 
 Others_Choice_Context Get_Others_Context (Others_Choice_Context_Kind kind,
                                                 Node *subtype_name) {
@@ -26847,11 +27702,6 @@ void Restricted_Name_Add (Restricted_Name_Set *set,
     .rule = rule, .entity = entity, .full_declaration = full_declaration };
 }
 
-const Restricted_Name_Position Restricted_Name_Position_Start = {
-  .private_type_name = PRIVATE_NAME_AS_TYPE_MARK,
-  .constant_name     = DEFERRED_CONSTANT_ELSEWHERE,
-  .incomplete_name   = INCOMPLETE_NAME_ELSEWHERE
-};
 
 Node *Find_Completion (Node_List *declarations,
                                         u32 after, Slice name) {
@@ -26989,9 +27839,6 @@ Restriction_On_Constant_Name (const Restricted_Name_Set *set,
   return NULL;
 }
 
-void Check_Restricted_Name_Occurrences (Node *node,
-                                               const Restricted_Name_Set *set,
-                                               Restricted_Name_Position position);
 
 void Check_Default_Expression_Bearing_Declaration (
     Node *node, Node *default_expression,
@@ -27334,10 +28181,7 @@ void Check_Bodies_Complete_A_Declaration (
       "the body of %s '%.*s' has no declaration to complete",
       Node_Kind_Property_Table[completed].program_unit_noun,
       (int) name.length, name.data);
-    /* A task body spans from its header to its own END, and either end
-       is where an ACATS test places its marker for this rule; report
-       both ends of the body when they fall on different lines rather
-       than picking one authorial convention over the other. */
+
     if (item->kind == NK_TASK_BODY and
         item->task_body.end_location.line != item->location.line)
       Reject_At (item->task_body.end_location,
@@ -27514,15 +28358,7 @@ void Check_Declared_Identifiers_Are_Distinct (Node_List *part) {
   }
 }
 
-typedef struct {
-  Slice identifier;
-  Token_Kind   operator_token;
-} Designator_Notation;
 
-typedef enum {
-  HIDING_DIRECT_ONLY,
-  HIDING_ALSO_BY_SELECTION,
-} Hiding_Extent_Kind;
 
 Designator_Notation Classify_Designator (Slice designator) {
   return (Designator_Notation){
@@ -27652,11 +28488,6 @@ void Collect_Component_List_Identifiers (Node_List *components,
   }
 }
 
-typedef enum {
-  DISCRIMINANT_NAME_ADMITTED,
-  DISCRIMINANT_NAME_ADMITTED_ALONE,
-  DISCRIMINANT_NAME_ELSEWHERE
-} Discriminant_Name_Position;
 
 void Check_Discriminant_Name_Occurrences (
     Node *node, const Symbol *record_type,
@@ -27924,10 +28755,6 @@ bool Name_Is_Out_Parameter_Or_Subcomponent (Node *node) {
   return false;
 }
 
-typedef struct {
-  i128 low;
-  i128 high;
-} Discrete_Interval;
 
 bool Discrete_Interval_Is_Empty (Discrete_Interval interval) {
   return interval.low > interval.high;
@@ -27959,18 +28786,7 @@ Type *Choice_Denotes_Subtype (Node *choice) {
   return NULL;
 }
 
-typedef enum {
-  CASE_CHOICE_OTHERS,
-  CASE_CHOICE_VALUES,
-  CASE_CHOICE_NOT_STATIC,
-  CASE_CHOICE_UNFOLDED
-} Case_Choice_Kind;
 
-typedef struct {
-  Case_Choice_Kind  kind;
-  Type        *type;
-  Discrete_Interval interval;
-} Case_Choice;
 
 Case_Choice Classify_Discrete_Range (Node *range_or_expression) {
   Node *choice = range_or_expression;
@@ -28028,16 +28844,7 @@ Case_Choice Classify_Discrete_Range (Node *range_or_expression) {
   return classified;
 }
 
-typedef enum {
-  CASE_COVERAGE_OVER_INTERVAL,
-  CASE_COVERAGE_UNBOUNDED,
-  CASE_COVERAGE_UNDECIDED
-} Case_Coverage_Kind;
 
-typedef struct {
-  Case_Coverage_Kind kind;
-  Discrete_Interval  interval;
-} Case_Coverage;
 
 Type *Get_Case_Subtype (Node *expression) {
   if (not expression) return NULL;
@@ -28102,10 +28909,6 @@ Case_Coverage Measure_Coverage (Node *expression) {
   return coverage;
 }
 
-typedef struct {
-  const char *construct;
-  const char *selector;
-} Choice_Construct;
 
 bool Case_Choice_Type_Admitted (Type *governing_type, Type *choice_type) {
   if (not governing_type or not choice_type) return true;
@@ -28281,17 +29084,7 @@ void Check_Library_Package_Body_Has_Its_Declaration (Node *cu) {
     }
   }
   else {
-    /* RM 10.1: a package body is a secondary unit, so it completes a
-       package_declaration that must already exist somewhere -- unlike a
-       subprogram body, it can never serve as its own declaration.
-       Catalog_Find_Declaration answers a different question ("what
-       does the library currently hold under this name") and falls back to
-       a body-only entry when no specification exists; that fallback is
-       right for deciding whether a later body redefines an earlier
-       subprogram, but wrong here, where a body-only entry is this very
-       compilation's own body registering itself and proves nothing about
-       a declaration.  Only an actual specification entry answers the
-       question this check asks. */
+
     Catalog_Entry *declaration =
       Catalog_Find (unit->package_body.name, CATALOG_UNIT_SPEC);
     if (declaration and not declaration->is_subprogram) return;
@@ -28385,7 +29178,6 @@ Slice Get_Stub_Simple_Name (Node *stub) {
   return Get_Unit_Name (stub);
 }
 
-typedef struct { Node_List *lists[2]; } Body_Stub_Home;
 
 Body_Stub_Home Find_Stub_Home (Node *unit) {
   Body_Stub_Home home = { { NULL, NULL } };
@@ -28571,11 +29363,6 @@ bool Name_Position_Admits_A_Generic_Unit (Name_Position_Kind position) {
   return false;
 }
 
-typedef struct Enclosing_Sequence {
-  const struct Enclosing_Sequence *outer;
-  const Node_List                 *statements;
-  bool                             confines_transfer_of_control;
-} Enclosing_Sequence;
 
 bool Sequence_Declares_Label (const Node_List *statements,
                                      const Symbol *label) {
@@ -28813,13 +29600,6 @@ bool Expressions_Conform (Node *written, Node *required,
   return true;
 }
 
-typedef struct {
-  const Node_List     *names;
-  Node         *type_mark;
-  Node         *default_expression;
-  Parameter_Mode_Kind  mode;
-  bool                 mode_is_written;
-} Written_Specification;
 
 bool Read_Written_Specification (Node *node,
                                       Written_Specification *out) {
@@ -28960,20 +29740,6 @@ void Check_Incomplete_Type_Discriminant_Parts (Node *incomplete,
                                 incomplete->location);
 }
 
-/* RM 3.8.1: "Prior to the end of the full type declaration, the only
-   allowed use of a name that denotes a type declared by an incomplete type
-   declaration is as the type mark in the subtype indication of an access
-   type definition; the only form of constraint allowed in this subtype
-   indication is a discriminant constraint," and, for an incomplete type
-   declared in a private part, "the full type declaration must occur later
-   and immediately within either the private part itself, or the
-   declarative part of the corresponding package body."  A discriminant
-   constraint written against the incomplete type claims to know its
-   discriminants, but when the full declaration is deferred to the package
-   body a client of the package never sees that body, so the constraint
-   can only be validated when the full declaration is given in the private
-   part itself; every other placement is a promise the private part alone
-   cannot keep, and AI-83-00007 settles the case by forbidding it. */
 void Check_Private_Part_Incomplete_Type_Constraints (Node *package_spec) {
   Node_List *private_part = &package_spec->package_spec.private_decls;
   for (u32 i = 0; i < private_part->count; i++) {
@@ -29958,6 +30724,54 @@ Rep Pick_Descriptor_Rep () {
   return Make_Int_Rep (64, false);
 }
 
+void Output_Reserve (Output_Buffer *buffer, size_t extra) {
+  if (buffer->length + extra + 1 <= buffer->capacity) return;
+  size_t capacity = buffer->capacity ? buffer->capacity : 4096;
+  while (buffer->length + extra + 1 > capacity) capacity *= 2;
+  char *text = Arena_Allocate (capacity);
+  if (buffer->length) memcpy (text, buffer->text, buffer->length);
+  buffer->text     = text;
+  buffer->capacity = capacity;
+}
+
+void Output_Write (Output_Buffer *buffer, const char *data, size_t length) {
+  if (not data or length == 0) return;
+  Output_Reserve (buffer, length);
+  memcpy (buffer->text + buffer->length, data, length);
+  buffer->length += length;
+  buffer->text[buffer->length] = '\0';
+}
+
+void Output_Put (Output_Buffer *buffer, char character) {
+  Output_Write (buffer, &character, 1);
+}
+
+void Output_Format (Output_Buffer *buffer, const char *format, ...) {
+  va_list args;
+  char    scratch[1024];
+
+  va_start (args, format);
+  int written = vsnprintf (scratch, sizeof scratch, format, args);
+  va_end (args);
+  if (written < 0) return;
+
+  if ((size_t) written < sizeof scratch) {
+    Output_Write (buffer, scratch, (size_t) written);
+    return;
+  }
+
+  Output_Reserve (buffer, (size_t) written);
+  va_start (args, format);
+  vsnprintf (buffer->text + buffer->length, (size_t) written + 1, format, args);
+  va_end (args);
+  buffer->length += (size_t) written;
+}
+
+void Output_Clear (Output_Buffer *buffer) {
+  buffer->length = 0;
+  if (buffer->text) buffer->text[0] = '\0';
+}
+
 void String_Const_Reserve (size_t extra) {
   while (cg->string_const_size + extra + 1 > cg->string_const_capacity) {
     size_t new_cap = cg->string_const_capacity * 2;
@@ -29989,17 +30803,8 @@ void Emit_String_Const_Symbol (Symbol *sym) {
 }
 
 void Emit_String_Const_Symbol_Name (Symbol *sym) {
-  char  *captured = NULL;
-  size_t captured_size = 0;
-  FILE  *saved_output = cg->output;
-  cg->output = open_memstream (&captured, &captured_size);
-  Emit_Symbol_Name (sym);
-  fclose (cg->output);
-  cg->output = saved_output;
-  if (captured) {
-    Emit_String_Const ("%.*s", (int) captured_size, captured);
-    free (captured);
-  }
+  Slice name = Get_Emitted_Name (sym);
+  Emit_String_Const ("%.*s", (int) name.length, name.data);
 }
 
 Register_Spelling Register_Spelling_Of (u32 reg) {
@@ -30148,7 +30953,7 @@ void Emit_Located_Text (const char *src_func, int src_line,
     for (const char *q = p; q < chunk_end; q++) {
       if (*q != ' ' and *q != '\t') { cg->emit_line_has_content = true; break; }
     }
-    fwrite (p, 1, (size_t) (chunk_end - p), cg->output);
+    Output_Write (cg->output, p, (size_t) (chunk_end - p));
 
     if (not nl) {
       cg->emit_at_line_start = false;
@@ -30156,11 +30961,11 @@ void Emit_Located_Text (const char *src_func, int src_line,
     }
 
     if (cg->emit_line_has_content) {
-      fprintf (cg->output, "  ; @ %s:%d",
-               cg->emit_line_start_func ? cg->emit_line_start_func : "?",
-               cg->emit_line_start_line);
+      Output_Format (cg->output, "  ; @ %s:%d",
+                     cg->emit_line_start_func ? cg->emit_line_start_func : "?",
+                     cg->emit_line_start_line);
     }
-    fputc ('\n', cg->output);
+    Output_Put (cg->output, '\n');
 
     cg->emit_at_line_start    = true;
     cg->emit_line_has_content = false;
@@ -30173,17 +30978,10 @@ void Emit_Located_Text (const char *src_func, int src_line,
 void Function_Body_Begin () {
   Function_Body_End ();
   cg->module_output       = cg->output;
-  cg->frame_text          = NULL;
-  cg->frame_text_size     = 0;
-  cg->prologue_text       = NULL;
-  cg->prologue_text_size  = 0;
-  cg->body_text           = NULL;
-  cg->body_text_size      = 0;
-  cg->frame_stream        = open_memstream (&cg->frame_text, &cg->frame_text_size);
-  cg->prologue_stream     = open_memstream (&cg->prologue_text,
-                                            &cg->prologue_text_size);
-  cg->body_stream         = open_memstream (&cg->body_text,  &cg->body_text_size);
-  cg->output              = cg->body_stream;
+  Output_Clear (&cg->frame);
+  Output_Clear (&cg->prologue);
+  Output_Clear (&cg->body);
+  cg->output              = &cg->body;
   cg->function_body_open  = true;
   cg->emitting_frame_slot = false;
   cg->emitting_prologue   = false;
@@ -30199,20 +30997,16 @@ void Function_Body_End () {
   cg->emitting_frame_slot = false;
   cg->emitting_prologue   = false;
 
-  fclose (cg->frame_stream);    cg->frame_stream    = NULL;
-  fclose (cg->prologue_stream); cg->prologue_stream = NULL;
-  fclose (cg->body_stream);     cg->body_stream     = NULL;
   cg->output = cg->module_output;
 
-  fputs ("entry:\n", cg->output);
-  if (cg->frame_text) fwrite (cg->frame_text, 1, cg->frame_text_size, cg->output);
-  if (cg->prologue_text)
-    fwrite (cg->prologue_text, 1, cg->prologue_text_size, cg->output);
-  if (cg->body_text)  fwrite (cg->body_text,  1, cg->body_text_size,  cg->output);
+  Output_Write (cg->output, "entry:\n", sizeof "entry:\n" - 1);
+  Output_Write (cg->output, cg->frame.text,    cg->frame.length);
+  Output_Write (cg->output, cg->prologue.text, cg->prologue.length);
+  Output_Write (cg->output, cg->body.text,     cg->body.length);
 
-  free (cg->frame_text);    cg->frame_text    = NULL; cg->frame_text_size    = 0;
-  free (cg->prologue_text); cg->prologue_text = NULL; cg->prologue_text_size = 0;
-  free (cg->body_text);     cg->body_text     = NULL; cg->body_text_size     = 0;
+  Output_Clear (&cg->frame);
+  Output_Clear (&cg->prologue);
+  Output_Clear (&cg->body);
   cg->emit_at_line_start = true;
 }
 
@@ -30220,15 +31014,15 @@ void Frame_Slot_Begin () {
   if (cg->function_body_open and not cg->emitting_frame_slot
       and cg->emit_at_line_start) {
     cg->emitting_frame_slot = true;
-    cg->output              = cg->frame_stream;
+    cg->output              = &cg->frame;
   }
 }
 
 void Frame_Slot_End () {
   if (cg->emitting_frame_slot) {
     cg->emitting_frame_slot = false;
-    cg->output              = cg->emitting_prologue ? cg->prologue_stream
-                                                    : cg->body_stream;
+    cg->output              = cg->emitting_prologue ? &cg->prologue
+                                                    : &cg->body;
   }
 }
 
@@ -30236,19 +31030,19 @@ void Prologue_Begin () {
   if (cg->function_body_open and not cg->emitting_prologue
       and not cg->emitting_frame_slot and cg->emit_at_line_start) {
     cg->emitting_prologue = true;
-    cg->output            = cg->prologue_stream;
+    cg->output            = &cg->prologue;
   }
 }
 void Prologue_End () {
   if (cg->emitting_prologue) {
     cg->emitting_prologue = false;
-    cg->output            = cg->body_stream;
+    cg->output            = &cg->body;
   }
 }
 
 void Prologue_Discard_If_No_Call () {
   if (not cg->prologue_is_droppable or cg->body_call_count > 0) return;
-  fseek (cg->prologue_stream, 0, SEEK_SET);
+  Output_Clear (&cg->prologue);
 }
 
 void Emit_Impl (const char *src_func, int src_line, const char *format, ...) {
@@ -30277,7 +31071,7 @@ void Emit_Impl (const char *src_func, int src_line, const char *format, ...) {
   if (need < 0) return;
 
   if (not cg->emit_debug_locations) {
-    fwrite (buf, 1, (size_t) need, cg->output);
+    Output_Write (cg->output, buf, (size_t) need);
     if (need > 0) cg->emit_at_line_start = (buf[need - 1] == '\n');
   } else {
     if (starts_line) Record_Emit_Result_Type (buf);
@@ -30300,7 +31094,7 @@ char *Emit_Call_Format (const char *format, va_list args, char *stack_buf,
 }
 
 void Emit_Call_Note () {
-  if (cg->function_body_open and cg->output == cg->body_stream)
+  if (cg->function_body_open and cg->output == &cg->body)
     cg->body_call_count++;
 }
 
@@ -30381,7 +31175,7 @@ void Emit_Verbatim_Impl (const char *src_func, int src_line,
   }
 
   if (not cg->emit_debug_locations) {
-    fwrite (text, 1, length, cg->output);
+    Output_Write (cg->output, text, length);
     cg->emit_at_line_start = (text[length - 1] == '\n');
     return;
   }
@@ -31002,7 +31796,7 @@ Slice Get_Emitted_Name (Symbol *sym) {
 void Emit_Symbol_Name (Symbol *sym) {
   Slice name = Get_Emitted_Name (sym);
   for (u32 i = 0; i < name.length; i++)
-    fputc (name.data[i], cg->output);
+    Output_Put (cg->output, name.data[i]);
 }
 
 const char *Spell_Symbol (Symbol *sym) {
@@ -31187,7 +31981,6 @@ const char *Spell_Exception_Kind (Exception_Kind kind) {
   return "constraint_error";
 }
 
-u32 Unit_Suppressed_Checks;
 
 Check_Permission Check_Permission_For (Check_Kind kind, Type *type,
                                        Symbol *sym) {
@@ -31415,7 +32208,7 @@ void Emit_Stack_Probe_Guard (const char *size_operand) {
   Emit_Name_Next ("stack.fits");
   I1 fits = Emit_Icmp ("ugt", Make_Int_Rep (64, false), reached, floor);
 
-  Emit_Branch_On (fits, ok_label, slow_label, "RM 11.1 stack extent probe");
+  Emit_Branch_On (fits, ok_label, slow_label, "stack extent probe");
   Emit_Label_Here (slow_label);
   Emit_Call_Void ("void @__ada_stack_check(i64 %s)  ; storage exhaustion check",
         size_operand);
@@ -31711,16 +32504,7 @@ u32 Emit_Constraint_Check_Internal (u32 val, Rep val_rep,
       target->high_bound.kind == BOUND_INTEGER) {
     u32 bits = (u32) To_Bits (target->size);
     if (bits == 0) bits = 32;
-    /* A target whose declared range spans its own representation's native
-       range cannot be violated by any value already held in that same
-       representation -- but the value examined here is the operand as it
-       stands before this check, which is only trustworthy for that
-       argument when the operand's own representation is no wider than the
-       target's. A wider operand (SYSTEM.MIN_INT .. MAX_INT is
-       exactly a full-range 64-bit target, and INTEGER itself is exactly a
-       full-range 32-bit target) can hold a value the target's
-       representation cannot, and eliding the check here would let that
-       value reach the target's storage unexamined. */
+
     bool operand_within_representation =
       val_rep.kind == LL_INT and val_rep.bits <= bits;
 
@@ -32129,19 +32913,6 @@ Value Emit_Fat_Array_Deep_Copy (Value fat, Type *type,
   return Wrap (Emit_Build_Fat_Pointer (copied_data, copied_bounds), REP_FAT);
 }
 
-/*  Whether a RETURN expression's value already is a freshly allocated
-    secondary-stack block holding bounds then elements, so the return
-    path may hand it back without another allocation and copy.  One
-    producer guarantees that shape: a predefined catenation, whose
-    emitter allocates the block that way.  A function whose result
-    lives on the secondary stack emits no release on return, so the
-    block survives into the caller.  A call's result does NOT qualify,
-    even though the callee built such a block: the call site
-    materialises the returned bounds and elements into frame-local
-    storage of the calling function, and returning that storage would
-    hand the caller a pointer into a dead frame.  A user-defined "&"
-    is such a call, so the operator must resolve to the predefined
-    catenation, mirroring the NK_BINARY_OP dispatch.  */
 bool Return_Value_Is_Fresh_Secondary_Stack_Block (Node *expression) {
   if (not expression or expression->kind != NK_BINARY_OP) return false;
   if (expression->binary.op != TK_AMPERSAND) return false;
@@ -35630,11 +36401,6 @@ Value Emit_Binary_Op_Predefined (Node *node) {
       u32 left_bytes  = Emit_Element_Byte_Count (left_length,  element_size, bounds_rep);
       u32 right_bytes = Emit_Element_Byte_Count (right_length, element_size, bounds_rep);
 
-      /*  The result block carries its bounds in front of its
-          elements -- the layout Emit_Fat_Array_Deep_Copy produces --
-          so a catenation returned from a function already has the
-          shape a function result must have and needs no further
-          copy (Return_Value_Is_Fresh_Secondary_Stack_Block).  */
       u32 bound_bytes = 2 * (Get_Bits (bounds_rep) / 8);
       if (bound_bytes % SECONDARY_STACK_ALIGN_BYTES)
         bound_bytes += SECONDARY_STACK_ALIGN_BYTES
@@ -36043,11 +36809,7 @@ Value Emit_Binary_Op_Predefined (Node *node) {
                                              result_type, node->binary.right);
       if ((binary_op == TK_MOD or binary_op == TK_REM) and
           not left_is_unsigned) {
-        //  Rem and mod by minus one are zero, but the machine operation
-        //  traps when the dividend is the base type's first value.  A
-        //  divisor of one delivers the same zero without the trap, so a
-        //  divisor known statically to differ from minus one keeps the
-        //  direct operation and any other divisor is substituted.
+
         i128 static_divisor;
         if (not (node->binary.right and
                  Read_Static_Whole (node->binary.right, &static_divisor) and
@@ -36517,14 +37279,6 @@ Value Emit_Checked_Scalar_Conversion (Value value,
         bool integer_to_integer =
           Rep_Is_Int (src_llvm) and Rep_Is_Int (dst_llvm);
 
-        /* RM 4.6's range check examines the conversion's operand value
-           against the target subtype, so for an integer-like conversion it
-           must run before any narrowing conversion below discards the
-           bits the check exists to examine -- a value the target's own
-           representation cannot hold does not become checkable by first
-           forcing it into that representation. Float conversions instead
-           check the narrowed IEEE result itself: a finite value that
-           narrows to an infinity lies outside the target type. */
         if (integer_to_integer and Has_Scalar_Representation (dst_type))
           Emit_Constraint_Check ((Value){ result, src_llvm }, dst_type, NULL);
 
@@ -39056,10 +39810,7 @@ Value Lower_Attribute (Node *node) {
 
     case ATTRIBUTE_POS: {
       Value operand = Lower_Expression (Get_Attribute_Operand (node, 0));
-      /* 'POS's result is universal_integer, wide enough to state any
-         position of its prefix's type -- so its representation must be at
-         least as wide as the operand's own, not clamped to whatever width
-         ordinary INTEGER arithmetic happens to use. */
+
       return Emit_Coerce (operand,
                               Pick_Wider (operand.rep, Pick_Arith_Rep ()));
     }
@@ -39077,12 +39828,7 @@ Value Lower_Attribute (Node *node) {
               .is_known = true }
           : Get_Base_Range (prefix_type);
       if (positions.is_known) {
-        /* The argument's own representation may be wider than ordinary
-           INTEGER arithmetic (SYSTEM.MIN_INT .. MAX_INT is a
-           legal integer type definition, and its 'VAL argument can carry
-           that full width) -- converting it down to Pick_Arith_Rep ()
-           before the range check below would discard exactly the bits
-           the check exists to examine. */
+
         Rep arith = Pick_Wider (argument.rep, Pick_Arith_Rep ());
         Emit_Range_Check_With_Raise (
           Emit_Convert (argument.reg, argument.rep, arith).reg,
@@ -40716,7 +41462,6 @@ void Agg_Emit_Component (Aggregate_Emission_Context *context,
   Agg_Emit_Component_Flat (context, expression, flat_index, origin);
 }
 
-enum { AGGREGATE_MEMSET_THRESHOLD = 4 };
 
 bool Read_Fill_Byte (const Aggregate_Emission_Context *context,
                                  Node *expression, u8 *fill_byte) {
@@ -41235,16 +41980,6 @@ void Emit_Index_Bounds_Constraint_Check (u32 lo_val, u32 hi_val,
   }
 }
 
-typedef struct {
-  Type_Bound low [MAX_AGG_DIMS];
-  Type_Bound high[MAX_AGG_DIMS];
-  u32   dimension_count;
-  bool       high_from_positional_count[MAX_AGG_DIMS];
-  u32   positional_count[MAX_AGG_DIMS];
-  bool       any_dynamic;
-  bool       inner_dynamic;
-  bool       from_applicable_index;
-} Aggregate_Emitted_Bounds;
 
 void Aggregate_Emit_Bounds (Node              *node,
                                    Type                *agg_type,
@@ -43005,7 +43740,7 @@ void Emit_Implicit_Initial_Value (u32   address,
   if (Is_Record (object_type)) {
     if (byte_extent and Type_Contains_Access (object_type))
       Emit_Zero_Fill (address, byte_extent,
-                      "RM 3.2.1 access subcomponents = null");
+                      "access subcomponents = null");
     if (object_type->record.component_count > 0)
       Emit_Initialize_Record (object_type, address);
     return;
@@ -43019,7 +43754,7 @@ void Emit_Implicit_Initial_Value (u32   address,
 
   if (byte_extent and
       (element_has_defaults or Type_Contains_Access (object_type)))
-    Emit_Zero_Fill (address, byte_extent, "RM 3.2.1 array defaults");
+    Emit_Zero_Fill (address, byte_extent, "array defaults");
 
   if (element_has_defaults and element_count)
     Emit_Array_Element_Defaults (
@@ -43034,12 +43769,6 @@ u32 Emit_Collection_Allocate (Type *access_type,
     "ptr @__ada_allocate (i64 %s)",  REG (byte_count));
 }
 
-typedef struct {
-  u32 dimension_count;
-  u32 low  [MAX_AGG_DIMS];
-  u32 high [MAX_AGG_DIMS];
-  Rep rep;
-} Allocated_Array_Bounds;
 
 u32 Count_Allocated_Dimensions (Type *array_type) {
   if (not Is_Array_Like (array_type)) return 0;
@@ -44619,10 +45348,7 @@ void Lower_Return_Statement (Node *node) {
     }
 
     if (Has_Scalar_Representation (ret_type)) {
-      /* RM 5.8: the returned value is checked against the result
-         subtype.  The expression's own subtype is the check's source:
-         when it is statically contained in the result subtype the
-         check elides, exactly as at every conversion site. */
+
       Emit_Constraint_Check ((Value){ value.reg, ret_rep }, ret_type,
                                  expr->type);
     }
@@ -45247,12 +45973,6 @@ void Emit_Rendezvous_Body (Node *accept_node, u32 caller_ptr,
   cg->in_exception_region     = saved_in_region;
 }
 
-typedef struct {
-  bool         has_else;
-  bool         has_terminate;
-  bool         every_alternative_guarded;
-  Node *expiry_alternative;
-} Selective_Wait_Shape;
 
 Selective_Wait_Shape Classify_Selective_Wait (Node *node) {
   Node_List *alternatives = &node->select_stmt.alternatives;
@@ -49555,7 +50275,7 @@ void Emit_Task_Function_Name (Symbol *task_sym, Slice fallback_name) {
     for (u32 i = 0; i < fallback_name.length; i++) {
       char ch = fallback_name.data[i];
       if (ch >= 'A' and ch <= 'Z') ch = ch - 'A' + 'a';
-      fputc (ch, cg->output);
+      Output_Put (cg->output, ch);
     }
   }
 }
@@ -50968,7 +51688,7 @@ void Lower_Implicit_Operators () {
   }
   if (cg->string_const_size > 0) {
     Emit ("\n; String constants\n");
-    fprintf (cg->output, "%s", cg->string_const_buffer);
+    Output_Write (cg->output, cg->string_const_buffer, cg->string_const_size);
     Emit ("\n");
     cg->string_const_size = 0;
   }
@@ -51214,7 +51934,7 @@ void Emit_Program_Entry_Point () {
   Emit ("}\n");
 
   if (cg->string_const_size > 0) {
-    fprintf (cg->output, "%s", cg->string_const_buffer);
+    Output_Write (cg->output, cg->string_const_buffer, cg->string_const_size);
     cg->string_const_size = 0;
   }
 }
@@ -51480,8 +52200,7 @@ void Emit_Integer_Value_Signed_Return (const char *stem, const char *value,
 void Emit_Runtime_Declarations () {
   Emit_Verbatim (
     "; Ada83 Compiler Output\n"
-    "target datalayout = \"e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128\"\n"
-    "target triple = \"x86_64-pc-linux-gnu\"\n\n"
+    HOST_TARGET_IR_HEADER
     "; External declarations\n"
     "declare i32 @memcmp (ptr, ptr, i64)\n"
     "declare i32 @strncasecmp (ptr, ptr, i64)\n"
@@ -51832,7 +52551,7 @@ void Emit_Runtime_Value_Attribute () {
   Emit ("}\n\n");
 
   Emit ("declare double @strtod(ptr readonly, ptr nocapture)\n");
-  Emit ("; ---- Float'VALUE: strip RM 2.4.1 underlines, then strtod ----\n");
+  Emit ("; ---- Float'VALUE: strip underlines, then strtod ----\n");
   Emit ("define linkonce_odr double @__ada_float_value(" FAT_PTR_TYPE " %%str)"
         " nounwind {\n");
   Emit ("entry:\n");
@@ -52045,7 +52764,7 @@ void Emit_Runtime_Globals () {
     "@__current_exception = linkonce_odr thread_local(initialexec) global ptr null\n"
     "@__master_chain = linkonce_odr thread_local(initialexec) global ptr null\n"
     "@__self_task = linkonce_odr thread_local(initialexec) global ptr null\n"
-    "; RM 11.1 stack floor per task; -1 until __ada_stack_check sets it\n"
+    "; stack floor per task; -1 until __ada_stack_check sets it\n"
     "@__stack_floor = linkonce_odr thread_local(initialexec) global i64 -1\n"
     "@__term_cond = linkonce_odr global [48 x i8] zeroinitializer, align 8\n"
     "@__rv_mutex = linkonce_odr global [40 x i8] zeroinitializer, align 8\n"
@@ -52094,7 +52813,7 @@ void Emit_Runtime_Storage () {
     "}\n\n"
     "@__stk_anchor = linkonce_odr thread_local(initialexec) global i64 0\n"
     "@__stk_limit  = linkonce_odr global i64 0\n"
-    "; RM 11.1 stack probe, slow path: establishes @__stack_floor\n"
+    "; stack probe, slow path: establishes @__stack_floor\n"
     "define linkonce_odr void @__ada_stack_check(i64 %size) nounwind noinline cold {\n"
     "entry:\n"
     "  %here_p = alloca i8\n"
@@ -52317,33 +53036,38 @@ void Emit_Runtime_Handler_Stack () {
   Emit_Void_Function_Epilogue (true);
 }
 
+#define ADA_SPIN_LIMIT "64"
+
 void Emit_Runtime_Synchronisation () {
-#ifdef SIMD_X86_64
-  Emit_Verbatim (
-    "define linkonce_odr void @__ada_cpu_relax() alwaysinline nounwind {\n"
-    "  call void @llvm.x86.sse2.pause()\n"
-    "  ret void\n"
-    "}\n\n");
+
+#if defined(SIMD_X86_64)
+  #define ADA_SPIN_HINT  "call void asm sideeffect \"pause\", \"~{memory}\"()\n"
 #elif defined(SIMD_ARM64)
-  Emit_Verbatim (
-    "define linkonce_odr void @__ada_cpu_relax() alwaysinline nounwind {\n"
-    "  call void asm sideeffect \"yield\", \"~{memory}\"()\n"
-    "  ret void\n"
-    "}\n\n");
+  #define ADA_SPIN_HINT  "call void asm sideeffect \"yield\", \"~{memory}\"()\n"
+#elif defined(__riscv)
+
+  #define ADA_SPIN_HINT  "call void asm sideeffect \"fence w, 0\", \"~{memory}\"()\n"
 #else
-  Emit_Verbatim (
-    "define linkonce_odr void @__ada_cpu_relax() alwaysinline nounwind {\n"
-    "  ret void\n"
-    "}\n\n");
+  #define ADA_SPIN_HINT  ""
 #endif
 
-#if defined(__linux__) and (defined(SIMD_X86_64) or defined(SIMD_ARM64))
-#ifdef SIMD_X86_64
+  Emit_Verbatim (
+    "define linkonce_odr void @__ada_cpu_relax() alwaysinline nounwind {\n"
+    "  " ADA_SPIN_HINT
+    "  ret void\n"
+    "}\n\n");
+
+#if defined(__linux__) and defined(SIMD_X86_64)
   #define ADA_SYS_FUTEX "202"
-#else
+#elif defined(__linux__) and (defined(SIMD_ARM64) or defined(__riscv))
   #define ADA_SYS_FUTEX "98"
 #endif
+
+#ifdef ADA_SYS_FUTEX
+
   Emit_Verbatim (
+    "@__ada_parked = linkonce_odr global i32 0, align 64\n\n"
+
     "define linkonce_odr void @__ada_wait_word(ptr %w, i32 %expected) {\n"
     "entry:\n"
     "  br label %outer\n"
@@ -52357,24 +53081,43 @@ void Emit_Runtime_Synchronisation () {
     "pause:\n"
     "  call void @__ada_cpu_relax()\n"
     "  %i2 = add i32 %i, 1\n"
-    "  %more = icmp ult i32 %i2, 256\n"
+    "  %more = icmp ult i32 %i2, " ADA_SPIN_LIMIT "\n"
     "  br i1 %more, label %again, label %park\n"
     "again:\n"
     "  br label %spin\n"
     "park:\n"
+    "  %_up = atomicrmw add ptr @__ada_parked, i32 1 seq_cst\n"
+    "  %recheck = load atomic i32, ptr %w seq_cst, align 4\n"
+    "  %moved = icmp ne i32 %recheck, %expected\n"
+    "  br i1 %moved, label %leave, label %sleep\n"
+    "sleep:\n"
     "  %exp64 = sext i32 %expected to i64\n"
     "  %_rc = call i64 (i64, ...) @syscall(i64 " ADA_SYS_FUTEX ", ptr %w, i64 128, i64 %exp64, ptr null)\n"
+    "  br label %leave\n"
+    "leave:\n"
+    "  %_down = atomicrmw sub ptr @__ada_parked, i32 1 seq_cst\n"
     "  br label %outer\n"
     "out:\n"
     "  ret void\n"
     "}\n\n"
+
     "define linkonce_odr void @__ada_wake_word(ptr %w) {\n"
+    "entry:\n"
+    "  fence seq_cst\n"
+    "  %asleep = load atomic i32, ptr @__ada_parked seq_cst, align 4\n"
+    "  %any = icmp ne i32 %asleep, 0\n"
+    "  br i1 %any, label %rouse, label %out\n"
+    "rouse:\n"
     "  %_rc = call i64 (i64, ...) @syscall(i64 " ADA_SYS_FUTEX ", ptr %w, i64 129, i64 2147483647, ptr null)\n"
+    "  br label %out\n"
+    "out:\n"
     "  ret void\n"
     "}\n\n");
-#undef ADA_SYS_FUTEX
+  #undef ADA_SYS_FUTEX
 #elif defined(_WIN32) and (defined(SIMD_X86_64) or defined(SIMD_ARM64))
   Emit_Verbatim (
+    "@__ada_parked = linkonce_odr global i32 0, align 64\n\n"
+
     "define linkonce_odr void @__ada_wait_word(ptr %w, i32 %expected) {\n"
     "entry:\n"
     "  %cmp = alloca i32, align 4\n"
@@ -52390,23 +53133,41 @@ void Emit_Runtime_Synchronisation () {
     "pause:\n"
     "  call void @__ada_cpu_relax()\n"
     "  %i2 = add i32 %i, 1\n"
-    "  %more = icmp ult i32 %i2, 256\n"
+    "  %more = icmp ult i32 %i2, " ADA_SPIN_LIMIT "\n"
     "  br i1 %more, label %again, label %park\n"
     "again:\n"
     "  br label %spin\n"
     "park:\n"
+    "  %_up = atomicrmw add ptr @__ada_parked, i32 1 seq_cst\n"
+    "  %recheck = load atomic i32, ptr %w seq_cst, align 4\n"
+    "  %moved = icmp ne i32 %recheck, %expected\n"
+    "  br i1 %moved, label %leave, label %sleep\n"
+    "sleep:\n"
     "  %_rc = call i32 @WaitOnAddress(ptr %w, ptr %cmp, i64 4, i32 -1)\n"
+    "  br label %leave\n"
+    "leave:\n"
+    "  %_down = atomicrmw sub ptr @__ada_parked, i32 1 seq_cst\n"
     "  br label %outer\n"
     "out:\n"
     "  ret void\n"
     "}\n\n"
+
     "define linkonce_odr void @__ada_wake_word(ptr %w) {\n"
+    "entry:\n"
+    "  fence seq_cst\n"
+    "  %asleep = load atomic i32, ptr @__ada_parked seq_cst, align 4\n"
+    "  %any = icmp ne i32 %asleep, 0\n"
+    "  br i1 %any, label %rouse, label %out\n"
+    "rouse:\n"
     "  call void @WakeByAddressAll(ptr %w)\n"
+    "  br label %out\n"
+    "out:\n"
     "  ret void\n"
     "}\n\n"
     "!llvm.linker.options = !{!0}\n"
     "!0 = !{!\"/DEFAULTLIB:synchronization.lib\"}\n\n");
 #else
+
   Emit_Verbatim (
     "define linkonce_odr void @__ada_wait_word(ptr %w, i32 %expected) {\n"
     "entry:\n"
@@ -52427,6 +53188,7 @@ void Emit_Runtime_Synchronisation () {
     "  ret void\n"
     "}\n\n");
 #endif
+  #undef ADA_SPIN_HINT
 }
 
 void Emit_Runtime_Rendezvous_Records () {
@@ -52489,7 +53251,7 @@ void Emit_Runtime_Rendezvous_Records () {
     "  %secp = " TIMESPEC_FIELD ("%ts", SECONDS) "\n"
     "  %nsp = " TIMESPEC_FIELD ("%ts", NANOSECONDS) "\n"
     "  %sec = load i64, ptr %secp\n"
-    "  %ns = load i64, ptr %nsp\n"
+    TIMESPEC_LOAD_NANOSECONDS ("%ns", "%nsp")
     "  %addsec = udiv i64 %us, 1000000\n"
     "  %addus = urem i64 %us, 1000000\n"
     "  %addns = mul i64 %addus, 1000\n"
@@ -52499,7 +53261,7 @@ void Emit_Runtime_Rendezvous_Records () {
     "  %sec1 = add i64 %sec, %addsec\n"
     "  %sec2 = add i64 %sec1, %carry\n"
     "  store i64 %sec2, ptr %secp\n"
-    "  store i64 %ns2, ptr %nsp\n"
+    TIMESPEC_STORE_NANOSECONDS ("%ns2", "%nsp")
     "  ret void\n"
     "}\n\n"
     "define linkonce_odr void @__ada_spin_for_call(ptr %self) {\n"
@@ -52519,7 +53281,7 @@ void Emit_Runtime_Rendezvous_Records () {
     "next:\n"
     "  call void @__ada_cpu_relax()\n"
     "  %i2 = add i32 %i, 1\n"
-    "  %more = icmp ult i32 %i2, 256\n"
+    "  %more = icmp ult i32 %i2, " ADA_SPIN_LIMIT "\n"
     "  br i1 %more, label %peek, label %out\n"
     "out:\n"
     "  ret void\n"
@@ -52572,7 +53334,7 @@ void Emit_Runtime_Delay () {
     "  %sec_slot = " TIMESPEC_FIELD ("%ts", SECONDS) "\n"
     "  store i64 %sec, ptr %sec_slot\n"
     "  %ns_slot = " TIMESPEC_FIELD ("%ts", NANOSECONDS) "\n"
-    "  store i64 %ns, ptr %ns_slot\n"
+    TIMESPEC_STORE_NANOSECONDS ("%ns", "%ns_slot")
     "  br label %loop\n"
     "loop:\n"
     "  %r = call i32 @nanosleep(ptr %ts, ptr %ts)\n"
@@ -52590,7 +53352,7 @@ void Emit_Runtime_Clock () {
     "  %secp = " TIMESPEC_FIELD ("%ts", SECONDS) "\n"
     "  %sec = load i64, ptr %secp\n"
     "  %nsp = " TIMESPEC_FIELD ("%ts", NANOSECONDS) "\n"
-    "  %ns = load i64, ptr %nsp\n"
+    TIMESPEC_LOAD_NANOSECONDS ("%ns", "%nsp")
     "  %s100k = mul i64 %sec, 100000\n"
     "  %nsu = sdiv i64 %ns, 10000\n"
     "  %tot = add i64 %s100k, %nsu\n"
@@ -54348,32 +55110,22 @@ void Write_Reachable_Runtime_Prelude (FILE       *destination,
 void Code_Generator_Finish () {
   Function_Body_End ();
 
-  if (cg->prelude_stream) {
-    fclose (cg->prelude_stream);
-    cg->prelude_stream = NULL;
-  }
-  if (cg->module_stream) {
-    fclose (cg->module_stream);
-    cg->module_stream = NULL;
-  }
-  cg->output = cg->destination;
-
   Write_Reachable_Runtime_Prelude (cg->destination,
-                                   cg->prelude_text, cg->prelude_text_size,
-                                   cg->module_text,  cg->module_text_size);
-  if (cg->module_text)
-    fwrite (cg->module_text, 1, cg->module_text_size, cg->destination);
+                                   cg->prelude.text, cg->prelude.length,
+                                   cg->module.text,  cg->module.length);
+  if (cg->module.length)
+    fwrite (cg->module.text, 1, cg->module.length, cg->destination);
   fflush (cg->destination);
 
-  free (cg->prelude_text); cg->prelude_text = NULL; cg->prelude_text_size = 0;
-  free (cg->module_text);  cg->module_text  = NULL; cg->module_text_size  = 0;
+  Output_Clear (&cg->prelude);
+  Output_Clear (&cg->module);
 }
 
 void Emit_Module_Prologue () {
   if (cg->header_emitted) return;
   cg->header_emitted = true;
 
-  cg->output = cg->prelude_stream;
+  cg->output = &cg->prelude;
   Emit_Runtime_Declarations ();
   Emit_Runtime_Value_Attribute ();
   Emit_Runtime_Exponentiation ();
@@ -54387,7 +55139,7 @@ void Emit_Module_Prologue () {
   Emit_Runtime_Tasking ();
   Emit_Runtime_Text_Io ();
   Emit_Runtime_Image_Attributes ();
-  cg->output = cg->module_stream;
+  cg->output = &cg->module;
 
   Lower_Exception_Globals ();
   Emit ("\n");
@@ -54432,7 +55184,7 @@ void Lower_Compilation_Unit (Node *node) {
 
   if (cg->string_const_size > 0) {
     Emit ("\n; String constants\n");
-    fprintf (cg->output, "%s", cg->string_const_buffer);
+    Output_Write (cg->output, cg->string_const_buffer, cg->string_const_size);
     Emit ("\n");
     cg->string_const_size = 0;
   }
@@ -54447,8 +55199,6 @@ void Lower_Compilation_Unit (Node *node) {
   }
 }
 
-void Apply_Published_Frame_Layout_Entry (Symbol *unit_sym,
-                                         Catalog_Entry *entry);
 
 void Apply_Published_Frame_Layout_Entry (Symbol *unit_sym,
                                          Catalog_Entry *entry) {
@@ -54473,8 +55223,6 @@ void Apply_Published_Frame_Layout_Entry (Symbol *unit_sym,
 }
 
 /* ==== §14  Library management ======================================= */
-u32 Crc32_Table[256];
-bool Crc32_Table_Initialized = false;
 u32 Checksum (const char *data, size_t length) {
   if (not Crc32_Table_Initialized) {
     for (u32 i = 0; i < 256; i++) {
@@ -55031,11 +55779,7 @@ Catalog_Dependence ALI_Read_Dependence (const char *line,
   return dependence;
 }
 
-Catalog_Entry *Catalog_Entries        = NULL;
-u32       Catalog_Entry_Count    = 0;
-u32       Catalog_Entry_Capacity = 0;
 
-Name_Index     Catalog_Index[CATALOG_UNIT_KIND_COUNT];
 
 Location Locate_In_Catalog (const Catalog_Entry *entry,
                                     u32 line, u32 column) {
@@ -55366,11 +56110,7 @@ void Catalog_Load_Directory (const char *directory) {
     snprintf (ali_path, sizeof (ali_path), "%s/%s", directory, file_name);
     char *text = Read_File_Simple (ali_path);
     if (not text) continue;
-    struct stat ali_status;
-    i64 ali_mtime = (stat (ali_path, &ali_status) == 0)
-      ? (i64)ali_status.st_mtime * 1000000000
-        + ali_status.st_mtim.tv_nsec
-      : 0;
+    i64 ali_mtime = Host_File_Modification_Time (ali_path);
     Catalog_Entry *current_unit = NULL;
     Frame_Slot *slots = NULL;
     u32 slot_count = 0, slot_capacity = 0;
@@ -55495,8 +56235,6 @@ void Catalog_Load_Directory (const char *directory) {
   closedir (dir);
 }
 
-ALI_Cache_Entry ALI_Cache[MAX_ALI_CACHE_ENTRIES];
-u32        ALI_Cache_Count = 0;
 
 const char *ALI_Skip_Blanks (const char *cursor) {
   while (*cursor == ' ' or *cursor == '\t') cursor++;
@@ -56053,8 +56791,6 @@ void Elab_Pair_Specs_Bodies (Elab_Graph *g) {
   }
 }
 
-Elab_Graph g_elab_graph;
-bool g_elab_graph_initialized = false;
 
 void Elab_Init () {
   if (not g_elab_graph_initialized) {
@@ -56729,6 +57465,7 @@ void Bind_Instance_Formal_Object (Symbol *instance_sym,
                                 formal_name->string_val.text, formal->location);
   binding->type = object_type;
   if (in_out) Bind_In_Out_Object_View (binding, object_type, actual_expr);
+  if (in_out) Mark_Name_As_Escaping_Assignment_Analysis (actual_expr);
   binding->parent                     = instance_sym;
   binding->is_package_level           = true;
   binding->instance_actual            = actual_expr;
@@ -56966,14 +57703,7 @@ bool Actual_Matches_In_Out_Formal_Object (Node *node) {
          Renaming_Of_Name_Is_Allowed (node);
 }
 
-Symbol  *Instantiating_Templates[MAX_INSTANTIATION_DEPTH];
-u32 Instantiating_Template_Count = 0;
 
-/* The part of RM 12.3.6's matching rule that does not mention parameter
-   modes: same kind of subprogram, same parameter count, and the same
-   parameter and result types.  Check_Subprogram_Conformance asks this and
-   then separately checks modes for the final legality decision; RM 8.7's
-   ambiguity question stops here, before a mode is ever consulted. */
 bool Subprogram_Type_Profile_Matches_Formal (Symbol *actual,
                                              Node *specification,
                                              Symbol *instance_sym) {
@@ -57015,16 +57745,6 @@ bool Subprogram_Type_Profile_Matches_Formal (Symbol *actual,
   return true;
 }
 
-/* RM 8.7 lists "the parameter modes" among the things overload resolution
-   does not consider, so a plain subprogram name that denotes more than one
-   visible homograph sharing the formal's parameter and result type
-   profile is ambiguous here, even though at most one of those homographs
-   can go on to satisfy RM 12.3.6's stricter, mode-inclusive matching rule.
-   Resolving the name by mode-inclusive conformance first, as
-   Find_Conforming_Actual does, can settle silently on whichever
-   homograph happens to have the right mode and never notice the others;
-   this asks the mode-blind question first, the one RM 8.7 actually
-   poses, so the ambiguity is reported before a mode is ever consulted. */
 void Check_Formal_Subprogram_Actual_Not_Ambiguous (
        Node *name_node, Node *specification, Symbol *instance_sym) {
   if (not name_node or name_node->kind != NK_IDENTIFIER) return;
@@ -57863,17 +58583,7 @@ char *Lookup_Path_Ext (Slice name, const char *primary) {
   return NULL;
 }
 
-typedef struct {
-  Slice name;
-  bool         spec;
-  bool         body;
-} Runtime_Unit_Identity;
 
-static char                 *Runtime_Library_Text;
-static char                  Runtime_Library_Path[PATH_MAX];
-static bool                  Runtime_Library_Load_Attempted;
-static Runtime_Unit_Identity Runtime_Units[MAX_UNITS_PER_SOURCE_FILE];
-static u32                   Runtime_Unit_Count;
 
 void Runtime_Library_Locate (const char *executable_directory) {
   snprintf (Runtime_Library_Path, sizeof Runtime_Library_Path,
@@ -58023,9 +58733,6 @@ char *Lookup_Path_Body (Slice name) {
   return Runtime_Library_Provides (name, true) ? Runtime_Library_Text : NULL;
 }
 
-const char     *Include_Paths[MAX_INCLUDE_PATHS];
-u32        Include_Path_Count        = 0;
-bool            Lookup_Path_Resolved_From_Runtime = false;
 
 const char *Add_Include_Path (const char *directory) {
   if (not directory or not directory[0]) return NULL;
@@ -58062,13 +58769,8 @@ bool Is_Directory (const char *path, char *out, size_t out_size) {
   return true;
 }
 
-bool            Debug_Emit_Locations      = false;
 
-bool            Ir_Output_Mode            = false;
 
-Node   **Loaded_Package_Bodies      = NULL;
-int             Loaded_Body_Count          = 0;
-int      Loaded_Body_Capacity       = 0;
 
 void Queue_Loaded_Body (Node *cu) {
   if (Loaded_Body_Count == Loaded_Body_Capacity) {
@@ -58100,7 +58802,6 @@ bool Body_Code_Belongs_To_This_Module (Slice name) {
   return entry and entry->loaded and not entry->code_compiled_elsewhere;
 }
 
-Loading_Set Loading_Packages = {0};
 bool Loading_Set_Contains (Slice name) {
   for (int i = 0; i < Loading_Packages.count; i++)
     if (Slices_Match (Loading_Packages.names[i], name)) return true;
@@ -58262,12 +58963,6 @@ void ALI_Load_Symbols (ALI_Cache_Entry *entry) {
   Symbol_Manager_Pop_Scope ();
 }
 
-Symbol  **Bodyless_Required_Packages       = NULL;
-u32  Bodyless_Required_Package_Count  = 0;
-u32 Bodyless_Required_Package_Capacity = 0;
-Symbol  **Missing_Body_Subprograms         = NULL;
-u32  Missing_Body_Subprogram_Count    = 0;
-u32 Missing_Body_Subprogram_Capacity = 0;
 
 void Append_Bodyless_Required_Package (Symbol *package_symbol) {
   if (package_symbol) {
@@ -58286,7 +58981,6 @@ void Append_Bodyless_Required_Package (Symbol *package_symbol) {
 
 #define MAX_COMPILATION_BODIES 64
 Slice Compilation_Body_Names[MAX_COMPILATION_BODIES];
-u32     Compilation_Body_Count = 0;
 
 void Note_Compilation_Package_Bodies (Node **units, int unit_count) {
   Compilation_Body_Count = 0;
@@ -59154,11 +59848,7 @@ void Compile_File (const char *input_path, const char *output_path) {
   {
     cg                        = Arena_Allocate (sizeof (Code_Generator));
     cg->destination           = out_file;
-    cg->prelude_stream        = open_memstream (&cg->prelude_text,
-                                                &cg->prelude_text_size);
-    cg->module_stream         = open_memstream (&cg->module_text,
-                                                &cg->module_text_size);
-    cg->output                = cg->module_stream;
+    cg->output                = &cg->module;
     cg->temp_id               = 1;
     cg->label_id              = 1;
     cg->global_id             = 1;
@@ -59246,12 +59936,20 @@ void Compile_File (const char *input_path, const char *output_path) {
   free (source);
 }
 
-void Compile_Job_Start (Compile_Job *job, const char *input_path) {
+bool Argument_Is_An_Input (const Driver_Command_Line *command_line,
+                           const char *argument) {
+  for (int i = 0; i < command_line->input_count; i++)
+    if (command_line->inputs[i] == argument) return true;
+  return false;
+}
+
+void Compile_Job_Start (Compile_Job *job, const char *input_path,
+                        const Driver_Command_Line *command_line) {
   char output_path[PATH_MAX];
 
   job->input_path  = input_path;
   job->exit_status = 0;
-  job->worker      = -1;
+  job->worker      = HOST_PROCESS_NONE;
 
   const char *slash = strrchr (input_path, '/');
   const char *dot   = strrchr (input_path, '.');
@@ -59265,12 +59963,34 @@ void Compile_Job_Start (Compile_Job *job, const char *input_path) {
   memcpy (output_path, input_path, stem);
   memcpy (output_path + stem, ".ll", sizeof ".ll");
 
-  job->worker = fork ();
-  if (job->worker == 0) {
-    Compile_File (input_path, output_path);
-    _exit (Error_Count > 0 ? 1 : 0);
+  size_t capacity = (size_t) (command_line->argument_count
+                              + 2 * command_line->input_count + 5);
+  const char **worker = Arena_Allocate (capacity * sizeof *worker);
+  int count = 0;
+
+  worker[count++] = command_line->executable;
+  for (int i = 1; i < command_line->argument_count; i++) {
+    const char *argument = command_line->arguments[i];
+    if (strcmp (argument, "-o") == 0)                     { i++; continue; }
+    if (Argument_Is_An_Input (command_line, argument))          continue;
+    worker[count++] = argument;
   }
-  if (job->worker < 0) {
+
+  for (int i = 0; i < command_line->input_count; i++) {
+    char *directory = Arena_Allocate (PATH_MAX);
+    if (Is_Directory (command_line->inputs[i], directory, PATH_MAX) and
+        strcmp (directory, ".") != 0) {
+      worker[count++] = "-I";
+      worker[count++] = directory;
+    }
+  }
+
+  worker[count++] = "-o";
+  worker[count++] = output_path;
+  worker[count++] = input_path;
+  worker[count]   = NULL;
+
+  if (not Host_Process_Start (&job->worker, worker)) {
     Report_Driver_Error ("cannot start a worker for '%s': %s",
                          input_path, strerror (errno));
     job->exit_status = 1;
@@ -59278,15 +59998,15 @@ void Compile_Job_Start (Compile_Job *job, const char *input_path) {
 }
 
 void Compile_Job_Wait (Compile_Job *job) {
-  if (job->worker <= 0) return;
-  int status;
-  if (waitpid (job->worker, &status, 0) < 0) {
+  if (job->worker == HOST_PROCESS_NONE) return;
+  int status = Host_Process_Wait (job->worker);
+  if (status < 0) {
     Report_Driver_Error ("lost the worker for '%s': %s",
                          job->input_path, strerror (errno));
     job->exit_status = 1;
     return;
   }
-  job->exit_status = WIFEXITED (status) ? WEXITSTATUS (status) : 1;
+  job->exit_status = status;
 }
 
 bool Suppress_Checks_From_Command_Line (const char *list) {
@@ -59361,7 +60081,9 @@ bool Warning_Flags_From_Command_Line (const char *argument) {
     }
   Report_Driver_Error ("unrecognized warning class in '%s'; the classes are "
                        "unused-variable, unused-but-set-variable, "
-                       "unused-parameter, unused-with, unreachable-code",
+                       "unused-parameter, unused-with, unreachable-code, "
+                       "unaccepted-entry, dead-store, constraint-error, "
+                       "read-before-assignment, redundant-with",
                        argument);
   return false;
 }
@@ -59400,7 +60122,7 @@ void Print_Usage (FILE *out, const char *program_name) {
       "      Annotate each emitted IR line with the compiler source\n"
       "      site that produced it, for debugging the compiler itself.\n"
       "\n"
-      "Runtime checks (Ada RM 11.7):\n"
+      "Runtime checks (Ada ):\n"
       "  --suppress=<check>[,<check>...]\n"
       "      Omit the named checks in every unit, as pragma SUPPRESS\n"
       "      would.  Checks: range_check, overflow_check, index_check,\n"
@@ -59600,13 +60322,10 @@ int main (int argc, char *argv[]) {
   }
   if (not usable) return 1;
 
+  char executable[PATH_MAX];
+  Host_Executable_Path (executable, sizeof executable, argv[0]);
   {
-    char executable[PATH_MAX], directory[PATH_MAX];
-    ssize_t length = readlink ("/proc/self/exe", executable,
-                               sizeof executable - 1);
-    if (length > 0) executable[length] = '\0';
-    else            snprintf (executable, sizeof executable, "%s", argv[0]);
-
+    char directory[PATH_MAX];
     if (Is_Directory (executable, directory, sizeof directory))
       Runtime_Library_Locate (directory);
   }
@@ -59652,16 +60371,23 @@ int main (int argc, char *argv[]) {
   }
 
   Compile_Job jobs[MAX_INPUT_FILES];
-  long processors = sysconf (_SC_NPROCESSORS_ONLN);
-  int  worker_limit = processors > 1 ? (int) processors : 1;
+  int worker_limit = Host_Processor_Count ();
   if (worker_limit > input_count) worker_limit = input_count;
   if (Inputs_Are_Order_Sensitive (inputs, input_count)) worker_limit = 1;
+
+  Driver_Command_Line command_line = {
+    .executable     = executable,
+    .argument_count = argc,
+    .arguments      = (const char *const *) argv,
+    .inputs         = inputs,
+    .input_count    = input_count
+  };
 
   int oldest_running = 0;
   for (int next = 0; next < input_count; next++) {
     if (next - oldest_running >= worker_limit)
       Compile_Job_Wait (&jobs[oldest_running++]);
-    Compile_Job_Start (&jobs[next], inputs[next]);
+    Compile_Job_Start (&jobs[next], inputs[next], &command_line);
   }
   while (oldest_running < input_count)
     Compile_Job_Wait (&jobs[oldest_running++]);
@@ -59688,88 +60414,11 @@ int main (int argc, char *argv[]) {
     { return dlsym (handle, name); }
 #endif
 
-typedef int Llvm_Bool;
-struct Llvm_C_Api {
-  void *library;
-
-  void       *(*Context_Create)             ();
-  void        (*Context_Dispose)            (void *context);
-  Llvm_Bool   (*Buffer_From_File)           (const char *path, void **buffer, char **error);
-  Llvm_Bool   (*Parse_Ir)                   (void *context, void *buffer, void **module, char **error);
-  void        (*Module_Dispose)             (void *module);
-  void        (*Dispose_Message)            (char *message);
-
-  void        (*Init_Target_Info)           ();
-  void        (*Init_Target)                ();
-  void        (*Init_Target_Mc)             ();
-  void        (*Init_Asm_Printer)           ();
-  void        (*Init_Asm_Parser)            ();
-
-  char       *(*Default_Triple)             ();
-  Llvm_Bool   (*Target_From_Triple)         (const char *triple, void **target, char **error);
-  char       *(*Host_Cpu_Name)              ();
-  char       *(*Host_Cpu_Features)          ();
-  void       *(*Create_Target_Machine)      (void *target, const char *triple, const char *cpu,
-                                             const char *features, int opt_level, int reloc,
-                                             int code_model);
-  void        (*Target_Machine_Dispose)     (void *machine);
-  void       *(*Create_Target_Data_Layout)  (void *machine);
-  void        (*Set_Module_Data_Layout)     (void *module, void *layout);
-  void        (*Dispose_Target_Data)        (void *layout);
-  void        (*Set_Target)                 (void *module, const char *triple);
-
-  void       *(*Pass_Options_Create)        ();
-  void        (*Pass_Options_Dispose)       (void *options);
-  void       *(*Run_Passes)                 (void *module, const char *passes, void *machine,
-                                             void *options);
-  char       *(*Error_Message)              (void *error);
-  void        (*Dispose_Error_Message)      (char *message);
-
-  Llvm_Bool   (*Emit_To_File)               (void *machine, void *module, const char *path,
-                                             int file_type, char **error);
-  Llvm_Bool   (*Print_Module_To_File)       (void *module, const char *path, char **error);
-  Llvm_Bool   (*Link_Modules)               (void *destination, void *source);
-};
 
 #ifdef SIMD_ARM64
   #define BACKEND_ARCH "AArch64"
 #else
   #define BACKEND_ARCH "X86"
-#endif
-
-#ifdef _WIN32
-extern const unsigned char _binary_LLVM_C_dll_start[] __attribute__((weak));
-extern const unsigned char _binary_LLVM_C_dll_end[]   __attribute__((weak));
-
-const char *Backend_Extract_Embedded_Library () {
-  if (not _binary_LLVM_C_dll_start or not _binary_LLVM_C_dll_end) return NULL;
-  size_t size = (size_t) (_binary_LLVM_C_dll_end - _binary_LLVM_C_dll_start);
-  const char *base = getenv ("LOCALAPPDATA");
-  if (size == 0 or not base) return NULL;
-
-  char directory[PATH_MAX], temp_path[PATH_MAX];
-  snprintf (directory, sizeof (directory), "%s\\ada83", base);
-  snprintf (Embedded_Library_Path_Text, sizeof (Embedded_Library_Path_Text), "%s\\LLVM-C-%zu.dll", directory, size);
-  CreateDirectoryA (directory, NULL);
-
-  struct stat existing;
-  if (stat (Embedded_Library_Path_Text, &existing) == 0 and (size_t) existing.st_size == size)
-    return Embedded_Library_Path_Text;
-
-  snprintf (temp_path, sizeof (temp_path), "%s.tmp%lu", Embedded_Library_Path_Text,
-            (unsigned long) GetCurrentProcessId ());
-  FILE *out = fopen (temp_path, "wb");
-  if (not out) return NULL;
-  size_t written = fwrite (_binary_LLVM_C_dll_start, 1, size, out);
-  fclose (out);
-  if (written != size) { remove (temp_path); return NULL; }
-  if (rename (temp_path, Embedded_Library_Path_Text) != 0) {
-    remove (temp_path);
-    if (stat (Embedded_Library_Path_Text, &existing) != 0 or (size_t) existing.st_size != size)
-      return NULL;
-  }
-  return Embedded_Library_Path_Text;
-}
 #endif
 
 bool Llvm_C_Api_Load (Llvm_C_Api *api, char *err, size_t err_size) {
@@ -59778,13 +60427,6 @@ bool Llvm_C_Api_Load (Llvm_C_Api *api, char *err, size_t err_size) {
   const char *override = getenv ("ADA83_LLVM_LIB");
   if (override)
     api->library = Backend_Library_Open (override);
-#ifdef _WIN32
-  if (not api->library) {
-    const char *embedded = Backend_Extract_Embedded_Library ();
-    if (embedded)
-      api->library = Backend_Library_Open (embedded);
-  }
-#endif
   for (size_t i = 0; not api->library and i < sizeof (Llvm_Library_Candidate_Names) / sizeof (*Llvm_Library_Candidate_Names); i++)
     api->library = Backend_Library_Open (Llvm_Library_Candidate_Names[i]);
   if (not api->library) {
@@ -59940,7 +60582,7 @@ int Native_Backend_Compile (const char *ir_path, const char *const *extra_ir,
 #endif
               , drivers[i], obj_path, exe_path);
     int link_status = system (command);
-    if (WIFEXITED (link_status) and WEXITSTATUS (link_status) == 127) continue;
+    if (Host_Command_Exit_Status (link_status) == 127) continue;
     driver_ran = true;
     status = link_status == 0 ? 0 : 1;
     break;

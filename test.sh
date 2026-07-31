@@ -1,84 +1,50 @@
 #!/usr/bin/env bash
 set -euo pipefail
-#
-# Usage:
-#   run_acats.sh run   [SELECTOR]    run and print an absolute report
-#   run_acats.sh check [SELECTOR]    run, diff vs baseline; exit 1 on any regression
-#   run_acats.sh bless [SELECTOR]    run, then write the results as the new baseline
-#   run_acats.sh list  [SELECTOR]    list the tests a selector expands to
-#   run_acats.sh help
-#
-#   SELECTOR (default: all):
-#     all              every acats/*.ada test (each classified by its own name)
-#     a|b|c|d|e|l      one ACATS class
-#     <prefix>         a filename prefix, e.g. c45, c452, c45347
-#
-# Compatibility: `g <class>` == `run <class>`, `q <group>` == `run <group>`.
-#
-# Environment:
-#   JOBS / NPROC     parallel workers (default: nproc)
-#   TEST_TIMEOUT     per-test run cap in seconds (default 30 — sized for the 10x
-#                    DELAY deviation in acats/ plus contention; use 120 for
-#                    pristine sources — see README.md)
-#   BASELINE         baseline manifest path (default: acats.baseline)
-#   TAP=1            also emit a TAP stream to <results>/results.tap
-#
-# A run always writes, into its own timestamped test_results/<id>/ directory:
-#   results.tsv      machine-readable: name <TAB> class <TAB> status <TAB> detail
-#   test_summary.txt one-line totals
-#   results.tap      TAP stream (when TAP=1)
 
-NPROC=${JOBS:-${NPROC:-$(nproc 2>/dev/null || echo 4)}}
+NPROC=${JOBS:-${NPROC:-$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)}}
 TEST_TIMEOUT=${TEST_TIMEOUT:-30}
 LINK_TIMEOUT=${LINK_TIMEOUT:-20}
 BASELINE=${BASELINE:-acats.baseline}
-START_MS=$(date +%s%3N)
+
+TIMEOUT=$(command -v timeout || command -v gtimeout) || {
+    echo "FATAL: no 'timeout' command found" >&2
+    echo "       on macOS: brew install coreutils" >&2
+    exit 1
+}
+export TIMEOUT
+
+now_ms(){
+    local stamp
+    stamp=$(date +%s%3N 2>/dev/null)
+    [[ $stamp =~ ^[0-9]+$ ]] || stamp=$(( $(date +%s) * 1000 ))
+    printf '%s' "$stamp"
+}
+START_MS=$(now_ms)
 
 mkdir -p test_results acats_logs
 
-# ── Rebuild compiler if source is newer than binary ───────────────────
+if [[ ! -d acats ]]; then
+    [[ -f tests.zip ]] || { echo "FATAL: no acats/ directory and no tests.zip"; exit 1; }
+    echo "Unpacking tests.zip..."
+    unzip -q tests.zip || { echo "FATAL: cannot unpack tests.zip"; exit 1; }
+fi
+
 if [[ ! -f ./ada83 ]] || [[ ada83.c -nt ./ada83 ]]; then
     echo "Rebuilding ada83..."
     make -s ada83 || { echo "FATAL: compiler build failed"; exit 1; }
 fi
 
-# ── Compile ACATS report package (always rebuild for freshness) ───────
-#  Into a path private to this invocation.  Every test links report.ll,
-#  and a shared acats/report.ll is a file two concurrent runs both
-#  rewrite -- the reader of a half-written one sees "found end of file
-#  when expecting more instructions" and scores every test in the run a
-#  link failure.  This script already promises that concurrent runs
-#  never overwrite each other; report.ll was the one place it did not
-#  keep that promise.
 export REPORT_LL="${TMPDIR:-/tmp}/ada83-report-$$.ll"
 trap 'rm -f "$REPORT_LL" "${REPORT_LL%.ll}.ali"' EXIT
-#  With -o rather than a redirect, so the ALI file lands beside the IR
-#  instead of in acats/.  The ALI set IS the program library, so a
-#  shared acats/report.ali is the same defect as a shared report.ll was:
-#  concurrent runs read each other's library and score tests against a
-#  unit they did not compile.
 ./ada83 --ir acats/report.adb -o "$REPORT_LL" >/dev/null 2>&1 || {
     echo "FATAL: cannot compile acats/report.adb"; exit 1; }
-
-# ── Helpers ───────────────────────────────────────────────────────────────
 
 pct(){ ((${2:-0}>0)) && printf %d $((100*$1/$2)) || printf 0; }
 
 elapsed(){
-    printf %.3f "$(bc<<<"scale=4;($(date +%s%3N)-${START_MS})/1000")"
+    printf %.3f "$(bc<<<"scale=4;($(now_ms)-${START_MS})/1000")"
 }
 
-# ═══════════════════════════════════════════════════════════════════════════
-# EXECUTION CORE — one subprocess per test, each emitting exactly one line:
-#   CLASS RESULT NAME DETAIL   (CLASS a/b/c/d/e/l ; RESULT pass/fail/skip ;
-#   DETAIL a single _-joined token). This section encodes the ACATS run
-# conventions (multi-file families, foundation files, the bind closure check,
-# whole-program linking) and is deliberately kept intact.
-# ═══════════════════════════════════════════════════════════════════════════
-
-# Build the compile set for a test. A multi-file main (…<digits>m) compiles
-# its whole fragment family in the ACATS-prescribed (lexical) order; every
-# other test compiles itself alone. Fills COMPILE_FILES.
 gather_files(){
     local f=$1 n=$2
     COMPILE_FILES=("$f")
@@ -90,11 +56,6 @@ gather_files(){
     fi
 }
 
-# Compile every file of the set in order (-o so each unit's .ll and .ali land
-# in the test's library dir — the .ali set IS the program library the later
-# files consult). Only the LAST/main file's .ll links (whole-program). Returns
-# nonzero on the first failing file, leaving its name in COMPILE_FAILED, then
-# runs the bind closure check leaving BIND_FAILED.
 compile_set(){
     local n=$1 part pn
     local lib=$RESULTS_DIR/$n.lib
@@ -104,10 +65,7 @@ compile_set(){
     COMPILE_FAILED=""
     for part in "${COMPILE_FILES[@]}"; do
         pn=$(basename "$part" .ada)
-        if ! timeout 4 ./ada83 --ir "$part" -o $lib/$pn.ll >/dev/null 2>$LOGS_DIR/$n.err; then
-            # ACATS ships intentionally-erroneous fragments (ca3009a, …):
-            # a rejected submission updates nothing and processing goes on.
-            # Only the main unit failing to compile fails the set.
+        if ! "$TIMEOUT" 4 ./ada83 --ir "$part" -o $lib/$pn.ll >/dev/null 2>$LOGS_DIR/$n.err; then
             if [[ $pn == "$n" ]]; then
                 COMPILE_FAILED=$pn
                 return 1
@@ -122,12 +80,6 @@ compile_set(){
     done
     [[ -n $MAIN_LL ]] || MAIN_LL=$lib/$(basename "${COMPILE_FILES[-1]}" .ada).ll
 
-    # A fragment module is linked only while it is the CURRENT provider of
-    # some unit: it is dropped when the main module whole-loaded one of its
-    # units (the compiler inlines WITH'd bodies), or when every unit it
-    # provides was superseded — re-submitted by a later compilation, or a
-    # subunit whose ancestor was recompiled (unit replacement: the
-    # later module owns the unit's code, the earlier one is obsolete).
     if ((${#LINK_FRAGMENTS[@]})); then
         local kept=() frag unit i p anc u_current
         local -a frag_units=()
@@ -141,7 +93,7 @@ compile_set(){
         for ((i = 0; i < ${#LINK_FRAGMENTS[@]}; i++)); do
             frag=${LINK_FRAGMENTS[i]}
             local in_main=0 current=0
-            [[ -n ${frag_units[i]//[$' \n']} ]] || current=1   # no ALI: keep
+            [[ -n ${frag_units[i]//[$' \n']} ]] || current=1
             for unit in ${frag_units[i]}; do
                 u_current=1
                 anc=$unit
@@ -152,9 +104,6 @@ compile_set(){
                     anc=${anc%.*}
                 done
                 ((u_current)) && current=1
-                # unit-owned symbols are @unit( or @unit__…; a single
-                # underscore (@unit_s82) is an overload homograph, not
-                # evidence the main whole-loaded this unit
                 grep -Eq "^define.*@${unit//./__}(\(|__)" "$MAIN_LL" && in_main=1
             done
             ((in_main)) && continue
@@ -170,24 +119,15 @@ compile_set(){
     fi
 }
 
-# Run a linked test binary with CWD inside the test's own .lib directory, so
-# scratch files it CREATEs stay out of the repo root and cannot collide across
-# concurrent tests. $1 = timeout seconds, $2 = test name, rest = lli flags.
 run_in_lib(){
     local secs=$1 n=$2; shift 2
     ( cd "$RESULTS_DIR/$n.lib" 2>/dev/null || exit 127
-      exec timeout "$secs" lli "$@" "$ROOT/$RESULTS_DIR/$n.bc" )
+      exec "$TIMEOUT" "$secs" lli "$@" "$ROOT/$RESULTS_DIR/$n.bc" )
 }
 
-# Whole-program link of MAIN_LL + surviving fragments + report.ll into $n.bc.
-# llvm-link is CPU-trivial, but first-touch disk under N-way parallelism can
-# blow a tight cap, so the timeout is generous; a kill (124/137) is reported as
-# LINK_STATUS=timeout, kept distinct from a genuine unresolved-symbol error
-# (LINK_STATUS=unresolved), so load artifacts can never masquerade as
-# missing-runtime "skips". Returns llvm-link's own status.
 link_program(){
     local n=$1 rc=0
-    timeout "$LINK_TIMEOUT" llvm-link -o "$RESULTS_DIR/$n.bc" "$MAIN_LL" \
+    "$TIMEOUT" "$LINK_TIMEOUT" llvm-link -o "$RESULTS_DIR/$n.bc" "$MAIN_LL" \
         ${LINK_FRAGMENTS[@]+"${LINK_FRAGMENTS[@]}"} "$REPORT_LL" \
         2>"$LOGS_DIR/$n.link" || rc=$?
     case $rc in
@@ -198,35 +138,24 @@ link_program(){
     return $rc
 }
 
-# ACATS Chapter-14 file continuity: a reader test (ce2108b, ce3112b, …) opens an
-# external file left behind by a creator it names with LEGAL_FILE_NAME(_,
-# "CExxx"). The ACATS model runs the creator first in the SAME directory; our
-# per-test CWD isolation would otherwise hide the file. Compile, link, and run
-# each named creator INTO THE READER'S OWN lib dir so its files are waiting when
-# the reader opens them. Best-effort: a creator that will not build just leaves
-# the reader to report the missing file as it would have without this step.
 run_continuity_creators(){
     local reader=$1 lib=$2 self=${1,,} c
     for c in $(grep -oiE 'legal_file_name[ ]*\([^)]*"ce[0-9a-z]+"' "acats/$reader.ada" 2>/dev/null \
                | grep -oiE '"ce[0-9a-z]+"' | tr -d '"' | tr 'A-Z' 'a-z' | sort -u); do
         [[ $c == "$self" || ! -f acats/$c.ada ]] && continue
         ./ada83 --ir "acats/$c.ada" -o "$lib/$c.ll" >/dev/null 2>&1 || continue
-        timeout "$LINK_TIMEOUT" llvm-link -o "$lib/$c.bc" "$lib/$c.ll" \
+        "$TIMEOUT" "$LINK_TIMEOUT" llvm-link -o "$lib/$c.bc" "$lib/$c.ll" \
             "$REPORT_LL" >/dev/null 2>&1 || continue
-        ( cd "$lib" && exec timeout "$TEST_TIMEOUT" lli "$c.bc" ) >/dev/null 2>&1 || true
+        ( cd "$lib" && exec "$TIMEOUT" "$TEST_TIMEOUT" lli "$c.bc" ) >/dev/null 2>&1 || true
     done
 }
 
 run_one(){
     local f=$1 n=$(basename "$1" .ada) q=${1##*/}; q=${q:0:1}
-    # Fragments (end in digit, not 'm') are compiled by their family's main.
     [[ $n =~ [0-9]$ && ! $n =~ m$ ]] && return
-    # Letter-suffixed fragments (d64005ea) belong to a <base><digit>m main.
     if [[ $n =~ ^(.*[a-z])[a-z]$ ]]; then
         compgen -G "acats/${BASH_REMATCH[1]}[0-9]m.ada" >/dev/null && return
     fi
-    # Support packages (check_file, enum_check, spprt13, …) — never contain the
-    # test-name form; ACATS test names have no underscore.
     [[ $n == *_* ]] && return
     local COMPILE_FILES MAIN_LL LINK_FRAGMENTS COMPILE_FAILED BIND_FAILED
     gather_files "$f" "$n"
@@ -253,7 +182,6 @@ run_one(){
             echo "c fail $n TIMEOUT:exceeded_${TEST_TIMEOUT}s"
             return
         fi
-        # mcjit retry is for ORC-JIT crashes only; a timeout must not pay twice.
         if ((rc!=0)); then
             rc=0
             run_in_lib "$TEST_TIMEOUT" "$n" -jit-kind=mcjit > $LOGS_DIR/$n.out 2>&1 || rc=$?
@@ -266,8 +194,6 @@ run_one(){
             if grep -q PASSED $LOGS_DIR/$n.out 2>/dev/null; then
                 echo "c pass $n PASSED"
             elif grep -q '^NOT APPLICABLE:' $LOGS_DIR/$n.out 2>/dev/null; then
-                # Only REPORT.NOT_APPLICABLE's own line counts; a COMMENT
-                # merely mentioning the words must not mask a failure.
                 echo "c skip $n N/A:$(grep -o '^NOT APPLICABLE:.*' $LOGS_DIR/$n.out|head -1|cut -c1-40)"
             elif grep -q FAILED $LOGS_DIR/$n.out 2>/dev/null; then
                 echo "c fail $n FAILED:$(grep FAILED $LOGS_DIR/$n.out|head -1|cut -c1-50)"
@@ -300,32 +226,13 @@ run_one(){
         fi
         ;;
     b)
-        #  A class B test is graded over its whole fragment family, not
-        #  over its main file.  Thirty-one of these families put every
-        #  illegality in the fragments and none in the main, so grading
-        #  the main alone found no expected lines at all and scored 0 of
-        #  0 -- below 90% however the compiler behaves.  gather_files has
-        #  already put the family in COMPILE_FILES; a marker and a
-        #  diagnostic are compared within one file, since the two carry
-        #  independent line numbers.
         local -a expected=() actual=()
         local part pn i hits=0 rejected=""
-        #  Each fragment is submitted to the library with -o, exactly as
-        #  class A and C submit theirs.  Without it no ALI file is
-        #  written, so there is no program library and RM 10.3's
-        #  obsolescence rules have nothing to be violated against --
-        #  which is what made ba3's post-compilation tests unreachable
-        #  by any change to the compiler.
         local lib=$RESULTS_DIR/$n.lib
         mkdir -p "$lib"
         for part in "${COMPILE_FILES[@]}"; do
             pn=$(basename "$part")
             i=0
-            #  ACATS writes the marker with one space and sometimes two
-            #  (bd1b01a..bd1b04d), so the separator is one-or-more.
-            #  A marker on a code line names that line (+/-1); a marker on a
-            #  comment-only line floats over a region (e.g. "missing body"
-            #  at the end of a declarative part) and gets a wider window.
             while IFS= read -r l; do
                 ((++i))
                 if [[ $l =~ --[[:space:]]+ERROR[[:space:]]*[:\;.] ]]; then
@@ -336,11 +243,7 @@ run_one(){
                     fi
                 fi
             done < "$part"
-            #  Compiled ONCE.  The rejection verdict and the diagnostics
-            #  are two readings of one run, and submitting the same unit
-            #  to the library twice would make the second submission
-            #  obsolete the first.
-            if timeout 4 ./ada83 --ir "$part" -o "$lib/${pn%.ada}.ll" \
+            if "$TIMEOUT" 4 ./ada83 --ir "$part" -o "$lib/${pn%.ada}.ll" \
                  >/dev/null 2>$LOGS_DIR/$n.$pn.err; then :; else
                 rejected=yes
             fi
@@ -382,13 +285,6 @@ run_one(){
         fi
         ;;
     e)
-        # Several E tests state alternative pass criteria in their own
-        # sources: rejection is the documented passing outcome when the
-        # implementation requires recompilation (ea3003*), refuses extra
-        # units per AI-00255 (ea1003b), or rejects an instantiation whose
-        # support is optional ("N/A => ERROR", ee2401d-style). These are
-        # the ACVC's machine-readable criteria, same standing as the
-        # "-- ERROR" markers the class-B grader consumes.
         e_reject(){
             local n=$1 stage=$2 detail=$3
             if grep -q "PASSED => ERROR\|IN THIS CASE RECOMPILATION IS\|SHOULD NOT BE LINKABLE" "$f"; then
@@ -437,7 +333,7 @@ run_one(){
             echo "l pass $n COMPILE_REJECT:$(head -1 $LOGS_DIR/$n.err 2>/dev/null|cut -c1-40)"
         fi
         ;;
-    f) ;; # Foundation support code — silent
+    f) ;;
     *) echo "? skip $n UNKNOWN:unrecognized_class" ;;
     esac
 }
@@ -446,15 +342,11 @@ export ROOT
 export -f run_one gather_files compile_set run_in_lib link_program run_continuity_creators pct
 export START_MS TEST_TIMEOUT LINK_TIMEOUT
 
-# Outer per-test cap (defense in depth): a hung test can never hang the suite,
-# even if an inner `timeout` is bypassed by a runaway grandchild. On a
-# SIGTERM/SIGKILL kill (124/137) emit a synthetic fail line so the test is
-# recorded, never silently dropped.
 run_one_timed(){
     local f=$1 n=$(basename "$1" .ada) q
     q=${f##*/}; q=${q:0:1}; q=${q,,}
     local out rc=0
-    out=$(timeout $((2*TEST_TIMEOUT+5)) bash -c 'run_one "$1"' _ "$f" 2>/dev/null) || rc=$?
+    out=$("$TIMEOUT" $((2*TEST_TIMEOUT+5)) bash -c 'run_one "$1"' _ "$f" 2>/dev/null) || rc=$?
     if ((rc==124 || rc==137)); then
         echo "$q fail $n TIMEOUT:exceeded_$((2*TEST_TIMEOUT+5))s"
     elif [[ -n $out ]]; then
@@ -463,12 +355,6 @@ run_one_timed(){
 }
 export -f run_one_timed
 
-# ═══════════════════════════════════════════════════════════════════════════
-# REPORTING & BASELINE
-# ═══════════════════════════════════════════════════════════════════════════
-
-# Read a "class result name detail" stream into RESULTS_TSV (name<TAB>class<TAB>
-# result<TAB>detail) and print the absolute per-class summary.
 tally_results(){
     local results_file=$1
     local -A C=([a]=0 [b]=0 [c]=0 [d]=0 [e]=0 [l]=0
@@ -524,14 +410,6 @@ tally_results(){
     fi
 }
 
-# Diff RESULTS_TSV against the baseline manifest (name<TAB>status). Prints the
-# categorized delta and sets REGRESSIONS to the count of pass→not-pass changes.
-# Only "pass" counts as a good state, so the taxonomy is unambiguous:
-#   REGRESSION   baseline pass, now not pass        (gates CI)
-#   PROGRESSION  baseline not pass, now pass        (bless to lock in)
-#   CHANGED      fail<->skip (neither was a pass)   (informational)
-#   NEW          not in baseline                    (informational)
-#   MISSING      in baseline, not run this time     (informational)
 compare_to_baseline(){
     REGRESSIONS=0
     if [[ ! -f $BASELINE ]]; then
@@ -570,9 +448,6 @@ compare_to_baseline(){
                        || printf "REGRESSED — %d test(s) that passed in the baseline now fail.\n" "$REGRESSIONS"
 }
 
-# Merge RESULTS_TSV into the baseline. A selector runs only part of the suite,
-# so entries for tests NOT in this run are preserved; tests that ran are
-# overwritten with their fresh status. Result: sorted `name<TAB>status`.
 write_baseline(){
     local tmp; tmp=$(mktemp)
     [[ -f $BASELINE ]] && cp "$BASELINE" "$tmp"
@@ -588,11 +463,6 @@ write_baseline(){
     printf "\nBaseline written: %s (%d tests recorded).\n" "$BASELINE" "$(wc -l < "$BASELINE")"
 }
 
-# ═══════════════════════════════════════════════════════════════════════════
-# SELECTORS & DRIVER
-# ═══════════════════════════════════════════════════════════════════════════
-
-# Expand a selector to a shell glob of test files.
 selector_glob(){
     case ${1:-all} in
         all)                     echo "acats/*.ada" ;;
@@ -601,8 +471,6 @@ selector_glob(){
     esac
 }
 
-# Run the selector's tests in parallel, writing results.tsv + summary, then
-# print the absolute report. Leaves the sorted result stream in RESULTS_TSV.
 run_selector(){
     local sel=${1:-all} title=$2
     local pattern; pattern=$(selector_glob "$sel")
@@ -623,7 +491,34 @@ run_selector(){
     rm -f "$tmpfile" "${tmpfile}.sorted"
 }
 
-usage(){ sed -n '3,44p' "$0" | sed 's/^# \{0,1\}//'; }
+usage(){ cat <<'TEXT'
+Usage: test.sh COMMAND [SELECTOR]
+
+Run the ACATS conformance suite against ./ada83.
+
+Commands:
+  run [SELECTOR]     run the suite and print a report
+  check [SELECTOR]   run, then diff against the baseline; exit 1 on regression
+  bless [SELECTOR]   run, then write the results as the new baseline
+  list [SELECTOR]    list the tests a selector expands to
+  help               display this help and exit
+
+Selectors:
+  all                every test (default)
+  a, b, c, d, e, l   one ACATS class
+  PREFIX             a filename prefix, such as c45 or c45347
+
+Environment:
+  JOBS, NPROC        parallel workers (default: the processor count)
+  TEST_TIMEOUT       per-test run cap in seconds (default: 30)
+  LINK_TIMEOUT       per-test link cap in seconds (default: 20)
+  BASELINE           baseline manifest path (default: acats.baseline)
+  TAP                set to 1 to also write a TAP stream
+
+Each run writes results to test_results/ID/ and logs to acats_logs/ID/, where
+ID is unique to the run, so concurrent runs do not overwrite one another.
+TEXT
+}
 
 main(){
     local cmd=${1:-help}; shift || true

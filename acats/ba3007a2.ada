@@ -1,8 +1,0 @@
--- BA3007A2.ADA
-
--- WKB 7/7/81
--- JBG 2/13/84
--- BHS 8/08/84
-
-PROCEDURE BA3007A0 (I : IN OUT INTEGER;
-                    J : IN INTEGER := 4);

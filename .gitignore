@@ -1,5 +1,6 @@
 # Compiled binary
 ada83
+ada83.exe
 a83
 ada83_debug
 
@@ -26,6 +27,16 @@ T*.ll
 vgcore.*
 ada83.c.pre-propagation
 test_derived_runtime
-tools/win64/LLVM-C.dll
-tools/win64/llvmc_blob.o
-!tools/win64/LLVM-C.dll.zst
+
+# Unpacked by build.bat from LLVM-C.zip, which is the tracked copy
+LLVM-C.dll
+
+# Toolchain build.bat fetches when the machine has no C compiler
+zig/
+zig.zip
+
+# The conformance suite, unpacked from tests.zip on demand
+acats/
+
+# Live agent worktrees
+.claude/
