@@ -60901,6 +60901,9 @@ typedef struct {
                                   from what is on disk                  */
   Quick_Fix fixes[MAX_QUICK_FIXES];
   u32       fix_count;
+  char *outline;               /* the last outline this file parsed into,
+                                  kept so an edit that will not parse yet
+                                  leaves the view standing rather than empty */
 } Open_Document;
 
 static Open_Document Open_Documents[MAX_OPEN_DOCUMENTS];
@@ -60954,6 +60957,7 @@ static void Forget_Document (const char *uri) {
       free (Open_Documents[i].uri);
       free (Open_Documents[i].path);
       free (Open_Documents[i].text);
+      free (Open_Documents[i].outline);
       Open_Documents[i] = Open_Documents[--Open_Document_Count];
       return;
     }
@@ -62571,7 +62575,7 @@ static u32 Column_Of_The_Name (const char *text, u32 line, u32 column,
    the editor's text and not the file on disk: an outline that lagged a
    keystroke behind would point the reader at the wrong line. */
 static void Answer_Document_Symbols (const Json *id,
-                                     const Open_Document *document) {
+                                     Open_Document *document) {
   char directory[PATH_MAX];
   if (not Is_Directory (document->path, directory, sizeof directory))
     snprintf (directory, sizeof directory, ".");
@@ -62583,7 +62587,10 @@ static void Answer_Document_Symbols (const Json *id,
             temporary, (long) getpid ());
 
   FILE *file = fopen (scratch, "wb");
-  if (not file) { Respond (id, "[]"); return; }
+  if (not file) {
+    Respond (id, document->outline ? document->outline : "[]");
+    return;
+  }
   if (document->text) fputs (document->text, file);
   fclose (file);
 
@@ -62646,7 +62653,20 @@ static void Answer_Document_Symbols (const Json *id,
     Buffer_Append_Text (&answer, "}");
   }
   Buffer_Append_Text (&answer, "]");
-  Respond (id, answer.data ? answer.data : "[]");
+
+  /* A file being typed into is usually not a legal compilation unit, and an
+     outline that empties itself on every unbalanced parenthesis is worse
+     than one a few keystrokes out of date.  A run that found nothing leaves
+     the last one that found something standing. */
+  if (count == 0 and document->outline) {
+    Respond (id, document->outline);
+  } else {
+    Respond (id, answer.data ? answer.data : "[]");
+    if (count > 0 and answer.data) {
+      free (document->outline);
+      document->outline = Duplicate (answer.data);
+    }
+  }
 
   Json_Free (symbols);
   Buffer_Free (&answer);
