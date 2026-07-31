@@ -68,10 +68,17 @@ REM an unpacked compiler cannot build anything that withs the standard library.
 REM The extension is one file: the manifest, grammar, language configuration,
 REM snippets and the two packaging files ride in ada83-extension.js as line
 REM comments. Splitting them out gives the layout VS Code installs.
+REM manual.md travels beside the extension, which is where the
+REM search_ada83_manual tool looks for it.
 :vsix
 if exist vsix rmdir /s /q vsix
 mkdir vsix\extension\syntaxes
 copy /y ada83-extension.js vsix\extension\ >nul
+if exist manual.md (
+    copy /y manual.md vsix\extension\ >nul
+) else (
+    echo manual.md is missing; packaging without the manual search tool.
+)
 del /q "%VSIX%" >nul 2>nul
 powershell -NoProfile -Command ^
     "$ErrorActionPreference='Stop';" ^

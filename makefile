@@ -45,6 +45,12 @@ RUNTIME = ada83-runtime.ada
 VSIX   = ada83.vsix
 BUNDLE = ada83-extension.js
 
+# The reference manual travels in the vsix beside the extension, which is
+# where the search_ada83_manual tool looks for it: a question of Ada 83
+# legality is then answered out of the standard rather than out of a memory
+# of some later Ada.
+MANUAL = manual.md
+
 all: ada83 provision-llvm
 
 ada83: ada83.c
@@ -137,6 +143,8 @@ staging/$(VSIX): $(BUNDLE)
 	rm -rf staging/vsix
 	mkdir -p staging/vsix/extension/syntaxes
 	cp $(BUNDLE) staging/vsix/extension/
+	@test -f $(MANUAL) && cp $(MANUAL) staging/vsix/extension/ \
+	  || echo "$(MANUAL) is missing; packaging without the manual search tool"
 	awk 'BEGIN { out = "" } \
 	     /^\/\/== end$$/       { out = ""; next } \
 	     /^\/\/== /            { name = substr ($$0, 6); \

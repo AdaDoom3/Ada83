@@ -118,8 +118,9 @@ the front end runs, so libLLVM is not needed and the server starts instantly.
 [`ada83-extension.js`](ada83-extension.js) is the whole extension, with no
 dependencies: the protocol is a Content-Length header and JSON, written out in
 one file rather than pulled in as a library, and the manifest, grammar,
-language configuration and snippets ride at the end of it as line comments.
-`make vsix` splits them back out into `ada83.vsix`, which the archives carry:
+language configuration, snippets, README and chat instructions ride at the end
+of it as line comments. `make vsix` splits them back out into `ada83.vsix`,
+alongside `manual.md`, and the archives carry it:
 
 ```sh
 code --install-extension ada83.vsix
@@ -134,6 +135,14 @@ Then point `ada83.compilerPath` at the compiler.
 | Hover | what a name is, and its profile, in the compiler's own words |
 | Find references | occurrences of a name, and highlight as the caret moves |
 | Related information | the compiler's notes as links inside the error |
+| Quick fixes | the compiler's own "did you mean" offered as an edit |
+| Outline | what a file declares, from the resolver's symbol table |
+| Workspace symbols | Ctrl+T over the Ada sources in the workspace root |
+| Completion | every visible name, and the 63 reserved words |
+| Signature help | the profile of the call being written, argument by argument |
+| Folding | `is`/`begin`/`end`, records, cases, loops, ifs, selects, comments |
+| Tasks and commands | build or check the open file, with the `ada83` matcher |
+| Manual search | `#ada83Manual` reads the standard for Copilot |
 | Syntax highlighting | the 63 Ada 83 reserved words, and no later ones |
 | Snippets | the shapes of the language |
 
