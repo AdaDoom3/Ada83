@@ -5,7 +5,7 @@ backend.
 
 ## Conformance
 
-For ACATS 1.11 all 3561 of its tests pass.
+Under ACATS 1.11 all 3561 tests pass
 
 ```
  A  Acceptance        ..............................   140/140   100%
@@ -19,8 +19,6 @@ For ACATS 1.11 all 3561 of its tests pass.
 ```
 
 ## Use
-
-The default output is a native executable, produced through LLVM:
 
 ```sh
 ./ada83 hello.ada -o hello
@@ -53,7 +51,7 @@ lli hello.ll                            # interpret the IR
 
 ## Tests
 
-The suite ships as `tests.zip` and is unpacked on first use.
+The ACATS tests are in `tests.zip` and unzipped on first use.
 
 ```sh
 bash test.sh run all      # every class
@@ -64,7 +62,7 @@ bash test.sh help
 ```
 
 Each run writes to its own directory under `test_results/`, with
-logs under `acats_logs/`, so concurrent runs do not overwrite eachother.
+logs under `acats_logs/`, so concurrent runs don't overwrite eachother.
 
 ## Benchmarks
 
