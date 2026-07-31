@@ -2,7 +2,7 @@
 
 A single-file Ada 83 LLVM compiler.
 
-![The Ada 83 extension for VS Code](readme-screenshot.gif)
+![The Ada 83 extension for VS Code](screenshot.gif)
 
 | | |
 |---|---|
