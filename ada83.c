@@ -16725,11 +16725,14 @@ double Eval_Const_Numeric_Impl (Node *node) {
       }
       return 0.0/0.0;
 
-    case NK_UNARY_OP:
-      if (node->unary.op == TK_MINUS) return -Eval_Const_Numeric (node->unary.operand);
-      if (node->unary.op == TK_PLUS)  return Eval_Const_Numeric (node->unary.operand);
-      if (node->unary.op == TK_ABS)   return fabs (Eval_Const_Numeric (node->unary.operand));
+    case NK_UNARY_OP: {
+      Token_Kind op = node->unary.op;
+      if (not Is_Operator_Token (node->symbol, &op)) return 0.0/0.0;
+      if (op == TK_MINUS) return -Eval_Const_Numeric (node->unary.operand);
+      if (op == TK_PLUS)  return Eval_Const_Numeric (node->unary.operand);
+      if (op == TK_ABS)   return fabs (Eval_Const_Numeric (node->unary.operand));
       return 0.0/0.0;
+    }
     case NK_ATTRIBUTE: {
       Type *ty = node->attribute.prefix ? node->attribute.prefix->type : NULL;
       Attribute_Kind attribute_kind = node->attribute.kind;
@@ -16788,12 +16791,11 @@ double Eval_Const_Numeric_Impl (Node *node) {
       return 0.0/0.0;
     }
     case NK_BINARY_OP: {
-      if (node->symbol and node->symbol->kind == SYMBOL_FUNCTION and
-          not node->symbol->is_predefined)
-        return 0.0/0.0;
+      Token_Kind op = node->binary.op;
+      if (not Is_Operator_Token (node->symbol, &op)) return 0.0/0.0;
       double l = Eval_Const_Numeric (node->binary.left);
       double r = Eval_Const_Numeric (node->binary.right);
-      switch (node->binary.op) {
+      switch (op) {
         case TK_PLUS:  return l + r;
         case TK_MINUS: return l - r;
         case TK_STAR:  return l * r;
@@ -16910,11 +16912,13 @@ bool Eval_Const_Rational (Node *node, Rational *out) {
     }
     case NK_UNARY_OP: {
       Rational operand;
+      Token_Kind op = node->unary.op;
+      if (not Is_Operator_Token (node->symbol, &op)) return false;
       if (not Eval_Const_Rational (node->unary.operand, &operand)) return false;
-      if (node->unary.op == TK_MINUS) {
+      if (op == TK_MINUS) {
         operand.numerator = Big_Integer_Clone (operand.numerator);
         operand.numerator->is_negative = not operand.numerator->is_negative;
-      } else if (node->unary.op == TK_ABS) {
+      } else if (op == TK_ABS) {
         operand.numerator = Big_Integer_Clone (operand.numerator);
         operand.numerator->is_negative = false;
       }
@@ -16923,12 +16927,10 @@ bool Eval_Const_Rational (Node *node, Rational *out) {
     }
     case NK_BINARY_OP: {
       Rational l, r;
+      Token_Kind op = node->binary.op;
+      if (not Is_Operator_Token (node->symbol, &op)) return false;
 
-      if (node->symbol and node->symbol->kind == SYMBOL_FUNCTION and
-          not node->symbol->is_predefined)
-        return false;
-
-      if (node->binary.op == TK_EXPON) {
+      if (op == TK_EXPON) {
         if (not Eval_Const_Rational (node->binary.left, &l)) return false;
         double re = Eval_Const_Numeric (node->binary.right);
         if (re != re or re != floor (re) or fabs (re) > 1000) return false;
@@ -16937,7 +16939,7 @@ bool Eval_Const_Rational (Node *node, Rational *out) {
       }
       if (not Eval_Const_Rational (node->binary.left, &l)) return false;
       if (not Eval_Const_Rational (node->binary.right, &r)) return false;
-      switch (node->binary.op) {
+      switch (op) {
         case TK_PLUS:  *out = Rational_Add (l, r); return true;
         case TK_MINUS: *out = Rational_Sub (l, r); return true;
         case TK_STAR:  *out = Rational_Mul (l, r); return true;
@@ -16972,9 +16974,11 @@ bool Eval_Const_Uint128 (Node *node, u128 *out) {
       }
       *out = (u128)(u64)node->integer_lit.value;
       return true;
-    case NK_UNARY_OP:
-      if (node->unary.op == TK_PLUS) return Eval_Const_Uint128 (node->unary.operand, out);
-      if (node->unary.op == TK_MINUS) {
+    case NK_UNARY_OP: {
+      Token_Kind op = node->unary.op;
+      if (not Is_Operator_Token (node->symbol, &op)) return false;
+      if (op == TK_PLUS) return Eval_Const_Uint128 (node->unary.operand, out);
+      if (op == TK_MINUS) {
         u128 v;
         if (Eval_Const_Uint128 (node->unary.operand, &v)) {
           *out = (u128)(-(i128)v);
@@ -16982,11 +16986,14 @@ bool Eval_Const_Uint128 (Node *node, u128 *out) {
         }
       }
       return false;
+    }
     case NK_BINARY_OP: {
       u128 l, r;
+      Token_Kind op = node->binary.op;
+      if (not Is_Operator_Token (node->symbol, &op)) return false;
       if (not Eval_Const_Uint128 (node->binary.left, &l)) return false;
       if (not Eval_Const_Uint128 (node->binary.right, &r)) return false;
-      switch (node->binary.op) {
+      switch (op) {
 
         case TK_PLUS:  *out = l + r; return true;
         case TK_MINUS: *out = l - r; return true;
@@ -17789,6 +17796,27 @@ void Analyze_Expr (Node *n) {
   }
 }
 
+bool Hides_Type (Type *actual, Type *formal, bool peel_views) {
+  if (not actual or not formal) return actual == formal;
+  Type *va = Get_Effective_View (actual);
+  Type *vf = Get_Effective_View (formal);
+  if (Has_Generic_Actual_View (va) or Has_Generic_Actual_View (vf)) {
+    if (va == vf) return true;
+    if (not peel_views) return false;
+    Type *pa = Has_Generic_Actual_View (va) ? va->generic_actual : va;
+    Type *pf = Has_Generic_Actual_View (vf) ? vf->generic_actual : vf;
+    return pa and pf and Get_Base (pa) == Get_Base (pf);
+  }
+  return Get_Base (va) == Get_Base (vf);
+}
+
+bool Is_Instance_Formal_Binding (Symbol *s) {
+  if (not s) return false;
+  if (not (s->renamed_object or s->is_instance_wrapper)) return false;
+  Symbol *owner = s->defining_scope ? s->defining_scope->owner : NULL;
+  return owner and owner->generic_template;
+}
+
 Interpretation *Select_Interp (Interp_List *l, Type *ctx) {
   if (not l or l->count == 0) return NULL;
 
@@ -17816,25 +17844,6 @@ Interpretation *Select_Interp (Interp_List *l, Type *ctx) {
     if (nc == 1) return c[0];
   }
 
-  bool Hides_Type (Type *actual, Type *formal, bool peel_views) {
-    if (not actual or not formal) return actual == formal;
-    Type *va = Get_Effective_View (actual);
-    Type *vf = Get_Effective_View (formal);
-    if (Has_Generic_Actual_View (va) or Has_Generic_Actual_View (vf)) {
-      if (va == vf) return true;
-      if (not peel_views) return false;
-      Type *pa = Has_Generic_Actual_View (va) ? va->generic_actual : va;
-      Type *pf = Has_Generic_Actual_View (vf) ? vf->generic_actual : vf;
-      return pa and pf and Get_Base (pa) == Get_Base (pf);
-    }
-    return Get_Base (va) == Get_Base (vf);
-  }
-  bool Is_Instance_Formal_Binding (Symbol *s) {
-    if (not s) return false;
-    if (not (s->renamed_object or s->is_instance_wrapper)) return false;
-    Symbol *owner = s->defining_scope ? s->defining_scope->owner : NULL;
-    return owner and owner->generic_template;
-  }
   Interpretation *user_hit = NULL;
   {
     u32 w = 0;
@@ -17859,9 +17868,15 @@ Interpretation *Select_Interp (Interp_List *l, Type *ctx) {
 
   {
     Interpretation *pu = NULL;
+    bool pu_fully_universal = false;
     for (u32 i = 0; i < nc; i++)
-      if (not c[i]->nam and Is_Universal (c[i]->opnd[0]))
-        pu = c[i];
+      if (not c[i]->nam and Is_Universal (c[i]->opnd[0])) {
+        bool fully = not c[i]->opnd[1] or Is_Universal (c[i]->opnd[1]);
+        if (fully or not pu_fully_universal) {
+          pu = c[i];
+          pu_fully_universal = fully;
+        }
+      }
     if (pu) {
       bool ctx_demands_concrete = false;
       if (ctx and not Is_Universal (ctx))
@@ -21922,29 +21937,29 @@ Return_Construct_Kind Find_Return_Construct (Symbol **construct) {
   return RETURN_FROM_NOTHING;
 }
 
+void Note_Discrete (Type *candidate, Type **discrete, u32 *discrete_count) {
+  Type *base = Get_Base (candidate);
+  if (not base or not Is_Discrete (base)) return;
+  for (u32 i = 0; i < *discrete_count; i++)
+    if (discrete[i] == base) return;
+  if (*discrete_count < MAX_INTERPRETATIONS) discrete[(*discrete_count)++] = base;
+}
+
 void Require_Determinable_Case_Expression (Node *expression) {
   Type *discrete[MAX_INTERPRETATIONS];
   u32   discrete_count = 0;
 
-  void Note (Type *candidate) {
-    Type *base = Get_Base (candidate);
-    if (not base or not Is_Discrete (base)) return;
-    for (u32 i = 0; i < discrete_count; i++)
-      if (discrete[i] == base) return;
-    if (discrete_count < MAX_INTERPRETATIONS) discrete[discrete_count++] = base;
-  }
-
   if (expression->kind == NK_CHARACTER) {
-    Note (sm->type_character);
+    Note_Discrete (sm->type_character, discrete, &discrete_count);
     Interp_List spelled;
     Collect_Interpretations (expression->string_val.text, &spelled);
     for (u32 i = 0; i < spelled.count; i++)
       if (spelled.items[i].nam and spelled.items[i].nam->kind == SYMBOL_LITERAL)
-        Note (spelled.items[i].typ);
+        Note_Discrete (spelled.items[i].typ, discrete, &discrete_count);
   } else {
     for (u32 i = 0; expression->interps and
                          i < expression->interps->count; i++)
-      Note (expression->interps->items[i].typ);
+      Note_Discrete (expression->interps->items[i].typ, discrete, &discrete_count);
   }
 
   if (discrete_count > 1)
@@ -33938,6 +33953,25 @@ Bound_Temps Emit_Bounds_From_Fat_Dim (u32 fat_ptr,
   return result;
 }
 
+/* The SJLJ jump buffer holds five words: the caller's frame pointer, the
+   resume address, and the stack pointer.  llvm.eh.sjlj.setjmp records only
+   the resume address; the first and third slots are filled here, exactly as
+   Clang lowers __builtin_setjmp.  The call-site returns_twice attribute is
+   load-bearing: it makes the whole function expose a returns-twice call,
+   which stops the register allocator from reusing spill slots whose old
+   values are still needed on the longjmp path. */
+u32 Emit_Sjlj_Setjmp (u32 jmp_buf) {
+  u32 frame_address = Emit_Call_Result ("ptr @llvm.frameaddress.p0(i32 0)");
+  Emit ("  store ptr %s, ptr %s\n", REG (frame_address), REG (jmp_buf));
+  u32 stack_pointer = Emit_Call_Result ("ptr @llvm.stacksave.p0()");
+  u32 stack_slot = Emit_Result ("getelementptr ptr, ptr %s, i64 2\n",
+                                REG (jmp_buf));
+  Emit ("  store ptr %s, ptr %s\n", REG (stack_pointer), REG (stack_slot));
+  return Emit_Call_Result ("" C_INT_TYPE " @llvm.eh.sjlj.setjmp(ptr %s)"
+                           " returns_twice",
+                           REG (jmp_buf));
+}
+
 Exception_Setup Emit_Exception_Handler_Setup () {
   Exception_Setup setup;
 
@@ -33949,7 +33983,7 @@ Exception_Setup Emit_Exception_Handler_Setup () {
   setup.jmp_buf = Emit_Temp ();
   Emit ("  %s = getelementptr { ptr, [200 x i8] }, ptr %s, i32 0, i32 1\n",
      REG (setup.jmp_buf),  REG (setup.handler_frame));
-  u32 setjmp_result = Emit_Call_Result ("" C_INT_TYPE " @_setjmp(ptr %s)",  REG (setup.jmp_buf));
+  u32 setjmp_result = Emit_Sjlj_Setjmp (setup.jmp_buf);
   I1 is_normal = Emit_Icmp_Const ("eq", REP_C_INT, setjmp_result, 0);
   setup.normal_label  = Emit_Label ();
   setup.handler_label = Emit_Label ();
@@ -36040,6 +36074,12 @@ I1 Lower_Short_Circuit (Node *node) {
   }
 }
 
+bool Static_Bound_As_Double (Type_Bound bound, double *out) {
+  if (bound.kind == BOUND_INTEGER) { *out = (double) bound.int_value; return true; }
+  if (bound.kind == BOUND_FLOAT)   { *out = bound.float_value;        return true; }
+  return false;
+}
+
 I1 Lower_Membership (Node *node, Value left_value) {
 
   Type *left_type = node->binary.left ? node->binary.left->type : NULL;
@@ -36224,11 +36264,6 @@ I1 Lower_Membership (Node *node, Value left_value) {
                      mark_type->kind == TYPE_TASK))
     return Emit_I1_Const (1, "composite IN is always true");
 
-  bool Static_Bound_As_Double (Type_Bound bound, double *out) {
-    if (bound.kind == BOUND_INTEGER) { *out = (double) bound.int_value; return true; }
-    if (bound.kind == BOUND_FLOAT)   { *out = bound.float_value;        return true; }
-    return false;
-  }
   if (left_type and mark_type and
       Has_Scalar_Representation (left_type) and Has_Scalar_Representation (mark_type) and
       Get_Root (left_type) == Get_Root (mark_type) and
@@ -46661,7 +46696,7 @@ void Lower_Statement (Node *node) {
           Emit_Call_Void ("void @__ada_push_handler(ptr %s)",  REG (handler_frame));
 
           u32 jmp_buf = Emit_Result ("getelementptr { ptr, [200 x i8] }, ptr %s, i32 0, i32 1\n",  REG (handler_frame));
-          u32 setjmp_result = Emit_Call_Result ("" C_INT_TYPE " @_setjmp(ptr %s)",  REG (jmp_buf));
+          u32 setjmp_result = Emit_Sjlj_Setjmp (jmp_buf);
 
           I1 is_normal = Emit_Icmp_Const ("eq", REP_C_INT, setjmp_result, 0);
           Emit_Branch_On (is_normal, normal_label, handler_label, NULL);
@@ -52204,14 +52239,19 @@ void Emit_Runtime_Declarations () {
     "; External declarations\n"
     "declare i32 @memcmp (ptr, ptr, i64)\n"
     "declare i32 @strncasecmp (ptr, ptr, i64)\n"
-    "declare i32 @_setjmp(ptr) returns_twice\n"
-    "declare void @_longjmp(ptr, i32) noreturn\n"
+    "declare i32 @llvm.eh.sjlj.setjmp(ptr) returns_twice\n"
+    "declare void @llvm.eh.sjlj.longjmp(ptr) noreturn\n"
+    "declare ptr @llvm.frameaddress.p0(i32)\n"
     "declare void @exit (i32)\n"
     "declare ptr @malloc (i64)\n"
     "declare ptr @calloc (i64, i64)\n"
     "declare ptr @realloc (ptr, i64)\n"
     "declare void @free (ptr)\n"
+#ifdef _WIN32
+    "declare void @GetCurrentThreadStackLimits(ptr, ptr)\n"
+#else
     "declare i32 @getrlimit(i32, ptr)\n"
+#endif
     "declare i32 @nanosleep(ptr, ptr)\n"
     "declare i32 @clock_gettime(i32, ptr)\n"
     "declare i32 @pthread_create(ptr, ptr, ptr, ptr)\n"
@@ -52830,6 +52870,16 @@ void Emit_Runtime_Storage () {
     "  %nolim = icmp eq i64 %l0, 0\n"
     "  br i1 %nolim, label %query, label %check\n"
     "query:\n"
+#ifdef _WIN32
+    "  %lohi = alloca [2 x i64]\n"
+    "  %hi_p = getelementptr inbounds i8, ptr %lohi, i64 8\n"
+    "  call void @GetCurrentThreadStackLimits(ptr %lohi, ptr %hi_p)\n"
+    "  %lo = load i64, ptr %lohi\n"
+    "  %hi = load i64, ptr %hi_p\n"
+    "  %l2 = sub i64 %hi, %lo\n"
+    "  store i64 %l2, ptr @__stk_limit\n"
+    "  br label %check\n"
+#else
     "  %rl = alloca [2 x i64]\n"
     "  %rc = call i32 @getrlimit(i32 3, ptr %rl)  ; RLIMIT_STACK\n"
     "  %rc_ok = icmp eq i32 %rc, 0\n"
@@ -52839,6 +52889,7 @@ void Emit_Runtime_Storage () {
     "  %l2 = select i1 %rc_ok, i64 %l1, i64 8388608  ; unqueryable: 8 MiB\n"
     "  store i64 %l2, ptr @__stk_limit\n"
     "  br label %check\n"
+#endif
     "check:\n"
     "  %l = phi i64 [%l2, %query], [%l0, %limit]\n"
     "  %usable = sub i64 %l, 262144  ; limit less the safety margin\n"
@@ -53163,9 +53214,7 @@ void Emit_Runtime_Synchronisation () {
     "  br label %out\n"
     "out:\n"
     "  ret void\n"
-    "}\n\n"
-    "!llvm.linker.options = !{!0}\n"
-    "!0 = !{!\"/DEFAULTLIB:synchronization.lib\"}\n\n");
+    "}\n\n");
 #else
 
   Emit_Verbatim (
@@ -53300,7 +53349,7 @@ void Emit_Runtime_Raise () {
     "  br i1 %is_null, label %unhandled, label %jump\n"
     "jump:\n"
     "  %jb = getelementptr { ptr, [200 x i8] }, ptr %frame, i32 0, i32 1\n"
-    "  call void @_longjmp(ptr %jb, i32 1)\n"
+    "  call void @llvm.eh.sjlj.longjmp(ptr %jb)\n"
     "  unreachable\n"
     "unhandled:\n"
     "  %exc_name = inttoptr " PTR_INT_TYPE " %exc_id to ptr\n"
@@ -54670,19 +54719,28 @@ void Emit_Runtime_Tasking () {
 
 void Emit_Runtime_Text_Io () {
   Emit ("; ---- TEXT_IO: the three standard streams ----\n");
+#ifdef _WIN32
+  Emit ("declare ptr @__acrt_iob_func(i32)\n");
+#else
   Emit ("@stdin  = external global ptr\n");
   Emit ("@stdout = external global ptr\n");
   Emit ("@stderr = external global ptr\n");
+#endif
   Emit ("declare i32 @fputs(ptr nocapture readonly, ptr nocapture)\n");
   Emit ("declare ptr @fgets(ptr, i32, ptr nocapture)\n");
   Emit ("declare i32 @fprintf (ptr nocapture, ptr nocapture readonly, ...)\n\n");
 
-  for (const char *const *stream = (const char *const[]){ "stdin", "stdout", "stderr", NULL };
-       *stream; stream++) {
+  const char *const streams[] = { "stdin", "stdout", "stderr", NULL };
+  for (const char *const *stream = streams; *stream; stream++) {
     Emit ("define linkonce_odr i64 @__ada_%s()"
           " nounwind willreturn memory(read) {\n", *stream);
     Emit ("entry:\n");
+#ifdef _WIN32
+    Emit ("  %%stream = call ptr @__acrt_iob_func(i32 %d)\n",
+          (int) (stream - streams));
+#else
     Emit ("  %%stream = load ptr, ptr @%s\n", *stream);
+#endif
     Emit ("  %%address = ptrtoint ptr %%stream to " PTR_INT_TYPE "\n");
     Emit ("  ret i64 %%address\n");
     Emit ("}\n\n");
@@ -60578,11 +60636,15 @@ int Native_Backend_Compile (const char *ir_path, const char *const *extra_ir,
     snprintf (command, sizeof (command),
               "%s \"%s\" -o \"%s\" -lm -lpthread"
 #ifdef _WIN32
-              " -lsynchronization"
+              " -lapi-ms-win-core-synch-l1-2-0"
 #endif
               , drivers[i], obj_path, exe_path);
     int link_status = system (command);
-    if (Host_Command_Exit_Status (link_status) == 127) continue;
+    int exit_status = Host_Command_Exit_Status (link_status);
+    if (exit_status == 127) continue;   /* POSIX: command not found      */
+#ifdef _WIN32
+    if (exit_status == 9009) continue;  /* cmd.exe: command not found    */
+#endif
     driver_ran = true;
     status = link_status == 0 ? 0 : 1;
     break;

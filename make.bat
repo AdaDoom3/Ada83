@@ -30,17 +30,19 @@ echo Makes the Ada 83 compiler.
 echo.
 echo MAKE [command]
 echo.
-echo   clean      Deletes ada83.exe, LLVM-C.dll and the downloaded Zig.
+echo   clean      Deletes ada83.exe, the LLVM DLLs and the downloaded Zig.
 echo   help       Displays this help.
 echo.
 echo Makes with GCC, Clang or Zig, whichever is found first.
 echo.
-echo LLVM-C.dll is unpacked from LLVM-C.zip and must stay with
-echo ada83.exe, which loads it when it runs.
+echo LLVM-C.dll and its companion DLLs are unpacked from LLVM-C.zip
+echo and must stay with ada83.exe, which loads them when it runs.
 exit /b 0
 
 :clean
-del /q "%EXE%" LLVM-C.dll zig.zip >nul 2>nul
+del /q "%EXE%" LLVM-C.dll libffi-8.dll libstdc++-6.dll libgcc_s_seh-1.dll ^
+    libwinpthread-1.dll libxml2-16.dll libiconv-2.dll libzstd.dll zlib1.dll ^
+    zig.zip >nul 2>nul
 rmdir /s /q zig >nul 2>nul
 echo Cleaned.
 exit /b 0
