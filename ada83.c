@@ -3448,6 +3448,22 @@ bool        Is_Body_Stub                               (Node *node);
 const char *Spell_Transfer                             (Node *statement);
 void        Note_Unreachable_Statements                (Node_List *list);
 void        Note_Unaccepted_Entries                    (Symbol *task_type);
+
+typedef enum {
+  CONVERSION_REFUSED_OPERAND_NOT_NUMERIC_KIND,
+  CONVERSION_REFUSED_TARGET_NOT_NUMERIC_KIND,
+  CONVERSION_REFUSED_OPERAND_NOT_ARRAY_KIND,
+  CONVERSION_REFUSED_TARGET_NOT_ARRAY_KIND,
+  CONVERSION_REFUSED_DIMENSION_KIND,
+  CONVERSION_REFUSED_COMPONENT_KIND,
+  CONVERSION_REFUSED_UNRELATED_KIND
+} Conversion_Refusal_Kind;
+
+Conversion_Refusal_Kind Classify_Conversion_Refusal (Type *target, Type *operand);
+void        Reject_Illegal_Conversion       (Node *apply, Type *target, Type *operand);
+bool        Reject_Name_With_Cause          (Location location, Slice name);
+bool        Reject_Selection_With_Cause     (Node *node, Type *viewed);
+void        Reject_Unresolvable_Application (Node *node, Node *prefix, Symbol *prefix_symbol);
 bool        Tree_Escapes_Usage_Analysis                (Node *node);
 bool        Is_An_Unused_Candidate                     (Symbol *sym);
 void        Note_Unused_Candidates_In_Scope            (Scope *scope, Node *body);
@@ -15321,6 +15337,242 @@ Symbol *Resolve_Entry_Rename_Overloaded_Prefix (Node *renamed,
   return settled;
 }
 
+Conversion_Refusal_Kind Classify_Conversion_Refusal (Type *target, Type *operand) {
+  Type *target_base  = Get_Base (target);
+  Type *operand_base = Get_Base (operand);
+  bool  target_array  = Is_Array_Like (target_base);
+  bool  operand_array = Is_Array_Like (operand_base);
+  if (target_array and operand_array)
+    return target_base->array.index_count != operand_base->array.index_count
+         ? CONVERSION_REFUSED_DIMENSION_KIND
+         : CONVERSION_REFUSED_COMPONENT_KIND;
+  if (target_array)              return CONVERSION_REFUSED_OPERAND_NOT_ARRAY_KIND;
+  if (operand_array)             return CONVERSION_REFUSED_TARGET_NOT_ARRAY_KIND;
+  if (Is_Numeric (target_base))  return CONVERSION_REFUSED_OPERAND_NOT_NUMERIC_KIND;
+  if (Is_Numeric (operand_base)) return CONVERSION_REFUSED_TARGET_NOT_NUMERIC_KIND;
+  return CONVERSION_REFUSED_UNRELATED_KIND;
+}
+
+void Reject_Illegal_Conversion (Node *apply, Type *target, Type *operand) {
+  Slice t = Describe_Type (target);
+  Slice o = Describe_Type (operand);
+  switch (Classify_Conversion_Refusal (target, operand)) {
+    case CONVERSION_REFUSED_OPERAND_NOT_NUMERIC_KIND:
+      Reject (apply, "conversion to the numeric type '%.*s' needs a numeric "
+                     "operand, and '%.*s' is not numeric",
+              (int) t.length, t.data, (int) o.length, o.data);
+      break;
+    case CONVERSION_REFUSED_TARGET_NOT_NUMERIC_KIND:
+      Reject (apply, "a value of the numeric type '%.*s' converts only to "
+                     "another numeric type, and '%.*s' is not numeric",
+              (int) o.length, o.data, (int) t.length, t.data);
+      break;
+    case CONVERSION_REFUSED_OPERAND_NOT_ARRAY_KIND:
+      Reject (apply, "conversion to the array type '%.*s' needs an array "
+                     "operand, and '%.*s' is not an array type",
+              (int) t.length, t.data, (int) o.length, o.data);
+      break;
+    case CONVERSION_REFUSED_TARGET_NOT_ARRAY_KIND:
+      Reject (apply, "an array of type '%.*s' converts only to another array "
+                     "type, and '%.*s' is not an array type",
+              (int) o.length, o.data, (int) t.length, t.data);
+      break;
+    case CONVERSION_REFUSED_DIMENSION_KIND:
+      Reject (apply, "cannot convert '%.*s' to '%.*s': the arrays have %u and "
+                     "%u dimensions, and conversion needs the same number",
+              (int) o.length, o.data, (int) t.length, t.data,
+              Get_Base (operand)->array.index_count,
+              Get_Base (target)->array.index_count);
+      break;
+    case CONVERSION_REFUSED_COMPONENT_KIND:
+      Reject (apply, "cannot convert '%.*s' to '%.*s': array conversion needs "
+                     "components of the same base type and matching index types",
+              (int) o.length, o.data, (int) t.length, t.data);
+      break;
+    default:
+      Reject (apply, "no conversion is defined from type '%.*s' to type "
+                     "'%.*s': they are not both numeric, are not related by "
+                     "derivation, and are not compatible arrays",
+              (int) o.length, o.data, (int) t.length, t.data);
+      break;
+  }
+}
+
+bool Reject_Name_With_Cause (Location location, Slice name) {
+  for (Scope *scope = sm->current_scope; scope; scope = scope->parent)
+    for (u32 bucket = 0; bucket < SYMBOL_TABLE_SIZE; bucket++)
+      for (Symbol *candidate = scope->buckets[bucket]; candidate;
+           candidate = candidate->next_in_bucket) {
+        if (not Slices_Match (candidate->name, name)) continue;
+        if (not Symbol_Visible_Under_Cutoff (candidate, scope)) {
+          Reject_At (location,
+            "'%.*s' is not visible here: it is declared after the generic "
+            "unit being instantiated",
+            (int) name.length, name.data);
+          return true;
+        }
+        if (candidate->visibility < VIS_IMMEDIATELY_VISIBLE) {
+          Reject_At (location,
+            "'%.*s' is declared at line %u but is hidden at this point",
+            (int) name.length, name.data, candidate->location.line);
+          return true;
+        }
+      }
+  if (Lookup_Path (name)) {
+    Reject_At (location,
+      "'%.*s' names a library unit; add it to a WITH clause before naming "
+      "it here",
+      (int) name.length, name.data);
+    return true;
+  }
+  return false;
+}
+
+bool Reject_Selection_With_Cause (Node *node, Type *viewed) {
+  Slice   selector      = node->selected.selector;
+  Symbol *prefix_symbol = node->selected.prefix->symbol;
+
+  if (prefix_symbol and prefix_symbol->kind == SYMBOL_PACKAGE) {
+    Symbol *hidden = NULL;
+    if (prefix_symbol->scope)
+      for (u32 bucket = 0; not hidden and bucket < SYMBOL_TABLE_SIZE; bucket++)
+        for (Symbol *candidate = prefix_symbol->scope->buckets[bucket];
+             candidate; candidate = candidate->next_in_bucket)
+          if (Slices_Match (candidate->name, selector)) {
+            hidden = candidate;
+            break;
+          }
+    if (hidden) {
+      Reject (node,
+        "'%.*s' is declared in package '%.*s' but is not visible at this "
+        "point",
+        (int) selector.length, selector.data,
+        (int) prefix_symbol->name.length, prefix_symbol->name.data);
+      return true;
+    }
+    for (Scope *scope = sm->current_scope; scope; scope = scope->parent)
+      if (scope == prefix_symbol->scope) {
+        Reject (node,
+          "nothing named '%.*s' is declared at this point in package '%.*s'",
+          (int) selector.length, selector.data,
+          (int) prefix_symbol->name.length, prefix_symbol->name.data);
+        return true;
+      }
+    return false;
+  }
+
+  if (prefix_symbol and prefix_symbol->kind == SYMBOL_GENERIC) {
+    Reject (node,
+      "'%.*s' is a generic package; only an instance of it has nameable "
+      "components",
+      (int) prefix_symbol->name.length, prefix_symbol->name.data);
+    return true;
+  }
+
+  if (prefix_symbol and (prefix_symbol->kind == SYMBOL_PROCEDURE or
+                         prefix_symbol->kind == SYMBOL_FUNCTION)) {
+    bool inside = false;
+    for (Scope *scope = sm->current_scope; scope; scope = scope->parent)
+      if (scope->owner == prefix_symbol or scope == prefix_symbol->scope)
+        inside = true;
+    if (not inside) {
+      Reject (node,
+        "the declarations of subprogram '%.*s' can be named only from "
+        "within its own body",
+        (int) prefix_symbol->name.length, prefix_symbol->name.data);
+      return true;
+    }
+    return false;
+  }
+
+  if (viewed and viewed->kind == TYPE_INCOMPLETE and viewed->name.length) {
+    Reject (node,
+      "the full declaration of type '%.*s' has not been given yet, so it "
+      "has no nameable components",
+      (int) viewed->name.length, viewed->name.data);
+    return true;
+  }
+  if (viewed and Is_Private (viewed) and viewed->name.length) {
+    Reject (node,
+      "type '%.*s' is private here; its components are visible only inside "
+      "the package that declares it",
+      (int) viewed->name.length, viewed->name.data);
+    return true;
+  }
+  return false;
+}
+
+void Reject_Unresolvable_Application (Node *node, Node *prefix,
+                                      Symbol *prefix_symbol) {
+  Slice name = prefix->string_val.text;
+  u32   argument_count = node->apply.arguments.count;
+
+  if (not prefix_symbol) {
+    if (not Reject_Name_With_Cause (prefix->location, name))
+      Reject (node, "cannot resolve '%.*s' as callable or indexable",
+              (int) name.length, name.data);
+    return;
+  }
+
+  switch (prefix_symbol->kind) {
+    case SYMBOL_PACKAGE:
+      Reject (node,
+        "'%.*s' names a package, not a subprogram or an array, so it "
+        "cannot take arguments",
+        (int) name.length, name.data);
+      return;
+    case SYMBOL_GENERIC:
+      Reject (node,
+        "'%.*s' is generic and cannot be called directly; instantiate it "
+        "with NEW and use the instance",
+        (int) name.length, name.data);
+      return;
+    case SYMBOL_TYPE:
+    case SYMBOL_SUBTYPE:
+      Reject (node,
+        "a type conversion to '%.*s' takes exactly one operand, not %u",
+        (int) name.length, name.data, argument_count);
+      return;
+    case SYMBOL_EXCEPTION:
+      Reject (node,
+        "'%.*s' names an exception; it is raised with a RAISE statement, "
+        "not called",
+        (int) name.length, name.data);
+      return;
+    case SYMBOL_LITERAL:
+      Reject (node,
+        "'%.*s' is an enumeration literal; it takes no arguments",
+        (int) name.length, name.data);
+      return;
+    default:
+      break;
+  }
+
+  Type *prefix_type = prefix->type;
+  if (prefix_type and Is_Access (prefix_type)) {
+    Type *designated = Get_Designated (prefix_type);
+    if (designated and designated->name.length) {
+      Reject (node,
+        "'%.*s' is an access value designating type '%.*s', which is not "
+        "an array, so it cannot be indexed",
+        (int) name.length, name.data,
+        (int) designated->name.length, designated->name.data);
+      return;
+    }
+  }
+  if (prefix_type and prefix_type->name.length) {
+    Reject (node,
+      "'%.*s' is of type '%.*s', which is not an array, so it cannot be "
+      "indexed or called",
+      (int) name.length, name.data,
+      (int) prefix_type->name.length, prefix_type->name.data);
+    return;
+  }
+  Reject (node, "cannot resolve '%.*s' as callable or indexable",
+          (int) name.length, name.data);
+}
+
+
 void Report_Selector_Not_Found (Location location,
                                        const char *lead,
                                        Slice selector,
@@ -15999,15 +16251,7 @@ Type *Resolve_Apply_On_Type_Mark (Node *apply,
       operand->type = type_mark->type;
     if (operand and operand->type and
         not Conversion_Is_Legal (type_mark->type, operand->type)) {
-      Slice target_name  = Describe_Type (type_mark->type);
-      Slice operand_name = Describe_Type (operand->type);
-      Reject (apply,
-                    "no conversion is defined from type '%.*s' to type "
-                    "'%.*s': the types must be numeric, derived from a "
-                    "common type, or arrays with matching index and "
-                    "component types",
-                    (int) operand_name.length, operand_name.data,
-                    (int) target_name.length, target_name.data);
+      Reject_Illegal_Conversion (apply, type_mark->type, operand->type);
     }
     apply->type = type_mark->type;
     apply->apply.resolution = APPLY_TYPE_CONVERSION;
@@ -16769,6 +17013,12 @@ void Analyze_Identifier (Node *n) {
                     "declarations is directly visible here; name it by an "
                     "expanded name",
                     (int) n->string_val.text.length, n->string_val.text.data);
+      n->symbol = NULL;
+      n->type = sm->type_integer;
+      Interp_Add (out, NULL, sm->type_integer, sm->type_integer, NULL);
+      return;
+    }
+    if (Reject_Name_With_Cause (n->location, n->string_val.text)) {
       n->symbol = NULL;
       n->type = sm->type_integer;
       Interp_Add (out, NULL, sm->type_integer, sm->type_integer, NULL);
@@ -19331,14 +19581,16 @@ Type *Resolve_Expression (Node *node) {
       } else {
         if (Resolve_Expanded_Name_Selector (node)) return node->type;
 
-        Symbol *prefix_symbol = node->selected.prefix->symbol;
-        Closest_Name_Search search = Closest_Name_Begin (node->selected.selector);
-        if (prefix_symbol and prefix_symbol->kind == SYMBOL_PACKAGE)
-          for (u32 i = 0; i < prefix_symbol->exported_count; i++)
-            Closest_Name_Consider (&search, prefix_symbol->exported[i]->name);
-        Report_Selector_Not_Found (node->location,
-                                   "cannot resolve selected component",
-                                   node->selected.selector, "", &search);
+        if (not Reject_Selection_With_Cause (node, record_type)) {
+          Symbol *prefix_symbol = node->selected.prefix->symbol;
+          Closest_Name_Search search = Closest_Name_Begin (node->selected.selector);
+          if (prefix_symbol and prefix_symbol->kind == SYMBOL_PACKAGE)
+            for (u32 i = 0; i < prefix_symbol->exported_count; i++)
+              Closest_Name_Consider (&search, prefix_symbol->exported[i]->name);
+          Report_Selector_Not_Found (node->location,
+                                     "cannot resolve selected component",
+                                     node->selected.selector, "", &search);
+        }
       }
       return sm->type_integer;
     }
@@ -19653,9 +19905,7 @@ Type *Resolve_Expression (Node *node) {
 
       node->apply.resolution = APPLY_UNRESOLVED;
       if (prefix->kind == NK_IDENTIFIER)
-        Reject (node, "cannot resolve '%.*s' as callable or indexable",
-                      (int) prefix->string_val.text.length,
-                      prefix->string_val.text.data);
+        Reject_Unresolvable_Application (node, prefix, prefix_symbol);
       return sm->type_integer;
     }
     case NK_ATTRIBUTE:  return Resolve_Attribute (node);
