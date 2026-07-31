@@ -52,6 +52,10 @@ Clang, or Zig, whichever it finds first. If no C compiler is installed it
 downloads Zig into the build directory and uses that, so nothing has to be
 installed beforehand.
 
+On macOS, `osascript build.applescript` does the same from the Finder side:
+it checks for the command line tools and for libLLVM, offers to install
+either that is missing, and runs the build in Terminal.
+
 ## Use
 
 The default output is a native executable, produced through LLVM:
@@ -130,24 +134,39 @@ macOS ships Bash 3.2 and no `timeout`, so running the suite there needs
 
 ## Benchmarks
 
-`bench.sh` measures compile time, generated-code speed at each optimisation
-level, and throughput over the conformance corpus. Where GNAT is present the
-same programs are built with it and the two are reported side by side; if it
-is absent, it is installed.
+`bench.sh` exists to aim work on `ada83.c` and then judge it.
 
 ```sh
-bash bench.sh            # everything
-bash bench.sh codegen    # run time of the generated code
-bash bench.sh compile    # time taken to compile
-bash bench.sh corpus     # throughput over the suite
+bash bench.sh stages            # front end against back end
+bash bench.sh corpus            # throughput, and the slowest inputs named
+bash bench.sh compare /tmp/old  # this build against another, with deltas
+bash bench.sh profile           # the functions compiling spends its time in
+bash bench.sh codegen           # run time of the generated code
+bash bench.sh memory            # peak resident set, compiling and running
 bash bench.sh help
 ```
 
+To judge a change, keep the old binary and name it:
+
+```sh
+cp ada83 /tmp/before && make && bash bench.sh compare /tmp/before
+```
+
+Nine programs are measured, each stressing something a compiler is judged
+on: integer arrays and index checks, floating point, calls, slices, fixed
+point and 12-digit float, range checks in a hot loop, raise and handle,
+allocation, and rendezvous. Each reads an opaque seed from its standard
+input, so none of their loops can be folded away at compile time — without
+that, the optimiser deletes the work and the timings are fiction.
+
 Every figure is the median of several timed runs taken after a warm-up, and
-is printed with the relative standard deviation of its samples, so a number
-that moved under measurement is visible as such rather than quoted as fact.
-The output of each program is compared between the two compilers, and any
-disagreement is reported alongside the timings.
+carries the relative standard deviation of its samples, so a number that
+moved under measurement is visible as such rather than quoted as a result.
+Where GNAT is present the same programs are built with it and the two are
+reported side by side, with their outputs compared. The `numerics` output is
+exempt from that comparison: Ada 83 leaves an implementation free to choose
+`'SMALL` and to round or truncate a real literal to a model number, and the
+two compilers choose differently.
 
 ## Deviations
 
@@ -196,3 +215,4 @@ The AVO withdrew ce3902b and kept ce3208a.
 | `test.sh` | Conformance harness |
 | `bench.sh` | Benchmarks |
 | `build.bat`, `LLVM-C.zip` | Windows build |
+| `build.applescript` | macOS build, from the Finder |
