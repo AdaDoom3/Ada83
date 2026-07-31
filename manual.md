@@ -264,6 +264,7 @@
   - [R.15 Representation Clauses](#r15-representation-clauses)
 
 - [Index](#index)
+- [Style Guidelines](#style-guidelines)
 
 ---
 
@@ -22856,3 +22857,362 @@ particular uses of the term. Every section number is a link.
 
 - **YEAR (predefined function)** — [9.6](#96-delay-statements-duration-and-time)
 - **---**
+
+
+---
+## Style Guidelines
+
+> [!NOTE]
+> This section records house style; it is informative, and forms no part of the
+> standard definition of the Ada programming language.
+
+Nothing here changes the legality or the meaning of a program. Ada ignores
+layout, and is insensitive to the case of identifiers and reserved words, so
+every rule below is a convention about how source is presented to a reader
+rather than anything a compiler enforces.
+
+### Sources of these Guidelines
+
+The rules were derived by measuring code, not by recalling a standard. The
+corpus is the hand-written Ada of AdaDoom3, the Neo engine written by the
+author of this compiler: 56 files and 16,961 lines from the project's `Engine`
+directory. The nine machine-generated `neo-api-*` binding files were left out,
+because they reproduce the layout of the C headers they translate rather than
+the layout of the project.
+
+Where the corpus settles a question, the rule below is marked *(measured)* and
+carries the count that backs it. Where the corpus is silent or contradicts
+itself, the rule is marked *(GNAT convention)*, meaning it was carried over
+from the GNAT style checker — the `-gnaty` family of switches — and was not
+observed here. The two sources disagree often enough that the distinction
+matters; see
+[Departures from GNAT Convention](#departures-from-gnat-convention).
+
+### Indentation
+
+**Indent two spaces per level.** *(measured)* Taking every line that ends in a
+construct opener — `is`, `then`, `loop`, `begin`, `declare`, `record` or
+`else` — and measuring the indent of the line that follows gives +2 in 866 of
+1,074 cases. The next most frequent value, +4, accounts for 114 and is
+produced by the rule for `begin` below rather than by a four-space step.
+Across the whole corpus, 90.8% of the 10,294 code lines begin with an even
+number of spaces; the odd remainder is almost all continuation lines aligned
+on an opening parenthesis.
+
+Two spaces, not the three that GNAT's own coding standard uses and that
+`-gnaty3` checks.
+
+**A construct's closer is indented one level in from its header, and its
+contents two levels in.** *(measured)* This is the most conspicuous feature of
+the style and the reverse of most Ada code. In a subprogram body `begin` does
+not line up under `procedure` or `function`; it lines up with the
+declarations, and `end` lines up with `begin`.
+
+```ada
+  function Split_Vec (Item : Str; On : Str) return Vector_Str_16_Unbound.Unsafe.Vector is
+    Result    : Vector_Str_16_Unbound.Unsafe.Vector; use Vector_Str_16_Unbound.Unsafe;
+    TRIMMED   : constant Str     := Trim (Item, Both);
+    REMAINDER : constant Natural := Index (Item, On);
+    begin
+      if REMAINDER = 0 then return Result & To_Str_Unbound (Item);
+      else Result.Append (To_Str_Unbound (Trim (TRIMMED (TRIMMED'First..REMAINDER - 1), Both))); end if;
+      return Result & (Split_Vec (TRIMMED (REMAINDER + 1..TRIMMED'Last), On));
+    end;
+```
+
+`begin` sits two columns in from its subprogram header in 145 of the 148
+bodies where the two can be paired, the first statement sits two columns in
+from `begin` in 194 of 212, and `end` returns to the column of `begin` in 184
+of 207.
+
+Record definitions take the same shape — components two levels in, `end
+record` one level in:
+
+```ada
+  type Allocation_State is record
+      ID             : Int_Unsigned_C       := 0;
+      Offset         : Int_64_Unsigned_C    := 0;
+      Size           : Int_64_Unsigned_C    := 0;
+      Kind           : Allocation_Kind      := Free_Allocation;
+      Next, Previous : Ptr_Allocation_State := null;
+    end record;
+```
+
+Components stand four columns in from the `record` line in 33 of 34
+definitions and `end record` two columns in in 33 of 34. Protected units place
+their `private` part and their `end` the same way.
+
+Packages are the exception. A package's declarations are one level in and its
+`end` returns to the column of the `package` line, as in ordinary Ada.
+
+**Continuation lines align one column past the innermost open parenthesis.**
+*(measured)* Of the 301 lines that leave a parenthesis open, 253 — 84.1% — are
+followed by a line beginning in exactly that column. Named associations are
+then aligned on their arrows.
+
+```ada
+    Descriptor_Set_Info : aliased VkDescriptorSetAllocateInfo := (descriptorPool     => Descriptor_Pool,
+                                                                  descriptorSetCount => 1,
+                                                                  pSetLayouts        => Pipeline.Shader.Descriptor_Set_Layout'Unchecked_Access,
+                                                                  others             => <>);
+```
+
+**`when` is indented one level from its `case`.** *(measured)* 375 of 404
+alternatives.
+
+**Use spaces only; never a tab.** *(GNAT convention)* The corpus does not
+settle this: 6 of its 56 files contain tab characters, but every one of them
+is inside a block of C reference code pasted into a comment or an unfinished
+body, never in Ada indentation.
+
+### Line Length
+
+**Lines run to 131 columns.** *(measured)* The copyright banner that opens
+every file is exactly 131 characters wide and the code is written to the same
+measure. Over a 5,067-line core subset the median line is 46 characters, the
+90th percentile 126 and the 95th percentile 131, with only 189 lines — 3.7% —
+longer than 131.
+
+Eighty columns is emphatically not the limit: 1,246 lines, 24.6% of that
+subset, exceed it. GNAT's line-length check defaults to 79 columns; this style
+does not follow it. The extra width is what pays for the column alignment
+described below, and that is what it is spent on.
+
+### Casing
+
+**Reserved words are lower case.** *(measured)* 12,513 of 12,607 occurrences,
+or 99.3%.
+
+> [!NOTE]
+> Of the 94 remaining occurrences, 42 are the attribute designator `'Range`,
+> which is not a reserved word in that position, and 12 are exception
+> declarations written `X : Exception;` — every exception declaration in the
+> corpus capitalises it. The rest are inside pasted C. The guideline follows
+> the dominant rule and writes `exception` in lower case like any other
+> reserved word.
+
+**Identifiers are `Mixed_Case` with underscores between words.** *(measured)*
+511 of 513 type and subtype names, and 1,051 of the 1,139 object, parameter
+and component names longer than two characters, or 92.3%. Every one of the 78
+lower-case names is inside a block of pasted C.
+
+**Named constants are `ALL_CAPS` with underscores.** *(measured)* 224 of 232
+constant declarations. This is the one place where the style abandons
+`Mixed_Case`, and it makes a constant recognisable at the point of use rather
+than only at its declaration.
+
+```ada
+    TRIMMED   : constant Str     := Trim (Item, Both);
+    REMAINDER : constant Natural := Index (Item, On);
+```
+
+**Predefined names keep their canonical spelling.** *(measured)* `Positive`
+283 of 283, `Natural` 60 of 60, `Duration` 15 of 16, `Integer` 11 of 11,
+`ASCII` 9 of 9, `Boolean` 7 of 7, `Character` 5 of 5. Every miscased spelling
+found anywhere in the corpus — `float`, `string` — is inside pasted C.
+
+**Attribute designators are `Mixed_Case`.** *(measured)* `'First`, `'Last`,
+`'Range`, `'Access`, `'Unchecked_Access`; no lower-case attribute appears.
+
+### Naming
+
+**Type names lead with the category and narrow from there.** *(measured)* The
+general kind comes first and the specialisation follows, so that related names
+sort and read together: `Array_Vector_3D`, `Ptr_Allocation_State`,
+`Int_64_Unsigned`, `Str_Unbound`. Of 513 type names, 161 begin `Array_`, 85
+`Ptr_`, 40 `Int_`, 20 `Real_` and 14 `Str_`. The prefixes are honest ones: all
+35 `Ptr_*` types are access types and all 81 `Array_*` types are array types.
+
+Two suffixes carry meaning as reliably: `_Kind` marks an enumeration type (39
+of 46) and `_State` a record type (59 of 77).
+
+**Procedures are imperative verbs; functions are nouns.** *(measured)* The
+common procedure names are `Set`, `Replace`, `Delete`, `Sort`, `Insert`,
+`Free`, `Put`, `Clear`, `Move` and `Update`. Functions are named for what they
+yield — `Get`, `Length`, `First`, `Log` — with `Has_` for predicates and `To_`
+for conversions; 148 functions begin `To_`. Accessors are overloaded on `Get`
+and `Set` rather than spelled `Get_Something`.
+
+**Parameters draw on a small stock vocabulary.** *(measured)* `Item` (169
+uses), `Val` (111), `Pos` (81), `Path`, `Args`, `Key` and `Kind` account for
+most formal parameter names, so a reader recognises a parameter's role
+immediately.
+
+**Packages are hierarchical, `Mixed_Case`, and singular.** *(measured)* `Neo`,
+`Neo.Core`, `Neo.Core.Strings`, `Neo.World.Graphics`. File names are the unit
+name in lower case with each dot written as a hyphen — `neo-core-strings.ads`.
+
+**Exceptions are named for the fault, not suffixed.** *(measured)*
+`Divide_By_Zero`, `Numeric_Overflow`, `Stack_Fault`,
+`Unsupported_Compression_Format`. None of the eleven exception names in the
+corpus ends in `_Error`.
+
+### Aligned Declarations
+
+**Line up colons, types and `:=` across a run of declarations.** *(measured)*
+Of 211 runs of two or more consecutive declarations at the same indent, 188 —
+89.1% — put every colon in one column. Where the declarations are initialised,
+106 of 145 runs — 73.1% — also put every `:=` in one column, and 170 of 201
+runs of named associations put every `=>` in one column. Padding is inserted
+after the colon where necessary so that the type names line up too, even when
+some declarations carry `constant` or `aliased` and others do not.
+
+```ada
+    Bind_Vertex_Offset  : aliased Int_64_Unsigned_C           := 0; -- Basically junk
+    Current_Pipeline    : aliased Ptr                         := NULL_PTR;
+```
+
+The same instinct is applied to whole subprogram declarations, which are
+padded until their parameter lists, return types and bodies stand in columns:
+
+```ada
+  procedure Line        (Item : Char)                      is begin Line (Item & "");                end;
+  procedure Line        (Item : Str_Unbound)               is begin Line (S (Item));                 end;
+  procedure Line        (Item : Str := "")                 is begin Put (Item & EOL);                end;
+  procedure Error       (Item : Str)                       is begin Line; Line ("ERROR: "   & Item); end;
+  procedure Warn        (Item : Str)                       is begin Line; Line ("WARNING: " & Item); end;
+  procedure Info        (Item : Str)                       is begin Line; Line ("INFO: "    & Item); end;
+  function Extension    (Path : Str) return Str            is (Path (Index (Path, ".") + 1..Path'Last));
+  function Log                       return Str_Unbound    is (Safe_IO.Log);
+  function Input_Entry               return Str            is (S (Safe_IO.Input_Entry));
+```
+
+**Write a space before a parameter list, and none around `..`.** *(measured)*
+All 813 subprogram declarations write `Name (`; none writes `Name(`. The range
+symbol is written tight, `1..Last`, in 269 places against 13 spaced.
+
+### Comments
+
+**Introduce a comment with `--` and a single space.** *(measured)* 777 of the
+1,025 prose comments, or 75.8%. The wider gaps that make up most of the
+remainder are commented-out code and tables that preserve their own internal
+alignment inside the comment.
+
+**Comments sit on their own line, above what they describe, at the indent of
+that code.** *(measured)* Trailing comments appear, but are reserved for short
+asides on a declaration — `:= 0; -- Basically junk`.
+
+**Introduce each group of declarations with a boxed header.** *(measured)* 206
+such boxes appear, and all 206 are formed identically: a rule of hyphens, the
+title as `-- Title --`, and a second identical rule, with the rules exactly as
+long as the title line and at the same indent. A blank line precedes the box
+in 205 of the 206 cases.
+
+```ada
+  -----------
+  -- Split --
+  -----------
+
+  function Split_Vec (Item : Str; On : Str) return Vector_Str_16_Unbound.Unsafe.Vector;
+  function Split     (Item : Str; On : Str) return Array_Str_Unbound is
+    (Vector_Str_16_Unbound.To_Unsafe_Array (Split_Vec (Item, On)));
+```
+
+The title names either the subprogram that follows — the case in 109 of the
+206 boxes — or the group of declarations it introduces, as in `-- Sorting --`
+or `-- Number Conversions --`.
+
+### Blank Lines
+
+**Separate a multi-line body from what precedes it.** *(measured)* Of 181
+multi-line subprogram bodies, 77 are preceded by a blank line and a further 52
+by a comment, which is itself preceded by a blank line.
+
+**Pack related one-line declarations together.** *(measured)* Of 955 one-line
+declarations and bodies, 884 — 93% — have no blank line before them. Runs of
+one-liners are meant to be read as a table, and a blank line inside one breaks
+the alignment that gives the table its point.
+
+**Use one blank line, never two.** *(measured)* Only 58 runs of two or more
+blank lines occur among the corpus's 2,165 blank lines.
+
+### Statements and Control Structures
+
+**Put a whole construct on one line when it fits.** *(measured)* 112 `if`
+statements are written `if C then S; end if;` on a single line against 175
+spread over several, and 122 subprogram bodies are written
+`is begin S; end;` on one line against 181 spread out. A further 166 functions
+are written as one-line expression functions.
+
+**Otherwise indent the body one level and close on its own line.**
+*(measured)* `end` returns to the column of the construct that opened it.
+
+```ada
+      procedure Put (Item : Str) is
+        begin
+          Current_Log := Current_Log & Item;
+          if Current_Put /= null then Current_Put.all (Item); end if;
+
+          -- Count new lines
+          for I of Item loop
+            if I = To_Char_16 (ASCII.CR) then Current_Lines := Current_Lines + 1; end if;
+          end loop;
+        exception when Device_Error => null; end;
+```
+
+**Do not repeat the unit name after `end`.** *(measured)* This is the
+strongest rule in the corpus: 312 bare `end;` against 10 that name the unit, or
+96.9%. It holds for library units too — even a package specification closes
+with a bare `end;`. The only other words that follow `end` are the reserved
+ones the syntax requires: `end if;` (213), `end loop;` (141), `end record;`
+(60) and `end case;` (36).
+
+### Compilation Unit Layout
+
+A file opens with the copyright banner, which is exactly 131 columns wide and
+fixes the line length for everything below it. *(measured)*
+
+```ada
+--                                                                                                                               --
+--                                                      N E O  E N G I N E                                                       --
+--                                                                                                                               --
+--                                               Copyright (C) 2020 Justin Squirek                                               --
+--                                                                                                                               --
+```
+
+**Pair each `with` with its `use` on one line, and align the `use` clauses.**
+*(measured)* 91 context clauses are written `with X; use X;` on a single line
+against 35 bare `with X;`, and only one `use` stands alone. Every one of the
+14 runs of two or more such lines aligns the `use` in a single column.
+
+```ada
+with Is_Debugging;
+with System;                     use System;
+with Neo;                        use Neo;
+with Neo.Core.Strings;           use Neo.Core.Strings;
+with Neo.Core.Console;           use Neo.Core.Console;
+```
+
+A blank line then separates the context clauses from the unit, which may be
+preceded by a one-line comment saying what it is for. A generic formal part is
+written with `generic` in the unit's own column and the formals one level in.
+
+**Keep everything but bodies in the specification.** *(project rule)* This one
+is stated by the project rather than inferred from a count: everything except
+subprogram, package, protected type and task bodies belongs in the `.ads`
+file, including global variables and private subprogram declarations, so that
+a single file gives the whole overview. The corpus does not follow it without
+exception — a protected object is declared in the body of `Neo.Core.Console`,
+for one — so treat it as the intent rather than an invariant.
+
+**Write source as LF-terminated text with no trailing blanks.** *(GNAT
+convention)* The corpus does not settle this — its files are stored with CRLF
+endings — so the rule is carried over from GNAT's whitespace checks.
+
+### Departures from GNAT Convention
+
+The style differs from GNAT's own conventions in five places, and every one of
+these was measured rather than assumed:
+
+|   | This style | GNAT convention |
+| --- | --- | --- |
+| Indent step | 2 spaces | 3 spaces (`-gnaty3`) |
+| `begin` | one level in from the subprogram header | same column as the header |
+| `end` of a construct | one level in from the header | same column as the header |
+| `end` of a unit | bare `end;` | repeats the unit name |
+| Line length | 131 columns | 79 columns (`-gnatyM`) |
+
+Everything else in the style — lower-case reserved words, `Mixed_Case`
+identifiers, canonical spelling of predefined names, a space before a
+parameter list, a space after `--` — agrees with GNAT, and was confirmed
+against the corpus rather than taken on trust.
