@@ -1361,15 +1361,31 @@ module.exports = { activate, deactivate };
 //  "comments": { "lineComment": "--" },
 //  "brackets": [["(", ")"]],
 //  "autoClosingPairs": [
-//    { "open": "(", "close": ")" },
+//    { "open": "(", "close": ")", "notIn": ["string", "comment"] },
 //    { "open": "\"", "close": "\"", "notIn": ["string", "comment"] }
 //  ],
+//  "autoCloseBefore": ";:.,=}) \n\t",
 //  "surroundingPairs": [["(", ")"], ["\"", "\""]],
 //  "wordPattern": "[A-Za-z][A-Za-z0-9_]*",
+//  "folding": {
+//    "offSide": false,
+//    "markers": {
+//      "start": "(?i)^\\s*(?:.*\\b(?:is|then|loop|record|declare|select|begin)\\s*|.*\\bbegin\\b.*)$",
+//      "end": "(?i)^\\s*end\\b"
+//    }
+//  },
 //  "onEnterRules": [
 //    {
 //      "beforeText": "^\\s*--.*$",
 //      "action": { "indent": "none", "appendText": "-- " }
+//    },
+//    {
+//      "beforeText": "(?i)^\\s*.*\\b(is|then|loop|record|declare|select|begin|else|do)\\s*$",
+//      "action": { "indent": "indent" }
+//    },
+//    {
+//      "beforeText": "(?i)^\\s*end\\b.*;\\s*$",
+//      "action": { "indent": "none" }
 //    }
 //  ],
 //  "indentationRules": {
@@ -1377,7 +1393,6 @@ module.exports = { activate, deactivate };
 //    "decreaseIndentPattern": "(?i)^\\s*\\b(end|elsif|else|exception|when|begin|private)\\b"
 //  }
 //}
-//
 
 //== snippets.json
 //{
