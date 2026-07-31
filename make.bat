@@ -23,21 +23,19 @@ if not "%~1"=="" (
     echo Invalid parameter - %~1
     goto usage
 )
-goto build
+goto make
 
 :usage
-echo Builds the Ada 83 compiler.
+echo Makes the Ada 83 compiler.
 echo.
-echo BUILD [command]
+echo MAKE [command]
 echo.
 echo   clean      Deletes ada83.exe, LLVM-C.dll and the downloaded Zig.
 echo   help       Displays this help.
 echo.
-echo Builds with GCC, Clang or Zig, whichever is found first. If none of
-echo them is installed, Zig is downloaded into this folder and used, so
-echo nothing has to be installed beforehand.
+echo Makes with GCC, Clang or Zig, whichever is found first.
 echo.
-echo LLVM-C.dll is unpacked from LLVM-C.zip and must stay beside
+echo LLVM-C.dll is unpacked from LLVM-C.zip and must stay with
 echo ada83.exe, which loads it when it runs.
 exit /b 0
 
@@ -47,7 +45,7 @@ rmdir /s /q zig >nul 2>nul
 echo Cleaned.
 exit /b 0
 
-:build
+:make
 call :require ada83.c     || exit /b 1
 call :require runtime.ada || exit /b 1
 call :unpack_llvm         || exit /b 1
@@ -84,7 +82,7 @@ call :attempt "GCC"   "gcc"         "gcc %CFLAGS% ada83.c -o %EXE% %LIBS%"      
 call :attempt "Clang" "clang"       "clang %CFLAGS% --target=x86_64-w64-windows-gnu ada83.c -o %EXE% %LIBS%" && exit /b 0
 call :fetch_zig || exit /b 1
 call :attempt "Zig"   "zig\zig.exe" "zig\zig.exe cc %CFLAGS% -target x86_64-windows-gnu ada83.c -o %EXE% %LIBS%" && exit /b 0
-echo No compiler was able to build ada83.c.
+echo No compiler was able to make ada83.c.
 exit /b 1
 
 :attempt
