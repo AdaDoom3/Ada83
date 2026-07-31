@@ -497,12 +497,19 @@ void Report_Driver_Error   (const char *format, ...)
 void Report_Driver_Warning (const char *format, ...)
        __attribute__((format(printf, 1, 2)));
 
+#define WARNING_CLASS_TABLE(X) \
+  X (WARNING_UNUSED_VARIABLE,         "unused-variable") \
+  X (WARNING_UNUSED_BUT_SET_VARIABLE, "unused-but-set-variable") \
+  X (WARNING_UNUSED_PARAMETER,        "unused-parameter") \
+  X (WARNING_UNUSED_WITH,             "unused-with") \
+  X (WARNING_UNREACHABLE_CODE,        "unreachable-code") \
+  X (WARNING_UNACCEPTED_ENTRY,        "unaccepted-entry") \
+  X (WARNING_DEAD_STORE,              "dead-store")
+
 typedef enum {
-  WARNING_UNUSED_VARIABLE,
-  WARNING_UNUSED_BUT_SET_VARIABLE,
-  WARNING_UNUSED_PARAMETER,
-  WARNING_UNUSED_WITH,
-  WARNING_UNREACHABLE_CODE,
+#define X(kind, name) kind,
+  WARNING_CLASS_TABLE (X)
+#undef X
   WARNING_CLASS_COUNT
 } Warning_Class_Kind;
 
@@ -3025,6 +3032,7 @@ struct Symbol {
   bool is_unreferenced;
   u32  read_count;
   bool is_ever_assigned;
+  bool is_ever_accepted;
 
   bool    extern_emitted;
   bool    extern_pending;
@@ -3471,6 +3479,7 @@ Node       *Peel_Labels                                (Node *item);
 bool        Is_Body_Stub                               (Node *node);
 const char *Spell_Transfer                             (Node *statement);
 void        Note_Unreachable_Statements                (Node_List *list);
+void        Note_Unaccepted_Entries                    (Symbol *task_type);
 bool        Tree_Escapes_Usage_Analysis                (Node *node);
 bool        Is_An_Unused_Candidate                     (Symbol *sym);
 void        Note_Unused_Candidates_In_Scope            (Scope *scope, Node *body);
@@ -7329,14 +7338,14 @@ void Report_Driver_Warning (const char *format, ...) {
 }
 
 const char *Warning_Class_Name[WARNING_CLASS_COUNT] = {
-  [WARNING_UNUSED_VARIABLE]         = "unused-variable",
-  [WARNING_UNUSED_BUT_SET_VARIABLE] = "unused-but-set-variable",
-  [WARNING_UNUSED_PARAMETER]        = "unused-parameter",
-  [WARNING_UNUSED_WITH]             = "unused-with",
-  [WARNING_UNREACHABLE_CODE]        = "unreachable-code",
+#define X(kind, name) [kind] = name,
+  WARNING_CLASS_TABLE (X)
+#undef X
 };
 bool Warning_Class_Is_Enabled[WARNING_CLASS_COUNT] = {
-  true, true, true, true, true
+#define X(kind, name) [kind] = true,
+  WARNING_CLASS_TABLE (X)
+#undef X
 };
 bool Warnings_Silenced = false;
 
@@ -20749,6 +20758,78 @@ const char *Spell_Transfer (Node *statement) {
   }
 }
 
+
+
+bool Tree_Holds_Any_Kind (Node *node, const Node_Kind *kinds, u32 count) {
+  if (not node) return false;
+  for (u32 k = 0; k < count; k++)
+    if (node->kind == kinds[k]) return true;
+  for (const Syntax_Tree_Edge *edge = Syntax_Tree_Shape[node->kind];
+       edge->offset; edge++) {
+    Node_List children = Get_Children (node, edge);
+    for (u32 i = 0; i < children.count; i++)
+      if (Tree_Holds_Any_Kind (children.items[i], kinds, count)) return true;
+  }
+  return false;
+}
+
+bool Tree_Reads_Symbol (Node *node, Symbol *sym) {
+  if (not node or not sym) return false;
+  if (node->symbol == sym) return true;
+  for (const Syntax_Tree_Edge *edge = Syntax_Tree_Shape[node->kind];
+       edge->offset; edge++) {
+    Node_List children = Get_Children (node, edge);
+    for (u32 i = 0; i < children.count; i++)
+      if (Tree_Reads_Symbol (children.items[i], sym)) return true;
+  }
+  return false;
+}
+
+Symbol *Assigned_Simple_Variable (Node *statement) {
+  if (not statement or statement->kind != NK_ASSIGNMENT) return NULL;
+  Node *target = statement->assignment.target;
+  if (not target or target->kind != NK_IDENTIFIER) return NULL;
+  Symbol *sym = target->symbol;
+  if (not sym or sym->kind != SYMBOL_VARIABLE) return NULL;
+  if (sym->aliased or sym->is_exported or sym->renamed_object) return NULL;
+  return sym;
+}
+
+/* A loop with no iteration scheme runs until something takes control out of
+   it.  If nothing in it can, the loop is the last thing the task or program
+   will do, which is worth saying out loud -- unless it is a server, whose
+   whole purpose is to run until its callers are done with it. */
+/* A condition the compiler can already evaluate is either a branch that is
+   never taken or one that is always taken; either way the reader is being
+   told something the code does not do. */
+/* Writing a variable twice with nothing in between that reads it means the
+   first value was never anyone's business. */
+void Note_Overwritten_Store (Node *first, Node *second) {
+  Symbol *sym = Assigned_Simple_Variable (first);
+  if (not sym or Assigned_Simple_Variable (second) != sym) return;
+  if (Tree_Reads_Symbol (second->assignment.value, sym)) return;
+  Note_Pending_Warning (WARNING_DEAD_STORE, first->location,
+    "this value assigned to '%.*s' is replaced on line %u before anything "
+    "reads it", (int) sym->name.length, sym->name.data,
+    second->location.line);
+}
+
+void Note_Unaccepted_Entries (Symbol *task_type) {
+  if (Diagnostics_Suppressed or Instantiating_Template_Count > 0) return;
+  if (not task_type or not task_type->exported) return;
+  for (u32 i = 0; i < task_type->exported_count; i++) {
+    Symbol *entry = task_type->exported[i];
+    if (not entry or entry->kind != SYMBOL_ENTRY) continue;
+    if (entry->is_ever_accepted) continue;
+    Note_Pending_Warning (WARNING_UNACCEPTED_ENTRY, entry->location,
+      "no accept statement for entry '%.*s' appears in the body of task "
+      "'%.*s', so every call to it waits forever",
+      (int) entry->name.length, entry->name.data,
+      (int) task_type->name.length, task_type->name.data);
+  }
+}
+
+
 void Note_Unreachable_Statements (Node_List *list) {
   if (Diagnostics_Suppressed or Instantiating_Template_Count > 0) return;
   for (u32 i = 0; i + 1 < list->count; i++) {
@@ -20763,6 +20844,12 @@ void Note_Unreachable_Statements (Node_List *list) {
       "this statement can never execute: the %s at line %u always "
       "transfers control away", transfer, statement->location.line);
     return;
+  }
+  for (u32 i = 0; i < list->count; i++) {
+    Node *statement = Peel_Labels (list->items[i]);
+    if (not statement) continue;
+    if (i + 1 < list->count)
+      Note_Overwritten_Store (statement, Peel_Labels (list->items[i + 1]));
   }
 }
 
@@ -21853,6 +21940,8 @@ void Resolve_Statement (Node *node) {
       Check_Entry_Name_Index (node->accept_stmt.entry_sym,
                               node->accept_stmt.index ? 1 : 0,
                               node->accept_stmt.index, node->location);
+      if (node->accept_stmt.entry_sym)
+        node->accept_stmt.entry_sym->is_ever_accepted = true;
       if (node->accept_stmt.entry_sym)
         for (Accept_Statement_Nesting *outer = Accept_Statements_In_Progress;
              outer; outer = outer->outer)
@@ -25045,6 +25134,9 @@ void Resolve_Declaration (Node *node) {
       }
       Resolve_Unit_Body_Statements (&node->task_body.statements);
       Resolve_Exception_Part (&node->task_body.handlers);
+      if (not node->task_body.is_separate and
+          not Tree_Escapes_Usage_Analysis (node))
+        Note_Unaccepted_Entries (type_sym);
       Symbol_Manager_Pop_Scope ();
     }                break;
     case NK_PACKAGE_SPEC:          {
@@ -52558,33 +52650,72 @@ void Emit_Runtime_Handler_Stack () {
   Emit_Void_Function_Epilogue (true);
 }
 
+/* How long to spin before sleeping.  The unit is one spin hint, and the
+     hint is not the same length everywhere: PAUSE was about ten cycles up
+     to Broadwell and is about a hundred and forty from Skylake-SP on,
+     which Intel raised deliberately to make waiting cheaper in power; AMD
+     sits nearer sixty-five.  What is being waited for is a rendezvous
+     partner handing over a cache line, which costs a cross-core transfer
+     of some tens of nanoseconds, a couple of hundred cycles.  Sixty-four
+     hints covers that on any of them, where two hundred and fifty-six
+     overshot by an order of magnitude on the newer parts and became
+     microseconds spent holding a core the partner may be waiting for.  */
+#define ADA_SPIN_LIMIT "64"
+
 void Emit_Runtime_Synchronisation () {
-#ifdef SIMD_X86_64
-  Emit_Verbatim (
-    "define linkonce_odr void @__ada_cpu_relax() alwaysinline nounwind {\n"
-    "  call void @llvm.x86.sse2.pause()\n"
-    "  ret void\n"
-    "}\n\n");
+  /* A spin hint costs a few cycles and tells the core that this loop is
+     waiting rather than working, so it can release pipeline and memory
+     resources to the other thread on the same core.  Each target spells
+     it differently; a target with no such hint spins bare. */
+
+#if defined(SIMD_X86_64)
+  #define ADA_SPIN_HINT  "call void asm sideeffect \"pause\", \"~{memory}\"()\n"
 #elif defined(SIMD_ARM64)
-  Emit_Verbatim (
-    "define linkonce_odr void @__ada_cpu_relax() alwaysinline nounwind {\n"
-    "  call void asm sideeffect \"yield\", \"~{memory}\"()\n"
-    "  ret void\n"
-    "}\n\n");
+  #define ADA_SPIN_HINT  "call void asm sideeffect \"yield\", \"~{memory}\"()\n"
+#elif defined(__riscv)
+  /* PAUSE of the Zihintpause extension, which is encoded as FENCE W,0 so
+     that a processor without the extension reads it as a fence it can
+     satisfy trivially. */
+  #define ADA_SPIN_HINT  "call void asm sideeffect \"fence w, 0\", \"~{memory}\"()\n"
 #else
-  Emit_Verbatim (
-    "define linkonce_odr void @__ada_cpu_relax() alwaysinline nounwind {\n"
-    "  ret void\n"
-    "}\n\n");
+  #define ADA_SPIN_HINT  ""
 #endif
 
-#if defined(__linux__) and (defined(SIMD_X86_64) or defined(SIMD_ARM64))
-#ifdef SIMD_X86_64
+  Emit_Verbatim (
+    "define linkonce_odr void @__ada_cpu_relax() alwaysinline nounwind {\n"
+    "  " ADA_SPIN_HINT
+    "  ret void\n"
+    "}\n\n");
+
+  /* Linux takes futex on the generic syscall table as 98, and on x86-64 at
+     202 for historical reasons. */
+#if defined(__linux__) and defined(SIMD_X86_64)
   #define ADA_SYS_FUTEX "202"
-#else
+#elif defined(__linux__) and (defined(SIMD_ARM64) or defined(__riscv))
   #define ADA_SYS_FUTEX "98"
 #endif
+
+#ifdef ADA_SYS_FUTEX
+  /* Waking a futex costs a system call whether or not anything is waiting
+     on it, and the kernel must hash the address and take the bucket lock
+     before it can discover there is no one to wake.  A rendezvous hands
+     off while its partner is still spinning nearly every time, so the
+     count below records how many threads are actually asleep and lets the
+     waker skip the call when the answer is none.
+
+     The count is raised before the waiting thread re-reads the word and
+     lowered after it wakes, and both sides order that against the word
+     with sequential consistency.  That is the store-buffer argument: the
+     waker stores the word and then reads the count, the waiter raises the
+     count and then reads the word, and sequential consistency forbids the
+     execution in which each misses the other.  A waiter that would have
+     been missed therefore sees the new word and does not sleep.  The count
+     is shared by every waited-on word, so a sleeper anywhere makes every
+     waker call; that costs an occasional wasted wake and never a lost
+     one. */
   Emit_Verbatim (
+    "@__ada_parked = linkonce_odr global i32 0, align 64\n\n"
+
     "define linkonce_odr void @__ada_wait_word(ptr %w, i32 %expected) {\n"
     "entry:\n"
     "  br label %outer\n"
@@ -52598,24 +52729,43 @@ void Emit_Runtime_Synchronisation () {
     "pause:\n"
     "  call void @__ada_cpu_relax()\n"
     "  %i2 = add i32 %i, 1\n"
-    "  %more = icmp ult i32 %i2, 256\n"
+    "  %more = icmp ult i32 %i2, " ADA_SPIN_LIMIT "\n"
     "  br i1 %more, label %again, label %park\n"
     "again:\n"
     "  br label %spin\n"
     "park:\n"
+    "  %_up = atomicrmw add ptr @__ada_parked, i32 1 seq_cst\n"
+    "  %recheck = load atomic i32, ptr %w seq_cst, align 4\n"
+    "  %moved = icmp ne i32 %recheck, %expected\n"
+    "  br i1 %moved, label %leave, label %sleep\n"
+    "sleep:\n"
     "  %exp64 = sext i32 %expected to i64\n"
     "  %_rc = call i64 (i64, ...) @syscall(i64 " ADA_SYS_FUTEX ", ptr %w, i64 128, i64 %exp64, ptr null)\n"
+    "  br label %leave\n"
+    "leave:\n"
+    "  %_down = atomicrmw sub ptr @__ada_parked, i32 1 seq_cst\n"
     "  br label %outer\n"
     "out:\n"
     "  ret void\n"
     "}\n\n"
+
     "define linkonce_odr void @__ada_wake_word(ptr %w) {\n"
+    "entry:\n"
+    "  fence seq_cst\n"
+    "  %asleep = load atomic i32, ptr @__ada_parked seq_cst, align 4\n"
+    "  %any = icmp ne i32 %asleep, 0\n"
+    "  br i1 %any, label %rouse, label %out\n"
+    "rouse:\n"
     "  %_rc = call i64 (i64, ...) @syscall(i64 " ADA_SYS_FUTEX ", ptr %w, i64 129, i64 2147483647, ptr null)\n"
+    "  br label %out\n"
+    "out:\n"
     "  ret void\n"
     "}\n\n");
-#undef ADA_SYS_FUTEX
+  #undef ADA_SYS_FUTEX
 #elif defined(_WIN32) and (defined(SIMD_X86_64) or defined(SIMD_ARM64))
   Emit_Verbatim (
+    "@__ada_parked = linkonce_odr global i32 0, align 64\n\n"
+
     "define linkonce_odr void @__ada_wait_word(ptr %w, i32 %expected) {\n"
     "entry:\n"
     "  %cmp = alloca i32, align 4\n"
@@ -52631,23 +52781,43 @@ void Emit_Runtime_Synchronisation () {
     "pause:\n"
     "  call void @__ada_cpu_relax()\n"
     "  %i2 = add i32 %i, 1\n"
-    "  %more = icmp ult i32 %i2, 256\n"
+    "  %more = icmp ult i32 %i2, " ADA_SPIN_LIMIT "\n"
     "  br i1 %more, label %again, label %park\n"
     "again:\n"
     "  br label %spin\n"
     "park:\n"
+    "  %_up = atomicrmw add ptr @__ada_parked, i32 1 seq_cst\n"
+    "  %recheck = load atomic i32, ptr %w seq_cst, align 4\n"
+    "  %moved = icmp ne i32 %recheck, %expected\n"
+    "  br i1 %moved, label %leave, label %sleep\n"
+    "sleep:\n"
     "  %_rc = call i32 @WaitOnAddress(ptr %w, ptr %cmp, i64 4, i32 -1)\n"
+    "  br label %leave\n"
+    "leave:\n"
+    "  %_down = atomicrmw sub ptr @__ada_parked, i32 1 seq_cst\n"
     "  br label %outer\n"
     "out:\n"
     "  ret void\n"
     "}\n\n"
+
     "define linkonce_odr void @__ada_wake_word(ptr %w) {\n"
+    "entry:\n"
+    "  fence seq_cst\n"
+    "  %asleep = load atomic i32, ptr @__ada_parked seq_cst, align 4\n"
+    "  %any = icmp ne i32 %asleep, 0\n"
+    "  br i1 %any, label %rouse, label %out\n"
+    "rouse:\n"
     "  call void @WakeByAddressAll(ptr %w)\n"
+    "  br label %out\n"
+    "out:\n"
     "  ret void\n"
     "}\n\n"
     "!llvm.linker.options = !{!0}\n"
     "!0 = !{!\"/DEFAULTLIB:synchronization.lib\"}\n\n");
 #else
+  /* Neither futex nor WaitOnAddress: fall back on the condition variable,
+     which needs no system call of its own here because the C library
+     decides when one is warranted. */
   Emit_Verbatim (
     "define linkonce_odr void @__ada_wait_word(ptr %w, i32 %expected) {\n"
     "entry:\n"
@@ -52668,6 +52838,7 @@ void Emit_Runtime_Synchronisation () {
     "  ret void\n"
     "}\n\n");
 #endif
+  #undef ADA_SPIN_HINT
 }
 
 void Emit_Runtime_Rendezvous_Records () {
@@ -52760,7 +52931,7 @@ void Emit_Runtime_Rendezvous_Records () {
     "next:\n"
     "  call void @__ada_cpu_relax()\n"
     "  %i2 = add i32 %i, 1\n"
-    "  %more = icmp ult i32 %i2, 256\n"
+    "  %more = icmp ult i32 %i2, " ADA_SPIN_LIMIT "\n"
     "  br i1 %more, label %peek, label %out\n"
     "out:\n"
     "  ret void\n"
@@ -59623,7 +59794,8 @@ bool Warning_Flags_From_Command_Line (const char *argument) {
     }
   Report_Driver_Error ("unrecognized warning class in '%s'; the classes are "
                        "unused-variable, unused-but-set-variable, "
-                       "unused-parameter, unused-with, unreachable-code",
+                       "unused-parameter, unused-with, unreachable-code, "
+                       "unaccepted-entry, dead-store",
                        argument);
   return false;
 }
