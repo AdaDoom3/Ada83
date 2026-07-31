@@ -109,9 +109,11 @@ If you do not have Arpanet access, please send the comments by mail
 ```ada
      Ada Joint Program Office
      Office of the Under Secretary of Defense Research and Engineering
-     Washington, DC 20301
+     Washington, Dc 20301
      United States of America.
 
+
+```
 
 For mail comments, it will assist us if you are able to send them on 8-inch
 single-sided single-density IBM format diskette - but even if you can
@@ -129,6 +131,8 @@ line header
           !version 1983
           !topic ...
 
+
+```
 
 The section line includes the section number, the paragraph number enclosed
 in parentheses, your name or affiliation (or both), and the date in ISO
@@ -176,6 +180,8 @@ of this manual:
 ```
 
 
+```
+
 ---
 
           USE OF MACHINE-READABLE Ada LANGUAGE REFERENCE MANUAL
@@ -192,324 +198,243 @@ forward comments via the Defense Data Network (DDN) to:
 ---
 
 
-## 16. Table of Contents
+## Table of Contents
 
-
-1 Introduction
-
-
-```ada
-        1.1 Scope of the Standard
-        1.1.1 Extent of the Standard
-        1.1.2 Conformity of an Implementation with the Standard
-        1.1.3 Method of Description
-        1.2 Structure of the Standard
-        1.3 Design Goals and Sources
-        1.4 Language Summary
-        1.5 Syntax Notation
-        1.6 Classification of Errors
-
-
-2 Lexical Elements
-
-
-        2.1 Character Set
-        2.2 Lexical Elements, Separators and Delimiters
-        2.3 Identifiers
-        2.4 Numeric Literals
-        2.4.1 Decimal Literals
-        2.4.2 Based Literals
-        2.5 Character Literals
-        2.6 String Literals
-        2.7 Comments
-        2.8 Pragmas
-        2.9 Reserved Words
-        2.10 Allowed Replacements of Characters
-
-
-3 Declarations and Types
-
-
-        3.1 Declarations
-        3.2 Objects and Named Numbers
-        3.2.1 Object Declarations
-        3.2.2 Number Declarations
-        3.3 Types and Subtypes
-        3.3.1 Type Declarations
-        3.3.2 Subtype Declarations
-        3.3.3 Classification of Operations
-        3.4 Derived Types
-        3.5 Scalar Types
-        3.5.1 Enumeration Types
-        3.5.2 Character Types
-        3.5.3 Boolean Types
-        3.5.4 Integer Types
-        3.5.5 Operations of Discrete Types
-        3.5.6 Real Types
-        3.5.7 Floating Point Types
-        3.5.8 Operations of Floating Point Types
-        3.5.9 Fixed Point Types
-        3.5.10 Operations of fixed point types
-        3.6 Array Types
-        3.6.1 Index Constraints and Discrete Ranges
-        3.6.2 Operations of Array Types
-        3.6.3 The Type String
-        3.7 Record Types
-        3.7.1 Discriminants
-        3.7.2 Discriminant Constraints
-        3.7.3 Variant Parts
-        3.7.4 Operations of Record Types
-        3.8 Access Types
-        3.8.1 Incomplete Type Declarations
-        3.8.2 Operations of Access Types
-        3.9 Declarative Parts
-
-
-4 Names and Expressions
-
-
-        4.1 Names
-        4.1.1 Indexed Components
-        4.1.2 Slices
-        4.1.3 Selected Components
-        4.1.4 Attributes
-        4.2 Literals
-        4.3 Aggregates
-        4.3.1 Record Aggregates
-        4.3.2 Array Aggregates
-        4.4 Expressions
-        4.5 Operators and Expression Evaluation
-        4.5.1 Logical Operators and Short Circuit Control Forms
-        4.5.2 Relational Operators and Membership Tests
-        4.5.3 Adding Operators
-        4.5.4 Unary Operators
-        4.5.5 Multiplying Operators
-        4.5.6 Exponentiating Operator
-        4.5.7 Accuracy of Operations with Real Operands
-        4.6 Type Conversions
-        4.7 Qualified Expressions
-        4.8 Allocators
-        4.9 Static Expressions and Static Subtypes
-        4.10 Universal Expression
-
-
-5 Statements
-
-
-        5.1 Simple and Compound Statements - Sequences of Statements
-        5.2 Assignment Statement
-        5.2.1 Array Assignments
-        5.3 If Statements
-        5.4 Case Statements
-        5.5 Loop Statements
-        5.6 Block Statements
-        5.7 Exit Statements
-        5.8 Return Statements
-        5.9 Goto Statements
-
-
-6 Subprograms
-
-
-        6.1 Subprogram Declarations
-        6.2 Formal Parameter Modes
-        6.3 Subprogram Bodies
-        6.3.1 Conformance Rules
-        6.3.2 Inline Expansion of Subprograms
-        6.4 Subprogram Calls
-        6.4.1 Parameter Associations
-        6.4.2 Default Parameters
-        6.5 Function Subprograms
-        6.6 Parameter and Result Type Profile - Overloading of Subprograms
-        6.7 Overloading of Operators
-
-
-7 Packages
-
-
-        7.1 Package Structure
-        7.2 Package Specifications and Declarations
-        7.3 Package Bodies
-        7.4 Private Type and Deferred Constant Declarations
-        7.4.1 Private Types
-        7.4.2 Operations of a Private Type
-        7.4.3 Deferred Constants
-        7.4.4 Limited Types
-        7.5 Example of a Table Management Package
-        7.6 Example of a Text Handling Package
-
-
-8 Visibility Rules
-
-
-        8.1 Declarative Region
-        8.2 Scope of Declarations
-        8.3 Visibility
-        8.4 Use Clauses
-        8.5 Renaming Declarations
-        8.6 The Package Standard
-        8.7 The Context of Overload Resolution
-
-
-9 Tasks
-
-
-```ada
-        9.1 Task Specifications and Task Bodies
-        9.2 Task Types and Task Objects
-        9.3 Task Execution - Task Activation
-        9.4 Task Dependence - Termination of Tasks
-        9.5 Entries, Entry Calls and Accept Statements
-        9.6 Delay Statements, Duration and Time
-        9.7 Select Statements
-        9.7.1 Selective Waits
-        9.7.2 Conditional Entry Calls
-        9.7.3 Timed Entry Calls
-        9.8 Priorities
-        9.9 Task and Entry Attributes
-        9.10 Abort Statements
-        9.11 Shared Variables
-        9.12 Example of Tasking
-
-
-10 Program Structure and Compilation Issues
-
-
-        10.1 Compilation Units - Library Units
-        10.1.1 Context Clauses - With Clauses
-        10.1.2 Examples of Compilation Units
-        10.2 Subunits of Compilation Units
-        10.2.1 Examples of Subunits
-        10.3 Order of Compilation
-        10.4 The Program Library
-        10.5 Elaboration of Library Units
-        10.6 Program Optimization
-
-
-11 Exceptions
-
-
-        11.1 Exception Declarations
-        11.2 Exception Handlers
-        11.3 Raise Statements
-        11.4 Exception Handling
-        11.4.1 Exceptions Raised During the Execution of Statements
-        11.4.2 Exceptions Raised During the Elaboration of Declarations
-        11.5 Exceptions Raised During Task Communication
-        11.6 Exceptions and Optimization
-        11.7 Suppressing Checks
-
-
-12 Generic Units
-
-
-        12.1 Generic Declarations
-        12.1.1 Generic Formal Objects
-        12.1.2 Generic Formal Types
-        12.1.3 Generic Formal Subprograms
-        12.2 Generic Bodies
-        12.3 Generic Instantiation
-        12.3.1 Matching Rules for Formal Objects
-        12.3.2 Matching Rules for Formal Private Types
-        12.3.3 Matching Rules for Formal Scalar Types
-        12.3.4 Matching Rules for Formal Array Types
-        12.3.5 Matching Rules for Formal Access Types
-        12.3.6 Matching Rules for Formal Subprograms
-        12.4 Example of a Generic Package
-
-
-13 Representation Clauses and Implementation Dependent Features
-
-
-        13.1 Representation Clauses
-        13.2 Length Clause
-        13.3 Enumeration Representation Clauses
-        13.4 Record Representation Clauses
-        13.5 Address Clauses
-        13.5.1 Interrupts
-        13.6 Change of Representation
-        13.7 The Package System
-        13.7.1 System Dependent Named Numbers
-        13.7.2 Representation Attributes
-        13.7.3 Representation Attributes of Real Types
-        13.8 Machine Code Insertions
-        13.9 Interface to other Languages
-        13.10 Unchecked Programming
-        13.10.1 Unchecked Storage Deallocation
-        13.10.2 Unchecked Type Conversions
-
-
-14 Input-Output
-
-
-        14.1 External Files and File Objects
-        14.2 Sequential and Direct Files
-        14.2.1 File Management
-        14.2.2 Sequential Input-Output
-        14.2.3 Specification of the Package Sequential_IO
-        14.2.4 Direct Input-Output
-        14.2.5 Specification of the Package Direct_IO
-        14.3 Text Input-Output
-        14.3.1 File Management
-        14.3.2 Default Input and Output Files
-        14.3.3 Specification of Line and Page Lengths
-        14.3.4 Operations on Columns, Lines and Pages
-        14.3.5 GET and PUT Procedures
-        14.3.6 Input-output of Characters and Strings
-        14.3.7 Input-Output for Integer Types
-        14.3.8 Input-Output for Real Types
-        14.3.9 Input-Output for Enumeration Types
-        14.3.10 Specification of the Package TEXT_IO
-        14.4 Exceptions in Input-Output
-        14.5 Specification of the Package IO_EXCEPTIONS
-        14.6 Low Level Input-Output
-        14.7 Example of Input-Output
-
-
+- [1 Introduction](#1-introduction)
+  - 1.1 Scope of the Standard
+    - 1.1.1 Extent of the Standard
+    - 1.1.2 Conformity of an Implementation with the Standard
+    - 1.1.3 Method of Description
+  - 1.2 Structure of the Standard
+  - 1.3 Design Goals and Sources
+  - 1.4 Language Summary
+  - 1.5 Syntax Notation
+  - 1.6 Classification of Errors
+- [2 Lexical Elements](#2-lexical-elements)
+  - 2.1 Character Set
+  - 2.2 Lexical Elements, Separators and Delimiters
+  - 2.3 Identifiers
+  - 2.4 Numeric Literals
+    - 2.4.1 Decimal Literals
+    - 2.4.2 Based Literals
+  - 2.5 Character Literals
+  - 2.6 String Literals
+  - 2.7 Comments
+  - 2.8 Pragmas
+  - 2.9 Reserved Words
+  - 2.10 Allowed Replacements of Characters
+- [3 Declarations and Types](#3-declarations-and-types)
+  - 3.1 Declarations
+  - 3.2 Objects and Named Numbers
+    - 3.2.1 Object Declarations
+    - 3.2.2 Number Declarations
+  - 3.3 Types and Subtypes
+    - 3.3.1 Type Declarations
+    - 3.3.2 Subtype Declarations
+    - 3.3.3 Classification of Operations
+  - 3.4 Derived Types
+  - 3.5 Scalar Types
+    - 3.5.1 Enumeration Types
+    - 3.5.2 Character Types
+    - 3.5.3 Boolean Types
+    - 3.5.4 Integer Types
+    - 3.5.5 Operations of Discrete Types
+    - 3.5.6 Real Types
+    - 3.5.7 Floating Point Types
+    - 3.5.8 Operations of Floating Point Types
+    - 3.5.9 Fixed Point Types
+    - 3.5.10 Operations of fixed point types
+  - 3.6 Array Types
+    - 3.6.1 Index Constraints and Discrete Ranges
+    - 3.6.2 Operations of Array Types
+    - 3.6.3 The Type String
+  - 3.7 Record Types
+    - 3.7.1 Discriminants
+    - 3.7.2 Discriminant Constraints
+    - 3.7.3 Variant Parts
+    - 3.7.4 Operations of Record Types
+  - 3.8 Access Types
+    - 3.8.1 Incomplete Type Declarations
+    - 3.8.2 Operations of Access Types
+  - 3.9 Declarative Parts
+- [4 Names and Expressions](#4-names-and-expressions)
+  - 4.1 Names
+    - 4.1.1 Indexed Components
+    - 4.1.2 Slices
+    - 4.1.3 Selected Components
+    - 4.1.4 Attributes
+  - 4.2 Literals
+  - 4.3 Aggregates
+    - 4.3.1 Record Aggregates
+    - 4.3.2 Array Aggregates
+  - 4.4 Expressions
+  - 4.5 Operators and Expression Evaluation
+    - 4.5.1 Logical Operators and Short Circuit Control Forms
+    - 4.5.2 Relational Operators and Membership Tests
+    - 4.5.3 Adding Operators
+    - 4.5.4 Unary Operators
+    - 4.5.5 Multiplying Operators
+    - 4.5.6 Exponentiating Operator
+    - 4.5.7 Accuracy of Operations with Real Operands
+  - 4.6 Type Conversions
+  - 4.7 Qualified Expressions
+  - 4.8 Allocators
+  - 4.9 Static Expressions and Static Subtypes
+  - 4.10 Universal Expression
+- [5 Statements](#5-statements)
+  - 5.1 Simple and Compound Statements - Sequences of Statements
+  - 5.2 Assignment Statement
+    - 5.2.1 Array Assignments
+  - 5.3 If Statements
+  - 5.4 Case Statements
+  - 5.5 Loop Statements
+  - 5.6 Block Statements
+  - 5.7 Exit Statements
+  - 5.8 Return Statements
+  - 5.9 Goto Statements
+- [6 Subprograms](#6-subprograms)
+  - 6.1 Subprogram Declarations
+  - 6.2 Formal Parameter Modes
+  - 6.3 Subprogram Bodies
+    - 6.3.1 Conformance Rules
+    - 6.3.2 Inline Expansion of Subprograms
+  - 6.4 Subprogram Calls
+    - 6.4.1 Parameter Associations
+    - 6.4.2 Default Parameters
+  - 6.5 Function Subprograms
+  - 6.6 Parameter and Result Type Profile - Overloading of Subprograms
+  - 6.7 Overloading of Operators
+- [7 Packages](#7-packages)
+  - 7.1 Package Structure
+  - 7.2 Package Specifications and Declarations
+  - 7.3 Package Bodies
+  - 7.4 Private Type and Deferred Constant Declarations
+    - 7.4.1 Private Types
+    - 7.4.2 Operations of a Private Type
+    - 7.4.3 Deferred Constants
+    - 7.4.4 Limited Types
+  - 7.5 Example of a Table Management Package
+  - 7.6 Example of a Text Handling Package
+- [8 Visibility Rules](#8-visibility-rules)
+  - 8.1 Declarative Region
+  - 8.2 Scope of Declarations
+  - 8.3 Visibility
+  - 8.4 Use Clauses
+  - 8.5 Renaming Declarations
+  - 8.6 The Package Standard
+  - 8.7 The Context of Overload Resolution
+- [9 Tasks](#9-tasks)
+  - 9.1 Task Specifications and Task Bodies
+  - 9.2 Task Types and Task Objects
+  - 9.3 Task Execution - Task Activation
+  - 9.4 Task Dependence - Termination of Tasks
+  - 9.5 Entries, Entry Calls and Accept Statements
+  - 9.6 Delay Statements, Duration and Time
+  - 9.7 Select Statements
+    - 9.7.1 Selective Waits
+    - 9.7.2 Conditional Entry Calls
+    - 9.7.3 Timed Entry Calls
+  - 9.8 Priorities
+  - 9.9 Task and Entry Attributes
+  - 9.10 Abort Statements
+  - 9.11 Shared Variables
+  - 9.12 Example of Tasking
+- [10 Program Structure and Compilation Issues](#10-program-structure-and-compilation-issues)
+  - 10.1 Compilation Units - Library Units
+    - 10.1.1 Context Clauses - With Clauses
+    - 10.1.2 Examples of Compilation Units
+  - 10.2 Subunits of Compilation Units
+    - 10.2.1 Examples of Subunits
+  - 10.3 Order of Compilation
+  - 10.4 The Program Library
+  - 10.5 Elaboration of Library Units
+  - 10.6 Program Optimization
+- [11 Exceptions](#11-exceptions)
+  - 11.1 Exception Declarations
+  - 11.2 Exception Handlers
+  - 11.3 Raise Statements
+  - 11.4 Exception Handling
+    - 11.4.1 Exceptions Raised During the Execution of Statements
+    - 11.4.2 Exceptions Raised During the Elaboration of Declarations
+  - 11.5 Exceptions Raised During Task Communication
+  - 11.6 Exceptions and Optimization
+  - 11.7 Suppressing Checks
+- [12 Generic Units](#12-generic-units)
+  - 12.1 Generic Declarations
+    - 12.1.1 Generic Formal Objects
+    - 12.1.2 Generic Formal Types
+    - 12.1.3 Generic Formal Subprograms
+  - 12.2 Generic Bodies
+  - 12.3 Generic Instantiation
+    - 12.3.1 Matching Rules for Formal Objects
+    - 12.3.2 Matching Rules for Formal Private Types
+    - 12.3.3 Matching Rules for Formal Scalar Types
+    - 12.3.4 Matching Rules for Formal Array Types
+    - 12.3.5 Matching Rules for Formal Access Types
+    - 12.3.6 Matching Rules for Formal Subprograms
+  - 12.4 Example of a Generic Package
+- [13 Representation Clauses and Implementation Dependent Features](#13-representation-clauses-and-implementation-dependent-features)
+  - 13.1 Representation Clauses
+  - 13.2 Length Clause
+  - 13.3 Enumeration Representation Clauses
+  - 13.4 Record Representation Clauses
+  - 13.5 Address Clauses
+    - 13.5.1 Interrupts
+  - 13.6 Change of Representation
+  - 13.7 The Package System
+    - 13.7.1 System Dependent Named Numbers
+    - 13.7.2 Representation Attributes
+    - 13.7.3 Representation Attributes of Real Types
+  - 13.8 Machine Code Insertions
+  - 13.9 Interface to other Languages
+  - 13.10 Unchecked Programming
+    - 13.10.1 Unchecked Storage Deallocation
+    - 13.10.2 Unchecked Type Conversions
+- [14 Input-Output](#14-input-output)
+  - 14.1 External Files and File Objects
+  - 14.2 Sequential and Direct Files
+    - 14.2.1 File Management
+    - 14.2.2 Sequential Input-Output
+    - 14.2.3 Specification of the Package Sequential_IO
+    - 14.2.4 Direct Input-Output
+    - 14.2.5 Specification of the Package Direct_IO
+  - 14.3 Text Input-Output
+    - 14.3.1 File Management
+    - 14.3.2 Default Input and Output Files
+    - 14.3.3 Specification of Line and Page Lengths
+    - 14.3.4 Operations on Columns, Lines and Pages
+    - 14.3.5 GET and PUT Procedures
+    - 14.3.6 Input-output of Characters and Strings
+    - 14.3.7 Input-Output for Integer Types
+    - 14.3.8 Input-Output for Real Types
+    - 14.3.9 Input-Output for Enumeration Types
+    - 14.3.10 Specification of the Package TEXT_IO
+  - 14.4 Exceptions in Input-Output
+  - 14.5 Specification of the Package IO_EXCEPTIONS
+  - 14.6 Low Level Input-Output
+  - 14.7 Example of Input-Output
 Annexes
-
-
-        A Predefined Language Attributes
-        B Predefined Language Pragmas
-        C Predefined Language Environment
-
-
+- [A Predefined Language Attributes](#a-predefined-language-attributes)
+- [B Predefined Language Pragmas](#b-predefined-language-pragmas)
+- [C Predefined Language Environment](#c-predefined-language-environment)
 Appendices
-
-
-```ada
-        D Glossary
-        E Syntax Summary
-        F Implementation Dependent Characteristics
-
-
+- [D Glossary](#d-glossary)
+- [E Syntax Summary](#e-syntax-summary)
+- [F Implementation Dependent Characteristics](#f-implementation-dependent-characteristics)
 Index
-
 Postscript: Submission of Comments
-
-
----
-
 The Ada Joint Program Office does not guarantee the accuracy of this
 file, as compared with the contents of ANSI/MIL-STD-1815A-1983,
 the Reference Manual for the Ada Programming Language. If errors or
 discrepancies are found in this machine-readable version, please
 forward comments via the Defense Data Network (DDN) to:
-
-                     ACTION@AJPO.SEI.CMU.EDU
-
+ACTION@AJPO.SEI.CMU.EDU
 or via conventional mail to
-
-
-```ada
-                  Ada Information Clearinghouse
-                   3D139 (1211 S. Fern, C-107)
-                         The Pentagon
-                   Washington, D.C. 20301-3081
-
-
+Ada Information Clearinghouse
+3D139 (1211 S. Fern, C-107)
+The Pentagon
+Washington, D.C. 20301-3081
 -----------------------------------------------------------------------
-
 Copyright 1980, 1982, 1983 owned by the United States Government as
 represented by the Under Secretary of Defense, Research and
 Engineering. All rights reserved. Provided that notice of copyright
@@ -519,7 +444,6 @@ clearly marked as an insertion; (2) shading or highlighting existing
 text; (3) deleting examples. Permission to publish other excerpts
 should be obtained from the Ada Joint Program Office, OUSDRE (R&AT),
 The Pentagon, Washington, DC 20301-2081, U.S.A.
-
 
 ## 1. Introduction
 
@@ -543,7 +467,7 @@ representation of data and access to system-dependent properties. Finally,
 both application-level and machine-level input-output are defined.
 
 
-### 1.1  Scope of the Standard
+### 1.1 Scope of the Standard
 
 
 This standard specifies the form and meaning of program units written in
@@ -551,7 +475,7 @@ Ada. Its purpose is to promote the portability of Ada programs to a
 variety of data processing systems.
 
 
-#### 1.1.1  Extent of the Standard
+#### 1.1.1 Extent of the Standard
 
 
 This standard specifies:
@@ -575,6 +499,8 @@ This standard specifies:
      required to detect, and the effect of attempting to translate or
      execute a program unit containing such violations.
 
+
+```
 
 (g) Those violations of the standard that a conforming implementation is
      not required to detect.
@@ -616,7 +542,7 @@ are:
      the absence of explicit synchronization.
 
 
-#### 1.1.2  Conformity of an Implementation With the Standard
+#### 1.1.2 Conformity of an Implementation With the Standard
 
 
 A conforming implementation is one that:
@@ -627,6 +553,8 @@ A conforming implementation is one that:
      provided that they are not so large as to exceed the capacity of the
      implementation.
 
+
+```
 
 (b) Rejects all program units that are so large as to exceed the capacity
      of the implementation.
@@ -642,7 +570,7 @@ A conforming implementation is one that:
      the standard.
 
 
-### 1.2  Structure of the Standard
+### 1.2 Structure of the Standard
 
 
 This reference manual contains fourteen chapters, three annexes, three
@@ -674,7 +602,7 @@ language:
   -  Each section whose title starts with the word "Example" or  "Examples"
 
 
-### 1.3  Design Goals and Sources
+### 1.3 Design Goals and Sources
 
 
 Ada was designed with three overriding concerns: program reliability and
@@ -747,7 +675,7 @@ ANSI canvass, all had a significant impact on the standard definition of
 the language.
 
 
-### 1.4  Language Summary
+### 1.4 Language Summary
 
 
 An Ada program is composed of one or more program units. These program
@@ -915,7 +843,7 @@ types and subprograms (as well as objects) and so allow general algorithms
 to be applied to all types of a given class.
 
 
-### 1.5  Method of Description and Syntax Notation
+### 1.5 Method of Description and Syntax Notation
 
 
 The form of Ada program units is described by means of a context-free
@@ -955,13 +883,15 @@ of Backus-Naur-Form. In particular,
 
      are equivalent.
 
+```ada
           return_statement ::= return [expression];
           return_statement ::= return; | return expression;
+```
 
 
 (d) Braces enclose a repeated item. The item may appear zero or more
 
-```ada
+```ebnf
      times; the repetitions occur from left to right as with an equivalent
      left-recursive rule. Thus the two following rules are equivalent.
 
@@ -969,15 +899,19 @@ of Backus-Naur-Form. In particular,
           term ::= factor | term multiplying_operator factor
 
 
+```
+
 (e) A vertical bar separates alternative items unless it occurs
 
-```ada
+```ebnf
      immediately after an opening brace, in which case it stands for
      itself:
 
           letter_or_digit ::= letter | digit
           component_association ::= [choice {| choice} =>] expression
 
+
+```
 
 (f) If the name of any syntactic category starts with an italicized part,
 
@@ -987,6 +921,8 @@ of Backus-Naur-Form. In particular,
      For example type_name and task_name are both equivalent to name alone.
 
 
+```
+
 Note:
 
 The syntax rules describing structured constructs are presented in a form
@@ -994,7 +930,7 @@ that corresponds to the recommended paragraphing. For example, an if
 statement is defined as
 
 
-```ada
+```ebnf
     if_statement ::=
         if condition then
           sequence_of_statements
@@ -1017,7 +953,7 @@ complete construct can fit on one line, this is also allowed in the
 recommended paragraphing.
 
 
-### 1.6  Classification of Errors
+### 1.6 Classification of Errors
 
 
 The language definition classifies errors into several different
@@ -1036,6 +972,8 @@ categories:
      the other hand, the fact that a program is legal does not mean, per
      se, that the program is free from other forms of error.
 
+
+```
 
 (b) Errors that must be detected at run time by the execution of an Ada
 
@@ -1108,6 +1046,8 @@ or via conventional mail to
                    Washington, D.C. 20301-3081
 
 
+```
+
 -----------------------------------------------------------------------
 
 Copyright 1980, 1982, 1983 owned by the United States Government as
@@ -1134,7 +1074,7 @@ References: character 2.1, compilation 10.1, lexical element 2.2, pragma
 2.8
 
 
-### 2.1  Character Set
+### 2.1 Character Set
 
 
 The only characters allowed in the text of a program are the graphic
@@ -1148,7 +1088,7 @@ graphical symbols, the ANSI graphical representation of the ISO character
 set.
 
 
-```ada
+```ebnf
     graphic_character ::= basic_graphic_character
        | lower_case_letter | other_special_character
 
@@ -1236,7 +1176,7 @@ special characters:
 ```
 
 
-### 2.2  Lexical Elements, Separators, and Delimiters
+### 2.2 Lexical Elements, Separators, and Delimiters
 
 
 The text of a program consists of the texts of one or more compilations.
@@ -1316,13 +1256,13 @@ effector 2.1, identifier 2.3, numeric literal 2.4, reserved word 2.9, space
 character 2.1, special character 2.1, string literal 2.6
 
 
-### 2.3  Identifiers
+### 2.3 Identifiers
 
 
 Identifiers are used as names and also as reserved words.
 
 
-```ada
+```ebnf
     identifier ::=
        letter {[underline] letter_or_digit}
 
@@ -1330,6 +1270,8 @@ Identifiers are used as names and also as reserved words.
 
     letter ::= upper_case_letter | lower_case_letter
 
+
+```
 
 All characters of an identifier are significant, including any underline
 character inserted between a letter or digit and an adjacent letter or
@@ -1340,10 +1282,12 @@ Examples:
 
 
 ```ada
-    COUNT X get_symbol Ethelyn Marion
+    Count X get_symbol Ethelyn Marion
 
-    SNOBOL_4 X1 PageCount STORE_NEXT_ITEM
+    Snobol_4 X1 PageCount Store_Next_Item
 
+
+```
 
 Note:
 
@@ -1352,7 +1296,7 @@ References: digit 2.1, lower case letter 2.1, name 4.1, reserved word 2.9,
 separator 2.2, space character 2.1, upper case letter 2.1
 
 
-### 2.4  Numeric Literals
+### 2.4 Numeric Literals
 
 
 There are two classes of numeric literals: real literals and integer
@@ -1366,20 +1310,22 @@ of the type universal_integer.
 References: literal 4.2, universal_integer type 3.5.4, universal_real type 3.5.6
 
 
-#### 2.4.1  Decimal Literals
+#### 2.4.1 Decimal Literals
 
 
 A decimal literal is a numeric literal expressed in the conventional
 decimal notation (that is, the base is implicitly ten).
 
 
-```ada
+```ebnf
     decimal_literal ::= integer [.integer] [exponent]
 
     integer ::= digit {[underline] digit}
 
     exponent ::= E [+] integer | E - integer
 
+
+```
 
 An underline character inserted between adjacent digits of a decimal
 literal does not affect the value of this numeric literal. The letter E of
@@ -1402,6 +1348,8 @@ Examples:
     1.34E-12 1.0E+6 -- real literals with exponent
 
 
+```
+
 Notes:
 
 Leading zeros are allowed. No space is allowed in a numeric literal, not
@@ -1412,14 +1360,14 @@ References: digit 2.1, lower case letter 2.1, numeric literal 2.4,
 separator 2.2, space character 2.1, upper case letter 2.1
 
 
-#### 2.4.2  Based Literals
+#### 2.4.2 Based Literals
 
 
 A based literal is a numeric literal expressed in a form that specifies the
 base explicitly. The base must be at least two and at most sixteen.
 
 
-```ada
+```ebnf
     based_literal ::=
        base # based_integer [.based_integer] # [exponent]
 
@@ -1456,7 +1404,7 @@ References: digit 2.1, exponent 2.4.1, letter 2.3, lower case letter 2.1,
 numeric literal 2.4, upper case letter 2.1
 
 
-### 2.5  Character Literals
+### 2.5 Character Literals
 
 
 A character literal is formed by enclosing one of the 95 graphic
@@ -1473,7 +1421,7 @@ References: character type 3.5.2, graphic character 2.1, literal 4.2,
 space character 2.1
 
 
-### 2.6  String Literals
+### 2.6 String Literals
 
 
 A string literal is formed by a sequence of graphic characters (possibly
@@ -1506,6 +1454,8 @@ Examples:
     "Characters such as $, %, and } are allowed in string literals"
 
 
+```
+
 Note:
 
 A string literal must fit on one line since it is a lexical element (see
@@ -1519,15 +1469,17 @@ characters). Examples of such uses of catenation are given below:
 ```ada
     "FIRST PART OF A SEQUENCE OF CHARACTERS " &
     "THAT CONTINUES ON THE NEXT LINE"
-    "sequence that includes the" & ASCII.ACK & "control character"
+    "sequence that includes the" & ASCII.Ack & "control character"
 
+
+```
 
 References: ascii predefined package C, catenation operation 4.5.3,
 character value 3.5.2, constant 3.2.1, declaration 3.1, end of a line 2.2,
 graphic character 2.1, lexical element 2.2
 
 
-### 2.7  Comments
+### 2.7 Comments
 
 
 A comment starts with two adjacent hyphens and extends up to the end of the
@@ -1559,7 +1511,7 @@ and is equivalent to one or more spaces (see 2.2).
 References: end of a line 2.2, illegal 1.6, legal 1.6, space character 2.1
 
 
-### 2.8  Pragmas
+### 2.8 Pragmas
 
 
 A pragma is used to convey information to the compiler. A pragma starts
@@ -1567,7 +1519,7 @@ with the reserved word pragma followed by an identifier that is the name of
 the pragma.
 
 
-```ada
+```ebnf
     pragma ::=
        pragma identifier [(argument_association {, argument_association})];
 
@@ -1575,6 +1527,8 @@ the pragma.
          [argument_identifier =>] name
        | [argument_identifier =>] expression
 
+
+```
 
 Pragmas are only allowed at the following places in a program:
 
@@ -1589,6 +1543,8 @@ Pragmas are only allowed at the following places in a program:
      and exception handler; but not in place of such a construct. Also at
      any place where a compilation unit would be allowed.
 
+
+```
 
 Additional restrictions exist for the placement of specific pragmas.
 
@@ -1617,11 +1573,13 @@ Examples:
 
 
 ```ada
-    pragma LIST(OFF);
-    pragma OPTIMIZE(TIME);
-    pragma INLINE(SETMASK);
-    pragma SUPPRESS(RANGE_CHECK, ON => INDEX);
+    pragma List(Off);
+    pragma Optimize(Time);
+    pragma Inline(Setmask);
+    pragma Suppress(Range_Check, On => Index);
 
+
+```
 
 Note:
 
@@ -1647,7 +1605,7 @@ case statement alternative 5.4, delay alternative 9.7.1, select alternative
 9.7.1, selective wait alternative 9.7.1, terminate alternative 9.7.1
 
 
-### 2.9  Reserved Words
+### 2.9 Reserved Words
 
 
 The identifiers listed below are called reserved words and are reserved for
@@ -1688,7 +1646,7 @@ References: attribute 4.1.4, declaration 3.1, identifier 2.3, lower case
 letter 2.1, upper case letter 2.1
 
 
-### 2.10  Allowable Replacements of Characters
+### 2.10 Allowable Replacements of Characters
 
 
 The following replacements are allowed for the vertical bar, sharp, and
@@ -1710,6 +1668,8 @@ quotation basic characters:
      each such doubled percent character is interpreted as a single percent
      character value.
 
+
+```
 
 These replacements do not change the meaning of the program.
 
@@ -1763,6 +1723,8 @@ or via conventional mail to
                    Washington, D.C. 20301-3081
 
 
+```
+
 -----------------------------------------------------------------------
 
 Copyright 1980, 1982, 1983 owned by the United States Government as
@@ -1783,7 +1745,7 @@ This chapter describes the types in the language and the rules for
 declaring constants, variables, and named numbers.
 
 
-### 3.1  Declarations
+### 3.1 Declarations
 
 
 The language defines several kinds of entities that are declared, either
@@ -1799,7 +1761,7 @@ There are several forms of declaration. A basic declaration is a form of
 declaration defined as follows.
 
 
-```ada
+```ebnf
     basic_declaration ::=
          object_declaration | number_declaration
        | type_declaration | subtype_declaration
@@ -1808,6 +1770,8 @@ declaration defined as follows.
        | exception_declaration | generic_instantiation
        | renaming_declaration | deferred_constant_declaration
 
+
+```
 
 Certain forms of declaration always occur (explicitly) as part of a basic
 declaration; these forms are discriminant specifications, component
@@ -1873,7 +1837,7 @@ subtype declaration 3.3.2, task declaration 9.1, type declaration 3.3.1,
 visibility 8.3
 
 
-### 3.2  Objects and Named Numbers
+### 3.2 Objects and Named Numbers
 
 
 An object is an entity that contains (has) a value of a given type. An
@@ -1897,7 +1861,7 @@ associates an identifier with a value of type universal_integer or
 universal_real.
 
 
-```ada
+```ebnf
     object_declaration ::=
          identifier_list : [constant] subtype_indication [:= expression];
        | identifier_list : [constant] constrained_array_definition [:= expression];
@@ -1935,13 +1899,13 @@ Example:
 ```ada
     --  the multiple object declaration
 
-    JOHN, PAUL : PERSON_NAME := new PERSON(SEX => M); -- see 3.8.1
+    John, Paul : Person_Name := new Person(Sex => M); -- see 3.8.1
 
     --  is  equivalent  to  the two single object declarations in the order
         given
 
-    JOHN : PERSON_NAME := new PERSON(SEX => M);
-    PAUL : PERSON_NAME := new PERSON(SEX => M);
+    John : Person_Name := new Person(Sex => M);
+    Paul : Person_Name := new Person(Sex => M);
 
 ```
 
@@ -1956,7 +1920,7 @@ slice 4.1.2, static expression 4.9, subprogram 6, subtype indication 3.3.2,
 type 3.3, universal_integer type 3.5.4, universal_real type 3.5.6
 
 
-#### 3.2.1  Object Declarations
+#### 3.2.1 Object Declarations
 
 
 An object declaration declares an object whose type is given either by a
@@ -1994,6 +1958,8 @@ The elaboration of an object declaration proceeds as follows:
      Otherwise any implicit initial values for the object or for its
      subcomponents are evaluated.
 
+
+```
 
 (c) The object is created.
 
@@ -2058,21 +2024,25 @@ Examples of variable declarations:
 
 
 ```ada
-    COUNT, SUM : INTEGER;
-    SIZE : INTEGER range 0 .. 10_ := 0;
-    SORTED : BOOLEAN := FALSE;
-    COLOR_TABLE : array(1 .. N) of COLOR;
-    OPTION : BIT_VECTOR(1 .. 10) := (others => TRUE);
+    Count, Sum : Integer;
+    Size : Integer range 0 .. 10_ := 0;
+    Sorted : Boolean := False;
+    Color_Table : array(1 .. N) of Color;
+    Option : Bit_Vector(1 .. 10) := (others => True);
 
+
+```
 
 Examples of constant declarations:
 
 
 ```ada
-    LIMIT : constant INTEGER := 10_
-    LOW_LIMIT : constant INTEGER := LIMIT/10;
-    TOLERANCE : constant REAL := DISPERSION(1.15);
+    Limit : constant Integer := 10_
+    Low_Limit : constant Integer := Limit/10;
+    Tolerance : constant Real := Dispersion(1.15);
 
+
+```
 
 Note:
 
@@ -2095,7 +2065,7 @@ subcomponent 3.3, subprogram 6, subtype 3.3, subtype indication 3.3.2, task
 9, task type 9.2, type 3.3, visible part 7.2
 
 
-#### 3.2.2  Number Declarations
+#### 3.2.2 Number Declarations
 
 
 A number declaration is a special form of constant declaration. The type
@@ -2125,7 +2095,7 @@ universal_integer type 3.5.4, universal_real type 3.5.6, universal type
 4.1 4
 
 
-### 3.3  Types and Subtypes
+### 3.3 Types and Subtypes
 
 
 A type is characterized by a set of values and a set of operations.
@@ -2194,13 +2164,13 @@ private type 7.4, qualified expression 4.7, real type 3.5.6, record type
 3.7, subtype declaration 3.3.2, task type 9.1, type declaration 3.3.1
 
 
-#### 3.3.1  Type Declarations
+#### 3.3.1 Type Declarations
 
 
 A type declaration declares a type.
 
 
-```ada
+```ebnf
     type_declaration ::= full_type_declaration
        | incomplete_type_declaration | private_type_declaration
 
@@ -2246,9 +2216,11 @@ Examples of type definitions:
 Examples of type declarations:
 
 
-    type COLOR is (WHITE, RED, YELLOW, GREEN, BLUE, BROWN, BLACK);
-    type COLUMN is range 1 .. 72;
-    type TABLE is array(1 .. 10) of INTEGER;
+```ada
+    type Color is (White, Red, Yellow, Green, Blue, Brown, Black);
+    type Column is range 1 .. 72;
+    type Table is array(1 .. 10) of Integer;
+```
 
 
 Notes:
@@ -2259,15 +2231,19 @@ declarations of A and B below define distinct types.
 
 
 ```ada
-    A : array(1 .. 10) of BOOLEAN;
-    B : array(1 .. 10) of BOOLEAN;
+    A : array(1 .. 10) of Boolean;
+    B : array(1 .. 10) of Boolean;
 
+
+```
 
 If A and B are declared by a multiple object declaration as below, their
 types are nevertheless different, since the multiple object declaration is
 equivalent to the above two single object declarations.
 
-    A, B : array(1 .. 10) of BOOLEAN;
+```ada
+    A, B : array(1 .. 10) of Boolean;
+```
 
 Incomplete type declarations are used for the definition of recursive and
 mutually dependent types (see 3.8.1). Private type declarations are used
@@ -2284,13 +2260,13 @@ private type declaration 7.4, real type definition 3.5.6, reserved word
 2.9, type 3.3
 
 
-#### 3.3.2  Subtype Declarations
+#### 3.3.2 Subtype Declarations
 
 
 A subtype declaration declares a subtype.
 
 
-```ada
+```ebnf
     subtype_declaration ::=
        subtype identifier is subtype_indication;
 
@@ -2340,14 +2316,16 @@ Examples of subtype declarations:
 
 
 ```ada
-    subtype RAINBOW is COLOR range RED .. BLUE; -- see 3.3.1
-    subtype RED_BLUE is RAINBOW;
-    subtype INT is INTEGER;
-    subtype SMALL_INT is INTEGER range -10 .. 10;
-    subtype UP_TO_K is COLUMN range 1 .. K; -- see 3.3.1
-    subtype SQUARE is MATRIX(1 .. 10, 1 .. 10); -- see 3.6
-    subtype MALE is PERSON(SEX => M); -- see 3.8
+    subtype Rainbow is Color range Red .. Blue; -- see 3.3.1
+    subtype Red_Blue is Rainbow;
+    subtype Int is Integer;
+    subtype Small_Int is Integer range -10 .. 10;
+    subtype Up_To_K is Column range 1 .. K; -- see 3.3.1
+    subtype Square is Matrix(1 .. 10, 1 .. 10); -- see 3.6
+    subtype Male is Person(Sex => M); -- see 3.8
 
+
+```
 
 Note:
 
@@ -2364,7 +2342,7 @@ constraint 3.5, reserved word 2.9, subtype 3.3, type 3.3, type name 3.3.1,
 unconstrained subtype 3.3
 
 
-#### 3.3.3  Classification of Operations
+#### 3.3.3 Classification of Operations
 
 
 The set of operations of a type includes the explicitly declared
@@ -2431,7 +2409,7 @@ declaration 3.3.1, universal_integer type 3.5.4, universal_real type 3.5.6,
 universal type 4.1 4
 
 
-### 3.4  Derived Types
+### 3.4 Derived Types
 
 
 A derived type definition defines a new (base) type whose characteristics
@@ -2461,6 +2439,8 @@ derived type are defined as follows:
 
   -  For each basic operation of the parent type, there is a  corresponding
 
+```
+
 ```ada
      basic operation of the derived type. Explicit type conversion of a
      value of the parent type into the corresponding value of the derived
@@ -2475,12 +2455,16 @@ derived type are defined as follows:
 
   -  If a default expression exists for a component of an object having the
 
+```
+
 ```ada
      parent type, then the same default expression is used for the
      corresponding component of an object having the derived type.
 
 
   -  If the parent type is an access type, then the parent and the  derived
+
+```
 
 ```ada
      type share the same collection; there is a null access value for the
@@ -2489,6 +2473,8 @@ derived type are defined as follows:
 
   -  If an explicit representation clause exists for the parent type and if
 
+```
+
 ```ada
      this clause appears before the derived type definition, then there is
      a corresponding representation clause (an implicit one) for the
@@ -2496,6 +2482,8 @@ derived type are defined as follows:
 
 
   -  Certain subprograms that are operations of the parent type are said to
+
+```
 
 ```ada
      be derivable. For each derivable subprogram of the parent type, there
@@ -2549,11 +2537,11 @@ Examples:
 
 
 ```ada
-    type LOCAL_COORDINATE is new COORDINATE; -- two different types
-    type MIDWEEK is new DAY range TUE .. THU; -- see 3.5.1
-    type COUNTER is new POSITIVE; -- same range as POSITIVE
+    type Local_Coordinate is new Coordinate; -- two different types
+    type Midweek is new Day range Tue .. Thu; -- see 3.5.1
+    type Counter is new Positive; -- same range as POSITIVE
 
-    type SPECIAL_KEY is new KEY_MANAGER.KEY; -- see 7.4.2
+    type Special_Key is new Key_Manager.Key; -- see 7.4.2
     -- the derived subprograms have the following specifications:
 
     -- procedure GET_KEY(K : out SPECIAL_KEY);
@@ -2609,7 +2597,7 @@ subprogram specification 6.1, subtype indication 3.3.2, subtype 3.3, type
 3.3, type definition 3.3.1, visible part 7.2
 
 
-### 3.5  Scalar Types
+### 3.5 Scalar Types
 
 
 Scalar types comprise enumeration types, integer types, and real types.
@@ -2621,12 +2609,14 @@ are ordered, that is, all relational operators are predefined for their
 values.
 
 
-```ada
+```ebnf
     range_constraint ::= range range
 
     range ::= range_attribute
        | simple_expression .. simple_expression
 
+
+```
 
 A range specifies a subset of values of a scalar type. The range L .. R
 specifies the values from L to R inclusive if the relation L <= R is true.
@@ -2675,13 +2665,13 @@ constraint 3.3, simple expression 4.4, subtype indication 3.3.2, type mark
 3.3.2
 
 
-#### 3.5.1  Enumeration Types
+#### 3.5.1 Enumeration Types
 
 
 An enumeration type definition defines an enumeration type.
 
 
-```ada
+```ebnf
     enumeration_type_definition ::=
        (enumeration_literal_specification {, enumeration_literal_specification})
 
@@ -2689,6 +2679,8 @@ An enumeration type definition defines an enumeration type.
 
     enumeration_literal ::= identifier | character_literal
 
+
+```
 
 The identifiers and character literals listed by an enumeration type
 definition must be distinct. Each enumeration literal specification is the
@@ -2740,7 +2732,7 @@ elaboration 3.9, 6.1, function 6.5, identifier 2.3, name 4.1, overloading
 4.5 4.5.2, type 3.3, type definition 3.3.1
 
 
-#### 3.5.2  Character Types
+#### 3.5.2 Character Types
 
 
 An enumeration type is said to be a character type if at least one of its
@@ -2751,7 +2743,9 @@ denoted by the corresponding character literal.
 
 Example:
 
-    type ROMAN_DIGIT is ('I', 'V', 'X', 'L', 'C', 'D', 'M');
+```ada
+    type Roman_Digit is ('I', 'V', 'X', 'L', 'C', 'D', 'M');
+```
 
 Notes:
 
@@ -2768,7 +2762,7 @@ literal 2.5, constant 3.2.1, declaration 3.1, enumeration type 3.5.1,
 graphic character 2.1, identifier 2.3, literal 4.2, predefined type C, type 3.3
 
 
-#### 3.5.3  Boolean Types
+#### 3.5.3 Boolean Types
 
 
 There is a predefined enumeration type named BOOLEAN. It contains the two
@@ -2780,7 +2774,7 @@ References: derived type 3.4, enumeration literal 3.5.1, enumeration type
 3.5.1, relational operator 4.5 4.5.2, type 3.3
 
 
-#### 3.5.4  Integer Types
+#### 3.5.4 Integer Types
 
 
 An integer type definition defines an integer type whose set of values
@@ -2795,7 +2789,9 @@ allowed.)
 
 A type declaration of the form:
 
+```ada
     type T is range L .. R;
+```
 
 is, by definition, equivalent to the following declarations:
 
@@ -2804,6 +2800,8 @@ is, by definition, equivalent to the following declarations:
     type integer_type is new predefined_integer_type;
     subtype T is integer_type range integer_type(L) .. integer_type(R);
 
+
+```
 
 where integer_type is an anonymous type, and where the predefined integer
 type is implicitly selected by the implementation, so as to contain the
@@ -2842,13 +2840,15 @@ Examples:
 
 
 ```ada
-    type PAGE_NUM is range 1 .. 2_
-    type LINE_SIZE is range 1 .. MAX_LINE_SIZE;
+    type Page_Num is range 1 .. 2_
+    type Line_Size is range 1 .. Max_Line_Size;
 
-    subtype SMALL_INT is INTEGER range -10 .. 10;
-    subtype COLUMN_PTR is LINE_SIZE range 1 .. 10;
-    subtype BUFFER_SIZE is INTEGER range 0 .. MAX;
+    subtype Small_Int is Integer range -10 .. 10;
+    subtype Column_Ptr is Line_Size range 1 .. 10;
+    subtype Buffer_Size is Integer range 0 .. Max;
 
+
+```
 
 Notes:
 
@@ -2871,7 +2871,7 @@ subtype declaration 3.3.2, system predefined package 13.7, type 3.3, type
 declaration 3.3.1, type definition 3.3.1, universal type 4.1 4
 
 
-#### 3.5.5  Operations of Discrete Types
+#### 3.5.5 Operations of Discrete Types
 
 
 The basic operations of a discrete type include the operations involved in
@@ -2896,9 +2896,11 @@ T'WIDTH Yields the maximum image length over all values of the subtype
 
 ```ada
             T (the image is the sequence of characters returned by the
-            attribute IMAGE, see below). Yields zero for a null range.
+            attribute Image, see below). Yields zero for a null range.
             The value of this attribute is of the type universal_integer.
 
+
+```
 
 All attributes of the second group are functions with a single parameter.
 The corresponding actual parameter is indicated below by X.
@@ -2925,24 +2927,28 @@ T'SUCC This attribute is a function. The parameter X must be a value
 ```ada
             of the base type of T. The result type is the base type of T.
             The result is the value whose position number is one greater
-            than that of X. The exception CONSTRAINT_ERROR is raised if X
-            equals T'BASE'LAST.
+            than that of X. The exception Constraint_Error is raised if X
+            equals T'Base'Last.
 
+
+```
 
 T'PRED This attribute is a function. The parameter X must be a value
 
 ```ada
             of the base type of T. The result type is the base type of T.
             The result is the value whose position number is one less than
-            that of X. The exception CONSTRAINT_ERROR is raised if X
-            equals T'BASE'FIRST.
+            that of X. The exception Constraint_Error is raised if X
+            equals T'Base'First.
 
+
+```
 
 T'IMAGE This attribute is a function. The parameter X must be a value
 
 ```ada
             of the base type of T. The result type is the predefined type
-            STRING. The result is the image of the value of X, that is, a
+            String. The result is the image of the value of X, that is, a
             sequence of characters representing the value in display form.
             The image of an integer value is the corresponding decimal
             literal; without underlines, leading zeros, exponent, or
@@ -2956,8 +2962,10 @@ T'IMAGE This attribute is a function. The parameter X must be a value
             spaces are included. The image of a character C, other than a
             graphic character, is implementation-defined; the only
             requirement is that the image must be such that C equals
-            CHARACTER'VALUE(CHARACTER'IMAGE(C)).
+            Character'Value(Character'Image(C)).
 
+
+```
 
 T'VALUE This attribute is a function. The parameter X must be a value
 
@@ -2974,6 +2982,8 @@ T'VALUE This attribute is a function. The parameter X must be a value
             a corresponding value in the base type of T, the result is this
             value. In any other case, the exception CONSTRAINT_ERROR is
             raised.
+
+```
 
 ```
 
@@ -3026,6 +3036,8 @@ Examples:
 
 ```
 
+```
+
 References: abs operator 4.5 4.5.6, assignment 5.2, attribute 4.1.4, base
 type 3.3, basic operation 3.3.3, binary adding operator 4.5 4.5.3, boolean
 type 3.5.3, bound of a range 3.5, character literal 2.5, constraint 3.3,
@@ -3041,7 +3053,7 @@ short-circuit control form 4.5 4.5.1, string type 3.6.3, subtype 3.3, type
 universal type 4.1 4
 
 
-#### 3.5.6  Real Types
+#### 3.5.6 Real Types
 
 
 Real types provide approximations to the real numbers, with relative bounds
@@ -3049,10 +3061,12 @@ on errors for floating point types, and with absolute bounds for fixed
 point types.
 
 
-```ada
+```ebnf
     real_type_definition ::=
        floating_point_constraint | fixed_point_constraint
 
+
+```
 
 A set of numbers called model numbers is associated with each real type.
 Error bounds on the predefined operations are given in terms of the model
@@ -3104,7 +3118,7 @@ predefined operation 3.3.3, real literal 2.4, type 3.3, type definition
 3.3.1, universal type 4.10
 
 
-#### 3.5.7  Floating Point Types
+#### 3.5.7 Floating Point Types
 
 
 For floating point types, the error bound is specified as a relative
@@ -3112,12 +3126,14 @@ precision by giving the required minimum number of significant decimal
 digits.
 
 
-```ada
+```ebnf
     floating_point_constraint ::=
        floating_accuracy_definition [range_constraint]
 
     floating_accuracy_definition ::= digits static_simple_expression
 
+
+```
 
 The minimum number of significant decimal digits is specified by the value
 of the static simple expression of the floating accuracy definition. This
@@ -3175,7 +3191,9 @@ type.
 A floating point type declaration of one of the two forms (that is, with or
 without the optional range constraint indicated by the square brackets):
 
+```ada
     type T is digits D [range L .. R];
+```
 
 is, by definition, equivalent to the following declarations:
 
@@ -3185,6 +3203,8 @@ is, by definition, equivalent to the following declarations:
     subtype T is floating_point_type digits D
        [range floating_point_type(L) .. floating_point_type(R)];
 
+
+```
 
 where floating_point_type is an anonymous type, and where the predefined
 floating point type is implicitly selected by the implementation so that
@@ -3233,14 +3253,16 @@ Examples:
 
 
 ```ada
-    type COEFFICIENT is digits 10 range -1.0 .. 1.0;
+    type Coefficient is digits 10 range -1.0 .. 1.0;
 
-    type REAL is digits 8;
-    type MASS is digits 7 range 0.0 .. 1.0E35;
+    type Real is digits 8;
+    type Mass is digits 7 range 0.0 .. 1.0E35;
 
-    subtype SHORT_COEFF is COEFFICIENT digits 5; -- a subtype with less accuracy
-    subtype PROBABILITY is REAL range 0.0 .. 1.0; -- a subtype with a smaller range
+    subtype Short_Coeff is Coefficient digits 5; -- a subtype with less accuracy
+    subtype Probability is Real range 0.0 .. 1.0; -- a subtype with a smaller range
 
+
+```
 
 Notes on the examples:
 
@@ -3262,7 +3284,7 @@ predefined operator 4.5, predefined type C, range constraint 3.5, real type
 3.3.2, subtype 3.3, type 3.3, type declaration 3.3.1, type mark 3.3.2
 
 
-#### 3.5.8  Operations of Floating Point Types
+#### 3.5.8 Operations of Floating Point Types
 
 
 The basic operations of a floating point type include the operations
@@ -3334,6 +3356,8 @@ T'SAFE_SMALL Yields the smallest positive (nonzero) safe number of the base
              universal_real.
 
 
+```
+
 T'SAFE_LARGE Yields the largest positive safe number of the base type of T.
              The value of this attribute is of the type universal_real.
 
@@ -3392,19 +3416,21 @@ multiplying operator 4.5 4.5.5, numeric type 3.5, object 3.2, operation
 universal_real type 3.5.6
 
 
-#### 3.5.9  Fixed Point Types
+#### 3.5.9 Fixed Point Types
 
 
 For fixed point types, the error bound is specified as an absolute value,
 called the delta of the fixed point type.
 
 
-```ada
+```ebnf
     fixed_point_constraint ::=
        fixed_accuracy_definition [range_constraint]
 
     fixed_accuracy_definition ::= delta static_simple_expression
 
+
+```
 
 The delta is specified by the value of the static simple expression of the
 fixed accuracy definition. This value must belong to some real type and
@@ -3450,7 +3476,9 @@ has the value returned by the attribute SMALL.
 
 A fixed point type declaration of the form:
 
+```ada
     type T is delta D range L .. R;
+```
 
 is, by definition, equivalent to the following declarations:
 
@@ -3460,6 +3488,8 @@ is, by definition, equivalent to the following declarations:
     subtype T is fixed_point_type
        range fixed_point_type(L) .. fixed_point_type(R);
 
+
+```
 
 In these declarations, fixed_point_type is an anonymous type, and the
 predefined fixed point type is implicitly selected by the implementation so
@@ -3513,14 +3543,14 @@ Examples:
 
 
 ```ada
-    type VOLT is delta 0.125 range 0.0 .. 255.0;
-    subtype ROUGH_VOLTAGE is VOLT delta 1.0; -- same range as VOLT
+    type Volt is delta 0.125 range 0.0 .. 255.0;
+    subtype Rough_Voltage is Volt delta 1.0; -- same range as VOLT
 
     --  A pure fraction which requires all the available space in a word
     --  on a two's complement machine can be declared as the type FRACTION:
 
-    DEL : constant := 1.0/2**(WORD_LENGTH - 1);
-    type FRACTION is delta DEL range -1.0 .. 1.0 - DEL;
+    Del : constant := 1.0/2**(Word_Length - 1);
+    type Fraction is delta Del range -1.0 .. 1.0 - Del;
 
 ```
 
@@ -3534,7 +3564,7 @@ safe number 3.5.6, simple expression 4.4, static expression 4.9, subtype
 declaration 3.3.1, type mark 3.3.2
 
 
-#### 3.5.10  Operations of Fixed Point Types
+#### 3.5.10 Operations of Fixed Point Types
 
 
 The basic operations of a fixed point type include the operations involved
@@ -3630,10 +3660,12 @@ The following relations exist between attributes of a fixed point type:
 
 
 ```ada
-    T'LARGE = (2**T'MANTISSA - 1) * T'SMALL
-    T'SAFE_LARGE = T'BASE'LARGE
-    T'SAFE_SMALL = T'BASE'SMALL
+    T'Large = (2**T'Mantissa - 1) * T'Small
+    T'Safe_Large = T'Base'Large
+    T'Safe_Small = T'Base'Small
 
+
+```
 
 References: abs operator 4.5 4.5.6, arithmetic operator 3.5.5 4.5,
 assignment 5.2, base type 3.3, basic operation 3.3.3, binary adding
@@ -3645,7 +3677,7 @@ multiplying operator 4.5 4.5.5, numeric type 3.5, object 3.2, operation
 3.5.4, universal_real type 3.5.6
 
 
-### 3.6  Array Types
+### 3.6 Array Types
 
 
 An array object is a composite object consisting of components that have
@@ -3654,7 +3686,7 @@ index values belonging to specified discrete types. The value of an array
 object is a composite value consisting of the values of its components.
 
 
-```ada
+```ebnf
     array_type_definition ::=
        unconstrained_array_definition | constrained_array_definition
 
@@ -3714,6 +3746,8 @@ this type:
   -  The array subtype is the subtype obtained by imposition of  the  index
      constraint on the array type.
 
+```
+
 If a constrained array definition is given for a type declaration, the
 simple name declared by this declaration denotes the array subtype.
 
@@ -3728,46 +3762,56 @@ Examples of type declarations with unconstrained array definitions:
 
 
 ```ada
-    type VECTOR is array(INTEGER range <>) of REAL;
-    type MATRIX is array(INTEGER range <>, INTEGER range <>) of REAL;
-    type BIT_VECTOR is array(INTEGER range <>) of BOOLEAN;
-    type ROMAN is array(POSITIVE range <>) of ROMAN_DIGIT;
+    type Vector is array(Integer range <>) of Real;
+    type Matrix is array(Integer range <>, Integer range <>) of Real;
+    type Bit_Vector is array(Integer range <>) of Boolean;
+    type Roman is array(Positive range <>) of Roman_Digit;
 
+
+```
 
 Examples of type declarations with constrained array definitions:
 
 
 ```ada
-    type TABLE is array(1 .. 10) of INTEGER;
-    type SCHEDULE is array(DAY) of BOOLEAN;
-    type LINE is array(1 .. MAX_LINE_SIZE) of CHARACTER;
+    type Table is array(1 .. 10) of Integer;
+    type Schedule is array(Day) of Boolean;
+    type Line is array(1 .. Max_Line_Size) of Character;
 
+
+```
 
 Examples of object declarations with constrained array definitions:
 
 
 ```ada
-    GRID : array(1 .. 80, 1 .. 100) of BOOLEAN;
-    MIX : array(COLOR range RED .. GREEN) of BOOLEAN;
-    PAGE : array(1 .. 50) of LINE; -- an array of arrays
+    Grid : array(1 .. 80, 1 .. 100) of Boolean;
+    Mix : array(Color range Red .. Green) of Boolean;
+    Page : array(1 .. 50) of Line; -- an array of arrays
 
+
+```
 
 Note:
 
 For a one-dimensional array, the rule given means that a type declaration
 with a constrained array definition such as
 
-    type T is array(POSITIVE range MIN .. MAX) of COMPONENT;
+```ada
+    type T is array(Positive range Min .. Max) of Component;
+```
 
 is equivalent (in the absence of an incorrect order dependence) to the
 succession of declarations
 
 
 ```ada
-    subtype index_subtype is POSITIVE range MIN .. MAX;
-    type array_type is array(index_subtype range <>) of COMPONENT;
+    subtype index_subtype is Positive range Min .. Max;
+    type array_type is array(index_subtype range <>) of Component;
     subtype T is array_type (index_subtype);
 
+
+```
 
 where index_subtype and array_type are both anonymous. Consequently, T is
 the name of a subtype and all objects declared with this type mark are
@@ -3784,7 +3828,7 @@ name 4.1, object 3.2, range 3.5, subtype 3.3, subtype indication 3.3.2,
 type 3.3, type declaration 3.3.1, type definition 3.3.1, type mark 3.3.2
 
 
-#### 3.6.1  Index Constraints and Discrete Ranges
+#### 3.6.1 Index Constraints and Discrete Ranges
 
 
 An index constraint determines the range of possible values for every index
@@ -3833,6 +3877,8 @@ The bounds of each array object are determined as follows:
 
   -  For a constant declared by an object declaration, the  bounds  of  the
 
+```
+
 ```ada
      constant are defined by the initial value if the subtype of the
      constant is unconstrained; they are otherwise defined by this subtype
@@ -3860,6 +3906,8 @@ The bounds of each array object are determined as follows:
      corresponding generic actual parameter.
 
 
+```
+
 For the elaboration of an index constraint, the discrete ranges are
 evaluated in some order that is not defined by the language.
 
@@ -3867,31 +3915,39 @@ Examples of array declarations including an index constraint:
 
 
     BOARD : MATRIX(1 .. 8, 1 .. 8); -- see 3.6
-    RECTANGLE : MATRIX(1 .. 20, 1 .. 30);
+```ada
+    Rectangle : Matrix(1 .. 20, 1 .. 30);
+```
     INVERSE : MATRIX(1 .. N, 1 .. N); -- N need not be static
 
-    FILTER : BIT_VECTOR(0 .. 31);
+```ada
+    Filter : Bit_Vector(0 .. 31);
+```
 
 
 Example of array declaration with a constrained array subtype:
 
 
 ```ada
-    MY_SCHEDULE : SCHEDULE; -- all arrays of type SCHEDULE have the same
+    My_Schedule : Schedule; -- all arrays of type SCHEDULE have the same
                                  bounds
 
+
+```
 
 Example of record type with a component that is an array:
 
 
 ```ada
-    type VAR_LINE(LENGTH : INTEGER) is
+    type Var_Line(Length : Integer) is
        record
-          IMAGE : STRING(1 .. LENGTH);
+          Image : String(1 .. Length);
        end record;
 
-    NULL_LINE : VAR_LINE(0); -- NULL_LINE.IMAGE is a null array
+    Null_Line : Var_Line(0); -- NULL_LINE.IMAGE is a null array
 
+
+```
 
 Notes:
 
@@ -3921,7 +3977,7 @@ unconstrained array type 3.6, unconstrained subtype 3.3, universal type
 4.10, universal_integer type 3.5.4, variable 3.2.1
 
 
-#### 3.6.2  Operations of Array Types
+#### 3.6.2 Operations of Array Types
 
 
 The basic operations of an array type include the operations involved in
@@ -3963,12 +4019,16 @@ A'LENGTH Yields the number of values of the first index range (zero
                 type universal_integer.
 
 
+```
+
 A'LENGTH(N) Yields the number of values of the N-th index range (zero
 
 ```ada
                 for a null range). The value of this attribute is of the
                 type universal_integer.
 
+
+```
 
 In addition, the attribute T'BASE is defined for an array type or subtype T
 (see 3.3.3); the attribute T'SIZE is defined for an array type or subtype
@@ -3997,9 +4057,11 @@ attributes if the index type is an integer type:
 
 
 ```ada
-    A'LENGTH = A'LAST - A'FIRST + 1
-    A'LENGTH(N) = A'LAST(N) - A'FIRST(N) + 1
+    A'Length = A'Last - A'First + 1
+    A'Length(N) = A'Last(N) - A'First(N) + 1
 
+
+```
 
 An array type is limited if its component type is limited (see 7.4.4).
 
@@ -4015,7 +4077,7 @@ type 3.3, unconstrained array type 3.6, universal type 4.10,
 universal_integer type 3.5.4
 
 
-#### 3.6.3  The Type String
+#### 3.6.3 The Type String
 
 
 The values of the predefined type STRING are one-dimensional arrays of the
@@ -4024,21 +4086,25 @@ POSITIVE:
 
 
 ```ada
-    subtype POSITIVE is INTEGER range 1 .. INTEGER'LAST;
-    type STRING is array(POSITIVE range <>) of CHARACTER;
+    subtype Positive is Integer range 1 .. Integer'Last;
+    type String is array(Positive range <>) of Character;
 
+
+```
 
 Examples:
 
 
 ```ada
-    STARS : STRING(1 .. 120) := (1 .. 120 => '*' );
-    QUESTION : constant STRING := "HOW MANY CHARACTERS?";
+    Stars : String(1 .. 120) := (1 .. 120 => '*' );
+    Question : constant String := "HOW MANY CHARACTERS?";
     --  QUESTION'FIRST = 1, QUESTION'LAST = 20 (the number of characters)
 
-    ASK_TWICE : constant STRING := QUESTION & QUESTION;
-    NINETY_SIX : constant ROMAN := "XCVI"; -- see 3.6
+    Ask_Twice : constant String := Question & Question;
+    Ninety_Six : constant Roman := "XCVI"; -- see 3.6
 
+
+```
 
 Notes:
 
@@ -4056,7 +4122,7 @@ operator 4.5, predefined type C, relational operator 4.5 4.5.2, string
 literal 2.6, subtype 3.3, type 3.3
 
 
-### 3.7  Record Types
+### 3.7 Record Types
 
 
 A record object is a composite object consisting of named components. The
@@ -4064,7 +4130,7 @@ value of a record object is a composite value consisting of the values of
 its components.
 
 
-```ada
+```ebnf
     record_type_definition ::=
        record
           component_list
@@ -4123,25 +4189,29 @@ Examples of record type declarations:
 
 
 ```ada
-    type DATE is
+    type Date is
        record
-          DAY : INTEGER range 1 .. 31;
-          MONTH : MONTH_NAME;
-          YEAR : INTEGER range 0 .. 4000;
+          Day : Integer range 1 .. 31;
+          Month : Month_Name;
+          Year : Integer range 0 .. 4000;
        end record;
 
-    type COMPLEX is
+    type Complex is
        record
-          RE : REAL := 0.0;
-          IM : REAL := 0.0;
+          Re : Real := 0.0;
+          Im : Real := 0.0;
        end record;
 
+
+```
 
 Examples of record variables:
 
 
-    TOMORROW, YESTERDAY : DATE;
-    A, B, C : COMPLEX;
+```ada
+    Tomorrow, Yesterday : Date;
+    A, B, C : Complex;
+```
 
     -- both components of A, B, and C are implicitly initialized to zero
 
@@ -4165,7 +4235,7 @@ discriminant 3.3, discriminant part 3.7 3.7.1, elaboration 3.9, expression
 object 3.2, subtype 3.3, type 3.3, type mark 3.3.2, variant part 3.7.3
 
 
-#### 3.7.1  Discriminants
+#### 3.7.1 Discriminants
 
 
 A discriminant part specifies the discriminants of a type. A discriminant
@@ -4173,13 +4243,15 @@ of a record is a component of the record. The type of a discriminant must
 be discrete.
 
 
-```ada
+```ebnf
     discriminant_part ::=
        (discriminant_specification {; discriminant_specification})
 
     discriminant_specification ::=
        identifier_list : type_mark [:= expression]
 
+
+```
 
 A discriminant part is only allowed in the type declaration for a record
 type, in a private type declaration or an incomplete type declaration (the
@@ -4233,26 +4305,26 @@ Examples:
 
 
 ```ada
-    type BUFFER(SIZE : BUFFER_SIZE := 100) is -- see 3.5.4
+    type Buffer(Size : Buffer_Size := 100) is -- see 3.5.4
        record
-          POS : BUFFER_SIZE := 0;
-          VALUE : STRING(1 .. SIZE);
+          Pos : Buffer_Size := 0;
+          Value : String(1 .. Size);
        end record;
 
-    type SQUARE(SIDE : INTEGER) is
+    type Square(Side : Integer) is
        record
-          MAT : MATRIX(1 .. SIDE, 1 .. SIDE); -- see 3.6
+          Mat : Matrix(1 .. Side, 1 .. Side); -- see 3.6
        end record;
 
-    type DOUBLE_SQUARE(NUMBER : INTEGER) is
+    type Double_Square(Number : Integer) is
        record
-          LEFT : SQUARE(NUMBER);
-          RIGHT : SQUARE(NUMBER);
+          Left : Square(Number);
+          Right : Square(Number);
        end record;
 
-    type ITEM(NUMBER : POSITIVE) is
+    type Item(Number : Positive) is
        record
-          CONTENT : INTEGER;
+          Content : Integer;
           --  no component depends on the discriminant
        end record;
 
@@ -4269,7 +4341,7 @@ object 3.2, private type 7.4, private type declaration 7.4, record type
 3.3.2, type declaration 3.3.1, type mark 3.3.2, variant part 3.7.3
 
 
-#### 3.7.2  Discriminant Constraints
+#### 3.7.2 Discriminant Constraints
 
 
 A discriminant constraint is only allowed in a subtype indication, after a
@@ -4278,13 +4350,15 @@ an access type whose designated type is a type with discriminants. A
 discriminant constraint specifies the values of these discriminants.
 
 
-```ada
+```ebnf
     discriminant_constraint ::=
        (discriminant_association {, discriminant_association})
 
     discriminant_association ::=
        [discriminant_simple_name {| discriminant_simple_name} =>] expression
 
+
+```
 
 Each discriminant association associates an expression with one or more
 discriminants. A discriminant association is said to be named if the
@@ -4362,10 +4436,14 @@ discriminants are determined as follows:
 
   -  For a renaming declaration and for a generic formal parameter of  mode
 
+```
+
 ```ada
      in out, the discriminants are those of the renamed object or of the
      corresponding generic actual parameter.
 
+
+```
 
 For the elaboration of a discriminant constraint, the expressions given in
 the discriminant associations are evaluated in some order that is not
@@ -4406,7 +4484,7 @@ subcomponent 3.3, subprogram 6, subtype 3.3, subtype indication 3.3.2, type
 3.3, type mark 3.3.2, variable 3.2.1
 
 
-#### 3.7.3  Variant Parts
+#### 3.7.3 Variant Parts
 
 
 A record type with a variant part specifies alternative lists of
@@ -4414,7 +4492,7 @@ components. Each variant defines the components for the corresponding
 value or values of the discriminant.
 
 
-```ada
+```ebnf
     variant_part ::=
        case discriminant_simple_name is
            variant
@@ -4457,36 +4535,42 @@ Example of record type with a variant part:
 
 
 ```ada
-    type DEVICE is (PRINTER, DISK, DRUM);
-    type STATE is (OPEN, CLOSED);
+    type Device is (Printer, Disk, Drum);
+    type State is (Open, Closed);
 
-    type PERIPHERAL(UNIT : DEVICE := DISK) is
+    type Peripheral(Unit : Device := Disk) is
        record
-          STATUS : STATE;
-          case UNIT is
-             when PRINTER =>
-                LINE_COUNT : INTEGER range 1 .. PAGE_SIZE;
+          Status : State;
+          case Unit is
+             when Printer =>
+                Line_Count : Integer range 1 .. Page_Size;
              when others =>
-                CYLINDER : CYLINDER_INDEX;
-                TRACK : TRACK_NUMBER;
+                Cylinder : Cylinder_Index;
+                Track : Track_Number;
              end case;
           end record;
 
 
+```
+
 Examples of record subtypes:
 
 
-    subtype DRUM_UNIT is PERIPHERAL(DRUM);
-    subtype DISK_UNIT is PERIPHERAL(DISK);
+```ada
+    subtype Drum_Unit is Peripheral(Drum);
+    subtype Disk_Unit is Peripheral(Disk);
+```
 
 
 Examples of constrained record ariables:
 
 
 ```ada
-    WRITER : PERIPHERAL(UNIT => PRINTER);
-    ARCHIVE : DISK_UNIT;
+    Writer : Peripheral(Unit => Printer);
+    Archive : Disk_Unit;
 
+
+```
 
 Note:
 
@@ -4501,7 +4585,7 @@ expression 4.4, simple name 4.1, static discrete range 4.9, static
 expression 4.9, static subtype 4.9, subtype 3.3
 
 
-#### 3.7.4  Operations of Record Types
+#### 3.7.4 Operations of Record Types
 
 
 The basic operations of a record type include the operations involved in
@@ -4517,14 +4601,14 @@ A'CONSTRAINED Yields the value TRUE if the discriminant constraint
 ```ada
                   applies to the object A, or if the object is a constant
                   (including a formal parameter or generic formal parameter
-                  of mode in); yields the value FALSE otherwise. If A is a
+                  of mode in); yields the value False otherwise. If A is a
                   generic formal parameter of mode in out, or if A is a
                   formal parameter of mode in out or out and the type mark
                   given in the corresponding parameter specification
                   denotes an unconstrained type with discriminants, then
                   the value of this attribute is obtained from that of the
                   corresponding actual parameter. The value of this attri-
-                  bute is of the predefined type BOOLEAN.
+                  bute is of the predefined type Boolean.
 
 ```
 
@@ -4592,10 +4676,12 @@ Examples:
 
 
 ```ada
-    type FRAME is access MATRIX; -- see 3.6
+    type Frame is access Matrix; -- see 3.6
 
-    type BUFFER_NAME is access BUFFER -- see 3.7.1
+    type Buffer_Name is access Buffer -- see 3.7.1
 
+
+```
 
 Notes:
 
@@ -4630,7 +4716,9 @@ another access type, or even the same access type. This permits mutually
 dependent and recursive access types. Their declarations require a prior
 incomplete (or private) type declaration for one or more types.
 
+```ada
      incomplete_type_declaration ::= type identifier [discriminant_part];
+```
 
 For each incomplete type declaration, there must be a corresponding
 declaration of a type with the same identifier. The corresponding
@@ -4663,19 +4751,21 @@ Example of a recursive type:
 
 
 ```ada
-    type CELL; -- incomplete type declaration
-    type LINK is access CELL;
+    type Cell; -- incomplete type declaration
+    type Link is access Cell;
 
-    type CELL is
+    type Cell is
        record
-          VALUE : INTEGER;
-          SUCC : LINK;
-          PRED : LINK;
+          Value : Integer;
+          Succ : Link;
+          Pred : Link;
        end record;
 
-    HEAD : LINK := new CELL'(O, null, null);
-    NEXT : LINK := HEAD.SUCC;
+    Head : Link := new Cell'(O, null, null);
+    Next : Link := Head.Succ;
 
+
+```
 
 Examples of mutually dependent access types:
 
@@ -4683,29 +4773,39 @@ Examples of mutually dependent access types:
     type PERSON(SEX : GENDER); -- incomplete type declaration
     type CAR; -- incomplete type declaration
 
-    type PERSON_NAME is access PERSON;
-    type CAR_NAME is access CAR;
+```ada
+    type Person_Name is access Person;
+    type Car_Name is access Car;
+```
 
     type CAR is
        record
-          NUMBER : INTEGER;
-          OWNER :PERSON_NAME;
+```ada
+          Number : Integer;
+          Owner :Person_Name;
        end record;
+```
 
     type PERSON(SEX : GENDER) is
        record
-          NAME : STRING(1 .. 20);
-          BIRTH : DATE;
-          AGE : INTEGER range 0 .. 130;
-          VEHICLE : CAR_NAME;
+```ada
+          Name : String(1 .. 20);
+          Birth : Date;
+          Age : Integer range 0 .. 130;
+          Vehicle : Car_Name;
+```
           case SEX is
              when M => WIFE : PERSON_NAME(SEX => F);
              when F => HUSBAND : PERSON_NAME(SEX => M);
+```ada
           end case;
        end record;
+```
 
     MY_CAR, YOUR_CAR, NEXT_CAR : CAR_NAME; -- implicitly initialized with
                                               null value
+
+```
 
 ```
 
@@ -4716,7 +4816,7 @@ elaboration 3.9, identifier 2.3, name 4.1, subtype indication 3.3.2, type
 3.3, type mark 3.3.2
 
 
-#### 3.8.2  Operations of Access Types
+#### 3.8.2 Operations of Access Types
 
 
 The basic operations of an access type include the operations involved in
@@ -4762,13 +4862,13 @@ discriminant 3.3, indexed component 4.1.1, literal 4.2, membership test 4.5
 task type 9.1, type 3.3
 
 
-### 3.9  Declarative Parts
+### 3.9 Declarative Parts
 
 
 A declarative part contains declarative items (possibly none).
 
 
-```ada
+```ebnf
     declarative_part ::=
        {basic_declarative_item} {later_declarative_item}
 
@@ -4865,6 +4965,8 @@ or via conventional mail to
                    Washington, D.C. 20301-3081
 
 
+```
+
 -----------------------------------------------------------------------
 
 Copyright 1980, 1982, 1983 owned by the United States Government as
@@ -4885,7 +4987,7 @@ The rules applicable to the different forms of name and expression, and to
 their evaluation, are given in this chapter.
 
 
-### 4.1  Names
+### 4.1 Names
 
 
 Names can denote declared entities, whether declared explicitly or
@@ -4895,7 +4997,7 @@ entry families, and entries in families of entries. Finally, names can
 denote attributes of any of the foregoing.
 
 
-```ada
+```ebnf
     name ::= simple_name
        | character_literal | operator_symbol
        | indexed_component | slice
@@ -4945,14 +5047,16 @@ Examples of simple names:
 
 
 ```ada
-    PI -- the simple name of a number (see 3.2.2)
-    LIMIT -- the simple name of a constant (see 3.2.1)
-    COUNT -- the simple name of a scalar variable (see 3.2.1)
-    BOARD -- the simple name of an array variable (see 3.6.1)
-    MATRIX -- the simple name of a type (see 3.6)
-    RANDOM -- the simple name of a function (see 6.1)
-    ERROR -- the simple name of an exception (see 11.1)
+    Pi -- the simple name of a number (see 3.2.2)
+    Limit -- the simple name of a constant (see 3.2.1)
+    Count -- the simple name of a scalar variable (see 3.2.1)
+    Board -- the simple name of an array variable (see 3.6.1)
+    Matrix -- the simple name of a type (see 3.6)
+    Random -- the simple name of a function (see 6.1)
+    Error -- the simple name of an exception (see 11.1)
 
+
+```
 
 References: access type 3.8, access value 3.8, attribute 4.1.4, belong to
 a type 3.3, character literal 2.5, component 3.3, constraint_error
@@ -4964,7 +5068,7 @@ access value 3.8, object 3.2.1, operator symbol 6.1, raising of exceptions
 subcomponent 3.3, type 3.3
 
 
-#### 4.1.1  Indexed Components
+#### 4.1.1 Indexed Components
 
 
 An indexed component denotes either a component of an array or an entry in
@@ -5011,7 +5115,7 @@ entry 9.5, entry family 9.5, evaluation 4.5, expression 4.4, function call
 exceptions 11, returned value 5.8 6.5, task object 9.2
 
 
-#### 4.1.2  Slices
+#### 4.1.2 Slices
 
 
 A slice denotes a one-dimensional array formed by a sequence of consecutive
@@ -5059,7 +5163,7 @@ null range 3.5, prefix 4.1, raising of exceptions 11, type 3.3, variable
 3.2.1
 
 
-#### 4.1.3  Selected Components
+#### 4.1.3 Selected Components
 
 
 Selected components are used to denote record components, entries, entry
@@ -5067,12 +5171,14 @@ families, and objects designated by access values; they are also used as
 expanded names as described below.
 
 
-```ada
+```ebnf
     selected_component ::= prefix.selector
 
     selector ::= simple_name
        | character_literal | operator_symbol | all
 
+
+```
 
 The following four forms of selected components are used to denote a
 discriminant, a record component, an entry, or an object designated by an
@@ -5147,6 +5253,8 @@ as the prefix of an expanded name. An expanded name can denote:
 
 ```
 
+```
+
 If, according to the visibility rules, there is at least one possible
 interpretation of the prefix of a selected component as the name of an
 enclosing subprogram or accept statement, then the only interpretations
@@ -5202,17 +5310,19 @@ simple name 4.1, subprogram 6, subunit 10.2, task 9, task object 9.2, task
 unit 9, variable 3.7.3, variant 3.7.3, visibility 8.3, visible part 3.7.3
 
 
-#### 4.1.4  Attributes
+#### 4.1.4 Attributes
 
 
 An attribute denotes a basic operation of an entity given by a prefix.
 
 
-```ada
+```ebnf
     attribute ::= prefix'attribute_designator
 
     attribute_designator ::= simple_name [(universal_static_expression)]
 
+
+```
 
 The applicable attribute designators depend on the prefix. An attribute
 can be a basic operation delivering a value; alternatively it can be a
@@ -5258,7 +5368,7 @@ entity 3.1, name 4.1, prefix 4.1, reserved word 2.9, simple name 4.1,
 static expression 4.9, type 3.3, universal expression 4.1O
 
 
-### 4.2  Literals
+### 4.2 Literals
 
 
 A literal is either a numeric literal, an enumeration literal, the literal
@@ -5296,10 +5406,12 @@ Examples:
 ```ada
     3.14159_26536 -- a real literal
     1_345 -- an integer literal
-    CLUBS -- an enumeration literal
+    Clubs -- an enumeration literal
     'A' -- a character literal
     "SOME TEXT" -- a string literal
 
+
+```
 
 References: access type 3.8, aggregate 4.3, array 3.6, array bound 3.6,
 array type 3.6, character literal 2.5, character type 3.5.2, component type
@@ -5310,20 +5422,22 @@ literal 2.4, string literal 2.6, type 3.3, universal_integer type 3.5.4,
 universal_real type 3.5.6, visibility 8.3
 
 
-### 4.3  Aggregates
+### 4.3 Aggregates
 
 
 An aggregate is a basic operation that combines component values into a
 composite value of a record or array type.
 
 
-```ada
+```ebnf
     aggregate ::=
        (component_association {, component_association})
 
     component_association ::=
        [choice {| choice} => ] expression
 
+
+```
 
 Each component association associates an expression with components
 (possibly none). A component association is said to be named if the
@@ -5379,7 +5493,7 @@ discrete range 3.6, expression 4.4, index 3.6, limited type 7.4.4, primary
 name 4.1, type 3.3, variant part 3.7.3
 
 
-#### 4.3.1  Record Aggregates
+#### 4.3.1 Record Aggregates
 
 
 If the type of an aggregate is a record type, the component names given as
@@ -5411,22 +5525,26 @@ Examples of record aggregates with named associations:
 
 
 ```ada
-    (DAY => 4, MONTH => JULY, YEAR => 1776)
-    (MONTH => JULY, DAY => 4, YEAR => 1776)
+    (Day => 4, Month => July, Year => 1776)
+    (Month => July, Day => 4, Year => 1776)
 
-    (DISK, CLOSED, TRACK => 5, CYLINDER => 12) -- see 3.7.3
-    (UNIT => DISK, STATUS => CLOSED, CYLINDER => 9, TRACK => 1)
+    (Disk, Closed, Track => 5, Cylinder => 12) -- see 3.7.3
+    (Unit => Disk, Status => Closed, Cylinder => 9, Track => 1)
 
+
+```
 
 Example of component association with several choices:
 
 
 ```ada
-    (VALUE => 0, SUCC|PRED => new CELL'(0, null, null)) -- see 3.8.1
+    (Value => 0, Succ|Pred => new Cell'(0, null, null)) -- see 3.8.1
 
     --  The allocator is evaluated twice:  SUCC and PRED designate
         different cells
 
+
+```
 
 Note:
 
@@ -5443,7 +5561,7 @@ program 10, raising of exceptions 11, record component 3.7, record type
 type 3.3, variant part 3.7.3
 
 
-#### 4.3.2  Array Aggregates
+#### 4.3.2 Array Aggregates
 
 
 If the type of an aggregate is a one-dimensional array type, then each
@@ -5500,6 +5618,8 @@ applicable index constraint):
      one of these three contexts.
 
 
+```
+
 The bounds of an array aggregate that does not have an others choice are
 determined as follows. For an aggregate that has named associations, the
 bounds are determined by the smallest and largest choices given. For a
@@ -5537,20 +5657,24 @@ Examples of array aggregates with positional associations:
 
 ```ada
     (7, 9, 5, 1, 3, 2, 4, 8, 6, 0)
-    TABLE'(5, 8, 4, 1, others => 0) -- see 3.6
+    Table'(5, 8, 4, 1, others => 0) -- see 3.6
 
+
+```
 
 Examples of array aggregates with named associations:
 
 
 ```ada
     (1 .. 5 => (1 .. 8 => 0.0)) -- two-dimensional
-    (1 .. N => new CELL) -- N new cells, in particular for N = 0
+    (1 .. N => new Cell) -- N new cells, in particular for N = 0
 
-    TABLE'(2 | 4 | 10 => 1, others => 0)
-    SCHEDULE'(MON .. FRI => TRUE, others => FALSE) -- see 3.6
-    SCHEDULE'(WED | SUN => FALSE, others => TRUE)
+    Table'(2 | 4 | 10 => 1, others => 0)
+    Schedule'(Mon .. Fri => True, others => False) -- see 3.6
+    Schedule'(Wed | Sun => False, others => True)
 
+
+```
 
 Examples of two-dimensional array aggregates:
 
@@ -5562,6 +5686,8 @@ Examples of two-dimensional array aggregates:
     (1 => (1.1, 1.2, 1.3), 2 => (2.1, 2.2, 2.3))
     (1 => (1 => 1.1, 2 => 1.2, 3 => 1.3), 2 => (1 => 2.1, 2 => 2.2, 3 => 2.3))
 
+
+```
 
 Examples of aggregates as initial values:
 
@@ -5585,13 +5711,13 @@ component association 4.3, qualified expression 4.7, raising of exceptions
 11, static expression 4.9, subcomponent 3.3, type 3.3
 
 
-### 4.4  Expressions
+### 4.4 Expressions
 
 
 An expression is a formula that defines the computation of a value.
 
 
-```ada
+```ebnf
     expression ::=
          relation {and relation} | relation {and then relation}
        | relation {or relation} | relation {or else relation}
@@ -5633,15 +5759,17 @@ Examples of primaries:
 
 ```ada
     4.0 -- real literal
-    PI -- named number
+    Pi -- named number
     (1 .. 10 => 0) -- array aggregate
-    SUM -- variable
-    INTEGER'LAST -- attribute
-    SINE(X) -- function call
-    COLOR'(BLUE) -- qualified expression
-    REAL(M*N) -- conversion
-    (LINE_COUNT + 10) -- parenthesized expression
+    Sum -- variable
+    Integer'Last -- attribute
+    Sine(X) -- function call
+    Color'(Blue) -- qualified expression
+    Real(M*N) -- conversion
+    (Line_Count + 10) -- parenthesized expression
 
+
+```
 
 Examples of expressions:
 
@@ -5661,6 +5789,8 @@ Examples of expressions:
 
 ```
 
+```
+
 References: aggregate 4.3, allocator 4.8, array aggregate 4.3.2, attribute
 4.1.4, binary adding operator 4.5 4.5.3, context of overload resolution
 8.7, exponentiating operator 4.5 4.5.6, function call 6.4, multiplying
@@ -5672,7 +5802,7 @@ literal 2.6, type 3.3, type conversion 4.6, type mark 3.3.2, unary adding
 operator 4.5 4.5.4, variable 3.2.1
 
 
-### 4.5  Operators and Expression Evaluation
+### 4.5 Operators and Expression Evaluation
 
 
 The language defines the following six classes of operators. The
@@ -5681,7 +5811,7 @@ designators in declarations of functions for user-defined operators. They
 are given in the order of increasing precedence.
 
 
-```ada
+```ebnf
     logical_operator ::= and | or | xor
     relational_operator ::= = | /= | < | <= | > | >=
     binary_adding_operator ::= + | - | &
@@ -5689,6 +5819,8 @@ are given in the order of increasing precedence.
     multiplying_operator ::= * | / | mod | rem
     highest_precedence_operator ::= ** | abs | not
 
+
+```
 
 The short-circuit control forms and then and or else have the same
 precedence as logical operators. The membership tests in and not in have
@@ -5730,7 +5862,7 @@ Examples of precedence:
 
 
 ```ada
-    not SUNNY or WARM -- same as (not SUNNY) or WARM
+    not Sunny or Warm -- same as (not SUNNY) or WARM
     X > 4.0 and Y > 0.0 -- same as (X > 4.0) and (Y > 0.0)
 
     -4.0*A**2            --  same as -(4.0 * (A**2))
@@ -5750,7 +5882,7 @@ of an exception 11, range 3.5, real type 3.5.6, relation 4.4, safe number
 universal_real type 3.5.6
 
 
-#### 4.5.1  Logical Operators and Short-circuit Control Forms
+#### 4.5.1 Logical Operators and Short-circuit Control Forms
 
 
 The following logical operators are predefined for any boolean type and any
@@ -5808,9 +5940,11 @@ Examples of short-circuit control forms:
 
 
 ```ada
-    NEXT_CAR.OWNER /= null and then NEXT_CAR.OWNER.AGE > 25 -- see 3.8.1
-    N = 0 or else A(N) = HIT_VALUE
+    Next_Car.Owner /= null and then Next_Car.Owner.Age > 25 -- see 3.8.1
+    N = 0 or else A(N) = Hit_Value
 
+
+```
 
 References: array type 3.6, boolean type 3.5.3, bound of an index range
 3.6.1, component of an array 3.6, constraint_error exception 11.1,
@@ -5820,7 +5954,7 @@ predefined operator 4.5, raising of exceptions 11, true boolean value
 3.5.3, type 3.3
 
 
-#### 4.5.2  Relational Operators and Membership Tests
+#### 4.5.2 Relational Operators and Membership Tests
 
 
 The equality and inequality operators are predefined for any type that is
@@ -5841,11 +5975,13 @@ the equality operator: FALSE if equal, TRUE if not equal.
 ```ada
     Operator Operation Operand type Result type
 
-    = /= equality and inequality any type BOOLEAN
+    = /= equality and inequality any type Boolean
 
-    < <= > >= test for ordering any scalar type BOOLEAN
-                                          discrete array type BOOLEAN
+    < <= > >= test for ordering any scalar type Boolean
+                                          discrete array type Boolean
 
+
+```
 
 Equality for the discrete types is equality of the values. For real
 operands whose values are nearly equal, the results of the predefined
@@ -5906,15 +6042,15 @@ Examples:
     "" < "A" and "A" < "AA" -- TRUE
     "AA" < "B" and "A" < "A " -- TRUE
 
-    MY_CAR = null -- true if MY_CAR has been set to null
+    My_Car = null -- true if MY_CAR has been set to null
                                   (see 3.8.1)
-    MY_CAR = YOUR_CAR -- true if we both share the same car
-    MY_CAR.all = YOUR_CAR.all -- true if the two cars are identical
+    My_Car = Your_Car -- true if we both share the same car
+    My_Car.all = Your_Car.all -- true if the two cars are identical
 
     N not in 1 .. 10 -- range membership test
-    TODAY in MON .. FRI -- range membership test
-    TODAY in WEEKDAY -- subtype membership test (see 3.5.1)
-    ARCHIVE in DISK_UNIT -- subtype membership test (see 3.7.3)
+    Today in Mon .. Fri -- range membership test
+    Today in Weekday -- subtype membership test (see 3.5.1)
+    Archive in Disk_Unit -- subtype membership test (see 3.7.3)
 
 ```
 
@@ -5941,7 +6077,7 @@ type 3.7, scalar type 3.5, simple expression 4.4, subcomponent 3.3,
 successor 3.5.5, type 3.3, type mark 3.3.2
 
 
-#### 4.5.3  Binary Adding Operators
+#### 4.5.3 Binary Adding Operators
 
 
 The binary adding operators + and - are predefined for any numeric type
@@ -5961,6 +6097,8 @@ Operator Operation Left operand type Right operand type Result type
                    the component type any array type same array type
                    the component type the component type any array type
 
+
+```
 
 For real types, the accuracy of the result is determined by the operand
 type (see 4.5.7).
@@ -5995,6 +6133,8 @@ Examples:
     'A' & 'A' -- catenation of two character literals
 
 
+```
+
 References: array type 3.6, character literal 2.5, component type 3.3,
 constraint_error exception 11.1, dimension 3.6, index subtype 3.6, length
 of an array 3.6.2, limited type 7.4.4, null array 3.6.1, numeric type 3.5,
@@ -6003,7 +6143,7 @@ operation 3.3, operator 4.5, predefined operator 4.5, raising of exceptions
 type 3.3
 
 
-#### 4.5.4  Unary Adding Operators
+#### 4.5.4 Unary Adding Operators
 
 
 The unary adding operators + and - are predefined for any numeric type and
@@ -6019,11 +6159,13 @@ and the result have the same type.
     -          negation    any numeric type   same numeric type
 
 
+```
+
 References: numeric type 3.5, operation 3.3, operator 4.5, predefined
 operator 4.5, type 3.3
 
 
-#### 4.5.5  Multiplying Operators
+#### 4.5.5 Multiplying Operators
 
 
 The operators * and / are predefined for any integer and any floating point
@@ -6042,12 +6184,16 @@ accuracy of the result is determined by the operand type (see 4.5.7).
 
    / integer division any integer type same integer type
 
+```
+
 ```ada
               floating division any floating point same floating point
                                  type type
 
   mod modulus any integer type same integer type
   rem remainder any integer type same integer type
+
+```
 
 Integer division and remainder are defined by the relation
 
@@ -6075,12 +6221,14 @@ operators, with an operand of the predefined type INTEGER, are predefined.
 ```ada
                         type
 
-                        INTEGER any fixed point same as right
+                        Integer any fixed point same as right
                                           type
 
 
-   / division any fixed point INTEGER same as left
+   / division any fixed point Integer same as left
                         type
+
+```
 
 Integer multiplication of fixed point values is equivalent to repeated
 addition. Division of a fixed point value by an integer does not involve a
@@ -6115,31 +6263,33 @@ Examples:
 
 
 ```ada
-    I : INTEGER := 1;
-    J : INTEGER := 2;
-    K : INTEGER := 3;
+    I : Integer := 1;
+    J : Integer := 2;
+    K : Integer := 3;
 
-    X : REAL digits 6 := 1.0; -- see 3.5.7
-    Y : REAL digits 6 := 2.0;
+    X : Real digits 6 := 1.0; -- see 3.5.7
+    Y : Real digits 6 := 2.0;
 
-    F : FRACTION delta 0.0001 := 0.1; -- see 3.5.9
-    G : FRACTION delta 0.0001 := 0.1;
+    F : Fraction delta 0.0001 := 0.1; -- see 3.5.9
+    G : Fraction delta 0.0001 := 0.1;
 
     Expression Value Result Type
 
-    I*J 2 same as I and J, that is, INTEGER
-    K/J 1 same as K and J, that is, INTEGER
-    K mod J 1 same as K and J, that is, INTEGER
+    I*J 2 same as I and J, that is, Integer
+    K/J 1 same as K and J, that is, Integer
+    K mod J 1 same as K and J, that is, Integer
 
-    X/Y 0.5 same as X and Y, that is, REAL
-    F/2 0.05 same as F, that is, FRACTION
+    X/Y 0.5 same as X and Y, that is, Real
+    F/2 0.05 same as F, that is, Fraction
 
-    3*F 0.3 same as F, that is, FRACTION
+    3*F 0.3 same as F, that is, Fraction
     F*G 0.01 universal_fixed, conversion needed
-    FRACTION(F*G) 0.01 FRACTION, as stated by the conversion
-    REAL(J)*Y 4.0 REAL, the type of both operands after
+    Fraction(F*G) 0.01 Fraction, as stated by the conversion
+    Real(J)*Y 4.0 Real, the type of both operands after
 
                                 conversion of J
+
+```
 
 Notes:
 
@@ -6181,7 +6331,7 @@ exceptions 11, renaming declaration 8.5, standard predefined package 8.6,
 type conversion 4.6
 
 
-#### 4.5.6  Highest Precedence Operators
+#### 4.5.6 Highest Precedence Operators
 
 
 The highest precedence unary operator abs is predefined for any numeric
@@ -6212,9 +6362,11 @@ operand, called the exponent, is of the predefined type INTEGER.
    ** exponentiation any integer type INTEGER same as left
 
 ```ada
-                          any floating point INTEGER same as left
+                          any floating point Integer same as left
                           type
 
+
+```
 
 Exponentiation with a positive exponent is equivalent to repeated
 multiplication of the left operand by itself, as indicated by the exponent
@@ -6232,7 +6384,7 @@ multiplication operation 4.5.5, predefined operator 4.5, raising of
 exceptions 11
 
 
-#### 4.5.7  Accuracy of Operations with Real Operands
+#### 4.5.7 Accuracy of Operations with Real Operands
 
 
 A real subtype specifies a set of model numbers. Both the accuracy
@@ -6270,6 +6422,8 @@ interval defined as follows:
      conversion of a universal expression is the model interval associated
      with this value within the operand subtype.
 
+
+```
 
 The result model interval is undefined if the absolute value of one of the
 above mathematical results exceeds the largest safe number of the result
@@ -6325,7 +6479,7 @@ operator 4.5.2 4.5, safe number 3.5.6, subtype 3.3, true boolean value
 3.5.3, type conversion 4.6, type mark 3.3.2, universal expression 4.1 4
 
 
-### 4.6  Type Conversions
+### 4.6 Type Conversions
 
 
 The evaluation of an explicit type conversion evaluates the expression
@@ -6364,6 +6518,8 @@ three cases:
      rounding may be either up or down.
 
 
+```
+
 (b) Derived types
 
 
@@ -6373,6 +6529,8 @@ three cases:
      exists a third type from which both types are derived, directly or
      indirectly.
 
+
+```
 
 (c) Array types
 
@@ -6443,42 +6601,48 @@ Examples of numeric type conversion:
 
 
 ```ada
-    REAL(2*J) -- value is converted to floating point
-    INTEGER(1.6) -- value is 2
-    INTEGER(-0.4) -- value is 0
+    Real(2*J) -- value is converted to floating point
+    Integer(1.6) -- value is 2
+    Integer(-0.4) -- value is 0
 
+
+```
 
 Example of conversion between derived types:
 
 
 ```ada
-    type A_FORM is new B_FORM;
+    type A_Form is new B_Form;
 
-    X : A_FORM;
-    Y : B_FORM;
+    X : A_Form;
+    Y : B_Form;
 
-    X := A_FORM(Y);
-    Y := B_FORM(X); -- the reverse conversion
+    X := A_Form(Y);
+    Y := B_Form(X); -- the reverse conversion
 
+
+```
 
 Examples of conversions between array types:
 
 
 ```ada
-    type SEQUENCE is array (INTEGER range <>) of INTEGER;
-    subtype DOZEN is SEQUENCE(1 .. 12);
-    LEDGER : array(1 .. 100) of INTEGER;
+    type Sequence is array (Integer range <>) of Integer;
+    subtype Dozen is Sequence(1 .. 12);
+    Ledger : array(1 .. 100) of Integer;
 
-    SEQUENCE(LEDGER) -- bounds are those of LEDGER
-    SEQUENCE(LEDGER(31 .. 42)) -- bounds are 31 and 42
-    DOZEN(LEDGER(31 .. 42)) -- bounds are those of DOZEN
+    Sequence(Ledger) -- bounds are those of LEDGER
+    Sequence(Ledger(31 .. 42)) -- bounds are 31 and 42
+    Dozen(Ledger(31 .. 42)) -- bounds are those of DOZEN
 
+
+```
 
 Examples of implicit conversions:
 
 
 ```ada
-    X : INTEGER := 2;
+    X : Integer := 2;
 
     X + 1 + 2 -- implicit conversion of each integer literal
     1 + 2 + X -- implicit conversion of each integer literal
@@ -6486,7 +6650,7 @@ Examples of implicit conversions:
 
     2 = (1 + 1) -- no implicit conversion: the type is uni-
                               versal_integer
-    A'LENGTH = B'LENGTH -- no implicit conversion: the type is uni-
+    A'Length = B'Length -- no implicit conversion: the type is uni-
                               versal_integer
     C : constant := 3 + 2; -- no implicit conversion: the type is uni-
                               versal_integer
@@ -6507,17 +6671,19 @@ type 3.6, universal_integer type 3.5.4, universal_real type 3.5.6, variable
 3.2.1
 
 
-### 4.7  Qualified Expressions
+### 4.7 Qualified Expressions
 
 
 A qualified expression is used to state explicitly the type, and possibly
 the subtype, of an operand that is the given expression or aggregate.
 
 
-```ada
+```ebnf
     qualified_expression ::=
        type_mark'(expression) | type_mark'aggregate
 
+
+```
 
 The operand must have the same type as the base type of the type mark. The
 value of a qualified expression is the value of the operand. The
@@ -6529,19 +6695,19 @@ Examples:
 
 
 ```ada
-    type MASK is (FIX, DEC, EXP, SIGNIF);
-    type CODE is (FIX, CLA, DEC, TNZ, SUB);
+    type Mask is (Fix, Dec, Exp, Signif);
+    type Code is (Fix, Cla, Dec, Tnz, Sub);
 
-    PRINT (MASK'(DEC)); -- DEC is of type MASK
-    PRINT (CODE'(DEC)); -- DEC is of type CODE
+    Print (Mask'(Dec)); -- DEC is of type MASK
+    Print (Code'(Dec)); -- DEC is of type CODE
 
-    for J in CODE'(FIX) .. CODE'(DEC) loop ... -- qualification needed for
-                                                  either FIX or DEC
-    for J in CODE range FIX .. DEC loop ... -- qualification unnecessary
-    for J in CODE'(FIX) .. DEC loop ... -- qualification unnecessary
-                                                  for DEC
+    for J in Code'(Fix) .. Code'(Dec) loop ... -- qualification needed for
+                                                  either Fix or Dec
+    for J in Code range Fix .. Dec loop ... -- qualification unnecessary
+    for J in Code'(Fix) .. Dec loop ... -- qualification unnecessary
+                                                  for Dec
 
-    DOZEN'(1 | 3 | 5 | 7 => 2, others => 0) -- see 4.6
+    Dozen'(1 | 3 | 5 | 7 => 2, others => 0) -- see 4.6
 
 ```
 
@@ -6566,17 +6732,19 @@ enumeration literal 3.5.1, expression 4.4, function 6.5, loop parameter
 subprogram 6, subprogram call 6.4, subtype 3.3, type 3.3, type mark 3.3.2
 
 
-### 4.8  Allocators
+### 4.8 Allocators
 
 
 The evaluation of an allocator creates an object and yields an access value
 that designates the object.
 
 
-```ada
+```ebnf
     allocator ::=
        new subtype_indication | new qualified_expression
 
+
+```
 
 The type of the object created by an allocator is the base type of the type
 mark given in either the subtype indication or the qualified expression.
@@ -6634,12 +6802,14 @@ achieved by one or more of the following means:
      statement, subprogram body, or task body that encloses the access type
      declaration, or after leaving the main program.
 
-        pragma CONTROLLED (access_type_simple_name);
+        pragma Controlled (access_type_simple_name);
 
-     A pragma CONTROLLED for a given access type is allowed at the same
+     A pragma Controlled for a given access type is allowed at the same
      places as a representation clause for the type (see 13.1). This
      pragma is not allowed for a derived type.
 
+
+```
 
 (c) The explicit deallocation of the object designated by an access value
 
@@ -6683,7 +6853,7 @@ body 6.3, subtype 3.3, subtype indication 3.3.2, task body 9.1, task type
 type with discriminants 3.3
 
 
-### 4.9  Static Expressions and Static Subtypes
+### 4.9 Static Expressions and Static Subtypes
 
 
 Certain expressions of a scalar type are said to be static. Similarly,
@@ -6711,12 +6881,16 @@ delivers a value (that is, it does not raise an exception):
      name; each actual parameter must also be a static expression.
 
 
+```
+
 (f) A language-defined attribute of a static subtype; for an attribute
 
 ```ada
      that is a function, the actual parameter must also be a static
      expression.
 
+
+```
 
 (g) A qualified expression whose type mark denotes a static subtype and
      whose operand is a static expression.
@@ -6757,7 +6931,7 @@ constraint 3.5, safe number 3.5.6, scalar type 3.5, subtype 3.3, type mark
 3.3.2
 
 
-### 4.10  Universal Expressions
+### 4.10 Universal Expressions
 
 
 A universal_expression is either an expression that delivers a result of
@@ -6805,13 +6979,13 @@ Examples:
     1 + 1 -- 2
     abs(-10)*3 -- 30
 
-    KILO : constant := 1000;
-    MEGA : constant := KILO*KILO; -- 1_000_000
-    LONG : constant := FLOAT'DIGITS*2;
+    Kilo : constant := 1000;
+    Mega : constant := Kilo*Kilo; -- 1_000_000
+    Long : constant := Float'Digits*2;
 
-    HALF_PI : constant := PI/2; -- see 3.2.2
-    DEG_TO_RAD : constant := HALF_PI/90;
-    RAD_TO_DEG : constant := 1.0/DEG_TO_RAD; -- equivalent to
+    Half_Pi : constant := Pi/2; -- see 3.2.2
+    Deg_To_Rad : constant := Half_Pi/90;
+    Rad_To_Deg : constant := 1.0/Deg_To_Rad; -- equivalent to
                                                 1.0/((3.14159_26536/2)/90)
 
 ```
@@ -6843,6 +7017,8 @@ or via conventional mail to
                          The Pentagon
                    Washington, D.C. 20301-3081
 
+
+```
 
 -----------------------------------------------------------------------
 
@@ -6876,7 +7052,7 @@ References: abort statement 9.10, accept statement 9.5, code statement
 statement 6.4, raise statement 11.3, select statement 9.7
 
 
-### 5.1  Simple and Compound Statements - Sequences of Statements
+### 5.1 Simple and Compound Statements - Sequences of Statements
 
 
 A statement is either simple or compound. A simple statement encloses no
@@ -6884,7 +7060,7 @@ other statement. A compound statement can enclose simple statements and
 other compound statements.
 
 
-```ada
+```ebnf
     sequence_of_statements ::= statement {statement}
 
     statement ::=
@@ -6940,10 +7116,12 @@ Examples of labeled statements:
 
 
 ```ada
-    <<HERE>> <<ICI>> <<AQUI>> <<HIER>> null;
+    <<Here>> <<Ici>> <<Aqui>> <<Hier>> null;
 
-    <<AFTER>> X := 1;
+    <<After>> X := 1;
 
+
+```
 
 Note:
 
@@ -6969,7 +7147,7 @@ subprogram body 6.3, task 9, task body 9.1, task unit 9.1, terminate
 alternative 9.7.1, terminated task 9.4
 
 
-### 5.2  Assignment Statement
+### 5.2 Assignment Statement
 
 
 An assignment statement replaces the current value of a variable with a new
@@ -6977,10 +7155,12 @@ value specified by an expression. The named variable and the right-hand
 side expression must be of the same type; this type must not be a limited type.
 
 
-```ada
+```ebnf
     assignment_statement ::=
        variable_name := expression;
 
+
+```
 
 For the execution of an assignment statement, the variable name and the
 expression are first evaluated, in some order that is not defined by the
@@ -7001,21 +7181,25 @@ Examples:
 
 
 ```ada
-    VALUE := MAX_VALUE - 1;
-    SHADE := BLUE;
+    Value := Max_Value - 1;
+    Shade := Blue;
 
-    NEXT_FRAME(F)(M, N) := 2.5; -- see 4.1.1
-    U := DOT_PRODUCT(V, W); -- see 6.5
+    Next_Frame(F)(M, N) := 2.5; -- see 4.1.1
+    U := Dot_Product(V, W); -- see 6.5
 
-    WRITER := (STATUS => OPEN, UNIT => PRINTER, LINE_COUNT => 60); -- see 3.7.3
-    NEXT_CAR.all := (72074, null); -- see 3.8.1
+    Writer := (Status => Open, Unit => Printer, Line_Count => 60); -- see 3.7.3
+    Next_Car.all := (72074, null); -- see 3.8.1
 
+
+```
 
 Examples of constraint checks:
 
 
-    I, J : INTEGER range 1 .. 10;
-    K : INTEGER range 1 .. 20;
+```ada
+    I, J : Integer range 1 .. 10;
+    K : Integer range 1 .. 20;
+```
      ...
 
     I := J; -- identical ranges
@@ -7050,7 +7234,7 @@ object 3.2, overloading 6.6 8.7, slice 4.1.2, subcomponent 3.3, subtype
 universal_real type 3.5.6, variable 3.2.1
 
 
-#### 5.2.1  Array Assignments
+#### 5.2.1 Array Assignments
 
 
 If the variable of an assignment statement is an array variable (including
@@ -7071,8 +7255,8 @@ Examples:
 
 
 ```ada
-    A : STRING(1 .. 31);
-    B : STRING(3 .. 33);
+    A : String(1 .. 31);
+    B : String(3 .. 33);
      ...
 
     A := B; -- same number of components
@@ -7098,7 +7282,7 @@ matching array components 4.5.2, slice 4.1.2, subtype conversion 4.6, type
 3.3, variable 3.2.1
 
 
-### 5.3  If Statements
+### 5.3 If Statements
 
 
 An if statement selects for execution one or none of the enclosed sequences
@@ -7106,7 +7290,7 @@ of statements, depending on the (truth) value of one or more corresponding
 conditions.
 
 
-```ada
+```ebnf
     if_statement ::=
         if condition then
           sequence_of_statements
@@ -7133,23 +7317,23 @@ Examples:
 
 
 ```ada
-    if MONTH = DECEMBER and DAY = 31 then
-       MONTH := JANUARY;
-       DAY := 1;
-       YEAR := YEAR + 1;
+    if Month = December and Day = 31 then
+       Month := January;
+       Day := 1;
+       Year := Year + 1;
     end if;
 
-    if LINE_TOO_SHORT then
-       raise LAYOUT_ERROR;
-    elsif LINE_FULL then
-       NEW_LINE;
-       PUT(ITEM);
+    if Line_Too_Short then
+       raise Layout_Error;
+    elsif Line_Full then
+       New_Line;
+       Put(Item);
     else
-       PUT(ITEM);
+       Put(Item);
     end if;
 
-    if MY_CAR.OWNER.VEHICLE /= MY_CAR then -- see 3.8
-       REPORT ("Incorrect data");
+    if My_Car.Owner.Vehicle /= My_Car then -- see 3.8
+       Report ("Incorrect data");
     end if;
 
 ```
@@ -7158,7 +7342,7 @@ References: boolean type 3.5.3, evaluation 4.5, expression 4.4, sequence
 of statements 5.1
 
 
-### 5.4  Case Statements
+### 5.4 Case Statements
 
 
 A case statement selects for execution one of a number of alternative
@@ -7166,7 +7350,7 @@ sequences of statements; the chosen alternative is defined by the value of
 an expression.
 
 
-```ada
+```ebnf
     case_statement ::=
        case expression is
            case_statement_alternative
@@ -7211,27 +7395,27 @@ Examples:
 
 
 ```ada
-    case SENSOR is
-       when ELEVATION => RECORD_ELEVATION(SENSOR_VALUE);
-       when AZIMUTH => RECORD_AZIMUTH (SENSOR_VALUE);
-       when DISTANCE => RECORD_DISTANCE (SENSOR_VALUE);
+    case Sensor is
+       when Elevation => Record_Elevation(Sensor_Value);
+       when Azimuth => Record_Azimuth (Sensor_Value);
+       when Distance => Record_Distance (Sensor_Value);
        when others => null;
     end case;
 
-    case TODAY is
-       when MON => COMPUTE_INITIAL_BALANCE;
-       when FRI => COMPUTE_CLOSING_BALANCE;
-       when TUE .. THU => GENERATE_REPORT(TODAY);
-       when SAT .. SUN => null;
+    case Today is
+       when Mon => Compute_Initial_Balance;
+       when Fri => Compute_Closing_Balance;
+       when Tue .. Thu => Generate_Report(Today);
+       when Sat .. Sun => null;
     end case;
 
-    case BIN_NUMBER(COUNT) is
-       when 1 => UPDATE_BIN(1);
-       when 2 => UPDATE_BIN(2);
+    case Bin_Number(Count) is
+       when 1 => Update_Bin(1);
+       when 2 => Update_Bin(2);
        when 3 | 4 =>
-          EMPTY_BIN(1);
-          EMPTY_BIN(2);
-       when others => raise ERROR;
+          Empty_Bin(1);
+          Empty_Bin(2);
+       when others => raise Error;
     end case;
 
 ```
@@ -7256,14 +7440,14 @@ expression 4.7, sequence of statements 5.1, static discrete range 4.9,
 static subtype 4.9, subtype 3.3, type 3.3, type conversion 4.6, type mark 3.3.2
 
 
-### 5.5  Loop Statements
+### 5.5 Loop Statements
 
 
 A loop statement includes a sequence of statements that is to be executed
 repeatedly, zero or more times.
 
 
-```ada
+```ebnf
     loop_statement ::=
        [loop_simple_name:]
           [iteration_scheme] loop
@@ -7319,42 +7503,50 @@ Example of a loop statement without an iteration scheme:
 
 ```ada
     loop
-       GET(CURRENT_CHARACTER);
-       exit when CURRENT_CHARACTER = '*';
+       Get(Current_Character);
+       exit when Current_Character = '*';
     end loop;
 
+
+```
 
 Example of a loop statement with a while iteration scheme:
 
 
 ```ada
-    while BID(N).PRICE < CUT_OFF.PRICE loop
-       RECORD_BID(BID(N).PRICE);
+    while Bid(N).Price < Cut_Off.Price loop
+       Record_Bid(Bid(N).Price);
        N := N + 1;
     end loop;
 
+
+```
 
 Example of a loop statement with a for iteration scheme:
 
 
 ```ada
-    for J in BUFFER'RANGE loop -- legal even with a null range
-       if BUFFER(J) /= SPACE then
-          PUT(BUFFER(J));
+    for J in Buffer'Range loop -- legal even with a null range
+       if Buffer(J) /= Space then
+          Put(Buffer(J));
        end if;
     end loop;
 
+
+```
 
 Example of a loop statement with a loop simple name:
 
 
 ```ada
-    SUMMATION:
-       while NEXT /= HEAD loop -- see 3.8
-          SUM := SUM + NEXT.VALUE;
-          NEXT := NEXT.SUCC;
-       end loop SUMMATION;
+    Summation:
+       while Next /= Head loop -- see 3.8
+          Sum := Sum + Next.Value;
+          Next := Next.Succ;
+       end loop;
 
+
+```
 
 Notes:
 
@@ -7373,6 +7565,8 @@ range.
     for J in 0 .. 1
 
 
+```
+
 Loop names are also used in exit statements, and in expanded names (in a
 prefix of the loop parameter).
 
@@ -7389,14 +7583,14 @@ return statement 5.8, scope 8.2, sequence of statements 5.1, simple name
 visibility 8.3
 
 
-### 5.6  Block Statements
+### 5.6 Block Statements
 
 
 A block statement encloses a sequence of statements optionally preceded by
 a declarative part and optionally followed by exception handlers.
 
 
-```ada
+```ebnf
     block_statement ::=
        [block_simple_name:]
           [declare
@@ -7423,13 +7617,15 @@ Example:
 
 
 ```ada
-    SWAP:
+    Swap:
        declare
-          TEMP : INTEGER;
+          Temp : Integer;
        begin
-          TEMP := V; V := U; U := TEMP;
-       end SWAP;
+          Temp := V; V := U; U := Temp;
+       end;
 
+
+```
 
 Notes:
 
@@ -7448,7 +7644,7 @@ of exceptions 11, return statement 5.8, sequence of statements 5.1, simple
 name 4.1, task object 9.2
 
 
-### 5.7  Exit Statements
+### 5.7 Exit Statements
 
 
 An exit statement is used to complete the execution of an enclosing loop
@@ -7456,10 +7652,12 @@ statement (called the loop in what follows); the completion is conditional
 if the exit statement includes a condition.
 
 
-```ada
+```ebnf
     exit_statement ::=
        exit [loop_name] [when condition];
 
+
+```
 
 An exit statement with a loop name is only allowed within the named loop,
 and applies to that loop; an exit statement without a loop name is only
@@ -7477,18 +7675,18 @@ Examples:
 
 
 ```ada
-    for N in 1 .. MAX_NUM_ITEMS loop
-       GET_NEW_ITEM(NEW_ITEM);
-       MERGE_ITEM(NEW_ITEM, STORAGE_FILE);
-       exit when NEW_ITEM = TERMINAL_ITEM;
+    for N in 1 .. Max_Num_Items loop
+       Get_New_Item(New_Item);
+       Merge_Item(New_Item, Storage_File);
+       exit when New_Item = Terminal_Item;
     end loop;
 
-    MAIN_CYCLE:
+    Main_Cycle:
        loop
           --  initial statements
-          exit MAIN_CYCLE when FOUND;
+          exit Main_Cycle when Found;
           --  final statements
-       end loop MAIN_CYCLE;
+       end loop;
 
 ```
 
@@ -7502,13 +7700,15 @@ body 12.1, loop name 5.5, loop statement 5.5, package body 7.1, subprogram
 body 6.3, true boolean value 3.5.3
 
 
-### 5.8  Return Statements
+### 5.8 Return Statements
 
 
 A return statement is used to complete the execution of the innermost
 enclosing function, procedure, or accept statement.
 
+```ada
     return_statement ::= return [expression];
+```
 
 A return statement is only allowed within the body of a subprogram or
 generic subprogram, or within an accept statement, and applies to the
@@ -7539,8 +7739,10 @@ Examples:
 
 ```ada
     return; -- in a procedure
-    return KEY_VALUE(LAST_INDEX); -- in a function
+    return Key_Value(Last_Index); -- in a function
 
+
+```
 
 Note:
 
@@ -7558,13 +7760,15 @@ specification 6.1, subtype 3.3, task body 9.1, type mark 3.3.2,
 universal_integer type 3.5.4, universal_real type 3.5.6
 
 
-### 5.9  Goto Statements
+### 5.9 Goto Statements
 
 
 A goto statement specifies an explicit transfer of control from this
 statement to a target statement named by a label.
 
+```ada
     goto_statement ::= goto label_name;
+```
 
 The innermost sequence of statements that encloses the target statement
 must also enclose the goto statement (note that the goto statement can be a
@@ -7590,11 +7794,11 @@ Example:
 
 
 ```ada
-    <<COMPARE>>
-       if A(I) < ELEMENT then
-          if LEFT(I) /= 0 then
-             I := LEFT(I);
-             goto COMPARE;
+    <<Compare>>
+       if A(I) < Element then
+          if Left(I) /= 0 then
+             I := Left(I);
+             goto Compare;
           end if;
           --  some statements
        end if;
@@ -7628,6 +7832,8 @@ or via conventional mail to
                    Washington, D.C. 20301-3081
 
 
+```
+
 -----------------------------------------------------------------------
 
 Copyright 1980, 1982, 1983 owned by the United States Government as
@@ -7660,14 +7866,14 @@ procedure 6.1, procedure call 6.4, subprogram body 6.3, subprogram call
 6.4, subprogram declaration 6.1, task unit 9
 
 
-### 6.1  Subprogram Declarations
+### 6.1 Subprogram Declarations
 
 
 A subprogram declaration declares a procedure or a function, as indicated
 by the initial reserved word.
 
 
-```ada
+```ebnf
     subprogram_declaration ::= subprogram_specification;
 
     subprogram_specification ::=
@@ -7718,18 +7924,18 @@ Examples of subprogram declarations:
 
 
 ```ada
-    procedure TRAVERSE_TREE;
-    procedure INCREMENT(X : in out INTEGER);
-    procedure RIGHT_INDENT(MARGIN : out LINE_SIZE); -- see 3.5.4
-    procedure SWITCH(FROM, TO : in out LINK); -- see 3.8.1
+    procedure Traverse_Tree;
+    procedure Increment(X : in out Integer);
+    procedure Right_Indent(Margin : out Line_Size); -- see 3.5.4
+    procedure Switch(From, To : in out Link); -- see 3.8.1
 
-    function RANDOM return PROBABILITY; -- see 3.5.7
+    function Random return Probability; -- see 3.5.7
 
-    function MIN_CELL(X : LINK) return CELL; -- see 3.8.1
-    function NEXT_FRAME(K : POSITIVE) return FRAME; -- see 3.8
-    function DOT_PRODUCT(LEFT,RIGHT: VECTOR) return REAL; -- see 3.6
+    function Min_Cell(X : Link) return Cell; -- see 3.8.1
+    function Next_Frame(K : Positive) return Frame; -- see 3.8
+    function Dot_Product(Left,Right: Vector) return Real; -- see 3.6
 
-    function "*"(LEFT,RIGHT : MATRIX) return MATRIX; -- see 3.6
+    function "*"(Left,Right : Matrix) return Matrix; -- see 3.6
 
 ```
 
@@ -7738,9 +7944,11 @@ Examples of in parameters with default expressions:
  procedure PRINT_HEADER(PAGES : in NATURAL;
 
 ```ada
-                HEADER : in LINE := (1 .. LINE'LAST => ' '); -- see 3.6
-                CENTER : in BOOLEAN := TRUE);
+                Header : in Line := (1 .. Line'Last => ' '); -- see 3.6
+                Center : in Boolean := True);
 
+
+```
 
 Notes:
 
@@ -7757,7 +7965,7 @@ overloading 6.6 8.7, procedure 6, string literal 2.6, subprogram call 6.4,
 type mark 3.3.2
 
 
-### 6.2  Formal Parameter Modes
+### 6.2 Formal Parameter Modes
 
 
 The value of an object is said to be read when this value is evaluated; it
@@ -7787,6 +7995,8 @@ A formal parameter of a subprogram has one of the three following modes:
           bounds and discriminants of the formal parameter and of its
           subcomponents is allowed, but no other reading.
 
+
+```
 
 For a scalar parameter, the above effects are achieved by copy: at the
 start of each call, if the mode is in or in out, the value of the actual
@@ -7878,13 +8088,13 @@ type 3.6, unconstrained type with discriminants 3.7.1, unconstrained
 variable 3.2.1, variable 3.2.1
 
 
-### 6.3  Subprogram Bodies
+### 6.3 Subprogram Bodies
 
 
 A subprogram body specifies the execution of a subprogram.
 
 
-```ada
+```ebnf
     subprogram_body ::=
         subprogram_specification is
            [declarative_part]
@@ -7939,15 +8149,15 @@ Example of subprogram body:
 
 
 ```ada
-    procedure PUSH(E : in ELEMENT_TYPE; S : in out STACK) is
+    procedure Push(E : in Element_Type; S : in out Stack) is
     begin
-       if S.INDEX = S.SIZE then
-          raise STACK_OVERFLOW;
+       if S.Index = S.Size then
+          raise Stack_Overflow;
        else
-          S.INDEX := S.INDEX + 1;
-          S.SPACE(S.INDEX) := E;
+          S.Index := S.Index + 1;
+          S.Space(S.Index) := E;
        end if;
-    end PUSH;
+    end;
 
 ```
 
@@ -7960,7 +8170,7 @@ subprogram declaration 6.1, subprogram specification 6.1, visibility 8.3,
 visible part 7.2
 
 
-#### 6.3.1  Conformance Rules
+#### 6.3.1 Conformance Rules
 
 
 Whenever the language rules require or allow the specification of a given
@@ -7979,10 +8189,14 @@ are allowed at each place:
 
   -  A string literal given as an operator symbol  can  be  replaced  by  a
 
+```
+
 ```ada
      different string literal if and only if both represent the same
      operator.
 
+
+```
 
 Two subprogram specifications are said to conform if, apart from comments
 and the above allowed variations, both specifications are formed by the
@@ -8004,10 +8218,12 @@ the same sequence of lexical elements:
 
 
 ```ada
-    procedure P(X,Y : INTEGER)
-    procedure P(X : INTEGER; Y : INTEGER)
-    procedure P(X,Y : in INTEGER)
+    procedure P(X,Y : Integer)
+    procedure P(X : Integer; Y : Integer)
+    procedure P(X,Y : in Integer)
 
+
+```
 
 References: actual parameter 6.4 6.4.1, allow 1.6, comment 2.7,
 declaration 3.1, deferred constant 7.4.3, direct visibility 8.3,
@@ -8017,14 +8233,16 @@ element 2, name 4.1, numeric literal 2.4, operator symbol 6.1, overloading
 4.1, subprogram specification 6.1, type conversion 4.6, visibility 8.3
 
 
-#### 6.3.2  Inline Expansion of Subprograms
+#### 6.3.2 Inline Expansion of Subprograms
 
 
 The pragma INLINE is used to indicate that inline expansion of the
 subprogram body is desired for every call of each of the named subprograms.
 The form of this pragma is as follows:
 
-    pragma INLINE (name {, name});
+```ada
+    pragma Inline (name {, name});
+```
 
 Each name is either the name of a subprogram or the name of a generic
 subprogram. The pragma INLINE is only allowed at the place of a
@@ -8054,7 +8272,7 @@ overloading 6.6 8.7, package specification 7.1, pragma 2.8, subprogram 6,
 subprogram body 6.3, subprogram call 6.4
 
 
-### 6.4  Subprogram Calls
+### 6.4 Subprogram Calls
 
 
 A subprogram call is either a procedure call statement or a function call;
@@ -8063,7 +8281,7 @@ specifies the association of the actual parameters, if any, with formal
 parameters of the subprogram.
 
 
-```ada
+```ebnf
     procedure_call_statement ::=
         procedure_name [actual_parameter_part];
 
@@ -8119,16 +8337,18 @@ Examples of function calls:
 
 
 ```ada
-    DOT_PRODUCT(U, V) -- see 6.1 and 6.5
-    CLOCK -- see 9.6
+    Dot_Product(U, V) -- see 6.1 and 6.5
+    Clock -- see 9.6
 
+
+```
 
 References: default expression for a formal parameter 6.1, erroneous 1.6,
 expression 4.4, formal parameter 6.1, formal part 6.1, name 4.1, simple
 name 4.1, subprogram 6, type mark 3.3.2, variable 3.2.1
 
 
-#### 6.4.1  Parameter Associations
+#### 6.4.1 Parameter Associations
 
 
 Each actual parameter must have the same type as the corresponding formal
@@ -8204,7 +8424,7 @@ unconstrained type with discriminants 3.7.1, undefined value 3.2.1,
 variable 3.2.1
 
 
-#### 6.4.2  Default Parameters
+#### 6.4.2 Default Parameters
 
 
 If a parameter specification includes a default expression for a parameter
@@ -8221,26 +8441,30 @@ Examples of procedures with default values:
 
 
 ```ada
-    procedure ACTIVATE(PROCESS : in PROCESS_NAME;
-                       AFTER : in PROCESS_NAME := NO_PROCESS;
-                       WAIT : in DURATION := 0.0;
-                       PRIOR : in BOOLEAN := FALSE);
+    procedure Activate(Process : in Process_Name;
+                       After : in Process_Name := No_Process;
+                       Wait : in Duration := 0.0;
+                       Prior : in Boolean := False);
 
-    procedure PAIR(LEFT, RIGHT : PERSON_NAME := new PERSON);
+    procedure Pair(Left, Right : Person_Name := new Person);
 
+
+```
 
 Examples of their calls:
 
 
 ```ada
-    ACTIVATE(X);
-    ACTIVATE(X, AFTER => Y);
-    ACTIVATE(X, WAIT => 60.0, PRIOR => TRUE);
-    ACTIVATE(X, Y, 10.0, FALSE);
+    Activate(X);
+    Activate(X, After => Y);
+    Activate(X, Wait => 60.0, Prior => True);
+    Activate(X, Y, 10.0, False);
 
-    PAIR;
-    PAIR(LEFT => new PERSON, RIGHT => new PERSON);
+    Pair;
+    Pair(Left => new Person, Right => new Person);
 
+
+```
 
 Note:
 
@@ -8256,7 +8480,7 @@ specification 6.1, positional parameter association 6.4, subprogram call
 6.4
 
 
-### 6.5  Function Subprograms
+### 6.5 Function Subprograms
 
 
 A function is a subprogram that returns a value (the result of the function
@@ -8275,15 +8499,15 @@ Example:
 
 
 ```ada
-    function DOT_PRODUCT(LEFT, RIGHT : VECTOR) return REAL is
-       SUM : REAL := 0.0;
+    function Dot_Product(Left, Right : Vector) return Real is
+       Sum : Real := 0.0;
     begin
-       CHECK(LEFT'FIRST = RIGHT'FIRST and LEFT'LAST = RIGHT'LAST);
-       for J in LEFT'RANGE loop
-          SUM := SUM + LEFT(J)*RIGHT(J);
+       Check(Left'First = Right'First and Left'Last = Right'Last);
+       for J in Left'Range loop
+          Sum := Sum + Left(J)*Right(J);
        end loop;
-       return SUM;
-    end DOT_PRODUCT;
+       return Sum;
+    end;
 
 ```
 
@@ -8293,7 +8517,7 @@ program_error exception 11.1, raising of exceptions 11, return statement
 5.8, statement 5
 
 
-### 6.6  Parameter and Result Type Profile - Overloading of Subprograms
+### 6.6 Parameter and Result Type Profile - Overloading of Subprograms
 
 
 Two formal parts are said to have the same parameter type profile if and
@@ -8324,23 +8548,25 @@ Examples of overloaded subprograms:
 
 
 ```ada
-    procedure PUT(X : INTEGER);
-    procedure PUT(X : STRING);
+    procedure Put(X : Integer);
+    procedure Put(X : String);
 
-    procedure SET(TINT : COLOR);
-    procedure SET(SIGNAL : LIGHT);
+    procedure Set(Tint : Color);
+    procedure Set(Signal : Light);
 
+
+```
 
 Examples of calls:
 
 
 ```ada
-    PUT(28);
-    PUT("no possible ambiguity here");
+    Put(28);
+    Put("no possible ambiguity here");
 
-    SET(TINT => RED);
-    SET(SIGNAL => RED);
-    SET(COLOR'(RED));
+    Set(Tint => Red);
+    Set(Signal => Red);
+    Set(Color'(Red));
 
     --  SET(RED) would be ambiguous since RED may
     --  denote a value either of type COLOR or of type LIGHT
@@ -8371,7 +8597,7 @@ expression 4.7, renaming declaration 8.5, result subtype 6.1, subprogram 6,
 subprogram specification 6.1, subtype 3.3, type 3.3
 
 
-### 6.7  Overloading of Operators
+### 6.7 Overloading of Operators
 
 
 The declaration of a function whose designator is an operator symbol is
@@ -8417,8 +8643,8 @@ Examples:
 
 
 ```ada
-    function "+" (LEFT, RIGHT : MATRIX) return MATRIX;
-    function "+" (LEFT, RIGHT : VECTOR) return VECTOR;
+    function "+" (Left, Right : Matrix) return Matrix;
+    function "+" (Left, Right : Vector) return Vector;
 
     --  assuming that A, B, and C are of the type VECTOR
     --  the three following assignments are equivalent
@@ -8426,7 +8652,7 @@ Examples:
     A := B + C;
 
     A := "+"(B, C);
-    A := "+"(LEFT => B, RIGHT => C);
+    A := "+"(Left => B, Right => C);
 
 ```
 
@@ -8462,6 +8688,8 @@ or via conventional mail to
                    Washington, D.C. 20301-3081
 
 
+```
+
 -----------------------------------------------------------------------
 
 Copyright 1980, 1982, 1983 owned by the United States Government as
@@ -8493,7 +8721,7 @@ References: generic unit 12, program unit 6, subprogram 6, task unit 9,
 type declaration 3.3.1
 
 
-### 7.1  Package Structure
+### 7.1 Package Structure
 
 
 A package is generally provided in two parts: a package specification and
@@ -8501,7 +8729,7 @@ a package body. Every package has a package specification, but not all
 packages have a package body.
 
 
-```ada
+```ebnf
     package_declaration ::= package_specification;
 
     package_specification ::=
@@ -8556,7 +8784,7 @@ package body 7.3, program unit 6, proper body 3.9, sequence of statements
 subunit 10.2, task body 9.1, task declaration 9.1, type 3.3
 
 
-### 7.2  Package Specifications and Declarations
+### 7.2 Package Specifications and Declarations
 
 
 The first list of declarative items of a package specification is called
@@ -8585,31 +8813,39 @@ Example of a package describing a group of common variables:
 
 
 ```ada
-    package PLOTTING_DATA is
-       PEN_UP : BOOLEAN;
+    package Plotting_Data is
+       Pen_Up : Boolean;
 
-       CONVERSION_FACTOR,
-       X_OFFSET, Y_OFFSET,
-       X_MIN, Y_MIN,
-       X_MAX, Y_MAX: REAL; -- see 3.5.7
+       Conversion_Factor,
+       X_Offset, Y_Offset,
+       X_Min, Y_Min,
+       X_Max, Y_Max: Real; -- see 3.5.7
 
-       X_VALUE : array (1 .. 500) of REAL;
-       Y_VALUE : array (1 .. 500) of REAL;
-    end PLOTTING_DATA;
+       X_Value : array (1 .. 500) of Real;
+       Y_Value : array (1 .. 500) of Real;
+    end;
 
+
+```
 
 Example of a package describing a common pool of objects and types:
 
 
     package WORK_DATA is
-       type DAY is (MON, TUE, WED, THU, FRI, SAT, SUN);
-       type HOURS_SPENT is delta 0.25 range 0.0 .. 24.0;
-       type TIME_TABLE is array (DAY) of HOURS_SPENT;
+```ada
+       type Day is (Mon, Tue, Wed, Thu, Fri, Sat, Sun);
+       type Hours_Spent is delta 0.25 range 0.0 .. 24.0;
+       type Time_Table is array (Day) of Hours_Spent;
 
-       WORK_HOURS : TIME_TABLE;
+       Work_Hours : Time_Table;
+```
        NORMAL_HOURS : constant TIME_TABLE :=
                          (MON .. THU => 8.25, FRI => 7.0, SAT | SUN => 0.0);
-    end WORK_DATA;
+```ada
+    end;
+```
+
+```
 
 ```
 
@@ -8620,7 +8856,7 @@ declaration 7.1, package identifier 7.1, package specification 7.1, scope
 8.2, simple name 4.1, type declaration 3.3.1, use clause 8.4, variable 3.2.1
 
 
-### 7.3  Package Bodies
+### 7.3 Package Bodies
 
 
 In contrast to the entities declared in the visible part of a package
@@ -8655,59 +8891,61 @@ Example of a package:
 
 
 ```ada
-    package RATIONAL_NUMBERS is
+    package Rational_Numbers is
 
-       type RATIONAL is
+       type Rational is
           record
-             NUMERATOR : INTEGER;
-             DENOMINATOR : POSITIVE;
+             Numerator : Integer;
+             Denominator : Positive;
           end record;
 
-       function EQUAL(X,Y : RATIONAL) return BOOLEAN;
+       function Equal(X,Y : Rational) return Boolean;
 
-       function "/" (X,Y : INTEGER) return RATIONAL; -- to construct a
+       function "/" (X,Y : Integer) return Rational; -- to construct a
                                                              rational number
-       function "+" (X,Y : RATIONAL) return RATIONAL;
-       function "-" (X,Y : RATIONAL) return RATIONAL;
-       function "*" (X,Y : RATIONAL) return RATIONAL;
-       function "/" (X,Y : RATIONAL) return RATIONAL;
+       function "+" (X,Y : Rational) return Rational;
+       function "-" (X,Y : Rational) return Rational;
+       function "*" (X,Y : Rational) return Rational;
+       function "/" (X,Y : Rational) return Rational;
     end;
 
-    package body RATIONAL_NUMBERS is
+    package body Rational_Numbers is
 
-       procedure SAME_DENOMINATOR (X,Y : in out RATIONAL) is
+       procedure Same_Denominator (X,Y : in out Rational) is
        begin
           --  reduces X and Y to the same denominator:
           ...
        end;
 
-       function EQUAL(X,Y : RATIONAL) return BOOLEAN is
-          U,V : RATIONAL;
+       function Equal(X,Y : Rational) return Boolean is
+          U,V : Rational;
        begin
           U := X;
           V := Y;
-          SAME_DENOMINATOR (U,V);
-          return U.NUMERATOR = V.NUMERATOR;
-       end EQUAL;
+          Same_Denominator (U,V);
+          return U.Numerator = V.Numerator;
+       end;
 
-       function "/" (X,Y : INTEGER) return RATIONAL is
+       function "/" (X,Y : Integer) return Rational is
        begin
           if Y > 0 then
-             return (NUMERATOR => X, DENOMINATOR => Y);
+             return (Numerator => X, Denominator => Y);
           else
-             return (NUMERATOR => -X, DENOMINATOR => -Y);
+             return (Numerator => -X, Denominator => -Y);
           end if;
        end "/";
 
-       function "+" (X,Y : RATIONAL) return RATIONAL is ... end "+";
-       function "-" (X,Y : RATIONAL) return RATIONAL is ... end "-";
+       function "+" (X,Y : Rational) return Rational is ... end "+";
+       function "-" (X,Y : Rational) return Rational is ... end "-";
 
 
-       function "*" (X,Y : RATIONAL) return RATIONAL is ... end "*";
-       function "/" (X,Y : RATIONAL) return RATIONAL is ... end "/";
+       function "*" (X,Y : Rational) return Rational is ... end "*";
+       function "/" (X,Y : Rational) return Rational is ... end "/";
 
-    end RATIONAL_NUMBERS;
+    end;
 
+
+```
 
 References: declaration 3.1, declarative part 3.9, elaboration 3.1 3.9,
 exception 11, exception handler 11.2, name 4.1, package specification 7.1,
@@ -8715,7 +8953,7 @@ program unit 6, program_error exception 11.1, sequence of statements 5.1,
 subprogram 6, variable 3.2.1, visible part 7.2
 
 
-### 7.4  Private Type and Deferred Constant Declarations
+### 7.4 Private Type and Deferred Constant Declarations
 
 
 The declaration of a type as a private type in the visible part of a
@@ -8726,13 +8964,15 @@ the definition of the type itself). Deferred constant declarations declare
 constants of private types.
 
 
-```ada
+```ebnf
     private_type_declaration ::=
        type identifier [discriminant_part] is [limited] private;
 
     deferred_constant_declaration ::=
        identifier_list : constant type_mark;
 
+
+```
 
 A private type declaration is only allowed as a declarative item of the
 visible part of a package, or as the generic parameter declaration for a
@@ -8749,13 +8989,17 @@ Examples of private type declarations:
 
 
 ```ada
-    type KEY is private;
-    type FILE_NAME is limited private;
+    type Key is private;
+    type File_Name is limited private;
 
+
+```
 
 Example of deferred constant declaration:
 
-    NULL_KEY : constant KEY;
+```ada
+    Null_Key : constant Key;
+```
 
 References: constant 3.2.1, declaration 3.1, declarative item 3.9,
 deferred constant 7.4.3, discriminant part 3.7.1, generic formal part 12.1,
@@ -8765,7 +9009,7 @@ generic formal type 12.1, generic parameter declaration 12.1, identifier
 7.2
 
 
-#### 7.4.1  Private Types
+#### 7.4.1 Private Types
 
 
 If a private type declaration is given in the visible part of a package,
@@ -8832,7 +9076,7 @@ declaration 3.3.1, type definition 3.3.1, unconstrained array type 3.6,
 variable 3.2.1, visible part 7.2
 
 
-#### 7.4.2  Operations of a Private Type
+#### 7.4.2 Operations of a Private Type
 
 
 The operations that are implicitly declared by a private type declaration
@@ -8892,12 +9136,14 @@ T'CONSTRAINED Yields the value FALSE if T denotes an unconstrained
 
 ```ada
               nonformal private type with discriminants; also yields the
-              value FALSE if T denotes a generic formal private type, and
+              value False if T denotes a generic formal private type, and
               the associated actual subtype is either an unconstrained type
               with discriminants or an unconstrained array type; yields
-              the value TRUE otherwise. The value of this attribute is of
-              the predefined type BOOLEAN.
+              the value True otherwise. The value of this attribute is of
+              the predefined type Boolean.
 
+
+```
 
 Note:
 
@@ -8919,29 +9165,29 @@ Example:
 
 
 ```ada
-    package KEY_MANAGER is
-       type KEY is private;
-       NULL_KEY : constant KEY;
-       procedure GET_KEY(K : out KEY);
-       function "<" (X, Y : KEY) return BOOLEAN;
+    package Key_Manager is
+       type Key is private;
+       Null_Key : constant Key;
+       procedure Get_Key(K : out Key);
+       function "<" (X, Y : Key) return Boolean;
     private
-       type KEY is new NATURAL;
-       NULL_KEY : constant KEY := 0;
+       type Key is new Natural;
+       Null_Key : constant Key := 0;
     end;
 
-    package body KEY_MANAGER is
-       LAST_KEY : KEY := 0;
-       procedure GET_KEY(K : out KEY) is
+    package body Key_Manager is
+       Last_Key : Key := 0;
+       procedure Get_Key(K : out Key) is
        begin
-          LAST_KEY := LAST_KEY + 1;
-          K := LAST_KEY;
-       end GET_KEY;
+          Last_Key := Last_Key + 1;
+          K := Last_Key;
+       end;
 
-       function "<" (X, Y : KEY) return BOOLEAN is
+       function "<" (X, Y : Key) return Boolean is
        begin
-          return INTEGER(X) < INTEGER(Y);
+          return Integer(X) < Integer(Y);
        end "<";
-    end KEY_MANAGER;
+    end;
 
 ```
 
@@ -8975,7 +9221,7 @@ program unit 6, qualification 4.7, relational operator 4.5, selected
 component 4.1.3, subprogram 6, task dependence 9.4, visible part 7.2
 
 
-#### 7.4.3  Deferred Constants
+#### 7.4.3 Deferred Constants
 
 
 If a deferred constant declaration is given in the visible part of a
@@ -9015,7 +9261,7 @@ object declaration 3.2.1, package 7, package specification 7.1, private
 part 7.2, record component 3.7, type mark 3.3.2, visible part 7.2
 
 
-#### 7.4.4  Limited Types
+#### 7.4.4 Limited Types
 
 
 A limited type is a type for which neither assignment nor the predefined
@@ -9069,32 +9315,32 @@ Example:
 
 
 ```ada
-    package I_O_PACKAGE is
-       type FILE_NAME is limited private;
+    package I_O_Package is
+       type File_Name is limited private;
 
-       procedure OPEN (F : in out FILE_NAME);
-       procedure CLOSE(F : in out FILE_NAME);
-       procedure READ (F : in FILE_NAME; ITEM : out INTEGER);
-       procedure WRITE(F : in FILE_NAME; ITEM : in INTEGER);
+       procedure Open (F : in out File_Name);
+       procedure Close(F : in out File_Name);
+       procedure Read (F : in File_Name; Item : out Integer);
+       procedure Write(F : in File_Name; Item : in Integer);
     private
-       type FILE_NAME is
+       type File_Name is
           record
-             INTERNAL_NAME : INTEGER := 0;
+             Internal_Name : Integer := 0;
           end record;
-    end I_O_PACKAGE;
+    end;
 
-    package body I_O_PACKAGE is
-       LIMIT : constant := 200;
-       type FILE_DESCRIPTOR is record ... end record;
-       DIRECTORY : array (1 .. LIMIT) of FILE_DESCRIPTOR;
+    package body I_O_Package is
+       Limit : constant := 200;
+       type File_Descriptor is record ... end record;
+       Directory : array (1 .. Limit) of File_Descriptor;
        ...
-       procedure OPEN (F : in out FILE_NAME) is ... end;
-       procedure CLOSE(F : in out FILE_NAME) is ... end;
-       procedure READ (F : in FILE_NAME; ITEM : out INTEGER) is ... end;
-       procedure WRITE(F : in FILE_NAME; ITEM : in INTEGER) is ... end;
+       procedure Open (F : in out File_Name) is ... end;
+       procedure Close(F : in out File_Name) is ... end;
+       procedure Read (F : in File_Name; Item : out Integer) is ... end;
+       procedure Write(F : in File_Name; Item : in Integer) is ... end;
     begin
        ...
-    end I_O_PACKAGE;
+    end;
 
 ```
 
@@ -9125,7 +9371,7 @@ component 3.7, record type 3.7, relational operator 4.5, subcomponent 3.3,
 subprogram 6, task type 9.1 9.2, type 3.3
 
 
-### 7.5  Example of a Table Management Package
+### 7.5 Example of a Table Management Package
 
 
 The following example illustrates the use of packages in providing high
@@ -9149,23 +9395,23 @@ package is exposed to the user.
 
 
 ```ada
-    package TABLE_MANAGER is
+    package Table_Manager is
 
-       type ITEM is
+       type Item is
           record
-             ORDER_NUM : INTEGER;
-             ITEM_CODE : INTEGER;
-             QUANTITY : INTEGER;
-             ITEM_TYPE : CHARACTER;
+             Order_Num : Integer;
+             Item_Code : Integer;
+             Quantity : Integer;
+             Item_Type : Character;
           end record;
 
-       NULL_ITEM : constant ITEM :=
-          (ORDER_NUM | ITEM_CODE | QUANTITY => 0, ITEM_TYPE => ' ');
+       Null_Item : constant Item :=
+          (Order_Num | Item_Code | Quantity => 0, Item_Type => ' ');
 
-       procedure INSERT (NEW_ITEM : in ITEM);
-       procedure RETRIEVE(FIRST_ITEM : out ITEM);
+       procedure Insert (New_Item : in Item);
+       procedure Retrieve(First_Item : out Item);
 
-       TABLE_FULL : exception; -- raised by INSERT when table full
+       Table_Full : exception; -- raised by INSERT when table full
     end;
 
 ```
@@ -9179,43 +9425,45 @@ of the package.
 
 
 ```ada
-    package body TABLE_MANAGER is
-       SIZE : constant := 2000;
-       subtype INDEX is INTEGER range 0 .. SIZE;
+    package body Table_Manager is
+       Size : constant := 2000;
+       subtype Index is Integer range 0 .. Size;
 
-       type INTERNAL_ITEM is
+       type Internal_Item is
           record
-             CONTENT : ITEM;
-             SUCC : INDEX;
-             PRED : INDEX;
+             Content : Item;
+             Succ : Index;
+             Pred : Index;
           end record;
 
-       TABLE : array (INDEX) of INTERNAL_ITEM;
-       FIRST_BUSY_ITEM : INDEX := 0;
-       FIRST_FREE_ITEM : INDEX := 1;
+       Table : array (Index) of Internal_Item;
+       First_Busy_Item : Index := 0;
+       First_Free_Item : Index := 1;
 
-       function FREE_LIST_EMPTY return BOOLEAN is ... end;
-       function BUSY_LIST_EMPTY return BOOLEAN is ... end;
-       procedure EXCHANGE (FROM : in INDEX; TO : in INDEX) is ... end;
+       function Free_List_Empty return Boolean is ... end;
+       function Busy_List_Empty return Boolean is ... end;
+       procedure Exchange (From : in Index; To : in Index) is ... end;
 
-       procedure INSERT (NEW_ITEM : in ITEM) is
+       procedure Insert (New_Item : in Item) is
        begin
-          if FREE_LIST_EMPTY then
-             raise TABLE_FULL;
+          if Free_List_Empty then
+             raise Table_Full;
           end if;
           --  remaining code for INSERT
-       end INSERT;
+       end;
 
-       procedure RETRIEVE (FIRST_ITEM : out ITEM) is ... end;
+       procedure Retrieve (First_Item : out Item) is ... end;
 
     begin
        --  initialization of the table linkages
 ```
 
-    end TABLE_MANAGER;
+```ada
+    end;
+```
 
 
-### 7.6  Example of a Text Handling Package
+### 7.6 Example of a Text Handling Package
 
 
 This example illustrates a simple text handling package. The users only
@@ -9237,70 +9485,74 @@ to minimize the number of explicit conversions the user has to write.
 
 
 ```ada
-    package TEXT_HANDLER is
-       MAXIMUM : constant := SOME_VALUE; -- implementation-defined
-       subtype INDEX is INTEGER range 0 .. MAXIMUM;
+    package Text_Handler is
+       Maximum : constant := Some_Value; -- implementation-defined
+       subtype Index is Integer range 0 .. Maximum;
 
-       type TEXT(MAXIMUM_LENGTH : INDEX) is limited private;
+       type Text(Maximum_Length : Index) is limited private;
 
-       function LENGTH (T : TEXT) return INDEX;
-       function VALUE (T : TEXT) return STRING;
-       function EMPTY (T : TEXT) return BOOLEAN;
+       function Length (T : Text) return Index;
+       function Value (T : Text) return String;
+       function Empty (T : Text) return Boolean;
 
-       function TO_TEXT (S : STRING; MAX : INDEX) return TEXT;
+       function To_Text (S : String; Max : Index) return Text;
                                                      --  maximum length MAX
-       function TO_TEXT (C : CHARACTER; MAX : INDEX) return TEXT;
-       function TO_TEXT (S : STRING) return TEXT;
+       function To_Text (C : Character; Max : Index) return Text;
+       function To_Text (S : String) return Text;
                                                 --  maximum length S'LENGTH
-       function TO_TEXT (C : CHARACTER) return TEXT;
+       function To_Text (C : Character) return Text;
 
-       function "&" (LEFT : TEXT; RIGHT : TEXT) return TEXT;
-       function "&" (LEFT : TEXT; RIGHT : STRING) return TEXT;
-       function "&" (LEFT : STRING; RIGHT : TEXT) return TEXT;
-       function "&" (LEFT : TEXT; RIGHT : CHARACTER) return TEXT;
-       function "&" (LEFT : CHARACTER; RIGHT : TEXT) return TEXT;
+       function "&" (Left : Text; Right : Text) return Text;
+       function "&" (Left : Text; Right : String) return Text;
+       function "&" (Left : String; Right : Text) return Text;
+       function "&" (Left : Text; Right : Character) return Text;
+       function "&" (Left : Character; Right : Text) return Text;
 
-       function "=" (LEFT : TEXT; RIGHT : TEXT) return BOOLEAN;
-       function "<" (LEFT : TEXT; RIGHT : TEXT) return BOOLEAN;
-       function "<=" (LEFT : TEXT; RIGHT : TEXT) return BOOLEAN;
-       function ">" (LEFT : TEXT; RIGHT : TEXT) return BOOLEAN;
-       function ">=" (LEFT : TEXT; RIGHT : TEXT) return BOOLEAN;
+       function "=" (Left : Text; Right : Text) return Boolean;
+       function "<" (Left : Text; Right : Text) return Boolean;
+       function "<=" (Left : Text; Right : Text) return Boolean;
+       function ">" (Left : Text; Right : Text) return Boolean;
+       function ">=" (Left : Text; Right : Text) return Boolean;
 
-       procedure SET (OBJECT : in out TEXT; VALUE : in TEXT);
-       procedure SET (OBJECT : in out TEXT; VALUE : in STRING);
-       procedure SET (OBJECT : in out TEXT; VALUE : in CHARACTER);
+       procedure Set (Object : in out Text; Value : in Text);
+       procedure Set (Object : in out Text; Value : in String);
+       procedure Set (Object : in out Text; Value : in Character);
 
-       procedure APPEND (TAIL : in TEXT; TO : in out TEXT);
-
-
-       procedure APPEND (TAIL : in STRING; TO : in out TEXT);
-       procedure APPEND (TAIL : in CHARACTER; TO : in out TEXT);
+       procedure Append (Tail : in Text; To : in out Text);
 
 
-  procedure AMEND (OBJECT : in out TEXT; BY : in TEXT; POSITION : in INDEX);
-  procedure AMEND (OBJECT : in out TEXT; BY : in STRING; POSITION : in INDEX);
-  procedure AMEND (OBJECT : in out TEXT; BY : in CHARACTER; POSITION :
-                                                                    in INDEX);
+       procedure Append (Tail : in String; To : in out Text);
+       procedure Append (Tail : in Character; To : in out Text);
+
+
+  procedure Amend (Object : in out Text; By : in Text; Position : in Index);
+  procedure Amend (Object : in out Text; By : in String; Position : in Index);
+  procedure Amend (Object : in out Text; By : in Character; Position :
+                                                                    in Index);
+
+```
 
 --  amend replaces part of the object by the given text, string, or character
 --  starting at the given position in the object
 
 
 ```ada
-       function LOCATE (FRAGMENT : TEXT; WITHIN : TEXT) return INDEX;
-       function LOCATE (FRAGMENT : STRING; WITHIN : TEXT) return INDEX;
-       function LOCATE (FRAGMENT : CHARACTER; WITHIN : TEXT) return INDEX;
+       function Locate (Fragment : Text; Within : Text) return Index;
+       function Locate (Fragment : String; Within : Text) return Index;
+       function Locate (Fragment : Character; Within : Text) return Index;
 
        --  all return 0 if the fragment is not located
 
     private
-       type TEXT(MAXIMUM_LENGTH : INDEX) is
+       type Text(Maximum_Length : Index) is
           record
-             POS : INDEX := 0;
-             VALUE : STRING(1 .. MAXIMUM_LENGTH);
+             Pos : Index := 0;
+             Value : String(1 .. Maximum_Length);
           end record;
-    end TEXT_HANDLER;
+    end;
 
+
+```
 
 Example of use of the text handling package:
 
@@ -9315,14 +9567,16 @@ result is the expanded version, with any necessary defaults added.
 
 
     function EXPAND_FILE_NAME (NAME : STRING) return STRING is
-       use TEXT_HANDLER;
+```ada
+       use Text_Handler;
 
-       DEFAULT_DEVICE : constant STRING := "SY:";
-       DEFAULT_FILE_NAME : constant STRING := "RESULTS";
-       DEFAULT_EXTENSION : constant STRING := ".DAT";
+       Default_Device : constant String := "SY:";
+       Default_File_Name : constant String := "RESULTS";
+       Default_Extension : constant String := ".DAT";
 
-       MAXIMUM_FILE_NAME_LENGTH : constant INDEX := SOME_APPROPRIATE_VALUE;
-       FILE_NAME : TEXT(MAXIMUM_FILE_NAME_LENGTH);
+       Maximum_File_Name_Length : constant Index := Some_Appropriate_Value;
+       File_Name : Text(Maximum_File_Name_Length);
+```
 
     begin
 
@@ -9330,20 +9584,26 @@ result is the expanded version, with any necessary defaults added.
 
        if EMPTY(FILE_NAME) then
           SET(FILE_NAME, DEFAULT_FILE_NAME);
+```ada
        end if;
+```
 
        if LOCATE(':', FILE_NAME) = 0 then
           SET(FILE_NAME, DEFAULT_DEVICE & FILE_NAME);
+```ada
        end if;
+```
 
        if LOCATE('.', FILE_NAME) = 0 then
           APPEND(DEFAULT_EXTENSION, TO => FILE_NAME);
+```ada
        end if;
 
 
-       return VALUE(FILE_NAME);
+       return Value(File_Name);
 
-    end EXPAND_FILE_NAME;
+    end;
+```
 
 
 ---
@@ -9365,6 +9625,8 @@ or via conventional mail to
                          The Pentagon
                    Washington, D.C. 20301-3081
 
+
+```
 
 -----------------------------------------------------------------------
 
@@ -9391,7 +9653,7 @@ References: declaration 3.1, declarative region 8.1, identifier 2.3, scope
 8.2, visibility 8.3
 
 
-### 8.1  Declarative Region
+### 8.1 Declarative Region
 
 
 A declarative region is a portion of the program text. A single
@@ -9411,6 +9673,8 @@ declarative region is formed by the text of each of the following:
 
   -  A record type declaration, together with a  corresponding  private  or
 
+```
+
 ```ada
      incomplete type declaration if any, and together with a corresponding
      record representation clause if any.
@@ -9418,12 +9682,16 @@ declarative region is formed by the text of each of the following:
 
   -  A renaming declaration that includes  a  formal  part,  or  a  generic
 
+```
+
 ```ada
      parameter declaration that includes either a formal part or a
      discriminant part.
 
 
   -  A block statement or a loop statement.
+
+```
 
 In each of the above cases, the declarative region is said to be associated
 with the corresponding declaration or statement. A declaration is said to
@@ -9479,7 +9747,7 @@ standard package 8.6, subprogram body 6.3, subprogram declaration 6.1,
 subunit 10.2, task body 9.1, task declaration 9.1, task unit 9
 
 
-### 8.2  Scope of Declarations
+### 8.2 Scope of Declarations
 
 
 For each form of declaration, the language rules define a certain portion
@@ -9544,7 +9812,7 @@ declaration 9.1, task unit 9, type declaration 3.3.1, use clause 8.4,
 visibility 8.3, visible part 7.2
 
 
-### 8.3  Visibility
+### 8.3 Visibility
 
 
 The meaning of the occurrence of an identifier at a given place in the text
@@ -9575,6 +9843,8 @@ cases arise.
 
   -  The visibility rules determine more than  one  possible  meaning.   In
 
+```
+
 ```ada
      such a case the occurrence of the identifier is legal at this point if
      and only if exactly one visible declaration is acceptable for the
@@ -9582,6 +9852,8 @@ cases arise.
      of overloading and section 8.7 for the context used for overload
      resolution).
 
+
+```
 
 A declaration is only visible within a certain part of its scope; this
 part starts at the end of the declaration except in a package
@@ -9613,6 +9885,8 @@ selection at places that are defined as follows.
      association of an aggregate of the type.
 
 
+```
+
 (d) For a discriminant specification of a given type declaration: at the
 
 ```ada
@@ -9620,6 +9894,8 @@ selection at places that are defined as follows.
      discriminant simple name (before the compound delimiter =>) in a named
      discriminant association of a discriminant constraint for the type.
 
+
+```
 
 (e) For a parameter specification of a given subprogram specification or
 
@@ -9689,11 +9965,11 @@ Example:
 
 ```ada
     procedure P is
-       A, B : BOOLEAN;
+       A, B : Boolean;
 
        procedure Q is
-          C : BOOLEAN;
-          B : BOOLEAN; -- an inner homograph of B
+          C : Boolean;
+          B : Boolean; -- an inner homograph of B
        begin
           ...
           B := A; -- means Q.B := P.A;
@@ -9737,14 +10013,16 @@ declarations are illegal:
 
 
 ```ada
-    K : INTEGER := K * K; -- illegal
+    K : Integer := K * K; -- illegal
     T : T; -- illegal
     procedure P(X : P); -- illegal
-    procedure Q(X : REAL := Q); -- illegal, even if there is a
+    procedure Q(X : Real := Q); -- illegal, even if there is a
                                            function named Q
-    procedure R(R : REAL); -- an inner declaration is legal (although
+    procedure R(R : Real); -- an inner declaration is legal (although
                                  confusing)
 
+
+```
 
 References: accept statement 9.5, aggregate 4.3, appropriate for a type
 4.1, argument 2.8, basic operation 3.3.3, character literal 2.5, component
@@ -9766,13 +10044,15 @@ subprogram call 6.4, subprogram declaration 6.1, subprogram specification
 clause 8.4, visible part 7.2
 
 
-### 8.4  Use Clauses
+### 8.4 Use Clauses
 
 
 A use clause achieves direct visibility of declarations that appear in the
 visible parts of named packages.
 
+```ada
     use_clause ::= use package_name {, package_name};
+```
 
 For each use clause, there is a certain region of text called the scope of
 the use clause. This region starts immediately after the use clause. If a
@@ -9800,12 +10080,16 @@ the following two cases:
 
   -  Potentially visible declarations that have the same identifier are not
 
+```
+
 ```ada
      made directly visible unless each of them is either an enumeration
      literal specification or the declaration of a subprogram (by a
      subprogram declaration, a renaming declaration, a generic
      instantiation, or an implicit declaration).
 
+
+```
 
 The elaboration of a use clause has no other effect.
 
@@ -9825,34 +10109,36 @@ Consequently, the following lines of text all have the same effect
     use P; use P, P;
 
 
+```
+
 Example of conflicting names in two packages:
 
 
 ```ada
     procedure R is
-       package TRAFFIC is
-          type COLOR is (RED, AMBER, GREEN);
+       package Traffic is
+          type Color is (Red, Amber, Green);
           ...
-       end TRAFFIC;
+       end;
 
-       package WATER_COLORS is
-          type COLOR is (WHITE, RED, YELLOW, GREEN, BLUE, BROWN, BLACK);
+       package Water_Colors is
+          type Color is (White, Red, Yellow, Green, Blue, Brown, Black);
           ...
-       end WATER_COLORS;
+       end;
 
-     use TRAFFIC; -- COLOR, RED, AMBER, and GREEN are directly visible
-     use WATER_COLORS; -- two homographs of GREEN are directly visible
+     use Traffic; -- COLOR, RED, AMBER, and GREEN are directly visible
+     use Water_Colors; -- two homographs of GREEN are directly visible
                         --  but COLOR is no longer directly visible
 
-     subtype LIGHT is TRAFFIC.COLOR; -- Subtypes are used to resolve
-     subtype SHADE is WATER_COLORS.COLOR; -- the conflicting type name COLOR
+     subtype Light is Traffic.Color; -- Subtypes are used to resolve
+     subtype Shade is Water_Colors.Color; -- the conflicting type name COLOR
 
-       SIGNAL : LIGHT;
-       PAINT : SHADE;
+       Signal : Light;
+       Paint : Shade;
     begin
-       SIGNAL := GREEN; -- that of TRAFFIC
-       PAINT := GREEN; -- that of WATER_COLORS
-    end R;
+       Signal := Green; -- that of TRAFFIC
+       Paint := Green; -- that of WATER_COLORS
+    end;
 
 ```
 
@@ -9861,16 +10147,16 @@ Example of name identification with a use clause:
 
 ```ada
        package D is
-          T, U, V : BOOLEAN;
-       end D;
+          T, U, V : Boolean;
+       end;
 
        procedure P is
           package E is
-             B, W, V : INTEGER;
-          end E;
+             B, W, V : Integer;
+          end;
 
           procedure Q is
-             T, X : REAL;
+             T, X : Real;
              use D, E;
           begin
              --  the name T means Q.T, not D.T
@@ -9880,10 +10166,10 @@ Example of name identification with a use clause:
              --  the name X means Q.X
              --  the name V is illegal : either D.V or E.V must be used
              ...
-          end Q;
+          end;
        begin
           ...
-       end P;
+       end;
 
 ```
 
@@ -9895,19 +10181,21 @@ identifier 2.3, immediate scope 8.2, name 4.1, occur immediately within
 8.1, package 7, scope 8.2, subprogram declaration 6.1, visible part 7.2
 
 
-### 8.5  Renaming Declarations
+### 8.5 Renaming Declarations
 
 
 A renaming declaration declares another name for an entity.
 
 
-```ada
+```ebnf
     renaming_declaration ::=
          identifier : type_mark renames object_name;
        | identifier : exception renames exception_name;
        | package identifier renames package_name;
        | subprogram_specification renames subprogram_or_entry_name;
 
+
+```
 
 The elaboration of a renaming declaration evaluates the name that follows
 the reserved word renames and thereby determines the entity denoted by this
@@ -9971,23 +10259,23 @@ Examples:
 
 ```ada
     declare
-       L : PERSON renames LEFTMOST_PERSON; -- see 3.8.1
+       L : Person renames Leftmost_Person; -- see 3.8.1
     begin
-       L.AGE := L.AGE + 1;
+       L.Age := L.Age + 1;
     end;
 
-    FULL : exception renames TABLE_MANAGER.TABLE_FULL; -- see 7.5
+    Full : exception renames Table_Manager.Table_Full; -- see 7.5
 
-    package TM renames TABLE_MANAGER;
+    package Tm renames Table_Manager;
 
-    function REAL_PLUS(LEFT, RIGHT : REAL ) return REAL renames "+";
-    function INT_PLUS (LEFT, RIGHT : INTEGER) return INTEGER renames "+";
+    function Real_Plus(Left, Right : Real ) return Real renames "+";
+    function Int_Plus (Left, Right : Integer) return Integer renames "+";
 
-    function ROUGE return COLOR renames RED; -- see 3.5.1
-    function ROT return COLOR renames RED;
-    function ROSSO return COLOR renames ROUGE;
+    function Rouge return Color renames Red; -- see 3.5.1
+    function Rot return Color renames Red;
+    function Rosso return Color renames Rouge;
 
-    function NEXT(X : COLOR) return COLOR renames COLOR'SUCC; -- see 3.5.5
+    function Next(X : Color) return Color renames Color'Succ; -- see 3.5.5
 ```
 
 
@@ -10022,7 +10310,9 @@ renaming a generic unit.
 A subtype can be used to achieve the effect of renaming a type (including a
 task type) as in
 
-    subtype MODE is TEXT_IO.FILE_MODE;
+```ada
+    subtype Mode is Text_IO.File_Mode;
+```
 
 References: allow 1.6, attribute 4.1.4, base type 3.3, conditional entry
 call 9.7.2, constant 3.2.1, constrained subtype 3.3, constraint 3.3,
@@ -10039,7 +10329,7 @@ subcomponent 3.3, subprogram 6, subprogram call 6.4, subprogram declaration
 entry call 9.7.3, type 3.3, type mark 3.3.2, variable 3.2.1, visibility 8.3
 
 
-### 8.6  The Package Standard
+### 8.6 The Package Standard
 
 
 The predefined types (for example the types BOOLEAN, CHARACTER and INTEGER)
@@ -10082,7 +10372,7 @@ within 8.1, operator 6.7, package 7, program unit 6, secondary unit 10.1,
 subtype 3.3, type 3.3, visibility 8.3, with clause 10.1.1
 
 
-### 8.7  The Context of Overload Resolution
+### 8.7 The Context of Overload Resolution
 
 
 Overloading is defined for subprograms, enumeration literals, operators,
@@ -10122,6 +10412,8 @@ the rules of the form described below.
      nonlimited type.
 
 
+```
+
 (c) Any rule that requires a prefix to be appropriate for a certain type.
 
 (d) Any rule that specifies a certain type as the result type of a basic
@@ -10130,6 +10422,8 @@ the rules of the form described below.
      operation, and any rule that specifies that this type is of a certain
      class.
 
+
+```
 
 (e) The rules that require the type of an aggregate or string literal to
 
@@ -10141,6 +10435,8 @@ the rules of the form described below.
      independently of the context (see 4.1.4, 5.4, 4.6, and 6.4.1).
 
 
+```
+
 (f) The rules given in section 6.6, for the resolution of overloaded
 
 ```ada
@@ -10150,6 +10446,8 @@ the rules of the form described below.
      4.1.3, for the interpretation of an expanded name whose prefix denotes
      a subprogram or an accept statement.
 
+
+```
 
 Subprogram names used as pragma arguments follow a different rule: the
 pragma can apply to several overloaded subprograms, as explained in section
@@ -10235,6 +10533,8 @@ or via conventional mail to
                    Washington, D.C. 20301-3081
 
 
+```
+
 -----------------------------------------------------------------------
 
 Copyright 1980, 1982, 1983 owned by the United States Government as
@@ -10293,7 +10593,7 @@ parameter in an entry call 9.5, program unit 6, rendezvous 9.5, select
 statement 9.7, subprogram 6, task body 9.1, task specification 9.1
 
 
-### 9.1  Task Specifications and Task Bodies
+### 9.1 Task Specifications and Task Bodies
 
 
 A task unit consists of a task specification and a task body. A task
@@ -10312,7 +10612,7 @@ in terms of task type declarations; the corresponding explanations for
 single task declarations follow from the stated equivalence.
 
 
-```ada
+```ebnf
     task_declaration ::= task_specification;
 
     task_specification ::=
@@ -10359,15 +10659,15 @@ Examples of specifications of task types:
 
 
 ```ada
-    task type RESOURCE is
-       entry SEIZE;
-       entry RELEASE;
-    end RESOURCE;
+    task type Resource is
+       entry Seize;
+       entry Release;
+    end;
 
-    task type KEYBOARD_DRIVER is
-       entry READ (C : out CHARACTER);
-       entry WRITE(C : in CHARACTER);
-    end KEYBOARD_DRIVER;
+    task type Keyboard_Driver is
+       entry Read (C : out Character);
+       entry Write(C : in Character);
+    end;
 
 ```
 
@@ -10375,16 +10675,16 @@ Examples of specifications of single tasks:
 
 
 ```ada
-    task PRODUCER_CONSUMER is
-       entry READ (V : out ITEM);
-       entry WRITE(E : in ITEM);
+    task Producer_Consumer is
+       entry Read (V : out Item);
+       entry Write(E : in Item);
     end;
 
-    task CONTROLLER is
-       entry REQUEST(LEVEL)(D : ITEM); -- a family of entries
-    end CONTROLLER;
+    task Controller is
+       entry Request(Level)(D : Item); -- a family of entries
+    end;
 
-    task USER; -- has no entries
+    task User; -- has no entries
 
 ```
 
@@ -10392,27 +10692,27 @@ Example of task specification and corresponding body:
 
 
 ```ada
-    task PROTECTED_ARRAY is
+    task Protected_Array is
        --  INDEX and ITEM are global types
-       entry READ (N : in INDEX; V : out ITEM);
-       entry WRITE(N : in INDEX; E : in ITEM);
+       entry Read (N : in Index; V : out Item);
+       entry Write(N : in Index; E : in Item);
     end;
 
-    task body PROTECTED_ARRAY is
-       TABLE : array(INDEX) of ITEM := (INDEX => NULL_ITEM);
+    task body Protected_Array is
+       Table : array(Index) of Item := (Index => Null_Item);
     begin
        loop
           select
-             accept READ (N : in INDEX; V : out ITEM) do
-                V := TABLE(N);
-             end READ;
+             accept Read (N : in Index; V : out Item) do
+                V := Table(N);
+             end;
           or
-             accept WRITE(N : in INDEX; E : in ITEM) do
-                TABLE(N) := E;
-             end WRITE;
+             accept Write(N : in Index; E : in Item) do
+                Table(N) := E;
+             end;
           end select;
        end loop;
-    end PROTECTED_ARRAY;
+    end;
 
 ```
 
@@ -10429,7 +10729,7 @@ program 10.1, object 3.2, object declaration 3.2.1, representation clause
 3.3, type declaration 3.3.1
 
 
-### 9.2  Task Types and Task Objects
+### 9.2 Task Types and Task Objects
 
 
 A task type is a limited type (see 7.4.4). Hence neither assignment nor
@@ -10455,19 +10755,23 @@ Examples:
 
 
 ```ada
-    CONTROL : RESOURCE;
-    TELETYPE : KEYBOARD_DRIVER;
-    POOL : array(1 .. 10) of KEYBOARD_DRIVER;
+    Control : Resource;
+    Teletype : Keyboard_Driver;
+    Pool : array(1 .. 10) of Keyboard_Driver;
     --  see also examples of declarations of single tasks in 9.1
 
+
+```
 
 Example of access type designating task objects:
 
 
 ```ada
-    type KEYBOARD is access KEYBOARD_DRIVER;
-    TERMINAL : KEYBOARD := new KEYBOARD_DRIVER;
+    type Keyboard is access Keyboard_Driver;
+    Terminal : Keyboard := new Keyboard_Driver;
 
+
+```
 
 Notes:
 
@@ -10506,7 +10810,7 @@ subcomponent 3.3, subprogram 6, subtype declaration 3.3.2, task body 9.1,
 type 3.3
 
 
-### 9.3  Task Execution - Task Activation
+### 9.3 Task Execution - Task Activation
 
 
 A task body defines the execution of any task that is designated by a task
@@ -10578,13 +10882,15 @@ Example:
 
 ```ada
     procedure P is
-       A, B : RESOURCE; -- elaborate the task objects A, B
-       C : RESOURCE; -- elaborate the task object C
+       A, B : Resource; -- elaborate the task objects A, B
+       C : Resource; -- elaborate the task object C
     begin
        --  the tasks A, B, C are activated in parallel before the first statement
        ...
     end;
 
+
+```
 
 Notes:
 
@@ -10601,7 +10907,7 @@ body 9.1, task object 9.2, task termination 9.4, task type 9.1,
 tasking_error exception 11.1
 
 
-### 9.4  Task Dependence - Termination of Tasks
+### 9.4 Task Dependence - Termination of Tasks
 
 
 Each task depends on at least one master. A master is a construct that is
@@ -10617,6 +10923,8 @@ following two cases:
      depends on the master that elaborates the corresponding access type
      definition.
 
+
+```
 
 (b) The task designated by any other task object depends on the master
      whose execution creates the task object.
@@ -10672,15 +10980,21 @@ Example:
 
     declare
        type GLOBAL is access RESOURCE; -- see 9.1
-       A, B : RESOURCE;
-       G : GLOBAL;
+```ada
+       A, B : Resource;
+       G : Global;
+```
     begin
        --  activation of A and B
        declare
-          type LOCAL is access RESOURCE;
+```ada
+          type Local is access Resource;
+```
           X : GLOBAL := new RESOURCE; -- activation of X.all
           L : LOCAL := new RESOURCE; -- activation of L.all
-          C : RESOURCE;
+```ada
+          C : Resource;
+```
        begin
           --  activation of C
           G := X; -- both G and X designate the same task object
@@ -10688,6 +11002,8 @@ Example:
        end; -- await termination of C and L.all (but not X.all)
        ...
     end; -- await termination of A, B, and G.all
+
+```
 
 ```
 
@@ -10723,7 +11039,7 @@ subprogram body 6.3, subprogram call 6.4, task body 9.1, task object 9.2,
 terminate alternative 9.7.1
 
 
-### 9.5  Entries, Entry Calls, and Accept Statements
+### 9.5 Entries, Entry Calls, and Accept Statements
 
 
 Entry calls and accept statements are the primary means of synchronization
@@ -10733,7 +11049,7 @@ specification. The actions to be performed when an entry is called are
 specified by corresponding accept statements.
 
 
-```ada
+```ebnf
     entry_declaration ::=
        entry identifier [(discrete_range)] [formal_part];
 
@@ -10812,6 +11128,8 @@ If a given entry is called by only one task, there are two possibilities:
   -  If a task reaches an accept statement prior to any call of that entry,
      the execution of the task is suspended until such a call is received.
 
+```
+
 When an entry has been called and a corresponding accept statement has been
 reached, the sequence of statements, if any, of the accept statement is
 executed by the called task (while the calling task remains suspended).
@@ -10835,34 +11153,38 @@ Examples of entry declarations:
 
 
 ```ada
-    entry READ(V : out ITEM);
-    entry SEIZE;
-    entry REQUEST(LEVEL)(D : ITEM); -- a family of entries
+    entry Read(V : out Item);
+    entry Seize;
+    entry Request(Level)(D : Item); -- a family of entries
 
+
+```
 
 Examples of entry calls:
 
 
 ```ada
-    CONTROL.RELEASE; -- see 9.2 and 9.1
-    PRODUCER_CONSUMER.WRITE(E); -- see 9.1
-    POOL(5).READ(NEXT_CHAR); -- see 9.2 and 9.1
-    CONTROLLER.REQUEST(LOW)(SOME_ITEM); -- see 9.1
+    Control.Release; -- see 9.2 and 9.1
+    Producer_Consumer.Write(E); -- see 9.1
+    Pool(5).Read(Next_Char); -- see 9.2 and 9.1
+    Controller.Request(Low)(Some_Item); -- see 9.1
 
+
+```
 
 Examples of accept statements:
 
 
 ```ada
-    accept SEIZE;
+    accept Seize;
 
-    accept READ(V : out ITEM) do
-       V := LOCAL_ITEM;
-    end READ;
+    accept Read(V : out Item) do
+       V := Local_Item;
+    end;
 
-    accept REQUEST(LOW)(D : ITEM) do
+    accept Request(Low)(D : Item) do
        ...
-    end REQUEST;
+    end;
 
 ```
 
@@ -10899,14 +11221,16 @@ body 9.1, task specification 9.1, tasking_error exception 11.1, timed entry
 call 9.7.3
 
 
-### 9.6  Delay Statements, Duration, and Time
+### 9.6 Delay Statements, Duration, and Time
 
 
 The execution of a delay statement evaluates the simple expression, and
 suspends further execution of the task that executes the delay statement,
 for at least the duration specified by the resulting value.
 
+```ada
     delay_statement ::= delay simple_expression;
+```
 
 The simple expression must be of the predefined fixed point type DURATION;
 its value is expressed in seconds; a delay statement with a negative value
@@ -10939,49 +11263,51 @@ of the type DURATION.
 
 
 ```ada
-    package CALENDAR is
-       type TIME is private;
+    package Calendar is
+       type Time is private;
 
-       subtype YEAR_NUMBER is INTEGER range 1901 .. 2099;
-       subtype MONTH_NUMBER is INTEGER range 1 .. 12;
-       subtype DAY_NUMBER is INTEGER range 1 .. 31;
-       subtype DAY_DURATION is DURATION range 0.0 .. 86_400.0;
+       subtype Year_Number is Integer range 1901 .. 2099;
+       subtype Month_Number is Integer range 1 .. 12;
+       subtype Day_Number is Integer range 1 .. 31;
+       subtype Day_Duration is Duration range 0.0 .. 86_400.0;
 
-       function CLOCK return TIME;
+       function Clock return Time;
 
-       function YEAR (DATE : TIME) return YEAR_NUMBER;
-       function MONTH (DATE : TIME) return MONTH_NUMBER;
-       function DAY (DATE : TIME) return DAY_NUMBER;
-       function SECONDS(DATE : TIME) return DAY_DURATION;
+       function Year (Date : Time) return Year_Number;
+       function Month (Date : Time) return Month_Number;
+       function Day (Date : Time) return Day_Number;
+       function Seconds(Date : Time) return Day_Duration;
 
-       procedure SPLIT (DATE : in TIME;
-                        YEAR : out YEAR_NUMBER;
-                        MONTH : out MONTH_NUMBER;
-                        DAY : out DAY_NUMBER;
-                        SECONDS : out DAY_DURATION);
+       procedure Split (Date : in Time;
+                        Year : out Year_Number;
+                        Month : out Month_Number;
+                        Day : out Day_Number;
+                        Seconds : out Day_Duration);
 
-       function TIME_OF(YEAR : YEAR_NUMBER;
-                        MONTH : MONTH_NUMBER;
-                        DAY : DAY_NUMBER;
-                        SECONDS : DAY_DURATION := 0.0) return TIME;
+       function Time_Of(Year : Year_Number;
+                        Month : Month_Number;
+                        Day : Day_Number;
+                        Seconds : Day_Duration := 0.0) return Time;
 
-       function "+" (LEFT : TIME; RIGHT : DURATION) return TIME;
-       function "+" (LEFT : DURATION; RIGHT : TIME) return TIME;
-       function "-" (LEFT : TIME; RIGHT : DURATION) return TIME;
-       function "-" (LEFT : TIME; RIGHT : TIME) return DURATION;
+       function "+" (Left : Time; Right : Duration) return Time;
+       function "+" (Left : Duration; Right : Time) return Time;
+       function "-" (Left : Time; Right : Duration) return Time;
+       function "-" (Left : Time; Right : Time) return Duration;
 
-       function "<" (LEFT, RIGHT : TIME) return BOOLEAN;
-       function "<=" (LEFT, RIGHT : TIME) return BOOLEAN;
-       function ">" (LEFT, RIGHT : TIME) return BOOLEAN;
-       function ">=" (LEFT, RIGHT : TIME) return BOOLEAN;
+       function "<" (Left, Right : Time) return Boolean;
+       function "<=" (Left, Right : Time) return Boolean;
+       function ">" (Left, Right : Time) return Boolean;
+       function ">=" (Left, Right : Time) return Boolean;
 
-       TIME_ERROR : exception; -- can be raised by TIME_OF, "+", and "-"
+       Time_Error : exception; -- can be raised by TIME_OF, "+", and "-"
 
 
     private
        -- implementation-dependent
     end;
 
+
+```
 
 Examples:
 
@@ -10990,14 +11316,14 @@ Examples:
     delay 3.0; -- delay 3.0 seconds
 
     declare
-       use CALENDAR;
+       use Calendar;
        --  INTERVAL is a global constant of type DURATION
-       NEXT_TIME : TIME := CLOCK + INTERVAL;
+       Next_Time : Time := Clock + Interval;
     begin
        loop
-          delay NEXT_TIME - CLOCK;
+          delay Next_Time - Clock;
           --  some actions
-          NEXT_TIME := NEXT_TIME + INTERVAL;
+          Next_Time := Next_Time + Interval;
        end loop;
     end;
 
@@ -11016,7 +11342,7 @@ function call 6.4, library unit 10.1, operator 4.5, package 7, private type
 type 3.3
 
 
-### 9.7  Select Statements
+### 9.7 Select Statements
 
 
 There are three forms of select statements. One form provides a selective
@@ -11024,16 +11350,18 @@ wait for one or more alternatives. The other two provide conditional and
 timed entry calls.
 
 
-```ada
+```ebnf
     select_statement ::= selective_wait
        | conditional_entry_call | timed_entry_call
 
+
+```
 
 References: selective wait 9.7.1, conditional entry call 9.7.2, timed
 entry call 9.7.3
 
 
-#### 9.7.1  Selective Waits
+#### 9.7.1 Selective Waits
 
 
 This form of the select statement allows a combination of waiting for, and
@@ -11041,7 +11369,7 @@ selecting from, one or more alternatives. The selection can depend on
 conditions associated with each alternative of the selective wait.
 
 
-```ada
+```ebnf
     selective_wait ::=
         select
           select_alternative
@@ -11110,6 +11438,8 @@ as follows:
 
   -  The else part is selected and its statements are executed if no accept
 
+```
+
 ```ada
      alternative can be immediately selected, in particular, if all
      alternatives are closed.
@@ -11117,11 +11447,15 @@ as follows:
 
   -  An open terminate alternative is selected if the conditions stated  in
 
+```
+
 ```ada
      section 9.4 are satisfied. It is a consequence of other rules that a
      terminate alternative cannot be selected while there is a queued entry
      call for any entry of the task.
 
+
+```
 
 The exception PROGRAM_ERROR is raised if all alternatives are closed and
 there is no else part.
@@ -11131,35 +11465,37 @@ Examples of a select statement:
 
 ```ada
     select
-       accept DRIVER_AWAKE_SIGNAL;
+       accept Driver_Awake_Signal;
     or
-       delay 30.0*SECONDS;
-       STOP_THE_TRAIN;
+       delay 30.0*Seconds;
+       Stop_The_Train;
     end select;
 
+
+```
 
 Example of a task body with a select statement:
 
 
 ```ada
-    task body RESOURCE is
-       BUSY : BOOLEAN := FALSE;
+    task body Resource is
+       Busy : Boolean := False;
     begin
        loop
           select
-             when not BUSY =>
-                accept SEIZE do
-                   BUSY := TRUE;
+             when not Busy =>
+                accept Seize do
+                   Busy := True;
                 end;
           or
-             accept RELEASE do
-                BUSY := FALSE;
+             accept Release do
+                Busy := False;
              end;
           or
              terminate;
           end select;
        end loop;
-    end RESOURCE;
+    end;
 
 ```
 
@@ -11175,14 +11511,14 @@ expression 9.6, delay statement 9.6, duration 9.6, entry 9.5, entry call
 rendezvous 9.5, select statement 9.7, sequence of statements 5.1, task 9
 
 
-#### 9.7.2  Conditional Entry Calls
+#### 9.7.2 Conditional Entry Calls
 
 
 A conditional entry call issues an entry call that is then canceled if a
 rendezvous is not immediately possible.
 
 
-```ada
+```ebnf
     conditional_entry_call ::=
        select
            entry_call_statement
@@ -11191,6 +11527,8 @@ rendezvous is not immediately possible.
            sequence_of_statements
        end select;
 
+
+```
 
 For the execution of a conditional entry call, the entry name is first
 evaluated. This is followed by any evaluations required for actual
@@ -11216,11 +11554,11 @@ Example:
 
 
 ```ada
-    procedure SPIN(R : RESOURCE) is
+    procedure Spin(R : Resource) is
     begin
        loop
           select
-             R.SEIZE;
+             R.Seize;
              return;
           else
              null; -- busy waiting
@@ -11237,14 +11575,14 @@ queued entry call 9.5, rendezvous 9.5, select statement 9.7, sequence of
 statements 5.1, task 9, tasking_error exception 11.1
 
 
-#### 9.7.3  Timed Entry Calls
+#### 9.7.3 Timed Entry Calls
 
 
 A timed entry call issues an entry call that is canceled if a rendezvous is
 not started within a given delay.
 
 
-```ada
+```ebnf
     timed_entry_call ::=
        select
            entry_call_statement
@@ -11253,6 +11591,8 @@ not started within a given delay.
            delay_alternative
        end select;
 
+
+```
 
 For the execution of a timed entry call, the entry name is first evaluated.
 This is followed by any evaluations required for actual parameters as in
@@ -11275,12 +11615,14 @@ Example:
 
 ```ada
     select
-       CONTROLLER.REQUEST(MEDIUM)(SOME_ITEM);
+       Controller.Request(Medium)(Some_Item);
     or
        delay 45.0;
        --  controller too busy, try something else
     end select;
 
+
+```
 
 References: abnormal task 9.10, accept statement 9.5, actual parameter
 part 6.4, completed task 9.4, conditional entry call 9.7.2, delay
@@ -11289,7 +11631,7 @@ expression 9.6, delay statement 9.6, duration 9.6, entry call statement
 rendezvous 9.5, sequence of statements 5.1, task 9, tasking_error exception 11.1
 
 
-### 9.8  Priorities
+### 9.8 Priorities
 
 
 Each task may (but need not) have a priority, which is a value of the
@@ -11298,7 +11640,9 @@ package SYSTEM (see 13.7). A lower value indicates a lower degree of
 urgency; the range of priorities is implementation-defined. A priority is
 associated with a task if a pragma
 
-    pragma PRIORITY (static_expression);
+```ada
+    pragma Priority (static_expression);
+```
 
 appears in the corresponding task specification; the priority is given by
 the value of the expression. A priority is associated with the main
@@ -11323,6 +11667,8 @@ priorities on scheduling is defined by the following rule:
      higher priority is not.
 
 
+```
+
 For tasks of the same priority, the scheduling order is not defined by the
 language. For tasks without explicit priority, the scheduling rules are
 not defined, except when such tasks are engaged in a rendezvous. If the
@@ -11345,7 +11691,7 @@ References: declarative part 3.9, entry call statement 9.5, integer type
 static expression 4.9, subtype 3.3, task 9, task specification 9.1
 
 
-### 9.9  Task and Entry Attributes
+### 9.9 Task and Entry Attributes
 
 
 For a task object or value T the following attributes are defined:
@@ -11354,9 +11700,11 @@ T'CALLABLE Yields the value FALSE when the execution of the task
 
 ```ada
               designated by T is either completed or terminated, or when
-              the task is abnormal. Yields the value TRUE otherwise. The
-              value of this attribute is of the predefined type BOOLEAN.
+              the task is abnormal. Yields the value True otherwise. The
+              value of this attribute is of the predefined type Boolean.
 
+
+```
 
 T'TERMINATED Yields the value TRUE if the task designated by T is
 
@@ -11394,13 +11742,15 @@ task object 9.2, task type 9.1, terminated task 9.4, timed entry call
 9.7.3, true boolean value 3.5.3, universal_integer type 3.5.4
 
 
-### 9.10  Abort Statements
+### 9.10 Abort Statements
 
 
 An abort statement causes one or more tasks to become abnormal, thus
 preventing any further rendezvous with such tasks.
 
+```ada
     abort_statement ::= abort task_name {, task_name};
+```
 
 The determination of the type of each task name uses the fact that the type
 of the name is a task type.
@@ -11457,7 +11807,7 @@ select statement 9.7, statement 5, task 9, tasking_error exception 11.1,
 terminated task 9.4, timed entry call 9.7.3
 
 
-### 9.11  Shared Variables
+### 9.11 Shared Variables
 
 
 The normal means of communicating values between tasks is by entry calls
@@ -11484,11 +11834,15 @@ following assumptions can always be made:
 
   -  If between two synchronization points of a task, this task  updates  a
 
+```
+
 ```ada
      shared variable whose type is a scalar or access type, then the
      variable is neither read nor updated by any other task at any time
      between these two points.
 
+
+```
 
 The execution of the program is erroneous if any of these assumptions is
 violated.
@@ -11515,7 +11869,9 @@ variable is a synchronization point for that variable; that is, the above
 assumptions always hold for the given variable (but not necessarily for
 other variables). The form of this pragma is as follows:
 
-    pragma SHARED(variable_simple_name);
+```ada
+    pragma Shared(variable_simple_name);
+```
 
 This pragma is allowed only for a variable declared by an object
 declaration and whose type is a scalar or access type; the variable
@@ -11535,7 +11891,7 @@ value 6.2, rendezvous 9.5, simple name 3.1 4.1, task 9, type 3.3, update a
 value 6.2, variable 3.2.1
 
 
-### 9.12  Example of Tasking
+### 9.12 Example of Tasking
 
 
 The following example defines a buffering task to smooth variations between
@@ -11547,21 +11903,25 @@ statements
 ```ada
     loop
        --  produce the next character CHAR
-       BUFFER.WRITE(CHAR);
-       exit when CHAR = ASCII.EOT;
+       Buffer.Write(Char);
+       exit when Char = ASCII.Eot;
     end loop;
 
+
+```
 
 and the consuming task may contain the statements
 
 
 ```ada
     loop
-       BUFFER.READ(CHAR);
+       Buffer.Read(Char);
        --  consume the character CHAR
-       exit when CHAR = ASCII.EOT;
+       exit when Char = ASCII.Eot;
     end loop;
 
+
+```
 
 The buffering task contains an internal pool of characters processed in a
 round-robin fashion. The pool has two indices, an IN_INDEX denoting the
@@ -11570,36 +11930,36 @@ the next output character.
 
 
 ```ada
-    task BUFFER is
-       entry READ (C : out CHARACTER);
-       entry WRITE(C : in CHARACTER);
+    task Buffer is
+       entry Read (C : out Character);
+       entry Write(C : in Character);
     end;
 
-    task body BUFFER is
-       POOL_SIZE : constant INTEGER := 100;
-       POOL : array(1 .. POOL_SIZE) of CHARACTER;
-       COUNT : INTEGER range 0 .. POOL_SIZE := 0;
-       IN_INDEX, OUT_INDEX : INTEGER range 1 .. POOL_SIZE := 1;
+    task body Buffer is
+       Pool_Size : constant Integer := 100;
+       Pool : array(1 .. Pool_Size) of Character;
+       Count : Integer range 0 .. Pool_Size := 0;
+       In_Index, Out_Index : Integer range 1 .. Pool_Size := 1;
     begin
        loop
           select
-             when COUNT < POOL_SIZE =>
-                accept WRITE(C : in CHARACTER) do
-                   POOL(IN_INDEX) := C;
+             when Count < Pool_Size =>
+                accept Write(C : in Character) do
+                   Pool(In_Index) := C;
                 end;
-                IN_INDEX := IN_INDEX mod POOL_SIZE + 1;
-                COUNT := COUNT + 1;
-          or when COUNT > 0 =>
-                accept READ(C : out CHARACTER) do
-                   C := POOL(OUT_INDEX);
+                In_Index := In_Index mod Pool_Size + 1;
+                Count := Count + 1;
+          or when Count > 0 =>
+                accept Read(C : out Character) do
+                   C := Pool(Out_Index);
                 end;
-                OUT_INDEX := OUT_INDEX mod POOL_SIZE + 1;
-                COUNT := COUNT - 1;
+                Out_Index := Out_Index mod Pool_Size + 1;
+                Count := Count - 1;
           or
              terminate;
           end select;
        end loop;
-    end BUFFER;
+    end;
 
 
 ```
@@ -11624,6 +11984,8 @@ or via conventional mail to
                          The Pentagon
                    Washington, D.C. 20301-3081
 
+
+```
 
 -----------------------------------------------------------------------
 
@@ -11657,14 +12019,14 @@ package declaration 7.1, subprogram body 6.3, subprogram declaration 6.1,
 subunit 10.2, task body 9.1, task unit 9
 
 
-### 10.1  Compilation Units - Library Units
+### 10.1 Compilation Units - Library Units
 
 
 The text of a program can be submitted to the compiler in one or more
 compilations. Each compilation is a succession of compilation units.
 
 
-```ada
+```ebnf
     compilation ::= {compilation_unit}
 
     compilation_unit ::=
@@ -11745,18 +12107,20 @@ package 8.6, subprogram 6, subprogram body 6.3, subprogram declaration 6.1,
 subunit 10.2, task 9, visibility 8.3
 
 
-#### 10.1.1  Context Clauses - With Clauses
+#### 10.1.1 Context Clauses - With Clauses
 
 
 A context clause is used to specify the library units whose names are
 needed within a compilation unit.
 
 
-```ada
+```ebnf
     context_clause ::= {with_clause {use_clause}}
 
     with_clause ::= with unit_simple_name {, unit_simple_name};
 
+
+```
 
 The names that appear in a context clause must be the simple names of
 library units. The simple name of any library unit is allowed within a
@@ -11808,26 +12172,26 @@ the program library. Such packages may be used by other main programs.
 
 
 ```ada
-    with TEXT_IO, REAL_OPERATIONS; use REAL_OPERATIONS;
-    procedure QUADRATIC_EQUATION is
-       A, B, C, D : REAL;
-       use REAL_IO, -- achieves direct visibility of GET and PUT
-                                for REAL
-           TEXT_IO, -- achieves direct visibility of PUT for strings
-                                and of NEW_LINE
-           REAL_FUNCTIONS; -- achieves direct visibility of SQRT
+    with Text_IO, Real_Operations; use Real_Operations;
+    procedure Quadratic_Equation is
+       A, B, C, D : Real;
+       use Real_IO, -- achieves direct visibility of GET and PUT
+                                for Real
+           Text_IO, -- achieves direct visibility of PUT for strings
+                                and of New_Line
+           Real_Functions; -- achieves direct visibility of SQRT
     begin
-       GET(A); GET(B); GET(C);
+       Get(A); Get(B); Get(C);
        D := B**2 - 4.0*A*C;
        if D < 0.0 then
-          PUT("Imaginary Roots.");
+          Put("Imaginary Roots.");
        else
-          PUT("Real Roots : X1 = ");
-          PUT((-B - SQRT(D))/(2.0*A)); PUT(" X2 = ");
-          PUT((-B + SQRT(D))/(2.0*A));
+          Put("Real Roots : X1 = ");
+          Put((-B - Sqrt(D))/(2.0*A)); Put(" X2 = ");
+          Put((-B + Sqrt(D))/(2.0*A));
        end if;
-       NEW_LINE;
-    end QUADRATIC_EQUATION;
+       New_Line;
+    end;
 
 ```
 
@@ -11852,7 +12216,7 @@ subprogram body 6.3, subprogram declaration 6.1, subunit 10.2, type 3.3,
 use clause 8.4, visibility 8.3
 
 
-#### 10.1.2  Examples of Compilation Units
+#### 10.1.2 Examples of Compilation Units
 
 
 A compilation unit can be split into a number of compilation units. For
@@ -11860,42 +12224,44 @@ example, consider the following program.
 
 
 ```ada
-    procedure PROCESSOR is
+    procedure Processor is
 
-       SMALL : constant := 20;
-       TOTAL : INTEGER := 0;
+       Small : constant := 20;
+       Total : Integer := 0;
 
-       package STOCK is
-          LIMIT : constant := 1
-          TABLE : array (1 .. LIMIT) of INTEGER;
-          procedure RESTART;
-       end STOCK;
+       package Stock is
+          Limit : constant := 1
+          Table : array (1 .. Limit) of Integer;
+          procedure Restart;
+       end;
 
-       package body STOCK is
-          procedure RESTART is
+       package body Stock is
+          procedure Restart is
           begin
-             for N in 1 .. LIMIT loop
-                TABLE(N) := N;
+             for N in 1 .. Limit loop
+                Table(N) := N;
              end loop;
           end;
        begin
-          RESTART;
-       end STOCK;
+          Restart;
+       end;
 
-       procedure UPDATE(X : INTEGER) is
-          use STOCK;
+       procedure Update(X : Integer) is
+          use Stock;
        begin
           ...
-          TABLE(X) := TABLE(X) + SMALL;
+          Table(X) := Table(X) + Small;
           ...
-       end UPDATE;
+       end;
 
     begin
        ...
-       STOCK.RESTART; -- reinitializes TABLE
+       Stock.Restart; -- reinitializes TABLE
        ...
-    end PROCESSOR;
+    end;
 
+
+```
 
 The following three compilation units define a program with an effect
 equivalent to the above example (the broken lines between compilation units
@@ -11906,9 +12272,11 @@ Example 2 : Several compilation units:
 
     package STOCK is
        LIMIT : constant := 1
-       TABLE : array (1 .. LIMIT) of INTEGER;
-       procedure RESTART;
-    end STOCK;
+```ada
+       Table : array (1 .. Limit) of Integer;
+       procedure Restart;
+    end;
+```
 
     -------------------------------------------------
 
@@ -11917,33 +12285,49 @@ Example 2 : Several compilation units:
        begin
           for N in 1 .. LIMIT loop
              TABLE(N) := N;
+```ada
           end loop;
        end;
+```
     begin
        RESTART;
-    end STOCK;
+```ada
+    end;
+```
 
     -------------------------------------------------
 
-    with STOCK;
+```ada
+    with Stock;
+```
     procedure PROCESSOR is
-       SMALL : constant := 20;
-       TOTAL : INTEGER := 0;
+```ada
+       Small : constant := 20;
+       Total : Integer := 0;
+```
 
        procedure UPDATE(X : INTEGER) is
-          use STOCK;
+```ada
+          use Stock;
+```
        begin
           ...
           TABLE(X) := TABLE(X) + SMALL;
           ...
-       end UPDATE;
+```ada
+       end;
+```
     begin
        ...
        STOCK.RESTART; -- reinitializes TABLE
        ...
-    end PROCESSOR;
+```ada
+    end;
+```
 ```
 
+
+```
 
 Note that in the latter version, the package STOCK has no visibility of
 outer identifiers other than the predefined identifiers (of the package
@@ -11963,7 +12347,7 @@ package 7, package body 7.1, package specification 7.1, program 10,
 standard package 8.6, use clause 8.4, visibility 8.3, with clause 10.1.1
 
 
-### 10.2  Subunits of Compilation Units
+### 10.2 Subunits of Compilation Units
 
 
 A subunit is used for the separate compilation of the proper body of a
@@ -11971,7 +12355,7 @@ program unit declared within another compilation unit. This method of
 splitting a program permits hierarchical program development.
 
 
-```ada
+```ebnf
     body_stub ::=
          subprogram_specification is separate;
        | package body package_simple_name is separate;
@@ -11980,6 +12364,8 @@ splitting a program permits hierarchical program development.
     subunit ::=
          separate (parent_unit_name) proper_body
 
+
+```
 
 A body stub is only allowed as the body of a program unit (a subprogram, a
 package, a task unit, or a generic unit) if the body stub occurs
@@ -12038,54 +12424,56 @@ body 3.9, renaming declaration 8.5, separate compilation 10.1, simple name
 clause 10.1.1
 
 
-#### 10.2.1  Examples of Subunits
+#### 10.2.1 Examples of Subunits
 
 
 The procedure TOP is first written as a compilation unit without subunits.
 
 
 ```ada
-    with TEXT_IO;
-    procedure TOP is
+    with Text_IO;
+    procedure Top is
 
-       type REAL is digits 10;
-       R, S : REAL := 1.0;
+       type Real is digits 10;
+       R, S : Real := 1.0;
 
-       package FACILITY is
-          PI : constant := 3.14159_26536;
-          function F(X : REAL) return REAL;
-          procedure G(Y, Z : REAL);
-       end FACILITY;
+       package Facility is
+          Pi : constant := 3.14159_26536;
+          function F(X : Real) return Real;
+          procedure G(Y, Z : Real);
+       end;
 
-       package body FACILITY is
+       package body Facility is
           --  some local declarations followed by
 
-          function F(X : REAL) return REAL is
+          function F(X : Real) return Real is
           begin
              --  sequence of statements of F
              ...
-          end F;
-          procedure G(Y, Z : REAL) is
+          end;
+          procedure G(Y, Z : Real) is
              --  local procedures using TEXT_IO
              ...
           begin
              --  sequence of statements of G
              ...
-          end G;
-       end FACILITY;
+          end;
+       end;
 
-       procedure TRANSFORM(U : in out REAL) is
-          use FACILITY;
+       procedure Transform(U : in out Real) is
+          use Facility;
        begin
           U := F(U);
           ...
-       end TRANSFORM;
+       end;
     begin -- TOP
-       TRANSFORM(R);
+       Transform(R);
        ...
-       FACILITY.G(R, S);
-    end TOP;
+       Facility.G(R, S);
+    end;
 
+
+```
 
 The body of the package FACILITY and that of the procedure TRANSFORM can be
 made into separate subunits of TOP. Similarly, the body of the procedure G
@@ -12096,14 +12484,18 @@ Example 3:
 
     procedure TOP is
 
-       type REAL is digits 10;
-       R, S : REAL := 1.0;
+```ada
+       type Real is digits 10;
+       R, S : Real := 1.0;
+```
 
        package FACILITY is
-          PI : constant := 3.14159_26536;
-          function F(X : REAL) return REAL;
-          procedure G(Y, Z : REAL);
-       end FACILITY;
+```ada
+          Pi : constant := 3.14159_26536;
+          function F(X : Real) return Real;
+          procedure G(Y, Z : Real);
+       end;
+```
 
      package body FACILITY is separate; -- stub of FACILITY
      procedure TRANSFORM(U : in out REAL) is separate; -- stub of TRANSFORM
@@ -12112,17 +12504,25 @@ Example 3:
        TRANSFORM(R);
        ...
        FACILITY.G(R, S);
-    end TOP;
+```ada
+    end;
+```
 
     -------------------------------------------------
 
     separate (TOP)
     procedure TRANSFORM(U : in out REAL) is
-       use FACILITY;
+```ada
+       use Facility;
+```
     begin
+```ada
        U := F(U);
+```
        ...
-    end TRANSFORM;
+```ada
+    end;
+```
 
     -------------------------------------------------
 
@@ -12134,14 +12534,20 @@ Example 3:
        begin
           --  sequence of statements of F
           ...
-       end F;
+```ada
+       end;
+```
 
        procedure G(Y, Z : REAL) is separate; -- stub of G
-    end FACILITY;
+```ada
+    end;
+```
 
     -------------------------------------------------
 
-    with TEXT_IO;
+```ada
+    with Text_IO;
+```
     separate (TOP.FACILITY) -- full name of FACILITY
 
 
@@ -12151,7 +12557,9 @@ Example 3:
     begin
        --  sequence of statements of G
        ...
-    end G;
+```ada
+    end;
+```
 
 
 In the above example TRANSFORM and FACILITY are subunits of TOP, and G is a
@@ -12170,7 +12578,7 @@ declaration 8.1, named number 3.2, package 7, package body 7.1, procedure
 3.2.1, visibility 8.3, with clause 10.1.1
 
 
-### 10.3  Order of Compilation
+### 10.3 Order of Compilation
 
 
 The rules defining the order in which units can be compiled are direct
@@ -12221,7 +12629,7 @@ implementations of generic program units, as described below.
      compiled before the package body, the pragma may be ignored by the
      compiler for such calls (a warning that inline inclusion was not
      achieved may be issued). Similar considerations apply to a separately
-     compiled subprogram for which an INLINE pragma is specified.
+     compiled subprogram for which an Inline pragma is specified.
 
 
   -  For optimization purposes, an implementation may compile several units
@@ -12239,6 +12647,8 @@ implementations of generic program units, as described below.
      a generic unit be part of the same compilation.
 
 
+```
+
 Examples of Compilation Order:
 
 (a) In example 1 (see 10.1.1): The procedure QUADRATIC_EQUATION must be
@@ -12253,24 +12663,30 @@ Examples of Compilation Order:
 (c) In example 2 (see 10.1.2): The specification of the package STOCK
 
 ```ada
-     must be compiled before the procedure PROCESSOR. On the other hand,
-     the procedure PROCESSOR can be compiled either before or after the
-     package body STOCK.
+     must be compiled before the procedure Processor. On the other hand,
+     the procedure Processor can be compiled either before or after the
+     package body Stock.
 
+
+```
 
 (d) In example 3 (see 10.2.1): The procedure G must be compiled after the
 
 ```ada
-     package TEXT_IO since this package is named by the with clause of G.
-     On the other hand, TEXT_IO can be compiled either before or after TOP.
+     package Text_IO since this package is named by the with clause of G.
+     On the other hand, Text_IO can be compiled either before or after Top.
 
+
+```
 
 (e) In example 3 (see 10.2.1): The subunits TRANSFORM and FACILITY must
 
 ```ada
-     be compiled after the main program TOP. Similarly, the subunit G must
-     be compiled after its parent unit FACILITY.
+     be compiled after the main program Top. Similarly, the subunit G must
+     be compiled after its parent unit Facility.
 
+
+```
 
 Notes:
 
@@ -12293,7 +12709,7 @@ subprogram specification 6.1, subunit 10.2, type 3.3, variable 3.2.1,
 visibility 8.3, with clause 10.1.1
 
 
-### 10.4  The Program Library
+### 10.4 The Program Library
 
 
 Compilers are required to enforce the language rules in the same manner for
@@ -12326,7 +12742,7 @@ compilation 10.3, program 10.1, program library 10.1, subunit 10.2, use
 clause 8.4, with clause 10.1.1
 
 
-### 10.5  Elaboration of Library Units
+### 10.5 Elaboration of Library Units
 
 
 Before the execution of a main program, all library units needed by the
@@ -12350,7 +12766,9 @@ body be already elaborated. If the prior elaboration of library unit
 bodies is needed, this can be requested by a pragma ELABORATE. The form of
 this pragma is as follows:
 
-    pragma ELABORATE (library_unit_simple_name {, library_unit_simple_name});
+```ada
+    pragma Elaborate (library_unit_simple_name {, library_unit_simple_name});
+```
 
 These pragmas are only allowed immediately after the context clause of a
 compilation unit (before the subsequent library unit or secondary unit).
@@ -12373,7 +12791,7 @@ elaboration 3.9, illegal 1.6, in some order 1.6, library unit 10.1, name
 compilation 10.1, simple name 4.1, subunit 10.2, with clause 10.1.1
 
 
-### 10.6  Program Optimization
+### 10.6 Program Optimization
 
 
 Optimization of the elaboration of declarations and the execution of
@@ -12421,6 +12839,8 @@ or via conventional mail to
                    Washington, D.C. 20301-3081
 
 
+```
+
 -----------------------------------------------------------------------
 
 Copyright 1980, 1982, 1983 owned by the United States Government as
@@ -12456,14 +12876,16 @@ References: block statement 5.6, error situation 1.6, exception handler
 11.4.2, raise statement 11.3, subprogram body 6.3, task body 9.1
 
 
-### 11.1  Exception Declarations
+### 11.1 Exception Declarations
 
 
 An exception declaration declares a name for an exception. The name of an
 exception can only be used in raise statements, exception handlers, and
 renaming declarations.
 
+```ada
     exception_declaration ::= identifier_list : exception;
+```
 
 An exception declaration with several identifiers is equivalent to a
 sequence of single exception declarations, as explained in section 3.2.
@@ -12493,7 +12915,7 @@ CONSTRAINT_ERROR This exception is raised in any of the following
                   exist because the access value is null.
 
 
-   NUMERIC_ERROR This exception is raised by the execution of a predefined
+   Numeric_Error This exception is raised by the execution of a predefined
 
                   numeric operation that cannot deliver a correct result
                   (within the declared accuracy for real types); this
@@ -12506,7 +12928,7 @@ CONSTRAINT_ERROR This exception is raised in any of the following
                   11.6.
 
 
-   PROGRAM_ERROR This exception is raised upon an attempt to call a
+   Program_Error This exception is raised upon an attempt to call a
 
                   subprogram, to activate a task, or to elaborate a generic
                   instantiation, if the body of the corresponding unit has
@@ -12520,7 +12942,7 @@ CONSTRAINT_ERROR This exception is raised in any of the following
                   incorrect order dependences (see 1.6).
 
 
-   STORAGE_ERROR This exception is raised in any of the following
+   Storage_Error This exception is raised in any of the following
 
                   situations: when the dynamic storage allocated to a task
                   is exceeded; during the evaluation of an allocator, if
@@ -12530,8 +12952,10 @@ CONSTRAINT_ERROR This exception is raised in any of the following
                   call, if storage is not sufficient.
 
 
-   TASKING_ERROR This exception is raised when exceptions arise during
+   Tasking_Error This exception is raised when exceptions arise during
                   intertask communication (see 9 and 11.5).
+
+```
 
 Note:
 
@@ -12543,10 +12967,12 @@ Examples of user-defined exception declarations:
 
 
 ```ada
-    SINGULAR : exception;
-    ERROR : exception;
-    OVERFLOW, UNDERFLOW : exception;
+    Singular : exception;
+    Error : exception;
+    Overflow, Underflow : exception;
 
+
+```
 
 References: access value 3.8, collection 3.8, declaration 3.1, exception
 11, exception handler 11.2, generic body 12.2, generic instantiation 12.3,
@@ -12578,19 +13004,21 @@ Tasking error exception contexts: abort statement 9.10, entry call 9.5
 9.7.2 9.7.3, exceptions during task communication 11.5, task activation 9.3
 
 
-### 11.2  Exception Handlers
+### 11.2 Exception Handlers
 
 
 The response to one or more exceptions is specified by an exception
 handler.
 
 
-```ada
+```ebnf
     exception_handler ::=
        when exception_choice {| exception_choice} =>
           sequence_of_statements
     exception_choice ::= exception_name | others
 
+
+```
 
 An exception handler occurs in a construct that is either a block statement
 or the body of a subprogram, package, task unit, or generic unit. Such a
@@ -12606,6 +13034,8 @@ of a frame that has exception handlers includes the following part:
        {exception_handler}
     end
 
+
+```
 
 The exceptions denoted by the exception names given as exception choices of
 a frame must all be distinct. The exception choice others is only allowed
@@ -12626,11 +13056,11 @@ Example:
     begin
        --  sequence of statements
     exception
-       when SINGULAR | NUMERIC_ERROR =>
-          PUT(" MATRIX IS SINGULAR ");
+       when Singular | Numeric_Error =>
+          Put(" MATRIX IS SINGULAR ");
        when others =>
-          PUT(" FATAL ERROR ");
-          raise ERROR;
+          Put(" FATAL ERROR ");
+          raise Error;
     end;
 
 ```
@@ -12649,12 +13079,14 @@ exception handling 11.4, function body 6.3, generic body 12.2, generic unit
 body 9.1, task unit 9 9.1, visibility 8.3
 
 
-### 11.3  Raise Statements
+### 11.3 Raise Statements
 
 
 A raise statement raises an exception.
 
+```ada
     raise_statement ::= raise [exception_name];
+```
 
 For the execution of a raise statement with an exception name, the named
 exception is raised. A raise statement without an exception name is only
@@ -12667,17 +13099,19 @@ Examples:
 
 
 ```ada
-    raise SINGULAR;
-    raise NUMERIC_ERROR; -- explicitly raising a predefined exception
+    raise Singular;
+    raise Numeric_Error; -- explicitly raising a predefined exception
 
     raise; -- only within an exception handler
 
+
+```
 
 References: exception 11, generic unit 12, name 4.1, package 7, sequence
 of statements 5.1, subprogram 6, task unit 9
 
 
-### 11.4  Exception Handling
+### 11.4 Exception Handling
 
 
 When an exception is raised, normal program execution is abandoned and
@@ -12689,7 +13123,7 @@ References: declaration 3.1, elaboration 3.1 3.9, exception 11, exception
 handler 11.2, raising of exceptions 11.3, statement 5
 
 
-#### 11.4.1  Exceptions Raised During the Execution of Statements
+#### 11.4.1 Exceptions Raised During the Execution of Statements
 
 
 The handling of an exception raised by the execution of a sequence of
@@ -12735,6 +13169,8 @@ frame:
      is abandoned.
 
 
+```
+
 (d) For a task body, the task becomes completed.
 
 An exception that is raised again (as in the above cases (a), (b), and (c))
@@ -12754,16 +13190,16 @@ Example:
 
 
 ```ada
-    function FACTORIAL (N : POSITIVE) return FLOAT is
+    function Factorial (N : Positive) return Float is
     begin
        if N = 1 then
           return 1.0;
        else
-          return FLOAT(N) * FACTORIAL(N-1);
+          return Float(N) * Factorial(N-1);
        end if;
     exception
-       when NUMERIC_ERROR => return FLOAT'SAFE_LARGE;
-    end FACTORIAL;
+       when Numeric_Error => return Float'Safe_Large;
+    end;
 
 ```
 
@@ -12778,7 +13214,7 @@ Example:
 
 ```ada
     procedure P is
-       ERROR : exception;
+       Error : exception;
        procedure R;
 
        procedure Q is
@@ -12787,14 +13223,14 @@ Example:
           ... -- error situation (2)
        exception
           ...
-          when ERROR => -- handler E2
+          when Error => -- handler E2
           ...
-       end Q;
+       end;
 
        procedure R is
        begin
           ... -- error situation (3)
-       end R;
+       end;
 
     begin
        ... -- error situation (1)
@@ -12802,10 +13238,12 @@ Example:
        ...
     exception
        ...
-       when ERROR => -- handler E1
+       when Error => -- handler E1
        ...
-    end P;
+    end;
 
+
+```
 
 The following situations can arise:
 
@@ -12823,6 +13261,8 @@ The following situations can arise:
      of the handler.
 
 
+```
+
 (3) If the exception ERROR is raised in the body of R, called by Q, the
 
 ```ada
@@ -12830,6 +13270,8 @@ The following situations can arise:
      body of Q. The handler E2 is then used to complete the execution of
      Q, as in situation (2).
 
+
+```
 
 Note that in the third situation, the exception raised in R results in
 (indirectly) transferring control to a handler that is part of Q and hence
@@ -12867,7 +13309,7 @@ statements 5.1, statement 5, subprogram 6, subprogram body 6.3, subprogram
 call 6.4, subunit 10.2, task 9, task body 9.1
 
 
-#### 11.4.2  Exceptions Raised During the Elaboration of Declarations
+#### 11.4.2 Exceptions Raised During the Elaboration of Declarations
 
 
 If an exception is raised during the elaboration of the declarative part of
@@ -12895,9 +13337,11 @@ the nature of the frame:
 (d) For a task body, the task becomes completed, and the exception
 
 ```ada
-     TASKING_ERROR is raised at the point of activation of the task, as
+     Tasking_Error is raised at the point of activation of the task, as
      explained in section 9.3.
 
+
+```
 
 Similarly, if an exception is raised during the elaboration of either a
 package declaration or a task declaration, this elaboration is abandoned;
@@ -12912,6 +13356,8 @@ the next action depends on the nature of the declaration.
      program is abandoned.
 
 
+```
+
 An exception that is raised again (as in the above cases (a), (b), (c) and
 (e)) is said to be propagated, either by the execution of the subprogram or
 block statement, or by the elaboration of the package declaration, task
@@ -12925,16 +13371,16 @@ Example of an exception in the declarative part of a block statement (case (b)):
        ...
     begin
        declare
-          N : INTEGER := F; -- the function F may raise ERROR
+          N : Integer := F; -- the function F may raise ERROR
        begin
           ...
        exception
-          when ERROR => -- handler E1
+          when Error => -- handler E1
        end;
        ...
     exception
-       when ERROR => -- handler E2
-    end P;
+       when Error => -- handler E2
+    end;
 
     --  if the exception ERROR is raised in the declaration of N, it is handled by E2
 
@@ -12948,7 +13394,7 @@ subprogram body 6.3, subprogram call 6.4, subunit 10.2, task 9, task body
 9.1, task declaration 9.1, tasking_error exception 11.1
 
 
-### 11.5  Exceptions Raised During Task Communication
+### 11.5 Exceptions Raised During Task Communication
 
 
 An exception can be propagated to a task communicating, or attempting to
@@ -12972,13 +13418,17 @@ A rendezvous can be completed abnormally in two cases:
      entry call.
 
 
+```
+
 (b) When the task containing the accept statement is completed abnormally
 
 ```ada
      as the result of an abort statement. In this case, the exception
-     TASKING_ERROR is raised in the calling task at the point of the entry
+     Tasking_Error is raised in the calling task at the point of the entry
      call.
 
+
+```
 
 On the other hand, if a task issuing an entry call becomes abnormal (as the
 result of an abort statement) no exception is raised in the called task.
@@ -12991,7 +13441,7 @@ References: abnormal task 9.10, abort statement 9.10, accept statement
 rendezvous 9.5, task 9, task termination 9.4, tasking_error exception 11.1
 
 
-### 11.6  Exceptions and Optimization
+### 11.6 Exceptions and Optimization
 
 
 The purpose of this section is to specify the conditions under which an
@@ -13029,6 +13479,8 @@ may propagate a (predefined) exception:
      canonical order, and the same exception handlers must apply.
 
 
+```
+
 (b) Within an expression, the association of operators with operands is
 
      specified by the syntax. However, for a sequence of predefined
@@ -13040,6 +13492,8 @@ may propagate a (predefined) exception:
      result model interval defined for the canonical left-to-right order
      (see 4.5.7). Such a reordering is allowed even if it may remove an
      exception, or introduce a further predefined exception.
+
+```
 
 ```
 
@@ -13075,15 +13529,15 @@ Example:
 
 ```ada
     declare
-       N : INTEGER;
+       N : Integer;
     begin
        N := 0; -- (1)
        for J in 1 .. 10 loop
           N := N + J**A(K); -- A and K are global variables
        end loop;
-       PUT(N);
+       Put(N);
     exception
-       when others => PUT("Some error arose"); PUT(N);
+       when others => Put("Some error arose"); Put(N);
     end;
 
 ```
@@ -13105,13 +13559,15 @@ subprogram 8.6, propagation of an exception 11.4, real type 3.5.6,
 undefined value 3.2.1
 
 
-### 11.7  Suppressing Checks
+### 11.7 Suppressing Checks
 
 
 The presence of a SUPPRESS pragma gives permission to an implementation to
 omit certain run-time checks. The form of this pragma is as follows:
 
-    pragma SUPPRESS(identifier [, [ON =>] name]);
+```ada
+    pragma Suppress(identifier [, [On =>] name]);
+```
 
 The identifier is that of the check that can be omitted. The name (if
 present) must be either a simple name or an expanded name and it must
@@ -13223,9 +13679,11 @@ Examples:
 
 
 ```ada
-    pragma SUPPRESS(RANGE_CHECK);
-    pragma SUPPRESS(INDEX_CHECK, ON => TABLE);
+    pragma Suppress(Range_Check);
+    pragma Suppress(Index_Check, On => Table);
 
+
+```
 
 Notes:
 
@@ -13274,6 +13732,8 @@ or via conventional mail to
                    Washington, D.C. 20301-3081
 
 
+```
+
 -----------------------------------------------------------------------
 
 Copyright 1980, 1982, 1983 owned by the United States Government as
@@ -13315,7 +13775,7 @@ generic instantiation 12.3, generic package 12.1, generic subprogram 12.1,
 instance 12.3, package 7, program unit 6, subprogram 6
 
 
-### 12.1  Generic Declarations
+### 12.1 Generic Declarations
 
 
 A generic declaration declares a generic unit, which is either a generic
@@ -13325,7 +13785,7 @@ parameter can be an object; alternatively (unlike a parameter of a
 subprogram), it can be a type or a subprogram.
 
 
-```ada
+```ebnf
     generic_declaration ::= generic_specification;
 
     generic_specification ::=
@@ -13374,47 +13834,59 @@ Examples of generic formal parts:
     generic -- parameterless
 
     generic
-       SIZE : NATURAL; -- formal object
+       Size : Natural; -- formal object
 
     generic
-       LENGTH : INTEGER := 200; -- formal object with a default
+       Length : Integer := 200; -- formal object with a default
                                             expression
-       AREA : INTEGER := LENGTH*LENGTH; -- formal object with a default
+       Area : Integer := Length*Length; -- formal object with a default
                                              expression
 
     generic
-       type ITEM is private; -- formal type
-       type INDEX is (<>); -- formal type
-       type ROW is array(INDEX range <>) of ITEM; -- formal type
-       with function "<"(X, Y : ITEM) return BOOLEAN; -- formal subprogram
+       type Item is private; -- formal type
+       type Index is (<>); -- formal type
+       type Row is array(Index range <>) of Item; -- formal type
+       with function "<"(X, Y : Item) return Boolean; -- formal subprogram
 
+
+```
 
 Examples of generic declarations declaring generic subprograms:
 
 
     generic
-       type ELEM is private;
-    procedure EXCHANGE(U, V : in out ELEM);
+```ada
+       type Elem is private;
+    procedure Exchange(U, V : in out Elem);
+```
 
     generic
-       type ITEM is private;
-       with function "*"(U, V : ITEM) return ITEM is <>;
-    function SQUARING(X : ITEM) return ITEM;
+```ada
+       type Item is private;
+       with function "*"(U, V : Item) return Item is <>;
+    function Squaring(X : Item) return Item;
+```
 
 
 Example of a generic declaration declaring a generic package:
 
 
     generic
-       type ITEM is private;
-       type VECTOR is array (POSITIVE range <>) of ITEM;
-       with function SUM(X, Y : ITEM) return ITEM;
+```ada
+       type Item is private;
+       type Vector is array (Positive range <>) of Item;
+       with function Sum(X, Y : Item) return Item;
+```
     package ON_VECTORS is
-       function SUM (A, B : VECTOR) return VECTOR;
-       function SIGMA(A : VECTOR) return ITEM;
-       LENGTH_ERROR : exception;
+```ada
+       function Sum (A, B : Vector) return Vector;
+       function Sigma(A : Vector) return Item;
+       Length_Error : exception;
        end;
+```
 
+
+```
 
 ```
 
@@ -13451,7 +13923,7 @@ subprogram specification 6.1, subtype indication 3.3.2, type 3.3, type mark
 3.3.2
 
 
-#### 12.1.1  Generic Formal Objects
+#### 12.1.1 Generic Formal Objects
 
 
 The first form of generic parameter declaration declares generic formal
@@ -13502,7 +13974,7 @@ limited type 7.4.4, matching generic actual parameter 12.3, mode 6.1, name
 mark 3.3.2, variable 3.2.1
 
 
-#### 12.1.2  Generic Formal Types
+#### 12.1.2 Generic Formal Types
 
 
 A generic parameter declaration that includes a generic type definition or
@@ -13554,6 +14026,8 @@ scalar type:
      integer types; these are defined in section 3.5.5.
 
 
+```
+
 (e) Integer types: range <>
 
 
@@ -13561,6 +14035,8 @@ scalar type:
      The available operations are the operations of integer types defined
      in section 3.5.5.
 
+
+```
 
 (f) Floating point types: digits <>
 
@@ -13587,23 +14063,27 @@ Examples of generic formal types:
 
 
 ```ada
-    type ITEM is private;
-    type BUFFER(LENGTH : NATURAL) is limited private;
+    type Item is private;
+    type Buffer(Length : Natural) is limited private;
 
-    type ENUM is (<>);
-    type INT is range <>;
-    type ANGLE is delta <>;
-    type MASS is digits <>;
+    type Enum is (<>);
+    type Int is range <>;
+    type Angle is delta <>;
+    type Mass is digits <>;
 
-    type TABLE is array (ENUM) of ITEM;
+    type Table is array (Enum) of Item;
 
+
+```
 
 Example of a generic formal part declaring a formal integer type:
 
 
     generic
-       type RANK is range <>;
-       FIRST : RANK := RANK'FIRST;
+```ada
+       type Rank is range <>;
+       First : Rank := Rank'First;
+```
        SECOND : RANK := FIRST + 1; -- the operator "+" of the type RANK
 
 
@@ -13622,7 +14102,7 @@ type definition 7.4, scalar type 3.5, slice 4.1.2, standard package 8.6 C,
 subtype indication 3.3.2, type mark 3.3.2, universal_fixed 3.5.9
 
 
-#### 12.1.3  Generic Formal Subprograms
+#### 12.1.3 Generic Formal Subprograms
 
 
 A generic parameter declaration that includes a subprogram specification
@@ -13642,14 +14122,16 @@ Examples of generic formal subprograms:
 
 
 ```ada
-    with function INCREASE(X : INTEGER) return INTEGER;
-    with function SUM(X, Y : ITEM) return ITEM;
+    with function Increase(X : Integer) return Integer;
+    with function Sum(X, Y : Item) return Item;
 
-    with function "+"(X, Y : ITEM) return ITEM is <>;
-    with function IMAGE(X : ENUM) return STRING is ENUM'IMAGE;
+    with function "+"(X, Y : Item) return Item is <>;
+    with function Image(X : Enum) return String is Enum'Image;
 
-    with procedure UPDATE is DEFAULT_UPDATE;
+    with procedure Update is Default_Update;
 
+
+```
 
 Notes:
 
@@ -13676,7 +14158,7 @@ actual subprogram 12.3.6, operator symbol 6.1, parameter of a subprogram
 subprogram specification 6.1, subtype 3.3.2, type 3.3, type mark 3.3.2
 
 
-### 12.2  Generic Bodies
+### 12.2 Generic Bodies
 
 
 The body of a generic subprogram or generic package is a template for the
@@ -13695,52 +14177,56 @@ Example of a generic procedure body:
 
 
 ```ada
-    procedure EXCHANGE(U, V : in out ELEM) is -- see example in 12.1
-       T : ELEM; -- the generic formal type
+    procedure Exchange(U, V : in out Elem) is -- see example in 12.1
+       T : Elem; -- the generic formal type
     begin
        T := U;
        U := V;
        V := T;
-    end EXCHANGE;
+    end;
 
+
+```
 
 Example of a generic function body:
 
 
 ```ada
-    function SQUARING(X : ITEM) return ITEM is -- see example in 12.1
+    function Squaring(X : Item) return Item is -- see example in 12.1
     begin
        return X*X; -- the formal operator "*"
     end;
 
 
+```
+
 Example of a generic package body:
 
 
 ```ada
-    package body ON_VECTORS is -- see example in 12.1
+    package body On_Vectors is -- see example in 12.1
 
-       function SUM(A, B : VECTOR) return VECTOR is
-          RESULT : VECTOR(A'RANGE); -- the formal type VECTOR
-          BIAS : constant INTEGER := B'FIRST - A'FIRST;
+       function Sum(A, B : Vector) return Vector is
+          Result : Vector(A'Range); -- the formal type VECTOR
+          Bias : constant Integer := B'First - A'First;
        begin
-          if A'LENGTH /= B'LENGTH then
-             raise LENGTH_ERROR;
+          if A'Length /= B'Length then
+             raise Length_Error;
           end if;
 
-          for N in A'RANGE loop
-             RESULT(N) := SUM(A(N), B(N + BIAS)); -- the formal function SUM
+          for N in A'Range loop
+             Result(N) := Sum(A(N), B(N + Bias)); -- the formal function SUM
           end loop;
-          return RESULT;
+          return Result;
        end;
 
-       function SIGMA(A : VECTOR) return ITEM is
-          TOTAL : ITEM := A(A'FIRST); -- the formal type ITEM
+       function Sigma(A : Vector) return Item is
+          Total : Item := A(A'First); -- the formal type ITEM
        begin
-          for N in A'FIRST + 1 .. A'LAST loop
-             TOTAL := SUM(TOTAL, A(N)); -- the formal function SUM
+          for N in A'First + 1 .. A'Last loop
+             Total := Sum(Total, A(N)); -- the formal function SUM
           end loop;
-          return TOTAL;
+          return Total;
        end;
     end;
 
@@ -13751,13 +14237,13 @@ instantiation 12.3, generic package 12.1, generic subprogram 12.1, instance
 12.3, package body 7.1, package 7, subprogram 6, subprogram body 6.3
 
 
-### 12.3  Generic Instantiation
+### 12.3 Generic Instantiation
 
 
 An instance of a generic unit is declared by a generic instantiation.
 
 
-```ada
+```ebnf
     generic_instantiation ::=
          package identifier is
              new generic_package_name [generic_actual_part];
@@ -13849,6 +14335,8 @@ by the corresponding occurrence within the instance.
      corresponding local declaration within the instance.
 
 
+```
+
 (i) For a name that denotes a global entity declared outside of the
      generic unit: The corresponding name denotes the same global entity.
 
@@ -13884,27 +14372,35 @@ Examples of generic instantiations (see 12.1):
 
 
 ```ada
-    procedure SWAP is new EXCHANGE(ELEM => INTEGER);
-    procedure SWAP is new EXCHANGE(CHARACTER); -- SWAP is overloaded
+    procedure Swap is new Exchange(Elem => Integer);
+    procedure Swap is new Exchange(Character); -- SWAP is overloaded
 
-    function SQUARE is new SQUARING(INTEGER); -- "*" of INTEGER used by default
-    function SQUARE is new SQUARING(ITEM => MATRIX, "*" => MATRIX_PRODUCT);
-    function SQUARE is new SQUARING(MATRIX, MATRIX_PRODUCT); -- same as previous
+    function Square is new Squaring(Integer); -- "*" of INTEGER used by default
+    function Square is new Squaring(Item => Matrix, "*" => Matrix_Product);
+    function Square is new Squaring(Matrix, Matrix_Product); -- same as previous
 
-    package INT_VECTORS is new ON_VECTORS(INTEGER, TABLE, "+");
+    package Int_Vectors is new On_Vectors(Integer, Table, "+");
 
+
+```
 
 Examples of uses of instantiated units:
 
 
     SWAP(A, B);
-    A := SQUARE(A);
+```ada
+    A := Square(A);
 
-    T : TABLE(1 .. 5) := (10, 20, 30, 40, 50);
+    T : Table(1 .. 5) := (10, 20, 30, 40, 50);
+```
     N : INTEGER := INT_VECTORS.SIGMA(T); -- 150 (see 12.2 for the body of
                                               SIGMA)
-    use INT_VECTORS;
+```ada
+    use Int_Vectors;
+```
     M : INTEGER := SIGMA(T); -- 150
+
+```
 
 ```
 
@@ -13926,11 +14422,11 @@ from outside the instance are ambiguous. For example:
        type A is (<>);
        type B is private;
     package G is
-       function NEXT(X : A) return A;
-       function NEXT(X : B) return B;
+       function Next(X : A) return A;
+       function Next(X : B) return B;
     end;
 
-    package P is new G(A => BOOLEAN, B => BOOLEAN);
+    package P is new G(A => Boolean, B => Boolean);
     -- calls of P.NEXT are ambiguous
 
 ```
@@ -13946,7 +14442,7 @@ name 4.1, operation 3.3, operator symbol 6.1, overloading 6.6 8.7, package
 subtype declaration 3.3.2, type mark 3.3.2, variable 3.2.1, visibility 8.3
 
 
-#### 12.3.1  Matching Rules for Formal Objects
+#### 12.3.1 Matching Rules for Formal Objects
 
 
 A generic formal parameter of mode in of a given type is matched by an
@@ -13976,7 +14472,7 @@ of exceptions 11, satisfy 3.3, subcomponent 3.3, type 3.3, type mark 3.3.2,
 variable 3.2.1
 
 
-#### 12.3.2  Matching Rules for Formal Private Types
+#### 12.3.2 Matching Rules for Formal Private Types
 
 
 A generic formal private type is matched by any type or subtype (the actual
@@ -14027,7 +14523,7 @@ with discriminants 3.3, unconstrained array type 3.6, unconstrained subtype
 3.3
 
 
-#### 12.3.3  Matching Rules for Formal Scalar Types
+#### 12.3.3 Matching Rules for Formal Scalar Types
 
 
 A generic formal type defined by (<>) is matched by any discrete subtype
@@ -14043,7 +14539,7 @@ type 12.3, generic formal type 12.1.2, generic type definition 12.1,
 integer type 3.5.4, matching generic actual parameter 12.3, scalar type 3.5
 
 
-#### 12.3.4  Matching Rules for Formal Array Types
+#### 12.3.4 Matching Rules for Formal Array Types
 
 
 A formal array type is matched by an actual array subtype that satisfies
@@ -14061,11 +14557,15 @@ the following conditions:
 
   -  The component type must be the same for the actual array type  as  for
 
+```
+
 ```ada
      the formal array type. If the component type is other than a scalar
      type, then the component subtypes must be either both constrained or
      both unconstrained.
 
+
+```
 
 If a generic unit has a formal array type, the elaboration of a
 corresponding instantiation checks that the constraints (if any) on the
@@ -14081,23 +14581,23 @@ Example:
     --  given the generic package
 
     generic
-       type ITEM is private;
-       type INDEX is (<>);
-       type VECTOR is array (INDEX range <>) of ITEM;
-       type TABLE is array (INDEX) of ITEM;
+       type Item is private;
+       type Index is (<>);
+       type Vector is array (Index range <>) of Item;
+       type Table is array (Index) of Item;
     package P is
        ...
     end;
 
     --  and the types
 
-    type MIX is array (COLOR range <>) of BOOLEAN;
-    type OPTION is array (COLOR) of BOOLEAN;
+    type Mix is array (Color range <>) of Boolean;
+    type Option is array (Color) of Boolean;
 
     --  then MIX can match VECTOR and OPTION can match TABLE
 
-    package R is new P(ITEM => BOOLEAN, INDEX => COLOR,
-                       VECTOR => MIX, TABLE => OPTION);
+    package R is new P(Item => Boolean, Index => Color,
+                       Vector => Mix, Table => Option);
 
 ```
 
@@ -14117,7 +14617,7 @@ matching generic actual parameter 12.3, raise statement 11.3, subtype 3.3,
 unconstrained array type 3.6
 
 
-#### 12.3.5  Matching Rules for Formal Access Types
+#### 12.3.5 Matching Rules for Formal Access Types
 
 
 A formal access type is matched by an actual access subtype if the type of
@@ -14137,29 +14637,31 @@ Example:
     --  the formal types of the generic package
 
     generic
-       type NODE is private;
-       type LINK is access NODE;
+       type Node is private;
+       type Link is access Node;
     package P is
        ...
     end;
 
     --  can be matched by the actual types
 
-    type CAR;
-    type CAR_NAME is access CAR;
+    type Car;
+    type Car_Name is access Car;
 
-    type CAR is
+    type Car is
        record
-          PRED, SUCC : CAR_NAME;
-          NUMBER : LICENSE_NUMBER;
-          OWNER : PERSON;
+          Pred, Succ : Car_Name;
+          Number : License_Number;
+          Owner : Person;
        end record;
 
     --  in the following generic instantiation
 
 ```
 
-    package R is new P(NODE => CAR, LINK => CAR_NAME);
+```ada
+    package R is new P(Node => Car, Link => Car_Name);
+```
 
 Note:
 
@@ -14173,7 +14675,7 @@ formal type 12.1.2, generic instantiation 12.3, matching generic actual
 parameter 12.3, object 3.2, raise statement 11.3, value of access type 3.8
 
 
-#### 12.3.6  Matching Rules for Formal Subprograms
+#### 12.3.6 Matching Rules for Formal Subprograms
 
 
 A formal subprogram is matched by an actual subprogram, enumeration
@@ -14202,26 +14704,28 @@ Example:
     --  given the generic function specification
 
     generic
-       type ITEM is private;
-       with function "*" (U, V : ITEM) return ITEM is <>;
-    function SQUARING(X : ITEM) return ITEM;
+       type Item is private;
+       with function "*" (U, V : Item) return Item is <>;
+    function Squaring(X : Item) return Item;
 
     --  and the function
 
-    function MATRIX_PRODUCT(A, B : MATRIX) return MATRIX;
+    function Matrix_Product(A, B : Matrix) return Matrix;
 
     --  the following instantiation is possible
 
-    function SQUARE is new SQUARING(MATRIX, MATRIX_PRODUCT);
+    function Square is new Squaring(Matrix, Matrix_Product);
 
     --  the following instantiations are equivalent
 
-    function SQUARE is new SQUARING(ITEM => INTEGER, "*" => "*");
+    function Square is new Squaring(Item => Integer, "*" => "*");
 
 
-    function SQUARE is new SQUARING(INTEGER, "*");
-    function SQUARE is new SQUARING(INTEGER);
+    function Square is new Squaring(Integer, "*");
+    function Square is new Squaring(Integer);
 
+
+```
 
 Notes:
 
@@ -14243,7 +14747,7 @@ generic actual parameter 12.3, name 4.1, parameter and result type profile
 6.3, subprogram 6, subprogram specification 6.1, subtype 3.3, visibility 8.3
 
 
-### 12.4  Example of a Generic Package
+### 12.4 Example of a Generic Package
 
 
 The following example provides a possible formulation of stacks by means of
@@ -14253,46 +14757,50 @@ elements are provided as generic parameters.
 
 ```ada
     generic
-       SIZE : POSITIVE;
-       type ITEM is private;
-    package STACK is
-       procedure PUSH(E : in ITEM);
-       procedure POP (E : out ITEM);
-       OVERFLOW, UNDERFLOW : exception;
-    end STACK;
+       Size : Positive;
+       type Item is private;
+    package Stack is
+       procedure Push(E : in Item);
+       procedure Pop (E : out Item);
+       Overflow, Underflow : exception;
+    end;
 
-    package body STACK is
+    package body Stack is
 
-       type TABLE is array (POSITIVE range <>) of ITEM;
-       SPACE : TABLE(1 .. SIZE);
-       INDEX : NATURAL := 0;
+       type Table is array (Positive range <>) of Item;
+       Space : Table(1 .. Size);
+       Index : Natural := 0;
 
-       procedure PUSH(E : in ITEM) is
+       procedure Push(E : in Item) is
        begin
-          if INDEX >= SIZE then
-             raise OVERFLOW;
+          if Index >= Size then
+             raise Overflow;
           end if;
-          INDEX := INDEX + 1;
-          SPACE(INDEX) := E;
-       end PUSH;
+          Index := Index + 1;
+          Space(Index) := E;
+       end;
 
-       procedure POP(E : out ITEM) is
+       procedure Pop(E : out Item) is
        begin
-          if INDEX = 0 then
-             raise UNDERFLOW;
+          if Index = 0 then
+             raise Underflow;
           end if;
-          E := SPACE(INDEX);
-          INDEX := INDEX - 1;
-       end POP;
+          E := Space(Index);
+          Index := Index - 1;
+       end;
 
-    end STACK;
+    end;
 
+
+```
 
 Instances of this generic package can be obtained as follows:
 
 
-    package STACK_INT is new STACK(SIZE => 200, ITEM => INTEGER);
-    package STACK_BOOL is new STACK(100, BOOLEAN);
+```ada
+    package Stack_Int is new Stack(Size => 200, Item => Integer);
+    package Stack_Bool is new Stack(100, Boolean);
+```
 
 
 Thereafter, the procedures of the instantiated packages can be called as
@@ -14300,9 +14808,11 @@ follows:
 
 
 ```ada
-    STACK_INT.PUSH(N);
-    STACK_BOOL.PUSH(TRUE);
+    Stack_Int.Push(N);
+    Stack_Bool.Push(True);
 
+
+```
 
 Alternatively, a generic formulation of the type STACK can be given as
 follows (package body omitted):
@@ -14310,18 +14820,18 @@ follows (package body omitted):
 
 ```ada
     generic
-       type ITEM is private;
-    package ON_STACKS is
-       type STACK(SIZE : POSITIVE) is limited private;
-       procedure PUSH(S : in out STACK; E : in ITEM);
-       procedure POP (S : in out STACK; E : out ITEM);
-       OVERFLOW, UNDERFLOW : exception;
+       type Item is private;
+    package On_Stacks is
+       type Stack(Size : Positive) is limited private;
+       procedure Push(S : in out Stack; E : in Item);
+       procedure Pop (S : in out Stack; E : out Item);
+       Overflow, Underflow : exception;
     private
-       type TABLE is array (POSITIVE range <>) of ITEM;
-       type STACK(SIZE : POSITIVE) is
+       type Table is array (Positive range <>) of Item;
+       type Stack(Size : Positive) is
           record
-             SPACE : TABLE(1 .. SIZE);
-             INDEX : NATURAL := 0;
+             Space : Table(1 .. Size);
+             Index : Natural := 0;
           end record;
     end;
 
@@ -14333,11 +14843,11 @@ thereafter stacks of the corresponding type can be declared:
 
 ```ada
     declare
-       package STACK_REAL is new ON_STACKS(REAL); use STACK_REAL;
-       S : STACK(100)
+       package Stack_Real is new On_Stacks(Real); use Stack_Real;
+       S : Stack(100)
     begin
        ...
-       PUSH(S, 2.54);
+       Push(S, 2.54);
        ...
     end;
 
@@ -14360,7 +14870,7 @@ Program Office, OUSDRE(R&AT), The Pentagon, Washington, D.C. 20301, U.S.A.
 ------------------------------------------------------------------------------
 
 
-### 13.1 Representation Clauses and Implementation-Dependent Features
+## 13. Representation Clauses and Implementation-Dependent Features
 
 
 This chapter describes representation clauses, certain implementation-
@@ -14377,7 +14887,7 @@ efficient representation or to interface with features that are outside
 the domain of the language (for example, peripheral hardware).
 
 
-```ada
+```ebnf
         representation_clause ::=
               type_representation_clause | address_clause
 
@@ -14385,6 +14895,8 @@ the domain of the language (for example, peripheral hardware).
               | enumeration_representation_clause
               |record_representation_clause
 
+
+```
 
 A type representation clause applies either to a type or to a first
 named subtype (that is, to a subtype declared by a type declaration,
@@ -14463,7 +14975,9 @@ specifies that storage minimization should be the main criterion when
 selecting the representation of a record or array type. Its form is
 as follows:
 
-        pragma PACK (type_simple_name);
+```ada
+        pragma Pack (type_simple_name);
+```
 
 Packing means that gaps between the storage areas allocated to
 consecutive components should be minimized. It need not, however,
@@ -14545,6 +15059,8 @@ of the length clause depends on the attribute designator:
      derived from an access type.
 
 
+```
+
 (c) Specification of storage for a task activation: T'STORAGE _SIZE
 
 
@@ -14554,6 +15070,8 @@ of the length clause depends on the attribute designator:
      storage units to be reserved for an activation (not the code) of a task
      of the type.
 
+
+```
 
 (d) Specification of small for a fixed point type: T'SMALL
 
@@ -14568,6 +15086,8 @@ of the length clause depends on the attribute designator:
 
 
  Notes:
+
+```
 
 A size specification is allowed for an access, task, or fixed point type,
 whether or not another form of length clause is also given for the type.
@@ -14596,25 +15116,27 @@ Examples:
 ```ada
       --assumed declarations:
 
-      type MEDIUM is range 0 .. 65000;
-      type SHORT is delta 0.01 range -100.0 .. 100.0;
-      type DEGREE is delta 0.1 range -360.0 .. 360.0;
+      type Medium is range 0 .. 65000;
+      type Short is delta 0.01 range -100.0 .. 100.0;
+      type Degree is delta 0.1 range -360.0 .. 360.0;
 
-      BYTE : constant := 8;
-      PAGE : constant := 2000;
+      Byte : constant := 8;
+      Page : constant := 2000;
 
       --length clauses:
 
-      for COLOR'SIZE use 1*BYTE; -- see 3.5.1
-      for MEDIUM'SIZE use 2*BYTE;
-      for SHORT'SIZE use 15;
+      for Color'Size use 1*Byte; -- see 3.5.1
+      for Medium'Size use 2*Byte;
+      for Short'Size use 15;
 
-      for CAR_NAME'STORAGE_SIZE use -- approximately 2000 cars
-              2000*((CAR'SIZE/SYSTEM.STORAGE_UNIT) +1);
+      for Car_Name'Storage_Size use -- approximately 2000 cars
+              2000*((Car'Size/System.Storage_Unit) +1);
 
 ```
 
-      for KEYBOARD_DRIVERS'STORAGE_SIZE use 1*PAGE;
+```ada
+      for Keyboard_Drivers'Storage_Size use 1*Page;
+```
 
 for DEGREE'SMALL use 360.0/2**(SYSTEM.STORAGE_UNIT -1);
 
@@ -14644,10 +15166,12 @@ An enumeration representation clause specifies the internal codes for the
 literals of the enumeration type that is named in the clause.
 
 
-```ada
+```ebnf
       enumeration_representation_clause ::= for type_simple_name use
                aggregate;
 
+
+```
 
 The aggregate used to specify this mapping is written as a one-dimensional
 aggregate, for which the index subtype is the enumeration type and the
@@ -14662,11 +15186,13 @@ Example:
 
 
 ```ada
-      type MIX_CODE is (ADD, SUB, MUL, LDA, STA, STZ);
+      type Mix_Code is (Add, Sub, Mul, Lda, Sta, Stz);
 
-      for MIX_CODE use
-         (ADD => 1, SUB =.2, MUL => 3, LDA => 8, STA => 24, STZ =>33);
+      for Mix_Code use
+         (Add => 1, Sub =.2, Mul => 3, Lda => 8, Sta => 24, Stz =>33);
 
+
+```
 
 Notes:
 
@@ -14694,7 +15220,7 @@ records, that is, the order, position, and size of record components
 (including discriminants, if any).
 
 
-```ada
+```ebnf
       record_representation_clause ::=
         for type_simple_name use
           record [alignment_clause]
@@ -14768,14 +15294,16 @@ type PROGRAM_STATUS_WORD is
   record
 
 ```ada
-      SYSTEM_MASK : BYTE_MASK;
-      PROTECTION_KEY : INTEGER range 0 .. 3;
-      MACHINE_STATE : STATE_MASK;
-      INTERRUPT_CAUSE : INTERRUPTION_CODE;
-      ILC : INTEGER range 0 .. 3;
-      CC : INTEGER range 0 .. 3;
-      PROGRAM_MASK : MODE_MASK;
-      INST_ADDRESS : ADDRESS;
+      System_Mask : Byte_Mask;
+      Protection_Key : Integer range 0 .. 3;
+      Machine_State : State_Mask;
+      Interrupt_Cause : Interruption_Code;
+      Ilc : Integer range 0 .. 3;
+      Cc : Integer range 0 .. 3;
+      Program_Mask : Mode_Mask;
+      Inst_Address : Address;
+
+```
 
 end record;
  
@@ -14784,14 +15312,14 @@ end record;
 
 ```ada
     record at mod 8;
-        SYSTEM_MASK at 0*WORD range 0 .. 7;
-        PROTECTION_KEY at 0*WORD range 10 .. 11; -- bits 8,9 unused
-        MACHINE_STATE at 0*WORD range 12 .. 15;
-        INTERRUPT_CAUSE at 0*WORD range 16 .. 31;
-        ILC at 1*WORD range 0 .. 1; -- second word
-        CC at 1*WORD range 2 .. 3;
-        PROGRAM_MASK at 1*WORD range 4 .. 7;
-        INST_ADDRESS at 1*WORD range 8 .. 31;
+        System_Mask at 0*Word range 0 .. 7;
+        Protection_Key at 0*Word range 10 .. 11; -- bits 8,9 unused
+        Machine_State at 0*Word range 12 .. 15;
+        Interrupt_Cause at 0*Word range 16 .. 31;
+        Ilc at 1*Word range 0 .. 1; -- second word
+        Cc at 1*Word range 2 .. 3;
+        Program_Mask at 1*Word range 4 .. 7;
+        Inst_Address at 1*Word range 8 .. 31;
     end record;
 
 ```
@@ -14815,7 +15343,9 @@ subcomponent 3.3, system package 13.7, variant 3.7.3
 
 An address clause specifies a required address in storage for an entity.
 
+```ada
       address_clause ::= for simple_name use at simple_expression;
+```
 
 The expression given after the reserved word at must be of the type ADDRESS
 defined in the package SYSTEM (see 13.7); this package must be named by a
@@ -14834,6 +15364,8 @@ name and the meaning of the corresponding address are as follows:
     required for the machine code associated with the body of the program
     unit.
 
+
+```
 
 (c) Name of a single entry: the address specifies a hardware interrupt to
     which the single entry is to be linked.
@@ -14855,9 +15387,11 @@ Example:
 
 
 ```ada
-    for CONTROL use at 16#0020#; -- assuming that SYSTEM.ADDRESS is an integer
+    for Control use at 16#0020#; -- assuming that SYSTEM.ADDRESS is an integer
     type
 
+
+```
 
 Notes:
 
@@ -14901,12 +15435,14 @@ Example:
 
 
 ```ada
-      task INTERRUPT_HANDLER is
-        entry DONE;
-        for DONE use at 16#40#; assuming that SYSTEM.ADDRESS is an integer
+      task Interrupt_Handler is
+        entry Done;
+        for Done use at 16#40#; assuming that System.Address is an integer
           type
-        end INTERRUPT_HANDLER;
+        end;
 
+
+```
 
 Notes:
 
@@ -14931,7 +15467,7 @@ alternative 9.7.1, select statement 9.7, system package 13.7, task 9,
 terminate alternative 9.7.1, timed entry call 9.7.3
 
 
-### 13.6  Change of Representation
+### 13.6 Change of Representation
 
 
 At most one representation clause is allowed for a given type and a given
@@ -14952,9 +15488,11 @@ Example:
       end record;
 
 
-  type PACKED_DESCRIPTOR is new DESCRIPTOR;
+  type Packed_Descriptor is new Descriptor;
 
-  for PACKED_DESCRIPTOR use
+  for Packed_Descriptor use
+
+```
 
 ```ada
       record
@@ -14962,17 +15500,21 @@ Example:
       end record;
 
 
+```
+
 Change of representation can now be accomplished by assignment with explicit
 type conversions:
 
 
 ```ada
-      D : DESCRIPTOR;
-      P : PACKED_DESCRIPTOR;
+      D : Descriptor;
+      P : Packed_Descriptor;
 
-      P := PACKED_DESCRIPTOR (D); -- pack D
-      D := DESCRIPTOR(P); -- unpack P
+      P := Packed_Descriptor (D); -- pack D
+      D := Descriptor(P); -- unpack P
 
+
+```
 
 References: assignment 5.2, derived type 3.4, type 3.3, type conversion
 4.6, type declaration 3.1, representation clause 13.1
@@ -14991,26 +15533,26 @@ of this package must contain at least the following declarations.
 package SYSTEM is
 
 ```ada
-      type ADDRESS is implementation_defined;
-      type NAME is implementation_defined_enumeration_type;
+      type Address is implementation_defined;
+      type Name is implementation_defined_enumeration_type;
 
-      SYSTEM_NAME : constant NAME := implementation_defined;
+      System_Name : constant Name := implementation_defined;
 
-      STORAGE_UNIT : constant := implementation_defined;
-      MEMORY_SIZE : constant := implementation_defined;
+      Storage_Unit : constant := implementation_defined;
+      Memory_Size : constant := implementation_defined;
 
       --System-Dependent Named Numbers:
 
-      MIN_INT : constant := implementation_defined;
-      MAX_INT : constant := implementation_defined;
-      MAX_DIGITS : constant := implementation_defined;
-      MAX_MANTISSA : constant := implementation_defined;
-      FINE_DELTA : constant := implementation_defined;
-      TICK : constant := implementation_defined;
+      Min_Int : constant := implementation_defined;
+      Max_Int : constant := implementation_defined;
+      Max_Digits : constant := implementation_defined;
+      Max_Mantissa : constant := implementation_defined;
+      Fine_Delta : constant := implementation_defined;
+      Tick : constant := implementation_defined;
 
       --Other System_Dependent Declarations
 
-      subtype PRIORITY is INTEGER range implementation_defined;
+      subtype Priority is Integer range implementation_defined;
 ```
 
 
@@ -15031,19 +15573,25 @@ SYSTEM_NAME, STORAGE_UNIT, and MEMORY_SIZE, can be obtained by means of the
 corresponding pragmas. These pragmas are only allowed at the start of a
 compilation, before the first compilation unit (if any) of the compilation.
 
-      pragma SYSTEM_NAME (enumeration_literal);
+```ada
+      pragma System_Name (enumeration_literal);
+```
 
 The effect of the above pragma is to use the enumeration literal with the
 specified identifier for the definition of the constant SYSTEM_NAME. This
 pragma is only allowed if the specified identifier corresponds to one of
 the literals of the type NAME.
 
-      pragma STORAGE_UNIT (numeric_literal);
+```ada
+      pragma Storage_Unit (numeric_literal);
+```
 
 The effect of the above pragma is to use the value of the specified numeric
 literal for the definition of the named number STORAGE_UNIT.
 
-      pragma MEMORY_SIZE (numeric_literal);
+```ada
+      pragma Memory_Size (numeric_literal);
+```
 
 The effect of the above pragma is to use the value of the specified numeric
 literal for the definition of the named number MEMORY_SIZE. 
@@ -15179,6 +15727,8 @@ T'STORAGE_SIZE Yields the number of storage units reserved for each
                type universal_integer.
 
 
+```
+
 Notes:
 
 For a task object X, the attribute X'SIZE gives the number of bits used to
@@ -15216,19 +15766,23 @@ T'MACHINE_ROUNDS Yields the value TRUE if every predefined arithmetic
 ```ada
                     operation on values of the base type of T either returns
                     an exact result or performs rounding; yields the value
-                    FALSE otherwise. The value of this attribute is of the
-                    predefined type BOOLEAN.
+                    False otherwise. The value of this attribute is of the
+                    predefined type Boolean.
 
+
+```
 
 T'MACHINE_OVERFLOWS Yields the value TRUE if every predefined operation on
 
 ```ada
                     values of the base type of T either provides a correct
-                    result, or raises the exception NUMERIC_ERROR in
-                    overflow situations (see 4.5.7); yields the value FALSE
+                    result, or raises the exception Numeric_Error in
+                    overflow situations (see 4.5.7); yields the value False
                     otherwise. The value of this attribute is of the
-                    predefined type BOOLEAN.
+                    predefined type Boolean.
 
+
+```
 
 For floating point types, the following attributes provide characteristics
 of the underlying machine representation, in terms of the canonical form
@@ -15256,6 +15810,8 @@ T'MACHINE_EMIN Yields the smallest (most negative) value of exponent
                     universal_integer. 
 
 
+```
+
 Note: For many machines the largest machine representable number of type F
 is almost
       (F'MACHINE_RADIX)**(F'MACHINE_EMAX),
@@ -15278,7 +15834,9 @@ universal_integer type 3.5.4
 A machine code insertion can be achieved by a call to a procedure whose
 sequence of statements contains code statements.
 
+```ada
       code_statement ::= type_mark'record_aggregate;
+```
 
 A code statement is only allowed in the sequence of statements of a
 procedure body. If a procedure body contains code statements, then within
@@ -15300,21 +15858,20 @@ expressions contained in such aggregates be static expressions.
 
 An implementation may provide machine-dependent pragmas specifying register
 conventions and calling conventions. Such pragmas must be documented in
-
-## Appendix F
+Appendix F.
 
 
 Example:
 
 
 ```ada
-      M : MASK
-      procedure SET_MASK; pragma INLINE(SET_MASK);
+      M : Mask
+      procedure Set_Mask; pragma Inline(Set_Mask);
 
-      procedure SET_MASK is
-        use MACHINE_CODE;
+      procedure Set_Mask is
+        use Machine_Code;
       begin
-        SI_FORMAT'(CODE => SSM, B => M'BASE_REG, D => M'DISP);
+        Si_Format'(Code => Ssm, B => M'Base_Reg, D => M'Disp);
         --  M'BASE_REG and M'DISP are implementation-specific predefined
             attributes
       end; 
@@ -15336,7 +15893,9 @@ A subprogram written in another language can be called from an Ada program
 provided that all communication is achieved via parameters and function
 results. A pragma of the form
 
-      pragma INTERFACE (language_name, subprogram_name);
+```ada
+      pragma Interface (language_name, subprogram_name);
+```
 
 must be given for each such subprogram; a subprogram name is allowed to
 stand for several overloaded subprograms. This pragma is allowed at the
@@ -15359,14 +15918,16 @@ Example:
 
 
 ```ada
-      package FORT_LIB is
-        function SQRT (X : FLOAT) return FLOAT;
-        function EXP (X : FLOAT) return FLOAT;
+      package Fort_Lib is
+        function Sqrt (X : Float) return Float;
+        function Exp (X : Float) return Float;
       private
-        pragma INTERFACE(FORTRAN, SQRT);
-        pragma INTERFACE(FORTRAN, EXP);
-      end FORT_LIB;
+        pragma Interface(Fortran, Sqrt);
+        pragma Interface(Fortran, Exp);
+      end;
 
+
+```
 
 Notes:
 
@@ -15393,15 +15954,17 @@ unchecked type conversions.
 
 ```ada
       generic
-         type OBJECT is limited private;
-         type NAME is access OBJECT;
-      procedure UNCHECKED_DEALLOCATION(X: in out NAME);
+         type Object is limited private;
+         type Name is access Object;
+      procedure Unchecked_Deallocation(X: in out Name);
 
       generic
-         type SOURCE is limited private;
-         type TARGET is limited private;
-      function UNCHECKED_CONVERSION(S : SOURCE) return TARGET;
+         type Source is limited private;
+         type Target is limited private;
+      function Unchecked_Conversion(S : Source) return Target;
 
+
+```
 
 References: generic subprogram 12.1, library unit 10.1, type 3.3
 
@@ -15431,6 +15994,8 @@ Such a FREE procedure has the following effect:
     designated by X is no longer required, and that the storage it occupies
     is to be reclaimed.
 
+
+```
 
 If X and Y designate the same object, then accessing this object through Y
 is erroneous if this access is performed (or attempted) after the call
@@ -15507,6 +16072,8 @@ or via conventional mail to
                    Washington, D.C. 20301-3081
 
 
+```
+
 -----------------------------------------------------------------------
 
 Copyright 1980, 1982, 1983 owned by the United States Government as
@@ -15535,7 +16102,9 @@ low_level_io package 14.6, sequential_io package 14.2 14.2.2, text_io
 package 14.3
 
 
-### 14.1  External Files and File Objects
+## 14. Input-Output
+
+### 14.1 External Files and File Objects
 
 
 Values input from the external environment of the program, or output to the
@@ -15559,20 +16128,20 @@ this package is given below.
 
 
 ```ada
-    with IO_EXCEPTIONS;
+    with IO_Exceptions;
     generic
-       type ELEMENT_TYPE is private;
-    package SEQUENTIAL_IO is
-       type FILE_TYPE is limited private;
+       type Element_Type is private;
+    package Sequential_IO is
+       type File_Type is limited private;
 
-       type FILE_MODE is (IN_FILE, OUT_FILE);
+       type File_Mode is (In_File, Out_File);
        ...
-       procedure OPEN (FILE : in out FILE_TYPE; ...);
+       procedure Open (File : in out File_Type; ...);
        ...
-       procedure READ (FILE : in FILE_TYPE; ITEM : out ELEMENT_TYPE);
-       procedure WRITE(FILE : in FILE_TYPE; ITEM : in ELEMENT_TYPE);
+       procedure Read (File : in File_Type; Item : out Element_Type);
+       procedure Write(File : in File_Type; Item : in Element_Type);
        ...
-    end SEQUENTIAL_IO;
+    end;
 
 ```
 
@@ -15640,7 +16209,7 @@ sequential file 14.2, sequential input-output 14.2.2, sequential_io package
 14.2 14.2.2, string 3.6.3, text_io package 14.3, write procedure 14.2.4
 
 
-### 14.2  Sequential and Direct Files
+### 14.2 Sequential and Direct Files
 
 
 Two kinds of access to external files are defined: sequential access and
@@ -15674,7 +16243,7 @@ for sequential files are the modes IN_FILE and OUT_FILE.
 References: count type 14.3, file mode 14.1, in_file 14.1, out_file 14.1
 
 
-#### 14.2.1  File Management
+#### 14.2.1 File Management
 
 
 The procedures and functions described in this section provide for the
@@ -15685,101 +16254,101 @@ effects described in section 14.3.1.
 
 
 ```ada
-    procedure CREATE(FILE : in out FILE_TYPE;
-                     MODE : in FILE_MODE := default_mode;
-                     NAME : in STRING := "";
-                     FORM : in STRING := "");
+    procedure Create(File : in out File_Type;
+                     Mode : in File_Mode := default_mode;
+                     Name : in String := "";
+                     Form : in String := "");
 
           Establishes a new external file, with the given name and form,
           and associates this external file with the given file. The given
           file is left open. The current mode of the given file is set to
           the given access mode. The default access mode is the mode
-          OUT_FILE for sequential and text input-output; it is the mode
-          INOUT_FILE for direct input-output. For direct access, the size
+          Out_File for sequential and text input-output; it is the mode
+          Inout_File for direct input-output. For direct access, the size
           of the created file is implementation-dependent. A null string
-          for NAME specifies an external file that is not accessible after
+          for Name specifies an external file that is not accessible after
           the completion of the main program (a temporary file). A null
-          string for FORM specifies the use of the default options of the
+          string for Form specifies the use of the default options of the
           implementation for the external file.
 
-          The exception STATUS_ERROR is raised if the given file is already
-          open. The exception NAME_ERROR is raised if the string given as
-          NAME does not allow the identification of an external file. The
-          exception USE_ERROR is raised if, for the specified mode, the
+          The exception Status_Error is raised if the given file is already
+          open. The exception Name_Error is raised if the string given as
+          Name does not allow the identification of an external file. The
+          exception Use_Error is raised if, for the specified mode, the
           environment does not support creation of an external file with
-          the given name (in the absence of NAME_ERROR) and form.
+          the given name (in the absence of Name_Error) and form.
 
-    procedure OPEN(FILE : in out FILE_TYPE;
-                   MODE : in FILE_MODE;
-                   NAME : in STRING;
-                   FORM : in STRING := "");
+    procedure Open(File : in out File_Type;
+                   Mode : in File_Mode;
+                   Name : in String;
+                   Form : in String := "");
 
           Associates the given file with an existing external file having
           the given name and form, and sets the current mode of the given
           file to the given mode. The given file is left open.
 
-          The exception STATUS_ERROR is raised if the given file is already
-          open. The exception NAME_ERROR is raised if the string given as
-          NAME does not allow the identification of an external file; in
+          The exception Status_Error is raised if the given file is already
+          open. The exception Name_Error is raised if the string given as
+          Name does not allow the identification of an external file; in
           particular, this exception is raised if no external file with the
-          given name exists. The exception USE_ERROR is raised if, for the
+          given name exists. The exception Use_Error is raised if, for the
           specified mode, the environment does not support opening for an
-          external file with the given name (in the absence of NAME_ERROR)
+          external file with the given name (in the absence of Name_Error)
           and form.
 
-    procedure CLOSE(FILE : in out FILE_TYPE);
+    procedure Close(File : in out File_Type);
 
           Severs the association between the given file and its associated
           external file. The given file is left closed.
 
-          The exception STATUS_ERROR is raised if the given file is not
+          The exception Status_Error is raised if the given file is not
           open.
 
-    procedure DELETE(FILE : in out FILE_TYPE);
+    procedure Delete(File : in out File_Type);
 
           Deletes the external file associated with the given file. The
           given file is closed, and the external file ceases to exist.
 
-          The exception STATUS_ERROR is raised if the given file is not
-          open. The exception USE_ERROR is raised if (as fully defined in
+          The exception Status_Error is raised if the given file is not
+          open. The exception Use_Error is raised if (as fully defined in
           Appendix F) deletion of the external file is not supported by the
           environment.
 
-    procedure RESET(FILE : in out FILE_TYPE; MODE : in FILE_MODE);
-    procedure RESET(FILE : in out FILE_TYPE);
+    procedure Reset(File : in out File_Type; Mode : in File_Mode);
+    procedure Reset(File : in out File_Type);
 
           Resets the given file so that reading from or writing to its
           elements can be restarted from the beginning of the file; in
           particular, for direct access this means that the current index
-          is set to one. If a MODE parameter is supplied, the current mode
+          is set to one. If a Mode parameter is supplied, the current mode
           of the given file is set to the given mode.
 
-          The exception STATUS_ERROR is raised if the file is not open.
-          The exception USE_ERROR is raised if the environment does not
+          The exception Status_Error is raised if the file is not open.
+          The exception Use_Error is raised if the environment does not
           support resetting for the external file and, also, if the
           environment does not support resetting to the specified mode for
           the external file.
 
-    function MODE(FILE : in FILE_TYPE) return FILE_MODE;
+    function Mode(File : in File_Type) return File_Mode;
 
           Returns the current mode of the given file.
 
-          The exception STATUS_ERROR is raised if the file is not open.
+          The exception Status_Error is raised if the file is not open.
 
-    function NAME(FILE : in FILE_TYPE) return STRING;
+    function Name(File : in File_Type) return String;
 
           Returns a string which uniquely identifies the external file
           currently associated with the given file (and may thus be used in
-          an OPEN operation). If an environment allows alternative
+          an Open operation). If an environment allows alternative
           specifications of the name (for example, abbreviations), the
           string returned by the function should correspond to a full
           specification of the name.
 
 
-          The exception STATUS_ERROR is raised if the given file is not
+          The exception Status_Error is raised if the given file is not
           open.
 
-    function FORM(FILE : in FILE_TYPE) return STRING;
+    function Form(File : in File_Type) return String;
 
           Returns the form string for the external file currently
           associated with the given file. If an environment allows
@@ -15789,13 +16358,13 @@ effects described in section 14.3.1.
           should indicate explicitly all options selected, including
           default options).
 
-          The exception STATUS_ERROR is raised if the given file is not
+          The exception Status_Error is raised if the given file is not
           open.
 
-    function IS_OPEN(FILE : in FILE_TYPE) return BOOLEAN;
+    function Is_Open(File : in File_Type) return Boolean;
 
-          Returns TRUE if the file is open (that is, if it is associated
-          with an external file), otherwise returns FALSE.
+          Returns True if the file is open (that is, if it is associated
+          with an external file), otherwise returns False.
 ```
 
 
@@ -15806,7 +16375,7 @@ type 14.1, form string 14.1, inout_file 14.2.4, mode 14.1, name string
 status_error exception 14.4, use_error exception 14.4
 
 
-#### 14.2.2  Sequential Input-Output
+#### 14.2.2 Sequential Input-Output
 
 
 The operations available for sequential input and output are described in
@@ -15815,38 +16384,40 @@ operations is attempted for a file that is not open.
 
 
 ```ada
-    procedure READ(FILE : in FILE_TYPE; ITEM : out ELEMENT_TYPE);
+    procedure Read(File : in File_Type; Item : out Element_Type);
 
-          Operates on a file of mode IN_FILE. Reads an element from the
-          given file, and returns the value of this element in the ITEM
+          Operates on a file of mode In_File. Reads an element from the
+          given file, and returns the value of this element in the Item
           parameter.
 
-          The exception MODE_ERROR is raised if the mode is not IN_FILE.
-          The exception END_ERROR is raised if no more elements can be read
-          from the given file. The exception DATA_ERROR is raised if the
+          The exception Mode_Error is raised if the mode is not In_File.
+          The exception End_Error is raised if no more elements can be read
+          from the given file. The exception Data_Error is raised if the
           element read cannot be interpreted as a value of the type
-          ELEMENT_TYPE; however, an implementation is allowed to omit this
+          Element_Type; however, an implementation is allowed to omit this
           check if performing the check is too complex.
 
-    procedure WRITE(FILE : in FILE_TYPE; ITEM : in ELEMENT_TYPE);
+    procedure Write(File : in File_Type; Item : in Element_Type);
 
-          Operates on a file of mode OUT_FILE. Writes the value of ITEM to
+          Operates on a file of mode Out_File. Writes the value of Item to
           the given file.
 
-          The exception MODE_ERROR is raised if the mode is not OUT_FILE.
-          The exception USE_ERROR is raised if the capacity of the external
+          The exception Mode_Error is raised if the mode is not Out_File.
+          The exception Use_Error is raised if the capacity of the external
           file is exceeded.
 
-    function END_OF_FILE(FILE : in FILE_TYPE) return BOOLEAN;
+    function End_Of_File(File : in File_Type) return Boolean;
 
-          Operates on a file of mode IN_FILE. Returns TRUE if no more
+          Operates on a file of mode In_File. Returns True if no more
           elements can be read from the given file; otherwise returns
 
 
-          FALSE.
+          False.
 
-          The exception MODE_ERROR is raised if the mode is not IN_FILE.
+          The exception Mode_Error is raised if the mode is not In_File.
 
+
+```
 
 References: data_error exception 14.4, element 14.1, element_type 14.1,
 end_error exception 14.4, external file 14.1, file 14.1, file mode 14.1,
@@ -15854,64 +16425,64 @@ file_type 14.1, in_file 14.1, mode_error exception 14.4, out_file 14.1,
 status_error exception 14.4, use_error exception 14.4
 
 
-#### 14.2.3  Specification of the Package Sequential_IO
+#### 14.2.3 Specification of the Package Sequential_IO
 
 
 ```ada
-    with IO_EXCEPTIONS;
+    with IO_Exceptions;
     generic
-       type ELEMENT_TYPE is private;
-    package SEQUENTIAL_IO is
+       type Element_Type is private;
+    package Sequential_IO is
 
-       type FILE_TYPE is limited private;
+       type File_Type is limited private;
 
-       type FILE_MODE is (IN_FILE, OUT_FILE);
+       type File_Mode is (In_File, Out_File);
 
        -- File management
 
-       procedure CREATE(FILE : in out FILE_TYPE;
-                        MODE : in FILE_MODE := OUT_FILE;
-                        NAME : in STRING := "";
-                        FORM : in STRING := "");
+       procedure Create(File : in out File_Type;
+                        Mode : in File_Mode := Out_File;
+                        Name : in String := "";
+                        Form : in String := "");
 
-       procedure OPEN (FILE : in out FILE_TYPE;
-                        MODE : in FILE_MODE;
-                        NAME : in STRING;
-                        FORM : in STRING := "");
+       procedure Open (File : in out File_Type;
+                        Mode : in File_Mode;
+                        Name : in String;
+                        Form : in String := "");
 
-       procedure CLOSE (FILE : in out FILE_TYPE);
-       procedure DELETE(FILE : in out FILE_TYPE);
-       procedure RESET (FILE : in out FILE_TYPE; MODE : in FILE_MODE);
-       procedure RESET (FILE : in out FILE_TYPE);
+       procedure Close (File : in out File_Type);
+       procedure Delete(File : in out File_Type);
+       procedure Reset (File : in out File_Type; Mode : in File_Mode);
+       procedure Reset (File : in out File_Type);
 
-       function MODE (FILE : in FILE_TYPE) return FILE_MODE;
-       function NAME (FILE : in FILE_TYPE) return STRING;
-       function FORM (FILE : in FILE_TYPE) return STRING;
+       function Mode (File : in File_Type) return File_Mode;
+       function Name (File : in File_Type) return String;
+       function Form (File : in File_Type) return String;
 
-       function IS_OPEN(FILE : in FILE_TYPE) return BOOLEAN;
+       function Is_Open(File : in File_Type) return Boolean;
 
        -- Input and output operations
 
-       procedure READ (FILE : in FILE_TYPE; ITEM : out ELEMENT_TYPE);
-       procedure WRITE (FILE : in FILE_TYPE; ITEM : in ELEMENT_TYPE);
+       procedure Read (File : in File_Type; Item : out Element_Type);
+       procedure Write (File : in File_Type; Item : in Element_Type);
 
-       function END_OF_FILE(FILE : in FILE_TYPE) return BOOLEAN;
+       function End_Of_File(File : in File_Type) return Boolean;
 
        -- Exceptions
 
-       STATUS_ERROR : exception renames IO_EXCEPTIONS.STATUS_ERROR;
-       MODE_ERROR : exception renames IO_EXCEPTIONS.MODE_ERROR;
+       Status_Error : exception renames IO_Exceptions.Status_Error;
+       Mode_Error : exception renames IO_Exceptions.Mode_Error;
 
 
-       NAME_ERROR : exception renames IO_EXCEPTIONS.NAME_ERROR;
-       USE_ERROR : exception renames IO_EXCEPTIONS.USE_ERROR;
-       DEVICE_ERROR : exception renames IO_EXCEPTIONS.DEVICE_ERROR;
-       END_ERROR : exception renames IO_EXCEPTIONS.END_ERROR;
-       DATA_ERROR : exception renames IO_EXCEPTIONS.DATA_ERROR;
+       Name_Error : exception renames IO_Exceptions.Name_Error;
+       Use_Error : exception renames IO_Exceptions.Use_Error;
+       Device_Error : exception renames IO_Exceptions.Device_Error;
+       End_Error : exception renames IO_Exceptions.End_Error;
+       Data_Error : exception renames IO_Exceptions.Data_Error;
 
     private
        -- implementation-dependent
-    end SEQUENTIAL_IO;
+    end;
 
 ```
 
@@ -15926,7 +16497,7 @@ package 14.2 14.2.2, status_error exception 14.4, use_error exception 14.4,
 write procedure 14.2.2,
 
 
-#### 14.2.4  Direct Input-Output
+#### 14.2.4 Direct Input-Output
 
 
 The operations available for direct input and output are described in this
@@ -15935,65 +16506,65 @@ is attempted for a file that is not open.
 
 
 ```ada
-    procedure READ(FILE : in FILE_TYPE; ITEM : out ELEMENT_TYPE;
-                                        FROM : in POSITIVE_COUNT);
-    procedure READ(FILE : in FILE_TYPE; ITEM : out ELEMENT_TYPE);
+    procedure Read(File : in File_Type; Item : out Element_Type;
+                                        From : in Positive_Count);
+    procedure Read(File : in File_Type; Item : out Element_Type);
 
-          Operates on a file of mode IN_FILE or INOUT_FILE. In the case of
+          Operates on a file of mode In_File or Inout_File. In the case of
           the first form, sets the current index of the given file to the
-          index value given by the parameter FROM. Then (for both forms)
-          returns, in the parameter ITEM, the value of the element whose
+          index value given by the parameter From. Then (for both forms)
+          returns, in the parameter Item, the value of the element whose
           position in the given file is specified by the current index of
           the file; finally, increases the current index by one.
 
-          The exception MODE_ERROR is raised if the mode of the given file
-          is OUT_FILE. The exception END_ERROR is raised if the index to
+          The exception Mode_Error is raised if the mode of the given file
+          is Out_File. The exception End_Error is raised if the index to
           be used exceeds the size of the external file. The exception
-          DATA_ERROR is raised if the element read cannot be interpreted as
-          a value of the type ELEMENT_TYPE; however, an implementation is
+          Data_Error is raised if the element read cannot be interpreted as
+          a value of the type Element_Type; however, an implementation is
           allowed to omit this check if performing the check is too
           complex.
 
-    procedure WRITE(FILE : in FILE_TYPE; ITEM : in ELEMENT_TYPE;
-                                         TO : in POSITIVE_COUNT);
-    procedure WRITE(FILE : in FILE_TYPE; ITEM : in ELEMENT_TYPE);
+    procedure Write(File : in File_Type; Item : in Element_Type;
+                                         To : in Positive_Count);
+    procedure Write(File : in File_Type; Item : in Element_Type);
 
-          Operates on a file of mode INOUT_FILE or OUT_FILE. In the case
+          Operates on a file of mode Inout_File or Out_File. In the case
           of the first form, sets the index of the given file to the index
-          value given by the parameter TO. Then (for both forms) gives the
-          value of the parameter ITEM to the element whose position in the
+          value given by the parameter To. Then (for both forms) gives the
+          value of the parameter Item to the element whose position in the
           given file is specified by the current index of the file;
           finally, increases the current index by one.
 
-          The exception MODE_ERROR is raised if the mode of the given file
-          is IN_FILE. The exception USE_ERROR is raised if the capacity of
+          The exception Mode_Error is raised if the mode of the given file
+          is In_File. The exception Use_Error is raised if the capacity of
           the external file is exceeded.
 
-    procedure SET_INDEX(FILE : in FILE_TYPE; TO : in POSITIVE_COUNT);
+    procedure Set_Index(File : in File_Type; To : in Positive_Count);
 
           Operates on a file of any mode. Sets the current index of the
           given file to the given index value (which may exceed the current
           size of the file).
 
-    function INDEX(FILE : in FILE_TYPE) return POSITIVE_COUNT;
+    function Index(File : in File_Type) return Positive_Count;
 
           Operates on a file of any mode. Returns the current index of the
           given file.
 
-    function SIZE(FILE : in FILE_TYPE) return COUNT;
+    function Size(File : in File_Type) return Count;
 
           Operates on a file of any mode. Returns the current size of the
           external file that is associated with the given file.
 
 
-    function END_OF_FILE(FILE : in FILE_TYPE) return BOOLEAN;
+    function End_Of_File(File : in File_Type) return Boolean;
 
-          Operates on a file of mode IN_FILE or INOUT_FILE. Returns TRUE
+          Operates on a file of mode In_File or Inout_File. Returns True
           if the current index exceeds the size of the external file;
-          otherwise returns FALSE.
+          otherwise returns False.
 
-          The exception MODE_ERROR is raised if the mode of the given file
-          is OUT_FILE.
+          The exception Mode_Error is raised if the mode of the given file
+          is Out_File.
 
 ```
 
@@ -16005,75 +16576,75 @@ open file 14.1, positive_count 14.3, status_error exception 14.4, use_error
 exception 14.4
 
 
-#### 14.2.5  Specification of the Package Direct_IO
+#### 14.2.5 Specification of the Package Direct_IO
 
 
 ```ada
-    with IO_EXCEPTIONS;
+    with IO_Exceptions;
     generic
-       type ELEMENT_TYPE is private;
-    package DIRECT_IO is
+       type Element_Type is private;
+    package Direct_IO is
 
-       type FILE_TYPE is limited private;
+       type File_Type is limited private;
 
-       type FILE_MODE is (IN_FILE, INOUT_FILE, OUT_FILE);
-       type COUNT is range 0 .. implementation defined;
-       subtype POSITIVE_COUNT is COUNT range 1 .. COUNT'LAST;
+       type File_Mode is (In_File, Inout_File, Out_File);
+       type Count is range 0 .. implementation defined;
+       subtype Positive_Count is Count range 1 .. Count'Last;
 
        -- File management
 
-       procedure CREATE(FILE : in out FILE_TYPE;
-                        MODE : in FILE_MODE := INOUT_FILE;
-                        NAME : in STRING := "";
-                        FORM : in STRING := "");
+       procedure Create(File : in out File_Type;
+                        Mode : in File_Mode := Inout_File;
+                        Name : in String := "";
+                        Form : in String := "");
 
-       procedure OPEN (FILE : in out FILE_TYPE;
-                        MODE : in FILE_MODE;
-                        NAME : in STRING;
-                        FORM : in STRING := "");
+       procedure Open (File : in out File_Type;
+                        Mode : in File_Mode;
+                        Name : in String;
+                        Form : in String := "");
 
-       procedure CLOSE (FILE : in out FILE_TYPE);
-       procedure DELETE(FILE : in out FILE_TYPE);
-       procedure RESET (FILE : in out FILE_TYPE; MODE : in FILE_MODE);
-       procedure RESET (FILE : in out FILE_TYPE);
+       procedure Close (File : in out File_Type);
+       procedure Delete(File : in out File_Type);
+       procedure Reset (File : in out File_Type; Mode : in File_Mode);
+       procedure Reset (File : in out File_Type);
 
-       function MODE (FILE : in FILE_TYPE) return FILE_MODE;
-       function NAME (FILE : in FILE_TYPE) return STRING;
-       function FORM (FILE : in FILE_TYPE) return STRING;
+       function Mode (File : in File_Type) return File_Mode;
+       function Name (File : in File_Type) return String;
+       function Form (File : in File_Type) return String;
 
-       function IS_OPEN(FILE : in FILE_TYPE) return BOOLEAN;
+       function Is_Open(File : in File_Type) return Boolean;
 
        -- Input and output operations
 
-       procedure READ (FILE : in FILE_TYPE; ITEM : out ELEMENT_TYPE; FROM :
-        POSITIVE_COUNT);
-       procedure READ (FILE : in FILE_TYPE; ITEM : out ELEMENT_TYPE);
+       procedure Read (File : in File_Type; Item : out Element_Type; From :
+        Positive_Count);
+       procedure Read (File : in File_Type; Item : out Element_Type);
 
-       procedure WRITE(FILE : in FILE_TYPE; ITEM : in ELEMENT_TYPE; TO :
-        POSITIVE_COUNT);
-       procedure WRITE(FILE : in FILE_TYPE; ITEM : in ELEMENT_TYPE);
+       procedure Write(File : in File_Type; Item : in Element_Type; To :
+        Positive_Count);
+       procedure Write(File : in File_Type; Item : in Element_Type);
 
-       procedure SET_INDEX(FILE : in FILE_TYPE; TO : in POSITIVE_COUNT);
+       procedure Set_Index(File : in File_Type; To : in Positive_Count);
 
-       function INDEX(FILE : in FILE_TYPE) return POSITIVE_COUNT;
-       function SIZE (FILE : in FILE_TYPE) return COUNT;
+       function Index(File : in File_Type) return Positive_Count;
+       function Size (File : in File_Type) return Count;
 
-       function END_OF_FILE(FILE : in FILE_TYPE) return BOOLEAN;
+       function End_Of_File(File : in File_Type) return Boolean;
 
        -- Exceptions
 
 
-       STATUS_ERROR : exception renames IO_EXCEPTIONS.STATUS_ERROR;
-       MODE_ERROR : exception renames IO_EXCEPTIONS.MODE_ERROR;
-       NAME_ERROR : exception renames IO_EXCEPTIONS.NAME_ERROR;
-       USE_ERROR : exception renames IO_EXCEPTIONS.USE_ERROR;
-       DEVICE_ERROR : exception renames IO_EXCEPTIONS.DEVICE_ERROR;
-       END_ERROR : exception renames IO_EXCEPTIONS.END_ERROR;
-       DATA_ERROR : exception renames IO_EXCEPTIONS.DATA_ERROR;
+       Status_Error : exception renames IO_Exceptions.Status_Error;
+       Mode_Error : exception renames IO_Exceptions.Mode_Error;
+       Name_Error : exception renames IO_Exceptions.Name_Error;
+       Use_Error : exception renames IO_Exceptions.Use_Error;
+       Device_Error : exception renames IO_Exceptions.Device_Error;
+       End_Error : exception renames IO_Exceptions.End_Error;
+       Data_Error : exception renames IO_Exceptions.Data_Error;
 
     private
        -- implementation-dependent
-    end DIRECT_IO;
+    end;
 
 ```
 
@@ -16090,7 +16661,7 @@ status_error exception 14.4, use_error exception 14.4, write procedure
 14.2.4 14.2.1
 
 
-### 14.3  Text Input-Output
+### 14.3 Text Input-Output
 
 
 This section describes the package TEXT_IO, which provides facilities for
@@ -16165,9 +16736,11 @@ to indicate special conditions).
 
 
 ```ada
-    type COUNT is range 0 .. implementation_defined;
-    subtype POSITIVE_COUNT is COUNT range 1 .. COUNT'LAST;
+    type Count is range 0 .. implementation_defined;
+    subtype Positive_Count is Count range 1 .. Count'Last;
 
+
+```
 
 For an output file, a maximum line length can be specified and a maximum
 page length can be specified. If a value to be output cannot fit on the
@@ -16189,7 +16762,7 @@ sequential access 14.1, standard input file 14.3.2, standard output file
 14.3.2
 
 
-#### 14.3.1  File Management
+#### 14.3.1 File Management
 
 
 The only allowed file modes for text files are the modes IN_FILE and
@@ -16216,11 +16789,13 @@ For text files, the procedures have the following additional effects:
   -  For the procedure RESET:  If the file has the current  mode  OUT_FILE,
 
 ```ada
-     has the effect of calling NEW_PAGE, unless the current page is already
+     has the effect of calling New_Page, unless the current page is already
      terminated; then outputs a file terminator. If the new file mode is
-     OUT_FILE, the page and line lengths are unbounded. For all modes, the
+     Out_File, the page and line lengths are unbounded. For all modes, the
      current column, line, and page numbers are set to one.
 
+
+```
 
 The exception MODE_ERROR is raised by the procedure RESET upon an attempt
 to change the mode of a file that is either the current default input file,
@@ -16234,7 +16809,7 @@ open procedure 14.2.1, out_file 14.1, page length 14.3, reset procedure
 14.2.1
 
 
-#### 14.3.2  Default Input and Output Files
+#### 14.3.2 Default Input and Output Files
 
 
 The following subprograms provide for the control of the particular default
@@ -16243,41 +16818,43 @@ other operation of text input-output described below.
 
 
 ```ada
-    procedure SET_INPUT(FILE : in FILE_TYPE);
+    procedure Set_Input(File : in File_Type);
 
-          Operates on a file of mode IN_FILE. Sets the current default
-          input file to FILE.
+          Operates on a file of mode In_File. Sets the current default
+          input file to File.
 
-          The exception STATUS_ERROR is raised if the given file is not
-          open. The exception MODE_ERROR is raised if the mode of the
-          given file is not IN_FILE.
+          The exception Status_Error is raised if the given file is not
+          open. The exception Mode_Error is raised if the mode of the
+          given file is not In_File.
 
-    procedure SET_OUTPUT(FILE : in FILE_TYPE);
+    procedure Set_Output(File : in File_Type);
 
-          Operates on a file of mode OUT_FILE. Sets the current default
-          output file to FILE.
+          Operates on a file of mode Out_File. Sets the current default
+          output file to File.
 
-          The exception STATUS_ERROR is raised if the given file is not
-          open. The exception MODE_ERROR is raised if the mode of the
-          given file is not OUT_FILE.
+          The exception Status_Error is raised if the given file is not
+          open. The exception Mode_Error is raised if the mode of the
+          given file is not Out_File.
 
-    function STANDARD_INPUT return FILE_TYPE;
+    function Standard_Input return File_Type;
 
           Returns the standard input file (see 14.3).
 
-    function STANDARD_OUTPUT return FILE_TYPE;
+    function Standard_Output return File_Type;
 
           Returns the standard output file (see 14.3).
 
 
-    function CURRENT_INPUT return FILE_TYPE;
+    function Current_Input return File_Type;
 
           Returns the current default input file.
 
-    function CURRENT_OUTPUT return FILE_TYPE;
+    function Current_Output return File_Type;
 
           Returns the current default output file.
 
+
+```
 
 Note:
 
@@ -16290,7 +16867,7 @@ get procedure 14.3.5, mode_error exception 14.4, put procedure 14.3.5,
 status_error exception 14.4
 
 
-#### 14.3.3  Specification of Line and Page Lengths
+#### 14.3.3 Specification of Line and Page Lengths
 
 
 The subprograms described in this section are concerned with the line and
@@ -16309,40 +16886,42 @@ not OUT_FILE.
 
 
 ```ada
-    procedure SET_LINE_LENGTH(FILE : in FILE_TYPE; TO : in COUNT);
-    procedure SET_LINE_LENGTH(TO : in COUNT);
+    procedure Set_Line_Length(File : in File_Type; To : in Count);
+    procedure Set_Line_Length(To : in Count);
 
           Sets the maximum line length of the specified output file to the
-          number of characters specified by TO. The value zero for TO
+          number of characters specified by To. The value zero for To
           specifies an unbounded line length.
 
-          The exception USE_ERROR is raised if the specified line length is
+          The exception Use_Error is raised if the specified line length is
           inappropriate for the associated external file.
 
-    procedure SET_PAGE_LENGTH(FILE : in FILE_TYPE; TO : in COUNT);
-    procedure SET_PAGE_LENGTH(TO : in COUNT);
+    procedure Set_Page_Length(File : in File_Type; To : in Count);
+    procedure Set_Page_Length(To : in Count);
 
           Sets the maximum page length of the specified output file to the
-          number of lines specified by TO. The value zero for TO specifies
+          number of lines specified by To. The value zero for To specifies
           an unbounded page length.
 
-          The exception USE_ERROR is raised if the specified page length is
+          The exception Use_Error is raised if the specified page length is
           inappropriate for the associated external file.
 
-    function LINE_LENGTH(FILE : in FILE_TYPE) return COUNT;
-    function LINE_LENGTH return COUNT;
+    function Line_Length(File : in File_Type) return Count;
+    function Line_Length return Count;
 
           Returns the maximum line length currently set for the specified
           output file, or zero if the line length is unbounded.
 
-    function PAGE_LENGTH(FILE : in FILE_TYPE) return COUNT;
+    function Page_Length(File : in File_Type) return Count;
 
 
-    function PAGE_LENGTH return COUNT;
+    function Page_Length return Count;
 
           Returns the maximum page length currently set for the specified
           output file, or zero if the page length is unbounded.
 
+
+```
 
 References: count type 14.3, current default output file 14.3, external
 file 14.1, file 14.1, file_type 14.1, line 14.3, line length 14.3, line
@@ -16352,7 +16931,7 @@ length 14.3, page terminator 14.3, status_error exception 14.4, unbounded
 page length 14.3, use_error exception 14.4
 
 
-#### 14.3.4  Operations on Columns, Lines, and Pages
+#### 14.3.4 Operations on Columns, Lines, and Pages
 
 
 The subprograms described in this section provide for explicit control of
@@ -16364,12 +16943,12 @@ is not open.
 
 
 ```ada
-    procedure NEW_LINE(FILE : in FILE_TYPE; SPACING : in POSITIVE_COUNT := 1);
-    procedure NEW_LINE(SPACING : in POSITIVE_COUNT := 1);
+    procedure New_Line(File : in File_Type; Spacing : in Positive_Count := 1);
+    procedure New_Line(Spacing : in Positive_Count := 1);
 
-          Operates on a file of mode OUT_FILE.
+          Operates on a file of mode Out_File.
 
-          For a SPACING of one: Outputs a line terminator and sets the
+          For a Spacing of one: Outputs a line terminator and sets the
           current column number to one. Then increments the current line
           number by one, except in the case that the current line number is
           already greater than or equal to the maximum page length, for a
@@ -16377,10 +16956,10 @@ is not open.
           the current page number is incremented by one, and the current
           line number is set to one.
 
-          For a SPACING greater than one, the above actions are performed
-          SPACING times.
+          For a Spacing greater than one, the above actions are performed
+          Spacing times.
 
-          The exception MODE_ERROR is raised if the mode is not OUT_FILE.
+          The exception Mode_Error is raised if the mode is not Out_File.
 
 ```
 
@@ -16389,9 +16968,9 @@ is not open.
 
 
 ```ada
-          Operates on a file of mode IN_FILE.
+          Operates on a file of mode In_File.
 
-          For a SPACING of one: Reads and discards all characters until a
+          For a Spacing of one: Reads and discards all characters until a
           line terminator has been read, and then sets the current column
           number to one. If the line terminator is not immediately
           followed by a page terminator, the current line number is
@@ -16400,74 +16979,78 @@ is not open.
           terminator is skipped, the current page number is incremented by
           one, and the current line number is set to one.
 
-          For a SPACING greater than one, the above actions are performed
-          SPACING times.
+          For a Spacing greater than one, the above actions are performed
+          Spacing times.
 
-          The exception MODE_ERROR is raised if the mode is not IN_FILE.
-          The exception END_ERROR is raised if an attempt is made to read a
+          The exception Mode_Error is raised if the mode is not In_File.
+          The exception End_Error is raised if an attempt is made to read a
           file terminator.
 
-    function END_OF_LINE(FILE : in FILE_TYPE) return BOOLEAN;
-    function END_OF_LINE return BOOLEAN;
+    function End_Of_Line(File : in File_Type) return Boolean;
+    function End_Of_Line return Boolean;
 
-          Operates on a file of mode IN_FILE. Returns TRUE if a line
+          Operates on a file of mode In_File. Returns True if a line
           terminator or a file terminator is next; otherwise returns
-          FALSE.
+          False.
 
-          The exception MODE_ERROR is raised if the mode is not IN_FILE.
+          The exception Mode_Error is raised if the mode is not In_File.
 
-    procedure NEW_PAGE(FILE : in FILE_TYPE);
-    procedure NEW_PAGE;
+    procedure New_Page(File : in File_Type);
+    procedure New_Page;
 
-          Operates on a file of mode OUT_FILE. Outputs a line terminator
+          Operates on a file of mode Out_File. Outputs a line terminator
           if the current line is not terminated, or if the current page is
           empty (that is, if the current column and line numbers are both
           equal to one). Then outputs a page terminator, which terminates
           the current page. Adds one to the current page number and sets
           the current column and line numbers to one.
 
-          The exception MODE_ERROR is raised if the mode is not OUT_FILE.
+          The exception Mode_Error is raised if the mode is not Out_File.
 
-    procedure SKIP_PAGE(FILE: in FILE_TYPE);
-    procedure SKIP_PAGE;
+    procedure Skip_Page(File: in File_Type);
+    procedure Skip_Page;
 
-          Operates on a file of mode IN_FILE. Reads and discards all
+          Operates on a file of mode In_File. Reads and discards all
           characters and line terminators until a page terminator has been
           read. Then adds one to the current page number, and sets the
           current column and line numbers to one.
 
-          The exception MODE_ERROR is raised if the mode is not IN_FILE.
-          The exception END_ERROR is raised if an attempt is made to read a
+          The exception Mode_Error is raised if the mode is not In_File.
+          The exception End_Error is raised if an attempt is made to read a
           file terminator.
 
-    function END_OF_PAGE(FILE : in FILE_TYPE) return BOOLEAN;
-    function END_OF_PAGE return BOOLEAN;
+    function End_Of_Page(File : in File_Type) return Boolean;
+    function End_Of_Page return Boolean;
 
-          Operates on a file of mode IN_FILE. Returns TRUE if the
+          Operates on a file of mode In_File. Returns True if the
 
 
           combination of a line terminator and a page terminator is next,
-          or if a file terminator is next; otherwise returns FALSE.
+          or if a file terminator is next; otherwise returns False.
 
-          The exception MODE_ERROR is raised if the mode is not IN_FILE.
+          The exception Mode_Error is raised if the mode is not In_File.
 
-    function END_OF_FILE(FILE : in FILE_TYPE) return BOOLEAN;
-    function END_OF_FILE return BOOLEAN;
+    function End_Of_File(File : in File_Type) return Boolean;
+    function End_Of_File return Boolean;
 
-          Operates on a file of mode IN_FILE. Returns TRUE if a file
+          Operates on a file of mode In_File. Returns True if a file
           terminator is next, or if the combination of a line, a page, and
-          a file terminator is next; otherwise returns FALSE.
+          a file terminator is next; otherwise returns False.
 
-          The exception MODE_ERROR is raised if the mode is not IN_FILE.
+          The exception Mode_Error is raised if the mode is not In_File.
 
+
+```
 
 The following subprograms provide for the control of the current position
 of reading or writing in a file. In all cases, the default file is the
 current output file.
 
 
-    procedure SET_COL(FILE : in FILE_TYPE; TO : in POSITIVE_COUNT);
-    procedure SET_COL(TO : in POSITIVE_COUNT);
+```ada
+    procedure Set_Col(File : in File_Type; To : in Positive_Count);
+    procedure Set_Col(To : in Positive_Count);
+```
 
           If the file mode is OUT_FILE:
 
@@ -16502,8 +17085,10 @@ current output file.
                The exception END_ERROR is raised if an attempt is made to
                read a file terminator.
 
-    procedure SET_LINE(FILE : in FILE_TYPE; TO : in POSITIVE_COUNT);
-    procedure SET_LINE(TO : in POSITIVE_COUNT);
+```ada
+    procedure Set_Line(File : in File_Type; To : in Positive_Count);
+    procedure Set_Line(To : in Positive_Count);
+```
 
           If the file mode is OUT_FILE:
 
@@ -16533,8 +17118,10 @@ current output file.
                The exception END_ERROR is raised if an attempt is made to
                read a file terminator.
 
-    function COL(FILE : in FILE_TYPE) return POSITIVE_COUNT;
-    function COL return POSITIVE_COUNT;
+```ada
+    function Col(File : in File_Type) return Positive_Count;
+    function Col return Positive_Count;
+```
 
           Returns the current column number.
 
@@ -16543,16 +17130,20 @@ current output file.
 
           COUNT'LAST.
 
-    function LINE(FILE : in FILE_TYPE) return POSITIVE_COUNT;
-    function LINE return POSITIVE_COUNT;
+```ada
+    function Line(File : in File_Type) return Positive_Count;
+    function Line return Positive_Count;
+```
 
           Returns the current line number.
 
           The exception LAYOUT_ERROR is raised if this number exceeds
           COUNT'LAST.
 
-    function PAGE(FILE : in FILE_TYPE) return POSITIVE_COUNT;
-    function PAGE return POSITIVE_COUNT;
+```ada
+    function Page(File : in File_Type) return Positive_Count;
+    function Page return Positive_Count;
+```
 
           Returns the current page number.
 
@@ -16560,6 +17151,8 @@ current output file.
 ```
 
           COUNT'LAST.
+
+```
 
 The column number, line number, or page number are allowed to exceed
 COUNT'LAST (as a consequence of the input or output of sufficiently many
@@ -16583,7 +17176,7 @@ page 14.3, page length 14.3, page terminator 14.3, positive count 14.3,
 status_error exception 14.4
 
 
-#### 14.3.5  Get and Put Procedures
+#### 14.3.5 Get and Put Procedures
 
 
 The procedures GET and PUT for items of the types CHARACTER, STRING,
@@ -16679,9 +17272,9 @@ reveal the layout and spaces.
 
 
 ```ada
-    N : INTEGER;
+    N : Integer;
        ...
-    GET(N);
+    Get(N);
 
     -- Characters at input       Sequence input       Value of N
 
@@ -16705,49 +17298,57 @@ put procedure 14.3.6 14.3.7 14.3.8 14.3.9, skipping 14.3.7 14.3.8 14.3.9,
 status_error exception 14.4, width 14.3.5 14.3.7 14.3.9
 
 
-#### 14.3.6  Input-Output of Characters and Strings
+#### 14.3.6 Input-Output of Characters and Strings
 
 
 For an item of type CHARACTER the following procedures are provided:
 
 
 ```ada
-    procedure GET(FILE : in FILE_TYPE; ITEM : out CHARACTER);
-    procedure GET(ITEM : out CHARACTER);
+    procedure Get(File : in File_Type; Item : out Character);
+    procedure Get(Item : out Character);
 
           After skipping any line terminators and any page terminators,
           reads the next character from the specified input file and
-          returns the value of this character in the out parameter ITEM.
+          returns the value of this character in the out parameter Item.
 
-          The exception END_ERROR is raised if an attempt is made to skip a
+          The exception End_Error is raised if an attempt is made to skip a
           file terminator.
 
-    procedure PUT(FILE : in FILE_TYPE; ITEM : in CHARACTER);
-    procedure PUT(ITEM : in CHARACTER);
+    procedure Put(File : in File_Type; Item : in Character);
+    procedure Put(Item : in Character);
 
           If the line length of the specified output file is bounded (that
           is, does not have the conventional value zero), and the current
-          column number exceeds it, has the effect of calling NEW_LINE with
+          column number exceeds it, has the effect of calling New_Line with
           a spacing of one. Then, or otherwise, outputs the given
           character to the file.
 
 
+```
+
 For an item of type STRING the following procedures are provided:
 
 
-    procedure GET(FILE : in FILE_TYPE; ITEM : out STRING);
-    procedure GET(ITEM : out STRING);
+```ada
+    procedure Get(File : in File_Type; Item : out String);
+    procedure Get(Item : out String);
+```
 
           Determines the length of the given string and attempts that
           number of GET operations for successive characters of the string
           (in particular, no operation is performed if the string is null).
 
-    procedure PUT(FILE : in FILE_TYPE; ITEM : in STRING);
-    procedure PUT(ITEM : in STRING);
+```ada
+    procedure Put(File : in File_Type; Item : in String);
+    procedure Put(Item : in String);
+```
 
           Determines the length of the given string and attempts that
           number of PUT operations for successive characters of the string
           (in particular, no operation is performed if the string is null).
+
+```
 
 ```
 
@@ -16759,22 +17360,22 @@ procedure GET_LINE(ITEM : out STRING; LAST : out NATURAL);
           Replaces successive characters of the specified string by
           successive characters read from the specified input file.
           Reading stops if the end of the line is met, in which case the
-          procedure SKIP_LINE is then called (in effect) with a spacing of
+          procedure Skip_Line is then called (in effect) with a spacing of
           one; reading also stops if the end of the string is met.
           Characters not replaced are left undefined.
 
-          If characters are read, returns in LAST the index value such that
-          ITEM(LAST) is the last character replaced (the index of the first
-          character replaced is ITEM'FIRST). If no characters are read,
-          returns in LAST an index value that is one less than ITEM'FIRST.
-          The exception END_ERROR is raised if an attempt is made to skip a
+          If characters are read, returns in Last the index value such that
+          Item(Last) is the last character replaced (the index of the first
+          character replaced is Item'First). If no characters are read,
+          returns in Last an index value that is one less than Item'First.
+          The exception End_Error is raised if an attempt is made to skip a
           file terminator.
 
-    procedure PUT_LINE(FILE : in FILE_TYPE; ITEM : in STRING);
-    procedure PUT_LINE(ITEM : in STRING);
+    procedure Put_Line(File : in File_Type; Item : in String);
+    procedure Put_Line(Item : in String);
 
-          Calls the procedure PUT for the given string, and then the
-          procedure NEW_LINE with a spacing of one.
+          Calls the procedure Put for the given string, and then the
+          procedure New_Line with a spacing of one.
 
 ```
 
@@ -16793,7 +17394,7 @@ References: current column number 14.3, end_error exception 14.4, file
 14.3.4, skipping 14.3.5
 
 
-#### 14.3.7  Input-Output for Integer Types
+#### 14.3.7 Input-Output for Integer Types
 
 
 The following procedures are defined in the generic package INTEGER_IO.
@@ -16807,7 +17408,9 @@ by an optional field width parameter. Values of widths of fields in output
 formats are of the nonnegative integer subtype FIELD. Values of bases are
 of the integer subtype NUMBER_BASE.
 
-    subtype NUMBER_BASE is INTEGER range 2 .. 16;
+```ada
+    subtype Number_Base is Integer range 2 .. 16;
+```
 
 The default field width and base to be used by output procedures are
 defined by the following variables that are declared in the generic package
@@ -16815,9 +17418,11 @@ INTEGER_IO:
 
 
 ```ada
-    DEFAULT_WIDTH : FIELD := NUM'WIDTH;
-    DEFAULT_BASE : NUMBER_BASE := 10;
+    Default_Width : Field := Num'Width;
+    Default_Base : Number_Base := 10;
 
+
+```
 
 The following procedures are provided:
 
@@ -16826,80 +17431,84 @@ The following procedures are provided:
 
 
 ```ada
-          If the value of the parameter WIDTH is zero, skips any leading
+          If the value of the parameter Width is zero, skips any leading
           blanks, line terminators, or page terminators, then reads a plus
           or a minus sign if present, then reads according to the syntax of
           an integer literal (which may be a based literal). If a nonzero
-          value of WIDTH is supplied, then exactly WIDTH characters are
+          value of Width is supplied, then exactly Width characters are
           input, or the characters (possibly none) up to a line terminator,
           whichever comes first; any skipped leading blanks are included
           in the count.
 
-          Returns, in the parameter ITEM, the value of type NUM that
+          Returns, in the parameter Item, the value of type Num that
           corresponds to the sequence input.
 
-          The exception DATA_ERROR is raised if the sequence input does not
+          The exception Data_Error is raised if the sequence input does not
           have the required syntax or if the value obtained is not of the
-          subtype NUM.
+          subtype Num.
 
-    procedure PUT(FILE : in FILE_TYPE;
-                  ITEM : in NUM;
-                  WIDTH : in FIELD := DEFAULT_WIDTH;
-                  BASE : in NUMBER_BASE := DEFAULT_BASE);
+    procedure Put(File : in File_Type;
+                  Item : in Num;
+                  Width : in Field := Default_Width;
+                  Base : in Number_Base := Default_Base);
 
-    procedure PUT(ITEM : in NUM;
-                  WIDTH : in FIELD := DEFAULT_WIDTH;
-                  BASE : in NUMBER_BASE := DEFAULT_BASE);
+    procedure Put(Item : in Num;
+                  Width : in Field := Default_Width;
+                  Base : in Number_Base := Default_Base);
 
-          Outputs the value of the parameter ITEM as an integer literal,
+          Outputs the value of the parameter Item as an integer literal,
           with no underlines, no exponent, and no leading zeros (but a
           single zero for the value zero), and a preceding minus sign for a
           negative value.
 
           If the resulting sequence of characters to be output has fewer
-          than WIDTH characters, then leading spaces are first output to
+          than Width characters, then leading spaces are first output to
           make up the difference.
 
-          Uses the syntax for decimal literal if the parameter BASE has the
-          value ten (either explicitly or through DEFAULT_BASE);
+          Uses the syntax for decimal literal if the parameter Base has the
+          value ten (either explicitly or through Default_Base);
           otherwise, uses the syntax for based literal, with any letters in
           upper case.
 
-    procedure GET(FROM : in STRING; ITEM : out NUM; LAST : out POSITIVE);
+    procedure Get(From : in String; Item : out Num; Last : out Positive);
 
           Reads an integer value from the beginning of the given string,
-          following the same rules as the GET procedure that reads an
+          following the same rules as the Get procedure that reads an
           integer value from a file, but treating the end of the string as
-          a file terminator. Returns, in the parameter ITEM, the value of
-          type NUM that corresponds to the sequence input. Returns in LAST
-          the index value such that FROM(LAST) is the last character read.
+          a file terminator. Returns, in the parameter Item, the value of
+          type Num that corresponds to the sequence input. Returns in Last
+          the index value such that From(Last) is the last character read.
 
-          The exception DATA_ERROR is raised if the sequence input does not
+          The exception Data_Error is raised if the sequence input does not
           have the required syntax or if the value obtained is not of the
-          subtype NUM.
+          subtype Num.
 
 
-    procedure PUT(TO : out STRING;
-                  ITEM : in NUM;
-                  BASE : in NUMBER_BASE := DEFAULT_BASE);
+    procedure Put(To : out String;
+                  Item : in Num;
+                  Base : in Number_Base := Default_Base);
 
-          Outputs the value of the parameter ITEM to the given string,
+          Outputs the value of the parameter Item to the given string,
           following the same rule as for output to a file, using the length
-          of the given string as the value for WIDTH.
+          of the given string as the value for Width.
 
+
+```
 
 Examples:
 
 
 ```ada
-    package INT_IO is new INTEGER_IO(SMALL_INT); use INT_IO;
+    package Int_IO is new Integer_IO(Small_Int); use Int_IO;
     -- default format used at instantiation,
-         DEFAULT_WIDTH = 4, DEFAULT_BASE = 10
+         Default_Width = 4, Default_Base = 10
 
-    PUT(126); -- "b126"
-    PUT(-126, 7); -- "bbb-126"
-    PUT(126, WIDTH => 13, BASE => 2); -- "bbb2#1111110#"
+    Put(126); -- "b126"
+    Put(-126, 7); -- "bbb-126"
+    Put(126, Width => 13, Base => 2); -- "bbb2#1111110#"
 
+
+```
 
 References: based literal 2.4.2, blank 14.3.5, data_error exception 14.4,
 decimal literal 2.4.1, field subtype 14.3.5, file_type 14.1, get procedure
@@ -16908,7 +17517,7 @@ exception 14.4, line terminator 14.3, put procedure 14.3.5, skipping
 14.3.5, width 14.3.5
 
 
-#### 14.3.8  Input-Output for Real Types
+#### 14.3.8 Input-Output for Real Types
 
 
 The following procedures are defined in the generic packages FLOAT_IO and
@@ -16938,114 +17547,122 @@ FLOAT_IO:
 
 
 ```ada
-    DEFAULT_FORE : FIELD := 2;
-    DEFAULT_AFT : FIELD := NUM'DIGITS-1;
-    DEFAULT_EXP : FIELD := 3;
+    Default_Fore : Field := 2;
+    Default_Aft : Field := Num'Digits-1;
+    Default_Exp : Field := 3;
 
+
+```
 
 For fixed point types, the default lengths of these fields are defined by
 the following variables that are declared in the generic package FIXED_IO:
 
 
 ```ada
-    DEFAULT_FORE : FIELD := NUM'FORE;
-    DEFAULT_AFT : FIELD := NUM'AFT;
-    DEFAULT_EXP : FIELD := 0;
+    Default_Fore : Field := Num'Fore;
+    Default_Aft : Field := Num'Aft;
+    Default_Exp : Field := 0;
 
+
+```
 
 The following procedures are provided:
 
 
 ```ada
-    procedure GET(FILE : in FILE_TYPE; ITEM : out NUM; WIDTH : in FIELD := 0);
-    procedure GET(ITEM : out NUM; WIDTH : in FIELD := 0);
+    procedure Get(File : in File_Type; Item : out Num; Width : in Field := 0);
+    procedure Get(Item : out Num; Width : in Field := 0);
 
-          If the value of the parameter WIDTH is zero, skips any leading
+          If the value of the parameter Width is zero, skips any leading
           blanks, line terminators, or page terminators, then reads a plus
           or a minus sign if present, then reads according to the syntax of
           a real literal (which may be a based literal). If a nonzero
-          value of WIDTH is supplied, then exactly WIDTH characters are
+          value of Width is supplied, then exactly Width characters are
           input, or the characters (possibly none) up to a line terminator,
           whichever comes first; any skipped leading blanks are included
           in the count.
 
-          Returns, in the parameter ITEM, the value of type NUM that
+          Returns, in the parameter Item, the value of type Num that
           corresponds to the sequence input.
 
-          The exception DATA_ERROR is raised if the sequence input does not
+          The exception Data_Error is raised if the sequence input does not
           have the required syntax or if the value obtained is not of the
-          subtype NUM.
+          subtype Num.
 
-    procedure PUT(FILE : in FILE_TYPE;
-                  ITEM : in NUM;
-                  FORE : in FIELD := DEFAULT_FORE;
-                  AFT : in FIELD := DEFAULT_AFT;
-                  EXP : in FIELD := DEFAULT_EXP);
+    procedure Put(File : in File_Type;
+                  Item : in Num;
+                  Fore : in Field := Default_Fore;
+                  Aft : in Field := Default_Aft;
+                  Exp : in Field := Default_Exp);
 
-    procedure PUT(ITEM : in NUM;
-                  FORE : in FIELD := DEFAULT_FORE;
-                  AFT : in FIELD := DEFAULT_AFT;
-                  EXP : in FIELD := DEFAULT_EXP);
+    procedure Put(Item : in Num;
+                  Fore : in Field := Default_Fore;
+                  Aft : in Field := Default_Aft;
+                  Exp : in Field := Default_Exp);
 
-          Outputs the value of the parameter ITEM as a decimal literal with
-          the format defined by FORE, AFT and EXP. If the value is
-          negative, a minus sign is included in the integer part. If EXP
+          Outputs the value of the parameter Item as a decimal literal with
+          the format defined by Fore, Aft and Exp. If the value is
+          negative, a minus sign is included in the integer part. If Exp
           has the value zero, then the integer part to be output has as
           many digits as are needed to represent the integer part of the
-          value of ITEM, overriding FORE if necessary, or consists of the
-          digit zero if the value of ITEM has no integer part.
+          value of Item, overriding Fore if necessary, or consists of the
+          digit zero if the value of Item has no integer part.
 
-          If EXP has a value greater than zero, then the integer part to be
+          If Exp has a value greater than zero, then the integer part to be
           output has a single digit, which is nonzero except for the value
-          0.0 of ITEM.
+          0.0 of Item.
 
           In both cases, however, if the integer part to be output has
-          fewer than FORE characters, including any minus sign, then
+          fewer than Fore characters, including any minus sign, then
           leading spaces are first output to make up the difference. The
-          number of digits of the fractional part is given by AFT, or is
-          one if AFT equals zero. The value is rounded; a value of
+          number of digits of the fractional part is given by Aft, or is
+          one if Aft equals zero. The value is rounded; a value of
           exactly one half in the last place may be rounded either up or
           down.
 
-          If EXP has the value zero, there is no exponent part. If EXP has
+          If Exp has the value zero, there is no exponent part. If Exp has
           a value greater than zero, then the exponent part to be output
           has as many digits as are needed to represent the exponent part
-          of the value of ITEM (for which a single digit integer part is
+          of the value of Item (for which a single digit integer part is
           used), and includes an initial sign (plus or minus). If the
-          exponent part to be output has fewer than EXP characters,
+          exponent part to be output has fewer than Exp characters,
           including the sign, then leading zeros precede the digits, to
-          make up the difference. For the value 0.0 of ITEM, the exponent
+          make up the difference. For the value 0.0 of Item, the exponent
           has the value zero.
 
-    procedure GET(FROM : in STRING; ITEM : out NUM; LAST : out POSITIVE);
+    procedure Get(From : in String; Item : out Num; Last : out Positive);
 
           Reads a real value from the beginning of the given string,
-          following the same rule as the GET procedure that reads a real
+          following the same rule as the Get procedure that reads a real
           value from a file, but treating the end of the string as a file
-          terminator. Returns, in the parameter ITEM, the value of type
-          NUM that corresponds to the sequence input. Returns in LAST the
-          index value such that FROM(LAST) is the last character read.
+          terminator. Returns, in the parameter Item, the value of type
+          Num that corresponds to the sequence input. Returns in Last the
+          index value such that From(Last) is the last character read.
 
-          The exception DATA_ERROR is raised if the sequence input does not
+          The exception Data_Error is raised if the sequence input does not
           have the required syntax, or if the value obtained is not of the
-          subtype NUM.
+          subtype Num.
 
 
-    procedure PUT(TO : out STRING;
-                  ITEM : in NUM;
-                  AFT : in FIELD := DEFAULT_AFT;
-                  EXP : in INTEGER := DEFAULT_EXP);
+    procedure Put(To : out String;
+                  Item : in Num;
+                  Aft : in Field := Default_Aft;
+                  Exp : in Integer := Default_Exp);
 
-          Outputs the value of the parameter ITEM to the given string,
+          Outputs the value of the parameter Item to the given string,
           following the same rule as for output to a file, using a value
-          for FORE such that the sequence of characters output exactly
+          for Fore such that the sequence of characters output exactly
           fills the string, including any leading spaces.
 
+
+```
 
 Examples:
 
 
-    package REAL_IO is new FLOAT_IO(REAL); use REAL_IO;
+```ada
+    package Real_IO is new Float_IO(Real); use Real_IO;
+```
     -- default format used at instantiation, DEFAULT_EXP = 3
 
     X : REAL := -123.4567; -- digits 8 (see 3.5.7)
@@ -17053,6 +17670,8 @@ Examples:
     PUT(X); -- default format "-1.2345670E+02"
     PUT(X, FORE => 5, AFT => 3, EXP => 2); -- "bbb-1.235E+2"
     PUT(X, 5, 3, 0); -- "b-123.457"
+
+```
 
 ```
 
@@ -17070,7 +17689,7 @@ terminator 14.3.5, put procedure 14.3.5, real literal 2.4, skipping 14.3.5,
 width 14.3.5
 
 
-#### 14.3.9  Input-Output for Enumeration Types
+#### 14.3.9 Input-Output for Enumeration Types
 
 
 The following procedures are defined in the generic package ENUMERATION_IO,
@@ -17081,7 +17700,9 @@ Values are output using either upper or lower case letters for identifiers.
 This is specified by the parameter SET, which is of the enumeration type
 TYPE_SET.
 
-    type TYPE_SET is (LOWER_CASE, UPPER_CASE);
+```ada
+    type Type_Set is (Lower_Case, Upper_Case);
+```
 
 The format (which includes any trailing spaces) can be specified by an
 optional field width parameter. The default field width and letter case
@@ -17090,70 +17711,74 @@ package ENUMERATION_IO:
 
 
 ```ada
-    DEFAULT_WIDTH : FIELD := 0;
-    DEFAULT_SETTING : TYPE_SET := UPPER_CASE;
+    Default_Width : Field := 0;
+    Default_Setting : Type_Set := Upper_Case;
 
+
+```
 
 The following procedures are provided:
 
 
 ```ada
-    procedure GET(FILE : in FILE_TYPE; ITEM : out ENUM);
-    procedure GET(ITEM : out ENUM);
+    procedure Get(File : in File_Type; Item : out Enum);
+    procedure Get(Item : out Enum);
 
           After skipping any leading blanks, line terminators, or page
           terminators, reads an identifier according to the syntax of this
           lexical element (lower and upper case being considered
           equivalent), or a character literal according to the syntax of
           this lexical element (including the apostrophes). Returns, in
-          the parameter ITEM, the value of type ENUM that corresponds to
+          the parameter Item, the value of type Enum that corresponds to
           the sequence input.
 
-          The exception DATA_ERROR is raised if the sequence input does not
+          The exception Data_Error is raised if the sequence input does not
           have the required syntax, or if the identifier or character
-          literal does not correspond to a value of the subtype ENUM.
+          literal does not correspond to a value of the subtype Enum.
 
-    procedure PUT(FILE : in FILE_TYPE;
-                  ITEM : in ENUM;
-                  WIDTH : in FIELD := DEFAULT_WIDTH;
-                  SET : in TYPE_SET := DEFAULT_SETTING);
+    procedure Put(File : in File_Type;
+                  Item : in Enum;
+                  Width : in Field := Default_Width;
+                  Set : in Type_Set := Default_Setting);
 
-    procedure PUT(ITEM : in ENUM;
-                  WIDTH : in FIELD := DEFAULT_WIDTH;
-                  SET : in TYPE_SET := DEFAULT_SETTING);
+    procedure Put(Item : in Enum;
+                  Width : in Field := Default_Width;
+                  Set : in Type_Set := Default_Setting);
 
-          Outputs the value of the parameter ITEM as an enumeration literal
+          Outputs the value of the parameter Item as an enumeration literal
           (either an identifier or a character literal). The optional
-          parameter SET indicates whether lower case or upper case is used
+          parameter Set indicates whether lower case or upper case is used
           for identifiers; it has no effect for character literals. If
-          the sequence of characters produced has fewer than WIDTH
+          the sequence of characters produced has fewer than Width
           characters, then trailing spaces are finally output to make up
           the difference.
 
-    procedure GET(FROM : in STRING; ITEM : out ENUM; LAST : out POSITIVE);
+    procedure Get(From : in String; Item : out Enum; Last : out Positive);
 
           Reads an enumeration value from the beginning of the given
-          string, following the same rule as the GET procedure that reads
+          string, following the same rule as the Get procedure that reads
           an enumeration value from a file, but treating the end of the
-          string as a file terminator. Returns, in the parameter ITEM, the
-          value of type ENUM that corresponds to the sequence input.
-          Returns in LAST the index value such that FROM(LAST) is the last
+          string as a file terminator. Returns, in the parameter Item, the
+          value of type Enum that corresponds to the sequence input.
+          Returns in Last the index value such that From(Last) is the last
           character read.
 
-          The exception DATA_ERROR is raised if the sequence input does not
+          The exception Data_Error is raised if the sequence input does not
           have the required syntax, or if the identifier or character
-          literal does not correspond to a value of the subtype ENUM.
+          literal does not correspond to a value of the subtype Enum.
 
-    procedure PUT(TO : out STRING;
-                  ITEM : in ENUM;
+    procedure Put(To : out String;
+                  Item : in Enum;
 
 
-                  SET : in TYPE_SET := DEFAULT_SETTING);
+                  Set : in Type_Set := Default_Setting);
 
-          Outputs the value of the parameter ITEM to the given string,
+          Outputs the value of the parameter Item to the given string,
           following the same rule as for output to a file, using the length
-          of the given string as the value for WIDTH.
+          of the given string as the value for Width.
 
+
+```
 
 Although the specification of the package ENUMERATION_IO would allow
 instantiation for an integer type, this is not the intended purpose of this
@@ -17167,11 +17792,13 @@ enumeration values. Thus
 
 
 ```ada
-    TEXT_IO.PUT('A'); -- outputs the character A
+    Text_IO.Put('A'); -- outputs the character A
 
-    package CHAR_IO is new TEXT_IO.ENUMERATION_IO(CHARACTER);
-    CHAR_IO.PUT('A'); -- outputs the character 'A', between single quotes
+    package Char_IO is new Text_IO.Enumeration_IO(Character);
+    Char_IO.Put('A'); -- outputs the character 'A', between single quotes
 
+
+```
 
 The type BOOLEAN is an enumeration type, hence ENUMERATION_IO can be
 instantiated for this type.
@@ -17181,74 +17808,74 @@ References: blank 14.3.5, data_error 14.3.5, enumeration_io package
 terminator 14.3.5, put procedure 14.3.5, skipping 14.3.5, width 14.3.5
 
 
-#### 14.3.10  Specification of the Package Text_IO
+#### 14.3.10 Specification of the Package Text_IO
 
 
 ```ada
-    with IO_EXCEPTIONS;
-    package TEXT_IO is
+    with IO_Exceptions;
+    package Text_IO is
 
-       type FILE_TYPE is limited private;
+       type File_Type is limited private;
 
-       type FILE_MODE is (IN_FILE, OUT_FILE);
+       type File_Mode is (In_File, Out_File);
 
-       type COUNT is range 0 .. implementation defined;
-       subtype POSITIVE_COUNT is COUNT range 1 .. COUNT'LAST;
-       UNBOUNDED : constant COUNT := 0; -- line and page length
+       type Count is range 0 .. implementation defined;
+       subtype Positive_Count is Count range 1 .. Count'Last;
+       Unbounded : constant Count := 0; -- line and page length
 
-       subtype FIELD is INTEGER range 0 .. implementation defined;
-       subtype NUMBER_BASE is INTEGER range 2 .. 16;
+       subtype Field is Integer range 0 .. implementation defined;
+       subtype Number_Base is Integer range 2 .. 16;
 
-       type TYPE_SET is (LOWER_CASE, UPPER_CASE);
+       type Type_Set is (Lower_Case, Upper_Case);
 
        -- File Management
 
-       procedure CREATE (FILE : in out FILE_TYPE;
-                         MODE : in FILE_MODE := OUT_FILE;
-                         NAME : in STRING := "";
-                         FORM : in STRING := "");
+       procedure Create (File : in out File_Type;
+                         Mode : in File_Mode := Out_File;
+                         Name : in String := "";
+                         Form : in String := "");
 
-       procedure OPEN (FILE : in out FILE_TYPE;
-                         MODE : in FILE_MODE;
-                         NAME : in STRING;
-                         FORM : in STRING := "");
+       procedure Open (File : in out File_Type;
+                         Mode : in File_Mode;
+                         Name : in String;
+                         Form : in String := "");
 
-       procedure CLOSE (FILE : in out FILE_TYPE);
-       procedure DELETE (FILE : in out FILE_TYPE);
-       procedure RESET (FILE : in out FILE_TYPE; MODE : in FILE_MODE);
-       procedure RESET (FILE : in out FILE_TYPE);
+       procedure Close (File : in out File_Type);
+       procedure Delete (File : in out File_Type);
+       procedure Reset (File : in out File_Type; Mode : in File_Mode);
+       procedure Reset (File : in out File_Type);
 
-       function MODE (FILE : in FILE_TYPE) return FILE_MODE;
-       function NAME (FILE : in FILE_TYPE) return STRING;
-       function FORM (FILE : in FILE_TYPE) return STRING;
+       function Mode (File : in File_Type) return File_Mode;
+       function Name (File : in File_Type) return String;
+       function Form (File : in File_Type) return String;
 
-       function IS_OPEN(FILE : in FILE_TYPE) return BOOLEAN;
+       function Is_Open(File : in File_Type) return Boolean;
 
        -- Control of default input and output files
 
-       procedure SET_INPUT (FILE : in FILE_TYPE);
-       procedure SET_OUTPUT(FILE : in FILE_TYPE);
+       procedure Set_Input (File : in File_Type);
+       procedure Set_Output(File : in File_Type);
 
-       function STANDARD_INPUT return FILE_TYPE;
-       function STANDARD_OUTPUT return FILE_TYPE;
+       function Standard_Input return File_Type;
+       function Standard_Output return File_Type;
 
-       function CURRENT_INPUT return FILE_TYPE;
-       function CURRENT_OUTPUT return FILE_TYPE;
+       function Current_Input return File_Type;
+       function Current_Output return File_Type;
 
 
        -- Specification of line and page lengths
 
-       procedure SET_LINE_LENGTH(FILE : in FILE_TYPE; TO : in COUNT);
-       procedure SET_LINE_LENGTH(TO : in COUNT);
+       procedure Set_Line_Length(File : in File_Type; To : in Count);
+       procedure Set_Line_Length(To : in Count);
 
-       procedure SET_PAGE_LENGTH(FILE : in FILE_TYPE; TO : in COUNT);
-       procedure SET_PAGE_LENGTH(TO : in COUNT);
+       procedure Set_Page_Length(File : in File_Type; To : in Count);
+       procedure Set_Page_Length(To : in Count);
 
-       function LINE_LENGTH(FILE : in FILE_TYPE) return COUNT;
-       function LINE_LENGTH return COUNT;
+       function Line_Length(File : in File_Type) return Count;
+       function Line_Length return Count;
 
-       function PAGE_LENGTH(FILE : in FILE_TYPE) return COUNT;
-       function PAGE_LENGTH return COUNT;
+       function Page_Length(File : in File_Type) return Count;
+       function Page_Length return Count;
 
        -- Column, Line, and Page Control
 ```
@@ -17262,193 +17889,193 @@ terminator 14.3.5, put procedure 14.3.5, skipping 14.3.5, width 14.3.5
 
 
 ```ada
-       function END_OF_LINE(FILE : in FILE_TYPE) return BOOLEAN;
-       function END_OF_LINE return BOOLEAN;
+       function End_Of_Line(File : in File_Type) return Boolean;
+       function End_Of_Line return Boolean;
 
-       procedure NEW_PAGE (FILE : in FILE_TYPE);
-       procedure NEW_PAGE;
+       procedure New_Page (File : in File_Type);
+       procedure New_Page;
 
-       procedure SKIP_PAGE (FILE : in FILE_TYPE);
-       procedure SKIP_PAGE;
+       procedure Skip_Page (File : in File_Type);
+       procedure Skip_Page;
 
-       function END_OF_PAGE(FILE : in FILE_TYPE) return BOOLEAN;
-       function END_OF_PAGE return BOOLEAN;
+       function End_Of_Page(File : in File_Type) return Boolean;
+       function End_Of_Page return Boolean;
 
-       function END_OF_FILE(FILE : in FILE_TYPE) return BOOLEAN;
-       function END_OF_FILE return BOOLEAN;
+       function End_Of_File(File : in File_Type) return Boolean;
+       function End_Of_File return Boolean;
 
-       procedure SET_COL (FILE : in FILE_TYPE; TO : in POSITIVE_COUNT);
-       procedure SET_COL (TO : in POSITIVE_COUNT);
+       procedure Set_Col (File : in File_Type; To : in Positive_Count);
+       procedure Set_Col (To : in Positive_Count);
 
-       procedure SET_LINE(FILE : in FILE_TYPE; TO : in POSITIVE_COUNT);
-       procedure SET_LINE(TO : in POSITIVE_COUNT);
+       procedure Set_Line(File : in File_Type; To : in Positive_Count);
+       procedure Set_Line(To : in Positive_Count);
 
-       function COL (FILE : in FILE_TYPE) return POSITIVE_COUNT;
-       function COL return POSITIVE_COUNT;
+       function Col (File : in File_Type) return Positive_Count;
+       function Col return Positive_Count;
 
-       function LINE(FILE : in FILE_TYPE) return POSITIVE_COUNT;
-       function LINE return POSITIVE_COUNT;
+       function Line(File : in File_Type) return Positive_Count;
+       function Line return Positive_Count;
 
-       function PAGE(FILE : in FILE_TYPE) return POSITIVE_COUNT;
-       function PAGE return POSITIVE_COUNT;
+       function Page(File : in File_Type) return Positive_Count;
+       function Page return Positive_Count;
 
        -- Character Input-Output
 
-       procedure GET(FILE : in FILE_TYPE; ITEM : out CHARACTER);
-       procedure GET(ITEM : out CHARACTER);
-       procedure PUT(FILE : in FILE_TYPE; ITEM : in CHARACTER);
-       procedure PUT(ITEM : in CHARACTER);
+       procedure Get(File : in File_Type; Item : out Character);
+       procedure Get(Item : out Character);
+       procedure Put(File : in File_Type; Item : in Character);
+       procedure Put(Item : in Character);
 
        -- String Input-Output
 
-       procedure GET(FILE : in FILE_TYPE; ITEM : out STRING);
-       procedure GET(ITEM : out STRING);
-       procedure PUT(FILE : in FILE_TYPE; ITEM : in STRING);
-       procedure PUT(ITEM : in STRING);
+       procedure Get(File : in File_Type; Item : out String);
+       procedure Get(Item : out String);
+       procedure Put(File : in File_Type; Item : in String);
+       procedure Put(Item : in String);
 
-       procedure GET_LINE(FILE : in FILE_TYPE; ITEM : out STRING; LAST :
-         out NATURAL);
+       procedure Get_Line(File : in File_Type; Item : out String; Last :
+         out Natural);
 
 
-       procedure GET_LINE(ITEM : out STRING; LAST : out NATURAL);
-       procedure PUT_LINE(FILE : in FILE_TYPE; ITEM : in STRING);
-       procedure PUT_LINE(ITEM : in STRING);
+       procedure Get_Line(Item : out String; Last : out Natural);
+       procedure Put_Line(File : in File_Type; Item : in String);
+       procedure Put_Line(Item : in String);
 
        -- Generic package for Input-Output of Integer Types
 
        generic
-          type NUM is range <>;
-       package INTEGER_IO is
+          type Num is range <>;
+       package Integer_IO is
 
-          DEFAULT_WIDTH : FIELD := NUM'WIDTH;
-          DEFAULT_BASE : NUMBER_BASE := 10;
+          Default_Width : Field := Num'Width;
+          Default_Base : Number_Base := 10;
 
 ```
 
    procedure GET(FILE : in FILE_TYPE; ITEM : out NUM; WIDTH : in FIELD := 0);
 
 ```ada
-          procedure GET(ITEM : out NUM; WIDTH : in FIELD := 0);
+          procedure Get(Item : out Num; Width : in Field := 0);
 
-          procedure PUT(FILE : in FILE_TYPE;
-                        ITEM : in NUM;
-                        WIDTH : in FIELD := DEFAULT_WIDTH;
-                        BASE : in NUMBER_BASE := DEFAULT_BASE);
-          procedure PUT(ITEM : in NUM;
-                        WIDTH : in FIELD := DEFAULT_WIDTH;
-                        BASE : in NUMBER_BASE := DEFAULT_BASE);
-       procedure GET(FROM : in STRING; ITEM : out NUM; LAST : out POSITIVE);
-       procedure PUT(TO : out STRING;
-                        ITEM : in NUM;
-                        BASE : in NUMBER_BASE := DEFAULT_BASE);
+          procedure Put(File : in File_Type;
+                        Item : in Num;
+                        Width : in Field := Default_Width;
+                        Base : in Number_Base := Default_Base);
+          procedure Put(Item : in Num;
+                        Width : in Field := Default_Width;
+                        Base : in Number_Base := Default_Base);
+       procedure Get(From : in String; Item : out Num; Last : out Positive);
+       procedure Put(To : out String;
+                        Item : in Num;
+                        Base : in Number_Base := Default_Base);
 
-     end INTEGER_IO;
+     end;
 
        -- Generic packages for Input-Output of Real Types
 
        generic
-          type NUM is digits <>;
-       package FLOAT_IO is
+          type Num is digits <>;
+       package Float_IO is
 
-          DEFAULT_FORE : FIELD := 2;
-          DEFAULT_AFT : FIELD := NUM'DIGITS-1;
-          DEFAULT_EXP : FIELD := 3;
+          Default_Fore : Field := 2;
+          Default_Aft : Field := Num'Digits-1;
+          Default_Exp : Field := 3;
 
-    procedure GET(FILE : in FILE_TYPE; ITEM : out NUM; WIDTH : in FIELD := 0);
-          procedure GET(ITEM : out NUM; WIDTH : in FIELD := 0);
+    procedure Get(File : in File_Type; Item : out Num; Width : in Field := 0);
+          procedure Get(Item : out Num; Width : in Field := 0);
 
-          procedure PUT(FILE : in FILE_TYPE;
-                        ITEM : in NUM;
-                        FORE : in FIELD := DEFAULT_FORE;
-                        AFT : in FIELD := DEFAULT_AFT;
-                        EXP : in FIELD := DEFAULT_EXP);
-          procedure PUT(ITEM : in NUM;
-                        FORE : in FIELD := DEFAULT_FORE;
-                        AFT : in FIELD := DEFAULT_AFT;
-                        EXP : in FIELD := DEFAULT_EXP);
+          procedure Put(File : in File_Type;
+                        Item : in Num;
+                        Fore : in Field := Default_Fore;
+                        Aft : in Field := Default_Aft;
+                        Exp : in Field := Default_Exp);
+          procedure Put(Item : in Num;
+                        Fore : in Field := Default_Fore;
+                        Aft : in Field := Default_Aft;
+                        Exp : in Field := Default_Exp);
 
-         procedure GET(FROM : in STRING; ITEM : out NUM; LAST : out POSITIVE);
-           procedure PUT(TO : out STRING;
-                        ITEM : in NUM;
-                        AFT : in FIELD := DEFAULT_AFT;
-                        EXP : in FIELD := DEFAULT_EXP);
-       end FLOAT_IO;
+         procedure Get(From : in String; Item : out Num; Last : out Positive);
+           procedure Put(To : out String;
+                        Item : in Num;
+                        Aft : in Field := Default_Aft;
+                        Exp : in Field := Default_Exp);
+       end;
 
        generic
-          type NUM is delta <>;
-       package FIXED_IO is
+          type Num is delta <>;
+       package Fixed_IO is
 
-          DEFAULT_FORE : FIELD := NUM'FORE;
-          DEFAULT_AFT : FIELD := NUM'AFT;
-          DEFAULT_EXP : FIELD := 0;
+          Default_Fore : Field := Num'Fore;
+          Default_Aft : Field := Num'Aft;
+          Default_Exp : Field := 0;
 
-    procedure GET(FILE : in FILE_TYPE; ITEM : out NUM; WIDTH : in FIELD := 0);
-          procedure GET(ITEM : out NUM; WIDTH : in FIELD := 0);
+    procedure Get(File : in File_Type; Item : out Num; Width : in Field := 0);
+          procedure Get(Item : out Num; Width : in Field := 0);
 
-          procedure PUT(FILE : in FILE_TYPE;
-                        ITEM : in NUM;
-                        FORE : in FIELD := DEFAULT_FORE;
-                        AFT : in FIELD := DEFAULT_AFT;
-                        EXP : in FIELD := DEFAULT_EXP);
-          procedure PUT(ITEM : in NUM;
-                        FORE : in FIELD := DEFAULT_FORE;
-                        AFT : in FIELD := DEFAULT_AFT;
-                        EXP : in FIELD := DEFAULT_EXP);
+          procedure Put(File : in File_Type;
+                        Item : in Num;
+                        Fore : in Field := Default_Fore;
+                        Aft : in Field := Default_Aft;
+                        Exp : in Field := Default_Exp);
+          procedure Put(Item : in Num;
+                        Fore : in Field := Default_Fore;
+                        Aft : in Field := Default_Aft;
+                        Exp : in Field := Default_Exp);
 
-        procedure GET(FROM : in STRING; ITEM : out NUM; LAST : out POSITIVE);
-          procedure PUT(TO : out STRING;
-                        ITEM : in NUM;
-                        AFT : in FIELD := DEFAULT_AFT;
-                        EXP : in FIELD := DEFAULT_EXP);
-       end FIXED_IO;
+        procedure Get(From : in String; Item : out Num; Last : out Positive);
+          procedure Put(To : out String;
+                        Item : in Num;
+                        Aft : in Field := Default_Aft;
+                        Exp : in Field := Default_Exp);
+       end;
 
        -- Generic package for Input-Output of Enumeration Types
 
        generic
-          type ENUM is (<>);
-       package ENUMERATION_IO is
+          type Enum is (<>);
+       package Enumeration_IO is
 
-          DEFAULT_WIDTH : FIELD := 0;
-          DEFAULT_SETTING : TYPE_SET := UPPER_CASE;
+          Default_Width : Field := 0;
+          Default_Setting : Type_Set := Upper_Case;
 
-          procedure GET(FILE : in FILE_TYPE; ITEM : out ENUM);
-          procedure GET(ITEM : out ENUM);
+          procedure Get(File : in File_Type; Item : out Enum);
+          procedure Get(Item : out Enum);
 
-          procedure PUT(FILE : in FILE_TYPE;
-                        ITEM : in ENUM;
-                        WIDTH : in FIELD := DEFAULT_WIDTH;
-                        SET : in TYPE_SET := DEFAULT_SETTING);
-          procedure PUT(ITEM : in ENUM;
-                        WIDTH : in FIELD := DEFAULT_WIDTH;
-                        SET : in TYPE_SET := DEFAULT_SETTING);
+          procedure Put(File : in File_Type;
+                        Item : in Enum;
+                        Width : in Field := Default_Width;
+                        Set : in Type_Set := Default_Setting);
+          procedure Put(Item : in Enum;
+                        Width : in Field := Default_Width;
+                        Set : in Type_Set := Default_Setting);
 
-      procedure GET(FROM : in STRING; ITEM : out ENUM; LAST : out POSITIVE);
-          procedure PUT(TO : out STRING;
-                        ITEM : in ENUM;
+      procedure Get(From : in String; Item : out Enum; Last : out Positive);
+          procedure Put(To : out String;
+                        Item : in Enum;
 
 
-                        SET : in TYPE_SET := DEFAULT_SETTING);
-       end ENUMERATION_IO;
+                        Set : in Type_Set := Default_Setting);
+       end;
 
     -- Exceptions
 
-       STATUS_ERROR : exception renames IO_EXCEPTIONS.STATUS_ERROR;
-       MODE_ERROR : exception renames IO_EXCEPTIONS.MODE_ERROR;
-       NAME_ERROR : exception renames IO_EXCEPTIONS.NAME_ERROR;
-       USE_ERROR : exception renames IO_EXCEPTIONS.USE_ERROR;
-       DEVICE_ERROR : exception renames IO_EXCEPTIONS.DEVICE_ERROR;
-       END_ERROR : exception renames IO_EXCEPTIONS.END_ERROR;
-       DATA_ERROR : exception renames IO_EXCEPTIONS.DATA_ERROR;
-       LAYOUT_ERROR : exception renames IO_EXCEPTIONS.LAYOUT_ERROR;
+       Status_Error : exception renames IO_Exceptions.Status_Error;
+       Mode_Error : exception renames IO_Exceptions.Mode_Error;
+       Name_Error : exception renames IO_Exceptions.Name_Error;
+       Use_Error : exception renames IO_Exceptions.Use_Error;
+       Device_Error : exception renames IO_Exceptions.Device_Error;
+       End_Error : exception renames IO_Exceptions.End_Error;
+       Data_Error : exception renames IO_Exceptions.Data_Error;
+       Layout_Error : exception renames IO_Exceptions.Layout_Error;
 
     private
        -- implementation-dependent
-    end TEXT_IO;
+    end;
 
 ```
 
 
-### 14.4  Exceptions in Input-Output
+### 14.4 Exceptions in Input-Output
 
 
 The following exceptions can be raised by input-output operations. They
@@ -17517,7 +18144,7 @@ set_output 14.3.2, skip_line procedure 14.3.4, skip_page procedure 14.3.4,
 text_io package 14.3
 
 
-### 14.5  Specification of the Package IO_Exceptions
+### 14.5 Specification of the Package IO_Exceptions
 
 
 This package defines the exceptions needed by the packages SEQUENTIAL_IO,
@@ -17525,23 +18152,23 @@ DIRECT_IO, and TEXT_IO.
 
 
 ```ada
-    package IO_EXCEPTIONS is
+    package IO_Exceptions is
 
-       STATUS_ERROR : exception;
-       MODE_ERROR : exception;
-       NAME_ERROR : exception;
-       USE_ERROR : exception;
-       DEVICE_ERROR : exception;
-       END_ERROR : exception;
-       DATA_ERROR : exception;
-       LAYOUT_ERROR : exception;
+       Status_Error : exception;
+       Mode_Error : exception;
+       Name_Error : exception;
+       Use_Error : exception;
+       Device_Error : exception;
+       End_Error : exception;
+       Data_Error : exception;
+       Layout_Error : exception;
 
-    end IO_EXCEPTIONS;
+    end;
 
 ```
 
 
-### 14.6  Low Level Input-Output
+### 14.6 Low Level Input-Output
 
 
 A low level input-output operation is an operation acting on a physical
@@ -17568,17 +18195,19 @@ follows:
 ```ada
     --  declarations of the possible types for DEVICE and DATA;
     --  declarations of overloaded procedures for these types:
-    procedure SEND_CONTROL (DEVICE : device_type; DATA : in out data_type);
-    procedure RECEIVE_CONTROL (DEVICE : device_type; DATA : in out data_type);
+    procedure Send_Control (Device : device_type; Data : in out data_type);
+    procedure Receive_Control (Device : device_type; Data : in out data_type);
 
  end;
+
+```
 
 The bodies of the procedures SEND_CONTROL and RECEIVE_CONTROL for various
 devices can be supplied in the body of the package LOW_LEVEL_IO. These
 procedure bodies may be written with code statements.
 
 
-### 14.7  Example of Input-Output
+### 14.7 Example of Input-Output
 
 
 The following example shows the use of some of the text input-output
@@ -17591,46 +18220,48 @@ separate from the procedure, would be used.
 
 
 ```ada
-    with TEXT_IO; use TEXT_IO;
-    procedure DIALOGUE is
-       type COLOR is (WHITE, RED, ORANGE, YELLOW, GREEN, BLUE, BROWN);
-       package COLOR_IO is new ENUMERATION_IO(ENUM => COLOR);
-       package NUMBER_IO is new INTEGER_IO(INTEGER);
-       use COLOR_IO, NUMBER_IO;
+    with Text_IO; use Text_IO;
+    procedure Dialogue is
+       type Color is (White, Red, Orange, Yellow, Green, Blue, Brown);
+       package Color_IO is new Enumeration_IO(Enum => Color);
+       package Number_IO is new Integer_IO(Integer);
+       use Color_IO, Number_IO;
 
-       INVENTORY : array (COLOR) of INTEGER := (20, 17, 43, 10, 28, 173, 87);
-       CHOICE : COLOR;
+       Inventory : array (Color) of Integer := (20, 17, 43, 10, 28, 173, 87);
+       Choice : Color;
 
-       procedure ENTER_COLOR (SELECTION : out COLOR) is
+       procedure Enter_Color (Selection : out Color) is
        begin
           loop
              begin
-                PUT("Color selected: "); -- prompts user
-                GET(SELECTION); -- accepts color typed, or raises exception
+                Put("Color selected: "); -- prompts user
+                Get(Selection); -- accepts color typed, or raises exception
                 return;
              exception
-                when DATA_ERROR =>
-                   PUT("Invalid color, try again. "); -- user has typed
-                   NEW_LINE(2); -- new line
+                when Data_Error =>
+                   Put("Invalid color, try again. "); -- user has typed
+                   New_Line(2); -- new line
                    --  completes execution of the block statement
              end;
           end loop; -- repeats the block statement until color accepted
        end;
     begin -- statements of DIALOGUE;
 
-       NUMBER_IO.DEFAULT_WIDTH := 5;
+       Number_IO.Default_Width := 5;
 
        loop
 
-          ENTER_COLOR(CHOICE); -- user types color and new line
+          Enter_Color(Choice); -- user types color and new line
 
-          SET_COL(5); PUT(CHOICE); PUT(" items available:");
-          SET_COL(40); PUT(INVENTORY(CHOICE)); -- default width is 5
-          NEW_LINE;
+          Set_Col(5); Put(Choice); Put(" items available:");
+          Set_Col(40); Put(Inventory(Choice)); -- default width is 5
+          New_Line;
        end loop;
 ```
 
-    end DIALOGUE;
+```ada
+    end;
+```
 
 Example of an interaction (characters typed by the user are italicized):
 
@@ -17664,6 +18295,8 @@ or via conventional mail to
                    Washington, D.C. 20301-3081
 
 
+```
+
 -----------------------------------------------------------------------
 
 Copyright 1980, 1982, 1983 owned by the United States Government as
@@ -17693,9 +18326,11 @@ P'ADDRESS For a prefix P that denotes an object, a program unit, a
                   with the corresponding body or statement. For an entry
                   for which an address clause has been given, the value
                   refers to the corresponding hardware interrupt. The
-                  value of this attribute is of the type ADDRESS defined in
-                  the package SYSTEM. (See 13.7.2.)
+                  value of this attribute is of the type Address defined in
+                  the package System. (See 13.7.2.)
 
+
+```
 
 P'AFT For a prefix P that denotes a fixed point subtype:
 
@@ -17722,31 +18357,35 @@ P'CALLABLE For a prefix P that is appropriate for a task type:
 
 
 ```ada
-                  Yields the value FALSE when the execution of the task P
+                  Yields the value False when the execution of the task P
                   is either completed or terminated, or when the task is
-                  abnormal; yields the value TRUE otherwise. The value of
-                  this attribute is of the predefined type BOOLEAN. (See
+                  abnormal; yields the value True otherwise. The value of
+                  this attribute is of the predefined type Boolean. (See
                   9.9.)
 
+
+```
 
 P'CONSTRAINED For a prefix P that denotes an object of a type with
 
 ```ada
                   discriminants:
 
-                  Yields the value TRUE if a discriminant constraint
+                  Yields the value True if a discriminant constraint
                   applies to the object P, or if the object is a constant
                   (including a formal parameter or generic formal parameter
-                  of mode in); yields the value FALSE otherwise. If P is
+                  of mode in); yields the value False otherwise. If P is
                   a generic formal parameter of mode in out, or if P is a
                   formal parameter of mode in out or out and the type mark
                   given in the corresponding parameter specification
                   denotes an unconstrained type with discriminants, then
                   the value of this attribute is obtained from that of the
                   corresponding actual parameter. The value of this
-                  attribute is of the predefined type BOOLEAN. (See
+                  attribute is of the predefined type Boolean. (See
                   3.7.4.)
 
+
+```
 
 P'CONSTRAINED For a prefix P that denotes a private type or subtype:
 
@@ -17780,6 +18419,8 @@ P'DELTA For a prefix P that denotes a fixed point subtype:
                   attribute is of the type universal_real. (See 3.5.10.)
 
 
+```
+
 P'DIGITS For a prefix P that denotes a floating point subtype:
 
 
@@ -17810,6 +18451,8 @@ P'EPSILON For a prefix P that denotes a floating point subtype:
                   universal_real. (See 3.5.8.)
 
 
+```
+
 P'FIRST For a prefix P that denotes a scalar type, or a subtype
 
                   of a scalar type:
@@ -17839,6 +18482,8 @@ P'FIRST(N) For a prefix P that is appropriate for an array type, or
                   (nonzero) and no greater than the dimensionality of the
                   array. (See 3.6.2 and 3.8.2.)
 
+
+```
 
 P'FIRST_BIT For a prefix P that denotes a component of a record
 
@@ -17871,7 +18516,7 @@ P'IMAGE For a prefix P that denotes a discrete type or subtype:
 ```ada
                   This attribute is a function with a single parameter.
                   The actual parameter X must be a value of the base type
-                  of P. The result type is the predefined type STRING.
+                  of P. The result type is the predefined type String.
                   The result is the image of the value of X, that is, a
                   sequence of characters representing the value in display
                   form. The image of an integer value is the corresponding
@@ -17886,6 +18531,8 @@ P'IMAGE For a prefix P that denotes a discrete type or subtype:
                   included. The image of a character other than a graphic
                   character is implementation-defined. (See 3.5.5.)
 
+
+```
 
 P'LARGE For a prefix P that denotes a real subtype:
 
@@ -17924,6 +18571,8 @@ P'LAST(N) For a prefix P that is appropriate for an array type,
                   (nonzero) and no greater than the dimensionality of the
                   array. (See 3.6.2 and 3.8.2.)
 
+
+```
 
 P'LAST_BIT For a prefix P that denotes a component of a record
 
@@ -17980,6 +18629,8 @@ P'MACHINE_EMIN For a prefix P that denotes a floating point type or
                        type universal_integer. (See 13.7.3.)
 
 
+```
+
 P'MACHINE_MANTISSA For a prefix P that denotes a floating point type or
 
                        subtype:
@@ -18035,6 +18686,8 @@ P'MANTISSA For a prefix P that denotes a real subtype:
                        type universal_integer. (See 3.5.8 and 3.5.10.)
 
 
+```
+
 P'POS For a prefix P that denotes a discrete type or
 
                        subtype:
@@ -18069,9 +18722,11 @@ P'PRED For a prefix P that denotes a discrete type or
                        of the base type of P. The result type is the base
                        type of P. The result is the value whose position
                        number is one less than that of X. The exception
-                       CONSTRAINT_ERROR is raised if X equals P'BASE'FIRST.
+                       Constraint_Error is raised if X equals P'Base'First.
                        (See 3.5.5.)
 
+
+```
 
 P'RANGE For a prefix P that is appropriate for an array
 
@@ -18108,6 +18763,8 @@ P'SAFE_LARGE For a prefix P that denotes a real type or subtype:
                        type of P. The value of this attribute is of the
                        type universal_real. (See 3.5.8 and 3.5.10.)
 
+
+```
 
 P'SAFE_SMALL For a prefix P that denotes a real type or subtype:
 
@@ -18174,9 +18831,11 @@ P'SUCC For a prefix P that denotes a discrete type or
                        of the base type of P. The result type is the base
                        type of P. The result is the value whose position
                        number is one greater than that of X. The
-                       exception CONSTRAINT_ERROR is raised if X equals
-                       P'BASE'LAST. (See 3.5.5.)
+                       exception Constraint_Error is raised if X equals
+                       P'Base'Last. (See 3.5.5.)
 
+
+```
 
 P'TERMINATED For a prefix P that is appropriate for a task type:
 
@@ -18197,11 +18856,13 @@ P'VAL For a prefix P that denotes a discrete type or
                        result type is the base type of P. The result is
                        the value whose position number is the
                        universal_integer value corresponding to X. The
-                       exception CONSTRAINT_ERROR is raised if the
+                       exception Constraint_Error is raised if the
                        universal_integer value corresponding to X is not in
-                       the range P'POS(P'BASE'FIRST) .. P'POS(P'BASE'LAST).
+                       the range P'Pos(P'Base'First) .. P'Pos(P'Base'Last).
                        (See 3.5.5.)
 
+
+```
 
 P'VALUE For a prefix P that denotes a discrete type or
 
@@ -18257,6 +18918,8 @@ or via conventional mail to
                    Washington, D.C. 20301-3081
 
 
+```
+
 -----------------------------------------------------------------------
 
 Copyright 1980, 1982, 1983 owned by the United States Government as
@@ -18292,6 +18955,8 @@ CONTROLLED Takes the simple name of an access type as the single
                program (see 4.8).
 
 
+```
+
 ELABORATE Takes one or more simple names denoting library units as
 
                arguments. This pragma is only allowed immediately after
@@ -18304,6 +18969,8 @@ ELABORATE Takes one or more simple names denoting library units as
                is a subunit, the library unit body must be elaborated
                before the body of the ancestor library unit of the subunit
                (see 10.5).
+
+```
 
 ```
 
@@ -18321,6 +18988,8 @@ INLINE Takes one or more names as arguments; each name is either
                instantiations (see 6.3.2).
 
 
+```
+
 INTERFACE Takes a language name and a subprogram name as arguments.
 
                This pragma is allowed at the place of a declarative item,
@@ -18336,16 +19005,20 @@ INTERFACE Takes a language name and a subprogram name as arguments.
 
 ```
 
+```
+
 LIST Takes one of the identifiers ON or OFF as the single
 
 ```ada
                argument. This pragma is allowed anywhere a pragma is
                allowed. It specifies that listing of the compilation is to
-               be continued or suspended until a LIST pragma with the
+               be continued or suspended until a List pragma with the
                opposite argument is given within the same compilation. The
                pragma itself is always listed if the compiler is producing
                a listing.
 
+
+```
 
 MEMORY_SIZE Takes a numeric literal as the single argument. This pragma
 
@@ -18354,8 +19027,10 @@ MEMORY_SIZE Takes a numeric literal as the single argument. This pragma
                first compilation unit (if any) of the compilation. The
                effect of this pragma is to use the value of the specified
                numeric literal for the definition of the named number
-               MEMORY_SIZE (see 13.7).
+               Memory_Size (see 13.7).
 
+
+```
 
 OPTIMIZE Takes one of the identifiers TIME or SPACE as the single
 
@@ -18365,6 +19040,8 @@ OPTIMIZE Takes one of the identifiers TIME or SPACE as the single
                declarative part. It specifies whether time or space is the
                primary optimization criterion.
 
+
+```
 
 PACK Takes the simple name of a record or array type as the
 
@@ -18376,6 +19053,8 @@ PACK Takes the simple name of a record or array type as the
                selecting the representation of the given type (see 13.1).
 
 
+```
+
 PAGE This pragma has no argument, and is allowed anywhere a
 
 ```ada
@@ -18384,16 +19063,20 @@ PAGE This pragma has no argument, and is allowed anywhere a
                compiler is currently producing a listing).
 
 
+```
+
 PRIORITY Takes a static expression of the predefined integer subtype
 
 ```ada
-               PRIORITY as the single argument. This pragma is only
+               Priority as the single argument. This pragma is only
                allowed within the specification of a task unit or
                immediately within the outermost declarative part of a main
                program. It specifies the priority of the task (or tasks of
                the task type) or the priority of the main program (see
                9.8).
 
+
+```
 
 SHARED Takes the simple name of a variable as the single argument.
 
@@ -18410,6 +19093,8 @@ SHARED Takes the simple name of a variable as the single argument.
                updating is implemented as an indivisible operation (see
                9.11).
 
+
+```
 
 STORAGE_UNIT Takes a numeric literal as the single argument. This pragma
 
@@ -18446,6 +19131,8 @@ SUPPRESS Takes as arguments the identifier of a check and optionally
                11.7).
 
 
+```
+
 SYSTEM_NAME Takes an enumeration literal as the single argument. This
 
                pragma is only allowed at the start of a compilation, before
@@ -18459,6 +19146,8 @@ SYSTEM_NAME Takes an enumeration literal as the single argument. This
 
 ```
 
+
+```
 
 ---
 
@@ -18479,6 +19168,8 @@ or via conventional mail to
                          The Pentagon
                    Washington, D.C. 20301-3081
 
+
+```
 
 -----------------------------------------------------------------------
 
@@ -18598,22 +19289,32 @@ package STANDARD is
       types:
 
    -- function "*" (LEFT : universal_integer; RIGHT : universal_real)
+```ada
       return universal_real;
+```
 
    -- function "*" (LEFT : universal_real;    RIGHT : universal_integer)
+```ada
       return universal_real;
+```
 
    -- function "/" (LEFT : universal_real;    RIGHT : universal_integer)
+```ada
       return universal_real;
+```
 
    -- The  type universal_fixed is predefined.  The only operators declared
       for this type are
 
    -- function "*" (LEFT : any_fixed_point_type; RIGHT : any_fixed_point_type)
+```ada
       return universal_fixed;
+```
 
    -- function "/" (LEFT : any_fixed_point_type; RIGHT : any_fixed_point_type)
+```ada
       return universal_fixed;
+```
 
   --  The  following  characters  form  the  standard  ASCII character set.
 
@@ -18623,8 +19324,10 @@ package STANDARD is
       definition.
 
 
-   type CHARACTER is
+   type Character is
 
+
+```
 
 ```ada
           (nul, soh, stx, etx, eot, enq, ack, bel,
@@ -18694,25 +19397,27 @@ R_BRACE : constant CHARACTER := '}'; TILDE : constant CHARACTER := '~';
 ```ada
       -- Lower case letters:
 
-      LC_A : constant CHARACTER := 'a';
+      Lc_A : constant Character := 'a';
       ...
-      LC_Z : constant CHARACTER := 'z';
+      Lc_Z : constant Character := 'z';
 
 
-   end ASCII;
+   end;
 
+
+```
 
 ```ada
        -- Predefined subtypes:
 
-       subtype NATURAL is INTEGER range 0 .. INTEGER'LAST;
-       subtype POSITIVE is INTEGER range 1 .. INTEGER'LAST;
+       subtype Natural is Integer range 0 .. Integer'Last;
+       subtype Positive is Integer range 1 .. Integer'Last;
 
        -- Predefined string type:
 
-       type STRING is array(POSITIVE range <>) of CHARACTER;
+       type String is array(Positive range <>) of Character;
 
-       pragma PACK(STRING);
+       pragma Pack(String);
 
        -- The predefined operators for this type are as follows:
 
@@ -18731,8 +19436,10 @@ R_BRACE : constant CHARACTER := '}'; TILDE : constant CHARACTER := '~';
        -- function "&" (LEFT : CHARACTER; RIGHT : CHARACTER) return STRING;
 
 
-  type DURATION is delta implementation_defined range implementation_defined;
+  type Duration is delta implementation_defined range implementation_defined;
 
+
+```
 
 ```ada
     -- The  predefined  operators for the type DURATION are the same as for
@@ -18741,11 +19448,13 @@ R_BRACE : constant CHARACTER := '}'; TILDE : constant CHARACTER := '~';
     -- The predefined exceptions:
 
 
-   CONSTRAINT_ERROR : exception;
-   NUMERIC_ERROR : exception;
-   PROGRAM_ERROR : exception;
-   STORAGE_ERROR : exception;
-   TASKING_ERROR : exception;
+   Constraint_Error : exception;
+   Numeric_Error : exception;
+   Program_Error : exception;
+   Storage_Error : exception;
+   Tasking_Error : exception;
+
+```
 
 end STANDARD;
 
@@ -18760,18 +19469,18 @@ The language definition predefines the following library units:
 
 
 ```ada
-    -  The package CALENDAR                         (see 9.6)
+    -  The package Calendar                         (see 9.6)
 
-    -  The package SYSTEM                           (see 13.7)
-    -  The package MACHINE_CODE (if provided)       (see 13.8)
-    -  The generic procedure UNCHECKED_DEALLOCATION (see 13.10.1)
-    -  The generic function UNCHECKED_CONVERSION    (see 13.10.2)
+    -  The package System                           (see 13.7)
+    -  The package Machine_Code (if provided)       (see 13.8)
+    -  The generic procedure Unchecked_Deallocation (see 13.10.1)
+    -  The generic function Unchecked_Conversion    (see 13.10.2)
 
-    -  The generic package SEQUENTIAL_IO            (see 14.2.3)
-    -  The generic package DIRECT_IO                (see 14.2.5)
-    -  The package TEXT_IO                          (see 14.3.10)
-    -  The package IO_EXCEPTIONS                    (see 14.5)
-    -  The package LOW_LEVEL_IO                     (see 14.6)
+    -  The generic package Sequential_IO            (see 14.2.3)
+    -  The generic package Direct_IO                (see 14.2.5)
+    -  The package Text_IO                          (see 14.3.10)
+    -  The package IO_Exceptions                    (see 14.5)
+    -  The package Low_Level_IO                     (see 14.6)
 
 
 ```
@@ -18796,6 +19505,8 @@ or via conventional mail to
                          The Pentagon
                    Washington, D.C. 20301-3081
 
+
+```
 
 -----------------------------------------------------------------------
 
@@ -19220,6 +19931,8 @@ or via conventional mail to
                    Washington, D.C. 20301-3081
 
 
+```
+
 -----------------------------------------------------------------------
 
 Copyright 1980, 1982, 1983 owned by the United States Government as
@@ -19233,7 +19946,7 @@ should be obtained from the Ada Joint Program Office, OUSDRE (R&AT),
 The Pentagon, Washington, DC 20301-2081, U.S.A.
 
 
-```ada
+```ebnf
                              E. Syntax Summary
 
     2.1
@@ -19997,7 +20710,9 @@ The Pentagon, Washington, DC 20301-2081, U.S.A.
 
 ```
 
+```ada
     code_statement ::= type_mark'record_aggregate;
+```
 
 
 ---
@@ -20019,6 +20734,8 @@ or via conventional mail to
                          The Pentagon
                    Washington, D.C. 20301-3081
 
+
+```
 
 -----------------------------------------------------------------------
 
@@ -20103,6 +20820,8 @@ particular uses of the term or phrase can be found; for example:
              in a code statement 13.8
 
 
+```
+
 The index also contains entries for different parts of a phrase, entries that
 correct alternative terminology, and entries directiong the reader to
 information otherwise hard to find, for example:
@@ -20112,6 +20831,8 @@ information otherwise hard to find, for example:
         Check
           [see: suppress pragma]
 
+
+```
 
 Abandon elaboration or evaluation (of declarations or statements)
   [see: exception, raise statement]
@@ -20123,6 +20844,8 @@ Abnormal task 9.10; 9.9
      as recipient of an entry call 9.7.2, 9.7.3, 11.5; 9.5
      raising tasking_error in a calling task 11.5; 9.5
 
+
+```
 
 Abort statement 9.10
   [see also: abnormal task, statement, task]
@@ -20137,6 +20860,8 @@ Abs unary operator 4.5.6; 4.5
      as an operation of an integer type 3.5.5
      in a factor 4.4
 
+
+```
 
 Absolute value operation 4.5.6
 
@@ -20200,6 +20925,8 @@ Accuracy
      of a numeric operation of a universal type 4.10
 
 
+```
+
 Activation
   [see: task activation]
 
@@ -20221,6 +20948,8 @@ Actual parameter 6.4.1; D; (of an operator) 6.7; (of a subprogram) 6.4;
      that is a loop parameter 5.5
 
 
+```
+
 Actual parameter part 6.4
 
 ```ada
@@ -20230,6 +20959,8 @@ Actual parameter part 6.4
      in a procedure call statement 6.4
      in a timed entry call 9.7.3
 
+
+```
 
 Actual part
   [see: actual parameter part, generic actual part]
@@ -20260,6 +20991,8 @@ Address clause 13.5; 13.1, 13.7
      as a representation clause 13.1
      for an entry 13.5.1
 
+
+```
 
 AFT (predefined attribute) for a fixed point
         type 3.5.10; A
@@ -20308,6 +21041,8 @@ Allocator 4.8; 3.8, D
      without storage check 11.7
 
 
+```
+
 Allowed 1.6
 
 Alternative
@@ -20348,6 +21083,8 @@ Apostrophe delimiter 2.2
      of a qualified expression 4.7
 
 
+```
+
 Apply 10.1.1
 
 Appropriate for a type 4.1
@@ -20358,6 +21095,8 @@ Appropriate for a type 4.1
      for a task type 4.1.3
      prefix of an attribute 4.1.4
 
+
+```
 
 Arbitrary selection of select alternatives 9.7.1
 
@@ -20376,6 +21115,8 @@ Arithmetic operator 4.5
      rounding for real types 13.7.3
 
 
+```
+
 Array aggregate 4.3.2; 4.3
   [see also: aggregate]
 
@@ -20383,6 +21124,8 @@ Array aggregate 4.3.2; 4.3
      as a basic operation 3.3.3; 3.6.2
      in an enumeration representation clause 13.3
 
+
+```
 
 Array assignment 5.2.1
 
@@ -20520,6 +21263,8 @@ Base type (of a subtype) 3.3
 
 ```
 
+```
+
 Based literal 2.4.2; 14.3.7
   [see also: colon character, sharp character]
      as a numeric literal 2.4
@@ -20560,6 +21305,8 @@ Basic operation 3.3.3
      raising an exception 11.4.1
      which is an attribute 4.1.4
 
+
+```
 
 Belong
 
@@ -20619,6 +21366,8 @@ Body stub 10.2; D
      must be in the same declarative part as the declaration 3.9, 7.1
 
 
+```
+
 BOOLEAN (predefined type) 3.5.3; C
 
 ```ada
@@ -20626,6 +21375,8 @@ BOOLEAN (predefined type) 3.5.3; C
      result of a condition 5.3
      result of an explicitly declared equality operator 6.7
 
+
+```
 
 Boolean expression
   [see: condition, expression]
@@ -20641,6 +21392,8 @@ Boolean type 3.5.3
      operation comparing real operands 4.5.7
 
 
+```
+
 Bound
   [see: error bound, first attribute, last attribute]
 
@@ -20653,6 +21406,8 @@ Bound of an array 3.6, 3.6.1
      initialization in an allocator constrains the allocated object 4.8
      result of an operation 4.5.1, 4.5.3, 4.5.6
 
+
+```
 
 Bound of a range 3.5; 3.5.4
 
@@ -20689,6 +21444,8 @@ CALLABLE (predefined attribute)
      for a task object 9.9; A
 
 
+```
+
 Calling conventions
   [see: subprogram declaration]
      of another language system 13.9
@@ -20713,6 +21470,8 @@ Catenation operation 4.5.3
      in a replacement of a string literal 2.10
 
 
+```
+
 Catenation operator 4.5; 2.6, 3.6.3, 4.5.3, C
   [see also: predefined operator]
 
@@ -20728,6 +21487,8 @@ Character 2.1
      names of characters 2.1
      replacement in program text 2.10
 
+
+```
 
 CHARACTER (predefined type) 3.5.2; C
      as the component type of the string type 3.6.3
@@ -20790,6 +21551,8 @@ CLOSE (input-output procedure)
      in text_io 14.2.1; 14.3.10
 
 
+```
+
 Closed alternative (of a selective wait) 9.7.1; 11.1
   [see also: alternative]
 
@@ -20822,6 +21585,8 @@ Comma
      delimiter 2.2
 
 
+```
+
 Comment 2.7; 2.2
      in a conforming construct 6.3.1
 
@@ -20853,6 +21618,8 @@ Compilation 10.1; 10, 10.4
      including an inline pragma 6.3.2
 
 
+```
+
 Compilation order
   [see: order of compilation]
 
@@ -20865,6 +21632,8 @@ Compilation unit 10.1; D, 10, 10.4, D
      with a context clause 10.1.1
      with a use clause 8.4
 
+
+```
 
 Compile time evaluation of expressions 10.6; 4.9
 
@@ -20890,6 +21659,8 @@ Completed task 9.4; 9.9
      due to an exception in the task body 11.4.1, 11.4.2
 
 
+```
+
 Component (of a composite type) 3.3; 3.6, 3.7, D
   [see also: component association, component clause, component list,
   composite type, default expression, dependence on a discriminant,
@@ -20913,6 +21684,8 @@ Component (of a composite type) 3.3; 3.6, 3.7, D
      that is a task object 9.3
      whose type is a limited type 7.4.4
 
+
+```
 
 Component association 4.3
 
@@ -20957,6 +21730,8 @@ Component type
      operation determining a composite type operation 4.5.1, 4.5.2
 
 
+```
+
 Composite type 3.3; 3.6, 3.7, D
   [see also: array type, class of type, component, discriminant, record
   type, subcomponent]
@@ -20968,6 +21743,8 @@ Composite type 3.3; 3.6, 3.7, D
      of an aggregate 4.3
      with a private type component 7.4.2
 
+
+```
 
 Compound delimiter 2.2
   [see also: arrow, assignment, box, delimiter, double dot, double star,
@@ -20991,6 +21768,8 @@ Condition 5.3
      in an if statement 5.3
      in a while iteration scheme 5.5
 
+
+```
 
 Conditional compilation 10.6
 
@@ -21038,6 +21817,8 @@ CONSTRAINED (predefined attribute)
      for a private type 7.4.2, A
 
 
+```
+
 Constrained array definition 3.6
      in an object declaration 3.2, 3.2.1
 
@@ -21053,6 +21834,8 @@ Constrained subtype 3.3; 3.2.1, 3.6, 3.6.1, 3.7, 3.7.2, 6.4.1, 12.3.4
      object declarations 3.2.1
      of a subtype indication in an allocator 4.8
 
+
+```
 
 Constraint (on an object of a type) 3.3, 3.3.2; D
   [see also: accuracy constraint, compatibility, constrained subtype,
@@ -21078,6 +21861,8 @@ Constraint (on an object of a type) 3.3, 3.3.2; D
      on a variable 3.2.1, 3.3, 3.6
      on the result of a generic formal function 12.1.3
 
+
+```
 
 CONSTRAINT_ERROR (predefined exception) 11.1
   [see also: access_check, discriminant_check, index_check, length_check,
@@ -21111,6 +21896,8 @@ CONSTRAINT_ERROR (predefined exception) 11.1
 
 ```
 
+```
+
 Context clause 10.1.1; D
   [see also: use clause, with clause]
 
@@ -21121,6 +21908,8 @@ Context clause 10.1.1; D
      inserted by the environment 10.4
      of a subunit 10.2
 
+
+```
 
 Context of overload resolution 8.7
   [see also: overloading]
@@ -21166,6 +21955,8 @@ CREATE (input-output procedure)
      in text_io 14.2.1, 14.3.1; 14.3.10
      raising an exception 14.4
 
+
+```
 
 Current column number 14.3; 14.3.1, 14.3.4, 14.3.5, 14.3.6
 
@@ -21232,6 +22023,8 @@ Declaration 3.1; D
      to which a representation clause applies 13.1
 
 
+```
+
 Declarative item 3.9
   [see also: basic declarative item, later declarative item]
 
@@ -21295,6 +22088,8 @@ Default expression
 
 ```
 
+```
+
 Default file 14.3.2; 14.3
 
 Default generic formal subprogram 12.1; 12.1.3, 12.3.6
@@ -21306,6 +22101,8 @@ Default initial value (of a type) 3.3
      for an access type object 3.8; 3.2.1 [see also: null access value]
      for a record type object 3.7; 3.2.1
 
+
+```
 
 Default initialization (for an object) 3.2.1, 3.3
   [see also: default expression, default initial value, initial value]
@@ -21334,6 +22131,8 @@ Default_width (field length)
      of integer_io 14.3.7; 14.3.10
 
 
+```
+
 Deferred constant 7.4.3
      of a limited type 7.4.4
 
@@ -21344,6 +22143,8 @@ Deferred constant declaration 7.4; 7.4.3
      as a basic declaration 3.1
      cannot include a forcing occurrence 13.1
 
+
+```
 
 Definition
   [see: access type definition, array type definition, component subtype
@@ -21422,6 +22223,8 @@ Derived subprogram
      implicitly declared 3.3.3
 
 
+```
+
 Derived type 3.4; D
   [see also: parent type]
 
@@ -21458,6 +22261,8 @@ Designator (of a function) 6.1
      overloaded 6.6
 
 
+```
+
 DEVICE_ERROR (input-output exception) 14.4; 14.2.3, 14.2.5, 14.3.10, 14.5
 
 Digit 2.1
@@ -21468,6 +22273,8 @@ Digit 2.1
      in a decimal literal 2.4.1
      in an identifier 2.3
 
+
+```
 
 Digits (of a floating point type) 3.5.7
   [see also: floating point type]
@@ -21490,6 +22297,8 @@ Direct visibility 8.3; D
      within a subunit 10.2
 
 
+```
+
 DIRECT_IO (predefined input-output generic package) 14.2, 14.2.4; 14, 14.1,
 14.2.5,
 
@@ -21497,6 +22306,8 @@ DIRECT_IO (predefined input-output generic package) 14.2, 14.2.4; 14, 14.1,
      exceptions 14.4; 14.5
      specification 14.2.5
 
+
+```
 
 Discrete range 3.6, 3.6.1
   [see also: range, static discrete range]
@@ -21528,6 +22339,8 @@ Discrete type 3.5; D
      operation 3.5.5; 4.5.2
 
 
+```
+
 Discriminant 3.3, 3.7.1; 3.7, D
   [see also: component clause, component, composite type, default
   expression, dependance on..., record type, selected component,
@@ -21548,6 +22361,8 @@ Discriminant 3.3, 3.7.1; 3.7, D
      with a default expression 3.7.1; 3.2.1
 
 
+```
+
 Discriminant association 3.7.2
 
      in a discriminant constraint 3.7.2
@@ -21565,6 +22380,8 @@ Discriminant constraint 3.7.2; 3.3.2, D
      on an access type 3.8
      violated 11.1
 
+
+```
 
 Discriminant part 3.7.1; 3.7
   [see also: elaboration of...]
@@ -21621,6 +22438,8 @@ Dot
      delimiter 2.2
      delimiter of a selected component 8.3; 4.1.3
 
+
+```
 
 Double dot compound delimiter 2.2
 
@@ -21712,6 +22531,8 @@ Element in a file 14, 14.1; 14.2
      in a sequential access file 14.2.2
 
 
+```
+
 ELEMENT_TYPE (generic formal type of direct_io) 14.2.5; 14.1, 14.2.4
 
 ELEMENT_TYPE (generic formal type of sequential_io) 14.2.3; 14.1, 14.2.2
@@ -21723,6 +22544,8 @@ Else part
      of an if statement 5.3
      of a selective wait 9.7.1; 11.1
 
+
+```
 
 EMAX (predefined attribute) 3.5.8; A
   [see also: machine_emax]
@@ -21740,6 +22563,8 @@ End of line 2.2
      terminating a comment 2.7
 
 
+```
+
 END_ERROR (input-output exception) 14.4; 14.2.2, 14.2.3, 14.2.4, 14.2.5,
 14.3.4, 14.3.5, 14.3.6, 14.3.10, 14.5
 
@@ -21750,6 +22575,8 @@ END_OF_FILE (input-output function)
      in an instance of sequential_io 14.2.2; 14.2.3
      in text_io 14.3.1, 14.3.10
 
+
+```
 
 END_OF_LINE (text_io function) 14.3.4; 14.3.10
      raising an exception 14.4
@@ -21784,6 +22611,8 @@ Entry call 9.5; 9, 9.7.1, 9.7.2, 9.7.3
      to communicate values 9.11
 
 
+```
+
 Entry call statement 9.5
   [see also: accept statement, actual parameter, statement, task declaration,
   task]
@@ -21794,6 +22623,8 @@ Entry call statement 9.5
      in a conditional entry call 9.7.2; 9.5
      in a timed entry call 9.7.3; 9.5
 
+
+```
 
 Entry declaration 9.5
   [see also: elaboration of...]
@@ -21807,6 +22638,8 @@ Entry declaration 9.5
      including the name of a private type 7.4.1
      visibility 8.3
 
+
+```
 
 Entry family 9.5
 
@@ -21845,12 +22678,16 @@ Enumeration literal 3.5.1, 4.2
 
 ```
 
+```
+
 Enumeration literal specification 3.5.1
 
 ```ada
      as part of a basic declaration 3.1
      made directly visible by a use clause 8.4
 
+
+```
 
 Enumeration representation clause 13.3
      as a representation clause 13.1
@@ -21866,6 +22703,8 @@ Enumeration type 3.5.1; 3.3, 3.5, D
      operation 3.5.5
      subject to an attribute 3.5.5
 
+
+```
 
 Enumeration type definition 3.5.1; 3.3.1
   [see also: elaboration of...]
@@ -21884,6 +22723,8 @@ Equal
      delimiter 2.2
 
 
+```
+
 Equality operator 4.5; 4.5.2
   [see also: limited type, relational operator]
 
@@ -21896,6 +22737,8 @@ Equality operator 4.5; 4.5.2
      for a real type 4.5.7
      for a record type 3.7.4
 
+
+```
 
 Erroneous execution 1.6
   [see also: program_error]
@@ -21920,6 +22763,8 @@ Error detected at
      compilation time 1.6
      run time 1.6
 
+
+```
 
 Error situation 1.6, 11, 11.1; 11.6
 
@@ -22062,6 +22907,8 @@ Expanded name 4.1.3; D
      replacing a simple name 6.3.1
 
 
+```
+
 Explicit conversion 4.6
   [see also: conversion operation, implicit conversion, subtype conversion,
   type conversion]
@@ -22070,6 +22917,8 @@ Explicit conversion 4.6
      from universal_fixed type 4.5.5
      to a real type 4.5.7
 
+
+```
 
 Explicit declaration 3.1; 4.1
   [see also: declaration]
@@ -22087,6 +22936,8 @@ Exponent part
      of a decimal literal 2.4.1
 
 
+```
+
 Exponentiating operator 4.5; 4.5.6
   [see also: highest precedence operator]
 
@@ -22094,6 +22945,8 @@ Exponentiating operator 4.5; 4.5.6
      in a factor 4.4
      overloaded 6.7
 
+
+```
 
 Exponentiation compound delimiter 2.2
   [see also: double star compound delimiter]
@@ -22175,6 +23028,8 @@ FILE_MODE (input-output type)
      in text_io 14.1, 14.2.1; 14.3.10
 
 
+```
+
 FILE_TYPE (input-output type)
 
 ```ada
@@ -22183,6 +23038,8 @@ FILE_TYPE (input-output type)
      in text_io 14.1, 14.2.1; 14.2, 14.3.3, 14.3.4, 14.3.6, 14.3.7, 14.3.8,
         14.3.9, 14.3.10
 
+
+```
 
 FINE_DELTA
   [see: system.fine_delta]
@@ -22195,6 +23052,8 @@ FIRST (predefined attribute) A
      for an array type 3.6.2
      for a scalar type 3.5
 
+
+```
 
 First named subtype 13.1
   [see also: anonymous base type, representation clause]
@@ -22223,6 +23082,8 @@ Fixed point types 3.5.9; D
      result of an operation out of range of the type 4.5.7
 
 
+```
+
 FIXED_IO (text_io inner generic package) 14.3.8; 14.3.10
 
 FLOAT (predefined type) 3.5.7; C
@@ -22249,6 +23110,8 @@ Floating point types 3.5.7; D
      result of an operation out of range of the type 4.5.7
 
 
+```
+
 Font design of graphical symbols 2.1
 
 For loop
@@ -22269,6 +23132,8 @@ FORM (input-output function)
      in text_io 14.2.1; 14.3.10
      raising an exception 14.4
 
+
+```
 
 Form feed format effector 2.1
 
@@ -22309,6 +23174,8 @@ Formal part 6.1; 6.4
      must not include a pragma 2.8
 
 
+```
+
 Formal subprogram
   [see: generic formal subprogram]
 
@@ -22346,6 +23213,8 @@ Full type declaration 3.3.1
      of a private type 7.4.1; 7.4.2
 
 
+```
+
 Function 6.1, 6.5; 6,12.3, D
   [see also: operator, parameter and result type profile, parameter,
   predefined function, result subtype, return statement, subprogram]
@@ -22356,6 +23225,8 @@ Function 6.1, 6.5; 6,12.3, D
      result [see: returned value]
      that is an attribute 4.1.4; 12.3.6
 
+
+```
 
 Function body
   [see: subprogram body]
@@ -22370,6 +23241,8 @@ Function call 6.4; 6
      with a parameter of a derived type 3.4
      with a result of a derived type 3.4
 
+
+```
 
 Function specification
   [see: subprogram specification]
@@ -22399,6 +23272,8 @@ Generic actual parameter 12.3; 12
      that is a task type 9.2
 
 
+```
+
 Generic actual part 12.3
 
 Generic actual subprogram 12.1.3, 12.3.6
@@ -22424,6 +23299,8 @@ Generic association 12.3
      positional generic association 12.3
 
 
+```
+
 Generic body 12.2; 12.1, 12.1.2, 12.3.2
   [see also: body stub, elaboration of...]
 
@@ -22436,6 +23313,8 @@ Generic body 12.2; 12.1, 12.1.2, 12.3.2
      must be in the same declarative part as the declaration 3.9, 7.1
      not yet elaborated at an instantiation 3.9
 
+
+```
 
 Generic declaration 12.1; 12, 12.1.2, 12.2
   [see also: elaboration of...]
@@ -22450,6 +23329,8 @@ Generic declaration 12.1; 12, 12.1.2, 12.2
      recompiled 10.3
 
 
+```
+
 Generic formal object 12.1, 12.1.1; 3.2, 12.3, 12.3.1
   [see also: default expression, generic formal parameter]
 
@@ -22457,6 +23338,8 @@ Generic formal object 12.1, 12.1.1; 3.2, 12.3, 12.3.1
      of an array type 3.6.1
      of a record type 3.7.2
 
+
+```
 
 Generic formal parameter 12.1, 12.3; D, 12
   [see also: generic actual parameter, generic association, generic formal
@@ -22469,6 +23352,8 @@ Generic formal parameter 12.1, 12.3; D, 12
      of a task type 9.2
 
 
+```
+
 Generic formal part 12.1; D, 12
 
 Generic formal subprogram 12.1, 12.1.3; 12.1.2, 12.3, 12.3.6
@@ -22478,6 +23363,8 @@ Generic formal subprogram 12.1, 12.1.3; 12.1.2, 12.3, 12.3.6
      formal function 12.1.3
      with the same name as another 12.3
 
+
+```
 
 Generic formal type 12.1, 12.1.2; 12.3
   [see also: constraint on..., discriminant of..., generic formal parameter,
@@ -22514,6 +23401,8 @@ Generic instance 12.3; D, 12, 12.1, 12.2
      raising an exception 11.4.1
 
 
+```
+
 Generic instantiation 12.3; D, 12.1, 12.1.3, 12.2
   [see also: declaration, elaboration of..., generic actual parameter]
 
@@ -22541,6 +23430,8 @@ Generic package 12.1; 12
      specification 12.1 [see also: generic specification]
 
 
+```
+
 Generic package body 12.2; 12.1
   [see also: package body]
 
@@ -22552,6 +23443,8 @@ Generic parameter declaration 12.1; 12.1.1, 12.1.2, 12.1.3, 12.3
      having an extended scope 8.2
      visibility 8.3
 
+
+```
 
 Generic procedure
   [see: generic subprogram]
@@ -22568,6 +23461,8 @@ Generic subprogram 12.1; 12
      specification 12.1 [see also: generic specification]
 
 
+```
+
 Generic type definition 12.1; 12.1.2, 12.3.3, 12.3.4
 
 Generic unit 12, 12.1; D, 12.2, 12.3
@@ -22579,6 +23474,8 @@ Generic unit 12, 12.1; D, 12.2, 12.3
      subject to a suppress pragma 11.7
      with a separately compiled body 10.2
 
+
+```
 
 Generic unit body
   [see: generic body]
@@ -22596,6 +23493,8 @@ GET (text_io procedure) 14.3.5; 14.3, 14.3.2, 14.3.4, 14.3.10
      raising an exception 14.4
 
 
+```
+
 GET_LINE (text_io procedure) 14.3.6; 14.3.10
 
 Global declaration 8.1
@@ -22610,6 +23509,8 @@ Goto statement 5.9
      causing a transfer of control 5.1
      completing block statement execution 9.4
 
+
+```
 
 Graphic character 2.1
   [see also: basic graphic character, character, lower case letter, other
@@ -22676,6 +23577,8 @@ Horizontal tabulation
      in text_io input 14.3.5
 
 
+```
+
 Hyphen character 2.1
   [see also: minus character]
      starting a comment 2.7
@@ -22738,6 +23641,8 @@ Identifier list 3.2
      in a parameter specification 6.1
 
 
+```
+
 Identity operation 4.5.4
 
 If statement 5.3
@@ -22771,6 +23676,8 @@ Implicit conversion 4.6
      of a universal expression 3.5.4, 3.5.6
      of a universal real expression 4.5.7
 
+
+```
 
 Implicit declaration 3.1; 4.1
   [see also: scope of...]
@@ -22854,6 +23761,8 @@ Index constraint 3.6, 3.6.1; D
      violated 11.1
 
 
+```
+
 Index of an element in a direct access file 14.2; 14.2.4
 
 Index range 3.6
@@ -22870,6 +23779,8 @@ Index type
      of a generic formal array type 12.3.4
 
 
+```
+
 Index_check
   [see: constraint_error, suppress]
 
@@ -22881,6 +23792,8 @@ Indexed component 4.1.1; 3.6, D
      as the name of an entry 9.5
      of a value of a generic formal array type 12.1.2
 
+
+```
 
 Indication
   [see: subtype indication]
@@ -22899,6 +23812,8 @@ Inequality operation 4.5; 4.5.2
      for a real type 4.5.7
      not available for a limited type 7.4.4
 
+
+```
 
 Initial value (of an object) 3.2.1
   [see also: allocator, composite type, default expression, default initial
@@ -22938,6 +23853,8 @@ Input-output 14
      with a text file 14.3
 
 
+```
+
 Instance
   [see: generic instance]
 
@@ -22950,6 +23867,8 @@ INTEGER (predefined type) 3.5.4; C
      as base type of a loop parameter 5.5
      as default type for the bounds of a discrete range 3.6.1; 9.5
 
+
+```
 
 Integer literal 2.4
   [see also: based integer literal, universal_integer type]
@@ -22985,6 +23904,8 @@ Integer type 3.5.4; 3.3, 3.5, D
      result of an operation out of range of the type 4.5
 
 
+```
+
 Integer type declaration
   [see: integer type definition]
 
@@ -23017,6 +23938,8 @@ IS_OPEN (input-output function)
      in text_io 14.2.1; 14.3.10
 
 
+```
+
 ISO (international organization for standardization) 2.1
 
 ISO seven bit coded character set 2.1
@@ -23036,6 +23959,8 @@ Label 5.1
      lead to by a goto statement 5.9
 
 
+```
+
 Label bracket
      compound delimiter 2.2
 
@@ -23052,6 +23977,8 @@ LAST (predefined attribute) A
      for an array type 3.6.2
      for a scalar type 3.5
 
+
+```
 
 LAST_BIT (predefined attribute) 13.7.2; A
   [see also: record representation clause]
@@ -23075,6 +24002,8 @@ Left parenthesis
      delimiter 2.2
 
 
+```
+
 Legal 1.6
 
 LENGTH (predefined attribute) 3.6.2; A
@@ -23087,6 +24016,8 @@ Length clause 13.2
      for an access type 4.8
      specifying small of a fixed point type 13.2; 3.5.9
 
+
+```
 
 Length of a string literal 2.6
 
@@ -23131,6 +24062,8 @@ Lexical element 2, 2.2; 2.4, 2.5, 2.6, D
      transferred by a text_io procedure 14.3, 14.3.5, 14.3.9
 
 
+```
+
 Lexicographic order 4.5.2
 
 Library package
@@ -23161,6 +24094,8 @@ Library unit 10.1; 10.5
      with a body stub 10.2
 
 
+```
+
 Limited private type 7.4.4
   [see also: private type]
 
@@ -23181,6 +24116,8 @@ Limited type 7.4.4; 9.2, D, 12.3.1
      operation 7.4.4; 4.5.2
      parameters for explicitly declared equality operators 6.7
 
+
+```
 
 Line 14.3, 14.3.4
 
@@ -23217,6 +24154,8 @@ Literal 4.2; D
      specification [see: enumeration literal specification]
 
 
+```
+
 Local declaration 8.1
      in a generic unit 12.3
 
@@ -23234,6 +24173,8 @@ Logical operator 4.5; 4.4, 4.5.1, C
      overloaded 6.7
 
 
+```
+
 Logical processor 9
 
 LONG_FLOAT (predefined type) 3.5.7; C
@@ -23247,6 +24188,8 @@ Loop name 5.5
      implicitly declared 3.1
      in an exit statement 5.7
 
+
+```
 
 Loop parameter 5.5
   [see also: constant, object]
@@ -23282,6 +24225,8 @@ Lower case letter 2.1
      in an identifier 2.3
 
 
+```
+
 Machine code insertion 13.8
 
 Machine dependent attribute 13.7.3
@@ -23313,6 +24258,8 @@ Main program 10.1
      termination 9.4
 
 
+```
+
 MANTISSA (predefined attribute) 3.5.8, 3.5.10; A
 
 Mantissa
@@ -23321,6 +24268,8 @@ Mantissa
      of a fixed point number 3.5.9
      of a floating point number 3.5.7; 13.7.3
 
+
+```
 
 Mark
   [see: type_mark]
@@ -23333,6 +24282,8 @@ Matching components
      of arrays 4.5.2; 4.5.1, 5.2.1
      of records 4.5.2
 
+
+```
 
 Matching generic formal
 
@@ -23376,6 +24327,8 @@ Membership test operation 4.5
      for a real type 4.5.7
 
 
+```
+
 MEMORY_SIZE (predefined named number)
   [see: system.memory_size]
 
@@ -23414,6 +24367,8 @@ Mode (of a file) 14.1; 14.2.1
      of a text_io file 14.3.1; 14.3.4
 
 
+```
+
 Mode (of a parameter) 6.2; 6.1, D
   [see also: formal parameter, generic formal parameter]
 
@@ -23423,12 +24378,16 @@ Mode (of a parameter) 6.2; 6.1, D
      of a generic form object 12.1.1
 
 
+```
+
 Mode in out for a formal parameter 6.1, 6.2; 3.2.1
 
 ```ada
      of a function 6.5
      of an interrupt entry 13.5.1
 
+
+```
 
 Mode in for a generic formal object 12.1.1; 3.2.1, 12.3, 12.3.1
 
@@ -23439,6 +24398,8 @@ Mode in for a formal parameter 6.1, 6.2; 3.2.1
      of an interrupt entry is not allowed 13.5.1
 
 
+```
+
 Mode in out for a generic formal object 12.1.1; 3.2.1, 12.3, 12.3.1
 
 Mode out for a formal parameter 6.1, 6.2
@@ -23447,6 +24408,8 @@ Mode out for a formal parameter 6.1, 6.2
      of a function is not allowed 6.5
      of an interrupt entry is not allowed 13.5.1
 
+
+```
 
 MODE_ERROR (input-output exception) 14.4; 14.2.2, 14.2.3, 14.2.4, 14.2.5,
 14.3.1, 14.3.2, 14.3.3, 14.3.4, 14.3.5, 14.3.10, 14.5
@@ -23461,6 +24424,8 @@ Model number (of a real type) 3.5.6; D
      of a fixed point type 3.5.9; 3.5.10
      of a floating point type 3.5.7; 3.5.8
 
+
+```
 
 Modulus operation 4.5.5
 
@@ -23480,6 +24445,8 @@ Multiple
      parameter specification 6.1; 3.2
 
 
+```
+
 Multiplication operation 4.5.5
      accuracy for a real type 4.5.7
 
@@ -23490,6 +24457,8 @@ Multiplying operator 4.5; 4.5.5, C
      in a term 4.4
      overloaded 6.7
 
+
+```
 
 Must (legality requirement) 1.6
 
@@ -23502,6 +24471,8 @@ NAME (input-output function)
      in an instance of sequential_io 14.2.1
      in text_io 14.2.1
 
+
+```
 
 NAME (predefined type)
   [see: system.name]
@@ -23598,6 +24569,8 @@ Null access value 3.8; 3.4, 4.2, 6.2, 11.1
      not causing constraint_error 11.7
 
 
+```
+
 Null array 3.6.1; 3.6
 
      aggregate 4.3.2
@@ -23621,6 +24594,8 @@ Null range 3.5
      as a choice of a variant part 3.7.3
      for a loop parameter 5.5
 
+
+```
 
 Null record 3.7
      and relational operation 4.5.2
@@ -23715,6 +24690,8 @@ Object declaration 3.2, 3.2.1
      with a task type 9.2; 9.3
 
 
+```
+
 Object designated
 
      by an access value 3.2, 3.8, 4.8; 4.1.3, 5.2, 9.2, 11.1
@@ -23745,6 +24722,8 @@ OPEN (input-output procedure)
      raising an exception 14.4
 
 
+```
+
 Open alternative 9.7.1
   [see also: alternative]
 
@@ -23752,6 +24731,8 @@ Open alternative 9.7.1
      accepting a conditional entry call 9.7.2
      accepting a timed entry call 9.7.3
 
+
+```
 
 Open file 14.1
 
@@ -23921,6 +24902,8 @@ Overloading 8.3; D
      resolved by explicit qualification 4.7
 
 
+```
+
 Overloading of
 
 ```ada
@@ -23960,6 +24943,8 @@ Package 7, 7.1; D
      subject to representation clause 13.1
      with a separately compiled body 10.2
 
+
+```
 
 Package body 7.1, 7.3; D
   [see also: body stub]
@@ -24007,6 +24992,8 @@ Package specification 7.1, 7.2
      including a suppress pragma 11.7
 
 
+```
+
 Page 14.3.4; 14.3
 
 PAGE (predefined pragma) B
@@ -24044,6 +25031,8 @@ Parameter association 6.4, 6.4.1
      positional parameter association 6.4
 
 
+```
+
 Parameter declaration
   [see: generic parameter declaration, parameter specification]
 
@@ -24060,6 +25049,8 @@ Parameter specification 6.1
      visibility 8.3
 
 
+```
+
 Parameter type profile 6.6
 
 Parent subprogram (of a derived subprogram) 3.4
@@ -24074,6 +25065,8 @@ Parent type (of a derived type) 3.4; D
      of a generic actual type 12.1.2
      of a numeric type is predefined and anonymous 3.5.4. 3.5.7, 3.5.9
 
+
+```
 
 Parent unit (of a body stub) 10.2
      compiled before its subunits 10.3
@@ -24144,6 +25137,8 @@ Position number
      returned by pos attribute 3.5.5
 
 
+```
+
 Position of a component within a record
   [see: record representation clause]
 
@@ -24179,6 +25174,8 @@ Pragma 2.8; 2, D
      recommending the representation of an entity 13.1
      specifying implementation conventions for code statements 13.8
 
+
+```
 
 Precedence 4.5
 
@@ -24243,6 +25240,8 @@ Predefined operation 3.3, 3.3.3; 8.6
      of a universal type 4.10
      propagating an exception 11.6
 
+
+```
 
 Predefined operator 4.5, 8.6; C
   [see also: abs, arithmetic operator, binary adding operator, catenation,
@@ -24328,6 +25327,8 @@ Private type 3.3, 7.4, 7.4.1; D
      operation 7.4.2
 
 
+```
+
 Private type declaration 7.4; 7.4.1, 7.4.2
   [see also: private part (of a package), visible part (of a package)]
 
@@ -24337,6 +25338,8 @@ Private type declaration 7.4; 7.4.1, 7.4.2
      including the word 'limited' 7.4.4
 
 
+```
+
 Procedure 6.1; 6, D
   [see also: parameter and result type profile, parameter, subprogram]
 
@@ -24345,6 +25348,8 @@ Procedure 6.1; 6, D
      as a renaming of an entry 9.5
      renamed 8.5
 
+
+```
 
 Procedure body
   [see: subprogram body]
@@ -24360,6 +25365,8 @@ Procedure call statement 6.4
      as a simple statement 5.1
      with a parameter of a derived type 3.4
 
+
+```
 
 Procedure specification
   [see: subprogram specification]
@@ -24381,6 +25388,8 @@ Program library 10.1, 10.4; 10.5
      manipulation and status 10.4
 
 
+```
+
 Program optimization 11.6; 10.6
 
 Program text 2.2, 10.1; 2.10
@@ -24397,6 +25406,8 @@ Program unit 6, 7, 9, 12; D
      with a separately compiled body 10.2
 
 
+```
+
 PROGRAM_ERROR (predefined exception) 11.1
   [see also: erroneous execution, suppress pragma]
 
@@ -24409,6 +25420,8 @@ PROGRAM_ERROR (predefined exception) 11.1
      raised by reaching the end of a function body 6.5
 
 
+```
+
 Propagation of an exception
   [see: exception propogation]
 
@@ -24420,6 +25433,8 @@ Proper body 3.9
      of a library unit separately compiled 10.1
 
 
+```
+
 PUT (text_io procedure) 14.3 14.3.5; 14.3, 14.3.2, 14.3.10
 
 ```ada
@@ -24430,6 +25445,8 @@ PUT (text_io procedure) 14.3 14.3.5; 14.3, 14.3.2, 14.3.10
      raising an exception 14.4
 
 
+```
+
 Qualification 4.7
 
 ```ada
@@ -24437,6 +25454,8 @@ Qualification 4.7
        3.8.2, 7.4.2
      using a name of an enumeration type as qualifier 3.5.1
 
+
+```
 
 Qualified expression 4.7; D
 
@@ -24448,6 +25467,8 @@ Qualified expression 4.7; D
      qualification of an array aggregate 4.3.2
      to resolve an overloading ambiguity 6.6
 
+
+```
 
 Queue of entry calls
   [see: entry queue]
@@ -24462,6 +25483,8 @@ Quotation character 2.1
      replacement by percent character 2.10
 
 
+```
+
 Radix of a floating point type 3.5.7; 13.7.3
 
 Raise statement 11.3; 11
@@ -24471,6 +25494,8 @@ Raise statement 11.3; 11
      as a simple statement 5.1
      including the name of an exception 11.1
 
+
+```
 
 Raising of an exception 11, 11.3; D
   [see also: exception]
@@ -24496,6 +25521,8 @@ RANGE (predefined attribute) 3.6.2; 4.1.4, A
      for an array type, 3.6.2
 
 
+```
+
 Range constraint 3.5; D
   [see also: elaboration of...]
 
@@ -24509,6 +25536,8 @@ Range constraint 3.5; D
      violated 11.1
 
 
+```
+
 Range_check
   [see: constraint_error, suppress]
 
@@ -24518,6 +25547,8 @@ READ (input-output procedure)
      in an instance of direct_io 14.2.4; 14.1, 14.2, 14.2.5
      in an instance of sequential_io 14.2.2; 14.1, 14.2, 14.2.3
 
+
+```
 
 Reading the value of an object 6.2, 9.11
 
@@ -24530,6 +25561,8 @@ Real literal 2.4
      is of universal_real type 3.5.6
 
 
+```
+
 Real type 3.5.6; 3.3, 3.5, D
   [see also: fixed point type, floating point type, model number, numeric
   type, safe number, scalar type, universal_real type]
@@ -24540,6 +25573,8 @@ Real type 3.5.6; 3.3, 3.5, D
      result of a conversion from a numeric type 4.5.7; 4.6
      result of an operation out of range of the type 4.5.
 
+
+```
 
 Real type definition 3.5.6; 3.3.1, 3.5.7, 3.5.9
   [see also: elaboration of...]
@@ -24557,6 +25592,8 @@ Record aggregate 4.3.1; 4.3
      as a basic operation 3.3.3, 3.7.4
      in a code statement 13.8
 
+
+```
 
 Record component
   [see: component, record type, selected component]
@@ -24592,6 +25629,8 @@ Recursive
      types 3.8.1; 3.3.1
 
 
+```
+
 Reentrant subprogram 6.1
 
 Reference (parameter passing) 6.2
@@ -24612,6 +25651,8 @@ Relational operation 4.5.2
      result for real operands 4.5.7
 
 
+```
+
 Relational operator 4.5; 4.5.2, C
   [see also: equality operator, inequality operator, ordering relation,
   overloading of an operator, predefined operator]
@@ -24625,6 +25666,8 @@ Relational operator 4.5; 4.5.2, C
      in a relation 4.4
      overloaded 6.7
 
+
+```
 
 Relative address of a component within a record
   [see: record representation clause]
@@ -24698,6 +25741,8 @@ RESET (input-output procedure)
      in text_io 14.2.1; 14.3.1, 14.3.10
 
 
+```
+
 Resolution of overloading
   [see: overloading]
 
@@ -24728,6 +25773,8 @@ Return statement 5.8
      in a function body 6.5
 
 
+```
+
 Returned value
   [see: function call]
 
@@ -24739,6 +25786,8 @@ Returned value
      of a predefined operator of an integer type 3.5.4
      of a predefined operator of a real type 3.5.6, 4.5.7
 
+
+```
 
 Right label bracket compound delimiter 2.2
 
@@ -24768,6 +25817,8 @@ Safe number (of a real type) 3.5.6; 4.5.7
      result of universal expression too large 4.10
 
 
+```
+
 SAFE_EMAX (predefined attribute) 3.5.8; A
 
 SAFE_LARGE (predefined attribute) 3.5.8, 3.5.10; A
@@ -24783,6 +25834,8 @@ Satisfy (a constraint) 3.3; D
      a range constraint 3.5
 
 
+```
+
 Scalar type 3.3, 3.5; D
   [see also: class of type, discrete type, enumeration type, fixed point
   type, floating point type, integer type, numeric type, real type, static
@@ -24794,6 +25847,8 @@ Scalar type 3.3, 3.5; D
      of a range in a membership test 4.5.2
      operation 3.5.5; 4.5.2
 
+
+```
 
 Scheduling 9.8; 13.5.1
 
@@ -24814,6 +25869,8 @@ Secondary unit 10.1
      subject to pragma elaborate 10.5
 
 
+```
+
 SECONDS (predefined function) 9.6
 
 Select alternative (of a selective wait) 9.7.1
@@ -24825,6 +25882,8 @@ Select statement 9.7; 9.7.1, 9.7.2, 9.7.3
      as a compound statement 5.1
      in an abnormal task 9.10
 
+
+```
 
 Selected component 4.1.3; 8.3, D
   [see also: direct visibility, prefix, selector, visibility by selection,
@@ -24859,6 +25918,8 @@ Selective wait 9.7.1; 9.7
      raising program_error 11.1
 
 
+```
+
 Selector 4.1.3; D
   [see also: prefix, selected component]
 
@@ -24875,6 +25936,8 @@ Separate compilation 10, 10.1; 10.5
      of a proper body 3.9
      of a proper body declared in another compilation unit 10.2
 
+
+```
 
 Separator 2.2
 
@@ -24914,6 +25977,8 @@ SEQUENTIAL_IO (predefined input-output generic package) 14.2, 14.2.2; 14,
      specification 14.2.3
 
 
+```
+
 SET_COL (text_io procedure) 14.3.4; 14.3.10
 
 SET_INDEX (input-output procedure) in an instance of direct_io 14.2.4; 14.2.5
@@ -24947,6 +26012,8 @@ Short circuit control form 4.5, 4.5.1; 4.4
      as a basic operation 3.3.3; 3.5.5
      in an expression 4.4
 
+
+```
 
 SHORT_FLOAT (predefined type) 3.5.7; C
 
@@ -25049,6 +26116,8 @@ Space character 2.1
      not allowed in a numeric literal 2.4.1
 
 
+```
+
 Space character literal 2.5; 2.2
 
 Special character 2.1
@@ -25071,6 +26140,8 @@ STANDARD (predefined package) 8.6; C
         and cross-division 4.5.5
 
 
+```
+
 STANDARD_INPUT (text_io function) 14.3.2; 14.3.10
 
 STANDARD_OUTPUT (text_io function) 14.3.2; 14.3.10
@@ -25082,6 +26153,8 @@ Star
      character 2.1
      delimiter 2.2
 
+
+```
 
 Statement 5.1; 5, D
   [see also: abort statement, accept statement, address attribute,
@@ -25098,6 +26171,8 @@ Statement 5.1; 5, D
      raising an exception 11.4.1; 11.4
      that cannot be reached 10.6
 
+
+```
 
 Statement alternative
   [see: case statement alternative]
@@ -25143,6 +26218,8 @@ Static subtype 4.9
      of the expression in a case statement 5.4
 
 
+```
+
 STATUS_ERROR (input-output exception) 14.4; 14.2.1, 14.2.2, 14.2.3, 14.2.4,
 14.2.5, 14.3.3, 14.3.4, 14.3.5, 14.3.10, 14.5
 
@@ -25156,6 +26233,8 @@ Storage bits
      of a record component relative to a storage unit 13.4
      size of a storage unit 13.7
 
+
+```
 
 Storage deallocation
   [see: unchecked_deallocation]
@@ -25192,6 +26271,8 @@ STORAGE_ERROR (predefined exception) 11.1
      raised by the execution of a subprogram call 11.1
 
 
+```
+
 STORAGE_SIZE (predefined attribute) 13.7.2; A
   [see also: storage units allocated]
 
@@ -25200,6 +26281,8 @@ STORAGE_SIZE (predefined attribute) 13.7.2; A
      for a task object or task type 9.9
      specified by a length clause 13.2
 
+
+```
 
 STORAGE_UNIT (predefined named number)
   [see: system.storage_unit]
@@ -25215,6 +26298,8 @@ STRING (predefined type) 3.6.3; C
      as the result of image attribute 3.5.5
 
 
+```
+
 String bracket 2.6; 2.10
 
 String literal 2.6, 4.2; 2.2, 3.6.3
@@ -25227,6 +26312,8 @@ String literal 2.6, 4.2; 2.2, 3.6.3
      may not be the argument of a conversion 4.6
      replaced by a catenation of basic characters 2.10
 
+
+```
 
 Stub
   [see: body stub]
@@ -25245,6 +26332,8 @@ Subcomponent 3.3; D
      whose type is a limited type 7.4.4
      whose type is a private type 7.4.1
 
+
+```
 
 Subprogram 6; D
   [see also: actual parameter, completed subprogram, derived subprogram,
@@ -25306,6 +26395,8 @@ Subprogram call 6.4; 6, 6.3, 12.3
      to a derived subprogram 3.4
      to a generic instance 12
 
+
+```
 
 Subprogram declaration 6.1; 6, D
 
@@ -25382,6 +26473,8 @@ Subtype conversion 4.6
      to a real type 4.5.7
 
 
+```
+
 Subtype declaration 3.3.2; 3.1,
 
      and forcing occurrences 13.1
@@ -25411,6 +26504,8 @@ Subtype indication 3.3.2
      including a fixed point constraint 3.5.9
      including a floating point constraint 3.5.7
      with a range constraint 3.5
+
+```
 
 ```
 
@@ -25457,6 +26552,8 @@ System dependent F
      record component 13.4
      type 13.7
 
+
+```
 
 SYSTEM.ADDRESS (predefined type) 13.7; 13.5
   [see also: address attribute, address clause]
@@ -25534,6 +26631,8 @@ Task body 9.1; 9, D
      specifying the execution of a task 9.2, 9.3
 
 
+```
+
 Task communication
   [see: roundezvous]
 
@@ -25559,6 +26658,8 @@ Task designated
      by a value of a task type 9.1; 9.2, 9.4, 9.5
 
 
+```
+
 Task execution 9.3
 
 Task object 9.2; 9.1, 9.5
@@ -25569,6 +26670,8 @@ Task object 9.2; 9.1, 9.5
      determining task dependence 9.4
      renamed 8.5
 
+
+```
 
 Task priority 9.8
   [see also: priority pragma, priority subtype]
@@ -25582,6 +26685,8 @@ Task specification 9.1; 9, D
      including a priority pragma 9.8
      including a representation clause 13.1
 
+
+```
 
 Task synchronization 9.5; 9.11
 
@@ -25599,6 +26704,8 @@ Task type 9.1, 9.2; D
      value designating a task object 3.2.1, 9.1, 9.2
 
 
+```
+
 Task unit 9.1; 9
   [see also: program unit]
 
@@ -25611,6 +26718,8 @@ Task unit 9.1; 9
      with a separately compiled body 10.2
 
 
+```
+
 TASKING_ERROR (predefined exception) 11.1
   [see also: suppress pragme]
 
@@ -25620,6 +26729,8 @@ TASKING_ERROR (predefined exception) 11.1
      raised by an exception in the task body 11.4.2
      raised by failure of an activation 9.3; 11.4.2
 
+
+```
 
 Template
   [see: generic unit]
@@ -25638,6 +26749,8 @@ Terminate alternative (of a selective wait) 9.7.1
         entry 13.5.1
 
 
+```
+
 TERMINATED (predefined attribute) for a task object 9.9; A
 
 Terminated task 9.4; 9.3, 9.9
@@ -25648,6 +26761,8 @@ Terminated task 9.4; 9.3, 9.9
      object or subcomponent of an object designated by an access value 4.8
      termination of a task during its activation 9.3
 
+
+```
 
 Terminator
   [see: file terminator, line terminator, page terminator]
@@ -25664,6 +26779,8 @@ TEXT_IO (predefined input-output package)
      specification 14.3.10
 
 
+```
+
 TICK
   [see: system.tick]
 
@@ -25678,6 +26795,8 @@ Timed entry call 9.7.3; 9.7
      and renamed entries 8.5
      subject to an address clause 13.5.1
 
+
+```
 
 Times operator
   [see: multiplying operator]
@@ -25746,6 +26865,8 @@ Type conversion 4.6
      to a real type 4.5.7
 
 
+```
+
 Type declaration 3.3.1
   [see also: elaboration of..., incomplete type declaration, private type
   declaration]
@@ -25802,6 +26923,8 @@ Type with discriminants 3.3; 3.3.1, 3.3.2, 3.7, 3.7.1, 7.4, 7.4.1
         4.6
 
 
+```
+
 Unary adding operator 4.4, 4.5, C; 4.5.4
   [see also: arithmetic operator, overloading of an operator, predefined
   operator]
@@ -25811,6 +26934,8 @@ Unary adding operator 4.4, 4.5, C; 4.5.4
      in a simple expression 4.4
      overloaded 6.7
 
+
+```
 
 Unary operator 4.5; 3.5.5. 3.5.8, 3.5.10, 3.6.2, 4.5.4, 4.5.6, C
   [see also: highest precedence operator, unary adding operator]
@@ -25834,6 +26959,8 @@ Unconstrained array type 3.6
      subject to a length clause 13.2
 
 
+```
+
 Unconstrained subtype 3.3, 3.3.2
   [see also: constrained subtype, constraint, subtype, type]
      indication in a generic unit 12.3.2
@@ -25844,6 +26971,8 @@ Unconstrained type 3.3; 3.2.1, 3.6, 3.6.1, 3.7, 3.7.2
      formal parameter 6.2
      with discriminants 6.4.1, 12.3.2
 
+
+```
 
 Unconstrained variable 3.3, 3.6, 3.7; 12.3.1
      as a subcomponent [see: subcomponent]
@@ -25900,6 +27029,8 @@ UNIVERSAL_INTEGER (predefined type) 3.5.4, 4.10; C
      result of an operation 4.10; 4.5
 
 
+```
+
 UNIVERSAL_REAL (predefined type) 3.5.6, 4.10
   [see also: real literal]
 
@@ -25925,6 +27056,8 @@ Upper case letter 2.1
      in an identifier 2.3
 
 
+```
+
 Urgency of a task
   [see: task priority]
 
@@ -25939,6 +27072,8 @@ Use clause (to achieve direct visibility) 8.4; 8.3, D
      in a context clause of a subunit 10.2
      inserted by the environment 10.4
 
+
+```
 
 USE_ERROR (input-output exception) 14.4; 14.2.1, 14.2.3, 14.2.5, 14.3.3,
 14.3.10, 14.5
@@ -26002,6 +27137,8 @@ Variant part 3.7.3; D
      in a record aggregate 4.3.1
 
 
+```
+
 Vertical bar character 2.1
      replacement by exclamation character 2.10
 
@@ -26051,6 +27188,8 @@ Visible part (of a package) 7.2; 3.2.1, 7.4, 7.4.1, 7.4.3, D
      use clause naming the package 8.4
      visibility of a declaration in a visible part 8.3
 
+
+```
 
 Wait
   [see: selective wait, task suspension]
