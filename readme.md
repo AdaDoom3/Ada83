@@ -42,8 +42,7 @@ $ ./hello
 Hello, Ada 83!
 ```
 
-The compiler emits LLVM IR, loads libLLVM, runs the pass pipeline, emits an
-object file, and calls the system linker. The IR can be taken directly:
+The compiler emits LLVM IR, so the IR can be taken directly:
 
 ```sh
 ./ada83 --ir hello.ada -o hello.ll      # textual LLVM IR
@@ -54,7 +53,7 @@ lli hello.ll                            # interpret the IR
 
 ## Tests
 
-The suite ships as `tests.zip` and is unpacked by the harness on first use.
+The suite ships as `tests.zip` and is unpacked on first use.
 
 ```sh
 bash test.sh run all      # every class
@@ -64,12 +63,10 @@ bash test.sh check        # run, then diff against the baseline
 bash test.sh help
 ```
 
-Each run writes to its own timestamped directory under `test_results/`, with
-logs under `acats_logs/`, so concurrent runs do not overwrite one another.
+Each run writes to its own directory under `test_results/`, with
+logs under `acats_logs/`, so concurrent runs do not overwrite eachother.
 
 ## Benchmarks
-
-`bench.sh` exists to aim work on `ada83.c` and then judge it.
 
 ```sh
 bash bench.sh stages            # front end against back end
@@ -82,7 +79,7 @@ bash bench.sh memory            # peak resident set, compiling and running
 bash bench.sh help
 ```
 
-To judge a change, keep the old binary and name it:
+To check a change, keep the old binary and name it:
 
 ```sh
 cp ada83 /tmp/before && make && bash bench.sh compare /tmp/before
