@@ -106,6 +106,41 @@ To check a change, keep the old binary and name it:
 cp ada83 /tmp/before && make && bash bench.sh compare /tmp/before
 ```
 
+## Editor
+
+`ada83 --lsp` serves the Language Server Protocol on stdin and stdout, so the
+compiler itself answers the editor. Diagnostics come from the same lexer,
+parser and resolver that build the program, and cannot disagree with it. Only
+the front end runs, so libLLVM is not needed and the server starts instantly.
+
+![The Ada 83 extension for VS Code](screenshot.gif)
+
+The [`vscode/`](vscode) directory holds an extension with no dependencies: the
+protocol is a Content-Length header and JSON, written out in one file rather
+than pulled in as a library. Install it by copying that directory into
+`~/.vscode/extensions/ada83`, and point `ada83.compilerPath` at the compiler.
+
+| | |
+| --- | --- |
+| Diagnostics | errors and warnings as you type, from the compiler |
+| Go to definition | any identifier, including into `ada83-runtime.ada` |
+| Related information | the compiler's notes as links inside the error |
+| Syntax highlighting | the 63 Ada 83 reserved words, and no later ones |
+| Snippets | the shapes of the language |
+
+The grammar is generated from the compiler's own token table, so it cannot
+drift from what the compiler accepts, and `vscode/grammar-test.js` tokenizes a
+battery of designed fragments through the engine VS Code uses to check it —
+that `end record` closes a record, that a keyword inside an identifier is not
+a keyword, and that the ten words Ada gained after 1983 stay ordinary
+identifiers.
+
+Any other editor can use the same server:
+
+```sh
+ada83 --lsp
+```
+
 ## Use
 
 ```sh

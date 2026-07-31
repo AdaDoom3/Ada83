@@ -7724,7 +7724,69 @@ void Print_Source_Excerpt (Location location) {
   Last_Excerpted_Location = location;
 }
 
+/* When the language server drives the compiler, diagnostics are collected
+   rather than printed: the server needs them as data, and stdout is carrying
+   the JSON-RPC stream.  Report_Diagnostic is the one place every diagnostic
+   passes through, so capturing here catches all of them.  The location's
+   filename points into memory the arena will reclaim, so it is copied. */
+typedef struct {
+  char                     *filename;
+  u32                       line;
+  u32                       column;
+  Diagnostic_Severity_Kind  severity;
+  char                     *message;
+} Captured_Diagnostic;
+
+enum { MAX_CAPTURED_DIAGNOSTICS = 512 };
+
+Captured_Diagnostic Captured_Diagnostics[MAX_CAPTURED_DIAGNOSTICS];
+u32                 Captured_Diagnostic_Count = 0;
+bool                Capturing_Diagnostics     = false;
+
+/* Stop after resolution instead of emitting IR: the server wants the
+   diagnostics, not the output, and must not have files written behind it. */
+bool                Analysis_Only             = false;
+
+void Discard_Captured_Diagnostics (void) {
+  for (u32 i = 0; i < Captured_Diagnostic_Count; i++) {
+    free (Captured_Diagnostics[i].filename);
+    free (Captured_Diagnostics[i].message);
+  }
+  Captured_Diagnostic_Count = 0;
+}
+
+static void Capture_Diagnostic (Location location,
+                                Diagnostic_Severity_Kind severity,
+                                const char *format, va_list args) {
+  if (Captured_Diagnostic_Count >= MAX_CAPTURED_DIAGNOSTICS) return;
+
+  va_list measuring;
+  va_copy (measuring, args);
+  int needed = vsnprintf (NULL, 0, format, measuring);
+  va_end (measuring);
+  if (needed < 0) return;
+
+  char *message = malloc ((size_t) needed + 1);
+  if (not message) return;
+  vsnprintf (message, (size_t) needed + 1, format, args);
+
+  const char *name = location.filename ? location.filename : "";
+  size_t      span = strlen (name);
+  char       *copy = malloc (span + 1);
+  if (not copy) { free (message); return; }
+  memcpy (copy, name, span + 1);
+
+  Captured_Diagnostics[Captured_Diagnostic_Count++] = (Captured_Diagnostic){
+    .filename = copy,
+    .line     = location.line,
+    .column   = location.column,
+    .severity = severity,
+    .message  = message
+  };
+}
+
 void Report_Diagnostic_Summary (void) {
+  if (Capturing_Diagnostics) return;
   if (Error_Count > 0 and Warning_Count > 0)
     fprintf (stderr, "%d error%s, %d warning%s\n",
              Error_Count,   Error_Count   == 1 ? "" : "s",
@@ -7741,6 +7803,10 @@ void Report_Diagnostic (Location location,
                         Diagnostic_Severity_Kind severity,
                         const char *format, va_list args) {
   if (Diagnostics_Suppressed) return;
+  if (Capturing_Diagnostics) {
+    Capture_Diagnostic (location, severity, format, args);
+    return;
+  }
   fprintf (stderr, "%s:%u:%u: %s%s%s: ",
            location.filename ? location.filename : "<unknown>",
            location.line, location.column,
@@ -60168,6 +60234,13 @@ void Compile_File (const char *input_path, const char *output_path) {
 
   Report_Usage_Warnings (input_path);
 
+  /* The language server wants the diagnostics and nothing else: return before
+     any output is opened, so no IR reaches stdout and no files are written. */
+  if (Analysis_Only) {
+    free (source);
+    return;
+  }
+
   if (Error_Count > 0) {
     Report_Diagnostic_Summary ();
     free (source);
@@ -60432,6 +60505,1033 @@ bool Warning_Flags_From_Command_Line (const char *argument) {
 #define ADA83_VERSION_TEXT \
   "ada83 1.0 -- an Ada 83 (ANSI/MIL-STD-1815A) compiler, LLVM native backend"
 
+/* ==== §31  Language server ========================================== */
+
+/* ==== §31  Language server ========================================== */
+
+/* `ada83 --lsp` speaks the Language Server Protocol on stdin and stdout.
+   It is the compiler's own front end answering the editor: the same lexer,
+   parser and resolver that produce an executable produce the squiggles, so
+   the two cannot disagree about what Ada 83 is.
+
+   Only the front end runs.  Native_Backend_Compile, and with it the whole
+   libLLVM dependency, is never reached, so the server starts instantly and
+   needs nothing beside the binary but ada83-runtime.ada.
+
+   Synchronisation is full-text: the editor sends the whole buffer on every
+   change.  For sources of this size that costs nothing and removes a class
+   of incremental-update bugs. */
+
+/* ---- a growable byte buffer ---------------------------------------- */
+
+typedef struct {
+  char   *data;
+  size_t  length;
+  size_t  capacity;
+} Text_Buffer;
+
+static void Buffer_Reserve (Text_Buffer *buffer, size_t extra) {
+  if (buffer->data and buffer->length + extra + 1 <= buffer->capacity) return;
+  size_t wanted = buffer->capacity ? buffer->capacity : 256;
+  while (wanted < buffer->length + extra + 1) wanted *= 2;
+  char *grown = realloc (buffer->data, wanted);
+  if (not grown) return;
+  buffer->data     = grown;
+  buffer->capacity = wanted;
+  buffer->data[buffer->length] = '\0';
+}
+
+static void Buffer_Append (Text_Buffer *buffer, const char *text, size_t n) {
+  Buffer_Reserve (buffer, n);
+  if (not buffer->data or buffer->length + n + 1 > buffer->capacity) return;
+  memcpy (buffer->data + buffer->length, text, n);
+  buffer->length += n;
+  buffer->data[buffer->length] = '\0';
+}
+
+static void Buffer_Append_Text (Text_Buffer *buffer, const char *text) {
+  Buffer_Append (buffer, text, strlen (text));
+}
+
+static void Buffer_Printf (Text_Buffer *buffer, const char *format, ...) {
+  va_list args, measuring;
+  va_start (args, format);
+  va_copy (measuring, args);
+  int needed = vsnprintf (NULL, 0, format, measuring);
+  va_end (measuring);
+  if (needed >= 0) {
+    Buffer_Reserve (buffer, (size_t) needed);
+    if (buffer->data and
+        buffer->length + (size_t) needed + 1 <= buffer->capacity) {
+      vsnprintf (buffer->data + buffer->length, (size_t) needed + 1,
+                 format, args);
+      buffer->length += (size_t) needed;
+    }
+  }
+  va_end (args);
+}
+
+static void Buffer_Free (Text_Buffer *buffer) {
+  free (buffer->data);
+  buffer->data     = NULL;
+  buffer->length   = 0;
+  buffer->capacity = 0;
+}
+
+/* Only the control characters must be escaped; UTF-8 passes through, the
+   transport being UTF-8 already. */
+static void Buffer_Append_Json_String (Text_Buffer *buffer, const char *text) {
+  Buffer_Append (buffer, "\"", 1);
+  for (const unsigned char *scan = (const unsigned char *) (text ? text : "");
+       *scan; scan++)
+    switch (*scan) {
+      case '"':  Buffer_Append (buffer, "\\\"", 2); break;
+      case '\\': Buffer_Append (buffer, "\\\\", 2); break;
+      case '\b': Buffer_Append (buffer, "\\b",  2); break;
+      case '\f': Buffer_Append (buffer, "\\f",  2); break;
+      case '\n': Buffer_Append (buffer, "\\n",  2); break;
+      case '\r': Buffer_Append (buffer, "\\r",  2); break;
+      case '\t': Buffer_Append (buffer, "\\t",  2); break;
+      default:
+        if (*scan < 0x20) Buffer_Printf (buffer, "\\u%04x", *scan);
+        else              Buffer_Append (buffer, (const char *) scan, 1);
+    }
+  Buffer_Append (buffer, "\"", 1);
+}
+
+/* ---- just enough JSON to read a request ---------------------------- */
+
+typedef enum {
+  JSON_NULL, JSON_BOOL, JSON_NUMBER, JSON_STRING, JSON_ARRAY, JSON_OBJECT
+} Json_Kind;
+
+typedef struct Json Json;
+
+struct Json {
+  Json_Kind kind;
+  bool      boolean;
+  double    number;
+  char     *string;          /* JSON_STRING                              */
+  Json    **items;           /* JSON_ARRAY, and the values of an object  */
+  char    **keys;            /* JSON_OBJECT only, parallel to items      */
+  u32       count;
+};
+
+static Json *Json_Parse_Value (const char **cursor);
+
+static void Json_Free (Json *value) {
+  if (not value) return;
+  for (u32 i = 0; i < value->count; i++) {
+    if (value->keys) free (value->keys[i]);
+    Json_Free (value->items[i]);
+  }
+  free (value->keys);
+  free (value->items);
+  free (value->string);
+  free (value);
+}
+
+static Json *Json_New (Json_Kind kind) {
+  Json *value = calloc (1, sizeof *value);
+  if (value) value->kind = kind;
+  return value;
+}
+
+static void Json_Skip_Space (const char **cursor) {
+  while (**cursor == ' '  or **cursor == '\t' or
+         **cursor == '\n' or **cursor == '\r')
+    (*cursor)++;
+}
+
+static void Json_Encode_Utf8 (Text_Buffer *out, u32 code_point) {
+  char bytes[4];
+  if (code_point < 0x80) {
+    bytes[0] = (char) code_point;
+    Buffer_Append (out, bytes, 1);
+  } else if (code_point < 0x800) {
+    bytes[0] = (char) (0xC0 | (code_point >> 6));
+    bytes[1] = (char) (0x80 | (code_point & 0x3F));
+    Buffer_Append (out, bytes, 2);
+  } else if (code_point < 0x10000) {
+    bytes[0] = (char) (0xE0 | (code_point >> 12));
+    bytes[1] = (char) (0x80 | ((code_point >>  6) & 0x3F));
+    bytes[2] = (char) (0x80 | (code_point & 0x3F));
+    Buffer_Append (out, bytes, 3);
+  } else {
+    bytes[0] = (char) (0xF0 | (code_point >> 18));
+    bytes[1] = (char) (0x80 | ((code_point >> 12) & 0x3F));
+    bytes[2] = (char) (0x80 | ((code_point >>  6) & 0x3F));
+    bytes[3] = (char) (0x80 | (code_point & 0x3F));
+    Buffer_Append (out, bytes, 4);
+  }
+}
+
+static u32 Json_Read_Hex4 (const char **cursor) {
+  u32 value = 0;
+  for (int i = 0; i < 4 and isxdigit ((unsigned char) **cursor); i++) {
+    char digit = *(*cursor)++;
+    value = value * 16 + (u32) (digit <= '9' ? digit - '0'
+                                             : (digit | 0x20) - 'a' + 10);
+  }
+  return value;
+}
+
+static char *Json_Parse_String (const char **cursor) {
+  if (**cursor != '"') return NULL;
+  (*cursor)++;
+  Text_Buffer text = {0};
+  Buffer_Reserve (&text, 0);
+  while (**cursor and **cursor != '"') {
+    if (**cursor != '\\') {
+      Buffer_Append (&text, *cursor, 1);
+      (*cursor)++;
+      continue;
+    }
+    (*cursor)++;
+    if (not **cursor) break;
+    char escape = *(*cursor)++;
+    switch (escape) {
+      case '"':  Buffer_Append (&text, "\"",  1); break;
+      case '\\': Buffer_Append (&text, "\\",  1); break;
+      case '/':  Buffer_Append (&text, "/",   1); break;
+      case 'b':  Buffer_Append (&text, "\b",  1); break;
+      case 'f':  Buffer_Append (&text, "\f",  1); break;
+      case 'n':  Buffer_Append (&text, "\n",  1); break;
+      case 'r':  Buffer_Append (&text, "\r",  1); break;
+      case 't':  Buffer_Append (&text, "\t",  1); break;
+      case 'u': {
+        u32 unit = Json_Read_Hex4 (cursor);
+        if (unit >= 0xD800 and unit <= 0xDBFF and
+            (*cursor)[0] == '\\' and (*cursor)[1] == 'u') {
+          *cursor += 2;
+          u32 trail = Json_Read_Hex4 (cursor);
+          if (trail >= 0xDC00 and trail <= 0xDFFF)
+            unit = 0x10000 + ((unit - 0xD800) << 10) + (trail - 0xDC00);
+        }
+        Json_Encode_Utf8 (&text, unit);
+        break;
+      }
+      default: Buffer_Append (&text, &escape, 1);
+    }
+  }
+  if (**cursor == '"') (*cursor)++;
+  return text.data;
+}
+
+static bool Json_Push (Json *value, char *key, Json *item) {
+  Json **items = realloc (value->items, (value->count + 1) * sizeof *items);
+  if (not items) return false;
+  value->items = items;
+  if (value->kind == JSON_OBJECT) {
+    char **keys = realloc (value->keys, (value->count + 1) * sizeof *keys);
+    if (not keys) return false;
+    value->keys = keys;
+    value->keys[value->count] = key;
+  }
+  value->items[value->count++] = item;
+  return true;
+}
+
+static Json *Json_Parse_Value (const char **cursor) {
+  Json_Skip_Space (cursor);
+  switch (**cursor) {
+    case '\0':
+      return NULL;
+
+    case '"': {
+      char *text = Json_Parse_String (cursor);
+      if (not text) return NULL;
+      Json *value = Json_New (JSON_STRING);
+      if (value) value->string = text;
+      else       free (text);
+      return value;
+    }
+
+    case '{': case '[': {
+      bool  object = **cursor == '{';
+      char  closer = object ? '}' : ']';
+      (*cursor)++;
+      Json *value = Json_New (object ? JSON_OBJECT : JSON_ARRAY);
+      if (not value) return NULL;
+      Json_Skip_Space (cursor);
+      if (**cursor == closer) { (*cursor)++; return value; }
+      for (;;) {
+        char *key = NULL;
+        if (object) {
+          Json_Skip_Space (cursor);
+          key = Json_Parse_String (cursor);
+          if (not key) { Json_Free (value); return NULL; }
+          Json_Skip_Space (cursor);
+          if (**cursor != ':') { free (key); Json_Free (value); return NULL; }
+          (*cursor)++;
+        }
+        Json *item = Json_Parse_Value (cursor);
+        if (not item or not Json_Push (value, key, item)) {
+          free (key);
+          Json_Free (item);
+          Json_Free (value);
+          return NULL;
+        }
+        Json_Skip_Space (cursor);
+        if (**cursor == ',') { (*cursor)++; continue; }
+        if (**cursor == closer) (*cursor)++;
+        break;
+      }
+      return value;
+    }
+
+    case 't':
+      if (strncmp (*cursor, "true", 4) != 0) return NULL;
+      *cursor += 4;
+      { Json *value = Json_New (JSON_BOOL); if (value) value->boolean = true;
+        return value; }
+
+    case 'f':
+      if (strncmp (*cursor, "false", 5) != 0) return NULL;
+      *cursor += 5;
+      return Json_New (JSON_BOOL);
+
+    case 'n':
+      if (strncmp (*cursor, "null", 4) != 0) return NULL;
+      *cursor += 4;
+      return Json_New (JSON_NULL);
+
+    default: {
+      char *end = NULL;
+      double number = strtod (*cursor, &end);
+      if (end == *cursor) return NULL;
+      *cursor = end;
+      Json *value = Json_New (JSON_NUMBER);
+      if (value) value->number = number;
+      return value;
+    }
+  }
+}
+
+static const Json *Json_Member (const Json *object, const char *key) {
+  if (not object or object->kind != JSON_OBJECT) return NULL;
+  for (u32 i = 0; i < object->count; i++)
+    if (object->keys[i] and strcmp (object->keys[i], key) == 0)
+      return object->items[i];
+  return NULL;
+}
+
+static const char *Json_Text (const Json *value) {
+  return value and value->kind == JSON_STRING ? value->string : NULL;
+}
+
+/* ---- documents ------------------------------------------------------ */
+
+enum { MAX_OPEN_DOCUMENTS = 64 };
+
+typedef struct {
+  char *uri;
+  char *path;                  /* the URI decoded to a host path        */
+  char *text;                  /* the editor's buffer, which may differ
+                                  from what is on disk                  */
+} Open_Document;
+
+static Open_Document Open_Documents[MAX_OPEN_DOCUMENTS];
+static u32           Open_Document_Count = 0;
+
+static char *Duplicate (const char *text) {
+  if (not text) return NULL;
+  size_t length = strlen (text);
+  char  *copy   = malloc (length + 1);
+  if (copy) memcpy (copy, text, length + 1);
+  return copy;
+}
+
+/* file:///home/x/y.ada -> /home/x/y.ada, percent-escapes decoded. */
+static char *Path_From_Uri (const char *uri) {
+  if (not uri) return NULL;
+  const char *rest = uri;
+  if (strncmp (rest, "file://", 7) == 0) {
+    rest += 7;
+    while (*rest and *rest != '/') rest++;    /* skip any authority */
+  }
+  Text_Buffer path = {0};
+  Buffer_Reserve (&path, 0);
+  for (; *rest; rest++) {
+    if (*rest == '%' and isxdigit ((unsigned char) rest[1])
+                     and isxdigit ((unsigned char) rest[2])) {
+      char hex[3] = { rest[1], rest[2], '\0' };
+      char byte   = (char) strtol (hex, NULL, 16);
+      Buffer_Append (&path, &byte, 1);
+      rest += 2;
+    } else {
+      Buffer_Append (&path, rest, 1);
+    }
+  }
+  /* /C:/src/x.ada is how a Windows path arrives; drop the leading slash. */
+  if (path.data and path.data[0] == '/' and
+      isalpha ((unsigned char) path.data[1]) and path.data[2] == ':')
+    memmove (path.data, path.data + 1, path.length--);
+  return path.data;
+}
+
+static Open_Document *Find_Document (const char *uri) {
+  for (u32 i = 0; i < Open_Document_Count; i++)
+    if (strcmp (Open_Documents[i].uri, uri) == 0) return &Open_Documents[i];
+  return NULL;
+}
+
+static void Forget_Document (const char *uri) {
+  for (u32 i = 0; i < Open_Document_Count; i++)
+    if (strcmp (Open_Documents[i].uri, uri) == 0) {
+      free (Open_Documents[i].uri);
+      free (Open_Documents[i].path);
+      free (Open_Documents[i].text);
+      Open_Documents[i] = Open_Documents[--Open_Document_Count];
+      return;
+    }
+}
+
+static Open_Document *Remember_Document (const char *uri, const char *text) {
+  Open_Document *document = Find_Document (uri);
+  if (document) {
+    free (document->text);
+    document->text = Duplicate (text);
+    return document;
+  }
+  if (Open_Document_Count >= MAX_OPEN_DOCUMENTS) return NULL;
+  document = &Open_Documents[Open_Document_Count++];
+  document->uri  = Duplicate (uri);
+  document->path = Path_From_Uri (uri);
+  document->text = Duplicate (text);
+  return document;
+}
+
+/* ---- positions ------------------------------------------------------ */
+
+/* The compiler counts lines and characters from one, a character being a
+   code point.  LSP counts lines from zero and, by default, measures columns
+   in UTF-16 code units.  The two agree on any ASCII source, which Ada 83
+   programs are, but the buffer is at hand so the conversion is done
+   properly rather than assumed.
+
+   The end of the range is taken to be the end of the identifier under the
+   reported position, so a diagnostic underlines a name rather than a single
+   character. */
+static void Utf16_Range_Of (const char *text, u32 line, u32 column,
+                            u32 *out_line, u32 *out_start, u32 *out_end) {
+  *out_line  = line ? line - 1 : 0;
+  *out_start = column ? column - 1 : 0;
+  *out_end   = *out_start + 1;
+  if (not text) return;
+
+  const char *scan = text;
+  for (u32 remaining = *out_line; remaining and *scan; ) {
+    if (*scan++ == '\n') remaining--;
+  }
+
+  u32 units = 0;
+  u32 wanted = column ? column - 1 : 0;
+  for (u32 seen = 0; seen < wanted and *scan and *scan != '\n'; seen++) {
+    unsigned char lead = (unsigned char) *scan;
+    u32 width = lead < 0x80 ? 1 : lead < 0xE0 ? 2 : lead < 0xF0 ? 3 : 4;
+    units += width == 4 ? 2 : 1;          /* astral code points are a pair */
+    scan  += width;
+  }
+  *out_start = units;
+
+  u32 span = 0;
+  for (const char *token = scan;
+       *token and (isalnum ((unsigned char) *token) or *token == '_');
+       token++)
+    span++;
+  *out_end = units + (span ? span : 1);
+}
+
+/* ---- transport ------------------------------------------------------ */
+
+static void Send_Message (const Text_Buffer *body) {
+  printf ("Content-Length: %zu\r\n\r\n", body->length);
+  fwrite (body->data, 1, body->length, stdout);
+  fflush (stdout);
+}
+
+/* Reads one framed message.  Returns false at end of input. */
+static bool Receive_Message (Text_Buffer *body) {
+  char   header[512];
+  size_t expected = 0;
+  bool   sized    = false;
+
+  for (;;) {
+    if (not fgets (header, sizeof header, stdin)) return false;
+    if (header[0] == '\r' or header[0] == '\n') break;
+    if (strncasecmp (header, "Content-Length:", 15) == 0) {
+      expected = (size_t) strtoul (header + 15, NULL, 10);
+      sized    = true;
+    }
+  }
+  if (not sized) return false;
+
+  body->length = 0;
+  Buffer_Reserve (body, expected);
+  if (not body->data) return false;
+  size_t read = fread (body->data, 1, expected, stdin);
+  body->length = read;
+  body->data[read] = '\0';
+  return read == expected;
+}
+
+static const char *Declaration_File (const char *filename);
+static void Append_File_Uri (Text_Buffer *out, const char *path);
+
+/* ---- analysis ------------------------------------------------------- */
+
+/* The compiler is built to compile once and exit: its arena, its catalog and
+   a dozen grow-on-demand lists are file-scope state that nothing ever has to
+   put back.  Reusing it in a long-lived server means resetting all of that
+   correctly on every keystroke, and getting it wrong is a use-after-free
+   rather than a wrong answer.
+
+   So each analysis runs in a child process instead.  The child compiles,
+   prints its diagnostics as JSON and exits, taking every scrap of compiler
+   state with it.  A crash in the front end costs one analysis rather than
+   the editor's language server, and the parent stays a few hundred lines of
+   protocol handling with no compiler state at all. */
+
+static char Server_Executable[PATH_MAX];
+
+/* The hidden mode the child runs in.  Prints a JSON array of diagnostics for
+   one file and exits; not meant to be run by hand. */
+int Analyse_And_Print (const char *path, const char *directory,
+                       const char *invoked_as) {
+  char executable[PATH_MAX], beside[PATH_MAX];
+  Host_Executable_Path (executable, sizeof executable, invoked_as);
+  if (Is_Directory (executable, beside, sizeof beside))
+    Runtime_Library_Locate (beside);
+  if (directory and directory[0]) Add_Include_Path (directory);
+  Add_Include_Path (".");
+
+  Capturing_Diagnostics = true;
+  Analysis_Only         = true;
+  Compile_File (path, directory);
+  Capturing_Diagnostics = false;
+
+  Text_Buffer out = {0};
+  Buffer_Append_Text (&out, "[");
+  for (u32 i = 0, published = 0; i < Captured_Diagnostic_Count; i++) {
+    const Captured_Diagnostic *diagnostic = &Captured_Diagnostics[i];
+    /* Diagnostics raised in a with-ed unit belong to that unit's own file. */
+    if (strcmp (diagnostic->filename, path) != 0) continue;
+    if (diagnostic->line == 0) continue;
+    if (diagnostic->severity == DIAGNOSTIC_SEVERITY_NOTE) continue;
+
+    if (published++) Buffer_Append_Text (&out, ",");
+    Buffer_Printf (&out, "{\"line\":%u,\"column\":%u,\"severity\":%d,"
+                         "\"message\":",
+                   diagnostic->line, diagnostic->column,
+                   (int) diagnostic->severity);
+    Buffer_Append_Json_String (&out, diagnostic->message);
+
+    /* The notes that follow a finding point at the declaration it turns on.
+       Handed over as related information they become links the editor can
+       follow, rather than a sentence naming a place the reader must find. */
+    Buffer_Append_Text (&out, ",\"related\":[");
+    u32 linked = 0;
+    for (u32 k = i + 1; k < Captured_Diagnostic_Count and
+         Captured_Diagnostics[k].severity == DIAGNOSTIC_SEVERITY_NOTE; k++) {
+      char where[PATH_MAX];
+      u32 at_line = 0, at_column = 0;
+      const char *message = Captured_Diagnostics[k].message;
+      const char *tail = strstr (message, " at ");
+      const char *last = NULL;
+      while (tail) { last = tail; tail = strstr (tail + 4, " at "); }
+      if (not last) continue;
+      if (sscanf (last + 4, "%[^:]:%u:%u", where, &at_line, &at_column) != 3)
+        continue;
+
+      if (linked++) Buffer_Append_Text (&out, ",");
+      Buffer_Append_Text (&out, "{\"file\":");
+      Buffer_Append_Json_String (&out, Declaration_File (where));
+      Buffer_Printf (&out, ",\"line\":%u,\"column\":%u,\"message\":",
+                     at_line, at_column);
+      Buffer_Append_Json_String (&out, message);
+      Buffer_Append_Text (&out, "}");
+    }
+    Buffer_Append_Text (&out, "]}");
+  }
+  Buffer_Append_Text (&out, "]");
+  fwrite (out.data, 1, out.length, stdout);
+  fflush (stdout);
+  Buffer_Free (&out);
+  Discard_Captured_Diagnostics ();
+  return 0;
+}
+
+static void Publish_Diagnostics (const Open_Document *document,
+                                 const Json *diagnostics) {
+  Text_Buffer message = {0};
+  Buffer_Append_Text (&message,
+    "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/publishDiagnostics\","
+    "\"params\":{\"uri\":");
+  Buffer_Append_Json_String (&message, document->uri);
+  Buffer_Append_Text (&message, ",\"diagnostics\":[");
+
+  u32 count = diagnostics and diagnostics->kind == JSON_ARRAY
+            ? diagnostics->count : 0;
+  for (u32 i = 0; i < count; i++) {
+    const Json *entry    = diagnostics->items[i];
+    const Json *line_of  = Json_Member (entry, "line");
+    const Json *column   = Json_Member (entry, "column");
+    const Json *severity = Json_Member (entry, "severity");
+    const char *text     = Json_Text (Json_Member (entry, "message"));
+    if (not line_of or not column) continue;
+
+    u32 line, start, end;
+    Utf16_Range_Of (document->text, (u32) line_of->number,
+                    (u32) column->number, &line, &start, &end);
+
+    /* 1 error, 2 warning, 3 information, 4 hint */
+    int kind = severity and (int) severity->number == DIAGNOSTIC_SEVERITY_WARNING ? 2
+             : severity and (int) severity->number == DIAGNOSTIC_SEVERITY_NOTE    ? 3
+             : 1;
+
+    if (i) Buffer_Append_Text (&message, ",");
+    Buffer_Printf (&message,
+      "{\"range\":{\"start\":{\"line\":%u,\"character\":%u},"
+      "\"end\":{\"line\":%u,\"character\":%u}},\"severity\":%d,"
+      "\"source\":\"ada83\",\"message\":",
+      line, start, line, end, kind);
+    Buffer_Append_Json_String (&message, text ? text : "");
+
+    const Json *related = Json_Member (entry, "related");
+    u32 links = related and related->kind == JSON_ARRAY ? related->count : 0;
+    if (links) {
+      Buffer_Append_Text (&message, ",\"relatedInformation\":[");
+      for (u32 k = 0; k < links; k++) {
+        const Json *link = related->items[k];
+        const char *file = Json_Text (Json_Member (link, "file"));
+        const Json *at_line = Json_Member (link, "line");
+        const Json *at_col  = Json_Member (link, "column");
+        if (not file or not at_line) continue;
+        u32 l = (u32) at_line->number ? (u32) at_line->number - 1 : 0;
+        u32 c = at_col and (u32) at_col->number ? (u32) at_col->number - 1 : 0;
+        if (k) Buffer_Append_Text (&message, ",");
+        Buffer_Append_Text (&message, "{\"location\":{\"uri\":\"");
+        Append_File_Uri (&message, file);
+        Buffer_Printf (&message,
+          "\",\"range\":{\"start\":{\"line\":%u,\"character\":%u},"
+          "\"end\":{\"line\":%u,\"character\":%u}}},\"message\":", l, c, l, c);
+        Buffer_Append_Json_String (&message,
+          Json_Text (Json_Member (link, "message")) ?: "");
+        Buffer_Append_Text (&message, "}");
+      }
+      Buffer_Append_Text (&message, "]");
+    }
+    Buffer_Append_Text (&message, "}");
+  }
+
+  Buffer_Append_Text (&message, "]}}");
+  Send_Message (&message);
+  Buffer_Free (&message);
+}
+
+/* Quote one argument for the shell that popen hands the command to. */
+static void Append_Shell_Argument (Text_Buffer *command, const char *text) {
+#ifdef _WIN32
+  Buffer_Append_Text (command, "\"");
+  for (const char *scan = text; *scan; scan++) {
+    if (*scan == '"') Buffer_Append_Text (command, "\\");
+    Buffer_Append (command, scan, 1);
+  }
+  Buffer_Append_Text (command, "\"");
+#else
+  Buffer_Append_Text (command, "'");
+  for (const char *scan = text; *scan; scan++) {
+    if (*scan == '\'') Buffer_Append_Text (command, "'\\''");
+    else                Buffer_Append (command, scan, 1);
+  }
+  Buffer_Append_Text (command, "'");
+#endif
+}
+
+/* The compiler reads from a file and the editor's buffer may not be on disk,
+   so the buffer goes to a scratch file and the document's own directory goes
+   on the include path, which is how a with-ed unit is found. */
+static void Analyse_Document (Open_Document *document) {
+  if (not document or not document->path) return;
+
+  char directory[PATH_MAX];
+  if (not Is_Directory (document->path, directory, sizeof directory))
+    snprintf (directory, sizeof directory, ".");
+
+  const char *temporary = getenv ("TMPDIR");
+  if (not temporary or not temporary[0]) temporary = "/tmp";
+  char scratch[PATH_MAX];
+  snprintf (scratch, sizeof scratch, "%s/ada83-lsp-%ld.ada",
+            temporary, (long) getpid ());
+
+  FILE *file = fopen (scratch, "wb");
+  if (not file) return;
+  if (document->text) fputs (document->text, file);
+  fclose (file);
+
+  Text_Buffer command = {0};
+  Append_Shell_Argument (&command, Server_Executable);
+  Buffer_Append_Text (&command, " --analyse ");
+  Append_Shell_Argument (&command, scratch);
+  Buffer_Append_Text (&command, " ");
+  Append_Shell_Argument (&command, directory);
+
+  Text_Buffer reply = {0};
+  Buffer_Reserve (&reply, 0);
+  FILE *child = popen (command.data, "r");
+  if (child) {
+    char chunk[4096];
+    size_t got;
+    while ((got = fread (chunk, 1, sizeof chunk, child)) > 0)
+      Buffer_Append (&reply, chunk, got);
+    pclose (child);
+  }
+
+  const char *cursor      = reply.data ? reply.data : "[]";
+  Json       *diagnostics = Json_Parse_Value (&cursor);
+  Publish_Diagnostics (document, diagnostics);
+  Json_Free (diagnostics);
+
+  Buffer_Free (&command);
+  Buffer_Free (&reply);
+  remove (scratch);
+}
+
+
+/* ---- definition lookup ------------------------------------------------ */
+
+/* Symbol carries the location it was declared at, and the runtime's units
+   are ordinary Ada that the compiler parses like any other, so a name that
+   resolves to something in ada83-runtime.ada can be pointed straight at its
+   declaration there.  The search is by name over the scopes the compilation
+   left behind: the innermost visible match first, then a sweep through every
+   scope reachable from the global one, which is what finds an entity inside
+   a package the file only ever names through a use clause. */
+
+static Symbol *Search_Scope_Tree (Scope *scope, Slice name, u32 depth) {
+  if (not scope or depth > 3) return NULL;
+  for (u32 i = 0; i < scope->symbol_count; i++) {
+    Symbol *candidate = scope->symbols[i];
+    if (candidate and candidate->location.filename and
+        Designators_Are_One_Name (candidate->name, name))
+      return candidate;
+  }
+  for (u32 i = 0; i < scope->symbol_count; i++) {
+    Symbol *candidate = scope->symbols[i];
+    if (not candidate or not candidate->scope) continue;
+    Symbol *found = Search_Scope_Tree (candidate->scope, name, depth + 1);
+    if (found) return found;
+  }
+  return NULL;
+}
+
+/* The declaration's file as the editor must see it: diagnostics inside the
+   runtime name it as ada83-runtime.ada, which is not a path the editor can
+   open, so it is replaced by the copy this compiler actually read. */
+static const char *Declaration_File (const char *filename) {
+  if (not filename or not Runtime_Library_Path[0]) return filename;
+  if (strcmp (filename, "ada83-runtime.ada") == 0)
+    return Runtime_Library_Path;
+
+  /* A unit taken from the runtime is labelled <Unit>.ads for diagnostics,
+     which is not a file anyone can open, but its lines are counted from the
+     start of ada83-runtime.ada, so the whole runtime is the right file. */
+  const char *dot = strrchr (filename, '.');
+  if (not dot or strchr (filename, '/')) return filename;
+  if (strcmp (dot, ".ads") != 0 and strcmp (dot, ".adb") != 0) return filename;
+
+  Slice unit = { filename, (u32) (dot - filename) };
+  if (Runtime_Library_Provides (unit, false) or
+      Runtime_Library_Provides (unit, true))
+    return Runtime_Library_Path;
+  return filename;
+}
+
+int Define_And_Print (const char *path, const char *directory,
+                      const char *name, const char *invoked_as) {
+  char executable[PATH_MAX], beside[PATH_MAX];
+  Host_Executable_Path (executable, sizeof executable, invoked_as);
+  if (Is_Directory (executable, beside, sizeof beside))
+    Runtime_Library_Locate (beside);
+  if (directory and directory[0]) Add_Include_Path (directory);
+  Add_Include_Path (".");
+
+  Capturing_Diagnostics = true;
+  Analysis_Only         = true;
+  Compile_File (path, directory);
+  Capturing_Diagnostics = false;
+
+  Slice wanted = { name, (u32) strlen (name) };
+  Symbol *found = sm ? Symbol_Find (wanted) : NULL;
+  if (found and not found->location.filename) found = NULL;
+  if (not found and sm) found = Search_Scope_Tree (sm->global_scope, wanted, 0);
+
+  Text_Buffer out = {0};
+  if (found) {
+    Buffer_Append_Text (&out, "{\"file\":");
+    Buffer_Append_Json_String (&out,
+      Declaration_File (found->location.filename));
+    Buffer_Printf (&out, ",\"line\":%u,\"column\":%u}",
+                   found->location.line, found->location.column);
+  } else {
+    Buffer_Append_Text (&out, "null");
+  }
+  fwrite (out.data, 1, out.length, stdout);
+  fflush (stdout);
+  Buffer_Free (&out);
+  Discard_Captured_Diagnostics ();
+  return 0;
+}
+
+/* ---- requests ------------------------------------------------------- */
+
+static void Respond (const Json *id, const char *result) {
+  Text_Buffer message = {0};
+  Buffer_Append_Text (&message, "{\"jsonrpc\":\"2.0\",\"id\":");
+  if (not id)                        Buffer_Append_Text (&message, "null");
+  else if (id->kind == JSON_STRING)  Buffer_Append_Json_String (&message,
+                                                                id->string);
+  else if (id->kind == JSON_NUMBER)  Buffer_Printf (&message, "%lld",
+                                                    (long long) id->number);
+  else                               Buffer_Append_Text (&message, "null");
+  Buffer_Printf (&message, ",\"result\":%s}", result);
+  Send_Message (&message);
+  Buffer_Free (&message);
+}
+
+static const Json *Document_Uri_Of (const Json *parameters) {
+  return Json_Member (Json_Member (parameters, "textDocument"), "uri");
+}
+
+/* The word under the cursor, in the editor's own coordinates: line and
+   character counted from zero, the character measured in UTF-16 units.
+   Ada identifiers are letters, digits and underscores, so the word is
+   whatever runs of those the position sits inside. */
+static bool Identifier_At (const char *text, u32 line, u32 character,
+                           char *out, size_t out_size) {
+  if (not text) return false;
+
+  const char *scan = text;
+  for (u32 remaining = line; remaining and *scan; )
+    if (*scan++ == '\n') remaining--;
+
+  const char *start = scan;
+  for (u32 units = 0; units < character and *scan and *scan != '\n'; ) {
+    unsigned char lead = (unsigned char) *scan;
+    u32 width = lead < 0x80 ? 1 : lead < 0xE0 ? 2 : lead < 0xF0 ? 3 : 4;
+    units += width == 4 ? 2 : 1;
+    scan  += width;
+  }
+
+  const char *first = scan;
+  while (first > start and (isalnum ((unsigned char) first[-1]) or
+                            first[-1] == '_'))
+    first--;
+  const char *limit = scan;
+  while (*limit and (isalnum ((unsigned char) *limit) or *limit == '_'))
+    limit++;
+
+  size_t length = (size_t) (limit - first);
+  if (length == 0 or length + 1 > out_size) return false;
+  memcpy (out, first, length);
+  out[length] = '\0';
+  return true;
+}
+
+/* file:///... for a host path, with the characters a URI may not carry
+   spelled as escapes. */
+static void Append_File_Uri (Text_Buffer *out, const char *path) {
+  Buffer_Append_Text (out, "file://");
+  if (path[0] != '/') Buffer_Append_Text (out, "/");
+  for (const unsigned char *scan = (const unsigned char *) path; *scan; scan++)
+    if (isalnum (*scan) or strchr ("-_.~/", *scan))
+      Buffer_Append (out, (const char *) scan, 1);
+    else
+      Buffer_Printf (out, "%%%02X", *scan);
+}
+
+static void Answer_Definition (const Json *id, const Open_Document *document,
+                               const char *name) {
+  char directory[PATH_MAX];
+  if (not Is_Directory (document->path, directory, sizeof directory))
+    snprintf (directory, sizeof directory, ".");
+
+  char scratch[PATH_MAX];
+  const char *temporary = getenv ("TMPDIR");
+  if (not temporary or not temporary[0]) temporary = "/tmp";
+  snprintf (scratch, sizeof scratch, "%s/ada83-lsp-%ld.ada",
+            temporary, (long) getpid ());
+
+  FILE *file = fopen (scratch, "wb");
+  if (not file) { Respond (id, "null"); return; }
+  if (document->text) fputs (document->text, file);
+  fclose (file);
+
+  Text_Buffer command = {0};
+  Append_Shell_Argument (&command, Server_Executable);
+  Buffer_Append_Text (&command, " --define ");
+  Append_Shell_Argument (&command, scratch);
+  Buffer_Append_Text (&command, " ");
+  Append_Shell_Argument (&command, directory);
+  Buffer_Append_Text (&command, " ");
+  Append_Shell_Argument (&command, name);
+
+  Text_Buffer reply = {0};
+  Buffer_Reserve (&reply, 0);
+  FILE *child = popen (command.data, "r");
+  if (child) {
+    char chunk[1024];
+    size_t got;
+    while ((got = fread (chunk, 1, sizeof chunk, child)) > 0)
+      Buffer_Append (&reply, chunk, got);
+    pclose (child);
+  }
+  remove (scratch);
+
+  const char *cursor = reply.data ? reply.data : "null";
+  Json *where = Json_Parse_Value (&cursor);
+  const char *found = Json_Text (Json_Member (where, "file"));
+  const Json *line   = Json_Member (where, "line");
+  const Json *column = Json_Member (where, "column");
+
+  if (found and line and column) {
+    u32 at_line = (u32) line->number ? (u32) line->number - 1 : 0;
+    u32 at_char = (u32) column->number ? (u32) column->number - 1 : 0;
+    /* A declaration in the file being edited is named relative to it. */
+    char absolute[PATH_MAX];
+    if (found[0] != '/') {
+      snprintf (absolute, sizeof absolute, "%s/%s", directory, found);
+      found = absolute;
+    }
+    Text_Buffer answer = {0};
+    Buffer_Append_Text (&answer, "{\"uri\":\"");
+    Append_File_Uri (&answer, found);
+    Buffer_Printf (&answer,
+      "\",\"range\":{\"start\":{\"line\":%u,\"character\":%u},"
+      "\"end\":{\"line\":%u,\"character\":%u}}}",
+      at_line, at_char, at_line, at_char);
+    Respond (id, answer.data ? answer.data : "null");
+    Buffer_Free (&answer);
+  } else {
+    Respond (id, "null");
+  }
+
+  Json_Free (where);
+  Buffer_Free (&command);
+  Buffer_Free (&reply);
+}
+
+
+int Run_Language_Server (const char *invoked_as) {
+  /* stdout carries the protocol; nothing may be written to it by accident,
+     and every message must leave unbuffered enough to not deadlock. */
+  setvbuf (stdout, NULL, _IOFBF, 0);
+
+  Host_Executable_Path (Server_Executable, sizeof Server_Executable,
+                        invoked_as);
+
+  Text_Buffer body = {0};
+  bool        stopping = false;
+
+  while (Receive_Message (&body)) {
+    const char *cursor  = body.data;
+    Json       *request = Json_Parse_Value (&cursor);
+    if (not request) continue;
+
+    const char *method     = Json_Text (Json_Member (request, "method"));
+    const Json *id         = Json_Member (request, "id");
+    const Json *parameters = Json_Member (request, "params");
+
+    if (not method) { Json_Free (request); continue; }
+
+    if (strcmp (method, "initialize") == 0) {
+      Text_Buffer result = {0};
+      Buffer_Printf (&result,
+        "{\"capabilities\":{\"textDocumentSync\":1,"
+        "\"definitionProvider\":true,"
+        "\"positionEncoding\":\"utf-16\"},"
+        "\"serverInfo\":{\"name\":\"ada83\",\"version\":\"1.0\"}}");
+      Respond (id, result.data ? result.data : "{}");
+      Buffer_Free (&result);
+
+    } else if (strcmp (method, "shutdown") == 0) {
+      stopping = true;
+      Respond (id, "null");
+
+    } else if (strcmp (method, "exit") == 0) {
+      Json_Free (request);
+      break;
+
+    } else if (strcmp (method, "textDocument/didOpen") == 0) {
+      const Json *item = Json_Member (parameters, "textDocument");
+      const char *uri  = Json_Text (Json_Member (item, "uri"));
+      const char *text = Json_Text (Json_Member (item, "text"));
+      if (uri) Analyse_Document (Remember_Document (uri, text ? text : ""));
+
+    } else if (strcmp (method, "textDocument/didChange") == 0) {
+      const char *uri     = Json_Text (Document_Uri_Of (parameters));
+      const Json *changes = Json_Member (parameters, "contentChanges");
+      const char *text    = NULL;
+      if (changes and changes->kind == JSON_ARRAY and changes->count)
+        text = Json_Text (Json_Member (changes->items[changes->count - 1],
+                                       "text"));
+      if (uri and text) Analyse_Document (Remember_Document (uri, text));
+
+    } else if (strcmp (method, "textDocument/didSave") == 0) {
+      const char *uri = Json_Text (Document_Uri_Of (parameters));
+      if (uri) Analyse_Document (Find_Document (uri));
+
+    } else if (strcmp (method, "textDocument/definition") == 0) {
+      const char *uri = Json_Text (Document_Uri_Of (parameters));
+      const Json *at  = Json_Member (parameters, "position");
+      Open_Document *document = uri ? Find_Document (uri) : NULL;
+      char name[256] = {0};
+      if (document and at)
+        Identifier_At (document->text,
+                       (u32) (Json_Member (at, "line")
+                              ? Json_Member (at, "line")->number : 0),
+                       (u32) (Json_Member (at, "character")
+                              ? Json_Member (at, "character")->number : 0),
+                       name, sizeof name);
+      if (name[0]) Answer_Definition (id, document, name);
+      else         Respond (id, "null");
+
+    } else if (strcmp (method, "textDocument/didClose") == 0) {
+      const char *uri = Json_Text (Document_Uri_Of (parameters));
+      if (uri) {
+        Open_Document *document = Find_Document (uri);
+        /* Clear this file's squiggles before dropping it. */
+        if (document) Publish_Diagnostics (document, NULL);
+        Forget_Document (uri);
+      }
+
+    } else if (id) {
+      /* A request the server does not implement still needs an answer. */
+      Text_Buffer message = {0};
+      Buffer_Append_Text (&message, "{\"jsonrpc\":\"2.0\",\"id\":");
+      if (id->kind == JSON_STRING) Buffer_Append_Json_String (&message,
+                                                              id->string);
+      else                         Buffer_Printf (&message, "%lld",
+                                                  (long long) id->number);
+      Buffer_Append_Text (&message,
+        ",\"error\":{\"code\":-32601,\"message\":\"method not found\"}}");
+      Send_Message (&message);
+      Buffer_Free (&message);
+    }
+
+    Json_Free (request);
+  }
+
+  Buffer_Free (&body);
+  for (u32 i = 0; i < Open_Document_Count; i++) {
+    free (Open_Documents[i].uri);
+    free (Open_Documents[i].path);
+    free (Open_Documents[i].text);
+  }
+  return stopping ? 0 : 0;
+}
+
 void Print_Usage (FILE *out, const char *program_name) {
     fprintf (out,
       "%s\n"
@@ -60439,6 +61539,7 @@ void Print_Usage (FILE *out, const char *program_name) {
       "Usage:\n"
       "  %s [options] <input.ada ...> [-o <output>]\n"
       "  %s --bind <library-dir> <main-unit>\n"
+      "  %s --lsp\n"
       "\n"
       "Compiles Ada 83 sources to a native executable using a\n"
       "runtime-loaded libLLVM.  Additional .ll modules given as inputs\n"
@@ -60487,9 +61588,14 @@ void Print_Usage (FILE *out, const char *program_name) {
       "                      Bind a precompiled program library: verify\n"
       "                      the unit closure and elaboration order and\n"
       "                      emit the binder module.\n"
+      "  --lsp               Serve the Language Server Protocol on stdin\n"
+      "                      and stdout, reporting diagnostics as an\n"
+      "                      editor types.  Only the front end runs, so\n"
+      "                      libLLVM is not needed.\n"
       "  -h, --help          Show this help and exit.\n"
       "  --version           Show version information and exit.\n",
-      ADA83_VERSION_TEXT, program_name, program_name);
+      ADA83_VERSION_TEXT, program_name, program_name,
+      program_name);
 }
 
 int main (int argc, char *argv[]) {
@@ -60506,6 +61612,27 @@ int main (int argc, char *argv[]) {
       printf ("%s\n", ADA83_VERSION_TEXT);
       return 0;
     }
+  }
+
+  if (strcmp (argv[1], "--lsp") == 0) return Run_Language_Server (argv[0]);
+
+  /* The analysis half of --lsp, run as a child process of it.  Not meant to
+     be used by hand; the output is JSON for the server, not for a reader. */
+  if (strcmp (argv[1], "--analyse") == 0) {
+    if (argc != 4) {
+      fprintf (stderr, "Usage: %s --analyse <file> <directory>\n", argv[0]);
+      return 1;
+    }
+    return Analyse_And_Print (argv[2], argv[3], argv[0]);
+  }
+
+  if (strcmp (argv[1], "--define") == 0) {
+    if (argc != 5) {
+      fprintf (stderr, "Usage: %s --define <file> <directory> <name>\n",
+               argv[0]);
+      return 1;
+    }
+    return Define_And_Print (argv[2], argv[3], argv[4], argv[0]);
   }
 
   if (strcmp (argv[1], "--bind") == 0) {
