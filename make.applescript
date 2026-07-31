@@ -15,7 +15,7 @@ on scriptDirectory()
 	try
 		set scriptFile to path to me
 		tell application "System Events" to set beside to POSIX path of (container of scriptFile)
-		if fileIsPresent(beside, "makefile") then return beside
+		if fileIsPresent(beside, "make.applescript") then return beside
 	end try
 	return do shell script "pwd"
 end scriptDirectory
@@ -74,26 +74,107 @@ on requestedTarget(argv)
 	return "build"
 end requestedTarget
 
+on joinedLines(lines)
+	set joined to ""
+	repeat with oneLine in lines
+		if joined is "" then
+			set joined to oneLine as text
+		else
+			set joined to joined & linefeed & (oneLine as text)
+		end if
+	end repeat
+	return joined
+end joinedLines
+
+on guardedProgram(steps, failureNote)
+	return joinedLines({"(", "set -e"} & steps & {") || echo '" & failureNote & "'"})
+end guardedProgram
+
+on extensionSplitLines()
+	return {"awk '/^\\/\\/== end$/       { out = \"\"; next }", ¬
+		"     /^\\/\\/== /           { name = substr ($0, 6)", ¬
+		"                            if (name ~ /^(extension.vsixmanifest|\\[)/) out = \"staging/vsix/\" name", ¬
+		"                            else out = \"staging/vsix/extension/\" name", ¬
+		"                            next }", ¬
+		"     /^\\/\\/= /            { next }", ¬
+		"     out != \"\" && /^\\/\\// { print substr ($0, 3) > out }' ada83-extension.js"}
+end extensionSplitLines
+
+on extensionSteps()
+	return {"command -v zip >/dev/null || { echo 'zip is needed to package'; exit 1; }", ¬
+		"rm -rf staging/vsix", ¬
+		"mkdir -p staging/vsix/extension/syntaxes", ¬
+		"cp ada83-extension.js ada83-icon.png staging/vsix/extension/", ¬
+		"if [ -f manual.md ]; then", ¬
+		"  cp manual.md staging/vsix/extension/", ¬
+		"else", ¬
+		"  echo 'manual.md is missing; packaging without the manual search tool'", ¬
+		"fi"} & extensionSplitLines() & ¬
+		{"rm -f staging/ada83.vsix", ¬
+		"( cd staging/vsix && zip -qr ../ada83.vsix . )", ¬
+		"rm -rf staging/vsix"}
+end extensionSteps
+
+on buildProgram()
+	return guardedProgram({"gcc -O3 -Wall -std=gnu2x -o ada83 ada83.c -lm -lpthread", ¬
+		"test -f ada83-runtime.ada || echo 'ada83-runtime.ada is not here; ada83 needs it beside the executable.'", ¬
+		"echo", ¬
+		"echo 'Built ada83.'", ¬
+		"echo 'Compile a program with:  ./ada83 myprogram.ada -o myprogram'"}, ¬
+		"The build failed; the message above says why.")
+end buildProgram
+
+on vsixProgram()
+	return guardedProgram(extensionSteps() & ¬
+		{"echo 'Built staging/ada83.vsix:'", ¬
+		"unzip -l staging/ada83.vsix | tail -n +4"}, ¬
+		"Building the extension failed; the message above says why.")
+end vsixProgram
+
+on packageProgram()
+	return guardedProgram(extensionSteps() & ¬
+		{"command -v lipo >/dev/null || { echo 'joining the macOS slices needs lipo'; exit 1; }", ¬
+		"gcc -O3 -Wall -g0 -std=gnu2x -arch arm64 -o staging/ada83-arm64 ada83.c -lm -lpthread", ¬
+		"gcc -O3 -Wall -g0 -std=gnu2x -arch x86_64 -o staging/ada83-x86_64 ada83.c -lm -lpthread", ¬
+		"lipo -create -output staging/ada83 staging/ada83-arm64 staging/ada83-x86_64", ¬
+		"rm -f staging/ada83-arm64 staging/ada83-x86_64", ¬
+		"cp ada83-runtime.ada ada83-icon.icns staging/", ¬
+		"rm -f bin-macos.zip.new", ¬
+		"( cd staging && zip -q ../bin-macos.zip.new ada83 ada83-runtime.ada ada83.vsix ada83-icon.icns )", ¬
+		"mv bin-macos.zip.new bin-macos.zip", ¬
+		"echo 'Packaged bin-macos.zip:'", ¬
+		"unzip -l bin-macos.zip | tail -n +4"}, ¬
+		"Packaging failed; the message above says why.")
+end packageProgram
+
+on programFor(chosenTarget)
+	if chosenTarget is "package" then return packageProgram()
+	if chosenTarget is "vsix" then return vsixProgram()
+	return buildProgram()
+end programFor
+
 on run argv
 	try
 		set directory to scriptDirectory()
 		set chosenTarget to requestedTarget(argv)
 		if chosenTarget is not "vsix" then
 			requireFile(directory, "ada83.c")
+		end if
+		if chosenTarget is "package" then
 			requireFile(directory, "ada83-runtime.ada")
-			requireCompiler()
-			requireLLVM(directory)
+			requireFile(directory, "ada83-icon.icns")
 		end if
 		if chosenTarget is not "build" then
 			requireFile(directory, "ada83-extension.js")
 			requireFile(directory, "ada83-icon.png")
-			if chosenTarget is "package" then requireFile(directory, "ada83-icon.icns")
+		end if
+		if chosenTarget is not "vsix" then
+			requireCompiler()
 		end if
 		if chosenTarget is "build" then
-			runInTerminal(directory, "make && echo && echo 'Built ada83.' && echo 'Compile a program with:  ./ada83 myprogram.ada -o myprogram'")
-		else
-			runInTerminal(directory, "make " & chosenTarget)
+			requireLLVM(directory)
 		end if
+		runInTerminal(directory, programFor(chosenTarget))
 	on error errorMessage number errorNumber
 		if errorNumber is not -128 then error errorMessage number errorNumber
 	end try
