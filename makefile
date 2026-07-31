@@ -15,7 +15,7 @@ TUNE          := $(if $(HOST_IS_GCC)$(filter x86_64 amd64,$(HOST_MACHINE)),\
 RUNTIME = ada83-runtime.ada
 MANUAL  = manual.md
 VSIX    = ada83.vsix
-BUNDLE  = ada83-extension.js
+BUNDLE  = ada83-extension.html
 ICON    = ada83-icon
 
 HOST_TARGET := $(if $(HOST_IS_MACOS),macos,linux)
@@ -137,16 +137,16 @@ vsix: staging/$(VSIX)
 staging/$(VSIX): $(BUNDLE) $(ICON).png $(wildcard $(MANUAL))
 	@command -v zip >/dev/null || { echo "zip is needed to package"; exit 1; }
 	rm -rf staging/vsix && mkdir -p staging/vsix/extension/syntaxes
-	cp $(BUNDLE) $(ICON).png staging/vsix/extension/
+	cp $(ICON).png staging/vsix/extension/
 	@test -f $(MANUAL) && cp $(MANUAL) staging/vsix/extension/ \
 	  || echo "$(MANUAL) is missing; packaging without the manual search tool"
-	awk '/^\/\/== end$$/      { out = ""; next } \
-	     /^\/\/== /           { name = substr ($$0, 6); \
-	                            out = (name ~ /^(extension.vsixmanifest|\[)/) \
-	                                  ? "staging/vsix/" name \
-	                                  : "staging/vsix/extension/" name; next } \
-	     /^\/\/= /            { next } \
-	     out != "" && /^\/\// { print substr ($$0, 3) > out }' $(BUNDLE)
+	awk '/^<\/script>$$/ { out = ""; next } \
+	     /^<script/ { match ($$0, /id="[^"]*"/); \
+	                  name = substr ($$0, RSTART + 4, RLENGTH - 5); \
+	                  out = (name ~ /^(extension.vsixmanifest|\[)/) \
+	                        ? "staging/vsix/" name \
+	                        : "staging/vsix/extension/" name; next } \
+	     out != "" { print > out }' $(BUNDLE)
 	rm -f $@
 	cd staging/vsix && zip -qr $(abspath $@) .
 	rm -rf staging/vsix

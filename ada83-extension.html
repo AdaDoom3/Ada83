@@ -1,0 +1,1932 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Ada 83 for Visual Studio Code</title>
+
+<script id="ada83-extension.js">
+'use strict';
+
+const { spawn } = require('child_process');
+const fs = require('fs');
+const path = require('path');
+const vscode = require('vscode');
+
+const Header_Terminator = '\r\n\r\n';
+
+const Content_Length_Of = (Header) =>
+  ((Match) => (Match === null ? null : Number (Match[1])))
+    (/content-length:\s*(\d+)/i.exec (Header));
+
+const Framed = (Message) =>
+  ((Body) =>
+     `Content-Length: ${Buffer.byteLength (Body, 'utf8')}` +
+     Header_Terminator + Body)
+    (JSON.stringify ({ jsonrpc: '2.0', ...Message }));
+
+const Unframed = (Stream) => {
+  const Split = Stream.indexOf (Header_Terminator);
+  if (Split < 0) return { Messages: [], Remainder: Stream };
+
+  const Length = Content_Length_Of (Stream.slice (0, Split));
+  const Start = Split + Header_Terminator.length;
+
+  if (Length === null) return Unframed (Stream.slice (Start));
+  if (Buffer.byteLength (Stream.slice (Start), 'utf8') < Length)
+    return { Messages: [], Remainder: Stream };
+
+  const Body = Stream.slice (Start, Start + Length);
+  const Rest = Unframed (Stream.slice (Start + Length));
+  return { Messages: [Body, ...Rest.Messages], Remainder: Rest.Remainder };
+};
+
+const Parsed = (Body) => {
+  try { return JSON.parse (Body); } catch { return null; }
+};
+
+const Configured = (Name, Fallback) =>
+  vscode.workspace.getConfiguration ('ada83').get (Name, Fallback);
+
+const Opened_Folders = () => vscode.workspace.workspaceFolders ?? [];
+
+const Opened_Folder = () => Opened_Folders ()[0] ?? null;
+
+const Initialize = (Id) => ({
+  id: Id,
+  method: 'initialize',
+  params: {
+    processId: process.pid,
+    rootUri: ((Folder) => (Folder === null ? null : Folder.uri.toString ()))
+               (Opened_Folder ()),
+    workspaceFolders:
+      ((Folders) =>
+         (Folders.length === 0
+            ? null
+            : Folders.map ((Folder) =>
+                ({ uri: Folder.uri.toString (), name: Folder.name }))))
+        (Opened_Folders ()),
+    capabilities: {
+      general: { positionEncodings: ['utf-16'] },
+      textDocument: {
+        publishDiagnostics: { relatedInformation: true },
+        signatureHelp: { signatureInformation: { parameterInformation: {
+          labelOffsetSupport: true } } },
+      },
+      workspace: { workspaceFolders: true },
+    },
+  },
+});
+
+const Initialized = () => ({ method: 'initialized', params: {} });
+
+const Did_Open = (Document) => ({
+  method: 'textDocument/didOpen',
+  params: {
+    textDocument: {
+      uri: Document.uri.toString (),
+      languageId: 'ada83',
+      version: Document.version,
+      text: Document.getText (),
+    },
+  },
+});
+
+const Did_Change = (Document) => ({
+  method: 'textDocument/didChange',
+  params: {
+    textDocument: {
+      uri: Document.uri.toString (),
+      version: Document.version,
+    },
+    contentChanges: [{ text: Document.getText () }],
+  },
+});
+
+const Did_Close = (Document) => ({
+  method: 'textDocument/didClose',
+  params: { textDocument: { uri: Document.uri.toString () } },
+});
+
+const Shutdown = (Id) => ({ id: Id, method: 'shutdown' });
+
+const Exit = () => ({ method: 'exit' });
+
+const Mapped = (Table, Fallback) => (Reported) => Table[Reported] ?? Fallback;
+
+const Severity_Table = {
+  1: vscode.DiagnosticSeverity.Error,
+  2: vscode.DiagnosticSeverity.Warning,
+  3: vscode.DiagnosticSeverity.Information,
+  4: vscode.DiagnosticSeverity.Hint,
+};
+
+const Severity_Of = Mapped (Severity_Table, vscode.DiagnosticSeverity.Error);
+
+const Range_Of = ({ start, end }) =>
+  new vscode.Range (start.line, start.character, end.line, end.character);
+
+const Related_Of = (Reported) =>
+  new vscode.DiagnosticRelatedInformation (
+    new vscode.Location (vscode.Uri.parse (Reported.location.uri),
+                         Range_Of (Reported.location.range)),
+    Reported.message ?? '');
+
+const Diagnostic_Of = (Reported) =>
+  Object.assign (
+    new vscode.Diagnostic (Range_Of (Reported.range), Reported.message,
+                           Severity_Of (Reported.severity)),
+    { source: 'ada83',
+      code: Reported.code,
+      relatedInformation:
+        (Reported.relatedInformation ?? []).map (Related_Of) });
+
+const Location_Of = (Result) =>
+  Result === null || Result === undefined
+    ? null
+    : new vscode.Location (vscode.Uri.parse (Result.uri),
+                           Range_Of (Result.range));
+
+const Is_Answer = (Message) =>
+  Message !== null && Message.id !== undefined &&
+  Message.method === undefined;
+
+const Is_Publication = (Message) =>
+  Message !== null && Message.method === 'textDocument/publishDiagnostics';
+
+const Publication_Of = (Message) => ({
+  Uri: vscode.Uri.parse (Message.params.uri),
+  Diagnostics: (Message.params.diagnostics ?? []).map (Diagnostic_Of),
+});
+
+const Publications_In = (Messages) =>
+  Messages.filter (Is_Publication).map (Publication_Of);
+
+const Answers_In = (Messages) => Messages.filter (Is_Answer);
+
+const Is_Ada_Document = (Document) =>
+  Document.languageId === 'ada83' && Document.uri.scheme === 'file';
+
+let Session = null;
+let Next_Id = 10;
+let Trace_Channel = null;
+const Awaiting = new Map ();
+
+let Tracing = 'off';
+
+const Traced = (Direction, Message) => {
+  if (Tracing === 'off' || Trace_Channel === null) return;
+  Trace_Channel.appendLine (
+    Tracing === 'verbose'
+      ? `${Direction} ${JSON.stringify (Message)}`
+      : `${Direction} ${Message.method ?? `id ${Message.id}`}`);
+};
+
+const Send = (Message) => {
+  if (Session === null || !Session.Server.stdin.writable) return;
+  Traced ('->', Message);
+  Session.Server.stdin.write (Framed (Message));
+};
+
+const Settle = (Message) =>
+  ((Resolve) => {
+     if (Resolve === undefined) return;
+     Traced ('<-', Message);
+     Awaiting.delete (Message.id);
+     Resolve (Message.result ?? null);
+   }) (Awaiting.get (Message.id));
+
+const Abandon_All = () =>
+  [...Awaiting.entries ()].forEach (([Id, Resolve]) => {
+    Awaiting.delete (Id);
+    Resolve (null);
+  });
+
+const Receive = (Chunk) => {
+  if (Session === null) return;
+  const { Messages, Remainder } = Unframed (Session.Buffered + Chunk);
+  Session.Buffered = Remainder;
+  const Parsed_Messages = Messages.map (Parsed);
+  Publications_In (Parsed_Messages).forEach (({ Uri, Diagnostics }) =>
+    Session.Diagnostics.set (Uri, Diagnostics));
+  Answers_In (Parsed_Messages).forEach (Settle);
+};
+
+let Pending_Change = null;
+
+const Flush_Changes = () => {
+  if (Pending_Change === null) return;
+  const { Timer, Notify, Document } = Pending_Change;
+  clearTimeout (Timer);
+  Pending_Change = null;
+  Send (Notify (Document));
+};
+
+const Cancel = (Id) => ({ method: '$/cancelRequest', params: { id: Id } });
+
+const Ask = (Build, Token, Patience) =>
+  Session === null
+    ? Promise.resolve (null)
+    : ((Id) =>
+         new Promise ((Resolve) => {
+           Awaiting.set (Id, Resolve);
+           Flush_Changes ();
+           Send (Build (Id));
+           const Abandon = (Notify) => () => {
+             if (!Awaiting.delete (Id)) return;
+             if (Notify) Send (Cancel (Id));
+             Resolve (null);
+           };
+           const Waiting = setTimeout (
+             Abandon (true),
+             Patience ?? Configured ('requestTimeout', 15000));
+           Token?.onCancellationRequested (() => {
+             clearTimeout (Waiting);
+             Abandon (true) ();
+           });
+         })) (Next_Id++);
+
+const Highlight_Kind_Table = {
+  1: vscode.DocumentHighlightKind.Text,
+  2: vscode.DocumentHighlightKind.Read,
+  3: vscode.DocumentHighlightKind.Write,
+};
+
+const Highlight_Kind_Of =
+  Mapped (Highlight_Kind_Table, vscode.DocumentHighlightKind.Text);
+
+const Highlight_Of = (Reported) =>
+  new vscode.DocumentHighlight (Range_Of (Reported.range),
+                                Highlight_Kind_Of (Reported.kind));
+
+const Listed = (Convert) => (Result) =>
+  Array.isArray (Result) ? Result.map (Convert) : [];
+
+const Highlights_Of = Listed (Highlight_Of);
+
+const Locations_Of = Listed (Location_Of);
+
+const Hover_Of = (Result) =>
+  Result === null || Result === undefined ||
+  Result.contents === null || Result.contents === undefined
+    ? null
+    : new vscode.Hover (new vscode.MarkdownString (Result.contents.value),
+                        Range_Of (Result.range));
+
+const Symbol_Kind_Of = (Reported) =>
+  Number.isInteger (Reported) && Reported >= 1 && Reported <= 26
+    ? Reported - 1
+    : vscode.SymbolKind.Variable;
+
+const Symbol_Of = (Reported) =>
+  new vscode.SymbolInformation (Reported.name,
+                                Symbol_Kind_Of (Reported.kind),
+                                Reported.containerName ?? '',
+                                Location_Of (Reported.location));
+
+const Symbols_Of = Listed (Symbol_Of);
+
+const Completion_Kind_Table = {
+  2: vscode.CompletionItemKind.Method,
+  3: vscode.CompletionItemKind.Function,
+  6: vscode.CompletionItemKind.Variable,
+  9: vscode.CompletionItemKind.Module,
+  14: vscode.CompletionItemKind.Keyword,
+  20: vscode.CompletionItemKind.EnumMember,
+  21: vscode.CompletionItemKind.Constant,
+  22: vscode.CompletionItemKind.Struct,
+  23: vscode.CompletionItemKind.Event,
+};
+
+const Completion_Kind_Of =
+  Mapped (Completion_Kind_Table, vscode.CompletionItemKind.Text);
+
+const Completion_Item_Of = (Reported) =>
+  Object.assign (
+    new vscode.CompletionItem (Reported.label,
+                               Completion_Kind_Of (Reported.kind)),
+    { detail: Reported.detail });
+
+const Completions_Of = (Result) =>
+  Result === null || Result === undefined
+    ? null
+    : (Result.items ?? []).map (Completion_Item_Of);
+
+const Workspace_Symbols_Of = Listed (Symbol_Of);
+
+const Parameter_Of = (Reported) =>
+  new vscode.ParameterInformation (Reported.label);
+
+const Signature_Of = (Reported) =>
+  Object.assign (new vscode.SignatureInformation (Reported.label),
+                 { parameters: (Reported.parameters ?? []).map (Parameter_Of) });
+
+const Signature_Help_Of = (Result) =>
+  Result === null || Result === undefined
+    ? null
+    : Object.assign (new vscode.SignatureHelp (), {
+        signatures: (Result.signatures ?? []).map (Signature_Of),
+        activeSignature: Result.activeSignature ?? 0,
+        activeParameter: Result.activeParameter ?? 0,
+      });
+
+const Folding_Kind_Table = {
+  comment: vscode.FoldingRangeKind.Comment,
+  imports: vscode.FoldingRangeKind.Imports,
+  region: vscode.FoldingRangeKind.Region,
+};
+
+const Folding_Range_Of = (Reported) =>
+  new vscode.FoldingRange (Reported.startLine, Reported.endLine,
+                           Folding_Kind_Table[Reported.kind]);
+
+const Folding_Ranges_Of = Listed (Folding_Range_Of);
+
+const Edited = (Edit, Uri, Replacements) => {
+  Replacements.forEach ((Replacement) =>
+    Edit.replace (vscode.Uri.parse (Uri), Range_Of (Replacement.range),
+                  Replacement.newText));
+  return Edit;
+};
+
+const Workspace_Edit_Of = (Changes) =>
+  Object.keys (Changes ?? {}).reduce (
+    (Edit, Uri) => Edited (Edit, Uri, Changes[Uri]),
+    new vscode.WorkspaceEdit ());
+
+const Code_Action_Of = (Reported) =>
+  Object.assign (
+    new vscode.CodeAction (Reported.title, vscode.CodeActionKind.QuickFix),
+    { edit: Workspace_Edit_Of ((Reported.edit ?? {}).changes),
+      isPreferred: Reported.isPreferred === true });
+
+const Code_Actions_Of = Listed (Code_Action_Of);
+
+const Text_Document_Of = (Document) => ({ uri: Document.uri.toString () });
+
+const Position_Of = ({ line, character }) => ({ line, character });
+
+const Range_Sent = ({ start, end }) =>
+  ({ start: Position_Of (start), end: Position_Of (end) });
+
+const At_Document = (Document) => ({ textDocument: Text_Document_Of (Document) });
+
+const At_Position = (Document, Position) =>
+  ({ ...At_Document (Document), position: Position_Of (Position) });
+
+const At_References = (Document, Position, Context) =>
+  ({ ...At_Position (Document, Position),
+     context: { includeDeclaration: (Context ?? {}).includeDeclaration !== false } });
+
+const At_Selection = (Document, Selection) =>
+  ({ ...At_Document (Document), range: Range_Sent (Selection),
+     context: { diagnostics: [] } });
+
+const For_Query = (Query) => ({ query: Query ?? '' });
+
+const Is_Cancellable = (Given) =>
+  Given !== null && typeof Given === 'object' &&
+  typeof Given.onCancellationRequested === 'function';
+
+const Registers = (Register) => (Provider) => Register (Ada_Selector, Provider);
+
+const Triggers = (Register, Name, Fallback) => (Provider, Capabilities) =>
+  Register (Ada_Selector, Provider,
+            ...((Capabilities[Name] ?? {}).triggerCharacters ?? Fallback));
+
+const Language_Features = [
+  { Capability: 'definitionProvider',        Provides: 'provideDefinition',
+    Method: 'textDocument/definition',       Parameters: At_Position,
+    Answer: Location_Of,
+    Register: Registers (vscode.languages.registerDefinitionProvider) },
+  { Capability: 'hoverProvider',             Provides: 'provideHover',
+    Method: 'textDocument/hover',            Parameters: At_Position,
+    Answer: Hover_Of,
+    Register: Registers (vscode.languages.registerHoverProvider) },
+  { Capability: 'documentHighlightProvider', Provides: 'provideDocumentHighlights',
+    Method: 'textDocument/documentHighlight', Parameters: At_Position,
+    Answer: Highlights_Of,
+    Register: Registers (vscode.languages.registerDocumentHighlightProvider) },
+  { Capability: 'referencesProvider',        Provides: 'provideReferences',
+    Method: 'textDocument/references',       Parameters: At_References,
+    Answer: Locations_Of,
+    Register: Registers (vscode.languages.registerReferenceProvider) },
+  { Capability: 'documentSymbolProvider',    Provides: 'provideDocumentSymbols',
+    Method: 'textDocument/documentSymbol',   Parameters: At_Document,
+    Answer: Symbols_Of,
+    Register: Registers (vscode.languages.registerDocumentSymbolProvider) },
+  { Capability: 'foldingRangeProvider',      Provides: 'provideFoldingRanges',
+    Method: 'textDocument/foldingRange',     Parameters: At_Document,
+    Answer: Folding_Ranges_Of,
+    Register: Registers (vscode.languages.registerFoldingRangeProvider) },
+  { Capability: 'codeActionProvider',        Provides: 'provideCodeActions',
+    Method: 'textDocument/codeAction',       Parameters: At_Selection,
+    Answer: Code_Actions_Of,
+    Register: (Provider) =>
+      vscode.languages.registerCodeActionsProvider (Ada_Selector, Provider,
+        { providedCodeActionKinds: [vscode.CodeActionKind.QuickFix] }) },
+  { Capability: 'completionProvider',        Provides: 'provideCompletionItems',
+    Method: 'textDocument/completion',       Parameters: At_Position,
+    Answer: Completions_Of,
+    Register: Triggers (vscode.languages.registerCompletionItemProvider,
+                        'completionProvider', ['.']) },
+  { Capability: 'signatureHelpProvider',     Provides: 'provideSignatureHelp',
+    Method: 'textDocument/signatureHelp',    Parameters: At_Position,
+    Answer: Signature_Help_Of,
+    Register: Triggers (vscode.languages.registerSignatureHelpProvider,
+                        'signatureHelpProvider', ['(', ',']) },
+  { Capability: 'workspaceSymbolProvider',   Provides: 'provideWorkspaceSymbols',
+    Method: 'workspace/symbol',              Parameters: For_Query,
+    Answer: Workspace_Symbols_Of,            Patience: 'workspaceRequestTimeout',
+    Register: (Provider) =>
+      vscode.languages.registerWorkspaceSymbolProvider (Provider) },
+];
+
+const Provider_For = ({ Method, Parameters, Answer, Provides, Patience }) => ({
+  [Provides]: (...Given) =>
+    Ask ((Id) => ({ id: Id, method: Method, params: Parameters (...Given) }),
+         Given.find (Is_Cancellable),
+         Patience === undefined ? undefined : Configured (Patience, 120000))
+      .then (Answer),
+});
+
+const Offered = (Capabilities, Name) =>
+  Capabilities[Name] !== undefined && Capabilities[Name] !== false;
+
+const Registrations = (Capabilities) =>
+  Language_Features
+    .filter (({ Capability }) => Offered (Capabilities, Capability))
+    .map ((Feature) => Feature.Register (Provider_For (Feature), Capabilities));
+
+const Manual_Name = 'manual.md';
+const Manual_Results = 4;
+const Manual_Section_Words = 700;
+const Manual_Total_Words = 2400;
+const Manual_Saturation = 1.2;
+const Manual_Balance = 0.75;
+const Clause_Bonus = 100;
+const Title_Bonus = 2.5;
+
+const Any_Heading = /^#{1,6}\s+\S/;
+const Numbered_Heading =
+  /^#{2,6}\s+([0-9]+(?:\.[0-9]+)*|[A-Z])\.?\s+(\S.*?)\s*$/;
+const Word_Pattern = /[a-z0-9_]+/g;
+const Clause_Pattern = /\b[0-9]+(?:\.[0-9]+)+\b/g;
+const Clause_Query = /\b[0-9]+(?:\.[0-9]+)*\b/g;
+
+const Heading_Of = (Line) =>
+  ((Match) =>
+     (Match === null ? null : { Clause: Match[1], Title: Match[2] }))
+    (Numbered_Heading.exec (Line));
+
+const Heading_Marks = (Lines) =>
+  Lines.reduce ((Marks, Line, Index) =>
+    (Any_Heading.test (Line) ? [...Marks, Index] : Marks), []);
+
+const Sectioned = (Text) =>
+  ((Lines) =>
+     ((Marks) =>
+        Marks
+          .map ((Start, Position) => ({
+            Heading: Heading_Of (Lines[Start]),
+            Body: Lines
+              .slice (Start + 1, Marks[Position + 1] ?? Lines.length)
+              .join ('\n').trim (),
+          }))
+          .filter (({ Heading }) => Heading !== null)
+          .map (({ Heading, Body }) => ({ ...Heading, Body })))
+       (Heading_Marks (Lines)))
+    (Text.split (/\r?\n/));
+
+const Tokens_Of = (Text) =>
+  ((Lowered) => [...(Lowered.match (Word_Pattern) ?? []),
+                 ...(Lowered.match (Clause_Pattern) ?? [])])
+    (Text.toLowerCase ());
+
+const Counted = (Words) => {
+  const Counts = new Map ();
+  Words.forEach ((Word) => Counts.set (Word, (Counts.get (Word) ?? 0) + 1));
+  return Counts;
+};
+
+const Entry_Of = (Section) =>
+  ((Counts) => ({
+     Section,
+     Counts,
+     Length: [...Counts.values ()].reduce ((Sum, Count) => Sum + Count, 0),
+     Title_Terms: new Set (Tokens_Of (`${Section.Clause} ${Section.Title}`)),
+   }))
+    (Counted (Tokens_Of (
+       `${Section.Clause} ${Section.Title}\n${Section.Body}`)));
+
+const Document_Frequencies = (Entries) => {
+  const Frequencies = new Map ();
+  Entries.forEach (({ Counts }) =>
+    Counts.forEach ((_, Word) =>
+      Frequencies.set (Word, (Frequencies.get (Word) ?? 0) + 1)));
+  return Frequencies;
+};
+
+const Indexed = (Sections) =>
+  ((Entries) => ({
+     Entries,
+     Frequencies: Document_Frequencies (Entries),
+     Count: Entries.length,
+     Average_Length:
+       Entries.reduce ((Sum, { Length }) => Sum + Length, 0) /
+       Math.max (1, Entries.length),
+   }))
+    (Sections.map (Entry_Of));
+
+const Inverse_Frequency = (Count, Documents) =>
+  Math.log (1 + (Count - Documents + 0.5) / (Documents + 0.5));
+
+const Term_Score = (Index, Entry, Word) =>
+  ((Frequency, Documents) =>
+     Frequency === 0 || Documents === 0
+       ? 0
+       : Inverse_Frequency (Index.Count, Documents) *
+         (Frequency * (Manual_Saturation + 1)) /
+         (Frequency + Manual_Saturation *
+            (1 - Manual_Balance +
+             Manual_Balance * Entry.Length / Index.Average_Length)))
+    (Entry.Counts.get (Word) ?? 0, Index.Frequencies.get (Word) ?? 0);
+
+const Score_Of = (Index, Entry, Words, Clauses) =>
+  (Clauses.includes (Entry.Section.Clause) ? Clause_Bonus : 0) +
+  Words.reduce ((Total, Word) =>
+    Total + Term_Score (Index, Entry, Word) +
+    (Entry.Title_Terms.has (Word) ? Title_Bonus : 0), 0);
+
+const Ranked = (Index, Query) =>
+  ((Words, Clauses) =>
+     Index.Entries
+       .map ((Entry) => ({
+         Section: Entry.Section,
+         Score: Score_Of (Index, Entry, Words, Clauses),
+       }))
+       .filter (({ Score }) => Score > 0)
+       .sort ((Left, Right) => Right.Score - Left.Score)
+       .slice (0, Manual_Results)
+       .map (({ Section }) => Section))
+    ([...new Set (Tokens_Of (Query))],
+     Query.match (Clause_Query) ?? []);
+
+const Words_In = (Text) => (Text.match (/\S+/g) ?? []).length;
+
+const Running_Words = (Lines) => {
+  let Total = 0;
+  return Lines.map ((Line) => (Total += Words_In (Line)));
+};
+
+const Clipped = (Text, Limit) =>
+  Limit <= 0
+    ? ''
+    : ((Lines) =>
+         ((Cut) =>
+            (Cut < 0
+               ? Text
+               : `${Lines.slice (0, Cut + 1).join ('\n')}\n[...]`))
+           (Running_Words (Lines).findIndex ((Count) => Count >= Limit)))
+        (Text.split ('\n'));
+
+const Budgeted = (Sections) => {
+  let Remaining = Manual_Total_Words;
+  return Sections
+    .map ((Section) =>
+       ((Body) => {
+          Remaining -= Words_In (Body);
+          return { ...Section, Body };
+        })
+         (Clipped (Section.Body,
+                   Math.min (Manual_Section_Words, Remaining))))
+    .filter (({ Body }) => Body.length > 0);
+};
+
+const Rendered = (Sections, Query) =>
+  Sections.length === 0
+    ? `No section of the Ada 83 manual matches "${Query}".`
+    : ['Ada 83 Reference Manual (ANSI/MIL-STD-1815A), sections matching ' +
+       `"${Query}":`,
+       ...Budgeted (Sections).map (({ Clause, Title, Body }) =>
+         `## ${Clause} ${Title}\n\n${Body}`)].join ('\n\n');
+
+const Manual_Text = (Root) => {
+  try { return fs.readFileSync (path.join (Root, Manual_Name), 'utf8'); }
+  catch { return null; }
+};
+
+let Manual_Cache;
+
+const Manual_Index = (Root) => {
+  if (Manual_Cache === undefined)
+    Manual_Cache =
+      ((Text) => (Text === null ? null : Indexed (Sectioned (Text))))
+        (Manual_Text (Root));
+  return Manual_Cache;
+};
+
+const Searched = (Root, Query) =>
+  Query.trim () === ''
+    ? 'Ask for a clause number, such as 4.5.7, or for the wording to find.'
+    : ((Index) =>
+         Index === null
+           ? `The Ada 83 manual (${Manual_Name}) is not installed beside ` +
+             'the extension.'
+           : Rendered (Ranked (Index, Query), Query.trim ()))
+        (Manual_Index (Root));
+
+const Manual_Tool = (Root) => ({
+  invoke: (Options) =>
+    new vscode.LanguageModelToolResult ([
+      new vscode.LanguageModelTextPart (
+        Searched (Root, String (Options.input?.query ?? '')))]),
+});
+
+const Manual_Registration = (Root) =>
+  vscode.lm === undefined || vscode.lm.registerTool === undefined
+    ? []
+    : [vscode.lm.registerTool ('search_ada83_manual', Manual_Tool (Root))];
+
+const Ada_Selector = { scheme: 'file', language: 'ada83' };
+
+const Task_Of = (Name, Title, Argument_List, Group) =>
+  Object.assign (
+    new vscode.Task (
+      { type: 'ada83', task: Name },
+      vscode.TaskScope.Workspace,
+      Title,
+      'ada83',
+      new vscode.ShellExecution (Configured ('compilerPath', 'ada83'),
+                                 Argument_List),
+      '$ada83'),
+    { group: Group });
+
+const Build_Task = (Source_Path) =>
+  Task_Of ('build', 'build this file', [Source_Path],
+           vscode.TaskGroup.Build);
+
+const Check_Task = (Source_Path) =>
+  Task_Of ('check', 'check this file', ['--ir', Source_Path],
+           vscode.TaskGroup.Test);
+
+const Task_For = (Name) => (Name === 'check' ? Check_Task : Build_Task);
+
+const Active_Ada_Path = () =>
+  ((Editor) =>
+     Editor === undefined || !Is_Ada_Document (Editor.document)
+       ? null
+       : Editor.document.uri.fsPath)
+    (vscode.window.activeTextEditor);
+
+const Tasks_For = (Source_Path) =>
+  Source_Path === null
+    ? []
+    : [Build_Task (Source_Path), Check_Task (Source_Path)];
+
+const Task_Provider = {
+  provideTasks: () => Tasks_For (Active_Ada_Path ()),
+  resolveTask: (Given) =>
+    ((Source_Path) =>
+       Source_Path === null
+         ? undefined
+         : Task_For (Given.definition.task) (Source_Path))
+      (Active_Ada_Path ()),
+};
+
+const Run_On_The_Active_File = (Make) => () =>
+  ((Source_Path) =>
+     Source_Path === null
+       ? vscode.window.showErrorMessage (
+           'Ada 83: open an Ada file before building or checking it.')
+       : vscode.tasks.executeTask (Make (Source_Path)))
+    (Active_Ada_Path ());
+
+const Substituted = (Setting) =>
+  ((Folder) =>
+     Setting.replace (/\$\{workspaceFolder\}/g,
+                      Folder === null ? '' : Folder.uri.fsPath))
+    (Opened_Folder ());
+
+const Watched_Folders = (Diagnostics, Output, Status) =>
+  vscode.workspace.onDidChangeWorkspaceFolders (() =>
+    Restart (Diagnostics, Output, Status));
+
+const Compiler_Path = () => Substituted (Configured ('compilerPath', 'ada83'));
+
+const Include_Arguments = () =>
+  Configured ('includePaths', []).flatMap ((Path) =>
+    ['-I', Substituted (Path)]);
+
+const Presentation = {
+  starting: ['$(loading~spin)', 'starting'],
+  ready: ['$(check)', 'ready'],
+  restarting: ['$(sync~spin)', 'restarting'],
+  failed: ['$(error)', 'unavailable'],
+  stopped: ['$(circle-slash)', 'stopped'],
+};
+
+const Show_State = (Status, State) => {
+  const [Icon, Detail] = Presentation[State];
+  Status.text = `${Icon} Ada 83`;
+  Status.tooltip = `Ada 83 language server: ${Detail}`;
+  Status.show ();
+};
+
+const Restart_Delay = (Attempt) => Math.min (1000 * 2 ** Attempt, 30000);
+const Restart_Limit = 5;
+
+const Start = (Diagnostics, Output, Status, Attempt) => {
+  if (!Configured ('enable', true)) return Show_State (Status, 'stopped');
+
+  const Command = Compiler_Path ();
+  const Server = spawn (Command, ['--lsp', ...Include_Arguments ()],
+                       { stdio: 'pipe' });
+  const Ours = { Server, Diagnostics, Output, Status, Buffered: '',
+                 Ready: false, Capabilities: {}, Registered: [] };
+  Session = Ours;
+  Show_State (Status, Attempt === 0 ? 'starting' : 'restarting');
+
+  const Give_Up = (Reason) => {
+    if (Session !== Ours) return;
+    Session = null;
+    Abandon_All ();
+    Ours.Registered.forEach ((Registration) => Registration.dispose ());
+    if (Attempt >= Restart_Limit) {
+      Show_State (Status, 'failed');
+      Output.appendLine (`server unavailable: ${Reason}`);
+      return vscode.window.showErrorMessage (
+        `Ada 83: '${Command} --lsp' will not run (${Reason}). Set ` +
+        'ada83.compilerPath to the compiler, and keep ada83-runtime.ada ' +
+        'beside it.');
+    }
+    Show_State (Status, 'restarting');
+    Output.appendLine (`server ${Reason}; restarting`);
+    setTimeout (() => {
+      if (Session === null)
+        Start (Diagnostics, Output, Status, Attempt + 1);
+    }, Restart_Delay (Attempt));
+  };
+
+  Server.on ('error', (Reason) => Give_Up (Reason.message));
+  Server.on ('exit', (Code, Signal) =>
+    Give_Up (`exited with ${Signal ?? Code}`));
+  Server.stdout.setEncoding ('utf8');
+  Server.stdout.on ('data', Receive);
+  Server.stderr.setEncoding ('utf8');
+  Server.stderr.on ('data', (Text) => Output.append (Text));
+
+  Ask (Initialize).then ((Result) => {
+    if (Session !== Ours || Result === null) return;
+    Ours.Ready = true;
+    Ours.Capabilities = Result.capabilities ?? {};
+    Ours.Registered = Registrations (Ours.Capabilities);
+    Show_State (Status, 'ready');
+    Send (Initialized ());
+    vscode.workspace.textDocuments
+      .filter (Is_Ada_Document)
+      .map (Did_Open)
+      .forEach (Send);
+  });
+};
+
+const Stop = () => {
+  if (Session === null) return;
+  const Ending = Session;
+  [Shutdown (Next_Id++), Exit ()].forEach (Send);
+  Session = null;
+  Abandon_All ();
+  Ending.Registered.forEach ((Registration) => Registration.dispose ());
+  Ending.Server.kill ();
+};
+
+const Restart = (Diagnostics, Output, Status) => {
+  Stop ();
+  Start (Diagnostics, Output, Status, 0);
+};
+
+const On_Ada = (Notify) => (Event) =>
+  ((Document) => { if (Is_Ada_Document (Document)) Send (Notify (Document)); })
+    (Event.document ?? Event);
+
+const Settles_Down = (Notify) => (Event) =>
+  ((Document) => {
+     if (!Is_Ada_Document (Document)) return;
+     if (Pending_Change !== null) clearTimeout (Pending_Change.Timer);
+     Pending_Change = {
+       Notify,
+       Document,
+       Timer: setTimeout (Flush_Changes, Configured ('syncDelay', 120)),
+     };
+   }) (Event.document ?? Event);
+
+const Touches_The_Server = (Change) =>
+  ['enable', 'compilerPath', 'includePaths']
+    .some ((Name) => Change.affectsConfiguration (`ada83.${Name}`));
+
+const activate = (Context) => {
+  const Output = vscode.window.createOutputChannel ('Ada 83');
+  const Diagnostics = vscode.languages.createDiagnosticCollection ('ada83');
+  const Status = vscode.window.createStatusBarItem (
+    vscode.StatusBarAlignment.Right, 100);
+  Status.command = 'ada83.showOutput';
+  Trace_Channel = Output;
+  Tracing = Configured ('trace.server', 'off');
+
+  Start (Diagnostics, Output, Status, 0);
+
+  Context.subscriptions.push (
+    Output,
+    Diagnostics,
+    Status,
+    { dispose: Stop },
+    vscode.workspace.onDidOpenTextDocument (On_Ada (Did_Open)),
+    vscode.workspace.onDidChangeTextDocument (Settles_Down (Did_Change)),
+    vscode.workspace.onDidCloseTextDocument (On_Ada (Did_Close)),
+    vscode.workspace.onDidSaveTextDocument (On_Ada (Did_Change)),
+    vscode.workspace.onDidChangeConfiguration ((Change) => {
+      Tracing = Configured ('trace.server', 'off');
+      if (Touches_The_Server (Change)) Restart (Diagnostics, Output, Status);
+    }),
+    Watched_Folders (Diagnostics, Output, Status),
+    vscode.commands.registerCommand ('ada83.build',
+                                     Run_On_The_Active_File (Build_Task)),
+    vscode.commands.registerCommand ('ada83.check',
+                                     Run_On_The_Active_File (Check_Task)),
+    vscode.commands.registerCommand ('ada83.restartServer',
+                                     () => Restart (Diagnostics, Output,
+                                                    Status)),
+    vscode.commands.registerCommand ('ada83.showOutput',
+                                     () => Output.show (true)),
+    vscode.tasks.registerTaskProvider ('ada83', Task_Provider),
+    ...Manual_Registration (Context.extensionPath));
+};
+
+const deactivate = Stop;
+
+module.exports = { activate, deactivate };
+
+//= The rest of the extension travels here, one line comment per
+//= line so that no payload can end the block it sits in: the
+//= grammar contains */ and the snippets contain ${. `make vsix`
+//= splits these back out into the shape VS Code installs.
+</script>
+
+<script id="package.json" type="application/json">
+{
+  "name": "ada83",
+  "displayName": "Ada 83",
+  "description": "Ada 83 (ANSI/MIL-STD-1815A) support, with diagnostics from the ada83 compiler itself.",
+  "version": "1.0.0",
+  "publisher": "ada83",
+  "license": "SEE LICENSE IN ../readme.md",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/AdaDoom3/Ada83.git"
+  },
+  "homepage": "https://github.com/AdaDoom3/Ada83#readme",
+  "bugs": {
+    "url": "https://github.com/AdaDoom3/Ada83/issues"
+  },
+  "qna": false,
+  "keywords": [
+    "ada",
+    "ada83",
+    "MIL-STD-1815A",
+    "compiler",
+    "llvm"
+  ],
+  "galleryBanner": {
+    "color": "#1e2430",
+    "theme": "dark"
+  },
+  "engines": {
+    "vscode": "^1.106.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Linters",
+    "Formatters",
+    "Snippets"
+  ],
+  "activationEvents": [
+    "onLanguage:ada83",
+    "onLanguageModelTool:search_ada83_manual",
+    "workspaceContains:**/*.ada",
+    "workspaceContains:**/*.adb",
+    "workspaceContains:**/*.ads"
+  ],
+  "icon": "ada83-icon.png",
+  "main": "./ada83-extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "ada83",
+        "aliases": [
+          "Ada 83",
+          "ada"
+        ],
+        "extensions": [
+          ".ada",
+          ".adb",
+          ".ads"
+        ],
+        "icon": {
+          "light": "./ada83-icon.png",
+          "dark": "./ada83-icon.png"
+        },
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "ada83",
+        "scopeName": "source.ada",
+        "path": "./syntaxes/ada83.tmLanguage.json"
+      }
+    ],
+    "snippets": [
+      {
+        "language": "ada83",
+        "path": "./snippets.json"
+      }
+    ],
+    "configuration": {
+      "title": "Ada 83",
+      "properties": {
+        "ada83.compilerPath": {
+          "type": "string",
+          "default": "ada83",
+          "description": "Path to the ada83 compiler. It is run as `ada83 --lsp`, and looks for ada83-runtime.ada beside itself."
+        },
+        "ada83.enable": {
+          "type": "boolean",
+          "default": true,
+          "description": "Report diagnostics from the compiler as you type."
+        },
+        "ada83.requestTimeout": {
+          "type": "number",
+          "default": 15000,
+          "description": "How long, in milliseconds, to wait for one answer from the language server. Every answer costs a compilation, so a large program needs a larger number."
+        },
+        "ada83.workspaceRequestTimeout": {
+          "type": "number",
+          "default": 120000,
+          "description": "How long, in milliseconds, to wait for a workspace-wide symbol search, which compiles every Ada source in the workspace root."
+        },
+        "ada83.includePaths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Directories searched for with-ed units, beyond the file's own and the workspace root. ${workspaceFolder} is substituted."
+        },
+        "ada83.syncDelay": {
+          "type": "number",
+          "default": 120,
+          "description": "How long, in milliseconds, typing must pause before the buffer is sent to the compiler. Every send costs a compilation."
+        },
+        "ada83.trace.server": {
+          "type": "string",
+          "enum": [
+            "off",
+            "messages",
+            "verbose"
+          ],
+          "default": "off",
+          "description": "Write the traffic between the editor and the language server to the Ada 83 output channel."
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "ada83.build",
+        "title": "Build This File",
+        "category": "Ada 83",
+        "icon": "$(gear)"
+      },
+      {
+        "command": "ada83.check",
+        "title": "Check This File",
+        "category": "Ada 83",
+        "icon": "$(check)"
+      },
+      {
+        "command": "ada83.restartServer",
+        "title": "Restart Language Server",
+        "category": "Ada 83",
+        "icon": "$(debug-restart)"
+      },
+      {
+        "command": "ada83.showOutput",
+        "title": "Show Server Log",
+        "category": "Ada 83",
+        "icon": "$(output)"
+      }
+    ],
+    "menus": {
+      "editor/title": [
+        {
+          "command": "ada83.build",
+          "when": "resourceLangId == ada83",
+          "group": "navigation@1"
+        },
+        {
+          "command": "ada83.check",
+          "when": "resourceLangId == ada83",
+          "group": "navigation@2"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "ada83.build",
+          "when": "resourceLangId == ada83"
+        },
+        {
+          "command": "ada83.check",
+          "when": "resourceLangId == ada83"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "ada83.build",
+          "when": "resourceLangId == ada83",
+          "group": "ada83@1"
+        },
+        {
+          "command": "ada83.check",
+          "when": "resourceLangId == ada83",
+          "group": "ada83@2"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "ada83.check",
+          "when": "resourceLangId == ada83",
+          "group": "ada83@1"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "ada83.build",
+        "key": "ctrl+alt+b",
+        "mac": "cmd+alt+b",
+        "when": "resourceLangId == ada83"
+      },
+      {
+        "command": "ada83.check",
+        "key": "ctrl+alt+c",
+        "mac": "cmd+alt+c",
+        "when": "resourceLangId == ada83"
+      }
+    ],
+    "walkthroughs": [
+      {
+        "id": "ada83.start",
+        "title": "Ada 83",
+        "description": "Compile and read Ada 83 with the compiler that checks it.",
+        "steps": [
+          {
+            "id": "ada83.start.compiler",
+            "title": "Point the extension at the compiler",
+            "description": "Everything here - the squiggles, the outline, the hovers, go to definition, completion, signature help and the quick fixes - is answered by `ada83` itself, so the extension needs to know where it is. Set it once, or leave it if `ada83` is on your PATH.\n[Set ada83.compilerPath](command:workbench.action.openSettings?%22ada83.compilerPath%22)",
+            "media": {
+              "image": "./ada83-icon.png",
+              "altText": "The Ada 83 icon"
+            },
+            "completionEvents": [
+              "onSettingChanged:ada83.compilerPath"
+            ]
+          },
+          {
+            "id": "ada83.start.write",
+            "title": "Write a program",
+            "description": "Open a file ending in .ada, .adb or .ads and type `hello` to expand a compilation unit that writes a line. The snippets cover packages, generics, task types, accept and selective wait, variant records, fixed point and representation clauses.\n[New Ada file](command:workbench.action.files.newUntitledFile?%7B%22languageId%22%3A%22ada83%22%7D)",
+            "media": {
+              "image": "./ada83-icon.png",
+              "altText": "The Ada 83 icon"
+            }
+          },
+          {
+            "id": "ada83.start.build",
+            "title": "Build it",
+            "description": "Ctrl+Alt+B builds the file in front of you into a native executable, Ctrl+Alt+C checks it without producing one. Both run as tasks, so their diagnostics land in the Problems panel.\n[Build this file](command:ada83.build)",
+            "media": {
+              "image": "./ada83-icon.png",
+              "altText": "The Ada 83 icon"
+            }
+          },
+          {
+            "id": "ada83.start.manual",
+            "title": "Read the standard, not a memory of it",
+            "description": "ANSI/MIL-STD-1815A travels inside this extension. A language model working here can search it with the `search_ada83_manual` tool, so a question of legality is answered out of the standard rather than out of a recollection of some later Ada.\n[Show the server log](command:ada83.showOutput)",
+            "media": {
+              "image": "./ada83-icon.png",
+              "altText": "The Ada 83 icon"
+            }
+          }
+        ]
+      }
+    ],
+    "chatInstructions": [
+      {
+        "path": "./ada83.instructions.md",
+        "when": "editorLangId == ada83"
+      }
+    ],
+    "languageModelTools": [
+      {
+        "name": "search_ada83_manual",
+        "toolReferenceName": "ada83Manual",
+        "displayName": "Search the Ada 83 Manual",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(book)",
+        "tags": [
+          "ada",
+          "ada83"
+        ],
+        "userDescription": "Look a rule up in the bundled Ada 83 reference manual.",
+        "modelDescription": "Searches the full text of the Ada 83 Reference Manual (ANSI/MIL-STD-1815A, the 1983 standard) and returns the matching clauses verbatim, each headed by its clause number and title. Use this tool whenever a question of Ada 83 legality, semantics or wording comes up: whether a construct exists in Ada 83 at all, reserved words, syntax productions, visibility and scope, overload resolution, type and subtype rules, derived types, discriminants, generics, tasking, exceptions, representation clauses, attributes, pragmas, the predefined environment, or implementation permissions and dependencies. It is also the way to read a clause you already know by number. Prefer it to recalling Ada from memory, which is usually Ada 95, 2005, 2012 or 2022 and wrong here. Query it with a clause number such as 4.5.7 or 13.1, or with the Ada terms in question such as universal_integer, elaboration order, derived type, static expression or representation clause.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "query": {
+              "type": "string",
+              "description": "A clause number such as 4.5.7, or the Ada 83 terms to look up, such as 'universal_integer' or 'overload resolution'."
+            }
+          },
+          "required": [
+            "query"
+          ]
+        }
+      }
+    ],
+    "problemMatchers": [
+      {
+        "name": "ada83",
+        "owner": "ada83",
+        "source": "ada83",
+        "fileLocation": [
+          "autoDetect",
+          "${workspaceFolder}"
+        ],
+        "pattern": {
+          "regexp": "^(\\S.*?):(\\d+):(\\d+):\\s+(error|warning|note|internal error):\\s+(.*)$",
+          "file": 1,
+          "line": 2,
+          "column": 3,
+          "severity": 4,
+          "message": 5
+        }
+      }
+    ],
+    "taskDefinitions": [
+      {
+        "type": "ada83",
+        "required": [
+          "task"
+        ],
+        "properties": {
+          "task": {
+            "type": "string",
+            "enum": [
+              "build",
+              "check"
+            ],
+            "description": "build compiles the active file to an executable; check resolves it and emits LLVM IR without writing anything."
+          }
+        }
+      }
+    ]
+  }
+}
+</script>
+
+<script id="README.md" type="text/markdown">
+# Ada 83
+
+Ada 83 (ANSI/MIL-STD-1815A) for Visual Studio Code, answered by the `ada83`
+compiler itself.
+
+`ada83 --lsp` is the language server. The same lexer, parser and resolver that
+produce an executable produce the squiggles, so the editor and the compiler
+cannot disagree about what Ada 83 is.
+
+## What it does
+
+| | |
+|---|---|
+| Diagnostics | as you type, with the compiler's own quick fixes and the locations each one points at |
+| Outline | every declaration the resolver saw, and it stays up while a file is mid-edit |
+| Hover | the declaration written as Ada declares it, and where it stands |
+| Go to definition | including into `ada83-runtime.ada`, so `Put_Line` opens the standard library |
+| References, highlights | across the file and the workspace |
+| Completion | names in scope, including the runtime's |
+| Signature help | the profile of the call being written, with the argument under the cursor marked |
+| Folding, symbols | from the compiler's view of the unit, not a guess at the text |
+| Syntax highlighting | all 63 reserved words, split the way the language divides them |
+| Snippets | thirty-four, from a compilation unit to a record representation clause |
+| Build and check | `Ctrl+Alt+B` and `Ctrl+Alt+C`, as tasks, with a problem matcher |
+
+## The standard, in the extension
+
+ANSI/MIL-STD-1815A travels inside this extension. A language model working in
+an Ada 83 workspace can search it with the `search_ada83_manual` tool, so a
+question of legality is answered out of the standard rather than out of a
+recollection of some later Ada.
+
+## Settings
+
+| | |
+|---|---|
+| `ada83.compilerPath` | where `ada83` is; `${workspaceFolder}` is substituted |
+| `ada83.enable` | report diagnostics as you type |
+| `ada83.syncDelay` | how long typing must pause before the buffer reaches the compiler |
+| `ada83.requestTimeout` | how long to wait for one answer |
+| `ada83.workspaceRequestTimeout` | how long to wait for a workspace-wide search |
+| `ada83.trace.server` | write the protocol traffic to the output channel |
+
+The compiler looks for `ada83-runtime.ada` beside its own executable, so keep
+the two together.
+</script>
+
+<script id="ada83.instructions.md" type="text/markdown">
+---
+name: Ada 83
+description: What Ada 83 (ANSI/MIL-STD-1815A) allows, and where to look it up.
+---
+
+These files are Ada 83 (ANSI/MIL-STD-1815A). They are not Ada 95, 2005, 2012
+or 2022, and the `ada83` compiler that checks them rejects anything later.
+
+Never write tagged types, protected objects or child units, and never write
+`abstract`, `aliased`, `requeue`, `until`, `interface`, `overriding`,
+`synchronized` or `some`: every one of those is Ada 95, 2005 or 2012. Ada 83
+has exactly 63 reserved words, and a construct needing a 64th is not Ada 83.
+
+Prefer the predefined packages the bundled runtime declares: `Standard`,
+`System`, `Text_IO` and its `Integer_IO`, `Float_IO`, `Fixed_IO` and
+`Enumeration_IO`, `Sequential_IO`, `Direct_IO`, `IO_Exceptions`, `Calendar`,
+`Low_Level_IO`, `Machine_Code`, `Unchecked_Conversion` and
+`Unchecked_Deallocation`.
+
+When legality is in question at all - visibility, overload resolution,
+representation clauses, implementation permissions, or whether a construct is
+Ada 83 in the first place - read the standard with the `search_ada83_manual`
+tool (`#ada83Manual`) instead of recalling modern Ada.
+</script>
+
+<script id="language-configuration.json" type="application/json">
+{
+  "comments": { "lineComment": "--" },
+  "brackets": [["(", ")"]],
+  "autoClosingPairs": [
+    { "open": "(", "close": ")", "notIn": ["string", "comment"] },
+    { "open": "\"", "close": "\"", "notIn": ["string", "comment"] }
+  ],
+  "autoCloseBefore": ";:.,=}) \n\t",
+  "surroundingPairs": [["(", ")"], ["\"", "\""]],
+  "wordPattern": "[A-Za-z][A-Za-z0-9_]*",
+  "folding": {
+    "offSide": false,
+    "markers": {
+      "start": "(?i)^\\s*(?:.*\\b(?:is|then|loop|record|declare|select|begin)\\s*|.*\\bbegin\\b.*)$",
+      "end": "(?i)^\\s*end\\b"
+    }
+  },
+  "onEnterRules": [
+    {
+      "beforeText": "^\\s*--.*$",
+      "action": { "indent": "none", "appendText": "-- " }
+    },
+    {
+      "beforeText": "(?i)^\\s*.*\\b(is|then|loop|record|declare|select|begin|else|do)\\s*$",
+      "action": { "indent": "indent" }
+    },
+    {
+      "beforeText": "(?i)^\\s*end\\b.*;\\s*$",
+      "action": { "indent": "none" }
+    }
+  ],
+  "indentationRules": {
+    "increaseIndentPattern": "(?i)^\\s*(.*\\b(is|then|loop|begin|record|declare|select|do|else)\\s*|.*\\b(procedure|function|package|task)\\b.*)$",
+    "decreaseIndentPattern": "(?i)^\\s*\\b(end|elsif|else|exception|when|begin|private)\\b"
+  }
+}
+</script>
+
+<script id="snippets.json" type="application/json">
+{
+  "procedure body": {
+    "prefix": "procedure",
+    "body": [
+      "procedure ${1:Name} is",
+      "begin",
+      "   $0",
+      "end ${1:Name};"
+    ],
+    "description": "A procedure body"
+  },
+  "function body": {
+    "prefix": "function",
+    "body": [
+      "function ${1:Name} return ${2:Type} is",
+      "begin",
+      "   $0",
+      "end ${1:Name};"
+    ],
+    "description": "A function body"
+  },
+  "package specification": {
+    "prefix": "package",
+    "body": [
+      "package ${1:Name} is",
+      "   $0",
+      "end ${1:Name};"
+    ],
+    "description": "A package specification"
+  },
+  "package body": {
+    "prefix": "packagebody",
+    "body": [
+      "package body ${1:Name} is",
+      "   $0",
+      "end ${1:Name};"
+    ],
+    "description": "A package body"
+  },
+  "for loop": {
+    "prefix": "for",
+    "body": [
+      "for ${1:I} in ${2:1 .. 10} loop",
+      "   $0",
+      "end loop;"
+    ],
+    "description": "A for loop"
+  },
+  "while loop": {
+    "prefix": "while",
+    "body": [
+      "while ${1:Condition} loop",
+      "   $0",
+      "end loop;"
+    ],
+    "description": "A while loop"
+  },
+  "if statement": {
+    "prefix": "if",
+    "body": [
+      "if ${1:Condition} then",
+      "   $0",
+      "end if;"
+    ],
+    "description": "An if statement"
+  },
+  "case statement": {
+    "prefix": "case",
+    "body": [
+      "case ${1:Expression} is",
+      "   when ${2:Choice} =>",
+      "      $0",
+      "   when others =>",
+      "      null;",
+      "end case;"
+    ],
+    "description": "A case statement"
+  },
+  "declare block": {
+    "prefix": "declare",
+    "body": [
+      "declare",
+      "   ${1:Name} : ${2:Type};",
+      "begin",
+      "   $0",
+      "end;"
+    ],
+    "description": "A block statement with declarations"
+  },
+  "record type": {
+    "prefix": "record",
+    "body": [
+      "type ${1:Name} is",
+      "   record",
+      "      ${2:Field} : ${3:Type};",
+      "   end record;"
+    ],
+    "description": "A record type declaration"
+  },
+  "exception handler": {
+    "prefix": "exception",
+    "body": [
+      "exception",
+      "   when ${1:Constraint_Error} =>",
+      "      $0"
+    ],
+    "description": "An exception handler"
+  },
+  "hello world": {
+    "prefix": "hello",
+    "body": [
+      "with Text_IO; use Text_IO;",
+      "procedure ${1:Hello} is",
+      "begin",
+      "   Put_Line (\"${2:Hello, Ada 83!}\");",
+      "end ${1:Hello};"
+    ],
+    "description": "A complete program"
+  },
+  "generic subprogram": {
+    "prefix": "generic",
+    "body": [
+      "generic",
+      "   type ${1:Element} is private;",
+      "procedure ${2:Name} (${3:Item} : in out ${1:Element});",
+      "",
+      "procedure ${2:Name} (${3:Item} : in out ${1:Element}) is",
+      "begin",
+      "   $0",
+      "end ${2:Name};"
+    ],
+    "description": "A generic procedure and its body"
+  },
+  "generic package": {
+    "prefix": "genericpackage",
+    "body": [
+      "generic",
+      "   type ${1:Element} is private;",
+      "package ${2:Name} is",
+      "   $0",
+      "end ${2:Name};"
+    ],
+    "description": "A generic package specification"
+  },
+  "task type": {
+    "prefix": "tasktype",
+    "body": [
+      "task type ${1:Worker} is",
+      "   entry ${2:Start} (${3:Item} : in ${4:Integer});",
+      "end ${1:Worker};",
+      "",
+      "task body ${1:Worker} is",
+      "begin",
+      "   accept ${2:Start} (${3:Item} : in ${4:Integer}) do",
+      "      $0",
+      "   end ${2:Start};",
+      "end ${1:Worker};"
+    ],
+    "description": "A task type, its entry and its body"
+  },
+  "task": {
+    "prefix": "task",
+    "body": [
+      "task ${1:Name};",
+      "",
+      "task body ${1:Name} is",
+      "begin",
+      "   $0",
+      "end ${1:Name};"
+    ],
+    "description": "A single task and its body"
+  },
+  "entry and accept": {
+    "prefix": "accept",
+    "body": [
+      "accept ${1:Name} (${2:Item} : in ${3:Integer}) do",
+      "   $0",
+      "end ${1:Name};"
+    ],
+    "description": "An accept statement with a body"
+  },
+  "selective wait": {
+    "prefix": "select",
+    "body": [
+      "select",
+      "   accept ${1:Name} do",
+      "      $0",
+      "   end ${1:Name};",
+      "or",
+      "   terminate;",
+      "end select;"
+    ],
+    "description": "A selective wait with a terminate alternative"
+  },
+  "timed entry call": {
+    "prefix": "selectdelay",
+    "body": [
+      "select",
+      "   ${1:Worker}.${2:Start} (${3:Item});",
+      "or",
+      "   delay ${4:1.0};",
+      "   $0",
+      "end select;"
+    ],
+    "description": "A timed entry call"
+  },
+  "variant record": {
+    "prefix": "variant",
+    "body": [
+      "type ${1:Shape} (${2:Kind} : ${3:Shape_Kind} := ${4:Circle}) is",
+      "   record",
+      "      case ${2:Kind} is",
+      "         when ${4:Circle} =>",
+      "            ${5:Radius} : ${6:Float};",
+      "         when others =>",
+      "            null;",
+      "      end case;",
+      "   end record;$0"
+    ],
+    "description": "A record type with a variant part"
+  },
+  "enumeration type": {
+    "prefix": "enum",
+    "body": [
+      "type ${1:Colour} is (${2:Red}, ${3:Amber}, ${4:Green});$0"
+    ],
+    "description": "An enumeration type"
+  },
+  "array type": {
+    "prefix": "array",
+    "body": [
+      "type ${1:Table} is array (${2:Positive} range <>) of ${3:Integer};$0"
+    ],
+    "description": "An unconstrained array type"
+  },
+  "subtype with range": {
+    "prefix": "subtype",
+    "body": [
+      "subtype ${1:Small} is ${2:Integer} range ${3:0} .. ${4:255};$0"
+    ],
+    "description": "A constrained subtype"
+  },
+  "fixed point type": {
+    "prefix": "fixed",
+    "body": [
+      "type ${1:Money} is delta ${2:0.01} range ${3:0.0} .. ${4:1_000.0};$0"
+    ],
+    "description": "A fixed point type"
+  },
+  "floating point type": {
+    "prefix": "float",
+    "body": [
+      "type ${1:Real} is digits ${2:12};$0"
+    ],
+    "description": "A floating point type"
+  },
+  "access type": {
+    "prefix": "access",
+    "body": [
+      "type ${1:Link} is access ${2:Node};$0"
+    ],
+    "description": "An access type"
+  },
+  "private type": {
+    "prefix": "private",
+    "body": [
+      "type ${1:Handle} is private;",
+      "private",
+      "   type ${1:Handle} is new ${2:Integer};$0"
+    ],
+    "description": "A private type and its full declaration"
+  },
+  "exception declaration": {
+    "prefix": "exceptiondecl",
+    "body": [
+      "${1:Name}_Error : exception;$0"
+    ],
+    "description": "An exception declaration"
+  },
+  "raise statement": {
+    "prefix": "raise",
+    "body": [
+      "raise ${1:Constraint_Error};$0"
+    ],
+    "description": "A raise statement"
+  },
+  "loop with exit": {
+    "prefix": "loop",
+    "body": [
+      "${1:Search} :",
+      "loop",
+      "   exit ${1:Search} when ${2:Done};",
+      "   $0",
+      "end loop ${1:Search};"
+    ],
+    "description": "A named loop with an exit"
+  },
+  "text io use": {
+    "prefix": "textio",
+    "body": [
+      "with Text_IO; use Text_IO;",
+      "procedure ${1:Main} is",
+      "begin",
+      "   Put_Line (\"${2:text}\");$0",
+      "end ${1:Main};"
+    ],
+    "description": "A main procedure that writes a line"
+  },
+  "integer io instantiation": {
+    "prefix": "integerio",
+    "body": [
+      "package ${1:Int_IO} is new Text_IO.Integer_IO (${2:Integer});",
+      "use ${1:Int_IO};$0"
+    ],
+    "description": "An instantiation of Text_IO.Integer_IO"
+  },
+  "pragma": {
+    "prefix": "pragma",
+    "body": [
+      "pragma ${1|Inline,Pack,Priority,Suppress,Elaborate,Optimize|} (${2:Name});$0"
+    ],
+    "description": "A pragma"
+  },
+  "representation clause": {
+    "prefix": "for use",
+    "body": [
+      "for ${1:Register} use",
+      "   record",
+      "      ${2:Field} at ${3:0} range ${4:0} .. ${5:7};",
+      "   end record;$0"
+    ],
+    "description": "A record representation clause"
+  }
+}
+</script>
+
+<script id="syntaxes/ada83.tmLanguage.json" type="application/json">
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Ada 83",
+  "scopeName": "source.ada",
+  "patterns": [
+    { "include": "#comment" },
+    { "include": "#string" },
+    { "include": "#character" },
+    { "include": "#number" },
+    { "include": "#context" },
+    { "include": "#label" },
+    { "include": "#declaration" },
+    { "include": "#closing" },
+    { "include": "#loop_parameter" },
+    { "include": "#association" },
+    { "include": "#attribute" },
+    { "include": "#predefined" },
+    { "include": "#literal" },
+    { "include": "#keyword" },
+    { "include": "#parameter" },
+    { "include": "#operator" },
+    { "include": "#punctuation" }
+  ],
+  "repository": {
+    "comment": {
+      "name": "comment.line.double-dash.ada",
+      "match": "--.*$"
+    },
+    "string": {
+      "name": "string.quoted.double.ada",
+      "begin": "\"",
+      "end": "\"",
+      "patterns": [
+        { "name": "constant.character.escape.ada", "match": "\"\"" }
+      ]
+    },
+    "character": {
+      "name": "string.quoted.single.ada",
+      "match": "'(?:[^']|'')'"
+    },
+    "number": {
+      "patterns": [
+        {
+          "name": "constant.numeric.based.ada",
+          "match": "\\b\\d[\\d_]*#[0-9A-Fa-f_]+(?:\\.[0-9A-Fa-f_]+)?#(?:[Ee][+-]?\\d[\\d_]*)?"
+        },
+        {
+          "name": "constant.numeric.decimal.ada",
+          "match": "\\b\\d[\\d_]*(?:\\.[\\d_]+)?(?:[Ee][+-]?\\d[\\d_]*)?\\b"
+        }
+      ]
+    },
+    "context": {
+      "match": "(?i)\\b(with|use)\\s+(?:(type)\\s+)?([A-Za-z][A-Za-z0-9_]*(?:\\.[A-Za-z][A-Za-z0-9_]*)*)",
+      "captures": {
+        "1": { "name": "keyword.other.ada" },
+        "2": { "name": "storage.type.ada" },
+        "3": { "name": "entity.name.namespace.ada" }
+      }
+    },
+    "label": {
+      "patterns": [
+        {
+          "match": "(<<)\\s*([A-Za-z][A-Za-z0-9_]*)\\s*(>>)",
+          "captures": {
+            "1": { "name": "punctuation.definition.label.ada" },
+            "2": { "name": "entity.name.label.ada" },
+            "3": { "name": "punctuation.definition.label.ada" }
+          }
+        },
+        {
+          "match": "(?i)^\\s*([A-Za-z][A-Za-z0-9_]*)\\s*(:)\\s*(?=(?:for\\b|while\\b|loop\\b|declare\\b|begin\\b|$))",
+          "captures": {
+            "1": { "name": "entity.name.label.ada" },
+            "2": { "name": "punctuation.separator.ada" }
+          }
+        }
+      ]
+    },
+    "declaration": {
+      "patterns": [
+        {
+          "match": "(?i)\\b(procedure|function|entry)\\s+(\"[^\"]+\"|[A-Za-z][A-Za-z0-9_]*)",
+          "captures": {
+            "1": { "name": "storage.type.ada" },
+            "2": { "name": "entity.name.function.ada" }
+          }
+        },
+        {
+          "match": "(?i)\\b(package)\\s+(body\\s+)?([A-Za-z][A-Za-z0-9_]*(?:\\.[A-Za-z][A-Za-z0-9_]*)*)",
+          "captures": {
+            "1": { "name": "storage.type.ada" },
+            "2": { "name": "storage.type.ada" },
+            "3": { "name": "entity.name.namespace.ada" }
+          }
+        },
+        {
+          "match": "(?i)\\b(task)\\s+(body\\s+|type\\s+)?([A-Za-z][A-Za-z0-9_]*)",
+          "captures": {
+            "1": { "name": "storage.type.ada" },
+            "2": { "name": "storage.type.ada" },
+            "3": { "name": "entity.name.type.ada" }
+          }
+        },
+        {
+          "match": "(?i)\\b(type|subtype)\\s+([A-Za-z][A-Za-z0-9_]*)",
+          "captures": {
+            "1": { "name": "storage.type.ada" },
+            "2": { "name": "entity.name.type.ada" }
+          }
+        },
+        {
+          "match": "(?i)\\b(pragma)\\s+([A-Za-z][A-Za-z0-9_]*)",
+          "captures": {
+            "1": { "name": "keyword.other.ada" },
+            "2": { "name": "entity.name.tag.ada" }
+          }
+        },
+        {
+          "match": "(?i)\\b(raise|new)\\s+([A-Za-z][A-Za-z0-9_]*(?:\\.[A-Za-z][A-Za-z0-9_]*)*)",
+          "captures": {
+            "1": { "name": "keyword.control.ada" },
+            "2": { "name": "entity.name.type.ada" }
+          }
+        },
+        {
+          "match": "(?i)\\b([A-Za-z][A-Za-z0-9_]*)\\s*(:)\\s*(exception)\\b",
+          "captures": {
+            "1": { "name": "entity.name.type.ada" },
+            "2": { "name": "punctuation.separator.ada" },
+            "3": { "name": "keyword.control.ada" }
+          }
+        }
+      ]
+    },
+    "closing": {
+      "match": "(?i)\\b(end)\\s+(?!(?:if|case|loop|record|select)\\b)(\"[^\"]+\"|[A-Za-z][A-Za-z0-9_]*)",
+      "captures": {
+        "1": { "name": "keyword.control.ada" },
+        "2": { "name": "entity.name.section.ada" }
+      }
+    },
+    "loop_parameter": {
+      "match": "(?i)\\b(for)\\s+([A-Za-z][A-Za-z0-9_]*)\\s+(in)\\b\\s*(reverse\\b)?",
+      "captures": {
+        "1": { "name": "keyword.control.ada" },
+        "2": { "name": "variable.other.loop.ada" },
+        "3": { "name": "storage.modifier.ada" },
+        "4": { "name": "storage.modifier.ada" }
+      }
+    },
+    "association": {
+      "match": "(?i)\\b([A-Za-z][A-Za-z0-9_]*)\\s*(=>)",
+      "captures": {
+        "1": { "name": "variable.parameter.ada" },
+        "2": { "name": "keyword.operator.ada" }
+      }
+    },
+    "attribute": {
+      "match": "(')([A-Za-z][A-Za-z0-9_]*)",
+      "captures": {
+        "1": { "name": "punctuation.definition.attribute.ada" },
+        "2": { "name": "support.other.attribute.ada" }
+      }
+    },
+    "predefined": {
+      "patterns": [
+        {
+          "name": "support.type.ada",
+          "match": "(?i)\\b(Integer|Natural|Positive|Float|Boolean|Character|String|Duration|Short_Integer|Long_Integer|Short_Float|Long_Float|Short_Short_Integer|Long_Long_Integer|Universal_Integer|Universal_Real)\\b"
+        },
+        {
+          "name": "support.class.ada",
+          "match": "(?i)\\b(Standard|System|Calendar|Text_IO|Sequential_IO|Direct_IO|IO_Exceptions|Low_Level_IO|Machine_Code|Unchecked_Conversion|Unchecked_Deallocation)\\b"
+        }
+      ]
+    },
+    "literal": {
+      "patterns": [
+        {
+          "name": "constant.language.boolean.ada",
+          "match": "(?i)\\b(True|False)\\b"
+        },
+        {
+          "name": "support.class.exception.ada",
+          "match": "(?i)\\b(Constraint_Error|Numeric_Error|Program_Error|Storage_Error|Tasking_Error|Status_Error|Mode_Error|Name_Error|Use_Error|Device_Error|End_Error|Data_Error|Layout_Error|Time_Error)\\b"
+        }
+      ]
+    },
+    "keyword": {
+      "patterns": [
+        {
+          "name": "constant.language.null.ada",
+          "match": "(?i)\\bnull\\b"
+        },
+        {
+          "name": "keyword.other.ada",
+          "match": "(?i)\\b(pragma|use|with)\\b"
+        },
+        {
+          "name": "storage.type.ada",
+          "match": "(?i)\\b(access|array|body|entry|function|generic|package|procedure|record|subtype|task|type)\\b"
+        },
+        {
+          "name": "storage.modifier.ada",
+          "match": "(?i)\\b(all|at|constant|delta|digits|in|limited|new|of|out|private|range|renames|reverse|separate)\\b"
+        },
+        {
+          "name": "keyword.control.ada",
+          "match": "(?i)\\b(abort|accept|begin|case|declare|delay|do|else|elsif|end|exception|exit|for|goto|if|is|loop|others|raise|return|select|terminate|then|when|while)\\b"
+        },
+        {
+          "name": "keyword.operator.word.ada",
+          "match": "(?i)\\b(abs|and|mod|not|or|rem|xor)\\b"
+        }
+      ]
+    },
+    "parameter": {
+      "match": "(?i)\\b([A-Za-z][A-Za-z0-9_]*)\\s*(:)\\s*((?:in\\s+out|in|out)\\b)?",
+      "captures": {
+        "1": { "name": "variable.parameter.ada" },
+        "2": { "name": "punctuation.separator.ada" },
+        "3": { "name": "storage.modifier.ada" }
+      }
+    },
+    "operator": {
+      "name": "keyword.operator.ada",
+      "match": "(:=|=>|\\.\\.|\\*\\*|/=|>=|<=|<>|[+\\-*/&<>=|])"
+    },
+    "punctuation": {
+      "patterns": [
+        { "name": "punctuation.terminator.ada", "match": ";" },
+        { "name": "punctuation.separator.ada", "match": "[,:.]" },
+        { "name": "punctuation.section.parens.ada", "match": "[()]" }
+      ]
+    }
+  }
+}
+</script>
+
+<script id="extension.vsixmanifest" type="application/xml">
+<?xml version="1.0" encoding="utf-8"?>
+<PackageManifest Version="2.0.0"
+    xmlns="http://schemas.microsoft.com/developer/vsx-schema/2011"
+    xmlns:d="http://schemas.microsoft.com/developer/vsx-schema-design/2011">
+  <Metadata>
+    <Identity Language="en-US" Id="ada83" Version="1.0.0" Publisher="ada83" />
+    <DisplayName>Ada 83</DisplayName>
+    <Description xml:space="preserve">Ada 83 (ANSI/MIL-STD-1815A) support. Diagnostics, go to definition, hover, outline, completion, signature help, folding and quick fixes come from the ada83 compiler itself.</Description>
+    <Tags>ada,ada83,mil-std-1815a</Tags>
+    <Categories>Programming Languages,Linters</Categories>
+    <GalleryFlags>Public</GalleryFlags>
+    <Properties>
+      <Property Id="Microsoft.VisualStudio.Code.Engine" Value="^1.106.0" />
+      <Property Id="Microsoft.VisualStudio.Code.ExtensionDependencies" Value="" />
+    </Properties>
+  </Metadata>
+  <Installation>
+    <InstallationTarget Id="Microsoft.VisualStudio.Code" />
+  </Installation>
+  <Dependencies />
+  <Assets>
+    <Asset Type="Microsoft.VisualStudio.Code.Manifest" Path="extension/package.json" Addressable="true" />
+    <Asset Type="Microsoft.VisualStudio.Services.Content.Details" Path="extension/README.md" Addressable="true" />
+  </Assets>
+</PackageManifest>
+</script>
+
+<script id="[Content_Types].xml" type="application/xml">
+<?xml version="1.0" encoding="utf-8"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="json" ContentType="application/json" />
+  <Default Extension="js" ContentType="application/javascript" />
+  <Default Extension="ada" ContentType="text/plain" />
+  <Default Extension="md" ContentType="text/markdown" />
+  <Default Extension="vsixmanifest" ContentType="text/xml" />
+</Types>
+</script>
