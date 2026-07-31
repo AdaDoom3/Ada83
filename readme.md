@@ -9,7 +9,14 @@ backend.
 | -------- | ------- | ----- |
 | Linux    | `make`  | GCC or Clang; installs libLLVM via the system package manager if absent |
 | macOS    | `make`, or run `make.applescript` | Apple Clang; libLLVM via Homebrew |
-| Windows  | `make.bat` | GCC, Clang or Zig, whichever is found first; downloads Zig if none is present. `LLVM-C.dll` and its companion DLLs are unpacked from `llvm-c.zip` and must stay beside `ada83.exe` |
+| Windows  | `make.bat` | GCC, Clang or Zig, whichever is found first; downloads Zig if none is present |
+
+Prebuilt compilers ship with the repository:
+
+| Archive | Contents |
+| ------- | -------- |
+| [`ada83-macos.zip`](ada83-macos.zip) | `ada83`, universal x86_64 + arm64; libLLVM via Homebrew |
+| [`ada83-windows.zip`](ada83-windows.zip) | `ada83.exe`; unzip [`llvm-c.zip`](llvm-c.zip) beside it for `LLVM-C.dll` and its companion DLLs |
 
 The compiler also cross-builds with [Zig](https://ziglang.org) from any host,
 for example:

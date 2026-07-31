@@ -33953,14 +33953,22 @@ Bound_Temps Emit_Bounds_From_Fat_Dim (u32 fat_ptr,
   return result;
 }
 
-/* The SJLJ jump buffer holds five words: the caller's frame pointer, the
-   resume address, and the stack pointer.  llvm.eh.sjlj.setjmp records only
-   the resume address; the first and third slots are filled here, exactly as
-   Clang lowers __builtin_setjmp.  The call-site returns_twice attribute is
+/* On POSIX hosts the handler frame is armed with LLVM's SJLJ intrinsics:
+   the buffer holds the frame pointer, the resume address and the stack
+   pointer; llvm.eh.sjlj.setjmp records only the resume address, so the
+   first and third slots are filled here, exactly as Clang lowers
+   __builtin_setjmp.  On Windows, where LLVM's Win64 SJLJ lowering is
+   broken, the runtime's own __ada_setjmp saves the callee-saved register
+   set itself.  Either way the call-site returns_twice attribute is
    load-bearing: it makes the whole function expose a returns-twice call,
    which stops the register allocator from reusing spill slots whose old
    values are still needed on the longjmp path. */
 u32 Emit_Sjlj_Setjmp (u32 jmp_buf) {
+#ifdef _WIN32
+  return Emit_Call_Result ("" C_INT_TYPE " @__ada_setjmp(ptr %s)"
+                           " returns_twice",
+                           REG (jmp_buf));
+#else
   u32 frame_address = Emit_Call_Result ("ptr @llvm.frameaddress.p0(i32 0)");
   Emit ("  store ptr %s, ptr %s\n", REG (frame_address), REG (jmp_buf));
   u32 stack_pointer = Emit_Call_Result ("ptr @llvm.stacksave.p0()");
@@ -33970,6 +33978,7 @@ u32 Emit_Sjlj_Setjmp (u32 jmp_buf) {
   return Emit_Call_Result ("" C_INT_TYPE " @llvm.eh.sjlj.setjmp(ptr %s)"
                            " returns_twice",
                            REG (jmp_buf));
+#endif
 }
 
 Exception_Setup Emit_Exception_Handler_Setup () {
@@ -33978,10 +33987,10 @@ Exception_Setup Emit_Exception_Handler_Setup () {
   u32 saved_master = Emit_Call_Result ("ptr @__ada_master_current()");
 
   setup.handler_frame =
-    Emit_Frame_Slot ("alloca { ptr, [200 x i8] }, align 16  ; handler frame\n");
+    Emit_Frame_Slot ("alloca { ptr, [240 x i8] }, align 16  ; handler frame\n");
   Emit_Call_Void ("void @__ada_push_handler(ptr %s)",  REG (setup.handler_frame));
   setup.jmp_buf = Emit_Temp ();
-  Emit ("  %s = getelementptr { ptr, [200 x i8] }, ptr %s, i32 0, i32 1\n",
+  Emit ("  %s = getelementptr { ptr, [240 x i8] }, ptr %s, i32 0, i32 1\n",
      REG (setup.jmp_buf),  REG (setup.handler_frame));
   u32 setjmp_result = Emit_Sjlj_Setjmp (setup.jmp_buf);
   I1 is_normal = Emit_Icmp_Const ("eq", REP_C_INT, setjmp_result, 0);
@@ -37075,11 +37084,11 @@ u32 Emit_Entry_Default_To_Slot (Node *def, Type *param_type) {
 
 void Emit_Deferred_Abort_Check () {
   if (not cg->in_task_body or not cg->task_body_done_label) return;
-  Emit_Call_Void ("i32 @pthread_mutex_lock(ptr @__rv_mutex)");
+  Emit_Call_Void ("void @__ada_rt_lock()");
   u32 ap = Emit_Result (
     TASK_FIELD ("%%__self_tcb", ABORT_PENDING) "\n");
   u32 apv = Emit_Result ("load i8, ptr %s\n",  REG (ap));
-  Emit_Call_Void ("i32 @pthread_mutex_unlock(ptr @__rv_mutex)");
+  Emit_Call_Void ("void @__ada_rt_unlock()");
   I1 aborted = Emit_Boolean_Truth_Test (apv);
   u32 cont = cg->label_id++;
   Emit ("  br i1 %s, label %%L%u, label %%L%u\n",
@@ -46128,7 +46137,7 @@ void Emit_Selective_Wait_Publish (Node_List *alternatives,
     Emit ("  store i64 %s, ptr %s\n",  REG (entry_index_64),  REG (slot_ptr));
   }
 
-  Emit_Call_Void ("i32 @pthread_mutex_lock(ptr @__rv_mutex)");
+  Emit_Call_Void ("void @__ada_rt_lock()");
   u32 open_list_field = Emit_Result (
     TASK_FIELD ("%%__self_tcb", OPEN_ENTRY_LIST) "\n");
   Emit ("  store ptr %s, ptr %s\n",  REG (open_list),  REG (open_list_field));
@@ -46159,7 +46168,7 @@ void Emit_Selective_Wait_Publish (Node_List *alternatives,
       Emit ("  store i8 1, ptr %s  ; at terminate alternative\n",
             REG (terminate_field));
   }
-  Emit_Call_Void ("i32 @pthread_mutex_unlock(ptr @__rv_mutex)");
+  Emit_Call_Void ("void @__ada_rt_unlock()");
 }
 
 void Emit_Selective_Wait_Retract (bool has_terminate) {
@@ -46199,11 +46208,11 @@ void Emit_Terminate_Alternative (Node *alternative,
   Emit_Label_Here (terminate_label);
   u32 completed_field = Emit_Result (
     TASK_FIELD ("%%__self_tcb", COMPLETED) "\n");
-  Emit_Call_Void ("i32 @pthread_mutex_lock(ptr @__rv_mutex)");
+  Emit_Call_Void ("void @__ada_rt_lock()");
   Emit ("  store i8 1, ptr %s  ; completed (terminate)\n",  REG (completed_field));
   Emit_Call_Void ("void @__ada_release_callers(ptr %%__self_tcb)");
-  Emit_Call_Void ("i32 @pthread_cond_broadcast(ptr @__term_cond)");
-  Emit_Call_Void ("i32 @pthread_mutex_unlock(ptr @__rv_mutex)");
+  Emit_Call_Void ("void @__ada_rt_broadcast()");
+  Emit_Call_Void ("void @__ada_rt_unlock()");
   Emit_Master_Cleanup_For_Return ();
   Emit_Call_Void ("void @__ada_pop_handler()");
   Emit ("  ret ptr null\n");
@@ -46676,7 +46685,7 @@ void Lower_Statement (Node *node) {
           Emit ("  ; -- has %u exception handler(s)\n", node->block_stmt.handlers.count);
 
           Emit ("  ; -- frame slot for the exception handler frame\n");
-          u32 handler_frame = Emit_Frame_Slot ("alloca { ptr, [200 x i8] }, align 16  ; handler frame\n");
+          u32 handler_frame = Emit_Frame_Slot ("alloca { ptr, [240 x i8] }, align 16  ; handler frame\n");
 
           Emit ("  ; -- block declarations (not covered by handler)\n");
           Secondary_Stack_Master secondary = Emit_Secondary_Stack_Enter_If (
@@ -46695,7 +46704,7 @@ void Lower_Statement (Node *node) {
           Emit ("  ; -- push handler and record the resumption point\n");
           Emit_Call_Void ("void @__ada_push_handler(ptr %s)",  REG (handler_frame));
 
-          u32 jmp_buf = Emit_Result ("getelementptr { ptr, [200 x i8] }, ptr %s, i32 0, i32 1\n",  REG (handler_frame));
+          u32 jmp_buf = Emit_Result ("getelementptr { ptr, [240 x i8] }, ptr %s, i32 0, i32 1\n",  REG (handler_frame));
           u32 setjmp_result = Emit_Sjlj_Setjmp (jmp_buf);
 
           I1 is_normal = Emit_Icmp_Const ("eq", REP_C_INT, setjmp_result, 0);
@@ -50461,13 +50470,13 @@ void Lower_Task_Body (Node *node) {
   Lower_Declaration_List (&node->task_body.declarations);
   Emit_Call_Void ("void @__ada_pop_handler()");
 
-  Emit_Call_Void ("i32 @pthread_mutex_lock(ptr @__rv_mutex)");
+  Emit_Call_Void ("void @__ada_rt_lock()");
   Emit ("  %%__as_slot = "
         TASK_FIELD ("%%__self_tcb", ACTIVATION_STATE) "\n");
   Emit ("  store i8 " TEXT_OF (ACTIVATION_STATE_COMPLETE)
         ", ptr %%__as_slot\n");
-  Emit_Call_Void ("i32 @pthread_cond_broadcast(ptr @__term_cond)");
-  Emit_Call_Void ("i32 @pthread_mutex_unlock(ptr @__rv_mutex)");
+  Emit_Call_Void ("void @__ada_rt_broadcast()");
+  Emit_Call_Void ("void @__ada_rt_unlock()");
   Emit_Activate_Pending_Tasks (master.saved_pa);
 
   u32 body_done = Emit_Label ();
@@ -50507,19 +50516,19 @@ void Lower_Task_Body (Node *node) {
   Emit_Call_Void ("void @__ada_pop_handler()");
 
   Emit_Label_Here (body_done);
-  Emit_Call_Void ("i32 @pthread_mutex_lock(ptr @__rv_mutex)");
+  Emit_Call_Void ("void @__ada_rt_lock()");
   Emit ("  %%__cmp_slot = "
         TASK_FIELD ("%%__self_tcb", COMPLETED) "\n");
   Emit ("  store i8 1, ptr %%__cmp_slot\n");
   Emit_Call_Void ("void @__ada_release_callers(ptr %%__self_tcb)");
-  Emit_Call_Void ("i32 @pthread_cond_broadcast(ptr @__term_cond)");
-  Emit_Call_Void ("i32 @pthread_mutex_unlock(ptr @__rv_mutex)");
+  Emit_Call_Void ("void @__ada_rt_broadcast()");
+  Emit_Call_Void ("void @__ada_rt_unlock()");
   Emit_Master_Exit (master);
   Emit ("  ret ptr null\n");
 
   Emit_Label_Here (decl_exc.handler_label);
   Emit_Call_Void ("void @__ada_pop_handler()");
-  Emit_Call_Void ("i32 @pthread_mutex_lock(ptr @__rv_mutex)");
+  Emit_Call_Void ("void @__ada_rt_lock()");
   Emit ("  %%__as_slot.h = "
         TASK_FIELD ("%%__self_tcb", ACTIVATION_STATE) "\n");
   Emit ("  %%__as_cur = load i8, ptr %%__as_slot.h\n");
@@ -50528,8 +50537,8 @@ void Lower_Task_Body (Node *node) {
   Emit ("  %%__as_new = select i1 %%__as_unset, i8 "
         TEXT_OF (ACTIVATION_STATE_FAILED) ", i8 %%__as_cur\n");
   Emit ("  store i8 %%__as_new, ptr %%__as_slot.h\n");
-  Emit_Call_Void ("i32 @pthread_cond_broadcast(ptr @__term_cond)");
-  Emit_Call_Void ("i32 @pthread_mutex_unlock(ptr @__rv_mutex)");
+  Emit_Call_Void ("void @__ada_rt_broadcast()");
+  Emit_Call_Void ("void @__ada_rt_unlock()");
   Emit ("  ret ptr null\n");
   Emit ("}\n\n");
 
@@ -51914,6 +51923,7 @@ void Emit_Program_Entry_Point () {
 
   Emit ("@__library_anchors = private global i64 0\n");
   Emit ("define i32 @main() {\n");
+  Emit ("  call void @__ada_tasking_init()\n");
 
   bool *elaborated = cg->elab_func_count
     ? Arena_Allocate (cg->elab_func_count * sizeof (bool)) : NULL;
@@ -52239,9 +52249,11 @@ void Emit_Runtime_Declarations () {
     "; External declarations\n"
     "declare i32 @memcmp (ptr, ptr, i64)\n"
     "declare i32 @strncasecmp (ptr, ptr, i64)\n"
+#ifndef _WIN32
     "declare i32 @llvm.eh.sjlj.setjmp(ptr) returns_twice\n"
     "declare void @llvm.eh.sjlj.longjmp(ptr) noreturn\n"
     "declare ptr @llvm.frameaddress.p0(i32)\n"
+#endif
     "declare void @exit (i32)\n"
     "declare ptr @malloc (i64)\n"
     "declare ptr @calloc (i64, i64)\n"
@@ -52249,19 +52261,31 @@ void Emit_Runtime_Declarations () {
     "declare void @free (ptr)\n"
 #ifdef _WIN32
     "declare void @GetCurrentThreadStackLimits(ptr, ptr)\n"
+    "declare void @AcquireSRWLockExclusive(ptr)\n"
+    "declare void @ReleaseSRWLockExclusive(ptr)\n"
+    "declare i32 @SleepConditionVariableSRW(ptr, ptr, i32, i32)\n"
+    "declare void @WakeAllConditionVariable(ptr)\n"
+    "declare void @WakeConditionVariable(ptr)\n"
+    "declare ptr @CreateThread(ptr, i64, ptr, ptr, i32, ptr)\n"
+    "declare i32 @WaitForSingleObject(ptr, i32)\n"
+    "declare i32 @CloseHandle(ptr)\n"
+    "declare void @GetSystemTimeAsFileTime(ptr)\n"
+    "declare void @Sleep(i32)\n"
 #else
     "declare i32 @getrlimit(i32, ptr)\n"
-#endif
     "declare i32 @nanosleep(ptr, ptr)\n"
     "declare i32 @clock_gettime(i32, ptr)\n"
     "declare i32 @pthread_create(ptr, ptr, ptr, ptr)\n"
     "declare i32 @pthread_join(ptr, ptr)\n"
-    "declare i32 @pthread_cancel(ptr)\n"
-    "declare void @pthread_exit (ptr)\n"
+    "declare i32 @pthread_mutex_init(ptr, ptr)\n"
+    "declare i32 @pthread_cond_init(ptr, ptr)\n"
     "declare i32 @pthread_mutex_lock(ptr)\n"
     "declare i32 @pthread_mutex_unlock(ptr)\n"
     "declare i32 @pthread_cond_wait(ptr, ptr)\n"
     "declare i32 @pthread_cond_timedwait(ptr, ptr, ptr)\n"
+    "declare i32 @pthread_cond_signal(ptr)\n"
+    "declare i32 @pthread_cond_broadcast(ptr)\n"
+#endif
     "declare ptr @llvm.stacksave.p0()\n"
     "declare void @llvm.stackrestore.p0(ptr)\n");
 #if defined(__linux__) and (defined(SIMD_X86_64) or defined(SIMD_ARM64))
@@ -52277,8 +52301,6 @@ void Emit_Runtime_Declarations () {
     "declare void @llvm.x86.sse2.pause()\n");
 #endif
   Emit_Verbatim (
-    "declare i32 @pthread_cond_signal(ptr)\n"
-    "declare i32 @pthread_cond_broadcast(ptr)\n"
     "declare i32 @printf (ptr, ...)\n"
     "declare i32 @putchar(i32)\n"
     "declare i32 @getchar()\n"
@@ -52806,8 +52828,181 @@ void Emit_Runtime_Globals () {
     "@__self_task = linkonce_odr thread_local(initialexec) global ptr null\n"
     "; stack floor per task; -1 until __ada_stack_check sets it\n"
     "@__stack_floor = linkonce_odr thread_local(initialexec) global i64 -1\n"
+#ifdef _WIN32
+    "; the runtime lock and condition are a native SRWLOCK and\n"
+    "; CONDITION_VARIABLE, for which zeroed storage is the documented\n"
+    "; static initialiser\n"
+    "@__term_cond = linkonce_odr global ptr null, align 8\n"
+    "@__rv_mutex = linkonce_odr global ptr null, align 8\n"
+    "define linkonce_odr void @__ada_tasking_init() {\n"
+    "  ret void\n"
+    "}\n"
+    "define linkonce_odr void @__ada_rt_lock() {\n"
+    "  call void @AcquireSRWLockExclusive(ptr @__rv_mutex)\n"
+    "  ret void\n"
+    "}\n"
+    "define linkonce_odr void @__ada_rt_unlock() {\n"
+    "  call void @ReleaseSRWLockExclusive(ptr @__rv_mutex)\n"
+    "  ret void\n"
+    "}\n"
+    "define linkonce_odr void @__ada_rt_wait() {\n"
+    "  %_w = call i32 @SleepConditionVariableSRW(ptr @__term_cond,"
+      " ptr @__rv_mutex, i32 -1, i32 0)\n"
+    "  ret void\n"
+    "}\n"
+    "; deadline is absolute microseconds from __ada_rt_now_us; returns 1\n"
+    "; when the deadline passed, 0 after any wakeup\n"
+    "define linkonce_odr i32 @__ada_rt_timed_wait(ptr %deadline) {\n"
+    "entry:\n"
+    "  %d = load i64, ptr %deadline\n"
+    "  %now = call i64 @__ada_rt_now_us()\n"
+    "  %late = icmp sge i64 %now, %d\n"
+    "  br i1 %late, label %expired, label %sleep\n"
+    "sleep:\n"
+    "  %left = sub i64 %d, %now\n"
+    "  %leftr = add i64 %left, 999\n"
+    "  %ms64 = udiv i64 %leftr, 1000\n"
+    "  %huge = icmp ugt i64 %ms64, 2147483646\n"
+    "  %ms64c = select i1 %huge, i64 2147483646, i64 %ms64\n"
+    "  %ms = trunc i64 %ms64c to i32\n"
+    "  %ok = call i32 @SleepConditionVariableSRW(ptr @__term_cond,"
+      " ptr @__rv_mutex, i32 %ms, i32 0)\n"
+    "  %failed = icmp eq i32 %ok, 0\n"
+    "  %x = zext i1 %failed to i32\n"
+    "  ret i32 %x\n"
+    "expired:\n"
+    "  ret i32 1\n"
+    "}\n"
+    "define linkonce_odr void @__ada_rt_broadcast() {\n"
+    "  call void @WakeAllConditionVariable(ptr @__term_cond)\n"
+    "  ret void\n"
+    "}\n"
+    "define linkonce_odr void @__ada_rt_signal() {\n"
+    "  call void @WakeConditionVariable(ptr @__term_cond)\n"
+    "  ret void\n"
+    "}\n"
+    "define linkonce_odr i32 @__ada_rt_thread_spawn(ptr %slot, ptr %arg) {\n"
+    "  %h = call ptr @CreateThread(ptr null, i64 0, ptr @__ada_task_wrapper,"
+      " ptr %arg, i32 0, ptr null)\n"
+    "  store ptr %h, ptr %slot\n"
+    "  %bad = icmp eq ptr %h, null\n"
+    "  %rc = zext i1 %bad to i32\n"
+    "  ret i32 %rc\n"
+    "}\n"
+    "define linkonce_odr void @__ada_rt_thread_join(ptr %tid) {\n"
+    "  %_w = call i32 @WaitForSingleObject(ptr %tid, i32 -1)\n"
+    "  %_c = call i32 @CloseHandle(ptr %tid)\n"
+    "  ret void\n"
+    "}\n"
+    "; microseconds since the Unix epoch, from the 100ns FILETIME clock\n"
+    "define linkonce_odr i64 @__ada_rt_now_us() nounwind willreturn {\n"
+    "  %ft = alloca i64, align 8\n"
+    "  call void @GetSystemTimeAsFileTime(ptr %ft)\n"
+    "  %t = load i64, ptr %ft\n"
+    "  %unix = sub i64 %t, 116444736000000000  ; 1601 to 1970\n"
+    "  %us = sdiv i64 %unix, 10\n"
+    "  ret i64 %us\n"
+    "}\n"
+    "define linkonce_odr void @__ada_rt_sleep_us(i64 %us) {\n"
+    "entry:\n"
+    "  %r = add i64 %us, 999\n"
+    "  %ms64 = udiv i64 %r, 1000\n"
+    "  %huge = icmp ugt i64 %ms64, 2147483646\n"
+    "  %ms64c = select i1 %huge, i64 2147483646, i64 %ms64\n"
+    "  %ms = trunc i64 %ms64c to i32\n"
+    "  call void @Sleep(i32 %ms)\n"
+    "  ret void\n"
+    "}\n"
+#else
+    "; sized for the largest host pthread objects (macOS: mutex 64, cond 48);\n"
+    "; zeroed storage is not a valid mutex or condition everywhere, so main\n"
+    "; initialises both through __ada_tasking_init before elaboration\n"
     "@__term_cond = linkonce_odr global [48 x i8] zeroinitializer, align 8\n"
-    "@__rv_mutex = linkonce_odr global [40 x i8] zeroinitializer, align 8\n"
+    "@__rv_mutex = linkonce_odr global [64 x i8] zeroinitializer, align 8\n"
+    "define linkonce_odr void @__ada_tasking_init() {\n"
+    "  %_m = call i32 @pthread_mutex_init(ptr @__rv_mutex, ptr null)\n"
+    "  %_c = call i32 @pthread_cond_init(ptr @__term_cond, ptr null)\n"
+    "  ret void\n"
+    "}\n"
+    "define linkonce_odr void @__ada_rt_lock() {\n"
+    "  %_l = call i32 @pthread_mutex_lock(ptr @__rv_mutex)\n"
+    "  ret void\n"
+    "}\n"
+    "define linkonce_odr void @__ada_rt_unlock() {\n"
+    "  %_u = call i32 @pthread_mutex_unlock(ptr @__rv_mutex)\n"
+    "  ret void\n"
+    "}\n"
+    "define linkonce_odr void @__ada_rt_wait() {\n"
+    "  %_w = call i32 @pthread_cond_wait(ptr @__term_cond, ptr @__rv_mutex)\n"
+    "  ret void\n"
+    "}\n"
+    "; deadline is absolute microseconds from __ada_rt_now_us; returns 1\n"
+    "; when the deadline passed, 0 after any wakeup\n"
+    "define linkonce_odr i32 @__ada_rt_timed_wait(ptr %deadline) {\n"
+    "entry:\n"
+    "  %d = load i64, ptr %deadline\n"
+    "  %ts = alloca " TIMESPEC_STORAGE ", align 8\n"
+    "  %sec = sdiv i64 %d, 1000000\n"
+    "  %rem = srem i64 %d, 1000000\n"
+    "  %ns = mul i64 %rem, 1000\n"
+    "  %secp = " TIMESPEC_FIELD ("%ts", SECONDS) "\n"
+    "  store i64 %sec, ptr %secp\n"
+    "  %nsp = " TIMESPEC_FIELD ("%ts", NANOSECONDS) "\n"
+    TIMESPEC_STORE_NANOSECONDS ("%ns", "%nsp")
+    "  %rc = call i32 @pthread_cond_timedwait(ptr @__term_cond,"
+      " ptr @__rv_mutex, ptr %ts)\n"
+    "  %expired = icmp eq i32 %rc, " TEXT_OF (ETIMEDOUT) "\n"
+    "  %x = zext i1 %expired to i32\n"
+    "  ret i32 %x\n"
+    "}\n"
+    "define linkonce_odr void @__ada_rt_broadcast() {\n"
+    "  %_b = call i32 @pthread_cond_broadcast(ptr @__term_cond)\n"
+    "  ret void\n"
+    "}\n"
+    "define linkonce_odr void @__ada_rt_signal() {\n"
+    "  %_s = call i32 @pthread_cond_signal(ptr @__term_cond)\n"
+    "  ret void\n"
+    "}\n"
+    "define linkonce_odr i32 @__ada_rt_thread_spawn(ptr %slot, ptr %arg) {\n"
+    "  %rc = call i32 @pthread_create(ptr %slot, ptr null,"
+      " ptr @__ada_task_wrapper, ptr %arg)\n"
+    "  ret i32 %rc\n"
+    "}\n"
+    "define linkonce_odr void @__ada_rt_thread_join(ptr %tid) {\n"
+    "  %_j = call i32 @pthread_join(ptr %tid, ptr null)\n"
+    "  ret void\n"
+    "}\n"
+    "define linkonce_odr i64 @__ada_rt_now_us() nounwind willreturn {\n"
+    "  %ts = alloca " TIMESPEC_STORAGE ", align 8\n"
+    "  %_r = call i32 @clock_gettime(i32 0, ptr %ts)\n"
+    "  %secp = " TIMESPEC_FIELD ("%ts", SECONDS) "\n"
+    "  %sec = load i64, ptr %secp\n"
+    "  %nsp = " TIMESPEC_FIELD ("%ts", NANOSECONDS) "\n"
+    TIMESPEC_LOAD_NANOSECONDS ("%ns", "%nsp")
+    "  %s_us = mul i64 %sec, 1000000\n"
+    "  %ns_us = sdiv i64 %ns, 1000\n"
+    "  %us = add i64 %s_us, %ns_us\n"
+    "  ret i64 %us\n"
+    "}\n"
+    "define linkonce_odr void @__ada_rt_sleep_us(i64 %us) {\n"
+    "entry:\n"
+    "  %ts = alloca " TIMESPEC_STORAGE ", align 8\n"
+    "  %sec = sdiv i64 %us, 1000000\n"
+    "  %rem = srem i64 %us, 1000000\n"
+    "  %ns = mul i64 %rem, 1000\n"
+    "  %sec_slot = " TIMESPEC_FIELD ("%ts", SECONDS) "\n"
+    "  store i64 %sec, ptr %sec_slot\n"
+    "  %ns_slot = " TIMESPEC_FIELD ("%ts", NANOSECONDS) "\n"
+    TIMESPEC_STORE_NANOSECONDS ("%ns", "%ns_slot")
+    "  br label %loop\n"
+    "loop:\n"
+    "  %r = call i32 @nanosleep(ptr %ts, ptr %ts)\n"
+    "  %interrupted = icmp ne i32 %r, 0\n"
+    "  br i1 %interrupted, label %loop, label %done\n"
+    "done:\n"
+    "  ret void\n"
+    "}\n"
+#endif
     "@.fmt_ue = linkonce_odr constant [25 x i8] c\"Unhandled exception: %s\\0A\\00\"\n\n"
     "; Standard exception identities\n"
     "@__exc.constraint_error = linkonce_odr constant [17 x i8] c\"CONSTRAINT_ERROR\\00\"\n"
@@ -53071,7 +53266,7 @@ void Emit_Runtime_Handler_Stack () {
     "; ---- Exception handling: the per-task handler chain ----\n"
     "define linkonce_odr void @__ada_push_handler(ptr %h) nounwind {\n"
     "  %old = load ptr, ptr @__handler_chain\n"
-    "  %link = getelementptr { ptr, [200 x i8] }, ptr %h, i32 0, i32 0\n"
+    "  %link = getelementptr { ptr, [240 x i8] }, ptr %h, i32 0, i32 0\n"
     "  store ptr %old, ptr %link\n"
     "  store ptr %h, ptr @__handler_chain\n"
     "  ret void\n"
@@ -53081,7 +53276,7 @@ void Emit_Runtime_Handler_Stack () {
     "  %is_null = icmp eq ptr %cur, null\n"
     "  br i1 %is_null, label %done, label %pop\n"
     "pop:\n"
-    "  %link = getelementptr { ptr, [200 x i8] }, ptr %cur, i32 0, i32 0\n"
+    "  %link = getelementptr { ptr, [240 x i8] }, ptr %cur, i32 0, i32 0\n"
     "  %prev = load ptr, ptr %link\n"
     "  store ptr %prev, ptr @__handler_chain\n");
   Emit_Void_Function_Epilogue (true);
@@ -53220,17 +53415,17 @@ void Emit_Runtime_Synchronisation () {
   Emit_Verbatim (
     "define linkonce_odr void @__ada_wait_word(ptr %w, i32 %expected) {\n"
     "entry:\n"
-    "  call i32 @pthread_mutex_lock(ptr @__rv_mutex)\n"
+    "  call void @__ada_rt_lock()\n"
     "  br label %loop\n"
     "loop:\n"
     "  %v = load atomic i32, ptr %w acquire, align 4\n"
     "  %done = icmp ne i32 %v, %expected\n"
     "  br i1 %done, label %out, label %wait\n"
     "wait:\n"
-    "  call i32 @pthread_cond_wait(ptr @__term_cond, ptr @__rv_mutex)\n"
+    "  call void @__ada_rt_wait()\n"
     "  br label %loop\n"
     "out:\n"
-    "  call i32 @pthread_mutex_unlock(ptr @__rv_mutex)\n"
+    "  call void @__ada_rt_unlock()\n"
     "  ret void\n"
     "}\n\n"
     "define linkonce_odr void @__ada_wake_word(ptr %w) {\n"
@@ -53295,22 +53490,11 @@ void Emit_Runtime_Rendezvous_Records () {
     "  store i64 0, ptr %exp\n"
     "  ret ptr %rv\n"
     "}\n\n"
+    "; the deadline slot holds absolute microseconds from __ada_rt_now_us\n"
     "define linkonce_odr void @__ada_abs_deadline(ptr %ts, i64 %us) {\n"
-    "  %_g = call i32 @clock_gettime(i32 0, ptr %ts)\n"
-    "  %secp = " TIMESPEC_FIELD ("%ts", SECONDS) "\n"
-    "  %nsp = " TIMESPEC_FIELD ("%ts", NANOSECONDS) "\n"
-    "  %sec = load i64, ptr %secp\n"
-    TIMESPEC_LOAD_NANOSECONDS ("%ns", "%nsp")
-    "  %addsec = udiv i64 %us, 1000000\n"
-    "  %addus = urem i64 %us, 1000000\n"
-    "  %addns = mul i64 %addus, 1000\n"
-    "  %ns1 = add i64 %ns, %addns\n"
-    "  %carry = udiv i64 %ns1, 1000000000\n"
-    "  %ns2 = urem i64 %ns1, 1000000000\n"
-    "  %sec1 = add i64 %sec, %addsec\n"
-    "  %sec2 = add i64 %sec1, %carry\n"
-    "  store i64 %sec2, ptr %secp\n"
-    TIMESPEC_STORE_NANOSECONDS ("%ns2", "%nsp")
+    "  %now = call i64 @__ada_rt_now_us()\n"
+    "  %d = add i64 %now, %us\n"
+    "  store i64 %d, ptr %ts\n"
     "  ret void\n"
     "}\n\n"
     "define linkonce_odr void @__ada_spin_for_call(ptr %self) {\n"
@@ -53337,7 +53521,120 @@ void Emit_Runtime_Rendezvous_Records () {
     "}\n\n");
 }
 
+#ifdef _WIN32
+/* LLVM's Win64 lowering of the SJLJ intrinsics is broken (a plain
+   __builtin_setjmp/__builtin_longjmp pair miscompiles for
+   x86_64-windows-gnu), and the Windows C runtimes couple longjmp to SEH
+   unwinding.  So on Windows the runtime carries its own CRT-free pair:
+   plain callee-saved register save and restore with POSIX semantics. */
+void Emit_Runtime_Setjmp () {
+#ifdef SIMD_X86_64
+  Emit_Verbatim (
+    "; Win64: rcx = buffer; saves rbx rbp rsi rdi r12-r15 rsp rip xmm6-15\n"
+    "define linkonce_odr i32 @__ada_setjmp(ptr %buf) naked noinline nounwind"
+    " returns_twice {\n"
+    "  call void asm sideeffect \""
+      "movq %rbx, 0(%rcx)\\0A"
+      "movq %rbp, 8(%rcx)\\0A"
+      "movq %rsi, 16(%rcx)\\0A"
+      "movq %rdi, 24(%rcx)\\0A"
+      "movq %r12, 32(%rcx)\\0A"
+      "movq %r13, 40(%rcx)\\0A"
+      "movq %r14, 48(%rcx)\\0A"
+      "movq %r15, 56(%rcx)\\0A"
+      "leaq 8(%rsp), %rax\\0A"
+      "movq %rax, 64(%rcx)\\0A"
+      "movq (%rsp), %rax\\0A"
+      "movq %rax, 72(%rcx)\\0A"
+      "movups %xmm6, 80(%rcx)\\0A"
+      "movups %xmm7, 96(%rcx)\\0A"
+      "movups %xmm8, 112(%rcx)\\0A"
+      "movups %xmm9, 128(%rcx)\\0A"
+      "movups %xmm10, 144(%rcx)\\0A"
+      "movups %xmm11, 160(%rcx)\\0A"
+      "movups %xmm12, 176(%rcx)\\0A"
+      "movups %xmm13, 192(%rcx)\\0A"
+      "movups %xmm14, 208(%rcx)\\0A"
+      "movups %xmm15, 224(%rcx)\\0A"
+      "xorl %eax, %eax\\0A"
+      "retq\", \"\"()\n"
+    "  unreachable\n"
+    "}\n"
+    "define linkonce_odr void @__ada_longjmp(ptr %buf) naked noinline noreturn"
+    " nounwind {\n"
+    "  call void asm sideeffect \""
+      "movq 0(%rcx), %rbx\\0A"
+      "movq 8(%rcx), %rbp\\0A"
+      "movq 16(%rcx), %rsi\\0A"
+      "movq 24(%rcx), %rdi\\0A"
+      "movq 32(%rcx), %r12\\0A"
+      "movq 40(%rcx), %r13\\0A"
+      "movq 48(%rcx), %r14\\0A"
+      "movq 56(%rcx), %r15\\0A"
+      "movups 80(%rcx), %xmm6\\0A"
+      "movups 96(%rcx), %xmm7\\0A"
+      "movups 112(%rcx), %xmm8\\0A"
+      "movups 128(%rcx), %xmm9\\0A"
+      "movups 144(%rcx), %xmm10\\0A"
+      "movups 160(%rcx), %xmm11\\0A"
+      "movups 176(%rcx), %xmm12\\0A"
+      "movups 192(%rcx), %xmm13\\0A"
+      "movups 208(%rcx), %xmm14\\0A"
+      "movups 224(%rcx), %xmm15\\0A"
+      "movq 64(%rcx), %rsp\\0A"
+      "movl $$1, %eax\\0A"
+      "jmpq *72(%rcx)\", \"\"()\n"
+    "  unreachable\n"
+    "}\n\n");
+#elif defined(SIMD_ARM64)
+  Emit_Verbatim (
+    "; Windows arm64: x0 = buffer; saves x19-x28 fp lr sp d8-d15\n"
+    "define linkonce_odr i32 @__ada_setjmp(ptr %buf) naked noinline nounwind"
+    " returns_twice {\n"
+    "  call void asm sideeffect \""
+      "stp x19, x20, [x0]\\0A"
+      "stp x21, x22, [x0, 16]\\0A"
+      "stp x23, x24, [x0, 32]\\0A"
+      "stp x25, x26, [x0, 48]\\0A"
+      "stp x27, x28, [x0, 64]\\0A"
+      "stp x29, x30, [x0, 80]\\0A"
+      "mov x1, sp\\0A"
+      "str x1, [x0, 96]\\0A"
+      "stp d8, d9, [x0, 104]\\0A"
+      "stp d10, d11, [x0, 120]\\0A"
+      "stp d12, d13, [x0, 136]\\0A"
+      "stp d14, d15, [x0, 152]\\0A"
+      "mov w0, wzr\\0A"
+      "ret\", \"\"()\n"
+    "  unreachable\n"
+    "}\n"
+    "define linkonce_odr void @__ada_longjmp(ptr %buf) naked noinline noreturn"
+    " nounwind {\n"
+    "  call void asm sideeffect \""
+      "ldp x19, x20, [x0]\\0A"
+      "ldp x21, x22, [x0, 16]\\0A"
+      "ldp x23, x24, [x0, 32]\\0A"
+      "ldp x25, x26, [x0, 48]\\0A"
+      "ldp x27, x28, [x0, 64]\\0A"
+      "ldp x29, x30, [x0, 80]\\0A"
+      "ldr x1, [x0, 96]\\0A"
+      "mov sp, x1\\0A"
+      "ldp d8, d9, [x0, 104]\\0A"
+      "ldp d10, d11, [x0, 120]\\0A"
+      "ldp d12, d13, [x0, 136]\\0A"
+      "ldp d14, d15, [x0, 152]\\0A"
+      "mov w0, #1\\0A"
+      "ret\", \"\"()\n"
+    "  unreachable\n"
+    "}\n\n");
+#endif
+}
+#endif
+
 void Emit_Runtime_Raise () {
+#ifdef _WIN32
+  Emit_Runtime_Setjmp ();
+#endif
   Emit_Verbatim (
     "; ---- Raising an exception: longjmp to the innermost handler frame,\n"
     ";      or report and terminate when there is none ----\n"
@@ -53348,8 +53645,12 @@ void Emit_Runtime_Raise () {
     "  %is_null = icmp eq ptr %frame, null\n"
     "  br i1 %is_null, label %unhandled, label %jump\n"
     "jump:\n"
-    "  %jb = getelementptr { ptr, [200 x i8] }, ptr %frame, i32 0, i32 1\n"
+    "  %jb = getelementptr { ptr, [240 x i8] }, ptr %frame, i32 0, i32 1\n"
+#ifdef _WIN32
+    "  call void @__ada_longjmp(ptr %jb)\n"
+#else
     "  call void @llvm.eh.sjlj.longjmp(ptr %jb)\n"
+#endif
     "  unreachable\n"
     "unhandled:\n"
     "  %exc_name = inttoptr " PTR_INT_TYPE " %exc_id to ptr\n"
@@ -53376,19 +53677,8 @@ void Emit_Runtime_Delay () {
     "  %pos = icmp sgt i64 %us, 0\n"
     "  br i1 %pos, label %sleep, label %done\n"
     "sleep:\n"
-    "  %ts = alloca " TIMESPEC_STORAGE ", align 8\n"
-    "  %sec = sdiv i64 %us, 1000000\n"
-    "  %rem = srem i64 %us, 1000000\n"
-    "  %ns = mul i64 %rem, 1000\n"
-    "  %sec_slot = " TIMESPEC_FIELD ("%ts", SECONDS) "\n"
-    "  store i64 %sec, ptr %sec_slot\n"
-    "  %ns_slot = " TIMESPEC_FIELD ("%ts", NANOSECONDS) "\n"
-    TIMESPEC_STORE_NANOSECONDS ("%ns", "%ns_slot")
-    "  br label %loop\n"
-    "loop:\n"
-    "  %r = call i32 @nanosleep(ptr %ts, ptr %ts)\n"
-    "  %interrupted = icmp ne i32 %r, 0\n"
-    "  br i1 %interrupted, label %loop, label %done\n");
+    "  call void @__ada_rt_sleep_us(i64 %us)\n"
+    "  br label %done\n");
   Emit_Void_Function_Epilogue (false);
 }
 
@@ -53396,15 +53686,8 @@ void Emit_Runtime_Clock () {
   Emit_Verbatim (
     "define linkonce_odr i64 @__ada_clock() nounwind willreturn {\n"
     "entry:\n"
-    "  %ts = alloca " TIMESPEC_STORAGE ", align 8\n"
-    "  %_r = call i32 @clock_gettime(i32 0, ptr %ts)\n"
-    "  %secp = " TIMESPEC_FIELD ("%ts", SECONDS) "\n"
-    "  %sec = load i64, ptr %secp\n"
-    "  %nsp = " TIMESPEC_FIELD ("%ts", NANOSECONDS) "\n"
-    TIMESPEC_LOAD_NANOSECONDS ("%ns", "%nsp")
-    "  %s100k = mul i64 %sec, 100000\n"
-    "  %nsu = sdiv i64 %ns, 10000\n"
-    "  %tot = add i64 %s100k, %nsu\n"
+    "  %us = call i64 @__ada_rt_now_us()\n"
+    "  %tot = sdiv i64 %us, 10  ; ticks of 10 microseconds\n"
     "  ret i64 %tot\n"
     "}\n\n");
 }
@@ -53450,7 +53733,7 @@ void Emit_Runtime_Task_Abort () {
     "  %null = icmp eq ptr %task, null\n"
     "  br i1 %null, label %done, label %lock\n"
     "lock:\n"
-    "  %_l = call i32 @pthread_mutex_lock(ptr @__rv_mutex)\n"
+    "  call void @__ada_rt_lock()\n"
     "  %tf = " TASK_FIELD ("%task", TERMINATED) "\n"
     "  %term = load i8, ptr %tf\n"
     "  %isterm = icmp ne i8 %term, 0\n"
@@ -53460,11 +53743,11 @@ void Emit_Runtime_Task_Abort () {
     "  store i8 1, ptr %apf  ; abort pending (abnormal)\n"
     "  call void @__ada_abort_release_call(ptr %task)\n"
     "  call void @__ada_abort_subtree(ptr %task)\n"
-    "  %_b = call i32 @pthread_cond_broadcast(ptr @__term_cond)\n"
-    "  %_u1 = call i32 @pthread_mutex_unlock(ptr @__rv_mutex)\n"
+    "  call void @__ada_rt_broadcast()\n"
+    "  call void @__ada_rt_unlock()\n"
     "  br label %done\n"
     "unlock:\n"
-    "  %_u2 = call i32 @pthread_mutex_unlock(ptr @__rv_mutex)\n");
+    "  call void @__ada_rt_unlock()\n");
   Emit_Void_Function_Epilogue (true);
 }
 
@@ -53478,7 +53761,7 @@ void Emit_Runtime_Task_Wrapper () {
     "  %1 = " TASK_FIELD ("%tcb", PARENT_FRAME) "\n"
     "  %frame = load ptr, ptr %1\n"
     "  %_r = call ptr %func(ptr %frame, ptr %tcb)\n"
-    "  %_l = call i32 @pthread_mutex_lock(ptr @__rv_mutex)\n"
+    "  call void @__ada_rt_lock()\n"
     "  %2 = " TASK_FIELD ("%tcb", COMPLETED) "\n"
     "  store i8 1, ptr %2\n"
     "  %3 = " TASK_FIELD ("%tcb", TERMINATED) "\n"
@@ -53494,8 +53777,8 @@ void Emit_Runtime_Task_Wrapper () {
     "  call void @__ada_awake_dec(ptr %mrec)\n"
     "  br label %out\n"
     "out:\n"
-    "  %_b = call i32 @pthread_cond_broadcast(ptr @__term_cond)\n"
-    "  %_u = call i32 @pthread_mutex_unlock(ptr @__rv_mutex)\n"
+    "  call void @__ada_rt_broadcast()\n"
+    "  call void @__ada_rt_unlock()\n"
     "  ret ptr null\n"
     "}\n\n");
 }
@@ -53544,7 +53827,7 @@ void Emit_Runtime_Task_Never_Activated () {
     "  %n = icmp eq ptr %tcb, null\n"
     "  br i1 %n, label %done, label %mark\n"
     "mark:\n"
-    "  call i32 @pthread_mutex_lock(ptr @__rv_mutex)\n"
+    "  call void @__ada_rt_lock()\n"
     "  %cs = " TASK_FIELD ("%tcb", COMPLETED) "\n"
     "  store i8 1, ptr %cs\n"
     "  %tm = " TASK_FIELD ("%tcb", TERMINATED) "\n"
@@ -53552,8 +53835,8 @@ void Emit_Runtime_Task_Never_Activated () {
     "  %as = " TASK_FIELD ("%tcb", ACTIVATION_STATE) "\n"
     "  store i8 " TEXT_OF (ACTIVATION_STATE_COMPLETE) ", ptr %as\n"
     "  call void @__ada_release_callers(ptr %tcb)\n"
-    "  call i32 @pthread_cond_broadcast(ptr @__term_cond)\n"
-    "  call i32 @pthread_mutex_unlock(ptr @__rv_mutex)\n");
+    "  call void @__ada_rt_broadcast()\n"
+    "  call void @__ada_rt_unlock()\n");
   Emit_Void_Function_Epilogue (true);
 }
 
@@ -53574,7 +53857,7 @@ void Emit_Runtime_Task_Activate () {
     "  %wascmp = icmp ne i8 %cmp0, 0\n"
     "  br i1 %wascmp, label %done, label %go\n"
     "go:\n"
-    "  %_l = call i32 @pthread_mutex_lock(ptr @__rv_mutex)\n"
+    "  call void @__ada_rt_lock()\n"
     "  %mp = " TASK_FIELD ("%tcb", MASTER_RECORD) "\n"
     "  %mrec = load ptr, ptr %mp\n"
     "  %nom = icmp eq ptr %mrec, null\n"
@@ -53586,13 +53869,13 @@ void Emit_Runtime_Task_Activate () {
     "  store i64 %a1, ptr %ap\n"
     "  br label %spawn\n"
     "spawn:\n"
-    "  %_u = call i32 @pthread_mutex_unlock(ptr @__rv_mutex)\n"
+    "  call void @__ada_rt_unlock()\n"
     "  %tid_slot = " TASK_FIELD ("%tcb", THREAD_IDENTIFIER) "\n"
-    "  %rc = call i32 @pthread_create(ptr %tid_slot, ptr null, ptr @__ada_task_wrapper, ptr %tcb)\n"
+    "  %rc = call i32 @__ada_rt_thread_spawn(ptr %tid_slot, ptr %tcb)\n"
     "  %failed = icmp ne i32 %rc, 0\n"
     "  br i1 %failed, label %nothread, label %done\n"
     "nothread:\n"
-    "  %_l2 = call i32 @pthread_mutex_lock(ptr @__rv_mutex)\n"
+    "  call void @__ada_rt_lock()\n"
     "  %cmp_slot = " TASK_FIELD ("%tcb", COMPLETED) "\n"
     "  store i8 1, ptr %cmp_slot\n"
     "  %term_slot = " TASK_FIELD ("%tcb", TERMINATED) "\n"
@@ -53600,8 +53883,8 @@ void Emit_Runtime_Task_Activate () {
     "  %as_slot = " TASK_FIELD ("%tcb", ACTIVATION_STATE) "\n"
     "  store i8 " TEXT_OF (ACTIVATION_STATE_FAILED) ", ptr %as_slot\n"
     "  call void @__ada_awake_dec(ptr %mrec)\n"
-    "  call i32 @pthread_cond_broadcast(ptr @__term_cond)\n"
-    "  %_u2 = call i32 @pthread_mutex_unlock(ptr @__rv_mutex)\n");
+    "  call void @__ada_rt_broadcast()\n"
+    "  call void @__ada_rt_unlock()\n");
   Emit_Void_Function_Epilogue (true);
 }
 
@@ -53614,7 +53897,7 @@ void Emit_Runtime_Activation_Wait () {
     "null_tcb:\n"
     "  ret i8 1\n"
     "lock:\n"
-    "  call i32 @pthread_mutex_lock(ptr @__rv_mutex)\n"
+    "  call void @__ada_rt_lock()\n"
     "  br label %loop\n"
     "loop:\n"
     "  %as_slot = " TASK_FIELD ("%tcb", ACTIVATION_STATE) "\n"
@@ -53622,10 +53905,10 @@ void Emit_Runtime_Activation_Wait () {
     "  %pending = icmp eq i8 %st, " TEXT_OF (ACTIVATION_STATE_PENDING) "\n"
     "  br i1 %pending, label %wait, label %ready\n"
     "wait:\n"
-    "  call i32 @pthread_cond_wait(ptr @__term_cond, ptr @__rv_mutex)\n"
+    "  call void @__ada_rt_wait()\n"
     "  br label %loop\n"
     "ready:\n"
-    "  call i32 @pthread_mutex_unlock(ptr @__rv_mutex)\n"
+    "  call void @__ada_rt_unlock()\n"
     "  ret i8 %st\n"
     "}\n\n");
 }
@@ -53761,10 +54044,10 @@ void Emit_Runtime_Flag_Complete () {
     "  %n = icmp eq ptr %flag, null\n"
     "  br i1 %n, label %done, label %set\n"
     "set:\n"
-    "  %_l = call i32 @pthread_mutex_lock(ptr @__rv_mutex)\n"
+    "  call void @__ada_rt_lock()\n"
     "  store i8 1, ptr %flag  ; master complete\n"
-    "  %_b = call i32 @pthread_cond_broadcast(ptr @__term_cond)\n"
-    "  %_u = call i32 @pthread_mutex_unlock(ptr @__rv_mutex)\n");
+    "  call void @__ada_rt_broadcast()\n"
+    "  call void @__ada_rt_unlock()\n");
   Emit_Void_Function_Epilogue (true);
 }
 
@@ -53779,7 +54062,7 @@ void Emit_Runtime_Awake_Decrement () {
     "  %a = load i64, ptr %ap\n"
     "  %a1 = sub i64 %a, 1\n"
     "  store i64 %a1, ptr %ap\n"
-    "  %_b = call i32 @pthread_cond_broadcast(ptr @__term_cond)\n"
+    "  call void @__ada_rt_broadcast()\n"
     "  %zero = icmp sle i64 %a1, 0\n"
     "  br i1 %zero, label %casc, label %done\n"
     "casc:\n"
@@ -53864,7 +54147,7 @@ void Emit_Runtime_Unpassify () {
     "  call void @__ada_unpassify(ptr %owner)\n"
     "  br label %bc\n"
     "bc:\n"
-    "  %_b = call i32 @pthread_cond_broadcast(ptr @__term_cond)\n");
+    "  call void @__ada_rt_broadcast()\n");
   Emit_Void_Function_Epilogue (true);
 }
 
@@ -53872,7 +54155,7 @@ void Emit_Runtime_Terminate_Wait () {
   Emit_Verbatim (
     "define linkonce_odr i8 @__ada_term_wait(ptr %tcb) {\n"
     "entry:\n"
-    "  %_l = call i32 @pthread_mutex_lock(ptr @__rv_mutex)\n"
+    "  call void @__ada_rt_lock()\n"
     "  br label %loop\n"
     "loop:\n"
     "  %gone = call i1 @__ada_task_dead(ptr %tcb)\n"
@@ -53911,14 +54194,14 @@ void Emit_Runtime_Terminate_Wait () {
     "  %pset = icmp ne i8 %p, 0\n"
     "  br i1 %pset, label %die, label %sleep\n"
     "sleep:\n"
-    "  %_w = call i32 @pthread_cond_wait(ptr @__term_cond, ptr @__rv_mutex)\n"
+    "  call void @__ada_rt_wait()\n"
     "  br label %loop\n"
     "serve:\n"
     "  call void @__ada_unpassify(ptr %tcb)\n"
-    "  %_u1 = call i32 @pthread_mutex_unlock(ptr @__rv_mutex)\n"
+    "  call void @__ada_rt_unlock()\n"
     "  ret i8 0\n"
     "die:\n"
-    "  %_u2 = call i32 @pthread_mutex_unlock(ptr @__rv_mutex)\n"
+    "  call void @__ada_rt_unlock()\n"
     "  ret i8 1\n"
     "}\n\n");
 }
@@ -53978,7 +54261,7 @@ void Emit_Runtime_Master_Unwind () {
     "  call void @__ada_flag_complete(ptr %df)  ; master complete (unwind)\n"
     "  br label %complete_pass\n"
     "complete_pass:\n"
-    "  call i32 @pthread_mutex_lock(ptr @__rv_mutex)\n"
+    "  call void @__ada_rt_lock()\n"
     "  %headp = " MASTER_RECORD_FIELD ("%cur", DEPENDENT_LIST_HEAD) "\n"
     "  %head = load ptr, ptr %headp\n"
     "  br label %cloop\n"
@@ -54005,8 +54288,8 @@ void Emit_Runtime_Master_Unwind () {
     "  %cnext = load ptr, ptr %cnp\n"
     "  br label %cloop\n"
     "join_pass:\n"
-    "  call i32 @pthread_cond_broadcast(ptr @__term_cond)\n"
-    "  call i32 @pthread_mutex_unlock(ptr @__rv_mutex)\n"
+    "  call void @__ada_rt_broadcast()\n"
+    "  call void @__ada_rt_unlock()\n"
     "  br label %jloop\n"
     "jloop:\n"
     "  %jnode = phi ptr [ %head, %join_pass ], [ %jnext, %jbody ]\n"
@@ -54032,7 +54315,7 @@ void Emit_Runtime_Master_Leave () {
   Emit_Verbatim (
     "define linkonce_odr void @__ada_master_leave(ptr %rec) {\n"
     "entry:\n"
-    "  %_l = call i32 @pthread_mutex_lock(ptr @__rv_mutex)\n"
+    "  call void @__ada_rt_lock()\n"
     "  %fp = " MASTER_RECORD_FIELD ("%rec", DONE_FLAG) "\n"
     "  %df = load ptr, ptr %fp\n"
     "  %nof = icmp eq ptr %df, null\n"
@@ -54041,10 +54324,10 @@ void Emit_Runtime_Master_Leave () {
     "  store i8 1, ptr %df  ; master complete\n"
     "  br label %bcast\n"
     "bcast:\n"
-    "  %_b = call i32 @pthread_cond_broadcast(ptr @__term_cond)\n"
+    "  call void @__ada_rt_broadcast()\n"
     "  %headp = " MASTER_RECORD_FIELD ("%rec", DEPENDENT_LIST_HEAD) "\n"
     "  %head = load ptr, ptr %headp\n"
-    "  %_ul = call i32 @pthread_mutex_unlock(ptr @__rv_mutex)\n"
+    "  call void @__ada_rt_unlock()\n"
     "  br label %loop\n"
     "loop:\n"
     "  %node = phi ptr [ %head, %bcast ], [ %next, %body ]\n"
@@ -54080,7 +54363,7 @@ void Emit_Runtime_Task_Join () {
     "  %tn = icmp eq ptr %tid, null\n"
     "  br i1 %tn, label %done, label %join\n"
     "join:\n"
-    "  %_j = call i32 @pthread_join(ptr %tid, ptr null)\n"
+    "  call void @__ada_rt_thread_join(ptr %tid)\n"
     "  store ptr null, ptr %tid_slot  ; joined\n");
   Emit_Void_Function_Epilogue (true);
 }
@@ -54107,10 +54390,10 @@ void Emit_Runtime_Join_All () {
   Emit_Verbatim (
     "define linkonce_odr void @__ada_join_all() {\n"
     "entry:\n"
-    "  call i32 @pthread_mutex_lock(ptr @__rv_mutex)\n"
+    "  call void @__ada_rt_lock()\n"
     "  store i8 1, ptr @__master_done  ; signal terminate alternatives\n"
-    "  call i32 @pthread_cond_broadcast(ptr @__term_cond)\n"
-    "  call i32 @pthread_mutex_unlock(ptr @__rv_mutex)\n"
+    "  call void @__ada_rt_broadcast()\n"
+    "  call void @__ada_rt_unlock()\n"
     "  br label %loop\n"
     "loop:\n"
     "  %node = load ptr, ptr @__all_tasks\n"
@@ -54124,7 +54407,7 @@ void Emit_Runtime_Join_All () {
     "  %unact = icmp eq ptr %tid, null\n"
     "  br i1 %unact, label %adv, label %joinit\n"
     "joinit:\n"
-    "  %_j = call i32 @pthread_join(ptr %tid, ptr null)\n"
+    "  call void @__ada_rt_thread_join(ptr %tid)\n"
     "  store ptr null, ptr %tid_slot  ; joined\n"
     "  br label %adv\n"
     "adv:\n"
@@ -54192,12 +54475,12 @@ void Emit_Runtime_Entry_Call_Try () {
     "  call void @__ada_raise(i64 %teid)\n"
     "  unreachable\n"
     "lock_it:\n"
-    "  call i32 @pthread_mutex_lock(ptr @__rv_mutex)\n"
+    "  call void @__ada_rt_lock()\n"
     "  %dead0 = call i1 @__ada_task_dead(ptr %task)\n"
     "  br i1 %dead0, label %raise_te_locked, label %condchk\n"
     "raise_te_locked:\n"
     "  call void @__ada_await_abnormal_teardown(ptr %task, ptr %self)\n"
-    "  call i32 @pthread_mutex_unlock(ptr @__rv_mutex)\n"
+    "  call void @__ada_rt_unlock()\n"
     "  call void @free (ptr %rv)\n"
     "  %teidl = ptrtoint ptr @__exc.tasking_error to " PTR_INT_TYPE "\n"
     "  call void @__ada_raise(i64 %teidl)\n"
@@ -54218,7 +54501,7 @@ void Emit_Runtime_Entry_Call_Try () {
     "  %copen = icmp ne i8 %oc, 0\n"
     "  br i1 %copen, label %enq, label %notready\n"
     "notready:\n"
-    "  call i32 @pthread_mutex_unlock(ptr @__rv_mutex)\n"
+    "  call void @__ada_rt_unlock()\n"
     "  call void @free (ptr %rv)\n"
     "  ret i8 0\n"
     "enq:\n"
@@ -54245,13 +54528,13 @@ void Emit_Runtime_Entry_Call_Try () {
     "  br label %enq_done\n"
     "enq_done:\n"
     "  call void @__ada_unpassify(ptr %task)\n"
-    "  call i32 @pthread_cond_broadcast(ptr @__term_cond)\n"
+    "  call void @__ada_rt_broadcast()\n"
     "  %zerob = icmp eq i64 %timeout_us, 0\n"
     "  br i1 %zerob, label %uwait, label %tsetup\n"
     "uwait:\n"
-    "  call i32 @pthread_mutex_unlock(ptr @__rv_mutex)\n"
+    "  call void @__ada_rt_unlock()\n"
     "  call void @__ada_wait_word(ptr %cfp, i32 " TEXT_OF (RENDEZVOUS_INCOMPLETE) ")\n"
-    "  call i32 @pthread_mutex_lock(ptr @__rv_mutex)\n"
+    "  call void @__ada_rt_lock()\n"
     "  br label %wdone\n"
     "tsetup:\n"
     "  call void @__ada_abs_deadline(ptr %ts, i64 %timeout_us)\n"
@@ -54261,8 +54544,8 @@ void Emit_Runtime_Entry_Call_Try () {
     "  %ok = icmp ne i32 %c, " TEXT_OF (RENDEZVOUS_INCOMPLETE) "\n"
     "  br i1 %ok, label %wdone, label %twait\n"
     "twait:\n"
-    "  %rc = call i32 @pthread_cond_timedwait(ptr @__term_cond, ptr @__rv_mutex, ptr %ts)\n"
-    "  %expired = icmp eq i32 %rc, " TEXT_OF (ETIMEDOUT) "\n"
+    "  %rc = call i32 @__ada_rt_timed_wait(ptr %ts)\n"
+    "  %expired = icmp eq i32 %rc, 1\n"
     "  br i1 %expired, label %texp, label %wloop\n"
     "texp:\n"
     "  %removed = call i8 @__ada_queue_unlink(ptr %task, ptr %rv)\n"
@@ -54270,7 +54553,7 @@ void Emit_Runtime_Entry_Call_Try () {
     "  br i1 %cancelled, label %cancel, label %cwloop\n"
     "cancel:\n"
     "  call void @__ada_set_pending_rendezvous(ptr %self, ptr null)\n"
-    "  call i32 @pthread_mutex_unlock(ptr @__rv_mutex)\n"
+    "  call void @__ada_rt_unlock()\n"
     "  call void @free (ptr %rv)\n"
     "  ret i8 0\n"
     "cwloop:\n"
@@ -54278,12 +54561,12 @@ void Emit_Runtime_Entry_Call_Try () {
     "  %done2 = icmp ne i32 %c2, " TEXT_OF (RENDEZVOUS_INCOMPLETE) "\n"
     "  br i1 %done2, label %wdone, label %cwait\n"
     "cwait:\n"
-    "  call i32 @pthread_cond_wait(ptr @__term_cond, ptr @__rv_mutex)\n"
+    "  call void @__ada_rt_wait()\n"
     "  br label %cwloop\n"
     "wdone:\n"
     "  %eid = load i64, ptr %exp0\n"
     "  call void @__ada_set_pending_rendezvous(ptr %self, ptr null)\n"
-    "  call i32 @pthread_mutex_unlock(ptr @__rv_mutex)\n"
+    "  call void @__ada_rt_unlock()\n"
     "  call void @free (ptr %rv)\n"
     "  %he = icmp ne i64 %eid, 0\n"
     "  br i1 %he, label %raise_e, label %ret1\n"
@@ -54336,7 +54619,7 @@ void Emit_Runtime_Await_Abnormal_Teardown () {
     "  %sab = icmp ne i8 %sapv, 0\n"
     "  br i1 %sab, label %done, label %wait\n"
     "wait:\n"
-    "  %_w = call i32 @pthread_cond_wait(ptr @__term_cond, ptr @__rv_mutex)\n"
+    "  call void @__ada_rt_wait()\n"
     "  br label %loop\n"
     "done:\n"
     "  ret void\n"
@@ -54373,7 +54656,7 @@ void Emit_Runtime_Entry_Call () {
     "  call void @__ada_raise(i64 %teid)\n"
     "  unreachable\n"
     "lock_it:\n"
-    "  call i32 @pthread_mutex_lock(ptr @__rv_mutex)\n"
+    "  call void @__ada_rt_lock()\n"
     "  %d0 = call i1 @__ada_task_dead(ptr %task)\n"
     "  br i1 %d0, label %raise_te_locked, label %enq\n"
     "enq:\n"
@@ -54400,14 +54683,14 @@ void Emit_Runtime_Entry_Call () {
     "  br label %enq_done\n"
     "enq_done:\n"
     "  call void @__ada_unpassify(ptr %task)\n"
-    "  call i32 @pthread_cond_broadcast(ptr @__term_cond)\n"
-    "  call i32 @pthread_mutex_unlock(ptr @__rv_mutex)\n"
+    "  call void @__ada_rt_broadcast()\n"
+    "  call void @__ada_rt_unlock()\n"
     "  call void @__ada_wait_word(ptr %cfp, i32 " TEXT_OF (RENDEZVOUS_INCOMPLETE) ")\n"
-    "  call i32 @pthread_mutex_lock(ptr @__rv_mutex)\n"
+    "  call void @__ada_rt_lock()\n"
     "  br label %finish\n"
     "raise_te_locked:\n"
     "  call void @__ada_await_abnormal_teardown(ptr %task, ptr %self)\n"
-    "  call i32 @pthread_mutex_unlock(ptr @__rv_mutex)\n"
+    "  call void @__ada_rt_unlock()\n"
     "  call void @free (ptr %rv)\n"
     "  %teid3 = ptrtoint ptr @__exc.tasking_error to " PTR_INT_TYPE "\n"
     "  call void @__ada_raise(i64 %teid3)\n"
@@ -54416,7 +54699,7 @@ void Emit_Runtime_Entry_Call () {
     "  call void @__ada_set_pending_rendezvous(ptr %self, ptr null)\n"
     "  %exp1 = " RENDEZVOUS_RECORD_FIELD ("%rv", EXCEPTION_IDENTITY) "\n"
     "  %eid_c = load i64, ptr %exp1\n"
-    "  call i32 @pthread_mutex_unlock(ptr @__rv_mutex)\n"
+    "  call void @__ada_rt_unlock()\n"
     "  call void @free (ptr %rv)\n"
     "  %hase = icmp ne i64 %eid_c, 0\n"
     "  br i1 %hase, label %raise_c, label %ok\n"
@@ -54480,7 +54763,7 @@ void Emit_Runtime_Accept_Wait () {
     "  %wep = " TASK_FIELD ("%self", ACCEPTING_ENTRY_INDEX) "\n"
     "  store i64 %entry_idx, ptr %wep\n"
     "  call void @__ada_spin_for_call(ptr %self)\n"
-    "  call i32 @pthread_mutex_lock(ptr @__rv_mutex)\n"
+    "  call void @__ada_rt_lock()\n"
     "  br label %loop\n"
     "loop:\n"
     "  %rv = call ptr @__ada_queue_take(ptr %self, i64 %entry_idx)\n"
@@ -54492,15 +54775,15 @@ void Emit_Runtime_Accept_Wait () {
     "  %aborted = icmp ne i8 %ap, 0\n"
     "  br i1 %aborted, label %abort_ret, label %wait\n"
     "wait:\n"
-    "  call i32 @pthread_cond_wait(ptr @__term_cond, ptr @__rv_mutex)\n"
+    "  call void @__ada_rt_wait()\n"
     "  br label %loop\n"
     "abort_ret:\n"
     "  store i64 " TEXT_OF (ACCEPTING_ENTRY_NONE) ", ptr %wep\n"
-    "  call i32 @pthread_mutex_unlock(ptr @__rv_mutex)\n"
+    "  call void @__ada_rt_unlock()\n"
     "  ret ptr null\n"
     "found:\n"
     "  store i64 " TEXT_OF (ACCEPTING_ENTRY_NONE) ", ptr %wep\n"
-    "  call i32 @pthread_mutex_unlock(ptr @__rv_mutex)\n"
+    "  call void @__ada_rt_unlock()\n"
     "  ret ptr %rv\n"
     "}\n\n");
 }
@@ -54509,9 +54792,9 @@ void Emit_Runtime_Accept_Try () {
   Emit_Verbatim (
     "define linkonce_odr ptr @__ada_accept_try(ptr %self, i64 %entry_idx) {\n"
     "entry:\n"
-    "  call i32 @pthread_mutex_lock(ptr @__rv_mutex)\n"
+    "  call void @__ada_rt_lock()\n"
     "  %rv = call ptr @__ada_queue_take(ptr %self, i64 %entry_idx)\n"
-    "  call i32 @pthread_mutex_unlock(ptr @__rv_mutex)\n"
+    "  call void @__ada_rt_unlock()\n"
     "  ret ptr %rv\n"
     "}\n\n");
 }
@@ -54579,7 +54862,7 @@ void Emit_Runtime_Select_Block () {
     "define linkonce_odr i8 @__ada_select_block(ptr %self, i64 %timeout_us) {\n"
     "entry:\n"
     "  call void @__ada_spin_for_call(ptr %self)\n"
-    "  call i32 @pthread_mutex_lock(ptr @__rv_mutex)\n"
+    "  call void @__ada_rt_lock()\n"
     "  %apf = " TASK_FIELD ("%self", ABORT_PENDING) "\n"
     "  %ap = load i8, ptr %apf\n"
     "  %abrt = icmp ne i8 %ap, 0\n"
@@ -54592,18 +54875,18 @@ void Emit_Runtime_Select_Block () {
     "  %timed = icmp sgt i64 %timeout_us, 0\n"
     "  br i1 %timed, label %twait, label %uwait\n"
     "uwait:\n"
-    "  call i32 @pthread_cond_wait(ptr @__term_cond, ptr @__rv_mutex)\n"
+    "  call void @__ada_rt_wait()\n"
     "  br label %wake\n"
     "twait:\n"
     "  %ts = alloca " TIMESPEC_STORAGE ", align 8\n"
     "  call void @__ada_abs_deadline(ptr %ts, i64 %timeout_us)\n"
-    "  %rc = call i32 @pthread_cond_timedwait(ptr @__term_cond, ptr @__rv_mutex, ptr %ts)\n"
-    "  %expired = icmp eq i32 %rc, " TEXT_OF (ETIMEDOUT) "\n"
-    "  call i32 @pthread_mutex_unlock(ptr @__rv_mutex)\n"
+    "  %rc = call i32 @__ada_rt_timed_wait(ptr %ts)\n"
+    "  %expired = icmp eq i32 %rc, 1\n"
+    "  call void @__ada_rt_unlock()\n"
     "  %x = zext i1 %expired to i8\n"
     "  ret i8 %x\n"
     "wake:\n"
-    "  call i32 @pthread_mutex_unlock(ptr @__rv_mutex)\n"
+    "  call void @__ada_rt_unlock()\n"
     "  ret i8 0\n"
     "}\n\n");
 }
@@ -54612,7 +54895,7 @@ void Emit_Runtime_Entry_Count () {
   Emit_Verbatim (
     "define linkonce_odr i32 @__ada_entry_count(ptr %self, i64 %entry_idx) {\n"
     "entry:\n"
-    "  call i32 @pthread_mutex_lock(ptr @__rv_mutex)\n"
+    "  call void @__ada_rt_lock()\n"
     "  %qhp = " TASK_FIELD ("%self", RENDEZVOUS_QUEUE_HEAD) "\n"
     "  %head0 = load ptr, ptr %qhp\n"
     "  br label %wl\n"
@@ -54633,7 +54916,7 @@ void Emit_Runtime_Entry_Count () {
     "  %nx = load ptr, ptr %nxp\n"
     "  br label %wl\n"
     "fin:\n"
-    "  call i32 @pthread_mutex_unlock(ptr @__rv_mutex)\n"
+    "  call void @__ada_rt_unlock()\n"
     "  ret i32 %n\n"
     "}\n\n");
 }
@@ -54642,7 +54925,7 @@ void Emit_Runtime_Accept_Complete () {
   Emit_Verbatim (
     "define linkonce_odr void @__ada_accept_complete(ptr %rv) {\n"
     "entry:\n"
-    "  call i32 @pthread_mutex_lock(ptr @__rv_mutex)\n"
+    "  call void @__ada_rt_lock()\n"
     "  %tgtp = " RENDEZVOUS_RECORD_FIELD ("%rv", TARGET_TASK) "\n"
     "  %tgt = load ptr, ptr %tgtp\n"
     "  %svp = " TASK_FIELD ("%tgt", SERVED_RENDEZVOUS_LIST) "\n"
@@ -54666,8 +54949,8 @@ void Emit_Runtime_Accept_Complete () {
     "  %1 = " RENDEZVOUS_RECORD_FIELD ("%rv", COMPLETION_WORD) "\n"
     "  store atomic i32 " TEXT_OF (RENDEZVOUS_COMPLETE) ", ptr %1 release, align 4\n"
     "  call void @__ada_wake_word(ptr %1)\n"
-    "  call i32 @pthread_cond_broadcast(ptr @__term_cond)\n"
-    "  call i32 @pthread_mutex_unlock(ptr @__rv_mutex)\n"
+    "  call void @__ada_rt_broadcast()\n"
+    "  call void @__ada_rt_unlock()\n"
     "  ret void\n"
     "}\n\n");
 }
@@ -60634,9 +60917,10 @@ int Native_Backend_Compile (const char *ir_path, const char *const *extra_ir,
     if (not drivers[i]) continue;
     char command[PATH_MAX * 3];
     snprintf (command, sizeof (command),
-              "%s \"%s\" -o \"%s\" -lm -lpthread"
 #ifdef _WIN32
-              " -lapi-ms-win-core-synch-l1-2-0"
+              "%s \"%s\" -o \"%s\" -lm -lapi-ms-win-core-synch-l1-2-0"
+#else
+              "%s \"%s\" -o \"%s\" -lm -lpthread"
 #endif
               , drivers[i], obj_path, exe_path);
     int link_status = system (command);
