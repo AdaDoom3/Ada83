@@ -7,6 +7,7 @@
 
 const { spawn } = require('child_process');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const vscode = require('vscode');
 
@@ -645,6 +646,113 @@ const Manual_Registration = (Root) =>
     ? []
     : [vscode.lm.registerTool ('search_ada83_manual', Manual_Tool (Root))];
 
+const Style_Heading = '## Style Guidelines';
+
+const Style_Rules = (Root) =>
+  ((Text) =>
+     (Text === null || Text.indexOf (Style_Heading) < 0
+        ? null
+        : Text.slice (Text.indexOf (Style_Heading))))
+    (Manual_Text (Root));
+
+const Reformat_Instruction = (Rules, Source) =>
+  ['Rewrite the Ada 83 source below so that it follows the style rules that',
+   'come after it. Change only layout, the casing of reserved words and',
+   'identifiers, and where comments sit. Do not change what the program',
+   'does: add and remove nothing, reorder nothing, and spell no name',
+   'differently except in its casing. Ada 83 only, so nothing from a later',
+   'Ada. Answer with the rewritten source alone, with no explanation and no',
+   'code fence.',
+   '', 'The source:', '', Source, '', 'The rules:', '', Rules].join ('\n');
+
+const Unfenced = (Text) =>
+  ((Match) => (Match === null ? Text : Match[1]))
+    (/^\s*```(?:ada|ada83)?\r?\n([\s\S]*?)\r?\n```\s*$/.exec (Text));
+
+const Spoken = async (Model, Prompt, Token) => {
+  const Reply = await Model.sendRequest (
+    [vscode.LanguageModelChatMessage.User (Prompt)], {}, Token);
+  let Spelled = '';
+  for await (const Fragment of Reply.text) Spelled += Fragment;
+  return Spelled;
+};
+
+const Still_Compiles = (Source, Directory) =>
+  new Promise ((Resolve) => {
+    const Scratch = path.join (os.tmpdir (),
+                               `ada83-reformat-${process.pid}.ada`);
+    try { fs.writeFileSync (Scratch, Source); }
+    catch { return Resolve (false); }
+    const Child = spawn (Compiler_Path (), ['--analyse', Scratch, Directory]);
+    let Reply = '';
+    Child.stdout.on ('data', (Chunk) => { Reply += Chunk; });
+    Child.on ('error', () => Resolve (false));
+    Child.on ('close', () => {
+      try { fs.unlinkSync (Scratch); } catch { }
+      const Reported = Parsed (Reply);
+      Resolve (Array.isArray (Reported) &&
+               !Reported.some (({ severity }) => severity === 0));
+    });
+  });
+
+const Whole_Of = (Document) =>
+  new vscode.Range (0, 0, Document.lineCount, 0);
+
+const Reformatted = async (Root, Document, Token) => {
+  const Rules = Style_Rules (Root);
+  if (Rules === null)
+    return { Complaint: `The style rules are in ${Manual_Name}, which is ` +
+                        'not installed beside the extension.' };
+
+  const Models = await vscode.lm.selectChatModels ({});
+  if (Models.length === 0)
+    return { Complaint: 'Reformatting asks a language model to apply the ' +
+                        'style rules, and no model is available here.' };
+
+  const Answer = Unfenced (
+    await Spoken (Models[0], Reformat_Instruction (Rules, Document.getText ()),
+                  Token)).trim ();
+  if (Answer === '')
+    return { Complaint: 'The model returned nothing.' };
+
+  const Directory = path.dirname (Document.uri.fsPath);
+  if (!await Still_Compiles (Answer + '\n', Directory))
+    return { Complaint: 'The reformatted source no longer compiles, so it ' +
+                        'was not applied.' };
+  return { Source: Answer + '\n' };
+};
+
+const Formatting_Provider = (Root) => ({
+  provideDocumentFormattingEdits: (Document, Options, Token) =>
+    Reformatted (Root, Document, Token).then (({ Source, Complaint }) =>
+      (Source === undefined
+         ? (vscode.window.showWarningMessage (`Ada 83: ${Complaint}`), [])
+         : [vscode.TextEdit.replace (Whole_Of (Document), Source)])),
+});
+
+const Reformat_Command = () =>
+  vscode.commands.executeCommand ('editor.action.formatDocument');
+
+const Reformat_On_Save = (Root) => (Event) =>
+  ((Document) => {
+     if (Configured ('autoFormat', 'off') !== 'onSave' ||
+         !Is_Ada_Document (Document)) return;
+     Event.waitUntil (
+       Reformatted (Root, Document, Event.token ?? undefined)
+         .then (({ Source }) =>
+           (Source === undefined
+              ? []
+              : [vscode.TextEdit.replace (Whole_Of (Document), Source)])));
+   }) (Event.document);
+
+const Reformat_Registration = (Root) =>
+  vscode.lm === undefined || vscode.lm.selectChatModels === undefined
+    ? []
+    : [vscode.languages.registerDocumentFormattingEditProvider (
+         Ada_Selector, Formatting_Provider (Root)),
+       vscode.commands.registerCommand ('ada83.reformat', Reformat_Command),
+       vscode.workspace.onWillSaveTextDocument (Reformat_On_Save (Root))];
+
 const Ada_Selector = { scheme: 'file', language: 'ada83' };
 
 const Task_Of = (Name, Title, Argument_List, Group) =>
@@ -856,7 +964,8 @@ const activate = (Context) => {
     vscode.commands.registerCommand ('ada83.showOutput',
                                      () => Output.show (true)),
     vscode.tasks.registerTaskProvider ('ada83', Task_Provider),
-    ...Manual_Registration (Context.extensionPath));
+    ...Manual_Registration (Context.extensionPath),
+    ...Reformat_Registration (Context.extensionPath));
 };
 
 const deactivate = Stop;
@@ -979,6 +1088,19 @@ module.exports = { activate, deactivate };
           "default": [],
           "description": "Directories searched for with-ed units, beyond the file's own and the workspace root. ${workspaceFolder} is substituted."
         },
+        "ada83.autoFormat": {
+          "type": "string",
+          "enum": [
+            "off",
+            "onSave"
+          ],
+          "enumDescriptions": [
+            "Reformat only when asked.",
+            "Reformat every Ada 83 file as it is saved."
+          ],
+          "default": "off",
+          "description": "Apply the manual's style rules as you go. Reformatting asks a language model to apply them and keeps the result only if it still compiles, so it costs a request per save."
+        },
         "ada83.syncDelay": {
           "type": "number",
           "default": 120,
@@ -1008,6 +1130,12 @@ module.exports = { activate, deactivate };
         "title": "Check This File",
         "category": "Ada 83",
         "icon": "$(check)"
+      },
+      {
+        "command": "ada83.reformat",
+        "title": "Reformat To The Manual's Style",
+        "category": "Ada 83",
+        "icon": "$(symbol-ruler)"
       },
       {
         "command": "ada83.restartServer",
@@ -1042,6 +1170,10 @@ module.exports = { activate, deactivate };
         },
         {
           "command": "ada83.check",
+          "when": "resourceLangId == ada83"
+        },
+        {
+          "command": "ada83.reformat",
           "when": "resourceLangId == ada83"
         }
       ],

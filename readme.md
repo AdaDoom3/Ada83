@@ -120,13 +120,21 @@ with libLLVM `20.1.2` behind ada83's back end.
 ## VSCode Extension
 
 `ada83 --lsp` serves the Language Server Protocol on stdin and stdout, and the
-extension that speaks it is one JavaScript file with no dependencies. It is in
-each archive above; `make vsix` builds it from `ada83-extension.js`.
+extension that speaks it has no dependencies. It is in each archive above;
+`make vsix` builds it from `ada83-extension.html`, which carries the manifest,
+the grammar, the snippets and the JavaScript as one file each editor can
+still colour.
+
+**Reformat To The Manual's Style** hands the file and the manual's Style
+Guidelines to whatever language model the editor has, and keeps the answer
+only if it still compiles. With no model available it says so rather than
+changing anything.
 
 | Setting | |
 | ------- | --- |
 | `ada83.compilerPath` | where `ada83` is; `${workspaceFolder}` is substituted |
 | `ada83.includePaths` | directories searched for with-ed units |
+| `ada83.autoFormat` | `onSave` reformats to the manual's style as you go |
 | `ada83.trace.server` | write the protocol traffic to the output channel |
 
 ## Use
