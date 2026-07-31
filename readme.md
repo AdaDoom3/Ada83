@@ -115,21 +115,30 @@ the front end runs, so libLLVM is not needed and the server starts instantly.
 
 ![The Ada 83 extension for VS Code](screenshot.gif)
 
-The [`vscode/`](vscode) directory holds an extension with no dependencies: the
-protocol is a Content-Length header and JSON, written out in one file rather
-than pulled in as a library. Install it by copying that directory into
-`~/.vscode/extensions/ada83`, and point `ada83.compilerPath` at the compiler.
+[`ada83-extension.js`](ada83-extension.js) is the whole extension, with no
+dependencies: the protocol is a Content-Length header and JSON, written out in
+one file rather than pulled in as a library, and the manifest, grammar,
+language configuration and snippets ride at the end of it as line comments.
+`make vsix` splits them back out into `ada83.vsix`, which the archives carry:
+
+```sh
+code --install-extension ada83.vsix
+```
+
+Then point `ada83.compilerPath` at the compiler.
 
 | | |
 | --- | --- |
 | Diagnostics | errors and warnings as you type, from the compiler |
 | Go to definition | any identifier, including into `ada83-runtime.ada` |
+| Hover | what a name is, and its profile, in the compiler's own words |
+| Find references | occurrences of a name, and highlight as the caret moves |
 | Related information | the compiler's notes as links inside the error |
 | Syntax highlighting | the 63 Ada 83 reserved words, and no later ones |
 | Snippets | the shapes of the language |
 
 The grammar is generated from the compiler's own token table, so it cannot
-drift from what the compiler accepts, and `vscode/grammar-test.js` tokenizes a
+drift from what the compiler accepts, and `ada83-extension-test.js` tokenizes a
 battery of designed fragments through the engine VS Code uses to check it —
 that `end record` closes a record, that a keyword inside an identifier is not
 a keyword, and that the ten words Ada gained after 1983 stay ordinary

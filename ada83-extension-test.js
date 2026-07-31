@@ -8,7 +8,18 @@ const path = require('path');
 const oniguruma = require('vscode-oniguruma');
 const textmate = require('vscode-textmate');
 
-const GRAMMAR = path.join(__dirname, 'syntaxes/ada83.tmLanguage.json');
+const BUNDLE = path.join(__dirname, 'ada83-extension.js');
+
+const Grammar_From_Bundle = () => {
+  const lines = fs.readFileSync(BUNDLE, 'utf8').split('\n');
+  let taking = false;
+  const body = [];
+  for (const line of lines) {
+    if (line.startsWith('//== ')) { taking = line.slice(5).endsWith('ada83.tmLanguage.json'); continue; }
+    if (taking && line.startsWith('//')) body.push(line.slice(2));
+  }
+  return body.join('\n');
+};
 const WASM = path.join(require.resolve('vscode-oniguruma'),
                        '../../release/onig.wasm');
 
@@ -168,7 +179,7 @@ const scopesFor = (tokens, line, text) => {
     }),
     loadGrammar: async (scope) =>
       scope === 'source.ada'
-        ? textmate.parseRawGrammar(fs.readFileSync(GRAMMAR, 'utf8'), GRAMMAR)
+        ? textmate.parseRawGrammar(Grammar_From_Bundle(), 'ada83.tmLanguage.json')
         : null,
   });
 

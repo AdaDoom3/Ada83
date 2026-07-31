@@ -71,12 +71,12 @@ REM comments. Splitting them out gives the layout VS Code installs.
 :vsix
 if exist vsix rmdir /s /q vsix
 mkdir vsix\extension\syntaxes
-copy /y vscode\ada83-extension.js vsix\extension\ >nul
+copy /y ada83-extension.js vsix\extension\ >nul
 del /q "%VSIX%" >nul 2>nul
 powershell -NoProfile -Command ^
     "$ErrorActionPreference='Stop';" ^
     "$out = $null;" ^
-    "foreach ($line in Get-Content -LiteralPath 'vscode\ada83-extension.js') {" ^
+    "foreach ($line in Get-Content -LiteralPath 'ada83-extension.js') {" ^
     "  if ($line -eq '//== end') { $out = $null; continue }" ^
     "  if ($line -like '//== *') {" ^
     "    $name = $line.Substring(5);" ^
@@ -106,7 +106,7 @@ REM needed to build one.
 if exist vsix rmdir /s /q vsix
 mkdir vsix\extension\syntaxes
 copy /y vscode\package.json vsix\extension\ >nul
-copy /y vscode\ada83-extension.js vsix\extension\ >nul
+copy /y ada83-extension.js vsix\extension\ >nul
 copy /y vscode\language-configuration.json vsix\extension\ >nul
 copy /y vscode\snippets.json vsix\extension\ >nul
 copy /y vscode\syntaxes\ada83.tmLanguage.json vsix\extension\syntaxes\ >nul

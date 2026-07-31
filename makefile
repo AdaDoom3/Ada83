@@ -43,7 +43,7 @@ RUNTIME = ada83-runtime.ada
 # holding both */ and $\{ cannot break out of.  Splitting them back out gives
 # the layout VS Code installs.
 VSIX   = ada83.vsix
-BUNDLE = vscode/ada83-extension.js
+BUNDLE = ada83-extension.js
 
 all: ada83 provision-llvm
 
@@ -125,15 +125,11 @@ endif
 
 # The extension, in the shape VS Code installs: `code --install-extension
 # ada83.vsix`, or unzip its extension/ directory into ~/.vscode/extensions.
-vsix: $(VSIX)
-
-$(VSIX): $(BUNDLE)
+vsix:
 	@command -v zip >/dev/null || { echo "zip is needed to package"; exit 1; }
 	rm -rf staging && mkdir -p staging
-	$(MAKE) --no-print-directory staging/$@
-	mv staging/$@ $@
-	rm -rf staging
-	@echo "Packaged $@:"; unzip -l $@ | tail -n +4
+	$(MAKE) --no-print-directory staging/$(VSIX)
+	@echo "Built staging/$(VSIX):"; unzip -l staging/$(VSIX) | tail -n +4
 
 # awk splits the bundle: //== names the next file, //= is commentary, and
 # every other line comment is that file's content with the // taken off.
