@@ -1340,39 +1340,23 @@ module.exports = { activate, deactivate };
 //  "name": "Ada 83",
 //  "scopeName": "source.ada",
 //  "patterns": [
-//    {
-//      "include": "#comment"
-//    },
-//    {
-//      "include": "#string"
-//    },
-//    {
-//      "include": "#character"
-//    },
-//    {
-//      "include": "#number"
-//    },
-//    {
-//      "include": "#declaration"
-//    },
-//    {
-//      "include": "#attribute"
-//    },
-//    {
-//      "include": "#predefined"
-//    },
-//    {
-//      "include": "#literal"
-//    },
-//    {
-//      "include": "#keyword"
-//    },
-//    {
-//      "include": "#parameter"
-//    },
-//    {
-//      "include": "#operator"
-//    }
+//    { "include": "#comment" },
+//    { "include": "#string" },
+//    { "include": "#character" },
+//    { "include": "#number" },
+//    { "include": "#context" },
+//    { "include": "#label" },
+//    { "include": "#declaration" },
+//    { "include": "#closing" },
+//    { "include": "#loop_parameter" },
+//    { "include": "#association" },
+//    { "include": "#attribute" },
+//    { "include": "#predefined" },
+//    { "include": "#literal" },
+//    { "include": "#keyword" },
+//    { "include": "#parameter" },
+//    { "include": "#operator" },
+//    { "include": "#punctuation" }
 //  ],
 //  "repository": {
 //    "comment": {
@@ -1384,10 +1368,7 @@ module.exports = { activate, deactivate };
 //      "begin": "\"",
 //      "end": "\"",
 //      "patterns": [
-//        {
-//          "name": "constant.character.escape.ada",
-//          "match": "\"\""
-//        }
+//        { "name": "constant.character.escape.ada", "match": "\"\"" }
 //      ]
 //    },
 //    "character": {
@@ -1398,102 +1379,138 @@ module.exports = { activate, deactivate };
 //      "patterns": [
 //        {
 //          "name": "constant.numeric.based.ada",
-//          "match": "\\b\\d+#[0-9A-Fa-f_]+#(?:[Ee][+-]?\\d+)?"
+//          "match": "\\b\\d[\\d_]*#[0-9A-Fa-f_]+(?:\\.[0-9A-Fa-f_]+)?#(?:[Ee][+-]?\\d[\\d_]*)?"
 //        },
 //        {
 //          "name": "constant.numeric.decimal.ada",
-//          "match": "\\b\\d[\\d_]*(?:\\.[\\d_]+)?(?:[Ee][+-]?\\d+)?\\b"
+//          "match": "\\b\\d[\\d_]*(?:\\.[\\d_]+)?(?:[Ee][+-]?\\d[\\d_]*)?\\b"
 //        }
 //      ]
 //    },
-//    "keyword": {
+//    "context": {
+//      "match": "(?i)\\b(with|use)\\s+(?:(type)\\s+)?([A-Za-z][A-Za-z0-9_]*(?:\\.[A-Za-z][A-Za-z0-9_]*)*)",
+//      "captures": {
+//        "1": { "name": "keyword.other.ada" },
+//        "2": { "name": "storage.type.ada" },
+//        "3": { "name": "entity.name.namespace.ada" }
+//      }
+//    },
+//    "label": {
 //      "patterns": [
 //        {
-//          "name": "keyword.control.ada",
-//          "match": "(?i)\\b(abort|accept|access|all|array|at|begin|body|case|constant|declare|delay|delta|digits|do|else|elsif|end|entry|exception|exit|for|function|generic|goto|if|in|is|limited|loop|new|null|of|others|out|package|pragma|private|procedure|raise|range|record|renames|return|reverse|select|separate|subtype|task|terminate|then|type|use|when|while|with)\\b"
+//          "match": "(<<)\\s*([A-Za-z][A-Za-z0-9_]*)\\s*(>>)",
+//          "captures": {
+//            "1": { "name": "punctuation.definition.label.ada" },
+//            "2": { "name": "entity.name.label.ada" },
+//            "3": { "name": "punctuation.definition.label.ada" }
+//          }
 //        },
 //        {
-//          "name": "keyword.operator.word.ada",
-//          "match": "(?i)\\b(abs|and|mod|not|or|rem|xor)\\b"
+//          "match": "(?i)^\\s*([A-Za-z][A-Za-z0-9_]*)\\s*(:)\\s*(?=(?:for\\b|while\\b|loop\\b|declare\\b|begin\\b))",
+//          "captures": {
+//            "1": { "name": "entity.name.label.ada" },
+//            "2": { "name": "punctuation.separator.ada" }
+//          }
 //        }
 //      ]
-//    },
-//    "attribute": {
-//      "name": "support.other.attribute.ada",
-//      "match": "'[A-Za-z][A-Za-z0-9_]*"
-//    },
-//    "operator": {
-//      "name": "keyword.operator.ada",
-//      "match": "(:=|=>|\\.\\.|\\*\\*|/=|>=|<=|<<|>>|<>|[+\\-*/&<>=|])"
 //    },
 //    "declaration": {
 //      "patterns": [
 //        {
-//          "match": "(?i)\\b(procedure|function|entry)\\s+([A-Za-z][A-Za-z0-9_]*)",
+//          "match": "(?i)\\b(procedure|function|entry)\\s+(\"[^\"]+\"|[A-Za-z][A-Za-z0-9_]*)",
 //          "captures": {
-//            "1": {
-//              "name": "keyword.control.ada"
-//            },
-//            "2": {
-//              "name": "entity.name.function.ada"
-//            }
+//            "1": { "name": "storage.type.ada" },
+//            "2": { "name": "entity.name.function.ada" }
 //          }
 //        },
 //        {
-//          "match": "(?i)\\b(package)\\s+(body\\s+)?([A-Za-z][A-Za-z0-9_]*)",
+//          "match": "(?i)\\b(package)\\s+(body\\s+)?([A-Za-z][A-Za-z0-9_]*(?:\\.[A-Za-z][A-Za-z0-9_]*)*)",
 //          "captures": {
-//            "1": {
-//              "name": "keyword.control.ada"
-//            },
-//            "2": {
-//              "name": "keyword.control.ada"
-//            },
-//            "3": {
-//              "name": "entity.name.namespace.ada"
-//            }
+//            "1": { "name": "storage.type.ada" },
+//            "2": { "name": "storage.type.ada" },
+//            "3": { "name": "entity.name.namespace.ada" }
 //          }
 //        },
 //        {
 //          "match": "(?i)\\b(task)\\s+(body\\s+|type\\s+)?([A-Za-z][A-Za-z0-9_]*)",
 //          "captures": {
-//            "1": {
-//              "name": "keyword.control.ada"
-//            },
-//            "2": {
-//              "name": "keyword.control.ada"
-//            },
-//            "3": {
-//              "name": "entity.name.class.ada"
-//            }
+//            "1": { "name": "storage.type.ada" },
+//            "2": { "name": "storage.type.ada" },
+//            "3": { "name": "entity.name.type.ada" }
 //          }
 //        },
 //        {
 //          "match": "(?i)\\b(type|subtype)\\s+([A-Za-z][A-Za-z0-9_]*)",
 //          "captures": {
-//            "1": {
-//              "name": "keyword.control.ada"
-//            },
-//            "2": {
-//              "name": "entity.name.type.ada"
-//            }
+//            "1": { "name": "storage.type.ada" },
+//            "2": { "name": "entity.name.type.ada" }
 //          }
 //        },
 //        {
-//          "match": "(?i)\\b(generic|pragma)\\s+([A-Za-z][A-Za-z0-9_]*)?",
+//          "match": "(?i)\\b(pragma)\\s+([A-Za-z][A-Za-z0-9_]*)",
 //          "captures": {
-//            "1": {
-//              "name": "keyword.control.ada"
-//            },
-//            "2": {
-//              "name": "entity.name.tag.ada"
-//            }
+//            "1": { "name": "keyword.other.ada" },
+//            "2": { "name": "entity.name.tag.ada" }
+//          }
+//        },
+//        {
+//          "match": "(?i)\\b(raise|new)\\s+([A-Za-z][A-Za-z0-9_]*(?:\\.[A-Za-z][A-Za-z0-9_]*)*)",
+//          "captures": {
+//            "1": { "name": "keyword.control.ada" },
+//            "2": { "name": "entity.name.type.ada" }
+//          }
+//        },
+//        {
+//          "match": "(?i)\\b([A-Za-z][A-Za-z0-9_]*)\\s*(:)\\s*(exception)\\b",
+//          "captures": {
+//            "1": { "name": "entity.name.type.ada" },
+//            "2": { "name": "punctuation.separator.ada" },
+//            "3": { "name": "keyword.control.ada" }
 //          }
 //        }
 //      ]
 //    },
+//    "closing": {
+//      "match": "(?i)\\b(end)\\s+(?!(?:if|case|loop|record|select)\\b)(\"[^\"]+\"|[A-Za-z][A-Za-z0-9_]*)",
+//      "captures": {
+//        "1": { "name": "keyword.control.ada" },
+//        "2": { "name": "entity.name.section.ada" }
+//      }
+//    },
+//    "loop_parameter": {
+//      "match": "(?i)\\b(for)\\s+([A-Za-z][A-Za-z0-9_]*)\\s+(in)\\b\\s*(reverse\\b)?",
+//      "captures": {
+//        "1": { "name": "keyword.control.ada" },
+//        "2": { "name": "variable.other.loop.ada" },
+//        "3": { "name": "storage.modifier.ada" },
+//        "4": { "name": "storage.modifier.ada" }
+//      }
+//    },
+//    "association": {
+//      "match": "(?i)\\b([A-Za-z][A-Za-z0-9_]*)\\s*(=>)",
+//      "captures": {
+//        "1": { "name": "variable.parameter.ada" },
+//        "2": { "name": "keyword.operator.ada" }
+//      }
+//    },
+//    "attribute": {
+//      "match": "(')([A-Za-z][A-Za-z0-9_]*)",
+//      "captures": {
+//        "1": { "name": "punctuation.definition.attribute.ada" },
+//        "2": { "name": "support.other.attribute.ada" }
+//      }
+//    },
 //    "predefined": {
-//      "name": "support.type.ada",
-//      "match": "(?i)\\b(Integer|Natural|Positive|Float|Boolean|Character|String|Duration|Short_Integer|Long_Integer|Short_Float|Long_Float|System|Standard)\\b"
+//      "patterns": [
+//        {
+//          "name": "support.type.ada",
+//          "match": "(?i)\\b(Integer|Natural|Positive|Float|Boolean|Character|String|Duration|Short_Integer|Long_Integer|Short_Float|Long_Float|Short_Short_Integer|Long_Long_Integer|Universal_Integer|Universal_Real)\\b"
+//        },
+//        {
+//          "name": "support.class.ada",
+//          "match": "(?i)\\b(Standard|System|Calendar|Text_IO|Sequential_IO|Direct_IO|IO_Exceptions|Low_Level_IO|Machine_Code|Unchecked_Conversion|Unchecked_Deallocation)\\b"
+//        }
+//      ]
 //    },
 //    "literal": {
 //      "patterns": [
@@ -1503,28 +1520,59 @@ module.exports = { activate, deactivate };
 //        },
 //        {
 //          "name": "support.class.exception.ada",
-//          "match": "(?i)\\b(Constraint_Error|Numeric_Error|Program_Error|Storage_Error|Tasking_Error)\\b"
+//          "match": "(?i)\\b(Constraint_Error|Numeric_Error|Program_Error|Storage_Error|Tasking_Error|Status_Error|Mode_Error|Name_Error|Use_Error|Device_Error|End_Error|Data_Error|Layout_Error|Time_Error)\\b"
+//        }
+//      ]
+//    },
+//    "keyword": {
+//      "patterns": [
+//        {
+//          "name": "constant.language.null.ada",
+//          "match": "(?i)\\bnull\\b"
+//        },
+//        {
+//          "name": "keyword.other.ada",
+//          "match": "(?i)\\b(pragma|use|with)\\b"
+//        },
+//        {
+//          "name": "storage.type.ada",
+//          "match": "(?i)\\b(access|array|body|entry|function|generic|package|procedure|record|subtype|task|type)\\b"
+//        },
+//        {
+//          "name": "storage.modifier.ada",
+//          "match": "(?i)\\b(all|at|constant|delta|digits|in|limited|new|of|out|private|range|renames|reverse|separate)\\b"
+//        },
+//        {
+//          "name": "keyword.control.ada",
+//          "match": "(?i)\\b(abort|accept|begin|case|declare|delay|do|else|elsif|end|exception|exit|for|goto|if|is|loop|others|raise|return|select|terminate|then|when|while)\\b"
+//        },
+//        {
+//          "name": "keyword.operator.word.ada",
+//          "match": "(?i)\\b(abs|and|mod|not|or|rem|xor)\\b"
 //        }
 //      ]
 //    },
 //    "parameter": {
 //      "match": "(?i)\\b([A-Za-z][A-Za-z0-9_]*)\\s*(:)\\s*((?:in\\s+out|in|out)\\b)?",
 //      "captures": {
-//        "1": {
-//          "name": "variable.parameter.ada"
-//        },
-//        "2": {
-//          "name": "punctuation.separator.ada"
-//        },
-//        "3": {
-//          "name": "keyword.control.ada"
-//        }
+//        "1": { "name": "variable.parameter.ada" },
+//        "2": { "name": "punctuation.separator.ada" },
+//        "3": { "name": "storage.modifier.ada" }
 //      }
+//    },
+//    "operator": {
+//      "name": "keyword.operator.ada",
+//      "match": "(:=|=>|\\.\\.|\\*\\*|/=|>=|<=|<>|[+\\-*/&<>=|])"
+//    },
+//    "punctuation": {
+//      "patterns": [
+//        { "name": "punctuation.terminator.ada", "match": ";" },
+//        { "name": "punctuation.separator.ada", "match": "[,:.]" },
+//        { "name": "punctuation.section.parens.ada", "match": "[()]" }
+//      ]
 //    }
 //  }
 //}
-//
-
 //== extension.vsixmanifest
 //<?xml version="1.0" encoding="utf-8"?>
 //<PackageManifest Version="2.0.0"
