@@ -45,11 +45,11 @@ const Opened_Folder = () =>
      (Folders === undefined || Folders.length === 0 ? null : Folders[0]))
     (vscode.workspace.workspaceFolders);
 
-const Initialize = (Process_Id) => ({
-  id: 1,
+const Initialize = (Id) => ({
+  id: Id,
   method: 'initialize',
   params: {
-    processId: Process_Id,
+    processId: process.pid,
     rootUri: ((Folder) => (Folder === null ? null : Folder.uri.toString ()))
                (Opened_Folder ()),
     workspaceFolders:
@@ -152,45 +152,86 @@ const Is_Ada_Document = (Document) =>
 
 let Session = null;
 let Next_Id = 10;
+let Trace_Channel = null;
 const Awaiting = new Map ();
 
+const Traced = (Direction, Message) =>
+  ((Level) => {
+     if (Level === 'off' || Trace_Channel === null) return;
+     Trace_Channel.appendLine (
+       Level === 'verbose'
+         ? `${Direction} ${JSON.stringify (Message)}`
+         : `${Direction} ${Message.method ?? `id ${Message.id}`}`);
+   }) (Configured ('trace.server', 'off'));
+
 const Send = (Message) => {
-  if (Session !== null && Session.Server.stdin.writable)
-    Session.Server.stdin.write (Framed (Message));
+  if (Session === null || !Session.Server.stdin.writable) return;
+  Traced ('->', Message);
+  Session.Server.stdin.write (Framed (Message));
 };
 
-const Settle = ({ id, result }) =>
+const Settle = (Message) =>
   ((Resolve) => {
      if (Resolve === undefined) return;
-     Awaiting.delete (id);
-     Resolve (result ?? null);
-   }) (Awaiting.get (id));
+     Traced ('<-', Message);
+     Awaiting.delete (Message.id);
+     Resolve (Message.result ?? null);
+   }) (Awaiting.get (Message.id));
+
+const Abandon_All = () =>
+  [...Awaiting.entries ()].forEach (([Id, Resolve]) => {
+    Awaiting.delete (Id);
+    Resolve (null);
+  });
 
 const Receive = (Chunk) => {
   if (Session === null) return;
   const { Messages, Remainder } = Unframed (Session.Buffered + Chunk);
-  Session = { ...Session, Buffered: Remainder };
+  Session.Buffered = Remainder;
   const Parsed_Messages = Messages.map (Parsed);
   Publications_In (Parsed_Messages).forEach (({ Uri, Diagnostics }) =>
     Session.Diagnostics.set (Uri, Diagnostics));
   Answers_In (Parsed_Messages).forEach (Settle);
 };
 
-const Ask = (Build, Patience) =>
-  ((Id) =>
-     new Promise ((Resolve) => {
-       Awaiting.set (Id, Resolve);
-       Send (Build (Id));
-       setTimeout (() => {
-         if (Awaiting.delete (Id)) Resolve (null);
-       }, Patience ?? Configured ('requestTimeout', 15000));
-     })) (Next_Id++);
+let Pending_Change = null;
+
+const Flush_Changes = () => {
+  if (Pending_Change === null) return;
+  const { Timer, Notify, Document } = Pending_Change;
+  clearTimeout (Timer);
+  Pending_Change = null;
+  Send (Notify (Document));
+};
+
+const Cancel = (Id) => ({ method: '$/cancelRequest', params: { id: Id } });
+
+const Ask = (Build, Token, Patience) =>
+  Session === null
+    ? Promise.resolve (null)
+    : ((Id) =>
+         new Promise ((Resolve) => {
+           Awaiting.set (Id, Resolve);
+           Flush_Changes ();
+           Send (Build (Id));
+           const Abandon = (Notify) => () => {
+             if (!Awaiting.delete (Id)) return;
+             if (Notify) Send (Cancel (Id));
+             Resolve (null);
+           };
+           const Waiting = setTimeout (
+             Abandon (true),
+             Patience ?? Configured ('requestTimeout', 15000));
+           Token?.onCancellationRequested (() => {
+             clearTimeout (Waiting);
+             Abandon (true) ();
+           });
+         })) (Next_Id++);
 
 const Definition_Provider = {
-  provideDefinition: (Document, Position) =>
-    Session === null
-      ? null
-      : Ask ((Id) => Definition (Id, Document, Position)).then (Location_Of),
+  provideDefinition: (Document, Position, Token) =>
+    Ask ((Id) => Definition (Id, Document, Position), Token)
+      .then (Location_Of),
 };
 
 const Document_Highlight = (Id, Document, Position) => ({
@@ -233,20 +274,17 @@ const Highlights_Of = Listed (Highlight_Of);
 const Locations_Of = Listed (Location_Of);
 
 const Highlight_Provider = {
-  provideDocumentHighlights: (Document, Position) =>
-    Session === null
-      ? []
-      : Ask ((Id) => Document_Highlight (Id, Document, Position))
-          .then (Highlights_Of),
+  provideDocumentHighlights: (Document, Position, Token) =>
+    Ask ((Id) => Document_Highlight (Id, Document, Position), Token)
+      .then (Highlights_Of),
 };
 
 const Reference_Provider = {
-  provideReferences: (Document, Position, Context) =>
-    Session === null
-      ? []
-      : Ask ((Id) => References (Id, Document, Position,
-                                 (Context ?? {}).includeDeclaration !== false))
-          .then (Locations_Of),
+  provideReferences: (Document, Position, Context, Token) =>
+    Ask ((Id) => References (Id, Document, Position,
+                             (Context ?? {}).includeDeclaration !== false),
+         Token)
+      .then (Locations_Of),
 };
 
 const Hover = (Id, Document, Position) => ({
@@ -266,10 +304,8 @@ const Hover_Of = (Result) =>
                         Range_Of (Result.range));
 
 const Hover_Provider = {
-  provideHover: (Document, Position) =>
-    Session === null
-      ? null
-      : Ask ((Id) => Hover (Id, Document, Position)).then (Hover_Of),
+  provideHover: (Document, Position, Token) =>
+    Ask ((Id) => Hover (Id, Document, Position), Token).then (Hover_Of),
 };
 
 const Document_Symbols = (Id, Document) => ({
@@ -293,10 +329,8 @@ const Symbols_Of = (Result) =>
   (Array.isArray (Result) ? Result : []).map (Symbol_Of);
 
 const Document_Symbol_Provider = {
-  provideDocumentSymbols: (Document) =>
-    Session === null
-      ? null
-      : Ask ((Id) => Document_Symbols (Id, Document)).then (Symbols_Of),
+  provideDocumentSymbols: (Document, Token) =>
+    Ask ((Id) => Document_Symbols (Id, Document), Token).then (Symbols_Of),
 };
 
 const Completion = (Id, Document, Position) => ({
@@ -335,11 +369,9 @@ const Completions_Of = (Result) =>
     : (Result.items ?? []).map (Completion_Item_Of);
 
 const Completion_Provider = {
-  provideCompletionItems: (Document, Position) =>
-    Session === null
-      ? null
-      : Ask ((Id) => Completion (Id, Document, Position))
-          .then (Completions_Of),
+  provideCompletionItems: (Document, Position, Token) =>
+    Ask ((Id) => Completion (Id, Document, Position), Token)
+      .then (Completions_Of),
 };
 
 const Workspace_Symbols = (Id, Query) => ({
@@ -351,12 +383,10 @@ const Workspace_Symbols = (Id, Query) => ({
 const Workspace_Symbols_Of = Listed (Symbol_Of);
 
 const Workspace_Symbol_Provider = {
-  provideWorkspaceSymbols: (Query) =>
-    Session === null
-      ? null
-      : Ask ((Id) => Workspace_Symbols (Id, Query ?? ''),
-             Configured ('workspaceRequestTimeout', 120000))
-          .then (Workspace_Symbols_Of),
+  provideWorkspaceSymbols: (Query, Token) =>
+    Ask ((Id) => Workspace_Symbols (Id, Query ?? ''), Token,
+         Configured ('workspaceRequestTimeout', 120000))
+      .then (Workspace_Symbols_Of),
 };
 
 const Signature_Help = (Id, Document, Position) => ({
@@ -385,11 +415,9 @@ const Signature_Help_Of = (Result) =>
       });
 
 const Signature_Help_Provider = {
-  provideSignatureHelp: (Document, Position) =>
-    Session === null
-      ? null
-      : Ask ((Id) => Signature_Help (Id, Document, Position))
-          .then (Signature_Help_Of),
+  provideSignatureHelp: (Document, Position, Token) =>
+    Ask ((Id) => Signature_Help (Id, Document, Position), Token)
+      .then (Signature_Help_Of),
 };
 
 const Folding_Ranges = (Id, Document) => ({
@@ -411,10 +439,9 @@ const Folding_Range_Of = (Reported) =>
 const Folding_Ranges_Of = Listed (Folding_Range_Of);
 
 const Folding_Range_Provider = {
-  provideFoldingRanges: (Document) =>
-    Session === null
-      ? []
-      : Ask ((Id) => Folding_Ranges (Id, Document)).then (Folding_Ranges_Of),
+  provideFoldingRanges: (Document, Context, Token) =>
+    Ask ((Id) => Folding_Ranges (Id, Document), Token)
+      .then (Folding_Ranges_Of),
 };
 
 const Code_Actions = (Id, Document, Selection) => ({
@@ -452,11 +479,9 @@ const Code_Action_Of = (Reported) =>
 const Code_Actions_Of = Listed (Code_Action_Of);
 
 const Code_Action_Provider = {
-  provideCodeActions: (Document, Selection) =>
-    Session === null
-      ? []
-      : Ask ((Id) => Code_Actions (Id, Document, Selection))
-          .then (Code_Actions_Of),
+  provideCodeActions: (Document, Selection, Context, Token) =>
+    Ask ((Id) => Code_Actions (Id, Document, Selection), Token)
+      .then (Code_Actions_Of),
 };
 
 const Manual_Name = 'manual.md';
@@ -703,81 +728,190 @@ const Run_On_The_Active_File = (Make) => () =>
        : vscode.tasks.executeTask (Make (Source_Path)))
     (Active_Ada_Path ());
 
-const Report_Failure = (Command) => (Reason) =>
-  vscode.window.showErrorMessage (
-    `Ada 83: cannot run '${Command} --lsp' (${Reason.message}). ` +
-    'Set ada83.compilerPath to the compiler, and keep ada83-runtime.ada ' +
-    'beside it.');
+const Substituted = (Setting) =>
+  ((Folder) =>
+     Setting.replace (/\$\{workspaceFolder\}/g,
+                      Folder === null ? '' : Folder.uri.fsPath))
+    (Opened_Folder ());
 
-const Start = (Diagnostics, Output) => {
-  if (!Configured ('enable', true)) return;
+const Compiler_Path = () => Substituted (Configured ('compilerPath', 'ada83'));
 
-  const Command = Configured ('compilerPath', 'ada83');
+const Presentation = {
+  starting: ['$(loading~spin)', 'starting'],
+  ready: ['$(check)', 'ready'],
+  restarting: ['$(sync~spin)', 'restarting'],
+  failed: ['$(error)', 'unavailable'],
+  stopped: ['$(circle-slash)', 'stopped'],
+};
+
+const Show_State = (Status, State) => {
+  const [Icon, Detail] = Presentation[State];
+  Status.text = `${Icon} Ada 83`;
+  Status.tooltip = `Ada 83 language server: ${Detail}`;
+  Status.show ();
+};
+
+const Restart_Delay = (Attempt) => Math.min (1000 * 2 ** Attempt, 30000);
+const Restart_Limit = 5;
+
+const Start = (Diagnostics, Output, Status, Attempt) => {
+  if (!Configured ('enable', true)) return Show_State (Status, 'stopped');
+
+  const Command = Compiler_Path ();
   const Server = spawn (Command, ['--lsp'], { stdio: 'pipe' });
+  const Ours = { Server, Diagnostics, Output, Status, Buffered: '',
+                 Ready: false, Capabilities: {}, Registered: [] };
+  Session = Ours;
+  Show_State (Status, Attempt === 0 ? 'starting' : 'restarting');
 
-  Session = { Server, Diagnostics, Buffered: '' };
+  const Give_Up = (Reason) => {
+    if (Session !== Ours) return;
+    Session = null;
+    Abandon_All ();
+    Ours.Registered.forEach ((Registration) => Registration.dispose ());
+    if (Attempt >= Restart_Limit) {
+      Show_State (Status, 'failed');
+      Output.appendLine (`server unavailable: ${Reason}`);
+      return vscode.window.showErrorMessage (
+        `Ada 83: '${Command} --lsp' will not run (${Reason}). Set ` +
+        'ada83.compilerPath to the compiler, and keep ada83-runtime.ada ' +
+        'beside it.');
+    }
+    Show_State (Status, 'restarting');
+    Output.appendLine (`server ${Reason}; restarting`);
+    setTimeout (() => {
+      if (Session === null)
+        Start (Diagnostics, Output, Status, Attempt + 1);
+    }, Restart_Delay (Attempt));
+  };
 
-  Server.on ('error', Report_Failure (Command));
+  Server.on ('error', (Reason) => Give_Up (Reason.message));
+  Server.on ('exit', (Code, Signal) =>
+    Give_Up (`exited with ${Signal ?? Code}`));
   Server.stdout.setEncoding ('utf8');
   Server.stdout.on ('data', Receive);
   Server.stderr.setEncoding ('utf8');
   Server.stderr.on ('data', (Text) => Output.append (Text));
 
-  [Initialize (process.pid), Initialized ()].forEach (Send);
-  vscode.workspace.textDocuments
-    .filter (Is_Ada_Document)
-    .map (Did_Open)
-    .forEach (Send);
+  Ask (Initialize).then ((Result) => {
+    if (Session !== Ours || Result === null) return;
+    Ours.Ready = true;
+    Ours.Capabilities = Result.capabilities ?? {};
+    Ours.Registered = Registrations (Ours.Capabilities);
+    Show_State (Status, 'ready');
+    Send (Initialized ());
+    vscode.workspace.textDocuments
+      .filter (Is_Ada_Document)
+      .map (Did_Open)
+      .forEach (Send);
+  });
 };
 
 const Stop = () => {
   if (Session === null) return;
+  const Ending = Session;
   [Shutdown (), Exit ()].forEach (Send);
   Session = null;
+  Abandon_All ();
+  Ending.Registered.forEach ((Registration) => Registration.dispose ());
+  Ending.Server.kill ();
 };
+
+const Restart = (Diagnostics, Output, Status) => {
+  Stop ();
+  Start (Diagnostics, Output, Status, 0);
+};
+
+const Registrations = (Capabilities) =>
+  [['definitionProvider',
+    () => vscode.languages.registerDefinitionProvider (
+            Ada_Selector, Definition_Provider)],
+   ['hoverProvider',
+    () => vscode.languages.registerHoverProvider (
+            Ada_Selector, Hover_Provider)],
+   ['documentHighlightProvider',
+    () => vscode.languages.registerDocumentHighlightProvider (
+            Ada_Selector, Highlight_Provider)],
+   ['referencesProvider',
+    () => vscode.languages.registerReferenceProvider (
+            Ada_Selector, Reference_Provider)],
+   ['documentSymbolProvider',
+    () => vscode.languages.registerDocumentSymbolProvider (
+            Ada_Selector, Document_Symbol_Provider)],
+   ['workspaceSymbolProvider',
+    () => vscode.languages.registerWorkspaceSymbolProvider (
+            Workspace_Symbol_Provider)],
+   ['completionProvider',
+    () => vscode.languages.registerCompletionItemProvider (
+            Ada_Selector, Completion_Provider,
+            ...(Capabilities.completionProvider?.triggerCharacters ?? ['.']))],
+   ['signatureHelpProvider',
+    () => vscode.languages.registerSignatureHelpProvider (
+            Ada_Selector, Signature_Help_Provider,
+            ...(Capabilities.signatureHelpProvider?.triggerCharacters
+                  ?? ['(', ',']))],
+   ['foldingRangeProvider',
+    () => vscode.languages.registerFoldingRangeProvider (
+            Ada_Selector, Folding_Range_Provider)],
+   ['codeActionProvider',
+    () => vscode.languages.registerCodeActionsProvider (
+            Ada_Selector, Code_Action_Provider,
+            { providedCodeActionKinds: [vscode.CodeActionKind.QuickFix] })]]
+    .filter (([Name]) => Capabilities[Name] !== undefined &&
+                         Capabilities[Name] !== false)
+    .map (([, Register]) => Register ());
 
 const On_Ada = (Notify) => (Event) =>
   ((Document) => { if (Is_Ada_Document (Document)) Send (Notify (Document)); })
     (Event.document ?? Event);
 
+const Settles_Down = (Notify) => (Event) =>
+  ((Document) => {
+     if (!Is_Ada_Document (Document)) return;
+     if (Pending_Change !== null) clearTimeout (Pending_Change.Timer);
+     Pending_Change = {
+       Notify,
+       Document,
+       Timer: setTimeout (Flush_Changes, Configured ('syncDelay', 120)),
+     };
+   }) (Event.document ?? Event);
+
+const Touches_The_Server = (Change) =>
+  ['enable', 'compilerPath', 'includePaths']
+    .some ((Name) => Change.affectsConfiguration (`ada83.${Name}`));
+
 const activate = (Context) => {
   const Output = vscode.window.createOutputChannel ('Ada 83');
   const Diagnostics = vscode.languages.createDiagnosticCollection ('ada83');
+  const Status = vscode.window.createStatusBarItem (
+    vscode.StatusBarAlignment.Right, 100);
+  Status.command = 'ada83.showOutput';
+  Trace_Channel = Output;
 
-  Start (Diagnostics, Output);
+  Start (Diagnostics, Output, Status, 0);
 
   Context.subscriptions.push (
     Output,
     Diagnostics,
+    Status,
     { dispose: Stop },
     vscode.workspace.onDidOpenTextDocument (On_Ada (Did_Open)),
-    vscode.workspace.onDidChangeTextDocument (On_Ada (Did_Change)),
+    vscode.workspace.onDidChangeTextDocument (Settles_Down (Did_Change)),
     vscode.workspace.onDidCloseTextDocument (On_Ada (Did_Close)),
+    vscode.workspace.onDidSaveTextDocument (On_Ada (Did_Change)),
+    vscode.workspace.onDidChangeConfiguration ((Change) => {
+      if (Touches_The_Server (Change)) Restart (Diagnostics, Output, Status);
+    }),
     vscode.commands.registerCommand ('ada83.build',
                                      Run_On_The_Active_File (Build_Task)),
     vscode.commands.registerCommand ('ada83.check',
                                      Run_On_The_Active_File (Check_Task)),
+    vscode.commands.registerCommand ('ada83.restartServer',
+                                     () => Restart (Diagnostics, Output,
+                                                    Status)),
+    vscode.commands.registerCommand ('ada83.showOutput',
+                                     () => Output.show (true)),
     vscode.tasks.registerTaskProvider ('ada83', Task_Provider),
-    vscode.languages.registerDefinitionProvider (
-      Ada_Selector, Definition_Provider),
-    vscode.languages.registerHoverProvider (Ada_Selector, Hover_Provider),
-    vscode.languages.registerDocumentHighlightProvider (
-      Ada_Selector, Highlight_Provider),
-    vscode.languages.registerReferenceProvider (
-      Ada_Selector, Reference_Provider),
-    vscode.languages.registerDocumentSymbolProvider (
-      Ada_Selector, Document_Symbol_Provider),
-    vscode.languages.registerWorkspaceSymbolProvider (
-      Workspace_Symbol_Provider),
-    vscode.languages.registerCompletionItemProvider (
-      Ada_Selector, Completion_Provider, '.'),
-    vscode.languages.registerSignatureHelpProvider (
-      Ada_Selector, Signature_Help_Provider, '(', ','),
-    vscode.languages.registerFoldingRangeProvider (
-      Ada_Selector, Folding_Range_Provider),
-    vscode.languages.registerCodeActionsProvider (
-      Ada_Selector, Code_Action_Provider,
-      { providedCodeActionKinds: [vscode.CodeActionKind.QuickFix] }),
     ...Manual_Registration (Context.extensionPath));
 };
 
@@ -861,6 +995,21 @@ module.exports = { activate, deactivate };
 //          "type": "number",
 //          "default": 120000,
 //          "description": "How long, in milliseconds, to wait for a workspace-wide symbol search, which compiles every Ada source in the workspace root."
+//        },
+//        "ada83.syncDelay": {
+//          "type": "number",
+//          "default": 120,
+//          "description": "How long, in milliseconds, typing must pause before the buffer is sent to the compiler. Every send costs a compilation."
+//        },
+//        "ada83.trace.server": {
+//          "type": "string",
+//          "enum": [
+//            "off",
+//            "messages",
+//            "verbose"
+//          ],
+//          "default": "off",
+//          "description": "Write the traffic between the editor and the language server to the Ada 83 output channel."
 //        }
 //      }
 //    },
@@ -876,6 +1025,18 @@ module.exports = { activate, deactivate };
 //        "title": "Check This File",
 //        "category": "Ada 83",
 //        "icon": "$(check)"
+//      },
+//      {
+//        "command": "ada83.restartServer",
+//        "title": "Restart Language Server",
+//        "category": "Ada 83",
+//        "icon": "$(debug-restart)"
+//      },
+//      {
+//        "command": "ada83.showOutput",
+//        "title": "Show Server Log",
+//        "category": "Ada 83",
+//        "icon": "$(output)"
 //      }
 //    ],
 //    "menus": {
