@@ -14,17 +14,8 @@ TIMEOUT=$(command -v timeout || command -v gtimeout) || {
 }
 export TIMEOUT
 
-for tool in llvm-link lli; do
-    command -v "$tool" >/dev/null || {
-        echo "FATAL: no '$tool' command found" >&2
-        echo "       classes A, C, D and E link and run what they compile," >&2
-        echo "       and without it every one of them reports as skipped" >&2
-        echo "       Debian/Ubuntu: apt-get install llvm" >&2
-        echo "       macOS:         brew install llvm" >&2
-        echo "       Windows:       winget install LLVM.LLVM" >&2
-        exit 1
-    }
-done
+OPT=${OPT:--O0}
+export OPT
 
 now_ms(){
     local stamp
@@ -135,14 +126,16 @@ compile_set(){
 run_in_lib(){
     local secs=$1 n=$2; shift 2
     ( cd "$RESULTS_DIR/$n.lib" 2>/dev/null || exit 127
-      exec "$TIMEOUT" "$secs" lli "$@" "$ROOT/$RESULTS_DIR/$n.bc" )
+      exec "$TIMEOUT" "$secs" "$ROOT/$PROGRAM" "$@" )
 }
 
 link_program(){
     local n=$1 rc=0
-    "$TIMEOUT" "$LINK_TIMEOUT" llvm-link -o "$RESULTS_DIR/$n.bc" "$MAIN_LL" \
+    PROGRAM=$RESULTS_DIR/$n.bin
+    "$TIMEOUT" "$LINK_TIMEOUT" ./ada83 "$OPT" "$MAIN_LL" \
         ${LINK_FRAGMENTS[@]+"${LINK_FRAGMENTS[@]}"} "$REPORT_LL" \
-        2>"$LOGS_DIR/$n.link" || rc=$?
+        -o "$PROGRAM" >/dev/null 2>"$LOGS_DIR/$n.link" || rc=$?
+    [[ -x $PROGRAM ]] || [[ ! -x $PROGRAM.exe ]] || PROGRAM=$PROGRAM.exe
     case $rc in
         0)       LINK_STATUS=ok ;;
         124|137) LINK_STATUS=timeout ;;
@@ -151,15 +144,22 @@ link_program(){
     return $rc
 }
 
+report_link_failure(){
+    local q=$1 n=$2
+    [[ $LINK_STATUS == timeout ]] \
+        && echo "$q fail $n TIMEOUT:link_exceeded_${LINK_TIMEOUT}s" \
+        || echo "$q skip $n BIND:unresolved_symbols"
+}
+
 run_continuity_creators(){
     local reader=$1 lib=$2 self=${1,,} c
     for c in $(grep -oiE 'legal_file_name[ ]*\([^)]*"ce[0-9a-z]+"' "acats/$reader.ada" 2>/dev/null \
                | grep -oiE '"ce[0-9a-z]+"' | tr -d '"' | tr 'A-Z' 'a-z' | sort -u); do
         [[ $c == "$self" || ! -f acats/$c.ada ]] && continue
         ./ada83 --ir "acats/$c.ada" -o "$lib/$c.ll" >/dev/null 2>&1 || continue
-        "$TIMEOUT" "$LINK_TIMEOUT" llvm-link -o "$lib/$c.bc" "$lib/$c.ll" \
-            "$REPORT_LL" >/dev/null 2>&1 || continue
-        ( cd "$lib" && exec "$TIMEOUT" "$TEST_TIMEOUT" lli "$c.bc" ) >/dev/null 2>&1 || true
+        "$TIMEOUT" "$LINK_TIMEOUT" ./ada83 "$OPT" "$lib/$c.ll" "$REPORT_LL" \
+            -o "$lib/$c.bin" >/dev/null 2>&1 || continue
+        ( cd "$lib" && exec "$TIMEOUT" "$TEST_TIMEOUT" "./$c.bin" ) >/dev/null 2>&1 || true
     done
 }
 
@@ -170,7 +170,7 @@ run_one(){
         compgen -G "acats/${BASH_REMATCH[1]}[0-9]m.ada" >/dev/null && return
     fi
     [[ $n == *_* ]] && return
-    local COMPILE_FILES MAIN_LL LINK_FRAGMENTS COMPILE_FAILED BIND_FAILED
+    local COMPILE_FILES MAIN_LL LINK_FRAGMENTS COMPILE_FAILED BIND_FAILED PROGRAM
     gather_files "$f" "$n"
 
     case ${q,,} in
@@ -184,8 +184,7 @@ run_one(){
             return
         fi
         if ! link_program "$n"; then
-            [[ $LINK_STATUS == timeout ]] && echo "c fail $n TIMEOUT:llvm-link_exceeded_${LINK_TIMEOUT}s" \
-                                          || echo "c skip $n BIND:unresolved_symbols"
+            report_link_failure c "$n"
             return
         fi
         run_continuity_creators "$n" "$RESULTS_DIR/$n.lib"
@@ -194,14 +193,6 @@ run_one(){
         if ((rc==124 || rc==137)); then
             echo "c fail $n TIMEOUT:exceeded_${TEST_TIMEOUT}s"
             return
-        fi
-        if ((rc!=0)); then
-            rc=0
-            run_in_lib "$TEST_TIMEOUT" "$n" -jit-kind=mcjit > $LOGS_DIR/$n.out 2>&1 || rc=$?
-            if ((rc==124 || rc==137)); then
-                echo "c fail $n TIMEOUT:exceeded_${TEST_TIMEOUT}s"
-                return
-            fi
         fi
         if ((rc==0)); then
             if grep -q PASSED $LOGS_DIR/$n.out 2>/dev/null; then
@@ -223,8 +214,7 @@ run_one(){
         if [[ -n $BIND_FAILED ]]; then
             echo "a fail $n OBSOLETE:$(head -1 $LOGS_DIR/$n.bind 2>/dev/null|cut -c1-50)"; return; fi
         if ! link_program "$n"; then
-            [[ $LINK_STATUS == timeout ]] && echo "a fail $n TIMEOUT:llvm-link_exceeded_${LINK_TIMEOUT}s" \
-                                          || echo "a skip $n BIND:unresolved_symbols"
+            report_link_failure a "$n"
             return; fi
         local rc=0
         run_in_lib "$TEST_TIMEOUT" "$n" > $LOGS_DIR/$n.out 2>&1 || rc=$?
@@ -232,10 +222,8 @@ run_one(){
             echo "a fail $n TIMEOUT:exceeded_${TEST_TIMEOUT}s"
         elif ((rc==0)); then
             echo "a pass $n PASSED"
-        elif run_in_lib "$TEST_TIMEOUT" "$n" -jit-kind=mcjit > $LOGS_DIR/$n.out 2>&1; then
-            echo "a pass $n PASSED"
         else
-            echo "a fail $n FAILED:exit_$?"
+            echo "a fail $n FAILED:exit_$rc"
         fi
         ;;
     b)
@@ -288,8 +276,7 @@ run_one(){
         if [[ -n $BIND_FAILED ]]; then
             echo "d fail $n OBSOLETE:$(head -1 $LOGS_DIR/$n.bind 2>/dev/null|cut -c1-50)"; return; fi
         if ! link_program "$n"; then
-            [[ $LINK_STATUS == timeout ]] && echo "d fail $n TIMEOUT:llvm-link_exceeded_${LINK_TIMEOUT}s" \
-                                          || echo "d skip $n BIND"
+            report_link_failure d "$n"
             return; fi
         if run_in_lib "$TEST_TIMEOUT" "$n" > $LOGS_DIR/$n.out 2>&1 && grep -q PASSED $LOGS_DIR/$n.out; then
             echo "d pass $n PASSED"
@@ -313,8 +300,7 @@ run_one(){
         if [[ -n $BIND_FAILED ]]; then
             e_reject "$n" BIND "$(head -1 $LOGS_DIR/$n.bind 2>/dev/null|cut -c1-50)"; return; fi
         if ! link_program "$n"; then
-            [[ $LINK_STATUS == timeout ]] && echo "e fail $n TIMEOUT:llvm-link_exceeded_${LINK_TIMEOUT}s" \
-                                          || echo "e skip $n BIND"
+            report_link_failure e "$n"
             return; fi
         run_in_lib "$TEST_TIMEOUT" "$n" > $LOGS_DIR/$n.out 2>&1 || true
         if grep -q "TENTATIVELY PASSED" $LOGS_DIR/$n.out 2>/dev/null; then
@@ -338,7 +324,7 @@ run_one(){
                     echo "l pass $n BIND_REJECT:execution_blocked"
                 fi
             elif [[ $LINK_STATUS == timeout ]]; then
-                echo "l fail $n TIMEOUT:llvm-link_exceeded_${LINK_TIMEOUT}s"
+                echo "l fail $n TIMEOUT:link_exceeded_${LINK_TIMEOUT}s"
             else
                 echo "l pass $n LINK_REJECT:binding_failed_as_expected"
             fi
@@ -352,7 +338,8 @@ run_one(){
 }
 ROOT=$PWD
 export ROOT
-export -f run_one gather_files compile_set run_in_lib link_program run_continuity_creators pct
+export -f run_one gather_files compile_set run_in_lib link_program \
+          report_link_failure run_continuity_creators pct
 export START_MS TEST_TIMEOUT LINK_TIMEOUT COMPILE_TIMEOUT
 
 run_one_timed(){
