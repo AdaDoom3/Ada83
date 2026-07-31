@@ -63655,31 +63655,38 @@ int Native_Backend_Compile (const char *ir_path, const char *const *extra_ir,
   }
 
   const char *configured = getenv ("CC");
+#ifdef _WIN32
+  const char *drivers[] = { configured, "clang -fuse-ld=lld", "cc", "clang",
+                            "gcc" };
+  const char *link_libraries = "-lm -lapi-ms-win-core-synch-l1-2-0";
+#else
   const char *drivers[] = { configured, "cc", "clang", "gcc" };
+  const char *link_libraries = "-lm -lpthread";
+#endif
   bool driver_ran = false;
-  for (size_t i = 0; i < sizeof (drivers) / sizeof (*drivers); i++) {
+  for (size_t i = 0; i < sizeof drivers / sizeof *drivers; i++) {
     if (not drivers[i]) continue;
     char command[PATH_MAX * 3];
-    snprintf (command, sizeof (command),
+    snprintf (command, sizeof command, "%s \"%s\" -o \"%s\" %s",
+              drivers[i], obj_path, exe_path, link_libraries);
+    int exit_status = Host_Command_Exit_Status (system (command));
+    if (exit_status == 127) continue;
 #ifdef _WIN32
-              "%s \"%s\" -o \"%s\" -lm -lapi-ms-win-core-synch-l1-2-0"
-#else
-              "%s \"%s\" -o \"%s\" -lm -lpthread"
-#endif
-              , drivers[i], obj_path, exe_path);
-    int link_status = system (command);
-    int exit_status = Host_Command_Exit_Status (link_status);
-    if (exit_status == 127) continue;   /* POSIX: command not found      */
-#ifdef _WIN32
-    if (exit_status == 9009) continue;  /* cmd.exe: command not found    */
+    if (exit_status == 9009) continue;
 #endif
     driver_ran = true;
-    status = link_status == 0 ? 0 : 1;
+    status     = exit_status == 0 ? 0 : 1;
     break;
   }
   if (not driver_ran)
     Report_Driver_Error ("no C compiler found to link with "
                          "(set CC, or install cc/clang/gcc)");
+#ifdef _WIN32
+  else if (status != 0)
+    Report_Driver_Warning ("thread-local storage reaches the linker as a COFF "
+                          "weak external, which only lld resolves; install "
+                          "clang with lld, or set CC to a driver that uses it");
+#endif
   remove (obj_path);
 
 done:
