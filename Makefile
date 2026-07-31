@@ -1,25 +1,16 @@
-
 CC = gcc
 CFLAGS = -O3 -Wall -std=gnu2x
 LIBS = -lm -lpthread
 
-# This makefile builds the Unix-like hosts.  Windows is built by build.bat,
-# which unpacks LLVM-C.zip beside the executable instead of relying on a
-# system libLLVM.
 HOST_SYSTEM  := $(shell uname -s)
 HOST_MACHINE := $(shell uname -m)
 CC_IS_CLANG  := $(shell echo | $(CC) -dM -E - 2>/dev/null | grep -c __clang__)
 
-# -fwhole-program is a GCC optimisation.  Clang takes the flag only to
-# warn that it does nothing, so do not offer it one.
 ifeq ($(CC_IS_CLANG),0)
 WHOLE_PROGRAM = -fwhole-program
 TUNE          = -march=native
 else
 WHOLE_PROGRAM =
-# Clang implements -march=native on x86-64 alone: on AArch64 it rejects
-# the argument outright, and the baseline there already carries the NEON
-# that §18 compiles against.
 ifneq ($(filter x86_64 amd64,$(HOST_MACHINE)),)
 TUNE = -march=native
 else
@@ -35,8 +26,7 @@ ada83: ada83.c
 SUDO := $(shell [ $$(id -u) -eq 0 ] || echo sudo)
 
 ifeq ($(HOST_SYSTEM),Darwin)
-# macOS has no ldconfig, so look where the loader will: the two Homebrew
-# prefixes and the command-line tools.  Homebrew is never run under sudo.
+# macOS has no ldconfig, so look where the loader will
 provision-llvm:
 	-@if [ -e /opt/homebrew/opt/llvm/lib/libLLVM.dylib ] \
 	   || [ -e /usr/local/opt/llvm/lib/libLLVM.dylib ] \
