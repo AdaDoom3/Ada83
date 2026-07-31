@@ -80,6 +80,15 @@ const Definition = (Id, Document, Position) => ({
   },
 });
 
+const Hover = (Id, Document, Position) => ({
+  id: Id,
+  method: 'textDocument/hover',
+  params: {
+    textDocument: { uri: Document.uri.toString () },
+    position: { line: Position.line, character: Position.character },
+  },
+});
+
 const Shutdown = () => ({ id: 2, method: 'shutdown' });
 
 const Exit = () => ({ method: 'exit' });
@@ -108,6 +117,13 @@ const Location_Of = (Result) =>
     ? null
     : new vscode.Location (vscode.Uri.parse (Result.uri),
                            Range_Of (Result.range));
+
+const Hover_Of = (Result) =>
+  Result === null || Result === undefined ||
+  Result.contents === null || Result.contents === undefined
+    ? null
+    : new vscode.Hover (new vscode.MarkdownString (Result.contents.value),
+                        Range_Of (Result.range));
 
 const Is_Answer = (Message) =>
   Message !== null && Message.id !== undefined &&
@@ -172,6 +188,13 @@ const Definition_Provider = {
       : Ask ((Id) => Definition (Id, Document, Position)).then (Location_Of),
 };
 
+const Hover_Provider = {
+  provideHover: (Document, Position) =>
+    Session === null
+      ? null
+      : Ask ((Id) => Hover (Id, Document, Position)).then (Hover_Of),
+};
+
 const Report_Failure = (Command) => (Reason) =>
   vscode.window.showErrorMessage (
     `Ada 83: cannot run '${Command} --lsp' (${Reason.message}). ` +
@@ -224,7 +247,9 @@ const activate = (Context) => {
     vscode.workspace.onDidChangeTextDocument (On_Ada (Did_Change)),
     vscode.workspace.onDidCloseTextDocument (On_Ada (Did_Close)),
     vscode.languages.registerDefinitionProvider (
-      { scheme: 'file', language: 'ada83' }, Definition_Provider));
+      { scheme: 'file', language: 'ada83' }, Definition_Provider),
+    vscode.languages.registerHoverProvider (
+      { scheme: 'file', language: 'ada83' }, Hover_Provider));
 };
 
 const deactivate = Stop;
