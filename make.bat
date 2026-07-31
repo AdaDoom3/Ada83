@@ -72,12 +72,9 @@ exit /b 0
 :package
 call :make || exit /b 1
 call :vsix || exit /b 1
-del /q "%ZIP%.new" >nul 2>nul
-setlocal enabledelayedexpansion
-set "CONTENTS=%EXE% %RUNTIME% %VSIX%"
-for %%D in (*.dll) do set "CONTENTS=!CONTENTS! %%D"
-tar --format zip -c -f "%ZIP%.new" !CONTENTS!
-endlocal
+powershell -NoProfile -Command ^
+    "$ErrorActionPreference='Stop';" ^
+    "Compress-Archive -Path '%EXE%','%RUNTIME%','%VSIX%','*.dll' -DestinationPath '%ZIP%.new' -Force"
 if not exist "%ZIP%.new" (
     echo Cannot write %ZIP%.
     exit /b 1
@@ -97,9 +94,10 @@ if exist "%MANUAL%" (
     echo %MANUAL% is missing; packaging without the manual search tool.
 )
 call :split
-del /q "%VSIX%" >nul 2>nul
-tar --format zip -c -f "%VSIX%" -C staging ^
-    extension extension.vsixmanifest "[Content_Types].xml"
+powershell -NoProfile -Command ^
+    "$ErrorActionPreference='Stop';" ^
+    "$parts = Get-ChildItem -LiteralPath 'staging' -Force | ForEach-Object FullName;" ^
+    "Compress-Archive -LiteralPath $parts -DestinationPath '%VSIX%' -Force"
 rmdir /s /q staging
 if not exist "%VSIX%" (
     echo Cannot write %VSIX%.
@@ -115,7 +113,8 @@ for /f "delims=" %%L in (%BUNDLE%) do (
     set "LINE=%%L"
     setlocal enabledelayedexpansion
     if "!LINE:~0,5!"=="//== " (
-        for %%N in ("!LINE:~5!") do endlocal & call :destination %%N
+        endlocal
+        call :destination "%%L"
     ) else (
         if defined OUT if "!LINE:~0,2!"=="//" if not "!LINE:~0,4!"=="//= " >>"!OUT!" echo(!LINE:~2!
         endlocal
@@ -126,6 +125,7 @@ exit /b 0
 
 :destination
 set "NAME=%~1"
+set "NAME=%NAME:~5%"
 set "OUT=staging\extension\%NAME%"
 if "%NAME%"=="extension.vsixmanifest" set "OUT=staging\%NAME%"
 if "%NAME:~0,1%"=="[" set "OUT=staging\%NAME%"
@@ -145,7 +145,11 @@ if not exist "%ZIP%" (
     exit /b 1
 )
 echo Unpacking LLVM-C.dll...
-tar -xf "%ZIP%" *.dll
+powershell -NoProfile -Command ^
+    "$ErrorActionPreference='Stop';" ^
+    "Expand-Archive -LiteralPath '%ZIP%' -DestinationPath 'staging' -Force;" ^
+    "Move-Item 'staging\*.dll' '.' -Force"
+rmdir /s /q staging >nul 2>nul
 if exist LLVM-C.dll exit /b 0
 echo Cannot unpack %ZIP%. Extract the DLLs here by hand and try again.
 exit /b 1
@@ -171,7 +175,7 @@ exit /b 1
 
 :find_zig
 set "ZIG=zig"
-call :present "%ZIG%" && exit /b 0
+where zig >nul 2>nul && exit /b 0
 set "ZIG=zig\zig.exe"
 if exist "%ZIG%" exit /b 0
 echo No C compiler was found. Zig %ZIG_VERSION% is one download and carries
@@ -181,10 +185,12 @@ if /i not "%REPLY%"=="y" (
     echo Install MinGW-w64 GCC, Clang or Zig and run this again.
     exit /b 1
 )
-curl -L -o zig.zip "%ZIG_URL%"
-tar -xf zig.zip
-move /y "%ZIG_NAME%" zig >nul
-del /q zig.zip >nul 2>nul
+powershell -NoProfile -Command ^
+    "$ErrorActionPreference='Stop';" ^
+    "Invoke-WebRequest '%ZIG_URL%' -OutFile 'zig.zip';" ^
+    "Expand-Archive 'zig.zip' '.' -Force;" ^
+    "Move-Item '%ZIG_NAME%' 'zig' -Force;" ^
+    "Remove-Item 'zig.zip'"
 if exist "%ZIG%" exit /b 0
 echo Cannot download Zig. Install MinGW-w64 GCC and try again.
 exit /b 1

@@ -91,6 +91,7 @@ on run argv
 	requireCompiler()
 	requireLLVM(directory)
 	if wantsPackage(argv) then
+		requireFile(directory, "ada83-extension.js")
 		inTerminal(directory, "make package && echo && echo 'Packaged bin-macos.zip.'")
 	else
 		inTerminal(directory, "make && echo && echo 'Built ada83.' && echo 'Compile a program with:  ./ada83 myprogram.ada -o myprogram'")
