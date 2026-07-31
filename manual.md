@@ -250,6 +250,19 @@
 - [F. Implementation-Dependent
   Characteristics](#f-implementation-dependent-characteristics)
 
+- [Rationale](#rationale)
+
+  - [R.4 Types](#r4-types)
+  - [R.5 Numeric Types](#r5-numeric-types)
+  - [R.6 Access Types](#r6-access-types)
+  - [R.7 Derived Types](#r7-derived-types)
+  - [R.9 Packages](#r9-packages)
+  - [R.11 Visibility and Overloading](#r11-visibility-and-overloading)
+  - [R.12 Generic Units](#r12-generic-units)
+  - [R.13 Tasking](#r13-tasking)
+  - [R.14 Exception Handling](#r14-exception-handling)
+  - [R.15 Representation Clauses](#r15-representation-clauses)
+
 - [Index](#index)
 
 ---
@@ -15914,6 +15927,3143 @@ appendix F for a given implementation must list in particular:
    (see [13.10.2](#13102-unchecked-type-conversions)).
 8. Any implementation-dependent characteristics of the input-output packages
    (see [14](#14-input-output)).
+
+---
+
+## Rationale
+
+The chapters of the standard say what the language is; they rarely say why. What
+follows is a set of extracts from *Rationale for the Design of the Ada
+Programming Language*, by Jean D. Ichbiah, John G. P. Barnes, and Robert J.
+Firth — the design team's own account of the choices behind the language, the
+alternatives they weighed, and the reasons those alternatives were rejected. The
+section numbers below are those of the Rationale, so that R.4 is its chapter 4
+and so on; the passages are the Rationale's own words, selected but not
+rewritten, and cross-referenced to the clauses of this manual that they explain.
+
+> [!NOTE]
+> This section is not part of the standard definition of the Ada programming
+> language. Where it differs from the preceding chapters, the preceding chapters
+> govern.
+
+### R.4 Types
+
+#### R.4.1 Introduction
+
+The notion of type has gradually emerged from the past twenty years of the
+history of programming languages as the way by which we impose structure on
+data. A now widely accepted view of types is that a type characterizes the set
+of values that objects of the type may assume, and the set of operations that
+may be performed on them. This common view is also taken in the Ada language.
+
+There are several important reasons why it is found desirable to associate a
+type with constants and variables:
+
+- **Factorization of Properties, Maintainability.** Knowledge about common
+  properties of objects should be described and collected in one place and a
+  name should be associated with that description. A type declaration serves
+  that purpose. Subsequently, the type name may be used to refer to the common
+  properties in object declarations. This factorization improves program
+  maintainability: if later a given property is to be changed, then the type
+  declaration will be the only part of the program text to be affected by the
+  change.
+
+- **Reliability.** Objects with distinct properties should be clearly
+  distinguished in a program, and the distinction should be enforced by the
+  compiler. Requiring that all objects be typed thus contributes to program
+  reliability. Experience has shown that a well-written program in Pascal can be
+  recognized easily by the use made of the typing facility to increase the
+  reliability, readability, and security of the program.
+
+- **Abstraction, Hiding of Implementation Details.** Abstract or external
+  properties of objects and operations should be separated from underlying and
+  internal implementation-dependent properties, such as the physical
+  representation on a specific machine. The abstract properties of an object are
+  the only ones that need to be known for its use. Implementation details should
+  therefore be hidden from the user. The need for such a separation is
+  particularly strong in the case of disjoint sections of a program text,
+  produced and maintained by different programmers, and presumably separately
+  compiled.
+
+Several classical problems are associated with the formulation of a type
+facility in a programming language. Some are the subject of ongoing debate among
+language designers and users, in particular:
+
+1. **Static versus Dynamic Properties.** Should both the static properties —
+   those which are determinable from an analysis of the program text at
+   compilation time — and the dynamic properties — those which may depend on the
+   dynamic execution of a program, such as reading from an input device — be
+   covered by a single notion of type?
+
+2. **Type Equivalence.** Should the language provide some form of equivalence or
+   compatibility among types with logically related properties?
+
+3. **Parameterization.** Should the language provide some form of
+   parameterization for types and their associated properties? Should the
+   evaluation of type parameters be performed at translation time or should it
+   be deferred until execution time?
+
+Two notions are distinguished: the notion of type and the notion of subtype (see
+[3.3](#33-types-and-subtypes)). A type characterizes a distinct set of values
+and its static properties, such as the applicable operations. Constraints may be
+imposed on named types: for example a range constraint for a scalar type, or an
+index constraint for an array type. In general, constraints define certain
+requirements whose satisfaction is to be checked dynamically. A subtype name
+serves as an abbreviation for a type name together with a constraint associated
+with the type. Several difficulties in the types of Pascal that have been noted
+by Habermann and others are overcome in Ada by the notion of subtype.
+
+Each type declaration defines a distinct type. In consequence, each type name
+denotes a distinct type. Values of a given type can be assigned only to objects
+that have this type. Values of different types cannot be intermixed. In
+contrast, objects that have different subtypes of the same type are compatible:
+the value of an object may be assigned to a variable that has the same type,
+whether or not the object and the variable have the same subtype. Constraints
+are normally checked at execution time, although in many cases these checks can
+be done at compilation time, in anticipation.
+
+Certain explicit conversions are allowed between closely related types (see
+[4.6](#46-type-conversions)). Such explicit conversions are defined among
+numeric types, among sufficiently similar array types, and among derived types
+of the same family. Being explicit, these conversions are safe. On the other
+hand, no implicit conversion is possible among user-defined types.
+
+Parameterization at execution time is closely associated with the notion of
+constraint. In particular this applies to array and record types. An
+unconstrained array type declaration has unspecified index bounds; these are
+subsequently specified by an index constraint for a given array object so that
+different array objects of the same type may have different numbers of
+components. A record type may have special components which are called
+discriminants and whose values are used at execution time to discriminate among
+alternative variants of the record type. As in the case of arrays, it is
+possible to write subprograms of general utility which operate on records with
+arbitrary discriminant values.
+
+Parameterization at compilation time is achieved by the very powerful mechanism
+of generic units. Whereas parameterization at execution time by index bounds and
+discriminants is limited to scalar values, the parameters of generic units can
+even be subprograms and types. For example, we could model the length of a stack
+by a discriminant; but, to allow for different types of elements, we would need
+to define stacks within a generic package and have the element type be a generic
+parameter.
+
+#### R.4.2 The Concept of Type
+
+Consider now the set of operations that is — implicitly — defined by an
+enumeration type declaration (see [3.5.1](#351-enumeration-types)):
+
+```ada
+type DAY is (MON, TUE, WED, THU, FRI, SAT, SUN);
+```
+
+Each of the identifiers thus enumerated is called an enumeration literal and can
+be viewed as a (parameterless) function that always delivers the same value.
+Hence we have a distinct value for each enumeration literal, and so we have
+seven values for the type DAY.
+
+Thus the declaration of the type DAY has implicitly defined the above set of
+values and operations, and thereby what we are allowed to do with objects and
+values of type DAY. To appreciate the contribution of this concept to program
+reliability consider the interactions of three important rules in typed
+languages such as Pascal and Ada:
+
+1. All objects (variables and constants) must be declared.
+
+2. The declaration of an object must specify its type.
+
+3. Any operation on an object must preserve its type.
+
+It results from the above rules that the type of an object is invariant during
+program execution: it is the type given in the object declaration. All
+properties characterized by the type are therefore static and must be checked at
+compilation time by Ada compilers.
+
+Using similar simple rules, an Ada compiler must reject each of the following
+illegal assignment statements:
+
+```ada
+TODAY := WEST;           -- Illegal: WEST is not a DAY value
+TODAY := 5;              -- Illegal: 5 is not a DAY value
+TODAY := TODAY + START;  -- Illegal: "+" is not defined for DAYS
+```
+
+In the last case, TODAY and START are both of type DAY but the operation "+" is
+not defined for this type and this knowledge allows rejection of the statement.
+
+This example demonstrates that the contribution of enumeration types to the
+quality of programs goes far beyond increased readability. We could actually
+achieve a comparable degree of readability in languages such as Algol 68, which
+do not provide enumeration types (or even in Fortran, using data or parameter
+statements). The set of Algol 68 declarations could be as follows
+
+```text
+# days of the week: #
+int MON=1, TUE=2, WED=3, THU=4, FRI=5, SAT=6, SUN=7;
+# directions: #
+int NORTH=1, EAST=2, SOUTH=3, WEST=4;
+int GOAL, TODAY, START;
+```
+
+thereby allowing the same degree of readability as Ada. The real difference is
+one of reliability. The following statements would all be accepted by an Algol
+68 compiler, whereas they would all be rejected by an Ada compiler in the Ada
+formulation:
+
+```text
+TODAY := WEST;
+TODAY := 8;
+TODAY := TODAY + START;
+START := 2*GOAL - NORTH + SUN*WEST;
+```
+
+By declaring DAY as an enumeration type we expressed the intent that there be
+seven distinct values with well-defined operations. This intent was expressed in
+a form that permits a compiler to verify that further uses of days are
+consistent. Furthermore, in declaring DIRECTION to be a different type (instead
+of having a single enumeration type with eleven values), we have conveyed our
+intent that days and directions should not be mixed; and again, we have done so
+in a form that allows verification at compilation time by an Ada compiler.
+
+In all cases to be examined in later sections, we will find that types allow the
+explicit formulation of certain logical requirements of programs. Explicit
+formulation allows these logical requirements to be verified by a mechanical
+tool — the Ada compiler — thereby contributing to program reliability.
+
+#### R.4.3 Type Equivalence
+
+As stated before, one of the objectives of a type system is to disallow
+incorrect (in particular unintentional) mixing of objects of different types.
+Hence a key issue in the design of a type system is the formulation of the
+conditions that must be satisfied by two objects in order that they have the
+same type.
+
+Alternative resolutions of this issue of type equivalence have been put forward
+in a paper by Welsh, Sneeringer, and Hoare. These are classified into two
+families, called name equivalence and structural equivalence.
+
+Name equivalence is used in Ada. It is based on the principle that each type
+declaration declares a distinct type: hence two type declarations always declare
+two distinct types, even if the included type definitions are textually
+identical. Consequently, for two objects to have the same type, their
+declarations must refer to the same type name (whether directly, or indirectly
+by a subtype, as we shall see later).
+
+Consider for example the declarations:
+
+```ada
+type COLOR  is (WHITE, RED, YELLOW, GREEN, BLUE, BROWN, BLACK);
+type COLOUR is (WHITE, RED, YELLOW, GREEN, BLUE, BROWN, BLACK);
+
+TINT      : COLOR  := BROWN;
+SHADE     : COLOR  := RED;
+HUE, SPOT : COLOUR := GREEN;
+```
+
+Then, according to the above stated principle, COLOR and COLOUR are two distinct
+types; TINT and SHADE are of the same type (COLOR); HUE and SPOT are of the same
+type (COLOUR). On the other hand, SPOT and TINT are of different types, so that
+the following assignment is not allowed:
+
+```ada
+SPOT := TINT;        -- Illegal!
+```
+
+Structural equivalence refers to formulations in which some form of equivalence
+rule is defined between types on the basis of their structural properties. For
+example, in the case of enumeration literals several degrees of structural
+equivalence would be conceivable: the same number of literals (unlikely); the
+same literals, although not necessarily in the same order; textually identical,
+including spaces and line breaks and so on. For example COLOR and COLOUR would
+be considered as structurally equivalent for all but the last of these
+formulations.
+
+We have rejected structural equivalence in order to avoid pattern-matching
+problems for the compiler and for the human reader: in the case of enumeration
+types, this could involve comparisons of very long lists of identifiers.
+
+We also believe that structural equivalence tends to defeat the purpose of
+typing. Thus, objects could be considered as being of the same type because
+their structures happen to be identical — by accident — or because they have
+become identical as a result of textual modifications performed during program
+maintenance: in the case of enumeration types, after deleting or inserting a
+literal. Such objects could then be mixed unintentionally, without causing
+compiler diagnostics, and the error would go undetected.
+
+Name equivalence is therefore both simpler and safer. If we want several objects
+to have the same type, then we must declare the type, thereby giving it a name,
+and we must subsequently refer to this name in the declarations of these
+objects.
+
+#### R.4.4 Constraints and Subtypes
+
+We shall now see how to restrict the values that may be assumed by an object to
+a subset of the values of the type. Such a restriction is called a constraint,
+and it does not affect the set of applicable operations. A subtype is a type
+together with an associated constraint. An object can be declared to have a
+certain subtype, and this is then a static property of the object. But in
+general it will not always be possible to determine statically (at compilation
+time) whether or not a value satisfies a constraint and thereby belongs to a
+corresponding subtype. Thus constraints and subtypes are concepts that are, in
+general, related to the dynamic behavior of programs.
+
+Constraints may be used effectively by compilers for optimization purposes.
+Their major purpose, however, is for greater program reliability: a constraint
+expresses a logical requirement on our program in an explicit manner, and it
+therefore opens up the possibility of reporting violations of this logical
+requirement, should they ever occur.
+
+In principle these violations will be reported at execution time by raising the
+exception CONSTRAINT_ERROR. This means that, in general, compilers will generate
+code that dynamically checks constraint satisfaction. In practice however,
+compilers will be able to report certain potential constraint violations at
+compilation time. In other situations they will be in a position to omit a given
+check, since success has been guaranteed by a prior check.
+
+It is good programming practice to factor out the knowledge of common
+properties, and this applies to constraints as well. The name of a subtype is an
+abbreviation for the associated type name and constraint (see
+[3.3.2](#332-subtype-declarations)). Thus a subtype declaration does not define
+a new type, and objects of different subtypes of a given type are compatible for
+assignment. In an expression, such objects can be used at any place where a
+value of the given type is expected; the constraint on an object need be checked
+only upon assignment to the object.
+
+The advantages of using subtypes are the usual maintainability advantages of any
+factoring mechanism. For example, if we want to change the range of workdays,
+then a single textual change is needed, namely in the subtype declaration.
+Without named subtypes, it would be necessary to inspect all occurrences of the
+range MON .. FRI in the program, in order to detect those occurrences where the
+intent was to use this range for workdays.
+
+Certain constraints that determine critical space requirements must be known at
+compilation time, since space optimization would not be possible in the case of
+dynamically computed values. For example, the range of an integer type had
+better be known statically, in order to allow the compiler to select the
+appropriate single-length or double-length machine instructions.
+
+However, requiring static evaluation in every case would be much too
+restrictive. The assertions expressed by range constraints would be too coarse,
+ranges could not be used as general loop iteration ranges, and arrays could only
+be of static size. A balance must be struck in this respect, and the rules of
+Ada represent a deliberate choice of when evaluation must be static.
+
+Note that if the bounds of the range are not known at compilation time, the
+compiler will often need to generate (implicitly) a descriptor containing the
+value of the bounds. Hence, to minimize descriptor overhead, it is important to
+localize the knowledge about equivalent constraints in a single subtype
+declaration and then to use the name of this subtype, instead of repeating the
+constraint in several variable declarations.
+
+Note also that, for reliability and maintainability, using a subtype is far
+better than repeating the corresponding constraint at various points of the
+text, since the value of an expression defining a bound may differ at these
+points.
+
+#### R.4.5 Arrays: Equivalence and Explicit Conversions
+
+Name equivalence, as explained above, is used systematically for all types in
+Ada, and in particular for array types (see [3.6](#36-array-types)). As for
+other types, the main arguments in favor of name equivalence are simplicity and
+the desire to avoid unintentional equivalence: It would not be desirable to
+treat two arrays as having the same type just because the component type is the
+same:
+
+```ada
+type OPTION_SET is array (OPTION) of BOOLEAN;
+type COLOR_SET  is array (COLOR)  of BOOLEAN;
+```
+
+and (in this case) just because the number of options happens to equal the
+number of colors. From a conceptual point of view, these two array types have
+nothing to do with each other, apart from their common component type.
+
+On the other hand, the design of Ada recognizes that this safety argument does
+not apply to explicit type conversions: being explicit, they are unequivocally
+intentional and cannot be just accidental.
+
+Explicit type conversions are clearly desirable among array types that satisfy
+certain conditions. To illustrate their need, consider a package defining
+sorting operations, and another performing table listings:
+
+```ada
+package SORTING is
+   type VECTOR is array (INTEGER range <>) of REAL;
+   procedure SORT(X : in out VECTOR);
+end SORTING;
+
+package LISTING is
+   type TABLE is array (INTEGER range <>) of REAL;
+   procedure LIST(X : in TABLE);
+end LISTING;
+```
+
+For the definition of the type VECTOR the number of decisions to be made was
+rather limited: first there was the component type; then there was the selection
+of INTEGER as index subtype. Given this limited number of decisions, it is not
+unlikely that the same decisions could be made in another package defined
+totally independently, say by a different software producer.
+
+The SORT operation is applicable to vectors; similarly the LIST operation is
+applicable to tables. However, a dilemma would arise for an array that must be
+sorted before being listed: should it be declared as a VECTOR or as a TABLE? —
+neither of the two would work. Similarly, an array might have been declared
+without knowing in advance whether it would ever be sorted (or listed), and it
+would be cumbersome to have to change the declaration just because it needed to
+be sorted in one part of the program.
+
+For these reasons, explicit conversions are allowed between two array types if
+both types have the same component type and the same dimensionality, and if for
+each dimension the index types are the same (or convertible to each other).
+
+#### R.4.6 Records: Equivalence and Default Initialization
+
+Name equivalence is used for record types (see [3.7](#37-record-types)), as for
+other types. To emphasize the arguments against structural equivalence, several
+alternative forms of structural equivalence rules can be considered, involving
+increasing amounts of checking, especially if the record types have a large
+number of components:
+
+- **(a)** Two record types are equivalent if the texts of their type definitions
+  (what appears after `is`) are identical (disregarding textual layout such as
+  spaces, new lines, and so on).
+
+- **(b)** Two record types are equivalent if they have the same number of
+  components, and at each component position, corresponding components have the
+  same name and are declared with the same type name.
+
+- **(c)** Same as (b) but the names of corresponding components need not agree,
+  only the type names. This is a more mathematical point of view, where one
+  considers a record as a cartesian product.
+
+- **(d)** Same as (b) but the order of components is not significant.
+
+- **(e)** Same as (c) but the constraints on corresponding components may
+  differ.
+
+- **(f)** Same as (e) but the subtypes must be the same.
+
+- **(g)** Same as (e) but the component types must be equivalent, while their
+  names need not be identical.
+
+- **(h)** Same as (g) but a type name is also equivalent to the text of the
+  corresponding type definition (which could even be anonymous).
+
+Rule (c) makes sense for a language for which all aggregates are in positional
+notation. It complicates the checking by the compiler, since all permutations
+must be considered. Conversely, the rule (d) is sensible for a totally
+non-positional language where components must always be named in record
+aggregates. Rule (e) complicates the implementation of constraints and subtypes
+for components, since they must be checked for each component on record or array
+assignments. Rule (f) cannot be checked statically. Rule (g) requires a
+recursive matching algorithm. In addition, rule (h) requires type expansion, and
+even an algorithm of cycle reduction in the case of mutually recursive access
+types.
+
+All these complexities for the implementation — and above all, for the reader —
+are avoided in Ada by adopting the simple rule that every declaration declares a
+distinct type.
+
+The main motivation for allowing default initialization of record components is
+one of program reliability. In many applications, it is found desirable to have
+a consistent initial state for all objects: the services offered by the program
+may critically depend on objects being well initialized. To achieve this, we
+could of course define an initial value to be used for all declarations, or
+provide the users with an initialization procedure to be applied before any
+other use is made of objects. The weakness of these approaches lies in the fact
+that our program would remain vulnerable to users that do not follow this
+initialization discipline (whether unintentionally or not). The only safe
+solution is therefore to have a default initialization that is invoked without
+any reliance on the user.
+
+#### R.4.7 Discriminants
+
+The form of record type presented so far corresponds to a pure Cartesian
+product, aside from the requirement that components be named. A typical example
+of such record types is the type PAIR with two components of type INTEGER: there
+is no dependence between these components — any pair of integers will be of type
+PAIR, so that the set of values of this type is actually the Cartesian product
+INTEGER x INTEGER.
+
+There are however composite objects in which there is dependence between
+components. For example, in a record describing an attendance list, the length
+of one component — the table of attendants — may be given by another component
+of the record. More generally, the overall structure of a record, in particular
+the presence or absence of certain components, may depend on the value of a
+specific component.
+
+Because of these dependences, such composite objects cannot be modelled as
+simple Cartesian products. Their description will require the use of special
+components called discriminants (see [3.7.1](#371-discriminants)).
+
+#### R.4.8 Mutability
+
+The term mutability refers to the ability to change the value of a discriminant
+of a given record (by a whole record assignment). The problems addressed in this
+discussion of mutability are those of efficiency of representation and
+efficiency of implementation of the parameter passing rules.
+
+Parameter passing rules for objects of record types do not specify whether the
+effect is to be achieved by copy or by reference (see
+[6.2](#62-formal-parameter-modes)). But the implementation has freedom to
+implement parameter passing by copy (for example, for small objects) or by
+reference (for example, for large objects): this should not matter for correct
+programs, that is, for programs that are not erroneous.
+
+The Ada solution for mutability is a dynamic solution, which involves dynamic
+transmission of the constrained attribute across subprogram calls. During the
+course of the Ada design several solutions that allow compilation-time
+verification of mutability were examined.
+
+One approach to static mutability would be to associate this quality with the
+type itself: allow types with objects that are always constrained (never
+mutable), allow types with objects that are never constrained (always mutable),
+but not types with both constrained objects and unconstrained objects. Whereas
+this solution allows efficient parameter passing by reference, its drawbacks
+become apparent precisely in those situations where we need to have both mutable
+and immutable objects. The first drawback is verbosity. The second — and more
+important — drawback is in terms of space efficiency: consider the formation of
+any structure that involves objects of a given type with different discriminant
+values.
+
+The Ada formulation takes advantage of the fact that objects dynamically created
+by allocators are constrained upon allocation. In terms of space efficiency this
+is optimal: the minimum space is reserved for the designated object. It is very
+well suited to a quite common situation in the construction of interrelated data
+structures: although the discriminant of the object designated by a given
+variable is not known statically, it will be very unlikely to change after
+allocation.
+
+Another approach to static mutability would be to associate the mutable quality
+with formal parameters, rather than with types. The major drawback of this
+approach (aside from the additional rules and notations) is that it would make
+it impossible to define an operation that performs mutations in the case of
+unconstrained objects but not in the case of constrained objects — note that
+this is actually what happens for the basic operation (`:=`) of assignment. If
+this property exists for assignment, we are likely to need it also for
+user-defined operations, which would not be possible with this static approach
+to mutability.
+
+---
+
+### R.5 Numeric Types
+
+#### R.5.1 Introduction
+
+The importance of numerical calculations in the use of computers dates from
+their earliest days. However, in spite of this long history of numerical
+computation, the handling of both fixed point and floating point data types is
+unsatisfactory in most programming languages.
+
+Fortran is widely used for scientific computation and compilers are available on
+almost all machines. Nevertheless, numerous defects can easily trap the unwary.
+For example, when a floating point value is assigned to an integer variable the
+value is truncated; this obvious trap is compounded by the lack of any
+definition of this effect — the standard does not say whether -3.8 truncates to
+-3 or to -4, that is, whether the sign is considered after truncation or with
+it. Moreover Fortran provides no facilities for fixed point arithmetic, for
+which there is a particular need on computers without floating point hardware.
+
+The most difficult area is the control of floating point precision, for which no
+entirely adequate solution is available. Fortran does not define the accuracy of
+single precision values. Consequently, the number of bits in the mantissa of a
+single precision value can be 48 on one system and 24 on another; to achieve a
+given precision, say 30 bits, one would have to specify single precision on the
+first system but double precision on the second.
+
+Several languages in the Algol 60 tradition, such as Pascal, Coral 66 and RTL/2,
+admit only one floating point data type. In some cases this simple solution
+meets the users' requirements better than Fortran does. In essence, unless the
+declarations can determine different precisions, it is best to use the same
+precision for all floating point quantities, and therefore to have only one
+floating-point data type in the language.
+
+Any language that has user-defined types, and some method of controlling
+precision, has the essential mechanism for an effective solution of this
+problem. It is, of course, imperative that the programmer use the typing
+facility in such a way that the floating point declarations can easily be
+remapped when a change of precision is needed.
+
+There is also considerable difficulty in formulating a satisfactory fixed point
+facility. The Steelman requirements specify exact fixed point computation: fixed
+point numbers shall be treated as exact numeric values; the scale or step size
+of each fixed point variable must be determinable during translation; scales
+shall not be restricted to powers of two. Thus the possible values of a fixed
+point variable must be integral multiples of a fixed quantity called the scale.
+Exact addition and subtraction do not cause problems, but multiplication and
+division do.
+
+Cobol apparently meets the Ironman requirements, but only by using decimal
+scales, which are not adequate for two reasons. First, this is not necessarily
+the scaling required by the application, and secondly, 10 is too coarse for the
+standard 16-bit minicomputer. A glance at a Cobol manual will also indicate that
+explaining the implicit decimal point to the programmer is not easy.
+
+In view of the difficulty of providing exact fixed point computation to meet the
+Steelman requirements, we considered what was really needed by the users. An
+analysis of actual applications in many real-time situations revealed that there
+was a need for cheap approximate computation. Small but frequently executed
+computations are performed upon digital input signals. Simple machines do not
+have floating point hardware, and emulation of floating point operations by
+software or firmware is not fast enough, hence some other means is required to
+perform approximate computations rapidly on such machines. To say that in the
+future floating point hardware will always be available may not be the answer:
+source data input is inevitably captured in fixed point representation, and
+floating point representation requires more space. Hence approximate fixed point
+is better matched than floating point to the needs of common applications.
+
+It must be admitted that, as we shall see, programming with fixed point is much
+more difficult than with floating point. On the other hand, fixed point is
+potentially more reliable because effective numerical error analysis requires
+tight bounds to be placed upon data values.
+
+It is concluded that approximate fixed point is generally the most useful
+arithmetic capability to provide that will complement integer and floating point
+facilities. However, Ada fixed point also provides some exact operations such as
+addition and subtraction, and these are invaluable, for example for the
+manipulation of intervals of time.
+
+#### R.5.2 Overview of Numerics in Ada
+
+The facility for numerics is based upon the idea that a numeric variable has an
+abstract value. The set of values of a numeric type will be a subset of the set
+of real numbers. Computation with integers is exact. Computation with fixed
+point and floating point is approximate: the former with an absolute bound on
+the error, the latter with a relative bound. These approximate types are called
+the real types since they can be thought of as approximations to the
+mathematical concept of the real numbers (see [3.5.6](#356-real-types)).
+
+The semantics of each numeric operation is determined by the type of its
+operands. The facility for numerics is based upon three types that cannot be
+named in a program (and hence are said to be anonymous — no variable of such a
+type can be declared). These types are referred to as universal_integer,
+universal_real, and universal_fixed. Any specific type in a given implementation
+is a partial representation of a universal type.
+
+- The type universal_integer is an integer type with a range large enough to
+  encompass every conceivable integer type of the implementation. Integer
+  literals are of type universal_integer.
+
+- The type universal_real is a real type with a precision that is high enough to
+  encompass any implemented real type. Real literals are of type universal_real.
+
+- The type universal_fixed is introduced as the result type of the unscaled
+  fixed point operations of multiplication and division. It is essentially a
+  type for intermediate results. The universal_fixed type has a finer delta than
+  any implemented fixed point type.
+
+There is an implementation-dependent type INTEGER, defined in the package
+STANDARD. The range of type INTEGER reflects the properties of the underlying
+hardware, in that the most efficiently handled integer size is used, with a
+range symmetric about zero. It would have been possible to have designed a
+language that had no predefined type such as INTEGER, but this would have meant
+that in order to obtain a type that would give as large a range of integer
+values as possible without losing efficiency, the programmer would have had to
+use language facilities that were highly system dependent. So to avoid this
+dependence, it is desirable to have a predefined type that maps onto the integer
+type that is most efficiently handled by the target computer.
+
+A hardware floating point representation has two independent parameters — the
+length of the mantissa and the range of the exponent. The mantissa length
+defines the relative accuracy, and the exponent range defines the range of the
+floating point values. In Ada, the user defines a floating point type by stating
+only the required precision, as a number of decimal digits; this defines the
+mantissa length. The language requires each floating point type to have an
+exponent range that is workable in relation to its mantissa length. In this way
+the two parameters are reduced to one, with a gain in simplicity for the user.
+
+In contrast to floating point, a fixed point type has an absolute rather than a
+relative accuracy. This absolute bound on the errors is called the delta. The
+user can define other fixed point types by specifying the required delta,
+together with the range of magnitudes to be encompassed.
+
+One finds in many programs several constants that parameterize the particular
+application. These constants have no particular type, but may be related one to
+another; for example the middle of a line is related to the line length. Number
+declarations are provided in Ada to express this (see
+[3.2.2](#322-number-declarations)). Without this facility, a change to the
+program to modify a constant would involve a search for all occurrences of the
+constant as well as of related constants. This would be both tedious and risky:
+for example the constant 40 might or might not be intended to signify half the
+line length, and even with a corresponding comment the process would be error
+prone.
+
+#### R.5.3 The Integer Types
+
+The user can define an integer type by specifying the range to be covered (see
+[3.5.4](#354-integer-types)), for example
+
+```ada
+type PAGE_NUM   is range 1 .. 2000;
+type MY_INTEGER is range -100_000 .. 100_000;
+```
+
+in which case the implementation will use whichever predefined type just
+encompasses this range. Thus MY_INTEGER would be implemented as (a subtype of a
+type derived from) LONG_INTEGER on a typical 16-bit minicomputer, but as INTEGER
+on a machine with larger word length. Portability of the program is thus
+assured, in this respect.
+
+The operations `/`, `mod`, and `rem` require explanation. There is no universal
+agreement on the semantics of these operations for negative operand values.
+Because different machines perform these operations differently, it is tempting
+not to define them for negative values. This is the approach taken in the
+axiomatic definition of Pascal. The semantics chosen in the Ada language
+corresponds to division with truncation toward zero (so `(-3)/2 = -1`). This has
+the advantage that it preserves the identity:
+
+```ada
+-(A/B) = (-A)/B = A/(-B)
+```
+
+The operations `/` and `rem` are related by `A = (A/B)*B + (A rem B)`, so that
+`rem` provides the remainder on division. The operation `mod` on the other hand
+is defined so that `A mod B` always has the same sign as B and its absolute
+value is less than the absolute value of B.
+
+#### R.5.4 The Real Types
+
+The real types form two classes: floating point types and fixed point types.
+Both are approximate and are different forms of approximation to the real
+numbers of mathematics. With floating point types, the error in representing a
+mathematical value is roughly proportional to its absolute value over a large
+range. In contrast, the error with a fixed point value has an absolute bound, so
+that small values have a correspondingly large relative error.
+
+The real type definition specifies bounds on the permitted error in the
+representation of values: the precision for floating point and the delta for
+fixed point. A floating point type declaration of the form `type T is digits D;`
+specifies D significant decimal digits precision. It would perhaps have been
+more consistent to specify a bound on the relative error directly, but giving
+the number of significant decimal digits is more natural for the user. For fixed
+point (see [3.5.9](#359-fixed-point-types)) a bound specified in decimal digits
+would have been inappropriate, and too coarse, for a binary machine. In this
+case the range constraint is not optional since an unbounded range would imply
+an infinite number of values.
+
+The operators `=` and `/=` could have been excluded because their semantics is
+of doubtful validity, since the representation is approximate. Given a precision
+of 6 digits, then equality could either mean equality of representation (which
+would typically be of higher precision) or equality only to 6 digits. If the
+former semantics were chosen then equality would be implementation dependent.
+Moreover, since some implementations may use a higher precision for temporary
+values than for declared objects, it would be possible after the assignment `X
+:= (Y + Z);` to have `X /= (Y + Z)`. If the latter semantics were chosen, then
+equality would be computed as approximately equal. This would lead to the
+anomaly that equality would no longer be transitive, that is, it would be
+possible that
+
+```ada
+X = Y and Y = Z and X /= Z
+```
+
+The decision has been to allow equality since it is defined for all other types.
+The user must be aware that the implemented precision is used, that is, the
+values X and Y are equal only if their representations are identical, and that
+in consequence code may not be portable. (The situation is no better with other
+languages.)
+
+Defining floating point types directly in terms of their precision and range is
+preferable for portability. In this case the types are mapped on the nearest
+applicable machine implemented precision. To summarize, the language provides a
+direct and simple mechanism for achieving efficient use of the available
+precisions predefined by a given implementation.
+
+The definition of the fixed point types is more difficult, for several reasons.
+First, the representation cannot be determined until both the range and delta
+are known. These two parameters determine the width required in bits and the
+position of the decimal (binary) point. Having determined these, the
+representation is fixed and the operations can be defined. The second problem is
+that the type resulting from multiplication and division is universal_fixed.
+Since no operations are available on the type universal_fixed, a product or a
+quotient must be explicitly converted to the required type (or subtype) (see
+[3.5.10](#3510-operations-of-fixed-point-types)).
+
+The operations of fixed multiplication and division are essentially in two
+parts. First, the accurate product or quotient is formed (that is, a result of
+the type universal_fixed is obtained). Second, the result must be converted
+before being assigned to any variable or being used in further computation. This
+conversion may imply a loss of accuracy due to the representation in the
+destination type: since the fixed point operands are essentially just scaled
+integers, the accurate product will in fact be another scaled integer, but the
+accurate quotient must be treated as a ratio of integers. A real literal is not
+allowed as an operand of fixed multiplication or division, since there is not a
+unique fixed point type to which to convert it; this situation can be resolved
+by an explicit conversion, or better, by using a declared constant — which
+simplifies program maintenance.
+
+The user can perform accurate computation with fixed point by ensuring that only
+exactly representable values are used. In fact, the only source of error is the
+implied rounding of constants and conversion (which is necessary for
+multiplication and division).
+
+#### R.5.5 A Semantic Model for Approximate Computation
+
+Programming languages do not conventionally define the semantics of floating
+point arithmetic. However, in Ada, with declarations controlling the accuracy of
+data types, it is highly desirable to do so. A proposal of W. S. Brown makes it
+possible to describe a model which is both clean in structure and realistic
+(that is, it describes the actual behavior of floating point arithmetic units).
+
+For each type, an abstract representation is defined. The abstract
+representation of each nonzero number x takes the form of a sign, a mantissa,
+and an integer exponent. Thus for the binary representation we have `x = ± m *
+2**n` where `1/2 <= m < 1`; that is, the number is normalized: the most
+significant binary digit is always 1. For example, a mantissa of length 3 allows
+representation of only the following mantissa values (using the notation for
+based literals):
+
+```ada
+2#0.100#,  2#0.101#,  2#0.110#,  2#0.111#
+```
+
+The relative precision here varies from 1 in 4 to 1 in 7; in general, mantissa
+length B guarantees precision of only 1 in 2**(B-1), although near to 1 the
+precision is nearly 1 in 2**B.
+
+We do not assume that numbers are represented in this fashion, merely that
+numbers having the numeric values given above are representable in the machine.
+Brown now develops axioms for the representable numbers and the behavior of a
+machine number that is bounded by an interval whose endpoints are representable
+numbers. These axioms allow the use of higher precision than specified in the
+declaration, which is essential in Ada, since the implemented precision will
+typically be greater than the declared precision.
+
+The Ada version of the Brown model for floating point works as follows (see
+[3.5.7](#357-floating-point-types) and
+[3.5.8](#358-operations-of-floating-point-types)):
+
+- From the decimal precision specified (F'DIGITS) the corresponding number of
+  binary places is determined, being F'MANTISSA.
+
+- The model numbers are those with F'MANTISSA binary places and an exponent in
+  the range `-4*F'MANTISSA .. 4*F'MANTISSA`.
+
+- The safe numbers are those with F'MANTISSA binary places and a potentially
+  larger exponent range limited by the hardware.
+
+The model numbers guarantee workable properties including a reasonable range of
+values — their definition is machine-independent: hence the term model. The safe
+numbers allow one to exploit the larger exponent range that many machines
+provide. Safe numbers have the same properties as model numbers and include the
+model numbers but their range is machine-dependent.
+
+For fixed point types, a similar representation is chosen without an exponent.
+In this case for the binary representation of each nonzero number x we use `x =
+± M * small` where M is now an integer, whose length B defines its range `1 ..
+2**(B-1)`, and small is the smallest positive representable value (corresponding
+to M=1). Axioms (not treated by Brown) can now be given which reflect the exact
+nature of some operations and the approximate nature of others. In addition,
+because of the obvious correspondence between the abstract representations of
+all approximate types, conversions can be defined.
+
+#### R.5.6 Conclusion
+
+The aim of the design is to provide the full range of numeric facilities within
+a secure system of types. This has been achieved by a combination of two
+techniques.
+
+Firstly, use is made of the ability in the language to define new types derived
+from an existing type, from which the new types inherit properties. The
+convenience of the derived type mechanism in Ada is that it provides a simple
+method of ensuring a high degree of portability. If the user declares a new type
+(therefore derived from a machine type), this type is distinct from other types
+in the program. This distinction ensures that type conversions are explicit and
+that a quite different representation could be used on other machines.
+
+Secondly, the precision of numerical representation and the bounds on results of
+computation are strictly controlled: With the model developed by Brown, it is
+possible to define an axiomatic system which gives the minimal properties of
+approximate computation. The axiomatic system is realistic in the sense that it
+can (and must) be applied to existing floating point implementations.
+
+Portability cannot be entirely guaranteed by the language because it is not
+possible for a program to be completely isolated from dependence on the
+underlying hardware. However, such dependence is limited to the attributes of
+the predefined numeric types, and properties of the implemented real types that
+cannot be derived from the axiomatic system — such as the radix of the
+underlying floating point representation.
+
+---
+
+### R.6 Access Types
+
+#### R.6.1 Introduction
+
+The notion of access type encompasses the concept of objects that are
+dynamically created during the execution of a program (see
+[3.8](#38-access-types)). In general, neither the number of such objects, nor
+their names, can be fixed in advance.
+
+The inclusion of such a feature in a language raises what are traditionally some
+of the most difficult issues in language design, and indeed in programming.
+
+#### R.6.2 Conceptual Aspects
+
+The objects of a program can be classified into two categories: static objects
+and dynamically allocated objects.
+
+Static objects are declared in a program and are containers for values. Each
+static object has a simple name that is used to denote either the container or
+the value, depending on the context where the name appears. Such objects are
+said to be static since their lifetime is determined by the static (textual)
+structure of the program.
+
+In contrast, the creation of dynamically allocated objects occurs dynamically,
+by the execution of so-called allocators, and is not directly related to the
+program structure. In general, the number of dynamically allocated objects is
+not easy to predict and it will not be possible to define their names by
+declarations. Hence what is returned by the execution of an allocator is an
+internal name — not an identifier — and therefore it cannot be used explicitly
+in the text to denote the newly allocated object.
+
+To deal with this problem, one usually defines by declaration a number of
+indirect names that may be used to access the different dynamically allocated
+objects at successive stages of execution. For this reason, indirect names are
+called access objects in Ada (they have been called pointers or reference
+variables in other languages). Internal names are called access values in Ada.
+To emphasize the difference between names and internal names, we say that a name
+denotes an object whereas we say that an access value designates an object.
+
+Four important consequences follow from the fact that access objects contain
+internal names:
+
+- The same internal name may be contained in several access objects, with the
+  consequence that they provide access to the same dynamically allocated object.
+
+- Access objects may be used to describe relations, in particular, relations
+  that change over time.
+
+- Since the internal name contained in an access variable may vary with
+  successive stages of the program execution, a given dynamically allocated
+  object may become inaccessible.
+
+- Since an access object does not contain any internal name prior to its first
+  allocation or assignment, there must be a special null value corresponding to
+  no internal name. This value is also required for describing partial
+  relations.
+
+Sharing and the possibility of inaccessibility are thus two of the classical
+difficulties of access types. A third classical difficulty is the well-known
+problem of dereferencing: considering the name of an access object, this name
+may stand for the name of the (static) access object; the content of the access
+object (that is, its value: an internal name); or the content of the dynamically
+allocated object that is designated by this internal name. The first two
+possibilities also exist for static objects. Most languages have the same
+notation in the two cases, and make a distinction by context. The third
+possibility, however, only exists for access objects, and the solutions offered
+by programming languages are very diverse. The diversity of the solutions
+adopted by several languages is a clear indication of the conceptual
+difficulties involved.
+
+A final conceptual difficulty in defining access types is the notion of constant
+access objects. Suppose an access object is declared to be constant. Several
+alternative interpretations could be given for such a declaration: that the
+access value is constant, so that it always designates the same dynamically
+allocated object, although the value of the latter could vary; that the access
+value can vary, but may only be used to read the components of a designated
+object; or both together. The first meaning, however, is the one that is most
+consistent with what is done for other types. Consider the analogy with an
+index: the fact that an index constant is constant only means that we always
+refer to the same component; it does not mean that assignment to this component
+is forbidden.
+
+#### R.6.3 Reliability, Efficiency, and Implementation Issues
+
+When a dynamically allocated object becomes inaccessible, the corresponding
+space may (at least theoretically) be reclaimed for other uses without any risk.
+This operation, classically called garbage collection, has been used in
+languages such as Lisp, Simula, and Algol 68.
+
+Unfortunately, there is no method of garbage collection that is generally
+suitable to real-time applications. The method used in most Lisp implementations
+is to allocate storage continuously until the available space is exhausted, and
+then reclaim inaccessible objects by a complete traversal of all allocated
+structures. This implies that the execution of an allocator can suddenly
+initiate garbage collection, thereby causing a large and unpredictable overhead.
+Moreover, as the available storage becomes increasingly fragmented by accessible
+objects, garbage collection could be triggered ever more frequently, causing
+rapid degradation of performance.
+
+Another method is to maintain reference counts with each allocated object: an
+object is inaccessible if its reference count is zero. This fails with cyclic
+structures, where a non-zero reference count does not necessarily imply
+accessibility. It also causes implementation problems, since the reference count
+of an accessed object must be decremented whenever a declared access object that
+designates it passes out of scope — either in the normal course of execution or
+as a result of an exception. However, even if this method were fully implemented
+it would not solve the problem: the unpredictable overhead has merely been
+transferred to the deallocation operation.
+
+A third method is to perform garbage collection periodically by a parallel
+process of lower priority. Provided the synchronization problems can be solved,
+this provides the least unsatisfactory solution for real-time use. Its major
+defect is that, under conditions where the transaction rate is high, the
+lower-priority processes may become starved, so garbage collection might not be
+done often enough to maintain a satisfactory pool of free storage.
+
+For these reasons several languages in the systems programming area try to
+achieve better control over storage management for dynamically allocated
+objects. Such operations usually cannot be written with the full degree of
+compilation-time checking that is provided by types. In addition, the
+availability of explicit deallocation introduces the possibility of dangling
+access values: the program might deallocate a dynamically allocated object that
+is still accessible by other paths — its internal name still being contained by
+other access variables.
+
+Confronted with this dilemma between reliability and efficiency, a possible
+answer is to choose reliability and accept the possibility that access types
+might not be used in programs that are time-critical. However, there are cases
+where access types should be used, precisely because the application considered
+is time-critical.
+
+In general, when access variables are used, address computations will be done
+only once, at the time of dynamic allocation. Thereafter access values can only
+be assigned to access objects or used to access the dynamically allocated
+objects. This however does not involve address computations. On the other hand,
+when indices are used, address computations must be redone for every access.
+
+#### R.6.4 Goals for a Formulation of Access Types
+
+One of the advantages of access variables is efficiency. As a consequence we
+must be able to use them in time-critical applications. In this case, however,
+we must provide a form of access variable that does not result in garbage
+collection with the associated costs and unpredictability.
+
+The needs of efficiency being thus satisfied, it remains that reliability should
+be a major goal in the formulation of access types, especially in view of the
+conceptual difficulties they raise. Hence a safe formulation of access types
+should have several important properties:
+
+- There must be a null value for access objects. Since null designates no
+  object, any attempt to denote a component of this nonexistent object should
+  raise the exception CONSTRAINT_ERROR (the null value cannot be dereferenced).
+  On many computers checking for such attempts is achievable without any
+  run-time cost if the internal value of null corresponds to some protected
+  address.
+
+- Access variables should be typed (as in Simula or Pascal) so that one access
+  variable can designate only objects of one type.
+
+- There should be a basic operation — the allocator — that dynamically creates
+  an object and delivers an access value designating this object (its internal
+  name). On the other hand, there should be no operation for explicit
+  deallocation of a dynamically allocated object (to avoid dangling access
+  values).
+
+- There should be a clear distinction between access types and other types. In
+  particular, there should be no possibility for an access value to designate a
+  static variable (again, to avoid dangling access values).
+
+#### R.6.5 Collections and Storage Management
+
+Conceptually it is important to realize that each access type declaration
+implicitly defines a collection for dynamically allocated objects. The actual
+collection will be built during program execution as allocators are executed.
+Its lifetime cannot be longer than that of the program unit in which the access
+type definition is provided. Collections in Ada are implicit and cannot be
+named. The collections associated with different access types are always
+disjoint, so that dynamically allocated objects designated by access variables
+that do not have the same type are guaranteed to be in different collections.
+
+The constraints applicable to a dynamically allocated object are established
+when the allocator is evaluated and cannot be modified during the lifetime of
+the dynamically allocated object. In the case of a dynamically allocated array,
+this means that the bounds of such an array cannot be modified. Similarly, for a
+type with discriminants, the discriminant values established at allocation time
+cannot be modified. As a consequence, only the size actually required by the
+dynamically allocated object need be allocated.
+
+Unless specified otherwise, the collection of dynamically allocated objects
+associated with an access type will be allocated in a global heap and may be
+garbage-collected in some implementations. For time-critical applications,
+however, it is possible to provide a length clause that specifies an upper bound
+for the space needed by the collection of a given access type (see
+[13.2](#132-length-clauses)). This space can then be reserved globally when the
+length clause is elaborated.
+
+A collection for which such a length clause has been given behaves like a static
+array as far as storage allocation is concerned. The objects are allocated
+within this static storage area by allocators; and the whole collection can be
+reclaimed globally under the same conditions as for an array declared at the
+place of the access type declaration.
+
+Such collections may be allocated either on the stack or on the heap. They have
+several advantages. In terms of storage management they have a cost comparable
+to that of arrays. In addition they offer both the notational advantages and the
+addressing efficiency of access variables. Finally, if an application wants to
+perform its own deallocation, it can do so by means of a generic instantiation
+of a predefined generic library procedure (see
+[13.10.1](#13101-unchecked-storage-deallocation)):
+
+```ada
+procedure FREE is
+   new UNCHECKED_DEALLOCATION(OBJECT => CAR, NAME => CAR_NAME);
+```
+
+This form of deallocation is said to be unchecked since no check will then be
+done to ensure that there are no dangling accesses to the same object. The use
+of this form of deallocation may therefore be justified by efficiency, but it
+presents some danger, and so programs that use it must be written with great
+care.
+
+#### R.6.6 Recursive Access Types
+
+The type of a record component can be an access type. This opens up the
+possibility of recursive access types, where a dynamically allocated object in a
+given collection has components designating other dynamically allocated objects
+in the same collection. The declaration of recursive access types will usually
+involve an incomplete type declaration (see
+[3.8.1](#381-incomplete-type-declarations)):
+
+```ada
+type PERSON(SEX : GENDER := F);      -- incomplete declaration     (1)
+type PERSON_NAME is access PERSON;   -- access type declaration    (2)
+
+type PERSON(SEX : GENDER := F) is    -- full declaration           (3)
+   record
+      AGE    : INTEGER range 0 .. 123;
+      FATHER : PERSON_NAME(SEX => M);                           -- (4)
+      MOTHER : PERSON_NAME(SEX => F);                           -- (5)
+      SPOUSE : PERSON_NAME;                                     -- (6)
+   end record;
+```
+
+The incomplete declaration allows a linear reading of the example: We first
+learn about the existence of a type called PERSON, so that at (2) we can
+understand what "access PERSON" means. We then learn what the type PERSON is in
+full. Without the incomplete declaration (1), the access type declaration (2)
+would be illegal. Similarly, we could not reverse the order of declarations (2)
+and (3) because then (3) would be illegal: we need to know what a PERSON_NAME is
+in order to understand the component declarations at (4), (5), and (6).
+
+---
+
+### R.7 Derived Types
+
+#### R.7.1 Introduction
+
+The basic mechanisms for defining a new type are by enumeration and by
+composition from existing ones; certain operations are automatically introduced
+by such definitions. Another way of defining a type is by means of a private
+type declaration. A third possibility is provided by the language: a type COPY
+is said to derive its characteristics from those of another existing type MODEL
+if it is declared as `type COPY is new MODEL;` (see [3.4](#34-derived-types)).
+
+This form of declaration is useful whenever a type is to have the same
+characteristics as another type, (and possibly some additional ones). Although
+the derived type COPY and its parent type MODEL have similar characteristics,
+they are nevertheless distinct types.
+
+The following topics are some of the major uses of derived types: simple strong
+typing; the explanation of numeric types; the ability to define new types that
+have numeric literals; the construction of private types; achieving transitivity
+of visibility; and change of representation. It will be shown that all these
+uses rely on a unique ability, namely the ability to introduce a distinct type
+with similar properties.
+
+#### R.7.2 What Carries Over
+
+In each case, the derived type is a copy of its parent type. This has several
+implications concerning the type class, the set of values, the applicable
+operations, and overloading.
+
+The derived type belongs to the same class as its parent type. The set of values
+of the derived type is a copy of the set of values of its parent type. There is
+a one-to-one correspondence between the two sets of values; but these two sets
+are nevertheless distinct.
+
+The basic operations for the derived type are as for the parent type. For
+example, if component selection is available for the parent type, it is
+available for the derived type. Attributes are basic operations, so the previous
+rule applies. If a given enumeration literal exists for the parent type, there
+is a corresponding enumeration literal — with the same identifier — for the
+derived type. For each predefined operation of the parent type there is a
+corresponding predefined operation of the derived type.
+
+For a type declared in the visible part of a package, each subprogram that has a
+parameter or result of the type and is declared within the visible part of this
+package is derivable. This means that corresponding operations are derived by
+the derived type. Note that these derived operations are obtained by systematic
+substitution of the name of the derived type for the name of the parent type.
+
+The above description shows that a derived type is very much like its parent
+type. They are nevertheless distinct types. However, there is a one-to-one
+correspondence between these sets of values and, for this reason, the language
+provides explicit conversions between corresponding values. Type conversions
+between types that are derived directly or indirectly from each other (or from a
+common parent type) usually do not result in any run-time executable code.
+
+Such conversions are also involved (implicitly) in the derivation of a derivable
+operation. The effect of a derived operation is obtained by application of the
+parent procedure, but conversion of the parameter to the parent type is assumed
+to take place before the call, and conversion back to the derived type is
+assumed to take place after the call. Here again these conversions usually do
+not result in any run-time executable code but they are needed to explain the
+use of the parent subprogram, which is only applicable to the parent type.
+
+#### R.7.3 Simple Strong Typing
+
+Given some useful type, the derivation mechanism offers a simple way of creating
+other types that are distinct copies of this type. The usual motivation for such
+type replication is to keep the two value spaces well separated and, thus, to
+achieve a simple form of strong typing. Consider a useful type for counting
+currency, and the types derived from it:
+
+```ada
+type CURRENCY is delta 0.01 range 0.0 .. 1.0E6;
+for CURRENCY'SMALL use CURRENCY'DELTA;
+
+type DOLLAR is new CURRENCY;  -- three
+type FRANC  is new CURRENCY;  -- distinct
+type MARK   is new CURRENCY;  -- types
+```
+
+The motivation for having these distinct types is well-known to every traveller,
+namely not to mix the different currencies. What this example illustrates is
+that we have provided type declarations that reflect the common-sense view that
+having one "centime" is not the same as having one "pfennig". Although both
+correspond to an abstract value of "0.01", we consider that they belong to
+different value spaces. Note that this would not be achieved if we had declared
+all our variables to be of the type CURRENCY, since this would allow mixing
+different currencies in an uncontrolled manner.
+
+Note that we could write this example — without derivation — by giving three
+identical type definitions. But this formulation would hide the fact that these
+three types are currencies with the same delta and range, and for which certain
+currency-specific functions could be declared, such as interest.
+
+To conclude on this first example, it shows that derived types can be used to
+achieve program reliability and readability in quite a simple manner — hence the
+name simple strong typing. Generic units can often (but not always) be used to
+achieve similar goals. However generic solutions will usually involve much more
+machinery and, in consequence, are less likely to be used in simple situations
+such as the currency example.
+
+From a purist point of view one could argue that the use of derived types in
+many of these examples does not achieve total reliability. For example, with the
+derivations `type LENGTH is new SCALAR;` and `type AREA is new SCALAR;` the
+multiplication that is derived for LENGTH is not useful, since it returns a
+LENGTH. However, we can always define — explicitly — a function that returns an
+AREA, and should we fear the misuse of the inherited multiplication, we can
+always hide it.
+
+But in many cases, we will not even bother to introduce such additional
+definitions: There are many ways in which we are trying to improve program
+reliability, and types are but one of them. The fact that any specific mechanism
+does not achieve one hundred percent safety does not mean that this mechanism
+should be neglected. The same reasoning will often apply to the use of derived
+types: they provide a simple mechanism for achieving a first level of safety.
+Being simple, this mechanism is more likely to be used than heavier mechanisms.
+Thus derived types will encourage the use of types for logical structuring.
+
+The previous forms of strong typing can almost be obtained by the use of generic
+instantiation instead of derivation. Generic instantiation almost achieves what
+is needed but one may regret the need to use a more elaborate feature of the
+language: generic program units. In many teaching strategies this feature would
+only be encountered at the advanced level. Hence it is not really satisfactory
+that the user should be confronted with this degree of difficulty (on top of
+verbosity) for such a simple situation.
+
+Moreover, the major drawback of the generic solution is that conversions between
+the two instantiated types are not possible, whether explicitly or implicitly,
+in the generic formulation. To achieve such conversion would require writing
+conversion functions. This solution is far from satisfactory from a maintenance
+point of view, since the conversion has to be expressed by duplication of the
+structure within the aggregate. In particular, it has to express the structural
+correspondence on a component-by-component basis. Any change in the definition
+of the type would therefore require revision of the text of these conversion
+functions.
+
+The approach taken for conversions is far simpler in the case of derivation: if
+a type is derived from another one, then it is immediately known that the two
+types have the same structure — by construction. Hence there is no need to
+detect structural similarity.
+
+Another approach would be to copy the type definition. This copying technique
+works in the case of numeric types, in particular for explicit conversions.
+However there are methodological objections to the fact that the sameness is
+hidden. In order to understand that the two types are similar we have to compare
+the definitions. But the intention does not appear. Actually there could be
+situations where the same constants are used in a third type by accident.
+Conversely, there are situations where we want two types to be similar although
+their range need not be the same. The superiority of the derivation approach for
+copying comes from the fact that the intention is made explicit by naming the
+parent type, even if the derived type has a different range.
+
+#### R.7.4 The Construction of Private Types
+
+For the construction of private types, derived types provide an easy and
+unambiguous way of distinguishing the operations of the private type from those
+of the type used for its representation (that is, the type declared by the full
+type declaration). The relevant aspects are: the fact that the parent and the
+derived type are distinct types; and the fact that explicit conversions between
+the two types exist.
+
+```ada
+package LOCKSMITH is
+   type KEY is private;
+   procedure GET_KEY(K : out KEY);
+   function "<" (X, Y : KEY) return BOOLEAN;
+private
+   type KEY is new CHARACTER;
+end LOCKSMITH;
+
+package body LOCKSMITH is
+   function "<" (X, Y : KEY) return BOOLEAN is
+   begin
+      return CHARACTER(X) < CHARACTER(Y);
+   end "<";
+end LOCKSMITH;
+```
+
+The user need not know that keys are implemented as characters, but he is
+provided with the operator "<" to order keys. The function first converts the
+parameters X and Y into characters and then compares them using character
+comparison. (Note that `X < Y` would not work: it would be a recursive call.)
+
+Without derivation, a solution can be developed using one-component records. The
+drawback of this solution is its lack of symmetry. Instead of the succession of
+two conversions — to the representation type and then back — we have now the
+succession of component selection and of aggregate construction. For these
+cases, the solution with derived types is more elegant.
+
+#### R.7.5 Conclusion — Achieving Copies in Ada
+
+Three main classes of entity are found in Ada programs: objects, types, and
+program units. For each class of entity, the language provides a copying
+mechanism; that is, a mechanism by which we can create distinct replicas having
+similar properties: object declaration for objects, type derivation for types,
+and generic instantiation for program units.
+
+The replication mechanism offered by generic units is very powerful and can be
+used to replicate the contents of program units. The generality of generic units
+certainly runs against a saying often heard in programming language design that
+there should be only one way of doing a given thing. Generic instantiation can
+even be used to achieve object replication, but it would be carrying matters to
+extremes to conclude from this that no simpler way should be provided. Generic
+instantiation can be used to replicate objects but it is not the most natural
+way. Similarly, although generic instantiation can be used to replicate types,
+derivation is a more natural and direct way.
+
+Six major situations have been reviewed in which copying a type provides a
+natural solution for the problem considered: simple strong typing; numeric
+types; new types inheriting literals; construction of private types;
+transitivity of visibility; and change of representation. The common
+characteristic of the above six situations is that in each of them there is a
+need to introduce a type that is a copy of another type. Without derivation, a
+variety of solutions and palliatives, most of them only partially satisfactory,
+would be required to solve these six problems. Furthermore many of these
+palliatives would involve manual copying and therefore raise severe issues of
+maintenance and configuration control. With derivation a unique — and elegant —
+mechanism is used to solve what is inherently a unique problem: the replication
+of a type.
+
+---
+
+### R.9 Packages
+
+#### R.9.1 Motivation
+
+Packages allow the programmer to define groups of logically related items (see
+[7](#7-packages)). They cover a wide variety of uses, ranging from collections
+of common declarations to groups of subprograms and encapsulated data types.
+
+The ability to package declared entities — such as variables, types,
+subprograms, and even other packages — provides the basis for a powerful
+structuring tool for complex programs. Moreover, a package permits clear
+separation between information that is usable by the rest of the program, and
+other information that must remain purely internal to the package. The internal
+information is hidden, and thereby protected from deliberate or inadvertent use
+by other programmers. This serves not only to localize the effect of internal
+errors to the package itself, but also to make it easier to replace one
+implementation of (the services offered by) a package by another. Packages are
+thus an essential tool for program modularity, supporting program verification
+and information hiding as advocated by Parnas.
+
+Facilities for modularization have appeared in many languages. Some of them —
+such as Simula, Clu, and Alphard — provide dynamic facilities which may entail
+large run-time overhead. The facility provided in Ada is more static — in the
+spirit of previous solutions offered in Lis, Euclid, Mesa, and Modula. At the
+same time it retains the best aspects of solutions in earlier languages such as
+Fortran and Jovial.
+
+We recognize three general kinds of modularization that can be achieved by
+different forms of package. The essential difference between these three forms
+is in the amount of information hiding that is provided. The package can be
+viewed as a wall surrounding the enclosed declarations, thereby separating them
+from the rest of the program. One may then imagine a window in the wall, through
+which (depending on its size) some or all of the declarations are exposed.
+
+1. **Named collections of entities:** the package exposes all of its
+   declarations (all declarations can be seen through the window).
+
+2. **Groups of related subprograms:** the package exposes the declarations of
+   the externally usable subprograms (only these can be seen through the window)
+   but hides their implementations and the declarations of the shared internal
+   entities.
+
+3. **Encapsulated data types — private types:** the package exposes the type
+   name and the declarations of applicable operations but hides all details of
+   structure, representation, and implementation of the operations (see
+   [7.4](#74-private-type-and-deferred-constant-declarations)).
+
+There is no critical linguistic difference between these three forms, and
+intermediate degrees of hiding exist.
+
+#### R.9.2 Visibility Control and Information Hiding
+
+The visibility rules of Algol 60, as embodied in its so-called block structure,
+are quite natural for programs of moderate size and have been adopted by most
+subsequent languages, including Ada: any declaration is visible throughout the
+block for which it is given, including nested inner blocks, unless hidden by
+declarations local to those blocks. However this simple structure is
+insufficient for the reliable construction of large programs since more precise
+control over the visibility of declarations is then needed. For example, with
+the above rule, a variable that is used by several subprograms must be declared
+outside their bodies, although it has no relevance to other parts of the
+program. This variable will then be visible to all users of these subprograms,
+and unprotected from accidental or malicious access.
+
+In the definition of a package, the visible part states which declarations are
+potentially visible outside the package. It is possible for other program units
+to see whatever is in the visible part; but they do not see it automatically.
+Within these program units, this visibility is achieved either by use clauses or
+by expanded names written in the form known as dot notation.
+
+Thus visibility of the identifiers declared in the visible part is controlled by
+the user. Names declared in the visible part of a package do not spontaneously
+invade (and pollute) the name space of the rest of the program. Visibility of
+the identifiers declared in the package body is even more tightly controlled:
+they are visible only within the package body — in particular, within the body
+of any subprogram declared in the visible part.
+
+The other essential characteristic of packages in Ada is the textual separation
+of the interface — those declarations that are relevant to users of the package
+— from the implementation. In an Ada package, these declarations are textually
+separated from the rest of the text: they form what is called the visible part
+of the package. This textual separation is a significant advantage for
+readability and for information hiding.
+
+Other languages such as Euclid and Modula have used a formulation based on an
+export list that mentions all identifiers that constitute the interface. This
+means that in order to know the properties of these identifiers, the human
+reader must scan through the entire text of the module to find the declarations
+of entities listed in the export list. This is a tedious operation and is, as we
+shall see, a breach of information hiding principles, since it involves reading
+parts of the text that should be of no concern (and should not even be
+available) to the user.
+
+There are good reasons for hiding the text of a package body from its users. An
+obvious one is confidentiality: a software producer supplying the services of a
+given package may want to protect his investment by not showing the package
+implementation (at least, not in source form). Another reason to hide the text
+of a package body from its users is to establish the normal producer-consumer
+contractual relationship that exists for other commercial products. It is the
+package specification that should be considered as the contract between the
+producer and the users. The included procedure specifications already form a
+(minimal) syntactic contract, but these may be supplemented by some explanation
+of their intended effect.
+
+Letting a user read the implementation would create the danger that he might
+derive some additional implicit assumptions from an analysis of the current
+implementation: assumptions that are not explicit in the contract. The producer
+of a package is bound only by the contract, and is therefore free to deliver
+later releases of the package that might not satisfy any such implicit
+assumptions of the user. The textual separation between the package
+specification and the package implementation provides an easy solution to this
+problem. The user will be provided with the source text of the package
+specification, and no more.
+
+#### R.9.3 Guaranteeing Software Components
+
+In an industry of software components, users are likely to request some
+guarantee against malfunction, as is usual for buyers of components in other
+industries. The problem of proving software components is certainly not an easy
+one; but we can show that packages lead to a reduction in its difficulty.
+Consider, for example, a table management package (see
+[7.5](#75-example-of-a-table-management-package)) and the steps that would have
+to be taken to convince oneself that it was operating correctly. To begin with
+we have to define a consistent state for the package: for example, we can define
+the table to be consistent if it contains all the items that have been inserted
+but not yet retrieved, and only these. We first have to show that the table is
+consistent initially: that is, after execution of the initialization statements.
+Then we have to show that if the table is consistent before the use of any one
+of the services offered, it will still be consistent after the execution of that
+procedure.
+
+In order to do this, our analysis need only consider the text of the
+corresponding procedure: the table cannot be updated directly from outside the
+package since it is not visible there.
+
+Without packages, the table would have to be global and we would have no
+protection against direct update of the table by users (whether the update is
+intentional or by accident). The previous consistency argument would then be
+considerably more complex since it would be necessary to inspect the text of all
+programs that use any of these procedures and check that these programs do not
+directly update the value of the table: The amount of text to be checked
+could be an order of magnitude larger than the text of the package itself.
+
+With the package concept — with the separation between the interface and the
+implementation; and with the protection of whatever is local to the package body
+— servicing software components becomes similar to servicing components in other
+industries: If a user reports a malfunction of the operations of a package, we
+know that we have only to check within the package to establish the reality and
+cause of any malfunction (and to make repairs as needed). The package body
+effectively acts as a sealed container.
+
+#### R.9.4 Why There Is a Private Part
+
+The essential role of packages is for logical modularity. In addition, they also
+play an important role for the physical modularity that is achieved by separate
+compilation. These two aspects of program modularization lead to slightly
+different (although not conflicting) requirements.
+
+For logical modularity the interface defined by the visible part of a package is
+sufficient. This information is needed for physical modularity too, but the
+physical interface also requires the availability of the additional information
+that is contained in the private part.
+
+This extra information is needed by compilers for the treatment of variables
+that are declared in one compilation unit but whose type is a private type
+declared in a different compilation unit. The difference essentially concerns
+storage allocation: knowledge of the amount of storage needed for such variables
+is necessary for selecting the machine instructions used for operations on the
+variables; this code selection is not a decision that could be postponed until
+the program is complete (that is, until linkage editing time).
+
+The reasons for this are found in the architectures of our current computing
+machines. These generally provide code abstractions that are bound at execution
+time, in the form of subprograms invoked by the call instruction. It is
+therefore possible to defer the binding of the bodies of such abstractions until
+link time, or even later. However, current machines do not provide similar data
+abstractions: every instruction that operates on a datum must be aware of its
+representation, and that representation must therefore have been bound at the
+moment the instruction was generated; that is, at compilation time. A more
+flexible architecture — evolved perhaps from today's tagged architectures —
+would indeed allow data representation choices to be deferred until link time,
+or even later.
+
+The declaration of a private type therefore does not in itself provide enough
+information for storage allocation and other operations. The full declaration of
+the type is needed, and so is any representation clause that the user wants:
+storage allocation will therefore require the information provided by the
+private part. Note that placing this information in the package body would not
+be satisfactory since it would create unnecessary dependences of other
+compilation units on this body, with the consequence that changes in the
+algorithms provided in the body would require recompilation of these other
+compilation units, even in the absence of change to the full type declaration.
+
+The one case where full type information can indeed be deferred until the
+package body is the case where the private type is implemented as an access
+type:
+
+```ada
+package MINIMAL is
+   type OPAQUE is private;
+private
+   type HIDDEN;                  -- nothing more required
+   type OPAQUE is access HIDDEN;
+end MINIMAL;
+```
+
+The reason, of course, is that nearly all current machines have a uniform
+addressing structure, so that an access value always looks the same regardless
+of what it is designating.
+
+To summarize, the logical interface corresponds to the visible part; the
+physical interface corresponds to the complete package specification, that is,
+to both the visible part and the private part. As long as a package
+specification is not changed, the package body that implements it can be defined
+and redefined without affecting other units that use this specification as an
+interface to the package.
+
+#### R.9.5 Availability of the Properties of Types Defined Within Packages
+
+It is important to define which of the properties of a type declared in the
+visible part of a package can be made available outside the package. In Ada the
+answer to this question is quite simple: the only available properties are those
+declared in the visible part.
+
+In the first place, consider the declaration of a type other than a private
+type, say a record type. If such a declaration is given in the visible part of a
+package, then the record type is potentially available — without restriction —
+to outside program units. In particular, such units can declare variables and
+invoke basic operations of this type (such as component selection and
+aggregates) in full knowledge of the data structure specified by the type.
+
+For a type declared as private, on the other hand, the visible part provides
+only the type name, and the specification of the subprograms applicable to
+objects of this type — these are the only operations applicable to objects of
+the type, apart from assignment and comparison for equality and inequality
+(which are available unless the private type is limited; see
+[7.4.4](#744-limited-types)), and attributes such as 'SIZE and 'ADDRESS (which
+are always available).
+
+Within a package body the characteristics of a private type are available as if
+the type were not private (see [7.4.2](#742-operations-of-a-private-type)). For
+example, if the type is a record type, its components can be denoted with the
+usual syntax of selected components.
+
+To summarize, the availability of properties of types declared in a package can
+be deduced from purely textual considerations: outside units see only the
+visible part and consequently can use only properties defined there; on the
+other hand, the package body can use all properties, including those defined by
+the full type declaration for a private type.
+
+#### R.9.6 Initialization of Objects of Private Types
+
+The elaboration of an object declaration results in the reservation of space for
+the corresponding object, whether the type of the object is private or not. The
+initialization of an object whose type is a private type could be achieved in
+the object declaration itself by assigning to it the value of a deferred
+constant or the value returned by a function; for a limited private type, it
+could only be achieved by a procedure call statement — hence not in the object
+declaration. However, there are cases where we want the components of an object
+whose type is private to satisfy some invariant as soon as the object is
+created, although initialization of other components may not be needed. This is
+achieved by means of initialization of record components:
+
+```ada
+package ALL_ABOUT_STACKS is
+   type STACK is limited private;
+
+   procedure PUSH (E : in  ELEMENT; S : in out STACK);
+   procedure POP  (E : out ELEMENT; S : in out STACK);
+private
+   type INDEX is range 0 .. 1000;
+   type STACK is
+      record
+         TOP   : INDEX := INDEX'FIRST;
+         SPACE : array (INDEX) of ELEMENT;
+      end record;
+end ALL_ABOUT_STACKS;
+```
+
+For any declaration of an object of type STACK, the component TOP is initialized
+to the minimum INDEX value. Thus, the stack invariants are satisfied as soon as
+the declaration of a stack object has been elaborated.
+
+#### R.9.7 A Note on Visibility
+
+If a use clause is provided within a given program unit, it opens up the
+visibility of the visible part of each package mentioned by the clause. However
+this effect is not transitive. Thus, if the clause `use FIRST_LAYER;` is given
+in the visible part of a package SECOND_LAYER, it does not mean that units
+containing the clause `use SECOND_LAYER;` will also see FIRST_LAYER. If we want
+the above use clause also to provide visibility of certain entities declared in
+FIRST_LAYER, then this can often be achieved explicitly, by renaming
+declarations (see [8.5](#85-renaming-declarations)):
+
+```ada
+package SECOND_LAYER is
+   subtype T is FIRST_LAYER.T;
+   procedure P(X : T) renames FIRST_LAYER.P;
+   -- additional operations defined by SECOND_LAYER
+   E : exception renames FIRST_LAYER.E;
+end SECOND_LAYER;
+```
+
+Note that a similar effect can be achieved by making T a derived type instead of
+a subtype. This latter form could be used if we wanted to prevent operations
+defined by another package for objects of type FIRST_LAYER.T from being used at
+the same time as those defined by the package SECOND_LAYER: the only operations
+that may be applied to the derived type are those inherited from FIRST_LAYER and
+those defined in SECOND_LAYER.
+
+---
+
+### R.11 Visibility and Overloading
+
+#### R.11.1 Introduction
+
+Central to the definition of Ada is a concern for the general structure of a
+program, the rules defining the visibility of identifiers at various points of a
+program, and the facilities offered for separate compilation. A major goal in
+this design was to give the programmer precise control over his name space: the
+set of names that he may define and use. It is important to be able to introduce
+new names without having to bother about possible conflicts with existing names.
+This requires the ability to control the inheritance of names that are defined
+in other contexts. As mentioned above, the notion of package is essential to
+achieve this kind of control. Another goal was to provide the same visibility
+rules for all program units, whether they are separately compiled or not.
+
+#### R.11.2 The Basic Visibility Model
+
+The search for simple and uniform scope rules has led to the adoption of a
+traditional approach: an identifier that is declared immediately within a given
+declarative region is directly visible within inner (nested) declarative regions
+(see [8.1](#81-declarative-region) and [8.3](#83-visibility)).
+
+The term declarative region in the above rule refers to a portion of the program
+text which includes a major group of declarations. Thus the basic rule is
+essentially that of Algol 60. The only extensions to this rule are related to
+packages and to separate compilation.
+
+The fundamental reason for selecting this liberal approach is the pragmatic
+assumption that names declared together are normally meant to be used together.
+It can be assumed that the names declared in the declarative part of a procedure
+are defined in the same context because they are intended to be used together.
+Extending this reasoning to inner program units means that these names are also
+visible within the bodies of inner units, so that those bodies may be directly
+defined in terms of these names. This suggests the assumption that entities
+declared in the same context have mutually dependent definitions.
+
+One alternative considered was to designate certain program units such as
+procedures and packages as being always closed: Closed units would not
+automatically inherit the visibility of outer declarative regions, so that some
+form of explicit import directive would be required in order for names declared
+in outer regions to become visible within closed units. This was ultimately
+deemed unacceptable because it led to clutter and to long name lists in many
+common cases. The following example illustrates the useless redundancy of the
+directive "sees T, C, L", where the procedures P_1 through P_N are obviously
+meant to work with T, C and L:
+
+```text
+-- the following is not an Ada text
+
+package body D is
+   L : T;
+
+   procedure P_1( ... ) sees T, C, L is ... end P_1;
+   procedure P_2( ... ) sees T, C, L is ... end P_2;
+   procedure P_N( ... ) sees T, C, L is ... end P_N;
+end D;
+```
+
+Early experience with the Euclid language, in which such an approach was taken,
+shows that the danger of long name lists is not to be underestimated. Because of
+transitivity, Euclid import lists can get very long. The danger is then — as
+evidenced by experience with named common in Fortran programs — that programmers
+tend to use the same import lists in all program units, for fear of omitting
+something. In any case, long name lists are usually skipped when reading, and
+this defeats their very purpose. The classical argument developed by Dijkstra,
+about our inability to deal with a large number of entities at the same time,
+also applies to long — and therefore unstructured — name lists.
+
+The only way to avoid this form of text clutter is to make automatic inheritance
+the default rule. The argument is that the textual embedding of declarations is
+already a strong indication of potential dependence. The systematic inclusion of
+additional import directives does not usually provide much information that may
+usefully be exploited by the translator, and it is likely to distract readers —
+and writers — of programs.
+
+It was found, moreover, that whether a given syntactic category should be an
+open scope or a closed scope was a highly subjective question. The answer may
+vary from one use to another, depending on the size of a particular program
+unit, the depth to which it is nested, the probability of subsequent
+recompilation, and so on. It seems clear, therefore, that the syntax of the
+language should not arbitrarily impose a decision in this regard. For this
+reason we have adopted the following approach:
+
+- All syntactic constructs that introduce declarations normally inherit the
+  identifiers of outer (enclosing) contexts.
+
+- A set of declarations can be encapsulated in the visible part of a package:
+  the visibility of these declarations is then acquired in other contexts by
+  means of use clauses.
+
+#### R.11.3 Expanded Names and Use Clauses
+
+Since classical inheritance of identifiers from outer declarative regions is the
+default rule, redeclaration of identifiers is possible, with the effect of
+hiding the outer definitions within the inner region. Some of the difficulties
+with identifier redeclarations disappear if the names of the corresponding
+entities can be written as expanded names: using the dot notation.
+
+As an additional syntactic convenience, a use clause may be given in a
+declarative part (see [8.4](#84-use-clauses)). A use clause mentions the names
+of one or more packages and its effect is to achieve direct visibility of any
+identifier declared in the visible part of one of the packages, exactly as if
+the identifier were declared at the place of the package concerned. For a given
+identifier, however, this effect is only achieved in the absence of any
+conflicting identifier. In all cases of redeclaration or conflict, the intended
+name must be given in full, as an expanded name.
+
+One consequence of these rules is that the position of use clauses does not
+matter. Another consequence is that a name that is made directly visible by a
+use clause cannot hide another name. This is quite essential for maintainability
+reasons. Assume, for example, that the specification of a package D were
+modified to include the declaration of some new entity called X. This should
+normally have no effect on a procedure Q that declares its own X. In particular,
+the inner reference to X should retain its previous meaning and should hence
+mean Q.X both before and after the modification. (Note that we have only reduced
+the magnitude of this general problem, since a later introduction of W within D
+would conflict with the W of another used package; the full solution lies in
+maintenance tools.)
+
+A similar maintainability argument led us to reject a unique visibility rule;
+that is, a rule forbidding redeclaration of identifiers that were already
+visible. If redefinition of identifiers were not allowed, the later introduction
+of some entity named X in the declaration list of P would force textual
+modification of an inner procedure such as Q, which should normally be
+unaffected by this change.
+
+Note that use clauses may be viewed as one possible form of the import
+directives mentioned above. However, the items listed in use clauses can only be
+names of packages, and the risk of long use lists is correspondingly reduced.
+Naturally, effective modularization will depend upon the user writing packages
+in such a way that related definitions are in the same packages; related
+definitions will usually be required together.
+
+#### R.11.4 Visibility Rules for Record Types
+
+A record type definition introduces a new declarative region. Hence component
+identifiers may be freely chosen. For each selected component, the visibility of
+the corresponding component is opened by the dot that follows the name of the
+record variable in the selected component.
+
+As with Pascal, variants within a record do not introduce new declarative
+regions. Hence the component names of each variant must be distinct from those
+of every other variant, even if they are semantically equivalent as far as the
+programmer is concerned. The reason for not introducing a new declarative region
+with each variant can be seen from the following example:
+
+```ada
+type T(COMPACT : BOOLEAN := TRUE) is
+   record
+      case COMPACT is
+         when TRUE  => VALUE : FLOAT;
+         when FALSE => VALUE : LONG_FLOAT;  -- illegal redeclaration
+      end case;
+   end record;
+```
+
+A selected component such as R.VALUE would have to be treated as a conditional
+expression, dependent on the discriminant, possibly delivering results of
+alternative types.
+
+#### R.11.5 Renaming
+
+The ability to rename turns out to be very convenient when working with packages
+that are developed independently by different groups of programmers. Being
+independently developed, such packages may well declare the same identifiers. If
+later these packages are both mentioned by a use clause in a given region, it
+may often be convenient to resolve name conflicts by renaming rather than by
+using dot notation whenever these identifiers appear.
+
+In addition to the notational advantage, a renaming declaration avoids
+reevaluating the access path to a record variable for each component selection,
+and may allow more efficient code to be generated.
+
+Because of the possibility of overloading, it will often suffice to rename
+conflicting type names: names of subprograms will in consequence be resolved by
+the overloading rules. The renaming facility can also be used to provide a name
+more appropriate to the context of its use. For instance, the author of a sort
+routine may call his version QUICKSORT2 whereas SORT may be better (and less
+cumbersome) throughout the application.
+
+#### R.11.6 Overloading of Operators and Names
+
+In Ada, every use of a simple name or operator symbol is understood with
+reference to an (explicit or implicit) declaration of the name or symbol. In the
+case of types, variables, and constants, at most one such declaration can be
+visible at any one point in the program. In the case of subprograms, enumeration
+literals, and entries, however, several declarations may be simultaneously
+visible. An occurrence of a subprogram name, such as PUT or "*", may therefore
+refer to one of several simultaneously visible declarations. The name or
+operator symbol is then said to be overloaded.
+
+The functions that implement integer multiplication and floating multiplication
+are represented by the same symbol because they are different implementations of
+the same abstract operation: the operation of multiplication.
+
+The overloading of predefined operators has been a feature of programming
+languages ever since Fortran. But Ada also permits users to define new data
+types, for example COMPLEX or RATIONAL. Since much of the power of the language
+comes from its extensibility, and since proper use of that extensibility
+requires that we make as little distinction as possible between predefined and
+user-defined types, it is natural that Ada also permits new operations to be
+defined, by declaring new overloadings of the operator symbols (see
+[6.7](#67-overloading-of-operators)).
+
+The ability to coin descriptive names is an important part of good programming,
+and it is therefore desirable that a programming language give the programmer as
+much freedom as possible in the choice of names. Moreover, the use of familiar
+notation in new contexts is a very powerful descriptive tool: it is an example
+of the principle of analogy. The ability of an Ada programmer to overload
+operators upon new types allows the principle of analogy to be used in
+programming.
+
+In practice, it is unlikely that two quite different overloadings will be
+defined together. It is more likely that each will be defined in its own
+package. The programmer defining a type is free to use the traditional operator
+symbols for the new type, and to give them a meaning analogous to their meaning
+with other types. There is no need to worry about other meanings (declarations)
+that might occur in other packages defining other types: the Ada overloading
+facility permits a package to be defined as an independent software component.
+
+Several languages beside Ada, such as Algol 68, permit operator symbols to be
+overloaded. Ada however also permits subprogram names to be overloaded, for
+exactly the same reasons. Consider for example
+
+```ada
+procedure PUT(X : in STRING);
+procedure PUT(X : in INTEGER);
+```
+
+The abstract operation PUT applies indifferently to both strings and integers;
+it is therefore appropriate that the same name be used in both cases. Observe
+that this is in accord with the conventions of natural language: "Put the book
+on the shelf", "Put the cat out" — which does not have separate words for
+putting books and putting cats.
+
+Ada does not permit the overloading of variables or constants. This again is in
+accordance with traditional habits of thought: we seem far more willing to
+accept potentially ambiguous names for operations than for things. Thus,
+mathematicians typically write additions of integers, floating-point values,
+vectors, matrices, and complex numbers all as "+", but their operand types are
+distinguished by a systematic nomenclature. It seems to be a convention of our
+language that verbs are generic but nouns are specific; Ada reflects this by
+permitting operations to be overloaded but — normally — not operands. Thus, Ada
+allows (and we find normal)
+
+```ada
+procedure SERVE(S : SOUP);
+procedure SERVE(F : FRUIT);       -- permitted overloading
+```
+
+but does not allow (and which we would find abnormal)
+
+```ada
+OF_THE_DAY : SOUP;
+OF_THE_DAY : FRUIT;               -- not a legal overloading!
+```
+
+#### R.11.7 Overloading of Literals
+
+Literals stand for values. However, in a strongly-typed language, it must be
+possible to associate a type with every value, and so in some sense a literal
+should imply a type. This creates difficulties in two cases: first, when
+different values, of different types, by chance are represented by the same
+literal; and secondly, when the same conceptual value belongs to more than one
+type.
+
+The first case is called homography: two conceptually different values have the
+same symbol. In no sense is a KIWI fruit the same as the flightless KIWI bird:
+the homography is an accident of language. A programming language should not
+forbid such homography: it would be unreasonable to force the author of a
+package PALETTE to change the word ORANGE merely because it was a fruit; and
+indeed Ada never forbids a programmer from defining a locally unambiguous name.
+But it is a separate design decision whether to permit overloading of such
+names.
+
+Ada permits overloading of enumeration literals; this is in accord with the idea
+that an enumeration literal resembles a parameterless function. Resolution is
+exactly as for parameterless functions: the required type is evident from the
+context. This rule also permits character literals to be used in more than one
+type.
+
+The numeric literals, however, illustrate the second case. In the declarations
+
+```ada
+X : FLOAT      := 1.0;
+Y : LONG_FLOAT := 1.0;
+```
+
+the two occurrences of "1.0" stand for the same abstract value — unity — but in
+two different physical representations, and hence, in Ada, associated with two
+different types. It would be possible to view "1.0" as an overloaded literal —
+overloaded on all real types. Ada however takes a different view, that we
+believe corresponds more closely to our intuition. It regards real literals as
+being all of one type, the type universal_real, and introduces an implicit
+conversion to the required numeric type.
+
+The alternative view — that the literals should be considered to be overloaded
+on all numeric types — would lead to some anomalies, of which the most annoying
+would perhaps be that `if 1 < 2 then ...` would be ambiguous: would we mean to
+invoke the "<" of type INTEGER or that of type LONG_INTEGER? The Ada view avoids
+such difficulties. Observe by contrast that, if two distinct character types
+ASCII and EBCDIC are both visible, then `if 'A' < '0' then ...` will indeed be
+rejected as ambiguous, and rightly so, since the relation means different things
+in ASCII and EBCDIC.
+
+#### R.11.8 The Context of Overload Resolution
+
+When an overloaded name or symbol occurs, the language translator must determine
+which of several possible definitions is meant. This process is called overload
+resolution, and it must naturally rely on information from the context in which
+the name occurs. In defining the language, the rules for overload resolution
+need to be established, and these rules must make clear two things: what is the
+context from which information is to be taken, and what information may be used.
+
+It might appear that the simplest overload resolution rule is to use everything
+— all information from as wide a context as possible — to resolve the overloaded
+reference. This rule may be simple, but it is not helpful. It requires the human
+reader to scan arbitrarily large pieces of text, and to make arbitrarily complex
+inferences. We believe that a better rule is one that makes explicit the task a
+human reader or a compiler must perform, and that makes this task as natural for
+the human reader as possible.
+
+The contexts to be used in overload resolution are given explicitly (see
+[8.7](#87-the-context-of-overload-resolution)). They correspond, we believe, to
+the natural program fragments that both writer and reader will regard as
+conceptual units. For example, the controlling expression of a for loop is such
+a unit: it represents a bounded, ordered iteration over a set of discrete
+values. Accordingly, the resolution process considers both bounds of the range,
+and also the fact of its discreteness. We can therefore resolve `for F in ORANGE
+.. KIWI loop` in the way that we believe the human reader would: as an iteration
+over fruits.
+
+As another example, consider a case statement. The case expression and the
+values in the case alternatives must of course all have the same type. However,
+Ada requires the case expression to be resolved first, before considering the
+case arms. This is because, otherwise, the human reader would have to scan an
+arbitrarily large amount of text in order to understand the very first line of
+the case statement. This would violate our convention (sanctioned by both Ada
+and natural usage) of linear readability.
+
+#### R.11.9 Information Used to Resolve Overloading
+
+A more difficult issue is, what information should be taken from the context of
+resolution? Since the main purpose of overloading is to allow analogous
+operations on different types to be given the same name, resolution clearly must
+consider type information. The other information available is the order, names,
+and modes of the parameters, the presence of defaults, and the result type.
+
+The rationale behind the Ada position is threefold. First, the rules should be
+convenient for, and comprehensible to, the human reader and writer: this must
+override any consideration of compiler simplicity. Secondly, the rules should
+allow natural programming conventions to be followed with unsurprising results.
+Thirdly, the information used should be readily observable in the program text,
+and not highly implicit.
+
+It seems best to consider first the overloading of operations. The natural use
+of operator symbols is in infix notation, where clearly the order of the
+parameters matters, but the formal names do not. And Ada therefore uses the one,
+and not the other. Ada does not permit the overloadings
+
+```ada
+function "-" (LEFT, RIGHT : INTEGER) return INTEGER;
+function "-" (MINUEND, SUBTRAHEND : INTEGER) return INTEGER;
+```
+
+because, even if we did happen to remember the traditional names of the
+operands, we would never use them in an invocation of the "-" operator. The
+formal names will never be seen at the point of call, and so cannot be
+considered in overload resolution.
+
+Since operations are functions, the parameter mode must always be `in` and so is
+irrelevant to the resolution. There remains only the question of the result
+type. Some languages, such as Algol 68, do not use the result type of an
+operation to assist in overload resolution. This has the advantage that it leads
+to an implementation of overload resolution by a single bottom-up traversal of
+the expression. But is this admitted convenience for the compiler writer
+accompanied by any benefit for the human programmer?
+
+There are few cases in conventional mathematics where an abstract operation may
+yield two different types of result, but these cases are significant. One
+example is the distinction between scalar product and vector product. It is
+surely desirable to allow
+
+```ada
+function "*" (LEFT, RIGHT : VECTOR) return SCALAR;
+function "*" (LEFT, RIGHT : VECTOR) return MATRIX;
+```
+
+since otherwise one hapless programmer will have to abandon infix notation
+completely, and the other will have to fight for his monopoly over the "*"
+symbol. As another example, consider the rational constructor `function "/"
+(LEFT, RIGHT : INTEGER) return RATIONAL;`. It is hard to imagine any better way
+of writing `ALMOST_PI := 355/113;`. But this requires the ability to overload
+"/" on the result type. We conclude that the use of the function result type in
+overload resolution is methodologically the better choice, and one that enhances
+the freedom of the programmer to write natural, comprehensible expressions.
+
+To resolve overloading, Ada uses the formal names but not the modes (see
+[6.6](#66-parameter-and-result-type-profile---overloading-of-subprograms)). The
+reason is simple: the programmer may write the formal names explicitly in the
+call statement, but has no means of indicating the modes at the place of the
+call (since all parameter associations use `=>`). Hence, the formal names can be
+made explicit, but the modes are always implicit, and the natural action is to
+use explicit information where given, but to avoid using implicit information
+that the human reader might have difficulty in deducing.
+
+#### R.11.10 Ambiguity
+
+An overloaded name is potentially ambiguous. In practice, even with the best
+programming style, actual ambiguities will sometimes arise, in the form of
+expressions that cannot be resolved. The most common reason is accident: two
+packages are jointly used; each defines a consistent set of names; but there is
+a clash of names. One cannot find fault with these packages individually, and
+yet a call such as `PUT(ORANGE);` may be ambiguous even when all available
+information is used.
+
+Clearly, the programmer must provide more information. There are two sorts of
+information that Ada permits one to provide: information about the source of a
+name, and information about its type. To illustrate the former, consider
+`BOTANY.PUT(ORANGE);`. This is clearly unambiguous, since only one PUT is
+defined in package BOTANY. Ada dot notation can always be used to give
+information about the source that provides the name, and, if the package in
+question has been properly written, this information should suffice. Indeed,
+this property is essential if packages are to be generally useful software
+components, since it guarantees that a properly-constructed package can be used
+by anyone, regardless of what other packages they may need.
+
+To illustrate how type information can be given, consider
+`PUT(FRUIT'(ORANGE));`. This also is unambiguous: ORANGE is a FRUIT, and so the
+PUT that puts fruits is intended. Since type names cannot be overloaded, and
+since all expressions can be qualified, this method also ensures overload
+resolution. By either of these methods, the user who by accident encounters an
+ambiguity can make the intended meaning explicit.
+
+---
+
+### R.12 Generic Units
+
+#### R.12.1 Introduction
+
+Generic units are a general form of parameterized program units (see
+[12](#12-generic-units)). As with other parameterization mechanisms, the primary
+purpose is factorization, resulting in a reduction in the size of the program
+text while also improving maintainability, readability, and efficiency.
+
+Parameterization by generic units is a natural extension of subprogram
+parameterization. When otherwise identical actions differ by a particular value
+or variable, these actions may be encapsulated in a subprogram where the value
+or variable appears as a parameter. Having thereby factored out the common part,
+the text becomes smaller and easier to read; and clerical errors, resulting from
+accidental lack of identity among the copies, are eliminated. Traditional
+parameterization mechanisms are usually in terms of values and variables. But
+the same factorization arguments apply when two otherwise identical program
+units differ by some other property, such as a type.
+
+A classical example is provided by stacks. Although one may want to have stacks
+of integers and stacks of real numbers, it is clear that neither the stack
+algorithms, nor the proof of their correctness, depends upon the type of the
+items to be stacked. However, the typing rules will not allow the writing of a
+single procedure to deal with items that are either integer or real values: if
+this were allowed, there would be no way to guarantee that a given stack does
+not contain intermixed integer and real values. Hence another parameterization
+mechanism is needed to express the intent that, although all items of a stack
+have the same type, we may want to specify this type independently for
+individual stacks: this parameterization mechanism is what is provided by the
+generic formal part of a generic unit.
+
+In addition, compilers may use their knowledge of type representations to
+achieve certain optimizations; for example, reusing the same code for stacks of
+integers and reals if the same number of bits is used for the mapping of values
+of these types. Seen in this light, the generic facility provides a natural
+complement to strong typing, minimizing the unnecessary duplication of both
+source text and object code.
+
+One of the commonest applications of any generic facility is factoring out
+dependences on particular types. Several earlier languages have accordingly
+introduced language features to accommodate this sort of parameterization. By
+far the most powerful is that provided by the language EL1; however, this
+generality is achieved at the cost of interpreting types in a fully dynamic
+fashion, which is incompatible with the efficiency and security criteria imposed
+in the present context.
+
+Languages such as Simula, Clu, and Mary offer a reasonably elegant approach to
+this problem, but all require that all objects be handled by reference. This
+introduces additional overhead — namely, indirect access — even in cases where
+this generality is neither needed nor wanted. To some degree, type discriminants
+and variants or type unions provide a possible approach when the alternative
+types are known in advance. Neither approach offers the flexibility that is
+required when the definition of new data types is viewed as the rule rather than
+the exception.
+
+A review of the shortcomings of existing mechanisms that allow types to be used
+as parameters showed that it was inappropriate to introduce overly elaborate
+language features solely for this purpose, principally because the same effect
+(and many others as well) can be essentially achieved by far simpler means using
+traditional macro-expansion techniques — although in a context-sensitive manner.
+The problem then reduced to integrating this well-established approach into the
+framework of a high-order language at reasonable cost.
+
+In Ada, the more sophisticated sorts of parameterization are accommodated by
+generic program units, which are a restricted form of context-sensitive macro
+facility. The main objectives in providing this particular mechanism have been:
+
+- to allow an additional degree of freedom in factorization without sacrificing
+  efficiency;
+
+- to allow compilers to take advantage of this factorization to minimize the
+  size of the code;
+
+- to preserve the security that is present for ordinary, unparameterized program
+  units; in particular, the degree of compilation-time error checking.
+
+The generic facility is expected to serve for the construction of
+general-purpose parameterized packages. Whereas such packages are likely to be
+utilized by large classes of users, it should be realized that fewer programmers
+will actually be involved in writing generic packages. Accordingly, we have
+tried to design a facility that can be almost ignored by the majority of users.
+They must indeed know how to instantiate a generic package, and this is fairly
+easy. On the other hand, they need not be familiar with the rules and
+precautions necessary for writing generic units.
+
+#### R.12.2 Explicit Instantiation of Generic Units
+
+The requirement that instantiation be explicit greatly simplifies the
+compilation of program units obtained by generic instantiation (see
+[12.3](#123-generic-instantiation)).
+
+The approach taken here clearly distinguishes between the instantiation of a
+program unit, obtained from a generic unit, and the invocation of the resulting
+program unit — calling a subprogram, using a package. Thereby it emphasizes the
+contrast between translation-time substitution of generic actual parameters and
+execution-time passage of actual parameters to subprograms. Explicit
+instantiation provides a well-defined locus for the point of instantiation and
+also for reporting any errors arising from inconsistent substitution. The
+resultant program unit can be invoked subsequently as often as required, with
+the same degree of power and security as for any other nongeneric program unit;
+this is a consequence of the fact that a program unit obtained by generic
+instantiation is indistinguishable from the same program unit defined explicitly
+at the point of instantiation.
+
+An alternative solution considered was implicit instantiation. Consider the
+following generic function:
+
+```ada
+generic
+   type ELEM is private;
+   with function "*" (LEFT, RIGHT : ELEM) return ELEM;
+function POWER(E : ELEM; N : POSITIVE) return ELEM;
+
+function POWER(E : ELEM; N : POSITIVE) return ELEM is
+begin
+   if N = 1 then
+      return E;
+   else
+      return E * POWER(E, N - 1);
+   end if;
+end POWER;
+```
+
+If implicit instantiation were provided, exponentiation could be applied without
+prior explicit instantiation, and the actual type used for ELEM would be
+implicitly inferred from the actual parameter associated with E in each call.
+
+Implicit instantiation would complicate the rules for the identification of
+overloaded subprograms. If a version of POWER were defined directly within a
+package RATIONAL_NUMBERS, then this explicit definition would hide the generic
+definition in an application such as POWER(R, 5). Thus the generic definition
+would be visible for some types and hidden for others. This added complexity
+would reflect on compilers, and also on program readability.
+
+Another problem would arise for the identification of POWER in the body of the
+generic unit itself: would this be a recursive implicit instantiation or a
+recursive call of the same instance? In the simple example considered, it could
+be easily interpreted as a recursive call. However, in general, it is not at all
+clear that the problem can always be resolved by a static analysis of the
+program (unless restrictions are adopted).
+
+In conclusion, implicit instantiation is still a research subject. The only
+solution within the current state of the art is explicit instantiation and this
+is therefore the solution chosen for Ada. Explicit instantiation certainly
+requires more writing on the part of the user, but it provides better awareness
+of the instances that are created and thus contributes to reliability and
+readability. In addition, it offers distinct advantages in terms of efficiency,
+since compilers can easily identify the existing instantiations and, in some
+cases, achieve optimizations such as sharing of code among several
+instantiations of the same generic unit.
+
+#### R.12.3 Generic Formal Parameters: The Contract Model
+
+A user instantiating a given generic package should be able to ignore the
+details of the generic body completely. In particular, if any error is made in
+instantiating a generic unit, the error should be reported to the user in terms
+of the generic instantiation itself — not in terms of the internals of the
+generic body. This requirement influences the form used for specifying generic
+formal parameters.
+
+Consider by analogy what is done for subprograms. For a normal — that is,
+nongeneric — procedure, specification of parameters permits independent checks
+of the procedure body on the one hand, and of the procedure calls on the other
+hand. Both must conform to the formal parameter specifications and these
+legality checks can be done independently: the procedure specification is a sort
+of contract between the procedure body and the corresponding procedure calls.
+
+The specification of generic formal parameters must achieve the same degree of
+independence:
+
+- For a given generic body, it should be possible to check that its text is
+  consistent with respect to the formal parameter specifications.
+
+- For a given generic instantiation, it should be possible to check that the
+  actual parameters are consistent with respect to the formal parameter
+  specifications.
+
+- The precision of the formal parameter specifications should be sufficient to
+  guarantee that if the checks are successful, then the corresponding
+  instantiations produce legal program units.
+
+The solution adopted to achieve these goals is to require that all operations of
+a generic formal type be determinable from its specification (see
+[12.1.2](#1212-generic-formal-types)):
+
+- For a formal type specified as limited private, no operation is assumed
+  available (apart from certain attributes). Hence any operation that is applied
+  to an object of the formal type within the generic unit must be provided as an
+  explicit generic formal parameter.
+
+- For a formal type specified as private (not limited), the same holds except
+  that assignment and the predefined comparison for equality and inequality are
+  available.
+
+- For a generic formal type declared as a type pattern with a box, the
+  operations of the corresponding kind of type are available: they are
+  implicitly declared. For example, the floating point operators are available
+  for any generic formal type defined by `digits <>`. Any other operation must
+  be provided explicitly by a generic formal parameter.
+
+When the body of a generic unit is being checked, the generic formal part thus
+provides the information required for the identification of all operations. When
+a given instantiation is being checked, the demands of the generic formal part
+must be met and incorrect actual parameters can be reported. These two checks
+can be performed independently. Furthermore, if errors exist in an
+instantiation, error messages can be formulated in terms of the generic formal
+part, which is necessarily known, rather than in terms of the details of the
+generic body, which might be separately compiled and hidden.
+
+An alternative considered in this design was the implicit inference of
+operations of a formal type. The reasons for rejecting this alternative are
+similar to those leading to the rejection of implicit instantiation. With
+implicit inference of operations, we would be left with the problem of
+identifying the "*" operation used in the body. For a given instantiation,
+should the "*" operation be identified as a global operation in the context of
+the generic declaration or in the context of the generic instantiation? The two
+alternatives might lead to different results. Note also that a statement such as
+`return E * E * E;` would be ambiguous in the presence of several overloadings
+of "*".
+
+In general, the specifications of the identified operations could be quite
+different from instantiation to instantiation depending on the operations
+visible in the context of the instantiation. None of this can happen with an
+explicit specification of the formal operation "*".
+
+To summarize, implicit inference of operations, based on the instantiation,
+would introduce awkward context-dependence and would require complete rechecking
+of the generic body for each instantiation. This last consequence would be
+particularly unfortunate, since generic bodies could not be checked (and proved
+correct) independently of the context. It would defeat the goal stated
+initially, since some error messages would have to be stated in terms of what is
+done within the generic body.
+
+The Ada solution permits independent checking of generic units and of generic
+instantiations. Hence it largely fulfills our goal of permitting the user to
+ignore the internal details of the generic units instantiated in his programs.
+
+One limitation of the contract model concerns the ability to declare
+unconstrained objects. An instantiation of a generic procedure that declares a
+local object of the formal type will not work if the actual type is an
+unconstrained array type, since a declaration of an unconstrained variable would
+not be allowed. The same problem would arise if the actual type were a type with
+discriminants that must be constrained. This limitation means that some
+instantiations may be rejected on the grounds that the body requires the ability
+to declare unconstrained objects of the formal type. We have considered this
+consequence to be preferable to an increase in the complexity of the syntax.
+
+To conclude this section on formal types let us note that Ada provides formal
+types for all classes of type except record and task types. The major reason for
+this is that it is not clear that reasonable criteria for matching exist for
+these type classes — criteria that would be consistent with the degree of type
+checking performed elsewhere, yet at the same time have a good probability of
+being usable for many actual record types and task types.
+
+#### R.12.4 Default Generic Parameters
+
+As stated before, all operations applicable to a formal type must be specified
+explicitly in the generic formal part. Nevertheless, in order to keep generic
+instantiations as simple as possible, a facility for specifying default values
+for generic parameters is offered, as it is for normal subprograms. In many
+cases, such defaults will actually be expressed by boxes:
+
+```ada
+generic
+   type ELEM is private;
+   with function "*" (LEFT, RIGHT : ELEM) return ELEM is <>;
+```
+
+This parallels exactly the treatment of `in` parameters with default values for
+subprograms. The default parameter is optional, and an instantiation such as
+`function "**" is new POWER(RATIONAL);` is taken as equivalent to `function "**"
+is new POWER(ELEM => RATIONAL, "*" => "*");`. The instantiation is legal if
+there is such a "*" operation for the type RATIONAL, whatever may be the
+parameter names. For the same reason `function "**" is new POWER(BOOLEAN);`
+would be an error, since no such operation exists for the type BOOLEAN. Again,
+the generic body and the generic instantiations can be checked independently.
+
+To summarize, the necessity to be able to check a generic body independently of
+its generic instantiations (an important user requirement) forces all operations
+applicable to a formal type to be specified, explicitly or implicitly, by the
+generic formal part. This could increase the number of generic parameters that
+must be supplied and could hence lead to a heavy syntax of generic
+instantiations. However, defaults can be specified for these operations, thus
+restoring much of the simplicity while losing none of the security. In most
+applications it should be possible to have only types as mandatory parameters
+and to provide defaults for all operations. This is consistent with the goal
+stated in the introduction, that writing a generic unit may well require some
+care, but using it ought to be extremely simple.
+
+---
+
+### R.13 Tasking
+
+#### R.13.1 Introduction
+
+Tasking is an important aspect of many embedded systems and this importance was
+clearly recognized in the Steelman requirements. However tasking seems to have
+been neglected in most languages currently in production use for such systems.
+One reason has clearly been a lack of confidence in the many different
+facilities put forward for the control of parallelism. Semaphores, events,
+signals and other similar mechanisms are clearly at too low a level. Monitors,
+on the other hand, are not always easy to understand and, with their associated
+signals, perhaps seem to offer an unfortunate mix of high-level and low-level
+concepts. It is believed that Ada strikes a good balance by providing facilities
+that are not only easy to use directly but can also be used as tools for the
+creation of mechanisms of different kinds.
+
+The basic textual concept in Ada is that of a task, which in form is closely
+analogous to a package (see [9](#9-tasks)). Tasks are automatically executed in
+parallel with the unit in which they are declared, and their termination
+similarly follows the scope structure. Task types enable the declaration of a
+dynamic number of tasks with similar properties. This facility, when used in
+conjunction with access types, allows flexible control over the number of tasks
+in a system and the manipulation of task identities.
+
+Communication and synchronization are both achieved using the concept of a
+rendezvous between a task issuing an entry call and a task accepting the call by
+an accept statement (see [9.5](#95-entries-entry-calls-and-accept-statements)).
+An entry call is similar to a procedure call except that the calling and called
+tasks are distinct and synchronized.
+
+Great power is provided by the select statement, which enables a task to respond
+to several different possible entry calls (see [9.7](#97-select-statements)).
+Variants of the select statement provide timed-out and conditional communication
+in a natural manner. Interrupts may be handled by a representation clause
+associated with a particular entry.
+
+#### R.13.2 Early Primitives
+
+The understanding of algorithmic sequential processes is based upon that of the
+evaluation of arithmetic and Boolean expressions, whose axioms have been well
+understood for centuries. However, there is no mathematical tradition upon which
+we can draw in order to help us to understand the behavior of cooperating
+sequential processes. As a consequence it has always been difficult to decide
+whether a particular set of real-time primitives is good or not. Many sets can
+be implemented in terms of each other but their relative primitiveness is often
+hard to perceive.
+
+Broadly speaking the primitives (or perhaps the applications) can be divided
+into two categories. The first enables common data or common code to be
+protected from multiple usage. The second enables one task to send a message to
+another; this includes the degenerate case of a signal, which can be thought of
+as a message with no content.
+
+One of the oldest and best known primitive sets is the binary semaphore
+described by Dijkstra. Semaphores can therefore be used both for protection and
+for signalling. They also have the merit of being primitives that are both
+simple to describe and easy to understand. What then are their disadvantages?
+Briefly the problem is that for all but the simplest applications, the
+programming of semaphores is difficult. Programs using semaphores exhibit
+similar symptoms to unstructured programs using gotos. They are hard to write,
+understand, prove, and maintain. More specifically, typical problems are:
+
+- One can jump around a call of P and therefore accidentally access unprotected
+  data.
+
+- One can jump around a call of V and accidentally leave the semaphore busy so
+  that the system deadlocks.
+
+- One can forget to use them.
+
+- It is not possible to program an alternative action if a semaphore is found to
+  be busy when attempting P.
+
+- It is not possible to wait for one of several semaphores to be free.
+
+- Semaphores are often visible to tasks that need not access them.
+
+Closely related to the semaphore is the signal or event. Semaphores are
+associated with data protection, and events with indicating that something has
+happened. There are variations in which several events are remembered. But in
+all forms, events suffer from the same structuring problems as semaphores.
+
+Various other primitives have been proposed in order to overcome the structuring
+difficulties of semaphores and events. However, they usually tackle only one of
+the application areas distinguished above (data protection and signalling). In
+this respect they are somewhat unbalanced.
+
+The critical section has been proposed as a syntactic form equivalent to a
+bracketed pair of P and V operations. This prevents goto statements from
+bypassing one of the operations and hence overcomes some of the difficulties of
+semaphores. Critical sections do not seem to have been successful. They solve
+only the exclusion problem and need to be complemented with a signalling
+mechanism; this does not lead to the unification sought by language designers.
+
+Many forms of message switching system have been implemented in order to give
+improved solutions to the signalling problem. Perhaps the biggest disadvantage
+of message systems is the need for a sizeable message controller. Message
+systems also seem to be of an ad-hoc nature with an apparently arbitrary set of
+parameters. Moreover they do not easily solve exclusion problems because of the
+high overhead involved.
+
+A significant step forward was the monitor, first described by Brinch Hansen and
+by Hoare. This includes the facilities of the critical section, and when
+combined with events (as in Modula), gives a reasonable solution to problems
+such as the bounded buffer. The monitor solves the exclusion problem but not the
+message problem. Indeed the signals in Modula still suffer from the structuring
+problems of semaphores.
+
+#### R.13.3 The Rendezvous Concept
+
+Another line of approach to mutual exclusion and synchronization was introduced
+in early computer science by Conway with the notion of coroutine, the first
+definition of a high-level synchronization mechanism. One of the important
+concepts introduced by Conway (and maybe forgotten later) is that
+synchronization and data transmission are two inseparable activities. Two
+parallel tasks need to be synchronized to exchange information — thereafter they
+resume their respective activities; this synchronization is known as a
+rendezvous. Two papers by Hoare and Brinch Hansen proposed a rethink of parallel
+processing in terms of this concept of rendezvous and strongly influenced the
+design of Ada.
+
+The difficult problem that arises here is one of making tasks known to each
+other. Tasks have names that identify them unambiguously. Should these names be
+used by tasks to synchronize with each other, or should there exist a further
+entity that makes both candidates for synchronization known to each other by
+reference to some common channel? These two solutions are extreme forms of
+symmetric communication; either each communicating task has full knowledge of
+its colleague, or it has no information at all.
+
+We rejected the channel solution in this design in order to avoid an additional
+language concept and the dual connection mechanism that it requires. The
+solution adopted in Ada, although closer to the one proposed by Hoare, is
+asymmetric: one of the two communicating tasks knows the name of the other and
+names it explicitly; the second task knows only that it expects some external
+interaction.
+
+In order to justify the asymmetry, let us first summarize the symmetric proposal
+developed by Hoare and embedded in a language which has become known as CSP
+(Communicating Sequential Processes). In CSP, communication between tasks is
+seen as synchronized input-output: one task outputs data which the other inputs,
+and both tasks rendezvous during the transfer — that is, the first to arrive at
+its input or output statement waits for the other and they both then execute the
+I/O statements together (or apparently together) before proceeding
+independently. Each task names the other in the transfer.
+
+As can be seen the CSP program is readable, although perhaps presented in a
+terse style by traditional high-level language standards. However, there are two
+problems with CSP. One is that a (one-to-one) named correspondence is required;
+because of this symmetry, it is not possible to program a library routine to
+provide resources to arbitrary users. The other problem is that a double
+interaction is required for the consumer; this means that the two calls really
+need to be encapsulated by a single procedure in order to give a clean
+interface.
+
+In Ada, naming is one-sided. Tasks can be characterized as services or as users.
+A user certainly needs to know the name of the service it is requesting. On the
+other hand, a server need not know the names of its users. Because of this
+asymmetry it is possible to program the above library routine. As a consequence
+there can be queues of waiting tasks associated with each request. On each
+successful rendezvous just one waiting task is served.
+
+The other important concept introduced in Ada is the notion of the extended
+rendezvous. This notion is a major breakthrough to a higher level of
+abstraction. In the case of a buffer task this overcomes the need for the double
+rendezvous with the consumer: we now have `BUFFER.READ(X);` rather than the two
+statements of CSP. This also illustrates the procedural form of entry call as
+opposed to some specialized statements. This enables a similar external
+interface to be presented, even if a change of solution demands that a procedure
+be replaced by an entry or vice versa.
+
+The extended rendezvous is more disciplined since it ensures that the same task
+performs the interaction throughout. It is also instructive to consider the same
+example written in Modula using monitors. This is satisfactory, but the internal
+behavior of the monitor is not nearly as clear as in CSP and Ada. The rendezvous
+mechanism is more disciplined than a monitor, since the accept statements appear
+inside a context (for example following a guard) from which information can be
+deduced, thereby facilitating both understanding and proof.
+
+Perhaps the most important point about both CSP and Ada is that they offer
+mechanisms that are applicable to both data protection and signalling. Earlier
+attempts to develop features at a higher level than semaphores or events (such
+as message systems and monitors) seemed to solve only one problem, and by
+offering an unbalanced solution were not clearly better than the original simple
+primitives.
+
+The rationale behind the accept statement and entry call is simply to provide a
+rendezvous. In some applications it is necessary that a rendezvous be achieved,
+whereas in others it is important for the caller not to be held up. It is much
+more difficult to program a rendezvous in terms of non-rendezvous primitives
+than vice versa. Hence the rendezvous has been chosen as the natural primitive.
+
+It is noted that calls are accepted in simple order of arrival. The alternative
+of making the order depend on some parameter of the call was considered and
+rejected because of the difficulty of implementation, which could severely
+penalize the simple user. It is possible to program different strategies when
+necessary.
+
+The introduction of entries leads naturally to the unification of tasks and
+packages. A task encapsulates entries in the same way as a package encapsulates
+procedures. Moreover there is a strong analogy between on the one hand the
+specification, in which the entries are specified, and the body, containing the
+sequence that controls the critical actions, and on the other hand the
+corresponding subdivisions of a package with respect to the specification and
+bodies of procedures.
+
+However, this unification has its limits. It proved necessary to disallow
+entities other than entries in the specification. This was partly for
+methodological reasons and partly because of the cost of preventing access to
+variables of an inactive task and of implementing access on a distributed
+system.
+
+The general applicability of the rendezvous concept has been confirmed by its
+use in other examples. This concept is well adapted to distributed systems —
+communication is achieved by entry calls, exchanged data is passed via
+parameters.
+
+#### R.13.4 Packages and Tasks
+
+We conclude by emphasizing one strong distinction between packages and tasks,
+despite their lexical similarity. The overall concept is that a package is
+passive and provides the means for visibility control and structuring, whereas a
+task is active and provides the means for parallelism and synchronization.
+
+In order to emphasize that a package is the main structuring tool, a task cannot
+be generic, cannot be a library unit, and cannot appear in a use clause.
+
+A general subsystem might thus be a (possibly generic) package containing tasks.
+This general structure has the advantage of giving good control over the
+facilities provided. Thus protocols on the use of entries may be enforced by
+encapsulating their calls in a procedure.
+
+---
+
+### R.14 Exception Handling
+
+#### R.14.1 Introduction
+
+The ability to handle error situations is essential for the reliability of
+real-time systems. In many cases, they must be designed as systems which should
+never halt. This definitely requires an ability to handle situations that,
+although rare, are quite likely to happen given enough time.
+
+This subject of exception handling has received considerable attention over the
+years, and several formulations of exception handling features for programming
+languages have been proposed. The solutions proposed differ mainly in the level
+of generality at which they treat the concept of exception.
+
+One family of solutions tends to consider exception handling as a normal
+programming technique for events that are infrequent, but are not necessarily
+errors. It means that when an exception occurs it is first treated by an
+exception handler, and then control may return to the point where the exception
+occurred. It also means that exception handling may be used to perform some
+repair actions and thereafter to continue normal execution.
+
+A second family of proposals tends to restrict exceptions to events that can be
+considered (in some sense) as errors or, at least, as terminating conditions.
+This means that when an exception is raised in a given sequence of statements,
+their execution will be abandoned. Control will be passed to an exception
+handler but will never return to the point where the exception was raised. The
+handler may decide to restart the same sequence of actions under better
+conditions, but it will do so by a different invocation of these actions, not by
+a simple resumption. This second family of solutions includes recovery blocks
+and a proposal by Bron, Fokkinga, and De Haas.
+
+Naturally, what is considered as an error is rather subjective, and moreover the
+ability of a handler to reinvoke a subprogram that raised an exception will
+permit the use of exception handling both for making repairs and for the
+treatment of rare events. The problem domains that can be addressed by the two
+families of solutions are hence comparable; but they require different
+underlying mechanisms and they lead to different programming styles.
+
+The exception handling facility provided in Ada belongs to this second family
+(see [11](#11-exceptions)). It provides a facility for local termination upon
+detection of errors. It has been inspired by the Bron proposal and has some
+similarities with the Bliss signal enable construct.
+
+The discussion of exception handling classifies exceptions into three
+categories:
+
+- Escape exceptions, which require termination of the operation that raised the
+  exception
+
+- Notify exceptions, which forbid termination of the operation that raised the
+  exception and require its resumption after completion of the actions of the
+  handler
+
+- Signal exceptions, which leave the choice between termination and resumption
+  to the handler
+
+Exceptions in Ada are of the escape category. They serve only for error
+situations and as terminating conditions, which simplifies the language: notify
+and signal exceptions are not provided, since these forms of exception violate
+program modularity and make optimization difficult, if not impossible.
+
+#### R.14.2 Propagation
+
+Conceptually, we may view an exception declaration as declaring a constant of
+some type called "exception", whose values may only be mentioned in exception
+handlers and in raise statements. Like any other declaration, an exception
+declaration has a scope, which is the region of text in which the corresponding
+name can be written in order to refer to the exception. However, as this analogy
+suggests, the error situation associated with an exception will exist beyond
+this region.
+
+When an exception is raised within the sequence of statements of a frame, the
+execution of this sequence of statements is always abandoned (see
+[11.4](#114-exception-handling)). What happens next depends on the presence or
+absence of appropriate exception handlers. If the frame includes a handler for
+the exception, the execution of the sequence of statements of this handler
+completes the execution of the frame. If the frame does not have a handler for
+the exception, the subsequent actions depend on the nature of the frame: for a
+subprogram body, the same exception is raised — implicitly — at the point of
+call of the subprogram; for a block statement, the same exception is raised
+within the frame containing the block statement itself, after this statement. In
+either case, we say that the exception is propagated.
+
+With this definition of exception handling, the effect of a subprogram, which is
+normally completed by the sequence of statements of its body, may alternatively,
+when an exception occurs, be completed by a corresponding handler, if present.
+
+After the explanation of the concept of exception propagation, it should now be
+clear that there is no conceptual difference between the predefined exceptions
+and exceptions that are declared by the user. Predefined exceptions are
+exceptions that can be propagated by the basic operations of the language such
+as indexing, accessing a value, and the arithmetic operations.
+
+#### R.14.3 Exceptions Raised During the Elaboration of Declarations
+
+The elaboration of declarations may involve the evaluation of some expressions,
+and in consequence, exceptions may be raised during this elaboration. Consider
+for example the procedure
+
+```ada
+procedure A(N : INTEGER) is
+   C : constant INTEGER := N * N;
+   D : INTEGER := C;
+   T : array (1 .. C) of INTEGER;
+begin
+   -- statements of A
+exception
+   -- handlers of A
+end A;
+```
+
+If an exception occurs during the elaboration of the constant C, the procedure
+will be in a state where D is not initialized, and the space for the array T is
+not yet allocated. Consequently, a handler may not be able to do much; any
+reference to D or T will be erroneous and may cause a further exception. For
+these reasons an exception raised by the elaboration of a declaration is never
+handled locally; it is propagated to the place where the elaboration of the
+declarations was initiated (see
+[11.4.2](#1142-exceptions-raised-during-the-elaboration-of-declarations)).
+
+#### R.14.4 Propagation of an Exception Beyond its Scope
+
+Since an exception can be propagated, it can be propagated beyond its scope. It
+is even possible for an exception to be propagated outside its scope and then
+back again within its scope. An exception propagated beyond its scope can only
+be handled there by a handler for others. It can be further propagated or raised
+again by the abbreviated form of the raise statement (`raise;`).
+
+This rule provides a simple and consistent interpretation and it avoids the
+complexity and run-time costs that would be incurred if exceptions propagated
+beyond their scope were converted into a unique undefined exception. This design
+also considered, and rejected, the possibility of associating the names of the
+possibly propagated exceptions with each procedure declaration. The main reason
+for rejecting this possibility is the fact that this would require extra
+run-time code for filtering the propagation of exceptions. For example, if a
+procedure were declared as
+
+```ada
+procedure P(X : INTEGER) PROPAGATES A, B, C;      -- not in Ada
+```
+
+its body would have to be compiled as the equivalent of the following procedure:
+
+```ada
+procedure P(X : INTEGER) is
+begin
+   ...
+exception
+   when A | B | C => raise;
+   when others    => raise anonymous_exception;
+end P;
+```
+
+We considered the resulting code expansion to be prohibitive, especially in the
+case of small functions and procedures. With the solution adopted in Ada, the
+user can always put similar information in comment form. The choice others
+covers all possible anonymous exceptions, not just one.
+
+The philosophy behind the Ada model is that an exception is not an error
+situation; it is only a name that is declared for an error situation. Like any
+other declaration, an exception declaration has a scope. The error situation, on
+the other hand has no such limits, and can always be referred to as part of the
+others exception choice.
+
+#### R.14.5 Tasks and Exceptions
+
+The exception handling facility has so far been presented in terms of sequential
+programs, and the concepts presented are therefore applicable within a task
+body. For exception propagation there is a difference with tasks: in contrast to
+what is done for subprograms, if an exception is not serviced by a handler
+within a task body, the exception is not further propagated — the task execution
+is merely completed (see
+[11.5](#115-exceptions-raised-during-task-communication)).
+
+Note that if the exception were propagated to the parent task, it would mean
+that child tasks could interfere asynchronously with their parent, and it would
+also mean that these interferences could occur simultaneously, with disastrous
+results.
+
+Consider now what happens if the activation of a local task is not started as a
+consequence of the raising of an exception. It would not make much sense to
+execute the statements of the enclosing unit, once it is known that one of the
+basic preconditions for its proper operation is not satisfied. For this reason,
+the execution of statements is not started, and the predefined exception
+TASKING_ERROR is propagated.
+
+Note that the exception that is propagated does not depend on what caused the
+abandonment of task activation. What matters for the procedure is to know
+whether or not activations have succeeded. Should one or more of them have
+failed, it does not matter much whether this is by constraint violation, or by a
+numeric error: in any case some other treatment is needed. This therefore is the
+justification for the propagation of the less specific exception TASKING_ERROR.
+By the same reasoning, it does not matter much whether one, or more than one,
+task failed to be activated. Hence a single exception is raised in either case.
+
+#### R.14.6 The Case Against Asynchronous Exceptions
+
+The normal means of communicating with a task is via entry calls. Hence most
+situations in which the termination of a task must be decided by another task
+should be programmed by calling a special entry, say STOP, of the task to be
+terminated (or by using a terminate alternative). The clear advantage of such a
+solution is the possibility thus offered of including accept statements for the
+STOP entry at those places where the termination can be done in an orderly
+fashion.
+
+The ability for one task to raise an exception in another task must however be
+viewed as a possibility that has — potentially — extremely severe consequences.
+In no way should such externally raised exceptions be considered as being normal
+terminating conditions. Interfering asynchronously with the execution of a task
+may catch it in a state where it is not prepared to respond to such
+intervention. There is then always a risk of leaving the task in a state of
+confusion, and also of contaminating other tasks that were communicating with
+it.
+
+#### R.14.7 Suppression of Checks
+
+A given program unit, and in particular a procedure, may be robust, in that it
+will perform some computation, and produce some result, for any value of its
+input parameters. On the other hand, its validity may only be guaranteed for
+certain values of these parameters. The exception mechanism is a useful tool to
+achieve robustness, but this may be gained at some cost in efficiency, since
+detection of some error situations may be expensive unless aided by special
+hardware.
+
+In some cases where robustness can be attained by means other than run-time
+checks, the programmer may not wish to incur the cost of checking for certain
+error situations. The pragma SUPPRESS indicates that the check named in the
+pragma need not be performed (see [11.7](#117-suppressing-checks)). In the
+presence of such pragmas, the compiler may suppress the named checks, and will
+do so if this results in an optimization. However, in the case of exceptions
+whose detection is aided by special hardware, inhibiting the corresponding
+hardware mechanisms may be costlier than actually performing the checks. Hence
+the pragma is not imperative — it does not mean that the checks are not done.
+
+An alternative view of the SUPPRESS pragma would regard it as a directive
+indicating imperatively that no check is to be performed to detect the
+exception. This approach would amount to a decision to continue execution of the
+program in spite of any error situation. It would give an appearance of
+robustness which might be exploited in cases where the programmer knows that the
+error situation will have some effects that can be detected at a later time, but
+it is contrary to the general philosophy of the language.
+
+In addition, the need to provide a semantics that reconciles software- and
+hardware-detected exceptions would have a negative effect on the efficiency of
+programs. If the pragma were imperative, then on a machine with
+hardware-detected exceptions it would be necessary to inhibit the hardware
+checks for a scope in which a corresponding pragma SUPPRESS is given.
+Thereafter, it would be necessary to enable the hardware detection again, prior
+to each call to a unit outside that scope, and again to inhibit the detection
+following a subsequent return from the call.
+
+#### R.14.8 Implementation of Exception Handling
+
+One important design consideration for the exception handling facility is that
+exceptions should add to execution time only if they are raised.
+
+Several techniques may be used to reach that goal, and they may differ from one
+implementation to another. The essential idea is that the run-time processing
+costs should be concentrated on the treatment of the raise statement.
+Consequently, processing of a raise statement may be relatively slow. In
+contrast, the costs associated with exception declarations and exception
+handlers are only in terms of space and in terms of compilation time — they have
+no influence on the execution time.
+
+As a feasibility proof, we outline a possible implementation technique in which
+no run-time costs whatsoever are incurred for exceptions unless they are raised.
+The basic principles are as follows:
+
+- When an exception occurs, the specific run-time system that treats exceptions
+  must be able to locate the addresses of the currently active procedure calls.
+  This condition is satisfied if (as is usually the case) return addresses are
+  stored in procedure activations.
+
+- Knowing the code address of a procedure, it must be possible to locate the
+  code address of the first handler. Similarly, given a handler, it must be
+  possible to find the next handler. This condition can be satisfied by chaining
+  the handlers and by storing the address of the first handler just before the
+  code of the procedure.
+
+- Each handler must start with the indication of the exception code (or codes)
+  that it services. Some convention must be used for the handler for others,
+  which must appear last.
+
+- When effecting the association of an exception with a handler, the run-time
+  system locates the procedure address and from there the chain of handlers. It
+  may then inspect the exception codes to find the appropriate handler, if any.
+
+We reiterate that this solution should only be considered as an existence proof
+that exceptions may be implemented at no cost unless raised. Other techniques
+may be more suitable, depending on the machine architecture.
+
+#### R.14.9 Proving Programs with Exceptions
+
+The problems of exception handling facilities such as the PL/I `on` conditions,
+which permit resumption after the exception, are well-known. For instance,
+assuming integer working, consider the consecutive statements:
+
+```ada
+X := P + Q;
+Y := X - Q;
+ASSERT (Y = P);
+```
+
+Unless overflow occurs in the evaluation of P + Q, the final assertion should be
+satisfied. This however would not be true if a handler for overflow were able to
+provide a different value for X and return to the same statement list.
+
+This simple example shows the near impossibility of proving programs with
+unrestricted signal and notify exceptions. For the same reasons, such programs
+are extremely difficult to optimize (see
+[11.6](#116-exceptions-and-optimization)).
+
+In contrast, for the proposal chosen in Ada, simple proof rules may be given.
+The main idea is a consequence of the definition of the role of a handler. As
+mentioned above, when an exception occurs in a procedure, the execution of the
+handler completes the execution of the procedure considered. Consequently the
+effect of a procedure is achieved either by its body if no exception occurs, or,
+if the exception E occurs, by the part of its body up to the point where the
+exception E occurs, and then by the handler for E. This shows that, with
+adequate programming conventions, the effect of a procedure that contains an
+exception handler can be characterized in a simple way. This simplifies
+correctness proofs.
+
+---
+
+### R.15 Representation Clauses
+
+#### R.15.1 The Separation Principle
+
+The treatment of representation in Ada is done according to the separation
+principle. Data type definitions are performed in two steps:
+
+- The logical properties of the data are defined. They describe all the
+  properties that programmers need to know. All algorithms are formulated in
+  terms of these logical properties and are not based on knowledge of the
+  representation.
+
+- The representation (implementation) properties of data are either explicitly
+  specified by the programmer or, in the usual case, chosen by default by the
+  compiler.
+
+There are many advantages in this separation. The most fundamental is the
+conceptual simplicity of formulating an algorithm in terms of abstract
+properties. The ability to abstract from a particular representation leads to
+clearer and better structured programs.
+
+Furthermore, to establish the correctness of a program that uses a given
+formulation of data and a given representation, we have two disjoint proofs.
+First we show that the program is correct given the formulation of the data
+types and algorithms. Then we show that the chosen representation is a correct
+implementation of the data. The separation also ensures that users do not make
+implicit assumptions about the representation of data.
+
+If at a later stage a different representation is selected, for example to
+reduce storage space, the formulation of the algorithms need not be modified.
+Conversely, if the algorithms of a program are modified, the representation need
+not be affected.
+
+Another advantage is textual simplicity. In some cases, the representation of a
+data type is dictated by external considerations such as the form of a hardware
+interface: the description of the representation may then be correspondingly
+complex. However, by keeping the logical description textually distinct from
+that of the representation we can retain the simplicity of the logical
+description.
+
+The above separation principle is reflected in Ada by a clear textual separation
+between the declaration of the logical properties of data and the specification
+of the properties of their representation. Properties of the representation are
+specified by representation clauses (see [13.1](#131-representation-clauses)).
+These clauses are optional, and distinct from the declaration of the logical
+properties. The parts of a program that are hardware-specific are thus easy to
+identify.
+
+#### R.15.2 Types and Data Representation
+
+In a typed language, it is important to associate representation clauses with
+types rather than with individual objects. The basic reasons are simplicity and
+uniformity. To associate representation clauses with individual objects could
+mean that these clauses have to be duplicated in many separate declarations and
+it might therefore be difficult to maintain consistency, especially after
+repeated modification.
+
+Alternatively, it could mean that a name is associated with each possible
+representation; and that each object declaration mentions both a type name and a
+representation name. However such a solution would result in less readable
+programs. For these reasons, a simpler solution is used in Ada: a representation
+is associated with a type. Associating representation with type localizes this
+specification in one place. The specification is thereby associated with all
+objects of the given type (constants, variables, formal parameters, and so on).
+
+A further advantage of this approach is that, while every type has some
+representation, the user need not always be concerned with it. Explicit
+(user-defined) representation clauses are optional: in most cases we are quite
+willing to let the compiler select an efficient representation for types. This
+is what we normally expect from compilers although no particular default is
+guaranteed, so that a small change of a declaration may sometimes be reflected
+by a more significant change of representation. In certain cases, however, we
+want to regain control: not because we do not trust the compiler but because we
+know some information that is essential for the selection of a representation.
+For example we might know that a given logical type is associated with an
+external hardware interface, in which case we would write a representation
+clause to adopt the representation that is dictated by the hardware and thus
+override any default choice made by the compiler.
+
+#### R.15.3 Multiple Representations and Change of Representation
+
+When a program has to deal with objects that exist on an external medium, one is
+faced with the problem of multiple representations. For example, records may be
+stored in a packed form on a file; but a program may need faster access to the
+record components when the information is processed, and hence may require an
+unpacked form. This is a classic situation in which different representations
+for the same objects are wanted.
+
+Although the details of the alternate representations are not part of the
+logical properties, the knowledge of the existence of alternate representations
+is, itself, a logical property. Consider the problem of converting data from
+some external medium into a form ready to be output onto another external
+medium. Both data objects belong to the same enumeration type, but they have
+different representations, each of which is prescribed by the outside world. In
+trying to establish the correctness of such a procedure with a single type and
+two representations attached to individual objects, one finds that the
+information contained in the logical declarations of the two objects does not
+suffice: it can only be concluded that they are of the same type. To complete
+the correctness proof it is necessary to consider representation clauses, and
+hence to violate the separation principle mentioned earlier. We are thus led to
+the conclusion that any attempt to hide the existence of multiple
+representations at the logical level ultimately leads to a violation of the
+separation principle.
+
+It is natural and desirable to use type as a carrier for representation. The
+approach adopted in Ada is to have a unique representation of each type and to
+select the representation explicitly by representation clauses. This results in
+a significant simplification, since the user does not have to think in terms of
+multiple representations for a single type.
+
+If we need two different representations, two different types are therefore
+required, although these two types should have identical logical properties: the
+solution to this problem is to use derived types. Since B derives its
+characteristics from A, both types have the same characteristics, for example
+the same components. However, they are distinct types and it is hence possible
+to specify different representations for A and for B. Change of representation
+can be achieved by explicit conversion between objects of types A and B since
+such conversions are defined for derived types (see
+[13.6](#136-change-of-representation)). Derivation has the effect of creating a
+type with the same characteristics as another type, without rewriting its entire
+description (that would define a distinct type for which no conversions are
+possible).
+
+> [!NOTE]
+> The one type — one representation principle must be understood in terms of the
+> knowledge that the user has from the existence (as opposed to the details) of
+> a representation. It means that if a representation is explicitly specified
+> for a type, then only one representation can be specified for this type.
+> However, in cases where the representation is implicitly selected by the
+> compiler, this does not preclude the use of different internal representations
+> in different contexts — out of sight of the user.
+
+The problem of change of representation is now straightforward: it can be
+expressed as an explicit type conversion between two derived types. The type
+conversion appears syntactically as the call of a function with the name of the
+target type:
+
+```ada
+procedure CONVERT is
+   -- declaration of the logical properties:
+
+   type DAY is (MON, TUE, WED, THU, FRI, SAT, SUN);
+   type EXTERNAL_DAY is new DAY;   -- a derived type
+
+   X : DAY := DAY'FIRST;
+   Y : EXTERNAL_DAY;
+
+   -- representation clauses for the two types:
+
+   for DAY use
+      (MON => 0, TUE => 1, WED => 2,
+       THU => 3, FRI => 4, SAT => 5, SUN => 6);
+   for EXTERNAL_DAY use
+      (MON => 1, TUE => 2, WED => 3,
+       THU => 4, FRI => 5, SAT => 6, SUN => 7);
+begin
+   ...
+   Y := EXTERNAL_DAY(X);
+   ...
+end CONVERT;
+```
+
+The correctness of this procedure can now be established without violation of
+the separation principle. First, we have to show that the program is correct
+given the definition of X and Y. Secondly, it must be shown that the
+representations given for DAY and EXTERNAL_DAY are correct (see
+[13.3](#133-enumeration-representation-clauses)).
+
+Although they are limited to types that are conformable — having been declared
+to be logically equivalent — type conversions may be very costly in some cases.
+As an example consider a record type with variants: the implementation of the
+assignment cannot be achieved as simply as for a normal record assignment. It
+must be done on a field by field basis. Producing such code is well within the
+capability of present compilation techniques. Nevertheless it is complex and can
+be somewhat costly on some computers (note that there might be variants within
+variants). Expressing changes of representation as explicit conversions warns
+the user of the potentially high cost of these operations.
+
+#### R.15.4 Unchecked Conversions
+
+The conversions allowed between numeric types and between types that are derived
+from each other are safe conversions that do not violate the rules of type
+checking.
+
+Unchecked type conversions can be achieved in any language that permits code
+insertions or address clauses. Such conversions may, for example, be needed if a
+user wants to define his own allocation strategy for access types. In this case,
+conversions from integer to access values are necessary to define an ALLOCATE
+procedure and a converse FREE procedure.
+
+From the point of view of programming management (and also of maintainability)
+it is desirable to provide a standard way to achieve such unchecked conversions.
+In this way the parts of a program that use such dangerous features are made
+easier to identify. A generic library function is predefined to that effect (see
+[13.10.2](#13102-unchecked-type-conversions)):
+
+```ada
+generic
+   type SOURCE is limited private;
+   type TARGET is limited private;
+function UNCHECKED_CONVERSION(S : SOURCE) return TARGET;
+```
+
+A program unit that uses unchecked type conversions must mention this generic
+function in its with clauses. The programming environment may be able to control
+and restrict the programs that are allowed to get access to the function
+UNCHECKED_CONVERSION.
 
 ---
 ## Index
