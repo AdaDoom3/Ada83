@@ -63187,8 +63187,9 @@ void Print_Usage (FILE *out, const char *program_name) {
       "\n"
       "Compiles Ada 83 sources to a native executable using a\n"
       "runtime-loaded libLLVM.  Additional .ll modules given as inputs\n"
-      "are linked into the result.  With no -o, the executable is named\n"
-      "after the first input file.\n"
+      "are linked into the result, and .ll modules on their own link\n"
+      "without a source, so no external llvm-link or lli is needed.\n"
+      "With no -o, the executable is named after the first input file.\n"
       "\n"
       "Code generation:\n"
       "  -O0, -O1, -O2, -O3, -Os\n"
@@ -63438,6 +63439,7 @@ int main (int argc, char *argv[]) {
 
   const char *native_extra[MAX_INPUT_FILES];
   int         native_extra_count = 0;
+  bool        link_only = false;
   char        derived_output[PATH_MAX];
   if (not Ir_Output_Mode and usable) {
     int ada_index = -1;
@@ -63448,13 +63450,14 @@ int main (int argc, char *argv[]) {
       else if (ada_index < 0) ada_index = i;
       else                    ada_index = -2;
     }
-    if (ada_index < 0) {
-      Report_Driver_Error ("a native build takes one Ada source (plus "
-                           "optional .ll modules); use --ir to batch-compile "
+    link_only = ada_index == -1 and native_extra_count > 0;
+    if (ada_index == -2 or (ada_index < 0 and not link_only)) {
+      Report_Driver_Error ("a native build takes at most one Ada source "
+                           "(plus .ll modules); use --ir to batch-compile "
                            "several sources to IR");
       usable = false;
     } else {
-      inputs[0]   = inputs[ada_index];
+      inputs[0]   = link_only ? native_extra[0] : inputs[ada_index];
       input_count = 1;
       if (not output) {
         const char *simple = Take_Base_Name (inputs[0]);
@@ -63506,6 +63509,10 @@ int main (int argc, char *argv[]) {
       .code_generation_level = code_generation_level,
       .optimized_ir_path     = emit_llvm ? optimized_ir_path : NULL
     };
+    if (link_only)
+      return Native_Backend_Compile (native_extra[0], native_extra + 1,
+                                     native_extra_count - 1, output,
+                                     &backend_options);
     Compile_File (inputs[0], ir_path);
     Arena_Free_All ();
     int status = Error_Count > 0

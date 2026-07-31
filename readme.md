@@ -146,8 +146,12 @@ The compiler emits LLVM IR, so the IR can be taken directly:
 ./ada83 --ir hello.ada -o hello.ll      # textual LLVM IR
 ./ada83 --emit-llvm hello.ada -o hello  # native, keeping the optimised IR
 ./ada83 --ir a.ada b.ada c.ada          # several units, one process each
+./ada83 hello.ll world.ll -o hello      # link .ll modules, no source needed
 lli hello.ll                            # interpret the IR
 ```
+
+Because `.ll` modules link on their own, the test suite builds and runs every
+program through `ada83` itself, and needs no `llvm-link` or `lli` on PATH.
 
 ## Tests
 
