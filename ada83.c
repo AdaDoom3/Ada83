@@ -61398,9 +61398,13 @@ static void Answer_Definition (const Json *id, const Open_Document *document,
   if (found and line and column) {
     u32 at_line = (u32) line->number ? (u32) line->number - 1 : 0;
     u32 at_char = (u32) column->number ? (u32) column->number - 1 : 0;
-    /* A declaration in the file being edited is named relative to it. */
+    /* The compiler names the file it was given, which for the buffer being
+       edited is the scratch copy -- already deleted, and not what the editor
+       has open. Anything else relative is relative to the document. */
     char absolute[PATH_MAX];
-    if (found[0] != '/') {
+    if (strcmp (found, scratch) == 0) {
+      found = document->path;
+    } else if (found[0] != '/') {
       snprintf (absolute, sizeof absolute, "%s/%s", directory, found);
       found = absolute;
     }
