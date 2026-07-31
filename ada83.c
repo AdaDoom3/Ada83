@@ -61033,7 +61033,13 @@ static void Publish_Include_Paths (int argc, char *argv[]) {
       if (joined.Length) Buffer_Append (&joined, (char[]) { HOST_PATH_SEPARATOR }, 1);
       Buffer_Append_Text (&joined, argv[++i]);
     }
-  if (joined.Length) setenv ("ADA83_INCLUDE", joined.Data, 1);
+  if (joined.Length) {
+#ifdef _WIN32
+    _putenv_s ("ADA83_INCLUDE", joined.Data);
+#else
+    setenv ("ADA83_INCLUDE", joined.Data, 1);
+#endif
+  }
   Buffer_Free (&joined);
 }
 

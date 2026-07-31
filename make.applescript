@@ -15,7 +15,7 @@ on scriptDirectory()
 	try
 		set scriptFile to path to me
 		tell application "System Events" to set beside to POSIX path of (container of scriptFile)
-		if fileIsPresent(beside, "ada83.c") then return beside
+		if fileIsPresent(beside, "makefile") then return beside
 	end try
 	return do shell script "pwd"
 end scriptDirectory
@@ -67,7 +67,8 @@ end requireLLVM
 on requestedTarget(argv)
 	try
 		repeat with argument in argv
-			if (argument as text) is in {"package", "vsix"} then return argument as text
+			if (argument as text) is "package" then return "package"
+			if (argument as text) is "vsix" then return "vsix"
 		end repeat
 	end try
 	return "build"
@@ -77,8 +78,8 @@ on run argv
 	try
 		set directory to scriptDirectory()
 		set chosenTarget to requestedTarget(argv)
-		requireFile(directory, "ada83.c")
 		if chosenTarget is not "vsix" then
+			requireFile(directory, "ada83.c")
 			requireFile(directory, "ada83-runtime.ada")
 			requireCompiler()
 			requireLLVM(directory)
