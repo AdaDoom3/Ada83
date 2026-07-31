@@ -1,26 +1,5 @@
 # Ada Language Reference Manual
 
-> **ANSI/MIL-STD-1815A** — fourteen chapters, three annexes, three appendices,
-> and an index. The standard definition of the language is the fourteen
-> chapters and the three annexes; the appendices and the index are informative.
-
-| | | |
-| --- | --- | --- |
-| **[1 Introduction](#1-introduction)** | **[6 Subprograms](#6-subprograms)** | **[11 Exceptions](#11-exceptions)** |
-| **[2 Lexical Elements](#2-lexical-elements)** | **[7 Packages](#7-packages)** | **[12 Generic Units](#12-generic-units)** |
-| **[3 Declarations and Types](#3-declarations-and-types)** | **[8 Visibility Rules](#8-visibility-rules)** | **[13 Representation Clauses](#13-representation-clauses-and-implementation-dependent-features)** |
-| **[4 Names and Expressions](#4-names-and-expressions)** | **[9 Tasks](#9-tasks)** | **[14 Input-Output](#14-input-output)** |
-| **[5 Statements](#5-statements)** | **[10 Program Structure](#10-program-structure-and-compilation-issues)** | |
-
-| Annexes — normative | | Appendices — informative | |
-| --- | --- | --- | --- |
-| **[A](#a-predefined-language-attributes)** | Predefined Language Attributes | **[D](#d-glossary)** | Glossary |
-| **[B](#b-predefined-language-pragmas)** | Predefined Language Pragmas | **[E](#e-syntax-summary)** | Syntax Summary |
-| **[C](#c-predefined-language-environment)** | Predefined Language Environment | **[F](#f-implementation-dependent-characteristics)** | Implementation-Dependent Characteristics |
-
-Every section number in the text is a link, and the [index](#index) is fully
-cross-referenced.
-
 ---
 
 ## Table of Contents
