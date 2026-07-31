@@ -4,6 +4,7 @@ cd /d "%~dp0"
 
 set "EXE=ada83.exe"
 set "ZIP=bin-windows.zip"
+set "VSIX=ada83.vsix"
 set "CFLAGS=-O2 -std=gnu2x"
 set "LIBS=-lm"
 set "ZIG_VERSION=0.16.0"
@@ -21,6 +22,7 @@ if /i "%~1"=="-h"      goto usage
 if /i "%~1"=="help"    goto usage
 if /i "%~1"=="clean"   goto clean
 if /i "%~1"=="package" goto package
+if /i "%~1"=="vsix"    goto vsix
 if not "%~1"=="" (
     echo Invalid parameter - %~1
     goto usage
@@ -33,7 +35,8 @@ echo.
 echo MAKE [command]
 echo.
 echo   clean      Deletes ada83.exe, the LLVM DLLs and the downloaded Zig.
-echo   package    Makes ada83.exe, then repacks bin-windows.zip around it.
+echo   package    Makes ada83.exe and ada83.vsix, then repacks bin-windows.zip.
+echo   vsix       Makes ada83.vsix, the VS Code extension, only.
 echo   help       Displays this help.
 echo.
 echo Makes with GCC, Clang or Zig, whichever is found first.
@@ -45,8 +48,8 @@ exit /b 0
 :clean
 del /q "%EXE%" LLVM-C.dll libffi-8.dll libstdc++-6.dll libgcc_s_seh-1.dll ^
     libwinpthread-1.dll libxml2-16.dll libiconv-2.dll libzstd.dll zlib1.dll ^
-    zig.zip "%ZIP%.new" >nul 2>nul
-rmdir /s /q zig >nul 2>nul
+    zig.zip "%ZIP%.new" "%VSIX%" >nul 2>nul
+rmdir /s /q zig vsix >nul 2>nul
 echo Cleaned.
 exit /b 0
 
@@ -62,15 +65,76 @@ exit /b 0
 REM The distributable: ada83.exe, the DLLs it loads, and ada83-runtime.ada,
 REM which ada83.exe looks for beside itself. Without the runtime in the archive
 REM an unpacked compiler cannot build anything that withs the standard library.
+REM The extension is one file: the manifest, grammar, language configuration,
+REM snippets and the two packaging files ride in ada83-extension.js as line
+REM comments. Splitting them out gives the layout VS Code installs.
+:vsix
+if exist vsix rmdir /s /q vsix
+mkdir vsix\extension\syntaxes
+copy /y vscode\ada83-extension.js vsix\extension\ >nul
+del /q "%VSIX%" >nul 2>nul
+powershell -NoProfile -Command ^
+    "$ErrorActionPreference='Stop';" ^
+    "$out = $null;" ^
+    "foreach ($line in Get-Content -LiteralPath 'vscode\ada83-extension.js') {" ^
+    "  if ($line -eq '//== end') { $out = $null; continue }" ^
+    "  if ($line -like '//== *') {" ^
+    "    $name = $line.Substring(5);" ^
+    "    $root = ($name -eq 'extension.vsixmanifest') -or $name.StartsWith('[');" ^
+    "    $out = Join-Path 'vsix' ($(if ($root) { $name } else { \"extension\$name\" }));" ^
+    "    New-Item -ItemType File -Force -Path $out | Out-Null; continue }" ^
+    "  if ($line -like '//= *') { continue }" ^
+    "  if ($out -and $line.StartsWith('//')) {" ^
+    "    Add-Content -LiteralPath $out -Value $line.Substring(2) } }" ^
+    "$parts = Get-ChildItem -LiteralPath 'vsix' -Force | ForEach-Object FullName;" ^
+    "Compress-Archive -LiteralPath $parts -DestinationPath '%VSIX%' -Force"
+rmdir /s /q vsix
+if not exist "%VSIX%" (
+    echo Cannot write %VSIX%.
+    exit /b 1
+)
+echo Built %VSIX%.
+exit /b 0
+
+REM The distributable: ada83.exe, the DLLs it loads, and ada83-runtime.ada,
+REM which ada83.exe looks for beside itself. Without the runtime in the archive
+REM an unpacked compiler cannot build anything that withs the standard library.
+REM A .vsix is a zip holding the manifest and sources under extension\, with
+REM the two packaging files at the root, so no tooling beyond the shell is
+REM needed to build one.
+:vsix
+if exist vsix rmdir /s /q vsix
+mkdir vsix\extension\syntaxes
+copy /y vscode\package.json vsix\extension\ >nul
+copy /y vscode\ada83-extension.js vsix\extension\ >nul
+copy /y vscode\language-configuration.json vsix\extension\ >nul
+copy /y vscode\snippets.json vsix\extension\ >nul
+copy /y vscode\syntaxes\ada83.tmLanguage.json vsix\extension\syntaxes\ >nul
+copy /y vscode\extension.vsixmanifest vsix\ >nul
+copy /y "vscode\[Content_Types].xml" vsix\ >nul
+del /q "%VSIX%" >nul 2>nul
+powershell -NoProfile -Command ^
+    "$ErrorActionPreference='Stop';" ^
+    "$parts = Get-ChildItem -LiteralPath 'vsix' -Force | ForEach-Object FullName;" ^
+    "Compress-Archive -LiteralPath $parts -DestinationPath '%VSIX%' -Force"
+rmdir /s /q vsix
+if not exist "%VSIX%" (
+    echo Cannot write %VSIX%.
+    exit /b 1
+)
+echo Built %VSIX%.
+exit /b 0
+
 :package
 call :make || exit /b 1
+call :vsix || exit /b 1
 echo Packing %ZIP%...
 REM Build the new archive alongside the old one; the DLLs unpacked by :make are
 REM the only copy on disk, so %ZIP% is only replaced once the new one is written.
 del /q "%ZIP%.new" >nul 2>nul
 powershell -NoProfile -Command ^
     "$ErrorActionPreference='Stop';" ^
-    "$names = @('%EXE%','ada83-runtime.ada') + (Get-ChildItem *.dll | ForEach-Object Name);" ^
+    "$names = @('%EXE%','ada83-runtime.ada','%VSIX%') + (Get-ChildItem *.dll | ForEach-Object Name);" ^
     "Compress-Archive -LiteralPath $names -DestinationPath '%ZIP%.new' -Force"
 if not exist "%ZIP%.new" (
     echo Cannot write %ZIP%.

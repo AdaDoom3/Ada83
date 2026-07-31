@@ -37,6 +37,14 @@ endif
 
 RUNTIME = ada83-runtime.ada
 
+# The extension is one file: the manifest, the grammar, the language
+# configuration, the snippets and the two packaging files ride in
+# ada83-extension.js as line comments, which is the only container a payload
+# holding both */ and $\{ cannot break out of.  Splitting them back out gives
+# the layout VS Code installs.
+VSIX   = ada83.vsix
+BUNDLE = vscode/ada83-extension.js
+
 all: ada83 provision-llvm
 
 ada83: ada83.c
@@ -109,16 +117,47 @@ else
 	  $(PACKAGE_TUNE)
 endif
 	cp $(RUNTIME) staging/
+	$(MAKE) --no-print-directory staging/$(VSIX)
 	rm -f $@
-	cd staging && zip -q ../$@ ada83 $(RUNTIME)
+	cd staging && zip -q ../$@ ada83 $(RUNTIME) $(VSIX)
 	rm -rf staging
 	@echo "Packaged $@:"; unzip -l $@ | tail -n +4
 
+# The extension, in the shape VS Code installs: `code --install-extension
+# ada83.vsix`, or unzip its extension/ directory into ~/.vscode/extensions.
+vsix: $(VSIX)
+
+$(VSIX): $(BUNDLE)
+	@command -v zip >/dev/null || { echo "zip is needed to package"; exit 1; }
+	rm -rf staging && mkdir -p staging
+	$(MAKE) --no-print-directory staging/$@
+	mv staging/$@ $@
+	rm -rf staging
+	@echo "Packaged $@:"; unzip -l $@ | tail -n +4
+
+# awk splits the bundle: //== names the next file, //= is commentary, and
+# every other line comment is that file's content with the // taken off.
+staging/$(VSIX): $(BUNDLE)
+	rm -rf staging/vsix
+	mkdir -p staging/vsix/extension/syntaxes
+	cp $(BUNDLE) staging/vsix/extension/
+	awk 'BEGIN { out = "" } \
+	     /^\/\/== end$$/       { out = ""; next } \
+	     /^\/\/== /            { name = substr ($$0, 6); \
+	                              out = (name ~ /^(extension.vsixmanifest|\[)/) \
+	                                    ? "staging/vsix/" name \
+	                                    : "staging/vsix/extension/" name; \
+	                              printf "" > out; next } \
+	     /^\/\/= /             { next } \
+	     out != "" && /^\/\// { print substr ($$0, 3) >> out }' $(BUNDLE)
+	cd staging/vsix && zip -qr ../$(VSIX) .
+	rm -rf staging/vsix
+
 clean:
-	rm -f ada83 *.o *.ll *.s *.exe a.out core
+	rm -f ada83 ada83.vsix *.o *.ll *.s *.exe a.out core
 	rm -rf staging test_results acats_logs acats/report.ll
 
 clean-test:
 	rm -rf test_results acats_logs acats/report.ll
 
-.PHONY: all package provision-llvm clean clean-test
+.PHONY: all package vsix provision-llvm clean clean-test
