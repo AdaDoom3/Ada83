@@ -1,6 +1,4 @@
--- Builds the Ada 83 compiler on macOS.
--- Run with: osascript build.applescript
--- or open it in Script Editor and press Run.
+-- Run with: osascript build.applescript or open it in Script Editor and press Run.
 
 on shell(command)
 	return do shell script command
