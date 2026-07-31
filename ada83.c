@@ -472,7 +472,10 @@ void Report_Driver_Warning (const char *format, ...)
   X (WARNING_UNUSED_WITH,             "unused-with") \
   X (WARNING_UNREACHABLE_CODE,        "unreachable-code") \
   X (WARNING_UNACCEPTED_ENTRY,        "unaccepted-entry") \
-  X (WARNING_DEAD_STORE,              "dead-store")
+  X (WARNING_DEAD_STORE,              "dead-store") \
+  X (WARNING_CONSTRAINT_ERROR,        "constraint-error") \
+  X (WARNING_READ_BEFORE_ASSIGNMENT,  "read-before-assignment") \
+  X (WARNING_REDUNDANT_WITH,          "redundant-with")
 
 typedef enum {
 #define X(kind, name) kind,
@@ -3001,6 +3004,7 @@ struct Symbol {
   u32  read_count;
   bool is_ever_assigned;
   bool is_ever_accepted;
+  bool escapes_assignment_analysis;
 
   bool    extern_emitted;
   bool    extern_pending;
@@ -3464,6 +3468,13 @@ void        Reject_Illegal_Conversion       (Node *apply, Type *target, Type *op
 bool        Reject_Name_With_Cause          (Location location, Slice name);
 bool        Reject_Selection_With_Cause     (Node *node, Type *viewed);
 void        Reject_Unresolvable_Application (Node *node, Node *prefix, Symbol *prefix_symbol);
+Symbol     *With_Clause_Unit                           (Node *unit_name);
+void        Note_Repeated_With_Clauses                 (Node *context_clause);
+bool        Range_Check_Is_Suppressed_Here             (Type *target_subtype);
+void        Note_Certain_Constraint_Error              (Node *value_expression,
+                                                        Type *target_subtype,
+                                                        const char *construct_noun);
+void        Mark_Name_As_Escaping_Assignment_Analysis  (Node *name);
 bool        Tree_Escapes_Usage_Analysis                (Node *node);
 bool        Is_An_Unused_Candidate                     (Symbol *sym);
 void        Note_Unused_Candidates_In_Scope            (Scope *scope, Node *body);
@@ -15573,6 +15584,130 @@ void Reject_Unresolvable_Application (Node *node, Node *prefix,
 }
 
 
+bool Range_Check_Is_Suppressed_Here (Type *target_subtype) {
+  u32 bit = Check_Kind_Bit (CHECK_KIND_RANGE);
+  if (Unit_Suppressed_Checks & bit) return true;
+  if (target_subtype->suppressed_checks & bit) return true;
+  if (target_subtype->base_type and
+      (target_subtype->base_type->suppressed_checks & bit)) return true;
+  for (Scope *region = sm->current_scope; region; region = region->parent)
+    if (region->owner and (region->owner->suppressed_checks & bit))
+      return true;
+  return false;
+}
+
+void Note_Certain_Constraint_Error (Node *value_expression,
+                                    Type *target_subtype,
+                                    const char *construct_noun) {
+  if (Diagnostics_Suppressed or Instantiating_Template_Count > 0) return;
+  if (Loading_Packages.count > 0) return;
+  if (not value_expression or not target_subtype) return;
+  if (target_subtype->low_bound.kind  != BOUND_INTEGER or
+      target_subtype->high_bound.kind != BOUND_INTEGER) return;
+  if (not Expression_Is_Static (value_expression)) return;
+  i128 value;
+  if (not Read_Static_Whole (value_expression, &value)) return;
+  Type_Bound point = (Type_Bound){ .kind = BOUND_INTEGER, .int_value = value };
+  Type *base = Get_Base (target_subtype);
+  if (not base or base->low_bound.kind != BOUND_INTEGER or
+      base->high_bound.kind != BOUND_INTEGER) return;
+  if (not Static_Interval_Contains (&base->low_bound, &base->high_bound,
+                                    &point, &point)) return;
+  if (not Static_Interval_Excludes (&target_subtype->low_bound,
+                                    &target_subtype->high_bound,
+                                    &point, &point)) return;
+  if (Range_Check_Is_Suppressed_Here (target_subtype)) return;
+  Note_Pending_Warning (WARNING_CONSTRAINT_ERROR, value_expression->location,
+    "this %s always raises CONSTRAINT_ERROR: %s is outside the subtype's "
+    "range %s .. %s",
+    construct_noun, I128_Decimal (value),
+    I128_Decimal (target_subtype->low_bound.int_value),
+    I128_Decimal (target_subtype->high_bound.int_value));
+}
+
+void Mark_Name_As_Escaping_Assignment_Analysis (Node *name) {
+  for (int depth = 0; name and depth < 64; depth++) {
+    Symbol *reached = name->symbol;
+    if (reached and Symbol_In_Any_Class (reached, SYMBOL_CLASS_OBJECT))
+      reached->escapes_assignment_analysis = true;
+    switch (name->kind) {
+      case NK_SELECTED:
+        name = name->selected.prefix;
+        continue;
+      case NK_APPLY:
+        if (name->apply.resolution == APPLY_TYPE_CONVERSION) {
+          name = name->apply.arguments.count == 1
+                   ? Unwrap_Association (name->apply.arguments.items[0])
+                   : NULL;
+          continue;
+        }
+        name = name->apply.prefix;
+        continue;
+      default:
+        return;
+    }
+  }
+}
+
+Symbol *With_Clause_Unit (Node *unit_name) {
+  if (not unit_name or unit_name->kind != NK_IDENTIFIER) return NULL;
+  Symbol *unit = unit_name->symbol;
+  while (unit and unit->aliased) unit = unit->aliased;
+  return unit;
+}
+
+void Note_Repeated_With_Clauses (Node *context_clause) {
+  if (Diagnostics_Suppressed or Loading_Packages.count > 0) return;
+  Node_List *clauses = &context_clause->context.with_clauses;
+  u32 written = context_clause->context.with_clauses_written_here;
+  if (written > clauses->count) written = clauses->count;
+  for (u32 i = 0; i < written; i++) {
+    Node *clause = clauses->items[i];
+    if (not clause) continue;
+    for (u32 j = 0; j < clause->use_clause.names.count; j++) {
+      Node   *name = clause->use_clause.names.items[j];
+      Symbol *unit = With_Clause_Unit (name);
+      if (not unit) continue;
+      Node *earlier = NULL;
+      for (u32 k = 0; k <= i and not earlier; k++) {
+        Node *scanned = clauses->items[k];
+        if (not scanned) continue;
+        u32 name_limit = k == i ? j : scanned->use_clause.names.count;
+        for (u32 n = 0; n < name_limit and not earlier; n++)
+          if (With_Clause_Unit (scanned->use_clause.names.items[n]) == unit)
+            earlier = scanned->use_clause.names.items[n];
+      }
+      if (earlier) {
+        Note_Pending_Warning (WARNING_REDUNDANT_WITH, name->location,
+          "'%.*s' is already named in the with clause on line %u",
+          (int) unit->name.length, unit->name.data, earlier->location.line);
+        continue;
+      }
+      for (u32 k = written; k < clauses->count and not earlier; k++) {
+        Node *scanned = clauses->items[k];
+        if (not scanned) continue;
+        for (u32 n = 0;
+             n < scanned->use_clause.names.count and not earlier; n++)
+          if (With_Clause_Unit (scanned->use_clause.names.items[n]) == unit)
+            earlier = scanned->use_clause.names.items[n];
+      }
+      if (not earlier) continue;
+      if (name->location.filename and earlier->location.filename and
+          strcmp (name->location.filename, earlier->location.filename) == 0)
+        Note_Pending_Warning (WARNING_REDUNDANT_WITH, name->location,
+          "'%.*s' is already available here: the with clause on line %u of "
+          "the specification also applies to this body",
+          (int) unit->name.length, unit->name.data, earlier->location.line);
+      else
+        Note_Pending_Warning (WARNING_REDUNDANT_WITH, name->location,
+          "'%.*s' is already available here: the with clause of the "
+          "specification also applies to this body",
+          (int) unit->name.length, unit->name.data);
+    }
+  }
+}
+
+
 void Report_Selector_Not_Found (Location location,
                                        const char *lead,
                                        Slice selector,
@@ -16048,6 +16183,10 @@ void Bind_Actuals_To_Formals (Node *apply, Symbol *name_view,
       continue;
     }
     Resolve_Operand (actual, formal_type);
+    if (profile_view->parameters[formal].mode == MODE_IN)
+      Note_Certain_Constraint_Error (actual, formal_type, "actual parameter");
+    else
+      Mark_Name_As_Escaping_Assignment_Analysis (actual);
 
     if (actual->symbol and actual->symbol->kind == SYMBOL_PROCEDURE and
         Node_In_Any_Class (actual, NODE_CLASS_SIMPLE_OR_EXPANDED_NAME))
@@ -16255,6 +16394,7 @@ Type *Resolve_Apply_On_Type_Mark (Node *apply,
     }
     apply->type = type_mark->type;
     apply->apply.resolution = APPLY_TYPE_CONVERSION;
+    Note_Certain_Constraint_Error (operand, type_mark->type, "conversion");
     return apply->type;
   }
   return NULL;
@@ -19417,6 +19557,9 @@ Type *Resolve_Attribute (Node *node) {
   if (sanctions_base) Base_Prefix_Sanctioning_Depth++;
   Resolve_Expression (node->attribute.prefix);
   if (sanctions_base) Base_Prefix_Sanctioning_Depth--;
+  if (node->attribute.kind == ATTRIBUTE_ADDRESS or
+      node->attribute.kind == ATTRIBUTE_SIZE)
+    Mark_Name_As_Escaping_Assignment_Analysis (node->attribute.prefix);
 
   if (node->attribute.kind == ATTRIBUTE_BASE and not Base_Prefix_Sanctioning_Depth)
     Reject (node,
@@ -19916,6 +20059,9 @@ Type *Resolve_Expression (Node *node) {
                                  node->qualified.subtype_mark->type);
       Check_Qualified_Operand_Type (node->qualified.subtype_mark,
                                     node->qualified.expression);
+      Note_Certain_Constraint_Error (node->qualified.expression,
+                                     node->qualified.subtype_mark->type,
+                                     "qualified expression");
       node->type = node->qualified.subtype_mark->type;
       return node->type;
     case NK_AGGREGATE:   {
@@ -21444,6 +21590,20 @@ void Report_Usage_Warnings (const char *main_source_path) {
   if (Error_Count == 0 and not Warnings_Silenced) {
     for (u32 i = 0; i < Unused_Object_Candidate_Count; i++) {
       Symbol *sym = Unused_Object_Candidates[i];
+      if (sym->kind == SYMBOL_VARIABLE and sym->read_count > 0 and
+          not sym->is_ever_assigned and
+          not sym->escapes_assignment_analysis and
+          not sym->is_package_level and
+          not sym->address_clause and
+          Has_Scalar_Representation (sym->type) and
+          sym->declaration and sym->declaration->kind == NK_OBJECT_DECL and
+          not sym->declaration->object_decl.init) {
+        Note_Pending_Warning (WARNING_READ_BEFORE_ASSIGNMENT, sym->location,
+          "variable '%.*s' is read but never assigned a value; what it "
+          "holds is whatever the stack held",
+          (int) sym->name.length, sym->name.data);
+        continue;
+      }
       if (sym->read_count > 0) continue;
       if (sym->kind == SYMBOL_PARAMETER) {
         if (sym->is_ever_assigned) continue;
@@ -21639,6 +21799,7 @@ void Resolve_Assignment_Statement (Node *node) {
     }
   }
 
+  Note_Certain_Constraint_Error (value, target->type, "assignment");
   if (Error_Count == errors_before_value) {
     Interpretation_Multiset value_interpretations =
       Interpret_Expression (value);
@@ -25207,6 +25368,7 @@ void Resolve_Declaration (Node *node) {
         sym->declared_in_statements = sm->statement_depth > 0;
 
         if (node->object_decl.is_rename and node->object_decl.init) {
+          Mark_Name_As_Escaping_Assignment_Analysis (node->object_decl.init);
           Type *slice_subtype = Derive_Slice_Subtype (node->object_decl.init);
           sym->type            = slice_subtype ? slice_subtype
                                                : node->object_decl.init->type;
@@ -25978,6 +26140,7 @@ void Resolve_Compilation_Unit (Node *node) {
         }
       }
     }
+    Note_Repeated_With_Clauses (ctx);
 
     {
       bool saved_context_names = Resolving_Context_Clause_Names;
@@ -57302,6 +57465,7 @@ void Bind_Instance_Formal_Object (Symbol *instance_sym,
                                 formal_name->string_val.text, formal->location);
   binding->type = object_type;
   if (in_out) Bind_In_Out_Object_View (binding, object_type, actual_expr);
+  if (in_out) Mark_Name_As_Escaping_Assignment_Analysis (actual_expr);
   binding->parent                     = instance_sym;
   binding->is_package_level           = true;
   binding->instance_actual            = actual_expr;
@@ -59918,7 +60082,8 @@ bool Warning_Flags_From_Command_Line (const char *argument) {
   Report_Driver_Error ("unrecognized warning class in '%s'; the classes are "
                        "unused-variable, unused-but-set-variable, "
                        "unused-parameter, unused-with, unreachable-code, "
-                       "unaccepted-entry, dead-store",
+                       "unaccepted-entry, dead-store, constraint-error, "
+                       "read-before-assignment, redundant-with",
                        argument);
   return false;
 }
