@@ -376,10 +376,6 @@ const activate = (Context) => {
       { scheme: 'file', language: 'ada83' }, Definition_Provider),
     vscode.languages.registerHoverProvider (
       { scheme: 'file', language: 'ada83' }, Hover_Provider),
-    vscode.languages.registerCompletionItemProvider (
-      { scheme: 'file', language: 'ada83' }, Completion_Provider, '.'),
-    vscode.languages.registerDocumentSymbolProvider (
-      { scheme: 'file', language: 'ada83' }, Document_Symbol_Provider),
     vscode.languages.registerDocumentHighlightProvider (
       { scheme: 'file', language: 'ada83' }, Highlight_Provider),
     vscode.languages.registerReferenceProvider (
