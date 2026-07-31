@@ -1,7 +1,6 @@
 # Ada83
 
-An Ada 83 (ANSI/MIL-STD-1815A) compiler in a single C file, with an LLVM
-backend.
+A single-file Ada 83 LLVM compiler 
 
 ![The Ada 83 extension for VS Code](readme-screenshot.gif)
 
@@ -131,27 +130,8 @@ extension that speaks it has no dependencies. It is in each archive above;
 the grammar, the snippets and the JavaScript as one file each editor can
 still colour.
 
-**Reformat To The Manual's Style** hands the file and the manual's Style
-Guidelines to whatever language model the editor has, and keeps the answer
-only if it still compiles. With no model available it says so rather than
-changing anything. Reindentation as you type is worked out in the extension
-instead, so it is immediate and asks nothing of a model.
-
-**Suggest A Fix** appears on any error the compiler reports. It sends the
-file, the errors and the same style rules, asks for the shortest form that
-still says what the program means, with every name spelled out and comments
-only where the code cannot explain itself, and refuses the answer unless it
-compiles. The result is shown as a diff against your file and applied only
-if you say so.
-
 Error messages can be read in another language. `ada83.language` picks one,
-and anything but English hands the message to the editor's model. The pieces
-of your own source are taken out of the message first and put back after, so
-a name the compiler quotes is never translated, never spelled differently and
-never seen by the model at all. English is the default and asks nothing of
-anything; each distinct message is translated once and remembered; and the
-English arrives immediately either way, with the translation replacing it when
-it lands.
+and anything but English hands the message to the editor's model.
 
 | `ada83.language` | |
 | ---------------- | --- |
