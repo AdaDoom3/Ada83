@@ -23008,8 +23008,7 @@ than only at its declaration.
 
 **Predefined names keep their canonical spelling.** *(measured)* `Positive`
 283 of 283, `Natural` 60 of 60, `Duration` 15 of 16, `Integer` 11 of 11,
-`ASCII` 9 of 9, `Boolean` 7 of 7, `Character` 5 of 5. Every miscased spelling
-found anywhere in the corpus — `float`, `string` — is inside pasted C.
+`ASCII` 9 of 9, `Boolean` 7 of 7, `Character` 5 of 5.
 
 **Attribute designators are `Mixed_Case`.** *(measured)* `'First`, `'Last`,
 `'Range`, `'Access`, `'Unchecked_Access`; no lower-case attribute appears.
@@ -23159,17 +23158,6 @@ ones the syntax requires: `end if;` (213), `end loop;` (141), `end record;`
 
 ### Compilation Unit Layout
 
-A file opens with the copyright banner, which is exactly 131 columns wide and
-fixes the line length for everything below it. *(measured)*
-
-```ada
---                                                                                                                               --
---                                                      N E O  E N G I N E                                                       --
---                                                                                                                               --
---                                               Copyright (C) 2020 Justin Squirek                                               --
---                                                                                                                               --
-```
-
 **Pair each `with` with its `use` on one line, and align the `use` clauses.**
 *(measured)* 91 context clauses are written `with X; use X;` on a single line
 against 35 bare `with X;`, and only one `use` stands alone. Every one of the
@@ -23191,26 +23179,7 @@ written with `generic` in the unit's own column and the formals one level in.
 is stated by the project rather than inferred from a count: everything except
 subprogram, package, protected type and task bodies belongs in the `.ads`
 file, including global variables and private subprogram declarations, so that
-a single file gives the whole overview. The corpus does not follow it without
-exception — a protected object is declared in the body of `Neo.Core.Console`,
-for one — so treat it as the intent rather than an invariant.
-
-**Write source as LF-terminated text with no trailing blanks.** *(GNAT
-convention)* The corpus does not settle this — its files are stored with CRLF
-endings — so the rule is carried over from GNAT's whitespace checks.
-
-### Departures from GNAT Convention
-
-The style differs from GNAT's own conventions in five places, and every one of
-these was measured rather than assumed:
-
-|   | This style | GNAT convention |
-| --- | --- | --- |
-| Indent step | 2 spaces | 3 spaces (`-gnaty3`) |
-| `begin` | one level in from the subprogram header | same column as the header |
-| `end` of a construct | one level in from the header | same column as the header |
-| `end` of a unit | bare `end;` | repeats the unit name |
-| Line length | 131 columns | 79 columns (`-gnatyM`) |
+a single file gives the whole overview.
 
 Everything else in the style — lower-case reserved words, `Mixed_Case`
 identifiers, canonical spelling of predefined names, a space before a
