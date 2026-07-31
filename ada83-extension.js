@@ -757,6 +757,10 @@ const Watched_Folders = (Diagnostics, Output, Status) =>
 
 const Compiler_Path = () => Substituted (Configured ('compilerPath', 'ada83'));
 
+const Include_Arguments = () =>
+  Configured ('includePaths', []).flatMap ((Path) =>
+    ['-I', Substituted (Path)]);
+
 const Presentation = {
   starting: ['$(loading~spin)', 'starting'],
   ready: ['$(check)', 'ready'],
@@ -779,7 +783,8 @@ const Start = (Diagnostics, Output, Status, Attempt) => {
   if (!Configured ('enable', true)) return Show_State (Status, 'stopped');
 
   const Command = Compiler_Path ();
-  const Server = spawn (Command, ['--lsp'], { stdio: 'pipe' });
+  const Server = spawn (Command, ['--lsp', ...Include_Arguments ()],
+                       { stdio: 'pipe' });
   const Ours = { Server, Diagnostics, Output, Status, Buffered: '',
                  Ready: false, Capabilities: {}, Registered: [] };
   Session = Ours;
@@ -1047,6 +1052,14 @@ module.exports = { activate, deactivate };
 //          "type": "number",
 //          "default": 120000,
 //          "description": "How long, in milliseconds, to wait for a workspace-wide symbol search, which compiles every Ada source in the workspace root."
+//        },
+//        "ada83.includePaths": {
+//          "type": "array",
+//          "items": {
+//            "type": "string"
+//          },
+//          "default": [],
+//          "description": "Directories searched for with-ed units, beyond the file's own and the workspace root. ${workspaceFolder} is substituted."
 //        },
 //        "ada83.syncDelay": {
 //          "type": "number",

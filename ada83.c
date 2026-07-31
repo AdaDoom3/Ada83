@@ -60997,6 +60997,46 @@ static u32 Column_Of_The_Misspelling (const char *text, u32 line, u32 column,
   return after ? after : before ? before : column;
 }
 
+#ifdef _WIN32
+  #define HOST_PATH_SEPARATOR ';'
+#else
+  #define HOST_PATH_SEPARATOR ':'
+#endif
+
+/* Where a with-ed unit is looked for while the server answers: the
+   document's own directory, the working directory, and whatever the editor
+   named when it started the server, which reaches the children through the
+   environment because each of them is a separate process. */
+static void Add_Analysis_Include_Paths (const char *directory) {
+  if (directory and directory[0]) Add_Include_Path (directory);
+  Add_Include_Path (".");
+
+  const char *named = getenv ("ADA83_INCLUDE");
+  for (const char *start = named ? named : ""; *start;) {
+    const char *stop   = strchr (start, HOST_PATH_SEPARATOR);
+    size_t      length = stop ? (size_t) (stop - start) : strlen (start);
+    if (length and length < PATH_MAX) {
+      char one[PATH_MAX];
+      memcpy (one, start, length);
+      one[length] = '\0';
+      Add_Include_Path (one);
+    }
+    start = stop ? stop + 1 : start + length;
+  }
+}
+
+/* -I paths given after --lsp are the editor's, and every child needs them. */
+static void Publish_Include_Paths (int argc, char *argv[]) {
+  Text_Buffer joined = {0};
+  for (int i = 2; i + 1 < argc; i++)
+    if (strcmp (argv[i], "-I") == 0) {
+      if (joined.Length) Buffer_Append (&joined, (char[]) { HOST_PATH_SEPARATOR }, 1);
+      Buffer_Append_Text (&joined, argv[++i]);
+    }
+  if (joined.Length) setenv ("ADA83_INCLUDE", joined.Data, 1);
+  Buffer_Free (&joined);
+}
+
 static void Send_Message (const Text_Buffer *body) {
   printf ("Content-Length: %zu\r\n\r\n", body->Length);
   fwrite (body->Data, 1, body->Length, stdout);
@@ -61038,8 +61078,7 @@ int Analyse_And_Print (const char *path, const char *directory,
   Host_Executable_Path (executable, sizeof executable, invoked_as);
   if (Is_Directory (executable, beside, sizeof beside))
     Runtime_Library_Locate (beside);
-  if (directory and directory[0]) Add_Include_Path (directory);
-  Add_Include_Path (".");
+  Add_Analysis_Include_Paths (directory);
 
   Capturing_Diagnostics = true;
   Analysis_Only         = true;
@@ -61358,8 +61397,7 @@ int Define_And_Print (const char *path, const char *directory,
   Host_Executable_Path (executable, sizeof executable, invoked_as);
   if (Is_Directory (executable, beside, sizeof beside))
     Runtime_Library_Locate (beside);
-  if (directory and directory[0]) Add_Include_Path (directory);
-  Add_Include_Path (".");
+  Add_Analysis_Include_Paths (directory);
 
   Capturing_Diagnostics = true;
   Analysis_Only         = true;
@@ -61533,8 +61571,7 @@ int Describe_And_Print (const char *path, const char *directory,
   Host_Executable_Path (executable, sizeof executable, invoked_as);
   if (Is_Directory (executable, beside, sizeof beside))
     Runtime_Library_Locate (beside);
-  if (directory and directory[0]) Add_Include_Path (directory);
-  Add_Include_Path (".");
+  Add_Analysis_Include_Paths (directory);
 
   Capturing_Diagnostics = true;
   Analysis_Only         = true;
@@ -61662,8 +61699,7 @@ int Symbols_And_Print (const char *path, const char *directory,
   Host_Executable_Path (executable, sizeof executable, invoked_as);
   if (Is_Directory (executable, beside, sizeof beside))
     Runtime_Library_Locate (beside);
-  if (directory and directory[0]) Add_Include_Path (directory);
-  Add_Include_Path (".");
+  Add_Analysis_Include_Paths (directory);
 
   Capturing_Diagnostics = true;
   Analysis_Only         = true;
@@ -61831,8 +61867,7 @@ int Complete_And_Print (const char *path, const char *directory,
   Host_Executable_Path (executable, sizeof executable, invoked_as);
   if (Is_Directory (executable, beside, sizeof beside))
     Runtime_Library_Locate (beside);
-  if (directory and directory[0]) Add_Include_Path (directory);
-  Add_Include_Path (".");
+  Add_Analysis_Include_Paths (directory);
 
   Capturing_Diagnostics = true;
   Analysis_Only         = true;
@@ -61879,8 +61914,7 @@ int Signature_And_Print (const char *path, const char *directory,
   Host_Executable_Path (executable, sizeof executable, invoked_as);
   if (Is_Directory (executable, beside, sizeof beside))
     Runtime_Library_Locate (beside);
-  if (directory and directory[0]) Add_Include_Path (directory);
-  Add_Include_Path (".");
+  Add_Analysis_Include_Paths (directory);
 
   Capturing_Diagnostics = true;
   Analysis_Only         = true;
@@ -62902,9 +62936,10 @@ static void Answer_Folding_Ranges (const Json *id,
   Buffer_Free (&out);
 }
 
-int Run_Language_Server (const char *invoked_as) {
+int Run_Language_Server (const char *invoked_as, int argc, char *argv[]) {
 
   setvbuf (stdout, NULL, _IOFBF, 0);
+  Publish_Include_Paths (argc, argv);
 
   Host_Executable_Path (Server_Executable, sizeof Server_Executable,
                         invoked_as);
@@ -63197,7 +63232,8 @@ int main (int argc, char *argv[]) {
     }
   }
 
-  if (strcmp (argv[1], "--lsp") == 0) return Run_Language_Server (argv[0]);
+  if (strcmp (argv[1], "--lsp") == 0)
+    return Run_Language_Server (argv[0], argc, argv);
 
   /* The analysis half of --lsp, run as a child process of it.  Not meant to
      be used by hand; the output is JSON for the server, not for a reader. */
