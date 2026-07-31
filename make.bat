@@ -4,7 +4,7 @@ cd /d "%~dp0"
 
 set "EXE=ada83.exe"
 set "CFLAGS=-O2 -std=gnu2x"
-set "LIBS=-lm -lpthread"
+set "LIBS=-lm"
 set "ZIG_VERSION=0.16.0"
 set "ZIG_NAME=zig-x86_64-windows-%ZIG_VERSION%"
 set "ZIG_URL=https://ziglang.org/download/%ZIG_VERSION%/%ZIG_NAME%.zip"
