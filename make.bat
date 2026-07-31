@@ -8,6 +8,7 @@ set "RUNTIME=ada83-runtime.ada"
 set "BUNDLE=ada83-extension.js"
 set "MANUAL=manual.md"
 set "VSIX=ada83.vsix"
+set "ICON=ada83-icon.ico"
 set "CFLAGS=-O2 -std=gnu2x"
 set "LIBS=-lm"
 set "ZIG_VERSION=0.16.0"
@@ -52,7 +53,7 @@ exit /b 0
 :clean
 del /q "%EXE%" LLVM-C.dll libffi-8.dll libstdc++-6.dll libgcc_s_seh-1.dll ^
     libwinpthread-1.dll libxml2-16.dll libiconv-2.dll libzstd.dll zlib1.dll ^
-    zig.zip "%ZIP%.new" "%VSIX%" >nul 2>nul
+    zig.zip "%ZIP%.new" "%VSIX%" icon.rc icon.res icon.res.o >nul 2>nul
 rmdir /s /q zig staging >nul 2>nul
 echo Cleaned.
 exit /b 0
@@ -72,9 +73,11 @@ exit /b 0
 :package
 call :make || exit /b 1
 call :vsix || exit /b 1
+set "ARTWORK="
+if exist "%ICON%" set "ARTWORK=,'%ICON%'"
 powershell -NoProfile -Command ^
     "$ErrorActionPreference='Stop';" ^
-    "Compress-Archive -Path '%EXE%','%RUNTIME%','%VSIX%','*.dll' -DestinationPath '%ZIP%.new' -Force"
+    "Compress-Archive -Path '%EXE%','%RUNTIME%','%VSIX%','*.dll'%ARTWORK% -DestinationPath '%ZIP%.new' -Force"
 if not exist "%ZIP%.new" (
     echo Cannot write %ZIP%.
     exit /b 1
@@ -155,12 +158,25 @@ echo Cannot unpack %ZIP%. Extract the DLLs here by hand and try again.
 exit /b 1
 
 :compile
-call :attempt "GCC"   "gcc"   "gcc %CFLAGS% ada83.c -o %EXE% %LIBS%" && exit /b 0
-call :attempt "Clang" "clang" "clang %CFLAGS% --target=x86_64-w64-windows-gnu ada83.c -o %EXE% %LIBS%" && exit /b 0
+call :resource "windres icon.rc -O coff -o icon.res.o" icon.res.o
+call :attempt "GCC"   "gcc"   "gcc %CFLAGS% ada83.c %RESOURCE% -o %EXE% %LIBS%" && exit /b 0
+call :attempt "Clang" "clang" "clang %CFLAGS% --target=x86_64-w64-windows-gnu ada83.c %RESOURCE% -o %EXE% %LIBS%" && exit /b 0
 call :find_zig || exit /b 1
-call :attempt "Zig" "%ZIG%" "%ZIG% cc %CFLAGS% -target x86_64-windows-gnu ada83.c -o %EXE% %LIBS%" && exit /b 0
+if not defined RESOURCE call :resource "%ZIG% rc icon.rc icon.res" icon.res
+call :attempt "Zig" "%ZIG%" "%ZIG% cc %CFLAGS% -target x86_64-windows-gnu ada83.c %RESOURCE% -o %EXE% %LIBS%" && exit /b 0
 echo No compiler was able to make ada83.c.
 exit /b 1
+
+:resource
+set "RESOURCE="
+if not exist "%ICON%" exit /b 0
+>icon.rc echo 1 ICON "%ICON%"
+%~1 >nul 2>nul
+del /q icon.rc >nul 2>nul
+if exist "%~2" ( set "RESOURCE=%~2" ) else (
+    echo Building without the icon; %ICON% could not be compiled in.
+)
+exit /b 0
 
 :attempt
 call :present "%~2" || exit /b 1
