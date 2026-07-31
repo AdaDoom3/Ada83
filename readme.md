@@ -1,6 +1,6 @@
-# Ada83 0.9
+# Ada83 
 
-A single-file Ada 83 LLVM compiler 
+A single-file Ada 83 LLVM compiler.
 
 ![The Ada 83 extension for VS Code](readme-screenshot.gif)
 
@@ -18,9 +18,7 @@ A single-file Ada 83 LLVM compiler
 ## Quick start
 
 Unpack the archive for your platform — [`bin-linux.zip`](bin-linux.zip),
-[`bin-macos.zip`](bin-macos.zip) or [`bin-windows.zip`](bin-windows.zip) — and
-keep its files together: the compiler looks for `ada83-runtime.ada` beside its
-own executable.
+[`bin-macos.zip`](bin-macos.zip) or [`bin-windows.zip`](bin-windows.zip)
 
 ```ada
 with Text_IO; use Text_IO;
@@ -45,9 +43,7 @@ code --install-extension ada83.vsix
 ```
 
 It needs `ada83` on your PATH, or `ada83.compilerPath` set to where you
-unpacked it. Everything in the recording above — the outline, the hovers, go
-to definition into the standard library, completion, signature help and the
-quick fixes — is the compiler answering.
+unpacked it.
 
 ## Building
 
@@ -66,8 +62,7 @@ Prebuilt compilers ship with the repository:
 | [`bin-windows.zip`](bin-windows.zip) | `ada83.exe`, `ada83-runtime.ada`, `ada83.vsix`, and `LLVM-C.dll` with its companion DLLs; unzip them together. Linking native executables wants clang with lld, which resolves the weak externals thread-local storage becomes on COFF |
 
 `ada83-runtime.ada` holds the standard library, and the compiler looks for it
-beside its own executable, so keep the two together when unpacking. To rebuild
-an archive from source:
+beside its own executable.
 
 | Platform | Command | Produces |
 | -------- | ------- | -------- |
@@ -76,14 +71,7 @@ an archive from source:
 | Windows  | `make.bat package` | `bin-windows.zip`, DLLs included |
 
 Each script builds the platform's icon from the one `ada83-icon.png` as it
-packages: a `.ico` compiled into `ada83.exe`'s resource table, an `.icns` and
-a Finder resource fork for macOS, and the PNG itself with a desktop entry on
-Linux. Every format carries the PNG bytes whole, so this is concatenation and
-a few length fields rather than an image tool, and nothing needs installing.
-
-`TARGET` names another platform, so a release can be cut from one machine.
-Each target wants that platform's usual cross toolchain, and says which one is
-missing rather than fetching it:
+packages.
 
 | Command | Produces | Wants |
 | ------- | -------- | ----- |
@@ -124,11 +112,7 @@ with libLLVM `20.1.2` behind ada83's back end.
 
 ## VSCode Extension
 
-`ada83 --lsp` serves the Language Server Protocol on stdin and stdout, and the
-extension that speaks it has no dependencies. It is in each archive above;
-`make vsix` builds it from `ada83-extension.html`, which carries the manifest,
-the grammar, the snippets and the JavaScript as one file each editor can
-still colour.
+`ada83 --lsp` serves the Language Server Protocol on stdin and stdout.
 
 Error messages can be read in another language. `ada83.language` picks one,
 and anything but English hands the message to the editor's model.
