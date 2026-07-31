@@ -73,19 +73,7 @@
       "patterns": [
         {
           "name": "keyword.control.ada",
-          "match": "(?i)\\b(abort|accept|case|delay|do|else|elsif|end|exception|exit|for|goto|if|loop|raise|return|select|terminate|then|when|while)\\b"
-        },
-        {
-          "name": "keyword.other.declaration.ada",
-          "match": "(?i)\\b(begin|declare|entry|function|package|pragma|procedure|task)\\b"
-        },
-        {
-          "name": "storage.type.ada",
-          "match": "(?i)\\b(access|array|constant|delta|digits|limited|null|private|range|record|subtype|type)\\b"
-        },
-        {
-          "name": "storage.modifier.ada",
-          "match": "(?i)\\b(all|at|body|generic|in|is|new|of|others|out|renames|reverse|separate|use|with)\\b"
+          "match": "(?i)\\b(abort|accept|access|all|array|at|begin|body|case|constant|declare|delay|delta|digits|do|else|elsif|end|entry|exception|exit|for|function|generic|goto|if|in|is|limited|loop|new|null|of|others|out|package|pragma|private|procedure|raise|range|record|renames|return|reverse|select|separate|subtype|task|terminate|then|type|use|when|while|with)\\b"
         },
         {
           "name": "keyword.operator.word.ada",
@@ -107,7 +95,7 @@
           "match": "(?i)\\b(procedure|function|entry)\\s+([A-Za-z][A-Za-z0-9_]*)",
           "captures": {
             "1": {
-              "name": "keyword.other.declaration.ada"
+              "name": "keyword.control.ada"
             },
             "2": {
               "name": "entity.name.function.ada"
@@ -118,10 +106,10 @@
           "match": "(?i)\\b(package)\\s+(body\\s+)?([A-Za-z][A-Za-z0-9_]*)",
           "captures": {
             "1": {
-              "name": "keyword.other.declaration.ada"
+              "name": "keyword.control.ada"
             },
             "2": {
-              "name": "storage.modifier.ada"
+              "name": "keyword.control.ada"
             },
             "3": {
               "name": "entity.name.namespace.ada"
@@ -132,10 +120,10 @@
           "match": "(?i)\\b(task)\\s+(body\\s+|type\\s+)?([A-Za-z][A-Za-z0-9_]*)",
           "captures": {
             "1": {
-              "name": "keyword.other.declaration.ada"
+              "name": "keyword.control.ada"
             },
             "2": {
-              "name": "storage.modifier.ada"
+              "name": "keyword.control.ada"
             },
             "3": {
               "name": "entity.name.class.ada"
@@ -146,7 +134,7 @@
           "match": "(?i)\\b(type|subtype)\\s+([A-Za-z][A-Za-z0-9_]*)",
           "captures": {
             "1": {
-              "name": "storage.type.ada"
+              "name": "keyword.control.ada"
             },
             "2": {
               "name": "entity.name.type.ada"
@@ -157,7 +145,7 @@
           "match": "(?i)\\b(generic|pragma)\\s+([A-Za-z][A-Za-z0-9_]*)?",
           "captures": {
             "1": {
-              "name": "keyword.other.declaration.ada"
+              "name": "keyword.control.ada"
             },
             "2": {
               "name": "entity.name.tag.ada"
@@ -192,7 +180,7 @@
           "name": "punctuation.separator.ada"
         },
         "3": {
-          "name": "storage.modifier.ada"
+          "name": "keyword.control.ada"
         }
       }
     }

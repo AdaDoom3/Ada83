@@ -8,14 +8,14 @@ const path = require('path');
 const oniguruma = require('vscode-oniguruma');
 const textmate = require('vscode-textmate');
 
-const GRAMMAR = require('path').join(__dirname, 'syntaxes/ada83.tmLanguage.json');
+const GRAMMAR = path.join(__dirname, 'syntaxes/ada83.tmLanguage.json');
 const WASM = path.join(require.resolve('vscode-oniguruma'),
                        '../../release/onig.wasm');
 
 const cases = [
   { name: 'end record closes a record',
     line: '   end record;',
-    want: [['end', 'keyword'], ['record', 'storage.type']] },
+    want: [['end', 'keyword'], ['record', 'keyword']] },
 
   { name: 'end case closes a case',
     line: '   end case;',
@@ -80,11 +80,11 @@ const cases = [
   { name: 'a subprogram name is a function entity',
     line: '   procedure Sample (Value : in Degrees) is',
     want: [['procedure', 'keyword'], ['Sample', 'entity.name.function'],
-           ['Value', 'variable.parameter'], ['in', 'storage.modifier']] },
+           ['Value', 'variable.parameter'], ['in', 'keyword']] },
 
   { name: 'a type name is a type entity',
     line: '   type Reading is',
-    want: [['type', 'storage.type'], ['Reading', 'entity.name.type']] },
+    want: [['type', 'keyword'], ['Reading', 'entity.name.type']] },
 
   { name: 'a package name is a namespace entity',
     line: '   package body Buffers is',
@@ -109,7 +109,7 @@ const cases = [
 
   { name: 'a range is an operator, not two dots',
     line: '   subtype Small is Integer range 0 .. 255;',
-    want: [['..', 'keyword.operator'], ['range', 'storage.type']] },
+    want: [['..', 'keyword.operator'], ['range', 'keyword']] },
 
   { name: 'a box is an operator',
     line: '   type Vector is array (Positive range <>) of Float;',
@@ -127,7 +127,7 @@ const cases = [
         name: `${word} is an identifier in Ada 83, not a keyword`,
         line: `   ${word.charAt(0).toUpperCase()}${word.slice(1)} : Integer := 0;`,
         want: [[`${word.charAt(0).toUpperCase()}${word.slice(1)}`, '!keyword'],
-               [`${word.charAt(0).toUpperCase()}${word.slice(1)}`, '!storage']],
+               [`${word.charAt(0).toUpperCase()}${word.slice(1)}`, '!entity']],
       })),
 
   { name: 'a keyword inside an identifier is not a keyword',
@@ -137,11 +137,11 @@ const cases = [
 
   { name: 'case is insensitive',
     line: '   PROCEDURE Loud IS',
-    want: [['PROCEDURE', 'keyword'], ['IS', 'storage.modifier']] },
+    want: [['PROCEDURE', 'keyword'], ['IS', 'keyword']] },
 
   { name: 'a label is not a keyword',
     line: '   <<Again>> null;',
-    want: [['<<', 'keyword.operator'], ['null', 'storage.type']] },
+    want: [['<<', 'keyword.operator'], ['null', 'keyword']] },
 ];
 
 const scopesFor = (tokens, line, text) => {
