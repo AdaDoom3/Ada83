@@ -225,29 +225,7 @@ Appendices
 - [D Glossary](#d-glossary)
 - [E Syntax Summary](#e-syntax-summary)
 - [F Implementation Dependent Characteristics](#f-implementation-dependent-characteristics)
-Index
-Postscript: Submission of Comments
-The Ada Joint Program Office does not guarantee the accuracy of this
-file, as compared with the contents of ANSI/MIL-STD-1815A-1983,
-the Reference Manual for the Ada Programming Language. If errors or
-discrepancies are found in this machine-readable version, please
-forward comments via the Defense Data Network (DDN) to:
-ACTION@AJPO.SEI.CMU.EDU
-or via conventional mail to
-Ada Information Clearinghouse
-3D139 (1211 S. Fern, C-107)
-The Pentagon
-Washington, D.C. 20301-3081
------------------------------------------------------------------------
-Copyright 1980, 1982, 1983 owned by the United States Government as
-represented by the Under Secretary of Defense, Research and
-Engineering. All rights reserved. Provided that notice of copyright
-is included on the first page, this document may be copied in its
-entirety without alteration or as altered by (1) adding text that is
-clearly marked as an insertion; (2) shading or highlighting existing
-text; (3) deleting examples. Permission to publish other excerpts
-should be obtained from the Ada Joint Program Office, OUSDRE (R&AT),
-The Pentagon, Washington, DC 20301-2081, U.S.A.
+
 
 ## 1. Introduction
 
@@ -830,39 +808,7 @@ for erroneous constructs, for incorrect order dependences, or for both.
 The predefined exception PROGRAM_ERROR is raised if such a check fails.
 
 
----
 
-The Ada Joint Program Office does not guarantee the accuracy of this
-file, as compared with the contents of ANSI/MIL-STD-1815A-1983,
-the Reference Manual for the Ada Programming Language. If errors or
-discrepancies are found in this machine-readable version, please
-forward comments via the Defense Data Network (DDN) to:
-
-                     ACTION@AJPO.SEI.CMU.EDU
-
-or via conventional mail to
-
-
-```ada
-                  Ada Information Clearinghouse
-                   3D139 (1211 S. Fern, C-107)
-                         The Pentagon
-                   Washington, D.C. 20301-3081
-
-
-```
-
------------------------------------------------------------------------
-
-Copyright 1980, 1982, 1983 owned by the United States Government as
-represented by the Under Secretary of Defense, Research and
-Engineering. All rights reserved. Provided that notice of copyright
-is included on the first page, this document may be copied in its
-entirety without alteration or as altered by (1) adding text that is
-clearly marked as an insertion; (2) shading or highlighting existing
-text; (3) deleting examples. Permission to publish other excerpts
-should be obtained from the Ada Joint Program Office, OUSDRE (R&AT),
-The Pentagon, Washington, DC 20301-2081, U.S.A.
 
 
 ## 2. Lexical Elements
@@ -1507,39 +1453,7 @@ element 2.2, lower case letter 2.1, numeric literal 2.4, string bracket
 
 
 
----
 
-The Ada Joint Program Office does not guarantee the accuracy of this
-file, as compared with the contents of ANSI/MIL-STD-1815A-1983,
-the Reference Manual for the Ada Programming Language. If errors or
-discrepancies are found in this machine-readable version, please
-forward comments via the Defense Data Network (DDN) to:
-
-                     ACTION@AJPO.SEI.CMU.EDU
-
-or via conventional mail to
-
-
-```ada
-                  Ada Information Clearinghouse
-                   3D139 (1211 S. Fern, C-107)
-                         The Pentagon
-                   Washington, D.C. 20301-3081
-
-
-```
-
------------------------------------------------------------------------
-
-Copyright 1980, 1982, 1983 owned by the United States Government as
-represented by the Under Secretary of Defense, Research and
-Engineering. All rights reserved. Provided that notice of copyright
-is included on the first page, this document may be copied in its
-entirety without alteration or as altered by (1) adding text that is
-clearly marked as an insertion; (2) shading or highlighting existing
-text; (3) deleting examples. Permission to publish other excerpts
-should be obtained from the Ada Joint Program Office, OUSDRE (R&AT),
-The Pentagon, Washington, DC 20301-2081, U.S.A.
 
 
 ## 3. Declarations and Types
@@ -4749,39 +4663,7 @@ representation clause 13.1, subprogram body 6.3, subunit 10.2, task body
 10.1.1
 
 
----
 
-The Ada Joint Program Office does not guarantee the accuracy of this
-file, as compared with the contents of ANSI/MIL-STD-1815A-1983,
-the Reference Manual for the Ada Programming Language. If errors or
-discrepancies are found in this machine-readable version, please
-forward comments via the Defense Data Network (DDN) to:
-
-                     ACTION@AJPO.SEI.CMU.EDU
-
-or via conventional mail to
-
-
-```ada
-                  Ada Information Clearinghouse
-                   3D139 (1211 S. Fern, C-107)
-                         The Pentagon
-                   Washington, D.C. 20301-3081
-
-
-```
-
------------------------------------------------------------------------
-
-Copyright 1980, 1982, 1983 owned by the United States Government as
-represented by the Under Secretary of Defense, Research and
-Engineering. All rights reserved. Provided that notice of copyright
-is included on the first page, this document may be copied in its
-entirety without alteration or as altered by (1) adding text that is
-clearly marked as an insertion; (2) shading or highlighting existing
-text; (3) deleting examples. Permission to publish other excerpts
-should be obtained from the Ada Joint Program Office, OUSDRE (R&AT),
-The Pentagon, Washington, DC 20301-2081, U.S.A.
 
 
 ## 4. Names and Expressions
@@ -6802,39 +6684,7 @@ system.min_int 13.7, type 3.3, universal_integer type 3.5.4, universal_real
 type 3.5.6
 
 
----
 
-The Ada Joint Program Office does not guarantee the accuracy of this
-file, as compared with the contents of ANSI/MIL-STD-1815A-1983,
-the Reference Manual for the Ada Programming Language. If errors or
-discrepancies are found in this machine-readable version, please
-forward comments via the Defense Data Network (DDN) to:
-
-                     ACTION@AJPO.SEI.CMU.EDU
-
-or via conventional mail to
-
-
-```ada
-                  Ada Information Clearinghouse
-                   3D139 (1211 S. Fern, C-107)
-                         The Pentagon
-                   Washington, D.C. 20301-3081
-
-
-```
-
------------------------------------------------------------------------
-
-Copyright 1980, 1982, 1983 owned by the United States Government as
-represented by the Under Secretary of Defense, Research and
-Engineering. All rights reserved. Provided that notice of copyright
-is included on the first page, this document may be copied in its
-entirety without alteration or as altered by (1) adding text that is
-clearly marked as an insertion; (2) shading or highlighting existing
-text; (3) deleting examples. Permission to publish other excerpts
-should be obtained from the Ada Joint Program Office, OUSDRE (R&AT),
-The Pentagon, Washington, DC 20301-2081, U.S.A.
 
 
 ## 5. Statements
@@ -7616,39 +7466,7 @@ statement 9.7, sequence of statements 5.1, statement 5.1, subprogram body
 6.3, task body 9.1, transfer of control 5.1
 
 
----
 
-The Ada Joint Program Office does not guarantee the accuracy of this
-file, as compared with the contents of ANSI/MIL-STD-1815A-1983,
-the Reference Manual for the Ada Programming Language. If errors or
-discrepancies are found in this machine-readable version, please
-forward comments via the Defense Data Network (DDN) to:
-
-                     ACTION@AJPO.SEI.CMU.EDU
-
-or via conventional mail to
-
-
-```ada
-                  Ada Information Clearinghouse
-                   3D139 (1211 S. Fern, C-107)
-                         The Pentagon
-                   Washington, D.C. 20301-3081
-
-
-```
-
------------------------------------------------------------------------
-
-Copyright 1980, 1982, 1983 owned by the United States Government as
-represented by the Under Secretary of Defense, Research and
-Engineering. All rights reserved. Provided that notice of copyright
-is included on the first page, this document may be copied in its
-entirety without alteration or as altered by (1) adding text that is
-clearly marked as an insertion; (2) shading or highlighting existing
-text; (3) deleting examples. Permission to publish other excerpts
-should be obtained from the Ada Joint Program Office, OUSDRE (R&AT),
-The Pentagon, Washington, DC 20301-2081, U.S.A.
 
 
 ## 6. Subprograms
@@ -8472,39 +8290,7 @@ relational operator 4.5 4.5.2, short-circuit control form 4.5 4.5.1, type
 definition 3.3.1, unary adding operator 4.5 4.5.4, visible by selection 8.3
 
 
----
 
-The Ada Joint Program Office does not guarantee the accuracy of this
-file, as compared with the contents of ANSI/MIL-STD-1815A-1983,
-the Reference Manual for the Ada Programming Language. If errors or
-discrepancies are found in this machine-readable version, please
-forward comments via the Defense Data Network (DDN) to:
-
-                     ACTION@AJPO.SEI.CMU.EDU
-
-or via conventional mail to
-
-
-```ada
-                  Ada Information Clearinghouse
-                   3D139 (1211 S. Fern, C-107)
-                         The Pentagon
-                   Washington, D.C. 20301-3081
-
-
-```
-
------------------------------------------------------------------------
-
-Copyright 1980, 1982, 1983 owned by the United States Government as
-represented by the Under Secretary of Defense, Research and
-Engineering. All rights reserved. Provided that notice of copyright
-is included on the first page, this document may be copied in its
-entirety without alteration or as altered by (1) adding text that is
-clearly marked as an insertion; (2) shading or highlighting existing
-text; (3) deleting examples. Permission to publish other excerpts
-should be obtained from the Ada Joint Program Office, OUSDRE (R&AT),
-The Pentagon, Washington, DC 20301-2081, U.S.A.
 
 
 ## 7. Packages
@@ -9410,39 +9196,7 @@ result is the expanded version, with any necessary defaults added.
 ```
 
 
----
 
-The Ada Joint Program Office does not guarantee the accuracy of this
-file, as compared with the contents of ANSI/MIL-STD-1815A-1983,
-the Reference Manual for the Ada Programming Language. If errors or
-discrepancies are found in this machine-readable version, please
-forward comments via the Defense Data Network (DDN) to:
-
-                     ACTION@AJPO.SEI.CMU.EDU
-
-or via conventional mail to
-
-
-```ada
-                  Ada Information Clearinghouse
-                   3D139 (1211 S. Fern, C-107)
-                         The Pentagon
-                   Washington, D.C. 20301-3081
-
-
-```
-
------------------------------------------------------------------------
-
-Copyright 1980, 1982, 1983 owned by the United States Government as
-represented by the Under Secretary of Defense, Research and
-Engineering. All rights reserved. Provided that notice of copyright
-is included on the first page, this document may be copied in its
-entirety without alteration or as altered by (1) adding text that is
-clearly marked as an insertion; (2) shading or highlighting existing
-text; (3) deleting examples. Permission to publish other excerpts
-should be obtained from the Ada Joint Program Office, OUSDRE (R&AT),
-The Pentagon, Washington, DC 20301-2081, U.S.A.
 
 
 ## 8. Visibility Rules
@@ -10317,39 +10071,7 @@ null literal 4.2, numeric literal 2.4, short-circuit control form 4.4,
 string literal 4.2
 
 
----
 
-The Ada Joint Program Office does not guarantee the accuracy of this
-file, as compared with the contents of ANSI/MIL-STD-1815A-1983,
-the Reference Manual for the Ada Programming Language. If errors or
-discrepancies are found in this machine-readable version, please
-forward comments via the Defense Data Network (DDN) to:
-
-                     ACTION@AJPO.SEI.CMU.EDU
-
-or via conventional mail to
-
-
-```ada
-                  Ada Information Clearinghouse
-                   3D139 (1211 S. Fern, C-107)
-                         The Pentagon
-                   Washington, D.C. 20301-3081
-
-
-```
-
------------------------------------------------------------------------
-
-Copyright 1980, 1982, 1983 owned by the United States Government as
-represented by the Under Secretary of Defense, Research and
-Engineering. All rights reserved. Provided that notice of copyright
-is included on the first page, this document may be copied in its
-entirety without alteration or as altered by (1) adding text that is
-clearly marked as an insertion; (2) shading or highlighting existing
-text; (3) deleting examples. Permission to publish other excerpts
-should be obtained from the Ada Joint Program Office, OUSDRE (R&AT),
-The Pentagon, Washington, DC 20301-2081, U.S.A.
 
 
 ## 9. Tasks
@@ -11769,39 +11491,7 @@ the next output character.
 ```
 
 
----
 
-The Ada Joint Program Office does not guarantee the accuracy of this
-file, as compared with the contents of ANSI/MIL-STD-1815A-1983,
-the Reference Manual for the Ada Programming Language. If errors or
-discrepancies are found in this machine-readable version, please
-forward comments via the Defense Data Network (DDN) to:
-
-                     ACTION@AJPO.SEI.CMU.EDU
-
-or via conventional mail to
-
-
-```ada
-                  Ada Information Clearinghouse
-                   3D139 (1211 S. Fern, C-107)
-                         The Pentagon
-                   Washington, D.C. 20301-3081
-
-
-```
-
------------------------------------------------------------------------
-
-Copyright 1980, 1982, 1983 owned by the United States Government as
-represented by the Under Secretary of Defense, Research and
-Engineering. All rights reserved. Provided that notice of copyright
-is included on the first page, this document may be copied in its
-entirety without alteration or as altered by (1) adding text that is
-clearly marked as an insertion; (2) shading or highlighting existing
-text; (3) deleting examples. Permission to publish other excerpts
-should be obtained from the Ada Joint Program Office, OUSDRE (R&AT),
-The Pentagon, Washington, DC 20301-2081, U.S.A.
 
 
 ## 10. Program Structure and Compilation Issues
@@ -12623,39 +12313,7 @@ References: condition 5.3, declaration 3.1, elaboration 3.9, evaluation
 raising of exceptions 11.3, statement 5, static expression 4.9, subprogram 6
 
 
----
 
-The Ada Joint Program Office does not guarantee the accuracy of this
-file, as compared with the contents of ANSI/MIL-STD-1815A-1983,
-the Reference Manual for the Ada Programming Language. If errors or
-discrepancies are found in this machine-readable version, please
-forward comments via the Defense Data Network (DDN) to:
-
-                     ACTION@AJPO.SEI.CMU.EDU
-
-or via conventional mail to
-
-
-```ada
-                  Ada Information Clearinghouse
-                   3D139 (1211 S. Fern, C-107)
-                         The Pentagon
-                   Washington, D.C. 20301-3081
-
-
-```
-
------------------------------------------------------------------------
-
-Copyright 1980, 1982, 1983 owned by the United States Government as
-represented by the Under Secretary of Defense, Research and
-Engineering. All rights reserved. Provided that notice of copyright
-is included on the first page, this document may be copied in its
-entirety without alteration or as altered by (1) adding text that is
-clearly marked as an insertion; (2) shading or highlighting existing
-text; (3) deleting examples. Permission to publish other excerpts
-should be obtained from the Ada Joint Program Office, OUSDRE (R&AT),
-The Pentagon, Washington, DC 20301-2081, U.S.A.
 
 
 ## 11. Exceptions
@@ -13514,41 +13172,6 @@ specification 7.1, pragma 2.8, program_error exception 11.1, program unit
 simple name 4.1, slice 4.1.2, subprogram 6, subprogram body 6.3, subprogram
 call 6.4, subtype 3.3, subunit 10.2, task 9, task body 9.1, task type 9.1,
 task unit 9, type 3.3, type mark 3.3.2
-
-
----
-
-The Ada Joint Program Office does not guarantee the accuracy of this
-file, as compared with the contents of ANSI/MIL-STD-1815A-1983,
-the Reference Manual for the Ada Programming Language. If errors or
-discrepancies are found in this machine-readable version, please
-forward comments via the Defense Data Network (DDN) to:
-
-                     ACTION@AJPO.SEI.CMU.EDU
-
-or via conventional mail to
-
-
-```ada
-                  Ada Information Clearinghouse
-                   3D139 (1211 S. Fern, C-107)
-                         The Pentagon
-                   Washington, D.C. 20301-3081
-
-
-```
-
------------------------------------------------------------------------
-
-Copyright 1980, 1982, 1983 owned by the United States Government as
-represented by the Under Secretary of Defense, Research and
-Engineering. All rights reserved. Provided that notice of copyright
-is included on the first page, this document may be copied in its
-entirety without alteration or as altered by (1) adding text that is
-clearly marked as an insertion; (2) shading or highlighting existing
-text; (3) deleting examples. Permission to publish other excerpts
-should be obtained from the Ada Joint Program Office, OUSDRE (R&AT),
-The Pentagon, Washington, DC 20301-2081, U.S.A.
 
 
 ## 12. Generic Units
@@ -14657,22 +14280,6 @@ thereafter stacks of the corresponding type can be declared:
 
 
 ```
-
-
----
-
-Copyright 1980, 1982, 1983, owned by the United States Government as
-represented by the Under Secretary of Defense, Research and Engineering. All
-rights resrved. Provided that notice of copyright is included on the first
-page, this document may be copied in its entirety without alteration or as
-altered by (1) adding text that is clearly marked as an insertion; (2) shading
-or alteration or highlighting existing text; (3) deleting examples.
-Permission to publish other excerpts should be obtained from the Ada Joint
-Program Office, OUSDRE(R&AT), The Pentagon, Washington, D.C. 20301, U.S.A.
-
-------------------------------------------------------------------------------
-------------------------------------------------------------------------------
-
 
 ## 13. Representation Clauses and Implementation-Dependent Features
 
@@ -15856,39 +15463,7 @@ function 12.1, instantiation 12.3, parameter of a subprogram 6.2, type 3.3,
 with clause 10.1.1
 
 
----
 
-The Ada Joint Program Office does not guarantee the accuracy of this
-file, as compared with the contents of ANSI/MIL-STD-1815A-1983,
-the Reference Manual for the Ada Programming Language. If errors or
-discrepancies are found in this machine-readable version, please
-forward comments via the Defense Data Network (DDN) to:
-
-                     ACTION@AJPO.SEI.CMU.EDU
-
-or via conventional mail to
-
-
-```ada
-                  Ada Information Clearinghouse
-                   3D139 (1211 S. Fern, C-107)
-                         The Pentagon
-                   Washington, D.C. 20301-3081
-
-
-```
-
------------------------------------------------------------------------
-
-Copyright 1980, 1982, 1983 owned by the United States Government as
-represented by the Under Secretary of Defense, Research and
-Engineering. All rights reserved. Provided that notice of copyright
-is included on the first page, this document may be copied in its
-entirety without alteration or as altered by (1) adding text that is
-clearly marked as an insertion; (2) shading or highlighting existing
-text; (3) deleting examples. Permission to publish other excerpts
-should be obtained from the Ada Joint Program Office, OUSDRE (R&AT),
-The Pentagon, Washington, DC 20301-2081, U.S.A.
 
 
                              14. Input-Output
@@ -18079,39 +17654,7 @@ Example of an interaction (characters typed by the user are italicized):
         YELLOW items available: 10
 
 
----
 
-The Ada Joint Program Office does not guarantee the accuracy of this
-file, as compared with the contents of ANSI/MIL-STD-1815A-1983,
-the Reference Manual for the Ada Programming Language. If errors or
-discrepancies are found in this machine-readable version, please
-forward comments via the Defense Data Network (DDN) to:
-
-                     ACTION@AJPO.SEI.CMU.EDU
-
-or via conventional mail to
-
-
-```ada
-                  Ada Information Clearinghouse
-                   3D139 (1211 S. Fern, C-107)
-                         The Pentagon
-                   Washington, D.C. 20301-3081
-
-
-```
-
------------------------------------------------------------------------
-
-Copyright 1980, 1982, 1983 owned by the United States Government as
-represented by the Under Secretary of Defense, Research and
-Engineering. All rights reserved. Provided that notice of copyright
-is included on the first page, this document may be copied in its
-entirety without alteration or as altered by (1) adding text that is
-clearly marked as an insertion; (2) shading or highlighting existing
-text; (3) deleting examples. Permission to publish other excerpts
-should be obtained from the Ada Joint Program Office, OUSDRE (R&AT),
-The Pentagon, Washington, DC 20301-2081, U.S.A.
 
 
                      A. Predefined Language Attributes
@@ -18702,39 +18245,7 @@ P'WIDTH For a prefix P that denotes a discrete subtype:
                        universal_integer. (See 3.5.5.)
 
 
----
 
-The Ada Joint Program Office does not guarantee the accuracy of this
-file, as compared with the contents of ANSI/MIL-STD-1815A-1983,
-the Reference Manual for the Ada Programming Language. If errors or
-discrepancies are found in this machine-readable version, please
-forward comments via the Defense Data Network (DDN) to:
-
-                     ACTION@AJPO.SEI.CMU.EDU
-
-or via conventional mail to
-
-
-```ada
-                  Ada Information Clearinghouse
-                   3D139 (1211 S. Fern, C-107)
-                         The Pentagon
-                   Washington, D.C. 20301-3081
-
-
-```
-
------------------------------------------------------------------------
-
-Copyright 1980, 1982, 1983 owned by the United States Government as
-represented by the Under Secretary of Defense, Research and
-Engineering. All rights reserved. Provided that notice of copyright
-is included on the first page, this document may be copied in its
-entirety without alteration or as altered by (1) adding text that is
-clearly marked as an insertion; (2) shading or highlighting existing
-text; (3) deleting examples. Permission to publish other excerpts
-should be obtained from the Ada Joint Program Office, OUSDRE (R&AT),
-The Pentagon, Washington, DC 20301-2081, U.S.A.
 
 
                       B. Predefined Language Pragmas
@@ -18953,39 +18464,7 @@ SYSTEM_NAME Takes an enumeration literal as the single argument. This
 
 ```
 
----
 
-The Ada Joint Program Office does not guarantee the accuracy of this
-file, as compared with the contents of ANSI/MIL-STD-1815A-1983,
-the Reference Manual for the Ada Programming Language. If errors or
-discrepancies are found in this machine-readable version, please
-forward comments via the Defense Data Network (DDN) to:
-
-                     ACTION@AJPO.SEI.CMU.EDU
-
-or via conventional mail to
-
-
-```ada
-                  Ada Information Clearinghouse
-                   3D139 (1211 S. Fern, C-107)
-                         The Pentagon
-                   Washington, D.C. 20301-3081
-
-
-```
-
------------------------------------------------------------------------
-
-Copyright 1980, 1982, 1983 owned by the United States Government as
-represented by the Under Secretary of Defense, Research and
-Engineering. All rights reserved. Provided that notice of copyright
-is included on the first page, this document may be copied in its
-entirety without alteration or as altered by (1) adding text that is
-clearly marked as an insertion; (2) shading or highlighting existing
-text; (3) deleting examples. Permission to publish other excerpts
-should be obtained from the Ada Joint Program Office, OUSDRE (R&AT),
-The Pentagon, Washington, DC 20301-2081, U.S.A.
 
 
                     C. Predefined Language Environment
@@ -19290,39 +18769,7 @@ The language definition predefines the following library units:
 ```
 
 
----
 
-The Ada Joint Program Office does not guarantee the accuracy of this
-file, as compared with the contents of ANSI/MIL-STD-1815A-1983,
-the Reference Manual for the Ada Programming Language. If errors or
-discrepancies are found in this machine-readable version, please
-forward comments via the Defense Data Network (DDN) to:
-
-                     ACTION@AJPO.SEI.CMU.EDU
-
-or via conventional mail to
-
-
-```ada
-                  Ada Information Clearinghouse
-                   3D139 (1211 S. Fern, C-107)
-                         The Pentagon
-                   Washington, D.C. 20301-3081
-
-
-```
-
------------------------------------------------------------------------
-
-Copyright 1980, 1982, 1983 owned by the United States Government as
-represented by the Under Secretary of Defense, Research and
-Engineering. All rights reserved. Provided that notice of copyright
-is included on the first page, this document may be copied in its
-entirety without alteration or as altered by (1) adding text that is
-clearly marked as an insertion; (2) shading or highlighting existing
-text; (3) deleting examples. Permission to publish other excerpts
-should be obtained from the Ada Joint Program Office, OUSDRE (R&AT),
-The Pentagon, Washington, DC 20301-2081, U.S.A.
 
 
                                 D. Glossary
@@ -19715,39 +19162,7 @@ Visible part. See package.
 With clause. See compilation unit.
 
 
----
 
-The Ada Joint Program Office does not guarantee the accuracy of this
-file, as compared with the contents of ANSI/MIL-STD-1815A-1983,
-the Reference Manual for the Ada Programming Language. If errors or
-discrepancies are found in this machine-readable version, please
-forward comments via the Defense Data Network (DDN) to:
-
-                     ACTION@AJPO.SEI.CMU.EDU
-
-or via conventional mail to
-
-
-```ada
-                  Ada Information Clearinghouse
-                   3D139 (1211 S. Fern, C-107)
-                         The Pentagon
-                   Washington, D.C. 20301-3081
-
-
-```
-
------------------------------------------------------------------------
-
-Copyright 1980, 1982, 1983 owned by the United States Government as
-represented by the Under Secretary of Defense, Research and
-Engineering. All rights reserved. Provided that notice of copyright
-is included on the first page, this document may be copied in its
-entirety without alteration or as altered by (1) adding text that is
-clearly marked as an insertion; (2) shading or highlighting existing
-text; (3) deleting examples. Permission to publish other excerpts
-should be obtained from the Ada Joint Program Office, OUSDRE (R&AT),
-The Pentagon, Washington, DC 20301-2081, U.S.A.
 
 
 ```ebnf
@@ -20519,39 +19934,7 @@ The Pentagon, Washington, DC 20301-2081, U.S.A.
 ```
 
 
----
 
-The Ada Joint Program Office does not guarantee the accuracy of this
-file, as compared with the contents of ANSI/MIL-STD-1815A-1983,
-the Reference Manual for the Ada Programming Language. If errors or
-discrepancies are found in this machine-readable version, please
-forward comments via the Defense Data Network (DDN) to:
-
-                     ACTION@AJPO.SEI.CMU.EDU
-
-or via conventional mail to
-
-
-```ada
-                  Ada Information Clearinghouse
-                   3D139 (1211 S. Fern, C-107)
-                         The Pentagon
-                   Washington, D.C. 20301-3081
-
-
-```
-
------------------------------------------------------------------------
-
-Copyright 1980, 1982, 1983 owned by the United States Government as
-represented by the Under Secretary of Defense, Research and
-Engineering. All rights reserved. Provided that notice of copyright
-is included on the first page, this document may be copied in its
-entirety without alteration or as altered by (1) adding text that is
-clearly marked as an insertion; (2) shading or highlighting existing
-text; (3) deleting examples. Permission to publish other excerpts
-should be obtained from the Ada Joint Program Office, OUSDRE (R&AT),
-The Pentagon, Washington, DC 20301-2081, U.S.A.
 
 
                 F. Implementation-Dependent Characteristics
