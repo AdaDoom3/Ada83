@@ -138,6 +138,7 @@ macOS ships Bash 3.2 and no `timeout`, so running the suite there needs
 
 ```sh
 bash bench.sh stages            # front end against back end
+bash bench.sh parser            # front end against input size
 bash bench.sh corpus            # throughput, and the slowest inputs named
 bash bench.sh compare /tmp/old  # this build against another, with deltas
 bash bench.sh profile           # the functions compiling spends its time in
@@ -152,12 +153,19 @@ To judge a change, keep the old binary and name it:
 cp ada83 /tmp/before && make && bash bench.sh compare /tmp/before
 ```
 
-Nine programs are measured, each stressing something a compiler is judged
-on: integer arrays and index checks, floating point, calls, slices, fixed
-point and 12-digit float, range checks in a hot loop, raise and handle,
-allocation, and rendezvous. Each reads an opaque seed from its standard
-input, so none of their loops can be folded away at compile time — without
-that, the optimiser deletes the work and the timings are fiction.
+Twelve programs are measured, each stressing something a compiler is judged
+on: integer arrays and index checks, dense floating point, LU decomposition,
+calls, slices, fixed point and 12-digit float, range checks in a hot loop,
+raise and handle, allocation, and three shapes of tasking — rendezvous
+throughput, task creation and termination, and a selective wait with an else
+part. Each reads an opaque seed from its standard input, so none of their
+loops can be folded away at compile time; without that, the optimiser deletes
+the work and the timings are fiction.
+
+`parser` compiles a generated unit of types, records, case statements and
+nested expressions at five sizes and reports the cost per line. That figure
+should stay flat: one that climbs with input size is a super-linear
+algorithm in the front end.
 
 Every figure is the median of several timed runs taken after a warm-up, and
 carries the relative standard deviation of its samples, so a number that

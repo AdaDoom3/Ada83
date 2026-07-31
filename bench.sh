@@ -8,12 +8,13 @@ Measure this compiler so that work on ada83.c can be aimed, and then judged.
 
 Modes:
   stages              where compile time goes: front end against back end
+  parser              front end against input size, to expose non-linear cost
   corpus              throughput over the conformance suite, slowest inputs named
   compare REFERENCE   this compiler against another build of it, with deltas
   profile             the functions in ada83.c that compiling spends time in
   codegen             run time of the generated code, against GNAT where present
   memory              peak memory of the compiler and of what it produces
-  all                 stages, corpus, codegen and memory
+  all                 every mode but compare and profile
   help                display this help and exit
 
 To judge a change to ada83.c, keep the old binary and name it:
@@ -29,6 +30,7 @@ Environment:
   ONLY        run only the named programs, space separated
   NO_GNAT     set to 1 to skip GNAT
   NO_ANIMATE  set to 1 to draw no progress indicators
+  NO_COLOUR   set to 1 to draw no colour
   KEEP_WORK   set to 1 to keep the working tree
 
 Each figure is the median of REPEATS timed runs, in seconds, after WARMUP
@@ -42,461 +44,543 @@ TEXT
 case "${1:-}" in help|-h|--help) usage; exit 0 ;; esac
 
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-mode=${1:-all}
-reference=${2:-}
-REPEATS=${REPEATS:-7}
-WARMUP=${WARMUP:-1}
-OPT=${OPT:-2}
-CORPUS=${CORPUS:-300}
-SLOWEST=${SLOWEST:-12}
-ONLY=${ONLY:-}
-NO_GNAT=${NO_GNAT:-0}
-NO_ANIMATE=${NO_ANIMATE:-0}
+mode=${1:-all} reference=${2:-}
+REPEATS=${REPEATS:-7} WARMUP=${WARMUP:-1} OPT=${OPT:-2}
+CORPUS=${CORPUS:-300} SLOWEST=${SLOWEST:-12} ONLY=${ONLY:-}
+NO_GNAT=${NO_GNAT:-0} NO_ANIMATE=${NO_ANIMATE:-0} NO_COLOUR=${NO_COLOUR:-0}
 KEEP_WORK=${KEEP_WORK:-0}
 
 ada83=$here/ada83
 work=$(mktemp -d "${TMPDIR:-/tmp}/ada83-bench-XXXXXX")
 seed=$work/seed
 
-ALL_PROGRAMS="sieve matmul recurse strings numerics checks exceptions memory tasking"
+ALL_PROGRAMS="sieve matmul lu recurse strings numerics checks exceptions memory tasking taskflood taskselect"
 PROGRAMS=${ONLY:-$ALL_PROGRAMS}
 
-describe(){
-    case $1 in
-        sieve)      echo "integer arrays, index checks" ;;
-        matmul)     echo "floating point, nested loops" ;;
-        recurse)    echo "call and return" ;;
-        strings)    echo "slices and character work" ;;
-        numerics)   echo "fixed point and 12-digit float" ;;
-        checks)     echo "range and index checks in a hot loop" ;;
-        exceptions) echo "raise, propagate, handle" ;;
-        memory)     echo "allocation and deallocation" ;;
-        tasking)    echo "rendezvous" ;;
-        *)          echo "" ;;
-    esac
-}
+describe(){ case $1 in
+    sieve)      echo "integer arrays, index checks" ;;
+    matmul)     echo "dense float, nested loops" ;;
+    lu)         echo "LU decomposition, float division" ;;
+    recurse)    echo "call and return" ;;
+    strings)    echo "slices and character work" ;;
+    numerics)   echo "fixed point and 12-digit float" ;;
+    checks)     echo "range and index checks in a hot loop" ;;
+    exceptions) echo "raise, propagate, handle" ;;
+    memory)     echo "allocation and deallocation" ;;
+    tasking)    echo "rendezvous throughput" ;;
+    taskflood)  echo "task creation and termination" ;;
+    taskselect) echo "selective wait with an else part" ;;
+esac; }
 
 comparable(){ case $1 in numerics) return 1 ;; *) return 0 ;; esac; }
 
-animated=0
-[ -t 2 ] && [ "$NO_ANIMATE" != "1" ] && animated=1
-if [ "$animated" = "1" ] && exec 9>/dev/tty 2>/dev/null; then :; else exec 9>/dev/null; animated=0; fi
+animated=0; [ -t 2 ] && [ "$NO_ANIMATE" != 1 ] && animated=1
+if [ $animated = 1 ] && exec 9>/dev/tty 2>/dev/null; then :; else exec 9>/dev/null; animated=0; fi
+if [ -t 1 ] && [ "$NO_COLOUR" != 1 ]
+then BOLD=$'\033[1m' DIM=$'\033[2m' GOOD=$'\033[32m' BAD=$'\033[31m' OFF=$'\033[0m'
+else BOLD='' DIM='' GOOD='' BAD='' OFF=''
+fi
 
-cleanup(){ show_cursor; [ "$KEEP_WORK" = "1" ] || rm -rf "$work"; }
+cleanup(){ show_cursor; [ "$KEEP_WORK" = 1 ] || rm -rf "$work"; }
 trap cleanup EXIT
 trap 'show_cursor; exit 130' INT
 
-hide_cursor(){ [ "$animated" = "1" ] && printf '\033[?25l' >&9; return 0; }
-show_cursor(){ [ "$animated" = "1" ] && printf '\033[?25h' >&9; return 0; }
+hide_cursor(){ [ $animated = 1 ] && printf '\033[?25l' >&9; return 0; }
+show_cursor(){ [ $animated = 1 ] && printf '\033[?25h' >&9; return 0; }
 
-FRACTION_CHARS=("" "▏" "▎" "▍" "▌" "▋" "▊" "▉")
+BLOCKS=("" "▏" "▎" "▍" "▌" "▋" "▊" "▉")
 
 bar(){
-    local filled=$1 width=$2 out="" full part i
-    full=${filled%.*}
-    part=$(awk -v f="$filled" -v w="$full" 'BEGIN{printf "%d",(f-w)*8}')
-    for ((i = 0; i < full; i++)); do out+="█"; done
-    if [ "$full" -lt "$width" ] && [ "$part" -gt 0 ]; then
-        out+="${FRACTION_CHARS[$part]}"
-        full=$((full+1))
-    fi
-    for ((i = full; i < width; i++)); do out+="·"; done
+    local fill=$1 width=$2 out='' whole part i
+    whole=${fill%.*}
+    part=$(awk -v f="$fill" -v w="$whole" 'BEGIN{printf "%d",(f-w)*8}')
+    for ((i = 0; i < whole && i < width; i++)); do out+='█'; done
+    [ "$whole" -lt "$width" ] && [ "$part" -gt 0 ] && { out+=${BLOCKS[$part]}; whole=$((whole+1)); }
+    for ((i = whole; i < width; i++)); do out+='·'; done
     printf '%s' "$out"
 }
 
+scaled(){ awk -v v="$1" -v m="$2" -v w="$3" 'BEGIN{printf "%.3f",(m>0?v/m:0)*w}'; }
+
 progress(){
-    [ "$animated" = "1" ] || return 0
-    local done=$1 total=$2 label=$3 width=32 filled pct
-    filled=$(awk -v d="$done" -v t="$total" -v w="$width" 'BEGIN{printf "%.3f",(t>0?d/t:0)*w}')
-    pct=$(awk -v d="$done" -v t="$total" 'BEGIN{printf "%3d",(t>0?d*100/t:0)}')
-    printf '\r\033[2K  \033[2m%s\033[0m %s%%  \033[2m%s\033[0m' \
-        "$(bar "$filled" "$width")" "$pct" "$label" >&9
+    [ $animated = 1 ] || return 0
+    printf '\r\033[2K  %s%s%s %3d%%  %s%s%s' "$DIM" "$(bar "$(scaled "$1" "$2" 32)" 32)" "$OFF" \
+        "$(awk -v d="$1" -v t="$2" 'BEGIN{printf "%d",(t>0?d*100/t:0)}')" "$DIM" "$3" "$OFF" >&9
 }
 
-progress_done(){ [ "$animated" = "1" ] && printf '\r\033[2K' >&9; return 0; }
+clear_line(){ [ $animated = 1 ] && printf '\r\033[2K' >&9; return 0; }
 
-PULSE_PID=""
+PULSE=''
 pulse(){
-    [ "$animated" = "1" ] || return 0
-    ( local i=0
-      while :; do
-        case $(( (i / 2) % 4 )) in
-          0) printf '\r\033[2K  \033[2m◦ %s\033[0m' "$1" >&9 ;;
-          1) printf '\r\033[2K  \033[2m◌ %s\033[0m' "$1" >&9 ;;
-          2) printf '\r\033[2K  \033[2m◍ %s\033[0m' "$1" >&9 ;;
-          3) printf '\r\033[2K  \033[2m◎ %s\033[0m' "$1" >&9 ;;
-        esac
+    [ $animated = 1 ] || return 0
+    ( i=0; while :; do
+        printf '\r\033[2K  %s%s %s%s' "$DIM" "$(printf '◦◌◍◎' | cut -c $(( (i/2)%4 + 1 )))" "$1" "$OFF" >&9
         i=$((i+1)); sleep 0.12
-      done ) &
-    PULSE_PID=$!
+      done ) & PULSE=$!
 }
+pulse_stop(){ [ -n "$PULSE" ] && { kill "$PULSE" 2>/dev/null; wait "$PULSE" 2>/dev/null; PULSE=''; clear_line; }; return 0; }
 
-pulse_stop(){
-    [ -n "$PULSE_PID" ] || return 0
-    kill "$PULSE_PID" 2>/dev/null; wait "$PULSE_PID" 2>/dev/null
-    PULSE_PID=""
-    [ "$animated" = "1" ] && printf '\r\033[2K' >&9
-    return 0
-}
-
-heading(){ printf '\n  \033[1m%s\033[0m\n  %s\n\n' "$1" "$2"; }
-rule(){ printf '  %s\n' "────────────────────────────────────────────────────────────────"; }
+heading(){ printf '\n  %s%s%s\n  %s%s%s\n\n' "$BOLD" "$1" "$OFF" "$DIM" "$2" "$OFF"; }
+rule(){ printf '  %s%s%s\n' "$DIM" "────────────────────────────────────────────────────────────────" "$OFF"; }
 die(){ show_cursor; echo "bench.sh: $*" >&2; exit 1; }
 
 measure(){
-    local samples="" t i
+    local out='' t i
     for ((i = 0; i < WARMUP; i++)); do "$@" <"$seed" >/dev/null 2>&1; done
     for ((i = 0; i < REPEATS; i++)); do
-        TIMEFORMAT=%R
-        t=$( { time "$@" <"$seed" >/dev/null 2>&1; } 2>&1 )
+        TIMEFORMAT=%R; t=$( { time "$@" <"$seed" >/dev/null 2>&1; } 2>&1 )
         case $t in ''|*[!0-9.]*) continue ;; esac
-        samples="$samples$t\n"
+        out="$out$t\n"
     done
-    [ -n "$samples" ] || { printf 'x x x'; return; }
-    printf "$samples" | awk '
-        {v[NR]=$1; total+=$1}
-        END{
-            n=NR; mean=total/n
-            for (i=1;i<=n;i++) for (j=i+1;j<=n;j++) if (v[j]<v[i]) {t=v[i];v[i]=v[j];v[j]=t}
-            median = (n%2) ? v[(n+1)/2] : (v[n/2]+v[n/2+1])/2
-            for (i=1;i<=n;i++) spread += (v[i]-mean)*(v[i]-mean)
-            printf "%.3f %.3f %.1f", median, v[1], (mean>0 ? sqrt(spread/(n>1?n-1:1))*100/mean : 0)
-        }'
+    [ -n "$out" ] || { printf 'x 0'; return; }
+    printf "$out" | awk '{v[NR]=$1; s+=$1}
+        END{ n = NR
+             if (n == 0) { printf "x 0"; exit }
+             mean = s / n
+             for (i = 1; i <= n; i++)
+                 for (j = i + 1; j <= n; j++)
+                     if (v[j] < v[i]) { hold = v[i]; v[i] = v[j]; v[j] = hold }
+             mid = (n % 2) ? v[(n + 1) / 2] : (v[n / 2] + v[n / 2 + 1]) / 2
+             for (i = 1; i <= n; i++) spread += (v[i] - mean) * (v[i] - mean)
+             sd = (n > 1) ? sqrt(spread / (n - 1)) : 0
+             printf "%.3f %.1f", mid, (mean > 0) ? sd * 100 / mean : 0 }'
 }
 
-median_of(){ set -- $1; printf '%s' "${1:-x}"; }
-rsd_of(){ set -- $1; printf '%s' "${3:-0}"; }
+med(){ set -- $1; printf '%s' "${1:-x}"; }
+rsd(){ set -- $1; printf '%s' "${2:-0}"; }
 
-dispersion(){
-    case $1 in x|'') printf '%6s' "" ; return ;; esac
-    awk -v r="$1" 'BEGIN{ printf (r>=5.0) ? "  !%3.0f%%" : "  ±%3.0f%%", r }'
-}
-
-ratio(){
-    case "$1$2" in *x*) printf '%7s' "-"; return ;; esac
-    awk -v a="$1" -v b="$2" 'BEGIN{ if (b+0==0) printf "%7s","-"; else printf "%7.2f",a/b }'
-}
-
-delta(){
-    case "$1$2" in *x*) printf '%9s' "-"; return ;; esac
-    awk -v new="$1" -v old="$2" 'BEGIN{
-        if (old+0==0) { printf "%9s","-"; exit }
-        printf "%+8.1f%%", (new-old)*100/old
-    }'
-}
+spread(){ case $1 in x|'') printf '%6s' '' ;; *) awk -v r="$1" 'BEGIN{printf (r>=5)?"  !%3.0f%%":"  ±%3.0f%%", r}' ;; esac; }
+ratio(){ case "$1$2" in *x*) printf '%7s' '-' ;; *) awk -v a="$1" -v b="$2" 'BEGIN{if(b+0==0)printf "%7s","-";else printf "%7.2f",a/b}' ;; esac; }
+change(){ case "$1$2" in *x*) printf '%9s' '-' ;; *) awk -v n="$1" -v o="$2" 'BEGIN{if(o+0==0)printf "%9s","-";else printf "%+8.1f%%",(n-o)*100/o}' ;; esac; }
 
 verdict(){
-    case "$1$2" in *x*) printf ''; return ;; esac
-    awk -v new="$1" -v old="$2" -v rn="$3" -v ro="$4" 'BEGIN{
-        change=(new-old)*100/old
-        noise=(rn>ro?rn:ro)
-        if (change < -noise) printf "faster"
-        else if (change > noise) printf "slower"
-        else printf "level"
-    }'
+    case "$1$2" in *x*) return ;; esac
+    local w; w=$(awk -v n="$1" -v o="$2" -v a="$3" -v b="$4" 'BEGIN{
+        c=(n-o)*100/o; e=(a>b?a:b); print (c<-e)?"faster":((c>e)?"slower":"level") }')
+    case $w in faster) printf '%sfaster%s' "$GOOD" "$OFF" ;;
+               slower) printf '%sslower%s' "$BAD" "$OFF" ;;
+               *)      printf '%slevel%s'  "$DIM" "$OFF" ;; esac
 }
+
+speedup(){ awk -v a="$1" -v g="$2" 'BEGIN{
+    if (a+0<=0||g+0<=0) exit
+    if (g>a) printf "%.1fx faster", g/a; else if (a>g) printf "%.1fx slower", a/g; else printf "level" }'; }
 
 peak_rss(){
-    local out
-    if out=$(/usr/bin/time -v "$@" <"$seed" 2>&1 >/dev/null); then
-        printf '%s' "$out" | awk '/Maximum resident set size/{printf "%.1f", $NF/1024}'
-    elif out=$(/usr/bin/time -l "$@" <"$seed" 2>&1 >/dev/null); then
-        printf '%s' "$out" | awk '/maximum resident set size/{printf "%.1f", $1/1048576}'
-    else
-        printf 'x'
-    fi
+    local o
+    if o=$(/usr/bin/time -v "$@" <"$seed" 2>&1 >/dev/null); then
+        printf '%s' "$o" | awk '/Maximum resident set size/{printf "%.1f", $NF/1024}'
+    elif o=$(/usr/bin/time -l "$@" <"$seed" 2>&1 >/dev/null); then
+        printf '%s' "$o" | awk '/maximum resident set size/{printf "%.1f", $1/1048576}'
+    else printf 'x'; fi
 }
 
-sudo_if_needed(){ [ "$(id -u)" -eq 0 ] || echo sudo; }
-
 install_gnat(){
-    local s cmd=""; s=$(sudo_if_needed)
-    if   command -v apt-get >/dev/null 2>&1; then cmd="$s apt-get install -y --no-install-recommends gnat"
-    elif command -v dnf     >/dev/null 2>&1; then cmd="$s dnf install -y gcc-gnat"
-    elif command -v pacman  >/dev/null 2>&1; then cmd="$s pacman -S --noconfirm gcc-ada"
-    elif command -v zypper  >/dev/null 2>&1; then cmd="$s zypper install -y gcc-ada"
-    elif command -v apk     >/dev/null 2>&1; then cmd="$s apk add gcc-gnat"
-    elif command -v brew    >/dev/null 2>&1; then cmd="brew install gnat"
-    else return 1
-    fi
-    pulse "installing GNAT to compare against"
-    eval "$cmd" >/dev/null 2>&1
-    pulse_stop
+    local s c=''; [ "$(id -u)" -eq 0 ] || s=sudo
+    for try in "apt-get:$s apt-get install -y --no-install-recommends gnat" \
+               "dnf:$s dnf install -y gcc-gnat" "pacman:$s pacman -S --noconfirm gcc-ada" \
+               "zypper:$s zypper install -y gcc-ada" "apk:$s apk add gcc-gnat" "brew:brew install gnat"; do
+        command -v "${try%%:*}" >/dev/null 2>&1 && { c=${try#*:}; break; }
+    done
+    [ -n "$c" ] || return 1
+    pulse "installing GNAT to compare against"; eval "$c" >/dev/null 2>&1; pulse_stop
     command -v gnatmake >/dev/null 2>&1
 }
 
 have_gnat(){
-    [ "$NO_GNAT" = "1" ] && return 1
-    command -v gnatmake >/dev/null 2>&1 && return 0
-    install_gnat
+    [ "$NO_GNAT" = 1 ] && return 1
+    command -v gnatmake >/dev/null 2>&1 || install_gnat
 }
-
-corpus_files(){ ls "$here/acats"/*.ada 2>/dev/null | head -n "$CORPUS"; }
 
 corpus_ready(){
     [ -d "$here/acats" ] && return 0
     [ -f "$here/tests.zip" ] || return 1
-    pulse "unpacking the conformance suite"
-    ( cd "$here" && unzip -q tests.zip )
-    pulse_stop
+    pulse "unpacking the conformance suite"; ( cd "$here" && unzip -q tests.zip ); pulse_stop
     [ -d "$here/acats" ]
+}
+corpus_files(){ ls "$here/acats"/*.ada 2>/dev/null | head -n "$CORPUS"; }
+
+count(){ printf '%s\n' $1 | wc -l; }
+
+monster(){
+    local n=$1 i
+    printf 'with TEXT_IO; use TEXT_IO;\nprocedure Monster is\n'
+    printf '   package Int_IO is new Integer_IO (Integer);\n   Seed : Integer;\n   Total : Integer := 0;\n'
+    for ((i = 1; i <= n; i++)); do
+        printf '   type Kind_%d is (Red_%d, Green_%d, Blue_%d);\n' $i $i $i $i
+        printf '   subtype Narrow_%d is Integer range %d .. %d;\n' $i $i $((i + 500))
+        printf '   type Rec_%d is record\n      A : Narrow_%d;\n      B : Kind_%d;\n      C : Float;\n   end record;\n' $i $i $i
+        printf '   function Fold_%d (X : Integer) return Integer;\n' $i
+    done
+    for ((i = 1; i <= n; i++)); do
+        printf '   function Fold_%d (X : Integer) return Integer is\n      V : Integer := X;\n      R : Rec_%d;\n   begin\n' $i $i
+        printf '      R.B := Green_%d;\n      R.C := Float (V mod 7);\n' $i
+        printf '      case V mod 4 is\n         when 0 => V := V + %d;\n         when 1 => V := V - %d;\n' $i $i
+        printf '         when 2 => V := V * 2 + ((V + %d) - (V - %d) * 1);\n         when others => V := V / 2;\n      end case;\n' $i $i
+        printf '      return ((V + 1) * (V + 2) - (V + 3) + Integer (R.C)) mod 1_000_003;\n   end;\n'
+    done
+    printf 'begin\n   Int_IO.Get (Seed);\n'
+    for ((i = 1; i <= n; i++)); do printf '   Total := (Total + Fold_%d (Seed + %d)) mod 1_000_003;\n' $i $i; done
+    printf "   Put_Line (\"monster:\" & Integer'Image (Total));\nend;\n"
 }
 
 write_programs(){
-    mkdir -p "$work/src"
-    echo 1 > "$seed"
+    mkdir -p "$work/src"; echo 1 > "$seed"
 
     cat > "$work/src/sieve.ada" <<'EOF'
 with TEXT_IO; use TEXT_IO;
-procedure SIEVE is
-   package INT_IO is new INTEGER_IO (INTEGER);
-   LIMIT : constant := 2_000_000;
-   type FLAGS is array (2 .. LIMIT) of BOOLEAN;
-   SEED  : INTEGER;
-   PRIME : FLAGS;
-   COUNT : INTEGER := 0;
+procedure Sieve is
+   package Int_IO is new Integer_IO (Integer);
+   Limit : constant := 2_000_000;
+   type Flags is array (2 .. Limit) of Boolean;
+   Seed  : Integer;
+   Prime : Flags;
+   Count : Integer := 0;
 begin
-   INT_IO.GET (SEED);
-   for PASS in 1 .. 5 loop
-      COUNT := 0;
-      for I in PRIME'RANGE loop PRIME (I) := TRUE; end loop;
-      for I in PRIME'RANGE loop
-         if PRIME (I) then
-            COUNT := COUNT + SEED;
+   Int_IO.Get (Seed);
+   for Pass in 1 .. 5 loop
+      Count := 0;
+      for I in Prime'Range loop Prime (I) := True; end loop;
+      for I in Prime'Range loop
+         if Prime (I) then
+            Count := Count + Seed;
             declare
-               J : INTEGER := I * 2;
+               J : Integer := I * 2;
             begin
-               while J <= LIMIT loop
-                  PRIME (J) := FALSE;
+               while J <= Limit loop
+                  Prime (J) := False;
                   J := J + I;
                end loop;
             end;
          end if;
       end loop;
    end loop;
-   PUT_LINE ("primes:" & INTEGER'IMAGE (COUNT));
-end SIEVE;
+   Put_Line ("primes:" & Integer'Image (Count));
+end;
 EOF
 
     cat > "$work/src/matmul.ada" <<'EOF'
 with TEXT_IO; use TEXT_IO;
-procedure MATMUL is
-   package INT_IO is new INTEGER_IO (INTEGER);
+procedure Matmul is
+   package Int_IO is new Integer_IO (Integer);
    N : constant := 400;
-   type MATRIX is array (1 .. N, 1 .. N) of FLOAT;
-   SEED    : INTEGER;
-   A, B, C : MATRIX;
-   SUM     : FLOAT;
+   type Matrix is array (1 .. N, 1 .. N) of Float;
+   Seed    : Integer;
+   A, B, C : Matrix;
+   Sum     : Float;
 begin
-   INT_IO.GET (SEED);
+   Int_IO.Get (Seed);
    for I in 1 .. N loop
       for J in 1 .. N loop
-         A (I, J) := FLOAT (I + J * SEED);
-         B (I, J) := FLOAT (I - J);
+         A (I, J) := Float (I + J * Seed);
+         B (I, J) := Float (I - J);
          C (I, J) := 0.0;
       end loop;
    end loop;
    for I in 1 .. N loop
       for J in 1 .. N loop
-         SUM := 0.0;
+         Sum := 0.0;
          for K in 1 .. N loop
-            SUM := SUM + A (I, K) * B (K, J);
+            Sum := Sum + A (I, K) * B (K, J);
          end loop;
-         C (I, J) := SUM;
+         C (I, J) := Sum;
       end loop;
    end loop;
-   SUM := 0.0;
+   Sum := 0.0;
+   for I in 1 .. N loop
+      for J in 1 .. N loop Sum := Sum + C (I, J); end loop;
+   end loop;
+   Put_Line ("checksum:" & Integer'Image (Integer (Sum / 1.0E9)));
+end;
+EOF
+
+    cat > "$work/src/lu.ada" <<'EOF'
+with TEXT_IO; use TEXT_IO;
+procedure LU is
+   package Int_IO is new Integer_IO (Integer);
+   N     : constant Integer := 1000;
+   Last  : constant Integer := N - 1;
+   type Matrix is array (1 .. N, 1 .. N) of Float;
+   Seed  : Integer;
+   A     : Matrix;
+   Pivot : Float;
+   Total : Float := 0.0;
+begin
+   Int_IO.Get (Seed);
    for I in 1 .. N loop
       for J in 1 .. N loop
-         SUM := SUM + C (I, J);
+         if I = J then A (I, J) := Float (N + I * Seed);
+         else A (I, J) := Float ((I * 7 + J * 3) mod 17) - 8.0; end if;
       end loop;
    end loop;
-   PUT_LINE ("checksum:" & INTEGER'IMAGE (INTEGER (SUM / 1.0E9)));
-end MATMUL;
+   for K in 1 .. Last loop
+      Pivot := A (K, K);
+      for I in K + 1 .. N loop
+         A (I, K) := A (I, K) / Pivot;
+         for J in K + 1 .. N loop
+            A (I, J) := A (I, J) - A (I, K) * A (K, J);
+         end loop;
+      end loop;
+   end loop;
+   for I in 1 .. N loop Total := Total + A (I, I); end loop;
+   Put_Line ("lu:" & Integer'Image (Integer (Total / 100.0)));
+end;
 EOF
 
     cat > "$work/src/recurse.ada" <<'EOF'
 with TEXT_IO; use TEXT_IO;
-procedure RECURSE is
-   package INT_IO is new INTEGER_IO (INTEGER);
-   SEED  : INTEGER;
-   TOTAL : INTEGER := 0;
-   function FIB (N : INTEGER) return INTEGER is
+procedure Recurse is
+   package Int_IO is new Integer_IO (Integer);
+   Seed  : Integer;
+   Total : Integer := 0;
+   function Fib (N : Integer) return Integer is
    begin
       if N < 2 then return N; end if;
-      return FIB (N - 1) + FIB (N - 2);
-   end FIB;
+      return Fib (N - 1) + Fib (N - 2);
+   end;
 begin
-   INT_IO.GET (SEED);
+   Int_IO.Get (Seed);
    for I in 1 .. 6 loop
-      TOTAL := TOTAL + FIB (30 + SEED);
+      Total := Total + Fib (30 + Seed);
    end loop;
-   PUT_LINE ("fib:" & INTEGER'IMAGE (TOTAL));
-end RECURSE;
+   Put_Line ("fib:" & Integer'Image (Total));
+end;
 EOF
 
     cat > "$work/src/strings.ada" <<'EOF'
 with TEXT_IO; use TEXT_IO;
-procedure STRINGS is
-   package INT_IO is new INTEGER_IO (INTEGER);
-   subtype LINE is STRING (1 .. 64);
-   SEED : INTEGER;
-   BUF  : LINE := (others => 'a');
-   HITS : INTEGER := 0;
-   function COUNT_CHAR (S : STRING; C : CHARACTER) return INTEGER is
-      N : INTEGER := 0;
+procedure Strings is
+   package Int_IO is new Integer_IO (Integer);
+   subtype Line is String (1 .. 64);
+   Seed : Integer;
+   Buf  : Line := (others => 'a');
+   Hits : Integer := 0;
+   function Count_Char (S : String; C : Character) return Integer is
+      N : Integer := 0;
    begin
-      for I in S'RANGE loop
+      for I in S'Range loop
          if S (I) = C then N := N + 1; end if;
       end loop;
       return N;
-   end COUNT_CHAR;
+   end;
 begin
-   INT_IO.GET (SEED);
-   for PASS in 1 .. 3_000_000 loop
-      BUF (1 + ((PASS * SEED) mod 64)) := CHARACTER'VAL (97 + (PASS mod 26));
-      HITS := HITS + COUNT_CHAR (BUF (1 .. 32), 'a');
+   Int_IO.Get (Seed);
+   for Pass in 1 .. 3_000_000 loop
+      Buf (1 + ((Pass * Seed) mod 64)) := Character'Val (97 + (Pass mod 26));
+      Hits := Hits + Count_Char (Buf (1 .. 32), 'a');
    end loop;
-   PUT_LINE ("hits:" & INTEGER'IMAGE (HITS));
-end STRINGS;
+   Put_Line ("hits:" & Integer'Image (Hits));
+end;
 EOF
 
     cat > "$work/src/numerics.ada" <<'EOF'
 with TEXT_IO; use TEXT_IO;
-procedure NUMERICS is
-   package INT_IO is new INTEGER_IO (INTEGER);
-   type MONEY is delta 0.01 range -1_000_000.0 .. 1_000_000.0;
-   type ANGLE is digits 12 range -1.0E9 .. 1.0E9;
-   SEED  : INTEGER;
-   ACC   : MONEY := 0.0;
-   RATE  : MONEY := 0.07;
-   THETA : ANGLE := 0.0;
-   TALLY : INTEGER := 0;
+procedure Numerics is
+   package Int_IO is new Integer_IO (Integer);
+   type Money is delta 0.01 range -1_000_000.0 .. 1_000_000.0;
+   type Angle is digits 12 range -1.0E9 .. 1.0E9;
+   Seed  : Integer;
+   Acc   : Money := 0.0;
+   Rate  : Money := 0.07;
+   Theta : Angle := 0.0;
+   Tally : Integer := 0;
 begin
-   INT_IO.GET (SEED);
+   Int_IO.Get (Seed);
    for I in 1 .. 40_000_000 loop
-      ACC := ACC + RATE * SEED;
-      if ACC > 900_000.0 then ACC := 0.0; end if;
-      THETA := THETA + ANGLE (I mod 1024) * 1.0E-3;
-      if THETA > 9.0E8 then THETA := 0.0; end if;
+      Acc := Acc + Rate * Seed;
+      if Acc > 900_000.0 then Acc := 0.0; end if;
+      Theta := Theta + Angle (I mod 1024) * 1.0E-3;
+      if Theta > 9.0E8 then Theta := 0.0; end if;
    end loop;
-   TALLY := INTEGER (ACC) / 1000 + INTEGER (THETA / 1.0E6);
-   PUT_LINE ("numerics:" & INTEGER'IMAGE (TALLY));
-end NUMERICS;
+   Tally := Integer (Acc) / 1000 + Integer (Theta / 1.0E6);
+   Put_Line ("numerics:" & Integer'Image (Tally));
+end;
 EOF
 
     cat > "$work/src/checks.ada" <<'EOF'
 with TEXT_IO; use TEXT_IO;
-procedure CHECKS is
-   package INT_IO is new INTEGER_IO (INTEGER);
-   subtype SMALL is INTEGER range 0 .. 999;
-   type TABLE is array (SMALL) of SMALL;
-   SEED  : INTEGER;
-   T     : TABLE := (others => 0);
-   IDX   : SMALL := 0;
-   TALLY : INTEGER := 0;
+procedure Checks is
+   package Int_IO is new Integer_IO (Integer);
+   subtype Small is Integer range 0 .. 999;
+   type Table is array (Small) of Small;
+   Seed  : Integer;
+   T     : Table := (others => 0);
+   Idx   : Small := 0;
+   Tally : Integer := 0;
 begin
-   INT_IO.GET (SEED);
-   for PASS in 1 .. 60_000 loop
-      for I in SMALL loop
-         IDX := SMALL ((I * 7 + PASS * SEED) mod 1000);
-         T (IDX) := SMALL ((T (IDX) + I + PASS + SEED) mod 997);
+   Int_IO.Get (Seed);
+   for Pass in 1 .. 60_000 loop
+      for I in Small loop
+         Idx := Small ((I * 7 + Pass * Seed) mod 1000);
+         T (Idx) := Small ((T (Idx) + I + Pass + Seed) mod 997);
       end loop;
    end loop;
-   for I in SMALL loop TALLY := (TALLY + T (I)) mod 1_000_003; end loop;
-   PUT_LINE ("checks:" & INTEGER'IMAGE (TALLY));
-end CHECKS;
+   for I in Small loop Tally := (Tally + T (I)) mod 1_000_003; end loop;
+   Put_Line ("checks:" & Integer'Image (Tally));
+end;
 EOF
 
     cat > "$work/src/exceptions.ada" <<'EOF'
 with TEXT_IO; use TEXT_IO;
-procedure EXCEPTIONS is
-   package INT_IO is new INTEGER_IO (INTEGER);
-   TROUBLE : exception;
-   SEED    : INTEGER;
-   CAUGHT  : INTEGER := 0;
-   procedure DEEP (LEVEL : INTEGER) is
+procedure Exceptions is
+   package Int_IO is new Integer_IO (Integer);
+   Trouble : exception;
+   Seed    : Integer;
+   Caught  : Integer := 0;
+   procedure Deep (Level : Integer) is
    begin
-      if LEVEL <= 0 then raise TROUBLE; end if;
-      DEEP (LEVEL - 1);
-   end DEEP;
+      if Level <= 0 then raise Trouble; end if;
+      Deep (Level - 1);
+   end;
 begin
-   INT_IO.GET (SEED);
+   Int_IO.Get (Seed);
    for I in 1 .. 2_000_000 loop
       begin
-         DEEP (8 * SEED);
+         Deep (8 * Seed);
       exception
-         when TROUBLE => CAUGHT := CAUGHT + 1;
+         when Trouble => Caught := Caught + 1;
       end;
    end loop;
-   PUT_LINE ("caught:" & INTEGER'IMAGE (CAUGHT));
-end EXCEPTIONS;
+   Put_Line ("caught:" & Integer'Image (Caught));
+end;
 EOF
 
     cat > "$work/src/memory.ada" <<'EOF'
 with TEXT_IO, UNCHECKED_DEALLOCATION; use TEXT_IO;
-procedure MEMORY is
-   package INT_IO is new INTEGER_IO (INTEGER);
-   type NODE;
-   type LINK is access NODE;
-   type NODE is record
-      VALUE : INTEGER;
-      NEXT  : LINK;
+procedure Memory is
+   package Int_IO is new Integer_IO (Integer);
+   type Node;
+   type Link is access Node;
+   type Node is record
+      Value : Integer;
+      Next  : Link;
    end record;
-   procedure FREE is new UNCHECKED_DEALLOCATION (NODE, LINK);
-   SEED  : INTEGER;
-   HEAD  : LINK;
-   N     : LINK;
-   TALLY : INTEGER := 0;
+   procedure Free is new Unchecked_Deallocation (Node, Link);
+   Seed  : Integer;
+   Head  : Link;
+   N     : Link;
+   Tally : Integer := 0;
 begin
-   INT_IO.GET (SEED);
-   for PASS in 1 .. 3_000 loop
-      HEAD := null;
+   Int_IO.Get (Seed);
+   for Pass in 1 .. 3_000 loop
+      Head := null;
       for I in 1 .. 5_000 loop
-         N := new NODE'(VALUE => I * SEED, NEXT => HEAD);
-         HEAD := N;
+         N := new Node'(Value => I * Seed, Next => Head);
+         Head := N;
       end loop;
-      while HEAD /= null loop
-         TALLY := (TALLY + HEAD.VALUE) mod 1_000_003;
-         N := HEAD;
-         HEAD := HEAD.NEXT;
-         FREE (N);
+      while Head /= null loop
+         Tally := (Tally + Head.Value) mod 1_000_003;
+         N := Head;
+         Head := Head.Next;
+         Free (N);
       end loop;
    end loop;
-   PUT_LINE ("memory:" & INTEGER'IMAGE (TALLY));
-end MEMORY;
+   Put_Line ("memory:" & Integer'Image (Tally));
+end;
 EOF
 
     cat > "$work/src/tasking.ada" <<'EOF'
 with TEXT_IO; use TEXT_IO;
-procedure TASKING is
-   package INT_IO is new INTEGER_IO (INTEGER);
-   SEED  : INTEGER;
-   TOTAL : INTEGER := 0;
-   task SERVER is
-      entry PUSH (V : INTEGER);
-      entry DRAIN (V : out INTEGER);
-   end SERVER;
-   task body SERVER is
-      ACC : INTEGER := 0;
+procedure Tasking is
+   package Int_IO is new Integer_IO (Integer);
+   Seed  : Integer;
+   Total : Integer := 0;
+   task Server is
+      entry Push (V : Integer);
+      entry Drain (V : out Integer);
+   end Server;
+   task body Server is
+      Acc : Integer := 0;
    begin
       loop
          select
-            accept PUSH (V : INTEGER) do ACC := ACC + V; end PUSH;
+            accept Push (V : Integer) do Acc := Acc + V; end Push;
          or
-            accept DRAIN (V : out INTEGER) do V := ACC; end DRAIN;
+            accept Drain (V : out Integer) do V := Acc; end Drain;
             exit;
          end select;
       end loop;
-   end SERVER;
+   end;
 begin
-   INT_IO.GET (SEED);
+   Int_IO.Get (Seed);
    for I in 1 .. 200_000 loop
-      SERVER.PUSH (SEED);
+      Server.Push (Seed);
    end loop;
-   SERVER.DRAIN (TOTAL);
-   PUT_LINE ("rendezvous:" & INTEGER'IMAGE (TOTAL));
-end TASKING;
+   Server.Drain (Total);
+   Put_Line ("rendezvous:" & Integer'Image (Total));
+end;
+EOF
+
+    cat > "$work/src/taskflood.ada" <<'EOF'
+with TEXT_IO; use TEXT_IO;
+procedure Taskflood is
+   package Int_IO is new Integer_IO (Integer);
+   Seed  : Integer;
+   Total : Integer := 0;
+   task type Worker is
+      entry Take (V : Integer);
+      entry Give (V : out Integer);
+   end Worker;
+   task body Worker is
+      Mine : Integer := 0;
+   begin
+      accept Take (V : Integer) do Mine := V; end Take;
+      for I in 1 .. 50 loop Mine := Mine + I; end loop;
+      accept Give (V : out Integer) do V := Mine; end Give;
+   end;
+begin
+   Int_IO.Get (Seed);
+   for Round in 1 .. 400 loop
+      declare
+         Crew : array (1 .. 8) of Worker;
+         Got  : Integer;
+      begin
+         for W in Crew'Range loop Crew (W).Take (W * Seed); end loop;
+         for W in Crew'Range loop
+            Crew (W).Give (Got);
+            Total := (Total + Got) mod 1_000_003;
+         end loop;
+      end;
+   end loop;
+   Put_Line ("flood:" & Integer'Image (Total));
+end;
+EOF
+
+    cat > "$work/src/taskselect.ada" <<'EOF'
+with TEXT_IO; use TEXT_IO;
+procedure Taskselect is
+   package Int_IO is new Integer_IO (Integer);
+   Seed  : Integer;
+   Total : Integer := 0;
+   task Arbiter is
+      entry Left  (V : Integer);
+      entry Right (V : Integer);
+      entry Done  (V : out Integer);
+   end Arbiter;
+   task body Arbiter is
+      Acc : Integer := 0;
+   begin
+      loop
+         select
+            accept Left (V : Integer) do Acc := Acc + V; end Left;
+         or
+            accept Right (V : Integer) do Acc := Acc - V; end Right;
+         or
+            accept Done (V : out Integer) do V := Acc; end Done;
+            exit;
+         else
+            Acc := Acc + 1;
+         end select;
+      end loop;
+   end;
+begin
+   Int_IO.Get (Seed);
+   for I in 1 .. 100_000 loop
+      if I mod 2 = 0 then Arbiter.Left (Seed); else Arbiter.Right (Seed); end if;
+   end loop;
+   Arbiter.Done (Total);
+   Put_Line ("select: done");
+end;
 EOF
 
     local p
@@ -504,98 +588,104 @@ EOF
 }
 
 run_stages(){
-    local p front whole step=0 total
-    total=$(printf '%s\n' $PROGRAMS | wc -l)
+    local p f w n=0 total; total=$(count "$PROGRAMS")
     heading "WHERE COMPILE TIME GOES" \
         "the front end emits IR; the rest is the LLVM pipeline, code generation and the linker"
-    printf '  %-11s %11s %11s %11s %9s\n' program "front end" whole "back end" "front %"
-    rule
+    printf '  %-11s %11s %11s %11s %9s\n' program "front end" whole "back end" "front %"; rule
     for p in $PROGRAMS; do
-        step=$((step+1)); progress "$((step-1))" "$total" "staging $p"
-        front=$(median_of "$(measure "$ada83" --ir "$work/src/$p.ada" -o "$work/$p.ll")")
-        whole=$(median_of "$(measure "$ada83" "-O$OPT" "$work/src/$p.ada" -o "$work/$p.exe")")
-        progress_done
-        awk -v p="$p" -v f="$front" -v w="$whole" 'BEGIN{
-            back = w - f
-            printf "  %-11s %11s %11s %11.3f %8.0f%%\n", p, f, w, (back>0?back:0), (w>0? f*100/w : 0)
-        }'
+        progress $((n++)) "$total" "staging $p"
+        f=$(med "$(measure "$ada83" --ir "$work/src/$p.ada" -o "$work/$p.ll")")
+        w=$(med "$(measure "$ada83" "-O$OPT" "$work/src/$p.ada" -o "$work/$p.exe")")
+        clear_line
+        awk -v p="$p" -v f="$f" -v w="$w" 'BEGIN{ b=w-f
+            printf "  %-11s %11s %11s %11.3f %8.0f%%\n", p, f, w, (b>0?b:0), (w>0?f*100/w:0) }'
     done
-    progress_done
-    printf '\n  Where the front end is the smaller share, changes to ada83.c will not\n'
-    printf '  show here; run again with OPT=0 to take the LLVM pipeline out of the way.\n'
+    clear_line
+    printf '\n  %sWhere the front end is the smaller share, changes to ada83.c will not show\n' "$DIM"
+    printf '  here; run again with OPT=0 to take the LLVM pipeline out of the way.%s\n' "$OFF"
+}
+
+run_parser(){
+    local n t lines peak=0 first='' firstlines=''
+    heading "FRONT END AGAINST INPUT SIZE" \
+        "a generated unit of types, records, case statements and nested expressions"
+    printf '  %-8s %9s %11s %13s %s\n' units lines "front end" "µs per line" ""; rule
+    for n in 50 100 200 400 800; do
+        progress "$n" 800 "generating and compiling ${n} units"
+        monster "$n" > "$work/src/monster.ada"
+        lines=$(wc -l < "$work/src/monster.ada")
+        t=$(med "$(measure "$ada83" --ir "$work/src/monster.ada" -o "$work/monster.ll")")
+        clear_line
+        [ -z "$first" ] && { first=$t; firstlines=$lines; }
+        awk -v n="$n" -v l="$lines" -v t="$t" -v f="$first" -v fl="$firstlines" 'BEGIN{
+            per = t*1000000/l
+            base = f*1000000/fl
+            printf "  %-8s %9s %11s %13.1f %s\n", n, l, t, per,
+                   (base>0 ? sprintf("%.2fx the cost per line of the smallest", per/base) : "") }'
+    done
+    clear_line
+    printf '\n  %sCost per line should stay flat. A figure that climbs with size is a\n' "$DIM"
+    printf '  super-linear algorithm in the front end, and worth hunting down.%s\n' "$OFF"
 }
 
 run_corpus(){
     heading "CORPUS THROUGHPUT" "the conformance suite compiled to LLVM IR"
     corpus_ready || { echo "  no corpus available"; return; }
-    local files count lines secs f done_n=0 one
-    files=$(corpus_files)
-    [ -n "$files" ] || { echo "  no corpus available"; return; }
-    count=$(printf '%s\n' $files | wc -l)
-    lines=$(cat $files 2>/dev/null | wc -l)
-    : > "$work/times"
+    local files n lines secs f done=0 one peak
+    files=$(corpus_files); [ -n "$files" ] || { echo "  no corpus available"; return; }
+    n=$(count "$files"); lines=$(cat $files 2>/dev/null | wc -l); : > "$work/times"
     TIMEFORMAT=%R
     secs=$( { time { for f in $files; do
-                one=$( { time "$ada83" --ir "$f" -o "$work/c.ll" >/dev/null 2>&1; } 2>&1 )
-                printf '%s\t%s\n' "$one" "$(basename "$f")" >> "$work/times"
-                done_n=$((done_n+1))
-                [ $((done_n % 10)) -eq 0 ] && progress "$done_n" "$count" "compiling the suite"
-             done ; } ; } 2>&1 | tail -1 )
-    progress_done
-    printf '  %-22s %s\n' "files" "$count"
-    printf '  %-22s %s\n' "lines" "$lines"
+            one=$( { time "$ada83" --ir "$f" -o "$work/c.ll" >/dev/null 2>&1; } 2>&1 )
+            printf '%s\t%s\n' "$one" "$(basename "$f")" >> "$work/times"
+            done=$((done+1)); [ $((done % 10)) = 0 ] && progress "$done" "$n" "compiling the suite"
+         done ; } ; } 2>&1 | tail -1 )
+    clear_line
+    printf '  %-22s %s\n' files "$n"
+    printf '  %-22s %s\n' lines "$lines"
     printf '  %-22s %s s\n' "wall time" "$secs"
-    awk -v l="$lines" -v s="$secs" 'BEGIN{ if (s+0>0) printf "  %-22s %d\n","lines per second",l/s }'
-    awk -v c="$count" -v s="$secs" 'BEGIN{ if (s+0>0) printf "  %-22s %.1f\n","files per second",c/s }'
+    awk -v l="$lines" -v s="$secs" 'BEGIN{if(s+0>0)printf "  %-22s %d\n","lines per second",l/s}'
+    awk -v c="$n" -v s="$secs" 'BEGIN{if(s+0>0)printf "  %-22s %.1f\n","files per second",c/s}'
     heading "SLOWEST INPUTS" "the files worth opening a profiler on"
-    local peak filled
     peak=$(sort -rn "$work/times" | head -1 | cut -f1)
     sort -rn "$work/times" | head -n "$SLOWEST" | while IFS=$'\t' read -r t name; do
-        filled=$(awk -v v="$t" -v m="$peak" 'BEGIN{printf "%.3f",(m>0?v/m:0)*24}')
-        printf '  %-18s %7ss  %s\n' "$name" "$t" "$(bar "$filled" 24)"
+        printf '  %-18s %7ss  %s\n' "$name" "$t" "$(bar "$(scaled "$t" "$peak" 24)" 24)"
     done
 }
 
 run_compare(){
-    local other=$1 p a b ra rb sa sb step=0 total f
+    local other=$1 p a b sa sb n=0 total f ref new files
     [ -n "$other" ] || die "compare needs the path of another ada83 binary"
     [ -x "$other" ] || die "cannot run $other"
-    total=$(printf '%s\n' $PROGRAMS | wc -l)
+    total=$(count "$PROGRAMS")
     heading "AGAINST $(basename "$other")" \
         "compile time; negative is faster than the reference, and a change inside the noise reads level"
-    printf '  %-11s %14s %14s %10s   %s\n' program reference "this build" delta ""
-    rule
+    printf '  %-11s %14s %14s %10s   %s\n' program reference "this build" delta ''; rule
     for p in $PROGRAMS; do
-        step=$((step+1)); progress "$((step-1))" "$total" "compiling $p"
+        progress $((n++)) "$total" "compiling $p"
         sb=$(measure "$other" "-O$OPT" "$work/src/$p.ada" -o "$work/$p.ref")
         sa=$(measure "$ada83" "-O$OPT" "$work/src/$p.ada" -o "$work/$p.new")
-        b=$(median_of "$sb"); rb=$(rsd_of "$sb")
-        a=$(median_of "$sa"); ra=$(rsd_of "$sa")
-        progress_done
+        b=$(med "$sb"); a=$(med "$sa"); clear_line
         printf '  %-11s %8s%s %8s%s %s   %s\n' "$p" \
-            "$b" "$(dispersion "$rb")" "$a" "$(dispersion "$ra")" \
-            "$(delta "$a" "$b")" "$(verdict "$a" "$b" "$ra" "$rb")"
+            "$b" "$(spread "$(rsd "$sb")")" "$a" "$(spread "$(rsd "$sa")")" \
+            "$(change "$a" "$b")" "$(verdict "$a" "$b" "$(rsd "$sa")" "$(rsd "$sb")")"
     done
-    progress_done
+    clear_line
     corpus_ready || return 0
-    local files ref new
-    files=$(corpus_files)
-    [ -n "$files" ] || return 0
+    files=$(corpus_files); [ -n "$files" ] || return 0
     TIMEFORMAT=%R
     progress 1 2 "reference over the corpus"
     ref=$( { time { for f in $files; do "$other" --ir "$f" -o "$work/c.ll" >/dev/null 2>&1; done ; } ; } 2>&1 | tail -1 )
     progress 2 2 "this build over the corpus"
     new=$( { time { for f in $files; do "$ada83" --ir "$f" -o "$work/c.ll" >/dev/null 2>&1; done ; } ; } 2>&1 | tail -1 )
-    progress_done
-    rule
-    printf '  %-11s %14s %14s %s\n' corpus "$ref" "$new" "$(delta "$new" "$ref")"
+    clear_line; rule
+    printf '  %-11s %14s %14s %s\n' corpus "$ref" "$new" "$(change "$new" "$ref")"
 }
 
 run_profile(){
     heading "WHERE THE COMPILER SPENDS ITS TIME" "symbols from ada83.c, compiling the corpus"
     corpus_ready || { echo "  no corpus available"; return; }
-    local files f
-    files=$(corpus_files)
+    local files f; files=$(corpus_files)
     [ -n "$files" ] || { echo "  no corpus available"; return; }
     if command -v perf >/dev/null 2>&1 && perf stat true >/dev/null 2>&1; then
         pulse "recording with perf"
@@ -615,87 +705,73 @@ run_profile(){
     pulse_stop
     if [ -f "$work/gmon.out" ] && command -v gprof >/dev/null 2>&1; then
         ( cd "$work" && gprof -b -p "$work/ada83-pg" gmon.out 2>/dev/null | head -22 | sed 's/^/  /' )
-    else
-        echo "  no profile was produced"
-    fi
+    else echo "  no profile was produced"; fi
 }
 
 run_codegen(){
-    local gnat=$1 p a g sa sg out_a out_g peak=0 step=0 total
-    total=$(printf '%s\n' $PROGRAMS | wc -l)
+    local gnat=$1 p a g sa sg oa og n=0 total peak=0 fa fg
+    total=$(count "$PROGRAMS")
     heading "GENERATED CODE" "run time of the compiled program at -O$OPT"
-    if [ "$gnat" = "1" ]; then
-        printf '  %-11s %14s %14s %8s  %s\n' program ada83 gnat ratio stresses
-    else
-        printf '  %-11s %14s  %s\n' program ada83 stresses
-    fi
+    if [ "$gnat" = 1 ]
+    then printf '  %-11s %14s %14s %8s  %s\n' program ada83 gnat ratio stresses
+    else printf '  %-11s %14s  %s\n' program ada83 stresses; fi
     rule
     for p in $PROGRAMS; do
-        step=$((step+1)); progress "$((step-1))" "$total" "$p"
+        progress $((n++)) "$total" "$p"
         if ! "$ada83" "-O$OPT" "$work/src/$p.ada" -o "$work/$p.a83" >/dev/null 2>&1; then
-            progress_done; printf '  %-11s %14s\n' "$p" "build failed"; continue
+            clear_line; printf '  %-11s %14s\n' "$p" "build failed"; continue
         fi
-        sa=$(measure "$work/$p.a83"); a=$(median_of "$sa")
-        out_a=$("$work/$p.a83" <"$seed" 2>&1 | head -1)
+        sa=$(measure "$work/$p.a83"); a=$(med "$sa")
+        oa=$("$work/$p.a83" <"$seed" 2>&1 | head -1)
         eval "T_$p=\$a"
-        if [ "$gnat" = "1" ]; then
-            sg="x x x"; g=x; out_g=$out_a
+        if [ "$gnat" = 1 ]; then
+            sg='x 0'; g=x; og=$oa
             if ( cd "$work/src" && gnatmake -q "-O$OPT" "$p.adb" -o "$work/$p.gnat" ) >/dev/null 2>&1; then
-                sg=$(measure "$work/$p.gnat"); g=$(median_of "$sg")
-                out_g=$("$work/$p.gnat" <"$seed" 2>&1 | head -1)
+                sg=$(measure "$work/$p.gnat"); g=$(med "$sg"); og=$("$work/$p.gnat" <"$seed" 2>&1 | head -1)
             fi
-            eval "G_$p=\$g"
-            progress_done
-            printf '  %-11s %8s%s %8s%s %s  %s' "$p" \
-                "$a" "$(dispersion "$(rsd_of "$sa")")" "$g" "$(dispersion "$(rsd_of "$sg")")" \
-                "$(ratio "$a" "$g")" "$(describe "$p")"
-            if [ "$out_a" != "$out_g" ]; then
-                if comparable "$p"; then printf '  OUTPUT DIFFERS'; else printf '  (representation differs)'; fi
-            fi
+            eval "G_$p=\$g"; clear_line
+            printf '  %-11s %8s%s %8s%s %s  %s' "$p" "$a" "$(spread "$(rsd "$sa")")" \
+                "$g" "$(spread "$(rsd "$sg")")" "$(ratio "$a" "$g")" "$(describe "$p")"
+            [ "$oa" != "$og" ] && { comparable "$p" && printf '  %sOUTPUT DIFFERS%s' "$BAD" "$OFF" \
+                                    || printf '  %s(representation differs)%s' "$DIM" "$OFF"; }
             printf '\n'
         else
-            progress_done
-            printf '  %-11s %8s%s  %s\n' "$p" "$a" "$(dispersion "$(rsd_of "$sa")")" "$(describe "$p")"
+            clear_line
+            printf '  %-11s %8s%s  %s\n' "$p" "$a" "$(spread "$(rsd "$sa")")" "$(describe "$p")"
         fi
     done
-    progress_done
-    [ "$gnat" = "1" ] || return 0
+    clear_line
+    [ "$gnat" = 1 ] || return 0
     heading "SIDE BY SIDE" "bar length is time; shorter is faster"
     for p in $PROGRAMS; do
         eval "a=\${T_$p:-x}"; eval "g=\${G_$p:-x}"
-        case $a in x) ;; *) awk -v v="$a" -v m="$peak" 'BEGIN{exit !(v>m)}' && peak=$a ;; esac
-        case $g in x) ;; *) awk -v v="$g" -v m="$peak" 'BEGIN{exit !(v>m)}' && peak=$g ;; esac
+        for v in "$a" "$g"; do
+            case $v in x) ;; *) awk -v v="$v" -v m="$peak" 'BEGIN{exit !(v>m)}' && peak=$v ;; esac
+        done
     done
-    local fa fg note
     for p in $PROGRAMS; do
         eval "a=\${T_$p:-x}"; eval "g=\${G_$p:-x}"
-        [ "$a" = "x" ] && continue
-        fa=$(awk -v v="$a" -v m="$peak" 'BEGIN{printf "%.3f",(m>0?v/m:0)*30}')
-        note=""
-        [ "$g" != "x" ] && note=$(awk -v a="$a" -v g="$g" 'BEGIN{
-            if (g>a) printf "%.1fx faster", g/a; else if (a>g) printf "%.1fx slower", a/g; else printf "level" }')
-        printf '  %-11s %-6s %s %7s  %s\n' "$p" ada83 "$(bar "$fa" 30)" "$a" "$note"
-        [ "$g" = "x" ] && continue
-        fg=$(awk -v v="$g" -v m="$peak" 'BEGIN{printf "%.3f",(m>0?v/m:0)*30}')
-        printf '  %-11s %-6s %s %7s\n' "" gnat "$(bar "$fg" 30)" "$g"
+        [ "$a" = x ] && continue
+        printf '  %-11s %s%-5s%s %s %7s  %s\n' "$p" "$BOLD" ada83 "$OFF" \
+            "$(bar "$(scaled "$a" "$peak" 30)" 30)" "$a" "$(speedup "$a" "$g")"
+        [ "$g" = x ] && continue
+        printf '  %-11s %s%-5s%s %s %7s\n' '' "$DIM" gnat "$OFF" \
+            "$(bar "$(scaled "$g" "$peak" 30)" 30)" "$g"
     done
 }
 
 run_memory(){
-    local p compiling running step=0 total
-    total=$(printf '%s\n' $PROGRAMS | wc -l)
+    local p c r n=0 total; total=$(count "$PROGRAMS")
     heading "PEAK MEMORY" "resident set at its high point, in megabytes"
-    printf '  %-11s %14s %14s  %s\n' program "compiling it" "running it" stresses
-    rule
+    printf '  %-11s %14s %14s  %s\n' program "compiling it" "running it" stresses; rule
     for p in $PROGRAMS; do
-        step=$((step+1)); progress "$((step-1))" "$total" "$p"
-        compiling=$(peak_rss "$ada83" "-O$OPT" "$work/src/$p.ada" -o "$work/$p.mem")
-        running=x
-        [ -x "$work/$p.mem" ] && running=$(peak_rss "$work/$p.mem")
-        progress_done
-        printf '  %-11s %14s %14s  %s\n' "$p" "${compiling:-x}" "${running:-x}" "$(describe "$p")"
+        progress $((n++)) "$total" "$p"
+        c=$(peak_rss "$ada83" "-O$OPT" "$work/src/$p.ada" -o "$work/$p.mem")
+        r=x; [ -x "$work/$p.mem" ] && r=$(peak_rss "$work/$p.mem")
+        clear_line
+        printf '  %-11s %14s %14s  %s\n' "$p" "${c:-x}" "${r:-x}" "$(describe "$p")"
     done
-    progress_done
+    clear_line
 }
 
 cpu_model(){
@@ -709,23 +785,24 @@ hide_cursor
 write_programs
 
 gnat=0
-case "$mode" in codegen|all) have_gnat && gnat=1 ;; esac
+case $mode in codegen|all) have_gnat && gnat=1 ;; esac
 
-printf '\n  \033[1mada83\033[0m   %s\n' "$("$ada83" --version 2>&1 | head -1)"
-[ "$gnat" = "1" ] && printf '  \033[1mgnat\033[0m    %s\n' "$(gnatmake --version 2>&1 | head -1)"
-printf '  \033[1mhost\033[0m    %s %s, %s cpus' "$(uname -s)" "$(uname -m)" \
+printf '\n  %sada83%s   %s\n' "$BOLD" "$OFF" "$("$ada83" --version 2>&1 | head -1)"
+[ $gnat = 1 ] && printf '  %sgnat%s    %s\n' "$BOLD" "$OFF" "$(gnatmake --version 2>&1 | head -1)"
+printf '  %shost%s    %s %s, %s cpus' "$BOLD" "$OFF" "$(uname -s)" "$(uname -m)" \
     "$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo '?')"
 [ -n "$(cpu_model)" ] && printf ', %s' "$(cpu_model)"
-printf '\n  \033[1mmethod\033[0m  median of %s runs after %s warmup, at -O%s\n' "$REPEATS" "$WARMUP" "$OPT"
+printf '\n  %smethod%s  median of %s runs after %s warmup, at -O%s\n' "$BOLD" "$OFF" "$REPEATS" "$WARMUP" "$OPT"
 
-case "$mode" in
+case $mode in
     stages)  run_stages ;;
+    parser)  run_parser ;;
     corpus)  run_corpus ;;
     compare) run_compare "$reference" ;;
     profile) run_profile ;;
     codegen) run_codegen "$gnat" ;;
     memory)  run_memory ;;
-    all)     run_stages; run_corpus; run_codegen "$gnat"; run_memory ;;
+    all)     run_stages; run_parser; run_corpus; run_codegen "$gnat"; run_memory ;;
     *)       show_cursor; echo "bench.sh: unknown mode '$mode'" >&2; usage >&2; exit 2 ;;
 esac
 show_cursor
