@@ -143,7 +143,7 @@ measure(){
              mid = (n % 2) ? v[(n + 1) / 2] : (v[n / 2] + v[n / 2 + 1]) / 2
              for (i = 1; i <= n; i++) spread += (v[i] - mean) * (v[i] - mean)
              sd = (n > 1) ? sqrt(spread / (n - 1)) : 0
-             printf "%.3f %.1f", mid, (mean > 0) ? sd * 100 / mean : 0 }'
+             printf "%.3f %.1f", mid, ((mean > 0) ? sd * 100 / mean : 0) }'
 }
 
 med(){ set -- $1; printf '%s' "${1:-x}"; }
