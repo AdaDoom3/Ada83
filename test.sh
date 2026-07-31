@@ -14,8 +14,17 @@ TIMEOUT=$(command -v timeout || command -v gtimeout) || {
 }
 export TIMEOUT
 
-OPT=${OPT:--O0}
-export OPT
+for tool in llvm-link lli; do
+    command -v "$tool" >/dev/null || {
+        echo "FATAL: no '$tool' command found" >&2
+        echo "       classes A, C, D and E link and run what they compile," >&2
+        echo "       and without it every one of them reports as skipped" >&2
+        echo "       Debian/Ubuntu: apt-get install llvm" >&2
+        echo "       macOS:         brew install llvm" >&2
+        echo "       Windows:       winget install LLVM.LLVM" >&2
+        exit 1
+    }
+done
 
 now_ms(){
     local stamp
@@ -338,8 +347,7 @@ run_one(){
 }
 ROOT=$PWD
 export ROOT
-export -f run_one gather_files compile_set run_in_lib link_program \
-          report_link_failure run_continuity_creators pct
+export -f run_one gather_files compile_set run_in_lib link_program run_continuity_creators pct
 export START_MS TEST_TIMEOUT LINK_TIMEOUT COMPILE_TIMEOUT
 
 run_one_timed(){
