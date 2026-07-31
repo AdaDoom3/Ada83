@@ -42,8 +42,7 @@ const Configured = (Name, Fallback) =>
 
 const Opened_Folders = () => vscode.workspace.workspaceFolders ?? [];
 
-const Opened_Folder = () =>
-  ((Folders) => (Folders.length === 0 ? null : Folders[0])) (Opened_Folders ());
+const Opened_Folder = () => Opened_Folders ()[0] ?? null;
 
 const Initialize = (Id) => ({
   id: Id,
@@ -60,6 +59,7 @@ const Initialize = (Id) => ({
                 ({ uri: Folder.uri.toString (), name: Folder.name }))))
         (Opened_Folders ()),
     capabilities: {
+      general: { positionEncodings: ['utf-16'] },
       textDocument: {
         publishDiagnostics: { relatedInformation: true },
         signatureHelp: { signatureInformation: { parameterInformation: {
@@ -100,18 +100,11 @@ const Did_Close = (Document) => ({
   params: { textDocument: { uri: Document.uri.toString () } },
 });
 
-const Definition = (Id, Document, Position) => ({
-  id: Id,
-  method: 'textDocument/definition',
-  params: {
-    textDocument: { uri: Document.uri.toString () },
-    position: { line: Position.line, character: Position.character },
-  },
-});
-
-const Shutdown = () => ({ id: 2, method: 'shutdown' });
+const Shutdown = (Id) => ({ id: Id, method: 'shutdown' });
 
 const Exit = () => ({ method: 'exit' });
+
+const Mapped = (Table, Fallback) => (Reported) => Table[Reported] ?? Fallback;
 
 const Severity_Table = {
   1: vscode.DiagnosticSeverity.Error,
@@ -120,8 +113,7 @@ const Severity_Table = {
   4: vscode.DiagnosticSeverity.Hint,
 };
 
-const Severity_Of = (Reported) =>
-  Severity_Table[Reported] ?? vscode.DiagnosticSeverity.Error;
+const Severity_Of = Mapped (Severity_Table, vscode.DiagnosticSeverity.Error);
 
 const Range_Of = ({ start, end }) =>
   new vscode.Range (start.line, start.character, end.line, end.character);
@@ -172,14 +164,15 @@ let Next_Id = 10;
 let Trace_Channel = null;
 const Awaiting = new Map ();
 
-const Traced = (Direction, Message) =>
-  ((Level) => {
-     if (Level === 'off' || Trace_Channel === null) return;
-     Trace_Channel.appendLine (
-       Level === 'verbose'
-         ? `${Direction} ${JSON.stringify (Message)}`
-         : `${Direction} ${Message.method ?? `id ${Message.id}`}`);
-   }) (Configured ('trace.server', 'off'));
+let Tracing = 'off';
+
+const Traced = (Direction, Message) => {
+  if (Tracing === 'off' || Trace_Channel === null) return;
+  Trace_Channel.appendLine (
+    Tracing === 'verbose'
+      ? `${Direction} ${JSON.stringify (Message)}`
+      : `${Direction} ${Message.method ?? `id ${Message.id}`}`);
+};
 
 const Send = (Message) => {
   if (Session === null || !Session.Server.stdin.writable) return;
@@ -245,39 +238,14 @@ const Ask = (Build, Token, Patience) =>
            });
          })) (Next_Id++);
 
-const Definition_Provider = {
-  provideDefinition: (Document, Position, Token) =>
-    Ask ((Id) => Definition (Id, Document, Position), Token)
-      .then (Location_Of),
-};
-
-const Document_Highlight = (Id, Document, Position) => ({
-  id: Id,
-  method: 'textDocument/documentHighlight',
-  params: {
-    textDocument: { uri: Document.uri.toString () },
-    position: { line: Position.line, character: Position.character },
-  },
-});
-
-const References = (Id, Document, Position, Include_Declaration) => ({
-  id: Id,
-  method: 'textDocument/references',
-  params: {
-    textDocument: { uri: Document.uri.toString () },
-    position: { line: Position.line, character: Position.character },
-    context: { includeDeclaration: Include_Declaration },
-  },
-});
-
 const Highlight_Kind_Table = {
   1: vscode.DocumentHighlightKind.Text,
   2: vscode.DocumentHighlightKind.Read,
   3: vscode.DocumentHighlightKind.Write,
 };
 
-const Highlight_Kind_Of = (Reported) =>
-  Highlight_Kind_Table[Reported] ?? vscode.DocumentHighlightKind.Text;
+const Highlight_Kind_Of =
+  Mapped (Highlight_Kind_Table, vscode.DocumentHighlightKind.Text);
 
 const Highlight_Of = (Reported) =>
   new vscode.DocumentHighlight (Range_Of (Reported.range),
@@ -290,46 +258,12 @@ const Highlights_Of = Listed (Highlight_Of);
 
 const Locations_Of = Listed (Location_Of);
 
-const Highlight_Provider = {
-  provideDocumentHighlights: (Document, Position, Token) =>
-    Ask ((Id) => Document_Highlight (Id, Document, Position), Token)
-      .then (Highlights_Of),
-};
-
-const Reference_Provider = {
-  provideReferences: (Document, Position, Context, Token) =>
-    Ask ((Id) => References (Id, Document, Position,
-                             (Context ?? {}).includeDeclaration !== false),
-         Token)
-      .then (Locations_Of),
-};
-
-const Hover = (Id, Document, Position) => ({
-  id: Id,
-  method: 'textDocument/hover',
-  params: {
-    textDocument: { uri: Document.uri.toString () },
-    position: { line: Position.line, character: Position.character },
-  },
-});
-
 const Hover_Of = (Result) =>
   Result === null || Result === undefined ||
   Result.contents === null || Result.contents === undefined
     ? null
     : new vscode.Hover (new vscode.MarkdownString (Result.contents.value),
                         Range_Of (Result.range));
-
-const Hover_Provider = {
-  provideHover: (Document, Position, Token) =>
-    Ask ((Id) => Hover (Id, Document, Position), Token).then (Hover_Of),
-};
-
-const Document_Symbols = (Id, Document) => ({
-  id: Id,
-  method: 'textDocument/documentSymbol',
-  params: { textDocument: { uri: Document.uri.toString () } },
-});
 
 const Symbol_Kind_Of = (Reported) =>
   Number.isInteger (Reported) && Reported >= 1 && Reported <= 26
@@ -342,22 +276,7 @@ const Symbol_Of = (Reported) =>
                                 Reported.containerName ?? '',
                                 Location_Of (Reported.location));
 
-const Symbols_Of = (Result) =>
-  (Array.isArray (Result) ? Result : []).map (Symbol_Of);
-
-const Document_Symbol_Provider = {
-  provideDocumentSymbols: (Document, Token) =>
-    Ask ((Id) => Document_Symbols (Id, Document), Token).then (Symbols_Of),
-};
-
-const Completion = (Id, Document, Position) => ({
-  id: Id,
-  method: 'textDocument/completion',
-  params: {
-    textDocument: { uri: Document.uri.toString () },
-    position: { line: Position.line, character: Position.character },
-  },
-});
+const Symbols_Of = Listed (Symbol_Of);
 
 const Completion_Kind_Table = {
   2: vscode.CompletionItemKind.Method,
@@ -371,8 +290,8 @@ const Completion_Kind_Table = {
   23: vscode.CompletionItemKind.Event,
 };
 
-const Completion_Kind_Of = (Reported) =>
-  Completion_Kind_Table[Reported] ?? vscode.CompletionItemKind.Text;
+const Completion_Kind_Of =
+  Mapped (Completion_Kind_Table, vscode.CompletionItemKind.Text);
 
 const Completion_Item_Of = (Reported) =>
   Object.assign (
@@ -385,35 +304,7 @@ const Completions_Of = (Result) =>
     ? null
     : (Result.items ?? []).map (Completion_Item_Of);
 
-const Completion_Provider = {
-  provideCompletionItems: (Document, Position, Token) =>
-    Ask ((Id) => Completion (Id, Document, Position), Token)
-      .then (Completions_Of),
-};
-
-const Workspace_Symbols = (Id, Query) => ({
-  id: Id,
-  method: 'workspace/symbol',
-  params: { query: Query },
-});
-
 const Workspace_Symbols_Of = Listed (Symbol_Of);
-
-const Workspace_Symbol_Provider = {
-  provideWorkspaceSymbols: (Query, Token) =>
-    Ask ((Id) => Workspace_Symbols (Id, Query ?? ''), Token,
-         Configured ('workspaceRequestTimeout', 120000))
-      .then (Workspace_Symbols_Of),
-};
-
-const Signature_Help = (Id, Document, Position) => ({
-  id: Id,
-  method: 'textDocument/signatureHelp',
-  params: {
-    textDocument: { uri: Document.uri.toString () },
-    position: { line: Position.line, character: Position.character },
-  },
-});
 
 const Parameter_Of = (Reported) =>
   new vscode.ParameterInformation (Reported.label);
@@ -431,18 +322,6 @@ const Signature_Help_Of = (Result) =>
         activeParameter: Result.activeParameter ?? 0,
       });
 
-const Signature_Help_Provider = {
-  provideSignatureHelp: (Document, Position, Token) =>
-    Ask ((Id) => Signature_Help (Id, Document, Position), Token)
-      .then (Signature_Help_Of),
-};
-
-const Folding_Ranges = (Id, Document) => ({
-  id: Id,
-  method: 'textDocument/foldingRange',
-  params: { textDocument: { uri: Document.uri.toString () } },
-});
-
 const Folding_Kind_Table = {
   comment: vscode.FoldingRangeKind.Comment,
   imports: vscode.FoldingRangeKind.Imports,
@@ -454,26 +333,6 @@ const Folding_Range_Of = (Reported) =>
                            Folding_Kind_Table[Reported.kind]);
 
 const Folding_Ranges_Of = Listed (Folding_Range_Of);
-
-const Folding_Range_Provider = {
-  provideFoldingRanges: (Document, Context, Token) =>
-    Ask ((Id) => Folding_Ranges (Id, Document), Token)
-      .then (Folding_Ranges_Of),
-};
-
-const Code_Actions = (Id, Document, Selection) => ({
-  id: Id,
-  method: 'textDocument/codeAction',
-  params: {
-    textDocument: { uri: Document.uri.toString () },
-    range: {
-      start: { line: Selection.start.line,
-               character: Selection.start.character },
-      end: { line: Selection.end.line, character: Selection.end.character },
-    },
-    context: { diagnostics: [] },
-  },
-});
 
 const Edited = (Edit, Uri, Replacements) => {
   Replacements.forEach ((Replacement) =>
@@ -495,11 +354,101 @@ const Code_Action_Of = (Reported) =>
 
 const Code_Actions_Of = Listed (Code_Action_Of);
 
-const Code_Action_Provider = {
-  provideCodeActions: (Document, Selection, Context, Token) =>
-    Ask ((Id) => Code_Actions (Id, Document, Selection), Token)
-      .then (Code_Actions_Of),
-};
+const Text_Document_Of = (Document) => ({ uri: Document.uri.toString () });
+
+const Position_Of = ({ line, character }) => ({ line, character });
+
+const Range_Sent = ({ start, end }) =>
+  ({ start: Position_Of (start), end: Position_Of (end) });
+
+const At_Document = (Document) => ({ textDocument: Text_Document_Of (Document) });
+
+const At_Position = (Document, Position) =>
+  ({ ...At_Document (Document), position: Position_Of (Position) });
+
+const At_References = (Document, Position, Context) =>
+  ({ ...At_Position (Document, Position),
+     context: { includeDeclaration: (Context ?? {}).includeDeclaration !== false } });
+
+const At_Selection = (Document, Selection) =>
+  ({ ...At_Document (Document), range: Range_Sent (Selection),
+     context: { diagnostics: [] } });
+
+const For_Query = (Query) => ({ query: Query ?? '' });
+
+const Is_Cancellable = (Given) =>
+  Given !== null && typeof Given === 'object' &&
+  typeof Given.onCancellationRequested === 'function';
+
+const Registers = (Register) => (Provider) => Register (Ada_Selector, Provider);
+
+const Triggers = (Register, Name, Fallback) => (Provider, Capabilities) =>
+  Register (Ada_Selector, Provider,
+            ...((Capabilities[Name] ?? {}).triggerCharacters ?? Fallback));
+
+const Language_Features = [
+  { Capability: 'definitionProvider',        Provides: 'provideDefinition',
+    Method: 'textDocument/definition',       Parameters: At_Position,
+    Answer: Location_Of,
+    Register: Registers (vscode.languages.registerDefinitionProvider) },
+  { Capability: 'hoverProvider',             Provides: 'provideHover',
+    Method: 'textDocument/hover',            Parameters: At_Position,
+    Answer: Hover_Of,
+    Register: Registers (vscode.languages.registerHoverProvider) },
+  { Capability: 'documentHighlightProvider', Provides: 'provideDocumentHighlights',
+    Method: 'textDocument/documentHighlight', Parameters: At_Position,
+    Answer: Highlights_Of,
+    Register: Registers (vscode.languages.registerDocumentHighlightProvider) },
+  { Capability: 'referencesProvider',        Provides: 'provideReferences',
+    Method: 'textDocument/references',       Parameters: At_References,
+    Answer: Locations_Of,
+    Register: Registers (vscode.languages.registerReferenceProvider) },
+  { Capability: 'documentSymbolProvider',    Provides: 'provideDocumentSymbols',
+    Method: 'textDocument/documentSymbol',   Parameters: At_Document,
+    Answer: Symbols_Of,
+    Register: Registers (vscode.languages.registerDocumentSymbolProvider) },
+  { Capability: 'foldingRangeProvider',      Provides: 'provideFoldingRanges',
+    Method: 'textDocument/foldingRange',     Parameters: At_Document,
+    Answer: Folding_Ranges_Of,
+    Register: Registers (vscode.languages.registerFoldingRangeProvider) },
+  { Capability: 'codeActionProvider',        Provides: 'provideCodeActions',
+    Method: 'textDocument/codeAction',       Parameters: At_Selection,
+    Answer: Code_Actions_Of,
+    Register: (Provider) =>
+      vscode.languages.registerCodeActionsProvider (Ada_Selector, Provider,
+        { providedCodeActionKinds: [vscode.CodeActionKind.QuickFix] }) },
+  { Capability: 'completionProvider',        Provides: 'provideCompletionItems',
+    Method: 'textDocument/completion',       Parameters: At_Position,
+    Answer: Completions_Of,
+    Register: Triggers (vscode.languages.registerCompletionItemProvider,
+                        'completionProvider', ['.']) },
+  { Capability: 'signatureHelpProvider',     Provides: 'provideSignatureHelp',
+    Method: 'textDocument/signatureHelp',    Parameters: At_Position,
+    Answer: Signature_Help_Of,
+    Register: Triggers (vscode.languages.registerSignatureHelpProvider,
+                        'signatureHelpProvider', ['(', ',']) },
+  { Capability: 'workspaceSymbolProvider',   Provides: 'provideWorkspaceSymbols',
+    Method: 'workspace/symbol',              Parameters: For_Query,
+    Answer: Workspace_Symbols_Of,            Patience: 'workspaceRequestTimeout',
+    Register: (Provider) =>
+      vscode.languages.registerWorkspaceSymbolProvider (Provider) },
+];
+
+const Provider_For = ({ Method, Parameters, Answer, Provides, Patience }) => ({
+  [Provides]: (...Given) =>
+    Ask ((Id) => ({ id: Id, method: Method, params: Parameters (...Given) }),
+         Given.find (Is_Cancellable),
+         Patience === undefined ? undefined : Configured (Patience, 120000))
+      .then (Answer),
+});
+
+const Offered = (Capabilities, Name) =>
+  Capabilities[Name] !== undefined && Capabilities[Name] !== false;
+
+const Registrations = (Capabilities) =>
+  Language_Features
+    .filter (({ Capability }) => Offered (Capabilities, Capability))
+    .map ((Feature) => Feature.Register (Provider_For (Feature), Capabilities));
 
 const Manual_Name = 'manual.md';
 const Manual_Results = 4;
@@ -836,7 +785,7 @@ const Start = (Diagnostics, Output, Status, Attempt) => {
 const Stop = () => {
   if (Session === null) return;
   const Ending = Session;
-  [Shutdown (), Exit ()].forEach (Send);
+  [Shutdown (Next_Id++), Exit ()].forEach (Send);
   Session = null;
   Abandon_All ();
   Ending.Registered.forEach ((Registration) => Registration.dispose ());
@@ -847,45 +796,6 @@ const Restart = (Diagnostics, Output, Status) => {
   Stop ();
   Start (Diagnostics, Output, Status, 0);
 };
-
-const Registrations = (Capabilities) =>
-  [['definitionProvider',
-    () => vscode.languages.registerDefinitionProvider (
-            Ada_Selector, Definition_Provider)],
-   ['hoverProvider',
-    () => vscode.languages.registerHoverProvider (
-            Ada_Selector, Hover_Provider)],
-   ['documentHighlightProvider',
-    () => vscode.languages.registerDocumentHighlightProvider (
-            Ada_Selector, Highlight_Provider)],
-   ['referencesProvider',
-    () => vscode.languages.registerReferenceProvider (
-            Ada_Selector, Reference_Provider)],
-   ['documentSymbolProvider',
-    () => vscode.languages.registerDocumentSymbolProvider (
-            Ada_Selector, Document_Symbol_Provider)],
-   ['workspaceSymbolProvider',
-    () => vscode.languages.registerWorkspaceSymbolProvider (
-            Workspace_Symbol_Provider)],
-   ['completionProvider',
-    () => vscode.languages.registerCompletionItemProvider (
-            Ada_Selector, Completion_Provider,
-            ...(Capabilities.completionProvider?.triggerCharacters ?? ['.']))],
-   ['signatureHelpProvider',
-    () => vscode.languages.registerSignatureHelpProvider (
-            Ada_Selector, Signature_Help_Provider,
-            ...(Capabilities.signatureHelpProvider?.triggerCharacters
-                  ?? ['(', ',']))],
-   ['foldingRangeProvider',
-    () => vscode.languages.registerFoldingRangeProvider (
-            Ada_Selector, Folding_Range_Provider)],
-   ['codeActionProvider',
-    () => vscode.languages.registerCodeActionsProvider (
-            Ada_Selector, Code_Action_Provider,
-            { providedCodeActionKinds: [vscode.CodeActionKind.QuickFix] })]]
-    .filter (([Name]) => Capabilities[Name] !== undefined &&
-                         Capabilities[Name] !== false)
-    .map (([, Register]) => Register ());
 
 const On_Ada = (Notify) => (Event) =>
   ((Document) => { if (Is_Ada_Document (Document)) Send (Notify (Document)); })
@@ -913,6 +823,7 @@ const activate = (Context) => {
     vscode.StatusBarAlignment.Right, 100);
   Status.command = 'ada83.showOutput';
   Trace_Channel = Output;
+  Tracing = Configured ('trace.server', 'off');
 
   Start (Diagnostics, Output, Status, 0);
 
@@ -926,6 +837,7 @@ const activate = (Context) => {
     vscode.workspace.onDidCloseTextDocument (On_Ada (Did_Close)),
     vscode.workspace.onDidSaveTextDocument (On_Ada (Did_Change)),
     vscode.workspace.onDidChangeConfiguration ((Change) => {
+      Tracing = Configured ('trace.server', 'off');
       if (Touches_The_Server (Change)) Restart (Diagnostics, Output, Status);
     }),
     Watched_Folders (Diagnostics, Output, Status),
