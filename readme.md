@@ -22,7 +22,7 @@ backend.
 | -------- | ------- | ----- |
 | Linux    | `make`  | GCC or Clang; installs libLLVM via the system package manager if absent |
 | macOS    | `make`, or run `make.applescript` | Apple Clang; libLLVM via Homebrew |
-| Windows  | `make.bat` | GCC, Clang or Zig, whichever is found first; downloads Zig if none is present |
+| Windows  | `make.bat` | GCC or Clang; offers to fetch Zig if neither is installed |
 
 Prebuilt compilers ship with the repository:
 
@@ -42,13 +42,15 @@ an archive from source:
 | macOS    | `make package`, or `osascript make.applescript package` | `bin-macos.zip`, both slices lipo'd together |
 | Windows  | `make.bat package` | `bin-windows.zip`, DLLs included |
 
-The compiler also cross-builds with [Zig](https://ziglang.org) from any host,
-for example:
+`TARGET` names another platform, so a release can be cut from one machine.
+Each target wants that platform's usual cross toolchain, and says which one is
+missing rather than fetching it:
 
-```sh
-zig cc -O2 -std=gnu2x -target x86_64-windows-gnu ada83.c -o ada83.exe -lm
-zig cc -O2 -std=gnu2x -target aarch64-macos     ada83.c -o ada83 -lm -lpthread
-```
+| Command | Produces | Wants |
+| ------- | -------- | ----- |
+| `make package TARGET=windows` | `bin-windows.zip` | `x86_64-w64-mingw32-gcc` |
+| `make package TARGET=macos` | `bin-macos.zip` | `o64-clang` and `lipo`, or a Mac |
+| `make package TARGET=linux` | `bin-linux.zip` | `x86_64-linux-gnu-gcc` |
 
 ## Conformance
 

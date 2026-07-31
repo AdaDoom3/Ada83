@@ -54,7 +54,8 @@ Compile_Slice = $(PACKAGE_COMPILER) $(PACKAGE_CFLAGS) \
                 -o $(call Slice_Output,$1) ada83.c $(LINK_$(TARGET))
 PACKAGE_PIECES = $(foreach Slice,$(PACKAGE_SLICES),$(call Slice_Output,$(Slice)))
 
-LIPO := $(shell command -v lipo || command -v llvm-lipo)
+LIPO := $(shell command -v lipo || command -v llvm-lipo || \
+                command -v "$$(llvm-config --bindir 2>/dev/null)/llvm-lipo")
 SUDO := $(shell [ $$(id -u) -eq 0 ] || echo sudo)
 
 LLVM_PRESENT_Darwin  = ls /opt/homebrew/opt/llvm/lib/libLLVM.dylib \
@@ -95,6 +96,9 @@ $(PACKAGE): ada83.c $(RUNTIME) $(BUNDLE)
 	  echo "packaging for $(TARGET) needs $(PACKAGE_COMPILER)"; exit 1; }
 	@test -z "$(PACKAGE_UNIVERSAL)" || test -n "$(LIPO)" || { \
 	  echo "joining the $(TARGET) slices needs lipo"; exit 1; }
+	@test -z "$(LIBRARIES_$(TARGET))" || test -f bin-$(TARGET).zip || { \
+	  echo "bin-$(TARGET).zip holds the only copy of the libraries $(TARGET)"; \
+	  echo "loads at run time, and is missing"; exit 1; }
 	rm -rf staging && mkdir staging
 	$(foreach Slice,$(or $(PACKAGE_SLICES),.),$(call Compile_Slice,$(Slice)) &&) \
 	  true
@@ -136,7 +140,7 @@ staging/$(VSIX): $(BUNDLE)
 	rm -rf staging/vsix
 
 clean:
-	rm -f ada83 $(VSIX) *.o *.ll *.s *.exe a.out core
+	rm -f ada83 $(VSIX) *.o *.ll *.s *.exe a.out core bin-*.zip.new
 	rm -rf staging test_results acats_logs acats/report.ll
 
 clean-test:
