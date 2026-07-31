@@ -14,10 +14,45 @@ on knownPlatforms()
 	return {linuxPlatform(), macosPlatform(), windowsPlatform()}
 end knownPlatforms
 
-on compilerFor(chosenPlatform)
-	if chosenPlatform is linuxPlatform() then return "x86_64-linux-gnu-gcc"
+on containerImage()
+	return "gcc:13"
+end containerImage
+
+on containerEngines()
+	return {"docker", "podman"}
+end containerEngines
+
+on isContainerEngine(toolName)
+	repeat with engine in containerEngines()
+		if toolName is (engine as text) then return true
+	end repeat
+	return false
+end isContainerEngine
+
+on toolIsPresent(toolName)
+	return shellSucceeds("command -v " & quoted form of toolName)
+end toolIsPresent
+
+on linuxCompilerTool()
+	if toolIsPresent("x86_64-linux-gnu-gcc") then return "x86_64-linux-gnu-gcc"
+	if toolIsPresent("x86_64-unknown-linux-gnu-gcc") then return "x86_64-unknown-linux-gnu-gcc"
+	repeat with engine in containerEngines()
+		if toolIsPresent(engine as text) then return engine as text
+	end repeat
+	return "x86_64-linux-gnu-gcc"
+end linuxCompilerTool
+
+on compilerToolFor(chosenPlatform)
+	if chosenPlatform is linuxPlatform() then return linuxCompilerTool()
 	if chosenPlatform is macosPlatform() then return "gcc"
 	return "x86_64-w64-mingw32-gcc"
+end compilerToolFor
+
+on compilerFor(chosenPlatform)
+	set toolName to compilerToolFor(chosenPlatform)
+	if isContainerEngine(toolName) then return toolName & ¬
+		" run --rm --volume \"$PWD\":/work --workdir /work " & containerImage() & " gcc"
+	return toolName
 end compilerFor
 
 on compilerFlagsFor(chosenPlatform)
@@ -85,7 +120,7 @@ on archiveContentsFor(chosenPlatform)
 end archiveContentsFor
 
 on toolchainHintFor(chosenPlatform)
-	if chosenPlatform is linuxPlatform() then return "Homebrew has no Linux cross compiler. The usual source is the x86_64-unknown-linux-gnu toolchain from the macos-cross-toolchains tap; install that, put the name above on your PATH, then run this script again."
+	if chosenPlatform is linuxPlatform() then return "Nothing here can build for Linux: no x86_64-linux-gnu-gcc, no x86_64-unknown-linux-gnu-gcc (the macos-cross-toolchains tap installs that one), and neither Docker nor Podman, which would compile in a " & containerImage() & " container instead. Install any one of those, then run this script again."
 	return "Homebrew has it: brew install mingw-w64. Install it, then run this script again."
 end toolchainHintFor
 
@@ -146,7 +181,7 @@ on requireToolchain(chosenPlatform)
 		requireCompiler()
 		return
 	end if
-	requireTool(chosenPlatform, compilerFor(chosenPlatform))
+	requireTool(chosenPlatform, compilerToolFor(chosenPlatform))
 	if resourceCompilerFor(chosenPlatform) is not "" then requireTool(chosenPlatform, resourceCompilerFor(chosenPlatform))
 end requireToolchain
 
@@ -273,6 +308,15 @@ on compileSteps(chosenPlatform)
 		"rm -f " & joinedWith(slicePaths, space)}
 end compileSteps
 
+on chosenRouteSteps(chosenPlatform)
+	if chosenPlatform is not linuxPlatform() then return {}
+	set toolName to compilerToolFor(chosenPlatform)
+	if isContainerEngine(toolName) then return {"echo 'Building the Linux executable in a " & containerImage() & ¬
+		" container under " & toolName & ".'", ¬
+		"echo 'The first run downloads that image; nothing else here is fetched.'"}
+	return {"echo 'Building the Linux executable with " & toolName & ".'"}
+end chosenRouteSteps
+
 on sharedLibraryGuardSteps(chosenPlatform)
 	if sharedLibrariesFor(chosenPlatform) is "" then return {}
 	return {"test -f " & archiveFor(chosenPlatform) & " || { echo '" & archiveFor(chosenPlatform) & ¬
@@ -328,7 +372,7 @@ on packageProgram(chosenPlatform)
 	set archiveName to archiveFor(chosenPlatform)
 	return guardedProgram(extensionSteps() & sharedLibraryGuardSteps(chosenPlatform) & ¬
 		sliceGuardSteps(chosenPlatform) & resourceObjectSteps(chosenPlatform) & ¬
-		compileSteps(chosenPlatform) & ¬
+		chosenRouteSteps(chosenPlatform) & compileSteps(chosenPlatform) & ¬
 		{"cp ada83-runtime.ada " & artworkFor(chosenPlatform) & " staging/"} & ¬
 		resourceForkSteps(chosenPlatform) & launcherSteps(chosenPlatform) & ¬
 		sharedLibrarySteps(chosenPlatform) & ¬
