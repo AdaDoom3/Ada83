@@ -81,7 +81,7 @@ end requireLLVM
 on run
 	set directory to scriptDirectory()
 	requireFile(directory, "ada83.c")
-	requireFile(directory, "runtime.ada")
+	requireFile(directory, "ada83-runtime.ada")
 	requireCompiler()
 	requireLLVM(directory)
 	inTerminal(directory, "make && echo && echo 'Built ada83.' && echo 'Compile a program with:  ./ada83 myprogram.ada -o myprogram'")
