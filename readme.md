@@ -17,7 +17,7 @@ A single-file Ada 83 LLVM compiler.
 
 ## Quick start
 
-Unpack the archive for your platform — [`bin-linux.zip`](bin-linux.zip),
+Unpack the archive for your platform: [`bin-linux.zip`](bin-linux.zip),
 [`bin-macos.zip`](bin-macos.zip) or [`bin-windows.zip`](bin-windows.zip)
 
 ```ada
