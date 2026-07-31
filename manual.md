@@ -1504,10 +1504,10 @@ subcomponent with an undefined value.
 
 ```ada
 Count, Sum : Integer;
-Size : Integer range 0 .. 10_000 := 0;
+Size : Integer range 0..10_000 := 0;
 Sorted : Boolean := False;
-Color_Table : array (1 .. N) of Color;
-Option : Bit_Vector (1 .. 10) := (others => True);
+Color_Table : array (1..N) of Color;
+Option : Bit_Vector (1..10) := (others => True);
 ```
 
 **Examples of constant declarations:**
@@ -1648,16 +1648,16 @@ where the syntax normally requires an identifier.
 
 ```ada
 (White, Red, Yellow, Green, Blue, Brown, Black)
-range 1 .. 72
-array (1 .. 10) of Integer
+range 1..72
+array (1..10) of Integer
 ```
 
 **Examples of type declarations:**
 
 ```ada
 type Color is (White, Red, Yellow, Green, Blue, Brown, Black);
-type Column is range 1 .. 72;
-type Table is array (1 .. 10) of Integer;
+type Column is range 1..72;
+type Table is array (1..10) of Integer;
 ```
 
 > [!NOTE]
@@ -1735,12 +1735,12 @@ fails.
 **Examples of subtype declarations:**
 
 ```ada
-subtype Rainbow is Color range Red .. Blue; -- see 3.3.1
+subtype Rainbow is Color range Red..Blue; -- see 3.3.1
 subtype Red_Blue is Rainbow;
 subtype Int is Integer;
-subtype Small_Int is Integer range -10 .. 10;
-subtype Up_To_K is Column range 1 .. K; -- see 3.3.1
-subtype Square is Matrix (1 .. 10, 1 .. 10); -- see 3.6
+subtype Small_Int is Integer range -10..10;
+subtype Up_To_K is Column range 1..K; -- see 3.3.1
+subtype Square is Matrix (1..10, 1..10); -- see 3.6
 subtype Male is Person (Sex => M); -- see 3.8
 ```
 
@@ -1895,7 +1895,7 @@ subtype is created.
 
 ```ada
 type Local_Coordinate is new Coordinate; -- two different types
-type Midweek is new Day range Tue .. Thu; -- see 3.5.1
+type Midweek is new Day range Tue..Thu; -- see 3.5.1
 type Counter is new Positive; -- same range as Positive
 
 type Special_Key is new Key_Manager.Key; -- see 7.4.2
@@ -2037,9 +2037,9 @@ type Light is (Red, Amber, Green); -- Red and Green are overloaded
 type Hexa is ('A', 'B', 'C', 'D', 'E', 'F');
 type Mixed is ('A', 'B', '*', B, None, '?', '%');
 
-subtype Weekday is Day range Mon .. Fri;
-subtype Major is Suit range Hearts .. Spades;
-subtype Rainbow is Color range Red .. Blue; -- the color Red, not the
+subtype Weekday is Day range Mon..Fri;
+subtype Major is Suit range Hearts..Spades;
+subtype Rainbow is Color range Red..Blue; -- the color Red, not the
                                                  light
 ```
 
@@ -2096,14 +2096,14 @@ bounds need not have the same integer type. (Negative bounds are allowed.)
 A type declaration of the form:
 
 ```ada
-type T is range L .. R;
+type T is range L..R;
 ```
 
 is, by definition, equivalent to the following declarations:
 
 ```ada
 type integer_type is new predefined_integer_type;
-subtype T is integer_type range integer_type (L) .. integer_type (R);
+subtype T is integer_type range integer_type (L)..integer_type (R);
 ```
 
 where integer_type is an anonymous type, and where the predefined integer type
@@ -2139,12 +2139,12 @@ be computed correctly, as described in section [11.6](#116-exceptions-and-optimi
 **Examples:**
 
 ```ada
-type Page_Num is range 1 .. 2_000;
-type Line_Size is range 1 .. Max_Line_Size;
+type Page_Num is range 1..2_000;
+type Line_Size is range 1..Max_Line_Size;
 
-subtype Small_Int is Integer range -10 .. 10;
-subtype Column_Ptr is Line_Size range 1 .. 10;
-subtype Buffer_Size is Integer range 0 .. Max;
+subtype Small_Int is Integer range -10..10;
+subtype Column_Ptr is Line_Size range 1..10;
+subtype Buffer_Size is Integer range 0..Max;
 ```
 
 > [!NOTE]
@@ -2404,7 +2404,7 @@ A floating point type declaration of one of the two forms (that is, with or
 without the optional range constraint indicated by the square brackets):
 
 ```ada
-type T is digits D [range L .. R];
+type T is digits D [range L..R];
 ```
 
 is, by definition, equivalent to the following declarations:
@@ -2412,7 +2412,7 @@ is, by definition, equivalent to the following declarations:
 ```ada
 type floating_point_type is new predefined_floating_point_type;
 subtype T is floating_point_type digits D
-   [range floating_point_type (L) .. floating_point_type (R)];
+   [range floating_point_type (L)..floating_point_type (R)];
 ```
 
 where floating_point_type is an anonymous type, and where the predefined
@@ -2459,13 +2459,13 @@ The same arithmetic operators are predefined for all floating point types (see
 **Examples:**
 
 ```ada
-type Coefficient is digits 10 range -1.0 .. 1.0;
+type Coefficient is digits 10 range -1.0..1.0;
 
 type Real is digits 8;
-type Mass is digits 7 range 0.0 .. 1.0E35;
+type Mass is digits 7 range 0.0..1.0E35;
 
 subtype Short_Coeff is Coefficient digits 5; -- a subtype with less accuracy
-subtype Probability is Real range 0.0 .. 1.0; -- a subtype with a smaller range
+subtype Probability is Real range 0.0..1.0; -- a subtype with a smaller range
 ```
 
 **Notes on the examples**
@@ -2635,7 +2635,7 @@ by the attribute Small.
 A fixed point type declaration of the form:
 
 ```ada
-type T is delta D range L .. R;
+type T is delta D range L..R;
 ```
 
 is, by definition, equivalent to the following declarations:
@@ -2643,7 +2643,7 @@ is, by definition, equivalent to the following declarations:
 ```ada
 type fixed_point_type is new predefined_fixed_point_type;
 subtype T is fixed_point_type
-   range fixed_point_type (L) .. fixed_point_type (R);
+   range fixed_point_type (L)..fixed_point_type (R);
 ```
 
 In these declarations, fixed_point_type is an anonymous type, and the predefined
@@ -2694,14 +2694,14 @@ this type must be converted explicitly to some numeric type.
 **Examples:**
 
 ```ada
-type Volt is delta 0.125 range 0.0 .. 255.0;
+type Volt is delta 0.125 range 0.0..255.0;
 subtype Rough_Voltage is Volt delta 1.0; -- same range as Volt
 
 --  A pure fraction which requires all the available space in a word
 --  on a two's complement machine can be declared as the type Fraction:
 
 Del : constant := 1.0/2**(Word_Length - 1);
-type Fraction is delta Del range -1.0 .. 1.0 - Del;
+type Fraction is delta Del range -1.0..1.0 - Del;
 ```
 
 #### 3.5.10 Operations of Fixed Point Types
@@ -2866,17 +2866,17 @@ type Roman is array (Positive range <>) of Roman_Digit;
 **Examples of type declarations with constrained array definitions:**
 
 ```ada
-type Table is array (1 .. 10) of Integer;
+type Table is array (1..10) of Integer;
 type Schedule is array (Day) of Boolean;
-type Line is array (1 .. Max_Line_Size) of Character;
+type Line is array (1..Max_Line_Size) of Character;
 ```
 
 **Examples of object declarations with constrained array definitions:**
 
 ```ada
-Grid : array (1 .. 80, 1 .. 100) of Boolean;
-Mix : array (Color range Red .. Green) of Boolean;
-Page : array (1 .. 50) of Line; -- an array of arrays
+Grid : array (1..80, 1..100) of Boolean;
+Mix : array (Color range Red..Green) of Boolean;
+Page : array (1..50) of Line; -- an array of arrays
 ```
 
 > [!NOTE]
@@ -2968,12 +2968,12 @@ some order that is not defined by the language.
 **Examples of array declarations including an index constraint:**
 
 ```ada
-Board : Matrix (1 .. 8, 1 .. 8); -- see 3.6
-Rectangle : Matrix (1 .. 20, 1 .. 30);
+Board : Matrix (1..8, 1..8); -- see 3.6
+Rectangle : Matrix (1..20, 1..30);
 
-Inverse : Matrix (1 .. N, 1 .. N); -- N need not be static
+Inverse : Matrix (1..N, 1..N); -- N need not be static
 
-Filter : Bit_Vector (0 .. 31);
+Filter : Bit_Vector (0..31);
 ```
 
 **Example of array declaration with a constrained array subtype:**
@@ -2988,7 +2988,7 @@ My_Schedule : Schedule; -- all arrays of type Schedule have the same
 ```ada
 type Var_Line (Length : Integer) is
    record
-      Image : String (1 .. Length);
+      Image : String (1..Length);
    end record;
 
 Null_Line : Var_Line (0); -- Null_Line.Image is a null array
@@ -3080,14 +3080,14 @@ The values of the predefined type String are one-dimensional arrays of the
 predefined type Character, indexed by values of the predefined subtype Positive:
 
 ```ada
-subtype Positive is Integer range 1 .. Integer'Last;
+subtype Positive is Integer range 1..Integer'Last;
 type String is array (Positive range <>) of Character;
 ```
 
 **Examples:**
 
 ```ada
-Stars : String (1 .. 120) := (1 .. 120 => '*' );
+Stars : String (1..120) := (1..120 => '*' );
 Question : constant String := "HOW MANY CHARACTERS?";
 --  Question'First = 1, Question'Last = 20 (the number of characters)
 
@@ -3168,9 +3168,9 @@ is not a discriminant.
 ```ada
 type Date is
    record
-      Day : Integer range 1 .. 31;
+      Day : Integer range 1..31;
       Month : Month_Name;
-      Year : Integer range 0 .. 4000;
+      Year : Integer range 0..4000;
    end record;
 
 type Complex is
@@ -3268,12 +3268,12 @@ The elaboration of a discriminant part has no other effect.
 type Buffer (Size : Buffer_Size := 100) is -- see 3.5.4
    record
       Pos : Buffer_Size := 0;
-      Value : String (1 .. Size);
+      Value : String (1..Size);
    end record;
 
 type Square (Side : Integer) is
    record
-      Mat : Matrix (1 .. Side, 1 .. Side); -- see 3.6
+      Mat : Matrix (1..Side, 1..Side); -- see 3.6
    end record;
 
 type Double_Square (Number : Integer) is
@@ -3447,7 +3447,7 @@ type Peripheral (Unit : Device := Disk) is
       Status : State;
       case Unit is
          when Printer =>
-            Line_Count : Integer range 1 .. Page_Size;
+            Line_Count : Integer range 1..Page_Size;
          when others =>
             Cylinder : Cylinder_Index;
             Track : Track_Number;
@@ -3637,9 +3637,9 @@ type Car is
 
 type Person (Sex : Gender) is
    record
-      Name : String (1 .. 20);
+      Name : String (1..20);
       Birth : Date;
-      Age : Integer range 0 .. 130;
+      Age : Integer range 0..130;
       Vehicle : Car_Name;
 
       case Sex is
@@ -3883,12 +3883,12 @@ subtype of the index.)
 **Examples of slices:**
 
 ```ada
-Stars (1 .. 15) -- a slice of 15 characters (see 3.6.3)
-Page (10 .. 10 + Size) -- a slice of 1 + Size components (see 3.6 and 3.2.1)
-Page (L)(A .. B) -- a slice of the array Page (L) (see 3.6)
-Stars (1 .. 0) -- a null slice (see 3.6.3)
+Stars (1..15) -- a slice of 15 characters (see 3.6.3)
+Page (10..10 + Size) -- a slice of 1 + Size components (see 3.6 and 3.2.1)
+Page (L)(A..B) -- a slice of the array Page (L) (see 3.6)
+Stars (1..0) -- a null slice (see 3.6.3)
 My_Schedule (Weekday) -- bounds given by subtype (see 3.6 and 3.5.1)
-Stars (5 .. 15)(K) -- same as Stars (K) (see 3.6.3)
+Stars (5..15)(K) -- same as Stars (K) (see 3.6.3)
                       --  provided that K is in 5 .. 15
 ```
 
@@ -4294,11 +4294,11 @@ Table' (5, 8, 4, 1, others => 0) -- see 3.6
 **Examples of array aggregates with named associations:**
 
 ```ada
-(1 .. 5 => (1 .. 8 => 0.0)) -- two-dimensional
-(1 .. N => new Cell) -- N new cells, in particular for N = 0
+(1..5 => (1..8 => 0.0)) -- two-dimensional
+(1..N => new Cell) -- N new cells, in particular for N = 0
 
 Table' (2 | 4 | 10 => 1, others => 0)
-Schedule' (Mon .. Fri => True, others => False) -- see 3.6
+Schedule' (Mon..Fri => True, others => False) -- see 3.6
 Schedule' (Wed | Sun => False, others => True)
 ```
 
@@ -4317,12 +4317,12 @@ Schedule' (Wed | Sun => False, others => True)
 ```ada
 A : Table := (7, 9, 5, 1, 3, 2, 4, 8, 6, 0); -- A (1)=7, A (10)= 8
 B : Table := Table' (2 | 4 | 10 => 1, others => 0); -- B (1)=0, B (10)=1
-C : constant Matrix := (1 .. 5 => (1 .. 8 => 0.0));
+C : constant Matrix := (1..5 => (1..8 => 0.0));
                                                -- C'First (1)=1, C'Last (2)=8
 
-D : Bit_Vector (M .. N) := (M .. N => True); -- see 3.6
-E : Bit_Vector (M .. N) := (others => True);
-F : String (1 .. 1) := (1 => 'F'); -- a one component aggregate: same as "F"
+D : Bit_Vector (M..N) := (M..N => True); -- see 3.6
+E : Bit_Vector (M..N) := (others => True);
+F : String (1..1) := (1 => 'F'); -- a one component aggregate: same as "F"
 ```
 
 ### 4.4 Expressions
@@ -4371,7 +4371,7 @@ result types are given in section [4.5](#45-operators-and-expression-evaluation)
 ```ada
 4.0 -- real literal
 Pi -- named number
-(1 .. 10 => 0) -- array aggregate
+(1..10 => 0) -- array aggregate
 Sum -- variable
 Integer'Last -- attribute
 Sine (X) -- function call
@@ -4389,7 +4389,7 @@ not Destroyed -- factor
 -4.0                      -- simple expression
 -4.0 + A                  -- simple expression
 B**2 - 4.0*A*C -- simple expression
-Password (1 .. 3) = "BWV" -- relation
+Password (1..3) = "BWV" -- relation
 Count in Small_Int -- relation
 Count not in Small_Int -- relation
 Index = 0 or Item_Hit -- expression
@@ -4509,7 +4509,7 @@ else delivers the same result as or.
 
 ```ada
 Sunny or Warm
-Filter (1 .. 10) and Filter (15 .. 24) -- see 3.6.1
+Filter (1..10) and Filter (15..24) -- see 3.6.1
 ```
 
 **Examples of short-circuit control forms:**
@@ -4602,8 +4602,8 @@ My_Car = null -- true if My_Car has been set to null
 My_Car = Your_Car -- true if we both share the same car
 My_Car.all = Your_Car.all -- true if the two cars are identical
 
-N not in 1 .. 10 -- range membership test
-Today in Mon .. Fri -- range membership test
+N not in 1..10 -- range membership test
+Today in Mon..Fri -- range membership test
 Today in Weekday -- subtype membership test (see 3.5.1)
 Archive in Disk_Unit -- subtype membership test (see 3.7.3)
 ```
@@ -5014,12 +5014,12 @@ Y := B_Form (X); -- the reverse conversion
 
 ```ada
 type Sequence is array (Integer range <>) of Integer;
-subtype Dozen is Sequence (1 .. 12);
-Ledger : array (1 .. 100) of Integer;
+subtype Dozen is Sequence (1..12);
+Ledger : array (1..100) of Integer;
 
 Sequence (Ledger) -- bounds are those of Ledger
-Sequence (Ledger (31 .. 42)) -- bounds are 31 and 42
-Dozen (Ledger (31 .. 42)) -- bounds are those of Dozen
+Sequence (Ledger (31..42)) -- bounds are 31 and 42
+Dozen (Ledger (31..42)) -- bounds are those of Dozen
 ```
 
 **Examples of implicit conversions:**
@@ -5068,10 +5068,10 @@ type Code is (Fix, Cla, Dec, Tnz, Sub);
 Print (Mask' (Dec)); -- Dec is of type Mask
 Print (Code' (Dec)); -- Dec is of type Code
 
-for J in Code' (Fix) .. Code' (Dec) loop ... -- qualification needed for
+for J in Code' (Fix)..Code' (Dec) loop ... -- qualification needed for
                                               either Fix or Dec
-for J in Code range Fix .. Dec loop ... -- qualification unnecessary
-for J in Code' (Fix) .. Dec loop ... -- qualification unnecessary
+for J in Code range Fix..Dec loop ... -- qualification unnecessary
+for J in Code' (Fix)..Dec loop ... -- qualification unnecessary
                                               for Dec
 
 Dozen' (1 | 3 | 5 | 7 => 2, others => 0) -- see 4.6
@@ -5179,12 +5179,12 @@ new Cell' (0, null, null) -- initialized explicitly
 new Cell' (Value => 0, Succ => null, Pred => null) -- initialized explicitly
 new Cell -- not initialized
 
-new Matrix (1 .. 10, 1 .. 20) -- the bounds only are given
-new Matrix' (1 .. 10 => (1 .. 20 => 0.0)) -- initialized explicitly
+new Matrix (1..10, 1..20) -- the bounds only are given
+new Matrix' (1..10 => (1..20 => 0.0)) -- initialized explicitly
 
 new Buffer (100) -- the discriminant only is given
 
-new Buffer' (Size => 80, Pos => 0, Value => (1 .. 80 => 'A'))
+new Buffer' (Size => 80, Pos => 0, Value => (1..80 => 'A'))
                                               -- initialized explicitly
 ```
 
@@ -5424,8 +5424,8 @@ Next_Car.all := (72074, null); -- see 3.8.1
 **Examples of constraint checks:**
 
 ```ada
-I, J : Integer range 1 .. 10;
-K : Integer range 1 .. 20;
+I, J : Integer range 1..10;
+K : Integer range 1..20;
 
  ...
 
@@ -5469,14 +5469,14 @@ component of the array variable is left unchanged.
 **Examples:**
 
 ```ada
-A : String (1 .. 31);
-B : String (3 .. 33);
+A : String (1..31);
+B : String (3..33);
  ...
 
 A := B; -- same number of components
 
-A (1 .. 9) := "tar sauce";
-A (4 .. 12) := A (1 .. 9); -- A (1 .. 12) = "tartar sauce"
+A (1..9) := "tar sauce";
+A (4..12) := A (1..9); -- A (1 .. 12) = "tartar sauce"
 ```
 
 > [!NOTE]
@@ -5600,8 +5600,8 @@ end case;
 case Today is
    when Mon => Compute_Initial_Balance;
    when Fri => Compute_Closing_Balance;
-   when Tue .. Thu => Generate_Report (Today);
-   when Sat .. Sun => null;
+   when Tue..Thu => Generate_Report (Today);
+   when Sat..Sun => null;
 end case;
 
 case Bin_Number (Count) is
@@ -5812,7 +5812,7 @@ is no condition.
 **Examples:**
 
 ```ada
-for N in 1 .. Max_Num_Items loop
+for N in 1..Max_Num_Items loop
    Get_New_Item (New_Item);
    Merge_Item (New_Item, Storage_File);
    exit when New_Item = Terminal_Item;
@@ -6001,7 +6001,7 @@ function "*"(Left,Right : Matrix) return Matrix; -- see 3.6
 ```ada
 procedure Print_Header (Pages : in Natural;
 
-               Header : in Line := (1 .. Line'Last => ' '); -- see 3.6
+               Header : in Line := (1..Line'Last => ' '); -- see 3.6
                Center : in Boolean := True);
 ```
 
@@ -6638,8 +6638,8 @@ package Plotting_Data is
    X_Min, Y_Min,
    X_Max, Y_Max: Real; -- see 3.5.7
 
-   X_Value : array (1 .. 500) of Real;
-   Y_Value : array (1 .. 500) of Real;
+   X_Value : array (1..500) of Real;
+   Y_Value : array (1..500) of Real;
 end;
 ```
 
@@ -6648,13 +6648,13 @@ end;
 ```ada
 package Work_Data is
    type Day is (Mon, Tue, Wed, Thu, Fri, Sat, Sun);
-   type Hours_Spent is delta 0.25 range 0.0 .. 24.0;
+   type Hours_Spent is delta 0.25 range 0.0..24.0;
    type Time_Table is array (Day) of Hours_Spent;
 
    Work_Hours : Time_Table;
 
    Normal_Hours : constant Time_Table :=
-                     (Mon .. Thu => 8.25, Fri => 7.0, Sat | Sun => 0.0);
+                     (Mon..Thu => 8.25, Fri => 7.0, Sat | Sun => 0.0);
 end;
 ```
 
@@ -7049,7 +7049,7 @@ end;
 package body I_O_Package is
    Limit : constant := 200;
    type File_Descriptor is record ... end record;
-   Directory : array (1 .. Limit) of File_Descriptor;
+   Directory : array (1..Limit) of File_Descriptor;
    ...
    procedure Open (F : in out File_Name) is ... end;
    procedure Close (F : in out File_Name) is ... end;
@@ -7124,7 +7124,7 @@ part. The package body need not be shown to the users of the package.
 ```ada
 package body Table_Manager is
    Size : constant := 2000;
-   subtype Index is Integer range 0 .. Size;
+   subtype Index is Integer range 0..Size;
 
    type Internal_Item is
       record
@@ -7179,7 +7179,7 @@ number of explicit conversions the user has to write.
 ```ada
   package Text_Handler is
      Maximum : constant := Some_Value; -- implementation-defined
-     subtype Index is Integer range 0 .. Maximum;
+     subtype Index is Integer range 0..Maximum;
 
      type Text (Maximum_Length : Index) is limited private;
 
@@ -7235,7 +7235,7 @@ private
    type Text (Maximum_Length : Index) is
       record
          Pos : Index := 0;
-         Value : String (1 .. Maximum_Length);
+         Value : String (1..Maximum_Length);
       end record;
 end;
 ```
@@ -8100,7 +8100,7 @@ holds for generic parameters.
 ```ada
 Control : Resource;
 Teletype : Keyboard_Driver;
-Pool : array (1 .. 10) of Keyboard_Driver;
+Pool : array (1..10) of Keyboard_Driver;
 --  see also examples of declarations of single tasks in 9.1
 ```
 
@@ -8508,10 +8508,10 @@ operator "-" cannot return a result that is in the range of the type Duration.
 package Calendar is
    type Time is private;
 
-   subtype Year_Number is Integer range 1901 .. 2099;
-   subtype Month_Number is Integer range 1 .. 12;
-   subtype Day_Number is Integer range 1 .. 31;
-   subtype Day_Duration is Duration range 0.0 .. 86_400.0;
+   subtype Year_Number is Integer range 1901..2099;
+   subtype Month_Number is Integer range 1..12;
+   subtype Day_Number is Integer range 1..31;
+   subtype Day_Duration is Duration range 0.0..86_400.0;
 
    function Clock return Time;
 
@@ -9027,9 +9027,9 @@ end;
 
 task body Buffer is
    Pool_Size : constant Integer := 100;
-   Pool : array (1 .. Pool_Size) of Character;
-   Count : Integer range 0 .. Pool_Size := 0;
-   In_Index, Out_Index : Integer range 1 .. Pool_Size := 1;
+   Pool : array (1..Pool_Size) of Character;
+   Count : Integer range 0..Pool_Size := 0;
+   In_Index, Out_Index : Integer range 1..Pool_Size := 1;
 begin
    loop
       select
@@ -9243,14 +9243,14 @@ procedure Processor is
 
    package Stock is
       Limit : constant := 1
-      Table : array (1 .. Limit) of Integer;
+      Table : array (1..Limit) of Integer;
       procedure Restart;
    end;
 
    package body Stock is
       procedure Restart is
       begin
-         for N in 1 .. Limit loop
+         for N in 1..Limit loop
             Table (N) := N;
          end loop;
       end;
@@ -9282,7 +9282,7 @@ the reader that these units need not be contiguous texts).
 ```ada
 package Stock is
    Limit : constant := 1
-   Table : array (1 .. Limit) of Integer;
+   Table : array (1..Limit) of Integer;
    procedure Restart;
 end;
 
@@ -9291,7 +9291,7 @@ end;
 package body Stock is
    procedure Restart is
    begin
-      for N in 1 .. Limit loop
+      for N in 1..Limit loop
          Table (N) := N;
       end loop;
    end;
@@ -10184,7 +10184,7 @@ declare
    N : Integer;
 begin
    N := 0; -- (1)
-   for J in 1 .. 10 loop
+   for J in 1..10 loop
       N := N + J**A (K); -- A and K are global variables
    end loop;
    Put (N);
@@ -10662,7 +10662,7 @@ package body On_Vectors is -- see example in 12.1
    function Sigma (A : Vector) return Item is
       Total : Item := A (A'First); -- the formal type Item
    begin
-      for N in A'First + 1 .. A'Last loop
+      for N in A'First + 1..A'Last loop
          Total := Sum (Total, A (N)); -- the formal function Sum
       end loop;
       return Total;
@@ -10799,7 +10799,7 @@ package Int_Vectors is new On_Vectors (Integer, Table, "+");
 Swap (A, B);
 A := Square (A);
 
-T : Table (1 .. 5) := (10, 20, 30, 40, 50);
+T : Table (1..5) := (10, 20, 30, 40, 50);
 
 N : Integer := Int_Vectors.Sigma (T); -- 150 (see 12.2 for the body of
                                           Sigma)
@@ -11070,7 +11070,7 @@ end;
 package body Stack is
 
    type Table is array (Positive range <>) of Item;
-   Space : Table (1 .. Size);
+   Space : Table (1..Size);
    Index : Natural := 0;
 
    procedure Push (E : in Item) is
@@ -11124,7 +11124,7 @@ private
    type Table is array (Positive range <>) of Item;
    type Stack (Size : Positive) is
       record
-         Space : Table (1 .. Size);
+         Space : Table (1..Size);
          Index : Natural := 0;
       end record;
 end;
@@ -11334,9 +11334,9 @@ depends on the attribute designator:
 ```ada
 --assumed declarations:
 
-type Medium is range 0 .. 65000;
-type Short is delta 0.01 range -100.0 .. 100.0;
-type Degree is delta 0.1 range -360.0 .. 360.0;
+type Medium is range 0..65000;
+type Short is delta 0.01 range -100.0..100.0;
+type Degree is delta 0.1 range -360.0..360.0;
 
 Byte : constant := 8;
 Page : constant := 2000;
@@ -11473,32 +11473,32 @@ Word : constant := 4;  -- storage unit is byte, 4 bytes per word
 type State is (A, M, W, P);
 type Mode  is (Fix, Dec, Exp, Signif);
 
-type Byte_Mask  is array (0 .. 7) of Boolean;
+type Byte_Mask  is array (0..7) of Boolean;
 type State_Mask is array (State)  of Boolean;
 type Mode_Mask  is array (Mode)   of Boolean;
 
 type Program_Status_Word is
    record
       System_Mask     : Byte_Mask;
-      Protection_Key  : Integer range 0 .. 3;
+      Protection_Key  : Integer range 0..3;
       Machine_State   : State_Mask;
       Interrupt_Cause : Interruption_Code;
-      Ilc             : Integer range 0 .. 3;
-      Cc              : Integer range 0 .. 3;
+      Ilc             : Integer range 0..3;
+      Cc              : Integer range 0..3;
       Program_Mask    : Mode_Mask;
       Inst_Address    : Address;
    end record;
 
 for Program_Status_Word use
    record at mod 8;
-      System_Mask     at 0*Word range 0 .. 7;
-      Protection_Key  at 0*Word range 10 .. 11;  -- bits 8,9 unused
-      Machine_State   at 0*Word range 12 .. 15;
-      Interrupt_Cause at 0*Word range 16 .. 31;
-      Ilc             at 1*Word range 0 .. 1;    -- second word
-      Cc              at 1*Word range 2 .. 3;
-      Program_Mask    at 1*Word range 4 .. 7;
-      Inst_Address    at 1*Word range 8 .. 31;
+      System_Mask     at 0*Word range 0..7;
+      Protection_Key  at 0*Word range 10..11;  -- bits 8,9 unused
+      Machine_State   at 0*Word range 12..15;
+      Interrupt_Cause at 0*Word range 16..31;
+      Ilc             at 1*Word range 0..1;    -- second word
+      Cc              at 1*Word range 2..3;
+      Program_Mask    at 1*Word range 4..7;
+      Inst_Address    at 1*Word range 8..31;
    end record;
 
 for Program_Status_Word'Size use 8*System.Storage_Unit;
@@ -12458,8 +12458,8 @@ package Direct_IO is
    type File_Type is limited private;
 
    type File_Mode is (In_File, Inout_File, Out_File);
-   type Count is range 0 .. implementation defined;
-   subtype Positive_Count is Count range 1 .. Count'Last;
+   type Count is range 0..implementation defined;
+   subtype Positive_Count is Count range 1..Count'Last;
 
    -- File management
 
@@ -12583,8 +12583,8 @@ of the subtype Positive_Count of the type Count (by convention, the value zero
 of the type Count is used to indicate special conditions).
 
 ```ada
-type Count is range 0 .. implementation_defined;
-subtype Positive_Count is Count range 1 .. Count'Last;
+type Count is range 0..implementation_defined;
+subtype Positive_Count is Count range 1..Count'Last;
 ```
 
 For an output file, a maximum line length can be specified and a maximum page
@@ -13143,7 +13143,7 @@ parameter. Values of widths of fields in output formats are of the nonnegative
 integer subtype Field. Values of bases are of the integer subtype Number_Base.
 
 ```ada
-subtype Number_Base is Integer range 2 .. 16;
+subtype Number_Base is Integer range 2..16;
 ```
 
 The default field width and base to be used by output procedures are defined by
@@ -13483,12 +13483,12 @@ language.
 
       type File_Mode is (In_File, Out_File);
 
-      type Count is range 0 .. implementation defined;
-      subtype Positive_Count is Count range 1 .. Count'Last;
+      type Count is range 0..implementation defined;
+      subtype Positive_Count is Count range 1..Count'Last;
       Unbounded : constant Count := 0; -- line and page length
 
-      subtype Field is Integer range 0 .. implementation defined;
-      subtype Number_Base is Integer range 2 .. 16;
+      subtype Field is Integer range 0..implementation defined;
+      subtype Number_Base is Integer range 2..16;
 
       type Type_Set is (Lower_Case, Upper_Case);
 
@@ -14611,8 +14611,8 @@ package Standard is
 
    -- Predefined subtypes:
 
-   subtype Natural  is Integer range 0 .. Integer'Last;
-   subtype Positive is Integer range 1 .. Integer'Last;
+   subtype Natural  is Integer range 0..Integer'Last;
+   subtype Positive is Integer range 1..Integer'Last;
 
    -- Predefined string type:
 
@@ -16594,8 +16594,8 @@ The user can define an integer type by specifying the range to be covered (see
 [3.5.4](#354-integer-types)), for example
 
 ```ada
-type PAGE_NUM   is range 1 .. 2000;
-type MY_INTEGER is range -100_000 .. 100_000;
+type PAGE_NUM   is range 1..2000;
+type MY_INTEGER is range -100_000..100_000;
 ```
 
 in which case the implementation will use whichever predefined type just
@@ -17022,7 +17022,7 @@ type PERSON_NAME is access PERSON;   -- access type declaration    (2)
 
 type PERSON(SEX : GENDER := F) is    -- full declaration           (3)
    record
-      AGE    : INTEGER range 0 .. 123;
+      AGE    : INTEGER range 0..123;
       FATHER : PERSON_NAME(SEX => M);                           -- (4)
       MOTHER : PERSON_NAME(SEX => F);                           -- (5)
       SPOUSE : PERSON_NAME;                                     -- (6)
@@ -17111,7 +17111,7 @@ achieve a simple form of strong typing. Consider a useful type for counting
 currency, and the types derived from it:
 
 ```ada
-type CURRENCY is delta 0.01 range 0.0 .. 1.0E6;
+type CURRENCY is delta 0.01 range 0.0..1.0E6;
 for CURRENCY'SMALL use CURRENCY'DELTA;
 
 type DOLLAR is new CURRENCY;  -- three
@@ -17531,7 +17531,7 @@ package ALL_ABOUT_STACKS is
    procedure PUSH (E : in  ELEMENT; S : in out STACK);
    procedure POP  (E : out ELEMENT; S : in out STACK);
 private
-   type INDEX is range 0 .. 1000;
+   type INDEX is range 0..1000;
    type STACK is
       record
          TOP   : INDEX := INDEX'FIRST;
@@ -18636,7 +18636,7 @@ for example the procedure
 procedure A(N : INTEGER) is
    C : constant INTEGER := N * N;
    D : INTEGER := C;
-   T : array (1 .. C) of INTEGER;
+   T : array (1..C) of INTEGER;
 begin
    -- statements of A
 exception
@@ -22936,15 +22936,20 @@ matters; see
 
 Two further bodies of code were consulted as contrast, and no house rule was
 taken from either. The first is this compiler's own runtime library,
-`runtime.ada`, 2,995 lines of Ada 83; it agrees with the corpus on lower-case
-reserved words (4,197 of 4,215) and on the bare `end;` (230 against 2), and
-disagrees with it flatly on two points recorded in
-[S.6 Spacing](#s6-spacing) and [S.13 Subprogram Profiles](#s13-subprogram-profiles).
-The second is the ACATS conformance suite, 4,051 files of 1980s test code,
+`ada83-runtime.ada`. When it was measured it ran to 2,995 lines of Ada 83; it
+agreed with the corpus on lower-case reserved words (4,197 of 4,215) and on
+the bare `end;` (230 against 10), and disagreed with it flatly on the two
+points recorded in [S.6 Spacing](#s6-spacing) and
+[S.13 Subprogram Profiles](#s13-subprogram-profiles). It has since been
+rewritten to these guidelines throughout, so the counts quoted for it here and
+in those two subsections are what it used to be, not what it is; it is no
+longer a contrast to anything below. The second is the ACATS conformance
+suite, 4,051 files of 1980s test code,
 which is the negative of this style in almost every respect: 288,127 upper-case
 reserved words against 3 lower-case, 13,860 `end Name;` against 7,754 bare, and
 7,111 spaced `..` against 4,396 tight. It is quoted below only to show what the
-corpus is not.
+corpus is not, and with the runtime library brought over it is now the only
+body of code here that disagrees with any of these rules.
 
 The corpus is modern Ada, and this manual describes Ada 83. Several rules
 below therefore rest on constructs that Ada 83 does not have. Each such rule
@@ -23178,10 +23183,12 @@ against 31 spaced, or 92.4%. Eleven of the thirty-one are in the adapted
 ```
 
 This is the sharpest disagreement in the whole style. This compiler's own
-`runtime.ada` writes the range spaced, `0 .. 32767`, in 94 of 94 occurrences,
-and so does the ACATS suite in 7,111 of 11,507. The corpus rule is followed
-here because the corpus is the subject of this section; a reader coming from
-either of the other two should expect the change.
+`ada83-runtime.ada` used to write the range spaced, `0 .. 32767`, in 94 of 94
+occurrences, and the ACATS suite still does in 7,111 of 11,507. The corpus
+rule is followed here because the corpus is the subject of this section, and
+the runtime library has since been rewritten to it: all 94 of its ranges are
+now tight. ACATS is the only body of code left on the other side, and a reader
+coming from it should expect the change.
 
 **Write `'` and `.` tight on both sides.** *(measured)* The apostrophe has no
 space before it in 789 of 790 occurrences and none after in 788 of 790; the
@@ -23514,9 +23521,12 @@ The mode is the default, and writing it adds a word that says nothing.
   function  Length (Item : Str) return Natural;
 ```
 
-This is the second point where the compiler's own `runtime.ada` disagrees: it
-writes `in` explicitly 315 times, and ACATS writes it 2,324 times. The corpus
-rule is the one recorded here.
+This is the second point where the compiler's own `ada83-runtime.ada` used to
+disagree: it wrote `in` explicitly 315 times. It has since been rewritten to
+this rule and writes the mode nowhere; its 43 `in out` parameters are
+untouched, the rule being about mode `in` alone. ACATS writes `in` 2,324 times
+and is now the only body of code here that does. The corpus rule is the one
+recorded here.
 
 **Put the parameters that are written to before the parameters that are only
 read.** *(measured)* Of the 66 profiles that mix the two, 52 — spread over
@@ -23739,9 +23749,9 @@ into columns like any other run of declarations.
     Initial  : Var_T := Var_T'First;
     Settable : Bool  := True;
   package CVar is
-      function Get return Var_T;
-      procedure Set (Val : Var_T);
-    end;
+    function Get return Var_T;
+    procedure Set (Val : Var_T);
+  end;
 ```
 
 **Order the formal part: types, then objects, then subprograms.** *(project
@@ -24028,11 +24038,11 @@ library units too — a package specification closes with a bare `end;`.
 
 ```ada
   package body Neo.Core.Strings is
-      function Split (Item : Str; On : Str) return Array_Str_Unbound is
-        begin
-          return To_Unsafe_Array (Split_Vec (Item, On));
-        end;
-    end;
+    function Split (Item : Str; On : Str) return Array_Str_Unbound is
+      begin
+        return To_Unsafe_Array (Split_Vec (Item, On));
+      end;
+  end;
 ```
 
 **Write after `end` only the reserved word the syntax requires.** *(measured)*
@@ -24041,8 +24051,11 @@ else. A loop label is not repeated after `end loop` either.
 
 The rule is worth stating precisely because it is unusual. GNAT's `-gnatye`
 checks the opposite, requiring the name; the ACATS suite writes `end Name;`
-13,860 times against 7,754 bare; and this compiler's own `runtime.ada` agrees
-with the corpus, 230 bare against 2 named. The justification the project gives
+13,860 times against 7,754 bare; and this compiler's own `ada83-runtime.ada`
+agrees with the corpus, 240 bare against none named. It very nearly did
+already: the ten it carried were two subprogram names and eight operator
+symbols, `end "+";` and its relatives, and all ten have been dropped. The
+justification the project gives
 is that the name after `end` is a comment the compiler happens to check, that
 it goes stale under renaming, and that a body short enough to read does not
 need it — which is the same argument that produces the one-line bodies of

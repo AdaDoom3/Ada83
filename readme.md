@@ -131,6 +131,13 @@ only if it still compiles. With no model available it says so rather than
 changing anything. Reindentation as you type is worked out in the extension
 instead, so it is immediate and asks nothing of a model.
 
+**Suggest A Fix** appears on any error the compiler reports. It sends the
+file, the errors and the same style rules, asks for the shortest form that
+still says what the program means, with every name spelled out and comments
+only where the code cannot explain itself, and refuses the answer unless it
+compiles. The result is shown as a diff against your file and applied only
+if you say so.
+
 | Setting | |
 | ------- | --- |
 | `ada83.compilerPath` | where `ada83` is; `${workspaceFolder}` is substituted |

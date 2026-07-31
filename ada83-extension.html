@@ -808,6 +808,146 @@ const On_Type_Registration = () =>
          Ada_Selector, On_Type_Provider, '\n', ';')]
     : [];
 
+/* A suggested fix is shown as a diff against the file and applied only if
+   the reader says so, so a wrong answer costs a glance and nothing more. */
+
+const Suggestion_Scheme = 'ada83-suggestion';
+const Suggestion_Sources = new Map ();
+const Suggestion_Changes = new vscode.EventEmitter ();
+
+const Suggestion_Documents = {
+  onDidChange: Suggestion_Changes.event,
+  provideTextDocumentContent: (Uri) =>
+    Suggestion_Sources.get (Uri.toString ()) ?? '',
+};
+
+const Suggestion_Uri = (Document) =>
+  Document.uri.with ({ scheme: Suggestion_Scheme });
+
+const Complained_Of = (Diagnostics) =>
+  Diagnostics
+    .map (({ range, message }) =>
+      `line ${range.start.line + 1}, column ${range.start.character + 1}: ` +
+      message)
+    .join ('\n');
+
+const Suggestion_Instruction = (Rules, Source, Complaints) =>
+  ['Repair the Ada 83 source below, which the compiler rejects with these',
+   'errors:', '', Complaints, '',
+   'Fix what is reported and leave the rest of the file alone. Ada 83 only,',
+   'so nothing from a later Ada.',
+   'Prefer the shortest form that still says what it means: one expression',
+   'rather than a sequence of statements, one subprogram rather than a',
+   'passage written out twice, and no scaffolding that carries no meaning.',
+   'Spell every name out in full, with no abbreviations, no initials and no',
+   'single letters.',
+   'Comment as Knuth would: one short sentence wherever the reason for the',
+   'code cannot be read off the code itself, and nowhere else. No banners,',
+   'and no restatement of what the syntax already says.',
+   'Follow every rule below to the letter; brevity never excuses breaking',
+   'one.',
+   'Answer with the repaired source alone, with no explanation and no code',
+   'fence.',
+   '', 'The source:', '', Source, '', 'The rules:', '', Rules].join ('\n');
+
+const Suggested = async (Root, Document, Diagnostics, Token) => {
+  const Rules = Style_Rules (Root);
+  if (Rules === null)
+    return { Complaint: `The style rules are in ${Manual_Name}, which is ` +
+                        'not installed beside the extension.' };
+
+  const Models = await vscode.lm.selectChatModels ({});
+  if (Models.length === 0)
+    return { Complaint: 'Suggesting a fix asks a language model to write ' +
+                        'one, and no model is available here.' };
+
+  const Answer = Unfenced (
+    await Spoken (Models[0],
+                  Suggestion_Instruction (Rules, Document.getText (),
+                                          Complained_Of (Diagnostics)),
+                  Token)).trim ();
+  if (Answer === '')
+    return { Complaint: 'The model returned nothing.' };
+  if (Answer === Document.getText ().trim ())
+    return { Complaint: 'The model left the source as it was.' };
+
+  return await Still_Compiles (Answer + '\n',
+                               path.dirname (Document.uri.fsPath))
+    ? { Source: Answer + '\n' }
+    : { Complaint: 'The suggested source does not compile either, so it ' +
+                   'was not offered.' };
+};
+
+const Approved = async (Document, Source) => {
+  const Uri = Suggestion_Uri (Document);
+  Suggestion_Sources.set (Uri.toString (), Source);
+  Suggestion_Changes.fire (Uri);
+  await vscode.commands.executeCommand (
+    'vscode.diff', Document.uri, Uri,
+    `${path.basename (Document.uri.fsPath)}: suggested fix`);
+  const Chosen = await vscode.window.showInformationMessage (
+    'Ada 83: apply this suggested fix?', 'Apply', 'Discard');
+  Suggestion_Sources.delete (Uri.toString ());
+  return Chosen === 'Apply';
+};
+
+const Applied = (Document, Source) =>
+  ((Edit) => (Edit.replace (Document.uri, Whole_Of (Document), Source),
+              vscode.workspace.applyEdit (Edit)))
+    (new vscode.WorkspaceEdit ());
+
+const Is_An_Error = ({ severity }) =>
+  severity === vscode.DiagnosticSeverity.Error;
+
+const Errors_In = (Document) =>
+  vscode.languages.getDiagnostics (Document.uri).filter (Is_An_Error);
+
+const Suggest_Fix_Command = (Root) => async (Given, Reported) => {
+  const Document = Given === undefined || Given.uri === undefined
+    ? vscode.window.activeTextEditor?.document
+    : Given;
+  if (Document === undefined || !Is_Ada_Document (Document)) return;
+
+  const Diagnostics = Reported ?? Errors_In (Document);
+  if (Diagnostics.length === 0)
+    return void vscode.window.showInformationMessage (
+      'Ada 83: nothing is reported wrong with this file.');
+
+  const { Source, Complaint } = await vscode.window.withProgress (
+    { location: vscode.ProgressLocation.Notification,
+      title: 'Ada 83: working out a fix', cancellable: true },
+    (Ignored, Token) => Suggested (Root, Document, Diagnostics, Token));
+
+  if (Source === undefined)
+    return void vscode.window.showWarningMessage (`Ada 83: ${Complaint}`);
+  if (await Approved (Document, Source)) await Applied (Document, Source);
+};
+
+const Suggestion_Action = (Document, Diagnostics) =>
+  Object.assign (
+    new vscode.CodeAction ('Suggest A Fix', vscode.CodeActionKind.QuickFix),
+    { diagnostics: Diagnostics,
+      command: { command: 'ada83.suggestFix', title: 'Suggest A Fix',
+                 arguments: [Document, Diagnostics] } });
+
+const Suggestion_Provider = {
+  provideCodeActions: (Document, Range, Context) =>
+    ((Errors) =>
+       (Errors.length === 0 ? [] : [Suggestion_Action (Document, Errors)]))
+      (Context.diagnostics.filter (Is_An_Error)),
+};
+
+const Suggestion_Registration = (Root) =>
+  vscode.lm === undefined || vscode.lm.selectChatModels === undefined
+    ? []
+    : [vscode.workspace.registerTextDocumentContentProvider (
+         Suggestion_Scheme, Suggestion_Documents),
+       vscode.languages.registerCodeActionsProvider (
+         Ada_Selector, Suggestion_Provider,
+         { providedCodeActionKinds: [vscode.CodeActionKind.QuickFix] }),
+       vscode.commands.registerCommand ('ada83.suggestFix',
+                                        Suggest_Fix_Command (Root))];
+
 const Ada_Selector = { scheme: 'file', language: 'ada83' };
 
 const Task_Of = (Name, Title, Argument_List, Group) =>
@@ -1021,6 +1161,7 @@ const activate = (Context) => {
     vscode.tasks.registerTaskProvider ('ada83', Task_Provider),
     ...Manual_Registration (Context.extensionPath),
     ...Reformat_Registration (Context.extensionPath),
+    ...Suggestion_Registration (Context.extensionPath),
     ...On_Type_Registration ());
 };
 
@@ -1206,6 +1347,12 @@ module.exports = { activate, deactivate };
         "icon": "$(symbol-ruler)"
       },
       {
+        "command": "ada83.suggestFix",
+        "title": "Suggest A Fix",
+        "category": "Ada 83",
+        "icon": "$(lightbulb-sparkle)"
+      },
+      {
         "command": "ada83.restartServer",
         "title": "Restart Language Server",
         "category": "Ada 83",
@@ -1243,6 +1390,10 @@ module.exports = { activate, deactivate };
         {
           "command": "ada83.reformat",
           "when": "resourceLangId == ada83"
+        },
+        {
+          "command": "ada83.suggestFix",
+          "when": "resourceLangId == ada83"
         }
       ],
       "explorer/context": [
@@ -1262,6 +1413,11 @@ module.exports = { activate, deactivate };
           "command": "ada83.check",
           "when": "resourceLangId == ada83",
           "group": "ada83@1"
+        },
+        {
+          "command": "ada83.suggestFix",
+          "when": "resourceLangId == ada83",
+          "group": "ada83@2"
         }
       ]
     },
@@ -1418,6 +1574,7 @@ cannot disagree about what Ada 83 is.
 | Diagnostics | as you type, with the compiler's own quick fixes and the locations each one points at |
 | Outline | every declaration the resolver saw, and it stays up while a file is mid-edit |
 | Hover | the declaration written as Ada declares it, and where it stands |
+| Suggest a fix | on any error: a repair written to the manual's style, shown as a diff first |
 | Go to definition | including into `ada83-runtime.ada`, so `Put_Line` opens the standard library |
 | References, highlights | across the file and the workspace |
 | Completion | names in scope, including the runtime's |
