@@ -413,6 +413,7 @@ typedef struct {
 } Closest_Name_Search;
 
 Closest_Name_Search Closest_Name_Begin    (Slice target);
+Closest_Name_Search Closest_Visible_Name  (Slice wrote);
 void                Closest_Name_Consider (Closest_Name_Search *search,
                                            Slice         candidate);
 bool                Closest_Name_Found    (const Closest_Name_Search *search);
@@ -7724,7 +7725,101 @@ void Print_Source_Excerpt (Location location) {
   Last_Excerpted_Location = location;
 }
 
+/* When the language server drives the compiler, diagnostics are collected
+   rather than printed: the server needs them as data, and stdout is carrying
+   the JSON-RPC stream.  Report_Diagnostic is the one place every diagnostic
+   passes through, so capturing here catches all of them.  The location's
+   filename points into memory the arena will reclaim, so it is copied. */
+typedef struct {
+  char                     *filename;
+  u32                       line;
+  u32                       column;
+  Diagnostic_Severity_Kind  severity;
+  char                     *message;
+  /* What Closest_Name_Search made of an unresolved name, kept as the two
+     names rather than as the sentence about them, so that a language server
+     can offer the repair as an edit instead of asking a reader to retype
+     it.  Both are null on a finding that had nothing to suggest. */
+  char                     *misspelled;
+  char                     *suggestion;
+} Captured_Diagnostic;
+
+enum { MAX_CAPTURED_DIAGNOSTICS = 512 };
+
+Captured_Diagnostic Captured_Diagnostics[MAX_CAPTURED_DIAGNOSTICS];
+u32                 Captured_Diagnostic_Count = 0;
+bool                Capturing_Diagnostics     = false;
+
+/* Stop after resolution instead of emitting IR: the server wants the
+   diagnostics, not the output, and must not have files written behind it. */
+bool                Analysis_Only             = false;
+
+void Discard_Captured_Diagnostics (void) {
+  for (u32 i = 0; i < Captured_Diagnostic_Count; i++) {
+    free (Captured_Diagnostics[i].filename);
+    free (Captured_Diagnostics[i].message);
+    free (Captured_Diagnostics[i].misspelled);
+    free (Captured_Diagnostics[i].suggestion);
+  }
+  Captured_Diagnostic_Count = 0;
+}
+
+static void Capture_Diagnostic (Location location,
+                                Diagnostic_Severity_Kind severity,
+                                const char *format, va_list args) {
+  if (Captured_Diagnostic_Count >= MAX_CAPTURED_DIAGNOSTICS) return;
+
+  va_list measuring;
+  va_copy (measuring, args);
+  int needed = vsnprintf (NULL, 0, format, measuring);
+  va_end (measuring);
+  if (needed < 0) return;
+
+  char *message = malloc ((size_t) needed + 1);
+  if (not message) return;
+  vsnprintf (message, (size_t) needed + 1, format, args);
+
+  const char *name = location.filename ? location.filename : "";
+  size_t      span = strlen (name);
+  char       *copy = malloc (span + 1);
+  if (not copy) { free (message); return; }
+  memcpy (copy, name, span + 1);
+
+  Captured_Diagnostics[Captured_Diagnostic_Count++] = (Captured_Diagnostic){
+    .filename = copy,
+    .line     = location.line,
+    .column   = location.column,
+    .severity = severity,
+    .message  = message
+  };
+}
+
+static char *Duplicate_Slice (Slice text) {
+  char *copy = malloc ((size_t) text.length + 1);
+  if (not copy) return NULL;
+  if (text.length) memcpy (copy, text.data, text.length);
+  copy[text.length] = '\0';
+  return copy;
+}
+
+/* The repair belongs to the finding it repairs, which is the diagnostic
+   captured just before the note announcing it -- and only that one, since a
+   rejection the compiler chose not to report leaves the previous finding on
+   top of the list with nothing to do with this name. */
+static void Attach_Suggestion (Location location, Slice wrote, Slice meant) {
+  if (not Capturing_Diagnostics or not Captured_Diagnostic_Count) return;
+  Captured_Diagnostic *finding =
+    &Captured_Diagnostics[Captured_Diagnostic_Count - 1];
+  if (finding->severity == DIAGNOSTIC_SEVERITY_NOTE)       return;
+  if (finding->line != location.line)                      return;
+  if (finding->column != location.column)                  return;
+  if (finding->suggestion)                                 return;
+  finding->misspelled = Duplicate_Slice (wrote);
+  finding->suggestion = Duplicate_Slice (meant);
+}
+
 void Report_Diagnostic_Summary (void) {
+  if (Capturing_Diagnostics) return;
   if (Error_Count > 0 and Warning_Count > 0)
     fprintf (stderr, "%d error%s, %d warning%s\n",
              Error_Count,   Error_Count   == 1 ? "" : "s",
@@ -7741,6 +7836,10 @@ void Report_Diagnostic (Location location,
                         Diagnostic_Severity_Kind severity,
                         const char *format, va_list args) {
   if (Diagnostics_Suppressed) return;
+  if (Capturing_Diagnostics) {
+    Capture_Diagnostic (location, severity, format, args);
+    return;
+  }
   fprintf (stderr, "%s:%u:%u: %s%s%s: ",
            location.filename ? location.filename : "<unknown>",
            location.line, location.column,
@@ -7789,6 +7888,7 @@ void Report_Related_Location_Note (Location location, const char *lead,
 void Report_Suggestion_Note (Location location,
                              const Closest_Name_Search *search) {
   if (not Closest_Name_Found (search)) return;
+  Attach_Suggestion (location, search->target, search->best);
   Report_Note (location, "did you mean '%.*s'?",
                (int) search->best.length, search->best.data);
 }
@@ -15513,15 +15613,35 @@ bool Reject_Selection_With_Cause (Node *node, Type *viewed) {
   return false;
 }
 
+/* Every name a reader could have written where they are standing, offered
+   to a search for the one they probably meant. */
+Closest_Name_Search Closest_Visible_Name (Slice wrote) {
+  Closest_Name_Search search = Closest_Name_Begin (wrote);
+  for (Scope *scope = sm->current_scope; scope; scope = scope->parent)
+    for (u32 bucket = 0; bucket < SYMBOL_TABLE_SIZE; bucket++)
+      for (Symbol *candidate = scope->buckets[bucket]; candidate;
+           candidate = candidate->next_in_bucket) {
+        if (candidate->visibility < VIS_IMMEDIATELY_VISIBLE) continue;
+        if (not Symbol_Visible_Under_Cutoff (candidate, scope)) continue;
+        Closest_Name_Consider (&search, candidate->name);
+      }
+  return search;
+}
+
 void Reject_Unresolvable_Application (Node *node, Node *prefix,
                                       Symbol *prefix_symbol) {
   Slice name = prefix->string_val.text;
   u32   argument_count = node->apply.arguments.count;
 
   if (not prefix_symbol) {
-    if (not Reject_Name_With_Cause (prefix->location, name))
+    /* Nothing of this name is in scope, which is the same trouble a name
+       standing on its own would be in, and answered the same way. */
+    if (not Reject_Name_With_Cause (prefix->location, name)) {
+      Closest_Name_Search search = Closest_Visible_Name (name);
       Reject (node, "cannot resolve '%.*s' as callable or indexable",
               (int) name.length, name.data);
+      Report_Suggestion_Note (node->location, &search);
+    }
     return;
   }
 
@@ -17171,15 +17291,7 @@ void Analyze_Identifier (Node *n) {
       Interp_Add (out, NULL, sm->type_integer, sm->type_integer, NULL);
       return;
     }
-    Closest_Name_Search search = Closest_Name_Begin (n->string_val.text);
-    for (Scope *scope = sm->current_scope; scope; scope = scope->parent)
-      for (u32 bucket = 0; bucket < SYMBOL_TABLE_SIZE; bucket++)
-        for (Symbol *candidate = scope->buckets[bucket]; candidate;
-             candidate = candidate->next_in_bucket) {
-          if (candidate->visibility < VIS_IMMEDIATELY_VISIBLE) continue;
-          if (not Symbol_Visible_Under_Cutoff (candidate, scope)) continue;
-          Closest_Name_Consider (&search, candidate->name);
-        }
+    Closest_Name_Search search = Closest_Visible_Name (n->string_val.text);
     Reject_At (n->location, "undefined identifier '%.*s'",
                   (int) n->string_val.text.length, n->string_val.text.data);
     Report_Suggestion_Note (n->location, &search);
@@ -60168,6 +60280,13 @@ void Compile_File (const char *input_path, const char *output_path) {
 
   Report_Usage_Warnings (input_path);
 
+  /* The language server wants the diagnostics and nothing else: return before
+     any output is opened, so no IR reaches stdout and no files are written. */
+  if (Analysis_Only) {
+    free (source);
+    return;
+  }
+
   if (Error_Count > 0) {
     Report_Diagnostic_Summary ();
     free (source);
@@ -60432,6 +60551,2611 @@ bool Warning_Flags_From_Command_Line (const char *argument) {
 #define ADA83_VERSION_TEXT \
   "ada83 1.0 -- an Ada 83 (ANSI/MIL-STD-1815A) compiler, LLVM native backend"
 
+
+typedef struct { char *Data; size_t Length, Capacity; } Text_Buffer;
+
+static void Buffer_Reserve (Text_Buffer *buffer, size_t extra) {
+  if (buffer->Data and buffer->Length + extra + 1 <= buffer->Capacity) return;
+  size_t wanted = buffer->Capacity ? buffer->Capacity : 256;
+  while (wanted < buffer->Length + extra + 1) wanted *= 2;
+  char *grown = realloc (buffer->Data, wanted);
+  if (not grown) return;
+  buffer->Data     = grown;
+  buffer->Capacity = wanted;
+  buffer->Data[buffer->Length] = '\0';
+}
+
+static void Buffer_Append (Text_Buffer *buffer, const char *text, size_t n) {
+  Buffer_Reserve (buffer, n);
+  if (not buffer->Data or buffer->Length + n + 1 > buffer->Capacity) return;
+  memcpy (buffer->Data + buffer->Length, text, n);
+  buffer->Length += n;
+  buffer->Data[buffer->Length] = '\0';
+}
+
+static void Buffer_Append_Text (Text_Buffer *buffer, const char *text) {
+  Buffer_Append (buffer, text, strlen (text));
+}
+
+static void Buffer_Printf (Text_Buffer *buffer, const char *format, ...) {
+  va_list args, measuring;
+  va_start (args, format);
+  va_copy (measuring, args);
+  int needed = vsnprintf (NULL, 0, format, measuring);
+  va_end (measuring);
+  if (needed >= 0) {
+    Buffer_Reserve (buffer, (size_t) needed);
+    if (buffer->Data and
+        buffer->Length + (size_t) needed + 1 <= buffer->Capacity) {
+      vsnprintf (buffer->Data + buffer->Length, (size_t) needed + 1,
+                 format, args);
+      buffer->Length += (size_t) needed;
+    }
+  }
+  va_end (args);
+}
+
+static void Buffer_Free (Text_Buffer *buffer) {
+  free (buffer->Data);
+  buffer->Data     = NULL;
+  buffer->Length   = 0;
+  buffer->Capacity = 0;
+}
+
+static void Buffer_Append_Json_String (Text_Buffer *buffer, const char *text) {
+  Buffer_Append (buffer, "\"", 1);
+  for (const unsigned char *scan = (const unsigned char *) (text ? text : "");
+       *scan; scan++)
+    switch (*scan) {
+      case '"':  Buffer_Append (buffer, "\\\"", 2); break;
+      case '\\': Buffer_Append (buffer, "\\\\", 2); break;
+      case '\b': Buffer_Append (buffer, "\\b",  2); break;
+      case '\f': Buffer_Append (buffer, "\\f",  2); break;
+      case '\n': Buffer_Append (buffer, "\\n",  2); break;
+      case '\r': Buffer_Append (buffer, "\\r",  2); break;
+      case '\t': Buffer_Append (buffer, "\\t",  2); break;
+      default:
+        if (*scan < 0x20) Buffer_Printf (buffer, "\\u%04x", *scan);
+        else              Buffer_Append (buffer, (const char *) scan, 1);
+    }
+  Buffer_Append (buffer, "\"", 1);
+}
+
+static void Buffer_Append_Json_Slice (Text_Buffer *buffer, Slice name) {
+  char text[256];
+  u32  length = name.data and name.length < sizeof text
+              ? name.length : 0;
+  if (length) memcpy (text, name.data, length);
+  text[length] = '\0';
+  Buffer_Append_Json_String (buffer, text);
+}
+
+typedef enum {
+  JSON_NULL, JSON_BOOL, JSON_NUMBER, JSON_STRING, JSON_ARRAY, JSON_OBJECT
+} Json_Kind;
+
+typedef struct Json Json;
+
+struct Json {
+  Json_Kind Kind;
+  bool      Boolean;
+  double    Number;
+  char     *String;
+  Json    **Items;
+  char    **Keys;
+  u32       Count;
+};
+
+static Json *Json_Parse_Value (const char **cursor);
+
+static void Json_Free (Json *value) {
+  if (not value) return;
+  for (u32 i = 0; i < value->Count; i++) {
+    if (value->Keys) free (value->Keys[i]);
+    Json_Free (value->Items[i]);
+  }
+  free (value->Keys);
+  free (value->Items);
+  free (value->String);
+  free (value);
+}
+
+static Json *Json_New (Json_Kind kind) {
+  Json *value = calloc (1, sizeof *value);
+  if (value) value->Kind = kind;
+  return value;
+}
+
+static void Json_Skip_Space (const char **cursor) {
+  while (**cursor == ' '  or **cursor == '\t' or
+         **cursor == '\n' or **cursor == '\r')
+    (*cursor)++;
+}
+
+static void Json_Encode_Utf8 (Text_Buffer *out, u32 code_point) {
+  char bytes[4];
+  if (code_point < 0x80) {
+    bytes[0] = (char) code_point;
+    Buffer_Append (out, bytes, 1);
+  } else if (code_point < 0x800) {
+    bytes[0] = (char) (0xC0 | (code_point >> 6));
+    bytes[1] = (char) (0x80 | (code_point & 0x3F));
+    Buffer_Append (out, bytes, 2);
+  } else if (code_point < 0x10000) {
+    bytes[0] = (char) (0xE0 | (code_point >> 12));
+    bytes[1] = (char) (0x80 | ((code_point >>  6) & 0x3F));
+    bytes[2] = (char) (0x80 | (code_point & 0x3F));
+    Buffer_Append (out, bytes, 3);
+  } else {
+    bytes[0] = (char) (0xF0 | (code_point >> 18));
+    bytes[1] = (char) (0x80 | ((code_point >> 12) & 0x3F));
+    bytes[2] = (char) (0x80 | ((code_point >>  6) & 0x3F));
+    bytes[3] = (char) (0x80 | (code_point & 0x3F));
+    Buffer_Append (out, bytes, 4);
+  }
+}
+
+static u32 Json_Read_Hex4 (const char **cursor) {
+  u32 value = 0;
+  for (int i = 0; i < 4 and isxdigit ((unsigned char) **cursor); i++) {
+    char digit = *(*cursor)++;
+    value = value * 16 + (u32) (digit <= '9' ? digit - '0'
+                                             : (digit | 0x20) - 'a' + 10);
+  }
+  return value;
+}
+
+static char *Json_Parse_String (const char **cursor) {
+  if (**cursor != '"') return NULL;
+  (*cursor)++;
+  Text_Buffer text = {0};
+  Buffer_Reserve (&text, 0);
+  while (**cursor and **cursor != '"') {
+    if (**cursor != '\\') {
+      Buffer_Append (&text, *cursor, 1);
+      (*cursor)++;
+      continue;
+    }
+    (*cursor)++;
+    if (not **cursor) break;
+    char escape = *(*cursor)++;
+    switch (escape) {
+      case '"':  Buffer_Append (&text, "\"",  1); break;
+      case '\\': Buffer_Append (&text, "\\",  1); break;
+      case '/':  Buffer_Append (&text, "/",   1); break;
+      case 'b':  Buffer_Append (&text, "\b",  1); break;
+      case 'f':  Buffer_Append (&text, "\f",  1); break;
+      case 'n':  Buffer_Append (&text, "\n",  1); break;
+      case 'r':  Buffer_Append (&text, "\r",  1); break;
+      case 't':  Buffer_Append (&text, "\t",  1); break;
+      case 'u': {
+        u32 unit = Json_Read_Hex4 (cursor);
+        if (unit >= 0xD800 and unit <= 0xDBFF and
+            (*cursor)[0] == '\\' and (*cursor)[1] == 'u') {
+          *cursor += 2;
+          u32 trail = Json_Read_Hex4 (cursor);
+          if (trail >= 0xDC00 and trail <= 0xDFFF)
+            unit = 0x10000 + ((unit - 0xD800) << 10) + (trail - 0xDC00);
+        }
+        Json_Encode_Utf8 (&text, unit);
+        break;
+      }
+      default: Buffer_Append (&text, &escape, 1);
+    }
+  }
+  if (**cursor == '"') (*cursor)++;
+  return text.Data;
+}
+
+static bool Json_Push (Json *value, char *key, Json *item) {
+  Json **items = realloc (value->Items, (value->Count + 1) * sizeof *items);
+  if (not items) return false;
+  value->Items = items;
+  if (value->Kind == JSON_OBJECT) {
+    char **keys = realloc (value->Keys, (value->Count + 1) * sizeof *keys);
+    if (not keys) return false;
+    value->Keys = keys;
+    value->Keys[value->Count] = key;
+  }
+  value->Items[value->Count++] = item;
+  return true;
+}
+
+static Json *Json_Parse_Value (const char **cursor) {
+  Json_Skip_Space (cursor);
+  switch (**cursor) {
+    case '\0':
+      return NULL;
+
+    case '"': {
+      char *text = Json_Parse_String (cursor);
+      if (not text) return NULL;
+      Json *value = Json_New (JSON_STRING);
+      if (value) value->String = text;
+      else       free (text);
+      return value;
+    }
+
+    case '{': case '[': {
+      bool  object = **cursor == '{';
+      char  closer = object ? '}' : ']';
+      (*cursor)++;
+      Json *value = Json_New (object ? JSON_OBJECT : JSON_ARRAY);
+      if (not value) return NULL;
+      Json_Skip_Space (cursor);
+      if (**cursor == closer) { (*cursor)++; return value; }
+      for (;;) {
+        char *key = NULL;
+        if (object) {
+          Json_Skip_Space (cursor);
+          key = Json_Parse_String (cursor);
+          if (not key) { Json_Free (value); return NULL; }
+          Json_Skip_Space (cursor);
+          if (**cursor != ':') { free (key); Json_Free (value); return NULL; }
+          (*cursor)++;
+        }
+        Json *item = Json_Parse_Value (cursor);
+        if (not item or not Json_Push (value, key, item)) {
+          free (key);
+          Json_Free (item);
+          Json_Free (value);
+          return NULL;
+        }
+        Json_Skip_Space (cursor);
+        if (**cursor == ',') { (*cursor)++; continue; }
+        if (**cursor == closer) (*cursor)++;
+        break;
+      }
+      return value;
+    }
+
+    case 't':
+      if (strncmp (*cursor, "true", 4) != 0) return NULL;
+      *cursor += 4;
+      { Json *value = Json_New (JSON_BOOL); if (value) value->Boolean = true;
+        return value; }
+
+    case 'f':
+      if (strncmp (*cursor, "false", 5) != 0) return NULL;
+      *cursor += 5;
+      return Json_New (JSON_BOOL);
+
+    case 'n':
+      if (strncmp (*cursor, "null", 4) != 0) return NULL;
+      *cursor += 4;
+      return Json_New (JSON_NULL);
+
+    default: {
+      char *end = NULL;
+      double number = strtod (*cursor, &end);
+      if (end == *cursor) return NULL;
+      *cursor = end;
+      Json *value = Json_New (JSON_NUMBER);
+      if (value) value->Number = number;
+      return value;
+    }
+  }
+}
+
+static const Json *Json_Member (const Json *object, const char *key) {
+  if (not object or object->Kind != JSON_OBJECT) return NULL;
+  for (u32 i = 0; i < object->Count; i++)
+    if (object->Keys[i] and strcmp (object->Keys[i], key) == 0)
+      return object->Items[i];
+  return NULL;
+}
+
+static const char *Json_Text (const Json *value) {
+  return value and value->Kind == JSON_STRING ? value->String : NULL;
+}
+
+enum { MAX_OPEN_DOCUMENTS = 64 };
+
+enum { MAX_QUICK_FIXES = 64 };
+
+typedef struct {
+  u32  line;
+  u32  start;
+  u32  end;
+  char replacement[128];
+} Quick_Fix;
+
+typedef struct {
+  char *uri;
+  char *path;
+  char *text;
+  Quick_Fix fixes[MAX_QUICK_FIXES];
+  u32       fix_count;
+  char *accepted;
+} Open_Document;
+
+static Open_Document Open_Documents[MAX_OPEN_DOCUMENTS];
+static u32           Open_Document_Count = 0;
+
+static char *Duplicate (const char *text) {
+  if (not text) return NULL;
+  size_t length = strlen (text);
+  char  *copy   = malloc (length + 1);
+  if (copy) memcpy (copy, text, length + 1);
+  return copy;
+}
+
+static char *Path_From_Uri (const char *uri) {
+  if (not uri) return NULL;
+  const char *rest = uri;
+  if (strncmp (rest, "file://", 7) == 0) {
+    rest += 7;
+    while (*rest and *rest != '/') rest++;
+  }
+  Text_Buffer path = {0};
+  Buffer_Reserve (&path, 0);
+  for (; *rest; rest++) {
+    if (*rest == '%' and isxdigit ((unsigned char) rest[1])
+                     and isxdigit ((unsigned char) rest[2])) {
+      char hex[3] = { rest[1], rest[2], '\0' };
+      char byte   = (char) strtol (hex, NULL, 16);
+      Buffer_Append (&path, &byte, 1);
+      rest += 2;
+    } else {
+      Buffer_Append (&path, rest, 1);
+    }
+  }
+
+  if (path.Data and path.Data[0] == '/' and
+      isalpha ((unsigned char) path.Data[1]) and path.Data[2] == ':')
+    memmove (path.Data, path.Data + 1, path.Length--);
+  return path.Data;
+}
+
+static Open_Document *Find_Document (const char *uri) {
+  for (u32 i = 0; i < Open_Document_Count; i++)
+    if (strcmp (Open_Documents[i].uri, uri) == 0) return &Open_Documents[i];
+  return NULL;
+}
+
+static void Forget_Document (const char *uri) {
+  for (u32 i = 0; i < Open_Document_Count; i++)
+    if (strcmp (Open_Documents[i].uri, uri) == 0) {
+      free (Open_Documents[i].uri);
+      free (Open_Documents[i].path);
+      free (Open_Documents[i].text);
+      free (Open_Documents[i].accepted);
+      Open_Documents[i] = Open_Documents[--Open_Document_Count];
+      return;
+    }
+}
+
+static Open_Document *Remember_Document (const char *uri, const char *text) {
+  Open_Document *document = Find_Document (uri);
+  if (document) {
+    free (document->text);
+    document->text      = Duplicate (text);
+    document->fix_count = 0;
+    return document;
+  }
+  if (Open_Document_Count >= MAX_OPEN_DOCUMENTS) return NULL;
+  document = &Open_Documents[Open_Document_Count++];
+  document->uri       = Duplicate (uri);
+  document->path      = Path_From_Uri (uri);
+  document->text      = Duplicate (text);
+  document->fix_count = 0;
+  return document;
+}
+
+static void Utf16_Range_Of (const char *text, u32 line, u32 column,
+                            u32 *out_line, u32 *out_start, u32 *out_end) {
+  *out_line  = line ? line - 1 : 0;
+  *out_start = column ? column - 1 : 0;
+  *out_end   = *out_start + 1;
+  if (not text) return;
+
+  const char *scan = text;
+  for (u32 remaining = *out_line; remaining and *scan; ) {
+    if (*scan++ == '\n') remaining--;
+  }
+
+  u32 units = 0;
+  u32 wanted = column ? column - 1 : 0;
+  for (u32 seen = 0; seen < wanted and *scan and *scan != '\n'; seen++) {
+    unsigned char lead = (unsigned char) *scan;
+    u32 width = lead < 0x80 ? 1 : lead < 0xE0 ? 2 : lead < 0xF0 ? 3 : 4;
+    units += width == 4 ? 2 : 1;
+    scan  += width;
+  }
+  *out_start = units;
+
+  u32 span = 0;
+  for (const char *token = scan;
+       *token and (isalnum ((unsigned char) *token) or *token == '_');
+       token++)
+    span++;
+  *out_end = units + (span ? span : 1);
+}
+
+static u32 Column_Of_The_Misspelling (const char *text, u32 line, u32 column,
+                                      const char *name) {
+  if (not text or not name or not name[0] or not line) return column;
+
+  const char *scan = text;
+  for (u32 remaining = line - 1; remaining and *scan; )
+    if (*scan++ == '\n') remaining--;
+
+  const char *first  = scan;
+  size_t      length = strlen (name);
+  u32         after  = 0, before = 0;
+  for (u32 at = 1; *scan and *scan != '\n'; at++) {
+    if (strncasecmp (scan, name, length) == 0 and
+        (scan == first or not (isalnum ((unsigned char) scan[-1]) or
+                               scan[-1] == '_')) and
+        not (isalnum ((unsigned char) scan[length]) or scan[length] == '_')) {
+      if (at >= column) { if (not after) after = at; }
+      else              before = at;
+    }
+    unsigned char lead = (unsigned char) *scan;
+    scan += lead < 0x80 ? 1 : lead < 0xE0 ? 2 : lead < 0xF0 ? 3 : 4;
+  }
+  return after ? after : before ? before : column;
+}
+
+#ifdef _WIN32
+  #define HOST_PATH_SEPARATOR ';'
+#else
+  #define HOST_PATH_SEPARATOR ':'
+#endif
+
+/* Where a with-ed unit is looked for while the server answers: the
+   document's own directory, the working directory, and whatever the editor
+   named when it started the server, which reaches the children through the
+   environment because each of them is a separate process. */
+static void Add_Analysis_Include_Paths (const char *directory) {
+  if (directory and directory[0]) Add_Include_Path (directory);
+  Add_Include_Path (".");
+
+  const char *named = getenv ("ADA83_INCLUDE");
+  for (const char *start = named ? named : ""; *start;) {
+    const char *stop   = strchr (start, HOST_PATH_SEPARATOR);
+    size_t      length = stop ? (size_t) (stop - start) : strlen (start);
+    if (length and length < PATH_MAX) {
+      char one[PATH_MAX];
+      memcpy (one, start, length);
+      one[length] = '\0';
+      Add_Include_Path (one);
+    }
+    start = stop ? stop + 1 : start + length;
+  }
+}
+
+/* -I paths given after --lsp are the editor's, and every child needs them. */
+static void Publish_Include_Paths (int argc, char *argv[]) {
+  Text_Buffer joined = {0};
+  for (int i = 2; i + 1 < argc; i++)
+    if (strcmp (argv[i], "-I") == 0) {
+      if (joined.Length) Buffer_Append (&joined, (char[]) { HOST_PATH_SEPARATOR }, 1);
+      Buffer_Append_Text (&joined, argv[++i]);
+    }
+  if (joined.Length) {
+#ifdef _WIN32
+    _putenv_s ("ADA83_INCLUDE", joined.Data);
+#else
+    setenv ("ADA83_INCLUDE", joined.Data, 1);
+#endif
+  }
+  Buffer_Free (&joined);
+}
+
+static void Send_Message (const Text_Buffer *body) {
+  printf ("Content-Length: %zu\r\n\r\n", body->Length);
+  fwrite (body->Data, 1, body->Length, stdout);
+  fflush (stdout);
+}
+
+static bool Receive_Message (Text_Buffer *body) {
+  char   header[512];
+  size_t expected = 0;
+  bool   sized    = false;
+
+  for (;;) {
+    if (not fgets (header, sizeof header, stdin)) return false;
+    if (header[0] == '\r' or header[0] == '\n') break;
+    if (strncasecmp (header, "Content-Length:", 15) == 0) {
+      expected = (size_t) strtoul (header + 15, NULL, 10);
+      sized    = true;
+    }
+  }
+  if (not sized) return false;
+
+  body->Length = 0;
+  Buffer_Reserve (body, expected);
+  if (not body->Data) return false;
+  size_t read = fread (body->Data, 1, expected, stdin);
+  body->Length = read;
+  body->Data[read] = '\0';
+  return read == expected;
+}
+
+static const char *Declaration_File (const char *filename);
+static void Append_File_Uri (Text_Buffer *out, const char *path);
+
+static char Server_Executable[PATH_MAX];
+
+int Analyse_And_Print (const char *path, const char *directory,
+                       const char *invoked_as) {
+  char executable[PATH_MAX], beside[PATH_MAX];
+  Host_Executable_Path (executable, sizeof executable, invoked_as);
+  if (Is_Directory (executable, beside, sizeof beside))
+    Runtime_Library_Locate (beside);
+  Add_Analysis_Include_Paths (directory);
+
+  Capturing_Diagnostics = true;
+  Analysis_Only         = true;
+  Compile_File (path, directory);
+  Capturing_Diagnostics = false;
+
+  Text_Buffer out = {0};
+  Buffer_Append_Text (&out, "[");
+  for (u32 i = 0, published = 0; i < Captured_Diagnostic_Count; i++) {
+    const Captured_Diagnostic *diagnostic = &Captured_Diagnostics[i];
+
+    if (strcmp (diagnostic->filename, path) != 0) continue;
+    if (diagnostic->line == 0) continue;
+    if (diagnostic->severity == DIAGNOSTIC_SEVERITY_NOTE) continue;
+
+    if (published++) Buffer_Append_Text (&out, ",");
+    Buffer_Printf (&out, "{\"line\":%u,\"column\":%u,\"severity\":%d,"
+                         "\"message\":",
+                   diagnostic->line, diagnostic->column,
+                   (int) diagnostic->severity);
+    Buffer_Append_Json_String (&out, diagnostic->message);
+
+    if (diagnostic->suggestion) {
+      Buffer_Append_Text (&out, ",\"misspelled\":");
+      Buffer_Append_Json_String (&out, diagnostic->misspelled
+                                         ? diagnostic->misspelled : "");
+      Buffer_Append_Text (&out, ",\"suggestion\":");
+      Buffer_Append_Json_String (&out, diagnostic->suggestion);
+    }
+
+    Buffer_Append_Text (&out, ",\"related\":[");
+    u32 linked = 0;
+    for (u32 k = i + 1; k < Captured_Diagnostic_Count and
+         Captured_Diagnostics[k].severity == DIAGNOSTIC_SEVERITY_NOTE; k++) {
+      char where[PATH_MAX];
+      u32 at_line = 0, at_column = 0;
+      const char *message = Captured_Diagnostics[k].message;
+      const char *tail = strstr (message, " at ");
+      const char *last = NULL;
+      while (tail) { last = tail; tail = strstr (tail + 4, " at "); }
+      if (not last) continue;
+      if (sscanf (last + 4, "%[^:]:%u:%u", where, &at_line, &at_column) != 3)
+        continue;
+
+      if (linked++) Buffer_Append_Text (&out, ",");
+      Buffer_Append_Text (&out, "{\"file\":");
+      Buffer_Append_Json_String (&out, Declaration_File (where));
+      Buffer_Printf (&out, ",\"line\":%u,\"column\":%u,\"message\":",
+                     at_line, at_column);
+      Buffer_Append_Json_String (&out, message);
+      Buffer_Append_Text (&out, "}");
+    }
+    Buffer_Append_Text (&out, "]}");
+  }
+  Buffer_Append_Text (&out, "]");
+  fwrite (out.Data, 1, out.Length, stdout);
+  fflush (stdout);
+  Buffer_Free (&out);
+  Discard_Captured_Diagnostics ();
+  return 0;
+}
+
+static void Publish_Diagnostics (Open_Document *document,
+                                 const Json *diagnostics) {
+  Text_Buffer message = {0};
+  Buffer_Append_Text (&message,
+    "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/publishDiagnostics\","
+    "\"params\":{\"uri\":");
+  Buffer_Append_Json_String (&message, document->uri);
+  Buffer_Append_Text (&message, ",\"diagnostics\":[");
+  document->fix_count = 0;
+
+  u32 count = diagnostics and diagnostics->Kind == JSON_ARRAY
+            ? diagnostics->Count : 0;
+  for (u32 i = 0; i < count; i++) {
+    const Json *entry    = diagnostics->Items[i];
+    const Json *line_of  = Json_Member (entry, "line");
+    const Json *column   = Json_Member (entry, "column");
+    const Json *severity = Json_Member (entry, "severity");
+    const char *text     = Json_Text (Json_Member (entry, "message"));
+    if (not line_of or not column) continue;
+
+    u32 line, start, end;
+    Utf16_Range_Of (document->text, (u32) line_of->Number,
+                    (u32) column->Number, &line, &start, &end);
+
+    const char *suggestion = Json_Text (Json_Member (entry, "suggestion"));
+    const char *misspelled = Json_Text (Json_Member (entry, "misspelled"));
+    if (suggestion and suggestion[0] and
+        document->fix_count < MAX_QUICK_FIXES) {
+      Quick_Fix *fix = &document->fixes[document->fix_count++];
+      Utf16_Range_Of (document->text, (u32) line_of->Number,
+                      Column_Of_The_Misspelling (document->text,
+                                                 (u32) line_of->Number,
+                                                 (u32) column->Number,
+                                                 misspelled ? misspelled : ""),
+                      &fix->line, &fix->start, &fix->end);
+      snprintf (fix->replacement, sizeof fix->replacement, "%s", suggestion);
+    }
+
+    int kind = severity and (int) severity->Number == DIAGNOSTIC_SEVERITY_WARNING ? 2
+             : severity and (int) severity->Number == DIAGNOSTIC_SEVERITY_NOTE    ? 3
+             : 1;
+
+    if (i) Buffer_Append_Text (&message, ",");
+    Buffer_Printf (&message,
+      "{\"range\":{\"start\":{\"line\":%u,\"character\":%u},"
+      "\"end\":{\"line\":%u,\"character\":%u}},\"severity\":%d,"
+      "\"source\":\"ada83\",\"message\":",
+      line, start, line, end, kind);
+    Buffer_Append_Json_String (&message, text ? text : "");
+
+    const Json *related = Json_Member (entry, "related");
+    u32 links = related and related->Kind == JSON_ARRAY ? related->Count : 0;
+    if (links) {
+      Buffer_Append_Text (&message, ",\"relatedInformation\":[");
+      for (u32 k = 0; k < links; k++) {
+        const Json *link = related->Items[k];
+        const char *file = Json_Text (Json_Member (link, "file"));
+        const Json *at_line = Json_Member (link, "line");
+        const Json *at_col  = Json_Member (link, "column");
+        if (not file or not at_line) continue;
+        u32 l = (u32) at_line->Number ? (u32) at_line->Number - 1 : 0;
+        u32 c = at_col and (u32) at_col->Number ? (u32) at_col->Number - 1 : 0;
+        if (k) Buffer_Append_Text (&message, ",");
+        Buffer_Append_Text (&message, "{\"location\":{\"uri\":\"");
+        Append_File_Uri (&message, file);
+        Buffer_Printf (&message,
+          "\",\"range\":{\"start\":{\"line\":%u,\"character\":%u},"
+          "\"end\":{\"line\":%u,\"character\":%u}}},\"message\":", l, c, l, c);
+        Buffer_Append_Json_String (&message,
+          Json_Text (Json_Member (link, "message")) ?: "");
+        Buffer_Append_Text (&message, "}");
+      }
+      Buffer_Append_Text (&message, "]");
+    }
+    Buffer_Append_Text (&message, "}");
+  }
+
+  Buffer_Append_Text (&message, "]}}");
+  Send_Message (&message);
+  Buffer_Free (&message);
+}
+
+static void Append_Shell_Argument (Text_Buffer *command, const char *text) {
+#ifdef _WIN32
+  Buffer_Append_Text (command, "\"");
+  for (const char *scan = text; *scan; scan++) {
+    if (*scan == '"') Buffer_Append_Text (command, "\\");
+    Buffer_Append (command, scan, 1);
+  }
+  Buffer_Append_Text (command, "\"");
+#else
+  Buffer_Append_Text (command, "'");
+  for (const char *scan = text; *scan; scan++) {
+    if (*scan == '\'') Buffer_Append_Text (command, "'\\''");
+    else                Buffer_Append (command, scan, 1);
+  }
+  Buffer_Append_Text (command, "'");
+#endif
+}
+
+static Text_Buffer Run_Analysis (const char *mode, const char *path,
+                                 const char *directory, const char *name) {
+  Text_Buffer command = {0};
+  Append_Shell_Argument (&command, Server_Executable);
+  Buffer_Append_Text (&command, " ");
+  Buffer_Append_Text (&command, mode);
+  Buffer_Append_Text (&command, " ");
+  Append_Shell_Argument (&command, path);
+  if (directory) {
+    Buffer_Append_Text (&command, " ");
+    Append_Shell_Argument (&command, directory);
+  }
+  if (name) {
+    Buffer_Append_Text (&command, " ");
+    Append_Shell_Argument (&command, name);
+  }
+
+  Text_Buffer reply = {0};
+  Buffer_Reserve (&reply, 0);
+  FILE *child = popen (command.Data, "r");
+  if (child) {
+    char   chunk[4096];
+    size_t got;
+    while ((got = fread (chunk, 1, sizeof chunk, child)) > 0)
+      Buffer_Append (&reply, chunk, got);
+    pclose (child);
+  }
+  Buffer_Free (&command);
+  return reply;
+}
+
+static void Scratch_Source_Path (char *scratch, size_t scratch_size) {
+  const char *temporary = getenv ("TMPDIR");
+  if (not temporary or not temporary[0]) temporary = "/tmp";
+  snprintf (scratch, scratch_size, "%s/ada83-lsp-%ld.ada",
+            temporary, (long) getpid ());
+}
+
+static Text_Buffer Run_Analysis_Over_Text (const char *mode, const char *text,
+                                           const char *directory,
+                                           const char *name,
+                                           const char *scratch) {
+  Text_Buffer reply = {0};
+  Buffer_Reserve (&reply, 0);
+
+  FILE *file = fopen (scratch, "wb");
+  if (not file) return reply;
+  if (text) fputs (text, file);
+  fclose (file);
+
+  Buffer_Free (&reply);
+  reply = Run_Analysis (mode, scratch, directory, name);
+  remove (scratch);
+  return reply;
+}
+
+static bool Nothing_Came_Back (const Text_Buffer *reply) {
+  const char *scan = reply->Data;
+  if (not scan) return true;
+  while (*scan and isspace ((unsigned char) *scan)) scan++;
+  return scan[0] == '\0'
+      or strncmp (scan, "null", 4) == 0
+      or (scan[0] == '[' and scan[1] == ']')
+      or (scan[0] == '{' and scan[1] == '}');
+}
+
+static Text_Buffer Ask_About_Document (const Open_Document *document,
+                                       const char *mode, const char *name,
+                                       char *directory, size_t directory_size,
+                                       char *scratch, size_t scratch_size) {
+  if (not Is_Directory (document->path, directory, directory_size))
+    snprintf (directory, directory_size, ".");
+  Scratch_Source_Path (scratch, scratch_size);
+
+  Text_Buffer reply = Run_Analysis_Over_Text (mode, document->text, directory,
+                                              name, scratch);
+  if (Nothing_Came_Back (&reply) and document->accepted) {
+    Buffer_Free (&reply);
+    reply = Run_Analysis_Over_Text (mode, document->accepted, directory,
+                                    name, scratch);
+  }
+  return reply;
+}
+
+static void Analyse_Document (Open_Document *document) {
+  if (not document or not document->path) return;
+
+  char directory[PATH_MAX], scratch[PATH_MAX];
+  if (not Is_Directory (document->path, directory, sizeof directory))
+    snprintf (directory, sizeof directory, ".");
+  Scratch_Source_Path (scratch, sizeof scratch);
+
+  Text_Buffer reply = Run_Analysis_Over_Text ("--analyse", document->text,
+                                              directory, NULL, scratch);
+
+  const char *cursor      = reply.Data ? reply.Data : "[]";
+  Json       *diagnostics = Json_Parse_Value (&cursor);
+  Publish_Diagnostics (document, diagnostics);
+
+  bool refused = false;
+  u32  count   = diagnostics and diagnostics->Kind == JSON_ARRAY
+               ? diagnostics->Count : 0;
+  for (u32 i = 0; i < count and not refused; i++) {
+    const Json *severity = Json_Member (diagnostics->Items[i], "severity");
+    refused = not severity
+           or (int) severity->Number == DIAGNOSTIC_SEVERITY_ERROR
+           or (int) severity->Number == DIAGNOSTIC_SEVERITY_INTERNAL_ERROR;
+  }
+  if (not refused and document->text) {
+    free (document->accepted);
+    document->accepted = Duplicate (document->text);
+  }
+
+  Json_Free (diagnostics);
+  Buffer_Free (&reply);
+}
+
+static Symbol *Search_Scope_Tree (Scope *scope, Slice name, u32 depth) {
+  if (not scope or depth > 3) return NULL;
+  for (u32 i = 0; i < scope->symbol_count; i++) {
+    Symbol *candidate = scope->symbols[i];
+    if (candidate and candidate->location.filename and
+        Designators_Are_One_Name (candidate->name, name))
+      return candidate;
+  }
+  for (u32 i = 0; i < scope->symbol_count; i++) {
+    Symbol *candidate = scope->symbols[i];
+    if (not candidate or not candidate->scope) continue;
+    Symbol *found = Search_Scope_Tree (candidate->scope, name, depth + 1);
+    if (found) return found;
+  }
+  return NULL;
+}
+
+static const char *Declaration_File (const char *filename) {
+  if (not filename or not Runtime_Library_Path[0]) return filename;
+  if (strcmp (filename, "ada83-runtime.ada") == 0)
+    return Runtime_Library_Path;
+
+  const char *dot = strrchr (filename, '.');
+  if (not dot or strchr (filename, '/')) return filename;
+  if (strcmp (dot, ".ads") != 0 and strcmp (dot, ".adb") != 0) return filename;
+
+  Slice unit = { filename, (u32) (dot - filename) };
+  if (Runtime_Library_Provides (unit, false) or
+      Runtime_Library_Provides (unit, true))
+    return Runtime_Library_Path;
+  return filename;
+}
+
+int Define_And_Print (const char *path, const char *directory,
+                      const char *name, const char *invoked_as) {
+  char executable[PATH_MAX], beside[PATH_MAX];
+  Host_Executable_Path (executable, sizeof executable, invoked_as);
+  if (Is_Directory (executable, beside, sizeof beside))
+    Runtime_Library_Locate (beside);
+  Add_Analysis_Include_Paths (directory);
+
+  Capturing_Diagnostics = true;
+  Analysis_Only         = true;
+  Compile_File (path, directory);
+  Capturing_Diagnostics = false;
+
+  Slice wanted = { name, (u32) strlen (name) };
+  Symbol *found = sm ? Symbol_Find (wanted) : NULL;
+  if (found and not found->location.filename) found = NULL;
+  if (not found and sm) found = Search_Scope_Tree (sm->global_scope, wanted, 0);
+
+  Text_Buffer out = {0};
+  if (found) {
+    Buffer_Append_Text (&out, "{\"file\":");
+    Buffer_Append_Json_String (&out,
+      Declaration_File (found->location.filename));
+    Buffer_Printf (&out, ",\"line\":%u,\"column\":%u}",
+                   found->location.line, found->location.column);
+  } else {
+    Buffer_Append_Text (&out, "null");
+  }
+  fwrite (out.Data, 1, out.Length, stdout);
+  fflush (stdout);
+  Buffer_Free (&out);
+  Discard_Captured_Diagnostics ();
+  return 0;
+}
+
+static void Append_Slice (Text_Buffer *out, Slice text) {
+  Buffer_Append (out, text.data, text.length);
+}
+
+static const char *Spell_Parameter_Mode (Parameter_Mode_Kind mode) {
+  return mode == MODE_OUT ? "out" : mode == MODE_IN_OUT ? "in out" : "in";
+}
+
+static const char *Spell_Symbol_Kind (const Symbol *symbol) {
+  switch (symbol->kind) {
+    case SYMBOL_VARIABLE:     return symbol->is_named_number ? "named number"
+                                                             : "variable";
+    case SYMBOL_CONSTANT:     return symbol->is_named_number ? "named number"
+                                                             : "constant";
+    case SYMBOL_TYPE:         return "type";
+    case SYMBOL_SUBTYPE:      return "subtype";
+    case SYMBOL_PROCEDURE:    return "procedure";
+    case SYMBOL_FUNCTION:     return "function";
+    case SYMBOL_PARAMETER:    return "parameter";
+    case SYMBOL_PACKAGE:      return "package";
+    case SYMBOL_EXCEPTION:    return "exception";
+    case SYMBOL_LABEL:        return "label";
+    case SYMBOL_ENTRY:        return "entry";
+    case SYMBOL_COMPONENT:    return "component";
+    case SYMBOL_DISCRIMINANT: return "discriminant";
+    case SYMBOL_LITERAL:      return "enumeration literal";
+    case SYMBOL_GENERIC:      return "generic unit";
+    default:                  break;
+  }
+  return "name";
+}
+
+typedef struct {
+  u32 start;
+  u32 stop;
+} Text_Span;
+
+static void Append_Parameter_Profile (Text_Buffer *out, const Symbol *symbol,
+                                      Text_Span *spans, u32 span_capacity) {
+  for (u32 i = 0; i < symbol->parameter_count; i++) {
+    const Parameter_Info *parameter = &symbol->parameters[i];
+    Buffer_Append_Text (out, i ? "; " : " (");
+    if (spans and i < span_capacity) spans[i].start = (u32) out->Length;
+    Append_Slice (out, parameter->name);
+    Buffer_Printf (out, " : %s ", Spell_Parameter_Mode (parameter->mode));
+    Append_Slice (out, Describe_Type (parameter->param_type
+                                        ? parameter->param_type
+                                        : parameter->param_sym
+                                            ? parameter->param_sym->type
+                                            : NULL));
+    if (spans and i < span_capacity) spans[i].stop = (u32) out->Length;
+  }
+  if (symbol->parameter_count) Buffer_Append_Text (out, ")");
+}
+
+static void Append_Declaration_Text (Text_Buffer *out, Symbol *symbol,
+                                     Text_Span *spans, u32 span_capacity) {
+  switch (symbol->kind) {
+
+    case SYMBOL_PACKAGE:
+      Buffer_Append_Text (out, "package ");
+      Append_Slice (out, symbol->name);
+      break;
+
+    case SYMBOL_GENERIC:
+      Buffer_Printf (out, "generic\n%s ",
+                     Spell_Generic_Kind (
+                       Classify_Generic_Spec (symbol->generic_unit)));
+      Append_Slice (out, symbol->name);
+      break;
+
+    case SYMBOL_TYPE:
+      Buffer_Append_Text (out, "type ");
+      Append_Slice (out, symbol->name);
+      break;
+
+    case SYMBOL_SUBTYPE:
+      Buffer_Append_Text (out, "subtype ");
+      Append_Slice (out, symbol->name);
+      Buffer_Append_Text (out, " is ");
+      Append_Slice (out, Describe_Type (symbol->type));
+      break;
+
+    case SYMBOL_PROCEDURE:
+      Buffer_Append_Text (out, "procedure ");
+      Append_Slice (out, symbol->name);
+      Append_Parameter_Profile (out, symbol, spans, span_capacity);
+      break;
+
+    case SYMBOL_ENTRY:
+      Buffer_Append_Text (out, "entry ");
+      Append_Slice (out, symbol->name);
+      Append_Parameter_Profile (out, symbol, spans, span_capacity);
+      break;
+
+    case SYMBOL_FUNCTION:
+      Buffer_Append_Text (out, "function ");
+      Append_Slice (out, symbol->name);
+      Append_Parameter_Profile (out, symbol, spans, span_capacity);
+      Buffer_Append_Text (out, " return ");
+      Append_Slice (out, Describe_Type (symbol->return_type
+                                          ? symbol->return_type
+                                          : symbol->type));
+      break;
+
+    case SYMBOL_EXCEPTION:
+      Append_Slice (out, symbol->name);
+      Buffer_Append_Text (out, " : exception");
+      break;
+
+    case SYMBOL_LABEL:
+      Buffer_Append_Text (out, "<<");
+      Append_Slice (out, symbol->name);
+      Buffer_Append_Text (out, ">>");
+      break;
+
+    case SYMBOL_PARAMETER:
+      Append_Slice (out, symbol->name);
+      Buffer_Printf (out, " : %s ",
+                     Spell_Parameter_Mode (Get_Parameter_Mode (symbol)));
+      Append_Slice (out, Describe_Type (symbol->type));
+      break;
+
+    case SYMBOL_CONSTANT:
+      Append_Slice (out, symbol->name);
+      Buffer_Append_Text (out, " : constant ");
+      Append_Slice (out, Describe_Type (symbol->type));
+      break;
+
+    default:
+      Append_Slice (out, symbol->name);
+      if (symbol->type) {
+        Buffer_Append_Text (out, " : ");
+        Append_Slice (out, Describe_Type (symbol->type));
+      }
+      break;
+  }
+}
+
+int Describe_And_Print (const char *path, const char *directory,
+                        const char *name, const char *invoked_as) {
+  char executable[PATH_MAX], beside[PATH_MAX];
+  Host_Executable_Path (executable, sizeof executable, invoked_as);
+  if (Is_Directory (executable, beside, sizeof beside))
+    Runtime_Library_Locate (beside);
+  Add_Analysis_Include_Paths (directory);
+
+  Capturing_Diagnostics = true;
+  Analysis_Only         = true;
+  Compile_File (path, directory);
+  Capturing_Diagnostics = false;
+
+  Slice wanted = { name, (u32) strlen (name) };
+  Symbol *found = sm ? Symbol_Find (wanted) : NULL;
+  if (found and not found->location.filename) found = NULL;
+  if (not found and sm) found = Search_Scope_Tree (sm->global_scope, wanted, 0);
+
+  Text_Buffer out = {0};
+  if (found) {
+    Buffer_Append_Text (&out, "{\"kind\":");
+    Buffer_Append_Json_String (&out, Spell_Symbol_Kind (found));
+    Buffer_Append_Text (&out, ",\"file\":");
+    Buffer_Append_Json_String (&out,
+      Declaration_File (found->location.filename));
+    Buffer_Printf (&out, ",\"line\":%u,\"column\":%u,\"declarations\":[",
+                   found->location.line, found->location.column);
+
+    u32 shown = 0;
+    for (Symbol *overload = found; overload and shown < 8;
+         overload = overload->next_overload) {
+      if (overload != found and not overload->location.filename) continue;
+      Text_Buffer declaration = {0};
+      Append_Declaration_Text (&declaration, overload, NULL, 0);
+      if (declaration.Length) {
+        if (shown++) Buffer_Append_Text (&out, ",");
+        Buffer_Append_Json_String (&out, declaration.Data);
+      }
+      Buffer_Free (&declaration);
+    }
+    Buffer_Append_Text (&out, "]}");
+  } else {
+    Buffer_Append_Text (&out, "null");
+  }
+  fwrite (out.Data, 1, out.Length, stdout);
+  fflush (stdout);
+  Buffer_Free (&out);
+  Discard_Captured_Diagnostics ();
+  return 0;
+}
+
+enum { MAX_OUTLINE_SYMBOLS = 4096, MAX_OUTLINE_SCOPES = 4096 };
+
+typedef struct {
+  Symbol *symbol;
+  Slice   container;
+} Outline_Entry;
+
+typedef struct {
+  const char    *path;
+  Outline_Entry *entries;
+  u32            count;
+  Scope        **visited;
+  u32            visited_count;
+} Outline_Walk;
+
+static bool Belongs_In_The_Outline (const Symbol *symbol) {
+  switch (symbol->kind) {
+    case SYMBOL_UNKNOWN:
+    case SYMBOL_LABEL:
+    case SYMBOL_PARAMETER: return false;
+    default:               return true;
+  }
+}
+
+static int Outline_Kind_Of (const Symbol *symbol) {
+  switch (symbol->kind) {
+    case SYMBOL_PACKAGE:      return 4;
+    case SYMBOL_GENERIC:      return 2;
+    case SYMBOL_TYPE:         return 23;
+    case SYMBOL_SUBTYPE:      return 5;
+    case SYMBOL_PROCEDURE:
+    case SYMBOL_FUNCTION:     return 12;
+    case SYMBOL_ENTRY:        return 6;
+    case SYMBOL_EXCEPTION:    return 24;
+    case SYMBOL_CONSTANT:     return 14;
+    case SYMBOL_LITERAL:      return 22;
+    case SYMBOL_COMPONENT:
+    case SYMBOL_DISCRIMINANT: return 8;
+    default:                  return 13;
+  }
+}
+
+static int Outline_Order (const void *left, const void *right) {
+  const Symbol *a = ((const Outline_Entry *) left)->symbol;
+  const Symbol *b = ((const Outline_Entry *) right)->symbol;
+  if (a->location.line   != b->location.line)
+    return a->location.line   < b->location.line   ? -1 : 1;
+  if (a->location.column != b->location.column)
+    return a->location.column < b->location.column ? -1 : 1;
+
+  if (a->creation_sequence != b->creation_sequence)
+    return a->creation_sequence < b->creation_sequence ? -1 : 1;
+  return 0;
+}
+
+static void Walk_Scope (Outline_Walk *walk, Scope *scope, Slice container,
+                        u32 depth) {
+  if (not scope or depth > 24) return;
+
+  for (u32 i = 0; i < walk->visited_count; i++)
+    if (walk->visited[i] == scope) return;
+  if (walk->visited_count >= MAX_OUTLINE_SCOPES) return;
+  walk->visited[walk->visited_count++] = scope;
+
+  for (u32 i = 0; i < scope->symbol_count; i++) {
+    Symbol *symbol = scope->symbols[i];
+    if (not symbol) continue;
+    bool declared_here = symbol->location.filename and symbol->location.line
+                     and strcmp (symbol->location.filename, walk->path) == 0;
+    if (declared_here and Belongs_In_The_Outline (symbol) and
+        walk->count < MAX_OUTLINE_SYMBOLS)
+      walk->entries[walk->count++] =
+        (Outline_Entry) { .symbol = symbol, .container = container };
+    Walk_Scope (walk, symbol->scope, symbol->name, depth + 1);
+  }
+}
+
+int Symbols_And_Print (const char *path, const char *directory,
+                       const char *invoked_as) {
+  char executable[PATH_MAX], beside[PATH_MAX];
+  Host_Executable_Path (executable, sizeof executable, invoked_as);
+  if (Is_Directory (executable, beside, sizeof beside))
+    Runtime_Library_Locate (beside);
+  Add_Analysis_Include_Paths (directory);
+
+  Capturing_Diagnostics = true;
+  Analysis_Only         = true;
+  Compile_File (path, directory);
+  Capturing_Diagnostics = false;
+
+  static Outline_Entry entries[MAX_OUTLINE_SYMBOLS];
+  static Scope        *visited[MAX_OUTLINE_SCOPES];
+  Outline_Walk walk = { .path = path, .entries = entries, .visited = visited };
+  if (sm) Walk_Scope (&walk, sm->global_scope, (Slice) {0}, 0);
+  qsort (entries, walk.count, sizeof *entries, Outline_Order);
+
+  Text_Buffer out = {0};
+  Buffer_Append_Text (&out, "[");
+  const Symbol *previous = NULL;
+  for (u32 i = 0, published = 0; i < walk.count; i++) {
+    const Symbol *symbol = entries[i].symbol;
+
+    if (previous and previous->location.line == symbol->location.line and
+        previous->location.column == symbol->location.column and
+        Designators_Are_One_Name (previous->name, symbol->name))
+      continue;
+    previous = symbol;
+
+    if (published++) Buffer_Append_Text (&out, ",");
+    Buffer_Append_Text (&out, "{\"name\":");
+    Buffer_Append_Json_Slice (&out, symbol->name);
+    Buffer_Printf (&out, ",\"kind\":%d,\"line\":%u,\"column\":%u,"
+                         "\"container\":",
+                   Outline_Kind_Of (symbol),
+                   symbol->location.line, symbol->location.column);
+    Buffer_Append_Json_Slice (&out, entries[i].container);
+    Buffer_Append_Text (&out, "}");
+  }
+  Buffer_Append_Text (&out, "]");
+  fwrite (out.Data, 1, out.Length, stdout);
+  fflush (stdout);
+  Buffer_Free (&out);
+  Discard_Captured_Diagnostics ();
+  return 0;
+}
+
+enum { MAX_COMPLETIONS = 400 };
+
+typedef struct {
+  Slice       name;
+  Symbol_Kind kind;
+} Completion;
+
+static bool Name_Is_An_Identifier (Slice name) {
+  if (name.length == 0 or name.length > 128) return false;
+  if (not isalpha ((unsigned char) name.data[0])) return false;
+  for (u32 i = 0; i < name.length; i++)
+    if (not isalnum ((unsigned char) name.data[i]) and name.data[i] != '_')
+      return false;
+  return true;
+}
+
+static bool Name_Is_A_Reserved_Word (Slice name) {
+  for (Token_Kind kind = 0; kind < TK_COUNT; kind++) {
+    if (not Token_In_Any_Class (kind, TOKEN_CLASS_RESERVED_WORD)) continue;
+    const char *spelling = Spell_Token (kind);
+    if (Slices_Match (name, (Slice){ spelling, (u32) strlen (spelling) }))
+      return true;
+  }
+  return false;
+}
+
+static bool Kind_Is_Offerable (Symbol_Kind kind) {
+  switch (kind) {
+    case SYMBOL_UNKNOWN:     case SYMBOL_LABEL:
+    case SYMBOL_COMPONENT:   case SYMBOL_DISCRIMINANT: return false;
+    default:                                           return true;
+  }
+}
+
+static bool Declared_In (const Symbol *symbol, const char *path) {
+  return symbol->location.filename and path and
+         strcmp (symbol->location.filename, path) == 0;
+}
+
+static bool Worth_Entering (const Symbol *symbol, const char *path) {
+  return symbol->kind == SYMBOL_PACKAGE or symbol->kind == SYMBOL_GENERIC or
+         Declared_In (symbol, path);
+}
+
+static void Collect_Completions (Scope *scope, const char *path, bool own_only,
+                                 u32 depth, Completion *found, u32 *count) {
+  if (not scope or depth > 3 or *count >= MAX_COMPLETIONS) return;
+
+  for (u32 i = 0; i < scope->symbol_count and *count < MAX_COMPLETIONS; i++) {
+    const Symbol *symbol = scope->symbols[i];
+    if (not symbol or not Kind_Is_Offerable (symbol->kind))    continue;
+    if (not Name_Is_An_Identifier (symbol->name))              continue;
+    if (Name_Is_A_Reserved_Word (symbol->name))                continue;
+    if (own_only and not Declared_In (symbol, path))           continue;
+
+    bool already = false;
+    for (u32 k = 0; k < *count and not already; k++)
+      already = found[k].kind == symbol->kind and
+                Designators_Are_One_Name (found[k].name, symbol->name);
+    if (already) continue;
+
+    found[*count].name = symbol->name;
+    found[*count].kind = symbol->kind;
+    (*count)++;
+  }
+
+  for (u32 i = 0; i < scope->symbol_count and *count < MAX_COMPLETIONS; i++) {
+    const Symbol *symbol = scope->symbols[i];
+    if (symbol and symbol->scope and Worth_Entering (symbol, path))
+      Collect_Completions (symbol->scope, path, own_only, depth + 1,
+                           found, count);
+  }
+}
+
+enum {
+  COMPLETION_ITEM_METHOD      = 2,
+  COMPLETION_ITEM_FUNCTION    = 3,
+  COMPLETION_ITEM_VARIABLE    = 6,
+  COMPLETION_ITEM_MODULE      = 9,
+  COMPLETION_ITEM_KEYWORD     = 14,
+  COMPLETION_ITEM_ENUM_MEMBER = 20,
+  COMPLETION_ITEM_CONSTANT    = 21,
+  COMPLETION_ITEM_STRUCT      = 22,
+  COMPLETION_ITEM_EVENT       = 23
+};
+
+static int Completion_Item_Kind (Symbol_Kind kind) {
+  switch (kind) {
+    case SYMBOL_PACKAGE:
+    case SYMBOL_GENERIC:   return COMPLETION_ITEM_MODULE;
+    case SYMBOL_TYPE:
+    case SYMBOL_SUBTYPE:   return COMPLETION_ITEM_STRUCT;
+    case SYMBOL_PROCEDURE:
+    case SYMBOL_FUNCTION:  return COMPLETION_ITEM_FUNCTION;
+    case SYMBOL_ENTRY:     return COMPLETION_ITEM_METHOD;
+    case SYMBOL_CONSTANT:  return COMPLETION_ITEM_CONSTANT;
+    case SYMBOL_EXCEPTION: return COMPLETION_ITEM_EVENT;
+    case SYMBOL_LITERAL:   return COMPLETION_ITEM_ENUM_MEMBER;
+    default:               return COMPLETION_ITEM_VARIABLE;
+  }
+}
+
+static const char *Completion_Detail (Symbol_Kind kind) {
+  switch (kind) {
+    case SYMBOL_PACKAGE:   return "package";
+    case SYMBOL_GENERIC:   return "generic unit";
+    case SYMBOL_TYPE:      return "type";
+    case SYMBOL_SUBTYPE:   return "subtype";
+    case SYMBOL_PROCEDURE: return "procedure";
+    case SYMBOL_FUNCTION:  return "function";
+    case SYMBOL_ENTRY:     return "entry";
+    case SYMBOL_CONSTANT:  return "constant";
+    case SYMBOL_EXCEPTION: return "exception";
+    case SYMBOL_LITERAL:   return "enumeration literal";
+    case SYMBOL_PARAMETER: return "parameter";
+    default:               return "variable";
+  }
+}
+
+int Complete_And_Print (const char *path, const char *directory,
+                        const char *invoked_as) {
+  char executable[PATH_MAX], beside[PATH_MAX];
+  Host_Executable_Path (executable, sizeof executable, invoked_as);
+  if (Is_Directory (executable, beside, sizeof beside))
+    Runtime_Library_Locate (beside);
+  Add_Analysis_Include_Paths (directory);
+
+  Capturing_Diagnostics = true;
+  Analysis_Only         = true;
+  Compile_File (path, directory);
+  Capturing_Diagnostics = false;
+
+  static Completion found[MAX_COMPLETIONS];
+  u32 count = 0;
+  if (sm) {
+    Collect_Completions (sm->global_scope, path, true,  0, found, &count);
+    Collect_Completions (sm->global_scope, path, false, 0, found, &count);
+  }
+
+  Text_Buffer out = {0};
+  Buffer_Append_Text (&out, "[");
+  for (u32 i = 0; i < count; i++) {
+    char name[160];
+    u32  length = found[i].name.length < sizeof name - 1
+                ? found[i].name.length : (u32) sizeof name - 1;
+    memcpy (name, found[i].name.data, length);
+    name[length] = '\0';
+
+    if (i) Buffer_Append_Text (&out, ",");
+    Buffer_Append_Text (&out, "{\"label\":");
+    Buffer_Append_Json_String (&out, name);
+    Buffer_Printf (&out, ",\"kind\":%d,\"detail\":",
+                   Completion_Item_Kind (found[i].kind));
+    Buffer_Append_Json_String (&out, Completion_Detail (found[i].kind));
+    Buffer_Append_Text (&out, "}");
+  }
+  Buffer_Append_Text (&out, "]");
+  fwrite (out.Data, 1, out.Length, stdout);
+  fflush (stdout);
+  Buffer_Free (&out);
+  Discard_Captured_Diagnostics ();
+  return 0;
+}
+
+enum { MAX_SIGNATURE_PARAMETERS = 64 };
+
+int Signature_And_Print (const char *path, const char *directory,
+                         const char *name, const char *invoked_as) {
+  char executable[PATH_MAX], beside[PATH_MAX];
+  Host_Executable_Path (executable, sizeof executable, invoked_as);
+  if (Is_Directory (executable, beside, sizeof beside))
+    Runtime_Library_Locate (beside);
+  Add_Analysis_Include_Paths (directory);
+
+  Capturing_Diagnostics = true;
+  Analysis_Only         = true;
+  Compile_File (path, directory);
+  Capturing_Diagnostics = false;
+
+  Slice wanted = { name, (u32) strlen (name) };
+  Symbol *found = sm ? Symbol_Find (wanted) : NULL;
+  if (found and not found->location.filename) found = NULL;
+  if (not found and sm) found = Search_Scope_Tree (sm->global_scope, wanted, 0);
+
+  Text_Buffer out = {0};
+  Buffer_Append_Text (&out, "[");
+  u32 published = 0;
+  for (Symbol *overload = found; overload and published < 8;
+       overload = overload->next_overload) {
+    if (overload->kind != SYMBOL_PROCEDURE and
+        overload->kind != SYMBOL_FUNCTION  and
+        overload->kind != SYMBOL_ENTRY) continue;
+
+    Text_Span   spans[MAX_SIGNATURE_PARAMETERS] = {0};
+    Text_Buffer label = {0};
+    Append_Declaration_Text (&label, overload, spans,
+                             MAX_SIGNATURE_PARAMETERS);
+    if (not label.Length) { Buffer_Free (&label); continue; }
+
+    u32 counted = overload->parameter_count < MAX_SIGNATURE_PARAMETERS
+                ? overload->parameter_count : MAX_SIGNATURE_PARAMETERS;
+    if (published++) Buffer_Append_Text (&out, ",");
+    Buffer_Append_Text (&out, "{\"label\":");
+    Buffer_Append_Json_String (&out, label.Data);
+    Buffer_Append_Text (&out, ",\"parameters\":[");
+    for (u32 i = 0; i < counted; i++)
+      Buffer_Printf (&out, "%s[%u,%u]", i ? "," : "",
+                     spans[i].start, spans[i].stop);
+    Buffer_Append_Text (&out, "]}");
+    Buffer_Free (&label);
+  }
+  Buffer_Append_Text (&out, "]");
+  fwrite (out.Data, 1, out.Length, stdout);
+  fflush (stdout);
+  Buffer_Free (&out);
+  Discard_Captured_Diagnostics ();
+  return 0;
+}
+
+static void Respond (const Json *id, const char *result) {
+  Text_Buffer message = {0};
+  Buffer_Append_Text (&message, "{\"jsonrpc\":\"2.0\",\"id\":");
+  if (not id)                        Buffer_Append_Text (&message, "null");
+  else if (id->Kind == JSON_STRING)  Buffer_Append_Json_String (&message,
+                                                                id->String);
+  else if (id->Kind == JSON_NUMBER)  Buffer_Printf (&message, "%lld",
+                                                    (long long) id->Number);
+  else                               Buffer_Append_Text (&message, "null");
+  Buffer_Printf (&message, ",\"result\":%s}", result);
+  Send_Message (&message);
+  Buffer_Free (&message);
+}
+
+static const Json *Document_Uri_Of (const Json *parameters) {
+  return Json_Member (Json_Member (parameters, "textDocument"), "uri");
+}
+
+static bool Identifier_At (const char *text, u32 line, u32 character,
+                           char *out, size_t out_size, u32 *from, u32 *to) {
+  if (not text) return false;
+
+  const char *scan = text;
+  for (u32 remaining = line; remaining and *scan; )
+    if (*scan++ == '\n') remaining--;
+
+  const char *start = scan;
+  for (u32 units = 0; units < character and *scan and *scan != '\n'; ) {
+    unsigned char lead = (unsigned char) *scan;
+    u32 width = lead < 0x80 ? 1 : lead < 0xE0 ? 2 : lead < 0xF0 ? 3 : 4;
+    units += width == 4 ? 2 : 1;
+    scan  += width;
+  }
+
+  const char *first = scan;
+  while (first > start and (isalnum ((unsigned char) first[-1]) or
+                            first[-1] == '_'))
+    first--;
+  const char *limit = scan;
+  while (*limit and (isalnum ((unsigned char) *limit) or *limit == '_'))
+    limit++;
+
+  size_t length = (size_t) (limit - first);
+  if (length == 0 or length + 1 > out_size) return false;
+  memcpy (out, first, length);
+  out[length] = '\0';
+
+  if (from and to) {
+    u32 units = 0;
+    for (const char *step = start; step < limit; ) {
+      unsigned char lead = (unsigned char) *step;
+      u32 width = lead < 0x80 ? 1 : lead < 0xE0 ? 2 : lead < 0xF0 ? 3 : 4;
+      if (step == first) *from = units;
+      units += width == 4 ? 2 : 1;
+      step  += width;
+    }
+    *to = units;
+  }
+  return true;
+}
+
+static void Append_File_Uri (Text_Buffer *out, const char *path) {
+  Buffer_Append_Text (out, "file://");
+  if (path[0] != '/') Buffer_Append_Text (out, "/");
+  for (const unsigned char *scan = (const unsigned char *) path; *scan; scan++)
+    if (isalnum (*scan) or strchr ("-_.~/", *scan))
+      Buffer_Append (out, (const char *) scan, 1);
+    else
+      Buffer_Printf (out, "%%%02X", *scan);
+}
+
+static Json *Ask_For_Declaration (const Open_Document *document,
+                                  const char *name,
+                                  char *directory, size_t directory_size,
+                                  char *scratch, size_t scratch_size) {
+  Text_Buffer reply = Ask_About_Document (document, "--define", name,
+                                          directory, directory_size,
+                                          scratch, scratch_size);
+  const char *cursor = reply.Data ? reply.Data : "null";
+  Json       *where  = Json_Parse_Value (&cursor);
+  Buffer_Free (&reply);
+  return where;
+}
+
+static void Answer_Definition (const Json *id, const Open_Document *document,
+                               const char *name) {
+  char directory[PATH_MAX], scratch[PATH_MAX];
+  Json *where = Ask_For_Declaration (document, name,
+                                     directory, sizeof directory,
+                                     scratch, sizeof scratch);
+  const char *found = Json_Text (Json_Member (where, "file"));
+  const Json *line   = Json_Member (where, "line");
+  const Json *column = Json_Member (where, "column");
+
+  if (found and line and column) {
+    u32 at_line = (u32) line->Number ? (u32) line->Number - 1 : 0;
+    u32 at_char = (u32) column->Number ? (u32) column->Number - 1 : 0;
+
+    char absolute[PATH_MAX];
+    if (strcmp (found, scratch) == 0) {
+      found = document->path;
+    } else if (found[0] != '/') {
+      snprintf (absolute, sizeof absolute, "%s/%s", directory, found);
+      found = absolute;
+    }
+    Text_Buffer answer = {0};
+    Buffer_Append_Text (&answer, "{\"uri\":\"");
+    Append_File_Uri (&answer, found);
+    Buffer_Printf (&answer,
+      "\",\"range\":{\"start\":{\"line\":%u,\"character\":%u},"
+      "\"end\":{\"line\":%u,\"character\":%u}}}",
+      at_line, at_char, at_line, at_char);
+    Respond (id, answer.Data ? answer.Data : "null");
+    Buffer_Free (&answer);
+  } else {
+    Respond (id, "null");
+  }
+
+  Json_Free (where);
+}
+
+typedef struct {
+  u32 line;
+  u32 start, end;
+  u32 source_line, source_column;
+} Occurrence;
+
+enum { MAX_OCCURRENCES = 2048 };
+
+typedef struct {
+  const char *scan;
+  u32         line;
+  u32         units;
+  u32         column;
+} Scan_Position;
+
+static void Scan_Step (Scan_Position *at) {
+  unsigned char lead = (unsigned char) *at->scan;
+  if (not lead) return;
+  if (lead == '\n') {
+    at->scan++;
+    at->line++;
+    at->units = at->column = 0;
+    return;
+  }
+  u32 width = lead < 0x80 ? 1 : lead < 0xE0 ? 2 : lead < 0xF0 ? 3 : 4;
+  for (u32 i = 0; i < width and *at->scan; i++) at->scan++;
+  at->units  += width == 4 ? 2 : 1;
+  at->column += 1;
+}
+
+static bool Is_Identifier_Character (char c) {
+  return isalnum ((unsigned char) c) or c == '_';
+}
+
+static u32 Occurrences_Of (const char *text, const char *name,
+                           Occurrence *found, u32 limit) {
+  if (not text or not name or not name[0]) return 0;
+
+  size_t        length = strlen (name);
+  u32           count  = 0;
+  Scan_Position at     = { text, 0, 0, 0 };
+  bool          after_value = false;
+
+  while (*at.scan) {
+    if (at.scan[0] == '-' and at.scan[1] == '-') {
+      while (*at.scan and *at.scan != '\n') Scan_Step (&at);
+      after_value = false;
+      continue;
+    }
+
+    if (at.scan[0] == '"') {
+      Scan_Step (&at);
+      while (*at.scan and *at.scan != '\n') {
+        if (at.scan[0] != '"') { Scan_Step (&at); continue; }
+        Scan_Step (&at);
+        if (at.scan[0] != '"') break;
+        Scan_Step (&at);
+      }
+      after_value = true;
+      continue;
+    }
+
+    if (at.scan[0] == '\'' and not after_value and
+        at.scan[1] and at.scan[1] != '\n' and at.scan[2] == '\'') {
+      Scan_Step (&at);
+      Scan_Step (&at);
+      Scan_Step (&at);
+      after_value = true;
+      continue;
+    }
+
+    if (Is_Identifier_Character (at.scan[0])) {
+      Scan_Position start = at;
+      while (Is_Identifier_Character (at.scan[0])) Scan_Step (&at);
+      if ((size_t) (at.scan - start.scan) == length and
+          strncasecmp (start.scan, name, length) == 0 and count < limit) {
+        found[count].line          = start.line;
+        found[count].start         = start.units;
+        found[count].end           = at.units;
+        found[count].source_line   = start.line   + 1;
+        found[count].source_column = start.column + 1;
+        count++;
+      }
+      after_value = true;
+      continue;
+    }
+
+    if (not isspace ((unsigned char) at.scan[0]))
+      after_value = at.scan[0] == ')';
+    Scan_Step (&at);
+  }
+  return count;
+}
+
+static u32 Declaration_Among (const Occurrence *found, u32 count,
+                              const Json *where, const char *scratch) {
+  const char *file   = Json_Text (Json_Member (where, "file"));
+  const Json *line   = Json_Member (where, "line");
+  const Json *column = Json_Member (where, "column");
+  if (not file or not line or not column) return count;
+  if (strcmp (file, scratch) != 0) return count;
+  for (u32 i = 0; i < count; i++)
+    if (found[i].source_line   == (u32) line->Number and
+        found[i].source_column == (u32) column->Number)
+      return i;
+  return count;
+}
+
+static void Append_Occurrence_Range (Text_Buffer *out,
+                                     const Occurrence *where) {
+  Buffer_Printf (out,
+    "\"range\":{\"start\":{\"line\":%u,\"character\":%u},"
+    "\"end\":{\"line\":%u,\"character\":%u}}",
+    where->line, where->start, where->line, where->end);
+}
+
+static void Answer_Highlights (const Json *id, const Open_Document *document,
+                               const char *name) {
+  Occurrence found[MAX_OCCURRENCES];
+  u32 count = Occurrences_Of (document->text, name, found, MAX_OCCURRENCES);
+
+  Text_Buffer answer = {0};
+  Buffer_Append_Text (&answer, "[");
+  for (u32 i = 0; i < count; i++) {
+    if (i) Buffer_Append_Text (&answer, ",");
+    Buffer_Append_Text (&answer, "{");
+    Append_Occurrence_Range (&answer, &found[i]);
+    Buffer_Append_Text (&answer, ",\"kind\":1}");
+  }
+  Buffer_Append_Text (&answer, "]");
+  Respond (id, answer.Data ? answer.Data : "[]");
+  Buffer_Free (&answer);
+}
+
+static void Answer_References (const Json *id, const Open_Document *document,
+                               const char *name, bool with_declaration) {
+  if (not document->path) { Respond (id, "[]"); return; }
+
+  Occurrence found[MAX_OCCURRENCES];
+  u32 count       = Occurrences_Of (document->text, name, found,
+                                    MAX_OCCURRENCES);
+  u32 declaration = count;
+
+  if (not with_declaration) {
+    char directory[PATH_MAX], scratch[PATH_MAX];
+    Json *where = Ask_For_Declaration (document, name,
+                                       directory, sizeof directory,
+                                       scratch, sizeof scratch);
+    declaration = Declaration_Among (found, count, where, scratch);
+    Json_Free (where);
+  }
+
+  Text_Buffer answer = {0};
+  Buffer_Append_Text (&answer, "[");
+  for (u32 i = 0, published = 0; i < count; i++) {
+    if (i == declaration) continue;
+    if (published++) Buffer_Append_Text (&answer, ",");
+    Buffer_Append_Text (&answer, "{\"uri\":\"");
+    Append_File_Uri (&answer, document->path);
+    Buffer_Append_Text (&answer, "\",");
+    Append_Occurrence_Range (&answer, &found[i]);
+    Buffer_Append_Text (&answer, "}");
+  }
+  Buffer_Append_Text (&answer, "]");
+  Respond (id, answer.Data ? answer.Data : "[]");
+  Buffer_Free (&answer);
+}
+
+static bool Name_Under_Cursor (const Open_Document *document, const Json *at,
+                               char *out, size_t out_size) {
+  out[0] = '\0';
+  if (not document or not at) return false;
+  const Json *line      = Json_Member (at, "line");
+  const Json *character = Json_Member (at, "character");
+  if (not Identifier_At (document->text,
+                         (u32) (line      ? line->Number      : 0),
+                         (u32) (character ? character->Number : 0),
+                         out, out_size, NULL, NULL)) {
+    out[0] = '\0';
+    return false;
+  }
+  if (isalpha ((unsigned char) out[0])) return true;
+  out[0] = '\0';
+  return false;
+}
+
+static void Answer_Hover (const Json *id, const Open_Document *document,
+                          const char *name, u32 line, u32 from, u32 to) {
+  char directory[PATH_MAX], scratch[PATH_MAX];
+  Text_Buffer reply = Ask_About_Document (document, "--describe", name,
+                                          directory, sizeof directory,
+                                          scratch, sizeof scratch);
+
+  const char *cursor       = reply.Data ? reply.Data : "null";
+  Json       *about        = Json_Parse_Value (&cursor);
+  const char *kind         = Json_Text (Json_Member (about, "kind"));
+  const char *found        = Json_Text (Json_Member (about, "file"));
+  const Json *at_line      = Json_Member (about, "line");
+  const Json *declarations = Json_Member (about, "declarations");
+  u32 count = declarations and declarations->Kind == JSON_ARRAY
+            ? declarations->Count : 0;
+
+  if (count) {
+
+    Text_Buffer markdown = {0};
+    Buffer_Append_Text (&markdown, "```ada\n");
+    for (u32 i = 0; i < count; i++) {
+      const char *text = Json_Text (declarations->Items[i]);
+      if (not text) continue;
+      Buffer_Append_Text (&markdown, text);
+      Buffer_Append_Text (&markdown, "\n");
+    }
+    Buffer_Append_Text (&markdown, "```");
+    if (kind) {
+      Buffer_Append_Text (&markdown, "\n\n");
+      Buffer_Append_Text (&markdown, kind);
+    }
+
+    if (found and strcmp (found, scratch) == 0 and document->path)
+      found = document->path;
+    if (found and at_line and (u32) at_line->Number)
+      Buffer_Printf (&markdown, "%s declared at %s:%u", kind ? "" : "\n\n",
+                     Take_Base_Name (found), (u32) at_line->Number);
+
+    Text_Buffer answer = {0};
+    Buffer_Append_Text (&answer,
+      "{\"contents\":{\"kind\":\"markdown\",\"value\":");
+    Buffer_Append_Json_String (&answer, markdown.Data ? markdown.Data : "");
+    Buffer_Printf (&answer,
+      "},\"range\":{\"start\":{\"line\":%u,\"character\":%u},"
+      "\"end\":{\"line\":%u,\"character\":%u}}}", line, from, line, to);
+    Respond (id, answer.Data ? answer.Data : "null");
+    Buffer_Free (&answer);
+    Buffer_Free (&markdown);
+  } else {
+    Respond (id, "null");
+  }
+
+  Json_Free (about);
+  Buffer_Free (&reply);
+}
+
+static u32 Column_Of_The_Name (const char *text, u32 line, u32 column,
+                               const char *name) {
+  if (not text or not name or not name[0] or not line) return column;
+
+  const char *scan = text;
+  for (u32 remaining = line - 1; remaining and *scan; )
+    if (*scan++ == '\n') remaining--;
+
+  const char *first  = scan;
+  size_t      length = strlen (name);
+  u32         at     = 1;
+  for (; at < column and *scan and *scan != '\n'; at++) {
+    unsigned char lead = (unsigned char) *scan;
+    scan += lead < 0x80 ? 1 : lead < 0xE0 ? 2 : lead < 0xF0 ? 3 : 4;
+  }
+  for (; *scan and *scan != '\n'; at++) {
+    if (strncasecmp (scan, name, length) == 0 and
+        (scan == first or not (isalnum ((unsigned char) scan[-1]) or
+                               scan[-1] == '_')) and
+        not (isalnum ((unsigned char) scan[length]) or scan[length] == '_'))
+      return at;
+    unsigned char lead = (unsigned char) *scan;
+    scan += lead < 0x80 ? 1 : lead < 0xE0 ? 2 : lead < 0xF0 ? 3 : 4;
+  }
+  return column;
+}
+
+static void Answer_Document_Symbols (const Json *id,
+                                     const Open_Document *document) {
+  char directory[PATH_MAX], scratch[PATH_MAX];
+  Text_Buffer reply = Ask_About_Document (document, "--symbols", NULL,
+                                          directory, sizeof directory,
+                                          scratch, sizeof scratch);
+
+  const char *cursor  = reply.Data ? reply.Data : "[]";
+  Json       *symbols = Json_Parse_Value (&cursor);
+  u32 count = symbols and symbols->Kind == JSON_ARRAY ? symbols->Count : 0;
+
+  Text_Buffer answer = {0};
+  Buffer_Append_Text (&answer, "[");
+  for (u32 i = 0, published = 0; i < count; i++) {
+    const Json *entry     = symbols->Items[i];
+    const char *name      = Json_Text (Json_Member (entry, "name"));
+    const char *container = Json_Text (Json_Member (entry, "container"));
+    const Json *kind      = Json_Member (entry, "kind");
+    const Json *at_line   = Json_Member (entry, "line");
+    const Json *at_column = Json_Member (entry, "column");
+    if (not name or not name[0] or not at_line or not at_column) continue;
+
+    u32 line, start, end;
+    Utf16_Range_Of (document->text, (u32) at_line->Number,
+                    Column_Of_The_Name (document->text, (u32) at_line->Number,
+                                        (u32) at_column->Number, name),
+                    &line, &start, &end);
+
+    if (published++) Buffer_Append_Text (&answer, ",");
+    Buffer_Append_Text (&answer, "{\"name\":");
+    Buffer_Append_Json_String (&answer, name);
+    Buffer_Printf (&answer, ",\"kind\":%d,\"location\":{\"uri\":",
+                   kind ? (int) kind->Number : 13);
+    Buffer_Append_Json_String (&answer, document->uri);
+    Buffer_Printf (&answer,
+      ",\"range\":{\"start\":{\"line\":%u,\"character\":%u},"
+      "\"end\":{\"line\":%u,\"character\":%u}}}",
+      line, start, line, end);
+    if (container and container[0]) {
+      Buffer_Append_Text (&answer, ",\"containerName\":");
+      Buffer_Append_Json_String (&answer, container);
+    }
+    Buffer_Append_Text (&answer, "}");
+  }
+  Buffer_Append_Text (&answer, "]");
+
+  Respond (id, answer.Data ? answer.Data : "[]");
+
+  Json_Free (symbols);
+  Buffer_Free (&answer);
+  Buffer_Free (&reply);
+}
+
+static void Append_Reserved_Words (Text_Buffer *out, bool *first) {
+  for (Token_Kind kind = 0; kind < TK_COUNT; kind++) {
+    if (not Token_In_Any_Class (kind, TOKEN_CLASS_RESERVED_WORD)) continue;
+
+    const char *spelling = Spell_Token (kind);
+    char        word[32];
+    size_t      length = 0;
+    while (spelling[length] and length + 1 < sizeof word) {
+      word[length] = (char) tolower ((unsigned char) spelling[length]);
+      length++;
+    }
+    word[length] = '\0';
+
+    if (*first) *first = false; else Buffer_Append_Text (out, ",");
+    Buffer_Append_Text (out, "{\"label\":");
+    Buffer_Append_Json_String (out, word);
+    Buffer_Printf (out, ",\"kind\":%d,\"detail\":\"reserved word\"}",
+                   COMPLETION_ITEM_KEYWORD);
+  }
+}
+
+static void Answer_Completion (const Json *id, const Open_Document *document) {
+  Text_Buffer reply = {0};
+  Buffer_Reserve (&reply, 0);
+
+  if (document and document->path) {
+    char directory[PATH_MAX], scratch[PATH_MAX];
+    Buffer_Free (&reply);
+    reply = Ask_About_Document (document, "--complete", NULL,
+                                directory, sizeof directory,
+                                scratch, sizeof scratch);
+  }
+
+  const char *cursor = reply.Data and reply.Data[0] ? reply.Data : "[]";
+  Json       *names  = Json_Parse_Value (&cursor);
+
+  Text_Buffer answer = {0};
+  Buffer_Append_Text (&answer, "{\"isIncomplete\":false,\"items\":[");
+  bool first = true;
+  u32  count = names and names->Kind == JSON_ARRAY ? names->Count : 0;
+  for (u32 i = 0; i < count; i++) {
+    const Json *entry  = names->Items[i];
+    const char *label  = Json_Text (Json_Member (entry, "label"));
+    const Json *kind   = Json_Member (entry, "kind");
+    const char *detail = Json_Text (Json_Member (entry, "detail"));
+    if (not label) continue;
+
+    if (first) first = false; else Buffer_Append_Text (&answer, ",");
+    Buffer_Append_Text (&answer, "{\"label\":");
+    Buffer_Append_Json_String (&answer, label);
+    Buffer_Printf (&answer, ",\"kind\":%d,\"detail\":",
+                   kind ? (int) kind->Number : COMPLETION_ITEM_VARIABLE);
+    Buffer_Append_Json_String (&answer, detail ? detail : "");
+    Buffer_Append_Text (&answer, "}");
+  }
+  Append_Reserved_Words (&answer, &first);
+  Buffer_Append_Text (&answer, "]}");
+
+  Respond (id, answer.Data ? answer.Data
+                           : "{\"isIncomplete\":false,\"items\":[]}");
+
+  Json_Free (names);
+  Buffer_Free (&answer);
+  Buffer_Free (&reply);
+}
+
+static void Answer_Code_Actions (const Json *id, const Open_Document *document,
+                                 const Json *range) {
+  const Json *start = Json_Member (range, "start");
+  const Json *end   = Json_Member (range, "end");
+  const Json *from  = Json_Member (start, "line");
+  const Json *upto  = Json_Member (end,   "line");
+  u32 first = from ? (u32) from->Number : 0;
+  u32 last  = upto ? (u32) upto->Number : first;
+
+  Text_Buffer answer = {0};
+  Buffer_Append_Text (&answer, "[");
+  for (u32 i = 0, published = 0; i < document->fix_count; i++) {
+    const Quick_Fix *fix = &document->fixes[i];
+    if (fix->line < first or fix->line > last) continue;
+
+    if (published++) Buffer_Append_Text (&answer, ",");
+    Buffer_Append_Text (&answer, "{\"title\":");
+    Text_Buffer title = {0};
+    Buffer_Printf (&title, "Change to '%s'", fix->replacement);
+    Buffer_Append_Json_String (&answer, title.Data ? title.Data : "");
+    Buffer_Free (&title);
+    Buffer_Append_Text (&answer,
+      ",\"kind\":\"quickfix\",\"isPreferred\":true,\"edit\":{\"changes\":{");
+    Buffer_Append_Json_String (&answer, document->uri);
+    Buffer_Printf (&answer,
+      ":[{\"range\":{\"start\":{\"line\":%u,\"character\":%u},"
+      "\"end\":{\"line\":%u,\"character\":%u}},\"newText\":",
+      fix->line, fix->start, fix->line, fix->end);
+    Buffer_Append_Json_String (&answer, fix->replacement);
+    Buffer_Append_Text (&answer, "}]}}}");
+  }
+  Buffer_Append_Text (&answer, "]");
+  Respond (id, answer.Data ? answer.Data : "[]");
+  Buffer_Free (&answer);
+}
+
+enum { MAX_WORKSPACE_FILES = 128, MAX_WORKSPACE_SYMBOLS = 512 };
+
+static char Workspace_Root[PATH_MAX];
+
+static bool Names_An_Ada_Source (const char *name) {
+  const char *dot = strrchr (name, '.');
+  if (not dot or name[0] == '.') return false;
+  return strcasecmp (dot, ".ada") == 0 or strcasecmp (dot, ".ads") == 0 or
+         strcasecmp (dot, ".adb") == 0;
+}
+
+static bool Join_Path (char *out, size_t out_size, const char *directory,
+                       const char *name) {
+  size_t left = strlen (directory), right = strlen (name);
+  if (left + right + 2 > out_size) return false;
+  memcpy (out, directory, left);
+  out[left] = '/';
+  memcpy (out + left + 1, name, right + 1);
+  return true;
+}
+
+static char *Read_Whole_File (const char *path) {
+  FILE *file = fopen (path, "rb");
+  if (not file) return NULL;
+  Text_Buffer text = {0};
+  Buffer_Reserve (&text, 0);
+  char   chunk[4096];
+  size_t got;
+  while ((got = fread (chunk, 1, sizeof chunk, file)) > 0)
+    Buffer_Append (&text, chunk, got);
+  fclose (file);
+  return text.Data;
+}
+
+static Json *Ask_For_Symbols (const char *path, const char *directory) {
+  Text_Buffer reply   = Run_Analysis ("--symbols", path, directory, NULL);
+  const char *cursor  = reply.Data and reply.Data[0] ? reply.Data : "[]";
+  Json       *symbols = Json_Parse_Value (&cursor);
+  Buffer_Free (&reply);
+  return symbols;
+}
+
+static bool Query_Selects (const char *query, const char *name) {
+  if (not query or not query[0]) return true;
+  size_t length = strlen (query);
+  for (const char *scan = name; *scan; scan++)
+    if (strncasecmp (scan, query, length) == 0) return true;
+  return false;
+}
+
+static void Append_Workspace_Symbol (Text_Buffer *answer, bool *first,
+                                     const char *path, const char *text,
+                                     const Json *entry) {
+  const char *name      = Json_Text (Json_Member (entry, "name"));
+  const char *container = Json_Text (Json_Member (entry, "container"));
+  const Json *kind      = Json_Member (entry, "kind");
+  const Json *at_line   = Json_Member (entry, "line");
+  const Json *at_column = Json_Member (entry, "column");
+  if (not name or not name[0] or not at_line or not at_column) return;
+
+  u32 line, start, end;
+  Utf16_Range_Of (text, (u32) at_line->Number,
+                  Column_Of_The_Name (text, (u32) at_line->Number,
+                                      (u32) at_column->Number, name),
+                  &line, &start, &end);
+
+  if (*first) *first = false; else Buffer_Append_Text (answer, ",");
+  Buffer_Append_Text (answer, "{\"name\":");
+  Buffer_Append_Json_String (answer, name);
+  Buffer_Printf (answer, ",\"kind\":%d,\"location\":{\"uri\":\"",
+                 kind ? (int) kind->Number : 13);
+  Append_File_Uri (answer, path);
+  Buffer_Printf (answer,
+    "\",\"range\":{\"start\":{\"line\":%u,\"character\":%u},"
+    "\"end\":{\"line\":%u,\"character\":%u}}}",
+    line, start, line, end);
+  if (container and container[0]) {
+    Buffer_Append_Text (answer, ",\"containerName\":");
+    Buffer_Append_Json_String (answer, container);
+  }
+  Buffer_Append_Text (answer, "}");
+}
+
+static void Answer_Workspace_Symbols (const Json *id, const char *query) {
+  if (not Workspace_Root[0]) { Respond (id, "[]"); return; }
+
+  DIR *directory = opendir (Workspace_Root);
+  if (not directory) { Respond (id, "[]"); return; }
+
+  char sources[MAX_WORKSPACE_FILES][PATH_MAX];
+  u32  source_count = 0;
+  for (struct dirent *entry; (entry = readdir (directory)) != NULL; ) {
+    if (source_count >= MAX_WORKSPACE_FILES) break;
+    if (not Names_An_Ada_Source (entry->d_name)) continue;
+    if (not Join_Path (sources[source_count], PATH_MAX,
+                       Workspace_Root, entry->d_name)) continue;
+    struct stat about;
+    if (stat (sources[source_count], &about) == 0 and S_ISREG (about.st_mode))
+      source_count++;
+  }
+  closedir (directory);
+
+  Text_Buffer answer = {0};
+  Buffer_Append_Text (&answer, "[");
+  bool first     = true;
+  u32  published = 0;
+  for (u32 i = 0; i < source_count and published < MAX_WORKSPACE_SYMBOLS; i++) {
+    char *text = Read_Whole_File (sources[i]);
+    Json *symbols = Ask_For_Symbols (sources[i], Workspace_Root);
+    u32 count = symbols and symbols->Kind == JSON_ARRAY ? symbols->Count : 0;
+    for (u32 k = 0; k < count and published < MAX_WORKSPACE_SYMBOLS; k++) {
+      const char *name = Json_Text (Json_Member (symbols->Items[k], "name"));
+      if (not Query_Selects (query, name ? name : "")) continue;
+      Append_Workspace_Symbol (&answer, &first, sources[i], text,
+                               symbols->Items[k]);
+      published++;
+    }
+    Json_Free (symbols);
+    free (text);
+  }
+  Buffer_Append_Text (&answer, "]");
+  Respond (id, answer.Data ? answer.Data : "[]");
+  Buffer_Free (&answer);
+}
+
+enum { MAX_CALL_DEPTH = 64 };
+
+static u32 Byte_Offset_Of (const char *text, u32 line, u32 character) {
+  const char *scan = text;
+  for (u32 remaining = line; remaining and *scan; )
+    if (*scan++ == '\n') remaining--;
+  for (u32 units = 0; units < character and *scan and *scan != '\n'; ) {
+    unsigned char lead = (unsigned char) *scan;
+    u32 width = lead < 0x80 ? 1 : lead < 0xE0 ? 2 : lead < 0xF0 ? 3 : 4;
+    units += width == 4 ? 2 : 1;
+    scan  += width;
+  }
+  return (u32) (scan - text);
+}
+
+static bool Enclosing_Call (const char *text, u32 offset,
+                            char *name, size_t name_size, u32 *argument) {
+  u32 opened[MAX_CALL_DEPTH], written[MAX_CALL_DEPTH];
+  u32 depth = 0;
+
+  for (u32 i = 0; i < offset and text[i]; i++) {
+    if (text[i] == '-' and text[i + 1] == '-') {
+      while (i < offset and text[i] and text[i] != '\n') i++;
+      continue;
+    }
+    if (text[i] == '"') {
+      for (i++; i < offset and text[i] and text[i] != '"'; i++) ;
+      continue;
+    }
+
+    if (text[i] == '\'' and text[i + 1] and text[i + 2] == '\'') {
+      i += 2;
+      continue;
+    }
+    if (text[i] == '(') {
+      if (depth < MAX_CALL_DEPTH) { opened[depth] = i; written[depth] = 0; }
+      depth++;
+    } else if (text[i] == ')') {
+      if (depth) depth--;
+    } else if (text[i] == ',') {
+      if (depth and depth <= MAX_CALL_DEPTH) written[depth - 1]++;
+    } else if (text[i] == ';') {
+      depth = 0;
+    }
+  }
+  if (depth == 0 or depth > MAX_CALL_DEPTH) return false;
+
+  u32 at = opened[depth - 1];
+  while (at and isspace ((unsigned char) text[at - 1])) at--;
+  u32 stop = at;
+  while (at and (isalnum ((unsigned char) text[at - 1]) or
+                 text[at - 1] == '_')) at--;
+  if (at == stop) return false;
+
+  size_t length = stop - at;
+  if (length >= name_size) return false;
+  memcpy (name, text + at, length);
+  name[length] = '\0';
+  *argument = written[depth - 1];
+  return true;
+}
+
+static void Answer_Signature_Help (const Json *id,
+                                   const Open_Document *document,
+                                   const char *name, u32 argument) {
+  char directory[PATH_MAX], scratch[PATH_MAX];
+  Text_Buffer reply = Ask_About_Document (document, "--signature", name,
+                                          directory, sizeof directory,
+                                          scratch, sizeof scratch);
+
+  const char *cursor  = reply.Data and reply.Data[0] ? reply.Data : "[]";
+  Json       *profiles = Json_Parse_Value (&cursor);
+  u32 count = profiles and profiles->Kind == JSON_ARRAY ? profiles->Count : 0;
+
+  if (count == 0) {
+    Respond (id, "null");
+    Json_Free (profiles);
+    Buffer_Free (&reply);
+    return;
+  }
+
+  u32 chosen = 0;
+  for (u32 i = 0; i < count; i++) {
+    const Json *parameters = Json_Member (profiles->Items[i], "parameters");
+    if (parameters and parameters->Kind == JSON_ARRAY and
+        parameters->Count > argument) { chosen = i; break; }
+  }
+
+  Text_Buffer answer = {0};
+  Buffer_Append_Text (&answer, "{\"signatures\":[");
+  for (u32 i = 0; i < count; i++) {
+    const char *label = Json_Text (Json_Member (profiles->Items[i], "label"));
+    const Json *parameters = Json_Member (profiles->Items[i], "parameters");
+    u32 written = parameters and parameters->Kind == JSON_ARRAY
+                ? parameters->Count : 0;
+    if (i) Buffer_Append_Text (&answer, ",");
+    Buffer_Append_Text (&answer, "{\"label\":");
+    Buffer_Append_Json_String (&answer, label ? label : "");
+    Buffer_Append_Text (&answer, ",\"parameters\":[");
+    for (u32 k = 0; k < written; k++) {
+      const Json *span = parameters->Items[k];
+      u32 from = span and span->Kind == JSON_ARRAY and span->Count > 0
+               ? (u32) span->Items[0]->Number : 0;
+      u32 upto = span and span->Kind == JSON_ARRAY and span->Count > 1
+               ? (u32) span->Items[1]->Number : 0;
+      Buffer_Printf (&answer, "%s{\"label\":[%u,%u]}", k ? "," : "",
+                     from, upto);
+    }
+    Buffer_Append_Text (&answer, "]}");
+  }
+  Buffer_Printf (&answer, "],\"activeSignature\":%u,\"activeParameter\":%u}",
+                 chosen, argument);
+  Respond (id, answer.Data ? answer.Data : "null");
+
+  Json_Free (profiles);
+  Buffer_Free (&answer);
+  Buffer_Free (&reply);
+}
+
+typedef enum {
+  FOLD_RECORD, FOLD_CASE, FOLD_LOOP, FOLD_IF, FOLD_SELECT,
+  FOLD_HEAD,
+  FOLD_BODY
+} Fold_Kind;
+
+enum { MAX_FOLD_DEPTH = 128 };
+
+typedef struct {
+  Fold_Kind kind;
+  u32       line;
+} Fold_Opening;
+
+typedef struct {
+  Text_Buffer *out;
+  bool         first;
+} Fold_Answer;
+
+static bool Word_Is (const char *text, u32 from, u32 to, const char *word) {
+  size_t length = strlen (word);
+  return (size_t) (to - from) == length and
+         strncasecmp (text + from, word, length) == 0;
+}
+
+static void Emit_Fold (Fold_Answer *answer, u32 from, u32 to,
+                       const char *kind) {
+  if (to <= from) return;
+  if (answer->first) answer->first = false;
+  else               Buffer_Append_Text (answer->out, ",");
+  Buffer_Printf (answer->out, "{\"startLine\":%u,\"endLine\":%u", from, to);
+  if (kind) Buffer_Printf (answer->out, ",\"kind\":\"%s\"", kind);
+  Buffer_Append_Text (answer->out, "}");
+}
+
+static void Close_Fold (Fold_Answer *answer, Fold_Opening *stack, u32 *depth,
+                        Fold_Kind kind, u32 line) {
+  for (u32 i = *depth; i; i--)
+    if (stack[i - 1].kind == kind) {
+      Emit_Fold (answer, stack[i - 1].line, line, NULL);
+      *depth = i - 1;
+      return;
+    }
+}
+
+static void Close_Body_Fold (Fold_Answer *answer, Fold_Opening *stack,
+                             u32 *depth, u32 line) {
+  for (u32 i = *depth; i; i--)
+    if (stack[i - 1].kind == FOLD_HEAD or stack[i - 1].kind == FOLD_BODY) {
+      Emit_Fold (answer, stack[i - 1].line, line, NULL);
+      *depth = i - 1;
+      return;
+    }
+}
+
+static void Open_Fold (Fold_Opening *stack, u32 *depth, Fold_Kind kind,
+                       u32 line) {
+  if (*depth < MAX_FOLD_DEPTH)
+    stack[(*depth)++] = (Fold_Opening) { .kind = kind, .line = line };
+}
+
+static void Fold_Comment_Runs (Fold_Answer *answer, const char *text) {
+  u32  line = 0, started = 0;
+  bool running = false;
+  for (const char *scan = text; ; ) {
+    const char *rest = scan;
+    while (*rest == ' ' or *rest == '\t') rest++;
+    bool comment = rest[0] == '-' and rest[1] == '-';
+
+    if (comment and not running) { running = true; started = line; }
+    else if (not comment and running) {
+      Emit_Fold (answer, started, line - 1, "comment");
+      running = false;
+    }
+
+    while (*scan and *scan != '\n') scan++;
+    if (not *scan) break;
+    scan++;
+    line++;
+  }
+  if (running) Emit_Fold (answer, started, line, "comment");
+}
+
+static void Answer_Folding_Ranges (const Json *id,
+                                   const Open_Document *document) {
+  const char *text = document->text ? document->text : "";
+
+  Text_Buffer out = {0};
+  Buffer_Append_Text (&out, "[");
+  Fold_Answer answer = { .out = &out, .first = true };
+
+  Fold_Opening stack[MAX_FOLD_DEPTH];
+  u32  depth = 0, line = 0, parentheses = 0, ending_at = 0;
+  bool ending = false, unit_pending = false, after_null = false;
+
+  for (u32 i = 0; text[i]; ) {
+    if (text[i] == '\n') { line++; i++; continue; }
+    if (text[i] == '-' and text[i + 1] == '-') {
+      while (text[i] and text[i] != '\n') i++;
+      continue;
+    }
+    if (text[i] == '"') {
+      for (i++; text[i] and text[i] != '"'; i++)
+        if (text[i] == '\n') line++;
+      if (text[i]) i++;
+      continue;
+    }
+    if (text[i] == '\'' and text[i + 1] and text[i + 2] == '\'') {
+      i += 3;
+      continue;
+    }
+    if (isalpha ((unsigned char) text[i])) {
+      u32 from = i;
+      while (isalnum ((unsigned char) text[i]) or text[i] == '_') i++;
+
+      if (ending) {
+        ending = false;
+        if      (Word_Is (text, from, i, "record"))
+          Close_Fold (&answer, stack, &depth, FOLD_RECORD, ending_at);
+        else if (Word_Is (text, from, i, "case"))
+          Close_Fold (&answer, stack, &depth, FOLD_CASE, ending_at);
+        else if (Word_Is (text, from, i, "loop"))
+          Close_Fold (&answer, stack, &depth, FOLD_LOOP, ending_at);
+        else if (Word_Is (text, from, i, "if"))
+          Close_Fold (&answer, stack, &depth, FOLD_IF, ending_at);
+        else if (Word_Is (text, from, i, "select"))
+          Close_Fold (&answer, stack, &depth, FOLD_SELECT, ending_at);
+        else
+          Close_Body_Fold (&answer, stack, &depth, ending_at);
+        continue;
+      }
+
+      if (Word_Is (text, from, i, "end")) {
+        ending    = true;
+        ending_at = line;
+      } else if (Word_Is (text, from, i, "record")) {
+        if (not after_null) Open_Fold (stack, &depth, FOLD_RECORD, line);
+      } else if (Word_Is (text, from, i, "case")) {
+        Open_Fold (stack, &depth, FOLD_CASE, line);
+      } else if (Word_Is (text, from, i, "loop")) {
+        Open_Fold (stack, &depth, FOLD_LOOP, line);
+      } else if (Word_Is (text, from, i, "if")) {
+        Open_Fold (stack, &depth, FOLD_IF, line);
+      } else if (Word_Is (text, from, i, "select")) {
+        Open_Fold (stack, &depth, FOLD_SELECT, line);
+      } else if (Word_Is (text, from, i, "declare")) {
+        Open_Fold (stack, &depth, FOLD_HEAD, line);
+      } else if (Word_Is (text, from, i, "begin") or
+                 Word_Is (text, from, i, "do")) {
+
+        if (depth and stack[depth - 1].kind == FOLD_HEAD)
+          stack[depth - 1].kind = FOLD_BODY;
+        else
+          Open_Fold (stack, &depth, FOLD_BODY, line);
+      } else if (Word_Is (text, from, i, "is")) {
+        if (unit_pending) Open_Fold (stack, &depth, FOLD_HEAD, line);
+        unit_pending = false;
+      } else if (Word_Is (text, from, i, "package") or
+                 Word_Is (text, from, i, "procedure") or
+                 Word_Is (text, from, i, "function") or
+                 Word_Is (text, from, i, "task") or
+                 Word_Is (text, from, i, "entry")) {
+        unit_pending = true;
+      }
+      after_null = Word_Is (text, from, i, "null");
+      continue;
+    }
+
+    if (text[i] == '(') parentheses++;
+    else if (text[i] == ')' and parentheses) parentheses--;
+    else if (text[i] == ';') {
+      if (ending) {
+        ending = false;
+        Close_Body_Fold (&answer, stack, &depth, ending_at);
+      }
+      if (parentheses == 0) unit_pending = false;
+      after_null = false;
+    }
+    i++;
+  }
+
+  Fold_Comment_Runs (&answer, text);
+  Buffer_Append_Text (&out, "]");
+  Respond (id, out.Data ? out.Data : "[]");
+  Buffer_Free (&out);
+}
+
+int Run_Language_Server (const char *invoked_as, int argc, char *argv[]) {
+
+  setvbuf (stdout, NULL, _IOFBF, 0);
+  Publish_Include_Paths (argc, argv);
+
+  Host_Executable_Path (Server_Executable, sizeof Server_Executable,
+                        invoked_as);
+
+  Text_Buffer body = {0};
+  bool        stopping = false;
+
+  while (Receive_Message (&body)) {
+    const char *cursor  = body.Data;
+    Json       *request = Json_Parse_Value (&cursor);
+    if (not request) continue;
+
+    const char *method     = Json_Text (Json_Member (request, "method"));
+    const Json *id         = Json_Member (request, "id");
+    const Json *parameters = Json_Member (request, "params");
+
+    if (not method) { Json_Free (request); continue; }
+
+    if (strcmp (method, "initialize") == 0) {
+
+      const char *root    = Json_Text (Json_Member (parameters, "rootUri"));
+      const Json *folders = Json_Member (parameters, "workspaceFolders");
+      if (not root and folders and folders->Kind == JSON_ARRAY and
+          folders->Count)
+        root = Json_Text (Json_Member (folders->Items[0], "uri"));
+      char *opened = root ? Path_From_Uri (root) : NULL;
+      if (opened) {
+        snprintf (Workspace_Root, sizeof Workspace_Root, "%s", opened);
+        free (opened);
+      }
+
+      Text_Buffer result = {0};
+      Buffer_Printf (&result,
+        "{\"capabilities\":{\"textDocumentSync\":1,"
+        "\"definitionProvider\":true,"
+        "\"documentHighlightProvider\":true,"
+        "\"referencesProvider\":true,"
+        "\"hoverProvider\":true,"
+        "\"documentSymbolProvider\":true,"
+        "\"workspaceSymbolProvider\":true,"
+        "\"foldingRangeProvider\":true,"
+        "\"codeActionProvider\":true,"
+        "\"completionProvider\":{\"triggerCharacters\":[\".\"]},"
+        "\"signatureHelpProvider\":{\"triggerCharacters\":[\"(\",\",\"]},"
+        "\"positionEncoding\":\"utf-16\"},"
+        "\"serverInfo\":{\"name\":\"ada83\",\"version\":\"1.0\"}}");
+      Respond (id, result.Data ? result.Data : "{}");
+      Buffer_Free (&result);
+
+    } else if (strcmp (method, "shutdown") == 0) {
+      stopping = true;
+      Respond (id, "null");
+
+    } else if (strcmp (method, "exit") == 0) {
+      Json_Free (request);
+      break;
+
+    } else if (strcmp (method, "textDocument/didOpen") == 0) {
+      const Json *item = Json_Member (parameters, "textDocument");
+      const char *uri  = Json_Text (Json_Member (item, "uri"));
+      const char *text = Json_Text (Json_Member (item, "text"));
+      if (uri) Analyse_Document (Remember_Document (uri, text ? text : ""));
+
+    } else if (strcmp (method, "textDocument/didChange") == 0) {
+      const char *uri     = Json_Text (Document_Uri_Of (parameters));
+      const Json *changes = Json_Member (parameters, "contentChanges");
+      const char *text    = NULL;
+      if (changes and changes->Kind == JSON_ARRAY and changes->Count)
+        text = Json_Text (Json_Member (changes->Items[changes->Count - 1],
+                                       "text"));
+      if (uri and text) Analyse_Document (Remember_Document (uri, text));
+
+    } else if (strcmp (method, "textDocument/didSave") == 0) {
+      const char *uri = Json_Text (Document_Uri_Of (parameters));
+      if (uri) Analyse_Document (Find_Document (uri));
+
+    } else if (strcmp (method, "textDocument/definition") == 0) {
+      const char *uri = Json_Text (Document_Uri_Of (parameters));
+      Open_Document *document = uri ? Find_Document (uri) : NULL;
+      char name[256];
+      if (Name_Under_Cursor (document, Json_Member (parameters, "position"),
+                             name, sizeof name))
+        Answer_Definition (id, document, name);
+      else
+        Respond (id, "null");
+
+    } else if (strcmp (method, "textDocument/documentHighlight") == 0) {
+      const char *uri = Json_Text (Document_Uri_Of (parameters));
+      Open_Document *document = uri ? Find_Document (uri) : NULL;
+      char name[256];
+      if (Name_Under_Cursor (document, Json_Member (parameters, "position"),
+                             name, sizeof name))
+        Answer_Highlights (id, document, name);
+      else
+        Respond (id, "[]");
+
+    } else if (strcmp (method, "textDocument/references") == 0) {
+      const char *uri = Json_Text (Document_Uri_Of (parameters));
+      Open_Document *document = uri ? Find_Document (uri) : NULL;
+      const Json *asked = Json_Member (Json_Member (parameters, "context"),
+                                       "includeDeclaration");
+      bool with_declaration = not asked or asked->Kind != JSON_BOOL
+                            or asked->Boolean;
+      char name[256];
+      if (Name_Under_Cursor (document, Json_Member (parameters, "position"),
+                             name, sizeof name))
+        Answer_References (id, document, name, with_declaration);
+      else
+        Respond (id, "[]");
+
+    } else if (strcmp (method, "textDocument/hover") == 0) {
+      const char *uri = Json_Text (Document_Uri_Of (parameters));
+      const Json *at  = Json_Member (parameters, "position");
+      Open_Document *document = uri ? Find_Document (uri) : NULL;
+      char name[256] = {0};
+      u32  line = 0, from = 0, to = 0;
+      if (document and at) {
+        line = (u32) (Json_Member (at, "line")
+                      ? Json_Member (at, "line")->Number : 0);
+        Identifier_At (document->text, line,
+                       (u32) (Json_Member (at, "character")
+                              ? Json_Member (at, "character")->Number : 0),
+                       name, sizeof name, &from, &to);
+      }
+      if (name[0]) Answer_Hover (id, document, name, line, from, to);
+      else         Respond (id, "null");
+
+    } else if (strcmp (method, "textDocument/documentSymbol") == 0) {
+      const char *uri = Json_Text (Document_Uri_Of (parameters));
+      Open_Document *document = uri ? Find_Document (uri) : NULL;
+      if (document) Answer_Document_Symbols (id, document);
+      else          Respond (id, "[]");
+
+    } else if (strcmp (method, "workspace/symbol") == 0) {
+      Answer_Workspace_Symbols (id, Json_Text (Json_Member (parameters,
+                                                            "query")));
+
+    } else if (strcmp (method, "textDocument/completion") == 0) {
+      const char *uri = Json_Text (Document_Uri_Of (parameters));
+      Answer_Completion (id, uri ? Find_Document (uri) : NULL);
+
+    } else if (strcmp (method, "textDocument/foldingRange") == 0) {
+      const char *uri = Json_Text (Document_Uri_Of (parameters));
+      Open_Document *document = uri ? Find_Document (uri) : NULL;
+      if (document) Answer_Folding_Ranges (id, document);
+      else          Respond (id, "[]");
+
+    } else if (strcmp (method, "textDocument/codeAction") == 0) {
+      const char *uri = Json_Text (Document_Uri_Of (parameters));
+      Open_Document *document = uri ? Find_Document (uri) : NULL;
+      if (document)
+        Answer_Code_Actions (id, document, Json_Member (parameters, "range"));
+      else
+        Respond (id, "[]");
+
+    } else if (strcmp (method, "textDocument/signatureHelp") == 0) {
+      const char *uri = Json_Text (Document_Uri_Of (parameters));
+      const Json *at  = Json_Member (parameters, "position");
+      Open_Document *document = uri ? Find_Document (uri) : NULL;
+      char name[256] = {0};
+      u32  argument  = 0;
+      bool inside    = false;
+      if (document and document->text and at) {
+        const Json *at_line      = Json_Member (at, "line");
+        const Json *at_character = Json_Member (at, "character");
+        inside = Enclosing_Call (document->text,
+                                 Byte_Offset_Of (document->text,
+                                   at_line ? (u32) at_line->Number : 0,
+                                   at_character ? (u32) at_character->Number
+                                                : 0),
+                                 name, sizeof name, &argument);
+      }
+      if (inside) Answer_Signature_Help (id, document, name, argument);
+      else        Respond (id, "null");
+
+    } else if (strcmp (method, "textDocument/didClose") == 0) {
+      const char *uri = Json_Text (Document_Uri_Of (parameters));
+      if (uri) {
+        Open_Document *document = Find_Document (uri);
+
+        if (document) Publish_Diagnostics (document, NULL);
+        Forget_Document (uri);
+      }
+
+    } else if (id) {
+
+      Text_Buffer message = {0};
+      Buffer_Append_Text (&message, "{\"jsonrpc\":\"2.0\",\"id\":");
+      if (id->Kind == JSON_STRING) Buffer_Append_Json_String (&message,
+                                                              id->String);
+      else                         Buffer_Printf (&message, "%lld",
+                                                  (long long) id->Number);
+      Buffer_Append_Text (&message,
+        ",\"error\":{\"code\":-32601,\"message\":\"method not found\"}}");
+      Send_Message (&message);
+      Buffer_Free (&message);
+    }
+
+    Json_Free (request);
+  }
+
+  Buffer_Free (&body);
+  for (u32 i = 0; i < Open_Document_Count; i++) {
+    free (Open_Documents[i].uri);
+    free (Open_Documents[i].path);
+    free (Open_Documents[i].text);
+  }
+  return stopping ? 0 : 0;
+}
+
 void Print_Usage (FILE *out, const char *program_name) {
     fprintf (out,
       "%s\n"
@@ -60439,6 +63163,7 @@ void Print_Usage (FILE *out, const char *program_name) {
       "Usage:\n"
       "  %s [options] <input.ada ...> [-o <output>]\n"
       "  %s --bind <library-dir> <main-unit>\n"
+      "  %s --lsp\n"
       "\n"
       "Compiles Ada 83 sources to a native executable using a\n"
       "runtime-loaded libLLVM.  Additional .ll modules given as inputs\n"
@@ -60487,9 +63212,14 @@ void Print_Usage (FILE *out, const char *program_name) {
       "                      Bind a precompiled program library: verify\n"
       "                      the unit closure and elaboration order and\n"
       "                      emit the binder module.\n"
+      "  --lsp               Serve the Language Server Protocol on stdin\n"
+      "                      and stdout, reporting diagnostics as an\n"
+      "                      editor types.  Only the front end runs, so\n"
+      "                      libLLVM is not needed.\n"
       "  -h, --help          Show this help and exit.\n"
       "  --version           Show version information and exit.\n",
-      ADA83_VERSION_TEXT, program_name, program_name);
+      ADA83_VERSION_TEXT, program_name, program_name,
+      program_name);
 }
 
 int main (int argc, char *argv[]) {
@@ -60506,6 +63236,62 @@ int main (int argc, char *argv[]) {
       printf ("%s\n", ADA83_VERSION_TEXT);
       return 0;
     }
+  }
+
+  if (strcmp (argv[1], "--lsp") == 0)
+    return Run_Language_Server (argv[0], argc, argv);
+
+  /* The analysis half of --lsp, run as a child process of it.  Not meant to
+     be used by hand; the output is JSON for the server, not for a reader. */
+  if (strcmp (argv[1], "--analyse") == 0) {
+    if (argc != 4) {
+      fprintf (stderr, "Usage: %s --analyse <file> <directory>\n", argv[0]);
+      return 1;
+    }
+    return Analyse_And_Print (argv[2], argv[3], argv[0]);
+  }
+
+  if (strcmp (argv[1], "--define") == 0) {
+    if (argc != 5) {
+      fprintf (stderr, "Usage: %s --define <file> <directory> <name>\n",
+               argv[0]);
+      return 1;
+    }
+    return Define_And_Print (argv[2], argv[3], argv[4], argv[0]);
+  }
+
+  if (strcmp (argv[1], "--describe") == 0) {
+    if (argc != 5) {
+      fprintf (stderr, "Usage: %s --describe <file> <directory> <name>\n",
+               argv[0]);
+      return 1;
+    }
+    return Describe_And_Print (argv[2], argv[3], argv[4], argv[0]);
+  }
+
+  if (strcmp (argv[1], "--symbols") == 0) {
+    if (argc != 4) {
+      fprintf (stderr, "Usage: %s --symbols <file> <directory>\n", argv[0]);
+      return 1;
+    }
+    return Symbols_And_Print (argv[2], argv[3], argv[0]);
+  }
+
+  if (strcmp (argv[1], "--complete") == 0) {
+    if (argc != 4) {
+      fprintf (stderr, "Usage: %s --complete <file> <directory>\n", argv[0]);
+      return 1;
+    }
+    return Complete_And_Print (argv[2], argv[3], argv[0]);
+  }
+
+  if (strcmp (argv[1], "--signature") == 0) {
+    if (argc != 5) {
+      fprintf (stderr, "Usage: %s --signature <file> <directory> <name>\n",
+               argv[0]);
+      return 1;
+    }
+    return Signature_And_Print (argv[2], argv[3], argv[4], argv[0]);
   }
 
   if (strcmp (argv[1], "--bind") == 0) {
@@ -60911,31 +63697,38 @@ int Native_Backend_Compile (const char *ir_path, const char *const *extra_ir,
   }
 
   const char *configured = getenv ("CC");
+#ifdef _WIN32
+  const char *drivers[] = { configured, "clang -fuse-ld=lld", "cc", "clang",
+                            "gcc" };
+  const char *link_libraries = "-lm -lapi-ms-win-core-synch-l1-2-0";
+#else
   const char *drivers[] = { configured, "cc", "clang", "gcc" };
+  const char *link_libraries = "-lm -lpthread";
+#endif
   bool driver_ran = false;
-  for (size_t i = 0; i < sizeof (drivers) / sizeof (*drivers); i++) {
+  for (size_t i = 0; i < sizeof drivers / sizeof *drivers; i++) {
     if (not drivers[i]) continue;
     char command[PATH_MAX * 3];
-    snprintf (command, sizeof (command),
+    snprintf (command, sizeof command, "%s \"%s\" -o \"%s\" %s",
+              drivers[i], obj_path, exe_path, link_libraries);
+    int exit_status = Host_Command_Exit_Status (system (command));
+    if (exit_status == 127) continue;
 #ifdef _WIN32
-              "%s \"%s\" -o \"%s\" -lm -lapi-ms-win-core-synch-l1-2-0"
-#else
-              "%s \"%s\" -o \"%s\" -lm -lpthread"
-#endif
-              , drivers[i], obj_path, exe_path);
-    int link_status = system (command);
-    int exit_status = Host_Command_Exit_Status (link_status);
-    if (exit_status == 127) continue;   /* POSIX: command not found      */
-#ifdef _WIN32
-    if (exit_status == 9009) continue;  /* cmd.exe: command not found    */
+    if (exit_status == 9009) continue;
 #endif
     driver_ran = true;
-    status = link_status == 0 ? 0 : 1;
+    status     = exit_status == 0 ? 0 : 1;
     break;
   }
   if (not driver_ran)
     Report_Driver_Error ("no C compiler found to link with "
                          "(set CC, or install cc/clang/gcc)");
+#ifdef _WIN32
+  else if (status != 0)
+    Report_Driver_Warning ("thread-local storage reaches the linker as a COFF "
+                          "weak external, which only lld resolves; install "
+                          "clang with lld, or set CC to a driver that uses it");
+#endif
   remove (obj_path);
 
 done:

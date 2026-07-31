@@ -1,0 +1,17 @@
+# Build output
+ada83
+ada83.exe
+staging/
+*.o
+*.ll
+*.ali
+*.native.*
+
+# Test output
+acats/
+test_results/
+acats_logs/
+
+# Agent worktrees
+.claude/
+ada83.vsix

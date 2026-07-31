@@ -1,9 +1,5 @@
 # Ada Language Reference Manual
 
-*Fourteen chapters, three annexes, three appendices, and an index. The standard
-definition of the language is the fourteen chapters and the three annexes; the
-appendices and the index are informative.*
-
 ---
 
 ## Table of Contents
@@ -245,7 +241,6 @@ appendices and the index are informative.*
 
 - [C. Predefined Language Environment](#c-predefined-language-environment)
 
-
 **Appendices** — informative
 
 - [D. Glossary](#d-glossary)
@@ -255,9 +250,23 @@ appendices and the index are informative.*
 - [F. Implementation-Dependent
   Characteristics](#f-implementation-dependent-characteristics)
 
+- [Rationale](#rationale)
+
+  - [R.4 Types](#r4-types)
+  - [R.5 Numeric Types](#r5-numeric-types)
+  - [R.6 Access Types](#r6-access-types)
+  - [R.7 Derived Types](#r7-derived-types)
+  - [R.9 Packages](#r9-packages)
+  - [R.11 Visibility and Overloading](#r11-visibility-and-overloading)
+  - [R.12 Generic Units](#r12-generic-units)
+  - [R.13 Tasking](#r13-tasking)
+  - [R.14 Exception Handling](#r14-exception-handling)
+  - [R.15 Representation Clauses](#r15-representation-clauses)
 
 - [Index](#index)
+- [Style Guidelines](#style-guidelines)
 
+---
 
 ## 1. Introduction
 
@@ -290,9 +299,7 @@ This standard specifies:
 
 - **(a)** The form of a program unit written in Ada.
 
-
 - **(b)** The effect of translating and executing such a program unit.
-
 
 - **(c)** The manner in which program units may be combined to form Ada
   programs.
@@ -304,12 +311,8 @@ This standard specifies:
   which they must be specified.
 
 - **(f)** Those violations of the standard that a conforming implementation is
-
-
-```ada
-     required to detect, and the effect of attempting to translate or
-     execute a program unit containing such violations.
-```
+  required to detect, and the effect of attempting to translate or execute a
+  program unit containing such violations.
 
 - **(g)** Those violations of the standard that a conforming implementation is
   not required to detect.
@@ -365,9 +368,7 @@ A conforming implementation is one that:
 
 - **(d)** Supplies all predefined program units required by the standard.
 
-
 - **(e)** Contains no variations except where the standard permits.
-
 
 - **(f)** Specifies all such permitted variations in the manner prescribed by
   the standard.
@@ -393,15 +394,11 @@ standard definition of the Ada programming language:
 
 - Section [1.3](#13-design-goals-and-sources) Design goals and sources
 
-
 - Section [1.4](#14-language-summary) Language summary
-
 
 - The examples, notes, and references given at the end of each section
 
-
 - Each section whose title starts with the word "Example" or "Examples"
-
 
 ### 1.3 Design Goals and Sources
 
@@ -489,7 +486,7 @@ utility. The language provides means whereby individual organizations can
 construct their own libraries. The text of a separately compiled program unit
 must name the library units it requires.
 
-Program Units
+#### Program Units
 
 A subprogram is the basic unit for expressing an algorithm. There are two kinds
 of subprograms: procedures and functions. A procedure is the means of invoking a
@@ -513,7 +510,7 @@ on multicomputers, multiprocessors, or with interleaved execution on a single
 processor. A task unit may define either a single executing task or a task type
 permitting the creation of any number of similar tasks.
 
-Declarations and Statements
+#### Declarations and Statements
 
 The body of a program unit generally contains two parts: a declarative part,
 which defines the logical entities to be used in the program unit, and a
@@ -563,7 +560,7 @@ error situations, the statements of a program unit can be textually followed by
 exception handlers that specify the actions to be taken when the error situation
 arises. Exceptions can be raised explicitly by a raise statement.
 
-Data Types
+#### Data Types
 
 Every object in the language has a type, which characterizes a set of values and
 a set of applicable operations. The main classes of types are scalar types
@@ -605,7 +602,7 @@ constrain the set of allowed values of a type. Subtypes can be used to define
 subranges of scalar types, arrays with a limited set of index values, and
 records and private types with particular discriminant values.
 
-Other Facilities
+#### Other Facilities
 
 Representation clauses can be used to specify the mapping between types and
 features of an underlying machine. For example, the user can specify that
@@ -658,36 +655,30 @@ Backus-Naur-Form. In particular,
   array
   ```
 
-
 - **(c)** Square brackets enclose optional items. Thus the two following rules
   are equivalent.
 
-```ada
-          return_statement ::= return [expression];
-          return_statement ::= return; | return expression;
-```
+  ```ebnf
+  return_statement ::= return [expression];
+  return_statement ::= return; | return expression;
+  ```
 
 - **(d)** Braces enclose a repeated item. The item may appear zero or more
+  times; the repetitions occur from left to right as with an equivalent
+  left-recursive rule. Thus the two following rules are equivalent.
 
-
-```ebnf
-     times; the repetitions occur from left to right as with an equivalent
-     left-recursive rule. Thus the two following rules are equivalent.
-
-          term ::= factor {multiplying_operator factor}
-          term ::= factor | term multiplying_operator factor
-```
+  ```ebnf
+  term ::= factor {multiplying_operator factor}
+  term ::= factor | term multiplying_operator factor
+  ```
 
 - **(e)** A vertical bar separates alternative items unless it occurs
+  immediately after an opening brace, in which case it stands for itself:
 
-
-```ebnf
-     immediately after an opening brace, in which case it stands for
-     itself:
-
-          letter_or_digit ::= letter | digit
-          component_association ::= [choice {| choice} =>] expression
-```
+  ```ebnf
+  letter_or_digit ::= letter | digit
+  component_association ::= [choice {| choice} =>] expression
+  ```
 
 - **(f)** If the name of any syntactic category starts with an italicized part,
   it is equivalent to the category name without the italicized part. The
@@ -745,7 +736,6 @@ The language definition classifies errors into several different categories:
 
 - **(c)** Erroneous execution.
 
-
   The language rules specify certain rules to be obeyed by Ada programs,
   although there is no requirement on Ada compilers to provide either a
   compilation-time or a run-time detection of the violation of such rules. The
@@ -755,20 +745,16 @@ The language definition classifies errors into several different categories:
 
 - **(d)** Incorrect order dependences.
 
-
-```ada
-     Whenever the reference manual specifies that different parts of a
-     given construct are to be executed in some order that is not defined
-     by the language, this means that the implementation is allowed to
-     execute these parts in any given order, following the rules that
-     result from that given order, but not in parallel. Furthermore, the
-     construct is incorrect if execution of these parts in a different
-     order would have a different effect. Compilers are not required to
-     provide either compilation-time or run-time detection of incorrect
-     order dependences. The foregoing is expressed in terms of the process
-     that is called execution; it applies equally to the processes that
-     are called evaluation and elaboration.
-```
+  Whenever the reference manual specifies that different parts of a given
+  construct are to be executed in some order that is not defined by the
+  language, this means that the implementation is allowed to execute these
+  parts in any given order, following the rules that result from that given
+  order, but not in parallel. Furthermore, the construct is incorrect if
+  execution of these parts in a different order would have a different effect.
+  Compilers are not required to provide either compilation-time or run-time
+  detection of incorrect order dependences. The foregoing is expressed in terms
+  of the process that is called execution; it applies equally to the processes
+  that are called evaluation and elaboration.
 
 If a compiler is able to recognize at compilation time that a construct is
 erroneous or contains an incorrect order dependence, then the compiler is
@@ -777,6 +763,8 @@ code that raises the predefined exception Program_Error. Similarly, compilers
 are allowed to generate code that checks at run time for erroneous constructs,
 for incorrect order dependences, or for both. The predefined exception
 Program_Error is raised if such a check fails.
+
+---
 
 ## 2. Lexical Elements
 
@@ -797,16 +785,18 @@ character set. The description of the language definition in this standard
 reference manual uses the ASCII graphical symbols, the ANSI graphical
 representation of the ISO character set.
 
+**Syntax**
+
 ```ebnf
-    graphic_character ::= basic_graphic_character
-       | lower_case_letter | other_special_character
+graphic_character ::= basic_graphic_character
+   | lower_case_letter | other_special_character
 
-    basic_graphic_character ::=
-         upper_case_letter | digit
-       | special_character | space_character
+basic_graphic_character ::=
+     upper_case_letter | digit
+   | special_character | space_character
 
-    basic_character ::=
-         basic_graphic_character | format_effector
+basic_character ::=
+     basic_graphic_character | format_effector
 ```
 
 The basic character set is sufficient for writing any program. The characters
@@ -822,7 +812,6 @@ follows:
 
 - **(d) the space character**
 
-
 Format effectors are the ISO (and ASCII) characters called horizontal
 tabulation, vertical tabulation, carriage return, line feed, and form feed.
 
@@ -833,7 +822,6 @@ characters are defined as follows:
   y z`
 
 - **(f) other special characters** — ``! $ % ? @ [ \ ] ^ ` { } ~``
-
 
 Allowable replacements for the special characters vertical bar (|), sharp (#),
 and quotation (") are defined in section [2.10](#210-allowable-replacements-of-characters).
@@ -908,7 +896,7 @@ or one of the following compound delimiters each composed of two adjacent
 special characters
 
 ```ada
-    => .. ** := /= >= <= << >> <>
+=> .. ** := /= >= <= << >> <>
 ```
 
 Each of the special characters listed for single character delimiters is a
@@ -943,13 +931,15 @@ chapter.
 
 Identifiers are used as names and also as reserved words.
 
+**Syntax**
+
 ```ebnf
-    identifier ::=
-       letter {[underline] letter_or_digit}
+identifier ::=
+   letter {[underline] letter_or_digit}
 
-    letter_or_digit ::= letter | digit
+letter_or_digit ::= letter | digit
 
-    letter ::= upper_case_letter | lower_case_letter
+letter ::= upper_case_letter | lower_case_letter
 ```
 
 All characters of an identifier are significant, including any underline
@@ -960,9 +950,9 @@ letters are considered as the same.
 **Examples:**
 
 ```ada
-    Count X get_symbol Ethelyn Marion
+Count X get_symbol Ethelyn Marion
 
-    Snobol_4 X1 PageCount Store_Next_Item
+Snobol_4 X1 PageCount Store_Next_Item
 ```
 
 > [!NOTE]
@@ -975,8 +965,10 @@ real literal is a numeric literal that includes a point; an integer literal is a
 numeric literal without a point. Real literals are the literals of the type
 universal_real. Integer literals are the literals of the type universal_integer.
 
+**Syntax**
+
 ```ebnf
-    numeric_literal ::= decimal_literal | based_literal
+numeric_literal ::= decimal_literal | based_literal
 ```
 
 #### 2.4.1 Decimal Literals
@@ -984,12 +976,14 @@ universal_real. Integer literals are the literals of the type universal_integer.
 A decimal literal is a numeric literal expressed in the conventional decimal
 notation (that is, the base is implicitly ten).
 
+**Syntax**
+
 ```ebnf
-    decimal_literal ::= integer [.integer] [exponent]
+decimal_literal ::= integer [.integer] [exponent]
 
-    integer ::= digit {[underline] digit}
+integer ::= digit {[underline] digit}
 
-    exponent ::= E [+] integer | E - integer
+exponent ::= E [+] integer | E - integer
 ```
 
 An underline character inserted between adjacent digits of a decimal literal
@@ -1005,11 +999,11 @@ minus sign.
 **Examples:**
 
 ```ada
-    12 0 1E6 123_456 -- integer literals
+12 0 1E6 123_456 -- integer literals
 
-    12.0 0.0 0.456 3.14159_26 -- real literals
+12.0 0.0 0.456 3.14159_26 -- real literals
 
-    1.34E-12 1.0E+6 -- real literals with exponent
+1.34E-12 1.0E+6 -- real literals with exponent
 ```
 
 > [!NOTE]
@@ -1022,16 +1016,18 @@ minus sign.
 A based literal is a numeric literal expressed in a form that specifies the base
 explicitly. The base must be at least two and at most sixteen.
 
+**Syntax**
+
 ```ebnf
-    based_literal ::=
-       base # based_integer [.based_integer] # [exponent]
+based_literal ::=
+   base # based_integer [.based_integer] # [exponent]
 
-    base ::= integer
+base ::= integer
 
-    based_integer ::=
-       extended_digit {[underline] extended_digit}
+based_integer ::=
+   extended_digit {[underline] extended_digit}
 
-    extended_digit ::= digit | letter
+extended_digit ::= digit | letter
 ```
 
 An underline character inserted between adjacent digits of a based literal does
@@ -1050,9 +1046,9 @@ literal with the exponent.
 **Examples:**
 
 ```ada
-  2#1111_1111# 16#Ff# 016#0FF# -- integer literals of value 255
-  16#E#E1 2#1110_0000 # -- integer literals of value 224
-  16#F.Ff#E+2 2#1.1111_1111_111#E11 -- real literals of value 4095.0
+2#1111_1111# 16#Ff# 016#0FF# -- integer literals of value 255
+16#E#E1 2#1110_0000 # -- integer literals of value 224
+16#F.Ff#E+2 2#1.1111_1111_111#E11 -- real literals of value 4095.0
 ```
 
 ### 2.5 Character Literals
@@ -1061,14 +1057,16 @@ A character literal is formed by enclosing one of the 95 graphic characters
 (including the space) between two apostrophe characters. A character literal has
 a value that belongs to a character type.
 
+**Syntax**
+
 ```ebnf
-    character_literal ::= 'graphic_character'
+character_literal ::= 'graphic_character'
 ```
 
 **Examples:**
 
 ```ada
-    'A' '*' ''' ' '
+'A' '*' ''' ' '
 ```
 
 ### 2.6 String Literals
@@ -1076,8 +1074,10 @@ a value that belongs to a character type.
 A string literal is formed by a sequence of graphic characters (possibly none)
 enclosed between two quotation characters used as string brackets.
 
+**Syntax**
+
 ```ebnf
-    string_literal ::= "{graphic_character}"
+string_literal ::= "{graphic_character}"
 ```
 
 A string literal has a value that is a sequence of character values
@@ -1095,12 +1095,12 @@ character.)
 **Examples:**
 
 ```ada
-    "Message of the day:"
+"Message of the day:"
 
-    "" -- an empty string literal
-    " " "A" """" -- three string literals of length 1
+"" -- an empty string literal
+" " "A" """" -- three string literals of length 1
 
-    "Characters such as $, %, and } are allowed in string literals"
+"Characters such as $, %, and } are allowed in string literals"
 ```
 
 > [!NOTE]
@@ -1128,14 +1128,14 @@ enlightenment of the human reader.
 **Examples:**
 
 ```ada
-    --  the last sentence above echoes the Algol 68 report
+--  the last sentence above echoes the Algol 68 report
 
-    end; -- processing of Line is complete
+end; -- processing of Line is complete
 
-    --  a long comment may be split onto
-    --  two or more consecutive lines
+--  a long comment may be split onto
+--  two or more consecutive lines
 
-    ----------------  the first two hyphens start the comment
+----------------  the first two hyphens start the comment
 ```
 
 > [!NOTE]
@@ -1147,13 +1147,15 @@ enlightenment of the human reader.
 A pragma is used to convey information to the compiler. A pragma starts with the
 reserved word pragma followed by an identifier that is the name of the pragma.
 
-```ebnf
-    pragma ::=
-       pragma identifier [(argument_association {, argument_association})];
+**Syntax**
 
-    argument_association ::=
-         [argument_identifier =>] name
-       | [argument_identifier =>] expression
+```ebnf
+pragma ::=
+   pragma identifier [(argument_association {, argument_association})];
+
+argument_association ::=
+     [argument_identifier =>] name
+   | [argument_identifier =>] expression
 ```
 
 Pragmas are only allowed at the following places in a program:
@@ -1192,10 +1194,10 @@ text over which a pragma has an effect depends on the pragma.
 **Examples:**
 
 ```ada
-    pragma List (Off);
-    pragma Optimize (Time);
-    pragma Inline (Setmask);
-    pragma Suppress (Range_Check, On => Index);
+pragma List (Off);
+pragma Optimize (Time);
+pragma Inline (Setmask);
+pragma Suppress (Range_Check, On => Index);
 ```
 
 > [!NOTE]
@@ -1268,7 +1270,8 @@ These replacements do not change the meaning of the program.
 > Similarly, the string literal "ABcd" with lower case letters could be replaced
 > by "AB" & ASCII.Lc_C & ASCII.Lc_D.
 >
-> 
+
+---
 
 ## 3. Declarations and Types
 
@@ -1289,14 +1292,16 @@ enumeration literal; see [3.3.3](#333-classification-of-operations)).
 There are several forms of declaration. A basic declaration is a form of
 declaration defined as follows.
 
+**Syntax**
+
 ```ebnf
-    basic_declaration ::=
-         object_declaration | number_declaration
-       | type_declaration | subtype_declaration
-       | subprogram_declaration | package_declaration
-       | task_declaration | generic_declaration
-       | exception_declaration | generic_instantiation
-       | renaming_declaration | deferred_constant_declaration
+basic_declaration ::=
+     object_declaration | number_declaration
+   | type_declaration | subtype_declaration
+   | subprogram_declaration | package_declaration
+   | task_declaration | generic_declaration
+   | exception_declaration | generic_instantiation
+   | renaming_declaration | deferred_constant_declaration
 ```
 
 Certain forms of declaration always occur (explicitly) as part of a basic
@@ -1350,34 +1355,30 @@ one of the following:
 
 - an object declared by an object declaration or by a single task declaration,
 
-
 - a formal parameter of a subprogram, entry, or generic subprogram,
-
 
 - a generic formal object,
 
-
 - a loop parameter,
-
 
 - an object designated by a value of an access type,
 
-
 - a component or a slice of another object.
-
 
 A number declaration is a special form of object declaration that associates an
 identifier with a value of type universal_integer or universal_real.
 
+**Syntax**
+
 ```ebnf
-    object_declaration ::=
-         identifier_list : [constant] subtype_indication [:= expression];
-       | identifier_list : [constant] constrained_array_definition [:= expression];
+object_declaration ::=
+     identifier_list : [constant] subtype_indication [:= expression];
+   | identifier_list : [constant] constrained_array_definition [:= expression];
 
-    number_declaration ::=
-         identifier_list : constant := universal_static_expression;
+number_declaration ::=
+     identifier_list : constant := universal_static_expression;
 
-    identifier_list ::= identifier {, identifier}
+identifier_list ::= identifier {, identifier}
 ```
 
 An object declaration is called a single object declaration if its identifier
@@ -1401,15 +1402,15 @@ declarations with several identifiers follow from the equivalence stated above.
 **Example:**
 
 ```ada
-    --  the multiple object declaration
+--  the multiple object declaration
 
-    John, Paul : Person_Name := new Person (Sex => M); -- see 3.8.1
+John, Paul : Person_Name := new Person (Sex => M); -- see 3.8.1
 
-    --  is  equivalent  to  the two single object declarations in the order
-        given
+--  is  equivalent  to  the two single object declarations in the order
+    given
 
-    John : Person_Name := new Person (Sex => M);
-    Paul : Person_Name := new Person (Sex => M);
+John : Person_Name := new Person (Sex => M);
+Paul : Person_Name := new Person (Sex => M);
 ```
 
 #### 3.2.1 Object Declarations
@@ -1446,7 +1447,6 @@ The elaboration of an object declaration proceeds as follows:
   are evaluated.
 
 - **(c)** The object is created.
-
 
 - **(d)** Any initial value (whether explicit or implicit) is assigned to the
   object or to the corresponding subcomponent.
@@ -1503,19 +1503,19 @@ subcomponent with an undefined value.
 **Examples of variable declarations:**
 
 ```ada
-    Count, Sum : Integer;
-    Size : Integer range 0 .. 10_ := 0;
-    Sorted : Boolean := False;
-    Color_Table : array (1 .. N) of Color;
-    Option : Bit_Vector (1 .. 10) := (others => True);
+Count, Sum : Integer;
+Size : Integer range 0..10_000 := 0;
+Sorted : Boolean := False;
+Color_Table : array (1..N) of Color;
+Option : Bit_Vector (1..10) := (others => True);
 ```
 
 **Examples of constant declarations:**
 
 ```ada
-    Limit : constant Integer := 10_
-    Low_Limit : constant Integer := Limit/10;
-    Tolerance : constant Real := Dispersion (1.15);
+Limit : constant Integer := 10_000;
+Low_Limit : constant Integer := Limit/10;
+Tolerance : constant Real := Dispersion (1.15);
 ```
 
 > [!NOTE]
@@ -1542,11 +1542,11 @@ the static expression.
 **Examples of number declarations:**
 
 ```ada
-  Pi : constant := 3.14159_26536; -- a real number
-  Two_Pi : constant := 2.0*Pi; -- a real number
-  Max : constant := 5 -- an integer number
-  Power_16 : constant := 2**16; -- the integer 65_536
-  One, Un, Eins : constant := 1; -- three different names for 1
+Pi : constant := 3.14159_26536; -- a real number
+Two_Pi : constant := 2.0*Pi; -- a real number
+Max : constant := 5 -- an integer number
+Power_16 : constant := 2**16; -- the integer 65_536
+One, Un, Eins : constant := 1; -- three different names for 1
 ```
 
 ### 3.3 Types and Subtypes
@@ -1610,18 +1610,20 @@ term "access value" is used for a value of an access type.
 
 A type declaration declares a type.
 
+**Syntax**
+
 ```ebnf
-    type_declaration ::= full_type_declaration
-       | incomplete_type_declaration | private_type_declaration
+type_declaration ::= full_type_declaration
+   | incomplete_type_declaration | private_type_declaration
 
-    full_type_declaration ::=
-         type identifier [discriminant_part] is type_definition;
+full_type_declaration ::=
+     type identifier [discriminant_part] is type_definition;
 
-    type_definition ::=
-         enumeration_type_definition | integer_type_definition
-       | real_type_definition | array_type_definition
-       | record_type_definition | access_type_definition
-       | derived_type_definition
+type_definition ::=
+     enumeration_type_definition | integer_type_definition
+   | real_type_definition | array_type_definition
+   | record_type_definition | access_type_definition
+   | derived_type_definition
 ```
 
 The elaboration of a full type declaration consists of the elaboration of the
@@ -1645,17 +1647,17 @@ where the syntax normally requires an identifier.
 **Examples of type definitions:**
 
 ```ada
-    (White, Red, Yellow, Green, Blue, Brown, Black)
-    range1 .. 72
-    array (1 .. 10) of Integer
+(White, Red, Yellow, Green, Blue, Brown, Black)
+range 1..72
+array (1..10) of Integer
 ```
 
 **Examples of type declarations:**
 
 ```ada
-    type Color is (White, Red, Yellow, Green, Blue, Brown, Black);
-    type Column is range 1 .. 72;
-    type Table is array (1 .. 10) of Integer;
+type Color is (White, Red, Yellow, Green, Blue, Brown, Black);
+type Column is range 1..72;
+type Table is array (1..10) of Integer;
 ```
 
 > [!NOTE]
@@ -1684,17 +1686,19 @@ where the syntax normally requires an identifier.
 
 A subtype declaration declares a subtype.
 
+**Syntax**
+
 ```ebnf
-    subtype_declaration ::=
-       subtype identifier is subtype_indication;
+subtype_declaration ::=
+   subtype identifier is subtype_indication;
 
-    subtype_indication ::= type_mark [constraint]
+subtype_indication ::= type_mark [constraint]
 
-    type_mark ::= type_name | subtype_name
+type_mark ::= type_name | subtype_name
 
-    constraint ::=
-         range_constraint | floating_point_constraint | fixed_point_constraint
-       | index_constraint | discriminant_constraint
+constraint ::=
+     range_constraint | floating_point_constraint | fixed_point_constraint
+   | index_constraint | discriminant_constraint
 ```
 
 A type mark denotes a type or a subtype. If a type mark is the name of a type,
@@ -1715,7 +1719,6 @@ includes a constraint proceeds as follows:
 
 - **(a)** The constraint is first elaborated.
 
-
 - **(b)** A check is then made that the constraint is compatible with the type
   or subtype denoted by the type mark.
 
@@ -1732,13 +1735,13 @@ fails.
 **Examples of subtype declarations:**
 
 ```ada
-    subtype Rainbow is Color range Red .. Blue; -- see 3.3.1
-    subtype Red_Blue is Rainbow;
-    subtype Int is Integer;
-    subtype Small_Int is Integer range -10 .. 10;
-    subtype Up_To_K is Column range 1 .. K; -- see 3.3.1
-    subtype Square is Matrix (1 .. 10, 1 .. 10); -- see 3.6
-    subtype Male is Person (Sex => M); -- see 3.8
+subtype Rainbow is Color range Red..Blue; -- see 3.3.1
+subtype Red_Blue is Rainbow;
+subtype Int is Integer;
+subtype Small_Int is Integer range -10..10;
+subtype Up_To_K is Column range 1..K; -- see 3.3.1
+subtype Square is Matrix (1..10, 1..10); -- see 3.6
+subtype Male is Person (Sex => M); -- see 3.8
 ```
 
 > [!NOTE]
@@ -1766,7 +1769,6 @@ A basic operation is an operation that is inherent in one of the following:
 
 - A selected component, an indexed component, or a slice.
 
-
 - A qualification (in qualified expressions), an explicit type conversion, or an
   implicit type conversion of a value of type universal_integer or
   universal_real to the corresponding value of another numeric type.
@@ -1777,12 +1779,7 @@ A basic operation is an operation that is inherent in one of the following:
 For every type or subtype T, the following attribute is defined:
 
 - **`T'Base`** — The base type of T. This attribute is allowed only as the
-
-
-```ada
-           prefix of the name of another attribute: for example,
-           T'Base'First.
-```
+  prefix of the name of another attribute: for example, T'Base'First.
 
 > [!NOTE]
 > Each literal is an operation whose evaluation yields the corresponding value
@@ -1803,8 +1800,10 @@ derived from those of a parent type; the new type is called a derived type. A
 derived type definition further defines a derived subtype, which is a subtype of
 the derived type.
 
+**Syntax**
+
 ```ebnf
-    derived_type_definition ::= new subtype_indication
+derived_type_definition ::= new subtype_indication
 ```
 
 The subtype indication that occurs after the reserved word new defines the
@@ -1830,12 +1829,8 @@ follows:
 - For each enumeration literal or predefined operator of the parent type there
   is a corresponding operation for the derived type.
 
-- If the parent type is a task type, then for each entry of the parent
-
-
-```ada
-     type there is a corresponding entry for the derived type.
-```
+- If the parent type is a task type, then for each entry of the parent type
+  there is a corresponding entry for the derived type.
 
 - If a default expression exists for a component of an object having the parent
   type, then the same default expression is used for the corresponding component
@@ -1843,10 +1838,9 @@ follows:
 
 - If the parent type is an access type, then the parent and the derived
 
-
 ```ada
-     type share the same collection; there is a null access value for the
-     derived type and it is the default initial value of that type.
+type share the same collection; there is a null access value for the
+derived type and it is the default initial value of that type.
 ```
 
 - If an explicit representation clause exists for the parent type and if this
@@ -1900,15 +1894,15 @@ subtype is created.
 **Examples:**
 
 ```ada
-    type Local_Coordinate is new Coordinate; -- two different types
-    type Midweek is new Day range Tue .. Thu; -- see 3.5.1
-    type Counter is new Positive; -- same range as Positive
+type Local_Coordinate is new Coordinate; -- two different types
+type Midweek is new Day range Tue..Thu; -- see 3.5.1
+type Counter is new Positive; -- same range as Positive
 
-    type Special_Key is new Key_Manager.Key; -- see 7.4.2
-    -- the derived subprograms have the following specifications:
+type Special_Key is new Key_Manager.Key; -- see 7.4.2
+-- the derived subprograms have the following specifications:
 
-    -- procedure Get_Key (K : out Special_Key);
-    -- function "<"(X,Y : Special_Key) return Boolean;
+-- procedure Get_Key (K : out Special_Key);
+-- function "<"(X,Y : Special_Key) return Boolean;
 ```
 
 > [!NOTE]
@@ -1949,11 +1943,13 @@ discrete type has a position number which is an integer value.
 Integer types and real types are called numeric types. All scalar types are
 ordered, that is, all relational operators are predefined for their values.
 
-```ebnf
-    range_constraint ::= range range
+**Syntax**
 
-    range ::= range_attribute
-       | simple_expression .. simple_expression
+```ebnf
+range_constraint ::= range range
+
+range ::= range_attribute
+   | simple_expression .. simple_expression
 ```
 
 A range specifies a subset of values of a scalar type. The range L .. R
@@ -1979,7 +1975,7 @@ expressions are given to specify the bounds, the evaluation of the range
 evaluates these simple expressions in some order that is not defined by the
 language.
 
-Attributes
+**Attributes**
 
 For any scalar type T or for any subtype T of a scalar type, the following
 attributes are defined:
@@ -1997,13 +1993,15 @@ attributes are defined:
 
 An enumeration type definition defines an enumeration type.
 
+**Syntax**
+
 ```ebnf
-    enumeration_type_definition ::=
-       (enumeration_literal_specification {, enumeration_literal_specification})
+enumeration_type_definition ::=
+   (enumeration_literal_specification {, enumeration_literal_specification})
 
-    enumeration_literal_specification ::= enumeration_literal
+enumeration_literal_specification ::= enumeration_literal
 
-    enumeration_literal ::= identifier | character_literal
+enumeration_literal ::= identifier | character_literal
 ```
 
 The identifiers and character literals listed by an enumeration type definition
@@ -2029,20 +2027,20 @@ the context (see [8.7](#87-the-context-of-overload-resolution)).
 **Examples:**
 
 ```ada
-  type Day is (Mon, Tue, Wed, Thu, Fri, Sat, Sun);
-  type Suit is (Clubs, Diamonds, Hearts, Spades);
-  type Gender is (M, F);
-  type Level is (Low, Medium, Urgent);
-  type Color is (White, Red, Yellow, Green, Blue, Brown, Black);
-  type Light is (Red, Amber, Green); -- Red and Green are overloaded
+type Day is (Mon, Tue, Wed, Thu, Fri, Sat, Sun);
+type Suit is (Clubs, Diamonds, Hearts, Spades);
+type Gender is (M, F);
+type Level is (Low, Medium, Urgent);
+type Color is (White, Red, Yellow, Green, Blue, Brown, Black);
+type Light is (Red, Amber, Green); -- Red and Green are overloaded
 
-  type Hexa is ('A', 'B', 'C', 'D', 'E', 'F');
-  type Mixed is ('A', 'B', '*', B, None, '?', '%');
+type Hexa is ('A', 'B', 'C', 'D', 'E', 'F');
+type Mixed is ('A', 'B', '*', B, None, '?', '%');
 
-  subtype Weekday is Day range Mon .. Fri;
-  subtype Major is Suit range Hearts .. Spades;
-  subtype Rainbow is Color range Red .. Blue; -- the color Red, not the
-                                                   light
+subtype Weekday is Day range Mon..Fri;
+subtype Major is Suit range Hearts..Spades;
+subtype Rainbow is Color range Red..Blue; -- the color Red, not the
+                                                 light
 ```
 
 > [!NOTE]
@@ -2061,7 +2059,7 @@ corresponding character literal.
 **Example:**
 
 ```ada
-    type Roman_Digit is ('I', 'V', 'X', 'L', 'C', 'D', 'M');
+type Roman_Digit is ('I', 'V', 'X', 'L', 'C', 'D', 'M');
 ```
 
 > [!NOTE]
@@ -2085,8 +2083,10 @@ from a boolean type.
 An integer type definition defines an integer type whose set of values includes
 at least those of the specified range.
 
+**Syntax**
+
 ```ebnf
-    integer_type_definition ::= range_constraint
+integer_type_definition ::= range_constraint
 ```
 
 If a range constraint is used as an integer type definition, each bound of the
@@ -2096,14 +2096,14 @@ bounds need not have the same integer type. (Negative bounds are allowed.)
 A type declaration of the form:
 
 ```ada
-    type T is range L .. R;
+type T is range L..R;
 ```
 
 is, by definition, equivalent to the following declarations:
 
 ```ada
-    type integer_type is new predefined_integer_type;
-    subtype T is integer_type range integer_type (L) .. integer_type (R);
+type integer_type is new predefined_integer_type;
+subtype T is integer_type range integer_type (L)..integer_type (R);
 ```
 
 where integer_type is an anonymous type, and where the predefined integer type
@@ -2139,12 +2139,12 @@ be computed correctly, as described in section [11.6](#116-exceptions-and-optimi
 **Examples:**
 
 ```ada
-    type Page_Num is range 1 .. 2_
-    type Line_Size is range 1 .. Max_Line_Size;
+type Page_Num is range 1..2_000;
+type Line_Size is range 1..Max_Line_Size;
 
-    subtype Small_Int is Integer range -10 .. 10;
-    subtype Column_Ptr is Line_Size range 1 .. 10;
-    subtype Buffer_Size is Integer range 0 .. Max;
+subtype Small_Int is Integer range -10..10;
+subtype Column_Ptr is Line_Size range 1..10;
+subtype Buffer_Size is Integer range 0..Max;
 ```
 
 > [!NOTE]
@@ -2190,13 +2190,9 @@ corresponding actual parameter is indicated below by X.
   is the position number of the value of the parameter.
 
 - **`T'Val`** — This attribute is a special function with a single parameter
-
-
-```ada
-            which can be of any integer type. The result type is the base
-            type of T. The result is the value whose position number is
-            the universal_integer value corresponding to X. The exception
-```
+  which can be of any integer type. The result type is the base type of T. The
+  result is the value whose position number is the universal_integer value
+  corresponding to X. The exception
 
 Constraint_Error is raised if the universal_integer value corresponding to X is
 not in the range T'Pos (T'Base'First) .. T'Pos (T'Base'Last).
@@ -2275,14 +2271,14 @@ group yield a characteristic of the subtype).
 **Examples:**
 
 ```ada
-    --  For the types and subtypes declared in section 3.5.1 we have:
+--  For the types and subtypes declared in section 3.5.1 we have:
 
-    --  Color'First   = White,   Color'Last   = Black
-    --  Rainbow'First = Red,     Rainbow'Last = Blue
+--  Color'First   = White,   Color'Last   = Black
+--  Rainbow'First = Red,     Rainbow'Last = Blue
 
-    --  Color'Succ (Blue) = Rainbow'Succ (Blue) = Brown
-    --  Color'Pos (Blue)  = Rainbow'Pos (Blue)  = 4
-    --  Color'Val (0)     = Rainbow'Val (0)     = White
+--  Color'Succ (Blue) = Rainbow'Succ (Blue) = Brown
+--  Color'Pos (Blue)  = Rainbow'Pos (Blue)  = 4
+--  Color'Val (0)     = Rainbow'Val (0)     = White
 ```
 
 #### 3.5.6 Real Types
@@ -2290,9 +2286,11 @@ group yield a characteristic of the subtype).
 Real types provide approximations to the real numbers, with relative bounds on
 errors for floating point types, and with absolute bounds for fixed point types.
 
+**Syntax**
+
 ```ebnf
-    real_type_definition ::=
-       floating_point_constraint | fixed_point_constraint
+real_type_definition ::=
+   floating_point_constraint | fixed_point_constraint
 ```
 
 A set of numbers called model numbers is associated with each real type. Error
@@ -2342,11 +2340,13 @@ floating or fixed point constraint and creates a real type.
 For floating point types, the error bound is specified as a relative precision
 by giving the required minimum number of significant decimal digits.
 
-```ebnf
-    floating_point_constraint ::=
-       floating_accuracy_definition [range_constraint]
+**Syntax**
 
-    floating_accuracy_definition ::= digits static_simple_expression
+```ebnf
+floating_point_constraint ::=
+   floating_accuracy_definition [range_constraint]
+
+floating_accuracy_definition ::= digits static_simple_expression
 ```
 
 The minimum number of significant decimal digits is specified by the value of
@@ -2360,7 +2360,9 @@ bounds need not have the same real type.
 For a given radix, the following canonical form is defined for any floating
 point model number other than zero:
 
+```ada
 sign * mantissa * (radix ** exponent)
+```
 
 In this form: sign is either +1 or -1; mantissa is expressed in a number base
 given by radix; and exponent is an integer number (possibly negative) such that
@@ -2402,15 +2404,15 @@ A floating point type declaration of one of the two forms (that is, with or
 without the optional range constraint indicated by the square brackets):
 
 ```ada
-    type T is digits D [range L .. R];
+type T is digits D [range L..R];
 ```
 
 is, by definition, equivalent to the following declarations:
 
 ```ada
-    type floating_point_type is new predefined_floating_point_type;
-    subtype T is floating_point_type digits D
-       [range floating_point_type (L) .. floating_point_type (R)];
+type floating_point_type is new predefined_floating_point_type;
+subtype T is floating_point_type digits D
+   [range floating_point_type (L)..floating_point_type (R)];
 ```
 
 where floating_point_type is an anonymous type, and where the predefined
@@ -2457,16 +2459,16 @@ The same arithmetic operators are predefined for all floating point types (see
 **Examples:**
 
 ```ada
-    type Coefficient is digits 10 range -1.0 .. 1.0;
+type Coefficient is digits 10 range -1.0..1.0;
 
-    type Real is digits 8;
-    type Mass is digits 7 range 0.0 .. 1.0E35;
+type Real is digits 8;
+type Mass is digits 7 range 0.0..1.0E35;
 
-    subtype Short_Coeff is Coefficient digits 5; -- a subtype with less accuracy
-    subtype Probability is Real range 0.0 .. 1.0; -- a subtype with a smaller range
+subtype Short_Coeff is Coefficient digits 5; -- a subtype with less accuracy
+subtype Probability is Real range 0.0..1.0; -- a subtype with a smaller range
 ```
 
-Notes on the examples:
+**Notes on the examples**
 
 The implemented accuracy for Coefficient is that of a predefined type having at
 least 10 digits of precision. Consequently the specification of 5 digits of
@@ -2513,12 +2515,7 @@ the following attributes:
   the type universal_integer.
 
 - **`T'Small`** — Yields the smallest positive (nonzero) model number of the
-
-
-```ada
-             subtype T. The value of this attribute is of the type
-             universal_real.
-```
+  subtype T. The value of this attribute is of the type universal_real.
 
 - **`T'Large`** — Yields the largest positive model number of the subtype T. The
   value of this attribute is of the type universal_real.
@@ -2532,12 +2529,7 @@ characteristics of the safe numbers:
   is of the type universal_integer.
 
 - **`T'Safe_Small`** — Yields the smallest positive (nonzero) safe number of the
-  base
-
-```ada
-             type of T. The value of this attribute is of the type
-             universal_real.
-```
+  base type of T. The value of this attribute is of the type universal_real.
 
 - **`T'Safe_Large`** — Yields the largest positive safe number of the base type
   of T. The value of this attribute is of the type universal_real.
@@ -2589,11 +2581,13 @@ operations are redefined in terms of the subtype.
 For fixed point types, the error bound is specified as an absolute value, called
 the delta of the fixed point type.
 
-```ebnf
-    fixed_point_constraint ::=
-       fixed_accuracy_definition [range_constraint]
+**Syntax**
 
-    fixed_accuracy_definition ::= delta static_simple_expression
+```ebnf
+fixed_point_constraint ::=
+   fixed_accuracy_definition [range_constraint]
+
+fixed_accuracy_definition ::= delta static_simple_expression
 ```
 
 The delta is specified by the value of the static simple expression of the fixed
@@ -2609,7 +2603,9 @@ this form: sign is either +1 or -1; mantissa is a positive (nonzero) integer;
 and any model number is a multiple of a certain positive real number called
 small, as follows:
 
+```ada
 sign * mantissa * small
+```
 
 For the model numbers defined by a fixed point constraint, the number small is
 chosen as the largest power of two that is not greater than the delta of the
@@ -2639,15 +2635,15 @@ by the attribute Small.
 A fixed point type declaration of the form:
 
 ```ada
-    type T is delta D range L .. R;
+type T is delta D range L..R;
 ```
 
 is, by definition, equivalent to the following declarations:
 
 ```ada
-    type fixed_point_type is new predefined_fixed_point_type;
-    subtype T is fixed_point_type
-       range fixed_point_type (L) .. fixed_point_type (R);
+type fixed_point_type is new predefined_fixed_point_type;
+subtype T is fixed_point_type
+   range fixed_point_type (L)..fixed_point_type (R);
 ```
 
 In these declarations, fixed_point_type is an anonymous type, and the predefined
@@ -2698,14 +2694,14 @@ this type must be converted explicitly to some numeric type.
 **Examples:**
 
 ```ada
-    type Volt is delta 0.125 range 0.0 .. 255.0;
-    subtype Rough_Voltage is Volt delta 1.0; -- same range as Volt
+type Volt is delta 0.125 range 0.0..255.0;
+subtype Rough_Voltage is Volt delta 1.0; -- same range as Volt
 
-    --  A pure fraction which requires all the available space in a word
-    --  on a two's complement machine can be declared as the type Fraction:
+--  A pure fraction which requires all the available space in a word
+--  on a two's complement machine can be declared as the type Fraction:
 
-    Del : constant := 1.0/2**(Word_Length - 1);
-    type Fraction is delta Del range -1.0 .. 1.0 - Del;
+Del : constant := 1.0/2**(Word_Length - 1);
+type Fraction is delta Del range -1.0..1.0 - Del;
 ```
 
 #### 3.5.10 Operations of Fixed Point Types
@@ -2734,12 +2730,7 @@ following attributes:
   3.5.9.) The value of this attribute is of the type universal_integer.
 
 - **`T'Small`** — Yields the smallest positive (nonzero) model number of the
-
-
-```ada
-             subtype T. The value of this attribute is of the type
-             universal_real.
-```
+  subtype T. The value of this attribute is of the type universal_real.
 
 - **`T'Large`** — Yields the largest positive model number of the subtype T. The
   value of this attribute is of the type universal_real.
@@ -2762,12 +2753,7 @@ The attributes of the second group include the following attributes which yield
 characteristics of the safe numbers:
 
 - **`T'Safe_Small`** — Yields the smallest positive (nonzero) safe number of the
-  base
-
-```ada
-             type of T. The value of this attribute is of the type
-             universal_real.
-```
+  base type of T. The value of this attribute is of the type universal_real.
 
 - **`T'Safe_Large`** — Yields the largest positive safe number of the base type
   of T. The value of this attribute is of the type universal_real.
@@ -2805,22 +2791,24 @@ same subtype. The name for a component of an array uses one or more index values
 belonging to specified discrete types. The value of an array object is a
 composite value consisting of the values of its components.
 
+**Syntax**
+
 ```ebnf
-    array_type_definition ::=
-       unconstrained_array_definition | constrained_array_definition
+array_type_definition ::=
+   unconstrained_array_definition | constrained_array_definition
 
-    unconstrained_array_definition ::=
-       array(index_subtype_definition {, index_subtype_definition}) of
-                component_subtype_indication
+unconstrained_array_definition ::=
+   array(index_subtype_definition {, index_subtype_definition}) of
+            component_subtype_indication
 
-    constrained_array_definition ::=
-       array index_constraint of component_subtype_indication
+constrained_array_definition ::=
+   array index_constraint of component_subtype_indication
 
-    index_subtype_definition ::= type_mark range <>
+index_subtype_definition ::= type_mark range <>
 
-    index_constraint ::= (discrete_range {, discrete_range})
+index_constraint ::= (discrete_range {, discrete_range})
 
-    discrete_range ::= discrete_subtype_indication | range
+discrete_range ::= discrete_subtype_indication | range
 ```
 
 An array object is characterized by the number of indices (the dimensionality of
@@ -2850,19 +2838,12 @@ includes that of the component subtype indication.
 A constrained array definition defines both an array type and a subtype of this
 type:
 
-- The array type is an implicitly declared anonymous type; this type is
-
-
-```ada
-     defined by an (implicit) unconstrained array definition, in which the
-     component subtype indication is that of the constrained array
-     definition, and in which the type mark of each index subtype
-     definition denotes the subtype defined by the corresponding discrete
-     range.
-
-  -  The array subtype is the subtype obtained by imposition of  the  index
-     constraint on the array type.
-```
+- The array type is an implicitly declared anonymous type; this type is defined
+  by an (implicit) unconstrained array definition, in which the component
+  subtype indication is that of the constrained array definition, and in which
+  the type mark of each index subtype definition denotes the subtype defined by
+  the corresponding discrete range. - The array subtype is the subtype obtained
+  by imposition of the index constraint on the array type.
 
 If a constrained array definition is given for a type declaration, the simple
 name declared by this declaration denotes the array subtype.
@@ -2876,26 +2857,26 @@ indication are performed in some order that is not defined by the language.
 **Examples of type declarations with unconstrained array definitions:**
 
 ```ada
-    type Vector is array (Integer range <>) of Real;
-    type Matrix is array (Integer range <>, Integer range <>) of Real;
-    type Bit_Vector is array (Integer range <>) of Boolean;
-    type Roman is array (Positive range <>) of Roman_Digit;
+type Vector is array (Integer range <>) of Real;
+type Matrix is array (Integer range <>, Integer range <>) of Real;
+type Bit_Vector is array (Integer range <>) of Boolean;
+type Roman is array (Positive range <>) of Roman_Digit;
 ```
 
 **Examples of type declarations with constrained array definitions:**
 
 ```ada
-    type Table is array (1 .. 10) of Integer;
-    type Schedule is array (Day) of Boolean;
-    type Line is array (1 .. Max_Line_Size) of Character;
+type Table is array (1..10) of Integer;
+type Schedule is array (Day) of Boolean;
+type Line is array (1..Max_Line_Size) of Character;
 ```
 
 **Examples of object declarations with constrained array definitions:**
 
 ```ada
-    Grid : array (1 .. 80, 1 .. 100) of Boolean;
-    Mix : array (Color range Red .. Green) of Boolean;
-    Page : array (1 .. 50) of Line; -- an array of arrays
+Grid : array (1..80, 1..100) of Boolean;
+Mix : array (Color range Red..Green) of Boolean;
+Page : array (1..50) of Line; -- an array of arrays
 ```
 
 > [!NOTE]
@@ -2987,36 +2968,30 @@ some order that is not defined by the language.
 **Examples of array declarations including an index constraint:**
 
 ```ada
-    Board : Matrix (1 .. 8, 1 .. 8); -- see 3.6
-```
-```ada
-    Rectangle : Matrix (1 .. 20, 1 .. 30);
-```
+Board : Matrix (1..8, 1..8); -- see 3.6
+Rectangle : Matrix (1..20, 1..30);
 
-```ada
-    Inverse : Matrix (1 .. N, 1 .. N); -- N need not be static
-```
+Inverse : Matrix (1..N, 1..N); -- N need not be static
 
-```ada
-    Filter : Bit_Vector (0 .. 31);
+Filter : Bit_Vector (0..31);
 ```
 
 **Example of array declaration with a constrained array subtype:**
 
 ```ada
-    My_Schedule : Schedule; -- all arrays of type Schedule have the same
-                                 bounds
+My_Schedule : Schedule; -- all arrays of type Schedule have the same
+                             bounds
 ```
 
 **Example of record type with a component that is an array:**
 
 ```ada
-    type Var_Line (Length : Integer) is
-       record
-          Image : String (1 .. Length);
-       end record;
+type Var_Line (Length : Integer) is
+   record
+      Image : String (1..Length);
+   end record;
 
-    Null_Line : Var_Line (0); -- Null_Line.Image is a null array
+Null_Line : Var_Line (0); -- Null_Line.Image is a null array
 ```
 
 > [!NOTE]
@@ -3046,48 +3021,28 @@ and no greater than the dimensionality of the array.
 - **`A'First`** — Yields the lower bound of the first index range. The value of
   this attribute has the same type as this lower bound.
 
-
 - **`A'First(N)`** — Yields the lower bound of the N-th index range. The value
   of this attribute has the same type as this lower bound.
-
 
 - **`A'Last`** — Yields the upper bound of the first index range. The value of
   this attribute has the same type as this upper bound.
 
-
 - **`A'Last(N)`** — Yields the upper bound of the N-th index range. The value of
   this attribute has the same type as this upper bound.
 
-
 - **`A'Range`** — Yields the first index range, that is, the range A'First ..
-
-
-```ada
-                A'Last.
-```
+  A'Last.
 
 - **`A'Range(N)`** — Yields the N-th index range, that is, the range A'First(N)
-
-
-```ada
-                .. A'Last (N).
-```
+  .. A'Last (N).
 
 - **`A'Length`** — Yields the number of values of the first index range (zero
-
-
-```ada
-                for a null range). The value of this attribute is of the
-                type universal_integer.
-```
+  for a null range). The value of this attribute is of the type
+  universal_integer.
 
 - **`A'Length(N)`** — Yields the number of values of the N-th index range (zero
-
-
-```ada
-                for a null range). The value of this attribute is of the
-                type universal_integer.
-```
+  for a null range). The value of this attribute is of the type
+  universal_integer.
 
 In addition, the attribute T'Base is defined for an array type or subtype T (see
 3.3.3); the attribute T'Size is defined for an array type or subtype T, and the
@@ -3125,19 +3080,19 @@ The values of the predefined type String are one-dimensional arrays of the
 predefined type Character, indexed by values of the predefined subtype Positive:
 
 ```ada
-    subtype Positive is Integer range 1 .. Integer'Last;
-    type String is array (Positive range <>) of Character;
+subtype Positive is Integer range 1..Integer'Last;
+type String is array (Positive range <>) of Character;
 ```
 
 **Examples:**
 
 ```ada
-    Stars : String (1 .. 120) := (1 .. 120 => '*' );
-    Question : constant String := "HOW MANY CHARACTERS?";
-    --  Question'First = 1, Question'Last = 20 (the number of characters)
+Stars : String (1..120) := (1..120 => '*' );
+Question : constant String := "HOW MANY CHARACTERS?";
+--  Question'First = 1, Question'Last = 20 (the number of characters)
 
-    Ask_Twice : constant String := Question & Question;
-    Ninety_Six : constant Roman := "XCVI"; -- see 3.6
+Ask_Twice : constant String := Question & Question;
+Ninety_Six : constant Roman := "XCVI"; -- see 3.6
 ```
 
 > [!NOTE]
@@ -3154,21 +3109,23 @@ A record object is a composite object consisting of named components. The value
 of a record object is a composite value consisting of the values of its
 components.
 
+**Syntax**
+
 ```ebnf
-    record_type_definition ::=
-       record
-          component_list
-       end record
+record_type_definition ::=
+   record
+      component_list
+   end record
 
-    component_list ::=
-          component_declaration {component_declaration}
-       | {component_declaration} variant_part
-       | null;
+component_list ::=
+      component_declaration {component_declaration}
+   | {component_declaration} variant_part
+   | null;
 
-    component_declaration ::=
-       identifier_list : component_subtype_definition [:= expression];
+component_declaration ::=
+   identifier_list : component_subtype_definition [:= expression];
 
-    component_subtype_definition ::= subtype_indication
+component_subtype_definition ::= subtype_indication
 ```
 
 Each component declaration declares a component of the record type. Besides
@@ -3209,29 +3166,27 @@ is not a discriminant.
 **Examples of record type declarations:**
 
 ```ada
-    type Date is
-       record
-          Day : Integer range 1 .. 31;
-          Month : Month_Name;
-          Year : Integer range 0 .. 4000;
-       end record;
+type Date is
+   record
+      Day : Integer range 1..31;
+      Month : Month_Name;
+      Year : Integer range 0..4000;
+   end record;
 
-    type Complex is
-       record
-          Re : Real := 0.0;
-          Im : Real := 0.0;
-       end record;
+type Complex is
+   record
+      Re : Real := 0.0;
+      Im : Real := 0.0;
+   end record;
 ```
 
 **Examples of record variables:**
 
 ```ada
-    Tomorrow, Yesterday : Date;
-    A, B, C : Complex;
-```
+Tomorrow, Yesterday : Date;
+A, B, C : Complex;
 
-```ada
-    -- both components of A, B, and C are implicitly initialized to zero
+-- both components of A, B, and C are implicitly initialized to zero
 ```
 
 > [!NOTE]
@@ -3250,12 +3205,14 @@ A discriminant part specifies the discriminants of a type. A discriminant of a
 record is a component of the record. The type of a discriminant must be
 discrete.
 
-```ebnf
-    discriminant_part ::=
-       (discriminant_specification {; discriminant_specification})
+**Syntax**
 
-    discriminant_specification ::=
-       identifier_list : type_mark [:= expression]
+```ebnf
+discriminant_part ::=
+   (discriminant_specification {; discriminant_specification})
+
+discriminant_specification ::=
+   identifier_list : type_mark [:= expression]
 ```
 
 A discriminant part is only allowed in the type declaration for a record type,
@@ -3308,28 +3265,28 @@ The elaboration of a discriminant part has no other effect.
 **Examples:**
 
 ```ada
-    type Buffer (Size : Buffer_Size := 100) is -- see 3.5.4
-       record
-          Pos : Buffer_Size := 0;
-          Value : String (1 .. Size);
-       end record;
+type Buffer (Size : Buffer_Size := 100) is -- see 3.5.4
+   record
+      Pos : Buffer_Size := 0;
+      Value : String (1..Size);
+   end record;
 
-    type Square (Side : Integer) is
-       record
-          Mat : Matrix (1 .. Side, 1 .. Side); -- see 3.6
-       end record;
+type Square (Side : Integer) is
+   record
+      Mat : Matrix (1..Side, 1..Side); -- see 3.6
+   end record;
 
-    type Double_Square (Number : Integer) is
-       record
-          Left : Square (Number);
-          Right : Square (Number);
-       end record;
+type Double_Square (Number : Integer) is
+   record
+      Left : Square (Number);
+      Right : Square (Number);
+   end record;
 
-    type Item (Number : Positive) is
-       record
-          Content : Integer;
-          --  no component depends on the discriminant
-       end record;
+type Item (Number : Positive) is
+   record
+      Content : Integer;
+      --  no component depends on the discriminant
+   end record;
 ```
 
 #### 3.7.2 Discriminant Constraints
@@ -3339,12 +3296,14 @@ mark. This type mark must denote either a type with discriminants, or an access
 type whose designated type is a type with discriminants. A discriminant
 constraint specifies the values of these discriminants.
 
-```ebnf
-    discriminant_constraint ::=
-       (discriminant_association {, discriminant_association})
+**Syntax**
 
-    discriminant_association ::=
-       [discriminant_simple_name {| discriminant_simple_name} =>] expression
+```ebnf
+discriminant_constraint ::=
+   (discriminant_association {, discriminant_association})
+
+discriminant_association ::=
+   [discriminant_simple_name {| discriminant_simple_name} =>] expression
 ```
 
 Each discriminant association associates an expression with one or more
@@ -3413,12 +3372,12 @@ discriminant associations are evaluated in some order that is not defined by the
 language; the expression of a named association is evaluated once for each named
 discriminant.
 
-Examples (using types declared in the previous section): 01
+**Examples** (using types declared in the previous section):
 
 ```ada
-  Large : Buffer (200); -- constrained, always 200 characters (explicit
-                              discriminant value)
-  Message : Buffer; -- unconstrained, initially 100 characters
+Large : Buffer (200); -- constrained, always 200 characters (explicit
+                            discriminant value)
+Message : Buffer; -- unconstrained, initially 100 characters
 ```
 
 (default discriminant value) Basis : Square (5); -- constrained, always 5 by 5
@@ -3438,19 +3397,21 @@ A record type with a variant part specifies alternative lists of components.
 Each variant defines the components for the corresponding value or values of the
 discriminant.
 
+**Syntax**
+
 ```ebnf
-    variant_part ::=
-       case discriminant_simple_name is
-           variant
-          {variant}
-       end case;
+variant_part ::=
+   case discriminant_simple_name is
+       variant
+      {variant}
+   end case;
 
-    variant ::=
-       when choice {| choice} =>
-          component_list
+variant ::=
+   when choice {| choice} =>
+      component_list
 
-    choice ::= simple_expression
-       | discrete_range | others | component_simple_name
+choice ::= simple_expression
+   | discrete_range | others | component_simple_name
 ```
 
 Each variant starts with a list of choices which must be of the same type as the
@@ -3478,34 +3439,34 @@ component list of a variant is specified by null, the variant has no components.
 **Example of record type with a variant part:**
 
 ```ada
-    type Device is (Printer, Disk, Drum);
-    type State is (Open, Closed);
+type Device is (Printer, Disk, Drum);
+type State is (Open, Closed);
 
-    type Peripheral (Unit : Device := Disk) is
-       record
-          Status : State;
-          case Unit is
-             when Printer =>
-                Line_Count : Integer range 1 .. Page_Size;
-             when others =>
-                Cylinder : Cylinder_Index;
-                Track : Track_Number;
-             end case;
-          end record;
+type Peripheral (Unit : Device := Disk) is
+   record
+      Status : State;
+      case Unit is
+         when Printer =>
+            Line_Count : Integer range 1..Page_Size;
+         when others =>
+            Cylinder : Cylinder_Index;
+            Track : Track_Number;
+         end case;
+      end record;
 ```
 
 **Examples of record subtypes:**
 
 ```ada
-    subtype Drum_Unit is Peripheral (Drum);
-    subtype Disk_Unit is Peripheral (Disk);
+subtype Drum_Unit is Peripheral (Drum);
+subtype Disk_Unit is Peripheral (Disk);
 ```
 
 **Examples of constrained record ariables:**
 
 ```ada
-    Writer : Peripheral (Unit => Printer);
-    Archive : Disk_Unit;
+Writer : Peripheral (Unit => Printer);
+Archive : Disk_Unit;
 ```
 
 > [!NOTE]
@@ -3532,7 +3493,6 @@ the following attribute:
   corresponding actual parameter. The value of this attribute is of the
   predefined type Boolean.
 
-
 In addition, the attributes T'Base and T'Size are defined for a record type or
 subtype T (see [3.3.3](#333-classification-of-operations)); the attributes A'Size and A'Address are defined for a
 record object A (see [13.7.2](#1372-representation-attributes)).
@@ -3553,8 +3513,10 @@ allocators (see [4.8](#48-allocators)) and that have no simple name. Access to s
 achieved by an access value returned by an allocator; the access value is said
 to designate the object.
 
+**Syntax**
+
 ```ebnf
-    access_type_definition ::= access subtype_indication
+access_type_definition ::= access subtype_indication
 ```
 
 For each access type, there is a literal null which has a null access value
@@ -3585,9 +3547,9 @@ satisfies the constraint.
 **Examples:**
 
 ```ada
-    type Frame is access Matrix; -- see 3.6
+type Frame is access Matrix; -- see 3.6
 
-    type Buffer_Name is access Buffer -- see 3.7.1
+type Buffer_Name is access Buffer -- see 3.7.1
 ```
 
 > [!NOTE]
@@ -3613,7 +3575,7 @@ recursive access types. Their declarations require a prior incomplete (or
 private) type declaration for one or more types.
 
 ```ada
-     incomplete_type_declaration ::= type identifier [discriminant_part];
+incomplete_type_declaration ::= type identifier [discriminant_part];
 ```
 
 For each incomplete type declaration, there must be a corresponding declaration
@@ -3644,66 +3606,50 @@ type declaration is not elaborated.
 **Example of a recursive type:**
 
 ```ada
-    type Cell; -- incomplete type declaration
-    type Link is access Cell;
+type Cell; -- incomplete type declaration
+type Link is access Cell;
 
-    type Cell is
-       record
-          Value : Integer;
-          Succ : Link;
-          Pred : Link;
-       end record;
+type Cell is
+   record
+      Value : Integer;
+      Succ : Link;
+      Pred : Link;
+   end record;
 
-    Head : Link := new Cell' (O, null, null);
-    Next : Link := Head.Succ;
+Head : Link := new Cell' (O, null, null);
+Next : Link := Head.Succ;
 ```
 
 **Examples of mutually dependent access types:**
 
 ```ada
-    type Person (Sex : Gender); -- incomplete type declaration
-    type Car; -- incomplete type declaration
-```
+type Person (Sex : Gender); -- incomplete type declaration
+type Car; -- incomplete type declaration
 
-```ada
-    type Person_Name is access Person;
-    type Car_Name is access Car;
-```
+type Person_Name is access Person;
+type Car_Name is access Car;
 
-```ada
-    type Car is
-       record
-```
-```ada
-          Number : Integer;
-          Owner :Person_Name;
-       end record;
-```
+type Car is
+   record
+      Number : Integer;
+      Owner :Person_Name;
+   end record;
 
-```ada
-    type Person (Sex : Gender) is
-       record
-```
-```ada
-          Name : String (1 .. 20);
-          Birth : Date;
-          Age : Integer range 0 .. 130;
-          Vehicle : Car_Name;
-```
+type Person (Sex : Gender) is
+   record
+      Name : String (1..20);
+      Birth : Date;
+      Age : Integer range 0..130;
+      Vehicle : Car_Name;
 
-```ada
-          case Sex is
-             when M => Wife : Person_Name (Sex => F);
-             when F => Husband : Person_Name (Sex => M);
-```
-```ada
-          end case;
-       end record;
-```
+      case Sex is
+         when M => Wife : Person_Name (Sex => F);
+         when F => Husband : Person_Name (Sex => M);
+      end case;
+   end record;
 
-```ada
-    My_Car, Your_Car, Next_Car : Car_Name; -- implicitly initialized with
-                                              null value
+My_Car, Your_Car, Next_Car : Car_Name; -- implicitly initialized with
+                                          null value
 ```
 
 #### 3.8.2 Operations of Access Types
@@ -3743,21 +3689,23 @@ predefined comparison for equality and inequality.
 
 A declarative part contains declarative items (possibly none).
 
+**Syntax**
+
 ```ebnf
-    declarative_part ::=
-       {basic_declarative_item} {later_declarative_item}
+declarative_part ::=
+   {basic_declarative_item} {later_declarative_item}
 
-    basic_declarative_item ::= basic_declaration
-       | representation_clause | use_clause
+basic_declarative_item ::= basic_declaration
+   | representation_clause | use_clause
 
-    later_declarative_item ::= body
-       | subprogram_declaration | package_declaration
-       | task_declaration | generic_declaration
-       | use_clause | generic_instantiation
+later_declarative_item ::= body
+   | subprogram_declaration | package_declaration
+   | task_declaration | generic_declaration
+   | use_clause | generic_instantiation
 
-    body ::= proper_body | body_stub
+body ::= proper_body | body_stub
 
-    proper_body ::= subprogram_body | package_body | task_body
+proper_body ::= subprogram_body | package_body | task_body
 ```
 
 The elaboration of a declarative part consists of the elaboration of the
@@ -3791,6 +3739,8 @@ itself be a declarative item of this declarative part (and must appear later).
 If the body is a body stub, then a separately compiled subunit containing the
 corresponding proper body is required for the program unit (see [10.2](#102-subunits-of-compilation-units)).
 
+---
+
 ## 4. Names and Expressions
 
 The rules applicable to the different forms of name and expression, and to their
@@ -3804,15 +3754,17 @@ subcomponents and slices of objects and values; single entries, entry families,
 and entries in families of entries. Finally, names can denote attributes of any
 of the foregoing.
 
+**Syntax**
+
 ```ebnf
-    name ::= simple_name
-       | character_literal | operator_symbol
-       | indexed_component | slice
-       | selected_component | attribute
+name ::= simple_name
+   | character_literal | operator_symbol
+   | indexed_component | slice
+   | selected_component | attribute
 
-    simple_name ::= identifier
+simple_name ::= identifier
 
-    prefix ::= name | function_call
+prefix ::= name | function_call
 ```
 
 A simple name for an entity is either the identifier associated with the entity
@@ -3833,13 +3785,8 @@ A prefix is said to be appropriate for a type in either of the following cases:
 
 - The type of the prefix is the type considered.
 
-
-- The type of the prefix is an access type whose designated type is the
-
-
-```ada
-     type considered.
-```
+- The type of the prefix is an access type whose designated type is the type
+  considered.
 
 The evaluation of a name determines the entity denoted by the name. This
 evaluation has no other effect for a name that is a simple name, a character
@@ -3856,13 +3803,13 @@ value, except in the case of the prefix of a representation attribute (see
 **Examples of simple names:**
 
 ```ada
-    Pi -- the simple name of a number (see 3.2.2)
-    Limit -- the simple name of a constant (see 3.2.1)
-    Count -- the simple name of a scalar variable (see 3.2.1)
-    Board -- the simple name of an array variable (see 3.6.1)
-    Matrix -- the simple name of a type (see 3.6)
-    Random -- the simple name of a function (see 6.1)
-    Error -- the simple name of an exception (see 11.1)
+Pi -- the simple name of a number (see 3.2.2)
+Limit -- the simple name of a constant (see 3.2.1)
+Count -- the simple name of a scalar variable (see 3.2.1)
+Board -- the simple name of an array variable (see 3.6.1)
+Matrix -- the simple name of a type (see 3.6)
+Random -- the simple name of a function (see 6.1)
+Error -- the simple name of an exception (see 11.1)
 ```
 
 #### 4.1.1 Indexed Components
@@ -3870,8 +3817,10 @@ value, except in the case of the prefix of a representation attribute (see
 An indexed component denotes either a component of an array or an entry in a
 family of entries.
 
+**Syntax**
+
 ```ebnf
-    indexed_component ::= prefix(expression {, expression})
+indexed_component ::= prefix(expression {, expression})
 ```
 
 In the case of a component of an array, the prefix must be appropriate for an
@@ -3890,15 +3839,15 @@ corresponding index of the prefixing array or entry family.
 **Examples of indexed components:**
 
 ```ada
- My_Schedule (Sat) -- a component of a one-dimensional array (see 3.6.1)
- Page (10) -- a component of a one-dimensional array (see 3.6)
- Board (M, J + 1) -- a component of a two-dimensional array (see 3.6.1)
- Page (10)(20) -- a component of a component (see 3.6)
- Request (Medium) -- an entry in a family of entries (see 9.5)
- Next_Frame (L)(M, N) -- a component of a function call (see 6.1)
+My_Schedule (Sat) -- a component of a one-dimensional array (see 3.6.1)
+Page (10) -- a component of a one-dimensional array (see 3.6)
+Board (M, J + 1) -- a component of a two-dimensional array (see 3.6.1)
+Page (10)(20) -- a component of a component (see 3.6)
+Request (Medium) -- an entry in a family of entries (see 9.5)
+Next_Frame (L)(M, N) -- a component of a function call (see 6.1)
 ```
 
-Notes on the examples:
+**Notes on the examples**
 
 Distinct notations are used for components of multidimensional arrays (such as
 Board) and arrays of arrays (such as Page). The components of an array of arrays
@@ -3912,8 +3861,10 @@ A slice denotes a one-dimensional array formed by a sequence of consecutive
 components of a one-dimensional array. A slice of a variable is a variable; a
 slice of a constant is a constant; a slice of a value is a value.
 
+**Syntax**
+
 ```ebnf
-    slice ::= prefix(discrete_range)
+slice ::= prefix(discrete_range)
 ```
 
 The prefix of a slice must be appropriate for a one-dimensional array type. The
@@ -3932,13 +3883,13 @@ subtype of the index.)
 **Examples of slices:**
 
 ```ada
-  Stars (1 .. 15) -- a slice of 15 characters (see 3.6.3)
-  Page (10 .. 10 + Size) -- a slice of 1 + Size components (see 3.6 and 3.2.1)
-  Page (L)(A .. B) -- a slice of the array Page (L) (see 3.6)
-  Stars (1 .. 0) -- a null slice (see 3.6.3)
-  My_Schedule (Weekday) -- bounds given by subtype (see 3.6 and 3.5.1)
-  Stars (5 .. 15)(K) -- same as Stars (K) (see 3.6.3)
-                        --  provided that K is in 5 .. 15
+Stars (1..15) -- a slice of 15 characters (see 3.6.3)
+Page (10..10 + Size) -- a slice of 1 + Size components (see 3.6 and 3.2.1)
+Page (L)(A..B) -- a slice of the array Page (L) (see 3.6)
+Stars (1..0) -- a null slice (see 3.6.3)
+My_Schedule (Weekday) -- bounds given by subtype (see 3.6 and 3.5.1)
+Stars (5..15)(K) -- same as Stars (K) (see 3.6.3)
+                      --  provided that K is in 5 .. 15
 ```
 
 > [!NOTE]
@@ -3952,11 +3903,13 @@ Selected components are used to denote record components, entries, entry
 families, and objects designated by access values; they are also used as
 expanded names as described below.
 
-```ebnf
-    selected_component ::= prefix.selector
+**Syntax**
 
-    selector ::= simple_name
-       | character_literal | operator_symbol | all
+```ebnf
+selected_component ::= prefix.selector
+
+selector ::= simple_name
+   | character_literal | operator_symbol | all
 ```
 
 The following four forms of selected components are used to denote a
@@ -3988,7 +3941,6 @@ literal, or an operator symbol. A function call is not allowed as the prefix of
 an expanded name. An expanded name can denote:
 
 - **(e)** An entity declared in the visible part of a package:
-
 
   The prefix must denote the package. The selector must be the simple name,
   character literal, or operator symbol of the entity.
@@ -4023,31 +3975,31 @@ the prefix.
 **Examples of selected components:**
 
 ```ada
-  Tomorrow.Month -- a record component (see 3.7)
-  Next_Car.Owner -- a record component (see 3.8.1)
-  Next_Car.Owner.Age -- a record component (see 3.8.1)
-  Writer.Unit -- a record component (a discriminant) (see 3.7.3)
-  Min_Cell (H).Value -- a record component of the result (see 6.1 and 3.8.1)
-                     --  of the function call Min_Cell (H)
-  Control.Seize -- an entry of the task Control (see 9.1 and 9.2)
-  Pool (K).Write -- an entry of the task Pool (K) (see 9.1 and 9.2)
+Tomorrow.Month -- a record component (see 3.7)
+Next_Car.Owner -- a record component (see 3.8.1)
+Next_Car.Owner.Age -- a record component (see 3.8.1)
+Writer.Unit -- a record component (a discriminant) (see 3.7.3)
+Min_Cell (H).Value -- a record component of the result (see 6.1 and 3.8.1)
+                   --  of the function call Min_Cell (H)
+Control.Seize -- an entry of the task Control (see 9.1 and 9.2)
+Pool (K).Write -- an entry of the task Pool (K) (see 9.1 and 9.2)
 
-  Next_Car.all -- the object designated by
-                     --  the access variable Next_Car (see 3.8.1)
+Next_Car.all -- the object designated by
+                   --  the access variable Next_Car (see 3.8.1)
 ```
 
 **Examples of expanded names:**
 
 ```ada
-  Table_Manager.Insert -- a procedure of the visible part of a package
-                           (see 7.5)
-  Key_Manager."<" -- an operator of the visible part of a package
-                           (see 7.4.2)
-  Dot_Product.Sum -- a variable declared in a procedure body (see 6.5)
-  Buffer.Pool -- a variable declared in a task unit (see 9.12)
-  Buffer.Read -- an entry of a task unit (see 9.12)
-  Swap.Temp -- a variable declared in a block statement (see 5.6)
-  Standard.Boolean -- the name of a predefined type (see 8.6 and C)
+Table_Manager.Insert -- a procedure of the visible part of a package
+                         (see 7.5)
+Key_Manager."<" -- an operator of the visible part of a package
+                         (see 7.4.2)
+Dot_Product.Sum -- a variable declared in a procedure body (see 6.5)
+Buffer.Pool -- a variable declared in a task unit (see 9.12)
+Buffer.Read -- an entry of a task unit (see 9.12)
+Swap.Temp -- a variable declared in a block statement (see 5.6)
+Standard.Boolean -- the name of a predefined type (see 8.6 and C)
 ```
 
 > [!NOTE]
@@ -4060,10 +4012,12 @@ the prefix.
 
 An attribute denotes a basic operation of an entity given by a prefix.
 
-```ebnf
-    attribute ::= prefix'attribute_designator
+**Syntax**
 
-    attribute_designator ::= simple_name [(universal_static_expression)]
+```ebnf
+attribute ::= prefix'attribute_designator
+
+attribute_designator ::= simple_name [(universal_static_expression)]
 ```
 
 The applicable attribute designators depend on the prefix. An attribute can be a
@@ -4091,7 +4045,7 @@ prefix.
 **Examples of attributes:**
 
 ```ada
-  Color'First -- minimum value of the enumeration type Color
+Color'First -- minimum value of the enumeration type Color
 ```
 
 (see [3.3.1](#331-type-declarations) and 3.5) Rainbow'Base'First -- same as Color'First (see [3.3.2](#332-subtype-declarations) and
@@ -4135,11 +4089,11 @@ literal).
 **Examples:**
 
 ```ada
-    3.14159_26536 -- a real literal
-    1_345 -- an integer literal
-    Clubs -- an enumeration literal
-    'A' -- a character literal
-    "SOME TEXT" -- a string literal
+3.14159_26536 -- a real literal
+1_345 -- an integer literal
+Clubs -- an enumeration literal
+'A' -- a character literal
+"SOME TEXT" -- a string literal
 ```
 
 ### 4.3 Aggregates
@@ -4147,12 +4101,14 @@ literal).
 An aggregate is a basic operation that combines component values into a
 composite value of a record or array type.
 
-```ebnf
-    aggregate ::=
-       (component_association {, component_association})
+**Syntax**
 
-    component_association ::=
-       [choice {| choice} => ] expression
+```ebnf
+aggregate ::=
+   (component_association {, component_association})
+
+component_association ::=
+   [choice {| choice} => ] expression
 ```
 
 Each component association associates an expression with components (possibly
@@ -4222,26 +4178,26 @@ The exception Constraint_Error is raised if this check fails.
 **Example of a record aggregate with positional associations:**
 
 ```ada
-    (4, July, 1776) -- see 3.7
+(4, July, 1776) -- see 3.7
 ```
 
 **Examples of record aggregates with named associations:**
 
 ```ada
-    (Day => 4, Month => July, Year => 1776)
-    (Month => July, Day => 4, Year => 1776)
+(Day => 4, Month => July, Year => 1776)
+(Month => July, Day => 4, Year => 1776)
 
-    (Disk, Closed, Track => 5, Cylinder => 12) -- see 3.7.3
-    (Unit => Disk, Status => Closed, Cylinder => 9, Track => 1)
+(Disk, Closed, Track => 5, Cylinder => 12) -- see 3.7.3
+(Unit => Disk, Status => Closed, Cylinder => 9, Track => 1)
 ```
 
 **Example of component association with several choices:**
 
 ```ada
-    (Value => 0, Succ|Pred => new Cell' (0, null, null)) -- see 3.8.1
+(Value => 0, Succ|Pred => new Cell' (0, null, null)) -- see 3.8.1
 
-    --  The allocator is evaluated twice:  Succ and Pred designate
-        different cells
+--  The allocator is evaluated twice:  Succ and Pred designate
+    different cells
 ```
 
 > [!NOTE]
@@ -4331,69 +4287,71 @@ fails.
 **Examples of array aggregates with positional associations:**
 
 ```ada
-    (7, 9, 5, 1, 3, 2, 4, 8, 6, 0)
-    Table' (5, 8, 4, 1, others => 0) -- see 3.6
+(7, 9, 5, 1, 3, 2, 4, 8, 6, 0)
+Table' (5, 8, 4, 1, others => 0) -- see 3.6
 ```
 
 **Examples of array aggregates with named associations:**
 
 ```ada
-    (1 .. 5 => (1 .. 8 => 0.0)) -- two-dimensional
-    (1 .. N => new Cell) -- N new cells, in particular for N = 0
+(1..5 => (1..8 => 0.0)) -- two-dimensional
+(1..N => new Cell) -- N new cells, in particular for N = 0
 
-    Table' (2 | 4 | 10 => 1, others => 0)
-    Schedule' (Mon .. Fri => True, others => False) -- see 3.6
-    Schedule' (Wed | Sun => False, others => True)
+Table' (2 | 4 | 10 => 1, others => 0)
+Schedule' (Mon..Fri => True, others => False) -- see 3.6
+Schedule' (Wed | Sun => False, others => True)
 ```
 
 **Examples of two-dimensional array aggregates:**
 
 ```ada
-    -- Three aggregates for the same value of type Matrix (see 3.6):
+-- Three aggregates for the same value of type Matrix (see 3.6):
 
-    ((1.1, 1.2, 1.3), (2.1, 2.2, 2.3))
-    (1 => (1.1, 1.2, 1.3), 2 => (2.1, 2.2, 2.3))
-    (1 => (1 => 1.1, 2 => 1.2, 3 => 1.3), 2 => (1 => 2.1, 2 => 2.2, 3 => 2.3))
+((1.1, 1.2, 1.3), (2.1, 2.2, 2.3))
+(1 => (1.1, 1.2, 1.3), 2 => (2.1, 2.2, 2.3))
+(1 => (1 => 1.1, 2 => 1.2, 3 => 1.3), 2 => (1 => 2.1, 2 => 2.2, 3 => 2.3))
 ```
 
 **Examples of aggregates as initial values:**
 
 ```ada
-  A : Table := (7, 9, 5, 1, 3, 2, 4, 8, 6, 0); -- A (1)=7, A (10)= 8
-  B : Table := Table' (2 | 4 | 10 => 1, others => 0); -- B (1)=0, B (10)=1
-  C : constant Matrix := (1 .. 5 => (1 .. 8 => 0.0));
-                                                 -- C'First (1)=1, C'Last (2)=8
+A : Table := (7, 9, 5, 1, 3, 2, 4, 8, 6, 0); -- A (1)=7, A (10)= 8
+B : Table := Table' (2 | 4 | 10 => 1, others => 0); -- B (1)=0, B (10)=1
+C : constant Matrix := (1..5 => (1..8 => 0.0));
+                                               -- C'First (1)=1, C'Last (2)=8
 
-  D : Bit_Vector (M .. N) := (M .. N => True); -- see 3.6
-  E : Bit_Vector (M .. N) := (others => True);
-  F : String (1 .. 1) := (1 => 'F'); -- a one component aggregate: same as "F"
+D : Bit_Vector (M..N) := (M..N => True); -- see 3.6
+E : Bit_Vector (M..N) := (others => True);
+F : String (1..1) := (1 => 'F'); -- a one component aggregate: same as "F"
 ```
 
 ### 4.4 Expressions
 
 An expression is a formula that defines the computation of a value.
 
+**Syntax**
+
 ```ebnf
-    expression ::=
-         relation {and relation} | relation {and then relation}
-       | relation {or relation} | relation {or else relation}
-       | relation {xor relation}
+expression ::=
+     relation {and relation} | relation {and then relation}
+   | relation {or relation} | relation {or else relation}
+   | relation {xor relation}
 
-    relation ::=
-         simple_expression [relational_operator simple_expression]
-       | simple_expression [not] in range
-       | simple_expression [not] in type_mark
+relation ::=
+     simple_expression [relational_operator simple_expression]
+   | simple_expression [not] in range
+   | simple_expression [not] in type_mark
 
-    simple_expression ::= [unary_adding_operator]
-                          term {binary_adding_operator term}
+simple_expression ::= [unary_adding_operator]
+                      term {binary_adding_operator term}
 
-    term ::= factor {multiplying_operator factor}
+term ::= factor {multiplying_operator factor}
 
-    factor ::= primary [** primary] | abs primary | not primary
+factor ::= primary [** primary] | abs primary | not primary
 
-    primary ::=
-       numeric_literal | null | aggregate | string_literal | name | allocator
-     | function_call | type_conversion | qualified_expression | (expression)
+primary ::=
+   numeric_literal | null | aggregate | string_literal | name | allocator
+ | function_call | type_conversion | qualified_expression | (expression)
 ```
 
 Each primary has a value and a type. The only names allowed as primaries are
@@ -4411,32 +4369,32 @@ result types are given in section [4.5](#45-operators-and-expression-evaluation)
 **Examples of primaries:**
 
 ```ada
-    4.0 -- real literal
-    Pi -- named number
-    (1 .. 10 => 0) -- array aggregate
-    Sum -- variable
-    Integer'Last -- attribute
-    Sine (X) -- function call
-    Color' (Blue) -- qualified expression
-    Real (M*N) -- conversion
-    (Line_Count + 10) -- parenthesized expression
+4.0 -- real literal
+Pi -- named number
+(1..10 => 0) -- array aggregate
+Sum -- variable
+Integer'Last -- attribute
+Sine (X) -- function call
+Color' (Blue) -- qualified expression
+Real (M*N) -- conversion
+(Line_Count + 10) -- parenthesized expression
 ```
 
 **Examples of expressions:**
 
 ```ada
-    Volume -- primary
-    not Destroyed -- factor
-    2*Line_Count -- term
-    -4.0                      -- simple expression
-    -4.0 + A                  -- simple expression
-    B**2 - 4.0*A*C -- simple expression
-    Password (1 .. 3) = "BWV" -- relation
-    Count in Small_Int -- relation
-    Count not in Small_Int -- relation
-    Index = 0 or Item_Hit -- expression
-    (Cold and Sunny) or Warm -- expression (parentheses are required)
-    A**(B**C) -- expression (parentheses are required)
+Volume -- primary
+not Destroyed -- factor
+2*Line_Count -- term
+-4.0                      -- simple expression
+-4.0 + A                  -- simple expression
+B**2 - 4.0*A*C -- simple expression
+Password (1..3) = "BWV" -- relation
+Count in Small_Int -- relation
+Count not in Small_Int -- relation
+Index = 0 or Item_Hit -- expression
+(Cold and Sunny) or Warm -- expression (parentheses are required)
+A**(B**C) -- expression (parentheses are required)
 ```
 
 ### 4.5 Operators and Expression Evaluation
@@ -4446,13 +4404,15 @@ operator symbols (except /=), and only those, can be used as designators in
 declarations of functions for user-defined operators. They are given in the
 order of increasing precedence.
 
+**Syntax**
+
 ```ebnf
-    logical_operator ::= and | or | xor
-    relational_operator ::= = | /= | < | <= | > | >=
-    binary_adding_operator ::= + | - | &
-    unary_adding_operator ::= + | -
-    multiplying_operator ::= * | / | mod | rem
-    highest_precedence_operator ::= ** | abs | not
+logical_operator ::= and | or | xor
+relational_operator ::= = | /= | < | <= | > | >=
+binary_adding_operator ::= + | - | &
+unary_adding_operator ::= + | -
+multiplying_operator ::= * | / | mod | rem
+highest_precedence_operator ::= ** | abs | not
 ```
 
 The short-circuit control forms and then and or else have the same precedence as
@@ -4492,14 +4452,14 @@ explained in section [4.5.7](#457-accuracy-of-operations-with-real-operands).
 **Examples of precedence:**
 
 ```ada
-    not Sunny or Warm -- same as (not Sunny) or Warm
-    X > 4.0 and Y > 0.0 -- same as (X > 4.0) and (Y > 0.0)
+not Sunny or Warm -- same as (not Sunny) or Warm
+X > 4.0 and Y > 0.0 -- same as (X > 4.0) and (Y > 0.0)
 
-    -4.0*A**2            --  same as -(4.0 * (A**2))
-    abs (1 + A) + B -- same as (abs (1 + A)) + B
-    Y**(-3) -- parentheses are necessary
-    A / B * C -- same as (A/B)*C
-    A + (B + C) -- evaluate B + C before adding it to A
+-4.0*A**2            --  same as -(4.0 * (A**2))
+abs (1 + A) + B -- same as (abs (1 + A)) + B
+Y**(-3) -- parentheses are necessary
+A / B * C -- same as (A/B)*C
+A + (B + C) -- evaluate B + C before adding it to A
 ```
 
 #### 4.5.1 Logical Operators and Short-circuit Control Forms
@@ -4548,15 +4508,15 @@ else delivers the same result as or.
 **Examples of logical operators:**
 
 ```ada
-    Sunny or Warm
-    Filter (1 .. 10) and Filter (15 .. 24) -- see 3.6.1
+Sunny or Warm
+Filter (1..10) and Filter (15..24) -- see 3.6.1
 ```
 
 **Examples of short-circuit control forms:**
 
 ```ada
-    Next_Car.Owner /= null and then Next_Car.Owner.Age > 25 -- see 3.8.1
-    N = 0 or else A (N) = Hit_Value
+Next_Car.Owner /= null and then Next_Car.Owner.Age > 25 -- see 3.8.1
+N = 0 or else A (N) = Hit_Value
 ```
 
 #### 4.5.2 Relational Operators and Membership Tests
@@ -4632,20 +4592,20 @@ in.
 **Examples:**
 
 ```ada
-    X /= Y
+X /= Y
 
-    "" < "A" and "A" < "AA" -- True
-    "AA" < "B" and "A" < "A " -- True
+"" < "A" and "A" < "AA" -- True
+"AA" < "B" and "A" < "A " -- True
 
-    My_Car = null -- true if My_Car has been set to null
-                                  (see 3.8.1)
-    My_Car = Your_Car -- true if we both share the same car
-    My_Car.all = Your_Car.all -- true if the two cars are identical
+My_Car = null -- true if My_Car has been set to null
+                              (see 3.8.1)
+My_Car = Your_Car -- true if we both share the same car
+My_Car.all = Your_Car.all -- true if the two cars are identical
 
-    N not in 1 .. 10 -- range membership test
-    Today in Mon .. Fri -- range membership test
-    Today in Weekday -- subtype membership test (see 3.5.1)
-    Archive in Disk_Unit -- subtype membership test (see 3.7.3)
+N not in 1..10 -- range membership test
+Today in Mon..Fri -- range membership test
+Today in Weekday -- subtype membership test (see 3.5.1)
+Archive in Disk_Unit -- subtype membership test (see 3.7.3)
 ```
 
 > [!NOTE]
@@ -4696,11 +4656,11 @@ has a value that does not belong to the component subtype.
 **Examples:**
 
 ```ada
-    Z + 0.1 -- Z must be of a real type
+Z + 0.1 -- Z must be of a real type
 
-    "A" & "BCD" -- catenation of two string literals
-    'A' & "BCD" -- catenation of a character literal and a string literal
-    'A' & 'A' -- catenation of two character literals
+"A" & "BCD" -- catenation of two string literals
+'A' & "BCD" -- catenation of a character literal and a string literal
+'A' & 'A' -- catenation of two character literals
 ```
 
 #### 4.5.4 Unary Adding Operators
@@ -4778,15 +4738,15 @@ right operand is zero.
 **Examples:**
 
 ```ada
-    I : Integer := 1;
-    J : Integer := 2;
-    K : Integer := 3;
+I : Integer := 1;
+J : Integer := 2;
+K : Integer := 3;
 
-    X : Real digits 6 := 1.0; -- see 3.5.7
-    Y : Real digits 6 := 2.0;
+X : Real digits 6 := 1.0; -- see 3.5.7
+Y : Real digits 6 := 2.0;
 
-    F : Fraction delta 0.0001 := 0.1; -- see 3.5.9
-    G : Fraction delta 0.0001 := 0.1;
+F : Fraction delta 0.0001 := 0.1; -- see 3.5.9
+G : Fraction delta 0.0001 := 0.1;
 
 ```
 
@@ -4889,12 +4849,8 @@ as follows:
   operation.
 
 - The model interval of an operand whose value is obtained by implicit
-
-
-```ada
-     conversion of a universal expression is the model interval associated
-     with this value within the operand subtype.
-```
+  conversion of a universal expression is the model interval associated with
+  this value within the operand subtype.
 
 The result model interval is undefined if the absolute value of one of the above
 mathematical results exceeds the largest safe number of the result type.
@@ -4943,8 +4899,10 @@ the operand, and converts the resulting value to a specified target type.
 Explicit type conversions are allowed between closely related types as defined
 below.
 
+**Syntax**
+
 ```ebnf
-    type_conversion ::= type_mark(expression)
+type_conversion ::= type_mark(expression)
 ```
 
 The target type of a type conversion is the base type of the type mark. The type
@@ -5035,52 +4993,52 @@ without this conversion.
 **Examples of numeric type conversion:**
 
 ```ada
-    Real (2*J) -- value is converted to floating point
-    Integer (1.6) -- value is 2
-    Integer (-0.4) -- value is 0
+Real (2*J) -- value is converted to floating point
+Integer (1.6) -- value is 2
+Integer (-0.4) -- value is 0
 ```
 
 **Example of conversion between derived types:**
 
 ```ada
-    type A_Form is new B_Form;
+type A_Form is new B_Form;
 
-    X : A_Form;
-    Y : B_Form;
+X : A_Form;
+Y : B_Form;
 
-    X := A_Form (Y);
-    Y := B_Form (X); -- the reverse conversion
+X := A_Form (Y);
+Y := B_Form (X); -- the reverse conversion
 ```
 
 **Examples of conversions between array types:**
 
 ```ada
-    type Sequence is array (Integer range <>) of Integer;
-    subtype Dozen is Sequence (1 .. 12);
-    Ledger : array (1 .. 100) of Integer;
+type Sequence is array (Integer range <>) of Integer;
+subtype Dozen is Sequence (1..12);
+Ledger : array (1..100) of Integer;
 
-    Sequence (Ledger) -- bounds are those of Ledger
-    Sequence (Ledger (31 .. 42)) -- bounds are 31 and 42
-    Dozen (Ledger (31 .. 42)) -- bounds are those of Dozen
+Sequence (Ledger) -- bounds are those of Ledger
+Sequence (Ledger (31..42)) -- bounds are 31 and 42
+Dozen (Ledger (31..42)) -- bounds are those of Dozen
 ```
 
 **Examples of implicit conversions:**
 
 ```ada
-    X : Integer := 2;
+X : Integer := 2;
 
-    X + 1 + 2 -- implicit conversion of each integer literal
-    1 + 2 + X -- implicit conversion of each integer literal
-    X + (1 + 2) -- implicit conversion of each integer literal
+X + 1 + 2 -- implicit conversion of each integer literal
+1 + 2 + X -- implicit conversion of each integer literal
+X + (1 + 2) -- implicit conversion of each integer literal
 
-    2 = (1 + 1) -- no implicit conversion: the type is uni-
-                              versal_integer
-    A'Length = B'Length -- no implicit conversion: the type is uni-
-                              versal_integer
-    C : constant := 3 + 2; -- no implicit conversion: the type is uni-
-                              versal_integer
+2 = (1 + 1) -- no implicit conversion: the type is uni-
+                          versal_integer
+A'Length = B'Length -- no implicit conversion: the type is uni-
+                          versal_integer
+C : constant := 3 + 2; -- no implicit conversion: the type is uni-
+                          versal_integer
 
-    X = 3 and 1 = 2 -- implicit conversion of 3, but not of 1 and 2
+X = 3 and 1 = 2 -- implicit conversion of 3, but not of 1 and 2
 ```
 
 ### 4.7 Qualified Expressions
@@ -5088,9 +5046,11 @@ without this conversion.
 A qualified expression is used to state explicitly the type, and possibly the
 subtype, of an operand that is the given expression or aggregate.
 
+**Syntax**
+
 ```ebnf
-    qualified_expression ::=
-       type_mark'(expression) | type_mark'aggregate
+qualified_expression ::=
+   type_mark'(expression) | type_mark'aggregate
 ```
 
 The operand must have the same type as the base type of the type mark. The value
@@ -5102,19 +5062,19 @@ if this check fails.
 **Examples:**
 
 ```ada
-    type Mask is (Fix, Dec, Exp, Signif);
-    type Code is (Fix, Cla, Dec, Tnz, Sub);
+type Mask is (Fix, Dec, Exp, Signif);
+type Code is (Fix, Cla, Dec, Tnz, Sub);
 
-    Print (Mask' (Dec)); -- Dec is of type Mask
-    Print (Code' (Dec)); -- Dec is of type Code
+Print (Mask' (Dec)); -- Dec is of type Mask
+Print (Code' (Dec)); -- Dec is of type Code
 
-    for J in Code' (Fix) .. Code' (Dec) loop ... -- qualification needed for
-                                                  either Fix or Dec
-    for J in Code range Fix .. Dec loop ... -- qualification unnecessary
-    for J in Code' (Fix) .. Dec loop ... -- qualification unnecessary
-                                                  for Dec
+for J in Code' (Fix)..Code' (Dec) loop ... -- qualification needed for
+                                              either Fix or Dec
+for J in Code range Fix..Dec loop ... -- qualification unnecessary
+for J in Code' (Fix)..Dec loop ... -- qualification unnecessary
+                                              for Dec
 
-    Dozen' (1 | 3 | 5 | 7 => 2, others => 0) -- see 4.6
+Dozen' (1 | 3 | 5 | 7 => 2, others => 0) -- see 4.6
 ```
 
 > [!NOTE]
@@ -5134,9 +5094,11 @@ if this check fails.
 The evaluation of an allocator creates an object and yields an access value that
 designates the object.
 
+**Syntax**
+
 ```ebnf
-    allocator ::=
-       new subtype_indication | new qualified_expression
+allocator ::=
+   new subtype_indication | new qualified_expression
 ```
 
 The type of the object created by an allocator is the base type of the type mark
@@ -5210,20 +5172,20 @@ storage. Note also that the exception Constraint_Error can be raised by the
 evaluation of the qualified expression, by the elaboration of the subtype
 indication, or by the initialization.
 
-Examples (for access types declared in section [3.8](#38-access-types)):
+**Examples** (for access types declared in section [3.8](#38-access-types)):
 
 ```ada
- new Cell' (0, null, null) -- initialized explicitly
- new Cell' (Value => 0, Succ => null, Pred => null) -- initialized explicitly
- new Cell -- not initialized
+new Cell' (0, null, null) -- initialized explicitly
+new Cell' (Value => 0, Succ => null, Pred => null) -- initialized explicitly
+new Cell -- not initialized
 
- new Matrix (1 .. 10, 1 .. 20) -- the bounds only are given
- new Matrix' (1 .. 10 => (1 .. 20 => 0.0)) -- initialized explicitly
+new Matrix (1..10, 1..20) -- the bounds only are given
+new Matrix' (1..10 => (1..20 => 0.0)) -- initialized explicitly
 
- new Buffer (100) -- the discriminant only is given
+new Buffer (100) -- the discriminant only is given
 
- new Buffer' (Size => 80, Pos => 0, Value => (1 .. 80 => 'A'))
-                                               -- initialized explicitly
+new Buffer' (Size => 80, Pos => 0, Value => (1..80 => 'A'))
+                                              -- initialized explicitly
 ```
 
 ### 4.9 Static Expressions and Static Subtypes
@@ -5239,19 +5201,12 @@ is, it does not raise an exception):
 
 - **(a)** An enumeration literal (including a character literal).
 
-
 - **(b)** A numeric literal.
-
 
 - **(c)** A named number.
 
-
 - **(d)** A constant explicitly declared by a constant declaration with a static
-
-
-```ada
-     subtype, and initialized with a static expression.
-```
+  subtype, and initialized with a static expression.
 
 - **(e)** A function call whose function name is an operator symbol that denotes
   a predefined operator, including a function name that is an expanded name;
@@ -5264,7 +5219,6 @@ is, it does not raise an exception):
   whose operand is a static expression.
 
 - **(h)** A static expression enclosed in parentheses.
-
 
 A static range is a range whose bounds are static expressions. A static range
 constraint is a range constraint whose range is static. A static subtype is
@@ -5326,18 +5280,20 @@ System.Min_Int.
 **Examples:**
 
 ```ada
-    1 + 1 -- 2
-    abs (-10)*3 -- 30
+1 + 1 -- 2
+abs (-10)*3 -- 30
 
-    Kilo : constant := 1000;
-    Mega : constant := Kilo*Kilo; -- 1_000_000
-    Long : constant := Float'Digits*2;
+Kilo : constant := 1000;
+Mega : constant := Kilo*Kilo; -- 1_000_000
+Long : constant := Float'Digits*2;
 
-    Half_Pi : constant := Pi/2; -- see 3.2.2
-    Deg_To_Rad : constant := Half_Pi/90;
-    Rad_To_Deg : constant := 1.0/Deg_To_Rad; -- equivalent to
-                                                1.0/((3.14159_26536/2)/90)
+Half_Pi : constant := Pi/2; -- see 3.2.2
+Deg_To_Rad : constant := Half_Pi/90;
+Rad_To_Deg : constant := 1.0/Deg_To_Rad; -- equivalent to
+                                            1.0/((3.14159_26536/2)/90)
 ```
+
+---
 
 ## 5. Statements
 
@@ -5357,27 +5313,29 @@ A statement is either simple or compound. A simple statement encloses no other
 statement. A compound statement can enclose simple statements and other compound
 statements.
 
+**Syntax**
+
 ```ebnf
-    sequence_of_statements ::= statement {statement}
+sequence_of_statements ::= statement {statement}
 
-    statement ::=
-       {label} simple_statement | {label} compound_statement
+statement ::=
+   {label} simple_statement | {label} compound_statement
 
-    simple_statement ::= null_statement
-       | assignment_statement | procedure_call_statement
-       | exit_statement | return_statement
-       | goto_statement | entry_call_statement
-       | delay_statement | abort_statement
-       | raise_statement | code_statement
+simple_statement ::= null_statement
+   | assignment_statement | procedure_call_statement
+   | exit_statement | return_statement
+   | goto_statement | entry_call_statement
+   | delay_statement | abort_statement
+   | raise_statement | code_statement
 
-    compound_statement ::=
-         if_statement | case_statement
-       | loop_statement | block_statement
-       | accept_statement | select_statement
+compound_statement ::=
+     if_statement | case_statement
+   | loop_statement | block_statement
+   | accept_statement | select_statement
 
-    label ::= <<label_simple_name>>
+label ::= <<label_simple_name>>
 
-    null_statement ::= null;
+null_statement ::= null;
 ```
 
 A statement is said to be labeled by the label name of any label of the
@@ -5409,9 +5367,9 @@ an abort statement.
 **Examples of labeled statements:**
 
 ```ada
-    <<Here>> <<Ici>> <<Aqui>> <<Hier>> null;
+<<Here>> <<Ici>> <<Aqui>> <<Hier>> null;
 
-    <<After>> X := 1;
+<<After>> X := 1;
 ```
 
 > [!NOTE]
@@ -5430,9 +5388,11 @@ An assignment statement replaces the current value of a variable with a new
 value specified by an expression. The named variable and the right-hand side
 expression must be of the same type; this type must not be a limited type.
 
+**Syntax**
+
 ```ebnf
-    assignment_statement ::=
-       variable_name := expression;
+assignment_statement ::=
+   variable_name := expression;
 ```
 
 For the execution of an assignment statement, the variable name and the
@@ -5451,29 +5411,27 @@ of any of these discriminants is changed by this execution.
 **Examples:**
 
 ```ada
-    Value := Max_Value - 1;
-    Shade := Blue;
+Value := Max_Value - 1;
+Shade := Blue;
 
-    Next_Frame (F)(M, N) := 2.5; -- see 4.1.1
-    U := Dot_Product (V, W); -- see 6.5
+Next_Frame (F)(M, N) := 2.5; -- see 4.1.1
+U := Dot_Product (V, W); -- see 6.5
 
-    Writer := (Status => Open, Unit => Printer, Line_Count => 60); -- see 3.7.3
-    Next_Car.all := (72074, null); -- see 3.8.1
+Writer := (Status => Open, Unit => Printer, Line_Count => 60); -- see 3.7.3
+Next_Car.all := (72074, null); -- see 3.8.1
 ```
 
 **Examples of constraint checks:**
 
 ```ada
-    I, J : Integer range 1 .. 10;
-    K : Integer range 1 .. 20;
-```
+I, J : Integer range 1..10;
+K : Integer range 1..20;
 
-```ada
-     ...
+ ...
 
-    I := J; -- identical ranges
-    K := J; -- compatible ranges
-    J := K; -- will raise the exception Constraint_Error if K > 10
+I := J; -- identical ranges
+K := J; -- compatible ranges
+J := K; -- will raise the exception Constraint_Error if K > 10
 ```
 
 > [!NOTE]
@@ -5511,14 +5469,14 @@ component of the array variable is left unchanged.
 **Examples:**
 
 ```ada
-    A : String (1 .. 31);
-    B : String (3 .. 33);
-     ...
+A : String (1..31);
+B : String (3..33);
+ ...
 
-    A := B; -- same number of components
+A := B; -- same number of components
 
-    A (1 .. 9) := "tar sauce";
-    A (4 .. 12) := A (1 .. 9); -- A (1 .. 12) = "tartar sauce"
+A (1..9) := "tar sauce";
+A (4..12) := A (1..9); -- A (1 .. 12) = "tartar sauce"
 ```
 
 > [!NOTE]
@@ -5537,17 +5495,19 @@ An if statement selects for execution one or none of the enclosed sequences of
 statements, depending on the (truth) value of one or more corresponding
 conditions.
 
-```ebnf
-    if_statement ::=
-        if condition then
-          sequence_of_statements
-       {elsif condition then
-          sequence_of_statements}
-       [else
-          sequence_of_statements]
-        end if;
+**Syntax**
 
-    condition ::= boolean_expression
+```ebnf
+if_statement ::=
+    if condition then
+      sequence_of_statements
+   {elsif condition then
+      sequence_of_statements}
+   [else
+      sequence_of_statements]
+    end if;
+
+condition ::= boolean_expression
 ```
 
 An expression specifying a condition must be of a boolean type.
@@ -5562,24 +5522,24 @@ sequences of statements is executed.
 **Examples:**
 
 ```ada
-    if Month = December and Day = 31 then
-       Month := January;
-       Day := 1;
-       Year := Year + 1;
-    end if;
+if Month = December and Day = 31 then
+   Month := January;
+   Day := 1;
+   Year := Year + 1;
+end if;
 
-    if Line_Too_Short then
-       raise Layout_Error;
-    elsif Line_Full then
-       New_Line;
-       Put (Item);
-    else
-       Put (Item);
-    end if;
+if Line_Too_Short then
+   raise Layout_Error;
+elsif Line_Full then
+   New_Line;
+   Put (Item);
+else
+   Put (Item);
+end if;
 
-    if My_Car.Owner.Vehicle /= My_Car then -- see 3.8
-       Report ("Incorrect data");
-    end if;
+if My_Car.Owner.Vehicle /= My_Car then -- see 3.8
+   Report ("Incorrect data");
+end if;
 ```
 
 ### 5.4 Case Statements
@@ -5587,16 +5547,18 @@ sequences of statements is executed.
 A case statement selects for execution one of a number of alternative sequences
 of statements; the chosen alternative is defined by the value of an expression.
 
-```ebnf
-    case_statement ::=
-       case expression is
-           case_statement_alternative
-          {case_statement_alternative}
-       end case;
+**Syntax**
 
-    case_statement_alternative ::=
-       when choice {| choice } =>
-          sequence_of_statements
+```ebnf
+case_statement ::=
+   case expression is
+       case_statement_alternative
+      {case_statement_alternative}
+   end case;
+
+case_statement_alternative ::=
+   when choice {| choice } =>
+      sequence_of_statements
 ```
 
 The expression must be of a discrete type which must be determinable
@@ -5628,28 +5590,28 @@ followed by the execution of the chosen sequence of statements.
 **Examples:**
 
 ```ada
-    case Sensor is
-       when Elevation => Record_Elevation (Sensor_Value);
-       when Azimuth => Record_Azimuth (Sensor_Value);
-       when Distance => Record_Distance (Sensor_Value);
-       when others => null;
-    end case;
+case Sensor is
+   when Elevation => Record_Elevation (Sensor_Value);
+   when Azimuth => Record_Azimuth (Sensor_Value);
+   when Distance => Record_Distance (Sensor_Value);
+   when others => null;
+end case;
 
-    case Today is
-       when Mon => Compute_Initial_Balance;
-       when Fri => Compute_Closing_Balance;
-       when Tue .. Thu => Generate_Report (Today);
-       when Sat .. Sun => null;
-    end case;
+case Today is
+   when Mon => Compute_Initial_Balance;
+   when Fri => Compute_Closing_Balance;
+   when Tue..Thu => Generate_Report (Today);
+   when Sat..Sun => null;
+end case;
 
-    case Bin_Number (Count) is
-       when 1 => Update_Bin (1);
-       when 2 => Update_Bin (2);
-       when 3 | 4 =>
-          Empty_Bin (1);
-          Empty_Bin (2);
-       when others => raise Error;
-    end case;
+case Bin_Number (Count) is
+   when 1 => Update_Bin (1);
+   when 2 => Update_Bin (2);
+   when 3 | 4 =>
+      Empty_Bin (1);
+      Empty_Bin (2);
+   when others => raise Error;
+end case;
 ```
 
 > [!NOTE]
@@ -5668,18 +5630,20 @@ followed by the execution of the chosen sequence of statements.
 A loop statement includes a sequence of statements that is to be executed
 repeatedly, zero or more times.
 
+**Syntax**
+
 ```ebnf
-    loop_statement ::=
-       [loop_simple_name:]
-          [iteration_scheme] loop
-             sequence_of_statements
-           end loop [loop_simple_name];
+loop_statement ::=
+   [loop_simple_name:]
+      [iteration_scheme] loop
+         sequence_of_statements
+       end loop [loop_simple_name];
 
-    iteration_scheme ::= while condition
-       | for loop_parameter_specification
+iteration_scheme ::= while condition
+   | for loop_parameter_specification
 
-    loop_parameter_specification ::=
-       identifier in [reverse] discrete_range
+loop_parameter_specification ::=
+   identifier in [reverse] discrete_range
 ```
 
 If a loop statement has a loop simple name, this simple name must be given both
@@ -5720,39 +5684,39 @@ assigned in decreasing order.
 **Example of a loop statement without an iteration scheme:**
 
 ```ada
-    loop
-       Get (Current_Character);
-       exit when Current_Character = '*';
-    end loop;
+loop
+   Get (Current_Character);
+   exit when Current_Character = '*';
+end loop;
 ```
 
 **Example of a loop statement with a while iteration scheme:**
 
 ```ada
-    while Bid (N).Price < Cut_Off.Price loop
-       Record_Bid (Bid (N).Price);
-       N := N + 1;
-    end loop;
+while Bid (N).Price < Cut_Off.Price loop
+   Record_Bid (Bid (N).Price);
+   N := N + 1;
+end loop;
 ```
 
 **Example of a loop statement with a for iteration scheme:**
 
 ```ada
-    for J in Buffer'Range loop -- legal even with a null range
-       if Buffer (J) /= Space then
-          Put (Buffer (J));
-       end if;
-    end loop;
+for J in Buffer'Range loop -- legal even with a null range
+   if Buffer (J) /= Space then
+      Put (Buffer (J));
+   end if;
+end loop;
 ```
 
 **Example of a loop statement with a loop simple name:**
 
 ```ada
-    Summation:
-       while Next /= Head loop -- see 3.8
-          Sum := Sum + Next.Value;
-          Next := Next.Succ;
-       end loop;
+Summation:
+   while Next /= Head loop -- see 3.8
+      Sum := Sum + Next.Value;
+      Next := Next.Succ;
+   end loop;
 ```
 
 > [!NOTE]
@@ -5777,17 +5741,19 @@ assigned in decreasing order.
 A block statement encloses a sequence of statements optionally preceded by a
 declarative part and optionally followed by exception handlers.
 
+**Syntax**
+
 ```ebnf
-    block_statement ::=
-       [block_simple_name:]
-          [declare
-               declarative_part]
-           begin
-               sequence_of_statements
-          [exception
-               exception_handler
-              {exception_handler}]
-           end [block_simple_name];
+block_statement ::=
+   [block_simple_name:]
+      [declare
+           declarative_part]
+       begin
+           sequence_of_statements
+      [exception
+           exception_handler
+          {exception_handler}]
+       end [block_simple_name];
 ```
 
 If a block statement has a block simple name, this simple name must be given
@@ -5802,12 +5768,12 @@ statements (see [11.2](#112-exception-handlers)).
 **Example:**
 
 ```ada
-    Swap:
-       declare
-          Temp : Integer;
-       begin
-          Temp := V; V := U; U := Temp;
-       end;
+Swap:
+   declare
+      Temp : Integer;
+   begin
+      Temp := V; V := U; U := Temp;
+   end;
 ```
 
 > [!NOTE]
@@ -5825,9 +5791,11 @@ An exit statement is used to complete the execution of an enclosing loop
 statement (called the loop in what follows); the completion is conditional if
 the exit statement includes a condition.
 
+**Syntax**
+
 ```ebnf
-    exit_statement ::=
-       exit [loop_name] [when condition];
+exit_statement ::=
+   exit [loop_name] [when condition];
 ```
 
 An exit statement with a loop name is only allowed within the named loop, and
@@ -5844,18 +5812,18 @@ is no condition.
 **Examples:**
 
 ```ada
-    for N in 1 .. Max_Num_Items loop
-       Get_New_Item (New_Item);
-       Merge_Item (New_Item, Storage_File);
-       exit when New_Item = Terminal_Item;
-    end loop;
+for N in 1..Max_Num_Items loop
+   Get_New_Item (New_Item);
+   Merge_Item (New_Item, Storage_File);
+   exit when New_Item = Terminal_Item;
+end loop;
 
-    Main_Cycle:
-       loop
-          --  initial statements
-          exit Main_Cycle when Found;
-          --  final statements
-       end loop;
+Main_Cycle:
+   loop
+      --  initial statements
+      exit Main_Cycle when Found;
+      --  final statements
+   end loop;
 ```
 
 > [!NOTE]
@@ -5868,7 +5836,7 @@ A return statement is used to complete the execution of the innermost enclosing
 function, procedure, or accept statement.
 
 ```ada
-    return_statement ::= return [expression];
+return_statement ::= return [expression];
 ```
 
 A return statement is only allowed within the body of a subprogram or generic
@@ -5897,8 +5865,8 @@ check fails.
 **Examples:**
 
 ```ada
-    return; -- in a procedure
-    return Key_Value (Last_Index); -- in a function
+return; -- in a procedure
+return Key_Value (Last_Index); -- in a function
 ```
 
 > [!NOTE]
@@ -5912,7 +5880,7 @@ A goto statement specifies an explicit transfer of control from this statement
 to a target statement named by a label.
 
 ```ada
-    goto_statement ::= goto label_name;
+goto_statement ::= goto label_name;
 ```
 
 The innermost sequence of statements that encloses the target statement must
@@ -5936,15 +5904,17 @@ statement.
 **Example:**
 
 ```ada
-    <<Compare>>
-       if A (I) < Element then
-          if Left (I) /= 0 then
-             I := Left (I);
-             goto Compare;
-          end if;
-          --  some statements
-       end if;
+<<Compare>>
+   if A (I) < Element then
+      if Left (I) /= 0 then
+         I := Left (I);
+         goto Compare;
+      end if;
+      --  some statements
+   end if;
 ```
+
+---
 
 ## 6. Subprograms
 
@@ -5962,26 +5932,26 @@ defining its calling conventions, and a subprogram body defining its execution.
 A subprogram declaration declares a procedure or a function, as indicated by the
 initial reserved word.
 
-```ebnf
-    subprogram_declaration ::= subprogram_specification;
-
-    subprogram_specification ::=
-         procedure identifier [formal_part]
-       | function designator [formal_part] return type_mark
-
-    designator ::= identifier | operator_symbol
-
-    operator_symbol ::= string_literal
-
-    formal_part ::=
-       (parameter_specification {; parameter_specification})
-
-    parameter_specification ::=
-       identifier_list : mode type_mark [:= expression]
-```
+**Syntax**
 
 ```ebnf
-    mode ::= [in] | in out | out
+subprogram_declaration ::= subprogram_specification;
+
+subprogram_specification ::=
+     procedure identifier [formal_part]
+   | function designator [formal_part] return type_mark
+
+designator ::= identifier | operator_symbol
+
+operator_symbol ::= string_literal
+
+formal_part ::=
+   (parameter_specification {; parameter_specification})
+
+parameter_specification ::=
+   identifier_list : mode type_mark [:= expression]
+
+mode ::= [in] | in out | out
 ```
 
 The specification of a procedure specifies its identifier and its formal
@@ -6012,29 +5982,27 @@ part. The elaboration of a formal part has no other effect.
 **Examples of subprogram declarations:**
 
 ```ada
-    procedure Traverse_Tree;
-    procedure Increment (X : in out Integer);
-    procedure Right_Indent (Margin : out Line_Size); -- see 3.5.4
-    procedure Switch (From, To : in out Link); -- see 3.8.1
+procedure Traverse_Tree;
+procedure Increment (X : in out Integer);
+procedure Right_Indent (Margin : out Line_Size); -- see 3.5.4
+procedure Switch (From, To : in out Link); -- see 3.8.1
 
-    function Random return Probability; -- see 3.5.7
+function Random return Probability; -- see 3.5.7
 
-    function Min_Cell (X : Link) return Cell; -- see 3.8.1
-    function Next_Frame (K : Positive) return Frame; -- see 3.8
-    function Dot_Product (Left,Right: Vector) return Real; -- see 3.6
+function Min_Cell (X : Link) return Cell; -- see 3.8.1
+function Next_Frame (K : Positive) return Frame; -- see 3.8
+function Dot_Product (Left,Right: Vector) return Real; -- see 3.6
 
-    function "*"(Left,Right : Matrix) return Matrix; -- see 3.6
+function "*"(Left,Right : Matrix) return Matrix; -- see 3.6
 ```
 
 **Examples of in parameters with default expressions:**
 
 ```ada
- procedure Print_Header (Pages : in Natural;
-```
+procedure Print_Header (Pages : in Natural;
 
-```ada
-                Header : in Line := (1 .. Line'Last => ' '); -- see 3.6
-                Center : in Boolean := True);
+               Header : in Line := (1..Line'Last => ' '); -- see 3.6
+               Center : in Boolean := True);
 ```
 
 > [!NOTE]
@@ -6138,16 +6106,18 @@ type of the subcomponent is a scalar type or an access type.
 
 A subprogram body specifies the execution of a subprogram.
 
+**Syntax**
+
 ```ebnf
-    subprogram_body ::=
-        subprogram_specification is
-           [declarative_part]
-        begin
-            sequence_of_statements
-       [exception
-            exception_handler
-           {exception_handler}]
-        end [designator];
+subprogram_body ::=
+    subprogram_specification is
+       [declarative_part]
+    begin
+        sequence_of_statements
+   [exception
+        exception_handler
+       {exception_handler}]
+    end [designator];
 ```
 
 The declaration of a subprogram is optional. In the absence of such a
@@ -6186,15 +6156,15 @@ sequence of statements of the subprogram body (see [11.4](#114-exception-handlin
 **Example of subprogram body:**
 
 ```ada
-    procedure Push (E : in Element_Type; S : in out Stack) is
-    begin
-       if S.Index = S.Size then
-          raise Stack_Overflow;
-       else
-          S.Index := S.Index + 1;
-          S.Space (S.Index) := E;
-       end if;
-    end;
+procedure Push (E : in Element_Type; S : in out Stack) is
+begin
+   if S.Index = S.Size then
+      raise Stack_Overflow;
+   else
+      S.Index := S.Index + 1;
+      S.Space (S.Index) := E;
+   end if;
+end;
 ```
 
 #### 6.3.1 Conformance Rules
@@ -6243,7 +6213,7 @@ body is desired for every call of each of the named subprograms. The form of
 this pragma is as follows:
 
 ```ada
-    pragma Inline (name {, name});
+pragma Inline (name {, name});
 ```
 
 Each name is either the name of a subprogram or the name of a generic
@@ -6272,23 +6242,25 @@ invokes the execution of the corresponding subprogram body. The call specifies
 the association of the actual parameters, if any, with formal parameters of the
 subprogram.
 
+**Syntax**
+
 ```ebnf
-    procedure_call_statement ::=
-        procedure_name [actual_parameter_part];
+procedure_call_statement ::=
+    procedure_name [actual_parameter_part];
 
-    function_call ::=
-        function_name [actual_parameter_part]
+function_call ::=
+    function_name [actual_parameter_part]
 
-    actual_parameter_part ::=
-        (parameter_association {, parameter_association})
+actual_parameter_part ::=
+    (parameter_association {, parameter_association})
 
-    parameter_association ::=
-       [formal_parameter =>] actual_parameter
+parameter_association ::=
+   [formal_parameter =>] actual_parameter
 
-    formal_parameter ::= parameter_simple_name
+formal_parameter ::= parameter_simple_name
 
-    actual_parameter ::=
-       expression | variable_name | type_mark(variable_name)
+actual_parameter ::=
+   expression | variable_name | type_mark(variable_name)
 ```
 
 Each parameter association associates an actual parameter with a corresponding
@@ -6315,20 +6287,20 @@ corresponding actual parameters (when this is done).
 **Examples of procedure calls:**
 
 ```ada
-  Traverse_Tree; -- see 6.1
-  Table_Manager.Insert (E); -- see 7.5
-  Print_Header (128, Title, True); -- see 6.1
+Traverse_Tree; -- see 6.1
+Table_Manager.Insert (E); -- see 7.5
+Print_Header (128, Title, True); -- see 6.1
 
-  Switch (From => X, To => Next); -- see 6.1
-  Print_Header (128, Header => Title, Center => True -- see 6.1
-  Print_Header (Header => Title, Center => True, Pages => 128); -- see 6.1
+Switch (From => X, To => Next); -- see 6.1
+Print_Header (128, Header => Title, Center => True -- see 6.1
+Print_Header (Header => Title, Center => True, Pages => 128); -- see 6.1
 ```
 
 **Examples of function calls:**
 
 ```ada
-    Dot_Product (U, V) -- see 6.1 and 6.5
-    Clock -- see 9.6
+Dot_Product (U, V) -- see 6.1 and 6.5
+Clock -- see 9.6
 ```
 
 #### 6.4.1 Parameter Associations
@@ -6403,24 +6375,24 @@ before the call and the resulting value is used as an implicit actual parameter.
 **Examples of procedures with default values:**
 
 ```ada
-    procedure Activate (Process : in Process_Name;
-                       After : in Process_Name := No_Process;
-                       Wait : in Duration := 0.0;
-                       Prior : in Boolean := False);
+procedure Activate (Process : in Process_Name;
+                   After : in Process_Name := No_Process;
+                   Wait : in Duration := 0.0;
+                   Prior : in Boolean := False);
 
-    procedure Pair (Left, Right : Person_Name := new Person);
+procedure Pair (Left, Right : Person_Name := new Person);
 ```
 
 **Examples of their calls:**
 
 ```ada
-    Activate (X);
-    Activate (X, After => Y);
-    Activate (X, Wait => 60.0, Prior => True);
-    Activate (X, Y, 10.0, False);
+Activate (X);
+Activate (X, After => Y);
+Activate (X, Wait => 60.0, Prior => True);
+Activate (X, Y, 10.0, False);
 
-    Pair;
-    Pair (Left => new Person, Right => new Person);
+Pair;
+Pair (Left => new Person, Right => new Person);
 ```
 
 > [!NOTE]
@@ -6445,15 +6417,15 @@ abandoned as a result of an exception.
 **Example:**
 
 ```ada
-    function Dot_Product (Left, Right : Vector) return Real is
-       Sum : Real := 0.0;
-    begin
-       Check (Left'First = Right'First and Left'Last = Right'Last);
-       for J in Left'Range loop
-          Sum := Sum + Left (J)*Right (J);
-       end loop;
-       return Sum;
-    end;
+function Dot_Product (Left, Right : Vector) return Real is
+   Sum : Real := 0.0;
+begin
+   Check (Left'First = Right'First and Left'Last = Right'Last);
+   for J in Left'Range loop
+      Sum := Sum + Left (J)*Right (J);
+   end loop;
+   return Sum;
+end;
 ```
 
 ### 6.6 Parameter and Result Type Profile - Overloading of Subprograms
@@ -6482,25 +6454,25 @@ to determine exactly one (overloaded) subprogram specification.
 **Examples of overloaded subprograms:**
 
 ```ada
-    procedure Put (X : Integer);
-    procedure Put (X : String);
+procedure Put (X : Integer);
+procedure Put (X : String);
 
-    procedure Set (Tint : Color);
-    procedure Set (Signal : Light);
+procedure Set (Tint : Color);
+procedure Set (Signal : Light);
 ```
 
 **Examples of calls:**
 
 ```ada
-    Put (28);
-    Put ("no possible ambiguity here");
+Put (28);
+Put ("no possible ambiguity here");
 
-    Set (Tint => Red);
-    Set (Signal => Red);
-    Set (Color' (Red));
+Set (Tint => Red);
+Set (Signal => Red);
+Set (Color' (Red));
 
-    --  Set (Red) would be ambiguous since Red may
-    --  denote a value either of type Color or of type Light
+--  Set (Red) would be ambiguous since Red may
+--  denote a value either of type Color or of type Light
 ```
 
 > [!NOTE]
@@ -6556,17 +6528,19 @@ can be used when equality is visible by selection but not directly visible.)
 **Examples:**
 
 ```ada
-    function "+" (Left, Right : Matrix) return Matrix;
-    function "+" (Left, Right : Vector) return Vector;
+function "+" (Left, Right : Matrix) return Matrix;
+function "+" (Left, Right : Vector) return Vector;
 
-    --  assuming that A, B, and C are of the type Vector
-    --  the three following assignments are equivalent
+--  assuming that A, B, and C are of the type Vector
+--  the three following assignments are equivalent
 
-    A := B + C;
+A := B + C;
 
-    A := "+"(B, C);
-    A := "+"(Left => B, Right => C);
+A := "+"(B, C);
+A := "+"(Left => B, Right => C);
 ```
+
+---
 
 ## 7. Packages
 
@@ -6585,25 +6559,27 @@ A package is generally provided in two parts: a package specification and a
 package body. Every package has a package specification, but not all packages
 have a package body.
 
+**Syntax**
+
 ```ebnf
-    package_declaration ::= package_specification;
+package_declaration ::= package_specification;
 
-    package_specification ::=
-        package identifier is
-          {basic_declarative_item}
-       [private
-          {basic_declarative_item}]
-        end [package_simple_name]
+package_specification ::=
+    package identifier is
+      {basic_declarative_item}
+   [private
+      {basic_declarative_item}]
+    end [package_simple_name]
 
-    package_body ::=
-        package body package_simple_name is
-           [declarative_part]
-       [begin
-            sequence_of_statements
-       [exception
-            exception_handler
-           {exception_handler}]]
-        end [package_simple_name];
+package_body ::=
+    package body package_simple_name is
+       [declarative_part]
+   [begin
+        sequence_of_statements
+   [exception
+        exception_handler
+       {exception_handler}]]
+    end [package_simple_name];
 ```
 
 The simple name at the start of a package body must repeat the package
@@ -6654,38 +6630,32 @@ basic declarative items in the given order.
 **Example of a package describing a group of common variables:**
 
 ```ada
-    package Plotting_Data is
-       Pen_Up : Boolean;
+package Plotting_Data is
+   Pen_Up : Boolean;
 
-       Conversion_Factor,
-       X_Offset, Y_Offset,
-       X_Min, Y_Min,
-       X_Max, Y_Max: Real; -- see 3.5.7
+   Conversion_Factor,
+   X_Offset, Y_Offset,
+   X_Min, Y_Min,
+   X_Max, Y_Max: Real; -- see 3.5.7
 
-       X_Value : array (1 .. 500) of Real;
-       Y_Value : array (1 .. 500) of Real;
-    end;
+   X_Value : array (1..500) of Real;
+   Y_Value : array (1..500) of Real;
+end;
 ```
 
 **Example of a package describing a common pool of objects and types:**
 
 ```ada
-    package Work_Data is
-```
-```ada
-       type Day is (Mon, Tue, Wed, Thu, Fri, Sat, Sun);
-       type Hours_Spent is delta 0.25 range 0.0 .. 24.0;
-       type Time_Table is array (Day) of Hours_Spent;
+package Work_Data is
+   type Day is (Mon, Tue, Wed, Thu, Fri, Sat, Sun);
+   type Hours_Spent is delta 0.25 range 0.0..24.0;
+   type Time_Table is array (Day) of Hours_Spent;
 
-       Work_Hours : Time_Table;
-```
+   Work_Hours : Time_Table;
 
-```ada
-       Normal_Hours : constant Time_Table :=
-                         (Mon .. Thu => 8.25, Fri => 7.0, Sat | Sun => 0.0);
-```
-```ada
-    end;
+   Normal_Hours : constant Time_Table :=
+                     (Mon..Thu => 8.25, Fri => 7.0, Sat | Sun => 0.0);
+end;
 ```
 
 ### 7.3 Package Bodies
@@ -6718,57 +6688,57 @@ execution of the sequence of statements of the package body.
 **Example of a package:**
 
 ```ada
-    package Rational_Numbers is
+package Rational_Numbers is
 
-       type Rational is
-          record
-             Numerator : Integer;
-             Denominator : Positive;
-          end record;
+   type Rational is
+      record
+         Numerator : Integer;
+         Denominator : Positive;
+      end record;
 
-       function Equal (X,Y : Rational) return Boolean;
+   function Equal (X,Y : Rational) return Boolean;
 
-       function "/" (X,Y : Integer) return Rational; -- to construct a
-                                                             rational number
-       function "+" (X,Y : Rational) return Rational;
-       function "-" (X,Y : Rational) return Rational;
-       function "*" (X,Y : Rational) return Rational;
-       function "/" (X,Y : Rational) return Rational;
-    end;
+   function "/" (X,Y : Integer) return Rational; -- to construct a
+                                                         rational number
+   function "+" (X,Y : Rational) return Rational;
+   function "-" (X,Y : Rational) return Rational;
+   function "*" (X,Y : Rational) return Rational;
+   function "/" (X,Y : Rational) return Rational;
+end;
 
-    package body Rational_Numbers is
+package body Rational_Numbers is
 
-       procedure Same_Denominator (X,Y : in out Rational) is
-       begin
-          --  reduces X and Y to the same denominator:
-          ...
-       end;
+   procedure Same_Denominator (X,Y : in out Rational) is
+   begin
+      --  reduces X and Y to the same denominator:
+      ...
+   end;
 
-       function Equal (X,Y : Rational) return Boolean is
-          U,V : Rational;
-       begin
-          U := X;
-          V := Y;
-          Same_Denominator (U,V);
-          return U.Numerator = V.Numerator;
-       end;
+   function Equal (X,Y : Rational) return Boolean is
+      U,V : Rational;
+   begin
+      U := X;
+      V := Y;
+      Same_Denominator (U,V);
+      return U.Numerator = V.Numerator;
+   end;
 
-       function "/" (X,Y : Integer) return Rational is
-       begin
-          if Y > 0 then
-             return (Numerator => X, Denominator => Y);
-          else
-             return (Numerator => -X, Denominator => -Y);
-          end if;
-       end "/";
+   function "/" (X,Y : Integer) return Rational is
+   begin
+      if Y > 0 then
+         return (Numerator => X, Denominator => Y);
+      else
+         return (Numerator => -X, Denominator => -Y);
+      end if;
+   end "/";
 
-       function "+" (X,Y : Rational) return Rational is ... end "+";
-       function "-" (X,Y : Rational) return Rational is ... end "-";
+   function "+" (X,Y : Rational) return Rational is ... end "+";
+   function "-" (X,Y : Rational) return Rational is ... end "-";
 
-       function "*" (X,Y : Rational) return Rational is ... end "*";
-       function "/" (X,Y : Rational) return Rational is ... end "/";
+   function "*" (X,Y : Rational) return Rational is ... end "*";
+   function "/" (X,Y : Rational) return Rational is ... end "/";
 
-    end;
+end;
 ```
 
 ### 7.4 Private Type and Deferred Constant Declarations
@@ -6779,12 +6749,14 @@ program units (that is, the logical properties) from other characteristics whose
 direct use is confined to the package (the details of the definition of the type
 itself). Deferred constant declarations declare constants of private types.
 
-```ebnf
-    private_type_declaration ::=
-       type identifier [discriminant_part] is [limited] private;
+**Syntax**
 
-    deferred_constant_declaration ::=
-       identifier_list : constant type_mark;
+```ebnf
+private_type_declaration ::=
+   type identifier [discriminant_part] is [limited] private;
+
+deferred_constant_declaration ::=
+   identifier_list : constant type_mark;
 ```
 
 A private type declaration is only allowed as a declarative item of the visible
@@ -6801,14 +6773,14 @@ as explained in section [3.2](#32-objects-and-named-numbers).
 **Examples of private type declarations:**
 
 ```ada
-    type Key is private;
-    type File_Name is limited private;
+type Key is private;
+type File_Name is limited private;
 ```
 
 **Example of deferred constant declaration:**
 
 ```ada
-    Null_Key : constant Key;
+Null_Key : constant Key;
 ```
 
 #### 7.4.1 Private Types
@@ -6875,7 +6847,6 @@ type, the basic operations include the attribute A'Constrained if the private
 type has discriminants (see [3.7.4](#374-operations-of-record-types)), and in any case, the attributes
 - **`A'Size`** — and A'Address (see [13.7.2](#1372-representation-attributes)).
 
-
 Finally, the operations implicitly declared by a private type declaration
 include the predefined comparison for equality and inequality unless the
 reserved word limited appears in the private type declaration.
@@ -6941,32 +6912,32 @@ For every private type or subtype T the following attribute is defined:
 **Example:**
 
 ```ada
-    package Key_Manager is
-       type Key is private;
-       Null_Key : constant Key;
-       procedure Get_Key (K : out Key);
-       function "<" (X, Y : Key) return Boolean;
-    private
-       type Key is new Natural;
-       Null_Key : constant Key := 0;
-    end;
+package Key_Manager is
+   type Key is private;
+   Null_Key : constant Key;
+   procedure Get_Key (K : out Key);
+   function "<" (X, Y : Key) return Boolean;
+private
+   type Key is new Natural;
+   Null_Key : constant Key := 0;
+end;
 
-    package body Key_Manager is
-       Last_Key : Key := 0;
-       procedure Get_Key (K : out Key) is
-       begin
-          Last_Key := Last_Key + 1;
-          K := Last_Key;
-       end;
+package body Key_Manager is
+   Last_Key : Key := 0;
+   procedure Get_Key (K : out Key) is
+   begin
+      Last_Key := Last_Key + 1;
+      K := Last_Key;
+   end;
 
-       function "<" (X, Y : Key) return Boolean is
-       begin
-          return Integer (X) < Integer (Y);
-       end "<";
-    end;
+   function "<" (X, Y : Key) return Boolean is
+   begin
+      return Integer (X) < Integer (Y);
+   end "<";
+end;
 ```
 
-Notes on the example:
+**Note on the example**
 
 Outside of the package Key_Manager, the operations available for objects of type
 Key include assignment, the comparison for equality or inequality, the procedure
@@ -7041,18 +7012,13 @@ The following are consequences of the rules for limited types:
 - An explicit initialization is not allowed in an object declaration if the type
   of the object is limited.
 
-- A default expression is not allowed in a component declaration if the
-
-
-```ada
-     type of the record component is limited.
-```
+- A default expression is not allowed in a component declaration if the type of
+  the record component is limited.
 
 - An explicit initial value is not allowed in an allocator if the designated
   type is limited.
 
 - A generic formal parameter of mode in must not be of a limited type.
-
 
 > [!NOTE]
 > The above rules do not exclude a default expression for a formal parameter of a
@@ -7066,35 +7032,35 @@ The following are consequences of the rules for limited types:
 **Example:**
 
 ```ada
-    package I_O_Package is
-       type File_Name is limited private;
+package I_O_Package is
+   type File_Name is limited private;
 
-       procedure Open (F : in out File_Name);
-       procedure Close (F : in out File_Name);
-       procedure Read (F : in File_Name; Item : out Integer);
-       procedure Write (F : in File_Name; Item : in Integer);
-    private
-       type File_Name is
-          record
-             Internal_Name : Integer := 0;
-          end record;
-    end;
+   procedure Open (F : in out File_Name);
+   procedure Close (F : in out File_Name);
+   procedure Read (F : in File_Name; Item : out Integer);
+   procedure Write (F : in File_Name; Item : in Integer);
+private
+   type File_Name is
+      record
+         Internal_Name : Integer := 0;
+      end record;
+end;
 
-    package body I_O_Package is
-       Limit : constant := 200;
-       type File_Descriptor is record ... end record;
-       Directory : array (1 .. Limit) of File_Descriptor;
-       ...
-       procedure Open (F : in out File_Name) is ... end;
-       procedure Close (F : in out File_Name) is ... end;
-       procedure Read (F : in File_Name; Item : out Integer) is ... end;
-       procedure Write (F : in File_Name; Item : in Integer) is ... end;
-    begin
-       ...
-    end;
+package body I_O_Package is
+   Limit : constant := 200;
+   type File_Descriptor is record ... end record;
+   Directory : array (1..Limit) of File_Descriptor;
+   ...
+   procedure Open (F : in out File_Name) is ... end;
+   procedure Close (F : in out File_Name) is ... end;
+   procedure Read (F : in File_Name; Item : out Integer) is ... end;
+   procedure Write (F : in File_Name; Item : in Integer) is ... end;
+begin
+   ...
+end;
 ```
 
-Notes on the example:
+**Note on the example**
 
 In the example above, an outside subprogram making use of I_O_Package may obtain
 a file name by calling Open and later use it in calls to Read and Write. Thus,
@@ -7129,24 +7095,24 @@ A sketch of such a package is given below. Only the specification of the package
 is exposed to the user.
 
 ```ada
-    package Table_Manager is
+package Table_Manager is
 
-       type Item is
-          record
-             Order_Num : Integer;
-             Item_Code : Integer;
-             Quantity : Integer;
-             Item_Type : Character;
-          end record;
+   type Item is
+      record
+         Order_Num : Integer;
+         Item_Code : Integer;
+         Quantity : Integer;
+         Item_Type : Character;
+      end record;
 
-       Null_Item : constant Item :=
-          (Order_Num | Item_Code | Quantity => 0, Item_Type => ' ');
+   Null_Item : constant Item :=
+      (Order_Num | Item_Code | Quantity => 0, Item_Type => ' ');
 
-       procedure Insert (New_Item : in Item);
-       procedure Retrieve (First_Item : out Item);
+   procedure Insert (New_Item : in Item);
+   procedure Retrieve (First_Item : out Item);
 
-       Table_Full : exception; -- raised by Insert when table full
-    end;
+   Table_Full : exception; -- raised by Insert when table full
+end;
 ```
 
 The details of implementing such packages can be quite complex; in this case
@@ -7156,41 +7122,39 @@ free lists. The initial table linkages are established by the initialization
 part. The package body need not be shown to the users of the package.
 
 ```ada
-    package body Table_Manager is
-       Size : constant := 2000;
-       subtype Index is Integer range 0 .. Size;
+package body Table_Manager is
+   Size : constant := 2000;
+   subtype Index is Integer range 0..Size;
 
-       type Internal_Item is
-          record
-             Content : Item;
-             Succ : Index;
-             Pred : Index;
-          end record;
+   type Internal_Item is
+      record
+         Content : Item;
+         Succ : Index;
+         Pred : Index;
+      end record;
 
-       Table : array (Index) of Internal_Item;
-       First_Busy_Item : Index := 0;
-       First_Free_Item : Index := 1;
+   Table : array (Index) of Internal_Item;
+   First_Busy_Item : Index := 0;
+   First_Free_Item : Index := 1;
 
-       function Free_List_Empty return Boolean is ... end;
-       function Busy_List_Empty return Boolean is ... end;
-       procedure Exchange (From : in Index; To : in Index) is ... end;
+   function Free_List_Empty return Boolean is ... end;
+   function Busy_List_Empty return Boolean is ... end;
+   procedure Exchange (From : in Index; To : in Index) is ... end;
 
-       procedure Insert (New_Item : in Item) is
-       begin
-          if Free_List_Empty then
-             raise Table_Full;
-          end if;
-          --  remaining code for Insert
-       end;
+   procedure Insert (New_Item : in Item) is
+   begin
+      if Free_List_Empty then
+         raise Table_Full;
+      end if;
+      --  remaining code for Insert
+   end;
 
-       procedure Retrieve (First_Item : out Item) is ... end;
+   procedure Retrieve (First_Item : out Item) is ... end;
 
-    begin
-       --  initialization of the table linkages
-```
+begin
+   --  initialization of the table linkages
 
-```ada
-    end;
+end;
 ```
 
 ### 7.6 Example of a Text Handling Package
@@ -7213,67 +7177,67 @@ strings and characters as well as on the type Text, in order to minimize the
 number of explicit conversions the user has to write.
 
 ```ada
-    package Text_Handler is
-       Maximum : constant := Some_Value; -- implementation-defined
-       subtype Index is Integer range 0 .. Maximum;
+  package Text_Handler is
+     Maximum : constant := Some_Value; -- implementation-defined
+     subtype Index is Integer range 0..Maximum;
 
-       type Text (Maximum_Length : Index) is limited private;
+     type Text (Maximum_Length : Index) is limited private;
 
-       function Length (T : Text) return Index;
-       function Value (T : Text) return String;
-       function Empty (T : Text) return Boolean;
+     function Length (T : Text) return Index;
+     function Value (T : Text) return String;
+     function Empty (T : Text) return Boolean;
 
-       function To_Text (S : String; Max : Index) return Text;
-                                                     --  maximum length Max
-       function To_Text (C : Character; Max : Index) return Text;
-       function To_Text (S : String) return Text;
-                                                --  maximum length S'Length
-       function To_Text (C : Character) return Text;
+     function To_Text (S : String; Max : Index) return Text;
+                                                   --  maximum length Max
+     function To_Text (C : Character; Max : Index) return Text;
+     function To_Text (S : String) return Text;
+                                              --  maximum length S'Length
+     function To_Text (C : Character) return Text;
 
-       function "&" (Left : Text; Right : Text) return Text;
-       function "&" (Left : Text; Right : String) return Text;
-       function "&" (Left : String; Right : Text) return Text;
-       function "&" (Left : Text; Right : Character) return Text;
-       function "&" (Left : Character; Right : Text) return Text;
+     function "&" (Left : Text; Right : Text) return Text;
+     function "&" (Left : Text; Right : String) return Text;
+     function "&" (Left : String; Right : Text) return Text;
+     function "&" (Left : Text; Right : Character) return Text;
+     function "&" (Left : Character; Right : Text) return Text;
 
-       function "=" (Left : Text; Right : Text) return Boolean;
-       function "<" (Left : Text; Right : Text) return Boolean;
-       function "<=" (Left : Text; Right : Text) return Boolean;
-       function ">" (Left : Text; Right : Text) return Boolean;
-       function ">=" (Left : Text; Right : Text) return Boolean;
+     function "=" (Left : Text; Right : Text) return Boolean;
+     function "<" (Left : Text; Right : Text) return Boolean;
+     function "<=" (Left : Text; Right : Text) return Boolean;
+     function ">" (Left : Text; Right : Text) return Boolean;
+     function ">=" (Left : Text; Right : Text) return Boolean;
 
-       procedure Set (Object : in out Text; Value : in Text);
-       procedure Set (Object : in out Text; Value : in String);
-       procedure Set (Object : in out Text; Value : in Character);
+     procedure Set (Object : in out Text; Value : in Text);
+     procedure Set (Object : in out Text; Value : in String);
+     procedure Set (Object : in out Text; Value : in Character);
 
-       procedure Append (Tail : in Text; To : in out Text);
+     procedure Append (Tail : in Text; To : in out Text);
 
-       procedure Append (Tail : in String; To : in out Text);
-       procedure Append (Tail : in Character; To : in out Text);
+     procedure Append (Tail : in String; To : in out Text);
+     procedure Append (Tail : in Character; To : in out Text);
 
-  procedure Amend (Object : in out Text; By : in Text; Position : in Index);
-  procedure Amend (Object : in out Text; By : in String; Position : in Index);
-  procedure Amend (Object : in out Text; By : in Character; Position :
-                                                                    in Index);
+procedure Amend (Object : in out Text; By : in Text; Position : in Index);
+procedure Amend (Object : in out Text; By : in String; Position : in Index);
+procedure Amend (Object : in out Text; By : in Character; Position :
+                                                                  in Index);
 ```
 
 -- amend replaces part of the object by the given text, string, or character --
 starting at the given position in the object
 
 ```ada
-       function Locate (Fragment : Text; Within : Text) return Index;
-       function Locate (Fragment : String; Within : Text) return Index;
-       function Locate (Fragment : Character; Within : Text) return Index;
+   function Locate (Fragment : Text; Within : Text) return Index;
+   function Locate (Fragment : String; Within : Text) return Index;
+   function Locate (Fragment : Character; Within : Text) return Index;
 
-       --  all return 0 if the fragment is not located
+   --  all return 0 if the fragment is not located
 
-    private
-       type Text (Maximum_Length : Index) is
-          record
-             Pos : Index := 0;
-             Value : String (1 .. Maximum_Length);
-          end record;
-    end;
+private
+   type Text (Maximum_Length : Index) is
+      record
+         Pos : Index := 0;
+         Value : String (1..Maximum_Length);
+      end record;
+end;
 ```
 
 **Example of use of the text handling package:**
@@ -7286,50 +7250,38 @@ user-supplied name is passed to Expand_File_Name as a parameter, and the result
 is the expanded version, with any necessary defaults added.
 
 ```ada
-    function Expand_File_Name (Name : String) return String is
-```
-```ada
-       use Text_Handler;
+function Expand_File_Name (Name : String) return String is
+   use Text_Handler;
 
-       Default_Device : constant String := "SY:";
-       Default_File_Name : constant String := "RESULTS";
-       Default_Extension : constant String := ".DAT";
+   Default_Device : constant String := "SY:";
+   Default_File_Name : constant String := "RESULTS";
+   Default_Extension : constant String := ".DAT";
 
-       Maximum_File_Name_Length : constant Index := Some_Appropriate_Value;
-       File_Name : Text (Maximum_File_Name_Length);
-```
+   Maximum_File_Name_Length : constant Index := Some_Appropriate_Value;
+   File_Name : Text (Maximum_File_Name_Length);
 
-```ada
-    begin
+begin
 
-       Set (File_Name, Name);
+   Set (File_Name, Name);
 
-       if Empty (File_Name) then
-          Set (File_Name, Default_File_Name);
-```
-```ada
-       end if;
-```
+   if Empty (File_Name) then
+      Set (File_Name, Default_File_Name);
+   end if;
 
-```ada
-       if Locate (':', File_Name) = 0 then
-          Set (File_Name, Default_Device & File_Name);
-```
-```ada
-       end if;
+   if Locate (':', File_Name) = 0 then
+      Set (File_Name, Default_Device & File_Name);
+   end if;
+
+   if Locate ('.', File_Name) = 0 then
+      Append (Default_Extension, To => File_Name);
+   end if;
+
+   return Value (File_Name);
+
+end;
 ```
 
-```ada
-       if Locate ('.', File_Name) = 0 then
-          Append (Default_Extension, To => File_Name);
-```
-```ada
-       end if;
-
-       return Value (File_Name);
-
-    end;
-```
+---
 
 ## 8. Visibility Rules
 
@@ -7350,20 +7302,14 @@ region is formed by the text of each of the following:
 
 - An entry declaration together with the corresponding accept statements.
 
-
-- A record type declaration, together with a corresponding private or
-
-
-```ada
-     incomplete type declaration if any, and together with a corresponding
-     record representation clause if any.
-```
+- A record type declaration, together with a corresponding private or incomplete
+  type declaration if any, and together with a corresponding record
+  representation clause if any.
 
 - A renaming declaration that includes a formal part, or a generic parameter
   declaration that includes either a formal part or a discriminant part.
 
 - A block statement or a loop statement.
-
 
 In each of the above cases, the declarative region is said to be associated with
 the corresponding declaration or statement. A declaration is said to occur
@@ -7422,26 +7368,17 @@ Furthermore, for any of the declarations listed below, the scope of the
 declaration extends beyond the immediate scope:
 
 - **(a)** A declaration that occurs immediately within the visible part of a
-
-
-```ada
-     package declaration.
-```
+  package declaration.
 
 - **(b)** An entry declaration.
 
-
 - **(c)** A component declaration.
-
 
 - **(d)** A discriminant specification.
 
-
 - **(e)** A parameter specification.
 
-
 - **(f)** A generic parameter declaration.
-
 
 In each of these cases, the given declaration occurs immediately within some
 enclosing declaration, and the scope of the given declaration extends to the end
@@ -7503,7 +7440,6 @@ selection at places that are defined as follows.
 
 - **(a)** For a declaration given in the visible part of a package declaration:
 
-
   at the place of the selector after the dot of an expanded name whose prefix
   denotes the package.
 
@@ -7523,13 +7459,9 @@ selection at places that are defined as follows.
   discriminant association of a discriminant constraint for the type.
 
 - **(e)** For a parameter specification of a given subprogram specification or
-
-
-```ada
-     entry declaration: at the place of the formal parameter (before the
-     compound delimiter =>) in a named parameter association of a
-     corresponding subprogram or entry call.
-```
+  entry declaration: at the place of the formal parameter (before the compound
+  delimiter =>) in a named parameter association of a corresponding subprogram
+  or entry call.
 
 - **(f)** For a generic parameter declaration of a given generic unit: at the
   place of the generic formal parameter (before the compound delimiter =>) in a
@@ -7587,30 +7519,30 @@ entire scope of this operation.
 **Example:**
 
 ```ada
-    procedure P is
-       A, B : Boolean;
+procedure P is
+   A, B : Boolean;
 
-       procedure Q is
-          C : Boolean;
-          B : Boolean; -- an inner homograph of B
-       begin
-          ...
-          B := A; -- means Q.B := P.A;
-          C := P.B; -- means Q.C := P.B;
-       end;
-    begin
-       ...
-       A := B; -- means P.A := P.B;
-    end;
+   procedure Q is
+      C : Boolean;
+      B : Boolean; -- an inner homograph of B
+   begin
+      ...
+      B := A; -- means Q.B := P.A;
+      C := P.B; -- means Q.C := P.B;
+   end;
+begin
+   ...
+   A := B; -- means P.A := P.B;
+end;
 ```
 
-Note on the visibility of library units:
+**Note on the visibility of library units**
 
 The visibility of library units is determined by with clauses (see [10.1.1](#1011-context-clauses---with-clauses)) and
 by the fact that library units are implicitly declared in the package Standard
 (see [8.6](#86-the-package-standard)).
 
-Note on homographs:
+**Note on homographs**
 
 The same identifier may occur in different declarations and may thus be
 associated with different entities, even if the scopes of these declarations
@@ -7622,7 +7554,7 @@ of the enclosing package declarations, task declarations, record type
 declarations, subprogram declarations, renaming declarations, or generic
 declarations. Finally overlapping scopes can result from nesting.
 
-Note on immediate scope, hiding, and visibility:
+**Note on immediate scope, hiding, and visibility**
 
 The rules defining immediate scope, hiding, and visibility imply that a
 reference to an identifier within its own declaration is illegal (except for
@@ -7632,13 +7564,13 @@ the identifier is visible only after the end of the declaration. For this
 reason, all but the last of the following declarations are illegal:
 
 ```ada
-    K : Integer := K * K; -- illegal
-    T : T; -- illegal
-    procedure P (X : P); -- illegal
-    procedure Q (X : Real := Q); -- illegal, even if there is a
-                                           function named Q
-    procedure R (R : Real); -- an inner declaration is legal (although
-                                 confusing)
+K : Integer := K * K; -- illegal
+T : T; -- illegal
+procedure P (X : P); -- illegal
+procedure Q (X : Real := Q); -- illegal, even if there is a
+                                       function named Q
+procedure R (R : Real); -- an inner declaration is legal (although
+                             confusing)
 ```
 
 ### 8.4 Use Clauses
@@ -7647,7 +7579,7 @@ A use clause achieves direct visibility of declarations that appear in the
 visible parts of named packages.
 
 ```ada
-    use_clause ::= use package_name {, package_name};
+use_clause ::= use package_name {, package_name};
 ```
 
 For each use clause, there is a certain region of text called the scope of the
@@ -7691,71 +7623,73 @@ The elaboration of a use clause has no other effect.
 **Example of conflicting names in two packages:**
 
 ```ada
-    procedure R is
-       package Traffic is
-          type Color is (Red, Amber, Green);
-          ...
-       end;
+procedure R is
+   package Traffic is
+      type Color is (Red, Amber, Green);
+      ...
+   end;
 
-       package Water_Colors is
-          type Color is (White, Red, Yellow, Green, Blue, Brown, Black);
-          ...
-       end;
+   package Water_Colors is
+      type Color is (White, Red, Yellow, Green, Blue, Brown, Black);
+      ...
+   end;
 
-     use Traffic; -- Color, Red, Amber, and Green are directly visible
-     use Water_Colors; -- two homographs of Green are directly visible
-                        --  but Color is no longer directly visible
+ use Traffic; -- Color, Red, Amber, and Green are directly visible
+ use Water_Colors; -- two homographs of Green are directly visible
+                    --  but Color is no longer directly visible
 
-     subtype Light is Traffic.Color; -- Subtypes are used to resolve
-     subtype Shade is Water_Colors.Color; -- the conflicting type name Color
+ subtype Light is Traffic.Color; -- Subtypes are used to resolve
+ subtype Shade is Water_Colors.Color; -- the conflicting type name Color
 
-       Signal : Light;
-       Paint : Shade;
-    begin
-       Signal := Green; -- that of Traffic
-       Paint := Green; -- that of Water_Colors
-    end;
+   Signal : Light;
+   Paint : Shade;
+begin
+   Signal := Green; -- that of Traffic
+   Paint := Green; -- that of Water_Colors
+end;
 ```
 
 **Example of name identification with a use clause:**
 
 ```ada
-       package D is
-          T, U, V : Boolean;
-       end;
+package D is
+   T, U, V : Boolean;
+end;
 
-       procedure P is
-          package E is
-             B, W, V : Integer;
-          end;
+procedure P is
+   package E is
+      B, W, V : Integer;
+   end;
 
-          procedure Q is
-             T, X : Real;
-             use D, E;
-          begin
-             --  the name T means Q.T, not D.T
-             --  the name U means D.U
-             --  the name B means E.B
-             --  the name W means E.W
-             --  the name X means Q.X
-             --  the name V is illegal : either D.V or E.V must be used
-             ...
-          end;
-       begin
-          ...
-       end;
+   procedure Q is
+      T, X : Real;
+      use D, E;
+   begin
+      --  the name T means Q.T, not D.T
+      --  the name U means D.U
+      --  the name B means E.B
+      --  the name W means E.W
+      --  the name X means Q.X
+      --  the name V is illegal : either D.V or E.V must be used
+      ...
+   end;
+begin
+   ...
+end;
 ```
 
 ### 8.5 Renaming Declarations
 
 A renaming declaration declares another name for an entity.
 
+**Syntax**
+
 ```ebnf
-    renaming_declaration ::=
-         identifier : type_mark renames object_name;
-       | identifier : exception renames exception_name;
-       | package identifier renames package_name;
-       | subprogram_specification renames subprogram_or_entry_name;
+renaming_declaration ::=
+     identifier : type_mark renames object_name;
+   | identifier : exception renames exception_name;
+   | package identifier renames package_name;
+   | subprogram_specification renames subprogram_or_entry_name;
 ```
 
 The elaboration of a renaming declaration evaluates the name that follows the
@@ -7814,36 +7748,36 @@ be renamed as a whole.
 **Examples:**
 
 ```ada
-    declare
-       L : Person renames Leftmost_Person; -- see 3.8.1
-    begin
-       L.Age := L.Age + 1;
-    end;
+declare
+   L : Person renames Leftmost_Person; -- see 3.8.1
+begin
+   L.Age := L.Age + 1;
+end;
 
-    Full : exception renames Table_Manager.Table_Full; -- see 7.5
+Full : exception renames Table_Manager.Table_Full; -- see 7.5
 
-    package Tm renames Table_Manager;
+package Tm renames Table_Manager;
 
-    function Real_Plus (Left, Right : Real ) return Real renames "+";
-    function Int_Plus (Left, Right : Integer) return Integer renames "+";
+function Real_Plus (Left, Right : Real ) return Real renames "+";
+function Int_Plus (Left, Right : Integer) return Integer renames "+";
 
-    function Rouge return Color renames Red; -- see 3.5.1
-    function Rot return Color renames Red;
-    function Rosso return Color renames Rouge;
+function Rouge return Color renames Red; -- see 3.5.1
+function Rot return Color renames Red;
+function Rosso return Color renames Rouge;
 
-    function Next (X : Color) return Color renames Color'Succ; -- see 3.5.5
+function Next (X : Color) return Color renames Color'Succ; -- see 3.5.5
 ```
 
 **Example of a renaming declaration with new parameter names:**
 
 ```ada
-    function "*" (X,Y : Vector) return Real renames Dot_Product; -- see 6.1
+function "*" (X,Y : Vector) return Real renames Dot_Product; -- see 6.1
 ```
 
 **Example of a renaming declaration with a new default expression:**
 
 ```ada
-    function Minimum (L : Link := Head) return Cell renames Min_Cell; -- see 6.1
+function Minimum (L : Link := Head) return Cell renames Min_Cell; -- see 6.1
 ```
 
 > [!NOTE]
@@ -7921,12 +7855,9 @@ innermost complete context; a complete context is one of the following:
 
 - A declaration.
 
-
 - A statement.
 
-
 - A representation clause.
-
 
 When considering possible interpretations of a complete context, the only rules
 considered are the syntax rules, the scope and visibility rules, and the rules
@@ -7940,7 +7871,6 @@ of the form described below.
   discrete, integer, real, universal, character, boolean, or nonlimited type.
 
 - **(c)** Any rule that requires a prefix to be appropriate for a certain type.
-
 
 - **(d)** Any rule that specifies a certain type as the result type of a basic
   operation, and any rule that specifies that this type is of a certain class.
@@ -7987,6 +7917,8 @@ clauses (see [13.5](#135-address-clauses)) follow different rules.
 > profile fall under the category (a); the same holds for rules that require
 > conformance of two constructs since conformance requires that corresponding
 > names be given the same meaning by the visibility and overloading rules.
+
+---
 
 ## 9. Tasks
 
@@ -8041,24 +7973,26 @@ the remainder of this chapter, explanations are given in terms of task type
 declarations; the corresponding explanations for single task declarations follow
 from the stated equivalence.
 
+**Syntax**
+
 ```ebnf
-    task_declaration ::= task_specification;
+task_declaration ::= task_specification;
 
-    task_specification ::=
-       task [type] identifier [is
-          {entry_declaration}
-          {representation_clause}
-       end [task_simple_name]]
+task_specification ::=
+   task [type] identifier [is
+      {entry_declaration}
+      {representation_clause}
+   end [task_simple_name]]
 
-    task_body ::=
-        task body task_simple_name is
-           [declarative_part]
-        begin
-            sequence_of_statements
-       [exception
-            exception_handler
-           {exception_handler}]
-        end [task_simple_name];
+task_body ::=
+    task body task_simple_name is
+       [declarative_part]
+    begin
+        sequence_of_statements
+   [exception
+        exception_handler
+       {exception_handler}]
+    end [task_simple_name];
 ```
 
 The simple name at the start of a task body must repeat the task unit
@@ -8085,56 +8019,56 @@ statements of the task body (see [11.4](#114-exception-handling)).
 **Examples of specifications of task types:**
 
 ```ada
-    task type Resource is
-       entry Seize;
-       entry Release;
-    end;
+task type Resource is
+   entry Seize;
+   entry Release;
+end;
 
-    task type Keyboard_Driver is
-       entry Read (C : out Character);
-       entry Write (C : in Character);
-    end;
+task type Keyboard_Driver is
+   entry Read (C : out Character);
+   entry Write (C : in Character);
+end;
 ```
 
 **Examples of specifications of single tasks:**
 
 ```ada
-    task Producer_Consumer is
-       entry Read (V : out Item);
-       entry Write (E : in Item);
-    end;
+task Producer_Consumer is
+   entry Read (V : out Item);
+   entry Write (E : in Item);
+end;
 
-    task Controller is
-       entry Request (Level)(D : Item); -- a family of entries
-    end;
+task Controller is
+   entry Request (Level)(D : Item); -- a family of entries
+end;
 
-    task User; -- has no entries
+task User; -- has no entries
 ```
 
 **Example of task specification and corresponding body:**
 
 ```ada
-    task Protected_Array is
-       --  Index and Item are global types
-       entry Read (N : in Index; V : out Item);
-       entry Write (N : in Index; E : in Item);
-    end;
+task Protected_Array is
+   --  Index and Item are global types
+   entry Read (N : in Index; V : out Item);
+   entry Write (N : in Index; E : in Item);
+end;
 
-    task body Protected_Array is
-       Table : array (Index) of Item := (Index => Null_Item);
-    begin
-       loop
-          select
-             accept Read (N : in Index; V : out Item) do
-                V := Table (N);
-             end;
-          or
-             accept Write (N : in Index; E : in Item) do
-                Table (N) := E;
-             end;
-          end select;
-       end loop;
-    end;
+task body Protected_Array is
+   Table : array (Index) of Item := (Index => Null_Item);
+begin
+   loop
+      select
+         accept Read (N : in Index; V : out Item) do
+            V := Table (N);
+         end;
+      or
+         accept Write (N : in Index; E : in Item) do
+            Table (N) := E;
+         end;
+      end select;
+   end loop;
+end;
 ```
 
 > [!NOTE]
@@ -8164,17 +8098,17 @@ holds for generic parameters.
 **Examples:**
 
 ```ada
-    Control : Resource;
-    Teletype : Keyboard_Driver;
-    Pool : array (1 .. 10) of Keyboard_Driver;
-    --  see also examples of declarations of single tasks in 9.1
+Control : Resource;
+Teletype : Keyboard_Driver;
+Pool : array (1..10) of Keyboard_Driver;
+--  see also examples of declarations of single tasks in 9.1
 ```
 
 **Example of access type designating task objects:**
 
 ```ada
-    type Keyboard is access Keyboard_Driver;
-    Terminal : Keyboard := new Keyboard_Driver;
+type Keyboard is access Keyboard_Driver;
+Terminal : Keyboard := new Keyboard_Driver;
 ```
 
 > [!NOTE]
@@ -8265,13 +8199,13 @@ subcomponent of this object becomes terminated and is therefore never activated.
 **Example:**
 
 ```ada
-    procedure P is
-       A, B : Resource; -- elaborate the task objects A, B
-       C : Resource; -- elaborate the task object C
-    begin
-       --  the tasks A, B, C are activated in parallel before the first statement
-       ...
-    end;
+procedure P is
+   A, B : Resource; -- elaborate the task objects A, B
+   C : Resource; -- elaborate the task object C
+begin
+   --  the tasks A, B, C are activated in parallel before the first statement
+   ...
+end;
 ```
 
 > [!NOTE]
@@ -8330,13 +8264,8 @@ following conditions are satisfied:
 - The task depends on some master whose execution is completed (hence not a
   library package).
 
-- Each task that depends on the master considered is either already
-
-
-```ada
-     terminated or similarly waiting on an open terminate alternative of a
-     select statement.
-```
+- Each task that depends on the master considered is either already terminated
+  or similarly waiting on an open terminate alternative of a select statement.
 
 When both conditions are satisfied, the task considered becomes terminated,
 together with all tasks that depend on the master considered.
@@ -8344,39 +8273,27 @@ together with all tasks that depend on the master considered.
 **Example:**
 
 ```ada
-    declare
-       type Global is access Resource; -- see 9.1
-```
-```ada
-       A, B : Resource;
-       G : Global;
-```
+declare
+   type Global is access Resource; -- see 9.1
+   A, B : Resource;
+   G : Global;
 
-```ada
-    begin
-       --  activation of A and B
-       declare
-```
-```ada
-          type Local is access Resource;
-```
+begin
+   --  activation of A and B
+   declare
+      type Local is access Resource;
 
-```ada
-          X : Global := new Resource; -- activation of X.all
-          L : Local := new Resource; -- activation of L.all
-```
-```ada
-          C : Resource;
-```
+      X : Global := new Resource; -- activation of X.all
+      L : Local := new Resource; -- activation of L.all
+      C : Resource;
 
-```ada
-       begin
-          --  activation of C
-          G := X; -- both G and X designate the same task object
-          ...
-       end; -- await termination of C and L.all (but not X.all)
-       ...
-    end; -- await termination of A, B, and G.all
+   begin
+      --  activation of C
+      G := X; -- both G and X designate the same task object
+      ...
+   end; -- await termination of C and L.all (but not X.all)
+   ...
+end; -- await termination of A, B, and G.all
 ```
 
 > [!NOTE]
@@ -8408,17 +8325,19 @@ similar to a subprogram declaration and is only allowed in a task specification.
 The actions to be performed when an entry is called are specified by
 corresponding accept statements.
 
+**Syntax**
+
 ```ebnf
-    entry_declaration ::=
-       entry identifier [(discrete_range)] [formal_part];
+entry_declaration ::=
+   entry identifier [(discrete_range)] [formal_part];
 
-    entry_call_statement ::= entry_name [actual_parameter_part];
+entry_call_statement ::= entry_name [actual_parameter_part];
 
-    accept_statement ::=
-       accept entry_simple_name [(entry_index)] [formal_part] [do
-          sequence_of_statements
-       end [entry_simple_name]];
-    entry_index ::= expression
+accept_statement ::=
+   accept entry_simple_name [(entry_index)] [formal_part] [do
+      sequence_of_statements
+   end [entry_simple_name]];
+entry_index ::= expression
 ```
 
 An entry declaration that includes a discrete range (see [3.6.1](#361-index-constraints-and-discrete-ranges)) declares a
@@ -8476,13 +8395,9 @@ corresponding entry call statement are synchronized.
 
 If a given entry is called by only one task, there are two possibilities:
 
-- If the calling task issues an entry call statement before a
-
-
-```ada
-     corresponding accept statement is reached by the task owning the
-     entry, the execution of the calling task is suspended.
-```
+- If the calling task issues an entry call statement before a corresponding
+  accept statement is reached by the task owning the entry, the execution of the
+  calling task is suspended.
 
 - If a task reaches an accept statement prior to any call of that entry, the
   execution of the task is suspended until such a call is received.
@@ -8508,32 +8423,32 @@ if the index of an entry of a family is not within the specified discrete range.
 **Examples of entry declarations:**
 
 ```ada
-    entry Read (V : out Item);
-    entry Seize;
-    entry Request (Level)(D : Item); -- a family of entries
+entry Read (V : out Item);
+entry Seize;
+entry Request (Level)(D : Item); -- a family of entries
 ```
 
 **Examples of entry calls:**
 
 ```ada
-    Control.Release; -- see 9.2 and 9.1
-    Producer_Consumer.Write (E); -- see 9.1
-    Pool (5).Read (Next_Char); -- see 9.2 and 9.1
-    Controller.Request (Low)(Some_Item); -- see 9.1
+Control.Release; -- see 9.2 and 9.1
+Producer_Consumer.Write (E); -- see 9.1
+Pool (5).Read (Next_Char); -- see 9.2 and 9.1
+Controller.Request (Low)(Some_Item); -- see 9.1
 ```
 
 **Examples of accept statements:**
 
 ```ada
-    accept Seize;
+accept Seize;
 
-    accept Read (V : out Item) do
-       V := Local_Item;
-    end;
+accept Read (V : out Item) do
+   V := Local_Item;
+end;
 
-    accept Request (Low)(D : Item) do
-       ...
-    end;
+accept Request (Low)(D : Item) do
+   ...
+end;
 ```
 
 > [!NOTE]
@@ -8560,7 +8475,7 @@ further execution of the task that executes the delay statement, for at least
 the duration specified by the resulting value.
 
 ```ada
-    delay_statement ::= delay simple_expression;
+delay_statement ::= delay simple_expression;
 ```
 
 The simple expression must be of the predefined fixed point type Duration; its
@@ -8590,65 +8505,65 @@ a date whose year number is in the range of the corresponding subtype, or if the
 operator "-" cannot return a result that is in the range of the type Duration.
 
 ```ada
-    package Calendar is
-       type Time is private;
+package Calendar is
+   type Time is private;
 
-       subtype Year_Number is Integer range 1901 .. 2099;
-       subtype Month_Number is Integer range 1 .. 12;
-       subtype Day_Number is Integer range 1 .. 31;
-       subtype Day_Duration is Duration range 0.0 .. 86_400.0;
+   subtype Year_Number is Integer range 1901..2099;
+   subtype Month_Number is Integer range 1..12;
+   subtype Day_Number is Integer range 1..31;
+   subtype Day_Duration is Duration range 0.0..86_400.0;
 
-       function Clock return Time;
+   function Clock return Time;
 
-       function Year (Date : Time) return Year_Number;
-       function Month (Date : Time) return Month_Number;
-       function Day (Date : Time) return Day_Number;
-       function Seconds (Date : Time) return Day_Duration;
+   function Year (Date : Time) return Year_Number;
+   function Month (Date : Time) return Month_Number;
+   function Day (Date : Time) return Day_Number;
+   function Seconds (Date : Time) return Day_Duration;
 
-       procedure Split (Date : in Time;
-                        Year : out Year_Number;
-                        Month : out Month_Number;
-                        Day : out Day_Number;
-                        Seconds : out Day_Duration);
+   procedure Split (Date : in Time;
+                    Year : out Year_Number;
+                    Month : out Month_Number;
+                    Day : out Day_Number;
+                    Seconds : out Day_Duration);
 
-       function Time_Of (Year : Year_Number;
-                        Month : Month_Number;
-                        Day : Day_Number;
-                        Seconds : Day_Duration := 0.0) return Time;
+   function Time_Of (Year : Year_Number;
+                    Month : Month_Number;
+                    Day : Day_Number;
+                    Seconds : Day_Duration := 0.0) return Time;
 
-       function "+" (Left : Time; Right : Duration) return Time;
-       function "+" (Left : Duration; Right : Time) return Time;
-       function "-" (Left : Time; Right : Duration) return Time;
-       function "-" (Left : Time; Right : Time) return Duration;
+   function "+" (Left : Time; Right : Duration) return Time;
+   function "+" (Left : Duration; Right : Time) return Time;
+   function "-" (Left : Time; Right : Duration) return Time;
+   function "-" (Left : Time; Right : Time) return Duration;
 
-       function "<" (Left, Right : Time) return Boolean;
-       function "<=" (Left, Right : Time) return Boolean;
-       function ">" (Left, Right : Time) return Boolean;
-       function ">=" (Left, Right : Time) return Boolean;
+   function "<" (Left, Right : Time) return Boolean;
+   function "<=" (Left, Right : Time) return Boolean;
+   function ">" (Left, Right : Time) return Boolean;
+   function ">=" (Left, Right : Time) return Boolean;
 
-       Time_Error : exception; -- can be raised by Time_Of, "+", and "-"
+   Time_Error : exception; -- can be raised by Time_Of, "+", and "-"
 
-    private
-       -- implementation-dependent
-    end;
+private
+   -- implementation-dependent
+end;
 ```
 
 **Examples:**
 
 ```ada
-    delay 3.0; -- delay 3.0 seconds
+delay 3.0; -- delay 3.0 seconds
 
-    declare
-       use Calendar;
-       --  Interval is a global constant of type Duration
-       Next_Time : Time := Clock + Interval;
-    begin
-       loop
-          delay Next_Time - Clock;
-          --  some actions
-          Next_Time := Next_Time + Interval;
-       end loop;
-    end;
+declare
+   use Calendar;
+   --  Interval is a global constant of type Duration
+   Next_Time : Time := Clock + Interval;
+begin
+   loop
+      delay Next_Time - Clock;
+      --  some actions
+      Next_Time := Next_Time + Interval;
+   end loop;
+end;
 ```
 
 > [!NOTE]
@@ -8663,9 +8578,11 @@ There are three forms of select statements. One form provides a selective wait
 for one or more alternatives. The other two provide conditional and timed entry
 calls.
 
+**Syntax**
+
 ```ebnf
-    select_statement ::= selective_wait
-       | conditional_entry_call | timed_entry_call
+select_statement ::= selective_wait
+   | conditional_entry_call | timed_entry_call
 ```
 
 #### 9.7.1 Selective Waits
@@ -8674,28 +8591,30 @@ This form of the select statement allows a combination of waiting for, and
 selecting from, one or more alternatives. The selection can depend on conditions
 associated with each alternative of the selective wait.
 
+**Syntax**
+
 ```ebnf
-    selective_wait ::=
-        select
-          select_alternative
-       {or
-          select_alternative}
-       [else
-          sequence_of_statements]
-        end select;
+selective_wait ::=
+    select
+      select_alternative
+   {or
+      select_alternative}
+   [else
+      sequence_of_statements]
+    end select;
 
-    select_alternative ::=
-       [when condition =>]
-          selective_wait_alternative
+select_alternative ::=
+   [when condition =>]
+      selective_wait_alternative
 
-    selective_wait_alternative ::= accept_alternative
-       | delay_alternative | terminate_alternative
+selective_wait_alternative ::= accept_alternative
+   | delay_alternative | terminate_alternative
 
-    accept_alternative ::= accept_statement [sequence_of_statements]
+accept_alternative ::= accept_statement [sequence_of_statements]
 
-    delay_alternative ::= delay_statement [sequence_of_statements]
+delay_alternative ::= delay_statement [sequence_of_statements]
 
-    terminate_alternative ::= terminate;
+terminate_alternative ::= terminate;
 ```
 
 A selective wait must contain at least one accept alternative. In addition a
@@ -8750,35 +8669,35 @@ is no else part.
 **Examples of a select statement:**
 
 ```ada
-    select
-       accept Driver_Awake_Signal;
-    or
-       delay 30.0*Seconds;
-       Stop_The_Train;
-    end select;
+select
+   accept Driver_Awake_Signal;
+or
+   delay 30.0*Seconds;
+   Stop_The_Train;
+end select;
 ```
 
 **Example of a task body with a select statement:**
 
 ```ada
-    task body Resource is
-       Busy : Boolean := False;
-    begin
-       loop
-          select
-             when not Busy =>
-                accept Seize do
-                   Busy := True;
-                end;
-          or
-             accept Release do
-                Busy := False;
-             end;
-          or
-             terminate;
-          end select;
-       end loop;
-    end;
+task body Resource is
+   Busy : Boolean := False;
+begin
+   loop
+      select
+         when not Busy =>
+            accept Seize do
+               Busy := True;
+            end;
+      or
+         accept Release do
+            Busy := False;
+         end;
+      or
+         terminate;
+      end select;
+   end loop;
+end;
 ```
 
 > [!NOTE]
@@ -8790,14 +8709,16 @@ is no else part.
 A conditional entry call issues an entry call that is then canceled if a
 rendezvous is not immediately possible.
 
+**Syntax**
+
 ```ebnf
-    conditional_entry_call ::=
-       select
-           entry_call_statement
-          [sequence_of_statements]
-       else
-           sequence_of_statements
-       end select;
+conditional_entry_call ::=
+   select
+       entry_call_statement
+      [sequence_of_statements]
+   else
+       sequence_of_statements
+   end select;
 ```
 
 For the execution of a conditional entry call, the entry name is first
@@ -8822,17 +8743,17 @@ when the called task becomes abnormal).
 **Example:**
 
 ```ada
-    procedure Spin (R : Resource) is
-    begin
-       loop
-          select
-             R.Seize;
-             return;
-          else
-             null; -- busy waiting
-          end select;
-       end loop;
-    end;
+procedure Spin (R : Resource) is
+begin
+   loop
+      select
+         R.Seize;
+         return;
+      else
+         null; -- busy waiting
+      end select;
+   end loop;
+end;
 ```
 
 #### 9.7.3 Timed Entry Calls
@@ -8840,14 +8761,16 @@ when the called task becomes abnormal).
 A timed entry call issues an entry call that is canceled if a rendezvous is not
 started within a given delay.
 
+**Syntax**
+
 ```ebnf
-    timed_entry_call ::=
-       select
-           entry_call_statement
-          [sequence_of_statements]
-       or
-           delay_alternative
-       end select;
+timed_entry_call ::=
+   select
+       entry_call_statement
+      [sequence_of_statements]
+   or
+       delay_alternative
+   end select;
 ```
 
 For the execution of a timed entry call, the entry name is first evaluated. This
@@ -8868,12 +8791,12 @@ the case when the called task becomes abnormal).
 **Example:**
 
 ```ada
-    select
-       Controller.Request (Medium)(Some_Item);
-    or
-       delay 45.0;
-       --  controller too busy, try something else
-    end select;
+select
+   Controller.Request (Medium)(Some_Item);
+or
+   delay 45.0;
+   --  controller too busy, try something else
+end select;
 ```
 
 ### 9.8 Priorities
@@ -8885,7 +8808,7 @@ priorities is implementation-defined. A priority is associated with a task if a
 pragma
 
 ```ada
-    pragma Priority (static_expression);
+pragma Priority (static_expression);
 ```
 
 appears in the corresponding task specification; the priority is given by the
@@ -8901,13 +8824,10 @@ there are more tasks eligible for execution than can be supported simultaneously
 by the available processing resources. The effect of priorities on scheduling is
 defined by the following rule:
 
-```ada
-     If two tasks with different priorities are both eligible for execution
-     and could sensibly be executed using the same physical processors and
-     the same other processing resources, then it cannot be the case that
-     the task with the lower priority is executing while the task with the
-     higher priority is not.
-```
+> If two tasks with different priorities are both eligible for execution and
+> could sensibly be executed using the same physical processors and the same
+> other processing resources, then it cannot be the case that the task with the
+> lower priority is executing while the task with the higher priority is not.
 
 For tasks of the same priority, the scheduling order is not defined by the
 language. For tasks without explicit priority, the scheduling rules are not
@@ -8946,15 +8866,10 @@ single entry or entry family can be either a simple or an expanded name). This
 attribute is only allowed within the body of T, but excluding within any program
 unit that is, itself, inner to the body of T.
 
-- **`E'Count`** — Yields the number of entry calls presently queued on the
-
-
-```ada
-              entry E (if the attribute is evaluated by the execution of an
-              accept statement for the entry E, the count does not include
-              the calling task). The value of this attribute is of the
-              type universal_integer.
-```
+- **`E'Count`** — Yields the number of entry calls presently queued on the entry
+  E (if the attribute is evaluated by the execution of an accept statement for
+  the entry E, the count does not include the calling task). The value of this
+  attribute is of the type universal_integer.
 
 > [!NOTE]
 > Algorithms interrogating the attribute E'Count should take precautions to allow
@@ -8967,7 +8882,7 @@ An abort statement causes one or more tasks to become abnormal, thus preventing
 any further rendezvous with such tasks.
 
 ```ada
-    abort_statement ::= abort task_name {, task_name};
+abort_statement ::= abort task_name {, task_name};
 ```
 
 The determination of the type of each task name uses the fact that the type of
@@ -9006,7 +8921,7 @@ If the abnormal completion of a task takes place while the task updates a
 variable, then the value of this variable is undefined. Example:
 
 ```ada
-    abort User, Terminal.all, Pool (3);
+abort User, Terminal.all, Pool (3);
 ```
 
 > [!NOTE]
@@ -9062,7 +8977,7 @@ always hold for the given variable (but not necessarily for other variables).
 The form of this pragma is as follows:
 
 ```ada
-    pragma Shared (variable_simple_name);
+pragma Shared (variable_simple_name);
 ```
 
 This pragma is allowed only for a variable declared by an object declaration and
@@ -9082,21 +8997,21 @@ speed of output of a producing task and the speed of input of some consuming
 task. For instance, the producing task may contain the statements
 
 ```ada
-    loop
-       --  produce the next character Char
-       Buffer.Write (Char);
-       exit when Char = ASCII.Eot;
-    end loop;
+loop
+   --  produce the next character Char
+   Buffer.Write (Char);
+   exit when Char = ASCII.Eot;
+end loop;
 ```
 
 and the consuming task may contain the statements
 
 ```ada
-    loop
-       Buffer.Read (Char);
-       --  consume the character Char
-       exit when Char = ASCII.Eot;
-    end loop;
+loop
+   Buffer.Read (Char);
+   --  consume the character Char
+   exit when Char = ASCII.Eot;
+end loop;
 ```
 
 The buffering task contains an internal pool of characters processed in a
@@ -9105,37 +9020,39 @@ for the next input character and an Out_Index denoting the space for the next
 output character.
 
 ```ada
-    task Buffer is
-       entry Read (C : out Character);
-       entry Write (C : in Character);
-    end;
+task Buffer is
+   entry Read (C : out Character);
+   entry Write (C : in Character);
+end;
 
-    task body Buffer is
-       Pool_Size : constant Integer := 100;
-       Pool : array (1 .. Pool_Size) of Character;
-       Count : Integer range 0 .. Pool_Size := 0;
-       In_Index, Out_Index : Integer range 1 .. Pool_Size := 1;
-    begin
-       loop
-          select
-             when Count < Pool_Size =>
-                accept Write (C : in Character) do
-                   Pool (In_Index) := C;
-                end;
-                In_Index := In_Index mod Pool_Size + 1;
-                Count := Count + 1;
-          or when Count > 0 =>
-                accept Read (C : out Character) do
-                   C := Pool (Out_Index);
-                end;
-                Out_Index := Out_Index mod Pool_Size + 1;
-                Count := Count - 1;
-          or
-             terminate;
-          end select;
-       end loop;
-    end;
+task body Buffer is
+   Pool_Size : constant Integer := 100;
+   Pool : array (1..Pool_Size) of Character;
+   Count : Integer range 0..Pool_Size := 0;
+   In_Index, Out_Index : Integer range 1..Pool_Size := 1;
+begin
+   loop
+      select
+         when Count < Pool_Size =>
+            accept Write (C : in Character) do
+               Pool (In_Index) := C;
+            end;
+            In_Index := In_Index mod Pool_Size + 1;
+            Count := Count + 1;
+      or when Count > 0 =>
+            accept Read (C : out Character) do
+               C := Pool (Out_Index);
+            end;
+            Out_Index := Out_Index mod Pool_Size + 1;
+            Count := Count - 1;
+      or
+         terminate;
+      end select;
+   end loop;
+end;
 ```
+
+---
 
 ## 10. Program Structure and Compilation Issues
 
@@ -9153,20 +9070,22 @@ task unit, or generic unit declared within another compilation unit.
 The text of a program can be submitted to the compiler in one or more
 compilations. Each compilation is a succession of compilation units.
 
+**Syntax**
+
 ```ebnf
-    compilation ::= {compilation_unit}
+compilation ::= {compilation_unit}
 
-    compilation_unit ::=
-         context_clause library_unit | context_clause secondary_unit
+compilation_unit ::=
+     context_clause library_unit | context_clause secondary_unit
 
-    library_unit ::=
-         subprogram_declaration | package_declaration
-       | generic_declaration | generic_instantiation
-       | subprogram_body
+library_unit ::=
+     subprogram_declaration | package_declaration
+   | generic_declaration | generic_instantiation
+   | subprogram_body
 
-    secondary_unit ::= library_unit_body | subunit
+secondary_unit ::= library_unit_body | subunit
 
-    library_unit_body ::= subprogram_body | package_body
+library_unit_body ::= subprogram_body | package_body
 ```
 
 The compilation units of a program are said to belong to a program library. A
@@ -9221,10 +9140,12 @@ must be a subprogram that is a library unit.
 A context clause is used to specify the library units whose names are needed
 within a compilation unit.
 
-```ebnf
-    context_clause ::= {with_clause {use_clause}}
+**Syntax**
 
-    with_clause ::= with unit_simple_name {, unit_simple_name};
+```ebnf
+context_clause ::= {with_clause {use_clause}}
+
+with_clause ::= with unit_simple_name {, unit_simple_name};
 ```
 
 The names that appear in a context clause must be the simple names of library
@@ -9265,7 +9186,7 @@ the allowed order of elaboration of compilation units, as explained in section
 > whether the name of a library unit is mentioned once or more than once by the
 > applicable with clauses, or even within a given with clause.
 
-Example 1 : A main program:
+**Example 1 — a main program**
 
 The following is an example of a main program consisting of a single compilation
 unit: a procedure for printing the real roots of a quadratic equation. The
@@ -9275,29 +9196,29 @@ Real_Functions) are assumed to be already present in the program library. Such
 packages may be used by other main programs.
 
 ```ada
-    with Text_IO, Real_Operations; use Real_Operations;
-    procedure Quadratic_Equation is
-       A, B, C, D : Real;
-       use Real_IO, -- achieves direct visibility of Get and Put
-                                for Real
-           Text_IO, -- achieves direct visibility of Put for strings
-                                and of New_Line
-           Real_Functions; -- achieves direct visibility of Sqrt
-    begin
-       Get (A); Get (B); Get (C);
-       D := B**2 - 4.0*A*C;
-       if D < 0.0 then
-          Put ("Imaginary Roots.");
-       else
-          Put ("Real Roots : X1 = ");
-          Put ((-B - Sqrt (D))/(2.0*A)); Put (" X2 = ");
-          Put ((-B + Sqrt (D))/(2.0*A));
-       end if;
-       New_Line;
-    end;
+with Text_IO, Real_Operations; use Real_Operations;
+procedure Quadratic_Equation is
+   A, B, C, D : Real;
+   use Real_IO, -- achieves direct visibility of Get and Put
+                            for Real
+       Text_IO, -- achieves direct visibility of Put for strings
+                            and of New_Line
+       Real_Functions; -- achieves direct visibility of Sqrt
+begin
+   Get (A); Get (B); Get (C);
+   D := B**2 - 4.0*A*C;
+   if D < 0.0 then
+      Put ("Imaginary Roots.");
+   else
+      Put ("Real Roots : X1 = ");
+      Put ((-B - Sqrt (D))/(2.0*A)); Put (" X2 = ");
+      Put ((-B + Sqrt (D))/(2.0*A));
+   end if;
+   New_Line;
+end;
 ```
 
-Notes on the example:
+**Note on the example**
 
 The with clauses of a compilation unit need only mention the names of those
 library subprograms and packages whose visibility is actually necessary within
@@ -9315,122 +9236,92 @@ A compilation unit can be split into a number of compilation units. For example,
 consider the following program.
 
 ```ada
-    procedure Processor is
+procedure Processor is
 
-       Small : constant := 20;
-       Total : Integer := 0;
+   Small : constant := 20;
+   Total : Integer := 0;
 
-       package Stock is
-          Limit : constant := 1
-          Table : array (1 .. Limit) of Integer;
-          procedure Restart;
-       end;
+   package Stock is
+      Limit : constant := 1
+      Table : array (1..Limit) of Integer;
+      procedure Restart;
+   end;
 
-       package body Stock is
-          procedure Restart is
-          begin
-             for N in 1 .. Limit loop
-                Table (N) := N;
-             end loop;
-          end;
-       begin
-          Restart;
-       end;
+   package body Stock is
+      procedure Restart is
+      begin
+         for N in 1..Limit loop
+            Table (N) := N;
+         end loop;
+      end;
+   begin
+      Restart;
+   end;
 
-       procedure Update (X : Integer) is
-          use Stock;
-       begin
-          ...
-          Table (X) := Table (X) + Small;
-          ...
-       end;
+   procedure Update (X : Integer) is
+      use Stock;
+   begin
+      ...
+      Table (X) := Table (X) + Small;
+      ...
+   end;
 
-    begin
-       ...
-       Stock.Restart; -- reinitializes Table
-       ...
-    end;
+begin
+   ...
+   Stock.Restart; -- reinitializes Table
+   ...
+end;
 ```
 
 The following three compilation units define a program with an effect equivalent
 to the above example (the broken lines between compilation units serve to remind
 the reader that these units need not be contiguous texts).
 
-Example 2 : Several compilation units:
+**Example 2 — several compilation units**
 
 ```ada
-    package Stock is
-       Limit : constant := 1
-```
-```ada
-       Table : array (1 .. Limit) of Integer;
-       procedure Restart;
-    end;
-```
+package Stock is
+   Limit : constant := 1
+   Table : array (1..Limit) of Integer;
+   procedure Restart;
+end;
 
-```ada
-    -------------------------------------------------
+-------------------------------------------------
 
-    package body Stock is
-       procedure Restart is
-       begin
-          for N in 1 .. Limit loop
-             Table (N) := N;
-```
-```ada
-          end loop;
-       end;
-```
+package body Stock is
+   procedure Restart is
+   begin
+      for N in 1..Limit loop
+         Table (N) := N;
+      end loop;
+   end;
 
-```ada
-    begin
-       Restart;
-```
-```ada
-    end;
-```
+begin
+   Restart;
+end;
 
-```ada
-    -------------------------------------------------
-```
+-------------------------------------------------
 
-```ada
-    with Stock;
-```
+with Stock;
 
-```ada
-    procedure Processor is
-```
-```ada
-       Small : constant := 20;
-       Total : Integer := 0;
-```
+procedure Processor is
+   Small : constant := 20;
+   Total : Integer := 0;
 
-```ada
-       procedure Update (X : Integer) is
-```
-```ada
-          use Stock;
-```
+   procedure Update (X : Integer) is
+      use Stock;
 
-```ada
-       begin
-          ...
-          Table (X) := Table (X) + Small;
-          ...
-```
-```ada
-       end;
-```
+   begin
+      ...
+      Table (X) := Table (X) + Small;
+      ...
+   end;
 
-```ada
-    begin
-       ...
-       Stock.Restart; -- reinitializes Table
-       ...
-```
-```ada
-    end;
+begin
+   ...
+   Stock.Restart; -- reinitializes Table
+   ...
+end;
 ```
 
 Note that in the latter version, the package Stock has no visibility of outer
@@ -9451,14 +9342,16 @@ A subunit is used for the separate compilation of the proper body of a program
 unit declared within another compilation unit. This method of splitting a
 program permits hierarchical program development.
 
-```ebnf
-    body_stub ::=
-         subprogram_specification is separate;
-       | package body package_simple_name is separate;
-       | task body task_simple_name is separate;
+**Syntax**
 
-    subunit ::=
-         separate (parent_unit_name) proper_body
+```ebnf
+body_stub ::=
+     subprogram_specification is separate;
+   | package body package_simple_name is separate;
+   | task body task_simple_name is separate;
+
+subunit ::=
+     separate (parent_unit_name) proper_body
 ```
 
 A body stub is only allowed as the body of a program unit (a subprogram, a
@@ -9508,153 +9401,115 @@ the subunit.
 The procedure Top is first written as a compilation unit without subunits.
 
 ```ada
-    with Text_IO;
-    procedure Top is
+with Text_IO;
+procedure Top is
 
-       type Real is digits 10;
-       R, S : Real := 1.0;
+   type Real is digits 10;
+   R, S : Real := 1.0;
 
-       package Facility is
-          Pi : constant := 3.14159_26536;
-          function F (X : Real) return Real;
-          procedure G (Y, Z : Real);
-       end;
+   package Facility is
+      Pi : constant := 3.14159_26536;
+      function F (X : Real) return Real;
+      procedure G (Y, Z : Real);
+   end;
 
-       package body Facility is
-          --  some local declarations followed by
+   package body Facility is
+      --  some local declarations followed by
 
-          function F (X : Real) return Real is
-          begin
-             --  sequence of statements of F
-             ...
-          end;
-          procedure G (Y, Z : Real) is
-             --  local procedures using Text_IO
-             ...
-          begin
-             --  sequence of statements of G
-             ...
-          end;
-       end;
+      function F (X : Real) return Real is
+      begin
+         --  sequence of statements of F
+         ...
+      end;
+      procedure G (Y, Z : Real) is
+         --  local procedures using Text_IO
+         ...
+      begin
+         --  sequence of statements of G
+         ...
+      end;
+   end;
 
-       procedure Transform (U : in out Real) is
-          use Facility;
-       begin
-          U := F (U);
-          ...
-       end;
-    begin -- Top
-       Transform (R);
-       ...
-       Facility.G (R, S);
-    end;
+   procedure Transform (U : in out Real) is
+      use Facility;
+   begin
+      U := F (U);
+      ...
+   end;
+begin -- Top
+   Transform (R);
+   ...
+   Facility.G (R, S);
+end;
 ```
 
 The body of the package Facility and that of the procedure Transform can be made
 into separate subunits of Top. Similarly, the body of the procedure G can be
 made into a subunit of Facility as follows.
 
-Example 3:
+**Example 3**
 
 ```ada
-    procedure Top is
-```
+procedure Top is
 
-```ada
-       type Real is digits 10;
-       R, S : Real := 1.0;
-```
+   type Real is digits 10;
+   R, S : Real := 1.0;
 
-```ada
-       package Facility is
-```
-```ada
-          Pi : constant := 3.14159_26536;
-          function F (X : Real) return Real;
-          procedure G (Y, Z : Real);
-       end;
-```
+   package Facility is
+      Pi : constant := 3.14159_26536;
+      function F (X : Real) return Real;
+      procedure G (Y, Z : Real);
+   end;
 
-```ada
-     package body Facility is separate; -- stub of Facility
-     procedure Transform (U : in out Real) is separate; -- stub of Transform
+ package body Facility is separate; -- stub of Facility
+ procedure Transform (U : in out Real) is separate; -- stub of Transform
 
-    begin -- Top
-       Transform (R);
-       ...
-       Facility.G (R, S);
-```
-```ada
-    end;
-```
+begin -- Top
+   Transform (R);
+   ...
+   Facility.G (R, S);
+end;
 
-```ada
-    -------------------------------------------------
+-------------------------------------------------
 
-    separate (Top)
-    procedure Transform (U : in out Real) is
-```
-```ada
-       use Facility;
-```
+separate (Top)
+procedure Transform (U : in out Real) is
+   use Facility;
 
-```ada
-    begin
-```
-```ada
-       U := F (U);
-```
+begin
+   U := F (U);
 
-```ada
-       ...
-```
-```ada
-    end;
-```
+   ...
+end;
 
-```ada
-    -------------------------------------------------
+-------------------------------------------------
 
-    separate (Top)
-    package body Facility is
-       --  some local declarations followed by
+separate (Top)
+package body Facility is
+   --  some local declarations followed by
 
-       function F (X : Real) return Real is
-       begin
-          --  sequence of statements of F
-          ...
-```
-```ada
-       end;
-```
+   function F (X : Real) return Real is
+   begin
+      --  sequence of statements of F
+      ...
+   end;
 
-```ada
-       procedure G (Y, Z : Real) is separate; -- stub of G
-```
-```ada
-    end;
-```
+   procedure G (Y, Z : Real) is separate; -- stub of G
+end;
 
-```ada
-    -------------------------------------------------
-```
+-------------------------------------------------
 
-```ada
-    with Text_IO;
-```
+with Text_IO;
 
-```ada
-    separate (Top.Facility) -- full name of Facility
+separate (Top.Facility) -- full name of Facility
 
-    procedure G (Y, Z : Real) is
-       --  local procedures using Text_IO
-       ...
-    begin
-       --  sequence of statements of G
-       ...
-```
-```ada
-    end;
+procedure G (Y, Z : Real) is
+   --  local procedures using Text_IO
+   ...
+begin
+   --  sequence of statements of G
+   ...
+end;
 ```
 
 In the above example Transform and Facility are subunits of Top, and G is a
@@ -9742,13 +9597,9 @@ program units, as described below.
   before or after the package body Stock.
 
 - **(d)** In example 3 (see [10.2.1](#1021-examples-of-subunits)): The procedure
-  G must be compiled after the
-
-
-```ada
-     package Text_IO since this package is named by the with clause of G.
-     On the other hand, Text_IO can be compiled either before or after Top.
-```
+  G must be compiled after the package Text_IO since this package is named by
+  the with clause of G. On the other hand, Text_IO can be compiled either before
+  or after Top.
 
 - **(e)** In example 3 (see [10.2.1](#1021-examples-of-subunits)): The subunits
   Transform and Facility must be compiled after the main program Top. Similarly,
@@ -9812,7 +9663,7 @@ this can be requested by a pragma Elaborate. The form of this pragma is as
 follows:
 
 ```ada
-    pragma Elaborate (library_unit_simple_name {, library_unit_simple_name});
+pragma Elaborate (library_unit_simple_name {, library_unit_simple_name});
 ```
 
 These pragmas are only allowed immediately after the context clause of a
@@ -9849,6 +9700,8 @@ effect of conditional compilation within the language.
 > an error if it occurs in a statement or subprogram that is never executed. The
 > compiler may warn the programmer of a potential error.
 
+---
+
 ## 11. Exceptions
 
 This chapter defines the facilities for dealing with errors or other exceptional
@@ -9871,7 +9724,7 @@ exception can only be used in raise statements, exception handlers, and renaming
 declarations.
 
 ```ada
-    exception_declaration ::= identifier_list : exception;
+exception_declaration ::= identifier_list : exception;
 ```
 
 An exception declaration with several identifiers is equivalent to a sequence of
@@ -9936,20 +9789,22 @@ the situations described are detected.
 **Examples of user-defined exception declarations:**
 
 ```ada
-    Singular : exception;
-    Error : exception;
-    Overflow, Underflow : exception;
+Singular : exception;
+Error : exception;
+Overflow, Underflow : exception;
 ```
 
 ### 11.2 Exception Handlers
 
 The response to one or more exceptions is specified by an exception handler.
 
+**Syntax**
+
 ```ebnf
-    exception_handler ::=
-       when exception_choice {| exception_choice} =>
-          sequence_of_statements
-    exception_choice ::= exception_name | others
+exception_handler ::=
+   when exception_choice {| exception_choice} =>
+      sequence_of_statements
+exception_choice ::= exception_name | others
 ```
 
 An exception handler occurs in a construct that is either a block statement or
@@ -9957,13 +9812,13 @@ the body of a subprogram, package, task unit, or generic unit. Such a construct
 will be called a frame in this chapter. In each case the syntax of a frame that
 has exception handlers includes the following part:
 
-```ada
-    begin
-        sequence_of_statements
-    exception
-        exception_handler
-       {exception_handler}
-    end
+```ebnf
+begin
+    sequence_of_statements
+exception
+    exception_handler
+   {exception_handler}
+end
 ```
 
 The exceptions denoted by the exception names given as exception choices of a
@@ -9980,15 +9835,15 @@ choices.
 **Example:**
 
 ```ada
-    begin
-       --  sequence of statements
-    exception
-       when Singular | Numeric_Error =>
-          Put (" MATRIX IS SINGULAR ");
-       when others =>
-          Put (" FATAL ERROR ");
-          raise Error;
-    end;
+begin
+   --  sequence of statements
+exception
+   when Singular | Numeric_Error =>
+      Put (" MATRIX IS SINGULAR ");
+   when others =>
+      Put (" FATAL ERROR ");
+      raise Error;
+end;
 ```
 
 > [!NOTE]
@@ -10001,7 +9856,7 @@ choices.
 A raise statement raises an exception.
 
 ```ada
-    raise_statement ::= raise [exception_name];
+raise_statement ::= raise [exception_name];
 ```
 
 For the execution of a raise statement with an exception name, the named
@@ -10014,10 +9869,10 @@ handler.
 **Examples:**
 
 ```ada
-    raise Singular;
-    raise Numeric_Error; -- explicitly raising a predefined exception
+raise Singular;
+raise Numeric_Error; -- explicitly raising a predefined exception
 
-    raise; -- only within an exception handler
+raise; -- only within an exception handler
 ```
 
 ### 11.4 Exception Handling
@@ -10058,18 +9913,12 @@ abandoned. The next action depends on the nature of the frame:
   accept statement).
 
 - **(c)** For a package body that is a declarative item, the same exception is
-
-
-```ada
-     raised again immediately after this declarative item (within the
-     enclosing declarative part). If the package body is that of a subunit,
-     the exception is raised again at the place of the corresponding body
-     stub. If the package is a library unit, execution of the main program
-     is abandoned.
-```
+  raised again immediately after this declarative item (within the enclosing
+  declarative part). If the package body is that of a subunit, the exception is
+  raised again at the place of the corresponding body stub. If the package is a
+  library unit, execution of the main program is abandoned.
 
 - **(d)** For a task body, the task becomes completed.
-
 
 An exception that is raised again (as in the above cases (a), (b), and (c)) is
 said to be propagated, either by the execution of the subprogram, the execution
@@ -10086,16 +9935,16 @@ depending on the nature of the frame.
 **Example:**
 
 ```ada
-    function Factorial (N : Positive) return Float is
-    begin
-       if N = 1 then
-          return 1.0;
-       else
-          return Float (N) * Factorial (N-1);
-       end if;
-    exception
-       when Numeric_Error => return Float'Safe_Large;
-    end;
+function Factorial (N : Positive) return Float is
+begin
+   if N = 1 then
+      return 1.0;
+   else
+      return Float (N) * Factorial (N-1);
+   end if;
+exception
+   when Numeric_Error => return Float'Safe_Large;
+end;
 ```
 
 If the multiplication raises Numeric_Error, then Float'Safe_Large is returned by
@@ -10107,34 +9956,34 @@ value Float'Safe_Large.
 **Example:**
 
 ```ada
-    procedure P is
-       Error : exception;
-       procedure R;
+procedure P is
+   Error : exception;
+   procedure R;
 
-       procedure Q is
-       begin
-          R;
-          ... -- error situation (2)
-       exception
-          ...
-          when Error => -- handler E2
-          ...
-       end;
+   procedure Q is
+   begin
+      R;
+      ... -- error situation (2)
+   exception
+      ...
+      when Error => -- handler E2
+      ...
+   end;
 
-       procedure R is
-       begin
-          ... -- error situation (3)
-       end;
+   procedure R is
+   begin
+      ... -- error situation (3)
+   end;
 
-    begin
-       ... -- error situation (1)
-       Q;
-       ...
-    exception
-       ...
-       when Error => -- handler E1
-       ...
-    end;
+begin
+   ... -- error situation (1)
+   Q;
+   ...
+exception
+   ...
+   when Error => -- handler E1
+   ...
+end;
 ```
 
 The following situations can arise:
@@ -10216,22 +10065,22 @@ package body.
 Example of an exception in the declarative part of a block statement (case (b)):
 
 ```ada
-    procedure P is
-       ...
-    begin
-       declare
-          N : Integer := F; -- the function F may raise Error
-       begin
-          ...
-       exception
-          when Error => -- handler E1
-       end;
-       ...
-    exception
-       when Error => -- handler E2
-    end;
+procedure P is
+   ...
+begin
+   declare
+      N : Integer := F; -- the function F may raise Error
+   begin
+      ...
+   exception
+      when Error => -- handler E1
+   end;
+   ...
+exception
+   when Error => -- handler E2
+end;
 
-    --  if the exception Error is raised in the declaration of N, it is handled by E2
+--  if the exception Error is raised in the declaration of N, it is handled by E2
 ```
 
 ### 11.5 Exceptions Raised During Task Communication
@@ -10248,15 +10097,10 @@ the call.
 A rendezvous can be completed abnormally in two cases:
 
 - **(a)** When an exception is raised within an accept statement, but not
-
-
-```ada
-     handled within an inner frame. In this case, the execution of the
-     accept statement is abandoned and the same exception is raised again
-     immediately after the accept statement within the called task; the
-     exception is also propagated to the calling task at the point of the
-     entry call.
-```
+  handled within an inner frame. In this case, the execution of the accept
+  statement is abandoned and the same exception is raised again immediately
+  after the accept statement within the called task; the exception is also
+  propagated to the calling task at the point of the entry call.
 
 - **(b)** When the task containing the accept statement is completed abnormally
   as the result of an abort statement. In this case, the exception Tasking_Error
@@ -10336,17 +10180,17 @@ this invocation ineffective.
 **Example:**
 
 ```ada
-    declare
-       N : Integer;
-    begin
-       N := 0; -- (1)
-       for J in 1 .. 10 loop
-          N := N + J**A (K); -- A and K are global variables
-       end loop;
-       Put (N);
-    exception
-       when others => Put ("Some error arose"); Put (N);
-    end;
+declare
+   N : Integer;
+begin
+   N := 0; -- (1)
+   for J in 1..10 loop
+      N := N + J**A (K); -- A and K are global variables
+   end loop;
+   Put (N);
+exception
+   when others => Put ("Some error arose"); Put (N);
+end;
 ```
 
 The evaluation of A(K) may be performed before the loop, and possibly
@@ -10364,7 +10208,7 @@ The presence of a Suppress pragma gives permission to an implementation to omit
 certain run-time checks. The form of this pragma is as follows:
 
 ```ada
-    pragma Suppress (identifier [, [On =>] name]);
+pragma Suppress (identifier [, [On =>] name]);
 ```
 
 The identifier is that of the check that can be omitted. The name (if present)
@@ -10445,8 +10289,8 @@ by the language).
 **Examples:**
 
 ```ada
-    pragma Suppress (Range_Check);
-    pragma Suppress (Index_Check, On => Table);
+pragma Suppress (Range_Check);
+pragma Suppress (Index_Check, On => Table);
 ```
 
 > [!NOTE]
@@ -10455,6 +10299,8 @@ by the language).
 > occurrence of such a pragma within a given unit does not guarantee that the
 > corresponding exception will not arise; the exceptions may also be propagated by
 > called units.
+
+---
 
 ## 12. Generic Units
 
@@ -10485,25 +10331,27 @@ part declaring any generic formal parameters. A generic formal parameter can be
 an object; alternatively (unlike a parameter of a subprogram), it can be a type
 or a subprogram.
 
+**Syntax**
+
 ```ebnf
-    generic_declaration ::= generic_specification;
+generic_declaration ::= generic_specification;
 
-    generic_specification ::=
-         generic_formal_part subprogram_specification
-       | generic_formal_part package_specification
+generic_specification ::=
+     generic_formal_part subprogram_specification
+   | generic_formal_part package_specification
 
-    generic_formal_part ::= generic {generic_parameter_declaration}
+generic_formal_part ::= generic {generic_parameter_declaration}
 
-    generic_parameter_declaration ::=
-         identifier_list : [in [out]] type_mark [:= expression];
-       | type identifier is generic_type_definition;
-       | private_type_declaration
-       | with subprogram_specification [is name];
-       | with subprogram_specification [is <>];
+generic_parameter_declaration ::=
+     identifier_list : [in [out]] type_mark [:= expression];
+   | type identifier is generic_type_definition;
+   | private_type_declaration
+   | with subprogram_specification [is name];
+   | with subprogram_specification [is <>];
 
-    generic_type_definition ::=
-         (<>) | range <> | digits <> | delta <>
-       | array_type_definition | access_type_definition
+generic_type_definition ::=
+     (<>) | range <> | digits <> | delta <>
+   | array_type_definition | access_type_definition
 ```
 
 The terms generic formal object (or simply, formal object), generic formal type
@@ -10526,62 +10374,50 @@ The elaboration of a generic declaration has no other effect.
 **Examples of generic formal parts:**
 
 ```ada
-    generic -- parameterless
+generic -- parameterless
 
-    generic
-       Size : Natural; -- formal object
+generic
+   Size : Natural; -- formal object
 
-    generic
-       Length : Integer := 200; -- formal object with a default
-                                            expression
-       Area : Integer := Length*Length; -- formal object with a default
-                                             expression
+generic
+   Length : Integer := 200; -- formal object with a default
+                                        expression
+   Area : Integer := Length*Length; -- formal object with a default
+                                         expression
 
-    generic
-       type Item is private; -- formal type
-       type Index is (<>); -- formal type
-       type Row is array (Index range <>) of Item; -- formal type
-       with function "<"(X, Y : Item) return Boolean; -- formal subprogram
+generic
+   type Item is private; -- formal type
+   type Index is (<>); -- formal type
+   type Row is array (Index range <>) of Item; -- formal type
+   with function "<"(X, Y : Item) return Boolean; -- formal subprogram
 ```
 
 **Examples of generic declarations declaring generic subprograms:**
 
 ```ada
-    generic
-```
-```ada
-       type Elem is private;
-    procedure Exchange (U, V : in out Elem);
-```
+generic
+   type Elem is private;
+procedure Exchange (U, V : in out Elem);
 
-```ada
-    generic
-```
-```ada
-       type Item is private;
-       with function "*"(U, V : Item) return Item is <>;
-    function Squaring (X : Item) return Item;
+generic
+   type Item is private;
+   with function "*"(U, V : Item) return Item is <>;
+function Squaring (X : Item) return Item;
 ```
 
 **Example of a generic declaration declaring a generic package:**
 
 ```ada
-    generic
-```
-```ada
-       type Item is private;
-       type Vector is array (Positive range <>) of Item;
-       with function Sum (X, Y : Item) return Item;
-```
+generic
+   type Item is private;
+   type Vector is array (Positive range <>) of Item;
+   with function Sum (X, Y : Item) return Item;
 
-```ada
-    package On_Vectors is
-```
-```ada
-       function Sum (A, B : Vector) return Vector;
-       function Sigma (A : Vector) return Item;
-       Length_Error : exception;
-       end;
+package On_Vectors is
+   function Sum (A, B : Vector) return Vector;
+   function Sigma (A : Vector) return Item;
+   Length_Error : exception;
+   end;
 ```
 
 > [!NOTE]
@@ -10709,29 +10545,25 @@ for the actual type or for some parent type of the actual type.
 **Examples of generic formal types:**
 
 ```ada
-    type Item is private;
-    type Buffer (Length : Natural) is limited private;
+type Item is private;
+type Buffer (Length : Natural) is limited private;
 
-    type Enum is (<>);
-    type Int is range <>;
-    type Angle is delta <>;
-    type Mass is digits <>;
+type Enum is (<>);
+type Int is range <>;
+type Angle is delta <>;
+type Mass is digits <>;
 
-    type Table is array (Enum) of Item;
+type Table is array (Enum) of Item;
 ```
 
 **Example of a generic formal part declaring a formal integer type:**
 
 ```ada
-    generic
-```
-```ada
-       type Rank is range <>;
-       First : Rank := Rank'First;
-```
+generic
+   type Rank is range <>;
+   First : Rank := Rank'First;
 
-```ada
-       Second : Rank := First + 1; -- the operator "+" of the type Rank
+   Second : Rank := First + 1; -- the operator "+" of the type Rank
 ```
 
 #### 12.1.3 Generic Formal Subprograms
@@ -10751,13 +10583,13 @@ instantiation, as described in section [12.3](#123-generic-instantiation)(f).
 **Examples of generic formal subprograms:**
 
 ```ada
-    with function Increase (X : Integer) return Integer;
-    with function Sum (X, Y : Item) return Item;
+with function Increase (X : Integer) return Integer;
+with function Sum (X, Y : Item) return Item;
 
-    with function "+"(X, Y : Item) return Item is <>;
-    with function Image (X : Enum) return String is Enum'Image;
+with function "+"(X, Y : Item) return Item is <>;
+with function Image (X : Enum) return String is Enum'Image;
 
-    with procedure Update is Default_Update;
+with procedure Update is Default_Update;
 ```
 
 > [!NOTE]
@@ -10790,77 +10622,79 @@ instances.
 **Example of a generic procedure body:**
 
 ```ada
-    procedure Exchange (U, V : in out Elem) is -- see example in 12.1
-       T : Elem; -- the generic formal type
-    begin
-       T := U;
-       U := V;
-       V := T;
-    end;
+procedure Exchange (U, V : in out Elem) is -- see example in 12.1
+   T : Elem; -- the generic formal type
+begin
+   T := U;
+   U := V;
+   V := T;
+end;
 ```
 
 **Example of a generic function body:**
 
 ```ada
-    function Squaring (X : Item) return Item is -- see example in 12.1
-    begin
-       return X*X; -- the formal operator "*"
-    end;
+function Squaring (X : Item) return Item is -- see example in 12.1
+begin
+   return X*X; -- the formal operator "*"
+end;
 ```
 
 **Example of a generic package body:**
 
 ```ada
-    package body On_Vectors is -- see example in 12.1
+package body On_Vectors is -- see example in 12.1
 
-       function Sum (A, B : Vector) return Vector is
-          Result : Vector (A'Range); -- the formal type Vector
-          Bias : constant Integer := B'First - A'First;
-       begin
-          if A'Length /= B'Length then
-             raise Length_Error;
-          end if;
+   function Sum (A, B : Vector) return Vector is
+      Result : Vector (A'Range); -- the formal type Vector
+      Bias : constant Integer := B'First - A'First;
+   begin
+      if A'Length /= B'Length then
+         raise Length_Error;
+      end if;
 
-          for N in A'Range loop
-             Result (N) := Sum (A (N), B (N + Bias)); -- the formal function Sum
-          end loop;
-          return Result;
-       end;
+      for N in A'Range loop
+         Result (N) := Sum (A (N), B (N + Bias)); -- the formal function Sum
+      end loop;
+      return Result;
+   end;
 
-       function Sigma (A : Vector) return Item is
-          Total : Item := A (A'First); -- the formal type Item
-       begin
-          for N in A'First + 1 .. A'Last loop
-             Total := Sum (Total, A (N)); -- the formal function Sum
-          end loop;
-          return Total;
-       end;
-    end;
+   function Sigma (A : Vector) return Item is
+      Total : Item := A (A'First); -- the formal type Item
+   begin
+      for N in A'First + 1..A'Last loop
+         Total := Sum (Total, A (N)); -- the formal function Sum
+      end loop;
+      return Total;
+   end;
+end;
 ```
 
 ### 12.3 Generic Instantiation
 
 An instance of a generic unit is declared by a generic instantiation.
 
+**Syntax**
+
 ```ebnf
-    generic_instantiation ::=
-         package identifier is
-             new generic_package_name [generic_actual_part];
-       | procedure identifier is
-             new generic_procedure_name [generic_actual_part];
-       | function designator is
-             new generic_function_name [generic_actual_part];
+generic_instantiation ::=
+     package identifier is
+         new generic_package_name [generic_actual_part];
+   | procedure identifier is
+         new generic_procedure_name [generic_actual_part];
+   | function designator is
+         new generic_function_name [generic_actual_part];
 
-    generic_actual_part ::=
-       (generic_association {, generic_association})
+generic_actual_part ::=
+   (generic_association {, generic_association})
 
-    generic_association ::=
-       [generic_formal_parameter =>] generic_actual_parameter
+generic_association ::=
+   [generic_formal_parameter =>] generic_actual_parameter
 
-    generic_formal_parameter ::= parameter_simple_name | operator_symbol
+generic_formal_parameter ::= parameter_simple_name | operator_symbol
 
-    generic_actual_parameter ::= expression | variable_name
-       | subprogram_name | entry_name | type_mark
+generic_actual_parameter ::= expression | variable_name
+   | subprogram_name | entry_name | type_mark
 ```
 
 An explicit generic actual parameter must be supplied for each generic formal
@@ -10892,12 +10726,8 @@ within the instance.
   the associated generic actual parameter.
 
 - **(c)** For a name that denotes a generic formal object of mode in out: The
-
-
-```ada
-     corresponding name denotes the variable named by the associated
-     generic actual parameter.
-```
+  corresponding name denotes the variable named by the associated generic actual
+  parameter.
 
 - **(d)** For a name that denotes a generic formal type: The corresponding name
   denotes the subtype named by the associated generic actual parameter (the
@@ -10920,11 +10750,7 @@ within the instance.
   local declaration within the instance.
 
 - **(i)** For a name that denotes a global entity declared outside of the
-
-
-```ada
-     generic unit: The corresponding name denotes the same global entity.
-```
+  generic unit: The corresponding name denotes the same global entity.
 
 Similar rules apply to operators and basic operations: in particular, formal
 operators follow a rule similar to rule (f), local operations follow a rule
@@ -10957,37 +10783,29 @@ by intermediate instantiations).
 Examples of generic instantiations (see [12.1](#121-generic-declarations)):
 
 ```ada
-    procedure Swap is new Exchange (Elem => Integer);
-    procedure Swap is new Exchange (Character); -- Swap is overloaded
+procedure Swap is new Exchange (Elem => Integer);
+procedure Swap is new Exchange (Character); -- Swap is overloaded
 
-    function Square is new Squaring (Integer); -- "*" of Integer used by default
-    function Square is new Squaring (Item => Matrix, "*" => Matrix_Product);
-    function Square is new Squaring (Matrix, Matrix_Product); -- same as previous
+function Square is new Squaring (Integer); -- "*" of Integer used by default
+function Square is new Squaring (Item => Matrix, "*" => Matrix_Product);
+function Square is new Squaring (Matrix, Matrix_Product); -- same as previous
 
-    package Int_Vectors is new On_Vectors (Integer, Table, "+");
+package Int_Vectors is new On_Vectors (Integer, Table, "+");
 ```
 
 **Examples of uses of instantiated units:**
 
 ```ada
-    Swap (A, B);
-```
-```ada
-    A := Square (A);
+Swap (A, B);
+A := Square (A);
 
-    T : Table (1 .. 5) := (10, 20, 30, 40, 50);
-```
+T : Table (1..5) := (10, 20, 30, 40, 50);
 
-```ada
-    N : Integer := Int_Vectors.Sigma (T); -- 150 (see 12.2 for the body of
-                                              Sigma)
-```
-```ada
-    use Int_Vectors;
-```
+N : Integer := Int_Vectors.Sigma (T); -- 150 (see 12.2 for the body of
+                                          Sigma)
+use Int_Vectors;
 
-```ada
-    M : Integer := Sigma (T); -- 150
+M : Integer := Sigma (T); -- 150
 ```
 
 > [!NOTE]
@@ -11101,30 +10919,28 @@ same bounds. The exception Constraint_Error is raised if this check fails.
 **Example:**
 
 ```ada
-    --  given the generic package
+--  given the generic package
 
-    generic
-       type Item is private;
-       type Index is (<>);
-       type Vector is array (Index range <>) of Item;
-       type Table is array (Index) of Item;
-    package P is
-       ...
-    end;
+generic
+   type Item is private;
+   type Index is (<>);
+   type Vector is array (Index range <>) of Item;
+   type Table is array (Index) of Item;
+package P is
+   ...
+end;
 
-    --  and the types
+--  and the types
 
-    type Mix is array (Color range <>) of Boolean;
-    type Option is array (Color) of Boolean;
+type Mix is array (Color range <>) of Boolean;
+type Option is array (Color) of Boolean;
 
-    --  then Mix can match Vector and Option can match Table
+--  then Mix can match Vector and Option can match Table
 
-    package R is new P (Item => Boolean, Index => Color,
-                       Vector => Mix, Table => Option);
-```
+package R is new P (Item => Boolean, Index => Color,
+                   Vector => Mix, Table => Option);
 
-```ada
-    --  Note that Mix cannot match Table and Option cannot match Vector
+--  Note that Mix cannot match Table and Option cannot match Vector
 ```
 
 > [!NOTE]
@@ -11147,32 +10963,30 @@ Constraint_Error is raised if this check fails.
 **Example:**
 
 ```ada
-    --  the formal types of the generic package
+--  the formal types of the generic package
 
-    generic
-       type Node is private;
-       type Link is access Node;
-    package P is
-       ...
-    end;
+generic
+   type Node is private;
+   type Link is access Node;
+package P is
+   ...
+end;
 
-    --  can be matched by the actual types
+--  can be matched by the actual types
 
-    type Car;
-    type Car_Name is access Car;
+type Car;
+type Car_Name is access Car;
 
-    type Car is
-       record
-          Pred, Succ : Car_Name;
-          Number : License_Number;
-          Owner : Person;
-       end record;
+type Car is
+   record
+      Pred, Succ : Car_Name;
+      Number : License_Number;
+      Owner : Person;
+   end record;
 
-    --  in the following generic instantiation
-```
+--  in the following generic instantiation
 
-```ada
-    package R is new P (Node => Car, Link => Car_Name);
+package R is new P (Node => Car, Link => Car_Name);
 ```
 
 > [!NOTE]
@@ -11203,27 +11017,27 @@ conditions).
 **Example:**
 
 ```ada
-    --  given the generic function specification
+--  given the generic function specification
 
-    generic
-       type Item is private;
-       with function "*" (U, V : Item) return Item is <>;
-    function Squaring (X : Item) return Item;
+generic
+   type Item is private;
+   with function "*" (U, V : Item) return Item is <>;
+function Squaring (X : Item) return Item;
 
-    --  and the function
+--  and the function
 
-    function Matrix_Product (A, B : Matrix) return Matrix;
+function Matrix_Product (A, B : Matrix) return Matrix;
 
-    --  the following instantiation is possible
+--  the following instantiation is possible
 
-    function Square is new Squaring (Matrix, Matrix_Product);
+function Square is new Squaring (Matrix, Matrix_Product);
 
-    --  the following instantiations are equivalent
+--  the following instantiations are equivalent
 
-    function Square is new Squaring (Item => Integer, "*" => "*");
+function Square is new Squaring (Item => Integer, "*" => "*");
 
-    function Square is new Squaring (Integer, "*");
-    function Square is new Squaring (Integer);
+function Square is new Squaring (Integer, "*");
+function Square is new Squaring (Integer);
 ```
 
 > [!NOTE]
@@ -11244,87 +11058,94 @@ generic package. The size of each stack and the type of the stack elements are
 provided as generic parameters.
 
 ```ada
-    generic
-       Size : Positive;
-       type Item is private;
-    package Stack is
-       procedure Push (E : in Item);
-       procedure Pop (E : out Item);
-       Overflow, Underflow : exception;
-    end;
+generic
+   Size : Positive;
+   type Item is private;
+package Stack is
+   procedure Push (E : in Item);
+   procedure Pop (E : out Item);
+   Overflow, Underflow : exception;
+end;
 
-    package body Stack is
+package body Stack is
 
-       type Table is array (Positive range <>) of Item;
-       Space : Table (1 .. Size);
-       Index : Natural := 0;
+   type Table is array (Positive range <>) of Item;
+   Space : Table (1..Size);
+   Index : Natural := 0;
 
-       procedure Push (E : in Item) is
-       begin
-          if Index >= Size then
-             raise Overflow;
-          end if;
-          Index := Index + 1;
-          Space (Index) := E;
-       end;
+   procedure Push (E : in Item) is
+   begin
+      if Index >= Size then
+         raise Overflow;
+      end if;
+      Index := Index + 1;
+      Space (Index) := E;
+   end;
 
-       procedure Pop (E : out Item) is
-       begin
-          if Index = 0 then
-             raise Underflow;
-          end if;
-          E := Space (Index);
-          Index := Index - 1;
-       end;
+   procedure Pop (E : out Item) is
+   begin
+      if Index = 0 then
+         raise Underflow;
+      end if;
+      E := Space (Index);
+      Index := Index - 1;
+   end;
 
-    end;
+end;
 ```
 
 Instances of this generic package can be obtained as follows:
 
 ```ada
-    package Stack_Int is new Stack (Size => 200, Item => Integer);
-    package Stack_Bool is new Stack (100, Boolean);
+package Stack_Int is new Stack (Size => 200, Item => Integer);
+package Stack_Bool is new Stack (100, Boolean);
 ```
 
 Thereafter, the procedures of the instantiated packages can be called as
 follows:
 
 ```ada
-    Stack_Int.Push (N);
-    Stack_Bool.Push (True);
+Stack_Int.Push (N);
+Stack_Bool.Push (True);
 ```
 
 Alternatively, a generic formulation of the type Stack can be given as follows
 (package body omitted):
 
 ```ada
-    generic
-       type Item is private;
-    package On_Stacks is
-       type Stack (Size : Positive) is limited private;
-       procedure Push (S : in out Stack; E : in Item);
-       procedure Pop (S : in out Stack; E : out Item);
-       Overflow, Underflow : exception;
-    private
-       type Table is array (Positive range <>) of Item;
-       type Stack (Size : Positive) is
-          record
-             Space : Table (1 .. Size);
-             Index : Natural := 0;
-          end record;
-    end;
+generic
+   type Item is private;
+package On_Stacks is
+   type Stack (Size : Positive) is limited private;
+   procedure Push (S : in out Stack; E : in Item);
+   procedure Pop (S : in out Stack; E : out Item);
+   Overflow, Underflow : exception;
+private
+   type Table is array (Positive range <>) of Item;
+   type Stack (Size : Positive) is
+      record
+         Space : Table (1..Size);
+         Index : Natural := 0;
+      end record;
+end;
 ```
 
 In order to use such a package, an instantiation must be created and thereafter
 stacks of the corresponding type can be declared:
 
 ```ada
-    declare
-       package Stack_Real is new On_Stacks (Real); use Stack_Real;
+declare
+   package Stack_Real is new On_Stacks (Real);
+   use Stack_Real;
+   S : Stack (100);
+begin
+   ...
+   Push (S, 2.54);
+   ...
+end;
 ```
 
-S : Stack (100) begin ... Push (S, 2.54); ... end;
+---
 
 ## 13. Representation Clauses and Implementation-Dependent Features
 
@@ -11338,13 +11159,15 @@ onto the underlying machine. They can be provided to give more efficient
 representation or to interface with features that are outside the domain of the
 language (for example, peripheral hardware).
 
-```ebnf
-        representation_clause ::=
-              type_representation_clause | address_clause
+**Syntax**
 
-        type_representation_clause ::= length_clause
-              | enumeration_representation_clause
-              |record_representation_clause
+```ebnf
+representation_clause ::=
+      type_representation_clause | address_clause
+
+type_representation_clause ::= length_clause
+      | enumeration_representation_clause
+      |record_representation_clause
 ```
 
 A type representation clause applies either to a type or to a first named
@@ -11383,7 +11206,6 @@ type. A forcing occurence is any occurrence other than in a type or subtype
 declaration, a subprogram specification, an entry declaration, a deferred
 constant declaration, a pragma, or a representation clause for the type itself.
 In any case, an occurrence within an expression is always forcing.
- 
 
 A representation clause for a given entity must not appear after an occurrence
 of the name of the entity if this occurrence forces a default determination of
@@ -11416,7 +11238,7 @@ Pack specifies that storage minimization should be the main criterion when
 selecting the representation of a record or array type. Its form is as follows:
 
 ```ada
-        pragma Pack (type_simple_name);
+pragma Pack (type_simple_name);
 ```
 
 Packing means that gaps between the storage areas allocated to consecutive
@@ -11439,7 +11261,11 @@ is not accepted by the implementation is ignored).
 
 A length clause specifies an amount of storage associated with a type.
 
+**Syntax**
+
+```ebnf
 length_clause ::= for attribute use simple_expression;
+```
 
 The expression must be of some numeric type and is evaluated during the
 elaboration of the length clause (unless it is a static expression). The prefix
@@ -11482,57 +11308,54 @@ depends on the attribute designator:
   type. (The length clause thereby also affects the amount of storage for
   objects that have this type).
 
- Notes:
-
-A size specification is allowed for an access, task, or fixed point type,
-whether or not another form of length clause is also given for the type.
-
-What is considered to be part of the storage reserved for a collection or for an
-activation of a task is implementation-dependent. The control afforded by length
-clauses is therefore relative to the implementation conventions. For example,
-the language does not define whether the storage reserved for an activation of a
-task includes any storage needed for the collection associated with an access
-type declared within the task body. Neither does it define the method of
-allocation for objects denoted by values of an access type. For example, the
-space allocated could be on a stack; alternatively, a general dynamic aliocation
-scheme or fixed storage could be used.
-
-The objects allocated in a collection need not have the same size if the
-designated type is an unconstrained array type or an unconstrained type with
-discriminants. Note also that the allocator itself may require some space for
-internal tables and links. Hence a length clause for the collection of an access
-type does not always give precise control over the maximum number of allocated
-objects.
+> [!NOTE]
+> A size specification is allowed for an access, task, or fixed point type,
+> whether or not another form of length clause is also given for the type.
+>
+> What is considered to be part of the storage reserved for a collection or for
+> an activation of a task is implementation-dependent. The control afforded by
+> length clauses is therefore relative to the implementation conventions. For
+> example, the language does not define whether the storage reserved for an
+> activation of a task includes any storage needed for the collection associated
+> with an access type declared within the task body. Neither does it define the
+> method of allocation for objects denoted by values of an access type. For
+> example, the space allocated could be on a stack; alternatively, a general
+> dynamic allocation scheme or fixed storage could be used.
+>
+> The objects allocated in a collection need not have the same size if the
+> designated type is an unconstrained array type or an unconstrained type with
+> discriminants. Note also that the allocator itself may require some space for
+> internal tables and links. Hence a length clause for the collection of an
+> access type does not always give precise control over the maximum number of
+> allocated objects.
 
 **Examples:**
 
 ```ada
-      --assumed declarations:
+--assumed declarations:
 
-      type Medium is range 0 .. 65000;
-      type Short is delta 0.01 range -100.0 .. 100.0;
-      type Degree is delta 0.1 range -360.0 .. 360.0;
+type Medium is range 0..65000;
+type Short is delta 0.01 range -100.0..100.0;
+type Degree is delta 0.1 range -360.0..360.0;
 
-      Byte : constant := 8;
-      Page : constant := 2000;
+Byte : constant := 8;
+Page : constant := 2000;
 
-      --length clauses:
+--length clauses:
 
-      for Color'Size use 1*Byte; -- see 3.5.1
-      for Medium'Size use 2*Byte;
-      for Short'Size use 15;
+for Color'Size use 1*Byte; -- see 3.5.1
+for Medium'Size use 2*Byte;
+for Short'Size use 15;
 
-      for Car_Name'Storage_Size use -- approximately 2000 cars
-              2000*((Car'Size/System.Storage_Unit) +1);
-```
+for Car_Name'Storage_Size use -- approximately 2000 cars
+        2000*((Car'Size/System.Storage_Unit) +1);
 
-```ada
-      for Keyboard_Drivers'Storage_Size use 1*Page;
-```
+for Keyboard_Drivers'Storage_Size use 1*Page;
 
 for Degree'Small use 360.0/2**(System.Storage_Unit -1);
+```
 
-Notes on the examples:
+**Notes on the examples:**
 
 In the length clause for Short, fifteen bits is the minimum necessary, since the
 type definition requires Short'Small=2**(-7) and Short'Mantissa = 14. The length
@@ -11544,9 +11367,11 @@ type.
 An enumeration representation clause specifies the internal codes for the
 literals of the enumeration type that is named in the clause.
 
+**Syntax**
+
 ```ebnf
-      enumeration_representation_clause ::= for type_simple_name use
-               aggregate;
+enumeration_representation_clause ::= for type_simple_name use
+         aggregate;
 ```
 
 The aggregate used to specify this mapping is written as a one-dimensional
@@ -11561,10 +11386,10 @@ predefined ordering relation of the type.
 **Example:**
 
 ```ada
-      type Mix_Code is (Add, Sub, Mul, Lda, Sta, Stz);
+type Mix_Code is (Add, Sub, Mul, Lda, Sta, Stz);
 
-      for Mix_Code use
-         (Add => 1, Sub =.2, Mul => 3, Lda => 8, Sta => 24, Stz =>33);
+for Mix_Code use
+   (Add => 1, Sub =.2, Mul => 3, Lda => 8, Sta => 24, Stz =>33);
 ```
 
 > [!NOTE]
@@ -11582,20 +11407,20 @@ A record representation clause specifies the storage representation of records,
 that is, the order, position, and size of record components (including
 discriminants, if any).
 
+**Syntax**
+
 ```ebnf
-      record_representation_clause ::=
-        for type_simple_name use
-          record [alignment_clause]
-            {component clause}
-          end record;
+record_representation_clause ::=
+  for type_simple_name use
+    record [alignment_clause]
+      {component clause}
+    end record;
 
-      alignment_clause ::= at mod static_simple_expression;
+alignment_clause ::= at mod static_simple_expression;
 
-      component_clause ::=
-        component_name at static_simple_expression range static_range;
+component_clause ::=
+  component_name at static_simple_expression range static_range;
 ```
-
- 
 
 The simple expression given after the reserved words at mod in an alignment
 clause, or after the reserved word at in a component clause, must be a static
@@ -11643,57 +11468,43 @@ implementation-dependent attributes).
 **Example:**
 
 ```ada
-      Word : constant := 4; -- storage unit is byte, 4 bytes per word
-```
+Word : constant := 4;  -- storage unit is byte, 4 bytes per word
 
-type State is (A,M,W,P); type Mode is (Fix, Dec, Exp, Signif);
+type State is (A, M, W, P);
+type Mode  is (Fix, Dec, Exp, Signif);
 
-type Byte_Mask is array (0.. 7) of Boolean; type State_Mask is array (State) of
-Boolean; type Mode_Mask is array (Mode) of Boolean;
+type Byte_Mask  is array (0..7) of Boolean;
+type State_Mask is array (State)  of Boolean;
+type Mode_Mask  is array (Mode)   of Boolean;
 
 type Program_Status_Word is
-
-```ada
-  record
-```
-
-```ada
-      System_Mask : Byte_Mask;
-      Protection_Key : Integer range 0 .. 3;
-      Machine_State : State_Mask;
+   record
+      System_Mask     : Byte_Mask;
+      Protection_Key  : Integer range 0..3;
+      Machine_State   : State_Mask;
       Interrupt_Cause : Interruption_Code;
-      Ilc : Integer range 0 .. 3;
-      Cc : Integer range 0 .. 3;
-      Program_Mask : Mode_Mask;
-      Inst_Address : Address;
+      Ilc             : Integer range 0..3;
+      Cc              : Integer range 0..3;
+      Program_Mask    : Mode_Mask;
+      Inst_Address    : Address;
+   end record;
+
+for Program_Status_Word use
+   record at mod 8;
+      System_Mask     at 0*Word range 0..7;
+      Protection_Key  at 0*Word range 10..11;  -- bits 8,9 unused
+      Machine_State   at 0*Word range 12..15;
+      Interrupt_Cause at 0*Word range 16..31;
+      Ilc             at 1*Word range 0..1;    -- second word
+      Cc              at 1*Word range 2..3;
+      Program_Mask    at 1*Word range 4..7;
+      Inst_Address    at 1*Word range 8..31;
+   end record;
+
+for Program_Status_Word'Size use 8*System.Storage_Unit;
 ```
 
-end record;
-
-```ada
- 
-
-  for Program_Status_Word use
-```
-
-```ada
-    record at mod 8;
-        System_Mask at 0*Word range 0 .. 7;
-        Protection_Key at 0*Word range 10 .. 11; -- bits 8,9 unused
-        Machine_State at 0*Word range 12 .. 15;
-        Interrupt_Cause at 0*Word range 16 .. 31;
-        Ilc at 1*Word range 0 .. 1; -- second word
-        Cc at 1*Word range 2 .. 3;
-        Program_Mask at 1*Word range 4 .. 7;
-        Inst_Address at 1*Word range 8 .. 31;
-    end record;
-```
-
-```ada
-  for Program_Status_Word'Size use 8*System.Storage_Unit;
-```
-
-Note on the example:
+**Note on the example:**
 
 The record representation clause defines the record layout. The length clause
 guarantees that exactly eight storage units are used.
@@ -11703,7 +11514,7 @@ guarantees that exactly eight storage units are used.
 An address clause specifies a required address in storage for an entity.
 
 ```ada
-      address_clause ::= for simple_name use at simple_expression;
+address_clause ::= for simple_name use at simple_expression;
 ```
 
 The expression given after the reserved word at must be of the type Address
@@ -11733,13 +11544,12 @@ the simple name.
 Address clauses should not be used to achieve overlays of objects or overlays of
 program units. Nor should a given interrupt be linked to more than one entry.
 Any program using address clauses to achieve such effects is erroneous.
- 
 
 **Example:**
 
 ```ada
-    for Control use at 16#0020#; -- assuming that System.Address is an integer
-    type
+for Control use at 16#0020#; -- assuming that System.Address is an integer
+type
 ```
 
 > [!NOTE]
@@ -11773,11 +11583,11 @@ given in section [9.4](#94-task-dependence---termination-of-tasks).
 **Example:**
 
 ```ada
-      task Interrupt_Handler is
-        entry Done;
-        for Done use at 16#40#; assuming that System.Address is an integer
-          type
-        end;
+task Interrupt_Handler is
+  entry Done;
+  for Done use at 16#40#; assuming that System.Address is an integer
+    type
+  end;
 ```
 
 > [!NOTE]
@@ -11790,7 +11600,7 @@ given in section [9.4](#94-task-dependence---termination-of-tasks).
 > consequence of the priority rules that an accept statement executed in response
 > to an interrupt takes precedence over ordinary, user-defined tasks, and can be
 > executed without first invoking a scheduling action.
->  
+>
 > One of the possible effects of an address clause for an interrupt entry is to
 > specify the priority of the interrupt (directly or indirectly). Direct calls to
 > an interrupt entry are allowed.
@@ -11805,37 +11615,31 @@ different representation for the second type.
 **Example:**
 
 ```ada
-  -- Packed_Descriptor and Descriptor are two different types
-  -- with identical characteristics, apart from their representation
+-- Packed_Descriptor and Descriptor are two different types
+-- with identical characteristics, apart from their representation
 
-  type Descriptor is
-```
+type Descriptor is
+   record
+      -- components of a descriptor
+   end record;
 
-```ada
-      record
-        -- components of a descriptor
-      end record;
+type Packed_Descriptor is new Descriptor;
 
-  type Packed_Descriptor is new Descriptor;
-
-  for Packed_Descriptor use
-```
-
-```ada
-      record
-        -- component clauses for some or for all components
-      end record;
+for Packed_Descriptor use
+   record
+      -- component clauses for some or for all components
+   end record;
 ```
 
 Change of representation can now be accomplished by assignment with explicit
 type conversions:
 
 ```ada
-      D : Descriptor;
-      P : Packed_Descriptor;
+D : Descriptor;
+P : Packed_Descriptor;
 
-      P := Packed_Descriptor (D); -- pack D
-      D := Descriptor (P); -- unpack P
+P := Packed_Descriptor (D); -- pack D
+D := Descriptor (P); -- unpack P
 ```
 
 ### 13.7 The Package System
@@ -11845,36 +11649,34 @@ which includes the definitions of certain configuration-dependent
 characteristics. The specification of the package System is
 implementation-dependent and must be given in Appendix F. The visible part of
 this package must contain at least the following declarations.
- 
 
+```ada
 package System is
 
-```ada
-      type Address is implementation_defined;
-      type Name is implementation_defined_enumeration_type;
+   type Address is implementation_defined;
+   type Name    is implementation_defined_enumeration_type;
 
-      System_Name : constant Name := implementation_defined;
+   System_Name  : constant Name := implementation_defined;
 
-      Storage_Unit : constant := implementation_defined;
-      Memory_Size : constant := implementation_defined;
+   Storage_Unit : constant := implementation_defined;
+   Memory_Size  : constant := implementation_defined;
 
-      --System-Dependent Named Numbers:
+   -- System-Dependent Named Numbers:
 
-      Min_Int : constant := implementation_defined;
-      Max_Int : constant := implementation_defined;
-      Max_Digits : constant := implementation_defined;
-      Max_Mantissa : constant := implementation_defined;
-      Fine_Delta : constant := implementation_defined;
-      Tick : constant := implementation_defined;
+   Min_Int      : constant := implementation_defined;
+   Max_Int      : constant := implementation_defined;
+   Max_Digits   : constant := implementation_defined;
+   Max_Mantissa : constant := implementation_defined;
+   Fine_Delta   : constant := implementation_defined;
+   Tick         : constant := implementation_defined;
 
-      --Other System_Dependent Declarations
+   -- Other System-Dependent Declarations
 
-      subtype Priority is Integer range implementation_defined;
-```
+   subtype Priority is Integer range implementation_defined;
 
-```ada
-      ...
-  end;
+   ...
+
+end System;
 ```
 
 The type Address is the type of the addresses provided in address clauses; it is
@@ -11891,7 +11693,7 @@ corresponding pragmas. These pragmas are only allowed at the start of a
 compilation, before the first compilation unit (if any) of the compilation.
 
 ```ada
-      pragma System_Name (enumeration_literal);
+pragma System_Name (enumeration_literal);
 ```
 
 The effect of the above pragma is to use the enumeration literal with the
@@ -11900,18 +11702,18 @@ is only allowed if the specified identifier corresponds to one of the literals
 of the type Name.
 
 ```ada
-      pragma Storage_Unit (numeric_literal);
+pragma Storage_Unit (numeric_literal);
 ```
 
 The effect of the above pragma is to use the value of the specified numeric
 literal for the definition of the named number Storage_Unit.
 
 ```ada
-      pragma Memory_Size (numeric_literal);
+pragma Memory_Size (numeric_literal);
 ```
 
 The effect of the above pragma is to use the value of the specified numeric
-literal for the definition of the named number Memory_Size. 
+literal for the definition of the named number Memory_Size.
 
 The compilation of any of these pragmas causes an implicit recompilation of the
 package System. Consequently any compilation unit that names System in its
@@ -11997,7 +11799,7 @@ For any task type or task object T:
 
 - **`T'Storage_Size`** — Yields the number of storage units reserved for each
   activation of a task of the type T or for the activation of the task object T.
-  The value of this attribute is of the type universal_integer. 
+  The value of this attribute is of the type universal_integer.
 
 > [!NOTE]
 > For a task object X, the attribute X'Size gives the number of bits used to hold
@@ -12024,7 +11826,6 @@ For both floating point and fixed point types:
   performs rounding; yields the value False otherwise. The value of this
   attribute is of the predefined type Boolean.
 
-
 - **`T'Machine_Overflows`** — Yields the value True if every predefined
   operation on values of the base type of T either provides a correct result, or
   raises the exception Numeric_Error in overflow situations (see
@@ -12039,38 +11840,28 @@ section [3.5.7](#357-floating-point-types):
 - **`T'Machine_Radix`** — Yields the value of the radix used by the machine
   representation of the base type of T (the digits are extended digits in the
   range 0 to T'Machine_Radix -1). The value of this attribute is of the type
-
-  ```ada
   universal_integer.
-  ```
-
 
 - **`T'Machine_Emax`** — Yields the largest value of exponent for the machine
   representation of the base type of T. The value of this attribute is of the
   type universal_integer.
 
-
 - **`T'Machine_Emin`** — Yields the smallest (most negative) value of exponent
   for the machine representation of the base type of T. The value of this
-  attribute is of the type
+  attribute is of the type universal_integer.
 
-  ```ada
-  universal_integer. 
-  ```
-
-
-Note: For many machines the largest machine representable number of type F is
-almost
-
-```ada
-      (F'Machine_Radix)**(F'Machine_Emax),
-```
-
-and the smallest positive representable number is
-
-```ada
-      F'Machine_Radix ** (F'Machine_Emin -1)
-```
+> [!NOTE]
+> For many machines the largest machine representable number of type F is almost
+>
+> ```ada
+> (F'Machine_Radix)**(F'Machine_Emax),
+> ```
+>
+> and the smallest positive representable number is
+>
+> ```ada
+> F'Machine_Radix ** (F'Machine_Emin - 1)
+> ```
 
 ### 13.8 Machine Code Insertions
 
@@ -12078,7 +11869,7 @@ A machine code insertion can be achieved by a call to a procedure whose sequence
 of statements contains code statements.
 
 ```ada
-      code_statement ::= type_mark'record_aggregate;
+code_statement ::= type_mark'record_aggregate;
 ```
 
 A code statement is only allowed in the sequence of statements of a procedure
@@ -12105,16 +11896,16 @@ F.
 **Example:**
 
 ```ada
-      M : Mask
-      procedure Set_Mask; pragma Inline (Set_Mask);
+M : Mask
+procedure Set_Mask; pragma Inline (Set_Mask);
 
-      procedure Set_Mask is
-        use Machine_Code;
-      begin
-        Si_Format' (Code => Ssm, B => M'Base_Reg, D => M'Disp);
-        --  M'Base_Reg and M'Disp are implementation-specific predefined
-            attributes
-      end; 
+procedure Set_Mask is
+  use Machine_Code;
+begin
+  Si_Format' (Code => Ssm, B => M'Base_Reg, D => M'Disp);
+  --  M'Base_Reg and M'Disp are implementation-specific predefined
+      attributes
+end;
 ```
 
 ### 13.9 Interface to Other Languages
@@ -12124,7 +11915,7 @@ provided that all communication is achieved via parameters and function results.
 A pragma of the form
 
 ```ada
-      pragma Interface (language_name, subprogram_name);
+pragma Interface (language_name, subprogram_name);
 ```
 
 must be given for each such subprogram; a subprogram name is allowed to stand
@@ -12146,13 +11937,13 @@ calls.
 **Example:**
 
 ```ada
-      package Fort_Lib is
-        function Sqrt (X : Float) return Float;
-        function Exp (X : Float) return Float;
-      private
-        pragma Interface (Fortran, Sqrt);
-        pragma Interface (Fortran, Exp);
-      end;
+package Fort_Lib is
+  function Sqrt (X : Float) return Float;
+  function Exp (X : Float) return Float;
+private
+  pragma Interface (Fortran, Sqrt);
+  pragma Interface (Fortran, Exp);
+end;
 ```
 
 > [!NOTE]
@@ -12169,15 +11960,15 @@ Unchecked_Conversion are used for unchecked storage deallocation and for
 unchecked type conversions.
 
 ```ada
-      generic
-         type Object is limited private;
-         type Name is access Object;
-      procedure Unchecked_Deallocation (X: in out Name);
+generic
+   type Object is limited private;
+   type Name is access Object;
+procedure Unchecked_Deallocation (X: in out Name);
 
-      generic
-         type Source is limited private;
-         type Target is limited private;
-      function Unchecked_Conversion (S : Source) return Target;
+generic
+   type Source is limited private;
+   type Target is limited private;
+function Unchecked_Conversion (S : Source) return Target;
 ```
 
 #### 13.10.1 Unchecked Storage Deallocation
@@ -12187,17 +11978,15 @@ type is achieved by a call of a procedure that is obtained by instantiation of
 the generic procedure Unchecked_Deallocation. For example:
 
 ```ada
-      procedure Free is new Unchecked_Deallocation (object_type_name,
-             access_type_name);
+procedure Free is new Unchecked_Deallocation (object_type_name,
+       access_type_name);
 ```
 
 Such a Free procedure has the following effect:
 
 - **(a)** after executing Free(X), the value of X is null;
 
-
 - **(b)** Free(X), when X is already equal to null, has no effect;
-
 
 - **(c)** Free(X), when X is not equal to null, is an indication that the object
   designated by X is no longer required, and that the storage it occupies is to
@@ -12238,6 +12027,8 @@ properties by means of unchecked conversions are erroneous.
 > Unchecked_Conversion is not visible in a compilation unit unless this generic
 > function is mentioned by a with clause that applies to the compilation unit.
 
+---
+
 ## 14. Input-Output
 
 Input-output is provided in the language by means of predefined packages. The
@@ -12270,20 +12061,20 @@ by means of the generic package Sequential_IO. The skeleton of this package is
 given below.
 
 ```ada
-    with IO_Exceptions;
-    generic
-       type Element_Type is private;
-    package Sequential_IO is
-       type File_Type is limited private;
+with IO_Exceptions;
+generic
+   type Element_Type is private;
+package Sequential_IO is
+   type File_Type is limited private;
 
-       type File_Mode is (In_File, Out_File);
-       ...
-       procedure Open (File : in out File_Type; ...);
-       ...
-       procedure Read (File : in File_Type; Item : out Element_Type);
-       procedure Write (File : in File_Type; Item : in Element_Type);
-       ...
-    end;
+   type File_Mode is (In_File, Out_File);
+   ...
+   procedure Open (File : in out File_Type; ...);
+   ...
+   procedure Read (File : in File_Type; Item : out Element_Type);
+   procedure Write (File : in File_Type; Item : in Element_Type);
+   ...
+end;
 ```
 
 In order to define sequential input-output for a given element type, an
@@ -12310,8 +12101,8 @@ An open file has a current mode, which is a value of one of the enumeration
 types
 
 ```ada
- type File_Mode is (In_File, Inout_File, Out_File); -- for Direct_IO
- type File_Mode is (In_File, Out_File); -- for Sequential_IO and Text_IO
+type File_Mode is (In_File, Inout_File, Out_File); -- for Direct_IO
+type File_Mode is (In_File, Out_File); -- for Sequential_IO and Text_IO
 ```
 
 These values correspond respectively to the cases where only reading, both
@@ -12378,10 +12169,10 @@ procedures Create, Open, and Reset have additional effects described in section
 14.3.1.
 
 ```ada
-    procedure Create (File : in out File_Type;
-                     Mode : in File_Mode := default_mode;
-                     Name : in String := "";
-                     Form : in String := "");
+procedure Create (File : in out File_Type;
+                 Mode : in File_Mode := default_mode;
+                 Name : in String := "";
+                 Form : in String := "");
 ```
 
 Establishes a new external file, with the given name and form, and associates
@@ -12400,8 +12191,12 @@ identification of an external file. The exception Use_Error is raised if, for
 the specified mode, the environment does not support creation of an external
 file with the given name (in the absence of Name_Error) and form.
 
-procedure Open (File : in out File_Type; Mode : in File_Mode; Name : in String;
-Form : in String := "");
+```ada
+procedure Open (File : in out File_Type;
+                Mode : in File_Mode;
+                Name : in String;
+                Form : in String := "");
+```
 
 Associates the given file with an existing external file having the given name
 and form, and sets the current mode of the given file to the given mode. The
@@ -12414,14 +12209,18 @@ no external file with the given name exists. The exception Use_Error is raised
 if, for the specified mode, the environment does not support opening for an
 external file with the given name (in the absence of Name_Error) and form.
 
+```ada
 procedure Close (File : in out File_Type);
+```
 
 Severs the association between the given file and its associated external file.
 The given file is left closed.
 
 The exception Status_Error is raised if the given file is not open.
 
+```ada
 procedure Delete (File : in out File_Type);
+```
 
 Deletes the external file associated with the given file. The given file is
 closed, and the external file ceases to exist.
@@ -12430,8 +12229,10 @@ The exception Status_Error is raised if the given file is not open. The
 exception Use_Error is raised if (as fully defined in Appendix F) deletion of
 the external file is not supported by the environment.
 
-procedure Reset (File : in out File_Type; Mode : in File_Mode); procedure Reset
-(File : in out File_Type);
+```ada
+procedure Reset (File : in out File_Type; Mode : in File_Mode);
+procedure Reset (File : in out File_Type);
+```
 
 Resets the given file so that reading from or writing to its elements can be
 restarted from the beginning of the file; in particular, for direct access this
@@ -12443,13 +12244,17 @@ Use_Error is raised if the environment does not support resetting for the
 external file and, also, if the environment does not support resetting to the
 specified mode for the external file.
 
+```ada
 function Mode (File : in File_Type) return File_Mode;
+```
 
 Returns the current mode of the given file.
 
 The exception Status_Error is raised if the file is not open.
 
+```ada
 function Name (File : in File_Type) return String;
+```
 
 Returns a string which uniquely identifies the external file currently
 associated with the given file (and may thus be used in an Open operation). If
@@ -12459,7 +12264,9 @@ specification of the name.
 
 The exception Status_Error is raised if the given file is not open.
 
+```ada
 function Form (File : in File_Type) return String;
+```
 
 Returns the form string for the external file currently associated with the
 given file. If an environment allows alternative specifications of the form (for
@@ -12469,7 +12276,9 @@ explicitly all options selected, including default options).
 
 The exception Status_Error is raised if the given file is not open.
 
+```ada
 function Is_Open (File : in File_Type) return Boolean;
+```
 
 Returns True if the file is open (that is, if it is associated with an external
 file), otherwise returns False.
@@ -12481,7 +12290,7 @@ section. The exception Status_Error is raised if any of these operations is
 attempted for a file that is not open.
 
 ```ada
-    procedure Read (File : in File_Type; Item : out Element_Type);
+procedure Read (File : in File_Type; Item : out Element_Type);
 ```
 
 Operates on a file of mode In_File. Reads an element from the given file, and
@@ -12493,78 +12302,80 @@ exception Data_Error is raised if the element read cannot be interpreted as a
 value of the type Element_Type; however, an implementation is allowed to omit
 this check if performing the check is too complex.
 
+```ada
 procedure Write (File : in File_Type; Item : in Element_Type);
+```
 
 Operates on a file of mode Out_File. Writes the value of Item to the given file.
 
 The exception Mode_Error is raised if the mode is not Out_File. The exception
 Use_Error is raised if the capacity of the external file is exceeded.
 
+```ada
 function End_Of_File (File : in File_Type) return Boolean;
+```
 
 Operates on a file of mode In_File. Returns True if no more elements can be read
-from the given file; otherwise returns
-
-False.
+from the given file; otherwise returns False.
 
 The exception Mode_Error is raised if the mode is not In_File.
 
 #### 14.2.3 Specification of the Package Sequential_IO
 
 ```ada
-    with IO_Exceptions;
-    generic
-       type Element_Type is private;
-    package Sequential_IO is
+with IO_Exceptions;
+generic
+   type Element_Type is private;
+package Sequential_IO is
 
-       type File_Type is limited private;
+   type File_Type is limited private;
 
-       type File_Mode is (In_File, Out_File);
+   type File_Mode is (In_File, Out_File);
 
-       -- File management
+   -- File management
 
-       procedure Create (File : in out File_Type;
-                        Mode : in File_Mode := Out_File;
-                        Name : in String := "";
-                        Form : in String := "");
+   procedure Create (File : in out File_Type;
+                    Mode : in File_Mode := Out_File;
+                    Name : in String := "";
+                    Form : in String := "");
 
-       procedure Open (File : in out File_Type;
-                        Mode : in File_Mode;
-                        Name : in String;
-                        Form : in String := "");
+   procedure Open (File : in out File_Type;
+                    Mode : in File_Mode;
+                    Name : in String;
+                    Form : in String := "");
 
-       procedure Close (File : in out File_Type);
-       procedure Delete (File : in out File_Type);
-       procedure Reset (File : in out File_Type; Mode : in File_Mode);
-       procedure Reset (File : in out File_Type);
+   procedure Close (File : in out File_Type);
+   procedure Delete (File : in out File_Type);
+   procedure Reset (File : in out File_Type; Mode : in File_Mode);
+   procedure Reset (File : in out File_Type);
 
-       function Mode (File : in File_Type) return File_Mode;
-       function Name (File : in File_Type) return String;
-       function Form (File : in File_Type) return String;
+   function Mode (File : in File_Type) return File_Mode;
+   function Name (File : in File_Type) return String;
+   function Form (File : in File_Type) return String;
 
-       function Is_Open (File : in File_Type) return Boolean;
+   function Is_Open (File : in File_Type) return Boolean;
 
-       -- Input and output operations
+   -- Input and output operations
 
-       procedure Read (File : in File_Type; Item : out Element_Type);
-       procedure Write (File : in File_Type; Item : in Element_Type);
+   procedure Read (File : in File_Type; Item : out Element_Type);
+   procedure Write (File : in File_Type; Item : in Element_Type);
 
-       function End_Of_File (File : in File_Type) return Boolean;
+   function End_Of_File (File : in File_Type) return Boolean;
 
-       -- Exceptions
+   -- Exceptions
 
-       Status_Error : exception renames IO_Exceptions.Status_Error;
-       Mode_Error : exception renames IO_Exceptions.Mode_Error;
+   Status_Error : exception renames IO_Exceptions.Status_Error;
+   Mode_Error : exception renames IO_Exceptions.Mode_Error;
 
-       Name_Error : exception renames IO_Exceptions.Name_Error;
-       Use_Error : exception renames IO_Exceptions.Use_Error;
-       Device_Error : exception renames IO_Exceptions.Device_Error;
-       End_Error : exception renames IO_Exceptions.End_Error;
-       Data_Error : exception renames IO_Exceptions.Data_Error;
+   Name_Error : exception renames IO_Exceptions.Name_Error;
+   Use_Error : exception renames IO_Exceptions.Use_Error;
+   Device_Error : exception renames IO_Exceptions.Device_Error;
+   End_Error : exception renames IO_Exceptions.End_Error;
+   Data_Error : exception renames IO_Exceptions.Data_Error;
 
-    private
-       -- implementation-dependent
-    end;
+private
+   -- implementation-dependent
+end;
 ```
 
 #### 14.2.4 Direct Input-Output
@@ -12574,9 +12385,9 @@ section. The exception Status_Error is raised if any of these operations is
 attempted for a file that is not open.
 
 ```ada
-    procedure Read (File : in File_Type; Item : out Element_Type;
-                                        From : in Positive_Count);
-    procedure Read (File : in File_Type; Item : out Element_Type);
+procedure Read (File : in File_Type; Item : out Element_Type;
+                                    From : in Positive_Count);
+procedure Read (File : in File_Type; Item : out Element_Type);
 ```
 
 Operates on a file of mode In_File or Inout_File. In the case of the first form,
@@ -12591,8 +12402,12 @@ the external file. The exception Data_Error is raised if the element read cannot
 be interpreted as a value of the type Element_Type; however, an implementation
 is allowed to omit this check if performing the check is too complex.
 
-procedure Write (File : in File_Type; Item : in Element_Type; To : in
-Positive_Count); procedure Write (File : in File_Type; Item : in Element_Type);
+```ada
+procedure Write (File : in File_Type;
+                 Item : in Element_Type;
+                 To   : in Positive_Count);
+procedure Write (File : in File_Type; Item : in Element_Type);
+```
 
 Operates on a file of mode Inout_File or Out_File. In the case of the first
 form, sets the index of the given file to the index value given by the parameter
@@ -12603,21 +12418,29 @@ finally, increases the current index by one.
 The exception Mode_Error is raised if the mode of the given file is In_File. The
 exception Use_Error is raised if the capacity of the external file is exceeded.
 
+```ada
 procedure Set_Index (File : in File_Type; To : in Positive_Count);
+```
 
 Operates on a file of any mode. Sets the current index of the given file to the
 given index value (which may exceed the current size of the file).
 
+```ada
 function Index (File : in File_Type) return Positive_Count;
+```
 
 Operates on a file of any mode. Returns the current index of the given file.
 
+```ada
 function Size (File : in File_Type) return Count;
+```
 
 Operates on a file of any mode. Returns the current size of the external file
 that is associated with the given file.
 
+```ada
 function End_Of_File (File : in File_Type) return Boolean;
+```
 
 Operates on a file of mode In_File or Inout_File. Returns True if the current
 index exceeds the size of the external file; otherwise returns False.
@@ -12627,70 +12450,70 @@ The exception Mode_Error is raised if the mode of the given file is Out_File.
 #### 14.2.5 Specification of the Package Direct_IO
 
 ```ada
-    with IO_Exceptions;
-    generic
-       type Element_Type is private;
-    package Direct_IO is
+with IO_Exceptions;
+generic
+   type Element_Type is private;
+package Direct_IO is
 
-       type File_Type is limited private;
+   type File_Type is limited private;
 
-       type File_Mode is (In_File, Inout_File, Out_File);
-       type Count is range 0 .. implementation defined;
-       subtype Positive_Count is Count range 1 .. Count'Last;
+   type File_Mode is (In_File, Inout_File, Out_File);
+   type Count is range 0..implementation defined;
+   subtype Positive_Count is Count range 1..Count'Last;
 
-       -- File management
+   -- File management
 
-       procedure Create (File : in out File_Type;
-                        Mode : in File_Mode := Inout_File;
-                        Name : in String := "";
-                        Form : in String := "");
+   procedure Create (File : in out File_Type;
+                    Mode : in File_Mode := Inout_File;
+                    Name : in String := "";
+                    Form : in String := "");
 
-       procedure Open (File : in out File_Type;
-                        Mode : in File_Mode;
-                        Name : in String;
-                        Form : in String := "");
+   procedure Open (File : in out File_Type;
+                    Mode : in File_Mode;
+                    Name : in String;
+                    Form : in String := "");
 
-       procedure Close (File : in out File_Type);
-       procedure Delete (File : in out File_Type);
-       procedure Reset (File : in out File_Type; Mode : in File_Mode);
-       procedure Reset (File : in out File_Type);
+   procedure Close (File : in out File_Type);
+   procedure Delete (File : in out File_Type);
+   procedure Reset (File : in out File_Type; Mode : in File_Mode);
+   procedure Reset (File : in out File_Type);
 
-       function Mode (File : in File_Type) return File_Mode;
-       function Name (File : in File_Type) return String;
-       function Form (File : in File_Type) return String;
+   function Mode (File : in File_Type) return File_Mode;
+   function Name (File : in File_Type) return String;
+   function Form (File : in File_Type) return String;
 
-       function Is_Open (File : in File_Type) return Boolean;
+   function Is_Open (File : in File_Type) return Boolean;
 
-       -- Input and output operations
+   -- Input and output operations
 
-       procedure Read (File : in File_Type; Item : out Element_Type; From :
-        Positive_Count);
-       procedure Read (File : in File_Type; Item : out Element_Type);
+   procedure Read (File : in File_Type; Item : out Element_Type; From :
+    Positive_Count);
+   procedure Read (File : in File_Type; Item : out Element_Type);
 
-       procedure Write (File : in File_Type; Item : in Element_Type; To :
-        Positive_Count);
-       procedure Write (File : in File_Type; Item : in Element_Type);
+   procedure Write (File : in File_Type; Item : in Element_Type; To :
+    Positive_Count);
+   procedure Write (File : in File_Type; Item : in Element_Type);
 
-       procedure Set_Index (File : in File_Type; To : in Positive_Count);
+   procedure Set_Index (File : in File_Type; To : in Positive_Count);
 
-       function Index (File : in File_Type) return Positive_Count;
-       function Size (File : in File_Type) return Count;
+   function Index (File : in File_Type) return Positive_Count;
+   function Size (File : in File_Type) return Count;
 
-       function End_Of_File (File : in File_Type) return Boolean;
+   function End_Of_File (File : in File_Type) return Boolean;
 
-       -- Exceptions
+   -- Exceptions
 
-       Status_Error : exception renames IO_Exceptions.Status_Error;
-       Mode_Error : exception renames IO_Exceptions.Mode_Error;
-       Name_Error : exception renames IO_Exceptions.Name_Error;
-       Use_Error : exception renames IO_Exceptions.Use_Error;
-       Device_Error : exception renames IO_Exceptions.Device_Error;
-       End_Error : exception renames IO_Exceptions.End_Error;
-       Data_Error : exception renames IO_Exceptions.Data_Error;
+   Status_Error : exception renames IO_Exceptions.Status_Error;
+   Mode_Error : exception renames IO_Exceptions.Mode_Error;
+   Name_Error : exception renames IO_Exceptions.Name_Error;
+   Use_Error : exception renames IO_Exceptions.Use_Error;
+   Device_Error : exception renames IO_Exceptions.Device_Error;
+   End_Error : exception renames IO_Exceptions.End_Error;
+   Data_Error : exception renames IO_Exceptions.Data_Error;
 
-    private
-       -- implementation-dependent
-    end;
+private
+   -- implementation-dependent
+end;
 ```
 
 ### 14.3 Text Input-Output
@@ -12760,8 +12583,8 @@ of the subtype Positive_Count of the type Count (by convention, the value zero
 of the type Count is used to indicate special conditions).
 
 ```ada
-    type Count is range 0 .. implementation_defined;
-    subtype Positive_Count is Count range 1 .. Count'Last;
+type Count is range 0..implementation_defined;
+subtype Positive_Count is Count range 1..Count'Last;
 ```
 
 For an output file, a maximum line length can be specified and a maximum page
@@ -12811,7 +12634,7 @@ files that are used when a file parameter is omitted from a Get, Put or other
 operation of text input-output described below.
 
 ```ada
-    procedure Set_Input (File : in File_Type);
+procedure Set_Input (File : in File_Type);
 ```
 
 Operates on a file of mode In_File. Sets the current default input file to File.
@@ -12819,7 +12642,9 @@ Operates on a file of mode In_File. Sets the current default input file to File.
 The exception Status_Error is raised if the given file is not open. The
 exception Mode_Error is raised if the mode of the given file is not In_File.
 
+```ada
 procedure Set_Output (File : in File_Type);
+```
 
 Operates on a file of mode Out_File. Sets the current default output file to
 File.
@@ -12827,19 +12652,27 @@ File.
 The exception Status_Error is raised if the given file is not open. The
 exception Mode_Error is raised if the mode of the given file is not Out_File.
 
+```ada
 function Standard_Input return File_Type;
+```
 
 Returns the standard input file (see [14.3](#143-text-input-output)).
 
+```ada
 function Standard_Output return File_Type;
+```
 
 Returns the standard output file (see [14.3](#143-text-input-output)).
 
+```ada
 function Current_Input return File_Type;
+```
 
 Returns the current default input file.
 
+```ada
 function Current_Output return File_Type;
+```
 
 Returns the current default output file.
 
@@ -12865,8 +12698,8 @@ open; the exception Mode_Error is raised if the mode of the file is not
 Out_File.
 
 ```ada
-    procedure Set_Line_Length (File : in File_Type; To : in Count);
-    procedure Set_Line_Length (To : in Count);
+procedure Set_Line_Length (File : in File_Type; To : in Count);
+procedure Set_Line_Length (To : in Count);
 ```
 
 Sets the maximum line length of the specified output file to the number of
@@ -12876,8 +12709,10 @@ length.
 The exception Use_Error is raised if the specified line length is inappropriate
 for the associated external file.
 
-procedure Set_Page_Length (File : in File_Type; To : in Count); procedure
-Set_Page_Length (To : in Count);
+```ada
+procedure Set_Page_Length (File : in File_Type; To : in Count);
+procedure Set_Page_Length (To : in Count);
+```
 
 Sets the maximum page length of the specified output file to the number of lines
 specified by To. The value zero for To specifies an unbounded page length.
@@ -12885,15 +12720,18 @@ specified by To. The value zero for To specifies an unbounded page length.
 The exception Use_Error is raised if the specified page length is inappropriate
 for the associated external file.
 
-function Line_Length (File : in File_Type) return Count; function Line_Length
-return Count;
+```ada
+function Line_Length (File : in File_Type) return Count;
+function Line_Length return Count;
+```
 
 Returns the maximum line length currently set for the specified output file, or
 zero if the line length is unbounded.
 
+```ada
 function Page_Length (File : in File_Type) return Count;
-
 function Page_Length return Count;
+```
 
 Returns the maximum page length currently set for the specified output file, or
 zero if the page length is unbounded.
@@ -12907,8 +12745,8 @@ parameter, or, in the absence of such a file parameter, on the appropriate
 any of these subprograms if the file to be used is not open.
 
 ```ada
-    procedure New_Line (File : in File_Type; Spacing : in Positive_Count := 1);
-    procedure New_Line (Spacing : in Positive_Count := 1);
+procedure New_Line (File : in File_Type; Spacing : in Positive_Count := 1);
+procedure New_Line (Spacing : in Positive_Count := 1);
 ```
 
 Operates on a file of mode Out_File.
@@ -12925,38 +12763,38 @@ For a Spacing greater than one, the above actions are performed Spacing times.
 The exception Mode_Error is raised if the mode is not Out_File.
 
 ```ada
- procedure Skip_Line (File : in File_Type; Spacing : in Positive_Count := 1);
- procedure Skip_Line (Spacing : in Positive_Count := 1);
+procedure Skip_Line (File : in File_Type; Spacing : in Positive_Count := 1);
+procedure Skip_Line (Spacing : in Positive_Count := 1);
 ```
 
-```ada
-          Operates on a file of mode In_File.
+Operates on a file of mode In_File.
 
-          For a Spacing of one: Reads and discards all characters until a
-          line terminator has been read, and then sets the current column
-          number to one. If the line terminator is not immediately
-          followed by a page terminator, the current line number is
-          incremented by one. Otherwise, if the line terminator is
-          immediately followed by a page terminator, then the page
-          terminator is skipped, the current page number is incremented by
-          one, and the current line number is set to one.
+For a Spacing of one: Reads and discards all characters until a line terminator
+has been read, and then sets the current column number to one. If the line
+terminator is not immediately followed by a page terminator, the current line
+number is incremented by one. Otherwise, if the line terminator is immediately
+followed by a page terminator, then the page terminator is skipped, the current
+page number is incremented by one, and the current line number is set to one.
 
-          For a Spacing greater than one, the above actions are performed
-          Spacing times.
-```
+For a Spacing greater than one, the above actions are performed Spacing times.
 
 The exception Mode_Error is raised if the mode is not In_File. The exception
 End_Error is raised if an attempt is made to read a file terminator.
 
-function End_Of_Line (File : in File_Type) return Boolean; function End_Of_Line
-return Boolean;
+```ada
+function End_Of_Line (File : in File_Type) return Boolean;
+function End_Of_Line return Boolean;
+```
 
 Operates on a file of mode In_File. Returns True if a line terminator or a file
 terminator is next; otherwise returns False.
 
 The exception Mode_Error is raised if the mode is not In_File.
 
-procedure New_Page (File : in File_Type); procedure New_Page;
+```ada
+procedure New_Page (File : in File_Type);
+procedure New_Page;
+```
 
 Operates on a file of mode Out_File. Outputs a line terminator if the current
 line is not terminated, or if the current page is empty (that is, if the current
@@ -12966,7 +12804,10 @@ the current column and line numbers to one.
 
 The exception Mode_Error is raised if the mode is not Out_File.
 
-procedure Skip_Page (File: in File_Type); procedure Skip_Page;
+```ada
+procedure Skip_Page (File : in File_Type);
+procedure Skip_Page;
+```
 
 Operates on a file of mode In_File. Reads and discards all characters and line
 terminators until a page terminator has been read. Then adds one to the current
@@ -12975,18 +12816,21 @@ page number, and sets the current column and line numbers to one.
 The exception Mode_Error is raised if the mode is not In_File. The exception
 End_Error is raised if an attempt is made to read a file terminator.
 
-function End_Of_Page (File : in File_Type) return Boolean; function End_Of_Page
-return Boolean;
+```ada
+function End_Of_Page (File : in File_Type) return Boolean;
+function End_Of_Page return Boolean;
+```
 
-Operates on a file of mode In_File. Returns True if the
-
-combination of a line terminator and a page terminator is next, or if a file
-terminator is next; otherwise returns False.
+Operates on a file of mode In_File. Returns True if the combination of a line
+terminator and a page terminator is next, or if a file terminator is next;
+otherwise returns False.
 
 The exception Mode_Error is raised if the mode is not In_File.
 
-function End_Of_File (File : in File_Type) return Boolean; function End_Of_File
-return Boolean;
+```ada
+function End_Of_File (File : in File_Type) return Boolean;
+function End_Of_File return Boolean;
+```
 
 Operates on a file of mode In_File. Returns True if a file terminator is next,
 or if the combination of a line, a page, and a file terminator is next;
@@ -12999,8 +12843,8 @@ reading or writing in a file. In all cases, the default file is the current
 output file.
 
 ```ada
-    procedure Set_Col (File : in File_Type; To : in Positive_Count);
-    procedure Set_Col (To : in Positive_Count);
+procedure Set_Col (File : in File_Type; To : in Positive_Count);
+procedure Set_Col (To : in Positive_Count);
 ```
 
 **If the file mode is Out_File:**
@@ -13030,10 +12874,9 @@ character at the specified column position.)
 The exception End_Error is raised if an attempt is made to read a file
 terminator.
 
-
 ```ada
-    procedure Set_Line (File : in File_Type; To : in Positive_Count);
-    procedure Set_Line (To : in Positive_Count);
+procedure Set_Line (File : in File_Type; To : in Positive_Count);
+procedure Set_Line (To : in Positive_Count);
 ```
 
 **If the file mode is Out_File:**
@@ -13059,40 +12902,32 @@ until a page is reached that has a line at the specified line position.)
 The exception End_Error is raised if an attempt is made to read a file
 terminator.
 
-
 ```ada
-    function Col (File : in File_Type) return Positive_Count;
-    function Col return Positive_Count;
+function Col (File : in File_Type) return Positive_Count;
+function Col return Positive_Count;
 ```
 
 Returns the current column number.
 
-The exception Layout_Error is raised if this number exceeds
-
-Count'Last.
-
+The exception Layout_Error is raised if this number exceeds Count'Last.
 
 ```ada
-    function Line (File : in File_Type) return Positive_Count;
-    function Line return Positive_Count;
+function Line (File : in File_Type) return Positive_Count;
+function Line return Positive_Count;
 ```
 
 Returns the current line number.
 
 The exception Layout_Error is raised if this number exceeds Count'Last.
 
-
 ```ada
-    function Page (File : in File_Type) return Positive_Count;
-    function Page return Positive_Count;
+function Page (File : in File_Type) return Positive_Count;
+function Page return Positive_Count;
 ```
 
 Returns the current page number.
 
-The exception Layout_Error is raised if this number exceeds
-
-Count'Last.
-
+The exception Layout_Error is raised if this number exceeds Count'Last.
 
 The column number, line number, or page number are allowed to exceed
 - **`Count'Last`** — (as a consequence of the input or output of sufficiently
@@ -13194,21 +13029,21 @@ the lower case letter b are not transferred: they are shown only to reveal the
 layout and spaces.
 
 ```ada
-    N : Integer;
-       ...
-    Get (N);
+N : Integer;
+   ...
+Get (N);
 
-    -- Characters at input       Sequence input       Value of N
+-- Characters at input       Sequence input       Value of N
 
-    --      bb-12535b            -12535               -12535
-    --      bb12_535E1b           12_535E1             125350
-    --      bb12_535E;            12_535E (none) Data_Error raised
+--      bb-12535b            -12535               -12535
+--      bb12_535E1b           12_535E1             125350
+--      bb12_535E;            12_535E (none) Data_Error raised
 ```
 
 **Example of overridden width parameter:**
 
 ```ada
-    Put (Item => -23, Width => 2); -- "-23"
+Put (Item => -23, Width => 2); -- "-23"
 ```
 
 #### 14.3.6 Input-Output of Characters and Strings
@@ -13216,8 +13051,8 @@ layout and spaces.
 For an item of type Character the following procedures are provided:
 
 ```ada
-    procedure Get (File : in File_Type; Item : out Character);
-    procedure Get (Item : out Character);
+procedure Get (File : in File_Type; Item : out Character);
+procedure Get (Item : out Character);
 ```
 
 After skipping any line terminators and any page terminators, reads the next
@@ -13227,8 +13062,10 @@ in the out parameter Item.
 The exception End_Error is raised if an attempt is made to skip a file
 terminator.
 
-procedure Put (File : in File_Type; Item : in Character); procedure Put (Item :
-in Character);
+```ada
+procedure Put (File : in File_Type; Item : in Character);
+procedure Put (Item : in Character);
+```
 
 If the line length of the specified output file is bounded (that is, does not
 have the conventional value zero), and the current column number exceeds it, has
@@ -13238,31 +13075,33 @@ outputs the given character to the file.
 For an item of type String the following procedures are provided:
 
 ```ada
-    procedure Get (File : in File_Type; Item : out String);
-    procedure Get (Item : out String);
+procedure Get (File : in File_Type; Item : out String);
+procedure Get (Item : out String);
 ```
 
 Determines the length of the given string and attempts that number of Get
 operations for successive characters of the string (in particular, no operation
 is performed if the string is null).
 
-
 ```ada
-    procedure Put (File : in File_Type; Item : in String);
-    procedure Put (Item : in String);
+procedure Put (File : in File_Type; Item : in String);
+procedure Put (Item : in String);
 ```
 
 Determines the length of the given string and attempts that number of Put
 operations for successive characters of the string (in particular, no operation
 is performed if the string is null).
 
-
-procedure Get_Line(File : in File_Type; Item : out String; Last : out Natural);
-procedure Get_Line(Item : out String; Last : out Natural);
+```ada
+procedure Get_Line (File : in File_Type;
+                    Item : out String;
+                    Last : out Natural);
+procedure Get_Line (Item : out String; Last : out Natural);
+```
 
 ```ada
-          Replaces successive characters of the specified string by
-          successive characters read from the specified input file.
+Replaces successive characters of the specified string by
+successive characters read from the specified input file.
 ```
 
 Reading stops if the end of the line is met, in which case the procedure
@@ -13275,8 +13114,10 @@ Item'First). If no characters are read, returns in Last an index value that is
 one less than Item'First. The exception End_Error is raised if an attempt is
 made to skip a file terminator.
 
-procedure Put_Line (File : in File_Type; Item : in String); procedure Put_Line
-(Item : in String);
+```ada
+procedure Put_Line (File : in File_Type; Item : in String);
+procedure Put_Line (Item : in String);
+```
 
 Calls the procedure Put for the given string, and then the procedure New_Line
 with a spacing of one.
@@ -13302,34 +13143,30 @@ parameter. Values of widths of fields in output formats are of the nonnegative
 integer subtype Field. Values of bases are of the integer subtype Number_Base.
 
 ```ada
-    subtype Number_Base is Integer range 2 .. 16;
+subtype Number_Base is Integer range 2..16;
 ```
 
 The default field width and base to be used by output procedures are defined by
 the following variables that are declared in the generic package Integer_IO:
 
 ```ada
-    Default_Width : Field := Num'Width;
-    Default_Base : Number_Base := 10;
+Default_Width : Field := Num'Width;
+Default_Base : Number_Base := 10;
 ```
 
 The following procedures are provided:
 
 ```ada
-   procedure Get (File : in File_Type; Item : out Num; Width : in Field := 0);
-   procedure Get (Item : out Num; Width : in Field := 0);
+procedure Get (File : in File_Type; Item : out Num; Width : in Field := 0);
+procedure Get (Item : out Num; Width : in Field := 0);
 ```
 
-```ada
-          If the value of the parameter Width is zero, skips any leading
-          blanks, line terminators, or page terminators, then reads a plus
-          or a minus sign if present, then reads according to the syntax of
-          an integer literal (which may be a based literal). If a nonzero
-          value of Width is supplied, then exactly Width characters are
-          input, or the characters (possibly none) up to a line terminator,
-          whichever comes first; any skipped leading blanks are included
-          in the count.
-```
+If the value of the parameter Width is zero, skips any leading blanks, line
+terminators, or page terminators, then reads a plus or a minus sign if present,
+then reads according to the syntax of an integer literal (which may be a based
+literal). If a nonzero value of Width is supplied, then exactly Width characters
+are input, or the characters (possibly none) up to a line terminator, whichever
+comes first; any skipped leading blanks are included in the count.
 
 Returns, in the parameter Item, the value of type Num that corresponds to the
 sequence input.
@@ -13337,11 +13174,15 @@ sequence input.
 The exception Data_Error is raised if the sequence input does not have the
 required syntax or if the value obtained is not of the subtype Num.
 
-procedure Put (File : in File_Type; Item : in Num; Width : in Field :=
-Default_Width; Base : in Number_Base := Default_Base);
-
-procedure Put (Item : in Num; Width : in Field := Default_Width; Base : in
-Number_Base := Default_Base);
+```ada
+procedure Put (File  : in File_Type;
+               Item  : in Num;
+               Width : in Field := Default_Width;
+               Base  : in Number_Base := Default_Base);
+procedure Put (Item  : in Num;
+               Width : in Field := Default_Width;
+               Base  : in Number_Base := Default_Base);
+```
 
 Outputs the value of the parameter Item as an integer literal, with no
 underlines, no exponent, and no leading zeros (but a single zero for the value
@@ -13354,7 +13195,9 @@ Uses the syntax for decimal literal if the parameter Base has the value ten
 (either explicitly or through Default_Base); otherwise, uses the syntax for
 based literal, with any letters in upper case.
 
+```ada
 procedure Get (From : in String; Item : out Num; Last : out Positive);
+```
 
 Reads an integer value from the beginning of the given string, following the
 same rules as the Get procedure that reads an integer value from a file, but
@@ -13365,8 +13208,11 @@ Last the index value such that From (Last) is the last character read.
 The exception Data_Error is raised if the sequence input does not have the
 required syntax or if the value obtained is not of the subtype Num.
 
-procedure Put (To : out String; Item : in Num; Base : in Number_Base :=
-Default_Base);
+```ada
+procedure Put (To   : out String;
+               Item : in Num;
+               Base : in Number_Base := Default_Base);
+```
 
 Outputs the value of the parameter Item to the given string, following the same
 rule as for output to a file, using the length of the given string as the value
@@ -13375,14 +13221,16 @@ for Width.
 **Examples:**
 
 ```ada
-    package Int_IO is new Integer_IO (Small_Int); use Int_IO;
-    -- default format used at instantiation,
+package Int_IO is new Integer_IO (Small_Int);
+use Int_IO;
+
+-- default format used at instantiation:
+--     Default_Width = 4, Default_Base = 10
+
+Put (126);                            -- "b126"
+Put (-126, 7);                        -- "bbb-126"
+Put (126, Width => 13, Base => 2);    -- "bbb2#1111110#"
 ```
-
-Default_Width = 4, Default_Base = 10
-
-Put (126); -- "b126" Put (-126, 7); -- "bbb-126" Put (126, Width => 13, Base =>
-2); -- "bbb2#1111110#"
 
 #### 14.3.8 Input-Output for Real Types
 
@@ -13395,11 +13243,15 @@ of each value output consists of a Fore field, a decimal point, an Aft field,
 and (if a nonzero Exp parameter is supplied) the letter E and an Exp field. The
 two possible formats thus correspond to:
 
+```ada
 Fore . Aft
+```
 
 and to:
 
+```ada
 Fore . Aft E Exp
+```
 
 without any spaces between these fields. The Fore field may include leading
 spaces, and a minus sign for negative values. The Aft field includes only
@@ -13410,35 +13262,33 @@ For floating point types, the default lengths of these fields are defined by the
 following variables that are declared in the generic package Float_IO:
 
 ```ada
-    Default_Fore : Field := 2;
-    Default_Aft : Field := Num'Digits-1;
-    Default_Exp : Field := 3;
+Default_Fore : Field := 2;
+Default_Aft : Field := Num'Digits-1;
+Default_Exp : Field := 3;
 ```
 
 For fixed point types, the default lengths of these fields are defined by the
 following variables that are declared in the generic package Fixed_IO:
 
 ```ada
-    Default_Fore : Field := Num'Fore;
-    Default_Aft : Field := Num'Aft;
-    Default_Exp : Field := 0;
+Default_Fore : Field := Num'Fore;
+Default_Aft : Field := Num'Aft;
+Default_Exp : Field := 0;
 ```
 
 The following procedures are provided:
 
 ```ada
-    procedure Get (File : in File_Type; Item : out Num; Width : in Field := 0);
-    procedure Get (Item : out Num; Width : in Field := 0);
-
-          If the value of the parameter Width is zero, skips any leading
-          blanks, line terminators, or page terminators, then reads a plus
-          or a minus sign if present, then reads according to the syntax of
-          a real literal (which may be a based literal). If a nonzero
-          value of Width is supplied, then exactly Width characters are
-          input, or the characters (possibly none) up to a line terminator,
-          whichever comes first; any skipped leading blanks are included
-          in the count.
+procedure Get (File : in File_Type; Item : out Num; Width : in Field := 0);
+procedure Get (Item : out Num; Width : in Field := 0);
 ```
+
+If the value of the parameter Width is zero, skips any leading blanks, line
+terminators, or page terminators, then reads a plus or a minus sign if present,
+then reads according to the syntax of a real literal (which may be a based
+literal). If a nonzero value of Width is supplied, then exactly Width characters
+are input, or the characters (possibly none) up to a line terminator, whichever
+comes first; any skipped leading blanks are included in the count.
 
 Returns, in the parameter Item, the value of type Num that corresponds to the
 sequence input.
@@ -13446,11 +13296,17 @@ sequence input.
 The exception Data_Error is raised if the sequence input does not have the
 required syntax or if the value obtained is not of the subtype Num.
 
-procedure Put (File : in File_Type; Item : in Num; Fore : in Field :=
-Default_Fore; Aft : in Field := Default_Aft; Exp : in Field := Default_Exp);
-
-procedure Put (Item : in Num; Fore : in Field := Default_Fore; Aft : in Field :=
-Default_Aft; Exp : in Field := Default_Exp);
+```ada
+procedure Put (File : in File_Type;
+               Item : in Num;
+               Fore : in Field := Default_Fore;
+               Aft  : in Field := Default_Aft;
+               Exp  : in Field := Default_Exp);
+procedure Put (Item : in Num;
+               Fore : in Field := Default_Fore;
+               Aft  : in Field := Default_Aft;
+               Exp  : in Field := Default_Exp);
+```
 
 Outputs the value of the parameter Item as a decimal literal with the format
 defined by Fore, Aft and Exp. If the value is negative, a minus sign is included
@@ -13476,7 +13332,9 @@ exponent part to be output has fewer than Exp characters, including the sign,
 then leading zeros precede the digits, to make up the difference. For the value
 0.0 of Item, the exponent has the value zero.
 
+```ada
 procedure Get (From : in String; Item : out Num; Last : out Positive);
+```
 
 Reads a real value from the beginning of the given string, following the same
 rule as the Get procedure that reads a real value from a file, but treating the
@@ -13487,8 +13345,12 @@ index value such that From (Last) is the last character read.
 The exception Data_Error is raised if the sequence input does not have the
 required syntax, or if the value obtained is not of the subtype Num.
 
-procedure Put (To : out String; Item : in Num; Aft : in Field := Default_Aft;
-Exp : in Integer := Default_Exp);
+```ada
+procedure Put (To   : out String;
+               Item : in Num;
+               Aft  : in Field := Default_Aft;
+               Exp  : in Integer := Default_Exp);
+```
 
 Outputs the value of the parameter Item to the given string, following the same
 rule as for output to a file, using a value for Fore such that the sequence of
@@ -13497,17 +13359,15 @@ characters output exactly fills the string, including any leading spaces.
 **Examples:**
 
 ```ada
-    package Real_IO is new Float_IO (Real); use Real_IO;
-```
+package Real_IO is new Float_IO (Real); use Real_IO;
 
-```ada
-    -- default format used at instantiation, Default_Exp = 3
+-- default format used at instantiation, Default_Exp = 3
 
-    X : Real := -123.4567; -- digits 8 (see 3.5.7)
+X : Real := -123.4567; -- digits 8 (see 3.5.7)
 
-    Put (X); -- default format "-1.2345670E+02"
-    Put (X, Fore => 5, Aft => 3, Exp => 2); -- "bbb-1.235E+2"
-    Put (X, 5, 3, 0); -- "b-123.457"
+Put (X); -- default format "-1.2345670E+02"
+Put (X, Fore => 5, Aft => 3, Exp => 2); -- "bbb-1.235E+2"
+Put (X, 5, 3, 0); -- "b-123.457"
 ```
 
 > [!NOTE]
@@ -13525,7 +13385,7 @@ Values are output using either upper or lower case letters for identifiers. This
 is specified by the parameter Set, which is of the enumeration type Type_Set.
 
 ```ada
-    type Type_Set is (Lower_Case, Upper_Case);
+type Type_Set is (Lower_Case, Upper_Case);
 ```
 
 The format (which includes any trailing spaces) can be specified by an optional
@@ -13533,15 +13393,15 @@ field width parameter. The default field width and letter case are defined by
 the following variables that are declared in the generic package Enumeration_IO:
 
 ```ada
-    Default_Width : Field := 0;
-    Default_Setting : Type_Set := Upper_Case;
+Default_Width : Field := 0;
+Default_Setting : Type_Set := Upper_Case;
 ```
 
 The following procedures are provided:
 
 ```ada
-    procedure Get (File : in File_Type; Item : out Enum);
-    procedure Get (Item : out Enum);
+procedure Get (File : in File_Type; Item : out Enum);
+procedure Get (Item : out Enum);
 ```
 
 After skipping any leading blanks, line terminators, or page terminators, reads
@@ -13554,11 +13414,15 @@ The exception Data_Error is raised if the sequence input does not have the
 required syntax, or if the identifier or character literal does not correspond
 to a value of the subtype Enum.
 
-procedure Put (File : in File_Type; Item : in Enum; Width : in Field :=
-Default_Width; Set : in Type_Set := Default_Setting);
-
-procedure Put (Item : in Enum; Width : in Field := Default_Width; Set : in
-Type_Set := Default_Setting);
+```ada
+procedure Put (File  : in File_Type;
+               Item  : in Enum;
+               Width : in Field := Default_Width;
+               Set   : in Type_Set := Default_Setting);
+procedure Put (Item  : in Enum;
+               Width : in Field := Default_Width;
+               Set   : in Type_Set := Default_Setting);
+```
 
 Outputs the value of the parameter Item as an enumeration literal (either an
 identifier or a character literal). The optional parameter Set indicates whether
@@ -13566,7 +13430,9 @@ lower case or upper case is used for identifiers; it has no effect for character
 literals. If the sequence of characters produced has fewer than Width
 characters, then trailing spaces are finally output to make up the difference.
 
+```ada
 procedure Get (From : in String; Item : out Enum; Last : out Positive);
+```
 
 Reads an enumeration value from the beginning of the given string, following the
 same rule as the Get procedure that reads an enumeration value from a file, but
@@ -13578,9 +13444,11 @@ The exception Data_Error is raised if the sequence input does not have the
 required syntax, or if the identifier or character literal does not correspond
 to a value of the subtype Enum.
 
-procedure Put (To : out String; Item : in Enum;
-
-Set : in Type_Set := Default_Setting);
+```ada
+procedure Put (To   : out String;
+               Item : in Enum;
+               Set  : in Type_Set := Default_Setting);
+```
 
 Outputs the value of the parameter Item to the given string, following the same
 rule as for output to a file, using the length of the given string as the value
@@ -13608,263 +13476,255 @@ language.
 #### 14.3.10 Specification of the Package Text_IO
 
 ```ada
-    with IO_Exceptions;
-    package Text_IO is
+   with IO_Exceptions;
+   package Text_IO is
 
-       type File_Type is limited private;
+      type File_Type is limited private;
 
-       type File_Mode is (In_File, Out_File);
+      type File_Mode is (In_File, Out_File);
 
-       type Count is range 0 .. implementation defined;
-       subtype Positive_Count is Count range 1 .. Count'Last;
-       Unbounded : constant Count := 0; -- line and page length
+      type Count is range 0..implementation defined;
+      subtype Positive_Count is Count range 1..Count'Last;
+      Unbounded : constant Count := 0; -- line and page length
 
-       subtype Field is Integer range 0 .. implementation defined;
-       subtype Number_Base is Integer range 2 .. 16;
+      subtype Field is Integer range 0..implementation defined;
+      subtype Number_Base is Integer range 2..16;
 
-       type Type_Set is (Lower_Case, Upper_Case);
+      type Type_Set is (Lower_Case, Upper_Case);
 
-       -- File Management
+      -- File Management
 
-       procedure Create (File : in out File_Type;
-                         Mode : in File_Mode := Out_File;
-                         Name : in String := "";
-                         Form : in String := "");
+      procedure Create (File : in out File_Type;
+                        Mode : in File_Mode := Out_File;
+                        Name : in String := "";
+                        Form : in String := "");
 
-       procedure Open (File : in out File_Type;
-                         Mode : in File_Mode;
-                         Name : in String;
-                         Form : in String := "");
+      procedure Open (File : in out File_Type;
+                        Mode : in File_Mode;
+                        Name : in String;
+                        Form : in String := "");
 
-       procedure Close (File : in out File_Type);
-       procedure Delete (File : in out File_Type);
-       procedure Reset (File : in out File_Type; Mode : in File_Mode);
-       procedure Reset (File : in out File_Type);
+      procedure Close (File : in out File_Type);
+      procedure Delete (File : in out File_Type);
+      procedure Reset (File : in out File_Type; Mode : in File_Mode);
+      procedure Reset (File : in out File_Type);
 
-       function Mode (File : in File_Type) return File_Mode;
-       function Name (File : in File_Type) return String;
-       function Form (File : in File_Type) return String;
+      function Mode (File : in File_Type) return File_Mode;
+      function Name (File : in File_Type) return String;
+      function Form (File : in File_Type) return String;
 
-       function Is_Open (File : in File_Type) return Boolean;
+      function Is_Open (File : in File_Type) return Boolean;
 
-       -- Control of default input and output files
+      -- Control of default input and output files
 
-       procedure Set_Input (File : in File_Type);
-       procedure Set_Output (File : in File_Type);
+      procedure Set_Input (File : in File_Type);
+      procedure Set_Output (File : in File_Type);
 
-       function Standard_Input return File_Type;
-       function Standard_Output return File_Type;
+      function Standard_Input return File_Type;
+      function Standard_Output return File_Type;
 
-       function Current_Input return File_Type;
-       function Current_Output return File_Type;
+      function Current_Input return File_Type;
+      function Current_Output return File_Type;
 
-       -- Specification of line and page lengths
+      -- Specification of line and page lengths
 
-       procedure Set_Line_Length (File : in File_Type; To : in Count);
-       procedure Set_Line_Length (To : in Count);
+      procedure Set_Line_Length (File : in File_Type; To : in Count);
+      procedure Set_Line_Length (To : in Count);
 
-       procedure Set_Page_Length (File : in File_Type; To : in Count);
-       procedure Set_Page_Length (To : in Count);
+      procedure Set_Page_Length (File : in File_Type; To : in Count);
+      procedure Set_Page_Length (To : in Count);
 
-       function Line_Length (File : in File_Type) return Count;
-       function Line_Length return Count;
+      function Line_Length (File : in File_Type) return Count;
+      function Line_Length return Count;
 
-       function Page_Length (File : in File_Type) return Count;
-       function Page_Length return Count;
+      function Page_Length (File : in File_Type) return Count;
+      function Page_Length return Count;
 
-       -- Column, Line, and Page Control
-```
+      -- Column, Line, and Page Control
 
-```ada
- procedure New_Line (File : in File_Type; Spacing : in Positive_Count := 1);
- procedure New_Line (Spacing : in Positive_Count := 1);
+procedure New_Line (File : in File_Type; Spacing : in Positive_Count := 1);
+procedure New_Line (Spacing : in Positive_Count := 1);
 
- procedure Skip_Line (File : in File_Type; Spacing : in Positive_Count := 1);
- procedure Skip_Line (Spacing : in Positive_Count := 1);
-```
+procedure Skip_Line (File : in File_Type; Spacing : in Positive_Count := 1);
+procedure Skip_Line (Spacing : in Positive_Count := 1);
 
-```ada
-       function End_Of_Line (File : in File_Type) return Boolean;
-       function End_Of_Line return Boolean;
+      function End_Of_Line (File : in File_Type) return Boolean;
+      function End_Of_Line return Boolean;
 
-       procedure New_Page (File : in File_Type);
-       procedure New_Page;
+      procedure New_Page (File : in File_Type);
+      procedure New_Page;
 
-       procedure Skip_Page (File : in File_Type);
-       procedure Skip_Page;
+      procedure Skip_Page (File : in File_Type);
+      procedure Skip_Page;
 
-       function End_Of_Page (File : in File_Type) return Boolean;
-       function End_Of_Page return Boolean;
+      function End_Of_Page (File : in File_Type) return Boolean;
+      function End_Of_Page return Boolean;
 
-       function End_Of_File (File : in File_Type) return Boolean;
-       function End_Of_File return Boolean;
+      function End_Of_File (File : in File_Type) return Boolean;
+      function End_Of_File return Boolean;
 
-       procedure Set_Col (File : in File_Type; To : in Positive_Count);
-       procedure Set_Col (To : in Positive_Count);
+      procedure Set_Col (File : in File_Type; To : in Positive_Count);
+      procedure Set_Col (To : in Positive_Count);
 
-       procedure Set_Line (File : in File_Type; To : in Positive_Count);
-       procedure Set_Line (To : in Positive_Count);
+      procedure Set_Line (File : in File_Type; To : in Positive_Count);
+      procedure Set_Line (To : in Positive_Count);
 
-       function Col (File : in File_Type) return Positive_Count;
-       function Col return Positive_Count;
+      function Col (File : in File_Type) return Positive_Count;
+      function Col return Positive_Count;
 
-       function Line (File : in File_Type) return Positive_Count;
-       function Line return Positive_Count;
+      function Line (File : in File_Type) return Positive_Count;
+      function Line return Positive_Count;
 
-       function Page (File : in File_Type) return Positive_Count;
-       function Page return Positive_Count;
+      function Page (File : in File_Type) return Positive_Count;
+      function Page return Positive_Count;
 
-       -- Character Input-Output
+      -- Character Input-Output
 
-       procedure Get (File : in File_Type; Item : out Character);
-       procedure Get (Item : out Character);
-       procedure Put (File : in File_Type; Item : in Character);
-       procedure Put (Item : in Character);
+      procedure Get (File : in File_Type; Item : out Character);
+      procedure Get (Item : out Character);
+      procedure Put (File : in File_Type; Item : in Character);
+      procedure Put (Item : in Character);
 
-       -- String Input-Output
+      -- String Input-Output
 
-       procedure Get (File : in File_Type; Item : out String);
-       procedure Get (Item : out String);
-       procedure Put (File : in File_Type; Item : in String);
-       procedure Put (Item : in String);
+      procedure Get (File : in File_Type; Item : out String);
+      procedure Get (Item : out String);
+      procedure Put (File : in File_Type; Item : in String);
+      procedure Put (Item : in String);
 
-       procedure Get_Line (File : in File_Type; Item : out String; Last :
-         out Natural);
+      procedure Get_Line (File : in File_Type; Item : out String; Last :
+        out Natural);
 
-       procedure Get_Line (Item : out String; Last : out Natural);
-       procedure Put_Line (File : in File_Type; Item : in String);
-       procedure Put_Line (Item : in String);
+      procedure Get_Line (Item : out String; Last : out Natural);
+      procedure Put_Line (File : in File_Type; Item : in String);
+      procedure Put_Line (Item : in String);
 
-       -- Generic package for Input-Output of Integer Types
+      -- Generic package for Input-Output of Integer Types
 
-       generic
-          type Num is range <>;
-       package Integer_IO is
+      generic
+         type Num is range <>;
+      package Integer_IO is
 
-          Default_Width : Field := Num'Width;
-          Default_Base : Number_Base := 10;
-```
+         Default_Width : Field := Num'Width;
+         Default_Base : Number_Base := 10;
 
-```ada
+  procedure Get (File : in File_Type; Item : out Num; Width : in Field := 0);
+
+         procedure Get (Item : out Num; Width : in Field := 0);
+
+         procedure Put (File : in File_Type;
+                       Item : in Num;
+                       Width : in Field := Default_Width;
+                       Base : in Number_Base := Default_Base);
+         procedure Put (Item : in Num;
+                       Width : in Field := Default_Width;
+                       Base : in Number_Base := Default_Base);
+      procedure Get (From : in String; Item : out Num; Last : out Positive);
+      procedure Put (To : out String;
+                       Item : in Num;
+                       Base : in Number_Base := Default_Base);
+
+    end;
+
+      -- Generic packages for Input-Output of Real Types
+
+      generic
+         type Num is digits <>;
+      package Float_IO is
+
+         Default_Fore : Field := 2;
+         Default_Aft : Field := Num'Digits-1;
+         Default_Exp : Field := 3;
+
    procedure Get (File : in File_Type; Item : out Num; Width : in Field := 0);
-```
+         procedure Get (Item : out Num; Width : in Field := 0);
 
-```ada
-          procedure Get (Item : out Num; Width : in Field := 0);
-
-          procedure Put (File : in File_Type;
-                        Item : in Num;
-                        Width : in Field := Default_Width;
-                        Base : in Number_Base := Default_Base);
-          procedure Put (Item : in Num;
-                        Width : in Field := Default_Width;
-                        Base : in Number_Base := Default_Base);
-       procedure Get (From : in String; Item : out Num; Last : out Positive);
-       procedure Put (To : out String;
-                        Item : in Num;
-                        Base : in Number_Base := Default_Base);
-
-     end;
-
-       -- Generic packages for Input-Output of Real Types
-
-       generic
-          type Num is digits <>;
-       package Float_IO is
-
-          Default_Fore : Field := 2;
-          Default_Aft : Field := Num'Digits-1;
-          Default_Exp : Field := 3;
-
-    procedure Get (File : in File_Type; Item : out Num; Width : in Field := 0);
-          procedure Get (Item : out Num; Width : in Field := 0);
-
-          procedure Put (File : in File_Type;
-                        Item : in Num;
-                        Fore : in Field := Default_Fore;
-                        Aft : in Field := Default_Aft;
-                        Exp : in Field := Default_Exp);
-          procedure Put (Item : in Num;
-                        Fore : in Field := Default_Fore;
-                        Aft : in Field := Default_Aft;
-                        Exp : in Field := Default_Exp);
-
-         procedure Get (From : in String; Item : out Num; Last : out Positive);
-           procedure Put (To : out String;
-                        Item : in Num;
-                        Aft : in Field := Default_Aft;
-                        Exp : in Field := Default_Exp);
-       end;
-
-       generic
-          type Num is delta <>;
-       package Fixed_IO is
-
-          Default_Fore : Field := Num'Fore;
-          Default_Aft : Field := Num'Aft;
-          Default_Exp : Field := 0;
-
-    procedure Get (File : in File_Type; Item : out Num; Width : in Field := 0);
-          procedure Get (Item : out Num; Width : in Field := 0);
-
-          procedure Put (File : in File_Type;
-                        Item : in Num;
-                        Fore : in Field := Default_Fore;
-                        Aft : in Field := Default_Aft;
-                        Exp : in Field := Default_Exp);
-          procedure Put (Item : in Num;
-                        Fore : in Field := Default_Fore;
-                        Aft : in Field := Default_Aft;
-                        Exp : in Field := Default_Exp);
+         procedure Put (File : in File_Type;
+                       Item : in Num;
+                       Fore : in Field := Default_Fore;
+                       Aft : in Field := Default_Aft;
+                       Exp : in Field := Default_Exp);
+         procedure Put (Item : in Num;
+                       Fore : in Field := Default_Fore;
+                       Aft : in Field := Default_Aft;
+                       Exp : in Field := Default_Exp);
 
         procedure Get (From : in String; Item : out Num; Last : out Positive);
           procedure Put (To : out String;
-                        Item : in Num;
-                        Aft : in Field := Default_Aft;
-                        Exp : in Field := Default_Exp);
-       end;
+                       Item : in Num;
+                       Aft : in Field := Default_Aft;
+                       Exp : in Field := Default_Exp);
+      end;
 
-       -- Generic package for Input-Output of Enumeration Types
+      generic
+         type Num is delta <>;
+      package Fixed_IO is
 
-       generic
-          type Enum is (<>);
-       package Enumeration_IO is
+         Default_Fore : Field := Num'Fore;
+         Default_Aft : Field := Num'Aft;
+         Default_Exp : Field := 0;
 
-          Default_Width : Field := 0;
-          Default_Setting : Type_Set := Upper_Case;
+   procedure Get (File : in File_Type; Item : out Num; Width : in Field := 0);
+         procedure Get (Item : out Num; Width : in Field := 0);
 
-          procedure Get (File : in File_Type; Item : out Enum);
-          procedure Get (Item : out Enum);
+         procedure Put (File : in File_Type;
+                       Item : in Num;
+                       Fore : in Field := Default_Fore;
+                       Aft : in Field := Default_Aft;
+                       Exp : in Field := Default_Exp);
+         procedure Put (Item : in Num;
+                       Fore : in Field := Default_Fore;
+                       Aft : in Field := Default_Aft;
+                       Exp : in Field := Default_Exp);
 
-          procedure Put (File : in File_Type;
-                        Item : in Enum;
-                        Width : in Field := Default_Width;
-                        Set : in Type_Set := Default_Setting);
-          procedure Put (Item : in Enum;
-                        Width : in Field := Default_Width;
-                        Set : in Type_Set := Default_Setting);
+       procedure Get (From : in String; Item : out Num; Last : out Positive);
+         procedure Put (To : out String;
+                       Item : in Num;
+                       Aft : in Field := Default_Aft;
+                       Exp : in Field := Default_Exp);
+      end;
 
-      procedure Get (From : in String; Item : out Enum; Last : out Positive);
-          procedure Put (To : out String;
-                        Item : in Enum;
+      -- Generic package for Input-Output of Enumeration Types
 
-                        Set : in Type_Set := Default_Setting);
-       end;
+      generic
+         type Enum is (<>);
+      package Enumeration_IO is
 
-    -- Exceptions
+         Default_Width : Field := 0;
+         Default_Setting : Type_Set := Upper_Case;
 
-       Status_Error : exception renames IO_Exceptions.Status_Error;
-       Mode_Error : exception renames IO_Exceptions.Mode_Error;
-       Name_Error : exception renames IO_Exceptions.Name_Error;
-       Use_Error : exception renames IO_Exceptions.Use_Error;
-       Device_Error : exception renames IO_Exceptions.Device_Error;
-       End_Error : exception renames IO_Exceptions.End_Error;
-       Data_Error : exception renames IO_Exceptions.Data_Error;
-       Layout_Error : exception renames IO_Exceptions.Layout_Error;
+         procedure Get (File : in File_Type; Item : out Enum);
+         procedure Get (Item : out Enum);
 
-    private
-       -- implementation-dependent
-    end;
+         procedure Put (File : in File_Type;
+                       Item : in Enum;
+                       Width : in Field := Default_Width;
+                       Set : in Type_Set := Default_Setting);
+         procedure Put (Item : in Enum;
+                       Width : in Field := Default_Width;
+                       Set : in Type_Set := Default_Setting);
+
+     procedure Get (From : in String; Item : out Enum; Last : out Positive);
+         procedure Put (To : out String;
+                       Item : in Enum;
+
+                       Set : in Type_Set := Default_Setting);
+      end;
+
+   -- Exceptions
+
+      Status_Error : exception renames IO_Exceptions.Status_Error;
+      Mode_Error : exception renames IO_Exceptions.Mode_Error;
+      Name_Error : exception renames IO_Exceptions.Name_Error;
+      Use_Error : exception renames IO_Exceptions.Use_Error;
+      Device_Error : exception renames IO_Exceptions.Device_Error;
+      End_Error : exception renames IO_Exceptions.End_Error;
+      Data_Error : exception renames IO_Exceptions.Data_Error;
+      Layout_Error : exception renames IO_Exceptions.Layout_Error;
+
+   private
+      -- implementation-dependent
+   end;
 ```
 
 ### 14.4 Exceptions in Input-Output
@@ -13926,18 +13786,18 @@ This package defines the exceptions needed by the packages Sequential_IO,
 Direct_IO, and Text_IO.
 
 ```ada
-    package IO_Exceptions is
+package IO_Exceptions is
 
-       Status_Error : exception;
-       Mode_Error : exception;
-       Name_Error : exception;
-       Use_Error : exception;
-       Device_Error : exception;
-       End_Error : exception;
-       Data_Error : exception;
-       Layout_Error : exception;
+   Status_Error : exception;
+   Mode_Error : exception;
+   Name_Error : exception;
+   Use_Error : exception;
+   Device_Error : exception;
+   End_Error : exception;
+   Data_Error : exception;
+   Layout_Error : exception;
 
-    end;
+end;
 ```
 
 ### 14.6 Low Level Input-Output
@@ -13961,16 +13821,14 @@ The visible part of the package defining these procedures is outlined as
 follows:
 
 ```ada
- package Low_Level_IO is
-```
+package Low_Level_IO is
 
-```ada
-    --  declarations of the possible types for Device and Data;
-    --  declarations of overloaded procedures for these types:
-    procedure Send_Control (Device : device_type; Data : in out data_type);
-    procedure Receive_Control (Device : device_type; Data : in out data_type);
+   --  declarations of the possible types for Device and Data;
+   --  declarations of overloaded procedures for these types:
+   procedure Send_Control (Device : device_type; Data : in out data_type);
+   procedure Receive_Control (Device : device_type; Data : in out data_type);
 
- end;
+end;
 ```
 
 The bodies of the procedures Send_Control and Receive_Control for various
@@ -13987,56 +13845,61 @@ used. For simplicity, all the requisite instantiations are given within one
 subprogram; in practice, a package, separate from the procedure, would be used.
 
 ```ada
-    with Text_IO; use Text_IO;
-    procedure Dialogue is
-       type Color is (White, Red, Orange, Yellow, Green, Blue, Brown);
-       package Color_IO is new Enumeration_IO (Enum => Color);
-       package Number_IO is new Integer_IO (Integer);
-       use Color_IO, Number_IO;
+with Text_IO; use Text_IO;
+procedure Dialogue is
+   type Color is (White, Red, Orange, Yellow, Green, Blue, Brown);
+   package Color_IO is new Enumeration_IO (Enum => Color);
+   package Number_IO is new Integer_IO (Integer);
+   use Color_IO, Number_IO;
 
-       Inventory : array (Color) of Integer := (20, 17, 43, 10, 28, 173, 87);
-       Choice : Color;
+   Inventory : array (Color) of Integer := (20, 17, 43, 10, 28, 173, 87);
+   Choice : Color;
 
-       procedure Enter_Color (Selection : out Color) is
-       begin
-          loop
-             begin
-                Put ("Color selected: "); -- prompts user
-                Get (Selection); -- accepts color typed, or raises exception
-                return;
-             exception
-                when Data_Error =>
-                   Put ("Invalid color, try again. "); -- user has typed
-                   New_Line (2); -- new line
-                   --  completes execution of the block statement
-             end;
-          end loop; -- repeats the block statement until color accepted
-       end;
-    begin -- statements of Dialogue;
+   procedure Enter_Color (Selection : out Color) is
+   begin
+      loop
+         begin
+            Put ("Color selected: "); -- prompts user
+            Get (Selection); -- accepts color typed, or raises exception
+            return;
+         exception
+            when Data_Error =>
+               Put ("Invalid color, try again. "); -- user has typed
+               New_Line (2); -- new line
+               --  completes execution of the block statement
+         end;
+      end loop; -- repeats the block statement until color accepted
+   end;
+begin -- statements of Dialogue;
 
-       Number_IO.Default_Width := 5;
+   Number_IO.Default_Width := 5;
 
-       loop
+   loop
 
-          Enter_Color (Choice); -- user types color and new line
+      Enter_Color (Choice); -- user types color and new line
 
-          Set_Col (5); Put (Choice); Put (" items available:");
-          Set_Col (40); Put (Inventory (Choice)); -- default width is 5
-          New_Line;
-       end loop;
+      Set_Col (5); Put (Choice); Put (" items available:");
+      Set_Col (40); Put (Inventory (Choice)); -- default width is 5
+      New_Line;
+   end loop;
+
+end;
 ```
 
-```ada
-    end;
-```
+**Example of an interaction** (characters typed by the user are shown in
+italics):
 
-**Example of an interaction (characters typed by the user are italicized):**
-
-Color selected: Black Invalid color, try again.
+```text
+Color selected: Black
+Invalid color, try again.
 
 Color selected: Blue
-Blue items available: 173 Color selected: Yellow Yellow items available: 10
+Blue items available:     173
+Color selected: Yellow
+Yellow items available:    10
+```
 
+---
 
 ## A. Predefined Language Attributes
 
@@ -14055,7 +13918,6 @@ attributes.
 
 - **`P'Aft`** — *For a prefix P that denotes a fixed point subtype*
 
-
   Yields the number of decimal digits needed after the point to accommodate the
   precision of the subtype P, unless the delta of the subtype P is greater than
   0.1, in which case the attribute yields the value one. (P'Aft is the smallest
@@ -14065,13 +13927,11 @@ attributes.
 
 - **`P'Base`** — *For a prefix P that denotes a type or subtype*
 
-
   This attribute denotes the base type of P. It is only allowed as the prefix of
   the name of another attribute: for example, P'Base'First. (See
   [3.3.3](#333-classification-of-operations).)
 
 - **`P'Callable`** — *For a prefix P that is appropriate for a task type*
-
 
   Yields the value False when the execution of the task P is either completed or
   terminated, or when the task is abnormal; yields the value True otherwise. The
@@ -14093,7 +13953,6 @@ attributes.
 
 - **`P'Constrained`** — *For a prefix P that denotes a private type or subtype*
 
-
   Yields the value False if P denotes an unconstrained nonformal private type
   with discriminants; also yields the value False if P denotes a generic formal
   private type and the associated actual subtype is either an unconstrained type
@@ -14103,7 +13962,6 @@ attributes.
 
 - **`P'Count`** — *For a prefix P that denotes an entry of a task unit*
 
-
   Yields the number of entry calls presently queued on the entry (if the
   attribute is evaluated within an accept statement for the entry P, the count
   does not include the calling task). The value of this attribute is of the type
@@ -14111,13 +13969,11 @@ attributes.
 
 - **`P'Delta`** — *For a prefix P that denotes a fixed point subtype*
 
-
   Yields the value of the delta specified in the fixed accuracy definition for
   the subtype P. The value of this attribute is of the type universal_real. (See
   [3.5.10](#3510-operations-of-fixed-point-types).)
 
 - **`P'Digits`** — *For a prefix P that denotes a floating point subtype*
-
 
   Yields the number of decimal digits in the decimal mantissa of model numbers
   of the subtype P. (This attribute yields the number D of section [3.5.7](#357-floating-point-types).) The
@@ -14126,14 +13982,12 @@ attributes.
 
 - **`P'Emax`** — *For a prefix P that denotes a floating point subtype*
 
-
   Yields the largest exponent value in the binary canonical form of model
   numbers of the subtype P. (This attribute yields the product 4*B of section
   3.5.7.) The value of this attribute is of the type universal_integer. (See
   [3.5.8](#358-operations-of-floating-point-types).)
 
 - **`P'Epsilon`** — *For a prefix P that denotes a floating point subtype*
-
 
   Yields the absolute value of the difference between the model number 1.0 and
   the next model number above, for the subtype P. The value of this attribute is
@@ -14171,7 +14025,6 @@ attributes.
 
 - **`P'Fore`** — *For a prefix P that denotes a fixed point subtype*
 
-
   Yields the minimum number of characters needed for the integer part of the
   decimal representation of any value of the subtype P, assuming that the
   representation does not include an exponent, but includes a one-character
@@ -14181,7 +14034,6 @@ attributes.
   [3.5.10](#3510-operations-of-fixed-point-types).)
 
 - **`P'Image`** — *For a prefix P that denotes a discrete type or subtype*
-
 
   This attribute is a function with a single parameter. The actual parameter X
   must be a value of the base type of P. The result type is the predefined type
@@ -14198,7 +14050,6 @@ attributes.
   [3.5.5](#355-operations-of-discrete-types).)
 
 - **`P'Large`** — *For a prefix P that denotes a real subtype*
-
 
   The attribute yields the largest positive model number of the subtype P. The
   value of this attribute is of the type universal_real. (See [3.5.8](#358-operations-of-floating-point-types) and 3.5.10.)
@@ -14290,7 +14141,6 @@ attributes.
 
 - **`P'Machine_Rounds`** — *For a prefix P that denotes a real type or subtype*
 
-
   Yields the value True if every predefined arithmetic operation on values of
   the base type of P either returns an exact result or performs rounding; yields
   the value False otherwise. The value of this attribute is of the predefined
@@ -14298,14 +14148,12 @@ attributes.
 
 - **`P'Mantissa`** — *For a prefix P that denotes a real subtype*
 
-
   Yields the number of binary digits in the binary mantissa of model numbers of
   the subtype P. (This attribute yields the number B of section [3.5.7](#357-floating-point-types) for a
   floating point type, or of section [3.5.9](#359-fixed-point-types) for a fixed point type.) The value of
   this attribute is of the type universal_integer. (See [3.5.8](#358-operations-of-floating-point-types) and 3.5.10.)
 
 - **`P'Pos`** — *For a prefix P that denotes a discrete type or subtype*
-
 
   This attribute is a function with a single parameter. The actual parameter X
   must be a value of the base type of P. The result type is the type
@@ -14321,7 +14169,6 @@ attributes.
   type universal_integer. (See [13.7.2](#1372-representation-attributes).)
 
 - **`P'Pred`** — *For a prefix P that denotes a discrete type or subtype*
-
 
   This attribute is a function with a single parameter. The actual parameter X
   must be a value of the base type of P. The result type is the base type of P.
@@ -14351,25 +14198,21 @@ attributes.
 
 - **`P'Safe_Large`** — *For a prefix P that denotes a real type or subtype*
 
-
   Yields the largest positive safe number of the base type of P. The value of
   this attribute is of the type universal_real. (See [3.5.8](#358-operations-of-floating-point-types) and 3.5.10.)
 
 - **`P'Safe_Small`** — *For a prefix P that denotes a real type or subtype*
-
 
   Yields the smallest positive (nonzero) safe number of the base type of P. The
   value of this attribute is of the type universal_real. (See [3.5.8](#358-operations-of-floating-point-types) and 3.5.10.)
 
 - **`P'Size`** — *For a prefix P that denotes an object*
 
-
   Yields the number of bits allocated to hold the object. The value of this
   attribute is of the type universal_integer. (See
   [13.7.2](#1372-representation-attributes).)
 
 - **`P'Size`** — *For a prefix P that denotes any type or subtype*
-
 
   Yields the minimum number of bits that is needed by the implementation to hold
   any possible object of the type or subtype P. The value of this attribute is
@@ -14378,12 +14221,10 @@ attributes.
 
 - **`P'Small`** — *For a prefix P that denotes a real subtype*
 
-
   Yields the smallest positive (nonzero) model number of the subtype P. The
   value of this attribute is of the type universal_real. (See [3.5.8](#358-operations-of-floating-point-types) and 3.5.10.)
 
 - **`P'Storage_Size`** — *For a prefix P that denotes an access type or subtype*
-
 
   Yields the total number of storage units reserved for the collection
   associated with the base type of P. The value of this attribute is of the type
@@ -14399,7 +14240,6 @@ attributes.
 
 - **`P'Succ`** — *For a prefix P that denotes a discrete type or subtype*
 
-
   This attribute is a function with a single parameter. The actual parameter X
   must be a value of the base type of P. The result type is the base type of P.
   The result is the value whose position number is one greater than that of X.
@@ -14408,13 +14248,11 @@ attributes.
 
 - **`P'Terminated`** — *For a prefix P that is appropriate for a task type*
 
-
   Yields the value True if the task P is terminated; yields the value False
   otherwise. The value of this attribute is of the predefined type Boolean. (See
   [9.9](#99-task-and-entry-attributes).)
 
 - **`P'Val`** — *For a prefix P that denotes a discrete type or subtype*
-
 
   This attribute is a special function with a single parameter X which can be of
   any integer type. The result type is the base type of P. The result is the
@@ -14424,7 +14262,6 @@ attributes.
   P'Pos(P'Base'Last). (See [3.5.5](#355-operations-of-discrete-types).)
 
 - **`P'Value`** — *For a prefix P that denotes a discrete type or subtype*
-
 
   This attribute is a function with a single parameter. The actual parameter X
   must be a value of the predefined type String. The result type is the base
@@ -14442,11 +14279,12 @@ attributes.
 
 - **`P'Width`** — *For a prefix P that denotes a discrete subtype*
 
-
   Yields the maximum image length over all values of the subtype P (the image is
   the sequence of characters returned by the attribute Image). The value of this
   attribute is of the type universal_integer. (See
   [3.5.5](#355-operations-of-discrete-types).)
+
+---
 
 ## B. Predefined Language Pragmas
 
@@ -14570,6 +14408,8 @@ definitions given elsewhere of the remaining language-defined pragmas.
   specified identifier corresponds to one of the literals of the type Name
   declared in the package System (see [13.7](#137-the-package-system)).
 
+---
+
 ## C. Predefined Language Environment
 
 This annex outlines the specification of the package Standard containing all
@@ -14684,107 +14524,131 @@ package Standard is
 
    -- function "/" (Left : any_fixed_point_type; Right : any_fixed_point_type) return universal_fixed;
 
-  --  The  following  characters  form  the  standard  ASCII character set.
-
-      set. Character literals -- corresponding to control characters are
-      not identifiers; they are indicated in italics in this
-      definition.
+   -- The following characters form the standard ASCII character set.
+   -- Character literals corresponding to control characters are not
+   -- identifiers; they are indicated in italics in this definition.
 
    type Character is
-```
+     (nul,   soh,   stx,   etx,   eot,   enq,   ack,   bel,
+      bs,    ht,    lf,    vt,    ff,    cr,    so,    si,
+      dle,   dc1,   dc2,   dc3,   dc4,   nak,   syn,   etb,
+      can,   em,    sub,   esc,   fs,    gs,    rs,    us,
 
-(nul, soh, stx, etx, eot, enq, ack, bel, bs, ht, lf, vt, ff, cr, so, si, dle,
-dc1, dc2, dc3, dc4, nak, syn, etb, can, em, sub, esc, fs, gs, rs, us,
+      ' ',   '!',   '"',   '#',   '$',   '%',   '&',   ''',
+      '(',   ')',   '*',   '+',   ',',   '-',   '.',   '/',
 
-' ', '!', '"', '#', '$', '%', '&', ''', '(', ')', '*', '+', ',', '-', '.', '/',
-'0', '1', '2', '3', '4', '5', '6', '7', '8', '9', ':', ';', '<', '=', '>', '?',
+      '0',   '1',   '2',   '3',   '4',   '5',   '6',   '7',
+      '8',   '9',   ':',   ';',   '<',   '=',   '>',   '?',
 
-'@', 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O',
-'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', '[', '\', ']', '~', '_',
+      '@',   'A',   'B',   'C',   'D',   'E',   'F',   'G',
+      'H',   'I',   'J',   'K',   'L',   'M',   'N',   'O',
+      'P',   'Q',   'R',   'S',   'T',   'U',   'V',   'W',
+      'X',   'Y',   'Z',   '[',   '\',   ']',   '^',   '_',
 
-'`', 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o',
-'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z', '{', '|', '}', '~', del);
+      '`',   'a',   'b',   'c',   'd',   'e',   'f',   'g',
+      'h',   'i',   'j',   'k',   'l',   'm',   'n',   'o',
+      'p',   'q',   'r',   's',   't',   'u',   'v',   'w',
+      'x',   'y',   'z',   '{',   '|',   '}',   '~',   del);
 
-for Character use -- 128 ASCII character set without holes (0, 1, 2, 3, 4, 5,
-..., 125, 126, 127);
+   for Character use  -- 128 ASCII character set without holes
+     (0, 1, 2, 3, 4, 5, ..., 125, 126, 127);
 
--- The predefined operators for the type Character are the same as for any
-enumeration type.
+   -- The predefined operators for the type Character are the same as for
+   -- any enumeration type.
 
-package ASCII is
+   package ASCII is
 
--- Control characters:
+      -- Control characters:
 
-Nul : constant Character := nul; Soh : constant Character := soh: Stx : constant
-Character := stx; Etx : constant Character := etx; Eot : constant Character :=
-eot; Enq : constant Character := enq: Ack : constant Character := ack; Bel :
-constant Character := bel; Bs : constant Character := bs; Ht : constant
-Character := ht; Lf : constant Character := lf; Vt : constant Character := vt;
-Ff : constant Character := ff; Cr : constant Character := cr; So : constant
-Character := so; Si : constant Character := si; Dle : constant Character := dle;
-Dc1 : constant Character := dc1; Dc2 : constant Character := dc2; Dc3 : constant
-Character := dc3; Dc4 : constant Character := dc4; Nak : constant Character :=
-nak; Syn : constant Character := syn; Etb : constant Character := etb; Can :
-constant Character := can; Em : constant Character := em: Sub : constant
-Character := sub; Esc : constant Character := esc; Fs : constant Character :=
-fs; Gs : constant Character := gs; Rs : constant Character := rs; Us : constant
-Character := us; Del : constant Character := del;
+      Nul : constant Character := nul;   Soh : constant Character := soh;
+      Stx : constant Character := stx;   Etx : constant Character := etx;
+      Eot : constant Character := eot;   Enq : constant Character := enq;
+      Ack : constant Character := ack;   Bel : constant Character := bel;
+      Bs  : constant Character := bs;    Ht  : constant Character := ht;
+      Lf  : constant Character := lf;    Vt  : constant Character := vt;
+      Ff  : constant Character := ff;    Cr  : constant Character := cr;
+      So  : constant Character := so;    Si  : constant Character := si;
+      Dle : constant Character := dle;   Dc1 : constant Character := dc1;
+      Dc2 : constant Character := dc2;   Dc3 : constant Character := dc3;
+      Dc4 : constant Character := dc4;   Nak : constant Character := nak;
+      Syn : constant Character := syn;   Etb : constant Character := etb;
+      Can : constant Character := can;   Em  : constant Character := em;
+      Sub : constant Character := sub;   Esc : constant Character := esc;
+      Fs  : constant Character := fs;    Gs  : constant Character := gs;
+      Rs  : constant Character := rs;    Us  : constant Character := us;
+      Del : constant Character := del;
 
--- Other characters:
+      -- Other characters:
 
-Exclam : constant Character := '!'; Quotation : constant Character := '"'; Sharp
-: constant Character := '#'; Dollar : constant Character := '$'; Percent :
-constant Character := '%'; Ampersand : constant Character := '&'; Colon :
-constant Character := ':'; Semicolon : constant Character := ';'; Query :
-constant Character := '?'; At_Sign : constant Character := '@'; L_Bracket :
-constant Character := '['; Back_Slash : constant Character := '\'; R_Bracket :
-constant Character := ']'; Circumflex : constant Character := '^'; Underline :
-constant Character := '_'; Grave : constant Character := '`'; L_Brace : constant
-Character := '{'; Bar : constant Character := '|'; R_Brace : constant Character
-:= '}'; Tilde : constant Character := '~';
+      Exclam     : constant Character := '!';
+      Quotation  : constant Character := '"';
+      Sharp      : constant Character := '#';
+      Dollar     : constant Character := '$';
+      Percent    : constant Character := '%';
+      Ampersand  : constant Character := '&';
+      Colon      : constant Character := ':';
+      Semicolon  : constant Character := ';';
+      Query      : constant Character := '?';
+      At_Sign    : constant Character := '@';
+      L_Bracket  : constant Character := '[';
+      Back_Slash : constant Character := '\';
+      R_Bracket  : constant Character := ']';
+      Circumflex : constant Character := '^';
+      Underline  : constant Character := '_';
+      Grave      : constant Character := '`';
+      L_Brace    : constant Character := '{';
+      Bar        : constant Character := '|';
+      R_Brace    : constant Character := '}';
+      Tilde      : constant Character := '~';
 
--- Lower case letters:
+      -- Lower case letters:
 
-Lc_A : constant Character := 'a'; ... Lc_Z : constant Character := 'z';
+      Lc_A : constant Character := 'a';
+      ...
+      Lc_Z : constant Character := 'z';
 
-end;
+   end ASCII;
 
--- Predefined subtypes:
+   -- Predefined subtypes:
 
-subtype Natural is Integer range 0 .. Integer'Last; subtype Positive is Integer
-range 1 .. Integer'Last;
+   subtype Natural  is Integer range 0..Integer'Last;
+   subtype Positive is Integer range 1..Integer'Last;
 
--- Predefined string type:
+   -- Predefined string type:
 
-type String is array (Positive range <>) of Character;
+   type String is array (Positive range <>) of Character;
 
-pragma Pack (String);
+   pragma Pack (String);
 
--- The predefined operators for this type are as follows:
+   -- The predefined operators for this type are as follows:
 
--- function "=" (Left, Right : String) return Boolean; -- function "/=" (Left,
-Right : String) return Boolean; -- function "<" (Left, Right : String) return
-Boolean; -- function "<=" (Left, Right : String) return Boolean; -- function ">"
-(Left, Right : String) return Boolean; -- function ">=" (Left, Right : String)
-return Boolean;
+   -- function "="  (Left, Right : String) return Boolean;
+   -- function "/=" (Left, Right : String) return Boolean;
+   -- function "<"  (Left, Right : String) return Boolean;
+   -- function "<=" (Left, Right : String) return Boolean;
+   -- function ">"  (Left, Right : String) return Boolean;
+   -- function ">=" (Left, Right : String) return Boolean;
 
--- function "&" (Left : String; Right : String) return String; -- function "&"
-(Left : Character; Right : String) return String;
+   -- function "&" (Left : String;    Right : String)    return String;
+   -- function "&" (Left : Character; Right : String)    return String;
+   -- function "&" (Left : String;    Right : Character) return String;
+   -- function "&" (Left : Character; Right : Character) return String;
 
--- function "&" (Left : String; Right : Character) return String; -- function
-"&" (Left : Character; Right : Character) return String;
+   type Duration is delta implementation_defined range implementation_defined;
 
-type Duration is delta implementation_defined range implementation_defined;
+   -- The predefined operators for the type Duration are the same as for
+   -- any fixed point type.
 
--- The predefined operators for the type Duration are the same as for any fixed
-point type.
+   -- The predefined exceptions:
 
--- The predefined exceptions:
-
-Constraint_Error : exception; Numeric_Error : exception; Program_Error :
-exception; Storage_Error : exception; Tasking_Error : exception;
+   Constraint_Error : exception;
+   Numeric_Error    : exception;
+   Program_Error    : exception;
+   Storage_Error    : exception;
+   Tasking_Error    : exception;
 
 end Standard;
+```
 
 Certain aspects of the predefined entities cannot be completely described in the
 language itself. For example, although the enumeration type Boolean can be
@@ -14808,6 +14672,8 @@ control forms cannot be expressed in the language.
 >     -  The package IO_Exceptions (see [14.5](#145-specification-of-the-package-io_exceptions))
 >     -  The package Low_Level_IO (see [14.6](#146-low-level-input-output))
 > ```
+
+---
 
 ## D. Glossary
 
@@ -15113,6 +14979,7 @@ terms.
 
 - **With clause.** *See compilation unit.*
 
+---
 
 ## E. Syntax Summary
 
@@ -15123,910 +14990,912 @@ that defines it.
 **[2.1 Character Set](#21-character-set)**
 
 ```ebnf
-    graphic_character ::= basic_graphic_character
-       | lower_case_letter | other_special_character
+graphic_character ::= basic_graphic_character
+   | lower_case_letter | other_special_character
 
-    basic_graphic_character ::=
-         upper_case_letter | digit
-       | special_character | space_character
+basic_graphic_character ::=
+     upper_case_letter | digit
+   | special_character | space_character
 
-    basic_character ::=
-         basic_graphic_character | format_effector
+basic_character ::=
+     basic_graphic_character | format_effector
 ```
 
 **[2.3 Identifiers](#23-identifiers)**
 
 ```ebnf
-    identifier ::=
-       letter {[underline] letter_or_digit}
+identifier ::=
+   letter {[underline] letter_or_digit}
 
-    letter_or_digit ::= letter | digit
+letter_or_digit ::= letter | digit
 
-    letter ::= upper_case_letter | lower_case_letter
+letter ::= upper_case_letter | lower_case_letter
 ```
 
 **[2.4 Numeric Literals](#24-numeric-literals)**
 
 ```ebnf
-    numeric_literal ::= decimal_literal | based_literal
+numeric_literal ::= decimal_literal | based_literal
 ```
 
 **[2.4.1 Decimal Literals](#241-decimal-literals)**
 
 ```ebnf
-    decimal_literal ::= integer [.integer] [exponent]
+decimal_literal ::= integer [.integer] [exponent]
 
-    integer ::= digit {[underline] digit}
+integer ::= digit {[underline] digit}
 
-    exponent ::= E [+] integer | E - integer
+exponent ::= E [+] integer | E - integer
 ```
 
 **[2.4.2 Based Literals](#242-based-literals)**
 
 ```ebnf
-    based_literal ::=
-       base # based_integer [.based_integer] # [exponent]
+based_literal ::=
+   base # based_integer [.based_integer] # [exponent]
 
-    base ::= integer
+base ::= integer
 
-    based_integer ::=
-       extended_digit {[underline] extended_digit}
+based_integer ::=
+   extended_digit {[underline] extended_digit}
 
-    extended_digit ::= digit | letter
+extended_digit ::= digit | letter
 ```
 
 **[2.5 Character Literals](#25-character-literals)**
 
 ```ebnf
-    character_literal ::= 'graphic_character'
+character_literal ::= 'graphic_character'
 ```
 
 **[2.6 String Literals](#26-string-literals)**
 
 ```ebnf
-    string_literal ::= "{graphic_character}"
+string_literal ::= "{graphic_character}"
 ```
 
 **[2.8 Pragmas](#28-pragmas)**
 
 ```ebnf
-    pragma ::=
-       pragma identifier [(argument_association
-                               {, argument_association})];
+pragma ::=
+   pragma identifier [(argument_association
+                           {, argument_association})];
 
-    argument_association ::=
-         [argument_identifier =>] name
-       | [argument_identifier =>] expression
+argument_association ::=
+     [argument_identifier =>] name
+   | [argument_identifier =>] expression
 ```
 
 **[3.1 Declarations](#31-declarations)**
 
 ```ebnf
-    basic_declaration ::=
-         object_declaration | number_declaration
-       | type_declaration | subtype_declaration
-       | subprogram_declaration | package_declaration
-       | task_declaration | generic_declaration
-       | exception_declaration | generic_instantiation
-       | renaming_declaration | deferred_constant_declaration
+basic_declaration ::=
+     object_declaration | number_declaration
+   | type_declaration | subtype_declaration
+   | subprogram_declaration | package_declaration
+   | task_declaration | generic_declaration
+   | exception_declaration | generic_instantiation
+   | renaming_declaration | deferred_constant_declaration
 ```
 
 **[3.2 Objects and Named Numbers](#32-objects-and-named-numbers)**
 
 ```ebnf
-    object_declaration ::=
-         identifier_list : [constant] subtype_indication [:= expression];
-       | identifier_list : [constant] constrained_array_definition
-                                                         [:= expression];
+object_declaration ::=
+     identifier_list : [constant] subtype_indication [:= expression];
+   | identifier_list : [constant] constrained_array_definition
+                                                     [:= expression];
 
-    number_declaration ::=
-         identifier_list : constant := universal_static_expression;
+number_declaration ::=
+     identifier_list : constant := universal_static_expression;
 
-    identifier_list ::= identifier {, identifier}
+identifier_list ::= identifier {, identifier}
 ```
 
 **[3.3.1 Type Declarations](#331-type-declarations)**
 
 ```ebnf
-    type_declaration ::= full_type_declaration
-       | incomplete_type_declaration | private_type_declaration
+type_declaration ::= full_type_declaration
+   | incomplete_type_declaration | private_type_declaration
 
-    full_type_declaration ::=
-     type identifier [discriminant_part] is type_definition;
+full_type_declaration ::=
+ type identifier [discriminant_part] is type_definition;
 
-    type_definition ::=
-         enumeration_type_definition | integer_type_definition
-       | real_type_definition | array_type_definition
-       | record_type_definition | access_type_definition
-       | derived_type_definition
+type_definition ::=
+     enumeration_type_definition | integer_type_definition
+   | real_type_definition | array_type_definition
+   | record_type_definition | access_type_definition
+   | derived_type_definition
 ```
 
 **[3.3.2 Subtype Declarations](#332-subtype-declarations)**
 
 ```ebnf
-    subtype_declaration ::=
-       subtype identifier is subtype_indication;
+subtype_declaration ::=
+   subtype identifier is subtype_indication;
 
-    subtype_indication ::= type_mark [constraint]
+subtype_indication ::= type_mark [constraint]
 
-    type_mark ::= type_name | subtype_name
+type_mark ::= type_name | subtype_name
 
-    constraint ::=
-         range_constraint | floating_point_constraint
-       | fixed_point_constraint | index_constraint
-       | discriminant_constraint
+constraint ::=
+     range_constraint | floating_point_constraint
+   | fixed_point_constraint | index_constraint
+   | discriminant_constraint
 ```
 
 **[3.4 Derived Types](#34-derived-types)**
 
 ```ebnf
-    derived_type_definition ::= new subtype_indication
+derived_type_definition ::= new subtype_indication
 ```
 
 **[3.5 Scalar Types](#35-scalar-types)**
 
 ```ebnf
-    range_constraint ::= range range
+range_constraint ::= range range
 
-    range ::= range_attribute
-       | simple_expression .. simple_expression
+range ::= range_attribute
+   | simple_expression .. simple_expression
 ```
 
 **[3.5.1 Enumeration Types](#351-enumeration-types)**
 
 ```ebnf
-    enumeration_type_definition ::=
-       (enumeration_literal_specification
-          {, enumeration_literal_specification})
+enumeration_type_definition ::=
+   (enumeration_literal_specification
+      {, enumeration_literal_specification})
 
-    enumeration_literal_specification ::= enumeration_literal
+enumeration_literal_specification ::= enumeration_literal
 
-    enumeration_literal ::= identifier | character_literal
+enumeration_literal ::= identifier | character_literal
 ```
 
 **[3.5.4 Integer Types](#354-integer-types)**
 
 ```ebnf
-    integer_type_definition ::= range_constraint
+integer_type_definition ::= range_constraint
 ```
 
 **[3.5.6 Real Types](#356-real-types)**
 
 ```ebnf
-    real_type_definition ::=
-       floating_point_constraint | fixed_point_constraint
+real_type_definition ::=
+   floating_point_constraint | fixed_point_constraint
 ```
 
 **[3.5.7 Floating Point Types](#357-floating-point-types)**
 
 ```ebnf
-    floating_point_constraint ::=
-       floating_accuracy_definition [range_constraint]
+floating_point_constraint ::=
+   floating_accuracy_definition [range_constraint]
 
-    floating_accuracy_definition ::=
-       digits static_simple_expression
+floating_accuracy_definition ::=
+   digits static_simple_expression
 ```
 
 **[3.5.9 Fixed Point Types](#359-fixed-point-types)**
 
 ```ebnf
-    fixed_point_constraint ::=
-       fixed_accuracy_definition [range_constraint]
+fixed_point_constraint ::=
+   fixed_accuracy_definition [range_constraint]
 
-    fixed_accuracy_definition ::=
-       delta static_simple_expression
+fixed_accuracy_definition ::=
+   delta static_simple_expression
 ```
 
 **[3.6 Array Types](#36-array-types)**
 
 ```ebnf
-    array_type_definition ::=
-       unconstrained_array_definition | constrained_array_definition
+array_type_definition ::=
+   unconstrained_array_definition | constrained_array_definition
 
-    unconstrained_array_definition ::=
-       array(index_subtype_definition {, index_subtype_definition}) of
-                component_subtype_indication
+unconstrained_array_definition ::=
+   array(index_subtype_definition {, index_subtype_definition}) of
+            component_subtype_indication
 
-    constrained_array_definition ::=
-       array index_constraint of component_subtype_indication
+constrained_array_definition ::=
+   array index_constraint of component_subtype_indication
 
-    index_subtype_definition ::= type_mark range <>
+index_subtype_definition ::= type_mark range <>
 
-    index_constraint ::= (discrete_range {, discrete_range})
+index_constraint ::= (discrete_range {, discrete_range})
 
-    discrete_range ::= discrete_subtype_indication | range
+discrete_range ::= discrete_subtype_indication | range
 ```
 
 **[3.7 Record Types](#37-record-types)**
 
 ```ebnf
-    record_type_definition ::=
-       record
-          component_list
-       end record
+record_type_definition ::=
+   record
+      component_list
+   end record
 
-    component_list ::=
-          component_declaration {component_declaration}
-       | {component_declaration} variant_part
-       | null;
+component_list ::=
+      component_declaration {component_declaration}
+   | {component_declaration} variant_part
+   | null;
 
-    component_declaration ::=
-       identifier_list : component_subtype_definition [:= expression];
+component_declaration ::=
+   identifier_list : component_subtype_definition [:= expression];
 
-    component_subtype_definition ::= subtype_indication
+component_subtype_definition ::= subtype_indication
 ```
 
 **[3.7.1 Discriminants](#371-discriminants)**
 
 ```ebnf
-    discriminant_part ::=
-       (discriminant_specification {; discriminant_specification})
+discriminant_part ::=
+   (discriminant_specification {; discriminant_specification})
 
-    discriminant_specification ::=
-       identifier_list : type_mark [:= expression]
+discriminant_specification ::=
+   identifier_list : type_mark [:= expression]
 ```
 
 **[3.7.2 Discriminant Constraints](#372-discriminant-constraints)**
 
 ```ebnf
-    discriminant_constraint ::=
-       (discriminant_association {, discriminant_association})
+discriminant_constraint ::=
+   (discriminant_association {, discriminant_association})
 
-    discriminant_association ::=
-       [discriminant_simple_name {| discriminant_simple_name} =>]
-                expression
+discriminant_association ::=
+   [discriminant_simple_name {| discriminant_simple_name} =>]
+            expression
 ```
 
 **[3.7.3 Variant Parts](#373-variant-parts)**
 
 ```ebnf
-    variant_part ::=
-       case discriminant_simple_name is
-           variant
-          {variant}
-       end case;
+variant_part ::=
+   case discriminant_simple_name is
+       variant
+      {variant}
+   end case;
 
-    variant ::=
-       when choice {| choice} =>
-          component_list
+variant ::=
+   when choice {| choice} =>
+      component_list
 
-    choice ::= simple_expression
-       | discrete_range | others | component_simple_name
+choice ::= simple_expression
+   | discrete_range | others | component_simple_name
 ```
 
 **[3.8 Access Types](#38-access-types)**
 
 ```ebnf
-    access_type_definition ::= access subtype_indication
+access_type_definition ::= access subtype_indication
 ```
 
 **[3.8.1 Incomplete Type Declarations](#381-incomplete-type-declarations)**
 
 ```ebnf
-    incomplete_type_declaration ::=
-       type identifier [discriminant_part];
+incomplete_type_declaration ::=
+   type identifier [discriminant_part];
 ```
 
 **[3.9 Declarative Parts](#39-declarative-parts)**
 
 ```ebnf
-    declarative_part ::=
-       {basic_declarative_item} {later_declarative_item}
+declarative_part ::=
+   {basic_declarative_item} {later_declarative_item}
 
-    basic_declarative_item ::= basic_declaration
-       | representation_clause | use_clause
+basic_declarative_item ::= basic_declaration
+   | representation_clause | use_clause
 
-    later_declarative_item ::= body
-       | subprogram_declaration | package_declaration
-       | task_declaration | generic_declaration
-       | use_clause | generic_instantiation
+later_declarative_item ::= body
+   | subprogram_declaration | package_declaration
+   | task_declaration | generic_declaration
+   | use_clause | generic_instantiation
 
-    body ::= proper_body | body_stub
+body ::= proper_body | body_stub
 
-    proper_body ::=
-       subprogram_body | package_body | task_body
+proper_body ::=
+   subprogram_body | package_body | task_body
 ```
 
 **[4.1 Names](#41-names)**
 
 ```ebnf
-    name ::= simple_name
-       | character_literal | operator_symbol
-       | indexed_component | slice
-       | selected_component | attribute
+name ::= simple_name
+   | character_literal | operator_symbol
+   | indexed_component | slice
+   | selected_component | attribute
 
-    simple_name ::= identifier
+simple_name ::= identifier
 
-    prefix ::= name | function_call
+prefix ::= name | function_call
 ```
 
 **[4.1.1 Indexed Components](#411-indexed-components)**
 
 ```ebnf
-    indexed_component ::= prefix(expression {, expression})
+indexed_component ::= prefix(expression {, expression})
 ```
 
 **[4.1.2 Slices](#412-slices)**
 
 ```ebnf
-    slice ::= prefix(discrete_range)
+slice ::= prefix(discrete_range)
 ```
 
 **[4.1.3 Selected Components](#413-selected-components)**
 
 ```ebnf
-    selected_component ::= prefix.selector
+selected_component ::= prefix.selector
 
-    selector ::= simple_name
-       | character_literal | operator_symbol | all
+selector ::= simple_name
+   | character_literal | operator_symbol | all
 ```
 
 **[4.1.4 Attributes](#414-attributes)**
 
 ```ebnf
-    attribute ::= prefix'attribute_designator
+attribute ::= prefix'attribute_designator
 
-    attribute_designator ::=
-       simple_name [(universal_static_expression)]
+attribute_designator ::=
+   simple_name [(universal_static_expression)]
 ```
 
 **[4.3 Aggregates](#43-aggregates)**
 
 ```ebnf
-    aggregate ::=
-       (component_association {, component_association})
+aggregate ::=
+   (component_association {, component_association})
 
-    component_association ::=
-       [choice {| choice} => ] expression
+component_association ::=
+   [choice {| choice} => ] expression
 ```
 
 **[4.4 Expressions](#44-expressions)**
 
 ```ebnf
-    expression ::=
-         relation {and relation} | relation {and then relation}
-       | relation {or relation} | relation {or else relation}
-       | relation {xor relation}
+expression ::=
+     relation {and relation} | relation {and then relation}
+   | relation {or relation} | relation {or else relation}
+   | relation {xor relation}
 
-    relation ::=
-         simple_expression [relational_operator simple_expression]
-       | simple_expression [not] in range
-       | simple_expression [not] in type_mark
+relation ::=
+     simple_expression [relational_operator simple_expression]
+   | simple_expression [not] in range
+   | simple_expression [not] in type_mark
 
-    simple_expression ::=
-       [unary_adding_operator] term {binary_adding_operator term}
+simple_expression ::=
+   [unary_adding_operator] term {binary_adding_operator term}
 
-    term ::= factor {multiplying_operator factor}
+term ::= factor {multiplying_operator factor}
 
-    factor ::= primary [** primary] | abs primary | not primary
+factor ::= primary [** primary] | abs primary | not primary
 
-    primary ::=
-         numeric_literal | null | aggregate | string_literal
-       | name | allocator | function_call | type_conversion
-       | qualified_expression | (expression)
+primary ::=
+     numeric_literal | null | aggregate | string_literal
+   | name | allocator | function_call | type_conversion
+   | qualified_expression | (expression)
 ```
 
 **[4.5 Operators and Expression Evaluation](#45-operators-and-expression-evaluation)**
 
 ```ebnf
-    logical_operator ::= and | or | xor
+logical_operator ::= and | or | xor
 
-    relational_operator ::= = | /= | < | <= | > | >=
+relational_operator ::= = | /= | < | <= | > | >=
 
-    binary_adding_operator ::= + | - | &
+binary_adding_operator ::= + | - | &
 
-    unary_adding_operator ::= + | -
+unary_adding_operator ::= + | -
 
-    multiplying_operator ::= * | / | mod | rem
+multiplying_operator ::= * | / | mod | rem
 
-    highest_precedence_operator ::= ** | abs | not
+highest_precedence_operator ::= ** | abs | not
 ```
 
 **[4.6 Type Conversions](#46-type-conversions)**
 
 ```ebnf
-    type_conversion ::= type_mark(expression)
+type_conversion ::= type_mark(expression)
 ```
 
 **[4.7 Qualified Expressions](#47-qualified-expressions)**
 
 ```ebnf
-    qualified_expression ::=
-       type_mark'(expression) | type_mark'aggregate
+qualified_expression ::=
+   type_mark'(expression) | type_mark'aggregate
 ```
 
 **[4.8 Allocators](#48-allocators)**
 
 ```ebnf
-    allocator ::=
-       new subtype_indication | new qualified_expression
+allocator ::=
+   new subtype_indication | new qualified_expression
 ```
 
 **[5.1 Simple and Compound Statements - Sequences of Statements](#51-simple-and-compound-statements---sequences-of-statements)**
 
 ```ebnf
-    sequence_of_statements ::= statement {statement}
+sequence_of_statements ::= statement {statement}
 
-    statement ::=
-       {label} simple_statement | {label} compound_statement
+statement ::=
+   {label} simple_statement | {label} compound_statement
 
-    simple_statement ::= null_statement
-       | assignment_statement | procedure_call_statement
-       | exit_statement | return_statement
-       | goto_statement | entry_call_statement
-       | delay_statement | abort_statement
-       | raise_statement | code_statement
+simple_statement ::= null_statement
+   | assignment_statement | procedure_call_statement
+   | exit_statement | return_statement
+   | goto_statement | entry_call_statement
+   | delay_statement | abort_statement
+   | raise_statement | code_statement
 
-    compound_statement ::=
-         if_statement | case_statement
-       | loop_statement | block_statement
-       | accept_statement | select_statement
+compound_statement ::=
+     if_statement | case_statement
+   | loop_statement | block_statement
+   | accept_statement | select_statement
 
-    label ::= <<label_simple_name>>
+label ::= <<label_simple_name>>
 
-    null_statement ::= null;
+null_statement ::= null;
 ```
 
 **[5.2 Assignment Statement](#52-assignment-statement)**
 
 ```ebnf
-    assignment_statement ::=
-       variable_name := expression;
+assignment_statement ::=
+   variable_name := expression;
 ```
 
 **[5.3 If Statements](#53-if-statements)**
 
 ```ebnf
-    if_statement ::=
-        if condition then
-          sequence_of_statements
-       {elsif condition then
-          sequence_of_statements}
-       [else
-          sequence_of_statements]
-        end if;
+if_statement ::=
+    if condition then
+      sequence_of_statements
+   {elsif condition then
+      sequence_of_statements}
+   [else
+      sequence_of_statements]
+    end if;
 
-    condition ::= boolean_expression
+condition ::= boolean_expression
 ```
 
 **[5.4 Case Statements](#54-case-statements)**
 
 ```ebnf
-    case_statement ::=
-       case expression is
-           case_statement_alternative
-          {case_statement_alternative}
-       end case;
+case_statement ::=
+   case expression is
+       case_statement_alternative
+      {case_statement_alternative}
+   end case;
 
-    case_statement_alternative ::=
-       when choice {| choice } =>
-          sequence_of_statements
+case_statement_alternative ::=
+   when choice {| choice } =>
+      sequence_of_statements
 ```
 
 **[5.5 Loop Statements](#55-loop-statements)**
 
 ```ebnf
-    loop_statement ::=
-       [loop_simple_name:]
-          [iteration_scheme] loop
-             sequence_of_statements
-           end loop [loop_simple_name];
+loop_statement ::=
+   [loop_simple_name:]
+      [iteration_scheme] loop
+         sequence_of_statements
+       end loop [loop_simple_name];
 
-    iteration_scheme ::= while condition
-       | for loop_parameter_specification
+iteration_scheme ::= while condition
+   | for loop_parameter_specification
 
-    loop_parameter_specification ::=
-       identifier in [reverse] discrete_range
+loop_parameter_specification ::=
+   identifier in [reverse] discrete_range
 ```
 
 **[5.6 Block Statements](#56-block-statements)**
 
 ```ebnf
-    block_statement ::=
-       [block_simple_name:]
-          [declare
-               declarative_part]
-           begin
-               sequence_of_statements
-          [exception
-               exception_handler
-              {exception_handler}]
-           end [block_simple_name];
+block_statement ::=
+   [block_simple_name:]
+      [declare
+           declarative_part]
+       begin
+           sequence_of_statements
+      [exception
+           exception_handler
+          {exception_handler}]
+       end [block_simple_name];
 ```
 
 **[5.7 Exit Statements](#57-exit-statements)**
 
 ```ebnf
-    exit_statement ::=
-       exit [loop_name] [when condition];
+exit_statement ::=
+   exit [loop_name] [when condition];
 ```
 
 **[5.8 Return Statements](#58-return-statements)**
 
 ```ebnf
-    return_statement ::= return [expression];
+return_statement ::= return [expression];
 ```
 
 **[5.9 Goto Statements](#59-goto-statements)**
 
 ```ebnf
-    goto_statement ::= goto label_name;
+goto_statement ::= goto label_name;
 ```
 
 **[6.1 Subprogram Declarations](#61-subprogram-declarations)**
 
 ```ebnf
-    subprogram_declaration ::= subprogram_specification;
+subprogram_declaration ::= subprogram_specification;
 
-    subprogram_specification ::=
-         procedure identifier [formal_part]
-       | function designator [formal_part] return type_mark
+subprogram_specification ::=
+     procedure identifier [formal_part]
+   | function designator [formal_part] return type_mark
 
-    designator ::= identifier | operator_symbol
+designator ::= identifier | operator_symbol
 
-    operator_symbol ::= string_literal
+operator_symbol ::= string_literal
 
-    formal_part ::=
-       (parameter_specification {; parameter_specification})
+formal_part ::=
+   (parameter_specification {; parameter_specification})
 
-    parameter_specification ::=
-       identifier_list : mode type_mark [:= expression]
+parameter_specification ::=
+   identifier_list : mode type_mark [:= expression]
 
-    mode ::= [in] | in out | out
+mode ::= [in] | in out | out
 ```
 
 **[6.3 Subprogram Bodies](#63-subprogram-bodies)**
 
 ```ebnf
-    subprogram_body ::=
-        subprogram_specification is
-           [declarative_part]
-        begin
-            sequence_of_statements
-       [exception
-            exception_handler
-           {exception_handler}]
-        end [designator];
+subprogram_body ::=
+    subprogram_specification is
+       [declarative_part]
+    begin
+        sequence_of_statements
+   [exception
+        exception_handler
+       {exception_handler}]
+    end [designator];
 ```
 
 **[6.4 Subprogram Calls](#64-subprogram-calls)**
 
 ```ebnf
-    procedure_call_statement ::=
-       procedure_name [actual_parameter_part];
+procedure_call_statement ::=
+   procedure_name [actual_parameter_part];
 
-    function_call ::=
-       function_name [actual_parameter_part]
+function_call ::=
+   function_name [actual_parameter_part]
 
-    actual_parameter_part ::=
-       (parameter_association {, parameter_association})
+actual_parameter_part ::=
+   (parameter_association {, parameter_association})
 
-    parameter_association ::=
-       [formal_parameter =>] actual_parameter
+parameter_association ::=
+   [formal_parameter =>] actual_parameter
 
-    formal_parameter ::= parameter_simple_name
+formal_parameter ::= parameter_simple_name
 
-    actual_parameter ::=
-       expression | variable_name | type_mark(variable_name)
+actual_parameter ::=
+   expression | variable_name | type_mark(variable_name)
 ```
 
 **[7.1 Package Structure](#71-package-structure)**
 
 ```ebnf
-    package_declaration ::= package_specification;
+package_declaration ::= package_specification;
 
-    package_specification ::=
-        package identifier is
-          {basic_declarative_item}
-       [private
-          {basic_declarative_item}]
-        end [package_simple_name]
+package_specification ::=
+    package identifier is
+      {basic_declarative_item}
+   [private
+      {basic_declarative_item}]
+    end [package_simple_name]
 
-    package_body ::=
-        package body package_simple_name is
-           [declarative_part]
-       [begin
+package_body ::=
+    package body package_simple_name is
+       [declarative_part]
+   [begin
 
-            sequence_of_statements
-       [exception
-            exception_handler
-           {exception_handler}]]
-        end [package_simple_name];
+        sequence_of_statements
+   [exception
+        exception_handler
+       {exception_handler}]]
+    end [package_simple_name];
 ```
 
 **[7.4 Private Type and Deferred Constant Declarations](#74-private-type-and-deferred-constant-declarations)**
 
 ```ebnf
-    private_type_declaration ::=
-       type identifier [discriminant_part] is [limited] private;
+private_type_declaration ::=
+   type identifier [discriminant_part] is [limited] private;
 
-    deferred_constant_declaration ::=
-       identifier_list : constant type_mark;
+deferred_constant_declaration ::=
+   identifier_list : constant type_mark;
 ```
 
 **[8.4 Use Clauses](#84-use-clauses)**
 
 ```ebnf
-    use_clause ::= use package_name {, package_name};
+use_clause ::= use package_name {, package_name};
 ```
 
 **[8.5 Renaming Declarations](#85-renaming-declarations)**
 
 ```ebnf
-    renaming_declaration ::=
-         identifier : type_mark renames object_name;
-       | identifier : exception renames exception_name;
-       | package identifier renames package_name;
-       | subprogram_specification renames subprogram_or_entry_name;
+renaming_declaration ::=
+     identifier : type_mark renames object_name;
+   | identifier : exception renames exception_name;
+   | package identifier renames package_name;
+   | subprogram_specification renames subprogram_or_entry_name;
 ```
 
 **[9.1 Task Specifications and Task Bodies](#91-task-specifications-and-task-bodies)**
 
 ```ebnf
-    task_declaration ::= task_specification;
+task_declaration ::= task_specification;
 
-    task_specification ::=
-       task [type] identifier [is
-          {entry_declaration}
-          {representation_clause}
-       end [task_simple_name]]
+task_specification ::=
+   task [type] identifier [is
+      {entry_declaration}
+      {representation_clause}
+   end [task_simple_name]]
 
-    task_body ::=
-        task body task_simple_name is
-           [declarative_part]
-        begin
-            sequence_of_statements
-       [exception
-            exception_handler
-           {exception_handler}]
-        end [task_simple_name];
+task_body ::=
+    task body task_simple_name is
+       [declarative_part]
+    begin
+        sequence_of_statements
+   [exception
+        exception_handler
+       {exception_handler}]
+    end [task_simple_name];
 ```
 
 **[9.5 Entries, Entry Calls, and Accept Statements](#95-entries-entry-calls-and-accept-statements)**
 
 ```ebnf
-    entry_declaration ::=
-       entry identifier [(discrete_range)] [formal_part];
+entry_declaration ::=
+   entry identifier [(discrete_range)] [formal_part];
 
-    entry_call_statement ::=
-       entry_name [actual_parameter_part];
+entry_call_statement ::=
+   entry_name [actual_parameter_part];
 
-    accept_statement ::=
-       accept entry_simple_name [(entry_index)] [formal_part] [do
-          sequence_of_statements
-       end [entry_simple_name]];
+accept_statement ::=
+   accept entry_simple_name [(entry_index)] [formal_part] [do
+      sequence_of_statements
+   end [entry_simple_name]];
 
-    entry_index ::= expression
+entry_index ::= expression
 ```
 
 **[9.6 Delay Statements, Duration, and Time](#96-delay-statements-duration-and-time)**
 
 ```ebnf
-    delay_statement ::= delay simple_expression;
+delay_statement ::= delay simple_expression;
 ```
 
 **[9.7 Select Statements](#97-select-statements)**
 
 ```ebnf
-    select_statement ::= selective_wait
-       | conditional_entry_call | timed_entry_call
+select_statement ::= selective_wait
+   | conditional_entry_call | timed_entry_call
 ```
 
 **[9.7.1 Selective Waits](#971-selective-waits)**
 
 ```ebnf
-    selective_wait ::=
-        select
-          select_alternative
-       {or
-          select_alternative}
-       [else
-          sequence_of_statements]
-        end select;
+selective_wait ::=
+    select
+      select_alternative
+   {or
+      select_alternative}
+   [else
+      sequence_of_statements]
+    end select;
 
-    select_alternative ::=
-       [when condition =>]
-          selective_wait_alternative
+select_alternative ::=
+   [when condition =>]
+      selective_wait_alternative
 
-    selective_wait_alternative ::= accept_alternative
-       | delay_alternative | terminate_alternative
+selective_wait_alternative ::= accept_alternative
+   | delay_alternative | terminate_alternative
 
-    accept_alternative ::=
-       accept_statement [sequence_of_statements]
+accept_alternative ::=
+   accept_statement [sequence_of_statements]
 
-    delay_alternative ::=
-       delay_statement [sequence_of_statements]
+delay_alternative ::=
+   delay_statement [sequence_of_statements]
 
-    terminate_alternative ::= terminate;
+terminate_alternative ::= terminate;
 
-    conditional_entry_call ::=
-       select
-           entry_call_statement
-          [sequence_of_statements]
-       else
-           sequence_of_statements
-       end select;
+conditional_entry_call ::=
+   select
+       entry_call_statement
+      [sequence_of_statements]
+   else
+       sequence_of_statements
+   end select;
 ```
 
 **[9.7.3 Timed Entry Calls](#973-timed-entry-calls)**
 
 ```ebnf
-    timed_entry_call ::=
-       select
-           entry_call_statement
-          [sequence_of_statements]
-       or
-           delay_alternative
-       end select;
+timed_entry_call ::=
+   select
+       entry_call_statement
+      [sequence_of_statements]
+   or
+       delay_alternative
+   end select;
 ```
 
 **[9.10 Abort Statements](#910-abort-statements)**
 
 ```ebnf
-    abort_statement ::= abort task_name {, task_name};
+abort_statement ::= abort task_name {, task_name};
 ```
 
 **[10.1 Compilation Units - Library Units](#101-compilation-units---library-units)**
 
 ```ebnf
-    compilation ::= {compilation_unit}
+compilation ::= {compilation_unit}
 
-    compilation_unit ::=
-         context_clause library_unit
-       | context_clause secondary_unit
+compilation_unit ::=
+     context_clause library_unit
+   | context_clause secondary_unit
 
-    library_unit ::=
-         subprogram_declaration | package_declaration
-       | generic_declaration | generic_instantiation
-       | subprogram_body
+library_unit ::=
+     subprogram_declaration | package_declaration
+   | generic_declaration | generic_instantiation
+   | subprogram_body
 
-    secondary_unit ::= library_unit_body | subunit
+secondary_unit ::= library_unit_body | subunit
 
-    library_unit_body ::= subprogram_body | package_body
+library_unit_body ::= subprogram_body | package_body
 ```
 
 **[10.1.1 Context Clauses - With Clauses](#1011-context-clauses---with-clauses)**
 
 ```ebnf
-    context_clause ::= {with_clause {use_clause}}
+context_clause ::= {with_clause {use_clause}}
 
-    with_clause ::=
-       with unit_simple_name {, unit_simple_name};
+with_clause ::=
+   with unit_simple_name {, unit_simple_name};
 ```
 
 **[10.2 Subunits of Compilation Units](#102-subunits-of-compilation-units)**
 
 ```ebnf
-    body_stub ::=
-         subprogram_specification is separate;
-       | package body package_simple_name is separate;
-       | task body task_simple_name is separate;
+body_stub ::=
+     subprogram_specification is separate;
+   | package body package_simple_name is separate;
+   | task body task_simple_name is separate;
 
-    subunit ::= separate (parent_unit_name) proper_body
+subunit ::= separate (parent_unit_name) proper_body
 ```
 
 **[11.1 Exception Declarations](#111-exception-declarations)**
 
 ```ebnf
-    exception_declaration ::= identifier_list : exception;
+exception_declaration ::= identifier_list : exception;
 ```
 
 **[11.2 Exception Handlers](#112-exception-handlers)**
 
 ```ebnf
-    exception_handler ::=
-       when exception_choice {| exception_choice} =>
-          sequence_of_statements
+exception_handler ::=
+   when exception_choice {| exception_choice} =>
+      sequence_of_statements
 
-    exception_choice ::= exception_name | others
+exception_choice ::= exception_name | others
 ```
 
 **[11.3 Raise Statements](#113-raise-statements)**
 
 ```ebnf
-    raise_statement ::= raise [exception_name];
+raise_statement ::= raise [exception_name];
 ```
 
 **[12.1 Generic Declarations](#121-generic-declarations)**
 
 ```ebnf
-    generic_declaration ::= generic_specification;
+generic_declaration ::= generic_specification;
 
-    generic_specification ::=
-         generic_formal_part subprogram_specification
-       | generic_formal_part package_specification
+generic_specification ::=
+     generic_formal_part subprogram_specification
+   | generic_formal_part package_specification
 
-    generic_formal_part ::= generic {generic_parameter_declaration}
+generic_formal_part ::= generic {generic_parameter_declaration}
 
-    generic_parameter_declaration ::=
-         identifier_list : [in [out]] type_mark [:= expression];
-       | type identifier is generic_type_definition;
-       | private_type_declaration
-       | with subprogram_specification [is name];
-       | with subprogram_specification [is <>];
+generic_parameter_declaration ::=
+     identifier_list : [in [out]] type_mark [:= expression];
+   | type identifier is generic_type_definition;
+   | private_type_declaration
+   | with subprogram_specification [is name];
+   | with subprogram_specification [is <>];
 
-    generic_type_definition ::=
-         (<>) | range <> | digits <> | delta <>
-       | array_type_definition | access_type_definition
+generic_type_definition ::=
+     (<>) | range <> | digits <> | delta <>
+   | array_type_definition | access_type_definition
 ```
 
 **[12.3 Generic Instantiation](#123-generic-instantiation)**
 
 ```ebnf
-    generic_instantiation ::=
-         package identifier is
-             new generic_package_name [generic_actual_part];
-       | procedure identifier is
-             new generic_procedure_name [generic_actual_part];
-       | function designator is
-             new generic_function_name [generic_actual_part];
+generic_instantiation ::=
+     package identifier is
+         new generic_package_name [generic_actual_part];
+   | procedure identifier is
+         new generic_procedure_name [generic_actual_part];
+   | function designator is
+         new generic_function_name [generic_actual_part];
 
-    generic_actual_part ::=
-       (generic_association {, generic_association})
+generic_actual_part ::=
+   (generic_association {, generic_association})
 
-    generic_association ::=
-       [generic_formal_parameter =>] generic_actual_parameter
+generic_association ::=
+   [generic_formal_parameter =>] generic_actual_parameter
 
-    generic_formal_parameter ::=
-       parameter_simple_name | operator_symbol
+generic_formal_parameter ::=
+   parameter_simple_name | operator_symbol
 
-    generic_actual_parameter ::= expression | variable_name
-       | subprogram_name | entry_name | type_mark
+generic_actual_parameter ::= expression | variable_name
+   | subprogram_name | entry_name | type_mark
 ```
 
 **[13.1 Representation Clauses](#131-representation-clauses)**
 
 ```ebnf
-    representation_clause ::=
-         type_representation_clause | address_clause
+representation_clause ::=
+     type_representation_clause | address_clause
 
-    type_representation_clause ::= length_clause
-       | enumeration_representation_clause
-       | record_representation_clause
+type_representation_clause ::= length_clause
+   | enumeration_representation_clause
+   | record_representation_clause
 ```
 
 **[13.2 Length Clauses](#132-length-clauses)**
 
 ```ebnf
-    length_clause ::= for attribute use simple_expression;
+length_clause ::= for attribute use simple_expression;
 ```
 
 **[13.3 Enumeration Representation Clauses](#133-enumeration-representation-clauses)**
 
 ```ebnf
-    enumeration_representation_clause ::=
-       for type_simple_name use aggregate;
+enumeration_representation_clause ::=
+   for type_simple_name use aggregate;
 ```
 
 **[13.4 Record Representation Clauses](#134-record-representation-clauses)**
 
 ```ebnf
-    record_representation_clause ::=
-       for type_simple_name use
-          record [alignment_clause]
+record_representation_clause ::=
+   for type_simple_name use
+      record [alignment_clause]
 
-             {component_clause}
-          end record;
+         {component_clause}
+      end record;
 
-    alignment_clause ::= at mod static_simple_expression;
+alignment_clause ::= at mod static_simple_expression;
 
-    component_clause ::=
-       component_name at static_simple_expression
-                      range static_range;
+component_clause ::=
+   component_name at static_simple_expression
+                  range static_range;
 ```
 
 **[13.5 Address Clauses](#135-address-clauses)**
 
 ```ebnf
-    address_clause ::=
-       for simple_name use at simple_expression;
+address_clause ::=
+   for simple_name use at simple_expression;
 ```
 
 **[13.8 Machine Code Insertions](#138-machine-code-insertions)**
 
 ```ebnf
-    code_statement ::= type_mark'record_aggregate;
+code_statement ::= type_mark'record_aggregate;
 ```
+
+---
 
 ## F. Implementation-Dependent Characteristics
 
@@ -16044,28 +15913,3158 @@ The reference manual of each Ada implementation must include an appendix (called
 Appendix F) that describes all implementation-dependent characteristics. The
 appendix F for a given implementation must list in particular:
 
-(1) The form, allowed places, and effect of every implementation-dependent
+1. The form, allowed places, and effect of every implementation-dependent
+   pragma.
+2. The name and the type of every implementation-dependent attribute.
+3. The specification of the package System.
+4. The list of all restrictions on representation clauses
+   (see [13.1](#131-representation-clauses)).
+5. The conventions used for any implementation-generated name denoting
+   implementation-dependent components
+   (see [13.4](#134-record-representation-clauses)).
+6. The interpretation of expressions that appear in address clauses, including
+   those for interrupts (see [13.5](#135-address-clauses)).
+7. Any restriction on unchecked conversions
+   (see [13.10.2](#13102-unchecked-type-conversions)).
+8. Any implementation-dependent characteristics of the input-output packages
+   (see [14](#14-input-output)).
+
+---
+
+## Rationale
+
+The chapters of the standard say what the language is; they rarely say why. What
+follows is a set of extracts from *Rationale for the Design of the Ada
+Programming Language*, by Jean D. Ichbiah, John G. P. Barnes, and Robert J.
+Firth — the design team's own account of the choices behind the language, the
+alternatives they weighed, and the reasons those alternatives were rejected. The
+section numbers below are those of the Rationale, so that R.4 is its chapter 4
+and so on; the passages are the Rationale's own words, selected but not
+rewritten, and cross-referenced to the clauses of this manual that they explain.
+
+> [!NOTE]
+> This section is not part of the standard definition of the Ada programming
+> language. Where it differs from the preceding chapters, the preceding chapters
+> govern.
+
+### R.4 Types
+
+#### R.4.1 Introduction
+
+The notion of type has gradually emerged from the past twenty years of the
+history of programming languages as the way by which we impose structure on
+data. A now widely accepted view of types is that a type characterizes the set
+of values that objects of the type may assume, and the set of operations that
+may be performed on them. This common view is also taken in the Ada language.
+
+There are several important reasons why it is found desirable to associate a
+type with constants and variables:
+
+- **Factorization of Properties, Maintainability.** Knowledge about common
+  properties of objects should be described and collected in one place and a
+  name should be associated with that description. A type declaration serves
+  that purpose. Subsequently, the type name may be used to refer to the common
+  properties in object declarations. This factorization improves program
+  maintainability: if later a given property is to be changed, then the type
+  declaration will be the only part of the program text to be affected by the
+  change.
+
+- **Reliability.** Objects with distinct properties should be clearly
+  distinguished in a program, and the distinction should be enforced by the
+  compiler. Requiring that all objects be typed thus contributes to program
+  reliability. Experience has shown that a well-written program in Pascal can be
+  recognized easily by the use made of the typing facility to increase the
+  reliability, readability, and security of the program.
+
+- **Abstraction, Hiding of Implementation Details.** Abstract or external
+  properties of objects and operations should be separated from underlying and
+  internal implementation-dependent properties, such as the physical
+  representation on a specific machine. The abstract properties of an object are
+  the only ones that need to be known for its use. Implementation details should
+  therefore be hidden from the user. The need for such a separation is
+  particularly strong in the case of disjoint sections of a program text,
+  produced and maintained by different programmers, and presumably separately
+  compiled.
+
+Several classical problems are associated with the formulation of a type
+facility in a programming language. Some are the subject of ongoing debate among
+language designers and users, in particular:
+
+1. **Static versus Dynamic Properties.** Should both the static properties —
+   those which are determinable from an analysis of the program text at
+   compilation time — and the dynamic properties — those which may depend on the
+   dynamic execution of a program, such as reading from an input device — be
+   covered by a single notion of type?
+
+2. **Type Equivalence.** Should the language provide some form of equivalence or
+   compatibility among types with logically related properties?
+
+3. **Parameterization.** Should the language provide some form of
+   parameterization for types and their associated properties? Should the
+   evaluation of type parameters be performed at translation time or should it
+   be deferred until execution time?
+
+Two notions are distinguished: the notion of type and the notion of subtype (see
+[3.3](#33-types-and-subtypes)). A type characterizes a distinct set of values
+and its static properties, such as the applicable operations. Constraints may be
+imposed on named types: for example a range constraint for a scalar type, or an
+index constraint for an array type. In general, constraints define certain
+requirements whose satisfaction is to be checked dynamically. A subtype name
+serves as an abbreviation for a type name together with a constraint associated
+with the type. Several difficulties in the types of Pascal that have been noted
+by Habermann and others are overcome in Ada by the notion of subtype.
+
+Each type declaration defines a distinct type. In consequence, each type name
+denotes a distinct type. Values of a given type can be assigned only to objects
+that have this type. Values of different types cannot be intermixed. In
+contrast, objects that have different subtypes of the same type are compatible:
+the value of an object may be assigned to a variable that has the same type,
+whether or not the object and the variable have the same subtype. Constraints
+are normally checked at execution time, although in many cases these checks can
+be done at compilation time, in anticipation.
+
+Certain explicit conversions are allowed between closely related types (see
+[4.6](#46-type-conversions)). Such explicit conversions are defined among
+numeric types, among sufficiently similar array types, and among derived types
+of the same family. Being explicit, these conversions are safe. On the other
+hand, no implicit conversion is possible among user-defined types.
+
+Parameterization at execution time is closely associated with the notion of
+constraint. In particular this applies to array and record types. An
+unconstrained array type declaration has unspecified index bounds; these are
+subsequently specified by an index constraint for a given array object so that
+different array objects of the same type may have different numbers of
+components. A record type may have special components which are called
+discriminants and whose values are used at execution time to discriminate among
+alternative variants of the record type. As in the case of arrays, it is
+possible to write subprograms of general utility which operate on records with
+arbitrary discriminant values.
+
+Parameterization at compilation time is achieved by the very powerful mechanism
+of generic units. Whereas parameterization at execution time by index bounds and
+discriminants is limited to scalar values, the parameters of generic units can
+even be subprograms and types. For example, we could model the length of a stack
+by a discriminant; but, to allow for different types of elements, we would need
+to define stacks within a generic package and have the element type be a generic
+parameter.
+
+#### R.4.2 The Concept of Type
+
+Consider now the set of operations that is — implicitly — defined by an
+enumeration type declaration (see [3.5.1](#351-enumeration-types)):
 
 ```ada
-     pragma.
+type DAY is (MON, TUE, WED, THU, FRI, SAT, SUN);
 ```
 
-(2) The name and the type of every implementation-dependent attribute.
+Each of the identifiers thus enumerated is called an enumeration literal and can
+be viewed as a (parameterless) function that always delivers the same value.
+Hence we have a distinct value for each enumeration literal, and so we have
+seven values for the type DAY.
 
-(3) The specification of the package System.
+Thus the declaration of the type DAY has implicitly defined the above set of
+values and operations, and thereby what we are allowed to do with objects and
+values of type DAY. To appreciate the contribution of this concept to program
+reliability consider the interactions of three important rules in typed
+languages such as Pascal and Ada:
 
-(4) The list of all restrictions on representation clauses (see [13.1](#131-representation-clauses))
+1. All objects (variables and constants) must be declared.
 
-(5) The conventions used for any implementation-generated name denoting
-implementation-dependent components (see [13.4](#134-record-representation-clauses)).
+2. The declaration of an object must specify its type.
 
-(6) The interpretation of expressions that appear in address clauses, including
-those for interrupts (see [13.5](#135-address-clauses)).
+3. Any operation on an object must preserve its type.
 
-(7) Any restriction on unchecked conversions (see [13.10.2](#13102-unchecked-type-conversions)).
+It results from the above rules that the type of an object is invariant during
+program execution: it is the type given in the object declaration. All
+properties characterized by the type are therefore static and must be checked at
+compilation time by Ada compilers.
 
-(8) Any implementation-dependent characteristics of the input-output packages
-(see [14](#14-input-output)).
+Using similar simple rules, an Ada compiler must reject each of the following
+illegal assignment statements:
+
+```ada
+TODAY := WEST;           -- Illegal: WEST is not a DAY value
+TODAY := 5;              -- Illegal: 5 is not a DAY value
+TODAY := TODAY + START;  -- Illegal: "+" is not defined for DAYS
+```
+
+In the last case, TODAY and START are both of type DAY but the operation "+" is
+not defined for this type and this knowledge allows rejection of the statement.
+
+This example demonstrates that the contribution of enumeration types to the
+quality of programs goes far beyond increased readability. We could actually
+achieve a comparable degree of readability in languages such as Algol 68, which
+do not provide enumeration types (or even in Fortran, using data or parameter
+statements). The set of Algol 68 declarations could be as follows
+
+```text
+# days of the week: #
+int MON=1, TUE=2, WED=3, THU=4, FRI=5, SAT=6, SUN=7;
+# directions: #
+int NORTH=1, EAST=2, SOUTH=3, WEST=4;
+int GOAL, TODAY, START;
+```
+
+thereby allowing the same degree of readability as Ada. The real difference is
+one of reliability. The following statements would all be accepted by an Algol
+68 compiler, whereas they would all be rejected by an Ada compiler in the Ada
+formulation:
+
+```text
+TODAY := WEST;
+TODAY := 8;
+TODAY := TODAY + START;
+START := 2*GOAL - NORTH + SUN*WEST;
+```
+
+By declaring DAY as an enumeration type we expressed the intent that there be
+seven distinct values with well-defined operations. This intent was expressed in
+a form that permits a compiler to verify that further uses of days are
+consistent. Furthermore, in declaring DIRECTION to be a different type (instead
+of having a single enumeration type with eleven values), we have conveyed our
+intent that days and directions should not be mixed; and again, we have done so
+in a form that allows verification at compilation time by an Ada compiler.
+
+In all cases to be examined in later sections, we will find that types allow the
+explicit formulation of certain logical requirements of programs. Explicit
+formulation allows these logical requirements to be verified by a mechanical
+tool — the Ada compiler — thereby contributing to program reliability.
+
+#### R.4.3 Type Equivalence
+
+As stated before, one of the objectives of a type system is to disallow
+incorrect (in particular unintentional) mixing of objects of different types.
+Hence a key issue in the design of a type system is the formulation of the
+conditions that must be satisfied by two objects in order that they have the
+same type.
+
+Alternative resolutions of this issue of type equivalence have been put forward
+in a paper by Welsh, Sneeringer, and Hoare. These are classified into two
+families, called name equivalence and structural equivalence.
+
+Name equivalence is used in Ada. It is based on the principle that each type
+declaration declares a distinct type: hence two type declarations always declare
+two distinct types, even if the included type definitions are textually
+identical. Consequently, for two objects to have the same type, their
+declarations must refer to the same type name (whether directly, or indirectly
+by a subtype, as we shall see later).
+
+Consider for example the declarations:
+
+```ada
+type COLOR  is (WHITE, RED, YELLOW, GREEN, BLUE, BROWN, BLACK);
+type COLOUR is (WHITE, RED, YELLOW, GREEN, BLUE, BROWN, BLACK);
+
+TINT      : COLOR  := BROWN;
+SHADE     : COLOR  := RED;
+HUE, SPOT : COLOUR := GREEN;
+```
+
+Then, according to the above stated principle, COLOR and COLOUR are two distinct
+types; TINT and SHADE are of the same type (COLOR); HUE and SPOT are of the same
+type (COLOUR). On the other hand, SPOT and TINT are of different types, so that
+the following assignment is not allowed:
+
+```ada
+SPOT := TINT;        -- Illegal!
+```
+
+Structural equivalence refers to formulations in which some form of equivalence
+rule is defined between types on the basis of their structural properties. For
+example, in the case of enumeration literals several degrees of structural
+equivalence would be conceivable: the same number of literals (unlikely); the
+same literals, although not necessarily in the same order; textually identical,
+including spaces and line breaks and so on. For example COLOR and COLOUR would
+be considered as structurally equivalent for all but the last of these
+formulations.
+
+We have rejected structural equivalence in order to avoid pattern-matching
+problems for the compiler and for the human reader: in the case of enumeration
+types, this could involve comparisons of very long lists of identifiers.
+
+We also believe that structural equivalence tends to defeat the purpose of
+typing. Thus, objects could be considered as being of the same type because
+their structures happen to be identical — by accident — or because they have
+become identical as a result of textual modifications performed during program
+maintenance: in the case of enumeration types, after deleting or inserting a
+literal. Such objects could then be mixed unintentionally, without causing
+compiler diagnostics, and the error would go undetected.
+
+Name equivalence is therefore both simpler and safer. If we want several objects
+to have the same type, then we must declare the type, thereby giving it a name,
+and we must subsequently refer to this name in the declarations of these
+objects.
+
+#### R.4.4 Constraints and Subtypes
+
+We shall now see how to restrict the values that may be assumed by an object to
+a subset of the values of the type. Such a restriction is called a constraint,
+and it does not affect the set of applicable operations. A subtype is a type
+together with an associated constraint. An object can be declared to have a
+certain subtype, and this is then a static property of the object. But in
+general it will not always be possible to determine statically (at compilation
+time) whether or not a value satisfies a constraint and thereby belongs to a
+corresponding subtype. Thus constraints and subtypes are concepts that are, in
+general, related to the dynamic behavior of programs.
+
+Constraints may be used effectively by compilers for optimization purposes.
+Their major purpose, however, is for greater program reliability: a constraint
+expresses a logical requirement on our program in an explicit manner, and it
+therefore opens up the possibility of reporting violations of this logical
+requirement, should they ever occur.
+
+In principle these violations will be reported at execution time by raising the
+exception CONSTRAINT_ERROR. This means that, in general, compilers will generate
+code that dynamically checks constraint satisfaction. In practice however,
+compilers will be able to report certain potential constraint violations at
+compilation time. In other situations they will be in a position to omit a given
+check, since success has been guaranteed by a prior check.
+
+It is good programming practice to factor out the knowledge of common
+properties, and this applies to constraints as well. The name of a subtype is an
+abbreviation for the associated type name and constraint (see
+[3.3.2](#332-subtype-declarations)). Thus a subtype declaration does not define
+a new type, and objects of different subtypes of a given type are compatible for
+assignment. In an expression, such objects can be used at any place where a
+value of the given type is expected; the constraint on an object need be checked
+only upon assignment to the object.
+
+The advantages of using subtypes are the usual maintainability advantages of any
+factoring mechanism. For example, if we want to change the range of workdays,
+then a single textual change is needed, namely in the subtype declaration.
+Without named subtypes, it would be necessary to inspect all occurrences of the
+range MON .. FRI in the program, in order to detect those occurrences where the
+intent was to use this range for workdays.
+
+Certain constraints that determine critical space requirements must be known at
+compilation time, since space optimization would not be possible in the case of
+dynamically computed values. For example, the range of an integer type had
+better be known statically, in order to allow the compiler to select the
+appropriate single-length or double-length machine instructions.
+
+However, requiring static evaluation in every case would be much too
+restrictive. The assertions expressed by range constraints would be too coarse,
+ranges could not be used as general loop iteration ranges, and arrays could only
+be of static size. A balance must be struck in this respect, and the rules of
+Ada represent a deliberate choice of when evaluation must be static.
+
+Note that if the bounds of the range are not known at compilation time, the
+compiler will often need to generate (implicitly) a descriptor containing the
+value of the bounds. Hence, to minimize descriptor overhead, it is important to
+localize the knowledge about equivalent constraints in a single subtype
+declaration and then to use the name of this subtype, instead of repeating the
+constraint in several variable declarations.
+
+Note also that, for reliability and maintainability, using a subtype is far
+better than repeating the corresponding constraint at various points of the
+text, since the value of an expression defining a bound may differ at these
+points.
+
+#### R.4.5 Arrays: Equivalence and Explicit Conversions
+
+Name equivalence, as explained above, is used systematically for all types in
+Ada, and in particular for array types (see [3.6](#36-array-types)). As for
+other types, the main arguments in favor of name equivalence are simplicity and
+the desire to avoid unintentional equivalence: It would not be desirable to
+treat two arrays as having the same type just because the component type is the
+same:
+
+```ada
+type OPTION_SET is array (OPTION) of BOOLEAN;
+type COLOR_SET  is array (COLOR)  of BOOLEAN;
+```
+
+and (in this case) just because the number of options happens to equal the
+number of colors. From a conceptual point of view, these two array types have
+nothing to do with each other, apart from their common component type.
+
+On the other hand, the design of Ada recognizes that this safety argument does
+not apply to explicit type conversions: being explicit, they are unequivocally
+intentional and cannot be just accidental.
+
+Explicit type conversions are clearly desirable among array types that satisfy
+certain conditions. To illustrate their need, consider a package defining
+sorting operations, and another performing table listings:
+
+```ada
+package SORTING is
+   type VECTOR is array (INTEGER range <>) of REAL;
+   procedure SORT(X : in out VECTOR);
+end SORTING;
+
+package LISTING is
+   type TABLE is array (INTEGER range <>) of REAL;
+   procedure LIST(X : in TABLE);
+end LISTING;
+```
+
+For the definition of the type VECTOR the number of decisions to be made was
+rather limited: first there was the component type; then there was the selection
+of INTEGER as index subtype. Given this limited number of decisions, it is not
+unlikely that the same decisions could be made in another package defined
+totally independently, say by a different software producer.
+
+The SORT operation is applicable to vectors; similarly the LIST operation is
+applicable to tables. However, a dilemma would arise for an array that must be
+sorted before being listed: should it be declared as a VECTOR or as a TABLE? —
+neither of the two would work. Similarly, an array might have been declared
+without knowing in advance whether it would ever be sorted (or listed), and it
+would be cumbersome to have to change the declaration just because it needed to
+be sorted in one part of the program.
+
+For these reasons, explicit conversions are allowed between two array types if
+both types have the same component type and the same dimensionality, and if for
+each dimension the index types are the same (or convertible to each other).
+
+#### R.4.6 Records: Equivalence and Default Initialization
+
+Name equivalence is used for record types (see [3.7](#37-record-types)), as for
+other types. To emphasize the arguments against structural equivalence, several
+alternative forms of structural equivalence rules can be considered, involving
+increasing amounts of checking, especially if the record types have a large
+number of components:
+
+- **(a)** Two record types are equivalent if the texts of their type definitions
+  (what appears after `is`) are identical (disregarding textual layout such as
+  spaces, new lines, and so on).
+
+- **(b)** Two record types are equivalent if they have the same number of
+  components, and at each component position, corresponding components have the
+  same name and are declared with the same type name.
+
+- **(c)** Same as (b) but the names of corresponding components need not agree,
+  only the type names. This is a more mathematical point of view, where one
+  considers a record as a cartesian product.
+
+- **(d)** Same as (b) but the order of components is not significant.
+
+- **(e)** Same as (c) but the constraints on corresponding components may
+  differ.
+
+- **(f)** Same as (e) but the subtypes must be the same.
+
+- **(g)** Same as (e) but the component types must be equivalent, while their
+  names need not be identical.
+
+- **(h)** Same as (g) but a type name is also equivalent to the text of the
+  corresponding type definition (which could even be anonymous).
+
+Rule (c) makes sense for a language for which all aggregates are in positional
+notation. It complicates the checking by the compiler, since all permutations
+must be considered. Conversely, the rule (d) is sensible for a totally
+non-positional language where components must always be named in record
+aggregates. Rule (e) complicates the implementation of constraints and subtypes
+for components, since they must be checked for each component on record or array
+assignments. Rule (f) cannot be checked statically. Rule (g) requires a
+recursive matching algorithm. In addition, rule (h) requires type expansion, and
+even an algorithm of cycle reduction in the case of mutually recursive access
+types.
+
+All these complexities for the implementation — and above all, for the reader —
+are avoided in Ada by adopting the simple rule that every declaration declares a
+distinct type.
+
+The main motivation for allowing default initialization of record components is
+one of program reliability. In many applications, it is found desirable to have
+a consistent initial state for all objects: the services offered by the program
+may critically depend on objects being well initialized. To achieve this, we
+could of course define an initial value to be used for all declarations, or
+provide the users with an initialization procedure to be applied before any
+other use is made of objects. The weakness of these approaches lies in the fact
+that our program would remain vulnerable to users that do not follow this
+initialization discipline (whether unintentionally or not). The only safe
+solution is therefore to have a default initialization that is invoked without
+any reliance on the user.
+
+#### R.4.7 Discriminants
+
+The form of record type presented so far corresponds to a pure Cartesian
+product, aside from the requirement that components be named. A typical example
+of such record types is the type PAIR with two components of type INTEGER: there
+is no dependence between these components — any pair of integers will be of type
+PAIR, so that the set of values of this type is actually the Cartesian product
+INTEGER x INTEGER.
+
+There are however composite objects in which there is dependence between
+components. For example, in a record describing an attendance list, the length
+of one component — the table of attendants — may be given by another component
+of the record. More generally, the overall structure of a record, in particular
+the presence or absence of certain components, may depend on the value of a
+specific component.
+
+Because of these dependences, such composite objects cannot be modelled as
+simple Cartesian products. Their description will require the use of special
+components called discriminants (see [3.7.1](#371-discriminants)).
+
+#### R.4.8 Mutability
+
+The term mutability refers to the ability to change the value of a discriminant
+of a given record (by a whole record assignment). The problems addressed in this
+discussion of mutability are those of efficiency of representation and
+efficiency of implementation of the parameter passing rules.
+
+Parameter passing rules for objects of record types do not specify whether the
+effect is to be achieved by copy or by reference (see
+[6.2](#62-formal-parameter-modes)). But the implementation has freedom to
+implement parameter passing by copy (for example, for small objects) or by
+reference (for example, for large objects): this should not matter for correct
+programs, that is, for programs that are not erroneous.
+
+The Ada solution for mutability is a dynamic solution, which involves dynamic
+transmission of the constrained attribute across subprogram calls. During the
+course of the Ada design several solutions that allow compilation-time
+verification of mutability were examined.
+
+One approach to static mutability would be to associate this quality with the
+type itself: allow types with objects that are always constrained (never
+mutable), allow types with objects that are never constrained (always mutable),
+but not types with both constrained objects and unconstrained objects. Whereas
+this solution allows efficient parameter passing by reference, its drawbacks
+become apparent precisely in those situations where we need to have both mutable
+and immutable objects. The first drawback is verbosity. The second — and more
+important — drawback is in terms of space efficiency: consider the formation of
+any structure that involves objects of a given type with different discriminant
+values.
+
+The Ada formulation takes advantage of the fact that objects dynamically created
+by allocators are constrained upon allocation. In terms of space efficiency this
+is optimal: the minimum space is reserved for the designated object. It is very
+well suited to a quite common situation in the construction of interrelated data
+structures: although the discriminant of the object designated by a given
+variable is not known statically, it will be very unlikely to change after
+allocation.
+
+Another approach to static mutability would be to associate the mutable quality
+with formal parameters, rather than with types. The major drawback of this
+approach (aside from the additional rules and notations) is that it would make
+it impossible to define an operation that performs mutations in the case of
+unconstrained objects but not in the case of constrained objects — note that
+this is actually what happens for the basic operation (`:=`) of assignment. If
+this property exists for assignment, we are likely to need it also for
+user-defined operations, which would not be possible with this static approach
+to mutability.
+
+---
+
+### R.5 Numeric Types
+
+#### R.5.1 Introduction
+
+The importance of numerical calculations in the use of computers dates from
+their earliest days. However, in spite of this long history of numerical
+computation, the handling of both fixed point and floating point data types is
+unsatisfactory in most programming languages.
+
+Fortran is widely used for scientific computation and compilers are available on
+almost all machines. Nevertheless, numerous defects can easily trap the unwary.
+For example, when a floating point value is assigned to an integer variable the
+value is truncated; this obvious trap is compounded by the lack of any
+definition of this effect — the standard does not say whether -3.8 truncates to
+-3 or to -4, that is, whether the sign is considered after truncation or with
+it. Moreover Fortran provides no facilities for fixed point arithmetic, for
+which there is a particular need on computers without floating point hardware.
+
+The most difficult area is the control of floating point precision, for which no
+entirely adequate solution is available. Fortran does not define the accuracy of
+single precision values. Consequently, the number of bits in the mantissa of a
+single precision value can be 48 on one system and 24 on another; to achieve a
+given precision, say 30 bits, one would have to specify single precision on the
+first system but double precision on the second.
+
+Several languages in the Algol 60 tradition, such as Pascal, Coral 66 and RTL/2,
+admit only one floating point data type. In some cases this simple solution
+meets the users' requirements better than Fortran does. In essence, unless the
+declarations can determine different precisions, it is best to use the same
+precision for all floating point quantities, and therefore to have only one
+floating-point data type in the language.
+
+Any language that has user-defined types, and some method of controlling
+precision, has the essential mechanism for an effective solution of this
+problem. It is, of course, imperative that the programmer use the typing
+facility in such a way that the floating point declarations can easily be
+remapped when a change of precision is needed.
+
+There is also considerable difficulty in formulating a satisfactory fixed point
+facility. The Steelman requirements specify exact fixed point computation: fixed
+point numbers shall be treated as exact numeric values; the scale or step size
+of each fixed point variable must be determinable during translation; scales
+shall not be restricted to powers of two. Thus the possible values of a fixed
+point variable must be integral multiples of a fixed quantity called the scale.
+Exact addition and subtraction do not cause problems, but multiplication and
+division do.
+
+Cobol apparently meets the Ironman requirements, but only by using decimal
+scales, which are not adequate for two reasons. First, this is not necessarily
+the scaling required by the application, and secondly, 10 is too coarse for the
+standard 16-bit minicomputer. A glance at a Cobol manual will also indicate that
+explaining the implicit decimal point to the programmer is not easy.
+
+In view of the difficulty of providing exact fixed point computation to meet the
+Steelman requirements, we considered what was really needed by the users. An
+analysis of actual applications in many real-time situations revealed that there
+was a need for cheap approximate computation. Small but frequently executed
+computations are performed upon digital input signals. Simple machines do not
+have floating point hardware, and emulation of floating point operations by
+software or firmware is not fast enough, hence some other means is required to
+perform approximate computations rapidly on such machines. To say that in the
+future floating point hardware will always be available may not be the answer:
+source data input is inevitably captured in fixed point representation, and
+floating point representation requires more space. Hence approximate fixed point
+is better matched than floating point to the needs of common applications.
+
+It must be admitted that, as we shall see, programming with fixed point is much
+more difficult than with floating point. On the other hand, fixed point is
+potentially more reliable because effective numerical error analysis requires
+tight bounds to be placed upon data values.
+
+It is concluded that approximate fixed point is generally the most useful
+arithmetic capability to provide that will complement integer and floating point
+facilities. However, Ada fixed point also provides some exact operations such as
+addition and subtraction, and these are invaluable, for example for the
+manipulation of intervals of time.
+
+#### R.5.2 Overview of Numerics in Ada
+
+The facility for numerics is based upon the idea that a numeric variable has an
+abstract value. The set of values of a numeric type will be a subset of the set
+of real numbers. Computation with integers is exact. Computation with fixed
+point and floating point is approximate: the former with an absolute bound on
+the error, the latter with a relative bound. These approximate types are called
+the real types since they can be thought of as approximations to the
+mathematical concept of the real numbers (see [3.5.6](#356-real-types)).
+
+The semantics of each numeric operation is determined by the type of its
+operands. The facility for numerics is based upon three types that cannot be
+named in a program (and hence are said to be anonymous — no variable of such a
+type can be declared). These types are referred to as universal_integer,
+universal_real, and universal_fixed. Any specific type in a given implementation
+is a partial representation of a universal type.
+
+- The type universal_integer is an integer type with a range large enough to
+  encompass every conceivable integer type of the implementation. Integer
+  literals are of type universal_integer.
+
+- The type universal_real is a real type with a precision that is high enough to
+  encompass any implemented real type. Real literals are of type universal_real.
+
+- The type universal_fixed is introduced as the result type of the unscaled
+  fixed point operations of multiplication and division. It is essentially a
+  type for intermediate results. The universal_fixed type has a finer delta than
+  any implemented fixed point type.
+
+There is an implementation-dependent type INTEGER, defined in the package
+STANDARD. The range of type INTEGER reflects the properties of the underlying
+hardware, in that the most efficiently handled integer size is used, with a
+range symmetric about zero. It would have been possible to have designed a
+language that had no predefined type such as INTEGER, but this would have meant
+that in order to obtain a type that would give as large a range of integer
+values as possible without losing efficiency, the programmer would have had to
+use language facilities that were highly system dependent. So to avoid this
+dependence, it is desirable to have a predefined type that maps onto the integer
+type that is most efficiently handled by the target computer.
+
+A hardware floating point representation has two independent parameters — the
+length of the mantissa and the range of the exponent. The mantissa length
+defines the relative accuracy, and the exponent range defines the range of the
+floating point values. In Ada, the user defines a floating point type by stating
+only the required precision, as a number of decimal digits; this defines the
+mantissa length. The language requires each floating point type to have an
+exponent range that is workable in relation to its mantissa length. In this way
+the two parameters are reduced to one, with a gain in simplicity for the user.
+
+In contrast to floating point, a fixed point type has an absolute rather than a
+relative accuracy. This absolute bound on the errors is called the delta. The
+user can define other fixed point types by specifying the required delta,
+together with the range of magnitudes to be encompassed.
+
+One finds in many programs several constants that parameterize the particular
+application. These constants have no particular type, but may be related one to
+another; for example the middle of a line is related to the line length. Number
+declarations are provided in Ada to express this (see
+[3.2.2](#322-number-declarations)). Without this facility, a change to the
+program to modify a constant would involve a search for all occurrences of the
+constant as well as of related constants. This would be both tedious and risky:
+for example the constant 40 might or might not be intended to signify half the
+line length, and even with a corresponding comment the process would be error
+prone.
+
+#### R.5.3 The Integer Types
+
+The user can define an integer type by specifying the range to be covered (see
+[3.5.4](#354-integer-types)), for example
+
+```ada
+type PAGE_NUM   is range 1..2000;
+type MY_INTEGER is range -100_000..100_000;
+```
+
+in which case the implementation will use whichever predefined type just
+encompasses this range. Thus MY_INTEGER would be implemented as (a subtype of a
+type derived from) LONG_INTEGER on a typical 16-bit minicomputer, but as INTEGER
+on a machine with larger word length. Portability of the program is thus
+assured, in this respect.
+
+The operations `/`, `mod`, and `rem` require explanation. There is no universal
+agreement on the semantics of these operations for negative operand values.
+Because different machines perform these operations differently, it is tempting
+not to define them for negative values. This is the approach taken in the
+axiomatic definition of Pascal. The semantics chosen in the Ada language
+corresponds to division with truncation toward zero (so `(-3)/2 = -1`). This has
+the advantage that it preserves the identity:
+
+```ada
+-(A/B) = (-A)/B = A/(-B)
+```
+
+The operations `/` and `rem` are related by `A = (A/B)*B + (A rem B)`, so that
+`rem` provides the remainder on division. The operation `mod` on the other hand
+is defined so that `A mod B` always has the same sign as B and its absolute
+value is less than the absolute value of B.
+
+#### R.5.4 The Real Types
+
+The real types form two classes: floating point types and fixed point types.
+Both are approximate and are different forms of approximation to the real
+numbers of mathematics. With floating point types, the error in representing a
+mathematical value is roughly proportional to its absolute value over a large
+range. In contrast, the error with a fixed point value has an absolute bound, so
+that small values have a correspondingly large relative error.
+
+The real type definition specifies bounds on the permitted error in the
+representation of values: the precision for floating point and the delta for
+fixed point. A floating point type declaration of the form `type T is digits D;`
+specifies D significant decimal digits precision. It would perhaps have been
+more consistent to specify a bound on the relative error directly, but giving
+the number of significant decimal digits is more natural for the user. For fixed
+point (see [3.5.9](#359-fixed-point-types)) a bound specified in decimal digits
+would have been inappropriate, and too coarse, for a binary machine. In this
+case the range constraint is not optional since an unbounded range would imply
+an infinite number of values.
+
+The operators `=` and `/=` could have been excluded because their semantics is
+of doubtful validity, since the representation is approximate. Given a precision
+of 6 digits, then equality could either mean equality of representation (which
+would typically be of higher precision) or equality only to 6 digits. If the
+former semantics were chosen then equality would be implementation dependent.
+Moreover, since some implementations may use a higher precision for temporary
+values than for declared objects, it would be possible after the assignment `X
+:= (Y + Z);` to have `X /= (Y + Z)`. If the latter semantics were chosen, then
+equality would be computed as approximately equal. This would lead to the
+anomaly that equality would no longer be transitive, that is, it would be
+possible that
+
+```ada
+X = Y and Y = Z and X /= Z
+```
+
+The decision has been to allow equality since it is defined for all other types.
+The user must be aware that the implemented precision is used, that is, the
+values X and Y are equal only if their representations are identical, and that
+in consequence code may not be portable. (The situation is no better with other
+languages.)
+
+Defining floating point types directly in terms of their precision and range is
+preferable for portability. In this case the types are mapped on the nearest
+applicable machine implemented precision. To summarize, the language provides a
+direct and simple mechanism for achieving efficient use of the available
+precisions predefined by a given implementation.
+
+The definition of the fixed point types is more difficult, for several reasons.
+First, the representation cannot be determined until both the range and delta
+are known. These two parameters determine the width required in bits and the
+position of the decimal (binary) point. Having determined these, the
+representation is fixed and the operations can be defined. The second problem is
+that the type resulting from multiplication and division is universal_fixed.
+Since no operations are available on the type universal_fixed, a product or a
+quotient must be explicitly converted to the required type (or subtype) (see
+[3.5.10](#3510-operations-of-fixed-point-types)).
+
+The operations of fixed multiplication and division are essentially in two
+parts. First, the accurate product or quotient is formed (that is, a result of
+the type universal_fixed is obtained). Second, the result must be converted
+before being assigned to any variable or being used in further computation. This
+conversion may imply a loss of accuracy due to the representation in the
+destination type: since the fixed point operands are essentially just scaled
+integers, the accurate product will in fact be another scaled integer, but the
+accurate quotient must be treated as a ratio of integers. A real literal is not
+allowed as an operand of fixed multiplication or division, since there is not a
+unique fixed point type to which to convert it; this situation can be resolved
+by an explicit conversion, or better, by using a declared constant — which
+simplifies program maintenance.
+
+The user can perform accurate computation with fixed point by ensuring that only
+exactly representable values are used. In fact, the only source of error is the
+implied rounding of constants and conversion (which is necessary for
+multiplication and division).
+
+#### R.5.5 A Semantic Model for Approximate Computation
+
+Programming languages do not conventionally define the semantics of floating
+point arithmetic. However, in Ada, with declarations controlling the accuracy of
+data types, it is highly desirable to do so. A proposal of W. S. Brown makes it
+possible to describe a model which is both clean in structure and realistic
+(that is, it describes the actual behavior of floating point arithmetic units).
+
+For each type, an abstract representation is defined. The abstract
+representation of each nonzero number x takes the form of a sign, a mantissa,
+and an integer exponent. Thus for the binary representation we have `x = ± m *
+2**n` where `1/2 <= m < 1`; that is, the number is normalized: the most
+significant binary digit is always 1. For example, a mantissa of length 3 allows
+representation of only the following mantissa values (using the notation for
+based literals):
+
+```ada
+2#0.100#,  2#0.101#,  2#0.110#,  2#0.111#
+```
+
+The relative precision here varies from 1 in 4 to 1 in 7; in general, mantissa
+length B guarantees precision of only 1 in 2**(B-1), although near to 1 the
+precision is nearly 1 in 2**B.
+
+We do not assume that numbers are represented in this fashion, merely that
+numbers having the numeric values given above are representable in the machine.
+Brown now develops axioms for the representable numbers and the behavior of a
+machine number that is bounded by an interval whose endpoints are representable
+numbers. These axioms allow the use of higher precision than specified in the
+declaration, which is essential in Ada, since the implemented precision will
+typically be greater than the declared precision.
+
+The Ada version of the Brown model for floating point works as follows (see
+[3.5.7](#357-floating-point-types) and
+[3.5.8](#358-operations-of-floating-point-types)):
+
+- From the decimal precision specified (F'DIGITS) the corresponding number of
+  binary places is determined, being F'MANTISSA.
+
+- The model numbers are those with F'MANTISSA binary places and an exponent in
+  the range `-4*F'MANTISSA .. 4*F'MANTISSA`.
+
+- The safe numbers are those with F'MANTISSA binary places and a potentially
+  larger exponent range limited by the hardware.
+
+The model numbers guarantee workable properties including a reasonable range of
+values — their definition is machine-independent: hence the term model. The safe
+numbers allow one to exploit the larger exponent range that many machines
+provide. Safe numbers have the same properties as model numbers and include the
+model numbers but their range is machine-dependent.
+
+For fixed point types, a similar representation is chosen without an exponent.
+In this case for the binary representation of each nonzero number x we use `x =
+± M * small` where M is now an integer, whose length B defines its range `1 ..
+2**(B-1)`, and small is the smallest positive representable value (corresponding
+to M=1). Axioms (not treated by Brown) can now be given which reflect the exact
+nature of some operations and the approximate nature of others. In addition,
+because of the obvious correspondence between the abstract representations of
+all approximate types, conversions can be defined.
+
+#### R.5.6 Conclusion
+
+The aim of the design is to provide the full range of numeric facilities within
+a secure system of types. This has been achieved by a combination of two
+techniques.
+
+Firstly, use is made of the ability in the language to define new types derived
+from an existing type, from which the new types inherit properties. The
+convenience of the derived type mechanism in Ada is that it provides a simple
+method of ensuring a high degree of portability. If the user declares a new type
+(therefore derived from a machine type), this type is distinct from other types
+in the program. This distinction ensures that type conversions are explicit and
+that a quite different representation could be used on other machines.
+
+Secondly, the precision of numerical representation and the bounds on results of
+computation are strictly controlled: With the model developed by Brown, it is
+possible to define an axiomatic system which gives the minimal properties of
+approximate computation. The axiomatic system is realistic in the sense that it
+can (and must) be applied to existing floating point implementations.
+
+Portability cannot be entirely guaranteed by the language because it is not
+possible for a program to be completely isolated from dependence on the
+underlying hardware. However, such dependence is limited to the attributes of
+the predefined numeric types, and properties of the implemented real types that
+cannot be derived from the axiomatic system — such as the radix of the
+underlying floating point representation.
+
+---
+
+### R.6 Access Types
+
+#### R.6.1 Introduction
+
+The notion of access type encompasses the concept of objects that are
+dynamically created during the execution of a program (see
+[3.8](#38-access-types)). In general, neither the number of such objects, nor
+their names, can be fixed in advance.
+
+The inclusion of such a feature in a language raises what are traditionally some
+of the most difficult issues in language design, and indeed in programming.
+
+#### R.6.2 Conceptual Aspects
+
+The objects of a program can be classified into two categories: static objects
+and dynamically allocated objects.
+
+Static objects are declared in a program and are containers for values. Each
+static object has a simple name that is used to denote either the container or
+the value, depending on the context where the name appears. Such objects are
+said to be static since their lifetime is determined by the static (textual)
+structure of the program.
+
+In contrast, the creation of dynamically allocated objects occurs dynamically,
+by the execution of so-called allocators, and is not directly related to the
+program structure. In general, the number of dynamically allocated objects is
+not easy to predict and it will not be possible to define their names by
+declarations. Hence what is returned by the execution of an allocator is an
+internal name — not an identifier — and therefore it cannot be used explicitly
+in the text to denote the newly allocated object.
+
+To deal with this problem, one usually defines by declaration a number of
+indirect names that may be used to access the different dynamically allocated
+objects at successive stages of execution. For this reason, indirect names are
+called access objects in Ada (they have been called pointers or reference
+variables in other languages). Internal names are called access values in Ada.
+To emphasize the difference between names and internal names, we say that a name
+denotes an object whereas we say that an access value designates an object.
+
+Four important consequences follow from the fact that access objects contain
+internal names:
+
+- The same internal name may be contained in several access objects, with the
+  consequence that they provide access to the same dynamically allocated object.
+
+- Access objects may be used to describe relations, in particular, relations
+  that change over time.
+
+- Since the internal name contained in an access variable may vary with
+  successive stages of the program execution, a given dynamically allocated
+  object may become inaccessible.
+
+- Since an access object does not contain any internal name prior to its first
+  allocation or assignment, there must be a special null value corresponding to
+  no internal name. This value is also required for describing partial
+  relations.
+
+Sharing and the possibility of inaccessibility are thus two of the classical
+difficulties of access types. A third classical difficulty is the well-known
+problem of dereferencing: considering the name of an access object, this name
+may stand for the name of the (static) access object; the content of the access
+object (that is, its value: an internal name); or the content of the dynamically
+allocated object that is designated by this internal name. The first two
+possibilities also exist for static objects. Most languages have the same
+notation in the two cases, and make a distinction by context. The third
+possibility, however, only exists for access objects, and the solutions offered
+by programming languages are very diverse. The diversity of the solutions
+adopted by several languages is a clear indication of the conceptual
+difficulties involved.
+
+A final conceptual difficulty in defining access types is the notion of constant
+access objects. Suppose an access object is declared to be constant. Several
+alternative interpretations could be given for such a declaration: that the
+access value is constant, so that it always designates the same dynamically
+allocated object, although the value of the latter could vary; that the access
+value can vary, but may only be used to read the components of a designated
+object; or both together. The first meaning, however, is the one that is most
+consistent with what is done for other types. Consider the analogy with an
+index: the fact that an index constant is constant only means that we always
+refer to the same component; it does not mean that assignment to this component
+is forbidden.
+
+#### R.6.3 Reliability, Efficiency, and Implementation Issues
+
+When a dynamically allocated object becomes inaccessible, the corresponding
+space may (at least theoretically) be reclaimed for other uses without any risk.
+This operation, classically called garbage collection, has been used in
+languages such as Lisp, Simula, and Algol 68.
+
+Unfortunately, there is no method of garbage collection that is generally
+suitable to real-time applications. The method used in most Lisp implementations
+is to allocate storage continuously until the available space is exhausted, and
+then reclaim inaccessible objects by a complete traversal of all allocated
+structures. This implies that the execution of an allocator can suddenly
+initiate garbage collection, thereby causing a large and unpredictable overhead.
+Moreover, as the available storage becomes increasingly fragmented by accessible
+objects, garbage collection could be triggered ever more frequently, causing
+rapid degradation of performance.
+
+Another method is to maintain reference counts with each allocated object: an
+object is inaccessible if its reference count is zero. This fails with cyclic
+structures, where a non-zero reference count does not necessarily imply
+accessibility. It also causes implementation problems, since the reference count
+of an accessed object must be decremented whenever a declared access object that
+designates it passes out of scope — either in the normal course of execution or
+as a result of an exception. However, even if this method were fully implemented
+it would not solve the problem: the unpredictable overhead has merely been
+transferred to the deallocation operation.
+
+A third method is to perform garbage collection periodically by a parallel
+process of lower priority. Provided the synchronization problems can be solved,
+this provides the least unsatisfactory solution for real-time use. Its major
+defect is that, under conditions where the transaction rate is high, the
+lower-priority processes may become starved, so garbage collection might not be
+done often enough to maintain a satisfactory pool of free storage.
+
+For these reasons several languages in the systems programming area try to
+achieve better control over storage management for dynamically allocated
+objects. Such operations usually cannot be written with the full degree of
+compilation-time checking that is provided by types. In addition, the
+availability of explicit deallocation introduces the possibility of dangling
+access values: the program might deallocate a dynamically allocated object that
+is still accessible by other paths — its internal name still being contained by
+other access variables.
+
+Confronted with this dilemma between reliability and efficiency, a possible
+answer is to choose reliability and accept the possibility that access types
+might not be used in programs that are time-critical. However, there are cases
+where access types should be used, precisely because the application considered
+is time-critical.
+
+In general, when access variables are used, address computations will be done
+only once, at the time of dynamic allocation. Thereafter access values can only
+be assigned to access objects or used to access the dynamically allocated
+objects. This however does not involve address computations. On the other hand,
+when indices are used, address computations must be redone for every access.
+
+#### R.6.4 Goals for a Formulation of Access Types
+
+One of the advantages of access variables is efficiency. As a consequence we
+must be able to use them in time-critical applications. In this case, however,
+we must provide a form of access variable that does not result in garbage
+collection with the associated costs and unpredictability.
+
+The needs of efficiency being thus satisfied, it remains that reliability should
+be a major goal in the formulation of access types, especially in view of the
+conceptual difficulties they raise. Hence a safe formulation of access types
+should have several important properties:
+
+- There must be a null value for access objects. Since null designates no
+  object, any attempt to denote a component of this nonexistent object should
+  raise the exception CONSTRAINT_ERROR (the null value cannot be dereferenced).
+  On many computers checking for such attempts is achievable without any
+  run-time cost if the internal value of null corresponds to some protected
+  address.
+
+- Access variables should be typed (as in Simula or Pascal) so that one access
+  variable can designate only objects of one type.
+
+- There should be a basic operation — the allocator — that dynamically creates
+  an object and delivers an access value designating this object (its internal
+  name). On the other hand, there should be no operation for explicit
+  deallocation of a dynamically allocated object (to avoid dangling access
+  values).
+
+- There should be a clear distinction between access types and other types. In
+  particular, there should be no possibility for an access value to designate a
+  static variable (again, to avoid dangling access values).
+
+#### R.6.5 Collections and Storage Management
+
+Conceptually it is important to realize that each access type declaration
+implicitly defines a collection for dynamically allocated objects. The actual
+collection will be built during program execution as allocators are executed.
+Its lifetime cannot be longer than that of the program unit in which the access
+type definition is provided. Collections in Ada are implicit and cannot be
+named. The collections associated with different access types are always
+disjoint, so that dynamically allocated objects designated by access variables
+that do not have the same type are guaranteed to be in different collections.
+
+The constraints applicable to a dynamically allocated object are established
+when the allocator is evaluated and cannot be modified during the lifetime of
+the dynamically allocated object. In the case of a dynamically allocated array,
+this means that the bounds of such an array cannot be modified. Similarly, for a
+type with discriminants, the discriminant values established at allocation time
+cannot be modified. As a consequence, only the size actually required by the
+dynamically allocated object need be allocated.
+
+Unless specified otherwise, the collection of dynamically allocated objects
+associated with an access type will be allocated in a global heap and may be
+garbage-collected in some implementations. For time-critical applications,
+however, it is possible to provide a length clause that specifies an upper bound
+for the space needed by the collection of a given access type (see
+[13.2](#132-length-clauses)). This space can then be reserved globally when the
+length clause is elaborated.
+
+A collection for which such a length clause has been given behaves like a static
+array as far as storage allocation is concerned. The objects are allocated
+within this static storage area by allocators; and the whole collection can be
+reclaimed globally under the same conditions as for an array declared at the
+place of the access type declaration.
+
+Such collections may be allocated either on the stack or on the heap. They have
+several advantages. In terms of storage management they have a cost comparable
+to that of arrays. In addition they offer both the notational advantages and the
+addressing efficiency of access variables. Finally, if an application wants to
+perform its own deallocation, it can do so by means of a generic instantiation
+of a predefined generic library procedure (see
+[13.10.1](#13101-unchecked-storage-deallocation)):
+
+```ada
+procedure FREE is
+   new UNCHECKED_DEALLOCATION(OBJECT => CAR, NAME => CAR_NAME);
+```
+
+This form of deallocation is said to be unchecked since no check will then be
+done to ensure that there are no dangling accesses to the same object. The use
+of this form of deallocation may therefore be justified by efficiency, but it
+presents some danger, and so programs that use it must be written with great
+care.
+
+#### R.6.6 Recursive Access Types
+
+The type of a record component can be an access type. This opens up the
+possibility of recursive access types, where a dynamically allocated object in a
+given collection has components designating other dynamically allocated objects
+in the same collection. The declaration of recursive access types will usually
+involve an incomplete type declaration (see
+[3.8.1](#381-incomplete-type-declarations)):
+
+```ada
+type PERSON(SEX : GENDER := F);      -- incomplete declaration     (1)
+type PERSON_NAME is access PERSON;   -- access type declaration    (2)
+
+type PERSON(SEX : GENDER := F) is    -- full declaration           (3)
+   record
+      AGE    : INTEGER range 0..123;
+      FATHER : PERSON_NAME(SEX => M);                           -- (4)
+      MOTHER : PERSON_NAME(SEX => F);                           -- (5)
+      SPOUSE : PERSON_NAME;                                     -- (6)
+   end record;
+```
+
+The incomplete declaration allows a linear reading of the example: We first
+learn about the existence of a type called PERSON, so that at (2) we can
+understand what "access PERSON" means. We then learn what the type PERSON is in
+full. Without the incomplete declaration (1), the access type declaration (2)
+would be illegal. Similarly, we could not reverse the order of declarations (2)
+and (3) because then (3) would be illegal: we need to know what a PERSON_NAME is
+in order to understand the component declarations at (4), (5), and (6).
+
+---
+
+### R.7 Derived Types
+
+#### R.7.1 Introduction
+
+The basic mechanisms for defining a new type are by enumeration and by
+composition from existing ones; certain operations are automatically introduced
+by such definitions. Another way of defining a type is by means of a private
+type declaration. A third possibility is provided by the language: a type COPY
+is said to derive its characteristics from those of another existing type MODEL
+if it is declared as `type COPY is new MODEL;` (see [3.4](#34-derived-types)).
+
+This form of declaration is useful whenever a type is to have the same
+characteristics as another type, (and possibly some additional ones). Although
+the derived type COPY and its parent type MODEL have similar characteristics,
+they are nevertheless distinct types.
+
+The following topics are some of the major uses of derived types: simple strong
+typing; the explanation of numeric types; the ability to define new types that
+have numeric literals; the construction of private types; achieving transitivity
+of visibility; and change of representation. It will be shown that all these
+uses rely on a unique ability, namely the ability to introduce a distinct type
+with similar properties.
+
+#### R.7.2 What Carries Over
+
+In each case, the derived type is a copy of its parent type. This has several
+implications concerning the type class, the set of values, the applicable
+operations, and overloading.
+
+The derived type belongs to the same class as its parent type. The set of values
+of the derived type is a copy of the set of values of its parent type. There is
+a one-to-one correspondence between the two sets of values; but these two sets
+are nevertheless distinct.
+
+The basic operations for the derived type are as for the parent type. For
+example, if component selection is available for the parent type, it is
+available for the derived type. Attributes are basic operations, so the previous
+rule applies. If a given enumeration literal exists for the parent type, there
+is a corresponding enumeration literal — with the same identifier — for the
+derived type. For each predefined operation of the parent type there is a
+corresponding predefined operation of the derived type.
+
+For a type declared in the visible part of a package, each subprogram that has a
+parameter or result of the type and is declared within the visible part of this
+package is derivable. This means that corresponding operations are derived by
+the derived type. Note that these derived operations are obtained by systematic
+substitution of the name of the derived type for the name of the parent type.
+
+The above description shows that a derived type is very much like its parent
+type. They are nevertheless distinct types. However, there is a one-to-one
+correspondence between these sets of values and, for this reason, the language
+provides explicit conversions between corresponding values. Type conversions
+between types that are derived directly or indirectly from each other (or from a
+common parent type) usually do not result in any run-time executable code.
+
+Such conversions are also involved (implicitly) in the derivation of a derivable
+operation. The effect of a derived operation is obtained by application of the
+parent procedure, but conversion of the parameter to the parent type is assumed
+to take place before the call, and conversion back to the derived type is
+assumed to take place after the call. Here again these conversions usually do
+not result in any run-time executable code but they are needed to explain the
+use of the parent subprogram, which is only applicable to the parent type.
+
+#### R.7.3 Simple Strong Typing
+
+Given some useful type, the derivation mechanism offers a simple way of creating
+other types that are distinct copies of this type. The usual motivation for such
+type replication is to keep the two value spaces well separated and, thus, to
+achieve a simple form of strong typing. Consider a useful type for counting
+currency, and the types derived from it:
+
+```ada
+type CURRENCY is delta 0.01 range 0.0..1.0E6;
+for CURRENCY'SMALL use CURRENCY'DELTA;
+
+type DOLLAR is new CURRENCY;  -- three
+type FRANC  is new CURRENCY;  -- distinct
+type MARK   is new CURRENCY;  -- types
+```
+
+The motivation for having these distinct types is well-known to every traveller,
+namely not to mix the different currencies. What this example illustrates is
+that we have provided type declarations that reflect the common-sense view that
+having one "centime" is not the same as having one "pfennig". Although both
+correspond to an abstract value of "0.01", we consider that they belong to
+different value spaces. Note that this would not be achieved if we had declared
+all our variables to be of the type CURRENCY, since this would allow mixing
+different currencies in an uncontrolled manner.
+
+Note that we could write this example — without derivation — by giving three
+identical type definitions. But this formulation would hide the fact that these
+three types are currencies with the same delta and range, and for which certain
+currency-specific functions could be declared, such as interest.
+
+To conclude on this first example, it shows that derived types can be used to
+achieve program reliability and readability in quite a simple manner — hence the
+name simple strong typing. Generic units can often (but not always) be used to
+achieve similar goals. However generic solutions will usually involve much more
+machinery and, in consequence, are less likely to be used in simple situations
+such as the currency example.
+
+From a purist point of view one could argue that the use of derived types in
+many of these examples does not achieve total reliability. For example, with the
+derivations `type LENGTH is new SCALAR;` and `type AREA is new SCALAR;` the
+multiplication that is derived for LENGTH is not useful, since it returns a
+LENGTH. However, we can always define — explicitly — a function that returns an
+AREA, and should we fear the misuse of the inherited multiplication, we can
+always hide it.
+
+But in many cases, we will not even bother to introduce such additional
+definitions: There are many ways in which we are trying to improve program
+reliability, and types are but one of them. The fact that any specific mechanism
+does not achieve one hundred percent safety does not mean that this mechanism
+should be neglected. The same reasoning will often apply to the use of derived
+types: they provide a simple mechanism for achieving a first level of safety.
+Being simple, this mechanism is more likely to be used than heavier mechanisms.
+Thus derived types will encourage the use of types for logical structuring.
+
+The previous forms of strong typing can almost be obtained by the use of generic
+instantiation instead of derivation. Generic instantiation almost achieves what
+is needed but one may regret the need to use a more elaborate feature of the
+language: generic program units. In many teaching strategies this feature would
+only be encountered at the advanced level. Hence it is not really satisfactory
+that the user should be confronted with this degree of difficulty (on top of
+verbosity) for such a simple situation.
+
+Moreover, the major drawback of the generic solution is that conversions between
+the two instantiated types are not possible, whether explicitly or implicitly,
+in the generic formulation. To achieve such conversion would require writing
+conversion functions. This solution is far from satisfactory from a maintenance
+point of view, since the conversion has to be expressed by duplication of the
+structure within the aggregate. In particular, it has to express the structural
+correspondence on a component-by-component basis. Any change in the definition
+of the type would therefore require revision of the text of these conversion
+functions.
+
+The approach taken for conversions is far simpler in the case of derivation: if
+a type is derived from another one, then it is immediately known that the two
+types have the same structure — by construction. Hence there is no need to
+detect structural similarity.
+
+Another approach would be to copy the type definition. This copying technique
+works in the case of numeric types, in particular for explicit conversions.
+However there are methodological objections to the fact that the sameness is
+hidden. In order to understand that the two types are similar we have to compare
+the definitions. But the intention does not appear. Actually there could be
+situations where the same constants are used in a third type by accident.
+Conversely, there are situations where we want two types to be similar although
+their range need not be the same. The superiority of the derivation approach for
+copying comes from the fact that the intention is made explicit by naming the
+parent type, even if the derived type has a different range.
+
+#### R.7.4 The Construction of Private Types
+
+For the construction of private types, derived types provide an easy and
+unambiguous way of distinguishing the operations of the private type from those
+of the type used for its representation (that is, the type declared by the full
+type declaration). The relevant aspects are: the fact that the parent and the
+derived type are distinct types; and the fact that explicit conversions between
+the two types exist.
+
+```ada
+package LOCKSMITH is
+   type KEY is private;
+   procedure GET_KEY(K : out KEY);
+   function "<" (X, Y : KEY) return BOOLEAN;
+private
+   type KEY is new CHARACTER;
+end LOCKSMITH;
+
+package body LOCKSMITH is
+   function "<" (X, Y : KEY) return BOOLEAN is
+   begin
+      return CHARACTER(X) < CHARACTER(Y);
+   end "<";
+end LOCKSMITH;
+```
+
+The user need not know that keys are implemented as characters, but he is
+provided with the operator "<" to order keys. The function first converts the
+parameters X and Y into characters and then compares them using character
+comparison. (Note that `X < Y` would not work: it would be a recursive call.)
+
+Without derivation, a solution can be developed using one-component records. The
+drawback of this solution is its lack of symmetry. Instead of the succession of
+two conversions — to the representation type and then back — we have now the
+succession of component selection and of aggregate construction. For these
+cases, the solution with derived types is more elegant.
+
+#### R.7.5 Conclusion — Achieving Copies in Ada
+
+Three main classes of entity are found in Ada programs: objects, types, and
+program units. For each class of entity, the language provides a copying
+mechanism; that is, a mechanism by which we can create distinct replicas having
+similar properties: object declaration for objects, type derivation for types,
+and generic instantiation for program units.
+
+The replication mechanism offered by generic units is very powerful and can be
+used to replicate the contents of program units. The generality of generic units
+certainly runs against a saying often heard in programming language design that
+there should be only one way of doing a given thing. Generic instantiation can
+even be used to achieve object replication, but it would be carrying matters to
+extremes to conclude from this that no simpler way should be provided. Generic
+instantiation can be used to replicate objects but it is not the most natural
+way. Similarly, although generic instantiation can be used to replicate types,
+derivation is a more natural and direct way.
+
+Six major situations have been reviewed in which copying a type provides a
+natural solution for the problem considered: simple strong typing; numeric
+types; new types inheriting literals; construction of private types;
+transitivity of visibility; and change of representation. The common
+characteristic of the above six situations is that in each of them there is a
+need to introduce a type that is a copy of another type. Without derivation, a
+variety of solutions and palliatives, most of them only partially satisfactory,
+would be required to solve these six problems. Furthermore many of these
+palliatives would involve manual copying and therefore raise severe issues of
+maintenance and configuration control. With derivation a unique — and elegant —
+mechanism is used to solve what is inherently a unique problem: the replication
+of a type.
+
+---
+
+### R.9 Packages
+
+#### R.9.1 Motivation
+
+Packages allow the programmer to define groups of logically related items (see
+[7](#7-packages)). They cover a wide variety of uses, ranging from collections
+of common declarations to groups of subprograms and encapsulated data types.
+
+The ability to package declared entities — such as variables, types,
+subprograms, and even other packages — provides the basis for a powerful
+structuring tool for complex programs. Moreover, a package permits clear
+separation between information that is usable by the rest of the program, and
+other information that must remain purely internal to the package. The internal
+information is hidden, and thereby protected from deliberate or inadvertent use
+by other programmers. This serves not only to localize the effect of internal
+errors to the package itself, but also to make it easier to replace one
+implementation of (the services offered by) a package by another. Packages are
+thus an essential tool for program modularity, supporting program verification
+and information hiding as advocated by Parnas.
+
+Facilities for modularization have appeared in many languages. Some of them —
+such as Simula, Clu, and Alphard — provide dynamic facilities which may entail
+large run-time overhead. The facility provided in Ada is more static — in the
+spirit of previous solutions offered in Lis, Euclid, Mesa, and Modula. At the
+same time it retains the best aspects of solutions in earlier languages such as
+Fortran and Jovial.
+
+We recognize three general kinds of modularization that can be achieved by
+different forms of package. The essential difference between these three forms
+is in the amount of information hiding that is provided. The package can be
+viewed as a wall surrounding the enclosed declarations, thereby separating them
+from the rest of the program. One may then imagine a window in the wall, through
+which (depending on its size) some or all of the declarations are exposed.
+
+1. **Named collections of entities:** the package exposes all of its
+   declarations (all declarations can be seen through the window).
+
+2. **Groups of related subprograms:** the package exposes the declarations of
+   the externally usable subprograms (only these can be seen through the window)
+   but hides their implementations and the declarations of the shared internal
+   entities.
+
+3. **Encapsulated data types — private types:** the package exposes the type
+   name and the declarations of applicable operations but hides all details of
+   structure, representation, and implementation of the operations (see
+   [7.4](#74-private-type-and-deferred-constant-declarations)).
+
+There is no critical linguistic difference between these three forms, and
+intermediate degrees of hiding exist.
+
+#### R.9.2 Visibility Control and Information Hiding
+
+The visibility rules of Algol 60, as embodied in its so-called block structure,
+are quite natural for programs of moderate size and have been adopted by most
+subsequent languages, including Ada: any declaration is visible throughout the
+block for which it is given, including nested inner blocks, unless hidden by
+declarations local to those blocks. However this simple structure is
+insufficient for the reliable construction of large programs since more precise
+control over the visibility of declarations is then needed. For example, with
+the above rule, a variable that is used by several subprograms must be declared
+outside their bodies, although it has no relevance to other parts of the
+program. This variable will then be visible to all users of these subprograms,
+and unprotected from accidental or malicious access.
+
+In the definition of a package, the visible part states which declarations are
+potentially visible outside the package. It is possible for other program units
+to see whatever is in the visible part; but they do not see it automatically.
+Within these program units, this visibility is achieved either by use clauses or
+by expanded names written in the form known as dot notation.
+
+Thus visibility of the identifiers declared in the visible part is controlled by
+the user. Names declared in the visible part of a package do not spontaneously
+invade (and pollute) the name space of the rest of the program. Visibility of
+the identifiers declared in the package body is even more tightly controlled:
+they are visible only within the package body — in particular, within the body
+of any subprogram declared in the visible part.
+
+The other essential characteristic of packages in Ada is the textual separation
+of the interface — those declarations that are relevant to users of the package
+— from the implementation. In an Ada package, these declarations are textually
+separated from the rest of the text: they form what is called the visible part
+of the package. This textual separation is a significant advantage for
+readability and for information hiding.
+
+Other languages such as Euclid and Modula have used a formulation based on an
+export list that mentions all identifiers that constitute the interface. This
+means that in order to know the properties of these identifiers, the human
+reader must scan through the entire text of the module to find the declarations
+of entities listed in the export list. This is a tedious operation and is, as we
+shall see, a breach of information hiding principles, since it involves reading
+parts of the text that should be of no concern (and should not even be
+available) to the user.
+
+There are good reasons for hiding the text of a package body from its users. An
+obvious one is confidentiality: a software producer supplying the services of a
+given package may want to protect his investment by not showing the package
+implementation (at least, not in source form). Another reason to hide the text
+of a package body from its users is to establish the normal producer-consumer
+contractual relationship that exists for other commercial products. It is the
+package specification that should be considered as the contract between the
+producer and the users. The included procedure specifications already form a
+(minimal) syntactic contract, but these may be supplemented by some explanation
+of their intended effect.
+
+Letting a user read the implementation would create the danger that he might
+derive some additional implicit assumptions from an analysis of the current
+implementation: assumptions that are not explicit in the contract. The producer
+of a package is bound only by the contract, and is therefore free to deliver
+later releases of the package that might not satisfy any such implicit
+assumptions of the user. The textual separation between the package
+specification and the package implementation provides an easy solution to this
+problem. The user will be provided with the source text of the package
+specification, and no more.
+
+#### R.9.3 Guaranteeing Software Components
+
+In an industry of software components, users are likely to request some
+guarantee against malfunction, as is usual for buyers of components in other
+industries. The problem of proving software components is certainly not an easy
+one; but we can show that packages lead to a reduction in its difficulty.
+Consider, for example, a table management package (see
+[7.5](#75-example-of-a-table-management-package)) and the steps that would have
+to be taken to convince oneself that it was operating correctly. To begin with
+we have to define a consistent state for the package: for example, we can define
+the table to be consistent if it contains all the items that have been inserted
+but not yet retrieved, and only these. We first have to show that the table is
+consistent initially: that is, after execution of the initialization statements.
+Then we have to show that if the table is consistent before the use of any one
+of the services offered, it will still be consistent after the execution of that
+procedure.
+
+In order to do this, our analysis need only consider the text of the
+corresponding procedure: the table cannot be updated directly from outside the
+package since it is not visible there.
+
+Without packages, the table would have to be global and we would have no
+protection against direct update of the table by users (whether the update is
+intentional or by accident). The previous consistency argument would then be
+considerably more complex since it would be necessary to inspect the text of all
+programs that use any of these procedures and check that these programs do not
+directly update the value of the table: The amount of text to be checked
+could be an order of magnitude larger than the text of the package itself.
+
+With the package concept — with the separation between the interface and the
+implementation; and with the protection of whatever is local to the package body
+— servicing software components becomes similar to servicing components in other
+industries: If a user reports a malfunction of the operations of a package, we
+know that we have only to check within the package to establish the reality and
+cause of any malfunction (and to make repairs as needed). The package body
+effectively acts as a sealed container.
+
+#### R.9.4 Why There Is a Private Part
+
+The essential role of packages is for logical modularity. In addition, they also
+play an important role for the physical modularity that is achieved by separate
+compilation. These two aspects of program modularization lead to slightly
+different (although not conflicting) requirements.
+
+For logical modularity the interface defined by the visible part of a package is
+sufficient. This information is needed for physical modularity too, but the
+physical interface also requires the availability of the additional information
+that is contained in the private part.
+
+This extra information is needed by compilers for the treatment of variables
+that are declared in one compilation unit but whose type is a private type
+declared in a different compilation unit. The difference essentially concerns
+storage allocation: knowledge of the amount of storage needed for such variables
+is necessary for selecting the machine instructions used for operations on the
+variables; this code selection is not a decision that could be postponed until
+the program is complete (that is, until linkage editing time).
+
+The reasons for this are found in the architectures of our current computing
+machines. These generally provide code abstractions that are bound at execution
+time, in the form of subprograms invoked by the call instruction. It is
+therefore possible to defer the binding of the bodies of such abstractions until
+link time, or even later. However, current machines do not provide similar data
+abstractions: every instruction that operates on a datum must be aware of its
+representation, and that representation must therefore have been bound at the
+moment the instruction was generated; that is, at compilation time. A more
+flexible architecture — evolved perhaps from today's tagged architectures —
+would indeed allow data representation choices to be deferred until link time,
+or even later.
+
+The declaration of a private type therefore does not in itself provide enough
+information for storage allocation and other operations. The full declaration of
+the type is needed, and so is any representation clause that the user wants:
+storage allocation will therefore require the information provided by the
+private part. Note that placing this information in the package body would not
+be satisfactory since it would create unnecessary dependences of other
+compilation units on this body, with the consequence that changes in the
+algorithms provided in the body would require recompilation of these other
+compilation units, even in the absence of change to the full type declaration.
+
+The one case where full type information can indeed be deferred until the
+package body is the case where the private type is implemented as an access
+type:
+
+```ada
+package MINIMAL is
+   type OPAQUE is private;
+private
+   type HIDDEN;                  -- nothing more required
+   type OPAQUE is access HIDDEN;
+end MINIMAL;
+```
+
+The reason, of course, is that nearly all current machines have a uniform
+addressing structure, so that an access value always looks the same regardless
+of what it is designating.
+
+To summarize, the logical interface corresponds to the visible part; the
+physical interface corresponds to the complete package specification, that is,
+to both the visible part and the private part. As long as a package
+specification is not changed, the package body that implements it can be defined
+and redefined without affecting other units that use this specification as an
+interface to the package.
+
+#### R.9.5 Availability of the Properties of Types Defined Within Packages
+
+It is important to define which of the properties of a type declared in the
+visible part of a package can be made available outside the package. In Ada the
+answer to this question is quite simple: the only available properties are those
+declared in the visible part.
+
+In the first place, consider the declaration of a type other than a private
+type, say a record type. If such a declaration is given in the visible part of a
+package, then the record type is potentially available — without restriction —
+to outside program units. In particular, such units can declare variables and
+invoke basic operations of this type (such as component selection and
+aggregates) in full knowledge of the data structure specified by the type.
+
+For a type declared as private, on the other hand, the visible part provides
+only the type name, and the specification of the subprograms applicable to
+objects of this type — these are the only operations applicable to objects of
+the type, apart from assignment and comparison for equality and inequality
+(which are available unless the private type is limited; see
+[7.4.4](#744-limited-types)), and attributes such as 'SIZE and 'ADDRESS (which
+are always available).
+
+Within a package body the characteristics of a private type are available as if
+the type were not private (see [7.4.2](#742-operations-of-a-private-type)). For
+example, if the type is a record type, its components can be denoted with the
+usual syntax of selected components.
+
+To summarize, the availability of properties of types declared in a package can
+be deduced from purely textual considerations: outside units see only the
+visible part and consequently can use only properties defined there; on the
+other hand, the package body can use all properties, including those defined by
+the full type declaration for a private type.
+
+#### R.9.6 Initialization of Objects of Private Types
+
+The elaboration of an object declaration results in the reservation of space for
+the corresponding object, whether the type of the object is private or not. The
+initialization of an object whose type is a private type could be achieved in
+the object declaration itself by assigning to it the value of a deferred
+constant or the value returned by a function; for a limited private type, it
+could only be achieved by a procedure call statement — hence not in the object
+declaration. However, there are cases where we want the components of an object
+whose type is private to satisfy some invariant as soon as the object is
+created, although initialization of other components may not be needed. This is
+achieved by means of initialization of record components:
+
+```ada
+package ALL_ABOUT_STACKS is
+   type STACK is limited private;
+
+   procedure PUSH (E : in  ELEMENT; S : in out STACK);
+   procedure POP  (E : out ELEMENT; S : in out STACK);
+private
+   type INDEX is range 0..1000;
+   type STACK is
+      record
+         TOP   : INDEX := INDEX'FIRST;
+         SPACE : array (INDEX) of ELEMENT;
+      end record;
+end ALL_ABOUT_STACKS;
+```
+
+For any declaration of an object of type STACK, the component TOP is initialized
+to the minimum INDEX value. Thus, the stack invariants are satisfied as soon as
+the declaration of a stack object has been elaborated.
+
+#### R.9.7 A Note on Visibility
+
+If a use clause is provided within a given program unit, it opens up the
+visibility of the visible part of each package mentioned by the clause. However
+this effect is not transitive. Thus, if the clause `use FIRST_LAYER;` is given
+in the visible part of a package SECOND_LAYER, it does not mean that units
+containing the clause `use SECOND_LAYER;` will also see FIRST_LAYER. If we want
+the above use clause also to provide visibility of certain entities declared in
+FIRST_LAYER, then this can often be achieved explicitly, by renaming
+declarations (see [8.5](#85-renaming-declarations)):
+
+```ada
+package SECOND_LAYER is
+   subtype T is FIRST_LAYER.T;
+   procedure P(X : T) renames FIRST_LAYER.P;
+   -- additional operations defined by SECOND_LAYER
+   E : exception renames FIRST_LAYER.E;
+end SECOND_LAYER;
+```
+
+Note that a similar effect can be achieved by making T a derived type instead of
+a subtype. This latter form could be used if we wanted to prevent operations
+defined by another package for objects of type FIRST_LAYER.T from being used at
+the same time as those defined by the package SECOND_LAYER: the only operations
+that may be applied to the derived type are those inherited from FIRST_LAYER and
+those defined in SECOND_LAYER.
+
+---
+
+### R.11 Visibility and Overloading
+
+#### R.11.1 Introduction
+
+Central to the definition of Ada is a concern for the general structure of a
+program, the rules defining the visibility of identifiers at various points of a
+program, and the facilities offered for separate compilation. A major goal in
+this design was to give the programmer precise control over his name space: the
+set of names that he may define and use. It is important to be able to introduce
+new names without having to bother about possible conflicts with existing names.
+This requires the ability to control the inheritance of names that are defined
+in other contexts. As mentioned above, the notion of package is essential to
+achieve this kind of control. Another goal was to provide the same visibility
+rules for all program units, whether they are separately compiled or not.
+
+#### R.11.2 The Basic Visibility Model
+
+The search for simple and uniform scope rules has led to the adoption of a
+traditional approach: an identifier that is declared immediately within a given
+declarative region is directly visible within inner (nested) declarative regions
+(see [8.1](#81-declarative-region) and [8.3](#83-visibility)).
+
+The term declarative region in the above rule refers to a portion of the program
+text which includes a major group of declarations. Thus the basic rule is
+essentially that of Algol 60. The only extensions to this rule are related to
+packages and to separate compilation.
+
+The fundamental reason for selecting this liberal approach is the pragmatic
+assumption that names declared together are normally meant to be used together.
+It can be assumed that the names declared in the declarative part of a procedure
+are defined in the same context because they are intended to be used together.
+Extending this reasoning to inner program units means that these names are also
+visible within the bodies of inner units, so that those bodies may be directly
+defined in terms of these names. This suggests the assumption that entities
+declared in the same context have mutually dependent definitions.
+
+One alternative considered was to designate certain program units such as
+procedures and packages as being always closed: Closed units would not
+automatically inherit the visibility of outer declarative regions, so that some
+form of explicit import directive would be required in order for names declared
+in outer regions to become visible within closed units. This was ultimately
+deemed unacceptable because it led to clutter and to long name lists in many
+common cases. The following example illustrates the useless redundancy of the
+directive "sees T, C, L", where the procedures P_1 through P_N are obviously
+meant to work with T, C and L:
+
+```text
+-- the following is not an Ada text
+
+package body D is
+   L : T;
+
+   procedure P_1( ... ) sees T, C, L is ... end P_1;
+   procedure P_2( ... ) sees T, C, L is ... end P_2;
+   procedure P_N( ... ) sees T, C, L is ... end P_N;
+end D;
+```
+
+Early experience with the Euclid language, in which such an approach was taken,
+shows that the danger of long name lists is not to be underestimated. Because of
+transitivity, Euclid import lists can get very long. The danger is then — as
+evidenced by experience with named common in Fortran programs — that programmers
+tend to use the same import lists in all program units, for fear of omitting
+something. In any case, long name lists are usually skipped when reading, and
+this defeats their very purpose. The classical argument developed by Dijkstra,
+about our inability to deal with a large number of entities at the same time,
+also applies to long — and therefore unstructured — name lists.
+
+The only way to avoid this form of text clutter is to make automatic inheritance
+the default rule. The argument is that the textual embedding of declarations is
+already a strong indication of potential dependence. The systematic inclusion of
+additional import directives does not usually provide much information that may
+usefully be exploited by the translator, and it is likely to distract readers —
+and writers — of programs.
+
+It was found, moreover, that whether a given syntactic category should be an
+open scope or a closed scope was a highly subjective question. The answer may
+vary from one use to another, depending on the size of a particular program
+unit, the depth to which it is nested, the probability of subsequent
+recompilation, and so on. It seems clear, therefore, that the syntax of the
+language should not arbitrarily impose a decision in this regard. For this
+reason we have adopted the following approach:
+
+- All syntactic constructs that introduce declarations normally inherit the
+  identifiers of outer (enclosing) contexts.
+
+- A set of declarations can be encapsulated in the visible part of a package:
+  the visibility of these declarations is then acquired in other contexts by
+  means of use clauses.
+
+#### R.11.3 Expanded Names and Use Clauses
+
+Since classical inheritance of identifiers from outer declarative regions is the
+default rule, redeclaration of identifiers is possible, with the effect of
+hiding the outer definitions within the inner region. Some of the difficulties
+with identifier redeclarations disappear if the names of the corresponding
+entities can be written as expanded names: using the dot notation.
+
+As an additional syntactic convenience, a use clause may be given in a
+declarative part (see [8.4](#84-use-clauses)). A use clause mentions the names
+of one or more packages and its effect is to achieve direct visibility of any
+identifier declared in the visible part of one of the packages, exactly as if
+the identifier were declared at the place of the package concerned. For a given
+identifier, however, this effect is only achieved in the absence of any
+conflicting identifier. In all cases of redeclaration or conflict, the intended
+name must be given in full, as an expanded name.
+
+One consequence of these rules is that the position of use clauses does not
+matter. Another consequence is that a name that is made directly visible by a
+use clause cannot hide another name. This is quite essential for maintainability
+reasons. Assume, for example, that the specification of a package D were
+modified to include the declaration of some new entity called X. This should
+normally have no effect on a procedure Q that declares its own X. In particular,
+the inner reference to X should retain its previous meaning and should hence
+mean Q.X both before and after the modification. (Note that we have only reduced
+the magnitude of this general problem, since a later introduction of W within D
+would conflict with the W of another used package; the full solution lies in
+maintenance tools.)
+
+A similar maintainability argument led us to reject a unique visibility rule;
+that is, a rule forbidding redeclaration of identifiers that were already
+visible. If redefinition of identifiers were not allowed, the later introduction
+of some entity named X in the declaration list of P would force textual
+modification of an inner procedure such as Q, which should normally be
+unaffected by this change.
+
+Note that use clauses may be viewed as one possible form of the import
+directives mentioned above. However, the items listed in use clauses can only be
+names of packages, and the risk of long use lists is correspondingly reduced.
+Naturally, effective modularization will depend upon the user writing packages
+in such a way that related definitions are in the same packages; related
+definitions will usually be required together.
+
+#### R.11.4 Visibility Rules for Record Types
+
+A record type definition introduces a new declarative region. Hence component
+identifiers may be freely chosen. For each selected component, the visibility of
+the corresponding component is opened by the dot that follows the name of the
+record variable in the selected component.
+
+As with Pascal, variants within a record do not introduce new declarative
+regions. Hence the component names of each variant must be distinct from those
+of every other variant, even if they are semantically equivalent as far as the
+programmer is concerned. The reason for not introducing a new declarative region
+with each variant can be seen from the following example:
+
+```ada
+type T(COMPACT : BOOLEAN := TRUE) is
+   record
+      case COMPACT is
+         when TRUE  => VALUE : FLOAT;
+         when FALSE => VALUE : LONG_FLOAT;  -- illegal redeclaration
+      end case;
+   end record;
+```
+
+A selected component such as R.VALUE would have to be treated as a conditional
+expression, dependent on the discriminant, possibly delivering results of
+alternative types.
+
+#### R.11.5 Renaming
+
+The ability to rename turns out to be very convenient when working with packages
+that are developed independently by different groups of programmers. Being
+independently developed, such packages may well declare the same identifiers. If
+later these packages are both mentioned by a use clause in a given region, it
+may often be convenient to resolve name conflicts by renaming rather than by
+using dot notation whenever these identifiers appear.
+
+In addition to the notational advantage, a renaming declaration avoids
+reevaluating the access path to a record variable for each component selection,
+and may allow more efficient code to be generated.
+
+Because of the possibility of overloading, it will often suffice to rename
+conflicting type names: names of subprograms will in consequence be resolved by
+the overloading rules. The renaming facility can also be used to provide a name
+more appropriate to the context of its use. For instance, the author of a sort
+routine may call his version QUICKSORT2 whereas SORT may be better (and less
+cumbersome) throughout the application.
+
+#### R.11.6 Overloading of Operators and Names
+
+In Ada, every use of a simple name or operator symbol is understood with
+reference to an (explicit or implicit) declaration of the name or symbol. In the
+case of types, variables, and constants, at most one such declaration can be
+visible at any one point in the program. In the case of subprograms, enumeration
+literals, and entries, however, several declarations may be simultaneously
+visible. An occurrence of a subprogram name, such as PUT or "*", may therefore
+refer to one of several simultaneously visible declarations. The name or
+operator symbol is then said to be overloaded.
+
+The functions that implement integer multiplication and floating multiplication
+are represented by the same symbol because they are different implementations of
+the same abstract operation: the operation of multiplication.
+
+The overloading of predefined operators has been a feature of programming
+languages ever since Fortran. But Ada also permits users to define new data
+types, for example COMPLEX or RATIONAL. Since much of the power of the language
+comes from its extensibility, and since proper use of that extensibility
+requires that we make as little distinction as possible between predefined and
+user-defined types, it is natural that Ada also permits new operations to be
+defined, by declaring new overloadings of the operator symbols (see
+[6.7](#67-overloading-of-operators)).
+
+The ability to coin descriptive names is an important part of good programming,
+and it is therefore desirable that a programming language give the programmer as
+much freedom as possible in the choice of names. Moreover, the use of familiar
+notation in new contexts is a very powerful descriptive tool: it is an example
+of the principle of analogy. The ability of an Ada programmer to overload
+operators upon new types allows the principle of analogy to be used in
+programming.
+
+In practice, it is unlikely that two quite different overloadings will be
+defined together. It is more likely that each will be defined in its own
+package. The programmer defining a type is free to use the traditional operator
+symbols for the new type, and to give them a meaning analogous to their meaning
+with other types. There is no need to worry about other meanings (declarations)
+that might occur in other packages defining other types: the Ada overloading
+facility permits a package to be defined as an independent software component.
+
+Several languages beside Ada, such as Algol 68, permit operator symbols to be
+overloaded. Ada however also permits subprogram names to be overloaded, for
+exactly the same reasons. Consider for example
+
+```ada
+procedure PUT(X : in STRING);
+procedure PUT(X : in INTEGER);
+```
+
+The abstract operation PUT applies indifferently to both strings and integers;
+it is therefore appropriate that the same name be used in both cases. Observe
+that this is in accord with the conventions of natural language: "Put the book
+on the shelf", "Put the cat out" — which does not have separate words for
+putting books and putting cats.
+
+Ada does not permit the overloading of variables or constants. This again is in
+accordance with traditional habits of thought: we seem far more willing to
+accept potentially ambiguous names for operations than for things. Thus,
+mathematicians typically write additions of integers, floating-point values,
+vectors, matrices, and complex numbers all as "+", but their operand types are
+distinguished by a systematic nomenclature. It seems to be a convention of our
+language that verbs are generic but nouns are specific; Ada reflects this by
+permitting operations to be overloaded but — normally — not operands. Thus, Ada
+allows (and we find normal)
+
+```ada
+procedure SERVE(S : SOUP);
+procedure SERVE(F : FRUIT);       -- permitted overloading
+```
+
+but does not allow (and which we would find abnormal)
+
+```ada
+OF_THE_DAY : SOUP;
+OF_THE_DAY : FRUIT;               -- not a legal overloading!
+```
+
+#### R.11.7 Overloading of Literals
+
+Literals stand for values. However, in a strongly-typed language, it must be
+possible to associate a type with every value, and so in some sense a literal
+should imply a type. This creates difficulties in two cases: first, when
+different values, of different types, by chance are represented by the same
+literal; and secondly, when the same conceptual value belongs to more than one
+type.
+
+The first case is called homography: two conceptually different values have the
+same symbol. In no sense is a KIWI fruit the same as the flightless KIWI bird:
+the homography is an accident of language. A programming language should not
+forbid such homography: it would be unreasonable to force the author of a
+package PALETTE to change the word ORANGE merely because it was a fruit; and
+indeed Ada never forbids a programmer from defining a locally unambiguous name.
+But it is a separate design decision whether to permit overloading of such
+names.
+
+Ada permits overloading of enumeration literals; this is in accord with the idea
+that an enumeration literal resembles a parameterless function. Resolution is
+exactly as for parameterless functions: the required type is evident from the
+context. This rule also permits character literals to be used in more than one
+type.
+
+The numeric literals, however, illustrate the second case. In the declarations
+
+```ada
+X : FLOAT      := 1.0;
+Y : LONG_FLOAT := 1.0;
+```
+
+the two occurrences of "1.0" stand for the same abstract value — unity — but in
+two different physical representations, and hence, in Ada, associated with two
+different types. It would be possible to view "1.0" as an overloaded literal —
+overloaded on all real types. Ada however takes a different view, that we
+believe corresponds more closely to our intuition. It regards real literals as
+being all of one type, the type universal_real, and introduces an implicit
+conversion to the required numeric type.
+
+The alternative view — that the literals should be considered to be overloaded
+on all numeric types — would lead to some anomalies, of which the most annoying
+would perhaps be that `if 1 < 2 then ...` would be ambiguous: would we mean to
+invoke the "<" of type INTEGER or that of type LONG_INTEGER? The Ada view avoids
+such difficulties. Observe by contrast that, if two distinct character types
+ASCII and EBCDIC are both visible, then `if 'A' < '0' then ...` will indeed be
+rejected as ambiguous, and rightly so, since the relation means different things
+in ASCII and EBCDIC.
+
+#### R.11.8 The Context of Overload Resolution
+
+When an overloaded name or symbol occurs, the language translator must determine
+which of several possible definitions is meant. This process is called overload
+resolution, and it must naturally rely on information from the context in which
+the name occurs. In defining the language, the rules for overload resolution
+need to be established, and these rules must make clear two things: what is the
+context from which information is to be taken, and what information may be used.
+
+It might appear that the simplest overload resolution rule is to use everything
+— all information from as wide a context as possible — to resolve the overloaded
+reference. This rule may be simple, but it is not helpful. It requires the human
+reader to scan arbitrarily large pieces of text, and to make arbitrarily complex
+inferences. We believe that a better rule is one that makes explicit the task a
+human reader or a compiler must perform, and that makes this task as natural for
+the human reader as possible.
+
+The contexts to be used in overload resolution are given explicitly (see
+[8.7](#87-the-context-of-overload-resolution)). They correspond, we believe, to
+the natural program fragments that both writer and reader will regard as
+conceptual units. For example, the controlling expression of a for loop is such
+a unit: it represents a bounded, ordered iteration over a set of discrete
+values. Accordingly, the resolution process considers both bounds of the range,
+and also the fact of its discreteness. We can therefore resolve `for F in ORANGE
+.. KIWI loop` in the way that we believe the human reader would: as an iteration
+over fruits.
+
+As another example, consider a case statement. The case expression and the
+values in the case alternatives must of course all have the same type. However,
+Ada requires the case expression to be resolved first, before considering the
+case arms. This is because, otherwise, the human reader would have to scan an
+arbitrarily large amount of text in order to understand the very first line of
+the case statement. This would violate our convention (sanctioned by both Ada
+and natural usage) of linear readability.
+
+#### R.11.9 Information Used to Resolve Overloading
+
+A more difficult issue is, what information should be taken from the context of
+resolution? Since the main purpose of overloading is to allow analogous
+operations on different types to be given the same name, resolution clearly must
+consider type information. The other information available is the order, names,
+and modes of the parameters, the presence of defaults, and the result type.
+
+The rationale behind the Ada position is threefold. First, the rules should be
+convenient for, and comprehensible to, the human reader and writer: this must
+override any consideration of compiler simplicity. Secondly, the rules should
+allow natural programming conventions to be followed with unsurprising results.
+Thirdly, the information used should be readily observable in the program text,
+and not highly implicit.
+
+It seems best to consider first the overloading of operations. The natural use
+of operator symbols is in infix notation, where clearly the order of the
+parameters matters, but the formal names do not. And Ada therefore uses the one,
+and not the other. Ada does not permit the overloadings
+
+```ada
+function "-" (LEFT, RIGHT : INTEGER) return INTEGER;
+function "-" (MINUEND, SUBTRAHEND : INTEGER) return INTEGER;
+```
+
+because, even if we did happen to remember the traditional names of the
+operands, we would never use them in an invocation of the "-" operator. The
+formal names will never be seen at the point of call, and so cannot be
+considered in overload resolution.
+
+Since operations are functions, the parameter mode must always be `in` and so is
+irrelevant to the resolution. There remains only the question of the result
+type. Some languages, such as Algol 68, do not use the result type of an
+operation to assist in overload resolution. This has the advantage that it leads
+to an implementation of overload resolution by a single bottom-up traversal of
+the expression. But is this admitted convenience for the compiler writer
+accompanied by any benefit for the human programmer?
+
+There are few cases in conventional mathematics where an abstract operation may
+yield two different types of result, but these cases are significant. One
+example is the distinction between scalar product and vector product. It is
+surely desirable to allow
+
+```ada
+function "*" (LEFT, RIGHT : VECTOR) return SCALAR;
+function "*" (LEFT, RIGHT : VECTOR) return MATRIX;
+```
+
+since otherwise one hapless programmer will have to abandon infix notation
+completely, and the other will have to fight for his monopoly over the "*"
+symbol. As another example, consider the rational constructor `function "/"
+(LEFT, RIGHT : INTEGER) return RATIONAL;`. It is hard to imagine any better way
+of writing `ALMOST_PI := 355/113;`. But this requires the ability to overload
+"/" on the result type. We conclude that the use of the function result type in
+overload resolution is methodologically the better choice, and one that enhances
+the freedom of the programmer to write natural, comprehensible expressions.
+
+To resolve overloading, Ada uses the formal names but not the modes (see
+[6.6](#66-parameter-and-result-type-profile---overloading-of-subprograms)). The
+reason is simple: the programmer may write the formal names explicitly in the
+call statement, but has no means of indicating the modes at the place of the
+call (since all parameter associations use `=>`). Hence, the formal names can be
+made explicit, but the modes are always implicit, and the natural action is to
+use explicit information where given, but to avoid using implicit information
+that the human reader might have difficulty in deducing.
+
+#### R.11.10 Ambiguity
+
+An overloaded name is potentially ambiguous. In practice, even with the best
+programming style, actual ambiguities will sometimes arise, in the form of
+expressions that cannot be resolved. The most common reason is accident: two
+packages are jointly used; each defines a consistent set of names; but there is
+a clash of names. One cannot find fault with these packages individually, and
+yet a call such as `PUT(ORANGE);` may be ambiguous even when all available
+information is used.
+
+Clearly, the programmer must provide more information. There are two sorts of
+information that Ada permits one to provide: information about the source of a
+name, and information about its type. To illustrate the former, consider
+`BOTANY.PUT(ORANGE);`. This is clearly unambiguous, since only one PUT is
+defined in package BOTANY. Ada dot notation can always be used to give
+information about the source that provides the name, and, if the package in
+question has been properly written, this information should suffice. Indeed,
+this property is essential if packages are to be generally useful software
+components, since it guarantees that a properly-constructed package can be used
+by anyone, regardless of what other packages they may need.
+
+To illustrate how type information can be given, consider
+`PUT(FRUIT'(ORANGE));`. This also is unambiguous: ORANGE is a FRUIT, and so the
+PUT that puts fruits is intended. Since type names cannot be overloaded, and
+since all expressions can be qualified, this method also ensures overload
+resolution. By either of these methods, the user who by accident encounters an
+ambiguity can make the intended meaning explicit.
+
+---
+
+### R.12 Generic Units
+
+#### R.12.1 Introduction
+
+Generic units are a general form of parameterized program units (see
+[12](#12-generic-units)). As with other parameterization mechanisms, the primary
+purpose is factorization, resulting in a reduction in the size of the program
+text while also improving maintainability, readability, and efficiency.
+
+Parameterization by generic units is a natural extension of subprogram
+parameterization. When otherwise identical actions differ by a particular value
+or variable, these actions may be encapsulated in a subprogram where the value
+or variable appears as a parameter. Having thereby factored out the common part,
+the text becomes smaller and easier to read; and clerical errors, resulting from
+accidental lack of identity among the copies, are eliminated. Traditional
+parameterization mechanisms are usually in terms of values and variables. But
+the same factorization arguments apply when two otherwise identical program
+units differ by some other property, such as a type.
+
+A classical example is provided by stacks. Although one may want to have stacks
+of integers and stacks of real numbers, it is clear that neither the stack
+algorithms, nor the proof of their correctness, depends upon the type of the
+items to be stacked. However, the typing rules will not allow the writing of a
+single procedure to deal with items that are either integer or real values: if
+this were allowed, there would be no way to guarantee that a given stack does
+not contain intermixed integer and real values. Hence another parameterization
+mechanism is needed to express the intent that, although all items of a stack
+have the same type, we may want to specify this type independently for
+individual stacks: this parameterization mechanism is what is provided by the
+generic formal part of a generic unit.
+
+In addition, compilers may use their knowledge of type representations to
+achieve certain optimizations; for example, reusing the same code for stacks of
+integers and reals if the same number of bits is used for the mapping of values
+of these types. Seen in this light, the generic facility provides a natural
+complement to strong typing, minimizing the unnecessary duplication of both
+source text and object code.
+
+One of the commonest applications of any generic facility is factoring out
+dependences on particular types. Several earlier languages have accordingly
+introduced language features to accommodate this sort of parameterization. By
+far the most powerful is that provided by the language EL1; however, this
+generality is achieved at the cost of interpreting types in a fully dynamic
+fashion, which is incompatible with the efficiency and security criteria imposed
+in the present context.
+
+Languages such as Simula, Clu, and Mary offer a reasonably elegant approach to
+this problem, but all require that all objects be handled by reference. This
+introduces additional overhead — namely, indirect access — even in cases where
+this generality is neither needed nor wanted. To some degree, type discriminants
+and variants or type unions provide a possible approach when the alternative
+types are known in advance. Neither approach offers the flexibility that is
+required when the definition of new data types is viewed as the rule rather than
+the exception.
+
+A review of the shortcomings of existing mechanisms that allow types to be used
+as parameters showed that it was inappropriate to introduce overly elaborate
+language features solely for this purpose, principally because the same effect
+(and many others as well) can be essentially achieved by far simpler means using
+traditional macro-expansion techniques — although in a context-sensitive manner.
+The problem then reduced to integrating this well-established approach into the
+framework of a high-order language at reasonable cost.
+
+In Ada, the more sophisticated sorts of parameterization are accommodated by
+generic program units, which are a restricted form of context-sensitive macro
+facility. The main objectives in providing this particular mechanism have been:
+
+- to allow an additional degree of freedom in factorization without sacrificing
+  efficiency;
+
+- to allow compilers to take advantage of this factorization to minimize the
+  size of the code;
+
+- to preserve the security that is present for ordinary, unparameterized program
+  units; in particular, the degree of compilation-time error checking.
+
+The generic facility is expected to serve for the construction of
+general-purpose parameterized packages. Whereas such packages are likely to be
+utilized by large classes of users, it should be realized that fewer programmers
+will actually be involved in writing generic packages. Accordingly, we have
+tried to design a facility that can be almost ignored by the majority of users.
+They must indeed know how to instantiate a generic package, and this is fairly
+easy. On the other hand, they need not be familiar with the rules and
+precautions necessary for writing generic units.
+
+#### R.12.2 Explicit Instantiation of Generic Units
+
+The requirement that instantiation be explicit greatly simplifies the
+compilation of program units obtained by generic instantiation (see
+[12.3](#123-generic-instantiation)).
+
+The approach taken here clearly distinguishes between the instantiation of a
+program unit, obtained from a generic unit, and the invocation of the resulting
+program unit — calling a subprogram, using a package. Thereby it emphasizes the
+contrast between translation-time substitution of generic actual parameters and
+execution-time passage of actual parameters to subprograms. Explicit
+instantiation provides a well-defined locus for the point of instantiation and
+also for reporting any errors arising from inconsistent substitution. The
+resultant program unit can be invoked subsequently as often as required, with
+the same degree of power and security as for any other nongeneric program unit;
+this is a consequence of the fact that a program unit obtained by generic
+instantiation is indistinguishable from the same program unit defined explicitly
+at the point of instantiation.
+
+An alternative solution considered was implicit instantiation. Consider the
+following generic function:
+
+```ada
+generic
+   type ELEM is private;
+   with function "*" (LEFT, RIGHT : ELEM) return ELEM;
+function POWER(E : ELEM; N : POSITIVE) return ELEM;
+
+function POWER(E : ELEM; N : POSITIVE) return ELEM is
+begin
+   if N = 1 then
+      return E;
+   else
+      return E * POWER(E, N - 1);
+   end if;
+end POWER;
+```
+
+If implicit instantiation were provided, exponentiation could be applied without
+prior explicit instantiation, and the actual type used for ELEM would be
+implicitly inferred from the actual parameter associated with E in each call.
+
+Implicit instantiation would complicate the rules for the identification of
+overloaded subprograms. If a version of POWER were defined directly within a
+package RATIONAL_NUMBERS, then this explicit definition would hide the generic
+definition in an application such as POWER(R, 5). Thus the generic definition
+would be visible for some types and hidden for others. This added complexity
+would reflect on compilers, and also on program readability.
+
+Another problem would arise for the identification of POWER in the body of the
+generic unit itself: would this be a recursive implicit instantiation or a
+recursive call of the same instance? In the simple example considered, it could
+be easily interpreted as a recursive call. However, in general, it is not at all
+clear that the problem can always be resolved by a static analysis of the
+program (unless restrictions are adopted).
+
+In conclusion, implicit instantiation is still a research subject. The only
+solution within the current state of the art is explicit instantiation and this
+is therefore the solution chosen for Ada. Explicit instantiation certainly
+requires more writing on the part of the user, but it provides better awareness
+of the instances that are created and thus contributes to reliability and
+readability. In addition, it offers distinct advantages in terms of efficiency,
+since compilers can easily identify the existing instantiations and, in some
+cases, achieve optimizations such as sharing of code among several
+instantiations of the same generic unit.
+
+#### R.12.3 Generic Formal Parameters: The Contract Model
+
+A user instantiating a given generic package should be able to ignore the
+details of the generic body completely. In particular, if any error is made in
+instantiating a generic unit, the error should be reported to the user in terms
+of the generic instantiation itself — not in terms of the internals of the
+generic body. This requirement influences the form used for specifying generic
+formal parameters.
+
+Consider by analogy what is done for subprograms. For a normal — that is,
+nongeneric — procedure, specification of parameters permits independent checks
+of the procedure body on the one hand, and of the procedure calls on the other
+hand. Both must conform to the formal parameter specifications and these
+legality checks can be done independently: the procedure specification is a sort
+of contract between the procedure body and the corresponding procedure calls.
+
+The specification of generic formal parameters must achieve the same degree of
+independence:
+
+- For a given generic body, it should be possible to check that its text is
+  consistent with respect to the formal parameter specifications.
+
+- For a given generic instantiation, it should be possible to check that the
+  actual parameters are consistent with respect to the formal parameter
+  specifications.
+
+- The precision of the formal parameter specifications should be sufficient to
+  guarantee that if the checks are successful, then the corresponding
+  instantiations produce legal program units.
+
+The solution adopted to achieve these goals is to require that all operations of
+a generic formal type be determinable from its specification (see
+[12.1.2](#1212-generic-formal-types)):
+
+- For a formal type specified as limited private, no operation is assumed
+  available (apart from certain attributes). Hence any operation that is applied
+  to an object of the formal type within the generic unit must be provided as an
+  explicit generic formal parameter.
+
+- For a formal type specified as private (not limited), the same holds except
+  that assignment and the predefined comparison for equality and inequality are
+  available.
+
+- For a generic formal type declared as a type pattern with a box, the
+  operations of the corresponding kind of type are available: they are
+  implicitly declared. For example, the floating point operators are available
+  for any generic formal type defined by `digits <>`. Any other operation must
+  be provided explicitly by a generic formal parameter.
+
+When the body of a generic unit is being checked, the generic formal part thus
+provides the information required for the identification of all operations. When
+a given instantiation is being checked, the demands of the generic formal part
+must be met and incorrect actual parameters can be reported. These two checks
+can be performed independently. Furthermore, if errors exist in an
+instantiation, error messages can be formulated in terms of the generic formal
+part, which is necessarily known, rather than in terms of the details of the
+generic body, which might be separately compiled and hidden.
+
+An alternative considered in this design was the implicit inference of
+operations of a formal type. The reasons for rejecting this alternative are
+similar to those leading to the rejection of implicit instantiation. With
+implicit inference of operations, we would be left with the problem of
+identifying the "*" operation used in the body. For a given instantiation,
+should the "*" operation be identified as a global operation in the context of
+the generic declaration or in the context of the generic instantiation? The two
+alternatives might lead to different results. Note also that a statement such as
+`return E * E * E;` would be ambiguous in the presence of several overloadings
+of "*".
+
+In general, the specifications of the identified operations could be quite
+different from instantiation to instantiation depending on the operations
+visible in the context of the instantiation. None of this can happen with an
+explicit specification of the formal operation "*".
+
+To summarize, implicit inference of operations, based on the instantiation,
+would introduce awkward context-dependence and would require complete rechecking
+of the generic body for each instantiation. This last consequence would be
+particularly unfortunate, since generic bodies could not be checked (and proved
+correct) independently of the context. It would defeat the goal stated
+initially, since some error messages would have to be stated in terms of what is
+done within the generic body.
+
+The Ada solution permits independent checking of generic units and of generic
+instantiations. Hence it largely fulfills our goal of permitting the user to
+ignore the internal details of the generic units instantiated in his programs.
+
+One limitation of the contract model concerns the ability to declare
+unconstrained objects. An instantiation of a generic procedure that declares a
+local object of the formal type will not work if the actual type is an
+unconstrained array type, since a declaration of an unconstrained variable would
+not be allowed. The same problem would arise if the actual type were a type with
+discriminants that must be constrained. This limitation means that some
+instantiations may be rejected on the grounds that the body requires the ability
+to declare unconstrained objects of the formal type. We have considered this
+consequence to be preferable to an increase in the complexity of the syntax.
+
+To conclude this section on formal types let us note that Ada provides formal
+types for all classes of type except record and task types. The major reason for
+this is that it is not clear that reasonable criteria for matching exist for
+these type classes — criteria that would be consistent with the degree of type
+checking performed elsewhere, yet at the same time have a good probability of
+being usable for many actual record types and task types.
+
+#### R.12.4 Default Generic Parameters
+
+As stated before, all operations applicable to a formal type must be specified
+explicitly in the generic formal part. Nevertheless, in order to keep generic
+instantiations as simple as possible, a facility for specifying default values
+for generic parameters is offered, as it is for normal subprograms. In many
+cases, such defaults will actually be expressed by boxes:
+
+```ada
+generic
+   type ELEM is private;
+   with function "*" (LEFT, RIGHT : ELEM) return ELEM is <>;
+```
+
+This parallels exactly the treatment of `in` parameters with default values for
+subprograms. The default parameter is optional, and an instantiation such as
+`function "**" is new POWER(RATIONAL);` is taken as equivalent to `function "**"
+is new POWER(ELEM => RATIONAL, "*" => "*");`. The instantiation is legal if
+there is such a "*" operation for the type RATIONAL, whatever may be the
+parameter names. For the same reason `function "**" is new POWER(BOOLEAN);`
+would be an error, since no such operation exists for the type BOOLEAN. Again,
+the generic body and the generic instantiations can be checked independently.
+
+To summarize, the necessity to be able to check a generic body independently of
+its generic instantiations (an important user requirement) forces all operations
+applicable to a formal type to be specified, explicitly or implicitly, by the
+generic formal part. This could increase the number of generic parameters that
+must be supplied and could hence lead to a heavy syntax of generic
+instantiations. However, defaults can be specified for these operations, thus
+restoring much of the simplicity while losing none of the security. In most
+applications it should be possible to have only types as mandatory parameters
+and to provide defaults for all operations. This is consistent with the goal
+stated in the introduction, that writing a generic unit may well require some
+care, but using it ought to be extremely simple.
+
+---
+
+### R.13 Tasking
+
+#### R.13.1 Introduction
+
+Tasking is an important aspect of many embedded systems and this importance was
+clearly recognized in the Steelman requirements. However tasking seems to have
+been neglected in most languages currently in production use for such systems.
+One reason has clearly been a lack of confidence in the many different
+facilities put forward for the control of parallelism. Semaphores, events,
+signals and other similar mechanisms are clearly at too low a level. Monitors,
+on the other hand, are not always easy to understand and, with their associated
+signals, perhaps seem to offer an unfortunate mix of high-level and low-level
+concepts. It is believed that Ada strikes a good balance by providing facilities
+that are not only easy to use directly but can also be used as tools for the
+creation of mechanisms of different kinds.
+
+The basic textual concept in Ada is that of a task, which in form is closely
+analogous to a package (see [9](#9-tasks)). Tasks are automatically executed in
+parallel with the unit in which they are declared, and their termination
+similarly follows the scope structure. Task types enable the declaration of a
+dynamic number of tasks with similar properties. This facility, when used in
+conjunction with access types, allows flexible control over the number of tasks
+in a system and the manipulation of task identities.
+
+Communication and synchronization are both achieved using the concept of a
+rendezvous between a task issuing an entry call and a task accepting the call by
+an accept statement (see [9.5](#95-entries-entry-calls-and-accept-statements)).
+An entry call is similar to a procedure call except that the calling and called
+tasks are distinct and synchronized.
+
+Great power is provided by the select statement, which enables a task to respond
+to several different possible entry calls (see [9.7](#97-select-statements)).
+Variants of the select statement provide timed-out and conditional communication
+in a natural manner. Interrupts may be handled by a representation clause
+associated with a particular entry.
+
+#### R.13.2 Early Primitives
+
+The understanding of algorithmic sequential processes is based upon that of the
+evaluation of arithmetic and Boolean expressions, whose axioms have been well
+understood for centuries. However, there is no mathematical tradition upon which
+we can draw in order to help us to understand the behavior of cooperating
+sequential processes. As a consequence it has always been difficult to decide
+whether a particular set of real-time primitives is good or not. Many sets can
+be implemented in terms of each other but their relative primitiveness is often
+hard to perceive.
+
+Broadly speaking the primitives (or perhaps the applications) can be divided
+into two categories. The first enables common data or common code to be
+protected from multiple usage. The second enables one task to send a message to
+another; this includes the degenerate case of a signal, which can be thought of
+as a message with no content.
+
+One of the oldest and best known primitive sets is the binary semaphore
+described by Dijkstra. Semaphores can therefore be used both for protection and
+for signalling. They also have the merit of being primitives that are both
+simple to describe and easy to understand. What then are their disadvantages?
+Briefly the problem is that for all but the simplest applications, the
+programming of semaphores is difficult. Programs using semaphores exhibit
+similar symptoms to unstructured programs using gotos. They are hard to write,
+understand, prove, and maintain. More specifically, typical problems are:
+
+- One can jump around a call of P and therefore accidentally access unprotected
+  data.
+
+- One can jump around a call of V and accidentally leave the semaphore busy so
+  that the system deadlocks.
+
+- One can forget to use them.
+
+- It is not possible to program an alternative action if a semaphore is found to
+  be busy when attempting P.
+
+- It is not possible to wait for one of several semaphores to be free.
+
+- Semaphores are often visible to tasks that need not access them.
+
+Closely related to the semaphore is the signal or event. Semaphores are
+associated with data protection, and events with indicating that something has
+happened. There are variations in which several events are remembered. But in
+all forms, events suffer from the same structuring problems as semaphores.
+
+Various other primitives have been proposed in order to overcome the structuring
+difficulties of semaphores and events. However, they usually tackle only one of
+the application areas distinguished above (data protection and signalling). In
+this respect they are somewhat unbalanced.
+
+The critical section has been proposed as a syntactic form equivalent to a
+bracketed pair of P and V operations. This prevents goto statements from
+bypassing one of the operations and hence overcomes some of the difficulties of
+semaphores. Critical sections do not seem to have been successful. They solve
+only the exclusion problem and need to be complemented with a signalling
+mechanism; this does not lead to the unification sought by language designers.
+
+Many forms of message switching system have been implemented in order to give
+improved solutions to the signalling problem. Perhaps the biggest disadvantage
+of message systems is the need for a sizeable message controller. Message
+systems also seem to be of an ad-hoc nature with an apparently arbitrary set of
+parameters. Moreover they do not easily solve exclusion problems because of the
+high overhead involved.
+
+A significant step forward was the monitor, first described by Brinch Hansen and
+by Hoare. This includes the facilities of the critical section, and when
+combined with events (as in Modula), gives a reasonable solution to problems
+such as the bounded buffer. The monitor solves the exclusion problem but not the
+message problem. Indeed the signals in Modula still suffer from the structuring
+problems of semaphores.
+
+#### R.13.3 The Rendezvous Concept
+
+Another line of approach to mutual exclusion and synchronization was introduced
+in early computer science by Conway with the notion of coroutine, the first
+definition of a high-level synchronization mechanism. One of the important
+concepts introduced by Conway (and maybe forgotten later) is that
+synchronization and data transmission are two inseparable activities. Two
+parallel tasks need to be synchronized to exchange information — thereafter they
+resume their respective activities; this synchronization is known as a
+rendezvous. Two papers by Hoare and Brinch Hansen proposed a rethink of parallel
+processing in terms of this concept of rendezvous and strongly influenced the
+design of Ada.
+
+The difficult problem that arises here is one of making tasks known to each
+other. Tasks have names that identify them unambiguously. Should these names be
+used by tasks to synchronize with each other, or should there exist a further
+entity that makes both candidates for synchronization known to each other by
+reference to some common channel? These two solutions are extreme forms of
+symmetric communication; either each communicating task has full knowledge of
+its colleague, or it has no information at all.
+
+We rejected the channel solution in this design in order to avoid an additional
+language concept and the dual connection mechanism that it requires. The
+solution adopted in Ada, although closer to the one proposed by Hoare, is
+asymmetric: one of the two communicating tasks knows the name of the other and
+names it explicitly; the second task knows only that it expects some external
+interaction.
+
+In order to justify the asymmetry, let us first summarize the symmetric proposal
+developed by Hoare and embedded in a language which has become known as CSP
+(Communicating Sequential Processes). In CSP, communication between tasks is
+seen as synchronized input-output: one task outputs data which the other inputs,
+and both tasks rendezvous during the transfer — that is, the first to arrive at
+its input or output statement waits for the other and they both then execute the
+I/O statements together (or apparently together) before proceeding
+independently. Each task names the other in the transfer.
+
+As can be seen the CSP program is readable, although perhaps presented in a
+terse style by traditional high-level language standards. However, there are two
+problems with CSP. One is that a (one-to-one) named correspondence is required;
+because of this symmetry, it is not possible to program a library routine to
+provide resources to arbitrary users. The other problem is that a double
+interaction is required for the consumer; this means that the two calls really
+need to be encapsulated by a single procedure in order to give a clean
+interface.
+
+In Ada, naming is one-sided. Tasks can be characterized as services or as users.
+A user certainly needs to know the name of the service it is requesting. On the
+other hand, a server need not know the names of its users. Because of this
+asymmetry it is possible to program the above library routine. As a consequence
+there can be queues of waiting tasks associated with each request. On each
+successful rendezvous just one waiting task is served.
+
+The other important concept introduced in Ada is the notion of the extended
+rendezvous. This notion is a major breakthrough to a higher level of
+abstraction. In the case of a buffer task this overcomes the need for the double
+rendezvous with the consumer: we now have `BUFFER.READ(X);` rather than the two
+statements of CSP. This also illustrates the procedural form of entry call as
+opposed to some specialized statements. This enables a similar external
+interface to be presented, even if a change of solution demands that a procedure
+be replaced by an entry or vice versa.
+
+The extended rendezvous is more disciplined since it ensures that the same task
+performs the interaction throughout. It is also instructive to consider the same
+example written in Modula using monitors. This is satisfactory, but the internal
+behavior of the monitor is not nearly as clear as in CSP and Ada. The rendezvous
+mechanism is more disciplined than a monitor, since the accept statements appear
+inside a context (for example following a guard) from which information can be
+deduced, thereby facilitating both understanding and proof.
+
+Perhaps the most important point about both CSP and Ada is that they offer
+mechanisms that are applicable to both data protection and signalling. Earlier
+attempts to develop features at a higher level than semaphores or events (such
+as message systems and monitors) seemed to solve only one problem, and by
+offering an unbalanced solution were not clearly better than the original simple
+primitives.
+
+The rationale behind the accept statement and entry call is simply to provide a
+rendezvous. In some applications it is necessary that a rendezvous be achieved,
+whereas in others it is important for the caller not to be held up. It is much
+more difficult to program a rendezvous in terms of non-rendezvous primitives
+than vice versa. Hence the rendezvous has been chosen as the natural primitive.
+
+It is noted that calls are accepted in simple order of arrival. The alternative
+of making the order depend on some parameter of the call was considered and
+rejected because of the difficulty of implementation, which could severely
+penalize the simple user. It is possible to program different strategies when
+necessary.
+
+The introduction of entries leads naturally to the unification of tasks and
+packages. A task encapsulates entries in the same way as a package encapsulates
+procedures. Moreover there is a strong analogy between on the one hand the
+specification, in which the entries are specified, and the body, containing the
+sequence that controls the critical actions, and on the other hand the
+corresponding subdivisions of a package with respect to the specification and
+bodies of procedures.
+
+However, this unification has its limits. It proved necessary to disallow
+entities other than entries in the specification. This was partly for
+methodological reasons and partly because of the cost of preventing access to
+variables of an inactive task and of implementing access on a distributed
+system.
+
+The general applicability of the rendezvous concept has been confirmed by its
+use in other examples. This concept is well adapted to distributed systems —
+communication is achieved by entry calls, exchanged data is passed via
+parameters.
+
+#### R.13.4 Packages and Tasks
+
+We conclude by emphasizing one strong distinction between packages and tasks,
+despite their lexical similarity. The overall concept is that a package is
+passive and provides the means for visibility control and structuring, whereas a
+task is active and provides the means for parallelism and synchronization.
+
+In order to emphasize that a package is the main structuring tool, a task cannot
+be generic, cannot be a library unit, and cannot appear in a use clause.
+
+A general subsystem might thus be a (possibly generic) package containing tasks.
+This general structure has the advantage of giving good control over the
+facilities provided. Thus protocols on the use of entries may be enforced by
+encapsulating their calls in a procedure.
+
+---
+
+### R.14 Exception Handling
+
+#### R.14.1 Introduction
+
+The ability to handle error situations is essential for the reliability of
+real-time systems. In many cases, they must be designed as systems which should
+never halt. This definitely requires an ability to handle situations that,
+although rare, are quite likely to happen given enough time.
+
+This subject of exception handling has received considerable attention over the
+years, and several formulations of exception handling features for programming
+languages have been proposed. The solutions proposed differ mainly in the level
+of generality at which they treat the concept of exception.
+
+One family of solutions tends to consider exception handling as a normal
+programming technique for events that are infrequent, but are not necessarily
+errors. It means that when an exception occurs it is first treated by an
+exception handler, and then control may return to the point where the exception
+occurred. It also means that exception handling may be used to perform some
+repair actions and thereafter to continue normal execution.
+
+A second family of proposals tends to restrict exceptions to events that can be
+considered (in some sense) as errors or, at least, as terminating conditions.
+This means that when an exception is raised in a given sequence of statements,
+their execution will be abandoned. Control will be passed to an exception
+handler but will never return to the point where the exception was raised. The
+handler may decide to restart the same sequence of actions under better
+conditions, but it will do so by a different invocation of these actions, not by
+a simple resumption. This second family of solutions includes recovery blocks
+and a proposal by Bron, Fokkinga, and De Haas.
+
+Naturally, what is considered as an error is rather subjective, and moreover the
+ability of a handler to reinvoke a subprogram that raised an exception will
+permit the use of exception handling both for making repairs and for the
+treatment of rare events. The problem domains that can be addressed by the two
+families of solutions are hence comparable; but they require different
+underlying mechanisms and they lead to different programming styles.
+
+The exception handling facility provided in Ada belongs to this second family
+(see [11](#11-exceptions)). It provides a facility for local termination upon
+detection of errors. It has been inspired by the Bron proposal and has some
+similarities with the Bliss signal enable construct.
+
+The discussion of exception handling classifies exceptions into three
+categories:
+
+- Escape exceptions, which require termination of the operation that raised the
+  exception
+
+- Notify exceptions, which forbid termination of the operation that raised the
+  exception and require its resumption after completion of the actions of the
+  handler
+
+- Signal exceptions, which leave the choice between termination and resumption
+  to the handler
+
+Exceptions in Ada are of the escape category. They serve only for error
+situations and as terminating conditions, which simplifies the language: notify
+and signal exceptions are not provided, since these forms of exception violate
+program modularity and make optimization difficult, if not impossible.
+
+#### R.14.2 Propagation
+
+Conceptually, we may view an exception declaration as declaring a constant of
+some type called "exception", whose values may only be mentioned in exception
+handlers and in raise statements. Like any other declaration, an exception
+declaration has a scope, which is the region of text in which the corresponding
+name can be written in order to refer to the exception. However, as this analogy
+suggests, the error situation associated with an exception will exist beyond
+this region.
+
+When an exception is raised within the sequence of statements of a frame, the
+execution of this sequence of statements is always abandoned (see
+[11.4](#114-exception-handling)). What happens next depends on the presence or
+absence of appropriate exception handlers. If the frame includes a handler for
+the exception, the execution of the sequence of statements of this handler
+completes the execution of the frame. If the frame does not have a handler for
+the exception, the subsequent actions depend on the nature of the frame: for a
+subprogram body, the same exception is raised — implicitly — at the point of
+call of the subprogram; for a block statement, the same exception is raised
+within the frame containing the block statement itself, after this statement. In
+either case, we say that the exception is propagated.
+
+With this definition of exception handling, the effect of a subprogram, which is
+normally completed by the sequence of statements of its body, may alternatively,
+when an exception occurs, be completed by a corresponding handler, if present.
+
+After the explanation of the concept of exception propagation, it should now be
+clear that there is no conceptual difference between the predefined exceptions
+and exceptions that are declared by the user. Predefined exceptions are
+exceptions that can be propagated by the basic operations of the language such
+as indexing, accessing a value, and the arithmetic operations.
+
+#### R.14.3 Exceptions Raised During the Elaboration of Declarations
+
+The elaboration of declarations may involve the evaluation of some expressions,
+and in consequence, exceptions may be raised during this elaboration. Consider
+for example the procedure
+
+```ada
+procedure A(N : INTEGER) is
+   C : constant INTEGER := N * N;
+   D : INTEGER := C;
+   T : array (1..C) of INTEGER;
+begin
+   -- statements of A
+exception
+   -- handlers of A
+end A;
+```
+
+If an exception occurs during the elaboration of the constant C, the procedure
+will be in a state where D is not initialized, and the space for the array T is
+not yet allocated. Consequently, a handler may not be able to do much; any
+reference to D or T will be erroneous and may cause a further exception. For
+these reasons an exception raised by the elaboration of a declaration is never
+handled locally; it is propagated to the place where the elaboration of the
+declarations was initiated (see
+[11.4.2](#1142-exceptions-raised-during-the-elaboration-of-declarations)).
+
+#### R.14.4 Propagation of an Exception Beyond its Scope
+
+Since an exception can be propagated, it can be propagated beyond its scope. It
+is even possible for an exception to be propagated outside its scope and then
+back again within its scope. An exception propagated beyond its scope can only
+be handled there by a handler for others. It can be further propagated or raised
+again by the abbreviated form of the raise statement (`raise;`).
+
+This rule provides a simple and consistent interpretation and it avoids the
+complexity and run-time costs that would be incurred if exceptions propagated
+beyond their scope were converted into a unique undefined exception. This design
+also considered, and rejected, the possibility of associating the names of the
+possibly propagated exceptions with each procedure declaration. The main reason
+for rejecting this possibility is the fact that this would require extra
+run-time code for filtering the propagation of exceptions. For example, if a
+procedure were declared as
+
+```ada
+procedure P(X : INTEGER) PROPAGATES A, B, C;      -- not in Ada
+```
+
+its body would have to be compiled as the equivalent of the following procedure:
+
+```ada
+procedure P(X : INTEGER) is
+begin
+   ...
+exception
+   when A | B | C => raise;
+   when others    => raise anonymous_exception;
+end P;
+```
+
+We considered the resulting code expansion to be prohibitive, especially in the
+case of small functions and procedures. With the solution adopted in Ada, the
+user can always put similar information in comment form. The choice others
+covers all possible anonymous exceptions, not just one.
+
+The philosophy behind the Ada model is that an exception is not an error
+situation; it is only a name that is declared for an error situation. Like any
+other declaration, an exception declaration has a scope. The error situation, on
+the other hand has no such limits, and can always be referred to as part of the
+others exception choice.
+
+#### R.14.5 Tasks and Exceptions
+
+The exception handling facility has so far been presented in terms of sequential
+programs, and the concepts presented are therefore applicable within a task
+body. For exception propagation there is a difference with tasks: in contrast to
+what is done for subprograms, if an exception is not serviced by a handler
+within a task body, the exception is not further propagated — the task execution
+is merely completed (see
+[11.5](#115-exceptions-raised-during-task-communication)).
+
+Note that if the exception were propagated to the parent task, it would mean
+that child tasks could interfere asynchronously with their parent, and it would
+also mean that these interferences could occur simultaneously, with disastrous
+results.
+
+Consider now what happens if the activation of a local task is not started as a
+consequence of the raising of an exception. It would not make much sense to
+execute the statements of the enclosing unit, once it is known that one of the
+basic preconditions for its proper operation is not satisfied. For this reason,
+the execution of statements is not started, and the predefined exception
+TASKING_ERROR is propagated.
+
+Note that the exception that is propagated does not depend on what caused the
+abandonment of task activation. What matters for the procedure is to know
+whether or not activations have succeeded. Should one or more of them have
+failed, it does not matter much whether this is by constraint violation, or by a
+numeric error: in any case some other treatment is needed. This therefore is the
+justification for the propagation of the less specific exception TASKING_ERROR.
+By the same reasoning, it does not matter much whether one, or more than one,
+task failed to be activated. Hence a single exception is raised in either case.
+
+#### R.14.6 The Case Against Asynchronous Exceptions
+
+The normal means of communicating with a task is via entry calls. Hence most
+situations in which the termination of a task must be decided by another task
+should be programmed by calling a special entry, say STOP, of the task to be
+terminated (or by using a terminate alternative). The clear advantage of such a
+solution is the possibility thus offered of including accept statements for the
+STOP entry at those places where the termination can be done in an orderly
+fashion.
+
+The ability for one task to raise an exception in another task must however be
+viewed as a possibility that has — potentially — extremely severe consequences.
+In no way should such externally raised exceptions be considered as being normal
+terminating conditions. Interfering asynchronously with the execution of a task
+may catch it in a state where it is not prepared to respond to such
+intervention. There is then always a risk of leaving the task in a state of
+confusion, and also of contaminating other tasks that were communicating with
+it.
+
+#### R.14.7 Suppression of Checks
+
+A given program unit, and in particular a procedure, may be robust, in that it
+will perform some computation, and produce some result, for any value of its
+input parameters. On the other hand, its validity may only be guaranteed for
+certain values of these parameters. The exception mechanism is a useful tool to
+achieve robustness, but this may be gained at some cost in efficiency, since
+detection of some error situations may be expensive unless aided by special
+hardware.
+
+In some cases where robustness can be attained by means other than run-time
+checks, the programmer may not wish to incur the cost of checking for certain
+error situations. The pragma SUPPRESS indicates that the check named in the
+pragma need not be performed (see [11.7](#117-suppressing-checks)). In the
+presence of such pragmas, the compiler may suppress the named checks, and will
+do so if this results in an optimization. However, in the case of exceptions
+whose detection is aided by special hardware, inhibiting the corresponding
+hardware mechanisms may be costlier than actually performing the checks. Hence
+the pragma is not imperative — it does not mean that the checks are not done.
+
+An alternative view of the SUPPRESS pragma would regard it as a directive
+indicating imperatively that no check is to be performed to detect the
+exception. This approach would amount to a decision to continue execution of the
+program in spite of any error situation. It would give an appearance of
+robustness which might be exploited in cases where the programmer knows that the
+error situation will have some effects that can be detected at a later time, but
+it is contrary to the general philosophy of the language.
+
+In addition, the need to provide a semantics that reconciles software- and
+hardware-detected exceptions would have a negative effect on the efficiency of
+programs. If the pragma were imperative, then on a machine with
+hardware-detected exceptions it would be necessary to inhibit the hardware
+checks for a scope in which a corresponding pragma SUPPRESS is given.
+Thereafter, it would be necessary to enable the hardware detection again, prior
+to each call to a unit outside that scope, and again to inhibit the detection
+following a subsequent return from the call.
+
+#### R.14.8 Implementation of Exception Handling
+
+One important design consideration for the exception handling facility is that
+exceptions should add to execution time only if they are raised.
+
+Several techniques may be used to reach that goal, and they may differ from one
+implementation to another. The essential idea is that the run-time processing
+costs should be concentrated on the treatment of the raise statement.
+Consequently, processing of a raise statement may be relatively slow. In
+contrast, the costs associated with exception declarations and exception
+handlers are only in terms of space and in terms of compilation time — they have
+no influence on the execution time.
+
+As a feasibility proof, we outline a possible implementation technique in which
+no run-time costs whatsoever are incurred for exceptions unless they are raised.
+The basic principles are as follows:
+
+- When an exception occurs, the specific run-time system that treats exceptions
+  must be able to locate the addresses of the currently active procedure calls.
+  This condition is satisfied if (as is usually the case) return addresses are
+  stored in procedure activations.
+
+- Knowing the code address of a procedure, it must be possible to locate the
+  code address of the first handler. Similarly, given a handler, it must be
+  possible to find the next handler. This condition can be satisfied by chaining
+  the handlers and by storing the address of the first handler just before the
+  code of the procedure.
+
+- Each handler must start with the indication of the exception code (or codes)
+  that it services. Some convention must be used for the handler for others,
+  which must appear last.
+
+- When effecting the association of an exception with a handler, the run-time
+  system locates the procedure address and from there the chain of handlers. It
+  may then inspect the exception codes to find the appropriate handler, if any.
+
+We reiterate that this solution should only be considered as an existence proof
+that exceptions may be implemented at no cost unless raised. Other techniques
+may be more suitable, depending on the machine architecture.
+
+#### R.14.9 Proving Programs with Exceptions
+
+The problems of exception handling facilities such as the PL/I `on` conditions,
+which permit resumption after the exception, are well-known. For instance,
+assuming integer working, consider the consecutive statements:
+
+```ada
+X := P + Q;
+Y := X - Q;
+ASSERT (Y = P);
+```
+
+Unless overflow occurs in the evaluation of P + Q, the final assertion should be
+satisfied. This however would not be true if a handler for overflow were able to
+provide a different value for X and return to the same statement list.
+
+This simple example shows the near impossibility of proving programs with
+unrestricted signal and notify exceptions. For the same reasons, such programs
+are extremely difficult to optimize (see
+[11.6](#116-exceptions-and-optimization)).
+
+In contrast, for the proposal chosen in Ada, simple proof rules may be given.
+The main idea is a consequence of the definition of the role of a handler. As
+mentioned above, when an exception occurs in a procedure, the execution of the
+handler completes the execution of the procedure considered. Consequently the
+effect of a procedure is achieved either by its body if no exception occurs, or,
+if the exception E occurs, by the part of its body up to the point where the
+exception E occurs, and then by the handler for E. This shows that, with
+adequate programming conventions, the effect of a procedure that contains an
+exception handler can be characterized in a simple way. This simplifies
+correctness proofs.
+
+---
+
+### R.15 Representation Clauses
+
+#### R.15.1 The Separation Principle
+
+The treatment of representation in Ada is done according to the separation
+principle. Data type definitions are performed in two steps:
+
+- The logical properties of the data are defined. They describe all the
+  properties that programmers need to know. All algorithms are formulated in
+  terms of these logical properties and are not based on knowledge of the
+  representation.
+
+- The representation (implementation) properties of data are either explicitly
+  specified by the programmer or, in the usual case, chosen by default by the
+  compiler.
+
+There are many advantages in this separation. The most fundamental is the
+conceptual simplicity of formulating an algorithm in terms of abstract
+properties. The ability to abstract from a particular representation leads to
+clearer and better structured programs.
+
+Furthermore, to establish the correctness of a program that uses a given
+formulation of data and a given representation, we have two disjoint proofs.
+First we show that the program is correct given the formulation of the data
+types and algorithms. Then we show that the chosen representation is a correct
+implementation of the data. The separation also ensures that users do not make
+implicit assumptions about the representation of data.
+
+If at a later stage a different representation is selected, for example to
+reduce storage space, the formulation of the algorithms need not be modified.
+Conversely, if the algorithms of a program are modified, the representation need
+not be affected.
+
+Another advantage is textual simplicity. In some cases, the representation of a
+data type is dictated by external considerations such as the form of a hardware
+interface: the description of the representation may then be correspondingly
+complex. However, by keeping the logical description textually distinct from
+that of the representation we can retain the simplicity of the logical
+description.
+
+The above separation principle is reflected in Ada by a clear textual separation
+between the declaration of the logical properties of data and the specification
+of the properties of their representation. Properties of the representation are
+specified by representation clauses (see [13.1](#131-representation-clauses)).
+These clauses are optional, and distinct from the declaration of the logical
+properties. The parts of a program that are hardware-specific are thus easy to
+identify.
+
+#### R.15.2 Types and Data Representation
+
+In a typed language, it is important to associate representation clauses with
+types rather than with individual objects. The basic reasons are simplicity and
+uniformity. To associate representation clauses with individual objects could
+mean that these clauses have to be duplicated in many separate declarations and
+it might therefore be difficult to maintain consistency, especially after
+repeated modification.
+
+Alternatively, it could mean that a name is associated with each possible
+representation; and that each object declaration mentions both a type name and a
+representation name. However such a solution would result in less readable
+programs. For these reasons, a simpler solution is used in Ada: a representation
+is associated with a type. Associating representation with type localizes this
+specification in one place. The specification is thereby associated with all
+objects of the given type (constants, variables, formal parameters, and so on).
+
+A further advantage of this approach is that, while every type has some
+representation, the user need not always be concerned with it. Explicit
+(user-defined) representation clauses are optional: in most cases we are quite
+willing to let the compiler select an efficient representation for types. This
+is what we normally expect from compilers although no particular default is
+guaranteed, so that a small change of a declaration may sometimes be reflected
+by a more significant change of representation. In certain cases, however, we
+want to regain control: not because we do not trust the compiler but because we
+know some information that is essential for the selection of a representation.
+For example we might know that a given logical type is associated with an
+external hardware interface, in which case we would write a representation
+clause to adopt the representation that is dictated by the hardware and thus
+override any default choice made by the compiler.
+
+#### R.15.3 Multiple Representations and Change of Representation
+
+When a program has to deal with objects that exist on an external medium, one is
+faced with the problem of multiple representations. For example, records may be
+stored in a packed form on a file; but a program may need faster access to the
+record components when the information is processed, and hence may require an
+unpacked form. This is a classic situation in which different representations
+for the same objects are wanted.
+
+Although the details of the alternate representations are not part of the
+logical properties, the knowledge of the existence of alternate representations
+is, itself, a logical property. Consider the problem of converting data from
+some external medium into a form ready to be output onto another external
+medium. Both data objects belong to the same enumeration type, but they have
+different representations, each of which is prescribed by the outside world. In
+trying to establish the correctness of such a procedure with a single type and
+two representations attached to individual objects, one finds that the
+information contained in the logical declarations of the two objects does not
+suffice: it can only be concluded that they are of the same type. To complete
+the correctness proof it is necessary to consider representation clauses, and
+hence to violate the separation principle mentioned earlier. We are thus led to
+the conclusion that any attempt to hide the existence of multiple
+representations at the logical level ultimately leads to a violation of the
+separation principle.
+
+It is natural and desirable to use type as a carrier for representation. The
+approach adopted in Ada is to have a unique representation of each type and to
+select the representation explicitly by representation clauses. This results in
+a significant simplification, since the user does not have to think in terms of
+multiple representations for a single type.
+
+If we need two different representations, two different types are therefore
+required, although these two types should have identical logical properties: the
+solution to this problem is to use derived types. Since B derives its
+characteristics from A, both types have the same characteristics, for example
+the same components. However, they are distinct types and it is hence possible
+to specify different representations for A and for B. Change of representation
+can be achieved by explicit conversion between objects of types A and B since
+such conversions are defined for derived types (see
+[13.6](#136-change-of-representation)). Derivation has the effect of creating a
+type with the same characteristics as another type, without rewriting its entire
+description (that would define a distinct type for which no conversions are
+possible).
+
+> [!NOTE]
+> The one type — one representation principle must be understood in terms of the
+> knowledge that the user has from the existence (as opposed to the details) of
+> a representation. It means that if a representation is explicitly specified
+> for a type, then only one representation can be specified for this type.
+> However, in cases where the representation is implicitly selected by the
+> compiler, this does not preclude the use of different internal representations
+> in different contexts — out of sight of the user.
+
+The problem of change of representation is now straightforward: it can be
+expressed as an explicit type conversion between two derived types. The type
+conversion appears syntactically as the call of a function with the name of the
+target type:
+
+```ada
+procedure CONVERT is
+   -- declaration of the logical properties:
+
+   type DAY is (MON, TUE, WED, THU, FRI, SAT, SUN);
+   type EXTERNAL_DAY is new DAY;   -- a derived type
+
+   X : DAY := DAY'FIRST;
+   Y : EXTERNAL_DAY;
+
+   -- representation clauses for the two types:
+
+   for DAY use
+      (MON => 0, TUE => 1, WED => 2,
+       THU => 3, FRI => 4, SAT => 5, SUN => 6);
+   for EXTERNAL_DAY use
+      (MON => 1, TUE => 2, WED => 3,
+       THU => 4, FRI => 5, SAT => 6, SUN => 7);
+begin
+   ...
+   Y := EXTERNAL_DAY(X);
+   ...
+end CONVERT;
+```
+
+The correctness of this procedure can now be established without violation of
+the separation principle. First, we have to show that the program is correct
+given the definition of X and Y. Secondly, it must be shown that the
+representations given for DAY and EXTERNAL_DAY are correct (see
+[13.3](#133-enumeration-representation-clauses)).
+
+Although they are limited to types that are conformable — having been declared
+to be logically equivalent — type conversions may be very costly in some cases.
+As an example consider a record type with variants: the implementation of the
+assignment cannot be achieved as simply as for a normal record assignment. It
+must be done on a field by field basis. Producing such code is well within the
+capability of present compilation techniques. Nevertheless it is complex and can
+be somewhat costly on some computers (note that there might be variants within
+variants). Expressing changes of representation as explicit conversions warns
+the user of the potentially high cost of these operations.
+
+#### R.15.4 Unchecked Conversions
+
+The conversions allowed between numeric types and between types that are derived
+from each other are safe conversions that do not violate the rules of type
+checking.
+
+Unchecked type conversions can be achieved in any language that permits code
+insertions or address clauses. Such conversions may, for example, be needed if a
+user wants to define his own allocation strategy for access types. In this case,
+conversions from integer to access values are necessary to define an ALLOCATE
+procedure and a converse FREE procedure.
+
+From the point of view of programming management (and also of maintainability)
+it is desirable to provide a standard way to achieve such unchecked conversions.
+In this way the parts of a program that use such dangerous features are made
+easier to identify. A generic library function is predefined to that effect (see
+[13.10.2](#13102-unchecked-type-conversions)):
+
+```ada
+generic
+   type SOURCE is limited private;
+   type TARGET is limited private;
+function UNCHECKED_CONVERSION(S : SOURCE) return TARGET;
+```
+
+A program unit that uses unchecked type conversions must mention this generic
+function in its with clauses. The programming environment may be able to control
+and restrict the programs that are allowed to get access to the function
+UNCHECKED_CONVERSION.
 
 ---
 ## Index
@@ -16079,7 +19078,6 @@ semicolon by sections with further information. Indented lines record
 particular uses of the term. Every section number is a link.
 
 [A](#index-a) · [B](#index-b) · [C](#index-c) · [D](#index-d) · [E](#index-e) · [F](#index-f) · [G](#index-g) · [H](#index-h) · [I](#index-i) · [L](#index-l) · [M](#index-m) · [N](#index-n) · [O](#index-o) · [P](#index-p) · [Q](#index-q) · [R](#index-r) · [S](#index-s) · [T](#index-t) · [U](#index-u) · [V](#index-v) · [W](#index-w) · [X](#index-x) · [Y](#index-y)
-
 
 ### Index A
 
@@ -19859,3 +22857,1302 @@ particular uses of the term. Every section number is a link.
 
 - **YEAR (predefined function)** — [9.6](#96-delay-statements-duration-and-time)
 - **---**
+
+
+---
+## Style Guidelines
+
+> [!NOTE]
+> This section records house style; it is informative, and forms no part of the
+> standard definition of the Ada programming language.
+
+Nothing here changes the legality or the meaning of a program. Ada ignores
+layout, and is insensitive to the case of identifiers and reserved words, so
+every rule below is a convention about how source is presented to a reader
+rather than anything a compiler enforces.
+
+Each rule is stated once, as a bold sentence, in the subsection its subject
+belongs to. If two subsections seem to bear on the same question, the more
+specific one governs.
+
+**The rules, by subject:**
+
+- [S.1 Sources of these Guidelines](#s1-sources-of-these-guidelines)
+- [S.2 Indentation](#s2-indentation)
+- [S.3 Line Length](#s3-line-length)
+- [S.4 Casing](#s4-casing)
+- [S.5 Naming](#s5-naming)
+- [S.6 Spacing](#s6-spacing)
+- [S.7 Aligned Declarations](#s7-aligned-declarations)
+- [S.8 Comments](#s8-comments)
+- [S.9 Blank Lines](#s9-blank-lines)
+- [S.10 Literals](#s10-literals)
+- [S.11 Expressions](#s11-expressions)
+- [S.12 Statements and Control Structures](#s12-statements-and-control-structures)
+- [S.13 Subprogram Profiles](#s13-subprogram-profiles)
+- [S.14 Aggregates and Named Associations](#s14-aggregates-and-named-associations)
+- [S.15 Type Declarations](#s15-type-declarations)
+- [S.16 Generic Units](#s16-generic-units)
+- [S.17 Tasking](#s17-tasking)
+- [S.18 Exceptions](#s18-exceptions)
+- [S.19 Representation Clauses and Pragmas](#s19-representation-clauses-and-pragmas)
+- [S.20 End Labelling](#s20-end-labelling)
+- [S.21 Compilation Unit Layout](#s21-compilation-unit-layout)
+- [S.22 Departures from GNAT Convention](#s22-departures-from-gnat-convention)
+
+### S.1 Sources of these Guidelines
+
+The rules were derived by measuring code, not by recalling a standard. The
+corpus is the hand-written Ada of AdaDoom3, the Neo engine written by the
+author of this compiler: 56 files and 16,961 lines from the project's `Engine`
+directory. The nine machine-generated `neo-api-*` binding files were left out,
+because they reproduce the layout of the C headers they translate rather than
+the layout of the project.
+
+That first pass counted whatever the files contained. Several of the engine's
+unfinished bodies hold blocks of C reference source pasted in verbatim, and
+those blocks distort any measurement of an operator or a delimiter. The later
+rules were therefore measured over a corpus filtered by a parser rather than
+by eye: every candidate file was submitted to a syntax-only compilation, and
+the 53 files that a compiler accepts as Ada — 15,027 lines — were kept, while
+the 15 it rejected were dropped. The difference is not cosmetic. Counting
+whitespace around `*` over the unfiltered files gives 63.6% a space before it;
+counting over the files that parse gives 482 of 482.
+
+One file that parses is nonetheless not house style:
+`neo-core-compression.adb` is a `zstd` binding adapted from outside the
+project, and it is written in GNAT's own conventions — three-space indent,
+lower-case identifiers, `end Name;`. It accounts for the whole of the minority
+in several counts below, and where it does, that is said.
+
+Where the corpus settles a question, the rule below is marked *(measured)* and
+carries the count that backs it. Where the corpus is silent or contradicts
+itself, the rule is marked *(GNAT convention)*, meaning it was carried over
+from the GNAT style checker — the `-gnaty` family of switches — and was not
+observed here, or *(project rule)*, meaning the project asserts it and the
+reason is given. The three sources disagree often enough that the distinction
+matters; see
+[S.22 Departures from GNAT Convention](#s22-departures-from-gnat-convention).
+
+Two further bodies of code were consulted as contrast, and no house rule was
+taken from either. The first is this compiler's own runtime library,
+`ada83-runtime.ada`. When it was measured it ran to 2,995 lines of Ada 83; it
+agreed with the corpus on lower-case reserved words (4,197 of 4,215) and on
+the bare `end;` (230 against 10), and disagreed with it flatly on the two
+points recorded in [S.6 Spacing](#s6-spacing) and
+[S.13 Subprogram Profiles](#s13-subprogram-profiles). It has since been
+rewritten to these guidelines throughout, so the counts quoted for it here and
+in those two subsections are what it used to be, not what it is; it is no
+longer a contrast to anything below. The second is the ACATS conformance
+suite, 4,051 files of 1980s test code,
+which is the negative of this style in almost every respect: 288,127 upper-case
+reserved words against 3 lower-case, 13,860 `end Name;` against 7,754 bare, and
+7,111 spaced `..` against 4,396 tight. It is quoted below only to show what the
+corpus is not, and with the runtime library brought over it is now the only
+body of code here that disagrees with any of these rules.
+
+The corpus is modern Ada, and this manual describes Ada 83. Several rules
+below therefore rest on constructs that Ada 83 does not have. Each such rule
+names the construct and gives the Ada 83 form alongside it.
+
+### S.2 Indentation
+
+**Indent two spaces per level.** *(measured)* Taking every line that ends in a
+construct opener — `is`, `then`, `loop`, `begin`, `declare`, `record` or
+`else` — and measuring the indent of the line that follows gives +2 in 866 of
+1,074 cases. The next most frequent value, +4, accounts for 114 and is
+produced by the rule for `begin` below rather than by a four-space step.
+Across the whole corpus, 90.8% of the 10,294 code lines begin with an even
+number of spaces; the odd remainder is almost all continuation lines aligned
+on an opening parenthesis.
+
+Two spaces, not the three that GNAT's own coding standard uses and that
+`-gnaty3` checks.
+
+**A construct's closer is indented one level in from its header, and its
+contents two levels in.** *(measured)* This is the most conspicuous feature of
+the style and the reverse of most Ada code. In a subprogram body `begin` does
+not line up under `procedure` or `function`; it lines up with the
+declarations, and `end` lines up with `begin`.
+
+```ada
+  function Split_Vec (Item : Str; On : Str) return Vector_Str_16_Unbound.Unsafe.Vector is
+    Result    : Vector_Str_16_Unbound.Unsafe.Vector; use Vector_Str_16_Unbound.Unsafe;
+    TRIMMED   : constant Str     := Trim (Item, Both);
+    REMAINDER : constant Natural := Index (Item, On);
+    begin
+      if REMAINDER = 0 then return Result & To_Str_Unbound (Item);
+      else Result.Append (To_Str_Unbound (Trim (TRIMMED (TRIMMED'First..REMAINDER - 1), Both))); end if;
+      return Result & (Split_Vec (TRIMMED (REMAINDER + 1..TRIMMED'Last), On));
+    end;
+```
+
+`begin` sits two columns in from its subprogram header in 145 of the 148
+bodies where the two can be paired, the first statement sits two columns in
+from `begin` in 194 of 212, and `end` returns to the column of `begin` in 184
+of 207.
+
+Record definitions take the same shape — components two levels in, `end
+record` one level in:
+
+```ada
+  type Allocation_State is record
+      ID             : Int_Unsigned_C       := 0;
+      Offset         : Int_64_Unsigned_C    := 0;
+      Size           : Int_64_Unsigned_C    := 0;
+      Kind           : Allocation_Kind      := Free_Allocation;
+      Next, Previous : Ptr_Allocation_State := null;
+    end record;
+```
+
+Components stand four columns in from the `record` line in 33 of 34
+definitions and `end record` two columns in in 33 of 34. Protected units place
+their `private` part and their `end` the same way.
+
+Packages are the exception. A package's declarations are one level in and its
+`end` returns to the column of the `package` line, as in ordinary Ada.
+
+**Continuation lines align one column past the innermost open parenthesis.**
+*(measured)* Of the 301 lines that leave a parenthesis open, 253 — 84.1% — are
+followed by a line beginning in exactly that column. Named associations are
+then aligned on their arrows.
+
+```ada
+    Descriptor_Set_Info : aliased VkDescriptorSetAllocateInfo := (descriptorPool     => Descriptor_Pool,
+                                                                  descriptorSetCount => 1,
+                                                                  pSetLayouts        => Pipeline.Shader.Descriptor_Set_Layout'Unchecked_Access,
+                                                                  others             => <>);
+```
+
+**`when` is indented one level from its `case`.** *(measured)* 375 of 404
+alternatives.
+
+**Use spaces only; never a tab.** *(GNAT convention)* The corpus does not
+settle this: 6 of its 56 files contain tab characters, but every one of them
+is inside a block of C reference code pasted into a comment or an unfinished
+body, never in Ada indentation.
+
+### S.3 Line Length
+
+**Lines run to 131 columns.** *(measured)* The copyright banner that opens
+every file is exactly 131 characters wide and the code is written to the same
+measure. Over a 5,067-line core subset the median line is 46 characters, the
+90th percentile 126 and the 95th percentile 131, with only 189 lines — 3.7% —
+longer than 131.
+
+Eighty columns is emphatically not the limit: 1,246 lines, 24.6% of that
+subset, exceed it. GNAT's line-length check defaults to 79 columns; this style
+does not follow it. The extra width is what pays for the column alignment
+described below, and that is what it is spent on.
+
+The width also explains why so few of the wrapping rules below have large
+counts behind them: at 131 columns almost nothing has to wrap. Only 19 of 519
+`if` conditions and 10 of 708 subprogram profiles run past one line.
+
+### S.4 Casing
+
+**Reserved words are lower case.** *(measured)* 12,968 of 13,057 occurrences,
+or 99.3%.
+
+> [!NOTE]
+> Of the 89 remaining occurrences, 72 are attribute designators — `'Range` 52
+> times, `'Access` 19 and `'Digits` once — which are not reserved words in
+> that position, four are the dereference written `.All`, and one is a
+> `Pragma` typo. The last 12 are exception declarations written
+> `X : Exception;`: every one of the twelve exception declarations in the
+> corpus capitalises it. The guideline follows the dominant rule and writes
+> `exception` in lower case like any other reserved word; see
+> [S.18 Exceptions](#s18-exceptions).
+
+**Identifiers are `Mixed_Case` with underscores between words.** *(measured)*
+511 of 513 type and subtype names, and 1,051 of the 1,139 object, parameter
+and component names longer than two characters, or 92.3%.
+
+**Named constants are `ALL_CAPS` with underscores.** *(measured)* 224 of 232
+constant declarations; 521 distinct all-capital spellings occur 1,498 times.
+This is the one place where the style abandons `Mixed_Case`, and it makes a
+constant recognisable at the point of use rather than only at its declaration.
+
+```ada
+    TRIMMED   : constant Str     := Trim (Item, Both);
+    REMAINDER : constant Natural := Index (Item, On);
+```
+
+**Write an acronym or initialism in full upper case, joined to the rest of the
+name by an underscore.** *(measured)* `IO` is upper in all 82 occurrences
+(`Ada_IO`, `Stream_IO`, `Text_IO`, `Direct_IO`), `CPU` in all 85, `GPU` in all
+28, `OS` in all 34, `API` in all 14 and `URL` in all 3. A trailing dimension
+count is treated the same way: `Vector_3D` and its relatives account for 256
+occurrences, none of them spelled `_3d`. The rule extends to the predefined
+names, which is why `Text_IO` and not `Text_Io` is the canonical spelling.
+
+**Write a two-letter abbreviation that is a word rather than an initialism as
+`Id`, not `ID`.** *(project rule)* This is the one place the corpus does not
+settle its own rule: `Id` and its compounds occur 77 times, `ID` 36 and `id`
+twice, and both spellings appear in the same file. `Id` is chosen because it
+is an abbreviation of *identifier*, not an initialism, and because it is what
+the predefined `Task_Id` uses in Ada 95 and later.
+
+**Predefined names keep their canonical spelling.** *(measured)* Twenty-five
+predefined names — `Positive` (284 occurrences), `Natural` (66), `Address`
+(72), `False` (260), `True` (196), `Integer` (13), `Duration` (13),
+`Boolean` (10), `Character` (5), `Constraint_Error` (6), `Program_Error` (14),
+`Put_Line` (6), `Unchecked_Conversion` (38) and the rest — occur 1,109 times
+between them, and each has exactly one spelling in the whole corpus. Not one
+is written `INTEGER`, `integer` or `Put_line`.
+
+**Attribute designators are `Mixed_Case`.** *(measured)* `'First`, `'Last`,
+`'Range`, `'Access`, `'Unchecked_Access`; no lower-case attribute appears.
+
+**A name imported from another language keeps that language's spelling.**
+*(measured)* 424 distinct identifiers begin with a lower-case letter and
+contain a capital — `vkCreateInstance`, `descriptorPool`,
+`wLeftMotorSpeed` — occurring 1,059 times, and 1,030 of those occurrences,
+97.3%, are in the three files that bind Vulkan and the Win32 API. An imported
+name is a quotation, and rewriting it as `Vk_Create_Instance` would break the
+correspondence with the header a reader has to check it against. The rule
+stops at the import: everything the project itself declares is `Mixed_Case`.
+
+### S.5 Naming
+
+**Type names lead with the category and narrow from there.** *(measured)* The
+general kind comes first and the specialisation follows, so that related names
+sort and read together: `Array_Vector_3D`, `Ptr_Allocation_State`,
+`Int_64_Unsigned`, `Str_Unbound`. Of 513 type names, 161 begin `Array_`, 85
+`Ptr_`, 40 `Int_`, 20 `Real_` and 14 `Str_`. The prefixes are honest ones: all
+35 `Ptr_*` types are access types and all 81 `Array_*` types are array types.
+
+Two suffixes carry meaning as reliably: `_Kind` marks an enumeration type (39
+of 46) and `_State` a record type (59 of 77).
+
+**Procedures are imperative verbs; functions are nouns.** *(measured)* The
+common procedure names are `Set`, `Replace`, `Delete`, `Sort`, `Insert`,
+`Free`, `Put`, `Clear`, `Move` and `Update`. Functions are named for what they
+yield — `Get`, `Length`, `First`, `Log` — with `Has_` for predicates and `To_`
+for conversions; 148 functions begin `To_`. Accessors are overloaded on `Get`
+and `Set` rather than spelled `Get_Something`.
+
+**Parameters draw on a small stock vocabulary.** *(measured)* `Item` (169
+uses), `Val` (111), `Pos` (81), `Path`, `Args`, `Key` and `Kind` account for
+most formal parameter names, so a reader recognises a parameter's role
+immediately.
+
+**Packages are hierarchical, `Mixed_Case`, and singular.** *(measured)* `Neo`,
+`Neo.Core`, `Neo.Core.Strings`, `Neo.World.Graphics`. File names are the unit
+name in lower case with each dot written as a hyphen — `neo-core-strings.ads`.
+Ada 83 has no child units; the Ada 83 form of the same hierarchy is a nest of
+packages inside one another, and the naming rule applies unchanged to the
+nested names.
+
+**Exceptions are named for the fault, not suffixed.** *(measured)*
+`Divide_By_Zero`, `Numeric_Overflow`, `Stack_Fault`,
+`Unsupported_Compression_Format`. None of the eleven exception names in the
+corpus ends in `_Error`.
+
+### S.6 Spacing
+
+The rules in this subsection are absolute in the corpus unless a count says
+otherwise. All counts are over the 53 files that parse.
+
+**Put one space on each side of `:=`, `=>`, `:`, and every binary operator.**
+*(measured)* `:=` carries a space before it in 1,880 of 1,880 occurrences and
+after it in 1,879 of 1,880; `=>` in 2,515 of 2,515 on both sides; `:` in 2,690
+of 2,694 before and 2,694 of 2,694 after. Of the binary operators, `+` is
+spaced on both sides in 496 of 496, `*` in 482 of 482, `-` in 236 of 236, `/`
+in 90 of 90, `&` in 518 of 518, `**` in 21 of 22, `=` in 240 of 240, `/=` in
+203 of 203, and the word operators `and`, `or` and `not` in 156 of 156, 114 of
+114 and 76 of 82.
+
+The four `:` without a space before them are the whole of the exception, and
+they are the same construct twice: a statement label and a choice parameter,
+both of which bind the colon tightly to the name in front of it.
+
+```ada
+      Outter: while not Close_Console loop
+      exception when Occurrence: others => Handle (Occurrence);
+```
+
+A choice parameter is Ada 95; Ada 83 writes `when others =>` with no name.
+
+**Write `..` tight, with no space on either side.** *(measured)* 378 tight
+against 31 spaced, or 92.4%. Eleven of the thirty-one are in the adapted
+`zstd` binding; the remaining twenty are in two files.
+
+```ada
+      Bone_Influences : Array_Bone_Index (1..Bone_Influence_Count);
+```
+
+This is the sharpest disagreement in the whole style. This compiler's own
+`ada83-runtime.ada` used to write the range spaced, `0 .. 32767`, in 94 of 94
+occurrences, and the ACATS suite still does in 7,111 of 11,507. The corpus
+rule is followed here because the corpus is the subject of this section, and
+the runtime library has since been rewritten to it: all 94 of its ranges are
+now tight. ACATS is the only body of code left on the other side, and a reader
+coming from it should expect the change.
+
+**Write `'` and `.` tight on both sides.** *(measured)* The apostrophe has no
+space before it in 789 of 790 occurrences and none after in 788 of 790; the
+selected-component dot has none on either side in all 4,580.
+
+```ada
+      Result := Neo.Core.Strings.To_Str (Item'Image);
+```
+
+**Write a unary minus tight against its operand.** *(measured)* 39 of 41.
+`-1` and `- 1` are different to read even though they mean the same thing, and
+the tight form keeps the sign attached to the number it belongs to.
+
+**Put a space after `,` and none before it.** *(measured)* 5,081 of 5,084 have
+a space after and 5,083 of 5,084 have none before. A comma at the end of a
+line counts as satisfying the rule.
+
+**Put no space before `;`.** *(measured)* 7,267 of 7,267.
+
+**Put a space between a name and the parenthesis that follows it.**
+*(measured)* 4,740 of 4,741 — one typo excepted — across calls, indexing,
+declarations and instantiations alike. GNAT checks the same thing with
+`-gnatyt`, which reports *space required* for `Put_Line(X)`; here the two
+agree.
+
+```ada
+      Set_Pixel (Buffer (X, Y), Shade (Depth));
+```
+
+**Put no space just inside a parenthesis.** *(measured)* 6,216 of 6,224 have
+no space after `(` and 6,224 of 6,224 have none before `)`. The eight
+exceptions are all line breaks, not spaces.
+
+**Put a space on each side of `|` in a list of choices.** *(measured)* 110 of
+110.
+
+```ada
+        when Moveable_Entity | Item_Entity | Light_Entity =>
+```
+
+### S.7 Aligned Declarations
+
+**Line up colons, types and `:=` across a run of declarations.** *(measured)*
+Of 211 runs of two or more consecutive declarations at the same indent, 188 —
+89.1% — put every colon in one column. Where the declarations are initialised,
+106 of 145 runs — 73.1% — also put every `:=` in one column, and 170 of 201
+runs of named associations put every `=>` in one column. Padding is inserted
+after the colon where necessary so that the type names line up too, even when
+some declarations carry `constant` or `aliased` and others do not.
+
+```ada
+    Bind_Vertex_Offset  : aliased Int_64_Unsigned_C           := 0; -- Basically junk
+    Current_Pipeline    : aliased Ptr                         := NULL_PTR;
+```
+
+The same instinct is applied to whole subprogram declarations, which are
+padded until their parameter lists, return types and bodies stand in columns:
+
+```ada
+  procedure Line        (Item : Char)                      is begin Line (Item & "");                end;
+  procedure Line        (Item : Str_Unbound)               is begin Line (S (Item));                 end;
+  procedure Line        (Item : Str := "")                 is begin Put (Item & EOL);                end;
+  procedure Error       (Item : Str)                       is begin Line; Line ("ERROR: "   & Item); end;
+  procedure Warn        (Item : Str)                       is begin Line; Line ("WARNING: " & Item); end;
+  procedure Info        (Item : Str)                       is begin Line; Line ("INFO: "    & Item); end;
+  function Extension    (Path : Str) return Str            is (Path (Index (Path, ".") + 1..Path'Last));
+  function Log                       return Str_Unbound    is (Safe_IO.Log);
+  function Input_Entry               return Str            is (S (Safe_IO.Input_Entry));
+```
+
+**Break an alignment run at a blank line, and only there.** *(project rule)*
+The alignment is what makes a run readable as a table, so the run has to end
+somewhere a reader already sees a boundary. The corpus supports the second
+half of this — 884 of 955 one-line declarations have no blank line before them,
+so the runs are long — but it was not measured for the choice of breakpoint,
+and the rule is stated to settle the question rather than because it was
+counted.
+
+### S.8 Comments
+
+**Introduce a comment with `--` and a single space.** *(measured)* 777 of the
+1,025 prose comments, or 75.8%. The wider gaps that make up most of the
+remainder are commented-out code and tables that preserve their own internal
+alignment inside the comment.
+
+**Comments sit on their own line, above what they describe, at the indent of
+that code.** *(measured)* Trailing comments appear, but are reserved for short
+asides on a declaration — `:= 0; -- Basically junk`.
+
+**Introduce each group of declarations with a boxed header.** *(measured)* 206
+such boxes appear, and all 206 are formed identically: a rule of hyphens, the
+title as `-- Title --`, and a second identical rule, with the rules exactly as
+long as the title line and at the same indent. A blank line precedes the box
+in 205 of the 206 cases.
+
+```ada
+  -----------
+  -- Split --
+  -----------
+
+  function Split_Vec (Item : Str; On : Str) return Vector_Str_16_Unbound.Unsafe.Vector;
+  function Split     (Item : Str; On : Str) return Array_Str_Unbound is
+    (Vector_Str_16_Unbound.To_Unsafe_Array (Split_Vec (Item, On)));
+```
+
+The title names either the subprogram that follows — the case in 109 of the
+206 boxes — or the group of declarations it introduces, as in `-- Sorting --`
+or `-- Number Conversions --`.
+
+### S.9 Blank Lines
+
+**Separate a multi-line body from what precedes it.** *(measured)* Of 181
+multi-line subprogram bodies, 77 are preceded by a blank line and a further 52
+by a comment, which is itself preceded by a blank line.
+
+**Pack related one-line declarations together.** *(measured)* Of 955 one-line
+declarations and bodies, 884 — 93% — have no blank line before them. Runs of
+one-liners are meant to be read as a table, and a blank line inside one breaks
+the alignment that gives the table its point.
+
+**Use one blank line, never two.** *(measured)* Only 58 runs of two or more
+blank lines occur among the corpus's 2,165 blank lines.
+
+### S.10 Literals
+
+**Write a based literal when the value is a bit pattern, and a decimal literal
+when it is a number.** *(measured)* 258 of the 2,311 numeric literals in the
+corpus are based, and every one of them is base 16 and stands for a mask, a
+flag word or a size — `16#8000_0000#`, `16#00AE#`, `16#0000_003F#`. Nothing is
+written in base 8 or base 2.
+
+**Group the digits of a based literal in fours with underscores as soon as
+there are more than four.** *(measured)* 46 based literals have more than four
+digits, and all 46 are underscored; all 46 group in fours, 44 of them as one
+group and 2 as three. No based literal of four digits or fewer carries an
+underscore.
+
+```ada
+        Result.Has_Advanced_Vector_Extensions_Enabled := (Data and 16#0000_0006#) > 0;
+        pragma Storage_Size (16#8000_0000#);
+```
+
+**Group the digits of a long decimal literal in threes.** *(measured)* Only
+two decimal literals in the corpus are underscored — `7_500` and
+`100_000_000_000_000.0` — and both group in threes. The other 45 decimal
+literals of four digits or more are written plain: `500000`, `1024`, `3000`.
+The rule takes the form the corpus shows when it groups at all, and applies it
+from five digits up, where the plain form stops being readable.
+
+**Write a real literal with a digit on both sides of the point.** *(project
+rule)* `0.0`, `75.0`, `0.0001`, never `.5` or `5.`. Ada makes this a matter of
+legality rather than of style — see [2.4](#24-numeric-literals) — and it is
+restated here because it is the sort of thing a reader arriving from C gets
+wrong, and because the corpus's real literals all take the legal form.
+
+**Begin each continuation line of a long concatenation with `&`.** *(project
+rule)* The corpus barely settles this. One file that builds inline-assembly
+templates accounts for 119 of the 121 wrapped `&` operators and puts every one
+of them at the end of its line; outside it only seven concatenations wrap at
+all, five leading with the operator and two trailing. Seven cases decide
+nothing, so the rule is taken from the boolean one in
+[S.11 Expressions](#s11-expressions), which is measured and which puts the
+operator at the start of the continuation line.
+
+```ada
+        Info ("Using Vulkan's debugging layer requires the LunarG SDK!" & EOL
+              & "It can be downloaded from https://vulkan.lunarg.com" & EOL
+              & "Continuing without the debugging layer enabled..." & EOL);
+```
+
+**Write a character literal, not an `ASCII` name, when the character is
+printable.** *(measured)* `' '` and `'.'` are written directly; the `ASCII`
+package is named 14 times, and each time for a control character —
+`ASCII.CR`, `ASCII.NUL`. In Ada 83 `ASCII` is the only way to name a control
+character; `Ada.Characters.Latin_1` does not exist.
+
+### S.11 Expressions
+
+**Parenthesise mixed logical operators; the language requires it.**
+*(measured)* Ada's grammar for an expression admits a sequence of `and`, or a
+sequence of `or`, or a sequence of `xor`, but never a mixture of two of them,
+so `A and B or C` is illegal and `(A and B) or C` is what must be written. See
+[4.4](#44-expressions), where the example `(Cold and Sunny) or Warm` is
+annotated *parentheses are required*. The corpus contains no mixed sequence at
+any parenthesis depth, which is what legality demands and what a count
+confirms.
+
+The same clause requires parentheses in `A**(B**C)`, `**` being non-associative.
+
+**Parenthesise nothing else that precedence already settles.** *(project
+rule)* `A + B * C` and `X = Y and then Z /= W` are written as they stand. The
+corpus was not counted for redundant parentheses — the measurement would need
+a semantic parse, not a lexical one — so this is asserted rather than
+observed, on the ground that a parenthesis a reader must check and then
+discard costs more than it saves.
+
+**Use `and then` and `or else` when the right operand must not be evaluated,
+and `and` and `or` when it may be.** *(measured)* The corpus writes `and then`
+47 times against 109 plain `and`, and `or else` 15 times against 99 plain
+`or`; 42 of the plain `and`s and 7 of the plain `or`s have a numeric literal
+as an operand and are bit operations on a modular type rather than boolean
+connectives at all. The short-circuit forms cluster where they must —
+`X /= null and then X.Field` — which is the rule stated positively.
+
+```ada
+              if Current_Id /= NULL_TASK_ID and then not Is_Terminated (Current_Id) then return; end if;
+```
+
+Ada 83 has `and then` and `or else` in the same form. What it does not have is
+the modular type the bit operations above are performed on; in Ada 83 the same
+work is done on an integer type with `Boolean` arrays or with
+`Unchecked_Conversion`.
+
+**Break a long boolean expression before the operator, so that each
+continuation line begins with `and`, `or`, `and then` or `or else`.**
+*(measured)* 46 of the 66 wrapped logical operators — 69.7% — lead their line,
+spread over seven files, against 20 that trail, spread over three. Leading
+puts the connectives in a column where they can be read down.
+
+**Put `then` on its own line when the condition it closes has wrapped.**
+*(project rule)* The corpus splits almost evenly — 10 of the 19 wrapped
+conditions put `then` on its own line, 9 leave it trailing — so the count
+decides nothing. The rule takes the former because a trailing `then` on a
+continuation line is indistinguishable at a glance from another operand.
+
+```ada
+              if Int_16_Unsigned_C (Message.wParam) = VK_V_KEY
+                and then (GetKeyState (Int_C (VK_CONTROL)) and 16#8000#) > 0
+                and then GetFocus /= Input_Box
+              then
+                Input_Entry (Input_Entry & Paste);
+```
+
+**Break a long arithmetic expression after an operand and align the
+continuation under the first operand.** *(project rule)* Arithmetic wraps too
+rarely in the corpus to count — four `+` and one `-` — so this follows the
+general continuation rule in [S.2 Indentation](#s2-indentation) rather than a
+measurement of its own.
+
+### S.12 Statements and Control Structures
+
+**Put a whole construct on one line when it fits.** *(measured)* 112 `if`
+statements are written `if C then S; end if;` on a single line against 175
+spread over several, and 122 subprogram bodies are written
+`is begin S; end;` on one line against 181 spread out. Across the corpus 500
+of 519 `if` and `elsif` conditions reach their `then` on the line they started
+on.
+
+**Otherwise indent the body one level and close on its own line.**
+*(measured)* `end` returns to the column of the construct that opened it. This
+holds for `end case;` inside a variant part as much as for `end loop;`.
+
+```ada
+      procedure Put (Item : Str) is
+        begin
+          Current_Log := Current_Log & Item;
+          if Current_Put /= null then Current_Put.all (Item); end if;
+
+          -- Count new lines
+          for I of Item loop
+            if I = To_Char_16 (ASCII.CR) then Current_Lines := Current_Lines + 1; end if;
+          end loop;
+        exception when Device_Error => null; end;
+```
+
+`for I of Item loop` is Ada 2012; the Ada 83 form of the same loop is
+`for I in Item'Range loop`, iterating over indices.
+
+**Write the whole iteration scheme on the line that carries `loop`.**
+*(measured)* All 144 `for` loops in the corpus reach `loop` on the line their
+`for` started on, and so do all 64 of the Ada 2012 `for ... of` loops.
+
+**Prefer a one-line expression function to a one-line body.** *(measured)* 253
+subprogram bodies are written `is (expression);` against 122 written
+`is begin S; end;`. This is an Ada 2012 construct with no Ada 83
+equivalent; in Ada 83 the same subprogram is written
+`function F (X : T) return U is begin return E; end;` on one line, which the
+one-line rule above already covers.
+
+**Use `exit` rather than `goto` to leave a loop.** *(measured)* 29 `exit`
+statements against 5 `goto`, and the five are all jumps forward out of a
+nest of loops, one of them carrying the comment *Gotos to keep the nesting
+sane*. A `goto` is written when the alternative is another level of flag and
+`if`, and not otherwise.
+
+### S.13 Subprogram Profiles
+
+**Write the profile on one line, and `is` at the end of it.** *(measured)* 690
+of the 708 subprogram bodies whose profile is followed by `is` put the whole
+profile and the `is` on one line. This is what 131 columns are for.
+
+```ada
+  function Split (Item : Str; On : Str) return Array_Str_Unbound is
+```
+
+**When the profile does not fit, break it at a `;` between parameters, align
+the following parameters one column past the open parenthesis, and leave `is`
+on the last line of the profile.** *(measured, weakly)* Ten profiles in the
+corpus wrap. Nine of them are in the adapted `zstd` binding, which puts the
+parameter list on its own lines and `is` alone on the line after; the one
+house example puts `is` at the end of the profile, as the rule says. The
+alignment half of the rule is measured — it is the general continuation rule
+of [S.2 Indentation](#s2-indentation), which holds in 253 of 301 cases — but
+the placement of `is` rests on a single instance, and is stated because
+putting `is` alone on a line contradicts the one-line rule above for no gain.
+
+```ada
+    procedure Stage_Image (Path        : Texture_Name_Str.T;
+                           Set_Sampler : access procedure (Path : Str);
+                           Set_Flag    : access procedure (Val  : Bool)) is
+      begin
+```
+
+An `access` parameter is Ada 95; Ada 83 passes an access value of a named
+access type, or a subprogram is passed as a generic formal.
+
+**Align the parameter names, the colons and the types within a wrapped
+profile.** *(measured)* Every wrapped house profile does this, and it is the
+same rule as [S.7 Aligned Declarations](#s7-aligned-declarations) applied to a
+parameter list; the example above shows both columns.
+
+**Never write mode `in`.** *(measured)* This is the most nearly absolute rule
+in the corpus: of 1,229 parameter specifications, 1,070 carry no mode at all,
+134 are `in out`, 23 are `out` and 2 are `access`. Not one is written `in`.
+The mode is the default, and writing it adds a word that says nothing.
+
+```ada
+  procedure Sort   (Item : in out Array_Str_Unbound);
+  procedure Insert (Item : Str; Pos : Positive);
+  function  Length (Item : Str) return Natural;
+```
+
+This is the second point where the compiler's own `ada83-runtime.ada` used to
+disagree: it wrote `in` explicitly 315 times. It has since been rewritten to
+this rule and writes the mode nowhere; its 43 `in out` parameters are
+untouched, the rule being about mode `in` alone. ACATS writes `in` 2,324 times
+and is now the only body of code here that does. The corpus rule is the one
+recorded here.
+
+**Put the parameters that are written to before the parameters that are only
+read.** *(measured)* Of the 66 profiles that mix the two, 52 — spread over
+twelve files, only three of them in the adapted `zstd` binding — put the `out`
+or `in out` parameter first, 12 put it last and 2 interleave.
+
+```ada
+  procedure Set_Matrix_3D_X (M : in out Matrix_3D; V : Vector_3D);
+  procedure Initialize      (Mechanism : out Decompressor; Input_Stream : Ptr_Stream);
+```
+
+The mode itself is always spelled `in out` and never `out in`, which the
+language requires in any case; with `in` never written, those two are the only
+mode spellings the corpus contains.
+
+**Give a defaulted parameter its default in the specification only.**
+*(project rule)* Ada requires the default expression to conform between
+specification and body, and repeating it invites the two to drift; the corpus
+was not counted for this, because the project keeps almost every declaration
+in the specification and the question rarely arises. See
+[S.21 Compilation Unit Layout](#s21-compilation-unit-layout).
+
+### S.14 Aggregates and Named Associations
+
+**Use named association in an aggregate.** *(measured)* Of 359 aggregates,
+274 — 76.3% — name their components, and 240 use `others`. A record aggregate
+is written positionally only when it has one or two components whose order is
+obvious from the type.
+
+**Use positional association in a call.** *(measured)* The corpus is the
+reverse of its own aggregate rule here: of the 545 parenthesised association
+lists of three or more items that follow a name, 432 are wholly positional and
+113 name at least one association, and of all such lists 4,604 are positional
+against 137 named. The count is inflated by array indexing, which cannot be
+named; but the direction is not in doubt. Names are added in a call when the
+argument is a literal whose meaning is not obvious — `Skip_Comments => False`.
+
+**Close a record aggregate with `others` whenever components are left at their
+defaults.** *(measured)* 240 of the 359 aggregates end in an `others` choice.
+The form `others => <>`, which means *whatever the component's default is*,
+accounts for 241 of the 458 `others` choices in the corpus.
+
+`others => <>` is Ada 2005. Ada 83 has no such association: an Ada 83
+aggregate must supply a value for every component, so the same intent is
+written either by naming a value for each remaining component or, where the
+components are of one type, by `others => 0`. Where neither is possible, the
+Ada 83 form is not an aggregate at all but a default-initialised object
+assigned component by component.
+
+**Lay a long aggregate out one association per line, aligned one column past
+the open parenthesis, with the arrows in a column.** *(measured)* 105 of the
+359 aggregates run to more than one line, and they follow the general
+continuation rule of [S.2 Indentation](#s2-indentation) — 253 of 301 — with
+the arrow alignment of [S.7 Aligned Declarations](#s7-aligned-declarations) —
+170 of 201 runs.
+
+```ada
+    Descriptor_Set_Info : aliased VkDescriptorSetAllocateInfo := (descriptorPool     => Descriptor_Pool,
+                                                                  descriptorSetCount => 1,
+                                                                  others             => <>);
+```
+
+**Write a qualified expression with no space between the type mark, the
+apostrophe and the parenthesis.** *(measured)* 37 of 39. This is the one place
+the space-before-parenthesis rule of [S.6 Spacing](#s6-spacing) does not
+apply, because the parenthesis belongs to the apostrophe and not to the name.
+
+```ada
+        Result := new Mesh_State'(Vertex_Count, Index_Count, Segment_Count, 0, 0, others => <>);
+```
+
+**Qualify an aggregate whenever its type is not fixed by the context.**
+*(project rule)* An aggregate on the right of `:=` or as a component default
+needs no qualification and the corpus gives it none; one passed to an
+overloaded subprogram does. The corpus was not counted for this, since
+deciding whether a qualification is needed requires resolving the overload
+set.
+
+### S.15 Type Declarations
+
+The corpus declares 491 types and subtypes: 91 arrays, 65 records, 38
+enumerations, 38 access types, 19 with discriminants, 6 derived and 3 private.
+The rules below follow that population.
+
+**Write a whole type declaration on one line when it fits, and align a run of
+them into columns.** *(measured)* All 91 array type declarations and all 38
+access type declarations fit on one line, and where several stand together
+they are padded until `is array` or `is access` begins in the same column, on
+the rule of [S.7 Aligned Declarations](#s7-aligned-declarations).
+
+```ada
+  type Array_x2_Bool     is array (Positive range <>, Positive range <>) of aliased Bool;
+  type Array_x2_Duration is array (Positive range <>, Positive range <>) of aliased Duration;
+  type Array_x2_Ptr      is array (Positive range <>, Positive range <>) of aliased Ptr;
+```
+
+**Write an access type as `access all T` when the designated object may be
+declared, and `access T` when it may only be allocated.** *(measured)* 33 of
+the 38 access types are `access all`, which is what makes `'Access` and
+`'Unchecked_Access` legal on a declared object. `access all` is Ada 95; Ada 83
+has only `type Ptr_T is access T;`, and the corresponding Ada 83 program
+allocates every designated object.
+
+**Lay an enumeration out on one line, or in aligned columns across several.**
+*(measured)* 25 of the 38 enumeration types fit on one line. The other 13 are
+set out as a table, the literals padded into columns so that a reader can
+count them by eye — one column per position, not one literal per line.
+
+```ada
+  type Dimension_Kind is (X_Dimension, Y_Dimension, Z_Dimension);
+
+  type Structure_Kind is (BoneNode,     CameraNode,     GeometryNode,   LightNode,    Node,
+                          Animation,    Transform,      Translation,    Rotation,     Scale,
+                          CameraObject, GeometryObject, LightObject,    ObjectRef,    MaterialRef);
+```
+
+**Put `is record` at the end of the `type` line, the components two levels in,
+and `end record;` one level in.** *(measured)* 33 of 34 record definitions
+place the components four columns in from the `type` line and 33 of 34 place
+`end record` two columns in. This is the general shape of
+[S.2 Indentation](#s2-indentation) — closer one level in, contents two — and
+it is why `end record;` does not line up under `type`.
+
+```ada
+  type Allocation_State is record
+      ID     : Int_Unsigned_C    := 0;
+      Offset : Int_64_Unsigned_C := 0;
+      Kind   : Allocation_Kind   := Free_Allocation;
+    end record;
+```
+
+**Write the discriminant part on the `type` line; if it wraps, align the
+following discriminants past the open parenthesis and put `is record` alone on
+the next line, one level in.** *(measured)* Nineteen type declarations carry a
+discriminant part; eighteen keep it on the `type` line, and the one that wraps
+is the example below. That is a single instance, so the placement of the
+wrapped `is record` is really a *(project rule)* resting on it; the alignment
+half follows the general continuation rule.
+
+```ada
+  type Mesh_State (Vertex_Count, Index_Count, Segment_Count : Positive;
+                   Bone_Influence_Count, Bone_Weight_Count  : Bone_Index)
+    is record
+      Name          : Geometry_Name_Str.T;
+      Visible       : Bool;
+      Bone_Indicies : Array_Bone_Index (1..Bone_Weight_Count);
+    end record;
+```
+
+**Put the variant part last, indent `case` with the components, its `when`
+one level in and their components one level in again, and return `end case;`
+to the column of `case`.** *(measured)* The corpus's variant records nest
+three deep and do this at every level; `when` is one level in from `case` in
+375 of 404 alternatives across the whole corpus.
+
+```ada
+  type Entity_State (Kind : Entity_Kind) is record
+      Name  : Str_Unbound;
+      Color : Color_State;
+
+      case Kind is
+        when Moveable_Entity | Item_Entity | Light_Entity =>
+          Broken_Model : Str_Unbound := NULL_STR_UNBOUND;
+        when Hurt_Entity =>
+          Kick_Direction  : Vector_3D := ZERO_VECTOR_3D;
+          Damage_To_Apply : Natural   := 0;
+        when others => null;
+      end case;
+    end record;
+```
+
+`when others => null;` closes every variant part in the corpus that does not
+enumerate all its choices, and is the form to use rather than leaving the
+choice list incomplete.
+
+**Put `private` at the column of the unit's `end`, and the private
+declarations one level in from it.** *(measured)* 14 private parts, all of
+them laid out this way, which is the same relation as `begin` to its
+declarations in [S.2 Indentation](#s2-indentation).
+
+```ada
+    protected type Safe_Task is
+        procedure Initialize;
+        function Running return Bool;
+      private
+        Current_Task : Task_Unsafe_Ptr := null;
+        Current_Id   : Task_Id         := NULL_TASK_ID;
+      end;
+```
+
+**Declare a private type in the visible part and complete it immediately after
+`private`.** *(project rule)* Three private types is too thin a sample to
+count, and the project's practice of keeping everything in the specification
+([S.21 Compilation Unit Layout](#s21-compilation-unit-layout)) makes the
+completion easy to find; the rule is stated so that the completion is not put
+at the end of a long private part instead.
+
+**Write an incomplete type declaration and its access type together, above
+the full declaration.** *(measured)* All four incomplete type declarations in
+the corpus are immediately followed by the access type that needs them and
+then, later, by the full declaration — never in any other order.
+
+```ada
+  type Map_State;
+  type Ptr_Map_State is access all Map_State;
+  type Map_State (Geometry_Count : Positive) is record
+```
+
+### S.16 Generic Units
+
+**Put `generic` in the unit's own column and the formal part one level in.**
+*(measured)* 29 generic units, all laid out this way; the formals are aligned
+into columns like any other run of declarations.
+
+```ada
+  generic
+    Name     : Str;
+    Help     : Str;
+    type Var_T is (<>);
+    Initial  : Var_T := Var_T'First;
+    Settable : Bool  := True;
+  package CVar is
+    function Get return Var_T;
+    procedure Set (Val : Var_T);
+  end;
+```
+
+**Order the formal part: types, then objects, then subprograms.** *(project
+rule)* The corpus does not settle this. Of its 29 generic formal parts, eight
+mix object and type formals, and they divide four to four; the example above
+puts two objects before the type and one after. The order is chosen because a
+formal object or subprogram may be declared in terms of a formal type but not
+the reverse, so putting the types first is the order in which the dependencies
+read forwards.
+
+**Introduce a formal subprogram with `with` on the same line as its profile.**
+*(measured)* Every formal subprogram in the corpus is written this way:
+`with procedure Callback (Args : Array_Str_Unbound);`.
+
+**Write an instantiation on one line, and align a run of them into columns.**
+*(measured)* 198 package instantiations, 181 of them — 91.4% — on one line,
+and 69 subprogram instantiations. A run of instantiations is padded until
+`is new` begins in the same column, exactly as a run of declarations is.
+
+```ada
+  package Vector_Vector_2D is new Vectors (Vector_2D);
+  package Vector_Vector_3D is new Vectors (Vector_3D);
+  package Vector_Bool      is new Vectors (Bool);
+```
+
+**When an instantiation does not fit, break after `is new` and align the
+actual part past the open parenthesis.** *(measured, weakly)* 17 of the 198
+instantiations wrap, and they follow the general continuation rule of
+[S.2 Indentation](#s2-indentation) rather than a rule of their own.
+
+### S.17 Tasking
+
+The corpus is uneven here. It contains 15 protected unit declarations and 15
+protected bodies, which is enough to measure a layout from, but only two task
+types, two entry declarations, two `accept` statements, ten `delay` statements
+and no `select` at all. Rules that follow from what the corpus contains are
+marked *(measured)*; the rest are marked *(project rule)* and derive their
+layout from the general shape of [S.2 Indentation](#s2-indentation) rather
+than from a count.
+
+Note also that the protected units the corpus leans on are Ada 95. In Ada 83
+the same mutual exclusion is written as a task with entries and a `select`
+statement — which is exactly the construct the corpus does not exercise, and
+the reason the `select` rules below are asserted rather than counted.
+
+**Lay a task or protected unit out like a record: contents two levels in,
+`end` one level in.** *(measured)* All 15 protected specifications and both
+task type specifications put their contents four columns in from the header
+and their `end` two columns in.
+
+```ada
+      task type Task_Unsafe is
+          pragma Storage_Size (16#8000_0000#);
+          entry Initialize (Id : out Task_Id);
+        end;
+```
+
+**Write an entry declaration exactly like a procedure declaration, and align a
+run of them.** *(measured)* Both entry declarations in the corpus are written
+this way, and the parameter rules of
+[S.13 Subprogram Profiles](#s13-subprogram-profiles) apply unchanged —
+including never writing mode `in`.
+
+**Write a whole `accept` on one line when its body fits; otherwise put `do` at
+the end of the `accept` line, the body one level in, and `end;` back at the
+column of `accept`.** *(measured, weakly)* The corpus has one of each, and the
+one that wraps puts `do` on a line of its own — which is what this rule
+declines to do, on the same ground as `is` in
+[S.13 Subprogram Profiles](#s13-subprogram-profiles): a reserved word alone on
+a line buys nothing.
+
+```ada
+          accept Initialize (Id : out Task_Id) do Id := Current_Task; end;
+
+          accept Run (Start_Index, Work_Amount : Positive; Is_Last : Bool) do
+            Local_Start_Index := Start_Index;
+            Local_End_Index   := Start_Index - 1 + Work_Amount;
+          end;
+```
+
+**Put `select`, each `or`, the `else` and the closing `end select;` all in one
+column, and their statements one level in.** *(project rule)* The corpus
+contains no `select`, so nothing here is measured. The column is chosen
+because the alternatives of a `select` are peers, exactly as the alternatives
+of a `case` are, and a reader should be able to find them by scanning one
+column.
+
+```ada
+      select
+        accept Stop;
+        exit;
+      or
+        accept Work (Item : Job) do
+          Current := Item;
+        end;
+      or
+        delay TIMEOUT;
+        Report_Idle;
+      else
+        null;
+      end select;
+```
+
+**Put a guard on the line above the `accept` it guards, in the alternative's
+own column.** *(project rule)* Not measured, for the same reason.
+
+```ada
+      select
+        when Queue_Length > 0 =>
+          accept Take (Item : out Job) do
+            Item := Head;
+          end;
+      or
+        terminate;
+      end select;
+```
+
+**Write `terminate;` as an alternative of its own, last.** *(project rule)*
+The language requires a terminate alternative to be the whole of its
+alternative and forbids it in a `select` with an `else`; writing it last makes
+that visible.
+
+**Write `delay` and the statement that recomputes its argument on one line.**
+*(measured)* Of the ten `delay` statements, six share their line with the
+assignment that resets the clock they wait on, and four — every one of them a
+bare constant delay — stand alone. The pair belongs together because reading
+either without the other misleads.
+
+```ada
+        delay WINDOW_POLLING_DURATION - (Clock - Last_Time); Last_Time := Clock;
+```
+
+### S.18 Exceptions
+
+**Declare exceptions in a run with the colons aligned, and write `exception`
+in lower case.** *(measured, and against the corpus)* The corpus has twelve
+exception declarations and all twelve capitalise the reserved word —
+`Duplicate : Exception;`. That is the single place where the guidelines
+overrule what was counted: `exception` is a reserved word, the rule in
+[S.4 Casing](#s4-casing) is that reserved words are lower case in 12,968 of
+13,057 occurrences, and twelve declarations are not enough to carve out an
+exception to a rule that strong. The alignment half is measured — it is the
+rule of [S.7 Aligned Declarations](#s7-aligned-declarations).
+
+```ada
+  Data_Error   : exception;
+  Device_Error : exception;
+  End_Error    : exception;
+```
+
+**Raise with the exception name alone.** *(measured)* All 75 `raise`
+statements name an exception and none re-raises with a bare `raise;`. Where a
+raise is the whole of a short `if`, it is written on the line with it, and a
+run of such raises is aligned.
+
+```ada
+        if (Data and 16#0000_0001#) /= 0 then raise Invalid_Operation;    end if;
+        if (Data and 16#0000_0002#) /= 0 then raise Denormalized_Operand; end if;
+        if (Data and 16#0000_0004#) /= 0 then raise Divide_By_Zero;       end if;
+```
+
+`raise X with "message"` is Ada 2005; Ada 83 has `raise X;` only, and a
+message is passed by other means or not at all.
+
+**Put the first handler on the same line as `exception`.** *(measured)* All 22
+handler sections in the corpus do this, which is the same instinct as the
+one-line rule in
+[S.12 Statements and Control Structures](#s12-statements-and-control-structures):
+`exception` alone on a line says nothing that the `when` beside it does not.
+
+```ada
+      procedure Handle_Set (Val : Str) is
+        begin
+          Set (Var_T'Wide_Value (Val));
+        exception when Constraint_Error =>
+          for I in Var_T'Range loop
+            if Val = To_Str (I) then Set (I); exit; end if;
+          end loop;
+        end;
+```
+
+**Put the handler's statements one level in from `exception`, and let `end`
+close the body as usual.** *(measured)* Every handler section in the corpus is
+laid out this way; a one-statement handler is written on the `exception` line
+entire — `exception when Device_Error => null; end;`.
+
+**Write `when others` last, and only to convert or report.** *(measured)* 13
+of the 22 handler sections have a `when others` choice, always last. The
+project's own use of it is to log and re-dispatch, as in
+`exception when Occurrence: others => Handle (Occurrence);`.
+
+A choice parameter — `when Occurrence: others =>` — is Ada 95. In Ada 83 the
+handler is written `when others =>` and there is no occurrence object to pass
+on.
+
+### S.19 Representation Clauses and Pragmas
+
+**Write a simple representation clause on one line, and align a run of them.**
+*(measured)* The corpus has six representation clauses and all six are one
+line: `for T'Size use 8;`, `for X'Address use Y'Address;`,
+`for Precision_Kind use (24, 53, 64);`. Where two stand together, the `use`
+clauses are aligned like anything else.
+
+```ada
+              for Source'Address      use Data;
+              for Destination'Address use To_Ptr (To_Int_Ptr (Staging_Data));
+```
+
+**Put a representation clause immediately after the declaration it applies
+to.** *(measured)* All six sit on the line below their type or object, or on
+the same line as it where both are short:
+
+```ada
+  type Int_8_Percent is range 1..100; for Int_8_Percent'Size use 8;
+```
+
+**Lay a record representation clause out like the record it describes: `use
+record` at the end of the `for` line, an alignment clause first, the component
+clauses two levels in with their `at`, `range` and bounds in columns, and
+`end record;` one level in.** *(project rule)* The corpus contains no record
+representation clause, so nothing here is measured. The layout is the one
+that [S.15 Type Declarations](#s15-type-declarations) already gives the record
+itself, so that the two can be read side by side; the column alignment is the
+rule of [S.7 Aligned Declarations](#s7-aligned-declarations). Contrast the
+form used by the example in
+[13.4](#134-record-representation-clauses), which puts `record` on a line of
+its own and indents three.
+
+```ada
+  for Program_Status_Word use record
+      at mod 8;
+      System_Mask     at 0*Word range  0..7;
+      Protection_Key  at 0*Word range 10..11;
+      Machine_State   at 0*Word range 12..15;
+      Interrupt_Cause at 0*Word range 16..31;
+    end record;
+```
+
+**Put a pragma that applies to one declaration immediately after it, at that
+declaration's indent.** *(measured)* Four of the corpus's sixteen pragmas
+apply to a single construct, and each sits with it: `pragma Inline (Run_Input);`
+on the line after the body of `Run_Input`, `pragma Storage_Size` as the first
+line inside a task specification, `pragma Assert` in the statement sequence
+it checks.
+
+**Put a pragma that brackets a region at column 1, whatever the indent of what
+it brackets.** *(measured)* All twelve `pragma Warnings` in the corpus are at
+column 1, in six matched `(Off)`/`(On)` pairs, while the code between them is
+indented anywhere from column 1 to column 7. Pulling them to the margin is
+what marks them as scaffolding rather than part of the program, and it makes
+an unmatched `(Off)` easy to see.
+
+```ada
+      function Handle_Get return Str is (Help & EOL & "Current value: " & Get);
+
+pragma Warnings (Off); -- warning: call to "Set" may occur before body is seen
+      procedure Handle_Set (Val : Str) is begin Set (Val); end;
+pragma Warnings (On);
+```
+
+**Give a suppressed warning a trailing comment saying which warning it is.**
+*(measured)* Three of the six `(Off)` pragmas carry the compiler's own wording
+as a trailing comment, as above. The other three do not, so this is the
+majority and not the whole; it is stated as a rule because an unexplained
+`pragma Warnings (Off)` cannot be reviewed.
+
+**Spell a pragma name in `Mixed_Case`.** *(measured)* `Warnings`, `Inline`,
+`Assert`, `Storage_Size` — 16 of 16.
+
+Of the four pragma names the corpus uses, only `Inline` is predefined in
+Ada 83; `Storage_Size` is Ada 95, `Assert` is Ada 2005, and `Warnings` is a
+GNAT extension. The Ada 83 set is the fourteen names listed in
+[B. Predefined Language Pragmas](#b-predefined-language-pragmas), and the
+casing rule applies to all of them.
+
+### S.20 End Labelling
+
+**Do not repeat the unit name after `end`.** *(measured)* This is the
+strongest rule in the corpus: 563 bare `end;` against 9 that name the unit,
+and all nine of those are in the adapted `zstd` binding described in
+[S.1 Sources of these Guidelines](#s1-sources-of-these-guidelines). Excluding
+that file, the corpus does not name a unit after `end` even once. It holds for
+library units too — a package specification closes with a bare `end;`.
+
+```ada
+  package body Neo.Core.Strings is
+    function Split (Item : Str; On : Str) return Array_Str_Unbound is
+      begin
+        return To_Unsafe_Array (Split_Vec (Item, On));
+      end;
+  end;
+```
+
+**Write after `end` only the reserved word the syntax requires.** *(measured)*
+`end if;` 413, `end loop;` 263, `end record;` 68, `end case;` 52 — and nothing
+else. A loop label is not repeated after `end loop` either.
+
+The rule is worth stating precisely because it is unusual. GNAT's `-gnatye`
+checks the opposite, requiring the name; the ACATS suite writes `end Name;`
+13,860 times against 7,754 bare; and this compiler's own `ada83-runtime.ada`
+agrees with the corpus, 240 bare against none named. It very nearly did
+already: the ten it carried were two subprogram names and eight operator
+symbols, `end "+";` and its relatives, and all ten have been dropped. The
+justification the project gives
+is that the name after `end` is a comment the compiler happens to check, that
+it goes stale under renaming, and that a body short enough to read does not
+need it — which is the same argument that produces the one-line bodies of
+[S.12 Statements and Control Structures](#s12-statements-and-control-structures).
+
+### S.21 Compilation Unit Layout
+
+**Pair each `with` with its `use` on one line, and align the `use` clauses.**
+*(measured)* 91 context clauses are written `with X; use X;` on a single line
+against 35 bare `with X;`, and only one `use` stands alone. Every one of the
+14 runs of two or more such lines aligns the `use` in a single column.
+
+```ada
+with Is_Debugging;
+with System;                     use System;
+with Neo;                        use Neo;
+with Neo.Core.Strings;           use Neo.Core.Strings;
+with Neo.Core.Console;           use Neo.Core.Console;
+```
+
+A blank line then separates the context clauses from the unit, which may be
+preceded by a one-line comment saying what it is for. A generic formal part is
+written with `generic` in the unit's own column and the formals one level in;
+see [S.16 Generic Units](#s16-generic-units).
+
+**Keep everything but bodies in the specification.** *(project rule)* This one
+is stated by the project rather than inferred from a count: everything except
+subprogram, package, protected type and task bodies belongs in the `.ads`
+file, including global variables and private subprogram declarations, so that
+a single file gives the whole overview.
+
+**Write a renaming on one line, aligned with its neighbours.** *(measured)* 81
+of the corpus's 84 renamings are on one line. A renaming is a declaration and
+takes the alignment rules of
+[S.7 Aligned Declarations](#s7-aligned-declarations).
+
+**Use `separate` only for a body that would otherwise make a file
+unreadable, or that has one implementation per platform.** *(measured)* Five
+bodies in 15,027 lines are written `is separate;`, and they answer to six
+subunit files because two of them — the CPU and window-system bodies — have an
+alternative implementation per target. The stubs are aligned like any other
+run of declarations.
+
+```ada
+      package body CPU    is separate;
+      package body System is separate;
+```
+
+### S.22 Departures from GNAT Convention
+
+The GNAT style checker — the `-gnaty` family of switches — is the nearest
+thing Ada has to a standard house style, and it is what a reader is likeliest
+to have met before. This style is not it. Every row below was checked by
+feeding the construct to a GNAT compiler and reading back what it said, so the
+middle column below is the checker's own wording and not a recollection of
+it.
+
+Where the two disagree:
+
+| Check | GNAT's diagnostic | This style |
+| --- | --- | --- |
+| `-gnaty3` | *bad indentation* at any step but three | two spaces ([S.2](#s2-indentation)) |
+| `-gnatyM79` | *this line is too long* past 79 columns | 131 ([S.3](#s3-line-length)) |
+| `-gnatyl` | *"begin" in wrong column, should be in column 1* | `begin` with the declarations ([S.2](#s2-indentation)) |
+| `-gnatye` | *"end U" required* | a bare `end;`, 563 of 563 ([S.20](#s20-end-labelling)) |
+| `-gnatyS` | *no statements may follow "then" on same line* | the whole `if` on one line when it fits, 112 times ([S.12](#s12-statements-and-control-structures)) |
+| `-gnatyc` | *space required* — two spaces must follow `--` | one space, 777 of 1,025 ([S.8](#s8-comments)) |
+| `-gnatyo` | *subprogram body "Alpha" not in alphabetical order* | grouped by subject under boxed headers; only 378 of 639 adjacent bodies are in alphabetical order, which is what chance would give ([S.8](#s8-comments)) |
+
+Where the two agree, and the corpus confirms it rather than the rule being
+taken on trust:
+
+| Check | GNAT's diagnostic | This style |
+| --- | --- | --- |
+| `-gnatyk` | *reserved words must be all lower case* | 12,968 of 13,057 ([S.4](#s4-casing)) |
+| `-gnatyn` | *bad casing of "Integer" declared in Standard* | 1,109 predefined-name occurrences, one spelling each ([S.4](#s4-casing)) |
+| `-gnatyr` | *bad casing of "Item" declared at line 2* | 4,017 of 4,081 names spelled one way throughout ([S.4](#s4-casing)) |
+| `-gnatyI` | *"in" should be omitted* | never written, 0 of 1,229 ([S.13](#s13-subprogram-profiles)) |
+| `-gnatyt` | *space required* for `Put_Line(X)` and for `Y+1` | 4,740 of 4,741, and every binary operator spaced ([S.6](#s6-spacing)) |
+| `-gnatyu` | *multiple blank lines* | 58 runs of two among 2,165 blank lines ([S.9](#s9-blank-lines)) |
+
+Two checks the project has decided nothing about, and this section will not
+pretend otherwise. `-gnatyb` rejects a line that ends in whitespace; 285 of
+the corpus's 15,027 lines do, in 13 of its 53 files, which reads as an
+accident nobody has swept up rather than as a position either way, and no rule
+above forbids or permits it. `-gnatyL`*nnn* rejects nesting deeper than *nnn*
+levels; the corpus nests variant parts three deep and packages deeper than
+that, and no limit has ever been chosen, so none is stated here.
+
+Three further questions are settled above by assertion rather than by
+counting, and are marked *(project rule)* where they occur: the layout of a
+`select` statement and its guards ([S.17](#s17-tasking)), the layout of a
+record representation clause
+([S.19](#s19-representation-clauses-and-pragmas)), and the order of a generic
+formal part ([S.16](#s16-generic-units)). Each is a construct the corpus does
+not contain, or contains without settling: there is no `select` statement and
+no `for X use record` anywhere in it, and of the eight generic formal parts
+that mix object and type formals, four lead with the type and four with an
+object. Reading a body of code that does settle them should replace the
+assertion with a count, and the rule should change if the count disagrees.
