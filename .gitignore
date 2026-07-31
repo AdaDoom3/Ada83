@@ -1,0 +1,10 @@
+ada83
+ada83.exe
+ada83.vsix
+staging/
+bin-*.zip.new
+
+acats/
+acats_logs/
+test_results/
+acats.baseline

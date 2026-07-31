@@ -3,6 +3,7 @@ set -euo pipefail
 
 NPROC=${JOBS:-${NPROC:-$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)}}
 TEST_TIMEOUT=${TEST_TIMEOUT:-30}
+COMPILE_TIMEOUT=${COMPILE_TIMEOUT:-30}
 LINK_TIMEOUT=${LINK_TIMEOUT:-20}
 BASELINE=${BASELINE:-acats.baseline}
 
@@ -12,6 +13,18 @@ TIMEOUT=$(command -v timeout || command -v gtimeout) || {
     exit 1
 }
 export TIMEOUT
+
+for tool in llvm-link lli; do
+    command -v "$tool" >/dev/null || {
+        echo "FATAL: no '$tool' command found" >&2
+        echo "       classes A, C, D and E link and run what they compile," >&2
+        echo "       and without it every one of them reports as skipped" >&2
+        echo "       Debian/Ubuntu: apt-get install llvm" >&2
+        echo "       macOS:         brew install llvm" >&2
+        echo "       Windows:       winget install LLVM.LLVM" >&2
+        exit 1
+    }
+done
 
 now_ms(){
     local stamp
@@ -65,7 +78,7 @@ compile_set(){
     COMPILE_FAILED=""
     for part in "${COMPILE_FILES[@]}"; do
         pn=$(basename "$part" .ada)
-        if ! "$TIMEOUT" 4 ./ada83 --ir "$part" -o $lib/$pn.ll >/dev/null 2>$LOGS_DIR/$n.err; then
+        if ! "$TIMEOUT" "$COMPILE_TIMEOUT" ./ada83 --ir "$part" -o $lib/$pn.ll >/dev/null 2>$LOGS_DIR/$n.err; then
             if [[ $pn == "$n" ]]; then
                 COMPILE_FAILED=$pn
                 return 1
@@ -243,7 +256,7 @@ run_one(){
                     fi
                 fi
             done < "$part"
-            if "$TIMEOUT" 4 ./ada83 --ir "$part" -o "$lib/${pn%.ada}.ll" \
+            if "$TIMEOUT" "$COMPILE_TIMEOUT" ./ada83 --ir "$part" -o "$lib/${pn%.ada}.ll" \
                  >/dev/null 2>$LOGS_DIR/$n.$pn.err; then :; else
                 rejected=yes
             fi
@@ -340,7 +353,7 @@ run_one(){
 ROOT=$PWD
 export ROOT
 export -f run_one gather_files compile_set run_in_lib link_program run_continuity_creators pct
-export START_MS TEST_TIMEOUT LINK_TIMEOUT
+export START_MS TEST_TIMEOUT LINK_TIMEOUT COMPILE_TIMEOUT
 
 run_one_timed(){
     local f=$1 n=$(basename "$1" .ada) q

@@ -129,6 +129,25 @@ int Host_Processor_Count () {
   return count > 1 ? (int) count : 1;
 }
 
+#ifdef _WIN32
+  #define HOST_DIRECTORY_SEPARATORS "/\\"
+#else
+  #define HOST_DIRECTORY_SEPARATORS "/"
+#endif
+
+const char *Host_Path_Split (const char *path) {
+  const char *last = NULL;
+  for (const char *scan = path;
+       (scan = strpbrk (scan, HOST_DIRECTORY_SEPARATORS));
+       scan++)
+    last = scan;
+  return last;
+}
+
+bool Host_Path_Separates (char character) {
+  return character and strchr (HOST_DIRECTORY_SEPARATORS, character);
+}
+
 bool Host_Executable_Path (char *buffer, size_t size, const char *invoked_as) {
 #if defined(_WIN32)
   DWORD written = GetModuleFileNameA (NULL, buffer, (DWORD) size);
@@ -6817,7 +6836,7 @@ const char *Add_Include_Path (const char *directory);
 bool        Is_Directory   (const char *path, char *out,
                               size_t out_size);
 const char *Take_Base_Name (const char *path) {
-  const char *slash = strrchr (path, '/');
+  const char *slash = Host_Path_Split (path);
   return slash ? slash + 1 : path;
 }
 char *Try_Read_Ext         (const char *base, const char *ext);
@@ -59018,7 +59037,8 @@ char *Try_Read_Ext (const char *base, const char *ext) {
 void Build_Include_Path_Filename (Slice name, u32 index, char *out, size_t out_size) {
   size_t base_len = strlen (Include_Paths[index]);
   snprintf (out, out_size, "%s%s%.*s", Include_Paths[index],
-       (base_len > 0 and Include_Paths[index][base_len-1] != '/') ? "/" : "",
+       (base_len and not Host_Path_Separates (Include_Paths[index][base_len-1]))
+         ? "/" : "",
        (int)name.length, name.data);
   for (char *cursor = out + base_len; *cursor; cursor++)
     if (*cursor >= 'A' and *cursor <= 'Z') *cursor = *cursor - 'A' + 'a';
@@ -59207,7 +59227,7 @@ const char *Add_Include_Path (const char *directory) {
 }
 
 bool Is_Directory (const char *path, char *out, size_t out_size) {
-  const char *slash = strrchr (path, '/');
+  const char *slash = Host_Path_Split (path);
   if (not slash) {
     if (out_size < 2) return false;
     out[0] = '.';
@@ -60411,7 +60431,7 @@ void Compile_Job_Start (Compile_Job *job, const char *input_path,
   job->exit_status = 0;
   job->worker      = HOST_PROCESS_NONE;
 
-  const char *slash = strrchr (input_path, '/');
+  const char *slash = Host_Path_Split (input_path);
   const char *dot   = strrchr (input_path, '.');
   size_t stem = (dot and (not slash or dot > slash))
               ? (size_t) (dot - input_path) : strlen (input_path);
