@@ -28,9 +28,9 @@ Prebuilt compilers ship with the repository:
 
 | Archive | Contents |
 | ------- | -------- |
-| [`bin-linux.zip`](bin-linux.zip) | `ada83`, baseline x86_64, and `ada83-runtime.ada`; needs glibc 2.34 or newer, and libLLVM from the system package manager |
-| [`bin-macos.zip`](bin-macos.zip) | `ada83`, universal x86_64 + arm64, and `ada83-runtime.ada`; libLLVM via Homebrew |
-| [`bin-windows.zip`](bin-windows.zip) | `ada83.exe`, `ada83-runtime.ada`, and `LLVM-C.dll` with its companion DLLs; unzip them together |
+| [`bin-linux.zip`](bin-linux.zip) | `ada83`, baseline x86_64, plus `ada83-runtime.ada` and `ada83.vsix`; needs glibc 2.34 or newer, and libLLVM from the system package manager |
+| [`bin-macos.zip`](bin-macos.zip) | `ada83`, universal x86_64 + arm64, plus `ada83-runtime.ada` and `ada83.vsix`; macOS 11 or newer, libLLVM via Homebrew |
+| [`bin-windows.zip`](bin-windows.zip) | `ada83.exe`, `ada83-runtime.ada`, `ada83.vsix`, and `LLVM-C.dll` with its companion DLLs; unzip them together. Linking native executables wants clang with lld, which resolves the weak externals thread-local storage becomes on COFF |
 
 `ada83-runtime.ada` holds the standard library, and the compiler looks for it
 beside its own executable, so keep the two together when unpacking. To rebuild
