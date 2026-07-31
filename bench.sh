@@ -31,6 +31,19 @@ Environment:
   NO_COLOUR   set to 1 to draw no colour
   KEEP_WORK   set to 1 to keep the working tree
 
+codegen mode only, where the two compilers are compared directly:
+  CODEGEN_REPEATS  timed repetitions of each pair (default: 25)
+  CODEGEN_WARMUP   untimed runs of each binary first (default: 3)
+  SUITES           whole passes of the suite, to show the ratios hold (default: 2)
+  BENCH_CPU        core to pin both binaries to (default: the last one)
+  BENCH_CPUS_TASK  cores for the programs with tasks (default: the last two)
+  RT               set to 1 to run at SCHED_FIFO priority 50 as well
+  FLOOR            seconds below which a MAD is treated as timer noise (default: 0.002)
+  LOAD_MAX         one-minute load average above which the run refuses (default: 2.0)
+  FORCE            set to 1 to measure anyway on a busy machine
+  TSV_DIR          directory to write suite<N>.tsv into, one row per program
+  NO_PIN           set to 1 to measure without taskset, nice or chrt
+
 TEXT
 }
 
@@ -42,6 +55,9 @@ REPEATS=${REPEATS:-7} WARMUP=${WARMUP:-1} OPT=${OPT:-2}
 CORPUS=${CORPUS:-300} SLOWEST=${SLOWEST:-12} ONLY=${ONLY:-}
 NO_GNAT=${NO_GNAT:-0} NO_ANIMATE=${NO_ANIMATE:-0} NO_COLOUR=${NO_COLOUR:-0}
 KEEP_WORK=${KEEP_WORK:-0}
+CODEGEN_REPEATS=${CODEGEN_REPEATS:-25} CODEGEN_WARMUP=${CODEGEN_WARMUP:-3}
+SUITES=${SUITES:-2} RT=${RT:-0} FLOOR=${FLOOR:-0.002}
+LOAD_MAX=${LOAD_MAX:-2.0} FORCE=${FORCE:-0} NO_PIN=${NO_PIN:-0} TSV_DIR=${TSV_DIR:-}
 
 ada83=$here/ada83
 work=$(mktemp -d "${TMPDIR:-/tmp}/ada83-bench-XXXXXX")
@@ -65,6 +81,11 @@ describe(){ case $1 in
     taskselect) echo "selective wait with an else part" ;;
 esac; }
 
+# Programs whose output must match GNAT's byte for byte. numerics is exempt:
+# it accumulates a fixed point value forty million times, and Ada 83 lets an
+# implementation choose its own `small` for such a type, so the two totals are
+# both correct and different (132 against 720 here). Every other program is
+# held to identical output, and a difference there is an error, not a footnote.
 comparable(){ case $1 in numerics) return 1 ;; *) return 0 ;; esac; }
 
 animated=0; [ -t 2 ] && [ "$NO_ANIMATE" != 1 ] && animated=1
@@ -145,6 +166,189 @@ measure(){
 
 med(){ set -- $1; printf '%s' "${1:-x}"; }
 rsd(){ set -- $1; printf '%s' "${2:-0}"; }
+
+# ---------------------------------------------------------------------------
+# Codegen measurement.
+#
+# The point of this mode is a ratio between two compilers, and a ratio is only
+# worth printing when it is larger than the noise underneath it.  Four things
+# are done about the noise, and one about what is claimed from it:
+#
+#   pinning       both binaries run on the same fixed cpus — one core for the
+#                 programs with no tasks in them, a fixed pair for the ones
+#                 that have tasks — so the scheduler moving a process around
+#                 the machine is no longer a variable, and neither is a core
+#                 the host happens to be throttling
+#   interleaving  A and B alternate within one pair, and the pair swaps order
+#                 every repetition, so load drifting during the run lands on
+#                 both compilers instead of on whichever went second
+#   repetition    more samples, summarised by median and median absolute
+#                 deviation, which a single slow run cannot drag around the way
+#                 it drags a mean and a standard deviation
+#   warmup        three untimed runs of each binary before any are kept, so
+#                 first-touch page faults and cold file cache are not measured
+#   load watching the load average is sampled while measuring, not only before,
+#                 because on a shared machine the neighbour starts when it likes
+#
+#   the rule      a ratio is printed only when the medians differ by more than
+#                 the sum of the two MADs.  Rows that fail it are reported as
+#                 indistinguishable rather than ordered.
+# ---------------------------------------------------------------------------
+
+ncpu=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 1)
+
+# Which cpus this process is actually allowed on. Counting them is not enough:
+# inside a container started with --cpuset-cpus=4,5 there are two cpus but they
+# are numbered 4 and 5, and taskset -c 1 would simply fail — silently dropping
+# the pinning that the whole method rests on. Ask the kernel for the numbers.
+allowed_cpus(){
+    local list part a b i out=''
+    list=$(taskset -pc $$ 2>/dev/null | sed 's/.*: *//')
+    [ -n "$list" ] || { for ((i = 0; i < ncpu; i++)); do out+="$i "; done; printf '%s' "$out"; return; }
+    local IFS=','
+    for part in $list; do
+        case $part in
+            *-*) a=${part%%-*}; b=${part##*-}
+                 for ((i = a; i <= b; i++)); do out+="$i "; done ;;
+            *)   out+="$part " ;;
+        esac
+    done
+    printf '%s' "$out"
+}
+CPUS=($(allowed_cpus))
+[ ${#CPUS[@]} -gt 0 ] || CPUS=(0)
+
+BENCH_CPU=${BENCH_CPU:-${CPUS[${#CPUS[@]}-1]}}
+
+# The programs that create Ada tasks cannot honestly be squeezed onto one core.
+# A task that polls — `select ... else` is a polling loop — spends its whole
+# timeslice spinning while the task it is waiting for sits behind it in the run
+# queue, so a single core turns a rendezvous into a scheduler round trip and
+# measures the scheduler rather than the code. They get a fixed *pair* of
+# cores instead: still no wandering across the machine, still identical for
+# both compilers, but concurrency still means something. Which programs those
+# are is not a judgement call, it is which ones declare a task.
+BENCH_CPUS_TASK=${BENCH_CPUS_TASK:-}
+if [ -z "$BENCH_CPUS_TASK" ]; then
+    if [ ${#CPUS[@]} -ge 2 ]
+    then BENCH_CPUS_TASK="${CPUS[${#CPUS[@]}-2]},${CPUS[${#CPUS[@]}-1]}"
+    else BENCH_CPUS_TASK=$BENCH_CPU; fi
+fi
+
+concurrent(){ case $1 in tasking|taskflood|taskselect) return 0 ;; *) return 1 ;; esac; }
+
+PRIO=() PRIO_WHY=''
+if [ "$NO_PIN" != 1 ]; then
+    if [ "$RT" = 1 ] && command -v chrt >/dev/null 2>&1 && chrt -f 50 true 2>/dev/null; then
+        PRIO=(chrt -f 50); PRIO_WHY=', SCHED_FIFO 50'
+    elif command -v nice >/dev/null 2>&1 && nice -n -5 true 2>/dev/null; then
+        PRIO=(nice -n -5); PRIO_WHY=', nice -5'
+    fi
+fi
+
+pinset(){  # cpu list -> the wrapper that holds a run on it
+    if [ "$NO_PIN" != 1 ] && command -v taskset >/dev/null 2>&1 && taskset -c "$1" true 2>/dev/null
+    then printf 'taskset -c %s\n' "$1"; fi
+}
+PIN_ONE=($(pinset "$BENCH_CPU")) PIN_MANY=($(pinset "$BENCH_CPUS_TASK"))
+PIN_ONE+=(${PRIO[@]+"${PRIO[@]}"}); PIN_MANY+=(${PRIO[@]+"${PRIO[@]}"})
+PIN=(${PIN_ONE[@]+"${PIN_ONE[@]}"})
+
+if [ ${#PIN_ONE[@]} -eq 0 ]; then PIN_WHY='unpinned'
+else PIN_WHY="pinned to cpu $BENCH_CPU, or cpus $BENCH_CPUS_TASK where the program has tasks${PRIO_WHY}"; fi
+
+loadavg(){ [ -r /proc/loadavg ] && cut -d' ' -f1 </proc/loadavg || uptime 2>/dev/null | sed 's/.*average[s]*: *//;s/[, ].*//'; }
+
+load_gate(){
+    local l; l=$(loadavg); [ -n "$l" ] || return 0
+    awk -v l="$l" -v m="$LOAD_MAX" 'BEGIN{exit !(l+0 > m+0)}' || return 0
+    if [ "$FORCE" = 1 ]
+    then printf '  %sload average is %s, above %s: measuring anyway (FORCE=1)%s\n' "$BAD" "$l" "$LOAD_MAX" "$OFF"
+    else die "load average is $l, above LOAD_MAX=$LOAD_MAX; wait for the machine to settle or set FORCE=1"; fi
+}
+
+# One timed run, through the pinning wrapper. Prints seconds, or fails.
+timed_run(){
+    local t
+    TIMEFORMAT=%R
+    t=$( { time ${PIN[@]+"${PIN[@]}"} "$@" <"$seed" >/dev/null 2>&1; } 2>&1 )
+    case $t in ''|*[!0-9.]*) return 1 ;; esac
+    printf '%s\n' "$t"
+}
+
+# median, median absolute deviation and sample count of a file of seconds
+stats(){
+    awk '{ v[++n] = $1 + 0 }
+         END{ if (n == 0) { printf "x x 0"; exit }
+              for (i = 1; i <= n; i++)
+                  for (j = i + 1; j <= n; j++)
+                      if (v[j] < v[i]) { h = v[i]; v[i] = v[j]; v[j] = h }
+              med = (n % 2) ? v[(n + 1) / 2] : (v[n / 2] + v[n / 2 + 1]) / 2
+              for (i = 1; i <= n; i++) { d[i] = v[i] - med; if (d[i] < 0) d[i] = -d[i] }
+              for (i = 1; i <= n; i++)
+                  for (j = i + 1; j <= n; j++)
+                      if (d[j] < d[i]) { h = d[i]; d[i] = d[j]; d[j] = h }
+              mad = (n % 2) ? d[(n + 1) / 2] : (d[n / 2] + d[n / 2 + 1]) / 2
+              printf "%.3f %.3f %d", med, mad, n }' "$1"
+}
+
+# A one-minute load average taken before the run says nothing about what the
+# machine did during it, and on a shared host something else can start at any
+# moment. Sample it throughout, and report the worst the run saw.
+LOAD_PEAK=0
+load_watch_start(){
+    ( while :; do loadavg; sleep 2; done > "$work/load.samples" 2>/dev/null ) &
+    LOAD_WATCH=$!
+}
+# Sets LOAD_LAST to the worst load seen since load_watch_start, and carries
+# the worst of the whole suite in LOAD_PEAK. Not a command substitution: that
+# would run in a subshell and lose both.
+load_watch_stop(){
+    local pk
+    LOAD_LAST=0
+    [ -n "${LOAD_WATCH:-}" ] || return 0
+    kill "$LOAD_WATCH" 2>/dev/null; wait "$LOAD_WATCH" 2>/dev/null; LOAD_WATCH=''
+    pk=$(sort -g "$work/load.samples" 2>/dev/null | tail -1); [ -n "$pk" ] || pk=0
+    LOAD_LAST=$pk
+    awk -v p="$pk" -v m="$LOAD_PEAK" 'BEGIN{exit !(p+0 > m+0)}' && LOAD_PEAK=$pk
+    return 0
+}
+
+# Two binaries, alternating, order swapped every repetition.
+measure_pair(){
+    local a=$1 b=$2 i t
+    : > "$work/samples.a"; : > "$work/samples.b"
+    for ((i = 0; i < CODEGEN_WARMUP; i++)); do
+        ${PIN[@]+"${PIN[@]}"} "$a" <"$seed" >/dev/null 2>&1
+        [ -n "$b" ] && ${PIN[@]+"${PIN[@]}"} "$b" <"$seed" >/dev/null 2>&1
+    done
+    for ((i = 0; i < CODEGEN_REPEATS; i++)); do
+        if [ -z "$b" ]; then
+            t=$(timed_run "$a") && printf '%s\n' "$t" >> "$work/samples.a"
+        elif [ $((i % 2)) -eq 0 ]; then
+            t=$(timed_run "$a") && printf '%s\n' "$t" >> "$work/samples.a"
+            t=$(timed_run "$b") && printf '%s\n' "$t" >> "$work/samples.b"
+        else
+            t=$(timed_run "$b") && printf '%s\n' "$t" >> "$work/samples.b"
+            t=$(timed_run "$a") && printf '%s\n' "$t" >> "$work/samples.a"
+        fi
+    done
+    return 0
+}
+
+# The rule: the medians must differ by more than the sum of the two MADs,
+# each MAD floored at the timer's own noise so a run that happens to repeat
+# to the millisecond cannot make a millisecond difference look real.
+distinguishable(){
+    awk -v a="$1" -v am="$2" -v g="$3" -v gm="$4" -v f="$FLOOR" 'BEGIN{
+        if (a == "x" || g == "x") exit 1
+        if (am + 0 < f + 0) am = f
+        if (gm + 0 < f + 0) gm = f
+        d = a - g; if (d < 0) d = -d
+        exit !(d > am + gm) }'
+}
+
+pm(){ case $1 in x) printf '%14s' 'x' ;; *) printf '%8s ±%-5s' "$1" "$2" ;; esac; }
 
 spread(){ case $1 in x|'') printf '%6s' '' ;; *) awk -v r="$1" 'BEGIN{printf (r>=5)?"  !%3.0f%%":"  ±%3.0f%%", r}' ;; esac; }
 ratio(){ case "$1$2" in *x*) printf '%7s' '-' ;; *) awk -v a="$1" -v b="$2" 'BEGIN{if(b+0==0)printf "%7s","-";else printf "%7.2f",a/b}' ;; esac; }
@@ -701,38 +905,75 @@ run_profile(){
 }
 
 run_codegen(){
-    local gnat=$1 p a g sa sg oa og n=0 total peak=0 fa fg
-    total=$(count "$PROGRAMS")
-    heading "GENERATED CODE"
+    local gnat=$1 suite=${2:-1} p a g am gm na ng oa og n=0 total peak=0
+    local verdict r note tsv='' cpus=$BENCH_CPU lpk=0
+    total=$(count "$PROGRAMS"); LOAD_PEAK=0
+    if [ -n "$TSV_DIR" ]; then mkdir -p "$TSV_DIR"; tsv=$TSV_DIR/suite$suite.tsv
+        printf 'program\tada83_med\tada83_mad\tgnat_med\tgnat_mad\tdistinguishable\tratio\toutput\tsamples\tcpus\tload_peak\n' > "$tsv"
+    fi
+    if [ "$SUITES" -gt 1 ]
+    then heading "GENERATED CODE — suite $suite of $SUITES" "median ± MAD of $CODEGEN_REPEATS interleaved repetitions, $PIN_WHY"
+    else heading "GENERATED CODE" "median ± MAD of $CODEGEN_REPEATS interleaved repetitions, $PIN_WHY"; fi
     if [ "$gnat" = 1 ]
-    then printf '  %-11s %14s %14s %8s  %s\n' program ada83 gnat ratio stresses
-    else printf '  %-11s %14s  %s\n' program ada83 stresses; fi
+    then printf '  %-11s %15s %15s %7s  %-17s %s\n' program 'ada83 (s)' 'gnat (s)' ratio verdict stresses
+    else printf '  %-11s %15s  %s\n' program 'ada83 (s)' stresses; fi
     rule
     for p in $PROGRAMS; do
         progress $((n++)) "$total" "$p"
         if ! "$ada83" "-O$OPT" "$work/src/$p.ada" -o "$work/$p.a83" >/dev/null 2>&1; then
-            clear_line; printf '  %-11s %14s\n' "$p" "build failed"; continue
+            clear_line; printf '  %-11s %14s\n' "$p" "build failed"
+            eval "T_$p=x G_$p=x R_${suite}_$p=- D_${suite}_$p=0"; continue
         fi
-        sa=$(measure "$work/$p.a83"); a=$(med "$sa")
+        g=x gm=x ng=0 og=''
+        if concurrent "$p"
+        then PIN=(${PIN_MANY[@]+"${PIN_MANY[@]}"}); cpus=$BENCH_CPUS_TASK
+        else PIN=(${PIN_ONE[@]+"${PIN_ONE[@]}"});  cpus=$BENCH_CPU; fi
+        load_watch_start
+        if [ "$gnat" = 1 ] &&
+           ( cd "$work/src" && gnatmake -q "-O$OPT" "$p.adb" -o "$work/$p.gnat" ) >/dev/null 2>&1
+        then measure_pair "$work/$p.a83" "$work/$p.gnat"
+             read -r g gm ng <<<"$(stats "$work/samples.b")"
+        else measure_pair "$work/$p.a83" ''; fi
+        load_watch_stop; lpk=$LOAD_LAST
+        read -r a am na <<<"$(stats "$work/samples.a")"
         oa=$("$work/$p.a83" <"$seed" 2>&1 | head -1)
-        eval "T_$p=\$a"
+        [ "$g" = x ] || og=$("$work/$p.gnat" <"$seed" 2>&1 | head -1)
+        eval "T_$p=\$a G_$p=\$g AM_$p=\$am GM_$p=\$gm"
+        clear_line
         if [ "$gnat" = 1 ]; then
-            sg='x 0'; g=x; og=$oa
-            if ( cd "$work/src" && gnatmake -q "-O$OPT" "$p.adb" -o "$work/$p.gnat" ) >/dev/null 2>&1; then
-                sg=$(measure "$work/$p.gnat"); g=$(med "$sg"); og=$("$work/$p.gnat" <"$seed" 2>&1 | head -1)
+            note=same
+            if [ "$g" != x ] && [ "$oa" != "$og" ]
+            then comparable "$p" && note=DIFFERS || note=representation; fi
+            if distinguishable "$a" "$am" "$g" "$gm"; then
+                r=$(awk -v a="$a" -v b="$g" 'BEGIN{printf "%.2f", a/b}')
+                verdict=$(speedup "$a" "$g")
+                case $verdict in *faster) verdict="$GOOD$verdict$OFF" ;; *slower) verdict="$BAD$verdict$OFF" ;; esac
+                eval "R_${suite}_$p=\$r D_${suite}_$p=1"
+            else
+                r='-'; verdict="${DIM}indistinguishable$OFF"
+                eval "R_${suite}_$p=- D_${suite}_$p=0"
             fi
-            eval "G_$p=\$g"; clear_line
-            printf '  %-11s %8s%s %8s%s %s  %s' "$p" "$a" "$(spread "$(rsd "$sa")")" \
-                "$g" "$(spread "$(rsd "$sg")")" "$(ratio "$a" "$g")" "$(describe "$p")"
-            [ "$oa" != "$og" ] && { comparable "$p" && printf '  %sOUTPUT DIFFERS%s' "$BAD" "$OFF" \
-                                    || printf '  %s(representation differs)%s' "$DIM" "$OFF"; }
+            eval "MA_${suite}_$p=\$a MG_${suite}_$p=\$g"
+            printf '  %-11s %s %s %7s  %-17s %s' "$p" "$(pm "$a" "$am")" "$(pm "$g" "$gm")" \
+                "$r" "$verdict" "$(describe "$p")"
+            case $note in DIFFERS) printf '  %sOUTPUT DIFFERS%s' "$BAD" "$OFF" ;;
+                          representation) printf '  %s(totals differ — the standard lets a fixed point type pick its own small)%s' \
+                              "$DIM" "$OFF" ;; esac
+            awk -v l="$lpk" -v m="$LOAD_MAX" 'BEGIN{exit !(l+0 > m+0)}' &&
+                printf '  %s! load reached %s while measuring%s' "$BAD" "$lpk" "$OFF"
             printf '\n'
+            [ -n "$tsv" ] && printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s/%s\t%s\t%s\n' \
+                "$p" "$a" "$am" "$g" "$gm" \
+                "$(eval "printf %s \$D_${suite}_$p")" "$r" "$note" "$na" "$ng" "$cpus" "$lpk" >> "$tsv"
         else
-            clear_line
-            printf '  %-11s %8s%s  %s\n' "$p" "$a" "$(spread "$(rsd "$sa")")" "$(describe "$p")"
+            printf '  %-11s %s  %s\n' "$p" "$(pm "$a" "$am")" "$(describe "$p")"
+            [ -n "$tsv" ] && printf '%s\t%s\t%s\t-\t-\t-\t-\t-\t%s/0\t%s\t%s\n' "$p" "$a" "$am" "$na" "$cpus" "$lpk" >> "$tsv"
         fi
     done
     clear_line
+    printf '\n  %sload%s    %s at the end of suite %s, %s at its worst while measuring%s\n' \
+        "$DIM" "$OFF" "$(loadavg)" "$suite" "$LOAD_PEAK" \
+        "$(awk -v l="$LOAD_PEAK" -v m="$LOAD_MAX" 'BEGIN{print (l+0>m+0)?" — SOMETHING ELSE WAS RUNNING, TREAT THIS SUITE AS SUSPECT":""}')"
     [ "$gnat" = 1 ] || return 0
     heading "SIDE BY SIDE"
     for p in $PROGRAMS; do
@@ -742,13 +983,54 @@ run_codegen(){
         done
     done
     for p in $PROGRAMS; do
-        eval "a=\${T_$p:-x}"; eval "g=\${G_$p:-x}"
+        eval "a=\${T_$p:-x}"; eval "g=\${G_$p:-x}"; eval "n=\${D_${suite}_$p:-0}"
         [ "$a" = x ] && continue
+        verdict=$(speedup "$a" "$g"); [ "$n" = 1 ] || verdict='indistinguishable'
         printf '  %-11s %s%-5s%s %s %7s  %s\n' "$p" "$BOLD" ada83 "$OFF" \
-            "$(bar "$(scaled "$a" "$peak" 30)" 30)" "$a" "$(speedup "$a" "$g")"
+            "$(bar "$(scaled "$a" "$peak" 30)" 30)" "$a" "$verdict"
         [ "$g" = x ] && continue
         printf '  %-11s %s%-5s%s %s %7s\n' '' "$DIM" gnat "$OFF" \
             "$(bar "$(scaled "$g" "$peak" 30)" 30)" "$g"
+    done
+    return 0
+}
+
+# Every suite is a full pass over every program. Two passes an hour apart in
+# machine load are the check on the ratios themselves: if suite 2 disagrees
+# with suite 1, the number is not stable enough to publish, whatever its MAD.
+run_codegen_suites(){
+    local gnat=$1 s
+    load_gate
+    for ((s = 1; s <= SUITES; s++)); do run_codegen "$gnat" "$s"; done
+    [ "$SUITES" -gt 1 ] && [ "$gnat" = 1 ] && run_stability
+    return 0
+}
+
+# The second pass is the only thing that can catch a ratio that is tight
+# within a run and still not a property of the code — one that moves when the
+# machine's mood does. A row that fails here should not be published, however
+# small its MADs were.
+run_stability(){
+    local p r1 r2 d1 d2 a1 g1 a2 g2
+    heading "SUITE AGAINST SUITE" "the same ratio measured twice, as the check that it is real"
+    printf '  %-11s %9s %9s %10s  %s\n' program 'suite 1' 'suite 2' drift ''; rule
+    for p in $PROGRAMS; do
+        eval "r1=\${R_1_$p:-x} r2=\${R_2_$p:-x} d1=\${D_1_$p:-0} d2=\${D_2_$p:-0}"
+        eval "a1=\${MA_1_$p:-x} g1=\${MG_1_$p:-x} a2=\${MA_2_$p:-x} g2=\${MG_2_$p:-x}"
+        [ "$r1" = x ] && continue
+        if [ "$d1" != 1 ] || [ "$d2" != 1 ]; then
+            printf '  %-11s %9s %9s %10s  %s\n' "$p" "$r1" "$r2" '-' \
+                "$([ "$d1" = "$d2" ] && echo 'indistinguishable in both suites' \
+                   || echo 'DISTINGUISHABLE IN ONE SUITE ONLY — not published')"
+            continue
+        fi
+        # from the medians rather than the printed two-decimal ratio, which at
+        # 0.01 is coarser than the drift being looked for
+        awk -v p="$p" -v a1="$a1" -v g1="$g1" -v a2="$a2" -v g2="$g2" 'BEGIN{
+            r1 = a1 / g1; r2 = a2 / g2; d = (r2 - r1) * 100 / r1
+            printf "  %-11s %9.3f %9.3f %+9.1f%%  %s\n", p, r1, r2, d,
+                ((d < 0 ? -d : d) <= 10) ? "stable" \
+                                         : "UNSTABLE — NO RATIO SHOULD BE PUBLISHED FOR THIS ROW" }'
     done
 }
 
@@ -779,12 +1061,35 @@ write_programs
 gnat=0
 case $mode in codegen|all) have_gnat && gnat=1 ;; esac
 
+# What the compiler under test was built with. The makefile can be asked, but
+# a build that did not come from the makefile — the container image, say —
+# sets ADA83_BUILD_FLAGS instead, so the line printed is never a guess.
+build_flags(){
+    [ -n "${ADA83_BUILD_FLAGS:-}" ] && { printf '%s\n' "$ADA83_BUILD_FLAGS"; return; }
+    make -C "$here" -s --eval='bench-print-flags: ; @echo $(CC) $(CFLAGS) $(WHOLE_PROGRAM) $(TUNE)' \
+        bench-print-flags 2>/dev/null | head -1
+}
+
 printf '\n  %sada83%s   %s\n' "$BOLD" "$OFF" "$("$ada83" --version 2>&1 | head -1)"
-[ $gnat = 1 ] && printf '  %sgnat%s    %s\n' "$BOLD" "$OFF" "$(gnatmake --version 2>&1 | head -1)"
+printf '  %sbuilt%s   %s\n' "$BOLD" "$OFF" "$(build_flags)"
+[ $gnat = 1 ] && printf '  %sgnat%s    %s (%s)\n' "$BOLD" "$OFF" "$(gnatmake --version 2>&1 | head -1)" \
+    "$(gcc --version 2>&1 | head -1)"
 printf '  %shost%s    %s %s, %s cpus' "$BOLD" "$OFF" "$(uname -s)" "$(uname -m)" \
     "$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo '?')"
 [ -n "$(cpu_model)" ] && printf ', %s' "$(cpu_model)"
-printf '\n  %smethod%s  median of %s runs after %s warmup, at -O%s\n' "$BOLD" "$OFF" "$REPEATS" "$WARMUP" "$OPT"
+printf '\n  %sload%s    %s at start (1 minute average, %s cpus)\n' "$BOLD" "$OFF" \
+    "$(loadavg)" "$(nproc 2>/dev/null || echo '?')"
+case $mode in
+  codegen|all) printf '  %smethod%s  benchmark programs at -O%s by both compilers; %s;\n' \
+                   "$BOLD" "$OFF" "$OPT" "$PIN_WHY"
+               printf '          %s interleaved repetitions per program after %s warmup runs,\n' \
+                   "$CODEGEN_REPEATS" "$CODEGEN_WARMUP"
+               printf '          reported as median ± median absolute deviation over %s suites;\n' "$SUITES"
+               printf '          a ratio is printed only where the medians differ by more than\n'
+               printf '          the sum of the two MADs (MAD floored at %ss)\n' "$FLOOR" ;;
+  *)           printf '  %smethod%s  median of %s runs after %s warmup, at -O%s\n' \
+                   "$BOLD" "$OFF" "$REPEATS" "$WARMUP" "$OPT" ;;
+esac
 
 case $mode in
     stages)  run_stages ;;
@@ -792,9 +1097,9 @@ case $mode in
     corpus)  run_corpus ;;
     compare) run_compare "$reference" ;;
     profile) run_profile ;;
-    codegen) run_codegen "$gnat" ;;
+    codegen) run_codegen_suites "$gnat" ;;
     memory)  run_memory ;;
-    all)     run_stages; run_parser; run_corpus; run_codegen "$gnat"; run_memory ;;
+    all)     run_stages; run_parser; run_corpus; run_codegen_suites "$gnat"; run_memory ;;
     *)       show_cursor; echo "bench.sh: unknown mode '$mode'" >&2; usage >&2; exit 2 ;;
 esac
 show_cursor
