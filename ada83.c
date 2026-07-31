@@ -58928,7 +58928,7 @@ char *Lookup_Path_Ext (Slice name, const char *primary) {
 
 void Runtime_Library_Locate (const char *executable_directory) {
   snprintf (Runtime_Library_Path, sizeof Runtime_Library_Path,
-            "%s/runtime.ada", executable_directory);
+            "%s/ada83-runtime.ada", executable_directory);
 }
 
 static void Runtime_Library_Ensure_Loaded (void) {
@@ -58938,13 +58938,13 @@ static void Runtime_Library_Ensure_Loaded (void) {
     ? Read_File_Simple (Runtime_Library_Path) : NULL;
   for (u32 i = 0; not source and i < Include_Path_Count; i++) {
     char candidate[PATH_MAX];
-    if (snprintf (candidate, sizeof candidate, "%s/runtime.ada",
+    if (snprintf (candidate, sizeof candidate, "%s/ada83-runtime.ada",
                   Include_Paths[i]) < (int) sizeof candidate)
       source = Read_File_Simple (candidate);
   }
   if (not source) return;
   Runtime_Library_Text = source;
-  Parser parser = Parser_New (source, strlen (source), "runtime.ada");
+  Parser parser = Parser_New (source, strlen (source), "ada83-runtime.ada");
   while (Runtime_Unit_Count < MAX_UNITS_PER_SOURCE_FILE and
          not parser.had_error and parser.current_token.kind != TK_EOF) {
     Node *cu = Parse_Compilation_Unit (&parser);

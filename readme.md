@@ -16,7 +16,7 @@ Prebuilt compilers ship with the repository:
 | Archive | Contents |
 | ------- | -------- |
 | [`ada83-macos.zip`](ada83-macos.zip) | `ada83`, universal x86_64 + arm64; libLLVM via Homebrew |
-| [`ada83-windows.zip`](ada83-windows.zip) | `ada83.exe`; unzip [`llvm.zip`](llvm.zip) beside it for `LLVM-C.dll` and its companion DLLs |
+| [`ada83-windows.zip`](ada83-windows.zip) | `ada83.exe` plus `LLVM-C.dll` and its companion DLLs; unzip them together |
 
 The compiler also cross-builds with [Zig](https://ziglang.org) from any host,
 for example:
