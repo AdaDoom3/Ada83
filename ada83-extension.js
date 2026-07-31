@@ -985,7 +985,10 @@ module.exports = { activate, deactivate };
 //  ],
 //  "activationEvents": [
 //    "onLanguage:ada83",
-//    "onLanguageModelTool:search_ada83_manual"
+//    "onLanguageModelTool:search_ada83_manual",
+//    "workspaceContains:**/*.ada",
+//    "workspaceContains:**/*.adb",
+//    "workspaceContains:**/*.ads"
 //  ],
 //  "icon": "ada83-icon.png",
 //  "main": "./ada83-extension.js",
@@ -1002,6 +1005,10 @@ module.exports = { activate, deactivate };
 //          ".adb",
 //          ".ads"
 //        ],
+//        "icon": {
+//          "light": "./ada83-icon.png",
+//          "dark": "./ada83-icon.png"
+//        },
 //        "configuration": "./language-configuration.json"
 //      }
 //    ],
@@ -1141,6 +1148,54 @@ module.exports = { activate, deactivate };
 //        "when": "resourceLangId == ada83"
 //      }
 //    ],
+//    "walkthroughs": [
+//      {
+//        "id": "ada83.start",
+//        "title": "Ada 83",
+//        "description": "Compile and read Ada 83 with the compiler that checks it.",
+//        "steps": [
+//          {
+//            "id": "ada83.start.compiler",
+//            "title": "Point the extension at the compiler",
+//            "description": "Everything here - the squiggles, the outline, the hovers, go to definition, completion, signature help and the quick fixes - is answered by `ada83` itself, so the extension needs to know where it is. Set it once, or leave it if `ada83` is on your PATH.\n[Set ada83.compilerPath](command:workbench.action.openSettings?%22ada83.compilerPath%22)",
+//            "media": {
+//              "image": "./ada83-icon.png",
+//              "altText": "The Ada 83 icon"
+//            },
+//            "completionEvents": [
+//              "onSettingChanged:ada83.compilerPath"
+//            ]
+//          },
+//          {
+//            "id": "ada83.start.write",
+//            "title": "Write a program",
+//            "description": "Open a file ending in .ada, .adb or .ads and type `hello` to expand a compilation unit that writes a line. The snippets cover packages, generics, task types, accept and selective wait, variant records, fixed point and representation clauses.\n[New Ada file](command:workbench.action.files.newUntitledFile?%7B%22languageId%22%3A%22ada83%22%7D)",
+//            "media": {
+//              "image": "./ada83-icon.png",
+//              "altText": "The Ada 83 icon"
+//            }
+//          },
+//          {
+//            "id": "ada83.start.build",
+//            "title": "Build it",
+//            "description": "Ctrl+Alt+B builds the file in front of you into a native executable, Ctrl+Alt+C checks it without producing one. Both run as tasks, so their diagnostics land in the Problems panel.\n[Build this file](command:ada83.build)",
+//            "media": {
+//              "image": "./ada83-icon.png",
+//              "altText": "The Ada 83 icon"
+//            }
+//          },
+//          {
+//            "id": "ada83.start.manual",
+//            "title": "Read the standard, not a memory of it",
+//            "description": "ANSI/MIL-STD-1815A travels inside this extension. A language model working here can search it with the `search_ada83_manual` tool, so a question of legality is answered out of the standard rather than out of a recollection of some later Ada.\n[Show the server log](command:ada83.showOutput)",
+//            "media": {
+//              "image": "./ada83-icon.png",
+//              "altText": "The Ada 83 icon"
+//            }
+//          }
+//        ]
+//      }
+//    ],
 //    "chatInstructions": [
 //      {
 //        "path": "./ada83.instructions.md",
@@ -1216,74 +1271,51 @@ module.exports = { activate, deactivate };
 //
 
 //== README.md
-//# Ada 83 for VS Code
+//# Ada 83
 //
-//Ada 83 (ANSI/MIL-STD-1815A) support, answered by the `ada83` compiler
-//itself. The extension starts `ada83 --lsp` and speaks the Language Server
-//Protocol to it, so the squiggles, the definitions and the hovers come from
-//the same lexer, parser and resolver that build the executable. The editor
-//and the compiler cannot disagree about what Ada 83 is.
+//Ada 83 (ANSI/MIL-STD-1815A) for Visual Studio Code, answered by the `ada83`
+//compiler itself.
+//
+//`ada83 --lsp` is the language server. The same lexer, parser and resolver that
+//produce an executable produce the squiggles, so the editor and the compiler
+//cannot disagree about what Ada 83 is.
 //
 //## What it does
 //
-//- **Diagnostics as you type.** Errors, warnings and notes from the real
-//  front end, with the notes that name a declaration turned into links.
-//- **Go to definition**, into your own sources and into the runtime library.
-//- **Hover**, showing the declaration as Ada, and where it was written.
-//- **Highlight and find all references** for the name under the cursor.
-//- **Outline and breadcrumbs** (`textDocument/documentSymbol`), and
-//  **Go to Symbol in Workspace** (Ctrl+T) across the Ada sources in the
-//  workspace root.
-//- **Completion** from everything the compilation left visible, plus the 63
-//  reserved words taken from the lexer's own table.
-//- **Signature help** while a call is being written, showing the profile and
-//  underlining the argument the cursor is on.
-//- **Folding** of `is`/`begin`/`end`, records, cases, loops, ifs, selects
-//  and runs of comment lines.
-//- **Quick fixes** for a misspelt name: the compiler already works out what
-//  you probably meant, and the extension offers it as an edit.
-//- **Tasks and commands.** "Ada 83: Build This File" and "Ada 83: Check This
-//  File" appear in the editor title bar and the command palette, and as
-//  `ada83` tasks with the `$ada83` problem matcher.
-//- **Syntax highlighting and snippets** for Ada 83 exactly: `tagged`,
-//  `protected`, `aliased` and the rest of the later reserved words are
-//  identifiers here, and are not painted as keywords.
-//- **A manual search tool for chat.** `#ada83Manual` searches the full text
-//  of the Ada 83 Reference Manual bundled beside the extension and returns
-//  the matching clauses verbatim.
+//| | |
+//|---|---|
+//| Diagnostics | as you type, with the compiler's own quick fixes and the locations each one points at |
+//| Outline | every declaration the resolver saw, and it stays up while a file is mid-edit |
+//| Hover | the declaration written as Ada declares it, and where it stands |
+//| Go to definition | including into `ada83-runtime.ada`, so `Put_Line` opens the standard library |
+//| References, highlights | across the file and the workspace |
+//| Completion | names in scope, including the runtime's |
+//| Signature help | the profile of the call being written, with the argument under the cursor marked |
+//| Folding, symbols | from the compiler's view of the unit, not a guess at the text |
+//| Syntax highlighting | all 63 reserved words, split the way the language divides them |
+//| Snippets | thirty-four, from a compilation unit to a record representation clause |
+//| Build and check | `Ctrl+Alt+B` and `Ctrl+Alt+C`, as tasks, with a problem matcher |
 //
-//## Installing
+//## The standard, in the extension
 //
-//The extension needs the compiler. Put `ada83` (and `ada83-runtime.ada`,
-//which it looks for beside itself) somewhere on `PATH`, or point
-//`ada83.compilerPath` at it.
-//
-//```
-//code --install-extension ada83.vsix
-//```
+//ANSI/MIL-STD-1815A travels inside this extension. A language model working in
+//an Ada 83 workspace can search it with the `search_ada83_manual` tool, so a
+//question of legality is answered out of the standard rather than out of a
+//recollection of some later Ada.
 //
 //## Settings
 //
-//| Setting | Default | Meaning |
-//| --- | --- | --- |
-//| `ada83.compilerPath` | `ada83` | The compiler to run as `ada83 --lsp`. |
-//| `ada83.enable` | `true` | Report diagnostics as you type. |
-//| `ada83.requestTimeout` | `15000` | Milliseconds to wait for one answer. |
-//| `ada83.workspaceRequestTimeout` | `120000` | Milliseconds to wait for a workspace-wide symbol search. |
+//| | |
+//|---|---|
+//| `ada83.compilerPath` | where `ada83` is; `${workspaceFolder}` is substituted |
+//| `ada83.enable` | report diagnostics as you type |
+//| `ada83.syncDelay` | how long typing must pause before the buffer reaches the compiler |
+//| `ada83.requestTimeout` | how long to wait for one answer |
+//| `ada83.workspaceRequestTimeout` | how long to wait for a workspace-wide search |
+//| `ada83.trace.server` | write the protocol traffic to the output channel |
 //
-//## How it works
-//
-//Every answer is a compilation. The compiler is built to compile once and
-//exit, so the language server never reuses its front end: each request runs
-//a child process (`--analyse`, `--define`, `--describe`, `--symbols`,
-//`--complete`, `--signature`) which compiles, prints JSON and exits, taking
-//all of its state with it. Only the front end runs, so libLLVM is never
-//loaded and the server starts instantly.
-//
-//## Licence
-//
-//See the compiler's `readme.md`.
-//
+//The compiler looks for `ada83-runtime.ada` beside its own executable, so keep
+//the two together.
 
 //== ada83.instructions.md
 //---
