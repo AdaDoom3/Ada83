@@ -92,10 +92,132 @@ on artworkFor(chosenPlatform)
 	return "ada83-icon.ico"
 end artworkFor
 
-on resourceForkFor(chosenPlatform)
-	if chosenPlatform is macosPlatform() then return "ada83-icon.rsrc"
-	return ""
-end resourceForkFor
+on iconSourceFor()
+	return "ada83-icon.png"
+end iconSourceFor
+
+on iconChunkFor(pixelWidth)
+	if pixelWidth is 16 then return "icp4"
+	if pixelWidth is 32 then return "icp5"
+	if pixelWidth is 64 then return "icp6"
+	if pixelWidth is 128 then return "ic07"
+	if pixelWidth is 256 then return "ic08"
+	if pixelWidth is 512 then return "ic09"
+	if pixelWidth is 1024 then return "ic10"
+	return "ic07"
+end iconChunkFor
+
+on writeBigInteger(fileHandle, theValue)
+	write theValue to fileHandle as integer
+end writeBigInteger
+
+on writeBigShort(fileHandle, theValue)
+	set theShort to theValue mod 65536
+	if theShort > 32767 then set theShort to theShort - 65536
+	write theShort to fileHandle as small integer
+end writeBigShort
+
+on writeLittleInteger(fileHandle, theValue)
+	writeBigShort(fileHandle, ((theValue mod 256) * 256) + ((theValue div 256) mod 256))
+	writeBigShort(fileHandle, (((theValue div 65536) mod 256) * 256) + ((theValue div 16777216) mod 256))
+end writeLittleInteger
+
+on writeZeroBytes(fileHandle, howMany)
+	repeat (howMany div 2) times
+		writeBigShort(fileHandle, 0)
+	end repeat
+end writeZeroBytes
+
+on openForWriting(thePath)
+	set fileHandle to open for access (POSIX file thePath) with write permission
+	set eof fileHandle to 0
+	return fileHandle
+end openForWriting
+
+
+on buildIcons(directory, chosenPlatform)
+	set sourcePath to directory & "/" & iconSourceFor()
+	set stagePath to directory & "/staging"
+	do shell script "mkdir -p " & quoted form of stagePath
+	set pngData to read (POSIX file sourcePath) as data
+	set pngLength to (do shell script "wc -c < " & quoted form of sourcePath) as integer
+	set pixelWidth to read (POSIX file sourcePath) from 17 to 20 as integer
+	set pixelHeight to read (POSIX file sourcePath) from 21 to 24 as integer
+
+	if chosenPlatform is linuxPlatform() then
+		do shell script "cp " & quoted form of sourcePath & " " & ¬
+			quoted form of (stagePath & "/ada83-icon.png")
+		return
+	end if
+
+	if chosenPlatform is windowsPlatform() then
+		set fileHandle to openForWriting(stagePath & "/ada83-icon.ico")
+		try
+			writeBigShort(fileHandle, 0)
+			writeBigShort(fileHandle, 256)
+			writeBigShort(fileHandle, 256)
+			writeBigShort(fileHandle, ((pixelWidth mod 256) * 256) + (pixelHeight mod 256))
+			writeBigShort(fileHandle, 0)
+			writeBigShort(fileHandle, 256)
+			writeBigShort(fileHandle, 8192)
+			writeLittleInteger(fileHandle, pngLength)
+			writeLittleInteger(fileHandle, 22)
+			write pngData to fileHandle
+		end try
+		close access fileHandle
+		return
+	end if
+
+	set icnsPath to stagePath & "/ada83-icon.icns"
+	set fileHandle to openForWriting(icnsPath)
+	try
+		write "icns" to fileHandle
+		writeBigInteger(fileHandle, pngLength + 16)
+		write iconChunkFor(pixelWidth) to fileHandle
+		writeBigInteger(fileHandle, pngLength + 8)
+		write pngData to fileHandle
+	end try
+	close access fileHandle
+
+	set icnsData to read (POSIX file icnsPath) as data
+	set icnsLength to pngLength + 16
+	set dataLength to icnsLength + 4
+	do shell script "mkdir -p " & quoted form of (stagePath & "/__MACOSX")
+	set fileHandle to openForWriting(stagePath & "/__MACOSX/._ada83")
+	try
+		writeBigInteger(fileHandle, 333319)
+		writeBigInteger(fileHandle, 131072)
+		writeZeroBytes(fileHandle, 16)
+		writeBigShort(fileHandle, 2)
+		writeBigInteger(fileHandle, 9)
+		writeBigInteger(fileHandle, 50)
+		writeBigInteger(fileHandle, 32)
+		writeBigInteger(fileHandle, 2)
+		writeBigInteger(fileHandle, 82)
+		writeBigInteger(fileHandle, 256 + dataLength + 46)
+		writeZeroBytes(fileHandle, 8)
+		writeBigShort(fileHandle, 1024)
+		writeZeroBytes(fileHandle, 22)
+		writeBigInteger(fileHandle, 256)
+		writeBigInteger(fileHandle, 256 + dataLength)
+		writeBigInteger(fileHandle, dataLength)
+		writeBigInteger(fileHandle, 46)
+		writeZeroBytes(fileHandle, 240)
+		writeBigInteger(fileHandle, icnsLength)
+		write icnsData to fileHandle
+		writeZeroBytes(fileHandle, 24)
+		writeBigShort(fileHandle, 28)
+		writeBigShort(fileHandle, 46)
+		writeBigShort(fileHandle, 0)
+		write "icns" to fileHandle
+		writeBigShort(fileHandle, 0)
+		writeBigShort(fileHandle, 10)
+		writeBigShort(fileHandle, -16455)
+		writeBigShort(fileHandle, -1)
+		writeBigInteger(fileHandle, 0)
+	end try
+	close access fileHandle
+end buildIcons
 
 on launcherFor(chosenPlatform)
 	if chosenPlatform is linuxPlatform() then return "ada83.desktop"
@@ -115,7 +237,7 @@ on archiveContentsFor(chosenPlatform)
 	set members to {executableFor(chosenPlatform), "ada83-runtime.ada", "ada83.vsix", artworkFor(chosenPlatform)}
 	if launcherFor(chosenPlatform) is not "" then set members to members & {launcherFor(chosenPlatform)}
 	if sharedLibrariesFor(chosenPlatform) is not "" then set members to members & {sharedLibrariesFor(chosenPlatform)}
-	if resourceForkFor(chosenPlatform) is not "" then set members to members & {"__MACOSX/._" & executableFor(chosenPlatform)}
+	if chosenPlatform is macosPlatform() then set members to members & {"__MACOSX/._" & executableFor(chosenPlatform)}
 	return joinedWith(members, space)
 end archiveContentsFor
 
@@ -330,15 +452,9 @@ end sliceGuardSteps
 
 on resourceObjectSteps(chosenPlatform)
 	if resourceObjectFor(chosenPlatform) is "" then return {}
-	return {"printf '1 ICON \"%s\"\\n' \"$PWD/" & artworkFor(chosenPlatform) & "\" | " & ¬
+	return {"printf '1 ICON \"%s\"\\n' \"$PWD/staging/" & artworkFor(chosenPlatform) & "\" | " & ¬
 		resourceCompilerFor(chosenPlatform) & " -O coff -o " & resourceObjectFor(chosenPlatform)}
 end resourceObjectSteps
-
-on resourceForkSteps(chosenPlatform)
-	if resourceForkFor(chosenPlatform) is "" then return {}
-	return {"mkdir -p staging/__MACOSX", ¬
-		"cp " & resourceForkFor(chosenPlatform) & " staging/__MACOSX/._" & executableFor(chosenPlatform)}
-end resourceForkSteps
 
 on launcherSteps(chosenPlatform)
 	if launcherFor(chosenPlatform) is "" then return {}
@@ -373,8 +489,7 @@ on packageProgram(chosenPlatform)
 	return guardedProgram(extensionSteps() & sharedLibraryGuardSteps(chosenPlatform) & ¬
 		sliceGuardSteps(chosenPlatform) & resourceObjectSteps(chosenPlatform) & ¬
 		chosenRouteSteps(chosenPlatform) & compileSteps(chosenPlatform) & ¬
-		{"cp ada83-runtime.ada " & artworkFor(chosenPlatform) & " staging/"} & ¬
-		resourceForkSteps(chosenPlatform) & launcherSteps(chosenPlatform) & ¬
+		{"cp ada83-runtime.ada staging/"} & launcherSteps(chosenPlatform) & ¬
 		sharedLibrarySteps(chosenPlatform) & ¬
 		{"rm -f " & archiveName & ".new", ¬
 		"( cd staging && zip -q ../" & archiveName & ".new " & archiveContentsFor(chosenPlatform) & " )", ¬
@@ -401,10 +516,7 @@ on run argv
 		end if
 		if chosenAction is "package" then
 			requireFile(directory, "ada83-runtime.ada")
-			requireFile(directory, artworkFor(chosenPlatform))
-			if resourceForkFor(chosenPlatform) is not "" then
-				requireFile(directory, resourceForkFor(chosenPlatform))
-			end if
+			requireFile(directory, iconSourceFor())
 		end if
 		if chosenAction is not "build" then
 			requireFile(directory, "ada83-extension.html")
@@ -417,6 +529,7 @@ on run argv
 			requireCompiler()
 			requireLLVM(directory)
 		end if
+		if chosenAction is "package" then buildIcons(directory, chosenPlatform)
 		runInTerminal(directory, programFor(chosenAction, chosenPlatform))
 	on error errorMessage number errorNumber
 		if errorNumber is not -128 then error errorMessage number errorNumber

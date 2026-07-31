@@ -22,55 +22,48 @@ LINUX_CROSS_COMPILER := $(or \
   $(if $(call Found,podman),$(subst docker,podman,$(CONTAINED_GCC))), \
   x86_64-linux-gnu-gcc)
 
-RUNTIME = ada83-runtime.ada
-MANUAL  = manual.md
-VSIX    = ada83.vsix
-BUNDLE  = ada83-extension.html
-ICON    = ada83-icon
+RUNTIME     = ada83-runtime.ada
+MANUAL      = manual.md
+VSIX        = ada83.vsix
+BUNDLE      = ada83-extension.html
+ICON        = ada83-icon
+ICON_SOURCE = $(ICON).png
 
-HOST_TARGET := $(if $(HOST_IS_MACOS),macos,linux)
-TARGET      ?= $(HOST_TARGET)
-CROSS       := $(filter-out $(HOST_TARGET),$(TARGET))
+ICON_WRITER = \
+  Byte () { printf "\\$$(printf '%03o' $$(($$1 & 255)))"; }; \
+  Big () { Byte $$(($$1 >> 24)); Byte $$(($$1 >> 16)); \
+           Byte $$(($$1 >> 8)); Byte $$1; }; \
+  Little () { Byte $$1; Byte $$(($$1 >> 8)); \
+              Byte $$(($$1 >> 16)); Byte $$(($$1 >> 24)); }; \
+  Short () { Byte $$(($$1 >> 8)); Byte $$1; }; \
+  Zeros () { Written=0; while [ $$Written -lt $$1 ]; do Byte 0; \
+             Written=$$((Written + 1)); done; }; \
+  Number () { od -An -tu1 -j$$1 -N4 $(ICON_SOURCE) \
+              | { read a b c d; echo $$((a<<24 | b<<16 | c<<8 | d)); }; }; \
+  Length=`wc -c < $(ICON_SOURCE)`; Width=`Number 16`; Height=`Number 20`; \
+  case $$Width in \
+    16) Chunk=icp4;; 32) Chunk=icp5;; 64) Chunk=icp6;; 128) Chunk=ic07;; \
+    256) Chunk=ic08;; 512) Chunk=ic09;; 1024) Chunk=ic10;; *) Chunk=ic07;; \
+  esac
 
-COMPILER_linux            = $(if $(CROSS),$(LINUX_CROSS_COMPILER),$(CC))
-COMPILER_macos            = $(if $(CROSS),o64-clang,$(CC))
-COMPILER_windows          = x86_64-w64-mingw32-gcc
-COMPILER_FLAGS_linux      = -O3 -Wall -g0 -std=gnu17 -march=x86-64 -mtune=generic
-COMPILER_FLAGS_macos      = -O3 -Wall -g0 -std=gnu2x
-COMPILER_FLAGS_windows    = -O2 -Wall -g0 -std=gnu2x
-ARCHITECTURES_macos       = arm64 x86_64
-LINK_LIBRARIES_linux      = -lm -lpthread
-LINK_LIBRARIES_macos      = -lm -lpthread
-LINK_LIBRARIES_windows    = -lm
-SUFFIX_windows            = .exe
-RESOURCE_FORK_macos       = $(ICON).rsrc
-ARTWORK_linux             = $(ICON).png
-ARTWORK_macos             = $(ICON).icns
-ARTWORK_windows           = $(ICON).ico
-LAUNCHER_linux            = ada83.desktop
-RESOURCE_COMPILER_windows = x86_64-w64-mingw32-windres
-SHARED_LIBRARIES_windows  = *.dll
+ICON_ICO = { Short 0; Byte 1; Byte 0; Byte 1; Byte 0; \
+             Byte $$((Width % 256)); Byte $$((Height % 256)); \
+             Byte 0; Byte 0; Byte 1; Byte 0; Byte 32; Byte 0; \
+             Little $$Length; Little 22; cat $(ICON_SOURCE); }
 
-$(if $(COMPILER_$(TARGET)),,\
-  $(error TARGET is '$(TARGET)'; it must be linux, macos or windows))
+ICON_ICNS = { printf icns; Big $$((Length + 16)); printf %s $$Chunk; \
+              Big $$((Length + 8)); cat $(ICON_SOURCE); }
 
-$(foreach Role,COMPILER COMPILER_FLAGS LINK_LIBRARIES SUFFIX ARTWORK LAUNCHER \
-               RESOURCE_COMPILER RESOURCE_FORK SHARED_LIBRARIES ARCHITECTURES,\
-  $(eval $(Role) := $($(Role)_$(TARGET))))
-
-COMPILER_FLAGS += $(if $(CROSS),,$(WHOLE_PROGRAM))
-
-PACKAGE          = bin-$(TARGET).zip
-LIBRARY_SOURCE   = bin-$(TARGET).zip
-EXECUTABLE       = ada83$(SUFFIX)
-RESOURCE_OBJECT  = $(if $(RESOURCE_COMPILER),staging/$(ICON).o)
-PACKAGE_CONTENTS = $(EXECUTABLE) $(RUNTIME) $(VSIX) $(ARTWORK) $(LAUNCHER) \
-                   $(SHARED_LIBRARIES) \
-                   $(if $(RESOURCE_FORK),__MACOSX/._$(EXECUTABLE))
-
-LIPO := $(shell command -v lipo || command -v llvm-lipo || \
-                command -v "$$(llvm-config --bindir 2>/dev/null)/llvm-lipo")
-SUDO := $(shell [ $$(id -u) -eq 0 ] || echo sudo)
+ICON_RSRC = Icns=`wc -c < staging/$(ICON).icns`; Data=$$((Icns + 4)); \
+            { Big 333319; Big 131072; Zeros 16; Short 2; \
+              Big 9; Big 50; Big 32; \
+              Big 2; Big 82; Big $$((256 + Data + 46)); \
+              Zeros 8; Short 1024; Zeros 22; \
+              Big 256; Big $$((256 + Data)); Big $$Data; Big 46; \
+              Zeros 240; Big $$Icns; cat staging/$(ICON).icns; \
+              Zeros 24; Short 28; Short 46; Short 0; \
+              printf icns; Short 0; Short 10; \
+              Short 49081; Short 65535; Big 0; }
 
 Slice_Path       = staging/$(EXECUTABLE)$(if $1,-$1)
 Compile_Slice    = $(COMPILER) $(COMPILER_FLAGS) $(if $1,-arch $1) \
@@ -99,6 +92,54 @@ LLVM_PRESENT = $(or $(LLVM_PRESENT_$(HOST_SYSTEM)),$(LLVM_PRESENT_Linux))
 LLVM_INSTALL = $(or $(LLVM_INSTALL_$(HOST_SYSTEM)),$(LLVM_INSTALL_Linux))
 LLVM_SUDO    = $(if $(HOST_IS_MACOS),,$(SUDO))
 
+HOST_TARGET := $(if $(HOST_IS_MACOS),macos,linux)
+TARGET      ?= $(HOST_TARGET)
+CROSS       := $(filter-out $(HOST_TARGET),$(TARGET))
+
+COMPILER_linux            = $(if $(CROSS),$(LINUX_CROSS_COMPILER),$(CC))
+COMPILER_macos            = $(if $(CROSS),o64-clang,$(CC))
+COMPILER_windows          = x86_64-w64-mingw32-gcc
+COMPILER_FLAGS_linux      = -O3 -Wall -g0 -std=gnu17 -march=x86-64 -mtune=generic
+COMPILER_FLAGS_macos      = -O3 -Wall -g0 -std=gnu2x
+COMPILER_FLAGS_windows    = -O2 -Wall -g0 -std=gnu2x
+ARCHITECTURES_macos       = arm64 x86_64
+LINK_LIBRARIES_linux      = -lm -lpthread
+LINK_LIBRARIES_macos      = -lm -lpthread
+LINK_LIBRARIES_windows    = -lm
+SUFFIX_windows            = .exe
+SIDECAR_macos             = __MACOSX/._ada83
+ARTWORK_linux             = $(ICON).png
+ARTWORK_macos             = $(ICON).icns
+ARTWORK_windows           = $(ICON).ico
+ICON_BUILD_linux          = cp $(ICON_SOURCE) staging/$(ICON).png
+ICON_BUILD_macos          = $(ICON_ICNS) > staging/$(ICON).icns; \
+                            mkdir -p staging/__MACOSX; \
+                            $(ICON_RSRC) > staging/__MACOSX/._$(EXECUTABLE)
+ICON_BUILD_windows        = $(ICON_ICO) > staging/$(ICON).ico
+LAUNCHER_linux            = ada83.desktop
+RESOURCE_COMPILER_windows = x86_64-w64-mingw32-windres
+SHARED_LIBRARIES_windows  = *.dll
+
+$(if $(COMPILER_$(TARGET)),,\
+  $(error TARGET is '$(TARGET)'; it must be linux, macos or windows))
+
+$(foreach Role,COMPILER COMPILER_FLAGS LINK_LIBRARIES SUFFIX ARTWORK LAUNCHER \
+               RESOURCE_COMPILER SIDECAR SHARED_LIBRARIES ARCHITECTURES,\
+  $(eval $(Role) := $($(Role)_$(TARGET))))
+
+COMPILER_FLAGS += $(if $(CROSS),,$(WHOLE_PROGRAM))
+
+PACKAGE          = bin-$(TARGET).zip
+LIBRARY_SOURCE   = bin-$(TARGET).zip
+EXECUTABLE       = ada83$(SUFFIX)
+RESOURCE_OBJECT  = $(if $(RESOURCE_COMPILER),staging/$(ICON).o)
+PACKAGE_CONTENTS = $(EXECUTABLE) $(RUNTIME) $(VSIX) $(ARTWORK) $(LAUNCHER) \
+                   $(SHARED_LIBRARIES) $(SIDECAR)
+
+LIPO := $(shell command -v lipo || command -v llvm-lipo || \
+                command -v "$$(llvm-config --bindir 2>/dev/null)/llvm-lipo")
+SUDO := $(shell [ $$(id -u) -eq 0 ] || echo sudo)
+
 all: ada83 provision-llvm
 
 ada83: ada83.c
@@ -116,7 +157,7 @@ provision-llvm:
 
 package: $(PACKAGE)
 
-$(PACKAGE): ada83.c $(RUNTIME) $(ARTWORK) staging/$(VSIX)
+$(PACKAGE): ada83.c $(RUNTIME) $(ICON_SOURCE) staging/$(VSIX)
 	@command -v $(firstword $(COMPILER)) >/dev/null || { \
 	  echo "packaging for $(TARGET) needs $(firstword $(COMPILER))"; exit 1; }
 	@test -z "$(SHARED_LIBRARIES)" || test -f $(LIBRARY_SOURCE) || { \
@@ -124,13 +165,13 @@ $(PACKAGE): ada83.c $(RUNTIME) $(ARTWORK) staging/$(VSIX)
 	  echo "loads at run time, and is missing"; exit 1; }
 	@test -z "$(SLICES)" || test -n "$(LIPO)" || { \
 	  echo "joining the $(TARGET) slices needs lipo"; exit 1; }
+	@mkdir -p staging
+	$(ICON_WRITER); $(ICON_BUILD_$(TARGET))
 	@test -z "$(RESOURCE_OBJECT)" || { set -x; \
-	  echo '1 ICON "$(abspath $(ARTWORK))"' \
+	  echo '1 ICON "$(abspath staging/$(ICON).ico)"' \
 	    | $(RESOURCE_COMPILER) -O coff -o $(RESOURCE_OBJECT); }
 	$(BUILD_EXECUTABLE)
-	cp $(RUNTIME) $(ARTWORK) staging/
-	test -z "$(RESOURCE_FORK)" || { mkdir -p staging/__MACOSX \
-	  && cp $(RESOURCE_FORK) staging/__MACOSX/._$(EXECUTABLE); }
+	cp $(RUNTIME) staging/
 	test -z "$(LAUNCHER)" || printf '%s\n' '[Desktop Entry]' 'Type=Application' \
 	  'Name=Ada 83' 'Comment=Ada 83 compiler' 'Exec=ada83 %F' 'Icon=$(ICON)' \
 	  'Terminal=true' 'Categories=Development;Building;' > staging/$(LAUNCHER)

@@ -76,6 +76,12 @@ an archive from source:
 | macOS    | `make package`, or `osascript make.applescript package` | `bin-macos.zip`, both slices lipo'd together |
 | Windows  | `make.bat package` | `bin-windows.zip`, DLLs included |
 
+Each script builds the platform's icon from the one `ada83-icon.png` as it
+packages: a `.ico` compiled into `ada83.exe`'s resource table, an `.icns` and
+a Finder resource fork for macOS, and the PNG itself with a desktop entry on
+Linux. Every format carries the PNG bytes whole, so this is concatenation and
+a few length fields rather than an image tool, and nothing needs installing.
+
 `TARGET` names another platform, so a release can be cut from one machine.
 Each target wants that platform's usual cross toolchain, and says which one is
 missing rather than fetching it:

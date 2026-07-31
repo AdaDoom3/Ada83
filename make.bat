@@ -29,10 +29,10 @@ set "LINK_LIBRARIES_macos=-lm -lpthread"
 set "ARTWORK_windows=%ICON%.ico"
 set "ARTWORK_linux=%ICON%.png"
 set "ARTWORK_macos=%ICON%.icns"
+set "ICON_SOURCE=%ICON%.png"
 set "ARCHITECTURES_linux=x86_64-linux-gnu.2.34"
 set "ARCHITECTURES_macos=aarch64-macos x86_64-macos"
 set "LAUNCHER_linux=ada83.desktop"
-set "RESOURCE_FORK_macos=%ICON%.rsrc"
 set "SHARED_LIBRARIES_windows=*.dll"
 
 call :dispatch %1 %2
@@ -85,7 +85,6 @@ call set "LINK_LIBRARIES=%%LINK_LIBRARIES_%TARGET%%%"
 call set "ARTWORK=%%ARTWORK_%TARGET%%%"
 call set "ARCHITECTURES=%%ARCHITECTURES_%TARGET%%%"
 call set "LAUNCHER=%%LAUNCHER_%TARGET%%%"
-call set "RESOURCE_FORK=%%RESOURCE_FORK_%TARGET%%%"
 call set "SHARED_LIBRARIES=%%SHARED_LIBRARIES_%TARGET%%%"
 set "ZIP=bin-%TARGET%.zip"
 exit /b 0
@@ -109,6 +108,7 @@ call :select "%~2" || exit /b 1
 call :vsix         || exit /b 1
 rmdir /s /q "%STAGE%" >nul 2>nul
 mkdir "%STAGE%"
+call :icons        || exit /b 1
 if defined ARCHITECTURES (
     call :cross || exit /b 1
 ) else (
@@ -174,13 +174,45 @@ exit /b %errorlevel%
 :stage
 copy /y "%RUNTIME%" "%STAGE%\" >nul
 copy /y "%VSIX%" "%STAGE%\" >nul
-if exist "%ARTWORK%" ( copy /y "%ARTWORK%" "%STAGE%\" >nul ) else (
-    echo %ARTWORK% is missing; packing %ZIP% without it.
-)
 if defined LAUNCHER call :launcher
-if defined RESOURCE_FORK call :fork
 if defined SHARED_LIBRARIES copy /y %SHARED_LIBRARIES% "%STAGE%\" >nul
 exit /b 0
+
+:icons
+powershell -NoProfile -Command ^
+    "$ErrorActionPreference='Stop';" ^
+    "$Png = [IO.File]::ReadAllBytes((Join-Path $PWD '%ICON_SOURCE%'));" ^
+    "$Big = { param($v) [byte[]]@(($v -shr 24) -band 255,($v -shr 16) -band 255," ^
+    "                             ($v -shr 8) -band 255,$v -band 255) };" ^
+    "$Little = { param($v) [byte[]]@($v -band 255,($v -shr 8) -band 255," ^
+    "                                ($v -shr 16) -band 255,($v -shr 24) -band 255) };" ^
+    "$Wide = ($Png[16] -shl 24) + ($Png[17] -shl 16) + ($Png[18] -shl 8) + $Png[19];" ^
+    "$Tall = ($Png[20] -shl 24) + ($Png[21] -shl 16) + ($Png[22] -shl 8) + $Png[23];" ^
+    "$Chunk = @{16='icp4';32='icp5';64='icp6';128='ic07';256='ic08';512='ic09';1024='ic10'}[$Wide];" ^
+    "if (-not $Chunk) { $Chunk = 'ic07' };" ^
+    "$Stage = Join-Path $PWD '%STAGE%';" ^
+    "$Ico = [byte[]]@(0,0,1,0,1,0,($Wide -band 255),($Tall -band 255),0,0,1,0,32,0) +" ^
+    "       (^& $Little $Png.Length) + (^& $Little 22) + $Png;" ^
+    "[IO.File]::WriteAllBytes((Join-Path $Stage '%ICON%.ico'), $Ico);" ^
+    "$Icns = [Text.Encoding]::ASCII.GetBytes('icns') + (^& $Big ($Png.Length + 16)) +" ^
+    "        [Text.Encoding]::ASCII.GetBytes($Chunk) + (^& $Big ($Png.Length + 8)) + $Png;" ^
+    "[IO.File]::WriteAllBytes((Join-Path $Stage '%ICON%.icns'), $Icns);" ^
+    "[IO.File]::WriteAllBytes((Join-Path $Stage '%ICON%.png'), $Png);" ^
+    "$Data = $Icns.Length + 4;" ^
+    "$Map = [byte[]]::new(24) + [byte[]]@(0,28,0,46,0,0) +" ^
+    "       [Text.Encoding]::ASCII.GetBytes('icns') + [byte[]]@(0,0,0,10,191,185,255,255,0,0,0,0);" ^
+    "$Fork = (^& $Big 256) + (^& $Big (256 + $Data)) + (^& $Big $Data) + (^& $Big 46) +" ^
+    "        [byte[]]::new(240) + (^& $Big $Icns.Length) + $Icns + $Map;" ^
+    "$Double = (^& $Big 333319) + (^& $Big 131072) + [byte[]]::new(16) + [byte[]]@(0,2) +" ^
+    "          (^& $Big 9) + (^& $Big 50) + (^& $Big 32) +" ^
+    "          (^& $Big 2) + (^& $Big 82) + (^& $Big $Fork.Length) +" ^
+    "          [byte[]]::new(8) + [byte[]]@(4,0) + [byte[]]::new(22) + $Fork;" ^
+    "if ('%TARGET%' -eq 'macos') {" ^
+    "  New-Item -ItemType Directory -Force -Path (Join-Path $Stage '__MACOSX') ^> $null;" ^
+    "  [IO.File]::WriteAllBytes((Join-Path $Stage '__MACOSX\._ada83'), $Double) }"
+if exist "%STAGE%\%ICON%.ico" exit /b 0
+echo Cannot build the icons. Making archives needs PowerShell 5 or later.
+exit /b 1
 
 :launcher
 powershell -NoProfile -Command ^
@@ -193,15 +225,6 @@ powershell -NoProfile -Command ^
 if exist "%STAGE%\%LAUNCHER%" exit /b 0
 echo Cannot write %LAUNCHER%. Making archives needs PowerShell 5 or later.
 exit /b 1
-
-:fork
-if not exist "%RESOURCE_FORK%" (
-    echo %RESOURCE_FORK% is missing; %EXECUTABLE% will have no Finder icon.
-    exit /b 0
-)
-mkdir "%STAGE%\__MACOSX"
-copy /y "%RESOURCE_FORK%" "%STAGE%\__MACOSX\._%EXECUTABLE%" >nul
-exit /b 0
 
 :archive
 set "CONTENTS='%STAGE%\%EXECUTABLE%','%STAGE%\%RUNTIME%','%STAGE%\%VSIX%'"
@@ -317,7 +340,7 @@ exit /b %errorlevel%
 set "RESOURCE=icon.res.o"
 if defined ZIG set "RESOURCE=icon.res"
 del /q icon.rc "%RESOURCE%" >nul 2>nul
-if exist "%ARTWORK%" >icon.rc echo 1 ICON "%ARTWORK%"
+if exist "%STAGE%\%ICON%.ico" >icon.rc echo 1 ICON "%STAGE%\%ICON%.ico"
 if exist icon.rc if defined ZIG %ZIG% rc icon.rc "%RESOURCE%" >nul 2>nul
 if exist icon.rc if not defined ZIG windres icon.rc -O coff -o "%RESOURCE%" >nul 2>nul
 del /q icon.rc >nul 2>nul
