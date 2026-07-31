@@ -53,6 +53,10 @@ unpacked it.
 | macOS    | `make`, or run `make.applescript` | Apple Clang; libLLVM via Homebrew |
 | Windows  | `make.bat` | GCC or Clang; offers to fetch Zig if neither is installed |
 
+Every script writes what it builds into `bin-<target>/` — `bin-linux/ada83`,
+`bin-macos/ada83`, `bin-windows\ada83.exe` with the DLLs it loads beside it —
+and `make package` zips that folder into `bin-<target>.zip`.
+
 Prebuilt compilers ship with the repository:
 
 | Archive | Contents |
@@ -155,12 +159,15 @@ lli hello.ll                            # interpret the IR
 The ACATS tests are in `tests.zip` and unzipped on first use.
 
 ```sh
-bash test.sh run all      # every class
+bash test.sh              # every class, the default
 bash test.sh run c        # one class
 bash test.sh run c45      # one group
 bash test.sh check        # run, then diff against the baseline
 bash test.sh help
 ```
+
+The suite builds the compiler if it is missing, and finds it in
+`bin-<target>/` or beside the script.
 
 Each run writes to its own directory under `test_results/`, with
 logs under `acats_logs/`, so concurrent runs don't overwrite eachother.

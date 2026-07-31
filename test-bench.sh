@@ -17,7 +17,7 @@ Modes:
 
 To test keep the old binary and name it:
 
-  cp ada83 /tmp/before && make && bash test-bench.sh compare /tmp/before
+  cp bin-*/ada83 /tmp/before && make && bash test-bench.sh compare /tmp/before
 
 Environment:
   REPEATS     timed repetitions after warmup (default: 7)
@@ -59,7 +59,14 @@ CODEGEN_REPEATS=${CODEGEN_REPEATS:-25} CODEGEN_WARMUP=${CODEGEN_WARMUP:-3}
 SUITES=${SUITES:-2} RT=${RT:-0} FLOOR=${FLOOR:-0.002}
 LOAD_MAX=${LOAD_MAX:-2.0} FORCE=${FORCE:-0} NO_PIN=${NO_PIN:-0} TSV_DIR=${TSV_DIR:-}
 
-ada83=$here/ada83
+case $(uname -s 2>/dev/null) in
+    Darwin)                 host_target=macos ;;
+    MINGW*|MSYS*|CYGWIN*)   host_target=windows ;;
+    *)                      host_target=linux ;;
+esac
+ada83=${ADA83:-$here/bin-$host_target/ada83}
+[ -x "$ada83" ] || [ ! -x "$ada83.exe" ] || ada83=$ada83.exe
+[ -x "$ada83" ] || [ ! -x "$here/ada83" ] || ada83=$here/ada83
 work=$(mktemp -d "${TMPDIR:-/tmp}/ada83-bench-XXXXXX")
 seed=$work/seed
 
@@ -396,7 +403,9 @@ have_gnat(){
 corpus_ready(){
     [ -d "$here/acats" ] && return 0
     [ -f "$here/tests.zip" ] || return 1
-    pulse "unpacking the conformance suite"; ( cd "$here" && unzip -q tests.zip ); pulse_stop
+    pulse "unpacking the conformance suite"
+    ( cd "$here" && { unzip -q tests.zip 2>/dev/null || tar -xf tests.zip; } )
+    pulse_stop
     [ -d "$here/acats" ]
 }
 corpus_files(){ ls "$here/acats"/*.ada 2>/dev/null | head -n "$CORPUS"; }
