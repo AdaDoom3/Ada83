@@ -118,11 +118,20 @@ const Severity_Of = (Reported) =>
 const Range_Of = ({ start, end }) =>
   new vscode.Range (start.line, start.character, end.line, end.character);
 
+const Related_Of = (Reported) =>
+  new vscode.DiagnosticRelatedInformation (
+    new vscode.Location (vscode.Uri.parse (Reported.location.uri),
+                         Range_Of (Reported.location.range)),
+    Reported.message ?? '');
+
 const Diagnostic_Of = (Reported) =>
   Object.assign (
     new vscode.Diagnostic (Range_Of (Reported.range), Reported.message,
                            Severity_Of (Reported.severity)),
-    { source: 'ada83' });
+    { source: 'ada83',
+      code: Reported.code,
+      relatedInformation:
+        (Reported.relatedInformation ?? []).map (Related_Of) });
 
 const Location_Of = (Result) =>
   Result === null || Result === undefined
