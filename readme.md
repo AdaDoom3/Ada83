@@ -3,12 +3,6 @@
 An Ada 83 (ANSI/MIL-STD-1815A) compiler in a single C file, with an LLVM
 backend.
 
-`ada83.c` holds the whole compiler: lexer, parser, semantics, expander, and
-LLVM IR emitter. It links against nothing but libm and libpthread. libLLVM is
-loaded at run time and used to optimise, generate code, and produce native
-executables, so building the compiler needs no LLVM headers and no LLVM
-development package.
-
 ## Conformance
 
 For ACATS 1.11 all 3561 of its tests pass.
