@@ -40,10 +40,10 @@ const Parsed = (Body) => {
 const Configured = (Name, Fallback) =>
   vscode.workspace.getConfiguration ('ada83').get (Name, Fallback);
 
+const Opened_Folders = () => vscode.workspace.workspaceFolders ?? [];
+
 const Opened_Folder = () =>
-  ((Folders) =>
-     (Folders === undefined || Folders.length === 0 ? null : Folders[0]))
-    (vscode.workspace.workspaceFolders);
+  ((Folders) => (Folders.length === 0 ? null : Folders[0])) (Opened_Folders ());
 
 const Initialize = (Id) => ({
   id: Id,
@@ -53,12 +53,20 @@ const Initialize = (Id) => ({
     rootUri: ((Folder) => (Folder === null ? null : Folder.uri.toString ()))
                (Opened_Folder ()),
     workspaceFolders:
-      ((Folder) =>
-         (Folder === null
+      ((Folders) =>
+         (Folders.length === 0
             ? null
-            : [{ uri: Folder.uri.toString (), name: Folder.name }]))
-        (Opened_Folder ()),
-    capabilities: {},
+            : Folders.map ((Folder) =>
+                ({ uri: Folder.uri.toString (), name: Folder.name }))))
+        (Opened_Folders ()),
+    capabilities: {
+      textDocument: {
+        publishDiagnostics: { relatedInformation: true },
+        signatureHelp: { signatureInformation: { parameterInformation: {
+          labelOffsetSupport: true } } },
+      },
+      workspace: { workspaceFolders: true },
+    },
   },
 });
 
@@ -743,6 +751,10 @@ const Substituted = (Setting) =>
                       Folder === null ? '' : Folder.uri.fsPath))
     (Opened_Folder ());
 
+const Watched_Folders = (Diagnostics, Output, Status) =>
+  vscode.workspace.onDidChangeWorkspaceFolders (() =>
+    Restart (Diagnostics, Output, Status));
+
 const Compiler_Path = () => Substituted (Configured ('compilerPath', 'ada83'));
 
 const Presentation = {
@@ -911,6 +923,7 @@ const activate = (Context) => {
     vscode.workspace.onDidChangeConfiguration ((Change) => {
       if (Touches_The_Server (Change)) Restart (Diagnostics, Output, Status);
     }),
+    Watched_Folders (Diagnostics, Output, Status),
     vscode.commands.registerCommand ('ada83.build',
                                      Run_On_The_Active_File (Build_Task)),
     vscode.commands.registerCommand ('ada83.check',
@@ -941,12 +954,34 @@ module.exports = { activate, deactivate };
 //  "version": "1.0.0",
 //  "publisher": "ada83",
 //  "license": "SEE LICENSE IN ../readme.md",
+//  "repository": {
+//    "type": "git",
+//    "url": "https://github.com/AdaDoom3/Ada83.git"
+//  },
+//  "homepage": "https://github.com/AdaDoom3/Ada83#readme",
+//  "bugs": {
+//    "url": "https://github.com/AdaDoom3/Ada83/issues"
+//  },
+//  "qna": false,
+//  "keywords": [
+//    "ada",
+//    "ada83",
+//    "MIL-STD-1815A",
+//    "compiler",
+//    "llvm"
+//  ],
+//  "galleryBanner": {
+//    "color": "#1e2430",
+//    "theme": "dark"
+//  },
 //  "engines": {
 //    "vscode": "^1.106.0"
 //  },
 //  "categories": [
 //    "Programming Languages",
-//    "Linters"
+//    "Linters",
+//    "Formatters",
+//    "Snippets"
 //  ],
 //  "activationEvents": [
 //    "onLanguage:ada83",
@@ -1070,8 +1105,41 @@ module.exports = { activate, deactivate };
 //          "command": "ada83.check",
 //          "when": "resourceLangId == ada83"
 //        }
+//      ],
+//      "explorer/context": [
+//        {
+//          "command": "ada83.build",
+//          "when": "resourceLangId == ada83",
+//          "group": "ada83@1"
+//        },
+//        {
+//          "command": "ada83.check",
+//          "when": "resourceLangId == ada83",
+//          "group": "ada83@2"
+//        }
+//      ],
+//      "editor/context": [
+//        {
+//          "command": "ada83.check",
+//          "when": "resourceLangId == ada83",
+//          "group": "ada83@1"
+//        }
 //      ]
 //    },
+//    "keybindings": [
+//      {
+//        "command": "ada83.build",
+//        "key": "ctrl+alt+b",
+//        "mac": "cmd+alt+b",
+//        "when": "resourceLangId == ada83"
+//      },
+//      {
+//        "command": "ada83.check",
+//        "key": "ctrl+alt+c",
+//        "mac": "cmd+alt+c",
+//        "when": "resourceLangId == ada83"
+//      }
+//    ],
 //    "chatInstructions": [
 //      {
 //        "path": "./ada83.instructions.md",
@@ -1269,70 +1337,337 @@ module.exports = { activate, deactivate };
 //{
 //  "procedure body": {
 //    "prefix": "procedure",
-//    "body": ["procedure ${1:Name} is", "begin", "   $0", "end ${1:Name};"],
+//    "body": [
+//      "procedure ${1:Name} is",
+//      "begin",
+//      "   $0",
+//      "end ${1:Name};"
+//    ],
 //    "description": "A procedure body"
 //  },
 //  "function body": {
 //    "prefix": "function",
-//    "body": ["function ${1:Name} return ${2:Type} is", "begin", "   $0",
-//             "end ${1:Name};"],
+//    "body": [
+//      "function ${1:Name} return ${2:Type} is",
+//      "begin",
+//      "   $0",
+//      "end ${1:Name};"
+//    ],
 //    "description": "A function body"
 //  },
 //  "package specification": {
 //    "prefix": "package",
-//    "body": ["package ${1:Name} is", "   $0", "end ${1:Name};"],
+//    "body": [
+//      "package ${1:Name} is",
+//      "   $0",
+//      "end ${1:Name};"
+//    ],
 //    "description": "A package specification"
 //  },
 //  "package body": {
 //    "prefix": "packagebody",
-//    "body": ["package body ${1:Name} is", "   $0", "end ${1:Name};"],
+//    "body": [
+//      "package body ${1:Name} is",
+//      "   $0",
+//      "end ${1:Name};"
+//    ],
 //    "description": "A package body"
 //  },
 //  "for loop": {
 //    "prefix": "for",
-//    "body": ["for ${1:I} in ${2:1 .. 10} loop", "   $0", "end loop;"],
+//    "body": [
+//      "for ${1:I} in ${2:1 .. 10} loop",
+//      "   $0",
+//      "end loop;"
+//    ],
 //    "description": "A for loop"
 //  },
 //  "while loop": {
 //    "prefix": "while",
-//    "body": ["while ${1:Condition} loop", "   $0", "end loop;"],
+//    "body": [
+//      "while ${1:Condition} loop",
+//      "   $0",
+//      "end loop;"
+//    ],
 //    "description": "A while loop"
 //  },
 //  "if statement": {
 //    "prefix": "if",
-//    "body": ["if ${1:Condition} then", "   $0", "end if;"],
+//    "body": [
+//      "if ${1:Condition} then",
+//      "   $0",
+//      "end if;"
+//    ],
 //    "description": "An if statement"
 //  },
 //  "case statement": {
 //    "prefix": "case",
-//    "body": ["case ${1:Expression} is", "   when ${2:Choice} =>", "      $0",
-//             "   when others =>", "      null;", "end case;"],
+//    "body": [
+//      "case ${1:Expression} is",
+//      "   when ${2:Choice} =>",
+//      "      $0",
+//      "   when others =>",
+//      "      null;",
+//      "end case;"
+//    ],
 //    "description": "A case statement"
 //  },
 //  "declare block": {
 //    "prefix": "declare",
-//    "body": ["declare", "   ${1:Name} : ${2:Type};", "begin", "   $0", "end;"],
+//    "body": [
+//      "declare",
+//      "   ${1:Name} : ${2:Type};",
+//      "begin",
+//      "   $0",
+//      "end;"
+//    ],
 //    "description": "A block statement with declarations"
 //  },
 //  "record type": {
 //    "prefix": "record",
-//    "body": ["type ${1:Name} is", "   record", "      ${2:Field} : ${3:Type};",
-//             "   end record;"],
+//    "body": [
+//      "type ${1:Name} is",
+//      "   record",
+//      "      ${2:Field} : ${3:Type};",
+//      "   end record;"
+//    ],
 //    "description": "A record type declaration"
 //  },
 //  "exception handler": {
 //    "prefix": "exception",
-//    "body": ["exception", "   when ${1:Constraint_Error} =>", "      $0"],
+//    "body": [
+//      "exception",
+//      "   when ${1:Constraint_Error} =>",
+//      "      $0"
+//    ],
 //    "description": "An exception handler"
 //  },
 //  "hello world": {
 //    "prefix": "hello",
-//    "body": ["with Text_IO; use Text_IO;", "procedure ${1:Hello} is", "begin",
-//             "   Put_Line (\"${2:Hello, Ada 83!}\");", "end ${1:Hello};"],
+//    "body": [
+//      "with Text_IO; use Text_IO;",
+//      "procedure ${1:Hello} is",
+//      "begin",
+//      "   Put_Line (\"${2:Hello, Ada 83!}\");",
+//      "end ${1:Hello};"
+//    ],
 //    "description": "A complete program"
+//  },
+//  "generic subprogram": {
+//    "prefix": "generic",
+//    "body": [
+//      "generic",
+//      "   type ${1:Element} is private;",
+//      "procedure ${2:Name} (${3:Item} : in out ${1:Element});",
+//      "",
+//      "procedure ${2:Name} (${3:Item} : in out ${1:Element}) is",
+//      "begin",
+//      "   $0",
+//      "end ${2:Name};"
+//    ],
+//    "description": "A generic procedure and its body"
+//  },
+//  "generic package": {
+//    "prefix": "genericpackage",
+//    "body": [
+//      "generic",
+//      "   type ${1:Element} is private;",
+//      "package ${2:Name} is",
+//      "   $0",
+//      "end ${2:Name};"
+//    ],
+//    "description": "A generic package specification"
+//  },
+//  "task type": {
+//    "prefix": "tasktype",
+//    "body": [
+//      "task type ${1:Worker} is",
+//      "   entry ${2:Start} (${3:Item} : in ${4:Integer});",
+//      "end ${1:Worker};",
+//      "",
+//      "task body ${1:Worker} is",
+//      "begin",
+//      "   accept ${2:Start} (${3:Item} : in ${4:Integer}) do",
+//      "      $0",
+//      "   end ${2:Start};",
+//      "end ${1:Worker};"
+//    ],
+//    "description": "A task type, its entry and its body"
+//  },
+//  "task": {
+//    "prefix": "task",
+//    "body": [
+//      "task ${1:Name};",
+//      "",
+//      "task body ${1:Name} is",
+//      "begin",
+//      "   $0",
+//      "end ${1:Name};"
+//    ],
+//    "description": "A single task and its body"
+//  },
+//  "entry and accept": {
+//    "prefix": "accept",
+//    "body": [
+//      "accept ${1:Name} (${2:Item} : in ${3:Integer}) do",
+//      "   $0",
+//      "end ${1:Name};"
+//    ],
+//    "description": "An accept statement with a body"
+//  },
+//  "selective wait": {
+//    "prefix": "select",
+//    "body": [
+//      "select",
+//      "   accept ${1:Name} do",
+//      "      $0",
+//      "   end ${1:Name};",
+//      "or",
+//      "   terminate;",
+//      "end select;"
+//    ],
+//    "description": "A selective wait with a terminate alternative"
+//  },
+//  "timed entry call": {
+//    "prefix": "selectdelay",
+//    "body": [
+//      "select",
+//      "   ${1:Worker}.${2:Start} (${3:Item});",
+//      "or",
+//      "   delay ${4:1.0};",
+//      "   $0",
+//      "end select;"
+//    ],
+//    "description": "A timed entry call"
+//  },
+//  "variant record": {
+//    "prefix": "variant",
+//    "body": [
+//      "type ${1:Shape} (${2:Kind} : ${3:Shape_Kind} := ${4:Circle}) is",
+//      "   record",
+//      "      case ${2:Kind} is",
+//      "         when ${4:Circle} =>",
+//      "            ${5:Radius} : ${6:Float};",
+//      "         when others =>",
+//      "            null;",
+//      "      end case;",
+//      "   end record;$0"
+//    ],
+//    "description": "A record type with a variant part"
+//  },
+//  "enumeration type": {
+//    "prefix": "enum",
+//    "body": [
+//      "type ${1:Colour} is (${2:Red}, ${3:Amber}, ${4:Green});$0"
+//    ],
+//    "description": "An enumeration type"
+//  },
+//  "array type": {
+//    "prefix": "array",
+//    "body": [
+//      "type ${1:Table} is array (${2:Positive} range <>) of ${3:Integer};$0"
+//    ],
+//    "description": "An unconstrained array type"
+//  },
+//  "subtype with range": {
+//    "prefix": "subtype",
+//    "body": [
+//      "subtype ${1:Small} is ${2:Integer} range ${3:0} .. ${4:255};$0"
+//    ],
+//    "description": "A constrained subtype"
+//  },
+//  "fixed point type": {
+//    "prefix": "fixed",
+//    "body": [
+//      "type ${1:Money} is delta ${2:0.01} range ${3:0.0} .. ${4:1_000.0};$0"
+//    ],
+//    "description": "A fixed point type"
+//  },
+//  "floating point type": {
+//    "prefix": "float",
+//    "body": [
+//      "type ${1:Real} is digits ${2:12};$0"
+//    ],
+//    "description": "A floating point type"
+//  },
+//  "access type": {
+//    "prefix": "access",
+//    "body": [
+//      "type ${1:Link} is access ${2:Node};$0"
+//    ],
+//    "description": "An access type"
+//  },
+//  "private type": {
+//    "prefix": "private",
+//    "body": [
+//      "type ${1:Handle} is private;",
+//      "private",
+//      "   type ${1:Handle} is new ${2:Integer};$0"
+//    ],
+//    "description": "A private type and its full declaration"
+//  },
+//  "exception declaration": {
+//    "prefix": "exceptiondecl",
+//    "body": [
+//      "${1:Name}_Error : exception;$0"
+//    ],
+//    "description": "An exception declaration"
+//  },
+//  "raise statement": {
+//    "prefix": "raise",
+//    "body": [
+//      "raise ${1:Constraint_Error};$0"
+//    ],
+//    "description": "A raise statement"
+//  },
+//  "loop with exit": {
+//    "prefix": "loop",
+//    "body": [
+//      "${1:Search} :",
+//      "loop",
+//      "   exit ${1:Search} when ${2:Done};",
+//      "   $0",
+//      "end loop ${1:Search};"
+//    ],
+//    "description": "A named loop with an exit"
+//  },
+//  "text io use": {
+//    "prefix": "textio",
+//    "body": [
+//      "with Text_IO; use Text_IO;",
+//      "procedure ${1:Main} is",
+//      "begin",
+//      "   Put_Line (\"${2:text}\");$0",
+//      "end ${1:Main};"
+//    ],
+//    "description": "A main procedure that writes a line"
+//  },
+//  "integer io instantiation": {
+//    "prefix": "integerio",
+//    "body": [
+//      "package ${1:Int_IO} is new Text_IO.Integer_IO (${2:Integer});",
+//      "use ${1:Int_IO};$0"
+//    ],
+//    "description": "An instantiation of Text_IO.Integer_IO"
+//  },
+//  "pragma": {
+//    "prefix": "pragma",
+//    "body": [
+//      "pragma ${1|Inline,Pack,Priority,Suppress,Elaborate,Optimize|} (${2:Name});$0"
+//    ],
+//    "description": "A pragma"
+//  },
+//  "representation clause": {
+//    "prefix": "for use",
+//    "body": [
+//      "for ${1:Register} use",
+//      "   record",
+//      "      ${2:Field} at ${3:0} range ${4:0} .. ${5:7};",
+//      "   end record;$0"
+//    ],
+//    "description": "A record representation clause"
 //  }
 //}
-//
 
 //== syntaxes/ada83.tmLanguage.json
 //{
@@ -1406,7 +1741,7 @@ module.exports = { activate, deactivate };
 //          }
 //        },
 //        {
-//          "match": "(?i)^\\s*([A-Za-z][A-Za-z0-9_]*)\\s*(:)\\s*(?=(?:for\\b|while\\b|loop\\b|declare\\b|begin\\b))",
+//          "match": "(?i)^\\s*([A-Za-z][A-Za-z0-9_]*)\\s*(:)\\s*(?=(?:for\\b|while\\b|loop\\b|declare\\b|begin\\b|$))",
 //          "captures": {
 //            "1": { "name": "entity.name.label.ada" },
 //            "2": { "name": "punctuation.separator.ada" }
@@ -1573,6 +1908,7 @@ module.exports = { activate, deactivate };
 //    }
 //  }
 //}
+
 //== extension.vsixmanifest
 //<?xml version="1.0" encoding="utf-8"?>
 //<PackageManifest Version="2.0.0"
