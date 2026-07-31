@@ -61351,20 +61351,26 @@ static void Append_File_Uri (Text_Buffer *out, const char *path) {
       Buffer_Printf (out, "%%%02X", *scan);
 }
 
-static void Answer_Definition (const Json *id, const Open_Document *document,
-                               const char *name) {
-  char directory[PATH_MAX];
-  if (not Is_Directory (document->path, directory, sizeof directory))
-    snprintf (directory, sizeof directory, ".");
+/* Asks the child where the name is declared.  The editor's buffer may not be
+   what is on disk, so the child is handed a scratch copy of it and the
+   document's own directory, which is where its with-ed units live; that also
+   means a declaration in the file being edited comes back named as the
+   scratch file, which is how it is recognised.  The answer is the caller's
+   to free. */
+static Json *Ask_For_Declaration (const Open_Document *document,
+                                  const char *name,
+                                  char *directory, size_t directory_size,
+                                  char *scratch, size_t scratch_size) {
+  if (not Is_Directory (document->path, directory, directory_size))
+    snprintf (directory, directory_size, ".");
 
-  char scratch[PATH_MAX];
   const char *temporary = getenv ("TMPDIR");
   if (not temporary or not temporary[0]) temporary = "/tmp";
-  snprintf (scratch, sizeof scratch, "%s/ada83-lsp-%ld.ada",
+  snprintf (scratch, scratch_size, "%s/ada83-lsp-%ld.ada",
             temporary, (long) getpid ());
 
   FILE *file = fopen (scratch, "wb");
-  if (not file) { Respond (id, "null"); return; }
+  if (not file) return NULL;
   if (document->text) fputs (document->text, file);
   fclose (file);
 
@@ -61391,6 +61397,17 @@ static void Answer_Definition (const Json *id, const Open_Document *document,
 
   const char *cursor = reply.data ? reply.data : "null";
   Json *where = Json_Parse_Value (&cursor);
+  Buffer_Free (&command);
+  Buffer_Free (&reply);
+  return where;
+}
+
+static void Answer_Definition (const Json *id, const Open_Document *document,
+                               const char *name) {
+  char directory[PATH_MAX], scratch[PATH_MAX];
+  Json *where = Ask_For_Declaration (document, name,
+                                     directory, sizeof directory,
+                                     scratch, sizeof scratch);
   const char *found = Json_Text (Json_Member (where, "file"));
   const Json *line   = Json_Member (where, "line");
   const Json *column = Json_Member (where, "column");
@@ -61418,8 +61435,226 @@ static void Answer_Definition (const Json *id, const Open_Document *document,
   }
 
   Json_Free (where);
-  Buffer_Free (&command);
-  Buffer_Free (&reply);
+}
+
+
+/* ---- occurrences of a name ------------------------------------------- */
+
+/* What the compiler knows about a name it has resolved does not outlive the
+   compilation: every Node carries the Symbol it was resolved to, but nothing
+   keeps a table of those, and there is no walk over the tree to gather them
+   from.  So the occurrences reported here are found by reading the document
+   as text rather than by asking the resolver: whole identifiers only, matched
+   without regard to case as Ada matches them, and never inside a comment or a
+   string literal.  That is what an editor does for a language it has no index
+   of, and for the common case -- a name that means one thing in the file the
+   caret is in -- it is the same answer the resolver would give.  What it
+   cannot do is tell two homographs apart.
+
+   The one thing the compiler is asked is which occurrence is the declaration,
+   and only for a references request, where the answer is needed to honour
+   includeDeclaration; a highlight must be cheap enough to run on every
+   movement of the caret, so it starts no child. */
+
+/* Where a name appears, in both coordinate systems: the editor's, which
+   counts lines from zero and columns in UTF-16 units, and the compiler's,
+   which counts both from one, a column being a code point. */
+typedef struct {
+  u32 line;                        /* zero-based, as the editor counts   */
+  u32 start, end;                  /* UTF-16 units into that line        */
+  u32 source_line, source_column;  /* one-based, as the compiler counts  */
+} Occurrence;
+
+enum { MAX_OCCURRENCES = 2048 };
+
+typedef struct {
+  const char *scan;
+  u32         line;                /* zero-based                         */
+  u32         units;               /* UTF-16 units into the line         */
+  u32         column;              /* code points into the line          */
+} Scan_Position;
+
+static void Scan_Step (Scan_Position *at) {
+  unsigned char lead = (unsigned char) *at->scan;
+  if (not lead) return;
+  if (lead == '\n') {
+    at->scan++;
+    at->line++;
+    at->units = at->column = 0;
+    return;
+  }
+  u32 width = lead < 0x80 ? 1 : lead < 0xE0 ? 2 : lead < 0xF0 ? 3 : 4;
+  for (u32 i = 0; i < width and *at->scan; i++) at->scan++;
+  at->units  += width == 4 ? 2 : 1;     /* astral code points are a pair */
+  at->column += 1;
+}
+
+static bool Is_Identifier_Character (char c) {
+  return isalnum ((unsigned char) c) or c == '_';
+}
+
+/* Every whole identifier in the text that spells the same name.  Comments run
+   to the end of their line, a doubled quote stands for one inside a string,
+   and a tick is an attribute rather than a character literal when it follows
+   something a value could have come from -- Table'Length is not a quoted L. */
+static u32 Occurrences_Of (const char *text, const char *name,
+                           Occurrence *found, u32 limit) {
+  if (not text or not name or not name[0]) return 0;
+
+  size_t        length = strlen (name);
+  u32           count  = 0;
+  Scan_Position at     = { text, 0, 0, 0 };
+  bool          after_value = false;
+
+  while (*at.scan) {
+    if (at.scan[0] == '-' and at.scan[1] == '-') {
+      while (*at.scan and *at.scan != '\n') Scan_Step (&at);
+      after_value = false;
+      continue;
+    }
+
+    if (at.scan[0] == '"') {
+      Scan_Step (&at);
+      while (*at.scan and *at.scan != '\n') {
+        if (at.scan[0] != '"') { Scan_Step (&at); continue; }
+        Scan_Step (&at);
+        if (at.scan[0] != '"') break;
+        Scan_Step (&at);
+      }
+      after_value = true;
+      continue;
+    }
+
+    if (at.scan[0] == '\'' and not after_value and
+        at.scan[1] and at.scan[1] != '\n' and at.scan[2] == '\'') {
+      Scan_Step (&at);
+      Scan_Step (&at);
+      Scan_Step (&at);
+      after_value = true;
+      continue;
+    }
+
+    if (Is_Identifier_Character (at.scan[0])) {
+      Scan_Position start = at;
+      while (Is_Identifier_Character (at.scan[0])) Scan_Step (&at);
+      if ((size_t) (at.scan - start.scan) == length and
+          strncasecmp (start.scan, name, length) == 0 and count < limit) {
+        found[count].line          = start.line;
+        found[count].start         = start.units;
+        found[count].end           = at.units;
+        found[count].source_line   = start.line   + 1;
+        found[count].source_column = start.column + 1;
+        count++;
+      }
+      after_value = true;
+      continue;
+    }
+
+    if (not isspace ((unsigned char) at.scan[0]))
+      after_value = at.scan[0] == ')';
+    Scan_Step (&at);
+  }
+  return count;
+}
+
+/* Which occurrence, if any, is the declaration the compiler resolved the name
+   to.  Only a declaration in this very document can be one of them, and that
+   is the one the child names as the scratch file it was given.  The count
+   itself stands for none of them. */
+static u32 Declaration_Among (const Occurrence *found, u32 count,
+                              const Json *where, const char *scratch) {
+  const char *file   = Json_Text (Json_Member (where, "file"));
+  const Json *line   = Json_Member (where, "line");
+  const Json *column = Json_Member (where, "column");
+  if (not file or not line or not column) return count;
+  if (strcmp (file, scratch) != 0) return count;
+  for (u32 i = 0; i < count; i++)
+    if (found[i].source_line   == (u32) line->number and
+        found[i].source_column == (u32) column->number)
+      return i;
+  return count;
+}
+
+static void Append_Occurrence_Range (Text_Buffer *out,
+                                     const Occurrence *where) {
+  Buffer_Printf (out,
+    "\"range\":{\"start\":{\"line\":%u,\"character\":%u},"
+    "\"end\":{\"line\":%u,\"character\":%u}}",
+    where->line, where->start, where->line, where->end);
+}
+
+/* Text 1, Read 2, Write 3.  Nothing here can tell a read from a write, so
+   every occurrence is reported as text and the editor draws them alike. */
+static void Answer_Highlights (const Json *id, const Open_Document *document,
+                               const char *name) {
+  Occurrence found[MAX_OCCURRENCES];
+  u32 count = Occurrences_Of (document->text, name, found, MAX_OCCURRENCES);
+
+  Text_Buffer answer = {0};
+  Buffer_Append_Text (&answer, "[");
+  for (u32 i = 0; i < count; i++) {
+    if (i) Buffer_Append_Text (&answer, ",");
+    Buffer_Append_Text (&answer, "{");
+    Append_Occurrence_Range (&answer, &found[i]);
+    Buffer_Append_Text (&answer, ",\"kind\":1}");
+  }
+  Buffer_Append_Text (&answer, "]");
+  Respond (id, answer.data ? answer.data : "[]");
+  Buffer_Free (&answer);
+}
+
+static void Answer_References (const Json *id, const Open_Document *document,
+                               const char *name, bool with_declaration) {
+  if (not document->path) { Respond (id, "[]"); return; }
+
+  Occurrence found[MAX_OCCURRENCES];
+  u32 count       = Occurrences_Of (document->text, name, found,
+                                    MAX_OCCURRENCES);
+  u32 declaration = count;
+
+  if (not with_declaration) {
+    char directory[PATH_MAX], scratch[PATH_MAX];
+    Json *where = Ask_For_Declaration (document, name,
+                                       directory, sizeof directory,
+                                       scratch, sizeof scratch);
+    declaration = Declaration_Among (found, count, where, scratch);
+    Json_Free (where);
+  }
+
+  Text_Buffer answer = {0};
+  Buffer_Append_Text (&answer, "[");
+  for (u32 i = 0, published = 0; i < count; i++) {
+    if (i == declaration) continue;
+    if (published++) Buffer_Append_Text (&answer, ",");
+    Buffer_Append_Text (&answer, "{\"uri\":\"");
+    Append_File_Uri (&answer, document->path);
+    Buffer_Append_Text (&answer, "\",");
+    Append_Occurrence_Range (&answer, &found[i]);
+    Buffer_Append_Text (&answer, "}");
+  }
+  Buffer_Append_Text (&answer, "]");
+  Respond (id, answer.data ? answer.data : "[]");
+  Buffer_Free (&answer);
+}
+
+/* The name the request's position sits on, if it is a name: a run that starts
+   with a digit is a literal, and nothing is to be looked up for it. */
+static bool Name_Under_Cursor (const Open_Document *document, const Json *at,
+                               char *out, size_t out_size) {
+  out[0] = '\0';
+  if (not document or not at) return false;
+  const Json *line      = Json_Member (at, "line");
+  const Json *character = Json_Member (at, "character");
+  if (not Identifier_At (document->text,
+                         (u32) (line      ? line->number      : 0),
+                         (u32) (character ? character->number : 0),
+                         out, out_size)) {
+    out[0] = '\0';
+    return false;
+  }
+  if (isalpha ((unsigned char) out[0])) return true;
+  out[0] = '\0';
+  return false;
 }
 
 
@@ -61450,6 +61685,8 @@ int Run_Language_Server (const char *invoked_as) {
       Buffer_Printf (&result,
         "{\"capabilities\":{\"textDocumentSync\":1,"
         "\"definitionProvider\":true,"
+        "\"documentHighlightProvider\":true,"
+        "\"referencesProvider\":true,"
         "\"positionEncoding\":\"utf-16\"},"
         "\"serverInfo\":{\"name\":\"ada83\",\"version\":\"1.0\"}}");
       Respond (id, result.data ? result.data : "{}");
@@ -61484,18 +61721,37 @@ int Run_Language_Server (const char *invoked_as) {
 
     } else if (strcmp (method, "textDocument/definition") == 0) {
       const char *uri = Json_Text (Document_Uri_Of (parameters));
-      const Json *at  = Json_Member (parameters, "position");
       Open_Document *document = uri ? Find_Document (uri) : NULL;
-      char name[256] = {0};
-      if (document and at)
-        Identifier_At (document->text,
-                       (u32) (Json_Member (at, "line")
-                              ? Json_Member (at, "line")->number : 0),
-                       (u32) (Json_Member (at, "character")
-                              ? Json_Member (at, "character")->number : 0),
-                       name, sizeof name);
-      if (name[0]) Answer_Definition (id, document, name);
-      else         Respond (id, "null");
+      char name[256];
+      if (Name_Under_Cursor (document, Json_Member (parameters, "position"),
+                             name, sizeof name))
+        Answer_Definition (id, document, name);
+      else
+        Respond (id, "null");
+
+    } else if (strcmp (method, "textDocument/documentHighlight") == 0) {
+      const char *uri = Json_Text (Document_Uri_Of (parameters));
+      Open_Document *document = uri ? Find_Document (uri) : NULL;
+      char name[256];
+      if (Name_Under_Cursor (document, Json_Member (parameters, "position"),
+                             name, sizeof name))
+        Answer_Highlights (id, document, name);
+      else
+        Respond (id, "[]");
+
+    } else if (strcmp (method, "textDocument/references") == 0) {
+      const char *uri = Json_Text (Document_Uri_Of (parameters));
+      Open_Document *document = uri ? Find_Document (uri) : NULL;
+      const Json *asked = Json_Member (Json_Member (parameters, "context"),
+                                       "includeDeclaration");
+      bool with_declaration = not asked or asked->kind != JSON_BOOL
+                            or asked->boolean;
+      char name[256];
+      if (Name_Under_Cursor (document, Json_Member (parameters, "position"),
+                             name, sizeof name))
+        Answer_References (id, document, name, with_declaration);
+      else
+        Respond (id, "[]");
 
     } else if (strcmp (method, "textDocument/didClose") == 0) {
       const char *uri = Json_Text (Document_Uri_Of (parameters));
