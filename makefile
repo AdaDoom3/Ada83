@@ -16,6 +16,7 @@ RUNTIME = ada83-runtime.ada
 MANUAL  = manual.md
 VSIX    = ada83.vsix
 BUNDLE  = ada83-extension.js
+ICON    = ada83-icon
 
 HOST_TARGET := $(if $(HOST_IS_MACOS),macos,linux)
 TARGET      ?= $(HOST_TARGET)
@@ -34,6 +35,11 @@ BASELINE_linux    = -march=x86-64 -mtune=generic
 SLICE_macos       = arm64 x86_64
 SUFFIX_windows    = .exe
 LIBRARIES_windows = *.dll
+ARTWORK_linux     = $(ICON).png
+ARTWORK_macos     = $(ICON).icns
+ARTWORK_windows   = $(ICON).ico
+WINDRES_windows   = x86_64-w64-mingw32-windres
+LAUNCHER_linux    = ada83.desktop
 
 $(if $(COMPILE_$(TARGET)),,\
   $(error TARGET is '$(TARGET)'; it must be linux, macos or windows))
@@ -45,13 +51,17 @@ PACKAGE_UNIVERSAL  = $(word 2,$(PACKAGE_SLICES))
 PACKAGE_EXECUTABLE = ada83$(SUFFIX_$(TARGET))
 PACKAGE_CFLAGS     = $(COMPILE_$(TARGET)) $(BASELINE_$(TARGET)) \
                      $(if $(CROSS),,$(WHOLE_PROGRAM))
+PACKAGE_ARTWORK    = $(ARTWORK_$(TARGET))
+PACKAGE_RESOURCE   = $(if $(WINDRES_$(TARGET)),staging/$(ICON).o)
 PACKAGE_CONTENTS   = $(PACKAGE_EXECUTABLE) $(RUNTIME) $(VSIX) \
+                     $(PACKAGE_ARTWORK) $(LAUNCHER_$(TARGET)) \
                      $(LIBRARIES_$(TARGET))
 
 Slice_Output  = staging/$(PACKAGE_EXECUTABLE)$(if $(PACKAGE_UNIVERSAL),-$1)
 Compile_Slice = $(PACKAGE_COMPILER) $(PACKAGE_CFLAGS) \
                 $(if $(filter-out .,$1),-arch $1) \
-                -o $(call Slice_Output,$1) ada83.c $(LINK_$(TARGET))
+                -o $(call Slice_Output,$1) ada83.c $(PACKAGE_RESOURCE) \
+                $(LINK_$(TARGET))
 PACKAGE_PIECES = $(foreach Slice,$(PACKAGE_SLICES),$(call Slice_Output,$(Slice)))
 
 LIPO := $(shell command -v lipo || command -v llvm-lipo || \
@@ -100,12 +110,21 @@ $(PACKAGE): ada83.c $(RUNTIME) $(BUNDLE)
 	  echo "bin-$(TARGET).zip holds the only copy of the libraries $(TARGET)"; \
 	  echo "loads at run time, and is missing"; exit 1; }
 	rm -rf staging && mkdir staging
+	$(if $(PACKAGE_RESOURCE),\
+	  echo '1 ICON "$(abspath $(ICON).ico)"' > staging/$(ICON).rc \
+	    && $(WINDRES_$(TARGET)) staging/$(ICON).rc -O coff -o $(PACKAGE_RESOURCE))
 	$(foreach Slice,$(or $(PACKAGE_SLICES),.),$(call Compile_Slice,$(Slice)) &&) \
 	  true
+	rm -f staging/$(ICON).rc
 	$(if $(PACKAGE_UNIVERSAL),\
 	  $(LIPO) -create -output staging/$(PACKAGE_EXECUTABLE) $(PACKAGE_PIECES) \
 	    && rm -f $(PACKAGE_PIECES))
-	cp $(RUNTIME) staging/
+	cp $(RUNTIME) $(PACKAGE_ARTWORK) staging/
+	$(if $(LAUNCHER_$(TARGET)),printf '%s\n' '[Desktop Entry]' 'Type=Application' \
+	  'Name=Ada 83' 'Comment=Ada 83 compiler' 'Exec=ada83 %F' \
+	  'Icon=ada83-icon' 'Terminal=true' 'Categories=Development;Building;' \
+	  > staging/$(LAUNCHER_$(TARGET)))
+	rm -f staging/$(ICON).o
 	$(MAKE) --no-print-directory staging/$(VSIX)
 	$(if $(LIBRARIES_$(TARGET)),\
 	  unzip -qoj bin-$(TARGET).zip '$(LIBRARIES_$(TARGET))' -d staging)
@@ -125,6 +144,7 @@ staging/$(VSIX): $(BUNDLE)
 	rm -rf staging/vsix
 	mkdir -p staging/vsix/extension/syntaxes
 	cp $(BUNDLE) staging/vsix/extension/
+	cp $(ICON).png staging/vsix/extension/
 	@test -f $(MANUAL) && cp $(MANUAL) staging/vsix/extension/ \
 	  || echo "$(MANUAL) is missing; packaging without the manual search tool"
 	awk 'BEGIN { out = "" } \

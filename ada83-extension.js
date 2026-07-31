@@ -987,6 +987,7 @@ module.exports = { activate, deactivate };
 //    "onLanguage:ada83",
 //    "onLanguageModelTool:search_ada83_manual"
 //  ],
+//  "icon": "ada83-icon.png",
 //  "main": "./ada83-extension.js",
 //  "contributes": {
 //    "languages": [
