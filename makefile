@@ -12,6 +12,16 @@ WHOLE_PROGRAM := $(if $(HOST_IS_GCC),-fwhole-program)
 TUNE          := $(if $(HOST_IS_GCC)$(filter x86_64 amd64,$(HOST_MACHINE)),\
                       -march=native)
 
+CONTAINED_GCC = docker run --rm --volume $(CURDIR):/work --workdir /work \
+                gcc:13 gcc
+Found = $(if $(shell command -v $1 2>/dev/null),$1)
+LINUX_CROSS_COMPILER := $(or \
+  $(call Found,x86_64-linux-gnu-gcc), \
+  $(call Found,x86_64-unknown-linux-gnu-gcc), \
+  $(if $(call Found,docker),$(CONTAINED_GCC)), \
+  $(if $(call Found,podman),$(subst docker,podman,$(CONTAINED_GCC))), \
+  x86_64-linux-gnu-gcc)
+
 RUNTIME = ada83-runtime.ada
 MANUAL  = manual.md
 VSIX    = ada83.vsix
@@ -22,7 +32,7 @@ HOST_TARGET := $(if $(HOST_IS_MACOS),macos,linux)
 TARGET      ?= $(HOST_TARGET)
 CROSS       := $(filter-out $(HOST_TARGET),$(TARGET))
 
-COMPILER_linux            = $(if $(CROSS),x86_64-linux-gnu-gcc,$(CC))
+COMPILER_linux            = $(if $(CROSS),$(LINUX_CROSS_COMPILER),$(CC))
 COMPILER_macos            = $(if $(CROSS),o64-clang,$(CC))
 COMPILER_windows          = x86_64-w64-mingw32-gcc
 COMPILER_FLAGS_linux      = -O3 -Wall -g0 -std=gnu17 -march=x86-64 -mtune=generic
@@ -107,8 +117,8 @@ provision-llvm:
 package: $(PACKAGE)
 
 $(PACKAGE): ada83.c $(RUNTIME) $(ARTWORK) staging/$(VSIX)
-	@command -v $(COMPILER) >/dev/null || { \
-	  echo "packaging for $(TARGET) needs $(COMPILER)"; exit 1; }
+	@command -v $(firstword $(COMPILER)) >/dev/null || { \
+	  echo "packaging for $(TARGET) needs $(firstword $(COMPILER))"; exit 1; }
 	@test -z "$(SHARED_LIBRARIES)" || test -f $(LIBRARY_SOURCE) || { \
 	  echo "$(LIBRARY_SOURCE) holds the only copy of the libraries $(TARGET)"; \
 	  echo "loads at run time, and is missing"; exit 1; }
