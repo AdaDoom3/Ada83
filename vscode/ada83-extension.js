@@ -172,6 +172,155 @@ const Definition_Provider = {
       : Ask ((Id) => Definition (Id, Document, Position)).then (Location_Of),
 };
 
+const Document_Highlight = (Id, Document, Position) => ({
+  id: Id,
+  method: 'textDocument/documentHighlight',
+  params: {
+    textDocument: { uri: Document.uri.toString () },
+    position: { line: Position.line, character: Position.character },
+  },
+});
+
+const References = (Id, Document, Position, Include_Declaration) => ({
+  id: Id,
+  method: 'textDocument/references',
+  params: {
+    textDocument: { uri: Document.uri.toString () },
+    position: { line: Position.line, character: Position.character },
+    context: { includeDeclaration: Include_Declaration },
+  },
+});
+
+const Highlight_Kind_Table = {
+  1: vscode.DocumentHighlightKind.Text,
+  2: vscode.DocumentHighlightKind.Read,
+  3: vscode.DocumentHighlightKind.Write,
+};
+
+const Highlight_Kind_Of = (Reported) =>
+  Highlight_Kind_Table[Reported] ?? vscode.DocumentHighlightKind.Text;
+
+const Highlight_Of = (Reported) =>
+  new vscode.DocumentHighlight (Range_Of (Reported.range),
+                                Highlight_Kind_Of (Reported.kind));
+
+const Listed = (Convert) => (Result) =>
+  Array.isArray (Result) ? Result.map (Convert) : [];
+
+const Highlights_Of = Listed (Highlight_Of);
+
+const Locations_Of = Listed (Location_Of);
+
+const Highlight_Provider = {
+  provideDocumentHighlights: (Document, Position) =>
+    Session === null
+      ? []
+      : Ask ((Id) => Document_Highlight (Id, Document, Position))
+          .then (Highlights_Of),
+};
+
+const Reference_Provider = {
+  provideReferences: (Document, Position, Context) =>
+    Session === null
+      ? []
+      : Ask ((Id) => References (Id, Document, Position,
+                                 (Context ?? {}).includeDeclaration !== false))
+          .then (Locations_Of),
+};
+
+const Hover = (Id, Document, Position) => ({
+  id: Id,
+  method: 'textDocument/hover',
+  params: {
+    textDocument: { uri: Document.uri.toString () },
+    position: { line: Position.line, character: Position.character },
+  },
+});
+
+const Hover_Of = (Result) =>
+  Result === null || Result === undefined ||
+  Result.contents === null || Result.contents === undefined
+    ? null
+    : new vscode.Hover (new vscode.MarkdownString (Result.contents.value),
+                        Range_Of (Result.range));
+
+const Hover_Provider = {
+  provideHover: (Document, Position) =>
+    Session === null
+      ? null
+      : Ask ((Id) => Hover (Id, Document, Position)).then (Hover_Of),
+};
+
+const Document_Symbols = (Id, Document) => ({
+  id: Id,
+  method: 'textDocument/documentSymbol',
+  params: { textDocument: { uri: Document.uri.toString () } },
+});
+
+const Symbol_Kind_Of = (Reported) =>
+  Number.isInteger (Reported) && Reported >= 1 && Reported <= 26
+    ? Reported - 1
+    : vscode.SymbolKind.Variable;
+
+const Symbol_Of = (Reported) =>
+  new vscode.SymbolInformation (Reported.name,
+                                Symbol_Kind_Of (Reported.kind),
+                                Reported.containerName ?? '',
+                                Location_Of (Reported.location));
+
+const Symbols_Of = (Result) =>
+  (Array.isArray (Result) ? Result : []).map (Symbol_Of);
+
+const Document_Symbol_Provider = {
+  provideDocumentSymbols: (Document) =>
+    Session === null
+      ? null
+      : Ask ((Id) => Document_Symbols (Id, Document)).then (Symbols_Of),
+};
+
+const Completion = (Id, Document, Position) => ({
+  id: Id,
+  method: 'textDocument/completion',
+  params: {
+    textDocument: { uri: Document.uri.toString () },
+    position: { line: Position.line, character: Position.character },
+  },
+});
+
+const Completion_Kind_Table = {
+  2: vscode.CompletionItemKind.Method,
+  3: vscode.CompletionItemKind.Function,
+  6: vscode.CompletionItemKind.Variable,
+  9: vscode.CompletionItemKind.Module,
+  14: vscode.CompletionItemKind.Keyword,
+  20: vscode.CompletionItemKind.EnumMember,
+  21: vscode.CompletionItemKind.Constant,
+  22: vscode.CompletionItemKind.Struct,
+  23: vscode.CompletionItemKind.Event,
+};
+
+const Completion_Kind_Of = (Reported) =>
+  Completion_Kind_Table[Reported] ?? vscode.CompletionItemKind.Text;
+
+const Completion_Item_Of = (Reported) =>
+  Object.assign (
+    new vscode.CompletionItem (Reported.label,
+                               Completion_Kind_Of (Reported.kind)),
+    { detail: Reported.detail });
+
+const Completions_Of = (Result) =>
+  Result === null || Result === undefined
+    ? null
+    : (Result.items ?? []).map (Completion_Item_Of);
+
+const Completion_Provider = {
+  provideCompletionItems: (Document, Position) =>
+    Session === null
+      ? null
+      : Ask ((Id) => Completion (Id, Document, Position))
+          .then (Completions_Of),
+};
+
 const Report_Failure = (Command) => (Reason) =>
   vscode.window.showErrorMessage (
     `Ada 83: cannot run '${Command} --lsp' (${Reason.message}). ` +
@@ -224,7 +373,17 @@ const activate = (Context) => {
     vscode.workspace.onDidChangeTextDocument (On_Ada (Did_Change)),
     vscode.workspace.onDidCloseTextDocument (On_Ada (Did_Close)),
     vscode.languages.registerDefinitionProvider (
-      { scheme: 'file', language: 'ada83' }, Definition_Provider));
+      { scheme: 'file', language: 'ada83' }, Definition_Provider),
+    vscode.languages.registerHoverProvider (
+      { scheme: 'file', language: 'ada83' }, Hover_Provider),
+    vscode.languages.registerCompletionItemProvider (
+      { scheme: 'file', language: 'ada83' }, Completion_Provider, '.'),
+    vscode.languages.registerDocumentSymbolProvider (
+      { scheme: 'file', language: 'ada83' }, Document_Symbol_Provider),
+    vscode.languages.registerDocumentHighlightProvider (
+      { scheme: 'file', language: 'ada83' }, Highlight_Provider),
+    vscode.languages.registerReferenceProvider (
+      { scheme: 'file', language: 'ada83' }, Reference_Provider));
 };
 
 const deactivate = Stop;

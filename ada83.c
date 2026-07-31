@@ -61284,6 +61284,205 @@ int Define_And_Print (const char *path, const char *directory,
   return 0;
 }
 
+/* ---- description lookup ---------------------------------------------- */
+
+/* The same lookup again, answering what the name is rather than where it
+   was written.  Symbol already holds everything a declaration says -- the
+   kind, the type, the parameter profile -- so the answer is that written
+   back out as Ada, and the type names in it are the ones Describe_Type
+   gives a diagnostic, so an error message and a hover call a thing by the
+   same name rather than each inventing one. */
+
+static void Append_Slice (Text_Buffer *out, Slice text) {
+  Buffer_Append (out, text.data, text.length);
+}
+
+static const char *Spell_Parameter_Mode (Parameter_Mode_Kind mode) {
+  return mode == MODE_OUT ? "out" : mode == MODE_IN_OUT ? "in out" : "in";
+}
+
+/* The noun a reader knows the entity by, which is the word Ada declares it
+   with wherever there is one. */
+static const char *Spell_Symbol_Kind (const Symbol *symbol) {
+  switch (symbol->kind) {
+    case SYMBOL_VARIABLE:     return symbol->is_named_number ? "named number"
+                                                             : "variable";
+    case SYMBOL_CONSTANT:     return symbol->is_named_number ? "named number"
+                                                             : "constant";
+    case SYMBOL_TYPE:         return "type";
+    case SYMBOL_SUBTYPE:      return "subtype";
+    case SYMBOL_PROCEDURE:    return "procedure";
+    case SYMBOL_FUNCTION:     return "function";
+    case SYMBOL_PARAMETER:    return "parameter";
+    case SYMBOL_PACKAGE:      return "package";
+    case SYMBOL_EXCEPTION:    return "exception";
+    case SYMBOL_LABEL:        return "label";
+    case SYMBOL_ENTRY:        return "entry";
+    case SYMBOL_COMPONENT:    return "component";
+    case SYMBOL_DISCRIMINANT: return "discriminant";
+    case SYMBOL_LITERAL:      return "enumeration literal";
+    case SYMBOL_GENERIC:      return "generic unit";
+    default:                  break;
+  }
+  return "name";
+}
+
+/* `(A : in INTEGER; B : out STRING)`, and nothing at all where a subprogram
+   takes no parameters, which is how Ada writes it. */
+static void Append_Parameter_Profile (Text_Buffer *out, const Symbol *symbol) {
+  for (u32 i = 0; i < symbol->parameter_count; i++) {
+    const Parameter_Info *parameter = &symbol->parameters[i];
+    Buffer_Append_Text (out, i ? "; " : " (");
+    Append_Slice (out, parameter->name);
+    Buffer_Printf (out, " : %s ", Spell_Parameter_Mode (parameter->mode));
+    Append_Slice (out, Describe_Type (parameter->param_type
+                                        ? parameter->param_type
+                                        : parameter->param_sym
+                                            ? parameter->param_sym->type
+                                            : NULL));
+  }
+  if (symbol->parameter_count) Buffer_Append_Text (out, ")");
+}
+
+static void Append_Declaration_Text (Text_Buffer *out, Symbol *symbol) {
+  switch (symbol->kind) {
+
+    case SYMBOL_PACKAGE:
+      Buffer_Append_Text (out, "package ");
+      Append_Slice (out, symbol->name);
+      break;
+
+    case SYMBOL_GENERIC:
+      Buffer_Printf (out, "generic\n%s ",
+                     Spell_Generic_Kind (
+                       Classify_Generic_Spec (symbol->generic_unit)));
+      Append_Slice (out, symbol->name);
+      break;
+
+    case SYMBOL_TYPE:
+      Buffer_Append_Text (out, "type ");
+      Append_Slice (out, symbol->name);
+      break;
+
+    case SYMBOL_SUBTYPE:
+      Buffer_Append_Text (out, "subtype ");
+      Append_Slice (out, symbol->name);
+      Buffer_Append_Text (out, " is ");
+      Append_Slice (out, Describe_Type (symbol->type));
+      break;
+
+    case SYMBOL_PROCEDURE:
+      Buffer_Append_Text (out, "procedure ");
+      Append_Slice (out, symbol->name);
+      Append_Parameter_Profile (out, symbol);
+      break;
+
+    case SYMBOL_ENTRY:
+      Buffer_Append_Text (out, "entry ");
+      Append_Slice (out, symbol->name);
+      Append_Parameter_Profile (out, symbol);
+      break;
+
+    case SYMBOL_FUNCTION:
+      Buffer_Append_Text (out, "function ");
+      Append_Slice (out, symbol->name);
+      Append_Parameter_Profile (out, symbol);
+      Buffer_Append_Text (out, " return ");
+      Append_Slice (out, Describe_Type (symbol->return_type
+                                          ? symbol->return_type
+                                          : symbol->type));
+      break;
+
+    case SYMBOL_EXCEPTION:
+      Append_Slice (out, symbol->name);
+      Buffer_Append_Text (out, " : exception");
+      break;
+
+    case SYMBOL_LABEL:
+      Buffer_Append_Text (out, "<<");
+      Append_Slice (out, symbol->name);
+      Buffer_Append_Text (out, ">>");
+      break;
+
+    case SYMBOL_PARAMETER:
+      Append_Slice (out, symbol->name);
+      Buffer_Printf (out, " : %s ",
+                     Spell_Parameter_Mode (Get_Parameter_Mode (symbol)));
+      Append_Slice (out, Describe_Type (symbol->type));
+      break;
+
+    case SYMBOL_CONSTANT:
+      Append_Slice (out, symbol->name);
+      Buffer_Append_Text (out, " : constant ");
+      Append_Slice (out, Describe_Type (symbol->type));
+      break;
+
+    default:
+      Append_Slice (out, symbol->name);
+      if (symbol->type) {
+        Buffer_Append_Text (out, " : ");
+        Append_Slice (out, Describe_Type (symbol->type));
+      }
+      break;
+  }
+}
+
+/* The hidden mode --describe runs in, a child of --lsp like the others.
+   Prints what a name is, or null where nothing of that name resolved. */
+int Describe_And_Print (const char *path, const char *directory,
+                        const char *name, const char *invoked_as) {
+  char executable[PATH_MAX], beside[PATH_MAX];
+  Host_Executable_Path (executable, sizeof executable, invoked_as);
+  if (Is_Directory (executable, beside, sizeof beside))
+    Runtime_Library_Locate (beside);
+  if (directory and directory[0]) Add_Include_Path (directory);
+  Add_Include_Path (".");
+
+  Capturing_Diagnostics = true;
+  Analysis_Only         = true;
+  Compile_File (path, directory);
+  Capturing_Diagnostics = false;
+
+  Slice wanted = { name, (u32) strlen (name) };
+  Symbol *found = sm ? Symbol_Find (wanted) : NULL;
+  if (found and not found->location.filename) found = NULL;
+  if (not found and sm) found = Search_Scope_Tree (sm->global_scope, wanted, 0);
+
+  Text_Buffer out = {0};
+  if (found) {
+    Buffer_Append_Text (&out, "{\"kind\":");
+    Buffer_Append_Json_String (&out, Spell_Symbol_Kind (found));
+    Buffer_Append_Text (&out, ",\"file\":");
+    Buffer_Append_Json_String (&out,
+      Declaration_File (found->location.filename));
+    Buffer_Printf (&out, ",\"line\":%u,\"column\":%u,\"declarations\":[",
+                   found->location.line, found->location.column);
+
+    /* An overloaded name is several declarations, and which one a reader
+       meant is not known here, so all of them are shown. */
+    u32 shown = 0;
+    for (Symbol *overload = found; overload and shown < 8;
+         overload = overload->next_overload) {
+      if (overload != found and not overload->location.filename) continue;
+      Text_Buffer declaration = {0};
+      Append_Declaration_Text (&declaration, overload);
+      if (declaration.length) {
+        if (shown++) Buffer_Append_Text (&out, ",");
+        Buffer_Append_Json_String (&out, declaration.data);
+      }
+      Buffer_Free (&declaration);
+    }
+    Buffer_Append_Text (&out, "]}");
+  } else {
+    Buffer_Append_Text (&out, "null");
+  }
+  fwrite (out.data, 1, out.length, stdout);
+  fflush (stdout);
+  Buffer_Free (&out);
+  Discard_Captured_Diagnostics ();
+  return 0;
+}
+
 /* ---- requests ------------------------------------------------------- */
 
 static void Respond (const Json *id, const char *result) {
@@ -61307,9 +61506,12 @@ static const Json *Document_Uri_Of (const Json *parameters) {
 /* The word under the cursor, in the editor's own coordinates: line and
    character counted from zero, the character measured in UTF-16 units.
    Ada identifiers are letters, digits and underscores, so the word is
-   whatever runs of those the position sits inside. */
+   whatever runs of those the position sits inside.
+
+   `from` and `to`, where they are asked for, come back as the word's own
+   range in those same coordinates, which is what a hover underlines. */
 static bool Identifier_At (const char *text, u32 line, u32 character,
-                           char *out, size_t out_size) {
+                           char *out, size_t out_size, u32 *from, u32 *to) {
   if (not text) return false;
 
   const char *scan = text;
@@ -61336,6 +61538,18 @@ static bool Identifier_At (const char *text, u32 line, u32 character,
   if (length == 0 or length + 1 > out_size) return false;
   memcpy (out, first, length);
   out[length] = '\0';
+
+  if (from and to) {
+    u32 units = 0;
+    for (const char *step = start; step < limit; ) {
+      unsigned char lead = (unsigned char) *step;
+      u32 width = lead < 0x80 ? 1 : lead < 0xE0 ? 2 : lead < 0xF0 ? 3 : 4;
+      if (step == first) *from = units;
+      units += width == 4 ? 2 : 1;
+      step  += width;
+    }
+    *to = units;
+  }
   return true;
 }
 
@@ -61652,13 +61866,107 @@ static bool Name_Under_Cursor (const Open_Document *document, const Json *at,
   if (not Identifier_At (document->text,
                          (u32) (line      ? line->number      : 0),
                          (u32) (character ? character->number : 0),
-                         out, out_size)) {
+                         out, out_size, NULL, NULL)) {
     out[0] = '\0';
     return false;
   }
   if (isalpha ((unsigned char) out[0])) return true;
   out[0] = '\0';
   return false;
+}
+
+/* Hover asks the same child the same question definition does, and reads the
+   fuller answer: what the name is, written as Ada declares it, and where
+   that declaration stands. */
+static void Answer_Hover (const Json *id, const Open_Document *document,
+                          const char *name, u32 line, u32 from, u32 to) {
+  char directory[PATH_MAX];
+  if (not Is_Directory (document->path, directory, sizeof directory))
+    snprintf (directory, sizeof directory, ".");
+
+  char scratch[PATH_MAX];
+  const char *temporary = getenv ("TMPDIR");
+  if (not temporary or not temporary[0]) temporary = "/tmp";
+  snprintf (scratch, sizeof scratch, "%s/ada83-lsp-%ld.ada",
+            temporary, (long) getpid ());
+
+  FILE *file = fopen (scratch, "wb");
+  if (not file) { Respond (id, "null"); return; }
+  if (document->text) fputs (document->text, file);
+  fclose (file);
+
+  Text_Buffer command = {0};
+  Append_Shell_Argument (&command, Server_Executable);
+  Buffer_Append_Text (&command, " --describe ");
+  Append_Shell_Argument (&command, scratch);
+  Buffer_Append_Text (&command, " ");
+  Append_Shell_Argument (&command, directory);
+  Buffer_Append_Text (&command, " ");
+  Append_Shell_Argument (&command, name);
+
+  Text_Buffer reply = {0};
+  Buffer_Reserve (&reply, 0);
+  FILE *child = popen (command.data, "r");
+  if (child) {
+    char chunk[1024];
+    size_t got;
+    while ((got = fread (chunk, 1, sizeof chunk, child)) > 0)
+      Buffer_Append (&reply, chunk, got);
+    pclose (child);
+  }
+  remove (scratch);
+
+  const char *cursor       = reply.data ? reply.data : "null";
+  Json       *about        = Json_Parse_Value (&cursor);
+  const char *kind         = Json_Text (Json_Member (about, "kind"));
+  const char *found        = Json_Text (Json_Member (about, "file"));
+  const Json *at_line      = Json_Member (about, "line");
+  const Json *declarations = Json_Member (about, "declarations");
+  u32 count = declarations and declarations->kind == JSON_ARRAY
+            ? declarations->count : 0;
+
+  if (count) {
+    /* The declarations go in a fenced block so the editor colours them as
+       the Ada they are; the line under it says what kind of thing they
+       declare, and names the file the reader would land in. */
+    Text_Buffer markdown = {0};
+    Buffer_Append_Text (&markdown, "```ada\n");
+    for (u32 i = 0; i < count; i++) {
+      const char *text = Json_Text (declarations->items[i]);
+      if (not text) continue;
+      Buffer_Append_Text (&markdown, text);
+      Buffer_Append_Text (&markdown, "\n");
+    }
+    Buffer_Append_Text (&markdown, "```");
+    if (kind) {
+      Buffer_Append_Text (&markdown, "\n\n");
+      Buffer_Append_Text (&markdown, kind);
+    }
+    /* The buffer was compiled from a scratch file, whose name means nothing
+       to the reader; what they are looking at is their own document. */
+    if (found and strcmp (found, scratch) == 0 and document->path)
+      found = document->path;
+    if (found and at_line and (u32) at_line->number)
+      Buffer_Printf (&markdown, "%s declared at %s:%u", kind ? "" : "\n\n",
+                     Take_Base_Name (found), (u32) at_line->number);
+
+    Text_Buffer answer = {0};
+    Buffer_Append_Text (&answer,
+      "{\"contents\":{\"kind\":\"markdown\",\"value\":");
+    Buffer_Append_Json_String (&answer, markdown.data ? markdown.data : "");
+    Buffer_Printf (&answer,
+      "},\"range\":{\"start\":{\"line\":%u,\"character\":%u},"
+      "\"end\":{\"line\":%u,\"character\":%u}}}", line, from, line, to);
+    Respond (id, answer.data ? answer.data : "null");
+    Buffer_Free (&answer);
+    Buffer_Free (&markdown);
+  } else {
+    Respond (id, "null");
+  }
+
+  Json_Free (about);
+  Buffer_Free (&command);
+  Buffer_Free (&reply);
 }
 
 
@@ -61691,6 +61999,7 @@ int Run_Language_Server (const char *invoked_as) {
         "\"definitionProvider\":true,"
         "\"documentHighlightProvider\":true,"
         "\"referencesProvider\":true,"
+        "\"hoverProvider\":true,"
         "\"positionEncoding\":\"utf-16\"},"
         "\"serverInfo\":{\"name\":\"ada83\",\"version\":\"1.0\"}}");
       Respond (id, result.data ? result.data : "{}");
@@ -61756,6 +62065,23 @@ int Run_Language_Server (const char *invoked_as) {
         Answer_References (id, document, name, with_declaration);
       else
         Respond (id, "[]");
+
+    } else if (strcmp (method, "textDocument/hover") == 0) {
+      const char *uri = Json_Text (Document_Uri_Of (parameters));
+      const Json *at  = Json_Member (parameters, "position");
+      Open_Document *document = uri ? Find_Document (uri) : NULL;
+      char name[256] = {0};
+      u32  line = 0, from = 0, to = 0;
+      if (document and at) {
+        line = (u32) (Json_Member (at, "line")
+                      ? Json_Member (at, "line")->number : 0);
+        Identifier_At (document->text, line,
+                       (u32) (Json_Member (at, "character")
+                              ? Json_Member (at, "character")->number : 0),
+                       name, sizeof name, &from, &to);
+      }
+      if (name[0]) Answer_Hover (id, document, name, line, from, to);
+      else         Respond (id, "null");
 
     } else if (strcmp (method, "textDocument/didClose") == 0) {
       const char *uri = Json_Text (Document_Uri_Of (parameters));
@@ -61893,6 +62219,15 @@ int main (int argc, char *argv[]) {
       return 1;
     }
     return Define_And_Print (argv[2], argv[3], argv[4], argv[0]);
+  }
+
+  if (strcmp (argv[1], "--describe") == 0) {
+    if (argc != 5) {
+      fprintf (stderr, "Usage: %s --describe <file> <directory> <name>\n",
+               argv[0]);
+      return 1;
+    }
+    return Describe_And_Print (argv[2], argv[3], argv[4], argv[0]);
   }
 
   if (strcmp (argv[1], "--bind") == 0) {
