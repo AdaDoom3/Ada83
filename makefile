@@ -33,6 +33,7 @@ LINK_LIBRARIES_linux      = -lm -lpthread
 LINK_LIBRARIES_macos      = -lm -lpthread
 LINK_LIBRARIES_windows    = -lm
 SUFFIX_windows            = .exe
+RESOURCE_FORK_macos       = $(ICON).rsrc
 ARTWORK_linux             = $(ICON).png
 ARTWORK_macos             = $(ICON).icns
 ARTWORK_windows           = $(ICON).ico
@@ -44,7 +45,7 @@ $(if $(COMPILER_$(TARGET)),,\
   $(error TARGET is '$(TARGET)'; it must be linux, macos or windows))
 
 $(foreach Role,COMPILER COMPILER_FLAGS LINK_LIBRARIES SUFFIX ARTWORK LAUNCHER \
-               RESOURCE_COMPILER SHARED_LIBRARIES ARCHITECTURES,\
+               RESOURCE_COMPILER RESOURCE_FORK SHARED_LIBRARIES ARCHITECTURES,\
   $(eval $(Role) := $($(Role)_$(TARGET))))
 
 COMPILER_FLAGS += $(if $(CROSS),,$(WHOLE_PROGRAM))
@@ -54,7 +55,8 @@ LIBRARY_SOURCE   = bin-$(TARGET).zip
 EXECUTABLE       = ada83$(SUFFIX)
 RESOURCE_OBJECT  = $(if $(RESOURCE_COMPILER),staging/$(ICON).o)
 PACKAGE_CONTENTS = $(EXECUTABLE) $(RUNTIME) $(VSIX) $(ARTWORK) $(LAUNCHER) \
-                   $(SHARED_LIBRARIES)
+                   $(SHARED_LIBRARIES) \
+                   $(if $(RESOURCE_FORK),__MACOSX/._$(EXECUTABLE))
 
 LIPO := $(shell command -v lipo || command -v llvm-lipo || \
                 command -v "$$(llvm-config --bindir 2>/dev/null)/llvm-lipo")
@@ -117,6 +119,8 @@ $(PACKAGE): ada83.c $(RUNTIME) $(ARTWORK) staging/$(VSIX)
 	    | $(RESOURCE_COMPILER) -O coff -o $(RESOURCE_OBJECT); }
 	$(BUILD_EXECUTABLE)
 	cp $(RUNTIME) $(ARTWORK) staging/
+	test -z "$(RESOURCE_FORK)" || { mkdir -p staging/__MACOSX \
+	  && cp $(RESOURCE_FORK) staging/__MACOSX/._$(EXECUTABLE); }
 	test -z "$(LAUNCHER)" || printf '%s\n' '[Desktop Entry]' 'Type=Application' \
 	  'Name=Ada 83' 'Comment=Ada 83 compiler' 'Exec=ada83 %F' 'Icon=$(ICON)' \
 	  'Terminal=true' 'Categories=Development;Building;' > staging/$(LAUNCHER)
