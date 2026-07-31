@@ -37,3 +37,6 @@ zig.zip
 
 # The conformance suite, unpacked from tests.zip on demand
 acats/
+
+# Live agent worktrees
+.claude/
