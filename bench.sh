@@ -4,8 +4,6 @@ set -uo pipefail
 usage(){ cat <<'TEXT'
 Usage: bench.sh [MODE] [ARGUMENT]
 
-Measure this compiler so that work on ada83.c can be aimed, and then judged.
-
 Modes:
   stages              where compile time goes: front end against back end
   parser              front end against input size, to expose non-linear cost
@@ -17,7 +15,7 @@ Modes:
   all                 every mode but compare and profile
   help                display this help and exit
 
-To judge a change to ada83.c, keep the old binary and name it:
+To test keep the old binary and name it:
 
   cp ada83 /tmp/before && make && bash bench.sh compare /tmp/before
 
@@ -33,11 +31,6 @@ Environment:
   NO_COLOUR   set to 1 to draw no colour
   KEEP_WORK   set to 1 to keep the working tree
 
-Each figure is the median of REPEATS timed runs, in seconds, after WARMUP
-untimed runs, printed with the relative standard deviation of its samples.
-A "!" in place of "±" marks a spread of 5% or more, where the median should
-not be read as a result. Every program takes an opaque seed on its standard
-input, so no loop in them can be folded away at compile time.
 TEXT
 }
 
