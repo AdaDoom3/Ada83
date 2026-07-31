@@ -205,8 +205,7 @@ const Receive = (Chunk) => {
   const { Messages, Remainder } = Unframed (Session.Buffered + Chunk);
   Session.Buffered = Remainder;
   const Parsed_Messages = Messages.map (Parsed);
-  Publications_In (Parsed_Messages).forEach (({ Uri, Diagnostics }) =>
-    Session.Diagnostics.set (Uri, Diagnostics));
+  Publications_In (Parsed_Messages).forEach (Publish);
   Answers_In (Parsed_Messages).forEach (Settle);
 };
 
@@ -948,6 +947,131 @@ const Suggestion_Registration = (Root) =>
        vscode.commands.registerCommand ('ada83.suggestFix',
                                         Suggest_Fix_Command (Root))];
 
+/* A diagnostic is English prose wrapped around pieces of the reader's own
+   source. The prose can be translated; the source cannot, so it is taken
+   out and put back rather than trusted to the translator. English asks
+   nothing of anything and is the path taken unless it is changed. */
+
+const Languages = [
+  { Tag: 'en',     Named: 'English',              In_Words: null },
+  { Tag: 'es',     Named: 'Spanish',              In_Words: 'Spanish' },
+  { Tag: 'fr',     Named: 'French',               In_Words: 'French' },
+  { Tag: 'de',     Named: 'German',               In_Words: 'German' },
+  { Tag: 'zh-CN',  Named: 'Chinese (Simplified)',
+    In_Words: 'Simplified Chinese' },
+  { Tag: 'ja',     Named: 'Japanese',             In_Words: 'Japanese' },
+  { Tag: 'hi',     Named: 'Hindi',                In_Words: 'Hindi' },
+  { Tag: 'lolcat', Named: 'Lolcat',
+    In_Words: 'Lolcat: the deliberately misspelled cat speak of the ' +
+              'I-CAN-HAS-CHEEZBURGER captions. Upper case throughout, and ' +
+              'the idiom of CAN HAS, OH NOES, IS NOT, INVISIBLE, SRSLY and ' +
+              'KTHXBAI. Keep it short and keep the meaning' },
+];
+
+const Language_Table = new Map (Languages.map ((L) => [L.Tag, L]));
+
+const Language_Spoken = () =>
+  Language_Table.get (Configured ('language', 'en')) ?? Language_Table.get ('en');
+
+/* Anything quoted is a piece of the reader's program, and the compiler
+   quotes every name it mentions. */
+const Code_Span = /'[^'\n]*'|`[^`\n]*`|"[^"\n]*"/g;
+
+const Masked = (Message) => {
+  const Kept = [];
+  const Skeleton = Message.replace (Code_Span,
+    (Span) => (Kept.push (Span), `{${Kept.length - 1}}`));
+  return { Skeleton, Kept };
+};
+
+const Unmasked = (Skeleton, Kept) =>
+  Skeleton.replace (/\{(\d+)\}/g,
+                    (Whole, Index) => Kept[Number (Index)] ?? Whole);
+
+const Translation_Instruction = (In_Words, Skeletons) =>
+  ['Translate each numbered line below into ' + In_Words + '.',
+   'They are diagnostics from a compiler for the Ada 83 language.',
+   'A run like {0} or {3} stands for a piece of the programmer\'s own source',
+   'that has been taken out. Reproduce every placeholder exactly as it is,',
+   'once each and in the order it appears, and translate only the words',
+   'around it. Do not translate, quote or explain a placeholder.',
+   'Leave any Ada reserved word you have to name in English.',
+   'Answer with exactly one line per input, each written as the number, a',
+   'full stop, a space, and the translation. Write nothing else.',
+   '',
+   ...Skeletons.map ((Skeleton, At) => `${At + 1}. ${Skeleton}`)].join ('\n');
+
+const Numbered_Lines = (Reply) =>
+  Reply.split ('\n')
+       .map ((Line) => /^\s*(\d+)\s*[.)]\s*(.*)$/.exec (Line))
+       .filter ((Match) => Match !== null)
+       .reduce ((Out, Match) => (Out[Number (Match[1]) - 1] = Match[2].trim (),
+                                 Out),
+                []);
+
+const Translations = new Map ();
+
+const Remembered = (Tag, Message) => `${Tag}\n${Message}`;
+
+const Translated = async (Language, Messages) => {
+  const Wanted = Array.from (new Set (Messages)).filter (
+    (Message) => !Translations.has (Remembered (Language.Tag, Message)));
+
+  if (Wanted.length > 0) {
+    const Models = await vscode.lm.selectChatModels ({});
+    if (Models.length === 0) return Messages;          /* leave it in English */
+
+    const Prepared = Wanted.map (Masked);
+    const Lines = Numbered_Lines (await Spoken (
+      Models[0],
+      Translation_Instruction (Language.In_Words,
+                               Prepared.map (({ Skeleton }) => Skeleton)),
+      undefined));
+
+    Prepared.forEach (({ Kept }, At) => {
+      if (typeof Lines[At] === 'string' && Lines[At] !== '')
+        Translations.set (Remembered (Language.Tag, Wanted[At]),
+                          Unmasked (Lines[At], Kept));
+    });
+  }
+
+  return Messages.map ((Message) =>
+    Translations.get (Remembered (Language.Tag, Message)) ?? Message);
+};
+
+const Messages_In = (Diagnostics) =>
+  Diagnostics.flatMap ((Reported) =>
+    [Reported.message,
+     ...(Reported.relatedInformation ?? []).map (({ message }) => message)]);
+
+const Retold = (Diagnostics, Spoken_Messages) => {
+  let At = 0;
+  return Diagnostics.map ((Reported) =>
+    Object.assign (
+      new vscode.Diagnostic (Reported.range, Spoken_Messages[At++],
+                             Reported.severity),
+      { source: Reported.source,
+        code: Reported.code,
+        relatedInformation: (Reported.relatedInformation ?? []).map (
+          (Related) => new vscode.DiagnosticRelatedInformation (
+                         Related.location, Spoken_Messages[At++])) }));
+};
+
+const Localised = async (Language, Uri, Diagnostics, Held) => {
+  const Spoken_Messages = await Translated (Language, Messages_In (Diagnostics));
+  if (Session === Held)               /* a restart in between voids the answer */
+    Session.Diagnostics.set (Uri, Retold (Diagnostics, Spoken_Messages));
+};
+
+const Publish = ({ Uri, Diagnostics }) => {
+  Session.Diagnostics.set (Uri, Diagnostics);
+  const Language = Language_Spoken ();
+  if (Language.In_Words === null || Diagnostics.length === 0 ||
+      vscode.lm === undefined || vscode.lm.selectChatModels === undefined)
+    return;
+  Localised (Language, Uri, Diagnostics, Session).catch (() => { });
+};
+
 const Ada_Selector = { scheme: 'file', language: 'ada83' };
 
 const Task_Of = (Name, Title, Argument_List, Group) =>
@@ -1310,6 +1434,31 @@ module.exports = { activate, deactivate };
           "default": "style",
           "description": "How much a reformat is allowed to change."
         },
+        "ada83.language": {
+          "type": "string",
+          "enum": [
+            "en",
+            "es",
+            "fr",
+            "de",
+            "zh-CN",
+            "ja",
+            "hi",
+            "lolcat"
+          ],
+          "enumDescriptions": [
+            "English, as the compiler writes it. Nothing is asked of anything.",
+            "Spanish",
+            "French",
+            "German",
+            "Chinese (Simplified)",
+            "Japanese",
+            "Hindi",
+            "Lolcat"
+          ],
+          "default": "en",
+          "description": "The language error messages are read in. Anything but English asks a language model to translate the prose, leaving the pieces of your own source untouched; the English arrives first either way, and each distinct message is translated once."
+        },
         "ada83.syncDelay": {
           "type": "number",
           "default": 120,
@@ -1597,6 +1746,7 @@ recollection of some later Ada.
 |---|---|
 | `ada83.compilerPath` | where `ada83` is; `${workspaceFolder}` is substituted |
 | `ada83.includePaths` | directories searched for with-ed units, beyond the file's own |
+| `ada83.language` | read errors in `en`, `es`, `fr`, `de`, `zh-CN`, `ja`, `hi` or `lolcat` |
 | `ada83.enable` | report diagnostics as you type |
 | `ada83.formatOnType` | reindent each line as you type it, worked out locally |
 | `ada83.formatOnSave` | reformat the whole file as it is saved, by asking a model |

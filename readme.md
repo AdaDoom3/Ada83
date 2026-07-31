@@ -138,10 +138,31 @@ only where the code cannot explain itself, and refuses the answer unless it
 compiles. The result is shown as a diff against your file and applied only
 if you say so.
 
+Error messages can be read in another language. `ada83.language` picks one,
+and anything but English hands the message to the editor's model. The pieces
+of your own source are taken out of the message first and put back after, so
+a name the compiler quotes is never translated, never spelled differently and
+never seen by the model at all. English is the default and asks nothing of
+anything; each distinct message is translated once and remembered; and the
+English arrives immediately either way, with the translation replacing it when
+it lands.
+
+| `ada83.language` | |
+| ---------------- | --- |
+| `en` | English, as the compiler writes it — no model, no request |
+| `es` | Spanish |
+| `fr` | French |
+| `de` | German |
+| `zh-CN` | Chinese (Simplified) |
+| `ja` | Japanese |
+| `hi` | Hindi |
+| `lolcat` | `O NOES 'Put_Lin' IS NOT CALLABUL. SRSLY.` |
+
 | Setting | |
 | ------- | --- |
 | `ada83.compilerPath` | where `ada83` is; `${workspaceFolder}` is substituted |
 | `ada83.includePaths` | directories searched for with-ed units |
+| `ada83.language` | the language error messages are read in |
 | `ada83.formatOnType` | reindent each line as you type it, worked out locally |
 | `ada83.formatOnSave` | reformat the whole file as it is saved, by asking a model |
 | `ada83.formatStrength` | how much a reformat may change: `indentation`, `layout` or `style` |
