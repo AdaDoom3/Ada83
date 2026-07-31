@@ -87,7 +87,8 @@ on joinedLines(lines)
 end joinedLines
 
 on guardedProgram(steps, failureNote)
-	return joinedLines({"(", "set -e"} & steps & {") || echo '" & failureNote & "'"})
+	return joinedLines({"(", "set -e"} & steps & ¬
+		{")", "test $? -eq 0 || echo '" & failureNote & "'"})
 end guardedProgram
 
 on extensionSplitLines()
@@ -139,8 +140,10 @@ on packageProgram()
 		"lipo -create -output staging/ada83 staging/ada83-arm64 staging/ada83-x86_64", ¬
 		"rm -f staging/ada83-arm64 staging/ada83-x86_64", ¬
 		"cp ada83-runtime.ada ada83-icon.icns staging/", ¬
+		"mkdir -p staging/__MACOSX", ¬
+		"cp ada83-icon.rsrc staging/__MACOSX/._ada83", ¬
 		"rm -f bin-macos.zip.new", ¬
-		"( cd staging && zip -q ../bin-macos.zip.new ada83 ada83-runtime.ada ada83.vsix ada83-icon.icns )", ¬
+		"( cd staging && zip -q ../bin-macos.zip.new ada83 ada83-runtime.ada ada83.vsix ada83-icon.icns __MACOSX/._ada83 )", ¬
 		"mv bin-macos.zip.new bin-macos.zip", ¬
 		"echo 'Packaged bin-macos.zip:'", ¬
 		"unzip -l bin-macos.zip | tail -n +4"}, ¬
@@ -163,6 +166,7 @@ on run argv
 		if chosenTarget is "package" then
 			requireFile(directory, "ada83-runtime.ada")
 			requireFile(directory, "ada83-icon.icns")
+			requireFile(directory, "ada83-icon.rsrc")
 		end if
 		if chosenTarget is not "build" then
 			requireFile(directory, "ada83-extension.js")
