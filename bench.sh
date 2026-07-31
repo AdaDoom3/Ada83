@@ -113,7 +113,11 @@ pulse(){
 }
 pulse_stop(){ [ -n "$PULSE" ] && { kill "$PULSE" 2>/dev/null; wait "$PULSE" 2>/dev/null; PULSE=''; clear_line; }; return 0; }
 
-heading(){ printf '\n  %s%s%s\n  %s%s%s\n\n' "$BOLD" "$1" "$OFF" "$DIM" "$2" "$OFF"; }
+heading(){
+    printf '\n  %s%s%s\n' "$BOLD" "$1" "$OFF"
+    [ $# -gt 1 ] && printf '  %s%s%s\n' "$DIM" "$2" "$OFF"
+    printf '\n'
+}
 rule(){ printf '  %s%s%s\n' "$DIM" "────────────────────────────────────────────────────────────────" "$OFF"; }
 die(){ show_cursor; echo "bench.sh: $*" >&2; exit 1; }
 
@@ -582,8 +586,7 @@ EOF
 
 run_stages(){
     local p f w n=0 total; total=$(count "$PROGRAMS")
-    heading "WHERE COMPILE TIME GOES" \
-        "the front end emits IR; the rest is the LLVM pipeline, code generation and the linker"
+    heading "COMPILE STAGES"
     printf '  %-11s %11s %11s %11s %9s\n' program "front end" whole "back end" "front %"; rule
     for p in $PROGRAMS; do
         progress $((n++)) "$total" "staging $p"
@@ -594,14 +597,11 @@ run_stages(){
             printf "  %-11s %11s %11s %11.3f %8.0f%%\n", p, f, w, (b>0?b:0), (w>0?f*100/w:0) }'
     done
     clear_line
-    printf '\n  %sWhere the front end is the smaller share, changes to ada83.c will not show\n' "$DIM"
-    printf '  here; run again with OPT=0 to take the LLVM pipeline out of the way.%s\n' "$OFF"
 }
 
 run_parser(){
     local n t lines peak=0 first='' firstlines=''
-    heading "FRONT END AGAINST INPUT SIZE" \
-        "a generated unit of types, records, case statements and nested expressions"
+    heading "FRONT END AGAINST INPUT SIZE"
     printf '  %-8s %9s %11s %13s %s\n' units lines "front end" "µs per line" ""; rule
     for n in 50 100 200 400 800; do
         progress "$n" 800 "generating and compiling ${n} units"
@@ -622,7 +622,7 @@ run_parser(){
 }
 
 run_corpus(){
-    heading "CORPUS THROUGHPUT" "the conformance suite compiled to LLVM IR"
+    heading "CORPUS THROUGHPUT"
     corpus_ready || { echo "  no corpus available"; return; }
     local files n lines secs f done=0 one peak
     files=$(corpus_files); [ -n "$files" ] || { echo "  no corpus available"; return; }
@@ -639,7 +639,7 @@ run_corpus(){
     printf '  %-22s %s s\n' "wall time" "$secs"
     awk -v l="$lines" -v s="$secs" 'BEGIN{if(s+0>0)printf "  %-22s %d\n","lines per second",l/s}'
     awk -v c="$n" -v s="$secs" 'BEGIN{if(s+0>0)printf "  %-22s %.1f\n","files per second",c/s}'
-    heading "SLOWEST INPUTS" "the files worth opening a profiler on"
+    heading "SLOWEST INPUTS"
     peak=$(sort -rn "$work/times" | head -1 | cut -f1)
     sort -rn "$work/times" | head -n "$SLOWEST" | while IFS=$'\t' read -r t name; do
         printf '  %-18s %7ss  %s\n' "$name" "$t" "$(bar "$(scaled "$t" "$peak" 24)" 24)"
@@ -651,8 +651,7 @@ run_compare(){
     [ -n "$other" ] || die "compare needs the path of another ada83 binary"
     [ -x "$other" ] || die "cannot run $other"
     total=$(count "$PROGRAMS")
-    heading "AGAINST $(basename "$other")" \
-        "compile time; negative is faster than the reference, and a change inside the noise reads level"
+    heading "AGAINST $(basename "$other")"
     printf '  %-11s %14s %14s %10s   %s\n' program reference "this build" delta ''; rule
     for p in $PROGRAMS; do
         progress $((n++)) "$total" "compiling $p"
@@ -676,7 +675,7 @@ run_compare(){
 }
 
 run_profile(){
-    heading "WHERE THE COMPILER SPENDS ITS TIME" "symbols from ada83.c, compiling the corpus"
+    heading "PROFILE"
     corpus_ready || { echo "  no corpus available"; return; }
     local files f; files=$(corpus_files)
     [ -n "$files" ] || { echo "  no corpus available"; return; }
@@ -704,7 +703,7 @@ run_profile(){
 run_codegen(){
     local gnat=$1 p a g sa sg oa og n=0 total peak=0 fa fg
     total=$(count "$PROGRAMS")
-    heading "GENERATED CODE" "run time of the compiled program at -O$OPT"
+    heading "GENERATED CODE"
     if [ "$gnat" = 1 ]
     then printf '  %-11s %14s %14s %8s  %s\n' program ada83 gnat ratio stresses
     else printf '  %-11s %14s  %s\n' program ada83 stresses; fi
@@ -735,7 +734,7 @@ run_codegen(){
     done
     clear_line
     [ "$gnat" = 1 ] || return 0
-    heading "SIDE BY SIDE" "bar length is time; shorter is faster"
+    heading "SIDE BY SIDE"
     for p in $PROGRAMS; do
         eval "a=\${T_$p:-x}"; eval "g=\${G_$p:-x}"
         for v in "$a" "$g"; do
@@ -755,7 +754,7 @@ run_codegen(){
 
 run_memory(){
     local p c r n=0 total; total=$(count "$PROGRAMS")
-    heading "PEAK MEMORY" "resident set at its high point, in megabytes"
+    heading "PEAK MEMORY" "megabytes"
     printf '  %-11s %14s %14s  %s\n' program "compiling it" "running it" stresses; rule
     for p in $PROGRAMS; do
         progress $((n++)) "$total" "$p"

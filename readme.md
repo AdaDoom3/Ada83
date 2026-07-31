@@ -3,6 +3,29 @@
 An Ada 83 (ANSI/MIL-STD-1815A) compiler in a single C file, with an LLVM
 backend.
 
+## Building
+
+| Platform | Command | Notes |
+| -------- | ------- | ----- |
+| Linux    | `make`  | GCC or Clang; installs libLLVM via the system package manager if absent |
+| macOS    | `make`, or run `make.applescript` | Apple Clang; libLLVM via Homebrew |
+| Windows  | `make.bat` | GCC, Clang or Zig, whichever is found first; downloads Zig if none is present |
+
+Prebuilt compilers ship with the repository:
+
+| Archive | Contents |
+| ------- | -------- |
+| [`ada83-macos.zip`](ada83-macos.zip) | `ada83`, universal x86_64 + arm64; libLLVM via Homebrew |
+| [`ada83-windows.zip`](ada83-windows.zip) | `ada83.exe`; unzip [`llvm-c.zip`](llvm-c.zip) beside it for `LLVM-C.dll` and its companion DLLs |
+
+The compiler also cross-builds with [Zig](https://ziglang.org) from any host,
+for example:
+
+```sh
+zig cc -O2 -std=gnu2x -target x86_64-windows-gnu ada83.c -o ada83.exe -lm
+zig cc -O2 -std=gnu2x -target aarch64-macos     ada83.c -o ada83 -lm -lpthread
+```
+
 ## Conformance
 
 Under ACATS 1.11 all 3561 tests pass
