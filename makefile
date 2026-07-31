@@ -18,21 +18,97 @@ TUNE =
 endif
 endif
 
-# What `make package` produces. These archives are meant to run on machines
-# other than the one that built them, so neither is tuned for the host: the
-# macOS one is both slices lipo'd together, the Linux one is baseline x86_64.
+# Which platform `make package` packages for. Left alone it is the host, so
+# `make package` on Linux writes bin-linux.zip; naming another platform builds
+# that platform's archive instead, through Zig, which carries a C compiler and
+# every target's libraries in the one program:
+#
+#     make package TARGET=windows
+#     make package TARGET=macos
+#
+# A release for all three platforms can therefore be cut from any one machine,
+# and each archive holds what a native build there would have produced. A
+# Windows host packages with make.bat rather than with this makefile, so the
+# windows target here is always a cross build.
+#
+# PACKAGE names the archive, so a trial build stays out of the tree with
+# `make package PACKAGE=/tmp/bin-linux.zip`.
 ifeq ($(HOST_SYSTEM),Darwin)
-PACKAGE       = bin-macos.zip
-PACKAGE_SLICE = arm64 x86_64
+HOST_TARGET = macos
 else
-PACKAGE       = bin-linux.zip
-PACKAGE_SLICE =
+HOST_TARGET = linux
+endif
+
+TARGET  ?= $(HOST_TARGET)
+PACKAGE  = bin-$(TARGET).zip
+
+# These archives are meant to run on machines other than the one that built
+# them, so none of them is tuned for the host: the macOS one is both slices
+# lipo'd together, the Linux and Windows ones are baseline x86_64. Debug
+# information is turned off by name because Zig's C driver emits it where GCC
+# does not, and an archive should not change size with the machine that packed
+# it.
+ifeq ($(TARGET),linux)
+PACKAGE_EXECUTABLE = ada83
+PACKAGE_LIBS       = -lm -lpthread
 # Baseline x86_64, and gnu17 rather than gnu2x. Under gnu2x glibc redirects
 # sscanf and strtoul to their __isoc23_ variants, which raises the oldest glibc
 # the archive will load on from 2.34 to 2.38. The two differ only in accepting
 # 0b literals when the base is zero, which no call site here asks for, so the
 # compiler behaves identically either way. `make` itself still uses gnu2x.
-PACKAGE_TUNE  = -march=x86-64 -mtune=generic -std=gnu17
+PACKAGE_CFLAGS         = -O3 -Wall -g0 -std=gnu17
+PACKAGE_ARCHITECTURE   = x86_64
+PACKAGE_BASELINE_FLAGS = -march=x86-64 -mtune=generic
+# Zig asks for both of those in the one word: the baseline comes with the
+# triple, and the glibc pinned to it is the floor the archive claims.
+PACKAGE_TRIPLE         = x86_64-linux-gnu.2.34
+else ifeq ($(TARGET),macos)
+PACKAGE_EXECUTABLE = ada83
+PACKAGE_LIBS       = -lm -lpthread
+PACKAGE_CFLAGS     = -O3 -Wall -g0 -std=gnu2x
+# One compile per slice, joined below into a universal executable. Apple spells
+# the 64-bit ARM architecture arm64 and LLVM spells it aarch64, which is why
+# the triples are not the architectures with -macos on the end.
+PACKAGE_ARCHITECTURE      = arm64 x86_64
+PACKAGE_ARCHITECTURE_FLAG = -arch
+PACKAGE_TRIPLE            = aarch64-macos x86_64-macos
+# lipo is what joins them. Apple's is called lipo and LLVM's is llvm-lipo; a
+# Linux host has the latter, which its LLVM packages sometimes leave in LLVM's
+# own bin directory rather than on PATH.
+LIPO := $(shell command -v lipo || command -v llvm-lipo || \
+                command -v "$$(llvm-config --bindir 2>/dev/null)/llvm-lipo")
+else ifeq ($(TARGET),windows)
+PACKAGE_EXECUTABLE = ada83.exe
+# The threads come with the C runtime, so nothing links -lpthread, and the
+# archive is optimised the way make.bat optimises it: the compiler in it is
+# then the same one however it was packed.
+PACKAGE_LIBS       = -lm
+PACKAGE_CFLAGS     = -O2 -Wall -g0 -std=gnu2x
+PACKAGE_TRIPLE     = x86_64-windows-gnu
+# LLVM-C.dll and its companions are what ada83.exe loads when it runs. They are
+# not built here and are not sources: the published Windows archive is the only
+# copy of them in the tree, so a repack takes them from there, as make.bat's
+# unpacking step does.
+PACKAGE_LIBRARIES        = *.dll
+PACKAGE_LIBRARY_ARCHIVE  = bin-windows.zip
+else
+$(error TARGET is '$(TARGET)'; it must be linux, macos or windows)
+endif
+
+# A slice is compiled by the host compiler when the target is the host and by
+# Zig otherwise. The two name a slice differently -- an architecture to the
+# host compiler, a whole target triple to Zig -- and the host compiler's own
+# flags do not cross: -fwhole-program is GCC's alone, and the baseline Zig
+# takes from the triple.
+ifeq ($(TARGET),$(HOST_TARGET))
+PACKAGE_COMPILER   = $(CC)
+PACKAGE_SLICE      = $(PACKAGE_ARCHITECTURE)
+PACKAGE_SLICE_FLAG = $(PACKAGE_ARCHITECTURE_FLAG)
+PACKAGE_CFLAGS    += $(WHOLE_PROGRAM) $(PACKAGE_BASELINE_FLAGS)
+else
+PACKAGE_COMPILER   = zig cc
+PACKAGE_SLICE      = $(PACKAGE_TRIPLE)
+PACKAGE_SLICE_FLAG = -target
 endif
 
 RUNTIME = ada83-runtime.ada
@@ -50,6 +126,12 @@ BUNDLE = ada83-extension.js
 # legality is then answered out of the standard rather than out of a memory
 # of some later Ada.
 MANUAL = manual.md
+
+# Every archive holds the compiler, the runtime and the extension, whichever
+# machine packed it; the extension is split and zipped by the host's own awk
+# and zip, so it is the same file for every target. The Windows archive also
+# holds the DLLs ada83.exe loads.
+PACKAGE_CONTENTS = $(PACKAGE_EXECUTABLE) $(RUNTIME) $(VSIX) $(PACKAGE_LIBRARIES)
 
 all: ada83 provision-llvm
 
@@ -108,24 +190,40 @@ package: $(PACKAGE)
 
 $(PACKAGE): ada83.c $(RUNTIME)
 	@command -v zip >/dev/null || { echo "zip is needed to package"; exit 1; }
+ifneq ($(TARGET),$(HOST_TARGET))
+	@command -v zig >/dev/null || { \
+	  echo "packaging for $(TARGET) on $(HOST_TARGET) is a cross build,"; \
+	  echo "which needs Zig; install it from https://ziglang.org"; exit 1; }
+endif
+ifeq ($(TARGET),macos)
+	@test -n "$(LIPO)" || { \
+	  echo "lipo is needed to join the macOS slices; install LLVM,"; \
+	  echo "which provides llvm-lipo"; exit 1; }
+endif
 	rm -rf staging && mkdir staging
-ifeq ($(HOST_SYSTEM),Darwin)
 	@for slice in $(PACKAGE_SLICE); do \
 	  echo "Compiling for $$slice..."; \
-	  $(CC) $(CFLAGS) -arch $$slice -o staging/ada83-$$slice ada83.c $(LIBS) \
-	    || exit 1; \
+	  $(PACKAGE_COMPILER) $(PACKAGE_CFLAGS) $(PACKAGE_SLICE_FLAG) $$slice \
+	    -o staging/ada83-$$slice ada83.c $(PACKAGE_LIBS) || exit 1; \
 	done
-	lipo -create -output staging/ada83 \
+ifeq ($(TARGET),macos)
+	$(LIPO) -create -output staging/$(PACKAGE_EXECUTABLE) \
 	  $(addprefix staging/ada83-,$(PACKAGE_SLICE))
 	rm -f $(addprefix staging/ada83-,$(PACKAGE_SLICE))
 else
-	$(CC) -O3 -Wall $(WHOLE_PROGRAM) -o staging/ada83 ada83.c $(LIBS) \
-	  $(PACKAGE_TUNE)
+	mv staging/ada83-$(PACKAGE_SLICE) staging/$(PACKAGE_EXECUTABLE)
 endif
 	cp $(RUNTIME) staging/
 	$(MAKE) --no-print-directory staging/$(VSIX)
-	rm -f $@
-	cd staging && zip -q ../$@ ada83 $(RUNTIME) $(VSIX)
+ifeq ($(TARGET),windows)
+	unzip -qoj $(PACKAGE_LIBRARY_ARCHIVE) '$(PACKAGE_LIBRARIES)' -d staging
+endif
+	rm -f $@.new
+	cd staging && zip -q $(abspath $@).new $(PACKAGE_CONTENTS)
+	@# The new archive is written beside the old one and only then moved over
+	@# it, because the DLLs of a Windows repack came out of the archive it
+	@# replaces.
+	mv $@.new $@
 	rm -rf staging
 	@echo "Packaged $@:"; unzip -l $@ | tail -n +4
 
