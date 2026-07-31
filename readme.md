@@ -3,6 +3,23 @@
 An Ada 83 (ANSI/MIL-STD-1815A) compiler in a single C file, with an LLVM
 backend.
 
+![The Ada 83 extension for VS Code](readme-screenshot.gif)
+
+## At a glance
+
+| | |
+|---|---|
+| **One translation unit** | `ada83.c`, 64k lines. No generated parser, no build system beyond a makefile, no third-party source. |
+| **Whole language** | Tasking, generics, fixed point, representation clauses, exceptions — all of MIL-STD-1815A, not a subset. |
+| **3561 / 3561 ACATS** | The 1.11 conformance suite passes in full, every class. |
+| **Native code** | LLVM IR straight out of the front end, through a libLLVM loaded at run time. `--ir` if you want the text. |
+| **Editor support in the binary** | `ada83 --lsp` is a language server. The extension it drives is one JavaScript file with no npm dependencies. |
+| **Nothing to install** | Prebuilt archives for Linux, macOS and Windows, each standalone. |
+
+The standard library is Ada, in one file (`ada83-runtime.ada`), and the
+reference manual travels with the compiler (`manual.md`) so a question of
+legality is answered out of the standard rather than out of memory.
+
 ## Building
 
 | Platform | Command | Notes |
@@ -70,13 +87,17 @@ with libLLVM `20.1.2` behind ada83's back end.
 
 ## VSCode Extension
 
-![The Ada 83 extension for VS Code](screenshot.gif)
-
-`ada83 --lsp` serves the Language Server Protocol on stdin and stdout
+`ada83 --lsp` serves the Language Server Protocol on stdin and stdout, so the
+outline, the hovers, go-to-definition, completion and the quick fixes in the
+recording above are the compiler's own answers rather than a second and lesser
+model of Ada living in the editor.
 
 ```sh
 code --install-extension ada83.vsix
 ```
+
+`ada83.vsix` is in each of the archives above, and `make vsix` builds it from
+`ada83-extension.js`.
 
 ## Use
 
