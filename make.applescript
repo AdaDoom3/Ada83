@@ -1,4 +1,4 @@
--- Run with: osascript build.applescript or open it in Script Editor and press Run.
+-- Run with: osascript make.applescript or open it in Script Editor and press Run
 
 on shell(command)
 	return do shell script command
@@ -21,8 +21,7 @@ on existsAt(directory, name)
 	return succeeds("test -e " & quoted form of (directory & name))
 end existsAt
 
--- Under osascript "path to me" is the interpreter, not this file, so the
--- sources are looked for beside the script and then in the working directory.
+-- Under osascript we look beside the script and then in the working directory
 on scriptDirectory()
 	set beside to ""
 	try
