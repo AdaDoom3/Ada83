@@ -16,6 +16,40 @@ backend.
 | Binaries | Linux, macOS, Windows |
 | Reference | `manual.md`, the standard itself |
 
+## Quick start
+
+Unpack the archive for your platform — [`bin-linux.zip`](bin-linux.zip),
+[`bin-macos.zip`](bin-macos.zip) or [`bin-windows.zip`](bin-windows.zip) — and
+keep its files together: the compiler looks for `ada83-runtime.ada` beside its
+own executable.
+
+```ada
+with Text_IO; use Text_IO;
+procedure Hello is
+begin
+   Put_Line ("Hello, Ada 83!");
+end;
+```
+
+```
+$ ./ada83 hello.ada -o hello
+Compiled 'hello.ada' -> 'hello.native.ll'
+Generated ALI file 'hello.native.ali'
+$ ./hello
+Hello, Ada 83!
+```
+
+For the editor, install the extension that came in the same archive:
+
+```sh
+code --install-extension ada83.vsix
+```
+
+It needs `ada83` on your PATH, or `ada83.compilerPath` set to where you
+unpacked it. Everything in the recording above — the outline, the hovers, go
+to definition into the standard library, completion, signature help and the
+quick fixes — is the compiler answering.
+
 ## Building
 
 | Platform | Command | Notes |
@@ -85,38 +119,17 @@ with libLLVM `20.1.2` behind ada83's back end.
 
 ## VSCode Extension
 
-`ada83 --lsp` serves the Language Server Protocol on stdin and stdout. The
-outline, hovers, go-to-definition, completion, signature help and quick fixes
-in the recording above all come from the compiler.
+`ada83 --lsp` serves the Language Server Protocol on stdin and stdout, and the
+extension that speaks it is one JavaScript file with no dependencies. It is in
+each archive above; `make vsix` builds it from `ada83-extension.js`.
 
-```sh
-code --install-extension ada83.vsix
-```
-
-`ada83.vsix` is in each of the archives above; `make vsix` builds it from
-`ada83-extension.js`.
+| Setting | |
+| ------- | --- |
+| `ada83.compilerPath` | where `ada83` is; `${workspaceFolder}` is substituted |
+| `ada83.includePaths` | directories searched for with-ed units |
+| `ada83.trace.server` | write the protocol traffic to the output channel |
 
 ## Use
-
-```sh
-./ada83 hello.ada -o hello
-```
-
-```ada
-with Text_IO; use Text_IO;
-procedure Hello is
-begin
-   Put_Line ("Hello, Ada 83!");
-end;
-```
-
-```
-$ ./ada83 hello.ada -o hello
-Compiled 'hello.ada' -> 'hello.native.ll'
-Generated ALI file 'hello.native.ali'
-$ ./hello
-Hello, Ada 83!
-```
 
 The compiler emits LLVM IR, so the IR can be taken directly:
 
