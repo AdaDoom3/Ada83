@@ -12,7 +12,7 @@ backend.
 | Language | all of MIL-STD-1815A: tasking, generics, fixed point, representation clauses |
 | Conformance | 3561 / 3561, ACATS 1.11 |
 | Output | native, through a libLLVM loaded at run time; `--ir` for the text |
-| Editor | `ada83 --lsp`, with a VS Code extension in one JavaScript file |
+| Editor | `ada83 --lsp`, with a VS Code extension in one dependency-free file |
 | Binaries | Linux, macOS, Windows |
 | Reference | `manual.md`, the standard itself |
 
@@ -128,13 +128,16 @@ still colour.
 **Reformat To The Manual's Style** hands the file and the manual's Style
 Guidelines to whatever language model the editor has, and keeps the answer
 only if it still compiles. With no model available it says so rather than
-changing anything.
+changing anything. Reindentation as you type is worked out in the extension
+instead, so it is immediate and asks nothing of a model.
 
 | Setting | |
 | ------- | --- |
 | `ada83.compilerPath` | where `ada83` is; `${workspaceFolder}` is substituted |
 | `ada83.includePaths` | directories searched for with-ed units |
-| `ada83.autoFormat` | `onSave` reformats to the manual's style as you go |
+| `ada83.formatOnType` | reindent each line as you type it, worked out locally |
+| `ada83.formatOnSave` | reformat the whole file as it is saved, by asking a model |
+| `ada83.formatStrength` | how much a reformat may change: `indentation`, `layout` or `style` |
 | `ada83.trace.server` | write the protocol traffic to the output channel |
 
 ## Use

@@ -1439,7 +1439,11 @@ recollection of some later Ada.
 | | |
 |---|---|
 | `ada83.compilerPath` | where `ada83` is; `${workspaceFolder}` is substituted |
+| `ada83.includePaths` | directories searched for with-ed units, beyond the file's own |
 | `ada83.enable` | report diagnostics as you type |
+| `ada83.formatOnType` | reindent each line as you type it, worked out locally |
+| `ada83.formatOnSave` | reformat the whole file as it is saved, by asking a model |
+| `ada83.formatStrength` | how much a reformat may change: `indentation`, `layout` or `style` |
 | `ada83.syncDelay` | how long typing must pause before the buffer reaches the compiler |
 | `ada83.requestTimeout` | how long to wait for one answer |
 | `ada83.workspaceRequestTimeout` | how long to wait for a workspace-wide search |
