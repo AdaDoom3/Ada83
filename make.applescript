@@ -1,4 +1,6 @@
 -- Run with: osascript make.applescript or open it in Script Editor and press Run
+-- Add the word package to build the universal binary and repack bin-macos.zip:
+--     osascript make.applescript package
 
 on shell(command)
 	return do shell script command
@@ -78,11 +80,29 @@ on requireLLVM(directory)
 	fail("Installing libLLVM.", "Run this script again once Homebrew has finished.")
 end requireLLVM
 
-on run
+-- Script Editor runs this with no arguments, so anything other than the word
+-- package -- including being double-clicked -- takes the plain build path.
+on wantsPackage(argv)
+	try
+		repeat with argument in argv
+			if (argument as text) is "package" then return true
+		end repeat
+	end try
+	return false
+end wantsPackage
+
+on run argv
 	set directory to scriptDirectory()
 	requireFile(directory, "ada83.c")
 	requireFile(directory, "ada83-runtime.ada")
 	requireCompiler()
 	requireLLVM(directory)
-	inTerminal(directory, "make && echo && echo 'Built ada83.' && echo 'Compile a program with:  ./ada83 myprogram.ada -o myprogram'")
+	if wantsPackage(argv) then
+		-- make package lipos the arm64 and x86_64 slices together and puts the
+		-- compiler and ada83-runtime.ada, which it looks for beside itself,
+		-- into bin-macos.zip.
+		inTerminal(directory, "make package && echo && echo 'Packaged bin-macos.zip.'")
+	else
+		inTerminal(directory, "make && echo && echo 'Built ada83.' && echo 'Compile a program with:  ./ada83 myprogram.ada -o myprogram'")
+	end if
 end run

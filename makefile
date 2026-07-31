@@ -18,6 +18,25 @@ TUNE =
 endif
 endif
 
+# What `make package` produces. These archives are meant to run on machines
+# other than the one that built them, so neither is tuned for the host: the
+# macOS one is both slices lipo'd together, the Linux one is baseline x86_64.
+ifeq ($(HOST_SYSTEM),Darwin)
+PACKAGE       = bin-macos.zip
+PACKAGE_SLICE = arm64 x86_64
+else
+PACKAGE       = bin-linux.zip
+PACKAGE_SLICE =
+# Baseline x86_64, and gnu17 rather than gnu2x. Under gnu2x glibc redirects
+# sscanf and strtoul to their __isoc23_ variants, which raises the oldest glibc
+# the archive will load on from 2.34 to 2.38. The two differ only in accepting
+# 0b literals when the base is zero, which no call site here asks for, so the
+# compiler behaves identically either way. `make` itself still uses gnu2x.
+PACKAGE_TUNE  = -march=x86-64 -mtune=generic -std=gnu17
+endif
+
+RUNTIME = ada83-runtime.ada
+
 all: ada83 provision-llvm
 
 ada83: ada83.c
@@ -64,11 +83,42 @@ provision-llvm:
 	fi
 endif
 
+# The distributable: the compiler plus $(RUNTIME), which ada83 looks for beside
+# its own executable. Without the runtime in the archive an unpacked compiler
+# cannot build anything that withs the standard library.
+#
+# The compiler is built into staging/ rather than reusing the ada83 target,
+# which tunes for the host; an archive compiled with -march=native would fault
+# on an older machine than the one that packaged it.
+package: $(PACKAGE)
+
+$(PACKAGE): ada83.c $(RUNTIME)
+	@command -v zip >/dev/null || { echo "zip is needed to package"; exit 1; }
+	rm -rf staging && mkdir staging
+ifeq ($(HOST_SYSTEM),Darwin)
+	@for slice in $(PACKAGE_SLICE); do \
+	  echo "Compiling for $$slice..."; \
+	  $(CC) $(CFLAGS) -arch $$slice -o staging/ada83-$$slice ada83.c $(LIBS) \
+	    || exit 1; \
+	done
+	lipo -create -output staging/ada83 \
+	  $(addprefix staging/ada83-,$(PACKAGE_SLICE))
+	rm -f $(addprefix staging/ada83-,$(PACKAGE_SLICE))
+else
+	$(CC) -O3 -Wall $(WHOLE_PROGRAM) -o staging/ada83 ada83.c $(LIBS) \
+	  $(PACKAGE_TUNE)
+endif
+	cp $(RUNTIME) staging/
+	rm -f $@
+	cd staging && zip -q ../$@ ada83 $(RUNTIME)
+	rm -rf staging
+	@echo "Packaged $@:"; unzip -l $@ | tail -n +4
+
 clean:
 	rm -f ada83 *.o *.ll *.s *.exe a.out core
-	rm -rf test_results acats_logs acats/report.ll
+	rm -rf staging test_results acats_logs acats/report.ll
 
 clean-test:
 	rm -rf test_results acats_logs acats/report.ll
 
-.PHONY: all provision-llvm clean clean-test
+.PHONY: all package provision-llvm clean clean-test

@@ -3,6 +3,7 @@ setlocal
 cd /d "%~dp0"
 
 set "EXE=ada83.exe"
+set "ZIP=bin-windows.zip"
 set "CFLAGS=-O2 -std=gnu2x"
 set "LIBS=-lm"
 set "ZIG_VERSION=0.16.0"
@@ -15,10 +16,11 @@ echo %cmdcmdline% | find /i "/c" >nul && pause
 exit /b %RESULT%
 
 :dispatch
-if /i "%~1"=="/?"    goto usage
-if /i "%~1"=="-h"    goto usage
-if /i "%~1"=="help"  goto usage
-if /i "%~1"=="clean" goto clean
+if /i "%~1"=="/?"      goto usage
+if /i "%~1"=="-h"      goto usage
+if /i "%~1"=="help"    goto usage
+if /i "%~1"=="clean"   goto clean
+if /i "%~1"=="package" goto package
 if not "%~1"=="" (
     echo Invalid parameter - %~1
     goto usage
@@ -31,6 +33,7 @@ echo.
 echo MAKE [command]
 echo.
 echo   clean      Deletes ada83.exe, the LLVM DLLs and the downloaded Zig.
+echo   package    Makes ada83.exe, then repacks bin-windows.zip around it.
 echo   help       Displays this help.
 echo.
 echo Makes with GCC, Clang or Zig, whichever is found first.
@@ -42,7 +45,7 @@ exit /b 0
 :clean
 del /q "%EXE%" LLVM-C.dll libffi-8.dll libstdc++-6.dll libgcc_s_seh-1.dll ^
     libwinpthread-1.dll libxml2-16.dll libiconv-2.dll libzstd.dll zlib1.dll ^
-    zig.zip >nul 2>nul
+    zig.zip "%ZIP%.new" >nul 2>nul
 rmdir /s /q zig >nul 2>nul
 echo Cleaned.
 exit /b 0
@@ -54,6 +57,27 @@ call :unpack_llvm               || exit /b 1
 call :compile                   || exit /b 1
 call :verify                    || exit /b 1
 echo Built %EXE%.
+exit /b 0
+
+REM The distributable: ada83.exe, the DLLs it loads, and ada83-runtime.ada,
+REM which ada83.exe looks for beside itself. Without the runtime in the archive
+REM an unpacked compiler cannot build anything that withs the standard library.
+:package
+call :make || exit /b 1
+echo Packing %ZIP%...
+REM Build the new archive alongside the old one; the DLLs unpacked by :make are
+REM the only copy on disk, so %ZIP% is only replaced once the new one is written.
+del /q "%ZIP%.new" >nul 2>nul
+powershell -NoProfile -Command ^
+    "$ErrorActionPreference='Stop';" ^
+    "$names = @('%EXE%','ada83-runtime.ada') + (Get-ChildItem *.dll | ForEach-Object Name);" ^
+    "Compress-Archive -LiteralPath $names -DestinationPath '%ZIP%.new' -Force"
+if not exist "%ZIP%.new" (
+    echo Cannot write %ZIP%.
+    exit /b 1
+)
+move /y "%ZIP%.new" "%ZIP%" >nul || exit /b 1
+echo Packaged %ZIP%.
 exit /b 0
 
 :require
