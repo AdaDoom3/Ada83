@@ -2,7 +2,7 @@
 set -uo pipefail
 
 usage(){ cat <<'TEXT'
-Usage: bench.sh [MODE] [ARGUMENT]
+Usage: test-bench.sh [MODE] [ARGUMENT]
 
 Modes:
   stages              where compile time goes: front end against back end
@@ -17,7 +17,7 @@ Modes:
 
 To test keep the old binary and name it:
 
-  cp ada83 /tmp/before && make && bash bench.sh compare /tmp/before
+  cp ada83 /tmp/before && make && bash test-bench.sh compare /tmp/before
 
 Environment:
   REPEATS     timed repetitions after warmup (default: 7)
@@ -140,7 +140,7 @@ heading(){
     printf '\n'
 }
 rule(){ printf '  %s%s%s\n' "$DIM" "────────────────────────────────────────────────────────────────" "$OFF"; }
-die(){ show_cursor; echo "bench.sh: $*" >&2; exit 1; }
+die(){ show_cursor; echo "test-bench.sh: $*" >&2; exit 1; }
 
 measure(){
     local out='' t i
@@ -1100,7 +1100,7 @@ case $mode in
     codegen) run_codegen_suites "$gnat" ;;
     memory)  run_memory ;;
     all)     run_stages; run_parser; run_corpus; run_codegen_suites "$gnat"; run_memory ;;
-    *)       show_cursor; echo "bench.sh: unknown mode '$mode'" >&2; usage >&2; exit 2 ;;
+    *)       show_cursor; echo "test-bench.sh: unknown mode '$mode'" >&2; usage >&2; exit 2 ;;
 esac
 show_cursor
 echo

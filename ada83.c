@@ -60901,9 +60901,11 @@ typedef struct {
                                   from what is on disk                  */
   Quick_Fix fixes[MAX_QUICK_FIXES];
   u32       fix_count;
-  char *outline;               /* the last outline this file parsed into,
-                                  kept so an edit that will not parse yet
-                                  leaves the view standing rather than empty */
+  char *accepted;              /* the last text of this file the compiler
+                                  analysed without error, which is what a
+                                  child is given again when the buffer as it
+                                  stands has no symbol table to answer out
+                                  of */
 } Open_Document;
 
 static Open_Document Open_Documents[MAX_OPEN_DOCUMENTS];
@@ -60957,7 +60959,7 @@ static void Forget_Document (const char *uri) {
       free (Open_Documents[i].uri);
       free (Open_Documents[i].path);
       free (Open_Documents[i].text);
-      free (Open_Documents[i].outline);
+      free (Open_Documents[i].accepted);
       Open_Documents[i] = Open_Documents[--Open_Document_Count];
       return;
     }
@@ -61281,53 +61283,146 @@ static void Append_Shell_Argument (Text_Buffer *command, const char *text) {
 #endif
 }
 
-/* The compiler reads from a file and the editor's buffer may not be on disk,
-   so the buffer goes to a scratch file and the document's own directory goes
-   on the include path, which is how a with-ed unit is found. */
-static void Analyse_Document (Open_Document *document) {
-  if (not document or not document->path) return;
-
-  char directory[PATH_MAX];
-  if (not Is_Directory (document->path, directory, sizeof directory))
-    snprintf (directory, sizeof directory, ".");
-
-  const char *temporary = getenv ("TMPDIR");
-  if (not temporary or not temporary[0]) temporary = "/tmp";
-  char scratch[PATH_MAX];
-  snprintf (scratch, sizeof scratch, "%s/ada83-lsp-%ld.ada",
-            temporary, (long) getpid ());
-
-  FILE *file = fopen (scratch, "wb");
-  if (not file) return;
-  if (document->text) fputs (document->text, file);
-  fclose (file);
-
+/* Every question the server answers out of the compiler is put to a child
+   process running one of its analysis modes.  A child because the compiler
+   builds its state once and lets the arena take it away again, which the
+   server, being long-lived, cannot do; a mode because the answers are the
+   compiler's own, not a second and lesser model of Ada living in the
+   server.  The reply is the caller's to free. */
+static Text_Buffer Run_Analysis (const char *mode, const char *path,
+                                 const char *directory, const char *name) {
   Text_Buffer command = {0};
   Append_Shell_Argument (&command, Server_Executable);
-  Buffer_Append_Text (&command, " --analyse ");
-  Append_Shell_Argument (&command, scratch);
   Buffer_Append_Text (&command, " ");
-  Append_Shell_Argument (&command, directory);
+  Buffer_Append_Text (&command, mode);
+  Buffer_Append_Text (&command, " ");
+  Append_Shell_Argument (&command, path);
+  if (directory) {
+    Buffer_Append_Text (&command, " ");
+    Append_Shell_Argument (&command, directory);
+  }
+  if (name) {
+    Buffer_Append_Text (&command, " ");
+    Append_Shell_Argument (&command, name);
+  }
 
   Text_Buffer reply = {0};
   Buffer_Reserve (&reply, 0);
   FILE *child = popen (command.data, "r");
   if (child) {
-    char chunk[4096];
+    char   chunk[4096];
     size_t got;
     while ((got = fread (chunk, 1, sizeof chunk, child)) > 0)
       Buffer_Append (&reply, chunk, got);
     pclose (child);
   }
+  Buffer_Free (&command);
+  return reply;
+}
+
+/* Where a buffer goes to be compiled.  The compiler reads from a file and
+   what is in the editor may never have been written to one, so it is put in
+   a scratch file the child is pointed at; the document's own directory goes
+   on the include path beside it, which is how a with-ed unit is found. */
+static void Scratch_Source_Path (char *scratch, size_t scratch_size) {
+  const char *temporary = getenv ("TMPDIR");
+  if (not temporary or not temporary[0]) temporary = "/tmp";
+  snprintf (scratch, scratch_size, "%s/ada83-lsp-%ld.ada",
+            temporary, (long) getpid ());
+}
+
+static Text_Buffer Run_Analysis_Over_Text (const char *mode, const char *text,
+                                           const char *directory,
+                                           const char *name,
+                                           const char *scratch) {
+  Text_Buffer reply = {0};
+  Buffer_Reserve (&reply, 0);
+
+  FILE *file = fopen (scratch, "wb");
+  if (not file) return reply;
+  if (text) fputs (text, file);
+  fclose (file);
+
+  Buffer_Free (&reply);
+  reply = Run_Analysis (mode, scratch, directory, name);
+  remove (scratch);
+  return reply;
+}
+
+/* Whether a child came back with nothing to say. */
+static bool Nothing_Came_Back (const Text_Buffer *reply) {
+  const char *scan = reply->data;
+  if (not scan) return true;
+  while (*scan and isspace ((unsigned char) *scan)) scan++;
+  return scan[0] == '\0'
+      or strncmp (scan, "null", 4) == 0
+      or (scan[0] == '[' and scan[1] == ']')
+      or (scan[0] == '{' and scan[1] == '}');
+}
+
+/* A buffer being typed into is usually not a legal compilation unit, and a
+   text that does not parse leaves the compiler with no symbol table for the
+   child to answer out of.  So a run that came back empty is made again over
+   the last text of this file the compiler did accept.  What the children
+   are asked is what a name is, never what stands at a position, so an
+   answer drawn from a slightly older text is still the right answer; only
+   the outline reports positions of its own, and an outline a few keystrokes
+   out of date is better than one that empties itself on every parenthesis
+   the writer has not closed yet. */
+static Text_Buffer Ask_About_Document (const Open_Document *document,
+                                       const char *mode, const char *name,
+                                       char *directory, size_t directory_size,
+                                       char *scratch, size_t scratch_size) {
+  if (not Is_Directory (document->path, directory, directory_size))
+    snprintf (directory, directory_size, ".");
+  Scratch_Source_Path (scratch, scratch_size);
+
+  Text_Buffer reply = Run_Analysis_Over_Text (mode, document->text, directory,
+                                              name, scratch);
+  if (Nothing_Came_Back (&reply) and document->accepted) {
+    Buffer_Free (&reply);
+    reply = Run_Analysis_Over_Text (mode, document->accepted, directory,
+                                    name, scratch);
+  }
+  return reply;
+}
+
+/* The squiggles, which are the one answer that must describe the buffer as
+   it stands: a diagnostic recalled from an older text would point at a line
+   the writer has already fixed.  A text the compiler accepted is kept here
+   rather than anywhere else, since this is the only place that learns
+   whether it did. */
+static void Analyse_Document (Open_Document *document) {
+  if (not document or not document->path) return;
+
+  char directory[PATH_MAX], scratch[PATH_MAX];
+  if (not Is_Directory (document->path, directory, sizeof directory))
+    snprintf (directory, sizeof directory, ".");
+  Scratch_Source_Path (scratch, sizeof scratch);
+
+  Text_Buffer reply = Run_Analysis_Over_Text ("--analyse", document->text,
+                                              directory, NULL, scratch);
 
   const char *cursor      = reply.data ? reply.data : "[]";
   Json       *diagnostics = Json_Parse_Value (&cursor);
   Publish_Diagnostics (document, diagnostics);
-  Json_Free (diagnostics);
 
-  Buffer_Free (&command);
+  bool refused = false;
+  u32  count   = diagnostics and diagnostics->kind == JSON_ARRAY
+               ? diagnostics->count : 0;
+  for (u32 i = 0; i < count and not refused; i++) {
+    const Json *severity = Json_Member (diagnostics->items[i], "severity");
+    refused = not severity
+           or (int) severity->number == DIAGNOSTIC_SEVERITY_ERROR
+           or (int) severity->number == DIAGNOSTIC_SEVERITY_INTERNAL_ERROR;
+  }
+  if (not refused and document->text) {
+    free (document->accepted);
+    document->accepted = Duplicate (document->text);
+  }
+
+  Json_Free (diagnostics);
   Buffer_Free (&reply);
-  remove (scratch);
 }
 
 
@@ -62143,43 +62238,11 @@ static Json *Ask_For_Declaration (const Open_Document *document,
                                   const char *name,
                                   char *directory, size_t directory_size,
                                   char *scratch, size_t scratch_size) {
-  if (not Is_Directory (document->path, directory, directory_size))
-    snprintf (directory, directory_size, ".");
-
-  const char *temporary = getenv ("TMPDIR");
-  if (not temporary or not temporary[0]) temporary = "/tmp";
-  snprintf (scratch, scratch_size, "%s/ada83-lsp-%ld.ada",
-            temporary, (long) getpid ());
-
-  FILE *file = fopen (scratch, "wb");
-  if (not file) return NULL;
-  if (document->text) fputs (document->text, file);
-  fclose (file);
-
-  Text_Buffer command = {0};
-  Append_Shell_Argument (&command, Server_Executable);
-  Buffer_Append_Text (&command, " --define ");
-  Append_Shell_Argument (&command, scratch);
-  Buffer_Append_Text (&command, " ");
-  Append_Shell_Argument (&command, directory);
-  Buffer_Append_Text (&command, " ");
-  Append_Shell_Argument (&command, name);
-
-  Text_Buffer reply = {0};
-  Buffer_Reserve (&reply, 0);
-  FILE *child = popen (command.data, "r");
-  if (child) {
-    char chunk[1024];
-    size_t got;
-    while ((got = fread (chunk, 1, sizeof chunk, child)) > 0)
-      Buffer_Append (&reply, chunk, got);
-    pclose (child);
-  }
-  remove (scratch);
-
+  Text_Buffer reply = Ask_About_Document (document, "--define", name,
+                                          directory, directory_size,
+                                          scratch, scratch_size);
   const char *cursor = reply.data ? reply.data : "null";
-  Json *where = Json_Parse_Value (&cursor);
-  Buffer_Free (&command);
+  Json       *where  = Json_Parse_Value (&cursor);
   Buffer_Free (&reply);
   return where;
 }
@@ -62448,41 +62511,10 @@ static bool Name_Under_Cursor (const Open_Document *document, const Json *at,
    that declaration stands. */
 static void Answer_Hover (const Json *id, const Open_Document *document,
                           const char *name, u32 line, u32 from, u32 to) {
-  char directory[PATH_MAX];
-  if (not Is_Directory (document->path, directory, sizeof directory))
-    snprintf (directory, sizeof directory, ".");
-
-  char scratch[PATH_MAX];
-  const char *temporary = getenv ("TMPDIR");
-  if (not temporary or not temporary[0]) temporary = "/tmp";
-  snprintf (scratch, sizeof scratch, "%s/ada83-lsp-%ld.ada",
-            temporary, (long) getpid ());
-
-  FILE *file = fopen (scratch, "wb");
-  if (not file) { Respond (id, "null"); return; }
-  if (document->text) fputs (document->text, file);
-  fclose (file);
-
-  Text_Buffer command = {0};
-  Append_Shell_Argument (&command, Server_Executable);
-  Buffer_Append_Text (&command, " --describe ");
-  Append_Shell_Argument (&command, scratch);
-  Buffer_Append_Text (&command, " ");
-  Append_Shell_Argument (&command, directory);
-  Buffer_Append_Text (&command, " ");
-  Append_Shell_Argument (&command, name);
-
-  Text_Buffer reply = {0};
-  Buffer_Reserve (&reply, 0);
-  FILE *child = popen (command.data, "r");
-  if (child) {
-    char chunk[1024];
-    size_t got;
-    while ((got = fread (chunk, 1, sizeof chunk, child)) > 0)
-      Buffer_Append (&reply, chunk, got);
-    pclose (child);
-  }
-  remove (scratch);
+  char directory[PATH_MAX], scratch[PATH_MAX];
+  Text_Buffer reply = Ask_About_Document (document, "--describe", name,
+                                          directory, sizeof directory,
+                                          scratch, sizeof scratch);
 
   const char *cursor       = reply.data ? reply.data : "null";
   Json       *about        = Json_Parse_Value (&cursor);
@@ -62533,7 +62565,6 @@ static void Answer_Hover (const Json *id, const Open_Document *document,
   }
 
   Json_Free (about);
-  Buffer_Free (&command);
   Buffer_Free (&reply);
 }
 
@@ -62575,43 +62606,11 @@ static u32 Column_Of_The_Name (const char *text, u32 line, u32 column,
    the editor's text and not the file on disk: an outline that lagged a
    keystroke behind would point the reader at the wrong line. */
 static void Answer_Document_Symbols (const Json *id,
-                                     Open_Document *document) {
-  char directory[PATH_MAX];
-  if (not Is_Directory (document->path, directory, sizeof directory))
-    snprintf (directory, sizeof directory, ".");
-
-  char scratch[PATH_MAX];
-  const char *temporary = getenv ("TMPDIR");
-  if (not temporary or not temporary[0]) temporary = "/tmp";
-  snprintf (scratch, sizeof scratch, "%s/ada83-lsp-%ld.ada",
-            temporary, (long) getpid ());
-
-  FILE *file = fopen (scratch, "wb");
-  if (not file) {
-    Respond (id, document->outline ? document->outline : "[]");
-    return;
-  }
-  if (document->text) fputs (document->text, file);
-  fclose (file);
-
-  Text_Buffer command = {0};
-  Append_Shell_Argument (&command, Server_Executable);
-  Buffer_Append_Text (&command, " --symbols ");
-  Append_Shell_Argument (&command, scratch);
-  Buffer_Append_Text (&command, " ");
-  Append_Shell_Argument (&command, directory);
-
-  Text_Buffer reply = {0};
-  Buffer_Reserve (&reply, 0);
-  FILE *child = popen (command.data, "r");
-  if (child) {
-    char chunk[4096];
-    size_t got;
-    while ((got = fread (chunk, 1, sizeof chunk, child)) > 0)
-      Buffer_Append (&reply, chunk, got);
-    pclose (child);
-  }
-  remove (scratch);
+                                     const Open_Document *document) {
+  char directory[PATH_MAX], scratch[PATH_MAX];
+  Text_Buffer reply = Ask_About_Document (document, "--symbols", NULL,
+                                          directory, sizeof directory,
+                                          scratch, sizeof scratch);
 
   const char *cursor  = reply.data ? reply.data : "[]";
   Json       *symbols = Json_Parse_Value (&cursor);
@@ -62654,23 +62653,10 @@ static void Answer_Document_Symbols (const Json *id,
   }
   Buffer_Append_Text (&answer, "]");
 
-  /* A file being typed into is usually not a legal compilation unit, and an
-     outline that empties itself on every unbalanced parenthesis is worse
-     than one a few keystrokes out of date.  A run that found nothing leaves
-     the last one that found something standing. */
-  if (count == 0 and document->outline) {
-    Respond (id, document->outline);
-  } else {
-    Respond (id, answer.data ? answer.data : "[]");
-    if (count > 0 and answer.data) {
-      free (document->outline);
-      document->outline = Duplicate (answer.data);
-    }
-  }
+  Respond (id, answer.data ? answer.data : "[]");
 
   Json_Free (symbols);
   Buffer_Free (&answer);
-  Buffer_Free (&command);
   Buffer_Free (&reply);
 }
 
@@ -62709,40 +62695,11 @@ static void Answer_Completion (const Json *id, const Open_Document *document) {
   Buffer_Reserve (&reply, 0);
 
   if (document and document->path) {
-    char directory[PATH_MAX];
-    if (not Is_Directory (document->path, directory, sizeof directory))
-      snprintf (directory, sizeof directory, ".");
-
-    const char *temporary = getenv ("TMPDIR");
-    if (not temporary or not temporary[0]) temporary = "/tmp";
-    char scratch[PATH_MAX];
-    snprintf (scratch, sizeof scratch, "%s/ada83-lsp-%ld.ada",
-              temporary, (long) getpid ());
-
-    FILE *file = fopen (scratch, "wb");
-    if (file) {
-      if (document->text) fputs (document->text, file);
-      fclose (file);
-
-      Text_Buffer command = {0};
-      Append_Shell_Argument (&command, Server_Executable);
-      Buffer_Append_Text (&command, " --complete ");
-      Append_Shell_Argument (&command, scratch);
-      Buffer_Append_Text (&command, " ");
-      Append_Shell_Argument (&command, directory);
-
-      FILE *child = popen (command.data, "r");
-      if (child) {
-        char   chunk[4096];
-        size_t got;
-        while ((got = fread (chunk, 1, sizeof chunk, child)) > 0)
-          Buffer_Append (&reply, chunk, got);
-        pclose (child);
-      }
-
-      Buffer_Free (&command);
-      remove (scratch);
-    }
+    char directory[PATH_MAX], scratch[PATH_MAX];
+    Buffer_Free (&reply);
+    reply = Ask_About_Document (document, "--complete", NULL,
+                                directory, sizeof directory,
+                                scratch, sizeof scratch);
   }
 
   const char *cursor = reply.data and reply.data[0] ? reply.data : "[]";
@@ -62870,27 +62827,9 @@ static char *Read_Whole_File (const char *path) {
 /* The child, run over a file that is already on disk: no scratch copy is
    needed, since what Ctrl+T searches is the project as it was saved. */
 static Json *Ask_For_Symbols (const char *path, const char *directory) {
-  Text_Buffer command = {0};
-  Append_Shell_Argument (&command, Server_Executable);
-  Buffer_Append_Text (&command, " --symbols ");
-  Append_Shell_Argument (&command, path);
-  Buffer_Append_Text (&command, " ");
-  Append_Shell_Argument (&command, directory);
-
-  Text_Buffer reply = {0};
-  Buffer_Reserve (&reply, 0);
-  FILE *child = popen (command.data, "r");
-  if (child) {
-    char   chunk[4096];
-    size_t got;
-    while ((got = fread (chunk, 1, sizeof chunk, child)) > 0)
-      Buffer_Append (&reply, chunk, got);
-    pclose (child);
-  }
-
+  Text_Buffer reply   = Run_Analysis ("--symbols", path, directory, NULL);
   const char *cursor  = reply.data and reply.data[0] ? reply.data : "[]";
   Json       *symbols = Json_Parse_Value (&cursor);
-  Buffer_Free (&command);
   Buffer_Free (&reply);
   return symbols;
 }
@@ -63053,41 +62992,10 @@ static bool Enclosing_Call (const char *text, u32 offset,
 static void Answer_Signature_Help (const Json *id,
                                    const Open_Document *document,
                                    const char *name, u32 argument) {
-  char directory[PATH_MAX];
-  if (not Is_Directory (document->path, directory, sizeof directory))
-    snprintf (directory, sizeof directory, ".");
-
-  const char *temporary = getenv ("TMPDIR");
-  if (not temporary or not temporary[0]) temporary = "/tmp";
-  char scratch[PATH_MAX];
-  snprintf (scratch, sizeof scratch, "%s/ada83-lsp-%ld.ada",
-            temporary, (long) getpid ());
-
-  FILE *file = fopen (scratch, "wb");
-  if (not file) { Respond (id, "null"); return; }
-  if (document->text) fputs (document->text, file);
-  fclose (file);
-
-  Text_Buffer command = {0};
-  Append_Shell_Argument (&command, Server_Executable);
-  Buffer_Append_Text (&command, " --signature ");
-  Append_Shell_Argument (&command, scratch);
-  Buffer_Append_Text (&command, " ");
-  Append_Shell_Argument (&command, directory);
-  Buffer_Append_Text (&command, " ");
-  Append_Shell_Argument (&command, name);
-
-  Text_Buffer reply = {0};
-  Buffer_Reserve (&reply, 0);
-  FILE *child = popen (command.data, "r");
-  if (child) {
-    char   chunk[4096];
-    size_t got;
-    while ((got = fread (chunk, 1, sizeof chunk, child)) > 0)
-      Buffer_Append (&reply, chunk, got);
-    pclose (child);
-  }
-  remove (scratch);
+  char directory[PATH_MAX], scratch[PATH_MAX];
+  Text_Buffer reply = Ask_About_Document (document, "--signature", name,
+                                          directory, sizeof directory,
+                                          scratch, sizeof scratch);
 
   const char *cursor  = reply.data and reply.data[0] ? reply.data : "[]";
   Json       *profiles = Json_Parse_Value (&cursor);
@@ -63096,7 +63004,6 @@ static void Answer_Signature_Help (const Json *id,
   if (count == 0) {
     Respond (id, "null");
     Json_Free (profiles);
-    Buffer_Free (&command);
     Buffer_Free (&reply);
     return;
   }
@@ -63139,7 +63046,6 @@ static void Answer_Signature_Help (const Json *id,
 
   Json_Free (profiles);
   Buffer_Free (&answer);
-  Buffer_Free (&command);
   Buffer_Free (&reply);
 }
 
