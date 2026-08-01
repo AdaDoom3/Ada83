@@ -5,6 +5,12 @@ NPROC=${JOBS:-${NPROC:-$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || e
 TEST_TIMEOUT=${TEST_TIMEOUT:-30}
 COMPILE_TIMEOUT=${COMPILE_TIMEOUT:-30}
 LINK_TIMEOUT=${LINK_TIMEOUT:-20}
+STARTUP_TIMEOUT=${STARTUP_TIMEOUT:-30}
+BUILD_TIMEOUT=${BUILD_TIMEOUT:-300}
+KILL_GRACE=${KILL_GRACE:-2}
+# Last-resort cap around a complete worker. Individual compile, bind, link and
+# execution phases still have their own tighter limits.
+WORKER_TIMEOUT=${WORKER_TIMEOUT:-$((8 * COMPILE_TIMEOUT + 4 * LINK_TIMEOUT + 2 * TEST_TIMEOUT + 30))}
 BASELINE=${BASELINE:-acats.baseline}
 OPT=${OPT:--O2}
 NO_ANIMATE=${NO_ANIMATE:-0} NO_COLOUR=${NO_COLOUR:-0}
@@ -68,7 +74,7 @@ find_timeout(){
         found=$(command -v "$candidate" 2>/dev/null) || continue
         # Windows ships an unrelated System32\timeout.exe, so ask for the
         # behaviour rather than trusting the name.
-        "$found" 5 true >/dev/null 2>&1 && { printf '%s' "$found"; return 0; }
+        "$found" -k 1 1 true >/dev/null 2>&1 && { printf '%s' "$found"; return 0; }
     done
     return 1
 }
@@ -81,6 +87,14 @@ TIMEOUT=$(find_timeout) || {
     exit 1
 }
 export TIMEOUT
+
+timed(){
+    local secs=$1
+    shift
+    "$TIMEOUT" -k "$KILL_GRACE" "$secs" "$@"
+}
+export -f timed
+export KILL_GRACE
 
 now_ms(){
     local stamp
@@ -130,9 +144,9 @@ find_ada83(){
 
 build_ada83(){
     if command -v make >/dev/null; then
-        make -s ada83
+        timed "$BUILD_TIMEOUT" make -s ada83
     elif [[ $HOST_TARGET == windows ]] && command -v cmd.exe >/dev/null; then
-        cmd.exe //c make.bat
+        timed "$BUILD_TIMEOUT" cmd.exe //c make.bat
     else
         echo "test.sh: no 'make' to build the compiler with" >&2
         echo "         Windows: run make.bat, then start this script again" >&2
@@ -158,7 +172,7 @@ cleanup(){
 }
 trap cleanup EXIT
 trap 'show_cursor; exit 130' INT
-"$ADA83" --ir acats/report.adb -o "$REPORT_LL" >/dev/null 2>&1 || \
+timed "$COMPILE_TIMEOUT" "$ADA83" --ir acats/report.adb -o "$REPORT_LL" >/dev/null 2>&1 || \
     die "cannot compile acats/report.adb"
 
 pct(){ ((${2:-0}>0)) && printf %d $((100*$1/$2)) || printf 0; }
@@ -188,7 +202,7 @@ compile_set(){
     COMPILE_FAILED=""
     for part in "${COMPILE_FILES[@]}"; do
         pn=$(basename "$part" .ada)
-        if ! "$TIMEOUT" "$COMPILE_TIMEOUT" "$ADA83" --ir "$part" -o $lib/$pn.ll >/dev/null 2>$LOGS_DIR/$n.err; then
+        if ! timed "$COMPILE_TIMEOUT" "$ADA83" --ir "$part" -o "$lib/$pn.ll" >/dev/null 2>"$LOGS_DIR/$n.err"; then
             if [[ $pn == "$n" ]]; then
                 COMPILE_FAILED=$pn
                 return 1
@@ -237,7 +251,7 @@ compile_set(){
     fi
 
     BIND_FAILED=""
-    if ! "$ADA83" --bind "$lib" "$n" 2>$LOGS_DIR/$n.bind; then
+    if ! timed "$COMPILE_TIMEOUT" "$ADA83" --bind "$lib" "$n" 2>"$LOGS_DIR/$n.bind"; then
         BIND_FAILED=$n
     fi
 }
@@ -245,13 +259,13 @@ compile_set(){
 run_in_lib(){
     local secs=$1 n=$2; shift 2
     ( cd "$RESULTS_DIR/$n.lib" 2>/dev/null || exit 127
-      exec "$TIMEOUT" "$secs" "$ROOT/$PROGRAM" "$@" )
+      timed "$secs" "$ROOT/$PROGRAM" "$@" )
 }
 
 link_program(){
     local n=$1 rc=0
     PROGRAM=$RESULTS_DIR/$n.bin
-    "$TIMEOUT" "$LINK_TIMEOUT" "$ADA83" "$OPT" "$MAIN_LL" \
+    timed "$LINK_TIMEOUT" "$ADA83" "$OPT" "$MAIN_LL" \
         ${LINK_FRAGMENTS[@]+"${LINK_FRAGMENTS[@]}"} "$REPORT_LL" \
         -o "$PROGRAM" >/dev/null 2>"$LOGS_DIR/$n.link" || rc=$?
     [[ -x $PROGRAM ]] || [[ ! -x $PROGRAM.exe ]] || PROGRAM=$PROGRAM.exe
@@ -275,10 +289,11 @@ run_continuity_creators(){
     for c in $(grep -oiE 'legal_file_name[ ]*\([^)]*"ce[0-9a-z]+"' "acats/$reader.ada" 2>/dev/null \
                | grep -oiE '"ce[0-9a-z]+"' | tr -d '"' | tr 'A-Z' 'a-z' | sort -u); do
         [[ $c == "$self" || ! -f acats/$c.ada ]] && continue
-        "$ADA83" --ir "acats/$c.ada" -o "$lib/$c.ll" >/dev/null 2>&1 || continue
-        "$TIMEOUT" "$LINK_TIMEOUT" "$ADA83" "$OPT" "$lib/$c.ll" "$REPORT_LL" \
+        timed "$COMPILE_TIMEOUT" "$ADA83" --ir "acats/$c.ada" -o "$lib/$c.ll" \
+            >/dev/null 2>&1 || continue
+        timed "$LINK_TIMEOUT" "$ADA83" "$OPT" "$lib/$c.ll" "$REPORT_LL" \
             -o "$lib/$c.bin" >/dev/null 2>&1 || continue
-        ( cd "$lib" && exec "$TIMEOUT" "$TEST_TIMEOUT" "./$c.bin" ) >/dev/null 2>&1 || true
+        ( cd "$lib" && timed "$TEST_TIMEOUT" "./$c.bin" ) >/dev/null 2>&1 || true
     done
 }
 
@@ -363,8 +378,8 @@ run_one(){
                     fi
                 fi
             done < "$part"
-            if "$TIMEOUT" "$COMPILE_TIMEOUT" "$ADA83" --ir "$part" -o "$lib/${pn%.ada}.ll" \
-                 >/dev/null 2>$LOGS_DIR/$n.$pn.err; then :; else
+            if timed "$COMPILE_TIMEOUT" "$ADA83" --ir "$part" -o "$lib/${pn%.ada}.ll" \
+                 >/dev/null 2>"$LOGS_DIR/$n.$pn.err"; then :; else
                 rejected=yes
             fi
             while IFS=: read -r file m _; do
@@ -459,15 +474,18 @@ ROOT=$PWD
 export ROOT
 export -f run_one gather_files compile_set run_in_lib link_program \
           report_link_failure run_continuity_creators pct
-export START_MS TEST_TIMEOUT LINK_TIMEOUT COMPILE_TIMEOUT OPT
+export START_MS TEST_TIMEOUT LINK_TIMEOUT COMPILE_TIMEOUT STARTUP_TIMEOUT \
+       BUILD_TIMEOUT WORKER_TIMEOUT OPT
 
 run_one_timed(){
     local f=$1 n=$(basename "$1" .ada) q
     q=${f##*/}; q=${q:0:1}; q=${q,,}
     local out rc=0
-    out=$("$TIMEOUT" $((2*TEST_TIMEOUT+5)) bash -c 'run_one "$1"' _ "$f" 2>/dev/null) || rc=$?
+    out=$(timed "$WORKER_TIMEOUT" bash -c 'run_one "$1"' _ "$f" 2>/dev/null) || rc=$?
     if ((rc==124 || rc==137)); then
-        echo "$q fail $n TIMEOUT:exceeded_$((2*TEST_TIMEOUT+5))s"
+        echo "$q fail $n TIMEOUT:worker_exceeded_${WORKER_TIMEOUT}s"
+    elif ((rc != 0)); then
+        echo "$q fail $n HARNESS:worker_exit_${rc}"
     elif [[ -n $out ]]; then
         echo "$out"
     fi
@@ -607,9 +625,15 @@ run_selector(){
     local listfile; listfile=$(mktemp)
     for f in $pattern; do [[ -f $f ]] && echo "$f" >> "$listfile"; done || true
     local total; total=$(wc -l < "$listfile")
+    ((total > 0)) || { rm -f "$listfile"; die "selector '$sel' matched no tests"; }
+
+    local version
+    version=$(timed "$STARTUP_TIMEOUT" "$ADA83" --version 2>&1) || \
+        version="version query failed or timed out"
+    version=${version%%$'\n'*}
 
     heading "$title"
-    printf '  %sada83%s    %s\n' "$BOLD" "$OFF" "$("$ADA83" --version 2>&1 | head -1)"
+    printf '  %sada83%s    %s\n' "$BOLD" "$OFF" "$version"
     printf '  %stests%s    %s, over %s workers\n' "$BOLD" "$OFF" "$total" "$NPROC"
     printf '  %sresults%s  %s\n' "$BOLD" "$OFF" "$RESULTS_DIR"
     printf '  %slogs%s     %s\n' "$BOLD" "$OFF" "$LOGS_DIR"
@@ -617,23 +641,37 @@ run_selector(){
     export PROGRESS_FILE; PROGRESS_FILE=$(mktemp)
     hide_cursor
     local tmpfile; tmpfile=$(mktemp)
-    xargs -P "$NPROC" -I{} bash -c 'run_one_timed "$@"' _ {} \
-        < "$listfile" > "$tmpfile" 2>/dev/null &
+    local worker_errors="$LOGS_DIR/harness.err"
+    local runner_status; runner_status=$(mktemp)
+    : > "$worker_errors"
+    (
+        set +e
+        xargs -P "$NPROC" -I{} bash -c 'run_one_timed "$@"' _ {} \
+            < "$listfile" > "$tmpfile" 2>"$worker_errors"
+        local rc=$?
+        printf '%d\n' "$rc" > "$runner_status"
+        exit "$rc"
+    ) &
     local runner=$!
     if [ $animated = 1 ]; then
         local done_n last
-        while kill -0 "$runner" 2>/dev/null; do
+        while [[ ! -s $runner_status ]] && kill -0 "$runner" 2>/dev/null; do
             done_n=$(wc -l < "$PROGRESS_FILE" 2>/dev/null) || done_n=0
             last=$(awk 'END{print $3}' "$tmpfile" 2>/dev/null) || last=''
             progress "${done_n:-0}" "$total" "${last:-running the suite}"
             sleep 0.15
         done
     fi
-    wait "$runner"
+    local runner_rc=0
+    wait "$runner" || runner_rc=$?
     clear_line; show_cursor
+    if ((runner_rc != 0)); then
+        printf '  %swarning:%s worker launcher exited with status %d; see %s\n' \
+            "$BAD" "$OFF" "$runner_rc" "$worker_errors" >&2
+    fi
     sort -k3 "$tmpfile" > "${tmpfile}.sorted"
     tally_results "${tmpfile}.sorted"
-    rm -f "$tmpfile" "${tmpfile}.sorted" "$listfile" "$PROGRESS_FILE"
+    rm -f "$tmpfile" "${tmpfile}.sorted" "$listfile" "$PROGRESS_FILE" "$runner_status"
 }
 
 usage(){ cat <<'TEXT'
@@ -660,7 +698,12 @@ Environment:
   OPT                optimisation flag the tests link with (default: -O2)
   JOBS, NPROC        parallel workers (default: the processor count)
   TEST_TIMEOUT       per-test run cap in seconds (default: 30)
+  COMPILE_TIMEOUT    per-unit compile/bind cap in seconds (default: 30)
   LINK_TIMEOUT       per-test link cap in seconds (default: 20)
+  STARTUP_TIMEOUT    compiler startup/version cap in seconds (default: 30)
+  BUILD_TIMEOUT      compiler rebuild cap in seconds (default: 300)
+  WORKER_TIMEOUT     last-resort cap around one complete test worker
+  KILL_GRACE         seconds after TERM before timeout sends KILL (default: 2)
   BASELINE           baseline manifest path (default: acats.baseline)
   TAP                set to 1 to also write a TAP stream
   NO_ANIMATE         set to 1 to draw no progress indicators
