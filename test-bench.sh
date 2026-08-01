@@ -385,15 +385,24 @@ peak_rss(){
 }
 
 install_gnat(){
-    local s c=''; [ "$(id -u)" -eq 0 ] || s=sudo
+    if [ "$host_target" = windows ]; then
+        gnat_note="no GNAT; get one with Alire (https://alire.ada.dev): alr toolchain --select"
+        return 1
+    fi
+    local s='' c=''; [ "$(id -u)" -eq 0 ] || s=sudo
     for try in "apt-get:$s apt-get install -y --no-install-recommends gnat" \
                "dnf:$s dnf install -y gcc-gnat" "pacman:$s pacman -S --noconfirm gcc-ada" \
                "zypper:$s zypper install -y gcc-ada" "apk:$s apk add gcc-gnat" "brew:brew install gnat"; do
         command -v "${try%%:*}" >/dev/null 2>&1 && { c=${try#*:}; break; }
     done
-    [ -n "$c" ] || return 1
+    if [ -z "$c" ]; then
+        gnat_note="no GNAT, and no package manager (apt-get/dnf/pacman/zypper/apk/brew) to install it with"
+        return 1
+    fi
     pulse "installing GNAT to compare against"; eval "$c" >/dev/null 2>&1; pulse_stop
-    command -v gnatmake >/dev/null 2>&1
+    command -v gnatmake >/dev/null 2>&1 && return 0
+    gnat_note="tried '${c#* }' but gnatmake is still not on PATH"
+    return 1
 }
 
 have_gnat(){
@@ -1082,8 +1091,12 @@ build_flags(){
 
 printf '\n  %sada83%s   %s\n' "$BOLD" "$OFF" "$("$ada83" --version 2>&1 | head -1)"
 printf '  %sbuilt%s   %s\n' "$BOLD" "$OFF" "$(build_flags)"
-[ $gnat = 1 ] && printf '  %sgnat%s    %s (%s)\n' "$BOLD" "$OFF" "$(gnatmake --version 2>&1 | head -1)" \
-    "$(gcc --version 2>&1 | head -1)"
+if [ $gnat = 1 ]; then
+    printf '  %sgnat%s    %s (%s)\n' "$BOLD" "$OFF" "$(gnatmake --version 2>&1 | head -1)" \
+        "$(gcc --version 2>&1 | head -1)"
+elif [ -n "${gnat_note:-}" ]; then
+    printf '  %sgnat%s    %s\n' "$BOLD" "$OFF" "$gnat_note"
+fi
 printf '  %shost%s    %s %s, %s cpus' "$BOLD" "$OFF" "$(uname -s)" "$(uname -m)" \
     "$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo '?')"
 [ -n "$(cpu_model)" ] && printf ', %s' "$(cpu_model)"
