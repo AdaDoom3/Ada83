@@ -22858,26 +22858,10 @@ particular uses of the term. Every section number is a link.
 - **YEAR (predefined function)** — [9.6](#96-delay-statements-duration-and-time)
 - **---**
 
-
 ---
 ## Style Guidelines
 
-> [!NOTE]
-> This section records house style; it is informative, and forms no part of the
-> standard definition of the Ada programming language.
-
-Nothing here changes the legality or the meaning of a program. Ada ignores
-layout, and is insensitive to the case of identifiers and reserved words, so
-every rule below is a convention about how source is presented to a reader
-rather than anything a compiler enforces.
-
-Each rule is stated once, as a bold sentence, in the subsection its subject
-belongs to. If two subsections seem to bear on the same question, the more
-specific one governs.
-
-**The rules, by subject:**
-
-- [S.1 Sources of these Guidelines](#s1-sources-of-these-guidelines)
+- [S.1 Scope and Conventions](#s1-scope-and-conventions)
 - [S.2 Indentation](#s2-indentation)
 - [S.3 Line Length](#s3-line-length)
 - [S.4 Casing](#s4-casing)
@@ -22899,80 +22883,25 @@ specific one governs.
 - [S.20 End Labelling](#s20-end-labelling)
 - [S.21 Compilation Unit Layout](#s21-compilation-unit-layout)
 
-### S.1 Sources of these Guidelines
+### S.1 Scope and Conventions
 
-The rules were derived by measuring code, not by recalling a standard. The
-corpus is the hand-written Ada of AdaDoom3, the Neo engine written by the
-author of this compiler: 56 files and 16,961 lines from the project's `Engine`
-directory. The nine machine-generated `neo-api-*` binding files were left out,
-because they reproduce the layout of the C headers they translate rather than
-the layout of the project.
+Rules that refer to Ada 95 or later constructs include the corresponding Ada 83
+form where one exists. Use the Ada 83 form when writing code for this compiler.
 
-That first pass counted whatever the files contained. Several of the engine's
-unfinished bodies hold blocks of C reference source pasted in verbatim, and
-those blocks distort any measurement of an operator or a delimiter. The later
-rules were therefore measured over a corpus filtered by a parser rather than
-by eye: every candidate file was submitted to a syntax-only compilation, and
-the 53 files that a compiler accepts as Ada — 15,027 lines — were kept, while
-the 15 it rejected were dropped. The difference is not cosmetic. Counting
-whitespace around `*` over the unfiltered files gives 63.6% a space before it;
-counting over the files that parse gives 482 of 482.
-
-One file that parses is nonetheless not house style:
-`neo-core-compression.adb` is a `zstd` binding adapted from outside the
-project, and it is written in GNAT's own conventions — three-space indent,
-lower-case identifiers, `end Name;`. It accounts for the whole of the minority
-in several counts below, and where it does, that is said.
-
-Where the corpus settles a question, the rule below is marked *(measured)* and
-carries the count that backs it. Where the corpus is silent or contradicts
-itself, the rule is marked *(GNAT convention)*, meaning it was carried over
-from the GNAT style checker — the `-gnaty` family of switches — and was not
-observed here, or *(project rule)*, meaning the project asserts it and the
-reason is given. The three sources disagree often enough that the distinction
-matters; see
-[S.22 Departures from GNAT Convention](#s22-departures-from-gnat-convention).
-
-Two further bodies of code were consulted as contrast, and no house rule was
-taken from either. The first is this compiler's own runtime library,
-`ada83-runtime.ada`. When it was measured it ran to 2,995 lines of Ada 83; it
-agreed with the corpus on lower-case reserved words (4,197 of 4,215) and on
-the bare `end;` (230 against 10), and disagreed with it flatly on the two
-points recorded in [S.6 Spacing](#s6-spacing) and
-[S.13 Subprogram Profiles](#s13-subprogram-profiles). It has since been
-rewritten to these guidelines throughout, so the counts quoted for it here and
-in those two subsections are what it used to be, not what it is; it is no
-longer a contrast to anything below. The second is the ACATS conformance
-suite, 4,051 files of 1980s test code,
-which is the negative of this style in almost every respect: 288,127 upper-case
-reserved words against 3 lower-case, 13,860 `end Name;` against 7,754 bare, and
-7,111 spaced `..` against 4,396 tight. It is quoted below only to show what the
-corpus is not, and with the runtime library brought over it is now the only
-body of code here that disagrees with any of these rules.
-
-The corpus is modern Ada, and this manual describes Ada 83. Several rules
-below therefore rest on constructs that Ada 83 does not have. Each such rule
-names the construct and gives the Ada 83 form alongside it.
+Examples in this guide are normative unless the surrounding text explicitly
+identifies an Ada-version difference.
 
 ### S.2 Indentation
 
-**Indent two spaces per level.** *(measured)* Taking every line that ends in a
-construct opener — `is`, `then`, `loop`, `begin`, `declare`, `record` or
-`else` — and measuring the indent of the line that follows gives +2 in 866 of
-1,074 cases. The next most frequent value, +4, accounts for 114 and is
-produced by the rule for `begin` below rather than by a four-space step.
-Across the whole corpus, 90.8% of the 10,294 code lines begin with an even
-number of spaces; the odd remainder is almost all continuation lines aligned
-on an opening parenthesis.
+**Indent two spaces per level.**
 
-Two spaces, not the three that GNAT's own coding standard uses and that
-`-gnaty3` checks.
+Do not use the three-space indentation associated with GNAT's own coding style.
 
-**A construct's closer is indented one level in from its header, and its
-contents two levels in.** *(measured)* This is the most conspicuous feature of
-the style and the reverse of most Ada code. In a subprogram body `begin` does
-not line up under `procedure` or `function`; it lines up with the
-declarations, and `end` lines up with `begin`.
+**Indent a construct's closer one level from its header and its contents two
+levels from its header.**
+
+In a subprogram body, place `begin` with the declarations, place statements one
+level inside `begin`, and align `end` with `begin`.
 
 ```ada
   function Split_Vec (Item : Str; On : Str) return Vector_Str_16_Unbound.Unsafe.Vector is
@@ -22986,17 +22915,12 @@ declarations, and `end` lines up with `begin`.
     end;
 ```
 
-`begin` sits two columns in from its subprogram header in 145 of the 148
-bodies where the two can be paired, the first statement sits two columns in
-from `begin` in 194 of 212, and `end` returns to the column of `begin` in 184
-of 207.
-
-Record definitions take the same shape — components two levels in, `end
-record` one level in:
+Lay out record definitions the same way: indent components two levels from the
+`type` line and indent `end record` one level.
 
 ```ada
   type Allocation_State is record
-      ID             : Int_Unsigned_C       := 0;
+      Id             : Int_Unsigned_C       := 0;
       Offset         : Int_64_Unsigned_C    := 0;
       Size           : Int_64_Unsigned_C    := 0;
       Kind           : Allocation_Kind      := Free_Allocation;
@@ -23004,225 +22928,167 @@ record` one level in:
     end record;
 ```
 
-Components stand four columns in from the `record` line in 33 of 34
-definitions and `end record` two columns in in 33 of 34. Protected units place
-their `private` part and their `end` the same way.
+Apply the same shape to protected units and task declarations.
 
-Packages are the exception. A package's declarations are one level in and its
-`end` returns to the column of the `package` line, as in ordinary Ada.
+Packages are the exception. Indent package declarations one level and align the
+package's `end` with its `package` line.
 
-**Continuation lines align one column past the innermost open parenthesis.**
-*(measured)* Of the 301 lines that leave a parenthesis open, 253 — 84.1% — are
-followed by a line beginning in exactly that column. Named associations are
-then aligned on their arrows.
+**Align continuation lines one column past the innermost open parenthesis.**
+
+Align named-association arrows within the continuation.
 
 ```ada
     Descriptor_Set_Info : aliased VkDescriptorSetAllocateInfo := (descriptorPool     => Descriptor_Pool,
                                                                   descriptorSetCount => 1,
-                                                                  pSetLayouts        => Pipeline.Shader.Descriptor_Set_Layout'Unchecked_Access,
+                                                                  pSetLayouts        => Pipeline.Shader'Access,
                                                                   others             => <>);
 ```
 
-**`when` is indented one level from its `case`.** *(measured)* 375 of 404
-alternatives.
+**Indent each `when` one level from its `case`.**
 
-**Use spaces only; never a tab.** *(GNAT convention)* The corpus does not
-settle this: 6 of its 56 files contain tab characters, but every one of them
-is inside a block of C reference code pasted into a comment or an unfinished
-body, never in Ada indentation.
+**Use spaces only. Never use tabs for indentation.**
 
 ### S.3 Line Length
 
-**Lines run to 131 columns.** *(measured)* The copyright banner that opens
-every file is exactly 131 characters wide and the code is written to the same
-measure. Over a 5,067-line core subset the median line is 46 characters, the
-90th percentile 126 and the 95th percentile 131, with only 189 lines — 3.7% —
-longer than 131.
+**Limit lines to 131 columns.**
 
-Eighty columns is emphatically not the limit: 1,246 lines, 24.6% of that
-subset, exceed it. GNAT's line-length check defaults to 79 columns; this style
-does not follow it. The extra width is what pays for the column alignment
-described below, and that is what it is spent on.
+Use the available width to preserve readable alignment and keep short profiles,
+declarations, and control structures on one line. Do not treat 80 columns as the
+project limit.
 
-The width also explains why so few of the wrapping rules below have large
-counts behind them: at 131 columns almost nothing has to wrap. Only 19 of 519
-`if` conditions and 10 of 708 subprogram profiles run past one line.
+Wrap only when a line would exceed 131 columns or when a multi-line form is
+materially easier to read.
 
 ### S.4 Casing
 
-**Reserved words are lower case.** *(measured)* 12,968 of 13,057 occurrences,
-or 99.3%.
+**Write reserved words in lower case.**
 
-> [!NOTE]
-> Of the 89 remaining occurrences, 72 are attribute designators — `'Range` 52
-> times, `'Access` 19 and `'Digits` once — which are not reserved words in
-> that position, four are the dereference written `.All`, and one is a
-> `Pragma` typo. The last 12 are exception declarations written
-> `X : Exception;`: every one of the twelve exception declarations in the
-> corpus capitalises it. The guideline follows the dominant rule and writes
-> `exception` in lower case like any other reserved word; see
-> [S.18 Exceptions](#s18-exceptions).
+Write `exception`, `record`, `begin`, `end`, and all other reserved words in
+lower case, including reserved words used in declarations.
 
-**Identifiers are `Mixed_Case` with underscores between words.** *(measured)*
-511 of 513 type and subtype names, and 1,051 of the 1,139 object, parameter
-and component names longer than two characters, or 92.3%.
+**Write identifiers in `Mixed_Case` with underscores between words.**
 
-**Named constants are `ALL_CAPS` with underscores.** *(measured)* 224 of 232
-constant declarations; 521 distinct all-capital spellings occur 1,498 times.
-This is the one place where the style abandons `Mixed_Case`, and it makes a
-constant recognisable at the point of use rather than only at its declaration.
+**Write named constants in `ALL_CAPS` with underscores between words.**
 
 ```ada
-    TRIMMED   : constant Str     := Trim (Item, Both);
+    TRIMMED   : constant Str     := Trim  (Item, Both);
     REMAINDER : constant Natural := Index (Item, On);
 ```
 
-**Write an acronym or initialism in full upper case, joined to the rest of the
-name by an underscore.** *(measured)* `IO` is upper in all 82 occurrences
-(`Ada_IO`, `Stream_IO`, `Text_IO`, `Direct_IO`), `CPU` in all 85, `GPU` in all
-28, `OS` in all 34, `API` in all 14 and `URL` in all 3. A trailing dimension
-count is treated the same way: `Vector_3D` and its relatives account for 256
-occurrences, none of them spelled `_3d`. The rule extends to the predefined
-names, which is why `Text_IO` and not `Text_Io` is the canonical spelling.
+**Write acronyms and initialisms in full upper case.**
 
-**Write a two-letter abbreviation that is a word rather than an initialism as
-`Id`, not `ID`.** *(project rule)* This is the one place the corpus does not
-settle its own rule: `Id` and its compounds occur 77 times, `ID` 36 and `id`
-twice, and both spellings appear in the same file. `Id` is chosen because it
-is an abbreviation of *identifier*, not an initialism, and because it is what
-the predefined `Task_Id` uses in Ada 95 and later.
+Join the acronym to adjacent words with an underscore: `Text_IO`, `Ada_IO`,
+`CPU_State`, `GPU_Buffer`, `OS_Path`, `API_Handle`, `URL_Value`, and
+`Vector_3D`.
 
-**Predefined names keep their canonical spelling.** *(measured)* Twenty-five
-predefined names — `Positive` (284 occurrences), `Natural` (66), `Address`
-(72), `False` (260), `True` (196), `Integer` (13), `Duration` (13),
-`Boolean` (10), `Character` (5), `Constraint_Error` (6), `Program_Error` (14),
-`Put_Line` (6), `Unchecked_Conversion` (38) and the rest — occur 1,109 times
-between them, and each has exactly one spelling in the whole corpus. Not one
-is written `INTEGER`, `integer` or `Put_line`.
+**Write the abbreviation for identifier as `Id`, not `ID`.**
 
-**Attribute designators are `Mixed_Case`.** *(measured)* `'First`, `'Last`,
-`'Range`, `'Access`, `'Unchecked_Access`; no lower-case attribute appears.
+Use `Task_Id`, `Object_Id`, and `Current_Id`.
 
-**A name imported from another language keeps that language's spelling.**
-*(measured)* 424 distinct identifiers begin with a lower-case letter and
-contain a capital — `vkCreateInstance`, `descriptorPool`,
-`wLeftMotorSpeed` — occurring 1,059 times, and 1,030 of those occurrences,
-97.3%, are in the three files that bind Vulkan and the Win32 API. An imported
-name is a quotation, and rewriting it as `Vk_Create_Instance` would break the
-correspondence with the header a reader has to check it against. The rule
-stops at the import: everything the project itself declares is `Mixed_Case`.
+**Preserve the canonical spelling of predefined names.**
+
+Write `Integer`, `Natural`, `Boolean`, `Constraint_Error`, `Put_Line`, and
+`Unchecked_Conversion` exactly as defined by the language or runtime.
+
+**Write attribute designators in `Mixed_Case`.**
+
+Use `'First`, `'Last`, `'Range`, `'Access`, and `'Unchecked_Access`.
+
+**Preserve the spelling of names imported from another language.**
+
+Keep names such as `vkCreateInstance`, `descriptorPool`, and
+`wLeftMotorSpeed` unchanged when they correspond directly to an external API.
+Use the normal project casing for wrappers and all project-defined declarations.
 
 ### S.5 Naming
 
-**Type names lead with the category and narrow from there.** *(measured)* The
-general kind comes first and the specialisation follows, so that related names
-sort and read together: `Array_Vector_3D`, `Ptr_Allocation_State`,
-`Int_64_Unsigned`, `Str_Unbound`. Of 513 type names, 161 begin `Array_`, 85
-`Ptr_`, 40 `Int_`, 20 `Real_` and 14 `Str_`. The prefixes are honest ones: all
-35 `Ptr_*` types are access types and all 81 `Array_*` types are array types.
+**Place the category first in type names, followed by the specialization.**
 
-Two suffixes carry meaning as reliably: `_Kind` marks an enumeration type (39
-of 46) and `_State` a record type (59 of 77).
+Use names such as `Array_Vector_3D`, `Ptr_Allocation_State`,
+`Int_64_Unsigned`, and `Str_Unbound`. Use `_Kind` for enumeration types and
+`_State` for record types.
 
-**Procedures are imperative verbs; functions are nouns.** *(measured)* The
-common procedure names are `Set`, `Replace`, `Delete`, `Sort`, `Insert`,
-`Free`, `Put`, `Clear`, `Move` and `Update`. Functions are named for what they
-yield — `Get`, `Length`, `First`, `Log` — with `Has_` for predicates and `To_`
-for conversions; 148 functions begin `To_`. Accessors are overloaded on `Get`
-and `Set` rather than spelled `Get_Something`.
+**Name procedures with imperative verbs.**
 
-**Parameters draw on a small stock vocabulary.** *(measured)* `Item` (169
-uses), `Val` (111), `Pos` (81), `Path`, `Args`, `Key` and `Kind` account for
-most formal parameter names, so a reader recognises a parameter's role
-immediately.
+Prefer names such as `Set`, `Replace`, `Delete`, `Sort`, `Insert`, `Free`,
+`Put`, `Clear`, `Move`, and `Update`.
 
-**Packages are hierarchical, `Mixed_Case`, and singular.** *(measured)* `Neo`,
-`Neo.Core`, `Neo.Core.Strings`, `Neo.World.Graphics`. File names are the unit
-name in lower case with each dot written as a hyphen — `neo-core-strings.ads`.
-Ada 83 has no child units; the Ada 83 form of the same hierarchy is a nest of
-packages inside one another, and the naming rule applies unchanged to the
-nested names.
+**Name functions for the value they return.**
 
-**Exceptions are named for the fault, not suffixed.** *(measured)*
-`Divide_By_Zero`, `Numeric_Overflow`, `Stack_Fault`,
-`Unsupported_Compression_Format`. None of the eleven exception names in the
-corpus ends in `_Error`.
+Use nouns or result-oriented names such as `Get`, `Length`, `First`, and `Log`.
+Use `Has_` for predicates and `To_` for conversions. Overload `Get` and `Set`
+for accessors rather than spelling each one `Get_Something` or `Set_Something`.
+
+**Use concise, conventional parameter names.**
+
+Prefer role names such as `Item`, `Val`, `Pos`, `Path`, `Args`, `Key`, and
+`Kind`.
+
+**Use hierarchical, singular, `Mixed_Case` package names.**
+
+Examples include `Neo`, `Neo.Core`, `Neo.Core.Strings`, and
+`Neo.World.Graphics`. Name files by converting the unit name to lower case and
+replacing each dot with a hyphen, as in `neo-core-strings.ads`.
+
+Ada 83 has no child units. Represent the same hierarchy with nested packages
+and apply the same naming rules to each nested name.
+
+**Name exceptions for the fault. Do not add an `_Error` suffix.**
+
+Use names such as `Divide_By_Zero`, `Numeric_Overflow`, `Stack_Fault`, and
+`Unsupported_Compression_Format`.
 
 ### S.6 Spacing
 
-The rules in this subsection are absolute in the corpus unless a count says
-otherwise. All counts are over the 53 files that parse.
-
 **Put one space on each side of `:=`, `=>`, `:`, and every binary operator.**
-*(measured)* `:=` carries a space before it in 1,880 of 1,880 occurrences and
-after it in 1,879 of 1,880; `=>` in 2,515 of 2,515 on both sides; `:` in 2,690
-of 2,694 before and 2,694 of 2,694 after. Of the binary operators, `+` is
-spaced on both sides in 496 of 496, `*` in 482 of 482, `-` in 236 of 236, `/`
-in 90 of 90, `&` in 518 of 518, `**` in 21 of 22, `=` in 240 of 240, `/=` in
-203 of 203, and the word operators `and`, `or` and `not` in 156 of 156, 114 of
-114 and 76 of 82.
-
-The four `:` without a space before them are the whole of the exception, and
-they are the same construct twice: a statement label and a choice parameter,
-both of which bind the colon tightly to the name in front of it.
 
 ```ada
-      Outter: while not Close_Console loop
+    Result := Left + Right;
+    Value  : Integer := 0;
+    Choice => Action;
+```
+
+Bind the colon tightly only where Ada syntax requires it, such as a statement
+label or an exception choice parameter.
+
+```ada
+      Outer: while not Close_Console loop
       exception when Occurrence: others => Handle (Occurrence);
 ```
 
-A choice parameter is Ada 95; Ada 83 writes `when others =>` with no name.
+A choice parameter is an Ada 95 feature. Ada 83 uses `when others =>`.
 
-**Write `..` tight, with no space on either side.** *(measured)* 378 tight
-against 31 spaced, or 92.4%. Eleven of the thirty-one are in the adapted
-`zstd` binding; the remaining twenty are in two files.
+**Write `..` with no surrounding spaces.**
 
 ```ada
       Bone_Influences : Array_Bone_Index (1..Bone_Influence_Count);
 ```
 
-This is the sharpest disagreement in the whole style. This compiler's own
-`ada83-runtime.ada` used to write the range spaced, `0 .. 32767`, in 94 of 94
-occurrences, and the ACATS suite still does in 7,111 of 11,507. The corpus
-rule is followed here because the corpus is the subject of this section, and
-the runtime library has since been rewritten to it: all 94 of its ranges are
-now tight. ACATS is the only body of code left on the other side, and a reader
-coming from it should expect the change.
-
-**Write `'` and `.` tight on both sides.** *(measured)* The apostrophe has no
-space before it in 789 of 790 occurrences and none after in 788 of 790; the
-selected-component dot has none on either side in all 4,580.
+**Write apostrophes and selected-component dots with no surrounding spaces.**
 
 ```ada
       Result := Neo.Core.Strings.To_Str (Item'Image);
 ```
 
-**Write a unary minus tight against its operand.** *(measured)* 39 of 41.
-`-1` and `- 1` are different to read even though they mean the same thing, and
-the tight form keeps the sign attached to the number it belongs to.
+**Write unary minus directly against its operand.**
 
-**Put a space after `,` and none before it.** *(measured)* 5,081 of 5,084 have
-a space after and 5,083 of 5,084 have none before. A comma at the end of a
-line counts as satisfying the rule.
+Use `-1`, not `- 1`.
 
-**Put no space before `;`.** *(measured)* 7,267 of 7,267.
+**Put one space after a comma and no space before it.**
 
-**Put a space between a name and the parenthesis that follows it.**
-*(measured)* 4,740 of 4,741 — one typo excepted — across calls, indexing,
-declarations and instantiations alike. GNAT checks the same thing with
-`-gnatyt`, which reports *space required* for `Put_Line(X)`; here the two
-agree.
+**Put no space before a semicolon.**
+
+**Put one space between a name and a following parenthesis.**
+
+Apply this rule to calls, indexing, declarations, and instantiations.
 
 ```ada
       Set_Pixel (Buffer (X, Y), Shade (Depth));
 ```
 
-**Put no space just inside a parenthesis.** *(measured)* 6,216 of 6,224 have
-no space after `(` and 6,224 of 6,224 have none before `)`. The eight
-exceptions are all line breaks, not spaces.
+**Put no space immediately inside parentheses.**
 
-**Put a space on each side of `|` in a list of choices.** *(measured)* 110 of
-110.
+**Put one space on each side of `|` in a list of choices.**
 
 ```ada
         when Moveable_Entity | Item_Entity | Light_Entity =>
@@ -23230,58 +23096,55 @@ exceptions are all line breaks, not spaces.
 
 ### S.7 Aligned Declarations
 
-**Line up colons, types and `:=` across a run of declarations.** *(measured)*
-Of 211 runs of two or more consecutive declarations at the same indent, 188 —
-89.1% — put every colon in one column. Where the declarations are initialised,
-106 of 145 runs — 73.1% — also put every `:=` in one column, and 170 of 201
-runs of named associations put every `=>` in one column. Padding is inserted
-after the colon where necessary so that the type names line up too, even when
-some declarations carry `constant` or `aliased` and others do not.
+**Align colons, type names, and `:=` across consecutive declarations.**
+
+Insert padding after the colon as needed so that types and initializers form
+stable columns, including when declarations use `constant` or `aliased`.
 
 ```ada
-    Bind_Vertex_Offset  : aliased Int_64_Unsigned_C           := 0; -- Basically junk
-    Current_Pipeline    : aliased Ptr                         := NULL_PTR;
+    Bind_Vertex_Offset : aliased Int_64_Unsigned_C := 0;
+    Current_Pipeline   : aliased Ptr               := NULL_PTR;
 ```
 
-The same instinct is applied to whole subprogram declarations, which are
-padded until their parameter lists, return types and bodies stand in columns:
+Apply the same alignment to runs of subprogram declarations, bodies,
+renamings, instantiations, and named associations.
 
 ```ada
-  procedure Line        (Item : Char)                      is begin Line (Item & "");                end;
-  procedure Line        (Item : Str_Unbound)               is begin Line (S (Item));                 end;
-  procedure Line        (Item : Str := "")                 is begin Put (Item & EOL);                end;
-  procedure Error       (Item : Str)                       is begin Line; Line ("ERROR: "   & Item); end;
-  procedure Warn        (Item : Str)                       is begin Line; Line ("WARNING: " & Item); end;
-  procedure Info        (Item : Str)                       is begin Line; Line ("INFO: "    & Item); end;
-  function Extension    (Path : Str) return Str            is (Path (Index (Path, ".") + 1..Path'Last));
-  function Log                       return Str_Unbound    is (Safe_IO.Log);
-  function Input_Entry               return Str            is (S (Safe_IO.Input_Entry));
+  procedure Line     (Item : Char)                   is begin Line (Item & "");                end;
+  procedure Line     (Item : Str_Unbound)            is begin Line (S (Item));                 end;
+  procedure Line     (Item : Str := "")              is begin Put (Item & EOL);                end;
+  procedure Error    (Item : Str)                    is begin Line; Line ("ERROR: "   & Item); end;
+  procedure Warn     (Item : Str)                    is begin Line; Line ("WARNING: " & Item); end;
+  procedure Info     (Item : Str)                    is begin Line; Line ("INFO: "    & Item); end;
+  function Extension (Path : Str) return Str         is (Path (Index (Path, ".") + 1..Path'Last));
+  function Log                    return Str_Unbound is (Safe_IO.Log);
+  function Input_Entry            return Str         is (S (Safe_IO.Input_Entry));
 ```
 
-**Break an alignment run at a blank line, and only there.** *(project rule)*
-The alignment is what makes a run readable as a table, so the run has to end
-somewhere a reader already sees a boundary. The corpus supports the second
-half of this — 884 of 955 one-line declarations have no blank line before them,
-so the runs are long — but it was not measured for the choice of breakpoint,
-and the rule is stated to settle the question rather than because it was
-counted.
+**Treat a blank line as the boundary of an alignment run.**
+
+Do not interrupt a related aligned group with a blank line. Start a new
+alignment group after a blank line.
 
 ### S.8 Comments
 
-**Introduce a comment with `--` and a single space.** *(measured)* 777 of the
-1,025 prose comments, or 75.8%. The wider gaps that make up most of the
-remainder are commented-out code and tables that preserve their own internal
-alignment inside the comment.
+**Begin prose comments with `--` followed by one space.**
 
-**Comments sit on their own line, above what they describe, at the indent of
-that code.** *(measured)* Trailing comments appear, but are reserved for short
-asides on a declaration — `:= 0; -- Basically junk`.
+Use additional spaces only when preserving the internal alignment of
+commented-out code or a table.
 
-**Introduce each group of declarations with a boxed header.** *(measured)* 206
-such boxes appear, and all 206 are formed identically: a rule of hyphens, the
-title as `-- Title --`, and a second identical rule, with the rules exactly as
-long as the title line and at the same indent. A blank line precedes the box
-in 205 of the 206 cases.
+**Place comments above the code they describe and align them with that code.**
+
+Reserve trailing comments for short declaration-specific notes.
+
+```ada
+    Value : Integer := 0; -- Temporary sentinel
+```
+
+**Introduce each declaration group with a boxed header.**
+
+Make both rules exactly as wide as the title line and keep all three lines at
+the same indentation.
 
 ```ada
   -----------
@@ -23293,125 +23156,95 @@ in 205 of the 206 cases.
     (Vector_Str_16_Unbound.To_Unsafe_Array (Split_Vec (Item, On)));
 ```
 
-The title names either the subprogram that follows — the case in 109 of the
-206 boxes — or the group of declarations it introduces, as in `-- Sorting --`
-or `-- Number Conversions --`.
+Use the subprogram name as the title when the group introduces one subprogram.
+Use a descriptive group name such as `-- Sorting --` or
+`-- Number Conversions --` for related declarations.
 
 ### S.9 Blank Lines
 
-**Separate a multi-line body from what precedes it.** *(measured)* Of 181
-multi-line subprogram bodies, 77 are preceded by a blank line and a further 52
-by a comment, which is itself preceded by a blank line.
+**Separate a multi-line body from the preceding declaration or body.**
 
-**Pack related one-line declarations together.** *(measured)* Of 955 one-line
-declarations and bodies, 884 — 93% — have no blank line before them. Runs of
-one-liners are meant to be read as a table, and a blank line inside one breaks
-the alignment that gives the table its point.
+A boxed header or explanatory comment may provide the separation.
 
-**Use one blank line, never two.** *(measured)* Only 58 runs of two or more
-blank lines occur among the corpus's 2,165 blank lines.
+**Keep related one-line declarations together.**
+
+Do not insert blank lines inside an aligned table of one-line declarations or
+bodies.
+
+**Use one blank line at a boundary. Never use two consecutive blank lines.**
 
 ### S.10 Literals
 
-**Write a based literal when the value is a bit pattern, and a decimal literal
-when it is a number.** *(measured)* 258 of the 2,311 numeric literals in the
-corpus are based, and every one of them is base 16 and stands for a mask, a
-flag word or a size — `16#8000_0000#`, `16#00AE#`, `16#0000_003F#`. Nothing is
-written in base 8 or base 2.
+**Use a based literal for a bit pattern and a decimal literal for a number.**
 
-**Group the digits of a based literal in fours with underscores as soon as
-there are more than four.** *(measured)* 46 based literals have more than four
-digits, and all 46 are underscored; all 46 group in fours, 44 of them as one
-group and 2 as three. No based literal of four digits or fewer carries an
-underscore.
+Use hexadecimal for masks, flag words, encoded fields, and machine-sized bit
+patterns, such as `16#8000_0000#` and `16#0000_003F#`.
+
+**Group hexadecimal digits in sets of four when the literal contains more than
+four digits.**
+
+Do not add an underscore to a four-digit hexadecimal literal.
 
 ```ada
         Result.Has_Advanced_Vector_Extensions_Enabled := (Data and 16#0000_0006#) > 0;
         pragma Storage_Size (16#8000_0000#);
 ```
 
-**Group the digits of a long decimal literal in threes.** *(measured)* Only
-two decimal literals in the corpus are underscored — `7_500` and
-`100_000_000_000_000.0` — and both group in threes. The other 45 decimal
-literals of four digits or more are written plain: `500000`, `1024`, `3000`.
-The rule takes the form the corpus shows when it groups at all, and applies it
-from five digits up, where the plain form stops being readable.
+**Group long decimal literals in sets of three, starting at five digits.**
 
-**Write a real literal with a digit on both sides of the point.** *(project
-rule)* `0.0`, `75.0`, `0.0001`, never `.5` or `5.`. Ada makes this a matter of
-legality rather than of style — see [2.4](#24-numeric-literals) — and it is
-restated here because it is the sort of thing a reader arriving from C gets
-wrong, and because the corpus's real literals all take the legal form.
+Use `100_000`, not `100000`.
 
-**Begin each continuation line of a long concatenation with `&`.** *(project
-rule)* The corpus barely settles this. One file that builds inline-assembly
-templates accounts for 119 of the 121 wrapped `&` operators and puts every one
-of them at the end of its line; outside it only seven concatenations wrap at
-all, five leading with the operator and two trailing. Seven cases decide
-nothing, so the rule is taken from the boolean one in
-[S.11 Expressions](#s11-expressions), which is measured and which puts the
-operator at the start of the continuation line.
+**Write a real literal with a digit on each side of the decimal point.**
+
+Use `0.0`, `75.0`, and `0.0001`. Do not write `.5` or `5.`.
+
+**Begin each continuation line of a long concatenation with `&`.**
 
 ```ada
         Info ("Using Vulkan's debugging layer requires the LunarG SDK!" & EOL
-              & "It can be downloaded from https://vulkan.lunarg.com" & EOL
-              & "Continuing without the debugging layer enabled..." & EOL);
+              & "It can be downloaded from https://vulkan.lunarg.com"   & EOL
+              & "Continuing without the debugging layer enabled..."     & EOL);
 ```
 
-**Write a character literal, not an `ASCII` name, when the character is
-printable.** *(measured)* `' '` and `'.'` are written directly; the `ASCII`
-package is named 14 times, and each time for a control character —
-`ASCII.CR`, `ASCII.NUL`. In Ada 83 `ASCII` is the only way to name a control
-character; `Ada.Characters.Latin_1` does not exist.
+**Use a character literal for a printable character.**
+
+Use names from `ASCII` for control characters such as `ASCII.CR` and
+`ASCII.NUL`. Ada 83 does not provide `Ada.Characters.Latin_1`.
 
 ### S.11 Expressions
 
-**Parenthesise mixed logical operators; the language requires it.**
-*(measured)* Ada's grammar for an expression admits a sequence of `and`, or a
-sequence of `or`, or a sequence of `xor`, but never a mixture of two of them,
-so `A and B or C` is illegal and `(A and B) or C` is what must be written. See
-[4.4](#44-expressions), where the example `(Cold and Sunny) or Warm` is
-annotated *parentheses are required*. The corpus contains no mixed sequence at
-any parenthesis depth, which is what legality demands and what a count
-confirms.
+**Parenthesize mixed logical operators as required by Ada.**
 
-The same clause requires parentheses in `A**(B**C)`, `**` being non-associative.
+Ada does not permit an unparenthesized mixture such as `A and B or C`. Write
+`(A and B) or C`.
 
-**Parenthesise nothing else that precedence already settles.** *(project
-rule)* `A + B * C` and `X = Y and then Z /= W` are written as they stand. The
-corpus was not counted for redundant parentheses — the measurement would need
-a semantic parse, not a lexical one — so this is asserted rather than
-observed, on the ground that a parenthesis a reader must check and then
-discard costs more than it saves.
+Also parenthesize nested exponentiation, because `**` is non-associative:
+`A**(B**C)`.
 
-**Use `and then` and `or else` when the right operand must not be evaluated,
-and `and` and `or` when it may be.** *(measured)* The corpus writes `and then`
-47 times against 109 plain `and`, and `or else` 15 times against 99 plain
-`or`; 42 of the plain `and`s and 7 of the plain `or`s have a numeric literal
-as an operand and are bit operations on a modular type rather than boolean
-connectives at all. The short-circuit forms cluster where they must —
-`X /= null and then X.Field` — which is the rule stated positively.
+**Do not add parentheses where precedence already determines the expression.**
+
+Write `A + B * C` and `X = Y and then Z /= W` without redundant grouping.
+
+**Use `and then` and `or else` when evaluation of the right operand must be
+conditional.**
+
+Use plain `and` and `or` when both operands may be evaluated or when operating
+on a modular value.
 
 ```ada
               if Current_Id /= NULL_TASK_ID and then not Is_Terminated (Current_Id) then return; end if;
 ```
 
-Ada 83 has `and then` and `or else` in the same form. What it does not have is
-the modular type the bit operations above are performed on; in Ada 83 the same
-work is done on an integer type with `Boolean` arrays or with
-`Unchecked_Conversion`.
+Ada 83 provides `and then` and `or else`. It does not provide modular types;
+use an integer representation, Boolean arrays, or `Unchecked_Conversion` when
+implementing equivalent bit operations.
 
-**Break a long boolean expression before the operator, so that each
-continuation line begins with `and`, `or`, `and then` or `or else`.**
-*(measured)* 46 of the 66 wrapped logical operators — 69.7% — lead their line,
-spread over seven files, against 20 that trail, spread over three. Leading
-puts the connectives in a column where they can be read down.
+**Break a long Boolean expression before the operator.**
 
-**Put `then` on its own line when the condition it closes has wrapped.**
-*(project rule)* The corpus splits almost evenly — 10 of the 19 wrapped
-conditions put `then` on its own line, 9 leave it trailing — so the count
-decides nothing. The rule takes the former because a trailing `then` on a
-continuation line is indistinguishable at a glance from another operand.
+Begin continuation lines with `and`, `or`, `and then`, or `or else` so the
+connectives form a readable column.
+
+**Put `then` on its own line when the condition wraps.**
 
 ```ada
               if Int_16_Unsigned_C (Message.wParam) = VK_V_KEY
@@ -23422,23 +23255,22 @@ continuation line is indistinguishable at a glance from another operand.
 ```
 
 **Break a long arithmetic expression after an operand and align the
-continuation under the first operand.** *(project rule)* Arithmetic wraps too
-rarely in the corpus to count — four `+` and one `-` — so this follows the
-general continuation rule in [S.2 Indentation](#s2-indentation) rather than a
-measurement of its own.
+continuation with the first operand.**
 
 ### S.12 Statements and Control Structures
 
-**Put a whole construct on one line when it fits.** *(measured)* 112 `if`
-statements are written `if C then S; end if;` on a single line against 175
-spread over several, and 122 subprogram bodies are written
-`is begin S; end;` on one line against 181 spread out. Across the corpus 500
-of 519 `if` and `elsif` conditions reach their `then` on the line they started
-on.
+**Put a complete construct on one line when it fits within 131 columns.**
 
-**Otherwise indent the body one level and close on its own line.**
-*(measured)* `end` returns to the column of the construct that opened it. This
-holds for `end case;` inside a variant part as much as for `end loop;`.
+```ada
+      if Ready then Run; end if;
+```
+
+Use the same rule for short loops, handlers, and subprogram bodies.
+
+**When a construct does not fit, indent its body one level and place its closer
+on a separate line.**
+
+Align the closer with the construct line it closes.
 
 ```ada
       procedure Put (Item : Str) is
@@ -23453,46 +23285,41 @@ holds for `end case;` inside a variant part as much as for `end loop;`.
         exception when Device_Error => null; end;
 ```
 
-`for I of Item loop` is Ada 2012; the Ada 83 form of the same loop is
-`for I in Item'Range loop`, iterating over indices.
+`for I of Item loop` is an Ada 2012 construct. In Ada 83, iterate over the
+index range:
 
-**Write the whole iteration scheme on the line that carries `loop`.**
-*(measured)* All 144 `for` loops in the corpus reach `loop` on the line their
-`for` started on, and so do all 64 of the Ada 2012 `for ... of` loops.
+```ada
+          for I in Item'Range loop
+```
 
-**Prefer a one-line expression function to a one-line body.** *(measured)* 253
-subprogram bodies are written `is (expression);` against 122 written
-`is begin S; end;`. This is an Ada 2012 construct with no Ada 83
-equivalent; in Ada 83 the same subprogram is written
-`function F (X : T) return U is begin return E; end;` on one line, which the
-one-line rule above already covers.
+**Keep the complete iteration scheme on the line containing `loop`.**
 
-**Use `exit` rather than `goto` to leave a loop.** *(measured)* 29 `exit`
-statements against 5 `goto`, and the five are all jumps forward out of a
-nest of loops, one of them carrying the comment *Gotos to keep the nesting
-sane*. A `goto` is written when the alternative is another level of flag and
-`if`, and not otherwise.
+**Prefer an expression function when the entire function is one expression.**
+
+Expression functions are an Ada 2012 feature. In Ada 83, write the equivalent
+one-line body:
+
+```ada
+  function F (X : T) return U is begin return E; end;
+```
+
+**Use `exit` to leave a loop.**
+
+Use `goto` only when it clearly avoids a more complex and less readable nest of
+flags and conditional statements.
 
 ### S.13 Subprogram Profiles
 
-**Write the profile on one line, and `is` at the end of it.** *(measured)* 690
-of the 708 subprogram bodies whose profile is followed by `is` put the whole
-profile and the `is` on one line. This is what 131 columns are for.
+**Write a subprogram profile on one line and place `is` at the end.**
 
 ```ada
   function Split (Item : Str; On : Str) return Array_Str_Unbound is
 ```
 
-**When the profile does not fit, break it at a `;` between parameters, align
-the following parameters one column past the open parenthesis, and leave `is`
-on the last line of the profile.** *(measured, weakly)* Ten profiles in the
-corpus wrap. Nine of them are in the adapted `zstd` binding, which puts the
-parameter list on its own lines and `is` alone on the line after; the one
-house example puts `is` at the end of the profile, as the rule says. The
-alignment half of the rule is measured — it is the general continuation rule
-of [S.2 Indentation](#s2-indentation), which holds in 253 of 301 cases — but
-the placement of `is` rests on a single instance, and is stated because
-putting `is` alone on a line contradicts the one-line rule above for no gain.
+**When a profile must wrap, break between parameters at a semicolon.**
+
+Align following parameters one column past the open parenthesis and keep `is`
+at the end of the final profile line.
 
 ```ada
     procedure Stage_Image (Path        : Texture_Name_Str.T;
@@ -23501,18 +23328,14 @@ putting `is` alone on a line contradicts the one-line rule above for no gain.
       begin
 ```
 
-An `access` parameter is Ada 95; Ada 83 passes an access value of a named
-access type, or a subprogram is passed as a generic formal.
+An anonymous access-to-subprogram parameter is an Ada 95 feature. In Ada 83,
+use a named access type or a generic formal subprogram.
 
-**Align the parameter names, the colons and the types within a wrapped
-profile.** *(measured)* Every wrapped house profile does this, and it is the
-same rule as [S.7 Aligned Declarations](#s7-aligned-declarations) applied to a
-parameter list; the example above shows both columns.
+**Align parameter names, colons, modes, and types within a wrapped profile.**
 
-**Never write mode `in`.** *(measured)* This is the most nearly absolute rule
-in the corpus: of 1,229 parameter specifications, 1,070 carry no mode at all,
-134 are `in out`, 23 are `out` and 2 are `access`. Not one is written `in`.
-The mode is the default, and writing it adds a word that says nothing.
+**Do not write mode `in`.**
+
+The mode is the default. Write only `out` and `in out` when required.
 
 ```ada
   procedure Sort   (Item : in out Array_Str_Unbound);
@@ -23520,67 +23343,40 @@ The mode is the default, and writing it adds a word that says nothing.
   function  Length (Item : Str) return Natural;
 ```
 
-This is the second point where the compiler's own `ada83-runtime.ada` used to
-disagree: it wrote `in` explicitly 315 times. It has since been rewritten to
-this rule and writes the mode nowhere; its 43 `in out` parameters are
-untouched, the rule being about mode `in` alone. ACATS writes `in` 2,324 times
-and is now the only body of code here that does. The corpus rule is the one
-recorded here.
-
-**Put the parameters that are written to before the parameters that are only
-read.** *(measured)* Of the 66 profiles that mix the two, 52 — spread over
-twelve files, only three of them in the adapted `zstd` binding — put the `out`
-or `in out` parameter first, 12 put it last and 2 interleave.
+**Place writable parameters before read-only parameters.**
 
 ```ada
   procedure Set_Matrix_3D_X (M : in out Matrix_3D; V : Vector_3D);
   procedure Initialize      (Mechanism : out Decompressor; Input_Stream : Ptr_Stream);
 ```
 
-The mode itself is always spelled `in out` and never `out in`, which the
-language requires in any case; with `in` never written, those two are the only
-mode spellings the corpus contains.
+**Put a default parameter expression in the specification only.**
 
-**Give a defaulted parameter its default in the specification only.**
-*(project rule)* Ada requires the default expression to conform between
-specification and body, and repeating it invites the two to drift; the corpus
-was not counted for this, because the project keeps almost every declaration
-in the specification and the question rarely arises. See
-[S.21 Compilation Unit Layout](#s21-compilation-unit-layout).
+Do not repeat the default in the body.
 
 ### S.14 Aggregates and Named Associations
 
-**Use named association in an aggregate.** *(measured)* Of 359 aggregates,
-274 — 76.3% — name their components, and 240 use `others`. A record aggregate
-is written positionally only when it has one or two components whose order is
-obvious from the type.
+**Use named associations in aggregates.**
 
-**Use positional association in a call.** *(measured)* The corpus is the
-reverse of its own aggregate rule here: of the 545 parenthesised association
-lists of three or more items that follow a name, 432 are wholly positional and
-113 name at least one association, and of all such lists 4,604 are positional
-against 137 named. The count is inflated by array indexing, which cannot be
-named; but the direction is not in doubt. Names are added in a call when the
-argument is a literal whose meaning is not obvious — `Skip_Comments => False`.
+Use positional record aggregates only when the type has one or two components
+and their order is immediately obvious.
 
-**Close a record aggregate with `others` whenever components are left at their
-defaults.** *(measured)* 240 of the 359 aggregates end in an `others` choice.
-The form `others => <>`, which means *whatever the component's default is*,
-accounts for 241 of the 458 `others` choices in the corpus.
+**Use positional associations in calls.**
 
-`others => <>` is Ada 2005. Ada 83 has no such association: an Ada 83
-aggregate must supply a value for every component, so the same intent is
-written either by naming a value for each remaining component or, where the
-components are of one type, by `others => 0`. Where neither is possible, the
-Ada 83 form is not an aggregate at all but a default-initialised object
-assigned component by component.
+Add argument names when a literal or Boolean would otherwise be unclear, such
+as `Skip_Comments => False`.
 
-**Lay a long aggregate out one association per line, aligned one column past
-the open parenthesis, with the arrows in a column.** *(measured)* 105 of the
-359 aggregates run to more than one line, and they follow the general
-continuation rule of [S.2 Indentation](#s2-indentation) — 253 of 301 — with
-the arrow alignment of [S.7 Aligned Declarations](#s7-aligned-declarations) —
-170 of 201 runs.
+**Use `others` when remaining aggregate components take their defaults.**
+
+Use `others => <>` in Ada 2005 or later. Ada 83 requires an explicit value for
+every component. Supply the remaining values by name, use a valid
+`others => Value` choice where possible, or initialize the object and assign
+components separately.
+
+**Lay out a long aggregate one association per line.**
+
+Align continuation lines one column past the open parenthesis and align the
+arrows.
 
 ```ada
     Descriptor_Set_Info : aliased VkDescriptorSetAllocateInfo := (descriptorPool     => Descriptor_Pool,
@@ -23588,33 +23384,27 @@ the arrow alignment of [S.7 Aligned Declarations](#s7-aligned-declarations) —
                                                                   others             => <>);
 ```
 
-**Write a qualified expression with no space between the type mark, the
-apostrophe and the parenthesis.** *(measured)* 37 of 39. This is the one place
-the space-before-parenthesis rule of [S.6 Spacing](#s6-spacing) does not
-apply, because the parenthesis belongs to the apostrophe and not to the name.
+**Write qualified expressions with no space between the type mark, apostrophe,
+and parenthesis.**
 
 ```ada
         Result := new Mesh_State'(Vertex_Count, Index_Count, Segment_Count, 0, 0, others => <>);
 ```
 
-**Qualify an aggregate whenever its type is not fixed by the context.**
-*(project rule)* An aggregate on the right of `:=` or as a component default
-needs no qualification and the corpus gives it none; one passed to an
-overloaded subprogram does. The corpus was not counted for this, since
-deciding whether a qualification is needed requires resolving the overload
-set.
+This is an exception to the normal space-before-parenthesis rule because the
+parenthesis belongs to the qualification.
+
+**Qualify an aggregate when its type is not fixed by context.**
+
+Do not add a qualification when assignment or component context already fixes
+the type.
 
 ### S.15 Type Declarations
 
-The corpus declares 491 types and subtypes: 91 arrays, 65 records, 38
-enumerations, 38 access types, 19 with discriminants, 6 derived and 3 private.
-The rules below follow that population.
+**Write a complete type declaration on one line when it fits.**
 
-**Write a whole type declaration on one line when it fits, and align a run of
-them into columns.** *(measured)* All 91 array type declarations and all 38
-access type declarations fit on one line, and where several stand together
-they are padded until `is array` or `is access` begins in the same column, on
-the rule of [S.7 Aligned Declarations](#s7-aligned-declarations).
+Align consecutive type declarations so `is array`, `is access`, or another
+common phrase begins in the same column.
 
 ```ada
   type Array_x2_Bool     is array (Positive range <>, Positive range <>) of aliased Bool;
@@ -23622,17 +23412,15 @@ the rule of [S.7 Aligned Declarations](#s7-aligned-declarations).
   type Array_x2_Ptr      is array (Positive range <>, Positive range <>) of aliased Ptr;
 ```
 
-**Write an access type as `access all T` when the designated object may be
-declared, and `access T` when it may only be allocated.** *(measured)* 33 of
-the 38 access types are `access all`, which is what makes `'Access` and
-`'Unchecked_Access` legal on a declared object. `access all` is Ada 95; Ada 83
-has only `type Ptr_T is access T;`, and the corresponding Ada 83 program
-allocates every designated object.
+**Use `access all T` when an access value may designate a declared object.**
 
-**Lay an enumeration out on one line, or in aligned columns across several.**
-*(measured)* 25 of the 38 enumeration types fit on one line. The other 13 are
-set out as a table, the literals padded into columns so that a reader can
-count them by eye — one column per position, not one literal per line.
+Use `access T` when values designate allocated objects only. `access all` is an
+Ada 95 feature; Ada 83 provides only `type Ptr_T is access T;`.
+
+**Lay out a short enumeration on one line.**
+
+For a long enumeration, arrange literals in aligned columns rather than one
+literal per line.
 
 ```ada
   type Dimension_Kind is (X_Dimension, Y_Dimension, Z_Dimension);
@@ -23642,28 +23430,22 @@ count them by eye — one column per position, not one literal per line.
                           CameraObject, GeometryObject, LightObject,    ObjectRef,    MaterialRef);
 ```
 
-**Put `is record` at the end of the `type` line, the components two levels in,
-and `end record;` one level in.** *(measured)* 33 of 34 record definitions
-place the components four columns in from the `type` line and 33 of 34 place
-`end record` two columns in. This is the general shape of
-[S.2 Indentation](#s2-indentation) — closer one level in, contents two — and
-it is why `end record;` does not line up under `type`.
+**Put `is record` at the end of the `type` line.**
+
+Indent components two levels and indent `end record;` one level.
 
 ```ada
   type Allocation_State is record
-      ID     : Int_Unsigned_C    := 0;
+      Id     : Int_Unsigned_C    := 0;
       Offset : Int_64_Unsigned_C := 0;
       Kind   : Allocation_Kind   := Free_Allocation;
     end record;
 ```
 
-**Write the discriminant part on the `type` line; if it wraps, align the
-following discriminants past the open parenthesis and put `is record` alone on
-the next line, one level in.** *(measured)* Nineteen type declarations carry a
-discriminant part; eighteen keep it on the `type` line, and the one that wraps
-is the example below. That is a single instance, so the placement of the
-wrapped `is record` is really a *(project rule)* resting on it; the alignment
-half follows the general continuation rule.
+**Keep a discriminant part on the `type` line when it fits.**
+
+When it wraps, align following discriminants past the open parenthesis and put
+`is record` on the next line, indented one level.
 
 ```ada
   type Mesh_State (Vertex_Count, Index_Count, Segment_Count : Positive;
@@ -23675,11 +23457,11 @@ half follows the general continuation rule.
     end record;
 ```
 
-**Put the variant part last, indent `case` with the components, its `when`
-one level in and their components one level in again, and return `end case;`
-to the column of `case`.** *(measured)* The corpus's variant records nest
-three deep and do this at every level; `when` is one level in from `case` in
-375 of 404 alternatives across the whole corpus.
+**Place a variant part last.**
+
+Indent `case` with the other components, indent each `when` one level from the
+`case`, indent its components one additional level, and align `end case;` with
+`case`.
 
 ```ada
   type Entity_State (Kind : Entity_Kind) is record
@@ -23697,14 +23479,11 @@ three deep and do this at every level; `when` is one level in from `case` in
     end record;
 ```
 
-`when others => null;` closes every variant part in the corpus that does not
-enumerate all its choices, and is the form to use rather than leaving the
-choice list incomplete.
+Use `when others => null;` when the listed choices do not cover every value.
 
-**Put `private` at the column of the unit's `end`, and the private
-declarations one level in from it.** *(measured)* 14 private parts, all of
-them laid out this way, which is the same relation as `begin` to its
-declarations in [S.2 Indentation](#s2-indentation).
+**Align `private` with the unit's `end`.**
+
+Indent private declarations one level from `private`.
 
 ```ada
     protected type Safe_Task is
@@ -23716,17 +23495,11 @@ declarations in [S.2 Indentation](#s2-indentation).
       end;
 ```
 
-**Declare a private type in the visible part and complete it immediately after
-`private`.** *(project rule)* Three private types is too thin a sample to
-count, and the project's practice of keeping everything in the specification
-([S.21 Compilation Unit Layout](#s21-compilation-unit-layout)) makes the
-completion easy to find; the rule is stated so that the completion is not put
-at the end of a long private part instead.
+**Complete a private type immediately after `private`.**
 
-**Write an incomplete type declaration and its access type together, above
-the full declaration.** *(measured)* All four incomplete type declarations in
-the corpus are immediately followed by the access type that needs them and
-then, later, by the full declaration — never in any other order.
+**Keep an incomplete type declaration with the access type that requires it.**
+
+Place both before the full declaration.
 
 ```ada
   type Map_State;
@@ -23736,15 +23509,15 @@ then, later, by the full declaration — never in any other order.
 
 ### S.16 Generic Units
 
-**Put `generic` in the unit's own column and the formal part one level in.**
-*(measured)* 29 generic units, all laid out this way; the formals are aligned
-into columns like any other run of declarations.
+**Place `generic` in the unit's column and indent the formal part one level.**
+
+Align formals as a declaration table.
 
 ```ada
   generic
+    type Var_T is (<>);
     Name     : Str;
     Help     : Str;
-    type Var_T is (<>);
     Initial  : Var_T := Var_T'First;
     Settable : Bool  := True;
   package CVar is
@@ -23753,22 +23526,19 @@ into columns like any other run of declarations.
   end;
 ```
 
-**Order the formal part: types, then objects, then subprograms.** *(project
-rule)* The corpus does not settle this. Of its 29 generic formal parts, eight
-mix object and type formals, and they divide four to four; the example above
-puts two objects before the type and one after. The order is chosen because a
-formal object or subprogram may be declared in terms of a formal type but not
-the reverse, so putting the types first is the order in which the dependencies
-read forwards.
+**Order generic formals by dependency: types, objects, then subprograms.**
 
-**Introduce a formal subprogram with `with` on the same line as its profile.**
-*(measured)* Every formal subprogram in the corpus is written this way:
-`with procedure Callback (Args : Array_Str_Unbound);`.
+This order allows later formals to use types introduced earlier.
 
-**Write an instantiation on one line, and align a run of them into columns.**
-*(measured)* 198 package instantiations, 181 of them — 91.4% — on one line,
-and 69 subprogram instantiations. A run of instantiations is padded until
-`is new` begins in the same column, exactly as a run of declarations is.
+**Put `with` on the same line as a formal subprogram profile.**
+
+```ada
+    with procedure Callback (Args : Array_Str_Unbound);
+```
+
+**Write an instantiation on one line when it fits.**
+
+Align a run of instantiations so `is new` begins in one column.
 
 ```ada
   package Vector_Vector_2D is new Vectors (Vector_2D);
@@ -23776,30 +23546,14 @@ and 69 subprogram instantiations. A run of instantiations is padded until
   package Vector_Bool      is new Vectors (Bool);
 ```
 
-**When an instantiation does not fit, break after `is new` and align the
-actual part past the open parenthesis.** *(measured, weakly)* 17 of the 198
-instantiations wrap, and they follow the general continuation rule of
-[S.2 Indentation](#s2-indentation) rather than a rule of their own.
+**When an instantiation wraps, break after `is new` and align the actual part
+past the open parenthesis.**
 
 ### S.17 Tasking
 
-The corpus is uneven here. It contains 15 protected unit declarations and 15
-protected bodies, which is enough to measure a layout from, but only two task
-types, two entry declarations, two `accept` statements, ten `delay` statements
-and no `select` at all. Rules that follow from what the corpus contains are
-marked *(measured)*; the rest are marked *(project rule)* and derive their
-layout from the general shape of [S.2 Indentation](#s2-indentation) rather
-than from a count.
+**Lay out a task or protected unit like a record.**
 
-Note also that the protected units the corpus leans on are Ada 95. In Ada 83
-the same mutual exclusion is written as a task with entries and a `select`
-statement — which is exactly the construct the corpus does not exercise, and
-the reason the `select` rules below are asserted rather than counted.
-
-**Lay a task or protected unit out like a record: contents two levels in,
-`end` one level in.** *(measured)* All 15 protected specifications and both
-task type specifications put their contents four columns in from the header
-and their `end` two columns in.
+Indent contents two levels and indent `end` one level.
 
 ```ada
       task type Task_Unsafe is
@@ -23808,19 +23562,14 @@ and their `end` two columns in.
         end;
 ```
 
-**Write an entry declaration exactly like a procedure declaration, and align a
-run of them.** *(measured)* Both entry declarations in the corpus are written
-this way, and the parameter rules of
-[S.13 Subprogram Profiles](#s13-subprogram-profiles) apply unchanged —
-including never writing mode `in`.
+**Write an entry declaration like a procedure declaration.**
 
-**Write a whole `accept` on one line when its body fits; otherwise put `do` at
-the end of the `accept` line, the body one level in, and `end;` back at the
-column of `accept`.** *(measured, weakly)* The corpus has one of each, and the
-one that wraps puts `do` on a line of its own — which is what this rule
-declines to do, on the same ground as `is` in
-[S.13 Subprogram Profiles](#s13-subprogram-profiles): a reserved word alone on
-a line buys nothing.
+Apply the same profile, alignment, and parameter-mode rules.
+
+**Keep a complete `accept` statement on one line when it fits.**
+
+When it wraps, keep `do` at the end of the `accept` line, indent the body one
+level, and align `end;` with `accept`.
 
 ```ada
           accept Initialize (Id : out Task_Id) do Id := Current_Task; end;
@@ -23831,12 +23580,9 @@ a line buys nothing.
           end;
 ```
 
-**Put `select`, each `or`, the `else` and the closing `end select;` all in one
-column, and their statements one level in.** *(project rule)* The corpus
-contains no `select`, so nothing here is measured. The column is chosen
-because the alternatives of a `select` are peers, exactly as the alternatives
-of a `case` are, and a reader should be able to find them by scanning one
-column.
+**Align `select`, each `or`, `else`, and `end select;` in one column.**
+
+Indent the statements of each alternative one level.
 
 ```ada
       select
@@ -23854,8 +23600,9 @@ column.
       end select;
 ```
 
-**Put a guard on the line above the `accept` it guards, in the alternative's
-own column.** *(project rule)* Not measured, for the same reason.
+**Place a guard on the line above the `accept` it guards.**
+
+Align the guard with the alternative's statements.
 
 ```ada
       select
@@ -23868,16 +23615,11 @@ own column.** *(project rule)* Not measured, for the same reason.
       end select;
 ```
 
-**Write `terminate;` as an alternative of its own, last.** *(project rule)*
-The language requires a terminate alternative to be the whole of its
-alternative and forbids it in a `select` with an `else`; writing it last makes
-that visible.
+**Place `terminate;` in its own final alternative.**
 
-**Write `delay` and the statement that recomputes its argument on one line.**
-*(measured)* Of the ten `delay` statements, six share their line with the
-assignment that resets the clock they wait on, and four — every one of them a
-bare constant delay — stand alone. The pair belongs together because reading
-either without the other misleads.
+Do not combine a terminate alternative with `else`.
+
+**Keep a `delay` and the statement that recomputes its argument on one line.**
 
 ```ada
         delay WINDOW_POLLING_DURATION - (Clock - Last_Time); Last_Time := Clock;
@@ -23885,15 +23627,7 @@ either without the other misleads.
 
 ### S.18 Exceptions
 
-**Declare exceptions in a run with the colons aligned, and write `exception`
-in lower case.** *(measured, and against the corpus)* The corpus has twelve
-exception declarations and all twelve capitalise the reserved word —
-`Duplicate : Exception;`. That is the single place where the guidelines
-overrule what was counted: `exception` is a reserved word, the rule in
-[S.4 Casing](#s4-casing) is that reserved words are lower case in 12,968 of
-13,057 occurrences, and twelve declarations are not enough to carve out an
-exception to a rule that strong. The alignment half is measured — it is the
-rule of [S.7 Aligned Declarations](#s7-aligned-declarations).
+**Declare exceptions in an aligned run and write `exception` in lower case.**
 
 ```ada
   Data_Error   : exception;
@@ -23901,10 +23635,7 @@ rule of [S.7 Aligned Declarations](#s7-aligned-declarations).
   End_Error    : exception;
 ```
 
-**Raise with the exception name alone.** *(measured)* All 75 `raise`
-statements name an exception and none re-raises with a bare `raise;`. Where a
-raise is the whole of a short `if`, it is written on the line with it, and a
-run of such raises is aligned.
+**Raise an exception by name.**
 
 ```ada
         if (Data and 16#0000_0001#) /= 0 then raise Invalid_Operation;    end if;
@@ -23912,14 +23643,9 @@ run of such raises is aligned.
         if (Data and 16#0000_0004#) /= 0 then raise Divide_By_Zero;       end if;
 ```
 
-`raise X with "message"` is Ada 2005; Ada 83 has `raise X;` only, and a
-message is passed by other means or not at all.
+Ada 83 supports `raise X;` but not `raise X with "message"`.
 
-**Put the first handler on the same line as `exception`.** *(measured)* All 22
-handler sections in the corpus do this, which is the same instinct as the
-one-line rule in
-[S.12 Statements and Control Structures](#s12-statements-and-control-structures):
-`exception` alone on a line says nothing that the `when` beside it does not.
+**Put the first handler on the same line as `exception`.**
 
 ```ada
       procedure Handle_Set (Val : Str) is
@@ -23932,76 +23658,67 @@ one-line rule in
         end;
 ```
 
-**Put the handler's statements one level in from `exception`, and let `end`
-close the body as usual.** *(measured)* Every handler section in the corpus is
-laid out this way; a one-statement handler is written on the `exception` line
-entire — `exception when Device_Error => null; end;`.
+**Indent handler statements one level from `exception`.**
 
-**Write `when others` last, and only to convert or report.** *(measured)* 13
-of the 22 handler sections have a `when others` choice, always last. The
-project's own use of it is to log and re-dispatch, as in
-`exception when Occurrence: others => Handle (Occurrence);`.
+Keep a one-statement handler on one line when it fits:
 
-A choice parameter — `when Occurrence: others =>` — is Ada 95. In Ada 83 the
-handler is written `when others =>` and there is no occurrence object to pass
-on.
+```ada
+        exception when Device_Error => null; end;
+```
+
+**Put `when others` last and use it only to convert, report, or dispatch an
+exception.**
+
+A choice parameter is an Ada 95 feature. Ada 83 uses `when others =>` without
+an occurrence object.
 
 ### S.19 Representation Clauses and Pragmas
 
-**Write a simple representation clause on one line, and align a run of them.**
-*(measured)* The corpus has six representation clauses and all six are one
-line: `for T'Size use 8;`, `for X'Address use Y'Address;`,
-`for Precision_Kind use (24, 53, 64);`. Where two stand together, the `use`
-clauses are aligned like anything else.
+**Write a simple representation clause on one line.**
+
+Align consecutive clauses.
 
 ```ada
-              for Source'Address      use Data;
-              for Destination'Address use To_Ptr (To_Int_Ptr (Staging_Data));
+  for Source'Address      use Data;
+  for Destination'Address use To_Ptr (To_Int_Ptr (Staging_Data));
 ```
 
-**Put a representation clause immediately after the declaration it applies
-to.** *(measured)* All six sit on the line below their type or object, or on
-the same line as it where both are short:
+**Place a representation clause immediately after the declaration it applies
+to.**
+
+Keep both on one line when they fit.
 
 ```ada
   type Int_8_Percent is range 1..100; for Int_8_Percent'Size use 8;
 ```
 
-**Lay a record representation clause out like the record it describes: `use
-record` at the end of the `for` line, an alignment clause first, the component
-clauses two levels in with their `at`, `range` and bounds in columns, and
-`end record;` one level in.** *(project rule)* The corpus contains no record
-representation clause, so nothing here is measured. The layout is the one
-that [S.15 Type Declarations](#s15-type-declarations) already gives the record
-itself, so that the two can be read side by side; the column alignment is the
-rule of [S.7 Aligned Declarations](#s7-aligned-declarations). Contrast the
-form used by the example in
-[13.4](#134-record-representation-clauses), which puts `record` on a line of
-its own and indents three.
+**Lay out a record representation clause like the corresponding record.**
+
+Keep `use record` on the `for` line. Put the alignment clause first. Indent
+component clauses two levels and align `at`, `range`, and the bounds. Indent
+`end record;` one level.
 
 ```ada
   for Program_Status_Word use record
       at mod 8;
-      System_Mask     at 0*Word range  0..7;
-      Protection_Key  at 0*Word range 10..11;
-      Machine_State   at 0*Word range 12..15;
-      Interrupt_Cause at 0*Word range 16..31;
+      System_Mask     at 0 * Word range  0..7;
+      Protection_Key  at 0 * Word range 10..11;
+      Machine_State   at 0 * Word range 12..15;
+      Interrupt_Cause at 0 * Word range 16..31;
     end record;
 ```
 
-**Put a pragma that applies to one declaration immediately after it, at that
-declaration's indent.** *(measured)* Four of the corpus's sixteen pragmas
-apply to a single construct, and each sits with it: `pragma Inline (Run_Input);`
-on the line after the body of `Run_Input`, `pragma Storage_Size` as the first
-line inside a task specification, `pragma Assert` in the statement sequence
-it checks.
+**Place a pragma that applies to one declaration immediately after that
+declaration.**
 
-**Put a pragma that brackets a region at column 1, whatever the indent of what
-it brackets.** *(measured)* All twelve `pragma Warnings` in the corpus are at
-column 1, in six matched `(Off)`/`(On)` pairs, while the code between them is
-indented anywhere from column 1 to column 7. Pulling them to the margin is
-what marks them as scaffolding rather than part of the program, and it makes
-an unmatched `(Off)` easy to see.
+Use the declaration's indentation. Place `pragma Storage_Size` inside the task
+or protected declaration it configures, and place `pragma Assert` in the
+statement sequence it checks.
+
+**Place a pragma that brackets a region at column 1.**
+
+Use this form for matched warning-control pragmas so the region is visible
+regardless of the surrounding indentation.
 
 ```ada
       function Handle_Get return Str is (Help & EOL & "Current value: " & Get);
@@ -24011,29 +23728,23 @@ pragma Warnings (Off); -- warning: call to "Set" may occur before body is seen
 pragma Warnings (On);
 ```
 
-**Give a suppressed warning a trailing comment saying which warning it is.**
-*(measured)* Three of the six `(Off)` pragmas carry the compiler's own wording
-as a trailing comment, as above. The other three do not, so this is the
-majority and not the whole; it is stated as a rule because an unexplained
-`pragma Warnings (Off)` cannot be reviewed.
+**Explain each suppressed warning in a trailing comment.**
 
-**Spell a pragma name in `Mixed_Case`.** *(measured)* `Warnings`, `Inline`,
-`Assert`, `Storage_Size` — 16 of 16.
+Use the compiler's warning text when practical.
 
-Of the four pragma names the corpus uses, only `Inline` is predefined in
-Ada 83; `Storage_Size` is Ada 95, `Assert` is Ada 2005, and `Warnings` is a
-GNAT extension. The Ada 83 set is the fourteen names listed in
-[B. Predefined Language Pragmas](#b-predefined-language-pragmas), and the
-casing rule applies to all of them.
+**Write pragma names in `Mixed_Case`.**
+
+Use `Warnings`, `Inline`, `Assert`, and `Storage_Size`.
+
+Only `Inline` is predefined in Ada 83. Apply the same casing rule to all Ada 83
+pragmas.
 
 ### S.20 End Labelling
 
-**Do not repeat the unit name after `end`.** *(measured)* This is the
-strongest rule in the corpus: 563 bare `end;` against 9 that name the unit,
-and all nine of those are in the adapted `zstd` binding described in
-[S.1 Sources of these Guidelines](#s1-sources-of-these-guidelines). Excluding
-that file, the corpus does not name a unit after `end` even once. It holds for
-library units too — a package specification closes with a bare `end;`.
+**Do not repeat a unit or subprogram name after `end`.**
+
+Use a bare `end;` for packages, subprograms, tasks, protected units, and library
+units.
 
 ```ada
   package body Neo.Core.Strings is
@@ -24044,59 +23755,41 @@ library units too — a package specification closes with a bare `end;`.
   end;
 ```
 
-**Write after `end` only the reserved word the syntax requires.** *(measured)*
-`end if;` 413, `end loop;` 263, `end record;` 68, `end case;` 52 — and nothing
-else. A loop label is not repeated after `end loop` either.
+**Write only the reserved word required by the syntax after `end`.**
 
-The rule is worth stating precisely because it is unusual. GNAT's `-gnatye`
-checks the opposite, requiring the name; the ACATS suite writes `end Name;`
-13,860 times against 7,754 bare; and this compiler's own `ada83-runtime.ada`
-agrees with the corpus, 240 bare against none named. It very nearly did
-already: the ten it carried were two subprogram names and eight operator
-symbols, `end "+";` and its relatives, and all ten have been dropped. The
-justification the project gives
-is that the name after `end` is a comment the compiler happens to check, that
-it goes stale under renaming, and that a body short enough to read does not
-need it — which is the same argument that produces the one-line bodies of
-[S.12 Statements and Control Structures](#s12-statements-and-control-structures).
+Use `end if;`, `end loop;`, `end record;`, and `end case;`. Do not repeat loop
+labels or operator symbols.
 
 ### S.21 Compilation Unit Layout
 
-**Pair each `with` with its `use` on one line, and align the `use` clauses.**
-*(measured)* 91 context clauses are written `with X; use X;` on a single line
-against 35 bare `with X;`, and only one `use` stands alone. Every one of the
-14 runs of two or more such lines aligns the `use` in a single column.
+**Pair each `with` clause with its `use` clause on one line.**
+
+Align consecutive `use` clauses. Keep a bare `with` when the unit is referenced
+with qualification.
 
 ```ada
 with Is_Debugging;
-with System;                     use System;
-with Neo;                        use Neo;
-with Neo.Core.Strings;           use Neo.Core.Strings;
-with Neo.Core.Console;           use Neo.Core.Console;
+with System;           use System;
+with Neo;              use Neo;
+with Neo.Core.Strings; use Neo.Core.Strings;
+with Neo.Core.Console; use Neo.Core.Console;
 ```
 
-A blank line then separates the context clauses from the unit, which may be
-preceded by a one-line comment saying what it is for. A generic formal part is
-written with `generic` in the unit's own column and the formals one level in;
-see [S.16 Generic Units](#s16-generic-units).
+Separate the context clauses from the unit with one blank line. A one-line
+comment describing the unit may appear immediately before the unit declaration.
 
-**Keep everything but bodies in the specification.** *(project rule)* This one
-is stated by the project rather than inferred from a count: everything except
-subprogram, package, protected type and task bodies belongs in the `.ads`
-file, including global variables and private subprogram declarations, so that
-a single file gives the whole overview.
+**Keep declarations in the specification and bodies in the body file.**
 
-**Write a renaming on one line, aligned with its neighbours.** *(measured)* 81
-of the corpus's 84 renamings are on one line. A renaming is a declaration and
-takes the alignment rules of
-[S.7 Aligned Declarations](#s7-aligned-declarations).
+Place global objects, private declarations, and all non-body declarations in
+the `.ads` file. Put subprogram, package, protected-type, and task bodies in
+the `.adb` file.
 
-**Use `separate` only for a body that would otherwise make a file
-unreadable, or that has one implementation per platform.** *(measured)* Five
-bodies in 15,027 lines are written `is separate;`, and they answer to six
-subunit files because two of them — the CPU and window-system bodies — have an
-alternative implementation per target. The stubs are aligned like any other
-run of declarations.
+**Write a renaming on one line and align it with neighboring declarations.**
+
+**Use `separate` only for a body that would otherwise make the file unreadable
+or for a platform-specific implementation.**
+
+Align body stubs like other declarations.
 
 ```ada
       package body CPU    is separate;
