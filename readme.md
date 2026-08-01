@@ -47,7 +47,7 @@ unpacked it.
 | Platform | Command | Notes |
 | -------- | ------- | ----- |
 | Linux    | `make`  | GCC or Clang; installs libLLVM via the system package manager if absent |
-| macOS    | ``make.applescript` | Apple Clang; libLLVM via Homebrew |
+| macOS    | `make.applescript` | Apple Clang; libLLVM via Homebrew |
 | Windows  | `make.bat` | GCC or Clang; offers to fetch Zig if neither is installed |
 
 Every script writes what it builds into `bin-<target>/` - `bin-linux/ada83`,
