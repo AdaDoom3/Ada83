@@ -47,10 +47,10 @@ unpacked it.
 | Platform | Command | Notes |
 | -------- | ------- | ----- |
 | Linux    | `make`  | GCC or Clang; installs libLLVM via the system package manager if absent |
-| macOS    | `make`, or run `make.applescript` | Apple Clang; libLLVM via Homebrew |
+| macOS    | ``make.applescript` | Apple Clang; libLLVM via Homebrew |
 | Windows  | `make.bat` | GCC or Clang; offers to fetch Zig if neither is installed |
 
-Every script writes what it builds into `bin-<target>/` — `bin-linux/ada83`,
+Every script writes what it builds into `bin-<target>/` - `bin-linux/ada83`,
 `bin-macos/ada83`, `bin-windows\ada83.exe` with the DLLs it loads beside it —
 and `make package` zips that folder into `bin-<target>.zip`.
 
@@ -60,7 +60,7 @@ beside its own executable.
 | Platform | Command | Produces |
 | -------- | ------- | -------- |
 | Linux    | `make package` | `bin-linux.zip` |
-| macOS    | `make package`, or `osascript make.applescript package` | `bin-macos.zip`, both slices lipo'd together |
+| macOS    | `osascript make.applescript package` | `bin-macos.zip`, both slices together |
 | Windows  | `make.bat package` | `bin-windows.zip`, DLLs included |
 
 ## Conformance
