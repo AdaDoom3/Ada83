@@ -7,6 +7,60 @@ COMPILE_TIMEOUT=${COMPILE_TIMEOUT:-30}
 LINK_TIMEOUT=${LINK_TIMEOUT:-20}
 BASELINE=${BASELINE:-acats.baseline}
 OPT=${OPT:--O2}
+NO_ANIMATE=${NO_ANIMATE:-0} NO_COLOUR=${NO_COLOUR:-0}
+
+# --- presentation, in the manner of test-bench.sh ---------------------------
+animated=0; [ -t 2 ] && [ "$NO_ANIMATE" != 1 ] && animated=1
+if [ $animated = 1 ] && exec 9>/dev/tty 2>/dev/null; then :; else exec 9>/dev/null; animated=0; fi
+if [ -t 1 ] && [ "$NO_COLOUR" != 1 ]
+then BOLD=$'\033[1m' DIM=$'\033[2m' GOOD=$'\033[32m' BAD=$'\033[31m' OFF=$'\033[0m'
+else BOLD='' DIM='' GOOD='' BAD='' OFF=''
+fi
+
+hide_cursor(){ [ $animated = 1 ] && printf '\033[?25l' >&9; return 0; }
+show_cursor(){ [ $animated = 1 ] && printf '\033[?25h' >&9; return 0; }
+
+BLOCKS=("" "▏" "▎" "▍" "▌" "▋" "▊" "▉")
+
+bar(){
+    local fill=$1 width=$2 out='' whole part i
+    whole=${fill%.*}
+    part=$(awk -v f="$fill" -v w="$whole" 'BEGIN{printf "%d",(f-w)*8}')
+    for ((i = 0; i < whole && i < width; i++)); do out+='█'; done
+    [ "$whole" -lt "$width" ] && [ "$part" -gt 0 ] && { out+=${BLOCKS[$part]}; whole=$((whole+1)); }
+    for ((i = whole; i < width; i++)); do out+='·'; done
+    printf '%s' "$out"
+}
+
+scaled(){ awk -v v="$1" -v m="$2" -v w="$3" 'BEGIN{printf "%.3f",(m>0?v/m:0)*w}'; }
+
+progress(){
+    [ $animated = 1 ] || return 0
+    printf '\r\033[2K  %s%s%s %3d%%  %s%s%s' "$DIM" "$(bar "$(scaled "$1" "$2" 32)" 32)" "$OFF" \
+        "$(awk -v d="$1" -v t="$2" 'BEGIN{printf "%d",(t>0?d*100/t:0)}')" "$DIM" "$3" "$OFF" >&9
+}
+
+clear_line(){ [ $animated = 1 ] && printf '\r\033[2K' >&9; return 0; }
+
+PULSE=''
+PULSE_FRAMES=('◦' '◌' '◍' '◎')
+pulse(){
+    [ $animated = 1 ] || return 0
+    ( i=0; while :; do
+        printf '\r\033[2K  %s%s %s%s' "$DIM" "${PULSE_FRAMES[(i/2)%4]}" "$1" "$OFF" >&9
+        i=$((i+1)); sleep 0.12
+      done ) & PULSE=$!
+}
+pulse_stop(){ [ -n "$PULSE" ] && { kill "$PULSE" 2>/dev/null; wait "$PULSE" 2>/dev/null; PULSE=''; clear_line; }; return 0; }
+
+heading(){
+    printf '\n  %s%s%s\n' "$BOLD" "$1" "$OFF"
+    [ $# -gt 1 ] && printf '  %s%s%s\n' "$DIM" "$2" "$OFF"
+    printf '\n'
+}
+rule(){ printf '  %s%s%s\n' "$DIM" "────────────────────────────────────────────────────────────────" "$OFF"; }
+die(){ pulse_stop; show_cursor; echo "test.sh: $*" >&2; exit 1; }
+# ---------------------------------------------------------------------------
 
 find_timeout(){
     local candidate found
@@ -20,10 +74,10 @@ find_timeout(){
 }
 
 TIMEOUT=$(find_timeout) || {
-    echo "FATAL: no usable 'timeout' command found" >&2
-    echo "       macOS:   brew install coreutils" >&2
-    echo "       Windows: run this under the bash that comes with Git for" >&2
-    echo "                Windows, whose /usr/bin/timeout comes first on PATH" >&2
+    echo "test.sh: no usable 'timeout' command found" >&2
+    echo "         macOS:   brew install coreutils" >&2
+    echo "         Windows: run this under the bash that comes with Git for" >&2
+    echo "                  Windows, whose /usr/bin/timeout comes first on PATH" >&2
     exit 1
 }
 export TIMEOUT
@@ -52,9 +106,10 @@ unpack(){
 }
 
 if [[ ! -d acats ]]; then
-    [[ -f tests.zip ]] || { echo "FATAL: no acats/ directory and no tests.zip"; exit 1; }
-    echo "Unpacking tests.zip..."
-    unpack tests.zip || { echo "FATAL: cannot unpack tests.zip"; exit 1; }
+    [[ -f tests.zip ]] || die "no acats/ directory and no tests.zip"
+    pulse "unpacking the conformance suite"
+    unpack tests.zip || die "cannot unpack tests.zip"
+    pulse_stop
 fi
 
 case $(uname -s 2>/dev/null) in
@@ -79,25 +134,32 @@ build_ada83(){
     elif [[ $HOST_TARGET == windows ]] && command -v cmd.exe >/dev/null; then
         cmd.exe //c make.bat
     else
-        echo "FATAL: no 'make' to build the compiler with" >&2
-        echo "       Windows: run make.bat, then start this script again" >&2
+        echo "test.sh: no 'make' to build the compiler with" >&2
+        echo "         Windows: run make.bat, then start this script again" >&2
         return 1
     fi
 }
 
 ADA83=$(find_ada83) || ADA83=""
 if [[ -z $ADA83 ]] || [[ ada83.c -nt $ADA83 ]]; then
-    echo "Rebuilding ada83..."
-    build_ada83 || { echo "FATAL: compiler build failed"; exit 1; }
-    ADA83=$(find_ada83) || { echo "FATAL: no ada83 executable after building"; exit 1; }
+    printf '  %srebuilding ada83%s\n' "$DIM" "$OFF"
+    build_ada83 || die "compiler build failed"
+    ADA83=$(find_ada83) || die "no ada83 executable after building"
 fi
 [[ $ADA83 == /* || $ADA83 == ?:[/\\]* ]] || ADA83=$PWD/${ADA83#./}
 export ADA83
 
 export REPORT_LL="${TMPDIR:-/tmp}/ada83-report-$$.ll"
-trap 'rm -f "$REPORT_LL" "${REPORT_LL%.ll}.ali"' EXIT
-"$ADA83" --ir acats/report.adb -o "$REPORT_LL" >/dev/null 2>&1 || {
-    echo "FATAL: cannot compile acats/report.adb"; exit 1; }
+cleanup(){
+    pulse_stop
+    show_cursor
+    [ -n "${REPORT_LL:-}" ] && rm -f "$REPORT_LL" "${REPORT_LL%.ll}.ali"
+    return 0
+}
+trap cleanup EXIT
+trap 'show_cursor; exit 130' INT
+"$ADA83" --ir acats/report.adb -o "$REPORT_LL" >/dev/null 2>&1 || \
+    die "cannot compile acats/report.adb"
 
 pct(){ ((${2:-0}>0)) && printf %d $((100*$1/$2)) || printf 0; }
 
@@ -409,6 +471,8 @@ run_one_timed(){
     elif [[ -n $out ]]; then
         echo "$out"
     fi
+    # one tick per file, whatever became of it, so the bar reaches the end
+    [[ -n ${PROGRESS_FILE:-} ]] && echo >> "$PROGRESS_FILE" || true
 }
 export -f run_one_timed
 
@@ -437,20 +501,19 @@ tally_results(){
 
     local pass=$((C[a]+C[b]+C[c]+C[d]+C[e]+C[l]))
 
-    printf "\n========================================\nRESULTS\n========================================\n\n"
-    printf " %-22s %6s %6s %6s %6s %7s\n" "CLASS" "pass" "fail" "skip" "total" "rate"
-    printf " %-22s %6s %6s %6s %6s %7s\n" "----------------------" "------" "------" "------" "------" "-------"
-    ((C[ta]>0)) && printf " %-22s %6d %6d %6d %6d %6d%%\n" "A  Acceptance" ${C[a]} ${C[fa]} ${C[sa]} ${C[ta]} $(pct ${C[a]} ${C[ta]})
-    ((C[tb]>0)) && printf " %-22s %6d %6d %6d %6d %6d%%\n" "B  Illegality" ${C[b]} ${C[fb]} ${C[sb]} ${C[tb]} $(pct ${C[b]} ${C[tb]})
-    ((C[tc]>0)) && printf " %-22s %6d %6d %6d %6d %6d%%\n" "C  Executable" ${C[c]} ${C[fc]} ${C[sc]} ${C[tc]} $(pct ${C[c]} ${C[tc]})
-    ((C[td]>0)) && printf " %-22s %6d %6d %6d %6d %6d%%\n" "D  Numerics"   ${C[d]} ${C[fd]} ${C[sd]} ${C[td]} $(pct ${C[d]} ${C[td]})
-    ((C[te]>0)) && printf " %-22s %6d %6d %6d %6d %6d%%\n" "E  Inspection" ${C[e]} ${C[fe]} ${C[se]} ${C[te]} $(pct ${C[e]} ${C[te]})
-    ((C[tl]>0)) && printf " %-22s %6d %6d %6d %6d %6d%%\n" "L  Post-compilation" ${C[l]} ${C[fl]} ${C[sl]} ${C[tl]} $(pct ${C[l]} ${C[tl]})
-    printf " %-22s %6s %6s %6s %6s %7s\n" "----------------------" "------" "------" "------" "------" "-------"
-    printf " %-22s %6d %6d %6d %6d %6d%%\n" "TOTAL" $pass ${C[f]} ${C[s]} ${C[z]} $(pct $pass ${C[z]})
-    printf "\n========================================\n"
-    printf " elapsed $(elapsed)s  |  processed %d tests  |  %d workers  |  %s\n" ${C[z]} "$NPROC" "$(date '+%Y-%m-%d %H:%M:%S')"
-    printf "========================================\n"
+    heading "RESULTS"
+    printf '  %-22s %6s %6s %6s %6s %7s\n' class pass fail skip total rate
+    rule
+    ((C[ta]>0)) && printf '  %-22s %6d %6d %6d %6d %6d%%\n' "A  Acceptance" ${C[a]} ${C[fa]} ${C[sa]} ${C[ta]} $(pct ${C[a]} ${C[ta]})
+    ((C[tb]>0)) && printf '  %-22s %6d %6d %6d %6d %6d%%\n' "B  Illegality" ${C[b]} ${C[fb]} ${C[sb]} ${C[tb]} $(pct ${C[b]} ${C[tb]})
+    ((C[tc]>0)) && printf '  %-22s %6d %6d %6d %6d %6d%%\n' "C  Executable" ${C[c]} ${C[fc]} ${C[sc]} ${C[tc]} $(pct ${C[c]} ${C[tc]})
+    ((C[td]>0)) && printf '  %-22s %6d %6d %6d %6d %6d%%\n' "D  Numerics"   ${C[d]} ${C[fd]} ${C[sd]} ${C[td]} $(pct ${C[d]} ${C[td]})
+    ((C[te]>0)) && printf '  %-22s %6d %6d %6d %6d %6d%%\n' "E  Inspection" ${C[e]} ${C[fe]} ${C[se]} ${C[te]} $(pct ${C[e]} ${C[te]})
+    ((C[tl]>0)) && printf '  %-22s %6d %6d %6d %6d %6d%%\n' "L  Post-compilation" ${C[l]} ${C[fl]} ${C[sl]} ${C[tl]} $(pct ${C[l]} ${C[tl]})
+    rule
+    printf '  %s%-22s %6d %6d %6d %6d %6d%%%s\n' "$BOLD" TOTAL $pass ${C[f]} ${C[s]} ${C[z]} $(pct $pass ${C[z]}) "$OFF"
+    printf '\n  %selapsed%s %ss over %d tests with %s workers, %s\n' \
+        "$DIM" "$OFF" "$(elapsed)" ${C[z]} "$NPROC" "$(date '+%Y-%m-%d %H:%M:%S')"
     printf "A=%d B=%d C=%d D=%d E=%d L=%d F=%d S=%d T=%d/%d (%d%%)\n" \
         ${C[a]} ${C[b]} ${C[c]} ${C[d]} ${C[e]} ${C[l]} ${C[f]} ${C[s]} $pass ${C[z]} $(pct $pass ${C[z]}) > "$RESULTS_DIR/test_summary.txt"
 
@@ -470,7 +533,8 @@ tally_results(){
 compare_to_baseline(){
     REGRESSIONS=0
     if [[ ! -f $BASELINE ]]; then
-        printf "\nNo baseline at %s — run \`%s bless\` to create one.\n" "$BASELINE" "${0##*/}"
+        printf '\n  %sno baseline at %s — run `%s bless` to create one%s\n' \
+            "$DIM" "$BASELINE" "${0##*/}" "$OFF"
         return 0
     fi
     local -A BL RES
@@ -491,18 +555,20 @@ compare_to_baseline(){
     for k in "${!BL[@]}"; do [[ -z ${RES[$k]:-} ]] && miss+=("$k ${BL[$k]}"); done
     REGRESSIONS=${#regr[@]}
 
-    printf "\n========================================\nBASELINE DIFF  (%s)\n========================================\n" "$BASELINE"
-    _emit(){ local tag=$1; shift; (($#)) || return 0
-             printf "\n%s (%d):\n" "$tag" "$#"; printf '  %s\n' "$@" | sort; }
-    _emit "REGRESSIONS"  ${regr[@]+"${regr[@]}"}
-    _emit "PROGRESSIONS" ${prog[@]+"${prog[@]}"}
-    _emit "CHANGED"      ${chg[@]+"${chg[@]}"}
-    _emit "NEW"          ${new[@]+"${new[@]}"}
-    _emit "MISSING"      ${miss[@]+"${miss[@]}"}
-    printf "\n%d regression(s), %d progression(s), %d changed, %d new, %d missing.\n" \
-        ${#regr[@]} ${#prog[@]} ${#chg[@]} ${#new[@]} ${#miss[@]}
-    ((REGRESSIONS==0)) && printf "OK — no regressions vs baseline.\n" \
-                       || printf "REGRESSED — %d test(s) that passed in the baseline now fail.\n" "$REGRESSIONS"
+    heading "BASELINE DIFF" "$BASELINE"
+    _emit(){ local tag=$1 colour=$2; shift 2; (($#)) || return 0
+             printf '  %s%s (%d)%s\n' "$colour" "$tag" "$#" "$OFF"
+             printf '    %s\n' "$@" | sort; printf '\n'; }
+    _emit "REGRESSIONS"  "$BAD"  ${regr[@]+"${regr[@]}"}
+    _emit "PROGRESSIONS" "$GOOD" ${prog[@]+"${prog[@]}"}
+    _emit "CHANGED"      "$BOLD" ${chg[@]+"${chg[@]}"}
+    _emit "NEW"          "$BOLD" ${new[@]+"${new[@]}"}
+    _emit "MISSING"      "$BOLD" ${miss[@]+"${miss[@]}"}
+    printf '  %s%d regression(s), %d progression(s), %d changed, %d new, %d missing%s\n' \
+        "$DIM" ${#regr[@]} ${#prog[@]} ${#chg[@]} ${#new[@]} ${#miss[@]} "$OFF"
+    ((REGRESSIONS==0)) && printf '  %sOK — no regressions vs baseline%s\n' "$GOOD" "$OFF" \
+                       || printf '  %sREGRESSED — %d test(s) that passed in the baseline now fail%s\n' \
+                              "$BAD" "$REGRESSIONS" "$OFF"
 }
 
 write_baseline(){
@@ -517,7 +583,8 @@ write_baseline(){
       for name in "${!NEW[@]}"; do printf '%s\t%s\n' "$name" "${NEW[$name]}"; done
     } | sort -k1,1 > "$BASELINE"
     rm -f "$tmp"
-    printf "\nBaseline written: %s (%d tests recorded).\n" "$BASELINE" "$(wc -l < "$BASELINE")"
+    printf '\n  %sbaseline%s written to %s, %d tests recorded\n' \
+        "$BOLD" "$OFF" "$BASELINE" "$(wc -l < "$BASELINE")"
 }
 
 selector_glob(){
@@ -537,15 +604,36 @@ run_selector(){
     export RESULTS_TSV="$RESULTS_DIR/results.tsv"
     mkdir -p "$RESULTS_DIR" "$LOGS_DIR"
 
-    printf "\n========================================\n%s\n========================================\n\n" "$title"
-    printf "results: %s\nlogs:    %s\n\n" "$RESULTS_DIR" "$LOGS_DIR"
+    local listfile; listfile=$(mktemp)
+    for f in $pattern; do [[ -f $f ]] && echo "$f" >> "$listfile"; done || true
+    local total; total=$(wc -l < "$listfile")
 
+    heading "$title"
+    printf '  %sada83%s    %s\n' "$BOLD" "$OFF" "$("$ADA83" --version 2>&1 | head -1)"
+    printf '  %stests%s    %s, over %s workers\n' "$BOLD" "$OFF" "$total" "$NPROC"
+    printf '  %sresults%s  %s\n' "$BOLD" "$OFF" "$RESULTS_DIR"
+    printf '  %slogs%s     %s\n' "$BOLD" "$OFF" "$LOGS_DIR"
+
+    export PROGRESS_FILE; PROGRESS_FILE=$(mktemp)
+    hide_cursor
     local tmpfile; tmpfile=$(mktemp)
-    for f in $pattern; do [[ -f $f ]] && echo "$f"; done \
-        | xargs -P "$NPROC" -I{} bash -c 'run_one_timed "$@"' _ {} > "$tmpfile" 2>/dev/null
+    xargs -P "$NPROC" -I{} bash -c 'run_one_timed "$@"' _ {} \
+        < "$listfile" > "$tmpfile" 2>/dev/null &
+    local runner=$!
+    if [ $animated = 1 ]; then
+        local done_n last
+        while kill -0 "$runner" 2>/dev/null; do
+            done_n=$(wc -l < "$PROGRESS_FILE" 2>/dev/null) || done_n=0
+            last=$(awk 'END{print $3}' "$tmpfile" 2>/dev/null) || last=''
+            progress "${done_n:-0}" "$total" "${last:-running the suite}"
+            sleep 0.15
+        done
+    fi
+    wait "$runner"
+    clear_line; show_cursor
     sort -k3 "$tmpfile" > "${tmpfile}.sorted"
     tally_results "${tmpfile}.sorted"
-    rm -f "$tmpfile" "${tmpfile}.sorted"
+    rm -f "$tmpfile" "${tmpfile}.sorted" "$listfile" "$PROGRESS_FILE"
 }
 
 usage(){ cat <<'TEXT'
@@ -575,6 +663,8 @@ Environment:
   LINK_TIMEOUT       per-test link cap in seconds (default: 20)
   BASELINE           baseline manifest path (default: acats.baseline)
   TAP                set to 1 to also write a TAP stream
+  NO_ANIMATE         set to 1 to draw no progress indicators
+  NO_COLOUR          set to 1 to draw no colour
 
 Each run writes results to test_results/ID/ and logs to acats_logs/ID/, where
 ID is unique to the run, so concurrent runs do not overwrite one another.
@@ -584,12 +674,12 @@ TEXT
 main(){
     local cmd=${1:-run}; shift || true
     case $cmd in
-        run|g)   run_selector "${1:-all}" "ACATS run — ${1:-all}" ;;
-        q)       run_selector "${1:-c32}" "ACATS run — ${1:-c32}" ;;
-        check)   run_selector "${1:-all}" "ACATS check — ${1:-all}"
+        run|g)   run_selector "${1:-all}" "ACATS RUN — ${1:-all}" ;;
+        q)       run_selector "${1:-c32}" "ACATS RUN — ${1:-c32}" ;;
+        check)   run_selector "${1:-all}" "ACATS CHECK — ${1:-all}"
                  compare_to_baseline
                  ((REGRESSIONS==0)) || exit 1 ;;
-        bless)   run_selector "${1:-all}" "ACATS bless — ${1:-all}"
+        bless)   run_selector "${1:-all}" "ACATS BLESS — ${1:-all}"
                  write_baseline ;;
         list)    local pattern; pattern=$(selector_glob "${1:-all}")
                  for f in $pattern; do [[ -f $f ]] && basename "$f" .ada; done ;;
