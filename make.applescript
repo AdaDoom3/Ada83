@@ -405,10 +405,10 @@ on extensionSteps(chosenPlatform)
 		"rm -rf staging/vsix", ¬
 		"mkdir -p staging/vsix/extension/syntaxes " & binFolder, ¬
 		"cp ada83-icon.png staging/vsix/extension/", ¬
-		"if [ -f manual.md ]; then", ¬
-		"  cp manual.md staging/vsix/extension/", ¬
+		"if [ -f ada83-manual.md ]; then", ¬
+		"  cp ada83-manual.md staging/vsix/extension/", ¬
 		"else", ¬
-		"  echo 'manual.md is missing; packaging without the manual search tool'", ¬
+		"  echo 'ada83-manual.md is missing; packaging without the manual search tool'", ¬
 		"fi"} & extensionSplitLines() & ¬
 		{"rm -f " & binFolder & "/ada83.vsix", ¬
 		"( cd staging/vsix && zip -qr ../../" & binFolder & "/ada83.vsix . )", ¬
