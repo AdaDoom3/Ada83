@@ -2,6 +2,11 @@ CC     = gcc
 CFLAGS = -O3 -Wall -std=gnu2x
 LIBS   = -lm -lpthread
 
+# Stage lines in the manner of test-bench.sh: dimmed on a terminal, plain
+# text when piped, so CI logs and redirected output stay free of ANSI codes.
+STAGE = if [ -t 1 ]; then printf '  \033[2m%s\033[0m\n' "$(1)"; \
+        else printf '  %s\n' "$(1)"; fi
+
 HOST_SYSTEM   := $(shell uname -s)
 HOST_MACHINE  := $(shell uname -m)
 HOST_IS_MACOS := $(filter Darwin,$(HOST_SYSTEM))
@@ -23,7 +28,7 @@ LINUX_CROSS_COMPILER := $(or \
   x86_64-linux-gnu-gcc)
 
 RUNTIME     = ada83-runtime.ada
-MANUAL      = manual.md
+MANUAL      = ada83-manual.md
 VSIX        = ada83.vsix
 BUNDLE      = ada83-extension.html
 ICON        = ada83-icon
@@ -149,6 +154,7 @@ ada83: $(HOST_BINARY)
 
 $(HOST_BINARY): ada83.c
 	@mkdir -p $(@D)
+	@$(call STAGE,compiling ada83.c with $(CC))
 	$(CC) $(CFLAGS) $(WHOLE_PROGRAM) $(TUNE) -o $@ $< $(LIBS)
 	@echo "Built $@."
 
@@ -173,10 +179,12 @@ $(PACKAGE): ada83.c $(RUNTIME) $(ICON_SOURCE) $(BIN_DIR)/$(VSIX)
 	@test -z "$(SLICES)" || test -n "$(LIPO)" || { \
 	  echo "joining the $(TARGET) slices needs lipo"; exit 1; }
 	@mkdir -p staging $(BIN_DIR)
+	@$(call STAGE,building the $(TARGET) icon)
 	$(ICON_WRITER); $(ICON_BUILD_$(TARGET))
 	@test -z "$(RESOURCE_OBJECT)" || { set -x; \
 	  echo '1 ICON "$(abspath $(BIN_DIR)/$(ICON).ico)"' \
 	    | $(RESOURCE_COMPILER) -O coff -o $(RESOURCE_OBJECT); }
+	@$(call STAGE,compiling ada83.c for $(TARGET))
 	$(BUILD_EXECUTABLE)
 	cp $(RUNTIME) $(BIN_DIR)/
 	test -z "$(LAUNCHER)" || printf '%s\n' '[Desktop Entry]' 'Type=Application' \
@@ -185,6 +193,7 @@ $(PACKAGE): ada83.c $(RUNTIME) $(ICON_SOURCE) $(BIN_DIR)/$(VSIX)
 	test -z "$(SHARED_LIBRARIES)" || \
 	  unzip -qoj $(LIBRARY_SOURCE) '$(SHARED_LIBRARIES)' -d $(BIN_DIR)
 	rm -f $@.new
+	@$(call STAGE,packing $(PACKAGE))
 	cd $(BIN_DIR) && zip -q $(abspath $@).new $(PACKAGE_CONTENTS)
 	mv $@.new $@
 	@echo "Packaged $@:"; unzip -l $@ | tail -n +4
@@ -199,6 +208,7 @@ $(BIN_DIR)/$(VSIX): $(BUNDLE) $(ICON).png $(wildcard $(MANUAL))
 	cp $(ICON).png staging/vsix/extension/
 	@test -f $(MANUAL) && cp $(MANUAL) staging/vsix/extension/ \
 	  || echo "$(MANUAL) is missing; packaging without the manual search tool"
+	@$(call STAGE,splitting $(BUNDLE))
 	awk '/^<\/script>$$/ { out = ""; next } \
 	     /^<script/ { match ($$0, /id="[^"]*"/); \
 	                  name = substr ($$0, RSTART + 4, RLENGTH - 5); \
@@ -207,6 +217,7 @@ $(BIN_DIR)/$(VSIX): $(BUNDLE) $(ICON).png $(wildcard $(MANUAL))
 	                        : "staging/vsix/extension/" name; next } \
 	     out != "" { print > out }' $(BUNDLE)
 	rm -f $@
+	@$(call STAGE,packing $(VSIX))
 	cd staging/vsix && zip -qr $(abspath $@) .
 	rm -rf staging/vsix
 
