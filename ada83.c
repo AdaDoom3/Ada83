@@ -195,16 +195,25 @@ bool Host_Executable_Path (char *buffer, size_t size, const char *invoked_as) {
 }
 
 i64 Host_File_Modification_Time (const char *path) {
+#if defined(_WIN32)
+  /*  stat on Windows truncates to whole seconds, which ties the .ali files a
+      build writes in quick succession; the FILETIME keeps 100ns resolution.  */
+  WIN32_FILE_ATTRIBUTE_DATA attributes;
+  if (not GetFileAttributesExA (path, GetFileExInfoStandard, &attributes))
+    return 0;
+  ULARGE_INTEGER when = { .LowPart  = attributes.ftLastWriteTime.dwLowDateTime,
+                          .HighPart = attributes.ftLastWriteTime.dwHighDateTime };
+  return ((i64) when.QuadPart - 116444736000000000LL) * 100;
+#else
   struct stat status;
   if (stat (path, &status) != 0) return 0;
-#if defined(_WIN32)
-  i64 nanoseconds = 0;
-#elif defined(__APPLE__)
+#if defined(__APPLE__)
   i64 nanoseconds = status.st_mtimespec.tv_nsec;
 #else
   i64 nanoseconds = status.st_mtim.tv_nsec;
 #endif
   return (i64) status.st_mtime * 1000000000 + nanoseconds;
+#endif
 }
 
 int Host_Command_Exit_Status (int result) {
@@ -515,22 +524,22 @@ void Report_Driver_Error   (const char *format, ...)
 void Report_Driver_Warning (const char *format, ...)
        __attribute__((format(printf, 1, 2)));
 
-#define WARNING_CLASS_TABLE(X) \
-  X (WARNING_UNUSED_VARIABLE,         "unused-variable") \
-  X (WARNING_UNUSED_BUT_SET_VARIABLE, "unused-but-set-variable") \
-  X (WARNING_UNUSED_PARAMETER,        "unused-parameter") \
-  X (WARNING_UNUSED_WITH,             "unused-with") \
-  X (WARNING_UNREACHABLE_CODE,        "unreachable-code") \
-  X (WARNING_UNACCEPTED_ENTRY,        "unaccepted-entry") \
-  X (WARNING_DEAD_STORE,              "dead-store") \
-  X (WARNING_CONSTRAINT_ERROR,        "constraint-error") \
-  X (WARNING_READ_BEFORE_ASSIGNMENT,  "read-before-assignment") \
-  X (WARNING_REDUNDANT_WITH,          "redundant-with")
+#define WARNING_CLASS_TABLE(_)                                   \
+  _ (WARNING_UNUSED_VARIABLE,         "unused-variable")         \
+  _ (WARNING_UNUSED_BUT_SET_VARIABLE, "unused-but-set-variable") \
+  _ (WARNING_UNUSED_PARAMETER,        "unused-parameter")        \
+  _ (WARNING_UNUSED_WITH,             "unused-with")             \
+  _ (WARNING_UNREACHABLE_CODE,        "unreachable-code")        \
+  _ (WARNING_UNACCEPTED_ENTRY,        "unaccepted-entry")        \
+  _ (WARNING_DEAD_STORE,              "dead-store")              \
+  _ (WARNING_CONSTRAINT_ERROR,        "constraint-error")        \
+  _ (WARNING_READ_BEFORE_ASSIGNMENT,  "read-before-assignment")  \
+  _ (WARNING_REDUNDANT_WITH,          "redundant-with")
 
 typedef enum {
-#define X(kind, name) kind,
-  WARNING_CLASS_TABLE (X)
-#undef X
+#define _(kind, name) kind,
+  WARNING_CLASS_TABLE (_)
+#undef _
   WARNING_CLASS_COUNT
 } Warning_Class_Kind;
 
@@ -672,144 +681,115 @@ typedef enum {
 } Comparison_Sign_Mask;
 
 /* ==== §7   Lexer ==================================================== */
-#define TOKEN_KIND_LIST(X) \
-    \
-  X (TK_EOF,        "<eof>",      TOKEN_CLASS_NONE) \
-  X (TK_ERROR,      "<error>",    TOKEN_CLASS_NONE) \
-    \
-  X (TK_IDENTIFIER, "identifier", TOKEN_CLASS_NONE) \
-  X (TK_INTEGER,    "integer",    TOKEN_CLASS_NONE) \
-  X (TK_REAL,       "real",       TOKEN_CLASS_NONE) \
-  X (TK_CHARACTER,  "character",  TOKEN_CLASS_NONE) \
-  X (TK_STRING,     "string",     TOKEN_CLASS_NONE) \
-    \
-  X (TK_LPAREN,     "(",   TOKEN_CLASS_NONE) \
-  X (TK_RPAREN,     ")",   TOKEN_CLASS_NONE) \
-  X (TK_LBRACKET,   "[",   TOKEN_CLASS_NONE) \
-  X (TK_RBRACKET,   "]",   TOKEN_CLASS_NONE) \
-  X (TK_COMMA,      ",",   TOKEN_CLASS_NONE) \
-  X (TK_DOT,        ".",   TOKEN_CLASS_NONE) \
-  X (TK_SEMICOLON,  ";",   TOKEN_CLASS_NONE) \
-  X (TK_COLON,      ":",   TOKEN_CLASS_NONE) \
-  X (TK_TICK,       "'",   TOKEN_CLASS_NONE) \
-    \
-  X (TK_ASSIGN,     ":=",  TOKEN_CLASS_NONE) \
-  X (TK_ARROW,      "=>",  TOKEN_CLASS_NONE) \
-  X (TK_DOTDOT,     "..",  TOKEN_CLASS_NONE) \
-  X (TK_LSHIFT,     "<<",  TOKEN_CLASS_NONE) \
-  X (TK_RSHIFT,     ">>",  TOKEN_CLASS_NONE) \
-  X (TK_BOX,        "<>",  TOKEN_CLASS_NONE) \
-  X (TK_BAR,        "|",   TOKEN_CLASS_NONE) \
-    \
-  X (TK_EQ, "=",  TOKEN_CLASS_EQUALITY, .infix_precedence = PREC_RELATIONAL, \
-     .operator_designator = S ("="),  .true_signs = COMPARISON_SIGN_EQUAL, \
-     .integer_predicate_signed = "eq",  .integer_predicate_unsigned = "eq",  .float_predicate = "oeq") \
-  X (TK_NE, "/=", TOKEN_CLASS_EQUALITY, .infix_precedence = PREC_RELATIONAL, \
-     .operator_designator = S ("/="), .true_signs = COMPARISON_SIGN_LESS | COMPARISON_SIGN_GREATER, \
-     .integer_predicate_signed = "ne",  .integer_predicate_unsigned = "ne",  .float_predicate = "une") \
-  X (TK_LT, "<",  TOKEN_CLASS_ORDERING, .infix_precedence = PREC_RELATIONAL, \
-     .operator_designator = S ("<"),  .true_signs = COMPARISON_SIGN_LESS, \
-     .integer_predicate_signed = "slt", .integer_predicate_unsigned = "ult", .float_predicate = "olt") \
-  X (TK_LE, "<=", TOKEN_CLASS_ORDERING, .infix_precedence = PREC_RELATIONAL, \
-     .operator_designator = S ("<="), .true_signs = COMPARISON_SIGN_LESS | COMPARISON_SIGN_EQUAL, \
-     .integer_predicate_signed = "sle", .integer_predicate_unsigned = "ule", .float_predicate = "ole") \
-  X (TK_GT, ">",  TOKEN_CLASS_ORDERING, .infix_precedence = PREC_RELATIONAL, \
-     .operator_designator = S (">"),  .true_signs = COMPARISON_SIGN_GREATER, \
-     .integer_predicate_signed = "sgt", .integer_predicate_unsigned = "ugt", .float_predicate = "ogt") \
-  X (TK_GE, ">=", TOKEN_CLASS_ORDERING, .infix_precedence = PREC_RELATIONAL, \
-     .operator_designator = S (">="), .true_signs = COMPARISON_SIGN_GREATER | COMPARISON_SIGN_EQUAL, \
-     .integer_predicate_signed = "sge", .integer_predicate_unsigned = "uge", .float_predicate = "oge") \
-    \
-  X (TK_PLUS,      "+",  TOKEN_CLASS_ARITHMETIC | TOKEN_CLASS_ALSO_UNARY, \
-     .infix_precedence = PREC_ADDITIVE,       .operator_designator = S ("+")) \
-  X (TK_MINUS,     "-",  TOKEN_CLASS_ARITHMETIC | TOKEN_CLASS_ALSO_UNARY, \
-     .infix_precedence = PREC_ADDITIVE,       .operator_designator = S ("-")) \
-  X (TK_STAR,      "*",  TOKEN_CLASS_ARITHMETIC, \
-     .infix_precedence = PREC_MULTIPLICATIVE, .operator_designator = S ("*")) \
-  X (TK_SLASH,     "/",  TOKEN_CLASS_ARITHMETIC, \
-     .infix_precedence = PREC_MULTIPLICATIVE, .operator_designator = S ("/")) \
-  X (TK_AMPERSAND, "&",  TOKEN_CLASS_CONCATENATION, \
-     .infix_precedence = PREC_ADDITIVE,       .operator_designator = S ("&")) \
-  X (TK_EXPON,     "**", TOKEN_CLASS_ARITHMETIC | TOKEN_CLASS_RIGHT_ASSOCIATIVE, \
-     .infix_precedence = PREC_EXPONENTIAL,    .operator_designator = S ("**")) \
-    \
-  X (TK_ABORT,     "ABORT",     TOKEN_CLASS_RESERVED_WORD) \
-  X (TK_ABS,       "ABS",       TOKEN_CLASS_RESERVED_WORD | TOKEN_CLASS_ARITHMETIC | \
-                                TOKEN_CLASS_UNARY_ONLY, .operator_designator = S ("abs")) \
-  X (TK_ACCEPT,    "ACCEPT",    TOKEN_CLASS_RESERVED_WORD | TOKEN_CLASS_RECOVERY_ANCHOR) \
-  X (TK_ACCESS,    "ACCESS",    TOKEN_CLASS_RESERVED_WORD) \
-  X (TK_ALL,       "ALL",       TOKEN_CLASS_RESERVED_WORD) \
-  X (TK_AND,       "AND",       TOKEN_CLASS_RESERVED_WORD | TOKEN_CLASS_LOGICAL, \
-     .infix_precedence = PREC_LOGICAL, .operator_designator = S ("and")) \
-  X (TK_AND_THEN,  "AND THEN",  TOKEN_CLASS_SHORT_CIRCUIT, \
-     .infix_precedence = PREC_LOGICAL) \
-  X (TK_ARRAY,     "ARRAY",     TOKEN_CLASS_RESERVED_WORD) \
-  X (TK_AT,        "AT",        TOKEN_CLASS_RESERVED_WORD) \
-  X (TK_BEGIN,     "BEGIN",     TOKEN_CLASS_RESERVED_WORD | TOKEN_CLASS_RECOVERY_ANCHOR) \
-  X (TK_BODY,      "BODY",      TOKEN_CLASS_RESERVED_WORD) \
-  X (TK_CASE,      "CASE",      TOKEN_CLASS_RESERVED_WORD | TOKEN_CLASS_RECOVERY_ANCHOR) \
-  X (TK_CONSTANT,  "CONSTANT",  TOKEN_CLASS_RESERVED_WORD) \
-  X (TK_DECLARE,   "DECLARE",   TOKEN_CLASS_RESERVED_WORD | TOKEN_CLASS_RECOVERY_ANCHOR) \
-  X (TK_DELAY,     "DELAY",     TOKEN_CLASS_RESERVED_WORD) \
-  X (TK_DELTA,     "DELTA",     TOKEN_CLASS_RESERVED_WORD) \
-  X (TK_DIGITS,    "DIGITS",    TOKEN_CLASS_RESERVED_WORD) \
-  X (TK_DO,        "DO",        TOKEN_CLASS_RESERVED_WORD) \
-  X (TK_ELSE,      "ELSE",      TOKEN_CLASS_RESERVED_WORD) \
-  X (TK_ELSIF,     "ELSIF",     TOKEN_CLASS_RESERVED_WORD) \
-  X (TK_END,       "END",       TOKEN_CLASS_RESERVED_WORD | TOKEN_CLASS_RECOVERY_ANCHOR) \
-  X (TK_ENTRY,     "ENTRY",     TOKEN_CLASS_RESERVED_WORD) \
-  X (TK_EXCEPTION, "EXCEPTION", TOKEN_CLASS_RESERVED_WORD | TOKEN_CLASS_RECOVERY_ANCHOR) \
-  X (TK_EXIT,      "EXIT",      TOKEN_CLASS_RESERVED_WORD) \
-  X (TK_FOR,       "FOR",       TOKEN_CLASS_RESERVED_WORD | TOKEN_CLASS_RECOVERY_ANCHOR) \
-  X (TK_FUNCTION,  "FUNCTION",  TOKEN_CLASS_RESERVED_WORD | TOKEN_CLASS_RECOVERY_ANCHOR) \
-  X (TK_GENERIC,   "GENERIC",   TOKEN_CLASS_RESERVED_WORD) \
-  X (TK_GOTO,      "GOTO",      TOKEN_CLASS_RESERVED_WORD) \
-  X (TK_IF,        "IF",        TOKEN_CLASS_RESERVED_WORD | TOKEN_CLASS_RECOVERY_ANCHOR) \
-  X (TK_IN,        "IN",        TOKEN_CLASS_RESERVED_WORD | TOKEN_CLASS_MEMBERSHIP, \
-     .infix_precedence = PREC_RELATIONAL) \
-  X (TK_IS,        "IS",        TOKEN_CLASS_RESERVED_WORD) \
-  X (TK_LIMITED,   "LIMITED",   TOKEN_CLASS_RESERVED_WORD) \
-  X (TK_LOOP,      "LOOP",      TOKEN_CLASS_RESERVED_WORD | TOKEN_CLASS_RECOVERY_ANCHOR) \
-  X (TK_MOD,       "MOD",       TOKEN_CLASS_RESERVED_WORD | TOKEN_CLASS_ARITHMETIC, \
-     .infix_precedence = PREC_MULTIPLICATIVE, .operator_designator = S ("mod")) \
-  X (TK_NEW,       "NEW",       TOKEN_CLASS_RESERVED_WORD) \
- \
-  X (TK_NOT,       "NOT",       TOKEN_CLASS_RESERVED_WORD | TOKEN_CLASS_LOGICAL | \
-                                TOKEN_CLASS_UNARY_ONLY | TOKEN_CLASS_MEMBERSHIP, \
-     .infix_precedence = PREC_RELATIONAL, .operator_designator = S ("not")) \
-  X (TK_NULL,      "NULL",      TOKEN_CLASS_RESERVED_WORD) \
-  X (TK_OF,        "OF",        TOKEN_CLASS_RESERVED_WORD) \
-  X (TK_OR,        "OR",        TOKEN_CLASS_RESERVED_WORD | TOKEN_CLASS_LOGICAL, \
-     .infix_precedence = PREC_LOGICAL, .operator_designator = S ("or")) \
-  X (TK_OR_ELSE,   "OR ELSE",   TOKEN_CLASS_SHORT_CIRCUIT, \
-     .infix_precedence = PREC_LOGICAL) \
-  X (TK_OTHERS,    "OTHERS",    TOKEN_CLASS_RESERVED_WORD) \
-  X (TK_OUT,       "OUT",       TOKEN_CLASS_RESERVED_WORD) \
-  X (TK_PACKAGE,   "PACKAGE",   TOKEN_CLASS_RESERVED_WORD | TOKEN_CLASS_RECOVERY_ANCHOR) \
-  X (TK_PRAGMA,    "PRAGMA",    TOKEN_CLASS_RESERVED_WORD | TOKEN_CLASS_RECOVERY_ANCHOR) \
-  X (TK_PRIVATE,   "PRIVATE",   TOKEN_CLASS_RESERVED_WORD) \
-  X (TK_PROCEDURE, "PROCEDURE", TOKEN_CLASS_RESERVED_WORD | TOKEN_CLASS_RECOVERY_ANCHOR) \
-  X (TK_RAISE,     "RAISE",     TOKEN_CLASS_RESERVED_WORD) \
-  X (TK_RANGE,     "RANGE",     TOKEN_CLASS_RESERVED_WORD) \
-  X (TK_RECORD,    "RECORD",    TOKEN_CLASS_RESERVED_WORD) \
-  X (TK_REM,       "REM",       TOKEN_CLASS_RESERVED_WORD | TOKEN_CLASS_ARITHMETIC, \
-     .infix_precedence = PREC_MULTIPLICATIVE, .operator_designator = S ("rem")) \
-  X (TK_RENAMES,   "RENAMES",   TOKEN_CLASS_RESERVED_WORD) \
-  X (TK_RETURN,    "RETURN",    TOKEN_CLASS_RESERVED_WORD | TOKEN_CLASS_RECOVERY_ANCHOR) \
-  X (TK_REVERSE,   "REVERSE",   TOKEN_CLASS_RESERVED_WORD) \
-  X (TK_SELECT,    "SELECT",    TOKEN_CLASS_RESERVED_WORD | TOKEN_CLASS_RECOVERY_ANCHOR) \
-  X (TK_SEPARATE,  "SEPARATE",  TOKEN_CLASS_RESERVED_WORD) \
-  X (TK_SUBTYPE,   "SUBTYPE",   TOKEN_CLASS_RESERVED_WORD | TOKEN_CLASS_RECOVERY_ANCHOR) \
-  X (TK_TASK,      "TASK",      TOKEN_CLASS_RESERVED_WORD | TOKEN_CLASS_RECOVERY_ANCHOR) \
-  X (TK_TERMINATE, "TERMINATE", TOKEN_CLASS_RESERVED_WORD) \
-  X (TK_THEN,      "THEN",      TOKEN_CLASS_RESERVED_WORD) \
-  X (TK_TYPE,      "TYPE",      TOKEN_CLASS_RESERVED_WORD | TOKEN_CLASS_RECOVERY_ANCHOR) \
-  X (TK_USE,       "USE",       TOKEN_CLASS_RESERVED_WORD) \
-  X (TK_WHEN,      "WHEN",      TOKEN_CLASS_RESERVED_WORD) \
-  X (TK_WHILE,     "WHILE",     TOKEN_CLASS_RESERVED_WORD | TOKEN_CLASS_RECOVERY_ANCHOR) \
-  X (TK_WITH,      "WITH",      TOKEN_CLASS_RESERVED_WORD) \
-  X (TK_XOR,       "XOR",       TOKEN_CLASS_RESERVED_WORD | TOKEN_CLASS_LOGICAL, \
-     .infix_precedence = PREC_LOGICAL, .operator_designator = S ("xor"))
+#define TOKEN_KIND_LIST(_)                                                                                                                                                                                                                                                                                                                                                       \
+                                                                                                                                                                                                                                                                                                                                                                                 \
+  _ (TK_EOF,        "<eof>",      TOKEN_CLASS_NONE)                                                                                                                                                                                                                                                                                                                              \
+  _ (TK_ERROR,      "<error>",    TOKEN_CLASS_NONE)                                                                                                                                                                                                                                                                                                                              \
+                                                                                                                                                                                                                                                                                                                                                                                 \
+  _ (TK_IDENTIFIER, "identifier", TOKEN_CLASS_NONE)                                                                                                                                                                                                                                                                                                                              \
+  _ (TK_INTEGER,    "integer",    TOKEN_CLASS_NONE)                                                                                                                                                                                                                                                                                                                              \
+  _ (TK_REAL,       "real",       TOKEN_CLASS_NONE)                                                                                                                                                                                                                                                                                                                              \
+  _ (TK_CHARACTER,  "character",  TOKEN_CLASS_NONE)                                                                                                                                                                                                                                                                                                                              \
+  _ (TK_STRING,     "string",     TOKEN_CLASS_NONE)                                                                                                                                                                                                                                                                                                                              \
+                                                                                                                                                                                                                                                                                                                                                                                 \
+  _ (TK_LPAREN,     "(",          TOKEN_CLASS_NONE)                                                                                                                                                                                                                                                                                                                              \
+  _ (TK_RPAREN,     ")",          TOKEN_CLASS_NONE)                                                                                                                                                                                                                                                                                                                              \
+  _ (TK_LBRACKET,   "[",          TOKEN_CLASS_NONE)                                                                                                                                                                                                                                                                                                                              \
+  _ (TK_RBRACKET,   "]",          TOKEN_CLASS_NONE)                                                                                                                                                                                                                                                                                                                              \
+  _ (TK_COMMA,      ",",          TOKEN_CLASS_NONE)                                                                                                                                                                                                                                                                                                                              \
+  _ (TK_DOT,        ".",          TOKEN_CLASS_NONE)                                                                                                                                                                                                                                                                                                                              \
+  _ (TK_SEMICOLON,  ";",          TOKEN_CLASS_NONE)                                                                                                                                                                                                                                                                                                                              \
+  _ (TK_COLON,      ":",          TOKEN_CLASS_NONE)                                                                                                                                                                                                                                                                                                                              \
+  _ (TK_TICK,       "'",          TOKEN_CLASS_NONE)                                                                                                                                                                                                                                                                                                                              \
+                                                                                                                                                                                                                                                                                                                                                                                 \
+  _ (TK_ASSIGN,     ":=",         TOKEN_CLASS_NONE)                                                                                                                                                                                                                                                                                                                              \
+  _ (TK_ARROW,      "=>",         TOKEN_CLASS_NONE)                                                                                                                                                                                                                                                                                                                              \
+  _ (TK_DOTDOT,     "..",         TOKEN_CLASS_NONE)                                                                                                                                                                                                                                                                                                                              \
+  _ (TK_LSHIFT,     "<<",         TOKEN_CLASS_NONE)                                                                                                                                                                                                                                                                                                                              \
+  _ (TK_RSHIFT,     ">>",         TOKEN_CLASS_NONE)                                                                                                                                                                                                                                                                                                                              \
+  _ (TK_BOX,        "<>",         TOKEN_CLASS_NONE)                                                                                                                                                                                                                                                                                                                              \
+  _ (TK_BAR,        "|",          TOKEN_CLASS_NONE)                                                                                                                                                                                                                                                                                                                              \
+                                                                                                                                                                                                                                                                                                                                                                                 \
+  _ (TK_EQ,         "=",          TOKEN_CLASS_EQUALITY,                                                                              .infix_precedence = PREC_RELATIONAL,     .operator_designator = S ("="),   .true_signs = COMPARISON_SIGN_EQUAL,                           .integer_predicate_signed = "eq",  .integer_predicate_unsigned = "eq",  .float_predicate = "oeq") \
+  _ (TK_NE,         "/=",         TOKEN_CLASS_EQUALITY,                                                                              .infix_precedence = PREC_RELATIONAL,     .operator_designator = S ("/="),  .true_signs = COMPARISON_SIGN_LESS | COMPARISON_SIGN_GREATER,  .integer_predicate_signed = "ne",  .integer_predicate_unsigned = "ne",  .float_predicate = "une") \
+  _ (TK_LT,         "<",          TOKEN_CLASS_ORDERING,                                                                              .infix_precedence = PREC_RELATIONAL,     .operator_designator = S ("<"),   .true_signs = COMPARISON_SIGN_LESS,                            .integer_predicate_signed = "slt", .integer_predicate_unsigned = "ult", .float_predicate = "olt") \
+  _ (TK_LE,         "<=",         TOKEN_CLASS_ORDERING,                                                                              .infix_precedence = PREC_RELATIONAL,     .operator_designator = S ("<="),  .true_signs = COMPARISON_SIGN_LESS | COMPARISON_SIGN_EQUAL,    .integer_predicate_signed = "sle", .integer_predicate_unsigned = "ule", .float_predicate = "ole") \
+  _ (TK_GT,         ">",          TOKEN_CLASS_ORDERING,                                                                              .infix_precedence = PREC_RELATIONAL,     .operator_designator = S (">"),   .true_signs = COMPARISON_SIGN_GREATER,                         .integer_predicate_signed = "sgt", .integer_predicate_unsigned = "ugt", .float_predicate = "ogt") \
+  _ (TK_GE,         ">=",         TOKEN_CLASS_ORDERING,                                                                              .infix_precedence = PREC_RELATIONAL,     .operator_designator = S (">="),  .true_signs = COMPARISON_SIGN_GREATER | COMPARISON_SIGN_EQUAL, .integer_predicate_signed = "sge", .integer_predicate_unsigned = "uge", .float_predicate = "oge") \
+                                                                                                                                                                                                                                                                                                                                                                                 \
+  _ (TK_PLUS,       "+",          TOKEN_CLASS_ARITHMETIC | TOKEN_CLASS_ALSO_UNARY,                                                   .infix_precedence = PREC_ADDITIVE,       .operator_designator = S ("+"))                                                                                                                                                                    \
+  _ (TK_MINUS,      "-",          TOKEN_CLASS_ARITHMETIC | TOKEN_CLASS_ALSO_UNARY,                                                   .infix_precedence = PREC_ADDITIVE,       .operator_designator = S ("-"))                                                                                                                                                                    \
+  _ (TK_STAR,       "*",          TOKEN_CLASS_ARITHMETIC,                                                                            .infix_precedence = PREC_MULTIPLICATIVE, .operator_designator = S ("*"))                                                                                                                                                                    \
+  _ (TK_SLASH,      "/",          TOKEN_CLASS_ARITHMETIC,                                                                            .infix_precedence = PREC_MULTIPLICATIVE, .operator_designator = S ("/"))                                                                                                                                                                    \
+  _ (TK_AMPERSAND,  "&",          TOKEN_CLASS_CONCATENATION,                                                                         .infix_precedence = PREC_ADDITIVE,       .operator_designator = S ("&"))                                                                                                                                                                    \
+  _ (TK_EXPON,      "**",         TOKEN_CLASS_ARITHMETIC | TOKEN_CLASS_RIGHT_ASSOCIATIVE,                                            .infix_precedence = PREC_EXPONENTIAL,    .operator_designator = S ("**"))                                                                                                                                                                   \
+                                                                                                                                                                                                                                                                                                                                                                                 \
+  _ (TK_ABORT,      "ABORT",      TOKEN_CLASS_RESERVED_WORD)                                                                                                                                                                                                                                                                                                                     \
+  _ (TK_ABS,        "ABS",        TOKEN_CLASS_RESERVED_WORD | TOKEN_CLASS_ARITHMETIC | TOKEN_CLASS_UNARY_ONLY,                       .operator_designator = S ("abs"))                                                                                                                                                                                                           \
+  _ (TK_ACCEPT,     "ACCEPT",     TOKEN_CLASS_RESERVED_WORD | TOKEN_CLASS_RECOVERY_ANCHOR)                                                                                                                                                                                                                                                                                       \
+  _ (TK_ACCESS,     "ACCESS",     TOKEN_CLASS_RESERVED_WORD)                                                                                                                                                                                                                                                                                                                     \
+  _ (TK_ALL,        "ALL",        TOKEN_CLASS_RESERVED_WORD)                                                                                                                                                                                                                                                                                                                     \
+  _ (TK_AND,        "AND",        TOKEN_CLASS_RESERVED_WORD | TOKEN_CLASS_LOGICAL,                                                   .infix_precedence = PREC_LOGICAL,        .operator_designator = S ("and"))                                                                                                                                                                  \
+  _ (TK_AND_THEN,   "AND THEN",   TOKEN_CLASS_SHORT_CIRCUIT,                                                                         .infix_precedence = PREC_LOGICAL)                                                                                                                                                                                                           \
+  _ (TK_ARRAY,      "ARRAY",      TOKEN_CLASS_RESERVED_WORD)                                                                                                                                                                                                                                                                                                                     \
+  _ (TK_AT,         "AT",         TOKEN_CLASS_RESERVED_WORD)                                                                                                                                                                                                                                                                                                                     \
+  _ (TK_BEGIN,      "BEGIN",      TOKEN_CLASS_RESERVED_WORD | TOKEN_CLASS_RECOVERY_ANCHOR)                                                                                                                                                                                                                                                                                       \
+  _ (TK_BODY,       "BODY",       TOKEN_CLASS_RESERVED_WORD)                                                                                                                                                                                                                                                                                                                     \
+  _ (TK_CASE,       "CASE",       TOKEN_CLASS_RESERVED_WORD | TOKEN_CLASS_RECOVERY_ANCHOR)                                                                                                                                                                                                                                                                                       \
+  _ (TK_CONSTANT,   "CONSTANT",   TOKEN_CLASS_RESERVED_WORD)                                                                                                                                                                                                                                                                                                                     \
+  _ (TK_DECLARE,    "DECLARE",    TOKEN_CLASS_RESERVED_WORD | TOKEN_CLASS_RECOVERY_ANCHOR)                                                                                                                                                                                                                                                                                       \
+  _ (TK_DELAY,      "DELAY",      TOKEN_CLASS_RESERVED_WORD)                                                                                                                                                                                                                                                                                                                     \
+  _ (TK_DELTA,      "DELTA",      TOKEN_CLASS_RESERVED_WORD)                                                                                                                                                                                                                                                                                                                     \
+  _ (TK_DIGITS,     "DIGITS",     TOKEN_CLASS_RESERVED_WORD)                                                                                                                                                                                                                                                                                                                     \
+  _ (TK_DO,         "DO",         TOKEN_CLASS_RESERVED_WORD)                                                                                                                                                                                                                                                                                                                     \
+  _ (TK_ELSE,       "ELSE",       TOKEN_CLASS_RESERVED_WORD)                                                                                                                                                                                                                                                                                                                     \
+  _ (TK_ELSIF,      "ELSIF",      TOKEN_CLASS_RESERVED_WORD)                                                                                                                                                                                                                                                                                                                     \
+  _ (TK_END,        "END",        TOKEN_CLASS_RESERVED_WORD | TOKEN_CLASS_RECOVERY_ANCHOR)                                                                                                                                                                                                                                                                                       \
+  _ (TK_ENTRY,      "ENTRY",      TOKEN_CLASS_RESERVED_WORD)                                                                                                                                                                                                                                                                                                                     \
+  _ (TK_EXCEPTION,  "EXCEPTION",  TOKEN_CLASS_RESERVED_WORD | TOKEN_CLASS_RECOVERY_ANCHOR)                                                                                                                                                                                                                                                                                       \
+  _ (TK_EXIT,       "EXIT",       TOKEN_CLASS_RESERVED_WORD)                                                                                                                                                                                                                                                                                                                     \
+  _ (TK_FOR,        "FOR",        TOKEN_CLASS_RESERVED_WORD | TOKEN_CLASS_RECOVERY_ANCHOR)                                                                                                                                                                                                                                                                                       \
+  _ (TK_FUNCTION,   "FUNCTION",   TOKEN_CLASS_RESERVED_WORD | TOKEN_CLASS_RECOVERY_ANCHOR)                                                                                                                                                                                                                                                                                       \
+  _ (TK_GENERIC,    "GENERIC",    TOKEN_CLASS_RESERVED_WORD)                                                                                                                                                                                                                                                                                                                     \
+  _ (TK_GOTO,       "GOTO",       TOKEN_CLASS_RESERVED_WORD)                                                                                                                                                                                                                                                                                                                     \
+  _ (TK_IF,         "IF",         TOKEN_CLASS_RESERVED_WORD | TOKEN_CLASS_RECOVERY_ANCHOR)                                                                                                                                                                                                                                                                                       \
+  _ (TK_IN,         "IN",         TOKEN_CLASS_RESERVED_WORD | TOKEN_CLASS_MEMBERSHIP,                                                .infix_precedence = PREC_RELATIONAL)                                                                                                                                                                                                        \
+  _ (TK_IS,         "IS",         TOKEN_CLASS_RESERVED_WORD)                                                                                                                                                                                                                                                                                                                     \
+  _ (TK_LIMITED,    "LIMITED",    TOKEN_CLASS_RESERVED_WORD)                                                                                                                                                                                                                                                                                                                     \
+  _ (TK_LOOP,       "LOOP",       TOKEN_CLASS_RESERVED_WORD | TOKEN_CLASS_RECOVERY_ANCHOR)                                                                                                                                                                                                                                                                                       \
+  _ (TK_MOD,        "MOD",        TOKEN_CLASS_RESERVED_WORD | TOKEN_CLASS_ARITHMETIC,                                                .infix_precedence = PREC_MULTIPLICATIVE, .operator_designator = S ("mod"))                                                                                                                                                                  \
+  _ (TK_NEW,        "NEW",        TOKEN_CLASS_RESERVED_WORD)                                                                                                                                                                                                                                                                                                                     \
+                                                                                                                                                                                                                                                                                                                                                                                 \
+  _ (TK_NOT,        "NOT",        TOKEN_CLASS_RESERVED_WORD | TOKEN_CLASS_LOGICAL | TOKEN_CLASS_UNARY_ONLY | TOKEN_CLASS_MEMBERSHIP, .infix_precedence = PREC_RELATIONAL,     .operator_designator = S ("not"))                                                                                                                                                                  \
+  _ (TK_NULL,       "NULL",       TOKEN_CLASS_RESERVED_WORD)                                                                                                                                                                                                                                                                                                                     \
+  _ (TK_OF,         "OF",         TOKEN_CLASS_RESERVED_WORD)                                                                                                                                                                                                                                                                                                                     \
+  _ (TK_OR,         "OR",         TOKEN_CLASS_RESERVED_WORD | TOKEN_CLASS_LOGICAL,                                                   .infix_precedence = PREC_LOGICAL,        .operator_designator = S ("or"))                                                                                                                                                                   \
+  _ (TK_OR_ELSE,    "OR ELSE",    TOKEN_CLASS_SHORT_CIRCUIT,                                                                         .infix_precedence = PREC_LOGICAL)                                                                                                                                                                                                           \
+  _ (TK_OTHERS,     "OTHERS",     TOKEN_CLASS_RESERVED_WORD)                                                                                                                                                                                                                                                                                                                     \
+  _ (TK_OUT,        "OUT",        TOKEN_CLASS_RESERVED_WORD)                                                                                                                                                                                                                                                                                                                     \
+  _ (TK_PACKAGE,    "PACKAGE",    TOKEN_CLASS_RESERVED_WORD | TOKEN_CLASS_RECOVERY_ANCHOR)                                                                                                                                                                                                                                                                                       \
+  _ (TK_PRAGMA,     "PRAGMA",     TOKEN_CLASS_RESERVED_WORD | TOKEN_CLASS_RECOVERY_ANCHOR)                                                                                                                                                                                                                                                                                       \
+  _ (TK_PRIVATE,    "PRIVATE",    TOKEN_CLASS_RESERVED_WORD)                                                                                                                                                                                                                                                                                                                     \
+  _ (TK_PROCEDURE,  "PROCEDURE",  TOKEN_CLASS_RESERVED_WORD | TOKEN_CLASS_RECOVERY_ANCHOR)                                                                                                                                                                                                                                                                                       \
+  _ (TK_RAISE,      "RAISE",      TOKEN_CLASS_RESERVED_WORD)                                                                                                                                                                                                                                                                                                                     \
+  _ (TK_RANGE,      "RANGE",      TOKEN_CLASS_RESERVED_WORD)                                                                                                                                                                                                                                                                                                                     \
+  _ (TK_RECORD,     "RECORD",     TOKEN_CLASS_RESERVED_WORD)                                                                                                                                                                                                                                                                                                                     \
+  _ (TK_REM,        "REM",        TOKEN_CLASS_RESERVED_WORD | TOKEN_CLASS_ARITHMETIC,                                                .infix_precedence = PREC_MULTIPLICATIVE, .operator_designator = S ("rem"))                                                                                                                                                                  \
+  _ (TK_RENAMES,    "RENAMES",    TOKEN_CLASS_RESERVED_WORD)                                                                                                                                                                                                                                                                                                                     \
+  _ (TK_RETURN,     "RETURN",     TOKEN_CLASS_RESERVED_WORD | TOKEN_CLASS_RECOVERY_ANCHOR)                                                                                                                                                                                                                                                                                       \
+  _ (TK_REVERSE,    "REVERSE",    TOKEN_CLASS_RESERVED_WORD)                                                                                                                                                                                                                                                                                                                     \
+  _ (TK_SELECT,     "SELECT",     TOKEN_CLASS_RESERVED_WORD | TOKEN_CLASS_RECOVERY_ANCHOR)                                                                                                                                                                                                                                                                                       \
+  _ (TK_SEPARATE,   "SEPARATE",   TOKEN_CLASS_RESERVED_WORD)                                                                                                                                                                                                                                                                                                                     \
+  _ (TK_SUBTYPE,    "SUBTYPE",    TOKEN_CLASS_RESERVED_WORD | TOKEN_CLASS_RECOVERY_ANCHOR)                                                                                                                                                                                                                                                                                       \
+  _ (TK_TASK,       "TASK",       TOKEN_CLASS_RESERVED_WORD | TOKEN_CLASS_RECOVERY_ANCHOR)                                                                                                                                                                                                                                                                                       \
+  _ (TK_TERMINATE,  "TERMINATE",  TOKEN_CLASS_RESERVED_WORD)                                                                                                                                                                                                                                                                                                                     \
+  _ (TK_THEN,       "THEN",       TOKEN_CLASS_RESERVED_WORD)                                                                                                                                                                                                                                                                                                                     \
+  _ (TK_TYPE,       "TYPE",       TOKEN_CLASS_RESERVED_WORD | TOKEN_CLASS_RECOVERY_ANCHOR)                                                                                                                                                                                                                                                                                       \
+  _ (TK_USE,        "USE",        TOKEN_CLASS_RESERVED_WORD)                                                                                                                                                                                                                                                                                                                     \
+  _ (TK_WHEN,       "WHEN",       TOKEN_CLASS_RESERVED_WORD)                                                                                                                                                                                                                                                                                                                     \
+  _ (TK_WHILE,      "WHILE",      TOKEN_CLASS_RESERVED_WORD | TOKEN_CLASS_RECOVERY_ANCHOR)                                                                                                                                                                                                                                                                                       \
+  _ (TK_WITH,       "WITH",       TOKEN_CLASS_RESERVED_WORD)                                                                                                                                                                                                                                                                                                                     \
+  _ (TK_XOR,        "XOR",        TOKEN_CLASS_RESERVED_WORD | TOKEN_CLASS_LOGICAL,                                                   .infix_precedence = PREC_LOGICAL,        .operator_designator = S ("xor"))
 
 #define TOKEN_KIND_ENUMERATOR(kind, ...) kind,
 typedef enum {
@@ -1146,21 +1126,21 @@ typedef enum {
                                  ATTRIBUTE_PREFIX_APPROPRIATE
 } Attribute_Prefix_Form;
 
-#define PREFIX_ENTITY_LIST(X) \
-  X (UNRESOLVED,       "nothing") \
-  X (OBJECT,           "an object") \
-  X (RECORD_COMPONENT, "a record component") \
-  X (VALUE,            "a value") \
-  X (TYPE,             "a type or subtype") \
-  X (TASK_UNIT,        "a task type or subtype") \
-  X (SUBPROGRAM,       "a subprogram") \
-  X (PACKAGE,          "a package") \
-  X (GENERIC_UNIT,     "a generic unit") \
-  X (LABEL,            "a label") \
-  X (ENTRY,            "an entry") \
-  X (ENTRY_FAMILY,     "an entry family") \
-  X (EXCEPTION,        "an exception") \
-  X (NAMED_NUMBER,     "a named number")
+#define PREFIX_ENTITY_LIST(_)                    \
+  _ (UNRESOLVED,       "nothing")                \
+  _ (OBJECT,           "an object")              \
+  _ (RECORD_COMPONENT, "a record component")     \
+  _ (VALUE,            "a value")                \
+  _ (TYPE,             "a type or subtype")      \
+  _ (TASK_UNIT,        "a task type or subtype") \
+  _ (SUBPROGRAM,       "a subprogram")           \
+  _ (PACKAGE,          "a package")              \
+  _ (GENERIC_UNIT,     "a generic unit")         \
+  _ (LABEL,            "a label")                \
+  _ (ENTRY,            "an entry")               \
+  _ (ENTRY_FAMILY,     "an entry family")        \
+  _ (EXCEPTION,        "an exception")           \
+  _ (NAMED_NUMBER,     "a named number")
 
 enum {
 #define PREFIX_ENTITY_ORDINAL(name, description) PREFIX_ENTITY_ORDINAL_##name,
@@ -1184,229 +1164,69 @@ typedef enum {
   PREFIX_ENTITY_TYPE_MARK    = PREFIX_ENTITY_TYPE | PREFIX_ENTITY_TASK_UNIT,
 } Prefix_Entity_Mask;
 
-#define ATTRIBUTE_KIND_LIST(X) \
-    \
-  X (ATTRIBUTE_FIRST, "FIRST", ATTRIBUTE_PREFIX_TYPE_MARK | ATTRIBUTE_PREFIX_APPROPRIATE, TYPE_CLASS_SCALAR | TYPE_CLASS_ARRAY, \
-     PREFIX_ENTITY_ANY, \
-     PREFIX_ENTITY_VALUE, \
-     ATTRIBUTE_RESULT_INDEX) \
-  X (ATTRIBUTE_LAST, "LAST", ATTRIBUTE_PREFIX_TYPE_MARK | ATTRIBUTE_PREFIX_APPROPRIATE, TYPE_CLASS_SCALAR | TYPE_CLASS_ARRAY, \
-     PREFIX_ENTITY_ANY, \
-     PREFIX_ENTITY_VALUE, \
-     ATTRIBUTE_RESULT_INDEX) \
-  X (ATTRIBUTE_LENGTH, "LENGTH", ATTRIBUTE_PREFIX_TYPE_MARK | ATTRIBUTE_PREFIX_APPROPRIATE, TYPE_CLASS_ARRAY, \
-     PREFIX_ENTITY_ANY, \
-     PREFIX_ENTITY_VALUE, \
-     ATTRIBUTE_RESULT_UNIVERSAL_INTEGER) \
-  X (ATTRIBUTE_RANGE, "RANGE", ATTRIBUTE_PREFIX_TYPE_MARK | ATTRIBUTE_PREFIX_APPROPRIATE, TYPE_CLASS_ARRAY, \
-     PREFIX_ENTITY_ANY, \
-     PREFIX_ENTITY_VALUE, \
-     ATTRIBUTE_RESULT_INDEX) \
-    \
-  X (ATTRIBUTE_SIZE, "SIZE", ATTRIBUTE_PREFIX_TYPE_MARK | ATTRIBUTE_PREFIX_OBJECT, TYPE_CLASS_ANY, \
-     PREFIX_ENTITY_ANY_OBJECT | PREFIX_ENTITY_TYPE_MARK, \
-     PREFIX_ENTITY_VALUE, \
-     ATTRIBUTE_RESULT_UNIVERSAL_INTEGER) \
-  X (ATTRIBUTE_ALIGNMENT, "ALIGNMENT", ATTRIBUTE_PREFIX_ANY, TYPE_CLASS_ANY, \
-     PREFIX_ENTITY_ANY, \
-     PREFIX_ENTITY_VALUE, \
-     ATTRIBUTE_RESULT_INTEGER) \
-  X (ATTRIBUTE_COMPONENT_SIZE, "COMPONENT_SIZE", ATTRIBUTE_PREFIX_ANY, TYPE_CLASS_ANY, \
-     PREFIX_ENTITY_ANY, \
-     PREFIX_ENTITY_VALUE, \
-     ATTRIBUTE_RESULT_INTEGER) \
-  X (ATTRIBUTE_ADDRESS, "ADDRESS", ATTRIBUTE_PREFIX_TYPE_MARK | ATTRIBUTE_PREFIX_OBJECT, TYPE_CLASS_ANY, \
-     PREFIX_ENTITY_ANY_OBJECT | PREFIX_ENTITY_PROGRAM_UNIT | \
-     PREFIX_ENTITY_LABEL | PREFIX_ENTITY_ENTRY | PREFIX_ENTITY_ENTRY_FAMILY, \
-     PREFIX_ENTITY_VALUE, \
-     ATTRIBUTE_RESULT_ADDRESS) \
-  X (ATTRIBUTE_STORAGE_SIZE, "STORAGE_SIZE", ATTRIBUTE_PREFIX_TYPE_MARK | ATTRIBUTE_PREFIX_OBJECT, TYPE_CLASS_ACCESS | TYPE_CLASS_TASK, \
-     PREFIX_ENTITY_ANY_OBJECT | PREFIX_ENTITY_TYPE_MARK, \
-     PREFIX_ENTITY_VALUE, \
-     ATTRIBUTE_RESULT_UNIVERSAL_INTEGER) \
-  X (ATTRIBUTE_FIRST_BIT, "FIRST_BIT", ATTRIBUTE_PREFIX_OBJECT, TYPE_CLASS_ANY, \
-     PREFIX_ENTITY_RECORD_COMPONENT, \
-     PREFIX_ENTITY_VALUE, \
-     ATTRIBUTE_RESULT_INTEGER) \
-  X (ATTRIBUTE_LAST_BIT, "LAST_BIT", ATTRIBUTE_PREFIX_OBJECT, TYPE_CLASS_ANY, \
-     PREFIX_ENTITY_RECORD_COMPONENT, \
-     PREFIX_ENTITY_VALUE, \
-     ATTRIBUTE_RESULT_INTEGER) \
-  X (ATTRIBUTE_POSITION, "POSITION", ATTRIBUTE_PREFIX_OBJECT, TYPE_CLASS_ANY, \
-     PREFIX_ENTITY_RECORD_COMPONENT, \
-     PREFIX_ENTITY_VALUE, \
-     ATTRIBUTE_RESULT_INTEGER) \
-    \
-  X (ATTRIBUTE_POS, "POS", ATTRIBUTE_PREFIX_TYPE_MARK, TYPE_CLASS_DISCRETE, \
-     PREFIX_ENTITY_ANY, \
-     PREFIX_ENTITY_SUBPROGRAM, \
-     ATTRIBUTE_RESULT_UNIVERSAL_INTEGER) \
-  X (ATTRIBUTE_VAL, "VAL", ATTRIBUTE_PREFIX_TYPE_MARK, TYPE_CLASS_DISCRETE, \
-     PREFIX_ENTITY_ANY, \
-     PREFIX_ENTITY_SUBPROGRAM, \
-     ATTRIBUTE_RESULT_PREFIX_BASE) \
-  X (ATTRIBUTE_ASM_INPUT, "ASM_INPUT", ATTRIBUTE_PREFIX_TYPE_MARK, TYPE_CLASS_ANY, \
-     PREFIX_ENTITY_ANY, \
-     PREFIX_ENTITY_SUBPROGRAM, \
-     ATTRIBUTE_RESULT_ASM_OPERAND) \
-  X (ATTRIBUTE_ASM_OUTPUT, "ASM_OUTPUT", ATTRIBUTE_PREFIX_TYPE_MARK, TYPE_CLASS_ANY, \
-     PREFIX_ENTITY_ANY, \
-     PREFIX_ENTITY_SUBPROGRAM, \
-     ATTRIBUTE_RESULT_ASM_OPERAND) \
-  X (ATTRIBUTE_SUCC, "SUCC", ATTRIBUTE_PREFIX_TYPE_MARK, TYPE_CLASS_DISCRETE, \
-     PREFIX_ENTITY_ANY, \
-     PREFIX_ENTITY_SUBPROGRAM, \
-     ATTRIBUTE_RESULT_PREFIX_BASE) \
-  X (ATTRIBUTE_PRED, "PRED", ATTRIBUTE_PREFIX_TYPE_MARK, TYPE_CLASS_DISCRETE, \
-     PREFIX_ENTITY_ANY, \
-     PREFIX_ENTITY_SUBPROGRAM, \
-     ATTRIBUTE_RESULT_PREFIX_BASE) \
-  X (ATTRIBUTE_MIN, "MIN", ATTRIBUTE_PREFIX_ANY, TYPE_CLASS_ANY, \
-     PREFIX_ENTITY_ANY, \
-     PREFIX_ENTITY_VALUE, \
-     ATTRIBUTE_RESULT_INTEGER) \
-  X (ATTRIBUTE_MAX, "MAX", ATTRIBUTE_PREFIX_ANY, TYPE_CLASS_ANY, \
-     PREFIX_ENTITY_ANY, \
-     PREFIX_ENTITY_VALUE, \
-     ATTRIBUTE_RESULT_INTEGER) \
-  X (ATTRIBUTE_ABS, "ABS", ATTRIBUTE_PREFIX_ANY, TYPE_CLASS_ANY, \
-     PREFIX_ENTITY_ANY, \
-     PREFIX_ENTITY_VALUE, \
-     ATTRIBUTE_RESULT_INTEGER) \
-  X (ATTRIBUTE_MOD, "MOD", ATTRIBUTE_PREFIX_ANY, TYPE_CLASS_ANY, \
-     PREFIX_ENTITY_ANY, \
-     PREFIX_ENTITY_VALUE, \
-     ATTRIBUTE_RESULT_INTEGER) \
-  X (ATTRIBUTE_IMAGE, "IMAGE", ATTRIBUTE_PREFIX_TYPE_MARK, TYPE_CLASS_DISCRETE, \
-     PREFIX_ENTITY_ANY, \
-     PREFIX_ENTITY_SUBPROGRAM, \
-     ATTRIBUTE_RESULT_STRING) \
-  X (ATTRIBUTE_VALUE, "VALUE", ATTRIBUTE_PREFIX_TYPE_MARK, TYPE_CLASS_DISCRETE, \
-     PREFIX_ENTITY_ANY, \
-     PREFIX_ENTITY_SUBPROGRAM, \
-     ATTRIBUTE_RESULT_PREFIX) \
-  X (ATTRIBUTE_WIDTH, "WIDTH", ATTRIBUTE_PREFIX_TYPE_MARK, TYPE_CLASS_DISCRETE, \
-     PREFIX_ENTITY_ANY, \
-     PREFIX_ENTITY_VALUE, \
-     ATTRIBUTE_RESULT_UNIVERSAL_INTEGER) \
-  X (ATTRIBUTE_MODULUS, "MODULUS", ATTRIBUTE_PREFIX_ANY, TYPE_CLASS_ANY, \
-     PREFIX_ENTITY_ANY, \
-     PREFIX_ENTITY_VALUE, \
-     ATTRIBUTE_RESULT_UNIVERSAL_INTEGER) \
-    \
-  X (ATTRIBUTE_ACCESS, "ACCESS", ATTRIBUTE_PREFIX_ANY, TYPE_CLASS_ANY, \
-     PREFIX_ENTITY_ANY, \
-     PREFIX_ENTITY_VALUE, \
-     ATTRIBUTE_RESULT_INTEGER) \
-  X (ATTRIBUTE_UNCHECKED_ACCESS, "UNCHECKED_ACCESS", ATTRIBUTE_PREFIX_ANY, TYPE_CLASS_ANY, \
-     PREFIX_ENTITY_ANY, \
-     PREFIX_ENTITY_VALUE, \
-     ATTRIBUTE_RESULT_INTEGER) \
-    \
-  X (ATTRIBUTE_DIGITS, "DIGITS", ATTRIBUTE_PREFIX_TYPE_MARK, TYPE_CLASS_FLOATING_POINT, \
-     PREFIX_ENTITY_ANY, \
-     PREFIX_ENTITY_VALUE, \
-     ATTRIBUTE_RESULT_UNIVERSAL_INTEGER) \
-  X (ATTRIBUTE_MANTISSA, "MANTISSA", ATTRIBUTE_PREFIX_TYPE_MARK, TYPE_CLASS_REAL, \
-     PREFIX_ENTITY_ANY, \
-     PREFIX_ENTITY_VALUE, \
-     ATTRIBUTE_RESULT_UNIVERSAL_INTEGER) \
-  X (ATTRIBUTE_EMAX, "EMAX", ATTRIBUTE_PREFIX_TYPE_MARK, TYPE_CLASS_FLOATING_POINT, \
-     PREFIX_ENTITY_ANY, \
-     PREFIX_ENTITY_VALUE, \
-     ATTRIBUTE_RESULT_UNIVERSAL_INTEGER) \
-  X (ATTRIBUTE_SAFE_EMAX, "SAFE_EMAX", ATTRIBUTE_PREFIX_TYPE_MARK, TYPE_CLASS_FLOATING_POINT, \
-     PREFIX_ENTITY_ANY, \
-     PREFIX_ENTITY_VALUE, \
-     ATTRIBUTE_RESULT_UNIVERSAL_INTEGER) \
-  X (ATTRIBUTE_EPSILON, "EPSILON", ATTRIBUTE_PREFIX_TYPE_MARK, TYPE_CLASS_FLOATING_POINT, \
-     PREFIX_ENTITY_ANY, \
-     PREFIX_ENTITY_VALUE, \
-     ATTRIBUTE_RESULT_UNIVERSAL_REAL) \
-  X (ATTRIBUTE_SMALL, "SMALL", ATTRIBUTE_PREFIX_TYPE_MARK, TYPE_CLASS_REAL, \
-     PREFIX_ENTITY_ANY, \
-     PREFIX_ENTITY_VALUE, \
-     ATTRIBUTE_RESULT_UNIVERSAL_REAL) \
-  X (ATTRIBUTE_LARGE, "LARGE", ATTRIBUTE_PREFIX_TYPE_MARK, TYPE_CLASS_REAL, \
-     PREFIX_ENTITY_ANY, \
-     PREFIX_ENTITY_VALUE, \
-     ATTRIBUTE_RESULT_UNIVERSAL_REAL) \
-  X (ATTRIBUTE_SAFE_SMALL, "SAFE_SMALL", ATTRIBUTE_PREFIX_TYPE_MARK, TYPE_CLASS_REAL, \
-     PREFIX_ENTITY_ANY, \
-     PREFIX_ENTITY_VALUE, \
-     ATTRIBUTE_RESULT_UNIVERSAL_REAL) \
-  X (ATTRIBUTE_SAFE_LARGE, "SAFE_LARGE", ATTRIBUTE_PREFIX_TYPE_MARK, TYPE_CLASS_REAL, \
-     PREFIX_ENTITY_ANY, \
-     PREFIX_ENTITY_VALUE, \
-     ATTRIBUTE_RESULT_UNIVERSAL_REAL) \
-  X (ATTRIBUTE_MODEL_EPSILON, "MODEL_EPSILON", ATTRIBUTE_PREFIX_ANY, TYPE_CLASS_FLOATING_POINT, \
-     PREFIX_ENTITY_ANY, \
-     PREFIX_ENTITY_VALUE, \
-     ATTRIBUTE_RESULT_UNIVERSAL_REAL) \
-  X (ATTRIBUTE_MODEL_SMALL, "MODEL_SMALL", ATTRIBUTE_PREFIX_ANY, TYPE_CLASS_FLOATING_POINT, \
-     PREFIX_ENTITY_ANY, \
-     PREFIX_ENTITY_VALUE, \
-     ATTRIBUTE_RESULT_UNIVERSAL_REAL) \
-    \
-  X (ATTRIBUTE_DELTA, "DELTA", ATTRIBUTE_PREFIX_TYPE_MARK, TYPE_CLASS_FIXED_POINT, \
-     PREFIX_ENTITY_ANY, \
-     PREFIX_ENTITY_VALUE, \
-     ATTRIBUTE_RESULT_UNIVERSAL_REAL) \
-  X (ATTRIBUTE_FORE, "FORE", ATTRIBUTE_PREFIX_TYPE_MARK, TYPE_CLASS_FIXED_POINT, \
-     PREFIX_ENTITY_ANY, \
-     PREFIX_ENTITY_VALUE, \
-     ATTRIBUTE_RESULT_UNIVERSAL_INTEGER) \
-  X (ATTRIBUTE_AFT, "AFT", ATTRIBUTE_PREFIX_TYPE_MARK, TYPE_CLASS_FIXED_POINT, \
-     PREFIX_ENTITY_ANY, \
-     PREFIX_ENTITY_VALUE, \
-     ATTRIBUTE_RESULT_UNIVERSAL_INTEGER) \
-    \
-  X (ATTRIBUTE_MACHINE_ROUNDS, "MACHINE_ROUNDS", ATTRIBUTE_PREFIX_TYPE_MARK, TYPE_CLASS_REAL, \
-     PREFIX_ENTITY_ANY, \
-     PREFIX_ENTITY_VALUE, \
-     ATTRIBUTE_RESULT_BOOLEAN) \
-  X (ATTRIBUTE_MACHINE_OVERFLOWS, "MACHINE_OVERFLOWS", ATTRIBUTE_PREFIX_TYPE_MARK, TYPE_CLASS_REAL, \
-     PREFIX_ENTITY_ANY, \
-     PREFIX_ENTITY_VALUE, \
-     ATTRIBUTE_RESULT_BOOLEAN) \
-  X (ATTRIBUTE_MACHINE_RADIX, "MACHINE_RADIX", ATTRIBUTE_PREFIX_TYPE_MARK, TYPE_CLASS_FLOATING_POINT, \
-     PREFIX_ENTITY_ANY, \
-     PREFIX_ENTITY_VALUE, \
-     ATTRIBUTE_RESULT_UNIVERSAL_INTEGER) \
-  X (ATTRIBUTE_MACHINE_MANTISSA, "MACHINE_MANTISSA", ATTRIBUTE_PREFIX_TYPE_MARK, TYPE_CLASS_FLOATING_POINT, \
-     PREFIX_ENTITY_ANY, \
-     PREFIX_ENTITY_VALUE, \
-     ATTRIBUTE_RESULT_UNIVERSAL_INTEGER) \
-  X (ATTRIBUTE_MACHINE_EMAX, "MACHINE_EMAX", ATTRIBUTE_PREFIX_TYPE_MARK, TYPE_CLASS_FLOATING_POINT, \
-     PREFIX_ENTITY_ANY, \
-     PREFIX_ENTITY_VALUE, \
-     ATTRIBUTE_RESULT_UNIVERSAL_INTEGER) \
-  X (ATTRIBUTE_MACHINE_EMIN, "MACHINE_EMIN", ATTRIBUTE_PREFIX_TYPE_MARK, TYPE_CLASS_FLOATING_POINT, \
-     PREFIX_ENTITY_ANY, \
-     PREFIX_ENTITY_VALUE, \
-     ATTRIBUTE_RESULT_UNIVERSAL_INTEGER) \
-    \
-  X (ATTRIBUTE_CONSTRAINED, "CONSTRAINED", ATTRIBUTE_PREFIX_TYPE_MARK | ATTRIBUTE_PREFIX_OBJECT, TYPE_CLASS_ANY, \
-     PREFIX_ENTITY_ANY, \
-     PREFIX_ENTITY_VALUE, \
-     ATTRIBUTE_RESULT_BOOLEAN) \
-  X (ATTRIBUTE_CALLABLE, "CALLABLE", ATTRIBUTE_PREFIX_TYPE_MARK | ATTRIBUTE_PREFIX_APPROPRIATE, TYPE_CLASS_TASK, \
-     PREFIX_ENTITY_ANY_OBJECT | PREFIX_ENTITY_VALUE, \
-     PREFIX_ENTITY_VALUE, \
-     ATTRIBUTE_RESULT_BOOLEAN) \
-  X (ATTRIBUTE_TERMINATED, "TERMINATED", ATTRIBUTE_PREFIX_TYPE_MARK | ATTRIBUTE_PREFIX_APPROPRIATE, TYPE_CLASS_TASK, \
-     PREFIX_ENTITY_ANY_OBJECT | PREFIX_ENTITY_VALUE, \
-     PREFIX_ENTITY_VALUE, \
-     ATTRIBUTE_RESULT_BOOLEAN) \
-  X (ATTRIBUTE_COUNT, "COUNT", ATTRIBUTE_PREFIX_OBJECT, TYPE_CLASS_ANY, \
-     PREFIX_ENTITY_ENTRY | PREFIX_ENTITY_ENTRY_FAMILY, \
-     PREFIX_ENTITY_VALUE, \
-     ATTRIBUTE_RESULT_UNIVERSAL_INTEGER) \
-    \
-  X (ATTRIBUTE_BASE, "BASE", ATTRIBUTE_PREFIX_TYPE_MARK, TYPE_CLASS_ANY, \
-     PREFIX_ENTITY_ANY, \
-     PREFIX_ENTITY_TYPE, \
-     ATTRIBUTE_RESULT_BASE)
+#define ATTRIBUTE_KIND_LIST(_)                                                                                                                                                                                                                                                                                                                        \
+                                                                                                                                                                                                                                                                                                                                                      \
+  _ (ATTRIBUTE_FIRST,             "FIRST",             ATTRIBUTE_PREFIX_TYPE_MARK | ATTRIBUTE_PREFIX_APPROPRIATE, TYPE_CLASS_SCALAR | TYPE_CLASS_ARRAY, PREFIX_ENTITY_ANY,                                                                                                              PREFIX_ENTITY_VALUE,      ATTRIBUTE_RESULT_INDEX)             \
+  _ (ATTRIBUTE_LAST,              "LAST",              ATTRIBUTE_PREFIX_TYPE_MARK | ATTRIBUTE_PREFIX_APPROPRIATE, TYPE_CLASS_SCALAR | TYPE_CLASS_ARRAY, PREFIX_ENTITY_ANY,                                                                                                              PREFIX_ENTITY_VALUE,      ATTRIBUTE_RESULT_INDEX)             \
+  _ (ATTRIBUTE_LENGTH,            "LENGTH",            ATTRIBUTE_PREFIX_TYPE_MARK | ATTRIBUTE_PREFIX_APPROPRIATE, TYPE_CLASS_ARRAY,                     PREFIX_ENTITY_ANY,                                                                                                              PREFIX_ENTITY_VALUE,      ATTRIBUTE_RESULT_UNIVERSAL_INTEGER) \
+  _ (ATTRIBUTE_RANGE,             "RANGE",             ATTRIBUTE_PREFIX_TYPE_MARK | ATTRIBUTE_PREFIX_APPROPRIATE, TYPE_CLASS_ARRAY,                     PREFIX_ENTITY_ANY,                                                                                                              PREFIX_ENTITY_VALUE,      ATTRIBUTE_RESULT_INDEX)             \
+                                                                                                                                                                                                                                                                                                                                                      \
+  _ (ATTRIBUTE_SIZE,              "SIZE",              ATTRIBUTE_PREFIX_TYPE_MARK | ATTRIBUTE_PREFIX_OBJECT,      TYPE_CLASS_ANY,                       PREFIX_ENTITY_ANY_OBJECT | PREFIX_ENTITY_TYPE_MARK,                                                                             PREFIX_ENTITY_VALUE,      ATTRIBUTE_RESULT_UNIVERSAL_INTEGER) \
+  _ (ATTRIBUTE_ALIGNMENT,         "ALIGNMENT",         ATTRIBUTE_PREFIX_ANY,                                      TYPE_CLASS_ANY,                       PREFIX_ENTITY_ANY,                                                                                                              PREFIX_ENTITY_VALUE,      ATTRIBUTE_RESULT_INTEGER)           \
+  _ (ATTRIBUTE_COMPONENT_SIZE,    "COMPONENT_SIZE",    ATTRIBUTE_PREFIX_ANY,                                      TYPE_CLASS_ANY,                       PREFIX_ENTITY_ANY,                                                                                                              PREFIX_ENTITY_VALUE,      ATTRIBUTE_RESULT_INTEGER)           \
+  _ (ATTRIBUTE_ADDRESS,           "ADDRESS",           ATTRIBUTE_PREFIX_TYPE_MARK | ATTRIBUTE_PREFIX_OBJECT,      TYPE_CLASS_ANY,                       PREFIX_ENTITY_ANY_OBJECT | PREFIX_ENTITY_PROGRAM_UNIT | PREFIX_ENTITY_LABEL | PREFIX_ENTITY_ENTRY | PREFIX_ENTITY_ENTRY_FAMILY, PREFIX_ENTITY_VALUE,      ATTRIBUTE_RESULT_ADDRESS)           \
+  _ (ATTRIBUTE_STORAGE_SIZE,      "STORAGE_SIZE",      ATTRIBUTE_PREFIX_TYPE_MARK | ATTRIBUTE_PREFIX_OBJECT,      TYPE_CLASS_ACCESS | TYPE_CLASS_TASK,  PREFIX_ENTITY_ANY_OBJECT | PREFIX_ENTITY_TYPE_MARK,                                                                             PREFIX_ENTITY_VALUE,      ATTRIBUTE_RESULT_UNIVERSAL_INTEGER) \
+  _ (ATTRIBUTE_FIRST_BIT,         "FIRST_BIT",         ATTRIBUTE_PREFIX_OBJECT,                                   TYPE_CLASS_ANY,                       PREFIX_ENTITY_RECORD_COMPONENT,                                                                                                 PREFIX_ENTITY_VALUE,      ATTRIBUTE_RESULT_INTEGER)           \
+  _ (ATTRIBUTE_LAST_BIT,          "LAST_BIT",          ATTRIBUTE_PREFIX_OBJECT,                                   TYPE_CLASS_ANY,                       PREFIX_ENTITY_RECORD_COMPONENT,                                                                                                 PREFIX_ENTITY_VALUE,      ATTRIBUTE_RESULT_INTEGER)           \
+  _ (ATTRIBUTE_POSITION,          "POSITION",          ATTRIBUTE_PREFIX_OBJECT,                                   TYPE_CLASS_ANY,                       PREFIX_ENTITY_RECORD_COMPONENT,                                                                                                 PREFIX_ENTITY_VALUE,      ATTRIBUTE_RESULT_INTEGER)           \
+                                                                                                                                                                                                                                                                                                                                                      \
+  _ (ATTRIBUTE_POS,               "POS",               ATTRIBUTE_PREFIX_TYPE_MARK,                                TYPE_CLASS_DISCRETE,                  PREFIX_ENTITY_ANY,                                                                                                              PREFIX_ENTITY_SUBPROGRAM, ATTRIBUTE_RESULT_UNIVERSAL_INTEGER) \
+  _ (ATTRIBUTE_VAL,               "VAL",               ATTRIBUTE_PREFIX_TYPE_MARK,                                TYPE_CLASS_DISCRETE,                  PREFIX_ENTITY_ANY,                                                                                                              PREFIX_ENTITY_SUBPROGRAM, ATTRIBUTE_RESULT_PREFIX_BASE)       \
+  _ (ATTRIBUTE_ASM_INPUT,         "ASM_INPUT",         ATTRIBUTE_PREFIX_TYPE_MARK,                                TYPE_CLASS_ANY,                       PREFIX_ENTITY_ANY,                                                                                                              PREFIX_ENTITY_SUBPROGRAM, ATTRIBUTE_RESULT_ASM_OPERAND)       \
+  _ (ATTRIBUTE_ASM_OUTPUT,        "ASM_OUTPUT",        ATTRIBUTE_PREFIX_TYPE_MARK,                                TYPE_CLASS_ANY,                       PREFIX_ENTITY_ANY,                                                                                                              PREFIX_ENTITY_SUBPROGRAM, ATTRIBUTE_RESULT_ASM_OPERAND)       \
+  _ (ATTRIBUTE_SUCC,              "SUCC",              ATTRIBUTE_PREFIX_TYPE_MARK,                                TYPE_CLASS_DISCRETE,                  PREFIX_ENTITY_ANY,                                                                                                              PREFIX_ENTITY_SUBPROGRAM, ATTRIBUTE_RESULT_PREFIX_BASE)       \
+  _ (ATTRIBUTE_PRED,              "PRED",              ATTRIBUTE_PREFIX_TYPE_MARK,                                TYPE_CLASS_DISCRETE,                  PREFIX_ENTITY_ANY,                                                                                                              PREFIX_ENTITY_SUBPROGRAM, ATTRIBUTE_RESULT_PREFIX_BASE)       \
+  _ (ATTRIBUTE_MIN,               "MIN",               ATTRIBUTE_PREFIX_ANY,                                      TYPE_CLASS_ANY,                       PREFIX_ENTITY_ANY,                                                                                                              PREFIX_ENTITY_VALUE,      ATTRIBUTE_RESULT_INTEGER)           \
+  _ (ATTRIBUTE_MAX,               "MAX",               ATTRIBUTE_PREFIX_ANY,                                      TYPE_CLASS_ANY,                       PREFIX_ENTITY_ANY,                                                                                                              PREFIX_ENTITY_VALUE,      ATTRIBUTE_RESULT_INTEGER)           \
+  _ (ATTRIBUTE_ABS,               "ABS",               ATTRIBUTE_PREFIX_ANY,                                      TYPE_CLASS_ANY,                       PREFIX_ENTITY_ANY,                                                                                                              PREFIX_ENTITY_VALUE,      ATTRIBUTE_RESULT_INTEGER)           \
+  _ (ATTRIBUTE_MOD,               "MOD",               ATTRIBUTE_PREFIX_ANY,                                      TYPE_CLASS_ANY,                       PREFIX_ENTITY_ANY,                                                                                                              PREFIX_ENTITY_VALUE,      ATTRIBUTE_RESULT_INTEGER)           \
+  _ (ATTRIBUTE_IMAGE,             "IMAGE",             ATTRIBUTE_PREFIX_TYPE_MARK,                                TYPE_CLASS_DISCRETE,                  PREFIX_ENTITY_ANY,                                                                                                              PREFIX_ENTITY_SUBPROGRAM, ATTRIBUTE_RESULT_STRING)            \
+  _ (ATTRIBUTE_VALUE,             "VALUE",             ATTRIBUTE_PREFIX_TYPE_MARK,                                TYPE_CLASS_DISCRETE,                  PREFIX_ENTITY_ANY,                                                                                                              PREFIX_ENTITY_SUBPROGRAM, ATTRIBUTE_RESULT_PREFIX)            \
+  _ (ATTRIBUTE_WIDTH,             "WIDTH",             ATTRIBUTE_PREFIX_TYPE_MARK,                                TYPE_CLASS_DISCRETE,                  PREFIX_ENTITY_ANY,                                                                                                              PREFIX_ENTITY_VALUE,      ATTRIBUTE_RESULT_UNIVERSAL_INTEGER) \
+  _ (ATTRIBUTE_MODULUS,           "MODULUS",           ATTRIBUTE_PREFIX_ANY,                                      TYPE_CLASS_ANY,                       PREFIX_ENTITY_ANY,                                                                                                              PREFIX_ENTITY_VALUE,      ATTRIBUTE_RESULT_UNIVERSAL_INTEGER) \
+                                                                                                                                                                                                                                                                                                                                                      \
+  _ (ATTRIBUTE_ACCESS,            "ACCESS",            ATTRIBUTE_PREFIX_ANY,                                      TYPE_CLASS_ANY,                       PREFIX_ENTITY_ANY,                                                                                                              PREFIX_ENTITY_VALUE,      ATTRIBUTE_RESULT_INTEGER)           \
+  _ (ATTRIBUTE_UNCHECKED_ACCESS,  "UNCHECKED_ACCESS",  ATTRIBUTE_PREFIX_ANY,                                      TYPE_CLASS_ANY,                       PREFIX_ENTITY_ANY,                                                                                                              PREFIX_ENTITY_VALUE,      ATTRIBUTE_RESULT_INTEGER)           \
+                                                                                                                                                                                                                                                                                                                                                      \
+  _ (ATTRIBUTE_DIGITS,            "DIGITS",            ATTRIBUTE_PREFIX_TYPE_MARK,                                TYPE_CLASS_FLOATING_POINT,            PREFIX_ENTITY_ANY,                                                                                                              PREFIX_ENTITY_VALUE,      ATTRIBUTE_RESULT_UNIVERSAL_INTEGER) \
+  _ (ATTRIBUTE_MANTISSA,          "MANTISSA",          ATTRIBUTE_PREFIX_TYPE_MARK,                                TYPE_CLASS_REAL,                      PREFIX_ENTITY_ANY,                                                                                                              PREFIX_ENTITY_VALUE,      ATTRIBUTE_RESULT_UNIVERSAL_INTEGER) \
+  _ (ATTRIBUTE_EMAX,              "EMAX",              ATTRIBUTE_PREFIX_TYPE_MARK,                                TYPE_CLASS_FLOATING_POINT,            PREFIX_ENTITY_ANY,                                                                                                              PREFIX_ENTITY_VALUE,      ATTRIBUTE_RESULT_UNIVERSAL_INTEGER) \
+  _ (ATTRIBUTE_SAFE_EMAX,         "SAFE_EMAX",         ATTRIBUTE_PREFIX_TYPE_MARK,                                TYPE_CLASS_FLOATING_POINT,            PREFIX_ENTITY_ANY,                                                                                                              PREFIX_ENTITY_VALUE,      ATTRIBUTE_RESULT_UNIVERSAL_INTEGER) \
+  _ (ATTRIBUTE_EPSILON,           "EPSILON",           ATTRIBUTE_PREFIX_TYPE_MARK,                                TYPE_CLASS_FLOATING_POINT,            PREFIX_ENTITY_ANY,                                                                                                              PREFIX_ENTITY_VALUE,      ATTRIBUTE_RESULT_UNIVERSAL_REAL)    \
+  _ (ATTRIBUTE_SMALL,             "SMALL",             ATTRIBUTE_PREFIX_TYPE_MARK,                                TYPE_CLASS_REAL,                      PREFIX_ENTITY_ANY,                                                                                                              PREFIX_ENTITY_VALUE,      ATTRIBUTE_RESULT_UNIVERSAL_REAL)    \
+  _ (ATTRIBUTE_LARGE,             "LARGE",             ATTRIBUTE_PREFIX_TYPE_MARK,                                TYPE_CLASS_REAL,                      PREFIX_ENTITY_ANY,                                                                                                              PREFIX_ENTITY_VALUE,      ATTRIBUTE_RESULT_UNIVERSAL_REAL)    \
+  _ (ATTRIBUTE_SAFE_SMALL,        "SAFE_SMALL",        ATTRIBUTE_PREFIX_TYPE_MARK,                                TYPE_CLASS_REAL,                      PREFIX_ENTITY_ANY,                                                                                                              PREFIX_ENTITY_VALUE,      ATTRIBUTE_RESULT_UNIVERSAL_REAL)    \
+  _ (ATTRIBUTE_SAFE_LARGE,        "SAFE_LARGE",        ATTRIBUTE_PREFIX_TYPE_MARK,                                TYPE_CLASS_REAL,                      PREFIX_ENTITY_ANY,                                                                                                              PREFIX_ENTITY_VALUE,      ATTRIBUTE_RESULT_UNIVERSAL_REAL)    \
+  _ (ATTRIBUTE_MODEL_EPSILON,     "MODEL_EPSILON",     ATTRIBUTE_PREFIX_ANY,                                      TYPE_CLASS_FLOATING_POINT,            PREFIX_ENTITY_ANY,                                                                                                              PREFIX_ENTITY_VALUE,      ATTRIBUTE_RESULT_UNIVERSAL_REAL)    \
+  _ (ATTRIBUTE_MODEL_SMALL,       "MODEL_SMALL",       ATTRIBUTE_PREFIX_ANY,                                      TYPE_CLASS_FLOATING_POINT,            PREFIX_ENTITY_ANY,                                                                                                              PREFIX_ENTITY_VALUE,      ATTRIBUTE_RESULT_UNIVERSAL_REAL)    \
+                                                                                                                                                                                                                                                                                                                                                      \
+  _ (ATTRIBUTE_DELTA,             "DELTA",             ATTRIBUTE_PREFIX_TYPE_MARK,                                TYPE_CLASS_FIXED_POINT,               PREFIX_ENTITY_ANY,                                                                                                              PREFIX_ENTITY_VALUE,      ATTRIBUTE_RESULT_UNIVERSAL_REAL)    \
+  _ (ATTRIBUTE_FORE,              "FORE",              ATTRIBUTE_PREFIX_TYPE_MARK,                                TYPE_CLASS_FIXED_POINT,               PREFIX_ENTITY_ANY,                                                                                                              PREFIX_ENTITY_VALUE,      ATTRIBUTE_RESULT_UNIVERSAL_INTEGER) \
+  _ (ATTRIBUTE_AFT,               "AFT",               ATTRIBUTE_PREFIX_TYPE_MARK,                                TYPE_CLASS_FIXED_POINT,               PREFIX_ENTITY_ANY,                                                                                                              PREFIX_ENTITY_VALUE,      ATTRIBUTE_RESULT_UNIVERSAL_INTEGER) \
+                                                                                                                                                                                                                                                                                                                                                      \
+  _ (ATTRIBUTE_MACHINE_ROUNDS,    "MACHINE_ROUNDS",    ATTRIBUTE_PREFIX_TYPE_MARK,                                TYPE_CLASS_REAL,                      PREFIX_ENTITY_ANY,                                                                                                              PREFIX_ENTITY_VALUE,      ATTRIBUTE_RESULT_BOOLEAN)           \
+  _ (ATTRIBUTE_MACHINE_OVERFLOWS, "MACHINE_OVERFLOWS", ATTRIBUTE_PREFIX_TYPE_MARK,                                TYPE_CLASS_REAL,                      PREFIX_ENTITY_ANY,                                                                                                              PREFIX_ENTITY_VALUE,      ATTRIBUTE_RESULT_BOOLEAN)           \
+  _ (ATTRIBUTE_MACHINE_RADIX,     "MACHINE_RADIX",     ATTRIBUTE_PREFIX_TYPE_MARK,                                TYPE_CLASS_FLOATING_POINT,            PREFIX_ENTITY_ANY,                                                                                                              PREFIX_ENTITY_VALUE,      ATTRIBUTE_RESULT_UNIVERSAL_INTEGER) \
+  _ (ATTRIBUTE_MACHINE_MANTISSA,  "MACHINE_MANTISSA",  ATTRIBUTE_PREFIX_TYPE_MARK,                                TYPE_CLASS_FLOATING_POINT,            PREFIX_ENTITY_ANY,                                                                                                              PREFIX_ENTITY_VALUE,      ATTRIBUTE_RESULT_UNIVERSAL_INTEGER) \
+  _ (ATTRIBUTE_MACHINE_EMAX,      "MACHINE_EMAX",      ATTRIBUTE_PREFIX_TYPE_MARK,                                TYPE_CLASS_FLOATING_POINT,            PREFIX_ENTITY_ANY,                                                                                                              PREFIX_ENTITY_VALUE,      ATTRIBUTE_RESULT_UNIVERSAL_INTEGER) \
+  _ (ATTRIBUTE_MACHINE_EMIN,      "MACHINE_EMIN",      ATTRIBUTE_PREFIX_TYPE_MARK,                                TYPE_CLASS_FLOATING_POINT,            PREFIX_ENTITY_ANY,                                                                                                              PREFIX_ENTITY_VALUE,      ATTRIBUTE_RESULT_UNIVERSAL_INTEGER) \
+                                                                                                                                                                                                                                                                                                                                                      \
+  _ (ATTRIBUTE_CONSTRAINED,       "CONSTRAINED",       ATTRIBUTE_PREFIX_TYPE_MARK | ATTRIBUTE_PREFIX_OBJECT,      TYPE_CLASS_ANY,                       PREFIX_ENTITY_ANY,                                                                                                              PREFIX_ENTITY_VALUE,      ATTRIBUTE_RESULT_BOOLEAN)           \
+  _ (ATTRIBUTE_CALLABLE,          "CALLABLE",          ATTRIBUTE_PREFIX_TYPE_MARK | ATTRIBUTE_PREFIX_APPROPRIATE, TYPE_CLASS_TASK,                      PREFIX_ENTITY_ANY_OBJECT | PREFIX_ENTITY_VALUE,                                                                                 PREFIX_ENTITY_VALUE,      ATTRIBUTE_RESULT_BOOLEAN)           \
+  _ (ATTRIBUTE_TERMINATED,        "TERMINATED",        ATTRIBUTE_PREFIX_TYPE_MARK | ATTRIBUTE_PREFIX_APPROPRIATE, TYPE_CLASS_TASK,                      PREFIX_ENTITY_ANY_OBJECT | PREFIX_ENTITY_VALUE,                                                                                 PREFIX_ENTITY_VALUE,      ATTRIBUTE_RESULT_BOOLEAN)           \
+  _ (ATTRIBUTE_COUNT,             "COUNT",             ATTRIBUTE_PREFIX_OBJECT,                                   TYPE_CLASS_ANY,                       PREFIX_ENTITY_ENTRY | PREFIX_ENTITY_ENTRY_FAMILY,                                                                               PREFIX_ENTITY_VALUE,      ATTRIBUTE_RESULT_UNIVERSAL_INTEGER) \
+                                                                                                                                                                                                                                                                                                                                                      \
+  _ (ATTRIBUTE_BASE,              "BASE",              ATTRIBUTE_PREFIX_TYPE_MARK,                                TYPE_CLASS_ANY,                       PREFIX_ENTITY_ANY,                                                                                                              PREFIX_ENTITY_TYPE,       ATTRIBUTE_RESULT_BASE)
 
 typedef enum {
   ATTRIBUTE_UNKNOWN = 0,
@@ -1945,94 +1765,94 @@ extern const Syntax_Tree_Edge Syntax_Tree_Shape[NK_COUNT][6];
 Node_List Get_Children (const Node       *node,
                         const Syntax_Tree_Edge  *edge);
 
-#define SYNTAX_TREE_SHAPE_LIST(X) \
-    \
-  X (NK_INTEGER) \
-  X (NK_REAL) \
-  X (NK_STRING) \
-  X (NK_CHARACTER) \
-  X (NK_NULL) \
-  X (NK_OTHERS) \
-  X (NK_IDENTIFIER) \
-  X (NK_SELECTED, KID (selected.prefix)) \
-  X (NK_ATTRIBUTE, KID (attribute.prefix), KIDS (attribute.arguments)) \
-  X (NK_QUALIFIED, KID (qualified.subtype_mark), KID (qualified.expression)) \
-    \
-  X (NK_BINARY_OP, KID (binary.left), KID (binary.right)) \
-  X (NK_UNARY_OP, KID (unary.operand)) \
-  X (NK_AGGREGATE, KIDS (aggregate.items)) \
-  X (NK_ALLOCATOR, KID (allocator.subtype_mark), KID (allocator.expression)) \
-  X (NK_APPLY, KID (apply.prefix), KIDS (apply.arguments)) \
-  X (NK_RANGE, KID (range.low), KID (range.high)) \
-  X (NK_ASSOCIATION, KIDS (association.choices), KID (association.expression)) \
-    \
-  X (NK_SUBTYPE_INDICATION, KID (subtype_ind.subtype_mark), KID (subtype_ind.constraint)) \
-  X (NK_RANGE_CONSTRAINT, KID (range_constraint.range)) \
-  X (NK_INDEX_CONSTRAINT, KIDS (index_constraint.ranges)) \
-  X (NK_DISCRIMINANT_CONSTRAINT, KIDS (discriminant_constraint.associations)) \
-  X (NK_DIGITS_CONSTRAINT, KID (digits_constraint.digits_expr), KID (digits_constraint.range)) \
-  X (NK_DELTA_CONSTRAINT, KID (delta_constraint.delta_expr), KID (delta_constraint.range)) \
-  X (NK_ARRAY_TYPE, KIDS (array_type.indices), KID (array_type.component_type)) \
-  X (NK_RECORD_TYPE, KIDS (record_type.discriminants), KIDS (record_type.components), KID (record_type.variant_part)) \
-  X (NK_ACCESS_TYPE, KID (access_type.designated)) \
-  X (NK_DERIVED_TYPE, KID (derived_type.parent_type), KID (derived_type.constraint)) \
-  X (NK_ENUMERATION_TYPE, KIDS (enum_type.literals)) \
-  X (NK_INTEGER_TYPE, KID (integer_type.range)) \
-  X (NK_REAL_TYPE, KID (real_type.precision), KID (real_type.range), KID (real_type.delta)) \
-  X (NK_COMPONENT_DECL, KIDS (component.names), KID (component.component_type), KID (component.init)) \
-  X (NK_VARIANT_PART, KID (variant_part.discriminant), KIDS (variant_part.variants)) \
-  X (NK_VARIANT, KIDS (variant.choices), KIDS (variant.components), KID (variant.variant_part)) \
-  X (NK_DISCRIMINANT_SPEC, KIDS (discriminant.names), KID (discriminant.disc_type), KID (discriminant.default_expr)) \
-    \
-  X (NK_ASSIGNMENT, KID (assignment.target), KID (assignment.value)) \
-  X (NK_CALL_STMT, KID (assignment.target), KID (assignment.value)) \
-  X (NK_RETURN, KID (return_stmt.expression)) \
-  X (NK_IF, KID (if_stmt.condition), KIDS (if_stmt.then_stmts), KIDS (if_stmt.elsif_parts), KIDS (if_stmt.else_stmts)) \
-  X (NK_CASE, KID (case_stmt.expression), KIDS (case_stmt.alternatives)) \
-  X (NK_LOOP, KID (loop_stmt.iteration_scheme), KIDS (loop_stmt.statements)) \
-  X (NK_BLOCK, KIDS (block_stmt.declarations), KIDS (block_stmt.statements), KIDS (block_stmt.handlers)) \
-  X (NK_EXIT, KID (exit_stmt.condition)) \
-  X (NK_GOTO) \
-  X (NK_RAISE, KID (raise_stmt.exception_name)) \
-  X (NK_NULL_STMT) \
-  X (NK_LABEL, KID (label_node.statement)) \
-  X (NK_ACCEPT, KID (accept_stmt.index), KIDS (accept_stmt.parameters), KIDS (accept_stmt.statements)) \
-  X (NK_SELECT, KIDS (select_stmt.alternatives), KID (select_stmt.else_part)) \
-  X (NK_SELECT_ALTERNATIVE, KID (select_alternative.guard), KID (select_alternative.statement), KIDS (select_alternative.statements)) \
-  X (NK_DELAY, KID (delay_stmt.expression)) \
-  X (NK_ABORT, KIDS (abort_stmt.task_names)) \
-  X (NK_CODE_STATEMENT, KID (code_statement.insertion)) \
-    \
-  X (NK_OBJECT_DECL, KIDS (object_decl.names), KID (object_decl.object_type), KID (object_decl.init)) \
-  X (NK_TYPE_DECL, KID (type_decl.definition), KIDS (type_decl.discriminants)) \
-  X (NK_SUBTYPE_DECL, KID (type_decl.definition), KIDS (type_decl.discriminants)) \
-  X (NK_EXCEPTION_DECL, KIDS (exception_decl.names), KID (exception_decl.renamed)) \
-  X (NK_PROCEDURE_SPEC, KIDS (subprogram_spec.parameters), KID (subprogram_spec.return_type), KID (subprogram_spec.renamed)) \
-  X (NK_FUNCTION_SPEC, KIDS (subprogram_spec.parameters), KID (subprogram_spec.return_type), KID (subprogram_spec.renamed)) \
-  X (NK_PROCEDURE_BODY, KID (subprogram_body.specification), KIDS (subprogram_body.declarations), KIDS (subprogram_body.statements), KIDS (subprogram_body.handlers)) \
-  X (NK_FUNCTION_BODY, KID (subprogram_body.specification), KIDS (subprogram_body.declarations), KIDS (subprogram_body.statements), KIDS (subprogram_body.handlers)) \
-  X (NK_PACKAGE_SPEC, KIDS (package_spec.visible_decls), KIDS (package_spec.private_decls)) \
-  X (NK_PACKAGE_BODY, KIDS (package_body.declarations), KIDS (package_body.statements), KIDS (package_body.handlers)) \
-  X (NK_TASK_SPEC, KIDS (task_spec.entries)) \
-  X (NK_TASK_BODY, KIDS (task_body.declarations), KIDS (task_body.statements), KIDS (task_body.handlers)) \
-  X (NK_ENTRY_DECL, KIDS (entry_decl.parameters), KIDS (entry_decl.index_constraints)) \
-  X (NK_SUBPROGRAM_RENAMING, KIDS (subprogram_spec.parameters), KID (subprogram_spec.return_type), KID (subprogram_spec.renamed)) \
-  X (NK_PACKAGE_RENAMING, KID (package_renaming.old_name)) \
-  X (NK_EXCEPTION_RENAMING, KIDS (exception_decl.names), KID (exception_decl.renamed)) \
-  X (NK_GENERIC_DECL, KIDS (generic_decl.formals), KID (generic_decl.unit)) \
-  X (NK_GENERIC_INST, KID (generic_inst.generic_name), KIDS (generic_inst.actuals)) \
-  X (NK_PARAM_SPEC, KIDS (param_spec.names), KID (param_spec.param_type), KID (param_spec.default_expr)) \
-  X (NK_USE_CLAUSE, KIDS (use_clause.names)) \
-  X (NK_WITH_CLAUSE, KIDS (use_clause.names)) \
-  X (NK_PRAGMA, KIDS (pragma_node.arguments)) \
-  X (NK_REPRESENTATION_CLAUSE, KID (rep_clause.entity_name), KID (rep_clause.expression), KIDS (rep_clause.component_clauses)) \
-  X (NK_EXCEPTION_HANDLER, KIDS (handler.exceptions), KIDS (handler.statements)) \
-  X (NK_CONTEXT_CLAUSE, KIDS (context.with_clauses), KIDS (context.use_clauses), KIDS (context.pragmas)) \
-  X (NK_COMPILATION_UNIT, KID (compilation_unit.context), KID (compilation_unit.unit), KID (compilation_unit.separate_parent)) \
-    \
-  X (NK_GENERIC_TYPE_PARAM, KID (generic_type_param.def_detail), KIDS (generic_type_param.discriminants)) \
-  X (NK_GENERIC_OBJECT_PARAM, KIDS (generic_object_param.names), KID (generic_object_param.object_type), KID (generic_object_param.default_expr)) \
-  X (NK_GENERIC_SUBPROGRAM_PARAM, KID (generic_subprog_param.specification), KID (generic_subprog_param.default_name))
+#define SYNTAX_TREE_SHAPE_LIST(_)                                                                                                                                                                  \
+                                                                                                                                                                                                   \
+  _ (NK_INTEGER)                                                                                                                                                                                   \
+  _ (NK_REAL)                                                                                                                                                                                      \
+  _ (NK_STRING)                                                                                                                                                                                    \
+  _ (NK_CHARACTER)                                                                                                                                                                                 \
+  _ (NK_NULL)                                                                                                                                                                                      \
+  _ (NK_OTHERS)                                                                                                                                                                                    \
+  _ (NK_IDENTIFIER)                                                                                                                                                                                \
+  _ (NK_SELECTED,                 KID (selected.prefix))                                                                                                                                           \
+  _ (NK_ATTRIBUTE,                KID (attribute.prefix),                      KIDS (attribute.arguments))                                                                                         \
+  _ (NK_QUALIFIED,                KID (qualified.subtype_mark),                KID (qualified.expression))                                                                                         \
+                                                                                                                                                                                                   \
+  _ (NK_BINARY_OP,                KID (binary.left),                           KID (binary.right))                                                                                                 \
+  _ (NK_UNARY_OP,                 KID (unary.operand))                                                                                                                                             \
+  _ (NK_AGGREGATE,                KIDS (aggregate.items))                                                                                                                                          \
+  _ (NK_ALLOCATOR,                KID (allocator.subtype_mark),                KID (allocator.expression))                                                                                         \
+  _ (NK_APPLY,                    KID (apply.prefix),                          KIDS (apply.arguments))                                                                                             \
+  _ (NK_RANGE,                    KID (range.low),                             KID (range.high))                                                                                                   \
+  _ (NK_ASSOCIATION,              KIDS (association.choices),                  KID (association.expression))                                                                                       \
+                                                                                                                                                                                                   \
+  _ (NK_SUBTYPE_INDICATION,       KID (subtype_ind.subtype_mark),              KID (subtype_ind.constraint))                                                                                       \
+  _ (NK_RANGE_CONSTRAINT,         KID (range_constraint.range))                                                                                                                                    \
+  _ (NK_INDEX_CONSTRAINT,         KIDS (index_constraint.ranges))                                                                                                                                  \
+  _ (NK_DISCRIMINANT_CONSTRAINT,  KIDS (discriminant_constraint.associations))                                                                                                                     \
+  _ (NK_DIGITS_CONSTRAINT,        KID (digits_constraint.digits_expr),         KID (digits_constraint.range))                                                                                      \
+  _ (NK_DELTA_CONSTRAINT,         KID (delta_constraint.delta_expr),           KID (delta_constraint.range))                                                                                       \
+  _ (NK_ARRAY_TYPE,               KIDS (array_type.indices),                   KID (array_type.component_type))                                                                                    \
+  _ (NK_RECORD_TYPE,              KIDS (record_type.discriminants),            KIDS (record_type.components),            KID (record_type.variant_part))                                           \
+  _ (NK_ACCESS_TYPE,              KID (access_type.designated))                                                                                                                                    \
+  _ (NK_DERIVED_TYPE,             KID (derived_type.parent_type),              KID (derived_type.constraint))                                                                                      \
+  _ (NK_ENUMERATION_TYPE,         KIDS (enum_type.literals))                                                                                                                                       \
+  _ (NK_INTEGER_TYPE,             KID (integer_type.range))                                                                                                                                        \
+  _ (NK_REAL_TYPE,                KID (real_type.precision),                   KID (real_type.range),                    KID (real_type.delta))                                                    \
+  _ (NK_COMPONENT_DECL,           KIDS (component.names),                      KID (component.component_type),           KID (component.init))                                                     \
+  _ (NK_VARIANT_PART,             KID (variant_part.discriminant),             KIDS (variant_part.variants))                                                                                       \
+  _ (NK_VARIANT,                  KIDS (variant.choices),                      KIDS (variant.components),                KID (variant.variant_part))                                               \
+  _ (NK_DISCRIMINANT_SPEC,        KIDS (discriminant.names),                   KID (discriminant.disc_type),             KID (discriminant.default_expr))                                          \
+                                                                                                                                                                                                   \
+  _ (NK_ASSIGNMENT,               KID (assignment.target),                     KID (assignment.value))                                                                                             \
+  _ (NK_CALL_STMT,                KID (assignment.target),                     KID (assignment.value))                                                                                             \
+  _ (NK_RETURN,                   KID (return_stmt.expression))                                                                                                                                    \
+  _ (NK_IF,                       KID (if_stmt.condition),                     KIDS (if_stmt.then_stmts),                KIDS (if_stmt.elsif_parts),              KIDS (if_stmt.else_stmts))       \
+  _ (NK_CASE,                     KID (case_stmt.expression),                  KIDS (case_stmt.alternatives))                                                                                      \
+  _ (NK_LOOP,                     KID (loop_stmt.iteration_scheme),            KIDS (loop_stmt.statements))                                                                                        \
+  _ (NK_BLOCK,                    KIDS (block_stmt.declarations),              KIDS (block_stmt.statements),             KIDS (block_stmt.handlers))                                               \
+  _ (NK_EXIT,                     KID (exit_stmt.condition))                                                                                                                                       \
+  _ (NK_GOTO)                                                                                                                                                                                      \
+  _ (NK_RAISE,                    KID (raise_stmt.exception_name))                                                                                                                                 \
+  _ (NK_NULL_STMT)                                                                                                                                                                                 \
+  _ (NK_LABEL,                    KID (label_node.statement))                                                                                                                                      \
+  _ (NK_ACCEPT,                   KID (accept_stmt.index),                     KIDS (accept_stmt.parameters),            KIDS (accept_stmt.statements))                                            \
+  _ (NK_SELECT,                   KIDS (select_stmt.alternatives),             KID (select_stmt.else_part))                                                                                        \
+  _ (NK_SELECT_ALTERNATIVE,       KID (select_alternative.guard),              KID (select_alternative.statement),       KIDS (select_alternative.statements))                                     \
+  _ (NK_DELAY,                    KID (delay_stmt.expression))                                                                                                                                     \
+  _ (NK_ABORT,                    KIDS (abort_stmt.task_names))                                                                                                                                    \
+  _ (NK_CODE_STATEMENT,           KID (code_statement.insertion))                                                                                                                                  \
+                                                                                                                                                                                                   \
+  _ (NK_OBJECT_DECL,              KIDS (object_decl.names),                    KID (object_decl.object_type),            KID (object_decl.init))                                                   \
+  _ (NK_TYPE_DECL,                KID (type_decl.definition),                  KIDS (type_decl.discriminants))                                                                                     \
+  _ (NK_SUBTYPE_DECL,             KID (type_decl.definition),                  KIDS (type_decl.discriminants))                                                                                     \
+  _ (NK_EXCEPTION_DECL,           KIDS (exception_decl.names),                 KID (exception_decl.renamed))                                                                                       \
+  _ (NK_PROCEDURE_SPEC,           KIDS (subprogram_spec.parameters),           KID (subprogram_spec.return_type),        KID (subprogram_spec.renamed))                                            \
+  _ (NK_FUNCTION_SPEC,            KIDS (subprogram_spec.parameters),           KID (subprogram_spec.return_type),        KID (subprogram_spec.renamed))                                            \
+  _ (NK_PROCEDURE_BODY,           KID (subprogram_body.specification),         KIDS (subprogram_body.declarations),      KIDS (subprogram_body.statements),       KIDS (subprogram_body.handlers)) \
+  _ (NK_FUNCTION_BODY,            KID (subprogram_body.specification),         KIDS (subprogram_body.declarations),      KIDS (subprogram_body.statements),       KIDS (subprogram_body.handlers)) \
+  _ (NK_PACKAGE_SPEC,             KIDS (package_spec.visible_decls),           KIDS (package_spec.private_decls))                                                                                  \
+  _ (NK_PACKAGE_BODY,             KIDS (package_body.declarations),            KIDS (package_body.statements),           KIDS (package_body.handlers))                                             \
+  _ (NK_TASK_SPEC,                KIDS (task_spec.entries))                                                                                                                                        \
+  _ (NK_TASK_BODY,                KIDS (task_body.declarations),               KIDS (task_body.statements),              KIDS (task_body.handlers))                                                \
+  _ (NK_ENTRY_DECL,               KIDS (entry_decl.parameters),                KIDS (entry_decl.index_constraints))                                                                                \
+  _ (NK_SUBPROGRAM_RENAMING,      KIDS (subprogram_spec.parameters),           KID (subprogram_spec.return_type),        KID (subprogram_spec.renamed))                                            \
+  _ (NK_PACKAGE_RENAMING,         KID (package_renaming.old_name))                                                                                                                                 \
+  _ (NK_EXCEPTION_RENAMING,       KIDS (exception_decl.names),                 KID (exception_decl.renamed))                                                                                       \
+  _ (NK_GENERIC_DECL,             KIDS (generic_decl.formals),                 KID (generic_decl.unit))                                                                                            \
+  _ (NK_GENERIC_INST,             KID (generic_inst.generic_name),             KIDS (generic_inst.actuals))                                                                                        \
+  _ (NK_PARAM_SPEC,               KIDS (param_spec.names),                     KID (param_spec.param_type),              KID (param_spec.default_expr))                                            \
+  _ (NK_USE_CLAUSE,               KIDS (use_clause.names))                                                                                                                                         \
+  _ (NK_WITH_CLAUSE,              KIDS (use_clause.names))                                                                                                                                         \
+  _ (NK_PRAGMA,                   KIDS (pragma_node.arguments))                                                                                                                                    \
+  _ (NK_REPRESENTATION_CLAUSE,    KID (rep_clause.entity_name),                KID (rep_clause.expression),              KIDS (rep_clause.component_clauses))                                      \
+  _ (NK_EXCEPTION_HANDLER,        KIDS (handler.exceptions),                   KIDS (handler.statements))                                                                                          \
+  _ (NK_CONTEXT_CLAUSE,           KIDS (context.with_clauses),                 KIDS (context.use_clauses),               KIDS (context.pragmas))                                                   \
+  _ (NK_COMPILATION_UNIT,         KID (compilation_unit.context),              KID (compilation_unit.unit),              KID (compilation_unit.separate_parent))                                   \
+                                                                                                                                                                                                   \
+  _ (NK_GENERIC_TYPE_PARAM,       KID (generic_type_param.def_detail),         KIDS (generic_type_param.discriminants))                                                                            \
+  _ (NK_GENERIC_OBJECT_PARAM,     KIDS (generic_object_param.names),           KID (generic_object_param.object_type),   KID (generic_object_param.default_expr))                                  \
+  _ (NK_GENERIC_SUBPROGRAM_PARAM, KID (generic_subprog_param.specification),   KID (generic_subprog_param.default_name))
 
 typedef enum {
   CONSTRAINT_FORM_NONE              = 0,
@@ -2180,200 +2000,94 @@ bool Lowering_Is_Filled (const Node *node, Lowering_Kind lowering);
 
 void Discard_Lowered_Form (Node *node);
 
-#define NODE_KIND_PROPERTY_LIST(X) \
-    \
-  X (NK_INTEGER) \
-  X (NK_REAL) \
-  X (NK_STRING, .classes = NODE_CLASS_TAKES_TYPE_FROM_CONTEXT) \
-  X (NK_CHARACTER, .classes = NODE_CLASS_TAKES_TYPE_FROM_CONTEXT) \
-  X (NK_NULL) \
-  X (NK_OTHERS) \
-  X (NK_IDENTIFIER, .classes = NODE_CLASS_TAKES_TYPE_FROM_CONTEXT \
-                            | NODE_CLASS_SIMPLE_OR_EXPANDED_NAME) \
-  X (NK_SELECTED, .classes = NODE_CLASS_TAKES_TYPE_FROM_CONTEXT \
-                           | NODE_CLASS_SIMPLE_OR_EXPANDED_NAME, \
-                  .name_prefix = FIELD (selected.prefix)) \
-  X (NK_ATTRIBUTE, .classes = NODE_CLASS_ENCLOSES_EXPRESSIONS, \
-                   .name_prefix = FIELD (attribute.prefix)) \
-  X (NK_QUALIFIED, .classes = NODE_CLASS_ENCLOSES_EXPRESSIONS) \
-    \
-  X (NK_BINARY_OP, .classes = NODE_CLASS_ENCLOSES_EXPRESSIONS \
-                            | NODE_CLASS_TAKES_TYPE_FROM_CONTEXT) \
-  X (NK_UNARY_OP, .classes = NODE_CLASS_ENCLOSES_EXPRESSIONS \
-                           | NODE_CLASS_TAKES_TYPE_FROM_CONTEXT) \
-  X (NK_AGGREGATE, .classes = NODE_CLASS_ENCLOSES_EXPRESSIONS \
-                            | NODE_CLASS_TAKES_TYPE_FROM_CONTEXT) \
-  X (NK_ALLOCATOR, .classes = NODE_CLASS_ENCLOSES_EXPRESSIONS \
-                            | NODE_CLASS_TAKES_TYPE_FROM_CONTEXT) \
-  X (NK_APPLY, .classes = NODE_CLASS_ENCLOSES_EXPRESSIONS \
-                        | NODE_CLASS_TAKES_TYPE_FROM_CONTEXT, \
-               .name_prefix = FIELD (apply.prefix)) \
-  X (NK_RANGE, .classes = NODE_CLASS_ENCLOSES_EXPRESSIONS) \
-  X (NK_ASSOCIATION, .choice_list = FIELD (association.choices)) \
-    \
-  X (NK_SUBTYPE_INDICATION) \
-  X (NK_RANGE_CONSTRAINT, .classes = NODE_CLASS_ENCLOSES_EXPRESSIONS, \
-                          .constraint_form = CONSTRAINT_FORM_RANGE) \
-  X (NK_INDEX_CONSTRAINT, .classes = NODE_CLASS_ENCLOSES_EXPRESSIONS, \
-                          .constraint_form = CONSTRAINT_FORM_INDEX) \
-  X (NK_DISCRIMINANT_CONSTRAINT, .classes = NODE_CLASS_ENCLOSES_EXPRESSIONS, \
-                          .constraint_form = CONSTRAINT_FORM_DISCRIMINANT) \
-  X (NK_DIGITS_CONSTRAINT, .classes = NODE_CLASS_ENCLOSES_EXPRESSIONS, \
-                          .constraint_form = CONSTRAINT_FORM_FLOATING_ACCURACY) \
-  X (NK_DELTA_CONSTRAINT, .classes = NODE_CLASS_ENCLOSES_EXPRESSIONS, \
-                          .constraint_form = CONSTRAINT_FORM_FIXED_ACCURACY) \
-  X (NK_ARRAY_TYPE) \
-  X (NK_RECORD_TYPE) \
-  X (NK_ACCESS_TYPE) \
-  X (NK_DERIVED_TYPE) \
-  X (NK_ENUMERATION_TYPE, .classes = NODE_CLASS_ENCLOSES_EXPRESSIONS) \
-  X (NK_INTEGER_TYPE, .classes = NODE_CLASS_ENCLOSES_EXPRESSIONS) \
-  X (NK_REAL_TYPE, .classes = NODE_CLASS_ENCLOSES_EXPRESSIONS) \
-  X (NK_COMPONENT_DECL, .declared_identifiers = FIELD (component.names), \
-                        .declared_subtype = FIELD (component.component_type), \
-                        .default_expression = FIELD (component.init)) \
-  X (NK_VARIANT_PART) \
-  X (NK_VARIANT, .choice_list = FIELD (variant.choices)) \
-  X (NK_DISCRIMINANT_SPEC, \
-                        .declared_identifiers = FIELD (discriminant.names), \
-                        .declared_subtype = FIELD (discriminant.disc_type), \
-                        .default_expression = FIELD (discriminant.default_expr)) \
-    \
-  X (NK_ASSIGNMENT) \
-  X (NK_CALL_STMT) \
-  X (NK_RETURN) \
-  X (NK_IF) \
-  X (NK_CASE) \
-  X (NK_LOOP, .statement_name = FIELD (loop_stmt.label), \
-              .statement_name_symbol = FIELD (loop_stmt.label_symbol)) \
-  X (NK_BLOCK, .handler_list = FIELD (block_stmt.handlers), \
-               .statement_name = FIELD (block_stmt.label), \
-               .statement_name_symbol = FIELD (block_stmt.label_symbol)) \
-  X (NK_EXIT) \
-  X (NK_GOTO) \
-  X (NK_RAISE) \
-  X (NK_NULL_STMT) \
-  X (NK_LABEL, .statement_name = FIELD (label_node.name), \
-               .statement_name_symbol = FIELD (label_node.symbol)) \
-  X (NK_ACCEPT, .identifier_list_part = FIELD (accept_stmt.parameters)) \
-  X (NK_SELECT) \
-  X (NK_SELECT_ALTERNATIVE) \
-  X (NK_DELAY) \
-  X (NK_ABORT) \
-  X (NK_CODE_STATEMENT) \
-    \
-  X (NK_OBJECT_DECL, .declared_identifiers = FIELD (object_decl.names), \
-                     .declared_subtype = FIELD (object_decl.object_type)) \
-  X (NK_TYPE_DECL, .classes = NODE_CLASS_EXEMPT_FROM_FORCING, \
-                   .private_name_position = PRIVATE_NAME_AS_TYPE_MARK) \
-  X (NK_SUBTYPE_DECL, .classes = NODE_CLASS_EXEMPT_FROM_FORCING, \
-                   .private_name_position = PRIVATE_NAME_AS_TYPE_MARK) \
-  X (NK_EXCEPTION_DECL, \
-                   .declared_identifiers = FIELD (exception_decl.names), \
-                   .private_name_position = PRIVATE_NAME_IN_UNADMITTED_DECLARATION) \
-  X (NK_PROCEDURE_SPEC, .classes = NODE_CLASS_PROGRAM_UNIT_DECLARATION \
-                                | NODE_CLASS_SUBPROGRAM_SPECIFICATION \
-                                | NODE_CLASS_EXEMPT_FROM_FORCING, \
-                   .private_name_position = PRIVATE_NAME_AS_TYPE_MARK, \
-                   .generic_unit_kind = GENERIC_UNIT_PROCEDURE, \
-                   .program_unit_noun = "procedure", \
-                   .generic_program_unit_noun = "generic procedure", \
-                   .identifier_list_part = FIELD (subprogram_spec.parameters), \
-                   .program_unit_name = FIELD (subprogram_spec.name)) \
-  X (NK_FUNCTION_SPEC, .classes = NODE_CLASS_PROGRAM_UNIT_DECLARATION \
-                                | NODE_CLASS_SUBPROGRAM_SPECIFICATION \
-                                | NODE_CLASS_EXEMPT_FROM_FORCING, \
-                   .private_name_position = PRIVATE_NAME_AS_TYPE_MARK, \
-                   .generic_unit_kind = GENERIC_UNIT_FUNCTION, \
-                   .program_unit_noun = "function", \
-                   .generic_program_unit_noun = "generic function", \
-                   .identifier_list_part = FIELD (subprogram_spec.parameters), \
-                   .program_unit_name = FIELD (subprogram_spec.name)) \
-  X (NK_PROCEDURE_BODY, .classes = NODE_CLASS_BODY \
-                                | NODE_CLASS_PROGRAM_UNIT_DECLARATION \
-                                | NODE_CLASS_SUBPROGRAM_BODY, \
-                   .private_name_position = PRIVATE_NAME_IN_UNADMITTED_DECLARATION, \
-                   .handler_list = FIELD (subprogram_body.handlers), \
-                   .separate_flag = FIELD (subprogram_body.is_separate), \
-                   .grafted_subunit_flag = \
-                     FIELD (subprogram_body.is_grafted_subunit), \
-                   .body_specification = \
-                     FIELD (subprogram_body.specification)) \
-  X (NK_FUNCTION_BODY, .classes = NODE_CLASS_BODY \
-                                | NODE_CLASS_PROGRAM_UNIT_DECLARATION \
-                                | NODE_CLASS_SUBPROGRAM_BODY, \
-                   .private_name_position = PRIVATE_NAME_IN_UNADMITTED_DECLARATION, \
-                   .handler_list = FIELD (subprogram_body.handlers), \
-                   .separate_flag = FIELD (subprogram_body.is_separate), \
-                   .grafted_subunit_flag = \
-                     FIELD (subprogram_body.is_grafted_subunit), \
-                   .body_specification = \
-                     FIELD (subprogram_body.specification)) \
-  X (NK_PACKAGE_SPEC, .classes = NODE_CLASS_PROGRAM_UNIT_DECLARATION, \
-                   .private_name_position = PRIVATE_NAME_IN_UNADMITTED_DECLARATION, \
-                   .program_unit_noun = "package", \
-                   .generic_program_unit_noun = "generic package", \
-                   .program_unit_name = FIELD (package_spec.name)) \
-  X (NK_PACKAGE_BODY, .classes = NODE_CLASS_BODY \
-                               | NODE_CLASS_PROGRAM_UNIT_DECLARATION, \
-                   .private_name_position = PRIVATE_NAME_IN_UNADMITTED_DECLARATION, \
-                   .handler_list = FIELD (package_body.handlers), \
-                   .separate_flag = FIELD (package_body.is_separate), \
-                   .grafted_subunit_flag = \
-                     FIELD (package_body.is_grafted_subunit), \
-                   .program_unit_name = FIELD (package_body.name)) \
-  X (NK_TASK_SPEC, .classes = NODE_CLASS_EXEMPT_FROM_FORCING, \
-                   .private_name_position = PRIVATE_NAME_IN_UNADMITTED_DECLARATION, \
-                   .program_unit_noun = "task", \
-                   .program_unit_name = FIELD (task_spec.name)) \
-  X (NK_TASK_BODY, .classes = NODE_CLASS_BODY \
-                              | NODE_CLASS_PROGRAM_UNIT_DECLARATION, \
-                   .private_name_position = PRIVATE_NAME_IN_UNADMITTED_DECLARATION, \
-                   .handler_list = FIELD (task_body.handlers), \
-                   .separate_flag = FIELD (task_body.is_separate), \
-                   .grafted_subunit_flag = \
-                     FIELD (task_body.is_grafted_subunit), \
-                   .program_unit_name = FIELD (task_body.name)) \
-  X (NK_ENTRY_DECL, .classes = NODE_CLASS_EXEMPT_FROM_FORCING, \
-                   .private_name_position = PRIVATE_NAME_AS_TYPE_MARK, \
-                   .identifier_list_part = FIELD (entry_decl.parameters)) \
-  X (NK_SUBPROGRAM_RENAMING, .classes = NODE_CLASS_SUBPROGRAM_RENAMING, \
-                   .private_name_position = PRIVATE_NAME_AS_TYPE_MARK, \
-                   .identifier_list_part = FIELD (subprogram_spec.parameters)) \
-  X (NK_PACKAGE_RENAMING, \
-                   .private_name_position = PRIVATE_NAME_IN_UNADMITTED_DECLARATION) \
-  X (NK_EXCEPTION_RENAMING, \
-                   .declared_identifiers = FIELD (exception_decl.names), \
-                   .private_name_position = PRIVATE_NAME_IN_UNADMITTED_DECLARATION) \
-  X (NK_GENERIC_DECL, \
-                   .private_name_position = PRIVATE_NAME_IN_UNADMITTED_DECLARATION) \
-  X (NK_GENERIC_INST, \
-                   .private_name_position = PRIVATE_NAME_IN_UNADMITTED_DECLARATION, \
-                   .program_unit_name = FIELD (generic_inst.instance_name)) \
-  X (NK_PARAM_SPEC, .declared_identifiers = FIELD (param_spec.names), \
-                    .declared_subtype = FIELD (param_spec.param_type), \
-                    .default_expression = FIELD (param_spec.default_expr)) \
-  X (NK_USE_CLAUSE, \
-                   .private_name_position = PRIVATE_NAME_IN_UNADMITTED_DECLARATION) \
-  X (NK_WITH_CLAUSE) \
-  X (NK_PRAGMA, .classes = NODE_CLASS_EXEMPT_FROM_FORCING) \
-  X (NK_REPRESENTATION_CLAUSE, \
-                   .private_name_position = PRIVATE_NAME_IN_UNADMITTED_DECLARATION) \
-  X (NK_EXCEPTION_HANDLER) \
-  X (NK_CONTEXT_CLAUSE) \
-  X (NK_COMPILATION_UNIT) \
-    \
-  X (NK_GENERIC_TYPE_PARAM, \
-                   .private_name_position = PRIVATE_NAME_IN_UNADMITTED_DECLARATION, \
-                   .identifier_list_part = FIELD (generic_type_param.discriminants)) \
-  X (NK_GENERIC_OBJECT_PARAM, \
-                   .private_name_position = PRIVATE_NAME_IN_UNADMITTED_DECLARATION, \
-                   .declared_identifiers = FIELD (generic_object_param.names), \
-                   .declared_subtype = FIELD (generic_object_param.object_type), \
-                   .default_expression = \
-                     FIELD (generic_object_param.default_expr)) \
-  X (NK_GENERIC_SUBPROGRAM_PARAM, \
-                   .private_name_position = PRIVATE_NAME_AS_TYPE_MARK)
+#define NODE_KIND_PROPERTY_LIST(_)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            \
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              \
+  _ (NK_INTEGER)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              \
+  _ (NK_REAL)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 \
+  _ (NK_STRING,                   .classes = NODE_CLASS_TAKES_TYPE_FROM_CONTEXT)                                                                                                                                                                                                                                                                                                                                                                                                                                                              \
+  _ (NK_CHARACTER,                .classes = NODE_CLASS_TAKES_TYPE_FROM_CONTEXT)                                                                                                                                                                                                                                                                                                                                                                                                                                                              \
+  _ (NK_NULL)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 \
+  _ (NK_OTHERS)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               \
+  _ (NK_IDENTIFIER,               .classes = NODE_CLASS_TAKES_TYPE_FROM_CONTEXT | NODE_CLASS_SIMPLE_OR_EXPANDED_NAME)                                                                                                                                                                                                                                                                                                                                                                                                                         \
+  _ (NK_SELECTED,                 .classes = NODE_CLASS_TAKES_TYPE_FROM_CONTEXT | NODE_CLASS_SIMPLE_OR_EXPANDED_NAME,                                    .name_prefix = FIELD (selected.prefix))                                                                                                                                                                                                                                                                                                                                              \
+  _ (NK_ATTRIBUTE,                .classes = NODE_CLASS_ENCLOSES_EXPRESSIONS,                                                                            .name_prefix = FIELD (attribute.prefix))                                                                                                                                                                                                                                                                                                                                             \
+  _ (NK_QUALIFIED,                .classes = NODE_CLASS_ENCLOSES_EXPRESSIONS)                                                                                                                                                                                                                                                                                                                                                                                                                                                                 \
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              \
+  _ (NK_BINARY_OP,                .classes = NODE_CLASS_ENCLOSES_EXPRESSIONS | NODE_CLASS_TAKES_TYPE_FROM_CONTEXT)                                                                                                                                                                                                                                                                                                                                                                                                                            \
+  _ (NK_UNARY_OP,                 .classes = NODE_CLASS_ENCLOSES_EXPRESSIONS | NODE_CLASS_TAKES_TYPE_FROM_CONTEXT)                                                                                                                                                                                                                                                                                                                                                                                                                            \
+  _ (NK_AGGREGATE,                .classes = NODE_CLASS_ENCLOSES_EXPRESSIONS | NODE_CLASS_TAKES_TYPE_FROM_CONTEXT)                                                                                                                                                                                                                                                                                                                                                                                                                            \
+  _ (NK_ALLOCATOR,                .classes = NODE_CLASS_ENCLOSES_EXPRESSIONS | NODE_CLASS_TAKES_TYPE_FROM_CONTEXT)                                                                                                                                                                                                                                                                                                                                                                                                                            \
+  _ (NK_APPLY,                    .classes = NODE_CLASS_ENCLOSES_EXPRESSIONS | NODE_CLASS_TAKES_TYPE_FROM_CONTEXT,                                       .name_prefix = FIELD (apply.prefix))                                                                                                                                                                                                                                                                                                                                                 \
+  _ (NK_RANGE,                    .classes = NODE_CLASS_ENCLOSES_EXPRESSIONS)                                                                                                                                                                                                                                                                                                                                                                                                                                                                 \
+  _ (NK_ASSOCIATION,              .choice_list = FIELD (association.choices))                                                                                                                                                                                                                                                                                                                                                                                                                                                                 \
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              \
+  _ (NK_SUBTYPE_INDICATION)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   \
+  _ (NK_RANGE_CONSTRAINT,         .classes = NODE_CLASS_ENCLOSES_EXPRESSIONS,                                                                            .constraint_form = CONSTRAINT_FORM_RANGE)                                                                                                                                                                                                                                                                                                                                            \
+  _ (NK_INDEX_CONSTRAINT,         .classes = NODE_CLASS_ENCLOSES_EXPRESSIONS,                                                                            .constraint_form = CONSTRAINT_FORM_INDEX)                                                                                                                                                                                                                                                                                                                                            \
+  _ (NK_DISCRIMINANT_CONSTRAINT,  .classes = NODE_CLASS_ENCLOSES_EXPRESSIONS,                                                                            .constraint_form = CONSTRAINT_FORM_DISCRIMINANT)                                                                                                                                                                                                                                                                                                                                     \
+  _ (NK_DIGITS_CONSTRAINT,        .classes = NODE_CLASS_ENCLOSES_EXPRESSIONS,                                                                            .constraint_form = CONSTRAINT_FORM_FLOATING_ACCURACY)                                                                                                                                                                                                                                                                                                                                \
+  _ (NK_DELTA_CONSTRAINT,         .classes = NODE_CLASS_ENCLOSES_EXPRESSIONS,                                                                            .constraint_form = CONSTRAINT_FORM_FIXED_ACCURACY)                                                                                                                                                                                                                                                                                                                                   \
+  _ (NK_ARRAY_TYPE)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           \
+  _ (NK_RECORD_TYPE)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          \
+  _ (NK_ACCESS_TYPE)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          \
+  _ (NK_DERIVED_TYPE)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         \
+  _ (NK_ENUMERATION_TYPE,         .classes = NODE_CLASS_ENCLOSES_EXPRESSIONS)                                                                                                                                                                                                                                                                                                                                                                                                                                                                 \
+  _ (NK_INTEGER_TYPE,             .classes = NODE_CLASS_ENCLOSES_EXPRESSIONS)                                                                                                                                                                                                                                                                                                                                                                                                                                                                 \
+  _ (NK_REAL_TYPE,                .classes = NODE_CLASS_ENCLOSES_EXPRESSIONS)                                                                                                                                                                                                                                                                                                                                                                                                                                                                 \
+  _ (NK_COMPONENT_DECL,           .declared_identifiers = FIELD (component.names),                                                                       .declared_subtype = FIELD (component.component_type),             .default_expression = FIELD (component.init))                                                                                                                                                                                                                                                                      \
+  _ (NK_VARIANT_PART)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         \
+  _ (NK_VARIANT,                  .choice_list = FIELD (variant.choices))                                                                                                                                                                                                                                                                                                                                                                                                                                                                     \
+  _ (NK_DISCRIMINANT_SPEC,        .declared_identifiers = FIELD (discriminant.names),                                                                    .declared_subtype = FIELD (discriminant.disc_type),               .default_expression = FIELD (discriminant.default_expr))                                                                                                                                                                                                                                                           \
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              \
+  _ (NK_ASSIGNMENT)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           \
+  _ (NK_CALL_STMT)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            \
+  _ (NK_RETURN)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               \
+  _ (NK_IF)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   \
+  _ (NK_CASE)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 \
+  _ (NK_LOOP,                     .statement_name = FIELD (loop_stmt.label),                                                                             .statement_name_symbol = FIELD (loop_stmt.label_symbol))                                                                                                                                                                                                                                                                                                                             \
+  _ (NK_BLOCK,                    .handler_list = FIELD (block_stmt.handlers),                                                                           .statement_name = FIELD (block_stmt.label),                       .statement_name_symbol = FIELD (block_stmt.label_symbol))                                                                                                                                                                                                                                                          \
+  _ (NK_EXIT)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 \
+  _ (NK_GOTO)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 \
+  _ (NK_RAISE)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                \
+  _ (NK_NULL_STMT)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            \
+  _ (NK_LABEL,                    .statement_name = FIELD (label_node.name),                                                                             .statement_name_symbol = FIELD (label_node.symbol))                                                                                                                                                                                                                                                                                                                                  \
+  _ (NK_ACCEPT,                   .identifier_list_part = FIELD (accept_stmt.parameters))                                                                                                                                                                                                                                                                                                                                                                                                                                                     \
+  _ (NK_SELECT)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               \
+  _ (NK_SELECT_ALTERNATIVE)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   \
+  _ (NK_DELAY)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                \
+  _ (NK_ABORT)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                \
+  _ (NK_CODE_STATEMENT)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       \
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              \
+  _ (NK_OBJECT_DECL,              .declared_identifiers = FIELD (object_decl.names),                                                                     .declared_subtype = FIELD (object_decl.object_type))                                                                                                                                                                                                                                                                                                                                 \
+  _ (NK_TYPE_DECL,                .classes = NODE_CLASS_EXEMPT_FROM_FORCING,                                                                             .private_name_position = PRIVATE_NAME_AS_TYPE_MARK)                                                                                                                                                                                                                                                                                                                                  \
+  _ (NK_SUBTYPE_DECL,             .classes = NODE_CLASS_EXEMPT_FROM_FORCING,                                                                             .private_name_position = PRIVATE_NAME_AS_TYPE_MARK)                                                                                                                                                                                                                                                                                                                                  \
+  _ (NK_EXCEPTION_DECL,           .declared_identifiers = FIELD (exception_decl.names),                                                                  .private_name_position = PRIVATE_NAME_IN_UNADMITTED_DECLARATION)                                                                                                                                                                                                                                                                                                                     \
+  _ (NK_PROCEDURE_SPEC,           .classes = NODE_CLASS_PROGRAM_UNIT_DECLARATION | NODE_CLASS_SUBPROGRAM_SPECIFICATION | NODE_CLASS_EXEMPT_FROM_FORCING, .private_name_position = PRIVATE_NAME_AS_TYPE_MARK,               .generic_unit_kind = GENERIC_UNIT_PROCEDURE,                  .program_unit_noun = "procedure",                                .generic_program_unit_noun = "generic procedure",                   .identifier_list_part = FIELD (subprogram_spec.parameters),  .program_unit_name = FIELD (subprogram_spec.name)) \
+  _ (NK_FUNCTION_SPEC,            .classes = NODE_CLASS_PROGRAM_UNIT_DECLARATION | NODE_CLASS_SUBPROGRAM_SPECIFICATION | NODE_CLASS_EXEMPT_FROM_FORCING, .private_name_position = PRIVATE_NAME_AS_TYPE_MARK,               .generic_unit_kind = GENERIC_UNIT_FUNCTION,                   .program_unit_noun = "function",                                 .generic_program_unit_noun = "generic function",                    .identifier_list_part = FIELD (subprogram_spec.parameters),  .program_unit_name = FIELD (subprogram_spec.name)) \
+  _ (NK_PROCEDURE_BODY,           .classes = NODE_CLASS_BODY | NODE_CLASS_PROGRAM_UNIT_DECLARATION | NODE_CLASS_SUBPROGRAM_BODY,                         .private_name_position = PRIVATE_NAME_IN_UNADMITTED_DECLARATION,  .handler_list = FIELD (subprogram_body.handlers),             .separate_flag = FIELD (subprogram_body.is_separate),            .grafted_subunit_flag = FIELD (subprogram_body.is_grafted_subunit), .body_specification = FIELD (subprogram_body.specification))                                                    \
+  _ (NK_FUNCTION_BODY,            .classes = NODE_CLASS_BODY | NODE_CLASS_PROGRAM_UNIT_DECLARATION | NODE_CLASS_SUBPROGRAM_BODY,                         .private_name_position = PRIVATE_NAME_IN_UNADMITTED_DECLARATION,  .handler_list = FIELD (subprogram_body.handlers),             .separate_flag = FIELD (subprogram_body.is_separate),            .grafted_subunit_flag = FIELD (subprogram_body.is_grafted_subunit), .body_specification = FIELD (subprogram_body.specification))                                                    \
+  _ (NK_PACKAGE_SPEC,             .classes = NODE_CLASS_PROGRAM_UNIT_DECLARATION,                                                                        .private_name_position = PRIVATE_NAME_IN_UNADMITTED_DECLARATION,  .program_unit_noun = "package",                               .generic_program_unit_noun = "generic package",                  .program_unit_name = FIELD (package_spec.name))                                                                                                                                     \
+  _ (NK_PACKAGE_BODY,             .classes = NODE_CLASS_BODY | NODE_CLASS_PROGRAM_UNIT_DECLARATION,                                                      .private_name_position = PRIVATE_NAME_IN_UNADMITTED_DECLARATION,  .handler_list = FIELD (package_body.handlers),                .separate_flag = FIELD (package_body.is_separate),               .grafted_subunit_flag = FIELD (package_body.is_grafted_subunit),    .program_unit_name = FIELD (package_body.name))                                                                 \
+  _ (NK_TASK_SPEC,                .classes = NODE_CLASS_EXEMPT_FROM_FORCING,                                                                             .private_name_position = PRIVATE_NAME_IN_UNADMITTED_DECLARATION,  .program_unit_noun = "task",                                  .program_unit_name = FIELD (task_spec.name))                                                                                                                                                                                                         \
+  _ (NK_TASK_BODY,                .classes = NODE_CLASS_BODY | NODE_CLASS_PROGRAM_UNIT_DECLARATION,                                                      .private_name_position = PRIVATE_NAME_IN_UNADMITTED_DECLARATION,  .handler_list = FIELD (task_body.handlers),                   .separate_flag = FIELD (task_body.is_separate),                  .grafted_subunit_flag = FIELD (task_body.is_grafted_subunit),       .program_unit_name = FIELD (task_body.name))                                                                    \
+  _ (NK_ENTRY_DECL,               .classes = NODE_CLASS_EXEMPT_FROM_FORCING,                                                                             .private_name_position = PRIVATE_NAME_AS_TYPE_MARK,               .identifier_list_part = FIELD (entry_decl.parameters))                                                                                                                                                                                                                                                             \
+  _ (NK_SUBPROGRAM_RENAMING,      .classes = NODE_CLASS_SUBPROGRAM_RENAMING,                                                                             .private_name_position = PRIVATE_NAME_AS_TYPE_MARK,               .identifier_list_part = FIELD (subprogram_spec.parameters))                                                                                                                                                                                                                                                        \
+  _ (NK_PACKAGE_RENAMING,         .private_name_position = PRIVATE_NAME_IN_UNADMITTED_DECLARATION)                                                                                                                                                                                                                                                                                                                                                                                                                                            \
+  _ (NK_EXCEPTION_RENAMING,       .declared_identifiers = FIELD (exception_decl.names),                                                                  .private_name_position = PRIVATE_NAME_IN_UNADMITTED_DECLARATION)                                                                                                                                                                                                                                                                                                                     \
+  _ (NK_GENERIC_DECL,             .private_name_position = PRIVATE_NAME_IN_UNADMITTED_DECLARATION)                                                                                                                                                                                                                                                                                                                                                                                                                                            \
+  _ (NK_GENERIC_INST,             .private_name_position = PRIVATE_NAME_IN_UNADMITTED_DECLARATION,                                                       .program_unit_name = FIELD (generic_inst.instance_name))                                                                                                                                                                                                                                                                                                                             \
+  _ (NK_PARAM_SPEC,               .declared_identifiers = FIELD (param_spec.names),                                                                      .declared_subtype = FIELD (param_spec.param_type),                .default_expression = FIELD (param_spec.default_expr))                                                                                                                                                                                                                                                             \
+  _ (NK_USE_CLAUSE,               .private_name_position = PRIVATE_NAME_IN_UNADMITTED_DECLARATION)                                                                                                                                                                                                                                                                                                                                                                                                                                            \
+  _ (NK_WITH_CLAUSE)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          \
+  _ (NK_PRAGMA,                   .classes = NODE_CLASS_EXEMPT_FROM_FORCING)                                                                                                                                                                                                                                                                                                                                                                                                                                                                  \
+  _ (NK_REPRESENTATION_CLAUSE,    .private_name_position = PRIVATE_NAME_IN_UNADMITTED_DECLARATION)                                                                                                                                                                                                                                                                                                                                                                                                                                            \
+  _ (NK_EXCEPTION_HANDLER)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    \
+  _ (NK_CONTEXT_CLAUSE)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       \
+  _ (NK_COMPILATION_UNIT)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     \
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              \
+  _ (NK_GENERIC_TYPE_PARAM,       .private_name_position = PRIVATE_NAME_IN_UNADMITTED_DECLARATION,                                                       .identifier_list_part = FIELD (generic_type_param.discriminants))                                                                                                                                                                                                                                                                                                                    \
+  _ (NK_GENERIC_OBJECT_PARAM,     .private_name_position = PRIVATE_NAME_IN_UNADMITTED_DECLARATION,                                                       .declared_identifiers = FIELD (generic_object_param.names),       .declared_subtype = FIELD (generic_object_param.object_type), .default_expression = FIELD (generic_object_param.default_expr))                                                                                                                                                                                     \
+  _ (NK_GENERIC_SUBPROGRAM_PARAM, .private_name_position = PRIVATE_NAME_AS_TYPE_MARK)
 
 typedef struct Generic_Actual_Binding   Generic_Actual_Binding;
 typedef struct Instance_Agreement_Check Instance_Agreement_Check;
@@ -2508,28 +2222,28 @@ u32   Frozen_Composite_Count = 0;
 Symbol    *Exception_Symbols[256];
 u32   Exception_Symbol_Count = 0;
 
-#define TYPE_KIND_LIST(X) \
-  X (TYPE_UNKNOWN,           TYPE_CLASS_NONE,              TYPE_ARM_NONE) \
-    \
-  X (TYPE_BOOLEAN,           TYPE_CLASS_ENUMERATION,       TYPE_ARM_ENUMERATION) \
-  X (TYPE_CHARACTER,         TYPE_CLASS_ENUMERATION,       TYPE_ARM_ENUMERATION) \
-  X (TYPE_INTEGER,           TYPE_CLASS_INTEGER,           TYPE_ARM_NONE) \
-  X (TYPE_MODULAR,           TYPE_CLASS_INTEGER,           TYPE_ARM_NONE) \
-  X (TYPE_ENUMERATION,       TYPE_CLASS_ENUMERATION,       TYPE_ARM_ENUMERATION) \
-  X (TYPE_FLOAT,             TYPE_CLASS_FLOATING_POINT,    TYPE_ARM_FLOAT) \
-  X (TYPE_FIXED,             TYPE_CLASS_FIXED_POINT,       TYPE_ARM_FIXED) \
-  X (TYPE_ARRAY,             TYPE_CLASS_ARRAY,             TYPE_ARM_ARRAY) \
-  X (TYPE_RECORD,            TYPE_CLASS_RECORD,            TYPE_ARM_RECORD) \
-  X (TYPE_STRING,            TYPE_CLASS_ARRAY,             TYPE_ARM_ARRAY) \
-  X (TYPE_ACCESS,            TYPE_CLASS_ACCESS,            TYPE_ARM_ACCESS) \
-  X (TYPE_UNIVERSAL_INTEGER, TYPE_CLASS_UNIVERSAL_INTEGER, TYPE_ARM_NONE) \
-  X (TYPE_UNIVERSAL_REAL,    TYPE_CLASS_UNIVERSAL_REAL,    TYPE_ARM_NONE) \
-  X (TYPE_TASK,              TYPE_CLASS_TASK,              TYPE_ARM_NONE) \
-  X (TYPE_SUBPROGRAM,        TYPE_CLASS_NONE,              TYPE_ARM_NONE) \
-  X (TYPE_PRIVATE,           TYPE_CLASS_PRIVATE,           TYPE_ARM_RECORD) \
-  X (TYPE_LIMITED_PRIVATE,   TYPE_CLASS_PRIVATE,           TYPE_ARM_RECORD) \
-  X (TYPE_INCOMPLETE,        TYPE_CLASS_NONE,              TYPE_ARM_RECORD) \
-  X (TYPE_PACKAGE,           TYPE_CLASS_NONE,              TYPE_ARM_NONE)
+#define TYPE_KIND_LIST(_)                                                        \
+  _ (TYPE_UNKNOWN,           TYPE_CLASS_NONE,              TYPE_ARM_NONE)        \
+                                                                                 \
+  _ (TYPE_BOOLEAN,           TYPE_CLASS_ENUMERATION,       TYPE_ARM_ENUMERATION) \
+  _ (TYPE_CHARACTER,         TYPE_CLASS_ENUMERATION,       TYPE_ARM_ENUMERATION) \
+  _ (TYPE_INTEGER,           TYPE_CLASS_INTEGER,           TYPE_ARM_NONE)        \
+  _ (TYPE_MODULAR,           TYPE_CLASS_INTEGER,           TYPE_ARM_NONE)        \
+  _ (TYPE_ENUMERATION,       TYPE_CLASS_ENUMERATION,       TYPE_ARM_ENUMERATION) \
+  _ (TYPE_FLOAT,             TYPE_CLASS_FLOATING_POINT,    TYPE_ARM_FLOAT)       \
+  _ (TYPE_FIXED,             TYPE_CLASS_FIXED_POINT,       TYPE_ARM_FIXED)       \
+  _ (TYPE_ARRAY,             TYPE_CLASS_ARRAY,             TYPE_ARM_ARRAY)       \
+  _ (TYPE_RECORD,            TYPE_CLASS_RECORD,            TYPE_ARM_RECORD)      \
+  _ (TYPE_STRING,            TYPE_CLASS_ARRAY,             TYPE_ARM_ARRAY)       \
+  _ (TYPE_ACCESS,            TYPE_CLASS_ACCESS,            TYPE_ARM_ACCESS)      \
+  _ (TYPE_UNIVERSAL_INTEGER, TYPE_CLASS_UNIVERSAL_INTEGER, TYPE_ARM_NONE)        \
+  _ (TYPE_UNIVERSAL_REAL,    TYPE_CLASS_UNIVERSAL_REAL,    TYPE_ARM_NONE)        \
+  _ (TYPE_TASK,              TYPE_CLASS_TASK,              TYPE_ARM_NONE)        \
+  _ (TYPE_SUBPROGRAM,        TYPE_CLASS_NONE,              TYPE_ARM_NONE)        \
+  _ (TYPE_PRIVATE,           TYPE_CLASS_PRIVATE,           TYPE_ARM_RECORD)      \
+  _ (TYPE_LIMITED_PRIVATE,   TYPE_CLASS_PRIVATE,           TYPE_ARM_RECORD)      \
+  _ (TYPE_INCOMPLETE,        TYPE_CLASS_NONE,              TYPE_ARM_RECORD)      \
+  _ (TYPE_PACKAGE,           TYPE_CLASS_NONE,              TYPE_ARM_NONE)
 
 #define TYPE_KIND_ENUMERATOR(kind, ...) kind,
 typedef enum {
@@ -2907,25 +2621,25 @@ bool Overloadable_Declarations_Are_Homographs (Symbol *a, Symbol *b);
 bool Subprogram_Is_Implicit                   (Symbol *s);
 bool Declaration_Is_Implicit                  (Symbol *s);
 
-#define SYMBOL_KIND_LIST(X) \
-    \
-  X (SYMBOL_UNKNOWN,          SYMBOL_CLASS_NONE,         PREFIX_ENTITY_UNRESOLVED) \
-    \
-  X (SYMBOL_VARIABLE,         SYMBOL_CLASS_OBJECT,       PREFIX_ENTITY_OBJECT) \
-  X (SYMBOL_CONSTANT,         SYMBOL_CLASS_OBJECT,       PREFIX_ENTITY_OBJECT) \
-  X (SYMBOL_TYPE,             SYMBOL_CLASS_TYPE,         PREFIX_ENTITY_TYPE) \
-  X (SYMBOL_SUBTYPE,          SYMBOL_CLASS_SUBTYPE,      PREFIX_ENTITY_TYPE) \
-  X (SYMBOL_PROCEDURE,        SYMBOL_CLASS_PROCEDURE,    PREFIX_ENTITY_SUBPROGRAM) \
-  X (SYMBOL_FUNCTION,         SYMBOL_CLASS_FUNCTION,     PREFIX_ENTITY_VALUE) \
-  X (SYMBOL_PARAMETER,        SYMBOL_CLASS_OBJECT,       PREFIX_ENTITY_OBJECT) \
-  X (SYMBOL_PACKAGE,          SYMBOL_CLASS_PACKAGE,      PREFIX_ENTITY_PACKAGE) \
-  X (SYMBOL_EXCEPTION,        SYMBOL_CLASS_NONE,         PREFIX_ENTITY_EXCEPTION) \
-  X (SYMBOL_LABEL,            SYMBOL_CLASS_NONE,         PREFIX_ENTITY_LABEL) \
-  X (SYMBOL_ENTRY,            SYMBOL_CLASS_ENTRY,        PREFIX_ENTITY_ENTRY) \
-  X (SYMBOL_COMPONENT,        SYMBOL_CLASS_OBJECT,       PREFIX_ENTITY_OBJECT) \
-  X (SYMBOL_DISCRIMINANT,     SYMBOL_CLASS_OBJECT,       PREFIX_ENTITY_OBJECT) \
-  X (SYMBOL_LITERAL,          SYMBOL_CLASS_LITERAL,      PREFIX_ENTITY_VALUE) \
-  X (SYMBOL_GENERIC,          SYMBOL_CLASS_GENERIC_UNIT, PREFIX_ENTITY_GENERIC_UNIT)
+#define SYMBOL_KIND_LIST(_)                                                      \
+                                                                                 \
+  _ (SYMBOL_UNKNOWN,      SYMBOL_CLASS_NONE,         PREFIX_ENTITY_UNRESOLVED)   \
+                                                                                 \
+  _ (SYMBOL_VARIABLE,     SYMBOL_CLASS_OBJECT,       PREFIX_ENTITY_OBJECT)       \
+  _ (SYMBOL_CONSTANT,     SYMBOL_CLASS_OBJECT,       PREFIX_ENTITY_OBJECT)       \
+  _ (SYMBOL_TYPE,         SYMBOL_CLASS_TYPE,         PREFIX_ENTITY_TYPE)         \
+  _ (SYMBOL_SUBTYPE,      SYMBOL_CLASS_SUBTYPE,      PREFIX_ENTITY_TYPE)         \
+  _ (SYMBOL_PROCEDURE,    SYMBOL_CLASS_PROCEDURE,    PREFIX_ENTITY_SUBPROGRAM)   \
+  _ (SYMBOL_FUNCTION,     SYMBOL_CLASS_FUNCTION,     PREFIX_ENTITY_VALUE)        \
+  _ (SYMBOL_PARAMETER,    SYMBOL_CLASS_OBJECT,       PREFIX_ENTITY_OBJECT)       \
+  _ (SYMBOL_PACKAGE,      SYMBOL_CLASS_PACKAGE,      PREFIX_ENTITY_PACKAGE)      \
+  _ (SYMBOL_EXCEPTION,    SYMBOL_CLASS_NONE,         PREFIX_ENTITY_EXCEPTION)    \
+  _ (SYMBOL_LABEL,        SYMBOL_CLASS_NONE,         PREFIX_ENTITY_LABEL)        \
+  _ (SYMBOL_ENTRY,        SYMBOL_CLASS_ENTRY,        PREFIX_ENTITY_ENTRY)        \
+  _ (SYMBOL_COMPONENT,    SYMBOL_CLASS_OBJECT,       PREFIX_ENTITY_OBJECT)       \
+  _ (SYMBOL_DISCRIMINANT, SYMBOL_CLASS_OBJECT,       PREFIX_ENTITY_OBJECT)       \
+  _ (SYMBOL_LITERAL,      SYMBOL_CLASS_LITERAL,      PREFIX_ENTITY_VALUE)        \
+  _ (SYMBOL_GENERIC,      SYMBOL_CLASS_GENERIC_UNIT, PREFIX_ENTITY_GENERIC_UNIT)
 
 #define SYMBOL_KIND_ENUMERATOR(kind, ...) kind,
 typedef enum {
@@ -5963,24 +5677,24 @@ _Static_assert (POINTER_ALLOC_SIZE == 8,
 #define TASK_CONTROL_BLOCK_OFFSET_SERVED_RENDEZVOUS_LIST         88
 #define TASK_CONTROL_BLOCK_SIZE                                  96
 
-#define TASK_CONTROL_BLOCK_FIELD_LIST(X) \
-    \
-  X (BODY_FUNCTION,                   POINTER_ALLOC_SIZE) \
-  X (PARENT_FRAME,                    POINTER_ALLOC_SIZE) \
-  X (THREAD_IDENTIFIER,               POINTER_ALLOC_SIZE) \
-  X (COMPLETED,                       1) \
-  X (MASTER_RECORD,                   POINTER_ALLOC_SIZE) \
-  X (RENDEZVOUS_QUEUE_HEAD,           POINTER_ALLOC_SIZE) \
-  X (ACCEPTING_ENTRY_INDEX,           8) \
-  X (ACTIVATION_STATE,                1) \
-  X (TERMINATED,                      1) \
-  X (AWAITING_TERMINATE_ALTERNATIVE,  1) \
-  X (PASSIVE,                         1) \
-  X (ABORT_PENDING,                   1) \
-  X (OWNED_MASTER_RECORDS,            POINTER_ALLOC_SIZE) \
-  X (PENDING_RENDEZVOUS,              POINTER_ALLOC_SIZE) \
-  X (OPEN_ENTRY_LIST,                 POINTER_ALLOC_SIZE) \
-  X (SERVED_RENDEZVOUS_LIST,          POINTER_ALLOC_SIZE)
+#define TASK_CONTROL_BLOCK_FIELD_LIST(_)                 \
+                                                         \
+  _ (BODY_FUNCTION,                  POINTER_ALLOC_SIZE) \
+  _ (PARENT_FRAME,                   POINTER_ALLOC_SIZE) \
+  _ (THREAD_IDENTIFIER,              POINTER_ALLOC_SIZE) \
+  _ (COMPLETED,                      1)                  \
+  _ (MASTER_RECORD,                  POINTER_ALLOC_SIZE) \
+  _ (RENDEZVOUS_QUEUE_HEAD,          POINTER_ALLOC_SIZE) \
+  _ (ACCEPTING_ENTRY_INDEX,          8)                  \
+  _ (ACTIVATION_STATE,               1)                  \
+  _ (TERMINATED,                     1)                  \
+  _ (AWAITING_TERMINATE_ALTERNATIVE, 1)                  \
+  _ (PASSIVE,                        1)                  \
+  _ (ABORT_PENDING,                  1)                  \
+  _ (OWNED_MASTER_RECORDS,           POINTER_ALLOC_SIZE) \
+  _ (PENDING_RENDEZVOUS,             POINTER_ALLOC_SIZE) \
+  _ (OPEN_ENTRY_LIST,                POINTER_ALLOC_SIZE) \
+  _ (SERVED_RENDEZVOUS_LIST,         POINTER_ALLOC_SIZE)
 
 #define TASK_CONTROL_BLOCK_UNUSED_BYTES \
   (TASKING_BYTES (25, 7) | TASKING_BYTES (60, 1) | TASKING_BYTES (62, 2))
@@ -5998,14 +5712,14 @@ _Static_assert (POINTER_ALLOC_SIZE == 8,
 #define RENDEZVOUS_RECORD_OFFSET_EXCEPTION_IDENTITY  40
 #define RENDEZVOUS_RECORD_SIZE                       48
 
-#define RENDEZVOUS_RECORD_FIELD_LIST(X) \
-    \
-  X (TARGET_TASK,         POINTER_ALLOC_SIZE) \
-  X (ENTRY_INDEX,         8) \
-  X (PARAMETER_BLOCK,     POINTER_ALLOC_SIZE) \
-  X (COMPLETION_WORD,     4) \
-  X (NEXT,                POINTER_ALLOC_SIZE) \
-  X (EXCEPTION_IDENTITY,  8)
+#define RENDEZVOUS_RECORD_FIELD_LIST(_)      \
+                                             \
+  _ (TARGET_TASK,        POINTER_ALLOC_SIZE) \
+  _ (ENTRY_INDEX,        8)                  \
+  _ (PARAMETER_BLOCK,    POINTER_ALLOC_SIZE) \
+  _ (COMPLETION_WORD,    4)                  \
+  _ (NEXT,               POINTER_ALLOC_SIZE) \
+  _ (EXCEPTION_IDENTITY, 8)
 
 #define RENDEZVOUS_RECORD_UNUSED_BYTES TASKING_BYTES (28, 4)
 
@@ -6022,14 +5736,14 @@ _Static_assert (POINTER_ALLOC_SIZE == 8,
 #define MASTER_RECORD_OFFSET_SCOPE_IDENTITY           40
 #define MASTER_RECORD_SIZE                            48
 
-#define MASTER_RECORD_FIELD_LIST(X) \
-    \
-  X (DEPENDENT_LIST_HEAD,        POINTER_ALLOC_SIZE) \
-  X (ENCLOSING_MASTER,           POINTER_ALLOC_SIZE) \
-  X (DONE_FLAG,                  POINTER_ALLOC_SIZE) \
-  X (OWNER_TASK_CONTROL_BLOCK,   POINTER_ALLOC_SIZE) \
-  X (AWAKE_COUNT,                8) \
-  X (SCOPE_IDENTITY,             8)
+#define MASTER_RECORD_FIELD_LIST(_)                \
+                                                   \
+  _ (DEPENDENT_LIST_HEAD,      POINTER_ALLOC_SIZE) \
+  _ (ENCLOSING_MASTER,         POINTER_ALLOC_SIZE) \
+  _ (DONE_FLAG,                POINTER_ALLOC_SIZE) \
+  _ (OWNER_TASK_CONTROL_BLOCK, POINTER_ALLOC_SIZE) \
+  _ (AWAKE_COUNT,              8)                  \
+  _ (SCOPE_IDENTITY,           8)
 
 #define MASTER_RECORD_UNUSED_BYTES TASKING_BYTES (0, 0)
 
@@ -6042,10 +5756,10 @@ _Static_assert (POINTER_ALLOC_SIZE == 8,
 #define TASKING_LIST_NODE_OFFSET_NEXT     8
 #define TASKING_LIST_NODE_SIZE           16
 
-#define TASKING_LIST_NODE_FIELD_LIST(X) \
-    \
-  X (ELEMENT,  POINTER_ALLOC_SIZE) \
-  X (NEXT,     POINTER_ALLOC_SIZE)
+#define TASKING_LIST_NODE_FIELD_LIST(_) \
+                                        \
+  _ (ELEMENT, POINTER_ALLOC_SIZE)       \
+  _ (NEXT,    POINTER_ALLOC_SIZE)
 
 #define TASKING_LIST_NODE_UNUSED_BYTES TASKING_BYTES (0, 0)
 
@@ -7971,14 +7685,14 @@ void Report_Driver_Warning (const char *format, ...) {
 }
 
 const char *Warning_Class_Name[WARNING_CLASS_COUNT] = {
-#define X(kind, name) [kind] = name,
-  WARNING_CLASS_TABLE (X)
-#undef X
+#define _(kind, name) [kind] = name,
+  WARNING_CLASS_TABLE (_)
+#undef _
 };
 bool Warning_Class_Is_Enabled[WARNING_CLASS_COUNT] = {
-#define X(kind, name) [kind] = true,
-  WARNING_CLASS_TABLE (X)
-#undef X
+#define _(kind, name) [kind] = true,
+  WARNING_CLASS_TABLE (_)
+#undef _
 };
 
 
@@ -9197,17 +8911,17 @@ _Static_assert (0 NODE_KIND_PROPERTY_LIST (PROPERTY_ONE) == NK_COUNT,
   "NODE_KIND_PROPERTY_LIST must name every Node_Kind exactly once");
 #undef PROPERTY_ONE
 
-#define LOWERING_LIST(X)                                                    \
-  X (LOWERING_APPLY_RESOLUTION,     NK_APPLY,       apply.resolution,           APPLY_UNRESOLVED) \
-  X (LOWERING_SELECTED_COMPONENT,   NK_SELECTED,    selected.component_index,   (u32) -1)    \
-  X (LOWERING_FORMAL_ORDINAL,       NK_ASSOCIATION, association.formal_ordinal, FORMAL_ORDINAL_UNBOUND) \
-  X (LOWERING_AGGREGATE_DESCRIPTOR, NK_AGGREGATE,   aggregate.descriptor,       0) \
-  X (LOWERING_LOOP_LABEL,           NK_LOOP,        loop_stmt.label_symbol,     0) \
-  X (LOWERING_EXIT_TARGET,          NK_EXIT,        exit_stmt.target,           0) \
-  X (LOWERING_GOTO_TARGET,          NK_GOTO,        goto_stmt.target,           0) \
-  X (LOWERING_LABEL_SYMBOL,         NK_LABEL,       label_node.symbol,          0) \
-  X (LOWERING_ACCEPT_ENTRY,         NK_ACCEPT,      accept_stmt.entry_sym,      0) \
-  X (LOWERING_MACHINE_CODE_INSERTION, NK_CODE_STATEMENT, code_statement.insertion_text, 0)
+#define LOWERING_LIST(_)                                                                                        \
+  _ (LOWERING_APPLY_RESOLUTION,       NK_APPLY,          apply.resolution,              APPLY_UNRESOLVED)       \
+  _ (LOWERING_SELECTED_COMPONENT,     NK_SELECTED,       selected.component_index,      (u32) -1)               \
+  _ (LOWERING_FORMAL_ORDINAL,         NK_ASSOCIATION,    association.formal_ordinal,    FORMAL_ORDINAL_UNBOUND) \
+  _ (LOWERING_AGGREGATE_DESCRIPTOR,   NK_AGGREGATE,      aggregate.descriptor,          0)                      \
+  _ (LOWERING_LOOP_LABEL,             NK_LOOP,           loop_stmt.label_symbol,        0)                      \
+  _ (LOWERING_EXIT_TARGET,            NK_EXIT,           exit_stmt.target,              0)                      \
+  _ (LOWERING_GOTO_TARGET,            NK_GOTO,           goto_stmt.target,              0)                      \
+  _ (LOWERING_LABEL_SYMBOL,           NK_LABEL,          label_node.symbol,             0)                      \
+  _ (LOWERING_ACCEPT_ENTRY,           NK_ACCEPT,         accept_stmt.entry_sym,         0)                      \
+  _ (LOWERING_MACHINE_CODE_INSERTION, NK_CODE_STATEMENT, code_statement.insertion_text, 0)
 
 #define LOWERING_ROW(name, node_kind, f, unfilled)                          \
   [name] = { node_kind,                                                     \
@@ -32035,8 +31749,8 @@ void Emit_Exception_Identity_Global (const char *mangled) {
   if (bl >= sizeof (upper)) bl = sizeof (upper) - 1;
   for (size_t k = 0; k < bl; k++) upper[k] = (char) toupper ((unsigned char) mangled[k]);
   upper[bl] = '\0';
-  Emit ("@__exc.%s = linkonce_odr constant [%zu x i8] c\"%s\\00\"\n",
-        mangled, bl + 1, upper);
+  Emit ("@__exc.%s = linkonce_odr constant [%u x i8] c\"%s\\00\"\n",
+        mangled, (unsigned) (bl + 1), upper);
 }
 
 void Emit_Exception_Ref (Symbol *exc) {
@@ -41527,6 +41241,27 @@ void Emit_Array_Component_Belongs_Check (u32 fat_reg, Rep bt,
                                                    BOUND_END_LOW_KIND,  bt).reg;
     u32 want_hi = Emit_Array_Dimension_Bound (component_subtype, d,
                                                    BOUND_END_HIGH_KIND, bt).reg;
+
+    /*  A discriminant-dependent range like 1 .. D1 must lie within the index
+        subtype before anything is copied at its size; without this the copy
+        below writes past the component (and the aggregate temporary).  */
+    Type *index_subtype = component_subtype->array.indices
+                            ? component_subtype->array.indices[d].index_type : NULL;
+    if (index_subtype and not Index_Subtype_Check_Is_Vacuous (index_subtype) and
+        index_subtype->low_bound.kind  == BOUND_INTEGER and
+        index_subtype->high_bound.kind == BOUND_INTEGER) {
+      u32 sub_lo = Emit_Int_Const (Eval_Bound (index_subtype->low_bound),  bt).reg;
+      u32 sub_hi = Emit_Int_Const (Eval_Bound (index_subtype->high_bound), bt).reg;
+      I1 nonnull = Emit_Icmp ("sle", bt, want_lo, want_hi);
+      I1 lo_out  = Emit_Icmp ("slt", bt, want_lo, sub_lo);
+      I1 hi_out  = Emit_Icmp ("sgt", bt, want_hi, sub_hi);
+      u32 outside = Emit_Result ("or i1 %s, %s"
+        "  ; component bounds vs index subtype\n",  REG (lo_out.reg),  REG (hi_out.reg));
+      I1 bad = Emit_And_I1 (nonnull, (I1){ outside });
+      Emit_Raise_Constraint_Error_When (bad,
+        "aggregate component bounds exceed the component index subtype");
+    }
+
     u32 got_lo = Emit_Fat_Pointer_Low_Dim  (fat_reg, bt, d).reg;
     u32 got_hi = Emit_Fat_Pointer_High_Dim (fat_reg, bt, d).reg;
     I1 lo_ne = Emit_Icmp ("ne", bt, got_lo, want_lo);
@@ -53473,21 +53208,24 @@ void Emit_Runtime_Handler_Stack () {
   Emit_Verbatim (
     "; Exception handling runtime\n"
     "; ---- Exception handling: the per-task handler chain ----\n"
-    "define linkonce_odr void @__ada_push_handler(ptr %h) nounwind {\n"
-    "  %old = load ptr, ptr @__handler_chain\n"
+    /*  noinline and volatile: inlining these frees the optimiser to cache the
+        chain head across an @__ada_setjmp that returns twice, which corrupts
+        the chain once a handler longjmps back through it.  */
+    "define linkonce_odr void @__ada_push_handler(ptr %h) noinline nounwind {\n"
+    "  %old = load volatile ptr, ptr @__handler_chain\n"
     "  %link = getelementptr { ptr, [240 x i8] }, ptr %h, i32 0, i32 0\n"
     "  store ptr %old, ptr %link\n"
-    "  store ptr %h, ptr @__handler_chain\n"
+    "  store volatile ptr %h, ptr @__handler_chain\n"
     "  ret void\n"
     "}\n\n"
-    "define linkonce_odr void @__ada_pop_handler() nounwind {\n"
-    "  %cur = load ptr, ptr @__handler_chain\n"
+    "define linkonce_odr void @__ada_pop_handler() noinline nounwind {\n"
+    "  %cur = load volatile ptr, ptr @__handler_chain\n"
     "  %is_null = icmp eq ptr %cur, null\n"
     "  br i1 %is_null, label %done, label %pop\n"
     "pop:\n"
     "  %link = getelementptr { ptr, [240 x i8] }, ptr %cur, i32 0, i32 0\n"
     "  %prev = load ptr, ptr %link\n"
-    "  store ptr %prev, ptr @__handler_chain\n");
+    "  store volatile ptr %prev, ptr @__handler_chain\n");
   Emit_Void_Function_Epilogue (true);
 }
 
@@ -53811,7 +53549,7 @@ void Emit_Runtime_Raise () {
     "define linkonce_odr void @__ada_raise(i64 %exc_id) noreturn nounwind {\n"
     "  %idp = inttoptr " PTR_INT_TYPE " %exc_id to ptr\n"
     "  store ptr %idp, ptr @__current_exception\n"
-    "  %frame = load ptr, ptr @__handler_chain\n"
+    "  %frame = load volatile ptr, ptr @__handler_chain\n"
     "  %is_null = icmp eq ptr %frame, null\n"
     "  br i1 %is_null, label %unhandled, label %jump\n"
     "jump:\n"
@@ -63230,11 +62968,7 @@ void Print_Usage (FILE *out, const char *program_name) {
       "  %s --bind <library-dir> <main-unit>\n"
       "  %s --lsp\n"
       "\n"
-      "Compiles Ada 83 sources to a native executable using a\n"
-      "runtime-loaded libLLVM.  Additional .ll modules given as inputs\n"
-      "are linked into the result, and .ll modules on their own link\n"
-      "without a source, so no external llvm-link or lli is needed.\n"
-      "With no -o, the executable is named after the first input file.\n"
+      "Compiles Ada 83 sources\n"
       "\n"
       "Code generation:\n"
       "  -O0, -O1, -O2, -O3, -Os\n"
@@ -63770,8 +63504,8 @@ int Native_Backend_Compile (const char *ir_path, const char *const *extra_ir,
 
   const char *configured = getenv ("CC");
 #ifdef _WIN32
-  const char *drivers[] = { configured, "clang -fuse-ld=lld", "cc", "clang",
-                            "gcc" };
+  const char *drivers[] = { configured, "clang -fuse-ld=lld", "zig cc", "cc",
+                            "clang", "gcc" };
   const char *link_libraries = "-lm -lapi-ms-win-core-synch-l1-2-0";
 #else
   const char *drivers[] = { configured, "cc", "clang", "gcc" };
@@ -63790,7 +63524,7 @@ int Native_Backend_Compile (const char *ir_path, const char *const *extra_ir,
 #endif
     driver_ran = true;
     status     = exit_status == 0 ? 0 : 1;
-    break;
+    if (status == 0) break;
   }
   if (not driver_ran)
     Report_Driver_Error ("no C compiler found to link with "
