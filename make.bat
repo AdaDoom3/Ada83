@@ -5,7 +5,7 @@ cd /d "%~dp0"
 set "SOURCE=ada83.c"
 set "RUNTIME=ada83-runtime.ada"
 set "BUNDLE=ada83-extension.html"
-set "MANUAL=manual.md"
+set "MANUAL=ada83-manual.md"
 set "VSIX=ada83.vsix"
 set "ICON=ada83-icon"
 set "LIBRARIES=bin-windows.zip"
@@ -37,7 +37,7 @@ set "SHARED_LIBRARIES_windows=*.dll"
 
 call :dispatch %1 %2
 set "RESULT=%errorlevel%"
-echo %cmdcmdline% | find /i "/c" >nul && pause
+echo %cmdcmdline% | "%SystemRoot%\System32\find.exe" /i "/c" >nul && pause
 exit /b %RESULT%
 
 :dispatch
@@ -161,7 +161,7 @@ exit /b 0
 
 :slice
 set "SLICE=%STAGE%\%EXECUTABLE%-%~1"
-echo Compiling for %~1 with Zig...
+echo   compiling for %~1 with Zig
 %ZIG% cc %COMPILER_FLAGS% -target %~1 -o %SLICE% %SOURCE% %LINK_LIBRARIES%
 if errorlevel 1 exit /b 1
 if defined SLICES set "MANY_SLICES=1"
@@ -173,11 +173,38 @@ set "LIPO=lipo"
 where lipo >nul 2>nul && goto join
 set "LIPO=llvm-lipo"
 where llvm-lipo >nul 2>nul && goto join
-echo joining the %TARGET% slices needs lipo
-exit /b 1
+goto fatjoin
 :join
 %LIPO% -create -output "%STAGE%\%EXECUTABLE%" %SLICES%
 if errorlevel 1 exit /b 1
+del /q %SLICES% >nul 2>nul
+exit /b 0
+
+rem  No lipo anywhere; a universal binary is only a big-endian fat header
+rem  in front of page-aligned slices, so PowerShell can join them itself.
+:fatjoin
+echo   joining the %TARGET% slices into a universal binary
+powershell -NoProfile -Command ^
+    "$ErrorActionPreference='Stop';" ^
+    "$Big = { param($v) [byte[]]@((($v -shr 24) -band 255),(($v -shr 16) -band 255)," ^
+    "                             (($v -shr 8) -band 255),($v -band 255)) };" ^
+    "$Names = '%SLICES%'.Trim() -split '\s+';" ^
+    "$Align = 16384; $Offset = $Align; $Entries = @(); $Bodies = @();" ^
+    "foreach ($Name in $Names) {" ^
+    "  $Bytes = [IO.File]::ReadAllBytes((Join-Path $PWD $Name));" ^
+    "  $Cpu = [BitConverter]::ToUInt32($Bytes, 4); $Sub = [BitConverter]::ToUInt32($Bytes, 8);" ^
+    "  $Entries += ,@($Cpu, $Sub, $Offset, $Bytes.Length); $Bodies += ,$Bytes;" ^
+    "  $Offset = ($Offset + $Bytes.Length + $Align - 1) -band (-bnot ($Align - 1)) };" ^
+    "$Out = (& $Big 3405691582) + (& $Big $Names.Count);" ^
+    "foreach ($e in $Entries) {" ^
+    "  $Out += (& $Big $e[0]) + (& $Big $e[1]) + (& $Big $e[2]) + (& $Big $e[3]) + (& $Big 14) };" ^
+    "for ($i = 0; $i -lt $Bodies.Count; $i++) {" ^
+    "  $Out += [byte[]]::new($Entries[$i][2] - $Out.Length) + $Bodies[$i] };" ^
+    "[IO.File]::WriteAllBytes((Join-Path $PWD '%STAGE%\%EXECUTABLE%'), $Out)"
+if not exist "%STAGE%\%EXECUTABLE%" (
+    echo Cannot join the %TARGET% slices. Install lipo or llvm-lipo and try again.
+    exit /b 1
+)
 del /q %SLICES% >nul 2>nul
 exit /b 0
 
@@ -189,24 +216,25 @@ exit /b 0
 :icons
 if not exist "%ICON_SOURCE%" exit /b 1
 if not exist "%STAGE%" mkdir "%STAGE%"
+echo   building the %TARGET% icons
 powershell -NoProfile -Command ^
     "$ErrorActionPreference='Stop';" ^
     "$Png = [IO.File]::ReadAllBytes((Join-Path $PWD '%ICON_SOURCE%'));" ^
-    "$Big = { param($v) [byte[]]@(($v -shr 24) -band 255,($v -shr 16) -band 255," ^
-    "                             ($v -shr 8) -band 255,$v -band 255) };" ^
-    "$Little = { param($v) [byte[]]@($v -band 255,($v -shr 8) -band 255," ^
-    "                                ($v -shr 16) -band 255,($v -shr 24) -band 255) };" ^
+    "$Big = { param($v) [byte[]]@((($v -shr 24) -band 255),(($v -shr 16) -band 255)," ^
+    "                             (($v -shr 8) -band 255),($v -band 255)) };" ^
+    "$Little = { param($v) [byte[]]@(($v -band 255),(($v -shr 8) -band 255)," ^
+    "                                (($v -shr 16) -band 255),(($v -shr 24) -band 255)) };" ^
     "$Wide = ($Png[16] -shl 24) + ($Png[17] -shl 16) + ($Png[18] -shl 8) + $Png[19];" ^
     "$Tall = ($Png[20] -shl 24) + ($Png[21] -shl 16) + ($Png[22] -shl 8) + $Png[23];" ^
     "$Chunk = @{16='icp4';32='icp5';64='icp6';128='ic07';256='ic08';512='ic09';1024='ic10'}[$Wide];" ^
     "if (-not $Chunk) { $Chunk = 'ic07' };" ^
     "$Stage = Join-Path $PWD '%STAGE%';" ^
     "$Ico = [byte[]]@(0,0,1,0,1,0,($Wide -band 255),($Tall -band 255),0,0,1,0,32,0) +" ^
-    "       (^& $Little $Png.Length) + (^& $Little 22) + $Png;" ^
+    "       (& $Little $Png.Length) + (& $Little 22) + $Png;" ^
     "if ('%TARGET%' -eq 'windows') {" ^
     "  [IO.File]::WriteAllBytes((Join-Path $Stage '%ICON%.ico'), $Ico) };" ^
-    "$Icns = [Text.Encoding]::ASCII.GetBytes('icns') + (^& $Big ($Png.Length + 16)) +" ^
-    "        [Text.Encoding]::ASCII.GetBytes($Chunk) + (^& $Big ($Png.Length + 8)) + $Png;" ^
+    "$Icns = [Text.Encoding]::ASCII.GetBytes('icns') + (& $Big ($Png.Length + 16)) +" ^
+    "        [Text.Encoding]::ASCII.GetBytes($Chunk) + (& $Big ($Png.Length + 8)) + $Png;" ^
     "if ('%TARGET%' -eq 'macos') {" ^
     "  [IO.File]::WriteAllBytes((Join-Path $Stage '%ICON%.icns'), $Icns) };" ^
     "if ('%TARGET%' -eq 'linux') {" ^
@@ -214,14 +242,14 @@ powershell -NoProfile -Command ^
     "$Data = $Icns.Length + 4;" ^
     "$Map = [byte[]]::new(24) + [byte[]]@(0,28,0,46,0,0) +" ^
     "       [Text.Encoding]::ASCII.GetBytes('icns') + [byte[]]@(0,0,0,10,191,185,255,255,0,0,0,0);" ^
-    "$Fork = (^& $Big 256) + (^& $Big (256 + $Data)) + (^& $Big $Data) + (^& $Big 46) +" ^
-    "        [byte[]]::new(240) + (^& $Big $Icns.Length) + $Icns + $Map;" ^
-    "$Double = (^& $Big 333319) + (^& $Big 131072) + [byte[]]::new(16) + [byte[]]@(0,2) +" ^
-    "          (^& $Big 9) + (^& $Big 50) + (^& $Big 32) +" ^
-    "          (^& $Big 2) + (^& $Big 82) + (^& $Big $Fork.Length) +" ^
+    "$Fork = (& $Big 256) + (& $Big (256 + $Data)) + (& $Big $Data) + (& $Big 46) +" ^
+    "        [byte[]]::new(240) + (& $Big $Icns.Length) + $Icns + $Map;" ^
+    "$Double = (& $Big 333319) + (& $Big 131072) + [byte[]]::new(16) + [byte[]]@(0,2) +" ^
+    "          (& $Big 9) + (& $Big 50) + (& $Big 32) +" ^
+    "          (& $Big 2) + (& $Big 82) + (& $Big $Fork.Length) +" ^
     "          [byte[]]::new(8) + [byte[]]@(4,0) + [byte[]]::new(22) + $Fork;" ^
     "if ('%TARGET%' -eq 'macos') {" ^
-    "  New-Item -ItemType Directory -Force -Path (Join-Path $Stage '__MACOSX') ^> $null;" ^
+    "  New-Item -ItemType Directory -Force -Path (Join-Path $Stage '__MACOSX') > $null;" ^
     "  [IO.File]::WriteAllBytes((Join-Path $Stage '__MACOSX\._ada83'), $Double) }"
 if exist "%STAGE%\%ARTWORK%" exit /b 0
 exit /b 1
@@ -244,10 +272,12 @@ if exist "%STAGE%\%ARTWORK%"    set "CONTENTS=%CONTENTS%,'%STAGE%\%ARTWORK%'"
 if defined LAUNCHER             set "CONTENTS=%CONTENTS%,'%STAGE%\%LAUNCHER%'"
 if defined SHARED_LIBRARIES     set "CONTENTS=%CONTENTS%,'%STAGE%\%SHARED_LIBRARIES%'"
 if exist "%STAGE%\__MACOSX"     set "CONTENTS=%CONTENTS%,'%STAGE%\__MACOSX'"
-del /q "%ZIP%.new" >nul 2>nul
+del /q "%ZIP%.new" staging\archive.zip >nul 2>nul
+echo   packing %ZIP%
 powershell -NoProfile -Command ^
     "$ErrorActionPreference='Stop';" ^
-    "Compress-Archive -Path %CONTENTS% -DestinationPath '%ZIP%.new' -Force"
+    "Compress-Archive -Path %CONTENTS% -DestinationPath 'staging\archive.zip' -Force;" ^
+    "Move-Item 'staging\archive.zip' '%ZIP%.new' -Force"
 if not exist "%ZIP%.new" (
     echo Cannot write %ZIP%. Making archives needs PowerShell 5 or later.
     exit /b 1
@@ -271,11 +301,14 @@ for %%F in ("%MANUAL%" "%ICON%.png") do (
         echo %%~F is missing; building %VSIX% without it.
     )
 )
+echo   splitting %BUNDLE%
 call :split
+echo   packing %VSIX%
 powershell -NoProfile -Command ^
     "$ErrorActionPreference='Stop';" ^
     "$Parts = Get-ChildItem -LiteralPath 'staging\vsix' -Force | ForEach-Object FullName;" ^
-    "Compress-Archive -LiteralPath $Parts -DestinationPath '%STAGE%\%VSIX%' -Force"
+    "Compress-Archive -LiteralPath $Parts -DestinationPath 'staging\vsix.zip' -Force;" ^
+    "Move-Item 'staging\vsix.zip' '%STAGE%\%VSIX%' -Force"
 rmdir /s /q staging\vsix >nul 2>nul
 if not exist "%STAGE%\%VSIX%" (
     echo Cannot write %VSIX%. Making archives needs PowerShell 5 or later.
@@ -325,7 +358,7 @@ if not exist "%LIBRARIES%" (
     echo Cannot find LLVM-C.dll or %LIBRARIES%.
     exit /b 1
 )
-echo Unpacking LLVM-C.dll into %STAGE%...
+echo   unpacking LLVM-C.dll into %STAGE%
 powershell -NoProfile -Command ^
     "$ErrorActionPreference='Stop';" ^
     "Expand-Archive -LiteralPath '%LIBRARIES%' -DestinationPath 'staging\llvm' -Force;" ^
@@ -347,7 +380,7 @@ set "TOOLCHAIN=Zig"
 set "COMPILER=%ZIG% cc -target x86_64-windows-gnu"
 :build
 call :resource
-echo Compiling with %TOOLCHAIN%...
+echo   compiling ada83.c with %TOOLCHAIN%
 %COMPILER% %COMPILER_FLAGS% %SOURCE% %RESOURCE% -o "%STAGE%\%EXECUTABLE%" %LINK_LIBRARIES%
 exit /b %errorlevel%
 
