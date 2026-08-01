@@ -1314,7 +1314,7 @@ module.exports = { activate, deactivate };
 {
   "name": "ada83",
   "displayName": "Ada 83",
-  "description": "Ada 83 (ANSI/MIL-STD-1815A) support, with diagnostics from the ada83 compiler itself.",
+  "description": "Ada 83 (ANSI/MIL-STD-1815A) language support, powered by the ada83 compiler.",
   "version": "1.0.0",
   "publisher": "ada83",
   "license": "SEE LICENSE IN ../readme.md",
@@ -1718,57 +1718,74 @@ module.exports = { activate, deactivate };
 </script>
 
 <script id="README.md" type="text/markdown">
-# Ada 83
+# Ada 83 for Visual Studio Code
 
-Ada 83 (ANSI/MIL-STD-1815A) for Visual Studio Code, answered by the `ada83`
-compiler itself.
+Ada 83 (ANSI/MIL-STD-1815A) language support, powered by the [`ada83`
+compiler](https://github.com/AdaDoom3/Ada83). The extension talks to
+`ada83 --lsp`, the compiler's own language server, so diagnostics, hovers and
+completions come from the exact same front end that builds your code.
 
-`ada83 --lsp` is the language server. The same lexer, parser and resolver that
-produce an executable produce the squiggles, so the editor and the compiler
-cannot disagree about what Ada 83 is.
+## Features
 
-## What it does
+- **Diagnostics** as you type, each with a quick fix from the compiler
+- **Go to Definition**, including into `ada83-runtime.ada`, the standard library
+- **Find All References** and **Document Highlights**
+- **Hover** showing the declaration as Ada 83 declares it
+- **Completion** for names in scope, including the runtime
+- **Signature Help** for the call being written
+- **Document Outline** and **Folding**, from the compiler's own view of the unit
+- **Syntax Highlighting** for all 63 Ada 83 reserved words
+- **Snippets** for common constructs, from a compilation unit to a record
+  representation clause
+- **Suggest a Fix**, a compiler-generated repair shown as a diff before it's applied
+- **Format Document** and format-on-save, to the style the standard itself uses
+- **Build** and **Check** commands (`Ctrl+Alt+B` / `Ctrl+Alt+C`), wired up as
+  tasks with a problem matcher
 
-| | |
+## Requirements
+
+- The `ada83` compiler, on your `PATH` or pointed to with
+  `ada83.compilerPath`. Get it from the
+  [releases](https://github.com/AdaDoom3/Ada83) or build it with `make`.
+- `ada83-runtime.ada`, kept next to the compiler executable.
+
+## Getting Started
+
+1. Install the `ada83` compiler and make sure it's on your `PATH` (or set
+   `ada83.compilerPath`).
+2. Open a folder containing `.ada`, `.adb`, or `.ads` files.
+3. Start typing — diagnostics, hovers and completions come from the compiler
+   automatically.
+
+## Configuration
+
+This extension contributes the following settings:
+
+| Setting | Description |
 |---|---|
-| Diagnostics | as you type, with the compiler's own quick fixes and the locations each one points at |
-| Outline | every declaration the resolver saw, and it stays up while a file is mid-edit |
-| Hover | the declaration written as Ada declares it, and where it stands |
-| Suggest a fix | on any error: a repair written to the manual's style, shown as a diff first |
-| Go to definition | including into `ada83-runtime.ada`, so `Put_Line` opens the standard library |
-| References, highlights | across the file and the workspace |
-| Completion | names in scope, including the runtime's |
-| Signature help | the profile of the call being written, with the argument under the cursor marked |
-| Folding, symbols | from the compiler's view of the unit, not a guess at the text |
-| Syntax highlighting | all 63 reserved words, split the way the language divides them |
-| Snippets | thirty-four, from a compilation unit to a record representation clause |
-| Build and check | `Ctrl+Alt+B` and `Ctrl+Alt+C`, as tasks, with a problem matcher |
+| `ada83.compilerPath` | Path to the `ada83` executable; `${workspaceFolder}` is substituted |
+| `ada83.includePaths` | Extra directories searched for with-ed units, beyond the file's own |
+| `ada83.language` | Language diagnostics are read in: `en`, `es`, `fr`, `de`, `zh-CN`, `ja`, `hi`, or `lolcat` |
+| `ada83.enable` | Report diagnostics as you type |
+| `ada83.formatOnType` | Reindent each line as it's typed |
+| `ada83.formatOnSave` | Reformat the whole file on save |
+| `ada83.formatStrength` | How much a reformat may change: `indentation`, `layout`, or `style` |
+| `ada83.syncDelay` | Debounce, in ms, before an edited buffer reaches the compiler |
+| `ada83.requestTimeout` | Timeout for a single language server request |
+| `ada83.workspaceRequestTimeout` | Timeout for a workspace-wide search |
+| `ada83.trace.server` | Log LSP traffic to the output channel, for troubleshooting |
 
-## The standard, in the extension
+## Language Model Tool
 
-ANSI/MIL-STD-1815A travels inside this extension. A language model working in
-an Ada 83 workspace can search it with the `search_ada83_manual` tool, so a
-question of legality is answered out of the standard rather than out of a
-recollection of some later Ada.
+For AI coding assistants, this extension exposes a `search_ada83_manual` tool
+that searches ANSI/MIL-STD-1815A directly, so a question about legality is
+answered from the standard itself rather than from a later Ada.
 
-## Settings
+## More Information
 
-| | |
-|---|---|
-| `ada83.compilerPath` | where `ada83` is; `${workspaceFolder}` is substituted |
-| `ada83.includePaths` | directories searched for with-ed units, beyond the file's own |
-| `ada83.language` | read errors in `en`, `es`, `fr`, `de`, `zh-CN`, `ja`, `hi` or `lolcat` |
-| `ada83.enable` | report diagnostics as you type |
-| `ada83.formatOnType` | reindent each line as you type it, worked out locally |
-| `ada83.formatOnSave` | reformat the whole file as it is saved, by asking a model |
-| `ada83.formatStrength` | how much a reformat may change: `indentation`, `layout` or `style` |
-| `ada83.syncDelay` | how long typing must pause before the buffer reaches the compiler |
-| `ada83.requestTimeout` | how long to wait for one answer |
-| `ada83.workspaceRequestTimeout` | how long to wait for a workspace-wide search |
-| `ada83.trace.server` | write the protocol traffic to the output channel |
-
-The compiler looks for `ada83-runtime.ada` beside its own executable, so keep
-the two together.
+- [Compiler and source](https://github.com/AdaDoom3/Ada83)
+- [Issue tracker](https://github.com/AdaDoom3/Ada83/issues)
+- [Language reference (`manual.md`)](https://github.com/AdaDoom3/Ada83/blob/main/ada83-manual.md)
 </script>
 
 <script id="ada83.instructions.md" type="text/markdown">
@@ -2516,7 +2533,7 @@ tool (`#ada83Manual`) instead of recalling modern Ada.
   <Metadata>
     <Identity Language="en-US" Id="ada83" Version="1.0.0" Publisher="ada83" />
     <DisplayName>Ada 83</DisplayName>
-    <Description xml:space="preserve">Ada 83 (ANSI/MIL-STD-1815A) support. Diagnostics, go to definition, hover, outline, completion, signature help, folding and quick fixes come from the ada83 compiler itself.</Description>
+    <Description xml:space="preserve">Ada 83 (ANSI/MIL-STD-1815A) language support, powered by the ada83 compiler. Diagnostics, go to definition, hover, outline, completion, signature help, folding and quick fixes.</Description>
     <Tags>ada,ada83,mil-std-1815a</Tags>
     <Categories>Programming Languages,Linters</Categories>
     <GalleryFlags>Public</GalleryFlags>
