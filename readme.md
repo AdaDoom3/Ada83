@@ -10,10 +10,7 @@ A single-file Ada 83 LLVM compiler.
 | Runtime | `ada83-runtime.ada`, 3k lines of Ada |
 | Language | all of MIL-STD-1815A: tasking, generics, fixed point, representation clauses |
 | Conformance | 3561 / 3561, ACATS 1.11 |
-| Output | generated through a libLLVM loaded at run time; `--ir` for the text |
-| Editor | `ada83 --lsp`, with a VS Code extension in one dependency-free file |
-| Binaries | Linux, macOS, Windows |
-| Reference | `manual.md`, the standard itself |
+| Targets | Linux, macOS, Windows |
 
 ## Quick start
 
