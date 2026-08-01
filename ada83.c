@@ -63354,6 +63354,26 @@ int main (int argc, char *argv[]) {
   #define BACKEND_ARCH "X86"
 #endif
 
+#ifndef _WIN32
+static char *Llvm_Config_Libdir (const char *config_command) {
+  Text_Buffer command = {0};
+  Buffer_Append_Text (&command, config_command);
+  Buffer_Append_Text (&command, " --libdir 2>/dev/null");
+  FILE *child = popen (command.Data, "r");
+  Buffer_Free (&command);
+  if (not child) return NULL;
+  char line[PATH_MAX];
+  char *result = fgets (line, sizeof line, child) ? strdup (line) : NULL;
+  pclose (child);
+  if (not result) return NULL;
+  size_t length = strlen (result);
+  while (length > 0 and (result[length - 1] == '\n' or result[length - 1] == '\r'))
+    result[--length] = '\0';
+  if (length == 0) { free (result); return NULL; }
+  return result;
+}
+#endif
+
 bool Llvm_C_Api_Load (Llvm_C_Api *api, char *err, size_t err_size) {
 
   memset (api, 0, sizeof (*api));
@@ -63362,10 +63382,35 @@ bool Llvm_C_Api_Load (Llvm_C_Api *api, char *err, size_t err_size) {
     api->library = Backend_Library_Open (override);
   for (size_t i = 0; not api->library and i < sizeof (Llvm_Library_Candidate_Names) / sizeof (*Llvm_Library_Candidate_Names); i++)
     api->library = Backend_Library_Open (Llvm_Library_Candidate_Names[i]);
+#ifndef _WIN32
   if (not api->library) {
+    static const char *const config_commands[] = {
+      "llvm-config",
+      "llvm-config-22", "llvm-config-21", "llvm-config-20",
+      "llvm-config-19", "llvm-config-18", "llvm-config-17"
+    };
+    for (size_t c = 0; not api->library and c < sizeof (config_commands) / sizeof (*config_commands); c++) {
+      char *libdir = Llvm_Config_Libdir (config_commands[c]);
+      if (not libdir) continue;
+      for (size_t i = 0; not api->library and i < sizeof (Llvm_Library_Candidate_Names) / sizeof (*Llvm_Library_Candidate_Names); i++) {
+        char path[PATH_MAX];
+        snprintf (path, sizeof path, "%s/%s", libdir, Llvm_Library_Candidate_Names[i]);
+        api->library = Backend_Library_Open (path);
+      }
+      free (libdir);
+    }
+  }
+#endif
+  if (not api->library) {
+#ifdef _WIN32
+    snprintf (err, err_size,
+      "no libLLVM found (set ADA83_LLVM_LIB, install LLVM, or "
+      "place LLVM-C.dll beside the executable)");
+#else
     snprintf (err, err_size,
       "no libLLVM found (set ADA83_LLVM_LIB, install the llvm package, or "
-      "place LLVM-C.dll beside the executable)");
+      "add an llvm-config to PATH)");
+#endif
     return false;
   }
 
