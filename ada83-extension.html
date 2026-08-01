@@ -2189,6 +2189,7 @@ tool (`#ada83Manual`) instead of recalling modern Ada.
     { "include": "#declaration" },
     { "include": "#closing" },
     { "include": "#loop_parameter" },
+    { "include": "#choice" },
     { "include": "#association" },
     { "include": "#attribute" },
     { "include": "#predefined" },
@@ -2389,6 +2390,29 @@ tool (`#ada83Manual`) instead of recalling modern Ada.
         "1": { "name": "variable.parameter.ada" },
         "2": { "name": "keyword.operator.ada" }
       }
+    },
+    "choice": {
+      "begin": "(?i)\\b(when)\\b",
+      "beginCaptures": {
+        "1": { "name": "keyword.control.ada" }
+      },
+      "end": "(=>)|(;)",
+      "endCaptures": {
+        "1": { "name": "keyword.operator.ada" },
+        "2": { "name": "punctuation.terminator.ada" }
+      },
+      "patterns": [
+        { "include": "#comment" },
+        { "include": "#string" },
+        { "include": "#character" },
+        { "include": "#number" },
+        { "include": "#literal" },
+        { "include": "#predefined" },
+        { "include": "#attribute" },
+        { "include": "#keyword" },
+        { "include": "#operator" },
+        { "include": "#punctuation" }
+      ]
     },
     "attribute": {
       "patterns": [
