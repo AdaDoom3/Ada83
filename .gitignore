@@ -51,3 +51,6 @@ perf.data.old
 gmon.out
 
 .DS_Store
+
+# Agent worktrees.
+/.claude/worktrees/

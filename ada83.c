@@ -105,6 +105,36 @@ u64 To_Bytes   (u64 bits)  {return (bits + Bits_Per_Unit - 1) / Bits_Per_Unit;}
     "e-m:e-i8:8:32-i16:16:32-i64:64-i128:128-n32:64-S128"
 #endif
 
+#if defined(SIMD_X86_64) and defined(_WIN32)
+  #define SJLJ_BUFFER_REGISTER "rcx"
+  #define SJLJ_SAVED_REGISTERS(Slot)                                     \
+    Slot ( 0, "rbx") Slot ( 8, "rbp") Slot (16, "rsi") Slot (24, "rdi")  \
+    Slot (32, "r12") Slot (40, "r13") Slot (48, "r14") Slot (56, "r15")
+  #define SJLJ_SAVED_VECTORS(Slot)                                       \
+    Slot ( 80, "xmm6")  Slot ( 96, "xmm7")  Slot (112, "xmm8")           \
+    Slot (128, "xmm9")  Slot (144, "xmm10") Slot (160, "xmm11")          \
+    Slot (176, "xmm12") Slot (192, "xmm13") Slot (208, "xmm14")          \
+    Slot (224, "xmm15")
+  #define SJLJ_STACK_OFFSET  64
+  #define SJLJ_RESUME_OFFSET 72
+#elif defined(SIMD_X86_64)
+  #define SJLJ_BUFFER_REGISTER "rdi"
+  #define SJLJ_SAVED_REGISTERS(Slot)                                     \
+    Slot ( 0, "rbx") Slot ( 8, "rbp") Slot (16, "r12")                   \
+    Slot (24, "r13") Slot (32, "r14") Slot (40, "r15")
+  #define SJLJ_SAVED_VECTORS(Slot)
+  #define SJLJ_STACK_OFFSET  48
+  #define SJLJ_RESUME_OFFSET 56
+#endif
+
+#ifdef SJLJ_BUFFER_REGISTER
+  #define SJLJ_AT(offset) TEXT_OF (offset) "(%" SJLJ_BUFFER_REGISTER ")"
+  #define SJLJ_SAVE(offset, reg)    "movq %" reg ", " SJLJ_AT (offset) "\\0A"
+  #define SJLJ_RESTORE(offset, reg) "movq " SJLJ_AT (offset) ", %" reg "\\0A"
+  #define SJLJ_SAVE_VECTOR(offset, reg)    "movups %" reg ", " SJLJ_AT (offset) "\\0A"
+  #define SJLJ_RESTORE_VECTOR(offset, reg) "movups " SJLJ_AT (offset) ", %" reg "\\0A"
+#endif
+
 #ifdef HOST_TARGET_TRIPLE
   #define HOST_TARGET_IR_HEADER                                    \
     "target datalayout = \"" HOST_TARGET_DATA_LAYOUT "\"\n"        \
@@ -3803,7 +3833,7 @@ bool        Read_Static_Rep_Value           (Node *expression,
                                              i64 *value);
 Location    Get_Clause_Location             (Node *clause);
 
-void  Apply_Component_Clause                  (Node *clause, Type *target,
+void  Apply_Component_Clause                  (Node *clause,
                                                Component_Info *component);
 u64   Get_First_Bit                           (const Component_Info *component);
 bool  Is_System_Address_Declaration           (Type *type_info);
@@ -4115,6 +4145,8 @@ typedef struct {
   bool           function_body_open;
   bool           emitting_frame_slot;
   bool           emitting_prologue;
+
+  bool           frame_resumed_by_longjmp;
 
   u32  body_call_count;
   bool prologue_is_droppable;
@@ -4558,6 +4590,9 @@ void  Emit_Store_Bounds_Struct_Pair  (u32 bounds_ptr, Rep bt,
 u32   Freeze_Disc_Value_Global       (Rep rep, u32 val);
 u32   Emit_Load_Preeval_Global       (u32 gid, Rep want);
 void  Emit_Memcpy                    (u32 dst, u32 src, u32 size_reg);
+void  Emit_Memmove                   (u32 dst, u32 src, u32 size_reg);
+void  Emit_Byte_Move                 (u32 dst, u32 src, u64 bytes,
+                                      const char *comment);
 void  Emit_Memcpy_To_Symbol_Sized    (Symbol *dst, u32 src,
                                       const char *size_operand, const char *comment);
 void  Emit_Memcpy_To_Symbol          (Symbol *dst, u32 src, i64 bytes, const char *comment);
@@ -24686,8 +24721,8 @@ Location Get_Clause_Location (Node *clause) {
   return clause->location;
 }
 
-void Apply_Component_Clause (Node *clause, Type *target,
-                                    Component_Info *component) {
+void Apply_Component_Clause (Node *clause,
+                             Component_Info *component) {
   if (not Type_Constraints_Are_Static (component->component_type, 0)) {
     Reject_At (Get_Clause_Location (clause),
                   "a component clause is only allowed where the constraints "
@@ -25374,7 +25409,7 @@ void Resolve_Representation_Clause (Node *node) {
             continue;
           }
           placing_clause[index] = clause;
-          Apply_Component_Clause (clause, target, component);
+          Apply_Component_Clause (clause, component);
         }
 
         for (u32 i = 0; i < component_count; i++) {
@@ -31134,6 +31169,30 @@ void Function_Body_Begin () {
   cg->body_call_count     = 0;
   cg->prologue_is_droppable = false;
   cg->block_terminated    = false;
+  cg->frame_resumed_by_longjmp = false;
+}
+
+#define STORAGE_ESCAPE_FORM "  call void asm sideeffect \"\", \"r\"(ptr %s)\n"
+
+const char *Alloca_Line_Slot (const char *line, size_t *length) {
+  const char *name = line + strspn (line, " ");
+  *length = strcspn (name, " ");
+  return (name[0] == '%' and *length
+          and strncmp (name + *length, " = alloca ", 10) == 0) ? name : NULL;
+}
+
+void Emit_Frame_Slots_Escape () {
+  for (const char *line = cg->frame.text; line and *line; ) {
+    const char *next = strchr (line, '\n');
+    size_t      length;
+    const char *name = Alloca_Line_Slot (line, &length);
+    if (name)
+      Output_Format (cg->output,
+                     "  call void asm sideeffect \"\", \"r\"(ptr %.*s)\n",
+                     (int) length, name);
+    if (not next) break;
+    line = next + 1;
+  }
 }
 
 void Function_Body_End () {
@@ -31147,6 +31206,7 @@ void Function_Body_End () {
 
   Output_Write (cg->output, "entry:\n", sizeof "entry:\n" - 1);
   Output_Write (cg->output, cg->frame.text,    cg->frame.length);
+  if (cg->frame_resumed_by_longjmp) Emit_Frame_Slots_Escape ();
   Output_Write (cg->output, cg->prologue.text, cg->prologue.length);
   Output_Write (cg->output, cg->body.text,     cg->body.length);
 
@@ -31329,6 +31389,17 @@ void Emit_Verbatim_Impl (const char *src_func, int src_line,
   Emit_Located_Text (src_func, src_line, text, length);
 }
 #define Emit(...) Emit_Impl (__func__, __LINE__, __VA_ARGS__)
+
+void Emit_Storage_Escapes (const char *storage) {
+  Emit (STORAGE_ESCAPE_FORM, storage);
+}
+
+u32 Emit_Object_Storage (u32 byte_size, const char *what) {
+  u32 storage = Emit_Result ("alloca i8, i64 %s  ; %s\n", REG (byte_size), what);
+  Emit_Storage_Escapes (REG (storage));
+  return storage;
+}
+
 #define Emit_Verbatim(text) Emit_Verbatim_Impl (__func__, __LINE__, (text))
 
 u32 Emit_Result_Impl (const char *src_func, int src_line,
@@ -33164,6 +33235,17 @@ void Emit_Memcpy (u32 dst, u32 src, u32 size_reg) {
      REG (dst),  REG (src),  REG (size_reg));
 }
 
+void Emit_Memmove (u32 dst, u32 src, u32 size_reg) {
+  Emit_Call_Void ("void @llvm.memmove.p0.p0.i64(ptr %s, ptr %s, i64 %s, i1 false)",
+     REG (dst),  REG (src),  REG (size_reg));
+}
+
+void Emit_Byte_Move (u32 dst, u32 src, u64 bytes, const char *comment) {
+  Emit_Call_Void ("void @llvm.memmove.p0.p0.i64(ptr %s, ptr %s, "
+        "i64 %llu, i1 false)  ; %s",
+     REG (dst),  REG (src),  (unsigned long long) bytes,  comment);
+}
+
 void Emit_Memcpy_To_Symbol_Sized (Symbol *dst, u32 src,
                                   const char *size_operand, const char *comment) {
   Emit_Call_Void_Begin ("void @llvm.memcpy.p0.p0.i64(ptr ");
@@ -33547,7 +33629,7 @@ void Emit_Fat_To_Array_Memcpy (u32 fat_val,
   u32 len = Emit_Length_From_Bounds (fat_lo, fat_hi, bnd_type).reg;
   u32 byte_len = Emit_Array_Storage_Bytes (array_type, len, bnd_type);
   u32 byte_len_64 = Emit_Extend_To_I64 (byte_len, bnd_type).reg;
-  Emit_Memcpy (dest_ptr, data_ptr, byte_len_64);
+  Emit_Memmove (dest_ptr, data_ptr, byte_len_64);
 }
 
 void Emit_Fat_Pointer_Copy_To_Name (u32 fat_ptr,
@@ -34084,17 +34166,8 @@ Bound_Temps Emit_Bounds_From_Fat_Dim (u32 fat_ptr,
   return result;
 }
 
-/* On POSIX hosts the handler frame is armed with LLVM's SJLJ intrinsics:
-   the buffer holds the frame pointer, the resume address and the stack
-   pointer; llvm.eh.sjlj.setjmp records only the resume address, so the
-   first and third slots are filled here, exactly as Clang lowers
-   __builtin_setjmp.  On Windows, where LLVM's Win64 SJLJ lowering is
-   broken, the runtime's own __ada_setjmp saves the callee-saved register
-   set itself.  Either way the call-site returns_twice attribute is
-   load-bearing: it makes the whole function expose a returns-twice call,
-   which stops the register allocator from reusing spill slots whose old
-   values are still needed on the longjmp path. */
 u32 Emit_Sjlj_Setjmp (u32 jmp_buf) {
+  cg->frame_resumed_by_longjmp = true;
 #ifdef _WIN32
   return Emit_Call_Result ("" C_INT_TYPE " @__ada_setjmp(ptr %s)"
                            " returns_twice",
@@ -34115,7 +34188,8 @@ u32 Emit_Sjlj_Setjmp (u32 jmp_buf) {
 Exception_Setup Emit_Exception_Handler_Setup () {
   Exception_Setup setup;
 
-  u32 saved_master = Emit_Call_Result ("ptr @__ada_master_current()");
+  u32 master_slot = Emit_Alloca_Store (REP_PTR,
+    Emit_Call_Result ("ptr @__ada_master_current()"));
 
   setup.handler_frame =
     Emit_Frame_Slot ("alloca { ptr, [240 x i8] }, align 16  ; handler frame\n");
@@ -34131,7 +34205,8 @@ Exception_Setup Emit_Exception_Handler_Setup () {
   Emit_Branch_On (is_normal, setup.normal_label, unwind_label, NULL);
 
   Emit_Label_Here (unwind_label);
-  Emit_Call_Void ("void @__ada_master_unwind(ptr %s)",  REG (saved_master));
+  Emit_Call_Void ("void @__ada_master_unwind(ptr %s)",
+                  REG (Emit_Result ("load ptr, ptr %s\n", REG (master_slot))));
   Emit ("  br label %%L%u\n", setup.handler_label);
   cg->block_terminated = true;
   return setup;
@@ -37238,7 +37313,7 @@ u32 Emit_Delay_Microseconds (Node *delay_expr) {
     dur = Emit_Result ("fmul double %s, 0x%016llX\n",  REG (db),  (unsigned long long)sb);
   }
   u32 us = Emit_Result ("fmul double %s, 1.0e6\n",  REG (dur));
-  return Emit_Result ("fptoui double %s to i64\n",  REG (us));
+  return Emit_Call_Result ("i64 @llvm.fptosi.sat.i64.f64(double %s)",  REG (us));
 }
 
 void Emit_Entry_Family_Index_Check (Symbol *entry_sym, u32 idx_val) {
@@ -40682,9 +40757,9 @@ void Emit_Store_To_Destination (Assignment_Destination destination,
       u32 source = Rep_Is_Fat_Pointer (value.rep)
         ? Emit_Extract_Fat_Data (value.reg) : value.reg;
       if (destination.byte_count_register)
-        Emit_Memcpy (destination.address, source, destination.byte_count_register);
+        Emit_Memmove (destination.address, source, destination.byte_count_register);
       else
-        Emit_Byte_Copy (destination.address, source, destination.byte_count,
+        Emit_Byte_Move (destination.address, source, destination.byte_count,
                         "composite assignment");
       return;
     }
@@ -45064,9 +45139,7 @@ void Lower_Slice_Assignment (Node *node, Node *target,
       Spell_Rep (destination.rep),  REG (destination.length),  element_size);
   byte_length = Emit_Extend_To_I64 (byte_length, destination.rep).reg;
 
-  Emit_Call_Void ("void @llvm.memcpy.p0.p0.i64("
-        "ptr %s, ptr %s, i64 %s, i1 false)  ; slice assignment",
-     REG (destination_pointer),  REG (source_pointer),  REG (byte_length));
+  Emit_Memmove (destination_pointer, source_pointer, byte_length);
 }
 
 void Lower_Array_Element_Assignment (Node *node,
@@ -45157,8 +45230,8 @@ void Lower_Constrained_Array_Assignment (Node *node,
       u32 target_fat  = Emit_Load_Fat_Pointer (target_symbol, bound_rep).reg;
       u32 target_data = Emit_Fat_Pointer_Data (target_fat, bound_rep).reg;
       u32 source_data = Emit_Fat_Pointer_Data (value.reg, bound_rep).reg;
-      Emit_Memcpy (target_data, source_data,
-                   Emit_Array_Byte_Size (array_type, value.reg).reg);
+      Emit_Memmove (target_data, source_data,
+                    Emit_Array_Byte_Size (array_type, value.reg).reg);
     } else {
       Emit_Fat_Pointer_Copy_To_Name (value.reg, target_symbol, bound_rep);
     }
@@ -45188,7 +45261,7 @@ void Lower_Constrained_Array_Assignment (Node *node,
       Emit_Length_Check (source_length, target_length, bound_rep, array_type);
     }
   }
-  Emit_Byte_Copy (Emit_Assignment_Target_Address (target_symbol), value.reg,
+  Emit_Byte_Move (Emit_Assignment_Target_Address (target_symbol), value.reg,
                   array_type->size > 0 ? array_type->size : 8,
                   "array assignment");
 }
@@ -45411,7 +45484,7 @@ void Lower_Assignment_Body (Node *node, Node *target) {
           target_first_length, target_total, bound_rep, target_type);
         source_data = Emit_Fat_Pointer_Data (source_value, bound_rep).reg;
       }
-      Emit_Memcpy (target_data, source_data, target_bytes);
+      Emit_Memmove (target_data, source_data, target_bytes);
     }
     return;
   }
@@ -46830,7 +46903,8 @@ void Lower_Statement (Node *node) {
           u32 normal_label = Emit_Label ();
           u32 end_label = Emit_Label ();
 
-          u32 saved_master = Emit_Call_Result ("ptr @__ada_master_current()");
+          u32 master_slot = Emit_Alloca_Store (REP_PTR,
+            Emit_Call_Result ("ptr @__ada_master_current()"));
 
           Emit ("  ; -- push handler and record the resumption point\n");
           Emit_Call_Void ("void @__ada_push_handler(ptr %s)",  REG (handler_frame));
@@ -46864,7 +46938,8 @@ void Lower_Statement (Node *node) {
           Emit ("  ; -- EXCEPTION handler entry (L%u)\n", handler_label);
           Emit_Label_Here (handler_label);
           Emit_Call_Void ("void @__ada_pop_handler()");
-          Emit_Call_Void ("void @__ada_master_unwind(ptr %s)",  REG (saved_master));
+          Emit_Call_Void ("void @__ada_master_unwind(ptr %s)",
+            REG (Emit_Result ("load ptr, ptr %s\n", REG (master_slot))));
 
           u32 exc_id = Emit_Current_Exception_Id ();
           Lower_Exception_Dispatch (&node->block_stmt.handlers, exc_id, end_label, true);
@@ -48577,9 +48652,8 @@ void Emit_Copy_Array_Into_Local_Storage (Symbol    *sym,
   u32 allocated_bytes = Emit_Extend_To_I64 (
     Emit_Array_Allocation_Bytes (object_type, length, bound_rep), bound_rep).reg;
 
-  u32 data = Emit_Result (
-    "alloca i8, i64 %s  ; storage for an array constrained by its value\n",
-    REG (allocated_bytes));
+  u32 data = Emit_Object_Storage (allocated_bytes,
+                                  "storage for an array constrained by its value");
   Emit_Memcpy (data, source_data, copied_bytes);
 
   if (Is_Constrained_Array (object_type) and
@@ -48940,6 +49014,9 @@ void Emit_Acquire_Dynamic_Record_Storage (Symbol *sym, Type *ty,
   Emit_Stack_Probe_Dynamic (size);
   Emit_Local_Ref (sym);
   Emit (" = alloca i8, i64 %s  ; record sized by its discriminants\n",  REG (size));
+  Emit ("  call void asm sideeffect \"\", \"r\"(ptr %%");
+  Emit_Symbol_Name (sym);
+  Emit (")\n");
   Emit ("  call void @llvm.memset.p0.i64(ptr %%");
   Emit_Symbol_Name (sym);
   Emit (", i8 0, i64 %s, i1 false)\n",  REG (size));
@@ -48994,9 +49071,8 @@ void Emit_Bind_Index_Constrained_Array_Storage (Node *node,
 
   u32 byte_length = Emit_Extend_To_I64 (
     Emit_Array_Allocation_Bytes (ty, total_length, bound_rep), bound_rep).reg;
-  u32 data = Emit_Result (
-    "alloca i8, i64 %s  ; array constrained by its index constraint\n",
-    REG (byte_length));
+  u32 data = Emit_Object_Storage (byte_length,
+                                  "array constrained by its index constraint");
 
   u32 fat = dimensions > 1
     ? Emit_Fat_Pointer_MultiDim (data, low, high, dimensions, bound_rep, bound_rep).reg
@@ -52381,8 +52457,6 @@ void Emit_Runtime_Declarations () {
     "declare i32 @memcmp (ptr, ptr, i64)\n"
     "declare i32 @strncasecmp (ptr, ptr, i64)\n"
 #ifndef _WIN32
-    "declare i32 @llvm.eh.sjlj.setjmp(ptr) returns_twice\n"
-    "declare void @llvm.eh.sjlj.longjmp(ptr) noreturn\n"
     "declare ptr @llvm.frameaddress.p0(i32)\n"
 #endif
     "declare void @exit (i32)\n"
@@ -52446,6 +52520,10 @@ void Emit_Runtime_Declarations () {
     "declare i64 @ftell (ptr)\n"
     "declare i32 @fseek (ptr, i64, i32)\n"
     "declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1)\n"
+    "declare void @llvm.memmove.p0.p0.i64(ptr, ptr, i64, i1)\n"
+    "declare i64 @llvm.fptosi.sat.i64.f64(double)\n"
+    "declare i32 @llvm.eh.sjlj.setjmp(ptr) returns_twice\n"
+    "declare void @llvm.eh.sjlj.longjmp(ptr) noreturn\n"
     "declare void @llvm.memset.p0.i64(ptr, i8, i64, i1)\n"
     "declare double @llvm.pow.f64(double, double)\n"
     "declare i64 @llvm.ctlz.i64(i64, i1)\n\n"
@@ -53653,40 +53731,18 @@ void Emit_Runtime_Rendezvous_Records () {
 }
 
 #ifdef _WIN32
-/* LLVM's Win64 lowering of the SJLJ intrinsics is broken (a plain
-   __builtin_setjmp/__builtin_longjmp pair miscompiles for
-   x86_64-windows-gnu), and the Windows C runtimes couple longjmp to SEH
-   unwinding.  So on Windows the runtime carries its own CRT-free pair:
-   plain callee-saved register save and restore with POSIX semantics. */
 void Emit_Runtime_Setjmp () {
 #ifdef SIMD_X86_64
   Emit_Verbatim (
-    "; Win64: rcx = buffer; saves rbx rbp rsi rdi r12-r15 rsp rip xmm6-15\n"
     "define linkonce_odr i32 @__ada_setjmp(ptr %buf) naked noinline nounwind"
     " returns_twice {\n"
     "  call void asm sideeffect \""
-      "movq %rbx, 0(%rcx)\\0A"
-      "movq %rbp, 8(%rcx)\\0A"
-      "movq %rsi, 16(%rcx)\\0A"
-      "movq %rdi, 24(%rcx)\\0A"
-      "movq %r12, 32(%rcx)\\0A"
-      "movq %r13, 40(%rcx)\\0A"
-      "movq %r14, 48(%rcx)\\0A"
-      "movq %r15, 56(%rcx)\\0A"
+      SJLJ_SAVED_REGISTERS (SJLJ_SAVE)
+      SJLJ_SAVED_VECTORS (SJLJ_SAVE_VECTOR)
       "leaq 8(%rsp), %rax\\0A"
-      "movq %rax, 64(%rcx)\\0A"
+      "movq %rax, " SJLJ_AT (SJLJ_STACK_OFFSET) "\\0A"
       "movq (%rsp), %rax\\0A"
-      "movq %rax, 72(%rcx)\\0A"
-      "movups %xmm6, 80(%rcx)\\0A"
-      "movups %xmm7, 96(%rcx)\\0A"
-      "movups %xmm8, 112(%rcx)\\0A"
-      "movups %xmm9, 128(%rcx)\\0A"
-      "movups %xmm10, 144(%rcx)\\0A"
-      "movups %xmm11, 160(%rcx)\\0A"
-      "movups %xmm12, 176(%rcx)\\0A"
-      "movups %xmm13, 192(%rcx)\\0A"
-      "movups %xmm14, 208(%rcx)\\0A"
-      "movups %xmm15, 224(%rcx)\\0A"
+      "movq %rax, " SJLJ_AT (SJLJ_RESUME_OFFSET) "\\0A"
       "xorl %eax, %eax\\0A"
       "retq\", \"\"()\n"
     "  unreachable\n"
@@ -53694,32 +53750,15 @@ void Emit_Runtime_Setjmp () {
     "define linkonce_odr void @__ada_longjmp(ptr %buf) naked noinline noreturn"
     " nounwind {\n"
     "  call void asm sideeffect \""
-      "movq 0(%rcx), %rbx\\0A"
-      "movq 8(%rcx), %rbp\\0A"
-      "movq 16(%rcx), %rsi\\0A"
-      "movq 24(%rcx), %rdi\\0A"
-      "movq 32(%rcx), %r12\\0A"
-      "movq 40(%rcx), %r13\\0A"
-      "movq 48(%rcx), %r14\\0A"
-      "movq 56(%rcx), %r15\\0A"
-      "movups 80(%rcx), %xmm6\\0A"
-      "movups 96(%rcx), %xmm7\\0A"
-      "movups 112(%rcx), %xmm8\\0A"
-      "movups 128(%rcx), %xmm9\\0A"
-      "movups 144(%rcx), %xmm10\\0A"
-      "movups 160(%rcx), %xmm11\\0A"
-      "movups 176(%rcx), %xmm12\\0A"
-      "movups 192(%rcx), %xmm13\\0A"
-      "movups 208(%rcx), %xmm14\\0A"
-      "movups 224(%rcx), %xmm15\\0A"
-      "movq 64(%rcx), %rsp\\0A"
+      SJLJ_SAVED_REGISTERS (SJLJ_RESTORE)
+      SJLJ_SAVED_VECTORS (SJLJ_RESTORE_VECTOR)
+      "movq " SJLJ_AT (SJLJ_STACK_OFFSET) ", %rsp\\0A"
       "movl $$1, %eax\\0A"
-      "jmpq *72(%rcx)\", \"\"()\n"
+      "jmpq *" SJLJ_AT (SJLJ_RESUME_OFFSET) "\", \"\"()\n"
     "  unreachable\n"
     "}\n\n");
 #elif defined(SIMD_ARM64)
   Emit_Verbatim (
-    "; Windows arm64: x0 = buffer; saves x19-x28 fp lr sp d8-d15\n"
     "define linkonce_odr i32 @__ada_setjmp(ptr %buf) naked noinline nounwind"
     " returns_twice {\n"
     "  call void asm sideeffect \""
@@ -59058,9 +59097,15 @@ char *Lookup_Path_Ext (Slice name, const char *primary) {
 
 
 
+bool Path_Join (char *out, size_t size, const char *directory, const char *name) {
+  int written = snprintf (out, size, "%s/%s", directory, name);
+  return written >= 0 and (size_t) written < size;
+}
+
 void Runtime_Library_Locate (const char *executable_directory) {
-  snprintf (Runtime_Library_Path, sizeof Runtime_Library_Path,
-            "%s/ada83-runtime.ada", executable_directory);
+  if (not Path_Join (Runtime_Library_Path, sizeof Runtime_Library_Path,
+                     executable_directory, "ada83-runtime.ada"))
+    Runtime_Library_Path[0] = '\0';
 }
 
 static void Runtime_Library_Ensure_Loaded (void) {
@@ -62089,8 +62134,8 @@ static void Answer_Definition (const Json *id, const Open_Document *document,
     if (strcmp (found, scratch) == 0) {
       found = document->path;
     } else if (found[0] != '/') {
-      snprintf (absolute, sizeof absolute, "%s/%s", directory, found);
-      found = absolute;
+      if (Path_Join (absolute, sizeof absolute, directory, found))
+        found = absolute;
     }
     Text_Buffer answer = {0};
     Buffer_Append_Text (&answer, "{\"uri\":\"");

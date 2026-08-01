@@ -1,0 +1,202 @@
+ADA83 REFACTOR AND CORRECTNESS CHECKLIST
+========================================
+
+THE TASK, AS GIVEN
+------------------
+"In the pursuit of high-quality code (low line count (e.g. low undue
+complexity) and high feature/correctness) - refactor and fix ada83.c all
+tests completely with much better Haskell-like C99 and smart
+code-golfing with, ironically, textbook "Literate Programming" style - NO
+COMMENTS THOUGH.
+
+Do NOT skip around - when you encounter a complex problem look at it as an
+opportunity to finally attack a big issue. Remember to follow the flow
+upstream to avoid hacking up the expander.
+
+Create a file to track everything called "checklist.txt" and include this
+prompt in it."
+
+
+STANDING RULES FOR THIS WORK
+----------------------------
+[ ] Root cause only. A fix that lands in the expander because that is
+    where the symptom showed up is not a fix; walk upstream to where the
+    wrong decision was made.
+[ ] No comments. The names and the shape of the code carry the meaning.
+[ ] Haskell-like C99: total functions over partial ones, expressions over
+    statements, no output parameters where a returned value will do, data
+    shaped so the invalid case cannot be written down.
+[ ] Line count is a measure of complexity removed, never of golf for its
+    own sake. Every deletion must leave the suite no worse.
+[ ] One failure class at a time, verified against the suite before moving
+    on.
+
+
+BASELINE
+--------
+./test.sh, 3561 tests, -O2 (the compiler's own default):
+    A 140/140   B 1350/1350   C 1940/1973   D 17/17   E 34/34   L 47/47
+    TOTAL 3528/3561
+
+All 33 failures are class C, all executable, all optimisation dependent:
+they pass at -O0 and fail identically at -O1 and -O2.
+
+
+THE 33 FAILURES
+---------------
+[x] c37211c  EXCEPTION RAISED AT ELABORATION OF FULL TYPE
+[x] c37211d  EXCEPTION RAISED AT ELABORATION OF FULL TYPE
+[x] c38002a  ERROR IN EVALUATION/ASSIGNMENT OF ACCESS
+[x] c43207b  CASE B2: F WAS NOT EVALUATED ONCE
+[x] c43212a  CASE 1: BOUNDS OF SUBAGGREGATES NOT DETERMINED
+[x] c52008a  TARGET RECORD VALUE ALTERED BY ASSIGNMENT
+[x] c52008b  LEGITIMATE ASSIGNMENT FAILED
+[x] c52009a  TARGET RECORD VALUE ALTERED BY ASSIGNMENT
+[x] c52013a  INCORRECT GLOBAL VARIABLE VALUE
+[x] c52102c  WRONG VALUES - B3
+[x] c52104f  WRONG EXCEPTION RAISED - SUBTEST 12
+[x] c52104k  ORIG. VALUE ALTERED (11)
+[x] c52104p  WRONG EXCEPTION RAISED - SUBTEST 12
+[x] c55d01a  BAD LOOP FLOW 11
+[x] c62003a  RUNTIME exit 1
+[x] c62003b  UNDETERMINED CHANGE TO GLOBAL VALUE
+[x] c64103b  EXCEPTION RAISED BEFORE CALL -P1 (B1)
+[x] c64103e  EXCEPTION RAISED BEFORE CALL-P1 (B)
+[x] c64103f  EXCEPTION RAISED BEFORE CALL -P1 (A)
+[x] c64104a  WRONG EXCEPTION RAISED FOR P3 (10)
+[x] c64104l  CONSTRAINT_ERROR RAISED BEFORE CALL
+[x] c64104m  CONSTRAINT_ERROR RAISED BEFORE CALL
+[x] c94002g  RUNTIME exit 1
+[x] c95078a  EXCEPTION HANDLER NEVER ENTERED PROPERLY
+[x] c96001a  TIMEOUT exceeded 30s
+[x] cb1003a  INCORRECT FLOW_COUNT VALUE
+[x] cb1010b  UNABLE TO ALLOCATE ANYTHING
+[x] cb2004a  INCORRECT FLOW_COUNT VALUE
+[x] cb3003a  INCORRECT FLOW_COUNT VALUE
+[x] cb4008a  EXCEPTION HANDLER MISSED SOMEWHERE
+[x] cc3007a  WRONG BINDING IN GENERICS
+[x] cd2b11a  RUNTIME exit 1
+[x] ce3116a  RUNTIME exit 1
+
+
+INVESTIGATION LOG
+-----------------
+(newest last)
+
+2026-07-31  The exception edge was invisible to LLVM.
+    Exceptions are SJLJ: Emit_Sjlj_Setjmp arms a handler frame and a raise
+    longjmps back to it.  That second arrival at the setjmp block is a
+    control-flow edge no LLVM instruction expresses, so mem2reg promoted
+    frame slots into SSA values that cross it, and the handler read
+    whatever the register held when setjmp was first called.  Every one of
+    the 33 failures was this: they pass at -O0, where nothing is promoted,
+    and fail identically at -O1 and -O2.
+
+    Reduced to 12 lines of Ada: N := 0; N := N + 1; raise; handler does
+    N := N + 1; prints 1 instead of 2.
+
+    Fixed where the lie is told rather than where it hurts.  A frame a
+    longjmp can resume keeps its slots in memory: Function_Body_End walks
+    the frame buffer it is about to flush and lets every alloca in it
+    escape once, so no pass may promote it, sink a store past a raise, or
+    treat a store before a noreturn raise as dead.  Emit_Sjlj_Setjmp is
+    the only thing that marks a frame as resumable, so a subprogram
+    without handlers is untouched.
+
+    Deriving the slot list from the frame text rather than recording it
+    means the two paths that emit allocas (Emit_Frame_Slot for temporaries
+    and the named-slot macro for objects) are both covered, and any third
+    one added later is covered without being told.
+
+    33 failures -> 3.  Remaining: c52008b, c52102c, c96001a.
+
+2026-07-31  Three more faults, all the same lie told in different places.
+
+    c52008b.  Q := TEMP vanished.  Dead store elimination removed the copy
+    because the only read of Q is in the handler, and the raise that
+    reaches that handler is noreturn: no path from the store to the read
+    exists in the CFG, so the store is dead.  The object was a
+    dynamically sized alloca, which the frame-slot rule did not cover.
+
+    c52102c.  A(-4..0) := A(0..4) with overlapping slices.  Ada assigns as
+    if through a temporary; the compiler emitted llvm.memcpy, which is
+    undefined when the operands overlap, and -O1 vectorised it into the
+    wrong answer.  Assignment between existing objects is a move.
+    Initialisation of fresh storage stays a copy.
+
+    c96001a.  DELAY -5.0 hung the program.  The duration reached i64
+    through `fptoui`, which is poison for a negative double, so at -O2 a
+    negative delay became an enormous unsigned sleep.  Now
+    llvm.fptosi.sat.i64.f64: total for every input, negative stays
+    negative and the runtime declines to sleep.
+
+    The setjmp pair was the deeper asymmetry.  POSIX used LLVM's SJLJ
+    intrinsics, which restore only the stack and frame pointers and the
+    resume address, while Windows already carried a hand-written pair that
+    saves the callee-saved registers.  So a value computed before a
+    protected region and untouched inside it survived on Windows and was
+    garbage on POSIX.  There is now one pair for every platform, with the
+    ABI written as data: which register carries the buffer, which
+    registers must be saved, where the stack pointer and resume address
+    sit.  The intrinsics and their #ifdef are gone.
+
+    Escaping every alloca in a resumable frame was too blunt: it pinned
+    compiler temporaries as well as objects and turned c37217a into a
+    segfault.  It was also inferring, by parsing the emitted text, a fact
+    the compiler already knew.  Emit_Local_Ref is the one place a symbol
+    is spelled into a frame slot, so that is where an object is now
+    recorded, and the escapes are emitted once at Function_Body_End.
+
+2026-08-01  What the invisible edge costs, and where the line is.
+
+    Escaping only the Ada objects was not enough: the compiler's own
+    temporaries cross the edge too, the array bounds slots and the
+    secondary-stack marks among them.  Nineteen tests said so.  Every
+    slot in a resumable frame is pinned, and cg->frame is the one thing
+    that knows what a frame holds, so that is what is read to pin them.
+
+    The hand-written setjmp pair went back to LLVM's intrinsics on POSIX.
+    The asymmetry offended, and the assembly was right, but the intrinsic
+    is not merely an instruction sequence: LLVM models it, and lays out
+    the frame knowing it can be resumed.  Two naked functions cannot say
+    that to the optimiser, and c37217a segfaulted for it.  Windows keeps
+    its own pair, for the reason it always had.
+
+    Then the values the machinery itself carries across the edge.
+    saved_master is read from the master chain before the region and used
+    after the resume; LLVM inlines the read and recomputes it at the use,
+    by which time the chain has moved.  It lives in a slot now, in both
+    the subprogram form and the block form.
+
+    From the audit: the whole-unconstrained-array assignment and
+    Emit_Fat_To_Array_Memcpy were the two remaining copies that Ada can
+    make overlap.  Both are moves now.
+
+    Warnings, reported from a Windows GCC build: the two snprintf
+    truncations were real, a path longer than the buffer was silently cut
+    and then used.  Path_Join returns whether it fitted and both callers
+    ask.  One dead parameter removed.  Clean under -Wall -Wextra.
+
+
+RESULT
+------
+./test.sh, 3561 tests, -O2:
+    A 140/140  B 1350/1350  C 1973/1973  D 17/17  E 34/34  L 47/47
+    TOTAL 3561/3561, and clean under gcc -Wall -Wextra.
+
+
+STILL OPEN
+----------
+[ ] Unguarded fptosi/fptoui outside the delay path (audit items 14-19):
+    fixed-point bound mantissas and the unsigned conversion fallback can
+    still be poison for out-of-range values.
+[ ] Size arithmetic without an overflow test feeding alloca/malloc/memcpy
+    (audit item 22).  Ada wants STORAGE_ERROR, not a wrapped allocation.
+[ ] inbounds GEPs on null slices and on unchecked index paths (audit
+    items 9-11).
+[ ] dereferenceable() asserted at maximum-variant size for discriminated
+    formals (audit item 12).
+[ ] Dynamically-sized allocas emitted in loops grow the stack without
+    bound (audit item 20).
+[ ] The literate rewrite of ada83.c itself: begun only where the fixes
+    landed.
