@@ -114,24 +114,24 @@ and anything but English hands the message to the editor's model.
 
 | Setting | |
 | ------- | --- |
-| `ada83.compilerPath` | where `ada83` is; `${workspaceFolder}` is substituted |
-| `ada83.includePaths` | directories searched for with-ed units |
-| `ada83.language` | the language error messages are read in |
-| `ada83.formatOnType` | reindent each line as you type it, worked out locally |
-| `ada83.formatOnSave` | reformat the whole file as it is saved, by asking a model |
-| `ada83.formatStrength` | how much a reformat may change: `indentation`, `layout` or `style` |
-| `ada83.trace.server` | write the protocol traffic to the output channel |
+| `ada83.compilerPath` | Location of `ada83` and where `${workspaceFolder}` gets substituted |
+| `ada83.includePaths` | Directories for with-ed units |
+| `ada83.language` | Language error messages are read in |
+| `ada83.formatOnType` | Reindent each line as you type it |
+| `ada83.formatOnSave` | Reformat the whole file as it is saved, by asking a model |
+| `ada83.formatStrength` | How much a reformat may change: `indentation`, `layout` or `style` |
+| `ada83.trace.server` | Write the protocol traffic to the output channel |
 
 ## Use
 
 The compiler emits LLVM IR, so the IR can be taken directly:
 
 ```sh
-./ada83 --ir hello.ada -o hello.ll      # textual LLVM IR
-./ada83 --emit-llvm hello.ada -o hello  # native, keeping the optimised IR
-./ada83 --ir a.ada b.ada c.ada          # several units, one process each
-./ada83 hello.ll world.ll -o hello      # link .ll modules, no source needed
-lli hello.ll                            # interpret the IR
+./ada83 --ir hello.ada -o hello.ll      # Textual LLVM IR
+./ada83 --emit-llvm hello.ada -o hello  # Native, keeping the optimised IR
+./ada83 --ir a.ada b.ada c.ada          # Several units, one process each
+./ada83 hello.ll world.ll -o hello      # Link .ll modules, no source needed
+lli hello.ll                            # Interpret the IR
 ```
 
 ## Tests
@@ -139,10 +139,10 @@ lli hello.ll                            # interpret the IR
 The ACATS tests are in `tests.zip` and unzipped on first use.
 
 ```sh
-bash test.sh              # every class, the default
-bash test.sh run c        # one class
-bash test.sh run c45      # one group
-bash test.sh check        # run, then diff against the baseline
+bash test.sh         # Every class, the default
+bash test.sh run c   # One class
+bash test.sh run c45 # One group
+bash test.sh check   # Run, then diff against the baseline
 bash test.sh help
 ```
 
