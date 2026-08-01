@@ -1,0 +1,56 @@
+# Build output.  Every make script now writes what it builds into
+# bin-<target>/; the zips beside those folders are released, so only the
+# folders are ignored.
+/bin-linux/
+/bin-macos/
+/bin-windows/
+/bin-*.zip.new
+
+# Scratch space the make scripts share for slices, resource objects and the
+# unpacked extension.
+/staging/
+
+# Where older versions of the make scripts built, and what make.bat still
+# leaves behind when a build stops early.
+/ada83
+/ada83.exe
+/ada83.pdb
+/ada83.vsix
+/icon.rc
+/icon.res
+/icon.res.o
+
+# The LLVM runtime that make.bat unpacks from bin-windows.zip.  These now
+# land in bin-windows/, but older builds put them here.
+/LLVM-C.dll
+/libffi-8.dll
+/libgcc_s_seh-1.dll
+/libiconv-2.dll
+/libstdc++-6.dll
+/libwinpthread-1.dll
+/libxml2-16.dll
+/libzstd.dll
+/zlib1.dll
+
+# The toolchain make.bat offers to download when no C compiler is installed.
+/zig/
+/zig.zip
+
+# The conformance suite, unpacked from tests.zip by test.sh and test-bench.sh.
+/acats/
+
+# What a test run produces: one directory per run under each of these, plus
+# the compiled report package.
+/test_results/
+/acats_logs/
+
+# Benchmark output, when TSV_DIR names a directory inside the tree.
+/suite*.tsv
+perf.data
+perf.data.old
+gmon.out
+
+.DS_Store
+
+# Agent worktrees.
+/.claude/worktrees/

@@ -54,18 +54,18 @@ ICON_ICO = { Short 0; Byte 1; Byte 0; Byte 1; Byte 0; \
 ICON_ICNS = { printf icns; Big $$((Length + 16)); printf %s $$Chunk; \
               Big $$((Length + 8)); cat $(ICON_SOURCE); }
 
-ICON_RSRC = Icns=`wc -c < staging/$(ICON).icns`; Data=$$((Icns + 4)); \
+ICON_RSRC = Icns=`wc -c < $(BIN_DIR)/$(ICON).icns`; Data=$$((Icns + 4)); \
             { Big 333319; Big 131072; Zeros 16; Short 2; \
               Big 9; Big 50; Big 32; \
               Big 2; Big 82; Big $$((256 + Data + 46)); \
               Zeros 8; Short 1024; Zeros 22; \
               Big 256; Big $$((256 + Data)); Big $$Data; Big 46; \
-              Zeros 240; Big $$Icns; cat staging/$(ICON).icns; \
+              Zeros 240; Big $$Icns; cat $(BIN_DIR)/$(ICON).icns; \
               Zeros 24; Short 28; Short 46; Short 0; \
               printf icns; Short 0; Short 10; \
               Short 49081; Short 65535; Big 0; }
 
-Slice_Path       = staging/$(EXECUTABLE)$(if $1,-$1)
+Slice_Path       = $(if $1,staging/$(EXECUTABLE)-$1,$(BIN_DIR)/$(EXECUTABLE))
 Compile_Slice    = $(COMPILER) $(COMPILER_FLAGS) $(if $1,-arch $1) \
                    -o $(call Slice_Path,$1) ada83.c $(RESOURCE_OBJECT) \
                    $(LINK_LIBRARIES)
@@ -111,11 +111,11 @@ SIDECAR_macos             = __MACOSX/._ada83
 ARTWORK_linux             = $(ICON).png
 ARTWORK_macos             = $(ICON).icns
 ARTWORK_windows           = $(ICON).ico
-ICON_BUILD_linux          = cp $(ICON_SOURCE) staging/$(ICON).png
-ICON_BUILD_macos          = $(ICON_ICNS) > staging/$(ICON).icns; \
-                            mkdir -p staging/__MACOSX; \
-                            $(ICON_RSRC) > staging/__MACOSX/._$(EXECUTABLE)
-ICON_BUILD_windows        = $(ICON_ICO) > staging/$(ICON).ico
+ICON_BUILD_linux          = cp $(ICON_SOURCE) $(BIN_DIR)/$(ICON).png
+ICON_BUILD_macos          = $(ICON_ICNS) > $(BIN_DIR)/$(ICON).icns; \
+                            mkdir -p $(BIN_DIR)/__MACOSX; \
+                            $(ICON_RSRC) > $(BIN_DIR)/__MACOSX/._$(EXECUTABLE)
+ICON_BUILD_windows        = $(ICON_ICO) > $(BIN_DIR)/$(ICON).ico
 LAUNCHER_linux            = ada83.desktop
 RESOURCE_COMPILER_windows = x86_64-w64-mingw32-windres
 SHARED_LIBRARIES_windows  = *.dll
@@ -129,9 +129,12 @@ $(foreach Role,COMPILER COMPILER_FLAGS LINK_LIBRARIES SUFFIX ARTWORK LAUNCHER \
 
 COMPILER_FLAGS += $(if $(CROSS),,$(WHOLE_PROGRAM))
 
+BIN_DIR          = bin-$(TARGET)
+BIN_DIRS         = bin-linux bin-macos bin-windows
 PACKAGE          = bin-$(TARGET).zip
 LIBRARY_SOURCE   = bin-$(TARGET).zip
 EXECUTABLE       = ada83$(SUFFIX)
+HOST_BINARY      = bin-$(HOST_TARGET)/ada83
 RESOURCE_OBJECT  = $(if $(RESOURCE_COMPILER),staging/$(ICON).o)
 PACKAGE_CONTENTS = $(EXECUTABLE) $(RUNTIME) $(VSIX) $(ARTWORK) $(LAUNCHER) \
                    $(SHARED_LIBRARIES) $(SIDECAR)
@@ -142,8 +145,12 @@ SUDO := $(shell [ $$(id -u) -eq 0 ] || echo sudo)
 
 all: ada83 provision-llvm
 
-ada83: ada83.c
+ada83: $(HOST_BINARY)
+
+$(HOST_BINARY): ada83.c
+	@mkdir -p $(@D)
 	$(CC) $(CFLAGS) $(WHOLE_PROGRAM) $(TUNE) -o $@ $< $(LIBS)
+	@echo "Built $@."
 
 provision-llvm:
 	@$(LLVM_PRESENT) && exit 0; \
@@ -157,7 +164,7 @@ provision-llvm:
 
 package: $(PACKAGE)
 
-$(PACKAGE): ada83.c $(RUNTIME) $(ICON_SOURCE) staging/$(VSIX)
+$(PACKAGE): ada83.c $(RUNTIME) $(ICON_SOURCE) $(BIN_DIR)/$(VSIX)
 	@command -v $(firstword $(COMPILER)) >/dev/null || { \
 	  echo "packaging for $(TARGET) needs $(firstword $(COMPILER))"; exit 1; }
 	@test -z "$(SHARED_LIBRARIES)" || test -f $(LIBRARY_SOURCE) || { \
@@ -165,28 +172,29 @@ $(PACKAGE): ada83.c $(RUNTIME) $(ICON_SOURCE) staging/$(VSIX)
 	  echo "loads at run time, and is missing"; exit 1; }
 	@test -z "$(SLICES)" || test -n "$(LIPO)" || { \
 	  echo "joining the $(TARGET) slices needs lipo"; exit 1; }
-	@mkdir -p staging
+	@mkdir -p staging $(BIN_DIR)
 	$(ICON_WRITER); $(ICON_BUILD_$(TARGET))
 	@test -z "$(RESOURCE_OBJECT)" || { set -x; \
-	  echo '1 ICON "$(abspath staging/$(ICON).ico)"' \
+	  echo '1 ICON "$(abspath $(BIN_DIR)/$(ICON).ico)"' \
 	    | $(RESOURCE_COMPILER) -O coff -o $(RESOURCE_OBJECT); }
 	$(BUILD_EXECUTABLE)
-	cp $(RUNTIME) staging/
+	cp $(RUNTIME) $(BIN_DIR)/
 	test -z "$(LAUNCHER)" || printf '%s\n' '[Desktop Entry]' 'Type=Application' \
 	  'Name=Ada 83' 'Comment=Ada 83 compiler' 'Exec=ada83 %F' 'Icon=$(ICON)' \
-	  'Terminal=true' 'Categories=Development;Building;' > staging/$(LAUNCHER)
+	  'Terminal=true' 'Categories=Development;Building;' > $(BIN_DIR)/$(LAUNCHER)
 	test -z "$(SHARED_LIBRARIES)" || \
-	  unzip -qoj $(LIBRARY_SOURCE) '$(SHARED_LIBRARIES)' -d staging
+	  unzip -qoj $(LIBRARY_SOURCE) '$(SHARED_LIBRARIES)' -d $(BIN_DIR)
 	rm -f $@.new
-	cd staging && zip -q $(abspath $@).new $(PACKAGE_CONTENTS)
+	cd $(BIN_DIR) && zip -q $(abspath $@).new $(PACKAGE_CONTENTS)
 	mv $@.new $@
 	@echo "Packaged $@:"; unzip -l $@ | tail -n +4
 
-vsix: staging/$(VSIX)
+vsix: $(BIN_DIR)/$(VSIX)
 	@echo "Built $<:"; unzip -l $< | tail -n +4
 
-staging/$(VSIX): $(BUNDLE) $(ICON).png $(wildcard $(MANUAL))
+$(BIN_DIR)/$(VSIX): $(BUNDLE) $(ICON).png $(wildcard $(MANUAL))
 	@command -v zip >/dev/null || { echo "zip is needed to package"; exit 1; }
+	@mkdir -p $(BIN_DIR)
 	rm -rf staging/vsix && mkdir -p staging/vsix/extension/syntaxes
 	cp $(ICON).png staging/vsix/extension/
 	@test -f $(MANUAL) && cp $(MANUAL) staging/vsix/extension/ \
@@ -204,9 +212,9 @@ staging/$(VSIX): $(BUNDLE) $(ICON).png $(wildcard $(MANUAL))
 
 clean: clean-test
 	rm -f ada83 ada83.exe $(VSIX) bin-*.zip.new
-	rm -rf staging
+	rm -rf staging $(BIN_DIRS)
 
 clean-test:
 	rm -rf test_results acats_logs acats/report.ll
 
-.PHONY: all package vsix provision-llvm clean clean-test
+.PHONY: all ada83 package vsix provision-llvm clean clean-test

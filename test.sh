@@ -6,25 +6,27 @@ TEST_TIMEOUT=${TEST_TIMEOUT:-30}
 COMPILE_TIMEOUT=${COMPILE_TIMEOUT:-30}
 LINK_TIMEOUT=${LINK_TIMEOUT:-20}
 BASELINE=${BASELINE:-acats.baseline}
+OPT=${OPT:--O2}
 
-TIMEOUT=$(command -v timeout || command -v gtimeout) || {
-    echo "FATAL: no 'timeout' command found" >&2
-    echo "       on macOS: brew install coreutils" >&2
+find_timeout(){
+    local candidate found
+    for candidate in ${TIMEOUT:+"$TIMEOUT"} timeout gtimeout /usr/bin/timeout; do
+        found=$(command -v "$candidate" 2>/dev/null) || continue
+        # Windows ships an unrelated System32\timeout.exe, so ask for the
+        # behaviour rather than trusting the name.
+        "$found" 5 true >/dev/null 2>&1 && { printf '%s' "$found"; return 0; }
+    done
+    return 1
+}
+
+TIMEOUT=$(find_timeout) || {
+    echo "FATAL: no usable 'timeout' command found" >&2
+    echo "       macOS:   brew install coreutils" >&2
+    echo "       Windows: run this under the bash that comes with Git for" >&2
+    echo "                Windows, whose /usr/bin/timeout comes first on PATH" >&2
     exit 1
 }
 export TIMEOUT
-
-for tool in llvm-link lli; do
-    command -v "$tool" >/dev/null || {
-        echo "FATAL: no '$tool' command found" >&2
-        echo "       classes A, C, D and E link and run what they compile," >&2
-        echo "       and without it every one of them reports as skipped" >&2
-        echo "       Debian/Ubuntu: apt-get install llvm" >&2
-        echo "       macOS:         brew install llvm" >&2
-        echo "       Windows:       winget install LLVM.LLVM" >&2
-        exit 1
-    }
-done
 
 now_ms(){
     local stamp
@@ -36,26 +38,72 @@ START_MS=$(now_ms)
 
 mkdir -p test_results acats_logs
 
+unpack(){
+    if command -v unzip >/dev/null; then
+        unzip -q "$1"
+    elif command -v tar >/dev/null && tar -xf "$1" 2>/dev/null; then
+        :
+    elif command -v powershell.exe >/dev/null; then
+        powershell.exe -NoProfile -Command \
+            "Expand-Archive -LiteralPath '$1' -DestinationPath '.' -Force"
+    else
+        return 1
+    fi
+}
+
 if [[ ! -d acats ]]; then
     [[ -f tests.zip ]] || { echo "FATAL: no acats/ directory and no tests.zip"; exit 1; }
     echo "Unpacking tests.zip..."
-    unzip -q tests.zip || { echo "FATAL: cannot unpack tests.zip"; exit 1; }
+    unpack tests.zip || { echo "FATAL: cannot unpack tests.zip"; exit 1; }
 fi
 
-if [[ ! -f ./ada83 ]] || [[ ada83.c -nt ./ada83 ]]; then
+case $(uname -s 2>/dev/null) in
+    Darwin)                 HOST_TARGET=macos ;;
+    MINGW*|MSYS*|CYGWIN*)   HOST_TARGET=windows ;;
+    *)                      HOST_TARGET=linux ;;
+esac
+
+find_ada83(){
+    local candidate
+    for candidate in ${ADA83:+"$ADA83"} \
+                     "bin-$HOST_TARGET/ada83" "bin-$HOST_TARGET/ada83.exe" \
+                     ./ada83 ./ada83.exe; do
+        [[ -x $candidate ]] && { printf '%s' "$candidate"; return 0; }
+    done
+    return 1
+}
+
+build_ada83(){
+    if command -v make >/dev/null; then
+        make -s ada83
+    elif [[ $HOST_TARGET == windows ]] && command -v cmd.exe >/dev/null; then
+        cmd.exe //c make.bat
+    else
+        echo "FATAL: no 'make' to build the compiler with" >&2
+        echo "       Windows: run make.bat, then start this script again" >&2
+        return 1
+    fi
+}
+
+ADA83=$(find_ada83) || ADA83=""
+if [[ -z $ADA83 ]] || [[ ada83.c -nt $ADA83 ]]; then
     echo "Rebuilding ada83..."
-    make -s ada83 || { echo "FATAL: compiler build failed"; exit 1; }
+    build_ada83 || { echo "FATAL: compiler build failed"; exit 1; }
+    ADA83=$(find_ada83) || { echo "FATAL: no ada83 executable after building"; exit 1; }
 fi
+[[ $ADA83 == /* || $ADA83 == ?:[/\\]* ]] || ADA83=$PWD/${ADA83#./}
+export ADA83
 
 export REPORT_LL="${TMPDIR:-/tmp}/ada83-report-$$.ll"
 trap 'rm -f "$REPORT_LL" "${REPORT_LL%.ll}.ali"' EXIT
-./ada83 --ir acats/report.adb -o "$REPORT_LL" >/dev/null 2>&1 || {
+"$ADA83" --ir acats/report.adb -o "$REPORT_LL" >/dev/null 2>&1 || {
     echo "FATAL: cannot compile acats/report.adb"; exit 1; }
 
 pct(){ ((${2:-0}>0)) && printf %d $((100*$1/$2)) || printf 0; }
 
 elapsed(){
-    printf %.3f "$(bc<<<"scale=4;($(now_ms)-${START_MS})/1000")"
+    local ms=$(( $(now_ms) - START_MS ))
+    printf '%d.%03d' $((ms / 1000)) $((ms % 1000))
 }
 
 gather_files(){
@@ -78,7 +126,7 @@ compile_set(){
     COMPILE_FAILED=""
     for part in "${COMPILE_FILES[@]}"; do
         pn=$(basename "$part" .ada)
-        if ! "$TIMEOUT" "$COMPILE_TIMEOUT" ./ada83 --ir "$part" -o $lib/$pn.ll >/dev/null 2>$LOGS_DIR/$n.err; then
+        if ! "$TIMEOUT" "$COMPILE_TIMEOUT" "$ADA83" --ir "$part" -o $lib/$pn.ll >/dev/null 2>$LOGS_DIR/$n.err; then
             if [[ $pn == "$n" ]]; then
                 COMPILE_FAILED=$pn
                 return 1
@@ -127,7 +175,7 @@ compile_set(){
     fi
 
     BIND_FAILED=""
-    if ! ./ada83 --bind "$lib" "$n" 2>$LOGS_DIR/$n.bind; then
+    if ! "$ADA83" --bind "$lib" "$n" 2>$LOGS_DIR/$n.bind; then
         BIND_FAILED=$n
     fi
 }
@@ -141,7 +189,7 @@ run_in_lib(){
 link_program(){
     local n=$1 rc=0
     PROGRAM=$RESULTS_DIR/$n.bin
-    "$TIMEOUT" "$LINK_TIMEOUT" ./ada83 "$OPT" "$MAIN_LL" \
+    "$TIMEOUT" "$LINK_TIMEOUT" "$ADA83" "$OPT" "$MAIN_LL" \
         ${LINK_FRAGMENTS[@]+"${LINK_FRAGMENTS[@]}"} "$REPORT_LL" \
         -o "$PROGRAM" >/dev/null 2>"$LOGS_DIR/$n.link" || rc=$?
     [[ -x $PROGRAM ]] || [[ ! -x $PROGRAM.exe ]] || PROGRAM=$PROGRAM.exe
@@ -165,8 +213,8 @@ run_continuity_creators(){
     for c in $(grep -oiE 'legal_file_name[ ]*\([^)]*"ce[0-9a-z]+"' "acats/$reader.ada" 2>/dev/null \
                | grep -oiE '"ce[0-9a-z]+"' | tr -d '"' | tr 'A-Z' 'a-z' | sort -u); do
         [[ $c == "$self" || ! -f acats/$c.ada ]] && continue
-        ./ada83 --ir "acats/$c.ada" -o "$lib/$c.ll" >/dev/null 2>&1 || continue
-        "$TIMEOUT" "$LINK_TIMEOUT" ./ada83 "$OPT" "$lib/$c.ll" "$REPORT_LL" \
+        "$ADA83" --ir "acats/$c.ada" -o "$lib/$c.ll" >/dev/null 2>&1 || continue
+        "$TIMEOUT" "$LINK_TIMEOUT" "$ADA83" "$OPT" "$lib/$c.ll" "$REPORT_LL" \
             -o "$lib/$c.bin" >/dev/null 2>&1 || continue
         ( cd "$lib" && exec "$TIMEOUT" "$TEST_TIMEOUT" "./$c.bin" ) >/dev/null 2>&1 || true
     done
@@ -253,7 +301,7 @@ run_one(){
                     fi
                 fi
             done < "$part"
-            if "$TIMEOUT" "$COMPILE_TIMEOUT" ./ada83 --ir "$part" -o "$lib/${pn%.ada}.ll" \
+            if "$TIMEOUT" "$COMPILE_TIMEOUT" "$ADA83" --ir "$part" -o "$lib/${pn%.ada}.ll" \
                  >/dev/null 2>$LOGS_DIR/$n.$pn.err; then :; else
                 rejected=yes
             fi
@@ -347,8 +395,9 @@ run_one(){
 }
 ROOT=$PWD
 export ROOT
-export -f run_one gather_files compile_set run_in_lib link_program run_continuity_creators pct
-export START_MS TEST_TIMEOUT LINK_TIMEOUT COMPILE_TIMEOUT
+export -f run_one gather_files compile_set run_in_lib link_program \
+          report_link_failure run_continuity_creators pct
+export START_MS TEST_TIMEOUT LINK_TIMEOUT COMPILE_TIMEOUT OPT
 
 run_one_timed(){
     local f=$1 n=$(basename "$1" .ada) q
@@ -500,12 +549,13 @@ run_selector(){
 }
 
 usage(){ cat <<'TEXT'
-Usage: test.sh COMMAND [SELECTOR]
+Usage: test.sh [COMMAND] [SELECTOR]
 
-Run the ACATS conformance suite against ./ada83.
+Run the ACATS conformance suite against the ada83 compiler.
+With no arguments, runs every test.
 
 Commands:
-  run [SELECTOR]     run the suite and print a report
+  run [SELECTOR]     run the suite and print a report (the default)
   check [SELECTOR]   run, then diff against the baseline; exit 1 on regression
   bless [SELECTOR]   run, then write the results as the new baseline
   list [SELECTOR]    list the tests a selector expands to
@@ -517,6 +567,9 @@ Selectors:
   PREFIX             a filename prefix, such as c45 or c45347
 
 Environment:
+  ADA83              compiler to test (default: bin-<platform>/ada83, built
+                     with make if it is missing)
+  OPT                optimisation flag the tests link with (default: -O2)
   JOBS, NPROC        parallel workers (default: the processor count)
   TEST_TIMEOUT       per-test run cap in seconds (default: 30)
   LINK_TIMEOUT       per-test link cap in seconds (default: 20)
@@ -529,7 +582,7 @@ TEXT
 }
 
 main(){
-    local cmd=${1:-help}; shift || true
+    local cmd=${1:-run}; shift || true
     case $cmd in
         run|g)   run_selector "${1:-all}" "ACATS run — ${1:-all}" ;;
         q)       run_selector "${1:-c32}" "ACATS run — ${1:-c32}" ;;

@@ -81,6 +81,10 @@ on resourceObjectFor(chosenPlatform)
 	return "staging/ada83-icon.o"
 end resourceObjectFor
 
+on binaryFolderFor(chosenPlatform)
+	return "bin-" & chosenPlatform
+end binaryFolderFor
+
 on executableFor(chosenPlatform)
 	if chosenPlatform is windowsPlatform() then return "ada83.exe"
 	return "ada83"
@@ -137,7 +141,7 @@ end openForWriting
 
 on buildIcons(directory, chosenPlatform)
 	set sourcePath to directory & "/" & iconSourceFor()
-	set stagePath to directory & "/staging"
+	set stagePath to directory & "/" & binaryFolderFor(chosenPlatform)
 	do shell script "mkdir -p " & quoted form of stagePath
 	set pngData to read (POSIX file sourcePath) as data
 	set pngLength to (do shell script "wc -c < " & quoted form of sourcePath) as integer
@@ -395,18 +399,19 @@ on extensionSplitLines()
 		"     out != \"\" { print > out }' ada83-extension.html"}
 end extensionSplitLines
 
-on extensionSteps()
+on extensionSteps(chosenPlatform)
+	set binFolder to binaryFolderFor(chosenPlatform)
 	return {"command -v zip >/dev/null || { echo 'zip is needed to package'; exit 1; }", ¬
 		"rm -rf staging/vsix", ¬
-		"mkdir -p staging/vsix/extension/syntaxes", ¬
+		"mkdir -p staging/vsix/extension/syntaxes " & binFolder, ¬
 		"cp ada83-icon.png staging/vsix/extension/", ¬
 		"if [ -f manual.md ]; then", ¬
 		"  cp manual.md staging/vsix/extension/", ¬
 		"else", ¬
 		"  echo 'manual.md is missing; packaging without the manual search tool'", ¬
 		"fi"} & extensionSplitLines() & ¬
-		{"rm -f staging/ada83.vsix", ¬
-		"( cd staging/vsix && zip -qr ../ada83.vsix . )", ¬
+		{"rm -f " & binFolder & "/ada83.vsix", ¬
+		"( cd staging/vsix && zip -qr ../../" & binFolder & "/ada83.vsix . )", ¬
 		"rm -rf staging/vsix"}
 end extensionSteps
 
@@ -418,15 +423,16 @@ on compileCommand(chosenPlatform, architectureFlag, outputPath)
 end compileCommand
 
 on compileSteps(chosenPlatform)
+	set binaryPath to binaryFolderFor(chosenPlatform) & "/" & executableFor(chosenPlatform)
 	set slicePaths to {}
-	set steps to {}
+	set steps to {"mkdir -p " & binaryFolderFor(chosenPlatform)}
 	repeat with architecture in architecturesFor(chosenPlatform)
 		set slicePath to "staging/" & executableFor(chosenPlatform) & "-" & (architecture as text)
 		set slicePaths to slicePaths & {slicePath}
 		set steps to steps & {compileCommand(chosenPlatform, " -arch " & (architecture as text), slicePath)}
 	end repeat
-	if slicePaths is {} then return {compileCommand(chosenPlatform, "", "staging/" & executableFor(chosenPlatform))}
-	return steps & {"lipo -create -output staging/" & executableFor(chosenPlatform) & " " & joinedWith(slicePaths, space), ¬
+	if slicePaths is {} then return steps & {compileCommand(chosenPlatform, "", binaryPath)}
+	return steps & {"lipo -create -output " & binaryPath & " " & joinedWith(slicePaths, space), ¬
 		"rm -f " & joinedWith(slicePaths, space)}
 end compileSteps
 
@@ -452,48 +458,56 @@ end sliceGuardSteps
 
 on resourceObjectSteps(chosenPlatform)
 	if resourceObjectFor(chosenPlatform) is "" then return {}
-	return {"printf '1 ICON \"%s\"\\n' \"$PWD/staging/" & artworkFor(chosenPlatform) & "\" | " & ¬
+	return {"mkdir -p staging", ¬
+		"printf '1 ICON \"%s\"\\n' \"$PWD/" & binaryFolderFor(chosenPlatform) & "/" & ¬
+		artworkFor(chosenPlatform) & "\" | " & ¬
 		resourceCompilerFor(chosenPlatform) & " -O coff -o " & resourceObjectFor(chosenPlatform)}
 end resourceObjectSteps
 
 on launcherSteps(chosenPlatform)
 	if launcherFor(chosenPlatform) is "" then return {}
 	return {"printf '%s\\n' '[Desktop Entry]' 'Type=Application' 'Name=Ada 83' 'Comment=Ada 83 compiler' " & ¬
-		"'Exec=ada83 %F' 'Icon=ada83-icon' 'Terminal=true' 'Categories=Development;Building;' > staging/" & ¬
-		launcherFor(chosenPlatform)}
+		"'Exec=ada83 %F' 'Icon=ada83-icon' 'Terminal=true' 'Categories=Development;Building;' > " & ¬
+		binaryFolderFor(chosenPlatform) & "/" & launcherFor(chosenPlatform)}
 end launcherSteps
 
 on sharedLibrarySteps(chosenPlatform)
 	if sharedLibrariesFor(chosenPlatform) is "" then return {}
-	return {"unzip -qoj " & archiveFor(chosenPlatform) & " '" & sharedLibrariesFor(chosenPlatform) & "' -d staging"}
+	return {"unzip -qoj " & archiveFor(chosenPlatform) & " '" & sharedLibrariesFor(chosenPlatform) & ¬
+		"' -d " & binaryFolderFor(chosenPlatform)}
 end sharedLibrarySteps
 
 on buildProgram()
-	return guardedProgram({"gcc -O3 -Wall -std=gnu2x -o ada83 ada83.c -lm -lpthread", ¬
+	set binaryPath to binaryFolderFor(macosPlatform()) & "/ada83"
+	return guardedProgram({"mkdir -p " & binaryFolderFor(macosPlatform()), ¬
+		"gcc -O3 -Wall -std=gnu2x -o " & binaryPath & " ada83.c -lm -lpthread", ¬
 		"test -f ada83-runtime.ada || echo 'ada83-runtime.ada is not here; ada83 needs it beside the executable.'", ¬
 		"echo", ¬
-		"echo 'Built ada83.'", ¬
-		"echo 'Compile a program with:  ./ada83 myprogram.ada -o myprogram'"}, ¬
+		"echo 'Built " & binaryPath & ".'", ¬
+		"echo 'Compile a program with:  ./" & binaryPath & " myprogram.ada -o myprogram'"}, ¬
 		"The build failed; the message above says why.")
 end buildProgram
 
-on vsixProgram()
-	return guardedProgram(extensionSteps() & ¬
-		{"echo 'Built staging/ada83.vsix:'", ¬
-		"unzip -l staging/ada83.vsix | tail -n +4"}, ¬
+on vsixProgram(chosenPlatform)
+	set vsixPath to binaryFolderFor(chosenPlatform) & "/ada83.vsix"
+	return guardedProgram(extensionSteps(chosenPlatform) & ¬
+		{"echo 'Built " & vsixPath & ":'", ¬
+		"unzip -l " & vsixPath & " | tail -n +4"}, ¬
 		"Building the extension failed; the message above says why.")
 end vsixProgram
 
 on packageProgram(chosenPlatform)
 	set archiveName to archiveFor(chosenPlatform)
-	return guardedProgram(extensionSteps() & sharedLibraryGuardSteps(chosenPlatform) & ¬
+	set binFolder to binaryFolderFor(chosenPlatform)
+	return guardedProgram(extensionSteps(chosenPlatform) & sharedLibraryGuardSteps(chosenPlatform) & ¬
 		sliceGuardSteps(chosenPlatform) & resourceObjectSteps(chosenPlatform) & ¬
 		chosenRouteSteps(chosenPlatform) & compileSteps(chosenPlatform) & ¬
-		{"cp ada83-runtime.ada staging/"} & launcherSteps(chosenPlatform) & ¬
+		{"cp ada83-runtime.ada " & binFolder & "/"} & launcherSteps(chosenPlatform) & ¬
 		sharedLibrarySteps(chosenPlatform) & ¬
 		{"rm -f " & archiveName & ".new", ¬
-		"( cd staging && zip -q ../" & archiveName & ".new " & archiveContentsFor(chosenPlatform) & " )", ¬
+		"( cd " & binFolder & " && zip -q ../" & archiveName & ".new " & archiveContentsFor(chosenPlatform) & " )", ¬
 		"mv " & archiveName & ".new " & archiveName, ¬
+		"rm -rf staging", ¬
 		"echo 'Packaged " & archiveName & ":'", ¬
 		"unzip -l " & archiveName & " | tail -n +4"}, ¬
 		"Packaging failed; the message above says why.")
@@ -501,7 +515,7 @@ end packageProgram
 
 on programFor(chosenAction, chosenPlatform)
 	if chosenAction is "package" then return packageProgram(chosenPlatform)
-	if chosenAction is "vsix" then return vsixProgram()
+	if chosenAction is "vsix" then return vsixProgram(chosenPlatform)
 	return buildProgram()
 end programFor
 
