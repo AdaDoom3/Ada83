@@ -22898,7 +22898,6 @@ specific one governs.
 - [S.19 Representation Clauses and Pragmas](#s19-representation-clauses-and-pragmas)
 - [S.20 End Labelling](#s20-end-labelling)
 - [S.21 Compilation Unit Layout](#s21-compilation-unit-layout)
-- [S.22 Departures from GNAT Convention](#s22-departures-from-gnat-convention)
 
 ### S.1 Sources of these Guidelines
 
@@ -24103,56 +24102,3 @@ run of declarations.
       package body CPU    is separate;
       package body System is separate;
 ```
-
-### S.22 Departures from GNAT Convention
-
-The GNAT style checker — the `-gnaty` family of switches — is the nearest
-thing Ada has to a standard house style, and it is what a reader is likeliest
-to have met before. This style is not it. Every row below was checked by
-feeding the construct to a GNAT compiler and reading back what it said, so the
-middle column below is the checker's own wording and not a recollection of
-it.
-
-Where the two disagree:
-
-| Check | GNAT's diagnostic | This style |
-| --- | --- | --- |
-| `-gnaty3` | *bad indentation* at any step but three | two spaces ([S.2](#s2-indentation)) |
-| `-gnatyM79` | *this line is too long* past 79 columns | 131 ([S.3](#s3-line-length)) |
-| `-gnatyl` | *"begin" in wrong column, should be in column 1* | `begin` with the declarations ([S.2](#s2-indentation)) |
-| `-gnatye` | *"end U" required* | a bare `end;`, 563 of 563 ([S.20](#s20-end-labelling)) |
-| `-gnatyS` | *no statements may follow "then" on same line* | the whole `if` on one line when it fits, 112 times ([S.12](#s12-statements-and-control-structures)) |
-| `-gnatyc` | *space required* — two spaces must follow `--` | one space, 777 of 1,025 ([S.8](#s8-comments)) |
-| `-gnatyo` | *subprogram body "Alpha" not in alphabetical order* | grouped by subject under boxed headers; only 378 of 639 adjacent bodies are in alphabetical order, which is what chance would give ([S.8](#s8-comments)) |
-
-Where the two agree, and the corpus confirms it rather than the rule being
-taken on trust:
-
-| Check | GNAT's diagnostic | This style |
-| --- | --- | --- |
-| `-gnatyk` | *reserved words must be all lower case* | 12,968 of 13,057 ([S.4](#s4-casing)) |
-| `-gnatyn` | *bad casing of "Integer" declared in Standard* | 1,109 predefined-name occurrences, one spelling each ([S.4](#s4-casing)) |
-| `-gnatyr` | *bad casing of "Item" declared at line 2* | 4,017 of 4,081 names spelled one way throughout ([S.4](#s4-casing)) |
-| `-gnatyI` | *"in" should be omitted* | never written, 0 of 1,229 ([S.13](#s13-subprogram-profiles)) |
-| `-gnatyt` | *space required* for `Put_Line(X)` and for `Y+1` | 4,740 of 4,741, and every binary operator spaced ([S.6](#s6-spacing)) |
-| `-gnatyu` | *multiple blank lines* | 58 runs of two among 2,165 blank lines ([S.9](#s9-blank-lines)) |
-
-Two checks the project has decided nothing about, and this section will not
-pretend otherwise. `-gnatyb` rejects a line that ends in whitespace; 285 of
-the corpus's 15,027 lines do, in 13 of its 53 files, which reads as an
-accident nobody has swept up rather than as a position either way, and no rule
-above forbids or permits it. `-gnatyL`*nnn* rejects nesting deeper than *nnn*
-levels; the corpus nests variant parts three deep and packages deeper than
-that, and no limit has ever been chosen, so none is stated here.
-
-Three further questions are settled above by assertion rather than by
-counting, and are marked *(project rule)* where they occur: the layout of a
-`select` statement and its guards ([S.17](#s17-tasking)), the layout of a
-record representation clause
-([S.19](#s19-representation-clauses-and-pragmas)), and the order of a generic
-formal part ([S.16](#s16-generic-units)). Each is a construct the corpus does
-not contain, or contains without settling: there is no `select` statement and
-no `for X use record` anywhere in it, and of the eight generic formal parts
-that mix object and type formals, four lead with the type and four with an
-object. Reading a body of code that does settle them should replace the
-assertion with a count, and the rule should change if the count disagrees.
