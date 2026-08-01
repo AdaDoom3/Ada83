@@ -132,10 +132,11 @@ progress(){
 clear_line(){ [ $animated = 1 ] && printf '\r\033[2K' >&9; return 0; }
 
 PULSE=''
+PULSE_FRAMES=('◦' '◌' '◍' '◎')
 pulse(){
     [ $animated = 1 ] || return 0
     ( i=0; while :; do
-        printf '\r\033[2K  %s%s %s%s' "$DIM" "$(printf '◦◌◍◎' | cut -c $(( (i/2)%4 + 1 )))" "$1" "$OFF" >&9
+        printf '\r\033[2K  %s%s %s%s' "$DIM" "${PULSE_FRAMES[(i/2)%4]}" "$1" "$OFF" >&9
         i=$((i+1)); sleep 0.12
       done ) & PULSE=$!
 }
