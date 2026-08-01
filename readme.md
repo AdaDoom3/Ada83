@@ -54,14 +54,6 @@ Every script writes what it builds into `bin-<target>/` — `bin-linux/ada83`,
 `bin-macos/ada83`, `bin-windows\ada83.exe` with the DLLs it loads beside it —
 and `make package` zips that folder into `bin-<target>.zip`.
 
-Prebuilt compilers ship with the repository:
-
-| Archive | Contents |
-| ------- | -------- |
-| [`bin-linux.zip`](bin-linux.zip) | `ada83`, baseline x86_64, plus `ada83-runtime.ada` and `ada83.vsix`; needs glibc 2.34 or newer, and libLLVM from the system package manager |
-| [`bin-macos.zip`](bin-macos.zip) | `ada83`, universal x86_64 + arm64, plus `ada83-runtime.ada` and `ada83.vsix`; macOS 11 or newer, libLLVM via Homebrew |
-| [`bin-windows.zip`](bin-windows.zip) | `ada83.exe`, `ada83-runtime.ada`, `ada83.vsix`, and `LLVM-C.dll` with its companion DLLs; unzip them together. Linking native executables wants clang with lld, which resolves the weak externals thread-local storage becomes on COFF |
-
 `ada83-runtime.ada` holds the standard library, and the compiler looks for it
 beside its own executable.
 
@@ -70,15 +62,6 @@ beside its own executable.
 | Linux    | `make package` | `bin-linux.zip` |
 | macOS    | `make package`, or `osascript make.applescript package` | `bin-macos.zip`, both slices lipo'd together |
 | Windows  | `make.bat package` | `bin-windows.zip`, DLLs included |
-
-Each script builds the platform's icon from the one `ada83-icon.png` as it
-packages.
-
-| Command | Produces | Wants |
-| ------- | -------- | ----- |
-| `make package TARGET=windows` | `bin-windows.zip` | `x86_64-w64-mingw32-gcc` |
-| `make package TARGET=macos` | `bin-macos.zip` | `o64-clang` and `lipo`, or a Mac |
-| `make package TARGET=linux` | `bin-linux.zip` | `x86_64-linux-gnu-gcc` |
 
 ## Conformance
 
