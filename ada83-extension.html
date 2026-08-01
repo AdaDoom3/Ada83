@@ -31,11 +31,14 @@ const Unframed = (Stream) => {
   const Start = Split + Header_Terminator.length;
 
   if (Length === null) return Unframed (Stream.slice (Start));
-  if (Buffer.byteLength (Stream.slice (Start), 'utf8') < Length)
-    return { Messages: [], Remainder: Stream };
 
-  const Body = Stream.slice (Start, Start + Length);
-  const Rest = Unframed (Stream.slice (Start + Length));
+  /* Content-Length counts bytes, and the stream is a string, so the body
+     is carved out of the bytes and the remainder decoded back. */
+  const Bytes = Buffer.from (Stream.slice (Start), 'utf8');
+  if (Bytes.length < Length) return { Messages: [], Remainder: Stream };
+
+  const Body = Bytes.slice (0, Length).toString ('utf8');
+  const Rest = Unframed (Bytes.slice (Length).toString ('utf8'));
   return { Messages: [Body, ...Rest.Messages], Remainder: Rest.Remainder };
 };
 
@@ -455,7 +458,7 @@ const Registrations = (Capabilities) =>
     .filter (({ Capability }) => Offered (Capabilities, Capability))
     .map ((Feature) => Feature.Register (Provider_For (Feature), Capabilities));
 
-const Manual_Name = 'manual.md';
+const Manual_Name = 'ada83-manual.md';
 const Manual_Results = 4;
 const Manual_Section_Words = 700;
 const Manual_Total_Words = 2400;
@@ -687,10 +690,13 @@ const Spoken = async (Model, Prompt, Token) => {
   return Spelled;
 };
 
+let Scratch_Serial = 0;
+
 const Still_Compiles = (Source, Directory) =>
   new Promise ((Resolve) => {
     const Scratch = path.join (os.tmpdir (),
-                               `ada83-reformat-${process.pid}.ada`);
+                               `ada83-reformat-${process.pid}-` +
+                               `${++Scratch_Serial}.ada`);
     try { fs.writeFileSync (Scratch, Source); }
     catch { return Resolve (false); }
     const Child = spawn (Compiler_Path (), ['--analyse', Scratch, Directory]);
@@ -778,7 +784,9 @@ const Reindented = (Document, Line) =>
 
 const On_Type_Provider = {
   provideOnTypeFormattingEdits: (Document, Position) =>
-    Reindented (Document, Position.line),
+    Configured ('formatOnType', false)
+      ? Reindented (Document, Position.line)
+      : [],
 };
 
 const Reformat_On_Save = (Root) => (Event) =>
@@ -802,10 +810,8 @@ const Reformat_Registration = (Root) =>
        vscode.workspace.onWillSaveTextDocument (Reformat_On_Save (Root))];
 
 const On_Type_Registration = () =>
-  Configured ('formatOnType', false)
-    ? [vscode.languages.registerOnTypeFormattingEditProvider (
-         Ada_Selector, On_Type_Provider, '\n', ';')]
-    : [];
+  [vscode.languages.registerOnTypeFormattingEditProvider (
+     Ada_Selector, On_Type_Provider, '\n', ';')];
 
 /* A suggested fix is shown as a diff against the file and applied only if
    the reader says so, so a wrong answer costs a glance and nothing more. */
@@ -1081,17 +1087,18 @@ const Task_Of = (Name, Title, Argument_List, Group) =>
       vscode.TaskScope.Workspace,
       Title,
       'ada83',
-      new vscode.ShellExecution (Configured ('compilerPath', 'ada83'),
-                                 Argument_List),
+      new vscode.ShellExecution (Compiler_Path (), Argument_List),
       '$ada83'),
     { group: Group });
 
 const Build_Task = (Source_Path) =>
-  Task_Of ('build', 'build this file', [Source_Path],
+  Task_Of ('build', 'build this file',
+           [...Include_Arguments (), Source_Path],
            vscode.TaskGroup.Build);
 
 const Check_Task = (Source_Path) =>
-  Task_Of ('check', 'check this file', ['--ir', Source_Path],
+  Task_Of ('check', 'check this file',
+           ['--ir', ...Include_Arguments (), Source_Path],
            vscode.TaskGroup.Test);
 
 const Task_For = (Name) => (Name === 'check' ? Check_Task : Build_Task);
@@ -1196,12 +1203,15 @@ const Start = (Diagnostics, Output, Status, Attempt) => {
   Server.on ('exit', (Code, Signal) =>
     Give_Up (`exited with ${Signal ?? Code}`));
   Server.stdout.setEncoding ('utf8');
-  Server.stdout.on ('data', Receive);
+  Server.stdout.on ('data', (Chunk) => {
+    if (Session === Ours) Receive (Chunk);
+  });
   Server.stderr.setEncoding ('utf8');
   Server.stderr.on ('data', (Text) => Output.append (Text));
 
   Ask (Initialize).then ((Result) => {
-    if (Session !== Ours || Result === null) return;
+    if (Session !== Ours) return;
+    if (Result === null) return void Server.kill ();
     Ours.Ready = true;
     Ours.Capabilities = Result.capabilities ?? {};
     Ours.Registered = Registrations (Ours.Capabilities);
@@ -1221,6 +1231,7 @@ const Stop = () => {
   Session = null;
   Abandon_All ();
   Ending.Registered.forEach ((Registration) => Registration.dispose ());
+  Ending.Diagnostics.clear ();
   Ending.Server.kill ();
 };
 
@@ -1819,7 +1830,7 @@ tool (`#ada83Manual`) instead of recalling modern Ada.
     }
   ],
   "indentationRules": {
-    "increaseIndentPattern": "(?i)^\\s*(.*\\b(is|then|loop|begin|record|declare|select|do|else)\\s*|.*\\b(procedure|function|package|task)\\b.*)$",
+    "increaseIndentPattern": "(?i)^\\s*(.*\\b(is|then|loop|begin|record|declare|select|do|else)\\s*|.*\\b(procedure|function|package|task)\\b[^;]*)$",
     "decreaseIndentPattern": "(?i)^\\s*\\b(end|elsif|else|exception|when|begin|private)\\b"
   }
 }
@@ -2172,6 +2183,7 @@ tool (`#ada83Manual`) instead of recalling modern Ada.
     { "include": "#string" },
     { "include": "#character" },
     { "include": "#number" },
+    { "include": "#pragma" },
     { "include": "#context" },
     { "include": "#label" },
     { "include": "#declaration" },
@@ -2189,19 +2201,26 @@ tool (`#ada83Manual`) instead of recalling modern Ada.
   "repository": {
     "comment": {
       "name": "comment.line.double-dash.ada",
-      "match": "--.*$"
+      "match": "(--).*$",
+      "captures": {
+        "1": { "name": "punctuation.definition.comment.ada" }
+      }
     },
     "string": {
-      "name": "string.quoted.double.ada",
-      "begin": "\"",
-      "end": "\"",
       "patterns": [
-        { "name": "constant.character.escape.ada", "match": "\"\"" }
+        {
+          "name": "string.quoted.double.ada",
+          "match": "\"(?:[^\"]|\"\")*\""
+        },
+        {
+          "name": "invalid.illegal.unterminated-string.ada",
+          "match": "\"[^\"]*$"
+        }
       ]
     },
     "character": {
       "name": "string.quoted.single.ada",
-      "match": "'(?:[^']|'')'"
+      "match": "(?<![A-Za-z0-9_])'.'"
     },
     "number": {
       "patterns": [
@@ -2216,12 +2235,42 @@ tool (`#ada83Manual`) instead of recalling modern Ada.
       ]
     },
     "context": {
-      "match": "(?i)\\b(with|use)\\s+(?:(type)\\s+)?([A-Za-z][A-Za-z0-9_]*(?:\\.[A-Za-z][A-Za-z0-9_]*)*)",
-      "captures": {
-        "1": { "name": "keyword.other.ada" },
-        "2": { "name": "storage.type.ada" },
-        "3": { "name": "entity.name.namespace.ada" }
-      }
+      "begin": "(?i)\\b(with|use)\\b(?=\\s+(?!function\\b|procedure\\b|record\\b|at\\b)[A-Za-z])",
+      "beginCaptures": {
+        "1": { "name": "keyword.other.ada" }
+      },
+      "end": ";",
+      "endCaptures": {
+        "0": { "name": "punctuation.terminator.ada" }
+      },
+      "patterns": [
+        { "include": "#comment" },
+        {
+          "name": "entity.name.namespace.ada",
+          "match": "[A-Za-z][A-Za-z0-9_]*(?:\\.[A-Za-z][A-Za-z0-9_]*)*"
+        },
+        { "name": "punctuation.separator.ada", "match": "," },
+        { "include": "#number" },
+        { "include": "#operator" }
+      ]
+    },
+    "pragma": {
+      "patterns": [
+        {
+          "match": "(?i)\\b(pragma)\\s+(controlled|elaborate|inline|interface|list|memory_size|optimize|pack|page|priority|shared|storage_unit|suppress|system_name)\\b",
+          "captures": {
+            "1": { "name": "keyword.other.pragma.ada" },
+            "2": { "name": "support.function.pragma.ada" }
+          }
+        },
+        {
+          "match": "(?i)\\b(pragma)\\s+([A-Za-z][A-Za-z0-9_]*)",
+          "captures": {
+            "1": { "name": "keyword.other.pragma.ada" },
+            "2": { "name": "entity.name.tag.ada" }
+          }
+        }
+      ]
     },
     "label": {
       "patterns": [
@@ -2275,10 +2324,18 @@ tool (`#ada83Manual`) instead of recalling modern Ada.
           }
         },
         {
-          "match": "(?i)\\b(pragma)\\s+([A-Za-z][A-Za-z0-9_]*)",
+          "match": "(?i)\\b(accept)\\s+([A-Za-z][A-Za-z0-9_]*)",
           "captures": {
-            "1": { "name": "keyword.other.ada" },
-            "2": { "name": "entity.name.tag.ada" }
+            "1": { "name": "keyword.control.ada" },
+            "2": { "name": "entity.name.function.ada" }
+          }
+        },
+        {
+          "match": "(?i)\\b(is)\\s+(new)\\s+([A-Za-z][A-Za-z0-9_]*(?:\\.[A-Za-z][A-Za-z0-9_]*)*)",
+          "captures": {
+            "1": { "name": "keyword.control.ada" },
+            "2": { "name": "storage.modifier.ada" },
+            "3": { "name": "entity.name.type.ada" }
           }
         },
         {
@@ -2289,9 +2346,9 @@ tool (`#ada83Manual`) instead of recalling modern Ada.
           }
         },
         {
-          "match": "(?i)\\b([A-Za-z][A-Za-z0-9_]*)\\s*(:)\\s*(exception)\\b",
+          "match": "(?i)\\b([A-Za-z][A-Za-z0-9_]*(?:\\s*,\\s*[A-Za-z][A-Za-z0-9_]*)*)\\s*(:)\\s*(exception)\\b",
           "captures": {
-            "1": { "name": "entity.name.type.ada" },
+            "1": { "name": "entity.name.type.exception.ada" },
             "2": { "name": "punctuation.separator.ada" },
             "3": { "name": "keyword.control.ada" }
           }
@@ -2299,11 +2356,23 @@ tool (`#ada83Manual`) instead of recalling modern Ada.
       ]
     },
     "closing": {
-      "match": "(?i)\\b(end)\\s+(?!(?:if|case|loop|record|select)\\b)(\"[^\"]+\"|[A-Za-z][A-Za-z0-9_]*)",
-      "captures": {
-        "1": { "name": "keyword.control.ada" },
-        "2": { "name": "entity.name.section.ada" }
-      }
+      "patterns": [
+        {
+          "match": "(?i)\\b(end)\\s+(loop)\\s+([A-Za-z][A-Za-z0-9_]*)",
+          "captures": {
+            "1": { "name": "keyword.control.ada" },
+            "2": { "name": "keyword.control.ada" },
+            "3": { "name": "entity.name.label.ada" }
+          }
+        },
+        {
+          "match": "(?i)\\b(end)\\s+(?!(?:if|case|loop|record|select)\\b)(\"[^\"]+\"|[A-Za-z][A-Za-z0-9_]*(?:\\.[A-Za-z][A-Za-z0-9_]*)*)",
+          "captures": {
+            "1": { "name": "keyword.control.ada" },
+            "2": { "name": "entity.name.section.ada" }
+          }
+        }
+      ]
     },
     "loop_parameter": {
       "match": "(?i)\\b(for)\\s+([A-Za-z][A-Za-z0-9_]*)\\s+(in)\\b\\s*(reverse\\b)?",
@@ -2315,28 +2384,39 @@ tool (`#ada83Manual`) instead of recalling modern Ada.
       }
     },
     "association": {
-      "match": "(?i)\\b([A-Za-z][A-Za-z0-9_]*)\\s*(=>)",
+      "match": "(?i)\\b(?!others\\b)([A-Za-z][A-Za-z0-9_]*)\\s*(=>)",
       "captures": {
         "1": { "name": "variable.parameter.ada" },
         "2": { "name": "keyword.operator.ada" }
       }
     },
     "attribute": {
-      "match": "(')([A-Za-z][A-Za-z0-9_]*)",
-      "captures": {
-        "1": { "name": "punctuation.definition.attribute.ada" },
-        "2": { "name": "support.other.attribute.ada" }
-      }
+      "patterns": [
+        {
+          "match": "(?i)(')\\s*(address|aft|base|callable|constrained|count|delta|digits|emax|epsilon|first_bit|first|fore|image|large|last_bit|last|length|machine_emax|machine_emin|machine_mantissa|machine_overflows|machine_radix|machine_rounds|mantissa|position|pos|pred|range|safe_emax|safe_large|safe_small|size|small|storage_size|succ|terminated|value|val|width)\\b",
+          "captures": {
+            "1": { "name": "punctuation.definition.attribute.ada" },
+            "2": { "name": "support.other.attribute.ada" }
+          }
+        },
+        {
+          "match": "(')\\s*([A-Za-z][A-Za-z0-9_]*)",
+          "captures": {
+            "1": { "name": "punctuation.definition.attribute.ada" },
+            "2": { "name": "entity.other.attribute-name.ada" }
+          }
+        }
+      ]
     },
     "predefined": {
       "patterns": [
         {
           "name": "support.type.ada",
-          "match": "(?i)\\b(Integer|Natural|Positive|Float|Boolean|Character|String|Duration|Short_Integer|Long_Integer|Short_Float|Long_Float|Short_Short_Integer|Long_Long_Integer|Universal_Integer|Universal_Real)\\b"
+          "match": "(?i)\\b(Integer|Natural|Positive|Float|Boolean|Character|String|Duration|Short_Integer|Long_Integer|Short_Float|Long_Float|Short_Short_Integer|Long_Long_Integer|Universal_Integer|Universal_Real|File_Type|File_Mode|Address|Priority)\\b"
         },
         {
           "name": "support.class.ada",
-          "match": "(?i)\\b(Standard|System|Calendar|Text_IO|Sequential_IO|Direct_IO|IO_Exceptions|Low_Level_IO|Machine_Code|Unchecked_Conversion|Unchecked_Deallocation)\\b"
+          "match": "(?i)\\b(Standard|ASCII|System|Calendar|Text_IO|Sequential_IO|Direct_IO|IO_Exceptions|Low_Level_IO|Machine_Code|Unchecked_Conversion|Unchecked_Deallocation|Integer_IO|Float_IO|Fixed_IO|Enumeration_IO)\\b"
         }
       ]
     },
@@ -2396,7 +2476,8 @@ tool (`#ada83Manual`) instead of recalling modern Ada.
       "patterns": [
         { "name": "punctuation.terminator.ada", "match": ";" },
         { "name": "punctuation.separator.ada", "match": "[,:.]" },
-        { "name": "punctuation.section.parens.ada", "match": "[()]" }
+        { "name": "punctuation.section.parens.ada", "match": "[()]" },
+        { "name": "punctuation.definition.attribute.ada", "match": "'" }
       ]
     }
   }
@@ -2427,6 +2508,7 @@ tool (`#ada83Manual`) instead of recalling modern Ada.
   <Assets>
     <Asset Type="Microsoft.VisualStudio.Code.Manifest" Path="extension/package.json" Addressable="true" />
     <Asset Type="Microsoft.VisualStudio.Services.Content.Details" Path="extension/README.md" Addressable="true" />
+    <Asset Type="Microsoft.VisualStudio.Services.Icons.Default" Path="extension/ada83-icon.png" Addressable="true" />
   </Assets>
 </PackageManifest>
 </script>
@@ -2438,6 +2520,7 @@ tool (`#ada83Manual`) instead of recalling modern Ada.
   <Default Extension="js" ContentType="application/javascript" />
   <Default Extension="ada" ContentType="text/plain" />
   <Default Extension="md" ContentType="text/markdown" />
+  <Default Extension="png" ContentType="image/png" />
   <Default Extension="vsixmanifest" ContentType="text/xml" />
 </Types>
 </script>
