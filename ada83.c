@@ -2460,6 +2460,7 @@ bool           Type_Full_Characteristics_In_Force
                  (const Type *t, Characteristics_Reach_Kind reach);
 
 bool  Has_Task_Component                   (Type *t);
+Symbol *Find_Locally_Unelaborated_Task     (Type *t, Symbol *enclosing);
 bool  Is_Limited                           (const Type *t);
 bool  Is_Scalar                            (const Type *t);
 bool  Has_Scalar_Representation            (const Type *t);
@@ -11685,6 +11686,28 @@ bool Has_Task_Component (Type *t) {
   return present;
 }
 
+Symbol *Find_Locally_Unelaborated_Task (Type *t, Symbol *enclosing) {
+  if (not t) return NULL;
+  if (t->kind == TYPE_TASK) {
+    Symbol *task_sym = t->defining_symbol;
+    if (task_sym and not task_sym->body_claimed and
+        task_sym->parent == enclosing)
+      return task_sym;
+    return NULL;
+  }
+  if (t->kind == TYPE_RECORD) {
+    for (u32 i = 0; i < t->record.component_count; i++) {
+      Symbol *found = Find_Locally_Unelaborated_Task (
+        t->record.components[i].component_type, enclosing);
+      if (found) return found;
+    }
+    return NULL;
+  }
+  if (t->kind == TYPE_ARRAY)
+    return Find_Locally_Unelaborated_Task (t->array.element_type, enclosing);
+  return NULL;
+}
+
 Symbol *Find_Defining_Package (const Type *t) {
   Symbol *package = t and t->defining_symbol ? t->defining_symbol->parent
                                              : NULL;
@@ -20067,6 +20090,17 @@ Type *Resolve_Expression (Node *node) {
 
       Type *designated = Get_Written_Subtype (node);
 
+      if (Has_Task_Component (designated) and
+          Is_Subprogram (sm->current_scope->owner)) {
+        Symbol *unelaborated =
+          Find_Locally_Unelaborated_Task (designated, sm->current_scope->owner);
+        if (unelaborated)
+          Report_Warning (node->location,
+            "allocator activates '%.*s' before its body and without pragma "
+            "Suppress (Elaboration_Check) will raise PROGRAM_ERROR at run time",
+            (int) unelaborated->name.length, unelaborated->name.data);
+      }
+
       if (Is_Access (context) and
           Type_Covers (Get_Designated (context), designated)) {
         node->type = Get_Base (context);
@@ -23953,6 +23987,13 @@ void Resolve_Generic_Instantiation (Node *node) {
     Reject (node, "expected a generic unit name");
     return;
   }
+
+  if (not template->generic_body and not template->body_is_separate_stub and
+      template->parent == sm->current_scope->owner and
+      Is_Subprogram (sm->current_scope->owner))
+    Report_Warning (node->location,
+      "instantiation of '%.*s' precedes its body and without pragma Suppress (Elaboration_Check) will raise PROGRAM_ERROR at run time",
+      (int) template->name.length, template->name.data);
 
   Generic_Unit_Kind declared_kind = node->generic_inst.unit_kind;
   Generic_Unit_Kind template_kind =
@@ -34565,6 +34606,10 @@ void Emit_Elaboration_Check (Symbol *callee) {
       guard = callee_root;
     }
   }
+  Check_Permission permission =
+    Check_Permission_For (CHECK_KIND_ELABORATION, NULL, guard);
+  if (not Check_Is_Required (permission)) return;
+
   u32 flag = Emit_Elaboration_Flag_Load (guard);
   if (flag)
     Emit_Check_With_Raise_Named (flag, false, "program_error",
@@ -47150,6 +47195,9 @@ void Emit_Activation_Failure_Check (u32 failed_flag) {
 u32 Emit_Task_Body_Unelaborated (Type *ty, u32 acc) {
   if (not ty) return acc;
   if (Is_Task (ty)) {
+    Check_Permission permission =
+      Check_Permission_For (CHECK_KIND_ELABORATION, NULL, ty->defining_symbol);
+    if (not Check_Is_Required (permission)) return acc;
     u32 flag = Emit_Elaboration_Flag_Load (ty->defining_symbol);
     if (not flag) return acc;
     u32 not_elaborated = Emit_Result ("xor i1 %s, 1\n",  REG (flag));
