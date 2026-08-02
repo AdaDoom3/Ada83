@@ -1,0 +1,17 @@
+name: Windows
+
+# Trunk-based: main is the only long-lived branch, so it is checked on every
+# push as well as on the pull requests that feed it.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  windows:
+    uses: ./.github/workflows/build.yml
+    with:
+      platform: windows
+      runner: windows-latest

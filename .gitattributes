@@ -1,0 +1,20 @@
+# Every text file in this repository uses LF endings, stored and checked out,
+# on every platform. Windows checkouts used to convert ada83-runtime.ada to
+# CRLF, which the Ada lexer rejects outright:
+#   ada83-runtime.ada:1480:61: error: control character (code 13) in comment
+* text=auto eol=lf
+
+# Batch files are the one exception, and not a stylistic one: cmd.exe resolves
+# `goto`/`call :label` by byte offset and cannot find a label in an LF-only
+# file, failing with "The system cannot find the batch label specified".
+# Stored as LF like everything else, checked out as CRLF so cmd can run it.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Binaries, which must never have their bytes rewritten.
+*.png  binary
+*.gif  binary
+*.ico  binary
+*.icns binary
+*.zip  binary
+*.vsix binary

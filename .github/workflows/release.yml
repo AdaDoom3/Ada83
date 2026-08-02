@@ -1,0 +1,148 @@
+name: Release
+
+# A release is cut by pushing a tag on main. Nothing is published on ordinary
+# pushes — there are no nightlies.
+#
+# Versioning is classic two-part (0.9, 1.0, 1.1), not semantic versioning, and
+# ada83.c holds the number: ADA83_VERSION_MAJOR / _MINOR, read by
+# .github/version.sh. A tag is only published if it names that version, sits
+# on main, and has not been released already — see the `verify` job.
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  # Cheap gate: refuse to spend three build machines on a tag that would
+  # publish a binary whose --version disagrees with the tag name.
+  verify:
+    name: verify tag
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Tag must match ada83.c, sit on main, and be unreleased
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag_name="${GITHUB_REF_NAME}"
+          source_version=$(./.github/version.sh)
+
+          if [[ $tag_name != "v$source_version" ]]; then
+            echo "::error file=ada83.c::tag $tag_name does not match the compiled version v$source_version. Retag, or fix ADA83_VERSION_MAJOR/_MINOR."
+            exit 1
+          fi
+
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::$tag_name points at a commit that is not on main."
+            exit 1
+          fi
+
+          if gh release view "$tag_name" >/dev/null 2>&1; then
+            echo "::error::a release for $tag_name already exists; versions are published once."
+            exit 1
+          fi
+
+          echo "$tag_name verified against ada83.c and main."
+
+  # The VS Code extension is platform-independent: `make vsix` only rearranges
+  # ada83-extension.html into a zip and never touches the compiler. It gets its
+  # own job so that publishing it does not ride on a platform build succeeding.
+  vsix:
+    name: package vsix
+    needs: [verify]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Build the extension
+        shell: bash
+        run: make vsix
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-vsix
+          path: bin-linux/ada83.vsix
+          if-no-files-found: error
+
+  # One packaging job per platform, each on its own native runner. `make
+  # package` builds the compiler, the platform artwork and its own copy of the
+  # extension, then packs bin-<platform>.zip.
+  package:
+    name: package (${{ matrix.platform }})
+    needs: [verify]
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux
+            runner: ubuntu-latest
+          - platform: macos
+            runner: macos-latest
+          - platform: windows
+            runner: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # macOS builds arm64 and x86_64 slices and lipos them into one binary;
+      # the makefile handles that from ARCHITECTURES_macos.
+      - name: Package (Linux/macOS)
+        if: matrix.platform != 'windows'
+        shell: bash
+        run: make package TARGET=${{ matrix.platform }}
+
+      # make.bat unpacks LLVM-C.dll and friends out of the committed
+      # bin-windows.zip, then repacks it with the freshly built exe.
+      - name: Package (Windows)
+        if: matrix.platform == 'windows'
+        shell: cmd
+        run: make.bat package
+
+      # The binary must report the version the tag promised. Cheap insurance
+      # against a stale checkout or a build that picked up the wrong source.
+      - name: Check --version against the tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${{ matrix.platform }}" == windows ]]; then
+            binary=bin-windows/ada83.exe
+          else
+            binary=bin-${{ matrix.platform }}/ada83
+          fi
+          "$binary" --version
+          "$binary" --version | grep -q "ada83 ${GITHUB_REF_NAME#v} "
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.platform }}
+          path: bin-${{ matrix.platform }}.zip
+          if-no-files-found: error
+
+  publish:
+    name: publish
+    needs: [package, vsix]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: dist-*
+          path: dist
+          merge-multiple: true
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ github.ref_name }}
+          prerelease: false
+          make_latest: true
+          generate_release_notes: true
+          files: dist/*
