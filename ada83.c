@@ -6330,41 +6330,41 @@ typedef struct {
 } Frame_Slot;
 
 typedef struct {
-  Slice      unit_name;
-  Slice      source_file;
-  Catalog_Unit_Kind kind;
-  u32          checksum;
-  i64           recorded_at;
-  bool              loaded;
+  Slice               unit_name;
+  Slice               source_file;
+  Catalog_Unit_Kind   kind;
+  u32                 checksum;
+  i64                 recorded_at;
+  bool                loaded;
 
-  bool              code_compiled_elsewhere;
+  bool                code_compiled_elsewhere;
 
-  Frame_Slot       *frame_slots;
-  u32          frame_slot_count;
-  i64           frame_size;
+  Frame_Slot         *frame_slots;
+  u32                 frame_slot_count;
+  i64                 frame_size;
 
-  u32          line;
-  u32          column;
+  u32                 line;
+  u32                 column;
 
   Catalog_Dependence *with_units;
-  u32          with_unit_count;
+  u32                 with_unit_count;
 
-  bool              requires_body;
-  bool              is_subprogram;
+  bool                requires_body;
+  bool                is_subprogram;
   Catalog_Dependence *stubs;
-  u32          stub_count;
+  u32                 stub_count;
 
-  bool              is_obsolete;
+  bool                is_obsolete;
 } Catalog_Entry;
 
-Catalog_Entry *Catalog_Find     (Slice unit_name,
-                                         Catalog_Unit_Kind kind);
-Slice   Flatten_Dotted_Name      (Node *name);
-Catalog_Entry *Catalog_Register_At (Slice unit_name,
-                                         Slice source_file,
-                                         Catalog_Unit_Kind kind,
-                                         u32 checksum,
-                                         i64 recorded_at);
+Catalog_Entry *Catalog_Find        (Slice             unit_name,
+                                    Catalog_Unit_Kind kind);
+Slice          Flatten_Dotted_Name (Node *name);
+Catalog_Entry *Catalog_Register_At (Slice             unit_name,
+                                    Slice             source_file,
+                                    Catalog_Unit_Kind kind,
+                                    u32               checksum,
+                                    i64               recorded_at);
 void           Catalog_Load_Directory (const char *directory);
 void           Catalog_Reset          ();
 void           Catalog_Require_Consistent (Slice unit_name,
@@ -8661,7 +8661,7 @@ Token Lex_Token (Lexer *lex) {
 
         const char *end_comment = Find_End_Of_Line (lex->current, lex->source_end);
         for (const char *scan = lex->current; scan < end_comment; scan++)
-          if (Is_Control (*scan) and *scan != '\t') {
+          if (Is_Control (*scan) and *scan != '\t' and *scan != '\r') {
             Reject_At ((Location){
                             .line     = lex->line,
                             .column   = lex->column +
@@ -60602,8 +60602,12 @@ bool Warning_Flags_From_Command_Line (const char *argument) {
   return false;
 }
 
+#define ADA83_VERSION_MAJOR 0
+#define ADA83_VERSION_MINOR 10
+
 #define ADA83_VERSION_TEXT \
-  "ada83 1.0 -- an Ada 83 (ANSI/MIL-STD-1815A) compiler, LLVM native backend"
+  "ada83 " TEXT_OF (ADA83_VERSION_MAJOR) "." TEXT_OF (ADA83_VERSION_MINOR) \
+  " -- an Ada 83 (ANSI/MIL-STD-1815A) compiler, LLVM native backend"
 
 
 typedef struct { char *Data; size_t Length, Capacity; } Text_Buffer;

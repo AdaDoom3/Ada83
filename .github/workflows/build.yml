@@ -1,0 +1,118 @@
+name: build
+
+# The shared body of the three per-platform CI workflows. They are separate
+# workflows so that each platform gets its own status badge, which a single
+# matrix job cannot give you: a badge names one workflow, not one leg of it.
+# The steps live here so there is only ever one copy to keep correct.
+
+on:
+  workflow_call:
+    inputs:
+      platform:
+        description: linux, macos or windows
+        required: true
+        type: string
+      runner:
+        description: GitHub-hosted runner image to build on
+        required: true
+        type: string
+
+jobs:
+  build:
+    name: build + acats
+    runs-on: ${{ inputs.runner }}
+    steps:
+      - uses: actions/checkout@v5
+
+      # lli and llvm-link are what test.sh runs the suite with. None of this
+      # affects how ada83 itself is compiled; that is the build step below.
+      - name: Install test tools (Linux)
+        if: inputs.platform == 'linux'
+        shell: bash
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends llvm
+          for tool in lli llvm-link; do
+            command -v "$tool" >/dev/null && continue
+            found=$(find /usr/lib/llvm-*/bin /usr/bin -maxdepth 1 -name "${tool}-*" 2>/dev/null | sort -V | tail -1)
+            [[ -n $found ]] && sudo ln -sf "$found" "/usr/local/bin/$tool"
+          done
+          command -v lli && command -v llvm-link
+
+      # Two things macOS does not ship that test.sh needs: timeout(1), which it
+      # accepts as coreutils' gtimeout, and a bash newer than the 3.2 in /bin,
+      # which lacks the associative arrays, mapfile and ${x,,} the suite uses.
+      # Its workers run as bare `bash -c`, so the newer bash has to come first
+      # on PATH rather than merely be installed.
+      - name: Install test tools (macOS)
+        if: inputs.platform == 'macos'
+        shell: bash
+        run: |
+          brew install llvm coreutils bash
+          echo "$(brew --prefix)/bin"     >> "$GITHUB_PATH"
+          echo "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
+
+      # unzip is not in base-devel, and test.sh wants it to unpack tests.zip;
+      # its fallbacks are GNU tar, which cannot read a zip at all, and then
+      # PowerShell.
+      - name: Install test tools (Windows)
+        if: inputs.platform == 'windows'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: mingw-w64-x86_64-llvm base-devel unzip
+
+      - name: Build (Linux/macOS)
+        if: inputs.platform != 'windows'
+        shell: bash
+        run: make ada83
+
+      # make.bat is the documented Windows build. It is deliberately not run
+      # from the MSYS2 shell above, which is here only for the POSIX harness.
+      - name: Build (Windows)
+        if: inputs.platform == 'windows'
+        shell: cmd
+        run: make.bat
+
+      - name: Run ACATS (Linux/macOS)
+        if: inputs.platform != 'windows'
+        shell: bash
+        run: bash test.sh run all
+
+      # Under MSYS2 test.sh resolves HOST_TARGET to windows and picks up
+      # bin-windows/ada83.exe by itself, so nothing needs copying first.
+      - name: Run ACATS (Windows)
+        if: inputs.platform == 'windows'
+        shell: msys2 {0}
+        run: bash test.sh run all
+
+      # `test.sh run` reports failures but always exits 0 — only `check` does
+      # otherwise, and that needs a per-platform baseline this repo does not
+      # carry. Without this step a wholly failing suite still shows a green
+      # badge, which is worse than no badge at all. It runs on failure too, so
+      # that a suite which died partway still says so in the job summary.
+      - name: Report and gate on the results
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          # `|| true` because no match makes ls exit 2, which would abort the
+          # step before it could report the more useful message below.
+          summary=$(ls -t test_results/*/test_summary.txt 2>/dev/null | head -1 || true)
+          if [[ -z $summary ]]; then
+            echo "::error::the suite produced no summary; it did not run to completion"
+            exit 1
+          fi
+          {
+            echo "### ACATS — ${{ inputs.platform }}"
+            echo '```'
+            cat "$summary"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          cat "$summary"
+          failed=$(sed -n 's/.*[[:space:]]F=\([0-9]\{1,\}\).*/\1/p' "$summary")
+          if (( ${failed:-0} > 0 )); then
+            echo "::error::$failed ACATS test(s) failed on ${{ inputs.platform }}"
+            exit 1
+          fi

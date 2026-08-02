@@ -1,5 +1,9 @@
 # Ada83 
 
+[![Linux](https://github.com/michael-hardeman/Ada83/actions/workflows/ci-linux.yml/badge.svg)](https://github.com/michael-hardeman/Ada83/actions/workflows/ci-linux.yml)
+[![macOS](https://github.com/michael-hardeman/Ada83/actions/workflows/ci-macos.yml/badge.svg)](https://github.com/michael-hardeman/Ada83/actions/workflows/ci-macos.yml)
+[![Windows](https://github.com/michael-hardeman/Ada83/actions/workflows/ci-windows.yml/badge.svg)](https://github.com/michael-hardeman/Ada83/actions/workflows/ci-windows.yml)
+
 A single-file Ada 83 LLVM compiler.
 
 ![The Ada 83 extension for VS Code](readme-demo.gif)
@@ -151,3 +155,19 @@ The suite builds the compiler if it is missing, and finds it in
 
 Each run writes to its own directory under `test_results/`, with
 logs under `acats_logs/`, so concurrent runs don't overwrite eachother.
+
+## Branching Strategy
+
+Trunk-based development
+
+One long-lived branch: main
+
+Always green and always releasable. Feature live on branches or forks. PR → the three platform checks → merge → delete.
+
+Cutting a release:
+
+1. Bump ADA83_VERSION_MINOR (normal) or ADA83_VERSION_MAJOR in ada83.c via a normal PR; merge to main.
+2. git tag v1.0 && git push origin v1.0
+3. release.yml fires: verifies the tag, builds and packages all three platforms, publishes.
+
+The tag gate refuses to publish unless the tag matches ADA83_VERSION_*, the commit is an ancestor of main, and no release exists under that tag. So a tag on an unmerged branch, or one that disagrees with the compiled banner, fails before spending three build machines.
