@@ -912,7 +912,7 @@ run_profile(){
         return
     fi
     pulse "building an instrumented compiler"
-    gcc -O2 -pg -w -std=gnu2x -o "$work/ada83-pg" "$here/ada83.c" -lm -lpthread >/dev/null 2>&1
+    gcc -O2 -pg -w -std=gnu2x -o "$work/ada83-pg" "$here/ada83.c" -lpthread >/dev/null 2>&1
     pulse_stop
     [ -x "$work/ada83-pg" ] || { echo "  perf is absent and the instrumented build failed"; return; }
     pulse "profiling"

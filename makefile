@@ -1,6 +1,6 @@
 CC     = gcc
 CFLAGS = -O3 -Wall -std=gnu2x
-LIBS   = -lm -lpthread
+LIBS   = -lpthread
 
 # Stage lines in the manner of test-bench.sh: dimmed on a terminal, plain
 # text when piped, so CI logs and redirected output stay free of ANSI codes.
@@ -108,9 +108,9 @@ COMPILER_FLAGS_linux      = -O3 -Wall -g0 -std=gnu17 -march=x86-64 -mtune=generi
 COMPILER_FLAGS_macos      = -O3 -Wall -g0 -std=gnu2x
 COMPILER_FLAGS_windows    = -O2 -Wall -g0 -std=gnu2x
 ARCHITECTURES_macos       = arm64 x86_64
-LINK_LIBRARIES_linux      = -lm -lpthread
-LINK_LIBRARIES_macos      = -lm -lpthread
-LINK_LIBRARIES_windows    = -lm
+LINK_LIBRARIES_linux      = -lpthread
+LINK_LIBRARIES_macos      = -lpthread
+LINK_LIBRARIES_windows    =
 SUFFIX_windows            = .exe
 SIDECAR_macos             = __MACOSX/._ada83
 ARTWORK_linux             = $(ICON).png
