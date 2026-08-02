@@ -150,24 +150,12 @@ bash test.sh check   # Run, then diff against the baseline
 bash test.sh help
 ```
 
-The suite builds the compiler if it is missing, and finds it in
-`bin-<target>/` or beside the script.
+## Workflow
 
-Each run writes to its own directory under `test_results/`, with
-logs under `acats_logs/`, so concurrent runs don't overwrite eachother.
+Release steps
 
-## Branching Strategy
-
-Trunk-based development
-
-One long-lived branch: main
-
-Always green and always releasable. Feature live on branches or forks. PR → the three platform checks → merge → delete.
-
-Cutting a release:
-
-1. Bump ADA83_VERSION_MINOR (normal) or ADA83_VERSION_MAJOR in ada83.c via a normal PR; merge to main.
+1. ADA83_VERSION_MINOR or ADA83_VERSION_MAJOR in ada83.c through a normal PR and merge to main.
 2. git tag v1.0 && git push origin v1.0
-3. release.yml fires: verifies the tag, builds and packages all three platforms, publishes.
+3. release.yml verifies the tag, builds and packages all three platforms, publishes.
 
-The tag gate refuses to publish unless the tag matches ADA83_VERSION_*, the commit is an ancestor of main, and no release exists under that tag. So a tag on an unmerged branch, or one that disagrees with the compiled banner, fails before spending three build machines.
+The tag gate refuses to publish unless the tag matches ADA83_VERSION_* and no release exists under that tag. So a tag on an unmerged branch, or one that disagrees.
