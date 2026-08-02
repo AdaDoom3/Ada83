@@ -699,7 +699,9 @@ const Still_Compiles = (Source, Directory) =>
                                `${++Scratch_Serial}.ada`);
     try { fs.writeFileSync (Scratch, Source); }
     catch { return Resolve (false); }
-    const Child = spawn (Compiler_Path (), ['--analyse', Scratch, Directory]);
+    const [Command, Arguments] =
+      Host_Escaped (Compiler_Path (), ['--analyse', Scratch, Directory]);
+    const Child = spawn (Command, Arguments);
     let Reply = '';
     Child.stdout.on ('data', (Chunk) => { Reply += Chunk; });
     Child.on ('error', () => Resolve (false));
@@ -1080,16 +1082,18 @@ const Publish = ({ Uri, Diagnostics }) => {
 
 const Ada_Selector = { scheme: 'file', language: 'ada83' };
 
-const Task_Of = (Name, Title, Argument_List, Group) =>
-  Object.assign (
+const Task_Of = (Name, Title, Argument_List, Group) => {
+  const [Command, Arguments] = Host_Escaped (Compiler_Path (), Argument_List);
+  return Object.assign (
     new vscode.Task (
       { type: 'ada83', task: Name },
       vscode.TaskScope.Workspace,
       Title,
       'ada83',
-      new vscode.ShellExecution (Compiler_Path (), Argument_List),
+      new vscode.ShellExecution (Command, Arguments),
       '$ada83'),
     { group: Group });
+};
 
 const Build_Task = (Source_Path) =>
   Task_Of ('build', 'build this file',
@@ -1149,6 +1153,22 @@ const Include_Arguments = () =>
   Configured ('includePaths', []).flatMap ((Path) =>
     ['-I', Substituted (Path)]);
 
+/* Flatpak gives the extension host its own sandboxed root filesystem, so a
+   compiler spawned directly only ever sees the runtime's bundled libraries
+   (e.g. Mesa's libLLVM), never the real system one, no matter how it
+   searches. flatpak-spawn --host re-launches it on the real host, where
+   its dynamic loader resolves the system libLLVM correctly. AppImages and
+   classic-confinement Snaps (which is how VSCodium ships) run unsandboxed
+   and need no such rewrite. */
+const In_Flatpak_Sandbox = () => {
+  try { return fs.existsSync ('/.flatpak-info'); }
+  catch { return false; }
+};
+
+const Host_Escaped = (Command, Arguments) =>
+  In_Flatpak_Sandbox () ? ['flatpak-spawn', ['--host', Command, ...Arguments]]
+                        : [Command, Arguments];
+
 const Presentation = {
   starting: ['$(loading~spin)', 'starting'],
   ready: ['$(check)', 'ready'],
@@ -1170,9 +1190,10 @@ const Restart_Limit = 5;
 const Start = (Diagnostics, Output, Status, Attempt) => {
   if (!Configured ('enable', true)) return Show_State (Status, 'stopped');
 
-  const Command = Compiler_Path ();
-  const Server = spawn (Command, ['--lsp', ...Include_Arguments ()],
-                       { stdio: 'pipe' });
+  const Path = Compiler_Path ();
+  const [Command, Arguments] =
+    Host_Escaped (Path, ['--lsp', ...Include_Arguments ()]);
+  const Server = spawn (Command, Arguments, { stdio: 'pipe' });
   const Ours = { Server, Diagnostics, Output, Status, Buffered: '',
                  Ready: false, Capabilities: {}, Registered: [] };
   Session = Ours;
@@ -1187,7 +1208,7 @@ const Start = (Diagnostics, Output, Status, Attempt) => {
       Show_State (Status, 'failed');
       Output.appendLine (`server unavailable: ${Reason}`);
       return vscode.window.showErrorMessage (
-        `Ada 83: '${Command} --lsp' will not run (${Reason}). Set ` +
+        `Ada 83: '${Path} --lsp' will not run (${Reason}). Set ` +
         'ada83.compilerPath to the compiler, and keep ada83-runtime.ada ' +
         'beside it.');
     }

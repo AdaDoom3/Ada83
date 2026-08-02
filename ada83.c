@@ -67,6 +67,209 @@ enum { Target_Max_Mantissa = 31 };
 u64 To_Bits    (u64 bytes) {return bytes * Bits_Per_Unit;}
 u64 To_Bytes   (u64 bits)  {return (bits + Bits_Per_Unit - 1) / Bits_Per_Unit;}
 
+#ifdef __clang__
+#pragma STDC FP_CONTRACT OFF
+#else
+#pragma GCC push_options
+#pragma GCC optimize ("fp-contract=off")
+#endif
+
+typedef struct {double high, low;}                 Double_Double;
+typedef struct {Double_Double significand; i64 exponent;} Scaled_Real;
+
+u64    To_Double_Bits   (double value) {u64 bits;    memcpy (&bits,  &value, sizeof bits);  return bits;}
+double From_Double_Bits (u64 bits)     {double value; memcpy (&value, &bits,  sizeof value); return value;}
+
+double Truncate_Toward_Zero (double value) {
+  u64 bits     = To_Double_Bits (value);
+  int exponent = (int) ((bits >> 52) & 0x7FF) - 1023;
+  if (exponent < 0)   return (bits >> 63) ? -0.0 : 0.0;
+  if (exponent >= 52) return value;
+  u64 fraction = ((u64) 1 << (52 - exponent)) - 1;
+  if ((bits & fraction) == 0) return value;
+  return From_Double_Bits (bits & ~fraction);
+}
+
+double Round_Up (double value) {
+  double truncated = Truncate_Toward_Zero (value);
+  return truncated < value ? truncated + 1.0 : truncated;
+}
+
+double Round_Down (double value) {
+  double truncated = Truncate_Toward_Zero (value);
+  return truncated > value ? truncated - 1.0 : truncated;
+}
+
+double Round_Half_Away_From_Zero (double value) {
+  double truncated = Truncate_Toward_Zero (value);
+  double remainder = value - truncated;
+  if (remainder >=  0.5) return truncated + 1.0;
+  if (remainder <= -0.5) return truncated - 1.0;
+  return truncated;
+}
+
+double Larger_Of (double left, double right) {
+  if (left  != left)  return right;
+  if (right != right) return left;
+  return left > right ? left : right;
+}
+
+int Ceiling_Log2 (double value) {
+  u64 bits     = To_Double_Bits (value);
+  int exponent = (int) ((bits >> 52) & 0x7FF) - 1023;
+  u64 mantissa = bits & 0xFFFFFFFFFFFFFULL;
+  if (exponent == -1023) {
+    if (mantissa == 0) return 0;
+    while (not (mantissa & 0x10000000000000ULL)) {mantissa <<= 1; exponent--;}
+    exponent++;
+    mantissa &= 0xFFFFFFFFFFFFFULL;
+  }
+  return mantissa == 0 ? exponent : exponent + 1;
+}
+
+double Power_Of_Two (int exponent) {
+  if (exponent >  1023)  return 1.0 / 0.0;
+  if (exponent >= -1022) return From_Double_Bits ((u64) (exponent + 1023) << 52);
+  if (exponent >= -1074) return From_Double_Bits ((u64) 1 << (exponent + 1074));
+  return 0.0;
+}
+
+Double_Double Exact_Sum (double left, double right) {
+  double sum       = left + right;
+  double left_part = sum - right;
+  double error     = (left - left_part) + (right - (sum - left_part));
+  return (Double_Double){sum, error};
+}
+
+Double_Double Split_Significand (double value) {
+  double scaled = 134217729.0 * value;
+  double high   = scaled - (scaled - value);
+  return (Double_Double){high, value - high};
+}
+
+#define Split_Safe_Magnitude 0x1p996
+
+Double_Double Exact_Product (double left, double right) {
+  double product = left * right;
+  if (product == 0.0 or product - product != 0.0) return (Double_Double){product, 0.0};
+  double rescale = 1.0;
+  if (left  > Split_Safe_Magnitude or left  < -Split_Safe_Magnitude) {left  *= 0x1p-64; rescale *= 0x1p64;}
+  if (right > Split_Safe_Magnitude or right < -Split_Safe_Magnitude) {right *= 0x1p-64; rescale *= 0x1p64;}
+  double        scaled = left * right;
+  Double_Double l      = Split_Significand (left), r = Split_Significand (right);
+  double        error  = ((l.high * r.high - scaled) + l.high * r.low + l.low * r.high) + l.low * r.low;
+  return (Double_Double){product, error * rescale};
+}
+
+Double_Double Multiply_Double_Double (Double_Double left, Double_Double right) {
+  Double_Double product = Exact_Product (left.high, right.high);
+  double        cross   = left.high * right.low + left.low * right.high;
+  return Exact_Sum (product.high, product.low + cross);
+}
+
+Double_Double Reciprocal_Double_Double (Double_Double value) {
+  double        estimate = 1.0 / value.high;
+  Double_Double product  = Multiply_Double_Double (value, (Double_Double){estimate, 0.0});
+  double        residual = (1.0 - product.high) - product.low;
+  return Exact_Sum (estimate, estimate * residual);
+}
+
+Scaled_Real Normalize_Scaled (Double_Double pair, i64 exponent) {
+  if (pair.high == 0.0 or pair.high - pair.high != 0.0) return (Scaled_Real){pair, exponent};
+  int shift = (int) ((To_Double_Bits (pair.high) >> 52) & 0x7FF) - 1023;
+  if (shift == 0) return (Scaled_Real){pair, exponent};
+  double scale = Power_Of_Two (-shift);
+  return (Scaled_Real){{pair.high * scale, pair.low * scale}, exponent + shift};
+}
+
+Scaled_Real Multiply_Scaled (Scaled_Real left, Scaled_Real right) {
+  return Normalize_Scaled (Multiply_Double_Double (left.significand, right.significand),
+                           left.exponent + right.exponent);
+}
+
+double Round_To_Odd (Double_Double pair) {
+  double sum = pair.high + pair.low;
+  if (sum == 0.0 or sum - sum != 0.0) return sum;
+  double residual = (pair.high - sum) + pair.low;
+  if (residual == 0.0) return sum;
+  u64 bits = To_Double_Bits (sum);
+  if (bits & 1) return sum;
+  bits += ((residual > 0.0) == (sum > 0.0)) ? 1 : -1;
+  return From_Double_Bits (bits);
+}
+
+double Collapse_Subnormal (Double_Double pair, i64 exponent) {
+  double        scale  = Power_Of_Two ((int) (exponent + 1074));
+  Double_Double scaled = {pair.high * scale, pair.low * scale};
+  double        whole  = Round_Half_Away_From_Zero (scaled.high);
+  Double_Double excess = Exact_Sum (scaled.high - whole, scaled.low);
+  bool          odd    = Round_Half_Away_From_Zero (whole * 0.5) * 2.0 != whole;
+  if      (excess.high >  0.5)  whole += 1.0;
+  else if (excess.high < -0.5)  whole -= 1.0;
+  else if (excess.high ==  0.5) {if (excess.low > 0.0 or (excess.low == 0.0 and odd)) whole += 1.0;}
+  else if (excess.high == -0.5) {if (excess.low < 0.0 or (excess.low == 0.0 and odd)) whole -= 1.0;}
+  return whole * 0x1p-1074;
+}
+
+double Collapse_Scaled (Scaled_Real value) {
+  i64 exponent = value.exponent;
+  if (exponent >= -1075 and exponent < -1022)
+    return Collapse_Subnormal (value.significand, exponent);
+  double significand = exponent < -1022
+    ? Round_To_Odd (value.significand)
+    : value.significand.high + value.significand.low;
+  if (significand == 0.0 or significand - significand != 0.0) return significand;
+  if (exponent >  1100) return significand > 0.0 ?  1.0 / 0.0 : -1.0 / 0.0;
+  if (exponent < -1200) return significand > 0.0 ?  0.0 : -0.0;
+  while (exponent < -1074) {significand *= 0x1p-64; exponent += 64;}
+  while (exponent >  1023) {significand *= 0x1p64;  exponent -= 64;}
+  return significand * Power_Of_Two ((int) exponent);
+}
+
+double Raise_To_Power_Rounded (double base, double exponent) {
+  if (exponent != Truncate_Toward_Zero (exponent)) return 0.0 / 0.0;
+  if (exponent > 1e18 or exponent < -1e18)         return 0.0 / 0.0;
+  i64 power   = (i64) exponent;
+  u64 repeats = power < 0 ? (u64) -power : (u64) power;
+  if (repeats == 0) return 1.0;
+  if (base != base) return base;
+  Double_Double result   = {1.0, 0.0};
+  Double_Double squaring = power < 0
+    ? Reciprocal_Double_Double ((Double_Double){base, 0.0})
+    : (Double_Double){base, 0.0};
+  for (;;) {
+    if (repeats & 1) result = Multiply_Double_Double (result, squaring);
+    repeats >>= 1;
+    if (repeats == 0) break;
+    squaring = Multiply_Double_Double (squaring, squaring);
+  }
+  return result.high + result.low;
+}
+
+double Raise_To_Power_Exact (double base, double exponent) {
+  if (exponent != Truncate_Toward_Zero (exponent)) return 0.0 / 0.0;
+  if (exponent > 1e18 or exponent < -1e18)         return 0.0 / 0.0;
+  i64 power   = (i64) exponent;
+  u64 repeats = power < 0 ? (u64) -power : (u64) power;
+  if (repeats == 0) return 1.0;
+  if (base != base or base == 0.0 or base - base != 0.0)
+    return Raise_To_Power_Rounded (base, exponent);
+  Scaled_Real result   = {{1.0, 0.0}, 0};
+  Scaled_Real squaring = Normalize_Scaled (
+    power < 0 ? Reciprocal_Double_Double ((Double_Double){base, 0.0})
+              : (Double_Double){base, 0.0}, 0);
+  for (;;) {
+    if (repeats & 1) result = Multiply_Scaled (result, squaring);
+    repeats >>= 1;
+    if (repeats == 0) break;
+    squaring = Multiply_Scaled (squaring, squaring);
+  }
+  return Collapse_Scaled (result);
+}
+#ifndef __clang__
+#pragma GCC pop_options
+#endif
+
 #define EXPAND_TO_TEXT(literal) #literal
 #define TEXT_OF(constant)       EXPAND_TO_TEXT (constant)
 
@@ -2460,6 +2663,7 @@ bool           Type_Full_Characteristics_In_Force
                  (const Type *t, Characteristics_Reach_Kind reach);
 
 bool  Has_Task_Component                   (Type *t);
+Symbol *Find_Locally_Unelaborated_Task     (Type *t, Symbol *enclosing);
 bool  Is_Limited                           (const Type *t);
 bool  Is_Scalar                            (const Type *t);
 bool  Has_Scalar_Representation            (const Type *t);
@@ -11685,6 +11889,28 @@ bool Has_Task_Component (Type *t) {
   return present;
 }
 
+Symbol *Find_Locally_Unelaborated_Task (Type *t, Symbol *enclosing) {
+  if (not t) return NULL;
+  if (t->kind == TYPE_TASK) {
+    Symbol *task_sym = t->defining_symbol;
+    if (task_sym and not task_sym->body_claimed and
+        task_sym->parent == enclosing)
+      return task_sym;
+    return NULL;
+  }
+  if (t->kind == TYPE_RECORD) {
+    for (u32 i = 0; i < t->record.component_count; i++) {
+      Symbol *found = Find_Locally_Unelaborated_Task (
+        t->record.components[i].component_type, enclosing);
+      if (found) return found;
+    }
+    return NULL;
+  }
+  if (t->kind == TYPE_ARRAY)
+    return Find_Locally_Unelaborated_Task (t->array.element_type, enclosing);
+  return NULL;
+}
+
 Symbol *Find_Defining_Package (const Type *t) {
   Symbol *package = t and t->defining_symbol ? t->defining_symbol->parent
                                              : NULL;
@@ -11901,7 +12127,7 @@ void Set_Float_Digits (Type *float_type, int digits) {
 
 int Measure_Mantissa (double bound, double small) {
   if (bound > 0 and small > 0) {
-    int m = (int)ceil (log2 (bound / small));
+    int m = Ceiling_Log2 (bound / small);
     return m < 1 ? 1 : m;
   }
   return 1;
@@ -11931,7 +12157,7 @@ Real_Model Get_Real_Model (Type *type_info) {
       .kind  = REAL_MODEL_FIXED_POINT_KIND,
       .type  = type_info,
       .small = Get_Small (type_info),
-      .bound = fmax (fabs (Eval_Bound_Float (type_info->low_bound)),
+      .bound = Larger_Of (fabs (Eval_Bound_Float (type_info->low_bound)),
                      fabs (Eval_Bound_Float (type_info->high_bound))),
     };
     model.mantissa      = Measure_Mantissa (model.bound, model.small);
@@ -11943,7 +12169,7 @@ Real_Model Get_Real_Model (Type *type_info) {
   i64 decimal_digits = type_info and type_info->flt.digits > 0
     ? type_info->flt.digits
     : Get_Machine_Format (type_info)->decimal_digits;
-  i64 mantissa = (i64) ceil (decimal_digits * LOG2_OF_10) + 1;
+  i64 mantissa = (i64) Round_Up (decimal_digits * LOG2_OF_10) + 1;
   return (Real_Model){
     .kind             = REAL_MODEL_FLOATING_POINT_KIND,
     .type             = type_info,
@@ -16696,12 +16922,12 @@ double Eval_Const_Numeric_Impl (Node *node) {
                          Is_Universal_Integer (dl->type);
             bool r_int = Is_Integer_Expr (dr) or Has_Integer_Representation (dr->type) or
                          Is_Universal_Integer (dr->type);
-            if (l_int and r_int and l == floor (l) and r == floor (r) and
+            if (l_int and r_int and l == Round_Down (l) and r == Round_Down (r) and
                 fabs (l) < 1e15 and fabs (r) < 1e15)
               return (double)((i64) l / (i64) r);
           }
           return l / r;
-        case TK_EXPON: return pow (l, r);
+        case TK_EXPON: return Raise_To_Power_Exact (l, r);
         default:       return 0.0/0.0;
       }
     }
@@ -16783,7 +17009,7 @@ bool Eval_Const_Rational (Node *node, Rational *out) {
       if (ak != ATTRIBUTE_MANTISSA and ak != ATTRIBUTE_SMALL and
           ak != ATTRIBUTE_LARGE) return false;
       double small_d = Get_Small (ty);
-      double bound = fmax (fabs (Eval_Bound_Float (ty->low_bound)),
+      double bound = Larger_Of (fabs (Eval_Bound_Float (ty->low_bound)),
                            fabs (Eval_Bound_Float (ty->high_bound)));
       if (not (bound > 0 and small_d > 0)) return false;
       i64 mantissa = Measure_Mantissa (bound, small_d);
@@ -16821,7 +17047,7 @@ bool Eval_Const_Rational (Node *node, Rational *out) {
       if (op == TK_EXPON) {
         if (not Eval_Const_Rational (node->binary.left, &l)) return false;
         double re = Eval_Const_Numeric (node->binary.right);
-        if (re != re or re != floor (re) or fabs (re) > 1000) return false;
+        if (re != re or re != Round_Down (re) or fabs (re) > 1000) return false;
         *out = Rational_Pow (l, (int)re);
         return true;
       }
@@ -18070,7 +18296,7 @@ bool Read_Static_Bound (Node *expr, i128 *out_val) {
   if (Is_Integer_Expr (expr) or
       not (Is_Real (expr->type) or expr->kind == NK_REAL)) {
     double folded = Eval_Const_Numeric (expr);
-    if (folded == folded and folded == floor (folded) and
+    if (folded == folded and folded == Round_Down (folded) and
         folded >= -9007199254740992.0 and folded <= 9007199254740992.0) {
       *out_val = (i128) folded;
       return true;
@@ -20067,6 +20293,17 @@ Type *Resolve_Expression (Node *node) {
 
       Type *designated = Get_Written_Subtype (node);
 
+      if (Has_Task_Component (designated) and
+          Is_Subprogram (sm->current_scope->owner)) {
+        Symbol *unelaborated =
+          Find_Locally_Unelaborated_Task (designated, sm->current_scope->owner);
+        if (unelaborated)
+          Report_Warning (node->location,
+            "allocator activates '%.*s' before its body and without pragma "
+            "Suppress (Elaboration_Check) will raise PROGRAM_ERROR at run time",
+            (int) unelaborated->name.length, unelaborated->name.data);
+      }
+
       if (Is_Access (context) and
           Type_Covers (Get_Designated (context), designated)) {
         node->type = Get_Base (context);
@@ -20670,7 +20907,7 @@ Type *Resolve_Type_Definition (Node *node) {
           if (Type_Bound_Is_Set (fixed_type->low_bound) and
               Type_Bound_Is_Set (fixed_type->high_bound)) {
             double small = Get_Small (fixed_type);
-            double bound = fmax (fabs (Eval_Bound_Float (fixed_type->low_bound)),
+            double bound = Larger_Of (fabs (Eval_Bound_Float (fixed_type->low_bound)),
                                  fabs (Eval_Bound_Float (fixed_type->high_bound)));
             int mantissa = Measure_Mantissa (bound, small);
 
@@ -23954,6 +24191,13 @@ void Resolve_Generic_Instantiation (Node *node) {
     return;
   }
 
+  if (not template->generic_body and not template->body_is_separate_stub and
+      template->parent == sm->current_scope->owner and
+      Is_Subprogram (sm->current_scope->owner))
+    Report_Warning (node->location,
+      "instantiation of '%.*s' precedes its body and without pragma Suppress (Elaboration_Check) will raise PROGRAM_ERROR at run time",
+      (int) template->name.length, template->name.data);
+
   Generic_Unit_Kind declared_kind = node->generic_inst.unit_kind;
   Generic_Unit_Kind template_kind =
     Classify_Generic_Spec (template->generic_unit);
@@ -24328,7 +24572,7 @@ u64 Measure_Minimum_Bits (Type *type_info) {
     if (isnan (low) or isnan (high) or
         fabs (low) > 1.0e30 or fabs (high) > 1.0e30)
       return 0;
-    double  bound     = fmax (fabs (floor (low)), fabs (ceil (high)));
+    double  bound     = Larger_Of (fabs (Round_Down (low)), fabs (Round_Up (high)));
     u128 magnitude  = (u128) bound;
     u64  reach_bits = 0;
     while (reach_bits < 127 and ((u128) 1 << reach_bits) < magnitude)
@@ -34565,6 +34809,10 @@ void Emit_Elaboration_Check (Symbol *callee) {
       guard = callee_root;
     }
   }
+  Check_Permission permission =
+    Check_Permission_For (CHECK_KIND_ELABORATION, NULL, guard);
+  if (not Check_Is_Required (permission)) return;
+
   u32 flag = Emit_Elaboration_Flag_Load (guard);
   if (flag)
     Emit_Check_With_Raise_Named (flag, false, "program_error",
@@ -34997,7 +35245,7 @@ bool Get_Constant_Value (Symbol *sym, Type *type,
     return true;
   }
   *exact = Is_Fixed_Point (type)
-    ? (i128) llround (value / Get_Base_Small (type))
+    ? (i128) Round_Half_Away_From_Zero (value / Get_Base_Small (type))
     : (i128) value;
   return true;
 }
@@ -47150,6 +47398,9 @@ void Emit_Activation_Failure_Check (u32 failed_flag) {
 u32 Emit_Task_Body_Unelaborated (Type *ty, u32 acc) {
   if (not ty) return acc;
   if (Is_Task (ty)) {
+    Check_Permission permission =
+      Check_Permission_For (CHECK_KIND_ELABORATION, NULL, ty->defining_symbol);
+    if (not Check_Is_Required (permission)) return acc;
     u32 flag = Emit_Elaboration_Flag_Load (ty->defining_symbol);
     if (not flag) return acc;
     u32 not_elaborated = Emit_Result ("xor i1 %s, 1\n",  REG (flag));
@@ -48687,7 +48938,7 @@ void Lower_Library_Global_Object (Node        *node,
     } else if (init->kind == NK_REAL) {
       float_value = init->real_lit.value;
       if (Is_Fixed_Point (shape->type))
-        integer_value = (i64) llround (float_value / Get_Base_Small (shape->type));
+        integer_value = (i64) Round_Half_Away_From_Zero (float_value / Get_Base_Small (shape->type));
       has_static_value = true;
     } else if (init->kind == NK_IDENTIFIER and init->symbol and
                init->symbol->is_named_number) {
@@ -49144,7 +49395,7 @@ void Lower_Object_Initializer (Node        *node,
                  : init->real_lit.value;
     Rep rep     = To_Rep (ty);
     u32 scaled  = Emit_Int_Const (
-      small != 0 ? (i64) round (value / small) : 0, rep).reg;
+      small != 0 ? (i64) Round_Half_Away_From_Zero (value / small) : 0, rep).reg;
 
     Emit_Constraint_Check (Wrap (scaled, rep), ty, NULL);
     Emit_Store_To_Symbol (sym, rep, scaled, NULL);
@@ -63354,6 +63605,26 @@ int main (int argc, char *argv[]) {
   #define BACKEND_ARCH "X86"
 #endif
 
+#ifndef _WIN32
+static char *Llvm_Config_Libdir (const char *config_command) {
+  Text_Buffer command = {0};
+  Buffer_Append_Text (&command, config_command);
+  Buffer_Append_Text (&command, " --libdir 2>/dev/null");
+  FILE *child = popen (command.Data, "r");
+  Buffer_Free (&command);
+  if (not child) return NULL;
+  char line[PATH_MAX];
+  char *result = fgets (line, sizeof line, child) ? strdup (line) : NULL;
+  pclose (child);
+  if (not result) return NULL;
+  size_t length = strlen (result);
+  while (length > 0 and (result[length - 1] == '\n' or result[length - 1] == '\r'))
+    result[--length] = '\0';
+  if (length == 0) { free (result); return NULL; }
+  return result;
+}
+#endif
+
 bool Llvm_C_Api_Load (Llvm_C_Api *api, char *err, size_t err_size) {
 
   memset (api, 0, sizeof (*api));
@@ -63362,10 +63633,35 @@ bool Llvm_C_Api_Load (Llvm_C_Api *api, char *err, size_t err_size) {
     api->library = Backend_Library_Open (override);
   for (size_t i = 0; not api->library and i < sizeof (Llvm_Library_Candidate_Names) / sizeof (*Llvm_Library_Candidate_Names); i++)
     api->library = Backend_Library_Open (Llvm_Library_Candidate_Names[i]);
+#ifndef _WIN32
   if (not api->library) {
+    static const char *const config_commands[] = {
+      "llvm-config",
+      "llvm-config-22", "llvm-config-21", "llvm-config-20",
+      "llvm-config-19", "llvm-config-18", "llvm-config-17"
+    };
+    for (size_t c = 0; not api->library and c < sizeof (config_commands) / sizeof (*config_commands); c++) {
+      char *libdir = Llvm_Config_Libdir (config_commands[c]);
+      if (not libdir) continue;
+      for (size_t i = 0; not api->library and i < sizeof (Llvm_Library_Candidate_Names) / sizeof (*Llvm_Library_Candidate_Names); i++) {
+        char path[PATH_MAX];
+        snprintf (path, sizeof path, "%s/%s", libdir, Llvm_Library_Candidate_Names[i]);
+        api->library = Backend_Library_Open (path);
+      }
+      free (libdir);
+    }
+  }
+#endif
+  if (not api->library) {
+#ifdef _WIN32
+    snprintf (err, err_size,
+      "no libLLVM found (set ADA83_LLVM_LIB, install LLVM, or "
+      "place LLVM-C.dll beside the executable)");
+#else
     snprintf (err, err_size,
       "no libLLVM found (set ADA83_LLVM_LIB, install the llvm package, or "
-      "place LLVM-C.dll beside the executable)");
+      "add an llvm-config to PATH)");
+#endif
     return false;
   }
 

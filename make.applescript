@@ -67,8 +67,8 @@ on architecturesFor(chosenPlatform)
 end architecturesFor
 
 on linkLibrariesFor(chosenPlatform)
-	if chosenPlatform is windowsPlatform() then return "-lm"
-	return "-lm -lpthread"
+	if chosenPlatform is windowsPlatform() then return ""
+	return "-lpthread"
 end linkLibrariesFor
 
 on resourceCompilerFor(chosenPlatform)
@@ -480,7 +480,7 @@ end sharedLibrarySteps
 on buildProgram()
 	set binaryPath to binaryFolderFor(macosPlatform()) & "/ada83"
 	return guardedProgram({"mkdir -p " & binaryFolderFor(macosPlatform()), ¬
-		"gcc -O3 -Wall -std=gnu2x -o " & binaryPath & " ada83.c -lm -lpthread", ¬
+		"gcc -O3 -Wall -std=gnu2x -o " & binaryPath & " ada83.c -lpthread", ¬
 		"test -f ada83-runtime.ada || echo 'ada83-runtime.ada is not here; ada83 needs it beside the executable.'", ¬
 		"echo", ¬
 		"echo 'Built " & binaryPath & ".'", ¬
