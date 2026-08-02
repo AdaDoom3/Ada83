@@ -1,8 +1,8 @@
 # Ada83 
 
-[![Linux](https://github.com/michael-hardeman/Ada83/actions/workflows/ci-linux.yml/badge.svg)](https://github.com/michael-hardeman/Ada83/actions/workflows/ci-linux.yml)
-[![macOS](https://github.com/michael-hardeman/Ada83/actions/workflows/ci-macos.yml/badge.svg)](https://github.com/michael-hardeman/Ada83/actions/workflows/ci-macos.yml)
-[![Windows](https://github.com/michael-hardeman/Ada83/actions/workflows/ci-windows.yml/badge.svg)](https://github.com/michael-hardeman/Ada83/actions/workflows/ci-windows.yml)
+[![Linux](https://github.com/AdaDoom3/Ada83/actions/workflows/ci-linux.yml/badge.svg)](https://github.com/AdaDoom3/Ada83/actions/workflows/ci-linux.yml)
+[![macOS](https://github.com/AdaDoom3/Ada83/actions/workflows/ci-macos.yml/badge.svg)](https://github.com/AdaDoom3/Ada83/actions/workflows/ci-macos.yml)
+[![Windows](https://github.com/AdaDoom3/Ada83/actions/workflows/ci-windows.yml/badge.svg)](https://github.com/AdaDoom3/Ada83/actions/workflows/ci-windows.yml)
 
 A single-file Ada 83 LLVM compiler.
 
