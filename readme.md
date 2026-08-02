@@ -150,12 +150,10 @@ bash test.sh check   # Run, then diff against the baseline
 bash test.sh help
 ```
 
-## Workflow
+## Release Workflow
 
-Release steps
+1. Update `ada83.c` with `ADA83_VERSION_MINOR` or `ADA83_VERSION_MAJOR` through a normal PR and merge to main.
+2. Update git with `git tag v1.0 && git push origin v1.0`
+3. Allow `release.yml` to verify the tag, build and packages all platforms and publishes.
 
-1. ADA83_VERSION_MINOR or ADA83_VERSION_MAJOR in ada83.c through a normal PR and merge to main.
-2. git tag v1.0 && git push origin v1.0
-3. release.yml verifies the tag, builds and packages all three platforms, publishes.
-
-The tag gate refuses to publish unless the tag matches ADA83_VERSION_* and no release exists under that tag. So a tag on an unmerged branch, or one that disagrees.
+The tag gate refuses to publish unless the tag matches `ADA83_VERSION_*` and no release exists under that tag. So a tag on an unmerged branch, or one that disagrees.
