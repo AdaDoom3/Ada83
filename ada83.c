@@ -281,6 +281,21 @@ double Raise_To_Power_Exact (double base, double exponent) {
   #define SIMD_GENERIC 1
 #endif
 
+/* LLVM's AArch64 backend does not lower @llvm.eh.sjlj.setjmp/longjmp: it
+   silently mis-selects them instead of refusing to compile, so a handler's
+   frame never actually lands on the chain and every exception on this
+   architecture looks unhandled at run time.  The hand-written naked-asm
+   __ada_setjmp/__ada_longjmp pair below (originally added for Windows,
+   where the intrinsics aren't usable either) sidesteps that: it is plain
+   AAPCS64 register spill/reload, so it works the same under macOS, Linux
+   or Windows on arm64.  */
+#ifdef SIMD_ARM64
+  #define ADA_SJLJ_NAKED 1
+#endif
+#ifdef _WIN32
+  #define ADA_SJLJ_NAKED 1
+#endif
+
 #define X86_64_DATA_LAYOUT(mangling)                                     \
   "e-m:" mangling "-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128"     \
   "-n8:16:32:64-S128"
@@ -34126,7 +34141,7 @@ Bound_Temps Emit_Bounds_From_Fat_Dim (u32 fat_ptr,
 
 u32 Emit_Sjlj_Setjmp (u32 jmp_buf) {
   cg->frame_resumed_by_longjmp = true;
-#ifdef _WIN32
+#ifdef ADA_SJLJ_NAKED
   return Emit_Call_Result ("" C_INT_TYPE " @__ada_setjmp(ptr %s)"
                            " returns_twice",
                            REG (jmp_buf));
@@ -52463,6 +52478,10 @@ void Emit_Runtime_Declarations () {
     "declare void @GetSystemTimeAsFileTime(ptr)\n"
     "declare void @Sleep(i32)\n"
 #else
+#ifdef __APPLE__
+    "declare ptr @pthread_self()\n"
+    "declare i64 @pthread_get_stacksize_np(ptr)\n"
+#endif
     "declare i32 @getrlimit(i32, ptr)\n"
     "declare i32 @nanosleep(ptr, ptr)\n"
     "declare i32 @clock_gettime(i32, ptr)\n"
@@ -53242,7 +53261,11 @@ void Emit_Runtime_Storage () {
     "  ret void\n"
     "}\n\n"
     "@__stk_anchor = linkonce_odr thread_local(initialexec) global i64 0\n"
-    "@__stk_limit  = linkonce_odr global i64 0\n"
+    /* thread_local: a plain global here would let whichever thread checks
+       first cache its stack size for every other thread too. That is wrong
+       on macOS, where pthread_create()'d task threads get a fixed 512 KiB
+       regardless of the process stack rlimit the main thread reports.  */
+    "@__stk_limit  = linkonce_odr thread_local(initialexec) global i64 0\n"
     "; stack probe, slow path: establishes @__stack_floor\n"
     "define linkonce_odr void @__ada_stack_check(i64 %size) nounwind noinline cold {\n"
     "entry:\n"
@@ -53267,6 +53290,14 @@ void Emit_Runtime_Storage () {
     "  %lo = load i64, ptr %lohi\n"
     "  %hi = load i64, ptr %hi_p\n"
     "  %l2 = sub i64 %hi, %lo\n"
+    "  store i64 %l2, ptr @__stk_limit\n"
+    "  br label %check\n"
+#elif defined(__APPLE__)
+    /* RLIMIT_STACK is a process-wide figure that only describes the main
+       thread; pthread_create() gives every task thread a fixed 512 KiB
+       stack regardless of it, so ask the thread for its own size instead.  */
+    "  %self = call ptr @pthread_self()\n"
+    "  %l2 = call i64 @pthread_get_stacksize_np(ptr %self)\n"
     "  store i64 %l2, ptr @__stk_limit\n"
     "  br label %check\n"
 #else
@@ -53719,7 +53750,7 @@ void Emit_Runtime_Rendezvous_Records () {
     "}\n\n");
 }
 
-#ifdef _WIN32
+#ifdef ADA_SJLJ_NAKED
 void Emit_Runtime_Setjmp () {
 #ifdef SIMD_X86_64
   Emit_Verbatim (
@@ -53791,7 +53822,7 @@ void Emit_Runtime_Setjmp () {
 #endif
 
 void Emit_Runtime_Raise () {
-#ifdef _WIN32
+#ifdef ADA_SJLJ_NAKED
   Emit_Runtime_Setjmp ();
 #endif
   Emit_Verbatim (
@@ -53805,7 +53836,7 @@ void Emit_Runtime_Raise () {
     "  br i1 %is_null, label %unhandled, label %jump\n"
     "jump:\n"
     "  %jb = getelementptr { ptr, [240 x i8] }, ptr %frame, i32 0, i32 1\n"
-#ifdef _WIN32
+#ifdef ADA_SJLJ_NAKED
     "  call void @__ada_longjmp(ptr %jb)\n"
 #else
     "  call void @llvm.eh.sjlj.longjmp(ptr %jb)\n"
@@ -60612,7 +60643,7 @@ bool Warning_Flags_From_Command_Line (const char *argument) {
 }
 
 #define ADA83_VERSION_MAJOR 0
-#define ADA83_VERSION_MINOR 10
+#define ADA83_VERSION_MINOR 11
 
 #define ADA83_VERSION_TEXT \
   "ada83 " TEXT_OF (ADA83_VERSION_MAJOR) "." TEXT_OF (ADA83_VERSION_MINOR) \
@@ -63815,17 +63846,30 @@ int Native_Backend_Compile (const char *ir_path, const char *const *extra_ir,
 #ifdef _WIN32
   const char *drivers[] = { configured, "clang -fuse-ld=lld", "zig cc", "cc",
                             "clang", "gcc" };
-  const char *link_libraries = "-lm -lapi-ms-win-core-synch-l1-2-0";
+  // Synchronization.lib is the import library Microsoft documents for
+  // WaitOnAddress, and the only one that exists in every toolchain: mingw-w64
+  // ships libsynchronization.a but no libapi-ms-win-core-synch-l1-2-0.a at
+  // all, so naming the API set directly cannot link under gcc or clang there.
+  const char *link_libraries = "-lm -lsynchronization";
+  // A PE image carries its own stack reserve, 1 MiB under lld and 2 MiB under
+  // mingw ld, where getrlimit(RLIMIT_STACK) reports 8 MiB on Linux and so does
+  // pthread_get_stacksize_np() for the main thread on macOS. The stack probe
+  // reads that reserve back through GetCurrentThreadStackLimits(), and threads
+  // created with no explicit size inherit it, so a frame the other two
+  // platforms have room for raises STORAGE_ERROR here. Ask for the same 8 MiB
+  // and the probe agrees on all three.
+  const char *link_options = "-Wl,--stack,8388608";
 #else
   const char *drivers[] = { configured, "cc", "clang", "gcc" };
   const char *link_libraries = "-lm -lpthread";
+  const char *link_options = "";
 #endif
   bool driver_ran = false;
   for (size_t i = 0; i < sizeof drivers / sizeof *drivers; i++) {
     if (not drivers[i]) continue;
     char command[PATH_MAX * 3];
-    snprintf (command, sizeof command, "%s \"%s\" -o \"%s\" %s",
-              drivers[i], obj_path, exe_path, link_libraries);
+    snprintf (command, sizeof command, "%s \"%s\" -o \"%s\" %s %s",
+              drivers[i], obj_path, exe_path, link_libraries, link_options);
     int exit_status = Host_Command_Exit_Status (system (command));
     if (exit_status == 127) continue;
 #ifdef _WIN32

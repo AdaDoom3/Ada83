@@ -1,12 +1,8 @@
 name: Release
 
-# A release is cut by pushing a tag on main. Nothing is published on ordinary
-# pushes — there are no nightlies.
-#
-# Versioning is classic two-part (0.9, 1.0, 1.1), not semantic versioning, and
-# ada83.c holds the number: ADA83_VERSION_MAJOR / _MINOR, read by
-# .github/version.sh. A tag is only published if it names that version, sits
-# on main, and has not been released already — see the `verify` job.
+# A release is cut by pushing a tag on main; nothing publishes on ordinary
+# pushes. Versioning is classic two-part (0.9, 1.0, 1.1), and ada83.c holds the
+# number in ADA83_VERSION_MAJOR / _MINOR, read by .github/version.sh.
 
 on:
   push:
@@ -16,8 +12,6 @@ permissions:
   contents: write
 
 jobs:
-  # Cheap gate: refuse to spend three build machines on a tag that would
-  # publish a binary whose --version disagrees with the tag name.
   verify:
     name: verify tag
     runs-on: ubuntu-latest
@@ -51,13 +45,9 @@ jobs:
             exit 1
           fi
 
-          echo "$tag_name verified against ada83.c and main."
-
-  # One packaging job per platform, each on its own native runner. `make
-  # package` builds the compiler, the platform artwork and the VS Code
-  # extension, then packs all of it into bin-<platform>.zip. The extension is
-  # deliberately not published on its own: every platform archive carries a
-  # copy.
+  # `make package` builds the compiler, the platform artwork and the VS Code
+  # extension, then packs bin-<platform>.zip. The extension is not published
+  # separately: every archive carries a copy.
   package:
     name: package (${{ matrix.platform }})
     needs: [verify]
@@ -75,33 +65,71 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      # macOS builds arm64 and x86_64 slices and lipos them into one binary;
-      # the makefile handles that from ARCHITECTURES_macos.
       - name: Package (Linux/macOS)
         if: matrix.platform != 'windows'
         shell: bash
         run: make package TARGET=${{ matrix.platform }}
 
-      # make.bat unpacks LLVM-C.dll and friends out of the committed
-      # bin-windows.zip, then repacks it with the freshly built exe.
       - name: Package (Windows)
         if: matrix.platform == 'windows'
         shell: cmd
         run: make.bat package
 
-      # The binary must report the version the tag promised. Cheap insurance
-      # against a stale checkout or a build that picked up the wrong source.
-      - name: Check --version against the tag
+      # The archives are built with different flags from CI, and on macOS as a
+      # universal binary CI never produces, so what ships is not what the suite
+      # ran against. Unpack it and take the compiler through a real compile,
+      # link and run.
+      - name: Check the packaged archive
         shell: bash
         run: |
           set -euo pipefail
-          if [[ "${{ matrix.platform }}" == windows ]]; then
-            binary=bin-windows/ada83.exe
-          else
-            binary=bin-${{ matrix.platform }}/ada83
-          fi
-          "$binary" --version
-          "$binary" --version | grep -q "ada83 ${GITHUB_REF_NAME#v} "
+          rm -rf verify && mkdir verify
+          unzip -q bin-${{ matrix.platform }}.zip -d verify
+          cd verify
+
+          case "${{ matrix.platform }}" in
+            windows) compiler=./ada83.exe ;;
+            *)       compiler=./ada83 ;;
+          esac
+          chmod +x "$compiler" 2>/dev/null || true
+
+          "$compiler" --version
+          "$compiler" --version | grep -q "ada83 ${GITHUB_REF_NAME#v} "
+
+          printf '%s\n' \
+            'WITH TEXT_IO;' \
+            'PROCEDURE HELLO IS' \
+            'BEGIN' \
+            '   TEXT_IO.PUT_LINE ("packaged ada83 works");' \
+            'END HELLO;' > hello.adb
+          "$compiler" hello.adb -o hello
+          program=./hello
+          [[ -x $program ]] || program=./hello.exe
+          "$program" | grep -qx "packaged ada83 works"
+
+      # A universal binary missing a slice still runs on the machine that built
+      # it, so the only way to catch that is to ask.
+      - name: Check the macOS binary is universal
+        if: matrix.platform == 'macos'
+        shell: bash
+        run: |
+          set -euo pipefail
+          archs=$(lipo -archs verify/ada83)
+          echo "slices: $archs"
+          for want in arm64 x86_64; do
+            grep -qw "$want" <<<"$archs" \
+              || { echo "::error::bin-macos.zip is missing the $want slice (has: $archs)"; exit 1; }
+          done
+
+      # ada83.exe loads LLVM-C.dll at run time; without it the archive is inert
+      # on any machine that does not already have LLVM.
+      - name: Check the Windows archive carries its DLLs
+        if: matrix.platform == 'windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          unzip -l bin-windows.zip | grep -qi 'LLVM-C\.dll' \
+            || { echo "::error::bin-windows.zip does not contain LLVM-C.dll"; exit 1; }
 
       - uses: actions/upload-artifact@v4
         with:

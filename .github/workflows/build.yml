@@ -1,9 +1,8 @@
 name: build
 
-# The shared body of the three per-platform CI workflows. They are separate
-# workflows so that each platform gets its own status badge, which a single
-# matrix job cannot give you: a badge names one workflow, not one leg of it.
-# The steps live here so there is only ever one copy to keep correct.
+# Shared body of the three per-platform CI workflows. They are separate
+# workflows so each platform gets its own badge; a badge names a workflow, not
+# one leg of a matrix.
 
 on:
   workflow_call:
@@ -24,8 +23,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      # lli and llvm-link are what test.sh runs the suite with. None of this
-      # affects how ada83 itself is compiled; that is the build step below.
+      # lli and llvm-link are what test.sh runs the suite with.
       - name: Install test tools (Linux)
         if: inputs.platform == 'linux'
         shell: bash
@@ -39,11 +37,9 @@ jobs:
           done
           command -v lli && command -v llvm-link
 
-      # Two things macOS does not ship that test.sh needs: timeout(1), which it
-      # accepts as coreutils' gtimeout, and a bash newer than the 3.2 in /bin,
-      # which lacks the associative arrays, mapfile and ${x,,} the suite uses.
-      # Its workers run as bare `bash -c`, so the newer bash has to come first
-      # on PATH rather than merely be installed.
+      # macOS has no timeout(1) — test.sh accepts coreutils' gtimeout — and its
+      # /bin/bash is 3.2, too old for the suite. Workers run as bare `bash -c`,
+      # so the newer bash must come first on PATH.
       - name: Install test tools (macOS)
         if: inputs.platform == 'macos'
         shell: bash
@@ -52,14 +48,11 @@ jobs:
           echo "$(brew --prefix)/bin"     >> "$GITHUB_PATH"
           echo "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
 
-      # release: false re-uses the MSYS2 already on the runner image at
-      # C:\msys64 instead of downloading and unpacking a second one. That
-      # install is only a bare base — no mingw64 packages, no unzip — so the
-      # pacman step below still does the real work, and update stays on because
-      # installing into a stale base is a partial upgrade.
-      # lli and llvm-link come from mingw-w64-x86_64-llvm and are what test.sh
-      # runs the suite with; neither Git Bash nor the image's own LLVM has
-      # them. unzip is not in base-devel, and test.sh wants it for tests.zip.
+      # release: false reuses the MSYS2 already on the image. clang and lld are
+      # the C driver ada83 links finished programs with: it emits thread-local
+      # storage as COFF weak externals, which GNU ld cannot resolve, so gcc
+      # fails every link with "relocation truncated to fit" against __ss_first
+      # and friends. unzip is not in base-devel.
       - name: Install test tools (Windows)
         if: inputs.platform == 'windows'
         uses: msys2/setup-msys2@v2
@@ -67,26 +60,25 @@ jobs:
           msystem: MINGW64
           release: false
           update: true
-          install: mingw-w64-x86_64-llvm base-devel unzip
+          install: >-
+            mingw-w64-x86_64-llvm
+            mingw-w64-x86_64-clang
+            mingw-w64-x86_64-lld
+            base-devel
+            unzip
 
       - name: Build (Linux/macOS)
         if: inputs.platform != 'windows'
         shell: bash
         run: make ada83
 
-      # make.bat is the documented Windows build. It is deliberately not run
-      # from the MSYS2 shell above, which is here only for the POSIX harness.
       - name: Build (Windows)
         if: inputs.platform == 'windows'
         shell: cmd
         run: make.bat
 
-      # ada83 looks for ada83-runtime.ada beside its own executable. The make
-      # targets leave the binary in bin-<platform>/ and the runtime at the repo
-      # root, so without this the compiler cannot read its own runtime and
-      # every unit that mentions TEXT_IO fails to compile. That shows up as
-      # thousands of skips rather than failures, and the illegality tests still
-      # pass, because a compiler that rejects everything rejects those too.
+      # ada83 looks for ada83-runtime.ada beside its own executable; the make
+      # targets leave the binary in bin-<platform>/ and the runtime at the root.
       - name: Place the runtime beside the compiler
         shell: bash
         run: |
@@ -102,87 +94,51 @@ jobs:
         shell: bash
         run: bash test.sh run all
 
-      # Under MSYS2 test.sh resolves HOST_TARGET to windows and picks up
-      # bin-windows/ada83.exe by itself, so nothing needs copying first.
-      #
-      # ada83 produces an executable by shelling out to a C driver — clang,
-      # zig cc, cc, then gcc. path-type is minimal, so the image's toolchain is
-      # invisible from in here and every link dies with "'clang' is not
-      # recognized as an internal or external command", which the harness
-      # reports as a skip rather than a failure. C:\mingw64 holds the same gcc
-      # that make.bat builds the compiler with.
       - name: Run ACATS (Windows)
         if: inputs.platform == 'windows'
         shell: msys2 {0}
-        run: |
-          export PATH="/c/mingw64/bin:$PATH"
-          command -v gcc
-          bash test.sh run all
+        run: bash test.sh run all
 
-      # `test.sh run` reports failures but always exits 0 — only `check` does
-      # otherwise, and that needs a per-platform baseline this repo does not
-      # carry. Without this step a wholly failing suite still shows a green
-      # badge, which is worse than no badge at all. It runs on failure too, so
-      # that a suite which died partway still says so in the job summary.
+      # `test.sh run` always exits 0, and a skipped test never ran at all, so
+      # both counts have to be checked or a wholly broken suite shows green.
       - name: Report and gate on the results
         if: always()
         shell: bash
         run: |
           set -euo pipefail
-          # `|| true` because no match makes ls exit 2, which would abort the
-          # step before it could report the more useful message below.
           summary=$(ls -t test_results/*/test_summary.txt 2>/dev/null | head -1 || true)
           if [[ -z $summary ]]; then
             echo "::error::the suite produced no summary; it did not run to completion"
             exit 1
           fi
-          {
-            echo "### ACATS — ${{ inputs.platform }}"
-            echo '```'
-            cat "$summary"
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
+          { echo "### ACATS — ${{ inputs.platform }}"; echo '```'
+            cat "$summary"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
           cat "$summary"
 
           failed=$(sed -n 's/.*[[:space:]]F=\([0-9]\{1,\}\).*/\1/p' "$summary")
           skipped=$(sed -n 's/.*[[:space:]]S=\([0-9]\{1,\}\).*/\1/p' "$summary")
           : "${failed:=0}" "${skipped:=0}"
+          (( failed || skipped )) || exit 0
 
-          # A skip is a test that never ran at all, because it would not
-          # compile, bind or link. Gating on failures alone would call a run
-          # green in which every executable test was skipped and only the
-          # compile-only classes reported anything.
-          # On a bad run the counts say nothing about why. test.sh sends the
-          # compiler's own diagnostics to per-test log files and reports only a
-          # category, so print the categories and then the actual text of the
-          # first few, which is what identifies the cause.
-          if (( failed > 0 || skipped > 0 )); then
-            results=$(ls -t test_results/*/results.tsv 2>/dev/null | head -1 || true)
-            logs=$(ls -td acats_logs/*/ 2>/dev/null | head -1 || true)
-            if [[ -n $results ]]; then
-              echo "categories, most common first:"
-              awk -F'\t' '$3 != "pass" { reason = $4; sub(/[:[].*/, "", reason);
-                                         print "  " $3 " " reason }' "$results" \
-                | sort | uniq -c | sort -rn | head
-              echo
-              echo "first few, with what the compiler actually said:"
-              # Counted inside awk rather than piped to head, which would close
-              # the pipe early and leave "awk: write error on /dev/stdout".
-              awk -F'\t' '$3 != "pass" && ++shown <= 3 { print $1 "\t" $3 "\t" $4 }' "$results" \
-              | while IFS=$'\t' read -r name result detail; do
-                  echo "  --- $name ($result) $detail"
-                  for stage in err bind link out; do
-                    [[ -s "$logs/$name.$stage" ]] || continue
-                    echo "      [$name.$stage]"
-                    head -6 "$logs/$name.$stage" | sed 's/^/        /'
-                  done
+          # test.sh reports only a category and sends the real diagnostics to
+          # per-test logs, so print those for the first few.
+          results=$(ls -t test_results/*/results.tsv 2>/dev/null | head -1 || true)
+          logs=$(ls -td acats_logs/*/ 2>/dev/null | head -1 || true)
+          if [[ -n $results ]]; then
+            awk -F'\t' '$3 != "pass" && ++n <= 3 { print $1 "\t" $4 }' "$results" \
+            | while IFS=$'\t' read -r name detail; do
+                echo "--- $name  $detail"
+                # Compiler diagnostics lead with the root cause; the bind and
+                # link logs end with it, after one line per driver tried.
+                for stage in err out; do
+                  [[ -s "$logs/$name.$stage" ]] || continue
+                  echo "  [$stage]"; head -6 "$logs/$name.$stage" | sed 's/^/    /'
                 done
-            fi
+                for stage in bind link; do
+                  [[ -s "$logs/$name.$stage" ]] || continue
+                  echo "  [$stage]"; tail -20 "$logs/$name.$stage" | sed 's/^/    /'
+                done
+              done
           fi
-          if (( failed > 0 )); then
-            echo "::error::$failed ACATS test(s) failed on ${{ inputs.platform }}"
-          fi
-          if (( skipped > 0 )); then
-            echo "::error::$skipped ACATS test(s) never ran on ${{ inputs.platform }}; they could not compile, bind or link"
-          fi
-          (( failed == 0 && skipped == 0 ))
+          echo "::error::${{ inputs.platform }}: $failed failed, $skipped never ran"
+          exit 1
