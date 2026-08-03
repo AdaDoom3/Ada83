@@ -112,7 +112,6 @@ LINK_LIBRARIES_linux      = -lpthread
 LINK_LIBRARIES_macos      = -lpthread
 LINK_LIBRARIES_windows    =
 SUFFIX_windows            = .exe
-SIDECAR_macos             = __MACOSX/._ada83
 ARTWORK_linux             = $(ICON).png
 ARTWORK_macos             = $(ICON).icns
 ARTWORK_windows           = $(ICON).ico
@@ -129,20 +128,17 @@ $(if $(COMPILER_$(TARGET)),,\
   $(error TARGET is '$(TARGET)'; it must be linux, macos or windows))
 
 $(foreach Role,COMPILER COMPILER_FLAGS LINK_LIBRARIES SUFFIX ARTWORK LAUNCHER \
-               RESOURCE_COMPILER SIDECAR SHARED_LIBRARIES ARCHITECTURES,\
+               RESOURCE_COMPILER SHARED_LIBRARIES ARCHITECTURES,\
   $(eval $(Role) := $($(Role)_$(TARGET))))
 
 COMPILER_FLAGS += $(if $(CROSS),,$(WHOLE_PROGRAM))
 
 BIN_DIR          = bin-$(TARGET)
 BIN_DIRS         = bin-linux bin-macos bin-windows
-PACKAGE          = bin-$(TARGET).zip
-LIBRARY_SOURCE   = bin-$(TARGET).zip
+LIBRARY_SOURCE   = bin-dll.zip
 EXECUTABLE       = ada83$(SUFFIX)
 HOST_BINARY      = bin-$(HOST_TARGET)/ada83
 RESOURCE_OBJECT  = $(if $(RESOURCE_COMPILER),staging/$(ICON).o)
-PACKAGE_CONTENTS = $(EXECUTABLE) $(RUNTIME) $(VSIX) $(ARTWORK) $(LAUNCHER) \
-                   $(SHARED_LIBRARIES) $(SIDECAR)
 
 LIPO := $(shell command -v lipo || command -v llvm-lipo || \
                 command -v "$$(llvm-config --bindir 2>/dev/null)/llvm-lipo")
@@ -168,9 +164,11 @@ provision-llvm:
 	 $(LLVM_INSTALL); \
 	 echo "libLLVM not found; install your system's llvm package"
 
-package: $(PACKAGE)
-
-$(PACKAGE): ada83.c $(RUNTIME) $(ICON_SOURCE) $(BIN_DIR)/$(VSIX)
+# `package` fills bin-<target>/ with everything a release carries: the
+# compiler, the runtime, the extension, the platform artwork, and — on
+# Windows — the vendored DLLs unpacked from bin-dll.zip, which holds
+# nothing else. The release workflow zips the folder itself.
+package: ada83.c $(RUNTIME) $(ICON_SOURCE) $(BIN_DIR)/$(VSIX)
 	@command -v $(firstword $(COMPILER)) >/dev/null || { \
 	  echo "packaging for $(TARGET) needs $(firstword $(COMPILER))"; exit 1; }
 	@test -z "$(SHARED_LIBRARIES)" || test -f $(LIBRARY_SOURCE) || { \
@@ -192,11 +190,7 @@ $(PACKAGE): ada83.c $(RUNTIME) $(ICON_SOURCE) $(BIN_DIR)/$(VSIX)
 	  'Terminal=true' 'Categories=Development;Building;' > $(BIN_DIR)/$(LAUNCHER)
 	test -z "$(SHARED_LIBRARIES)" || \
 	  unzip -qoj $(LIBRARY_SOURCE) '$(SHARED_LIBRARIES)' -d $(BIN_DIR)
-	rm -f $@.new
-	@$(call STAGE,packing $(PACKAGE))
-	cd $(BIN_DIR) && zip -q $(abspath $@).new $(PACKAGE_CONTENTS)
-	mv $@.new $@
-	@echo "Packaged $@:"; unzip -l $@ | tail -n +4
+	@echo "Packaged $(BIN_DIR)/:"; ls -1 $(BIN_DIR)
 
 vsix: $(BIN_DIR)/$(VSIX)
 	@echo "Built $<:"; unzip -l $< | tail -n +4
@@ -222,7 +216,7 @@ $(BIN_DIR)/$(VSIX): $(BUNDLE) $(ICON).png $(wildcard $(MANUAL))
 	rm -rf staging/vsix
 
 clean: clean-test
-	rm -f ada83 ada83.exe $(VSIX) bin-*.zip.new
+	rm -f ada83 ada83.exe $(VSIX)
 	rm -rf staging $(BIN_DIRS)
 
 clean-test:

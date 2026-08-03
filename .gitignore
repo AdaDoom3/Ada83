@@ -1,10 +1,9 @@
-# Build output.  Every make script now writes what it builds into
-# bin-<target>/; the zips beside those folders are released, so only the
-# folders are ignored.
+# Build output.  Every make script writes what it builds into bin-<target>/;
+# the release workflow zips those folders itself. bin-dll.zip is tracked:
+# it vendors the DLLs ada83.exe loads at run time, and nothing else.
 /bin-linux/
 /bin-macos/
 /bin-windows/
-/bin-*.zip.new
 
 # Scratch space the make scripts share for slices, resource objects and the
 # unpacked extension.
@@ -20,8 +19,10 @@
 /icon.res
 /icon.res.o
 
-# The LLVM runtime that make.bat unpacks from bin-windows.zip.  These now
-# land in bin-windows/, but older builds put them here.
+# The LLVM runtime that make.bat unpacks from bin-dll.zip.  These now
+# land in bin-windows/, but older builds put them here.  bin-*.zip.new is
+# what those older builds left behind when packaging stopped early.
+/bin-*.zip.new
 /LLVM-C.dll
 /libffi-8.dll
 /libgcc_s_seh-1.dll
