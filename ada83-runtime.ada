@@ -327,7 +327,8 @@ package body Text_IO is
     Dummy : Integer;
     begin
       for I in 4..99 loop
-        if Same_External (I, Name) then
+        -- Only a file with pending output is flushable; see Reset below.
+        if Same_External (I, Name) and then File_Control_Blocks (I).Mode /= In_File then
           Dummy := C_Fflush (File_Control_Blocks (I).Stream);
         end if;
       end loop;
@@ -529,7 +530,13 @@ package body Text_IO is
         File_Control_Blocks (Table_Slot).Page_Active := False;
       end if;
       if File_Control_Blocks (Table_Slot).Shared and File_Control_Blocks (Table_Slot).Stream /= Null_Address then
-        Dummy := C_Fflush (File_Control_Blocks (Table_Slot).Stream);
+        -- Flushing a stream last used for reading is undefined in C. The
+        -- Windows runtime advances it to the end of what it had buffered,
+        -- which drags every other internal file sharing the stream to end of
+        -- file; the branches below reposition where a mode needs it.
+        if File_Control_Blocks (Table_Slot).Mode /= In_File then
+          Dummy := C_Fflush (File_Control_Blocks (Table_Slot).Stream);
+        end if;
         if Mode = In_File then
           null;
         elsif Mode = Out_File then
