@@ -53,29 +53,11 @@ jobs:
 
           echo "$tag_name verified against ada83.c and main."
 
-  # The VS Code extension is platform-independent: `make vsix` only rearranges
-  # ada83-extension.html into a zip and never touches the compiler. It gets its
-  # own job so that publishing it does not ride on a platform build succeeding.
-  vsix:
-    name: package vsix
-    needs: [verify]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-
-      - name: Build the extension
-        shell: bash
-        run: make vsix
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: dist-vsix
-          path: bin-linux/ada83.vsix
-          if-no-files-found: error
-
   # One packaging job per platform, each on its own native runner. `make
-  # package` builds the compiler, the platform artwork and its own copy of the
-  # extension, then packs bin-<platform>.zip.
+  # package` builds the compiler, the platform artwork and the VS Code
+  # extension, then packs all of it into bin-<platform>.zip. The extension is
+  # deliberately not published on its own: every platform archive carries a
+  # copy.
   package:
     name: package (${{ matrix.platform }})
     needs: [verify]
@@ -129,7 +111,7 @@ jobs:
 
   publish:
     name: publish
-    needs: [package, vsix]
+    needs: [package]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4

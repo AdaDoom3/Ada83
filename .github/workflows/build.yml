@@ -52,14 +52,20 @@ jobs:
           echo "$(brew --prefix)/bin"     >> "$GITHUB_PATH"
           echo "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
 
-      # unzip is not in base-devel, and test.sh wants it to unpack tests.zip;
-      # its fallbacks are GNU tar, which cannot read a zip at all, and then
-      # PowerShell.
+      # release: false re-uses the MSYS2 already on the runner image at
+      # C:\msys64 instead of downloading and unpacking a second one. That
+      # install is only a bare base — no mingw64 packages, no unzip — so the
+      # pacman step below still does the real work, and update stays on because
+      # installing into a stale base is a partial upgrade.
+      # lli and llvm-link come from mingw-w64-x86_64-llvm and are what test.sh
+      # runs the suite with; neither Git Bash nor the image's own LLVM has
+      # them. unzip is not in base-devel, and test.sh wants it for tests.zip.
       - name: Install test tools (Windows)
         if: inputs.platform == 'windows'
         uses: msys2/setup-msys2@v2
         with:
           msystem: MINGW64
+          release: false
           update: true
           install: mingw-w64-x86_64-llvm base-devel unzip
 
@@ -75,6 +81,22 @@ jobs:
         shell: cmd
         run: make.bat
 
+      # ada83 looks for ada83-runtime.ada beside its own executable. The make
+      # targets leave the binary in bin-<platform>/ and the runtime at the repo
+      # root, so without this the compiler cannot read its own runtime and
+      # every unit that mentions TEXT_IO fails to compile. That shows up as
+      # thousands of skips rather than failures, and the illegality tests still
+      # pass, because a compiler that rejects everything rejects those too.
+      - name: Place the runtime beside the compiler
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${{ inputs.platform }}" == windows ]]; then
+            cp ada83-runtime.ada bin-windows/
+          else
+            cp ada83-runtime.ada bin-${{ inputs.platform }}/
+          fi
+
       - name: Run ACATS (Linux/macOS)
         if: inputs.platform != 'windows'
         shell: bash
@@ -82,10 +104,20 @@ jobs:
 
       # Under MSYS2 test.sh resolves HOST_TARGET to windows and picks up
       # bin-windows/ada83.exe by itself, so nothing needs copying first.
+      #
+      # ada83 produces an executable by shelling out to a C driver — clang,
+      # zig cc, cc, then gcc. path-type is minimal, so the image's toolchain is
+      # invisible from in here and every link dies with "'clang' is not
+      # recognized as an internal or external command", which the harness
+      # reports as a skip rather than a failure. C:\mingw64 holds the same gcc
+      # that make.bat builds the compiler with.
       - name: Run ACATS (Windows)
         if: inputs.platform == 'windows'
         shell: msys2 {0}
-        run: bash test.sh run all
+        run: |
+          export PATH="/c/mingw64/bin:$PATH"
+          command -v gcc
+          bash test.sh run all
 
       # `test.sh run` reports failures but always exits 0 — only `check` does
       # otherwise, and that needs a per-platform baseline this repo does not
@@ -111,8 +143,46 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
           cat "$summary"
+
           failed=$(sed -n 's/.*[[:space:]]F=\([0-9]\{1,\}\).*/\1/p' "$summary")
-          if (( ${failed:-0} > 0 )); then
-            echo "::error::$failed ACATS test(s) failed on ${{ inputs.platform }}"
-            exit 1
+          skipped=$(sed -n 's/.*[[:space:]]S=\([0-9]\{1,\}\).*/\1/p' "$summary")
+          : "${failed:=0}" "${skipped:=0}"
+
+          # A skip is a test that never ran at all, because it would not
+          # compile, bind or link. Gating on failures alone would call a run
+          # green in which every executable test was skipped and only the
+          # compile-only classes reported anything.
+          # On a bad run the counts say nothing about why. test.sh sends the
+          # compiler's own diagnostics to per-test log files and reports only a
+          # category, so print the categories and then the actual text of the
+          # first few, which is what identifies the cause.
+          if (( failed > 0 || skipped > 0 )); then
+            results=$(ls -t test_results/*/results.tsv 2>/dev/null | head -1 || true)
+            logs=$(ls -td acats_logs/*/ 2>/dev/null | head -1 || true)
+            if [[ -n $results ]]; then
+              echo "categories, most common first:"
+              awk -F'\t' '$3 != "pass" { reason = $4; sub(/[:[].*/, "", reason);
+                                         print "  " $3 " " reason }' "$results" \
+                | sort | uniq -c | sort -rn | head
+              echo
+              echo "first few, with what the compiler actually said:"
+              # Counted inside awk rather than piped to head, which would close
+              # the pipe early and leave "awk: write error on /dev/stdout".
+              awk -F'\t' '$3 != "pass" && ++shown <= 3 { print $1 "\t" $3 "\t" $4 }' "$results" \
+              | while IFS=$'\t' read -r name result detail; do
+                  echo "  --- $name ($result) $detail"
+                  for stage in err bind link out; do
+                    [[ -s "$logs/$name.$stage" ]] || continue
+                    echo "      [$name.$stage]"
+                    head -6 "$logs/$name.$stage" | sed 's/^/        /'
+                  done
+                done
+            fi
           fi
+          if (( failed > 0 )); then
+            echo "::error::$failed ACATS test(s) failed on ${{ inputs.platform }}"
+          fi
+          if (( skipped > 0 )); then
+            echo "::error::$skipped ACATS test(s) never ran on ${{ inputs.platform }}; they could not compile, bind or link"
+          fi
+          (( failed == 0 && skipped == 0 ))

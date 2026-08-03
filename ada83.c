@@ -55161,8 +55161,15 @@ void Emit_Runtime_Tasking () {
 
 void Emit_Runtime_Text_Io () {
   Emit ("; ---- TEXT_IO: the three standard streams ----\n");
-#ifdef _WIN32
+#if defined(_WIN32)
   Emit ("declare ptr @__acrt_iob_func(i32)\n");
+#elif defined(__APPLE__)
+  // Apple's libc defines stdin, stdout and stderr as macros for these; the
+  // unprefixed names are not symbols at all, and asking for them leaves
+  // "Undefined symbols for architecture arm64: _stderr" at link time.
+  Emit ("@__stdinp  = external global ptr\n");
+  Emit ("@__stdoutp = external global ptr\n");
+  Emit ("@__stderrp = external global ptr\n");
 #else
   Emit ("@stdin  = external global ptr\n");
   Emit ("@stdout = external global ptr\n");
@@ -55177,9 +55184,11 @@ void Emit_Runtime_Text_Io () {
     Emit ("define linkonce_odr i64 @__ada_%s()"
           " nounwind willreturn memory(read) {\n", *stream);
     Emit ("entry:\n");
-#ifdef _WIN32
+#if defined(_WIN32)
     Emit ("  %%stream = call ptr @__acrt_iob_func(i32 %d)\n",
           (int) (stream - streams));
+#elif defined(__APPLE__)
+    Emit ("  %%stream = load ptr, ptr @__%sp\n", *stream);
 #else
     Emit ("  %%stream = load ptr, ptr @%s\n", *stream);
 #endif
