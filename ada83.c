@@ -54048,6 +54048,29 @@ void Emit_Runtime_Task_Activate () {
     "  br i1 %wascmp, label %done, label %go\n"
     "go:\n"
     "  call void @__ada_rt_lock()\n"
+    "  %abort_slot = " TASK_FIELD ("%tcb", ABORT_PENDING) "\n"
+    "  %abort_flag = load i8, ptr %abort_slot\n"
+    "  %was_aborted = icmp ne i8 %abort_flag, 0\n"
+    "  br i1 %was_aborted, label %aborted, label %live\n"
+    // A task aborted between elaboration and activation is never activated at
+    // all: it becomes terminated where it stands. Spawning it instead leaves
+    // 'TERMINATED false until the thread happens to reach the end of the body,
+    // which the activator can outrun. The activation counts as complete, not
+    // failed, so the activator gets no TASKING_ERROR.
+    "aborted:\n"
+    "  %aborted_completed = " TASK_FIELD ("%tcb", COMPLETED) "\n"
+    "  store i8 1, ptr %aborted_completed\n"
+    "  %aborted_terminated = " TASK_FIELD ("%tcb", TERMINATED) "\n"
+    "  store i8 1, ptr %aborted_terminated\n"
+    "  %aborted_state = " TASK_FIELD ("%tcb", ACTIVATION_STATE) "\n"
+    "  store i8 " TEXT_OF (ACTIVATION_STATE_COMPLETE) ", ptr %aborted_state\n"
+    "  call void @__ada_release_callers(ptr %tcb)\n"
+    "  call void @__ada_rt_broadcast()\n"
+    "  call void @__ada_rt_unlock()\n"
+    "  br label %done\n"
+    // The master counts this task as awake only once it is really spawned, so
+    // the branch above has nothing to undo.
+    "live:\n"
     "  %mp = " TASK_FIELD ("%tcb", MASTER_RECORD) "\n"
     "  %mrec = load ptr, ptr %mp\n"
     "  %nom = icmp eq ptr %mrec, null\n"

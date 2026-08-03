@@ -7,6 +7,7 @@ name: Release
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -15,19 +16,30 @@ jobs:
   verify:
     name: verify tag
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
+      - name: Read the version out of ada83.c
+        id: version
+        shell: bash
+        run: echo "version=$(./.github/version.sh)" >> "$GITHUB_OUTPUT"
+
+      # Only a tag push can publish, so only a tag push has to pass the gate.
+      # A manual run is a dry run off a branch: it builds and checks the
+      # archives, and stops before `publish`.
       - name: Tag must match ada83.c, sit on main, and be unreleased
+        if: github.event_name == 'push'
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
           tag_name="${GITHUB_REF_NAME}"
-          source_version=$(./.github/version.sh)
+          source_version="${{ steps.version.outputs.version }}"
 
           if [[ $tag_name != "v$source_version" ]]; then
             echo "::error file=ada83.c::tag $tag_name does not match the compiled version v$source_version. Retag, or fix ADA83_VERSION_MAJOR/_MINOR."
@@ -65,6 +77,39 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # The runners carry no LLVM. ada83 dlopens libLLVM to emit native code,
+      # so without it the packaged compiler cannot get past --ir.
+      - name: Install the toolchain (Linux)
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends llvm
+
+      - name: Install the toolchain (macOS)
+        if: matrix.platform == 'macos'
+        shell: bash
+        run: |
+          brew install llvm
+          echo "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
+
+      # The clang on the image targets MSVC, so it drives lld-link and rejects
+      # the mingw spellings ada83 emits (-lm, -Wl,--stack). MINGW64 clang and
+      # lld are the combination that links: ada83 puts thread-local storage in
+      # COFF weak externals, which GNU ld cannot resolve either.
+      - name: Install the toolchain (Windows)
+        if: matrix.platform == 'windows'
+        id: msys2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          release: false
+          update: true
+          install: >-
+            mingw-w64-x86_64-llvm
+            mingw-w64-x86_64-clang
+            mingw-w64-x86_64-lld
+
       - name: Package (Linux/macOS)
         if: matrix.platform != 'windows'
         shell: bash
@@ -75,12 +120,22 @@ jobs:
         shell: cmd
         run: make.bat package
 
+      # Only now, so that make.bat still compiles with the image's gcc: ada83
+      # links through system(), which inherits this PATH, and the MINGW64
+      # clang has to win over the MSVC-targeting one in the image.
+      - name: Put MINGW64 ahead of the image toolchain
+        if: matrix.platform == 'windows'
+        shell: bash
+        run: echo '${{ steps.msys2.outputs.msys2-location }}\mingw64\bin' >> "$GITHUB_PATH"
+
       # The archives are built with different flags from CI, and on macOS as a
       # universal binary CI never produces, so what ships is not what the suite
       # ran against. Unpack it and take the compiler through a real compile,
       # link and run.
       - name: Check the packaged archive
         shell: bash
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
         run: |
           set -euo pipefail
           rm -rf verify && mkdir verify
@@ -94,7 +149,7 @@ jobs:
           chmod +x "$compiler" 2>/dev/null || true
 
           "$compiler" --version
-          "$compiler" --version | grep -q "ada83 ${GITHUB_REF_NAME#v} "
+          "$compiler" --version | grep -q "ada83 $VERSION "
 
           printf '%s\n' \
             'WITH TEXT_IO;' \
@@ -140,6 +195,7 @@ jobs:
   publish:
     name: publish
     needs: [package]
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
