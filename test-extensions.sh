@@ -94,8 +94,10 @@ for source in "$here"/extensions/*.ada; do
         report fail "$name" "$(tail -2 "$dir/compile.log" | tr '\n' ' ')"
         continue
     fi
+    # prefer the real .exe: msys bash resolves the extension-less path for
+    # -x and for running, but nm needs the file that actually exists
     exe=$dir/$name
-    [[ -x $exe ]] || exe=$dir/$name.exe
+    [[ -f $exe.exe ]] && exe=$exe.exe
 
     symbol=$(header "$source" SYMBOL)
     symbol_not=$(header "$source" SYMBOL-NOT)
