@@ -26307,9 +26307,11 @@ void Resolve_Compilation_Unit (Node *node) {
 
   if (not node->compilation_unit.separate_parent and
       Node_In_Any_Class (node->compilation_unit.unit, NODE_CLASS_SUBPROGRAM_BODY) and
-      not node->compilation_unit.unit->subprogram_body.is_separate)
+      not node->compilation_unit.unit->subprogram_body.is_separate) {
     Load_Library_Subprogram_Declaration (
       Get_Simple_Name (node->compilation_unit.unit));
+    Mark_Body_Loaded (Get_Simple_Name (node->compilation_unit.unit));
+  }
 
   Check_Subunit_Identifiers_Are_Unique (node);
 
@@ -31792,9 +31794,6 @@ size_t Mangle_Into_Buffer (char *buf, size_t pos, size_t max, Symbol *sym) {
     if (pos + 2 < max) { buf[pos++] = '_'; buf[pos++] = '_'; }
   } else if (not sym->parent and Is_Subprogram (sym) and
              not sym->is_imported and not sym->is_exported) {
-    // a library subprogram would otherwise land in the linker's namespace
-    // under its bare Ada name, colliding with the C entry point when named
-    // Main and interposing on libc for names like Read or Sleep
     for (const char *ch = "_ada_"; *ch and pos + 1 < max; ch++)
       buf[pos++] = *ch;
   }
