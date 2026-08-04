@@ -110,7 +110,8 @@ end;
 
 `Argument (1)` is the first argument after the program name; a `Number` beyond
 `Argument_Count` raises `Constraint_Error`. Both extensions are covered by the
-test programs under `extensions/` in `tests.zip`, run by `test-extensions.sh`.
+test programs under `extensions/` in `tests.zip`, which `test.sh` runs as the
+last stage of a full run.
 
 ## Benchmarks
 
@@ -174,22 +175,21 @@ lli hello.ll                            # Interpret the IR
 The ACATS tests are in `tests.zip` and unzipped on first use.
 
 ```sh
-bash test.sh         # Every class, the default
-bash test.sh run c   # One class
-bash test.sh run c45 # One group
-bash test.sh check   # Run, then diff against the baseline
+bash test.sh            # Every class, then the extensions -- the default
+bash test.sh run c      # One class
+bash test.sh run c45    # One group
+bash test.sh check      # Run, then diff against the baseline
+bash test.sh extensions # Only the extension tests
 bash test.sh help
 ```
 
-The extension tests are Ada programs too, under `extensions/` in the same
-`tests.zip`. Each one self-reports PASSED or FAILED, and comment headers tell
-the harness what to do around the run — `-- ARGS:` for command-line arguments,
-`-- LINK:` for a separately compiled unit, `-- SYMBOL:` / `-- SYMBOL-NOT:` for
-what nm must find in the executable. CI runs them after ACATS:
-
-```sh
-bash test-extensions.sh
-```
+A full run ends with the extension stage: Ada programs under `extensions/` in
+the same `tests.zip`, covering what ACATS cannot see. Each one self-reports
+PASSED or FAILED, and comment headers tell the harness what to do around the
+run — `-- ARGS:` for command-line arguments, `-- LINK:` for a separately
+compiled unit, `-- SYMBOL:` / `-- SYMBOL-NOT:` for what nm must find in the
+executable. They are counted apart from the ACATS classes, as `X=` and `XF=`
+in the run summary.
 
 ## Release Workflow
 

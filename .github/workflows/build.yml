@@ -99,21 +99,10 @@ jobs:
         shell: msys2 {0}
         run: bash test.sh run all
 
-      # The extensions — _ada_ symbol naming and Extension_Command_Line — are
-      # outside ACATS's horizon, so they get their own suite. Unlike test.sh
-      # it exits nonzero on any failure, so it needs no gating step.
-      - name: Run extension tests (Linux/macOS)
-        if: inputs.platform != 'windows'
-        shell: bash
-        run: bash test-extensions.sh
-
-      - name: Run extension tests (Windows)
-        if: inputs.platform == 'windows'
-        shell: msys2 {0}
-        run: bash test-extensions.sh
-
       # `test.sh run` always exits 0, and a skipped test never ran at all, so
       # both counts have to be checked or a wholly broken suite shows green.
+      # A full run ends with the extension stage, whose failures land in the
+      # same summary as XF.
       - name: Report and gate on the results
         if: always()
         shell: bash
@@ -130,8 +119,12 @@ jobs:
 
           failed=$(sed -n 's/.*[[:space:]]F=\([0-9]\{1,\}\).*/\1/p' "$summary")
           skipped=$(sed -n 's/.*[[:space:]]S=\([0-9]\{1,\}\).*/\1/p' "$summary")
-          : "${failed:=0}" "${skipped:=0}"
-          (( failed || skipped )) || exit 0
+          ext_failed=$(sed -n 's/.*[[:space:]]XF=\([0-9]\{1,\}\).*/\1/p' "$summary")
+          : "${failed:=0}" "${skipped:=0}" "${ext_failed:=0}"
+          if (( ext_failed )); then
+            echo "::error::${{ inputs.platform }}: $ext_failed extension test(s) failed"
+          fi
+          (( failed || skipped || ext_failed )) || exit 0
 
           # test.sh reports only a category and sends the real diagnostics to
           # per-test logs, so print those for the first few.
@@ -153,5 +146,6 @@ jobs:
                 done
               done
           fi
-          echo "::error::${{ inputs.platform }}: $failed failed, $skipped never ran"
+          (( failed || skipped )) &&
+            echo "::error::${{ inputs.platform }}: $failed failed, $skipped never ran"
           exit 1
