@@ -26,7 +26,7 @@ unpack the archive for your platform: `bin-linux.zip`, `bin-macos.zip` or
 with Text_IO; use Text_IO;
 procedure Hello is
 begin
-  Put_Line ("Hello, Ada 83!");
+   Put_Line ("Hello, Ada 83!");
 end;
 ```
 
@@ -83,35 +83,6 @@ Under ACATS 1.11 all 3561 tests pass
 | **E** | Inspection | `34 / 34` | **100%** ✅ |
 | **L** | Post-compilation | `47 / 47` | **100%** ✅ |
 | | **Total** | **`3561 / 3561`** | **100%** ✅ |
-
-## Extensions
-
-Two departures from bare MIL-STD-1815A, neither observable from within a
-conforming program:
-
-**Linker naming.** A library subprogram's symbol is prefixed `_ada_`, in the
-GNAT manner, so `procedure Main` cannot collide with the C entry point and a
-procedure named `Read` or `Sleep` cannot interpose on libc. Package members
-keep their `package__name` form; names given through `pragma Import` and
-`pragma Export` are never prefixed. The standard says nothing about object
-code, so this is linker territory, not language territory.
-
-**Command_Line.** The generated entry point captures `argc`/`argv`,
-and a vendor runtime package exposes them, mirroring Ada 95's
-`Ada.Command_Line`:
-
-```ada
-package Command_Line is
-  function Argument_Count return Natural;
-  function Argument (Number : Positive) return String;
-  function Command_Name return String;
-end;
-```
-
-`Argument (1)` is the first argument after the program name; a `Number` beyond
-`Argument_Count` raises `Constraint_Error`. Both extensions are covered by the
-test programs under `extensions/` in `tests.zip`, which `test.sh` runs as the
-last stage of a full run.
 
 ## Benchmarks
 
@@ -175,21 +146,12 @@ lli hello.ll                            # Interpret the IR
 The ACATS tests are in `tests.zip` and unzipped on first use.
 
 ```sh
-bash test.sh            # Every class, then the extensions -- the default
-bash test.sh run c      # One class
-bash test.sh run c45    # One group
-bash test.sh check      # Run, then diff against the baseline
-bash test.sh extensions # Only the extension tests
+bash test.sh         # Every class, the default
+bash test.sh run c   # One class
+bash test.sh run c45 # One group
+bash test.sh check   # Run, then diff against the baseline
 bash test.sh help
 ```
-
-A full run ends with the extension stage: Ada programs under `extensions/` in
-the same `tests.zip`, covering what ACATS cannot see. Each one self-reports
-PASSED or FAILED, and comment headers tell the harness what to do around the
-run — `-- ARGS:` for command-line arguments, `-- LINK:` for a separately
-compiled unit, `-- SYMBOL:` / `-- SYMBOL-NOT:` for what nm must find in the
-executable. They are counted apart from the ACATS classes, as `X=` and `XF=`
-in the run summary.
 
 ## Release Workflow
 
