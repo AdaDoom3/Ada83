@@ -99,6 +99,19 @@ jobs:
         shell: msys2 {0}
         run: bash test.sh run all
 
+      # The extensions — _ada_ symbol naming and Extension_Command_Line — are
+      # outside ACATS's horizon, so they get their own suite. Unlike test.sh
+      # it exits nonzero on any failure, so it needs no gating step.
+      - name: Run extension tests (Linux/macOS)
+        if: inputs.platform != 'windows'
+        shell: bash
+        run: bash test-extensions.sh
+
+      - name: Run extension tests (Windows)
+        if: inputs.platform == 'windows'
+        shell: msys2 {0}
+        run: bash test-extensions.sh
+
       # `test.sh run` always exits 0, and a skipped test never ran at all, so
       # both counts have to be checked or a wholly broken suite shows green.
       - name: Report and gate on the results

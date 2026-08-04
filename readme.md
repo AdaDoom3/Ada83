@@ -84,6 +84,34 @@ Under ACATS 1.11 all 3561 tests pass
 | **L** | Post-compilation | `47 / 47` | **100%** ✅ |
 | | **Total** | **`3561 / 3561`** | **100%** ✅ |
 
+## Extensions
+
+Two departures from bare MIL-STD-1815A, neither observable from within a
+conforming program:
+
+**Linker naming.** A library subprogram's symbol is prefixed `_ada_`, in the
+GNAT manner, so `procedure Main` cannot collide with the C entry point and a
+procedure named `Read` or `Sleep` cannot interpose on libc. Package members
+keep their `package__name` form; names given through `pragma Import` and
+`pragma Export` are never prefixed. The standard says nothing about object
+code, so this is linker territory, not language territory.
+
+**Extension_Command_Line.** The generated entry point captures `argc`/`argv`,
+and a vendor runtime package exposes them, mirroring Ada 95's
+`Ada.Command_Line`:
+
+```ada
+package Extension_Command_Line is
+  function Argument_Count return Natural;
+  function Argument (Number : Positive) return String;
+  function Command_Name return String;
+end;
+```
+
+`Argument (1)` is the first argument after the program name; a `Number` beyond
+`Argument_Count` raises `Constraint_Error`. Both extensions are covered by
+`test-extensions.sh`.
+
 ## Benchmarks
 
 Run time of the generated code at `-O2`, against GNAT 13.3.0 (GCC
@@ -151,6 +179,12 @@ bash test.sh run c   # One class
 bash test.sh run c45 # One group
 bash test.sh check   # Run, then diff against the baseline
 bash test.sh help
+```
+
+The extensions have their own suite, which CI runs after ACATS:
+
+```sh
+bash test-extensions.sh
 ```
 
 ## Release Workflow

@@ -6135,6 +6135,7 @@ void Emit_Runtime_Entry_Count             ();
 void Emit_Runtime_Accept_Complete         ();
 
 void Emit_Runtime_Text_Io             ();
+void Emit_Runtime_Command_Line        ();
 void Emit_Runtime_Image_Attributes    ();
 
 typedef struct {
@@ -31789,6 +31790,13 @@ size_t Mangle_Into_Buffer (char *buf, size_t pos, size_t max, Symbol *sym) {
   if (qualify_through_parent) {
     pos = Mangle_Into_Buffer (buf, pos, max, sym->parent);
     if (pos + 2 < max) { buf[pos++] = '_'; buf[pos++] = '_'; }
+  } else if (not sym->parent and Is_Subprogram (sym) and
+             not sym->is_imported and not sym->is_exported) {
+    // a library subprogram would otherwise land in the linker's namespace
+    // under its bare Ada name, colliding with the C entry point when named
+    // Main and interposing on libc for names like Read or Sleep
+    for (const char *ch = "_ada_"; *ch and pos + 1 < max; ch++)
+      buf[pos++] = *ch;
   }
   return Mangle_Slice_Into (buf, pos, max, sym->name);
 }
@@ -52130,7 +52138,9 @@ void Emit_Program_Entry_Point () {
   }
 
   Emit ("@__library_anchors = private global i64 0\n");
-  Emit ("define i32 @main() {\n");
+  Emit ("define i32 @main(i32 %%argc, ptr %%argv) {\n");
+  Emit ("  store i32 %%argc, ptr @__ada_argc_value\n");
+  Emit ("  store ptr %%argv, ptr @__ada_argv_value\n");
   Emit ("  call void @__ada_tasking_init()\n");
 
   bool *elaborated = cg->elab_func_count
@@ -55252,6 +55262,68 @@ void Emit_Runtime_Text_Io () {
   }
 }
 
+void Emit_Runtime_Command_Line () {
+  Emit_Verbatim (
+    "; ---- EXTENSION_COMMAND_LINE: argc/argv captured by main ----\n"
+    "@__ada_argc_value = linkonce_odr global i32 0\n"
+    "@__ada_argv_value = linkonce_odr global ptr null\n"
+    "declare i64 @strlen(ptr nocapture)\n\n"
+    "define linkonce_odr ptr @__ada_arg_pointer(i32 %n)"
+    " nounwind willreturn memory(read) {\n"
+    "entry:\n"
+    "  %argc = load i32, ptr @__ada_argc_value\n"
+    "  %neg = icmp slt i32 %n, 0\n"
+    "  %oob = icmp sge i32 %n, %argc\n"
+    "  %bad = or i1 %neg, %oob\n"
+    "  br i1 %bad, label %none, label %fetch\n"
+    "fetch:\n"
+    "  %base = load ptr, ptr @__ada_argv_value\n"
+    "  %null = icmp eq ptr %base, null\n"
+    "  br i1 %null, label %none, label %index\n"
+    "index:\n"
+    "  %n64 = sext i32 %n to i64\n"
+    "  %slot = getelementptr ptr, ptr %base, i64 %n64\n"
+    "  %arg = load ptr, ptr %slot\n"
+    "  ret ptr %arg\n"
+    "none:\n"
+    "  ret ptr null\n"
+    "}\n\n"
+    "define linkonce_odr i32 @__ada_argc()"
+    " nounwind willreturn memory(read) {\n"
+    "entry:\n"
+    "  %argc = load i32, ptr @__ada_argc_value\n"
+    "  ret i32 %argc\n"
+    "}\n\n"
+    "define linkonce_odr i32 @__ada_arg_length(i32 %n)"
+    " nounwind willreturn memory(read) {\n"
+    "entry:\n"
+    "  %arg = call ptr @__ada_arg_pointer(i32 %n)\n"
+    "  %null = icmp eq ptr %arg, null\n"
+    "  br i1 %null, label %none, label %measure\n"
+    "measure:\n"
+    "  %len = call i64 @strlen(ptr %arg)\n"
+    "  %len32 = trunc i64 %len to i32\n"
+    "  ret i32 %len32\n"
+    "none:\n"
+    "  ret i32 0\n"
+    "}\n\n"
+    "define linkonce_odr i32 @__ada_arg_char(i32 %n, i32 %i)"
+    " nounwind willreturn memory(read) {\n"
+    "entry:\n"
+    "  %arg = call ptr @__ada_arg_pointer(i32 %n)\n"
+    "  %null = icmp eq ptr %arg, null\n"
+    "  br i1 %null, label %none, label %index\n"
+    "index:\n"
+    "  %i64 = sext i32 %i to i64\n"
+    "  %slot = getelementptr i8, ptr %arg, i64 %i64\n"
+    "  %byte = load i8, ptr %slot\n"
+    "  %val = zext i8 %byte to i32\n"
+    "  ret i32 %val\n"
+    "none:\n"
+    "  ret i32 0\n"
+    "}\n\n");
+}
+
 void Emit_Runtime_Image_Attributes () {
   Rep rts_sbt = Pick_String_Bound_Rep ();
   Rep iat     = Pick_Arith_Rep ();
@@ -55701,6 +55773,7 @@ void Emit_Module_Prologue () {
   Emit_Runtime_Raise ();
   Emit_Runtime_Tasking ();
   Emit_Runtime_Text_Io ();
+  Emit_Runtime_Command_Line ();
   Emit_Runtime_Image_Attributes ();
   cg->output = &cg->module;
 

@@ -241,7 +241,8 @@ compile_set(){
                     anc=${anc%.*}
                 done
                 ((u_current)) && current=1
-                grep -Eq "^define.*@${unit//./__}(\(|__)" "$MAIN_LL" && in_main=1
+                # library subprograms carry the _ada_ prefix; packages do not
+                grep -Eq "^define.*@(_ada_)?${unit//./__}(\(|__)" "$MAIN_LL" && in_main=1
             done
             ((in_main)) && continue
             ((current)) || continue
