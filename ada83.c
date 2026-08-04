@@ -39931,7 +39931,13 @@ Value Lower_Attribute (Node *node) {
   Symbol *prefix_symbol        = prefix->symbol;
   if (not prefix_type and prefix_symbol and prefix_symbol->type)
     prefix_type = prefix_symbol->type;
-  if (prefix_type and
+
+  if (Expression_Is_Slice (prefix)) {
+    needs_runtime_bounds = true;
+    prefix_symbol        = NULL;
+  }
+
+  if (not needs_runtime_bounds and prefix_type and
       (Is_Unconstrained_Array (prefix_type) or
        Has_Dynamic_Bounds (prefix_type)))
     if (not prefix_symbol or
@@ -49199,7 +49205,7 @@ void Lower_Array_Of_Character_Initializer (Node        *node,
                            Type_Needs_Fat_Pointer (sym->type);
 
   if (init->kind == NK_STRING or not Is_Constrained_Array (init_type) or
-      Type_Needs_Fat_Pointer (init_type)) {
+      Type_Needs_Fat_Pointer (init_type) or Expression_Is_Slice (init)) {
     u32 fat = Lower_Expression (init).reg;
     if (Object_Adopts_Its_Initializers_Storage (node, sym, ty)) {
       Emit ("  ; the object IS the result\n");
