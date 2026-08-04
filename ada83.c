@@ -37324,19 +37324,8 @@ void Emit_Entry_Family_Index_Check (Symbol *entry_sym, u32 idx_val) {
 void Note_Separate_Boundary_Callee (Symbol *sym) {
   if (not sym or sym->separate_callee_noted) return;
   if (not Is_Subprogram (sym)) return;
+  if (sym->is_predefined or sym->convention == CONVENTION_INTRINSIC) return;
 
-  if (not cg->subunit_parent) {
-    if (sym->body_claimed) return;
-    bool behind_separate_stub = false;
-    for (Symbol *ancestor = sym->parent; ancestor;
-         ancestor = ancestor->parent)
-      if (ancestor->kind == SYMBOL_PACKAGE and
-          ancestor->body_is_separate_stub) {
-        behind_separate_stub = true;
-        break;
-      }
-    if (not behind_separate_stub) return;
-  }
   if (not Has_Stable_Library_Name (sym) and
       not Is_Global (sym)) return;
   Append_Separate_Callee (sym);
