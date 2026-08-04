@@ -44588,7 +44588,10 @@ Value Lower_Expression (Node *node) {
 
       if (call_target and call_target != node->symbol and call_target->is_predefined) {
         Token_Kind override = Token_From_Op_Name (call_target->name);
-        if (override != TK_EOF and override != node->binary.op) {
+        bool inequality_of_equality =
+          node->binary.op == TK_NE and override == TK_EQ;
+        if (override != TK_EOF and override != node->binary.op and
+            not inequality_of_equality) {
           Node tmp  = *node;
           tmp.binary.op    = override;
           return Emit_Binary_Op_Predefined (&tmp);
