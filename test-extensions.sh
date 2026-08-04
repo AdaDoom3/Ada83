@@ -3,7 +3,7 @@ set -uo pipefail
 
 # Runs the extension tests — the .ada programs under extensions/ in
 # tests.zip. They cover what ACATS (test.sh) cannot see: the _ada_ symbol
-# prefix on library subprograms, and Extension_Command_Line.
+# prefix on library subprograms, and Command_Line.
 #
 # Each test is one self-reporting Ada program: it prints PASSED, or one or
 # more FAILED lines. Comment headers direct the harness:

@@ -26,7 +26,7 @@ unpack the archive for your platform: `bin-linux.zip`, `bin-macos.zip` or
 with Text_IO; use Text_IO;
 procedure Hello is
 begin
-   Put_Line ("Hello, Ada 83!");
+  Put_Line ("Hello, Ada 83!");
 end;
 ```
 
@@ -96,12 +96,12 @@ keep their `package__name` form; names given through `pragma Import` and
 `pragma Export` are never prefixed. The standard says nothing about object
 code, so this is linker territory, not language territory.
 
-**Extension_Command_Line.** The generated entry point captures `argc`/`argv`,
+**Command_Line.** The generated entry point captures `argc`/`argv`,
 and a vendor runtime package exposes them, mirroring Ada 95's
 `Ada.Command_Line`:
 
 ```ada
-package Extension_Command_Line is
+package Command_Line is
   function Argument_Count return Natural;
   function Argument (Number : Positive) return String;
   function Command_Name return String;

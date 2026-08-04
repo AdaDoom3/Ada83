@@ -2932,12 +2932,12 @@ private
   No_Input_Operands  : constant Asm_Input_Operand  := 0;
   No_Output_Operands : constant Asm_Output_Operand := 0;
 end;
-package Extension_Command_Line is
+package Command_Line is
   function Argument_Count return Natural;
   function Argument (Number : Positive) return String;
   function Command_Name return String;
 end;
-package body Extension_Command_Line is
+package body Command_Line is
   function C_Argc return Integer;
   pragma Import (C, C_Argc, "__ada_argc");
   function C_Arg_Length (N : Integer) return Integer;
