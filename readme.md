@@ -109,8 +109,8 @@ end;
 ```
 
 `Argument (1)` is the first argument after the program name; a `Number` beyond
-`Argument_Count` raises `Constraint_Error`. Both extensions are covered by
-`test-extensions.sh`.
+`Argument_Count` raises `Constraint_Error`. Both extensions are covered by the
+test programs under `extensions/` in `tests.zip`, run by `test-extensions.sh`.
 
 ## Benchmarks
 
@@ -181,7 +181,11 @@ bash test.sh check   # Run, then diff against the baseline
 bash test.sh help
 ```
 
-The extensions have their own suite, which CI runs after ACATS:
+The extension tests are Ada programs too, under `extensions/` in the same
+`tests.zip`. Each one self-reports PASSED or FAILED, and comment headers tell
+the harness what to do around the run — `-- ARGS:` for command-line arguments,
+`-- LINK:` for a separately compiled unit, `-- SYMBOL:` / `-- SYMBOL-NOT:` for
+what nm must find in the executable. CI runs them after ACATS:
 
 ```sh
 bash test-extensions.sh
