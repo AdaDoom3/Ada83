@@ -233,17 +233,9 @@ on sharedLibrariesFor(chosenPlatform)
 	return ""
 end sharedLibrariesFor
 
-on archiveFor(chosenPlatform)
-	return "bin-" & chosenPlatform & ".zip"
-end archiveFor
-
-on archiveContentsFor(chosenPlatform)
-	set members to {executableFor(chosenPlatform), "ada83-runtime.ada", "ada83.vsix", artworkFor(chosenPlatform)}
-	if launcherFor(chosenPlatform) is not "" then set members to members & {launcherFor(chosenPlatform)}
-	if sharedLibrariesFor(chosenPlatform) is not "" then set members to members & {sharedLibrariesFor(chosenPlatform)}
-	if chosenPlatform is macosPlatform() then set members to members & {"__MACOSX/._" & executableFor(chosenPlatform)}
-	return joinedWith(members, space)
-end archiveContentsFor
+on librariesArchive()
+	return "bin-dll.zip"
+end librariesArchive
 
 on toolchainHintFor(chosenPlatform)
 	if chosenPlatform is linuxPlatform() then return "Nothing here can build for Linux: no x86_64-linux-gnu-gcc, no x86_64-unknown-linux-gnu-gcc (the macos-cross-toolchains tap installs that one), and neither Docker nor Podman, which would compile in a " & containerImage() & " container instead. Install any one of those, then run this script again."
@@ -447,7 +439,7 @@ end chosenRouteSteps
 
 on sharedLibraryGuardSteps(chosenPlatform)
 	if sharedLibrariesFor(chosenPlatform) is "" then return {}
-	return {"test -f " & archiveFor(chosenPlatform) & " || { echo '" & archiveFor(chosenPlatform) & ¬
+	return {"test -f " & librariesArchive() & " || { echo '" & librariesArchive() & ¬
 		" holds the only copy of the libraries " & chosenPlatform & "'; echo 'loads at run time, and is missing'; exit 1; }"}
 end sharedLibraryGuardSteps
 
@@ -473,7 +465,7 @@ end launcherSteps
 
 on sharedLibrarySteps(chosenPlatform)
 	if sharedLibrariesFor(chosenPlatform) is "" then return {}
-	return {"unzip -qoj " & archiveFor(chosenPlatform) & " '" & sharedLibrariesFor(chosenPlatform) & ¬
+	return {"unzip -qoj " & librariesArchive() & " '" & sharedLibrariesFor(chosenPlatform) & ¬
 		"' -d " & binaryFolderFor(chosenPlatform)}
 end sharedLibrarySteps
 
@@ -497,19 +489,15 @@ on vsixProgram(chosenPlatform)
 end vsixProgram
 
 on packageProgram(chosenPlatform)
-	set archiveName to archiveFor(chosenPlatform)
 	set binFolder to binaryFolderFor(chosenPlatform)
 	return guardedProgram(extensionSteps(chosenPlatform) & sharedLibraryGuardSteps(chosenPlatform) & ¬
 		sliceGuardSteps(chosenPlatform) & resourceObjectSteps(chosenPlatform) & ¬
 		chosenRouteSteps(chosenPlatform) & compileSteps(chosenPlatform) & ¬
 		{"cp ada83-runtime.ada " & binFolder & "/"} & launcherSteps(chosenPlatform) & ¬
 		sharedLibrarySteps(chosenPlatform) & ¬
-		{"rm -f " & archiveName & ".new", ¬
-		"( cd " & binFolder & " && zip -q ../" & archiveName & ".new " & archiveContentsFor(chosenPlatform) & " )", ¬
-		"mv " & archiveName & ".new " & archiveName, ¬
-		"rm -rf staging", ¬
-		"echo 'Packaged " & archiveName & ":'", ¬
-		"unzip -l " & archiveName & " | tail -n +4"}, ¬
+		{"rm -rf staging", ¬
+		"echo 'Packaged " & binFolder & ":'", ¬
+		"ls -1 " & binFolder}, ¬
 		"Packaging failed; the message above says why.")
 end packageProgram
 

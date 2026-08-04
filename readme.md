@@ -18,8 +18,9 @@ A single-file Ada 83 LLVM compiler.
 
 ## Quick start
 
-Unpack the archive for your platform: [`bin-linux.zip`](bin-linux.zip),
-[`bin-macos.zip`](bin-macos.zip) or [`bin-windows.zip`](bin-windows.zip)
+From the [latest release](https://github.com/AdaDoom3/Ada83/releases/latest),
+unpack the archive for your platform: `bin-linux.zip`, `bin-macos.zip` or
+`bin-windows.zip`
 
 ```ada
 with Text_IO; use Text_IO;
@@ -55,17 +56,19 @@ unpacked it.
 | Windows  | `make.bat` | GCC or Clang; offers to fetch Zig if neither is installed |
 
 Every script writes what it builds into `bin-<target>/` - `bin-linux/ada83`,
-`bin-macos/ada83`, `bin-windows\ada83.exe` with the DLLs it loads beside it —
-and `make package` zips that folder into `bin-<target>.zip`.
+`bin-macos/ada83`, `bin-windows\ada83.exe` with the DLLs it loads beside it.
+The DLLs are vendored in `bin-dll.zip`, which holds nothing else; the
+release workflow zips each finished `bin-<target>/` into the archives it
+publishes.
 
 `ada83-runtime.ada` holds the standard library, and the compiler looks for it
 beside its own executable.
 
 | Platform | Command | Produces |
 | -------- | ------- | -------- |
-| Linux    | `make package` | `bin-linux.zip` |
-| macOS    | `osascript make.applescript package` | `bin-macos.zip`, both slices together |
-| Windows  | `make.bat package` | `bin-windows.zip`, DLLs included |
+| Linux    | `make package` | `bin-linux/`, extension and artwork included |
+| macOS    | `osascript make.applescript package` | `bin-macos/`, both slices together |
+| Windows  | `make.bat package` | `bin-windows/`, DLLs included |
 
 ## Conformance
 

@@ -58,7 +58,9 @@ jobs:
           fi
 
   # `make package` builds the compiler, the platform artwork and the VS Code
-  # extension, then packs bin-<platform>.zip. The extension is not published
+  # extension into bin-<platform>/; the repository's bin-dll.zip holds only
+  # the vendored DLLs Windows loads at run time, and this job packs the full
+  # release archive from the folder. The extension is not published
   # separately: every archive carries a copy.
   package:
     name: package (${{ matrix.platform }})
@@ -109,6 +111,7 @@ jobs:
             mingw-w64-x86_64-llvm
             mingw-w64-x86_64-clang
             mingw-w64-x86_64-lld
+            zip
 
       - name: Package (Linux/macOS)
         if: matrix.platform != 'windows'
@@ -128,6 +131,24 @@ jobs:
         shell: bash
         run: echo '${{ steps.msys2.outputs.msys2-location }}\mingw64\bin' >> "$GITHUB_PATH"
 
+      # The make scripts stop at bin-<platform>/; the release archive that
+      # ships is packed here from everything they staged.
+      - name: Pack the release archive (Linux/macOS)
+        if: matrix.platform != 'windows'
+        shell: bash
+        run: |
+          mkdir -p dist
+          cd bin-${{ matrix.platform }} && zip -qr ../dist/bin-${{ matrix.platform }}.zip .
+
+      # The image's git-bash has no zip, so this runs in the MSYS2 shell that
+      # installed one.
+      - name: Pack the release archive (Windows)
+        if: matrix.platform == 'windows'
+        shell: msys2 {0}
+        run: |
+          mkdir -p dist
+          cd bin-windows && zip -qr ../dist/bin-windows.zip .
+
       # The archives are built with different flags from CI, and on macOS as a
       # universal binary CI never produces, so what ships is not what the suite
       # ran against. Unpack it and take the compiler through a real compile,
@@ -139,7 +160,7 @@ jobs:
         run: |
           set -euo pipefail
           rm -rf verify && mkdir verify
-          unzip -q bin-${{ matrix.platform }}.zip -d verify
+          unzip -q dist/bin-${{ matrix.platform }}.zip -d verify
           cd verify
 
           case "${{ matrix.platform }}" in
@@ -183,13 +204,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          unzip -l bin-windows.zip | grep -qi 'LLVM-C\.dll' \
+          unzip -l dist/bin-windows.zip | grep -qi 'LLVM-C\.dll' \
             || { echo "::error::bin-windows.zip does not contain LLVM-C.dll"; exit 1; }
 
       - uses: actions/upload-artifact@v4
         with:
           name: dist-${{ matrix.platform }}
-          path: bin-${{ matrix.platform }}.zip
+          path: dist/bin-${{ matrix.platform }}.zip
           if-no-files-found: error
 
   publish:

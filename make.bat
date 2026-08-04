@@ -8,7 +8,7 @@ set "BUNDLE=ada83-extension.html"
 set "MANUAL=ada83-manual.md"
 set "VSIX=ada83.vsix"
 set "ICON=ada83-icon"
-set "LIBRARIES=bin-windows.zip"
+set "LIBRARIES=bin-dll.zip"
 set "STAGE=bin-windows"
 set "ZIG_VERSION=0.16.0"
 set "ZIG_NAME=zig-x86_64-windows-%ZIG_VERSION%"
@@ -59,7 +59,8 @@ echo MAKE [command] [target]
 echo.
 echo   clean      Deletes the bin-^<target^> folders, any Zig, and the leftovers
 echo              of older builds that wrote to this folder.
-echo   package    Makes the compiler and %VSIX%, then packs bin-^<target^>.zip.
+echo   package    Makes the compiler and %VSIX%, filling bin-^<target^> with
+echo              everything a release carries.
 echo   vsix       Makes %VSIX%, the VS Code extension, only.
 echo   help       Displays this help.
 echo.
@@ -89,7 +90,6 @@ call set "ARTWORK=%%ARTWORK_%TARGET%%%"
 call set "ARCHITECTURES=%%ARCHITECTURES_%TARGET%%%"
 call set "LAUNCHER=%%LAUNCHER_%TARGET%%%"
 call set "SHARED_LIBRARIES=%%SHARED_LIBRARIES_%TARGET%%%"
-set "ZIP=bin-%TARGET%.zip"
 set "STAGE=bin-%TARGET%"
 if not exist "%STAGE%" mkdir "%STAGE%"
 exit /b 0
@@ -97,7 +97,7 @@ exit /b 0
 :clean
 del /q "%EXECUTABLE_windows%" ada83.pdb LLVM-C.dll libffi-8.dll libstdc++-6.dll libzstd.dll ^
     libgcc_s_seh-1.dll libwinpthread-1.dll libxml2-16.dll libiconv-2.dll ^
-    zlib1.dll zig.zip bin-*.zip.new "%VSIX%" icon.rc icon.res icon.res.o >nul 2>nul
+    zlib1.dll zig.zip "%VSIX%" icon.rc icon.res icon.res.o >nul 2>nul
 for %%D in (staging zig bin-linux bin-macos bin-windows) do rmdir /s /q %%D >nul 2>nul
 echo Cleaned.
 exit /b 0
@@ -124,9 +124,8 @@ if defined ARCHITECTURES (
     call :native || exit /b 1
 )
 call :stage   || exit /b 1
-call :archive || exit /b 1
 rmdir /s /q staging >nul 2>nul
-echo Packaged %ZIP%.
+echo Packaged %STAGE%.
 exit /b 0
 
 :native
@@ -265,28 +264,6 @@ powershell -NoProfile -Command ^
 if exist "%STAGE%\%LAUNCHER%" exit /b 0
 echo Cannot write %LAUNCHER%. Making archives needs PowerShell 5 or later.
 exit /b 1
-
-:archive
-set "CONTENTS='%STAGE%\%EXECUTABLE%','%STAGE%\%RUNTIME%','%STAGE%\%VSIX%'"
-if exist "%STAGE%\%ARTWORK%"    set "CONTENTS=%CONTENTS%,'%STAGE%\%ARTWORK%'"
-if defined LAUNCHER             set "CONTENTS=%CONTENTS%,'%STAGE%\%LAUNCHER%'"
-if defined SHARED_LIBRARIES     set "CONTENTS=%CONTENTS%,'%STAGE%\%SHARED_LIBRARIES%'"
-if exist "%STAGE%\__MACOSX"     set "CONTENTS=%CONTENTS%,'%STAGE%\__MACOSX'"
-del /q "%ZIP%.new" staging\archive.zip >nul 2>nul
-echo   packing %ZIP%
-powershell -NoProfile -Command ^
-    "$ErrorActionPreference='Stop';" ^
-    "Compress-Archive -Path %CONTENTS% -DestinationPath 'staging\archive.zip' -Force;" ^
-    "Move-Item 'staging\archive.zip' '%ZIP%.new' -Force"
-if not exist "%ZIP%.new" (
-    echo Cannot write %ZIP%. Making archives needs PowerShell 5 or later.
-    exit /b 1
-)
-move /y "%ZIP%.new" "%ZIP%" >nul || (
-    echo Cannot replace %ZIP%; another program may be holding it open.
-    exit /b 1
-)
-exit /b 0
 
 :vsix
 if not defined TARGET (
