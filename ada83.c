@@ -17470,7 +17470,11 @@ void Add_User_Operator_Interps (Interp_List *out,
       Type *p0 = f->parameters[0].param_type;
       Type *p1 = arity == 2 ? f->parameters[1].param_type : NULL;
 
-      bool accepts = arity == 2 and (left_count == 0 or right_count == 0);
+      // An operand that takes its type from context contributes no types
+      // to match against, so the candidate stands until the operand is
+      // resolved against its profile.
+      bool accepts = arity == 2 ? (left_count == 0 or right_count == 0)
+                                : left_count == 0;
       for (u32 i = 0; i < left_count and not accepts; i++) {
         if (not Overload_Formal_Accepts (p0, left[i])) continue;
         if (arity == 1) { accepts = true; break; }
