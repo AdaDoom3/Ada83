@@ -104,12 +104,16 @@ for source in "$here"/extensions/*.ada; do
             report skip "$name" "symbol check needs nm, which is not on PATH"
             continue
         fi
+        # Mach-O prepends an underscore to every C-level symbol, so accept
+        # the name with or without one leading underscore
         symbols=$("$nm_tool" "$exe" 2>/dev/null)
-        if [[ -n $symbol ]] && ! grep -qw "$symbol" <<<"$symbols"; then
+        if [[ -n $symbol ]] &&
+           ! grep -qE "[[:space:]]_?$symbol\$" <<<"$symbols"; then
             report fail "$name" "symbol $symbol missing from the executable"
             continue
         fi
-        if [[ -n $symbol_not ]] && grep -qw "$symbol_not" <<<"$symbols"; then
+        if [[ -n $symbol_not ]] &&
+           grep -qE "[[:space:]]_?$symbol_not\$" <<<"$symbols"; then
             report fail "$name" "symbol $symbol_not present in the executable"
             continue
         fi
