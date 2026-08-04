@@ -26866,6 +26866,22 @@ void Check_Associations (Node_List *associations,
     }
 }
 
+bool Callable_With_No_Actuals (Symbol *sym) {
+  if (not sym) return false;
+  for (u32 f = 0; f < sym->parameter_count; f++)
+    if (not sym->parameters[f].default_value) return false;
+  return true;
+}
+
+// A name written without an actual parameter part denotes the overload
+// that needs none, whatever order the declarations came in.
+Symbol *Overload_Callable_With_No_Actuals (Symbol *sym) {
+  if (Callable_With_No_Actuals (sym)) return sym;
+  for (Symbol *other = sym; other; other = other->next_overload)
+    if (Callable_With_No_Actuals (other)) return other;
+  return sym;
+}
+
 void Check_Call_Actual_Parameter_Part (Symbol *callee,
                                               Node_List *arguments,
                                               Location location) {
@@ -30280,15 +30296,19 @@ void Check_Legality_Of_Node (Node *node,
     case NK_IDENTIFIER:
     case NK_SELECTED:
       if (position == NAME_POSITION_ORDINARY and
-          node->symbol and node->symbol->kind == SYMBOL_FUNCTION)
+          node->symbol and node->symbol->kind == SYMBOL_FUNCTION) {
+        node->symbol = Overload_Callable_With_No_Actuals (node->symbol);
         Check_Call_Actual_Parameter_Part (node->symbol, &(Node_List){0},
                                           node->location);
+      }
       break;
     case NK_CALL_STMT: {
       Node *name = node->assignment.target;
-      if (name and name->kind != NK_APPLY)
+      if (name and name->kind != NK_APPLY and name->symbol) {
+        name->symbol = Overload_Callable_With_No_Actuals (name->symbol);
         Check_Call_Actual_Parameter_Part (name->symbol, &(Node_List){0},
                                           node->location);
+      }
       break;
     }
     case NK_ASSIGNMENT:
