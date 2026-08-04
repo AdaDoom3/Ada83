@@ -2932,3 +2932,42 @@ private
   No_Input_Operands  : constant Asm_Input_Operand  := 0;
   No_Output_Operands : constant Asm_Output_Operand := 0;
 end;
+package Command_Line is
+  function Argument_Count return Natural;
+  function Argument (Number : Positive) return String;
+  function Command_Name return String;
+end;
+package body Command_Line is
+  function C_Argc return Integer;
+  pragma Import (C, C_Argc, "__ada_argc");
+  function C_Arg_Length (N : Integer) return Integer;
+  pragma Import (C, C_Arg_Length, "__ada_arg_length");
+  function C_Arg_Char (N : Integer; I : Integer) return Integer;
+  pragma Import (C, C_Arg_Char, "__ada_arg_char");
+  function Fetch (N : Integer) return String is
+    Result : String (1 .. C_Arg_Length (N));
+    begin
+      for I in Result'Range loop
+        Result (I) := Character'Val (C_Arg_Char (N, I - 1));
+      end loop;
+      return Result;
+    end;
+  function Argument_Count return Natural is
+    begin
+      if C_Argc < 1 then
+        return 0;
+      end if;
+      return C_Argc - 1;
+    end;
+  function Argument (Number : Positive) return String is
+    begin
+      if Number > Argument_Count then
+        raise Constraint_Error;
+      end if;
+      return Fetch (Number);
+    end;
+  function Command_Name return String is
+    begin
+      return Fetch (0);
+    end;
+end;

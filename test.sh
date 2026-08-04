@@ -106,10 +106,13 @@ START_MS=$(now_ms)
 
 mkdir -p test_results acats_logs
 
+# $2 names the directory to take, so that a tree holding one suite but not
+# the other does not have to be unpacked whole -- and unzip never stops to
+# ask whether to overwrite what is already there.
 unpack(){
     if command -v unzip >/dev/null; then
-        unzip -q "$1"
-    elif command -v tar >/dev/null && tar -xf "$1" 2>/dev/null; then
+        unzip -qo "$1" "$2/*"
+    elif command -v tar >/dev/null && tar -xf "$1" "$2" 2>/dev/null; then
         :
     elif command -v powershell.exe >/dev/null; then
         powershell.exe -NoProfile -Command \
@@ -119,12 +122,13 @@ unpack(){
     fi
 }
 
-if [[ ! -d acats ]]; then
-    [[ -f tests.zip ]] || die "no acats/ directory and no tests.zip"
-    pulse "unpacking the conformance suite"
-    unpack tests.zip || die "cannot unpack tests.zip"
+for suite in acats extensions; do
+    [[ -d $suite ]] && continue
+    [[ -f tests.zip ]] || die "no $suite/ directory and no tests.zip"
+    pulse "unpacking $suite"
+    unpack tests.zip "$suite" || die "cannot unpack $suite from tests.zip"
     pulse_stop
-fi
+done
 
 case $(uname -s 2>/dev/null) in
     Darwin)                 HOST_TARGET=macos ;;
@@ -241,7 +245,8 @@ compile_set(){
                     anc=${anc%.*}
                 done
                 ((u_current)) && current=1
-                grep -Eq "^define.*@${unit//./__}(\(|__)" "$MAIN_LL" && in_main=1
+                # library subprograms carry the _ada_ prefix; packages do not
+                grep -Eq "^define.*@(_ada_)?${unit//./__}(\(|__)" "$MAIN_LL" && in_main=1
             done
             ((in_main)) && continue
             ((current)) || continue
@@ -674,18 +679,143 @@ run_selector(){
     rm -f "$tmpfile" "${tmpfile}.sorted" "$listfile" "$PROGRESS_FILE" "$runner_status"
 }
 
+# The extension tests are Ada programs under extensions/, covering what ACATS
+# cannot see: the _ada_ symbol prefix on library subprograms, and Command_Line.
+# Each program self-reports PASSED or FAILED; comment headers steer the run:
+#
+#   -- ARGS: alpha "two words"     command-line arguments for the run
+#   -- LINK: other.ada             unit to compile separately and link in
+#   -- SYMBOL: _ada_main           symbol nm must find in the executable
+#   -- SYMBOL-NOT: _ada_expo       symbol nm must not find
+#
+# A file some test's -- LINK: header names is a support unit, not a test.
+ext_header(){ sed -n "s/^-- $2: //p" "$1" | tail -1; }
+
+run_extension_tests(){
+    EXT_PASS=0 EXT_FAIL=0 EXT_SKIP=0
+    [[ -d extensions ]] || { printf '  %sno extensions/ directory%s\n' "$DIM" "$OFF"; return 0; }
+
+    local nm_tool; nm_tool=$(command -v nm || command -v llvm-nm || true)
+    local work; work=$(mktemp -d "${TMPDIR:-/tmp}/ada83-ext.XXXXXX")
+
+    local -A is_support=()
+    local source linked
+    for source in extensions/*.ada; do
+        linked=$(ext_header "$source" LINK)
+        [[ -n $linked ]] && is_support[$linked]=1
+    done
+
+    heading "EXTENSIONS" "the _ada_ symbol prefix and Command_Line"
+
+    local name dir exe symbol symbol_not symbols args detail
+    local -a fragments
+    for source in extensions/*.ada; do
+        name=$(basename "$source" .ada)
+        [[ -n ${is_support[$name.ada]:-} ]] && continue
+
+        dir=$work/$name
+        mkdir -p "$dir"
+        fragments=()
+        detail=""
+
+        linked=$(ext_header "$source" LINK)
+        if [[ -n $linked ]]; then
+            if timed "$COMPILE_TIMEOUT" "$ADA83" --ir "extensions/$linked" \
+                 -o "$dir/linked.ll" >"$dir/compile.log" 2>&1; then
+                fragments+=("$dir/linked.ll")
+            else
+                detail="support unit $linked: $(tail -2 "$dir/compile.log" | tr '\n' ' ')"
+            fi
+        fi
+
+        if [[ -z $detail ]] &&
+           ! ( cd "$dir" && timed "$LINK_TIMEOUT" "$ADA83" "$ROOT/$source" \
+                 ${fragments[@]+"${fragments[@]}"} -o "$dir/$name" ) \
+                 >>"$dir/compile.log" 2>&1; then
+            detail=$(tail -2 "$dir/compile.log" | tr '\n' ' ')
+        fi
+
+        # msys bash resolves the extension-less path for -x and for running,
+        # but nm needs the file that actually exists
+        exe=$dir/$name
+        [[ -f $exe.exe ]] && exe=$exe.exe
+
+        if [[ -z $detail ]]; then
+            symbol=$(ext_header "$source" SYMBOL)
+            symbol_not=$(ext_header "$source" SYMBOL-NOT)
+            if [[ -n $symbol || -n $symbol_not ]]; then
+                if [[ -z $nm_tool ]]; then
+                    printf '  %sskip%s %s — symbol check needs nm, which is not on PATH\n' \
+                        "$DIM" "$OFF" "$name"
+                    ((++EXT_SKIP)); continue
+                fi
+                # Mach-O prepends an underscore to every C-level symbol, so
+                # accept the name with or without one leading underscore
+                symbols=$("$nm_tool" "$exe" 2>/dev/null) || symbols=""
+                if [[ -n $symbol ]] &&
+                   ! grep -qE "[[:space:]]_?$symbol\$" <<<"$symbols"; then
+                    detail="symbol $symbol missing from the executable"
+                elif [[ -n $symbol_not ]] &&
+                     grep -qE "[[:space:]]_?$symbol_not\$" <<<"$symbols"; then
+                    detail="symbol $symbol_not present in the executable"
+                fi
+            fi
+        fi
+
+        if [[ -z $detail ]]; then
+            args=$(ext_header "$source" ARGS)
+            eval "set -- $args"
+            if ! timed "$TEST_TIMEOUT" "$exe" "$@" >"$dir/run.out" 2>"$dir/run.err"; then
+                detail="exited $? — $(tail -2 "$dir/run.err" | tr '\n' ' ')"
+            elif grep -q FAILED "$dir/run.out"; then
+                detail=$(grep FAILED "$dir/run.out" | head -1)
+            elif ! grep -q PASSED "$dir/run.out"; then
+                detail="printed neither PASSED nor FAILED: $(head -1 "$dir/run.out")"
+            fi
+        fi
+
+        if [[ -z $detail ]]; then
+            printf '  %sok%s   %s\n' "$GOOD" "$OFF" "$name"
+            ((++EXT_PASS))
+        else
+            printf '  %sFAIL%s %s — %s\n' "$BAD" "$OFF" "$name" "$detail"
+            ((++EXT_FAIL))
+            [[ -n ${LOGS_DIR:-} ]] && cp "$dir/compile.log" "$LOGS_DIR/$name.ext" 2>/dev/null
+        fi
+    done
+
+    [[ ${KEEP_WORK:-0} == 1 ]] || rm -rf "$work"
+
+    printf '\n  %s%d extension tests: %d passed, %d failed, %d skipped%s\n' \
+        "$BOLD" $((EXT_PASS + EXT_FAIL + EXT_SKIP)) "$EXT_PASS" "$EXT_FAIL" \
+        "$EXT_SKIP" "$OFF"
+
+    # The summary is what CI gates on; XF is the extension failure count.
+    [[ -n ${RESULTS_DIR:-} && -f $RESULTS_DIR/test_summary.txt ]] &&
+        printf ' X=%d/%d XF=%d XS=%d\n' \
+            "$EXT_PASS" $((EXT_PASS + EXT_FAIL + EXT_SKIP)) "$EXT_FAIL" "$EXT_SKIP" \
+            >> "$RESULTS_DIR/test_summary.txt"
+    return 0
+}
+
 usage(){ cat <<'TEXT'
 Usage: test.sh [COMMAND] [SELECTOR]
 
-Run the ACATS conformance suite against the ada83 compiler.
-With no arguments, runs every test.
+Run the ACATS conformance suite and the extension tests against the ada83
+compiler. With no arguments, runs every test.
 
 Commands:
   run [SELECTOR]     run the suite and print a report (the default)
   check [SELECTOR]   run, then diff against the baseline; exit 1 on regression
   bless [SELECTOR]   run, then write the results as the new baseline
   list [SELECTOR]    list the tests a selector expands to
+  extensions         run only the extension tests
   help               display this help and exit
+
+A full run (no selector, or `all`) ends with the extension tests: the Ada
+programs under extensions/, which cover what ACATS cannot see -- the _ada_
+symbol prefix on library subprograms, and the Command_Line vendor package.
+They are counted separately, as X= and XF= in the run summary.
 
 Selectors:
   all                every test (default)
@@ -705,6 +835,7 @@ Environment:
   WORKER_TIMEOUT     last-resort cap around one complete test worker
   KILL_GRACE         seconds after TERM before timeout sends KILL (default: 2)
   BASELINE           baseline manifest path (default: acats.baseline)
+  KEEP_WORK          set to 1 to keep the extension stage's working tree
   TAP                set to 1 to also write a TAP stream
   NO_ANIMATE         set to 1 to draw no progress indicators
   NO_COLOUR          set to 1 to draw no colour
@@ -717,11 +848,16 @@ TEXT
 main(){
     local cmd=${1:-run}; shift || true
     case $cmd in
-        run|g)   run_selector "${1:-all}" "ACATS RUN — ${1:-all}" ;;
+        run|g)   run_selector "${1:-all}" "ACATS RUN — ${1:-all}"
+                 [[ ${1:-all} == all ]] && run_extension_tests ;;
         q)       run_selector "${1:-c32}" "ACATS RUN — ${1:-c32}" ;;
         check)   run_selector "${1:-all}" "ACATS CHECK — ${1:-all}"
+                 [[ ${1:-all} == all ]] && run_extension_tests
                  compare_to_baseline
-                 ((REGRESSIONS==0)) || exit 1 ;;
+                 ((REGRESSIONS==0 && ${EXT_FAIL:-0}==0)) || exit 1 ;;
+        extensions|x)
+                 run_extension_tests
+                 ((${EXT_FAIL:-0}==0)) || exit 1 ;;
         bless)   run_selector "${1:-all}" "ACATS BLESS — ${1:-all}"
                  write_baseline ;;
         list)    local pattern; pattern=$(selector_glob "${1:-all}")

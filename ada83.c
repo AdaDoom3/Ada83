@@ -6135,6 +6135,7 @@ void Emit_Runtime_Entry_Count             ();
 void Emit_Runtime_Accept_Complete         ();
 
 void Emit_Runtime_Text_Io             ();
+void Emit_Runtime_Command_Line        ();
 void Emit_Runtime_Image_Attributes    ();
 
 typedef struct {
@@ -17469,7 +17470,11 @@ void Add_User_Operator_Interps (Interp_List *out,
       Type *p0 = f->parameters[0].param_type;
       Type *p1 = arity == 2 ? f->parameters[1].param_type : NULL;
 
-      bool accepts = arity == 2 and (left_count == 0 or right_count == 0);
+      // An operand that takes its type from context contributes no types
+      // to match against, so the candidate stands until the operand is
+      // resolved against its profile.
+      bool accepts = arity == 2 ? (left_count == 0 or right_count == 0)
+                                : left_count == 0;
       for (u32 i = 0; i < left_count and not accepts; i++) {
         if (not Overload_Formal_Accepts (p0, left[i])) continue;
         if (arity == 1) { accepts = true; break; }
@@ -26306,9 +26311,11 @@ void Resolve_Compilation_Unit (Node *node) {
 
   if (not node->compilation_unit.separate_parent and
       Node_In_Any_Class (node->compilation_unit.unit, NODE_CLASS_SUBPROGRAM_BODY) and
-      not node->compilation_unit.unit->subprogram_body.is_separate)
+      not node->compilation_unit.unit->subprogram_body.is_separate) {
     Load_Library_Subprogram_Declaration (
       Get_Simple_Name (node->compilation_unit.unit));
+    Mark_Body_Loaded (Get_Simple_Name (node->compilation_unit.unit));
+  }
 
   Check_Subunit_Identifiers_Are_Unique (node);
 
@@ -26861,6 +26868,22 @@ void Check_Associations (Node_List *associations,
                     (int) formals[f].name.length, formals[f].name.data);
       return;
     }
+}
+
+bool Callable_With_No_Actuals (Symbol *sym) {
+  if (not sym) return false;
+  for (u32 f = 0; f < sym->parameter_count; f++)
+    if (not sym->parameters[f].default_value) return false;
+  return true;
+}
+
+// A name written without an actual parameter part denotes the overload
+// that needs none, whatever order the declarations came in.
+Symbol *Overload_Callable_With_No_Actuals (Symbol *sym) {
+  if (Callable_With_No_Actuals (sym)) return sym;
+  for (Symbol *other = sym; other; other = other->next_overload)
+    if (Callable_With_No_Actuals (other)) return other;
+  return sym;
 }
 
 void Check_Call_Actual_Parameter_Part (Symbol *callee,
@@ -30277,15 +30300,19 @@ void Check_Legality_Of_Node (Node *node,
     case NK_IDENTIFIER:
     case NK_SELECTED:
       if (position == NAME_POSITION_ORDINARY and
-          node->symbol and node->symbol->kind == SYMBOL_FUNCTION)
+          node->symbol and node->symbol->kind == SYMBOL_FUNCTION) {
+        node->symbol = Overload_Callable_With_No_Actuals (node->symbol);
         Check_Call_Actual_Parameter_Part (node->symbol, &(Node_List){0},
                                           node->location);
+      }
       break;
     case NK_CALL_STMT: {
       Node *name = node->assignment.target;
-      if (name and name->kind != NK_APPLY)
+      if (name and name->kind != NK_APPLY and name->symbol) {
+        name->symbol = Overload_Callable_With_No_Actuals (name->symbol);
         Check_Call_Actual_Parameter_Part (name->symbol, &(Node_List){0},
                                           node->location);
+      }
       break;
     }
     case NK_ASSIGNMENT:
@@ -31789,6 +31816,10 @@ size_t Mangle_Into_Buffer (char *buf, size_t pos, size_t max, Symbol *sym) {
   if (qualify_through_parent) {
     pos = Mangle_Into_Buffer (buf, pos, max, sym->parent);
     if (pos + 2 < max) { buf[pos++] = '_'; buf[pos++] = '_'; }
+  } else if (not sym->parent and Is_Subprogram (sym) and
+             not sym->is_imported and not sym->is_exported) {
+    for (const char *ch = "_ada_"; *ch and pos + 1 < max; ch++)
+      buf[pos++] = *ch;
   }
   return Mangle_Slice_Into (buf, pos, max, sym->name);
 }
@@ -37317,19 +37348,8 @@ void Emit_Entry_Family_Index_Check (Symbol *entry_sym, u32 idx_val) {
 void Note_Separate_Boundary_Callee (Symbol *sym) {
   if (not sym or sym->separate_callee_noted) return;
   if (not Is_Subprogram (sym)) return;
+  if (sym->is_predefined or sym->convention == CONVENTION_INTRINSIC) return;
 
-  if (not cg->subunit_parent) {
-    if (sym->body_claimed) return;
-    bool behind_separate_stub = false;
-    for (Symbol *ancestor = sym->parent; ancestor;
-         ancestor = ancestor->parent)
-      if (ancestor->kind == SYMBOL_PACKAGE and
-          ancestor->body_is_separate_stub) {
-        behind_separate_stub = true;
-        break;
-      }
-    if (not behind_separate_stub) return;
-  }
   if (not Has_Stable_Library_Name (sym) and
       not Is_Global (sym)) return;
   Append_Separate_Callee (sym);
@@ -39935,7 +39955,13 @@ Value Lower_Attribute (Node *node) {
   Symbol *prefix_symbol        = prefix->symbol;
   if (not prefix_type and prefix_symbol and prefix_symbol->type)
     prefix_type = prefix_symbol->type;
-  if (prefix_type and
+
+  if (Expression_Is_Slice (prefix)) {
+    needs_runtime_bounds = true;
+    prefix_symbol        = NULL;
+  }
+
+  if (not needs_runtime_bounds and prefix_type and
       (Is_Unconstrained_Array (prefix_type) or
        Has_Dynamic_Bounds (prefix_type)))
     if (not prefix_symbol or
@@ -49203,7 +49229,7 @@ void Lower_Array_Of_Character_Initializer (Node        *node,
                            Type_Needs_Fat_Pointer (sym->type);
 
   if (init->kind == NK_STRING or not Is_Constrained_Array (init_type) or
-      Type_Needs_Fat_Pointer (init_type)) {
+      Type_Needs_Fat_Pointer (init_type) or Expression_Is_Slice (init)) {
     u32 fat = Lower_Expression (init).reg;
     if (Object_Adopts_Its_Initializers_Storage (node, sym, ty)) {
       Emit ("  ; the object IS the result\n");
@@ -52130,7 +52156,9 @@ void Emit_Program_Entry_Point () {
   }
 
   Emit ("@__library_anchors = private global i64 0\n");
-  Emit ("define i32 @main() {\n");
+  Emit ("define i32 @main(i32 %%argc, ptr %%argv) {\n");
+  Emit ("  store i32 %%argc, ptr @__ada_argc_value\n");
+  Emit ("  store ptr %%argv, ptr @__ada_argv_value\n");
   Emit ("  call void @__ada_tasking_init()\n");
 
   bool *elaborated = cg->elab_func_count
@@ -55252,6 +55280,68 @@ void Emit_Runtime_Text_Io () {
   }
 }
 
+void Emit_Runtime_Command_Line () {
+  Emit_Verbatim (
+    "; ---- EXTENSION_COMMAND_LINE: argc/argv captured by main ----\n"
+    "@__ada_argc_value = linkonce_odr global i32 0\n"
+    "@__ada_argv_value = linkonce_odr global ptr null\n"
+    "declare i64 @strlen(ptr nocapture)\n\n"
+    "define linkonce_odr ptr @__ada_arg_pointer(i32 %n)"
+    " nounwind willreturn memory(read) {\n"
+    "entry:\n"
+    "  %argc = load i32, ptr @__ada_argc_value\n"
+    "  %neg = icmp slt i32 %n, 0\n"
+    "  %oob = icmp sge i32 %n, %argc\n"
+    "  %bad = or i1 %neg, %oob\n"
+    "  br i1 %bad, label %none, label %fetch\n"
+    "fetch:\n"
+    "  %base = load ptr, ptr @__ada_argv_value\n"
+    "  %null = icmp eq ptr %base, null\n"
+    "  br i1 %null, label %none, label %index\n"
+    "index:\n"
+    "  %n64 = sext i32 %n to i64\n"
+    "  %slot = getelementptr ptr, ptr %base, i64 %n64\n"
+    "  %arg = load ptr, ptr %slot\n"
+    "  ret ptr %arg\n"
+    "none:\n"
+    "  ret ptr null\n"
+    "}\n\n"
+    "define linkonce_odr i32 @__ada_argc()"
+    " nounwind willreturn memory(read) {\n"
+    "entry:\n"
+    "  %argc = load i32, ptr @__ada_argc_value\n"
+    "  ret i32 %argc\n"
+    "}\n\n"
+    "define linkonce_odr i32 @__ada_arg_length(i32 %n)"
+    " nounwind willreturn memory(read) {\n"
+    "entry:\n"
+    "  %arg = call ptr @__ada_arg_pointer(i32 %n)\n"
+    "  %null = icmp eq ptr %arg, null\n"
+    "  br i1 %null, label %none, label %measure\n"
+    "measure:\n"
+    "  %len = call i64 @strlen(ptr %arg)\n"
+    "  %len32 = trunc i64 %len to i32\n"
+    "  ret i32 %len32\n"
+    "none:\n"
+    "  ret i32 0\n"
+    "}\n\n"
+    "define linkonce_odr i32 @__ada_arg_char(i32 %n, i32 %i)"
+    " nounwind willreturn memory(read) {\n"
+    "entry:\n"
+    "  %arg = call ptr @__ada_arg_pointer(i32 %n)\n"
+    "  %null = icmp eq ptr %arg, null\n"
+    "  br i1 %null, label %none, label %index\n"
+    "index:\n"
+    "  %i64 = sext i32 %i to i64\n"
+    "  %slot = getelementptr i8, ptr %arg, i64 %i64\n"
+    "  %byte = load i8, ptr %slot\n"
+    "  %val = zext i8 %byte to i32\n"
+    "  ret i32 %val\n"
+    "none:\n"
+    "  ret i32 0\n"
+    "}\n\n");
+}
+
 void Emit_Runtime_Image_Attributes () {
   Rep rts_sbt = Pick_String_Bound_Rep ();
   Rep iat     = Pick_Arith_Rep ();
@@ -55701,6 +55791,7 @@ void Emit_Module_Prologue () {
   Emit_Runtime_Raise ();
   Emit_Runtime_Tasking ();
   Emit_Runtime_Text_Io ();
+  Emit_Runtime_Command_Line ();
   Emit_Runtime_Image_Attributes ();
   cg->output = &cg->module;
 
