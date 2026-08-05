@@ -3866,6 +3866,7 @@ typedef struct {
 
 typedef enum {
   PENDING_ELABORATION_OBJECT_INITIALIZER_KIND,
+  PENDING_ELABORATION_COMPOSITE_INITIALIZER_KIND,
   PENDING_ELABORATION_DECLARATION_KIND,
 } Pending_Elaboration_Kind;
 
@@ -48064,6 +48065,27 @@ void Emit_Pending_Library_Elaborations () {
       continue;
     }
 
+    if (kind == PENDING_ELABORATION_COMPOSITE_INITIALIZER_KIND) {
+      Type *composite = sym->type;
+      Emit ("  ; elaborate %.*s\n", (int) sym->name.length, sym->name.data);
+      u32 destination = Emit_Result ("getelementptr i8, ptr ");
+      Emit_Symbol_Ref (sym);
+      Emit (", i64 0\n");
+      u32 size_temp = Emit_Int_Const (
+        composite->size ? composite->size : 1, Pick_Size_Rep ()).reg;
+      if (Is_Constrained_Array (composite)) {
+        Value source = Lower_Expression (node);
+        if (Rep_Is_Fat_Pointer (source.rep))
+          Emit_Fat_To_Array_Memcpy (Fat_Ptr_As_Value (source.reg).reg,
+                                    destination, composite);
+        else
+          Emit_Memcpy (destination, source.reg, size_temp);
+      } else {
+        Emit_Memcpy (destination, Lower_Composite_Address (node), size_temp);
+      }
+      continue;
+    }
+
     Type   *ty   = sym->type;
     Rep     dst  = To_Rep (ty);
 
@@ -49008,6 +49030,13 @@ void Lower_Library_Global_Object (Node        *node,
       not shape->is_constrained_array and not shape->is_record and
       not Rep_Is_Fat_Pointer (shape->rep))
     Defer_Library_Elaboration (PENDING_ELABORATION_OBJECT_INITIALIZER_KIND,
+                               sym, node->object_decl.init);
+
+  if (node->object_decl.init and not has_static_value and
+      (shape->is_constrained_array or shape->is_record) and
+      not Rep_Is_Fat_Pointer (shape->rep) and
+      not Has_Dynamic_Bounds (shape->type))
+    Defer_Library_Elaboration (PENDING_ELABORATION_COMPOSITE_INITIALIZER_KIND,
                                sym, node->object_decl.init);
 
   Emit (" = %s %s\n",
