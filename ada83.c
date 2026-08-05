@@ -3867,6 +3867,7 @@ typedef struct {
 typedef enum {
   PENDING_ELABORATION_OBJECT_INITIALIZER_KIND,
   PENDING_ELABORATION_COMPOSITE_INITIALIZER_KIND,
+  PENDING_ELABORATION_NESTED_PACKAGE_KIND,
   PENDING_ELABORATION_DECLARATION_KIND,
 } Pending_Elaboration_Kind;
 
@@ -48065,6 +48066,13 @@ void Emit_Pending_Library_Elaborations () {
       continue;
     }
 
+    if (kind == PENDING_ELABORATION_NESTED_PACKAGE_KIND) {
+      Emit_Call_Void_Begin ("void @");
+      Emit_Symbol_Name (sym);
+      Emit_Call_End ("___elab()  ; nested package body");
+      continue;
+    }
+
     if (kind == PENDING_ELABORATION_COMPOSITE_INITIALIZER_KIND) {
       Type *composite = sym->type;
       Emit ("  ; elaborate %.*s\n", (int) sym->name.length, sym->name.data);
@@ -51374,6 +51382,13 @@ void Lower_Package_Body (Node *node) {
   Emit_Elaboration_Function_Close (frame);
 
   Process_Deferred_Bodies (saved_deferred);
+
+  if (pkg_sym and pkg_sym->parent) {
+    Defer_Library_Elaboration (PENDING_ELABORATION_NESTED_PACKAGE_KIND,
+                               pkg_sym, NULL);
+    return;
+  }
+
   Register_Library_Elaboration_Function (pkg_sym, true);
 }
 
