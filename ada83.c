@@ -7377,6 +7377,8 @@ int      Loaded_Body_Capacity       = 0;
 
 Loading_Set Loading_Packages = {0};
 
+Slice           Subunit_Ancestor_Unit_Name = {NULL, 0};
+
 Symbol  **Bodyless_Required_Packages       = NULL;
 
 u32  Bodyless_Required_Package_Count  = 0;
@@ -48930,13 +48932,23 @@ void Lower_Library_Global_Object (Node        *node,
   if (sym->extern_emitted) return;
   sym->extern_emitted = true;
 
+  const char *constant_linkage = "linkonce_odr";
+  if (sym->defining_scope)
+    for (u32 i = 0; i < sym->defining_scope->symbol_count; i++) {
+      Symbol *neighbour = sym->defining_scope->symbols[i];
+      if (neighbour and neighbour->body_is_separate_stub) {
+        constant_linkage = "weak_odr";
+        break;
+      }
+    }
+
   Emit_Global_Ref (sym);
 
   if (node->object_decl.is_constant and node->object_decl.init) {
     Node *init = node->object_decl.init;
 
     if (init->kind == NK_INTEGER) {
-      Emit (" = linkonce_odr constant %s %lld\n",
+      Emit (" = %s constant %s %lld\n", constant_linkage,
             Spell_Rep (shape->rep),
             (long long) init->integer_lit.value);
       return;
@@ -48946,7 +48958,8 @@ void Lower_Library_Global_Object (Node        *node,
       Slice text   = init->string_val.text;
       i64      length = (i64) text.length;
 
-      Emit (".data = linkonce_odr constant [%lld x i8] c\"", (long long) length);
+      Emit (".data = %s constant [%lld x i8] c\"", constant_linkage,
+            (long long) length);
       for (u32 j = 0; j < text.length; j++) {
         unsigned char byte = (unsigned char) text.data[j];
         if (Byte_Is_Literal (byte)) Emit ("%c", byte);
@@ -48958,11 +48971,11 @@ void Lower_Library_Global_Object (Node        *node,
                                                                      : sm->type_string);
       const char *bound_text = Spell_Rep (bound_rep);
       Emit_Global_Ref (sym);
-      Emit (".bounds = linkonce_odr constant %s { %s 1, %s %d }\n",
+      Emit (".bounds = %s constant %s { %s 1, %s %d }\n", constant_linkage,
             Spell_Bounds_Type (bound_rep), bound_text, bound_text, (int) length);
 
       Emit_Global_Ref (sym);
-      Emit (" = linkonce_odr constant " FAT_PTR_TYPE " { ptr @");
+      Emit (" = %s constant " FAT_PTR_TYPE " { ptr @", constant_linkage);
       Emit_Symbol_Name (sym);
       Emit (".data, ptr @");
       Emit_Symbol_Name (sym);
@@ -59842,7 +59855,11 @@ void Load_Package_Spec (Slice name, char *src) {
     return;
   }
 
-  if (Try_Load_From_ALI (name)) {
+  bool ancestor_of_a_subunit =
+    Subunit_Ancestor_Unit_Name.length and
+    Slices_Match (name, Subunit_Ancestor_Unit_Name);
+
+  if (not ancestor_of_a_subunit and Try_Load_From_ALI (name)) {
     return;
   }
 
@@ -60095,7 +60112,8 @@ void Load_Package_Spec (Slice name, char *src) {
         previous = supplied_body;
       }
     }
-    if (not Specification_Declares_A_Generic_Unit (cu)) return;
+    if (not ancestor_of_a_subunit and
+        not Specification_Declares_A_Generic_Unit (cu)) return;
     {
       Catalog_Entry *entry = Catalog_Find (name, CATALOG_UNIT_BODY);
       if (not entry)
@@ -60458,6 +60476,14 @@ void Compile_File (const char *input_path, const char *output_path) {
   sm->current_scope  = sm->global_scope;
   sm->next_unique_id = 1;
   Symbol_Manager_Init_Predefined ();
+
+  for (int i = 0; i < unit_count and not Subunit_Ancestor_Unit_Name.length; i++) {
+    Node *ancestor = units[i] ? units[i]->compilation_unit.separate_parent : NULL;
+    while (ancestor and ancestor->kind == NK_SELECTED)
+      ancestor = ancestor->selected.prefix;
+    if (ancestor and ancestor->kind == NK_IDENTIFIER)
+      Subunit_Ancestor_Unit_Name = ancestor->string_val.text;
+  }
 
   for (int i = 0; i < unit_count; i++)
     Resolve_Compilation_Unit (units[i]);
