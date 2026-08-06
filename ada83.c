@@ -4340,9 +4340,12 @@ typedef enum {
   EXCEPTION_KIND_TASKING_ERROR
 } Exception_Kind;
 
+#define NO_ANALYSIS_CHECK_SITE 0xFFFFFFFFu
+
 typedef struct {
   Check_Kind kind;
   bool       is_required;
+  u32        site;
 } Check_Permission;
 
 typedef struct {
@@ -31736,8 +31739,90 @@ I1 Emit_Conjunction_Result (Boolean_Conjunction conjunction) {
   return (I1){ final.reg };
 }
 
+#ifdef _WIN32
+  #define HOST_NULL_DEVICE "NUL"
+#else
+  #define HOST_NULL_DEVICE "/dev/null"
+#endif
+
+#define MAX_ANALYSIS_CHECK_SITES 65536
+
+typedef struct {
+  Check_Kind kind;
+  Location   location;
+  bool        suppressed;
+  bool        emitted;
+  const char *verdict;
+  const char *reason;
+  Symbol     *owner;
+} Analysis_Check_Site;
+
+Analysis_Check_Site Analysis_Check_Sites[MAX_ANALYSIS_CHECK_SITES];
+u32      Analysis_Check_Site_Count = 0;
+bool     Analysis_Sites_Overflowed = false;
+bool     Analyze_Mode              = false;
+Location Current_Emit_Location     = {0};
+
+const char *Spell_Check_Kind (Check_Kind kind) {
+  switch (kind) {
+    case CHECK_KIND_RANGE:        return "range_check";
+    case CHECK_KIND_OVERFLOW:     return "overflow_check";
+    case CHECK_KIND_INDEX:        return "index_check";
+    case CHECK_KIND_LENGTH:       return "length_check";
+    case CHECK_KIND_DIVISION:     return "division_check";
+    case CHECK_KIND_ACCESS:       return "access_check";
+    case CHECK_KIND_DISCRIMINANT: return "discriminant_check";
+    case CHECK_KIND_ELABORATION:  return "elaboration_check";
+    case CHECK_KIND_STORAGE:      return "storage_check";
+    default:                      return "check";
+  }
+}
+
+u32 Note_Check_Site (Check_Kind kind, bool suppressed) {
+  if (not Analyze_Mode) return NO_ANALYSIS_CHECK_SITE;
+  if (Analysis_Check_Site_Count >= MAX_ANALYSIS_CHECK_SITES) {
+    Analysis_Sites_Overflowed = true;
+    return NO_ANALYSIS_CHECK_SITE;
+  }
+  Analysis_Check_Sites[Analysis_Check_Site_Count] = (Analysis_Check_Site){
+    .kind       = kind,
+    .location   = Current_Emit_Location,
+    .suppressed = suppressed,
+    .emitted    = false,
+    .verdict    = NULL,
+    .reason     = NULL,
+    .owner      = cg ? cg->current_function : NULL
+  };
+  return Analysis_Check_Site_Count++;
+}
+
+/* A check is emitted by several routines, not all of which are handed the
+   permission that authorised it, so the site is paired with the emission
+   through the one thing they share: the permission is taken immediately
+   before the check is written.  The pending site is consumed by the first
+   raise that follows it, and cleared, so a site whose check is not written
+   cannot be claimed by an unrelated raise later on. */
+u32 Pending_Check_Site = NO_ANALYSIS_CHECK_SITE;
+
+void Note_Check_Site_Pending (u32 site) { Pending_Check_Site = site; }
+
+void Note_Check_Not_Needed (const char *verdict, const char *reason) {
+  if (Pending_Check_Site < Analysis_Check_Site_Count) {
+    Analysis_Check_Sites[Pending_Check_Site].verdict = verdict;
+    Analysis_Check_Sites[Pending_Check_Site].reason  = reason;
+  }
+  Pending_Check_Site = NO_ANALYSIS_CHECK_SITE;
+}
+
+void Note_Check_Emitted (void) {
+  if (Pending_Check_Site < Analysis_Check_Site_Count)
+    Analysis_Check_Sites[Pending_Check_Site].emitted = true;
+  Pending_Check_Site = NO_ANALYSIS_CHECK_SITE;
+}
+
 void Emit_Location (Location location) {
   if (location.line > 0) {
+    Current_Emit_Location = location;
     const char *filename = location.filename ? location.filename : "?";
 
     const char *base = filename;
@@ -32284,7 +32369,11 @@ Check_Permission Check_Permission_For (Check_Kind kind, Type *type,
     region = region->defining_scope ? region->defining_scope->owner : NULL;
   }
 
-  return (Check_Permission){ .kind = kind, .is_required = not permitted };
+  u32 site = Note_Check_Site (kind, permitted);
+  Note_Check_Site_Pending (permitted ? NO_ANALYSIS_CHECK_SITE : site);
+  return (Check_Permission){ .kind        = kind,
+                             .is_required = not permitted,
+                             .site        = site };
 }
 
 bool Check_Is_Required (Check_Permission permission) {
@@ -32524,6 +32613,9 @@ Value Emit_Overflow_Checked_Op (
     Check_Permission_For (CHECK_KIND_OVERFLOW, result_type, NULL);
 
   if (is_unsigned or not Check_Is_Required (permission)) {
+    if (is_unsigned and Check_Is_Required (permission))
+      Note_Check_Not_Needed ("cannot_fail",
+                             "modular arithmetic wraps instead of overflowing");
     u32 t = Emit_Result ("%s %s %s, %s\n",  op,  Spell_Rep (llvm_type),  REG (left),  REG (right));
 
     return Wrap_As (t, result_type);
@@ -32783,7 +32875,10 @@ u32 Emit_Constraint_Check_Internal (u32 val, Rep val_rep,
                       target->kind == TYPE_CHARACTER or
                       target->kind == TYPE_FIXED);
   bool is_float_like = (target->kind == TYPE_FLOAT);
-  if (not is_int_like and not is_float_like) return val;
+  if (not is_int_like and not is_float_like) {
+    Note_Check_Not_Needed ("not_applicable", "the type has no range to check");
+    return val;
+  }
 
   if (is_int_like and
       target->low_bound.kind  == BOUND_INTEGER and
@@ -32809,7 +32904,11 @@ u32 Emit_Constraint_Check_Internal (u32 val, Rep val_rep,
           &target->low_bound, &target->high_bound,
           &source->low_bound, &source->high_bound);
     }
-    if (full_range) return val;
+    if (full_range) {
+      Note_Check_Not_Needed ("cannot_fail",
+                           "every value the operand can hold is in range");
+      return val;
+    }
   }
 
   bool low_is_known  = (target->low_bound.kind  == BOUND_INTEGER or
@@ -32818,7 +32917,10 @@ u32 Emit_Constraint_Check_Internal (u32 val, Rep val_rep,
   bool high_is_known = (target->high_bound.kind == BOUND_INTEGER or
                         target->high_bound.kind == BOUND_FLOAT   or
                         target->high_bound.kind == BOUND_EXPR);
-  if (not low_is_known or not high_is_known) return val;
+  if (not low_is_known or not high_is_known) {
+    Note_Check_Not_Needed ("unchecked", "the bounds are not available here");
+    return val;
+  }
 
   Value value, low, high;
 
@@ -32843,7 +32945,10 @@ u32 Emit_Constraint_Check_Internal (u32 val, Rep val_rep,
     low  = Wrap (low.reg,  Or_Else (low.rep,  Pick_Arith_Rep ()));
     high = Wrap (high.reg, Or_Else (high.rep, Pick_Arith_Rep ()));
   }
-  if (not low.reg or not high.reg) return val;
+  if (not low.reg or not high.reg) {
+    Note_Check_Not_Needed ("unchecked", "the bounds are not available here");
+    return val;
+  }
 
   Emit_Runtime_Check (permission,
     Check_Requires (Emit_In_Range (value, low, high, Is_Unsigned (target))),
@@ -32992,6 +33097,7 @@ void Emit_Discrete_Range_Mark_Check (Node *range_node) {
 
 void Emit_Check_With_Raise_Named (u32 cond, bool raise_on_true,
                    const char *exc_name, const char *comment) {
+  Note_Check_Emitted ();
   u32 raise_label = cg->label_id++;
   u32 cont_label  = cg->label_id++;
   Emit_Branch_On ((I1){ cond }, raise_on_true ? raise_label : cont_label,
@@ -34928,6 +35034,9 @@ void Emit_Elaboration_Check (Symbol *callee) {
   if (flag)
     Emit_Check_With_Raise_Named (flag, false, "program_error",
                                  "subprogram body not yet elaborated");
+  else
+    Note_Check_Not_Needed ("cannot_fail",
+                           "the body is elaborated before this point");
 }
 
 void Emit_Store_Fat_Pointer_Fields_To_Symbol
@@ -47511,7 +47620,11 @@ u32 Emit_Task_Body_Unelaborated (Type *ty, u32 acc) {
       Check_Permission_For (CHECK_KIND_ELABORATION, NULL, ty->defining_symbol);
     if (not Check_Is_Required (permission)) return acc;
     u32 flag = Emit_Elaboration_Flag_Load (ty->defining_symbol);
-    if (not flag) return acc;
+    if (not flag) {
+      Note_Check_Not_Needed ("cannot_fail",
+                             "the body is elaborated before this point");
+      return acc;
+    }
     u32 not_elaborated = Emit_Result ("xor i1 %s, 1\n",  REG (flag));
     if (not acc) return not_elaborated;
     return Emit_Result ("or i1 %s, %s\n",  REG (acc),  REG (not_elaborated));
@@ -60492,6 +60605,123 @@ bool Inputs_Are_Order_Sensitive (const char *const *inputs, int input_count) {
   return false;
 }
 
+void Write_Json_Text (FILE *out, const char *text, u32 length) {
+  for (u32 i = 0; i < length; i++) {
+    unsigned char ch = (unsigned char) text[i];
+    if (ch == '"' or ch == '\\')   fprintf (out, "\\%c", ch);
+    else if (ch == '\n')           fputs ("\\n", out);
+    else if (ch == '\t')           fputs ("\\t", out);
+    else if (ch == '\r')           fputs ("\\r", out);
+    else if (ch < 0x20)            fprintf (out, "\\u%04x", ch);
+    else                           fputc ((int) ch, out);
+  }
+}
+
+void Write_Json_String (FILE *out, const char *text) {
+  fputc ('"', out);
+  if (text) Write_Json_Text (out, text, (u32) strlen (text));
+  fputc ('"', out);
+}
+
+/* A site belongs to the unit under analysis when it was emitted from the
+   file named on the command line.  Checks in the units it depends on are
+   that unit's business, and reporting them would bury the ones asked for:
+   a hello-world draws about twenty checks of its own and some hundreds
+   from Text_IO. */
+bool Analysis_Site_Is_In_Unit (Analysis_Check_Site *site,
+                               const char *input_path) {
+  return site->location.filename and input_path and
+         strcmp (site->location.filename, input_path) == 0;
+}
+
+/* What became of a check.  "checked" is a check in the generated code and
+   "suppressed" is permission given; the rest is the compiler having written
+   no check.  That is "cannot_fail" where it determined one unnecessary,
+   "not_applicable" where the construct never had one, "unchecked" where it
+   could not build one, and "unknown" where this implementation does not yet
+   record which of those happened. */
+const char *Spell_Check_Verdict (Analysis_Check_Site *site) {
+  if (site->suppressed) return "suppressed";
+  if (site->emitted)    return "checked";
+  if (site->verdict)    return site->verdict;
+  return "unknown";
+}
+
+void Write_Analysis_Report (FILE *out, const char *input_path) {
+  u32 by_kind[CHECK_KIND_STORAGE + 1] = {0};
+  u32 suppressed_total  = 0;
+  u32 checked_total     = 0;
+  u32 cannot_fail_total = 0;
+  u32 unchecked_total   = 0;
+  u32 not_applicable    = 0;
+  u32 unknown_total     = 0;
+  u32 reported          = 0;
+
+  for (u32 i = 0; i < Analysis_Check_Site_Count; i++) {
+    Analysis_Check_Site *site = &Analysis_Check_Sites[i];
+    if (not Analysis_Site_Is_In_Unit (site, input_path)) continue;
+    if (site->kind <= CHECK_KIND_STORAGE) by_kind[site->kind]++;
+    const char *verdict = Spell_Check_Verdict (site);
+    if      (strcmp (verdict, "suppressed")     == 0) suppressed_total++;
+    else if (strcmp (verdict, "checked")        == 0) checked_total++;
+    else if (strcmp (verdict, "cannot_fail")    == 0) cannot_fail_total++;
+    else if (strcmp (verdict, "not_applicable") == 0) not_applicable++;
+    else if (strcmp (verdict, "unchecked")      == 0) unchecked_total++;
+    else                                              unknown_total++;
+    reported++;
+  }
+
+  fputs ("{\n  \"version\": 1,\n  \"source\": ", out);
+  Write_Json_String (out, input_path);
+  fputs (",\n  \"sites\": [", out);
+
+  bool wrote_site = false;
+  for (u32 i = 0; i < Analysis_Check_Site_Count; i++) {
+    Analysis_Check_Site *site = &Analysis_Check_Sites[i];
+    if (not Analysis_Site_Is_In_Unit (site, input_path)) continue;
+    fputs (wrote_site ? ",\n    {" : "\n    {", out);
+    wrote_site = true;
+    fputs (" \"kind\": ", out);
+    Write_Json_String (out, Spell_Check_Kind (site->kind));
+    fputs (", \"file\": ", out);
+    Write_Json_String (out, site->location.filename);
+    fprintf (out, ", \"line\": %u, \"column\": %u",
+             site->location.line, site->location.column);
+    fputs (", \"verdict\": ", out);
+    Write_Json_String (out, Spell_Check_Verdict (site));
+    if (site->reason and not site->suppressed and not site->emitted) {
+      fputs (", \"reason\": ", out);
+      Write_Json_String (out, site->reason);
+    }
+    if (site->owner and site->owner->name.length) {
+      fputs (", \"subprogram\": \"", out);
+      Write_Json_Text (out, site->owner->name.data, site->owner->name.length);
+      fputc ('"', out);
+    }
+    fputs (" }", out);
+  }
+
+  fputs (wrote_site ? "\n  ],\n" : "],\n", out);
+  fprintf (out, "  \"summary\": {\n    \"sites\": %u,\n    \"checked\": %u,"
+                "\n    \"cannot_fail\": %u,\n    \"not_applicable\": %u,"
+                "\n    \"unchecked\": %u,\n    \"unknown\": %u,"
+                "\n    \"suppressed\": %u",
+           reported, checked_total, cannot_fail_total, not_applicable,
+           unchecked_total, unknown_total, suppressed_total);
+  if (Analysis_Sites_Overflowed)
+    fprintf (out, ",\n    \"truncated\": true, \"limit\": %d",
+             MAX_ANALYSIS_CHECK_SITES);
+  fputs (",\n    \"by_kind\": {", out);
+  bool first = true;
+  for (u32 k = 0; k <= CHECK_KIND_STORAGE; k++) {
+    if (not by_kind[k]) continue;
+    fprintf (out, "%s\n      \"%s\": %u", first ? "" : ",",
+             Spell_Check_Kind ((Check_Kind) k), by_kind[k]);
+    first = false;
+  }
+  fputs (first ? "}\n  }\n}\n" : "\n    }\n  }\n}\n", out);
+}
+
 void Compile_File (const char *input_path, const char *output_path) {
   Loaded_Body_Count               = 0;
   Bodyless_Required_Package_Count = 0;
@@ -60637,8 +60867,18 @@ void Compile_File (const char *input_path, const char *output_path) {
   }
 
   FILE *out_file = stdout;
-  bool close_output = false;
-  if (output_path) {
+  bool close_output   = false;
+  bool discard_output = false;
+  if (Analyze_Mode) {
+    out_file = fopen (HOST_NULL_DEVICE, "w");
+    if (not out_file) {
+      Report_Driver_Error ("cannot open %s: %s", HOST_NULL_DEVICE,
+                           strerror (errno));
+      free (source);
+      return;
+    }
+    discard_output = true;
+  } else if (output_path) {
     out_file = fopen (output_path, "w");
     if (not out_file) {
       Report_Driver_Error ("cannot open output file '%s': %s",
@@ -60734,6 +60974,10 @@ void Compile_File (const char *input_path, const char *output_path) {
       fclose (ali_file);
       fprintf (stderr, "Generated ALI file '%s'\n", ali_path);
     }
+  }
+  if (discard_output) {
+    fclose (out_file);
+    Write_Analysis_Report (stdout, input_path);
   }
   Report_Diagnostic_Summary ();
   free (source);
@@ -63531,6 +63775,10 @@ void Print_Usage (FILE *out, const char *program_name) {
       "  --trace-emit\n"
       "      Annotate each emitted IR line with the compiler source\n"
       "      site that produced it, for debugging the compiler itself.\n"
+      "  --analyze\n"
+      "      Report the runtime checks the unit contains, as JSON on\n"
+      "      stdout: where each one is, and whether it reached the\n"
+      "      generated code.  No object, IR or ALI file is written.\n"
       "\n"
       "Runtime checks (Ada ):\n"
       "  --suppress=<check>[,<check>...]\n"
@@ -63708,6 +63956,9 @@ int main (int argc, char *argv[]) {
     } else if (strcmp (argument, "--emit-llvm") == 0) {
       emit_llvm = true;
     } else if (strcmp (argument, "--ir") == 0) {
+      Ir_Output_Mode = true;
+    } else if (strcmp (argument, "--analyze") == 0) {
+      Analyze_Mode   = true;
       Ir_Output_Mode = true;
     } else if (strncmp (argument, "--suppress=", 11) == 0) {
       if (not Suppress_Checks_From_Command_Line (argument + 11))
