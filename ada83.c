@@ -23092,7 +23092,12 @@ Node *Find_Pragma_Named_Argument (Node_List *args, Slice formal) {
       Node *choice = arg->association.choices.items[c];
       if (not choice or choice->kind != NK_IDENTIFIER) continue;
       if (not Slices_Match (choice->string_val.text, formal)) continue;
-      if (not found) found = arg->association.expression;
+      if (found)
+        Note_Pending_Warning (WARNING_PRAGMA_IGNORED, arg->location,
+          "'%.*s' is given more than once in this pragma; this one has no "
+          "effect", (int) formal.length, formal.data);
+      else
+        found = arg->association.expression;
     }
   }
   return found;
