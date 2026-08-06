@@ -50466,6 +50466,7 @@ void Lower_Subprogram_Body (Node *node) {
           Spell_Return_Rep (sym));
     Emit_Symbol_Name (sym);
     Emit_Formal_Parameter_List (sym, is_nested, true);
+    if (sym and sym->is_inline) Emit (" inlinehint");
     Emit (" {\n");
     Function_Body_Begin ();
 
