@@ -753,7 +753,8 @@ void Report_Driver_Warning (const char *format, ...)
   _ (WARNING_CONSTRAINT_ERROR,        "constraint-error")        \
   _ (WARNING_READ_BEFORE_ASSIGNMENT,  "read-before-assignment")  \
   _ (WARNING_REDUNDANT_WITH,          "redundant-with")          \
-  _ (WARNING_PRAGMA_IGNORED,          "pragma-ignored")
+  _ (WARNING_PRAGMA_IGNORED,          "pragma-ignored")          \
+  _ (WARNING_UNRECOGNIZED_PRAGMA,     "unrecognized-pragma")
 
 typedef enum {
 #define _(kind, name) kind,
@@ -24041,6 +24042,22 @@ void Resolve_Subprogram_Renaming (Node *node) {
   node->symbol = sym;
 }
 
+bool Pragma_Name_Is_Known (Slice name) {
+  static const char *const known[] = {
+    "CONTROLLED",   "ELABORATE",     "INLINE",    "INTERFACE",
+    "LIST",         "MEMORY_SIZE",   "OPTIMIZE",  "PACK",
+    "PAGE",         "PRIORITY",      "SHARED",    "STORAGE_UNIT",
+    "SUPPRESS",     "SYSTEM_NAME",
+    "CONVENTION",   "ELABORATE_ALL", "EXPORT",    "IMPORT",
+    "PREELABORATE", "PROFILE",       "PURE",      "RESTRICTIONS",
+    "UNREFERENCED"
+  };
+  for (u32 i = 0; i < sizeof known / sizeof known[0]; i++)
+    if (Slices_Match (name, (Slice){ known[i], (u32) strlen (known[i]) }))
+      return true;
+  return false;
+}
+
 void Resolve_Pragma (Node *node) {
   Node_List   *arguments = &node->pragma_node.arguments;
   Slice name      = node->pragma_node.name;
@@ -24180,6 +24197,11 @@ void Resolve_Pragma (Node *node) {
       if (pure) unit->is_pure_unit = true;
       else      unit->is_preelaborate_unit = true;
     }
+
+  } else if (not Pragma_Name_Is_Known (name)) {
+    Note_Pending_Warning (WARNING_UNRECOGNIZED_PRAGMA, node->location,
+      "unrecognized pragma '%.*s' ignored",
+      (int) name.length, name.data);
   }
 }
 
