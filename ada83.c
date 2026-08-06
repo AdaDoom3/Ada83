@@ -63938,6 +63938,61 @@ bool Llvm_C_Api_Load (Llvm_C_Api *api, char *err, size_t err_size) {
   return true;
 }
 
+
+#define MAX_LINKER_ARGUMENTS 128
+
+bool Push_Linker_Word (const char *word, char *pool, size_t pool_size,
+                       size_t *pool_used, const char **argv, int *argc) {
+  if (not word) return true;
+  size_t length = strlen (word);
+  if (*pool_used + length + 1 > pool_size) return false;
+  if (*argc + 1 >= MAX_LINKER_ARGUMENTS) return false;
+  char *slot = pool + *pool_used;
+  memcpy (slot, word, length + 1);
+  *pool_used += length + 1;
+  argv[(*argc)++] = slot;
+  return true;
+}
+
+bool Push_Linker_Words (const char *text, char *pool, size_t pool_size,
+                        size_t *pool_used, const char **argv, int *argc) {
+  if (not text) return true;
+  const char *cursor = text;
+  while (*cursor) {
+    while (*cursor == ' ') cursor++;
+    if (not *cursor) break;
+    const char *start = cursor;
+    while (*cursor and *cursor != ' ') cursor++;
+    size_t length = (size_t) (cursor - start);
+    if (*pool_used + length + 1 > pool_size) return false;
+    if (*argc + 1 >= MAX_LINKER_ARGUMENTS) return false;
+    char *slot = pool + *pool_used;
+    memcpy (slot, start, length);
+    slot[length] = '\0';
+    *pool_used += length + 1;
+    argv[(*argc)++] = slot;
+  }
+  return true;
+}
+
+int Run_Linker_Driver (const char **argv) {
+#ifdef _WIN32
+  intptr_t result = _spawnvp (_P_WAIT, argv[0], (const char *const *) argv);
+  if (result == -1) return 127;
+  return (int) result;
+#else
+  pid_t child = fork ();
+  if (child < 0) return 127;
+  if (child == 0) {
+    execvp (argv[0], (char *const *) argv);
+    _exit (127);
+  }
+  int wait_status = 0;
+  if (waitpid (child, &wait_status, 0) < 0) return 127;
+  return Host_Command_Exit_Status (wait_status);
+#endif
+}
+
 int Native_Backend_Compile (const char *ir_path, const char *const *extra_ir,
                             int extra_count, const char *exe_path,
                             const Native_Backend_Options *options) {
@@ -64054,10 +64109,26 @@ int Native_Backend_Compile (const char *ir_path, const char *const *extra_ir,
   bool driver_ran = false;
   for (size_t i = 0; i < sizeof drivers / sizeof *drivers; i++) {
     if (not drivers[i]) continue;
-    char command[PATH_MAX * 3];
-    snprintf (command, sizeof command, "%s \"%s\" -o \"%s\" %s %s",
-              drivers[i], obj_path, exe_path, link_libraries, link_options);
-    int exit_status = Host_Command_Exit_Status (system (command));
+
+    const char *argv[MAX_LINKER_ARGUMENTS];
+    char        pool[PATH_MAX * 4];
+    int         argc = 0;
+    size_t      used = 0;
+
+    bool built =
+      Push_Linker_Words (drivers[i],      pool, sizeof pool, &used, argv, &argc) and
+      Push_Linker_Word  (obj_path,        pool, sizeof pool, &used, argv, &argc) and
+      Push_Linker_Word  ("-o",            pool, sizeof pool, &used, argv, &argc) and
+      Push_Linker_Word  (exe_path,        pool, sizeof pool, &used, argv, &argc) and
+      Push_Linker_Words (link_libraries,  pool, sizeof pool, &used, argv, &argc) and
+      Push_Linker_Words (link_options,    pool, sizeof pool, &used, argv, &argc);
+    if (not built) {
+      Report_Driver_Error ("the link command is too long");
+      break;
+    }
+    argv[argc] = NULL;
+
+    int exit_status = Run_Linker_Driver (argv);
     if (exit_status == 127) continue;
 #ifdef _WIN32
     if (exit_status == 9009) continue;
