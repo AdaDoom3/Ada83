@@ -752,7 +752,8 @@ void Report_Driver_Warning (const char *format, ...)
   _ (WARNING_DEAD_STORE,              "dead-store")              \
   _ (WARNING_CONSTRAINT_ERROR,        "constraint-error")        \
   _ (WARNING_READ_BEFORE_ASSIGNMENT,  "read-before-assignment")  \
-  _ (WARNING_REDUNDANT_WITH,          "redundant-with")
+  _ (WARNING_REDUNDANT_WITH,          "redundant-with")          \
+  _ (WARNING_PRAGMA_IGNORED,          "pragma-ignored")
 
 typedef enum {
 #define _(kind, name) kind,
@@ -23081,11 +23082,43 @@ void Derive_Subprograms (Type *derived_type,
     }
 }
 
+Node *Find_Pragma_Named_Argument (Node_List *args, Slice formal) {
+  Node *found = NULL;
+  for (u32 i = 0; i < args->count; i++) {
+    Node *arg = args->items[i];
+    if (not arg or arg->kind != NK_ASSOCIATION) continue;
+    for (u32 c = 0; c < arg->association.choices.count; c++) {
+      Node *choice = arg->association.choices.items[c];
+      if (not choice or choice->kind != NK_IDENTIFIER) continue;
+      if (not Slices_Match (choice->string_val.text, formal)) continue;
+      if (not found) found = arg->association.expression;
+    }
+  }
+  return found;
+}
+
+Node *Pragma_Argument (Node_List *args, Slice formal, u32 position) {
+  Node *named = Find_Pragma_Named_Argument (args, formal);
+  if (named) return named;
+  if (position >= args->count) return NULL;
+  Node *supplied = args->items[position];
+  if (supplied and supplied->kind == NK_ASSOCIATION and
+      supplied->association.choices.count > 0)
+    return NULL;
+  return supplied;
+}
+
 void Apply_Pragma_External_Name (Symbol *sym, Node_List *args) {
-  if (args->count < 3) return;
-  Node *name_node = Unwrap_Association (args->items[2]);
+  Node *supplied = Pragma_Argument (args, S ("EXTERNAL_NAME"), 2);
+  if (not supplied) return;
+  Node *name_node = Unwrap_Association (supplied);
   if (name_node and name_node->kind == NK_STRING)
     sym->external_name = name_node->string_val.text;
+  else
+    Note_Pending_Warning (WARNING_PRAGMA_IGNORED, supplied->location,
+      "the external name must be a string literal, so this argument has no "
+      "effect and '%.*s' keeps its Ada name",
+      (int) sym->name.length, sym->name.data);
 }
 
 void Apply_Pragma_Convention (Symbol *sym, Node *conv_node) {
@@ -23100,10 +23133,10 @@ void Apply_Pragma_Convention (Symbol *sym, Node *conv_node) {
 }
 
 Symbol *Find_Pragma_Entity (Node_List *arguments, Node **out_convention) {
-  *out_convention = NULL;
-  if (arguments->count < 2) return NULL;
-  *out_convention = Unwrap_Association (arguments->items[0]);
-  Node *entity = Unwrap_Association (arguments->items[1]);
+  *out_convention = Unwrap_Association (
+    Pragma_Argument (arguments, S ("CONVENTION"), 0));
+  Node *entity = Unwrap_Association (
+    Pragma_Argument (arguments, S ("ENTITY"), 1));
   if (not (entity and entity->kind == NK_IDENTIFIER)) return NULL;
   return Symbol_Find (entity->string_val.text);
 }
