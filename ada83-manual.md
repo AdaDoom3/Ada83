@@ -15522,6 +15522,224 @@ appendix F for a given implementation must list in particular:
 8. Any implementation-dependent characteristics of the input-output packages
    (see [14](#14-input-output)).
 
+### F.1 Implementation-dependent pragmas
+
+This section states, for each pragma defined by this implementation, its form,
+the places it is allowed, and its effect. It answers item 1 above.
+
+Every pragma in this section is allowed wherever
+[2.8](#28-pragmas) allows a pragma, except where noted otherwise. A pragma
+that names an entity takes effect only where that entity is visible and is
+named after its declaration; otherwise the pragma has no effect.
+
+Argument identifiers are shown in upper case. An argument shown as a
+lower-case syntactic category with no identifier is positional; a named
+association written for such an argument has no effect.
+
+The conventions named by pragma IMPORT, pragma EXPORT and pragma CONVENTION
+are:
+
+| Convention | Effect |
+|---|---|
+| `C` | recorded on the entity |
+| `STDCALL` | recorded on the entity; the targets this implementation generates code for pass arguments identically under `C` and `STDCALL`, so the two select the same sequence |
+| `INTRINSIC` | recorded on the entity; the entity is excluded from the list of subprograms referenced across a subunit boundary, and a generic instance whose template carries this convention carries it also |
+
+An identifier other than these three leaves the entity's convention as it was.
+The convention of an entity named by no such pragma is `ADA`.
+
+The name presented to the linker for an entity with no external name is formed
+as follows:
+
+| Entity | Link name |
+|---|---|
+| library subprogram | `_ada_` followed by the subprogram's name in lower case |
+| subprogram declared in a package | the package name, `__`, the subprogram name, and `_s` followed by a decimal number derived from the parameter and result types |
+| package elaboration procedure | the package name followed by `___elab` |
+
+The decimal suffix distinguishes overloaded subprograms; two subprograms of
+the same profile in different packages carry the same suffix.
+
+#### Pragma IMPORT
+
+```
+pragma IMPORT (CONVENTION => convention, ENTITY => entity
+               [, EXTERNAL_NAME => string_literal]);
+```
+
+The entity must be a subprogram. Its body is supplied outside this program
+library: no body is required for it in this library, and a call to it is
+compiled as a call to the subprogram named by `EXTERNAL_NAME`.
+
+`EXTERNAL_NAME` must be a string literal. Its value is the name presented to
+the linker. If the argument is omitted, the link name stated above is used. If
+the argument is present and is not a string literal, the argument has no
+effect, the link name stated above is used, and a `pragma-ignored` warning is
+issued.
+
+Pragma INTERFACE of [13.9](#139-interface-to-other-languages) is not provided
+by this implementation. Pragma IMPORT states what pragma INTERFACE states, and
+additionally carries the external name.
+
+#### Pragma EXPORT
+
+```
+pragma EXPORT (CONVENTION => convention, ENTITY => entity
+               [, EXTERNAL_NAME => string_literal]);
+```
+
+Marks the entity as exported and sets its convention. A body is required for
+the entity.
+
+`EXTERNAL_NAME` must be a string literal. Its value is the name under which the
+entity is presented to the linker, and is the name by which a program written
+in another language refers to it. If the argument is omitted, the link name
+stated above is used. If the argument is present and is not a string literal,
+the argument has no effect, the link name stated above is used, and a
+`pragma-ignored` warning is issued.
+
+#### Pragma CONVENTION
+
+```
+pragma CONVENTION (CONVENTION => convention, ENTITY => entity);
+```
+
+Sets the convention of the entity. The entity is neither imported nor
+exported by this pragma.
+
+#### Pragma UNREFERENCED
+
+```
+pragma UNREFERENCED (entity {, entity});
+```
+
+Each entity is a variable, constant, parameter, or a unit named in a with
+clause. No `unused-variable`, `unused-but-set-variable`, `unused-parameter` or
+`unused-with` warning is issued for an entity named by this pragma. The pragma
+has no other effect.
+
+#### Pragma RESTRICTIONS
+
+```
+pragma RESTRICTIONS (restriction {, restriction});
+```
+
+Each restriction is one of:
+
+| Restriction | Constructs rejected |
+|---|---|
+| `NO_SELECT_STATEMENTS` | select statements |
+| `NO_ABORT_STATEMENTS` | abort statements |
+| `NO_TASK_ALLOCATORS` | allocators for task types |
+| `NO_ENTRY_FAMILIES` | entry family declarations |
+
+A restriction is in force from the pragma to the end of the compilation. A
+program containing a construct rejected by a restriction in force is illegal.
+An identifier that is not one of the four is ignored, and a warning is issued.
+
+#### Pragma PROFILE
+
+```
+pragma PROFILE (profile);
+```
+
+`RAVENSCAR` is the only profile defined by this implementation. It puts
+`NO_SELECT_STATEMENTS`, `NO_ABORT_STATEMENTS`, `NO_TASK_ALLOCATORS` and
+`NO_ENTRY_FAMILIES` in force. Any other identifier is ignored, and a warning
+is issued.
+
+#### Pragma PURE, Pragma PREELABORATE
+
+```
+pragma PURE [(unit)];
+pragma PREELABORATE [(unit)];
+```
+
+Marks a package as pure, or as preelaborable. With no argument the pragma
+applies to the package enclosing it.
+
+The mark is recorded in the library information file written for the unit. A
+unit so marked contributes no elaboration dependence to units that name it in
+a with clause. This implementation does not check that the unit obeys the
+rules the mark implies.
+
+#### Pragma ELABORATE_ALL
+
+```
+pragma ELABORATE_ALL (unit {, unit});
+```
+
+Takes effect only in a context clause, following the with clause naming the
+unit. Written elsewhere, the pragma has no effect and no warning is issued.
+
+The body of each named unit, and the body of every unit reachable from it
+through with clauses, is elaborated before the unit to which the context
+clause belongs. Pragma ELABORATE of Annex B requires the same of each named
+unit alone, without the units reachable from it.
+
+### F.2 Language-defined pragmas
+
+The pragmas of Annex B are accepted by this implementation. The following have
+the effect Annex B defines:
+
+| Pragma | Effect |
+|---|---|
+| `ELABORATE` | the body of each named unit is elaborated before the unit to which the context clause belongs |
+| `INLINE` | each named subprogram is marked for inline expansion at its call sites |
+| `PACK` | components of the named array or record type are allocated without gaps, and the type's size is set to the total so obtained |
+| `SUPPRESS` | the named check is omitted |
+
+Pragma SUPPRESS accepts the check names `ACCESS_CHECK`, `DISCRIMINANT_CHECK`,
+`DIVISION_CHECK`, `ELABORATION_CHECK`, `INDEX_CHECK`, `LENGTH_CHECK`,
+`OVERFLOW_CHECK`, `RANGE_CHECK` and `STORAGE_CHECK`, and additionally accepts
+`ALL_CHECKS`, which names all nine. Written without its `ON` argument, the
+pragma omits the check over the region in which it appears, or over the
+compilation when it appears at the outermost level. Written with its `ON`
+argument, the permission is recorded against the named entity; it is applied
+where a check is generated for that entity and is not applied where a check is
+generated for a subtype or a region.
+
+The same checks may be omitted for a whole compilation with the `--suppress`
+option of the compiler, which takes the same names.
+
+Pragma INLINE marks the subprogram for inline expansion. Whether a given call
+is expanded is determined by the code generator, which takes the mark as one
+input; the pragma does not require expansion and its absence does not prevent
+it.
+
+The following pragmas of Annex B are accepted, are not diagnosed, and are not
+yet implemented: `CONTROLLED`, `INTERFACE`, `LIST`, `MEMORY_SIZE`, `OPTIMIZE`,
+`PAGE`, `PRIORITY`, `SHARED`, `STORAGE_UNIT`, `SYSTEM_NAME`.
+
+### F.3 Pragma arguments
+
+[2.8](#28-pragmas) admits a named association only where the argument
+identifier is defined. The argument identifiers defined by this implementation
+are `CONVENTION`, `ENTITY` and `EXTERNAL_NAME`, on the pragmas shown in
+[F.1](#f1-implementation-dependent-pragmas). No other pragma of this
+implementation defines an argument identifier. No argument identifier is
+defined here for a pragma of Annex B beyond those Annex B defines.
+
+An argument is matched to a formal by name where an argument identifier is
+given, and by position otherwise. Where the same formal is named more than
+once, the first association is used, the later ones have no effect, and a
+`pragma-ignored` warning is issued for each.
+
+In accordance with 2.8, a pragma whose arguments do not correspond to its form
+has no effect and is not illegal. Two warning classes report such a pragma:
+
+| Class | Reported when |
+|---|---|
+| `unrecognized-pragma` | the pragma identifier is not one this implementation recognizes |
+| `pragma-ignored` | the pragma identifier is recognized and an argument does not correspond, so that the argument, or the pragma, has no effect |
+
+Both classes are enabled by default and are turned off with
+`-Wno-unrecognized-pragma` and `-Wno-pragma-ignored`. The identifiers this
+implementation recognizes are the fourteen of Annex B and the nine of
+[F.1](#f1-implementation-dependent-pragmas).
+
+No pragma defined by this implementation determines the legality of any text
+outside the pragma itself.
 ---
 
 ## Rationale

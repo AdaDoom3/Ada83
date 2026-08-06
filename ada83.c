@@ -752,7 +752,9 @@ void Report_Driver_Warning (const char *format, ...)
   _ (WARNING_DEAD_STORE,              "dead-store")              \
   _ (WARNING_CONSTRAINT_ERROR,        "constraint-error")        \
   _ (WARNING_READ_BEFORE_ASSIGNMENT,  "read-before-assignment")  \
-  _ (WARNING_REDUNDANT_WITH,          "redundant-with")
+  _ (WARNING_REDUNDANT_WITH,          "redundant-with")          \
+  _ (WARNING_PRAGMA_IGNORED,          "pragma-ignored")          \
+  _ (WARNING_UNRECOGNIZED_PRAGMA,     "unrecognized-pragma")
 
 typedef enum {
 #define _(kind, name) kind,
@@ -23081,11 +23083,48 @@ void Derive_Subprograms (Type *derived_type,
     }
 }
 
+Node *Find_Pragma_Named_Argument (Node_List *args, Slice formal) {
+  Node *found = NULL;
+  for (u32 i = 0; i < args->count; i++) {
+    Node *arg = args->items[i];
+    if (not arg or arg->kind != NK_ASSOCIATION) continue;
+    for (u32 c = 0; c < arg->association.choices.count; c++) {
+      Node *choice = arg->association.choices.items[c];
+      if (not choice or choice->kind != NK_IDENTIFIER) continue;
+      if (not Slices_Match (choice->string_val.text, formal)) continue;
+      if (found)
+        Note_Pending_Warning (WARNING_PRAGMA_IGNORED, arg->location,
+          "'%.*s' is given more than once in this pragma; this one has no "
+          "effect", (int) formal.length, formal.data);
+      else
+        found = arg->association.expression;
+    }
+  }
+  return found;
+}
+
+Node *Pragma_Argument (Node_List *args, Slice formal, u32 position) {
+  Node *named = Find_Pragma_Named_Argument (args, formal);
+  if (named) return named;
+  if (position >= args->count) return NULL;
+  Node *supplied = args->items[position];
+  if (supplied and supplied->kind == NK_ASSOCIATION and
+      supplied->association.choices.count > 0)
+    return NULL;
+  return supplied;
+}
+
 void Apply_Pragma_External_Name (Symbol *sym, Node_List *args) {
-  if (args->count < 3) return;
-  Node *name_node = Unwrap_Association (args->items[2]);
+  Node *supplied = Pragma_Argument (args, S ("EXTERNAL_NAME"), 2);
+  if (not supplied) return;
+  Node *name_node = Unwrap_Association (supplied);
   if (name_node and name_node->kind == NK_STRING)
     sym->external_name = name_node->string_val.text;
+  else
+    Note_Pending_Warning (WARNING_PRAGMA_IGNORED, supplied->location,
+      "the external name must be a string literal, so this argument has no "
+      "effect and '%.*s' keeps its Ada name",
+      (int) sym->name.length, sym->name.data);
 }
 
 void Apply_Pragma_Convention (Symbol *sym, Node *conv_node) {
@@ -23100,10 +23139,10 @@ void Apply_Pragma_Convention (Symbol *sym, Node *conv_node) {
 }
 
 Symbol *Find_Pragma_Entity (Node_List *arguments, Node **out_convention) {
-  *out_convention = NULL;
-  if (arguments->count < 2) return NULL;
-  *out_convention = Unwrap_Association (arguments->items[0]);
-  Node *entity = Unwrap_Association (arguments->items[1]);
+  *out_convention = Unwrap_Association (
+    Pragma_Argument (arguments, S ("CONVENTION"), 0));
+  Node *entity = Unwrap_Association (
+    Pragma_Argument (arguments, S ("ENTITY"), 1));
   if (not (entity and entity->kind == NK_IDENTIFIER)) return NULL;
   return Symbol_Find (entity->string_val.text);
 }
@@ -24008,6 +24047,22 @@ void Resolve_Subprogram_Renaming (Node *node) {
   node->symbol = sym;
 }
 
+bool Pragma_Name_Is_Known (Slice name) {
+  static const char *const known[] = {
+    "CONTROLLED",   "ELABORATE",     "INLINE",    "INTERFACE",
+    "LIST",         "MEMORY_SIZE",   "OPTIMIZE",  "PACK",
+    "PAGE",         "PRIORITY",      "SHARED",    "STORAGE_UNIT",
+    "SUPPRESS",     "SYSTEM_NAME",
+    "CONVENTION",   "ELABORATE_ALL", "EXPORT",    "IMPORT",
+    "PREELABORATE", "PROFILE",       "PURE",      "RESTRICTIONS",
+    "UNREFERENCED"
+  };
+  for (u32 i = 0; i < sizeof known / sizeof known[0]; i++)
+    if (Slices_Match (name, (Slice){ known[i], (u32) strlen (known[i]) }))
+      return true;
+  return false;
+}
+
 void Resolve_Pragma (Node *node) {
   Node_List   *arguments = &node->pragma_node.arguments;
   Slice name      = node->pragma_node.name;
@@ -24147,6 +24202,11 @@ void Resolve_Pragma (Node *node) {
       if (pure) unit->is_pure_unit = true;
       else      unit->is_preelaborate_unit = true;
     }
+
+  } else if (not Pragma_Name_Is_Known (name)) {
+    Note_Pending_Warning (WARNING_UNRECOGNIZED_PRAGMA, node->location,
+      "unrecognized pragma '%.*s' ignored",
+      (int) name.length, name.data);
   }
 }
 
@@ -31985,7 +32045,8 @@ Slice Get_Emitted_Name (Symbol *sym) {
 
   while (sym->aliased) sym = sym->aliased;
 
-  if (sym->is_imported and sym->external_name.length > 0) {
+  if ((sym->is_imported or sym->is_exported) and
+      sym->external_name.length > 0) {
     Slice name = sym->external_name;
     if (name.length >= 2 and name.data[0] == '"' and name.data[name.length - 1] == '"') {
       name.data++;
@@ -50405,6 +50466,7 @@ void Lower_Subprogram_Body (Node *node) {
           Spell_Return_Rep (sym));
     Emit_Symbol_Name (sym);
     Emit_Formal_Parameter_List (sym, is_nested, true);
+    if (sym and sym->is_inline) Emit (" inlinehint");
     Emit (" {\n");
     Function_Body_Begin ();
 
@@ -63938,6 +64000,61 @@ bool Llvm_C_Api_Load (Llvm_C_Api *api, char *err, size_t err_size) {
   return true;
 }
 
+
+#define MAX_LINKER_ARGUMENTS 128
+
+bool Push_Linker_Word (const char *word, char *pool, size_t pool_size,
+                       size_t *pool_used, const char **argv, int *argc) {
+  if (not word) return true;
+  size_t length = strlen (word);
+  if (*pool_used + length + 1 > pool_size) return false;
+  if (*argc + 1 >= MAX_LINKER_ARGUMENTS) return false;
+  char *slot = pool + *pool_used;
+  memcpy (slot, word, length + 1);
+  *pool_used += length + 1;
+  argv[(*argc)++] = slot;
+  return true;
+}
+
+bool Push_Linker_Words (const char *text, char *pool, size_t pool_size,
+                        size_t *pool_used, const char **argv, int *argc) {
+  if (not text) return true;
+  const char *cursor = text;
+  while (*cursor) {
+    while (*cursor == ' ') cursor++;
+    if (not *cursor) break;
+    const char *start = cursor;
+    while (*cursor and *cursor != ' ') cursor++;
+    size_t length = (size_t) (cursor - start);
+    if (*pool_used + length + 1 > pool_size) return false;
+    if (*argc + 1 >= MAX_LINKER_ARGUMENTS) return false;
+    char *slot = pool + *pool_used;
+    memcpy (slot, start, length);
+    slot[length] = '\0';
+    *pool_used += length + 1;
+    argv[(*argc)++] = slot;
+  }
+  return true;
+}
+
+int Run_Linker_Driver (const char **argv) {
+#ifdef _WIN32
+  intptr_t result = _spawnvp (_P_WAIT, argv[0], (const char *const *) argv);
+  if (result == -1) return 127;
+  return (int) result;
+#else
+  pid_t child = fork ();
+  if (child < 0) return 127;
+  if (child == 0) {
+    execvp (argv[0], (char *const *) argv);
+    _exit (127);
+  }
+  int wait_status = 0;
+  if (waitpid (child, &wait_status, 0) < 0) return 127;
+  return Host_Command_Exit_Status (wait_status);
+#endif
+}
+
 int Native_Backend_Compile (const char *ir_path, const char *const *extra_ir,
                             int extra_count, const char *exe_path,
                             const Native_Backend_Options *options) {
@@ -64054,10 +64171,26 @@ int Native_Backend_Compile (const char *ir_path, const char *const *extra_ir,
   bool driver_ran = false;
   for (size_t i = 0; i < sizeof drivers / sizeof *drivers; i++) {
     if (not drivers[i]) continue;
-    char command[PATH_MAX * 3];
-    snprintf (command, sizeof command, "%s \"%s\" -o \"%s\" %s %s",
-              drivers[i], obj_path, exe_path, link_libraries, link_options);
-    int exit_status = Host_Command_Exit_Status (system (command));
+
+    const char *argv[MAX_LINKER_ARGUMENTS];
+    char        pool[PATH_MAX * 4];
+    int         argc = 0;
+    size_t      used = 0;
+
+    bool built =
+      Push_Linker_Words (drivers[i],      pool, sizeof pool, &used, argv, &argc) and
+      Push_Linker_Word  (obj_path,        pool, sizeof pool, &used, argv, &argc) and
+      Push_Linker_Word  ("-o",            pool, sizeof pool, &used, argv, &argc) and
+      Push_Linker_Word  (exe_path,        pool, sizeof pool, &used, argv, &argc) and
+      Push_Linker_Words (link_libraries,  pool, sizeof pool, &used, argv, &argc) and
+      Push_Linker_Words (link_options,    pool, sizeof pool, &used, argv, &argc);
+    if (not built) {
+      Report_Driver_Error ("the link command is too long");
+      break;
+    }
+    argv[argc] = NULL;
+
+    int exit_status = Run_Linker_Driver (argv);
     if (exit_status == 127) continue;
 #ifdef _WIN32
     if (exit_status == 9009) continue;

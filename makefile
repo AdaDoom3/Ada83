@@ -138,6 +138,7 @@ BIN_DIRS         = bin-linux bin-macos bin-windows
 LIBRARY_SOURCE   = bin-dll.zip
 EXECUTABLE       = ada83$(SUFFIX)
 HOST_BINARY      = bin-$(HOST_TARGET)/ada83
+HOST_RUNTIME     = bin-$(HOST_TARGET)/$(RUNTIME)
 RESOURCE_OBJECT  = $(if $(RESOURCE_COMPILER),staging/$(ICON).o)
 
 LIPO := $(shell command -v lipo || command -v llvm-lipo || \
@@ -146,13 +147,18 @@ SUDO := $(shell [ $$(id -u) -eq 0 ] || echo sudo)
 
 all: ada83 provision-llvm
 
-ada83: $(HOST_BINARY)
+ada83: $(HOST_BINARY) $(HOST_RUNTIME)
 
 $(HOST_BINARY): ada83.c
 	@mkdir -p $(@D)
 	@$(call STAGE,compiling ada83.c with $(CC))
 	$(CC) $(CFLAGS) $(WHOLE_PROGRAM) $(TUNE) -o $@ $< $(LIBS)
 	@echo "Built $@."
+
+$(HOST_RUNTIME): $(RUNTIME)
+	@mkdir -p $(@D)
+	@$(call STAGE,copying $(RUNTIME) beside the compiler)
+	cp $< $@
 
 provision-llvm:
 	@$(LLVM_PRESENT) && exit 0; \
