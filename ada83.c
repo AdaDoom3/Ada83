@@ -32045,7 +32045,8 @@ Slice Get_Emitted_Name (Symbol *sym) {
 
   while (sym->aliased) sym = sym->aliased;
 
-  if (sym->is_imported and sym->external_name.length > 0) {
+  if ((sym->is_imported or sym->is_exported) and
+      sym->external_name.length > 0) {
     Slice name = sym->external_name;
     if (name.length >= 2 and name.data[0] == '"' and name.data[name.length - 1] == '"') {
       name.data++;
