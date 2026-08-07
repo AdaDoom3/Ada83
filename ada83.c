@@ -6309,6 +6309,8 @@ typedef struct {
   u32        elaboration_supply_count;
 } ALI_Info;
 
+#define MAX_ALI_SUMMARIES 256
+
 typedef struct {
   char     kind;
   char    *name;
@@ -6336,6 +6338,10 @@ typedef struct ALI_Cache_Entry_Forward {
   ALI_Export *exports;
   u32    export_count;
   u32    export_capacity;
+  char  *summary_names[MAX_ALI_SUMMARIES];
+  i64    summary_low  [MAX_ALI_SUMMARIES];
+  i64    summary_high [MAX_ALI_SUMMARIES];
+  u32    summary_count;
 } ALI_Cache_Entry;
 
 extern ALI_Cache_Entry ALI_Cache[MAX_ALI_CACHE_ENTRIES];
@@ -57244,6 +57250,21 @@ ALI_Cache_Entry *ALI_Read (const char *ali_path) {
         entry->withs[entry->with_count++] = strdup (token);
       }
     }
+    else if (line[0] == 'I' and line[1] == 'V' and line[2] == ' ') {
+
+      if (entry->summary_count < MAX_ALI_SUMMARIES) {
+        char        name[512];
+        const char *cursor2 = ALI_Skip_Blanks (line + 2);
+        cursor2 = ALI_Read_Token (cursor2, name, sizeof name);
+        long long low = 0, high = 0;
+        if (name[0] and sscanf (cursor2, " %lld %lld", &low, &high) == 2) {
+          u32 at = entry->summary_count++;
+          entry->summary_names[at] = strdup (name);
+          entry->summary_low  [at] = (i64) low;
+          entry->summary_high [at] = (i64) high;
+        }
+      }
+    }
     else if (line[0] == 'D') {
 
       continue;
@@ -60907,6 +60928,29 @@ void Check_Expression (Node *node, Analysis_State *state) {
   }
 }
 
+/* A callee compiled elsewhere has no summary here, but its ALI may
+   carry one.  The key is the name code generation gives the subprogram,
+   which both compilations agree on. */
+bool Summary_From_Library (Symbol *callee, Interval *out) {
+  if (not callee) return false;
+  Slice mangled = Symbol_Mangle_Name (callee);
+  if (not mangled.length) return false;
+
+  for (u32 i = 0; i < ALI_Cache_Count; i++) {
+    ALI_Cache_Entry *entry = &ALI_Cache[i];
+    for (u32 j = 0; j < entry->summary_count; j++) {
+      const char *name = entry->summary_names[j];
+      if (not name) continue;
+      if (strlen (name) != mangled.length) continue;
+      if (memcmp (name, mangled.data, mangled.length) != 0) continue;
+      *out = Interval_Of ((i128) entry->summary_low[j],
+                          (i128) entry->summary_high[j]);
+      return true;
+    }
+  }
+  return false;
+}
+
 Interval Eval_Interval (Node *node, Analysis_State *state) {
   if (not node) return Interval_Top ();
 
@@ -60928,10 +60972,15 @@ Interval Eval_Interval (Node *node, Analysis_State *state) {
         if (summary and summary->returns_anything and
             summary->result.known and not Interval_Is_Empty (summary->result))
           return Interval_Meet (summary->result, Interval_Of_Type (node->type));
+        Interval library;
+        if ((not summary or not summary->returns_anything) and
+            Summary_From_Library (callee, &library))
+          return Interval_Meet (library, Interval_Of_Type (node->type));
       }
       return Interval_Of_Type (node->type);
     }
 
+    case NK_SELECTED:
     case NK_IDENTIFIER: {
       Symbol *sym = node->symbol;
       if (sym) {
@@ -60949,6 +60998,10 @@ Interval Eval_Interval (Node *node, Analysis_State *state) {
               not Interval_Is_Empty (summary->result))
             return Interval_Meet (summary->result,
                                   Interval_Of_Type (node->type));
+          Interval library;
+          if ((not summary or not summary->returns_anything) and
+              Summary_From_Library (callee, &library))
+            return Interval_Meet (library, Interval_Of_Type (node->type));
         }
       }
       return Interval_Of_Type (node->type);
@@ -61554,6 +61607,12 @@ void Analyze_Units (Node **units, int unit_count) {
         continue;
       Analyze_Bodies (units[i]);
     }
+    /* The body of a withed unit is read from its source when that source
+       is at hand, and it is what a call into that unit does.  Summaries
+       are taken from it too; its findings are not, since they belong to
+       whoever compiles it. */
+    for (int i = 0; i < Loaded_Body_Count; i++)
+      Analyze_Bodies (Loaded_Package_Bodies[i]);
     Summaries_Usable = true;
     if (pass > 0 and not Summaries_Changed (previous, before_count)) break;
   }
@@ -61650,6 +61709,32 @@ bool Analysis_Proved_Safe_Here (Check_Kind kind, Location location) {
   if (Provably_Safe_Use_Count < MAX_ANALYSIS_CHECK_SITES)
     Provably_Safe_Uses[Provably_Safe_Use_Count++] = location.line;
   return true;
+}
+
+/* A function's result range, keyed by the name code generation gives it,
+   so a later compilation that calls it can start from what the body
+   does rather than from what its subtype allows.  Only a range narrower
+   than the subtype is worth the line. */
+void ALI_Write_Summaries (FILE *out) {
+  for (u32 i = 0; i < Summary_Count; i++) {
+    Subprogram_Summary *summary = &Summaries[i];
+    if (not summary->owner or not summary->returns_anything) continue;
+    if (not summary->result.known or Interval_Is_Empty (summary->result))
+      continue;
+    if (summary->result.low  < (i128) INT64_MIN or
+        summary->result.high > (i128) INT64_MAX) continue;
+
+    Interval declared = Interval_Of_Type (summary->owner->return_type);
+    if (declared.known and
+        summary->result.low  <= declared.low and
+        summary->result.high >= declared.high) continue;
+
+    Slice mangled = Symbol_Mangle_Name (summary->owner);
+    if (not mangled.length) continue;
+    fprintf (out, "IV %.*s %lld %lld\n", (int) mangled.length, mangled.data,
+             (long long) summary->result.low,
+             (long long) summary->result.high);
+  }
 }
 
 void Join_Findings_To_Sites (void) {
@@ -62049,6 +62134,7 @@ void Compile_File (const char *input_path, const char *output_path) {
         ALI_Collect_Unit (&ali, units[i], source, source_size, input_path);
       ALI_Collect_Elaboration_Supply (&ali);
       ALI_Write (ali_file, &ali);
+      ALI_Write_Summaries (ali_file);
       fclose (ali_file);
       fprintf (stderr, "Generated ALI file '%s'\n", ali_path);
     }
