@@ -31755,6 +31755,7 @@ typedef struct {
   bool        emitted;
   const char *verdict;
   const char *reason;
+  const char *analysis;     /* what the interval analysis settled, if any */
   Symbol     *owner;
 } Analysis_Check_Site;
 
@@ -31792,6 +31793,7 @@ u32 Note_Check_Site (Check_Kind kind, bool suppressed) {
     .emitted    = false,
     .verdict    = NULL,
     .reason     = NULL,
+    .analysis   = NULL,
     .owner      = cg ? cg->current_function : NULL
   };
   return Analysis_Check_Site_Count++;
@@ -60620,6 +60622,8 @@ typedef struct {
 } Interval;
 
 #define MAX_ANALYSIS_VARS 256
+#define INT128_HIGH_LIMIT  ((i128) INT64_MAX)
+#define INT128_LOW_LIMIT   ((i128) INT64_MIN)
 
 typedef struct { Symbol *sym; Interval value; } Analysis_Binding;
 
@@ -60759,8 +60763,11 @@ Analysis_Finding Analysis_Findings[MAX_ANALYSIS_FINDINGS];
 u32     Analysis_Finding_Count = 0;
 Symbol *Analysis_Current_Owner = NULL;
 
+bool Analysis_Recording = true;
+
 void Note_Finding (Check_Kind kind, Location location, const char *verdict,
                    const char *detail, Interval witness, Interval allowed) {
+  if (not Analysis_Recording) return;
   if (Analysis_Finding_Count >= MAX_ANALYSIS_FINDINGS) return;
   Analysis_Findings[Analysis_Finding_Count++] = (Analysis_Finding){
     kind, location, verdict, detail, witness, allowed, Analysis_Current_Owner };
@@ -60799,6 +60806,18 @@ void Check_Expression (Node *node, Analysis_State *state) {
                         "the index", actual, allowed);
       }
     }
+  }
+
+  if (node->kind == NK_BINARY_OP and
+      (node->binary.op == TK_PLUS or node->binary.op == TK_MINUS or
+       node->binary.op == TK_STAR)) {
+    Type *base = node->type;
+    while (base and base->base_type) base = base->base_type;
+    Interval room   = Interval_Of_Type (base);
+    Interval result = Eval_Interval (node, state);
+    if (room.known and result.known and Interval_Contains (room, result))
+      Note_Finding (CHECK_KIND_OVERFLOW, node->location, "cannot_fail",
+                    "the result", result, room);
   }
 
   if (node->kind == NK_BINARY_OP and
@@ -60875,6 +60894,98 @@ Interval Eval_Interval (Node *node, Analysis_State *state) {
   }
 }
 
+/* The largest interval both arguments admit. */
+Interval Interval_Meet (Interval a, Interval b) {
+  if (not a.known) return b;
+  if (not b.known) return a;
+  return Interval_Of (a.low  > b.low  ? a.low  : b.low,
+                      a.high < b.high ? a.high : b.high);
+}
+
+Interval Interval_Below (i128 bound, bool inclusive) {
+  return Interval_Of (INT128_LOW_LIMIT, inclusive ? bound : bound - 1);
+}
+
+Interval Interval_Above (i128 bound, bool inclusive) {
+  return Interval_Of (inclusive ? bound : bound + 1, INT128_HIGH_LIMIT);
+}
+
+/* Narrow what the state holds by a condition known to be true.  Only a
+   comparison or membership naming a variable on one side is used; a
+   condition of any other shape narrows nothing, which costs precision
+   and never soundness. */
+void Refine_By_Condition (Node *condition, bool holds, Analysis_State *state) {
+  if (not condition or state->unreachable) return;
+
+  if (condition->kind == NK_UNARY_OP and condition->unary.op == TK_NOT) {
+    Refine_By_Condition (condition->unary.operand, not holds, state);
+    return;
+  }
+
+  if (condition->kind != NK_BINARY_OP) return;
+  Token_Kind op = condition->binary.op;
+
+  /* "and" narrows by both arms when it holds; "or" narrows by both when
+     it fails.  The other direction says nothing about either arm. */
+  if ((op == TK_AND or op == TK_AND_THEN) and holds) {
+    Refine_By_Condition (condition->binary.left,  true, state);
+    Refine_By_Condition (condition->binary.right, true, state);
+    return;
+  }
+  if ((op == TK_OR or op == TK_OR_ELSE) and not holds) {
+    Refine_By_Condition (condition->binary.left,  false, state);
+    Refine_By_Condition (condition->binary.right, false, state);
+    return;
+  }
+
+  Node *left = condition->binary.left;
+  if (not left or left->kind != NK_IDENTIFIER or not left->symbol) return;
+  Symbol *sym = left->symbol;
+
+  if (op == TK_IN or op == TK_NOT) {
+    if (not holds) return;              /* "not in" narrows nothing useful */
+    if (op == TK_NOT) return;
+    Node *range = condition->binary.right;
+    if (not range or range->kind != NK_RANGE) return;
+    Interval low  = Eval_Interval (range->range.low,  state);
+    Interval high = Eval_Interval (range->range.high, state);
+    if (not low.known or not high.known) return;
+    Interval allowed = Interval_Of (low.low, high.high);
+    Interval *slot = State_Slot (state, sym);
+    State_Bind (state, sym,
+                Interval_Meet (slot ? *slot : Interval_Of_Type (left->type),
+                               allowed));
+    return;
+  }
+
+  Interval other = Eval_Interval (condition->binary.right, state);
+  if (not other.known or Interval_Is_Empty (other)) return;
+
+  Interval narrowed;
+  bool     usable = true;
+  switch (op) {
+    case TK_LT: narrowed = holds ? Interval_Below (other.high, false)
+                                 : Interval_Above (other.low,  true);  break;
+    case TK_LE: narrowed = holds ? Interval_Below (other.high, true)
+                                 : Interval_Above (other.low,  false); break;
+    case TK_GT: narrowed = holds ? Interval_Above (other.low,  false)
+                                 : Interval_Below (other.high, true);  break;
+    case TK_GE: narrowed = holds ? Interval_Above (other.low,  true)
+                                 : Interval_Below (other.high, false); break;
+    case TK_EQ: if (not holds) { usable = false; break; }
+                narrowed = other; break;
+    case TK_NE: if (holds) { usable = false; break; }
+                narrowed = other; break;
+    default:    usable = false; break;
+  }
+  if (not usable) return;
+
+  Interval *slot = State_Slot (state, sym);
+  State_Bind (state, sym,
+              Interval_Meet (slot ? *slot : Interval_Of_Type (left->type),
+                             narrowed));
+}
+
 void Analyze_Statement_List (Node_List *statements, Analysis_State *state);
 
 /* Everything a statement assigns becomes unknown.  Used for a loop body,
@@ -60898,6 +61009,59 @@ void Forget_Assigned (Node *node, Analysis_State *state) {
    what it assigned is not known here, so those actuals stop being known.
    A call through a name this pass cannot resolve forgets every simple
    actual, since it may be such a parameter. */
+/* Widening.  Where a value grew between one pass over the loop and the
+   next, the direction it grew in is pushed to the limit rather than
+   guessed at, so the iteration settles instead of counting upward
+   forever. */
+void State_Widen (Analysis_State *into, Analysis_State *next) {
+  for (u32 i = 0; i < into->count; i++) {
+    Interval *now = State_Slot (next, into->vars[i].sym);
+    if (not now) { into->vars[i].value = Interval_Top (); continue; }
+    Interval was = into->vars[i].value;
+    if (not was.known or not now->known) {
+      into->vars[i].value = Interval_Top ();
+      continue;
+    }
+    into->vars[i].value = Interval_Of (
+      now->low  < was.low  ? INT128_LOW_LIMIT  : was.low,
+      now->high > was.high ? INT128_HIGH_LIMIT : was.high);
+  }
+  for (u32 i = 0; i < next->count; i++)
+    if (not State_Slot (into, next->vars[i].sym))
+      State_Bind (into, next->vars[i].sym, Interval_Top ());
+}
+
+bool State_Same (Analysis_State *a, Analysis_State *b) {
+  if (a->count != b->count) return false;
+  for (u32 i = 0; i < a->count; i++) {
+    Interval *other = State_Slot (b, a->vars[i].sym);
+    if (not other) return false;
+    if (other->known != a->vars[i].value.known) return false;
+    if (other->known and (other->low  != a->vars[i].value.low or
+                          other->high != a->vars[i].value.high)) return false;
+  }
+  return true;
+}
+
+/* A for loop's parameter runs over the range it names, which is the most
+   useful interval in the language: it is exactly what indexes an array. */
+void Bind_Loop_Parameter (Node *scheme, Analysis_State *state) {
+  if (not scheme or scheme->kind != NK_BINARY_OP or scheme->binary.op != TK_IN)
+    return;
+  Node *name  = scheme->binary.left;
+  Node *range = scheme->binary.right;
+  if (not name or not name->symbol or not range) return;
+  if (range->kind == NK_RANGE) {
+    Interval low  = Eval_Interval (range->range.low,  state);
+    Interval high = Eval_Interval (range->range.high, state);
+    if (low.known and high.known) {
+      State_Bind (state, name->symbol, Interval_Of (low.low, high.high));
+      return;
+    }
+  }
+  State_Bind (state, name->symbol, Interval_Of_Type (name->type));
+}
+
 void Forget_Call_Actuals (Node *call, Analysis_State *state) {
   if (not call) return;
   Node *prefix = call->apply.prefix;
@@ -60987,12 +61151,16 @@ void Analyze_Statement (Node *node, Analysis_State *state) {
     case NK_IF: {
       Check_Expression (node->if_stmt.condition, state);
       Analysis_State taken = *state, otherwise = *state;
+      Refine_By_Condition (node->if_stmt.condition, true,  &taken);
+      Refine_By_Condition (node->if_stmt.condition, false, &otherwise);
       Analyze_Statement_List (&node->if_stmt.then_stmts, &taken);
       for (u32 i = 0; i < node->if_stmt.elsif_parts.count; i++) {
         Node *part = node->if_stmt.elsif_parts.items[i];
         if (not part) continue;
-        Analysis_State branch = *state;
+        Analysis_State branch = otherwise;
         Check_Expression (part->if_stmt.condition, &branch);
+        Refine_By_Condition (part->if_stmt.condition, true,  &branch);
+        Refine_By_Condition (part->if_stmt.condition, false, &otherwise);
         Analyze_Statement_List (&part->if_stmt.then_stmts, &branch);
         State_Join (&taken, &branch);
       }
@@ -61019,14 +61187,37 @@ void Analyze_Statement (Node *node, Analysis_State *state) {
     }
 
     case NK_LOOP: {
-      /* The body may run any number of times, so nothing it assigns is
-         known on entry to it. */
-      for (u32 i = 0; i < node->loop_stmt.statements.count; i++)
-        Forget_Assigned (node->loop_stmt.statements.items[i], state);
       Check_Expression (node->loop_stmt.iteration_scheme, state);
-      Analyze_Statement_List (&node->loop_stmt.statements, state);
-      for (u32 i = 0; i < node->loop_stmt.statements.count; i++)
-        Forget_Assigned (node->loop_stmt.statements.items[i], state);
+
+      /* Iterate the body until the state stops changing, widening as it
+         goes, with findings switched off until the state has settled --
+         a pass over an unsettled state can hold a value the loop never
+         actually takes. */
+      Analysis_State entry = *state;
+      bool saved_recording = Analysis_Recording;
+      Analysis_Recording = false;
+      for (int pass = 0; pass < 8; pass++) {
+        Analysis_State body = entry;
+        Bind_Loop_Parameter (node->loop_stmt.iteration_scheme, &body);
+        Refine_By_Condition (node->loop_stmt.iteration_scheme, true, &body);
+        Analyze_Statement_List (&node->loop_stmt.statements, &body);
+        Analysis_State widened = entry;
+        State_Widen (&widened, &body);
+        if (State_Same (&widened, &entry)) break;
+        entry = widened;
+      }
+      Analysis_Recording = saved_recording;
+
+      Analysis_State body = entry;
+      Bind_Loop_Parameter (node->loop_stmt.iteration_scheme, &body);
+      Refine_By_Condition (node->loop_stmt.iteration_scheme, true, &body);
+      Analyze_Statement_List (&node->loop_stmt.statements, &body);
+
+      /* After the loop the parameter is out of scope and the body may
+         have run any number of times, so the widened state is what is
+         known. */
+      *state = entry;
+      state->unreachable = false;
       return;
     }
 
@@ -61156,6 +61347,29 @@ const char *Spell_Check_Verdict (Analysis_Check_Site *site) {
   return "unknown";
 }
 
+/* The site inventory is taken while code is generated and the findings
+   while the statements are read, so the two see the same check through
+   different eyes: a site is placed at the statement, a finding at the
+   expression within it.  They are joined on the check's kind and line,
+   which is what they agree on. */
+void Join_Findings_To_Sites (void) {
+  for (u32 i = 0; i < Analysis_Check_Site_Count; i++) {
+    Analysis_Check_Site *site = &Analysis_Check_Sites[i];
+    for (u32 j = 0; j < Analysis_Finding_Count; j++) {
+      Analysis_Finding *finding = &Analysis_Findings[j];
+      if (finding->kind != site->kind) continue;
+      if (finding->location.line != site->location.line) continue;
+      if (not finding->location.filename or not site->location.filename or
+          strcmp (finding->location.filename, site->location.filename) != 0)
+        continue;
+      /* A must-fail says more than a cannot-fail, so it wins the slot. */
+      if (site->analysis and strcmp (site->analysis, "always_fails") == 0)
+        continue;
+      site->analysis = finding->verdict;
+    }
+  }
+}
+
 void Write_Analysis_Report (FILE *out, const char *input_path) {
   u32 by_kind[CHECK_KIND_STORAGE + 1] = {0};
   u32 suppressed_total  = 0;
@@ -61164,6 +61378,7 @@ void Write_Analysis_Report (FILE *out, const char *input_path) {
   u32 unchecked_total   = 0;
   u32 not_applicable    = 0;
   u32 unknown_total     = 0;
+  u32 removable         = 0;
   u32 reported          = 0;
 
   for (u32 i = 0; i < Analysis_Check_Site_Count; i++) {
@@ -61177,6 +61392,8 @@ void Write_Analysis_Report (FILE *out, const char *input_path) {
     else if (strcmp (verdict, "not_applicable") == 0) not_applicable++;
     else if (strcmp (verdict, "unchecked")      == 0) unchecked_total++;
     else                                              unknown_total++;
+    if (site->emitted and site->analysis and
+        strcmp (site->analysis, "cannot_fail") == 0) removable++;
     reported++;
   }
 
@@ -61201,6 +61418,10 @@ void Write_Analysis_Report (FILE *out, const char *input_path) {
     if (site->reason and not site->suppressed and not site->emitted) {
       fputs (", \"reason\": ", out);
       Write_Json_String (out, site->reason);
+    }
+    if (site->analysis) {
+      fputs (", \"analysis\": ", out);
+      Write_Json_String (out, site->analysis);
     }
     if (site->owner and site->owner->name.length) {
       fputs (", \"subprogram\": \"", out);
@@ -61251,9 +61472,11 @@ void Write_Analysis_Report (FILE *out, const char *input_path) {
   fprintf (out, "  \"summary\": {\n    \"sites\": %u,\n    \"checked\": %u,"
                 "\n    \"cannot_fail\": %u,\n    \"not_applicable\": %u,"
                 "\n    \"unchecked\": %u,\n    \"unknown\": %u,"
-                "\n    \"suppressed\": %u,\n    \"must_fail\": %u",
+                "\n    \"suppressed\": %u,\n    \"must_fail\": %u,"
+                "\n    \"checked_but_provably_safe\": %u",
            reported, checked_total, cannot_fail_total, not_applicable,
-           unchecked_total, unknown_total, suppressed_total, must_fail);
+           unchecked_total, unknown_total, suppressed_total, must_fail,
+           removable);
   if (Analysis_Sites_Overflowed)
     fprintf (out, ",\n    \"truncated\": true, \"limit\": %d",
              MAX_ANALYSIS_CHECK_SITES);
@@ -61528,6 +61751,7 @@ void Compile_File (const char *input_path, const char *output_path) {
   }
   if (discard_output) {
     fclose (out_file);
+    Join_Findings_To_Sites ();
     Write_Analysis_Report (stdout, input_path);
   }
   Report_Diagnostic_Summary ();
