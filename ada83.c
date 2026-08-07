@@ -60731,6 +60731,8 @@ Interval Interval_Of_Type (Type *type) {
   return Interval_Of (type->low_bound.int_value, type->high_bound.int_value);
 }
 
+Interval Interval_Meet (Interval a, Interval b);
+
 Interval *State_Slot (Analysis_State *state, Symbol *sym) {
   for (u32 i = 0; i < state->count; i++)
     if (state->vars[i].sym == sym) return &state->vars[i].value;
@@ -60756,6 +60758,50 @@ void State_Join (Analysis_State *into, Analysis_State *other) {
     if (not State_Slot (into, other->vars[i].sym))
       State_Bind (into, other->vars[i].sym, Interval_Top ());
 }
+
+/* ==== Subprogram summaries ==========================================
+   What a body does, in the only terms a caller needs: the range of what
+   a function returns, and the range each out parameter is left holding.
+   Ada 83 has no access-to-subprogram type, so every call names its
+   callee and the call graph is exact; the summaries are computed by
+   reading every body, and read again until they stop changing. */
+
+#define MAX_SUMMARIES        2048
+#define MAX_SUMMARY_OUTPUTS  8
+
+typedef struct {
+  Symbol  *owner;
+  Interval result;
+  Interval outputs[MAX_SUMMARY_OUTPUTS];
+  u32      output_count;
+  bool     returns_anything;
+} Subprogram_Summary;
+
+Subprogram_Summary Summaries[MAX_SUMMARIES];
+u32  Summary_Count    = 0;
+bool Summaries_Usable = false;   /* false while they are being computed */
+
+Subprogram_Summary *Find_Summary (Symbol *sym) {
+  if (not sym) return NULL;
+  for (u32 i = 0; i < Summary_Count; i++)
+    if (Summaries[i].owner == sym) return &Summaries[i];
+  return NULL;
+}
+
+Subprogram_Summary *Summary_For (Symbol *sym) {
+  Subprogram_Summary *found = Find_Summary (sym);
+  if (found) return found;
+  if (Summary_Count >= MAX_SUMMARIES) return NULL;
+  Summaries[Summary_Count] = (Subprogram_Summary){
+    .owner = sym, .result = Interval_Of (1, 0), .output_count = 0,
+    .returns_anything = false };
+  for (u32 i = 0; i < MAX_SUMMARY_OUTPUTS; i++)
+    Summaries[Summary_Count].outputs[i] = Interval_Of (1, 0);
+  return &Summaries[Summary_Count++];
+}
+
+/* The summary being built by the body now being read. */
+Subprogram_Summary *Summary_Under_Construction = NULL;
 
 #define MAX_ANALYSIS_FINDINGS 4096
 
@@ -60874,11 +60920,36 @@ Interval Eval_Interval (Node *node, Analysis_State *state) {
     case NK_QUALIFIED:
       return Eval_Interval (node->qualified.expression, state);
 
+    case NK_APPLY: {
+      Symbol *callee = node->apply.prefix ? node->apply.prefix->symbol : NULL;
+      while (callee and callee->aliased) callee = callee->aliased;
+      if (Summaries_Usable and callee and Is_Subprogram (callee)) {
+        Subprogram_Summary *summary = Find_Summary (callee);
+        if (summary and summary->returns_anything and
+            summary->result.known and not Interval_Is_Empty (summary->result))
+          return Interval_Meet (summary->result, Interval_Of_Type (node->type));
+      }
+      return Interval_Of_Type (node->type);
+    }
+
     case NK_IDENTIFIER: {
       Symbol *sym = node->symbol;
       if (sym) {
         Interval *slot = State_Slot (state, sym);
         if (slot) return *slot;
+        /* A parameterless call is written as a name, so a function's
+           result reaches its caller through this case and not the
+           one for an argument list. */
+        Symbol *callee = sym;
+        while (callee and callee->aliased) callee = callee->aliased;
+        if (Summaries_Usable and callee and Is_Subprogram (callee)) {
+          Subprogram_Summary *summary = Find_Summary (callee);
+          if (summary and summary->returns_anything and
+              summary->result.known and
+              not Interval_Is_Empty (summary->result))
+            return Interval_Meet (summary->result,
+                                  Interval_Of_Type (node->type));
+        }
       }
       return Interval_Of_Type (node->type);
     }
@@ -61095,7 +61166,16 @@ void Forget_Call_Actuals (Node *call, Analysis_State *state) {
     if (modes_known and i < callee->parameter_count and
         callee->parameters[i].mode == MODE_IN)
       continue;
-    State_Bind (state, actual->symbol, Interval_Top ());
+
+    Interval left_holding = Interval_Top ();
+    if (Summaries_Usable and modes_known and i < MAX_SUMMARY_OUTPUTS) {
+      Subprogram_Summary *summary = Find_Summary (callee);
+      if (summary and i < summary->output_count and
+          summary->outputs[i].known and
+          not Interval_Is_Empty (summary->outputs[i]))
+        left_holding = summary->outputs[i];
+    }
+    State_Bind (state, actual->symbol, left_holding);
   }
 }
 
@@ -61140,6 +61220,13 @@ void Analyze_Statement (Node *node, Analysis_State *state) {
       node->kind == NK_EXIT   or node->kind == NK_RAISE) {
     Check_Expression (node, state);
     Forget_Calls_In (node, state);
+    if (node->kind == NK_RETURN and node->return_stmt.expression and
+        Summary_Under_Construction) {
+      Summary_Under_Construction->returns_anything = true;
+      Summary_Under_Construction->result = Interval_Join (
+        Summary_Under_Construction->result,
+        Eval_Interval (node->return_stmt.expression, state));
+    }
     /* An exit or goto with a condition may or may not be taken; an
        unconditional one ends this path. */
     if (node->kind == NK_RETURN or node->kind == NK_GOTO or
@@ -61176,6 +61263,20 @@ void Analyze_Statement (Node *node, Analysis_State *state) {
         else if (Interval_Contains (allowed, value))
           Note_Finding (CHECK_KIND_RANGE, node->location, "cannot_fail",
                         "the value assigned", value, allowed);
+      }
+
+      if (target and target->kind == NK_IDENTIFIER and target->symbol and
+          Summary_Under_Construction and
+          Summary_Under_Construction->owner) {
+        Symbol *owner = Summary_Under_Construction->owner;
+        for (u32 pi = 0; pi < owner->parameter_count and
+                         pi < MAX_SUMMARY_OUTPUTS; pi++)
+          if (owner->parameters[pi].param_sym == target->symbol and
+              owner->parameters[pi].mode != MODE_IN) {
+            Subprogram_Summary *summary = Summary_Under_Construction;
+            if (pi >= summary->output_count) summary->output_count = pi + 1;
+            summary->outputs[pi] = Interval_Join (summary->outputs[pi], value);
+          }
       }
 
       if (target and target->kind == NK_IDENTIFIER and target->symbol) {
@@ -61311,10 +61412,15 @@ void Analyze_Bodies (Node *node) {
 
   if (statements) {
     Symbol *saved_owner = Analysis_Current_Owner;
+    Subprogram_Summary *saved_summary = Summary_Under_Construction;
     Analysis_Current_Owner = node->symbol;
+    Summary_Under_Construction =
+      node->symbol and Is_Subprogram (node->symbol)
+        ? Summary_For (node->symbol) : NULL;
     Analysis_State state = { .count = 0 };
     Analyze_Statement_List (statements, &state);
-    Analysis_Current_Owner = saved_owner;
+    Analysis_Current_Owner     = saved_owner;
+    Summary_Under_Construction = saved_summary;
   }
 
   for (const Syntax_Tree_Edge *edge = Syntax_Tree_Shape[node->kind];
@@ -61409,6 +61515,18 @@ bool Line_Bears_One_Check (Check_Kind kind, u32 line) {
   }
 }
 
+bool Summaries_Changed (Subprogram_Summary *before, u32 count) {
+  if (count != Summary_Count) return true;
+  for (u32 i = 0; i < count; i++) {
+    if (before[i].owner != Summaries[i].owner) return true;
+    if (before[i].result.known != Summaries[i].result.known) return true;
+    if (before[i].result.known and
+        (before[i].result.low  != Summaries[i].result.low or
+         before[i].result.high != Summaries[i].result.high)) return true;
+  }
+  return false;
+}
+
 void Analyze_Units (Node **units, int unit_count) {
   Analysis_Finding_Count = 0;
   memset (Line_Index_Sites,      0, sizeof Line_Index_Sites);
@@ -61417,6 +61535,32 @@ void Analyze_Units (Node **units, int unit_count) {
   for (int i = 0; i < unit_count; i++) Tally_Check_Constructs (units[i]);
   Analysis_Budget        = ANALYSIS_STATEMENT_BUDGET;
   Analysis_Exhausted     = false;
+  /* Read every body with findings switched off until the summaries
+     settle: a pass over a summary still being derived can hold a value
+     the program never produces. */
+  static Subprogram_Summary previous[MAX_SUMMARIES];
+  bool saved_recording = Analysis_Recording;
+  Analysis_Recording = false;
+  Summaries_Usable   = false;
+  Summary_Count      = 0;
+
+  for (int pass = 0; pass < 3; pass++) {
+    u32 before_count = Summary_Count;
+    memcpy (previous, Summaries, before_count * sizeof *previous);
+    Summary_Count = 0;
+    Analysis_Budget = ANALYSIS_STATEMENT_BUDGET;
+    for (int i = 0; i < unit_count; i++) {
+      if (not units[i] or units[i]->compilation_unit.grafted_into_generic)
+        continue;
+      Analyze_Bodies (units[i]);
+    }
+    Summaries_Usable = true;
+    if (pass > 0 and not Summaries_Changed (previous, before_count)) break;
+  }
+
+  Analysis_Recording = saved_recording;
+  Analysis_Budget    = ANALYSIS_STATEMENT_BUDGET;
+  Summary_Under_Construction = NULL;
   for (int i = 0; i < unit_count; i++) {
     if (not units[i] or units[i]->compilation_unit.grafted_into_generic) continue;
     Analyze_Bodies (units[i]);
