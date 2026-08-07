@@ -60626,6 +60626,7 @@ typedef struct { Symbol *sym; Interval value; } Analysis_Binding;
 typedef struct {
   Analysis_Binding vars[MAX_ANALYSIS_VARS];
   u32              count;
+  bool             unreachable;
 } Analysis_State;
 
 Interval Interval_Top (void) { return (Interval){ 0, 0, false }; }
@@ -60730,6 +60731,8 @@ void State_Bind (Analysis_State *state, Symbol *sym, Interval value) {
 }
 
 void State_Join (Analysis_State *into, Analysis_State *other) {
+  if (other->unreachable) return;
+  if (into->unreachable)  { *into = *other; return; }
   for (u32 i = 0; i < into->count; i++) {
     Interval *slot = State_Slot (other, into->vars[i].sym);
     into->vars[i].value = slot ? Interval_Join (into->vars[i].value, *slot)
@@ -60891,13 +60894,62 @@ void Forget_Assigned (Node *node, Analysis_State *state) {
   }
 }
 
-void Analyze_Statement (Node *node, Analysis_State *state) {
+/* A call can assign any actual passed to an out or in out parameter, and
+   what it assigned is not known here, so those actuals stop being known.
+   A call through a name this pass cannot resolve forgets every simple
+   actual, since it may be such a parameter. */
+void Forget_Call_Actuals (Node *call, Analysis_State *state) {
+  if (not call) return;
+  Node *prefix = call->apply.prefix;
+  Symbol *callee = prefix ? prefix->symbol : NULL;
+  while (callee and callee->aliased) callee = callee->aliased;
+  bool modes_known = callee and callee->parameters;
+
+  for (u32 i = 0; i < call->apply.arguments.count; i++) {
+    Node *actual = Unwrap_Association (call->apply.arguments.items[i]);
+    if (not actual or actual->kind != NK_IDENTIFIER or not actual->symbol)
+      continue;
+    if (modes_known and i < callee->parameter_count and
+        callee->parameters[i].mode == MODE_IN)
+      continue;
+    State_Bind (state, actual->symbol, Interval_Top ());
+  }
+}
+
+void Forget_Calls_In (Node *node, Analysis_State *state) {
   if (not node) return;
+  if (node->kind == NK_APPLY and node->apply.prefix and
+      node->apply.prefix->symbol and
+      Is_Subprogram (node->apply.prefix->symbol))
+    Forget_Call_Actuals (node, state);
+  for (const Syntax_Tree_Edge *edge = Syntax_Tree_Shape[node->kind];
+       edge->offset; edge++) {
+    Node_List children = Get_Children (node, edge);
+    for (u32 i = 0; i < children.count; i++)
+      Forget_Calls_In (children.items[i], state);
+  }
+}
+
+void Analyze_Statement (Node *node, Analysis_State *state) {
+  if (not node or state->unreachable) return;
+
+  if (node->kind == NK_RETURN or node->kind == NK_GOTO or
+      node->kind == NK_EXIT) {
+    Check_Expression (node, state);
+    Forget_Calls_In (node, state);
+    /* An exit or goto with a condition may or may not be taken; an
+       unconditional one ends this path. */
+    if (node->kind == NK_RETURN or node->kind == NK_GOTO or
+        (node->kind == NK_EXIT and not node->exit_stmt.condition))
+      state->unreachable = true;
+    return;
+  }
 
   switch (node->kind) {
     case NK_ASSIGNMENT: {
       Check_Expression (node->assignment.value, state);
       Check_Expression (node->assignment.target, state);
+      Forget_Calls_In (node->assignment.value, state);
       Interval value  = Eval_Interval (node->assignment.value, state);
       Node   *target  = node->assignment.target;
       Type   *target_type = target ? target->type : NULL;
@@ -60984,6 +61036,7 @@ void Analyze_Statement (Node *node, Analysis_State *state) {
 
     default:
       Check_Expression (node, state);
+      Forget_Calls_In (node, state);
       return;
   }
 }
