@@ -32356,6 +32356,9 @@ const char *Spell_Exception_Kind (Exception_Kind kind) {
 }
 
 
+bool Elide_Provable_Checks = false;
+bool Analysis_Proved_Safe_Here (Check_Kind kind, Location location);
+
 Check_Permission Check_Permission_For (Check_Kind kind, Type *type,
                                        Symbol *sym) {
   u32 bit       = Check_Kind_Bit (kind);
@@ -32371,6 +32374,9 @@ Check_Permission Check_Permission_For (Check_Kind kind, Type *type,
     if (region->suppressed_checks & bit) { permitted = true; break; }
     region = region->defining_scope ? region->defining_scope->owner : NULL;
   }
+
+  if (not permitted and Analysis_Proved_Safe_Here (kind, Current_Emit_Location))
+    permitted = true;
 
   u32 site = Note_Check_Site (kind, permitted);
   Note_Check_Site_Pending (permitted ? NO_ANALYSIS_CHECK_SITE : site);
@@ -61355,8 +61361,60 @@ void Report_Analysis_Warnings (const char *input_path) {
   }
 }
 
+/* How many constructs of each kind sit on each line of the unit, counted
+   over the whole tree rather than over what the walk reaches.  A finding
+   names a line, so a line bearing two checks of one kind cannot say which
+   of them was settled, and neither may be acted on. */
+#define MAX_TALLY_LINES 65536
+u16 Line_Index_Sites[MAX_TALLY_LINES];
+u16 Line_Division_Sites[MAX_TALLY_LINES];
+u16 Line_Assignment_Sites[MAX_TALLY_LINES];
+
+void Tally_Line (u16 *table, u32 line) {
+  if (line and line < MAX_TALLY_LINES and table[line] < 0xFFFF) table[line]++;
+}
+
+void Tally_Check_Constructs (Node *node) {
+  if (not node) return;
+  u32 line = node->location.line;
+
+  if (node->kind == NK_APPLY and node->apply.prefix and
+      node->apply.prefix->type and
+      node->apply.prefix->type->kind == TYPE_ARRAY)
+    Tally_Line (Line_Index_Sites, line);
+
+  if (node->kind == NK_BINARY_OP and
+      (node->binary.op == TK_SLASH or node->binary.op == TK_MOD or
+       node->binary.op == TK_REM))
+    Tally_Line (Line_Division_Sites, line);
+
+  if (node->kind == NK_ASSIGNMENT)
+    Tally_Line (Line_Assignment_Sites, line);
+
+  for (const Syntax_Tree_Edge *edge = Syntax_Tree_Shape[node->kind];
+       edge->offset; edge++) {
+    Node_List children = Get_Children (node, edge);
+    for (u32 i = 0; i < children.count; i++)
+      Tally_Check_Constructs (children.items[i]);
+  }
+}
+
+bool Line_Bears_One_Check (Check_Kind kind, u32 line) {
+  if (not line or line >= MAX_TALLY_LINES) return false;
+  switch (kind) {
+    case CHECK_KIND_INDEX:    return Line_Index_Sites[line]      == 1;
+    case CHECK_KIND_DIVISION: return Line_Division_Sites[line]   == 1;
+    case CHECK_KIND_RANGE:    return Line_Assignment_Sites[line] == 1;
+    default:                  return false;
+  }
+}
+
 void Analyze_Units (Node **units, int unit_count) {
   Analysis_Finding_Count = 0;
+  memset (Line_Index_Sites,      0, sizeof Line_Index_Sites);
+  memset (Line_Division_Sites,   0, sizeof Line_Division_Sites);
+  memset (Line_Assignment_Sites, 0, sizeof Line_Assignment_Sites);
+  for (int i = 0; i < unit_count; i++) Tally_Check_Constructs (units[i]);
   Analysis_Budget        = ANALYSIS_STATEMENT_BUDGET;
   Analysis_Exhausted     = false;
   for (int i = 0; i < unit_count; i++) {
@@ -61412,6 +61470,44 @@ const char *Spell_Check_Verdict (Analysis_Check_Site *site) {
    different eyes: a site is placed at the statement, a finding at the
    expression within it.  They are joined on the check's kind and line,
    which is what they agree on. */
+/* Whether the analysis proved this check cannot fail, at a granularity
+   fine enough to act on.  A site is placed at the statement and a
+   finding at the expression, so the two meet only on the kind and the
+   line.  That is enough only where the line holds one check of the kind
+   and the analysis settled it: with two on a line -- A (I) := A (J) --
+   a finding cannot be told to belong to one rather than the other, and
+   eliding both on the strength of one would drop a check the program
+   needs.  Both are then left alone. */
+u32 Provably_Safe_Uses[MAX_ANALYSIS_CHECK_SITES];
+u32 Provably_Safe_Use_Count = 0;
+
+bool Analysis_Proved_Safe_Here (Check_Kind kind, Location location) {
+  if (not Elide_Provable_Checks or not location.line) return false;
+
+  u32  matches = 0;
+  bool all_safe = true;
+  for (u32 i = 0; i < Analysis_Finding_Count; i++) {
+    Analysis_Finding *finding = &Analysis_Findings[i];
+    if (finding->kind != kind) continue;
+    if (finding->location.line != location.line) continue;
+    if (not finding->location.filename or not location.filename or
+        strcmp (finding->location.filename, location.filename) != 0) continue;
+    matches++;
+    if (strcmp (finding->verdict, "cannot_fail") != 0) all_safe = false;
+  }
+  if (matches != 1 or not all_safe) return false;
+  if (not Line_Bears_One_Check (kind, location.line)) return false;
+
+  /* One finding stands for one check.  If the line turns out to hold a
+     second check of the same kind, the first has already taken the
+     finding and the second is checked as usual. */
+  for (u32 i = 0; i < Provably_Safe_Use_Count; i++)
+    if (Provably_Safe_Uses[i] == location.line) return false;
+  if (Provably_Safe_Use_Count < MAX_ANALYSIS_CHECK_SITES)
+    Provably_Safe_Uses[Provably_Safe_Use_Count++] = location.line;
+  return true;
+}
+
 void Join_Findings_To_Sites (void) {
   for (u32 i = 0; i < Analysis_Check_Site_Count; i++) {
     Analysis_Check_Site *site = &Analysis_Check_Sites[i];
@@ -61658,7 +61754,7 @@ void Compile_File (const char *input_path, const char *output_path) {
   for (int i = 0; i < unit_count; i++)
     Check_Legality_Of_Compilation_Unit (units[i]);
 
-  if (Analyze_Mode or
+  if (Analyze_Mode or Elide_Provable_Checks or
       (not Warnings_Silenced and
        Warning_Class_Is_Enabled[WARNING_UNREACHABLE_CODE])) {
     Analyze_Units (units, unit_count);
@@ -64614,6 +64710,10 @@ void Print_Usage (FILE *out, const char *program_name) {
       "  --trace-emit\n"
       "      Annotate each emitted IR line with the compiler source\n"
       "      site that produced it, for debugging the compiler itself.\n"
+      "  --elide-provable-checks\n"
+      "      Omit a runtime check the interval analysis proves cannot\n"
+      "      fail.  Off by default: it removes checks on the strength of\n"
+      "      that analysis.\n"
       "  --analyze\n"
       "      Report the runtime checks the unit contains, as JSON on\n"
       "      stdout: where each one is, whether it reached the generated\n"
@@ -64798,6 +64898,8 @@ int main (int argc, char *argv[]) {
       emit_llvm = true;
     } else if (strcmp (argument, "--ir") == 0) {
       Ir_Output_Mode = true;
+    } else if (strcmp (argument, "--elide-provable-checks") == 0) {
+      Elide_Provable_Checks = true;
     } else if (strcmp (argument, "--analyze") == 0) {
       Analyze_Mode   = true;
       Ir_Output_Mode = true;
