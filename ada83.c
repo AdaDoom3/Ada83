@@ -323,6 +323,20 @@ double Raise_To_Power_Exact (double base, double exponent) {
     "e-m:e-i8:8:32-i16:16:32-i64:64-i128:128-n32:64-S128"
 #endif
 
+#if defined(_WIN32)
+  #define TARGET_OS_LITERAL   "WINDOWS"
+#elif defined(__APPLE__)
+  #define TARGET_OS_LITERAL   "MACOS"
+#else
+  #define TARGET_OS_LITERAL   "LINUX"
+#endif
+
+#if defined(SIMD_ARM64)
+  #define TARGET_CPU_LITERAL  "AARCH64"
+#else
+  #define TARGET_CPU_LITERAL  "X86_64"
+#endif
+
 #if defined(SIMD_X86_64) and defined(_WIN32)
   #define SJLJ_BUFFER_REGISTER "rcx"
   #define SJLJ_SAVED_REGISTERS(Slot)                                     \
@@ -59733,7 +59747,7 @@ char *Make_System_Source (void) {
   enum { Address_Bits = POINTER_ALLOC_SIZE * Bits_Per_Unit };
   static char *cached;
   if (cached) return cached;
-  enum { Size = 1024 };
+  enum { Size = 2048 };
   cached = Arena_Allocate (Size);
   snprintf (cached, Size,
     "PACKAGE SYSTEM IS\n"
@@ -59746,6 +59760,11 @@ char *Make_System_Source (void) {
     "SYSTEM_NAME:CONSTANT NAME:=ADA83;\n"
     "SUBTYPE PRIORITY IS INTEGER RANGE 0..7;\n"
     "NULL_ADDRESS:CONSTANT ADDRESS;\n"
+    "TYPE TARGET_SYSTEM IS(LINUX,MACOS,WINDOWS);\n"
+    "TYPE TARGET_MACHINE IS(X86_64,AARCH64);\n"
+    "TARGET_OS:CONSTANT TARGET_SYSTEM:=%s;\n"
+    "TARGET_CPU:CONSTANT TARGET_MACHINE:=%s;\n"
+    "TARGET_WORD_SIZE:CONSTANT:=%d;\n"
     "PRIVATE\n"
     "TYPE ADDRESS IS RANGE -(2**%d)..2**%d-1;\n"
     "NULL_ADDRESS:CONSTANT ADDRESS:=0;\n"
@@ -59753,6 +59772,7 @@ char *Make_System_Source (void) {
     (int) Ada_Widest_Integer_Bits - 1, (int) Ada_Widest_Integer_Bits - 1,
     (int) Target_Max_Mantissa, (int) Target_Max_Mantissa,
     (int) Bits_Per_Unit, (int) Ada_Integer_Bits - 1,
+    TARGET_OS_LITERAL, TARGET_CPU_LITERAL, (int) Address_Bits,
     (int) Address_Bits - 1, (int) Address_Bits - 1);
   return cached;
 }

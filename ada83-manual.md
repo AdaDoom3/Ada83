@@ -15740,6 +15740,50 @@ implementation recognizes are the fourteen of Annex B and the nine of
 
 No pragma defined by this implementation determines the legality of any text
 outside the pragma itself.
+
+### F.4 The specification of the package System
+
+The visible part of System contains the declarations required by
+[13.7](#137-the-package-system), and, under the heading of other
+system-dependent declarations that clause allows, the following description of
+the target the program is being compiled for:
+
+```ada
+type TARGET_SYSTEM  is (LINUX, MACOS, WINDOWS);
+type TARGET_MACHINE is (X86_64, AARCH64);
+
+TARGET_OS        : constant TARGET_SYSTEM  := implementation_defined;
+TARGET_CPU       : constant TARGET_MACHINE := implementation_defined;
+TARGET_WORD_SIZE : constant                := implementation_defined;
+```
+
+TARGET_OS and TARGET_CPU name the operating system and instruction set of the
+target. TARGET_WORD_SIZE is the width in bits of an address.
+
+TARGET_OS and TARGET_CPU are constants of a static subtype initialized by a
+static expression, so a comparison against either is itself static
+(see [4.9](#49-static-expressions-and-static-subtypes)) and may appear wherever
+a static expression is required. This is what allows one body to hold code for
+more than one target:
+
+```ada
+if System.TARGET_OS = System.MACOS then
+   return 58;             --  _SC_NPROCESSORS_ONLN
+end if;
+return 84;
+```
+
+Both arms of such a statement are elaborated, resolved and checked for legality
+whatever the target, so code written for a target other than the one being
+compiled for cannot fall out of step unnoticed. Whether the arm that cannot be
+reached is also generated is not defined; it is removed when optimization is
+enabled. This mechanism selects between statements, not between declarations;
+for a declaration that must be absent on some targets, see the `When` argument
+of pragma IMPORT in F.1.
+
+These declarations describe the target, not the implementation. SYSTEM_NAME
+continues to name the implementation and is always ADA83.
+
 ---
 
 ## Rationale
