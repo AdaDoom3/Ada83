@@ -15677,6 +15677,57 @@ through with clauses, is elaborated before the unit to which the context
 clause belongs. Pragma ELABORATE of Annex B requires the same of each named
 unit alone, without the units reachable from it.
 
+#### Pragma LINKER_OPTIONS
+
+```
+pragma LINKER_OPTIONS (option {, option} [, ENABLED => condition]);
+```
+
+Allowed wherever a pragma may appear in a declarative part.
+
+Each option is any expression reducible to a string at compile time, in the
+same sense as an external name, and reaches the linker as one argument. They
+are passed after the options this implementation supplies for itself, which
+they therefore cannot displace.
+
+One pragma is one option however many words it names, so an option that means
+nothing without the word after it names both:
+
+```ada
+pragma LINKER_OPTIONS ("-framework", "CoreFoundation");
+pragma LINKER_OPTIONS ("-framework", "Security");
+```
+
+Each word may hold only letters, digits and the characters `-_./+=:,`, and no
+word may contain a space -- write the words separately instead. `@`, which
+would name a file for the linker to read further options from, is not
+accepted: it would carry text this rule never sees.
+
+The linker is run directly rather than through a shell, so an argument is
+never parsed as anything but an argument. The restriction above is a second
+line rather than the only one.
+
+The `ENABLED` argument has the meaning it has for pragma IMPORT: a false
+condition makes the pragma have no effect, and a condition that is not static
+is illegal. This is what makes a library requirement conditional without
+making the declaration around it conditional:
+
+```ada
+pragma LINKER_OPTIONS ("-luser32",
+                       ENABLED => System.TARGET_OS = System.WINDOWS);
+```
+
+Options are recorded in the ALI file of the unit that requests them. A link
+uses the options of the unit being compiled together with those recorded for
+each module named on the command line, and no others; an ALI read for any
+other reason does not contribute. Two options are the same only when they
+name the same words in the same order, and one requested more than once is
+passed once.
+
+An option may name at most 8 words, and a link at most 64 options. Reaching
+either is an error naming what asked for one too many, rather than a link
+quietly missing an option.
+
 ### F.2 Language-defined pragmas
 
 The pragmas of Annex B are accepted by this implementation. The following have

@@ -6341,6 +6341,10 @@ typedef struct {
   u32 param_count;
 } ALI_Export;
 
+#define MAX_LINKER_OPTIONS 64
+#define MAX_LINKER_OPTIONS_PER_UNIT MAX_LINKER_OPTIONS
+#define MAX_LINKER_OPTION_WORDS 8
+
 typedef struct ALI_Cache_Entry_Forward {
   char       *unit_name;
   char       *source_file;
@@ -6362,6 +6366,10 @@ typedef struct ALI_Cache_Entry_Forward {
   i64    summary_low  [MAX_ALI_SUMMARIES];
   i64    summary_high [MAX_ALI_SUMMARIES];
   u32    summary_count;
+  char       *linker_options[MAX_LINKER_OPTIONS_PER_UNIT]
+                            [MAX_LINKER_OPTION_WORDS];
+  u32    linker_option_words[MAX_LINKER_OPTIONS_PER_UNIT];
+  u32    linker_option_count;
 } ALI_Cache_Entry;
 
 extern ALI_Cache_Entry ALI_Cache[MAX_ALI_CACHE_ENTRIES];
@@ -7412,6 +7420,57 @@ int      Loaded_Body_Capacity       = 0;
 Loading_Set Loading_Packages = {0};
 
 Slice           Subunit_Ancestor_Unit_Name = {NULL, 0};
+
+typedef struct {
+  char *words[MAX_LINKER_OPTION_WORDS];
+  u32   word_count;
+} Linker_Option_Entry;
+
+Linker_Option_Entry Linker_Options[MAX_LINKER_OPTIONS];
+u32                 Linker_Option_Count = 0;
+
+bool Linker_Option_Is_Safe (Slice option) {
+  for (u32 i = 0; i < option.length; i++) {
+    char ch = option.data[i];
+    bool ok = (ch >= 'a' and ch <= 'z') or (ch >= 'A' and ch <= 'Z') or
+              (ch >= '0' and ch <= '9') or
+              ch == '-' or ch == '_' or ch == '.' or ch == '/' or
+              ch == '+' or ch == '=' or ch == ':' or ch == ',';
+    if (not ok) return false;
+  }
+  return option.length > 0;
+}
+
+bool Linker_Entry_Matches (const Linker_Option_Entry *entry,
+                           const Slice *words, u32 count) {
+  if (entry->word_count != count) return false;
+  for (u32 i = 0; i < count; i++)
+    if (strlen (entry->words[i]) != words[i].length or
+        memcmp (entry->words[i], words[i].data, words[i].length) != 0)
+      return false;
+  return true;
+}
+
+bool Note_Linker_Option (const Slice *words, u32 count) {
+  if (count == 0 or count > MAX_LINKER_OPTION_WORDS) return false;
+  for (u32 i = 0; i < count; i++)
+    if (not Linker_Option_Is_Safe (words[i])) return false;
+  for (u32 i = 0; i < Linker_Option_Count; i++)
+    if (Linker_Entry_Matches (&Linker_Options[i], words, count)) return true;
+  if (Linker_Option_Count >= MAX_LINKER_OPTIONS) return false;
+
+  Linker_Option_Entry *entry = &Linker_Options[Linker_Option_Count];
+  entry->word_count = 0;
+  for (u32 i = 0; i < count; i++) {
+    char *held = malloc (words[i].length + 1);
+    if (not held) return false;
+    memcpy (held, words[i].data, words[i].length);
+    held[words[i].length] = '\0';
+    entry->words[entry->word_count++] = held;
+  }
+  Linker_Option_Count++;
+  return true;
+}
 
 Symbol  **Bodyless_Required_Packages       = NULL;
 
@@ -23368,6 +23427,75 @@ Node *Pragma_Argument (Node_List *args, Slice formal, u32 position) {
   return supplied;
 }
 
+bool Fold_Static_String (Node *node, Slice *out, int depth) {
+  if (not node or depth > 32) return false;
+
+  switch (node->kind) {
+
+    case NK_STRING:
+      *out = node->string_val.text;
+      return true;
+
+    case NK_ASSOCIATION:
+      return Fold_Static_String (Unwrap_Association (node), out, depth + 1);
+
+    case NK_QUALIFIED:
+      return Fold_Static_String (node->qualified.expression, out, depth + 1);
+
+    case NK_IDENTIFIER:
+    case NK_SELECTED: {
+      Symbol *sym = node->symbol;
+      if (not sym) {
+        Resolve_Expression (node);
+        sym = node->symbol;
+      }
+      if (not sym or sym->kind != SYMBOL_CONSTANT) return false;
+      Node *declaration = sym->declaration;
+      if (not declaration or declaration->kind != NK_OBJECT_DECL) return false;
+      if (not declaration->object_decl.is_constant) return false;
+      return Fold_Static_String (declaration->object_decl.init, out, depth + 1);
+    }
+
+    case NK_BINARY_OP: {
+      if (node->binary.op != TK_AMPERSAND) return false;
+      Slice left, right;
+      if (not Fold_Static_String (node->binary.left, &left, depth + 1))
+        return false;
+      if (not Fold_Static_String (node->binary.right, &right, depth + 1))
+        return false;
+      char *joined = Arena_Allocate ((size_t) left.length + right.length + 1);
+      memcpy (joined, left.data, left.length);
+      memcpy (joined + left.length, right.data, right.length);
+      joined[left.length + right.length] = '\0';
+      *out = (Slice){ joined, left.length + right.length };
+      return true;
+    }
+
+    case NK_APPLY: {
+      if (not Expression_Is_Slice (node)) return false;
+      if (node->apply.arguments.count != 1) return false;
+      Slice whole;
+      if (not Fold_Static_String (node->apply.prefix, &whole, depth + 1))
+        return false;
+      Node *range = Unwrap_Association (node->apply.arguments.items[0]);
+      if (not range or range->kind != NK_RANGE) return false;
+      i128 low, high;
+      if (not Fold_Static_Index (range->range.low, &low, 0) or
+          not Fold_Static_Index (range->range.high, &high, 0))
+        return false;
+      if (high < low) { *out = (Slice){ whole.data, 0 }; return true; }
+      if (low < 1 or high > (i128) whole.length) return false;
+      *out = (Slice){ whole.data + (u32) (low - 1),
+                      (u32) (high - low + 1) };
+      return true;
+    }
+
+    default:
+      return false;
+  }
+}
+
+
 void Apply_Pragma_External_Name (Symbol *sym, Node_List *args) {
   Node *supplied = Pragma_Argument (args, S ("EXTERNAL_NAME"), 2);
   if (not supplied) return;
@@ -23414,6 +23542,21 @@ bool Fold_Static_Boolean (Node *node, bool *out, int depth) {
   if (not Read_Static_Bound (node, &value)) return false;
   *out = value != 0;
   return true;
+}
+
+bool Pragma_Guard_Selects (Node_List *args, Node *pragma_node,
+                           const char *pragma_name, bool *selected) {
+  *selected = true;
+  Node *guard = Find_Pragma_Named_Argument (args, S ("ENABLED"));
+  if (not guard) return true;
+  if (Fold_Static_Boolean (guard, selected, 0)) return true;
+  Reject_At (guard->location,
+    "the ENABLED argument of pragma %s must be a static expression of a "
+    "boolean type; it decides whether this declaration reaches the "
+    "linker, so it cannot depend on anything computed at run time",
+    pragma_name);
+  (void) pragma_node;
+  return false;
 }
 
 void Apply_Pragma_Convention (Symbol *sym, Node *conv_node) {
@@ -24457,6 +24600,51 @@ void Resolve_Pragma (Node *node) {
         sym->convention = CONVENTION_C;
       Apply_Pragma_External_Name (sym, arguments);
     }
+
+  } else if (Slices_Match (name, S("LINKER_OPTIONS"))) {
+    bool selected = true;
+    Pragma_Guard_Selects (arguments, node, "LINKER_OPTIONS", &selected);
+    Slice words[MAX_LINKER_OPTION_WORDS];
+    u32   word_count = 0;
+    bool  usable     = true;
+
+    for (u32 i = 0; i < arguments->count and usable; i++) {
+      Node *supplied = arguments->items[i];
+      if (supplied and supplied->kind == NK_ASSOCIATION and
+          supplied->association.choices.count > 0)
+        continue;
+      if (word_count == MAX_LINKER_OPTION_WORDS) {
+        Reject_At (supplied->location,
+          "a pragma LINKER_OPTIONS may name at most %d words",
+          MAX_LINKER_OPTION_WORDS);
+        usable = false;
+        break;
+      }
+      Slice word;
+      if (not Fold_Static_String (supplied, &word, 0)) {
+        Reject_At (supplied->location,
+          "an argument of pragma LINKER_OPTIONS must be known at compile "
+          "time: a string literal, a constant declared from one, or those "
+          "joined with \"&\" or narrowed by a slice");
+        usable = false;
+        break;
+      }
+      if (not Linker_Option_Is_Safe (word)) {
+        Reject_At (supplied->location,
+          "a linker option may hold only letters, digits and the "
+          "characters -_./+=:, and must be one word; an option that "
+          "takes a word after it names both in the one pragma");
+        usable = false;
+        break;
+      }
+      words[word_count++] = word;
+    }
+
+    if (selected and usable and word_count > 0 and
+        not Note_Linker_Option (words, word_count))
+      Reject_At (node->location,
+        "this compilation already carries %d linker options, which is all "
+        "this implementation keeps", MAX_LINKER_OPTIONS);
 
   } else if (Slices_Match (name, S("UNREFERENCED"))) {
     for (u32 i = 0; i < arguments->count; i++) {
@@ -56792,6 +56980,15 @@ void ALI_Write (FILE *out, ALI_Info *ali) {
              (int)ali->elaboration_supply[i].length,
              ali->elaboration_supply[i].data);
 
+  if (Linker_Option_Count > 0) fprintf (out, "\n");
+  for (u32 i = 0; i < Linker_Option_Count; i++)
+    {
+      fprintf (out, "L");
+      for (u32 w = 0; w < Linker_Options[i].word_count; w++)
+        fprintf (out, " \"%s\"", Linker_Options[i].words[w]);
+      fprintf (out, "\n");
+    }
+
   fprintf (out, "\n");
   for (u32 i = 0; i < ali->unit_count; i++) {
     Unit_Info *u = &ali->units[i];
@@ -57454,6 +57651,27 @@ ALI_Cache_Entry *ALI_Read (const char *ali_path) {
           entry->summary_names[at] = strdup (name);
           entry->summary_low  [at] = (i64) low;
           entry->summary_high [at] = (i64) high;
+        }
+      }
+    }
+    else if (line[0] == 'L' and line[1] == ' ') {
+
+      if (entry->linker_option_count < MAX_LINKER_OPTIONS_PER_UNIT) {
+        u32   slot  = entry->linker_option_count;
+        u32   words = 0;
+        char *cursor = line + 1;
+        while (words < MAX_LINKER_OPTION_WORDS) {
+          char *open_quote = strchr (cursor, '"');
+          if (not open_quote) break;
+          char *close_quote = strchr (open_quote + 1, '"');
+          if (not close_quote) break;
+          *close_quote = '\0';
+          entry->linker_options[slot][words++] = strdup (open_quote + 1);
+          cursor = close_quote + 1;
+        }
+        if (words > 0) {
+          entry->linker_option_words[slot] = words;
+          entry->linker_option_count++;
         }
       }
     }
@@ -64549,6 +64767,30 @@ int Native_Backend_Compile (const char *ir_path, const char *const *extra_ir,
   const char *link_libraries = "-lm -lpthread";
   const char *link_options = "";
 #endif
+  for (int i = 0; i < extra_count; i++) {
+    const char *module = extra_ir[i];
+    size_t length = strlen (module);
+    if (length < 3 or strcmp (module + length - 3, ".ll") != 0) continue;
+    char ali_path[PATH_MAX];
+    if (snprintf (ali_path, sizeof ali_path, "%.*s.ali",
+                  (int) (length - 3), module) >= (int) sizeof ali_path)
+      continue;
+    ALI_Cache_Entry *module_ali = ALI_Read (ali_path);
+    if (not module_ali) continue;
+    for (u32 o = 0; o < module_ali->linker_option_count; o++) {
+      Slice words[MAX_LINKER_OPTION_WORDS];
+      u32   count = module_ali->linker_option_words[o];
+      for (u32 w = 0; w < count; w++) {
+        const char *word = module_ali->linker_options[o][w];
+        words[w] = (Slice){ word, (u32) strlen (word) };
+      }
+      if (not Note_Linker_Option (words, count))
+        Report_Driver_Error ("module '%s' asks for more linker options than "
+                             "this implementation keeps (%d)",
+                             module, MAX_LINKER_OPTIONS);
+    }
+  }
+
   bool driver_ran = false;
   for (size_t i = 0; i < sizeof drivers / sizeof *drivers; i++) {
     if (not drivers[i]) continue;
@@ -64565,6 +64807,10 @@ int Native_Backend_Compile (const char *ir_path, const char *const *extra_ir,
       Push_Linker_Word  (exe_path,        pool, sizeof pool, &used, argv, &argc) and
       Push_Linker_Words (link_libraries,  pool, sizeof pool, &used, argv, &argc) and
       Push_Linker_Words (link_options,    pool, sizeof pool, &used, argv, &argc);
+    for (u32 o = 0; built and o < Linker_Option_Count; o++)
+      for (u32 w = 0; built and w < Linker_Options[o].word_count; w++)
+        built = Push_Linker_Word (Linker_Options[o].words[w], pool,
+                                  sizeof pool, &used, argv, &argc);
     if (not built) {
       Report_Driver_Error ("the link command is too long");
       break;
