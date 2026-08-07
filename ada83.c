@@ -2999,6 +2999,7 @@ struct Symbol {
 
   bool            is_inline;
   bool            is_imported;
+  bool            import_is_unavailable;
   bool            is_exported;
   Slice           external_name;
   Slice           link_name;
@@ -23161,6 +23162,7 @@ void Resolve_Declaration_List (Node_List *list) {
   for (u32 i = 0; i < list->count; i++) {
     Node *item = list->items[i];
     if (item and item->symbol and not item->symbol->is_imported and
+        not item->symbol->import_is_unavailable and
         Node_In_Any_Class (item, NODE_CLASS_SUBPROGRAM_SPECIFICATION))
       item->symbol->needs_elab_flag = true;
   }
@@ -23499,13 +23501,13 @@ bool Fold_Static_String (Node *node, Slice *out, int depth) {
 void Apply_Pragma_External_Name (Symbol *sym, Node_List *args) {
   Node *supplied = Pragma_Argument (args, S ("EXTERNAL_NAME"), 2);
   if (not supplied) return;
-  Node *name_node = Unwrap_Association (supplied);
-  if (name_node and name_node->kind == NK_STRING)
-    sym->external_name = name_node->string_val.text;
+  Slice folded;
+  if (Fold_Static_String (supplied, &folded, 0))
+    sym->external_name = folded;
   else
     Note_Pending_Warning (WARNING_PRAGMA_IGNORED, supplied->location,
-      "the external name must be a string literal, so this argument has no "
-      "effect and '%.*s' keeps its Ada name",
+      "the external name must be known at compile time, so this argument "
+      "has no effect and '%.*s' keeps its Ada name",
       (int) sym->name.length, sym->name.data);
 }
 
@@ -24584,7 +24586,17 @@ void Resolve_Pragma (Node *node) {
   } else if (Slices_Match (name, S("IMPORT"))) {
     Node *convention = NULL;
     Symbol *sym = Find_Pragma_Entity (arguments, &convention);
-    if (sym) {
+    bool selected = true;
+    Pragma_Guard_Selects (arguments, node, "IMPORT", &selected);
+    if (sym and not selected and not Is_Subprogram (sym)) {
+      Reject_At (node->location,
+        "the ENABLED argument of pragma IMPORT is accepted only for a "
+        "subprogram; an object that is not imported has no value to "
+        "stand in for the one it would have named");
+    } else if (sym and not selected) {
+      sym->import_is_unavailable = true;
+      Apply_Pragma_Convention (sym, convention);
+    } else if (sym) {
       sym->is_imported = true;
       Apply_Pragma_Convention (sym, convention);
       Apply_Pragma_External_Name (sym, arguments);
@@ -24592,6 +24604,11 @@ void Resolve_Pragma (Node *node) {
 
   } else if (Slices_Match (name, S("EXPORT"))) {
     Node *convention = NULL;
+    Node *guard = Find_Pragma_Named_Argument (arguments, S ("ENABLED"));
+    if (guard)
+      Reject_At (guard->location,
+        "pragma EXPORT has no ENABLED argument: an exported subprogram "
+        "has a body, which exists whatever the target");
     Symbol *sym = Find_Pragma_Entity (arguments, &convention);
     if (sym) {
       sym->is_exported = true;
@@ -28769,7 +28786,8 @@ bool Declaration_Requires_Body (Node *item) {
     case NK_PACKAGE_SPEC:
       return Package_Specification_Requires_Body (item);
     case NK_PROCEDURE_SPEC: case NK_FUNCTION_SPEC:
-      return not (item->symbol and item->symbol->is_imported);
+      return not (item->symbol and (item->symbol->is_imported or
+                                    item->symbol->import_is_unavailable));
     case NK_TASK_SPEC:
       return true;
     case NK_GENERIC_DECL: {
@@ -34983,7 +35001,7 @@ Symbol *Find_Enclosing_Subprogram (Symbol *sym) {
 }
 
 bool Subprogram_Needs_Static_Chain (Symbol *sym) {
-  if (sym and sym->is_imported) return false;
+  if (sym and (sym->is_imported or sym->import_is_unavailable)) return false;
   return Find_Enclosing_Subprogram (sym) != NULL;
 }
 
@@ -52701,6 +52719,23 @@ void Emit_Module_External_Declarations () {
       }
       continue;
     }
+    if (callee->import_is_unavailable) {
+      Emit ("define linkonce_odr %s @", Spell_Return_Rep (callee));
+      Emit_Symbol_Name (callee);
+      Emit_Formal_Parameter_List (callee,
+                                  Subprogram_Needs_Static_Chain (callee), true);
+      Emit (" {\nentry:\n");
+      u32 saved_temp = cg->temp_id;
+      cg->temp_id = 1;
+      cg->block_terminated = false;
+      Emit_Raise_Exception ("program_error",
+                            "not imported on this target");
+      Emit ("}\n");
+      cg->temp_id = saved_temp;
+      cg->block_terminated = false;
+      continue;
+    }
+
     Emit ("declare %s @", Spell_Return_Rep (callee));
     Emit_Symbol_Name (callee);
     Emit_Formal_Parameter_List (callee, Subprogram_Needs_Static_Chain (callee),

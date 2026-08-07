@@ -15581,6 +15581,80 @@ Pragma INTERFACE of [13.9](#139-interface-to-other-languages) is not provided
 by this implementation. Pragma IMPORT states what pragma INTERFACE states, and
 additionally carries the external name.
 
+The `ENABLED` argument decides whether the entity is imported at all. Its
+condition must be a static expression of a boolean type
+(see [4.9](#49-static-expressions-and-static-subtypes)); a condition that is
+not static is illegal, since whether the declaration reaches the linker cannot
+depend on a value computed at run time. The short-circuit control forms `and
+then` and `or else` are not operators
+(see [4.5.1](#451-logical-operators-and-short-circuit-control-forms)), so an
+expression using one is not static and is not accepted here; write `and` or
+`or`. Giving `ENABLED` more than once in a pragma is illegal.
+
+If the condition is omitted or true, the pragma has its usual effect. If it is
+false the entity is not imported: no external name is associated with it, and
+nothing that refers to it causes a reference to the linker. It is accepted
+without a body, as an imported subprogram is, and a call to it raises
+PROGRAM_ERROR if it is taken.
+
+This is how one body serves targets whose foreign subprograms differ, and it
+is the effect [10.6](#106-program-optimization) describes: "A compiler may
+find that some statements or subprograms will never be executed, for example,
+if their execution depends on a condition known to be False. The corresponding
+object machine code can then be omitted. This rule permits the effect of
+conditional compilation within the language." A subprogram not available on
+the target being compiled for is declared and left unimported; its declaration
+and every call to it are still resolved and checked for legality, but the
+symbol it would have named is never demanded:
+
+```ada
+function C_Getpid return INTEGER;
+pragma IMPORT (C, C_Getpid, "getpid",
+               ENABLED => System.TARGET_OS /= System.WINDOWS);
+
+function W_GetCurrentProcessId return INTEGER;
+pragma IMPORT (STDCALL, W_GetCurrentProcessId, "GetCurrentProcessId",
+               ENABLED => System.TARGET_OS = System.WINDOWS);
+```
+
+Whether the call that cannot be taken is removed does not matter: the
+subprogram it names is defined either way, so the program links whatever the
+optimization level.
+
+A condition that wrongly holds is caught by the linker, since the entity is
+then imported and its symbol is demanded of a target that does not have it.
+
+`ENABLED` is accepted only for a subprogram. An object that is not imported has
+no value to stand in for the one it would have named, so the pragma is illegal
+there.
+
+Pragma EXPORT takes no `ENABLED` argument, and giving it one is illegal. An
+exported subprogram has a body, which exists whatever the target.
+
+The external name of either pragma need not be a string literal. It may be any
+expression the compiler can reduce to a string: a literal, a constant declared
+from one, two such joined with `&`, or a slice of one whose bounds are static.
+An expression that cannot be reduced is illegal, rather than silently ignored.
+
+A slice is what lets one body spell a name that carries a suffix on some
+targets and not others, since Ada 83 has no conditional expression to choose
+between two strings:
+
+```ada
+Suffix_Text : constant STRING := "$INODE64";
+Suffix_Last : constant :=
+   8 * BOOLEAN'POS (System.TARGET_OS  = System.MACOS and
+                    System.TARGET_CPU = System.X86_64);
+
+Inode : constant STRING := Suffix_Text (1 .. Suffix_Last);
+
+function C_Stat (...) return INTEGER;
+pragma IMPORT (C, C_Stat, "stat" & Inode);
+```
+
+On a target where the condition does not hold the slice is empty and the plain
+name is imported.
+
 #### Pragma EXPORT
 
 ```
