@@ -42,6 +42,9 @@
 /acats/
 /implementation/
 
+# Working notes that are not part of the compiler.
+/source-bud.md
+
 # What a test run produces: one directory per run under each of these, plus
 # the compiled report package.
 /test_results/

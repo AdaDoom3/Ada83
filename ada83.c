@@ -23250,6 +23250,79 @@ void Derive_Subprograms (Type *derived_type,
     }
 }
 
+bool Fold_Static_Boolean (Node *node, bool *out, int depth);
+
+bool Fold_Static_Index (Node *node, i128 *out, int depth) {
+  if (not node or depth > 32) return false;
+  if (not node->symbol and not node->type) Resolve_Expression (node);
+
+  if (node->kind == NK_INTEGER) {
+    *out = (i128) node->integer_lit.value;
+    return true;
+  }
+
+  if (node->kind == NK_QUALIFIED)
+    return Fold_Static_Index (node->qualified.expression, out, depth + 1);
+
+  if ((node->kind == NK_IDENTIFIER or node->kind == NK_SELECTED) and
+      node->symbol and node->symbol->kind == SYMBOL_CONSTANT and
+      node->symbol->declaration and
+      node->symbol->declaration->kind == NK_OBJECT_DECL and
+      node->symbol->declaration->object_decl.init)
+    return Fold_Static_Index (node->symbol->declaration->object_decl.init,
+                              out, depth + 1);
+
+  if (node->kind == NK_APPLY and node->apply.prefix and
+      node->apply.prefix->kind == NK_ATTRIBUTE and
+      node->apply.prefix->attribute.kind == ATTRIBUTE_POS and
+      node->apply.arguments.count == 1)
+    return Fold_Static_Index (
+      Unwrap_Association (node->apply.arguments.items[0]), out, depth + 1);
+
+  if (node->kind == NK_ATTRIBUTE and
+      node->attribute.kind == ATTRIBUTE_POS and
+      node->attribute.arguments.count == 1)
+    return Fold_Static_Index (node->attribute.arguments.items[0],
+                              out, depth + 1);
+
+  if (node->kind == NK_UNARY_OP and node->unary.operand) {
+    if (node->unary.op != TK_PLUS and node->unary.op != TK_MINUS)
+      return Read_Static_Bound (node, out);
+    i128 inner;
+    if (not Fold_Static_Index (node->unary.operand, &inner, depth + 1))
+      return false;
+    *out = node->unary.op == TK_MINUS ? -inner : inner;
+    return true;
+  }
+
+  if (node->kind == NK_BINARY_OP and
+      (node->binary.op == TK_PLUS or node->binary.op == TK_MINUS or
+       node->binary.op == TK_STAR or node->binary.op == TK_SLASH)) {
+    i128 left, right;
+    if (not Fold_Static_Index (node->binary.left,  &left,  depth + 1) or
+        not Fold_Static_Index (node->binary.right, &right, depth + 1))
+      return false;
+    switch (node->binary.op) {
+      case TK_PLUS:  return not __builtin_add_overflow (left, right, out);
+      case TK_MINUS: return not __builtin_sub_overflow (left, right, out);
+      case TK_STAR:  return not __builtin_mul_overflow (left, right, out);
+      default:
+        if (right == 0) return false;
+        *out = left / right;
+        return true;
+    }
+  }
+
+  if (Read_Static_Bound (node, out)) return true;
+
+  bool truth;
+  if (Fold_Static_Boolean (node, &truth, depth + 1)) {
+    *out = truth ? 1 : 0;
+    return true;
+  }
+  return false;
+}
+
 Node *Find_Pragma_Named_Argument (Node_List *args, Slice formal) {
   Node *found = NULL;
   for (u32 i = 0; i < args->count; i++) {
@@ -23292,6 +23365,41 @@ void Apply_Pragma_External_Name (Symbol *sym, Node_List *args) {
       "the external name must be a string literal, so this argument has no "
       "effect and '%.*s' keeps its Ada name",
       (int) sym->name.length, sym->name.data);
+}
+
+bool Fold_Static_Boolean (Node *node, bool *out, int depth) {
+  if (not node or depth > 32) return false;
+
+  if (node->kind == NK_ASSOCIATION)
+    return Fold_Static_Boolean (Unwrap_Association (node), out, depth + 1);
+
+  if (node->kind == NK_QUALIFIED)
+    return Fold_Static_Boolean (node->qualified.expression, out, depth + 1);
+
+  if (node->kind == NK_UNARY_OP and node->unary.op == TK_NOT) {
+    bool inner;
+    if (not Fold_Static_Boolean (node->unary.operand, &inner, depth + 1))
+      return false;
+    *out = not inner;
+    return true;
+  }
+
+  if (node->kind == NK_BINARY_OP and
+      (node->binary.op == TK_AND or node->binary.op == TK_OR)) {
+    bool left, right;
+    if (not Fold_Static_Boolean (node->binary.left,  &left,  depth + 1) or
+        not Fold_Static_Boolean (node->binary.right, &right, depth + 1))
+      return false;
+    *out = node->binary.op == TK_AND ? (left and right) : (left or right);
+    return true;
+  }
+
+  if (not node->symbol and not node->type) Resolve_Expression (node);
+
+  i128 value;
+  if (not Read_Static_Bound (node, &value)) return false;
+  *out = value != 0;
+  return true;
 }
 
 void Apply_Pragma_Convention (Symbol *sym, Node *conv_node) {
@@ -64666,6 +64774,9 @@ void Note_Finding (Check_Kind kind, Location location, const char *verdict,
 Interval Array_Index_Interval (Node *prefix) {
   Type *type = prefix ? prefix->type : NULL;
   if (not type or type->kind != TYPE_ARRAY)  return Interval_Top ();
+  /* A function returning an array is called, not indexed, and its
+     argument is an actual rather than an index. */
+  if (prefix->symbol and Is_Subprogram (prefix->symbol)) return Interval_Top ();
   if (type->array.index_count != 1)          return Interval_Top ();
   if (not type->array.indices)               return Interval_Top ();
   Index_Info *index = &type->array.indices[0];
@@ -64675,7 +64786,20 @@ Interval Array_Index_Interval (Node *prefix) {
 }
 
 void Check_Expression (Node *node, Analysis_State *state) {
-  if (not node) return;
+  if (not node or state->unreachable) return;
+
+  /* "and then" and "or else" evaluate their right operand only where the
+     left allows it, so the right is read knowing what the left said.
+     A /= 0 and then B / A is not a division by zero. */
+  if (node->kind == NK_BINARY_OP and
+      (node->binary.op == TK_AND_THEN or node->binary.op == TK_OR_ELSE)) {
+    Check_Expression (node->binary.left, state);
+    Analysis_State guarded = *state;
+    Refine_By_Condition (node->binary.left,
+                         node->binary.op == TK_AND_THEN, &guarded);
+    Check_Expression (node->binary.right, &guarded);
+    return;
+  }
 
   if (node->kind == NK_APPLY and node->apply.prefix and
       node->apply.arguments.count == 1) {
@@ -64694,7 +64818,7 @@ void Check_Expression (Node *node, Analysis_State *state) {
     }
   }
 
-  if (node->kind == NK_BINARY_OP and
+  if (node->kind == NK_BINARY_OP and not node->symbol and
       (node->binary.op == TK_PLUS or node->binary.op == TK_MINUS or
        node->binary.op == TK_STAR)) {
     Type *base = node->type;
@@ -64706,7 +64830,9 @@ void Check_Expression (Node *node, Analysis_State *state) {
                     "the result", result, room);
   }
 
-  if (node->kind == NK_BINARY_OP and
+  /* "/" may name a function.  Only the predefined operator divides, and
+     only it can raise for a zero divisor. */
+  if (node->kind == NK_BINARY_OP and not node->symbol and
       (node->binary.op == TK_SLASH or node->binary.op == TK_MOD or
        node->binary.op == TK_REM)) {
     Interval divisor = Eval_Interval (node->binary.right, state);
@@ -64783,6 +64909,21 @@ Interval Eval_Interval (Node *node, Analysis_State *state) {
       if (sym) {
         Interval *slot = State_Slot (state, sym);
         if (slot) return *slot;
+
+        if (sym->kind == SYMBOL_LITERAL) {
+          i128 folded;
+          if (Fold_Static_Index (node, &folded, 0))
+            return Interval_Const (folded);
+        }
+
+        if (sym->kind == SYMBOL_CONSTANT and sym->declaration and
+            sym->declaration->kind == NK_OBJECT_DECL and
+            sym->declaration->object_decl.init and
+            sym->declaration->object_decl.init != node) {
+          i128 folded;
+          if (Fold_Static_Index (sym->declaration->object_decl.init, &folded, 0))
+            return Interval_Const (folded);
+        }
         Symbol *callee = sym;
         while (callee and callee->aliased) callee = callee->aliased;
         if (Summaries_Usable and callee and Is_Subprogram (callee)) {
@@ -64852,6 +64993,17 @@ void Refine_By_Condition (Node *condition, bool holds, Analysis_State *state) {
     return;
   }
 
+  /* A bare boolean: "if Flag then" says Flag is true on that branch. */
+  if ((condition->kind == NK_IDENTIFIER or condition->kind == NK_SELECTED) and
+      condition->symbol and condition->symbol->kind == SYMBOL_VARIABLE) {
+    Interval *slot = State_Slot (state, condition->symbol);
+    Interval known = Interval_Const (holds ? 1 : 0);
+    Interval left  = slot ? Interval_Meet (*slot, known) : known;
+    if (Interval_Is_Empty (left)) state->unreachable = true;
+    State_Bind (state, condition->symbol, left);
+    return;
+  }
+
   if (condition->kind != NK_BINARY_OP) return;
   Token_Kind op = condition->binary.op;
 
@@ -64900,18 +65052,31 @@ void Refine_By_Condition (Node *condition, bool holds, Analysis_State *state) {
                                  : Interval_Below (other.high, true);  break;
     case TK_GE: narrowed = holds ? Interval_Above (other.low,  true)
                                  : Interval_Below (other.high, false); break;
-    case TK_EQ: if (not holds) { usable = false; break; }
-                narrowed = other; break;
-    case TK_NE: if (holds) { usable = false; break; }
-                narrowed = other; break;
+    /* "X = C" failing, and "X /= C" holding, both say only that X is not
+       C, which an interval cannot hold -- unless X is known to be exactly
+       C, and then the branch is not taken at all. */
+    case TK_EQ:
+    case TK_NE: {
+      bool says_equal = (op == TK_EQ) == holds;
+      if (says_equal) { narrowed = other; break; }
+      Interval *held = State_Slot (state, sym);
+      if (held and held->known and other.known and
+          held->low == held->high and other.low == other.high and
+          held->low == other.low)
+        state->unreachable = true;
+      usable = false;
+      break;
+    }
     default:    usable = false; break;
   }
   if (not usable) return;
 
   Interval *slot = State_Slot (state, sym);
-  State_Bind (state, sym,
-              Interval_Meet (slot ? *slot : Interval_Of_Type (left->type),
-                             narrowed));
+  Interval refined =
+    Interval_Meet (slot ? *slot : Interval_Of_Type (left->type), narrowed);
+  /* Nothing satisfies the condition here, so this branch is not taken. */
+  if (Interval_Is_Empty (refined)) state->unreachable = true;
+  State_Bind (state, sym, refined);
 }
 
 void Forget_Assigned (Node *node, Analysis_State *state) {
@@ -65192,6 +65357,18 @@ void Analyze_Statement (Node *node, Analysis_State *state) {
 
     case NK_BLOCK:
       Analyze_Statement_List (&node->block_stmt.statements, state);
+      return;
+
+    case NK_ACCEPT:
+      /* The body runs when the entry is called, which is not from here,
+         so what it leaves is not known to what follows. */
+      Check_Expression (node->accept_stmt.index, state);
+      {
+        Analysis_State accepted = *state;
+        Analyze_Statement_List (&node->accept_stmt.statements, &accepted);
+      }
+      for (u32 i = 0; i < node->accept_stmt.statements.count; i++)
+        Forget_Assigned (node->accept_stmt.statements.items[i], state);
       return;
 
     default:
