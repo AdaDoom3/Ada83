@@ -15624,6 +15624,77 @@ optimization level.
 A condition that wrongly holds is caught by the linker, since the entity is
 then imported and its symbol is demanded of a target that does not have it.
 
+A condition that wrongly fails would otherwise be caught by nothing: the
+entity is left unimported, the program links, and the call raises
+PROGRAM_ERROR only if it is reached. A call this target can reach is
+therefore reported:
+
+```
+warning: 'C_Getpid' is not imported, since the ENABLED condition of its
+         pragma IMPORT is false, so reaching this call raises
+         PROGRAM_ERROR; place the call where a static condition rules it
+         out, or correct that condition [-Wunavailable-import]
+```
+
+It is a warning and not an error, for two reasons that agree.
+[2.8](#28-pragmas) says the legality of a program does not depend on the
+presence or absence of an implementation-defined pragma, and a rule that
+refused the call would make this one decide it. And
+[10.6](#106-program-optimization) says of an expression whose evaluation is
+known to raise: "An expression whose evaluation is known to raise an
+exception need not represent an error if it occurs in a statement or
+subprogram that is never executed. The compiler may warn the programmer of
+a potential error." That is this case exactly, and warning is what it
+allows. The program compiles, links without demanding the symbol, and
+raises PROGRAM_ERROR if the call is taken.
+
+The declaration draws no warning, and neither does a call some static
+condition rules out. The condition doing the ruling out need not be the one
+on the pragma, nor mention the target at all: it is any condition 4.9 admits
+and this implementation folds. A body may therefore declare every system's
+imports and name each of them, so long as each is named only where a static
+condition has excluded the statement. That is the whole of what the ENABLED
+argument is for.
+
+Reachable here is an over-approximation, not a decision: everything counts as
+reachable except what one rule rules out. A subprogram nameable from outside
+the compilation may be called from outside it and is examined; one declared
+only in a package body is examined once something reachable names it. Ada 83
+has no access-to-subprogram type, so every call names its callee and the call
+graph is what the text says it is.
+
+The rule that rules code out is a condition this implementation can evaluate
+under [4.9](#49-static-expressions-and-static-subtypes): an `if` whose
+condition is static, and a `case` whose expression is static, discard the
+arms the value excludes. Nothing else does. A loop that never runs, a
+statement after an unconditional `return`, and a condition using `and then`
+or `or else` -- which 4.5.1 makes control forms rather than operators, so
+4.9 does not admit them -- are all still reachable as far as this is
+concerned, and a call in one of them is reported.
+
+A body written for another target, called only where the target rules the
+call out, therefore compiles.
+
+Reachability stops at the edge of the compilation, so a call made only from
+another unit is not seen here. It is seen when that unit is compiled, since
+the rule applies to whatever compilation holds the call, and a program whose
+every unit compiles therefore holds no reachable call to an entity its target
+left unimported.
+
+What a call names is followed to the subprogram that runs, so a renaming, a
+chain of them, a name a use clause made visible, an operator renamed from a
+subprogram, and an operation a derived type inherits all reach the same rule
+as a direct call. A generic body is examined once something reachable
+instantiates it, and a generic instantiated only where the target rules the
+instantiation out is not examined at all.
+
+Two bounds limit the walk, and a call escaping either draws no warning; it
+still raises PROGRAM_ERROR if it is reached. A compilation is examined for at most 8192 subprogram bodies and
+library package elaborations together, and a chain of renamings and use-clause
+aliases is followed at most 64 links. Neither bound is announced when it is
+reached. Both are set where a compilation written to be read by a person does
+not reach them, and a compilation that does reach one is built to.
+
 `ENABLED` is accepted only for a subprogram. An object that is not imported has
 no value to stand in for the one it would have named, so the pragma is illegal
 there.
@@ -15857,14 +15928,18 @@ has no effect and is not illegal. Two warning classes report such a pragma:
 |---|---|
 | `unrecognized-pragma` | the pragma identifier is not one this implementation recognizes |
 | `pragma-ignored` | the pragma identifier is recognized and an argument does not correspond, so that the argument, or the pragma, has no effect |
+| `unavailable-import` | a call this target can reach names an entity whose `ENABLED` condition is false, so reaching it raises PROGRAM_ERROR |
 
-Both classes are enabled by default and are turned off with
-`-Wno-unrecognized-pragma` and `-Wno-pragma-ignored`. The identifiers this
+All three are enabled by default and are turned off with
+`-Wno-unrecognized-pragma`, `-Wno-pragma-ignored` and
+`-Wno-unavailable-import`. The identifiers this
 implementation recognizes are the fourteen of Annex B and the nine of
 [F.1](#f1-implementation-dependent-pragmas).
 
 No pragma defined by this implementation determines the legality of any text
-outside the pragma itself.
+outside the pragma itself. A pragma IMPORT whose `ENABLED` condition is
+false changes what a call does at run time and draws a warning where the
+call can be reached; it does not make that call illegal.
 
 ### F.4 The specification of the package System
 

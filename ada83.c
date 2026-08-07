@@ -775,7 +775,8 @@ void Report_Driver_Warning (const char *format, ...)
   _ (WARNING_REDUNDANT_WITH,          "redundant-with")          \
   _ (WARNING_PRAGMA_IGNORED,          "pragma-ignored")          \
   _ (WARNING_UNRECOGNIZED_PRAGMA,     "unrecognized-pragma")     \
-  _ (WARNING_CHECK_ALWAYS_FAILS,      "check-always-fails")
+  _ (WARNING_CHECK_ALWAYS_FAILS,      "check-always-fails")     \
+  _ (WARNING_UNAVAILABLE_IMPORT,      "unavailable-import")
 
 typedef enum {
 #define _(kind, name) kind,
@@ -31198,6 +31199,20 @@ void Check_Separately_Compiled_Designator (Node *node) {
     "the designator of a separately compiled subprogram must be an "
     "identifier, and \"%.*s\" is an operator symbol",
     (int) designator.length, designator.data);
+}
+
+
+
+
+bool Subprogram_Nameable_Outside (Symbol *sym) {
+  if (not sym) return false;
+  if (not sym->parent) return true;
+  if (sym->is_exported) return true;
+  Symbol *pkg = sym->parent;
+  if (pkg->kind == SYMBOL_PACKAGE or pkg->kind == SYMBOL_GENERIC)
+    for (u32 i = 0; i < pkg->exported_count; i++)
+      if (pkg->exported[i] == sym) return true;
+  return false;
 }
 
 void Check_Legality_Of_Compilation_Unit (Node *node) {
@@ -65072,6 +65087,82 @@ void Note_Finding (Check_Kind kind, Location location, const char *verdict,
     kind, location, verdict, detail, witness, allowed, Analysis_Current_Owner };
 }
 
+#define MAX_RENAMING_HOPS 64
+
+/* What a name denotes.  A renaming, a use-clause alias and an operation a
+   derived type inherits each give the call a symbol of its own, and the
+   body that runs is at the end of that chain. */
+Symbol *Denoted_Subprogram (Symbol *sym) {
+  for (u32 hops = 0; sym and hops < MAX_RENAMING_HOPS; hops++) {
+    if (sym->aliased)          { sym = sym->aliased;          continue; }
+    if (sym->parent_operation) { sym = sym->parent_operation; continue; }
+    const Symbol *renamed = Find_Renamed_Subprogram (sym);
+    if (not renamed) break;
+    sym = (Symbol *) renamed;
+  }
+  return sym;
+}
+
+/* A pragma may not decide whether the program is legal -- 2.8 says the
+   legality of a program does not depend on the presence or absence of an
+   implementation-defined pragma -- and 10.6 says an expression known to
+   raise need not be an error where it is never executed, and that the
+   compiler may warn.  So this is a warning, and the framework decides
+   where: a call in a statement that runs, in a body that runs. */
+void Report_Unavailable_Callee (Symbol *callee, Node *at) {
+  if (not callee or not callee->import_is_unavailable) return;
+  Note_Pending_Warning (WARNING_UNAVAILABLE_IMPORT, at->location,
+    "'%.*s' is not imported, since the ENABLED condition of its pragma "
+    "IMPORT is false, so reaching this call raises PROGRAM_ERROR; place "
+    "the call where a static condition rules it out, or correct that "
+    "condition",
+    (int) callee->name.length, callee->name.data);
+}
+
+/* Which bodies run.  A body reached only from a statement the target rules
+   out is not examined, which is what lets one compilation hold every
+   system's code: 10.6 says such statements are never executed, and a
+   finding in one of them would describe a program that does not exist.
+   A subprogram nameable from outside the compilation may be called from
+   anywhere, so it is taken as reached. */
+
+#define MAX_ANALYSED_BODIES 8192
+
+typedef struct {
+  Symbol *owner;
+  Node   *body;
+  bool    reached;
+} Analysed_Body;
+
+Analysed_Body Analysed_Bodies[MAX_ANALYSED_BODIES];
+u32  Analysed_Body_Count = 0;
+bool Reachability_Grew   = false;
+bool Track_Reachability  = false;
+
+Analysed_Body *Find_Analysed_Body (Symbol *sym) {
+  if (not sym) return NULL;
+  sym = Denoted_Subprogram (sym);
+  for (u32 i = 0; i < Analysed_Body_Count; i++)
+    if (Analysed_Bodies[i].owner == sym) return &Analysed_Bodies[i];
+  return NULL;
+}
+
+void Note_Instance_Reached (Node *body) {
+  if (not body) return;
+  for (u32 i = 0; i < Analysed_Body_Count; i++)
+    if (Analysed_Bodies[i].body == body and not Analysed_Bodies[i].reached) {
+      Analysed_Bodies[i].reached = true;
+      Reachability_Grew          = true;
+    }
+}
+
+void Note_Body_Reached (Symbol *sym) {
+  Analysed_Body *body = Find_Analysed_Body (sym);
+  if (not body or body->reached) return;
+  body->reached    = true;
+  Reachability_Grew = true;
+}
+
 Interval Array_Index_Interval (Node *prefix) {
   Type *type = prefix ? prefix->type : NULL;
   if (not type or type->kind != TYPE_ARRAY)  return Interval_Top ();
@@ -65089,6 +65180,17 @@ Interval Array_Index_Interval (Node *prefix) {
 void Check_Expression (Node *node, Analysis_State *state) {
   if (not node or state->unreachable) return;
 
+  /* A nested body is an entry of its own, walked when something reaches
+     it.  Descending into it here would report what it holds whether or
+     not it runs, and report it twice when it does. */
+  if (Node_In_Any_Class (node, NODE_CLASS_SUBPROGRAM_BODY) or
+      node->kind == NK_PACKAGE_BODY or node->kind == NK_TASK_BODY)
+    return;
+
+  /* A renaming names a subprogram without calling it.  What is reached is
+     whatever calls the renaming, which is seen where that call is. */
+  if (node->kind == NK_SUBPROGRAM_RENAMING) return;
+
   /* "and then" and "or else" evaluate their right operand only where the
      left allows it, so the right is read knowing what the left said.
      A /= 0 and then B / A is not a division by zero. */
@@ -65100,6 +65202,21 @@ void Check_Expression (Node *node, Analysis_State *state) {
                          node->binary.op == TK_AND_THEN, &guarded);
     Check_Expression (node->binary.right, &guarded);
     return;
+  }
+
+  if (Track_Reachability and node->kind == NK_GENERIC_INST and node->symbol) {
+    Note_Instance_Reached (node->symbol->instance_body);
+    Note_Instance_Reached (node->symbol->instance_spec);
+  }
+
+  /* A call carries its symbol on the name and again on the apply around
+     it; the name is what is reported, so that one call is one warning. */
+  if (node->symbol and Is_Subprogram (node->symbol) and
+      (node->kind == NK_IDENTIFIER or node->kind == NK_SELECTED or
+       node->kind == NK_BINARY_OP  or node->kind == NK_UNARY_OP)) {
+    Symbol *callee = Denoted_Subprogram (node->symbol);
+    if (Track_Reachability)       Note_Body_Reached (callee);
+    else if (Analysis_Recording)  Report_Unavailable_Callee (callee, node);
   }
 
   if (node->kind == NK_APPLY and node->apply.prefix and
@@ -65584,6 +65701,12 @@ void Analyze_Statement (Node *node, Analysis_State *state) {
     case NK_IF: {
       Check_Expression (node->if_stmt.condition, state);
       Analysis_State taken = *state, otherwise = *state;
+      bool decided, holds = false;
+      decided = Fold_Static_Boolean (node->if_stmt.condition, &holds, 0);
+      if (decided) {
+        if (holds) otherwise.unreachable = true;
+        else       taken.unreachable     = true;
+      }
       Refine_By_Condition (node->if_stmt.condition, true,  &taken);
       Refine_By_Condition (node->if_stmt.condition, false, &otherwise);
       Analyze_Statement_List (&node->if_stmt.then_stmts, &taken);
@@ -65599,6 +65722,13 @@ void Analyze_Statement (Node *node, Analysis_State *state) {
       }
       Analyze_Statement_List (&node->if_stmt.else_stmts, &otherwise);
       bool had_else = node->if_stmt.else_stmts.count > 0;
+      if (decided) {
+        /* One arm was never in play; the other is simply what follows. */
+        *state = holds ? taken : otherwise;
+        state->unreachable   = holds ? taken.unreachable : otherwise.unreachable;
+        state->reported_dead = false;
+        return;
+      }
       State_Join (&taken, &otherwise);
       if (taken.unreachable and had_else) {
         taken.dead_cause       = "every branch of the if statement above "
@@ -65682,6 +65812,128 @@ void Analyze_Statement (Node *node, Analysis_State *state) {
 void Analyze_Statement_List (Node_List *statements, Analysis_State *state) {
   for (u32 i = 0; i < statements->count; i++)
     Analyze_Statement (statements->items[i], state);
+}
+
+void Collect_Analysed_Bodies (Node *node) {
+  if (not node) return;
+
+  Node_List *statements = NULL;
+  if (Node_In_Any_Class (node, NODE_CLASS_SUBPROGRAM_BODY) and
+      not node->subprogram_body.is_separate)
+    statements = &node->subprogram_body.statements;
+  else if (node->kind == NK_PACKAGE_BODY)
+    statements = &node->package_body.statements;
+  else if (node->kind == NK_TASK_BODY)
+    statements = &node->task_body.statements;
+
+  if (statements and Analysed_Body_Count < MAX_ANALYSED_BODIES) {
+    Symbol *owner = node->symbol;
+    while (owner and owner->aliased) owner = owner->aliased;
+
+    /* A unit can reach the table twice -- once as a unit of this
+       compilation and once as a body loaded for it -- and walking it
+       twice would say everything in it twice. */
+    bool already = false;
+    for (u32 i = 0; i < Analysed_Body_Count and not already; i++)
+      already = Analysed_Bodies[i].body == node;
+    if (already) goto children;
+
+    /* A package body elaborates whatever calls into the package, and a
+       task body runs once the task does; both are reached.  A subprogram
+       is reached when something reached calls it, unless it can be named
+       from outside this compilation. */
+    bool reached = node->kind == NK_PACKAGE_BODY or node->kind == NK_TASK_BODY
+                   or Subprogram_Nameable_Outside (owner);
+    Analysed_Bodies[Analysed_Body_Count++] =
+      (Analysed_Body){ .owner = owner, .body = node, .reached = reached };
+  }
+
+children:
+  /* A generic template does not run; its instances do.  Each carries a
+     clone of the body with the actuals in place, which is collected here
+     and reached when the instantiation is. */
+  if (node->kind == NK_GENERIC_INST and node->symbol) {
+    if (node->symbol->instance_body)
+      Collect_Analysed_Bodies (node->symbol->instance_body);
+    if (node->symbol->instance_spec)
+      Collect_Analysed_Bodies (node->symbol->instance_spec);
+  }
+
+  for (const Syntax_Tree_Edge *edge = Syntax_Tree_Shape[node->kind];
+       edge->offset; edge++) {
+    Node_List children = Get_Children (node, edge);
+    for (u32 i = 0; i < children.count; i++)
+      Collect_Analysed_Bodies (children.items[i]);
+  }
+}
+
+/* Walk one body, without descending into the bodies nested in it: each
+   is in the table on its own, and is walked when something reaches it. */
+void Analyze_One_Body (Analysed_Body *entry) {
+  Node *node = entry->body;
+  Node_List *statements =
+      Node_In_Any_Class (node, NODE_CLASS_SUBPROGRAM_BODY)
+        ? &node->subprogram_body.statements
+    : node->kind == NK_PACKAGE_BODY ? &node->package_body.statements
+                                    : &node->task_body.statements;
+
+  Symbol *saved_owner = Analysis_Current_Owner;
+  Subprogram_Summary *saved_summary = Summary_Under_Construction;
+  Analysis_Current_Owner = node->symbol;
+  Summary_Under_Construction =
+    node->symbol and Is_Subprogram (node->symbol)
+      ? Summary_For (node->symbol) : NULL;
+  Node_List *declarations =
+      Node_In_Any_Class (node, NODE_CLASS_SUBPROGRAM_BODY)
+        ? &node->subprogram_body.declarations
+    : node->kind == NK_PACKAGE_BODY ? &node->package_body.declarations
+                                    : &node->task_body.declarations;
+  Node_List *handlers =
+      Node_In_Any_Class (node, NODE_CLASS_SUBPROGRAM_BODY)
+        ? &node->subprogram_body.handlers
+    : node->kind == NK_PACKAGE_BODY ? &node->package_body.handlers
+                                    : &node->task_body.handlers;
+
+  Analysis_State state = { .count = 0 };
+
+  /* A declaration runs when the body does: an initializer is evaluated
+     and a default parameter is evaluated at every call that omits it.
+     The default belongs to the specification, which is read here because
+     the body it belongs to is not descended into. */
+  if (Node_In_Any_Class (node, NODE_CLASS_SUBPROGRAM_BODY))
+    Check_Expression (node->subprogram_body.specification, &state);
+  for (u32 i = 0; i < declarations->count; i++) {
+    Node *declaration = declarations->items[i];
+    Check_Expression (declaration, &state);
+    /* A declaration with an initial value leaves the object holding it,
+       which is what the statements below start from, and what carries a
+       generic's actual into the body of an instance. */
+    if (declaration and declaration->kind == NK_OBJECT_DECL and
+        declaration->object_decl.init) {
+      Interval initial = Eval_Interval (declaration->object_decl.init, &state);
+      for (u32 n = 0; n < declaration->object_decl.names.count; n++) {
+        Node *name = declaration->object_decl.names.items[n];
+        if (not name or not name->symbol) continue;
+        Interval held = initial;
+        Interval declared = Interval_Of_Type (name->symbol->type);
+        if (held.known and declared.known) held = Interval_Meet (held, declared);
+        else if (not held.known)           held = declared;
+        State_Bind (&state, name->symbol, held);
+      }
+    }
+  }
+
+  Analyze_Statement_List (statements, &state);
+
+  /* A handler runs where the body raises, which is anywhere in it, so it
+     is read from a state that assumes nothing. */
+  for (u32 i = 0; i < handlers->count; i++) {
+    Analysis_State caught = { .count = 0 };
+    Check_Expression (handlers->items[i], &caught);
+  }
+
+  Analysis_Current_Owner     = saved_owner;
+  Summary_Under_Construction = saved_summary;
 }
 
 void Analyze_Bodies (Node *node) {
@@ -65831,13 +66083,32 @@ void Analyze_Units (Node **units, int unit_count) {
     if (pass > 0 and not Summaries_Changed (previous, before_count)) break;
   }
 
+  /* Which bodies run.  Everything a reached body calls is reached, so the
+     table is walked until it stops growing; a body reached only from a
+     statement a static condition rules out never enters it. */
+  Analysed_Body_Count = 0;
+  for (int i = 0; i < unit_count; i++) {
+    if (not units[i] or units[i]->compilation_unit.grafted_into_generic) continue;
+    Collect_Analysed_Bodies (units[i]);
+  }
+  for (int i = 0; i < Loaded_Body_Count; i++)
+    Collect_Analysed_Bodies (Loaded_Package_Bodies[i]);
+
+  Track_Reachability = true;
+  for (int pass = 0; pass < 16; pass++) {
+    Reachability_Grew = false;
+    Analysis_Budget   = ANALYSIS_STATEMENT_BUDGET;
+    for (u32 i = 0; i < Analysed_Body_Count; i++)
+      if (Analysed_Bodies[i].reached) Analyze_One_Body (&Analysed_Bodies[i]);
+    if (not Reachability_Grew) break;
+  }
+  Track_Reachability = false;
+
   Analysis_Recording = saved_recording;
   Analysis_Budget    = ANALYSIS_STATEMENT_BUDGET;
   Summary_Under_Construction = NULL;
-  for (int i = 0; i < unit_count; i++) {
-    if (not units[i] or units[i]->compilation_unit.grafted_into_generic) continue;
-    Analyze_Bodies (units[i]);
-  }
+  for (u32 i = 0; i < Analysed_Body_Count; i++)
+    if (Analysed_Bodies[i].reached) Analyze_One_Body (&Analysed_Bodies[i]);
 }
 
 void Write_Json_Text (FILE *out, const char *text, u32 length) {
