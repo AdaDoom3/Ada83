@@ -739,10 +739,22 @@ run_implementation_tests(){
                     >"$dir/support.log" 2>&1 ||
                     detail="support unit $support: $(tail -2 "$dir/support.log" | tr '\n' ' ')"
             fi
+            # Two runs, because the two surfaces are separate: --analyze
+            # writes JSON on stdout and says nothing else, and an ordinary
+            # compilation is where the same findings reach a reader as
+            # warnings.
             [[ -z $detail ]] &&
               ( cd "$dir" && timed "$COMPILE_TIMEOUT" "$ADA83" --analyze $analyze \
                  -I "$ROOT/implementation" "$ROOT/$source" ) \
-                 >"$dir/report.json" 2>"$dir/warn.log"
+                 >"$dir/report.json" 2>"$dir/analyze.err"
+            [[ -z $detail ]] &&
+              ( cd "$dir" && timed "$COMPILE_TIMEOUT" "$ADA83" --ir $analyze \
+                 -I "$ROOT/implementation" "$ROOT/$source" -o "$dir/$name.ll" ) \
+                 >/dev/null 2>"$dir/warn.log"
+
+            if [[ -z $detail && -s $dir/analyze.err ]]; then
+                detail="--analyze wrote to stderr: $(head -1 "$dir/analyze.err")"
+            fi
 
             want=$(ext_header "$source" WARN)
             want_count=$(ext_header "$source" WARN-COUNT)

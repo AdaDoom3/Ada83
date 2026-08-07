@@ -61987,7 +61987,10 @@ void Compile_File (const char *input_path, const char *output_path) {
       (not Warnings_Silenced and
        Warning_Class_Is_Enabled[WARNING_UNREACHABLE_CODE])) {
     Analyze_Units (units, unit_count);
-    if (Analyze_Mode) Report_Analysis_Warnings (input_path);
+    /* An ordinary compilation reports what must fail as a warning.
+       --analyze says the same thing in its findings, and saying it twice
+       in two formats would leave neither stream clean. */
+    if (not Analyze_Mode) Report_Analysis_Warnings (input_path);
   }
 
   bool main_program_compilation = false;
@@ -64946,9 +64949,10 @@ void Print_Usage (FILE *out, const char *program_name) {
       "      that analysis.\n"
       "  --analyze\n"
       "      Report the runtime checks the unit contains, as JSON on\n"
-      "      stdout: where each one is, whether it reached the generated\n"
-      "      code, and which of them an interval analysis can settle.  A\n"
-      "      check the analysis proves must fail is also warned about.\n"
+      "      stdout and nothing else: where each one is, whether it\n"
+      "      reached the generated code, and which of them an interval\n"
+      "      analysis can settle.  Diagnostics are left to an ordinary\n"
+      "      compilation, which reports the same findings as warnings.\n"
       "      No object, IR or ALI file is written.\n"
       "\n"
       "Runtime checks (Ada ):\n"
@@ -65131,8 +65135,9 @@ int main (int argc, char *argv[]) {
     } else if (strcmp (argument, "--elide-provable-checks") == 0) {
       Elide_Provable_Checks = true;
     } else if (strcmp (argument, "--analyze") == 0) {
-      Analyze_Mode   = true;
-      Ir_Output_Mode = true;
+      Analyze_Mode      = true;
+      Ir_Output_Mode    = true;
+      Warnings_Silenced = true;
     } else if (strncmp (argument, "--suppress=", 11) == 0) {
       if (not Suppress_Checks_From_Command_Line (argument + 11))
         usable = false;
