@@ -707,7 +707,7 @@ run_extension_tests(){
 
     heading "EXTENSIONS" "the _ada_ symbol prefix and Command_Line"
 
-    local name dir exe symbol symbol_not symbols args detail
+    local name dir exe symbol symbol_not symbols args detail analyze
     local -a fragments
     for source in extensions/*.ada; do
         name=$(basename "$source" .ada)
@@ -717,6 +717,64 @@ run_extension_tests(){
         mkdir -p "$dir"
         fragments=()
         detail=""
+
+        # An ANALYZE test asks what --analyze reports rather than what the
+        # program prints: WARN names text a diagnostic must carry,
+        # WARN-COUNT how many lines carry it, NO-WARN text that must not
+        # appear at all, and JSON a pattern the report must contain.  A
+        # rule that stops firing then fails rather than passing quietly.
+        analyze=$(ext_header "$source" ANALYZE)
+        if [[ -n $analyze ]]; then
+            local want want_count seen no_want json_want support
+            [[ $analyze == none ]] && analyze=""
+
+            # A unit this one reads is compiled first, so that its
+            # library information file -- and the summaries in it --
+            # exist before the caller is analysed.
+            support=$(ext_header "$source" LINK)
+            if [[ -n $support ]]; then
+                ( cd "$dir" && timed "$COMPILE_TIMEOUT" "$ADA83" --ir \
+                    "$ROOT/extensions/$support" -o "$dir/${support%.ada}.ll" ) \
+                    >"$dir/support.log" 2>&1 ||
+                    detail="support unit $support: $(tail -2 "$dir/support.log" | tr '\n' ' ')"
+            fi
+            [[ -z $detail ]] &&
+              ( cd "$dir" && timed "$COMPILE_TIMEOUT" "$ADA83" --analyze $analyze \
+                 -I "$ROOT/extensions" "$ROOT/$source" ) \
+                 >"$dir/report.json" 2>"$dir/warn.log"
+
+            want=$(ext_header "$source" WARN)
+            want_count=$(ext_header "$source" WARN-COUNT)
+            no_want=$(ext_header "$source" NO-WARN)
+            json_want=$(ext_header "$source" JSON)
+
+            if [[ -n $want ]]; then
+                seen=$(grep -c -- "$want" "$dir/warn.log" || true)
+                if ((seen == 0)); then
+                    detail="no diagnostic said '$want'"
+                elif [[ -n $want_count ]] && ((seen != want_count)); then
+                    detail="$seen diagnostic(s) said '$want', wanted $want_count"
+                fi
+            fi
+            if [[ -z $detail && -n $no_want ]] &&
+               grep -q -- "$no_want" "$dir/warn.log"; then
+                detail="a diagnostic said '$no_want', which must not appear"
+            fi
+            if [[ -z $detail && -n $json_want ]] &&
+               ! grep -q -- "$json_want" "$dir/report.json"; then
+                detail="the report does not contain '$json_want'"
+            fi
+
+            if [[ -z $detail ]]; then
+                printf '  %sok%s   %s\n' "$GOOD" "$OFF" "$name"
+                ((++EXT_PASS))
+            else
+                printf '  %sFAIL%s %s — %s\n' "$BAD" "$OFF" "$name" "$detail"
+                ((++EXT_FAIL))
+                [[ -n ${LOGS_DIR:-} ]] && cp "$dir/warn.log" "$LOGS_DIR/$name.ext" 2>/dev/null
+            fi
+            continue
+        fi
 
         linked=$(ext_header "$source" LINK)
         if [[ -n $linked ]]; then
@@ -728,8 +786,9 @@ run_extension_tests(){
             fi
         fi
 
+        local build_flags; build_flags=$(ext_header "$source" FLAGS)
         if [[ -z $detail ]] &&
-           ! ( cd "$dir" && timed "$LINK_TIMEOUT" "$ADA83" "$ROOT/$source" \
+           ! ( cd "$dir" && timed "$LINK_TIMEOUT" "$ADA83" $build_flags "$ROOT/$source" \
                  ${fragments[@]+"${fragments[@]}"} -o "$dir/$name" ) \
                  >>"$dir/compile.log" 2>&1; then
             detail=$(tail -2 "$dir/compile.log" | tr '\n' ' ')
