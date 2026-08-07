@@ -366,6 +366,12 @@ double Raise_To_Power_Exact (double base, double exponent) {
   #define HOST_TARGET_IR_HEADER  ""
 #endif
 
+#ifdef _WIN32
+  #define HOST_NULL_DEVICE "NUL"
+#else
+  #define HOST_NULL_DEVICE "/dev/null"
+#endif
+
 int Host_Processor_Count () {
 #ifdef _WIN32
   SYSTEM_INFO system_information;
@@ -7450,6 +7456,157 @@ struct Llvm_C_Api {
   Llvm_Bool   (*Print_Module_To_File)       (void *module, const char *path, char **error);
   Llvm_Bool   (*Link_Modules)               (void *destination, void *source);
 };
+
+/* ==== §20  Analysis ================================================= */
+#define MAX_ANALYSIS_CHECK_SITES  65536
+#define MAX_ANALYSIS_VARS         256
+#define MAX_ANALYSIS_FINDINGS     4096
+#define MAX_SUMMARIES             2048
+#define MAX_SUMMARY_OUTPUTS       8
+#define MAX_TALLY_LINES           65536
+#define ANALYSIS_STATEMENT_BUDGET 200000
+#define INT128_HIGH_LIMIT         ((i128) INT64_MAX)
+#define INT128_LOW_LIMIT          ((i128) INT64_MIN)
+
+typedef struct {
+  Check_Kind  kind;
+  Location    location;
+  bool        suppressed;
+  bool        emitted;
+  const char *verdict;
+  const char *reason;
+  const char *analysis;
+  Symbol     *owner;
+} Analysis_Check_Site;
+
+typedef struct {
+  i128 low, high;
+  bool known;
+} Interval;
+
+typedef struct { Symbol *sym; Interval value; } Analysis_Binding;
+
+typedef struct {
+  Analysis_Binding vars[MAX_ANALYSIS_VARS];
+  u32              count;
+  bool             unreachable;
+  bool             reported_dead;
+  const char      *dead_cause;
+  u32              dead_line;
+  bool             dead_from_branch;
+} Analysis_State;
+
+typedef struct {
+  Symbol  *owner;
+  Interval result;
+  Interval outputs[MAX_SUMMARY_OUTPUTS];
+  u32      output_count;
+  bool     returns_anything;
+} Subprogram_Summary;
+
+typedef struct {
+  Check_Kind  kind;
+  Location    location;
+  const char *verdict;
+  const char *detail;
+  Interval    witness;
+  Interval    allowed;
+  Symbol     *owner;
+} Analysis_Finding;
+
+Analysis_Check_Site Analysis_Check_Sites[MAX_ANALYSIS_CHECK_SITES];
+u32      Analysis_Check_Site_Count = 0;
+bool     Analysis_Sites_Overflowed = false;
+bool     Analyze_Mode              = false;
+bool     Elide_Provable_Checks     = false;
+Location Current_Emit_Location     = {0};
+u32      Pending_Check_Site        = NO_ANALYSIS_CHECK_SITE;
+
+Subprogram_Summary  Summaries[MAX_SUMMARIES];
+u32                 Summary_Count              = 0;
+bool                Summaries_Usable           = false;
+Subprogram_Summary *Summary_Under_Construction = NULL;
+
+Analysis_Finding Analysis_Findings[MAX_ANALYSIS_FINDINGS];
+u32              Analysis_Finding_Count = 0;
+Symbol          *Analysis_Current_Owner = NULL;
+bool             Analysis_Recording     = true;
+u32              Analysis_Budget        = ANALYSIS_STATEMENT_BUDGET;
+bool             Analysis_Exhausted     = false;
+
+u16 Line_Index_Sites      [MAX_TALLY_LINES];
+u16 Line_Division_Sites   [MAX_TALLY_LINES];
+u16 Line_Assignment_Sites [MAX_TALLY_LINES];
+
+u32 Provably_Safe_Uses[MAX_ANALYSIS_CHECK_SITES];
+u32 Provably_Safe_Use_Count = 0;
+
+Interval Interval_Top      (void);
+Interval Interval_Of       (i128 low, i128 high);
+Interval Interval_Const    (i128 v);
+bool     Interval_Is_Empty (Interval i);
+Interval Interval_Join     (Interval a, Interval b);
+Interval Interval_Meet     (Interval a, Interval b);
+bool     Interval_Contains (Interval outer, Interval inner);
+bool     Interval_Disjoint (Interval a, Interval b);
+bool     Interval_Holds    (Interval i, i128 v);
+Interval Interval_Add      (Interval a, Interval b);
+Interval Interval_Sub      (Interval a, Interval b);
+Interval Interval_Mul      (Interval a, Interval b);
+Interval Interval_Div      (Interval a, Interval b);
+Interval Interval_Below    (i128 bound, bool inclusive);
+Interval Interval_Above    (i128 bound, bool inclusive);
+Interval Interval_Of_Type  (Type *type);
+
+Interval *State_Slot  (Analysis_State *state, Symbol *sym);
+void      State_Bind  (Analysis_State *state, Symbol *sym, Interval value);
+void      State_Join  (Analysis_State *into, Analysis_State *other);
+void      State_Widen (Analysis_State *into, Analysis_State *next);
+bool      State_Same  (Analysis_State *a, Analysis_State *b);
+
+Subprogram_Summary *Find_Summary        (Symbol *sym);
+Subprogram_Summary *Summary_For         (Symbol *sym);
+bool                Summary_From_Library (Symbol *callee, Interval *out);
+bool                Summaries_Changed   (Subprogram_Summary *before, u32 count);
+void                ALI_Write_Summaries (FILE *out);
+
+void     Note_Finding          (Check_Kind kind, Location location,
+                                const char *verdict, const char *detail,
+                                Interval witness, Interval allowed);
+Interval Array_Index_Interval  (Node *prefix);
+Interval Eval_Interval         (Node *node, Analysis_State *state);
+void     Check_Expression      (Node *node, Analysis_State *state);
+void     Refine_By_Condition   (Node *condition, bool holds,
+                                Analysis_State *state);
+void     Forget_Assigned       (Node *node, Analysis_State *state);
+void     Forget_Call_Actuals   (Node *call, Analysis_State *state);
+void     Forget_Calls_In       (Node *node, Analysis_State *state);
+void     Bind_Loop_Parameter   (Node *scheme, Analysis_State *state);
+void     Analyze_Statement     (Node *node, Analysis_State *state);
+void     Analyze_Statement_List (Node_List *statements, Analysis_State *state);
+void     Analyze_Bodies        (Node *node);
+void     Analyze_Units         (Node **units, int unit_count);
+
+const char *Spell_Check_Kind          (Check_Kind kind);
+u32         Note_Check_Site           (Check_Kind kind, bool suppressed);
+void        Note_Check_Site_Pending   (u32 site);
+void        Note_Check_Not_Needed     (const char *verdict, const char *reason);
+void        Note_Check_Emitted        (void);
+bool        Analysis_Site_Is_In_Unit  (Analysis_Check_Site *site,
+                                       const char *input_path);
+const char *Spell_Check_Verdict       (Analysis_Check_Site *site);
+void        Join_Findings_To_Sites    (void);
+
+void Tally_Line               (u16 *table, u32 line);
+void Tally_Check_Constructs   (Node *node);
+bool Line_Bears_One_Check     (Check_Kind kind, u32 line);
+bool Analysis_Proved_Safe_Here (Check_Kind kind, Location location);
+
+const char *Spell_Interval           (Interval i, char *buffer, size_t size);
+void        Report_Analysis_Warnings (const char *input_path);
+void        Write_Json_Text          (FILE *out, const char *text, u32 length);
+void        Write_Json_String        (FILE *out, const char *text);
+void        Write_Analysis_Report    (FILE *out, const char *input_path);
 
 /* ==== §3   Memory =================================================== */
 void *Arena_Allocate (size_t size) {
@@ -31746,89 +31903,6 @@ I1 Emit_Conjunction_Result (Boolean_Conjunction conjunction) {
   return (I1){ final.reg };
 }
 
-#ifdef _WIN32
-  #define HOST_NULL_DEVICE "NUL"
-#else
-  #define HOST_NULL_DEVICE "/dev/null"
-#endif
-
-#define MAX_ANALYSIS_CHECK_SITES 65536
-
-typedef struct {
-  Check_Kind kind;
-  Location   location;
-  bool        suppressed;
-  bool        emitted;
-  const char *verdict;
-  const char *reason;
-  const char *analysis;     /* what the interval analysis settled, if any */
-  Symbol     *owner;
-} Analysis_Check_Site;
-
-Analysis_Check_Site Analysis_Check_Sites[MAX_ANALYSIS_CHECK_SITES];
-u32      Analysis_Check_Site_Count = 0;
-bool     Analysis_Sites_Overflowed = false;
-bool     Analyze_Mode              = false;
-Location Current_Emit_Location     = {0};
-
-const char *Spell_Check_Kind (Check_Kind kind) {
-  switch (kind) {
-    case CHECK_KIND_RANGE:        return "range_check";
-    case CHECK_KIND_OVERFLOW:     return "overflow_check";
-    case CHECK_KIND_INDEX:        return "index_check";
-    case CHECK_KIND_LENGTH:       return "length_check";
-    case CHECK_KIND_DIVISION:     return "division_check";
-    case CHECK_KIND_ACCESS:       return "access_check";
-    case CHECK_KIND_DISCRIMINANT: return "discriminant_check";
-    case CHECK_KIND_ELABORATION:  return "elaboration_check";
-    case CHECK_KIND_STORAGE:      return "storage_check";
-    default:                      return "check";
-  }
-}
-
-u32 Note_Check_Site (Check_Kind kind, bool suppressed) {
-  if (not Analyze_Mode) return NO_ANALYSIS_CHECK_SITE;
-  if (Analysis_Check_Site_Count >= MAX_ANALYSIS_CHECK_SITES) {
-    Analysis_Sites_Overflowed = true;
-    return NO_ANALYSIS_CHECK_SITE;
-  }
-  Analysis_Check_Sites[Analysis_Check_Site_Count] = (Analysis_Check_Site){
-    .kind       = kind,
-    .location   = Current_Emit_Location,
-    .suppressed = suppressed,
-    .emitted    = false,
-    .verdict    = NULL,
-    .reason     = NULL,
-    .analysis   = NULL,
-    .owner      = cg ? cg->current_function : NULL
-  };
-  return Analysis_Check_Site_Count++;
-}
-
-/* A check is emitted by several routines, not all of which are handed the
-   permission that authorised it, so the site is paired with the emission
-   through the one thing they share: the permission is taken immediately
-   before the check is written.  The pending site is consumed by the first
-   raise that follows it, and cleared, so a site whose check is not written
-   cannot be claimed by an unrelated raise later on. */
-u32 Pending_Check_Site = NO_ANALYSIS_CHECK_SITE;
-
-void Note_Check_Site_Pending (u32 site) { Pending_Check_Site = site; }
-
-void Note_Check_Not_Needed (const char *verdict, const char *reason) {
-  if (Pending_Check_Site < Analysis_Check_Site_Count) {
-    Analysis_Check_Sites[Pending_Check_Site].verdict = verdict;
-    Analysis_Check_Sites[Pending_Check_Site].reason  = reason;
-  }
-  Pending_Check_Site = NO_ANALYSIS_CHECK_SITE;
-}
-
-void Note_Check_Emitted (void) {
-  if (Pending_Check_Site < Analysis_Check_Site_Count)
-    Analysis_Check_Sites[Pending_Check_Site].emitted = true;
-  Pending_Check_Site = NO_ANALYSIS_CHECK_SITE;
-}
-
 void Emit_Location (Location location) {
   if (location.line > 0) {
     Current_Emit_Location = location;
@@ -32360,10 +32434,6 @@ const char *Spell_Exception_Kind (Exception_Kind kind) {
   }
   return "constraint_error";
 }
-
-
-bool Elide_Provable_Checks = false;
-bool Analysis_Proved_Safe_Here (Check_Kind kind, Location location);
 
 Check_Permission Check_Permission_For (Check_Kind kind, Type *type,
                                        Symbol *sym) {
@@ -60635,1249 +60705,6 @@ bool Inputs_Are_Order_Sensitive (const char *const *inputs, int input_count) {
   return false;
 }
 
-/* ==== Interval analysis =============================================
-   An abstract interpretation over the statement tree.  Ada 83 statements
-   are structured, so the interpreter carries an abstract state through
-   them and joins at merge points; there is no control-flow graph to
-   build.  A loop is entered once with everything it assigns set to top,
-   which is the widening.  A goto target is not tracked, so anything a
-   goto can reach is analysed from top as well. */
-
-typedef struct {
-  i128 low, high;
-  bool known;        /* false is top: any value at all */
-} Interval;
-
-#define MAX_ANALYSIS_VARS 256
-#define INT128_HIGH_LIMIT  ((i128) INT64_MAX)
-#define INT128_LOW_LIMIT   ((i128) INT64_MIN)
-
-typedef struct { Symbol *sym; Interval value; } Analysis_Binding;
-
-typedef struct {
-  Analysis_Binding vars[MAX_ANALYSIS_VARS];
-  u32              count;
-  bool             unreachable;
-  bool             reported_dead;
-  const char      *dead_cause;   /* the transfer that ended the path */
-  u32              dead_line;
-  bool             dead_from_branch;
-} Analysis_State;
-
-Interval Interval_Top (void) { return (Interval){ 0, 0, false }; }
-Interval Interval_Of  (i128 low, i128 high) {
-  return (Interval){ low, high, true };
-}
-Interval Interval_Const (i128 v) { return Interval_Of (v, v); }
-
-bool Interval_Is_Empty (Interval i) { return i.known and i.low > i.high; }
-
-Interval Interval_Join (Interval a, Interval b) {
-  if (not a.known or not b.known) return Interval_Top ();
-  if (Interval_Is_Empty (a)) return b;
-  if (Interval_Is_Empty (b)) return a;
-  return Interval_Of (a.low < b.low ? a.low : b.low,
-                      a.high > b.high ? a.high : b.high);
-}
-
-/* Whether every value of `inner` is a value of `outer`. */
-bool Interval_Contains (Interval outer, Interval inner) {
-  if (not outer.known or not inner.known) return false;
-  if (Interval_Is_Empty (inner)) return true;
-  if (Interval_Is_Empty (outer)) return false;
-  return inner.low >= outer.low and inner.high <= outer.high;
-}
-
-/* Whether no value of `a` is a value of `b`. */
-bool Interval_Disjoint (Interval a, Interval b) {
-  if (not a.known or not b.known) return false;
-  if (Interval_Is_Empty (a) or Interval_Is_Empty (b)) return false;
-  return a.high < b.low or b.high < a.low;
-}
-
-bool Interval_Holds (Interval i, i128 v) {
-  return i.known and not Interval_Is_Empty (i) and v >= i.low and v <= i.high;
-}
-
-Interval Interval_Add (Interval a, Interval b) {
-  i128 low, high;
-  if (not a.known or not b.known) return Interval_Top ();
-  if (__builtin_add_overflow (a.low, b.low, &low) or
-      __builtin_add_overflow (a.high, b.high, &high)) return Interval_Top ();
-  return Interval_Of (low, high);
-}
-
-Interval Interval_Sub (Interval a, Interval b) {
-  i128 low, high;
-  if (not a.known or not b.known) return Interval_Top ();
-  if (__builtin_sub_overflow (a.low, b.high, &low) or
-      __builtin_sub_overflow (a.high, b.low, &high)) return Interval_Top ();
-  return Interval_Of (low, high);
-}
-
-Interval Interval_Mul (Interval a, Interval b) {
-  if (not a.known or not b.known) return Interval_Top ();
-  i128 corner[4];
-  if (__builtin_mul_overflow (a.low,  b.low,  &corner[0]) or
-      __builtin_mul_overflow (a.low,  b.high, &corner[1]) or
-      __builtin_mul_overflow (a.high, b.low,  &corner[2]) or
-      __builtin_mul_overflow (a.high, b.high, &corner[3])) return Interval_Top ();
-  i128 low = corner[0], high = corner[0];
-  for (int i = 1; i < 4; i++) {
-    if (corner[i] < low)  low  = corner[i];
-    if (corner[i] > high) high = corner[i];
-  }
-  return Interval_Of (low, high);
-}
-
-Interval Interval_Div (Interval a, Interval b) {
-  if (not a.known or not b.known) return Interval_Top ();
-  if (Interval_Holds (b, 0)) return Interval_Top ();
-  i128 corner[4] = { a.low / b.low, a.low / b.high,
-                     a.high / b.low, a.high / b.high };
-  i128 low = corner[0], high = corner[0];
-  for (int i = 1; i < 4; i++) {
-    if (corner[i] < low)  low  = corner[i];
-    if (corner[i] > high) high = corner[i];
-  }
-  return Interval_Of (low, high);
-}
-
-/* The subtype's own range, which is where a variable's interval starts. */
-Interval Interval_Of_Type (Type *type) {
-  if (not type) return Interval_Top ();
-  if (not Has_Scalar_Representation (type)) return Interval_Top ();
-  if (type->low_bound.kind  != BOUND_INTEGER or
-      type->high_bound.kind != BOUND_INTEGER) return Interval_Top ();
-  return Interval_Of (type->low_bound.int_value, type->high_bound.int_value);
-}
-
-Interval Interval_Meet (Interval a, Interval b);
-
-Interval *State_Slot (Analysis_State *state, Symbol *sym) {
-  for (u32 i = 0; i < state->count; i++)
-    if (state->vars[i].sym == sym) return &state->vars[i].value;
-  return NULL;
-}
-
-void State_Bind (Analysis_State *state, Symbol *sym, Interval value) {
-  Interval *slot = State_Slot (state, sym);
-  if (slot) { *slot = value; return; }
-  if (state->count >= MAX_ANALYSIS_VARS) return;
-  state->vars[state->count++] = (Analysis_Binding){ sym, value };
-}
-
-void State_Join (Analysis_State *into, Analysis_State *other) {
-  if (other->unreachable) return;
-  if (into->unreachable)  { *into = *other; return; }
-  for (u32 i = 0; i < into->count; i++) {
-    Interval *slot = State_Slot (other, into->vars[i].sym);
-    into->vars[i].value = slot ? Interval_Join (into->vars[i].value, *slot)
-                               : Interval_Top ();
-  }
-  for (u32 i = 0; i < other->count; i++)
-    if (not State_Slot (into, other->vars[i].sym))
-      State_Bind (into, other->vars[i].sym, Interval_Top ());
-}
-
-/* ==== Subprogram summaries ==========================================
-   What a body does, in the only terms a caller needs: the range of what
-   a function returns, and the range each out parameter is left holding.
-   Ada 83 has no access-to-subprogram type, so every call names its
-   callee and the call graph is exact; the summaries are computed by
-   reading every body, and read again until they stop changing. */
-
-#define MAX_SUMMARIES        2048
-#define MAX_SUMMARY_OUTPUTS  8
-
-typedef struct {
-  Symbol  *owner;
-  Interval result;
-  Interval outputs[MAX_SUMMARY_OUTPUTS];
-  u32      output_count;
-  bool     returns_anything;
-} Subprogram_Summary;
-
-Subprogram_Summary Summaries[MAX_SUMMARIES];
-u32  Summary_Count    = 0;
-bool Summaries_Usable = false;   /* false while they are being computed */
-
-Subprogram_Summary *Find_Summary (Symbol *sym) {
-  if (not sym) return NULL;
-  for (u32 i = 0; i < Summary_Count; i++)
-    if (Summaries[i].owner == sym) return &Summaries[i];
-  return NULL;
-}
-
-Subprogram_Summary *Summary_For (Symbol *sym) {
-  Subprogram_Summary *found = Find_Summary (sym);
-  if (found) return found;
-  if (Summary_Count >= MAX_SUMMARIES) return NULL;
-  Summaries[Summary_Count] = (Subprogram_Summary){
-    .owner = sym, .result = Interval_Of (1, 0), .output_count = 0,
-    .returns_anything = false };
-  for (u32 i = 0; i < MAX_SUMMARY_OUTPUTS; i++)
-    Summaries[Summary_Count].outputs[i] = Interval_Of (1, 0);
-  return &Summaries[Summary_Count++];
-}
-
-/* The summary being built by the body now being read. */
-Subprogram_Summary *Summary_Under_Construction = NULL;
-
-#define MAX_ANALYSIS_FINDINGS 4096
-
-typedef struct {
-  Check_Kind  kind;
-  Location    location;
-  const char *verdict;    /* always_fails | cannot_fail | may_fail */
-  const char *detail;
-  Interval    witness;
-  Interval    allowed;
-  Symbol     *owner;
-} Analysis_Finding;
-
-Analysis_Finding Analysis_Findings[MAX_ANALYSIS_FINDINGS];
-u32     Analysis_Finding_Count = 0;
-Symbol *Analysis_Current_Owner = NULL;
-
-bool Analysis_Recording = true;
-
-/* A loop is read repeatedly until its state settles, so nesting multiplies
-   the work: the capacity tests nest loops dozens deep, where the passes
-   alone would outlast the compilation.  The walk gets a fixed budget of
-   statements and stops when it runs out, which costs findings and never
-   correctness -- a check that goes unexamined is simply not reported. */
-#define ANALYSIS_STATEMENT_BUDGET 200000
-u32  Analysis_Budget    = ANALYSIS_STATEMENT_BUDGET;
-bool Analysis_Exhausted = false;
-
-void Note_Finding (Check_Kind kind, Location location, const char *verdict,
-                   const char *detail, Interval witness, Interval allowed) {
-  if (not Analysis_Recording) return;
-  if (Analysis_Finding_Count >= MAX_ANALYSIS_FINDINGS) return;
-  Analysis_Findings[Analysis_Finding_Count++] = (Analysis_Finding){
-    kind, location, verdict, detail, witness, allowed, Analysis_Current_Owner };
-}
-
-Interval Eval_Interval (Node *node, Analysis_State *state);
-
-/* The index range of a one-dimensional array whose bounds are static.
-   Several dimensions, and bounds that are not static, are left alone. */
-Interval Array_Index_Interval (Node *prefix) {
-  Type *type = prefix ? prefix->type : NULL;
-  if (not type or type->kind != TYPE_ARRAY)  return Interval_Top ();
-  if (type->array.index_count != 1)          return Interval_Top ();
-  if (not type->array.indices)               return Interval_Top ();
-  Index_Info *index = &type->array.indices[0];
-  if (index->low_bound.kind  != BOUND_INTEGER or
-      index->high_bound.kind != BOUND_INTEGER) return Interval_Top ();
-  return Interval_Of (index->low_bound.int_value, index->high_bound.int_value);
-}
-
-void Check_Expression (Node *node, Analysis_State *state) {
-  if (not node) return;
-
-  if (node->kind == NK_APPLY and node->apply.prefix and
-      node->apply.arguments.count == 1) {
-    Interval allowed = Array_Index_Interval (node->apply.prefix);
-    if (allowed.known) {
-      Node *argument = Unwrap_Association (node->apply.arguments.items[0]);
-      Interval actual = Eval_Interval (argument, state);
-      if (allowed.known and actual.known) {
-        if (Interval_Disjoint (actual, allowed))
-          Note_Finding (CHECK_KIND_INDEX, node->location, "always_fails",
-                        "the index", actual, allowed);
-        else if (Interval_Contains (allowed, actual))
-          Note_Finding (CHECK_KIND_INDEX, node->location, "cannot_fail",
-                        "the index", actual, allowed);
-      }
-    }
-  }
-
-  if (node->kind == NK_BINARY_OP and
-      (node->binary.op == TK_PLUS or node->binary.op == TK_MINUS or
-       node->binary.op == TK_STAR)) {
-    Type *base = node->type;
-    while (base and base->base_type) base = base->base_type;
-    Interval room   = Interval_Of_Type (base);
-    Interval result = Eval_Interval (node, state);
-    if (room.known and result.known and Interval_Contains (room, result))
-      Note_Finding (CHECK_KIND_OVERFLOW, node->location, "cannot_fail",
-                    "the result", result, room);
-  }
-
-  if (node->kind == NK_BINARY_OP and
-      (node->binary.op == TK_SLASH or node->binary.op == TK_MOD or
-       node->binary.op == TK_REM)) {
-    Interval divisor = Eval_Interval (node->binary.right, state);
-    if (divisor.known and not Interval_Is_Empty (divisor)) {
-      if (divisor.low == 0 and divisor.high == 0)
-        Note_Finding (CHECK_KIND_DIVISION, node->location, "always_fails",
-                      "the divisor is zero", divisor, Interval_Top ());
-      else if (not Interval_Holds (divisor, 0))
-        Note_Finding (CHECK_KIND_DIVISION, node->location, "cannot_fail",
-                      "the divisor cannot be zero", divisor, Interval_Top ());
-    }
-  }
-
-  for (const Syntax_Tree_Edge *edge = Syntax_Tree_Shape[node->kind];
-       edge->offset; edge++) {
-    Node_List children = Get_Children (node, edge);
-    for (u32 i = 0; i < children.count; i++)
-      Check_Expression (children.items[i], state);
-  }
-}
-
-/* A callee compiled elsewhere has no summary here, but its ALI may
-   carry one.  The key is the name code generation gives the subprogram,
-   which both compilations agree on. */
-bool Summary_From_Library (Symbol *callee, Interval *out) {
-  if (not callee) return false;
-  Slice mangled = Symbol_Mangle_Name (callee);
-  if (not mangled.length) return false;
-
-  for (u32 i = 0; i < ALI_Cache_Count; i++) {
-    ALI_Cache_Entry *entry = &ALI_Cache[i];
-    for (u32 j = 0; j < entry->summary_count; j++) {
-      const char *name = entry->summary_names[j];
-      if (not name) continue;
-      if (strlen (name) != mangled.length) continue;
-      if (memcmp (name, mangled.data, mangled.length) != 0) continue;
-      *out = Interval_Of ((i128) entry->summary_low[j],
-                          (i128) entry->summary_high[j]);
-      return true;
-    }
-  }
-  return false;
-}
-
-Interval Eval_Interval (Node *node, Analysis_State *state) {
-  if (not node) return Interval_Top ();
-
-  switch (node->kind) {
-    case NK_INTEGER:
-      return Interval_Const ((i128) node->integer_lit.value);
-
-    case NK_ASSOCIATION:
-      return Eval_Interval (Unwrap_Association (node), state);
-
-    case NK_QUALIFIED:
-      return Eval_Interval (node->qualified.expression, state);
-
-    case NK_APPLY: {
-      Symbol *callee = node->apply.prefix ? node->apply.prefix->symbol : NULL;
-      while (callee and callee->aliased) callee = callee->aliased;
-      if (Summaries_Usable and callee and Is_Subprogram (callee)) {
-        Subprogram_Summary *summary = Find_Summary (callee);
-        if (summary and summary->returns_anything and
-            summary->result.known and not Interval_Is_Empty (summary->result))
-          return Interval_Meet (summary->result, Interval_Of_Type (node->type));
-        Interval library;
-        if ((not summary or not summary->returns_anything) and
-            Summary_From_Library (callee, &library))
-          return Interval_Meet (library, Interval_Of_Type (node->type));
-      }
-      return Interval_Of_Type (node->type);
-    }
-
-    case NK_SELECTED:
-    case NK_IDENTIFIER: {
-      Symbol *sym = node->symbol;
-      if (sym) {
-        Interval *slot = State_Slot (state, sym);
-        if (slot) return *slot;
-        /* A parameterless call is written as a name, so a function's
-           result reaches its caller through this case and not the
-           one for an argument list. */
-        Symbol *callee = sym;
-        while (callee and callee->aliased) callee = callee->aliased;
-        if (Summaries_Usable and callee and Is_Subprogram (callee)) {
-          Subprogram_Summary *summary = Find_Summary (callee);
-          if (summary and summary->returns_anything and
-              summary->result.known and
-              not Interval_Is_Empty (summary->result))
-            return Interval_Meet (summary->result,
-                                  Interval_Of_Type (node->type));
-          Interval library;
-          if ((not summary or not summary->returns_anything) and
-              Summary_From_Library (callee, &library))
-            return Interval_Meet (library, Interval_Of_Type (node->type));
-        }
-      }
-      return Interval_Of_Type (node->type);
-    }
-
-    case NK_UNARY_OP:
-      if (node->unary.op == TK_MINUS)
-        return Interval_Sub (Interval_Const (0),
-                             Eval_Interval (node->unary.operand, state));
-      return Interval_Of_Type (node->type);
-
-    case NK_BINARY_OP: {
-      Interval left  = Eval_Interval (node->binary.left,  state);
-      Interval right = Eval_Interval (node->binary.right, state);
-      Interval result;
-      switch (node->binary.op) {
-        case TK_PLUS:  result = Interval_Add (left, right); break;
-        case TK_MINUS: result = Interval_Sub (left, right); break;
-        case TK_STAR:  result = Interval_Mul (left, right); break;
-        case TK_SLASH: result = Interval_Div (left, right); break;
-        default:       result = Interval_Top ();            break;
-      }
-      /* The result of an operation still lies in its own subtype, so the
-         declared range is a second source of precision. */
-      Interval declared = Interval_Of_Type (node->type);
-      if (not result.known) return declared;
-      if (declared.known and Interval_Contains (declared, result)) return result;
-      return result;
-    }
-
-    default:
-      return Interval_Of_Type (node->type);
-  }
-}
-
-/* The largest interval both arguments admit. */
-Interval Interval_Meet (Interval a, Interval b) {
-  if (not a.known) return b;
-  if (not b.known) return a;
-  return Interval_Of (a.low  > b.low  ? a.low  : b.low,
-                      a.high < b.high ? a.high : b.high);
-}
-
-Interval Interval_Below (i128 bound, bool inclusive) {
-  return Interval_Of (INT128_LOW_LIMIT, inclusive ? bound : bound - 1);
-}
-
-Interval Interval_Above (i128 bound, bool inclusive) {
-  return Interval_Of (inclusive ? bound : bound + 1, INT128_HIGH_LIMIT);
-}
-
-/* Narrow what the state holds by a condition known to be true.  Only a
-   comparison or membership naming a variable on one side is used; a
-   condition of any other shape narrows nothing, which costs precision
-   and never soundness. */
-void Refine_By_Condition (Node *condition, bool holds, Analysis_State *state) {
-  if (not condition or state->unreachable) return;
-
-  if (condition->kind == NK_UNARY_OP and condition->unary.op == TK_NOT) {
-    Refine_By_Condition (condition->unary.operand, not holds, state);
-    return;
-  }
-
-  if (condition->kind != NK_BINARY_OP) return;
-  Token_Kind op = condition->binary.op;
-
-  /* "and" narrows by both arms when it holds; "or" narrows by both when
-     it fails.  The other direction says nothing about either arm. */
-  if ((op == TK_AND or op == TK_AND_THEN) and holds) {
-    Refine_By_Condition (condition->binary.left,  true, state);
-    Refine_By_Condition (condition->binary.right, true, state);
-    return;
-  }
-  if ((op == TK_OR or op == TK_OR_ELSE) and not holds) {
-    Refine_By_Condition (condition->binary.left,  false, state);
-    Refine_By_Condition (condition->binary.right, false, state);
-    return;
-  }
-
-  Node *left = condition->binary.left;
-  if (not left or left->kind != NK_IDENTIFIER or not left->symbol) return;
-  Symbol *sym = left->symbol;
-
-  if (op == TK_IN or op == TK_NOT) {
-    if (not holds) return;              /* "not in" narrows nothing useful */
-    if (op == TK_NOT) return;
-    Node *range = condition->binary.right;
-    if (not range or range->kind != NK_RANGE) return;
-    Interval low  = Eval_Interval (range->range.low,  state);
-    Interval high = Eval_Interval (range->range.high, state);
-    if (not low.known or not high.known) return;
-    Interval allowed = Interval_Of (low.low, high.high);
-    Interval *slot = State_Slot (state, sym);
-    State_Bind (state, sym,
-                Interval_Meet (slot ? *slot : Interval_Of_Type (left->type),
-                               allowed));
-    return;
-  }
-
-  Interval other = Eval_Interval (condition->binary.right, state);
-  if (not other.known or Interval_Is_Empty (other)) return;
-
-  Interval narrowed;
-  bool     usable = true;
-  switch (op) {
-    case TK_LT: narrowed = holds ? Interval_Below (other.high, false)
-                                 : Interval_Above (other.low,  true);  break;
-    case TK_LE: narrowed = holds ? Interval_Below (other.high, true)
-                                 : Interval_Above (other.low,  false); break;
-    case TK_GT: narrowed = holds ? Interval_Above (other.low,  false)
-                                 : Interval_Below (other.high, true);  break;
-    case TK_GE: narrowed = holds ? Interval_Above (other.low,  true)
-                                 : Interval_Below (other.high, false); break;
-    case TK_EQ: if (not holds) { usable = false; break; }
-                narrowed = other; break;
-    case TK_NE: if (holds) { usable = false; break; }
-                narrowed = other; break;
-    default:    usable = false; break;
-  }
-  if (not usable) return;
-
-  Interval *slot = State_Slot (state, sym);
-  State_Bind (state, sym,
-              Interval_Meet (slot ? *slot : Interval_Of_Type (left->type),
-                             narrowed));
-}
-
-void Analyze_Statement_List (Node_List *statements, Analysis_State *state);
-
-/* Everything a statement assigns becomes unknown.  Used for a loop body,
-   which may run any number of times, and for a goto target. */
-void Forget_Assigned (Node *node, Analysis_State *state) {
-  if (not node) return;
-  if (node->kind == NK_ASSIGNMENT) {
-    Node *target = node->assignment.target;
-    if (target and target->kind == NK_IDENTIFIER and target->symbol)
-      State_Bind (state, target->symbol, Interval_Top ());
-  }
-  for (const Syntax_Tree_Edge *edge = Syntax_Tree_Shape[node->kind];
-       edge->offset; edge++) {
-    Node_List children = Get_Children (node, edge);
-    for (u32 i = 0; i < children.count; i++)
-      Forget_Assigned (children.items[i], state);
-  }
-}
-
-/* A call can assign any actual passed to an out or in out parameter, and
-   what it assigned is not known here, so those actuals stop being known.
-   A call through a name this pass cannot resolve forgets every simple
-   actual, since it may be such a parameter. */
-/* Widening.  Where a value grew between one pass over the loop and the
-   next, the direction it grew in is pushed to the limit rather than
-   guessed at, so the iteration settles instead of counting upward
-   forever. */
-void State_Widen (Analysis_State *into, Analysis_State *next) {
-  for (u32 i = 0; i < into->count; i++) {
-    Interval *now = State_Slot (next, into->vars[i].sym);
-    if (not now) { into->vars[i].value = Interval_Top (); continue; }
-    Interval was = into->vars[i].value;
-    if (not was.known or not now->known) {
-      into->vars[i].value = Interval_Top ();
-      continue;
-    }
-    into->vars[i].value = Interval_Of (
-      now->low  < was.low  ? INT128_LOW_LIMIT  : was.low,
-      now->high > was.high ? INT128_HIGH_LIMIT : was.high);
-  }
-  for (u32 i = 0; i < next->count; i++)
-    if (not State_Slot (into, next->vars[i].sym))
-      State_Bind (into, next->vars[i].sym, Interval_Top ());
-}
-
-bool State_Same (Analysis_State *a, Analysis_State *b) {
-  if (a->count != b->count) return false;
-  for (u32 i = 0; i < a->count; i++) {
-    Interval *other = State_Slot (b, a->vars[i].sym);
-    if (not other) return false;
-    if (other->known != a->vars[i].value.known) return false;
-    if (other->known and (other->low  != a->vars[i].value.low or
-                          other->high != a->vars[i].value.high)) return false;
-  }
-  return true;
-}
-
-/* A for loop's parameter runs over the range it names, which is the most
-   useful interval in the language: it is exactly what indexes an array. */
-void Bind_Loop_Parameter (Node *scheme, Analysis_State *state) {
-  if (not scheme or scheme->kind != NK_BINARY_OP or scheme->binary.op != TK_IN)
-    return;
-  Node *name  = scheme->binary.left;
-  Node *range = scheme->binary.right;
-  if (not name or not name->symbol or not range) return;
-  if (range->kind == NK_RANGE) {
-    Interval low  = Eval_Interval (range->range.low,  state);
-    Interval high = Eval_Interval (range->range.high, state);
-    if (low.known and high.known) {
-      State_Bind (state, name->symbol, Interval_Of (low.low, high.high));
-      return;
-    }
-  }
-  State_Bind (state, name->symbol, Interval_Of_Type (name->type));
-}
-
-void Forget_Call_Actuals (Node *call, Analysis_State *state) {
-  if (not call) return;
-  Node *prefix = call->apply.prefix;
-  Symbol *callee = prefix ? prefix->symbol : NULL;
-  while (callee and callee->aliased) callee = callee->aliased;
-  bool modes_known = callee and callee->parameters;
-
-  for (u32 i = 0; i < call->apply.arguments.count; i++) {
-    Node *actual = Unwrap_Association (call->apply.arguments.items[i]);
-    if (not actual or actual->kind != NK_IDENTIFIER or not actual->symbol)
-      continue;
-    if (modes_known and i < callee->parameter_count and
-        callee->parameters[i].mode == MODE_IN)
-      continue;
-
-    Interval left_holding = Interval_Top ();
-    if (Summaries_Usable and modes_known and i < MAX_SUMMARY_OUTPUTS) {
-      Subprogram_Summary *summary = Find_Summary (callee);
-      if (summary and i < summary->output_count and
-          summary->outputs[i].known and
-          not Interval_Is_Empty (summary->outputs[i]))
-        left_holding = summary->outputs[i];
-    }
-    State_Bind (state, actual->symbol, left_holding);
-  }
-}
-
-void Forget_Calls_In (Node *node, Analysis_State *state) {
-  if (not node) return;
-  if (node->kind == NK_APPLY and node->apply.prefix and
-      node->apply.prefix->symbol and
-      Is_Subprogram (node->apply.prefix->symbol))
-    Forget_Call_Actuals (node, state);
-  for (const Syntax_Tree_Edge *edge = Syntax_Tree_Shape[node->kind];
-       edge->offset; edge++) {
-    Node_List children = Get_Children (node, edge);
-    for (u32 i = 0; i < children.count; i++)
-      Forget_Calls_In (children.items[i], state);
-  }
-}
-
-void Analyze_Statement (Node *node, Analysis_State *state) {
-  if (not node) return;
-  if (Analysis_Budget == 0) { Analysis_Exhausted = true; return; }
-  Analysis_Budget--;
-  if (state->unreachable) {
-    if (Analysis_Recording and node->kind != NK_PRAGMA and
-        node->kind != NK_LABEL and not state->reported_dead and
-        state->dead_from_branch) {
-      state->reported_dead = true;
-      if (state->dead_cause and state->dead_line)
-        Note_Pending_Warning (WARNING_UNREACHABLE_CODE, node->location,
-          "this statement can never execute: the %s at line %u always "
-          "transfers control away", state->dead_cause, state->dead_line);
-      else if (state->dead_cause)
-        Note_Pending_Warning (WARNING_UNREACHABLE_CODE, node->location,
-          "this statement can never execute: %s", state->dead_cause);
-      else
-        Note_Pending_Warning (WARNING_UNREACHABLE_CODE, node->location,
-          "this statement can never execute: nothing reaches it");
-    }
-    return;
-  }
-
-  if (node->kind == NK_RETURN or node->kind == NK_GOTO or
-      node->kind == NK_EXIT   or node->kind == NK_RAISE) {
-    Check_Expression (node, state);
-    Forget_Calls_In (node, state);
-    if (node->kind == NK_RETURN and node->return_stmt.expression and
-        Summary_Under_Construction) {
-      Summary_Under_Construction->returns_anything = true;
-      Summary_Under_Construction->result = Interval_Join (
-        Summary_Under_Construction->result,
-        Eval_Interval (node->return_stmt.expression, state));
-    }
-    /* An exit or goto with a condition may or may not be taken; an
-       unconditional one ends this path. */
-    if (node->kind == NK_RETURN or node->kind == NK_GOTO or
-        node->kind == NK_RAISE  or
-        (node->kind == NK_EXIT and not node->exit_stmt.condition)) {
-      state->unreachable = true;
-      state->dead_cause  = node->kind == NK_RETURN ? "return statement"
-                         : node->kind == NK_GOTO   ? "goto statement"
-                         : node->kind == NK_RAISE  ? "raise statement"
-                                                   : "exit statement";
-      state->dead_line        = node->location.line;
-      state->dead_from_branch = false;
-    }
-    return;
-  }
-
-  switch (node->kind) {
-    case NK_ASSIGNMENT: {
-      Check_Expression (node->assignment.value, state);
-      Check_Expression (node->assignment.target, state);
-      Forget_Calls_In (node->assignment.value, state);
-      Interval value  = Eval_Interval (node->assignment.value, state);
-      Node   *target  = node->assignment.target;
-      Type   *target_type = target ? target->type : NULL;
-      Interval allowed = Interval_Of_Type (target_type);
-
-      bool value_is_literal = node->assignment.value and
-                              node->assignment.value->kind == NK_INTEGER;
-      if (allowed.known and value.known and not Interval_Is_Empty (value) and
-          not value_is_literal) {
-        if (Interval_Disjoint (value, allowed))
-          Note_Finding (CHECK_KIND_RANGE, node->location, "always_fails",
-                        "the value assigned", value, allowed);
-        else if (Interval_Contains (allowed, value))
-          Note_Finding (CHECK_KIND_RANGE, node->location, "cannot_fail",
-                        "the value assigned", value, allowed);
-      }
-
-      if (target and target->kind == NK_IDENTIFIER and target->symbol and
-          Summary_Under_Construction and
-          Summary_Under_Construction->owner) {
-        Symbol *owner = Summary_Under_Construction->owner;
-        for (u32 pi = 0; pi < owner->parameter_count and
-                         pi < MAX_SUMMARY_OUTPUTS; pi++)
-          if (owner->parameters[pi].param_sym == target->symbol and
-              owner->parameters[pi].mode != MODE_IN) {
-            Subprogram_Summary *summary = Summary_Under_Construction;
-            if (pi >= summary->output_count) summary->output_count = pi + 1;
-            summary->outputs[pi] = Interval_Join (summary->outputs[pi], value);
-          }
-      }
-
-      if (target and target->kind == NK_IDENTIFIER and target->symbol) {
-        /* After the assignment the variable holds the assigned value,
-           narrowed by its own subtype: a value outside it would have
-           raised rather than been stored. */
-        Interval held = value;
-        if (allowed.known and value.known) {
-          i128 low  = value.low  > allowed.low  ? value.low  : allowed.low;
-          i128 high = value.high < allowed.high ? value.high : allowed.high;
-          held = Interval_Of (low, high);
-        } else if (not value.known) {
-          held = allowed;
-        }
-        State_Bind (state, target->symbol, held);
-      }
-      return;
-    }
-
-    case NK_IF: {
-      Check_Expression (node->if_stmt.condition, state);
-      Analysis_State taken = *state, otherwise = *state;
-      Refine_By_Condition (node->if_stmt.condition, true,  &taken);
-      Refine_By_Condition (node->if_stmt.condition, false, &otherwise);
-      Analyze_Statement_List (&node->if_stmt.then_stmts, &taken);
-      for (u32 i = 0; i < node->if_stmt.elsif_parts.count; i++) {
-        Node *part = node->if_stmt.elsif_parts.items[i];
-        if (not part) continue;
-        Analysis_State branch = otherwise;
-        Check_Expression (part->if_stmt.condition, &branch);
-        Refine_By_Condition (part->if_stmt.condition, true,  &branch);
-        Refine_By_Condition (part->if_stmt.condition, false, &otherwise);
-        Analyze_Statement_List (&part->if_stmt.then_stmts, &branch);
-        State_Join (&taken, &branch);
-      }
-      Analyze_Statement_List (&node->if_stmt.else_stmts, &otherwise);
-      bool had_else = node->if_stmt.else_stmts.count > 0;
-      State_Join (&taken, &otherwise);
-      if (taken.unreachable and had_else) {
-        taken.dead_cause       = "every branch of the if statement above "
-                                 "transfers control away";
-        taken.dead_line        = 0;
-        taken.dead_from_branch = true;
-      } else if (not had_else) {
-        taken.unreachable = false;   /* the condition may be false */
-      }
-      *state = taken;
-      return;
-    }
-
-    case NK_CASE: {
-      Check_Expression (node->case_stmt.expression, state);
-      Analysis_State joined = *state;
-      bool first = true;
-      for (u32 i = 0; i < node->case_stmt.alternatives.count; i++) {
-        Node *alternative = node->case_stmt.alternatives.items[i];
-        if (not alternative) continue;
-        Analysis_State branch = *state;
-        Analyze_Statement (alternative->association.expression, &branch);
-        if (first) { joined = branch; first = false; }
-        else       State_Join (&joined, &branch);
-      }
-      if (not first) *state = joined;
-      return;
-    }
-
-    case NK_LOOP: {
-      Check_Expression (node->loop_stmt.iteration_scheme, state);
-
-      /* Iterate the body until the state stops changing, widening as it
-         goes, with findings switched off until the state has settled --
-         a pass over an unsettled state can hold a value the loop never
-         actually takes. */
-      Analysis_State entry = *state;
-      bool saved_recording = Analysis_Recording;
-      Analysis_Recording = false;
-      for (int pass = 0; pass < 4 and Analysis_Budget; pass++) {
-        Analysis_State body = entry;
-        Bind_Loop_Parameter (node->loop_stmt.iteration_scheme, &body);
-        Refine_By_Condition (node->loop_stmt.iteration_scheme, true, &body);
-        Analyze_Statement_List (&node->loop_stmt.statements, &body);
-        Analysis_State widened = entry;
-        State_Widen (&widened, &body);
-        if (State_Same (&widened, &entry)) break;
-        entry = widened;
-      }
-      Analysis_Recording = saved_recording;
-
-      Analysis_State body = entry;
-      Bind_Loop_Parameter (node->loop_stmt.iteration_scheme, &body);
-      Refine_By_Condition (node->loop_stmt.iteration_scheme, true, &body);
-      Analyze_Statement_List (&node->loop_stmt.statements, &body);
-
-      /* After the loop the parameter is out of scope and the body may
-         have run any number of times, so the widened state is what is
-         known. */
-      *state = entry;
-      state->unreachable = false;
-      return;
-    }
-
-    case NK_BLOCK:
-      Analyze_Statement_List (&node->block_stmt.statements, state);
-      return;
-
-    default:
-      Check_Expression (node, state);
-      Forget_Calls_In (node, state);
-      return;
-  }
-}
-
-void Analyze_Statement_List (Node_List *statements, Analysis_State *state) {
-  for (u32 i = 0; i < statements->count; i++)
-    Analyze_Statement (statements->items[i], state);
-}
-
-/* Each subprogram body is analysed on its own, from a state in which
-   nothing is known but what the declarations say.  Parameters and
-   globals are their subtypes, which Eval_Interval reads from the type
-   when the state holds no binding. */
-void Analyze_Bodies (Node *node) {
-  if (not node) return;
-
-  Node_List *statements = NULL;
-  if (Node_In_Any_Class (node, NODE_CLASS_SUBPROGRAM_BODY) and
-      not node->subprogram_body.is_separate)
-    statements = &node->subprogram_body.statements;
-  else if (node->kind == NK_PACKAGE_BODY)
-    statements = &node->package_body.statements;
-  else if (node->kind == NK_TASK_BODY)
-    statements = &node->task_body.statements;
-
-  if (statements) {
-    Symbol *saved_owner = Analysis_Current_Owner;
-    Subprogram_Summary *saved_summary = Summary_Under_Construction;
-    Analysis_Current_Owner = node->symbol;
-    Summary_Under_Construction =
-      node->symbol and Is_Subprogram (node->symbol)
-        ? Summary_For (node->symbol) : NULL;
-    Analysis_State state = { .count = 0 };
-    Analyze_Statement_List (statements, &state);
-    Analysis_Current_Owner     = saved_owner;
-    Summary_Under_Construction = saved_summary;
-  }
-
-  for (const Syntax_Tree_Edge *edge = Syntax_Tree_Shape[node->kind];
-       edge->offset; edge++) {
-    Node_List children = Get_Children (node, edge);
-    for (u32 i = 0; i < children.count; i++)
-      Analyze_Bodies (children.items[i]);
-  }
-}
-
-const char *Spell_Interval (Interval i, char *buffer, size_t size) {
-  if (not i.known) { snprintf (buffer, size, "any value"); return buffer; }
-  if (i.low == i.high) {
-    snprintf (buffer, size, "%s", I128_Decimal (i.low));
-    return buffer;
-  }
-  char low[Decimal_Text_Max];
-  snprintf (low, sizeof low, "%s", I128_Decimal (i.low));
-  snprintf (buffer, size, "%s .. %s", low, I128_Decimal (i.high));
-  return buffer;
-}
-
-/* Only a check that must fail is reported as a warning.  A check that
-   may fail is the ordinary case and belongs in the report, not on a
-   reader's screen. */
-void Report_Analysis_Warnings (const char *input_path) {
-  for (u32 i = 0; i < Analysis_Finding_Count; i++) {
-    Analysis_Finding *finding = &Analysis_Findings[i];
-    if (strcmp (finding->verdict, "always_fails") != 0) continue;
-    if (not finding->location.filename or not input_path or
-        strcmp (finding->location.filename, input_path) != 0) continue;
-    char witness[64], allowed[64];
-    Spell_Interval (finding->witness, witness, sizeof witness);
-    if (finding->allowed.known) {
-      Spell_Interval (finding->allowed, allowed, sizeof allowed);
-      Note_Pending_Warning (WARNING_CHECK_ALWAYS_FAILS, finding->location,
-        "%s is %s, outside the permitted %s, so this %s always fails",
-        finding->detail, witness, allowed, Spell_Check_Kind (finding->kind));
-    } else {
-      Note_Pending_Warning (WARNING_CHECK_ALWAYS_FAILS, finding->location,
-        "%s, so this %s always fails",
-        finding->detail, Spell_Check_Kind (finding->kind));
-    }
-  }
-}
-
-/* How many constructs of each kind sit on each line of the unit, counted
-   over the whole tree rather than over what the walk reaches.  A finding
-   names a line, so a line bearing two checks of one kind cannot say which
-   of them was settled, and neither may be acted on. */
-#define MAX_TALLY_LINES 65536
-u16 Line_Index_Sites[MAX_TALLY_LINES];
-u16 Line_Division_Sites[MAX_TALLY_LINES];
-u16 Line_Assignment_Sites[MAX_TALLY_LINES];
-
-void Tally_Line (u16 *table, u32 line) {
-  if (line and line < MAX_TALLY_LINES and table[line] < 0xFFFF) table[line]++;
-}
-
-void Tally_Check_Constructs (Node *node) {
-  if (not node) return;
-  u32 line = node->location.line;
-
-  if (node->kind == NK_APPLY and node->apply.prefix and
-      node->apply.prefix->type and
-      node->apply.prefix->type->kind == TYPE_ARRAY)
-    Tally_Line (Line_Index_Sites, line);
-
-  if (node->kind == NK_BINARY_OP and
-      (node->binary.op == TK_SLASH or node->binary.op == TK_MOD or
-       node->binary.op == TK_REM))
-    Tally_Line (Line_Division_Sites, line);
-
-  if (node->kind == NK_ASSIGNMENT)
-    Tally_Line (Line_Assignment_Sites, line);
-
-  for (const Syntax_Tree_Edge *edge = Syntax_Tree_Shape[node->kind];
-       edge->offset; edge++) {
-    Node_List children = Get_Children (node, edge);
-    for (u32 i = 0; i < children.count; i++)
-      Tally_Check_Constructs (children.items[i]);
-  }
-}
-
-bool Line_Bears_One_Check (Check_Kind kind, u32 line) {
-  if (not line or line >= MAX_TALLY_LINES) return false;
-  switch (kind) {
-    case CHECK_KIND_INDEX:    return Line_Index_Sites[line]      == 1;
-    case CHECK_KIND_DIVISION: return Line_Division_Sites[line]   == 1;
-    case CHECK_KIND_RANGE:    return Line_Assignment_Sites[line] == 1;
-    default:                  return false;
-  }
-}
-
-bool Summaries_Changed (Subprogram_Summary *before, u32 count) {
-  if (count != Summary_Count) return true;
-  for (u32 i = 0; i < count; i++) {
-    if (before[i].owner != Summaries[i].owner) return true;
-    if (before[i].result.known != Summaries[i].result.known) return true;
-    if (before[i].result.known and
-        (before[i].result.low  != Summaries[i].result.low or
-         before[i].result.high != Summaries[i].result.high)) return true;
-  }
-  return false;
-}
-
-void Analyze_Units (Node **units, int unit_count) {
-  Analysis_Finding_Count = 0;
-  memset (Line_Index_Sites,      0, sizeof Line_Index_Sites);
-  memset (Line_Division_Sites,   0, sizeof Line_Division_Sites);
-  memset (Line_Assignment_Sites, 0, sizeof Line_Assignment_Sites);
-  for (int i = 0; i < unit_count; i++) Tally_Check_Constructs (units[i]);
-  Analysis_Budget        = ANALYSIS_STATEMENT_BUDGET;
-  Analysis_Exhausted     = false;
-  /* Read every body with findings switched off until the summaries
-     settle: a pass over a summary still being derived can hold a value
-     the program never produces. */
-  static Subprogram_Summary previous[MAX_SUMMARIES];
-  bool saved_recording = Analysis_Recording;
-  Analysis_Recording = false;
-  Summaries_Usable   = false;
-  Summary_Count      = 0;
-
-  for (int pass = 0; pass < 3; pass++) {
-    u32 before_count = Summary_Count;
-    memcpy (previous, Summaries, before_count * sizeof *previous);
-    Summary_Count = 0;
-    Analysis_Budget = ANALYSIS_STATEMENT_BUDGET;
-    for (int i = 0; i < unit_count; i++) {
-      if (not units[i] or units[i]->compilation_unit.grafted_into_generic)
-        continue;
-      Analyze_Bodies (units[i]);
-    }
-    /* The body of a withed unit is read from its source when that source
-       is at hand, and it is what a call into that unit does.  Summaries
-       are taken from it too; its findings are not, since they belong to
-       whoever compiles it. */
-    for (int i = 0; i < Loaded_Body_Count; i++)
-      Analyze_Bodies (Loaded_Package_Bodies[i]);
-    Summaries_Usable = true;
-    if (pass > 0 and not Summaries_Changed (previous, before_count)) break;
-  }
-
-  Analysis_Recording = saved_recording;
-  Analysis_Budget    = ANALYSIS_STATEMENT_BUDGET;
-  Summary_Under_Construction = NULL;
-  for (int i = 0; i < unit_count; i++) {
-    if (not units[i] or units[i]->compilation_unit.grafted_into_generic) continue;
-    Analyze_Bodies (units[i]);
-  }
-}
-
-void Write_Json_Text (FILE *out, const char *text, u32 length) {
-  for (u32 i = 0; i < length; i++) {
-    unsigned char ch = (unsigned char) text[i];
-    if (ch == '"' or ch == '\\')   fprintf (out, "\\%c", ch);
-    else if (ch == '\n')           fputs ("\\n", out);
-    else if (ch == '\t')           fputs ("\\t", out);
-    else if (ch == '\r')           fputs ("\\r", out);
-    else if (ch < 0x20)            fprintf (out, "\\u%04x", ch);
-    else                           fputc ((int) ch, out);
-  }
-}
-
-void Write_Json_String (FILE *out, const char *text) {
-  fputc ('"', out);
-  if (text) Write_Json_Text (out, text, (u32) strlen (text));
-  fputc ('"', out);
-}
-
-/* A site belongs to the unit under analysis when it was emitted from the
-   file named on the command line.  Checks in the units it depends on are
-   that unit's business, and reporting them would bury the ones asked for:
-   a hello-world draws about twenty checks of its own and some hundreds
-   from Text_IO. */
-bool Analysis_Site_Is_In_Unit (Analysis_Check_Site *site,
-                               const char *input_path) {
-  return site->location.filename and input_path and
-         strcmp (site->location.filename, input_path) == 0;
-}
-
-/* What became of a check.  "checked" is a check in the generated code and
-   "suppressed" is permission given; the rest is the compiler having written
-   no check.  That is "cannot_fail" where it determined one unnecessary,
-   "not_applicable" where the construct never had one, "unchecked" where it
-   could not build one, and "unknown" where this implementation does not yet
-   record which of those happened. */
-const char *Spell_Check_Verdict (Analysis_Check_Site *site) {
-  if (site->suppressed) return "suppressed";
-  if (site->emitted)    return "checked";
-  if (site->verdict)    return site->verdict;
-  return "unknown";
-}
-
-/* The site inventory is taken while code is generated and the findings
-   while the statements are read, so the two see the same check through
-   different eyes: a site is placed at the statement, a finding at the
-   expression within it.  They are joined on the check's kind and line,
-   which is what they agree on. */
-/* Whether the analysis proved this check cannot fail, at a granularity
-   fine enough to act on.  A site is placed at the statement and a
-   finding at the expression, so the two meet only on the kind and the
-   line.  That is enough only where the line holds one check of the kind
-   and the analysis settled it: with two on a line -- A (I) := A (J) --
-   a finding cannot be told to belong to one rather than the other, and
-   eliding both on the strength of one would drop a check the program
-   needs.  Both are then left alone. */
-u32 Provably_Safe_Uses[MAX_ANALYSIS_CHECK_SITES];
-u32 Provably_Safe_Use_Count = 0;
-
-bool Analysis_Proved_Safe_Here (Check_Kind kind, Location location) {
-  if (not Elide_Provable_Checks or not location.line) return false;
-
-  u32  matches = 0;
-  bool all_safe = true;
-  for (u32 i = 0; i < Analysis_Finding_Count; i++) {
-    Analysis_Finding *finding = &Analysis_Findings[i];
-    if (finding->kind != kind) continue;
-    if (finding->location.line != location.line) continue;
-    if (not finding->location.filename or not location.filename or
-        strcmp (finding->location.filename, location.filename) != 0) continue;
-    matches++;
-    if (strcmp (finding->verdict, "cannot_fail") != 0) all_safe = false;
-  }
-  if (matches != 1 or not all_safe) return false;
-  if (not Line_Bears_One_Check (kind, location.line)) return false;
-
-  /* One finding stands for one check.  If the line turns out to hold a
-     second check of the same kind, the first has already taken the
-     finding and the second is checked as usual. */
-  for (u32 i = 0; i < Provably_Safe_Use_Count; i++)
-    if (Provably_Safe_Uses[i] == location.line) return false;
-  if (Provably_Safe_Use_Count < MAX_ANALYSIS_CHECK_SITES)
-    Provably_Safe_Uses[Provably_Safe_Use_Count++] = location.line;
-  return true;
-}
-
-/* A function's result range, keyed by the name code generation gives it,
-   so a later compilation that calls it can start from what the body
-   does rather than from what its subtype allows.  Only a range narrower
-   than the subtype is worth the line. */
-void ALI_Write_Summaries (FILE *out) {
-  for (u32 i = 0; i < Summary_Count; i++) {
-    Subprogram_Summary *summary = &Summaries[i];
-    if (not summary->owner or not summary->returns_anything) continue;
-    if (not summary->result.known or Interval_Is_Empty (summary->result))
-      continue;
-    if (summary->result.low  < (i128) INT64_MIN or
-        summary->result.high > (i128) INT64_MAX) continue;
-
-    Interval declared = Interval_Of_Type (summary->owner->return_type);
-    if (declared.known and
-        summary->result.low  <= declared.low and
-        summary->result.high >= declared.high) continue;
-
-    Slice mangled = Symbol_Mangle_Name (summary->owner);
-    if (not mangled.length) continue;
-    fprintf (out, "IV %.*s %lld %lld\n", (int) mangled.length, mangled.data,
-             (long long) summary->result.low,
-             (long long) summary->result.high);
-  }
-}
-
-void Join_Findings_To_Sites (void) {
-  for (u32 i = 0; i < Analysis_Check_Site_Count; i++) {
-    Analysis_Check_Site *site = &Analysis_Check_Sites[i];
-    for (u32 j = 0; j < Analysis_Finding_Count; j++) {
-      Analysis_Finding *finding = &Analysis_Findings[j];
-      if (finding->kind != site->kind) continue;
-      if (finding->location.line != site->location.line) continue;
-      if (not finding->location.filename or not site->location.filename or
-          strcmp (finding->location.filename, site->location.filename) != 0)
-        continue;
-      /* A must-fail says more than a cannot-fail, so it wins the slot. */
-      if (site->analysis and strcmp (site->analysis, "always_fails") == 0)
-        continue;
-      site->analysis = finding->verdict;
-    }
-  }
-}
-
-void Write_Analysis_Report (FILE *out, const char *input_path) {
-  u32 by_kind[CHECK_KIND_STORAGE + 1] = {0};
-  u32 suppressed_total  = 0;
-  u32 checked_total     = 0;
-  u32 cannot_fail_total = 0;
-  u32 unchecked_total   = 0;
-  u32 not_applicable    = 0;
-  u32 unknown_total     = 0;
-  u32 removable         = 0;
-  u32 reported          = 0;
-
-  for (u32 i = 0; i < Analysis_Check_Site_Count; i++) {
-    Analysis_Check_Site *site = &Analysis_Check_Sites[i];
-    if (not Analysis_Site_Is_In_Unit (site, input_path)) continue;
-    if (site->kind <= CHECK_KIND_STORAGE) by_kind[site->kind]++;
-    const char *verdict = Spell_Check_Verdict (site);
-    if      (strcmp (verdict, "suppressed")     == 0) suppressed_total++;
-    else if (strcmp (verdict, "checked")        == 0) checked_total++;
-    else if (strcmp (verdict, "cannot_fail")    == 0) cannot_fail_total++;
-    else if (strcmp (verdict, "not_applicable") == 0) not_applicable++;
-    else if (strcmp (verdict, "unchecked")      == 0) unchecked_total++;
-    else                                              unknown_total++;
-    if (site->emitted and site->analysis and
-        strcmp (site->analysis, "cannot_fail") == 0) removable++;
-    reported++;
-  }
-
-  fputs ("{\n  \"version\": 1,\n  \"source\": ", out);
-  Write_Json_String (out, input_path);
-  fputs (",\n  \"sites\": [", out);
-
-  bool wrote_site = false;
-  for (u32 i = 0; i < Analysis_Check_Site_Count; i++) {
-    Analysis_Check_Site *site = &Analysis_Check_Sites[i];
-    if (not Analysis_Site_Is_In_Unit (site, input_path)) continue;
-    fputs (wrote_site ? ",\n    {" : "\n    {", out);
-    wrote_site = true;
-    fputs (" \"kind\": ", out);
-    Write_Json_String (out, Spell_Check_Kind (site->kind));
-    fputs (", \"file\": ", out);
-    Write_Json_String (out, site->location.filename);
-    fprintf (out, ", \"line\": %u, \"column\": %u",
-             site->location.line, site->location.column);
-    fputs (", \"verdict\": ", out);
-    Write_Json_String (out, Spell_Check_Verdict (site));
-    if (site->reason and not site->suppressed and not site->emitted) {
-      fputs (", \"reason\": ", out);
-      Write_Json_String (out, site->reason);
-    }
-    if (site->analysis) {
-      fputs (", \"analysis\": ", out);
-      Write_Json_String (out, site->analysis);
-    }
-    if (site->owner and site->owner->name.length) {
-      fputs (", \"subprogram\": \"", out);
-      Write_Json_Text (out, site->owner->name.data, site->owner->name.length);
-      fputc ('"', out);
-    }
-    fputs (" }", out);
-  }
-
-  fputs (wrote_site ? "\n  ],\n" : "],\n", out);
-
-  fputs ("  \"findings\": [", out);
-  bool wrote_finding = false;
-  u32  must_fail = 0;
-  for (u32 i = 0; i < Analysis_Finding_Count; i++) {
-    Analysis_Finding *finding = &Analysis_Findings[i];
-    if (not finding->location.filename or not input_path or
-        strcmp (finding->location.filename, input_path) != 0) continue;
-    if (strcmp (finding->verdict, "always_fails") == 0) must_fail++;
-    fputs (wrote_finding ? ",\n    {" : "\n    {", out);
-    wrote_finding = true;
-    fputs (" \"kind\": ", out);
-    Write_Json_String (out, Spell_Check_Kind (finding->kind));
-    fputs (", \"verdict\": ", out);
-    Write_Json_String (out, finding->verdict);
-    fprintf (out, ", \"line\": %u, \"column\": %u",
-             finding->location.line, finding->location.column);
-    fputs (", \"detail\": ", out);
-    Write_Json_String (out, finding->detail);
-    char text[64];
-    fputs (", \"value\": ", out);
-    Write_Json_String (out, Spell_Interval (finding->witness, text, sizeof text));
-    if (finding->allowed.known) {
-      fputs (", \"allowed\": ", out);
-      Write_Json_String (out, Spell_Interval (finding->allowed, text,
-                                              sizeof text));
-    }
-    if (finding->owner and finding->owner->name.length) {
-      fputs (", \"subprogram\": \"", out);
-      Write_Json_Text (out, finding->owner->name.data,
-                       finding->owner->name.length);
-      fputc ('"', out);
-    }
-    fputs (" }", out);
-  }
-  fputs (wrote_finding ? "\n  ],\n" : "],\n", out);
-
-  fprintf (out, "  \"summary\": {\n    \"sites\": %u,\n    \"checked\": %u,"
-                "\n    \"cannot_fail\": %u,\n    \"not_applicable\": %u,"
-                "\n    \"unchecked\": %u,\n    \"unknown\": %u,"
-                "\n    \"suppressed\": %u,\n    \"must_fail\": %u,"
-                "\n    \"checked_but_provably_safe\": %u",
-           reported, checked_total, cannot_fail_total, not_applicable,
-           unchecked_total, unknown_total, suppressed_total, must_fail,
-           removable);
-  if (Analysis_Exhausted)
-    fputs (",\n    \"analysis_truncated\": true", out);
-  if (Analysis_Sites_Overflowed)
-    fprintf (out, ",\n    \"truncated\": true, \"limit\": %d",
-             MAX_ANALYSIS_CHECK_SITES);
-  fputs (",\n    \"by_kind\": {", out);
-  bool first = true;
-  for (u32 k = 0; k <= CHECK_KIND_STORAGE; k++) {
-    if (not by_kind[k]) continue;
-    fprintf (out, "%s\n      \"%s\": %u", first ? "" : ",",
-             Spell_Check_Kind ((Check_Kind) k), by_kind[k]);
-    first = false;
-  }
-  fputs (first ? "}\n  }\n}\n" : "\n    }\n  }\n}\n", out);
-}
-
 void Compile_File (const char *input_path, const char *output_path) {
   Loaded_Body_Count               = 0;
   Bodyless_Required_Package_Count = 0;
@@ -61987,9 +60814,6 @@ void Compile_File (const char *input_path, const char *output_path) {
       (not Warnings_Silenced and
        Warning_Class_Is_Enabled[WARNING_UNREACHABLE_CODE])) {
     Analyze_Units (units, unit_count);
-    /* An ordinary compilation reports what must fail as a warning.
-       --analyze says the same thing in its findings, and saying it twice
-       in two formats would leave neither stream clean. */
     if (not Analyze_Mode) Report_Analysis_Warnings (input_path);
   }
 
@@ -65649,3 +64473,1109 @@ done:
   Native_Backend_Llvm_Api.Context_Dispose (context);
   return status;
 }
+
+/* ==== §20  Analysis ================================================= */
+const char *Spell_Check_Kind (Check_Kind kind) {
+  switch (kind) {
+    case CHECK_KIND_RANGE:        return "range_check";
+    case CHECK_KIND_OVERFLOW:     return "overflow_check";
+    case CHECK_KIND_INDEX:        return "index_check";
+    case CHECK_KIND_LENGTH:       return "length_check";
+    case CHECK_KIND_DIVISION:     return "division_check";
+    case CHECK_KIND_ACCESS:       return "access_check";
+    case CHECK_KIND_DISCRIMINANT: return "discriminant_check";
+    case CHECK_KIND_ELABORATION:  return "elaboration_check";
+    case CHECK_KIND_STORAGE:      return "storage_check";
+    default:                      return "check";
+  }
+}
+
+u32 Note_Check_Site (Check_Kind kind, bool suppressed) {
+  if (not Analyze_Mode) return NO_ANALYSIS_CHECK_SITE;
+  if (Analysis_Check_Site_Count >= MAX_ANALYSIS_CHECK_SITES) {
+    Analysis_Sites_Overflowed = true;
+    return NO_ANALYSIS_CHECK_SITE;
+  }
+  Analysis_Check_Sites[Analysis_Check_Site_Count] = (Analysis_Check_Site){
+    .kind       = kind,
+    .location   = Current_Emit_Location,
+    .suppressed = suppressed,
+    .emitted    = false,
+    .verdict    = NULL,
+    .reason     = NULL,
+    .analysis   = NULL,
+    .owner      = cg ? cg->current_function : NULL
+  };
+  return Analysis_Check_Site_Count++;
+}
+
+void Note_Check_Site_Pending (u32 site) { Pending_Check_Site = site; }
+
+void Note_Check_Not_Needed (const char *verdict, const char *reason) {
+  if (Pending_Check_Site < Analysis_Check_Site_Count) {
+    Analysis_Check_Sites[Pending_Check_Site].verdict = verdict;
+    Analysis_Check_Sites[Pending_Check_Site].reason  = reason;
+  }
+  Pending_Check_Site = NO_ANALYSIS_CHECK_SITE;
+}
+
+void Note_Check_Emitted (void) {
+  if (Pending_Check_Site < Analysis_Check_Site_Count)
+    Analysis_Check_Sites[Pending_Check_Site].emitted = true;
+  Pending_Check_Site = NO_ANALYSIS_CHECK_SITE;
+}
+
+Interval Interval_Top (void) { return (Interval){ 0, 0, false }; }
+Interval Interval_Of  (i128 low, i128 high) {
+  return (Interval){ low, high, true };
+}
+Interval Interval_Const (i128 v) { return Interval_Of (v, v); }
+
+bool Interval_Is_Empty (Interval i) { return i.known and i.low > i.high; }
+
+Interval Interval_Join (Interval a, Interval b) {
+  if (not a.known or not b.known) return Interval_Top ();
+  if (Interval_Is_Empty (a)) return b;
+  if (Interval_Is_Empty (b)) return a;
+  return Interval_Of (a.low < b.low ? a.low : b.low,
+                      a.high > b.high ? a.high : b.high);
+}
+
+bool Interval_Contains (Interval outer, Interval inner) {
+  if (not outer.known or not inner.known) return false;
+  if (Interval_Is_Empty (inner)) return true;
+  if (Interval_Is_Empty (outer)) return false;
+  return inner.low >= outer.low and inner.high <= outer.high;
+}
+
+bool Interval_Disjoint (Interval a, Interval b) {
+  if (not a.known or not b.known) return false;
+  if (Interval_Is_Empty (a) or Interval_Is_Empty (b)) return false;
+  return a.high < b.low or b.high < a.low;
+}
+
+bool Interval_Holds (Interval i, i128 v) {
+  return i.known and not Interval_Is_Empty (i) and v >= i.low and v <= i.high;
+}
+
+Interval Interval_Add (Interval a, Interval b) {
+  i128 low, high;
+  if (not a.known or not b.known) return Interval_Top ();
+  if (__builtin_add_overflow (a.low, b.low, &low) or
+      __builtin_add_overflow (a.high, b.high, &high)) return Interval_Top ();
+  return Interval_Of (low, high);
+}
+
+Interval Interval_Sub (Interval a, Interval b) {
+  i128 low, high;
+  if (not a.known or not b.known) return Interval_Top ();
+  if (__builtin_sub_overflow (a.low, b.high, &low) or
+      __builtin_sub_overflow (a.high, b.low, &high)) return Interval_Top ();
+  return Interval_Of (low, high);
+}
+
+Interval Interval_Mul (Interval a, Interval b) {
+  if (not a.known or not b.known) return Interval_Top ();
+  i128 corner[4];
+  if (__builtin_mul_overflow (a.low,  b.low,  &corner[0]) or
+      __builtin_mul_overflow (a.low,  b.high, &corner[1]) or
+      __builtin_mul_overflow (a.high, b.low,  &corner[2]) or
+      __builtin_mul_overflow (a.high, b.high, &corner[3])) return Interval_Top ();
+  i128 low = corner[0], high = corner[0];
+  for (int i = 1; i < 4; i++) {
+    if (corner[i] < low)  low  = corner[i];
+    if (corner[i] > high) high = corner[i];
+  }
+  return Interval_Of (low, high);
+}
+
+Interval Interval_Div (Interval a, Interval b) {
+  if (not a.known or not b.known) return Interval_Top ();
+  if (Interval_Holds (b, 0)) return Interval_Top ();
+  i128 corner[4] = { a.low / b.low, a.low / b.high,
+                     a.high / b.low, a.high / b.high };
+  i128 low = corner[0], high = corner[0];
+  for (int i = 1; i < 4; i++) {
+    if (corner[i] < low)  low  = corner[i];
+    if (corner[i] > high) high = corner[i];
+  }
+  return Interval_Of (low, high);
+}
+
+Interval Interval_Of_Type (Type *type) {
+  if (not type) return Interval_Top ();
+  if (not Has_Scalar_Representation (type)) return Interval_Top ();
+  if (type->low_bound.kind  != BOUND_INTEGER or
+      type->high_bound.kind != BOUND_INTEGER) return Interval_Top ();
+  return Interval_Of (type->low_bound.int_value, type->high_bound.int_value);
+}
+
+Interval *State_Slot (Analysis_State *state, Symbol *sym) {
+  for (u32 i = 0; i < state->count; i++)
+    if (state->vars[i].sym == sym) return &state->vars[i].value;
+  return NULL;
+}
+
+void State_Bind (Analysis_State *state, Symbol *sym, Interval value) {
+  Interval *slot = State_Slot (state, sym);
+  if (slot) { *slot = value; return; }
+  if (state->count >= MAX_ANALYSIS_VARS) return;
+  state->vars[state->count++] = (Analysis_Binding){ sym, value };
+}
+
+void State_Join (Analysis_State *into, Analysis_State *other) {
+  if (other->unreachable) return;
+  if (into->unreachable)  { *into = *other; return; }
+  for (u32 i = 0; i < into->count; i++) {
+    Interval *slot = State_Slot (other, into->vars[i].sym);
+    into->vars[i].value = slot ? Interval_Join (into->vars[i].value, *slot)
+                               : Interval_Top ();
+  }
+  for (u32 i = 0; i < other->count; i++)
+    if (not State_Slot (into, other->vars[i].sym))
+      State_Bind (into, other->vars[i].sym, Interval_Top ());
+}
+
+Subprogram_Summary *Find_Summary (Symbol *sym) {
+  if (not sym) return NULL;
+  for (u32 i = 0; i < Summary_Count; i++)
+    if (Summaries[i].owner == sym) return &Summaries[i];
+  return NULL;
+}
+
+Subprogram_Summary *Summary_For (Symbol *sym) {
+  Subprogram_Summary *found = Find_Summary (sym);
+  if (found) return found;
+  if (Summary_Count >= MAX_SUMMARIES) return NULL;
+  Summaries[Summary_Count] = (Subprogram_Summary){
+    .owner = sym, .result = Interval_Of (1, 0), .output_count = 0,
+    .returns_anything = false };
+  for (u32 i = 0; i < MAX_SUMMARY_OUTPUTS; i++)
+    Summaries[Summary_Count].outputs[i] = Interval_Of (1, 0);
+  return &Summaries[Summary_Count++];
+}
+
+void Note_Finding (Check_Kind kind, Location location, const char *verdict,
+                   const char *detail, Interval witness, Interval allowed) {
+  if (not Analysis_Recording) return;
+  if (Analysis_Finding_Count >= MAX_ANALYSIS_FINDINGS) return;
+  Analysis_Findings[Analysis_Finding_Count++] = (Analysis_Finding){
+    kind, location, verdict, detail, witness, allowed, Analysis_Current_Owner };
+}
+
+Interval Array_Index_Interval (Node *prefix) {
+  Type *type = prefix ? prefix->type : NULL;
+  if (not type or type->kind != TYPE_ARRAY)  return Interval_Top ();
+  if (type->array.index_count != 1)          return Interval_Top ();
+  if (not type->array.indices)               return Interval_Top ();
+  Index_Info *index = &type->array.indices[0];
+  if (index->low_bound.kind  != BOUND_INTEGER or
+      index->high_bound.kind != BOUND_INTEGER) return Interval_Top ();
+  return Interval_Of (index->low_bound.int_value, index->high_bound.int_value);
+}
+
+void Check_Expression (Node *node, Analysis_State *state) {
+  if (not node) return;
+
+  if (node->kind == NK_APPLY and node->apply.prefix and
+      node->apply.arguments.count == 1) {
+    Interval allowed = Array_Index_Interval (node->apply.prefix);
+    if (allowed.known) {
+      Node *argument = Unwrap_Association (node->apply.arguments.items[0]);
+      Interval actual = Eval_Interval (argument, state);
+      if (allowed.known and actual.known) {
+        if (Interval_Disjoint (actual, allowed))
+          Note_Finding (CHECK_KIND_INDEX, node->location, "always_fails",
+                        "the index", actual, allowed);
+        else if (Interval_Contains (allowed, actual))
+          Note_Finding (CHECK_KIND_INDEX, node->location, "cannot_fail",
+                        "the index", actual, allowed);
+      }
+    }
+  }
+
+  if (node->kind == NK_BINARY_OP and
+      (node->binary.op == TK_PLUS or node->binary.op == TK_MINUS or
+       node->binary.op == TK_STAR)) {
+    Type *base = node->type;
+    while (base and base->base_type) base = base->base_type;
+    Interval room   = Interval_Of_Type (base);
+    Interval result = Eval_Interval (node, state);
+    if (room.known and result.known and Interval_Contains (room, result))
+      Note_Finding (CHECK_KIND_OVERFLOW, node->location, "cannot_fail",
+                    "the result", result, room);
+  }
+
+  if (node->kind == NK_BINARY_OP and
+      (node->binary.op == TK_SLASH or node->binary.op == TK_MOD or
+       node->binary.op == TK_REM)) {
+    Interval divisor = Eval_Interval (node->binary.right, state);
+    if (divisor.known and not Interval_Is_Empty (divisor)) {
+      if (divisor.low == 0 and divisor.high == 0)
+        Note_Finding (CHECK_KIND_DIVISION, node->location, "always_fails",
+                      "the divisor is zero", divisor, Interval_Top ());
+      else if (not Interval_Holds (divisor, 0))
+        Note_Finding (CHECK_KIND_DIVISION, node->location, "cannot_fail",
+                      "the divisor cannot be zero", divisor, Interval_Top ());
+    }
+  }
+
+  for (const Syntax_Tree_Edge *edge = Syntax_Tree_Shape[node->kind];
+       edge->offset; edge++) {
+    Node_List children = Get_Children (node, edge);
+    for (u32 i = 0; i < children.count; i++)
+      Check_Expression (children.items[i], state);
+  }
+}
+
+bool Summary_From_Library (Symbol *callee, Interval *out) {
+  if (not callee) return false;
+  Slice mangled = Symbol_Mangle_Name (callee);
+  if (not mangled.length) return false;
+
+  for (u32 i = 0; i < ALI_Cache_Count; i++) {
+    ALI_Cache_Entry *entry = &ALI_Cache[i];
+    for (u32 j = 0; j < entry->summary_count; j++) {
+      const char *name = entry->summary_names[j];
+      if (not name) continue;
+      if (strlen (name) != mangled.length) continue;
+      if (memcmp (name, mangled.data, mangled.length) != 0) continue;
+      *out = Interval_Of ((i128) entry->summary_low[j],
+                          (i128) entry->summary_high[j]);
+      return true;
+    }
+  }
+  return false;
+}
+
+Interval Eval_Interval (Node *node, Analysis_State *state) {
+  if (not node) return Interval_Top ();
+
+  switch (node->kind) {
+    case NK_INTEGER:
+      return Interval_Const ((i128) node->integer_lit.value);
+
+    case NK_ASSOCIATION:
+      return Eval_Interval (Unwrap_Association (node), state);
+
+    case NK_QUALIFIED:
+      return Eval_Interval (node->qualified.expression, state);
+
+    case NK_APPLY: {
+      Symbol *callee = node->apply.prefix ? node->apply.prefix->symbol : NULL;
+      while (callee and callee->aliased) callee = callee->aliased;
+      if (Summaries_Usable and callee and Is_Subprogram (callee)) {
+        Subprogram_Summary *summary = Find_Summary (callee);
+        if (summary and summary->returns_anything and
+            summary->result.known and not Interval_Is_Empty (summary->result))
+          return Interval_Meet (summary->result, Interval_Of_Type (node->type));
+        Interval library;
+        if ((not summary or not summary->returns_anything) and
+            Summary_From_Library (callee, &library))
+          return Interval_Meet (library, Interval_Of_Type (node->type));
+      }
+      return Interval_Of_Type (node->type);
+    }
+
+    case NK_SELECTED:
+    case NK_IDENTIFIER: {
+      Symbol *sym = node->symbol;
+      if (sym) {
+        Interval *slot = State_Slot (state, sym);
+        if (slot) return *slot;
+        Symbol *callee = sym;
+        while (callee and callee->aliased) callee = callee->aliased;
+        if (Summaries_Usable and callee and Is_Subprogram (callee)) {
+          Subprogram_Summary *summary = Find_Summary (callee);
+          if (summary and summary->returns_anything and
+              summary->result.known and
+              not Interval_Is_Empty (summary->result))
+            return Interval_Meet (summary->result,
+                                  Interval_Of_Type (node->type));
+          Interval library;
+          if ((not summary or not summary->returns_anything) and
+              Summary_From_Library (callee, &library))
+            return Interval_Meet (library, Interval_Of_Type (node->type));
+        }
+      }
+      return Interval_Of_Type (node->type);
+    }
+
+    case NK_UNARY_OP:
+      if (node->unary.op == TK_MINUS)
+        return Interval_Sub (Interval_Const (0),
+                             Eval_Interval (node->unary.operand, state));
+      return Interval_Of_Type (node->type);
+
+    case NK_BINARY_OP: {
+      Interval left  = Eval_Interval (node->binary.left,  state);
+      Interval right = Eval_Interval (node->binary.right, state);
+      Interval result;
+      switch (node->binary.op) {
+        case TK_PLUS:  result = Interval_Add (left, right); break;
+        case TK_MINUS: result = Interval_Sub (left, right); break;
+        case TK_STAR:  result = Interval_Mul (left, right); break;
+        case TK_SLASH: result = Interval_Div (left, right); break;
+        default:       result = Interval_Top ();            break;
+      }
+      Interval declared = Interval_Of_Type (node->type);
+      if (not result.known) return declared;
+      if (declared.known and Interval_Contains (declared, result)) return result;
+      return result;
+    }
+
+    default:
+      return Interval_Of_Type (node->type);
+  }
+}
+
+Interval Interval_Meet (Interval a, Interval b) {
+  if (not a.known) return b;
+  if (not b.known) return a;
+  return Interval_Of (a.low  > b.low  ? a.low  : b.low,
+                      a.high < b.high ? a.high : b.high);
+}
+
+Interval Interval_Below (i128 bound, bool inclusive) {
+  return Interval_Of (INT128_LOW_LIMIT, inclusive ? bound : bound - 1);
+}
+
+Interval Interval_Above (i128 bound, bool inclusive) {
+  return Interval_Of (inclusive ? bound : bound + 1, INT128_HIGH_LIMIT);
+}
+
+void Refine_By_Condition (Node *condition, bool holds, Analysis_State *state) {
+  if (not condition or state->unreachable) return;
+
+  if (condition->kind == NK_UNARY_OP and condition->unary.op == TK_NOT) {
+    Refine_By_Condition (condition->unary.operand, not holds, state);
+    return;
+  }
+
+  if (condition->kind != NK_BINARY_OP) return;
+  Token_Kind op = condition->binary.op;
+
+  if ((op == TK_AND or op == TK_AND_THEN) and holds) {
+    Refine_By_Condition (condition->binary.left,  true, state);
+    Refine_By_Condition (condition->binary.right, true, state);
+    return;
+  }
+  if ((op == TK_OR or op == TK_OR_ELSE) and not holds) {
+    Refine_By_Condition (condition->binary.left,  false, state);
+    Refine_By_Condition (condition->binary.right, false, state);
+    return;
+  }
+
+  Node *left = condition->binary.left;
+  if (not left or left->kind != NK_IDENTIFIER or not left->symbol) return;
+  Symbol *sym = left->symbol;
+
+  if (op == TK_IN or op == TK_NOT) {
+    if (not holds) return;
+    if (op == TK_NOT) return;
+    Node *range = condition->binary.right;
+    if (not range or range->kind != NK_RANGE) return;
+    Interval low  = Eval_Interval (range->range.low,  state);
+    Interval high = Eval_Interval (range->range.high, state);
+    if (not low.known or not high.known) return;
+    Interval allowed = Interval_Of (low.low, high.high);
+    Interval *slot = State_Slot (state, sym);
+    State_Bind (state, sym,
+                Interval_Meet (slot ? *slot : Interval_Of_Type (left->type),
+                               allowed));
+    return;
+  }
+
+  Interval other = Eval_Interval (condition->binary.right, state);
+  if (not other.known or Interval_Is_Empty (other)) return;
+
+  Interval narrowed;
+  bool     usable = true;
+  switch (op) {
+    case TK_LT: narrowed = holds ? Interval_Below (other.high, false)
+                                 : Interval_Above (other.low,  true);  break;
+    case TK_LE: narrowed = holds ? Interval_Below (other.high, true)
+                                 : Interval_Above (other.low,  false); break;
+    case TK_GT: narrowed = holds ? Interval_Above (other.low,  false)
+                                 : Interval_Below (other.high, true);  break;
+    case TK_GE: narrowed = holds ? Interval_Above (other.low,  true)
+                                 : Interval_Below (other.high, false); break;
+    case TK_EQ: if (not holds) { usable = false; break; }
+                narrowed = other; break;
+    case TK_NE: if (holds) { usable = false; break; }
+                narrowed = other; break;
+    default:    usable = false; break;
+  }
+  if (not usable) return;
+
+  Interval *slot = State_Slot (state, sym);
+  State_Bind (state, sym,
+              Interval_Meet (slot ? *slot : Interval_Of_Type (left->type),
+                             narrowed));
+}
+
+void Forget_Assigned (Node *node, Analysis_State *state) {
+  if (not node) return;
+  if (node->kind == NK_ASSIGNMENT) {
+    Node *target = node->assignment.target;
+    if (target and target->kind == NK_IDENTIFIER and target->symbol)
+      State_Bind (state, target->symbol, Interval_Top ());
+  }
+  for (const Syntax_Tree_Edge *edge = Syntax_Tree_Shape[node->kind];
+       edge->offset; edge++) {
+    Node_List children = Get_Children (node, edge);
+    for (u32 i = 0; i < children.count; i++)
+      Forget_Assigned (children.items[i], state);
+  }
+}
+
+void State_Widen (Analysis_State *into, Analysis_State *next) {
+  for (u32 i = 0; i < into->count; i++) {
+    Interval *now = State_Slot (next, into->vars[i].sym);
+    if (not now) { into->vars[i].value = Interval_Top (); continue; }
+    Interval was = into->vars[i].value;
+    if (not was.known or not now->known) {
+      into->vars[i].value = Interval_Top ();
+      continue;
+    }
+    into->vars[i].value = Interval_Of (
+      now->low  < was.low  ? INT128_LOW_LIMIT  : was.low,
+      now->high > was.high ? INT128_HIGH_LIMIT : was.high);
+  }
+  for (u32 i = 0; i < next->count; i++)
+    if (not State_Slot (into, next->vars[i].sym))
+      State_Bind (into, next->vars[i].sym, Interval_Top ());
+}
+
+bool State_Same (Analysis_State *a, Analysis_State *b) {
+  if (a->count != b->count) return false;
+  for (u32 i = 0; i < a->count; i++) {
+    Interval *other = State_Slot (b, a->vars[i].sym);
+    if (not other) return false;
+    if (other->known != a->vars[i].value.known) return false;
+    if (other->known and (other->low  != a->vars[i].value.low or
+                          other->high != a->vars[i].value.high)) return false;
+  }
+  return true;
+}
+
+void Bind_Loop_Parameter (Node *scheme, Analysis_State *state) {
+  if (not scheme or scheme->kind != NK_BINARY_OP or scheme->binary.op != TK_IN)
+    return;
+  Node *name  = scheme->binary.left;
+  Node *range = scheme->binary.right;
+  if (not name or not name->symbol or not range) return;
+  if (range->kind == NK_RANGE) {
+    Interval low  = Eval_Interval (range->range.low,  state);
+    Interval high = Eval_Interval (range->range.high, state);
+    if (low.known and high.known) {
+      State_Bind (state, name->symbol, Interval_Of (low.low, high.high));
+      return;
+    }
+  }
+  State_Bind (state, name->symbol, Interval_Of_Type (name->type));
+}
+
+void Forget_Call_Actuals (Node *call, Analysis_State *state) {
+  if (not call) return;
+  Node *prefix = call->apply.prefix;
+  Symbol *callee = prefix ? prefix->symbol : NULL;
+  while (callee and callee->aliased) callee = callee->aliased;
+  bool modes_known = callee and callee->parameters;
+
+  for (u32 i = 0; i < call->apply.arguments.count; i++) {
+    Node *actual = Unwrap_Association (call->apply.arguments.items[i]);
+    if (not actual or actual->kind != NK_IDENTIFIER or not actual->symbol)
+      continue;
+    if (modes_known and i < callee->parameter_count and
+        callee->parameters[i].mode == MODE_IN)
+      continue;
+
+    Interval left_holding = Interval_Top ();
+    if (Summaries_Usable and modes_known and i < MAX_SUMMARY_OUTPUTS) {
+      Subprogram_Summary *summary = Find_Summary (callee);
+      if (summary and i < summary->output_count and
+          summary->outputs[i].known and
+          not Interval_Is_Empty (summary->outputs[i]))
+        left_holding = summary->outputs[i];
+    }
+    State_Bind (state, actual->symbol, left_holding);
+  }
+}
+
+void Forget_Calls_In (Node *node, Analysis_State *state) {
+  if (not node) return;
+  if (node->kind == NK_APPLY and node->apply.prefix and
+      node->apply.prefix->symbol and
+      Is_Subprogram (node->apply.prefix->symbol))
+    Forget_Call_Actuals (node, state);
+  for (const Syntax_Tree_Edge *edge = Syntax_Tree_Shape[node->kind];
+       edge->offset; edge++) {
+    Node_List children = Get_Children (node, edge);
+    for (u32 i = 0; i < children.count; i++)
+      Forget_Calls_In (children.items[i], state);
+  }
+}
+
+void Analyze_Statement (Node *node, Analysis_State *state) {
+  if (not node) return;
+  if (Analysis_Budget == 0) { Analysis_Exhausted = true; return; }
+  Analysis_Budget--;
+  if (state->unreachable) {
+    if (Analysis_Recording and node->kind != NK_PRAGMA and
+        node->kind != NK_LABEL and not state->reported_dead and
+        state->dead_from_branch) {
+      state->reported_dead = true;
+      if (state->dead_cause and state->dead_line)
+        Note_Pending_Warning (WARNING_UNREACHABLE_CODE, node->location,
+          "this statement can never execute: the %s at line %u always "
+          "transfers control away", state->dead_cause, state->dead_line);
+      else if (state->dead_cause)
+        Note_Pending_Warning (WARNING_UNREACHABLE_CODE, node->location,
+          "this statement can never execute: %s", state->dead_cause);
+      else
+        Note_Pending_Warning (WARNING_UNREACHABLE_CODE, node->location,
+          "this statement can never execute: nothing reaches it");
+    }
+    return;
+  }
+
+  if (node->kind == NK_RETURN or node->kind == NK_GOTO or
+      node->kind == NK_EXIT   or node->kind == NK_RAISE) {
+    Check_Expression (node, state);
+    Forget_Calls_In (node, state);
+    if (node->kind == NK_RETURN and node->return_stmt.expression and
+        Summary_Under_Construction) {
+      Summary_Under_Construction->returns_anything = true;
+      Summary_Under_Construction->result = Interval_Join (
+        Summary_Under_Construction->result,
+        Eval_Interval (node->return_stmt.expression, state));
+    }
+    if (node->kind == NK_RETURN or node->kind == NK_GOTO or
+        node->kind == NK_RAISE  or
+        (node->kind == NK_EXIT and not node->exit_stmt.condition)) {
+      state->unreachable = true;
+      state->dead_cause  = node->kind == NK_RETURN ? "return statement"
+                         : node->kind == NK_GOTO   ? "goto statement"
+                         : node->kind == NK_RAISE  ? "raise statement"
+                                                   : "exit statement";
+      state->dead_line        = node->location.line;
+      state->dead_from_branch = false;
+    }
+    return;
+  }
+
+  switch (node->kind) {
+    case NK_ASSIGNMENT: {
+      Check_Expression (node->assignment.value, state);
+      Check_Expression (node->assignment.target, state);
+      Forget_Calls_In (node->assignment.value, state);
+      Interval value  = Eval_Interval (node->assignment.value, state);
+      Node   *target  = node->assignment.target;
+      Type   *target_type = target ? target->type : NULL;
+      Interval allowed = Interval_Of_Type (target_type);
+
+      bool value_is_literal = node->assignment.value and
+                              node->assignment.value->kind == NK_INTEGER;
+      if (allowed.known and value.known and not Interval_Is_Empty (value) and
+          not value_is_literal) {
+        if (Interval_Disjoint (value, allowed))
+          Note_Finding (CHECK_KIND_RANGE, node->location, "always_fails",
+                        "the value assigned", value, allowed);
+        else if (Interval_Contains (allowed, value))
+          Note_Finding (CHECK_KIND_RANGE, node->location, "cannot_fail",
+                        "the value assigned", value, allowed);
+      }
+
+      if (target and target->kind == NK_IDENTIFIER and target->symbol and
+          Summary_Under_Construction and
+          Summary_Under_Construction->owner) {
+        Symbol *owner = Summary_Under_Construction->owner;
+        for (u32 pi = 0; pi < owner->parameter_count and
+                         pi < MAX_SUMMARY_OUTPUTS; pi++)
+          if (owner->parameters[pi].param_sym == target->symbol and
+              owner->parameters[pi].mode != MODE_IN) {
+            Subprogram_Summary *summary = Summary_Under_Construction;
+            if (pi >= summary->output_count) summary->output_count = pi + 1;
+            summary->outputs[pi] = Interval_Join (summary->outputs[pi], value);
+          }
+      }
+
+      if (target and target->kind == NK_IDENTIFIER and target->symbol) {
+        Interval held = value;
+        if (allowed.known and value.known) {
+          i128 low  = value.low  > allowed.low  ? value.low  : allowed.low;
+          i128 high = value.high < allowed.high ? value.high : allowed.high;
+          held = Interval_Of (low, high);
+        } else if (not value.known) {
+          held = allowed;
+        }
+        State_Bind (state, target->symbol, held);
+      }
+      return;
+    }
+
+    case NK_IF: {
+      Check_Expression (node->if_stmt.condition, state);
+      Analysis_State taken = *state, otherwise = *state;
+      Refine_By_Condition (node->if_stmt.condition, true,  &taken);
+      Refine_By_Condition (node->if_stmt.condition, false, &otherwise);
+      Analyze_Statement_List (&node->if_stmt.then_stmts, &taken);
+      for (u32 i = 0; i < node->if_stmt.elsif_parts.count; i++) {
+        Node *part = node->if_stmt.elsif_parts.items[i];
+        if (not part) continue;
+        Analysis_State branch = otherwise;
+        Check_Expression (part->if_stmt.condition, &branch);
+        Refine_By_Condition (part->if_stmt.condition, true,  &branch);
+        Refine_By_Condition (part->if_stmt.condition, false, &otherwise);
+        Analyze_Statement_List (&part->if_stmt.then_stmts, &branch);
+        State_Join (&taken, &branch);
+      }
+      Analyze_Statement_List (&node->if_stmt.else_stmts, &otherwise);
+      bool had_else = node->if_stmt.else_stmts.count > 0;
+      State_Join (&taken, &otherwise);
+      if (taken.unreachable and had_else) {
+        taken.dead_cause       = "every branch of the if statement above "
+                                 "transfers control away";
+        taken.dead_line        = 0;
+        taken.dead_from_branch = true;
+      } else if (not had_else) {
+        taken.unreachable = false;
+      }
+      *state = taken;
+      return;
+    }
+
+    case NK_CASE: {
+      Check_Expression (node->case_stmt.expression, state);
+      Analysis_State joined = *state;
+      bool first = true;
+      for (u32 i = 0; i < node->case_stmt.alternatives.count; i++) {
+        Node *alternative = node->case_stmt.alternatives.items[i];
+        if (not alternative) continue;
+        Analysis_State branch = *state;
+        Analyze_Statement (alternative->association.expression, &branch);
+        if (first) { joined = branch; first = false; }
+        else       State_Join (&joined, &branch);
+      }
+      if (not first) *state = joined;
+      return;
+    }
+
+    case NK_LOOP: {
+      Check_Expression (node->loop_stmt.iteration_scheme, state);
+
+      Analysis_State entry = *state;
+      bool saved_recording = Analysis_Recording;
+      Analysis_Recording = false;
+      for (int pass = 0; pass < 4 and Analysis_Budget; pass++) {
+        Analysis_State body = entry;
+        Bind_Loop_Parameter (node->loop_stmt.iteration_scheme, &body);
+        Refine_By_Condition (node->loop_stmt.iteration_scheme, true, &body);
+        Analyze_Statement_List (&node->loop_stmt.statements, &body);
+        Analysis_State widened = entry;
+        State_Widen (&widened, &body);
+        if (State_Same (&widened, &entry)) break;
+        entry = widened;
+      }
+      Analysis_Recording = saved_recording;
+
+      Analysis_State body = entry;
+      Bind_Loop_Parameter (node->loop_stmt.iteration_scheme, &body);
+      Refine_By_Condition (node->loop_stmt.iteration_scheme, true, &body);
+      Analyze_Statement_List (&node->loop_stmt.statements, &body);
+
+      *state = entry;
+      state->unreachable = false;
+      return;
+    }
+
+    case NK_BLOCK:
+      Analyze_Statement_List (&node->block_stmt.statements, state);
+      return;
+
+    default:
+      Check_Expression (node, state);
+      Forget_Calls_In (node, state);
+      return;
+  }
+}
+
+void Analyze_Statement_List (Node_List *statements, Analysis_State *state) {
+  for (u32 i = 0; i < statements->count; i++)
+    Analyze_Statement (statements->items[i], state);
+}
+
+void Analyze_Bodies (Node *node) {
+  if (not node) return;
+
+  Node_List *statements = NULL;
+  if (Node_In_Any_Class (node, NODE_CLASS_SUBPROGRAM_BODY) and
+      not node->subprogram_body.is_separate)
+    statements = &node->subprogram_body.statements;
+  else if (node->kind == NK_PACKAGE_BODY)
+    statements = &node->package_body.statements;
+  else if (node->kind == NK_TASK_BODY)
+    statements = &node->task_body.statements;
+
+  if (statements) {
+    Symbol *saved_owner = Analysis_Current_Owner;
+    Subprogram_Summary *saved_summary = Summary_Under_Construction;
+    Analysis_Current_Owner = node->symbol;
+    Summary_Under_Construction =
+      node->symbol and Is_Subprogram (node->symbol)
+        ? Summary_For (node->symbol) : NULL;
+    Analysis_State state = { .count = 0 };
+    Analyze_Statement_List (statements, &state);
+    Analysis_Current_Owner     = saved_owner;
+    Summary_Under_Construction = saved_summary;
+  }
+
+  for (const Syntax_Tree_Edge *edge = Syntax_Tree_Shape[node->kind];
+       edge->offset; edge++) {
+    Node_List children = Get_Children (node, edge);
+    for (u32 i = 0; i < children.count; i++)
+      Analyze_Bodies (children.items[i]);
+  }
+}
+
+const char *Spell_Interval (Interval i, char *buffer, size_t size) {
+  if (not i.known) { snprintf (buffer, size, "any value"); return buffer; }
+  if (i.low == i.high) {
+    snprintf (buffer, size, "%s", I128_Decimal (i.low));
+    return buffer;
+  }
+  char low[Decimal_Text_Max];
+  snprintf (low, sizeof low, "%s", I128_Decimal (i.low));
+  snprintf (buffer, size, "%s .. %s", low, I128_Decimal (i.high));
+  return buffer;
+}
+
+void Report_Analysis_Warnings (const char *input_path) {
+  for (u32 i = 0; i < Analysis_Finding_Count; i++) {
+    Analysis_Finding *finding = &Analysis_Findings[i];
+    if (strcmp (finding->verdict, "always_fails") != 0) continue;
+    if (not finding->location.filename or not input_path or
+        strcmp (finding->location.filename, input_path) != 0) continue;
+    char witness[64], allowed[64];
+    Spell_Interval (finding->witness, witness, sizeof witness);
+    if (finding->allowed.known) {
+      Spell_Interval (finding->allowed, allowed, sizeof allowed);
+      Note_Pending_Warning (WARNING_CHECK_ALWAYS_FAILS, finding->location,
+        "%s is %s, outside the permitted %s, so this %s always fails",
+        finding->detail, witness, allowed, Spell_Check_Kind (finding->kind));
+    } else {
+      Note_Pending_Warning (WARNING_CHECK_ALWAYS_FAILS, finding->location,
+        "%s, so this %s always fails",
+        finding->detail, Spell_Check_Kind (finding->kind));
+    }
+  }
+}
+
+void Tally_Line (u16 *table, u32 line) {
+  if (line and line < MAX_TALLY_LINES and table[line] < 0xFFFF) table[line]++;
+}
+
+void Tally_Check_Constructs (Node *node) {
+  if (not node) return;
+  u32 line = node->location.line;
+
+  if (node->kind == NK_APPLY and node->apply.prefix and
+      node->apply.prefix->type and
+      node->apply.prefix->type->kind == TYPE_ARRAY)
+    Tally_Line (Line_Index_Sites, line);
+
+  if (node->kind == NK_BINARY_OP and
+      (node->binary.op == TK_SLASH or node->binary.op == TK_MOD or
+       node->binary.op == TK_REM))
+    Tally_Line (Line_Division_Sites, line);
+
+  if (node->kind == NK_ASSIGNMENT)
+    Tally_Line (Line_Assignment_Sites, line);
+
+  for (const Syntax_Tree_Edge *edge = Syntax_Tree_Shape[node->kind];
+       edge->offset; edge++) {
+    Node_List children = Get_Children (node, edge);
+    for (u32 i = 0; i < children.count; i++)
+      Tally_Check_Constructs (children.items[i]);
+  }
+}
+
+bool Line_Bears_One_Check (Check_Kind kind, u32 line) {
+  if (not line or line >= MAX_TALLY_LINES) return false;
+  switch (kind) {
+    case CHECK_KIND_INDEX:    return Line_Index_Sites[line]      == 1;
+    case CHECK_KIND_DIVISION: return Line_Division_Sites[line]   == 1;
+    case CHECK_KIND_RANGE:    return Line_Assignment_Sites[line] == 1;
+    default:                  return false;
+  }
+}
+
+bool Summaries_Changed (Subprogram_Summary *before, u32 count) {
+  if (count != Summary_Count) return true;
+  for (u32 i = 0; i < count; i++) {
+    if (before[i].owner != Summaries[i].owner) return true;
+    if (before[i].result.known != Summaries[i].result.known) return true;
+    if (before[i].result.known and
+        (before[i].result.low  != Summaries[i].result.low or
+         before[i].result.high != Summaries[i].result.high)) return true;
+  }
+  return false;
+}
+
+void Analyze_Units (Node **units, int unit_count) {
+  Analysis_Finding_Count = 0;
+  memset (Line_Index_Sites,      0, sizeof Line_Index_Sites);
+  memset (Line_Division_Sites,   0, sizeof Line_Division_Sites);
+  memset (Line_Assignment_Sites, 0, sizeof Line_Assignment_Sites);
+  for (int i = 0; i < unit_count; i++) Tally_Check_Constructs (units[i]);
+  Analysis_Budget        = ANALYSIS_STATEMENT_BUDGET;
+  Analysis_Exhausted     = false;
+  static Subprogram_Summary previous[MAX_SUMMARIES];
+  bool saved_recording = Analysis_Recording;
+  Analysis_Recording = false;
+  Summaries_Usable   = false;
+  Summary_Count      = 0;
+
+  for (int pass = 0; pass < 3; pass++) {
+    u32 before_count = Summary_Count;
+    memcpy (previous, Summaries, before_count * sizeof *previous);
+    Summary_Count = 0;
+    Analysis_Budget = ANALYSIS_STATEMENT_BUDGET;
+    for (int i = 0; i < unit_count; i++) {
+      if (not units[i] or units[i]->compilation_unit.grafted_into_generic)
+        continue;
+      Analyze_Bodies (units[i]);
+    }
+    for (int i = 0; i < Loaded_Body_Count; i++)
+      Analyze_Bodies (Loaded_Package_Bodies[i]);
+    Summaries_Usable = true;
+    if (pass > 0 and not Summaries_Changed (previous, before_count)) break;
+  }
+
+  Analysis_Recording = saved_recording;
+  Analysis_Budget    = ANALYSIS_STATEMENT_BUDGET;
+  Summary_Under_Construction = NULL;
+  for (int i = 0; i < unit_count; i++) {
+    if (not units[i] or units[i]->compilation_unit.grafted_into_generic) continue;
+    Analyze_Bodies (units[i]);
+  }
+}
+
+void Write_Json_Text (FILE *out, const char *text, u32 length) {
+  for (u32 i = 0; i < length; i++) {
+    unsigned char ch = (unsigned char) text[i];
+    if (ch == '"' or ch == '\\')   fprintf (out, "\\%c", ch);
+    else if (ch == '\n')           fputs ("\\n", out);
+    else if (ch == '\t')           fputs ("\\t", out);
+    else if (ch == '\r')           fputs ("\\r", out);
+    else if (ch < 0x20)            fprintf (out, "\\u%04x", ch);
+    else                           fputc ((int) ch, out);
+  }
+}
+
+void Write_Json_String (FILE *out, const char *text) {
+  fputc ('"', out);
+  if (text) Write_Json_Text (out, text, (u32) strlen (text));
+  fputc ('"', out);
+}
+
+bool Analysis_Site_Is_In_Unit (Analysis_Check_Site *site,
+                               const char *input_path) {
+  return site->location.filename and input_path and
+         strcmp (site->location.filename, input_path) == 0;
+}
+
+const char *Spell_Check_Verdict (Analysis_Check_Site *site) {
+  if (site->suppressed) return "suppressed";
+  if (site->emitted)    return "checked";
+  if (site->verdict)    return site->verdict;
+  return "unknown";
+}
+
+bool Analysis_Proved_Safe_Here (Check_Kind kind, Location location) {
+  if (not Elide_Provable_Checks or not location.line) return false;
+
+  u32  matches = 0;
+  bool all_safe = true;
+  for (u32 i = 0; i < Analysis_Finding_Count; i++) {
+    Analysis_Finding *finding = &Analysis_Findings[i];
+    if (finding->kind != kind) continue;
+    if (finding->location.line != location.line) continue;
+    if (not finding->location.filename or not location.filename or
+        strcmp (finding->location.filename, location.filename) != 0) continue;
+    matches++;
+    if (strcmp (finding->verdict, "cannot_fail") != 0) all_safe = false;
+  }
+  if (matches != 1 or not all_safe) return false;
+  if (not Line_Bears_One_Check (kind, location.line)) return false;
+
+  for (u32 i = 0; i < Provably_Safe_Use_Count; i++)
+    if (Provably_Safe_Uses[i] == location.line) return false;
+  if (Provably_Safe_Use_Count < MAX_ANALYSIS_CHECK_SITES)
+    Provably_Safe_Uses[Provably_Safe_Use_Count++] = location.line;
+  return true;
+}
+
+void ALI_Write_Summaries (FILE *out) {
+  for (u32 i = 0; i < Summary_Count; i++) {
+    Subprogram_Summary *summary = &Summaries[i];
+    if (not summary->owner or not summary->returns_anything) continue;
+    if (not summary->result.known or Interval_Is_Empty (summary->result))
+      continue;
+    if (summary->result.low  < (i128) INT64_MIN or
+        summary->result.high > (i128) INT64_MAX) continue;
+
+    Interval declared = Interval_Of_Type (summary->owner->return_type);
+    if (declared.known and
+        summary->result.low  <= declared.low and
+        summary->result.high >= declared.high) continue;
+
+    Slice mangled = Symbol_Mangle_Name (summary->owner);
+    if (not mangled.length) continue;
+    fprintf (out, "IV %.*s %lld %lld\n", (int) mangled.length, mangled.data,
+             (long long) summary->result.low,
+             (long long) summary->result.high);
+  }
+}
+
+void Join_Findings_To_Sites (void) {
+  for (u32 i = 0; i < Analysis_Check_Site_Count; i++) {
+    Analysis_Check_Site *site = &Analysis_Check_Sites[i];
+    for (u32 j = 0; j < Analysis_Finding_Count; j++) {
+      Analysis_Finding *finding = &Analysis_Findings[j];
+      if (finding->kind != site->kind) continue;
+      if (finding->location.line != site->location.line) continue;
+      if (not finding->location.filename or not site->location.filename or
+          strcmp (finding->location.filename, site->location.filename) != 0)
+        continue;
+      if (site->analysis and strcmp (site->analysis, "always_fails") == 0)
+        continue;
+      site->analysis = finding->verdict;
+    }
+  }
+}
+
+void Write_Analysis_Report (FILE *out, const char *input_path) {
+  u32 by_kind[CHECK_KIND_STORAGE + 1] = {0};
+  u32 suppressed_total  = 0;
+  u32 checked_total     = 0;
+  u32 cannot_fail_total = 0;
+  u32 unchecked_total   = 0;
+  u32 not_applicable    = 0;
+  u32 unknown_total     = 0;
+  u32 removable         = 0;
+  u32 reported          = 0;
+
+  for (u32 i = 0; i < Analysis_Check_Site_Count; i++) {
+    Analysis_Check_Site *site = &Analysis_Check_Sites[i];
+    if (not Analysis_Site_Is_In_Unit (site, input_path)) continue;
+    if (site->kind <= CHECK_KIND_STORAGE) by_kind[site->kind]++;
+    const char *verdict = Spell_Check_Verdict (site);
+    if      (strcmp (verdict, "suppressed")     == 0) suppressed_total++;
+    else if (strcmp (verdict, "checked")        == 0) checked_total++;
+    else if (strcmp (verdict, "cannot_fail")    == 0) cannot_fail_total++;
+    else if (strcmp (verdict, "not_applicable") == 0) not_applicable++;
+    else if (strcmp (verdict, "unchecked")      == 0) unchecked_total++;
+    else                                              unknown_total++;
+    if (site->emitted and site->analysis and
+        strcmp (site->analysis, "cannot_fail") == 0) removable++;
+    reported++;
+  }
+
+  fputs ("{\n  \"version\": 1,\n  \"source\": ", out);
+  Write_Json_String (out, input_path);
+  fputs (",\n  \"sites\": [", out);
+
+  bool wrote_site = false;
+  for (u32 i = 0; i < Analysis_Check_Site_Count; i++) {
+    Analysis_Check_Site *site = &Analysis_Check_Sites[i];
+    if (not Analysis_Site_Is_In_Unit (site, input_path)) continue;
+    fputs (wrote_site ? ",\n    {" : "\n    {", out);
+    wrote_site = true;
+    fputs (" \"kind\": ", out);
+    Write_Json_String (out, Spell_Check_Kind (site->kind));
+    fputs (", \"file\": ", out);
+    Write_Json_String (out, site->location.filename);
+    fprintf (out, ", \"line\": %u, \"column\": %u",
+             site->location.line, site->location.column);
+    fputs (", \"verdict\": ", out);
+    Write_Json_String (out, Spell_Check_Verdict (site));
+    if (site->reason and not site->suppressed and not site->emitted) {
+      fputs (", \"reason\": ", out);
+      Write_Json_String (out, site->reason);
+    }
+    if (site->analysis) {
+      fputs (", \"analysis\": ", out);
+      Write_Json_String (out, site->analysis);
+    }
+    if (site->owner and site->owner->name.length) {
+      fputs (", \"subprogram\": \"", out);
+      Write_Json_Text (out, site->owner->name.data, site->owner->name.length);
+      fputc ('"', out);
+    }
+    fputs (" }", out);
+  }
+
+  fputs (wrote_site ? "\n  ],\n" : "],\n", out);
+
+  fputs ("  \"findings\": [", out);
+  bool wrote_finding = false;
+  u32  must_fail = 0;
+  for (u32 i = 0; i < Analysis_Finding_Count; i++) {
+    Analysis_Finding *finding = &Analysis_Findings[i];
+    if (not finding->location.filename or not input_path or
+        strcmp (finding->location.filename, input_path) != 0) continue;
+    if (strcmp (finding->verdict, "always_fails") == 0) must_fail++;
+    fputs (wrote_finding ? ",\n    {" : "\n    {", out);
+    wrote_finding = true;
+    fputs (" \"kind\": ", out);
+    Write_Json_String (out, Spell_Check_Kind (finding->kind));
+    fputs (", \"verdict\": ", out);
+    Write_Json_String (out, finding->verdict);
+    fprintf (out, ", \"line\": %u, \"column\": %u",
+             finding->location.line, finding->location.column);
+    fputs (", \"detail\": ", out);
+    Write_Json_String (out, finding->detail);
+    char text[64];
+    fputs (", \"value\": ", out);
+    Write_Json_String (out, Spell_Interval (finding->witness, text, sizeof text));
+    if (finding->allowed.known) {
+      fputs (", \"allowed\": ", out);
+      Write_Json_String (out, Spell_Interval (finding->allowed, text,
+                                              sizeof text));
+    }
+    if (finding->owner and finding->owner->name.length) {
+      fputs (", \"subprogram\": \"", out);
+      Write_Json_Text (out, finding->owner->name.data,
+                       finding->owner->name.length);
+      fputc ('"', out);
+    }
+    fputs (" }", out);
+  }
+  fputs (wrote_finding ? "\n  ],\n" : "],\n", out);
+
+  fprintf (out, "  \"summary\": {\n    \"sites\": %u,\n    \"checked\": %u,"
+                "\n    \"cannot_fail\": %u,\n    \"not_applicable\": %u,"
+                "\n    \"unchecked\": %u,\n    \"unknown\": %u,"
+                "\n    \"suppressed\": %u,\n    \"must_fail\": %u,"
+                "\n    \"checked_but_provably_safe\": %u",
+           reported, checked_total, cannot_fail_total, not_applicable,
+           unchecked_total, unknown_total, suppressed_total, must_fail,
+           removable);
+  if (Analysis_Exhausted)
+    fputs (",\n    \"analysis_truncated\": true", out);
+  if (Analysis_Sites_Overflowed)
+    fprintf (out, ",\n    \"truncated\": true, \"limit\": %d",
+             MAX_ANALYSIS_CHECK_SITES);
+  fputs (",\n    \"by_kind\": {", out);
+  bool first = true;
+  for (u32 k = 0; k <= CHECK_KIND_STORAGE; k++) {
+    if (not by_kind[k]) continue;
+    fprintf (out, "%s\n      \"%s\": %u", first ? "" : ",",
+             Spell_Check_Kind ((Check_Kind) k), by_kind[k]);
+    first = false;
+  }
+  fputs (first ? "}\n  }\n}\n" : "\n    }\n  }\n}\n", out);
+}
+
