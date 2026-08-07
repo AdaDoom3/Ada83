@@ -843,7 +843,7 @@ run_extension_tests(){
         [[ -n $linked ]] && is_support[$linked]=1
     done
 
-    heading "EXTENSIONS" "the _ada_ symbol prefix and Command_Line"
+    heading "EXTENSIONS" "the _ada_ symbol prefix, Command_Line and --analyze"
 
     local name dir exe symbol symbol_not symbols args detail analyze
     local -a fragments argv
@@ -2032,7 +2032,8 @@ Commands:
 
 A full run (no selector, or \`all') ends with the extension tests: the Ada
 programs under extensions/, which cover what ACATS cannot see -- the _ada_
-symbol prefix on library subprograms, and the Command_Line vendor package.
+symbol prefix on library subprograms, the Command_Line vendor package, and
+what --analyze reports.  Each is named feature_NN_what_it_checks.
 They are counted separately, as X= and XF= in the run summary.
 
 Selectors:
