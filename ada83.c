@@ -23506,9 +23506,10 @@ void Apply_Pragma_External_Name (Symbol *sym, Node_List *args) {
   if (Fold_Static_String (supplied, &folded, 0))
     sym->external_name = folded;
   else
-    Note_Pending_Warning (WARNING_PRAGMA_IGNORED, supplied->location,
-      "the external name must be known at compile time, so this argument "
-      "has no effect and '%.*s' keeps its Ada name",
+    Reject_At (supplied->location,
+      "the external name of '%.*s' must be known at compile time: a string "
+      "literal, a constant declared from one, or those joined with \"&\" or "
+      "narrowed by a slice",
       (int) sym->name.length, sym->name.data);
 }
 

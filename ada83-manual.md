@@ -15564,18 +15564,19 @@ the same profile in different packages carry the same suffix.
 
 ```
 pragma IMPORT (CONVENTION => convention, ENTITY => entity
-               [, EXTERNAL_NAME => string_literal]);
+               [, EXTERNAL_NAME => static_string_expression]
+               [, ENABLED => static_boolean_expression]);
 ```
 
 The entity must be a subprogram. Its body is supplied outside this program
 library: no body is required for it in this library, and a call to it is
 compiled as a call to the subprogram named by `EXTERNAL_NAME`.
 
-`EXTERNAL_NAME` must be a string literal. Its value is the name presented to
-the linker. If the argument is omitted, the link name stated above is used. If
-the argument is present and is not a string literal, the argument has no
-effect, the link name stated above is used, and a `pragma-ignored` warning is
-issued.
+`EXTERNAL_NAME` is the name presented to the linker. If the argument is
+omitted, the link name stated above is used. It need not be a string literal:
+any expression this implementation can reduce to a string serves, and one it
+cannot reduce is illegal. The expressions accepted are described below, with
+what a slice of one is for.
 
 Pragma INTERFACE of [13.9](#139-interface-to-other-languages) is not provided
 by this implementation. Pragma IMPORT states what pragma INTERFACE states, and
@@ -15589,7 +15590,10 @@ depend on a value computed at run time. The short-circuit control forms `and
 then` and `or else` are not operators
 (see [4.5.1](#451-logical-operators-and-short-circuit-control-forms)), so an
 expression using one is not static and is not accepted here; write `and` or
-`or`. Giving `ENABLED` more than once in a pragma is illegal.
+`or`. Giving `ENABLED` more than once in a pragma is not illegal: the first
+decides, each later one has no effect, and a `pragma-ignored` warning names
+it. This is the rule F.3 states for a repeated pragma argument, and `ENABLED`
+is not an exception to it.
 
 If the condition is omitted or true, the pragma has its usual effect. If it is
 false the entity is not imported: no external name is associated with it, and
@@ -15705,7 +15709,9 @@ exported subprogram has a body, which exists whatever the target.
 The external name of either pragma need not be a string literal. It may be any
 expression the compiler can reduce to a string: a literal, a constant declared
 from one, two such joined with `&`, or a slice of one whose bounds are static.
-An expression that cannot be reduced is illegal, rather than silently ignored.
+An expression that cannot be reduced is illegal, rather than silently ignored,
+since an entity that reaches the linker under a name other than the one asked
+for is a fault no later stage can catch.
 
 A slice is what lets one body spell a name that carries a suffix on some
 targets and not others, since Ada 83 has no conditional expression to choose
@@ -15730,18 +15736,20 @@ name is imported.
 
 ```
 pragma EXPORT (CONVENTION => convention, ENTITY => entity
-               [, EXTERNAL_NAME => string_literal]);
+               [, EXTERNAL_NAME => static_string_expression]);
 ```
 
 Marks the entity as exported and sets its convention. A body is required for
 the entity.
 
-`EXTERNAL_NAME` must be a string literal. Its value is the name under which the
-entity is presented to the linker, and is the name by which a program written
-in another language refers to it. If the argument is omitted, the link name
-stated above is used. If the argument is present and is not a string literal,
-the argument has no effect, the link name stated above is used, and a
-`pragma-ignored` warning is issued.
+`EXTERNAL_NAME` is the name under which the entity is presented to the linker,
+and is the name by which a program written in another language refers to it.
+If the argument is omitted, the link name stated above is used. The
+expressions accepted are those pragma IMPORT accepts, and one that cannot be
+reduced to a string is illegal.
+
+Pragma EXPORT has no `ENABLED` argument, and giving it one is illegal: an
+exported subprogram has a body, and the body exists whatever the target.
 
 #### Pragma CONVENTION
 
@@ -15825,18 +15833,18 @@ unit alone, without the units reachable from it.
 #### Pragma LINKER_OPTIONS
 
 ```
-pragma LINKER_OPTIONS (option {, option} [, ENABLED => condition]);
+pragma LINKER_OPTIONS (word {, word} [, ENABLED => condition]);
 ```
 
 Allowed wherever a pragma may appear in a declarative part.
 
-Each option is any expression reducible to a string at compile time, in the
-same sense as an external name, and reaches the linker as one argument. They
-are passed after the options this implementation supplies for itself, which
-they therefore cannot displace.
+Each word is any expression reducible to a string at compile time, in the same
+sense as an external name, and reaches the linker as one argument of its own.
+They are passed after the options this implementation supplies for itself,
+which they therefore cannot displace.
 
-One pragma is one option however many words it names, so an option that means
-nothing without the word after it names both:
+One pragma names one option, however many words that option takes, so an
+option that means nothing without the word after it names both:
 
 ```ada
 pragma LINKER_OPTIONS ("-framework", "CoreFoundation");
@@ -15911,8 +15919,8 @@ yet implemented: `CONTROLLED`, `INTERFACE`, `LIST`, `MEMORY_SIZE`, `OPTIMIZE`,
 
 [2.8](#28-pragmas) admits a named association only where the argument
 identifier is defined. The argument identifiers defined by this implementation
-are `CONVENTION`, `ENTITY` and `EXTERNAL_NAME`, on the pragmas shown in
-[F.1](#f1-implementation-dependent-pragmas). No other pragma of this
+are `CONVENTION`, `ENTITY`, `EXTERNAL_NAME` and `ENABLED`, on the pragmas shown
+in [F.1](#f1-implementation-dependent-pragmas). No other pragma of this
 implementation defines an argument identifier. No argument identifier is
 defined here for a pragma of Annex B beyond those Annex B defines.
 
@@ -15922,7 +15930,19 @@ once, the first association is used, the later ones have no effect, and a
 `pragma-ignored` warning is issued for each.
 
 In accordance with 2.8, a pragma whose arguments do not correspond to its form
-has no effect and is not illegal. Two warning classes report such a pragma:
+has no effect and is not illegal: the argument, or the pragma, is ignored and a
+warning reports it.
+
+An argument that does correspond, and that the pragma cannot use, is a
+different case. `ENABLED` decides whether a declaration reaches the linker, and
+`EXTERNAL_NAME` decides the name it reaches the linker under; neither has a
+default this implementation could substitute without changing what the program
+links against. An argument of either that cannot be reduced to the value the
+pragma requires is therefore illegal, as is one given where the pragma does not
+take it. What is illegal in each case is the pragma itself, and never the text
+around it.
+
+Three warning classes concern pragmas:
 
 | Class | Reported when |
 |---|---|
@@ -15933,7 +15953,7 @@ has no effect and is not illegal. Two warning classes report such a pragma:
 All three are enabled by default and are turned off with
 `-Wno-unrecognized-pragma`, `-Wno-pragma-ignored` and
 `-Wno-unavailable-import`. The identifiers this
-implementation recognizes are the fourteen of Annex B and the nine of
+implementation recognizes are the fourteen of Annex B and the ten of
 [F.1](#f1-implementation-dependent-pragmas).
 
 No pragma defined by this implementation determines the legality of any text
@@ -15978,8 +15998,8 @@ whatever the target, so code written for a target other than the one being
 compiled for cannot fall out of step unnoticed. Whether the arm that cannot be
 reached is also generated is not defined; it is removed when optimization is
 enabled. This mechanism selects between statements, not between declarations;
-for a declaration that must be absent on some targets, see the `When` argument
-of pragma IMPORT in F.1.
+for a declaration that must be absent on some targets, see the `ENABLED`
+argument of pragma IMPORT in F.1.
 
 These declarations describe the target, not the implementation. SYSTEM_NAME
 continues to name the implementation and is always ADA83.
