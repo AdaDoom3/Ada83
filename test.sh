@@ -122,7 +122,7 @@ unpack(){
     fi
 }
 
-for suite in acats extensions; do
+for suite in acats implementation; do
     [[ -d $suite ]] && continue
     [[ -f tests.zip ]] || die "no $suite/ directory and no tests.zip"
     pulse "unpacking $suite"
@@ -679,7 +679,8 @@ run_selector(){
     rm -f "$tmpfile" "${tmpfile}.sorted" "$listfile" "$PROGRESS_FILE" "$runner_status"
 }
 
-# The extension tests are Ada programs under extensions/, covering what ACATS
+# The implementation tests are Ada programs under implementation/, covering
+# what ACATS
 # cannot see: the _ada_ symbol prefix on library subprograms, and Command_Line.
 # Each program self-reports PASSED or FAILED; comment headers steer the run:
 #
@@ -691,25 +692,25 @@ run_selector(){
 # A file some test's -- LINK: header names is a support unit, not a test.
 ext_header(){ sed -n "s/^-- $2: //p" "$1" | tail -1; }
 
-run_extension_tests(){
+run_implementation_tests(){
     EXT_PASS=0 EXT_FAIL=0 EXT_SKIP=0
-    [[ -d extensions ]] || { printf '  %sno extensions/ directory%s\n' "$DIM" "$OFF"; return 0; }
+    [[ -d implementation ]] || { printf '  %sno implementation/ directory%s\n' "$DIM" "$OFF"; return 0; }
 
     local nm_tool; nm_tool=$(command -v nm || command -v llvm-nm || true)
     local work; work=$(mktemp -d "${TMPDIR:-/tmp}/ada83-ext.XXXXXX")
 
     local -A is_support=()
     local source linked
-    for source in extensions/*.ada; do
+    for source in implementation/*.ada; do
         linked=$(ext_header "$source" LINK)
         [[ -n $linked ]] && is_support[$linked]=1
     done
 
-    heading "EXTENSIONS" "the _ada_ symbol prefix, Command_Line and --analyze"
+    heading "IMPLEMENTATION" "the _ada_ symbol prefix, Command_Line and --analyze"
 
     local name dir exe symbol symbol_not symbols args detail analyze
     local -a fragments
-    for source in extensions/*.ada; do
+    for source in implementation/*.ada; do
         name=$(basename "$source" .ada)
         [[ -n ${is_support[$name.ada]:-} ]] && continue
 
@@ -734,13 +735,13 @@ run_extension_tests(){
             support=$(ext_header "$source" LINK)
             if [[ -n $support ]]; then
                 ( cd "$dir" && timed "$COMPILE_TIMEOUT" "$ADA83" --ir \
-                    "$ROOT/extensions/$support" -o "$dir/${support%.ada}.ll" ) \
+                    "$ROOT/implementation/$support" -o "$dir/${support%.ada}.ll" ) \
                     >"$dir/support.log" 2>&1 ||
                     detail="support unit $support: $(tail -2 "$dir/support.log" | tr '\n' ' ')"
             fi
             [[ -z $detail ]] &&
               ( cd "$dir" && timed "$COMPILE_TIMEOUT" "$ADA83" --analyze $analyze \
-                 -I "$ROOT/extensions" "$ROOT/$source" ) \
+                 -I "$ROOT/implementation" "$ROOT/$source" ) \
                  >"$dir/report.json" 2>"$dir/warn.log"
 
             want=$(ext_header "$source" WARN)
@@ -778,7 +779,7 @@ run_extension_tests(){
 
         linked=$(ext_header "$source" LINK)
         if [[ -n $linked ]]; then
-            if timed "$COMPILE_TIMEOUT" "$ADA83" --ir "extensions/$linked" \
+            if timed "$COMPILE_TIMEOUT" "$ADA83" --ir "implementation/$linked" \
                  -o "$dir/linked.ll" >"$dir/compile.log" 2>&1; then
                 fragments+=("$dir/linked.ll")
             else
@@ -845,13 +846,14 @@ run_extension_tests(){
 
     [[ ${KEEP_WORK:-0} == 1 ]] || rm -rf "$work"
 
-    printf '\n  %s%d extension tests: %d passed, %d failed, %d skipped%s\n' \
+    printf '\n  %s%d implementation tests: %d passed, %d failed, %d skipped%s\n' \
         "$BOLD" $((EXT_PASS + EXT_FAIL + EXT_SKIP)) "$EXT_PASS" "$EXT_FAIL" \
         "$EXT_SKIP" "$OFF"
 
-    # The summary is what CI gates on; XF is the extension failure count.
+    # The summary is what CI gates on: I is the implementation-test tally
+    # and IF its failures.
     [[ -n ${RESULTS_DIR:-} && -f $RESULTS_DIR/test_summary.txt ]] &&
-        printf ' X=%d/%d XF=%d XS=%d\n' \
+        printf ' I=%d/%d IF=%d IS=%d\n' \
             "$EXT_PASS" $((EXT_PASS + EXT_FAIL + EXT_SKIP)) "$EXT_FAIL" "$EXT_SKIP" \
             >> "$RESULTS_DIR/test_summary.txt"
     return 0
@@ -868,14 +870,14 @@ Commands:
   check [SELECTOR]   run, then diff against the baseline; exit 1 on regression
   bless [SELECTOR]   run, then write the results as the new baseline
   list [SELECTOR]    list the tests a selector expands to
-  extensions         run only the extension tests
+  implementation     run only the implementation tests (alias: extensions)
   help               display this help and exit
 
 A full run (no selector, or `all`) ends with the extension tests: the Ada
-programs under extensions/, which cover what ACATS cannot see -- the _ada_
+programs under implementation/, which cover what ACATS cannot see -- the _ada_
 symbol prefix on library subprograms, the Command_Line vendor package, and
 what --analyze reports.  Each is named feature_NN_what_it_checks.
-They are counted separately, as X= and XF= in the run summary.
+They are counted separately, as I= and IF= in the run summary.
 
 Selectors:
   all                every test (default)
@@ -909,14 +911,14 @@ main(){
     local cmd=${1:-run}; shift || true
     case $cmd in
         run|g)   run_selector "${1:-all}" "ACATS RUN — ${1:-all}"
-                 [[ ${1:-all} == all ]] && run_extension_tests ;;
+                 [[ ${1:-all} == all ]] && run_implementation_tests ;;
         q)       run_selector "${1:-c32}" "ACATS RUN — ${1:-c32}" ;;
         check)   run_selector "${1:-all}" "ACATS CHECK — ${1:-all}"
-                 [[ ${1:-all} == all ]] && run_extension_tests
+                 [[ ${1:-all} == all ]] && run_implementation_tests
                  compare_to_baseline
                  ((REGRESSIONS==0 && ${EXT_FAIL:-0}==0)) || exit 1 ;;
-        extensions|x)
-                 run_extension_tests
+        implementation|extensions|x)
+                 run_implementation_tests
                  ((${EXT_FAIL:-0}==0)) || exit 1 ;;
         bless)   run_selector "${1:-all}" "ACATS BLESS — ${1:-all}"
                  write_baseline ;;

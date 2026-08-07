@@ -38,9 +38,9 @@
 /zig.zip
 
 # The conformance suite, unpacked from tests.zip by test.sh and test-bench.sh,
-# and the extension tests, unpacked from the same archive by test-extensions.sh.
+# and the implementation tests, unpacked from the same archive by test.sh.
 /acats/
-/extensions/
+/implementation/
 
 # What a test run produces: one directory per run under each of these, plus
 # the compiled report package.
