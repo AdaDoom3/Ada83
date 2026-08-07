@@ -60631,6 +60631,10 @@ typedef struct {
   Analysis_Binding vars[MAX_ANALYSIS_VARS];
   u32              count;
   bool             unreachable;
+  bool             reported_dead;
+  const char      *dead_cause;   /* the transfer that ended the path */
+  u32              dead_line;
+  bool             dead_from_branch;
 } Analysis_State;
 
 Interval Interval_Top (void) { return (Interval){ 0, 0, false }; }
@@ -60764,6 +60768,15 @@ u32     Analysis_Finding_Count = 0;
 Symbol *Analysis_Current_Owner = NULL;
 
 bool Analysis_Recording = true;
+
+/* A loop is read repeatedly until its state settles, so nesting multiplies
+   the work: the capacity tests nest loops dozens deep, where the passes
+   alone would outlast the compilation.  The walk gets a fixed budget of
+   statements and stops when it runs out, which costs findings and never
+   correctness -- a check that goes unexamined is simply not reported. */
+#define ANALYSIS_STATEMENT_BUDGET 200000
+u32  Analysis_Budget    = ANALYSIS_STATEMENT_BUDGET;
+bool Analysis_Exhausted = false;
 
 void Note_Finding (Check_Kind kind, Location location, const char *verdict,
                    const char *detail, Interval witness, Interval allowed) {
@@ -61095,17 +61108,45 @@ void Forget_Calls_In (Node *node, Analysis_State *state) {
 }
 
 void Analyze_Statement (Node *node, Analysis_State *state) {
-  if (not node or state->unreachable) return;
+  if (not node) return;
+  if (Analysis_Budget == 0) { Analysis_Exhausted = true; return; }
+  Analysis_Budget--;
+  if (state->unreachable) {
+    if (Analysis_Recording and node->kind != NK_PRAGMA and
+        node->kind != NK_LABEL and not state->reported_dead and
+        state->dead_from_branch) {
+      state->reported_dead = true;
+      if (state->dead_cause and state->dead_line)
+        Note_Pending_Warning (WARNING_UNREACHABLE_CODE, node->location,
+          "this statement can never execute: the %s at line %u always "
+          "transfers control away", state->dead_cause, state->dead_line);
+      else if (state->dead_cause)
+        Note_Pending_Warning (WARNING_UNREACHABLE_CODE, node->location,
+          "this statement can never execute: %s", state->dead_cause);
+      else
+        Note_Pending_Warning (WARNING_UNREACHABLE_CODE, node->location,
+          "this statement can never execute: nothing reaches it");
+    }
+    return;
+  }
 
   if (node->kind == NK_RETURN or node->kind == NK_GOTO or
-      node->kind == NK_EXIT) {
+      node->kind == NK_EXIT   or node->kind == NK_RAISE) {
     Check_Expression (node, state);
     Forget_Calls_In (node, state);
     /* An exit or goto with a condition may or may not be taken; an
        unconditional one ends this path. */
     if (node->kind == NK_RETURN or node->kind == NK_GOTO or
-        (node->kind == NK_EXIT and not node->exit_stmt.condition))
+        node->kind == NK_RAISE  or
+        (node->kind == NK_EXIT and not node->exit_stmt.condition)) {
       state->unreachable = true;
+      state->dead_cause  = node->kind == NK_RETURN ? "return statement"
+                         : node->kind == NK_GOTO   ? "goto statement"
+                         : node->kind == NK_RAISE  ? "raise statement"
+                                                   : "exit statement";
+      state->dead_line        = node->location.line;
+      state->dead_from_branch = false;
+    }
     return;
   }
 
@@ -61165,7 +61206,16 @@ void Analyze_Statement (Node *node, Analysis_State *state) {
         State_Join (&taken, &branch);
       }
       Analyze_Statement_List (&node->if_stmt.else_stmts, &otherwise);
+      bool had_else = node->if_stmt.else_stmts.count > 0;
       State_Join (&taken, &otherwise);
+      if (taken.unreachable and had_else) {
+        taken.dead_cause       = "every branch of the if statement above "
+                                 "transfers control away";
+        taken.dead_line        = 0;
+        taken.dead_from_branch = true;
+      } else if (not had_else) {
+        taken.unreachable = false;   /* the condition may be false */
+      }
       *state = taken;
       return;
     }
@@ -61196,7 +61246,7 @@ void Analyze_Statement (Node *node, Analysis_State *state) {
       Analysis_State entry = *state;
       bool saved_recording = Analysis_Recording;
       Analysis_Recording = false;
-      for (int pass = 0; pass < 8; pass++) {
+      for (int pass = 0; pass < 4 and Analysis_Budget; pass++) {
         Analysis_State body = entry;
         Bind_Loop_Parameter (node->loop_stmt.iteration_scheme, &body);
         Refine_By_Condition (node->loop_stmt.iteration_scheme, true, &body);
@@ -61244,12 +61294,20 @@ void Analyze_Statement_List (Node_List *statements, Analysis_State *state) {
 void Analyze_Bodies (Node *node) {
   if (not node) return;
 
+  Node_List *statements = NULL;
   if (Node_In_Any_Class (node, NODE_CLASS_SUBPROGRAM_BODY) and
-      not node->subprogram_body.is_separate) {
+      not node->subprogram_body.is_separate)
+    statements = &node->subprogram_body.statements;
+  else if (node->kind == NK_PACKAGE_BODY)
+    statements = &node->package_body.statements;
+  else if (node->kind == NK_TASK_BODY)
+    statements = &node->task_body.statements;
+
+  if (statements) {
     Symbol *saved_owner = Analysis_Current_Owner;
     Analysis_Current_Owner = node->symbol;
     Analysis_State state = { .count = 0 };
-    Analyze_Statement_List (&node->subprogram_body.statements, &state);
+    Analyze_Statement_List (statements, &state);
     Analysis_Current_Owner = saved_owner;
   }
 
@@ -61299,6 +61357,8 @@ void Report_Analysis_Warnings (const char *input_path) {
 
 void Analyze_Units (Node **units, int unit_count) {
   Analysis_Finding_Count = 0;
+  Analysis_Budget        = ANALYSIS_STATEMENT_BUDGET;
+  Analysis_Exhausted     = false;
   for (int i = 0; i < unit_count; i++) {
     if (not units[i] or units[i]->compilation_unit.grafted_into_generic) continue;
     Analyze_Bodies (units[i]);
@@ -61477,6 +61537,8 @@ void Write_Analysis_Report (FILE *out, const char *input_path) {
            reported, checked_total, cannot_fail_total, not_applicable,
            unchecked_total, unknown_total, suppressed_total, must_fail,
            removable);
+  if (Analysis_Exhausted)
+    fputs (",\n    \"analysis_truncated\": true", out);
   if (Analysis_Sites_Overflowed)
     fprintf (out, ",\n    \"truncated\": true, \"limit\": %d",
              MAX_ANALYSIS_CHECK_SITES);
@@ -61596,9 +61658,11 @@ void Compile_File (const char *input_path, const char *output_path) {
   for (int i = 0; i < unit_count; i++)
     Check_Legality_Of_Compilation_Unit (units[i]);
 
-  if (Analyze_Mode) {
+  if (Analyze_Mode or
+      (not Warnings_Silenced and
+       Warning_Class_Is_Enabled[WARNING_UNREACHABLE_CODE])) {
     Analyze_Units (units, unit_count);
-    Report_Analysis_Warnings (input_path);
+    if (Analyze_Mode) Report_Analysis_Warnings (input_path);
   }
 
   bool main_program_compilation = false;
