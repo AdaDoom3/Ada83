@@ -135,7 +135,7 @@ COMPILER_FLAGS += $(if $(CROSS),,$(WHOLE_PROGRAM))
 
 BIN_DIR          = bin-$(TARGET)
 BIN_DIRS         = bin-linux bin-macos bin-windows
-LIBRARY_SOURCE   = bin-dll.zip
+LIBRARY_SOURCE   = bin-libraries.zip
 EXECUTABLE       = ada83$(SUFFIX)
 HOST_BINARY      = bin-$(HOST_TARGET)/ada83
 HOST_RUNTIME     = bin-$(HOST_TARGET)/$(RUNTIME)
@@ -172,7 +172,7 @@ provision-llvm:
 
 # `package` fills bin-<target>/ with everything a release carries: the
 # compiler, the runtime, the extension, the platform artwork, and — on
-# Windows — the vendored DLLs unpacked from bin-dll.zip, which holds
+# Windows — the vendored DLLs unpacked from bin-libraries.zip, which holds
 # nothing else. The release workflow zips the folder itself.
 package: ada83.c $(RUNTIME) $(ICON_SOURCE) $(BIN_DIR)/$(VSIX)
 	@command -v $(firstword $(COMPILER)) >/dev/null || { \
@@ -216,6 +216,12 @@ $(BIN_DIR)/$(VSIX): $(BUNDLE) $(ICON).png $(wildcard $(MANUAL))
 	                        ? "staging/vsix/" name \
 	                        : "staging/vsix/extension/" name; next } \
 	     out != "" { print > out }' $(BUNDLE)
+	@command -v node >/dev/null || { \
+	  echo "node is needed to fold the manifest into the README tables"; \
+	  exit 1; }
+	@$(call STAGE,folding the manifest into the README tables)
+	node staging/vsix/extension/readme-tables.js staging/vsix/extension
+	rm staging/vsix/extension/readme-tables.js
 	rm -f $@
 	@$(call STAGE,packing $(VSIX))
 	cd staging/vsix && zip -qr $(abspath $@) .

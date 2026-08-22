@@ -32,8 +32,6 @@ const Unframed = (Stream) => {
 
   if (Length === null) return Unframed (Stream.slice (Start));
 
-  /* Content-Length counts bytes, and the stream is a string, so the body
-     is carved out of the bytes and the remainder decoded back. */
   const Bytes = Buffer.from (Stream.slice (Start), 'utf8');
   if (Bytes.length < Length) return { Messages: [], Remainder: Stream };
 
@@ -382,6 +380,21 @@ const At_Selection = (Document, Selection) =>
   ({ ...At_Document (Document), range: Range_Sent (Selection),
      context: { diagnostics: [] } });
 
+const Semantic_Legend_Of = (Capability) =>
+  new vscode.SemanticTokensLegend (
+    (Capability ?? {}).legend?.tokenTypes ?? [],
+    (Capability ?? {}).legend?.tokenModifiers ?? []);
+
+const Semantic_Tokens_Of = (Result) =>
+  Result === null || Result === undefined || !Array.isArray (Result.data)
+    ? null
+    : new vscode.SemanticTokens (Uint32Array.from (Result.data));
+
+const Code_Lens_Of = (Reported) =>
+  new vscode.CodeLens (Range_Of (Reported.range), Reported.command);
+
+const Code_Lenses_Of = Listed (Code_Lens_Of);
+
 const For_Query = (Query) => ({ query: Query ?? '' });
 
 const Is_Cancellable = (Given) =>
@@ -440,6 +453,18 @@ const Language_Features = [
     Answer: Workspace_Symbols_Of,            Patience: 'workspaceRequestTimeout',
     Register: (Provider) =>
       vscode.languages.registerWorkspaceSymbolProvider (Provider) },
+
+  { Capability: 'semanticTokensProvider',    Provides: 'provideDocumentSemanticTokens',
+    Method: 'textDocument/semanticTokens/full', Parameters: At_Document,
+    Answer: Semantic_Tokens_Of,
+    Register: (Provider, Capabilities) =>
+      vscode.languages.registerDocumentSemanticTokensProvider (
+        Ada_Selector, Provider,
+        Semantic_Legend_Of (Capabilities.semanticTokensProvider)) },
+  { Capability: 'codeLensProvider',          Provides: 'provideCodeLenses',
+    Method: 'textDocument/codeLens',         Parameters: At_Document,
+    Answer: Code_Lenses_Of,
+    Register: Registers (vscode.languages.registerCodeLensProvider) },
 ];
 
 const Provider_For = ({ Method, Parameters, Answer, Provides, Patience }) => ({
@@ -699,9 +724,10 @@ const Still_Compiles = (Source, Directory) =>
                                `${++Scratch_Serial}.ada`);
     try { fs.writeFileSync (Scratch, Source); }
     catch { return Resolve (false); }
-    const [Command, Arguments] =
-      Host_Escaped (Compiler_Path (), ['--analyse', Scratch, Directory]);
-    const Child = spawn (Command, Arguments);
+    const [Command, Arguments, Options] =
+      Host_Escaped (Compiler_Path (), ['--analyse', Scratch, Directory],
+                    Analysis_Environment ());
+    const Child = spawn (Command, Arguments, Options);
     let Reply = '';
     Child.stdout.on ('data', (Chunk) => { Reply += Chunk; });
     Child.on ('error', () => Resolve (false));
@@ -815,9 +841,6 @@ const On_Type_Registration = () =>
   [vscode.languages.registerOnTypeFormattingEditProvider (
      Ada_Selector, On_Type_Provider, '\n', ';')];
 
-/* A suggested fix is shown as a diff against the file and applied only if
-   the reader says so, so a wrong answer costs a glance and nothing more. */
-
 const Suggestion_Scheme = 'ada83-suggestion';
 const Suggestion_Sources = new Map ();
 const Suggestion_Changes = new vscode.EventEmitter ();
@@ -893,7 +916,7 @@ const Approved = async (Document, Source) => {
     'vscode.diff', Document.uri, Uri,
     `${path.basename (Document.uri.fsPath)}: suggested fix`);
   const Chosen = await vscode.window.showInformationMessage (
-    'Ada 83: apply this suggested fix?', 'Apply', 'Discard');
+    'Ada 83: apply the suggested fix?', 'Apply', 'Discard');
   Suggestion_Sources.delete (Uri.toString ());
   return Chosen === 'Apply';
 };
@@ -918,11 +941,11 @@ const Suggest_Fix_Command = (Root) => async (Given, Reported) => {
   const Diagnostics = Reported ?? Errors_In (Document);
   if (Diagnostics.length === 0)
     return void vscode.window.showInformationMessage (
-      'Ada 83: nothing is reported wrong with this file.');
+      'Ada 83: no diagnostics in this file.');
 
   const { Source, Complaint } = await vscode.window.withProgress (
     { location: vscode.ProgressLocation.Notification,
-      title: 'Ada 83: working out a fix', cancellable: true },
+      title: 'Ada 83: suggesting a fix', cancellable: true },
     (Ignored, Token) => Suggested (Root, Document, Diagnostics, Token));
 
   if (Source === undefined)
@@ -932,9 +955,9 @@ const Suggest_Fix_Command = (Root) => async (Given, Reported) => {
 
 const Suggestion_Action = (Document, Diagnostics) =>
   Object.assign (
-    new vscode.CodeAction ('Suggest A Fix', vscode.CodeActionKind.QuickFix),
+    new vscode.CodeAction ('Suggest Fix', vscode.CodeActionKind.QuickFix),
     { diagnostics: Diagnostics,
-      command: { command: 'ada83.suggestFix', title: 'Suggest A Fix',
+      command: { command: 'ada83.suggestFix', title: 'Suggest Fix',
                  arguments: [Document, Diagnostics] } });
 
 const Suggestion_Provider = {
@@ -954,11 +977,6 @@ const Suggestion_Registration = (Root) =>
          { providedCodeActionKinds: [vscode.CodeActionKind.QuickFix] }),
        vscode.commands.registerCommand ('ada83.suggestFix',
                                         Suggest_Fix_Command (Root))];
-
-/* A diagnostic is English prose wrapped around pieces of the reader's own
-   source. The prose can be translated; the source cannot, so it is taken
-   out and put back rather than trusted to the translator. English asks
-   nothing of anything and is the path taken unless it is changed. */
 
 const Languages = [
   { Tag: 'en',     Named: 'English',              In_Words: null },
@@ -981,8 +999,6 @@ const Language_Table = new Map (Languages.map ((L) => [L.Tag, L]));
 const Language_Spoken = () =>
   Language_Table.get (Configured ('language', 'en')) ?? Language_Table.get ('en');
 
-/* Anything quoted is a piece of the reader's program, and the compiler
-   quotes every name it mentions. */
 const Code_Span = /'[^'\n]*'|`[^`\n]*`|"[^"\n]*"/g;
 
 const Masked = (Message) => {
@@ -1027,7 +1043,7 @@ const Translated = async (Language, Messages) => {
 
   if (Wanted.length > 0) {
     const Models = await vscode.lm.selectChatModels ({});
-    if (Models.length === 0) return Messages;          /* leave it in English */
+    if (Models.length === 0) return Messages;
 
     const Prepared = Wanted.map (Masked);
     const Lines = Numbered_Lines (await Spoken (
@@ -1067,7 +1083,7 @@ const Retold = (Diagnostics, Spoken_Messages) => {
 
 const Localised = async (Language, Uri, Diagnostics, Held) => {
   const Spoken_Messages = await Translated (Language, Messages_In (Diagnostics));
-  if (Session === Held)               /* a restart in between voids the answer */
+  if (Session === Held)
     Session.Diagnostics.set (Uri, Retold (Diagnostics, Spoken_Messages));
 };
 
@@ -1082,11 +1098,236 @@ const Publish = ({ Uri, Diagnostics }) => {
 
 const Ada_Selector = { scheme: 'file', language: 'ada83' };
 
-const Task_Of = (Name, Title, Argument_List, Group) => {
+const Project_Suffixes = ['.gpr', '.gpj'];
+
+const Is_A_Project = (Named) =>
+  Project_Suffixes.includes (path.extname (Named).toLowerCase ());
+
+const Beside_The_Folder = (Named) =>
+  ((Folder) =>
+     (path.isAbsolute (Named) || Folder === null
+        ? Named
+        : path.join (Folder.uri.fsPath, Named)))
+    (Opened_Folder ());
+
+const Named_Project = () =>
+  ((Named) => (Named === '' ? null : Beside_The_Folder (Named)))
+    (Substituted (Configured ('projectFile', '')).trim ());
+
+const Root_Projects = () => {
+  const Folder = Opened_Folder ();
+  try {
+    return Folder === null
+      ? []
+      : fs.readdirSync (Folder.uri.fsPath)
+           .filter (Is_A_Project)
+           .sort ()
+           .map ((Named) => path.join (Folder.uri.fsPath, Named));
+  } catch { return []; }
+};
+
+const Active_Project = () =>
+  Named_Project () ??
+  ((Found) => (Found.length === 1 ? Found[0] : null)) (Root_Projects ());
+
+const Scenario = () => Configured ('scenario', {});
+
+const Scenario_Arguments = () =>
+  Object.entries (Scenario ()).map (([Name, Value]) => `-X${Name}=${Value}`);
+
+const Project_Arguments = (Project, Rest) =>
+  ['-P', Project, ...Scenario_Arguments (), ...Rest];
+
+const Ran = (Arguments, Environment) =>
+  new Promise ((Resolve) => {
+    const [Command, Given, Options] =
+      Host_Escaped (Compiler_Path (), Arguments, Environment);
+    const Child = spawn (Command, Given, Options);
+    let Answer = '', Complaint = '';
+    Child.stdout.on ('data', (Chunk) => { Answer += Chunk; });
+    Child.stderr.on ('data', (Chunk) => { Complaint += Chunk; });
+    Child.on ('error', ({ message }) =>
+      Resolve ({ Code: -1, Answer, Complaint: message }));
+    Child.on ('close', (Code) => Resolve ({ Code, Answer, Complaint }));
+  });
+
+const Plan_Value_Column = 41;
+const Project_Heading   = /^project (\S.*)$/;
+
+const Recorded = (Values, Key, Value) =>
+  Values.set (Key, [...(Values.get (Key) ?? []), Value]);
+
+const Plan_Of = (Text) => {
+  const Read   = { Projects: [], Whole: new Map () };
+  const Latest = () => Read.Projects[Read.Projects.length - 1];
+  let   Filed  = Read.Whole;
+  let   Key    = '';
+  Text.split (/\r?\n/).forEach ((Line) => {
+    const Opened = Project_Heading.exec (Line);
+    if (Opened !== null) {
+      Read.Projects.push ({ Name: Opened[1].trim (), Values: new Map () });
+      Filed = Latest ().Values;
+      Key = '';
+      return;
+    }
+    if (Line.length <= Plan_Value_Column) return;
+    const Named = Line.slice (0, Plan_Value_Column).trim ();
+    if (Named !== '') {
+      Key   = Named;
+      Filed = Line.startsWith (' ') && Read.Projects.length > 0
+                ? Latest ().Values : Read.Whole;
+    }
+    if (Key !== '')
+      Recorded (Filed, Key, Line.slice (Plan_Value_Column).trim ());
+  });
+  return Read;
+};
+
+let Project_Plan = null;
+
+const Everywhere = (Key) =>
+  Project_Plan === null
+    ? []
+    : [...new Set (Project_Plan.Projects.flatMap (
+         ({ Values }) => Values.get (Key) ?? []))];
+
+const In_The_Root = (Key) =>
+  Project_Plan === null || Project_Plan.Projects.length === 0
+    ? [] : Project_Plan.Projects[0].Values.get (Key) ?? [];
+
+const Top_Level = (Key) =>
+  Project_Plan === null ? [] : Project_Plan.Whole.get (Key) ?? [];
+
+const Complaint_Pattern =
+  /^(.*?):(\d+):(\d+):\s+(error|warning|note|internal error):\s+(.*)$/;
+
+const Project_Severity_Table = {
+  error: vscode.DiagnosticSeverity.Error,
+  warning: vscode.DiagnosticSeverity.Warning,
+  note: vscode.DiagnosticSeverity.Information,
+  'internal error': vscode.DiagnosticSeverity.Error,
+};
+
+const Project_Severity_Of =
+  Mapped (Project_Severity_Table, vscode.DiagnosticSeverity.Error);
+
+const Complaint_Of = (Row, Column, Severity, Message) =>
+  Object.assign (
+    new vscode.Diagnostic (
+      new vscode.Range (Number (Row) - 1, Number (Column) - 1,
+                        Number (Row) - 1, Number.MAX_SAFE_INTEGER),
+      Message, Project_Severity_Of (Severity)),
+    { source: 'ada83' });
+
+const Complained_About = (Complaints, Text) => {
+  const Found = new Map ();
+  Text.split (/\r?\n/).forEach ((Line) =>
+    ((Match) => {
+       if (Match === null) return;
+       const [, File, Row, Column, Severity, Message] = Match;
+       Recorded (Found, File,
+                 Complaint_Of (Row, Column, Severity, Message));
+     }) (Complaint_Pattern.exec (Line)));
+  Complaints.clear ();
+  Found.forEach ((Diagnostics, File) =>
+    Complaints.set (vscode.Uri.file (Beside_The_Folder (File)), Diagnostics));
+};
+
+let Project_Item = null;
+
+const Scenario_Summary = () =>
+  ((Set) =>
+     (Set.length === 0 ? ''
+      : Set.length === 1 ? ` ${Set[0][0]}=${Set[0][1]}`
+      : ` ${Set.length} set`))
+    (Object.entries (Scenario ()));
+
+const Project_Tooltip = (Project) =>
+  [`Project: ${Project}`,
+   Project_Plan === null
+     ? 'The compiler would not read it; see the Problems panel.'
+     : `Mains: ${In_The_Root ('Main').join (', ') || 'none declared'}`,
+   ...Object.entries (Scenario ())
+      .map (([Name, Value]) => `${Name} = ${Value}`),
+   'Click to set a scenario variable.'].join ('\n');
+
+const Show_Project = () => {
+  if (Project_Item === null) return;
+  const Project = Active_Project ();
+  const Several = Project === null && Root_Projects ().length > 1;
+  if (Project === null && !Several) return Project_Item.hide ();
+  Project_Item.text = Project === null
+    ? '$(list-tree) choose a project'
+    : `${Project_Plan === null ? '$(error)' : '$(list-tree)'} ` +
+      `${path.basename (Project)}${Scenario_Summary ()}`;
+  Project_Item.command =
+    Project === null ? 'ada83.selectProject' : 'ada83.setScenario';
+  Project_Item.tooltip = Project === null
+    ? 'Ada 83: the workspace root holds more than one project file, so ' +
+      'none is active. Click to choose one.'
+    : Project_Tooltip (Project);
+  Project_Item.show ();
+};
+
+const Project_Refresh = async (Complaints) => {
+  const Project = Active_Project ();
+  Project_Plan = null;
+  vscode.commands.executeCommand ('setContext', 'ada83.hasProject',
+                                  Project !== null);
+  Complaints.clear ();
+  if (Project !== null) {
+    const Reply = await Ran (Project_Arguments (Project, ['-n']));
+    Complained_About (Complaints, Reply.Complaint);
+    if (Reply.Code === 0) Project_Plan = Plan_Of (Reply.Answer);
+  }
+  Show_Project ();
+};
+
+const Externals_Argument = '--externals';
+
+const Variable_Of = (Reported) => ({
+  Name:    String (Reported.name ?? ''),
+  Type:    Reported.type ?? null,
+  Values:  Array.isArray (Reported.values) ? Reported.values.map (String) : [],
+  Default: Reported.default ?? null,
+  Value:   Reported.value ?? null,
+});
+
+const Listed_Variables = async (Project) =>
+  ((Reply) => {
+     if (Reply.Code !== 0) return null;
+     try {
+       const Reported = JSON.parse (Reply.Answer);
+       return Array.isArray (Reported) ? Reported.map (Variable_Of) : null;
+     } catch { return null; }
+   }) (await Ran (Project_Arguments (Project, [Externals_Argument])));
+
+const External_Line = /^(.+?)=([\s\S]*) \((command line|project)\)$/;
+
+const Planned_Variables = () =>
+  Top_Level ('external')
+    .map ((Line) => External_Line.exec (Line))
+    .filter ((Match) => Match !== null)
+    .map (([, Name, Value]) =>
+      ({ Name, Type: null, Values: [], Default: Value, Value }));
+
+const With_The_Setting = (Known) =>
+  [...Known,
+   ...Object.entries (Scenario ())
+      .filter (([Name]) => !Known.some ((Variable) => Variable.Name === Name))
+      .map (([Name, Value]) =>
+        ({ Name, Type: null, Values: [], Default: null, Value }))]
+    .sort ((Left, Right) => Left.Name.localeCompare (Right.Name));
+
+const Scenario_Variables = async (Project) =>
+  With_The_Setting (
+    (await Listed_Variables (Project)) ?? Planned_Variables ());
+
+const Task_Of = (Name, Title, Argument_List, Group, Extra) => {
   const [Command, Arguments] = Host_Escaped (Compiler_Path (), Argument_List);
   return Object.assign (
     new vscode.Task (
-      { type: 'ada83', task: Name },
+      { type: 'ada83', task: Name, ...Extra },
       vscode.TaskScope.Workspace,
       Title,
       'ada83',
@@ -1107,6 +1348,19 @@ const Check_Task = (Source_Path) =>
 
 const Task_For = (Name) => (Name === 'check' ? Check_Task : Build_Task);
 
+const Project_Task = (Project) =>
+  Task_Of ('project', 'build the project',
+           Project_Arguments (Project, []), vscode.TaskGroup.Build);
+
+const Main_Task = (Project, Main) =>
+  Task_Of ('main', `build ${Main}`,
+           Project_Arguments (Project, [Main]), vscode.TaskGroup.Build,
+           { main: Main });
+
+const Plan_Task = (Project) =>
+  Task_Of ('plan', 'show the build plan',
+           Project_Arguments (Project, ['-n']), vscode.TaskGroup.Build);
+
 const Active_Ada_Path = () =>
   ((Editor) =>
      Editor === undefined || !Is_Ada_Document (Editor.document)
@@ -1114,19 +1368,30 @@ const Active_Ada_Path = () =>
        : Editor.document.uri.fsPath)
     (vscode.window.activeTextEditor);
 
-const Tasks_For = (Source_Path) =>
+const File_Tasks = (Source_Path) =>
   Source_Path === null
     ? []
     : [Build_Task (Source_Path), Check_Task (Source_Path)];
 
+const Project_Tasks = (Project) =>
+  Project === null
+    ? []
+    : [Project_Task (Project), Plan_Task (Project),
+       ...In_The_Root ('Main').map ((Main) => Main_Task (Project, Main))];
+
+const Resolved_Task = (Definition, Project, Source_Path) =>
+  Definition.task === 'project' && Project !== null ? Project_Task (Project)
+  : Definition.task === 'plan' && Project !== null ? Plan_Task (Project)
+  : Definition.task === 'main' && Project !== null
+    ? Main_Task (Project, Definition.main ?? In_The_Root ('Main')[0] ?? '')
+  : Source_Path === null ? undefined
+  : Task_For (Definition.task) (Source_Path);
+
 const Task_Provider = {
-  provideTasks: () => Tasks_For (Active_Ada_Path ()),
+  provideTasks: () => [...File_Tasks (Active_Ada_Path ()),
+                       ...Project_Tasks (Active_Project ())],
   resolveTask: (Given) =>
-    ((Source_Path) =>
-       Source_Path === null
-         ? undefined
-         : Task_For (Given.definition.task) (Source_Path))
-      (Active_Ada_Path ()),
+    Resolved_Task (Given.definition, Active_Project (), Active_Ada_Path ()),
 };
 
 const Run_On_The_Active_File = (Make) => () =>
@@ -1137,37 +1402,253 @@ const Run_On_The_Active_File = (Make) => () =>
        : vscode.tasks.executeTask (Make (Source_Path)))
     (Active_Ada_Path ());
 
+const Scenario_Target = () =>
+  Opened_Folder () === null
+    ? vscode.ConfigurationTarget.Global
+    : vscode.ConfigurationTarget.Workspace;
+
+const Settled = (Name, Value) =>
+  vscode.workspace.getConfiguration ('ada83')
+    .update (Name, Value, Scenario_Target ());
+
+const Project_Item_Of = (Given) =>
+  ({ label: path.basename (Given),
+     description: vscode.workspace.asRelativePath (Given),
+     Path: Given });
+
+const Select_Project = async () => {
+  const Found =
+    (await vscode.workspace.findFiles ('**/*.{gpr,gpj}',
+                                       '**/node_modules/**', 64))
+      .map (({ fsPath }) => fsPath).sort ();
+  if (Found.length === 0)
+    return void vscode.window.showInformationMessage (
+      'Ada 83: no .gpr or .gpj in this workspace.');
+  const Chosen = await vscode.window.showQuickPick (
+    Found.map (Project_Item_Of),
+    { title: 'Select Project' });
+  if (Chosen === undefined) return;
+  await Settled ('projectFile',
+                 vscode.workspace.asRelativePath (Chosen.Path));
+};
+
+const With_A_Project = (Use) => () =>
+  ((Project) => (Project === null ? Select_Project () : Use (Project)))
+    (Active_Project ());
+
+const Detail_Of = (Variable) =>
+  Variable.Values.length > 0
+    ? `${Variable.Type ?? 'one of'}: ${Variable.Values.join (', ')}`
+    : Variable.Default === null
+      ? 'no default: the build needs a value'
+      : 'any text';
+
+const Variable_Item = (Variable) => ({
+  label: Variable.Name,
+  description: Variable.Value ?? Variable.Default ?? 'not set',
+  detail: Detail_Of (Variable),
+  Variable,
+});
+
+const Add_A_Variable = {
+  label: '$(add) Set a variable by name',
+  Add: true,
+};
+
+const Reset_The_Scenario = {
+  label: '$(discard) Reset to project defaults',
+  Reset: true,
+};
+
+const Named_Variable = async () =>
+  ((Name) => (Name === undefined || Name.trim () === ''
+                ? null
+                : { Name: Name.trim (), Type: null, Values: [],
+                    Default: null, Value: null }))
+    (await vscode.window.showInputBox (
+       { title: 'Scenario Variable',
+         prompt: 'Case-sensitive, as spelled inside external (...).' }));
+
+const Unset_Value = { label: '$(discard) Project default' };
+
+const Picked_Value = async (Variable) =>
+  ((Chosen) =>
+     (Chosen === undefined ? undefined
+      : Chosen.label === Unset_Value.label ? null
+      : Chosen.label))
+    (await vscode.window.showQuickPick (
+       [...Variable.Values.map ((Value) => ({ label: Value })),
+        ...(Scenario ()[Variable.Name] === undefined ? [] : [Unset_Value])],
+       { title: `Ada 83: ${Variable.Name}`,
+         placeHolder: 'Select a value' }));
+
+const Written_Value = async (Variable) =>
+  ((Given) =>
+     (Given === undefined ? undefined : Given.trim () === '' ? null : Given))
+    (await vscode.window.showInputBox (
+       { title: `Ada 83: ${Variable.Name}`,
+         value: Scenario ()[Variable.Name] ?? Variable.Default ?? '',
+         prompt: (Variable.Default === null
+                    ? 'No default. '
+                    : `Default: ${Variable.Default}. `) +
+                 'Empty clears it.' }));
+
+const Chosen_Value = (Variable) =>
+  Variable.Values.length > 0 ? Picked_Value (Variable)
+                             : Written_Value (Variable);
+
+const Without = (Values, Name) =>
+  Object.fromEntries (Object.entries (Values)
+    .filter (([Given]) => Given !== Name));
+
+const Set_Scenario = With_A_Project (async (Project) => {
+  const Variables = await Scenario_Variables (Project);
+  const Chosen = await vscode.window.showQuickPick (
+    [...Variables.map (Variable_Item), Add_A_Variable, Reset_The_Scenario],
+    { title: 'Scenario Variables',
+      placeHolder: Variables.length === 0
+        ? 'No externals listed; add one by name.'
+        : 'Select a variable to set' });
+  if (Chosen === undefined) return;
+  if (Chosen.Reset === true) return void Settled ('scenario', {});
+
+  const Variable = Chosen.Add === true ? await Named_Variable ()
+                                       : Chosen.Variable;
+  if (Variable === null) return;
+  const Value = await Chosen_Value (Variable);
+  if (Value === undefined) return;
+  await Settled ('scenario',
+                 Value === null
+                   ? Without (Scenario (), Variable.Name)
+                   : { ...Scenario (), [Variable.Name]: Value });
+});
+
+const Built_With = 'ada83.builtWith';
+
+const Stamp_Of = () => JSON.stringify (Scenario ());
+
+const Cleared_First = async (Memory, Clean) => {
+  const Before = Memory.get (Built_With);
+  if (Before === undefined || Before === Stamp_Of ()) return true;
+  const Chosen = await vscode.window.showWarningMessage (
+    'Ada 83: the scenario changed since the last build; old objects ' +
+    'would be reused.',
+    'Clean And Build', 'Build Anyway');
+  if (Chosen === undefined) return false;
+  if (Chosen === 'Clean And Build') await Clean ();
+  return true;
+};
+
+const Build_Project = (Memory, Clean) => With_A_Project (async (Project) => {
+  if (!await Cleared_First (Memory, Clean)) return;
+  await Memory.update (Built_With, Stamp_Of ());
+  vscode.tasks.executeTask (Project_Task (Project));
+});
+
+const Build_Main = (Memory, Clean) => With_A_Project (async (Project) => {
+  const Mains = In_The_Root ('Main');
+  if (Mains.length === 0)
+    return void vscode.window.showInformationMessage (
+      'Ada 83: cannot build. The project declares no Main.');
+  const Chosen = Mains.length === 1
+    ? Mains[0]
+    : await vscode.window.showQuickPick (
+        Mains, { title: 'Build Main' });
+  if (Chosen === undefined) return;
+  if (!await Cleared_First (Memory, Clean)) return;
+  await Memory.update (Built_With, Stamp_Of ());
+  vscode.tasks.executeTask (Main_Task (Project, Chosen));
+});
+
+const Show_Plan = With_A_Project ((Project) =>
+  vscode.tasks.executeTask (Plan_Task (Project)));
+
+const Product_Suffixes = ['.ali', '.ll', '.o', '.s'];
+
+const Stem_Of = (Main) => Main.replace (/\.[^.]*$/, '');
+
+const Removed = (Given) => {
+  try { fs.unlinkSync (Given); return 1; } catch { return 0; }
+};
+
+const Products_In = (Directory) => {
+  try {
+    return fs.readdirSync (Directory)
+             .filter ((Named) =>
+               Product_Suffixes.includes (path.extname (Named)))
+             .map ((Named) => path.join (Directory, Named));
+  } catch { return []; }
+};
+
+const Executables_In = (Directory) =>
+  In_The_Root ('Main').flatMap ((Main) =>
+    [path.join (Directory, Stem_Of (Main)),
+     path.join (Directory, `${Stem_Of (Main)}.exe`)]);
+
+const Clean_Project = async () => {
+  if (Project_Plan === null)
+    return void vscode.window.showInformationMessage (
+      'Ada 83: cannot clean. No project has been read.');
+  const Objects = In_The_Root ('Object_Dir');
+  const Executables = In_The_Root ('Exec_Dir');
+  if (Objects.length === 0 && Executables.length === 0)
+    return void vscode.window.showInformationMessage (
+      'Ada 83: cannot clean. The project sets no Object_Dir or Exec_Dir.');
+  const Chosen = await vscode.window.showWarningMessage (
+    `Ada 83: remove the compiler's own products from ` +
+    `${[...Objects, ...Executables].join (', ')}?`,
+    { modal: true }, 'Remove');
+  if (Chosen !== 'Remove') return;
+  const Gone =
+    [...Objects.flatMap (Products_In),
+     ...Executables.flatMap (Executables_In)].reduce (
+       (Total, Given) => Total + Removed (Given), 0);
+  vscode.window.showInformationMessage (
+    `Ada 83: removed ${Gone} file${Gone === 1 ? '' : 's'}.`);
+};
+
 const Substituted = (Setting) =>
   ((Folder) =>
      Setting.replace (/\$\{workspaceFolder\}/g,
                       Folder === null ? '' : Folder.uri.fsPath))
     (Opened_Folder ());
 
-const Watched_Folders = (Diagnostics, Output, Status) =>
-  vscode.workspace.onDidChangeWorkspaceFolders (() =>
-    Restart (Diagnostics, Output, Status));
+const Watched_Folders = (Reload) =>
+  vscode.workspace.onDidChangeWorkspaceFolders (Reload);
 
 const Compiler_Path = () => Substituted (Configured ('compilerPath', 'ada83'));
 
-const Include_Arguments = () =>
-  Configured ('includePaths', []).flatMap ((Path) =>
-    ['-I', Substituted (Path)]);
+const Include_Paths = () =>
+  [...new Set ([...Configured ('includePaths', []).map (Substituted),
+                ...Everywhere ('Source_Dirs'),
+                ...Everywhere ('directory')])];
 
-/* Flatpak gives the extension host its own sandboxed root filesystem, so a
-   compiler spawned directly only ever sees the runtime's bundled libraries
-   (e.g. Mesa's libLLVM), never the real system one, no matter how it
-   searches. flatpak-spawn --host re-launches it on the real host, where
-   its dynamic loader resolves the system libLLVM correctly. AppImages and
-   classic-confinement Snaps (which is how VSCodium ships) run unsandboxed
-   and need no such rewrite. */
+const Include_Arguments = () =>
+  Include_Paths ().flatMap ((Path) => ['-I', Path]);
+
+const Analysis_Environment = () =>
+  ((Paths) =>
+     (Paths.length === 0
+        ? undefined
+        : { ADA83_INCLUDE: Paths.join (path.delimiter) }))
+    (Include_Paths ());
+
 const In_Flatpak_Sandbox = () => {
   try { return fs.existsSync ('/.flatpak-info'); }
   catch { return false; }
 };
 
-const Host_Escaped = (Command, Arguments) =>
-  In_Flatpak_Sandbox () ? ['flatpak-spawn', ['--host', Command, ...Arguments]]
-                        : [Command, Arguments];
+const Exported = (Environment) =>
+  Object.entries (Environment ?? {}).map (([Name, Value]) =>
+    `--env=${Name}=${Value}`);
+
+const Host_Escaped = (Command, Arguments, Environment) =>
+  In_Flatpak_Sandbox ()
+    ? ['flatpak-spawn',
+       ['--host', ...Exported (Environment), Command, ...Arguments], {}]
+    : [Command, Arguments,
+       Environment === undefined
+         ? {} : { env: { ...process.env, ...Environment } }];
 
 const Presentation = {
   starting: ['$(loading~spin)', 'starting'],
@@ -1208,9 +1689,8 @@ const Start = (Diagnostics, Output, Status, Attempt) => {
       Show_State (Status, 'failed');
       Output.appendLine (`server unavailable: ${Reason}`);
       return vscode.window.showErrorMessage (
-        `Ada 83: '${Path} --lsp' will not run (${Reason}). Set ` +
-        'ada83.compilerPath to the compiler, and keep ada83-runtime.ada ' +
-        'beside it.');
+        `Ada 83: '${Path} --lsp' failed (${Reason}). Check ` +
+        'ada83.compilerPath and ada83-runtime.ada.');
     }
     Show_State (Status, 'restarting');
     Output.appendLine (`server ${Reason}; restarting`);
@@ -1280,21 +1760,1052 @@ const Touches_The_Server = (Change) =>
   ['enable', 'compilerPath', 'includePaths']
     .some ((Name) => Change.affectsConfiguration (`ada83.${Name}`));
 
+const Touches_The_Project = (Change) =>
+  ['projectFile', 'scenario']
+    .some ((Name) => Change.affectsConfiguration (`ada83.${Name}`));
+
+const Watched_Projects = (Reload) =>
+  ((Watcher) =>
+     [Watcher, Watcher.onDidChange (Reload), Watcher.onDidCreate (Reload),
+      Watcher.onDidDelete (Reload)])
+    (vscode.workspace.createFileSystemWatcher ('**/*.{gpr,gpj}'));
+
+const Sidebar_View = 'ada83.projectView';
+
+let Sidebar_Model = null;
+
+const Sidebar_Changes = new vscode.EventEmitter ();
+
+const Sidebar_Plan_Argument = '--plan-json';
+
+const Sidebar_Answered = (Reply) =>
+  Reply.Code === 0 ? Parsed (Reply.Answer) : null;
+
+const Sidebar_Plan = async (Project) =>
+  Sidebar_Answered (
+    await Ran (Project_Arguments (Project, [Sidebar_Plan_Argument])));
+
+const Sidebar_Meta_Spellings = ['file', 'qualifier', 'directory', 'import',
+                                'extends', 'external'];
+
+const Sidebar_One_Of = (Values, Key) => (Values.get (Key) ?? [])[0] ?? null;
+
+const Sidebar_Planned_Project = ({ Name, Values }) => ({
+  name: Name,
+  file: Sidebar_One_Of (Values, 'file'),
+  qualifier: Sidebar_One_Of (Values, 'qualifier'),
+  directory: Sidebar_One_Of (Values, 'directory'),
+  attributes: [...Values.entries ()]
+    .filter (([Key]) => !Sidebar_Meta_Spellings.includes (Key))
+    .map (([Key, Items]) => ({ name: Key, index: null, values: Items })),
+  types: [],
+  variables: [],
+  imports: Values.get ('import') ?? [],
+  extends: Sidebar_One_Of (Values, 'extends'),
+});
+
+const Sidebar_Plan_From_The_Reader = () =>
+  Project_Plan === null
+    ? null
+    : { projects: Project_Plan.Projects.map (Sidebar_Planned_Project),
+        externals: [] };
+
+const Sidebar_External_Of = (Reported) =>
+  Object.assign (Variable_Of (Reported),
+                 { Origin: Reported.origin ?? null });
+
+const Sidebar_Externals = async (Project) =>
+  ((Reported) =>
+     (Array.isArray (Reported) ? Reported.map (Sidebar_External_Of) : null))
+    (Sidebar_Answered (
+       await Ran (Project_Arguments (Project, [Externals_Argument]))));
+
+const Sidebar_Variables = async (Project) =>
+  With_The_Setting ((await Sidebar_Externals (Project)) ??
+                    Planned_Variables ());
+
+const Sidebar_Gathered = async () =>
+  ((Project) =>
+     Project === null
+       ? Promise.resolve (null)
+       : Promise.all ([Sidebar_Plan (Project), Sidebar_Variables (Project)])
+           .then (([Told, Variables]) =>
+              ((Plan) => ({
+                 Project,
+                 Plan,
+                 By_File: new Map ((Plan === null ? [] : Plan.projects)
+                                     .map ((Given) => [Given.file, Given])),
+                 Variables,
+               }))
+                (Told ?? Sidebar_Plan_From_The_Reader ())))
+    (Active_Project ());
+
+const Refresh_Sidebar = async () => {
+  Sidebar_Model = await Sidebar_Gathered ();
+  Sidebar_Changes.fire (undefined);
+};
+
+const Sidebar_Leaf = vscode.TreeItemCollapsibleState.None;
+
+const Sidebar_Attribute_Spelled = ({ name, index }) =>
+  index === null || index === undefined ? name : `${name} ("${index}")`;
+
+const Sidebar_Variable_Spelled = (Variable) =>
+  Variable.Value !== null && Variable.Value !== undefined
+    ? `= ${Variable.Value} (${Variable.Origin ?? 'workspace'})`
+    : Variable.Default !== null && Variable.Default !== undefined
+      ? `= ${Variable.Default} (default)`
+      : `= (not set)`;
+
+const Sidebar_Project_Item = ({ Given, Root }) =>
+  Object.assign (
+    new vscode.TreeItem (Given.name,
+      Root ? vscode.TreeItemCollapsibleState.Expanded
+           : vscode.TreeItemCollapsibleState.Collapsed),
+    { description: Given.file === null
+        ? '' : vscode.workspace.asRelativePath (Given.file),
+      tooltip: Given.file ?? Given.name,
+      iconPath: new vscode.ThemeIcon (Root ? 'project' : 'link'),
+      contextValue: 'ada83Project' });
+
+const Sidebar_Main_Item = ({ Main }) =>
+  Object.assign (new vscode.TreeItem (Main, Sidebar_Leaf),
+    { description: 'main',
+      iconPath: new vscode.ThemeIcon ('symbol-method'),
+      contextValue: 'ada83Main' });
+
+const Sidebar_Attribute_Item = ({ Row }) =>
+  Row.values.length > 1
+    ? Object.assign (
+        new vscode.TreeItem (Sidebar_Attribute_Spelled (Row),
+                             vscode.TreeItemCollapsibleState.Collapsed),
+        { iconPath: new vscode.ThemeIcon ('symbol-field') })
+    : Object.assign (
+        new vscode.TreeItem (Sidebar_Attribute_Spelled (Row), Sidebar_Leaf),
+        { description: Row.values.join (' '),
+          tooltip: Row.values.join ('\n'),
+          iconPath: new vscode.ThemeIcon ('symbol-field') });
+
+const Sidebar_Value_Item = ({ Text }) =>
+  Object.assign (new vscode.TreeItem (Text, Sidebar_Leaf),
+    { iconPath: new vscode.ThemeIcon ('symbol-string') });
+
+const Sidebar_Variable_Item = ({ Variable }) =>
+  Object.assign (
+    new vscode.TreeItem (Variable.Name, Sidebar_Leaf),
+    { description: Sidebar_Variable_Spelled (Variable),
+      tooltip: Detail_Of (Variable),
+      iconPath: new vscode.ThemeIcon (
+        Variable.Values.length > 0 ? 'symbol-enum' : 'symbol-variable'),
+      contextValue: 'ada83Variable',
+      command: { command: 'ada83.setScenarioVariable',
+                 title: 'Set Variable',
+                 arguments: [Variable] } });
+
+const Sidebar_Note_Item = ({ Text }) =>
+  Object.assign (new vscode.TreeItem (Text, Sidebar_Leaf),
+    { iconPath: new vscode.ThemeIcon ('info') });
+
+const Sidebar_Import_Node = (File, Trail) =>
+  ((Found) =>
+     Found === undefined || Trail.includes (File)
+       ? { Kind: 'attribute',
+           Row: { name: 'import', index: null, values: [File] } }
+       : { Kind: 'project', Given: Found, Root: false,
+           Trail: [...Trail, File] })
+    (Sidebar_Model.By_File.get (File));
+
+const Sidebar_Project_Children = ({ Given, Trail, Root }) => {
+  const Attributes = Given.attributes ?? [];
+  const Named = (Row) => ({ Kind: 'attribute', Row });
+  return [
+    ...(Root ? Sidebar_Model.Variables.map ((Variable) =>
+                 ({ Kind: 'variable', Variable }))
+             : []),
+    ...Attributes.filter (({ name }) => name === 'Main')
+                 .flatMap (({ values }) => values)
+                 .map ((Main) => ({ Kind: 'main', Main, Given })),
+    ...Attributes.filter (({ name }) => name !== 'Main').map (Named),
+    ...(Given.types ?? []).map (({ name, values }) =>
+        Named ({ name: `type ${name}`, index: null, values })),
+    ...(Given.variables ?? []).map (({ name, values }) =>
+        Named ({ name: `variable ${name}`, index: null, values })),
+    ...(Given.imports ?? []).map ((File) =>
+        Sidebar_Import_Node (File, Trail ?? [Given.file])),
+    ...(Given.extends === null || Given.extends === undefined ? [] :
+        [Named ({ name: 'extends', index: null, values: [Given.extends] })]),
+  ];
+};
+
+const Sidebar_Attribute_Children = ({ Row }) =>
+  Row.values.length > 1
+    ? Row.values.map ((Text) => ({ Kind: 'value', Text }))
+    : [];
+
+const Sidebar_Roots = () =>
+  Sidebar_Model === null
+    ? []
+    : Sidebar_Model.Plan === null ||
+      Sidebar_Model.Plan.projects.length === 0
+        ? [{ Kind: 'note',
+             Text: 'the project would not read; see the Problems panel' }]
+        : [{ Kind: 'project',
+             Given: Sidebar_Model.Plan.projects[0], Root: true }];
+
+const Sidebar_Kinds = {
+  project:   { Item: Sidebar_Project_Item,   Children: Sidebar_Project_Children },
+  main:      { Item: Sidebar_Main_Item,      Children: () => [] },
+  attribute: { Item: Sidebar_Attribute_Item, Children: Sidebar_Attribute_Children },
+  value:     { Item: Sidebar_Value_Item,     Children: () => [] },
+  variable:  { Item: Sidebar_Variable_Item,  Children: () => [] },
+  note:      { Item: Sidebar_Note_Item,      Children: () => [] },
+};
+
+const Sidebar_Provider = {
+  onDidChangeTreeData: Sidebar_Changes.event,
+  getTreeItem: (Element) => Sidebar_Kinds[Element.Kind].Item (Element),
+  getChildren: (Element) =>
+    Element === undefined ? Sidebar_Roots ()
+                          : Sidebar_Kinds[Element.Kind].Children (Element),
+};
+
+const Sidebar_Set_Variable = async (Variable) => {
+  if (Variable === undefined || Variable === null) return Set_Scenario ();
+  const Value = await Chosen_Value (Variable);
+  if (Value === undefined) return;
+  await Settled ('scenario',
+                 Value === null
+                   ? Without (Scenario (), Variable.Name)
+                   : { ...Scenario (), [Variable.Name]: Value });
+};
+
+const Progress_Line = /^PROGRESS (\d+) (\d+) (\S+) (.*)$/;
+
+const Progress_Build = (Project, Mains, Output, Debug) =>
+  vscode.window.withProgress (
+    { location: vscode.ProgressLocation.Notification,
+      title: 'Ada 83: building', cancellable: true },
+    (Progress, Token) => new Promise ((Resolve) => {
+      const [Command, Given, Options] = Host_Escaped (
+        Compiler_Path (),
+        Project_Arguments (Project, ['--progress',
+                                     ...(Debug === true ? ['-g'] : []),
+                                     ...Mains]));
+      const Child = spawn (Command, Given, Options);
+      let Compiled = 0;
+      let Buffered = '';
+      Token.onCancellationRequested (() => Child.kill ());
+      Child.stdout.setEncoding ('utf8');
+      Child.stdout.on ('data', (Chunk) => {
+        Buffered += Chunk;
+        const Lines = Buffered.split ('\n');
+        Buffered = Lines.pop ();
+        Lines.map ((Line) => Progress_Line.exec (Line))
+             .filter ((Match) => Match !== null)
+             .forEach (([, N, Total, Unit, File]) => {
+                Compiled = Number (N);
+                Progress.report ({
+                  increment: 100 / Number (Total),
+                  message: `compiling ${N}/${Total} — ` +
+                           `${path.basename (File)}`,
+                });
+              });
+      });
+      Child.stderr.setEncoding ('utf8');
+      Child.stderr.on ('data', (Text) => Output.append (Text));
+      Child.on ('error', ({ message }) => {
+        Output.appendLine (message);
+        Resolve ({ Code: -1, Compiled });
+      });
+      Child.on ('close', (Code) => Resolve ({ Code, Compiled }));
+    }));
+
+const Told_The_Outcome = ({ Code, Compiled }, Output) =>
+  Code !== 0
+    ? vscode.window.showWarningMessage (
+        'Ada 83: the build failed. See the Ada 83 output.', 'Show Output')
+        .then ((Chosen) => { if (Chosen === 'Show Output') Output.show (true); })
+    : Compiled === 0
+      ? vscode.window.showInformationMessage (
+          'Ada 83: up to date.')
+      : vscode.window.showInformationMessage (
+          `Ada 83: built — ${Compiled} unit${Compiled === 1 ? '' : 's'} ` +
+          'compiled.');
+
+const Sidebar_Build = (Memory, Clean, Output) => async (Element, Debug) => {
+  const Project = Active_Project ();
+  if (Project === null) return Select_Project ();
+  if (!await Cleared_First (Memory, Clean)) return null;
+  await Memory.update (Built_With, Stamp_Of ());
+  const Outcome = await Progress_Build (
+    Project, Element?.Main === undefined ? [] : [Element.Main], Output,
+    Debug);
+  await Told_The_Outcome (Outcome, Output);
+  return Outcome;
+};
+
+const Sidebar_Attribute_Values = (Given, Name, Index) =>
+  (Given?.attributes ?? [])
+    .filter ((Row) => Row.name === Name &&
+                      (Index === undefined || Row.index === Index))
+    .flatMap ((Row) => Row.values);
+
+const Sidebar_Executable = (Given, Main) =>
+  ((Directory) =>
+     Directory === undefined
+       ? null
+       : path.join (Directory,
+           (Sidebar_Attribute_Values (Given, "Builder'Executable",
+                                      Main)[0] ?? Stem_Of (Main)) +
+           (Sidebar_Attribute_Values (Given,
+                                      "Builder'Executable_Suffix")[0] ?? '')))
+    (Sidebar_Attribute_Values (Given, 'Exec_Dir')[0]);
+
+const Sidebar_Run = (Memory, Clean, Output) => async (Element) => {
+  if (Element?.Main === undefined) return;
+  const Outcome = await Sidebar_Build (Memory, Clean, Output) (Element);
+  if (Outcome === null || Outcome === undefined || Outcome.Code !== 0)
+    return;
+  const Executable = Sidebar_Executable (Element.Given, Element.Main);
+  if (Executable === null)
+    return void vscode.window.showInformationMessage (
+      'Ada 83: cannot run. The project names no Exec_Dir.');
+  const Terminal = vscode.window.createTerminal (
+    { name: `Ada 83: ${path.basename (Executable)}` });
+  Terminal.show ();
+  Terminal.sendText (JSON.stringify (Executable));
+};
+
+const Sidebar_Registration = (Memory, Output, Refreshed) =>
+  [vscode.window.registerTreeDataProvider (Sidebar_View, Sidebar_Provider),
+   vscode.commands.registerCommand ('ada83.refreshProjectView', Refreshed),
+   vscode.commands.registerCommand ('ada83.setScenarioVariable',
+                                    Sidebar_Set_Variable),
+   vscode.commands.registerCommand ('ada83.buildMainWithProgress',
+     Sidebar_Build (Memory, Clean_Project, Output)),
+   vscode.commands.registerCommand ('ada83.runMain',
+     Sidebar_Run (Memory, Clean_Project, Output))];
+
+const http = require ('http');
+const https = require ('https');
+const zlib = require ('zlib');
+const { fileURLToPath } = require ('url');
+
+const Executable_Suffix = process.platform === 'win32' ? '.exe' : '';
+
+const Platform_Folder =
+  process.platform === 'win32'  ? 'bin-windows' :
+  process.platform === 'darwin' ? 'bin-macos'   : 'bin-linux';
+
+const Version_Of = (Command) =>
+  new Promise ((Resolve) => {
+    const [Spawned, Arguments, Options] =
+      Host_Escaped (Command, ['--version']);
+    let Child;
+    try { Child = spawn (Spawned, Arguments, Options); }
+    catch { return Resolve (null); }
+    let Answer = '';
+    Child.stdout.on ('data', (Chunk) => { Answer += Chunk; });
+    Child.on ('error', () => Resolve (null));
+    Child.on ('close', (Code) =>
+      Resolve (Code === 0 && Answer.trim () !== ''
+                 ? Answer.trim ().split (/\r?\n/)[0]
+                 : null));
+  });
+
+const Setting_Written = () =>
+  ((Inspected) =>
+     Inspected !== undefined &&
+     [Inspected.globalValue, Inspected.workspaceValue,
+      Inspected.workspaceFolderValue]
+       .some ((Value) => Value !== undefined))
+    (vscode.workspace.getConfiguration ('ada83').inspect ('compilerPath'));
+
+const Workspace_Compiler = () =>
+  ((Folder) =>
+     Folder === null
+       ? null
+       : path.join (Folder.uri.fsPath, Platform_Folder,
+                    'ada83' + Executable_Suffix))
+    (Opened_Folder ());
+
+let Known_Compiler = { Path: null, Version: null };
+let Compiler_Item = null;
+
+const Show_Compiler = () => {
+  if (Compiler_Item === null) return;
+  if (Known_Compiler.Version === null) {
+    Compiler_Item.text = '$(warning) ada83: not found';
+    Compiler_Item.tooltip =
+      'No ada83 compiler answers --version. Click to download or locate one.';
+  } else {
+    Compiler_Item.text =
+      `$(tools) ${Known_Compiler.Version.split (' -- ')[0]}`;
+    Compiler_Item.tooltip =
+      `${Known_Compiler.Version}\n${Known_Compiler.Path}\n` +
+      'Click to change the compiler.';
+  }
+  Compiler_Item.show ();
+};
+
+const Terminals_Told = (Context, Executable) => {
+  const Collection = Context.environmentVariableCollection;
+  if (Collection === undefined) return;
+  Collection.clear ();
+  if (Executable === null || !path.isAbsolute (Executable)) return;
+  Collection.prepend ('PATH', path.dirname (Executable) + path.delimiter);
+};
+
+const Adopted = async (Context, Executable, Version, Target) => {
+  Known_Compiler = { Path: Executable, Version };
+  Terminals_Told (Context, Executable);
+  Show_Compiler ();
+  if (Target !== undefined &&
+      Substituted (Configured ('compilerPath', 'ada83')) !== Executable)
+    await vscode.workspace.getConfiguration ('ada83')
+      .update ('compilerPath', Executable, Target);
+};
+
+const Default_Download_Base =
+  'https://raw.githubusercontent.com/AdaDoom3/Ada83/main';
+
+const Download_Base = () =>
+  Configured ('downloadBase', Default_Download_Base).replace (/\/+$/, '');
+
+const Fetched_Names = () =>
+  process.platform === 'win32'
+    ? [`${Platform_Folder}/ada83.exe`, 'ada83-runtime.ada', 'bin-libraries.zip']
+    : [`${Platform_Folder}/ada83`, 'ada83-runtime.ada'];
+
+const Got = (Address, Redirects) =>
+  new Promise ((Resolve, Reject) => {
+    const Where = new URL (Address);
+    if (Where.protocol === 'file:')
+      return fs.readFile (fileURLToPath (Where), (Complaint, Data) =>
+        (Complaint ? Reject (Complaint) : Resolve (Data)));
+    const Transport = Where.protocol === 'http:' ? http : https;
+    const Request = Transport.get (Where, (Reply) => {
+      if (Reply.statusCode >= 300 && Reply.statusCode < 400 &&
+          Reply.headers.location !== undefined) {
+        Reply.resume ();
+        return (Redirects ?? 0) >= 5
+          ? Reject (new Error (`too many redirects for ${Address}`))
+          : Resolve (Got (new URL (Reply.headers.location, Where).toString (),
+                          (Redirects ?? 0) + 1));
+      }
+      if (Reply.statusCode !== 200) {
+        Reply.resume ();
+        return Reject (new Error (`${Reply.statusCode} for ${Address}`));
+      }
+      const Pieces = [];
+      Reply.on ('data', (Piece) => Pieces.push (Piece));
+      Reply.on ('end', () => Resolve (Buffer.concat (Pieces)));
+      Reply.on ('error', Reject);
+    });
+    Request.on ('error', Reject);
+    Request.setTimeout (120000, () =>
+      Request.destroy (new Error (`timed out fetching ${Address}`)));
+  });
+
+const Zip_Members = (Data) => {
+  let At = Data.length - 22;
+  while (At >= 0 && Data.readUInt32LE (At) !== 0x06054b50) At--;
+  if (At < 0) throw new Error ('not a zip file');
+  const Count = Data.readUInt16LE (At + 10);
+  let Entry = Data.readUInt32LE (At + 16);
+  const Members = [];
+  for (let Index = 0; Index < Count; Index++) {
+    if (Data.readUInt32LE (Entry) !== 0x02014b50)
+      throw new Error ('damaged zip directory');
+    const Method = Data.readUInt16LE (Entry + 10);
+    const Squeezed = Data.readUInt32LE (Entry + 20);
+    const Name_Length = Data.readUInt16LE (Entry + 28);
+    const Extra_Length = Data.readUInt16LE (Entry + 30);
+    const Comment_Length = Data.readUInt16LE (Entry + 32);
+    const Local = Data.readUInt32LE (Entry + 42);
+    const Start = Local + 30 + Data.readUInt16LE (Local + 26) +
+                  Data.readUInt16LE (Local + 28);
+    Members.push ({
+      Name: Data.slice (Entry + 46, Entry + 46 + Name_Length)
+                .toString ('utf8'),
+      Method,
+      Data: Data.slice (Start, Start + Squeezed),
+    });
+    Entry += 46 + Name_Length + Extra_Length + Comment_Length;
+  }
+  return Members;
+};
+
+const Unpacked = (Member) =>
+  Member.Method === 0 ? Member.Data :
+  Member.Method === 8 ? zlib.inflateRawSync (Member.Data) :
+  (() => { throw new Error (`zip method ${Member.Method}`); }) ();
+
+const Downloaded_Compiler = async (Context) => {
+  const Home = path.join (Context.globalStorageUri.fsPath,
+                          Context.extension?.packageJSON?.version ?? '0');
+  const Staging = Home + '.partial';
+  fs.rmSync (Staging, { recursive: true, force: true });
+  fs.mkdirSync (Staging, { recursive: true });
+  try {
+    for (const Name of Fetched_Names ()) {
+      const Data = await Got (`${Download_Base ()}/${Name}`);
+      if (Name === 'bin-libraries.zip')
+        Zip_Members (Data)
+          .filter ((Member) => Member.Name.toLowerCase ().endsWith ('.dll'))
+          .forEach ((Member) =>
+            fs.writeFileSync (
+              path.join (Staging, path.basename (Member.Name)),
+              Unpacked (Member)));
+      else
+        fs.writeFileSync (path.join (Staging, path.basename (Name)), Data);
+    }
+    fs.chmodSync (path.join (Staging, 'ada83' + Executable_Suffix), 0o755);
+    const Version =
+      await Version_Of (path.join (Staging, 'ada83' + Executable_Suffix));
+    if (Version === null)
+      throw new Error ('the downloaded compiler does not answer --version');
+    fs.rmSync (Home, { recursive: true, force: true });
+    fs.renameSync (Staging, Home);
+    return { Executable: path.join (Home, 'ada83' + Executable_Suffix),
+             Version };
+  } catch (Reason) {
+    fs.rmSync (Staging, { recursive: true, force: true });
+    throw Reason;
+  }
+};
+
+const Fetch_Compiler = (Context) =>
+  vscode.window.withProgress (
+    { location: vscode.ProgressLocation.Notification,
+      title: 'Ada 83: downloading the compiler' },
+    () => Downloaded_Compiler (Context))
+  .then (async ({ Executable, Version }) => {
+    await Adopted (Context, Executable, Version,
+                   vscode.ConfigurationTarget.Global);
+    vscode.window.showInformationMessage (
+      `Ada 83: installed ${Version}.`);
+  })
+  .catch ((Reason) =>
+    vscode.window.showErrorMessage (
+      `Ada 83: download failed (${Reason.message}). Set ` +
+      'ada83.downloadBase, or locate a compiler.'));
+
+const Locate_Compiler = async (Context) => {
+  const Chosen = await vscode.window.showOpenDialog (
+    { canSelectMany: false, openLabel: 'Select Compiler',
+      title: 'Locate ada83' });
+  if (Chosen === undefined || Chosen.length === 0) return;
+  const Executable = Chosen[0].fsPath;
+  const Version = await Version_Of (Executable);
+  if (Version === null)
+    return void vscode.window.showErrorMessage (
+      `Ada 83: '${Executable}' does not answer --version, so it was not ` +
+      'taken. Remember the compiler needs ada83-runtime.ada beside it ' +
+      'to compile anything.');
+  await Adopted (Context, Executable, Version,
+                 vscode.ConfigurationTarget.Global);
+};
+
+const Offer_Compiler = (Context) =>
+  vscode.window.showInformationMessage (
+    'Ada 83: no compiler found in ada83.compilerPath, the workspace, ' +
+    'or PATH. Language features need one.',
+    'Download', 'Locate…', 'Not Now')
+  .then ((Chosen) =>
+    Chosen === 'Download' ? Fetch_Compiler (Context)
+    : Chosen === 'Locate…' ? Locate_Compiler (Context)
+    : undefined);
+
+const Compiler_Settled = async (Context) => {
+  if (Setting_Written ()) {
+    const Named = Compiler_Path ();
+    const Version = await Version_Of (Named);
+    if (Version !== null) return Adopted (Context, Named, Version);
+  }
+  const Local = Workspace_Compiler ();
+  if (Local !== null && fs.existsSync (Local)) {
+    const Version = await Version_Of (Local);
+    if (Version !== null)
+      return Adopted (Context, Local, Version, Scenario_Target ());
+  }
+  const On_Path = await Version_Of ('ada83' + Executable_Suffix);
+  if (On_Path !== null)
+    return Adopted (Context, 'ada83' + Executable_Suffix, On_Path);
+  Known_Compiler = { Path: null, Version: null };
+  Terminals_Told (Context, null);
+  Show_Compiler ();
+  Offer_Compiler (Context);
+};
+
+const Compiler_Choices = (Context) => [
+  { label: '$(cloud-download) Download the released compiler',
+    detail: 'Fetched from ada83.downloadBase into the extension\'s own ' +
+            'storage, the runtime beside it.',
+    Act: () => Fetch_Compiler (Context) },
+  { label: '$(folder-opened) Locate a compiler…',
+    detail: 'Point at an ada83 executable you already have.',
+    Act: () => Locate_Compiler (Context) },
+  { label: '$(sync) Look again',
+    detail: 'The setting, then bin-<platform> under the workspace, then ' +
+            'PATH.',
+    Act: () => Compiler_Settled (Context) },
+];
+
+const Choose_Compiler = (Context) => async () => {
+  const Chosen = await vscode.window.showQuickPick (
+    Compiler_Choices (Context),
+    { title: 'Locate Compiler',
+      placeHolder: Known_Compiler.Version === null
+        ? 'No compiler answers --version.'
+        : `Using ${Known_Compiler.Path} — ${Known_Compiler.Version}` });
+  if (Chosen !== undefined) await Chosen.Act ();
+};
+
+const Reshown_Compiler = (Context) => (Change) => {
+  if (!Change.affectsConfiguration ('ada83.compilerPath')) return;
+  const Named = Compiler_Path ();
+  Version_Of (Named).then ((Version) => {
+    Known_Compiler = { Path: Version === null ? null : Named, Version };
+    Terminals_Told (Context, Version === null ? null : Named);
+    Show_Compiler ();
+  });
+};
+
+const Bootstrap_Registration = (Context) => {
+  Compiler_Item = vscode.window.createStatusBarItem (
+    vscode.StatusBarAlignment.Right, 98);
+  Compiler_Item.command = 'ada83.chooseCompiler';
+  return [
+    Compiler_Item,
+    vscode.commands.registerCommand ('ada83.updateCompiler',
+                                     () => Fetch_Compiler (Context)),
+    vscode.commands.registerCommand ('ada83.chooseCompiler',
+                                     Choose_Compiler (Context)),
+    vscode.workspace.onDidChangeConfiguration (Reshown_Compiler (Context)),
+  ];
+};
+
+const Ada_Identifier = /^[A-Za-z](_?[A-Za-z0-9])*$/;
+
+const Scaffold_Project = (Name, Kind) => [
+  `--  Written by Ada 83: New Project.  Build it with`,
+  `--    ada83 -P ${Name.toLowerCase ()}.gpr [-X BUILD=release]`,
+  `project ${Name} is`,
+  `  type Build_Kind is ("debug", "release");`,
+  `  Build : Build_Kind := external ("BUILD", "debug");`,
+  ``,
+  `  for Source_Dirs use ("src");`,
+  `  for Object_Dir use "objs";`,
+  ...(Kind === 'application'
+        ? [`  for Exec_Dir use ".";`,
+           `  for Main use ("main.adb");`]
+        : []),
+  ``,
+  `  package Compiler is`,
+  `    case Build is`,
+  `      when "debug"   => for Default_Switches ("Ada") use ("-O0");`,
+  `      when "release" => for Default_Switches ("Ada") use ("-O2");`,
+  `    end case;`,
+  `  end Compiler;`,
+  `end ${Name};`,
+  ``].join ('\n');
+
+const Scaffold_Main = (Name) => [
+  `with Text_IO; use Text_IO;`,
+  ``,
+  `procedure Main is`,
+  `  begin`,
+  `    Put_Line ("Hello from ${Name}.");`,
+  `  end;`,
+  ``].join ('\n');
+
+const Scaffold_Spec = (Name) => [
+  `package ${Name} is`,
+  `  function Greeting return String;`,
+  `end;`,
+  ``].join ('\n');
+
+const Scaffold_Body = (Name) => [
+  `package body ${Name} is`,
+  `  function Greeting return String is`,
+  `    begin`,
+  `      return "Hello from ${Name}.";`,
+  `    end;`,
+  `end;`,
+  ``].join ('\n');
+
+const Project_Kinds = [
+  { label: 'Application',
+    description: 'a main program, built to an executable',
+    Kind: 'application' },
+  { label: 'Library',
+    description: 'a package spec and body',
+    Kind: 'library' },
+];
+
+const Asked_Kind = async () =>
+  ((Chosen) => Chosen === undefined ? undefined : Chosen.Kind)
+    (await vscode.window.showQuickPick (Project_Kinds,
+       { title: 'New Project: Kind (1/2)',
+         placeHolder: 'Select a project kind' }));
+
+const Asked_Name = () =>
+  vscode.window.showInputBox ({
+    title: 'New Project: Name (2/2)',
+    prompt: 'Enter the project name; its lower case names the folder.',
+    validateInput: (Given) =>
+      Ada_Identifier.test (Given.trim ())
+        ? null
+        : 'An Ada identifier: a letter, then letters, digits and single ' +
+          'underscores.',
+  });
+
+const Asked_Location = (Start) =>
+  vscode.window.showSaveDialog ({
+    title: 'New Project: Location (2/2)',
+    saveLabel: 'Create Project',
+    defaultUri: Start ?? vscode.Uri.file (path.join (os.homedir (), '.gpr')),
+    filters: { 'GPR project file': ['gpr'] },
+  });
+
+const New_Project = (Context) => async () => {
+  const Kind = await Asked_Kind ();
+  if (Kind === undefined) return;
+
+  const Folder = Opened_Folder ();
+  let Name, Parent;
+  if (Folder === null) {
+    for (let Start;;) {
+      const Chosen = await Asked_Location (Start);
+      if (Chosen === undefined) return;
+      Name   = path.basename (Chosen.fsPath).replace (/\.gpr$/i, '');
+      Parent = path.dirname (Chosen.fsPath);
+      if (Ada_Identifier.test (Name)) break;
+      Start = vscode.Uri.file (path.join (Parent, '.gpr'));
+      await vscode.window.showErrorMessage (
+        Name === ''
+          ? 'Ada 83: the project needs a name before the .gpr.'
+          : `Ada 83: '${Name}' is not an Ada identifier, so it cannot ` +
+            'name a project.',
+        { modal: true });
+    }
+  } else {
+    const Given = await Asked_Name ();
+    if (Given === undefined) return;
+    Name   = Given.trim ();
+    Parent = Folder.uri.fsPath;
+  }
+
+  const Lower = Name.toLowerCase ();
+  const Root  = vscode.Uri.file (path.join (Parent, Lower));
+  const Under = (...Steps) => vscode.Uri.joinPath (Root, ...Steps);
+  try {
+    await vscode.workspace.fs.stat (Root);
+    return void vscode.window.showErrorMessage (
+      `Ada 83: '${Root.fsPath}' already exists.`);
+  } catch {}
+
+  const First = Kind === 'application' ? Under ('src', 'main.adb')
+                                       : Under ('src', `${Lower}.ads`);
+  const Written = new vscode.WorkspaceEdit ();
+  const Filed = (Where, Text) =>
+    Written.createFile (Where, { contents: Buffer.from (Text) });
+  Filed (Under (`${Lower}.gpr`), Scaffold_Project (Name, Kind));
+  if (Kind === 'application')
+    Filed (First, Scaffold_Main (Name));
+  else {
+    Filed (First, Scaffold_Spec (Name));
+    Filed (Under ('src', `${Lower}.adb`), Scaffold_Body (Name));
+  }
+  try {
+    await vscode.workspace.fs.createDirectory (Under ('src'));
+    if (!await vscode.workspace.applyEdit (Written)) throw new Error ();
+  } catch ({ message }) {
+    return void vscode.window.showErrorMessage (
+      `Ada 83: the project could not be written` +
+      `${message ? ` (${message})` : ''}.`);
+  }
+
+  if (Folder === null)
+    return void vscode.commands.executeCommand ('vscode.openFolder', Root);
+
+  await Settled ('projectFile',
+                 vscode.workspace.asRelativePath (Under (`${Lower}.gpr`)));
+  await vscode.window.showTextDocument (
+    await vscode.workspace.openTextDocument (First));
+  if (Known_Compiler.Version === null) Offer_Compiler (Context);
+};
+
+const Scaffold_Registration = (Context) =>
+  [vscode.commands.registerCommand ('ada83.newProject',
+                                    New_Project (Context))];
+
+const Debug_Type = 'ada83';
+const Debug_Prebuilt = 'ada83Prebuilt';
+const Debug_Flag = /(^|\s)--dap\b/;
+
+const Usage_Of = (Command) =>
+  new Promise ((Resolve) => {
+    const [Spawned, Arguments, Options] = Host_Escaped (Command, ['--help']);
+    let Child;
+    try { Child = spawn (Spawned, Arguments, Options); }
+    catch { return Resolve (''); }
+    let Told = '';
+    Child.stdout.on ('data', (Chunk) => { Told += Chunk; });
+    Child.stderr.on ('data', (Chunk) => { Told += Chunk; });
+    Child.on ('error', () => Resolve (''));
+    Child.on ('close', () => Resolve (Told));
+  });
+
+const Usage_Answers = new Map ();
+
+const Speaks_Dap = (Compiler) => {
+  if (!Usage_Answers.has (Compiler))
+    Usage_Answers.set (Compiler,
+      Usage_Of (Compiler).then ((Told) => Debug_Flag.test (Told)));
+  return Usage_Answers.get (Compiler);
+};
+
+const Debug_Adapter_Factory = {
+  createDebugAdapterDescriptor: async () => {
+    const Named = Substituted (Configured ('debugAdapterPath', '')).trim ();
+    if (Named !== '') return new vscode.DebugAdapterExecutable (Named, []);
+    const Compiler = Known_Compiler.Path ?? Compiler_Path ();
+    if (!await Speaks_Dap (Compiler))
+      throw new Error (
+        `Ada 83: '${Compiler}' does not know --dap, the mode where the ` +
+        'compiler itself is the debug adapter. Run Ada 83: Download Or ' +
+        'Update The Compiler, or point ada83.debugAdapterPath at a DAP ' +
+        'executable.');
+    return new vscode.DebugAdapterExecutable (Compiler, ['--dap']);
+  },
+};
+
+const Debug_Mains = () =>
+  ((Root) =>
+     Root === undefined
+       ? []
+       : Sidebar_Attribute_Values (Root, 'Main')
+           .map ((Main) => ({ Main, Given: Root })))
+    (Sidebar_Model?.Plan?.projects[0]);
+
+const Debug_Configuration = (Element, Executable) => ({
+  type: Debug_Type,
+  request: 'launch',
+  name: `Ada 83: ${Element.Main}`,
+  program: Executable,
+});
+
+const Debug_Built = (Memory, Output) => async (Element) => {
+  const Outcome =
+    await Sidebar_Build (Memory, Clean_Project, Output) (Element, true);
+  if (Outcome === null || Outcome === undefined || Outcome.Code !== 0)
+    return null;
+  const Executable = Sidebar_Executable (Element.Given, Element.Main);
+  if (Executable !== null) return Debug_Configuration (Element, Executable);
+  vscode.window.showInformationMessage (
+    'Ada 83: cannot debug. The project names no Exec_Dir.');
+  return null;
+};
+
+const Debug_Chosen = async (Mains) =>
+  ((Picked) => Mains.find (({ Main }) => Main === Picked))
+    (await vscode.window.showQuickPick (
+       Mains.map (({ Main }) => Main),
+       { title: 'Debug Main' }));
+
+const Debug_Main = (Memory, Output) => async (Given) => {
+  if (Active_Project () === null) return Select_Project ();
+  const Mains = Debug_Mains ();
+  if (Given?.Main === undefined && Mains.length === 0)
+    return void vscode.window.showInformationMessage (
+      'Ada 83: cannot debug. The project declares no Main.');
+  const Element = Given?.Main !== undefined ? Given
+                : Mains.length === 1 ? Mains[0]
+                : await Debug_Chosen (Mains);
+  if (Element === undefined) return;
+  const Configuration = await Debug_Built (Memory, Output) (Element);
+  if (Configuration !== null)
+    vscode.debug.startDebugging (
+      Opened_Folder () ?? undefined,
+      { ...Configuration, [Debug_Prebuilt]: true });
+};
+
+const Debug_Empty = (Given) =>
+  Given.type === undefined && Given.request === undefined &&
+  Given.name === undefined;
+
+const Debug_Initial = () =>
+  ((Executable) => ({
+     type: Debug_Type,
+     request: 'launch',
+     name: 'Ada 83: debug the main',
+     program: Executable === null
+       ? '${workspaceFolder}/main'
+       : ((Relative) =>
+            path.isAbsolute (Relative)
+              ? Relative
+              : '${workspaceFolder}/' + Relative)
+           (vscode.workspace.asRelativePath (Executable)),
+     stopOnEntry: false,
+   }))
+    (((Element) =>
+        Element === undefined
+          ? null
+          : Sidebar_Executable (Element.Given, Element.Main))
+       (Debug_Mains ()[0]));
+
+const Debug_Provider = (Memory, Output) => ({
+  provideDebugConfigurations: () => [Debug_Initial ()],
+  resolveDebugConfiguration: async (Ignored, Given) => {
+    if (Given[Debug_Prebuilt] === true)
+      return Without (Given, Debug_Prebuilt);
+    if (!Debug_Empty (Given)) {
+      if (Active_Project () === null) return Given;
+      const Outcome = await Sidebar_Build (Memory, Clean_Project, Output) (
+        undefined, true);
+      return Outcome !== null && Outcome !== undefined && Outcome.Code === 0
+        ? Given : undefined;
+    }
+    const Element = Debug_Mains ()[0];
+    if (Element !== undefined)
+      return (await Debug_Built (Memory, Output) (Element)) ?? undefined;
+    vscode.window.showInformationMessage (
+      'Ada 83: no active project declares a Main to fill a debug ' +
+      'configuration from; write one in launch.json.');
+    return undefined;
+  },
+});
+
+const Debug_Registration = (Memory, Output) =>
+  [vscode.debug.registerDebugAdapterDescriptorFactory (
+     Debug_Type, Debug_Adapter_Factory),
+   vscode.debug.registerDebugConfigurationProvider (
+     Debug_Type, Debug_Provider (Memory, Output)),
+   vscode.commands.registerCommand ('ada83.debugMain',
+     Debug_Main (Memory, Output)),
+   vscode.commands.registerCommand ('ada83.debugMainWithProgress',
+     Debug_Main (Memory, Output))];
+
+const Ada_Tasks_View = 'ada83.tasksView';
+
+let Ada_Tasks = [];
+
+const Ada_Tasks_Changes = new vscode.EventEmitter ();
+
+const Ada_Task_Rows_Of = (Body) =>
+  Array.isArray (Body?.tasks)
+    ? Body.tasks.filter (({ id }) => Number.isInteger (id))
+    : [];
+
+const Ada_Tasks_Shown = (Tasks) => {
+  Ada_Tasks = Tasks;
+  Ada_Tasks_Changes.fire (undefined);
+};
+
+const Ada_Tasks_Refreshed = (Session) =>
+  Promise.resolve (Session.customRequest ('ada83/tasks'))
+    .then (Ada_Task_Rows_Of)
+    .catch (() => [])
+    .then (Ada_Tasks_Shown);
+
+const Ada_Task_Dependents = (Id) =>
+  Ada_Tasks.filter (({ id, parent }) => parent === Id && id !== Id);
+
+const Ada_Task_Roots = () =>
+  ((Ids) =>
+     Ada_Tasks.filter (({ id, parent }) =>
+       parent === 0 || parent === id || !Ids.has (parent)))
+    (new Set (Ada_Tasks.map (({ id }) => id)));
+
+const Ada_Task_Item = (Task) =>
+  Object.assign (
+    new vscode.TreeItem (Task.name,
+      Ada_Task_Dependents (Task.id).length === 0
+        ? vscode.TreeItemCollapsibleState.None
+        : vscode.TreeItemCollapsibleState.Expanded),
+    { id: String (Task.id),
+      description: Task.state,
+      tooltip: `${Task.name} — ${Task.state}`,
+      iconPath: new vscode.ThemeIcon ('symbol-event') });
+
+const Ada_Tasks_Provider = {
+  onDidChangeTreeData: Ada_Tasks_Changes.event,
+  getTreeItem: Ada_Task_Item,
+  getChildren: (Element) =>
+    Element === undefined ? Ada_Task_Roots ()
+                          : Ada_Task_Dependents (Element.id),
+};
+
+const Ada_Tasks_Session = (Session) => {
+  const Debugging = Session !== undefined && Session.type === Debug_Type;
+  vscode.commands.executeCommand ('setContext', 'ada83.debugging',
+                                  Debugging);
+  if (Debugging) Ada_Tasks_Refreshed (Session);
+  else Ada_Tasks_Shown ([]);
+};
+
+const Ada_Tasks_Tracker = (Session) => ({
+  onDidSendMessage: (Message) => {
+    if (Message.type === 'event' && Message.event === 'stopped')
+      Ada_Tasks_Refreshed (Session);
+  },
+});
+
+const Ada_Tasks_Registration = () => {
+  Ada_Tasks_Session (vscode.debug.activeDebugSession);
+  return [
+    vscode.window.registerTreeDataProvider (Ada_Tasks_View,
+                                            Ada_Tasks_Provider),
+    vscode.debug.onDidChangeActiveDebugSession (Ada_Tasks_Session),
+    vscode.debug.registerDebugAdapterTrackerFactory (Debug_Type,
+      { createDebugAdapterTracker: Ada_Tasks_Tracker }),
+  ];
+};
+
 const activate = (Context) => {
+  vscode.commands.executeCommand ('setContext', 'ada83.relevant', true);
   const Output = vscode.window.createOutputChannel ('Ada 83');
   const Diagnostics = vscode.languages.createDiagnosticCollection ('ada83');
+  const Complaints =
+    vscode.languages.createDiagnosticCollection ('ada83-project');
   const Status = vscode.window.createStatusBarItem (
     vscode.StatusBarAlignment.Right, 100);
   Status.command = 'ada83.showOutput';
+  Project_Item = vscode.window.createStatusBarItem (
+    vscode.StatusBarAlignment.Right, 99);
   Trace_Channel = Output;
   Tracing = Configured ('trace.server', 'off');
 
-  Start (Diagnostics, Output, Status, 0);
+  const Read_The_Project = () =>
+    Project_Refresh (Complaints)
+      .then (Refresh_Sidebar)
+      .catch ((Reason) =>
+        Output.appendLine (`project unread: ${Reason.message}`));
+
+  const Reload = () =>
+    Read_The_Project ().then (() => Restart (Diagnostics, Output, Status));
+
+  let Settling = null;
+  const Reload_Soon = () => {
+    if (Settling !== null) clearTimeout (Settling);
+    Settling = setTimeout (() => { Settling = null; Reload (); }, 250);
+  };
+
+  Compiler_Settled (Context)
+    .catch (() => null)
+    .then (Read_The_Project)
+    .then (() => {
+      if (Session === null) Start (Diagnostics, Output, Status, 0);
+    });
 
   Context.subscriptions.push (
     Output,
     Diagnostics,
+    Complaints,
     Status,
+    Project_Item,
     { dispose: Stop },
     vscode.workspace.onDidOpenTextDocument (On_Ada (Did_Open)),
     vscode.workspace.onDidChangeTextDocument (Settles_Down (Did_Change)),
@@ -1302,19 +2813,37 @@ const activate = (Context) => {
     vscode.workspace.onDidSaveTextDocument (On_Ada (Did_Change)),
     vscode.workspace.onDidChangeConfiguration ((Change) => {
       Tracing = Configured ('trace.server', 'off');
+      if (Touches_The_Project (Change)) return void Reload ();
       if (Touches_The_Server (Change)) Restart (Diagnostics, Output, Status);
     }),
-    Watched_Folders (Diagnostics, Output, Status),
+    Watched_Folders (Reload_Soon),
+    ...Watched_Projects (Reload_Soon),
     vscode.commands.registerCommand ('ada83.build',
                                      Run_On_The_Active_File (Build_Task)),
     vscode.commands.registerCommand ('ada83.check',
                                      Run_On_The_Active_File (Check_Task)),
+    vscode.commands.registerCommand ('ada83.selectProject', Select_Project),
+    vscode.commands.registerCommand ('ada83.setScenario', Set_Scenario),
+    vscode.commands.registerCommand (
+      'ada83.buildProject',
+      Build_Project (Context.workspaceState, Clean_Project)),
+    vscode.commands.registerCommand (
+      'ada83.buildMain',
+      Build_Main (Context.workspaceState, Clean_Project)),
+    vscode.commands.registerCommand ('ada83.showPlan', Show_Plan),
+    vscode.commands.registerCommand ('ada83.cleanProject', Clean_Project),
     vscode.commands.registerCommand ('ada83.restartServer',
                                      () => Restart (Diagnostics, Output,
                                                     Status)),
     vscode.commands.registerCommand ('ada83.showOutput',
                                      () => Output.show (true)),
     vscode.tasks.registerTaskProvider ('ada83', Task_Provider),
+    ...Sidebar_Registration (Context.workspaceState, Output,
+                             Read_The_Project),
+    ...Debug_Registration (Context.workspaceState, Output),
+    ...Ada_Tasks_Registration (),
+    ...Bootstrap_Registration (Context),
+    ...Scaffold_Registration (Context),
     ...Manual_Registration (Context.extensionPath),
     ...Reformat_Registration (Context.extensionPath),
     ...Suggestion_Registration (Context.extensionPath),
@@ -1325,10 +2854,6 @@ const deactivate = Stop;
 
 module.exports = { activate, deactivate };
 
-//= The rest of the extension travels here, one line comment per
-//= line so that no payload can end the block it sits in: the
-//= grammar contains */ and the snippets contain ${. `make vsix`
-//= splits these back out into the shape VS Code installs.
 </script>
 
 <script id="package.json" type="application/json">
@@ -1366,23 +2891,78 @@ module.exports = { activate, deactivate };
     "Programming Languages",
     "Linters",
     "Formatters",
-    "Snippets"
+    "Snippets",
+    "Debuggers"
   ],
   "activationEvents": [
     "onLanguage:ada83",
     "onLanguageModelTool:search_ada83_manual",
+    "onDebugResolve:ada83",
+    "onDebugInitialConfigurations",
     "workspaceContains:**/*.ada",
     "workspaceContains:**/*.adb",
-    "workspaceContains:**/*.ads"
+    "workspaceContains:**/*.ads",
+    "workspaceContains:**/*.gpr",
+    "workspaceContains:**/*.gpj"
   ],
   "icon": "ada83-icon.png",
   "main": "./ada83-extension.js",
   "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "ada83",
+          "title": "Ada 83",
+          "icon": "./ada83-icon.png"
+        }
+      ]
+    },
+    "views": {
+      "ada83": [
+        {
+          "id": "ada83.projectView",
+          "name": "Project",
+          "contextualTitle": "Ada 83",
+          "icon": "./ada83-icon.png",
+          "when": "ada83.relevant"
+        }
+      ],
+      "debug": [
+        {
+          "id": "ada83.tasksView",
+          "name": "Tasks",
+          "contextualTitle": "Ada 83",
+          "icon": "./ada83-icon.png",
+          "when": "ada83.debugging"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "ada83.projectView",
+        "contents": "No project selected. Choose the .gpr or .gpj to build and analyse with.\n[Select Project](command:ada83.selectProject)"
+      },
+      {
+        "view": "explorer",
+        "contents": "Create a new Ada project.\n[New Ada Project](command:ada83.newProject)",
+        "when": "workspaceFolderCount == 0"
+      }
+    ],
+    "configurationDefaults": {
+      "[ada83]": {
+        "editor.tabSize": 2,
+        "editor.insertSpaces": true
+      },
+      "explorer.fileNesting.patterns": {
+        "*.ada": "${capture}.ali, ${capture}.native.ll, ${capture}.native.ali",
+        "*.adb": "${capture}.ali, ${capture}.native.ll, ${capture}.native.ali"
+      }
+    },
     "languages": [
       {
         "id": "ada83",
         "aliases": [
-          "Ada 83",
+          "Ada",
           "ada"
         ],
         "extensions": [
@@ -1391,10 +2971,41 @@ module.exports = { activate, deactivate };
           ".ads"
         ],
         "icon": {
+          "light": "./ada83-icon-source.svg",
+          "dark": "./ada83-icon-source.svg"
+        },
+        "configuration": "./language-configuration.json"
+      },
+      {
+        "id": "gpr",
+        "aliases": [
+          "GNAT Project",
+          "gpr"
+        ],
+        "extensions": [
+          ".gpr"
+        ],
+        "icon": {
           "light": "./ada83-icon.png",
           "dark": "./ada83-icon.png"
         },
-        "configuration": "./language-configuration.json"
+        "configuration": "./language-configuration-gpr.json"
+      },
+      {
+        "id": "gpj",
+        "aliases": [
+          "Green Hills Project",
+          "gpj"
+        ],
+        "extensions": [
+          ".gpj"
+        ],
+        "firstLine": "^#!gbuild",
+        "icon": {
+          "light": "./ada83-icon.png",
+          "dark": "./ada83-icon.png"
+        },
+        "configuration": "./language-configuration-gpj.json"
       }
     ],
     "grammars": [
@@ -1402,6 +3013,23 @@ module.exports = { activate, deactivate };
         "language": "ada83",
         "scopeName": "source.ada",
         "path": "./syntaxes/ada83.tmLanguage.json"
+      },
+      {
+        "language": "gpr",
+        "scopeName": "source.gpr",
+        "path": "./syntaxes/gpr.tmLanguage.json"
+      },
+      {
+        "language": "gpj",
+        "scopeName": "source.gpj",
+        "path": "./syntaxes/gpj.tmLanguage.json"
+      }
+    ],
+    "iconThemes": [
+      {
+        "id": "ada83",
+        "label": "Ada 83 File Icons (minimal)",
+        "path": "./ada83-file-icons.json"
       }
     ],
     "snippets": [
@@ -1416,7 +3044,17 @@ module.exports = { activate, deactivate };
         "ada83.compilerPath": {
           "type": "string",
           "default": "ada83",
-          "description": "Path to the ada83 compiler. It is run as `ada83 --lsp`, and looks for ada83-runtime.ada beside itself."
+          "description": "Path to the ada83 compiler. It is run as `ada83 --lsp`, and looks for ada83-runtime.ada beside itself. Left unset, the extension looks in bin-<platform>/ under the workspace, then on PATH, and failing both offers to download a build; whatever is adopted is written back here."
+        },
+        "ada83.downloadBase": {
+          "type": "string",
+          "default": "https://raw.githubusercontent.com/AdaDoom3/Ada83/main",
+          "description": "Where Ada 83: Download Or Update The Compiler fetches from. It appends bin-<platform>/ada83, ada83-runtime.ada and, on Windows, bin-libraries.zip, so a mirror only reproduces those paths under its own base. http(s) and file URLs are read."
+        },
+        "ada83.debugAdapterPath": {
+          "type": "string",
+          "default": "",
+          "description": "A Debug Adapter Protocol executable to run in place of the compiler's own adapter, verbatim and with no arguments — raw lldb-dap, say, for the untranslated view. Left empty, debugging runs the resolved compiler as `ada83 --dap`, which drives lldb-dap underneath and does the Ada spelling itself. ${workspaceFolder} is substituted."
         },
         "ada83.enable": {
           "type": "boolean",
@@ -1439,7 +3077,21 @@ module.exports = { activate, deactivate };
             "type": "string"
           },
           "default": [],
-          "description": "Directories searched for with-ed units, beyond the file's own and the workspace root. ${workspaceFolder} is substituted."
+          "description": "Directories searched for with-ed units, beyond the file's own and the workspace root. ${workspaceFolder} is substituted, and an active project's own source directories are searched after these."
+        },
+        "ada83.projectFile": {
+          "type": "string",
+          "default": "",
+          "description": "The project file (.gpr or .gpj) the extension builds and analyses with, passed to the compiler as -P. ${workspaceFolder} is substituted and a relative path is taken from the workspace folder. Left empty, a single .gpr or .gpj at the root of the workspace is used; if the root holds more than one, none is active until Ada 83: Select The Active Project chooses one."
+        },
+        "ada83.scenario": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {},
+          "description": "Scenario variables passed to the compiler as -X NAME=VALUE, which is what external (\"NAME\", ...) in the project reads. Set them from the status bar or with Ada 83: Set A Scenario Variable, which offers a typed variable exactly the values its type declares. Names are matched by case, as the compiler matches them.",
+          "scope": "resource"
         },
         "ada83.formatOnType": {
           "type": "boolean",
@@ -1510,28 +3162,118 @@ module.exports = { activate, deactivate };
     },
     "commands": [
       {
+        "command": "ada83.newProject",
+        "title": "New Project",
+        "category": "Ada 83",
+        "icon": "$(new-folder)"
+      },
+      {
         "command": "ada83.build",
-        "title": "Build This File",
+        "title": "Build File",
         "category": "Ada 83",
         "icon": "$(gear)"
       },
       {
         "command": "ada83.check",
-        "title": "Check This File",
+        "title": "Check File",
         "category": "Ada 83",
         "icon": "$(check)"
       },
       {
+        "command": "ada83.buildProject",
+        "title": "Build Project",
+        "category": "Ada 83",
+        "icon": "$(list-tree)"
+      },
+      {
+        "command": "ada83.buildMain",
+        "title": "Build Main",
+        "category": "Ada 83",
+        "icon": "$(run)"
+      },
+      {
+        "command": "ada83.showPlan",
+        "title": "Show Build Plan",
+        "category": "Ada 83",
+        "icon": "$(list-flat)"
+      },
+      {
+        "command": "ada83.cleanProject",
+        "title": "Clean Project",
+        "category": "Ada 83",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "ada83.selectProject",
+        "title": "Select Project",
+        "category": "Ada 83",
+        "icon": "$(folder-opened)"
+      },
+      {
+        "command": "ada83.setScenario",
+        "title": "Set Scenario Variable",
+        "category": "Ada 83",
+        "icon": "$(settings)"
+      },
+      {
         "command": "ada83.reformat",
-        "title": "Reformat To The Manual's Style",
+        "title": "Reformat File",
         "category": "Ada 83",
         "icon": "$(symbol-ruler)"
       },
       {
         "command": "ada83.suggestFix",
-        "title": "Suggest A Fix",
+        "title": "Suggest Fix",
         "category": "Ada 83",
         "icon": "$(lightbulb-sparkle)"
+      },
+      {
+        "command": "ada83.refreshProjectView",
+        "title": "Refresh Project View",
+        "category": "Ada 83",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "ada83.setScenarioVariable",
+        "title": "Set Variable",
+        "category": "Ada 83",
+        "icon": "$(settings)"
+      },
+      {
+        "command": "ada83.buildMainWithProgress",
+        "title": "Build",
+        "category": "Ada 83",
+        "icon": "$(gear)"
+      },
+      {
+        "command": "ada83.runMain",
+        "title": "Run",
+        "category": "Ada 83",
+        "icon": "$(run)"
+      },
+      {
+        "command": "ada83.debugMain",
+        "title": "Debug Main",
+        "category": "Ada 83",
+        "icon": "$(debug-alt)"
+      },
+      {
+        "command": "ada83.debugMainWithProgress",
+        "title": "Debug",
+        "category": "Ada 83",
+        "icon": "$(debug-alt)"
+      },
+      {
+        "command": "ada83.updateCompiler",
+        "title": "Download Compiler",
+        "category": "Ada 83",
+        "icon": "$(cloud-download)"
+      },
+      {
+        "command": "ada83.chooseCompiler",
+        "title": "Locate Compiler",
+        "category": "Ada 83",
+        "icon": "$(tools)"
       },
       {
         "command": "ada83.restartServer",
@@ -1547,6 +3289,35 @@ module.exports = { activate, deactivate };
       }
     ],
     "menus": {
+      "view/title": [
+        {
+          "command": "ada83.refreshProjectView",
+          "when": "view == ada83.projectView",
+          "group": "navigation@1"
+        },
+        {
+          "command": "ada83.buildMainWithProgress",
+          "when": "view == ada83.projectView && ada83.hasProject",
+          "group": "navigation@2"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "ada83.buildMainWithProgress",
+          "when": "view == ada83.projectView && viewItem == ada83Main",
+          "group": "inline@1"
+        },
+        {
+          "command": "ada83.runMain",
+          "when": "view == ada83.projectView && viewItem == ada83Main",
+          "group": "inline@2"
+        },
+        {
+          "command": "ada83.debugMainWithProgress",
+          "when": "view == ada83.projectView && viewItem == ada83Main",
+          "group": "inline@3"
+        }
+      ],
       "editor/title": [
         {
           "command": "ada83.build",
@@ -1556,6 +3327,16 @@ module.exports = { activate, deactivate };
         {
           "command": "ada83.check",
           "when": "resourceLangId == ada83",
+          "group": "navigation@2"
+        },
+        {
+          "command": "ada83.showPlan",
+          "when": "resourceExtname == .gpr || resourceExtname == .gpj",
+          "group": "navigation@1"
+        },
+        {
+          "command": "ada83.buildProject",
+          "when": "resourceExtname == .gpr || resourceExtname == .gpj",
           "group": "navigation@2"
         }
       ],
@@ -1575,6 +3356,46 @@ module.exports = { activate, deactivate };
         {
           "command": "ada83.suggestFix",
           "when": "resourceLangId == ada83"
+        },
+        {
+          "command": "ada83.buildProject",
+          "when": "ada83.hasProject"
+        },
+        {
+          "command": "ada83.buildMain",
+          "when": "ada83.hasProject"
+        },
+        {
+          "command": "ada83.showPlan",
+          "when": "ada83.hasProject"
+        },
+        {
+          "command": "ada83.cleanProject",
+          "when": "ada83.hasProject"
+        },
+        {
+          "command": "ada83.refreshProjectView",
+          "when": "ada83.hasProject"
+        },
+        {
+          "command": "ada83.setScenarioVariable",
+          "when": "false"
+        },
+        {
+          "command": "ada83.buildMainWithProgress",
+          "when": "ada83.hasProject"
+        },
+        {
+          "command": "ada83.runMain",
+          "when": "false"
+        },
+        {
+          "command": "ada83.debugMain",
+          "when": "ada83.hasProject"
+        },
+        {
+          "command": "ada83.debugMainWithProgress",
+          "when": "false"
         }
       ],
       "explorer/context": [
@@ -1586,6 +3407,16 @@ module.exports = { activate, deactivate };
         {
           "command": "ada83.check",
           "when": "resourceLangId == ada83",
+          "group": "ada83@2"
+        },
+        {
+          "command": "ada83.selectProject",
+          "when": "resourceExtname == .gpr || resourceExtname == .gpj",
+          "group": "ada83@1"
+        },
+        {
+          "command": "ada83.showPlan",
+          "when": "resourceExtname == .gpr || resourceExtname == .gpj",
           "group": "ada83@2"
         }
       ],
@@ -1614,6 +3445,18 @@ module.exports = { activate, deactivate };
         "key": "ctrl+alt+c",
         "mac": "cmd+alt+c",
         "when": "resourceLangId == ada83"
+      },
+      {
+        "command": "ada83.buildProject",
+        "key": "ctrl+alt+shift+b",
+        "mac": "cmd+alt+shift+b",
+        "when": "ada83.hasProject"
+      },
+      {
+        "command": "ada83.setScenario",
+        "key": "ctrl+alt+x",
+        "mac": "cmd+alt+x",
+        "when": "ada83.hasProject"
       }
     ],
     "walkthroughs": [
@@ -1624,14 +3467,27 @@ module.exports = { activate, deactivate };
         "steps": [
           {
             "id": "ada83.start.compiler",
-            "title": "Point the extension at the compiler",
-            "description": "Everything here - the squiggles, the outline, the hovers, go to definition, completion, signature help and the quick fixes - is answered by `ada83` itself, so the extension needs to know where it is. Set it once, or leave it if `ada83` is on your PATH.\n[Set ada83.compilerPath](command:workbench.action.openSettings?%22ada83.compilerPath%22)",
+            "title": "Get a compiler",
+            "description": "Everything here - the squiggles, the outline, the hovers, go to definition, completion, signature help and the quick fixes - is answered by `ada83` itself. The extension looks for it in `ada83.compilerPath`, then in `bin-<platform>/` under the workspace, then on PATH; found nowhere, it offers to fetch a released build, runtime and all, into its own storage. The status bar names whichever compiler answered.\n[Download the compiler](command:ada83.updateCompiler)\n[Set ada83.compilerPath](command:workbench.action.openSettings?%22ada83.compilerPath%22)",
             "media": {
               "image": "./ada83-icon.png",
               "altText": "The Ada 83 icon"
             },
             "completionEvents": [
-              "onSettingChanged:ada83.compilerPath"
+              "onSettingChanged:ada83.compilerPath",
+              "onCommand:ada83.updateCompiler"
+            ]
+          },
+          {
+            "id": "ada83.start.new",
+            "title": "Start a project",
+            "description": "One name is the whole question. **Ada 83: New Project** writes `<name>.gpr` with a typed scenario variable, a `src/` directory and a main that prints a line, then opens it - a complete project the build commands below act on at once.\n[New project](command:ada83.newProject)",
+            "media": {
+              "image": "./ada83-icon.png",
+              "altText": "The Ada 83 icon"
+            },
+            "completionEvents": [
+              "onCommand:ada83.newProject"
             ]
           },
           {
@@ -1651,6 +3507,42 @@ module.exports = { activate, deactivate };
               "image": "./ada83-icon.png",
               "altText": "The Ada 83 icon"
             }
+          },
+          {
+            "id": "ada83.start.project",
+            "title": "Select a project",
+            "description": "A `.gpr` or `.gpj` at the root of the workspace is picked up on its own; anywhere else, name it in `ada83.projectFile`. The project's source directories are then searched for with-ed units, its mains become tasks, and its scenario variables - the `external (...)` its variables are set from - are set from the status bar and passed to every build.\n[Select the active project](command:ada83.selectProject)",
+            "media": {
+              "image": "./ada83-icon.png",
+              "altText": "The Ada 83 icon"
+            },
+            "completionEvents": [
+              "onCommand:ada83.selectProject"
+            ]
+          },
+          {
+            "id": "ada83.start.scenario",
+            "title": "Set the scenario",
+            "description": "A project's knobs are its scenario variables, read from `external (...)`. **Ada 83: Set A Scenario Variable** (`Ctrl+Alt+X`, or the status bar) lists what the project declares - a typed variable is offered exactly its type's literals - and what you pick rides every build and plan as `-X NAME=VALUE`. Then **Build The Active Project** (`Ctrl+Alt+Shift+B`) compiles and links its mains; the compiler stamps the scenario into the object directory and rebuilds what a change invalidates.\n[Set a scenario variable](command:ada83.setScenario)\n[Build the project](command:ada83.buildProject)",
+            "media": {
+              "image": "./ada83-scenario-mock.svg",
+              "altText": "A rendering of the scenario-variable picker (not a screenshot)"
+            },
+            "completionEvents": [
+              "onCommand:ada83.buildProject"
+            ]
+          },
+          {
+            "id": "ada83.start.debug",
+            "title": "Debug it",
+            "description": "**Ada 83: Debug A Main From The Project** — or the Debug button on a main in the project view, or `F5` — rebuilds the main with `-g` and starts it under the compiler's own debug adapter: `ada83 --dap` speaks the Debug Adapter Protocol itself, lldb-dap underneath, so breakpoints, stepping and backtraces read in Ada's own names.\n[Debug a main](command:ada83.debugMain)",
+            "media": {
+              "image": "./ada83-icon.png",
+              "altText": "The Ada 83 icon"
+            },
+            "completionEvents": [
+              "onCommand:ada83.debugMain"
+            ]
           },
           {
             "id": "ada83.start.manual",
@@ -1727,11 +3619,84 @@ module.exports = { activate, deactivate };
             "type": "string",
             "enum": [
               "build",
-              "check"
+              "check",
+              "project",
+              "main",
+              "plan"
             ],
-            "description": "build compiles the active file to an executable; check resolves it and emits LLVM IR without writing anything."
+            "description": "build compiles the active file to an executable; check resolves it and emits LLVM IR without writing anything; project builds every main the active project declares; main builds the one named beside it; plan prints what the project resolves to, with -n, and builds nothing."
+          },
+          "main": {
+            "type": "string",
+            "description": "The main to build, as the project's Main attribute names it. Read only by the main task; left out, the project's first main is taken."
           }
         }
+      }
+    ],
+    "breakpoints": [
+      {
+        "language": "ada83"
+      }
+    ],
+    "debuggers": [
+      {
+        "type": "ada83",
+        "label": "Ada",
+        "languages": [
+          "ada83"
+        ],
+        "configurationAttributes": {
+          "launch": {
+            "required": [
+              "program"
+            ],
+            "properties": {
+              "program": {
+                "type": "string",
+                "description": "The executable to debug. Build it with -g first; Ada 83: Debug A Main From The Project does both."
+              },
+              "args": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "default": [],
+                "description": "Arguments handed to the program."
+              },
+              "cwd": {
+                "type": "string",
+                "description": "The directory the program starts in. Left out, the adapter keeps its own, the workspace folder."
+              },
+              "stopOnEntry": {
+                "type": "boolean",
+                "default": false,
+                "description": "Stop as the program enters, before any of it has run."
+              }
+            }
+          }
+        },
+        "initialConfigurations": [
+          {
+            "type": "ada83",
+            "request": "launch",
+            "name": "Ada 83: debug the main",
+            "program": "${workspaceFolder}/main",
+            "stopOnEntry": false
+          }
+        ],
+        "configurationSnippets": [
+          {
+            "label": "Ada 83: Debug A Main",
+            "description": "Launch a main built with -g under the compiler's own debug adapter, ada83 --dap.",
+            "body": {
+              "type": "ada83",
+              "request": "launch",
+              "name": "^\"Ada 83: debug ${1:main}\"",
+              "program": "^\"\\${workspaceFolder}/${1:main}\"",
+              "stopOnEntry": false
+            }
+          }
+        ]
       }
     ]
   }
@@ -1743,70 +3708,496 @@ module.exports = { activate, deactivate };
 
 Ada 83 (ANSI/MIL-STD-1815A) language support, powered by the [`ada83`
 compiler](https://github.com/AdaDoom3/Ada83). The extension talks to
-`ada83 --lsp`, the compiler's own language server, so diagnostics, hovers and
-completions come from the exact same front end that builds your code.
+`ada83 --lsp`, the compiler's own language server, so diagnostics, hovers,
+completions and every other answer come from the exact same front end that
+builds your code — there is no second parser to disagree with the first.
 
 ## Features
 
-- **Diagnostics** as you type, each with a quick fix from the compiler
+- **Diagnostics** as you type, spanning the whole name they complain about.
+  A `previous declaration at ...` note arrives as a linked related location
+  — click it in the Problems panel and land on the declaration — and a
+  `did you mean ...?` note becomes a one-click quick fix that renames the
+  identifier under the diagnostic. All three come from the compiler itself,
+  not from a regex over its output
 - **Go to Definition**, including into `ada83-runtime.ada`, the standard library
-- **Find All References** and **Document Highlights**
+- **Find All References**, **Document Highlights** and **workspace symbols**
 - **Hover** showing the declaration as Ada 83 declares it
 - **Completion** for names in scope, including the runtime
 - **Signature Help** for the call being written
 - **Document Outline** and **Folding**, from the compiler's own view of the unit
-- **Syntax Highlighting** for all 63 Ada 83 reserved words
-- **Snippets** for common constructs, from a compilation unit to a record
-  representation clause
-- **Suggest a Fix**, a compiler-generated repair shown as a diff before it's applied
-- **Format Document** and format-on-save, to the style the standard itself uses
+- **Syntax highlighting** for all 63 Ada 83 reserved words, and **file icons**
+  for `.ada`, `.ads`, `.adb`, `.gpr` and `.gpj`
+- **Semantic Highlighting**: the compiler says what kind of thing each name
+  is — package, type, subprogram, parameter, enumeration literal, object —
+  so a theme can colour `COUNT` the type apart from `COUNT` the variable,
+  which no grammar can
+- **Code Lenses** over every library-level parameterless procedure — the
+  ones the compiler accepts as mains — offering *Build*, *Build Main* and
+  *Plan*
+- **A Project sidebar** — the tree `-P` resolved, imports and all, with
+  Build, Run and Debug on every main, live build progress, and scenario
+  variables as rows
+- **Debugging, adapter included** — `F5` or the Debug button on a main
+  rebuilds it with `-g` and starts it under `ada83 --dap`: the compiler
+  speaks the Debug Adapter Protocol itself, lldb-dap underneath, Ada
+  names throughout, and a **Tasks** view of the program's Ada tasks at
+  every stop
+- **Snippets** from a compilation unit to a record representation clause
 - **Build** and **Check** commands (`Ctrl+Alt+B` / `Ctrl+Alt+C`), wired up as
   tasks with a problem matcher
+- **Project files**, `.gpr` and `.gpj`: plan, build and clean with `-P`, mains
+  as tasks, **scenario variables** set from a typed picker (`Ctrl+Alt+X`)
+- **New Project** scaffolds a buildable project from one name
+- **The compiler itself, found or fetched**: point at one, or let the
+  extension download a released build
+- **Suggest A Fix**, a model-written repair shown as a diff, applied only if
+  you approve it and only if it compiles
+- **Format Document** and format-on-save to the style the standard itself
+  uses, plus model-free reindentation as you type
+- **Diagnostics in your language**, translated on request, English by default
+- A **`search_ada83_manual` tool** so AI assistants read the standard rather
+  than recall a later Ada
+
+## Zero to compiled
+
+1. Install the extension and open a folder.
+2. If no `ada83` is found, accept the offer to **download** one (or point
+   `ada83.compilerPath` at yours). The status bar names whichever compiler
+   answered.
+3. Run **Ada 83: New Project**, give it a name.
+4. `Ctrl+Alt+Shift+B` builds it; the binary lands beside the project file.
+
+## The compiler
+
+Everything past colouring is answered by the `ada83` executable, so the
+extension resolves one on activation, in this order:
+
+1. **`ada83.compilerPath`**, when you have set it;
+2. **`bin-linux/`, `bin-macos/` or `bin-windows/` under the workspace** —
+   the layout the compiler's own repository builds into;
+3. **`ada83` on PATH**;
+4. failing all three, an **offer to download** a released build or locate one.
+
+A candidate counts only if `--version` answers. The download goes to the
+extension's own storage, is staged and adopted only after `--version`
+answers there too, and always places `ada83-runtime.ada` — which the
+compiler requires beside its executable — next to the binary, plus the
+vendored DLLs on Windows. Whatever is adopted is written back to
+`ada83.compilerPath`, put first on `PATH` in integrated terminals, and named
+in the status bar with its version. **Ada 83: Download Or Update The
+Compiler** re-fetches at any time; `ada83.downloadBase` points the fetch at
+a mirror (http, https or file URLs).
+
+The extension makes no other network request, and sends no telemetry.
+
+## Projects
+
+Point the extension at a project and it hands it to the compiler as
+`-P`. A single `.gpr` or `.gpj` at the root of the workspace is found on its
+own; anywhere else, name it in `ada83.projectFile` or run **Ada 83: Select
+The Active Project**. If the root holds more than one, none is active until
+you choose — the status bar says so and clicking it asks.
+
+With a project active:
+
+- its **source directories**, and those of everything it withs, are searched
+  for with-ed units, so go-to-definition and completion see the whole tree
+- **Ada 83: Build The Active Project** (`Ctrl+Alt+Shift+B`) compiles and
+  links; each **main** is also a task of its own, and **Build A Main From
+  The Project** picks one
+- **Ada 83: Show The Build Plan** runs `-n`, which prints what the project
+  resolves to — sources, switches, imports and externals — and builds nothing
+- **Ada 83: Clean The Project** removes the compiler's own products (`.ali`,
+  `.ll`, `.o`, `.s`) from `Object_Dir` and the mains from `Exec_Dir`, after
+  asking. It touches nothing else
+- diagnostics from the project file itself land in the Problems panel with
+  everything else. An attribute the compiler does not know is a **warning**,
+  not an error, so a GNAT tree carrying `package IDE` marks it and builds
+
+**Ada 83: New Project** goes the other way: give it a name and it writes
+`<name>.gpr` with a typed scenario variable, a `src/` directory and a main
+that prints a line — a complete project every command above acts on at once.
+
+### Scenario variables
+
+A project sets its knobs from `external (...)`, and a typed one names the
+values it may take:
+
+```ada
+type Build_Kind is ("debug", "release");
+Build : Build_Kind := external ("BUILD", "debug");
+```
+
+**Ada 83: Set A Scenario Variable** (`Ctrl+Alt+X`, or the status bar item)
+asks the compiler to list what the project declares, types, defaults and
+all (`--externals`). A typed variable is offered exactly its type's
+literals, because those are exactly the values it may take — a closed list
+and not a text box; an untyped one opens a text box with its default filled
+in, and emptying that box unsets it again. What you choose is remembered in
+the workspace, as `ada83.scenario`, and passed to every build and every
+plan as `-X NAME=VALUE`; the language server is then restarted over the
+source directories that scenario resolves to. The same picker resets every
+variable to the project's own defaults, and names one the project does not
+reach under the current setting. An older compiler that cannot list
+externals still gets a picker: the names the plan resolved, as free text.
+
+An external declared with **no default** and left unset is an error, in
+gprbuild and here: the compiler refuses to read the project and says which
+one, the message appears against the project file, and the status bar shows
+the project in error until it is set.
+
+Changing a variable re-reads the project and restarts the language server.
+The compiler records the scenario a build used in its object directory and
+rebuilds what a change invalidates, so switching back and forth does not
+hand you stale objects.
+
+### The Project sidebar
+
+The Ada 83 icon in the activity bar opens the project explorer: the tree
+`-P` resolved, drawn from the compiler's own answers (`--plan-json` for
+the tree, `--externals` for the variables), so the sidebar cannot come to
+disagree with the build.
+
+- the **root project** expands to its attributes — `Source_Dirs`,
+  `Object_Dir`, switches plain and indexed, spelled as the plan spells
+  them — its typed declarations and variables, and its **imports**, each
+  a project node of its own, expandable the same way
+- every **main** carries inline **Build** and **Run** buttons. Build runs
+  the compiler with `--progress` and renders each compile as it happens —
+  *compiling 3/17 — pack.adb* — and a build with nothing to do says so:
+  *up to date — nothing to compile*. Run builds first, then starts the
+  image in a terminal. Both offer to clean first when the scenario changed
+  since the last build, like the build tasks do
+- **scenario variables** are rows, `NAME = value (origin)`. Clicking a
+  typed one opens exactly its type's literals, an untyped one a text box
+  with its default filled in, and the choice lands in `ada83.scenario`
+  exactly as the picker's would
+- the view refreshes when a project file is saved or the scenario
+  changes, and by hand from its title bar
+
+### What the compiler answers today
+
+Project support arrived in the compiler a stage at a time, and the
+extension says whatever the compiler says rather than pretending
+otherwise. A current compiler reads a project (`-P`), plans (`-n`, and
+`--plan-json` for tools), lists the externals with their types
+(`--externals`), builds in dependency order, and narrates a build one
+`PROGRESS` line per compile (`--progress`). With an older compiler the
+extension degrades a feature at a time: the typed picker falls back to
+the externals the plan resolved, as free text; the sidebar falls back to
+the `-n` plan, which carries no indexed attributes — less, never wrong.
+The sidebar's Build button asks for `--progress` and needs a compiler
+that knows it; the build *tasks* (`Ctrl+Alt+Shift+B` and friends) pass no
+such flag and work with any.
+
+## Debugging
+
+`F5`, **Ada 83: Debug A Main From The Project**, or the **Debug** button
+on a main in the project view. The extension rebuilds the main with `-g`
+first — the same progress build the sidebar's Build runs, `-P` and every
+`-X` preserved — then starts the executable under the debug adapter,
+which is the compiler itself: `ada83 --dap` speaks the Debug Adapter
+Protocol on stdio, drives lldb-dap underneath — LLVM end to end, the
+same toolchain that assembled the code — and does the Ada spelling
+itself: **breakpoints, stepping, variables and expressions** work, and
+names are translated on the way through, so what you read is what Ada
+declares rather than an encoded linkage name. While the program stands
+stopped, a **Tasks** view in Run and Debug lists its Ada tasks — each
+master expandable to its dependents, the state beside each name — read
+through the adapter from the runtime's own records; a compiler too old
+to answer leaves the view empty, never wrong. There are no other moving
+parts: no adapter code in the extension, no debugger script anywhere.
+
+A `launch.json` is optional — with none, `F5` on the project debugs its
+first main — and when one names a `program`, the project is still
+rebuilt with `-g` before the adapter gets it. A compiler that predates
+`--dap` is refused with a message pointing at **Ada 83: Download Or
+Update The Compiler**, not half-served; `ada83.debugAdapterPath` runs
+any other DAP executable — raw lldb-dap, say — verbatim in its place,
+for those who want the untranslated view.
+
+The same story holds outside the editor. `ada83 -g` builds a binary
+every LLVM tool reads — lldb, lldb-dap — and `ada83 --debug prog`
+debugs one in the terminal, the same engine and the same Ada spelling
+as the adapter. gdb is the exception: its Ada mode wants its own
+dialect of the debug information, so build with `-ggdb` — `-g` in every
+other respect — and gdb 14+ then speaks Ada natively, `break
+pack.proc`, `print rec.field`; gdb's `catch exception` and `info tasks`
+lean on GNAT runtime hooks this runtime does not provide. Either flag
+defaults the build to `-O0` unless an explicit `-O` says otherwise, so
+what you step through is what you wrote.
+
+## Commands
+
+Generated from the extension manifest — the table cannot say anything the
+extension does not declare.
+
+<!-- BEGIN GENERATED: commands -->
+| Command | Keys | Identifier |
+|---|---|---|
+| Ada 83: New Project |  | `ada83.newProject` |
+| Ada 83: Build File | `ctrl+alt+b` / `cmd+alt+b` | `ada83.build` |
+| Ada 83: Check File | `ctrl+alt+c` / `cmd+alt+c` | `ada83.check` |
+| Ada 83: Build Project | `ctrl+alt+shift+b` / `cmd+alt+shift+b` | `ada83.buildProject` |
+| Ada 83: Build Main |  | `ada83.buildMain` |
+| Ada 83: Show Build Plan |  | `ada83.showPlan` |
+| Ada 83: Clean Project |  | `ada83.cleanProject` |
+| Ada 83: Select Project |  | `ada83.selectProject` |
+| Ada 83: Set Scenario Variable | `ctrl+alt+x` / `cmd+alt+x` | `ada83.setScenario` |
+| Ada 83: Reformat File |  | `ada83.reformat` |
+| Ada 83: Suggest Fix |  | `ada83.suggestFix` |
+| Ada 83: Refresh Project View |  | `ada83.refreshProjectView` |
+| Ada 83: Set Variable |  | `ada83.setScenarioVariable` |
+| Ada 83: Build |  | `ada83.buildMainWithProgress` |
+| Ada 83: Run |  | `ada83.runMain` |
+| Ada 83: Debug Main |  | `ada83.debugMain` |
+| Ada 83: Debug |  | `ada83.debugMainWithProgress` |
+| Ada 83: Download Compiler |  | `ada83.updateCompiler` |
+| Ada 83: Locate Compiler |  | `ada83.chooseCompiler` |
+| Ada 83: Restart Language Server |  | `ada83.restartServer` |
+| Ada 83: Show Server Log |  | `ada83.showOutput` |
+<!-- END GENERATED: commands -->
+
+## Settings
+
+<!-- BEGIN GENERATED: settings -->
+| Setting | Default | What it does |
+|---|---|---|
+| `ada83.compilerPath` | `"ada83"` | Path to the ada83 compiler. |
+| `ada83.downloadBase` | `"https://raw.githubusercontent.com/AdaDoom3/Ada83/main"` | Where Ada 83: Download Or Update The Compiler fetches from. |
+| `ada83.debugAdapterPath` |  | A Debug Adapter Protocol executable to run in place of the compiler's own adapter, verbatim and with no arguments — raw lldb-dap, say, for the untranslated view. |
+| `ada83.enable` | `true` | Report diagnostics from the compiler as you type. |
+| `ada83.requestTimeout` | `15000` | How long, in milliseconds, to wait for one answer from the language server. |
+| `ada83.workspaceRequestTimeout` | `120000` | How long, in milliseconds, to wait for a workspace-wide symbol search, which compiles every Ada source in the workspace root. |
+| `ada83.includePaths` | `[]` | Directories searched for with-ed units, beyond the file's own and the workspace root. |
+| `ada83.projectFile` |  | The project file (.gpr or .gpj) the extension builds and analyses with, passed to the compiler as -P. |
+| `ada83.scenario` | `{}` | Scenario variables passed to the compiler as -X NAME=VALUE, which is what external ("NAME", ...) in the project reads. |
+| `ada83.formatOnType` | `false` | Reindent the line as you type it, by the manual's two-space rule. |
+| `ada83.formatOnSave` | `false` | Reformat the whole file as it is saved. |
+| `ada83.formatStrength` | `"style"` | How much a reformat is allowed to change. |
+| `ada83.language` | `"en"` | The language error messages are read in. |
+| `ada83.syncDelay` | `120` | How long, in milliseconds, typing must pause before the buffer is sent to the compiler. |
+| `ada83.trace.server` | `"off"` | Write the traffic between the editor and the language server to the Ada 83 output channel. |
+<!-- END GENERATED: settings -->
+
+## Snippets
+
+<!-- BEGIN GENERATED: snippets -->
+| Prefix | Expands to |
+|---|---|
+| `procedure` | A procedure body |
+| `function` | A function body |
+| `package` | A package specification |
+| `packagebody` | A package body |
+| `for` | A for loop |
+| `while` | A while loop |
+| `if` | An if statement |
+| `case` | A case statement |
+| `declare` | A block statement with declarations |
+| `record` | A record type declaration |
+| `exception` | An exception handler |
+| `hello` | A complete program |
+| `generic` | A generic procedure and its body |
+| `genericpackage` | A generic package specification |
+| `tasktype` | A task type, its entry and its body |
+| `task` | A single task and its body |
+| `accept` | An accept statement with a body |
+| `select` | A selective wait with a terminate alternative |
+| `selectdelay` | A timed entry call |
+| `selectelse` | A selective wait whose else part runs when no rendezvous is ready |
+| `variant` | A record type with a variant part |
+| `enum` | An enumeration type |
+| `array` | An unconstrained array type |
+| `subtype` | A constrained subtype |
+| `fixed` | A fixed point type |
+| `float` | A floating point type |
+| `access` | An access type |
+| `private` | A private type and its full declaration |
+| `exceptiondecl` | An exception declaration |
+| `raise` | A raise statement |
+| `loop` | A named loop with an exit |
+| `textio` | A main procedure that writes a line |
+| `integerio` | An instantiation of Text_IO.Integer_IO |
+| `pragma` | A pragma |
+| `for use` | A record representation clause |
+<!-- END GENERATED: snippets -->
 
 ## Requirements
 
-- The `ada83` compiler, on your `PATH` or pointed to with
-  `ada83.compilerPath`. Get it from the
-  [releases](https://github.com/AdaDoom3/Ada83) or build it with `make`.
-- `ada83-runtime.ada`, kept next to the compiler executable.
+- Visual Studio Code 1.106 or later, or a compatible editor.
+- The `ada83` compiler. If none is found the extension offers to download a
+  released build; nothing else is required.
+- `ada83-runtime.ada` beside the compiler executable — the download places
+  it there; keep it there if you install by hand.
+- To debug: a compiler new enough to know `--dap` — the extension offers
+  the update — with lldb-dap on PATH underneath it, or
+  `ada83.debugAdapterPath` naming any DAP executable to run instead.
 
-## Getting Started
+## What this is not
 
-1. Install the `ada83` compiler and make sure it's on your `PATH` (or set
-   `ada83.compilerPath`).
-2. Open a folder containing `.ada`, `.adb`, or `.ads` files.
-3. Start typing — diagnostics, hovers and completions come from the compiler
-   automatically.
+Honesty is cheaper than a surprised bug report:
 
-## Configuration
+- **Not Ada 95, 2005, 2012 or 2022.** No tagged types, no child units, no
+  protected objects, no `aliased`, none of the 6 reserved words Ada 95
+  added. The compiler rejects them, and this extension serves this
+  compiler. For modern Ada, use AdaCore's tooling.
+- **Not GNAT tooling.** A GNAT project tree usually loads — unknown
+  attributes are warnings, `package IDE` and friends are recorded and
+  ignored — but nothing here runs gprbuild or gnatpp. Debugging is the
+  compiler's own `--dap` adapter over lldb; gdb's Ada mode reads
+  binaries built with `-ggdb` outside the editor.
+- **Formatting, Suggest A Fix and translated diagnostics ask a language
+  model** available inside your editor, decline politely when there is
+  none, and never apply an answer that does not compile. Everything else —
+  diagnostics, navigation, completion, builds — is model-free and works
+  offline.
+- **The file icon theme is deliberately minimal.** VS Code applies one icon
+  theme to all files, so choosing "Ada 83 File Icons" gives Ada and project
+  files their marks and everything else a plain document.
+- **No screenshots here.** The walkthrough's picture of the scenario picker
+  is an SVG rendering labelled as such, not a screenshot pretending to be
+  the product.
 
-This extension contributes the following settings:
-
-| Setting | Description |
-|---|---|
-| `ada83.compilerPath` | Path to the `ada83` executable; `${workspaceFolder}` is substituted |
-| `ada83.includePaths` | Extra directories searched for with-ed units, beyond the file's own |
-| `ada83.language` | Language diagnostics are read in: `en`, `es`, `fr`, `de`, `zh-CN`, `ja`, `hi`, or `lolcat` |
-| `ada83.enable` | Report diagnostics as you type |
-| `ada83.formatOnType` | Reindent each line as it's typed |
-| `ada83.formatOnSave` | Reformat the whole file on save |
-| `ada83.formatStrength` | How much a reformat may change: `indentation`, `layout`, or `style` |
-| `ada83.syncDelay` | Debounce, in ms, before an edited buffer reaches the compiler |
-| `ada83.requestTimeout` | Timeout for a single language server request |
-| `ada83.workspaceRequestTimeout` | Timeout for a workspace-wide search |
-| `ada83.trace.server` | Log LSP traffic to the output channel, for troubleshooting |
-
-## Language Model Tool
-
-For AI coding assistants, this extension exposes a `search_ada83_manual` tool
-that searches ANSI/MIL-STD-1815A directly, so a question about legality is
-answered from the standard itself rather than from a later Ada.
-
-## More Information
+## More information
 
 - [Compiler and source](https://github.com/AdaDoom3/Ada83)
 - [Issue tracker](https://github.com/AdaDoom3/Ada83/issues)
-- [Language reference (`manual.md`)](https://github.com/AdaDoom3/Ada83/blob/main/ada83-manual.md)
+- [Language reference (`ada83-manual.md`)](https://github.com/AdaDoom3/Ada83/blob/main/ada83-manual.md)
+</script>
+
+<script id="readme-tables.js" type="text/javascript">
+#!/usr/bin/env node
+'use strict';
+
+const fs = require ('fs');
+const path = require ('path');
+
+const Root = process.argv[2] ?? __dirname;
+
+const Read = (Name) =>
+  JSON.parse (fs.readFileSync (path.join (Root, Name), 'utf8'));
+
+const Manifest = Read ('package.json');
+const Snippets = Read ('snippets.json');
+
+const Cell = (Text) =>
+  String (Text).replace (/\|/g, '\\|').replace (/\s*\r?\n\s*/g, ' ');
+
+const First_Sentence = (Text) =>
+  ((Match) => (Match === null ? Text : Match[0]))
+    (/^.*?[.!?](?=\s|$)/s.exec (Text));
+
+const Table = (Head, Rows) =>
+  [`| ${Head.join (' | ')} |`,
+   `|${Head.map (() => '---').join ('|')}|`,
+   ...Rows.map ((Row) => `| ${Row.map (Cell).join (' | ')} |`)].join ('\n');
+
+const Keys_For = (Command) =>
+  (Manifest.contributes.keybindings ?? [])
+    .filter ((Bound) => Bound.command === Command)
+    .map (({ key, mac }) =>
+      (mac === undefined ? `\`${key}\`` : `\`${key}\` / \`${mac}\``))
+    .join (', ');
+
+const Shown_Default = (Given) =>
+  Given === undefined || Given === '' ? '' : `\`${JSON.stringify (Given)}\``;
+
+const Tables = {
+  commands: Table (['Command', 'Keys', 'Identifier'],
+    Manifest.contributes.commands.map ((Command) =>
+      [`${Command.category}: ${Command.title}`,
+       Keys_For (Command.command),
+       `\`${Command.command}\``])),
+  settings: Table (['Setting', 'Default', 'What it does'],
+    Object.entries (Manifest.contributes.configuration.properties)
+      .map (([Name, About]) =>
+        [`\`${Name}\``,
+         Shown_Default (About.default),
+         First_Sentence (About.description)])),
+  snippets: Table (['Prefix', 'Expands to'],
+    Object.values (Snippets).map ((Snippet) =>
+      [`\`${Snippet.prefix}\``, Snippet.description])),
+};
+
+const Readme_Path = path.join (Root, 'README.md');
+let Readme = fs.readFileSync (Readme_Path, 'utf8');
+const Missing = [];
+
+Object.entries (Tables).forEach (([Name, Body]) => {
+  const Marked = new RegExp (
+    `(<!-- BEGIN GENERATED: ${Name}[^>]*-->)[\\s\\S]*?` +
+    `(<!-- END GENERATED: ${Name} -->)`);
+  if (!Marked.test (Readme)) return Missing.push (Name);
+  Readme = Readme.replace (Marked, `$1\n${Body}\n$2`);
+});
+
+if (Missing.length > 0) {
+  console.error (`README.md lost its generated markers: ${Missing.join (', ')}`);
+  process.exit (1);
+}
+
+fs.writeFileSync (Readme_Path, Readme);
+console.log ('README tables regenerated from the manifest');
+</script>
+
+<script id="CHANGELOG.md" type="text/markdown">
+# Changelog
+
+Every user-visible change, newest first. The version is the extension's
+own; the compiler versions independently and answers `--version`.
+
+## 1.0.0
+
+The first release, grown alongside the compiler's 2026 campaign. In the
+order the pieces landed:
+
+The language client:
+
+- Diagnostics as you type, from `ada83 --lsp`, with the compiler's quick fixes
+- Go to definition, references, document highlights, workspace symbols
+- Hover, completion, signature help, outline, folding
+- Syntax highlighting for the 63 reserved words; brackets, folding and
+  indentation rules
+- Snippets, a compilation unit to a record representation clause
+- Build This File / Check This File as tasks with a problem matcher
+- Format Document and format-on-save to the manual's style, model-applied
+  and kept only when the result still compiles; model-free reindentation
+  as you type
+- Suggest A Fix: a model-written repair shown as a diff, applied only on
+  approval and only if it compiles
+- Diagnostics translated on request (es, fr, de, zh-CN, ja, hi, lolcat),
+  English untouched by default
+- The `search_ada83_manual` language-model tool and Ada 83 chat
+  instructions, so assistants read ANSI/MIL-STD-1815A instead of
+  recalling a later Ada
+
+Project files:
+
+- `.gpr` and `.gpj` handed to the compiler as `-P`; a lone root project
+  found on its own, others chosen with Select The Active Project
+- Build The Active Project, Build A Main From The Project, Show The
+  Build Plan (`-n`), Clean The Project
+- Scenario variables from a status-bar picker: a typed external offers
+  exactly its type's literals (`--externals`), an untyped one a text box
+- Project-file diagnostics in the Problems panel; unknown attributes are
+  warnings, so GNAT trees load
+- Debugging: F5, Debug A Main From The Project, and a Debug button on
+  every main — a `-g` rebuild, then the compiler itself as the debug
+  adapter (`ada83 --dap`, lldb-dap underneath); while the program is
+  stopped, a Tasks view of its Ada tasks in Run and Debug
+
+Standing alone:
+
+- The compiler found or fetched: setting, then workspace `bin-<platform>/`,
+  then PATH, then an offer to download a released build with the runtime
+  placed beside it; the adopted compiler is named in the status bar and
+  put first on PATH in integrated terminals
+- New Project: one name becomes a `.gpr` with a typed scenario variable,
+  `src/`, and a main that prints a line
+- File icons for `.ada`, `.ads`, `.adb`, `.gpr`, `.gpj` as an icon theme
+- A walkthrough covering compiler fetch, scaffolding, scenario and build
+- README reference tables generated from the manifest at packaging time
 </script>
 
 <script id="ada83.instructions.md" type="text/markdown">
@@ -1871,6 +4262,35 @@ tool (`#ada83Manual`) instead of recalling modern Ada.
     "increaseIndentPattern": "(?i)^\\s*(.*\\b(is|then|loop|begin|record|declare|select|do|else)\\s*|.*\\b(procedure|function|package|task)\\b[^;]*)$",
     "decreaseIndentPattern": "(?i)^\\s*\\b(end|elsif|else|exception|when|begin|private)\\b"
   }
+}
+</script>
+
+<script id="language-configuration-gpr.json" type="application/json">
+{
+  "comments": { "lineComment": "--" },
+  "brackets": [["(", ")"]],
+  "autoClosingPairs": [
+    { "open": "(", "close": ")", "notIn": ["string", "comment"] },
+    { "open": "\"", "close": "\"", "notIn": ["string", "comment"] }
+  ],
+  "surroundingPairs": [["(", ")"], ["\"", "\""]],
+  "wordPattern": "[A-Za-z][A-Za-z0-9_]*",
+  "indentationRules": {
+    "increaseIndentPattern": "(?i)^\\s*(.*\\bis\\s*|.*\\b(case|when)\\b[^;]*)$",
+    "decreaseIndentPattern": "(?i)^\\s*\\b(end|when)\\b"
+  }
+}
+</script>
+
+<script id="language-configuration-gpj.json" type="application/json">
+{
+  "comments": { "lineComment": "#" },
+  "brackets": [["[", "]"]],
+  "autoClosingPairs": [
+    { "open": "[", "close": "]", "notIn": ["comment"] }
+  ],
+  "surroundingPairs": [["[", "]"]],
+  "wordPattern": "[A-Za-z0-9_.-]+"
 }
 </script>
 
@@ -2081,6 +4501,19 @@ tool (`#ada83Manual`) instead of recalling modern Ada.
     ],
     "description": "A timed entry call"
   },
+  "selective wait with else": {
+    "prefix": "selectelse",
+    "body": [
+      "select",
+      "   accept ${1:Name} do",
+      "      ${2:null;}",
+      "   end ${1:Name};",
+      "else",
+      "   $0",
+      "end select;"
+    ],
+    "description": "A selective wait whose else part runs when no rendezvous is ready"
+  },
   "variant record": {
     "prefix": "variant",
     "body": [
@@ -2258,8 +4691,9 @@ tool (`#ada83Manual`) instead of recalling modern Ada.
       ]
     },
     "character": {
+      "comment": "A tick opens a character literal only when the tick before it cannot close a prefix: after an identifier character or ')' the tick is an attribute or qualified-expression mark, so T'A'FIRST and CHARACTER'('A') both read correctly.",
       "name": "string.quoted.single.ada",
-      "match": "(?<![A-Za-z0-9_])'.'"
+      "match": "(?<![A-Za-z0-9_)])'.'"
     },
     "number": {
       "patterns": [
@@ -2335,52 +4769,59 @@ tool (`#ada83Manual`) instead of recalling modern Ada.
         {
           "match": "(?i)\\b(procedure|function|entry)\\s+(\"[^\"]+\"|[A-Za-z][A-Za-z0-9_]*)",
           "captures": {
-            "1": { "name": "storage.type.ada" },
+            "1": { "name": "keyword.other.ada" },
             "2": { "name": "entity.name.function.ada" }
           }
         },
         {
           "match": "(?i)\\b(package)\\s+(body\\s+)?([A-Za-z][A-Za-z0-9_]*(?:\\.[A-Za-z][A-Za-z0-9_]*)*)",
           "captures": {
-            "1": { "name": "storage.type.ada" },
-            "2": { "name": "storage.type.ada" },
+            "1": { "name": "keyword.other.ada" },
+            "2": { "name": "keyword.other.ada" },
             "3": { "name": "entity.name.namespace.ada" }
           }
         },
         {
           "match": "(?i)\\b(task)\\s+(body\\s+|type\\s+)?([A-Za-z][A-Za-z0-9_]*)",
           "captures": {
-            "1": { "name": "storage.type.ada" },
-            "2": { "name": "storage.type.ada" },
+            "1": { "name": "keyword.other.ada" },
+            "2": { "name": "keyword.other.ada" },
             "3": { "name": "entity.name.type.ada" }
           }
         },
         {
           "match": "(?i)\\b(type|subtype)\\s+([A-Za-z][A-Za-z0-9_]*)",
           "captures": {
-            "1": { "name": "storage.type.ada" },
+            "1": { "name": "keyword.other.ada" },
             "2": { "name": "entity.name.type.ada" }
           }
         },
         {
           "match": "(?i)\\b(accept)\\s+([A-Za-z][A-Za-z0-9_]*)",
           "captures": {
-            "1": { "name": "keyword.control.ada" },
+            "1": { "name": "keyword.other.ada" },
             "2": { "name": "entity.name.function.ada" }
           }
         },
         {
           "match": "(?i)\\b(is)\\s+(new)\\s+([A-Za-z][A-Za-z0-9_]*(?:\\.[A-Za-z][A-Za-z0-9_]*)*)",
           "captures": {
-            "1": { "name": "keyword.control.ada" },
-            "2": { "name": "storage.modifier.ada" },
+            "1": { "name": "keyword.other.ada" },
+            "2": { "name": "keyword.other.ada" },
             "3": { "name": "entity.name.type.ada" }
           }
         },
         {
-          "match": "(?i)\\b(raise|new)\\s+([A-Za-z][A-Za-z0-9_]*(?:\\.[A-Za-z][A-Za-z0-9_]*)*)",
+          "match": "(?i)\\b(raise)\\s+([A-Za-z][A-Za-z0-9_]*(?:\\.[A-Za-z][A-Za-z0-9_]*)*)",
           "captures": {
-            "1": { "name": "keyword.control.ada" },
+            "1": { "name": "keyword.other.ada" },
+            "2": { "name": "entity.name.type.ada" }
+          }
+        },
+        {
+          "match": "(?i)\\b(new)\\s+([A-Za-z][A-Za-z0-9_]*(?:\\.[A-Za-z][A-Za-z0-9_]*)*)",
+          "captures": {
+            "1": { "name": "keyword.other.ada" },
             "2": { "name": "entity.name.type.ada" }
           }
         },
@@ -2389,7 +4830,7 @@ tool (`#ada83Manual`) instead of recalling modern Ada.
           "captures": {
             "1": { "name": "entity.name.type.exception.ada" },
             "2": { "name": "punctuation.separator.ada" },
-            "3": { "name": "keyword.control.ada" }
+            "3": { "name": "keyword.other.ada" }
           }
         }
       ]
@@ -2399,15 +4840,15 @@ tool (`#ada83Manual`) instead of recalling modern Ada.
         {
           "match": "(?i)\\b(end)\\s+(loop)\\s+([A-Za-z][A-Za-z0-9_]*)",
           "captures": {
-            "1": { "name": "keyword.control.ada" },
-            "2": { "name": "keyword.control.ada" },
+            "1": { "name": "keyword.other.ada" },
+            "2": { "name": "keyword.other.ada" },
             "3": { "name": "entity.name.label.ada" }
           }
         },
         {
           "match": "(?i)\\b(end)\\s+(?!(?:if|case|loop|record|select)\\b)(\"[^\"]+\"|[A-Za-z][A-Za-z0-9_]*(?:\\.[A-Za-z][A-Za-z0-9_]*)*)",
           "captures": {
-            "1": { "name": "keyword.control.ada" },
+            "1": { "name": "keyword.other.ada" },
             "2": { "name": "entity.name.section.ada" }
           }
         }
@@ -2416,10 +4857,10 @@ tool (`#ada83Manual`) instead of recalling modern Ada.
     "loop_parameter": {
       "match": "(?i)\\b(for)\\s+([A-Za-z][A-Za-z0-9_]*)\\s+(in)\\b\\s*(reverse\\b)?",
       "captures": {
-        "1": { "name": "keyword.control.ada" },
+        "1": { "name": "keyword.other.ada" },
         "2": { "name": "variable.other.loop.ada" },
-        "3": { "name": "storage.modifier.ada" },
-        "4": { "name": "storage.modifier.ada" }
+        "3": { "name": "keyword.other.ada" },
+        "4": { "name": "keyword.other.ada" }
       }
     },
     "association": {
@@ -2432,7 +4873,7 @@ tool (`#ada83Manual`) instead of recalling modern Ada.
     "choice": {
       "begin": "(?i)\\b(when)\\b",
       "beginCaptures": {
-        "1": { "name": "keyword.control.ada" }
+        "1": { "name": "keyword.other.ada" }
       },
       "end": "(=>)|(;)",
       "endCaptures": {
@@ -2453,22 +4894,11 @@ tool (`#ada83Manual`) instead of recalling modern Ada.
       ]
     },
     "attribute": {
-      "patterns": [
-        {
-          "match": "(?i)(')\\s*(address|aft|base|callable|constrained|count|delta|digits|emax|epsilon|first_bit|first|fore|image|large|last_bit|last|length|machine_emax|machine_emin|machine_mantissa|machine_overflows|machine_radix|machine_rounds|mantissa|position|pos|pred|range|safe_emax|safe_large|safe_small|size|small|storage_size|succ|terminated|value|val|width)\\b",
-          "captures": {
-            "1": { "name": "punctuation.definition.attribute.ada" },
-            "2": { "name": "support.other.attribute.ada" }
-          }
-        },
-        {
-          "match": "(')\\s*([A-Za-z][A-Za-z0-9_]*)",
-          "captures": {
-            "1": { "name": "punctuation.definition.attribute.ada" },
-            "2": { "name": "entity.other.attribute-name.ada" }
-          }
-        }
-      ]
+      "match": "(')\\s*([A-Za-z][A-Za-z0-9_]*)",
+      "captures": {
+        "1": { "name": "punctuation.definition.attribute.ada" },
+        "2": { "name": "entity.other.attribute-name.ada" }
+      }
     },
     "predefined": {
       "patterns": [
@@ -2495,6 +4925,7 @@ tool (`#ada83Manual`) instead of recalling modern Ada.
       ]
     },
     "keyword": {
+      "comment": "All 63 reserved words take one scope, so every construct's bracket words match under any theme: procedure/is/begin/exception/end one color, accept/do/end one color, if/then/end if one color. Only null stands apart, because it is a value, and its Dark+ color happens to coincide.",
       "patterns": [
         {
           "name": "constant.language.null.ada",
@@ -2502,32 +4933,17 @@ tool (`#ada83Manual`) instead of recalling modern Ada.
         },
         {
           "name": "keyword.other.ada",
-          "match": "(?i)\\b(pragma|use|with)\\b"
-        },
-        {
-          "name": "storage.type.ada",
-          "match": "(?i)\\b(access|array|body|entry|function|generic|package|procedure|record|subtype|task|type)\\b"
-        },
-        {
-          "name": "storage.modifier.ada",
-          "match": "(?i)\\b(all|at|constant|delta|digits|in|limited|new|of|out|private|range|renames|reverse|separate)\\b"
-        },
-        {
-          "name": "keyword.control.ada",
-          "match": "(?i)\\b(abort|accept|begin|case|declare|delay|do|else|elsif|end|exception|exit|for|goto|if|is|loop|others|raise|return|select|terminate|then|when|while)\\b"
-        },
-        {
-          "name": "keyword.operator.word.ada",
-          "match": "(?i)\\b(abs|and|mod|not|or|rem|xor)\\b"
+          "match": "(?i)\\b(abort|abs|accept|access|all|and|array|at|begin|body|case|constant|declare|delay|delta|digits|do|else|elsif|end|entry|exception|exit|for|function|generic|goto|if|in|is|limited|loop|mod|new|not|of|or|others|out|package|pragma|private|procedure|raise|range|record|rem|renames|return|reverse|select|separate|subtype|task|terminate|then|type|use|when|while|with|xor)\\b"
         }
       ]
     },
     "parameter": {
-      "match": "(?i)\\b([A-Za-z][A-Za-z0-9_]*)\\s*(:)\\s*((?:in\\s+out|in|out)\\b)?",
+      "comment": "A mode is declarative, not a membership test, so 'in out' takes the declarative scope as one piece rather than splitting into operator-in and other-out. The colon must not be the head of ':=', or an assignment's target reads as a declaration and the delimiter splits in two.",
+      "match": "(?i)\\b([A-Za-z][A-Za-z0-9_]*)\\s*(:)(?!=)\\s*((?:in\\s+out|in|out)\\b)?",
       "captures": {
         "1": { "name": "variable.parameter.ada" },
         "2": { "name": "punctuation.separator.ada" },
-        "3": { "name": "storage.modifier.ada" }
+        "3": { "name": "keyword.other.ada" }
       }
     },
     "operator": {
@@ -2546,6 +4962,309 @@ tool (`#ada83Manual`) instead of recalling modern Ada.
 }
 </script>
 
+<script id="syntaxes/gpr.tmLanguage.json" type="application/json">
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "GNAT Project",
+  "scopeName": "source.gpr",
+  "comment": "A .gpr is lexically an Ada subset, so the reserved words take the same partition as source.ada: case/when steer, everything else declares. The qualifiers and 'project' itself are contextual keywords, matched only where the grammar of a project file puts them.",
+  "patterns": [
+    { "include": "#comment" },
+    { "include": "#string" },
+    { "include": "#qualifier" },
+    { "include": "#declaration" },
+    { "include": "#builtin" },
+    { "include": "#attribute" },
+    { "include": "#keyword" },
+    { "include": "#number" },
+    { "include": "#operator" },
+    { "include": "#punctuation" }
+  ],
+  "repository": {
+    "comment": {
+      "name": "comment.line.double-dash.gpr",
+      "match": "(--).*$",
+      "captures": {
+        "1": { "name": "punctuation.definition.comment.gpr" }
+      }
+    },
+    "string": {
+      "name": "string.quoted.double.gpr",
+      "match": "\"(?:[^\"]|\"\")*\""
+    },
+    "qualifier": {
+      "comment": "abstract/aggregate/library/standard/configuration are keywords only where a qualifier can stand, immediately before 'project'; anywhere else the same spelling is a name.",
+      "name": "keyword.other.gpr",
+      "match": "(?i)\\b(abstract|aggregate|configuration|library|standard)(?=\\s+(?:library\\s+)?project\\b)"
+    },
+    "declaration": {
+      "patterns": [
+        {
+          "match": "(?i)\\b(project)\\s+([A-Za-z][A-Za-z0-9_]*(?:\\.[A-Za-z][A-Za-z0-9_]*)*)",
+          "captures": {
+            "1": { "name": "keyword.other.gpr" },
+            "2": { "name": "entity.name.namespace.gpr" }
+          }
+        },
+        {
+          "match": "(?i)\\b(package)\\s+([A-Za-z][A-Za-z0-9_]*)",
+          "captures": {
+            "1": { "name": "keyword.other.gpr" },
+            "2": { "name": "entity.name.namespace.gpr" }
+          }
+        },
+        {
+          "match": "(?i)\\b(type)\\s+([A-Za-z][A-Za-z0-9_]*)",
+          "captures": {
+            "1": { "name": "keyword.other.gpr" },
+            "2": { "name": "entity.name.type.gpr" }
+          }
+        },
+        {
+          "match": "(?i)\\b(end)\\s+([A-Za-z][A-Za-z0-9_]*(?:\\.[A-Za-z][A-Za-z0-9_]*)*)",
+          "captures": {
+            "1": { "name": "keyword.other.gpr" },
+            "2": { "name": "entity.name.section.gpr" }
+          }
+        },
+        {
+          "match": "(?i)\\b(for)\\s+([A-Za-z][A-Za-z0-9_]*)",
+          "captures": {
+            "1": { "name": "keyword.other.gpr" },
+            "2": { "name": "entity.other.attribute-name.gpr" }
+          }
+        }
+      ]
+    },
+    "builtin": {
+      "name": "support.function.gpr",
+      "match": "(?i)\\b(external_as_list|external)\\b"
+    },
+    "attribute": {
+      "match": "(')\\s*([A-Za-z][A-Za-z0-9_]*)",
+      "captures": {
+        "1": { "name": "punctuation.definition.attribute.gpr" },
+        "2": { "name": "entity.other.attribute-name.gpr" }
+      }
+    },
+    "keyword": {
+      "patterns": [
+        {
+          "name": "constant.language.null.gpr",
+          "match": "(?i)\\bnull\\b"
+        },
+        {
+          "name": "keyword.other.gpr",
+          "match": "(?i)\\b(all|at|case|end|extends|for|is|limited|others|package|project|renames|type|use|when|with)\\b"
+        }
+      ]
+    },
+    "number": {
+      "name": "constant.numeric.gpr",
+      "match": "\\b\\d+\\b"
+    },
+    "operator": {
+      "name": "keyword.operator.gpr",
+      "match": "(:=|=>|&|\\|)"
+    },
+    "punctuation": {
+      "patterns": [
+        { "name": "punctuation.terminator.gpr", "match": ";" },
+        { "name": "punctuation.separator.gpr", "match": "[,:.]" },
+        { "name": "punctuation.section.parens.gpr", "match": "[()]" }
+      ]
+    }
+  }
+}
+</script>
+<script id="ada83-file-icons.json" type="application/json">
+{
+  "iconDefinitions": {
+    "ada83-source":      { "iconPath": "./ada83-icon-source.svg" },
+    "ada83-spec":        { "iconPath": "./ada83-icon-spec.svg" },
+    "ada83-body":        { "iconPath": "./ada83-icon-body.svg" },
+    "ada83-project":     { "iconPath": "./ada83-icon-project.svg" },
+    "ada83-file":        { "iconPath": "./ada83-icon-file.svg" },
+    "ada83-folder":      { "iconPath": "./ada83-icon-folder.svg" },
+    "ada83-folder-open": { "iconPath": "./ada83-icon-folder-open.svg" }
+  },
+  "file": "ada83-file",
+  "folder": "ada83-folder",
+  "folderExpanded": "ada83-folder-open",
+  "fileExtensions": {
+    "ada": "ada83-source",
+    "adb": "ada83-body",
+    "ads": "ada83-spec",
+    "gpr": "ada83-project",
+    "gpj": "ada83-project"
+  },
+  "languageIds": {
+    "ada83": "ada83-source"
+  }
+}
+</script>
+
+<script id="syntaxes/gpj.tmLanguage.json" type="application/json">
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Green Hills Project",
+  "scopeName": "source.gpj",
+  "comment": "A .gpj is read a line at a time, and each rule here claims exactly the lines the compiler's reader claims: the #!gbuild header, '#' comments, '-' options, 'macro' and key=value directives, and a [Tag] standing alone or after an entry. An entry's file name is left unscoped, so nothing can mis-color a path.",
+  "patterns": [
+    { "include": "#header" },
+    { "include": "#comment" },
+    { "include": "#option" },
+    { "include": "#macro" },
+    { "include": "#setting" },
+    { "include": "#tag" }
+  ],
+  "repository": {
+    "header": {
+      "name": "comment.line.shebang.gpj",
+      "match": "^#!gbuild\\b.*$"
+    },
+    "comment": {
+      "comment": "Only a '#' first on its line comments; one inside an option or a path is part of it.",
+      "name": "comment.line.number-sign.gpj",
+      "match": "^\\s*(#).*$",
+      "captures": {
+        "1": { "name": "punctuation.definition.comment.gpj" }
+      }
+    },
+    "option": {
+      "match": "^\\s*(-[^\\s=]*)(=)?",
+      "captures": {
+        "1": { "name": "keyword.other.option.gpj" },
+        "2": { "name": "keyword.operator.assignment.gpj" }
+      }
+    },
+    "macro": {
+      "match": "^\\s*(macro)\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*(=)",
+      "captures": {
+        "1": { "name": "keyword.other.directive.gpj" },
+        "2": { "name": "variable.other.macro.gpj" },
+        "3": { "name": "keyword.operator.assignment.gpj" }
+      }
+    },
+    "setting": {
+      "comment": "A first word carrying '=' is a directive, primaryTarget=... being the common one; the reader warns about the unknown ones but reads them all.",
+      "match": "^\\s*([A-Za-z_][A-Za-z0-9_]*)(=)",
+      "captures": {
+        "1": { "name": "variable.other.key.gpj" },
+        "2": { "name": "keyword.operator.assignment.gpj" }
+      }
+    },
+    "tag": {
+      "match": "(\\[)([^\\]]+)(\\])",
+      "captures": {
+        "1": { "name": "punctuation.definition.tag.gpj" },
+        "2": { "name": "entity.name.section.tag.gpj" },
+        "3": { "name": "punctuation.definition.tag.gpj" }
+      }
+    }
+  }
+}
+</script>
+<script id="ada83-icon-source.svg" type="image/svg+xml">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16">
+  <path d="M3.5 1.5h6l3 3v10h-9z" fill="none" stroke="#808080"/>
+  <path d="M9.5 1.5v3h3" fill="none" stroke="#808080"/>
+  <path d="M5.4 12.5 8 5.5l2.6 7M6.4 10h3.2" fill="none" stroke="#cc3333"
+        stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
+</script>
+
+<script id="ada83-icon-spec.svg" type="image/svg+xml">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16">
+  <path d="M3.5 1.5h6l3 3v10h-9z" fill="none" stroke="#808080"/>
+  <path d="M9.5 1.5v3h3" fill="none" stroke="#808080"/>
+  <path d="M4.9 12 7 6.5 9.1 12M5.7 10h2.6" fill="none" stroke="#cc3333"
+        stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="10" y="13.6" font-family="sans-serif" font-size="6"
+        fill="#808080">s</text>
+</svg>
+</script>
+
+<script id="ada83-icon-body.svg" type="image/svg+xml">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16">
+  <path d="M3.5 1.5h6l3 3v10h-9z" fill="none" stroke="#808080"/>
+  <path d="M9.5 1.5v3h3" fill="none" stroke="#808080"/>
+  <path d="M4.9 12 7 6.5 9.1 12M5.7 10h2.6" fill="none" stroke="#cc3333"
+        stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="10" y="13.6" font-family="sans-serif" font-size="6"
+        fill="#808080">b</text>
+</svg>
+</script>
+
+<script id="ada83-icon-project.svg" type="image/svg+xml">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16">
+  <path d="M3.5 1.5h6l3 3v10h-9z" fill="none" stroke="#808080"/>
+  <path d="M9.5 1.5v3h3" fill="none" stroke="#808080"/>
+  <path d="M5.5 5.5v6M5.5 8.5h3M5.5 11.5h3" fill="none" stroke="#cc3333"
+        stroke-width="1.2" stroke-linecap="round"/>
+  <circle cx="10" cy="8.5" r="1" fill="#cc3333"/>
+  <circle cx="10" cy="11.5" r="1" fill="#cc3333"/>
+</svg>
+</script>
+
+<script id="ada83-icon-file.svg" type="image/svg+xml">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16">
+  <path d="M3.5 1.5h6l3 3v10h-9z" fill="none" stroke="#808080"/>
+  <path d="M9.5 1.5v3h3" fill="none" stroke="#808080"/>
+  <path d="M5.5 7h3M5.5 9.5h5M5.5 12h5" fill="none" stroke="#808080"/>
+</svg>
+</script>
+
+<script id="ada83-icon-folder.svg" type="image/svg+xml">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16">
+  <path d="M1.5 3.5h4.2l1.6 2h7.2v7h-13z" fill="none" stroke="#808080"/>
+</svg>
+</script>
+
+<script id="ada83-scenario-mock.svg" type="image/svg+xml">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 400"
+     font-family="sans-serif">
+  <rect width="640" height="400" fill="#1e2430"/>
+  <text x="320" y="26" text-anchor="middle" font-size="13" fill="#8a93a5"
+        letter-spacing="2">A RENDERING OF THE PICKER — NOT A SCREENSHOT</text>
+  <rect x="70" y="48" width="500" height="304" rx="6" fill="#252b39"
+        stroke="#3a4356"/>
+  <text x="90" y="78" font-size="15" fill="#d6dbe5">Ada 83: scenario
+    variables</text>
+  <rect x="90" y="92" width="460" height="30" rx="3" fill="#1a1f2a"
+        stroke="#3a4356"/>
+  <text x="100" y="112" font-size="13" fill="#6b7383">The variable to set
+    for this workspace</text>
+  <rect x="82" y="134" width="476" height="52" rx="3" fill="#31405e"/>
+  <text x="100" y="156" font-size="14" fill="#e6eaf2">BUILD</text>
+  <text x="180" y="156" font-size="13" fill="#9aa3b5">debug</text>
+  <text x="100" y="176" font-size="12" fill="#8a93a5">Build_Kind: debug,
+    release</text>
+  <text x="100" y="214" font-size="14" fill="#c9cfdb">OS</text>
+  <text x="180" y="214" font-size="13" fill="#9aa3b5">not set</text>
+  <text x="100" y="234" font-size="12" fill="#6b7383">no default: the build
+    needs a value</text>
+  <text x="100" y="272" font-size="14" fill="#c9cfdb">+ Set a variable by
+    name</text>
+  <text x="100" y="292" font-size="12" fill="#6b7383">For a variable the
+    project does not reach under this scenario.</text>
+  <text x="100" y="326" font-size="14" fill="#c9cfdb">↺ Reset every variable
+    to the project defaults</text>
+  <rect x="0" y="374" width="640" height="26" fill="#171b24"/>
+  <text x="20" y="391" font-size="12" fill="#9aa3b5">⌄ demo.gpr
+    BUILD=debug</text>
+  <text x="620" y="391" text-anchor="end" font-size="12"
+        fill="#9aa3b5">✓ Ada 83</text>
+</svg>
+</script>
+
+<script id="ada83-icon-folder-open.svg" type="image/svg+xml">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16">
+  <path d="M1.5 12.5v-9h4.2l1.6 2h6.2v2" fill="none" stroke="#808080"/>
+  <path d="M1.5 12.5l2-5h11l-2 5z" fill="none" stroke="#808080"/>
+</svg>
+</script>
+
 <script id="extension.vsixmanifest" type="application/xml">
 <?xml version="1.0" encoding="utf-8"?>
 <PackageManifest Version="2.0.0"
@@ -2554,9 +5273,9 @@ tool (`#ada83Manual`) instead of recalling modern Ada.
   <Metadata>
     <Identity Language="en-US" Id="ada83" Version="1.0.0" Publisher="ada83" />
     <DisplayName>Ada 83</DisplayName>
-    <Description xml:space="preserve">Ada 83 (ANSI/MIL-STD-1815A) language support, powered by the ada83 compiler. Diagnostics, go to definition, hover, outline, completion, signature help, folding and quick fixes.</Description>
+    <Description xml:space="preserve">Ada 83 (ANSI/MIL-STD-1815A) language support, powered by the ada83 compiler. Diagnostics, go to definition, hover, outline, completion, signature help, folding, quick fixes, and .gpr / .gpj project files with their scenario variables.</Description>
     <Tags>ada,ada83,mil-std-1815a</Tags>
-    <Categories>Programming Languages,Linters</Categories>
+    <Categories>Programming Languages,Linters,Debuggers</Categories>
     <GalleryFlags>Public</GalleryFlags>
     <Properties>
       <Property Id="Microsoft.VisualStudio.Code.Engine" Value="^1.106.0" />
@@ -2570,6 +5289,7 @@ tool (`#ada83Manual`) instead of recalling modern Ada.
   <Assets>
     <Asset Type="Microsoft.VisualStudio.Code.Manifest" Path="extension/package.json" Addressable="true" />
     <Asset Type="Microsoft.VisualStudio.Services.Content.Details" Path="extension/README.md" Addressable="true" />
+    <Asset Type="Microsoft.VisualStudio.Services.Content.Changelog" Path="extension/CHANGELOG.md" Addressable="true" />
     <Asset Type="Microsoft.VisualStudio.Services.Icons.Default" Path="extension/ada83-icon.png" Addressable="true" />
   </Assets>
 </PackageManifest>
@@ -2583,6 +5303,7 @@ tool (`#ada83Manual`) instead of recalling modern Ada.
   <Default Extension="ada" ContentType="text/plain" />
   <Default Extension="md" ContentType="text/markdown" />
   <Default Extension="png" ContentType="image/png" />
+  <Default Extension="svg" ContentType="image/svg+xml" />
   <Default Extension="vsixmanifest" ContentType="text/xml" />
 </Types>
 </script>
