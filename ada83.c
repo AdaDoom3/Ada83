@@ -308,8 +308,7 @@ double Raise_To_Power_Exact (double base, double exponent) {
   #define ADA_EH_SEH 1
 #endif
 #ifdef ADA_EH_SEH
-  #define ADA_EH_PERSONALITY      "__ada_personality_seh"
-  #define ADA_EH_LSDA_PERSONALITY "__gcc_personality_imp"
+  #define ADA_EH_PERSONALITY      "__gcc_personality_seh0"
 #else
   #define ADA_EH_PERSONALITY      "__ada_personality"
   #define ADA_EH_LSDA_PERSONALITY "__gcc_personality_v0"
@@ -56756,9 +56755,12 @@ void Lower_Task_Body (Node *node) {
 
   Emit ("  %%__as_slot = "
         TASK_FIELD ("%%__self_tcb", ACTIVATION_STATE) "\n");
+  Emit_Call_Void ("void @__ada_rt_lock()");
   Emit ("  store atomic i8 " TEXT_OF (ACTIVATION_STATE_COMPLETE)
         ", ptr %%__as_slot release, align 1\n");
   Emit_Call_Void ("void @__ada_task_signal(ptr %%__self_tcb)");
+  Emit_Call_Void ("void @__ada_rt_broadcast()");
+  Emit_Call_Void ("void @__ada_rt_unlock()");
   Emit_Activate_Pending_Tasks (master.saved_pa);
 
   u32 body_done = Emit_Label ();
@@ -56814,8 +56816,11 @@ void Lower_Task_Body (Node *node) {
         TEXT_OF (ACTIVATION_STATE_PENDING) "\n");
   Emit ("  %%__as_new = select i1 %%__as_unset, i8 "
         TEXT_OF (ACTIVATION_STATE_FAILED) ", i8 %%__as_cur\n");
+  Emit_Call_Void ("void @__ada_rt_lock()");
   Emit ("  store atomic i8 %%__as_new, ptr %%__as_slot.h release, align 1\n");
   Emit_Call_Void ("void @__ada_task_signal(ptr %%__self_tcb)");
+  Emit_Call_Void ("void @__ada_rt_broadcast()");
+  Emit_Call_Void ("void @__ada_rt_unlock()");
   Emit ("  ret ptr null\n");
   Emit ("}\n\n");
 
@@ -58643,8 +58648,12 @@ void Emit_Runtime_Declarations () {
     "declare i32 @memcmp (ptr, ptr, i64)\n"
     "declare i32 @strncasecmp (ptr, ptr, i64)\n"
     "declare " C_INT_TYPE " @_Unwind_ForcedUnwind (ptr, ptr, ptr)\n"
+#ifdef ADA_EH_SEH
+    "declare " C_INT_TYPE " @" ADA_EH_PERSONALITY " (ptr, ptr, ptr, ptr)\n"
+#else
     "declare " C_INT_TYPE " @" ADA_EH_LSDA_PERSONALITY
       " (" C_INT_TYPE ", " C_INT_TYPE ", i64, ptr, ptr)\n"
+#endif
 
     "declare " PTR_INT_TYPE " @_Unwind_GetIPInfo (ptr, ptr)\n"
     "declare " PTR_INT_TYPE " @_Unwind_GetIP (ptr)\n"
@@ -58655,7 +58664,6 @@ void Emit_Runtime_Declarations () {
     "declare void @_Unwind_SetGR (ptr, " C_INT_TYPE ", " PTR_INT_TYPE ")\n"
     "declare void @_Unwind_SetIP (ptr, " PTR_INT_TYPE ")\n"
 
-    "declare " C_INT_TYPE " @_GCC_specific_handler (ptr, ptr, ptr, ptr, ptr)\n"
     "declare void @exit (i32)\n"
     "declare ptr @malloc (i64)\n"
     "declare ptr @calloc (i64, i64)\n"
@@ -59528,7 +59536,7 @@ void Emit_Runtime_Synchronisation () {
   #define ADA_SYS_FUTEX "98"
 #endif
 
-#ifdef ADA_SYS_FUTEX
+#if defined(ADA_SYS_FUTEX) and not defined(ADA_FORCE_CV_WAIT)
 
   Emit_Verbatim (
     RUNTIME_WORD_WAIT ("",
@@ -59539,7 +59547,8 @@ void Emit_Runtime_Synchronisation () {
       "  %_rc = call i64 (i64, ...) @syscall(i64 " ADA_SYS_FUTEX
         ", ptr %w, i64 129, i64 2147483647, ptr null)\n"));
   #undef ADA_SYS_FUTEX
-#elif defined(_WIN32) and (defined(SIMD_X86_64) or defined(SIMD_ARM64))
+#elif defined(_WIN32) and not defined(ADA_FORCE_CV_WAIT) and \
+      (defined(SIMD_X86_64) or defined(SIMD_ARM64))
   Emit_Verbatim (
     RUNTIME_WORD_WAIT (
       "  %cmp = alloca i32, align 4\n"
@@ -59666,6 +59675,7 @@ static const char Runtime_Rendezvous_Records_Text[] =
     "}\n\n";
 
 void Emit_Runtime_Personality () {
+#ifndef ADA_EH_SEH
   Emit_Verbatim (
     "; ---- Choosing a frame's landing pad: a per-task direct-mapped cache\n"
     ";      over the frame tables, so a site is decoded once and not once\n"
@@ -59734,16 +59744,7 @@ void Emit_Runtime_Personality () {
     "verbatim:\n"
     "  ret " C_INT_TYPE " %verdict\n"
     "}\n\n");
-
-  Emit_Verbatim (
-    "define linkonce_odr " C_INT_TYPE " @__ada_personality_seh(ptr %record,"
-      " ptr %frame,\n"
-    "    ptr %machine, ptr %dispatch) nounwind uwtable {\n"
-    "  %disposition = tail call " C_INT_TYPE " @_GCC_specific_handler("
-      "ptr %record, ptr %frame,\n"
-    "      ptr %machine, ptr %dispatch, ptr @__ada_personality)\n"
-    "  ret " C_INT_TYPE " %disposition\n"
-    "}\n\n");
+#endif
 }
 
 void Emit_Runtime_Owned_Walk () {
@@ -61767,9 +61768,9 @@ static const char Runtime_Entry_Call_Try_Text[] =
     "  br i1 %zerob, label %uwait, label %tsetup\n"
 
     "uwait:\n"
-    "  call void @__ada_rt_unlock()\n"
     "  call void @__ada_task_signal(ptr %task)\n"
     "  %budget = call i32 @__ada_partner_spin(ptr %task)\n"
+    "  call void @__ada_rt_unlock()\n"
     "  call void @__ada_wait_word(ptr %cfp, i32 "
       TEXT_OF (RENDEZVOUS_INCOMPLETE) ", ptr %cwp, i32 %budget)\n"
     "  call void @__ada_rt_lock()\n"
@@ -61907,10 +61908,9 @@ static const char Runtime_Entry_Call_Text[] =
     "  %d0 = call i1 @__ada_task_dead(ptr %task)\n"
     "  br i1 %d0, label %raise_te_locked, label %enq\n"
     RENDEZVOUS_ENQUEUE ("", "istail", "appendtail")
-    "  call void @__ada_rt_unlock()\n"
-
     "  call void @__ada_task_signal(ptr %task)\n"
     "  %budget = call i32 @__ada_partner_spin(ptr %task)\n"
+    "  call void @__ada_rt_unlock()\n"
     "  call void @__ada_wait_word(ptr %cfp, i32 "
       TEXT_OF (RENDEZVOUS_INCOMPLETE) ", ptr %cwp, i32 %budget)\n"
     "  call void @__ada_rt_lock()\n"
