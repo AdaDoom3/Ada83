@@ -27,13 +27,15 @@
   #define NOUSER
   #include <windows.h>
   #include <process.h>
-#else
+#elif defined(__APPLE__)
   #include <poll.h>
   #include <signal.h>
   #include <sys/wait.h>
-#endif
-#ifdef __APPLE__
   #include <mach-o/dyld.h>
+#else // __unix__
+  #include <poll.h>
+  #include <signal.h>
+  #include <sys/wait.h>
 #endif
 
 typedef uint8_t  u8;
@@ -9228,12 +9230,11 @@ struct Llvm_C_Api {
 
 #define MAX_LINKER_ARGUMENTS 128
 
-#define ADA83_VERSION_MAJOR 0
-#define ADA83_VERSION_MINOR 11
+#define ADA83_VERSION_MAJOR 1
+#define ADA83_VERSION_MINOR 0
 
 #define ADA83_VERSION_TEXT \
-  "ada83 " TEXT_OF (ADA83_VERSION_MAJOR) "." TEXT_OF (ADA83_VERSION_MINOR) \
-  " -- an Ada 83 (ANSI/MIL-STD-1815A) compiler, LLVM native backend"
+  "ada83 " TEXT_OF (ADA83_VERSION_MAJOR) "." TEXT_OF (ADA83_VERSION_MINOR)
 
 typedef struct {
   const char *flag;
