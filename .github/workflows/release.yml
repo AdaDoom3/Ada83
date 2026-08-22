@@ -170,7 +170,7 @@ jobs:
           chmod +x "$compiler" 2>/dev/null || true
 
           "$compiler" --version
-          "$compiler" --version | grep -q "ada83 $VERSION "
+          "$compiler" --version | grep -qxF "ada83 $VERSION"
 
           printf '%s\n' \
             'WITH TEXT_IO;' \
