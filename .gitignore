@@ -48,6 +48,7 @@
 /test_results/
 /acats_logs/
 /bench/
+/project/
 
 # Benchmark output, when TSV_DIR names a directory inside the tree.
 /suite*.tsv
