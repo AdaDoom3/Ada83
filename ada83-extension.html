@@ -2040,7 +2040,7 @@ const Sidebar_Build = (Memory, Clean, Output) => async (Element, Debug) => {
   const Outcome = await Progress_Build (
     Project, Element?.Main === undefined ? [] : [Element.Main], Output,
     Debug);
-  await Told_The_Outcome (Outcome, Output);
+  void Told_The_Outcome (Outcome, Output);
   return Outcome;
 };
 
@@ -2070,10 +2070,12 @@ const Sidebar_Run = (Memory, Clean, Output) => async (Element) => {
   if (Executable === null)
     return void vscode.window.showInformationMessage (
       'Ada 83: cannot run. The project names no Exec_Dir.');
+  const [Command, Arguments] = Host_Escaped (Executable, []);
   const Terminal = vscode.window.createTerminal (
     { name: `Ada 83: ${path.basename (Executable)}` });
   Terminal.show ();
-  Terminal.sendText (JSON.stringify (Executable));
+  Terminal.sendText (
+    [Command, ...Arguments].map ((Word) => JSON.stringify (Word)).join (' '));
 };
 
 const Sidebar_Registration = (Memory, Output, Refreshed) =>
@@ -2567,10 +2569,14 @@ const Speaks_Dap = (Compiler) => {
   return Usage_Answers.get (Compiler);
 };
 
+const Adapter_Executable = (Command, Arguments) =>
+  ((Escaped) => new vscode.DebugAdapterExecutable (Escaped[0], Escaped[1]))
+    (Host_Escaped (Command, Arguments));
+
 const Debug_Adapter_Factory = {
   createDebugAdapterDescriptor: async () => {
     const Named = Substituted (Configured ('debugAdapterPath', '')).trim ();
-    if (Named !== '') return new vscode.DebugAdapterExecutable (Named, []);
+    if (Named !== '') return Adapter_Executable (Named, []);
     const Compiler = Known_Compiler.Path ?? Compiler_Path ();
     if (!await Speaks_Dap (Compiler))
       throw new Error (
@@ -2578,7 +2584,7 @@ const Debug_Adapter_Factory = {
         'compiler itself is the debug adapter. Run Ada 83: Download Or ' +
         'Update The Compiler, or point ada83.debugAdapterPath at a DAP ' +
         'executable.');
-    return new vscode.DebugAdapterExecutable (Compiler, ['--dap']);
+    return Adapter_Executable (Compiler, ['--dap']);
   },
 };
 
@@ -2913,7 +2919,7 @@ module.exports = { activate, deactivate };
         {
           "id": "ada83",
           "title": "Ada 83",
-          "icon": "./ada83-icon.png"
+          "icon": "./ada83-icon-activity.svg"
         }
       ]
     },
@@ -2923,7 +2929,7 @@ module.exports = { activate, deactivate };
           "id": "ada83.projectView",
           "name": "Project",
           "contextualTitle": "Ada 83",
-          "icon": "./ada83-icon.png",
+          "icon": "./ada83-icon-activity.svg",
           "when": "ada83.relevant"
         }
       ],
@@ -2932,7 +2938,7 @@ module.exports = { activate, deactivate };
           "id": "ada83.tasksView",
           "name": "Tasks",
           "contextualTitle": "Ada 83",
-          "icon": "./ada83-icon.png",
+          "icon": "./ada83-icon-activity.svg",
           "when": "ada83.debugging"
         }
       ]
@@ -5165,6 +5171,15 @@ tool (`#ada83Manual`) instead of recalling modern Ada.
   }
 }
 </script>
+<script id="ada83-icon-activity.svg" type="image/svg+xml">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+  <circle cx="12" cy="12" r="10.4" fill="none" stroke="#c5c5c5"
+          stroke-width="1.7"/>
+  <path d="M12 20 7.3 5.53 19.61 14.47 4.39 14.47 16.7 5.53Z" fill="none"
+        stroke="#c5c5c5" stroke-width="1.5" stroke-linejoin="round"/>
+</svg>
+</script>
+
 <script id="ada83-icon-source.svg" type="image/svg+xml">
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16">
   <path d="M3.5 1.5h6l3 3v10h-9z" fill="none" stroke="#808080"/>
