@@ -9104,6 +9104,8 @@ typedef struct {
   int             from_backend;
   bool            backend_gone;
   bool            initialized;
+  bool            launch_pending;
+  bool            launch_ok;
   bool            configured;
   bool            stopped;
   bool            exited;
@@ -9113,6 +9115,7 @@ typedef struct {
   long long       frame;
   bool            frame_valid;
   u32             sequence;
+  u32             launch_seq;
   u32             known_ids[REPL_MAX_KNOWN_IDS];
   u32             known_id_count;
   Repl_Breakpoint breakpoints[REPL_MAX_BREAKPOINTS];
@@ -18912,7 +18915,9 @@ bool Check_Subprogram_Conformance (
               Symbol *actual, Node *specification,
               Symbol *instance_sym, Subprogram_Match_Report_Kind report,
               Location location) {
-  if (not Is_Subprogram (actual)) return false;
+  bool actual_is_entry = actual and actual->kind == SYMBOL_ENTRY and
+                         not Is_Entry_Family (actual);
+  if (not Is_Subprogram (actual) and not actual_is_entry) return false;
   Slice formal_name = specification->subprogram_spec.name;
   const char *noun = report == SUBPROGRAM_MATCH_DEFAULT ? "default" : "actual";
   bool conforms = true;
@@ -43561,17 +43566,24 @@ static Value Lower_Entry_Call (Node *node, Symbol *sym, Symbol *entry_rename_sym
   }
 
   Node *prefix = node->apply.prefix;
+  Symbol *entry_task = sym->parent ? Get_Denoted_Task_Object (sym->parent)
+                                   : NULL;
   u32 task_ptr;
   if (entry_rename_sym and entry_rename_sym->rename_task_slot) {
     task_ptr = Emit_Temp ();
     Emit ("  %s = load ptr, ptr ",  REG (task_ptr));
     Emit_Symbol_Storage (entry_rename_sym->rename_task_slot);
     Emit ("  ; task bound at rename elaboration\n");
-  } else if (prefix->kind != NK_SELECTED and sym->parent and
-             sym->parent->kind == SYMBOL_VARIABLE and
-             Is_Task (sym->parent->type)) {
+  } else if (prefix->kind != NK_SELECTED and entry_task and
+             entry_task->kind == SYMBOL_VARIABLE and
+             Is_Task (entry_task->type)) {
     task_ptr = Emit_Temp ();
-    Emit_Load_Ptr_From_Symbol (task_ptr, sym->parent);
+    Emit_Load_Ptr_From_Symbol (task_ptr, entry_task);
+  } else if (prefix->kind != NK_SELECTED and entry_rename_sym and
+             entry_rename_sym->renamed_entry_name and
+             entry_rename_sym->renamed_entry_name->kind == NK_SELECTED) {
+    task_ptr = Emit_Task_Pointer_From_Selected (
+      entry_rename_sym->renamed_entry_name->selected.prefix);
   } else {
     task_ptr = Emit_Task_Pointer_From_Selected (
       prefix->kind == NK_SELECTED ? prefix->selected.prefix : NULL);
@@ -65675,6 +65687,12 @@ void Bind_Instance_Formal_Subprogram (Symbol *instance_sym,
   if (slot->actual_subprogram and not slot->actual_negated) {
     Bind_Renamed_Subprogram_Actual (binding, slot->actual_subprogram,
                                     specification, remap);
+    Node *actual_name = Unwrap_Association (slot->actual_association);
+    if (not actual_name)
+      actual_name = formal->generic_subprog_param.default_name;
+    if (slot->actual_subprogram->kind == SYMBOL_ENTRY and
+        actual_name and actual_name->kind == NK_SELECTED)
+      binding->renamed_entry_name = actual_name;
 
   } else {
     Location location = slot->actual_negated ? formal->location
@@ -65915,12 +65933,27 @@ bool Actual_Conforms_To_Formal_Subprogram (Symbol *actual,
                                        (Location){0});
 }
 
+static Symbol *Find_Conforming_Entry_Overload (Symbol *named,
+                                               Node *specification,
+                                               Symbol *instance_sym) {
+  for (Symbol *candidate = named->next_overload; candidate;
+       candidate = candidate->next_overload)
+    if (candidate->kind == SYMBOL_ENTRY and
+        Slices_Match (candidate->name, named->name) and
+        Actual_Conforms_To_Formal_Subprogram (candidate, specification,
+                                              instance_sym))
+      return candidate;
+  return named;
+}
+
 Symbol *Find_Conforming_Actual (Symbol *named,
                                              Node *specification,
                                              Symbol *instance_sym) {
-  if (not Is_Subprogram (named) or
-      Actual_Conforms_To_Formal_Subprogram (named, specification, instance_sym))
+  if (Actual_Conforms_To_Formal_Subprogram (named, specification, instance_sym))
     return named;
+  if (named and named->kind == SYMBOL_ENTRY)
+    return Find_Conforming_Entry_Overload (named, specification, instance_sym);
+  if (not Is_Subprogram (named)) return named;
   Interp_List candidates;
   Collect_Interpretations (named->name, &candidates);
   for (u32 i = 0; i < candidates.count; i++) {
@@ -66482,7 +66515,8 @@ void Bind_Written_Subprogram_Actual (Symbol *instance,
     Check_Formal_Subprogram_Actual_Not_Ambiguous (name_node, specification,
                                                   instance);
     Symbol *actual_sym = name_node->symbol;
-    if (Is_Subprogram (actual_sym))
+    if (Is_Subprogram (actual_sym) or
+        (actual_sym and actual_sym->kind == SYMBOL_ENTRY))
       actual_sym = Find_Conforming_Actual (actual_sym, specification,
                                                  instance);
     if (actual_sym) {
@@ -71607,34 +71641,6 @@ static void Repl_Handle_Event (Repl *repl, const Json *message) {
   }
 }
 
-static Json *Repl_Request (Repl *repl, const char *command,
-                           const char *arguments) {
-  if (repl->backend_gone) return NULL;
-  Text_Buffer message = {0};
-  Buffer_Printf (&message, "{\"seq\":%u,\"type\":\"request\",\"command\":\"%s\"",
-                 ++repl->sequence, command);
-  if (arguments) Buffer_Printf (&message, ",\"arguments\":%s", arguments);
-  Buffer_Append_Text (&message, "}");
-  bool sent = Dap_Write_Framed (repl->to_backend, message.Data, message.Length);
-  Buffer_Free (&message);
-  if (not sent) {
-    Repl_Backend_Lost (repl, true);
-    return NULL;
-  }
-  for (;;) {
-    Json *reply = Repl_Read_Message (repl);
-    if (not reply) return NULL;
-    const char *type    = Json_Text (Json_Member (reply, "type"));
-    const Json *for_seq = Json_Member (reply, "request_seq");
-    if (type and strcmp (type, "response") == 0 and for_seq and
-        for_seq->Kind == JSON_NUMBER and
-        (u32) for_seq->Number == repl->sequence)
-      return reply;
-    Repl_Handle_Event (repl, reply);
-    Json_Free (reply);
-  }
-}
-
 static bool Repl_Reply_Ok (const Json *reply) {
   const Json *success = Json_Member (reply, "success");
   if (success and success->Kind == JSON_BOOL and success->Boolean)
@@ -71644,11 +71650,57 @@ static bool Repl_Reply_Ok (const Json *reply) {
   return false;
 }
 
+static bool Repl_Response_For (const Json *message, u32 seq) {
+  const char *type    = Json_Text (Json_Member (message, "type"));
+  const Json *for_seq = Json_Member (message, "request_seq");
+  return type and strcmp (type, "response") == 0 and for_seq
+         and for_seq->Kind == JSON_NUMBER and (u32) for_seq->Number == seq;
+}
+
+static void Repl_Handle_Message (Repl *repl, const Json *message) {
+  if (repl->launch_pending and Repl_Response_For (message, repl->launch_seq)) {
+    repl->launch_pending = false;
+    repl->launch_ok      = Repl_Reply_Ok (message);
+    return;
+  }
+  Repl_Handle_Event (repl, message);
+}
+
+static bool Repl_Send_Request (Repl *repl, const char *command,
+                               const char *arguments) {
+  if (repl->backend_gone) return false;
+  Text_Buffer message = {0};
+  Buffer_Printf (&message, "{\"seq\":%u,\"type\":\"request\",\"command\":\"%s\"",
+                 ++repl->sequence, command);
+  if (arguments) Buffer_Printf (&message, ",\"arguments\":%s", arguments);
+  Buffer_Append_Text (&message, "}");
+  bool sent = Dap_Write_Framed (repl->to_backend, message.Data, message.Length);
+  Buffer_Free (&message);
+  if (not sent) Repl_Backend_Lost (repl, true);
+  return sent;
+}
+
+static Json *Repl_Await_Response (Repl *repl, u32 seq) {
+  for (;;) {
+    Json *reply = Repl_Read_Message (repl);
+    if (not reply) return NULL;
+    if (Repl_Response_For (reply, seq)) return reply;
+    Repl_Handle_Message (repl, reply);
+    Json_Free (reply);
+  }
+}
+
+static Json *Repl_Request (Repl *repl, const char *command,
+                           const char *arguments) {
+  if (not Repl_Send_Request (repl, command, arguments)) return NULL;
+  return Repl_Await_Response (repl, repl->sequence);
+}
+
 static void Repl_Wait_For_Stop (Repl *repl) {
   while (not repl->stopped and not repl->exited and not repl->backend_gone) {
     Json *message = Repl_Read_Message (repl);
     if (not message) return;
-    Repl_Handle_Event (repl, message);
+    Repl_Handle_Message (repl, message);
     Json_Free (message);
   }
 }
@@ -71928,18 +71980,19 @@ static bool Repl_Start_Backend (Repl *repl) {
     Buffer_Append_Json_String (&arguments, repl->arguments[i]);
   }
   Buffer_Append_Text (&arguments, "]}");
-  reply = Repl_Request (repl, "launch", arguments.Data);
+  bool sent = Repl_Send_Request (repl, "launch", arguments.Data);
   Buffer_Free (&arguments);
-  if (not reply) return false;
-  bool launched = Repl_Reply_Ok (reply);
-  Json_Free (reply);
-  while (launched and not repl->initialized and not repl->backend_gone) {
+  if (not sent) return false;
+  repl->launch_seq     = repl->sequence;
+  repl->launch_pending = true;
+  repl->launch_ok      = true;
+  while (repl->launch_ok and not repl->initialized and not repl->backend_gone) {
     Json *message = Repl_Read_Message (repl);
     if (not message) break;
-    Repl_Handle_Event (repl, message);
+    Repl_Handle_Message (repl, message);
     Json_Free (message);
   }
-  return launched and not repl->backend_gone;
+  return repl->launch_ok and repl->initialized and not repl->backend_gone;
 }
 
 static void Repl_Stop_Backend (Repl *repl) {
@@ -73206,7 +73259,7 @@ static void Dap_Walk_Exception_Frame (Dap_Quest *quest,
     Dap_Quest_Release_Raw (quest);
     return;
   }
-  const char *expression = "(const char *)" DAP_FIRST_ARGUMENT_REGISTER;
+  const char *expression = "(char *)" DAP_FIRST_ARGUMENT_REGISTER;
   char        composed[128];
   if (quest->helper != DAP_HELPER_RAISE) {
     if (Dap_Proxy.tls_probe == 0) {
@@ -73215,12 +73268,12 @@ static void Dap_Walk_Exception_Frame (Dap_Quest *quest,
     }
     if (Dap_Proxy.tls_probe == 2) {
       snprintf (composed, sizeof composed,
-                "(const char *)*(const char **)"
+                "(char *)*(char **)"
                 "((unsigned long long)$fs_base - %lld)",
                 (long long) -Dap_Proxy.tls_tpoff);
       expression = composed;
     } else
-      expression = "(const char *)((unsigned long (*)(void))"
+      expression = "(char *)((unsigned long (*)(void))"
                    "__ada_current_exception)()";
   }
   if (not Dap_Send_Evaluate (expression, (i64) frame_id->Number,
