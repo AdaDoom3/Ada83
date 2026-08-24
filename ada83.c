@@ -27109,7 +27109,80 @@ void Derive_Subprograms (Type *derived_type,
     }
 }
 
-static Node *Find_Pragma_Named_Argument (Node_List *args, Slice formal) {
+static bool Fold_Static_Boolean (Node *node, bool *out, int depth);
+
+bool Fold_Static_Index (Node *node, i128 *out, int depth) {
+  if (not node or depth > 32) return false;
+  if (not node->symbol and not node->type) Resolve_Expression (node);
+
+  if (node->kind == NK_INTEGER) {
+    *out = (i128) node->integer_lit.value;
+    return true;
+  }
+
+  if (node->kind == NK_QUALIFIED)
+    return Fold_Static_Index (node->qualified.expression, out, depth + 1);
+
+  if ((node->kind == NK_IDENTIFIER or node->kind == NK_SELECTED) and
+      node->symbol and node->symbol->kind == SYMBOL_CONSTANT and
+      node->symbol->declaration and
+      node->symbol->declaration->kind == NK_OBJECT_DECL and
+      node->symbol->declaration->object_decl.init)
+    return Fold_Static_Index (node->symbol->declaration->object_decl.init,
+                              out, depth + 1);
+
+  if (node->kind == NK_APPLY and node->apply.prefix and
+      node->apply.prefix->kind == NK_ATTRIBUTE and
+      node->apply.prefix->attribute.kind == ATTRIBUTE_POS and
+      node->apply.arguments.count == 1)
+    return Fold_Static_Index (
+      Unwrap_Association (node->apply.arguments.items[0]), out, depth + 1);
+
+  if (node->kind == NK_ATTRIBUTE and
+      node->attribute.kind == ATTRIBUTE_POS and
+      node->attribute.arguments.count == 1)
+    return Fold_Static_Index (node->attribute.arguments.items[0],
+                              out, depth + 1);
+
+  if (node->kind == NK_UNARY_OP and node->unary.operand) {
+    if (node->unary.op != TK_PLUS and node->unary.op != TK_MINUS)
+      return Read_Static_Bound (node, out);
+    i128 inner;
+    if (not Fold_Static_Index (node->unary.operand, &inner, depth + 1))
+      return false;
+    *out = node->unary.op == TK_MINUS ? -inner : inner;
+    return true;
+  }
+
+  if (node->kind == NK_BINARY_OP and
+      (node->binary.op == TK_PLUS or node->binary.op == TK_MINUS or
+       node->binary.op == TK_STAR or node->binary.op == TK_SLASH)) {
+    i128 left, right;
+    if (not Fold_Static_Index (node->binary.left,  &left,  depth + 1) or
+        not Fold_Static_Index (node->binary.right, &right, depth + 1))
+      return false;
+    switch (node->binary.op) {
+      case TK_PLUS:  return not __builtin_add_overflow (left, right, out);
+      case TK_MINUS: return not __builtin_sub_overflow (left, right, out);
+      case TK_STAR:  return not __builtin_mul_overflow (left, right, out);
+      default:
+        if (right == 0) return false;
+        *out = left / right;
+        return true;
+    }
+  }
+
+  if (Read_Static_Bound (node, out)) return true;
+
+  bool truth;
+  if (Fold_Static_Boolean (node, &truth, depth + 1)) {
+    *out = truth ? 1 : 0;
+    return true;
+  }
+  return false;
+}
+
+Node *Find_Pragma_Named_Argument (Node_List *args, Slice formal) {
   Node *found = NULL;
   for (u32 i = 0; i < args->count; i++) {
     Node *arg = args->items[i];
@@ -27151,6 +27224,41 @@ void Apply_Pragma_External_Name (Symbol *sym, Node_List *args) {
       "the external name must be a string literal, so this argument has no "
       "effect and '%.*s' keeps its Ada name",
       (int) sym->name.length, sym->name.data);
+}
+
+bool Fold_Static_Boolean (Node *node, bool *out, int depth) {
+  if (not node or depth > 32) return false;
+
+  if (node->kind == NK_ASSOCIATION)
+    return Fold_Static_Boolean (Unwrap_Association (node), out, depth + 1);
+
+  if (node->kind == NK_QUALIFIED)
+    return Fold_Static_Boolean (node->qualified.expression, out, depth + 1);
+
+  if (node->kind == NK_UNARY_OP and node->unary.op == TK_NOT) {
+    bool inner;
+    if (not Fold_Static_Boolean (node->unary.operand, &inner, depth + 1))
+      return false;
+    *out = not inner;
+    return true;
+  }
+
+  if (node->kind == NK_BINARY_OP and
+      (node->binary.op == TK_AND or node->binary.op == TK_OR)) {
+    bool left, right;
+    if (not Fold_Static_Boolean (node->binary.left,  &left,  depth + 1) or
+        not Fold_Static_Boolean (node->binary.right, &right, depth + 1))
+      return false;
+    *out = node->binary.op == TK_AND ? (left and right) : (left or right);
+    return true;
+  }
+
+  if (not node->symbol and not node->type) Resolve_Expression (node);
+
+  i128 value;
+  if (not Read_Static_Bound (node, &value)) return false;
+  *out = value != 0;
+  return true;
 }
 
 void Apply_Pragma_Convention (Symbol *sym, Node *conv_node) {
@@ -36315,7 +36423,7 @@ typedef struct {
   bool        emitted;
   const char *verdict;
   const char *reason;
-  const char *analysis;     /* what the interval analysis settled, if any */
+  const char *analysis;
   Symbol     *owner;
 } Analysis_Check_Site;
 
@@ -36359,12 +36467,6 @@ u32 Note_Check_Site (Check_Kind kind, bool suppressed) {
   return Analysis_Check_Site_Count++;
 }
 
-/* A check is emitted by several routines, not all of which are handed the
-   permission that authorised it, so the site is paired with the emission
-   through the one thing they share: the permission is taken immediately
-   before the check is written.  The pending site is consumed by the first
-   raise that follows it, and cleared, so a site whose check is not written
-   cannot be claimed by an unrelated raise later on. */
 u32 Pending_Check_Site = NO_ANALYSIS_CHECK_SITE;
 
 void Note_Check_Site_Pending (u32 site) { Pending_Check_Site = site; }
@@ -68188,17 +68290,9 @@ bool ALI_Path_For_Output (char *out, size_t size, const char *output_path) {
            < (int) size;
 }
 
-/* ==== Interval analysis =============================================
-   An abstract interpretation over the statement tree.  Ada 83 statements
-   are structured, so the interpreter carries an abstract state through
-   them and joins at merge points; there is no control-flow graph to
-   build.  A loop is entered once with everything it assigns set to top,
-   which is the widening.  A goto target is not tracked, so anything a
-   goto can reach is analysed from top as well. */
-
 typedef struct {
   i128 low, high;
-  bool known;        /* false is top: any value at all */
+  bool known;
 } Interval;
 
 #define MAX_ANALYSIS_VARS 256
@@ -68212,7 +68306,7 @@ typedef struct {
   u32              count;
   bool             unreachable;
   bool             reported_dead;
-  const char      *dead_cause;   /* the transfer that ended the path */
+  const char      *dead_cause;
   u32              dead_line;
   bool             dead_from_branch;
 } Analysis_State;
@@ -68233,7 +68327,6 @@ Interval Interval_Join (Interval a, Interval b) {
                       a.high > b.high ? a.high : b.high);
 }
 
-/* Whether every value of `inner` is a value of `outer`. */
 bool Interval_Contains (Interval outer, Interval inner) {
   if (not outer.known or not inner.known) return false;
   if (Interval_Is_Empty (inner)) return true;
@@ -68241,7 +68334,6 @@ bool Interval_Contains (Interval outer, Interval inner) {
   return inner.low >= outer.low and inner.high <= outer.high;
 }
 
-/* Whether no value of `a` is a value of `b`. */
 bool Interval_Disjoint (Interval a, Interval b) {
   if (not a.known or not b.known) return false;
   if (Interval_Is_Empty (a) or Interval_Is_Empty (b)) return false;
@@ -68296,7 +68388,6 @@ Interval Interval_Div (Interval a, Interval b) {
   return Interval_Of (low, high);
 }
 
-/* The subtype's own range, which is where a variable's interval starts. */
 Interval Interval_Of_Type (Type *type) {
   if (not type) return Interval_Top ();
   if (not Has_Scalar_Representation (type)) return Interval_Top ();
@@ -68333,13 +68424,6 @@ void State_Join (Analysis_State *into, Analysis_State *other) {
       State_Bind (into, other->vars[i].sym, Interval_Top ());
 }
 
-/* ==== Subprogram summaries ==========================================
-   What a body does, in the only terms a caller needs: the range of what
-   a function returns, and the range each out parameter is left holding.
-   Ada 83 has no access-to-subprogram type, so every call names its
-   callee and the call graph is exact; the summaries are computed by
-   reading every body, and read again until they stop changing. */
-
 #define MAX_SUMMARIES        2048
 #define MAX_SUMMARY_OUTPUTS  8
 
@@ -68353,7 +68437,7 @@ typedef struct {
 
 Subprogram_Summary Summaries[MAX_SUMMARIES];
 u32  Summary_Count    = 0;
-bool Summaries_Usable = false;   /* false while they are being computed */
+bool Summaries_Usable = false;
 
 Subprogram_Summary *Find_Summary (Symbol *sym) {
   if (not sym) return NULL;
@@ -68374,7 +68458,6 @@ Subprogram_Summary *Summary_For (Symbol *sym) {
   return &Summaries[Summary_Count++];
 }
 
-/* The summary being built by the body now being read. */
 Subprogram_Summary *Summary_Under_Construction = NULL;
 
 #define MAX_ANALYSIS_FINDINGS 4096
@@ -68382,12 +68465,79 @@ Subprogram_Summary *Summary_Under_Construction = NULL;
 typedef struct {
   Check_Kind  kind;
   Location    location;
-  const char *verdict;    /* always_fails | cannot_fail | may_fail */
+  const char *verdict;
   const char *detail;
   Interval    witness;
   Interval    allowed;
   Symbol     *owner;
 } Analysis_Finding;
+
+Interval Interval_Top      (void);
+Interval Interval_Of       (i128 low, i128 high);
+Interval Interval_Const    (i128 v);
+bool     Interval_Is_Empty (Interval i);
+Interval Interval_Join     (Interval a, Interval b);
+Interval Interval_Meet     (Interval a, Interval b);
+bool     Interval_Contains (Interval outer, Interval inner);
+bool     Interval_Disjoint (Interval a, Interval b);
+bool     Interval_Holds    (Interval i, i128 v);
+Interval Interval_Add      (Interval a, Interval b);
+Interval Interval_Sub      (Interval a, Interval b);
+Interval Interval_Mul      (Interval a, Interval b);
+Interval Interval_Div      (Interval a, Interval b);
+Interval Interval_Below    (i128 bound, bool inclusive);
+Interval Interval_Above    (i128 bound, bool inclusive);
+Interval Interval_Of_Type  (Type *type);
+
+Interval *State_Slot  (Analysis_State *state, Symbol *sym);
+void      State_Bind  (Analysis_State *state, Symbol *sym, Interval value);
+void      State_Join  (Analysis_State *into, Analysis_State *other);
+void      State_Widen (Analysis_State *into, Analysis_State *next);
+bool      State_Same  (Analysis_State *a, Analysis_State *b);
+
+Subprogram_Summary *Find_Summary        (Symbol *sym);
+Subprogram_Summary *Summary_For         (Symbol *sym);
+bool                Summary_From_Library (Symbol *callee, Interval *out);
+bool                Summaries_Changed   (Subprogram_Summary *before, u32 count);
+void                ALI_Write_Summaries (FILE *out);
+
+void     Note_Finding          (Check_Kind kind, Location location,
+                                const char *verdict, const char *detail,
+                                Interval witness, Interval allowed);
+Interval Array_Index_Interval  (Node *prefix);
+Interval Eval_Interval         (Node *node, Analysis_State *state);
+void     Check_Expression      (Node *node, Analysis_State *state);
+void     Refine_By_Condition   (Node *condition, bool holds,
+                                Analysis_State *state);
+void     Forget_Assigned       (Node *node, Analysis_State *state);
+void     Forget_Call_Actuals   (Node *call, Analysis_State *state);
+void     Forget_Calls_In       (Node *node, Analysis_State *state);
+void     Bind_Loop_Parameter   (Node *scheme, Analysis_State *state);
+void     Analyze_Statement     (Node *node, Analysis_State *state);
+void     Analyze_Statement_List (Node_List *statements, Analysis_State *state);
+void     Analyze_Bodies        (Node *node);
+void     Analyze_Units         (Node **units, int unit_count);
+
+const char *Spell_Check_Kind          (Check_Kind kind);
+u32         Note_Check_Site           (Check_Kind kind, bool suppressed);
+void        Note_Check_Site_Pending   (u32 site);
+void        Note_Check_Not_Needed     (const char *verdict, const char *reason);
+void        Note_Check_Emitted        (void);
+bool        Analysis_Site_Is_In_Unit  (Analysis_Check_Site *site,
+                                       const char *input_path);
+const char *Spell_Check_Verdict       (Analysis_Check_Site *site);
+void        Join_Findings_To_Sites    (void);
+
+void Tally_Line               (u16 *table, u32 line);
+void Tally_Check_Constructs   (Node *node);
+bool Line_Bears_One_Check     (Check_Kind kind, u32 line);
+bool Analysis_Proved_Safe_Here (Check_Kind kind, Location location);
+
+const char *Spell_Interval           (Interval i, char *buffer, size_t size);
+void        Report_Analysis_Warnings (const char *input_path);
+void        Write_Json_Text          (FILE *out, const char *text, u32 length);
+void        Write_Json_String        (FILE *out, const char *text);
+void        Write_Analysis_Report    (FILE *out, const char *input_path);
 
 Analysis_Finding Analysis_Findings[MAX_ANALYSIS_FINDINGS];
 u32     Analysis_Finding_Count = 0;
@@ -68395,11 +68545,6 @@ Symbol *Analysis_Current_Owner = NULL;
 
 bool Analysis_Recording = true;
 
-/* A loop is read repeatedly until its state settles, so nesting multiplies
-   the work: the capacity tests nest loops dozens deep, where the passes
-   alone would outlast the compilation.  The walk gets a fixed budget of
-   statements and stops when it runs out, which costs findings and never
-   correctness -- a check that goes unexamined is simply not reported. */
 #define ANALYSIS_STATEMENT_BUDGET 200000
 u32  Analysis_Budget    = ANALYSIS_STATEMENT_BUDGET;
 bool Analysis_Exhausted = false;
@@ -68414,11 +68559,11 @@ void Note_Finding (Check_Kind kind, Location location, const char *verdict,
 
 Interval Eval_Interval (Node *node, Analysis_State *state);
 
-/* The index range of a one-dimensional array whose bounds are static.
-   Several dimensions, and bounds that are not static, are left alone. */
 Interval Array_Index_Interval (Node *prefix) {
   Type *type = prefix ? prefix->type : NULL;
   if (not type or type->kind != TYPE_ARRAY)  return Interval_Top ();
+
+  if (prefix->symbol and Is_Subprogram (prefix->symbol)) return Interval_Top ();
   if (type->array.index_count != 1)          return Interval_Top ();
   if (not type->array.indices)               return Interval_Top ();
   Index_Info *index = &type->array.indices[0];
@@ -68428,7 +68573,17 @@ Interval Array_Index_Interval (Node *prefix) {
 }
 
 void Check_Expression (Node *node, Analysis_State *state) {
-  if (not node) return;
+  if (not node or state->unreachable) return;
+
+  if (node->kind == NK_BINARY_OP and
+      (node->binary.op == TK_AND_THEN or node->binary.op == TK_OR_ELSE)) {
+    Check_Expression (node->binary.left, state);
+    Analysis_State guarded = *state;
+    Refine_By_Condition (node->binary.left,
+                         node->binary.op == TK_AND_THEN, &guarded);
+    Check_Expression (node->binary.right, &guarded);
+    return;
+  }
 
   if (node->kind == NK_APPLY and node->apply.prefix and
       node->apply.arguments.count == 1) {
@@ -68447,7 +68602,7 @@ void Check_Expression (Node *node, Analysis_State *state) {
     }
   }
 
-  if (node->kind == NK_BINARY_OP and
+  if (node->kind == NK_BINARY_OP and not node->symbol and
       (node->binary.op == TK_PLUS or node->binary.op == TK_MINUS or
        node->binary.op == TK_STAR)) {
     Type *base = node->type;
@@ -68459,7 +68614,7 @@ void Check_Expression (Node *node, Analysis_State *state) {
                     "the result", result, room);
   }
 
-  if (node->kind == NK_BINARY_OP and
+  if (node->kind == NK_BINARY_OP and not node->symbol and
       (node->binary.op == TK_SLASH or node->binary.op == TK_MOD or
        node->binary.op == TK_REM)) {
     Interval divisor = Eval_Interval (node->binary.right, state);
@@ -68481,9 +68636,6 @@ void Check_Expression (Node *node, Analysis_State *state) {
   }
 }
 
-/* A callee compiled elsewhere has no summary here, but its ALI may
-   carry one.  The key is the name code generation gives the subprogram,
-   which both compilations agree on. */
 bool Summary_From_Library (Symbol *callee, Interval *out) {
   if (not callee) return false;
   Slice mangled = Symbol_Mangle_Name (callee);
@@ -68539,9 +68691,21 @@ Interval Eval_Interval (Node *node, Analysis_State *state) {
       if (sym) {
         Interval *slot = State_Slot (state, sym);
         if (slot) return *slot;
-        /* A parameterless call is written as a name, so a function's
-           result reaches its caller through this case and not the
-           one for an argument list. */
+
+        if (sym->kind == SYMBOL_LITERAL) {
+          i128 folded;
+          if (Fold_Static_Index (node, &folded, 0))
+            return Interval_Const (folded);
+        }
+
+        if (sym->kind == SYMBOL_CONSTANT and sym->declaration and
+            sym->declaration->kind == NK_OBJECT_DECL and
+            sym->declaration->object_decl.init and
+            sym->declaration->object_decl.init != node) {
+          i128 folded;
+          if (Fold_Static_Index (sym->declaration->object_decl.init, &folded, 0))
+            return Interval_Const (folded);
+        }
         Symbol *callee = sym;
         while (callee and callee->aliased) callee = callee->aliased;
         if (Summaries_Usable and callee and Is_Subprogram (callee)) {
@@ -68577,8 +68741,7 @@ Interval Eval_Interval (Node *node, Analysis_State *state) {
         case TK_SLASH: result = Interval_Div (left, right); break;
         default:       result = Interval_Top ();            break;
       }
-      /* The result of an operation still lies in its own subtype, so the
-         declared range is a second source of precision. */
+
       Interval declared = Interval_Of_Type (node->type);
       if (not result.known) return declared;
       if (declared.known and Interval_Contains (declared, result)) return result;
@@ -68590,7 +68753,6 @@ Interval Eval_Interval (Node *node, Analysis_State *state) {
   }
 }
 
-/* The largest interval both arguments admit. */
 Interval Interval_Meet (Interval a, Interval b) {
   if (not a.known) return b;
   if (not b.known) return a;
@@ -68606,10 +68768,6 @@ Interval Interval_Above (i128 bound, bool inclusive) {
   return Interval_Of (inclusive ? bound : bound + 1, INT128_HIGH_LIMIT);
 }
 
-/* Narrow what the state holds by a condition known to be true.  Only a
-   comparison or membership naming a variable on one side is used; a
-   condition of any other shape narrows nothing, which costs precision
-   and never soundness. */
 void Refine_By_Condition (Node *condition, bool holds, Analysis_State *state) {
   if (not condition or state->unreachable) return;
 
@@ -68618,11 +68776,19 @@ void Refine_By_Condition (Node *condition, bool holds, Analysis_State *state) {
     return;
   }
 
+  if ((condition->kind == NK_IDENTIFIER or condition->kind == NK_SELECTED) and
+      condition->symbol and condition->symbol->kind == SYMBOL_VARIABLE) {
+    Interval *slot = State_Slot (state, condition->symbol);
+    Interval known = Interval_Const (holds ? 1 : 0);
+    Interval left  = slot ? Interval_Meet (*slot, known) : known;
+    if (Interval_Is_Empty (left)) state->unreachable = true;
+    State_Bind (state, condition->symbol, left);
+    return;
+  }
+
   if (condition->kind != NK_BINARY_OP) return;
   Token_Kind op = condition->binary.op;
 
-  /* "and" narrows by both arms when it holds; "or" narrows by both when
-     it fails.  The other direction says nothing about either arm. */
   if ((op == TK_AND or op == TK_AND_THEN) and holds) {
     Refine_By_Condition (condition->binary.left,  true, state);
     Refine_By_Condition (condition->binary.right, true, state);
@@ -68639,7 +68805,7 @@ void Refine_By_Condition (Node *condition, bool holds, Analysis_State *state) {
   Symbol *sym = left->symbol;
 
   if (op == TK_IN or op == TK_NOT) {
-    if (not holds) return;              /* "not in" narrows nothing useful */
+    if (not holds) return;
     if (op == TK_NOT) return;
     Node *range = condition->binary.right;
     if (not range or range->kind != NK_RANGE) return;
@@ -68668,24 +68834,31 @@ void Refine_By_Condition (Node *condition, bool holds, Analysis_State *state) {
                                  : Interval_Below (other.high, true);  break;
     case TK_GE: narrowed = holds ? Interval_Above (other.low,  true)
                                  : Interval_Below (other.high, false); break;
-    case TK_EQ: if (not holds) { usable = false; break; }
-                narrowed = other; break;
-    case TK_NE: if (holds) { usable = false; break; }
-                narrowed = other; break;
+    case TK_EQ:
+    case TK_NE: {
+      bool says_equal = (op == TK_EQ) == holds;
+      if (says_equal) { narrowed = other; break; }
+      Interval *held = State_Slot (state, sym);
+      if (held and held->known and other.known and
+          held->low == held->high and other.low == other.high and
+          held->low == other.low)
+        state->unreachable = true;
+      usable = false;
+      break;
+    }
     default:    usable = false; break;
   }
   if (not usable) return;
 
   Interval *slot = State_Slot (state, sym);
-  State_Bind (state, sym,
-              Interval_Meet (slot ? *slot : Interval_Of_Type (left->type),
-                             narrowed));
+  Interval refined =
+    Interval_Meet (slot ? *slot : Interval_Of_Type (left->type), narrowed);
+  if (Interval_Is_Empty (refined)) state->unreachable = true;
+  State_Bind (state, sym, refined);
 }
 
 void Analyze_Statement_List (Node_List *statements, Analysis_State *state);
 
-/* Everything a statement assigns becomes unknown.  Used for a loop body,
-   which may run any number of times, and for a goto target. */
 void Forget_Assigned (Node *node, Analysis_State *state) {
   if (not node) return;
   if (node->kind == NK_ASSIGNMENT) {
@@ -68701,14 +68874,6 @@ void Forget_Assigned (Node *node, Analysis_State *state) {
   }
 }
 
-/* A call can assign any actual passed to an out or in out parameter, and
-   what it assigned is not known here, so those actuals stop being known.
-   A call through a name this pass cannot resolve forgets every simple
-   actual, since it may be such a parameter. */
-/* Widening.  Where a value grew between one pass over the loop and the
-   next, the direction it grew in is pushed to the limit rather than
-   guessed at, so the iteration settles instead of counting upward
-   forever. */
 void State_Widen (Analysis_State *into, Analysis_State *next) {
   for (u32 i = 0; i < into->count; i++) {
     Interval *now = State_Slot (next, into->vars[i].sym);
@@ -68739,8 +68904,6 @@ bool State_Same (Analysis_State *a, Analysis_State *b) {
   return true;
 }
 
-/* A for loop's parameter runs over the range it names, which is the most
-   useful interval in the language: it is exactly what indexes an array. */
 void Bind_Loop_Parameter (Node *scheme, Analysis_State *state) {
   if (not scheme or scheme->kind != NK_BINARY_OP or scheme->binary.op != TK_IN)
     return;
@@ -68833,8 +68996,7 @@ void Analyze_Statement (Node *node, Analysis_State *state) {
         Summary_Under_Construction->result,
         Eval_Interval (node->return_stmt.expression, state));
     }
-    /* An exit or goto with a condition may or may not be taken; an
-       unconditional one ends this path. */
+
     if (node->kind == NK_RETURN or node->kind == NK_GOTO or
         node->kind == NK_RAISE  or
         (node->kind == NK_EXIT and not node->exit_stmt.condition)) {
@@ -68886,9 +69048,7 @@ void Analyze_Statement (Node *node, Analysis_State *state) {
       }
 
       if (target and target->kind == NK_IDENTIFIER and target->symbol) {
-        /* After the assignment the variable holds the assigned value,
-           narrowed by its own subtype: a value outside it would have
-           raised rather than been stored. */
+
         Interval held = value;
         if (allowed.known and value.known) {
           i128 low  = value.low  > allowed.low  ? value.low  : allowed.low;
@@ -68927,7 +69087,7 @@ void Analyze_Statement (Node *node, Analysis_State *state) {
         taken.dead_line        = 0;
         taken.dead_from_branch = true;
       } else if (not had_else) {
-        taken.unreachable = false;   /* the condition may be false */
+        taken.unreachable = false;
       }
       *state = taken;
       return;
@@ -68952,10 +69112,6 @@ void Analyze_Statement (Node *node, Analysis_State *state) {
     case NK_LOOP: {
       Check_Expression (node->loop_stmt.iteration_scheme, state);
 
-      /* Iterate the body until the state stops changing, widening as it
-         goes, with findings switched off until the state has settled --
-         a pass over an unsettled state can hold a value the loop never
-         actually takes. */
       Analysis_State entry = *state;
       bool saved_recording = Analysis_Recording;
       Analysis_Recording = false;
@@ -68976,9 +69132,6 @@ void Analyze_Statement (Node *node, Analysis_State *state) {
       Refine_By_Condition (node->loop_stmt.iteration_scheme, true, &body);
       Analyze_Statement_List (&node->loop_stmt.statements, &body);
 
-      /* After the loop the parameter is out of scope and the body may
-         have run any number of times, so the widened state is what is
-         known. */
       *state = entry;
       state->unreachable = false;
       return;
@@ -68986,6 +69139,17 @@ void Analyze_Statement (Node *node, Analysis_State *state) {
 
     case NK_BLOCK:
       Analyze_Statement_List (&node->block_stmt.statements, state);
+      return;
+
+    case NK_ACCEPT:
+
+      Check_Expression (node->accept_stmt.index, state);
+      {
+        Analysis_State accepted = *state;
+        Analyze_Statement_List (&node->accept_stmt.statements, &accepted);
+      }
+      for (u32 i = 0; i < node->accept_stmt.statements.count; i++)
+        Forget_Assigned (node->accept_stmt.statements.items[i], state);
       return;
 
     default:
@@ -69000,10 +69164,6 @@ void Analyze_Statement_List (Node_List *statements, Analysis_State *state) {
     Analyze_Statement (statements->items[i], state);
 }
 
-/* Each subprogram body is analysed on its own, from a state in which
-   nothing is known but what the declarations say.  Parameters and
-   globals are their subtypes, which Eval_Interval reads from the type
-   when the state holds no binding. */
 void Analyze_Bodies (Node *node) {
   if (not node) return;
 
@@ -69049,9 +69209,6 @@ const char *Spell_Interval (Interval i, char *buffer, size_t size) {
   return buffer;
 }
 
-/* Only a check that must fail is reported as a warning.  A check that
-   may fail is the ordinary case and belongs in the report, not on a
-   reader's screen. */
 void Report_Analysis_Warnings (const char *input_path) {
   for (u32 i = 0; i < Analysis_Finding_Count; i++) {
     Analysis_Finding *finding = &Analysis_Findings[i];
@@ -69073,10 +69230,6 @@ void Report_Analysis_Warnings (const char *input_path) {
   }
 }
 
-/* How many constructs of each kind sit on each line of the unit, counted
-   over the whole tree rather than over what the walk reaches.  A finding
-   names a line, so a line bearing two checks of one kind cannot say which
-   of them was settled, and neither may be acted on. */
 #define MAX_TALLY_LINES 65536
 u16 Line_Index_Sites[MAX_TALLY_LINES];
 u16 Line_Division_Sites[MAX_TALLY_LINES];
@@ -69141,9 +69294,7 @@ void Analyze_Units (Node **units, int unit_count) {
   for (int i = 0; i < unit_count; i++) Tally_Check_Constructs (units[i]);
   Analysis_Budget        = ANALYSIS_STATEMENT_BUDGET;
   Analysis_Exhausted     = false;
-  /* Read every body with findings switched off until the summaries
-     settle: a pass over a summary still being derived can hold a value
-     the program never produces. */
+
   static Subprogram_Summary previous[MAX_SUMMARIES];
   bool saved_recording = Analysis_Recording;
   Analysis_Recording = false;
@@ -69160,10 +69311,7 @@ void Analyze_Units (Node **units, int unit_count) {
         continue;
       Analyze_Bodies (units[i]);
     }
-    /* The body of a withed unit is read from its source when that source
-       is at hand, and it is what a call into that unit does.  Summaries
-       are taken from it too; its findings are not, since they belong to
-       whoever compiles it. */
+
     for (int i = 0; i < Loaded_Body_Count; i++)
       Analyze_Bodies (Loaded_Package_Bodies[i]);
     Summaries_Usable = true;
@@ -69197,23 +69345,12 @@ void Write_Json_String (FILE *out, const char *text) {
   fputc ('"', out);
 }
 
-/* A site belongs to the unit under analysis when it was emitted from the
-   file named on the command line.  Checks in the units it depends on are
-   that unit's business, and reporting them would bury the ones asked for:
-   a hello-world draws about twenty checks of its own and some hundreds
-   from Text_IO. */
 bool Analysis_Site_Is_In_Unit (Analysis_Check_Site *site,
                                const char *input_path) {
   return site->location.filename and input_path and
          strcmp (site->location.filename, input_path) == 0;
 }
 
-/* What became of a check.  "checked" is a check in the generated code and
-   "suppressed" is permission given; the rest is the compiler having written
-   no check.  That is "cannot_fail" where it determined one unnecessary,
-   "not_applicable" where the construct never had one, "unchecked" where it
-   could not build one, and "unknown" where this implementation does not yet
-   record which of those happened. */
 const char *Spell_Check_Verdict (Analysis_Check_Site *site) {
   if (site->suppressed) return "suppressed";
   if (site->emitted)    return "checked";
@@ -69221,19 +69358,6 @@ const char *Spell_Check_Verdict (Analysis_Check_Site *site) {
   return "unknown";
 }
 
-/* The site inventory is taken while code is generated and the findings
-   while the statements are read, so the two see the same check through
-   different eyes: a site is placed at the statement, a finding at the
-   expression within it.  They are joined on the check's kind and line,
-   which is what they agree on. */
-/* Whether the analysis proved this check cannot fail, at a granularity
-   fine enough to act on.  A site is placed at the statement and a
-   finding at the expression, so the two meet only on the kind and the
-   line.  That is enough only where the line holds one check of the kind
-   and the analysis settled it: with two on a line -- A (I) := A (J) --
-   a finding cannot be told to belong to one rather than the other, and
-   eliding both on the strength of one would drop a check the program
-   needs.  Both are then left alone. */
 u32 Provably_Safe_Uses[MAX_ANALYSIS_CHECK_SITES];
 u32 Provably_Safe_Use_Count = 0;
 
@@ -69254,9 +69378,6 @@ bool Analysis_Proved_Safe_Here (Check_Kind kind, Location location) {
   if (matches != 1 or not all_safe) return false;
   if (not Line_Bears_One_Check (kind, location.line)) return false;
 
-  /* One finding stands for one check.  If the line turns out to hold a
-     second check of the same kind, the first has already taken the
-     finding and the second is checked as usual. */
   for (u32 i = 0; i < Provably_Safe_Use_Count; i++)
     if (Provably_Safe_Uses[i] == location.line) return false;
   if (Provably_Safe_Use_Count < MAX_ANALYSIS_CHECK_SITES)
@@ -69264,10 +69385,6 @@ bool Analysis_Proved_Safe_Here (Check_Kind kind, Location location) {
   return true;
 }
 
-/* A function's result range, keyed by the name code generation gives it,
-   so a later compilation that calls it can start from what the body
-   does rather than from what its subtype allows.  Only a range narrower
-   than the subtype is worth the line. */
 void ALI_Write_Summaries (FILE *out) {
   for (u32 i = 0; i < Summary_Count; i++) {
     Subprogram_Summary *summary = &Summaries[i];
@@ -69300,7 +69417,7 @@ void Join_Findings_To_Sites (void) {
       if (not finding->location.filename or not site->location.filename or
           strcmp (finding->location.filename, site->location.filename) != 0)
         continue;
-      /* A must-fail says more than a cannot-fail, so it wins the slot. */
+
       if (site->analysis and strcmp (site->analysis, "always_fails") == 0)
         continue;
       site->analysis = finding->verdict;
@@ -69509,9 +69626,7 @@ void Compile_File (const char *input_path, const char *output_path,
       (not Warnings_Silenced and
        Warning_Class_Is_Enabled[WARNING_UNREACHABLE_CODE])) {
     Analyze_Units (units, unit_count);
-    /* An ordinary compilation reports what must fail as a warning.
-       --analyze says the same thing in its findings, and saying it twice
-       in two formats would leave neither stream clean. */
+
     if (not Analyze_Mode) Report_Analysis_Warnings (input_path);
   }
 
@@ -75504,6 +75619,16 @@ static void Print_Usage (FILE *out, const char *program_name) {
       "      analysis can settle.  Diagnostics are left to an ordinary\n"
       "      compilation, which reports the same findings as warnings.\n"
       "      No object, IR or ALI file is written.\n"
+      "      Each site carries one verdict.  \"checked\" is a check in\n"
+      "      the generated code and \"suppressed\" is permission given;\n"
+      "      the rest is the compiler having written no check --\n"
+      "      \"cannot_fail\" where it proved one unnecessary,\n"
+      "      \"not_applicable\" where the construct never had one,\n"
+      "      \"unchecked\" where it could not build one, and \"unknown\"\n"
+      "      where it does not record which of those happened.\n"
+      "      Only the checks of the unit named on the command line are\n"
+      "      reported; those of the units it withs are their own\n"
+      "      business.\n"
       "\n"
       "Runtime checks (Ada ):\n"
       "  --suppress=<check>[,<check>...]\n"
