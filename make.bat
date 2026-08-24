@@ -4,6 +4,7 @@ cd /d "%~dp0"
 
 set "SOURCE=ada83.c"
 set "RUNTIME=ada83-runtime.ada"
+set "PLUGINS=ada83.vim ada83.el"
 set "BUNDLE=ada83-extension.html"
 set "MANUAL=ada83-manual.md"
 set "VSIX=ada83.vsix"
@@ -209,6 +210,10 @@ exit /b 0
 
 :stage
 copy /y "%RUNTIME%" "%STAGE%\" >nul
+for %%P in (%PLUGINS%) do (
+    call :require %%P || exit /b 1
+    copy /y "%%P" "%STAGE%\" >nul
+)
 if defined LAUNCHER call :launcher
 exit /b 0
 

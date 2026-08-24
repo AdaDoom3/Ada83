@@ -28,6 +28,7 @@ LINUX_CROSS_COMPILER := $(or \
   x86_64-linux-gnu-gcc)
 
 RUNTIME     = ada83-runtime.ada
+PLUGINS     = ada83.vim ada83.el
 MANUAL      = ada83-manual.md
 VSIX        = ada83.vsix
 BUNDLE      = ada83-extension.html
@@ -171,10 +172,11 @@ provision-llvm:
 	 echo "libLLVM not found; install your system's llvm package"
 
 # `package` fills bin-<target>/ with everything a release carries: the
-# compiler, the runtime, the extension, the platform artwork, and — on
-# Windows — the vendored DLLs unpacked from bin-libraries.zip, which holds
-# nothing else. The release workflow zips the folder itself.
-package: ada83.c $(RUNTIME) $(ICON_SOURCE) $(BIN_DIR)/$(VSIX)
+# compiler, the runtime, the extension, the Vim and Emacs plugins, the
+# platform artwork, and — on Windows — the vendored DLLs unpacked from
+# bin-libraries.zip, which holds nothing else. The release workflow zips the
+# folder itself.
+package: ada83.c $(RUNTIME) $(PLUGINS) $(ICON_SOURCE) $(BIN_DIR)/$(VSIX)
 	@command -v $(firstword $(COMPILER)) >/dev/null || { \
 	  echo "packaging for $(TARGET) needs $(firstword $(COMPILER))"; exit 1; }
 	@test -z "$(SHARED_LIBRARIES)" || test -f $(LIBRARY_SOURCE) || { \
@@ -191,6 +193,7 @@ package: ada83.c $(RUNTIME) $(ICON_SOURCE) $(BIN_DIR)/$(VSIX)
 	@$(call STAGE,compiling ada83.c for $(TARGET))
 	$(BUILD_EXECUTABLE)
 	cp $(RUNTIME) $(BIN_DIR)/
+	cp $(PLUGINS) $(BIN_DIR)/
 	test -z "$(LAUNCHER)" || printf '%s\n' '[Desktop Entry]' 'Type=Application' \
 	  'Name=Ada 83' 'Comment=Ada 83 compiler' 'Exec=ada83 %F' 'Icon=$(ICON)' \
 	  'Terminal=true' 'Categories=Development;Building;' > $(BIN_DIR)/$(LAUNCHER)

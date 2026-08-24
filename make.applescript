@@ -493,7 +493,8 @@ on packageProgram(chosenPlatform)
 	return guardedProgram(extensionSteps(chosenPlatform) & sharedLibraryGuardSteps(chosenPlatform) & ¬
 		sliceGuardSteps(chosenPlatform) & resourceObjectSteps(chosenPlatform) & ¬
 		chosenRouteSteps(chosenPlatform) & compileSteps(chosenPlatform) & ¬
-		{"cp ada83-runtime.ada " & binFolder & "/"} & launcherSteps(chosenPlatform) & ¬
+		{"cp ada83-runtime.ada " & binFolder & "/", ¬
+		"cp ada83.vim ada83.el " & binFolder & "/"} & launcherSteps(chosenPlatform) & ¬
 		sharedLibrarySteps(chosenPlatform) & ¬
 		{"rm -rf staging", ¬
 		"echo 'Packaged " & binFolder & ":'", ¬
@@ -518,6 +519,8 @@ on run argv
 		end if
 		if chosenAction is "package" then
 			requireFile(directory, "ada83-runtime.ada")
+			requireFile(directory, "ada83.vim")
+			requireFile(directory, "ada83.el")
 			requireFile(directory, iconSourceFor())
 		end if
 		if chosenAction is not "build" then

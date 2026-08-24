@@ -45,7 +45,8 @@ code --install-extension ada83.vsix
 ```
 
 It needs `ada83` on your PATH, or `ada83.compilerPath` set to where you
-unpacked it.
+unpacked it. For Vim, Neovim or Emacs, `ada83.vim` and `ada83.el` are in the
+same archive — see [Vim and Emacs](#vim-and-emacs).
 
 ## Building
 
@@ -66,7 +67,7 @@ beside its own executable.
 
 | Platform | Command | Produces |
 | -------- | ------- | -------- |
-| Linux    | `make package` | `bin-linux/`, extension and artwork included |
+| Linux    | `make package` | `bin-linux/`, extension, editor plugins and artwork included |
 | macOS    | `osascript make.applescript package` | `bin-macos/`, both slices together |
 | Windows  | `make.bat package` | `bin-windows/`, DLLs included |
 
@@ -158,6 +159,50 @@ and anything but English hands the message to the editor's model.
 | `ada83.formatOnSave` | Reformat the whole file as it is saved, by asking a model |
 | `ada83.formatStrength` | How much a reformat may change: `indentation`, `layout` or `style` |
 | `ada83.trace.server` | Write the protocol traffic to the output channel |
+
+## Vim and Emacs
+
+Two single files, `ada83.vim` and `ada83.el`, give the same colours outside
+VS Code. Each carries the syntax on its own, starts `ada83 --lsp` through
+whichever client is installed, and colours the buffer from the compiler.
+
+Both ship in the release archive beside the compiler.
+
+```sh
+cp ada83.vim ~/.vim/plugin/          # Vim
+cp ada83.vim ~/.config/nvim/plugin/  # Neovim
+cp ada83.el  ~/.emacs.d/lisp/        # Emacs, then (require 'ada83)
+```
+
+On Neovim the compiler is run, decoded and marked in Lua, asynchronously:
+25,000 tokens over 4,400 lines cost 84 ms off the main loop, against 330 ms
+of blocking Vimscript. Vim takes the Vimscript path unchanged.
+
+The semantic layer comes from a mode of the compiler itself:
+
+```sh
+./ada83 --highlight demo.ada .
+```
+
+`--highlight` prints every token of one file as JSON — a legend of kind
+names, then one `[line, column, length, kind]` per token — reading the
+literals and the reserved words lexically and giving every other name the
+kind the analysis resolved it to. A name is coloured as the package, type,
+function, variable, parameter or enumeration literal it was *declared* as,
+which is what a regular expression cannot know. The plugins lay that over
+the syntax as text properties (Vim), extmarks (Neovim) or overlays (Emacs)
+when a file is opened and after it is written; `:Ada83Highlight` and
+`M-x ada83-highlight-buffer` ask for it by hand.
+
+The language server is wired up for Neovim's built-in client and vim-lsp,
+and for both Eglot and lsp-mode. For coc.nvim, put this in
+`coc-settings.json`:
+
+```json
+"languageserver": {
+  "ada83": { "command": "ada83", "args": ["--lsp"], "filetypes": ["ada83"] }
+}
+```
 
 ## Use
 

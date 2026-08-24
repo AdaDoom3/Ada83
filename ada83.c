@@ -9046,6 +9046,38 @@ enum {
 _Static_assert (SEMANTIC_TOKEN_TYPE_COUNT == 6,
   "SEMANTIC_TOKEN_LEGEND_JSON spells each token type at its enum index");
 
+enum {
+  HIGHLIGHT_COMMENT,
+  HIGHLIGHT_STRING,
+  HIGHLIGHT_CHARACTER,
+  HIGHLIGHT_NUMBER,
+  HIGHLIGHT_KEYWORD,
+  HIGHLIGHT_ATTRIBUTE,
+  HIGHLIGHT_PRAGMA,
+  HIGHLIGHT_LABEL,
+  HIGHLIGHT_OPERATOR,
+  HIGHLIGHT_DELIMITER,
+  HIGHLIGHT_NAMESPACE,
+  HIGHLIGHT_TYPE,
+  HIGHLIGHT_FUNCTION,
+  HIGHLIGHT_VARIABLE,
+  HIGHLIGHT_PARAMETER,
+  HIGHLIGHT_ENUMERATION,
+  HIGHLIGHT_IDENTIFIER,
+  HIGHLIGHT_KIND_COUNT
+};
+
+#define HIGHLIGHT_LEGEND_JSON                                                 \
+  "[\"comment\",\"string\",\"character\",\"number\",\"keyword\","             \
+  "\"attribute\",\"pragma\",\"label\",\"operator\",\"delimiter\","            \
+  "\"namespace\",\"type\",\"function\",\"variable\",\"parameter\","           \
+  "\"enumeration\",\"identifier\"]"
+
+_Static_assert (HIGHLIGHT_KIND_COUNT == 17,
+  "HIGHLIGHT_LEGEND_JSON spells each highlight kind at its enum index");
+
+enum { MAX_HIGHLIGHT_TOKENS = 262144 };
+
 enum { MAX_SEMANTIC_TOKENS = 16384, MAX_CLASSIFIED_NAMES = 4096 };
 
 typedef struct {
@@ -70749,6 +70781,231 @@ static int Tokens_And_Print (const char *path, const char *directory,
   return Analysis_Session_End (&out);
 }
 
+typedef struct {
+  Text_Buffer *out;
+  u32          published;
+} Highlight_Answer;
+
+typedef enum {
+  HIGHLIGHT_EXPECT_NOTHING,
+  HIGHLIGHT_EXPECT_ATTRIBUTE,
+  HIGHLIGHT_EXPECT_PRAGMA,
+  HIGHLIGHT_EXPECT_LABEL
+} Highlight_Expectation;
+
+static int Highlight_Kind_Of_Semantic_Type (int semantic_type) {
+  switch (semantic_type) {
+    case SEMANTIC_TOKEN_NAMESPACE:   return HIGHLIGHT_NAMESPACE;
+    case SEMANTIC_TOKEN_TYPE:        return HIGHLIGHT_TYPE;
+    case SEMANTIC_TOKEN_FUNCTION:    return HIGHLIGHT_FUNCTION;
+    case SEMANTIC_TOKEN_VARIABLE:    return HIGHLIGHT_VARIABLE;
+    case SEMANTIC_TOKEN_PARAMETER:   return HIGHLIGHT_PARAMETER;
+    case SEMANTIC_TOKEN_ENUM_MEMBER: return HIGHLIGHT_ENUMERATION;
+    default:                         return HIGHLIGHT_IDENTIFIER;
+  }
+}
+
+static void Publish_Highlight (Highlight_Answer *answer, u32 line, u32 column,
+                               u32 length, int kind) {
+  if (length == 0 or answer->published >= MAX_HIGHLIGHT_TOKENS) return;
+  Buffer_Printf (answer->out, "%s[%u,%u,%u,%d]",
+                 answer->published ? "," : "", line, column, length, kind);
+  answer->published++;
+}
+
+static u32 Width_Of_Character_Literal (const char *source, u32 at) {
+  u32 body = 1;
+  if ((unsigned char) source[at + 1] >= 0xC0)
+    while (((unsigned char) source[at + 1 + body] & 0xC0) == 0x80) body++;
+  return source[at + 1] and source[at + 1] != '\n' and
+         source[at + 1 + body] == '\'' ? body + 2 : 0;
+}
+
+static u32 End_Of_Numeric_Literal (const char *source, u32 at) {
+  while (isdigit ((unsigned char) source[at]) or source[at] == '_') at++;
+
+  if (source[at] == '#') {
+    at++;
+    while (source[at] and source[at] != '#' and source[at] != '\n') at++;
+    if (source[at] == '#') at++;
+  } else if (source[at] == '.' and isdigit ((unsigned char) source[at + 1])) {
+    at++;
+    while (isdigit ((unsigned char) source[at]) or source[at] == '_') at++;
+  }
+
+  if ((source[at] | 0x20) == 'e') {
+    u32 exponent = at + 1;
+    if (source[exponent] == '+' or source[exponent] == '-') exponent++;
+    if (isdigit ((unsigned char) source[exponent])) {
+      at = exponent;
+      while (isdigit ((unsigned char) source[at]) or source[at] == '_') at++;
+    }
+  }
+  return at;
+}
+
+static u32 End_Of_String_Literal (const char *source, u32 at, char delimiter) {
+  for (at++; source[at] and source[at] != '\n'; ) {
+    if (source[at] != delimiter) { at++; continue; }
+    at++;
+    if (source[at] != delimiter) break;
+    at++;
+  }
+  return at;
+}
+
+static void Scan_Text_For_Highlights (Highlight_Answer *answer,
+                                      const char *source,
+                                      const Classification_Walk *walk) {
+  static const struct { const char *spelling; int kind; } compounds[] = {
+    { ":=", HIGHLIGHT_OPERATOR  }, { "=>", HIGHLIGHT_OPERATOR  },
+    { "..", HIGHLIGHT_OPERATOR  }, { "**", HIGHLIGHT_OPERATOR  },
+    { "/=", HIGHLIGHT_OPERATOR  }, { ">=", HIGHLIGHT_OPERATOR  },
+    { "<=", HIGHLIGHT_OPERATOR  }, { "<>", HIGHLIGHT_OPERATOR  },
+    { "<<", HIGHLIGHT_DELIMITER }, { ">>", HIGHLIGHT_DELIMITER }
+  };
+
+  u32                   line = 1, column = 1;
+  bool                  after_value = false;
+  Highlight_Expectation expecting   = HIGHLIGHT_EXPECT_NOTHING;
+
+  for (u32 at = 0; source[at] and
+                   answer->published < MAX_HIGHLIGHT_TOKENS; ) {
+    char lead = source[at];
+
+    if (lead == '\n') { at++; line++; column = 1;  continue; }
+    if (isspace ((unsigned char) lead)) { at++; column++; continue; }
+
+    if (lead == '-' and source[at + 1] == '-') {
+      u32 from = at;
+      while (source[at] and source[at] != '\n') at++;
+      Publish_Highlight (answer, line, column, at - from, HIGHLIGHT_COMMENT);
+      column     += at - from;
+      after_value = false;
+      continue;
+    }
+
+    if (lead == '"' or lead == '%') {
+      u32 from = at;
+      at = End_Of_String_Literal (source, at, lead);
+      Publish_Highlight (answer, line, column, at - from, HIGHLIGHT_STRING);
+      column     += at - from;
+      after_value = true;
+      expecting   = HIGHLIGHT_EXPECT_NOTHING;
+      continue;
+    }
+
+    if (lead == '\'') {
+      u32 width = after_value ? 0 : Width_Of_Character_Literal (source, at);
+      if (width) {
+        Publish_Highlight (answer, line, column, width, HIGHLIGHT_CHARACTER);
+        at         += width;
+        column     += width;
+        after_value = true;
+      } else {
+        Publish_Highlight (answer, line, column, 1, HIGHLIGHT_DELIMITER);
+        at++;
+        column++;
+        after_value = false;
+        expecting   = HIGHLIGHT_EXPECT_ATTRIBUTE;
+      }
+      continue;
+    }
+
+    if (isdigit ((unsigned char) lead)) {
+      u32 from = at;
+      at = End_Of_Numeric_Literal (source, at);
+      Publish_Highlight (answer, line, column, at - from, HIGHLIGHT_NUMBER);
+      column     += at - from;
+      after_value = true;
+      expecting   = HIGHLIGHT_EXPECT_NOTHING;
+      continue;
+    }
+
+    if (isalpha ((unsigned char) lead)) {
+      u32 from = at;
+      while (Is_Identifier_Character (source[at])) at++;
+
+      Slice      word     = { source + from, at - from };
+      Token_Kind reserved = Find_Reserved_Word (word);
+      int        kind;
+
+      if (reserved != TK_IDENTIFIER) {
+        kind        = HIGHLIGHT_KEYWORD;
+        after_value = reserved == TK_ALL;
+        expecting   = reserved == TK_PRAGMA ? HIGHLIGHT_EXPECT_PRAGMA
+                                            : HIGHLIGHT_EXPECT_NOTHING;
+      } else {
+        int semantic_type = Classified_Type_Of (walk, word);
+        kind = expecting == HIGHLIGHT_EXPECT_ATTRIBUTE ? HIGHLIGHT_ATTRIBUTE
+             : expecting == HIGHLIGHT_EXPECT_PRAGMA    ? HIGHLIGHT_PRAGMA
+             : expecting == HIGHLIGHT_EXPECT_LABEL     ? HIGHLIGHT_LABEL
+             : semantic_type >= 0
+                 ? Highlight_Kind_Of_Semantic_Type (semantic_type)
+                 : HIGHLIGHT_IDENTIFIER;
+        after_value = true;
+        expecting   = HIGHLIGHT_EXPECT_NOTHING;
+      }
+
+      Publish_Highlight (answer, line, column, at - from, kind);
+      column += at - from;
+      continue;
+    }
+
+    u32 width = 0;
+    int kind  = HIGHLIGHT_DELIMITER;
+    for (u32 i = 0; i < Count_Of (compounds) and not width; i++)
+      if (source[at]     == compounds[i].spelling[0] and
+          source[at + 1] == compounds[i].spelling[1]) {
+        width = 2;
+        kind  = compounds[i].kind;
+      }
+    if (not width) {
+      width = 1;
+      kind  = strchr ("+-*/&<>=|!", lead) ? HIGHLIGHT_OPERATOR
+                                          : HIGHLIGHT_DELIMITER;
+    }
+
+    Publish_Highlight (answer, line, column, width, kind);
+    at         += width;
+    column     += width;
+    after_value = lead == ')';
+    expecting   = width == 2 and lead == '<' ? HIGHLIGHT_EXPECT_LABEL
+                                             : HIGHLIGHT_EXPECT_NOTHING;
+  }
+}
+
+static int Highlight_And_Print (const char *path, const char *directory,
+                                const char *name, const char *invoked_as) {
+  (void) name;
+  Analysis_Session_Begin (path, directory, invoked_as);
+
+  static Classified_Name names[MAX_CLASSIFIED_NAMES];
+  static Scope           *visited[MAX_OUTLINE_SCOPES];
+  Classification_Walk walk = { .path = path, .names = names,
+                               .visited = visited };
+  if (sm) {
+    walk.own_only = true;
+    Collect_Classified_Names (&walk, sm->global_scope, 0);
+    walk.visited_count = 0;
+    walk.own_only = false;
+    Collect_Classified_Names (&walk, sm->global_scope, 0);
+  }
+
+  char *text = Read_File_Simple (path);
+
+  Text_Buffer out = {0};
+  Buffer_Append_Text (&out,
+    "{\"legend\":" HIGHLIGHT_LEGEND_JSON ",\"tokens\":[");
+
+  Highlight_Answer answer = { .out = &out };
+  Scan_Text_For_Highlights (&answer, text ? text : "", &walk);
+
+  Buffer_Append_Text (&out, "]}");
+  free (text);
+  return Analysis_Session_End (&out);
+}
+
 static int Mains_And_Print (const char *path, const char *directory,
                             const char *name, const char *invoked_as) {
   (void) name;
@@ -74163,6 +74420,18 @@ static void Print_Usage (FILE *out, const char *program_name) {
       "                      the terminal: lldb-dap runs underneath and\n"
       "                      the session speaks Ada -- break by dotted\n"
       "                      name or file:line, run, step, bt, print.\n"
+      "  --highlight <file> <directory>\n"
+      "                      Print every token of the file as JSON, for an\n"
+      "                      editor that colours text itself rather than\n"
+      "                      over the language server: a legend of kind\n"
+      "                      names, then one [line, column, length, kind]\n"
+      "                      per token, with line and column counted from\n"
+      "                      one and column and length counted in bytes.\n"
+      "                      Comments, literals, reserved words, attributes\n"
+      "                      and pragma names are read lexically; every\n"
+      "                      other name the analysis resolved carries what\n"
+      "                      it was declared as -- package, type, function,\n"
+      "                      variable, parameter, enumeration literal.\n"
       "  --dump-tree <file> <directory>\n"
       "                      Dump the resolved syntax tree of every unit\n"
       "                      in the file (compiler debugging).\n"
@@ -74250,6 +74519,7 @@ int main (int argc, char *argv[]) {
     { "--complete",  4, "<file> <directory>",        Complete_And_Print  },
     { "--signature", 5, "<file> <directory> <name>", Signature_And_Print },
     { "--tokens",    4, "<file> <directory>",        Tokens_And_Print    },
+    { "--highlight", 4, "<file> <directory>",        Highlight_And_Print },
     { "--mains",     4, "<file> <directory>",        Mains_And_Print     },
     { "--dump-tree", 4, "<file> <directory>",        Dump_Tree_And_Print },
     { "--dump-rep",  4, "<file> <directory>",        Dump_Rep_And_Print  }
