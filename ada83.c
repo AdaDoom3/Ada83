@@ -4122,6 +4122,9 @@ u32   Count_Variant_Components                 (Node *variant_part);
 void  Resolve_Variant_Part                     (Node *variant_part);
 void  Set_Variant_Choice                       (Variant_Info *info, Node *choice);
 static void Set_Variant_Choices                (Variant_Info *info, Node_List *choices);
+static u32  Laid_Out_Component_Size            (Type *component_type);
+static void Relayout_Record_Components         (Type *record_type);
+static void Relayout_Types_Embedding           (Type *completed);
 bool  Variant_Admits_Value                     (const Variant_Info *variant,
                                                 i64 value);
 void  Check_Entry_Count_Attribute              (Node *node);
@@ -22884,13 +22887,21 @@ void Resolve_Range_Bound_Against_Other (Node *bound,
   Resolve_Operand (bound, other_end_type);
 }
 
+static u32 Laid_Out_Component_Size (Type *component_type) {
+  u32 component_size = component_type ? component_type->size : 8;
+  if (component_type and component_size == 0 and
+      Is_Constrained_Array (component_type) and
+      component_type->array.index_count > 0)
+    component_size = Measure_Max_Array_Size (component_type);
+  return component_size;
+}
+
 static void Add_Component_Declaration (Record_Layout *layout,
                                        Node *declaration) {
   if (declaration->kind != NK_COMPONENT_DECL) return;
   Resolve_Expression (declaration->component.component_type);
   Type *component_type = declaration->component.component_type
     ? declaration->component.component_type->type : sm->type_integer;
-  u32 component_size = component_type ? component_type->size : 8;
 
   if (Type_Constraint_Is_Required (component_type) and
       declaration->component.component_type)
@@ -22902,10 +22913,7 @@ static void Add_Component_Declaration (Record_Layout *layout,
                       "discriminant constraint, since the discriminants of "
                       "its type have no defaults");
 
-  if (component_type and component_size == 0 and
-      Is_Constrained_Array (component_type) and
-      component_type->array.index_count > 0)
-    component_size = Measure_Max_Array_Size (component_type);
+  u32 component_size = Laid_Out_Component_Size (component_type);
 
   if (declaration->component.init) {
     Seed_Expected_Type (declaration->component.init, component_type);
@@ -24718,6 +24726,53 @@ static void Grow_Record_For_Array_Components (Type *record_type) {
         needed <= (i128) UINT32_MAX)
       record_type->size = (u32) needed;
   }
+}
+
+static void Relayout_Record_Components (Type *record_type) {
+  if (record_type->specified_bit_size > 0 or record_type->is_packed) return;
+  Component_Info *components = record_type->record.components;
+  u32             count      = record_type->record.component_count;
+  u32             offset     = 0;
+  u32             ci         = 0;
+
+  for (; ci < count and components[ci].is_discriminant; ci++) {
+    Type *discriminant_type = components[ci].component_type;
+    u32   size              = discriminant_type ? discriminant_type->size : 8;
+    components[ci].byte_offset = offset;
+    components[ci].bit_size    = size * 8;
+    offset += size;
+  }
+  for (; ci < count and components[ci].variant_index < 0; ci++) {
+    Type *component_type = components[ci].component_type;
+    components[ci].byte_offset = offset;
+    components[ci].bit_offset  = 0;
+    components[ci].bit_size    = component_type ? component_type->size * 8 : 64;
+    offset += Laid_Out_Component_Size (component_type);
+  }
+  record_type->size = offset;
+
+  if (record_type->record.variant_count > 0) {
+    u32 max_variant_size = 0;
+    record_type->record.variant_offset = offset;
+    for (u32 vi = 0; vi < record_type->record.variant_count; vi++) {
+      Variant_Info *variant = &record_type->record.variants[vi];
+      u32           extent  = 0;
+      u32           past    = variant->first_component + variant->component_count;
+      for (u32 c = variant->first_component; c < past and c < count; c++) {
+        Type *component_type = components[c].component_type;
+        components[c].byte_offset = offset + extent;
+        components[c].bit_offset  = 0;
+        components[c].bit_size    = component_type ? component_type->size * 8 : 64;
+        extent += Laid_Out_Component_Size (component_type);
+      }
+      variant->variant_size = extent;
+      if (extent > max_variant_size) max_variant_size = extent;
+    }
+    record_type->record.max_variant_size = max_variant_size;
+    record_type->size = offset + max_variant_size;
+  }
+
+  Grow_Record_For_Array_Components (record_type);
 }
 
 static Type *Constrain_Real_By_Accuracy (Type *target, Type_Kind kind,
@@ -29678,6 +29733,29 @@ static void Propagate_Record_Full_View (Type *type) {
     }
 }
 
+static void Relayout_Types_Embedding (Type *completed) {
+  for (Scope *scope = sm->current_scope; scope; scope = scope->parent)
+    for (u32 i = 0; i < scope->symbol_count; i++) {
+      Symbol *symbol = scope->symbols[i];
+      if (not symbol or
+          (symbol->kind != SYMBOL_TYPE and symbol->kind != SYMBOL_SUBTYPE))
+        continue;
+      Type *t = symbol->type;
+      if (not t or t == completed or not Type_Reaches (t, completed, 0))
+        continue;
+      if (Is_Constrained_Array (t) and t->size != 0)
+        Compute_Static_Array_Size (t, 8);
+      else if (Get_Live_Arm (t) != TYPE_ARM_RECORD)
+        continue;
+      else if (t->base_type and Get_Live_Arm (t->base_type) == TYPE_ARM_RECORD) {
+        t->size                    = t->base_type->size;
+        t->record.variant_offset   = t->base_type->record.variant_offset;
+        t->record.max_variant_size = t->base_type->record.max_variant_size;
+      } else
+        Relayout_Record_Components (t);
+    }
+}
+
 static Location Find_Limited_Component_Location (Node *definition,
                                                  Location fallback) {
   if (not definition) return fallback;
@@ -29879,6 +29957,9 @@ void Resolve_Declaration (Node *node) {
           defined = NULL;
         }
         if (defined) {
+          bool completes_partial_view = type->kind == TYPE_PRIVATE or
+                                        type->kind == TYPE_LIMITED_PRIVATE or
+                                        type->kind == TYPE_INCOMPLETE;
           Type_Become (type, defined);
 
           if (Is_Record (type) or Is_Private (type))
@@ -29895,6 +29976,7 @@ void Resolve_Declaration (Node *node) {
             Reject (node,
               "LIMITED is only allowed in a private type declaration");
           if (Is_Record (type)) Propagate_Record_Full_View (type);
+          if (completes_partial_view) Relayout_Types_Embedding (type);
 
           Check_Private_Type_Completion (type,
             Find_Limited_Component_Location (definition, node->location));
@@ -48962,8 +49044,10 @@ void Emit_Index_Subtype_Bound_Check (Type *idx_ty, u32 lo, u32 hi,
   Rep iat = Pick_Arith_Rep ();
   u32 lo_c = Emit_Convert (lo, from_bt, iat).reg;
   u32 hi_c = Emit_Convert (hi, from_bt, iat).reg;
+  u32 skip = Emit_Open_Skip_If (Emit_Icmp ("sgt", iat, lo_c, hi_c).reg);
   Emit_Constraint_Check (Wrap (lo_c, iat), idx_ty, NULL);
   Emit_Constraint_Check (Wrap (hi_c, iat), idx_ty, NULL);
+  Emit_Close_Null_Skip (skip);
 }
 
 void Emit_Aggregate_Bound_Match_Check (u32 a_lo, u32 b_lo,
