@@ -174,6 +174,7 @@ package Text_IO is
 private
   type File_Type is record
       Handle : Integer := 0;
+      Serial : Integer := 0;
     end record;
 end;
 with System;
@@ -239,6 +240,7 @@ package body Text_IO is
       Page_Active : Boolean;
       Shared      : Boolean;
       Write_Pos   : Integer;
+      Serial      : Integer;
     end record;
   type FCB_Array is array (0..99) of File_Control_Block;
   Initialized         :          Boolean        := False;
@@ -246,7 +248,10 @@ package body Text_IO is
   Current_Input_Slot  :          Integer        := 1;
   Current_Output_Slot :          Integer        := 2;
   Current_Error_Slot  :          Integer        := 3;
-  Next_FCB            :          Integer        := 4;
+  Current_Input_Serial  :        Integer        := 0;
+  Current_Output_Serial :        Integer        := 0;
+  Current_Error_Serial  :        Integer        := 0;
+  Next_Serial         :          Integer        := 4;
   Null_Address        : constant System.Address := System.Null_Address;
   procedure To_C_String (S : String; Buffer : out String) is
     J : Integer := 1;
@@ -283,6 +288,7 @@ package body Text_IO is
       File_Control_Blocks (Table_Slot).Name_Length := 0;
       File_Control_Blocks (Table_Slot).Form_Length := 0;
       File_Control_Blocks (Table_Slot).Is_Standard := True;
+      File_Control_Blocks (Table_Slot).Serial := Table_Slot;
       File_Control_Blocks (Table_Slot).Shared := False;
       Reset_Position (Table_Slot);
     end;
@@ -308,6 +314,36 @@ package body Text_IO is
     begin
       if not Is_Open_Index (Table_Slot) then raise Status_Error; end if;
     end;
+  procedure Require_Live (File : File_Type; Table_Slot : Integer) is
+    begin
+      Require_Open (Table_Slot);
+      if File.Serial /= 0
+          and then File.Serial /= File_Control_Blocks (Table_Slot).Serial then
+        raise Status_Error;
+      end if;
+    end;
+  function Claim_Slot return Integer is
+    begin
+      Ensure_Init;
+      for I in 4..99 loop
+        if not File_Control_Blocks (I).Is_Open then
+          return I;
+        end if;
+      end loop;
+      raise Use_Error;
+    end;
+  procedure Release_Slot (Table_Slot : Integer) is
+    begin
+      File_Control_Blocks (Table_Slot).Is_Open := False;
+      File_Control_Blocks (Table_Slot).Stream := Null_Address;
+      File_Control_Blocks (Table_Slot).Serial := 0;
+    end;
+  function Names_An_Open_File (File : File_Type) return Boolean is
+    begin
+      return Is_Open_Index (File.Handle)
+        and then (File.Serial = 0
+                  or else File.Serial = File_Control_Blocks (File.Handle).Serial);
+    end;
   procedure Raw_Put (Table_Slot : Integer; C : Integer);
   function Same_External (I : Integer; Name : String) return Boolean is
     begin
@@ -327,7 +363,6 @@ package body Text_IO is
     Dummy : Integer;
     begin
       for I in 4..99 loop
-        -- Only a file with pending output is flushable; see Reset below.
         if Same_External (I, Name) and then File_Control_Blocks (I).Mode /= In_File then
           Dummy := C_Fflush (File_Control_Blocks (I).Stream);
         end if;
@@ -338,19 +373,14 @@ package body Text_IO is
     Mode_Text   : constant String := Open_Mode_String (Mode);
     Name_Buffer :          String (1..1025);
     begin
-      if Is_Open_Index (File.Handle) then
+      if Names_An_Open_File (File) then
         raise Status_Error;
       end if;
-      if Next_FCB > 99 then
-        raise Use_Error;
-      end if;
-      Table_Slot := Next_FCB;
-      Next_FCB := Next_FCB + 1;
+      Table_Slot := Claim_Slot;
       if Name'Length > 0 then
         To_C_String (Name, Name_Buffer);
         File_Control_Blocks (Table_Slot).Stream := C_Fopen (Name_Buffer'Address, Mode_Text'Address);
         if File_Control_Blocks (Table_Slot).Stream = Null_Address then
-          Next_FCB := Next_FCB - 1;
           raise Name_Error;
         end if;
         File_Control_Blocks (Table_Slot).Name_Length := Name'Length;
@@ -358,7 +388,6 @@ package body Text_IO is
       else
         File_Control_Blocks (Table_Slot).Stream := C_Tmpfile;
         if File_Control_Blocks (Table_Slot).Stream = Null_Address then
-          Next_FCB := Next_FCB - 1;
           raise Use_Error;
         end if;
         File_Control_Blocks (Table_Slot).Name_Length := 0;
@@ -372,32 +401,32 @@ package body Text_IO is
       File_Control_Blocks (Table_Slot).Is_Standard := False;
       Reset_Position (Table_Slot);
       File_Control_Blocks (Table_Slot).Shared := False;
-      File := (Handle => Table_Slot);
+      File_Control_Blocks (Table_Slot).Serial := Next_Serial;
+      Next_Serial := Next_Serial + 1;
+      File := (Handle => Table_Slot, Serial => Next_Serial - 1);
     end;
   procedure Open (File : in out File_Type; Mode : File_Mode; Name : String; Form : String := "") is
     Table_Slot  :          Integer;
     Mode_Text   : constant String := Open_Mode_String (Mode);
     Name_Buffer :          String (1..1025);
     begin
-      if Is_Open_Index (File.Handle) then
+      if Names_An_Open_File (File) then
         raise Status_Error;
       end if;
       if File.Handle /= 0 then
-        if File.Handle = Current_Output_Slot and Mode = In_File then
+        if File.Handle = Current_Output_Slot and File.Serial = Current_Output_Serial
+            and Mode = In_File then
           raise Mode_Error;
         end if;
-        if File.Handle = Current_Input_Slot and Mode /= In_File then
+        if File.Handle = Current_Input_Slot and File.Serial = Current_Input_Serial
+            and Mode /= In_File then
           raise Mode_Error;
         end if;
-      end if;
-      if Next_FCB > 99 then
-        raise Use_Error;
       end if;
       if Name'Length = 0 then
         raise Name_Error;
       end if;
-      Table_Slot := Next_FCB;
-      Next_FCB := Next_FCB + 1;
+      Table_Slot := Claim_Slot;
       Flush_External (Name);
       declare
         Sharer : Integer := Find_Open_By_Name (Name);
@@ -422,7 +451,6 @@ package body Text_IO is
             File_Control_Blocks (Table_Slot).Stream := C_Fopen (Name_Buffer'Address, Mode_Text'Address);
             File_Control_Blocks (Table_Slot).Shared := False;
             if File_Control_Blocks (Table_Slot).Stream = Null_Address then
-              Next_FCB := Next_FCB - 1;
               raise Name_Error;
             end if;
           end if;
@@ -438,20 +466,26 @@ package body Text_IO is
       File_Control_Blocks (Table_Slot).Is_Standard := False;
       Reset_Position (Table_Slot);
       if File.Handle /= 0 then
-        if File.Handle = Current_Output_Slot then
+        if File.Handle = Current_Output_Slot
+            and File.Serial = Current_Output_Serial then
           Current_Output_Slot := Table_Slot;
+          Current_Output_Serial := Next_Serial;
         end if;
-        if File.Handle = Current_Input_Slot then
+        if File.Handle = Current_Input_Slot
+            and File.Serial = Current_Input_Serial then
           Current_Input_Slot := Table_Slot;
+          Current_Input_Serial := Next_Serial;
         end if;
       end if;
-      File := (Handle => Table_Slot);
+      File_Control_Blocks (Table_Slot).Serial := Next_Serial;
+      Next_Serial := Next_Serial + 1;
+      File := (Handle => Table_Slot, Serial => Next_Serial - 1);
     end;
   procedure Close (File : in out File_Type) is
     Table_Slot : Integer := File.Handle;
     Dummy      : Integer;
     begin
-      Require_Open (Table_Slot);
+      Require_Live (File, Table_Slot);
       if File_Control_Blocks (Table_Slot).Is_Standard then
         raise Use_Error;
       end if;
@@ -483,15 +517,14 @@ package body Text_IO is
             end if;
           end if;
         end;
-      File_Control_Blocks (Table_Slot).Is_Open := False;
-      File_Control_Blocks (Table_Slot).Stream := Null_Address;
+      Release_Slot (Table_Slot);
     end;
   procedure Delete (File : in out File_Type) is
     Table_Slot  : Integer := File.Handle;
     Name_Buffer : String (1..1025);
     Dummy       : Integer;
     begin
-      Require_Open (Table_Slot);
+      Require_Live (File, Table_Slot);
       if File_Control_Blocks (Table_Slot).Is_Standard then
         raise Use_Error;
       end if;
@@ -502,9 +535,9 @@ package body Text_IO is
         To_C_String (File_Control_Blocks (Table_Slot).Name (1..File_Control_Blocks (Table_Slot).Name_Length), Name_Buffer);
         Dummy := C_Remove (Name_Buffer'Address);
       end if;
-      File_Control_Blocks (Table_Slot).Is_Open := False;
-      File_Control_Blocks (Table_Slot).Stream := Null_Address;
+      Release_Slot (Table_Slot);
       File.Handle := 0;
+      File.Serial := 0;
     end;
   procedure Reset (File : in out File_Type; Mode : File_Mode) is
     Table_Slot  :          Integer := File.Handle;
@@ -512,7 +545,7 @@ package body Text_IO is
     Mode_Text   : constant String  := Open_Mode_String (Mode);
     Dummy       :          Integer;
     begin
-      Require_Open (Table_Slot);
+      Require_Live (File, Table_Slot);
       if File_Control_Blocks (Table_Slot).Is_Standard then
         raise Use_Error;
       end if;
@@ -530,10 +563,6 @@ package body Text_IO is
         File_Control_Blocks (Table_Slot).Page_Active := False;
       end if;
       if File_Control_Blocks (Table_Slot).Shared and File_Control_Blocks (Table_Slot).Stream /= Null_Address then
-        -- Flushing a stream last used for reading is undefined in C. The
-        -- Windows runtime advances it to the end of what it had buffered,
-        -- which drags every other internal file sharing the stream to end of
-        -- file; the branches below reposition where a mode needs it.
         if File_Control_Blocks (Table_Slot).Mode /= In_File then
           Dummy := C_Fflush (File_Control_Blocks (Table_Slot).Stream);
         end if;
@@ -565,13 +594,13 @@ package body Text_IO is
   function Mode (File : File_Type) return File_Mode is
     Table_Slot : Integer := File.Handle;
     begin
-      Require_Open (Table_Slot);
+      Require_Live (File, Table_Slot);
       return File_Control_Blocks (Table_Slot).Mode;
     end;
   function Name (File : File_Type) return String is
     Table_Slot : Integer := File.Handle;
     begin
-      Require_Open (Table_Slot);
+      Require_Live (File, Table_Slot);
       if File_Control_Blocks (Table_Slot).Name_Length = 0 then
         return "";
       end if;
@@ -580,7 +609,7 @@ package body Text_IO is
   function Form (File : File_Type) return String is
     Table_Slot : Integer := File.Handle;
     begin
-      Require_Open (Table_Slot);
+      Require_Live (File, Table_Slot);
       if File_Control_Blocks (Table_Slot).Form_Length = 0 then
         return "";
       end if;
@@ -592,45 +621,48 @@ package body Text_IO is
     end;
   procedure Set_Input (File : File_Type) is
     begin
-      Require_Open (File.Handle);
+      Require_Live (File, File.Handle);
       if File_Control_Blocks (File.Handle).Mode /= In_File then raise Mode_Error; end if;
       Current_Input_Slot := File.Handle;
+      Current_Input_Serial := File.Serial;
     end;
   procedure Set_Output (File : File_Type) is
     begin
-      Require_Open (File.Handle);
+      Require_Live (File, File.Handle);
       if File_Control_Blocks (File.Handle).Mode = In_File then raise Mode_Error; end if;
       Current_Output_Slot := File.Handle;
+      Current_Output_Serial := File.Serial;
     end;
   procedure Set_Error (File : File_Type) is
     begin
-      Require_Open (File.Handle);
+      Require_Live (File, File.Handle);
       if File_Control_Blocks (File.Handle).Mode = In_File then raise Mode_Error; end if;
       Current_Error_Slot := File.Handle;
+      Current_Error_Serial := File.Serial;
     end;
   function Standard_Input return File_Type is
     begin
-      return (Handle => 1);
+      return (Handle => 1, Serial => 0);
     end;
   function Standard_Output return File_Type is
     begin
-      return (Handle => 2);
+      return (Handle => 2, Serial => 0);
     end;
   function Standard_Error return File_Type is
     begin
-      return (Handle => 3);
+      return (Handle => 3, Serial => 0);
     end;
   function Current_Input return File_Type is
     begin
-      return (Handle => Current_Input_Slot);
+      return (Handle => Current_Input_Slot, Serial => Current_Input_Serial);
     end;
   function Current_Output return File_Type is
     begin
-      return (Handle => Current_Output_Slot);
+      return (Handle => Current_Output_Slot, Serial => Current_Output_Serial);
     end;
   function Current_Error return File_Type is
     begin
-      return (Handle => Current_Error_Slot);
+      return (Handle => Current_Error_Slot, Serial => Current_Error_Serial);
     end;
   procedure Flush (File : File_Type) is
     Table_Slot : Integer := File.Handle;
@@ -642,51 +674,51 @@ package body Text_IO is
     end;
   procedure Flush is
     begin
-      Flush ((Handle => Current_Output_Slot));
+      Flush ((Handle => Current_Output_Slot, Serial => Current_Output_Serial));
     end;
   procedure Set_Line_Length (File : File_Type; To : Count) is
     Table_Slot : Integer := File.Handle;
     begin
-      Require_Open (Table_Slot);
+      Require_Live (File, Table_Slot);
       if File_Control_Blocks (Table_Slot).Mode = In_File then raise Mode_Error; end if;
       File_Control_Blocks (Table_Slot).Line_Length := To;
     end;
   procedure Set_Line_Length (To : Count) is
     begin
-      Set_Line_Length ((Handle => Current_Output_Slot), To);
+      Set_Line_Length ((Handle => Current_Output_Slot, Serial => Current_Output_Serial), To);
     end;
   procedure Set_Page_Length (File : File_Type; To : Count) is
     Table_Slot : Integer := File.Handle;
     begin
-      Require_Open (Table_Slot);
+      Require_Live (File, Table_Slot);
       if File_Control_Blocks (Table_Slot).Mode = In_File then raise Mode_Error; end if;
       File_Control_Blocks (Table_Slot).Page_Length := To;
     end;
   procedure Set_Page_Length (To : Count) is
     begin
-      Set_Page_Length ((Handle => Current_Output_Slot), To);
+      Set_Page_Length ((Handle => Current_Output_Slot, Serial => Current_Output_Serial), To);
     end;
   function Line_Length (File : File_Type) return Count is
     Table_Slot : Integer := File.Handle;
     begin
-      Require_Open (Table_Slot);
+      Require_Live (File, Table_Slot);
       if File_Control_Blocks (Table_Slot).Mode = In_File then raise Mode_Error; end if;
       return File_Control_Blocks (Table_Slot).Line_Length;
     end;
   function Line_Length return Count is
     begin
-      return Line_Length ((Handle => Current_Output_Slot));
+      return Line_Length ((Handle => Current_Output_Slot, Serial => Current_Output_Serial));
     end;
   function Page_Length (File : File_Type) return Count is
     Table_Slot : Integer := File.Handle;
     begin
-      Require_Open (Table_Slot);
+      Require_Live (File, Table_Slot);
       if File_Control_Blocks (Table_Slot).Mode = In_File then raise Mode_Error; end if;
       return File_Control_Blocks (Table_Slot).Page_Length;
     end;
   function Page_Length return Count is
     begin
-      return Page_Length ((Handle => Current_Output_Slot));
+      return Page_Length ((Handle => Current_Output_Slot, Serial => Current_Output_Serial));
     end;
   procedure Raw_Put (Table_Slot : Integer; C : Integer) is
     Dummy : Integer;
@@ -742,7 +774,7 @@ package body Text_IO is
   procedure New_Line (File : File_Type; Spacing : Positive_Count := 1) is
     Table_Slot : Integer := File.Handle;
     begin
-      Require_Open (Table_Slot);
+      Require_Live (File, Table_Slot);
       if File_Control_Blocks (Table_Slot).Mode = In_File then
         raise Mode_Error;
       end if;
@@ -762,13 +794,13 @@ package body Text_IO is
     end;
   procedure New_Line (Spacing : Positive_Count := 1) is
     begin
-      New_Line ((Handle => Current_Output_Slot), Spacing);
+      New_Line ((Handle => Current_Output_Slot, Serial => Current_Output_Serial), Spacing);
     end;
   procedure Skip_Line (File : File_Type; Spacing : Positive_Count := 1) is
     Table_Slot : Integer := File.Handle;
     C          : Integer;
     begin
-      Require_Open (Table_Slot);
+      Require_Live (File, Table_Slot);
       if File_Control_Blocks (Table_Slot).Mode /= In_File then
         raise Mode_Error;
       end if;
@@ -798,13 +830,13 @@ package body Text_IO is
     end;
   procedure Skip_Line (Spacing : Positive_Count := 1) is
     begin
-      Skip_Line ((Handle => Current_Input_Slot), Spacing);
+      Skip_Line ((Handle => Current_Input_Slot, Serial => Current_Input_Serial), Spacing);
     end;
   function End_Of_Line (File : File_Type) return Boolean is
     Table_Slot : Integer := File.Handle;
     C          : Integer;
     begin
-      Require_Open (Table_Slot);
+      Require_Live (File, Table_Slot);
       if File_Control_Blocks (Table_Slot).Mode /= In_File then
         raise Mode_Error;
       end if;
@@ -813,12 +845,12 @@ package body Text_IO is
     end;
   function End_Of_Line return Boolean is
     begin
-      return End_Of_Line ((Handle => Current_Input_Slot));
+      return End_Of_Line ((Handle => Current_Input_Slot, Serial => Current_Input_Serial));
     end;
   procedure New_Page (File : File_Type) is
     Table_Slot : Integer := File.Handle;
     begin
-      Require_Open (Table_Slot);
+      Require_Live (File, Table_Slot);
       if File_Control_Blocks (Table_Slot).Mode = In_File then
         raise Mode_Error;
       end if;
@@ -834,13 +866,13 @@ package body Text_IO is
     end;
   procedure New_Page is
     begin
-      New_Page ((Handle => Current_Output_Slot));
+      New_Page ((Handle => Current_Output_Slot, Serial => Current_Output_Serial));
     end;
   procedure Skip_Page (File : File_Type) is
     Table_Slot : Integer := File.Handle;
     C          : Integer;
     begin
-      Require_Open (Table_Slot);
+      Require_Live (File, Table_Slot);
       if File_Control_Blocks (Table_Slot).Mode /= In_File then
         raise Mode_Error;
       end if;
@@ -864,13 +896,13 @@ package body Text_IO is
     end;
   procedure Skip_Page is
     begin
-      Skip_Page ((Handle => Current_Input_Slot));
+      Skip_Page ((Handle => Current_Input_Slot, Serial => Current_Input_Serial));
     end;
   function End_Of_Page (File : File_Type) return Boolean is
     Table_Slot : Integer := File.Handle;
     C0, C1     : Integer;
     begin
-      Require_Open (Table_Slot);
+      Require_Live (File, Table_Slot);
       if File_Control_Blocks (Table_Slot).Mode /= In_File then
         raise Mode_Error;
       end if;
@@ -884,13 +916,13 @@ package body Text_IO is
     end;
   function End_Of_Page return Boolean is
     begin
-      return End_Of_Page ((Handle => Current_Input_Slot));
+      return End_Of_Page ((Handle => Current_Input_Slot, Serial => Current_Input_Serial));
     end;
   function End_Of_File (File : File_Type) return Boolean is
     Table_Slot : Integer := File.Handle;
     C0, C1     : Integer;
     begin
-      Require_Open (Table_Slot);
+      Require_Live (File, Table_Slot);
       if File_Control_Blocks (Table_Slot).Mode /= In_File then
         raise Mode_Error;
       end if;
@@ -906,13 +938,13 @@ package body Text_IO is
     end;
   function End_Of_File return Boolean is
     begin
-      return End_Of_File ((Handle => Current_Input_Slot));
+      return End_Of_File ((Handle => Current_Input_Slot, Serial => Current_Input_Serial));
     end;
   procedure Set_Col (File : File_Type; To : Positive_Count) is
     Table_Slot : Integer := File.Handle;
     C          : Integer;
     begin
-      Require_Open (Table_Slot);
+      Require_Live (File, Table_Slot);
       if File_Control_Blocks (Table_Slot).Mode = In_File then
         loop
           if File_Control_Blocks (Table_Slot).Col > Integer (To) then
@@ -947,12 +979,12 @@ package body Text_IO is
     end;
   procedure Set_Col (To : Positive_Count) is
     begin
-      Set_Col ((Handle => Current_Output_Slot), To);
+      Set_Col ((Handle => Current_Output_Slot, Serial => Current_Output_Serial), To);
     end;
   procedure Set_Line (File : File_Type; To : Positive_Count) is
     Table_Slot : Integer := File.Handle;
     begin
-      Require_Open (Table_Slot);
+      Require_Live (File, Table_Slot);
       if File_Control_Blocks (Table_Slot).Mode = In_File then
         loop
           exit when File_Control_Blocks (Table_Slot).Line = Integer (To);
@@ -976,12 +1008,12 @@ package body Text_IO is
     end;
   procedure Set_Line (To : Positive_Count) is
     begin
-      Set_Line ((Handle => Current_Output_Slot), To);
+      Set_Line ((Handle => Current_Output_Slot, Serial => Current_Output_Serial), To);
     end;
   function Col (File : File_Type) return Positive_Count is
     Table_Slot : Integer := File.Handle;
     begin
-      Require_Open (Table_Slot);
+      Require_Live (File, Table_Slot);
       if File_Control_Blocks (Table_Slot).Col > Integer (Count'Last) then
         raise Layout_Error;
       end if;
@@ -989,12 +1021,12 @@ package body Text_IO is
     end;
   function Col return Positive_Count is
     begin
-      return Col ((Handle => Current_Output_Slot));
+      return Col ((Handle => Current_Output_Slot, Serial => Current_Output_Serial));
     end;
   function Line (File : File_Type) return Positive_Count is
     Table_Slot : Integer := File.Handle;
     begin
-      Require_Open (Table_Slot);
+      Require_Live (File, Table_Slot);
       if File_Control_Blocks (Table_Slot).Line > Integer (Count'Last) then
         raise Layout_Error;
       end if;
@@ -1002,12 +1034,12 @@ package body Text_IO is
     end;
   function Line return Positive_Count is
     begin
-      return Line ((Handle => Current_Output_Slot));
+      return Line ((Handle => Current_Output_Slot, Serial => Current_Output_Serial));
     end;
   function Page (File : File_Type) return Positive_Count is
     Table_Slot : Integer := File.Handle;
     begin
-      Require_Open (Table_Slot);
+      Require_Live (File, Table_Slot);
       if File_Control_Blocks (Table_Slot).Page > Integer (Count'Last) then
         raise Layout_Error;
       end if;
@@ -1015,13 +1047,13 @@ package body Text_IO is
     end;
   function Page return Positive_Count is
     begin
-      return Page ((Handle => Current_Output_Slot));
+      return Page ((Handle => Current_Output_Slot, Serial => Current_Output_Serial));
     end;
   procedure Get (File : File_Type; Item : out Character) is
     Table_Slot : Integer := File.Handle;
     C          : Integer;
     begin
-      Require_Open (Table_Slot);
+      Require_Live (File, Table_Slot);
       if File_Control_Blocks (Table_Slot).Mode /= In_File then
         raise Mode_Error;
       end if;
@@ -1045,12 +1077,12 @@ package body Text_IO is
     end;
   procedure Get (Item : out Character) is
     begin
-      Get ((Handle => Current_Input_Slot), Item);
+      Get ((Handle => Current_Input_Slot, Serial => Current_Input_Serial), Item);
     end;
   procedure Put (File : File_Type; Item : Character) is
     Table_Slot : Integer := File.Handle;
     begin
-      Require_Open (Table_Slot);
+      Require_Live (File, Table_Slot);
       if File_Control_Blocks (Table_Slot).Mode = In_File then
         raise Mode_Error;
       end if;
@@ -1064,7 +1096,7 @@ package body Text_IO is
     end;
   procedure Put (Item : Character) is
     begin
-      Put ((Handle => Current_Output_Slot), Item);
+      Put ((Handle => Current_Output_Slot, Serial => Current_Output_Serial), Item);
     end;
   procedure Get (File : File_Type; Item : out String) is
     begin
@@ -1074,12 +1106,12 @@ package body Text_IO is
     end;
   procedure Get (Item : out String) is
     begin
-      Get ((Handle => Current_Input_Slot), Item);
+      Get ((Handle => Current_Input_Slot, Serial => Current_Input_Serial), Item);
     end;
   procedure Put (File : File_Type; Item : String) is
     Table_Slot : Integer := File.Handle;
     begin
-      Require_Open (Table_Slot);
+      Require_Live (File, Table_Slot);
       if File_Control_Blocks (Table_Slot).Mode = In_File then
         raise Mode_Error;
       end if;
@@ -1095,7 +1127,7 @@ package body Text_IO is
     end;
   procedure Put (Item : String) is
     begin
-      Put ((Handle => Current_Output_Slot), Item);
+      Put ((Handle => Current_Output_Slot, Serial => Current_Output_Serial), Item);
     end;
   procedure Get_Line (File : File_Type; Item : out String; Last : out Natural) is
     Table_Slot :          Integer := File.Handle;
@@ -1104,7 +1136,7 @@ package body Text_IO is
     Last_Slot  : constant Integer := Integer (Item'Last);
     I          :          Integer;
     begin
-      Require_Open (Table_Slot);
+      Require_Live (File, Table_Slot);
       if File_Control_Blocks (Table_Slot).Mode /= In_File then
         raise Mode_Error;
       end if;
@@ -1140,7 +1172,7 @@ package body Text_IO is
     end;
   procedure Get_Line (Item : out String; Last : out Natural) is
     begin
-      Get_Line ((Handle => Current_Input_Slot), Item, Last);
+      Get_Line ((Handle => Current_Input_Slot, Serial => Current_Input_Serial), Item, Last);
     end;
   procedure Put_Line (File : File_Type; Item : String) is
     begin
@@ -1149,7 +1181,7 @@ package body Text_IO is
     end;
   procedure Put_Line (Item : String) is
     begin
-      Put_Line ((Handle => Current_Output_Slot), Item);
+      Put_Line ((Handle => Current_Output_Slot, Serial => Current_Output_Serial), Item);
     end;
   procedure Skip_Blanks_And_Terminators (Table_Slot : Integer) is
     C : Integer;
@@ -1484,7 +1516,6 @@ package body Text_IO is
     Mantissa        : Mantissa_Integer := 0;
     Binary_Exponent : Integer          := 0;
 
-    -- Exact decimal digits, stored least-significant first.
     Exact_Digits : array (0..Max_Exact_Digits) of Integer := (others => 0);
 
     Exact_Digit_Count : Integer := 1;
@@ -1871,7 +1902,7 @@ package body Text_IO is
       Scratch     : String (1..256);
       Text_Length : Integer;
       begin
-        Require_Open (Table_Slot);
+        Require_Live (File, Table_Slot);
         if File_Control_Blocks (Table_Slot).Mode /= In_File then raise Mode_Error; end if;
         Read_Number_Token (Table_Slot, Integer (Width), False, Scratch, Text_Length);
         if Text_Length = 0 then
@@ -1888,17 +1919,17 @@ package body Text_IO is
       end;
     procedure Get (Item : out Number; Width : Field := 0) is
       begin
-        Get (File_Type'(Handle => Current_Input_Slot), Item, Width);
+        Get (File_Type'(Handle => Current_Input_Slot, Serial => Current_Input_Serial), Item, Width);
       end;
     procedure Put (File : File_Type; Item : Number; Width : Field := Default_Width; Base : Number_Base := Default_Base) is
       begin
-        Require_Open (File.Handle);
+        Require_Live (File, File.Handle);
         if File_Control_Blocks (File.Handle).Mode = In_File then raise Mode_Error; end if;
         Put_Right_Justified (File, Image_In_Base (Item, Base), Integer (Width));
       end;
     procedure Put (Item : Number; Width : Field := Default_Width; Base : Number_Base := Default_Base) is
       begin
-        Put ((Handle => Current_Output_Slot), Item, Width, Base);
+        Put ((Handle => Current_Output_Slot, Serial => Current_Output_Serial), Item, Width, Base);
       end;
     procedure Get (From : String; Item : out Number; Last : out Positive) is
       Token_Start : constant Integer := First_Nonblank (From);
@@ -1930,7 +1961,7 @@ package body Text_IO is
       Scratch     : String (1..256);
       Text_Length : Integer;
       begin
-        Require_Open (Table_Slot);
+        Require_Live (File, Table_Slot);
         if File_Control_Blocks (Table_Slot).Mode /= In_File then raise Mode_Error; end if;
         Read_Number_Token (Table_Slot, Integer (Width), True, Scratch, Text_Length);
         if Text_Length = 0 then
@@ -1947,7 +1978,7 @@ package body Text_IO is
       end;
     procedure Get (Item : out Number; Width : Field := 0) is
       begin
-        Get (File_Type'(Handle => Current_Input_Slot), Item, Width);
+        Get (File_Type'(Handle => Current_Input_Slot, Serial => Current_Input_Serial), Item, Width);
       end;
     procedure Put (File : File_Type;
                    Item : Number;
@@ -1955,13 +1986,13 @@ package body Text_IO is
                    Aft  : Field := Default_Aft;
                    Exp  : Field := Default_Exp) is
       begin
-        Require_Open (File.Handle);
+        Require_Live (File, File.Handle);
         if File_Control_Blocks (File.Handle).Mode = In_File then raise Mode_Error; end if;
         Format_Real (File, Long_Real (Item), Integer (Fore), Integer (Aft), Integer (Exp));
       end;
     procedure Put (Item : Number; Fore : Field := Default_Fore; Aft : Field := Default_Aft; Exp : Field := Default_Exp) is
       begin
-        Put ((Handle => Current_Output_Slot), Item, Fore, Aft, Exp);
+        Put ((Handle => Current_Output_Slot, Serial => Current_Output_Serial), Item, Fore, Aft, Exp);
       end;
     procedure Get (From : String; Item : out Number; Last : out Positive) is
       Token_Start : constant Integer := First_Nonblank (From);
@@ -1993,7 +2024,7 @@ package body Text_IO is
       Scratch     : String (1..256);
       Text_Length : Integer;
       begin
-        Require_Open (Table_Slot);
+        Require_Live (File, Table_Slot);
         if File_Control_Blocks (Table_Slot).Mode /= In_File then raise Mode_Error; end if;
         Read_Number_Token (Table_Slot, Integer (Width), True, Scratch, Text_Length);
         if Text_Length = 0 then
@@ -2010,7 +2041,7 @@ package body Text_IO is
       end;
     procedure Get (Item : out Number; Width : Field := 0) is
       begin
-        Get (File_Type'(Handle => Current_Input_Slot), Item, Width);
+        Get (File_Type'(Handle => Current_Input_Slot, Serial => Current_Input_Serial), Item, Width);
       end;
     procedure Put (File : File_Type;
                    Item : Number;
@@ -2018,13 +2049,13 @@ package body Text_IO is
                    Aft  : Field := Default_Aft;
                    Exp  : Field := Default_Exp) is
       begin
-        Require_Open (File.Handle);
+        Require_Live (File, File.Handle);
         if File_Control_Blocks (File.Handle).Mode = In_File then raise Mode_Error; end if;
         Format_Real (File, Long_Real (Item), Integer (Fore), Integer (Aft), Integer (Exp));
       end;
     procedure Put (Item : Number; Fore : Field := Default_Fore; Aft : Field := Default_Aft; Exp : Field := Default_Exp) is
       begin
-        Put ((Handle => Current_Output_Slot), Item, Fore, Aft, Exp);
+        Put ((Handle => Current_Output_Slot, Serial => Current_Output_Serial), Item, Fore, Aft, Exp);
       end;
     procedure Get (From : String; Item : out Number; Last : out Positive) is
       Token_Start : constant Integer := First_Nonblank (From);
@@ -2073,7 +2104,7 @@ package body Text_IO is
       P          : Integer := 0;
       C          : Integer;
       begin
-        Require_Open (Table_Slot);
+        Require_Live (File, Table_Slot);
         if File_Control_Blocks (Table_Slot).Mode /= In_File then raise Mode_Error; end if;
         Skip_Blanks_And_Terminators (Table_Slot);
         declare
@@ -2115,17 +2146,17 @@ package body Text_IO is
       end;
     procedure Get (Item : out Enum) is
       begin
-        Get ((Handle => Current_Input_Slot), Item);
+        Get ((Handle => Current_Input_Slot, Serial => Current_Input_Serial), Item);
       end;
     procedure Put (File : File_Type; Item : Enum; Width : Field := Default_Width; Set : Type_Set := Default_Setting) is
       begin
-        Require_Open (File.Handle);
+        Require_Live (File, File.Handle);
         if File_Control_Blocks (File.Handle).Mode = In_File then raise Mode_Error; end if;
         Put_Left_Justified (File, Cased_Image (Item, Set), Integer (Width));
       end;
     procedure Put (Item : Enum; Width : Field := Default_Width; Set : Type_Set := Default_Setting) is
       begin
-        Put ((Handle => Current_Output_Slot), Item, Width, Set);
+        Put ((Handle => Current_Output_Slot, Serial => Current_Output_Serial), Item, Width, Set);
       end;
     procedure Get (From : String; Item : out Enum; Last : out Positive) is
       Token_Start : constant Integer := First_Nonblank (From);
@@ -2363,6 +2394,7 @@ package Direct_IO is
 private
   type File_Type is record
       Handle : Integer := 0;
+      Serial : Integer := 0;
     end record;
 end;
 with System;
@@ -2497,7 +2529,7 @@ package body Direct_IO is
       if not Creating then
         Recover_Slot (Table_Slot);
       end if;
-      File := (Handle => Table_Slot);
+      File := (Handle => Table_Slot, Serial => 0);
     end;
   procedure Create (File : in out File_Type; Mode : File_Mode := Inout_File; Name : String := ""; Form : String := "") is
     begin
@@ -2514,7 +2546,7 @@ package body Direct_IO is
       Ignore := C_Fclose (File_Control_Blocks (Table_Slot).Stream);
       File_Control_Blocks (Table_Slot).Stream := Null_Address;
       File_Control_Blocks (Table_Slot).Is_Open := False;
-      File := (Handle => 0);
+      File := (Handle => 0, Serial => 0);
     end;
   procedure Delete (File : in out File_Type) is
     Table_Slot  : Integer := Require_Open (File);
@@ -2528,7 +2560,7 @@ package body Direct_IO is
       end if;
       File_Control_Blocks (Table_Slot).Stream := Null_Address;
       File_Control_Blocks (Table_Slot).Is_Open := False;
-      File := (Handle => 0);
+      File := (Handle => 0, Serial => 0);
     end;
   procedure Reset (File : in out File_Type; Mode : File_Mode) is
     Table_Slot : Integer := Require_Open (File);
@@ -2667,6 +2699,7 @@ package Sequential_IO is
 private
   type File_Type is record
       Handle : Integer := 0;
+      Serial : Integer := 0;
     end record;
 end;
 with System;
@@ -2754,7 +2787,7 @@ package body Sequential_IO is
       end if;
       File_Control_Blocks (Table_Slot).Mode := Mode;
       File_Control_Blocks (Table_Slot).Is_Open := True;
-      File := (Handle => Table_Slot);
+      File := (Handle => Table_Slot, Serial => 0);
     end;
   procedure Create (File : in out File_Type; Mode : File_Mode := Out_File; Name : String := ""; Form : String := "") is
     begin
@@ -2771,7 +2804,7 @@ package body Sequential_IO is
       Ignore := C_Fclose (File_Control_Blocks (Table_Slot).Stream);
       File_Control_Blocks (Table_Slot).Stream := Null_Address;
       File_Control_Blocks (Table_Slot).Is_Open := False;
-      File := (Handle => 0);
+      File := (Handle => 0, Serial => 0);
     end;
   procedure Delete (File : in out File_Type) is
     Table_Slot  : Integer := Require_Open (File);
@@ -2785,7 +2818,7 @@ package body Sequential_IO is
       end if;
       File_Control_Blocks (Table_Slot).Stream := Null_Address;
       File_Control_Blocks (Table_Slot).Is_Open := False;
-      File := (Handle => 0);
+      File := (Handle => 0, Serial => 0);
     end;
   procedure Reset (File : in out File_Type; Mode : File_Mode) is
     Table_Slot : Integer := Require_Open (File);
