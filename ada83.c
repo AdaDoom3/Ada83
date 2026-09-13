@@ -2797,12 +2797,19 @@ typedef struct {
 } Type_Bound;
 
 typedef struct {
-  i64  disc_value_low;
-  i64  disc_value_high;
-  bool is_others;
-  u32  first_component;
-  u32  component_count;
-  u32  variant_size;
+  i64 low;
+  i64 high;
+} Discrete_Choice_Interval;
+
+typedef struct {
+  i64                       disc_value_low;
+  i64                       disc_value_high;
+  Discrete_Choice_Interval *choices;
+  u32                       choice_count;
+  bool                      is_others;
+  u32                       first_component;
+  u32                       component_count;
+  u32                       variant_size;
 } Variant_Info;
 
 typedef struct {
@@ -3963,8 +3970,34 @@ typedef enum {
   UNIVERSAL_INTEGER_OVERFLOW,
   UNIVERSAL_INTEGER_NOT_STATIC
 } Universal_Integer_Kind;
+
+typedef struct {
+  u128 magnitude;
+  bool negative;
+} Wide_Integer;
+
 Universal_Integer_Kind  Eval_Universal_Integer               (Node *node,
                                                               i128    *out);
+static Universal_Integer_Kind Eval_Narrow                    (Node *node, i128 *out);
+static Wide_Integer           Wide_Of_I128                   (i128 value);
+static bool                   Wide_To_I128                   (Wide_Integer value, i128 *out);
+static bool                   Wide_Is_Zero                   (Wide_Integer value);
+static Wide_Integer           Wide_Negate                    (Wide_Integer value);
+static bool                   Wide_Magnitude_Less            (Wide_Integer left,
+                                                              Wide_Integer right);
+static bool                   Wide_Add                       (Wide_Integer a, Wide_Integer b,
+                                                              Wide_Integer *out);
+static bool                   Wide_Subtract                  (Wide_Integer a, Wide_Integer b,
+                                                              Wide_Integer *out);
+static bool                   Wide_Multiply                  (Wide_Integer a, Wide_Integer b,
+                                                              Wide_Integer *out);
+static Wide_Integer           Wide_Divide                    (Wide_Integer a, Wide_Integer b);
+static Wide_Integer           Wide_Remainder                 (Wide_Integer a, Wide_Integer b);
+static Universal_Integer_Kind Eval_Wide_Binary               (Token_Kind    op,
+                                                              Wide_Integer  a,
+                                                              Wide_Integer  b,
+                                                              Wide_Integer *out);
+static Universal_Integer_Kind Eval_Wide                      (Node *node, Wide_Integer *out);
 void                    Check_Aggregate_Type_Is_Determined   (Interp_List   *interps,
                                                               Argument_Info *args,
                                                               Symbol        *chosen);
@@ -4088,6 +4121,9 @@ void  Resolve_Range_Bound_Against_Other        (Node *bound,
 u32   Count_Variant_Components                 (Node *variant_part);
 void  Resolve_Variant_Part                     (Node *variant_part);
 void  Set_Variant_Choice                       (Variant_Info *info, Node *choice);
+static void Set_Variant_Choices                (Variant_Info *info, Node_List *choices);
+bool  Variant_Admits_Value                     (const Variant_Info *variant,
+                                                i64 value);
 void  Check_Entry_Count_Attribute              (Node *node);
 void  Check_Entry_Name_Index                   (Symbol *entry, u32 index_count,
                                                 Node *index,
@@ -5712,6 +5748,8 @@ u32 Emit_Widen_To_Entry_Slot (u32 reg, Rep rep);
 void     Emit_Aggregate_Count_Vs_Constraint_Check (Node *agg, Type *param_type);
 u32 Emit_Entry_Default_To_Slot (Node *def, Type *param_type);
 Value Lower_Apply             (Node *node);
+static I1 Emit_Choice_Membership (u32 discriminant, Rep rep,
+                                  i64 low_value, i64 high_value);
 I1 Emit_Variant_Membership (u32 discriminant, Rep rep,
                                         const Variant_Info *variant);
 void Emit_Variant_Present_Check (u32 record_base,
@@ -7510,6 +7548,7 @@ _Static_assert (COLLECTION_PAGESIZE_SELECTOR == _SC_PAGESIZE,
   erroneous                                                                 \
   "}\n\n"
 
+void Note_Prelude_Declarations        (void);
 void Emit_Runtime_Declarations        ();
 void Emit_Runtime_Value_Attribute     ();
 void Emit_Power_Function              (const char *name,
@@ -15375,7 +15414,7 @@ bool Has_Private_Partial_View (const Type *t) {
 
 static bool Type_Full_View_Not_Yet_Available (const Type *t) {
   if (not t->full_view_arrived) return true;
-  return Outside_Defining_Package (t);
+  return Has_Private_Partial_View (t) and Outside_Defining_Package (t);
 }
 
 Type_View_Kind Get_View_In_Force (const Type *t) {
@@ -15469,10 +15508,16 @@ static bool Full_Characteristics_To_Depth (const Type *t,
                                          constituent_view, depth + 1))
     return false;
 
-  if (Is_Access (t))
+  if (Is_Access (t)) {
+    Type *designated = t->access.designated_type;
+    Type_View_Kind designated_view =
+      (designated and
+       Find_Defining_Package (t) == Find_Defining_Package (designated))
+        ? minimum_constituent_view : constituent_view;
     return reach == CHARACTERISTICS_OF_THE_TYPE or
-           Full_Characteristics_To_Depth (t->access.designated_type, reach,
-                                          constituent_view, depth + 1);
+           Full_Characteristics_To_Depth (designated, reach,
+                                          designated_view, depth + 1);
+  }
   if (reach != CHARACTERISTICS_OF_THE_COMPONENTS) return true;
 
   if (t->kind == TYPE_RECORD) {
@@ -20582,8 +20627,7 @@ bool Is_Operator_Token (Symbol *symbol, Token_Kind *op) {
   return true;
 }
 
-Universal_Integer_Kind Eval_Universal_Integer (Node *node,
-                                               i128    *out) {
+static Universal_Integer_Kind Eval_Narrow (Node *node, i128 *out) {
   node = Peel_Constant
     (node, Const_Peel_Qualified | Const_Peel_Discrete_Constant);
   if (not node) return UNIVERSAL_INTEGER_NOT_STATIC;
@@ -20604,8 +20648,7 @@ Universal_Integer_Kind Eval_Universal_Integer (Node *node,
       Token_Kind op = node->unary.op;
       if (not Is_Operator_Token (node->symbol, &op))
         return UNIVERSAL_INTEGER_NOT_STATIC;
-      Universal_Integer_Kind operand = Eval_Universal_Integer (
-        node->unary.operand, &v);
+      Universal_Integer_Kind operand = Eval_Narrow (node->unary.operand, &v);
       if (operand != UNIVERSAL_INTEGER_EXACT) return operand;
       switch (op) {
         case TK_MINUS: *out = -v;             return UNIVERSAL_INTEGER_EXACT;
@@ -20620,9 +20663,9 @@ Universal_Integer_Kind Eval_Universal_Integer (Node *node,
       Token_Kind op = node->binary.op;
       if (not Is_Operator_Token (node->symbol, &op))
         return UNIVERSAL_INTEGER_NOT_STATIC;
-      Universal_Integer_Kind left  = Eval_Universal_Integer (node->binary.left,  &a);
+      Universal_Integer_Kind left  = Eval_Narrow (node->binary.left,  &a);
       if (left != UNIVERSAL_INTEGER_EXACT) return left;
-      Universal_Integer_Kind right = Eval_Universal_Integer (node->binary.right, &b);
+      Universal_Integer_Kind right = Eval_Narrow (node->binary.right, &b);
       if (right != UNIVERSAL_INTEGER_EXACT) return right;
       switch (op) {
         case TK_PLUS:  return __builtin_add_overflow (a, b, out)
@@ -20669,6 +20712,192 @@ Universal_Integer_Kind Eval_Universal_Integer (Node *node,
 
     default: return UNIVERSAL_INTEGER_NOT_STATIC;
   }
+}
+
+static Wide_Integer Wide_Of_I128 (i128 value) {
+  Wide_Integer result;
+  result.negative = value < 0;
+  result.magnitude = value < 0 ? (u128) -(value + 1) + 1 : (u128) value;
+  return result;
+}
+
+static bool Wide_To_I128 (Wide_Integer value, i128 *out) {
+  u128 limit = (u128) 1 << 127;
+  if (value.negative) {
+    if (value.magnitude > limit) return false;
+    if (value.magnitude == limit) { *out = -(i128) (limit - 1) - 1; return true; }
+    *out = -(i128) value.magnitude;
+    return true;
+  }
+  if (value.magnitude > limit - 1) return false;
+  *out = (i128) value.magnitude;
+  return true;
+}
+
+static bool Wide_Is_Zero (Wide_Integer value) { return value.magnitude == 0; }
+
+static Wide_Integer Wide_Negate (Wide_Integer value) {
+  value.negative = not value.negative and not Wide_Is_Zero (value);
+  return value;
+}
+
+static bool Wide_Magnitude_Less (Wide_Integer left, Wide_Integer right) {
+  return left.magnitude < right.magnitude;
+}
+
+static bool Wide_Add (Wide_Integer a, Wide_Integer b, Wide_Integer *out) {
+  if (a.negative == b.negative) {
+    if (__builtin_add_overflow (a.magnitude, b.magnitude, &out->magnitude))
+      return false;
+    out->negative = a.negative and not Wide_Is_Zero (*out);
+    return true;
+  }
+  if (Wide_Magnitude_Less (a, b)) { Wide_Integer t = a; a = b; b = t; }
+  out->magnitude = a.magnitude - b.magnitude;
+  out->negative  = a.negative and out->magnitude != 0;
+  return true;
+}
+
+static bool Wide_Subtract (Wide_Integer a, Wide_Integer b, Wide_Integer *out) {
+  return Wide_Add (a, Wide_Negate (b), out);
+}
+
+static bool Wide_Multiply (Wide_Integer a, Wide_Integer b, Wide_Integer *out) {
+  if (__builtin_mul_overflow (a.magnitude, b.magnitude, &out->magnitude))
+    return false;
+  out->negative = (a.negative != b.negative) and not Wide_Is_Zero (*out);
+  return true;
+}
+
+static Wide_Integer Wide_Divide (Wide_Integer a, Wide_Integer b) {
+  Wide_Integer result;
+  result.magnitude = a.magnitude / b.magnitude;
+  result.negative  = (a.negative != b.negative) and result.magnitude != 0;
+  return result;
+}
+
+static Wide_Integer Wide_Remainder (Wide_Integer a, Wide_Integer b) {
+  Wide_Integer result;
+  result.magnitude = a.magnitude % b.magnitude;
+  result.negative  = a.negative and result.magnitude != 0;
+  return result;
+}
+
+static Universal_Integer_Kind Eval_Wide_Binary (Token_Kind    op,
+                                                Wide_Integer  a,
+                                                Wide_Integer  b,
+                                                Wide_Integer *out) {
+  switch (op) {
+    case TK_PLUS:
+      return Wide_Add (a, b, out) ? UNIVERSAL_INTEGER_EXACT
+                                  : UNIVERSAL_INTEGER_OVERFLOW;
+    case TK_MINUS:
+      return Wide_Subtract (a, b, out) ? UNIVERSAL_INTEGER_EXACT
+                                       : UNIVERSAL_INTEGER_OVERFLOW;
+    case TK_STAR:
+      return Wide_Multiply (a, b, out) ? UNIVERSAL_INTEGER_EXACT
+                                       : UNIVERSAL_INTEGER_OVERFLOW;
+    case TK_SLASH:
+      if (Wide_Is_Zero (b)) return UNIVERSAL_INTEGER_NOT_STATIC;
+      *out = Wide_Divide (a, b);
+      return UNIVERSAL_INTEGER_EXACT;
+    case TK_REM:
+      if (Wide_Is_Zero (b)) return UNIVERSAL_INTEGER_NOT_STATIC;
+      *out = Wide_Remainder (a, b);
+      return UNIVERSAL_INTEGER_EXACT;
+    case TK_MOD: {
+      if (Wide_Is_Zero (b)) return UNIVERSAL_INTEGER_NOT_STATIC;
+      Wide_Integer r = Wide_Remainder (a, b);
+      if (not Wide_Is_Zero (r) and r.negative != b.negative)
+        if (not Wide_Add (r, b, &r)) return UNIVERSAL_INTEGER_OVERFLOW;
+      *out = r;
+      return UNIVERSAL_INTEGER_EXACT;
+    }
+    case TK_EXPON: {
+      if (b.negative) return UNIVERSAL_INTEGER_NOT_STATIC;
+      if (Wide_Is_Zero (a)) {
+        out->magnitude = Wide_Is_Zero (b) ? 1 : 0;
+        out->negative  = false;
+        return UNIVERSAL_INTEGER_EXACT;
+      }
+      if (a.magnitude == 1) {
+        out->magnitude = 1;
+        out->negative  = a.negative and (b.magnitude & 1);
+        return UNIVERSAL_INTEGER_EXACT;
+      }
+      Wide_Integer r = { 1, false };
+      for (u128 i = 0; i < b.magnitude; i++)
+        if (not Wide_Multiply (r, a, &r)) return UNIVERSAL_INTEGER_OVERFLOW;
+      *out = r;
+      return UNIVERSAL_INTEGER_EXACT;
+    }
+    default: return UNIVERSAL_INTEGER_NOT_STATIC;
+  }
+}
+
+static Universal_Integer_Kind Eval_Wide (Node *node, Wide_Integer *out) {
+  node = Peel_Constant
+    (node, Const_Peel_Qualified | Const_Peel_Discrete_Constant);
+  if (not node) return UNIVERSAL_INTEGER_NOT_STATIC;
+  if (node->symbol and node->symbol->kind == SYMBOL_LITERAL) {
+    *out = Wide_Of_I128 (node->symbol->frame_offset);
+    return UNIVERSAL_INTEGER_EXACT;
+  }
+  switch (node->kind) {
+    case NK_INTEGER: {
+      i128 value;
+      if (node->integer_lit.big_value) {
+        if (not Big_Integer_To_Int128 (node->integer_lit.big_value, &value))
+          return UNIVERSAL_INTEGER_OVERFLOW;
+        *out = Wide_Of_I128 (value);
+        return UNIVERSAL_INTEGER_EXACT;
+      }
+      *out = Wide_Of_I128 (node->integer_lit.value);
+      return UNIVERSAL_INTEGER_EXACT;
+    }
+
+    case NK_UNARY_OP: {
+      Wide_Integer v;
+      Token_Kind op = node->unary.op;
+      if (not Is_Operator_Token (node->symbol, &op))
+        return UNIVERSAL_INTEGER_NOT_STATIC;
+      Universal_Integer_Kind operand = Eval_Wide (node->unary.operand, &v);
+      if (operand != UNIVERSAL_INTEGER_EXACT) return operand;
+      switch (op) {
+        case TK_MINUS: *out = Wide_Negate (v); return UNIVERSAL_INTEGER_EXACT;
+        case TK_PLUS:  *out = v;               return UNIVERSAL_INTEGER_EXACT;
+        case TK_ABS:   v.negative = false; *out = v;
+                       return UNIVERSAL_INTEGER_EXACT;
+        default:       return UNIVERSAL_INTEGER_NOT_STATIC;
+      }
+    }
+
+    case NK_BINARY_OP: {
+      Wide_Integer a, b;
+      Token_Kind op = node->binary.op;
+      if (not Is_Operator_Token (node->symbol, &op))
+        return UNIVERSAL_INTEGER_NOT_STATIC;
+      Universal_Integer_Kind left = Eval_Wide (node->binary.left, &a);
+      if (left != UNIVERSAL_INTEGER_EXACT) return left;
+      Universal_Integer_Kind right = Eval_Wide (node->binary.right, &b);
+      if (right != UNIVERSAL_INTEGER_EXACT) return right;
+      return Eval_Wide_Binary (op, a, b, out);
+    }
+
+    default: return UNIVERSAL_INTEGER_NOT_STATIC;
+  }
+}
+
+Universal_Integer_Kind Eval_Universal_Integer (Node *node,
+                                               i128    *out) {
+  Universal_Integer_Kind narrow = Eval_Narrow (node, out);
+  if (narrow != UNIVERSAL_INTEGER_OVERFLOW) return narrow;
+
+  Wide_Integer wide;
+  Universal_Integer_Kind status = Eval_Wide (node, &wide);
+  if (status != UNIVERSAL_INTEGER_EXACT) return status;
+  return Wide_To_I128 (wide, out) ? UNIVERSAL_INTEGER_EXACT
+                                  : UNIVERSAL_INTEGER_OVERFLOW;
 }
 
 double Eval_Const_Numeric (Node *node) {
@@ -22823,6 +23052,37 @@ void Set_Variant_Choice (Variant_Info *info, Node *choice) {
   }
 }
 
+static void Set_Variant_Choices (Variant_Info *info, Node_List *choices) {
+  if (choices->count == 0) return;
+  info->choices = Arena_Allocate (choices->count *
+                                  sizeof (Discrete_Choice_Interval));
+  for (u32 i = 0; i < choices->count; i++) {
+    Variant_Info one = { 0 };
+    Set_Variant_Choice (&one, choices->items[i]);
+    if (one.is_others) {
+      info->is_others = true;
+      continue;
+    }
+    info->choices[info->choice_count].low  = one.disc_value_low;
+    info->choices[info->choice_count].high = one.disc_value_high;
+    info->choice_count++;
+  }
+  if (info->choice_count > 0) {
+    info->disc_value_low  = info->choices[0].low;
+    info->disc_value_high = info->choices[0].high;
+  }
+}
+
+bool Variant_Admits_Value (const Variant_Info *variant, i64 value) {
+  for (u32 i = 0; i < variant->choice_count; i++)
+    if (value >= variant->choices[i].low and
+        value <= variant->choices[i].high)
+      return true;
+  return variant->choice_count == 0 and
+         value >= variant->disc_value_low and
+         value <= variant->disc_value_high;
+}
+
 void Fill_Aggregate_Descriptor (Node *node) {
   Aggregate_Descriptor *descriptor = Arena_Allocate (sizeof (Aggregate_Descriptor));
   *descriptor = (Aggregate_Descriptor){ 0 };
@@ -24421,9 +24681,10 @@ static void Layout_Record_Variant_Part (Record_Layout *layout,
 
     info->disc_value_low  = 0;
     info->disc_value_high = 0;
+    info->choices         = NULL;
+    info->choice_count    = 0;
     info->is_others       = false;
-    if (variant->variant.choices.count > 0)
-      Set_Variant_Choice (info, variant->variant.choices.items[0]);
+    Set_Variant_Choices (info, &variant->variant.choices);
 
     info->first_component = layout->component_index;
     layout->variant_index          = (i32) vi;
@@ -37554,8 +37815,12 @@ u32 Emit_Constraint_Check_Internal (u32 val, Rep val_rep,
     low   = Emit_Subtype_Bound (target, BOUND_END_LOW_KIND,  float_rep);
     high  = Emit_Subtype_Bound (target, BOUND_END_HIGH_KIND, float_rep);
   } else {
-    low   = Emit_Subtype_Bound (target, BOUND_END_LOW_KIND,  REP_VOID);
-    high  = Emit_Subtype_Bound (target, BOUND_END_HIGH_KIND, REP_VOID);
+    Rep target_rep = To_Rep (target);
+    Rep bound_rep  = (Rep_Is_Int (target_rep) and
+                      target_rep.bits > Pick_Arith_Rep ().bits)
+                     ? target_rep : REP_VOID;
+    low   = Emit_Subtype_Bound (target, BOUND_END_LOW_KIND,  bound_rep);
+    high  = Emit_Subtype_Bound (target, BOUND_END_HIGH_KIND, bound_rep);
     value = Wrap (val, Or_Else (val_rep,
                             To_Rep (source ? source : target)));
 
@@ -38777,6 +39042,8 @@ Value Emit_Bound_Value (Type_Bound *bound) {
     i128 value     = bound->int_value;
     if (value < (i128)INT32_MIN or value > (i128)INT32_MAX)
       bound_rep = Make_Int_Rep (64, false);
+    if (value < -(((i128) 1 << 63)) or value > (((i128) 1 << 63) - 1))
+      bound_rep = Make_Int_Rep (128, false);
     return Emit_Int_Const (value, bound_rep);
   } else if (bound->kind == BOUND_FLOAT) {
     return Emit_Float_Literal (bound->float_value, Make_Float_Rep (Width_Double),
@@ -41770,7 +42037,9 @@ static Value Lower_Exponentiation (Node *node, u32 left, u32 right,
      Spell_Rep (pow_rep),  REG (right));
 
   Rep destination = result_type ? To_Rep (result_type) : Pick_Arith_Rep ();
+  bool result_is_universal = result_type and Is_Universal_Integer (result_type);
   if (Check_Is_Required (permission) and not is_unsigned and
+      not result_is_universal and
       Rep_Is_Int (destination) and destination.bits < 64) {
     i64 low  = -((i64) 1 << (destination.bits - 1));
     i64 high =  ((i64) 1 << (destination.bits - 1)) - 1;
@@ -41782,6 +42051,9 @@ static Value Lower_Exponentiation (Node *node, u32 left, u32 right,
     Emit_Runtime_Check (permission, outside,
                         EXCEPTION_KIND_CONSTRAINT_ERROR,
                         "exponentiation overflow");
+  }
+  if (result_is_universal) {
+    return Wrap (t, pow_rep);
   }
   return Wrap (Coerce_To_Rep (t, pow_rep, destination), destination);
 }
@@ -44188,16 +44460,33 @@ Value Lower_Apply (Node *node) {
   return Lower_Indexing_Or_Conversion (node, sym);
 }
 
-I1 Emit_Variant_Membership (u32 discriminant, Rep rep,
-                                        const Variant_Info *variant) {
-  if (variant->disc_value_low == variant->disc_value_high)
+static I1 Emit_Choice_Membership (u32 discriminant, Rep rep,
+                                  i64 low_value, i64 high_value) {
+  if (low_value == high_value)
     return Emit_Icmp ("eq", rep, discriminant,
-                      Emit_Int_Const (variant->disc_value_low, rep).reg);
-  u32 low  = Emit_Int_Const (variant->disc_value_low,  rep).reg;
-  u32 high = Emit_Int_Const (variant->disc_value_high, rep).reg;
+                      Emit_Int_Const (low_value, rep).reg);
+  u32 low  = Emit_Int_Const (low_value,  rep).reg;
+  u32 high = Emit_Int_Const (high_value, rep).reg;
   I1 at_least = Emit_Icmp ("sge", rep, discriminant, low);
   I1 at_most  = Emit_Icmp ("sle", rep, discriminant, high);
   return Emit_And_I1 (at_least, at_most);
+}
+
+I1 Emit_Variant_Membership (u32 discriminant, Rep rep,
+                                        const Variant_Info *variant) {
+  if (variant->choice_count <= 1)
+    return Emit_Choice_Membership (discriminant, rep,
+                                   variant->disc_value_low,
+                                   variant->disc_value_high);
+  I1 covered = Emit_Choice_Membership (discriminant, rep,
+                                       variant->choices[0].low,
+                                       variant->choices[0].high);
+  for (u32 i = 1; i < variant->choice_count; i++)
+    covered = Emit_Or_I1 (covered,
+                Emit_Choice_Membership (discriminant, rep,
+                                        variant->choices[i].low,
+                                        variant->choices[i].high));
+  return covered;
 }
 
 void Emit_Variant_Present_Check (u32 record_base,
@@ -44626,7 +44915,8 @@ Image_Family_Interface Get_Family_Interface (Image_Family family) {
       break;
   }
   return (Image_Family_Interface){ .noun = "integer",
-                                   .rep  = Pick_Arith_Rep () };
+                                   .rep  = Make_Int_Rep
+                                             (Ada_Widest_Integer_Bits, false) };
 }
 
 Value Emit_Attribute_Integer_Constant (u32 t, i64 value,
@@ -46233,8 +46523,7 @@ i32 Find_Governing_Index (Type *record_type) {
 static i32 Select_Variant_By_Value (Type *record_type, i64 gov) {
   i32 others_variant = -1;
   for (u32 vi = 0; vi < record_type->record.variant_count; vi++) {
-    if (gov >= record_type->record.variants[vi].disc_value_low and
-        gov <= record_type->record.variants[vi].disc_value_high)
+    if (Variant_Admits_Value (&record_type->record.variants[vi], gov))
       return (i32) vi;
     if (record_type->record.variants[vi].is_others)
       others_variant = (i32) vi;
@@ -48811,36 +49100,26 @@ u32 Emit_Variant_Disc_Guard (Component_Info *comp, Type *ty,
     (u32)comp->variant_index < ty->record.variant_count) {
     Variant_Info *vinfo = &ty->record.variants[comp->variant_index];
     if (not vinfo->is_others) {
-      u32 lo = Emit_Int_Const (vinfo->disc_value_low, disc_type).reg;
-      u32 hi = Emit_Int_Const (vinfo->disc_value_high, disc_type).reg;
-      I1 cmp_lo = Emit_Icmp ("sge", disc_type, disc_val, lo);
-      I1 cmp_hi = Emit_Icmp ("sle", disc_type, disc_val, hi);
-      I1 in_range = Emit_And_I1 (cmp_lo, cmp_hi);
+      I1 in_range = Emit_Variant_Membership (disc_val, disc_type, vinfo);
       u32 check_lbl = cg->label_id++;
       skip = cg->label_id++;
       Emit_Branch_On (in_range, check_lbl, skip, NULL);
       Emit_Label_Here (check_lbl);
     } else {
-      u32 in_others = 0;
-      bool first = true;
+      I1   in_others = { 0 };
+      bool first     = true;
       for (u32 vi = 0; vi < ty->record.variant_count; vi++) {
         if (ty->record.variants[vi].is_others) continue;
-        u32 lo = Emit_Int_Const (ty->record.variants[vi].disc_value_low, disc_type).reg;
-        u32 hi = Emit_Int_Const (ty->record.variants[vi].disc_value_high, disc_type).reg;
-        I1 lt = Emit_Icmp ("slt", disc_type, disc_val, lo);
-        I1 gt = Emit_Icmp ("sgt", disc_type, disc_val, hi);
-        u32 outside = Emit_Result ("or i1 %s, %s  ; disc outside this variant\n",  REG (lt.reg),
-                                   REG (gt.reg));
+        I1 outside = Emit_Not_I1 (
+          Emit_Variant_Membership (disc_val, disc_type,
+                                   &ty->record.variants[vi]));
         if (first) { in_others = outside; first = false; }
-        else {
-          u32 merged = Emit_Result ("and i1 %s, %s\n",  REG (in_others),  REG (outside));
-          in_others = merged;
-        }
+        else         in_others = Emit_And_I1 (in_others, outside);
       }
       if (not first) {
         u32 check_lbl = cg->label_id++;
         skip = cg->label_id++;
-        Emit_Branch_On ((I1){ in_others }, check_lbl, skip, NULL);
+        Emit_Branch_On (in_others, check_lbl, skip, NULL);
         Emit_Label_Here (check_lbl);
       }
     }
@@ -58964,8 +59243,7 @@ void Emit_Integer_Value_Signed_Return (const char *stem, const char *value,
   Emit_Stemmed (stem, "  ret %s %%ret_$\n", rt);
 }
 
-void Emit_Runtime_Declarations () {
-  Emit_Verbatim (
+static const char Runtime_Declarations_Text[] =
     "; Ada83 Compiler Output\n"
     HOST_TARGET_IR_HEADER
     "; A check's raise arm is the exceptional one (RM 11.1); these are the\n"
@@ -59047,7 +59325,35 @@ void Emit_Runtime_Declarations () {
     "declare i32 @pthread_cond_broadcast(ptr)\n"
 #endif
     "declare ptr @llvm.stacksave.p0()\n"
-    "declare void @llvm.stackrestore.p0(ptr)\n");
+    "declare void @llvm.stackrestore.p0(ptr)\n";
+
+void Note_Prelude_Declarations (void) {
+  const char *text = Runtime_Declarations_Text;
+
+  for (size_t i = 0; text[i] and text[i + 1]; i++) {
+    if (i != 0 and text[i - 1] != '\n') continue;
+    if (strncmp (text + i, "declare ", 8) != 0) continue;
+
+    size_t at = i + 8;
+    while (text[at] and text[at] != '@' and text[at] != '\n') at++;
+    if (text[at] != '@') continue;
+
+    size_t first = at + 1;
+    size_t past  = first;
+    while (text[past] and
+           (Is_Id_Char (text[past]) or text[past] == '.' or
+            text[past] == '_')) past++;
+    if (past == first) continue;
+
+    Slice name = { text + first, (u32) (past - first) };
+    if (Name_Index_Find_Exact (&cg->emitted_extern_names, name)) continue;
+    if (cg->emitted_extern_names.count >= 512) return;
+    Name_Index_Insert_Exact (&cg->emitted_extern_names, name, 0);
+  }
+}
+
+void Emit_Runtime_Declarations () {
+  Emit_Verbatim (Runtime_Declarations_Text);
 #if defined(__linux__) and (defined(SIMD_X86_64) or defined(SIMD_ARM64))
   Emit_Verbatim (
     "declare i64 @syscall(i64, ...)\n");
@@ -62879,7 +63185,8 @@ void Emit_Runtime_Image_Attributes () {
   Emit ("@.img_fmt_f = linkonce_odr constant [5 x i8] c\"%%.6g\\00\"\n\n");
 
   Emit ("; ---- Integer'IMAGE: sign or leading blank, then the digits ----\n");
-  Emit_Integer_Image (iat, rts_sbt, 24);
+  Emit_Integer_Image (Make_Int_Rep (Ada_Widest_Integer_Bits, false),
+                      rts_sbt, 24);
 
   Emit ("; ---- Float'IMAGE ----\n");
   Emit_Snprintf_Image ("float", "double", 32, "@.img_fmt_f", rts_sbt);
@@ -63314,6 +63621,8 @@ static void Emit_Runtime_Group (u8 group) {
 void Emit_Module_Prologue () {
   if (cg->header_emitted) return;
   cg->header_emitted = true;
+
+  Note_Prelude_Declarations ();
 
   cg->output = &cg->prelude;
   Emit_Runtime_Group (RUNTIME_GROUP_CORE);
