@@ -60972,8 +60972,15 @@ void Agg_Setup_Dynamic_Extent (Node *node, const Aggregate_Shape *shape,
       : Emit_Result ("mul %s %s, %u\n",
           Spell_Rep (lrep),  REG (length),  context->elem_size);
     clamped = Emit_Clamp_Negative_To_Zero (lrep, byte_size);
+    Rep iat = Pick_Arith_Rep ();
+    I1 too_large = Emit_Icmp_Const ("ugt", lrep, clamped, 2147483647);
+    Emit_Check_With_Raise_Named (too_large.reg, true, "storage_error",
+       "aggregate size exceeds INTEGER range");
+    u32 narrow = lrep.bits == iat.bits ? clamped
+      : Emit_Result ("trunc %s %s to %s\n",
+          Spell_Rep (lrep),  REG (clamped),  Spell_Rep (iat));
     base = Emit_Result ("alloca i8, %s %s  ; dynamic array aggregate\n",
-      Spell_Rep (lrep),  REG (clamped));
+      Spell_Rep (iat),  REG (narrow));
   }
 
   if (cg->in_agg_component > 0)
