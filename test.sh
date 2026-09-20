@@ -247,9 +247,13 @@ acats_setup(){
     START_MS=$(now_ms)
     mkdir -p test_results acats_logs
 
+    # acats is the suite every run is built on and must be present. The rest
+    # are optional extras -- their runners no-op on an absent directory -- so a
+    # suite that is in neither the checkout nor tests.zip is skipped, not fatal.
     local suite
     for suite in acats extensions project debug acats-bonus; do
-        unpack_suite "$PWD" "$suite" || die \
+        unpack_suite "$PWD" "$suite" && continue
+        [[ $suite == acats ]] && die \
             "$suite is missing and tests.zip does not carry it; it is tracked in git -- restore it with: git checkout -- $suite"
     done
 

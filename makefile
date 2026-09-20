@@ -1,6 +1,13 @@
 CC     = gcc
 CFLAGS = -O3 -Wall -std=gnu2x
-LIBS   = -lpthread
+# ada83.c only touches pthread on the non-Windows branch; Windows uses
+# CreateThread and needs no thread library. Some toolchains (e.g. GNAT's
+# mingw gcc) ship no libpthread at all, so probe for it rather than assume:
+# keep -lpthread only when a trivial program links against it, and drop it
+# otherwise. On glibc/macOS it stays (a harmless stub); on Windows it goes.
+LIBS   = $(shell printf 'int main(void){return 0;}' \
+                 | $(CC) -x c - -lpthread -o /dev/null 2>/dev/null \
+                 && echo -lpthread)
 
 # Stage lines in the manner of test-bench.sh: dimmed on a terminal, plain
 # text when piped, so CI logs and redirected output stay free of ANSI codes.
