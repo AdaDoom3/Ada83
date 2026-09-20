@@ -1135,8 +1135,11 @@ const Scenario = () => Configured ('scenario', {});
 const Scenario_Arguments = () =>
   Object.entries (Scenario ()).map (([Name, Value]) => `-X${Name}=${Value}`);
 
+const Extension_Arguments = () =>
+  (Configured ('languageExtensions', true) ? [] : ['-ada83']);
+
 const Project_Arguments = (Project, Rest) =>
-  ['-P', Project, ...Scenario_Arguments (), ...Rest];
+  ['-P', Project, ...Extension_Arguments (), ...Scenario_Arguments (), ...Rest];
 
 const Ran = (Arguments, Environment) =>
   new Promise ((Resolve) => {
@@ -1170,12 +1173,11 @@ const Plan_Of = (Text) => {
       Key = '';
       return;
     }
-    if (Line.length <= Plan_Value_Column) return;
+    if (Read.Projects.length === 0 || Line.length <= Plan_Value_Column) return;
     const Named = Line.slice (0, Plan_Value_Column).trim ();
     if (Named !== '') {
       Key   = Named;
-      Filed = Line.startsWith (' ') && Read.Projects.length > 0
-                ? Latest ().Values : Read.Whole;
+      Filed = Line.startsWith (' ') ? Latest ().Values : Read.Whole;
     }
     if (Key !== '')
       Recorded (Filed, Key, Line.slice (Plan_Value_Column).trim ());
@@ -1197,6 +1199,44 @@ const In_The_Root = (Key) =>
 
 const Top_Level = (Key) =>
   Project_Plan === null ? [] : Project_Plan.Whole.get (Key) ?? [];
+
+const Indexed_In_The_Root = (Name, Index) =>
+  Project_Plan === null || Project_Plan.Projects.length === 0
+    ? []
+    : [...Project_Plan.Projects[0].Values]
+        .filter (([Key]) =>
+           Key.toLowerCase () === `${Name} ("${Index}")`.toLowerCase ())
+        .flatMap (([, Items]) => Items);
+
+const Language_Source_Keys = [
+  { Language: 'Ada',   Keys: ['Ada_Sources', 'Source_Files'], Tagged: false },
+  { Language: 'C',     Keys: ['C_Sources'],                   Tagged: false },
+  { Language: 'C++',   Keys: ['CPP_Sources'],                 Tagged: false },
+  { Language: 'Other', Keys: ['Other_Sources'],               Tagged: true },
+];
+
+const Tagged_Source = /^(.*\S)\s+\[(.+)\]$/;
+
+const Source_Row_Of = (Tagged) => (Text) =>
+  ((Match) =>
+     (Match === null ? { Path: Text, Tag: null }
+                     : { Path: Match[1], Tag: Match[2] }))
+    (Tagged ? Tagged_Source.exec (Text) : null);
+
+const First_Listed = (Values_Named, Keys) =>
+  Keys.map ((Key) => Values_Named (Key))
+      .find ((Items) => Items.length > 0) ?? [];
+
+const Language_Groups = (Values_Named) =>
+  ((Groups) =>
+     (Groups.every (({ Language, Sources }) =>
+        Language === 'Ada' || Sources.length === 0)
+        ? null
+        : Groups.filter (({ Sources }) => Sources.length > 0)))
+    (Language_Source_Keys.map (({ Language, Keys, Tagged }) =>
+       ({ Language,
+          Sources: First_Listed (Values_Named, Keys)
+                     .map (Source_Row_Of (Tagged)) })));
 
 const Complaint_Pattern =
   /^(.*?):(\d+):(\d+):\s+(error|warning|note|internal error):\s+(.*)$/;
@@ -1242,11 +1282,21 @@ const Scenario_Summary = () =>
       : ` ${Set.length} set`))
     (Object.entries (Scenario ()));
 
+const Details_Spellings =
+  ['VCS_Kind', 'Documentation_Dir', 'Gnat', 'Gnatlist', 'VCS_File_Check',
+   'VCS_Log_Check', 'Remote_Host', 'Program_Host', 'Communication_Protocol',
+   'Xref_Database_Dir', 'Artifacts_Dir'];
+
+const Project_Details = () =>
+  Details_Spellings.flatMap ((Name) =>
+    In_The_Root (`IDE'${Name}`).map ((Value) => `${Name} = ${Value}`));
+
 const Project_Tooltip = (Project) =>
   [`Project: ${Project}`,
    Project_Plan === null
      ? 'The compiler would not read it; see the Problems panel.'
      : `Mains: ${In_The_Root ('Main').join (', ') || 'none declared'}`,
+   ...Project_Details (),
    ...Object.entries (Scenario ())
       .map (([Name, Value]) => `${Name} = ${Value}`),
    'Click to set a scenario variable.'].join ('\n');
@@ -1338,12 +1388,13 @@ const Task_Of = (Name, Title, Argument_List, Group, Extra) => {
 
 const Build_Task = (Source_Path) =>
   Task_Of ('build', 'build this file',
-           [...Include_Arguments (), Source_Path],
+           [...Extension_Arguments (), ...Include_Arguments (), Source_Path],
            vscode.TaskGroup.Build);
 
 const Check_Task = (Source_Path) =>
   Task_Of ('check', 'check this file',
-           ['--ir', ...Include_Arguments (), Source_Path],
+           ['--ir', ...Extension_Arguments (), ...Include_Arguments (),
+            Source_Path],
            vscode.TaskGroup.Test);
 
 const Task_For = (Name) => (Name === 'check' ? Check_Task : Build_Task);
@@ -1616,7 +1667,14 @@ const Substituted = (Setting) =>
 const Watched_Folders = (Reload) =>
   vscode.workspace.onDidChangeWorkspaceFolders (Reload);
 
-const Compiler_Path = () => Substituted (Configured ('compilerPath', 'ada83'));
+const Pinned_Compiler = () =>
+  Setting_Written ()
+    ? null
+    : ((Found) => (Found === undefined ? null : Substituted (Found)))
+        (Indexed_In_The_Root ("IDE'Compiler_Command", 'ada')[0]);
+
+const Compiler_Path = () =>
+  Pinned_Compiler () ?? Substituted (Configured ('compilerPath', 'ada83'));
 
 const Include_Paths = () =>
   [...new Set ([...Configured ('includePaths', []).map (Substituted),
@@ -1673,7 +1731,8 @@ const Start = (Diagnostics, Output, Status, Attempt) => {
 
   const Path = Compiler_Path ();
   const [Command, Arguments] =
-    Host_Escaped (Path, ['--lsp', ...Include_Arguments ()]);
+    Host_Escaped (Path, ['--lsp', ...Extension_Arguments (),
+                         ...Include_Arguments ()]);
   const Server = spawn (Command, Arguments, { stdio: 'pipe' });
   const Ours = { Server, Diagnostics, Output, Status, Buffered: '',
                  Ready: false, Capabilities: {}, Registered: [] };
@@ -1757,7 +1816,7 @@ const Settles_Down = (Notify) => (Event) =>
    }) (Event.document ?? Event);
 
 const Touches_The_Server = (Change) =>
-  ['enable', 'compilerPath', 'includePaths']
+  ['enable', 'compilerPath', 'includePaths', 'languageExtensions']
     .some ((Name) => Change.affectsConfiguration (`ada83.${Name}`));
 
 const Touches_The_Project = (Change) =>
@@ -1906,6 +1965,22 @@ const Sidebar_Note_Item = ({ Text }) =>
   Object.assign (new vscode.TreeItem (Text, Sidebar_Leaf),
     { iconPath: new vscode.ThemeIcon ('info') });
 
+const Sidebar_Language_Item = ({ Language, Sources }) =>
+  Object.assign (
+    new vscode.TreeItem (Language, vscode.TreeItemCollapsibleState.Collapsed),
+    { description: `${Sources.length} source${Sources.length === 1 ? '' : 's'}`,
+      iconPath: new vscode.ThemeIcon ('symbol-namespace'),
+      contextValue: 'ada83Language' });
+
+const Sidebar_Source_Item = ({ Path, Tag }) =>
+  Object.assign (new vscode.TreeItem (Path, Sidebar_Leaf),
+    { description: Tag ?? '',
+      tooltip: Tag === null ? Path : `${Path} [${Tag}]`,
+      iconPath: new vscode.ThemeIcon ('symbol-file') });
+
+const Sidebar_Language_Children = ({ Sources }) =>
+  Sources.map ((Source) => ({ Kind: 'source', ...Source }));
+
 const Sidebar_Import_Node = (File, Trail) =>
   ((Found) =>
      Found === undefined || Trail.includes (File)
@@ -1918,6 +1993,11 @@ const Sidebar_Import_Node = (File, Trail) =>
 const Sidebar_Project_Children = ({ Given, Trail, Root }) => {
   const Attributes = Given.attributes ?? [];
   const Named = (Row) => ({ Kind: 'attribute', Row });
+  const Groups = Language_Groups ((Key) =>
+    Sidebar_Attribute_Values (Given, Key));
+  const Grouped = (Name) =>
+    Groups !== null &&
+    Language_Source_Keys.some (({ Keys }) => Keys.includes (Name));
   return [
     ...(Root ? Sidebar_Model.Variables.map ((Variable) =>
                  ({ Kind: 'variable', Variable }))
@@ -1925,7 +2005,9 @@ const Sidebar_Project_Children = ({ Given, Trail, Root }) => {
     ...Attributes.filter (({ name }) => name === 'Main')
                  .flatMap (({ values }) => values)
                  .map ((Main) => ({ Kind: 'main', Main, Given })),
-    ...Attributes.filter (({ name }) => name !== 'Main').map (Named),
+    ...(Groups ?? []).map ((Group) => ({ Kind: 'language', ...Group })),
+    ...Attributes.filter (({ name }) => name !== 'Main' && !Grouped (name))
+                 .map (Named),
     ...(Given.types ?? []).map (({ name, values }) =>
         Named ({ name: `type ${name}`, index: null, values })),
     ...(Given.variables ?? []).map (({ name, values }) =>
@@ -1955,6 +2037,8 @@ const Sidebar_Roots = () =>
 const Sidebar_Kinds = {
   project:   { Item: Sidebar_Project_Item,   Children: Sidebar_Project_Children },
   main:      { Item: Sidebar_Main_Item,      Children: () => [] },
+  language:  { Item: Sidebar_Language_Item,  Children: Sidebar_Language_Children },
+  source:    { Item: Sidebar_Source_Item,    Children: () => [] },
   attribute: { Item: Sidebar_Attribute_Item, Children: Sidebar_Attribute_Children },
   value:     { Item: Sidebar_Value_Item,     Children: () => [] },
   variable:  { Item: Sidebar_Variable_Item,  Children: () => [] },
@@ -2573,11 +2657,26 @@ const Adapter_Executable = (Command, Arguments) =>
   ((Escaped) => new vscode.DebugAdapterExecutable (Escaped[0], Escaped[1]))
     (Host_Escaped (Command, Arguments));
 
+const Command_Piece  = /(?:[^\s"']|"[^"]*"|'[^']*')+/g;
+const Command_Quotes = /"([^"]*)"|'([^']*)'/g;
+
+const Command_Words = (Text) =>
+  (Text.match (Command_Piece) ?? []).map ((Word) =>
+    Word.replace (Command_Quotes, (Whole, Double, Single) => Double ?? Single));
+
+const Debugger_Command = () =>
+  ((Words) => (Words.length === 0 ? null : Words))
+    (Command_Words (In_The_Root ("IDE'Debugger_Command")[0] ?? ''));
+
 const Debug_Adapter_Factory = {
   createDebugAdapterDescriptor: async () => {
     const Named = Substituted (Configured ('debugAdapterPath', '')).trim ();
     if (Named !== '') return Adapter_Executable (Named, []);
-    const Compiler = Known_Compiler.Path ?? Compiler_Path ();
+    const Commanded = Debugger_Command ();
+    if (Commanded !== null)
+      return Adapter_Executable (Commanded[0], Commanded.slice (1));
+    const Compiler =
+      Pinned_Compiler () ?? Known_Compiler.Path ?? Compiler_Path ();
     if (!await Speaks_Dap (Compiler))
       throw new Error (
         `Ada 83: '${Compiler}' does not know --dap, the mode where the ` +
@@ -3050,7 +3149,7 @@ module.exports = { activate, deactivate };
         "ada83.compilerPath": {
           "type": "string",
           "default": "ada83",
-          "description": "Path to the ada83 compiler. It is run as `ada83 --lsp`, and looks for ada83-runtime.ada beside itself. Left unset, the extension looks in bin-<platform>/ under the workspace, then on PATH, and failing both offers to download a build; whatever is adopted is written back here."
+          "description": "Path to the ada83 compiler: set, it always wins; unset, a project naming IDE'Compiler_Command (\"ada\") pins the compiler the project is built and analysed with. It is run as `ada83 --lsp`, and looks for ada83-runtime.ada beside itself. Left unset with no project pinning one, the extension looks in bin-<platform>/ under the workspace, then on PATH, and failing both offers to download a build; whatever is adopted is written back here."
         },
         "ada83.downloadBase": {
           "type": "string",
@@ -3060,12 +3159,18 @@ module.exports = { activate, deactivate };
         "ada83.debugAdapterPath": {
           "type": "string",
           "default": "",
-          "description": "A Debug Adapter Protocol executable to run in place of the compiler's own adapter, verbatim and with no arguments — raw lldb-dap, say, for the untranslated view. Left empty, debugging runs the resolved compiler as `ada83 --dap`, which drives lldb-dap underneath and does the Ada spelling itself. ${workspaceFolder} is substituted."
+          "description": "A Debug Adapter Protocol executable to run in place of the compiler's own adapter, verbatim and with no arguments — raw lldb-dap, say, for the untranslated view. Left empty, a project naming IDE'Debugger_Command runs that command line, quotes honored; otherwise debugging runs the resolved compiler as `ada83 --dap`, which drives lldb-dap underneath and does the Ada spelling itself. ${workspaceFolder} is substituted."
         },
         "ada83.enable": {
           "type": "boolean",
           "default": true,
           "description": "Report diagnostics from the compiler as you type."
+        },
+        "ada83.languageExtensions": {
+          "type": "boolean",
+          "default": true,
+          "description": "Admit the language extensions: protected types, controlled types, expression functions, if and case expressions, aspect specifications, access-to-subprogram types, general access types with aliased objects and 'Access, dot notation on a leading in out formal, Ada 95 unit names, the generic formal defaults beyond Ada 83, and the small features (renaming a function call, 'Valid, null procedures, function out parameters, deferred constants of any type, 'Alignment). Turn it off and the compiler is invoked with -ada83, strict ANSI/MIL-STD-1815A, where every one of those is an error naming the construct. A program that relies on an extension is not a legal Ada 83 program, which is what the strict setting is for.",
+          "scope": "resource"
         },
         "ada83.requestTimeout": {
           "type": "number",
@@ -3785,6 +3890,10 @@ extension resolves one on activation, in this order:
 3. **`ada83` on PATH**;
 4. failing all three, an **offer to download** a released build or locate one.
 
+A project may pin its own: `IDE'Compiler_Command ("ada")` names the
+compiler the project is built and analysed with whenever
+`ada83.compilerPath` is not set, and the setting always wins when it is.
+
 A candidate counts only if `--version` answers. The download goes to the
 extension's own storage, is staged and adopted only after `--version`
 answers there too, and always places `ada83-runtime.ada` — which the
@@ -3819,7 +3928,8 @@ With a project active:
   asking. It touches nothing else
 - diagnostics from the project file itself land in the Problems panel with
   everything else. An attribute the compiler does not know is a **warning**,
-  not an error, so a GNAT tree carrying `package IDE` marks it and builds
+  not an error, so a GNAT tree carrying `package Pretty_Printer` marks it
+  and builds
 
 **Ada 83: New Project** goes the other way: give it a name and it writes
 `<name>.gpr` with a typed scenario variable, a `src/` directory and a main
@@ -3869,6 +3979,10 @@ disagree with the build.
   `Object_Dir`, switches plain and indexed, spelled as the plan spells
   them — its typed declarations and variables, and its **imports**, each
   a project node of its own, expandable the same way
+- a project recording more than Ada groups its **sources by language** —
+  Ada, C, C++, and Other with each file's recorded language beside it —
+  from the `Ada_Sources`, `C_Sources`, `CPP_Sources` and `Other_Sources`
+  the plan answers; an Ada-only project reads exactly as before
 - every **main** carries inline **Build** and **Run** buttons. Build runs
   the compiler with `--progress` and renders each compile as it happens —
   *compiling 3/17 — pack.adb* — and a build with nothing to do says so:
@@ -3892,7 +4006,9 @@ otherwise. A current compiler reads a project (`-P`), plans (`-n`, and
 `PROGRESS` line per compile (`--progress`). With an older compiler the
 extension degrades a feature at a time: the typed picker falls back to
 the externals the plan resolved, as free text; the sidebar falls back to
-the `-n` plan, which carries no indexed attributes — less, never wrong.
+the `-n` plan, which carries no indexed attributes — less, never wrong;
+one that answers no per-language source keys and no `package IDE`
+attributes shows no language groups and pins nothing.
 The sidebar's Build button asks for `--progress` and needs a compiler
 that knows it; the build *tasks* (`Ctrl+Alt+Shift+B` and friends) pass no
 such flag and work with any.
@@ -3921,7 +4037,9 @@ rebuilt with `-g` before the adapter gets it. A compiler that predates
 `--dap` is refused with a message pointing at **Ada 83: Download Or
 Update The Compiler**, not half-served; `ada83.debugAdapterPath` runs
 any other DAP executable — raw lldb-dap, say — verbatim in its place,
-for those who want the untranslated view.
+for those who want the untranslated view, and a project naming
+`IDE'Debugger_Command` runs that command line, quotes honored, while
+the setting is empty.
 
 The same story holds outside the editor. `ada83 -g` builds a binary
 every LLVM tool reads — lldb, lldb-dap — and `ada83 --debug prog`
@@ -3970,10 +4088,11 @@ extension does not declare.
 <!-- BEGIN GENERATED: settings -->
 | Setting | Default | What it does |
 |---|---|---|
-| `ada83.compilerPath` | `"ada83"` | Path to the ada83 compiler. |
+| `ada83.compilerPath` | `"ada83"` | Path to the ada83 compiler: set, it always wins; unset, a project naming IDE'Compiler_Command ("ada") pins the compiler the project is built and analysed with. |
 | `ada83.downloadBase` | `"https://raw.githubusercontent.com/AdaDoom3/Ada83/main"` | Where Ada 83: Download Or Update The Compiler fetches from. |
 | `ada83.debugAdapterPath` |  | A Debug Adapter Protocol executable to run in place of the compiler's own adapter, verbatim and with no arguments — raw lldb-dap, say, for the untranslated view. |
 | `ada83.enable` | `true` | Report diagnostics from the compiler as you type. |
+| `ada83.languageExtensions` | `true` | Admit the language extensions: protected types, controlled types, expression functions, if and case expressions, aspect specifications, access-to-subprogram types, general access types with aliased objects and 'Access, dot notation on a leading in out formal, Ada 95 unit names, the generic formal defaults beyond Ada 83, and the small features (renaming a function call, 'Valid, null procedures, function out parameters, deferred constants of any type, 'Alignment). |
 | `ada83.requestTimeout` | `15000` | How long, in milliseconds, to wait for one answer from the language server. |
 | `ada83.workspaceRequestTimeout` | `120000` | How long, in milliseconds, to wait for a workspace-wide symbol search, which compiles every Ada source in the workspace root. |
 | `ada83.includePaths` | `[]` | Directories searched for with-ed units, beyond the file's own and the workspace root. |
@@ -4045,13 +4164,22 @@ extension does not declare.
 Honesty is cheaper than a surprised bug report:
 
 - **Not Ada 95, 2005, 2012 or 2022.** No tagged types, no child units, no
-  protected objects, no `aliased`, none of the 6 reserved words Ada 95
-  added. The compiler rejects them, and this extension serves this
-  compiler. For modern Ada, use AdaCore's tooling.
+  `aliased`, none of the 6 reserved words Ada 95 added. The compiler
+  rejects them, and this extension serves this compiler. For modern Ada,
+  use AdaCore's tooling. A set of later constructs is available as named
+  extensions admitted by default, and refused when
+  `ada83.languageExtensions` is off — protected
+  types, controlled types, expression functions, if and case expressions,
+  aspect specifications, access-to-subprogram and general access types,
+  dot notation on a leading `in out` formal, Ada 95 unit names, the
+  generic formal defaults beyond Ada 83, and a handful of small ones —
+  and a program that uses one is not a legal Ada 83 program, which is why
+  the setting is off by default.
 - **Not GNAT tooling.** A GNAT project tree usually loads — unknown
-  attributes are warnings, `package IDE` and friends are recorded and
-  ignored — but nothing here runs gprbuild or gnatpp. Debugging is the
-  compiler's own `--dap` adapter over lldb; gdb's Ada mode reads
+  attributes are warnings, and `package IDE` is read: `Compiler_Command
+  ("ada")` and `Debugger_Command` steer the extension, the rest ride the
+  project tooltip — but nothing here runs gprbuild or gnatpp. Debugging
+  is the compiler's own `--dap` adapter over lldb; gdb's Ada mode reads
   binaries built with `-ggdb` outside the editor.
 - **Formatting, Suggest A Fix and translated diagnostics ask a language
   model** available inside your editor, decline politely when there is
@@ -4192,6 +4320,14 @@ Project files:
   every main — a `-g` rebuild, then the compiler itself as the debug
   adapter (`ada83 --dap`, lldb-dap underneath); while the program is
   stopped, a Tasks view of its Ada tasks in Run and Debug
+- Sources grouped by language in the project view — Ada, C, C++, Other
+  with each file's recorded language — from the plan's `Ada_Sources`,
+  `C_Sources`, `CPP_Sources` and `Other_Sources`; absent keys leave the
+  view as it was
+- `package IDE` consumed: `Compiler_Command ("ada")` pins the project's
+  compiler while `ada83.compilerPath` is unset, `Debugger_Command` names
+  the debug command line, quotes honored, while `ada83.debugAdapterPath`
+  is empty, and the remaining attributes ride the project tooltip
 
 Standing alone:
 
@@ -4204,6 +4340,11 @@ Standing alone:
 - File icons for `.ada`, `.ads`, `.adb`, `.gpr`, `.gpj` as an icon theme
 - A walkthrough covering compiler fetch, scaffolding, scenario and build
 - README reference tables generated from the manifest at packaging time
+- `ada83.languageExtensions`, off, passes `-ada83` to every invocation —
+  the language server, Build This File, Check This File and the project
+  tasks — so a workspace built with the extensions is analysed with them
+  too. Off by default: with the flag off the compiler is strict
+  ANSI/MIL-STD-1815A, which is what this extension is for
 </script>
 
 <script id="ada83.instructions.md" type="text/markdown">
@@ -4219,6 +4360,9 @@ Never write tagged types, protected objects or child units, and never write
 `abstract`, `aliased`, `requeue`, `until`, `interface`, `overriding`,
 `synchronized` or `some`: every one of those is Ada 95, 2005 or 2012. Ada 83
 has exactly 63 reserved words, and a construct needing a 64th is not Ada 83.
+The compiler does accept a set of later constructs by default, protected and
+controlled types among them; if the project you are editing is built with
+`-ada83`, none of them belongs in these files.
 
 Prefer the predefined packages the bundled runtime declares: `Standard`,
 `System`, `Text_IO` and its `Integer_IO`, `Float_IO`, `Fixed_IO` and

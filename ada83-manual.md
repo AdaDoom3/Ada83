@@ -1527,6 +1527,185 @@ type Special_Key is new Key_Manager.Key; -- See 7.4.2
 > subtype of this parameter need not have any value in common with the derived
 > subtype.
 
+> [!IMPORTANT]
+> **Extension — derivation within a visible part (off under `-ada83`).**
+>
+> This paragraph describes a language extension. It is admitted by
+> default but is not part of ANSI/MIL-STD-1815A, and is rejected when the
+> compiler is invoked with `-ada83`; a program that relies on it is not a
+> legal Ada 83 program.
+>
+> Two of the rules above restrict derivation within the visible part of a
+> package; by default both are relaxed, as Ada 95 relaxed them, so that a
+> hierarchy of derived types and their operations can be declared in one
+> package specification.
+>
+> A derived type declared immediately within the visible part of a package
+> may be used, within that same visible part, as the parent type of a
+> derived type definition. The restriction is kept only for a private type
+> whose full declaration has not yet been given: it cannot be a parent type
+> before its full declaration (see [7.4.1](#741-private-types)).
+>
+> A subprogram explicitly declared immediately within the visible part of a
+> package is derivable from the point of its declaration, not only after the
+> end of the visible part. A type derived later in the same visible part
+> therefore inherits every derivable subprogram of its parent type that is
+> declared before the derived type declaration. The implicit declarations of
+> the derived subprograms still occur at the place of the derived type
+> declaration, so a subprogram declared after it is not inherited by it, and
+> a subprogram explicitly declared for the derived type hides the derived
+> subprogram it is a homograph of, as [8.3](#83-visibility) states.
+>
+> ```ada
+> package Counters is
+>   type Counter is record V : Integer := 0; end record;
+>   procedure Add (C : in out Counter; By : Integer);
+>   type Tally is new Counter;          -- inherits Add (C : in out Tally; By : Integer)
+>   procedure Scale (T : in out Tally; By : Integer);
+>   type Audited is new Tally;          -- a derived type as a parent in the same
+>                                       -- visible part; inherits Add and Scale
+> end Counters;
+> ```
+>
+> Under `-ada83` both rules are enforced as stated above: `Tally` inherits
+> nothing, and the declaration of `Audited` is rejected because `Tally` is a
+> derived type declared in the same visible part.
+
+> [!IMPORTANT]
+> **Extension — controlled types (off under `-ada83`).**
+>
+> This paragraph describes a language extension. It is admitted by
+> default but is not part of ANSI/MIL-STD-1815A, and is rejected when the
+> compiler is invoked with `-ada83`; a program that relies on it is not a
+> legal Ada 83 program.
+>
+> By default two predefined record types, `CONTROLLED` and
+> `LIMITED_CONTROLLED`, are declared in package STANDARD. They are empty
+> records, neither is a keyword, and a program that declares its own entity
+> called `CONTROLLED` hides the predefined one as it would hide any other
+> predefined name. A derived type definition whose parent is one of them, or
+> is itself controlled, may carry a record extension part:
+>
+> ```ebnf
+> derived_type_definition ::= new subtype_indication [record_extension_part]
+> record_extension_part   ::= with record_definition
+> ```
+>
+> The result is an ordinary record type whose components are those of the
+> parent followed by those of the extension; there is no tag, no dispatching,
+> no class-wide type, and `'CLASS` and `'TAG` remain undefined attributes. A
+> record extension part is legal only on a controlled parent, the parent must
+> not have a variant part, and a type declared with a record extension part
+> may declare discriminants of its own only when the parent has no
+> components. A type is *controlled* when it is derived, directly or through
+> intermediate derivations, from `CONTROLLED` or `LIMITED_CONTROLLED`; it
+> *needs finalization* when it is controlled or has a component (or array
+> element, at any depth) whose type does. A type derived from
+> `LIMITED_CONTROLLED` is limited.
+>
+> The operations of a controlled type are the procedures `INITIALIZE`,
+> `ADJUST` and `FINALIZE`, each with exactly one parameter of mode **in out**
+> of the type, declared in the same declarative region as the type. None is
+> declared implicitly: a type that declares no `FINALIZE` inherits its
+> parent's, and a type derived from `CONTROLLED` alone has no operations at
+> all, so naming one is an error like naming any undeclared subprogram. A
+> subprogram with one of these three names and any parameter or result of a
+> controlled type must have that profile, and a limited controlled type may
+> not declare an `ADJUST`. Binding is static: the procedure called for an
+> object is decided at compile time from the object's type.
+>
+> The three operations are called at the points ISO/IEC 8652:1995 clauses
+> 7.6 and 7.6.1 give them, with these orders. When an object is declared
+> without an initial value, its controlled components are initialized first
+> (in declaration order, each after its own default initialization) and then
+> `INITIALIZE` is called on the object; through a derivation chain the parent
+> part is initialized before the extension components and before the type's
+> own `INITIALIZE`. `ADJUST` follows the same order after a copy. `FINALIZE`
+> is called on the object first, then on its parent part, then on its
+> extension components in reverse declaration order. A level of a derivation
+> chain that declares no operation contributes nothing, so an inherited
+> operation runs once. Only the components of the active variant are touched.
+>
+> An object declared with an initial value is adjusted after the copy when the
+> value is a name, and is not adjusted when the value is an aggregate or a
+> function call: the aggregate or result is built in place and becomes the
+> object, so no anonymous object exists to be finalized. The same rule holds
+> within an aggregate, component by component and element by element: a
+> component or element whose value is a name is a copy, adjusted once for each
+> element the choice covers, while one written as an aggregate of its own is
+> built in place and is not adjusted at all. A function call or aggregate of a
+> controlled type used anywhere else creates an anonymous object whose master
+> is the enclosing statement or declaration: it is finalized once the
+> statement completes, or immediately after the condition of an if, while or
+> exit, or the selector of a case, has been evaluated, and also when an
+> exception leaves the statement. In a return statement the value of an
+> expression that names a local object of the function is moved into the
+> result without adjustment, and that local is then not finalized by the
+> function; any other value is adjusted as it is copied into the result.
+>
+> An assignment statement whose target needs finalization finalizes the old
+> value of the target, copies, and adjusts the new value. Assigning an object
+> to itself does nothing. An assignment to a slice assigns the elements the
+> slice covers: those are finalized, copied and adjusted, and no other element
+> of the array is touched. When the source is a name that may overlap the
+> target — a dereference, a component reached through an access value, a
+> renaming, or a parameter — the value is first copied into an anonymous
+> object which is adjusted, then finalized after the copy, as in 7.6(17). When
+> the source is a function call or an aggregate, its anonymous object is
+> finalized at the end of the statement. An exception propagated by `FINALIZE`
+> or `ADJUST` during an assignment statement, or by `FINALIZE` during an
+> instance of `UNCHECKED_DEALLOCATION`, is replaced by Program_Error at that
+> point.
+>
+> The objects of a master — a block, a subprogram body, a task body, or the
+> program at library level — are finalized when the master completes, after
+> its dependent tasks have been awaited, in reverse order of their
+> declaration, whether the master is left normally, by a return, exit or
+> goto, or by an exception. Only objects whose initialization completed are
+> finalized, so an exception raised by the third of five initializers
+> finalizes the first two and no more. If one `FINALIZE` of a master
+> propagates an exception, the remaining finalizations are still performed
+> and Program_Error is raised once the master has been left; on the exception
+> path the original exception continues to propagate unless a `FINALIZE`
+> raised, in which case Program_Error replaces it. The objects declared in
+> library packages are finalized after the main subprogram has returned and
+> all tasks have terminated, unit by unit in the reverse of the elaboration
+> order.
+>
+> Every nonderived access type whose designated type needs finalization has
+> a collection: the objects created by its allocators, and by allocators of
+> access types derived from it. Allocation initializes or adjusts the new
+> object as a declaration would; `UNCHECKED_DEALLOCATION` finalizes the
+> object and removes it from the collection before reclaiming its storage;
+> whatever is never deallocated is finalized when the master in which the
+> access type is declared completes. Each such allocation carries two extra
+> words in front of the object. Under a `STORAGE_SIZE` clause the collection
+> takes its storage from the heap rather than from the pooled blocks.
+>
+> A generic body declaring objects of a formal private type finalizes them
+> in an instance whose actual needs finalization and does nothing in one
+> whose actual does not, because each instance is expanded separately.
+> Nothing is recorded in a library file for this: a client learns that a
+> type is controlled from the specification it compiles.
+>
+> The implicit calls are subprogram calls, so each makes the elaboration check
+> of 3.9 and raises Program_Error when the body it names has not been
+> elaborated. Because 3.9 places every body after the basic declarations of
+> its declarative part, a locally declared controlled type cannot have objects
+> in the same declarative part as its own operations; the operations belong in
+> an inner package, whose body is elaborated before any object of the type is
+> created. A local named by a return statement is treated as the function's
+> result object and is not finalized by that function even if the function is
+> abandoned by an exception. The result of a function returning an
+> unconstrained array whose elements need finalization is not treated as an
+> anonymous object. Refused by name: class-wide types and dispatching,
+> `'CLASS` and `'TAG`, abstract types, extension aggregates (`(PARENT with
+> ...)`), a controlled actual for a generic formal tagged type (there are
+> none), abort-deferred finalization (there is no abort), coextensions and
+> per-object access discriminants, and `UNCHECKED_DEALLOCATION` of an object
+> whose collection has already been finalized, which is erroneous and is not
+> detected.
+
 ### 3.5 Scalar Types
 
 Scalar types comprise enumeration types, integer types, and real types.
@@ -3152,15 +3331,150 @@ type Buffer_Name is access Buffer -- See 3.7.1
 > Access values are called pointers of references in some other languages.
 
 > [!IMPORTANT]
-> **Extension — access-to-subprogram types (enabled by `-x`).**
+> **Extension — general access types (off under `-ada83`).**
 >
-> This paragraph describes a language extension. It is not part of
-> ANSI/MIL-STD-1815A and is rejected unless the compiler is invoked with
-> `-x`; a program that relies on it is not a legal Ada 83 program.
+> This paragraph describes a language extension. It is admitted by
+> default but is not part of ANSI/MIL-STD-1815A, and is rejected when the
+> compiler is invoked with `-ada83`; a program that relies on it is not a
+> legal Ada 83 program.
+>
+> An access type definition may be written with the reserved word `all`
+> or `constant` between `access` and the subtype indication, and the new
+> reserved word `aliased` may precede the subtype indication of an object
+> declaration or of a component declaration, and the component subtype
+> indication of an array type definition.
+>
+> ```ebnf
+> access_type_definition ::= access [all | constant] subtype_indication
+>
+> object_declaration ::=
+>    identifier_list : [constant] [aliased] subtype_indication [:= expression];
+>
+> component_declaration ::=
+>    identifier_list : [aliased] subtype_indication [:= expression];
+>
+> array_type_definition ::= ... of [aliased] subtype_indication
+> ```
+>
+> An access type declared with `all` or `constant` is a *general* access
+> type; one declared without is *pool-specific*, and its values designate
+> only objects created by allocators, as in Ada 83. A value of a general
+> access type may in addition designate an *aliased view* of an object
+> declared by an object declaration: `X'ACCESS`, where `X` denotes such a
+> view, yields a value of a general access type designating `X`. A general
+> access type declared with `constant` is an access-to-constant type: the
+> object its values designate is read only through them, so its
+> dereferences (explicit, or the implicit ones of a component selection or
+> an index) are not variables — they cannot be assigned to nor passed as
+> actual parameters of mode `out` or `in out`. A general access type
+> declared with `all` is an access-to-variable type.
+>
+> The following denote aliased views: an object declared `aliased`; a
+> component declared `aliased`, and an element of an array whose components
+> are; the object designated by any access value, so `A.all` and every
+> component or element selected through `A` are aliased; a renaming of an
+> aliased view; a generic formal object of mode `in out` (a renaming of its
+> actual); and a formal parameter of a type that is passed by reference — a
+> task type, a protected type, or a limited record or array type containing
+> one — the counterpart here of the tagged-type rule of later Ada. A slice
+> is never aliased, and neither is a type conversion, a function result or
+> a generic formal object of mode `in`, which are values.
+>
+> `X'ACCESS` is legal only if the expected type is a single general access
+> type: `X` must denote an aliased view whose type is the designated type
+> of that access type, and unless the designated subtype is an
+> unconstrained subtype of a type with discriminants, the nominal subtype of
+> `X` — the one its declaration gives it, not the one an initial value may
+> have constrained it to — must statically match the designated subtype:
+> both constrained with the same bounds or discriminant values, or both
+> unconstrained. If the access type is an access-to-variable type, `X` must
+> be a variable. `X` must not be a subcomponent that depends on the
+> discriminants of a variable whose subtype is unconstrained, nor of the
+> dereference of an access-to-variable general access value whose
+> designated subtype is unconstrained with defaulted discriminants (the
+> object such a value designates may be any such variable), the rule the
+> object renaming declaration of [8.5](#85-renaming-declarations) already
+> imposes; the dereference of a pool-specific value is exempt, since an
+> allocated object is constrained. The attribute takes part in overload
+> resolution like any operand: the prefix's type selects among the
+> interpretations of the enclosing call, and two access types with the same
+> designated type, of whatever kinds, leave it ambiguous. It cannot be the
+> operand of a type conversion, which offers no expected type; write a
+> qualified expression.
+>
+> **The accessibility rule.** Every declaration lies in a *region*: the
+> library level, or the innermost enclosing *master* — a subprogram, task or
+> entry body, a block statement, an accept statement — with the library
+> level as the outermost region and each master one deeper than the one it
+> lies in. Packages are transparent to the count. An object, a component of
+> one, or a subprogram lies in the region of its declaration; a formal
+> parameter, in that of its subprogram's body; a renaming, in that of what
+> it renames; the object designated by an access value, in the region of
+> the access type; a generic formal object of mode `in out`, in that of its
+> actual; a declaration in a generic instance, in the region of the
+> instantiation; an access type, in the region of its declaration, a
+> derived access type in that of its ultimate ancestor, and a generic formal
+> access type in that of the actual it is given. The rule, in every place
+> the language needs one, is a single constraint between two regions:
+>
+> - `X'ACCESS` and `P'ACCESS` require the region of `X` or `P` to be no
+>   deeper than the region of the access type;
+> - a conversion between access types requires the region of the operand
+>   type to be no deeper than the region of the target type.
+>
+> A value that broke the rule would outlive what it designates. Both
+> regions are known when the constraint is written, so the compiler decides
+> it there: a violation is rejected, and a satisfied constraint costs nothing
+> at run time — no code is emitted for it. The one exception is the body of
+> a generic unit, whose legality is not re-examined in each instance: a
+> constraint written in a generic body is evaluated when the instance runs
+> it, and a violation raises `PROGRAM_ERROR` at that point. The check is
+> emitted as a comparison of the two regions' witnesses, each a constant
+> within the instance, and folds away at `-O2` wherever it holds.
+>
+> `X'UNCHECKED_ACCESS` yields the same value as `X'ACCESS` under the same
+> rules but the accessibility rule, which it waives: the program then
+> answers for not using the value after `X` is gone.
+>
+> A general access type takes the operations of [3.8](#38-access-types),
+> with two additions to explicit conversion, whose target must be a general
+> access type: a value of an access-to-constant type does not convert to an
+> access-to-variable type, and the designated subtypes must be of one type
+> and statically match, unless the target's is an unconstrained subtype of
+> a type with discriminants. Every value of a general access type is one
+> word, as a pool-specific value is, and `'SIZE` and `'STORAGE_SIZE` say
+> the same of both. A generic formal access type written with `all` or
+> `constant` requires an actual of the same kind.
+>
+> **Examples:**
+>
+> ```ada
+> type Cell is record Value : Integer; end record;
+> type Cell_Ref is access all Cell;
+> Head : aliased Cell;
+> First : Cell_Ref := Head'Access;         -- legal: one region
+>
+> procedure Walk is
+>    Local : aliased Cell;
+>    Here  : Cell_Ref := Local'Access;     -- illegal: Local is deeper
+>    type Step_Ref is access all Cell;
+>    Step  : Step_Ref := Head'Access;      -- legal: Head is shallower
+> begin
+>    First := Local'Unchecked_Access;      -- accepted; Walk must not return
+> end Walk;                                -- with First still designating Local
+> ```
+
+> **Extension — access-to-subprogram types (off under `-ada83`).**
+>
+> This paragraph describes a language extension. It is admitted by
+> default but is not part of ANSI/MIL-STD-1815A, and is rejected when the
+> compiler is invoked with `-ada83`; a program that relies on it is not a
+> legal Ada 83 program.
 >
 > An access type definition may name a subprogram profile instead of a
-> subtype indication. A value of such a type designates a subprogram, or is
-> the null value which designates no subprogram at all.
+> subtype indication, both as a type definition and as a generic formal type
+> definition. A value of such a type designates a subprogram, or is the null
+> value which designates no subprogram at all.
 >
 > ```ebnf
 > access_type_definition ::= access subtype_indication
@@ -3194,25 +3508,42 @@ type Buffer_Name is access Buffer -- See 3.7.1
 > call, and the check that raises it is the access check of
 > [11.7](#117-suppressing-checks).
 >
-> **The declaration of `P` and the declaration of the access type must be
-> immediately within the same subprogram body, or both outside every
-> subprogram body.** A subprogram declared within a subprogram body reaches
-> the enclosing activation through a static link, and a value of an
-> access-to-subprogram type is one word: it carries the address of the
-> subprogram and no link. The link a call supplies is therefore a property of
-> the access type — it is the activation of the subprogram body the type is
-> declared in — and the rule above is what makes that link the one the
-> designated subprogram wants. The rule subsumes the accessibility rule it
-> replaces: a subprogram more deeply nested than the access type is rejected,
-> and no access value can outlive the frame of the subprogram it designates,
-> because that frame is the one its own type names.
+> **The accessibility rule** is the one stated for general access types
+> above, with `P` in the place of `X`: the region of `P` — that of the
+> body its declaration lies in, or of the renamed subprogram when `P` is a
+> renaming — must not be deeper than the region of the access type, which
+> is that of its declaration, of its ultimate ancestor when it is derived,
+> and of the actual when it is a generic formal. The value would otherwise
+> outlive the activation it captures. Like every constraint of the rule,
+> this one is decided where it is written and costs nothing when it holds;
+> in a generic body it becomes the run-time check of the same paragraph,
+> so a subprogram declared in a generic body is in practice designated only
+> by an access type declared within the same generic unit, whose region is
+> comparable to its own in every instance.
 >
-> `P'Unchecked_Access` denotes the same value and waives nothing. The check
-> it waives in other languages guards a frame's lifetime; here the frame is
-> named by the type rather than carried by the value, so waiving the rule
-> would not produce a value that outlives a frame — it would produce a call
-> made with a link belonging to some other frame, which is not a hazard a
-> program may take responsibility for.
+> **Representation.** A value of an access-to-subprogram type is two words:
+> the address of the subprogram, and the activation it is to run in. Both
+> are settled where `P'Access` is written — the second by walking to the
+> activation of the body `P` is declared in — so one value called from
+> anywhere reaches the right frame, and two values built from different
+> activations of the same body behave differently, as they should. A
+> library-level subprogram carries a null second word.
+>
+> **Convention.** `pragma Convention (C, T)` on an access-to-subprogram type
+> makes it **one** word — a bare code pointer, callable by a foreign
+> language — and its designated subprogram must then carry the same
+> convention and be declared at depth zero, since a one-word value has
+> nowhere to keep an activation. A nested subprogram is rejected rather than
+> reached through generated code: no page of memory this compiler allocates
+> is ever both writable and executable. `T'Size` is 128 for the Ada
+> convention and 64 for a foreign one; conversion between two
+> access-to-subprogram types of different conventions is not defined, since
+> it would have to invent or discard an activation.
+>
+> `P'Unchecked_Access` denotes the same value and, unlike its object form,
+> waives nothing: the accessibility rule guards the activation the value
+> carries, and a value that outlived it would call a subprogram with a dead
+> frame.
 >
 > An access-to-subprogram value may designate a subprogram declared by a
 > generic instantiation. It may not designate an entry, nor an operation the
@@ -3223,9 +3554,11 @@ type Buffer_Name is access Buffer -- See 3.7.1
 > The only operations of an access-to-subprogram type are the call described
 > above, assignment, the predefined equality and inequality operators, and
 > qualification and explicit conversion between access-to-subprogram types
-> whose designated profiles are type conformant and whose declarations agree,
-> as above, about the subprogram body they are written in. Two values are
-> equal when they designate the same subprogram or are both null.
+> whose designated profiles are type conformant, whose conventions agree,
+> and whose regions satisfy the accessibility rule, the operand type's no
+> deeper than the target's.
+> Two values are equal when both are null, or when they designate the same
+> subprogram *and* the same activation of it.
 
 #### 3.8.1 Incomplete Type Declarations
 
@@ -3365,6 +3698,30 @@ body ::= proper_body | body_stub
 
 proper_body ::= subprogram_body | package_body | task_body
 ```
+
+> [!IMPORTANT]
+> **Extension — free declarative order (off under `-ada83`).**
+>
+> This paragraph describes a language extension. It is admitted by
+> default but is not part of ANSI/MIL-STD-1815A, and is rejected when the
+> compiler is invoked with `-ada83`; a program that relies on it is not a
+> legal Ada 83 program.
+>
+> A declarative part may give its declarative items in any order, as Ada 95
+> allows:
+>
+> ```ebnf
+> declarative_part ::= {declarative_item}
+>
+> declarative_item ::= basic_declarative_item | later_declarative_item
+> ```
+>
+> A basic declaration may therefore follow a body. Elaboration is unchanged:
+> the items elaborate in the order written, and a name must still be declared
+> before it is used, so an object whose initial value calls a function still
+> follows that function's declaration. The rule this lifts is one of textual
+> placement, and the checks of 3.9 that a body is elaborated before it is
+> called are untouched.
 
 The elaboration of a declarative part consists of the elaboration of the
 declarative items, if any, in the order in which they are given in the
@@ -3665,6 +4022,83 @@ Standard.Boolean -- The name of a predefined type (see 8.6 and C)
 > the simple name must be given at each level for the name of a subcomponent. For
 > example, the name Next_Car.Owner.Birth.Month cannot be shortened
 > (Next_Car.Owner.Month is not allowed).
+
+> [!IMPORTANT]
+> **Extension — dot notation for a subprogram call (off under `-ada83`).**
+>
+> This paragraph describes a language extension. It is admitted by
+> default but is not part of ANSI/MIL-STD-1815A, and is rejected when the
+> compiler is invoked with `-ada83`; a program that relies on it is not a
+> legal Ada 83 program.
+>
+> A selected component whose prefix denotes an object may name, as its
+> selector, a subprogram whose first formal parameter has mode **in out**
+> and is of the type of that object. The selected component, followed by an
+> actual parameter part when the subprogram has further formals, is then a
+> *prefixed call*, and the prefix is the actual parameter for that first
+> formal.
+>
+> `prefix.selector [actual_parameter_part]` is a prefixed call when all of
+> the following hold:
+>
+> - the prefix denotes an object: a variable, a record component, an array
+>   element, an object designated by an access value, or a formal parameter.
+>   If the type of the prefix is an access type, the prefix is implicitly
+>   dereferenced, as it is for the forms (a) to (c) above;
+>
+> - the selected component is not of any of the forms (a) to (f) above: those
+>   are tried first, so a discriminant, a component, an entry or a protected
+>   operation of the prefix keeps its meaning, and a program that is legal
+>   without this extension means the same with it;
+>
+> - the selector is the simple name of a subprogram whose first formal
+>   parameter has mode **in out** and whose type is the type of the prefix,
+>   among the subprograms declared in the same declarative region as that
+>   type — its derived subprograms included — and the subprograms directly
+>   visible at the place of the call. The subprograms of the type's
+>   declarative region are reached through the prefix without a use clause
+>   (see [8.4](#84-use-clauses)).
+>
+> The meaning of the prefixed call `P.S (A1, ..., An)` is the call
+> `S (P, A1, ..., An)`: the prefix is the actual for the first formal, the
+> actual parameter part supplies the remaining formals, and the rules of
+> [6.4.1](#641-parameter-associations) for the actual parameters and their
+> modes apply to that call. When the subprogram has exactly one formal, the
+> prefixed call is written without an actual parameter part. Because the
+> first formal has mode **in out**, the prefix must be a variable: a
+> constant, a formal parameter of mode **in**, a literal, or a function call
+> is not allowed as the prefix of a prefixed call.
+>
+> Where more than one subprogram of that name satisfies the last condition,
+> the remaining actual parameters determine which is called, by the rules of
+> [6.6](#66-parameter-and-result-type-profile---overloading-of-subprograms),
+> exactly as for the written-out call; the prefixed call is ambiguous if
+> they do not. A function is not reachable as a prefixed call, since its
+> parameters have mode **in** (see [6.5](#65-function-subprograms)). The
+> subprogram is determined at compile time from the type of the prefix; no
+> dispatching takes place. Within a generic unit, a prefixed call whose
+> prefix is of a formal type is resolved in each instance against the actual
+> type, as every call within an instance is.
+>
+> ```ada
+> package Counters is
+>   type Counter is record V : Integer := 0; end record;
+>   procedure Bump  (C : in out Counter; By : Integer);
+>   procedure Reset (C : in out Counter);
+> end Counters;
+>
+> with Counters;                        -- no use clause is needed
+> procedure Main is
+>   Obj : Counters.Counter;
+> begin
+>   Obj.Bump (2);                       -- the call Counters.Bump (Obj, 2)
+>   Obj.Reset;                          -- the call Counters.Reset (Obj)
+> end Main;
+> ```
+>
+> Under `-ada83`, a selected component that would be a prefixed call is
+> rejected as the language extension it is; a selector that names no such
+> subprogram draws the same message with or without `-ada83`.
 
 #### 4.1.4 Attributes
 
@@ -4053,6 +4487,81 @@ Index = 0 or Item_Hit -- Expression
 (Cold and Sunny) or Warm -- Expression (parentheses are required)
 A**(B**C) -- Expression (parentheses are required)
 ```
+
+> [!IMPORTANT]
+> **Extension — if expressions and case expressions (off under `-ada83`).**
+>
+> This paragraph describes a language extension. It is admitted by
+> default but is not part of ANSI/MIL-STD-1815A, and is rejected when the
+> compiler is invoked with `-ada83`; a program that relies on it is not a
+> legal Ada 83 program.
+>
+> A conditional expression yields the value of one of several dependent
+> expressions, chosen by a condition or by a selecting expression. Only the
+> chosen dependent expression is evaluated.
+>
+> ```ebnf
+> conditional_expression ::= if_expression | case_expression
+>
+> if_expression ::=
+>      if condition then dependent_expression
+>      {elsif condition then dependent_expression}
+>      [else dependent_expression]
+>
+> case_expression ::=
+>      case selecting_expression is
+>      case_expression_alternative {, case_expression_alternative}
+>
+> case_expression_alternative ::=
+>      when discrete_choice_list => dependent_expression
+> ```
+>
+> Note the separators: the alternatives of a case expression are separated by
+> commas, not semicolons, and there is no closing `end case`.
+>
+> **A conditional expression must be immediately surrounded by parentheses.**
+> It is not a relation, a simple expression or a factor, so it never combines
+> with an operator without parentheses of its own. The surrounding parentheses
+> may be the enclosing construct's own, but only when they enclose nothing
+> else: `Single (if C then A else B)`, `Month'(if C then A else B)`,
+> `A1 (if C then I else J)` and a one-argument generic actual part or pragma
+> argument list are legal, while `Double (Green, if C then A else B)`,
+> `Single (C => if C then A else B)`, `A2 (Blue, if C then I else J)` and
+> `(15, if C then A else B, 92)` are not — a comma or an arrow intervenes.
+>
+> The expected type of the conditional expression is passed on to every
+> dependent expression, which is how an overloaded literal or call in an arm
+> is resolved; where the context supplies no type, the arms determine it
+> between them, and it is an error for an arm to be of a type the conditional
+> expression's own type does not admit. A condition must be of a boolean type,
+> and if an if expression has no `else`, the expression itself must be of a
+> boolean type: when no condition is True the value is then True. The
+> selecting expression of a case expression obeys the rules of the case
+> statement's expression — it must be of a discrete type and must be
+> resolvable without using the choices — and the alternatives obey the choice
+> rules of [5.4](#54-case-statements): the choices must be static, must not
+> overlap, must lie within the values the selecting expression can take, must
+> cover every one of them, and an `others` choice, if given, must be the only
+> choice of the last alternative. Constraint_Error is raised if no alternative
+> covers the value of the selecting expression, which a program can only
+> reach through an object holding a value outside its subtype.
+>
+> A conditional expression is a static expression when the conditions or the
+> selecting expression, the choices, and the *chosen* dependent expression are
+> static — the dependent expressions that are not chosen are *statically
+> unevaluated* and need not be evaluable, so
+> `Days : constant := (if True then 31 else 1/0);` is a legal number
+> declaration. The choices of a case expression are never statically
+> unevaluated: they are what decides which alternative is chosen, so a choice
+> that cannot be evaluated is illegal even in an alternative that is not
+> selected.
+>
+> By default, a name whose nominal subtype is static and constrained determines
+> the values a case statement's or case expression's choices must cover even
+> when that name is a function call, as in Ada 95 and later; under `-ada83` the
+> Ada 83 rule stands, under which only an object name, a qualified expression
+> and a type conversion do so, and a function call requires the choices to
+> cover its base type.
 
 ### 4.5 Operators and Expression Evaluation
 
@@ -5669,6 +6178,51 @@ procedure Print_Header (Pages : in Natural;
 >
 > All subprograms can be called recursively and are reentrant.
 
+> [!IMPORTANT]
+> **Extension — null procedures (off under `-ada83`).**
+>
+> This paragraph describes a language extension. It is admitted by
+> default but is not part of ANSI/MIL-STD-1815A, and is rejected when the
+> compiler is invoked with `-ada83`; a program that relies on it is not a
+> legal Ada 83 program.
+>
+> A procedure whose body would consist of a single null statement may be
+> declared as a null procedure: its specification, the reserved word `is`
+> and the reserved word `null`.
+>
+> ```ebnf
+> null_procedure_declaration ::= procedure_specification is null;
+> ```
+>
+> A null procedure declaration is a basic declaration, not a body, exactly
+> as an expression function is. It may therefore appear wherever a
+> subprogram declaration may — in the visible part or the private part of a
+> package specification — and it is not a body for the rule of
+> [3.9](#39-declarative-parts) that basic declarative items precede the
+> bodies of a declarative part. A package whose subprograms are all null
+> procedures requires no body.
+>
+> If a subprogram declaration with the same designator and a fully
+> conforming specification (see [6.3.1](#631-conformance-rules)) precedes
+> it in the same declarative part or package specification, the null
+> procedure is the completion of that declaration, which then requires no
+> other body. No other completion is allowed for a null procedure: a body,
+> a body stub or a renaming with the same profile is rejected as a second
+> declaration of the same subprogram.
+>
+> A call of a null procedure has no effect beyond the evaluation of its
+> actual parameters and the parameter associations of
+> [6.4](#64-subprogram-calls). A formal parameter of mode out is not
+> assigned by the body, so the corresponding actual receives whatever the
+> copy back finds, as after any procedure that leaves an out parameter
+> unassigned. The parameters of a null procedure are never reported as
+> unused.
+>
+> A null procedure may be passed as a generic actual subprogram. The null
+> default `with procedure P is null;` of a generic formal subprogram (see
+> [12.1.3](#1213-generic-formal-subprograms)) declares the same construct on
+> the formal side.
+
 ### 6.2 Formal Parameter Modes
 
 The value of an object is said to be read when this value is evaluated; it is
@@ -5758,6 +6312,32 @@ type of the subcomponent is a scalar type or an access type.
 > parameter designates the same task; the same holds for a subcomponent of an
 > actual parameter and the corresponding subcomponent of the associated formal
 > parameter.
+
+> [!IMPORTANT]
+> **Extension — out and in out parameters of functions (off under `-ada83`).**
+>
+> This paragraph describes a language extension. It is admitted by
+> default but is not part of ANSI/MIL-STD-1815A, and is rejected when the
+> compiler is invoked with `-ada83`; a program that relies on it is not a
+> legal Ada 83 program.
+>
+> A function may declare formal parameters of mode out and in out. The rules
+> of this section apply to them unchanged: the actual parameter for such a
+> formal must be a variable, the copying in and out described above takes
+> place for a function call exactly as for a procedure call, and the copy
+> back happens when the function returns, before the enclosing expression
+> uses the value of the call. Where two such calls are operands of one
+> expression, the order in which they are evaluated is not defined by the
+> language, as for any operands (see [4.5](#45-operators-and-expression-evaluation)).
+> The rule that a formal parameter of mode out may not be read within the
+> body is unchanged.
+>
+> The parameters of an operator — a function whose designator is an
+> operator symbol — must all be of mode in, and so must those of a generic
+> function that is instantiated with an operator symbol as its designator;
+> a declaration, instantiation or renaming that breaks this rule is
+> rejected. In strict mode a parameter of a function that is not of mode
+> in is rejected at the parameter.
 
 ### 6.3 Subprogram Bodies
 
@@ -6084,6 +6664,64 @@ function Dot_Product (Left, Right : Vector) return Real is
     return Sum;
   end;
 ```
+
+> [!IMPORTANT]
+> **Extension — expression functions (off under `-ada83`).**
+>
+> This paragraph describes a language extension. It is admitted by
+> default but is not part of ANSI/MIL-STD-1815A, and is rejected when the
+> compiler is invoked with `-ada83`; a program that relies on it is not a
+> legal Ada 83 program.
+>
+> A function whose body would consist of a single return statement may be
+> written as an expression function: its specification, the reserved word
+> `is`, and the returned expression in parentheses.
+>
+> ```ebnf
+> expression_function_declaration ::=
+>     function_specification is (expression);
+> ```
+>
+> An expression function is a basic declaration, not a body. It may
+> therefore appear wherever a subprogram declaration may — in the visible
+> part or the private part of a package specification, where a body may
+> not — and it is not a body for the rule of [3.9](#39-declarative-parts)
+> that basic declarative items precede the bodies of a declarative part:
+> an expression function may follow a body, and basic declarations may
+> follow it. The parentheses belong to the declaration, not to the
+> expression: `is (X)` returns `X`, exactly as `return X;` would.
+>
+> If a subprogram declaration with the same designator and a fully
+> conforming specification (see [6.3.1](#631-conformance-rules)) precedes
+> it in the same declarative part or package specification, the expression
+> function is the completion of that declaration, which then requires no
+> other body; a generic function declaration may be completed this way,
+> and every instance of it is then an expression function. Otherwise the
+> expression function is both the declaration of the function and its
+> completion, and no body may be given for it. The expression must be of
+> the result type of the function, as the expression of a return statement
+> must be (see [5.8](#58-return-statements)).
+>
+> The expression is resolved where it is written, but naming an entity in
+> it does not force the representation of the entity (see
+> [13.1](#131-representation-clauses)), as naming it in a default
+> expression does not: a deferred constant may be named before its full
+> declaration, and a function may be named before its body. A package
+> specification whose subprograms are all expression functions requires no
+> package body.
+>
+> An expression function that completes an earlier declaration establishes,
+> at the place where it stands, that the function can from then on be
+> called, exactly as the elaboration of a body does (see
+> [6.3](#63-subprogram-bodies)); a call made before that raises the
+> exception Program_Error, as for any subprogram whose body is not yet
+> elaborated. An expression function that is its own declaration has no
+> separate body, so a call of it can never raise Program_Error for that
+> reason. A call of an expression function is never a static expression.
+> The compiler treats every expression function as if it were named in a
+> pragma Inline (see [6.3.2](#632-inline-expansion-of-subprograms)); as for
+> the pragma, the code generator is free to follow or to ignore the
+> recommendation.
 
 ### 6.6 Parameter and Result Type Profile - Overloading of Subprograms
 
@@ -6729,6 +7367,31 @@ operations of a type is desired. Such packages serve a dual purpose. They
 prevent a user from making use of the internal structure of the type. They also
 implement the notion of an encapsulated data type where the only operations on
 the type are those given in the package specification.
+
+> [!IMPORTANT]
+> **Extension — deferred constants of non-private types (off under `-ada83`).**
+>
+> This paragraph describes a language extension. It is admitted by
+> default but is not part of ANSI/MIL-STD-1815A, and is rejected when the
+> compiler is invoked with `-ada83`; a program that relies on it is not a
+> legal Ada 83 program.
+>
+> A deferred constant declaration may name any type, not only a private
+> type declared in the same visible part. The full declaration must still
+> occur in the private part of the same package, and a deferred constant
+> declaration is still only allowed in the visible part of a package
+> specification: elsewhere a constant declaration requires an
+> initialization. The type must be named by a type mark; an array type
+> definition is not allowed.
+>
+> The subtype of the deferred constant may be given by a subtype
+> indication with a constraint, in which case the full declaration must
+> give the same subtype indication. Where the deferred declaration names
+> an unconstrained array type, the initial value of the full declaration
+> fixes the bounds of the constant, as it does for any constant of such a
+> type. The rule of [7.4.3](#743-deferred-constants) that a deferred
+> constant may be named before its full declaration only in a default
+> expression is unchanged.
 
 ### 7.5 Example of a Table Management Package
 
@@ -7456,6 +8119,33 @@ function Minimum (L : Link := Head) return Cell renames Min_Cell; -- See 6.1
 > ```ada
 >     subtype Mode is Text_IO.File_Mode;
 > ```
+
+> [!IMPORTANT]
+> **Extension — renaming a function call (off under `-ada83`).**
+>
+> This paragraph describes a language extension. It is admitted by
+> default but is not part of ANSI/MIL-STD-1815A, and is rejected when the
+> compiler is invoked with `-ada83`; a program that relies on it is not a
+> legal Ada 83 program.
+>
+> The renamed object may be a function call: a function call is a name that
+> denotes its result object. A parameterless function named without an
+> actual parameter part is such a call here, as it is in an expression.
+>
+> ```ada
+>     Line : String renames Text_IO.Get_Line;
+> ```
+>
+> The call is evaluated once, when the renaming declaration is elaborated,
+> and the new name denotes the result object for the rest of the enclosing
+> declarative region; a use of the name does not evaluate the call again,
+> and a block statement that is executed repeatedly creates a fresh result
+> object each time it is entered. The result object is a constant: the
+> renaming cannot be assigned to, nor passed as an actual parameter for a
+> formal of mode out or in out. As for any object renaming, the type mark
+> must name the base type of the renamed object; the renaming takes the
+> subtype of the result, so a renamed result of an unconstrained array type
+> has the bounds the call produced.
 
 ### 8.6 The Package Standard
 
@@ -8642,6 +9332,130 @@ An implementation must restrict the objects for which the pragma Shared is
 allowed to objects for which each of direct reading and direct updating is
 implemented as an indivisible operation.
 
+> [!IMPORTANT]
+> **Extension — protected types and protected objects (off under `-ada83`).**
+>
+> This paragraph describes a language extension. It is admitted by
+> default but is not part of ANSI/MIL-STD-1815A, and is rejected when the
+> compiler is invoked with `-ada83`; a program that relies on it is not a
+> legal Ada 83 program. Without
+> `-ada83` the word `protected` is an ordinary identifier, and an Ada 83 program
+> that uses it as a name still compiles.
+>
+> A protected unit declares data together with the operations that reach it,
+> and guarantees that those operations do not run concurrently on the same
+> object. A protected declaration declares a single object; a protected type
+> declaration declares a type whose objects each carry their own data and
+> their own lock.
+>
+> ```ebnf
+> protected_type_declaration ::=
+>     protected type identifier [known_discriminant_part] is
+>         protected_operation_declaration {protected_operation_declaration}
+>       [ private
+>         protected_element_declaration {protected_element_declaration} ]
+>     end [protected_identifier];
+>
+> single_protected_declaration ::=
+>     protected identifier is
+>         protected_operation_declaration {protected_operation_declaration}
+>       [ private
+>         protected_element_declaration {protected_element_declaration} ]
+>     end [protected_identifier];
+>
+> protected_operation_declaration ::= subprogram_declaration
+>                                   | entry_declaration
+>                                   | representation_clause
+>
+> protected_element_declaration ::= protected_operation_declaration
+>                                 | component_declaration
+>
+> protected_body ::=
+>     protected body identifier is
+>       { protected_operation_item }
+>     end [protected_identifier];
+>
+> protected_operation_item ::= subprogram_declaration | subprogram_body
+>                            | entry_body | representation_clause
+>
+> entry_body ::=
+>     entry identifier [ ( entry_index_specification ) ] [formal_part]
+>       when condition is
+>       declarative_part
+>     begin
+>       handled_sequence_of_statements
+>     end [entry_identifier];
+>
+> entry_index_specification ::= for identifier in discrete_subtype_definition
+> ```
+>
+> **Components.** A component may be declared only in the private part; a
+> component declaration written in the visible part is illegal, and so is a
+> constant, a type declaration or an anonymous array type where a component
+> declaration is expected. A protected body may not declare a variable: the
+> state of a protected object lives in its private part. Within the body the
+> components and discriminants of the current object are directly visible by
+> their simple names; from outside, only the operations declared in the
+> visible part can be named, as `Object.Operation`.
+>
+> **Protected actions.** A call of a protected operation is a protected
+> action on the object named by the call. A procedure or an entry body holds
+> the object exclusively for the whole action; a function holds it in a
+> shared mode, so several protected function calls on one object proceed
+> together while excluding every procedure and entry body. A call written
+> without an object prefix, from within the unit's own body, is an internal
+> call: it runs inside the action already in progress and takes no further
+> lock. A call written with a prefix is external even when the prefix turns
+> out to name the object whose action is running; such a call deadlocks, and
+> is a bounded error the implementation does not detect.
+>
+> **Entries and barriers.** An entry body carries a barrier, and a call is
+> served only while its barrier is True. The barrier is evaluated with the
+> object locked and may name the components, the discriminants and the entry
+> index, but **not the formal parameters of its own entry** — the barrier is
+> evaluated before a call is selected. Calls queue in arrival order across
+> the whole object; the queue is served at the end of every protected action,
+> and servicing continues — taking the earliest queued call whose barrier is
+> open, running its body, and starting again — until no queued call has an
+> open barrier. All of that is one protected action, so a body that opens
+> another entry's barrier has that entry served before the object is
+> released. If the evaluation of a barrier propagates an exception,
+> Program_Error is propagated to every caller queued on the object.
+>
+> `E'COUNT` yields the number of calls queued on entry `E`, and is allowed
+> only within the body of the protected unit that declares `E`.
+>
+> **Potentially blocking operations are rejected.** RM 9.5.1 makes a
+> potentially blocking operation within a protected action a bounded error.
+> This implementation makes it a compile-time error instead: a `delay`, an
+> `accept`, a `select`, an `abort` or an entry call written anywhere in a
+> protected body is rejected. A call of a protected procedure or function of
+> **another** protected object is allowed.
+>
+> A protected function may not call a protected procedure or entry of the
+> same object, and may not assign to a component of it: the function holds
+> only the shared lock.
+>
+> **Finalization.** UNCHECKED_DEALLOCATION of a protected object completes
+> every call queued on it with Program_Error, and every later call on that
+> object raises Program_Error at once.
+>
+> **What is not supported.** `requeue`, protected procedures as interrupt
+> handlers (`pragma Attach_Handler`, `pragma Interrupt_Handler`), priority
+> ceiling locking (`pragma Locking_Policy`), protected interfaces and
+> tagged, synchronized or dispatching protected operations. A timed or
+> conditional call of a protected entry — a protected entry call as the
+> triggering statement of a `select` — is rejected. A protected unit is not
+> a library unit; it is declared within another unit, and its body belongs
+> to the same declarative part as its declaration, after every basic
+> declaration of that part.
+>
+> **Representation.** A protected object is one contiguous object: a
+> fixed-size header holding the lock word, the object's queue and its
+> parent-frame link, followed by the components in declaration order. The
+> lock is per object; no lock is shared between two protected objects, and
+> none is shared with the tasking runtime.
+
 ### 9.12 Example of Tasking
 
 The following example defines a buffering task to smooth variations between the
@@ -8806,6 +9620,71 @@ only names allowed in a use clause of a context clause are the simple names of
 library packages mentioned by previous with clauses of the context clause. A
 simple name declared by a renaming declaration is not allowed in a context
 clause.
+
+> [!IMPORTANT]
+> **Extension — Ada 95 unit names (off under `-ada83`).**
+>
+> This paragraph describes a language extension. It is admitted by
+> default but is not part of ANSI/MIL-STD-1815A, and is rejected when the
+> compiler is invoked with `-ada83`; a program that relies on it is not a
+> legal Ada 83 program.
+>
+> A with clause may name a library unit by the expanded name Ada 95 gives
+> it, when the compiler's table of Ada 95 unit names lists that name:
+>
+> ```ebnf
+> with_clause ::= with unit_name {, unit_name};
+>
+> unit_name   ::= unit_simple_name | ada95_unit_name
+> ```
+>
+> Each name of the table has one of three dispositions.
+>
+> *An analogue exists.* `Ada.Text_IO`, `Ada.Sequential_IO`, `Ada.Direct_IO`,
+> `Ada.IO_Exceptions`, `Ada.Calendar`, `Ada.Unchecked_Conversion`,
+> `Ada.Unchecked_Deallocation`, `Ada.Command_Line`, `System.Machine_Code` and
+> `Ada.Characters.Latin_1` name units of this compiler's library — TEXT_IO,
+> SEQUENTIAL_IO, DIRECT_IO, IO_EXCEPTIONS, CALENDAR, UNCHECKED_CONVERSION,
+> UNCHECKED_DEALLOCATION, COMMAND_LINE, MACHINE_CODE, and the package ASCII of
+> STANDARD. Such a with clause is accepted with a warning naming both
+> spellings (class `ada95-unit`, silenced by `-Wno-ada95-unit`); it has the
+> effect of a with clause naming the analogue, and the expanded name denotes
+> the analogue thereafter: `Ada.Text_IO.Put_Line` is `TEXT_IO.PUT_LINE`,
+> `use Ada.Text_IO;` makes the declarations of TEXT_IO use-visible, and
+> `package IO renames Ada.Text_IO;` renames TEXT_IO. `Ada.Integer_Text_IO`,
+> `Ada.Float_Text_IO` and `Ada.Long_Float_Text_IO` have no package to rename;
+> they are supplied as instances of TEXT_IO.INTEGER_IO and TEXT_IO.FLOAT_IO
+> for INTEGER, FLOAT and LONG_FLOAT, declared once per program when first
+> named.
+>
+> *The semantics exist without a unit.* `Ada.Finalization` is accepted with a
+> warning and binds no unit: its `Controlled` and `Limited_Controlled` denote
+> the predefined types of the controlled-type extension.
+>
+> *Nothing exists.* Every other name of the table — `Ada.Exceptions`,
+> `Ada.Strings` and its children, `Ada.Containers`, `Ada.Numerics`,
+> `Ada.Streams`, `Ada.Tags`, `Ada.Real_Time`, `Ada.Task_Identification`,
+> `Ada.Interrupts`, `Ada.Wide_Text_IO`, `Ada.Characters.Handling`,
+> `Interfaces` and its children, `System.Storage_Elements`,
+> `System.Address_To_Access_Conversions` — is an error, since a with clause
+> that cannot be satisfied would only cascade; the message says what the unit
+> is and what Ada 83 offers instead. A child of a listed unit that is not
+> itself listed, such as `Ada.Text_IO.Text_Streams`, is likewise an error
+> naming the child: a name is matched against the table as a whole and never
+> resolved to a parent.
+>
+> Names are matched without regard to case. `Ada` itself is not a library
+> unit and cannot be named alone: the accepted names are bound through a
+> package `Ada` that the compiler declares, as if in STANDARD, the first time
+> such a with clause is accepted — a program that never names an Ada 95 unit
+> never sees it, and a program that declares its own library unit `Ada` keeps
+> it, every with clause of an Ada 95 name then being an error naming the
+> conflict. `pragma Elaborate` and `pragma Elaborate_All` accept the Ada 95
+> spelling and apply to the analogue. The library file written for a unit
+> records the analogue, never the Ada 95 spelling, so units compiled with and
+> without the table produce the same dependences and link together; and a
+> diagnostic that mentions what such a name reaches spells it as the
+> analogue's entity, under its own name.
 
 The with clauses and use clauses of the context clause of a library unit apply
 to this library unit and also to the secondary unit that defines the
@@ -10258,6 +11137,96 @@ with procedure Update is Default_Update;
 > any visible type, including a generic formal type of the same generic formal
 > part.
 
+> [!IMPORTANT]
+> **Extension — defaults for generic formals beyond Ada 83 (off under `-ada83`).**
+>
+> This paragraph describes a language extension. It is admitted by
+> default but is not part of ANSI/MIL-STD-1815A, and is rejected when the
+> compiler is invoked with `-ada83`; a program that relies on it is not a
+> legal Ada 83 program.
+>
+> Ada 83 already lets a generic formal object carry a default expression and a
+> generic formal subprogram a default name or a box, as sections
+> [12.1.1](#1211-generic-formal-objects) and
+> [12.1.3](#1213-generic-formal-subprograms) describe. The extension adds
+> three further forms, one for each of the remaining ways a generic
+> parameter declaration can be written. Each fills the corresponding actual
+> when the instantiation omits it; an explicit generic actual parameter
+> always takes precedence.
+>
+> ```ebnf
+> generic_parameter_declaration ::=
+>      identifier_list : [in [out]] type_mark [:= expression];
+>    | type identifier is generic_type_definition [or use type_mark];
+>    | with subprogram_specification [is name];
+>    | with subprogram_specification [is <>];
+>    | with subprogram_specification is null;
+>    | with package identifier is new generic_package_name
+>          formal_package_actual_part;
+>
+> formal_package_actual_part ::=
+>      (<>)
+>    | [(formal_package_association {, formal_package_association})]
+>
+> formal_package_association ::=
+>      generic_association
+>    | generic_parameter_simple_name => <>
+>    | others => <>
+> ```
+>
+> **A default subtype for a generic formal type** (`or use type_mark`). The
+> type mark is resolved at the point of the generic formal type declaration,
+> in the environment of the generic declaration; the formal type being
+> declared is not yet visible there (see [8.3](#83-visibility)), so the
+> default can name an earlier formal type of the same generic formal part but
+> neither the formal itself nor a later one. The default must denote a type
+> that would be a legal generic actual parameter for the formal, under the
+> matching rules of [12.3.2](#1232-matching-rules-for-formal-private-types)
+> through [12.3.5](#1235-matching-rules-for-formal-access-types); this is
+> checked at the generic declaration. When an instantiation gives no actual
+> for the formal, the default is the actual; a default that names an earlier
+> formal type denotes the actual supplied (or defaulted) for that formal in
+> the same instantiation.
+>
+> **A null default for a generic formal procedure** (`is null`). When an
+> instantiation gives no actual for the formal, the actual is a procedure
+> with the profile of the formal whose body is a single null statement. A
+> null default is allowed only for a formal procedure, never for a formal
+> function.
+>
+> **A generic formal package** (`with package`). The generic package named
+> after `new` is the *template* of the formal package; the actual for the
+> formal must be an instance of that template, and the formal package
+> denotes that instance within the instance of the enclosing generic unit.
+> Within the generic unit the formal package denotes a package whose visible
+> part is the visible part of the template, with the formal parameters of the
+> template replaced as the formal package actual part directs:
+>
+> * an association whose actual is written (`Formal => Actual`, or
+>   positional) fixes the corresponding formal of the template, exactly as in
+>   an instantiation, and an association omitted without a box is filled by
+>   the template's default for that formal, which must therefore exist;
+> * a box (`Formal => <>`, `others => <>` for every formal not named earlier
+>   in the list, or `(<>)` for all of them) leaves the corresponding formal
+>   parameter of the template a formal parameter of the formal package, and
+>   such a formal parameter is visible through the formal package — by an
+>   expanded name and, after a use clause naming the formal package, by its
+>   simple name — with the meaning the actual instance gives it. A formal
+>   parameter of the template that the actual part fixes is *not* visible
+>   through the formal package.
+>
+> A box, `others => <>`, and `(<>)` are allowed only in a formal package
+> actual part; `others => <>` must be the last association. The template's
+> generic formal part may itself declare a formal package, and a formal
+> package may be given as the actual for another formal package whose
+> template is the same generic package.
+>
+> The visibility rules of Ada 83 are unchanged by the extension: a default
+> subtype mark, like a default subprogram name, is resolved where the generic
+> is declared, and the name of the template in a formal package declaration
+> must be visible there, whereas a box default is resolved where the generic
+> is instantiated.
+
 ### 12.2 Generic Bodies
 
 The body of a generic subprogram or generic package is a template for the bodies
@@ -10907,6 +11876,111 @@ is not accepted by the implementation is ignored).
 > [!NOTE]
 > No representation clause is allowed for a generic formal type.
 
+> [!IMPORTANT]
+> **Extension — aspect specifications (off under `-ada83`).**
+>
+> This paragraph describes a language extension. It is admitted by
+> default but is not part of ANSI/MIL-STD-1815A, and is rejected when the
+> compiler is invoked with `-ada83`; a program that relies on it is not a
+> legal Ada 83 program.
+>
+> A declaration may carry an aspect specification, introduced by the
+> reserved word `with`, which gives certain aspects of the declared entity
+> in the declaration itself, in place of the pragma or representation
+> clause that would otherwise follow it. The construct is that of Ada 2012
+> (its reference manual, 13.1.1), restricted to the aspects for which this
+> compiler already implements the pragma or clause.
+>
+> ```ebnf
+> aspect_specification ::= with aspect_mark [=> aspect_definition]
+>                             {, aspect_mark [=> aspect_definition]}
+>
+> aspect_mark          ::= aspect_identifier
+> aspect_definition    ::= expression | identifier
+> ```
+>
+> The aspect specification is written at the end of a declaration,
+> immediately before its semicolon: after the type definition (or the word
+> PRIVATE) of a type declaration, after the subtype indication of a subtype
+> declaration, after the initialization of an object declaration, after
+> the word EXCEPTION of an exception declaration, after the renamed name of
+> a renaming declaration, after a subprogram specification, after the
+> actual part of a generic instantiation, after a generic formal parameter
+> declaration, after an entry declaration, and after the name of a task
+> declaration written without IS. In a package specification, a subprogram
+> body, and a task specification written with IS, it precedes the word IS:
+> `package P with Pure is`, `procedure P with Inline is`, `task T with
+> Priority => 3 is`. A component declaration, a package body, a task body
+> and a generic subprogram declaration take no aspect specification, since
+> no aspect below applies to them.
+>
+> Each aspect mark stands for the Ada 83 construct beside it, applied to
+> the declared entity `E`; for an object declaration that declares several
+> objects, to each of them.
+>
+> | Aspect                                              | Written on                                 | Equivalent                                                          |
+> |-----------------------------------------------------|--------------------------------------------|---------------------------------------------------------------------|
+> | `Inline`                                            | subprogram                                 | `pragma Inline (E);`                                                |
+> | `Pack`                                              | type                                       | `pragma Pack (E);`                                                  |
+> | `Convention => C`                                   | type, object, subprogram                   | `pragma Convention (C, E);` ([F.1](#f1-implementation-dependent-pragmas)) |
+> | `Import [, Convention => C] [, External_Name => N]` | object, subprogram                         | `pragma Import (C, E, N);` — `Ada` when no convention is given      |
+> | `Export [, Convention => C] [, External_Name => N]` | object, subprogram                         | `pragma Export (C, E, N);`                                          |
+> | `Suppress => Check`                                 | any entity                                 | `pragma Suppress (Check, E);`; on a package, `pragma Suppress (Check);` within it |
+> | `Unreferenced`                                      | any entity                                 | `pragma Unreferenced (E);`                                          |
+> | `Pure`, `Preelaborate`                              | package, library subprogram                | `pragma Pure;`, `pragma Preelaborate;`                              |
+> | `Priority => N`                                     | task                                       | `pragma Priority (N);` — accepted and without effect, as the pragma is |
+> | `Size => N`                                         | type                                       | `for E'SIZE use N;` ([13.2](#132-length-clauses))                   |
+> | `Storage_Size => N`                                 | access type, task type                     | `for E'STORAGE_SIZE use N;`                                         |
+> | `Small => R`                                        | fixed point type                           | `for E'SMALL use R;`                                                |
+> | `Address => A`                                      | object, subprogram, package, task, entry   | `for E use at A;` ([13.5](#135-address-clauses))                    |
+>
+> The aspects `Inline`, `Pack`, `Import`, `Export`, `Unreferenced`, `Pure`
+> and `Preelaborate` are Boolean: written without a definition they mean
+> True; a definition, when written, must be a static expression of type
+> BOOLEAN, and when it is False the aspect has no effect — the pragma is
+> not applied, but the aspect still counts as given (see below). Every
+> other aspect requires a definition. The definition of `Convention` and of
+> `Suppress` is an identifier — a convention name or a check name, as in
+> the pragma — and is not resolved as an expression.
+>
+> The names in an aspect definition are resolved at the end of the
+> declaration list that encloses the declaration: for a declaration in the
+> visible part of a package, at the end of the visible part, where the
+> private part's declarations are not yet visible. A definition may thus
+> name a constant declared later in the same list. An aspect written
+> without a definition takes effect at its declaration, exactly as the
+> pragma written there would; an aspect with a definition takes effect at
+> the end of the list, in the order the declarations were written.
+>
+> Within one aspect specification each aspect may be given at most once,
+> `Import` and `Export` may not both be given, and `External_Name` may
+> only accompany one of them. An aspect mark must name an aspect of the
+> kind of entity declared. No language-defined aspect may be given on a
+> renaming declaration or a generic formal parameter declaration
+> (`Unreferenced`, which is implementation-defined, may). An aspect given
+> in an aspect specification may not be given again for the same entity by
+> a pragma or a representation clause; the later pragma or clause is
+> rejected. `'CLASS` on an aspect mark is not supported.
+>
+> Everything else is the rule of the equivalent construct, unchanged: the
+> expression of `Size` must be static and non-negative, a representation
+> may not be fixed after a forcing occurrence of the type's name
+> ([13.1](#131-representation-clauses)), the full declaration of a private
+> type must precede its `Size`, an address clause requires SYSTEM, and so
+> on; the diagnostics are those of the pragma or clause. In a generic unit
+> the aspects are applied to each instance. The emitted code for a program
+> written with aspects is that of the same program written with the
+> pragmas and clauses above.
+>
+> Aspects with no equivalent here are not provided and are rejected as
+> unknown marks: `Volatile` and `Atomic` — not `pragma Shared`, which this
+> compiler accepts and ignores, so routing them to it would promise a
+> synchronisation this implementation does not perform; `Alignment` and
+> `Component_Size`, whose clauses have no effect here; `Link_Name`, since
+> the pragma argument it corresponds to is not implemented; and
+> `Elaborate_Body`, `Unsuppress`, `Interrupt_Priority`, `No_Return` and the
+> other Ada 95 and later aspects, which have no Ada 83 construct at all.
+
 ### 13.2 Length Clauses
 
 A length clause specifies an amount of storage associated with a type.
@@ -11011,6 +12085,43 @@ In the length clause for Short, fifteen bits is the minimum necessary, since the
 type definition requires Short'Small=2**(-7) and Short'Mantissa = 14. The length
 clause for Degree forces the model numbers to exactly span the range of the
 type.
+
+> [!IMPORTANT]
+> **Extension — the 'Alignment attribute (off under `-ada83`).**
+>
+> This paragraph describes a language extension. It is admitted by
+> default but is not part of ANSI/MIL-STD-1815A, and is rejected when the
+> compiler is invoked with `-ada83`; a program that relies on it is not a
+> legal Ada 83 program.
+>
+> A length clause may specify the alignment of a type or of a stand-alone
+> object, with the attribute designator ALIGNMENT:
+>
+> ```ada
+>     for T'ALIGNMENT use static_simple_expression;
+>     for X'ALIGNMENT use static_simple_expression;
+> ```
+>
+> The expression must be static, of an integer type, and zero or a power of
+> two; a negative value, or a positive value that is not a power of two, is
+> rejected. Zero specifies no alignment requirement. For a type, every
+> stand-alone object of the type — at library level, in a subprogram, and
+> in the activation record of a nested subprogram — is allocated at an
+> address that is a multiple of the alignment. For an object, the clause
+> applies to that object alone; it must appear in the same declarative
+> region as the object's declaration. Components of records and arrays are
+> placed by the layout rules of [13.4](#134-record-representation-clauses);
+> an alignment specified for a component's type does not move the component.
+>
+> The attribute `T'ALIGNMENT`, or `X'ALIGNMENT` for an object, yields the
+> alignment in storage units as a value of type *universal_integer*; for an
+> entity with a specified alignment it yields the value specified.
+>
+> The same specification may be written as the aspect
+> `Alignment => expression` of the aspect specification extension (see
+> [13.1](#131-representation-clauses)), on a type declaration or an object
+> declaration; the expression is then resolved at the end of the enclosing
+> declaration list, as for every aspect.
 
 ### 13.3 Enumeration Representation Clauses
 
@@ -11676,6 +12787,32 @@ properties by means of unchecked conversions are erroneous.
 > function is mentioned by a with clause that applies to the compilation unit.
 
 ---
+
+> [!IMPORTANT]
+> **Extension — the 'Valid attribute (off under `-ada83`).**
+>
+> This paragraph describes a language extension. It is admitted by
+> default but is not part of ANSI/MIL-STD-1815A, and is rejected when the
+> compiler is invoked with `-ada83`; a program that relies on it is not a
+> legal Ada 83 program.
+>
+> For a prefix `X` that denotes a scalar object — a variable, a constant, a
+> formal parameter, a component, or a renaming of one; a value is not
+> allowed — the attribute `X'VALID` yields the predefined type BOOLEAN. It
+> is TRUE if the bits held by the object represent a value of the object's
+> subtype, and FALSE otherwise; it never raises an exception, and it does
+> not read the object as an evaluation of its value would.
+>
+> A floating point object holds a valid value when its bits are a finite
+> number within the subtype's range; an infinity or a NaN written into it
+> by an unchecked conversion is not valid. An integer or enumeration
+> object holds a valid value when the value is within the subtype's range.
+> This compiler stores an enumeration value as its position, whether or not
+> the type has an enumeration representation clause; the codes given by
+> such a clause are applied by unchecked conversions to and from the type,
+> and an unchecked conversion into the type of a bit pattern that is not
+> the code of any literal yields a stored position beyond the last literal,
+> which `'VALID` reports as invalid.
 
 ## 14. Input-Output
 
@@ -15677,9 +16814,17 @@ has no other effect.
 
 ```
 pragma RESTRICTIONS (restriction {, restriction});
+restriction ::= restriction_identifier | restriction_identifier => static_expression
 ```
 
-Each restriction is one of:
+The restriction identifiers of Ada 95 (RM 95 13.12, D.7 and H.4) are
+accepted. A restriction is in force from the pragma to the end of the source
+file in which it appears; a program containing a construct rejected by a
+restriction in force is illegal, and the construct is reported with the
+restriction it violates. Withed library units are not subject to the
+restrictions of the file that withs them.
+
+The following restrictions are checked at the construct:
 
 | Restriction | Constructs rejected |
 |---|---|
@@ -15687,10 +16832,51 @@ Each restriction is one of:
 | `NO_ABORT_STATEMENTS` | abort statements |
 | `NO_TASK_ALLOCATORS` | allocators for task types |
 | `NO_ENTRY_FAMILIES` | entry family declarations |
+| `NO_ALLOCATORS` | allocators |
+| `NO_LOCAL_ALLOCATORS` | allocators, and instantiations of generic packages, within a subprogram, entry or task body |
+| `NO_EXCEPTIONS` | raise statements and exception handlers (exception declarations are allowed) |
+| `NO_FLOATING_POINT` | floating point type definitions, and uses of floating point types by name (objects, components, conversions, generic actuals) |
+| `NO_FIXED_POINT` | fixed point type definitions, uses of fixed point types by name, and delay statements |
+| `NO_UNCHECKED_CONVERSION` | with clauses naming, and instantiations of, `UNCHECKED_CONVERSION` |
+| `NO_UNCHECKED_DEALLOCATION` | with clauses naming, and instantiations of, `UNCHECKED_DEALLOCATION` |
+| `NO_UNCHECKED_ACCESS` | the attribute `'UNCHECKED_ACCESS` |
+| `NO_ACCESS_SUBPROGRAMS` | access-to-subprogram type definitions |
+| `NO_PROTECTED_TYPES` | protected types and protected objects |
+| `NO_LOCAL_PROTECTED_OBJECTS` | protected objects within a subprogram, entry or task body |
+| `NO_TASK_HIERARCHY` | task objects, and task allocators whose access type is declared, within a subprogram, entry or task body |
+| `NO_TERMINATE_ALTERNATIVES` | terminate alternatives |
+| `NO_DELAY` | delay statements and with clauses naming `CALENDAR` |
+| `NO_IO` | with clauses naming `TEXT_IO`, `SEQUENTIAL_IO` or `DIRECT_IO` |
+| `NO_ENUMERATION_MAPS` | `'IMAGE`, `'VALUE` and `'WIDTH` of enumeration types |
+| `NO_IMPLICIT_HEAP_ALLOCATIONS` | the constructs for which this compiler allocates heap storage of its own accord: objects too large for the stack, library-level objects whose size is not static, and task objects (their control blocks) |
 
-A restriction is in force from the pragma to the end of the compilation. A
-program containing a construct rejected by a restriction in force is illegal.
-An identifier that is not one of the four is ignored, and a warning is issued.
+The following take a value and are checked against it:
+
+| Restriction | Constructs rejected |
+|---|---|
+| `MAX_TASKS => 0` | task objects and task allocators; a positive limit is accepted but not checked, with a warning |
+| `MAX_SELECT_ALTERNATIVES => N` | selective waits with more than N alternatives |
+| `MAX_TASK_ENTRIES => N` | task units declaring more than N entries |
+| `MAX_PROTECTED_ENTRIES => N` | protected units declaring more than N entries |
+
+The following need whole-program or run-time analysis and are accepted
+with a warning that they are not enforced: `NO_RECURSION`, `NO_REENTRANCY`,
+`NO_NESTED_FINALIZATION`, `NO_ELABORATION_CODE`, `NO_TASK_TERMINATION`,
+`NO_IMPLEMENTATION_ATTRIBUTES`, `NO_IMPLEMENTATION_PRAGMAS`,
+`NO_OBSOLESCENT_FEATURES`, `MAX_ENTRY_QUEUE_LENGTH`,
+`MAX_STORAGE_AT_BLOCKING`.
+
+The following restrict features this implementation does not have, so
+every program respects them; they are accepted silently:
+`IMMEDIATE_RECLAMATION`, `MAX_ASYNCHRONOUS_SELECT_NESTING`,
+`NO_ASYNCHRONOUS_CONTROL`, `NO_DISPATCH`, `NO_DYNAMIC_ATTACHMENT`,
+`NO_DYNAMIC_PRIORITIES`, `NO_IMPLEMENTATION_RESTRICTIONS`,
+`NO_STANDARD_STORAGE_POOLS`, `NO_STREAMS`, `NO_TASK_ATTRIBUTES_PACKAGE`,
+`NO_WIDE_CHARACTERS`.
+
+An identifier that is none of these is ignored, and a warning is issued. A
+value given to a restriction that takes none, or omitted from one that
+needs one, is an error.
 
 #### Pragma PROFILE
 
@@ -15795,6 +16981,236 @@ implementation recognizes are the fourteen of Annex B and the nine of
 
 No pragma defined by this implementation determines the legality of any text
 outside the pragma itself.
+
+### F.4 Freestanding output (--freestanding)
+
+The `--freestanding` option changes what the compiler emits, not what it
+accepts: the language compiled is the same, and the same unit compiled
+without the option produces exactly the output it always did. With the
+option, the runtime functions embedded in the emitted module are the forms
+that call no operating system — no `syscall`, no `pthread_*`, no
+`getrlimit`, `sysconf`, `clock_gettime` or `nanosleep` appears in the
+output. The runtime lock becomes a spin word, waiters poll under the
+processor's pause hint instead of sleeping, a delay busy-waits on the
+image's clock, the stack probe assumes an 8 MiB limit rather than asking
+the machine, and a collection's default reservation uses the
+unknown-machine constant of [13.2](#132-length-clauses).
+
+What remains is the contract the image must satisfy at link time. Three
+primitives belong to this implementation and are declared by the emitted
+module; the image provides them:
+
+| Symbol | Profile (LLVM types) | Referenced by |
+|---|---|---|
+| `__ada_os_thread_join` | `void (ptr)` | every main program — the final join walk names it even when no task is ever created, so a taskless image may supply an empty body |
+| `__ada_os_thread_spawn` | `i32 (ptr, ptr, ptr)` | any program with tasks — store a thread identity through the first argument, run the second argument on the new thread passing the third, return 0 on success |
+| `__ada_os_now_us` | `i64 ()` | any program with a delay statement, a timed entry call, or CALENDAR — microseconds on a clock that only moves forward |
+
+The rest of the surface is ordinary libc-shaped symbols that the image
+provides, overrides or avoids, exactly as `os.ada` does with its `.set`
+alias table. Which of them the module references follows from what the
+program uses, and the unreferenced ones are pruned from the output:
+
+- `printf` and `exit` — the unhandled-exception report and program exit;
+  every main program references both.
+- `_Unwind_ForcedUnwind`, `_Unwind_GetIP`, `_Unwind_GetIPInfo`,
+  `_Unwind_SetGR`, `_Unwind_SetIP`, `_Unwind_Find_FDE` and
+  `__gcc_personality_v0` — exception propagation follows the Itanium
+  unwinder ABI; any program with a handler or a raise references them,
+  and a freestanding image links its own unwinder or libgcc's.
+- `malloc`, `calloc`, `realloc`, `free`, `aligned_alloc` — allocators,
+  tasking control blocks, and the file machinery of TEXT_IO.
+- `memcmp`, `strncasecmp` — composite equality and case-blind comparison.
+- The `f`-family of stdio (`fopen`, `fputc`, `fgetc`, `fwrite`, `fseek`,
+  `ftell`, `fflush`, ...) — only where TEXT_IO or the file forms of
+  input-output are used.
+
+Two properties of the output do not change under the option. The target
+triple and data layout stamped at the head of the module are still the
+compiler's own — they name the instruction set and object format, which a
+freestanding image on the same processor wants, and no operating-system
+dependence follows from them; cross-instruction-set emission is not what
+this option is for. And the synchronisation just described never sleeps:
+every wait is a busy wait, correct for genuinely concurrent threads
+supplied by `__ada_os_thread_spawn`, and wasteful — a freestanding image
+that schedules cooperatively must arrange its own preemption.
+
+### F.5 Project files (-P)
+
+The `-P` option reads a GNAT project file (`.gpr`) or a Green Hills project
+file (`.gpj`), enumerates the sources it names, compiles the stale ones in
+dependency order, binds, and links its mains; `-n` prints the plan that
+would be built and stops, and `-X NAME=VALUE` defines an external that wins
+over the project's own. The Ada it compiles is the language of this manual.
+This section states what the reader records beyond that: the language of
+every source, what is done with the ones that are not Ada, the `IDE`
+package, and the rows the plan prints for them.
+
+#### Languages
+
+Every source carries a language. In a `.gpj` it is the entry's tag —
+`[Ada]`, `[C]`, `[C++]`, or any other word, which names the language as
+written. In a `.gpr` it is the language whose `Naming'Spec_Suffix` or
+`Naming'Body_Suffix` the file name ends in, else the language its suffix
+names by default:
+
+| Suffix | Language |
+|---|---|
+| `.ads`, `.adb`, `.ada` | Ada |
+| `.c` | C |
+| `.h` | C, a header |
+| `.cc`, `.cpp`, `.cxx` | C++ |
+| `.hh`, `.hpp` | C++, a header |
+
+Three languages have handlers: Ada, C and C++. Enumeration of `Source_Dirs`
+takes the suffixes of the languages that `Languages` names — a handled
+language's defaults, a `Naming` suffix standing in for them where the
+project gives one, and for a language with no handler only the `Naming`
+suffix the project gives it; `Source_Files` and `.gpj` entries are recorded
+whatever their suffix. A header is recorded under its language and is never
+compiled. A language with no handler — anything else `Languages` or a tag
+names — is recorded and not acted on: the reader warns once for the
+language or the tag (`language 'Assembler' is recorded and not acted on`,
+`entry tag 'Assembly' is recorded and not acted on`), a build warns once
+for each of its sources, listed or enumerated, as it skips them, and the
+build is never refused on its account.
+
+#### C and C++ sources
+
+A C or C++ source that is stale by modification time is compiled to
+`<Object_Dir>/<stem>.o` in the same ordered pass that compiles the Ada
+sources, and every such object joins the link of every main of the tree;
+`-lstdc++` is added to a link that includes a C++ object. The compiler is
+looked for at the first C or C++ compile that must run, and not before, so
+a project whose foreign objects are current needs no C compiler:
+
+| Language | Driver |
+|---|---|
+| C | `$CC` when set, then `cc`, `clang`, `gcc` |
+| C++ | `$CXX` when set, then `c++`, `clang++`, `g++` |
+
+A driver that cannot be started (exit status 127) yields to the next; when
+none can, the build stops with `no C compiler found to compile 'x.c' (set
+CC, or install cc/clang/gcc)`. Each compile is `<driver> -c <source> -o
+<object>`, then `-I<dir>` for every source directory of every project in
+the tree and every object directory, then the source's switches:
+`Compiler'Switches ("<file>")` when the project gives them, else
+`Compiler'Default_Switches ("<language>")` — in a `.gpj`, the option lines
+under the entry, else the project's. Each switch is read in the project's
+dialect, GNAT for a `.gpr` and Green Hills for a `.gpj`, through the table
+of [F.6](#f6-dialect-compatibility---gnat---greenhills): a mapped switch
+with a native spelling is passed as that spelling (`-G` as `-g`, `-Ospeed`
+as `-O3`), a mapped or accepted switch without one is consumed, an
+unsupported switch warns and is dropped, and a switch the table does not
+know passes to the driver as written — which is how `-DNAME=1`, `-Wall` or
+an `-I` reach it.
+
+An Ada source is compiled by this compiler in the project's dialect mode:
+the compile it starts is given `--gnat` for a `.gpr` and `--greenhills` for
+a `.gpj` ahead of the source's `Compiler'Switches ("<file>")` or
+`Compiler'Default_Switches ("Ada")`, so each switch is read exactly as that
+mode reads a command line ([F.6](#f6-dialect-compatibility---gnat---greenhills)):
+`-gnatp` and `-check=none` suppress every check, `-gnat83` and `-ada83` are
+accepted, an unsupported switch warns once per compile and is skipped, and
+a switch neither the mode nor this compiler knows is rejected as it is on a
+command line. `-O` levels are taken out of the compile and decide the
+native build, a Green Hills spelling (`-Ospeed`) through the same table. A
+`.gpj` option line that the Green Hills table knows is recorded as a
+compiler switch without the note that an unknown option is assumed to be
+one.
+
+#### The plan
+
+`-n` prints, for each project of the tree, `project <name>` and one aligned
+row per attribute — the key and its value, a list value continuing on the
+following lines — then the `external` rows for the `-X` definitions and the
+`command line` row. When a project holds at least one source that is not
+Ada, four rows follow its plain attributes; an Ada-only project prints none
+of them, so its plan is what it was before languages were recorded.
+
+| Row | Lists |
+|---|---|
+| `Ada_Sources` | the Ada sources |
+| `C_Sources` | the C sources, headers included |
+| `CPP_Sources` | the C++ sources, headers included |
+| `Other_Sources` | every recorded source of a language with no handler, as `<path> [<language>]` — the tag, the language whose `Naming` suffix matched, or `Unknown` |
+
+Each path is joined to the directory the source was found in, the way the
+build resolves it. `Source_Files` keeps printing the attribute as it was
+declared, every file and every language, and is absent when the sources
+were enumerated from `Source_Dirs`.
+
+#### Package IDE
+
+The `IDE` package of a `.gpr`, the package GNAT Studio writes, is read. Its
+thirteen attributes are parsed, stored and printed by `-n` as `IDE'<Name>`
+among the project's attributes, and none of them changes what this
+compiler builds:
+
+| Attribute | Value |
+|---|---|
+| `Compiler_Command ("<language>")` | a command, indexed by language |
+| `Debugger_Command` | a command line |
+| `Gnat`, `Gnatlist` | a command each |
+| `VCS_Kind`, `VCS_File_Check`, `VCS_Log_Check` | a name, then a command each |
+| `Remote_Host`, `Program_Host`, `Communication_Protocol` | a host, a host with its port, a protocol name |
+| `Documentation_Dir`, `Xref_Database_Dir`, `Artifacts_Dir` | a directory, resolved against the project's |
+
+Two of them are acted on by the editor extension, which reads the plan.
+`Compiler_Command ("ada")` names the compiler the project is built and
+analysed with while the extension's `ada83.compilerPath` setting is unset;
+a set value always wins. `Debugger_Command` is run as the debug command
+line, quotes honored, while `ada83.debugAdapterPath` is empty; a set value
+replaces it. The remaining eleven are shown in the project's tooltip.
+
+### F.6 Dialect compatibility (--gnat, --greenhills)
+
+The `--gnat` and `--greenhills` options put the command line in a mode that
+also accepts the flags peculiar to GNAT and to the Green Hills toolchain.
+Neither changes the language compiled, and neither changes a spelling this
+compiler already shares with both: `-O`, `-g`, `-o`, `-c` and `-I` keep
+their meaning in every mode. Without a mode flag a foreign flag is rejected
+as an unrecognized option, exactly as before the modes existed, and each
+mode rejects the other's flags the same way. The mode's table is also what
+reads a project's compiler switches ([F.5](#f5-project-files--p)) — an Ada
+compile is started in the project's mode, a C or C++ compile's switches go
+through the table in the build itself — a `.gpr`'s in GNAT's dialect and a
+`.gpj`'s in Green Hills'.
+
+A flag is matched against the mode's table by its whole spelling
+(`-gnatp`), by a spelling with a glued value (`-gnatec=<file>`,
+`-check=<level>`), or as a prefix family (`-gnatw<letters>`,
+`-gnaty<rules>`, `-gnatV<checks>`, and last any other `-gnat<rest>`); the
+first row that matches decides, and it has one of three dispositions:
+
+| Disposition | Effect | GNAT | Green Hills |
+|---|---|---|---|
+| mapped | the flag lands on the behavior of this compiler | `-gnatp`: every check omitted, as `--suppress=all`; `-gnatw<letters>`: the warning classes below; `-cargs`, `-bargs`, `-largs`: the sections below | `-check=none`: every check omitted, `-check=all`: nothing, any other level: unsupported; `-G`: `-g`; `-Onone`, `-Ogeneral`, `-Ospeed`, `-Osize`, `-Omax`: `-O0`, `-O2`, `-O3`, `-Os`, `-O3` |
+| accepted | the flag means something to the other toolchain and nothing here, and is read without effect | `-gnato`, `-gnatE`, `-gnatn`, `-gnatN`, `-gnatf`, `-gnatq`, `-gnatv`, `-gnat83`, `-fstack-check` | `--long_long`, `-ada83` |
+| unsupported | the flag asks for what this compiler does not do; a warning names it and it is skipped, never an error | `-gnata`, `-gnatg`, `-gnatl`, `-gnatQ`, `-gnat95`, `-gnat05`, `-gnat12`, `-gnat2005`, `-gnat2012`, `-gnat2022`, `-gnatec=`, `-gnatem=`, `-gnateT=`, `-gnaty…`, `-gnatV…`, and any other `-gnat…` | `-cpu=`, `-bsp=`, `-os_dir=`, `-lnk=`, `-map`, `-map=`, `--no_long_long`, `-ada95` |
+
+The warning reads `'-gnatQ' is a GNAT flag ada83 does not support; skipped`,
+or `'-cpu=ppc' is a Green Hills flag ada83 does not support; skipped`.
+
+The letters of `-gnatw` are read one at a time:
+
+| Letter | Effect |
+|---|---|
+| `a` | every warning class on, and warnings no longer silenced |
+| `A` | every warning class off |
+| `s` | warnings silenced |
+| `u`, `U` | `unused-variable`, `unused-but-set-variable`, `unused-parameter` and `unused-with` on, off |
+| `r`, `R` | `redundant-with` on, off |
+| `g`, `G` | `unrecognized-pragma` on, off |
+
+Any other letter, and any `.x` or `_x` pair, warns once — `'-gnatwZ' is a
+GNAT warning letter ada83 does not support; skipped` — and is skipped.
+
+`-cargs`, `-bargs` and `-largs` divide a GNAT command line into compiler,
+binder and linker arguments. After `-largs`, every word up to the next
+marker is passed to the linker; after `-bargs`, the words are read and set
+aside, with one warning that `'-bargs' binder arguments are accepted and
+not acted on`; `-cargs` returns to compiler options.
 ---
 
 ## Rationale

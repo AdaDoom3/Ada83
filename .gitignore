@@ -47,8 +47,9 @@
 # the compiled report package.
 /test_results/
 /acats_logs/
-/bench/
-/project/
+
+# Byte-code the linkage checker leaves beside itself.
+/repro/__pycache__/
 
 # Benchmark output, when TSV_DIR names a directory inside the tree.
 /suite*.tsv
@@ -63,3 +64,4 @@ gmon.out
 
 # Region measurement scratch: rebuilt compilers and program runs.
 /swarm/*/work/
+__pycache__/

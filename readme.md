@@ -10,7 +10,7 @@ A single-file Ada 83 LLVM compiler.
 
 | | |
 |---|---|
-| Compiler | `ada83.c`, 64k lines, no generated code, no third-party source |
+| Compiler | `ada83.c`, 95k lines, no generated code, no third-party source |
 | Runtime | `ada83-runtime.ada`, 3k lines of Ada |
 | Language | all of MIL-STD-1815A: tasking, generics, fixed point, representation clauses |
 | Conformance | 3561 / 3561, ACATS 1.11 |
@@ -87,29 +87,27 @@ Under ACATS 1.11 all 3561 tests pass
 ## Benchmarks
 
 Run time of the generated code at `-O2`, against GNAT 13.3.0 (GCC
-`13.3.0-6ubuntu2~24.04.1`), on Linux x86_64 with 4 cpus (Intel Xeon @ 2.80 GHz),
-with libLLVM `20.1.2` behind ada83's back end. Median ± MAD of 25
-interleaved repetitions per program, pinned, after warmup; the whole run is
-measured twice and a ratio is printed only where both suites could tell the
-compilers apart (raw data: `bench/runs-2026-08-18/`).
+`13.3.0-6ubuntu2~24.04.1`), on Linux x86_64 with 4 cpus (Intel Xeon @ 2.80 GHz).
+Median ± MAD of 25 interleaved repetitions per program, pinned, after warmup;
+the whole run is measured twice and a ratio is printed only where both suites
+could tell the compilers apart and agreed with each other (raw data:
+`bench/runs-2026-09-19-b/`).
 
 | Program | Stresses | ada83 (s) | gnat (s) | Ratio | Result |
 |---------|----------|----------:|---------:|------:|-------:|
-| **exceptions** | raise, propagate, handle | `0.029 ± 0.001` | `4.979 ± 0.108` | `0.01` | **172× faster** |
-| **memory** | allocation and deallocation | `0.107 ± 0.002` | `0.425 ± 0.011` | `0.25` | **4.0× faster** |
-| **lu** | LU decomposition, float division | `0.082 ± 0.002` | `0.244 ± 0.004` | `0.34` | **3.0× faster** |
-| **tasking** | rendezvous throughput | `4.652 ± 0.875` | `11.136 ± 0.267` | `0.42` | **2.4× faster** |
-| **taskelse** | selective wait with an else part | `0.051 ± 0.002` | `0.098 ± 0.002` | `0.52` | **1.9× faster** |
-| **numerics** | fixed point and 12-digit float * | `0.106 ± 0.001` | `0.164 ± 0.005` | `0.65` | **1.5× faster** |
-| **strings** | slices and character work | `0.047 ± 0.001` | `0.067 ± 0.001` | `0.70` | **1.4× faster** |
-| **taskflood** | task creation and termination | `0.376 ± 0.020` | `0.473 ± 0.021` | `0.79` | **1.3× faster** |
-| **sieve** | integer arrays, index checks | `0.064 ± 0.002` | `0.064 ± 0.002` | — | *indistinguishable* |
-| **matmul** | dense float, nested loops | `0.031 ± 0.001` | `0.030 ± 0.001` | — | *indistinguishable* |
-| **recurse** | call and return | `0.021 ± 0.001` | `0.026 ± 0.002` | — | *indistinguishable* |
-| **checks** | range and index checks in a hot loop | `0.191 ± 0.013` | `0.217 ± 0.013` | — | *indistinguishable* |
+| **lu** | LU decomposition, float division | `0.062 ± 0.001` | `0.220 ± 0.002` | `0.28` | **3.5× faster** |
+| **memory** | allocation and deallocation | `0.116 ± 0.000` | `0.248 ± 0.002` | `0.47` | **2.1× faster** |
+| **taskelse** | selective wait with an else part | `0.042 ± 0.001` | `0.088 ± 0.001` | `0.48` | **2.1× faster** |
+| **finalizer** | controlled types, finalisation on scope exit | `0.025 ± 0.000` | `0.050 ± 0.000` | `0.50` | **2.0× faster** |
+| **indirect** | calls through a subprogram pointer | `0.059 ± 0.001` | `0.097 ± 0.000` | `0.61` | **1.6× faster** |
+| **taskflood** | task creation and termination | `0.385 ± 0.002` | `0.499 ± 0.002` | `0.77` | **1.3× faster** |
+| **strings** | slices and character work | `0.043 ± 0.000` | `0.052 ± 0.000` | `0.83` | **1.2× faster** |
+| **wraparound** | modular arithmetic at the type's top | `0.054 ± 0.000` | `0.064 ± 0.000` | `0.84` | **1.2× faster** |
+| **checks** | range and index checks in a hot loop | `0.159 ± 0.000` | `0.184 ± 0.000` | `0.86` | **1.2× faster** |
+| **numerics** | fixed point and 12-digit float \* | `0.070 ± 0.000` | `0.081 ± 0.000` | `0.86` | **1.2× faster** |
 
-\* the printed totals differ between compilers — the standard lets a fixed
-point type pick its own small.
+Rerun the table with `bash test.sh bench codegen`; the harness refuses to
+measure above a load average of 2, and refusing is the point.
 
 ## VSCode Extension
 
@@ -237,13 +235,17 @@ $1 = (depth => 3, label => "climb")
 
 ## Tests
 
-The ACATS tests are in `tests.zip` and unzipped on first use.
+The ACATS tests are in `tests.zip` and unzipped on first use. The
+reproducers under `repro/` — the program each fix was landed with, 400 of
+them — are a suite of their own, run at the end of every full run and on
+their own in about thirty seconds.
 
 ```sh
 bash test.sh         # Every class, the default
 bash test.sh run c   # One class
 bash test.sh run c45 # One group
 bash test.sh check   # Run, then diff against the baseline
+bash test.sh repro   # The reproducers, judged by the headers in each file
 bash test.sh help
 ```
 
