@@ -144,8 +144,9 @@ case $(uname -s 2>/dev/null) in
 esac
 
 # $2 names the directory to take, so that a tree holding one suite but not
-# the other does not have to be unpacked whole -- and unzip never stops to
-# ask whether to overwrite what is already there.
+# the other does not have to be unpacked whole.  -o is deliberate for the
+# suites tests.zip owns; the suites git tracks are not in the archive at
+# all, so unpacking can never overwrite a tracked file with a stale copy.
 unpack(){
     if command -v unzip >/dev/null; then
         unzip -qo "$1" "$2/*"
@@ -247,8 +248,9 @@ acats_setup(){
     mkdir -p test_results acats_logs
 
     local suite
-    for suite in acats extensions project debug; do
-        unpack_suite "$PWD" "$suite" || die "cannot unpack $suite from tests.zip"
+    for suite in acats extensions project debug acats-bonus; do
+        unpack_suite "$PWD" "$suite" || die \
+            "$suite is missing and tests.zip does not carry it; it is tracked in git -- restore it with: git checkout -- $suite"
     done
 
     ADA83=$(find_ada83) || ADA83=""
@@ -261,7 +263,7 @@ acats_setup(){
     export ADA83
 
     export REPORT_LL="${TMPDIR:-/tmp}/ada83-report-$$.ll"
-    timed "$COMPILE_TIMEOUT" "$ADA83" --ir acats/report.adb -o "$REPORT_LL" >/dev/null 2>&1 || \
+    timed "$COMPILE_TIMEOUT" "$ADA83" -ada83 --ir acats/report.adb -o "$REPORT_LL" >/dev/null 2>&1 || \
         die "cannot compile acats/report.adb"
 
     ROOT=$PWD
@@ -297,7 +299,7 @@ compile_set(){
     COMPILE_FAILED=""
     for part in "${COMPILE_FILES[@]}"; do
         pn=$(basename "$part" .ada)
-        if ! timed "$COMPILE_TIMEOUT" "$ADA83" --ir "$part" -o "$lib/$pn.ll" >/dev/null 2>"$LOGS_DIR/$n.err"; then
+        if ! timed "$COMPILE_TIMEOUT" "$ADA83" -ada83 --ir "$part" -o "$lib/$pn.ll" >/dev/null 2>"$LOGS_DIR/$n.err"; then
             if [[ $pn == "$n" ]]; then
                 COMPILE_FAILED=$pn
                 return 1
@@ -387,7 +389,7 @@ run_continuity_creators(){
     for c in $(grep -oiE 'legal_file_name[ ]*\([^)]*"ce[0-9a-z]+"' "acats/$reader.ada" 2>/dev/null \
                | grep -oiE '"ce[0-9a-z]+"' | tr -d '"' | tr '[:upper:]' '[:lower:]' | sort -u); do
         [[ $c == "$self" || ! -f acats/$c.ada ]] && continue
-        timed "$COMPILE_TIMEOUT" "$ADA83" --ir "acats/$c.ada" -o "$lib/$c.ll" \
+        timed "$COMPILE_TIMEOUT" "$ADA83" -ada83 --ir "acats/$c.ada" -o "$lib/$c.ll" \
             >/dev/null 2>&1 || continue
         timed "$LINK_TIMEOUT" "$ADA83" "$OPT" "$lib/$c.ll" "$REPORT_LL" \
             -o "$lib/$c.bin" >/dev/null 2>&1 || continue
@@ -477,7 +479,7 @@ run_one(){
                     fi
                 fi
             done < "$part"
-            if timed "$COMPILE_TIMEOUT" "$ADA83" --ir "$part" -o "$lib/${pn%.ada}.ll" \
+            if timed "$COMPILE_TIMEOUT" "$ADA83" -ada83 --ir "$part" -o "$lib/${pn%.ada}.ll" \
                  >/dev/null 2>"$LOGS_DIR/$n.$pn.err"; then :; else
                 rejected=yes
             fi
@@ -943,7 +945,7 @@ run_project_tests(){
     heading "PROJECT FILES" "gpr and gpj build descriptions, read with -P ... -n"
 
     local suite line tail_line p f k
-    for suite in gpj gpr; do
+    for suite in gpj gpr build; do
         [[ -x project/$suite/run.sh || -f project/$suite/run.sh ]] || continue
         line=$(sh "project/$suite/run.sh" "$ADA83" 2>&1) || true
         printf '%s\n' "$line" | sed -n '/^\(FAILED\|KNOWN\)/s/^/  /p'
@@ -963,6 +965,31 @@ run_project_tests(){
     [[ -n ${RESULTS_DIR:-} && -f $RESULTS_DIR/test_summary.txt ]] &&
         printf ' PJ=%d/%d PJF=%d PJK=%d\n' "$PROJ_PASS" "$proj_total" "$PROJ_FAIL" "$PROJ_KNOWN" \
             >> "$RESULTS_DIR/test_summary.txt"
+    return 0
+}
+
+#  The acats-bonus suite: ACATS 4.2 tests for six post-Ada-83 features,
+#  sanitized to Ada 83 plus the one feature under test.
+#  Grading is per acats-bonus/STATUS: while a feature is `pending' its
+#  failures are pending, not failures -- but a test that PASSES counts as a
+#  pass either way, so the suite carries real signal from the first day.
+run_bonus_tests(){
+    BONUS_PASS=0 BONUS_FAIL=0 BONUS_PEND=0
+    [[ -d acats-bonus ]] || { printf '  %sno acats-bonus/ directory%s\n' "$DIM" "$OFF"; return 0; }
+
+    heading "ACATS BONUS" "post-Ada-83 features, now the default: protected types, expression functions, if/case expressions, pragma-equivalent aspects, generic formal defaults, subprogram pointers, controlled types, Ada 95 unit names, dot notation"
+
+    local line tail_line
+    line=$(sh acats-bonus/run.sh "$ADA83" 2>&1) || true
+    printf '%s\n' "$line" | sed -n '/^FAILED/s/^/  /p'
+    tail_line=$(printf '%s\n' "$line" | tail -1)
+    BONUS_PASS=$(sed -n 's/.*[^0-9]\([0-9]\+\) passed.*/\1/p' <<<"$tail_line"); BONUS_PASS=${BONUS_PASS:-0}
+    BONUS_FAIL=$(sed -n 's/.*[^0-9]\([0-9]\+\) failed.*/\1/p' <<<"$tail_line"); BONUS_FAIL=${BONUS_FAIL:-0}
+    BONUS_PEND=$(sed -n 's/.*[^0-9]\([0-9]\+\) pending.*/\1/p' <<<"$tail_line"); BONUS_PEND=${BONUS_PEND:-0}
+
+    local graded=$((BONUS_PASS + BONUS_FAIL))
+    printf '\n  %s%s%s\n' "$BOLD" "$tail_line" "$OFF"
+    rate_bar "ACATS BONUS" "$BONUS_PASS" "$((graded > 0 ? graded : 1))"
     return 0
 }
 
@@ -996,7 +1023,36 @@ run_debug_tests(){
     return 0
 }
 
-ALL_PROGRAMS="sieve matmul lu recurse strings numerics checks exceptions memory tasking taskflood taskselect taskelse"
+# The reproducers: every program a fix was landed with, under repro/, run
+# in isolation and judged by the expectation lines in its own header --
+# the conventions are at the top of repro/run.sh.
+run_repro_tests(){
+    REPRO_PASS=0 REPRO_FAIL=0
+    [[ -f repro/run.sh ]] || { printf '  %sno repro/run.sh%s\n' "$DIM" "$OFF"; return 0; }
+
+    heading "REPRODUCERS" "the program each fix was landed with, run in isolation and judged by its header"
+
+    local line tail_line
+    line=$(bash repro/run.sh "$ADA83" 2>&1) || true
+    printf '%s\n' "$line" | sed -n '/^FAILED/s/^/  /p'
+    tail_line=$(printf '%s\n' "$line" | tail -1)
+    REPRO_PASS=$(sed -n 's/.*[^0-9]\([0-9]\+\) passed.*/\1/p' <<<"$tail_line"); REPRO_PASS=${REPRO_PASS:-0}
+    REPRO_FAIL=$(sed -n 's/.*[^0-9]\([0-9]\+\) failed.*/\1/p' <<<"$tail_line"); REPRO_FAIL=${REPRO_FAIL:-0}
+
+    local repro_total=$((REPRO_PASS + REPRO_FAIL))
+    printf '\n  %s%s%s\n' "$BOLD" "$tail_line" "$OFF"
+    rate_bar REPRODUCERS "$REPRO_PASS" "$((repro_total > 0 ? repro_total : 1))"
+
+    [[ -n ${RESULTS_DIR:-} && -f $RESULTS_DIR/test_summary.txt ]] &&
+        printf ' RP=%d/%d RPF=%d\n' "$REPRO_PASS" "$repro_total" "$REPRO_FAIL" \
+            >> "$RESULTS_DIR/test_summary.txt"
+    return 0
+}
+
+#  The last four measure the language extensions whose cost a test cannot
+#  show: each is legal Ada 95 as well, so
+#  GNAT compiles the same program as the reference.
+ALL_PROGRAMS="sieve matmul lu recurse strings numerics checks exceptions memory tasking taskflood taskselect taskelse indirect monitor finalizer wraparound"
 
 describe(){ case $1 in
     sieve)      echo "integer arrays, index checks" ;;
@@ -1010,6 +1066,10 @@ describe(){ case $1 in
     memory)     echo "allocation and deallocation" ;;
     tasking)    echo "rendezvous throughput" ;;
     taskflood)  echo "task creation and termination" ;;
+    indirect)   echo "a call through an access-to-subprogram" ;;
+    monitor)    echo "protected procedure, function and entry, uncontended" ;;
+    finalizer)  echo "Initialize, Adjust and Finalize driven by the compiler" ;;
+    wraparound) echo "modular arithmetic, a power of two and a modulus that is not" ;;
     taskselect) echo "selective wait with an else part (UNMEASURABLE — see taskelse)" ;;
     taskelse)   echo "selective wait with an else part, fixed poll count" ;;
 esac; }
@@ -1022,6 +1082,9 @@ esac; }
 comparable(){ case $1 in numerics) return 1 ;; *) return 0 ;; esac; }
 
 concurrent(){ case $1 in tasking|taskflood|taskselect|taskelse) return 0 ;; *) return 1 ;; esac; }
+
+#  The feature half of each pair.
+extended(){ case $1 in indirect|monitor|finalizer|wraparound) return 0 ;; *) return 1 ;; esac; }
 
 measure(){
     local out='' t i
@@ -1612,6 +1675,127 @@ begin
 end;
 EOF
 
+    cat > "$BENCH_WORK/src/indirect.ada" <<'EOF'
+with TEXT_IO; use TEXT_IO;
+procedure Indirect is
+   package Int_IO is new Integer_IO (Integer);
+   type Op is access function (X : Integer) return Integer;
+   function Add_One (X : Integer) return Integer;
+   function Double  (X : Integer) return Integer;
+   function Negate  (X : Integer) return Integer;
+   function Square  (X : Integer) return Integer;
+   Table : constant array (0 .. 3) of Op :=
+     (Add_One'Access, Double'Access, Negate'Access, Square'Access);
+   Seed  : Integer;
+   Total : Integer := 0;
+   function Add_One (X : Integer) return Integer is begin return X + 1; end;
+   function Double  (X : Integer) return Integer is begin return X + X; end;
+   function Negate  (X : Integer) return Integer is begin return -X; end;
+   function Square  (X : Integer) return Integer is begin return X * X; end;
+begin
+   Int_IO.Get (Seed);
+   for I in 1 .. 30_000_000 loop
+      Total := (Total + Table (I mod 4) (I mod 512)) mod 1024;
+   end loop;
+   Put_Line ("indirect:" & Integer'Image (Total));
+end;
+EOF
+
+
+    cat > "$BENCH_WORK/src/monitor.ada" <<'EOF'
+with TEXT_IO; use TEXT_IO;
+procedure Monitor is
+   package Int_IO is new Integer_IO (Integer);
+   protected Cell is
+      procedure Put (X : Integer);
+      function  Get return Integer;
+      entry     Take (X : out Integer);
+   private
+      V : Integer := 0;
+   end Cell;
+   Seed  : Integer;
+   Total : Integer := 0;
+   Held  : Integer;
+   protected body Cell is
+      procedure Put (X : Integer) is begin V := (V + X) mod 1024; end Put;
+      function  Get return Integer is begin return V; end Get;
+      entry     Take (X : out Integer) when True is begin X := V; end Take;
+   end Cell;
+begin
+   Int_IO.Get (Seed);
+   for I in 1 .. 4_000_000 loop
+      Cell.Put (I mod 512);
+      Total := (Total + Cell.Get) mod 1024;
+      Cell.Take (Held);
+      Total := (Total + Held) mod 1024;
+   end loop;
+   Put_Line ("monitor:" & Integer'Image (Total));
+end;
+EOF
+
+
+    cat > "$BENCH_WORK/src/finalizer.ada" <<'EOF'
+with ADA.FINALIZATION; use ADA.FINALIZATION;
+with TEXT_IO; use TEXT_IO;
+procedure Finalizer is
+   package Int_IO is new Integer_IO (Integer);
+   Events : Integer := 0;
+   package Items is
+      type Item is new Controlled with record V : Integer := 0; end record;
+      procedure Initialize (I : in out Item);
+      procedure Adjust     (I : in out Item);
+      procedure Finalize   (I : in out Item);
+   end Items;
+   use Items;
+   Seed : Integer;
+   package body Items is
+      procedure Initialize (I : in out Item) is begin I.V := Events mod 7; Events := Events + I.V + 1; end Initialize;
+      procedure Adjust     (I : in out Item) is begin I.V := (I.V + Events) mod 13; Events := Events + I.V + 3; end Adjust;
+      procedure Finalize   (I : in out Item) is begin Events := Events + I.V + 5; end Finalize;
+   end Items;
+begin
+   Int_IO.Get (Seed);
+   declare
+      Keep : Item;
+   begin
+      for I in 1 .. 2_000_000 loop
+         declare
+            Fresh : Item;
+         begin
+            Fresh.V := I mod 512;
+            Keep := Fresh;
+         end;
+      end loop;
+      Events := Events + Keep.V;
+   end;
+   Put_Line ("finalize:" & Integer'Image (Events));
+end;
+EOF
+
+
+    cat > "$BENCH_WORK/src/wraparound.ada" <<'EOF'
+with TEXT_IO; use TEXT_IO;
+procedure Wraparound is
+   package Int_IO is new Integer_IO (Integer);
+   type Byte  is mod 256;
+   type Odd   is mod 200;
+   Seed  : Integer;
+   B     : Byte    := 0;
+   D     : Odd     := 0;
+   Total : Integer := 0;
+begin
+   Int_IO.Get (Seed);
+   for I in 1 .. 10_000_000 loop
+      B := B + Byte (I mod 251);
+      B := (B * 3) xor 16#5A#;
+      D := D * 7 + Odd (I mod 199);
+      Total := (Total + Integer (B) + Integer (D)) mod 1024;
+   end loop;
+   Put_Line ("wraparound:" & Integer'Image (Total));
+end;
+EOF
+
+
     local p
     for p in $ALL_PROGRAMS; do cp "$BENCH_WORK/src/$p.ada" "$BENCH_WORK/src/$p.adb"; done
 }
@@ -1736,6 +1920,7 @@ EOF
 run_codegen(){
     local gnat=$1 suite=${2:-1} p a g am gm na ng oa og n=0 total=${#PROGRAM_LIST[@]} peak=0
     local outcome r note tsv='' cpus=$BENCH_CPU lpk=0 v
+    local -a DIALECT
     LOAD_PEAK=0
     if [ -n "$TSV_DIR" ]; then mkdir -p "$TSV_DIR"; tsv=$TSV_DIR/suite$suite.tsv
         printf 'program\tada83_med\tada83_mad\tgnat_med\tgnat_mad\tdistinguishable\tratio\toutput\tsamples\tcpus\tload_peak\n' > "$tsv"
@@ -1749,7 +1934,8 @@ run_codegen(){
     rule
     for p in "${PROGRAM_LIST[@]}"; do
         progress $((n++)) "$total" "$p"
-        if ! "$BENCH_ADA83" "-O$OPT" "$BENCH_WORK/src/$p.ada" -o "$BENCH_WORK/$p.a83" >/dev/null 2>&1; then
+        if ! "$BENCH_ADA83" "-O$OPT" \
+               "$BENCH_WORK/src/$p.ada" -o "$BENCH_WORK/$p.a83" >/dev/null 2>&1; then
             clear_line; printf '  %-11s %14s\n' "$p" "build failed"
             eval "T_$p=x G_$p=x R_${suite}_$p=- D_${suite}_$p=0"; continue
         fi
@@ -1956,8 +2142,9 @@ usage(){ cat <<TEXT
 Usage: $SELF [COMMAND] [ARGUMENT]
 
 Test and measure the ada83 compiler: the ACATS conformance suite, the
-extension tests, the project-file tests, and the benchmarks.  With no
-arguments, runs every test.
+extension tests, the project-file tests, the acats-bonus and debugging
+suites, the reproducers, and the benchmarks.  With no arguments, runs
+every test.
 
 Commands:
   run [SELECTOR]     run the suite and print a report (the default)
@@ -1968,6 +2155,13 @@ Commands:
   project            run only the project-file tests (gpr and gpj)
   debug              run only the debugging feature tests (-g, gdb, --dump-*);
                      cases whose feature has not merged yet count as pending
+  bonus              run only the acats-bonus suite: ACATS 4.2 tests for the
+                     post-Ada-83 features behind -x, sanitized to Ada 83 plus
+                     the feature under test; a test whose feature is still
+                     pending counts as pending, never as a failure
+  repro              run only the reproducers: the program each fix was landed
+                     with, under repro/, run in isolation and judged by the
+                     expectation lines in its header (see repro/run.sh)
   bench [MODE]       measure rather than test; see Benchmark modes below
   help               display this help and exit
 
@@ -2054,22 +2248,30 @@ main(){
                  if [[ ${1:-all} == all ]]; then
                      run_extension_tests
                      run_project_tests
+                     run_bonus_tests
                      run_debug_tests
+                     run_repro_tests
                  fi ;;
         q)       run_selector "${1:-c32}" "ACATS RUN — ${1:-c32}" ;;
         check)   run_selector "${1:-all}" "ACATS CHECK — ${1:-all}"
-                 [[ ${1:-all} == all ]] && { run_extension_tests; run_project_tests; run_debug_tests; }
+                 [[ ${1:-all} == all ]] && { run_extension_tests; run_project_tests; run_bonus_tests; run_debug_tests; run_repro_tests; }
                  compare_to_baseline
-                 ((REGRESSIONS==0 && ${EXT_FAIL:-0}==0 && ${PROJ_FAIL:-0}==0 && ${DBG_FAIL:-0}==0)) || exit 1 ;;
+                 ((REGRESSIONS==0 && ${EXT_FAIL:-0}==0 && ${PROJ_FAIL:-0}==0 && ${DBG_FAIL:-0}==0 && ${REPRO_FAIL:-0}==0)) || exit 1 ;;
         extensions|x)
                  run_extension_tests
                  ((${EXT_FAIL:-0}==0)) || exit 1 ;;
         project|p)
                  run_project_tests
                  ((${PROJ_FAIL:-0}==0)) || exit 1 ;;
+        bonus|b83)
+                 run_bonus_tests
+                 ((${BONUS_FAIL:-0}==0)) || exit 1 ;;
         debug|dbg)
                  run_debug_tests
                  ((${DBG_FAIL:-0}==0)) || exit 1 ;;
+        repro|rp)
+                 run_repro_tests
+                 ((${REPRO_FAIL:-0}==0)) || exit 1 ;;
         bless)   run_selector "${1:-all}" "ACATS BLESS — ${1:-all}"
                  write_baseline ;;
         list)    local -a SELECTED=(); selector_files "${1:-all}"
