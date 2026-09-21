@@ -59736,8 +59736,8 @@ bool Is_Static_Int_Node (Node *n) {
   if (n->kind == NK_CHARACTER) return true;
   if (n->symbol and n->symbol->kind == SYMBOL_LITERAL) return true;
   {
-    double folded = Eval_Const_Numeric (n);
-    return not isnan (folded) and folded == (double) (i64) folded;
+    i128 exact;
+    return Read_Static_Bound (n, &exact);
   }
 }
 i128 Eval_Static_Int (Node *n) {
@@ -59761,8 +59761,8 @@ i128 Eval_Static_Int (Node *n) {
       return (i128)(unsigned char) n->string_val.text.data[0];
   }
   {
-    double folded = Eval_Const_Numeric (n);
-    if (not isnan (folded)) return (i128) (i64) folded;
+    i128 exact;
+    if (Read_Static_Bound (n, &exact)) return exact;
   }
   return 0;
 }
@@ -92721,6 +92721,12 @@ int Native_Backend_Compile (const char *ir_path, const char *const *extra_ir,
     Report_Driver_Warning ("thread-local storage reaches the linker as a COFF "
                           "weak external, which only lld resolves; install "
                           "clang with lld, or set CC to a driver that uses it");
+#endif
+#if defined(__APPLE__)
+  if (status == 0 and Emit_Debug_Info) {
+    const char *dsym_argv[] = { "dsymutil", exe_path, NULL };
+    Run_Linker_Driver (dsym_argv);
+  }
 #endif
   remove (obj_path);
 
