@@ -95,7 +95,7 @@ if not exist "%STAGE%" mkdir "%STAGE%"
 exit /b 0
 
 :clean
-del /q "%EXECUTABLE_windows%" ada83.pdb LLVM-C.dll libffi-8.dll libstdc++-6.dll libzstd.dll ^
+del /q "%EXECUTABLE_windows%" ada83.pdb ada83.obj LLVM-C.dll libffi-8.dll libstdc++-6.dll libzstd.dll ^
     libgcc_s_seh-1.dll libwinpthread-1.dll libxml2-16.dll libiconv-2.dll ^
     zlib1.dll zig.zip "%VSIX%" icon.rc icon.res icon.res.o >nul 2>nul
 for %%D in (staging zig bin-linux bin-macos bin-windows) do rmdir /s /q %%D >nul 2>nul
@@ -352,6 +352,11 @@ where gcc >nul 2>nul && goto build
 set "TOOLCHAIN=Clang"
 set "COMPILER=clang --target=x86_64-w64-windows-gnu"
 where clang >nul 2>nul && goto build
+rem  clang-cl builds the native MSVC target (SEH, MSVC CRT), which cl.exe
+rem  cannot because ada83.c uses __int128.  It needs a Windows SDK on
+rem  INCLUDE/LIB, as a Visual Studio developer prompt provides; try it before
+rem  downloading Zig, and fall through to Zig if it or its link fails.
+where clang-cl >nul 2>nul && (call :compile_msvc && exit /b 0)
 call :offer_zig || exit /b 1
 set "TOOLCHAIN=Zig"
 set "COMPILER=%ZIG% cc -target x86_64-windows-gnu"
@@ -360,6 +365,23 @@ call :resource
 echo   compiling ada83.c with %TOOLCHAIN%
 %COMPILER% %COMPILER_FLAGS% %SOURCE% %RESOURCE% -o "%STAGE%\%EXECUTABLE%" %LINK_LIBRARIES%
 exit /b %errorlevel%
+
+:compile_msvc
+rem  compiler-rt carries the __int128 helpers (__divti3 and friends) ada83.c
+rem  needs and the MSVC CRT lacks; the exe links beside the LLVM DLLs already
+rem  unpacked into %STAGE%, so it loads the bundled libLLVM at run time.
+set "RESDIR="
+for /f "delims=" %%R in ('clang-cl -print-resource-dir 2^>nul') do set "RESDIR=%%R"
+if not defined RESDIR exit /b 1
+set "BUILTINS=%RESDIR%\lib\windows\clang_rt.builtins-x86_64.lib"
+if not exist "%BUILTINS%" exit /b 1
+call :resource
+echo   compiling ada83.c with clang-cl (native MSVC)
+clang-cl /nologo /O2 /clang:-std=gnu2x -fuse-ld=lld /Fe:"%STAGE%\%EXECUTABLE%" ^
+    %SOURCE% %RESOURCE% synchronization.lib "%BUILTINS%"
+set "RC=%errorlevel%"
+del /q ada83.obj >nul 2>nul
+exit /b %RC%
 
 :resource
 set "RESOURCE=icon.res.o"

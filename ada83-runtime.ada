@@ -241,13 +241,14 @@ package body Text_IO is
       Write_Pos   : Integer;
     end record;
   type FCB_Array is array (0..99) of File_Control_Block;
-  Initialized         :          Boolean        := False;
-  File_Control_Blocks :          FCB_Array;
-  Current_Input_Slot  :          Integer        := 1;
-  Current_Output_Slot :          Integer        := 2;
-  Current_Error_Slot  :          Integer        := 3;
-  Next_FCB            :          Integer        := 4;
-  Null_Address        : constant System.Address := System.Null_Address;
+  Initialized           :          Boolean        := False;
+  File_Control_Blocks   :          FCB_Array;
+  Current_Input_Slot    :          Integer        := 1;
+  Current_Output_Slot   :          Integer        := 2;
+  Current_Error_Slot    :          Integer        := 3;
+  Next_FCB              :          Integer        := 4;
+  Null_Address          : constant System.Address := System.Null_Address;
+  Put_Line_Buffer_Limit : constant Integer        := 4096;
   procedure To_C_String (S : String; Buffer : out String) is
     J : Integer := 1;
     begin
@@ -1143,9 +1144,28 @@ package body Text_IO is
       Get_Line ((Handle => Current_Input_Slot), Item, Last);
     end;
   procedure Put_Line (File : File_Type; Item : String) is
+    Table_Slot : Integer := File.Handle;
     begin
-      Put (File, Item);
-      New_Line (File);
+      Require_Open (Table_Slot);
+      if Item'Length < Put_Line_Buffer_Limit
+          and File_Control_Blocks (Table_Slot).Mode /= In_File
+          and File_Control_Blocks (Table_Slot).Line_Length = Unbounded
+          and File_Control_Blocks (Table_Slot).Page_Length = Unbounded
+          and not File_Control_Blocks (Table_Slot).Shared then
+        declare
+          Text : String (1 .. Item'Length + 1);
+        begin
+          Text (1 .. Item'Length) := Item;
+          Text (Text'Last)        := Character'Val (10);
+          Raw_Write (Table_Slot, Text);
+        end;
+        File_Control_Blocks (Table_Slot).Col         := 1;
+        File_Control_Blocks (Table_Slot).Line        := File_Control_Blocks (Table_Slot).Line + 1;
+        File_Control_Blocks (Table_Slot).Page_Active := True;
+      else
+        Put (File, Item);
+        New_Line (File);
+      end if;
     end;
   procedure Put_Line (Item : String) is
     begin
@@ -2969,5 +2989,244 @@ package body Command_Line is
   function Command_Name return String is
     begin
       return Fetch (0);
+    end;
+end;
+with System;
+with IO_Exceptions;
+package Stream_IO is
+  type Stream_Type is new Root_Stream_Type with record
+      Handle : Integer := 0;
+    end record;
+  procedure Read (Stream : in out Stream_Type; Item : out Stream_Element_Array; Last : out Stream_Element_Offset);
+  procedure Write (Stream : in out Stream_Type; Item : in Stream_Element_Array);
+  type Stream_Access is access Stream_Type;
+  type File_Type is limited private;
+  type File_Mode is (In_File, Out_File, Append_File);
+  Status_Error : exception renames IO_Exceptions.Status_Error;
+  Mode_Error   : exception renames IO_Exceptions.Mode_Error;
+  Name_Error   : exception renames IO_Exceptions.Name_Error;
+  Use_Error    : exception renames IO_Exceptions.Use_Error;
+  Device_Error : exception renames IO_Exceptions.Device_Error;
+  End_Error    : exception renames IO_Exceptions.End_Error;
+  Data_Error   : exception renames IO_Exceptions.Data_Error;
+  procedure Create (File : in out File_Type; Mode : File_Mode := Out_File; Name : String := ""; Form : String := "");
+  procedure Open (File : in out File_Type; Mode : File_Mode; Name : String; Form : String := "");
+  procedure Close (File : in out File_Type);
+  procedure Delete (File : in out File_Type);
+  procedure Reset (File : in out File_Type; Mode : File_Mode);
+  procedure Reset (File : in out File_Type);
+  function Mode (File : File_Type) return File_Mode;
+  function Name (File : File_Type) return String;
+  function Form (File : File_Type) return String;
+  function Is_Open (File : File_Type) return Boolean;
+  function End_Of_File (File : File_Type) return Boolean;
+  function Stream (File : File_Type) return Stream_Access;
+  procedure Read (File : File_Type; Item : out Stream_Element_Array; Last : out Stream_Element_Offset);
+  procedure Write (File : File_Type; Item : in Stream_Element_Array);
+private
+  type File_Type is record
+      Handle : Integer := 0;
+    end record;
+end;
+package body Stream_IO is
+  function C_Fopen (Name : System.Address; Mode : System.Address) return System.Address;
+  pragma Import (C, C_Fopen, "fopen");
+  function C_Fclose (Stream : System.Address) return Integer;
+  pragma Import (C, C_Fclose, "fclose");
+  function C_Fread (Pointer : System.Address; Size : Integer; Count : Integer; Stream : System.Address) return Integer;
+  pragma Import (C, C_Fread, "fread");
+  function C_Fwrite (Pointer : System.Address; Size : Integer; Count : Integer; Stream : System.Address) return Integer;
+  pragma Import (C, C_Fwrite, "fwrite");
+  function C_Remove (Name : System.Address) return Integer;
+  pragma Import (C, C_Remove, "remove");
+  function C_Fseek (Stream : System.Address; Offset : Integer; Whence : Integer) return Integer;
+  pragma Import (C, C_Fseek, "fseek");
+  function C_Fflush (Stream : System.Address) return Integer;
+  pragma Import (C, C_Fflush, "fflush");
+  function C_Fgetc (Stream : System.Address) return Integer;
+  pragma Import (C, C_Fgetc, "fgetc");
+  function C_Ungetc (C : Integer; Stream : System.Address) return Integer;
+  pragma Import (C, C_Ungetc, "ungetc");
+  function C_Tmpfile return System.Address;
+  pragma Import (C, C_Tmpfile, "tmpfile");
+  Null_Address : constant System.Address := System.Null_Address;
+  Seek_Set     : constant Integer        := 0;
+  Seek_End     : constant Integer        := 2;
+  type Control_Block is record
+      Stream      : System.Address := Null_Address;
+      Channel     : Stream_Access;
+      Mode        : File_Mode      := In_File;
+      Is_Open     : Boolean        := False;
+      Name_Length : Natural        := 0;
+      Name        : String (1..1024);
+    end record;
+  File_Control_Blocks : array (1..99) of Control_Block;
+  function Is_Open_Index (Table_Slot : Integer) return Boolean is
+    begin
+      return Table_Slot >= 1 and then Table_Slot <= 99 and then File_Control_Blocks (Table_Slot).Is_Open;
+    end;
+  function Require_Open (File : File_Type) return Integer is
+    begin
+      if not Is_Open_Index (File.Handle) then raise Status_Error; end if;
+      return File.Handle;
+    end;
+  procedure To_C_String (S : String; Buffer : out String) is
+    J : Integer := 1;
+    begin
+      for I in S'First..S'Last loop
+        Buffer (J) := S (I);
+        J := J + 1;
+      end loop;
+      Buffer (J) := Character'Val (0);
+    end;
+  procedure Attach (File : in out File_Type; Mode : File_Mode; Name : String; Creating : Boolean) is
+    Table_Slot  : Integer := 0;
+    Name_Buffer : String (1..1026);
+    Mode_Text   : String (1..4);
+    begin
+      if Is_Open_Index (File.Handle) then raise Status_Error; end if;
+      for J in File_Control_Blocks'Range loop
+        if not File_Control_Blocks (J).Is_Open then Table_Slot := J; exit; end if;
+      end loop;
+      if Table_Slot = 0 then raise Use_Error; end if;
+      if not Creating and then Name'Length = 0 then raise Name_Error; end if;
+      if Creating then
+        Mode_Text := ('w', '+', 'b', Character'Val (0));
+      elsif Mode = In_File then
+        Mode_Text := ('r', 'b', Character'Val (0), Character'Val (0));
+      else
+        Mode_Text := ('r', '+', 'b', Character'Val (0));
+      end if;
+      if Name'Length > 0 then
+        To_C_String (Name, Name_Buffer);
+        File_Control_Blocks (Table_Slot).Stream := C_Fopen (Name_Buffer'Address, Mode_Text'Address);
+        if File_Control_Blocks (Table_Slot).Stream = Null_Address then
+          if Creating then raise Use_Error; else raise Name_Error; end if;
+        end if;
+        File_Control_Blocks (Table_Slot).Name_Length := Name'Length;
+        File_Control_Blocks (Table_Slot).Name (1..Name'Length) := Name;
+      else
+        File_Control_Blocks (Table_Slot).Stream := C_Tmpfile;
+        if File_Control_Blocks (Table_Slot).Stream = Null_Address then raise Use_Error; end if;
+        File_Control_Blocks (Table_Slot).Name_Length := 0;
+      end if;
+      if Mode = Append_File then
+        if C_Fseek (File_Control_Blocks (Table_Slot).Stream, 0, Seek_End) /= 0 then raise Use_Error; end if;
+      end if;
+      if File_Control_Blocks (Table_Slot).Channel = null then
+        File_Control_Blocks (Table_Slot).Channel := new Stream_Type;
+      end if;
+      File_Control_Blocks (Table_Slot).Channel.Handle := Table_Slot;
+      File_Control_Blocks (Table_Slot).Mode := Mode;
+      File_Control_Blocks (Table_Slot).Is_Open := True;
+      File := (Handle => Table_Slot);
+    end;
+  procedure Detach (File : in out File_Type; Removing : Boolean) is
+    Table_Slot  : Integer := Require_Open (File);
+    Name_Buffer : String (1..1026);
+    Ignore      : Integer;
+    begin
+      Ignore := C_Fclose (File_Control_Blocks (Table_Slot).Stream);
+      if Removing and then File_Control_Blocks (Table_Slot).Name_Length > 0 then
+        To_C_String (File_Control_Blocks (Table_Slot).Name (1..File_Control_Blocks (Table_Slot).Name_Length), Name_Buffer);
+        Ignore := C_Remove (Name_Buffer'Address);
+      end if;
+      File_Control_Blocks (Table_Slot).Stream := Null_Address;
+      File_Control_Blocks (Table_Slot).Channel.Handle := 0;
+      File_Control_Blocks (Table_Slot).Is_Open := False;
+      File := (Handle => 0);
+    end;
+  procedure Create (File : in out File_Type; Mode : File_Mode := Out_File; Name : String := ""; Form : String := "") is
+    begin
+      Attach (File, Mode, Name, Creating => True);
+    end;
+  procedure Open (File : in out File_Type; Mode : File_Mode; Name : String; Form : String := "") is
+    begin
+      Attach (File, Mode, Name, Creating => False);
+    end;
+  procedure Close (File : in out File_Type) is
+    begin
+      Detach (File, Removing => False);
+    end;
+  procedure Delete (File : in out File_Type) is
+    begin
+      Detach (File, Removing => True);
+    end;
+  procedure Reset (File : in out File_Type; Mode : File_Mode) is
+    Table_Slot : Integer := Require_Open (File);
+    Ignore     : Integer;
+    begin
+      Ignore := C_Fflush (File_Control_Blocks (Table_Slot).Stream);
+      if Mode = Append_File then
+        Ignore := C_Fseek (File_Control_Blocks (Table_Slot).Stream, 0, Seek_End);
+      else
+        Ignore := C_Fseek (File_Control_Blocks (Table_Slot).Stream, 0, Seek_Set);
+      end if;
+      File_Control_Blocks (Table_Slot).Mode := Mode;
+    end;
+  procedure Reset (File : in out File_Type) is
+    begin
+      Reset (File, Mode (File));
+    end;
+  function Mode (File : File_Type) return File_Mode is
+    begin
+      return File_Control_Blocks (Require_Open (File)).Mode;
+    end;
+  function Name (File : File_Type) return String is
+    Table_Slot : Integer := Require_Open (File);
+    begin
+      if File_Control_Blocks (Table_Slot).Name_Length = 0 then raise Use_Error; end if;
+      return File_Control_Blocks (Table_Slot).Name (1..File_Control_Blocks (Table_Slot).Name_Length);
+    end;
+  function Form (File : File_Type) return String is
+    Table_Slot : Integer := Require_Open (File);
+    begin
+      return "";
+    end;
+  function Is_Open (File : File_Type) return Boolean is
+    begin
+      return Is_Open_Index (File.Handle);
+    end;
+  function End_Of_File (File : File_Type) return Boolean is
+    Table_Slot : Integer := Require_Open (File);
+    C          : Integer;
+    Ignore     : Integer;
+    begin
+      if File_Control_Blocks (Table_Slot).Mode /= In_File then raise Mode_Error; end if;
+      C := C_Fgetc (File_Control_Blocks (Table_Slot).Stream);
+      if C = -1 then return True; end if;
+      Ignore := C_Ungetc (C, File_Control_Blocks (Table_Slot).Stream);
+      return False;
+    end;
+  function Stream (File : File_Type) return Stream_Access is
+    begin
+      return File_Control_Blocks (Require_Open (File)).Channel;
+    end;
+  procedure Read (Stream : in out Stream_Type; Item : out Stream_Element_Array; Last : out Stream_Element_Offset) is
+    Got : Integer := 0;
+    begin
+      if not Is_Open_Index (Stream.Handle) then raise Status_Error; end if;
+      if File_Control_Blocks (Stream.Handle).Mode /= In_File then raise Mode_Error; end if;
+      if Item'Length > 0 then
+        Got := C_Fread (Item (Item'First)'Address, 1, Item'Length, File_Control_Blocks (Stream.Handle).Stream);
+      end if;
+      Last := Item'First + Stream_Element_Offset (Got) - 1;
+    end;
+  procedure Write (Stream : in out Stream_Type; Item : in Stream_Element_Array) is
+    begin
+      if not Is_Open_Index (Stream.Handle) then raise Status_Error; end if;
+      if File_Control_Blocks (Stream.Handle).Mode = In_File then raise Mode_Error; end if;
+      if Item'Length > 0 and then
+         C_Fwrite (Item (Item'First)'Address, 1, Item'Length, File_Control_Blocks (Stream.Handle).Stream) /= Item'Length then
+        raise Device_Error;
+      end if;
+    end;
+  procedure Read (File : File_Type; Item : out Stream_Element_Array; Last : out Stream_Element_Offset) is
+    begin
+      Read (File_Control_Blocks (Require_Open (File)).Channel.all, Item, Last);
+    end;
+  procedure Write (File : File_Type; Item : in Stream_Element_Array) is
+    begin
+      Write (File_Control_Blocks (Require_Open (File)).Channel.all, Item);
     end;
 end;

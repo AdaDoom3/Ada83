@@ -972,16 +972,19 @@ run_project_tests(){
     return 0
 }
 
-#  The acats-bonus suite: ACATS 4.2 tests for six post-Ada-83 features,
-#  sanitized to Ada 83 plus the one feature under test.
-#  Grading is per acats-bonus/STATUS: while a feature is `pending' its
-#  failures are pending, not failures -- but a test that PASSES counts as a
-#  pass either way, so the suite carries real signal from the first day.
+#  The acats-bonus suite: ACATS 4.2 tests for the post-Ada-83 features,
+#  sanitized to Ada 83 plus the one feature under test, and -- in
+#  acats-bonus/untagged -- tests of no feature at all, whose only post-83
+#  construct was a tagged type nothing in them dispatched on.
+#  A test either passes or fails.  There used to be a third bucket:
+#  acats-bonus/STATUS carried `pending' rows and run.sh refused to fail the
+#  tests underneath them, which held 57 tests of five unimplemented
+#  features outside the count entirely.
 run_bonus_tests(){
-    BONUS_PASS=0 BONUS_FAIL=0 BONUS_PEND=0
+    BONUS_PASS=0 BONUS_FAIL=0
     [[ -d acats-bonus ]] || { printf '  %sno acats-bonus/ directory%s\n' "$DIM" "$OFF"; return 0; }
 
-    heading "ACATS BONUS" "post-Ada-83 features, now the default: protected types, expression functions, if/case expressions, pragma-equivalent aspects, generic formal defaults, subprogram pointers, controlled types, Ada 95 unit names, dot notation"
+    heading "ACATS BONUS" "post-Ada-83 features, now the default: protected types, controlled types, child units, general and anonymous access types, subprogram pointers, expression functions, if/case expressions, aspects, generic formal defaults, streams, generalized references, iterators and for-of loops, Ada 95 unit names, dot notation; and coverage salvaged from tagged-blocked tests"
 
     local line tail_line
     line=$(sh acats-bonus/run.sh "$ADA83" 2>&1) || true
@@ -989,7 +992,6 @@ run_bonus_tests(){
     tail_line=$(printf '%s\n' "$line" | tail -1)
     BONUS_PASS=$(sed -n 's/.*[^0-9]\([0-9]\+\) passed.*/\1/p' <<<"$tail_line"); BONUS_PASS=${BONUS_PASS:-0}
     BONUS_FAIL=$(sed -n 's/.*[^0-9]\([0-9]\+\) failed.*/\1/p' <<<"$tail_line"); BONUS_FAIL=${BONUS_FAIL:-0}
-    BONUS_PEND=$(sed -n 's/.*[^0-9]\([0-9]\+\) pending.*/\1/p' <<<"$tail_line"); BONUS_PEND=${BONUS_PEND:-0}
 
     local graded=$((BONUS_PASS + BONUS_FAIL))
     printf '\n  %s%s%s\n' "$BOLD" "$tail_line" "$OFF"
@@ -2160,9 +2162,11 @@ Commands:
   debug              run only the debugging feature tests (-g, gdb, --dump-*);
                      cases whose feature has not merged yet count as pending
   bonus              run only the acats-bonus suite: ACATS 4.2 tests for the
-                     post-Ada-83 features behind -x, sanitized to Ada 83 plus
-                     the feature under test; a test whose feature is still
-                     pending counts as pending, never as a failure
+                     post-Ada-83 features, admitted by default and refused
+                     under -ada83, sanitized to Ada 83 plus
+                     the feature under test; every test either passes or
+                     fails, and a b-test passes only when each of its marked
+                     lines draws a diagnostic
   repro              run only the reproducers: the program each fix was landed
                      with, under repro/, run in isolation and judged by the
                      expectation lines in its header (see repro/run.sh)

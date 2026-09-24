@@ -1701,8 +1701,9 @@ type Special_Key is new Key_Manager.Key; -- See 7.4.2
 > anonymous object. Refused by name: class-wide types and dispatching,
 > `'CLASS` and `'TAG`, abstract types, extension aggregates (`(PARENT with
 > ...)`), a controlled actual for a generic formal tagged type (there are
-> none), abort-deferred finalization (there is no abort), coextensions and
-> per-object access discriminants, and `UNCHECKED_DEALLOCATION` of an object
+> none), abort-deferred finalization (there is no abort), a per-object
+> expression that names a discriminant as anything but a name by itself, and
+> `UNCHECKED_DEALLOCATION` of an object
 > whose collection has already been finalized, which is erroneous and is not
 > detected.
 
@@ -3053,6 +3054,45 @@ type Item (Number : Positive) is record
     --  No component depends on the discriminant
   end record;
 ```
+
+> **Extension — a discriminant of an unconstrained type (off under `-ada83`).**
+> A discriminant may be written with an unconstrained composite type mark,
+> `S : STRING`, and then holds a value of that type rather than a discrete
+> one. It is sugar over the coextension: the discriminant is carried as an
+> `access STRING`, the value written for it becomes the anonymous allocator
+> that defines it — a coextension of the object, allocated with it and
+> reclaimed with the master that holds it — and every mention of the
+> discriminant is implicitly dereferenced, so the program sees a `STRING`
+> and never a pointer. `X.S`, `X.S'LENGTH`, `X.S (I)`, `X.S (1 .. 3)` and
+> `X.S = "world"` all read as they look.
+>
+> Carrying the value out of line, rather than laying it out inside the
+> record, keeps the record a **constant size**: a type with such a
+> discriminant nests in an array or inside another record like any
+> fixed-size type, each element carrying its own coextension.
+>
+> The discriminant of a constrained object is a constant, so `X.S` may not
+> be assigned to, indexed into as a target, or passed as an `in out` or
+> `out` actual. `null` is not a value of the discriminant's type and is
+> refused.
+>
+> Two objects match when their discriminants are **equal as values**, not
+> when they designate one array: `Y := X` between two objects of
+> `NAMED ("world")` is allowed and raises Constraint_Error for
+> `NAMED ("worlds")`, exactly as a discrete discriminant would.
+>
+> A default is allowed, and makes objects of the type mutable as it does
+> for a discrete discriminant: `X : NAMED;` takes the default, and a
+> whole-record assignment may give it a value of any length. Nothing is
+> ever shared between two objects. A constrained target keeps the
+> coextension it already had, the check having proved the two values
+> equal; a mutable target adopts the storage an aggregate or a function
+> result had already allocated, or clones the value of a named source
+> into storage of its own, and in both cases returns what it was holding.
+> Each object's coextension is reclaimed from its own discriminant field
+> when the master holding the object is left, so an object that changes
+> its discriminant many times occupies what its current value needs and
+> no more.
 
 #### 3.7.2 Discriminant Constraints
 
@@ -8337,6 +8377,44 @@ task_body ::=
     end [task_simple_name];
 ```
 
+> [!IMPORTANT]
+> **Extension — discriminants on a task type (off under `-ada83`).**
+>
+> This paragraph describes a language extension. It is admitted by
+> default but is not part of ANSI/MIL-STD-1815A, and is rejected when the
+> compiler is invoked with `-ada83`; a program that relies on it is not a
+> legal Ada 83 program.
+>
+> A task type declaration may carry a known discriminant part, written as
+> for a record type or a protected type, and its discriminants may be
+> access discriminants:
+>
+> ```ada
+>     task type Worker (Id : Integer; Pool : access Queue) is
+>        entry Go;
+>     end Worker;
+>
+>     Hand : Worker (7, Shared'Access);
+> ```
+>
+> A single task declaration declares an object, not a type, and so has no
+> discriminant part. Every object of a discriminated task type is
+> constrained: the constraint is given where the object is declared, by an
+> allocator, or by the component subtype, unless every discriminant has a
+> default. The values are evaluated when the object is created, checked
+> against the discriminant subtypes, and readable by name in the task body,
+> including from a subprogram declared in it; a discriminant is a constant
+> there. An access discriminant carries the accessibility level of the
+> expression that gave it, exactly as a protected unit's does, so
+> converting it to a named access type inside the body raises Program_Error
+> when it would outlive what it designates.
+>
+> Three uses are refused rather than lowered: an entry declaration may not
+> name a discriminant, because entries are declared once with the type; a
+> discriminant is not visible from outside the task, as a protected unit's
+> components are not; and the discriminant of a task component of a record
+> may not be given by a discriminant of that record.
+
 The simple name at the start of a task body must repeat the task unit
 identifier. Similarly if a simple name appears at the end of the task
 specification or body, it must repeat the task unit identifier. Within a task
@@ -9647,7 +9725,7 @@ clause.
 > SEQUENTIAL_IO, DIRECT_IO, IO_EXCEPTIONS, CALENDAR, UNCHECKED_CONVERSION,
 > UNCHECKED_DEALLOCATION, COMMAND_LINE, MACHINE_CODE, and the package ASCII of
 > STANDARD. Such a with clause is accepted with a warning naming both
-> spellings (class `ada95-unit`, silenced by `-Wno-ada95-unit`); it has the
+> spellings (class `unit-alias`, silenced by `-Wno-unit-alias`); it has the
 > effect of a with clause naming the analogue, and the expanded name denotes
 > the analogue thereafter: `Ada.Text_IO.Put_Line` is `TEXT_IO.PUT_LINE`,
 > `use Ada.Text_IO;` makes the declarations of TEXT_IO use-visible, and
@@ -9685,6 +9763,23 @@ clause.
 > without the table produce the same dependences and link together; and a
 > diagnostic that mentions what such a name reaches spells it as the
 > analogue's entity, under its own name.
+
+> [!IMPORTANT]
+> **Extension — a use clause implies its with clause (off under `-ada83`).**
+>
+> This paragraph describes a language extension. It is admitted by
+> default but is not part of ANSI/MIL-STD-1815A, and is rejected when the
+> compiler is invoked with `-ada83`; a program that relies on it is not a
+> legal Ada 83 program.
+>
+> A use clause of a context clause may name a library package that no with
+> clause of that context clause mentions. The use clause then has the effect
+> of a with clause naming the same unit, followed by the use clause itself:
+> `use Text_IO;` alone stands for `with Text_IO; use Text_IO;`. The name may be
+> any name a with clause could give, `Ada.Text_IO` included. A name that is not
+> a library unit is reported once, at the use clause, and a unit named only
+> this way of which nothing is referenced draws the `unused-with` warning
+> naming the use clause.
 
 The with clauses and use clauses of the context clause of a library unit apply
 to this library unit and also to the secondary unit that defines the

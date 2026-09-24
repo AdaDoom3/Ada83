@@ -65,3 +65,4 @@ gmon.out
 # Region measurement scratch: rebuilt compilers and program runs.
 /swarm/*/work/
 __pycache__/
+acats-bonus/acats42/
