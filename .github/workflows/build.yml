@@ -70,7 +70,7 @@ jobs:
       - name: Build (Linux/macOS)
         if: inputs.platform != 'windows'
         shell: bash
-        run: make turboada
+        run: make ta
 
       - name: Build (Windows)
         if: inputs.platform == 'windows'

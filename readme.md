@@ -27,10 +27,10 @@ unpack the archive for your platform: `bin-linux.zip`, `bin-macos.zip` or
 `bin-windows.zip`
 
 ```ada
-with Text_IO; use Text_IO;
+use Text_IO;
 procedure Hello is
   begin
-    Put_Line ("Hello, Ada wrld!");
+    Put_Line ("Hello, Ada world!");
   end;
 ```
 
