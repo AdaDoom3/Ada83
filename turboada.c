@@ -58,13 +58,13 @@
   #endif
 #endif
 
-#define ADA83_VERSION_MAJOR 1
-#define ADA83_VERSION_MINOR 3
+#define TURBOADA_VERSION_MAJOR 1
+#define TURBOADA_VERSION_MINOR 3
 
-#define ADA83_VERSION_TEXT \
-  "ada83 " TEXT_OF (ADA83_VERSION_MAJOR) "." TEXT_OF (ADA83_VERSION_MINOR)
+#define TURBOADA_VERSION_TEXT \
+  "ta " TEXT_OF (TURBOADA_VERSION_MAJOR) "." TEXT_OF (TURBOADA_VERSION_MINOR)
 
-static const char Ada83_Usage_Head[] =
+static const char Turboada_Usage_Head[] =
   "%s\n"
   "\n"
   "Usage:\n"
@@ -118,7 +118,7 @@ static const char Ada83_Usage_Head[] =
   "  -W<class>, -Wno-<class>\n"
   "      Enable or disable one class:";
 
-static const char Ada83_Usage_Rest[] =
+static const char Turboada_Usage_Rest[] =
   "\n"
   "\n"
   "General:\n"
@@ -278,8 +278,8 @@ bool Size_Is_Indivisible (u64 bytes);
   #define ADA_EH_MSVC 1
 #endif
 
-#if defined(_WIN32) and not defined(ADA_EH_SEH)
-  #define ADA_EH_SEH 1
+#if defined(_WIN32) and not defined(ADA_EH_MSVC)
+  #define ADA_EH_MSVC 1
 #endif
 
 #if defined(ADA_FORCE_CV_WAIT)
@@ -1420,6 +1420,7 @@ typedef enum {
   _ (TK_REM,        "REM",        TOKEN_CLASS_RESERVED_WORD | TOKEN_CLASS_ARITHMETIC,              \
      .infix_precedence = PREC_MULTIPLICATIVE, .operator_designator = S ("rem"))                    \
   _ (TK_RENAMES,    "RENAMES",    TOKEN_CLASS_RESERVED_WORD)                                       \
+  _ (TK_REQUEUE,    "REQUEUE",    TOKEN_CLASS_NONE)                                                \
   _ (TK_RETURN,     "RETURN",     TOKEN_CLASS_RESERVED_WORD | TOKEN_CLASS_RECOVERY_ANCHOR)         \
   _ (TK_REVERSE,    "REVERSE",    TOKEN_CLASS_RESERVED_WORD)                                       \
   _ (TK_SELECT,     "SELECT",     TOKEN_CLASS_RESERVED_WORD | TOKEN_CLASS_RECOVERY_ANCHOR)         \
@@ -1429,6 +1430,7 @@ typedef enum {
   _ (TK_TERMINATE,  "TERMINATE",  TOKEN_CLASS_RESERVED_WORD)                                       \
   _ (TK_THEN,       "THEN",       TOKEN_CLASS_RESERVED_WORD | TOKEN_CLASS_ENDS_ALTERNATIVE)       \
   _ (TK_TYPE,       "TYPE",       TOKEN_CLASS_RESERVED_WORD | TOKEN_CLASS_RECOVERY_ANCHOR)         \
+  _ (TK_UNTIL,      "UNTIL",      TOKEN_CLASS_NONE)                                                \
   _ (TK_USE,        "USE",        TOKEN_CLASS_RESERVED_WORD)                                       \
   _ (TK_WHEN,       "WHEN",       TOKEN_CLASS_RESERVED_WORD | TOKEN_CLASS_ENDS_STATEMENTS)         \
   _ (TK_WHILE,      "WHILE",      TOKEN_CLASS_RESERVED_WORD | TOKEN_CLASS_RECOVERY_ANCHOR          \
@@ -1663,6 +1665,7 @@ typedef enum {
 
   NK_BINARY_OP, NK_UNARY_OP, NK_AGGREGATE,  NK_ALLOCATOR, NK_APPLY, NK_RANGE, NK_ASSOCIATION,
   NK_IF_EXPR,   NK_IF_ARM,   NK_CASE_EXPR,  NK_QUANTIFIED, NK_CHOICE_LIST,
+  NK_DECLARE_EXPR, NK_RAISE_EXPR, NK_DELTA_AGGREGATE, NK_BOX, NK_ITERATED_ASSOC,
 
   NK_SUBTYPE_INDICATION, NK_RANGE_CONSTRAINT, NK_INDEX_CONSTRAINT, NK_DISCRIMINANT_CONSTRAINT,
   NK_DIGITS_CONSTRAINT,  NK_DELTA_CONSTRAINT, NK_ARRAY_TYPE,       NK_RECORD_TYPE,
@@ -1673,7 +1676,7 @@ typedef enum {
   NK_ASSIGNMENT, NK_CALL_STMT, NK_RETURN, NK_IF,     NK_CASE,   NK_LOOP,  NK_BLOCK, NK_EXIT, NK_GOTO,
   NK_RAISE,      NK_NULL_STMT, NK_LABEL,  NK_ACCEPT, NK_SELECT, NK_SELECT_ALTERNATIVE,
   NK_DELAY,      NK_ABORT,     NK_CODE_STATEMENT,
-  NK_CONTINUE,
+  NK_CONTINUE,   NK_REQUEUE,
 
   NK_OBJECT_DECL,    NK_TYPE_DECL,           NK_SUBTYPE_DECL,          NK_EXCEPTION_DECL,
   NK_PROCEDURE_SPEC, NK_FUNCTION_SPEC,       NK_PROCEDURE_BODY,        NK_FUNCTION_BODY,
@@ -2470,6 +2473,31 @@ struct Node {
     } quantified;
 
     struct {
+      Node_List  declarations;
+      Node_List  statements;
+      Node      *expression;
+      bool       is_task_master;
+      u32        master_scope_id;
+    } declare_expr;
+
+    struct {
+      Node *exception_name;
+      Node *message;
+    } raise_expr;
+
+    struct {
+      Node      *base;
+      Node_List  items;
+    } delta_aggregate;
+
+    struct {
+      Slice      name;
+      Node      *domain;
+      Node      *expression;
+      bool       is_reverse;
+    } iterated;
+
+    struct {
       Node_List choices;
     } choice_list;
 
@@ -2530,6 +2558,7 @@ struct Node {
       Node *parent_type;
       Node *constraint;
       Node *extension;
+      bool  is_private_extension;
     } derived_type;
 
     struct {
@@ -2665,7 +2694,14 @@ struct Node {
 
     struct {
       Node *expression;
+      bool  is_until;
     } delay_stmt;
+
+    struct {
+      Node   *entry_name;
+      bool    with_abort;
+      Symbol *entry_sym;
+    } requeue_stmt;
 
     struct {
       Node_List task_names;
@@ -2690,6 +2726,7 @@ struct Node {
       Slice      name;
       Node_List  discriminants;
       Node      *definition;
+      Node      *private_parent;
       bool       is_limited;
       bool       is_private;
       bool       has_unknown_discriminants;
@@ -2905,6 +2942,7 @@ Node *Identifier_New (Slice text, Symbol *denoted, Type *type,
 
 Node *Unwrap_Association (Node *node);
 bool  Is_Conditional_Expression (const Node *node);
+bool  Value_Is_A_Box            (const Node *node);
 
 bool       Is_Dereference                      (const Node *node);
 bool       Is_Deferred_Constant_Declaration    (const Node *node);
@@ -2959,6 +2997,15 @@ typedef struct { u16 offset; bool is_list; } Syntax_Tree_Edge;
   _ (NK_QUANTIFIED,               KID (quantified.iteration_scheme),                    \
      KID (quantified.component_subtype),       KID (quantified.predicate))              \
   _ (NK_CHOICE_LIST,              KIDS (choice_list.choices))                           \
+  _ (NK_DECLARE_EXPR,             KIDS (declare_expr.declarations),                     \
+     KIDS (declare_expr.statements),           KID (declare_expr.expression))           \
+  _ (NK_RAISE_EXPR,               KID (raise_expr.exception_name),                      \
+     KID (raise_expr.message))                                                          \
+  _ (NK_DELTA_AGGREGATE,          KID (delta_aggregate.base),                           \
+     KIDS (delta_aggregate.items))                                                      \
+  _ (NK_BOX)                                                                            \
+  _ (NK_ITERATED_ASSOC,           KID (iterated.domain),                                \
+     KID (iterated.expression))                                                         \
                                                                                         \
   _ (NK_SUBTYPE_INDICATION,       KID (subtype_ind.subtype_mark),                       \
      KID (subtype_ind.constraint))                                                      \
@@ -3018,6 +3065,7 @@ typedef struct { u16 offset; bool is_list; } Syntax_Tree_Edge;
   _ (NK_SELECT_ALTERNATIVE,       KID (select_alternative.guard),                       \
      KID (select_alternative.statement),       KIDS (select_alternative.statements))    \
   _ (NK_DELAY,                    KID (delay_stmt.expression))                          \
+  _ (NK_REQUEUE,                  KID (requeue_stmt.entry_name))                        \
   _ (NK_ABORT,                    KIDS (abort_stmt.task_names))                         \
   _ (NK_CODE_STATEMENT,           KID (code_statement.insertion))                       \
                                                                                         \
@@ -3025,6 +3073,7 @@ typedef struct { u16 offset; bool is_list; } Syntax_Tree_Edge;
      KID (object_decl.object_type),            KID (object_decl.init),                  \
      KIDS (aspects))                                                                    \
   _ (NK_TYPE_DECL,                KID (type_decl.definition),                           \
+     KID (type_decl.private_parent),                                                    \
      KIDS (type_decl.discriminants),           KIDS (aspects))                          \
   _ (NK_SUBTYPE_DECL,             KID (type_decl.definition),                           \
      KIDS (type_decl.discriminants),           KIDS (aspects))                          \
@@ -3304,6 +3353,19 @@ enum {
      .reverse_flag              = FIELD (quantified.is_reverse))                          \
   _ (NK_CHOICE_LIST,                                                                      \
      .classes                   = NODE_CLASS_ENCLOSES_EXPRESSIONS)                        \
+  _ (NK_DECLARE_EXPR,                                                                     \
+     .classes                   = NODE_CLASS_ENCLOSES_EXPRESSIONS |                       \
+                                  NODE_CLASS_TAKES_TYPE_FROM_CONTEXT)                     \
+  _ (NK_RAISE_EXPR,                                                                       \
+     .classes                   = NODE_CLASS_ENCLOSES_EXPRESSIONS |                       \
+                                  NODE_CLASS_TAKES_TYPE_FROM_CONTEXT)                     \
+  _ (NK_DELTA_AGGREGATE,                                                                  \
+     .classes                   = NODE_CLASS_ENCLOSES_EXPRESSIONS |                       \
+                                  NODE_CLASS_TAKES_TYPE_FROM_CONTEXT)                     \
+  _ (NK_BOX,                                                                              \
+     .classes                   = NODE_CLASS_TAKES_TYPE_FROM_CONTEXT)                     \
+  _ (NK_ITERATED_ASSOC,                                                                   \
+     .classes                   = NODE_CLASS_ENCLOSES_EXPRESSIONS)                        \
                                                                                           \
   _ (NK_SUBTYPE_INDICATION)                                                               \
   _ (NK_RANGE_CONSTRAINT,                                                                 \
@@ -3373,6 +3435,7 @@ enum {
   _ (NK_SELECT)                                                                           \
   _ (NK_SELECT_ALTERNATIVE)                                                               \
   _ (NK_DELAY)                                                                            \
+  _ (NK_REQUEUE)                                                                          \
   _ (NK_ABORT)                                                                            \
   _ (NK_CODE_STATEMENT)                                                                   \
                                                                                           \
@@ -3713,6 +3776,7 @@ Parser   Parser_New               (const char *source, size_t length, const char
 bool     Parser_At                (Parser *p, Token_Kind kind);
 bool     Parser_At_Any            (Parser *p, Token_Kind k1, Token_Kind k2);
 bool     Parser_At_Class          (Parser *p, Token_Class_Mask classes);
+Token_Kind Parser_Peek_Kind       (Parser *p);
 bool     Parser_Peek_At           (Parser *p, Token_Kind kind);
 Parser_Mark Parser_Mark_Here      (const Parser *p);
 void     Parser_Rewind_To         (Parser *p, Parser_Mark mark);
@@ -3780,9 +3844,15 @@ Node *Parse_Association_Items                   (Parser *p, Node_List *list,
 void  Parse_Association_List                    (Parser *p, Node_List *list);
 Node *Parse_Aggregate_Association               (Parser *p, Node *first_choice,
                                                  Location loc);
+Node *Parse_Box                                 (Parser *p);
 Node *Parse_Aggregate_After_First_Item          (Parser *p, Node *first, Location loc);
 
 bool  Parser_At_Conditional_Expression          (Parser *p);
+bool  Parser_At_Iterated_Association            (Parser *p);
+bool  Parser_At_Declare_Expression_Statement    (Parser *p);
+Node *Parse_Iterated_Association                (Parser *p);
+Node *Parse_Declare_Expression                  (Parser *p);
+Node *Parse_Raise_Expression                    (Parser *p);
 bool  Parser_At_Aggregate_Continuation          (Parser *p);
 bool  Is_Unparenthesized_Conditional            (const Node *node);
 void  Reject_Unparenthesized_Conditional        (Node *node);
@@ -3865,6 +3935,10 @@ bool  Parse_Body_Trailer                  (Parser *p, Node *node, bool *is_separ
                                            Location *end_location,
                                            bool begin_is_optional);
 Node *Parse_Block_Statement               (Parser *p, Slice name);
+bool  Parser_At_Delay_Until               (Parser *p);
+Node *Parse_Delay_Tail                    (Parser *p, Node *node);
+bool  Parser_At_Requeue_Statement         (Parser *p);
+Node *Parse_Requeue_Statement             (Parser *p);
 Node *Parse_Accept_Statement              (Parser *p);
 Node *Parse_Select_Statement              (Parser *p);
 Node *Parse_Pragma                        (Parser *p);
@@ -4291,6 +4365,7 @@ struct Type {
   Shared_Access_Kind component_shared_access;
 
   Type_Kind partial_view_kind;
+  Type *partial_view_parent;
 
   u32 partial_view_discriminant_count;
 
@@ -5108,6 +5183,7 @@ struct Symbol {
   bool    declared_in_visible_part;
   bool    declared_in_private_part;
   u32     disc_agg_temp;
+  u32     contract_actual_temp;
   bool    is_disc_constrained;
 
   u8      raise_verdict;
@@ -5278,31 +5354,51 @@ void        Print_Scope        (const Scope *scope);
 void        ps                 (const Symbol *sym);
 void        psc                (const Symbol *sym);
 
+#define HIDING_CAUSE_LIST                                                    \
+  _ (BY_AN_ANCESTORS_PRIVATE_PART, Hidden_In_An_Ancestors_Private_Part, true,\
+     "in an ancestor's private part, which the visible part of a public "    \
+     "child cannot see")                                                     \
+  _ (BY_THE_VISIBILITY_CUTOFF,     Hidden_By_The_Visibility_Cutoff,    false,\
+     "after the generic unit being instantiated")                            \
+  _ (BY_A_MISSING_WITH_CLAUSE,     Hidden_By_A_Missing_With_Clause,    true, \
+     "as a child unit, and no with clause that applies here names it")
+
 typedef enum {
   HIDING_NONE,
-  HIDING_BY_AN_ANCESTORS_PRIVATE_PART,
-  HIDING_BY_THE_VISIBILITY_CUTOFF,
-  HIDING_BY_A_MISSING_WITH_CLAUSE
+#define _(name, hides, selected, explanation) HIDING_##name,
+  HIDING_CAUSE_LIST
+#undef _
+  HIDING_CAUSE_COUNT
 } Hiding_Cause;
 
-const char *const Hiding_Cause_Explanation[] = {
-  [HIDING_BY_AN_ANCESTORS_PRIVATE_PART] =
-    "in an ancestor's private part, which the visible part of a public "
-    "child cannot see",
-  [HIDING_BY_THE_VISIBILITY_CUTOFF] =
-    "after the generic unit being instantiated",
-  [HIDING_BY_A_MISSING_WITH_CLAUSE] =
-    "as a child unit, and no with clause that applies here names it"
-};
-_Static_assert (Count_Of (Hiding_Cause_Explanation) ==
-                HIDING_BY_A_MISSING_WITH_CLAUSE + 1,
-                "one explanation per Hiding_Cause");
+typedef enum {
+  NAME_WRITTEN_DIRECTLY,
+  NAME_WRITTEN_BY_SELECTION
+} Name_Form;
 
-Hiding_Cause Hiding_Cause_Here                   (Symbol *sym, Scope *scope);
 bool         Hidden_In_An_Ancestors_Private_Part (Symbol *sym, Scope *scope);
 bool         Hidden_By_The_Visibility_Cutoff     (Symbol *sym, Scope *scope);
-bool         Hidden_By_A_Missing_With_Clause     (Symbol *sym);
-bool         Symbol_Visible_Here                 (Symbol *sym, Scope *scope);
+bool         Hidden_By_A_Missing_With_Clause     (Symbol *sym, Scope *scope);
+
+typedef struct {
+  bool      (*hides)           (Symbol *sym, Scope *scope);
+  bool        a_selected_name;
+  const char *explanation;
+} Hiding_Cause_Row;
+
+const Hiding_Cause_Row Hiding_Cause_Table[] = {
+#define _(name, hides, selected, explanation) \
+  [HIDING_##name] = { hides, selected, explanation },
+  HIDING_CAUSE_LIST
+#undef _
+};
+_Static_assert (Count_Of (Hiding_Cause_Table) == HIDING_CAUSE_COUNT,
+                "one row per Hiding_Cause");
+
+Hiding_Cause Hiding_Cause_Here                   (Symbol *sym, Scope *scope,
+                                                  Name_Form form);
+bool         Symbol_Visible_Here                 (Symbol *sym, Scope *scope,
+                                                  Name_Form form);
 
 void    Symbol_Add                            (Symbol *sym);
 void    Scope_Link_Symbol                     (Scope *scope, Symbol *sym);
@@ -5800,7 +5896,7 @@ void Reject_Missing_Child_Unit_Parent           (Node *parent);
 Symbol *Child_Unit_Parent                       (Node *cu);
 Scope *Child_Unit_Parent_Region                 (Node *cu);
 bool Is_Public_Child_Declaration                (Node *cu);
-bool Is_Region_Of_A_Public_Ancestor             (Node *cu, Scope *scope);
+bool Ancestor_Private_Part_Reaches              (Scope *region);
 Scope *Resolve_Child_Unit_Parent                (Node *cu);
 bool Is_Child_Library_Unit                      (const Symbol *unit);
 bool Is_Private_Child                           (const Symbol *unit);
@@ -5823,6 +5919,7 @@ bool Declaration_Has_Its_Body            (Node *item, Node_List *bodies_in);
 bool Declaration_Completed_In_Specification (Node *item,
                                              Node *specification);
 bool Package_Specification_Requires_Body (Node *spec);
+bool Protected_Specification_Requires_Body (Node *spec);
 bool Package_Needs_No_Body               (const Symbol *package);
 void Check_Bodies_Are_Declared           (Node_List *declared_in,
                                           Node *specification,
@@ -6051,10 +6148,12 @@ Conversion_Refusal_Kind Classify_Conversion_Refusal (Type *target, Type *operand
 
 void        Reject_Illegal_Conversion       (Node *apply, Type *target, Type *operand);
 Region      Library_Region                  ();
+Region      Parametric_Region               ();
 bool        Scope_Opens_A_Master            (const Scope *scope);
 bool        Reject_Name_With_Cause          (Location location, Slice name);
 bool        Is_Stream_Attribute             (Attribute_Kind kind);
 bool        Designates_A_Stream             (Type *access_type);
+Type       *Access_To_A_Stream              ();
 typedef struct {
   Stream_Direction  direction;
   const char       *why;
@@ -6083,6 +6182,10 @@ bool        Reject_Value_Outside_Modulus               (Node *expression,
 void        Check_Static_Modular_Operand               (Node *whole, Node *operand,
                                                         Type *operand_type);
 bool        Noting_Warnings_Here                       (void);
+const char *Spell_Static_Bound                         (Type_Bound bound,
+                                                        char *buffer);
+#define Bound_Decimal(bound) \
+  Spell_Static_Bound ((bound), (char [Decimal_Text_Max]){ 0 })
 void        Note_Certain_Constraint_Error              (Node *value_expression,
                                                         Type *target_subtype,
                                                         const char *construct_noun);
@@ -6346,6 +6449,7 @@ void     Reject_Region_Escape               (Node *site,
 Slice    Render_Region_Escape               (const Region_Escape *escape,
                                              char *buffer);
 Region  Region_Of_Type                      (const Type *type);
+bool    Parameter_View_Is_The_Actuals        (Symbol *sym);
 Region  Region_Of_Entity                    (Symbol *sym);
 Node   *Array_A_Loop_Parameter_Iterates     (const Symbol *sym);
 Region  Region_Of_Name                      (Node *name);
@@ -6380,6 +6484,8 @@ typedef enum {
      true,  UNKNOWN)                                                          \
   _ (ACCESS_FROM_MASTER,     "the master of the call that built it",          \
      false, OF_THE_ORIGIN)                                                    \
+  _ (ACCESS_FROM_CALLER,     "the master of the call that passed it",         \
+     true,  OF_THE_ORIGIN)                                                    \
   _ (ACCESS_FROM_INSTANCE,   "the level of the object it belongs to",         \
      true,  UNKNOWN)                                                          \
   _ (ACCESS_FROM_PARTS,      "the deepest part it was built from",            \
@@ -6429,6 +6535,9 @@ typedef struct {
 const char *Spell_Accessibility_Origin      (Accessibility_Origin origin);
 bool    Accessibility_Is_Carried            (Accessibility from);
 Static_Region_Kind Static_Region_Of_Origin  (Accessibility_Origin origin);
+bool    Value_Contributes_A_Level            (Node *part);
+Accessibility_Origin Origin_Of_A_View        (Node *name,
+                                              Accessibility_Origin otherwise);
 bool    Aggregate_Carries_An_Accessibility_Level (Node *aggregate);
 bool    Selects_A_Component                 (const Node *name);
 Name_Step Step_Into_Name                    (Node *name);
@@ -6804,6 +6913,8 @@ void  Check_Entry_Name_Index                   (Symbol *entry, u32 index_count,
                                                 Node *index,
                                                 Location location);
 
+enum { ITERATED_ASSOCIATION_LIMIT = 4096 };
+
 typedef struct {
   u32   component_index;
   bool  variant_known;
@@ -6827,6 +6938,9 @@ Node               *aggregate,
 Node               *item,
 Type                 *record_type,
 Record_Aggregate_Coverage *coverage);
+void Require_Component_Type_Agreement        (Node *expression,
+                                              Type *component_type,
+                                              int errors_before);
 Type *Derive_Row_Type                        (Type *array_type);
 void  Resolve_Array_Aggregate_Choices        (Node *item,
                                               Type   *array_type);
@@ -6909,6 +7023,12 @@ Type *Pick_Common_Reading                    (Node *node);
 Type *Resolve_Dependent_Expressions          (Node *node, Type *want);
 Type *Resolve_Conditional_Expression         (Node *node);
 Type *Resolve_Quantified_Expression          (Node *node);
+Type *Resolve_Declare_Expression             (Node *node);
+Type *Resolve_Raise_Expression               (Node *node);
+Type *Resolve_Delta_Aggregate                (Node *node);
+void  Expand_Iterated_Associations           (Node *aggregate);
+Node *Substitute_Iteration_Value             (Node *body, Slice name,
+                                              Node *value);
 
 bool Decl_Is_Visible_Subprogram (Node *decl);
 void Append_Symbol_Grown        (Symbol ***items, u32 *count,
@@ -7139,6 +7259,7 @@ bool              Reject_Predicate_Attribute       (Node *node,
   _ (NK_ACCEPT,         Resolve_Accept_Statement)         \
   _ (NK_SELECT,         Resolve_Select_Statement)         \
   _ (NK_DELAY,          Resolve_Delay_Statement)          \
+  _ (NK_REQUEUE,        Resolve_Requeue_Statement)        \
   _ (NK_ABORT,          Resolve_Abort_Statement)          \
   _ (NK_CODE_STATEMENT, Resolve_Code_Statement)           \
   _ (NK_PRAGMA,         Resolve_Pragma)
@@ -7322,6 +7443,7 @@ _Static_assert (0 LOOP_SCHEME_LIST (LOOP_SCHEME_ONE) == LOOP_SCHEME_COUNT,
 
 Node *Loop_Parameter_Name (const Node *loop);
 
+Symbol *Entry_Called_By_Statement (Node *statement);
 void Check_Entry_Call_Select (Node *node);
 
 bool    Subprogram_Is_Derivable                 (Symbol *sub, Scope *scope,
@@ -7367,6 +7489,7 @@ Symbol       *Earlier_View_Awaiting_Completion (Slice name);
 Symbol       *Declare_Type_Entity            (Node *node);
 void          Check_Private_Type_Completion  (Type *type,
                                               Location where);
+void          Record_Private_Extension_Parent (Node *node, Type *type);
 Walk_Verdict  Circularity_Visit              (Node *node, void *context);
 bool          Find_Circularity               (Node *node, Type *type,
                                               Location *where);
@@ -7537,6 +7660,7 @@ void  Check_Protected_Bodies_Are_Declared     (Node_List *declarations,
 Walk_Verdict Protected_Action_Visit (Node *node, void *context);
 bool  Call_Acts_On_The_Current_Instance       (Node *name, Symbol *unit);
 Walk_Verdict Protected_Function_Body_Visit (Node *node, void *context);
+void  Check_Protected_Operation_Item          (Node *item, Symbol *type_sym);
 void  Resolve_Protected_Body                  (Node *node);
 void  Apply_Use_Clause_Name                   (Node *name_node);
 void  Apply_Use_Type_Clause_Name              (Node *name_node);
@@ -7559,6 +7683,11 @@ void    Check_Actual_Parameter_Types                (Symbol *callee, Symbol *pro
                                                      u32 first_actual);
 Node   *Get_Renamed_Object                          (const Symbol *sym);
 Node   *Name_A_View_Stands_For                      (const Symbol *sym);
+Symbol *Current_Protected_Operation = NULL;
+bool    Is_A_Protected_Operation                    (const Symbol *sym);
+Symbol *Enter_Protected_Operation                   (Symbol *operation);
+bool    Is_A_Constant_Protected_Component           (const Symbol *sym);
+bool    Reject_Constant_Protected_View              (Node *name);
 bool    Symbol_Denotes_A_Variable                   (const Symbol *sym);
 bool    Prefix_Is_Implicitly_Dereferenced           (Node *prefix);
 Type   *Get_Selected_Record                         (Node *node);
@@ -7734,7 +7863,7 @@ void Check_Allocator_Constraint_Form                (Node *node);
 bool Aggregate_Value_Type_Is_Wrong                  (Type *required,
                                                      Type *found);
 void Check_Array_Aggregate_Types                    (Node *node);
-void Check_Aggregate_Component_Lengths              (Node *node, Scope *vantage);
+void Check_Aggregate_Component_Values               (Node *node, Scope *vantage);
 void Check_Array_Aggregate_Coverage                 (Node *node);
 void Check_Multidimensional_String_Items            (Node *aggregate,
                                                      Others_Choice_Context context);
@@ -7972,6 +8101,7 @@ bool           Walk_Subprogram_Contract          (Node *body,
                                                   void *context);
 bool           Subprogram_Checks_A_Contract      (const Symbol *subprogram);
 Walk_Verdict   Old_Or_Result_Visit               (Node *node, void *context);
+Symbol        *Prefix_Names_No_Value              (Node *prefix);
 const char    *Contract_Attribute_Refusal        (Node *node);
 Type          *Resolve_Contract_Attribute        (Node *node);
 bool           Statically_Names_An_Object        (Node *name);
@@ -8888,6 +9018,7 @@ typedef struct {
   u32        params_ptr;
   Node_List *parameters;
   u32        end_label;
+  u32        requeue_slot;
 } Accept_State;
 
 enum { TYPE_STATE_NAME_MAX = 48 };
@@ -9046,6 +9177,7 @@ typedef struct {
   u32      pending_activation_capacity;
 
   bool  entry_call_try_mode;
+  u32   entry_family_object;
   u32   entry_call_timeout_temp;
   u32   entry_call_result_temp;
   Node *entry_call_delay_expr;
@@ -10357,6 +10489,7 @@ Value           Lower_Bounded_Expression    (Node *value, Result_Bound bound);
 bool            Actual_Is_An_Allocator      (Node *actual);
 u32             Emit_Parameter_Level        (Symbol *parameter);
 u32             Emit_Current_Activation_Level ();
+u32             Emit_Calling_Master_Level     ();
 enum { ACCESSIBILITY_LEVEL_DEEPEST = 1 << 20 };
 
 u32             Emit_Region_Level           (Region region);
@@ -10514,7 +10647,7 @@ typedef enum {
   _ (NK_IF)             _ (NK_CASE)          _ (NK_LOOP)                      \
   _ (NK_BLOCK)          _ (NK_EXIT)          _ (NK_GOTO)                      \
   _ (NK_RAISE)          _ (NK_NULL_STMT)     _ (NK_LABEL)                     \
-  _ (NK_ACCEPT)         _ (NK_SELECT)        _ (NK_DELAY)                     \
+  _ (NK_ACCEPT)         _ (NK_SELECT)        _ (NK_DELAY)     _ (NK_REQUEUE)  \
   _ (NK_ABORT)          _ (NK_CODE_STATEMENT)                                 \
   _ (NK_OBJECT_DECL)    _ (NK_TYPE_DECL)     _ (NK_SUBTYPE_DECL)              \
   _ (NK_EXCEPTION_DECL) _ (NK_PROCEDURE_BODY) _ (NK_FUNCTION_BODY)            \
@@ -10694,6 +10827,10 @@ void     Emit_Allocated_Object_Start    (Type *created_subtype, u32 address,
 Value    Lower_If_Expression            (Node *node);
 Value    Lower_Case_Expression          (Node *node);
 Value    Lower_Quantified_Expression    (Node *node);
+Value    Lower_Declare_Expression       (Node *node);
+Value    Lower_Raise_Expression         (Node *node);
+Value    Lower_Delta_Aggregate          (Node *node);
+Value    Emit_Unreached_Value           (Type *type);
 void     Adopt_Into_This_Activation     (Symbol *sym);
 Symbol  *Resolve_Subprogram_Rename      (Symbol *sym);
 Symbol  *Designated_Subprogram          (Symbol *named);
@@ -11056,6 +11193,9 @@ void  Emit_Protected_Call_Open  (Protected_Call *call, Node *node,
 void  Emit_Protected_Operands   (Symbol *unit, const char *object,
                                  const char *level, bool *need_comma);
 void  Emit_Protected_Call_Close (Protected_Call *call);
+bool Entry_Checks_A_Precondition (const Symbol *entry);
+void Emit_Entry_Precondition (Symbol *entry, const Rendezvous_Layout *layout,
+                              u32 param_block);
 Value Lower_Entry_Call       (Node *node, Symbol *sym, Symbol *entry_rename_sym);
 void Emit_Deallocated_Object_Finalization (Type *access_type,
                                            Type *designated, u32 data);
@@ -11192,13 +11332,20 @@ Type *Controlled_Routine_Type        (Type *named, Type *t);
 void  Note_Controlled_Routine        (Type *t, Controlled_Operation_Kind op);
 void  Emit_Controlled_Routine_Call   (Type *routine, u32 base,
                                       Controlled_Operation_Kind op);
-void  Emit_Controlled_Operation_Call (Symbol *op, u32 base);
+void  Emit_Controlled_Operation_Call (Symbol *op, u32 base,
+                                      Controlled_Operation_Kind kind);
+bool  Controlled_Build_Needs_Undo     (Type *t, u32 first_own,
+                                      bool parent_part, bool own);
+void  Emit_Controlled_Build_Undo      (Finalization_List *built,
+                                      Exception_Setup *guard);
 void  Emit_Controlled_Record_Walk    (Type *t, u32 base,
                                       Controlled_Operation_Kind op);
 void  Emit_Controlled_Component_Op   (Type *record, u32 base, u32 ci,
-                                      Controlled_Operation_Kind op);
+                                      Controlled_Operation_Kind op,
+                                      Finalization_List *built);
 void  Emit_Controlled_Element_Loop   (Type *element, u32 first, u32 stride,
-                                      u32 count, Controlled_Operation_Kind op);
+                                      u32 count, Controlled_Operation_Kind op,
+                                      u32 done_slot);
 void  Emit_Controlled_Elements       (Type *array_type, u32 data, u32 count,
                                       Controlled_Operation_Kind op);
 u32  Emit_Evaluable_Bound (Type_Bound *bound, Rep rep);
@@ -11380,8 +11527,9 @@ u32 Normalize_To_Fat_Pointer (Node *expr,
                                    Type   *type,
                                    Rep     bt);
 void     Emit_Deferred_Abort_Check ();
-u32 Emit_Delay_Microseconds (Node *delay_expr);
+u32 Emit_Delay_Microseconds (Node *delay);
 void Emit_Entry_Family_Index_Check (Symbol *entry_sym, u32 idx_val);
+Value Emit_Component_From_Entry_Call_Site (Symbol *sym, Type *ty);
 u32 Wrap_Constrained_As_Fat  (Node *expr,
                                    Type   *type,
                                    Rep     bt);
@@ -11612,6 +11760,7 @@ void Emit_Return_Cleanups (Symbol *moved, Value result);
 u32  Emit_Result_Copy_On_Secondary_Stack (Type *type, u32 object, u32 bytes,
                                           const char *what, Symbol *moved);
 void Lower_Return_Statement (Node *node);
+void Lower_Requeue_Statement (Node *node);
 void Emit_Case_Choice_Branch (u32 match_reg, u32 alt_label,
                               u32 next_check, bool has_more);
 void Emit_Case_Range_Choice (u32 selector, u32 low, u32 high,
@@ -11792,6 +11941,7 @@ void Lower_Instance_Expansion          (Symbol *instance_sym,
                                         Symbol *template_sym);
 void Lower_Task_Declaration            (Node *node);
 void Lower_Protected_Declaration       (Node *node);
+void Lower_Protected_Specification_Items  (Node *node);
 void Elaborate_Protected_Declaration   (Node *node);
 void Define_Single_Protected_Object    (Symbol *object);
 void Emit_Protected_Entry_Index_Binding (Node *item, Symbol *entry);
@@ -11815,6 +11965,7 @@ void     Emit_Rendezvous_Body (Node *body,
                                u32 caller_ptr,
                                u32 params_ptr,
                                u32 after_label,
+                               u32 requeue_slot,
                                bool caller_executes);
 Selective_Wait_Shape Classify_Selective_Wait (Node *node);
 
@@ -12021,6 +12172,7 @@ void Copy_Fat_Into_Local                (Symbol *sym,
                                          u32     fat,
                                          Rep     bound_rep);
 bool Lower_Object_Rename_Slots       (Node *node);
+Node *Declared_Initial_Value         (Node *declaration);
 bool Object_Needs_Finalization       (Node *declaration, void *context);
 bool Declarations_Need_Finalization  (Node_List *list);
 bool Type_Defaults_Create_Controlled_Temps (Type *t);
@@ -12073,6 +12225,8 @@ Finalizable_Entry *Register_Library_Finalizable_Object (Symbol *object,
 Finalizable_Kind   Object_Finalizable_Kind (Node *declaration, Type *t);
 void Elaborate_Finalizable_Object (Symbol *object, Type *t, Node *declaration,
                                    Finalizable_Registrar *register_with);
+void Finish_Declared_Object        (Symbol *object, Type *t, Node *declaration,
+                                    Finalizable_Registrar *register_with);
 bool Subtype_Has_Allocated_Coextensions (const Type *t);
 Constituent_Verdict Allocated_Coextension_Step (const Type *t, const Constituent_Walk *walk);
 #define COLLECTION_STORAGE_LIST(_)                                          \
@@ -12149,6 +12303,9 @@ typedef struct {
 
 void Emit_Controlled_Run_Op           (Controlled_Run run, u32 base,
                                 Controlled_Operation_Kind op);
+void Emit_Finalize_Failure_Note       ();
+void Emit_Finalize_Failure_Close      (Exception_Setup *guard);
+void Emit_Raise_If_Finalize_Failed    (Finalization_Bounded_Error error);
 void Emit_Bounded_Error_Close         (Exception_Setup *guard,
                                        Finalization_Bounded_Error error);
 void Emit_Controlled_Assignment       (Controlled_Run run, u32 target, u32 source,
@@ -12615,6 +12772,15 @@ void Emit_Record_Component_Value (Node     *expression,
                                          u32         base,
                                          u32         component_index,
                                          Disc_Alloc_Info *disc_info);
+void Emit_Record_Component_Box_Default (Type       *agg_type,
+                                        u32         base,
+                                        u32         component_index,
+                                        Disc_Alloc_Info *disc_info);
+void Emit_Record_Aggregate_Component (Node       *expression,
+                                      Type       *agg_type,
+                                      u32         base,
+                                      u32         component_index,
+                                      Disc_Alloc_Info *disc_info);
 bool      Is_Others_Choice      (Node *choice);
 bool      Aggregate_Has_Others  (Node *agg);
 bool      Is_Static_Int_Node    (Node *n);
@@ -15765,8 +15931,7 @@ static const struct {
   .object_suffix     = ".obj",
   .executable_suffix = ".exe",
   .libraries         = "msvcrt.lib ucrt.lib vcruntime.lib kernel32.lib "
-                       "synchronization.lib legacy_stdio_definitions.lib "
-                       "oldnames.lib",
+                       "legacy_stdio_definitions.lib oldnames.lib",
   .options           = "/NOLOGO /INCREMENTAL:NO /STACK:"
                        TEXT_OF (LINK_STACK_BYTES) " /SUBSYSTEM:CONSOLE",
   .debug_options     = "/DEBUG",
@@ -15779,7 +15944,7 @@ static const struct {
   .output_prefix     = "",
   .object_suffix     = ".o",
   .executable_suffix = "",
-  .libraries         = "-lm -lsynchronization",
+  .libraries         = "-lm",
   .options           = "-Wl,--stack," TEXT_OF (LINK_STACK_BYTES),
   .debug_options     = NULL,
   .cpp_library       = "-lstdc++",
@@ -15804,7 +15969,10 @@ static const char *const Linker_Drivers[] = {
 #if defined(_WIN32) and defined(ADA_WINDOWS_MSVC)
   "lld-link", "link"
 #elif defined(_WIN32)
-  "clang -fuse-ld=lld", "zig cc", "cc", "clang", "gcc"
+  "gcc -fuse-ld=lld",
+  "clang -fuse-ld=lld --target=x86_64-w64-windows-gnu",
+  "zig cc -target x86_64-windows-gnu",
+  "cc", "gcc", "clang"
 #else
   "cc", "clang", "gcc"
 #endif
@@ -15964,9 +16132,9 @@ typedef struct {
 } Main_Lens;
 
 const Main_Lens Main_Lenses[] = {
-  { "Build",      "ada83.build"     },
-  { "Build Main", "ada83.buildMain" },
-  { "Plan",       "ada83.showPlan"  },
+  { "Build",      "turboada.build"     },
+  { "Build Main", "turboada.buildMain" },
+  { "Plan",       "turboada.showPlan"  },
 };
 
 static Open_Document Open_Documents[MAX_OPEN_DOCUMENTS];
@@ -17485,6 +17653,7 @@ void  Project_Print_Plan_Json     (const Project_Request *request);
 #define ADA_SPIN_LIMIT        "64"
 #define ADA_SPIN_BUDGET_HOT   "16384"
 #define ADA_SPIN_BUDGET_COLD  "0"
+#define ADA_PROTECTED_POLL_US "200"
 
 #ifdef _WIN32
   #define ADA_LOCK_ATTEMPT(suffix)                                        \
@@ -20045,6 +20214,11 @@ static const char Runtime_Protected_Text[] =
       " i64 %slot, i32 1\n"
     "  %body = load ptr, ptr %ep\n"
     "  %_ran = call ptr %body(ptr %frame, ptr %po, i64 %idx, ptr %cur)\n"
+    "; RM 9.5.4: a body that requeued its caller hands the record back, and\n"
+    "; the call is not complete -- it is queued again, under its new index\n"
+    "  %moved = icmp ne ptr %_ran, null\n"
+    "  br i1 %moved, label %restart, label %complete\n"
+    "complete:\n"
     COMPLETE_QUEUED_CALL ("%cur")
     "  br label %restart\n"
     "; RM 9.5.3(7): an exception in a barrier gives Program_Error to every\n"
@@ -20055,6 +20229,31 @@ static const char Runtime_Protected_Text[] =
     "  br label %release\n"
     "release:\n"
     "  call void @__ada_prot_unlock(ptr %po)\n"
+    "  ret void\n"
+    "}\n\n"
+
+    "; RM 9.5.4: a requeue takes the call out of the entry body running it\n"
+    "; and puts it back on the object's queue under the entry it names, all\n"
+    "; under the lock the protected action already holds\n"
+    "define linkonce_odr void @__ada_prot_requeue(ptr %po, ptr %rv,"
+      " i64 %idx) {\n"
+    "entry:\n"
+    "  %ip = " RENDEZVOUS_RECORD_FIELD ("%rv", ENTRY_INDEX) "\n"
+    "  store i64 %idx, ptr %ip\n"
+    "  %rnp = " RENDEZVOUS_RECORD_FIELD ("%rv", NEXT) "\n"
+    "  store ptr null, ptr %rnp\n"
+    "  %qp = " PROTECTED_HEADER_FIELD ("%po", QUEUE_HEAD) "\n"
+    "  br label %walk\n"
+    "walk:\n"
+    "  %linkp = phi ptr [ %qp, %entry ], [ %nxp, %adv ]\n"
+    "  %cur = load ptr, ptr %linkp\n"
+    "  %tail = icmp eq ptr %cur, null\n"
+    "  br i1 %tail, label %append, label %adv\n"
+    "adv:\n"
+    "  %nxp = " RENDEZVOUS_RECORD_FIELD ("%cur", NEXT) "\n"
+    "  br label %walk\n"
+    "append:\n"
+    "  store ptr %rv, ptr %linkp\n"
     "  ret void\n"
     "}\n\n"
 
@@ -20106,6 +20305,104 @@ static const char Runtime_Protected_Text[] =
     RAISE_BRIDGED_IDENTITY ("eid", "%rv")
     "out:\n"
     "  ret void\n"
+    "}\n\n"
+
+    "; RM 9.7.2/9.7.3: a timed or conditional call is queued exactly as an\n"
+    "; ordinary one, so the service pass the queueing starts serves it when\n"
+    "; its barrier is open.  What differs is what happens when that pass\n"
+    "; leaves it queued: the conditional form withdraws it at once and the\n"
+    "; timed form withdraws it at the deadline.  Withdrawal retakes the\n"
+    "; object's lock, so a body that is being run for this call has already\n"
+    "; stored the completion word by then and the call counts as accepted.\n"
+    "; The result is 1 when the body ran and 0 when the call was withdrawn.\n"
+    "define linkonce_odr i8 @__ada_prot_entry_call_try(ptr %po, i64 %idx,"
+      " ptr %params, i64 %timeout_us) {\n"
+    "entry:\n"
+    "  %rv = alloca i8, i64 " TEXT_OF (RENDEZVOUS_RECORD_SIZE) ", align 8\n"
+    "  call void @__ada_rv_init(ptr %rv, ptr %po, i64 %idx, ptr %params)\n"
+    "  %cp = " RENDEZVOUS_RECORD_FIELD ("%rv", COMPLETION_WORD) "\n"
+    "  %xp = " RENDEZVOUS_RECORD_FIELD ("%rv", EXCEPTION_IDENTITY) "\n"
+    "  call void @__ada_prot_lock(ptr %po)\n"
+    "  %dp = " PROTECTED_HEADER_FIELD ("%po", FINALIZED) "\n"
+    "  %gone = load i8, ptr %dp\n"
+    "  %dead = icmp ne i8 %gone, 0\n"
+    "  br i1 %dead, label %finalized, label %queue\n"
+    "finalized:\n"
+    "  call void @__ada_prot_unlock(ptr %po)\n"
+    RAISE_RUNTIME_EXCEPTION ("peid", "program_error")
+    "queue:\n"
+    "  %qp = " PROTECTED_HEADER_FIELD ("%po", QUEUE_HEAD) "\n"
+    "  br label %walk\n"
+    "walk:\n"
+    "  %linkp = phi ptr [ %qp, %queue ], [ %nxp, %adv ]\n"
+    "  %cur = load ptr, ptr %linkp\n"
+    "  %tail = icmp eq ptr %cur, null\n"
+    "  br i1 %tail, label %append, label %adv\n"
+    "adv:\n"
+    "  %nxp = " RENDEZVOUS_RECORD_FIELD ("%cur", NEXT) "\n"
+    "  br label %walk\n"
+    "append:\n"
+    "  store ptr %rv, ptr %linkp\n"
+    "  call void @__ada_prot_service(ptr %po)\n"
+    "  %state = load atomic i32, ptr %cp acquire, align 4\n"
+    "  %ran = icmp ne i32 %state, " TEXT_OF (RENDEZVOUS_INCOMPLETE) "\n"
+    "  br i1 %ran, label %taken, label %pending\n"
+    "pending:\n"
+    "  %timed = icmp ne i64 %timeout_us, 0\n"
+    "  br i1 %timed, label %deadline, label %withdraw\n"
+    "deadline:\n"
+    "  %now0 = call i64 @__ada_rt_now_us()\n"
+    "  %until = add i64 %now0, %timeout_us\n"
+    "  br label %poll\n"
+    "poll:\n"
+    "  %state2 = load atomic i32, ptr %cp acquire, align 4\n"
+    "  %ran2 = icmp ne i32 %state2, " TEXT_OF (RENDEZVOUS_INCOMPLETE) "\n"
+    "  br i1 %ran2, label %taken, label %expiry\n"
+    "expiry:\n"
+    "  %now = call i64 @__ada_rt_now_us()\n"
+    "  %late = icmp sge i64 %now, %until\n"
+    "  br i1 %late, label %withdraw, label %nap\n"
+    "nap:\n"
+    "  %left = sub i64 %until, %now\n"
+    "  %long = icmp sgt i64 %left, " ADA_PROTECTED_POLL_US "\n"
+    "  %slice = select i1 %long, i64 " ADA_PROTECTED_POLL_US ", i64 %left\n"
+    "  call void @__ada_rt_sleep_us(i64 %slice)\n"
+    "  br label %poll\n"
+    "withdraw:\n"
+    "  call void @__ada_prot_lock(ptr %po)\n"
+    "  %state3 = load atomic i32, ptr %cp acquire, align 4\n"
+    "  %ran3 = icmp ne i32 %state3, " TEXT_OF (RENDEZVOUS_INCOMPLETE) "\n"
+    "  br i1 %ran3, label %unqueued, label %unlink\n"
+    "unlink:\n"
+    "  %wqp = " PROTECTED_HEADER_FIELD ("%po", QUEUE_HEAD) "\n"
+    "  br label %scan\n"
+    "scan:\n"
+    "  %slink = phi ptr [ %wqp, %unlink ], [ %snxp, %step ]\n"
+    "  %node = load ptr, ptr %slink\n"
+    "  %end = icmp eq ptr %node, null\n"
+    "  br i1 %end, label %unqueued, label %probe\n"
+    "probe:\n"
+    "  %snxp = " RENDEZVOUS_RECORD_FIELD ("%node", NEXT) "\n"
+    "  %mine = icmp eq ptr %node, %rv\n"
+    "  br i1 %mine, label %drop, label %step\n"
+    "step:\n"
+    "  br label %scan\n"
+    "drop:\n"
+    "  %after = load ptr, ptr %snxp\n"
+    "  store ptr %after, ptr %slink\n"
+    "  call void @__ada_prot_unlock(ptr %po)\n"
+    "  ret i8 0\n"
+    "unqueued:\n"
+    "  call void @__ada_prot_unlock(ptr %po)\n"
+    "  br label %taken\n"
+    "taken:\n"
+    "  %eid = load i64, ptr %xp\n"
+    "  %raised = icmp ne i64 %eid, 0\n"
+    "  br i1 %raised, label %reraise, label %out\n"
+    "reraise:\n"
+    RAISE_BRIDGED_IDENTITY ("eid", "%rv")
+    "out:\n"
+    "  ret i8 1\n"
     "}\n\n"
 
     "; E'COUNT: the calls queued on entry %idx, counted under the lock the\n"
@@ -21300,7 +21597,7 @@ void Report_Suggestion_Note (Location location,
 void Report_Driver_Diagnostic (Diagnostic_Severity_Kind severity,
                                int *count, const char *format,
                                va_list args) {
-  fprintf (stderr, "ada83: %s%s%s: ", Pick_Severity_Color (severity),
+  fprintf (stderr, "ta: %s%s%s: ", Pick_Severity_Color (severity),
            Spell_Severity (severity), Spell_Color_Reset ());
   vfprintf (stderr, format, args);
   fputc ('\n', stderr);
@@ -22772,6 +23069,10 @@ bool Is_Conditional_Expression (const Node *node) {
   return node and (node->kind == NK_IF_EXPR or node->kind == NK_CASE_EXPR);
 }
 
+bool Value_Is_A_Box (const Node *node) {
+  return node and node->kind == NK_BOX;
+}
+
 const char *Spell_Generic_Kind (Generic_Unit_Kind kind) {
   switch (kind) {
     case GENERIC_UNIT_PROCEDURE: return "procedure";
@@ -23574,12 +23875,16 @@ bool Parser_At_Class (Parser *parser, Token_Class_Mask classes) {
   return Token_In_Any_Class (parser->current_token.kind, classes);
 }
 
-bool Parser_Peek_At (Parser *parser, Token_Kind kind) {
+Token_Kind Parser_Peek_Kind (Parser *parser) {
   Parser_Mark mark = Parser_Mark_Here (parser);
   parser->lexer.prev_token_kind = parser->current_token.kind;
-  bool result = Lex_Token (&parser->lexer).kind == kind;
+  Token_Kind kind = Lex_Token (&parser->lexer).kind;
   Parser_Rewind_To (parser, mark);
-  return result;
+  return kind;
+}
+
+bool Parser_Peek_At (Parser *parser, Token_Kind kind) {
+  return Parser_Peek_Kind (parser) == kind;
 }
 
 Parser_Mark Parser_Mark_Here (const Parser *parser) {
@@ -23875,12 +24180,26 @@ Node *Parse_Aggregate_Association (Parser *p, Node *first_choice,
   while (Parser_Match (p, TK_BAR))
     Node_List_Push (&assoc->association.choices, Parse_Choice (p));
   if (Parser_Match (p, TK_ARROW))
-    assoc->association.expression = Parse_Expression (p);
+    assoc->association.expression = Parser_At (p, TK_BOX)
+                                      ? Parse_Box (p) : Parse_Expression (p);
   return assoc;
+}
+
+Node *Parse_Box (Parser *p) {
+  Extension_Is_Enabled (Get_Location (p),
+                        "a component left at its default with '<>'");
+  return Parse_Open_Node (p, TK_BOX, NK_BOX);
 }
 
 Node *Parse_Aggregate_After_First_Item (Parser *p, Node *first,
                                         Location loc) {
+  if (first and first->kind == NK_ITERATED_ASSOC) {
+    Node *node = Node_New (NK_AGGREGATE, loc);
+    Node_List_Push (&node->aggregate.items, first);
+    if (Parser_Match (p, TK_COMMA))
+      Parse_Association_List (p, &node->aggregate.items);
+    return node;
+  }
   if (not Parser_At_Aggregate_Continuation (p)) return first;
   Node *node = Node_New (NK_AGGREGATE, loc);
   Node *item = Parser_Match (p, TK_DOTDOT)
@@ -23985,7 +24304,73 @@ Node *Parse_Conditional_Expression (Parser *p) {
                               : Parse_Case_Expression (p);
 }
 
+bool Parser_At_Iterated_Association (Parser *p) {
+  if (not Parser_At (p, TK_FOR)) return false;
+  Parser_Mark mark = Parser_Mark_Here (p);
+  Parser_Advance (p);
+  bool quantifier = Parser_At (p, TK_ALL) or
+                    (Parser_At (p, TK_IDENTIFIER) and
+                     Slices_Match (p->current_token.text, S ("SOME")));
+  Parser_Rewind_To (p, mark);
+  return not quantifier;
+}
+
+Node *Parse_Iterated_Association (Parser *p) {
+  Extension_Is_Enabled (Get_Location (p), "an iterated component association");
+  Node *node = Parse_Open_Node (p, TK_FOR, NK_ITERATED_ASSOC);
+  node->iterated.name = Parse_Identifier (p);
+  Parser_Expect (p, TK_IN);
+  node->iterated.is_reverse = Parser_Match (p, TK_REVERSE);
+  node->iterated.domain     = Parse_Range (p);
+  Parser_Expect (p, TK_ARROW);
+  node->iterated.expression = Parse_Expression (p);
+  return node;
+}
+
+bool Parser_At_Declare_Expression_Statement (Parser *p) {
+  Parser_Mark mark  = Parser_Mark_Here (p);
+  u32         depth = 0;
+  bool        found = false;
+  while (not Parser_At (p, TK_EOF)) {
+    Token_Kind kind = p->current_token.kind;
+    if (kind == TK_RPAREN and depth == 0) break;
+    if (kind == TK_SEMICOLON and depth == 0) { found = true; break; }
+    if (kind == TK_LPAREN) depth++;
+    if (kind == TK_RPAREN) depth--;
+    Parser_Advance (p);
+  }
+  Parser_Rewind_To (p, mark);
+  return found;
+}
+
+Node *Parse_Declare_Expression (Parser *p) {
+  Extension_Is_Enabled (Get_Location (p), "a declare expression");
+  Node *node = Parse_Open_Node (p, TK_DECLARE, NK_DECLARE_EXPR);
+  node->declarative_part_end =
+    Parse_Declarative_Items (p, &node->declare_expr.declarations,
+                             DECLARATIVE_SECTION_DECLARATIVE_PART);
+  Parser_Expect (p, TK_BEGIN);
+  Parse_Until (p, not Parser_At_Declare_Expression_Statement (p)) {
+    Node_List_Push (&node->declare_expr.statements, Parse_Statement (p));
+    Parser_Expect (p, TK_SEMICOLON);
+    if (p->panic_mode) Parser_Synchronize (p);
+  }
+  node->declare_expr.expression = Parse_Expression (p);
+  return node;
+}
+
+Node *Parse_Raise_Expression (Parser *p) {
+  Extension_Is_Enabled (Get_Location (p), "a raise expression");
+  Node *node = Parse_Open_Node (p, TK_RAISE, NK_RAISE_EXPR);
+  node->raise_expr.exception_name = Parse_Name (p);
+  if (Parser_Match (p, TK_WITH))
+    node->raise_expr.message = Parse_Expression (p);
+  return node;
+}
+
 Node *Parse_Operand_In_Parentheses (Parser *p) {
+  if (Parser_At (p, TK_DECLARE))          return Parse_Declare_Expression (p);
+  if (Parser_At_Iterated_Association (p)) return Parse_Iterated_Association (p);
   if (not Parser_At_Conditional_Expression (p)) return Parse_Expression (p);
   Node *conditional = Parse_Conditional_Expression (p);
   if (Parser_At_Aggregate_Continuation (p))
@@ -24050,6 +24435,8 @@ Node *Parse_Primary (Parser *p) {
     return node;
   }
 
+  if (Parser_At (p, TK_RAISE)) return Parse_Raise_Expression (p);
+
   if (Parser_At_Any (p, TK_NOT, TK_ABS) or
       Parser_At_Any (p, TK_PLUS, TK_MINUS)) {
     Reject_At (location,
@@ -24064,10 +24451,18 @@ Node *Parse_Primary (Parser *p) {
     expr = Parse_Range_Constraint_After_Mark (p, expr, location);
     Node *node = Parse_Aggregate_After_First_Item (p, expr, location);
     if (node == expr and Parser_Match (p, TK_WITH)) {
-      node = Node_New (NK_AGGREGATE, location);
-      Node_List_Push (&node->aggregate.items, expr);
-      node->aggregate.is_named = true;
-      Parse_Association_List (p, &node->aggregate.items);
+      Location at = Get_Location (p);
+      if (Parser_Match (p, TK_DELTA)) {
+        Extension_Is_Enabled (at, "a delta aggregate");
+        node = Node_New (NK_DELTA_AGGREGATE, location);
+        node->delta_aggregate.base = expr;
+        Parse_Association_List (p, &node->delta_aggregate.items);
+      } else {
+        node = Node_New (NK_AGGREGATE, location);
+        Node_List_Push (&node->aggregate.items, expr);
+        node->aggregate.is_named = true;
+        Parse_Association_List (p, &node->aggregate.items);
+      }
     }
     Parser_Expect (p, TK_RPAREN);
     if (node == expr and expr->parenthesis_depth < UINT8_MAX)
@@ -24189,6 +24584,7 @@ Node *Parse_Choice (Parser *p) {
 }
 
 Node *Parse_Association_Head (Parser *p, Location loc) {
+  if (Parser_At_Iterated_Association (p)) return Parse_Iterated_Association (p);
   if (Parser_At_Conditional_Expression (p))
     return Parse_Conditional_Expression (p);
   if (Parser_At (p, TK_OTHERS)) return Parse_Choice (p);
@@ -24492,7 +24888,7 @@ Node *Parse_Subtype_Indication (Parser *p) {
 
 bool Parser_At_Extension_Word (Parser *p, Token_Kind word) {
   if (Parser_At (p, word)) return true;
-  if (Language_Extensions or not Parser_At (p, TK_IDENTIFIER)) return false;
+  if (not Parser_At (p, TK_IDENTIFIER)) return false;
   return Slices_Match (p->current_token.text,
                        Slice_Of_Text (Spell_Token (word)));
 }
@@ -24675,6 +25071,11 @@ Node *Parse_Type_Definition (Parser *p) {
         (Parser_Peek_At (p, TK_RECORD) or Parser_Peek_At (p, TK_NULL))) {
       Parser_Advance (p);
       node->derived_type.extension = Parse_Record_Definition (p);
+    } else if (Parser_At (p, TK_WITH) and Parser_Peek_At (p, TK_PRIVATE)) {
+      Extension_Is_Enabled (Get_Location (p), "a private extension");
+      Parser_Advance (p);
+      Parser_Advance (p);
+      node->derived_type.is_private_extension = true;
     }
     return node;
   }
@@ -24819,6 +25220,42 @@ void Parse_Exception_Handlers (Parser *p, Node_List *handlers) {
   }
 }
 
+bool Parser_At_Delay_Until (Parser *p) {
+  if (not Parser_At_Extension_Word (p, TK_UNTIL)) return false;
+  Token_Kind next = Parser_Peek_Kind (p);
+  return next != TK_SEMICOLON and next != TK_DOT and next != TK_TICK and
+         next != TK_LPAREN   and Get_Infix_Precedence (next) == PREC_NONE;
+}
+
+Node *Parse_Delay_Tail (Parser *p, Node *node) {
+  Location at = Get_Location (p);
+  if (Parser_At_Delay_Until (p)) {
+    Parser_Advance (p);
+    Extension_Is_Enabled (at, "a delay until statement");
+    node->delay_stmt.is_until = true;
+  }
+  node->delay_stmt.expression = Parse_Expression (p);
+  return node;
+}
+
+bool Parser_At_Requeue_Statement (Parser *p) {
+  return Parser_At_Extension_Word (p, TK_REQUEUE) and
+         Parser_Peek_At (p, TK_IDENTIFIER);
+}
+
+Node *Parse_Requeue_Statement (Parser *p) {
+  Location at   = Get_Location (p);
+  Node    *node = Node_New (NK_REQUEUE, at);
+  Parser_Advance (p);
+  Extension_Is_Enabled (at, "a requeue statement");
+  node->requeue_stmt.entry_name = Parse_Name (p);
+  if (Parser_Match (p, TK_WITH)) {
+    Parser_Expect (p, TK_ABORT);
+    node->requeue_stmt.with_abort = true;
+  }
+  return node;
+}
+
 Node *Parse_Accept_Statement(Parser *p) {
   Node *node = Parse_Open_Node (p, TK_ACCEPT, NK_ACCEPT);
   node->accept_stmt.entry_name = Parse_Identifier (p);
@@ -24887,8 +25324,7 @@ Node *Parse_Select_Statement (Parser *p) {
       kind = SELECT_ALTERNATIVE_TERMINATE;
     } else if (Parser_Match (p, TK_DELAY)) {
       kind      = SELECT_ALTERNATIVE_DELAY;
-      statement = Node_New (NK_DELAY, alt_loc);
-      statement->delay_stmt.expression = Parse_Expression (p);
+      statement = Parse_Delay_Tail (p, Node_New (NK_DELAY, alt_loc));
     } else if (Parser_At (p, TK_ACCEPT)) {
       kind      = SELECT_ALTERNATIVE_ACCEPT;
       statement = Parse_Accept_Statement (p);
@@ -25138,8 +25574,7 @@ Node *Parse_Statement (Parser *p) {
       break;
 
     case TK_DELAY:
-      stmt = Parse_Open_Node (p, TK_DELAY, NK_DELAY);
-      stmt->delay_stmt.expression = Parse_Expression (p);
+      stmt = Parse_Delay_Tail (p, Parse_Open_Node (p, TK_DELAY, NK_DELAY));
       break;
 
     case TK_ABORT:
@@ -25149,6 +25584,7 @@ Node *Parse_Statement (Parser *p) {
 
     case TK_IDENTIFIER:
       stmt = Parser_At_Continue_Statement (p) ? Parse_Continue_Statement (p)
+           : Parser_At_Requeue_Statement (p)  ? Parse_Requeue_Statement (p)
                                               : Parse_Assignment_Or_Call (p);
       break;
 
@@ -25279,7 +25715,14 @@ Node *Parse_Type_Declaration(Parser *p) {
   node->type_decl.is_limited = Parser_Match (p, TK_LIMITED);
   node->type_decl.is_private = Parser_Match (p, TK_PRIVATE);
   if (not node->type_decl.is_private) {
-    node->type_decl.definition = Parse_Type_Definition (p);
+    Node *definition           = Parse_Type_Definition (p);
+    node->type_decl.definition = definition;
+    if (definition->kind == NK_DERIVED_TYPE and
+        definition->derived_type.is_private_extension) {
+      node->type_decl.private_parent = definition->derived_type.parent_type;
+      node->type_decl.definition     = NULL;
+      node->type_decl.is_private     = true;
+    }
   }
   node->aspects = Parse_Aspect_Specifications (p);
   return node;
@@ -25906,7 +26349,7 @@ void Parse_Protected_Items (Parser *p, Node *unit, Node_List *items,
       Parser_Expect (p, TK_SEMICOLON);
     } else if (Parser_At_Subprogram_Or_Clause (p)) {
       Node *item = Parse_Declaration (p);
-      if (item and (Node_In_Any_Class (item, NODE_CLASS_BODY) or
+      if (item and (Is_Body (item) or
                     item->kind == NK_SUBPROGRAM_RENAMING or
                     item->kind == NK_GENERIC_INST))
         Reject (item, "only entry, procedure and function declarations may "
@@ -26901,7 +27344,9 @@ bool Declared_Within_A_Package (void) {
 
 bool Outside_Defining_Package (const Type *t) {
   Symbol *defining_package = Find_Defining_Package (t);
-  return not defining_package or not Inside_Region_Of (defining_package);
+  return not defining_package or not Inside_Region_Of (defining_package) or
+         not Ancestor_Private_Part_Reaches (
+               Child_Unit_Home_Scope (defining_package));
 }
 
 bool Inside_Visible_Part_Of (const Symbol *package) {
@@ -29034,25 +29479,18 @@ Symbol *Symbol_New (Symbol_Kind kind, Slice name, Location location) {
   return sym;
 }
 
-Hiding_Cause Hiding_Cause_Here (Symbol *sym, Scope *scope) {
-  if (Hidden_In_An_Ancestors_Private_Part (sym, scope))
-    return HIDING_BY_AN_ANCESTORS_PRIVATE_PART;
-  if (Hidden_By_The_Visibility_Cutoff (sym, scope))
-    return HIDING_BY_THE_VISIBILITY_CUTOFF;
-  if (Hidden_By_A_Missing_With_Clause (sym))
-    return HIDING_BY_A_MISSING_WITH_CLAUSE;
+Hiding_Cause Hiding_Cause_Here (Symbol *sym, Scope *scope, Name_Form form) {
+  for (u32 cause = HIDING_NONE + 1; sym and cause < HIDING_CAUSE_COUNT; cause++)
+    if ((form == NAME_WRITTEN_DIRECTLY or
+         Hiding_Cause_Table[cause].a_selected_name) and
+        Hiding_Cause_Table[cause].hides (sym, scope))
+      return (Hiding_Cause) cause;
   return HIDING_NONE;
 }
 
 bool Hidden_In_An_Ancestors_Private_Part (Symbol *sym, Scope *scope) {
-  Node *child = sm->compilation_unit;
-  if (not sym->declared_in_private_part or
-      not Is_Public_Child_Declaration (child))
-    return false;
-  Node *unit = child->compilation_unit.unit;
-  return Is_Region_Of_A_Public_Ancestor (child, scope) and
-         Part_Standing_In (unit ? unit->symbol : NULL) !=
-           PACKAGE_PART_PRIVATE;
+  return sym->declared_in_private_part and
+         not Ancestor_Private_Part_Reaches (scope);
 }
 
 bool Hidden_By_The_Visibility_Cutoff (Symbol *sym, Scope *scope) {
@@ -29063,7 +29501,7 @@ bool Hidden_By_The_Visibility_Cutoff (Symbol *sym, Scope *scope) {
          not Scope_Encloses (sm->cutoff_exempt_scope, scope);
 }
 
-bool Hidden_By_A_Missing_With_Clause (Symbol *sym) {
+bool Hidden_By_A_Missing_With_Clause (Symbol *sym, Scope *scope) {
   if (not Is_Child_Library_Unit (sym) or not sm->compilation_unit or
       Loading_Packages.count > 0 or Instantiating_Template_Count > 0)
     return false;
@@ -29092,8 +29530,8 @@ bool Hidden_By_A_Missing_With_Clause (Symbol *sym) {
   return false;
 }
 
-bool Symbol_Visible_Here (Symbol *sym, Scope *scope) {
-  return Hiding_Cause_Here (sym, scope) == HIDING_NONE;
+bool Symbol_Visible_Here (Symbol *sym, Scope *scope, Name_Form form) {
+  return Hiding_Cause_Here (sym, scope, form) == HIDING_NONE;
 }
 
 Symbol_Class_Mask Classify_Symbol (const Symbol *sym) {
@@ -29568,12 +30006,12 @@ Symbol *Symbol_Search_Scopes (Slice name, Name_Match_Predicate *match,
 
 bool Meaning_Is_Immediately_Visible (Symbol *sym, Scope *scope) {
   return sym->visibility >= VIS_IMMEDIATELY_VISIBLE and
-         Symbol_Visible_Here (sym, scope);
+         Symbol_Visible_Here (sym, scope, NAME_WRITTEN_DIRECTLY);
 }
 
 bool Meaning_Is_Visible_By_Selection_Only (Symbol *sym, Scope *scope) {
   return sym->visibility == VIS_BY_SELECTION_ONLY and
-         Symbol_Visible_Here (sym, scope);
+         Symbol_Visible_Here (sym, scope, NAME_WRITTEN_DIRECTLY);
 }
 
 Symbol *Symbol_Find (Slice name) {
@@ -29645,7 +30083,8 @@ Symbol *Symbol_Find_By_Type (Slice name, Type *expected_type) {
 
       for (Symbol *ovl = sym; ovl; ovl = ovl->next_overload) {
         if (ovl->visibility < VIS_IMMEDIATELY_VISIBLE) continue;
-        if (not Symbol_Visible_Here (ovl, scope)) continue;
+        if (not Symbol_Visible_Here (ovl, scope, NAME_WRITTEN_DIRECTLY))
+          continue;
 
         Type *ovl_type = Get_Denoted_Type (ovl);
 
@@ -30008,6 +30447,9 @@ bool Arguments_Match_Profile (Symbol *sym, Argument_Info *args) {
       if (not Access_Attribute_Can_Denote (actual, param_type)) return false;
       continue;
     }
+    if (not arg_type and param_type and Is_Conditional_Expression (actual) and
+        not Flexible_Can_Denote (actual, param_type))
+      return false;
     bool (*accepts) (Type *, Type *) =
       sym->is_predefined ? Predefined_Operator_Accepts : Overload_Formal_Accepts;
     if (not accepts (param_type, arg_type) and
@@ -30296,7 +30738,7 @@ void Collect_Interpretations (Slice name, Interp_List *interps) {
       if (not Designators_Are_One_Name (entry->name, name)) continue;
       for (Symbol *s = entry; s; s = s->next_overload)
         if (s->visibility >= VIS_BY_SELECTION_ONLY and
-            Symbol_Visible_Here (s, scope) and
+            Symbol_Visible_Here (s, scope, NAME_WRITTEN_DIRECTLY) and
             not Hidden_By_An_Inner_Homograph (s, interps, inner_count) and
             Stamp_First_Visit (&s->collection_stamp, pass))
           Interp_Add_Known_Unique (interps, s, Get_Denoted_Type (s),
@@ -30324,7 +30766,7 @@ void Collect_Package_Interpretations (Symbol *package, Slice selector,
          s and Stamp_First_Visit (&s->collection_stamp, pass);
          s = s->next_overload)
       if (Implicit_Operator_Is_Declared_Here (s) and
-          not Hidden_By_A_Missing_With_Clause (s))
+          Symbol_Visible_Here (s, package->scope, NAME_WRITTEN_BY_SELECTION))
         Interp_Add_Known_Unique (interps, s, Get_Denoted_Type (s),
                                  NULL, NULL);
   }
@@ -31794,6 +32236,10 @@ Region Library_Region () {
   return (Region){ REGION_LIBRARY, NULL };
 }
 
+Region Parametric_Region () {
+  return (Region){ REGION_ANY, NULL, NULL };
+}
+
 bool Region_Names_A_Master (Region_Kind kind) {
   switch (kind) {
 #define REGION_KIND_NAMES_A_MASTER(kind, description, names_a_master)         \
@@ -31976,6 +32422,11 @@ Region Region_Of_Type (const Type *type) {
   return Is_Access (access) ? access->access.region : Library_Region ();
 }
 
+bool Parameter_View_Is_The_Actuals (Symbol *sym) {
+  return sym and sym->kind == SYMBOL_PARAMETER and
+         Parameter_Passed_By_Reference (Get_Parameter_Mode (sym), sym->type);
+}
+
 Region Region_Of_Entity (Symbol *sym) {
   sym = Unalias (sym);
   if (not sym) return Library_Region ();
@@ -32129,12 +32580,26 @@ Symbol *Object_Denoted_By_Name (Node *name) {
   return NULL;
 }
 
+bool Value_Contributes_A_Level (Node *part) {
+  Type *given = part ? part->type : NULL;
+  return given and (Is_Access (Get_Underlying (given)) or
+                    Type_Carries_An_Accessibility_Level (given));
+}
+
+Accessibility_Origin Origin_Of_A_View (Node *name,
+                                       Accessibility_Origin otherwise) {
+  return Language_Extensions and
+         Parameter_View_Is_The_Actuals (Object_Denoted_By_Name (name))
+           ? ACCESS_FROM_CALLER : otherwise;
+}
+
 bool Aggregate_Carries_An_Accessibility_Level (Node *aggregate) {
   if (not aggregate or aggregate->kind != NK_AGGREGATE) return false;
-  for (u32 i = 0; i < aggregate->aggregate.items.count; i++) {
-    Node *part = Unwrap_Association (aggregate->aggregate.items.items[i]);
-    if (part and Type_Carries_An_Accessibility_Level (part->type)) return true;
-  }
+  if (Type_Carries_An_Accessibility_Level (aggregate->type)) return true;
+  for (u32 i = 0; i < aggregate->aggregate.items.count; i++)
+    if (Value_Contributes_A_Level (
+          Unwrap_Association (aggregate->aggregate.items.items[i])))
+      return true;
   return false;
 }
 
@@ -32205,8 +32670,10 @@ Accessibility Accessibility_Of (Node *value) {
 
   if (bare->kind == NK_ATTRIBUTE and
       Attribute_Yields_An_Access_Value (bare->attribute.kind))
-    return (Accessibility){ .origin = ACCESS_FROM_DESIGNATED,
-                            .region = Region_Of_Name (bare->attribute.prefix) };
+    return (Accessibility){
+      .origin = Origin_Of_A_View (bare->attribute.prefix,
+                                  ACCESS_FROM_DESIGNATED),
+      .region = Region_Of_Name (bare->attribute.prefix) };
 
   if (Aggregate_Carries_An_Accessibility_Level (bare))
     return (Accessibility){ .origin = ACCESS_FROM_PARTS, .region = typed,
@@ -32240,7 +32707,8 @@ Accessibility Accessibility_Of (Node *value) {
     Is_Dereference (bare);
   if ((denoted or through_a_dereference) and
       (not is_access or Region_Is_Parametric (typed)))
-    return (Accessibility){ .origin = ACCESS_FROM_OBJECT,
+    return (Accessibility){ .origin = Origin_Of_A_View (bare,
+                                                       ACCESS_FROM_OBJECT),
                             .region = Region_Of_Name (bare) };
 
   return (Accessibility){ .origin = by_type, .region = typed };
@@ -32256,7 +32724,7 @@ Region Region_Of_Access_Value (Node *value) {
   Accessibility from = Accessibility_Of (value);
   switch (Static_Region_Of_Origin (from.origin)) {
     case STATIC_REGION_OF_THE_ORIGIN: return from.region;
-    case STATIC_REGION_UNKNOWN:       return (Region){ REGION_ANY, NULL, NULL };
+    case STATIC_REGION_UNKNOWN:       return Parametric_Region ();
     case STATIC_REGION_OF_THE_TYPE:   break;
   }
   return Region_Of_Type (value ? value->type : NULL);
@@ -32434,10 +32902,11 @@ bool Reject_Name_With_Cause (Location location, Slice name) {
       for (Symbol *candidate = Scope_Bucket (scope, bucket); candidate;
            candidate = candidate->next_in_bucket) {
         if (not Slices_Match (candidate->name, name)) continue;
-        Hiding_Cause cause = Hiding_Cause_Here (candidate, scope);
+        Hiding_Cause cause =
+          Hiding_Cause_Here (candidate, scope, NAME_WRITTEN_DIRECTLY);
         if (cause != HIDING_NONE) {
           Reject_At (location, "'%.*s' is not visible here: it is declared %s",
-            (int) name.length, name.data, Hiding_Cause_Explanation[cause]);
+            (int) name.length, name.data, Hiding_Cause_Table[cause].explanation);
           return true;
         }
         if (candidate->visibility < VIS_IMMEDIATELY_VISIBLE) {
@@ -32494,15 +32963,9 @@ bool Reject_Selection_With_Cause (Node *node, Type *viewed) {
   Symbol *prefix_symbol = node->selected.prefix->symbol;
 
   if (prefix_symbol and prefix_symbol->kind == SYMBOL_PACKAGE) {
-    if (Hidden_By_A_Missing_With_Clause (
-          Find_Child_Unit (prefix_symbol, selector))) {
-      Reject (node, "'%.*s' is not visible here: it is declared %s",
-              (int) selector.length, selector.data,
-              Hiding_Cause_Explanation[HIDING_BY_A_MISSING_WITH_CLAUSE]);
-      return true;
-    }
-    Symbol *hidden = NULL;
-    if (prefix_symbol->scope)
+    Symbol *hidden = Find_Child_Unit (prefix_symbol, selector);
+    if (not Hidden_By_A_Missing_With_Clause (hidden, NULL)) hidden = NULL;
+    if (not hidden and prefix_symbol->scope)
       for (u32 bucket = 0; not hidden and bucket < SYMBOL_TABLE_SIZE; bucket++)
         for (Symbol *candidate = Scope_Bucket (prefix_symbol->scope, bucket);
              candidate; candidate = candidate->next_in_bucket)
@@ -32511,11 +32974,18 @@ bool Reject_Selection_With_Cause (Node *node, Type *viewed) {
             break;
           }
     if (hidden) {
-      Reject (node,
-        "'%.*s' is declared in package '%.*s' but is not visible at this "
-        "point",
-        (int) selector.length, selector.data,
-        (int) prefix_symbol->name.length, prefix_symbol->name.data);
+      Hiding_Cause cause = Hiding_Cause_Here (hidden, prefix_symbol->scope,
+                                              NAME_WRITTEN_BY_SELECTION);
+      if (cause != HIDING_NONE)
+        Reject (node, "'%.*s' is not visible here: it is declared %s",
+                (int) selector.length, selector.data,
+                Hiding_Cause_Table[cause].explanation);
+      else
+        Reject (node,
+          "'%.*s' is declared in package '%.*s' but is not visible at this "
+          "point",
+          (int) selector.length, selector.data,
+          (int) prefix_symbol->name.length, prefix_symbol->name.data);
       return true;
     }
     for (Scope *scope = sm->current_scope; scope; scope = scope->parent)
@@ -32577,7 +33047,9 @@ Closest_Name_Search Closest_Visible_Name (Slice wrote) {
       for (Symbol *candidate = Scope_Bucket (scope, bucket); candidate;
            candidate = candidate->next_in_bucket) {
         if (candidate->visibility < VIS_IMMEDIATELY_VISIBLE) continue;
-        if (not Symbol_Visible_Here (candidate, scope)) continue;
+        if (not Symbol_Visible_Here (candidate, scope,
+                                    NAME_WRITTEN_DIRECTLY))
+          continue;
         Closest_Name_Consider (&search, candidate->name);
       }
   return search;
@@ -32828,20 +33300,27 @@ bool Noting_Warnings_Here (void) {
 
 void Check_Static_Modular_Operand (Node *whole, Node *operand,
                                    Type *operand_type) {
-  i128 value;
-  if (not Noting_Warnings_Here ()) return;
   if (not operand or not operand->type or not Is_Unsigned (operand_type)) return;
-  if (not Static_Value_Is_Universal (operand)) return;
   if (not Is_Universal_Integer (operand->type) and
       Get_Base (operand->type) != Get_Base (operand_type)) return;
-  if (Expression_Is_Static (whole) or not Expression_Is_Static (operand)) return;
-  if (not Read_Static_Whole (operand, &value)) return;
-  Reject_Value_Outside_Modulus (operand, operand_type, value);
+  if (Expression_Is_Static (whole)) return;
+  Note_Certain_Constraint_Error (operand, Get_Base (operand_type), "operand");
+}
+
+const char *Spell_Static_Bound (Type_Bound bound, char *buffer) {
+  double value;
+  if (bound.kind == BOUND_INTEGER) return Spell_I128 (bound.int_value, buffer);
+  if (not Static_Bound_As_Double (bound, &value)) return "?";
+  snprintf (buffer, Decimal_Text_Max, "%g", value);
+  return buffer;
 }
 
 void Note_Certain_Constraint_Error (Node *value_expression,
                                     Type *target_subtype,
                                     const char *construct_noun) {
+  Rational   exact;
+  Type_Bound point;
+  i128       whole;
   if (not Noting_Warnings_Here ()) return;
   if (not value_expression or not target_subtype) return;
   if (value_expression->kind == NK_NULL) {
@@ -32849,22 +33328,31 @@ void Note_Certain_Constraint_Error (Node *value_expression,
                                        target_subtype, construct_noun);
     return;
   }
-  if (target_subtype->low_bound.kind  != BOUND_INTEGER or
-      target_subtype->high_bound.kind != BOUND_INTEGER) return;
+  if (not Is_Scalar (target_subtype)) return;
   if (not Expression_Is_Static (value_expression)) return;
-  i128 value;
-  if (not Read_Static_Whole (value_expression, &value)) return;
-  Type_Bound point = (Type_Bound){ .kind = BOUND_INTEGER, .int_value = value };
+  if (target_subtype->low_bound.kind  == BOUND_INTEGER and
+      target_subtype->high_bound.kind == BOUND_INTEGER and
+      Read_Static_Whole (value_expression, &whole))
+    point = (Type_Bound){ .kind = BOUND_INTEGER, .int_value = whole };
+  else if (Eval_Const_Rational (value_expression, &exact))
+    point = (Type_Bound){ .kind        = BOUND_FLOAT,
+                          .float_value = Rational_To_Double (exact) };
+  else return;
   Type *base = Get_Base (target_subtype);
-  if (not base or base->low_bound.kind != BOUND_INTEGER or
-      base->high_bound.kind != BOUND_INTEGER) return;
-  if (Is_Unsigned (base) and Static_Value_Is_Universal (value_expression) and
-      Reject_Value_Outside_Modulus (value_expression, base, value)) return;
-  if (not Static_Interval_Contains (&base->low_bound, &base->high_bound,
-                                    &point, &point)) return;
+  if (not base) return;
+  if (Is_Unsigned (base) and point.kind == BOUND_INTEGER and
+      Static_Value_Is_Universal (value_expression) and
+      Reject_Value_Outside_Modulus (value_expression, base, point.int_value))
+    return;
   if (not Static_Interval_Excludes (&target_subtype->low_bound,
                                     &target_subtype->high_bound,
                                     &point, &point)) return;
+  bool  beyond_base = base != target_subtype and
+                      Static_Range_Covers (base, target_subtype) and
+                      Static_Interval_Excludes (&base->low_bound,
+                                                &base->high_bound,
+                                                &point, &point);
+  Type *violated    = beyond_base ? base : target_subtype;
   Check_Site site = { .where   = value_expression->location,
                       .checked = target_subtype,
                       .subject = target_subtype,
@@ -32873,11 +33361,12 @@ void Note_Certain_Constraint_Error (Node *value_expression,
   Note_Pending_Warning_While (Check_Note_Still_Applies,
     Check_Note_New (CHECK_KIND_RANGE, site),
     WARNING_CONSTRAINT_ERROR, value_expression->location,
-    "this %s always raises CONSTRAINT_ERROR: %s is outside the subtype's "
+    "this %s always raises CONSTRAINT_ERROR: %s is outside the %s "
     "range %s .. %s",
-    construct_noun, I128_Decimal (value),
-    I128_Decimal (target_subtype->low_bound.int_value),
-    I128_Decimal (target_subtype->high_bound.int_value));
+    construct_noun, Bound_Decimal (point),
+    beyond_base ? "base" : "subtype's",
+    Bound_Decimal (violated->low_bound),
+    Bound_Decimal (violated->high_bound));
 }
 
 void Note_Certain_Null_Exclusion_Error (Location where, Type *target_subtype,
@@ -33489,7 +33978,9 @@ Symbol *Find_Package_Export (Symbol *package_symbol,
   for (u32 i = 0; i < package_symbol->exported_count; i++) {
     if (not Designators_Are_One_Name (package_symbol->exported[i]->name, selector)
         or not Implicit_Operator_Is_Declared_Here (package_symbol->exported[i])
-        or Hidden_By_A_Missing_With_Clause (package_symbol->exported[i]))
+        or not Symbol_Visible_Here (package_symbol->exported[i],
+                                    package_symbol->scope,
+                                    NAME_WRITTEN_BY_SELECTION))
       continue;
     Symbol *selected = Get_Denoted_Task_Object (package_symbol->exported[i]);
     if (not expected) return selected;
@@ -33498,7 +33989,8 @@ Symbol *Find_Package_Export (Symbol *package_symbol,
          overload = overload->next_overload) {
       Type *denoted = Get_Denoted_Type (overload);
       if (denoted and Type_Covers_Strict (expected, denoted) and
-          not Hidden_By_A_Missing_With_Clause (overload))
+          Symbol_Visible_Here (overload, package_symbol->scope,
+                               NAME_WRITTEN_BY_SELECTION))
         return overload;
     }
     if (not fallback) fallback = selected;
@@ -33597,7 +34089,9 @@ bool Resolve_Expanded_Name_Selector (Node *node) {
       : NULL;
     if (in_scope and renamed_prefix and not in_scope->declared_in_visible_part)
       in_scope = NULL;
-    if (Hidden_By_A_Missing_With_Clause (in_scope)) in_scope = NULL;
+    if (not Symbol_Visible_Here (in_scope, prefix_symbol->scope,
+                                 NAME_WRITTEN_BY_SELECTION))
+      in_scope = NULL;
     if (in_scope) {
       Select_Entity (node, Get_Denoted_Task_Object (in_scope));
       return true;
@@ -34658,7 +35152,12 @@ bool Eval_Const_Rational (Node *node, Rational *out) {
 
       return false;
     case NK_INTEGER:
-      *out = Rational_From_Int ((i64)node->integer_lit.value);
+      if (node->integer_lit.big_value)
+        *out = (Rational){ .numerator = Big_Integer_Clone (
+                             node->integer_lit.big_value),
+                           .denominator = Big_Integer_Make_One () };
+      else
+        *out = Rational_From_Int ((i64)node->integer_lit.value);
       return true;
 
     case NK_CHARACTER:
@@ -35145,8 +35644,8 @@ u32 Pick_Literal_Types (Node *operand, Type ***out, u32 *capacity) {
 }
 
 bool Operand_Denotes_No_Type_Of_Its_Own (Node *o) {
-  return o and (o->kind == NK_AGGREGATE or o->kind == NK_CHARACTER or
-                o->kind == NK_STRING);
+  return o and (o->kind == NK_AGGREGATE  or o->kind == NK_CHARACTER or
+                o->kind == NK_RAISE_EXPR or o->kind == NK_STRING);
 }
 
 bool Flexible_Can_Denote (Node *o, Type *t) {
@@ -36544,6 +37043,13 @@ void Check_Self_Determined_Discrete_Range (Node *discrete_range) {
       "a discrete range is of a discrete type");
     return;
   }
+  if (Name_Was_Resolved (discrete_range) and
+      not Is_A_Discrete_Range (discrete_range)) {
+    Reject (discrete_range,
+      "a discrete range is a range, a discrete subtype indication, or a "
+      "type mark denoting a discrete subtype");
+    return;
+  }
 
   if (discrete_range->kind != NK_RANGE) return;
   Node *bounds[2] = { discrete_range->range.low,
@@ -37040,7 +37546,9 @@ void Add_Component_Declaration (Record_Layout *layout,
                     "'%.*s'; this expression has type '%.*s'",
                     (int) component_name.length, component_name.data,
                     (int) value_name.length, value_name.data);
-    }
+    } else
+      Note_Certain_Constraint_Error (declaration->component.init,
+                                     component_type, "default expression");
     if (Is_Limited (component_type))
       Reject_At (declaration->component.init->location,
                     "a record component of a limited type cannot have a "
@@ -37958,9 +38466,26 @@ void Resolve_Record_Aggregate_Named_Item (
   Resolve_Expression (item->association.expression);
   Require_One_Interpretation (item->association.expression, component_type,
                               errors_before);
+  Require_Component_Type_Agreement (item->association.expression,
+                                    component_type, errors_before);
   if (component_type)
     Reject_Escaping_Assignment (item->association.expression, component_type,
                                 item->association.expression);
+}
+
+void Require_Component_Type_Agreement (Node *expression, Type *component_type,
+                                       int errors_before) {
+  if (not expression or not component_type or Error_Count != errors_before)
+    return;
+  if (Instantiating_Template_Count > 0) return;
+  if (Type_Covers_Strict (component_type, expression->type)) return;
+  Slice component_name = Describe_Type (component_type);
+  Slice value_name     = Describe_Type (expression->type);
+  Reject (expression,
+                "the component's value must be of type '%.*s'; "
+                "this expression has type '%.*s'",
+                (int) component_name.length, component_name.data,
+                (int) value_name.length, value_name.data);
 }
 
 void Resolve_Record_Aggregate_Positional_Item (
@@ -37992,6 +38517,7 @@ void Resolve_Record_Aggregate_Positional_Item (
   }
   Resolve_Expression (item);
   Require_One_Interpretation (item, component_type, errors_before);
+  Require_Component_Type_Agreement (item, component_type, errors_before);
   if (component_type) Reject_Escaping_Assignment (item, component_type, item);
 }
 
@@ -38216,7 +38742,8 @@ Type *Resolve_Attribute (Node *node) {
                             sm->current_scope) & PREFIX_ENTITY_TYPE_MARK) and
       ((Attribute_Properties_Table[node->attribute.kind].prefix_form &
         ATTRIBUTE_PREFIX_APPROPRIATE) or
-       (yields_access and not Type_Covers (pointed, reference->type))))
+       (yields_access and not Same_Base_Type (pointed, reference->type) and
+        not Type_Covers (pointed, reference->type))))
     Make_Generalized_Reference (reference);
   if (node->attribute.kind == ATTRIBUTE_ADDRESS or
       node->attribute.kind == ATTRIBUTE_SIZE)
@@ -38262,6 +38789,19 @@ Type *Resolve_Attribute (Node *node) {
       not (Classify_Prefix (prefix, node->attribute.kind, sm->current_scope) &
            PREFIX_ENTITY_TYPE_MARK))
     prefix_type = designated;
+
+  if (Attribute_Yields_An_Access_Value (attribute_kind) and
+      names_a_subprogram and access_context and
+      not Is_Access_To_Subprogram (access_context)) {
+    Slice wanted = Describe_Type (access_context);
+    Reject (node,
+      "'%.*s names a subprogram here, but the context expects type '%.*s', "
+      "which is not an access-to-subprogram type",
+      (int) node->attribute.name.length, node->attribute.name.data,
+      (int) wanted.length, wanted.data);
+    node->type = access_context;
+    return node->type;
+  }
 
   if (Attribute_Yields_An_Access_Value (attribute_kind) and
       (Is_Access_To_Subprogram (access_context) or not names_a_subprogram)) {
@@ -39061,6 +39601,14 @@ Type *Resolve_Apply (Node *node) {
   node->apply.resolution = APPLY_UNRESOLVED;
   if (prefix->kind == NK_IDENTIFIER)
     Reject_Unresolvable_Application (node, prefix, prefix_symbol);
+  else if (prefix->type) {
+    Slice prefix_name = Describe_Type (prefix->type);
+    Reject (node,
+      "this prefix has type '%.*s', which is not an array, a subprogram, "
+      "or an entry, so it cannot take arguments",
+      (int) prefix_name.length, prefix_name.data);
+  } else
+    Reject (node, "this prefix is not callable or indexable");
   return sm->type_integer;
 }
 
@@ -39076,6 +39624,12 @@ void Check_Aggregate_Legality (Node *node, Type *aggregate_type) {
                   "aggregates are not available for '%.*s here: the type is "
                   "private at this point",
                   (int) aggregate_type->name.length, aggregate_type->name.data);
+  else if (aggregate_type and not Is_Composite (aggregate_type) and
+           node->aggregate.items.count == 1 and
+           node->aggregate.items.items[0]->kind == NK_ITERATED_ASSOC)
+    Reject (node->aggregate.items.items[0],
+                  "a quantified expression needs its quantifier, ALL or SOME, "
+                  "after FOR");
   else if (aggregate_type and not Is_Composite (aggregate_type))
     Reject (node,
                   "an aggregate has a composite type, and this context "
@@ -39086,9 +39640,10 @@ void Check_Aggregate_Legality (Node *node, Type *aggregate_type) {
   bool position_seen = false;
   for (u32 i = 0; i < node->aggregate.items.count; i++) {
     Node *item = node->aggregate.items.items[i];
-    bool is_named   = item->kind == NK_ASSOCIATION;
+    bool is_named   = item->kind == NK_ASSOCIATION or
+                      item->kind == NK_ITERATED_ASSOC;
     bool has_others = false;
-    if (is_named)
+    if (item->kind == NK_ASSOCIATION)
       for (u32 c = 0; c < item->association.choices.count; c++)
         if (item->association.choices.items[c]->kind == NK_OTHERS)
           has_others = true;
@@ -39392,6 +39947,165 @@ Type *Resolve_Quantified_Expression (Node *node) {
   return type;
 }
 
+Type *Resolve_Declare_Expression (Node *node) {
+  if (node->interps and node->interps->count > 0) {
+    node->type = node->interps->items[0].typ;
+    return node->type;
+  }
+  Node *value = node->declare_expr.expression;
+  Enter_Statement_Scope (node, NULL);
+  Resolve_Declaration_List (&node->declare_expr.declarations);
+  Note_Task_Master (&node->declare_expr.declarations,
+                    &node->declare_expr.is_task_master,
+                    &node->declare_expr.master_scope_id);
+  Freeze_Declaration_List (&node->declare_expr.declarations);
+  Resolve_Statement_List (&node->declare_expr.statements);
+  Seed_Context_Type (value, node->type);
+  Type *type = Resolve_Expression (value);
+  Note_Unused_Candidates_In_Scope (sm->current_scope, node);
+  Symbol_Manager_Pop_Scope ();
+  if (type) node->type = type;
+  if (node->type)
+    Interp_Add (Node_Interps_Reset (node), NULL, node->type, NULL, NULL);
+  return node->type;
+}
+
+Type *Resolve_Raise_Expression (Node *node) {
+  Enforce_Restriction (RESTRICTION_NO_EXCEPTIONS, node->location,
+                       "raise expression");
+  Resolve_Expression (node->raise_expr.exception_name);
+  Require_Exception_Name (node->raise_expr.exception_name,
+                          "the name of a raise expression");
+  if (node->raise_expr.message) Resolve_Raise_Message (node->raise_expr.message);
+  return node->type;
+}
+
+Type *Resolve_Delta_Aggregate (Node *node) {
+  Node *base = node->delta_aggregate.base;
+  Seed_Context_Type (base, node->type);
+  Type *type = Resolve_Expression (base);
+  if (not node->type) node->type = type;
+  Type *record_type = node->type;
+  if (not Is_Record (record_type)) {
+    Reject (node,
+            "a delta aggregate builds a record value from another one; this "
+            "one has no record type");
+    return node->type;
+  }
+  for (u32 i = 0; i < node->delta_aggregate.items.count; i++) {
+    Node *item = node->delta_aggregate.items.items[i];
+    if (not item or item->kind != NK_ASSOCIATION) {
+      Reject (item ? item : node,
+              "every component of a delta aggregate is named, as "
+              "'component => value'");
+      continue;
+    }
+    Type *component_type = NULL;
+    for (u32 c = 0; c < item->association.choices.count; c++) {
+      Node *choice = item->association.choices.items[c];
+      if (not choice or choice->kind != NK_IDENTIFIER) {
+        Reject (choice ? choice : item,
+                "a delta aggregate names the components it changes");
+        continue;
+      }
+      i32 index = Find_Record_Component (record_type, choice->string_val.text);
+      if (index < 0) {
+        Reject (choice, "'%.*s' is not a component of this type",
+                (int) choice->string_val.text.length,
+                choice->string_val.text.data);
+        continue;
+      }
+      if (record_type->record.components[index].is_discriminant)
+        Reject (choice,
+                "a delta aggregate cannot change '%.*s': it is a "
+                "discriminant",
+                (int) choice->string_val.text.length,
+                choice->string_val.text.data);
+      if (not component_type)
+        component_type = record_type->record.components[index].component_type;
+    }
+    Node *expression = item->association.expression;
+    if (not expression) continue;
+    int errors_before = Error_Count;
+    Seed_Expected_Type (expression, component_type);
+    Resolve_Expression (expression);
+    Require_One_Interpretation (expression, component_type, errors_before);
+    Require_Component_Type_Agreement (expression, component_type,
+                                      errors_before);
+  }
+  return node->type;
+}
+
+Node *Substitute_Iteration_Value (Node *body, Slice name, Node *value) {
+  if (not body) return NULL;
+  if (body->kind == NK_IDENTIFIER and Slices_Match (body->string_val.text, name))
+    return Clone_Subtree (value);
+  if (body->kind == NK_ASSOCIATION) {
+    body->association.expression =
+      Substitute_Iteration_Value (body->association.expression, name, value);
+    return body;
+  }
+  for (const Syntax_Tree_Edge *edge = Syntax_Tree_Shape[body->kind];
+       edge->offset; edge++) {
+    void *slot = (char *) body + edge->offset;
+    if (not edge->is_list) {
+      *(Node **) slot = Substitute_Iteration_Value (*(Node **) slot, name, value);
+      continue;
+    }
+    Node_List *list = slot;
+    for (u32 i = 0; i < list->count; i++)
+      list->items[i] = Substitute_Iteration_Value (list->items[i], name, value);
+  }
+  return body;
+}
+
+void Expand_Iterated_Associations (Node *aggregate) {
+  bool any = false;
+  for (u32 i = 0; i < aggregate->aggregate.items.count; i++) {
+    Node *item = aggregate->aggregate.items.items[i];
+    if (item and item->kind == NK_ITERATED_ASSOC) any = true;
+  }
+  if (not any) return;
+
+  Node_List expanded = { 0 };
+  for (u32 i = 0; i < aggregate->aggregate.items.count; i++) {
+    Node *item = aggregate->aggregate.items.items[i];
+    if (not item or item->kind != NK_ITERATED_ASSOC) {
+      Node_List_Push (&expanded, item);
+      continue;
+    }
+    Node *domain = item->iterated.domain;
+    Node *low    = domain and domain->kind == NK_RANGE ? domain->range.low  : NULL;
+    Node *high   = domain and domain->kind == NK_RANGE ? domain->range.high : NULL;
+    Resolve_Expression (low);
+    Resolve_Expression (high);
+    if (not Is_Static_Int_Node (low) or not Is_Static_Int_Node (high)) {
+      Reject (item,
+              "an iterated component association is written out one index at "
+              "a time, so its range must be static here");
+      continue;
+    }
+    i128 first = Eval_Static_Int (low), last = Eval_Static_Int (high);
+    if (last - first >= ITERATED_ASSOCIATION_LIMIT) {
+      Reject (item,
+              "an iterated component association is written out one index at "
+              "a time, and this range asks for more than %u of them",
+              (unsigned) ITERATED_ASSOCIATION_LIMIT);
+      continue;
+    }
+    for (i128 value = first; value <= last; value++) {
+      Node *index = Node_New (NK_INTEGER, item->location);
+      index->integer_lit.value  = (i64) value;
+      Node *association = Node_New (NK_ASSOCIATION, item->location);
+      Node_List_Push (&association->association.choices, index);
+      association->association.expression = Substitute_Iteration_Value (
+        Clone_Subtree (item->iterated.expression), item->iterated.name, index);
+      Node_List_Push (&expanded, association);
+    }
+  }
+  aggregate->aggregate.items = expanded;
+}
+
 Type *Resolve_Expression (Node *node) {
   if (not node) return NULL;
   if (Literal_As_Written (node) != node) return Reinterpret_User_Literal (node);
@@ -39532,6 +40246,7 @@ Type *Resolve_Expression_By_Kind (Node *node) {
       bool  is_record      = Is_Record (aggregate_type);
 
       Check_Aggregate_Legality (node, aggregate_type);
+      Expand_Iterated_Associations (node);
 
       Record_Aggregate_Coverage coverage = { .component_index = 0,
                                              .variant_known   = false,
@@ -39628,6 +40343,17 @@ Type *Resolve_Expression_By_Kind (Node *node) {
     case NK_IF_EXPR:
     case NK_CASE_EXPR:   return Resolve_Conditional_Expression (node);
     case NK_QUANTIFIED:  return Resolve_Quantified_Expression (node);
+    case NK_DECLARE_EXPR:    return Resolve_Declare_Expression (node);
+    case NK_RAISE_EXPR:      return Resolve_Raise_Expression (node);
+    case NK_DELTA_AGGREGATE: return Resolve_Delta_Aggregate (node);
+    case NK_BOX:
+      if (not node->type) node->type = node->expected_type;
+      return node->type;
+    case NK_ITERATED_ASSOC:
+      Reject (node,
+              "an iterated component association may only be written as an "
+              "item of an aggregate");
+      return NULL;
     case NK_ASSOCIATION: {
       for (u32 i = 0; i < node->association.choices.count; i++)
         Resolve_Expression (node->association.choices.items[i]);
@@ -40321,7 +41047,7 @@ Type *Resolve_Type_Definition (Node *node) {
         access_type->access.is_anonymous       = node->access_type.is_anonymous;
         access_type->access.excludes_null      = node->access_type.excludes_null;
         access_type->access.region = node->access_type.is_anonymous
-          ? (Region){ REGION_ANY }
+          ? Parametric_Region ()
           : Region_Of_Scope (sm->current_scope);
 
         if (node->access_type.profile)
@@ -40848,7 +41574,9 @@ u32 Resolve_Parameter_Profile (Node_List *specs, Parameter_Info **out,
                       "'%.*s'",
                       (int) parameter_name.length, parameter_name.data,
                       (int) value_name.length, value_name.data);
-      }
+      } else
+        Note_Certain_Constraint_Error (default_expr, parameter_type,
+                                       "default expression");
     }
 
     for (u32 j = 0; j < spec->param_spec.names.count; j++) {
@@ -41326,8 +42054,18 @@ Type *Resolve_Object_Access_Attribute (Node *node, Type *access_type) {
   Slice  name   = node->attribute.name;
 
   if (not Extension_Is_Enabled (node->location,
-                                "the 'Access attribute on an object") or
-      not Is_Access (access_type)) {
+                                "the 'Access attribute on an object")) {
+    node->type = NULL;
+    return NULL;
+  }
+  if (not Is_Access (access_type)) {
+    if (access_type) {
+      Slice wanted = Describe_Type (access_type);
+      Reject (node,
+        "'%.*s yields an access value, but the context expects type '%.*s', "
+        "which is not an access type",
+        (int) name.length, name.data, (int) wanted.length, wanted.data);
+    }
     node->type = NULL;
     return NULL;
   }
@@ -41677,6 +42415,7 @@ bool Statement_Sequence_Holds (Node_List *sequence,
 
 void Resolve_Subprogram_Body_Interior (Node *body,
                                        bool freeze_declarations) {
+  Symbol *outer_operation = Enter_Protected_Operation (body->symbol);
   Resolve_Declaration_List (&body->subprogram_body.declarations);
   Note_Task_Master (&body->subprogram_body.declarations,
                     &body->subprogram_body.is_task_master,
@@ -41686,6 +42425,7 @@ void Resolve_Subprogram_Body_Interior (Node *body,
   Resolve_Subprogram_Body_Statement_Sequence (body);
   Resolve_Exception_Part (&body->subprogram_body.handlers);
   Check_Machine_Code_Procedure_Body (body);
+  Current_Protected_Operation = outer_operation;
 }
 
 const char *Spell_Transfer (Node *statement) {
@@ -42210,8 +42950,20 @@ bool Is_Stream_Attribute (Attribute_Kind kind) {
 }
 
 bool Designates_A_Stream (Type *access_type) {
-  Type *view = Get_Underlying (access_type);
+  Type *view = access_type ? Get_Underlying (access_type) : NULL;
   return view and Is_Access (view) and Is_Stream_Type (Get_Designated (view));
+}
+
+Type *Access_To_A_Stream () {
+  Symbol *root = Symbol_Find (S ("ROOT_STREAM_TYPE"));
+  if (not root or not root->type) return NULL;
+  Type *wanted = Type_New (TYPE_ACCESS, S (""));
+  wanted->access.modifier        = ACCESS_ALL;
+  wanted->access.is_anonymous    = true;
+  wanted->access.designated_type = root->type;
+  wanted->access.region          = Parametric_Region ();
+  Set_Access_Type_Size (wanted);
+  return wanted;
 }
 
 const char *Why_Not_Streamable (Type *t, Stream_Direction direction) {
@@ -42272,6 +43024,7 @@ void Resolve_Stream_Attribute_Call (Node *statement) {
   }
   Node *stream = Unwrap_Association (arguments->items[0]);
   Node *item   = Unwrap_Association (arguments->items[1]);
+  if (not stream->expected_type) stream->expected_type = Access_To_A_Stream ();
   Resolve_Expression (stream);
   if (stream->type and not Designates_A_Stream (stream->type)) {
     Slice given = Describe_Type (stream->type);
@@ -42446,8 +43199,10 @@ void Resolve_Component_Iterator (Node *loop) {
   parameter->is_aliased          = component and
                                    array_type->array.aliased_components;
   parameter->is_unreferenced     = true;
+  parameter->declared_in_statements = true;
   parameter->rename_address_slot = Declare_Synthesized_Slot (
     parameter->name, "component", NULL, parameter->location);
+  parameter->rename_address_slot->declared_in_statements = true;
   Symbol_Add (parameter);
   scheme->binary.left->type = component;
 }
@@ -43785,6 +44540,7 @@ void Resolve_Return_Statement (Node *node) {
                       "the type of the expression of a return statement must "
                       "be the result type of the function");
       Require_One_Interpretation (value, result_type, errors_before);
+      Note_Certain_Constraint_Error (value, result_type, "returned value");
       break;
   }
 }
@@ -43973,9 +44729,25 @@ void Resolve_Accept_Statement (Node *node) {
   Symbol_Manager_Pop_Scope ();
 }
 
+Symbol *Entry_Called_By_Statement (Node *statement) {
+  if (statement and statement->kind == NK_CALL_STMT)
+    statement = statement->assignment.target;
+  if (not statement) return NULL;
+  Symbol *called = statement->kind == NK_APPLY
+    ? (statement->apply.prefix ? statement->apply.prefix->symbol : NULL)
+    : statement->symbol;
+  called = Resolve_Subprogram_Rename (Unalias (called));
+  return (called and called->kind == SYMBOL_ENTRY) ? called : NULL;
+}
+
 void Check_Entry_Call_Select (Node *node) {
   Node_List *alternatives = &node->select_stmt.alternatives;
   Node      *delay        = NULL;
+
+  if (Is_Protected_Entry (Entry_Called_By_Statement (
+        alternatives->items[0]->select_alternative.statement)))
+    Extension_Is_Enabled (node->location,
+      "a timed or conditional call to a protected entry");
 
   for (u32 i = 0; i < alternatives->count; i++) {
     Node *alternative = alternatives->items[i];
@@ -44090,11 +44862,74 @@ void Resolve_Delay_Statement (Node *node) {
   Enforce_Restriction (RESTRICTION_NO_FIXED_POINT, node->location,
                        "delay statement, which uses the fixed point type DURATION,");
   Node *expression = node->delay_stmt.expression;
+  if (node->delay_stmt.is_until) {
+    Resolve_Expression (expression);
+    if (expression and not Is_Fixed_Point (expression->type))
+      Reject (expression,
+                    "the expression of a delay until statement must name a "
+                    "point in time, such as the result of CLOCK");
+    return;
+  }
   Resolve_Expression_In_Context (expression, sm->type_duration);
   if (expression and not Type_Covers_Strict (sm->type_duration, expression->type))
     Reject (expression,
                   "the expression of a delay statement must be of the "
                   "predefined fixed point type DURATION");
+}
+
+void Resolve_Requeue_Statement (Node *node) {
+  Node   *name      = node->requeue_stmt.entry_name;
+  Symbol *from      = NULL;
+  bool    in_accept = false;
+  for (Scope *scope = sm->current_scope; scope and not from and not in_accept;
+       scope = scope->parent) {
+    Symbol *owner = scope->owner;
+    if (scope->opened_by_accept_statement)            in_accept = true;
+    else if (not owner)                               continue;
+    else if (owner->kind == SYMBOL_ENTRY)             from = owner;
+    else if (Is_Subprogram (owner) or
+             owner->kind == SYMBOL_PACKAGE or
+             owner->kind == SYMBOL_GENERIC)           break;
+  }
+  if (in_accept or (from and not Is_Protected_Entry (from))) {
+    Reject (node,
+      "a requeue out of an accept statement is not supported by this "
+      "implementation");
+    return;
+  }
+  if (not from) {
+    Reject (node,
+      "a requeue statement may only appear in an entry body or an accept "
+      "statement");
+    return;
+  }
+  if (not name or name->kind != NK_IDENTIFIER) {
+    Reject (node,
+      "this implementation requeues only to an entry named on its own, "
+      "without a prefix or a family index");
+    return;
+  }
+  Symbol *target = Symbol_Find (name->string_val.text);
+  name->symbol   = target;
+  if (not target or target->kind != SYMBOL_ENTRY) {
+    Reject (name, "'%.*s' does not name an entry",
+            (int) name->string_val.text.length, name->string_val.text.data);
+    return;
+  }
+  if (target->protected_owner != from->protected_owner or
+      Is_Entry_Family (target)) {
+    Reject (name,
+      "this implementation requeues only to a single entry of the protected "
+      "unit the requeue statement appears in");
+    return;
+  }
+  if (from->parameter_count > 0 or target->parameter_count > 0) {
+    Reject (node,
+      "this implementation requeues only between entries without parameters");
+    return;
+  }
+  target->is_ever_accepted     = true;
+  node->requeue_stmt.entry_sym = target;
 }
 
 void Resolve_Abort_Statement (Node *node) {
@@ -45840,7 +46675,9 @@ void Declare_Discriminants (Node_List *discriminants,
                       "type '%.*s'; this expression has type '%.*s'",
                       (int) discriminant_name.length, discriminant_name.data,
                       (int) value_name.length, value_name.data);
-      }
+      } else
+        Note_Certain_Constraint_Error (default_expression, discriminant_type,
+                                       "default expression");
     }
 
     for (u32 j = 0; j < specification->discriminant.names.count; j++) {
@@ -45858,9 +46695,36 @@ void Declare_Discriminants (Node_List *discriminants,
   }
 }
 
+void Record_Private_Extension_Parent (Node *node, Type *type) {
+  Node *written = node->type_decl.private_parent;
+  if (not written or not type) return;
+  Resolve_Expression (written);
+  Check_Type_Mark_Denotes_A_Type (Get_Type_Mark (written));
+  Type *parent = written->type;
+  if (parent and Get_Live_Arm (parent) != TYPE_ARM_RECORD) {
+    Slice named = Describe_Type (parent);
+    Reject (written,
+      "a private extension extends a record type; '%.*s' is not one",
+      (int) named.length, named.data);
+    return;
+  }
+  type->partial_view_parent = parent;
+}
+
 void Check_Private_Type_Completion (Type *type,
                                     Location where) {
   if (not Has_Private_Partial_View (type)) return;
+
+  if (type->partial_view_parent and
+      Get_Base (type->parent_type) != Get_Base (type->partial_view_parent)) {
+    Slice wanted = Describe_Type (type->partial_view_parent);
+    Reject_At (where,
+      "the full type of the private extension '%.*s' must be a record "
+      "extension of '%.*s'",
+      (int) type->name.length, type->name.data,
+      (int) wanted.length, wanted.data);
+    return;
+  }
 
   bool unconstrained_with_discriminants =
     Get_Live_Arm (type) == TYPE_ARM_RECORD and
@@ -46544,6 +47408,10 @@ void Resolve_Subprogram_Renaming (Node *node) {
     if (not sym->return_type) sym->return_type = renamed->return_type;
   }
 
+  if (renamed and renamed->protected_owner and renamed_name and
+      renamed_name->kind == NK_SELECTED and renamed->kind != SYMBOL_ENTRY)
+    sym->renamed_entry_name = renamed_name;
+
   if (renamed and renamed->kind == SYMBOL_ENTRY and renamed_name) {
     sym->renamed_entry_name = renamed_name;
     sym->rename_task_slot = Declare_Synthesized_Slot (
@@ -47162,9 +48030,10 @@ void Resolve_Pragma_Shared_Variable (Node *node) {
   if (pragma->of_components)
     unit = Is_Array_Like (Get_Underlying (unit))
              ? Get_Underlying (unit)->array.element_type : NULL;
-  if (pragma->access == SHARED_ACCESS_ATOMIC and
-      not Atomic_Access_Is_Supported (node, unit, entity->name))
-    return;
+  if (pragma->access == SHARED_ACCESS_ATOMIC) {
+    if (Is_Protected (Get_Underlying (unit))) return;
+    if (not Atomic_Access_Is_Supported (node, unit, entity->name)) return;
+  }
   if (Declares_A_Full_Type (entity)) {
     Share_Type (entity->type, pragma);
     Share_Type (Get_Base (entity->type), pragma);
@@ -47546,11 +48415,6 @@ void Record_Subprogram_Contract (Node *declaration, Symbol *subject) {
         Contract_Is_Recorded_From (subject, item))
       continue;
     recorded |= Assertion_Kind_Bit (kind);
-    if (subject->protected_owner) {
-      Reject (item, "Pre and Post are not supported on protected operations "
-                    "by this implementation");
-      continue;
-    }
     Record_Contract_Item (subject, (Contract_Item){
       .kind     = kind,
       .origin   = item,
@@ -47659,7 +48523,7 @@ void Resolve_Contract_Aspect_Pragma (Node *node) {
 Node *Make_Contract_Validation (Node *declaration, Node *item,
                                 Aspect_Kind kind) {
   Slice written = item->association.choices.items[0]->string_val.text;
-  if (declaration->kind == NK_ENTRY_DECL) {
+  if (declaration->kind == NK_ENTRY_DECL and kind != ASPECT_PRE) {
     Reject (item, "%.*s is not supported on entries by this implementation",
             (int) written.length, written.data);
     return NULL;
@@ -47839,6 +48703,18 @@ Walk_Verdict Old_Or_Result_Visit (Node *node, void *context) {
          Is_Contract_Attribute (node->attribute.kind) ? WALK_DONE : WALK_INTO;
 }
 
+Symbol *Prefix_Names_No_Value (Node *prefix) {
+  Symbol *named = prefix and (prefix->kind == NK_IDENTIFIER or
+                              prefix->kind == NK_SELECTED)
+                    ? Unalias (prefix->symbol) : NULL;
+  return named and
+         (Symbol_In_Any_Class (named, SYMBOL_CLASS_NAMES_NO_VALUE) or
+          (Symbol_In_Any_Class (named, SYMBOL_CLASS_FUNCTION |
+                                       SYMBOL_CLASS_ENTRY) and
+           not Subprogram_Callable_With_No_Arguments (named)))
+           ? named : NULL;
+}
+
 const char *Contract_Attribute_Refusal (Node *node) {
   const Contract_Context *context = &Current_Contract_Context;
   bool is_old = node->attribute.kind == ATTRIBUTE_OLD;
@@ -47888,7 +48764,14 @@ Type *Resolve_Contract_Attribute (Node *node) {
   Type           *prefix_type = Resolve_Expression (prefix);
   Old_Prefix_Scan scan        = { prefix,
                                   Current_Contract_Context.first_sequence };
-  if (Is_Limited (prefix_type))
+  Symbol         *named       = Prefix_Names_No_Value (prefix);
+  if (named)
+    Reject (node,
+      "the prefix of 'Old must denote an object or a value, and '%.*s' "
+      "names a %s",
+      (int) named->name.length, named->name.data,
+      Spell_Symbol_Kind (named));
+  else if (Is_Limited (prefix_type))
     Reject (node, "the prefix of 'Old may not be of a limited type: 'Old "
                   "keeps a copy of its value");
   else if (Walk_Tree (prefix, Postcondition_Entity_Visit, &scan))
@@ -49571,6 +50454,7 @@ Symbol *Declare_Task_Entry (Node *entry, Symbol *type_sym,
 
   Symbol_Add (entry_sym);
   entry->symbol = entry_sym;
+  Record_Subprogram_Contract (entry, entry_sym);
   return entry_sym;
 }
 
@@ -49699,9 +50583,13 @@ u32 Declare_Protected_Operations (Node_List *items, Symbol *type_sym,
       operation->protected_owner = type_sym;
     } else {
       Resolve_Declaration (item);
-      if (Node_In_Any_Class (item, NODE_CLASS_SUBPROGRAM_SPECIFICATION))
+      if (Node_In_Any_Class (item, NODE_CLASS_SUBPROGRAM_SPECIFICATION) or
+          Body_Is_A_Basic_Declaration (item))
         operation = item->symbol;
-      if (operation) operation->needs_elab_flag = false;
+      if (Body_Is_A_Basic_Declaration (item))
+        Check_Protected_Operation_Item (item, type_sym);
+      if (operation)
+        operation->needs_elab_flag = not Body_Is_A_Basic_Declaration (item);
     }
     Expand_Aspects_After (items, i);
     if (operation and exported)
@@ -49903,20 +50791,10 @@ bool Call_Acts_On_The_Current_Instance (Node *name, Symbol *unit) {
 
 Walk_Verdict Protected_Function_Body_Visit (Node *node, void *context) {
   Symbol *unit = context;
-  if (node->kind == NK_ASSIGNMENT) {
-    Symbol *target = node->assignment.target
-                       ? Unalias (node->assignment.target->symbol) : NULL;
-    if (target and target->is_current_instance and target->parent == unit)
-      Reject (node->assignment.target,
-        "'%.*s' is a component of the protected object and is constant in "
-        "the body of a protected function",
-        (int) target->name.length, target->name.data);
-    return WALK_INTO;
-  }
   Node   *name   = node->kind == NK_APPLY     ? node
                  : node->kind == NK_CALL_STMT ? node->assignment.target : NULL;
   Symbol *called = name ? Unalias (name->symbol) : NULL;
-  if (not called or called->protected_owner != unit or
+  if (not Is_A_Protected_Operation (called) or called->protected_owner != unit or
       (called->kind != SYMBOL_PROCEDURE and called->kind != SYMBOL_ENTRY) or
       not Call_Acts_On_The_Current_Instance (name, unit))
     return WALK_INTO;
@@ -49926,6 +50804,14 @@ Walk_Verdict Protected_Function_Body_Visit (Node *node, void *context) {
     called->kind == SYMBOL_ENTRY ? "entry" : "procedure",
     (int) called->name.length, called->name.data);
   return WALK_OVER;
+}
+
+void Check_Protected_Operation_Item (Node *item, Symbol *type_sym) {
+  if (not item) return;
+  if (item->kind == NK_FUNCTION_BODY and item->symbol and
+      item->symbol->protected_owner == type_sym)
+    Walk_Tree (item, Protected_Function_Body_Visit, type_sym);
+  Walk_Tree (item, Protected_Action_Visit, NULL);
 }
 
 void Resolve_Protected_Body (Node *node) {
@@ -49953,14 +50839,9 @@ void Resolve_Protected_Body (Node *node) {
   for (u32 i = 0; i < items->count; i++) {
     Node *item = items->items[i];
     if (not item) continue;
-    if (item->kind == NK_ENTRY_BODY) {
-      Resolve_Entry_Body (item, type_sym);
-      continue;
-    }
-    Resolve_Declaration (item);
-    if (item->kind == NK_FUNCTION_BODY and item->symbol and
-        item->symbol->protected_owner == type_sym)
-      Walk_Tree (item, Protected_Function_Body_Visit, type_sym);
+    if (item->kind == NK_ENTRY_BODY) Resolve_Entry_Body (item, type_sym);
+    else                             Resolve_Declaration (item);
+    Check_Protected_Operation_Item (item, type_sym);
   }
 
   if (spec and spec->kind == NK_PROTECTED_SPEC) {
@@ -49969,7 +50850,6 @@ void Resolve_Protected_Body (Node *node) {
     Check_Protected_Bodies_Are_Declared (&spec->protected_spec.private_items,
                                          items, node->protected_body.end_location);
   }
-  Walk_Tree (node, Protected_Action_Visit, NULL);
   Symbol_Manager_Pop_Scope ();
   type_sym->scope = declared_in;
 }
@@ -49997,7 +50877,7 @@ void Apply_Use_Clause_Name (Node *name_node) {
           exported->is_implicit_declaration and
           Token_From_Op_Name (exported->name) != TK_EOF)
         continue;
-      if (Hidden_By_A_Missing_With_Clause (exported)) continue;
+      if (Hidden_By_A_Missing_With_Clause (exported, NULL)) continue;
       Add_Use_Alias (exported);
     }
     return;
@@ -50228,6 +51108,7 @@ void Resolve_Declaration (Node *node) {
                                                             : TYPE_UNKNOWN,
           discriminants, node->type_decl.has_unknown_discriminants);
         Type_Attach_Discriminant_Record (type, discriminants);
+        Record_Private_Extension_Parent (node, type);
       }
 
       if (opens_a_record_type_region) Symbol_Manager_Pop_Scope ();
@@ -50750,14 +51631,19 @@ bool Is_Public_Child_Declaration (Node *cu) {
          Shape_Of_Compilation_Unit (cu) == COMPILATION_UNIT_IS_A_DECLARATION;
 }
 
-bool Is_Region_Of_A_Public_Ancestor (Node *cu, Scope *scope) {
+bool Ancestor_Private_Part_Reaches (Scope *region) {
+  Node *cu = sm->compilation_unit;
+  if (not region or not Is_Public_Child_Declaration (cu)) return true;
+  Node *unit = cu->compilation_unit.unit;
+  if (Part_Standing_In (unit ? unit->symbol : NULL) == PACKAGE_PART_PRIVATE)
+    return true;
   Scope *parent_region = Child_Unit_Parent_Region (cu);
-  if (not parent_region or not Scope_Encloses (scope, parent_region))
-    return false;
+  if (not parent_region or not Scope_Encloses (region, parent_region))
+    return true;
   Symbol *private_link = Nearest_Private_Child_Below (Child_Unit_Parent (cu),
                                                       NULL);
-  return not private_link or
-         Scope_Encloses (Child_Unit_Home_Scope (private_link), scope);
+  return private_link and
+         not Scope_Encloses (Child_Unit_Home_Scope (private_link), region);
 }
 
 Scope *Resolve_Child_Unit_Parent (Node *cu) {
@@ -51100,10 +51986,40 @@ Node *Name_A_View_Stands_For (const Symbol *sym) {
   return sym and sym->is_instance_in_out_binding ? sym->instance_actual : NULL;
 }
 
+bool Is_A_Protected_Operation (const Symbol *sym) {
+  return sym and sym->protected_owner and
+         sym->parent == sym->protected_owner;
+}
+
+Symbol *Enter_Protected_Operation (Symbol *operation) {
+  Symbol *outer = Current_Protected_Operation;
+  if (Is_A_Protected_Operation (operation))
+    Current_Protected_Operation = operation;
+  return outer;
+}
+
+bool Is_A_Constant_Protected_Component (const Symbol *sym) {
+  Symbol *operation = Current_Protected_Operation;
+  return sym and sym->is_current_instance and operation and
+         operation->kind == SYMBOL_FUNCTION and
+         operation->protected_owner == Protected_Unit_Of (sym);
+}
+
+bool Reject_Constant_Protected_View (Node *name) {
+  Symbol *object = Object_Denoted_By_Name (name);
+  if (not Is_A_Constant_Protected_Component (object)) return false;
+  Reject (name,
+    "'%.*s' is a component of the protected object and is constant in "
+    "the body of a protected function",
+    (int) object->name.length, object->name.data);
+  return true;
+}
+
 bool Symbol_Denotes_A_Variable (const Symbol *sym) {
   if (not sym) return false;
   Node *renamed = Get_Renamed_Object (sym);
   if (renamed) return Is_Variable_Name (renamed);
+  if (Is_A_Constant_Protected_Component (sym)) return false;
   switch (sym->kind) {
     case SYMBOL_VARIABLE:  return not sym->is_loop_parameter;
     case SYMBOL_PARAMETER: return Get_Parameter_Mode ((Symbol *) sym) != MODE_IN;
@@ -51294,6 +52210,7 @@ void Check_Actual_Parameter_Variables (Symbol *callee,
       continue;
     }
     if (Is_Variable_Name_Or_Conversion_Of_One (actual)) continue;
+    if (Reject_Constant_Protected_View (actual)) continue;
 
     Slice formal_name = profile_view->parameters[formal].name;
     Reject_At (actual ? actual->location : argument->location,
@@ -51414,6 +52331,7 @@ void Check_Associations (Node_List *associations,
       represented[represented_count++] = found;
     }
 
+    if (Value_Is_A_Box (association->association.expression)) continue;
     Type *represented_type = represented_count
       ? Get_Base (formals[represented[0]].type) : NULL;
     for (u32 r = 1; r < represented_count; r++)
@@ -52317,7 +53235,7 @@ void Check_Array_Aggregate_Types (Node *node) {
   }
 }
 
-void Check_Aggregate_Component_Lengths (Node *node, Scope *vantage) {
+void Check_Aggregate_Component_Values (Node *node, Scope *vantage) {
   Type *aggregate_type = node->type;
 
   if (Is_Record (aggregate_type)) {
@@ -52342,21 +53260,27 @@ void Check_Aggregate_Component_Lengths (Node *node, Scope *vantage) {
     for (u32 i = 0; i < count; i++) {
       if (present and not present[i]) continue;
       const Component_Info *component = &aggregate_type->record.components[i];
-      Note_Certain_Length_Error (
-        Record_Aggregate_Component_Value (node, aggregate_type, i, present),
-        component->component_type, "component association", "component",
-        component->name, aggregate_type, vantage);
+      Node *value = Record_Aggregate_Component_Value (node, aggregate_type, i,
+                                                      present);
+      Note_Certain_Length_Error (value, component->component_type,
+                                 "component association", "component",
+                                 component->name, aggregate_type, vantage);
+      Note_Certain_Constraint_Error (value, component->component_type,
+                                     "component association");
     }
     return;
   }
 
   if (not Is_Array_Like (aggregate_type)) return;
   if (aggregate_type->array.index_count != 1) return;
-  for (u32 i = 0; i < node->aggregate.items.count; i++)
-    Note_Certain_Length_Error (
-      Unwrap_Association (node->aggregate.items.items[i]),
-      aggregate_type->array.element_type, "component association",
-      "component subtype", S(""), aggregate_type, vantage);
+  for (u32 i = 0; i < node->aggregate.items.count; i++) {
+    Node *value = Unwrap_Association (node->aggregate.items.items[i]);
+    Note_Certain_Length_Error (value, aggregate_type->array.element_type,
+                               "component association", "component subtype",
+                               S(""), aggregate_type, vantage);
+    Note_Certain_Constraint_Error (value, aggregate_type->array.element_type,
+                                   "component association");
+  }
 }
 
 void Check_Array_Aggregate_Coverage (Node *node) {
@@ -53036,8 +53960,10 @@ bool Declaration_Requires_Body (Node *item) {
       return Package_Specification_Requires_Body (item);
     case NK_PROCEDURE_SPEC: case NK_FUNCTION_SPEC:
       return not (item->symbol and item->symbol->is_imported);
-    case NK_TASK_SPEC: case NK_PROTECTED_SPEC:
+    case NK_TASK_SPEC:
       return true;
+    case NK_PROTECTED_SPEC:
+      return Protected_Specification_Requires_Body (item);
     case NK_GENERIC_DECL: {
       Node *template_unit = item->generic_decl.unit;
       return not template_unit
@@ -53123,6 +54049,16 @@ bool Package_Specification_Requires_Body (Node *spec) {
   return false;
 }
 
+bool Protected_Specification_Requires_Body (Node *spec) {
+  if (not spec or spec->kind != NK_PROTECTED_SPEC) return false;
+  Node_List *const parts[2] = { &spec->protected_spec.visible_items,
+                                &spec->protected_spec.private_items };
+  for (u32 part = 0; part < 2; part++)
+    for (u32 i = 0; i < parts[part]->count; i++)
+      if (Protected_Item_Declaration (parts[part]->items[i])) return true;
+  return false;
+}
+
 bool Package_Needs_No_Body (const Symbol *package) {
   Node *spec = package ? package->declaration : NULL;
   return spec and spec->kind == NK_PACKAGE_SPEC and
@@ -53203,7 +54139,8 @@ void Check_Bodies_Complete_A_Declaration (
 
 bool Declaration_Exempt_From_Forcing (const Node *node) {
   if (node->kind == NK_OBJECT_DECL)
-    return node->object_decl.is_constant and not node->object_decl.init;
+    return node->object_decl.is_collection or
+           (node->object_decl.is_constant and not node->object_decl.init);
   return Node_In_Any_Class (node, NODE_CLASS_EXEMPT_FROM_FORCING);
 }
 
@@ -55485,6 +56422,9 @@ void Check_Legality_Of_Node (Node *node,
                              const Enclosing_Unit *enclosing) {
   if (not node) return;
 
+  Symbol *outer_operation =
+    Enter_Protected_Operation (enclosing ? enclosing->unit : NULL);
+
   if (not Name_Position_Admits_A_Generic_Unit (position))
     Check_Name_Denotes_No_Generic_Unit (node, enclosing);
 
@@ -55740,7 +56680,8 @@ void Check_Legality_Of_Node (Node *node,
     }
     case NK_ASSIGNMENT:
       if (Name_Was_Resolved (node->assignment.target) and
-          not Is_Variable_Name (node->assignment.target))
+          not Is_Variable_Name (node->assignment.target) and
+          not Reject_Constant_Protected_View (node->assignment.target))
         Reject_At (node->assignment.target->location,
                       "the target of an assignment must be the name of a "
                       "variable");
@@ -55754,7 +56695,7 @@ void Check_Legality_Of_Node (Node *node,
       Check_Multidimensional_String_Items (node, others_context);
       Check_Record_Aggregate_Components   (node);
       Check_Array_Aggregate_Types         (node);
-      Check_Aggregate_Component_Lengths   (node, Get_Region (enclosing));
+      Check_Aggregate_Component_Values   (node, Get_Region (enclosing));
       Check_Array_Aggregate_Coverage      (node);
       break;
     case NK_GENERIC_DECL:
@@ -55835,6 +56776,7 @@ void Check_Legality_Of_Node (Node *node,
       Classify_Reading (node, item, reading),
       item == generic_unit_specification ? &here : within);
   }
+  Current_Protected_Operation = outer_operation;
 }
 
 void Check_Separately_Compiled_Designator (Node *node) {
@@ -57147,7 +58089,7 @@ void Debug_Write_Metadata () {
            HOST_DEBUG_FORMAT_FLAG
            "!3 = !{i32 2, !\"Debug Info Version\", i32 3}\n"
            "!4 = distinct !DICompileUnit(language: %s, "
-           "file: !%u, producer: \"ada83\", isOptimized: false, "
+           "file: !%u, producer: \"turboada\", isOptimized: false, "
            "runtimeVersion: 0, emissionKind: FullDebug)\n",
            cg->debug_gdb ? "DW_LANG_Ada83" : "DW_LANG_C99", file);
   Flush_Module_Metadata ();
@@ -58624,6 +59566,8 @@ void Note_Exception_Identity (const char *spelled, Symbol *exception) {
 }
 
 const char *Spell_Storage (Symbol *sym) {
+  if (sym and sym->contract_actual_temp)
+    return Arena_Format ("%s", REG (sym->contract_actual_temp));
   if (Is_Predicate_Instance (sym) and sym->disc_agg_temp)
     return Arena_Format ("%s", REG (sym->disc_agg_temp));
   bool         uplevel = Is_Uplevel_Access (sym);
@@ -62795,6 +63739,10 @@ void Emit_Scalar_Range_Note (Symbol *sym, Type *type, Rep rep) {
 }
 
 Value Emit_Object_Value (Symbol *sym, Type *type) {
+  if (sym and sym->is_current_instance) {
+    Value from_site = Emit_Component_From_Entry_Call_Site (sym, type);
+    if (from_site.reg) return from_site;
+  }
   Type *packed_element = Renaming_Names_A_Packed_Element (sym);
   if (packed_element)
     return Emit_Packed_Element_Load (packed_element, Emit_Symbol_Address (sym),
@@ -65198,9 +66146,17 @@ void Emit_Deferred_Abort_Check () {
   Emit_Label_Here (cont);
 }
 
-u32 Emit_Delay_Microseconds (Node *delay_expr) {
+u32 Emit_Delay_Microseconds (Node *delay) {
+  Node *delay_expr = delay->delay_stmt.expression;
   u32 dur = Lower_Expression (delay_expr).reg;
   Type *dt = delay_expr->type;
+  if (delay->delay_stmt.is_until) {
+    Rep rep = dt ? To_Rep (dt) : Pick_Arith_Rep ();
+    u32 now = Emit_Coerce (Wrap (Emit_Call_Result ("i64 @__ada_clock()"),
+                                 Make_Int_Rep (64, true)), rep).reg;
+    dur = Emit_Result ("sub %s %s, %s  ; the wait runs until minus now\n",
+                       Spell_Rep (rep),  REG (dur),  REG (now));
+  }
   if (Is_Fixed_Point (dt)) {
     Rep fr = To_Rep (dt);
     u32 db = Emit_Result ("sitofp %s %s to double\n",  Spell_Rep (fr),  REG (dur));
@@ -65233,6 +66189,19 @@ void Emit_Entry_Family_Index_Check (Symbol *entry_sym, u32 idx_val) {
   } else if (constraint and Has_Discrete_Representation (constraint->type)) {
     Emit_Constraint_Check (Wrap (idx_val, iat), constraint->type, NULL);
   }
+}
+
+Value Emit_Component_From_Entry_Call_Site (Symbol *sym, Type *ty) {
+  if (not cg->entry_family_object or not Protected_Unit_Of (sym))
+    return NO_VALUE;
+  u32 address = Emit_Result ("getelementptr i8, ptr %s, i64 %lld"
+                             "  ; protected component, at the call site\n",
+                             REG (cg->entry_family_object),
+                             (long long) sym->frame_offset);
+  Rep rep = ty ? To_Rep (ty) : Pick_Arith_Rep ();
+  u32 reg = Emit_Result ("load %s, ptr %s%s\n",
+                         Spell_Rep (rep),  REG (address),  Alias_Tag (rep));
+  return Wrap (reg, rep);
 }
 
 void Note_Separate_Boundary_Callee (Symbol *sym) {
@@ -66175,8 +67144,7 @@ Region Region_A_Value_Must_Outlive (Type *target, Region holder) {
 
 Result_Bound Result_Bound_In_Force () {
   if (cg->result_bound.root) return cg->result_bound;
-  return (Result_Bound){ NULL, NULL, (Region){ REGION_ANY, NULL, NULL },
-                         false };
+  return (Result_Bound){ NULL, NULL, Parametric_Region (), false };
 }
 
 Result_Bound Bound_Of_A_Part (Node *part, Type *part_type) {
@@ -66346,6 +67314,19 @@ u32 Emit_Current_Activation_Level () {
                         cg->statement_master_depth);
 }
 
+u32 Emit_Calling_Master_Level () {
+  Symbol *here = cg->current_function;
+  if (here and Subprogram_Needs_Accessibility_Level (here))
+    return Emit_Result ("sub i32 %%__level, 1"
+                        "  ; the master of the call that passed it\n");
+  Region mine = here and here->scope ? Region_Of_Scope (here->scope)
+                                     : Library_Region ();
+  u32    deep = Region_Master_Depth (mine);
+  return Emit_Result ("add i32 %u, 0"
+                      "  ; static level of the master of the call\n",
+                      deep ? deep - 1 : 0);
+}
+
 u32 Emit_Level_Seen_From_A_Task (u32 level, Scope *accepted, bool written) {
   Scope *task_body = accepted;
   while (task_body and (task_body->opened_by_accept_statement or
@@ -66432,8 +67413,7 @@ u32 Emit_Accessibility_Level (Accessibility from) {
       u32 deepest = 0;
       for (u32 i = 0; i < from.parts->aggregate.items.count; i++) {
         Node *part = Unwrap_Association (from.parts->aggregate.items.items[i]);
-        if (not part or not Type_Carries_An_Accessibility_Level (part->type))
-          continue;
+        if (not Value_Contributes_A_Level (part)) continue;
         u32 level = Emit_Accessibility_Level (Accessibility_Of (part));
         deepest = deepest ? Emit_Deeper_Level (deepest, level) : level;
       }
@@ -66444,6 +67424,8 @@ u32 Emit_Accessibility_Level (Accessibility from) {
     case ACCESS_FROM_OBJECT:
     case ACCESS_FROM_DESIGNATED:
       return Emit_Region_Level (from.region);
+    case ACCESS_FROM_CALLER:
+      return Emit_Calling_Master_Level ();
     case ACCESS_FROM_MASTER:
     case ACCESS_FROM_HERE:
       return Emit_Current_Activation_Level ();
@@ -67226,8 +68208,15 @@ u32 Emit_Protected_Self (void) {
 
 Node *Protected_Call_Prefix (Node *node) {
   Node *name = node and node->kind == NK_APPLY ? node->apply.prefix : node;
-  return name and name->kind == NK_SELECTED and
-         not name->selected.is_prefixed_call ? name->selected.prefix : NULL;
+  for (u32 depth = 0; name and depth < 8; depth++) {
+    if (name->kind == NK_APPLY) { name = name->apply.prefix; continue; }
+    if (name->kind == NK_SELECTED)
+      return name->selected.is_prefixed_call ? NULL : name->selected.prefix;
+    Symbol *named = name->kind == NK_IDENTIFIER ? name->symbol : NULL;
+    if (not named or not named->renamed_entry_name) return NULL;
+    name = named->renamed_entry_name;
+  }
+  return NULL;
 }
 
 u32 Emit_Protected_Object_Level (Node *prefix) {
@@ -67348,6 +68337,40 @@ Value Emit_Staged_Slice_Actual (Actual_Binding *binding, Type *formal_type,
                                     bound_rep);
 }
 
+bool Entry_Checks_A_Precondition (const Symbol *entry) {
+  for (u32 i = 0; entry and i < entry->contract_item_count; i++)
+    if (entry->contract_items[i].kind == ASSERTION_KIND_PRE and
+        Contract_Item_Is_Checked (&entry->contract_items[i]))
+      return true;
+  return false;
+}
+
+void Emit_Entry_Precondition (Symbol *entry, const Rendezvous_Layout *layout,
+                              u32 param_block) {
+  if (not Entry_Checks_A_Precondition (entry)) return;
+  u32      *saved = layout->count and layout->formals
+    ? Arena_Allocate (layout->count * sizeof (u32)) : NULL;
+  Location  at    = cg->current_location;
+  for (u32 p = 0; saved and p < layout->count; p++) {
+    Symbol *formal = layout->formals[p].symbol;
+    Type   *type   = layout->formals[p].type;
+    saved[p] = formal ? formal->contract_actual_temp : 0;
+    if (not formal) continue;
+    formal->contract_actual_temp =
+      Accept_Formal_Is_Bound_By_Reference (type) or
+      Accept_Formal_Is_Bound_As_Fat_Pointer (type) or Is_Array_Like (type)
+        ? Emit_Result ("inttoptr " PTR_INT_TYPE " %s to ptr\n",
+            REG (Emit_Rendezvous_Word_Load (param_block, p,
+                                            "formal named by a precondition")))
+        : Emit_Rendezvous_Word_Address (param_block, p);
+  }
+  Emit_Contract_Checks (entry, ASSERTION_KIND_PRE);
+  for (u32 p = 0; saved and p < layout->count; p++)
+    if (layout->formals[p].symbol)
+      layout->formals[p].symbol->contract_actual_temp = saved[p];
+  Emit_Location (at);
+}
+
 Value Lower_Entry_Call (Node *node, Symbol *sym, Symbol *entry_rename_sym) {
   Emit ("  ; Entry call: %.*s\n", (int) sym->name.length, sym->name.data);
 
@@ -67370,8 +68393,15 @@ Value Lower_Entry_Call (Node *node, Symbol *sym, Symbol *entry_rename_sym) {
     first_param_idx = 1;
   }
 
-  if (is_entry_family and family_idx_temp)
+  u32 protected_object = Is_Protected_Entry (sym)
+    ? Emit_Protected_Object_Pointer (Protected_Call_Prefix (node)) : 0;
+
+  if (is_entry_family and family_idx_temp) {
+    u32 saved = cg->entry_family_object;
+    cg->entry_family_object = protected_object;
     Emit_Entry_Family_Index_Check (sym, family_idx_temp);
+    cg->entry_family_object = saved;
+  }
 
   u32 param_count = sym->parameters ? sym->parameter_count
                        : (node->apply.arguments.count - first_param_idx);
@@ -67533,10 +68563,12 @@ Value Lower_Entry_Call (Node *node, Symbol *sym, Symbol *entry_rename_sym) {
         "the actual's accessibility level");
   }
 
+  Emit_Entry_Precondition (sym, &layout, param_block);
+
   Node *prefix = node->apply.prefix;
   if (Is_Protected_Entry (sym)) {
     Node *target = Protected_Call_Prefix (node);
-    u32   object = Emit_Protected_Object_Pointer (target);
+    u32   object = protected_object;
     u32   index  = Emit_Entry_Index (sym, family_idx_temp);
     if (Protected_Carries_An_Accessibility_Level (sym->protected_owner)) {
       u32 level    = Emit_Protected_Object_Level (target);
@@ -67548,11 +68580,21 @@ Value Lower_Entry_Call (Node *node, Symbol *sym, Symbol *entry_rename_sym) {
             "  ; the level its entry bodies read\n",
             REG (level), REG (level_at));
     }
-    if (cg->entry_call_try_mode)
-      Reject (node, "a timed or conditional call to a protected entry is not "
-                    "supported by this implementation");
-    Emit_Call_Void ("void @__ada_prot_entry_call(ptr %s, i64 %s, ptr %s)",
-                    REG (object), REG (index), REG (param_block));
+    if (cg->entry_call_try_mode) {
+      if (cg->entry_call_delay_expr) {
+        Node *delay_statement = cg->entry_call_delay_expr;
+        cg->entry_call_delay_expr = NULL;
+        cg->entry_call_timeout_temp = Emit_Delay_Microseconds (delay_statement);
+      }
+      cg->entry_call_result_temp = Emit_Call_Result (
+        "i8 @__ada_prot_entry_call_try(ptr %s, i64 %s, ptr %s, i64 %s)",
+        REG (object), REG (index), REG (param_block),
+        cg->entry_call_timeout_temp ? REG (cg->entry_call_timeout_temp)
+                                    : "0");
+    } else {
+      Emit_Call_Void ("void @__ada_prot_entry_call(ptr %s, i64 %s, ptr %s)",
+                      REG (object), REG (index), REG (param_block));
+    }
     Emit_Entry_Call_Copy_Backs (&layout, binding, slot_count, param_block);
     Emit_Call_Void ("void @llvm.stackrestore.p0(ptr %s)", REG (entry_sp));
     return NO_VALUE;
@@ -67583,9 +68625,9 @@ Value Lower_Entry_Call (Node *node, Symbol *sym, Symbol *entry_rename_sym) {
   u32 entry_index_64 = Emit_Entry_Index (sym, family_idx_temp);
 
   if (cg->entry_call_delay_expr) {
-    Node *delay_expression = cg->entry_call_delay_expr;
+    Node *delay_statement = cg->entry_call_delay_expr;
     cg->entry_call_delay_expr = NULL;
-    cg->entry_call_timeout_temp = Emit_Delay_Microseconds (delay_expression);
+    cg->entry_call_timeout_temp = Emit_Delay_Microseconds (delay_statement);
   }
 
   if (cg->entry_call_try_mode) {
@@ -70715,7 +71757,7 @@ void Emit_Strided_Run_Controlled_Op (Element_Interval run, Type *element,
                                                     run.rep);
   u32 stride = Emit_Dynamic_Stride_Header_Load (run.base);
   u32 count  = Emit_Convert (run.length, run.rep, Pick_Size_Rep ()).reg;
-  Emit_Controlled_Element_Loop (element, first, stride, count, op);
+  Emit_Controlled_Element_Loop (element, first, stride, count, op, 0);
 }
 
 void Emit_Run_Length_Check (Element_Interval destination,
@@ -70750,9 +71792,9 @@ void Emit_Assign_Dynamic_Stride_Slice (Type *array_type,
   Emit_Strided_Run_Controlled_Op (destination, element, CONTROLLED_FINALIZE);
   Emit_Copy_Dynamic_Stride_Slice (destination, held);
   Emit_Strided_Run_Controlled_Op (destination, element, CONTROLLED_ADJUST);
-  Emit_Bounded_Error_Close (&guard, BOUNDED_ERROR_IN_ASSIGNMENT);
   if (may_overlap)
     Emit_Strided_Run_Controlled_Op (held, element, CONTROLLED_FINALIZE);
+  Emit_Bounded_Error_Close (&guard, BOUNDED_ERROR_IN_ASSIGNMENT);
 }
 
 void Emit_Copy_Dynamic_Stride_Slice (Element_Interval destination,
@@ -72138,6 +73180,11 @@ void Agg_Emit_Component_Flat (Aggregate_Emission_Context *context,
   if (flat_index.is_static and context->initialized and
       (flat_index.value < 0 or flat_index.value >= context->count))
     return;
+  if (Value_Is_A_Box (expression)) {
+    if (flat_index.is_static and context->initialized)
+      context->initialized[(size_t) flat_index.value] = true;
+    return;
+  }
   Type *saved_subject = cg->operation_subject;
   cg->operation_subject = context->agg_type;
   u32   value;
@@ -73493,7 +74540,8 @@ Value Lower_Array_Aggregate_Body (Node *node, Type *agg_type) {
     Emit_Label_Here (skip_label);
   }
 
-  if (shape->has_others and not built_from_constant)
+  if (shape->has_others and not built_from_constant and
+      not Value_Is_A_Box (shape->others_expression))
     Agg_Fill_Others (&context, shape->others_expression, shape->positional_count);
 
   if (cg->in_agg_component > 0 and not bounds.high_from_positional_count[0]) {
@@ -73577,6 +74625,39 @@ void Emit_Record_Component_Value (Node     *expression,
     Agg_Post_Discriminant (value, component, component_index, agg_type,
                            disc_info);
   cg->operation_subject = saved_subject;
+}
+
+void Emit_Record_Component_Box_Default (Type *agg_type, u32 base,
+                                        u32 component_index,
+                                        Disc_Alloc_Info *disc_info) {
+  Component_Info *component = &agg_type->record.components[component_index];
+  if (component->default_expr) {
+    Emit_Record_Component_Value (component->default_expr, agg_type, base,
+                                 component_index, disc_info);
+    return;
+  }
+  Type *component_type = component->component_type;
+  if (not component_type) return;
+  u32 where = Emit_Component_Base (agg_type, base, component_index);
+  if (Record_Needs_Initial_Values (component_type))
+    Emit_Initialize_Record_Component (agg_type, component_index, component_type,
+                                      where);
+  else if (Is_Access (component_type))
+    Emit ("  store %s, ptr %s  ; the box leaves this one null\n",
+          Spell_Null_Access (component_type),  REG (where));
+  else if (Needs_Finalization (component_type))
+    Emit_Controlled_Op (component_type, where, CONTROLLED_INITIALIZE);
+}
+
+void Emit_Record_Aggregate_Component (Node *expression, Type *agg_type,
+                                      u32 base, u32 component_index,
+                                      Disc_Alloc_Info *disc_info) {
+  if (Value_Is_A_Box (expression))
+    Emit_Record_Component_Box_Default (agg_type, base, component_index,
+                                       disc_info);
+  else
+    Emit_Record_Component_Value (expression, agg_type, base, component_index,
+                                 disc_info);
 }
 
 void Collect_Component_Subtype_Discriminants (Type *component_type,
@@ -73759,8 +74840,8 @@ Value Lower_Record_Aggregate_Body (Node *node, Type *agg_type) {
           if (ci < 0) continue;
           if ((pass == 0) != (bool) agg_type->record.components[ci].is_discriminant)
             continue;
-          Emit_Record_Component_Value (item->association.expression, agg_type, base,
-                                       (u32) ci, &disc_info);
+          Emit_Record_Aggregate_Component (item->association.expression, agg_type,
+                                           base, (u32) ci, &disc_info);
           initialized[ci] = true;
         }
         continue;
@@ -73787,8 +74868,8 @@ Value Lower_Record_Aggregate_Body (Node *node, Type *agg_type) {
       if (not initialized[ci] and
           not Record_Component_Is_Excluded (agg_type, ci, selected_variant,
                                             nested_gone))
-        Emit_Record_Component_Value (shape.others_expression, agg_type, base, ci,
-                                     &disc_info);
+        Emit_Record_Aggregate_Component (shape.others_expression, agg_type, base,
+                                          ci, &disc_info);
 
   if (disc_info.count > 0)
     Emit_Aggregate_Disc_Dependent_Index_Checks (agg_type, selected_variant,
@@ -74632,14 +75713,40 @@ void Emit_Controlled_Routine_Call (Type *routine, u32 base,
                   Controlled_Operation_Suffix[op],  REG (base));
 }
 
-void Emit_Controlled_Operation_Call (Symbol *op, u32 base) {
-  Symbol *target = Unalias_Operation (op);
+void Emit_Controlled_Operation_Call (Symbol *op, u32 base,
+                                     Controlled_Operation_Kind kind) {
+  Symbol         *target = Unalias_Operation (op);
+  Exception_Setup guard  = { 0 };
+  bool            noted  = kind == CONTROLLED_FINALIZE;
+  if (noted) Emit_Exception_Handler_Setup (&guard);
   Emit_Elaboration_Check (target);
   Emit_Planned_Call (&(Call_Plan){
     .profile    = target,
     .binding    = &(Actual_Binding){ .value = base, .rep = REP_PTR,
                                      .is_covered = true },
     .slot_count = 1 });
+  if (noted) Emit_Finalize_Failure_Close (&guard);
+}
+
+bool Controlled_Build_Needs_Undo (Type *t, u32 first_own, bool parent_part,
+                                  bool own) {
+  u32 parts = parent_part ? 1 : 0;
+  for (u32 ci = first_own; ci < t->record.component_count; ci++) {
+    Component_Info *comp = &t->record.components[ci];
+    if (not comp->is_discriminant and
+        Needs_Finalization (comp->component_type))
+      parts++;
+  }
+  return parts >= 2 or (parts == 1 and own);
+}
+
+void Emit_Controlled_Build_Undo (Finalization_List *built,
+                                 Exception_Setup *guard) {
+  u32 finished = Emit_Label ();
+  Emit_Branch_If_Needed (finished);
+  Emit_Exception_Handler_Close (guard);
+  Emit_Finalization_Sequence (built, FINALIZATION_ON_UNWIND, NULL);
+  Emit_Label_Here (finished);
 }
 
 void Emit_Controlled_Record_Walk (Type *t, u32 base,
@@ -74652,8 +75759,21 @@ void Emit_Controlled_Record_Walk (Type *t, u32 base,
                                         : NULL;
   bool  finalizing  = op == CONTROLLED_FINALIZE;
 
-  if (finalizing and own) Emit_Controlled_Operation_Call (own, base);
-  if (parent_part) Emit_Controlled_Op (parent, base, op);
+  Finalization_List built = { 0 };
+  Exception_Setup   guard = { 0 };
+  bool undo = op == CONTROLLED_INITIALIZE and
+              Controlled_Build_Needs_Undo (t, first_own, parent_part,
+                                           own != NULL);
+  if (undo) {
+    Open_Finalization_Cursor (&built, 0);
+    Emit_Exception_Handler_Setup (&guard);
+  }
+
+  if (finalizing and own) Emit_Controlled_Operation_Call (own, base, op);
+  if (parent_part) {
+    Emit_Controlled_Op (parent, base, op);
+    if (undo) Append_Controlled_Run (&built, parent, base, base, 0);
+  }
 
   Value governing = Emit_Governing_Discriminant (t, base);
 
@@ -74670,30 +75790,34 @@ void Emit_Controlled_Record_Walk (Type *t, u32 base,
     Controlled_Operation_Kind component_op =
       op == CONTROLLED_INITIALIZE and comp->default_expr ? CONTROLLED_ADJUST
                                                          : op;
-    Emit_Controlled_Component_Op (t, base, ci, component_op);
+    Emit_Controlled_Component_Op (t, base, ci, component_op,
+                                  undo ? &built : NULL);
     Emit_Close_Variant_Guard (skip);
   }
 
-  if (not finalizing and own) Emit_Controlled_Operation_Call (own, base);
+  if (not finalizing and own) Emit_Controlled_Operation_Call (own, base, op);
+  if (undo) Emit_Controlled_Build_Undo (&built, &guard);
 }
 
 void Emit_Controlled_Component_Op (Type *record, u32 base, u32 ci,
-                                   Controlled_Operation_Kind op) {
+                                   Controlled_Operation_Kind op,
+                                   Finalization_List *built) {
   Type *component_type = record->record.components[ci].component_type;
   u32   component      = Emit_Component_Base (record, base, ci);
-  if (Is_Constrained_Array (component_type) and
-      Has_Dynamic_Bounds (component_type))
-    Emit_Controlled_Elements (
-      component_type, component,
-      Emit_Dependent_Component_Element_Count (record, base, ci,
-                                              Pick_Size_Rep ()),
-      op);
-  else
-    Emit_Controlled_Op (component_type, component, op);
+  u32   count          = Is_Constrained_Array (component_type) and
+                         Has_Dynamic_Bounds (component_type)
+                           ? Emit_Dependent_Component_Element_Count (
+                               record, base, ci, Pick_Size_Rep ())
+                           : 0;
+  if (count) Emit_Controlled_Elements (component_type, component, count, op);
+  else       Emit_Controlled_Op (component_type, component, op);
+  if (built and Needs_Finalization (component_type))
+    Append_Controlled_Run (built, component_type, component, component, count);
 }
 
 void Emit_Controlled_Element_Loop (Type *element, u32 first, u32 stride,
-                                   u32 count, Controlled_Operation_Kind op) {
+                                   u32 count, Controlled_Operation_Kind op,
+                                   u32 done_slot) {
   bool descending = op == CONTROLLED_FINALIZE;
   Rep  counter    = Make_Int_Rep (64, true);
   u32  zero       = Emit_Int_Const (0, counter).reg;
@@ -74710,6 +75834,10 @@ void Emit_Controlled_Element_Loop (Type *element, u32 first, u32 stride,
   u32 pointer = Emit_Result ("getelementptr i8, ptr %s, i64 %s\n",
                              REG (first),  REG (offset));
   Emit_Controlled_Op (element, pointer, op);
+  if (done_slot)
+    Emit ("  store i64 %s, ptr %s\n",
+          REG (Emit_Result ("add i64 %s, 1\n",  REG (loop.current))),
+          REG (done_slot));
   Emit_Counted_Loop_End (&loop);
 }
 
@@ -74717,7 +75845,26 @@ void Emit_Controlled_Elements (Type *array_type, u32 data, u32 count,
                                Controlled_Operation_Kind op) {
   if (not count or not Needs_Finalization (array_type)) return;
   Type *element = array_type ? array_type->array.element_type : NULL;
-  u32   stride;
+  Finalization_List built     = { 0 };
+  Exception_Setup   guard     = { 0 };
+  bool              undo      = op == CONTROLLED_INITIALIZE;
+  u32               done_slot = 0;
+  if (undo) {
+    done_slot = Emit_Frame_Slot (
+      "alloca i64  ; elements this build has already initialized\n");
+    Emit ("  store i64 0, ptr %s\n",  REG (done_slot));
+    Open_Finalization_Cursor (&built, 1);
+    Finalizable_Entry *entry = Finalization_List_Append (
+      &built, (Finalizable_Entry){ .kind    = FINALIZABLE_ANONYMOUS,
+                                   .type    = array_type,
+                                   .address = data,
+                                   .handle  = data });
+    entry->pointer_slot = Emit_Finalizable_Address_Slot (
+      "elements this build has already initialized", data);
+    entry->count_slot   = done_slot;
+    Emit_Exception_Handler_Setup (&guard);
+  }
+  u32 stride;
   if (Element_Size_Is_Run_Time (array_type)) {
     stride = Emit_Dynamic_Stride_Header_Load (data);
     data   = Emit_Dynamic_Stride_Data (data);
@@ -74728,7 +75875,8 @@ void Emit_Controlled_Elements (Type *array_type, u32 data, u32 count,
     stride = Emit_Extend_To_I64 (Emit_Composite_Byte_Size (element),
                                  Pick_Size_Rep ()).reg;
   }
-  Emit_Controlled_Element_Loop (element, data, stride, count, op);
+  Emit_Controlled_Element_Loop (element, data, stride, count, op, done_slot);
+  if (undo) Emit_Controlled_Build_Undo (&built, &guard);
 }
 
 u32 Emit_Evaluable_Bound (Type_Bound *bound, Rep rep) {
@@ -75405,13 +76553,11 @@ void Emit_Finalization_Sequence (Finalization_List *list,
     if (kind == FINALIZATION_ON_UNWIND) Emit_Reraise ();
     return;
   }
-  Rep flag_rep = Make_Int_Rep (8, false);
   u32 saved_exception = kind == FINALIZATION_ON_UNWIND
                           ? Emit_Current_Exception_Id () : 0;
   u32 saved_message   = kind == FINALIZATION_ON_UNWIND
                           ? Emit_Result ("load ptr, ptr @__reported_detail\n")
                           : 0;
-  u32 raised = Emit_Alloca_Store (flag_rep, Emit_Int_Const (0, flag_rep).reg);
 
   Exception_Setup guard = { 0 };
   Emit_Exception_Handler_Setup (&guard);
@@ -75440,29 +76586,35 @@ void Emit_Finalization_Sequence (Finalization_List *list,
   }
 
   Emit_Exception_Handler_Close (&guard);
-  Emit ("  store i8 1, ptr %s\n",  REG (raised));
+  Emit_Finalize_Failure_Note ();
   Emit_Branch_If_Needed (sequence);
 
   Emit_Label_Here (done);
-  if (kind == FINALIZATION_SILENT) return;
-  u32 failed_label = Emit_Label (), ok_label = Emit_Label ();
-  u32 failed = Emit_Result ("load i8, ptr %s\n",  REG (raised));
-  Emit_Branch_Weighted (Emit_Icmp_Const ("ne", flag_rep, failed, 0),
-                        failed_label, ok_label, BRANCH_COLD_WHEN_TRUE, NULL);
-  Emit_Label_Here (failed_label);
-  Emit_Raise_Program_Error (
-    Finalization_Bounded_Error_Comments[BOUNDED_ERROR_IN_MASTER]);
-  Emit_Label_Here (ok_label);
+  if (kind == FINALIZATION_SILENT) {
+    Emit ("  store i8 0, ptr @__finalize_failed\n");
+    return;
+  }
+  Emit_Raise_If_Finalize_Failed (BOUNDED_ERROR_IN_MASTER);
   if (kind != FINALIZATION_ON_UNWIND) return;
   Emit ("  store ptr %s, ptr @__pending_detail  ; its message goes on too\n",
         REG (saved_message));
   Emit_Raise_Identity (saved_exception, "propagates after finalization");
 }
 
+Node *Declared_Initial_Value (Node *declaration) {
+  return declaration and declaration->kind == NK_OBJECT_DECL
+           ? declaration->object_decl.init : NULL;
+}
+
 bool Object_Needs_Finalization (Node *declaration, void *context) {
+  Symbol *single = Single_Declaration_Object (declaration);
+  if (single)
+    return Object_Finalizable_Kind (declaration, single->type) !=
+           FINALIZABLE_NONE;
   if (declaration->kind != NK_OBJECT_DECL) return false;
+  Node *init = Declared_Initial_Value (declaration);
   if (Renames_A_View (declaration))
-    return Construct_Creates_Controlled_Temps (declaration->object_decl.init);
+    return Construct_Creates_Controlled_Temps (init);
   for (u32 j = 0; j < declaration->object_decl.names.count; j++) {
     Node *name = declaration->object_decl.names.items[j];
     Type *t = (name and name->symbol) ? name->symbol->type : declaration->type;
@@ -75470,8 +76622,8 @@ bool Object_Needs_Finalization (Node *declaration, void *context) {
       return true;
     if (Subtype_Has_Allocated_Coextensions (t)) return true;
     u32 bit = 0;
-    if (Coextension_Mask_For (t, declaration->object_decl.init, &bit) or
-        Initializer_Hands_Over_Coextensions (t, declaration->object_decl.init))
+    if (Coextension_Mask_For (t, init, &bit) or
+        Initializer_Hands_Over_Coextensions (t, init))
       return true;
   }
   return false;
@@ -75740,7 +76892,9 @@ Finalizable_Entry *Register_Library_Finalizable_Object (Symbol *object,
 }
 
 Finalizable_Kind Object_Finalizable_Kind (Node *declaration, Type *t) {
-  if (declaration->object_decl.is_collection) return FINALIZABLE_COLLECTION;
+  if (declaration->kind == NK_OBJECT_DECL and
+      declaration->object_decl.is_collection)
+    return FINALIZABLE_COLLECTION;
   return Needs_Finalization (t) ? FINALIZABLE_OBJECT : FINALIZABLE_NONE;
 }
 
@@ -75748,9 +76902,16 @@ void Elaborate_Finalizable_Object (Symbol *object, Type *t, Node *declaration,
                                    Finalizable_Registrar *register_with) {
   Finalizable_Kind kind = Object_Finalizable_Kind (declaration, t);
   if (kind == FINALIZABLE_NONE) return;
-  if (kind == FINALIZABLE_OBJECT and not declaration->object_decl.init)
+  if (kind == FINALIZABLE_OBJECT and not Declared_Initial_Value (declaration))
     Emit_Controlled_Object_Op (object, t, CONTROLLED_INITIALIZE);
   register_with (object, t, kind);
+}
+
+void Finish_Declared_Object (Symbol *object, Type *t, Node *declaration,
+                             Finalizable_Registrar *register_with) {
+  Elaborate_Finalizable_Object (object, t, declaration, register_with);
+  Emit_Declared_Object_Predicate_Check (object,
+                                        declaration->object_decl.init != NULL);
 }
 
 bool Subtype_Has_Allocated_Coextensions (const Type *t) {
@@ -76183,13 +77344,35 @@ void Emit_Controlled_Run_Op (Controlled_Run run, u32 base,
   else           Emit_Controlled_Op (run.type, base, op);
 }
 
-void Emit_Bounded_Error_Close (Exception_Setup *guard,
-                               Finalization_Bounded_Error error) {
+void Emit_Finalize_Failure_Note () {
+  Emit ("  store i8 1, ptr @__finalize_failed\n");
+}
+
+void Emit_Finalize_Failure_Close (Exception_Setup *guard) {
   u32 done = Emit_Label ();
   Emit_Branch_If_Needed (done);
   Emit_Exception_Handler_Close (guard);
-  Emit_Raise_Program_Error (Finalization_Bounded_Error_Comments[error]);
+  Emit_Finalize_Failure_Note ();
+  Emit_Branch_If_Needed (done);
   Emit_Label_Here (done);
+}
+
+void Emit_Raise_If_Finalize_Failed (Finalization_Bounded_Error error) {
+  Rep flag   = Make_Int_Rep (8, false);
+  u32 failed = Emit_Result ("load i8, ptr @__finalize_failed\n");
+  Emit ("  store i8 0, ptr @__finalize_failed\n");
+  u32 raising = Emit_Label (), settled = Emit_Label ();
+  Emit_Branch_Weighted (Emit_Icmp_Const ("ne", flag, failed, 0),
+                        raising, settled, BRANCH_COLD_WHEN_TRUE, NULL);
+  Emit_Label_Here (raising);
+  Emit_Raise_Program_Error (Finalization_Bounded_Error_Comments[error]);
+  Emit_Label_Here (settled);
+}
+
+void Emit_Bounded_Error_Close (Exception_Setup *guard,
+                               Finalization_Bounded_Error error) {
+  Emit_Finalize_Failure_Close (guard);
+  Emit_Raise_If_Finalize_Failed (error);
 }
 
 void Emit_Controlled_Assignment (Controlled_Run run, u32 target, u32 source,
@@ -76207,8 +77390,8 @@ void Emit_Controlled_Assignment (Controlled_Run run, u32 target, u32 source,
   Emit_Controlled_Run_Op (run, target, CONTROLLED_FINALIZE);
   Emit_Memcpy (target, source, bytes);
   Emit_Controlled_Run_Op (run, target, CONTROLLED_ADJUST);
-  Emit_Bounded_Error_Close (&guard, BOUNDED_ERROR_IN_ASSIGNMENT);
   if (anonymous) Emit_Controlled_Run_Op (run, anonymous, CONTROLLED_FINALIZE);
+  Emit_Bounded_Error_Close (&guard, BOUNDED_ERROR_IN_ASSIGNMENT);
 }
 
 void Emit_Library_Finalizer (Symbol *unit) {
@@ -77094,6 +78277,101 @@ Value Lower_Quantified_Expression (Node *node) {
                             REG (verdict)), rep);
 }
 
+Value Lower_Declare_Expression (Node *node) {
+  Emit_Location (node->location);
+  Emit ("  ; DECLARE expression\n");
+  cg->statement_master_depth++;
+  u32 finalization = Emit_Finalization_Enter (&node->declare_expr.declarations,
+                                              &node->declare_expr.statements,
+                                              true);
+  Master_Scope master = Emit_Master_Enter_If (node->declare_expr.is_task_master,
+                                              node->declare_expr.master_scope_id,
+                                              &node->declare_expr.statements);
+  Lower_Declaration_List (&node->declare_expr.declarations);
+  Emit_Activate_Pending_Tasks (master.saved_pa);
+  Lower_Statement_List (&node->declare_expr.statements);
+  Emit ("  ; -- the value of the DECLARE expression\n");
+  Value value = Lower_Expression (node->declare_expr.expression);
+  if (Is_Record (node->type) and Needs_Finalization (node->type) and
+      Declarations_Need_Finalization (&node->declare_expr.declarations)) {
+    Emit ("  ; -- the value outlives the objects declared beside it\n");
+    u32 kept = Emit_Record_Aggregate_Storage (node, node->type);
+    Emit_Memcpy (kept, value.reg, Emit_Type_Byte_Size (node->type));
+    Emit_Adjust_After_Copy (node->type, kept, value.reg);
+    Register_Anonymous_Controlled_Object (node->type, kept);
+    value = Wrap (kept, REP_PTR);
+  }
+  Emit_Master_Exit (master);
+  Emit_Finalization_Exit (finalization);
+  cg->statement_master_depth--;
+  return value;
+}
+
+Value Emit_Unreached_Value (Type *type) {
+  Rep rep = type ? To_Rep (type) : Pick_Arith_Rep ();
+  if (Rep_Is_Fat_Pointer (rep)) return Wrap (Emit_Null_Fat_Pointer (), rep);
+  if (Rep_Is_Pointer (rep))
+    return Wrap (Emit_Result ("inttoptr " PTR_INT_TYPE " 0 to ptr\n"), rep);
+  if (Rep_Is_Float (rep))
+    return Wrap (Emit_Constant_Register (Make_Float_Operand (0.0, rep)), rep);
+  return Emit_Literal_Register (0, rep);
+}
+
+Value Lower_Raise_Expression (Node *node) {
+  Emit_Location (node->location);
+  Symbol *exception = node->raise_expr.exception_name
+                        ? node->raise_expr.exception_name->symbol : NULL;
+  if (not exception) {
+    Emit ("  ; RAISE expression without a name\n");
+    return Emit_Unreached_Value (node->type);
+  }
+  Emit ("  ; RAISE expression ");
+  Emit_Symbol_Name (exception);
+  Emit ("\n");
+  Node       *message = node->raise_expr.message;
+  const char *text    = message and message->kind == NK_STRING
+    ? Arena_Format ("%.*s", (int) message->string_val.text.length,
+                    message->string_val.text.data)
+    : NULL;
+  if (message and not text) Emit_Pending_Message_Value (message);
+  Emit_Raise_With_Message (exception, text, "raise expression");
+  Emit_Block_Label ("L%u", Emit_Label ());
+  cg->block_terminated = false;
+  return Emit_Unreached_Value (node->type);
+}
+
+Value Lower_Delta_Aggregate (Node *node) {
+  Type *record_type = node->type;
+  Emit_Location (node->location);
+  Emit ("  ; delta aggregate\n");
+  u32   base = Emit_Record_Aggregate_Storage (node, record_type);
+  Value from = Lower_Expression (node->delta_aggregate.base);
+  Emit_Memcpy (base, from.reg, Emit_Type_Byte_Size (record_type));
+  Emit_Adjust_After_Copy (record_type, base, from.reg);
+
+  Disc_Alloc_Entry disc_alloc[16];
+  Disc_Alloc_Info  disc_info =
+    Bind_Aggregate_Subtype_Discriminants (record_type, disc_alloc, 16);
+  for (u32 i = 0; i < node->delta_aggregate.items.count; i++) {
+    Node *item = node->delta_aggregate.items.items[i];
+    if (not item or item->kind != NK_ASSOCIATION or
+        not item->association.expression) continue;
+    for (u32 c = 0; c < item->association.choices.count; c++) {
+      Node *choice = item->association.choices.items[c];
+      if (not choice or choice->kind != NK_IDENTIFIER) continue;
+      i32 index = Find_Record_Component (record_type, choice->string_val.text);
+      if (index < 0) continue;
+      Emit_Record_Component_Value (item->association.expression, record_type,
+                                   base, (u32) index, &disc_info);
+    }
+  }
+  for (u32 da = 0; da < disc_info.count; da++)
+    disc_info.entries[da].sym->disc_agg_temp = 0;
+  if (Needs_Finalization (record_type))
+    Register_Anonymous_Controlled_Object (record_type, base);
+  return Wrap (base, REP_PTR);
+}
+
 void Adopt_Into_This_Activation (Symbol *sym) {
   if (not sym) return;
   sym->unique_id                        = sm->next_unique_id++;
@@ -77204,6 +78482,9 @@ Value Lower_Expression_Body (Node *node) {
     case NK_IF_EXPR:    return Lower_If_Expression (node);
     case NK_CASE_EXPR:  return Lower_Case_Expression (node);
     case NK_QUANTIFIED: return Lower_Quantified_Expression (node);
+    case NK_DECLARE_EXPR:    return Lower_Declare_Expression (node);
+    case NK_RAISE_EXPR:      return Lower_Raise_Expression (node);
+    case NK_DELTA_AGGREGATE: return Lower_Delta_Aggregate (node);
     case NK_IDENTIFIER: return Lower_Identifier (node);
     case NK_SELECTED:   {
       Type *prefix_type = node->selected.prefix->type;
@@ -77500,9 +78781,6 @@ Value Lower_Expression_Body (Node *node) {
       char master_argument[OPERAND_MAX];
       Spell_Allocator_Master (created_subtype, access_type, master_argument);
       bool collected = Collection_Head_Of (access_type) != NULL;
-      bool coextension = coextension_owner != 0 and
-                         Is_Access_Discriminant_Type (access_type) and
-                         Needs_Finalization (created_subtype);
 
       if (is_fat_pointer and initial_value and
           Is_Array_Like (initial_value->type)) {
@@ -77551,9 +78829,8 @@ Value Lower_Expression_Body (Node *node) {
 
         Emit_Implicit_Initial_Value (address, created_subtype, elements,
                                      plan.reserved);
-        if (collected)
-          Emit_Controlled_Elements (created_subtype, address, elements,
-                                    CONTROLLED_INITIALIZE);
+        Emit_Controlled_Elements (created_subtype, address, elements,
+                                  CONTROLLED_INITIALIZE);
         Emit_Created_Task_Activation (
           created_subtype->array.element_type, address, plan.elements,
           (u32) Measure_Element_Storage (created_subtype),
@@ -77604,8 +78881,7 @@ Value Lower_Expression_Body (Node *node) {
           Find_Object_Destination (address, created_subtype),
           value, initial_value->type, NULL, initial_value);
         Emit_Access_Designated_Disc_Check (value.reg, value.rep, target_subtype);
-        if (collected or coextension)
-          Emit_Adjust_After_Copy (created_subtype, address, value.reg);
+        Emit_Adjust_After_Copy (created_subtype, address, value.reg);
       } else {
         i128 elements = Is_Array_Like (created_subtype)
                           ? Count_Elements (created_subtype) : 0;
@@ -77613,8 +78889,7 @@ Value Lower_Expression_Body (Node *node) {
           address, created_subtype,
           elements > 0 ? Emit_Int_Const (elements, Pick_Size_Rep ()).reg : 0,
           byte_count);
-        if (collected or coextension)
-          Emit_Controlled_Op (created_subtype, address, CONTROLLED_INITIALIZE);
+        Emit_Controlled_Op (created_subtype, address, CONTROLLED_INITIALIZE);
         if (Is_Composite (allocator_subtype) and
             Has_Component_Defaults (allocator_subtype))
           Emit_Predicate_Check (Wrap (address, REP_PTR), created_subtype,
@@ -78713,6 +79988,22 @@ void Lower_Return_Statement (Node *node) {
   cg->block_terminated = true;
 }
 
+void Lower_Requeue_Statement (Node *node) {
+  Symbol *target = node->requeue_stmt.entry_sym;
+  if (not target or not cg->accept.active or not cg->accept.requeue_slot)
+    Die (node->location,
+         "a requeue statement outside a protected entry body reached codegen");
+  Emit_Location (node->location);
+  Emit ("  ; REQUEUE %.*s\n",
+        (int) target->name.length, target->name.data);
+  Emit_Call_Void ("void @__ada_prot_requeue(ptr %%__po, ptr %s, i64 %u)",
+                  REG (cg->accept.caller_ptr),  Entry_Index_Base (target));
+  Emit ("  store ptr %s, ptr %s  ; the call is queued again, not complete\n",
+        REG (cg->accept.caller_ptr),  REG (cg->accept.requeue_slot));
+  Emit ("  br label %%L%u\n",  cg->accept.end_label);
+  cg->block_terminated = true;
+}
+
 void Emit_Case_Choice_Branch (u32 match_reg, u32 alt_label,
                               u32 next_check, bool has_more) {
   u32 next_choice = has_more ? Emit_Label () : next_check;
@@ -79342,7 +80633,8 @@ void Lower_Component_Iterator (Node *node, const Loop_Body *body) {
   Open_Loop_Continuation (node);
   u32 component = Emit_Array_Element_Address (whole, array.view, loop.current,
                                               szt);
-  if (Type_Needs_Fat_Pointer (element->type))
+  if (Type_Needs_Fat_Pointer (element->type) and
+      not Is_Access (element->type))
     component = Emit_Snapshot_Renamed_Fat (
       Emit_Fat_Pointer_For_Lvalue (component, element->type).reg,
       element->type, false);
@@ -79727,7 +81019,7 @@ bool Lower_Conditional_Or_Timed_Entry_Call (Node *node) {
 
   cg->entry_call_timeout_temp = 0;
   cg->entry_call_delay_expr = delay_alternative
-    ? delay_alternative->select_alternative.statement->delay_stmt.expression
+    ? delay_alternative->select_alternative.statement
     : NULL;
 
   cg->entry_call_try_mode = true;
@@ -79797,18 +81089,19 @@ u32 Emit_Rendezvous_Parameter_Block (Node_List *parameters,
 void Emit_Rendezvous_Body (Node *body,
                            Node_List *parameters, Node_List *statements,
                            u32 caller_ptr, u32 params_ptr, u32 after_label,
-                           bool caller_executes) {
+                           u32 requeue_slot, bool caller_executes) {
   Emit_Accept_Parameter_Bindings (parameters, params_ptr);
 
   Exception_Setup rendezvous = {0};
   Emit_Exception_Handler_Setup (&rendezvous);
 
   Accept_State saved_accept = cg->accept;
-  cg->accept = (Accept_State){ .active     = true,
-                               .caller_ptr = caller_ptr,
-                               .params_ptr = params_ptr,
-                               .parameters = parameters,
-                               .end_label  = after_label };
+  cg->accept = (Accept_State){ .active       = true,
+                               .caller_ptr   = caller_ptr,
+                               .params_ptr   = params_ptr,
+                               .parameters   = parameters,
+                               .end_label    = after_label,
+                               .requeue_slot = requeue_slot };
 
   Debug_Entry_Scope entry_scope = Debug_Entry_Open (body);
   Debug_Declare_Entry_Formals (parameters);
@@ -79904,7 +81197,7 @@ u32 Emit_Selective_Wait_Delay_Budget (Node_List *alternatives,
           SELECT_ALTERNATIVE_DELAY) continue;
 
     u32 microseconds = Emit_Delay_Microseconds (
-      alternative->select_alternative.statement->delay_stmt.expression);
+      alternative->select_alternative.statement);
     u32 current =
       Emit_Result ("load i64, ptr %s\n",  REG (budget_slot));
     I1 shorter = Emit_Icmp ("ult", Make_Int_Rep (64, true),
@@ -80600,7 +81893,8 @@ void Lower_Rendezvous (Node *accept, u32 caller_ptr) {
   u32 after_label = Emit_Label ();
   Emit_Rendezvous_Body (accept, &accept->accept_stmt.parameters,
                         &accept->accept_stmt.statements,
-                        caller_ptr, params_ptr, after_label, false);
+                        caller_ptr, params_ptr, after_label, NO_REGISTER,
+                        false);
   Emit_Label_Here (after_label);
 }
 
@@ -80862,12 +82156,15 @@ void Lower_Statement_Body (Node *node) {
 
     case NK_DELAY:
       {
-        u32 microseconds =
-          Emit_Delay_Microseconds (node->delay_stmt.expression);
+        u32 microseconds = Emit_Delay_Microseconds (node);
         Emit_Deferred_Abort_Check ();
         Emit_Call_Void ("void @__ada_delay(i64 %s)",  REG (microseconds));
         Emit_Deferred_Abort_Check ();
       }
+      break;
+
+    case NK_REQUEUE:
+      Lower_Requeue_Statement (node);
       break;
 
     case NK_ACCEPT:
@@ -82277,6 +83574,21 @@ u32 Emit_Renamed_Object_Address (Symbol *renaming, Node *renamed,
                                  bool outlives_the_frame) {
   if (renaming->rename_element_start_slot)
     return Emit_Renamed_View_Address (renaming, renamed, outlives_the_frame);
+  if (renamed and renamed->kind == NK_APPLY and
+      renamed->apply.resolution == APPLY_TYPE_CONVERSION and
+      renamed->type and Has_Scalar_Representation (renamed->type)) {
+    Value value = Lower_Expression (renamed);
+    u32   bytes = (Get_Bits (value.rep) + 7) / 8;
+    u32   spill = outlives_the_frame
+      ? Emit_Call_Result ("ptr @__ada_allocate (i64 %u)"
+                          "  ; converted rename snapshot",
+                          bytes < 8 ? 8 : bytes)
+      : Emit_Frame_Slot ("alloca %s  ; converted rename snapshot\n",
+                         Spell_Rep (value.rep));
+    Emit ("  store %s %s, ptr %s\n",
+          Spell_Rep (value.rep),  REG (value.reg),  REG (spill));
+    return spill;
+  }
   if (not Type_Needs_Fat_Pointer (renaming->type))
     return Lower_Lvalue (renamed);
   return Emit_Snapshot_Renamed_Fat (Lower_Expression (renamed).reg,
@@ -84888,8 +86200,8 @@ void Lower_Object_Declaration (Node *node) {
           if (ty and Is_Array_Like (ty) and Type_Needs_Fat_Pointer (ty) and
               not node->object_decl.init) {
             Emit_Fill_Dynamic_Library_Array (sym, NULL);
-            Elaborate_Finalizable_Object (sym, ty, node,
-                                          Register_Library_Finalizable_Object);
+            Finish_Declared_Object (sym, ty, node,
+                                    Register_Library_Finalizable_Object);
             continue;
           }
           Object_Shape shape = ty ? Get_Object_Shape (ty)
@@ -84899,9 +86211,8 @@ void Lower_Object_Declaration (Node *node) {
                 Shape_Wants_Array_Element_Defaults (&shape) or
                 Type_Excludes_Null (ty))
               Emit_Apply_Library_Default_Init (sym);
-            Emit_Declared_Object_Predicate_Check (sym, false);
-            Elaborate_Finalizable_Object (sym, ty, node,
-                                          Register_Library_Finalizable_Object);
+            Finish_Declared_Object (sym, ty, node,
+                                    Register_Library_Finalizable_Object);
             continue;
           }
 
@@ -84914,9 +86225,8 @@ void Lower_Object_Declaration (Node *node) {
                 ? PENDING_ELABORATION_DYNAMIC_ARRAY_KIND
                 : PENDING_ELABORATION_OBJECT_INITIALIZER_KIND;
           Emit_Pending_Library_Elaboration (kind, sym, node->object_decl.init);
-          Emit_Declared_Object_Predicate_Check (sym, true);
-          Elaborate_Finalizable_Object (sym, ty, node,
-                                        Register_Library_Finalizable_Object);
+          Finish_Declared_Object (sym, ty, node,
+                                  Register_Library_Finalizable_Object);
         }
       }
       Pop_Result_Level_Bound (saved_bound);
@@ -84994,10 +86304,8 @@ void Lower_Object_Declaration (Node *node) {
     else
       Lower_Default_Initialization (sym, &shape);
     cg->coextension_owner_depth--;
-    Emit_Declared_Object_Predicate_Check (sym, node->object_decl.init != NULL);
-
     Register_Object_Coextensions (sym, ty, node->object_decl.init);
-    Elaborate_Finalizable_Object (sym, ty, node, Register_Finalizable_Object);
+    Finish_Declared_Object (sym, ty, node, Register_Finalizable_Object);
   }
 
   Bound_Cache_Forget_All ();
@@ -86982,7 +88290,7 @@ void Emit_Monitor_Body_Function (Node *accept) {
   u32 done = Emit_Label ();
   Emit_Rendezvous_Body (accept, &accept->accept_stmt.parameters,
                         &accept->accept_stmt.statements,
-                        rv, params_ptr, done, true);
+                        rv, params_ptr, done, NO_REGISTER, true);
   Emit_Label_Here (done);
   Emit ("  ret ptr null\n");
   Emit ("}\n\n");
@@ -87165,8 +88473,15 @@ void Lower_Task_Body (Node *node) {
   Emit_Call_Void ("void @__ada_rt_broadcast()");
 #endif
   Emit_Call_Void ("void @__ada_rt_unlock()");
+  Exception_Setup completion_exc = { 0 };
+  Emit_Exception_Handler_Setup (&completion_exc);
   Emit_Master_Exit (master);
   Emit_Finalization_Sequence_Of (finalization, FINALIZATION_ON_EXIT);
+  u32 completed = Emit_Label ();
+  Emit_Branch_If_Needed (completed);
+  Emit_Exception_Handler_Close (&completion_exc);
+  Emit_Branch_If_Needed (completed);
+  Emit_Label_Here (completed);
   Emit_Collection_Master_Reclaim (&pools);
   Emit ("  ret ptr null\n");
   cg->block_terminated = true;
@@ -88091,7 +89406,9 @@ void Lower_Protected_Declaration (Node *node) {
   else {
     bool laid_out_at_run_time = Reserve_Runtime_Record_Layout (unit->type);
     if (object) Define_Single_Protected_Object (object);
-    if (laid_out_at_run_time or (object and object->storage_is_indirect))
+    if (laid_out_at_run_time or
+        (object and (object->storage_is_indirect or
+                     Needs_Finalization (object->type))))
       Defer_Library_Elaboration (PENDING_ELABORATION_PROTECTED_DECLARATION_KIND,
                                  object, node);
     else if (object)
@@ -88099,6 +89416,21 @@ void Lower_Protected_Declaration (Node *node) {
                                  object, node);
   }
   if (node->protected_spec.is_type) Emit_Elaboration_Flag_Store (unit, false);
+  Lower_Protected_Specification_Items (node);
+}
+
+void Lower_Protected_Specification_Items (Node *node) {
+  Node_List *const parts[2] = { &node->protected_spec.visible_items,
+                                &node->protected_spec.private_items };
+  for (u32 part = 0; part < 2; part++)
+    for (u32 i = 0; i < parts[part]->count; i++) {
+      Node *item = parts[part]->items[i];
+      if (not item) continue;
+      if (Body_Is_A_Basic_Declaration (item))
+        Lower_Subprogram_Body_Declaration (item);
+      else if (item->symbol and item->symbol->needs_elab_flag)
+        Emit_Elaboration_Flag_Store (item->symbol, false);
+    }
 }
 
 void Elaborate_Protected_Declaration (Node *node) {
@@ -88111,6 +89443,10 @@ void Elaborate_Protected_Declaration (Node *node) {
     ? Emit_Acquire_Dynamic_Object_Storage (object, type, 0,
                                            DYNAMIC_STORAGE_IN_A_LIBRARY_CELL)
     : Emit_Symbol_Address (object));
+  Elaborate_Finalizable_Object (object, type, node,
+                                Is_Global (object)
+                                  ? Register_Library_Finalizable_Object
+                                  : Register_Finalizable_Object);
 }
 
 void Define_Single_Protected_Object (Symbol *object) {
@@ -88258,12 +89594,15 @@ void Emit_Protected_Entry_Function (Node *item, Symbol *unit) {
   u32 record     = Emit_Result ("getelementptr i8, ptr %%__rv, i64 0\n");
   u32 params     = Emit_Rendezvous_Parameter_Block (&item->entry_body.parameters,
                                                     record);
+  u32 moved      = Emit_Frame_Slot ("alloca ptr  ; requeued call, if any\n");
+  Emit ("  store ptr null, ptr %s\n",  REG (moved));
   u32 done       = Emit_Label ();
   Emit_Rendezvous_Body (item, &item->entry_body.parameters,
                         &item->entry_body.statements,
-                        record, params, done, true);
+                        record, params, done, moved, true);
   Emit_Label_Here (done);
-  Emit ("  ret ptr null\n");
+  Emit ("  ret ptr %s\n",
+        REG (Emit_Result ("load ptr, ptr %s  ; requeued?\n",  REG (moved))));
   Emit_Protected_Function_Close (saved);
 }
 
@@ -89623,6 +90962,8 @@ void Emit_Runtime_Declarations () {
     "declare void @GetSystemTimeAsFileTime(ptr)\n"
     "declare void @Sleep(i32)\n"
     "declare i32 @GlobalMemoryStatusEx(ptr)\n"
+    "declare ptr @GetModuleHandleA(ptr)\n"
+    "declare ptr @GetProcAddress(ptr, ptr)\n"
 #else
 #ifdef __APPLE__
     "declare ptr @pthread_self()\n"
@@ -89653,10 +90994,6 @@ void Emit_Runtime_Declarations () {
 #if defined(__linux__) and (defined(SIMD_X86_64) or defined(SIMD_ARM64))
   Emit_Verbatim (
     "declare i64 @syscall(i64, ...)\n");
-#elif defined(_WIN32) and (defined(SIMD_X86_64) or defined(SIMD_ARM64))
-  Emit_Verbatim (
-    "declare i32 @WaitOnAddress(ptr, ptr, i64, i32)\n"
-    "declare void @WakeByAddressAll(ptr)\n");
 #endif
 #ifdef SIMD_X86_64
   Emit_Verbatim (
@@ -90045,6 +91382,10 @@ void Emit_Runtime_Globals () {
     "; from anywhere else clears it rather than inheriting it\n"
     "@__pending_detail = linkonce_odr thread_local(initialexec) global ptr null\n"
     "@__reported_detail = linkonce_odr thread_local(initialexec) global ptr null\n"
+    "; a Finalize that propagated leaves its mark here; the finalization\n"
+    "; that invoked it carries on, and turns the mark into PROGRAM_ERROR\n"
+    "; once every object it owes has been finalized\n"
+    "@__finalize_failed = linkonce_odr thread_local(initialexec) global i8 0\n"
     "@__master_chain = linkonce_odr thread_local(initialexec) global ptr null\n"
     "; retired master records, reusable by this thread; enter and release\n"
     "; both run on the owning task's thread, so no lock guards this list\n"
@@ -90592,12 +91933,43 @@ void Emit_Runtime_Synchronisation () {
 #elif defined(_WIN32) and not defined(ADA_FORCE_CV_WAIT) and \
       (defined(SIMD_X86_64) or defined(SIMD_ARM64))
   Emit_Verbatim (
+    "@__ada_str_kernel32 = private constant [13 x i8] c\"kernel32.dll\\00\"\n"
+    "@__ada_str_waiton = private constant [14 x i8] c\"WaitOnAddress\\00\"\n"
+    "@__ada_str_wakeall = private constant [17 x i8] c\"WakeByAddressAll\\00\"\n"
+    "@__ada_pfn_waiton = internal global ptr null\n"
+    "@__ada_pfn_wakeall = internal global ptr null\n"
     RUNTIME_WORD_WAIT (
       "  %cmp = alloca i32, align 4\n"
       "  store i32 %expected, ptr %cmp\n",
-      "  %_rc = call i32 @WaitOnAddress(ptr %w, ptr %cmp, i64 4, i32 -1)\n")
+      "  %pf0 = load atomic ptr, ptr @__ada_pfn_waiton monotonic, align 8\n"
+      "  %n0 = icmp eq ptr %pf0, null\n"
+      "  br i1 %n0, label %wres, label %wuse\n"
+      "wres:\n"
+      "  %k = call ptr @GetModuleHandleA(ptr @__ada_str_kernel32)\n"
+      "  %pw = call ptr @GetProcAddress(ptr %k, ptr @__ada_str_waiton)\n"
+      "  %pk = call ptr @GetProcAddress(ptr %k, ptr @__ada_str_wakeall)\n"
+      "  store atomic ptr %pk, ptr @__ada_pfn_wakeall monotonic, align 8\n"
+      "  store atomic ptr %pw, ptr @__ada_pfn_waiton monotonic, align 8\n"
+      "  br label %wuse\n"
+      "wuse:\n"
+      "  %pf = phi ptr [ %pf0, %sleep ], [ %pw, %wres ]\n"
+      "  %use = icmp ne ptr %pf, null\n"
+      "  br i1 %use, label %wfa, label %wpoll\n"
+      "wfa:\n"
+      "  %_r = call i32 %pf(ptr %w, ptr %cmp, i64 4, i32 -1)\n"
+      "  br label %wjoin\n"
+      "wpoll:\n"
+      "  call void @Sleep(i32 1)\n"
+      "  br label %wjoin\n"
+      "wjoin:\n")
     RUNTIME_WORD_WAKE (
-      "  call void @WakeByAddressAll(ptr %w)\n"));
+      "  %pw0 = load atomic ptr, ptr @__ada_pfn_wakeall monotonic, align 8\n"
+      "  %hw = icmp ne ptr %pw0, null\n"
+      "  br i1 %hw, label %wkc, label %wkj\n"
+      "wkc:\n"
+      "  call void %pw0(ptr %w)\n"
+      "  br label %wkj\n"
+      "wkj:\n"));
 #else
   Emit_Verbatim (RUNTIME_WORD_PORTABLE);
 #endif
@@ -95789,6 +97161,8 @@ void Resolve_Generic_Formal_Object_Default (Node *formal, Type *object_type) {
     Reject (default_expr,
                   "default expression is not of the type of the "
                   "generic formal object");
+  else Note_Certain_Constraint_Error (default_expr, object_type,
+                                      "default expression");
   if (not default_expr->type) default_expr->type = object_type;
 }
 
@@ -95852,7 +97226,7 @@ void Install_Generic_Formal_Symbols (Symbol *generic_symbol) {
             Node *definition = formal->generic_type_param.def_detail;
             type->access.modifier =
               formal->generic_type_param.access_modifier;
-            type->access.region = (Region){ REGION_ANY };
+            type->access.region = Parametric_Region ();
             if (definition->kind == NK_ACCESS_TYPE) {
               Resolve_Designated_Profile (type, definition);
               type->defining_symbol = type_sym;
@@ -96389,8 +97763,9 @@ void Bind_Instance_Formal_Subprogram (Symbol *instance_sym,
     Node *actual_name = Unwrap_Association (slot->actual_association);
     if (not actual_name)
       actual_name = formal->generic_subprog_param.default_name;
-    if (slot->actual_subprogram->kind == SYMBOL_ENTRY and
-        actual_name and actual_name->kind == NK_SELECTED)
+    if (actual_name and actual_name->kind == NK_SELECTED and
+        (slot->actual_subprogram->kind == SYMBOL_ENTRY or
+         slot->actual_subprogram->protected_owner))
       binding->renamed_entry_name = actual_name;
 
   } else {
@@ -98367,7 +99742,7 @@ bool Path_Join (char *out, size_t size, const char *directory, const char *name)
 
 void Runtime_Library_Locate (const char *executable_directory) {
   if (not Path_Join (Runtime_Library_Path, sizeof Runtime_Library_Path,
-                     executable_directory, "ada83-runtime.ada"))
+                     executable_directory, "turboada-runtime.ada"))
     Runtime_Library_Path[0] = '\0';
 }
 
@@ -98378,12 +99753,12 @@ void Runtime_Library_Ensure_Loaded (void) {
     ? Read_File_Simple (Runtime_Library_Path) : NULL;
   if (not source) {
     char candidate[PATH_MAX];
-    source = Include_Path_Probe (S ("ada83-runtime.ada"), "", NULL, false,
+    source = Include_Path_Probe (S ("turboada-runtime.ada"), "", NULL, false,
                                  true, candidate, sizeof (candidate));
   }
   if (not source) return;
   Runtime_Library_Text = source;
-  Parser parser = Parser_New (source, strlen (source), "ada83-runtime.ada");
+  Parser parser = Parser_New (source, strlen (source), "turboada-runtime.ada");
   while (Runtime_Unit_Count < MAX_UNITS_PER_SOURCE_FILE and
          not parser.had_error and parser.current_token.kind != TK_EOF) {
     Node *cu = Parse_Compilation_Unit (&parser);
@@ -101634,7 +103009,7 @@ void Add_Analysis_Include_Paths (const char *directory) {
   if (directory and directory[0]) Add_Include_Path (directory);
   Add_Include_Path (".");
 
-  const char *named = getenv ("ADA83_INCLUDE");
+  const char *named = getenv ("TURBOADA_INCLUDE");
   for (const char *start = named ? named : ""; *start;) {
     const char *stop   = strchr (start, HOST_PATH_SEPARATOR);
     size_t      length = stop ? (size_t) (stop - start) : strlen (start);
@@ -101657,9 +103032,9 @@ void Publish_Include_Paths (int argc, char *argv[]) {
     }
   if (joined.Length) {
 #ifdef _WIN32
-    _putenv_s ("ADA83_INCLUDE", joined.Data);
+    _putenv_s ("TURBOADA_INCLUDE", joined.Data);
 #else
-    setenv ("ADA83_INCLUDE", joined.Data, 1);
+    setenv ("TURBOADA_INCLUDE", joined.Data, 1);
 #endif
   }
   Buffer_Free (&joined);
@@ -101835,7 +103210,7 @@ void Publish_Diagnostics (Open_Document *document,
     Buffer_Append_Text (&message, "{");
     Append_Range (&message, line, start, line, end);
     Buffer_Printf (&message,
-      ",\"severity\":%d,\"source\":\"ada83\",\"message\":", kind);
+      ",\"severity\":%d,\"source\":\"turboada\",\"message\":", kind);
     Buffer_Append_Json_String (&message, text ? text : "");
 
     const Json *related = Json_Member (entry, "related");
@@ -102136,7 +103511,7 @@ Symbol *Search_Scope_Tree (Scope *scope, Slice name, u32 depth) {
 
 const char *Declaration_File (const char *filename) {
   if (not filename or not Runtime_Library_Path[0]) return filename;
-  if (strcmp (filename, "ada83-runtime.ada") == 0)
+  if (strcmp (filename, "turboada-runtime.ada") == 0)
     return Runtime_Library_Path;
 
   const char *dot = strrchr (filename, '.');
@@ -103643,7 +105018,7 @@ int Run_Language_Server (const char *invoked_as, int argc, char *argv[]) {
           ",\"tokenModifiers\":[]},\"full\":true},"
         "\"codeLensProvider\":{\"resolveProvider\":false},"
         "\"positionEncoding\":\"utf-16\"},"
-        "\"serverInfo\":{\"name\":\"ada83\",\"version\":\"1.0\"}}");
+        "\"serverInfo\":{\"name\":\"turboada\",\"version\":\"1.0\"}}");
 
     } else if (strcmp (method, "shutdown") == 0) {
       shut_down = true;
@@ -104128,7 +105503,7 @@ static bool Dap_Command_Exists (const char *command) {
 }
 
 static const char *Dap_Backend_Command (void) {
-  const char *override = getenv ("ADA83_LLDB_DAP");
+  const char *override = getenv ("TURBOADA_LLDB_DAP");
   if (override and override[0])
     return Dap_Command_Exists (override) ? override : NULL;
   static const char *const candidates[] =
@@ -104203,7 +105578,7 @@ static int Run_Debug_Adapter (const char *invoked_as) {
   const char *command = Dap_Backend_Command ();
   if (not command)
     return Dap_Refuse ("no lldb-dap found (tried lldb-dap, lldb-dap-18, "
-                       "lldb-vscode on PATH; ADA83_LLDB_DAP overrides)");
+                       "lldb-vscode on PATH; TURBOADA_LLDB_DAP overrides)");
 
   int   to_child = -1, from_child = -1;
   pid_t child    = Dap_Spawn_Backend (command, &to_child, &from_child);
@@ -104659,7 +106034,7 @@ static bool Repl_Start_Backend (Repl *repl) {
   const char *command = Dap_Backend_Command ();
   if (not command) {
     fputs ("No lldb-dap found (tried lldb-dap, lldb-dap-18, lldb-vscode "
-           "on PATH; ADA83_LLDB_DAP overrides).\n", stderr);
+           "on PATH; TURBOADA_LLDB_DAP overrides).\n", stderr);
     return false;
   }
   pid_t backend = Dap_Spawn_Backend (command, &repl->to_backend,
@@ -104674,7 +106049,7 @@ static bool Repl_Start_Backend (Repl *repl) {
   repl->stream.Length = 0;
   if (repl->stream.Data) repl->stream.Data[0] = '\0';
   Json *reply = Repl_Request (repl, "initialize",
-    "{\"adapterID\":\"ada83\",\"clientID\":\"ada83-debug\","
+    "{\"adapterID\":\"turboada\",\"clientID\":\"turboada-debug\","
     "\"linesStartAt1\":true,\"columnsStartAt1\":true}");
   if (not reply) return false;
   Json_Free (reply);
@@ -104961,7 +106336,7 @@ static int Run_Debug_Repl (int argument_count, char **arguments) {
   if (not Repl_Start_Backend (repl)) return 1;
   char line[1024];
   while (not repl->done) {
-    fputs ("(ada83) ", stdout);
+    fputs ("(ta) ", stdout);
     fflush (stdout);
     if (not fgets (line, sizeof line, stdin)) break;
     char *scan = line;
@@ -105378,7 +106753,7 @@ static bool Dap_Guess_Source (char *out, size_t size) {
              or strcmp (run + run_length - 4, ".adb") == 0)) {
       const char *base = strrchr (run, '/');
       base = base ? base + 1 : run;
-      if (strcmp (base, "ada83-runtime.ada") != 0
+      if (strcmp (base, "turboada-runtime.ada") != 0
           and Dap_Resolve_Source (run, out, size))
         found = true;
     }
@@ -105421,7 +106796,7 @@ static void Dap_Load_Analysis (void) {
     Dap_Copy_Text (directory, sizeof directory, ".");
   Analysis_Session_Begin (source, directory,
                           Dap_Proxy.invoked_as ? Dap_Proxy.invoked_as
-                                               : "ada83");
+                                               : "ta");
   for (u32 i = 0; i < Units_Of_This_Compilation_Count; i++)
     Dap_Collect_Accepts (Units_Of_This_Compilation[i], (Slice){ 0 }, 0);
   Discard_Captured_Diagnostics ();
@@ -105683,7 +107058,7 @@ static bool Dap_Render_Tasks (Dap_Quest *quest) {
       root = quest->tasks[i].thread;
 
   Text_Buffer out = {0};
-  Dap_Response_Open (&out, quest->request_seq, "ada83/tasks", true);
+  Dap_Response_Open (&out, quest->request_seq, "turboada/tasks", true);
   Buffer_Append_Text (&out, "\"body\":{\"tasks\":[");
   for (u32 i = 0; i < quest->task_count; i++) {
     const Dap_Task_Slot *task = &quest->tasks[i];
@@ -106336,7 +107711,7 @@ static int Dap_Exception_Info_Request (int fd, const Json *request) {
 
 static bool Dap_Answer_Tasks_Error (i64 request_seq, const char *message) {
   Text_Buffer out = {0};
-  Dap_Response_Open (&out, request_seq, "ada83/tasks", false);
+  Dap_Response_Open (&out, request_seq, "turboada/tasks", false);
   Buffer_Append_Text (&out, "\"message\":");
   Buffer_Append_Json_String (&out, message);
   Buffer_Append_Text (&out, "}");
@@ -106354,7 +107729,7 @@ static int Dap_Tasks_Request (int fd, const Json *request) {
     return Dap_Answer_Tasks_Error (request_seq, "the target is not stopped");
   if (Dap_Proxy.tasking < 0) {
     Text_Buffer out = {0};
-    Dap_Response_Open (&out, request_seq, "ada83/tasks", true);
+    Dap_Response_Open (&out, request_seq, "turboada/tasks", true);
     Buffer_Append_Text (&out, "\"body\":{\"tasks\":[]}}");
     bool written = Dap_Write_Framed (Dap_Proxy.editor_fd, out.Data,
                                      out.Length);
@@ -106728,7 +108103,7 @@ static int Dap_Proxy_Client_Message (int fd, Json *request,
     return Dap_Client_Line_Breakpoints (fd, request);
   if (strcmp (command, "exceptionInfo") == 0)
     return Dap_Exception_Info_Request (fd, request);
-  if (strcmp (command, "ada83/tasks") == 0)
+  if (strcmp (command, "turboada/tasks") == 0)
     return Dap_Tasks_Request (fd, request);
   return -1;
 }
@@ -106748,8 +108123,8 @@ static void Dap_Proxy_Backend_Lost (void) {
 #endif
 
 void Print_Usage (FILE *out, const char *program_name) {
-    fprintf (out, Ada83_Usage_Head,
-      ADA83_VERSION_TEXT, program_name, program_name, program_name,
+    fprintf (out, Turboada_Usage_Head,
+      TURBOADA_VERSION_TEXT, program_name, program_name, program_name,
       program_name, program_name, program_name);
     size_t column = sizeof "      Enable or disable one class:" - 1;
     for (int i = 0; i < WARNING_CLASS_COUNT; i++) {
@@ -106759,7 +108134,7 @@ void Print_Usage (FILE *out, const char *program_name) {
                i + 1 < WARNING_CLASS_COUNT ? ',' : '.');
       column += 1 + width;
     }
-    fputs (Ada83_Usage_Rest, out);
+    fputs (Turboada_Usage_Rest, out);
 }
 
 int Bind_Program (const char *library_directory, const char *main_unit,
@@ -106843,7 +108218,7 @@ static char *Llvm_Config_Libdir (const char *config_command) {
 bool Llvm_C_Api_Load (Llvm_C_Api *api, char *err, size_t err_size) {
 
   memset (api, 0, sizeof (*api));
-  const char *override = getenv ("ADA83_LLVM_LIB");
+  const char *override = getenv ("TURBOADA_LLVM_LIB");
   if (override)
     api->library = Backend_Library_Open (override);
   for (size_t i = 0; not api->library and
@@ -106873,11 +108248,11 @@ bool Llvm_C_Api_Load (Llvm_C_Api *api, char *err, size_t err_size) {
   if (not api->library) {
 #ifdef _WIN32
     snprintf (err, err_size,
-      "no libLLVM found (set ADA83_LLVM_LIB, install LLVM, or "
+      "no libLLVM found (set TURBOADA_LLVM_LIB, install LLVM, or "
       "place LLVM-C.dll beside the executable)");
 #else
     snprintf (err, err_size,
-      "no libLLVM found (set ADA83_LLVM_LIB, install the llvm package, or "
+      "no libLLVM found (set TURBOADA_LLVM_LIB, install the llvm package, or "
       "add an llvm-config to PATH)");
 #endif
     return false;
@@ -106959,11 +108334,151 @@ bool Push_Linker_Words (const char *text, char *pool, size_t pool_size,
   return true;
 }
 
+#ifdef _WIN32
+  #define HOST_PATH_LIST_SEPARATOR ';'
+#else
+  #define HOST_PATH_LIST_SEPARATOR ':'
+#endif
+
+static bool Program_Is_Runnable (const char *path) {
+#ifdef _WIN32
+  DWORD attributes = GetFileAttributesA (path);
+  return attributes != INVALID_FILE_ATTRIBUTES
+     and not (attributes & FILE_ATTRIBUTE_DIRECTORY);
+#else
+  return access (path, X_OK) == 0;
+#endif
+}
+
+static bool Program_In_Directory (const char *directory, const char *program,
+                                  char *out, size_t size) {
+#ifdef _WIN32
+  const char *suffix = strchr (program, '.') ? "" : ".exe";
+#else
+  const char *suffix = "";
+#endif
+  const char *separator = "";
+  size_t length = strlen (directory);
+  if (length and not Host_Path_Separates (directory[length - 1]))
+    separator = "/";
+  if ((size_t) snprintf (out, size, "%s%s%s%s",
+                         directory, separator, program, suffix) >= size)
+    return false;
+  return Program_Is_Runnable (out);
+}
+
+bool Locate_Program (const char *program, char *out, size_t size) {
+  if (strpbrk (program, HOST_DIRECTORY_SEPARATORS))
+    return Program_Is_Runnable (program)
+       and (size_t) snprintf (out, size, "%s", program) < size;
+
+  const char *path = getenv ("PATH");
+  for (const char *scan = path; scan and *scan;) {
+    char entry[PATH_MAX];
+    size_t length = 0;
+    while (scan[length] and scan[length] != HOST_PATH_LIST_SEPARATOR) length++;
+    if (length and length < sizeof entry) {
+      memcpy (entry, scan, length);
+      entry[length] = '\0';
+      if (Program_In_Directory (entry, program, out, size)) return true;
+    }
+    scan += length;
+    if (*scan) scan++;
+  }
+
+  char exe[PATH_MAX];
+  if (Host_Executable_Path (exe, sizeof exe, NULL)) {
+    const char *split = Host_Path_Split (exe);
+    size_t length = split ? (size_t) (split - exe) : 0;
+    if (length and length < sizeof exe) {
+      char directory[PATH_MAX];
+      memcpy (directory, exe, length);
+      directory[length] = '\0';
+      if (Program_In_Directory (directory, program, out, size)) return true;
+      char nested[PATH_MAX];
+      if ((size_t) snprintf (nested, sizeof nested, "%s/zig", directory)
+            < sizeof nested
+          and Program_In_Directory (nested, program, out, size)) return true;
+      if ((size_t) snprintf (nested, sizeof nested, "%s/../zig", directory)
+            < sizeof nested
+          and Program_In_Directory (nested, program, out, size)) return true;
+    }
+  }
+  if (Program_In_Directory ("zig", program, out, size)) return true;
+  if (Program_In_Directory ("../zig", program, out, size)) return true;
+
+  static const char *const Common_Directories[] = {
+#ifdef _WIN32
+    "C:/Program Files/LLVM/bin", "C:/msys64/ucrt64/bin",
+    "C:/msys64/mingw64/bin", "C:/msys64/clang64/bin", "C:/msys64/usr/bin",
+#else
+    "/usr/local/bin", "/usr/bin", "/opt/homebrew/bin", "/opt/local/bin",
+#endif
+  };
+  for (size_t i = 0; i < Count_Of (Common_Directories); i++)
+    if (Program_In_Directory (Common_Directories[i], program, out, size))
+      return true;
+
+#ifdef _WIN32
+  static const char *const Gnat_Roots[] = { "C:/GNAT", "C:/GNATPRO",
+                                            "C:/gnat", "C:/gnatpro" };
+  char newest_name[128] = "";
+  bool found = false;
+  for (size_t r = 0; r < Count_Of (Gnat_Roots); r++) {
+    Host_Directory *listing = Host_Directory_Open (Gnat_Roots[r]);
+    if (not listing) continue;
+    const char *name;
+    while ((name = Host_Directory_Next (listing))) {
+      if (name[0] == '.' or (found and strcmp (name, newest_name) <= 0)) continue;
+      char bin[PATH_MAX], candidate[PATH_MAX];
+      if ((size_t) snprintf (bin, sizeof bin, "%s/%s/bin", Gnat_Roots[r], name)
+            >= sizeof bin)
+        continue;
+      if (Program_In_Directory (bin, program, candidate, sizeof candidate)) {
+        snprintf (newest_name, sizeof newest_name, "%s", name);
+        snprintf (out, size, "%s", candidate);
+        found = true;
+      }
+    }
+    Host_Directory_Close (listing);
+  }
+  if (found) return true;
+#endif
+  return false;
+}
+
 int Run_Linker_Driver (const char **argv) {
 #ifdef _WIN32
-  intptr_t result = _spawnvp (_P_WAIT, argv[0], (const char *const *) argv);
-  if (result == -1) return 127;
-  return (int) result;
+  char resolved[PATH_MAX];
+  const char *application = argv[0];
+  if (not strpbrk (argv[0], HOST_DIRECTORY_SEPARATORS)) {
+    if (not Locate_Program (argv[0], resolved, sizeof resolved)) return 127;
+    application = resolved;
+  }
+  static char command[32768];
+  size_t used = 0;
+  for (int i = 0; argv[i]; i++) {
+    bool quote = argv[i][0] == '\0' or strpbrk (argv[i], " \t");
+    const char *piece = argv[i];
+    if (used and used < sizeof command) command[used++] = ' ';
+    if (quote and used < sizeof command) command[used++] = '"';
+    for (; *piece and used < sizeof command; piece++) command[used++] = *piece;
+    if (quote and used < sizeof command) command[used++] = '"';
+  }
+  if (used >= sizeof command) return 127;
+  command[used] = '\0';
+
+  STARTUPINFOA        startup = { .cb = sizeof startup };
+  PROCESS_INFORMATION process = { 0 };
+  if (not CreateProcessA (application, command, NULL, NULL, TRUE, 0, NULL, NULL,
+                          &startup, &process))
+    return 127;
+  WaitForSingleObject (process.hProcess, INFINITE);
+  DWORD code = 0;
+  GetExitCodeProcess (process.hProcess, &code);
+  CloseHandle (process.hProcess);
+  CloseHandle (process.hThread);
+  return (int) code;
 #else
   pid_t child = fork ();
   if (child < 0) return 127;
@@ -107109,6 +108624,12 @@ int Native_Backend_Compile (const char *ir_path, const char *const *extra_ir,
       break;
     }
     argv[argc] = NULL;
+
+    char resolved[PATH_MAX];
+    if (Locate_Program (argv[0], resolved, sizeof resolved))
+      argv[0] = resolved;
+    else
+      continue;
 
     int exit_status = Run_Linker_Driver (argv);
     if (exit_status == 127) continue;
@@ -110645,7 +112166,7 @@ int main (int argc, char *argv[]) {
     if (strcmp (argv[i], "--help") == 0 or strcmp (argv[i], "-h") == 0)
       { Print_Usage (stdout, argv[0]); return 0; }
     if (strcmp (argv[i], "--version") == 0)
-      { printf ("%s\n", ADA83_VERSION_TEXT); return 0; }
+      { printf ("%s\n", TURBOADA_VERSION_TEXT); return 0; }
     if (strcmp (argv[i], "-ada83") == 0) {
       Language_Extensions = false;
       memmove (&argv[i], &argv[i + 1], (size_t) (argc - i - 1) * sizeof *argv);
